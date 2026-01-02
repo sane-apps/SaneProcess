@@ -1,53 +1,85 @@
 # SaneProcess
 
-A battle-tested SOP enforcement system for Claude Code.
+**Battle-tested SOP enforcement for Claude Code.**
 
-## Quick Start
+Stop AI doom loops. Ship reliable code.
 
-```bash
-# In your project folder:
-curl -sL saneprocess.dev/init | bash
-
-# Or run locally:
-./scripts/init.sh
-```
-
-## What's Inside
-
-```
-SaneProcess/
-├── docs/
-│   ├── SaneProcess.md    # Full documentation (the SOP)
-│   └── SaneProcess.pdf   # PDF version for distribution
-├── scripts/
-│   └── init.sh           # Project initializer (detects type, creates configs)
-└── examples/             # Example configurations
-```
+---
 
 ## The Problem
 
-Claude Code is powerful but undisciplined. It:
-- Guesses the same broken fix 10 times (doom loops)
+Claude Code is powerful but undisciplined:
+- Guesses the same broken fix 10 times
 - Assumes APIs exist without checking
-- Skips tests, forgets to verify
-- Loses context between sessions
+- Skips verification, forgets context
+- Wastes 20+ minutes on preventable mistakes
 
 ## The Solution
 
 SaneProcess enforces discipline through:
 
-1. **Golden Rules** - 11 memorable rules like "TWO STRIKES? INVESTIGATE"
-2. **Circuit Breaker** - Auto-stops after 3 same errors or 5 total failures
-3. **Memory System** - Persists bug patterns across sessions
-4. **Hooks** - Automatic enforcement via Claude Code hooks
-5. **Self-Rating** - Accountability after every task
+| Feature | What It Does |
+|---------|--------------|
+| **11 Golden Rules** | Memorable rules like "TWO STRIKES? INVESTIGATE" |
+| **Circuit Breaker** | Auto-stops after 3 same errors or 5 total failures |
+| **Memory System** | Bug patterns persist across sessions |
+| **Compliance Loop** | Enforced task completion with verification |
+| **Self-Rating** | Accountability after every task |
 
-## Target Users
+## What's Included
 
-- Developers using Claude Code for macOS/iOS development
-- Teams wanting consistent AI-assisted coding practices
-- Anyone tired of AI wasting time on doom loops
+```
+├── docs/SaneProcess.md   # Complete SOP documentation (1,100+ lines)
+├── scripts/init.sh       # One-command project setup
+└── Hooks & configs       # Circuit breaker, memory compactor, lefthook
+```
 
-## Version
+---
 
-2.1 - January 2026
+## Pricing
+
+| Tier | Price | Includes |
+|------|-------|----------|
+| **Personal** | $29 | License for 1 developer |
+| **Team** | $99 | License for up to 5 developers |
+| **Enterprise** | Contact | Unlimited + custom hooks + support |
+
+**To purchase:** [Open an issue](https://github.com/stephanjoseph/SaneProcess/issues/new) with subject "License Request"
+
+---
+
+## Preview
+
+You can view the full source code here. To use it in your projects, purchase a license.
+
+**Quick look at the Golden Rules:**
+
+```
+#0  NAME THE RULE BEFORE YOU CODE
+#1  STAY IN YOUR LANE (files in project)
+#2  VERIFY BEFORE YOU TRY (check docs)
+#3  TWO STRIKES? INVESTIGATE
+#4  GREEN MEANS GO (tests must pass)
+#5  USE PROJECT TOOLS
+#6  BUILD, KILL, LAUNCH, LOG
+#7  NO TEST? NO REST
+#8  FILE SIZE LIMITS (500/800)
+#9  NEW FILE? UPDATE PROJECT
+#10 TRACK WITH TodoWrite
+```
+
+---
+
+## License
+
+**Source Available** - You may view this code for evaluation. Usage requires a paid license. See [LICENSE](LICENSE) for details.
+
+---
+
+## Questions?
+
+Open an issue or contact [@stephanjoseph](https://github.com/stephanjoseph)
+
+---
+
+*SaneProcess v2.1 - January 2026*
