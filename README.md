@@ -29,10 +29,22 @@ SaneProcess enforces discipline through:
 ## What's Included
 
 ```
-├── docs/SaneProcess.md   # Complete SOP documentation (1,100+ lines)
-├── scripts/init.sh       # One-command project setup
-└── Hooks & configs       # Circuit breaker, memory compactor, lefthook
+├── docs/SaneProcess.md     # Complete SOP documentation (1,100+ lines)
+├── scripts/init.sh         # One-command project setup
+├── scripts/mac_context.rb  # Mac development knowledge injection (370+ lines)
+└── Hooks & configs         # Circuit breaker, memory compactor, lefthook
 ```
+
+## The "Supervisor" Advantage
+
+SaneProcess isn't just rules - it's a **Mac App Factory** layer:
+
+| Feature | What It Does |
+|---------|--------------|
+| **Mac Context Injection** | 370 lines of Info.plist, entitlements, sandboxing, notarization patterns |
+| **Circuit Breaker** | Stops Claude after 3 same errors (prevents $20 token burn) |
+| **XcodeGen Integration** | Never let Claude touch .xcodeproj directly |
+| **Build Loop Handler** | Captures errors, strips noise, feeds back only essentials |
 
 ---
 
