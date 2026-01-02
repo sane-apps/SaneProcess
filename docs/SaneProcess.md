@@ -20,7 +20,7 @@ You now have a complete human-AI development system for building macOS applicati
 
 | Option | Do This |
 |--------|---------|
-| **Instant Setup** | Run `curl -sL saneprocess.dev/init \| bash` in your project folder |
+| **Instant Setup** | Run `curl -sL https://raw.githubusercontent.com/stephanjoseph/SaneProcess/main/scripts/init.sh \| bash` in your project folder |
 | **Manual Setup** | Open Terminal, run `claude`, paste this document, say "set up SaneProcess" |
 | **Learn First** | Keep reading to understand the rules, then set up manually |
 
@@ -1115,4 +1115,4 @@ killall -9 <app-name>
 
 ---
 
-*SaneProcess v2.0 - Universal macOS Development Operations Manual*
+*SaneProcess v2.1 - Universal macOS Development Operations Manual*
