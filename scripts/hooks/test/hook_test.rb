@@ -25,13 +25,41 @@ FAIL = '❌'
 
 def setup
   FileUtils.rm_rf(TEST_PROJECT)
-  FileUtils.mkdir_p("#{TEST_PROJECT}/.claude")
+  FileUtils.mkdir_p("#{TEST_PROJECT}/.claude/rules")
   FileUtils.mkdir_p("#{TEST_PROJECT}/Views")
   FileUtils.mkdir_p("#{TEST_PROJECT}/Tests")
   FileUtils.mkdir_p("#{TEST_PROJECT}/Services")
 
   # Create a test file for size checks
   File.write("#{TEST_PROJECT}/test.swift", "line\n" * 100)
+
+  # Create rules files for path_rules tests
+  File.write("#{TEST_PROJECT}/.claude/rules/views.md", <<~MD)
+    # SwiftUI View Rules
+
+    ## Requirements
+
+    1. **Extract if body > 50 lines** - Split into subviews
+    2. **No business logic in views** - Views render state
+  MD
+
+  File.write("#{TEST_PROJECT}/.claude/rules/tests.md", <<~MD)
+    # Test File Rules
+
+    ## Requirements
+
+    1. **Use Swift Testing** - #expect() not XCTAssert
+    2. **No tautologies** - #expect(true) is useless
+  MD
+
+  File.write("#{TEST_PROJECT}/.claude/rules/services.md", <<~MD)
+    # Service Layer Rules
+
+    ## Requirements
+
+    1. **Actor for shared mutable state** - Thread safety
+    2. **Protocol-first** - Define interface before implementation
+  MD
 end
 
 def teardown

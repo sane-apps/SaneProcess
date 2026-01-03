@@ -10,7 +10,9 @@
 
 require 'json'
 
-RULES_DIR = File.join(Dir.pwd, '.claude', 'rules')
+# Use project dir from env, fall back to pwd
+PROJECT_DIR = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
+RULES_DIR = File.join(PROJECT_DIR, '.claude', 'rules')
 
 # Pattern matching for file paths
 PATTERN_RULES = {

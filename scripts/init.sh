@@ -173,6 +173,62 @@ done
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# DOWNLOAD SANEMASTER CLI
+# ═══════════════════════════════════════════════════════════════════════════════
+
+echo "Downloading SaneMaster CLI..."
+
+mkdir -p Scripts/sanemaster
+
+# Download main CLI
+curl -sL "${REPO_RAW}/scripts/SaneMaster.rb" -o "Scripts/SaneMaster.rb"
+chmod +x "Scripts/SaneMaster.rb"
+echo "   ✅ Scripts/SaneMaster.rb"
+
+# Download modules
+SANEMASTER_MODULES=(
+    "base.rb"
+    "bootstrap.rb"
+    "circuit_breaker_state.rb"
+    "compliance_report.rb"
+    "dependencies.rb"
+    "diagnostics.rb"
+    "export.rb"
+    "generation.rb"
+    "generation_assets.rb"
+    "generation_mocks.rb"
+    "generation_templates.rb"
+    "md_export.rb"
+    "memory.rb"
+    "meta.rb"
+    "quality.rb"
+    "session.rb"
+    "sop_loop.rb"
+    "test_mode.rb"
+    "verify.rb"
+)
+
+for module in "${SANEMASTER_MODULES[@]}"; do
+    curl -sL "${REPO_RAW}/scripts/sanemaster/${module}" -o "Scripts/sanemaster/${module}"
+done
+echo "   ✅ Scripts/sanemaster/ (${#SANEMASTER_MODULES[@]} modules)"
+
+# Replace placeholders with project name
+echo "   🔧 Configuring for ${PROJECT_NAME}..."
+BUNDLE_ID="com.example.${PROJECT_NAME,,}"  # lowercase project name
+
+sed -i '' "s/__PROJECT_NAME__/${PROJECT_NAME}/g" Scripts/SaneMaster.rb
+sed -i '' "s/__BUNDLE_ID__/${BUNDLE_ID}/g" Scripts/SaneMaster.rb
+
+for module in Scripts/sanemaster/*.rb; do
+    sed -i '' "s/__PROJECT_NAME__/${PROJECT_NAME}/g" "$module"
+    sed -i '' "s/__BUNDLE_ID__/${BUNDLE_ID}/g" "$module"
+done
+echo "   ✅ Configured for ${PROJECT_NAME}"
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # DOWNLOAD PATTERN RULES
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -246,6 +302,11 @@ cat > .claude/settings.json << 'EOF'
         "type": "command",
         "command": "./Scripts/hooks/version_mismatch.rb",
         "matchTools": ["Bash"]
+      },
+      {
+        "type": "command",
+        "command": "./Scripts/hooks/skill_validator.rb",
+        "matchTools": ["Skill"]
       }
     ],
     "PostToolUse": [
@@ -267,6 +328,11 @@ cat > .claude/settings.json << 'EOF'
       {
         "type": "command",
         "command": "./Scripts/hooks/audit_logger.rb"
+      },
+      {
+        "type": "command",
+        "command": "./Scripts/hooks/deeper_look_trigger.rb",
+        "matchTools": ["Grep", "Glob", "Read"]
       }
     ]
   }
@@ -463,8 +529,9 @@ echo -e "${GREEN}║                    Installation Complete!                  
 echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo "Installed:"
-echo "   • 11 SOP enforcement hooks"
+echo "   • 13 SOP enforcement hooks"
 echo "   • 6 pattern-based rules"
+echo "   • SaneMaster CLI (./Scripts/SaneMaster.rb)"
 echo "   • Claude Code settings with hook registration"
 echo "   • MCP server configuration"
 echo ""
@@ -472,6 +539,11 @@ echo -e "${BLUE}Next steps:${NC}"
 echo "   1. Run: ${GREEN}claude${NC}"
 echo "   2. Hooks activate automatically"
 echo "   3. See DEVELOPMENT.md for the 13 Golden Rules"
+echo ""
+echo -e "${BLUE}SaneMaster commands:${NC}"
+echo "   ./Scripts/SaneMaster.rb verify      # Build, test, lint"
+echo "   ./Scripts/SaneMaster.rb test-mode   # Build, kill, launch, logs"
+echo "   ./Scripts/SaneMaster.rb memory      # View memory graph health"
 echo ""
 echo -e "${YELLOW}Note:${NC} Add these to .gitignore:"
 echo "   .claude/circuit_breaker.json"

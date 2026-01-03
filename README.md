@@ -34,6 +34,8 @@ SaneProcess enforces discipline through:
 │   └── PROJECT_TEMPLATE.md     # Customize for your project
 ├── scripts/
 │   ├── init.sh                 # One-command project setup
+│   ├── SaneMaster.rb           # CLI for build, verify, test-mode, memory
+│   ├── sanemaster/             # 19 SaneMaster modules
 │   ├── mac_context.rb          # Mac development knowledge injection
 │   ├── skill_loader.rb         # Load/unload domain-specific knowledge
 │   └── hooks/                  # 13 production-ready hooks
@@ -87,6 +89,30 @@ ruby scripts/skill_loader.rb unload --all            # Clear all skills
 
 Skills add domain-specific knowledge to your context. Base context is 757 lines; with all skills loaded: ~1,350 lines.
 
+### SaneMaster CLI
+
+Your project's command center. Installed at `Scripts/SaneMaster.rb`:
+
+```bash
+./Scripts/SaneMaster.rb verify          # Build + test + lint
+./Scripts/SaneMaster.rb test-mode       # Build, kill, launch, stream logs
+./Scripts/SaneMaster.rb memory          # View memory graph health
+./Scripts/SaneMaster.rb deps            # Show dependency versions
+./Scripts/SaneMaster.rb export          # Export for LLM context
+./Scripts/SaneMaster.rb diag            # Analyze crash reports
+./Scripts/SaneMaster.rb bootstrap       # Reset session state
+```
+
+Key features:
+- **verify**: Full build cycle with lint and test
+- **test-mode**: Kill old processes, build, launch, tail logs
+- **memory**: Check Memory MCP health (entities, token estimate, unfixed bugs)
+- **deps**: Version audit of all dependencies (CocoaPods, SPM, Homebrew)
+- **diag**: Analyze crash reports and diagnose issues
+- **bootstrap**: Reset circuit breaker and session state
+
+Run `./Scripts/SaneMaster.rb help` for all commands.
+
 ## The "Supervisor" Advantage
 
 SaneProcess isn't just rules - it's a **Mac App Factory** layer:
@@ -135,6 +161,7 @@ curl -sL https://raw.githubusercontent.com/stephanjoseph/SaneProcess/main/script
 
 This installs:
 - 13 SOP enforcement hooks
+- SaneMaster CLI (`Scripts/SaneMaster.rb` + 19 modules)
 - 6 pattern-based rules
 - Claude Code settings with hook registration
 - MCP server configuration
