@@ -10,8 +10,12 @@ Production-ready hooks for Claude Code SOP enforcement.
 | `circuit_breaker.rb` | PreToolUse | Stops after 3 consecutive failures | **Yes** |
 | `edit_validator.rb` | PreToolUse | Blocks dangerous paths, enforces 800-line limit | **Yes** |
 | `path_rules.rb` | PreToolUse | Shows context-specific rules for file types | No |
+| `sop_mapper.rb` | PreToolUse | Enforces Rule #0 - map rules before coding | No |
+| `two_fix_reminder.rb` | PreToolUse | Reminds about Rule #3 every 10 edits | No |
+| `version_mismatch.rb` | PreToolUse | Prevents BUG-008 - build/launch path mismatch | No |
 | `failure_tracker.rb` | PostToolUse | Tracks failures, trips circuit breaker | No |
 | `test_quality_checker.rb` | PostToolUse | Warns on tautology tests like `#expect(true)` | No |
+| `verify_reminder.rb` | PostToolUse | Reminds Rule #6 cycle after Swift edits | No |
 | `audit_logger.rb` | PostToolUse | Logs all tool calls to `.claude/audit.jsonl` | No |
 
 ## How They Work
@@ -83,5 +87,9 @@ Hooks are registered in `.claude/settings.json`:
 | `.claude/circuit_breaker.json` | Breaker state (failures, tripped) |
 | `.claude/failure_state.json` | Failure tracking state |
 | `.claude/audit.jsonl` | Audit log (JSON Lines) |
+| `.claude/sop_state.json` | SOP rule mapping state |
+| `.claude/edit_state.json` | Edit count per session |
+| `.claude/edit_count.json` | Cumulative edit count |
+| `.claude/build_state.json` | Build path tracking |
 
 These are gitignored - they're session-specific.

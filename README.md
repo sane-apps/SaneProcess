@@ -36,14 +36,18 @@ SaneProcess enforces discipline through:
 │   ├── init.sh                 # One-command project setup
 │   ├── mac_context.rb          # Mac development knowledge injection
 │   ├── skill_loader.rb         # Load/unload domain-specific knowledge
-│   └── hooks/                  # 7 production-ready hooks
+│   └── hooks/                  # 11 production-ready hooks
 │       ├── circuit_breaker.rb     # Blocks after 3 failures
 │       ├── edit_validator.rb      # Path safety + file size limits
 │       ├── failure_tracker.rb     # Tracks consecutive failures
 │       ├── test_quality_checker.rb # Detects tautology tests
 │       ├── path_rules.rb          # Shows context-specific rules
 │       ├── session_start.rb       # Bootstraps session state
-│       └── audit_logger.rb        # Logs all decisions
+│       ├── audit_logger.rb        # Logs all decisions
+│       ├── sop_mapper.rb          # Enforces Rule #0 mapping
+│       ├── two_fix_reminder.rb    # Rule #3 reminder
+│       ├── verify_reminder.rb     # Rule #6 cycle reminder
+│       └── version_mismatch.rb    # Prevents BUG-008
 ├── skills/                     # Modular expert knowledge
 │   ├── swift-concurrency.md
 │   ├── swiftui-performance.md
@@ -113,7 +117,7 @@ curl -sL https://raw.githubusercontent.com/stephanjoseph/SaneProcess/main/script
 ```
 
 This installs:
-- 7 SOP enforcement hooks
+- 11 SOP enforcement hooks
 - 6 pattern-based rules
 - Claude Code settings with hook registration
 - MCP server configuration

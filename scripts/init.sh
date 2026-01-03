@@ -156,6 +156,10 @@ HOOKS=(
     "path_rules.rb"
     "session_start.rb"
     "audit_logger.rb"
+    "sop_mapper.rb"
+    "two_fix_reminder.rb"
+    "verify_reminder.rb"
+    "version_mismatch.rb"
 )
 
 for hook in "${HOOKS[@]}"; do
@@ -225,6 +229,21 @@ cat > .claude/settings.json << 'EOF'
         "type": "command",
         "command": "./Scripts/hooks/path_rules.rb",
         "matchTools": ["Edit", "Write"]
+      },
+      {
+        "type": "command",
+        "command": "./Scripts/hooks/sop_mapper.rb",
+        "matchTools": ["Edit", "Write"]
+      },
+      {
+        "type": "command",
+        "command": "./Scripts/hooks/two_fix_reminder.rb",
+        "matchTools": ["Edit"]
+      },
+      {
+        "type": "command",
+        "command": "./Scripts/hooks/version_mismatch.rb",
+        "matchTools": ["Bash"]
       }
     ],
     "PostToolUse": [
@@ -237,6 +256,11 @@ cat > .claude/settings.json << 'EOF'
         "type": "command",
         "command": "./Scripts/hooks/test_quality_checker.rb",
         "matchTools": ["Edit", "Write"]
+      },
+      {
+        "type": "command",
+        "command": "./Scripts/hooks/verify_reminder.rb",
+        "matchTools": ["Edit"]
       },
       {
         "type": "command",
@@ -260,6 +284,10 @@ circuit_breaker.json
 failure_state.json
 audit.jsonl
 memory.json
+sop_state.json
+edit_state.json
+edit_count.json
+build_state.json
 
 # Keep rules and settings
 !rules/
@@ -433,7 +461,7 @@ echo -e "${GREEN}║                    Installation Complete!                  
 echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo "Installed:"
-echo "   • 7 SOP enforcement hooks"
+echo "   • 11 SOP enforcement hooks"
 echo "   • 6 pattern-based rules"
 echo "   • Claude Code settings with hook registration"
 echo "   • MCP server configuration"
