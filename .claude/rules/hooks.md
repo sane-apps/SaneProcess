@@ -19,29 +19,27 @@
 
 require 'json'
 
-# Get tool context from environment
-tool_name = ENV.fetch('CLAUDE_TOOL_NAME', nil)
-tool_input = ENV.fetch('CLAUDE_TOOL_INPUT', nil)
+# Read from stdin (Claude Code standard)
+begin
+  input = JSON.parse($stdin.read)
+rescue JSON::ParserError, Errno::ENOENT
+  exit 0  # Don't block on parse errors
+end
 
-# Skip if no input
-exit 0 if tool_name.nil? || tool_input.nil?
+tool_name = input['tool_name']
+tool_input = input['tool_input'] || input
 
 begin
-  # Validation logic here
-  data = JSON.parse(tool_input)
-
-  if should_block?(data)
+  if should_block?(tool_input)
     warn '🔴 BLOCKED: [Rule Name]'
     warn '   Reason: [explanation]'
     exit 1
   end
 
-  # Allow the call
-  exit 0
+  exit 0  # Allow the call
 rescue StandardError => e
-  # Don't block on unexpected errors
   warn "⚠️  Hook error: #{e.message}"
-  exit 0
+  exit 0  # Don't block on unexpected errors
 end
 ```
 
@@ -58,7 +56,7 @@ end
 
 ```ruby
 # Missing error handling - will crash and block unexpectedly
-data = JSON.parse(ENV['CLAUDE_TOOL_INPUT'])
+data = JSON.parse($stdin.read)
 
 # Using exit 1 for warnings - will block the tool
 if file_too_large?(data)

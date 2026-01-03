@@ -9,7 +9,7 @@
 1. **frozen_string_literal** - Always add pragma at top
 2. **Exit codes matter** - 0 = success, 1 = blocked/error
 3. **Warn, don't puts** - Use `warn` for messages (goes to stderr)
-4. **Handle missing input** - Check ENV vars exist before using
+4. **Handle missing input** - Read from stdin, handle empty gracefully
 
 ## Right
 
@@ -19,18 +19,16 @@
 
 require 'json'
 
-# Check required input exists
-tool_input = ENV.fetch('CLAUDE_TOOL_INPUT', nil)
-exit 0 if tool_input.nil? || tool_input.empty?
-
-# Parse and validate
+# Read from stdin (Claude Code standard)
 begin
-  data = JSON.parse(tool_input)
-  # ... process
-rescue JSON::ParserError
-  warn '⚠️  Invalid JSON input'
+  input = JSON.parse($stdin.read)
+rescue JSON::ParserError, Errno::ENOENT
   exit 0  # Don't block on parse errors
 end
+
+# Process the input
+tool_input = input['tool_input'] || input
+# ... do work
 ```
 
 ## Wrong
@@ -42,6 +40,6 @@ require 'json'
 # Using puts instead of warn
 puts "Processing..."  # Goes to stdout, may interfere with hook output
 
-# Not checking if ENV exists
-data = JSON.parse(ENV['CLAUDE_TOOL_INPUT'])  # Will crash if nil
+# Not handling empty stdin
+data = JSON.parse($stdin.read)  # Will crash on empty input
 ```

@@ -5,7 +5,7 @@ You are working on **SaneProcess** - the SOP enforcement framework itself.
 ## Project Purpose
 - Public repo for sale/distribution
 - Contains: docs, examples, hooks, skills, init scripts
-- Users install via `curl -sL saneprocess.dev/init | bash`
+- Users install via `curl -sL https://raw.githubusercontent.com/stephanjoseph/SaneProcess/main/scripts/init.sh | bash`
 
 ## Key Files
 | Path | Purpose |

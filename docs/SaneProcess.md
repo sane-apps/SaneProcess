@@ -1,6 +1,6 @@
 # SaneProcess
 
-**Version 2.1** | January 2026
+**Version 2.2** | January 2026
 
 ---
 
@@ -34,7 +34,7 @@ This is a **process framework** with three layers:
 
 | Layer | What It Is | Transferable? |
 |-------|-----------|---------------|
-| **1. The Rules** | 11 Golden Rules + workflows + research protocol | ✅ Yes - copy this document |
+| **1. The Rules** | 13 Golden Rules + workflows + research protocol | ✅ Yes - copy this document |
 | **2. The Tooling** | CLI automation (SaneMaster.rb or equivalent) | ⚠️ Adapt - needs project setup |
 | **3. The Enforcement** | Claude Code hooks + MCP servers | ⚠️ Adapt - config files provided |
 
