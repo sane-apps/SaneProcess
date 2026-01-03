@@ -1,0 +1,44 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__memory__*",
+      "mcp__apple-docs__*",
+      "mcp__context7__*",
+      "mcp__github__*"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '✅ SaneProcess session started' && cat \"$CLAUDE_PROJECT_DIR\"/.claude/SOP_CONTEXT.md 2>/dev/null || echo '📋 Working on SaneProcess - the SOP framework'"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/path_rules.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/path_rules.rb",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
