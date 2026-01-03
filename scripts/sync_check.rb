@@ -19,6 +19,7 @@
 #
 
 require 'digest'
+require 'fileutils'
 require 'json'
 
 class SyncCheck
@@ -51,8 +52,9 @@ class SyncCheck
     hooks.md
   ].freeze
 
-  def initialize(project_paths = [])
-    @project_paths = project_paths.empty? ? detect_sibling_projects : project_paths
+  def initialize(args = [])
+    @fix_mode = args.delete('--fix')
+    @project_paths = args.empty? ? detect_sibling_projects : args
     @diffs = []
   end
 
@@ -94,9 +96,62 @@ class SyncCheck
         puts
       end
 
-      puts "Run 'ruby scripts/sync_check.rb --fix' to copy from SaneProcess to projects"
+      if @fix_mode
+        fix_diffs
+      else
+        puts "Run 'ruby scripts/sync_check.rb --fix' to copy from SaneProcess to projects"
+      end
       exit 1
     end
+  end
+
+  def fix_diffs
+    puts
+    puts "Fixing differences..."
+    puts
+
+    fixed = 0
+    skipped = 0
+
+    @diffs.each do |diff|
+      project_path = detect_project_path(diff[:project])
+      next unless project_path
+
+      case diff[:status]
+      when '❌ MISSING', '⚠️  DIFFERS'
+        # Copy from SaneProcess to project
+        if diff[:file].start_with?('rules/')
+          src = File.join(RULES_DIR, diff[:file].sub('rules/', ''))
+          dst = File.join(project_path, '.claude', diff[:file])
+        else
+          src = File.join(HOOKS_DIR, diff[:file])
+          dst_dir = find_hooks_dir(project_path)
+          dst = File.join(dst_dir, diff[:file]) if dst_dir
+        end
+
+        if src && dst && File.exist?(src)
+          FileUtils.mkdir_p(File.dirname(dst))
+          FileUtils.cp(src, dst)
+          FileUtils.chmod(0o755, dst) if dst.end_with?('.rb')
+          puts "  ✅ Copied #{diff[:file]} to #{diff[:project]}"
+          fixed += 1
+        else
+          puts "  ⚠️  Skipped #{diff[:file]} (source not found)"
+          skipped += 1
+        end
+      when '➕ EXTRA'
+        # Extra files in project - don't delete, just note
+        puts "  ⏭️  Skipped #{diff[:file]} (project-specific)"
+        skipped += 1
+      end
+    end
+
+    puts
+    puts "Fixed: #{fixed}, Skipped: #{skipped}"
+  end
+
+  def detect_project_path(project_name)
+    @project_paths.find { |p| File.basename(p) == project_name }
   end
 
   private
@@ -141,7 +196,13 @@ class SyncCheck
   end
 
   def find_hooks_dir(project_path)
-    %w[Scripts/hooks scripts/hooks].each do |rel_path|
+    # Check multiple possible hook locations
+    %w[
+      Scripts/hooks
+      scripts/hooks
+      Scripts/sanemaster/hooks
+      scripts/sanemaster/hooks
+    ].each do |rel_path|
       full_path = File.join(project_path, rel_path)
       return full_path if File.directory?(full_path)
     end
