@@ -89,6 +89,12 @@ def output_session_context
     warn "📁 Pattern rules: #{rule_count} loaded" if rule_count.positive?
   end
 
+  # Check for memory file and remind to load
+  memory_file = File.join(CLAUDE_DIR, 'memory.json')
+  if File.exist?(memory_file)
+    warn '🧠 Memory available - run mcp__memory__read_graph at session start'
+  end
+
   warn ''
 end
 
