@@ -287,17 +287,27 @@ Start minimal, add commands as needed. Reference the full SaneMaster.rb for:
 
 These rules are **mandatory**. Self-rate adherence after every task.
 
+### Why Catchy Rule Names?
+
+Memorable rules + clear tool names = **human can audit in real-time**.
+
+Names like "SANEMASTER OR DISASTER" aren't just mnemonics—they're a **shared vocabulary**. When I say "Rule #5" you instantly know whether I'm complying or drifting. This lets you catch mistakes as they happen instead of after 20 minutes of debugging.
+
+---
+
 ## Rule #0: NAME THE RULE BEFORE YOU CODE
 
 ✅ DO: State which rules apply before writing code
 ❌ DON'T: Start coding without thinking about rules
 
 ```
-🟢 RIGHT: "This uses an API → verify it exists first (Rule #2)"
-🟢 RIGHT: "New file needed → run project generator after"
+🟢 RIGHT: "This uses an API → Rule #2: VERIFY BEFORE YOU TRY"
+🟢 RIGHT: "New file needed → Rule #9: NEW FILE? GEN THAT PILE"
 🔴 WRONG: "Let me just start coding..."
 🔴 WRONG: "I'll figure out the rules as I go"
 ```
+
+---
 
 ## Rule #1: STAY IN YOUR LANE
 
@@ -313,6 +323,8 @@ These rules are **mandatory**. Self-rate adherence after every task.
 
 If file must go elsewhere → ask user where.
 
+---
+
 ## Rule #2: VERIFY BEFORE YOU TRY
 
 ✅ DO: Verify APIs exist before using them
@@ -324,6 +336,8 @@ If file must go elsewhere → ask user where.
 🔴 WRONG: "I remember this API has a .zoom property"
 🔴 WRONG: "Stack Overflow says use .preferredOption"
 ```
+
+---
 
 ## Rule #3: TWO STRIKES? INVESTIGATE
 
@@ -339,6 +353,8 @@ If file must go elsewhere → ask user where.
 
 Stopping IS compliance. Guessing a 3rd time is the violation.
 
+---
+
 ## Rule #4: GREEN MEANS GO
 
 ✅ DO: Fix all test failures before claiming done
@@ -351,17 +367,21 @@ Stopping IS compliance. Guessing a 3rd time is the violation.
 🔴 WRONG: "I'll fix the tests later"
 ```
 
-## Rule #5: USE PROJECT TOOLS
+---
+
+## Rule #5: SANEMASTER OR DISASTER
 
 ✅ DO: Use project's build tool (Makefile, package.json, Scripts/, etc.)
 ❌ DON'T: Use raw build commands
 
 ```
-🟢 RIGHT: ./Scripts/build.rb verify
+🟢 RIGHT: ./Scripts/<project-tool> verify
 🟢 RIGHT: npm test
 🔴 WRONG: xcodebuild -scheme MyApp build
 🔴 WRONG: tsc && node dist/index.js
 ```
+
+---
 
 ## Rule #6: BUILD, KILL, LAUNCH, LOG
 
@@ -382,6 +402,8 @@ killall -9 <app-name>         # KILL
 🔴 WRONG: Launch without killing old instance
 ```
 
+---
+
 ## Rule #7: NO TEST? NO REST
 
 ✅ DO: Every bug fix gets a regression test
@@ -394,21 +416,23 @@ killall -9 <app-name>         # KILL
 🔴 WRONG: #expect(value == true || value == false)
 ```
 
-## Rule #8: FILE SIZE LIMITS
+---
 
-✅ DO: Keep files under 500 lines, split by responsibility
-❌ DON'T: Exceed 800 lines or split arbitrarily
+## Rule #8: BUG FOUND? WRITE IT DOWN
+
+✅ DO: Document bugs in TodoWrite immediately, tracking file after
+❌ DON'T: Try to remember bugs or skip documentation
 
 ```
-🟢 RIGHT: Split Manager.swift → Manager.swift + Manager+Feature.swift
-🟢 RIGHT: 650-line file with clear single responsibility = OK
-🔴 WRONG: 900-line file "because it's all related"
-🔴 WRONG: Split at line 400 mid-function to hit a number
+🟢 RIGHT: TodoWrite: "BUG: Camera - black screen on launch"
+🟢 RIGHT: Update BUG_TRACKING.md with root cause after fix
+🔴 WRONG: "I'll remember to fix that later"
+🔴 WRONG: Fix bug without documenting what caused it
 ```
 
-**Thresholds:** Soft limit 500, Hard limit 800
+---
 
-## Rule #9: NEW FILE? UPDATE PROJECT
+## Rule #9: NEW FILE? GEN THAT PILE
 
 ✅ DO: Run project generator after creating new files
 ❌ DON'T: Forget to update project configuration
@@ -420,17 +444,59 @@ killall -9 <app-name>         # KILL
 🔴 WRONG: "I created the file, we're done!"
 ```
 
-## Rule #10: TRACK WITH TodoWrite
+---
 
-✅ DO: Use TodoWrite for multi-step tasks (3+ steps)
-❌ DON'T: Try to remember all tasks in your head
+## Rule #10: FIVE HUNDRED'S FINE, EIGHT'S THE LINE
+
+✅ DO: Keep files under 500 lines, split by responsibility
+❌ DON'T: Exceed 800 lines or split arbitrarily
+
+| Lines | Status |
+|-------|--------|
+| <500 | Good |
+| 500-800 | OK if single responsibility |
+| >800 | Must split |
 
 ```
-🟢 RIGHT: TodoWrite with status: in_progress → completed
-🟢 RIGHT: One task in_progress at a time
-🔴 WRONG: "I'll remember to do that later"
-🔴 WRONG: Mark all tasks complete at once at the end
+🟢 RIGHT: Split Manager.swift → Manager.swift + Manager+Feature.swift
+🟢 RIGHT: 650-line file with clear single responsibility = OK
+🔴 WRONG: 900-line file "because it's all related"
+🔴 WRONG: Split at line 400 mid-function to hit a number
 ```
+
+---
+
+## Rule #11: TOOL BROKE? FIX THE YOKE
+
+✅ DO: If your build tool fails, fix the tool itself
+❌ DON'T: Work around broken tools
+
+```
+🟢 RIGHT: "Nuclear clean doesn't clear cache → fix the clean script"
+🟢 RIGHT: "Logs path wrong → fix the logs command"
+🔴 WRONG: "Nuclear clean doesn't work → run raw xcodebuild"
+🔴 WRONG: "Logs broken → just skip checking logs"
+```
+
+Working around broken tools creates invisible debt. Fix once, benefit forever.
+
+---
+
+## Rule #12: TALK WHILE I WALK
+
+✅ DO: Use subagents for heavy lifting, stay responsive to user
+❌ DON'T: Block on long operations
+
+```
+🟢 RIGHT: "User asked question → answer while subagent keeps working"
+🟢 RIGHT: "Long task → spawn subagent, stay responsive"
+🔴 WRONG: "Hold on, let me finish this first..."
+🔴 WRONG: "Running verify... (blocks for 2 minutes)"
+```
+
+User talks, you listen, work continues uninterrupted.
+
+---
 
 ## Self-Rating (MANDATORY)
 
@@ -457,14 +523,18 @@ Real failures from past sessions. Don't repeat them.
 
 | Mistake | What Happened | Prevention |
 |---------|---------------|------------|
-| **Guessed API** | Assumed API exists, wasted 20+ min | `verify_api` or check docs first |
-| **Kept guessing** | Same fix 4 times. Finally checked docs. | Stop at 2, investigate |
-| **Skipped project generator** | Created file, "file not found" for 20 min | Run generator after new files |
-| **Deleted "unused" file** | Static analyzer said unused, broke build | Grep before delete |
-| **Wrong build path** | Built to ./build, launched from DerivedData | Verify paths match |
+| **Guessed API** | Assumed `NSWorkspace.shared.zoom` exists. It doesn't. 20 min wasted. | `verify_api` or check docs first |
+| **Kept guessing** | Same fix 4 times. Finally checked docs on attempt 5. | Stop at 2, investigate (Rule #3) |
+| **Skipped project generator** | Created `NewService.swift`, "file not found" for 20 min | Run generator after new files (Rule #9) |
+| **Deleted "unused" file** | Static analyzer said unused, but DI container needed it. Broke build. | Grep before delete |
+| **Wrong build path** | Built to `./build`, launched from `DerivedData` | Verify paths match |
 | **Skimmed the SOP** | Missed obvious rule, 5/10 session | Read and internalize rules |
+| **Trusted web search** | Stack Overflow said use `.preferredCamera`. API doesn't exist. | SDK is source of truth |
+| **No regression test** | Fixed bug, shipped, bug came back 2 weeks later | Every fix gets a test (Rule #7) |
 
 **The #1 differentiator**: Skimming this SOP = 5/10 sessions. Internalizing it = 8+/10.
+
+**"If you skim you sin."** — The answers are here. Read them.
 
 ---
 
@@ -1082,12 +1152,14 @@ killall -9 <app-name>
 │   #2  VERIFY BEFORE YOU TRY (check docs)                   │
 │   #3  TWO STRIKES? INVESTIGATE                             │
 │   #4  GREEN MEANS GO (tests must pass)                     │
-│   #5  USE PROJECT TOOLS                                    │
+│   #5  SANEMASTER OR DISASTER (use project tools)           │
 │   #6  BUILD, KILL, LAUNCH, LOG                             │
 │   #7  NO TEST? NO REST                                     │
-│   #8  FILE SIZE LIMITS (500/800)                           │
-│   #9  NEW FILE? UPDATE PROJECT                             │
-│   #10 TRACK WITH TodoWrite                                 │
+│   #8  BUG FOUND? WRITE IT DOWN                             │
+│   #9  NEW FILE? GEN THAT PILE                              │
+│   #10 FIVE HUNDRED'S FINE, EIGHT'S THE LINE                │
+│   #11 TOOL BROKE? FIX THE YOKE                             │
+│   #12 TALK WHILE I WALK (subagents)                        │
 ├────────────────────────────────────────────────────────────┤
 │ RESEARCH ORDER                                             │
 │   1. apple-docs MCP (Apple APIs)                           │
@@ -1115,4 +1187,4 @@ killall -9 <app-name>
 
 ---
 
-*SaneProcess v2.1 - Universal macOS Development Operations Manual*
+*SaneProcess v2.2 - Universal Development Operations Manual*
