@@ -38,8 +38,14 @@ def default_state
   }
 end
 
-# Get tool name from environment
-tool_name = ENV.fetch('CLAUDE_TOOL_NAME', nil)
+# Read hook input from stdin (Claude Code standard)
+begin
+  input = JSON.parse($stdin.read)
+rescue JSON::ParserError, Errno::ENOENT
+  exit 0
+end
+
+tool_name = input['tool_name'] || ENV.fetch('CLAUDE_TOOL_NAME', nil)
 exit 0 if tool_name.nil? || tool_name.empty?
 
 # Check if this tool should be blocked

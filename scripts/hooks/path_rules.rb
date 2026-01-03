@@ -19,7 +19,13 @@ PATTERN_RULES = {
   # Views
   %w[**/Views/**/*.swift **/UI/**/*.swift **/*View.swift] => 'views.md',
   # Services
-  %w[**/Services/**/*.swift **/*Service.swift **/*Manager.swift] => 'services.md'
+  %w[**/Services/**/*.swift **/*Service.swift **/*Manager.swift] => 'services.md',
+  # Models
+  %w[**/Models/**/*.swift **/*Model.swift **/Core/**/*.swift **/Domain/**/*.swift] => 'models.md',
+  # Scripts
+  %w[**/Scripts/**/*.rb **/scripts/**/*.rb **/*_hook.rb **/*_validator.rb] => 'scripts.md',
+  # Hooks
+  %w[**/hooks/**/*.rb] => 'hooks.md'
 }.freeze
 
 def match_patterns(file_path, patterns)
@@ -80,8 +86,8 @@ def main
   file_path = input.dig('tool_input', 'file_path') || ''
   return if file_path.empty?
 
-  # Skip non-Swift files for now (extend later)
-  return unless file_path.end_with?('.swift')
+  # Only check Swift and Ruby files
+  return unless file_path.end_with?('.swift') || file_path.end_with?('.rb')
 
   # Find matching rules
   matched_rules = find_matching_rules(file_path)

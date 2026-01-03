@@ -37,65 +37,61 @@ TAUTOLOGY_PATTERNS = [
   /#expect.*FIXME/i
 ].freeze
 
-# Get tool input from environment
-tool_input_raw = ENV.fetch('CLAUDE_TOOL_INPUT', nil)
-exit 0 if tool_input_raw.nil? || tool_input_raw.empty?
-
+# Read hook input from stdin (Claude Code standard)
 begin
-  tool_input = JSON.parse(tool_input_raw)
-  file_path = tool_input['file_path']
-
-  exit 0 if file_path.nil? || file_path.empty?
-
-  # Only check test files
-  exit 0 unless file_path.include?('/Tests/') || file_path.match?(/Tests?\.swift$/)
-
-  # For Edit tool, check new_string; for Write tool, check content
-  content = tool_input['new_string'] || tool_input['content'] || ''
-  exit 0 if content.empty?
-
-  # Collect issues
-  tautologies = []
-
-  # Check for tautology patterns
-  TAUTOLOGY_PATTERNS.each do |pattern|
-    matches = content.scan(pattern)
-    tautologies.concat(matches) unless matches.empty?
-  end
-
-  # Report issues
-  if tautologies.any?
-    warn ''
-    warn '=' * 60
-    warn '⚠️  WARNING: Rule #7 - TAUTOLOGY TEST DETECTED'
-    warn '=' * 60
-    warn ''
-    warn "   File: #{file_path}"
-    warn ''
-    warn '   These assertions always pass (useless tests):'
-    tautologies.first(5).each do |match|
-      warn "   • #{match.to_s.strip[0, 50]}..."
-    end
-    warn ''
-    warn '   A good test should:'
-    warn '   • Test actual computed values, not literals'
-    warn '   • Verify behavior, not implementation'
-    warn '   • Fail when the code is broken'
-    warn ''
-    warn '   Examples of GOOD assertions:'
-    warn '   • #expect(result.count == 3)'
-    warn '   • #expect(error.code == .invalidInput)'
-    warn '   • #expect(viewModel.isLoading == false)'
-    warn ''
-    warn '=' * 60
-    warn ''
-  end
-
-  # Always exit 0 (don't block, just warn)
-  exit 0
-rescue JSON::ParserError
-  exit 0
-rescue StandardError => e
-  warn "⚠️  Test quality checker error: #{e.message}"
+  input = JSON.parse($stdin.read)
+rescue JSON::ParserError, Errno::ENOENT
   exit 0
 end
+
+tool_input = input['tool_input'] || input
+file_path = tool_input['file_path']
+
+exit 0 if file_path.nil? || file_path.empty?
+
+# Only check test files
+exit 0 unless file_path.include?('/Tests/') || file_path.match?(/Tests?\.swift$/)
+
+# For Edit tool, check new_string; for Write tool, check content
+content = tool_input['new_string'] || tool_input['content'] || ''
+exit 0 if content.empty?
+
+# Collect issues
+tautologies = []
+
+# Check for tautology patterns
+TAUTOLOGY_PATTERNS.each do |pattern|
+  matches = content.scan(pattern)
+  tautologies.concat(matches) unless matches.empty?
+end
+
+# Report issues
+if tautologies.any?
+  warn ''
+  warn '=' * 60
+  warn '⚠️  WARNING: Rule #7 - TAUTOLOGY TEST DETECTED'
+  warn '=' * 60
+  warn ''
+  warn "   File: #{file_path}"
+  warn ''
+  warn '   These assertions always pass (useless tests):'
+  tautologies.first(5).each do |match|
+    warn "   • #{match.to_s.strip[0, 50]}..."
+  end
+  warn ''
+  warn '   A good test should:'
+  warn '   • Test actual computed values, not literals'
+  warn '   • Verify behavior, not implementation'
+  warn '   • Fail when the code is broken'
+  warn ''
+  warn '   Examples of GOOD assertions:'
+  warn '   • #expect(result.count == 3)'
+  warn '   • #expect(error.code == .invalidInput)'
+  warn '   • #expect(viewModel.isLoading == false)'
+  warn ''
+  warn '=' * 60
+  warn ''
+end
+
+# Always exit 0 (don't block, just warn)
+exit 0
