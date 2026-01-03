@@ -15,16 +15,26 @@
 
 require 'json'
 require 'fileutils'
+require_relative 'rule_tracker'
+require_relative 'state_signer'
 
-STATE_FILE = File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.claude', 'circuit_breaker.json')
+PROJECT_DIR = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
+STATE_FILE = File.join(PROJECT_DIR, '.claude', 'circuit_breaker.json')
+BYPASS_FILE = File.join(PROJECT_DIR, '.claude/bypass_active.json')
 DEFAULT_THRESHOLD = 3
 BLOCKED_TOOLS = %w[Edit Bash Write].freeze
 
-def load_state
-  return default_state unless File.exist?(STATE_FILE)
+# Skip enforcement if bypass is active
+exit 0 if File.exist?(BYPASS_FILE)
 
-  JSON.parse(File.read(STATE_FILE), symbolize_names: true)
-rescue JSON::ParserError
+def load_state
+  # VULN-003 FIX: Use signed state files
+  data = StateSigner.read_verified(STATE_FILE)
+  return default_state if data.nil?
+
+  # Symbolize keys for compatibility
+  data.transform_keys(&:to_sym)
+rescue StandardError
   default_state
 end
 
@@ -56,45 +66,12 @@ state = load_state
 
 # If breaker is tripped, BLOCK the tool call
 if state[:tripped]
+  RuleTracker.log_violation(rule: 3, hook: 'circuit_breaker', reason: "Blocked #{tool_name} - #{state[:failures]} failures")
   warn ''
-  warn '=' * 60
-  warn '🔴 CIRCUIT BREAKER OPEN - TOOL CALL BLOCKED'
-  warn '=' * 60
+  warn "🔴 CIRCUIT BREAKER OPEN | #{state[:failures]} failures | #{state[:trip_reason] || 'Unknown'}"
+  warn '   Research the problem, present plan, get approval, then: ./Scripts/<tool> reset_breaker'
   warn ''
-  warn "   Breaker tripped at: #{state[:tripped_at]}"
-  warn "   Reason: #{state[:trip_reason] || 'Unknown'}"
-  warn "   Total failures: #{state[:failures]}"
-  warn "   Blocked tools: #{BLOCKED_TOOLS.join(', ')}"
-  warn ''
-  warn '   ┌─────────────────────────────────────────────────────────┐'
-  warn '   │  MANDATORY: Research the problem and present a plan    │'
-  warn '   └─────────────────────────────────────────────────────────┘'
-  warn ''
-  warn '   You MUST now:'
-  warn ''
-  warn '   1. READ THE ERRORS:'
-  warn '      ./Scripts/<tool> breaker_errors'
-  warn ''
-  warn '   2. RESEARCH using ALL available tools:'
-  warn '      - Task agents (Explore, Plan) for codebase analysis'
-  warn '      - mcp__apple-docs__* for Apple API verification'
-  warn '      - mcp__context7__* for library documentation'
-  warn '      - WebSearch/WebFetch for solutions and patterns'
-  warn '      - Grep/Glob/Read for local investigation'
-  warn '      - mcp__memory__search_nodes (past bugs often repeat)'
-  warn ''
-  warn '   3. PRESENT A SOP-COMPLIANT PLAN:'
-  warn '      - State which rules apply'
-  warn '      - Show what you learned from research'
-  warn '      - Propose specific steps to fix'
-  warn ''
-  warn '   4. WAIT for user approval before reset'
-  warn ''
-  warn '   Only after user approves your plan:'
-  warn '     ./Scripts/<tool> reset_breaker'
-  warn ''
-  warn '=' * 60
-  exit 1
+  exit 2 # Exit code 2 = BLOCK in Claude Code
 end
 
 # Breaker not tripped - allow the call
@@ -102,10 +79,12 @@ end
 if state[:failures].positive?
   remaining = state[:threshold] - state[:failures]
   if remaining == 1
+    RuleTracker.log_enforcement(rule: 3, hook: 'circuit_breaker', action: 'warn', details: "#{state[:failures]}/#{state[:threshold]} failures")
     warn "⚠️  WARNING: Circuit breaker at #{state[:failures]}/#{state[:threshold]} failures!"
     warn '   One more failure will BLOCK all Edit/Bash/Write tools.'
     warn '   Consider stopping to investigate before continuing.'
   elsif remaining <= 2
+    RuleTracker.log_enforcement(rule: 3, hook: 'circuit_breaker', action: 'remind', details: "#{state[:failures]}/#{state[:threshold]} failures")
     warn "⚠️  Circuit breaker: #{state[:failures]}/#{state[:threshold]} failures"
   end
 end

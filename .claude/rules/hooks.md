@@ -7,7 +7,8 @@
 ## Requirements
 
 1. **Exit 0 to allow** - Tool call proceeds
-2. **Exit 1 to block** - Tool call is prevented
+2. **Exit 2 to BLOCK** - Tool call is prevented (Claude Code standard)
+3. **Exit 1 = warning only** - Shows warning but tool proceeds
 3. **Warn for messages** - User sees stderr output
 4. **Handle errors gracefully** - Don't block on unexpected errors
 
@@ -33,7 +34,7 @@ begin
   if should_block?(tool_input)
     warn '🔴 BLOCKED: [Rule Name]'
     warn '   Reason: [explanation]'
-    exit 1
+    exit 2  # Exit 2 = BLOCK in Claude Code
   end
 
   exit 0  # Allow the call

@@ -11,11 +11,16 @@
 # - 1: Edit BLOCKED
 
 require 'json'
+require_relative 'rule_tracker'
 
 # Configuration
 PROJECT_DIR = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
 SOFT_LIMIT = 500
 HARD_LIMIT = 800
+BYPASS_FILE = File.join(PROJECT_DIR, '.claude/bypass_active.json')
+
+# Skip enforcement if bypass is active
+exit 0 if File.exist?(BYPASS_FILE)
 
 # Paths that should ALWAYS be blocked (dangerous/system paths)
 BLOCKED_PATHS = [
@@ -57,20 +62,11 @@ normalized_project = File.expand_path(PROJECT_DIR)
 
 # Check 1: BLOCK dangerous/system paths (never allow)
 if BLOCKED_PATHS.any? { |blocked| normalized_path.start_with?(blocked) }
+  RuleTracker.log_violation(rule: 1, hook: 'edit_validator', reason: "Dangerous path: #{file_path}")
   warn ''
-  warn '=' * 60
-  warn '🔴 BLOCKED: Rule #1 - DANGEROUS PATH'
-  warn '=' * 60
+  warn "🔴 BLOCKED: Rule #1 - Dangerous path: #{file_path}"
   warn ''
-  warn "   File: #{file_path}"
-  warn ''
-  warn '   This path is blocked for safety reasons:'
-  warn '   - System directories (/etc, /usr, /System, /Library)'
-  warn '   - Temp directories (/var, /private)'
-  warn '   - Sensitive config (~/.ssh, ~/.aws, ~/.claude)'
-  warn ''
-  warn '=' * 60
-  exit 1
+  exit 2 # Exit code 2 = BLOCK in Claude Code
 end
 
 # Check 2: WARN on cross-project (user can still approve)
@@ -78,6 +74,7 @@ unless normalized_path.start_with?(normalized_project)
   warn ''
   if normalized_path.start_with?(USER_HOME)
     # It's in user home but different project - warn but allow
+    RuleTracker.log_enforcement(rule: 1, hook: 'edit_validator', action: 'warn', details: "Cross-project: #{file_path}")
     warn '⚠️  WARNING: Rule #1 - Cross-project edit'
     warn "   Current project: #{PROJECT_DIR}"
     warn "   Target file: #{file_path}"
@@ -87,18 +84,11 @@ unless normalized_path.start_with?(normalized_project)
     warn ''
   else
     # Outside user home entirely - block
-    warn '=' * 60
-    warn '🔴 BLOCKED: Rule #1 - STAY IN YOUR LANE'
-    warn '=' * 60
+    RuleTracker.log_violation(rule: 1, hook: 'edit_validator', reason: "Outside home: #{file_path}")
     warn ''
-    warn "   File: #{file_path}"
-    warn "   Project: #{PROJECT_DIR}"
+    warn "🔴 BLOCKED: Rule #1 - Outside home: #{file_path}"
     warn ''
-    warn '   Path is outside your home directory.'
-    warn '   Ask the user before editing system files.'
-    warn ''
-    warn '=' * 60
-    exit 1
+    exit 2 # Exit code 2 = BLOCK in Claude Code
   end
 end
 
@@ -116,30 +106,44 @@ if File.exist?(file_path)
   projected_count = line_count + lines_added
 
   if projected_count > HARD_LIMIT
+    RuleTracker.log_violation(rule: 10, hook: 'edit_validator', reason: "#{projected_count} lines > #{HARD_LIMIT} limit")
     warn ''
-    warn '=' * 60
-    warn '🔴 BLOCKED: Rule #10 - FILE TOO LARGE'
-    warn '=' * 60
+    warn "🔴 BLOCKED: Rule #10 - #{projected_count} lines > #{HARD_LIMIT} limit. Split file first."
     warn ''
-    warn "   File: #{file_path}"
-    warn "   Current: #{line_count} lines"
-    warn "   After edit: ~#{projected_count} lines"
-    warn "   Hard limit: #{HARD_LIMIT} lines"
-    warn ''
-    warn '   Split this file before continuing:'
-    warn '   - Extract a protocol/extension to a new file'
-    warn '   - Move related functionality to a helper'
-    warn '   - Run project generator after creating new files'
-    warn ''
-    warn '=' * 60
-    exit 1
+    exit 2 # Exit code 2 = BLOCK in Claude Code
   elsif projected_count > SOFT_LIMIT
+    RuleTracker.log_enforcement(rule: 10, hook: 'edit_validator', action: 'warn', details: "#{projected_count} lines > #{SOFT_LIMIT} soft limit")
     warn ''
     warn '⚠️  WARNING: Rule #10 - File approaching size limit'
     warn "   #{file_path}: #{line_count} → ~#{projected_count} lines"
     warn "   Soft limit: #{SOFT_LIMIT} | Hard limit: #{HARD_LIMIT}"
     warn '   Consider splitting soon.'
     warn ''
+  end
+end
+
+# =============================================================================
+# TABLE BAN - No markdown tables (they render terribly in terminal)
+# =============================================================================
+
+content = tool_input['new_string'] || tool_input['content'] || ''
+
+# Detect markdown table patterns
+table_patterns = [
+  /\|[-:]+\|/,           # |---|---| header separator
+  /^\s*\|.*\|.*\|/m,     # | col | col | rows
+]
+
+if table_patterns.any? { |p| content.match?(p) }
+  # Count pipes to confirm it's really a table (not just a single |)
+  pipe_lines = content.lines.count { |l| l.count('|') >= 2 }
+
+  if pipe_lines >= 2
+    RuleTracker.log_violation(rule: :no_tables, hook: 'edit_validator', reason: 'Markdown table detected')
+    warn ''
+    warn '🔴 BLOCKED: No tables. Use plain lists instead.'
+    warn ''
+    exit 2
   end
 end
 

@@ -498,22 +498,45 @@ User talks, you listen, work continues uninterrupted.
 
 ---
 
-## Self-Rating (MANDATORY)
+## Session Summary (MANDATORY)
 
-After every task, rate 1-10 with specific items:
+Every session ends with this exact format:
 
 ```
-**Self-rating: 7/10**
-✅ Used project tools, ran tests, documented bug
-❌ Forgot to check logs after launch
+## Session Summary
+
+### What Was Done
+1. [First concrete deliverable]
+2. [Second concrete deliverable]
+3. [Third concrete deliverable]
+
+### SOP Compliance: X/10
+
+✅ **Followed:**
+- Rule #X: [What you did right]
+- Rule #X: [What you did right]
+
+❌ **Missed:**
+- Rule #X: [What you missed and why]
+
+**Next time:** [Specific improvement for future sessions]
+
+### Followup
+- [Actionable item for future]
+- [Actionable item for future]
 ```
+
+**CRITICAL:** Rating is on RULE COMPLIANCE, not task completion. Process discipline is the point.
 
 | Score | Meaning |
 |-------|---------|
 | 9-10 | All rules followed |
-| 7-8 | Minor miss |
-| 5-6 | Notable gaps |
+| 7-8 | Minor miss (one rule) |
+| 5-6 | Notable gaps (2-3 rules) |
 | 1-4 | Multiple violations |
+
+🔴 WRONG: Rating yourself on "did I finish the task"
+🟢 RIGHT: Rating yourself on "did I follow the rules while doing the task"
 
 ---
 

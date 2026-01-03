@@ -6,19 +6,25 @@ Production-ready hooks for Claude Code SOP enforcement.
 
 | Hook | Type | Purpose | Blocks? |
 |------|------|---------|---------|
+| `rule_tracker.rb` | Module | Shared tracking for rule enforcement analytics | N/A |
 | `session_start.rb` | SessionStart | Bootstraps session, resets circuit breaker | No |
 | `circuit_breaker.rb` | PreToolUse | Stops after 3 consecutive failures | **Yes** |
 | `edit_validator.rb` | PreToolUse | Blocks dangerous paths, enforces 800-line limit | **Yes** |
 | `path_rules.rb` | PreToolUse | Shows context-specific rules for file types | No |
 | `sop_mapper.rb` | PreToolUse | Enforces Rule #0 - map rules before coding | No |
-| `two_fix_reminder.rb` | PreToolUse | Reminds about Rule #3 every 10 edits | No |
-| `version_mismatch.rb` | PreToolUse | Prevents BUG-008 - build/launch path mismatch | No |
+| `skill_validator.rb` | PreToolUse | Validates sane-loop has exit conditions | **Yes** |
+| `two_fix_reminder.rb` | PostToolUse | Reminds about Rule #3 every 10 edits | No |
+| `version_mismatch.rb` | PostToolUse | Prevents BUG-008 - build/launch path mismatch | No |
 | `failure_tracker.rb` | PostToolUse | Tracks failures, trips circuit breaker | No |
 | `test_quality_checker.rb` | PostToolUse | Warns on tautology tests like `#expect(true)` | No |
 | `verify_reminder.rb` | PostToolUse | Reminds Rule #6 cycle after Swift edits | No |
 | `audit_logger.rb` | PostToolUse | Logs all tool calls to `.claude/audit.jsonl` | No |
 | `deeper_look_trigger.rb` | PostToolUse | Reminds to audit when issues discovered | No |
-| `skill_validator.rb` | PreToolUse | Validates sane-loop has exit conditions | **Yes** |
+| `saneloop_enforcer.rb` | PreToolUse | Blocks if user requested saneloop but not started | **Yes** |
+| `session_summary_validator.rb` | PostToolUse | Validates session summaries, rewards streaks, shames cheating | No |
+| `prompt_analyzer.rb` | UserPromptSubmit | Detects trigger words, tracks patterns, learns from corrections | No |
+| `pattern_learner.rb` | PostToolUse | Logs actions for pattern learning, correlates with corrections | No |
+| `process_enforcer.rb` | PreToolUse | **BLOCKS** if bypassing required processes (research, plan, commit, verify, bash-file-bypass, subagent-bypass) | **Yes** |
 
 ## How They Work
 
@@ -35,7 +41,8 @@ All hooks read JSON from **stdin** (Claude Code standard):
 
 **Exit codes:**
 - `0` = Allow the tool call
-- `1` = Block the tool call
+- `2` = **BLOCK** the tool call (Claude Code standard)
+- `1` = Non-blocking error (shows warning but proceeds)
 
 **Output:**
 - `stdout` = JSON response (for hooks that return data)
@@ -93,5 +100,25 @@ Hooks are registered in `.claude/settings.json`:
 | `.claude/edit_state.json` | Edit count per session |
 | `.claude/edit_count.json` | Cumulative edit count |
 | `.claude/build_state.json` | Build path tracking |
+| `.claude/rule_tracking.jsonl` | Rule enforcement analytics |
 
 These are gitignored - they're session-specific.
+
+## Bypass Protection (v2)
+
+The enforcement hooks have been hardened against common bypass attempts:
+
+| Bypass Attempt | Protection | Hook |
+|---------------|------------|------|
+| Casual conversation resets requirements | Triggers now MERGE instead of overwrite (except fresh-start triggers like `saneloop`) | `prompt_analyzer.rb` |
+| Bash `echo >> file` or `sed -i` | Detected and blocked when requirements unsatisfied | `process_enforcer.rb` |
+| Spawn subagent to edit | Task prompts scanned for edit keywords | `process_enforcer.rb` |
+| MCP GitHub file push | ⚠️ Not covered (needs Claude Code feature) | N/A |
+
+### Fresh-Start vs Additive Triggers
+
+**Fresh-start triggers** (reset requirements):
+- `saneloop`, `test_mode`, `commit`
+
+**Additive triggers** (merge with existing):
+- `explain`, `show`, `remember`, `research`, `plan`, `verify`, `bug_note`

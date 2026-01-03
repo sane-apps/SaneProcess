@@ -14,6 +14,7 @@
 require 'json'
 require 'time'
 require 'fileutils'
+require_relative 'rule_tracker'
 
 PROJECT_DIR = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
 STATE_FILE = File.join(PROJECT_DIR, '.claude', 'sop_state.json')
@@ -68,42 +69,11 @@ rescue StandardError
 end
 
 def output_checkpoint_form(reason, state, tool_count)
+  task = state ? (state['task'] || 'unknown') : 'unknown'
+  rules = state ? (state['rules']&.join(', ') || 'none') : 'none'
   warn ''
-  warn '=' * 65
-  warn '🔄 SANE LOOP CHECKPOINT'
-  warn '=' * 65
+  warn "📋 SOP CHECK (#{reason}) | Task: #{task} | Rules: #{rules}"
   warn ''
-  warn "   Trigger: #{reason}"
-  warn "   Tool calls this session: #{tool_count}"
-  warn ''
-  warn '   ┌─────────────────────────────────────────────────────────────┐'
-  warn '   │  STOP and answer these questions:                          │'
-  warn '   └─────────────────────────────────────────────────────────────┘'
-  warn ''
-  warn '   1. CURRENT TASK: What are you working on right now?'
-  warn '      (Should match a TodoWrite item or user request)'
-  warn ''
-  warn '   2. RULES APPLIED: Which CLAUDE.md rules apply here?'
-  warn '      #2=VERIFY  #3=TWO-FIX  #5=PROJECT-TOOLS  #6=FULL-CYCLE'
-  warn ''
-  warn '   3. EXPECTED OUTCOME: What should happen when done?'
-  warn '      (Specific & testable: "Tests pass", "Build succeeds")'
-  warn ''
-  warn '   4. CONCERNS: Anything making you uncertain?'
-  warn '      (If yes, ask user NOW - don\'t guess)'
-  warn ''
-
-  if state
-    warn "   Current mapping: #{state['rules']&.join(', ') || 'none'}"
-    warn "   Task: #{state['task'] || 'unknown'}"
-    age = state['timestamp'] ? ((Time.now - Time.parse(state['timestamp'])) / 60).round : 0
-    warn "   Age: #{age} min"
-    warn ''
-  end
-
-  warn '   To acknowledge: Update .claude/sop_state.json'
-  warn ''
-  warn '=' * 65
   warn ''
 end
 
@@ -169,6 +139,7 @@ def main
 
   return unless reason
 
+  RuleTracker.log_enforcement(rule: 0, hook: 'sop_mapper', action: 'checkpoint', details: reason)
   output_checkpoint_form(reason, state, tool_count)
 end
 

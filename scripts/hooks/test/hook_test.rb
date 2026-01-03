@@ -5,7 +5,7 @@
 # Run with: ruby scripts/hooks/test/hook_test.rb
 #
 # Tests all hooks for correct behavior:
-# - Proper exit codes (0 = allow, 1 = block)
+# - Proper exit codes (0 = allow, 2 = block)
 # - Correct stdin JSON parsing
 # - Expected output messages
 
@@ -131,7 +131,7 @@ def test_circuit_breaker
   }))
 
   result = run_hook('circuit_breaker.rb', { tool_name: 'Edit' })
-  assert_exit_code(result, 1, 'Blocks Edit when breaker tripped')
+  assert_exit_code(result, 2, 'Blocks Edit when breaker tripped')
   assert_output_contains(result, /CIRCUIT BREAKER OPEN/, 'Shows breaker message')
 
   # Cleanup
@@ -155,14 +155,14 @@ def test_edit_validator
   result = run_hook('edit_validator.rb', {
     tool_input: { file_path: '/etc/passwd' }
   })
-  assert_exit_code(result, 1, 'Blocks /etc/passwd')
+  assert_exit_code(result, 2, 'Blocks /etc/passwd')
   assert_output_contains(result, /DANGEROUS PATH/, 'Shows dangerous path warning')
 
   # Test 3: Block ~/.ssh
   result = run_hook('edit_validator.rb', {
     tool_input: { file_path: File.expand_path('~/.ssh/id_rsa') }
   })
-  assert_exit_code(result, 1, 'Blocks ~/.ssh paths')
+  assert_exit_code(result, 2, 'Blocks ~/.ssh paths')
 
   # Test 4: Warn on cross-project (but allow)
   result = run_hook('edit_validator.rb', {
@@ -322,6 +322,72 @@ def test_session_start
 end
 
 # =============================================================================
+# Process Enforcer Tests (VULN-002 Bash bypass detection)
+# =============================================================================
+
+def test_process_enforcer
+  puts "\n🛡️ Process Enforcer Tests"
+
+  # Set up requirements file
+  reqs_file = "#{TEST_PROJECT}/.claude/prompt_requirements.json"
+  File.write(reqs_file, JSON.generate({
+    requested: %w[saneloop plan],
+    satisfied: [],
+    modifiers: []
+  }))
+
+  # Test 1: Blocks Edit when saneloop not active
+  result = run_hook('process_enforcer.rb', {
+    tool_name: 'Edit',
+    tool_input: { file_path: "#{TEST_PROJECT}/test.swift" }
+  })
+  assert_exit_code(result, 2, 'Blocks Edit when saneloop required (exit 2)')
+  assert_output_contains(result, /SANELOOP_REQUIRED/, 'Shows saneloop required message')
+
+  # Test 2: Detects Bash file write bypass (echo >>)
+  result = run_hook('process_enforcer.rb', {
+    tool_name: 'Bash',
+    tool_input: { command: 'echo "bypass" >> /tmp/test.txt' }
+  })
+  assert_exit_code(result, 2, 'Blocks Bash echo redirect')
+  assert_output_contains(result, /BASH_FILE_WRITE_BYPASS/, 'Detects echo bypass')
+
+  # Test 3: Detects Bash file write bypass (sed -i)
+  result = run_hook('process_enforcer.rb', {
+    tool_name: 'Bash',
+    tool_input: { command: "sed -i '' 's/a/b/' file.txt" }
+  })
+  assert_exit_code(result, 2, 'Blocks Bash sed -i')
+  assert_output_contains(result, /BASH_FILE_WRITE_BYPASS/, 'Detects sed bypass')
+
+  # Test 4: Allows .claude state file writes
+  result = run_hook('process_enforcer.rb', {
+    tool_name: 'Bash',
+    tool_input: { command: 'echo "{}" > .claude/state.json' }
+  })
+  # Should still block on SANELOOP but NOT on BASH_FILE_WRITE
+  assert_output_not_contains(result, /BASH_FILE_WRITE_BYPASS/, 'Allows .claude writes')
+
+  # Test 5: Allows saneloop start command (bootstrap fix)
+  result = run_hook('process_enforcer.rb', {
+    tool_name: 'Bash',
+    tool_input: { command: './Scripts/SaneMaster.rb saneloop start "test"' }
+  })
+  assert_exit_code(result, 0, 'Allows saneloop start command')
+
+  # Test 6: Blocks subagent editing bypass
+  result = run_hook('process_enforcer.rb', {
+    tool_name: 'Task',
+    tool_input: { prompt: 'Edit the file and add a line' }
+  })
+  assert_exit_code(result, 2, 'Blocks Task for editing')
+  assert_output_contains(result, /SUBAGENT_BYPASS/, 'Detects subagent bypass')
+
+  # Cleanup
+  File.delete(reqs_file) rescue nil
+end
+
+# =============================================================================
 # Run All Tests
 # =============================================================================
 
@@ -339,6 +405,7 @@ begin
   test_path_rules
   test_audit_logger
   test_session_start
+  test_process_enforcer
 ensure
   teardown
 end

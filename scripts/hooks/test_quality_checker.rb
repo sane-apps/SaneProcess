@@ -16,6 +16,7 @@
 # - 0: Always (warnings only)
 
 require 'json'
+require_relative 'rule_tracker'
 
 # Tautology patterns to detect
 TAUTOLOGY_PATTERNS = [
@@ -67,6 +68,7 @@ end
 
 # Report issues
 if tautologies.any?
+  RuleTracker.log_enforcement(rule: 7, hook: 'test_quality_checker', action: 'warn', details: "#{tautologies.count} tautologies in #{file_path}")
   warn ''
   warn '=' * 60
   warn '⚠️  WARNING: Rule #7 - TAUTOLOGY TEST DETECTED'

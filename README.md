@@ -20,7 +20,7 @@ SaneProcess enforces discipline through:
 
 | Feature | What It Does |
 |---------|--------------|
-| **13 Golden Rules** | Memorable rules like "TWO STRIKES? INVESTIGATE" |
+| **13 Golden Rules** | Memorable, enforceable rules for AI discipline |
 | **Circuit Breaker** | Auto-stops after 3 same errors or 5 total failures |
 | **Memory System** | Bug patterns persist across sessions |
 | **Compliance Loop** | Enforced task completion with verification |
@@ -38,20 +38,20 @@ SaneProcess enforces discipline through:
 │   ├── sanemaster/             # 19 SaneMaster modules
 │   ├── mac_context.rb          # Mac development knowledge injection
 │   ├── skill_loader.rb         # Load/unload domain-specific knowledge
-│   └── hooks/                  # 13 production-ready hooks
+│   └── hooks/                  # 20 production-ready hooks
 │       ├── circuit_breaker.rb     # Blocks after 3 failures
 │       ├── edit_validator.rb      # Path safety + file size limits
 │       ├── failure_tracker.rb     # Tracks consecutive failures
-│       ├── test_quality_checker.rb # Detects tautology tests
-│       ├── path_rules.rb          # Shows context-specific rules
-│       ├── session_start.rb       # Bootstraps session state
-│       ├── audit_logger.rb        # Logs all decisions
+│       ├── process_enforcer.rb    # 5-category research enforcement
+│       ├── prompt_analyzer.rb     # Detects user intent from prompts
+│       ├── research_tracker.rb    # Tracks research across categories
+│       ├── session_summary_validator.rb # Auto-calculates SOP score
+│       ├── saneloop_enforcer.rb   # Warns at iteration limits
+│       ├── state_signer.rb        # HMAC signatures for state files
+│       ├── rule_tracker.rb        # Logs violations for scoring
 │       ├── sop_mapper.rb          # Enforces Rule #0 mapping
-│       ├── two_fix_reminder.rb    # Rule #3 reminder
-│       ├── verify_reminder.rb     # Rule #6 cycle reminder
-│       ├── version_mismatch.rb    # Prevents BUG-008
-│       ├── deeper_look_trigger.rb # Reminds to audit discovered issues
-│       └── skill_validator.rb     # Validates sane-loop exit conditions
+│       ├── audit_logger.rb        # Logs all decisions
+│       └── ...                    # + 8 more enforcement hooks
 ├── skills/                     # Modular expert knowledge
 │   ├── swift-concurrency.md
 │   ├── swiftui-performance.md
@@ -160,7 +160,7 @@ curl -sL https://raw.githubusercontent.com/stephanjoseph/SaneProcess/main/script
 ```
 
 This installs:
-- 13 SOP enforcement hooks
+- 20 SOP enforcement hooks
 - SaneMaster CLI (`Scripts/SaneMaster.rb` + 19 modules)
 - 6 pattern-based rules
 - Claude Code settings with hook registration
@@ -205,4 +205,4 @@ Open an issue or contact [@stephanjoseph](https://github.com/stephanjoseph)
 
 ---
 
-*SaneProcess v2.2 - January 2026*
+*SaneProcess v2.3 - January 2026*

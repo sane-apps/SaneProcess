@@ -8,6 +8,17 @@
     ]
   },
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/prompt_analyzer.rb",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
@@ -29,12 +40,27 @@
           },
           {
             "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/edit_validator.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/sop_mapper.rb",
             "timeout": 5
           },
           {
             "type": "command",
             "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/path_rules.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/saneloop_enforcer.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/process_enforcer.rb",
             "timeout": 5
           }
         ]
@@ -49,12 +75,37 @@
           },
           {
             "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/edit_validator.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/sop_mapper.rb",
             "timeout": 5
           },
           {
             "type": "command",
             "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/path_rules.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/saneloop_enforcer.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/process_enforcer.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/skill_validator.rb",
             "timeout": 5
           }
         ]
@@ -66,11 +117,141 @@
             "type": "command",
             "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/circuit_breaker.rb",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/process_enforcer.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/process_enforcer.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/circuit_breaker.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/edit_validator.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/saneloop_enforcer.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/process_enforcer.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/process_enforcer.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/process_enforcer.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/process_enforcer.rb",
+            "timeout": 5
           }
         ]
       }
     ],
     "PostToolUse": [
+      {
+        "matcher": "WebSearch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/research_tracker.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/research_tracker.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__memory__*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/research_tracker.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__apple-docs__*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/research_tracker.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__context7__*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/research_tracker.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__github__*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/research_tracker.rb",
+            "timeout": 5
+          }
+        ]
+      },
       {
         "matcher": "Edit",
         "hooks": [
@@ -82,6 +263,21 @@
           {
             "type": "command",
             "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/verify_reminder.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/test_quality_checker.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/session_summary_validator.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/pattern_learner.rb",
             "timeout": 5
           },
           {
@@ -106,6 +302,16 @@
           },
           {
             "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/version_mismatch.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/pattern_learner.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/audit_logger.rb",
             "timeout": 5
           }
@@ -114,6 +320,11 @@
       {
         "matcher": "Grep",
         "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/research_tracker.rb",
+            "timeout": 5
+          },
           {
             "type": "command",
             "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/deeper_look_trigger.rb",
@@ -131,6 +342,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/research_tracker.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/deeper_look_trigger.rb",
             "timeout": 5
           },
@@ -146,6 +362,21 @@
         "hooks": [
           {
             "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/test_quality_checker.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/session_summary_validator.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/pattern_learner.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/audit_logger.rb",
             "timeout": 5
           }
@@ -154,6 +385,36 @@
       {
         "matcher": "Glob",
         "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/research_tracker.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/audit_logger.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/audit_logger.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/test_quality_checker.rb",
+            "timeout": 5
+          },
           {
             "type": "command",
             "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/audit_logger.rb",

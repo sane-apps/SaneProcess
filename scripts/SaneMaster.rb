@@ -117,7 +117,8 @@ class SaneMaster
         'session_end' => { args: '[--skip-prompts]', desc: 'End session with insight extraction' },
         'reset_breaker' => { args: '', desc: 'Reset circuit breaker (unblock tools)' },
         'breaker_status' => { args: '', desc: 'Show circuit breaker status' },
-        'breaker_errors' => { args: '', desc: 'Show recent failure messages' }
+        'breaker_errors' => { args: '', desc: 'Show recent failure messages' },
+        'saneloop' => { args: '<cmd> [opts]', desc: 'Native task loop (start|status|check|log|complete)' }
       }
     },
     export: {
@@ -206,6 +207,8 @@ class SaneMaster
       run_quality_report
     when 'audit'
       audit_project
+    when 'qa'
+      system(File.join(__dir__, 'qa.rb'))
     when 'validate_test_references', 'validate-tests'
       validate_test_references
 
@@ -295,6 +298,10 @@ class SaneMaster
       start_sop_loop(args)
     when 'reset_escalation', 're'
       reset_escalation(args)
+
+    # SaneLoop - Native structured task loops (replaces ralph-wiggum)
+    when 'saneloop', 'sl'
+      saneloop(args)
 
     # Debug Console
     when 'console'

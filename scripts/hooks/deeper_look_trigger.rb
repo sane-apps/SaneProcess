@@ -13,6 +13,7 @@
 # - 0: Always (reminder only, never blocks)
 
 require 'json'
+require_relative 'rule_tracker'
 
 # === DEEPER LOOK: Issue patterns requiring investigation ===
 ISSUE_PATTERNS = [
@@ -113,50 +114,18 @@ WEASEL_PATTERNS = {
 
 def output_issue_warning(found_issues)
   warn ''
-  warn '=' * 65
-  warn '🔍 DEEPER LOOK TRIGGER - Issue Pattern Detected'
-  warn '=' * 65
-  warn ''
-  warn '   You discovered something broken/hidden!'
-  warn ''
-  warn '   ┌─────────────────────────────────────────────────────────────┐'
-  warn '   │  "What ELSE might be broken that I haven\'t noticed?"       │'
-  warn '   └─────────────────────────────────────────────────────────────┘'
-  warn ''
-  warn '   Before fixing this ONE thing, check similar patterns.'
-  warn ''
-  warn '   Patterns detected:'
-  found_issues.first(3).each do |pattern|
-    warn "   • #{pattern.source[0, 50]}..."
-  end
-  warn ''
-  warn '=' * 65
+  warn '🔍 DEEPER LOOK: What else might be broken?'
+  found_issues.first(3).each { |p| warn "  - #{p.source[0, 50]}..." }
   warn ''
 end
 
 def output_weasel_warning(found_weasels)
   warn ''
-  warn '=' * 65
-  warn '🚨 SANE COP - Weasel Words Detected'
-  warn '=' * 65
-  warn ''
-
+  warn '🚨 WEASEL WORDS DETECTED - reconsider approach'
   found_weasels.each_value do |info|
-    icon = case info[:severity]
-           when :alert then '🔴'
-           when :warning then '🟡'
-           else '🔵'
-           end
-    warn "   #{icon} Rule #{info[:rule]}: #{info[:msg]}"
+    icon = info[:severity] == :alert ? '🔴' : '🟡'
+    warn "  #{icon} Rule #{info[:rule]}: #{info[:msg]}"
   end
-
-  warn ''
-  warn '   ┌─────────────────────────────────────────────────────────────┐'
-  warn '   │  These phrases often indicate SOP violations.              │'
-  warn '   │  Stop and reconsider your approach.                        │'
-  warn '   └─────────────────────────────────────────────────────────────┘'
-  warn ''
-  warn '=' * 65
   warn ''
 end
 
@@ -192,7 +161,16 @@ found_issues = ISSUE_PATTERNS.filter { |pat| text_to_check.match?(pat) }
 found_weasels = WEASEL_PATTERNS.select { |pattern, _info| text_to_check.match?(pattern) }
 
 # Output warnings
-output_issue_warning(found_issues) if found_issues.any?
-output_weasel_warning(found_weasels) if found_weasels.any?
+if found_issues.any?
+  RuleTracker.log_enforcement(rule: 8, hook: 'deeper_look_trigger', action: 'warn', details: "#{found_issues.count} issue patterns found")
+  output_issue_warning(found_issues)
+end
+
+if found_weasels.any?
+  # Track by most severe rule violated
+  first_rule = found_weasels.values.first[:rule]
+  RuleTracker.log_enforcement(rule: first_rule.to_s, hook: 'deeper_look_trigger', action: 'warn', details: "#{found_weasels.count} weasel patterns")
+  output_weasel_warning(found_weasels)
+end
 
 exit 0

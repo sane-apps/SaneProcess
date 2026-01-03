@@ -149,6 +149,7 @@ echo ""
 echo "Downloading hooks from GitHub..."
 
 HOOKS=(
+    "rule_tracker.rb"
     "circuit_breaker.rb"
     "edit_validator.rb"
     "failure_tracker.rb"
@@ -162,6 +163,12 @@ HOOKS=(
     "version_mismatch.rb"
     "deeper_look_trigger.rb"
     "skill_validator.rb"
+    "saneloop_enforcer.rb"
+    "session_summary_validator.rb"
+    "prompt_analyzer.rb"
+    "pattern_learner.rb"
+    "process_enforcer.rb"
+    "research_tracker.rb"
 )
 
 for hook in "${HOOKS[@]}"; do
@@ -307,6 +314,11 @@ cat > .claude/settings.json << 'EOF'
         "type": "command",
         "command": "./Scripts/hooks/skill_validator.rb",
         "matchTools": ["Skill"]
+      },
+      {
+        "type": "command",
+        "command": "./Scripts/hooks/saneloop_enforcer.rb",
+        "matchTools": ["Edit", "Write", "Bash"]
       }
     ],
     "PostToolUse": [
@@ -333,6 +345,11 @@ cat > .claude/settings.json << 'EOF'
         "type": "command",
         "command": "./Scripts/hooks/deeper_look_trigger.rb",
         "matchTools": ["Grep", "Glob", "Read"]
+      },
+      {
+        "type": "command",
+        "command": "./Scripts/hooks/session_summary_validator.rb",
+        "matchTools": ["Edit", "Write"]
       }
     ]
   }
@@ -351,11 +368,20 @@ cat > .claude/.gitignore << 'EOF'
 circuit_breaker.json
 failure_state.json
 audit.jsonl
+audit_log.jsonl
 memory.json
 sop_state.json
 edit_state.json
 edit_count.json
 build_state.json
+tool_count.json
+compliance_streak.json
+rule_tracking.jsonl
+research_progress.json
+research_findings.jsonl
+prompt_requirements.json
+process_satisfaction.json
+enforcement_log.jsonl
 
 # Keep rules and settings
 !rules/
@@ -529,7 +555,7 @@ echo -e "${GREEN}║                    Installation Complete!                  
 echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo "Installed:"
-echo "   • 13 SOP enforcement hooks"
+echo "   • 16 SOP enforcement hooks"
 echo "   • 6 pattern-based rules"
 echo "   • SaneMaster CLI (./Scripts/SaneMaster.rb)"
 echo "   • Claude Code settings with hook registration"

@@ -9,6 +9,8 @@
 
 require 'json'
 require 'fileutils'
+require_relative 'rule_tracker'
+require_relative 'state_signer'
 
 # State file for failure tracking
 STATE_FILE = File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.claude', 'failure_state.json')
@@ -23,16 +25,19 @@ def default_breaker_state
 end
 
 def load_state(file, default)
-  return default.call unless File.exist?(file)
+  # VULN-003 FIX: Use signed state files
+  data = StateSigner.read_verified(file)
+  return default.call if data.nil?
 
-  JSON.parse(File.read(file), symbolize_names: false)
+  # Keep string keys for compatibility
+  data
 rescue StandardError
   default.call
 end
 
 def save_state(file, state)
-  FileUtils.mkdir_p(File.dirname(file))
-  File.write(file, JSON.pretty_generate(state))
+  # VULN-003 FIX: Sign state files to prevent tampering
+  StateSigner.write_signed(file, state.transform_keys(&:to_s))
 end
 
 # Read hook input from stdin
@@ -95,6 +100,7 @@ if is_failure
     breaker[:tripped_at] = Time.now.iso8601
     breaker[:trip_reason] = "#{breaker[:failures]} consecutive failures"
     save_state(BREAKER_FILE, breaker)
+    RuleTracker.log_violation(rule: 3, hook: 'failure_tracker', reason: "Circuit breaker tripped: #{breaker[:failures]} failures")
     warn '🔴 CIRCUIT BREAKER TRIPPED: All Edit/Bash/Write tools now BLOCKED.'
   else
     save_state(BREAKER_FILE, breaker)
@@ -103,6 +109,7 @@ if is_failure
   # Enforce Two-Fix Rule
   if state['consecutive_failures'] >= 2 && !state['escalated']
     state['escalated'] = true
+    RuleTracker.log_enforcement(rule: 3, hook: 'failure_tracker', action: 'warn', details: "#{state['consecutive_failures']} failures")
     warn "⚠️  TWO-FIX RULE: #{state['consecutive_failures']} failures. STOP GUESSING. Research before next fix."
   end
 else

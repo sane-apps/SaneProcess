@@ -16,6 +16,7 @@
 
 require 'json'
 require 'fileutils'
+require_relative 'state_signer'
 
 PROJECT_DIR = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
 CLAUDE_DIR = File.join(PROJECT_DIR, '.claude')
@@ -42,23 +43,32 @@ def ensure_claude_dir
 end
 
 def reset_session_state
-  # Reset circuit breaker for new session
-  if File.exist?(BREAKER_FILE)
-    breaker = JSON.parse(File.read(BREAKER_FILE))
+  # VULN-007 FIX: Do NOT auto-reset tripped breaker
+  # A tripped breaker indicates repeated failures that need human review
+  # Claude should not be able to bypass by starting a new session
 
-    # Only reset if it was tripped - preserve threshold settings
-    if breaker['tripped']
-      breaker['failures'] = 0
-      breaker['tripped'] = false
-      breaker['tripped_at'] = nil
-      breaker['trip_reason'] = nil
-      breaker['reset_at'] = Time.now.utc.iso8601
-      breaker['reset_reason'] = 'new_session'
-      File.write(BREAKER_FILE, JSON.pretty_generate(breaker))
-    end
+  # VULN-003 FIX: Use signed state files
+  breaker = StateSigner.read_verified(BREAKER_FILE)
+
+  if breaker && breaker['tripped']
+    # Mark that reset is pending user approval
+    breaker['pending_user_reset'] = true
+    breaker['session_started_while_tripped'] = Time.now.utc.iso8601
+    StateSigner.write_signed(BREAKER_FILE, breaker)
+
+    # Warn user - breaker stays tripped
+    warn ''
+    warn '🔴 CIRCUIT BREAKER STILL TRIPPED'
+    warn "   Tripped at: #{breaker['tripped_at']}"
+    warn "   Reason: #{breaker['trip_reason']}"
+    warn ''
+    warn '   Say "reset breaker" or "approve breaker reset" to clear.'
+    warn '   This prevents Claude from bypassing failures by restarting.'
+    warn ''
+    return # Don't reset failure tracking either
   end
 
-  # Reset failure tracking
+  # Only reset failure tracking if breaker is NOT tripped
   if File.exist?(FAILURE_FILE)
     File.delete(FAILURE_FILE)
   end

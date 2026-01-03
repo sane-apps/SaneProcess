@@ -8,7 +8,7 @@
 #
 # Exit codes:
 # - 0: Allow
-# - 1: Block (missing exit conditions)
+# - 2: Block (missing exit conditions) - Claude Code uses exit 2 for blocking
 
 require 'json'
 
@@ -41,7 +41,7 @@ begin
     warn '     /sane-loop "Fix bug" --max-iterations 15 --completion-promise "BUG-FIXED"'
     warn ''
     warn '   This prevents infinite loops (learned from 700+ iteration failure).'
-    exit 1
+    exit 2 # Exit code 2 = BLOCK in Claude Code
   end
 
   if unlimited && !has_promise
@@ -52,7 +52,7 @@ begin
     warn '     1. Set --max-iterations to a positive number (10-20 recommended)'
     warn "     2. Add --completion-promise 'TEXT' as exit condition"
     warn ''
-    exit 1
+    exit 2 # Exit code 2 = BLOCK in Claude Code
   end
 
   # Warn about high iteration counts

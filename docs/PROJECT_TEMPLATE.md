@@ -125,21 +125,41 @@ See the full [SaneProcess documentation](./SaneProcess.md) for the complete 13 G
 
 ---
 
-## Self-Rating Checklist
+## Session Summary Format
 
-After each task, rate yourself:
+Every session ends with this exact format:
 
 ```
-**Self-rating: X/10**
-✅ [What you did well]
-❌ [What you missed]
+## Session Summary
+
+### What Was Done
+1. [First concrete deliverable]
+2. [Second concrete deliverable]
+3. [Third concrete deliverable]
+
+### SOP Compliance: X/10
+
+✅ **Followed:**
+- Rule #X: [What you did right]
+- Rule #X: [What you did right]
+
+❌ **Missed:**
+- Rule #X: [What you missed and why]
+
+**Next time:** [Specific improvement for future sessions]
+
+### Followup
+- [Actionable item for future]
+- [Actionable item for future]
 ```
+
+**CRITICAL:** Rating is on RULE COMPLIANCE, not task completion.
 
 | Score | Meaning |
 |-------|---------|
 | 9-10 | All rules followed |
-| 7-8 | Minor miss |
-| 5-6 | Notable gaps |
+| 7-8 | Minor miss (one rule) |
+| 5-6 | Notable gaps (2-3 rules) |
 | 1-4 | Multiple violations |
 
 ---

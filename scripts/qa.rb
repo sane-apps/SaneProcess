@@ -28,7 +28,9 @@ class SaneProcessQA
   README = File.join(__dir__, '..', 'README.md')
   SOP_DOC = File.join(__dir__, '..', 'docs', 'SaneProcess.md')
   HOOKS_README = File.join(__dir__, 'hooks', 'README.md')
+  SETTINGS_JSON = File.join(__dir__, '..', '.claude', 'settings.json')
 
+  # Hooks that get registered in settings.json
   EXPECTED_HOOKS = %w[
     circuit_breaker.rb
     edit_validator.rb
@@ -43,7 +45,20 @@ class SaneProcessQA
     version_mismatch.rb
     deeper_look_trigger.rb
     skill_validator.rb
+    saneloop_enforcer.rb
+    session_summary_validator.rb
+    prompt_analyzer.rb
+    pattern_learner.rb
+    process_enforcer.rb
   ].freeze
+
+  # Shared modules that hooks require (not registered, but must exist)
+  SHARED_MODULES = %w[
+    rule_tracker.rb
+  ].freeze
+
+  # All hook files that should exist
+  ALL_HOOK_FILES = (EXPECTED_HOOKS + SHARED_MODULES).freeze
 
   EXPECTED_RULE_COUNT = 13
 
@@ -86,6 +101,7 @@ class SaneProcessQA
     check_hooks_exist
     check_hooks_syntax
     check_hooks_use_stdin
+    check_hooks_registered
     check_sanemaster_syntax
     check_init_script
     check_readme_hook_count
@@ -124,12 +140,12 @@ class SaneProcessQA
   def check_hooks_exist
     print "Checking hooks exist... "
 
-    missing = EXPECTED_HOOKS.reject do |hook|
+    missing = ALL_HOOK_FILES.reject do |hook|
       File.exist?(File.join(HOOKS_DIR, hook))
     end
 
     if missing.empty?
-      puts "✅ #{EXPECTED_HOOKS.count} hooks present"
+      puts "✅ #{ALL_HOOK_FILES.count} hooks present"
     else
       @errors << "Missing hooks: #{missing.join(', ')}"
       puts "❌ Missing: #{missing.join(', ')}"
@@ -140,7 +156,7 @@ class SaneProcessQA
     print "Checking Ruby syntax... "
 
     invalid = []
-    EXPECTED_HOOKS.each do |hook|
+    ALL_HOOK_FILES.each do |hook|
       path = File.join(HOOKS_DIR, hook)
       next unless File.exist?(path)
 
@@ -180,6 +196,54 @@ class SaneProcessQA
     else
       @errors << "Hooks using ENV for tool input (should use stdin): #{uses_env_for_input.join(', ')}"
       puts "❌ Using ENV for input: #{uses_env_for_input.join(', ')}"
+    end
+  end
+
+  def check_hooks_registered
+    print "Checking hooks registered in settings.json... "
+
+    unless File.exist?(SETTINGS_JSON)
+      @errors << "settings.json not found"
+      puts "❌ Missing"
+      return
+    end
+
+    begin
+      settings = JSON.parse(File.read(SETTINGS_JSON))
+    rescue JSON::ParserError => e
+      @errors << "settings.json is invalid JSON: #{e.message}"
+      puts "❌ Invalid JSON"
+      return
+    end
+
+    hooks_section = settings['hooks'] || {}
+
+    # Extract all hook commands from settings.json
+    registered_hooks = []
+    %w[UserPromptSubmit SessionStart PreToolUse PostToolUse].each do |hook_type|
+      entries = hooks_section[hook_type] || []
+      entries.each do |entry|
+        hook_list = entry['hooks'] || []
+        hook_list.each do |hook|
+          command = hook['command'] || ''
+          # Extract hook filename from command like: ruby "$CLAUDE_PROJECT_DIR"/scripts/hooks/circuit_breaker.rb
+          if (match = command.match(%r{hooks/([^/\s"]+\.rb)}))
+            registered_hooks << match[1]
+          end
+        end
+      end
+    end
+
+    registered_hooks.uniq!
+
+    # Check which expected hooks are NOT registered
+    not_registered = EXPECTED_HOOKS - registered_hooks
+
+    if not_registered.empty?
+      puts "✅ All #{EXPECTED_HOOKS.count} hooks registered"
+    else
+      @errors << "Hooks NOT registered in settings.json (invisible!): #{not_registered.join(', ')}"
+      puts "❌ Not registered: #{not_registered.join(', ')}"
     end
   end
 
@@ -247,11 +311,11 @@ class SaneProcessQA
     # Parse the hooks list
     init_hooks = hooks_match[1].scan(/"([^"]+)"/).flatten
 
-    missing = EXPECTED_HOOKS - init_hooks
-    extra = init_hooks - EXPECTED_HOOKS
+    missing = ALL_HOOK_FILES - init_hooks
+    extra = init_hooks - ALL_HOOK_FILES
 
     if missing.empty? && extra.empty?
-      puts "✅ init.sh lists all #{EXPECTED_HOOKS.count} hooks"
+      puts "✅ init.sh lists all #{ALL_HOOK_FILES.count} hooks"
     else
       @errors << "init.sh missing: #{missing.join(', ')}" unless missing.empty?
       @warnings << "init.sh has extra: #{extra.join(', ')}" unless extra.empty?
@@ -279,12 +343,12 @@ class SaneProcessQA
       return
     end
 
-    wrong_counts = hook_counts.reject { |c| c == EXPECTED_HOOKS.count }
+    wrong_counts = hook_counts.reject { |c| c == ALL_HOOK_FILES.count }
     if wrong_counts.empty?
-      puts "✅ Hook count correct (#{EXPECTED_HOOKS.count})"
+      puts "✅ Hook count correct (#{ALL_HOOK_FILES.count})"
     else
-      @errors << "README.md says #{wrong_counts.first} hooks, should be #{EXPECTED_HOOKS.count}"
-      puts "❌ Says #{wrong_counts.first}, should be #{EXPECTED_HOOKS.count}"
+      @errors << "README.md says #{wrong_counts.first} hooks, should be #{ALL_HOOK_FILES.count}"
+      puts "❌ Says #{wrong_counts.first}, should be #{ALL_HOOK_FILES.count}"
     end
   end
 
@@ -329,7 +393,7 @@ class SaneProcessQA
     content = File.read(HOOKS_README)
 
     # Check each expected hook is mentioned
-    missing = EXPECTED_HOOKS.reject do |hook|
+    missing = ALL_HOOK_FILES.reject do |hook|
       content.include?(hook)
     end
 
