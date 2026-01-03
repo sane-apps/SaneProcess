@@ -6,7 +6,9 @@
 # Usage: curl -sL saneprocess.dev/init | bash
 #    or: ./sane-init.sh
 #
-# Version 2.1 - January 2026
+# Version 2.2 - January 2026
+# Copyright (c) 2026 Stephan Joseph. All Rights Reserved.
+# License required for use: stephanjoseph2007@gmail.com
 #
 
 set -e
@@ -18,9 +20,112 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# LICENSE VALIDATION (REQUIRED)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+LICENSE_DIR="$HOME/.saneprocess"
+LICENSE_FILE="$LICENSE_DIR/license.key"
+
+validate_license() {
+    local key=""
+    
+    # Check environment variable first
+    if [ -n "$SANEPROCESS_LICENSE" ]; then
+        key="$SANEPROCESS_LICENSE"
+    elif [ -f "$LICENSE_FILE" ]; then
+        key=$(cat "$LICENSE_FILE")
+    fi
+    
+    # No license found
+    if [ -z "$key" ]; then
+        echo ""
+        echo -e "${RED}╔═══════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${RED}║                    LICENSE REQUIRED                           ║${NC}"
+        echo -e "${RED}╚═══════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo "SaneProcess requires a valid license for any use."
+        echo ""
+        echo -e "${YELLOW}To purchase a license:${NC}"
+        echo "   Email: stephanjoseph2007@gmail.com"
+        echo ""
+        echo -e "${YELLOW}To activate your license:${NC}"
+        echo "   ./scripts/license.rb activate SP-XXXX-XXXX-XXXX-XXXX"
+        echo ""
+        echo -e "${YELLOW}Or set environment variable:${NC}"
+        echo "   export SANEPROCESS_LICENSE=SP-XXXX-XXXX-XXXX-XXXX"
+        echo ""
+        exit 1
+    fi
+    
+    # Validate format: SP-XXXX-XXXX-XXXX-XXXX
+    if ! echo "$key" | grep -qE '^SP-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$'; then
+        echo ""
+        echo -e "${RED}❌ Invalid license key format${NC}"
+        echo ""
+        echo "Expected format: SP-XXXX-XXXX-XXXX-XXXX"
+        echo ""
+        echo "Please check your license key or contact:"
+        echo "   stephanjoseph2007@gmail.com"
+        echo ""
+        exit 1
+    fi
+    
+    # Extract parts and validate checksum
+    local prefix=$(echo "$key" | cut -d'-' -f1)
+    local type_code=$(echo "$key" | cut -d'-' -f2)
+    local user_id=$(echo "$key" | cut -d'-' -f3)
+    local date_code=$(echo "$key" | cut -d'-' -f4)
+    local checksum=$(echo "$key" | cut -d'-' -f5)
+    
+    local data="$prefix-$type_code-$user_id-$date_code"
+    local expected=$(echo -n "${data}SaneProcess2026" | shasum -a 256 | cut -c1-4 | tr 'a-z' 'A-Z')
+    
+    if [ "$checksum" != "$expected" ]; then
+        echo ""
+        echo -e "${RED}❌ Invalid license key${NC}"
+        echo ""
+        echo "This license key is not valid. Possible reasons:"
+        echo "   • Typo in the license key"
+        echo "   • License has been revoked"
+        echo "   • Key was generated incorrectly"
+        echo ""
+        echo "Please contact: stephanjoseph2007@gmail.com"
+        echo ""
+        exit 1
+    fi
+    
+    # Check for trial expiration (T prefix)
+    if [[ "$type_code" == T* ]]; then
+        # Trial licenses expire after 14 days
+        # date_code is days since 2026-01-01 in base36
+        local days_since=$(echo "ibase=36; $date_code" | bc 2>/dev/null || echo "0")
+        local issue_timestamp=$(($(date -j -f "%Y-%m-%d" "2026-01-01" "+%s" 2>/dev/null || date -d "2026-01-01" "+%s" 2>/dev/null || echo "1735689600") + days_since * 86400))
+        local expiry_timestamp=$((issue_timestamp + 14 * 86400))
+        local now=$(date "+%s")
+        
+        if [ "$now" -gt "$expiry_timestamp" ]; then
+            echo ""
+            echo -e "${RED}❌ Trial license has expired${NC}"
+            echo ""
+            echo "Your 14-day trial has ended."
+            echo ""
+            echo "To purchase a full license:"
+            echo "   Email: stephanjoseph2007@gmail.com"
+            echo ""
+            exit 1
+        fi
+    fi
+    
+    echo -e "${GREEN}✅ License validated${NC}"
+}
+
+# Run license validation FIRST
+validate_license
+
 echo ""
 echo -e "${BLUE}╔═══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║${NC}              ${GREEN}SaneProcess v2.1 Initialization${NC}                  ${BLUE}║${NC}"
+echo -e "${BLUE}║${NC}              ${GREEN}SaneProcess v2.2 Initialization${NC}                  ${BLUE}║${NC}"
 echo -e "${BLUE}╚═══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -252,7 +357,7 @@ when 'clean'
   system("rm -rf ~/Library/Developer/Xcode/DerivedData/#{PROJECT}-*")
   puts '✅ Cleaned DerivedData'
 when 'logs'
-  Kernel.send(:system, 'log', 'stream', '--predicate', "process == \\"#{PROJECT}\\"", '--style', 'compact')
+  Kernel.send(:system, 'log', 'stream', '--predicate', "process == \"#{PROJECT}\"", '--style', 'compact')
 when 'launch'
   app = Dir.glob(File.expand_path("~/Library/Developer/Xcode/DerivedData/#{PROJECT}-*/Build/Products/Debug/#{PROJECT}.app")).first
   if app
@@ -267,7 +372,7 @@ when 'test_mode'
   if system('./Scripts/build.rb verify') && system('./Scripts/build.rb launch')
     sleep 1
     puts '📡 Streaming logs...'
-    Kernel.send(:system, 'log', 'stream', '--predicate', "process == \\"#{PROJECT}\\"", '--style', 'compact')
+    Kernel.send(:system, 'log', 'stream', '--predicate', "process == \"#{PROJECT}\"", '--style', 'compact')
   end
 when 'bootstrap'
   puts '✅ Ready'
