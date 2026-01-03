@@ -44,14 +44,23 @@ state['edit_count'] += 1
 # Save state
 File.write(state_file, JSON.pretty_generate(state))
 
-# Output reminder every 10 edits
-output = if (state['edit_count'] % 10).zero?
-           {
-             'result' => 'continue',
-             'message' => "Reminder: You've made #{state['edit_count']} edits this session. Remember: Verify before coding, Two-Fix Rule applies."
-           }
-         else
-           { 'result' => 'continue' }
-         end
+# Output reminder every 10 edits - MUST use warn for visibility
+if (state['edit_count'] % 10).zero?
+  warn ''
+  warn '=' * 60
+  warn "📋 CHECKPOINT: #{state['edit_count']} edits this session"
+  warn '=' * 60
+  warn ''
+  warn '   Quick self-check:'
+  warn '   • What task am I working on?'
+  warn '   • Which SOP rules apply here?'
+  warn '   • Have I verified my changes work?'
+  warn ''
+  warn '   Rule #3: Two strikes? Research before guessing again'
+  warn '   Rule #6: Build → Kill → Launch → Logs → Confirm'
+  warn ''
+  warn '=' * 60
+  warn ''
+end
 
-puts output.to_json
+puts({ 'result' => 'continue' }.to_json)

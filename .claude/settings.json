@@ -13,7 +13,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '✅ SaneProcess session started' && cat \"$CLAUDE_PROJECT_DIR\"/.claude/SOP_CONTEXT.md 2>/dev/null || echo '📋 Working on SaneProcess - the SOP framework'"
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/session_start.rb"
           }
         ]
       }
@@ -22,6 +22,16 @@
       {
         "matcher": "Edit",
         "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/circuit_breaker.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/sop_mapper.rb",
+            "timeout": 5
+          },
           {
             "type": "command",
             "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/path_rules.rb",
@@ -34,7 +44,119 @@
         "hooks": [
           {
             "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/circuit_breaker.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/sop_mapper.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/path_rules.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/circuit_breaker.rb",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/two_fix_reminder.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/verify_reminder.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/audit_logger.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/failure_tracker.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/deeper_look_trigger.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/audit_logger.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/deeper_look_trigger.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/audit_logger.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/deeper_look_trigger.rb",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/audit_logger.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/audit_logger.rb",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/audit_logger.rb",
             "timeout": 5
           }
         ]
