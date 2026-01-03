@@ -14,6 +14,7 @@
 # - docs/SaneProcess.md matches rule count
 # - All URLs in docs are reachable
 # - All hooks use stdin pattern (not ENV vars)
+# - SaneMaster CLI and modules have valid syntax
 # - Hook tests pass
 #
 
@@ -46,6 +47,31 @@ class SaneProcessQA
 
   EXPECTED_RULE_COUNT = 13
 
+  SANEMASTER_CLI = File.join(__dir__, 'SaneMaster.rb')
+  SANEMASTER_DIR = File.join(__dir__, 'sanemaster')
+
+  EXPECTED_SANEMASTER_MODULES = %w[
+    base.rb
+    bootstrap.rb
+    circuit_breaker_state.rb
+    compliance_report.rb
+    dependencies.rb
+    diagnostics.rb
+    export.rb
+    generation.rb
+    generation_assets.rb
+    generation_mocks.rb
+    generation_templates.rb
+    md_export.rb
+    memory.rb
+    meta.rb
+    quality.rb
+    session.rb
+    sop_loop.rb
+    test_mode.rb
+    verify.rb
+  ].freeze
+
   def initialize
     @errors = []
     @warnings = []
@@ -60,6 +86,7 @@ class SaneProcessQA
     check_hooks_exist
     check_hooks_syntax
     check_hooks_use_stdin
+    check_sanemaster_syntax
     check_init_script
     check_readme_hook_count
     check_sop_doc_rule_count
@@ -153,6 +180,48 @@ class SaneProcessQA
     else
       @errors << "Hooks using ENV for tool input (should use stdin): #{uses_env_for_input.join(', ')}"
       puts "❌ Using ENV for input: #{uses_env_for_input.join(', ')}"
+    end
+  end
+
+  def check_sanemaster_syntax
+    print "Checking SaneMaster syntax... "
+
+    invalid = []
+
+    # Check main CLI
+    if File.exist?(SANEMASTER_CLI)
+      result = `ruby -c #{SANEMASTER_CLI} 2>&1`
+      invalid << 'SaneMaster.rb' unless $?.success?
+    else
+      @errors << "SaneMaster.rb not found"
+      puts "❌ Missing"
+      return
+    end
+
+    # Check all modules exist and have valid syntax
+    missing_modules = []
+    EXPECTED_SANEMASTER_MODULES.each do |mod|
+      path = File.join(SANEMASTER_DIR, mod)
+      unless File.exist?(path)
+        missing_modules << mod
+        next
+      end
+
+      result = `ruby -c #{path} 2>&1`
+      invalid << mod unless $?.success?
+    end
+
+    if missing_modules.any?
+      @errors << "Missing SaneMaster modules: #{missing_modules.join(', ')}"
+      puts "❌ Missing modules: #{missing_modules.join(', ')}"
+      return
+    end
+
+    if invalid.empty?
+      puts "✅ SaneMaster + #{EXPECTED_SANEMASTER_MODULES.count} modules valid"
+    else
+      @errors << "Invalid syntax in SaneMaster: #{invalid.join(', ')}"
+      puts "❌ Invalid: #{invalid.join(', ')}"
     end
   end
 
