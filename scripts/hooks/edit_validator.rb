@@ -18,6 +18,7 @@ PROJECT_DIR = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
 SOFT_LIMIT = 500
 HARD_LIMIT = 800
 BYPASS_FILE = File.join(PROJECT_DIR, '.claude/bypass_active.json')
+READ_HISTORY_FILE = File.join(PROJECT_DIR, '.claude/read_history.json')
 
 # Skip enforcement if bypass is active
 exit 0 if File.exist?(BYPASS_FILE)
@@ -50,6 +51,41 @@ tool_input = input['tool_input'] || input
 file_path = tool_input['file_path']
 
 exit 0 if file_path.nil? || file_path.empty?
+
+# =============================================================================
+# READ-BEFORE-EDIT: Warn if editing a file that wasn't read first
+# =============================================================================
+
+def file_was_read?(path)
+  return true unless File.exist?(READ_HISTORY_FILE)
+
+  history = begin
+    JSON.parse(File.read(READ_HISTORY_FILE))
+  rescue StandardError
+    { 'files' => [] }
+  end
+
+  normalized = File.expand_path(path)
+  history['files'].include?(normalized)
+end
+
+# Only check for existing files (new files don't need to be read first)
+if File.exist?(file_path) && !file_was_read?(file_path)
+  # Skip warning for certain file types that are OK to edit without reading
+  skip_read_check = file_path.match?(/\.(json|lock|sum)$/) ||
+                    file_path.include?('.claude/') ||
+                    file_path.include?('node_modules/')
+
+  unless skip_read_check
+    RuleTracker.log_enforcement(rule: 2, hook: 'edit_validator', action: 'warn', details: "Edit without Read: #{file_path}")
+    warn ''
+    warn '⚠️  WARNING: Rule #2 - Editing file not yet read this session'
+    warn "   File: #{file_path}"
+    warn '   VERIFY BEFORE YOU TRY: Read files before proposing edits.'
+    warn '   Use Read tool first to understand existing code.'
+    warn ''
+  end
+end
 
 # =============================================================================
 # Rule #1: STAY IN YOUR LANE - Block dangerous paths, warn on cross-project

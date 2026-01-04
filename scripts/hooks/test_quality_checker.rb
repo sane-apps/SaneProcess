@@ -38,6 +38,25 @@ TAUTOLOGY_PATTERNS = [
   /#expect.*FIXME/i
 ].freeze
 
+# Patterns that suggest hard-coded test values (may not generalize)
+# These WARN but don't indicate automatic failure like tautologies
+HARDCODED_PATTERNS = [
+  # Suspiciously specific "magic" numbers in assertions
+  # (excluding common valid values like 0, 1, -1, 2, 10, 100)
+  /#expect\s*\([^)]+==\s*(?!0|1|2|10|100|-1)\d{2,}\s*\)/,  # 2+ digit numbers
+  /XCTAssertEqual\s*\([^,]+,\s*(?!0|1|2|10|100|-1)\d{2,}\s*\)/,
+
+  # Long literal strings in assertions (likely test fixture data)
+  /#expect\s*\([^)]+==\s*"[^"]{30,}"\s*\)/,
+  /XCTAssertEqual\s*\([^,]+,\s*"[^"]{30,}"\s*\)/,
+
+  # Hardcoded array counts that seem arbitrary
+  /#expect\s*\([^)]+\.count\s*==\s*(?!0|1|2|3|10)\d+\s*\)/,
+
+  # Inline array/dictionary literals in assertions
+  /#expect\s*\([^)]+==\s*\[[^\]]{20,}\]\s*\)/
+].freeze
+
 # Read hook input from stdin (Claude Code standard)
 begin
   input = JSON.parse($stdin.read)
@@ -59,6 +78,7 @@ exit 0 if content.empty?
 
 # Collect issues
 tautologies = []
+hardcoded = []
 
 # Check for tautology patterns
 TAUTOLOGY_PATTERNS.each do |pattern|
@@ -66,7 +86,13 @@ TAUTOLOGY_PATTERNS.each do |pattern|
   tautologies.concat(matches) unless matches.empty?
 end
 
-# Report issues
+# Check for hardcoded value patterns
+HARDCODED_PATTERNS.each do |pattern|
+  matches = content.scan(pattern)
+  hardcoded.concat(matches) unless matches.empty?
+end
+
+# Report tautology issues (more serious)
 if tautologies.any?
   RuleTracker.log_enforcement(rule: 7, hook: 'test_quality_checker', action: 'warn', details: "#{tautologies.count} tautologies in #{file_path}")
   warn ''
@@ -92,6 +118,30 @@ if tautologies.any?
   warn '   • #expect(viewModel.isLoading == false)'
   warn ''
   warn '=' * 60
+  warn ''
+end
+
+# Report hardcoded value issues (less serious, but still worth noting)
+if hardcoded.any?
+  RuleTracker.log_enforcement(rule: 7, hook: 'test_quality_checker', action: 'info', details: "#{hardcoded.count} possible hardcoded values in #{file_path}")
+  warn ''
+  warn '-' * 60
+  warn '💡 NOTICE: Possible hard-coded test values detected'
+  warn '-' * 60
+  warn ''
+  warn "   File: #{file_path}"
+  warn ''
+  warn '   These assertions may only work for specific test inputs:'
+  hardcoded.first(3).each do |match|
+    warn "   • #{match.to_s.strip[0, 60]}..."
+  end
+  warn ''
+  warn '   Consider:'
+  warn '   • Does this test work for ALL valid inputs, not just test cases?'
+  warn '   • Are you testing the algorithm, or just memorizing answers?'
+  warn '   • Would this catch a regression in the actual logic?'
+  warn ''
+  warn '-' * 60
   warn ''
 end
 

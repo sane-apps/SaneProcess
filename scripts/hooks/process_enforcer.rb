@@ -33,6 +33,8 @@ ENFORCEMENT_LOG = File.join(PROJECT_DIR, '.claude/enforcement_log.jsonl')
 MEMORY_CHECK_FILE = File.join(PROJECT_DIR, '.claude/memory_checked.json')
 BYPASS_FILE = File.join(PROJECT_DIR, '.claude/bypass_active.json')
 RESEARCH_PROGRESS_FILE = File.join(PROJECT_DIR, '.claude/research_progress.json')
+HYPOTHESIS_FILE = File.join(PROJECT_DIR, '.claude/research_hypotheses.json')
+READ_HISTORY_FILE = File.join(PROJECT_DIR, '.claude/read_history.json')
 EDIT_STATE_FILE = File.join(PROJECT_DIR, '.claude/edit_state.json')
 SUMMARY_VALIDATED_FILE = File.join(PROJECT_DIR, '.claude/summary_validated.json')
 
@@ -527,7 +529,7 @@ if research_required
       blocks << {
         rule: 'RESEARCH_FIRST',
         message: "#{done_count}/5 research categories complete. Missing: #{missing_names.join(', ')}",
-        fix: "Complete ALL 5: Memory, Docs, Web, Local, GitHub. If output is not applicable, TRY FIRST then ask user: 'skip #{missing_keys.first}' (can't skip what you haven't attempted)"
+        fix: "Complete ALL 5: Memory, Docs, Web, Local, GitHub. Track competing hypotheses with confidence levels as you go. If output is not applicable, TRY FIRST then ask user: 'skip #{missing_keys.first}'"
       }
     end
   end

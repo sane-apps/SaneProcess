@@ -26,6 +26,7 @@ require_relative 'state_signer'
 PROJECT_DIR = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
 FINDINGS_FILE = File.join(PROJECT_DIR, '.claude/research_findings.jsonl')
 RESEARCH_PROGRESS_FILE = File.join(PROJECT_DIR, '.claude/research_progress.json')
+READ_HISTORY_FILE = File.join(PROJECT_DIR, '.claude/read_history.json')
 BYPASS_FILE = File.join(PROJECT_DIR, '.claude/bypass_active.json')
 
 # Skip if bypass active
@@ -98,6 +99,25 @@ end
 def log_finding(entry)
   FileUtils.mkdir_p(File.dirname(FINDINGS_FILE))
   File.open(FINDINGS_FILE, 'a') { |f| f.puts entry.to_json }
+end
+
+# Track files that have been Read (for read-before-edit enforcement)
+def track_read_file(file_path)
+  return if file_path.nil? || file_path.empty?
+
+  FileUtils.mkdir_p(File.dirname(READ_HISTORY_FILE))
+  history = begin
+    JSON.parse(File.read(READ_HISTORY_FILE))
+  rescue StandardError
+    { 'files' => [], 'session_start' => Time.now.iso8601 }
+  end
+
+  normalized = File.expand_path(file_path)
+  unless history['files'].include?(normalized)
+    history['files'] << normalized
+    history['last_read'] = Time.now.iso8601
+    File.write(READ_HISTORY_FILE, JSON.pretty_generate(history))
+  end
 end
 
 # Read hook input from stdin
@@ -180,6 +200,11 @@ finding = {
   output_preview: summarize_output(tool_output, 300)
 }
 log_finding(finding)
+
+# Track Read tool usage for read-before-edit enforcement
+if tool_name == 'Read' && is_meaningful
+  track_read_file(tool_input['file_path'])
+end
 
 # Update research progress (VULN-006 FIX: only if output is meaningful)
 progress = load_research_progress
