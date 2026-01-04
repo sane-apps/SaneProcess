@@ -180,8 +180,16 @@ end
 def mark_research_category(category, tool_name, prompt = nil)
   progress = load_research_progress
   progress[category] ||= { completed_at: nil, tool: nil, skipped: false, skip_reason: nil }
-  return if progress[category][:completed_at] # Already done
 
+  # BUG FIX: Allow Task agents to upgrade existing entries to via_task=true
+  # Previously, if a category was marked by direct tool call (via_task=false),
+  # a later Task agent couldn't update it, causing permanent block.
+  already_done_via_task = progress[category][:completed_at] && progress[category][:via_task]
+  if already_done_via_task
+    return # Already done via Task - no upgrade needed
+  end
+
+  # Either new entry OR upgrading non-Task entry to Task entry
   progress[category][:completed_at] = Time.now.iso8601
   progress[category][:tool] = tool_name
   progress[category][:prompt] = prompt&.slice(0, 200) if prompt # Store truncated prompt as proof
