@@ -1,6 +1,32 @@
 {
   "permissions": {
     "allow": [
+      "Bash(./Scripts/SaneMaster.rb:*)",
+      "Bash(xcodegen:*)",
+      "Bash(bundle exec:*)",
+      "Bash(killall:*)",
+      "Bash(git:*)",
+      "Bash(ls:*)",
+      "Bash(brew:*)",
+      "Bash(swiftlint:*)",
+      "Bash(mockolo:*)",
+      "Bash(periphery:*)",
+      "Bash(lefthook:*)",
+      "Bash(xcodebuild:*)",
+      "Bash(xcrun:*)",
+      "Bash(open:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(du:*)",
+      "Bash(df:*)",
+      "Bash(pgrep:*)",
+      "Bash(pkill:*)",
+      "Bash(curl:*)",
+      "Bash(which:*)",
+      "Bash(ruby:*)",
+      "Bash(/opt/homebrew/opt/ruby/bin/*:*)",
       "mcp__memory__*",
       "mcp__apple-docs__*",
       "mcp__context7__*",
@@ -434,5 +460,11 @@
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "swift-lsp@claude-plugins-official": true,
+    "code-review@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": true,
+    "ralph-wiggum@claude-plugins-official": true
   }
 }
