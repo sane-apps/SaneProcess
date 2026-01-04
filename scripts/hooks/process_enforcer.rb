@@ -24,6 +24,9 @@ require 'json'
 require 'fileutils'
 require 'time'
 require_relative 'state_signer'
+require_relative 'shortcut_detectors'
+
+include ShortcutDetectors
 
 PROJECT_DIR = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
 REQUIREMENTS_FILE = File.join(PROJECT_DIR, '.claude/prompt_requirements.json')
@@ -44,32 +47,35 @@ SUMMARY_REQUIRED_AFTER_EDITS = 25
 # Significant task threshold - require plan/SaneLoop after this many unique files
 SIGNIFICANT_TASK_THRESHOLD = 3
 
-# 5 mandatory research categories - ALL must be satisfied
+# 5 mandatory research categories - ALL must be satisfied via TASK AGENTS
+# ENFORCEMENT: Individual tool calls don't count. Must spawn Task agents.
+# This prevents gaming by calling tools that fail or only searching our own repo.
 RESEARCH_CATEGORIES = {
   memory: {
     name: 'Memory',
-    tools: ['mcp__memory__read_graph'],
-    desc: 'Check past bugs/patterns'
+    keywords: %w[memory knowledge graph past bugs patterns],
+    desc: 'Check past bugs/patterns via Task agent'
   },
   docs: {
     name: 'API Docs',
-    tools: ->(t) { t.start_with?('mcp__apple-docs__') || t.start_with?('mcp__context7__') },
-    desc: 'Verify APIs exist'
+    keywords: %w[docs documentation api apple-docs context7 sdk interface],
+    desc: 'Verify APIs exist via Task agent'
   },
   web: {
     name: 'Web Search',
-    tools: %w[WebSearch WebFetch],
-    desc: 'Find patterns/solutions'
+    keywords: %w[web search google community stackoverflow best practices],
+    desc: 'Find patterns/solutions via Task agent'
   },
   local: {
     name: 'Local Codebase',
-    tools: %w[Read Grep Glob],
-    desc: 'Understand existing code'
+    keywords: %w[local codebase existing code project files grep glob],
+    desc: 'Understand existing code via Task agent'
   },
   github: {
-    name: 'GitHub',
-    tools: ->(t) { t.start_with?('mcp__github__') },
-    desc: 'Check issues/PRs/prior work'
+    name: 'External GitHub',
+    keywords: %w[github external repos community projects examples],
+    desc: 'Learn from community projects (NOT our repo) via Task agent',
+    exclude_keywords: %w[stephanjoseph saneprocess] # Our repo doesn't count!
   }
 }.freeze
 
@@ -143,26 +149,77 @@ def save_research_progress(progress)
   StateSigner.write_signed(RESEARCH_PROGRESS_FILE, string_progress)
 end
 
-def mark_research_category(category, tool_name)
+def mark_research_category(category, tool_name, prompt = nil)
   progress = load_research_progress
   progress[category] ||= { completed_at: nil, tool: nil, skipped: false, skip_reason: nil }
   return if progress[category][:completed_at] # Already done
 
   progress[category][:completed_at] = Time.now.iso8601
   progress[category][:tool] = tool_name
+  progress[category][:prompt] = prompt&.slice(0, 200) if prompt # Store truncated prompt as proof
+  progress[category][:via_task] = (tool_name == 'Task') # Track if done via Task agent
   save_research_progress(progress)
 end
 
-def research_category_for_tool(tool_name)
+# Detect which research category a Task prompt belongs to (if any)
+def research_category_for_task_prompt(prompt)
+  return nil if prompt.nil? || prompt.empty?
+
+  prompt_lower = prompt.downcase
+
   RESEARCH_CATEGORIES.each do |cat, config|
-    matcher = config[:tools]
-    matched = if matcher.is_a?(Proc)
-                matcher.call(tool_name)
-              else
-                matcher.include?(tool_name)
-              end
-    return cat if matched
+    keywords = config[:keywords] || []
+    exclude = config[:exclude_keywords] || []
+
+    # Check if any keyword matches
+    has_keyword = keywords.any? { |kw| prompt_lower.include?(kw) }
+
+    # Check if excluded (e.g., searching our own repo doesn't count for GitHub)
+    is_excluded = exclude.any? { |ex| prompt_lower.include?(ex) }
+
+    # Special case for GitHub: must NOT be searching our own repo
+    if cat == :github && is_excluded
+      warn "   ⚠️  GitHub research must be EXTERNAL (not our repo)"
+      next
+    end
+
+    return cat if has_keyword
   end
+
+  nil
+end
+
+# Check if research was done via Task agents (not individual tool calls)
+def research_done_via_tasks?
+  progress = load_research_progress
+  return false if progress.empty?
+
+  # All 5 categories must be completed via Task agents
+  RESEARCH_CATEGORIES.keys.all? do |cat|
+    cat_progress = progress[cat]
+    cat_progress && cat_progress[:completed_at] && cat_progress[:via_task]
+  end
+end
+
+# Legacy function for non-Task tools (kept for backward compatibility / logging only)
+def research_category_for_tool(tool_name)
+  # NOTE: Individual tool calls no longer count toward research satisfaction
+  # This is kept only for logging/tracking purposes
+  tool_to_category = {
+    'mcp__memory__read_graph' => :memory,
+    'WebSearch' => :web,
+    'WebFetch' => :web,
+    'Read' => :local,
+    'Grep' => :local,
+    'Glob' => :local
+  }
+
+  return tool_to_category[tool_name] if tool_to_category.key?(tool_name)
+
+  # MCP tools
+  return :docs if tool_name.start_with?('mcp__apple-docs__') || tool_name.start_with?('mcp__context7__')
+  return :github if tool_name.start_with?('mcp__github__')
+
   nil
 end
 
@@ -248,123 +305,8 @@ def significant_task_detected?
 end
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SHORTCUT DETECTION - Catch Claude trying to bypass
+# SHORTCUT DETECTION - Moved to shortcut_detectors.rb module
 # ═══════════════════════════════════════════════════════════════════════════════
-
-def detect_casual_self_rating(content)
-  # Catch patterns like "Self-Rating: 8/10" or "Rating: 7/10" without proper format
-  casual_patterns = [
-    /Self-Rating:\s*\d+\/10/i,
-    /Rating:\s*\d+\/10/i,
-    /\*\*Self-rating:\s*\d+\/10\*\*/i,
-    /My rating:\s*\d+\/10/i
-  ]
-
-  proper_format = content.include?('SOP Compliance:') && content.include?('Performance:')
-
-  casual_patterns.any? { |p| content.match?(p) } && !proper_format
-end
-
-def detect_lazy_commit(command)
-  # Catch simple "git commit" without full workflow
-  return false unless command.match?(/git commit/i)
-
-  # Full workflow should include: status, diff, add
-  has_status = command.include?('status')
-  has_diff = command.include?('diff')
-  has_add = command.include?('add')
-
-  # If it's just "git commit -m" without the workflow, it's lazy
-  command.match?(/git commit\s+-m/i) && !has_status && !has_diff
-end
-
-def detect_bash_file_write(command)
-  # VULN-002 FIX: Detect Bash commands that write to files
-  # These bypass Edit/Write tool hooks!
-  file_write_patterns = [
-    />(?!&)/,                           # redirect: echo "x" > file (but not >&)
-    />>/,                               # append: echo "x" >> file
-    /\bsed\s+(-[a-zA-Z]*i|-i)/,         # sed in-place: sed -i 's/x/y/' file
-    /\btee\b/,                          # tee: echo "x" | tee file
-    /\bcat\s*>(?!&)/,                   # cat redirect: cat > file
-    /<<\s*['"]?EOF/i,                   # heredoc: cat << EOF
-    /\bdd\b.*\bof=/,                    # dd: dd if=x of=file
-    /\bcp\b.*[^|]$/,                    # cp: cp source dest (not in pipeline)
-    /\bmv\b.*[^|]$/,                    # mv: mv source dest
-    /\btouch\b/,                        # touch: creates files
-    /\binstall\b.*-[a-zA-Z]*[mM]/,      # install with mode
-  ]
-
-  # Whitelist: safe file operations (VULN-002 FIX: removed .claude/ blanket allow)
-  safe_patterns = [
-    /\/dev\/null/,                      # Allow redirect to null
-    /\bgit\b/,                          # Allow git operations
-    /\|.*>/,                            # Allow pipeline output (usually logging)
-    # NOTE: .claude/ removed - hooks write via Ruby, not Bash
-    # If Claude uses Bash to write .claude/*.json, that's a bypass attempt
-  ]
-
-  return false if safe_patterns.any? { |p| command.match?(p) }
-
-  file_write_patterns.any? { |p| command.match?(p) }
-end
-
-def detect_bash_table_bypass(command)
-  # VULN-004 FIX: Detect sed/echo inserting markdown tables
-  # Tables are banned (render terribly in terminal) - can't bypass with sed
-  return false unless command.match?(/\bsed\b|\becho\b|>>|>/)
-
-  # Look for table patterns in the command content
-  table_patterns = [
-    /\|[-:]+\|/,           # |---|---| header separator
-    /\|.*\|.*\|/,          # | col | col | rows
-  ]
-
-  table_patterns.any? { |p| command.match?(p) }
-end
-
-def detect_bash_size_bypass(command)
-  # VULN-005 FIX: Detect sed editing large files that would be blocked by Edit
-  # If Edit would block due to 800-line limit, sed shouldn't be allowed either
-  return nil unless command.match?(/\bsed\s+(-[a-zA-Z]*i|-i)/)
-
-  # Extract target file from sed command
-  # Pattern: sed -i '' 's/.../.../g' <filename>
-  file_match = command.match(/sed\s+(?:-[a-zA-Z]*i|-i)\s+(?:''|"")?\s*'[^']*'\s+(.+)$/)
-  file_match ||= command.match(/sed\s+(?:-[a-zA-Z]*i|-i)\s+(?:''|"")?\s*"[^"]*"\s+(.+)$/)
-  return nil unless file_match
-
-  file_path = file_match[1].strip.gsub(/['"]/, '')
-  return nil unless File.exist?(file_path)
-
-  line_count = File.readlines(file_path).count
-  is_markdown = file_path.end_with?('.md')
-  limit = is_markdown ? 1500 : 800
-
-  return { file: file_path, lines: line_count, limit: limit } if line_count > limit
-  nil
-end
-
-def detect_skipped_verification(content, tool_name)
-  # Catch "done" claims without running verify
-  done_patterns = [
-    /\bdone\b/i,
-    /\bcomplete\b/i,
-    /\bfinished\b/i,
-    /\ball set\b/i,
-    /\bthat'?s it\b/i
-  ]
-
-  return false unless done_patterns.any? { |p| content.match?(p) }
-
-  # Check if verify was run recently (within last 5 tool calls)
-  return false unless File.exist?('.claude/audit.jsonl')
-
-  recent_calls = File.readlines('.claude/audit.jsonl').last(10)
-  recent_calls.any? { |line| line.include?('verify') || line.include?('qa.rb') }
-rescue StandardError
-  false
-end
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAIN ENFORCEMENT LOGIC
@@ -411,11 +353,21 @@ is_research_tool = %w[Read Grep Glob WebFetch WebSearch].include?(tool_name) ||
                    tool_name.start_with?('mcp__')
 
 # Task tool needs special handling - it's research UNLESS used for editing
+# CRITICAL: Task agents are the PRIMARY way to satisfy research requirements
 if tool_name == 'Task'
   task_prompt = tool_input['prompt'] || ''
   edit_keywords = %w[edit write create modify change update add append remove delete fix patch]
   is_edit_task = edit_keywords.any? { |kw| task_prompt.downcase.include?(kw) }
   is_research_tool = !is_edit_task  # Only research if NOT editing
+
+  # Track research Task calls by category
+  unless is_edit_task
+    category = research_category_for_task_prompt(task_prompt)
+    if category
+      mark_research_category(category, 'Task', task_prompt)
+      warn "📊 Task research: #{RESEARCH_CATEGORIES[category][:name]} category tracked"
+    end
+  end
 end
 
 # Read-only Bash commands are also research
@@ -450,20 +402,20 @@ if is_research_tool
     File.write(MEMORY_CHECK_FILE, { checked_at: Time.now.iso8601 }.to_json)
   end
 
-  # Track research progress by category (MUST be before exit 0)
-  if requested.include?('research')
-    category = research_category_for_tool(tool_name)
-    if category
-      mark_research_category(category, tool_name)
-      status = research_status
+  # NOTE: Individual tool calls are logged but do NOT satisfy research requirements
+  # Only Task agents satisfy research (prevents gaming with failed calls or own-repo searches)
+  # The Task tool handler (above) tracks research Task calls with mark_research_category()
 
-      if status[:all_done]
-        mark_satisfied(:research)
-        warn '✅ All 5 research categories complete - research satisfied'
-      elsif status[:done].any?
-        remaining = status[:missing].map { |c| RESEARCH_CATEGORIES[c][:name] }.join(', ')
-        warn "📊 Research: #{status[:done].length}/5 | Missing: #{remaining}"
-      end
+  # Show progress for informational purposes only
+  if tool_name == 'Task'
+    status = research_status
+    if research_done_via_tasks?
+      mark_satisfied(:research)
+      warn '✅ All 5 Task agents complete - research satisfied'
+    elsif status[:done].any?
+      done_via_task = status[:done].count { |cat| load_research_progress.dig(cat, :via_task) }
+      remaining = status[:missing].map { |c| RESEARCH_CATEGORIES[c][:name] }.join(', ')
+      warn "📊 Research: #{done_via_task}/5 Task agents | Missing: #{remaining}"
     end
   end
 
@@ -534,38 +486,38 @@ if tool_name == 'Task'
 end
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CHECK 2: Research Required Before Implementation (5 MANDATORY CATEGORIES)
-# VULN-FIX: Research is now MANDATORY by default for Edit/Write (opt-OUT, not opt-IN)
+# CHECK 2: Research Required Before Implementation (5 MANDATORY TASK AGENTS)
+# ENFORCEMENT: Must spawn 5 Task agents for research - individual tool calls don't count
+# This prevents gaming by calling tools that fail or only searching our own repo
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Research is mandatory for Edit/Write unless already satisfied
 research_required = %w[Edit Write].include?(tool_name) && !is_satisfied?(:research)
 
 if research_required
-  # Check actual research progress (tracked by research_tracker.rb PostToolUse)
-  status = research_status
-
-  if status[:all_done]
-    # Auto-mark satisfaction when all 5 categories complete
-    # (research_tracker tracks this but process_enforcer wasn't triggered for MCP tools)
+  # Check if research was done via Task agents (the only valid way now)
+  if research_done_via_tasks?
     mark_satisfied(:research)
-    warn '✅ Research: All 5 categories complete - now satisfied'
+    warn '✅ Research: All 5 Task agents complete - research satisfied'
   else
-    # Allow research tools through - they're being tracked by research_tracker
-    research_tools = %w[Read Grep Glob WebFetch WebSearch Task]
-    is_doing_research = research_tools.include?(tool_name) || tool_name.start_with?('mcp__')
+    status = research_status
+    done_via_task = status[:done].count { |cat| load_research_progress.dig(cat, :via_task) }
+    missing_names = status[:missing].map { |c| RESEARCH_CATEGORIES[c][:name] }
+    not_via_task = status[:done].reject { |cat| load_research_progress.dig(cat, :via_task) }
 
-    unless is_doing_research
-      missing_names = status[:missing].map { |c| RESEARCH_CATEGORIES[c][:name] }
-      missing_keys = status[:missing].map(&:to_s)
-      done_count = status[:done].length
-
-      blocks << {
-        rule: 'RESEARCH_FIRST',
-        message: "#{done_count}/5 research categories complete. Missing: #{missing_names.join(', ')}",
-        fix: "Complete ALL 5: Memory, Docs, Web, Local, GitHub. Track competing hypotheses with confidence levels as you go. If output is not applicable, TRY FIRST then ask user: 'skip #{missing_keys.first}'"
-      }
+    # Build the fix message
+    fix_parts = []
+    fix_parts << "Spawn 5 Task agents in parallel for research" if done_via_task < 5
+    fix_parts << "Missing: #{missing_names.join(', ')}" if missing_names.any?
+    if not_via_task.any?
+      fix_parts << "NOT via Task: #{not_via_task.map { |c| RESEARCH_CATEGORIES[c][:name] }.join(', ')}"
     end
+
+    blocks << {
+      rule: 'RESEARCH_FIRST_VIA_TASKS',
+      message: "#{done_via_task}/5 research Task agents complete. Must use Task agents, not individual tools.",
+      fix: fix_parts.join('. ') + ". Example: Task(subagent_type='general-purpose', prompt='Search memory for...')"
+    }
   end
 end
 
