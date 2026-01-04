@@ -41,6 +41,9 @@ SUMMARY_VALIDATED_FILE = File.join(PROJECT_DIR, '.claude/summary_validated.json'
 # Session summary required after this many edits
 SUMMARY_REQUIRED_AFTER_EDITS = 25
 
+# Significant task threshold - require plan/SaneLoop after this many unique files
+SIGNIFICANT_TASK_THRESHOLD = 3
+
 # 5 mandatory research categories - ALL must be satisfied
 RESEARCH_CATEGORIES = {
   memory: {
@@ -227,6 +230,21 @@ def edits_since_summary
   edit_state[:edit_count] || 0
 rescue StandardError
   0
+end
+
+def unique_files_edited
+  return 0 unless File.exist?(EDIT_STATE_FILE)
+
+  edit_state = JSON.parse(File.read(EDIT_STATE_FILE), symbolize_names: true)
+  files = edit_state[:unique_files] || edit_state['unique_files'] || []
+  files.length
+rescue StandardError
+  0
+end
+
+def significant_task_detected?
+  # Returns true if 3+ unique files edited without plan/saneloop already active
+  unique_files_edited >= SIGNIFICANT_TASK_THRESHOLD
 end
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -471,6 +489,22 @@ if requested.include?('saneloop') && !saneloop_active?
     message: 'User requested SaneLoop but none is active.',
     fix: 'Run: ./Scripts/SaneMaster.rb saneloop start "task" --criteria "..." --promise "..."'
   }
+end
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CHECK 1.2: SIGNIFICANT TASK DETECTION (3+ unique files = needs plan/SaneLoop)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Auto-detect significant multi-file work that should have been planned
+if %w[Edit Write].include?(tool_name)
+  if significant_task_detected? && !saneloop_active? && !is_satisfied?(:plan)
+    file_count = unique_files_edited
+    blocks << {
+      rule: 'SIGNIFICANT_TASK_DETECTED',
+      message: "#{file_count} unique files edited without plan or SaneLoop. This is significant work.",
+      fix: 'Either: 1) Show a plan for user approval, OR 2) Start SaneLoop with: ./Scripts/SaneMaster.rb saneloop start "task"'
+    }
+  end
 end
 
 # ═══════════════════════════════════════════════════════════════════════════════

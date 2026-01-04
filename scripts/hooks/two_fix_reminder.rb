@@ -33,13 +33,23 @@ state_dir = File.dirname(state_file)
 FileUtils.mkdir_p(state_dir)
 
 # Load state
-state = File.exist?(state_file) ? JSON.parse(File.read(state_file)) : { 'edit_count' => 0, 'session' => nil }
+default_state = { 'edit_count' => 0, 'session' => nil, 'unique_files' => [] }
+state = File.exist?(state_file) ? JSON.parse(File.read(state_file)) : default_state
 
 # Reset counter if new session
-state = { 'edit_count' => 0, 'session' => session_id } if state['session'] != session_id
+state = { 'edit_count' => 0, 'session' => session_id, 'unique_files' => [] } if state['session'] != session_id
+
+# Ensure unique_files exists (for backwards compatibility)
+state['unique_files'] ||= []
 
 # Increment edit count
 state['edit_count'] += 1
+
+# Track unique files edited
+normalized_path = File.expand_path(file_path) if file_path && !file_path.empty?
+if normalized_path && !state['unique_files'].include?(normalized_path)
+  state['unique_files'] << normalized_path
+end
 
 # Save state
 File.write(state_file, JSON.pretty_generate(state))
