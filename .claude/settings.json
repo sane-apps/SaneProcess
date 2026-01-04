@@ -422,6 +422,17 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/stop_validator.rb",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }
