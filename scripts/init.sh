@@ -169,6 +169,7 @@ HOOKS=(
     "pattern_learner.rb"
     "process_enforcer.rb"
     "research_tracker.rb"
+    "state_signer.rb"
 )
 
 for hook in "${HOOKS[@]}"; do
