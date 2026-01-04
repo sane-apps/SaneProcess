@@ -6,3 +6,14 @@
 
 # Local testing
 test-project/
+
+# Claude runtime state
+.claude/enforcement_breaker.json
+.claude/saneloop-state.json
+.claude/edit_count.json
+.claude/tool_count.json
+.claude/read_history.json
+.claude/recent_actions.json
+.claude/compliance_streak.json
+.claude/user_patterns.json
+.claude/*.jsonl
