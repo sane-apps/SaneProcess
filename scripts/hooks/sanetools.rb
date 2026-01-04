@@ -633,8 +633,7 @@ def self_test
     warn "  FAIL: Empty input should return exit 0, got #{status.exitstatus}"
   end
 
-  # === CLEANUP: Reset state so other tests can run ===
-  StateManager.reset(:research)
+  # === CLEANUP: Reset circuit breaker only (don't reset research - breaks normal ops) ===
   StateManager.reset(:circuit_breaker)
   StateManager.update(:enforcement) do |e|
     e[:halted] = false

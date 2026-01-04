@@ -519,11 +519,9 @@ def self_test
     warn "  FAIL: MCP success should return nil, got #{result}"
   end
 
-  # === CLEANUP: Reset state so other tests can run ===
-  StateManager.reset(:edits)
+  # === CLEANUP: Reset circuit breaker only (don't reset research - breaks normal ops) ===
   StateManager.reset(:circuit_breaker)
   StateManager.update(:enforcement) { |e| e[:halted] = false; e[:blocks] = []; e }
-  StateManager.update(:action_log) { |_| [] }
 
   warn ''
   warn "#{passed}/#{passed + failed} tests passed"
