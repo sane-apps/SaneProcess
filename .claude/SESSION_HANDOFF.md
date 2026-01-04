@@ -1,4 +1,30 @@
-## Session Summary
+## Next Session: Build SanePrompt
+
+### Immediate Action
+```bash
+./scripts/SaneMaster.rb saneloop start "Build SanePrompt orchestration system"
+```
+
+### Context
+- Full spec at: `.claude/architecture/SANEPROMPT_SPEC.md`
+- Hook consolidation COMPLETE (committed 0cf7fed)
+- 18/18 tests passing
+
+### First Steps
+1. Fix table rule in `~/.claude/hooks/edit_validator.rb` (allow tables in docs)
+2. Read the 6 key files listed in spec
+3. Create `scripts/hooks/core/saneprompt_engine.rb`
+
+### What SanePrompt Does
+- Transforms vague user prompts into structured plans
+- Maps Golden Rules before work begins
+- Offers execution modes: Autonomous / Phase-by-phase / Supervised
+- Each phase gets research burst + self-rating + checkpoint
+- Detects gaming patterns in audit logs
+
+---
+
+## Previous Session Summary
 
 ### What Was Done
 1. Implemented session start cleanup - clears stale satisfaction files on new session (session_start.rb:97-115)
