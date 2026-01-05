@@ -37,18 +37,55 @@ MEMORY_TOOLS = %w[mcp__memory__read_graph mcp__memory__search_nodes].freeze
 
 # === INTELLIGENCE: Bootstrap Whitelist ===
 # These tools ALWAYS allowed to prevent circular blocking (e.g., can't research because research is blocked)
-# Pre-compiled Regexp.union for O(1) matching
+#
+# CRITICAL: Categorize by DAMAGE POTENTIAL, not by name!
+#   - Read-only: No damage possible → always allow
+#   - Local mutation: Affects this project → require research
+#   - Global mutation: Affects ALL projects (MCP memory) → require research
+#   - External mutation: Affects outside systems (GitHub) → require research
+#
+# Learned from LIVE FAILURE: Claude nuked global MCP memory without understanding
+# it's shared across all projects. Only READ-ONLY operations are bootstrap tools.
 BOOTSTRAP_TOOL_PATTERN = Regexp.union(
-  /^mcp__memory__/,        # All memory MCP
-  /^Read$/,                # Reading files
-  /^Grep$/,                # Searching content
-  /^Glob$/,                # Finding files
-  /^WebSearch$/,           # Web search
-  /^WebFetch$/,            # Fetching URLs
-  /^mcp__apple-docs__/,    # Apple docs
-  /^mcp__context7__/,      # Context7 docs
-  /^mcp__github__/,        # GitHub MCP
-  /^Task$/                 # Task agents (for research)
+  # Read-only memory ops (global but safe)
+  /^mcp__memory__read_graph$/,
+  /^mcp__memory__search_nodes$/,
+  /^mcp__memory__open_nodes$/,
+  # Read-only local ops
+  /^Read$/,
+  /^Grep$/,
+  /^Glob$/,
+  # Read-only web ops
+  /^WebSearch$/,
+  /^WebFetch$/,
+  # Read-only doc ops
+  /^mcp__apple-docs__/,
+  /^mcp__context7__/,
+  # Read-only GitHub ops (search, get, list)
+  /^mcp__github__search_/,
+  /^mcp__github__get_/,
+  /^mcp__github__list_/,
+  # Task agents (for research delegation)
+  /^Task$/
+).freeze
+
+# === MUTATION PATTERNS (require research) ===
+
+# Global mutations - affect ALL projects via shared MCP memory
+GLOBAL_MUTATION_PATTERN = Regexp.union(
+  /^mcp__memory__delete_/,
+  /^mcp__memory__create_/,
+  /^mcp__memory__add_/
+).freeze
+
+# External mutations - affect systems outside this project
+EXTERNAL_MUTATION_PATTERN = Regexp.union(
+  /^mcp__github__create_/,      # create_issue, create_pr, create_branch, create_repository
+  /^mcp__github__push_/,        # push_files
+  /^mcp__github__update_/,      # update_issue, update_pull_request_branch
+  /^mcp__github__merge_/,       # merge_pull_request
+  /^mcp__github__fork_/,        # fork_repository
+  /^mcp__github__add_/          # add_issue_comment
 ).freeze
 
 # === INTELLIGENCE: Requirement Satisfaction ===
@@ -333,6 +370,38 @@ def check_research_before_edit(tool_name, tool_input)
   "Use Task agents for each category."
 end
 
+# === MUTATION CHECKS (global & external) ===
+
+def check_global_mutations(tool_name, _tool_input)
+  return nil unless tool_name.match?(GLOBAL_MUTATION_PATTERN)
+
+  research = StateManager.get(:research)
+  complete = research_complete?(research)
+
+  return nil if complete
+
+  missing = research_missing(research)
+  "GLOBAL MUTATION BLOCKED\n" \
+  "Tool '#{tool_name}' affects ALL projects (MCP memory is shared).\n" \
+  "Complete research first. Missing: #{missing.join(', ')}\n" \
+  "Use mcp__memory__read_graph to understand current state before mutating."
+end
+
+def check_external_mutations(tool_name, _tool_input)
+  return nil unless tool_name.match?(EXTERNAL_MUTATION_PATTERN)
+
+  research = StateManager.get(:research)
+  complete = research_complete?(research)
+
+  return nil if complete
+
+  missing = research_missing(research)
+  "EXTERNAL MUTATION BLOCKED\n" \
+  "Tool '#{tool_name}' affects external systems (GitHub).\n" \
+  "Complete research first. Missing: #{missing.join(', ')}\n" \
+  "Use mcp__github__get_* or mcp__github__list_* to understand state first."
+end
+
 def research_complete?(research)
   RESEARCH_CATEGORIES.keys.all? { |cat| research[cat] }
 end
@@ -455,6 +524,20 @@ def process_tool(tool_name, tool_input)
 
   # Check research before edit
   if (reason = check_research_before_edit(tool_name, tool_input))
+    log_action(tool_name, true, reason)
+    output_block(reason)
+    return 2
+  end
+
+  # Check global mutations (MCP memory affects ALL projects)
+  if (reason = check_global_mutations(tool_name, tool_input))
+    log_action(tool_name, true, reason)
+    output_block(reason)
+    return 2
+  end
+
+  # Check external mutations (GitHub affects outside systems)
+  if (reason = check_external_mutations(tool_name, tool_input))
     log_action(tool_name, true, reason)
     output_block(reason)
     return 2

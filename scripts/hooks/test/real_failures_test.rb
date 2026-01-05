@@ -93,6 +93,81 @@ puts "#{RED}╚═════════════════════�
 
 begin
   # ==========================================================================
+  section("PATTERN 0: Destructive MCP ops without research")
+  # From: LIVE FAILURE - Claude nuked SaneVideo memory without understanding
+  # that MCP memory is globally shared across projects
+  # ==========================================================================
+
+  reset_state!
+
+  # These are DESTRUCTIVE - should require research first
+  test("mcp__memory__delete_entities without research", true, SANETOOLS,
+    { 'tool_name' => 'mcp__memory__delete_entities', 'tool_input' => { 'entityNames' => ['foo'] } })
+
+  test("mcp__memory__delete_observations without research", true, SANETOOLS,
+    { 'tool_name' => 'mcp__memory__delete_observations', 'tool_input' => { 'deletions' => [] } })
+
+  test("mcp__memory__delete_relations without research", true, SANETOOLS,
+    { 'tool_name' => 'mcp__memory__delete_relations', 'tool_input' => { 'relations' => [] } })
+
+  # These are MUTATIONS - should also require research
+  test("mcp__memory__create_entities without research", true, SANETOOLS,
+    { 'tool_name' => 'mcp__memory__create_entities', 'tool_input' => { 'entities' => [] } })
+
+  test("mcp__memory__create_relations without research", true, SANETOOLS,
+    { 'tool_name' => 'mcp__memory__create_relations', 'tool_input' => { 'relations' => [] } })
+
+  test("mcp__memory__add_observations without research", true, SANETOOLS,
+    { 'tool_name' => 'mcp__memory__add_observations', 'tool_input' => { 'observations' => [] } })
+
+  # These are READ-ONLY - should be allowed (bootstrap tools)
+  test("mcp__memory__read_graph allowed (research tool)", false, SANETOOLS,
+    { 'tool_name' => 'mcp__memory__read_graph', 'tool_input' => {} })
+
+  test("mcp__memory__search_nodes allowed (research tool)", false, SANETOOLS,
+    { 'tool_name' => 'mcp__memory__search_nodes', 'tool_input' => { 'query' => 'test' } })
+
+  test("mcp__memory__open_nodes allowed (research tool)", false, SANETOOLS,
+    { 'tool_name' => 'mcp__memory__open_nodes', 'tool_input' => { 'names' => ['test'] } })
+
+  # ==========================================================================
+  section("PATTERN 0.5: External mutations (GitHub) without research")
+  # Applying the broader lesson: categorize by DAMAGE POTENTIAL
+  # GitHub mutations affect external systems - require research first
+  # ==========================================================================
+
+  reset_state!
+
+  # These are MUTATIONS - should require research first
+  test("mcp__github__create_issue without research", true, SANETOOLS,
+    { 'tool_name' => 'mcp__github__create_issue', 'tool_input' => { 'owner' => 'x', 'repo' => 'y', 'title' => 'z' } })
+
+  test("mcp__github__create_pull_request without research", true, SANETOOLS,
+    { 'tool_name' => 'mcp__github__create_pull_request', 'tool_input' => { 'owner' => 'x', 'repo' => 'y', 'title' => 'z', 'head' => 'a', 'base' => 'b' } })
+
+  test("mcp__github__push_files without research", true, SANETOOLS,
+    { 'tool_name' => 'mcp__github__push_files', 'tool_input' => { 'owner' => 'x', 'repo' => 'y', 'files' => [], 'message' => 'z', 'branch' => 'b' } })
+
+  test("mcp__github__merge_pull_request without research", true, SANETOOLS,
+    { 'tool_name' => 'mcp__github__merge_pull_request', 'tool_input' => { 'owner' => 'x', 'repo' => 'y', 'pull_number' => 1 } })
+
+  test("mcp__github__add_issue_comment without research", true, SANETOOLS,
+    { 'tool_name' => 'mcp__github__add_issue_comment', 'tool_input' => { 'owner' => 'x', 'repo' => 'y', 'issue_number' => 1, 'body' => 'z' } })
+
+  test("mcp__github__fork_repository without research", true, SANETOOLS,
+    { 'tool_name' => 'mcp__github__fork_repository', 'tool_input' => { 'owner' => 'x', 'repo' => 'y' } })
+
+  # These are READ-ONLY - should be allowed (bootstrap tools)
+  test("mcp__github__search_code allowed (research tool)", false, SANETOOLS,
+    { 'tool_name' => 'mcp__github__search_code', 'tool_input' => { 'q' => 'test' } })
+
+  test("mcp__github__get_issue allowed (research tool)", false, SANETOOLS,
+    { 'tool_name' => 'mcp__github__get_issue', 'tool_input' => { 'owner' => 'x', 'repo' => 'y', 'issue_number' => 1 } })
+
+  test("mcp__github__list_issues allowed (research tool)", false, SANETOOLS,
+    { 'tool_name' => 'mcp__github__list_issues', 'tool_input' => { 'owner' => 'x', 'repo' => 'y' } })
+
+  # ==========================================================================
   section("PATTERN 1: Ignoring prompts - jumping straight to edit")
   # From: PRIME_DIRECTIVE entity, frustration_count: 17
   # ==========================================================================
