@@ -4,7 +4,7 @@
 
 **SaneProcess** is a battle-tested SOP (Standard Operating Procedure) enforcement framework for AI-assisted development with Claude Code. It provides:
 
-- **13 Golden Rules** for AI discipline and reliable code delivery
+- **16 Golden Rules** for AI discipline and reliable code delivery
 - **Circuit breaker** pattern to prevent repeated errors and wasted time
 - **Memory system** for cross-session bug pattern persistence
 - **Hook architecture** for automated compliance enforcement
@@ -109,7 +109,7 @@ ruby scripts/license_gen.rb --validate SP-XXXX-...  # Validate key
 ### Never Do This
 
 1. **Never modify .claude/state.json directly** - Always use state_manager.rb
-2. **Never break the 13 Golden Rules** - They're the product's core value
+2. **Never break the 16 Golden Rules** - They're the product's core value
 3. **Never write files outside the project** - Respect #1: STAY IN YOUR LANE
 4. **Never remove tests** - Only add or update them
 5. **Never use raw build commands** - Always use project tools (./Scripts/SaneMaster.rb)
@@ -137,7 +137,7 @@ All components use the **Sane** prefix for brand consistency:
 
 When adding new components, follow this naming pattern.
 
-## The 13 Golden Rules (Reference)
+## The 16 Golden Rules (Reference)
 
 These are the product's core value proposition. Never modify their numbering or core meaning:
 
@@ -155,6 +155,9 @@ These are the product's core value proposition. Never modify their numbering or 
 #10 FIVE HUNDRED'S FINE, EIGHT'S THE LINE
 #11 TOOL BROKE? FIX THE YOKE
 #12 TALK WHILE I WALK (stay responsive)
+#13 CONTEXT OR CHAOS (maintain CLAUDE.md)
+#14 PROMPT LIKE A PRO (specific prompts)
+#15 REVIEW BEFORE YOU SHIP (self-review)
 ```
 
 ## Hook Architecture Principles
@@ -243,7 +246,7 @@ When adding features or fixing bugs, check if the change should be propagated to
 While this is a commercial product, contributions should:
 
 1. **Maintain the existing architecture** - Don't introduce new paradigms without discussion
-2. **Follow the 13 Golden Rules** - Practice what we preach
+2. **Follow the 16 Golden Rules** - Practice what we preach
 3. **Add tests for new features** - Maintain test coverage
 4. **Update documentation** - Code without docs is incomplete
 5. **Preserve user workflows** - Don't break existing commands or patterns
