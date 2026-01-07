@@ -20,11 +20,12 @@ SaneProcess enforces discipline through:
 
 | Feature | What It Does |
 |---------|--------------|
-| **13 Golden Rules** | Memorable, enforceable rules for AI discipline |
+| **16 Golden Rules** | Memorable, enforceable rules for AI discipline |
 | **Circuit Breaker** | Auto-stops after 3 same errors or 5 total failures |
 | **Memory System** | Bug patterns persist across sessions |
 | **Compliance Loop** | Enforced task completion with verification |
 | **Self-Rating** | Accountability after every task |
+| **AI Self-Review** | Mandatory code review before shipping (Rule #15) |
 
 ## What's Included
 
@@ -197,7 +198,7 @@ This installs:
 - 6 pattern-based rules
 - Claude Code settings with hook registration
 - MCP server configuration
-- DEVELOPMENT.md with the 13 Golden Rules
+- DEVELOPMENT.md with the 16 Golden Rules
 
 ---
 
@@ -205,7 +206,7 @@ This installs:
 
 You can view the full source code here. To use it in your projects, purchase a license.
 
-**Quick look at the 13 Golden Rules:**
+**Quick look at the 16 Golden Rules:**
 
 ```
 #0  NAME THE RULE BEFORE YOU CODE
@@ -221,6 +222,9 @@ You can view the full source code here. To use it in your projects, purchase a l
 #10 FIVE HUNDRED'S FINE, EIGHT'S THE LINE
 #11 TOOL BROKE? FIX THE YOKE
 #12 TALK WHILE I WALK (stay responsive)
+#13 CONTEXT OR CHAOS (maintain CLAUDE.md)
+#14 PROMPT LIKE A PRO (specific prompts)
+#15 REVIEW BEFORE YOU SHIP (self-review)
 ```
 
 ---

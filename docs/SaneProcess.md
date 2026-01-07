@@ -1,6 +1,6 @@
 # SaneProcess
 
-**Version 2.2** | January 2026
+**Version 2.4** | January 2026
 
 ---
 
@@ -34,7 +34,7 @@ This is a **process framework** with three layers:
 
 | Layer | What It Is | Transferable? |
 |-------|-----------|---------------|
-| **1. The Rules** | 13 Golden Rules + workflows + research protocol | ✅ Yes - copy this document |
+| **1. The Rules** | 16 Golden Rules + workflows + research protocol | ✅ Yes - copy this document |
 | **2. The Tooling** | CLI automation (SaneMaster.rb or equivalent) | ⚠️ Adapt - needs project setup |
 | **3. The Enforcement** | Claude Code hooks + MCP servers | ⚠️ Adapt - config files provided |
 
@@ -498,6 +498,69 @@ User talks, you listen, work continues uninterrupted.
 
 ---
 
+## Rule #13: CONTEXT OR CHAOS
+
+✅ DO: Maintain and update CLAUDE.md context file in project root
+❌ DON'T: Start sessions without loading context or updating it with learnings
+
+```
+🟢 RIGHT: Load CLAUDE.md at session start, update with new patterns
+🟢 RIGHT: Add discovered APIs, gotchas, and commands to context file
+🔴 WRONG: "I'll remember this pattern for next session"
+🔴 WRONG: Starting work without checking existing context
+```
+
+**Context File Requirements:**
+- **Location**: Project root as `CLAUDE.md` or `.claude/CONTEXT.md`
+- **Contents**: Build commands, code styles, testing instructions, env setup
+- **Updates**: Add new learnings during sessions with `# key` notation
+- **Auto-generate**: Use `/init` command to create initial context files
+
+---
+
+## Rule #14: PROMPT LIKE A PRO
+
+✅ DO: Write specific, structured prompts with context and constraints
+❌ DON'T: Use vague or ambiguous instructions
+
+```
+🟢 RIGHT: "Write a test for logout edge case, no mocks, use existing test patterns"
+🟢 RIGHT: "Fix bug in StateManager.swift:250 - pipeline misses change event"
+🔴 WRONG: "Make it work"
+🔴 WRONG: "Add a feature like the other one"
+```
+
+**Prompt Engineering Checklist:**
+- Include file paths and line numbers when referencing code
+- Specify constraints (no mocks, use existing patterns, stay under 500 lines)
+- Use emphasis words like "IMPORTANT" or "YOU MUST" for critical rules
+- Ask for plans before implementation: "Outline steps first"
+- Include desired outcome format or examples
+
+---
+
+## Rule #15: REVIEW BEFORE YOU SHIP
+
+✅ DO: Self-review code for mistakes before claiming done
+❌ DON'T: Blindly trust generated code without verification
+
+```
+🟢 RIGHT: "Before shipping, reviewing for: security, performance, edge cases"
+🟢 RIGHT: "Cross-checking with secondary approach for stubborn bugs"
+🔴 WRONG: "Code compiles, must be correct"
+🔴 WRONG: "Tests pass, no need to review"
+```
+
+**Self-Review Checklist:**
+- [ ] Logic is correct for all edge cases
+- [ ] No security vulnerabilities introduced
+- [ ] Performance is reasonable (no O(n²) in hot paths)
+- [ ] Code follows project patterns and style
+- [ ] Error handling is comprehensive
+- [ ] Changes align with codebase architecture
+
+---
+
 ## Session Summary (MANDATORY)
 
 Every session ends with this exact format:
@@ -538,6 +601,21 @@ Every session ends with this exact format:
 🔴 WRONG: Rating yourself on "did I finish the task"
 🟢 RIGHT: Rating yourself on "did I follow the rules while doing the task"
 
+### AI Usage Self-Rating (Add to Session Summary)
+
+Rate your AI workflow discipline separately:
+
+| Criteria | ✅ or ❌ |
+|----------|--------|
+| Used progressive prompting (plan first, then implement) | |
+| Verified APIs before using (Rule #2) | |
+| Self-reviewed code before claiming done (Rule #15) | |
+| Updated context file with new learnings (Rule #13) | |
+| Used specific prompts with constraints (Rule #14) | |
+| Stopped at 2 failures and researched (Rule #3) | |
+
+**Target: 5/6 or better for AI-native development.**
+
 ---
 
 # 2A. THIS HAS BURNED YOU
@@ -553,7 +631,11 @@ Real failures from past sessions. Don't repeat them.
 | **Wrong build path** | Built to `./build`, launched from `DerivedData` | Verify paths match |
 | **Skimmed the SOP** | Missed obvious rule, 5/10 session | Read and internalize rules |
 | **Trusted web search** | Stack Overflow said use `.preferredCamera`. API doesn't exist. | SDK is source of truth |
-| **No regression test2** | Fixed bug, shipped, bug came back 2 weeks later | Every fix gets a test (Rule #7) |
+| **No regression test** | Fixed bug, shipped, bug came back 2 weeks later | Every fix gets a test (Rule #7) |
+| **AI hallucinated API** | Generated code using non-existent method signature | Verify with SDK before using (Rule #2) |
+| **No context file** | Repeated same mistakes across sessions | Maintain CLAUDE.md (Rule #13) |
+| **Vague prompt** | "Fix it" led to 3 wrong approaches | Be specific with constraints (Rule #14) |
+| **Skipped self-review** | Security vulnerability in generated code shipped | Review before ship (Rule #15) |
 
 **The #1 differentiator**: Skimming this SOP = 5/10 sessions. Internalizing it = 8+/10.
 
@@ -603,8 +685,36 @@ Approve?
   - Add `reload()` call
   - Run full cycle
 
+[Rule #15: REVIEW BEFORE YOU SHIP] - Self-review:
+  - Check edge cases
+  - Verify no security issues
+  - Confirm code follows patterns
+
 Approve?
 ```
+
+### Prompt Refinement (Optional but Recommended)
+
+For complex tasks, document your prompt iteration:
+
+```
+## Prompt Refinement
+
+### Initial Prompt
+"Fix the button bug"
+
+### Refined Prompt (after clarification)
+"Fix button in StateManager.swift:250 that stays stuck after action.
+IMPORTANT: Use existing reload() pattern, add regression test, no mocks.
+Expected: Button resets to default state after 100ms delay."
+
+### Expected Output
+- Test file: Tests/Regression/ButtonResetTests.swift
+- Fix in: StateManager.swift:254
+- Pattern: Same as CameraManager reload pattern
+```
+
+This prevents prompt ambiguity and creates audit trail for iterations.
 
 ---
 
@@ -685,6 +795,37 @@ When investigating unfamiliar APIs, frameworks, or patterns:
 - Using unfamiliar API → Check docs first
 - 2 failed attempts → Stop and research (Rule #3)
 - User says "research" or "investigate" → Full protocol
+
+## AI-Specific Research Patterns
+
+### Ask for Plans First (Before Implementation)
+
+```
+🟢 RIGHT: "Before implementing, outline the steps you'll take"
+🟢 RIGHT: "What's your approach? List steps, then I'll approve"
+🔴 WRONG: "Just implement it" (skips planning)
+```
+
+### Use Subagents for Parallel Research
+
+When debugging stubborn issues:
+1. Spawn research subagent to investigate docs
+2. Continue main work while research completes
+3. Integrate findings when ready
+
+### Cross-Check with Secondary AI
+
+For critical bugs or security concerns:
+- Use different model (GPT-4, Gemini) as "second opinion"
+- Compare approaches before implementing
+- Document disagreements in research notes
+
+### Clear Context When Drifting
+
+Use `/clear` command if:
+- Session exceeds 30+ minutes on same issue
+- AI suggestions become repetitive
+- Context pollution from unrelated topics
 
 ---
 
@@ -1183,6 +1324,9 @@ killall -9 <app-name>
 │   #10 FIVE HUNDRED'S FINE, EIGHT'S THE LINE                │
 │   #11 TOOL BROKE? FIX THE YOKE                             │
 │   #12 TALK WHILE I WALK (subagents)                        │
+│   #13 CONTEXT OR CHAOS (maintain CLAUDE.md)                │
+│   #14 PROMPT LIKE A PRO (specific prompts)                 │
+│   #15 REVIEW BEFORE YOU SHIP (self-review)                 │
 ├────────────────────────────────────────────────────────────┤
 │ RESEARCH ORDER                                             │
 │   1. apple-docs MCP (Apple APIs)                           │
@@ -1210,4 +1354,4 @@ killall -9 <app-name>
 
 ---
 
-*SaneProcess v2.3 - Universal Development Operations Manual*
+*SaneProcess v2.4 - Universal Development Operations Manual*

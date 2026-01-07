@@ -114,7 +114,7 @@ Real failures from past sessions. Don't repeat them.
 
 ## Golden Rules Reference
 
-See the full [SaneProcess documentation](./SaneProcess.md) for the complete 13 Golden Rules.
+See the full [SaneProcess documentation](./SaneProcess.md) for the complete 16 Golden Rules.
 
 **Quick reminder:**
 - #0: NAME THE RULE BEFORE YOU CODE

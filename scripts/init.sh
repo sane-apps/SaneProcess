@@ -6,7 +6,7 @@
 # Usage:
 #   curl -sL https://raw.githubusercontent.com/stephanjoseph/SaneProcess/main/scripts/init.sh | bash
 #
-# Version 2.3 - January 2026
+# Version 2.4 - January 2026
 # Copyright (c) 2026 Stephan Joseph. All Rights Reserved.
 # License required for use: stephanjoseph2007@gmail.com
 #
@@ -80,7 +80,7 @@ validate_license
 
 echo ""
 echo -e "${BLUE}╔═══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║${NC}              ${GREEN}SaneProcess v2.3 Installation${NC}                    ${BLUE}║${NC}"
+echo -e "${BLUE}║${NC}              ${GREEN}SaneProcess v2.4 Installation${NC}                    ${BLUE}║${NC}"
 echo -e "${BLUE}╚═══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -451,7 +451,7 @@ if [ ! -f "DEVELOPMENT.md" ]; then
 
 This project uses **SaneProcess** for Claude Code SOP enforcement.
 
-## The 13 Golden Rules
+## The 16 Golden Rules
 
 ```
 #0  NAME THE RULE BEFORE YOU CODE
@@ -467,6 +467,9 @@ This project uses **SaneProcess** for Claude Code SOP enforcement.
 #10 FIVE HUNDRED'S FINE, EIGHT'S THE LINE
 #11 TOOL BROKE? FIX THE YOKE
 #12 TALK WHILE I WALK (stay responsive)
+#13 CONTEXT OR CHAOS (maintain CLAUDE.md)
+#14 PROMPT LIKE A PRO (specific prompts)
+#15 REVIEW BEFORE YOU SHIP (self-review)
 ```
 
 ## Installed Hooks
@@ -491,6 +494,17 @@ After every task, Claude should rate 1-10:
 | 7-8 | Minor miss |
 | 5-6 | Notable gaps |
 | 1-4 | Multiple violations |
+
+## AI Usage Self-Rating
+
+| Criteria | ✅ or ❌ |
+|----------|--------|
+| Used progressive prompting (plan first) | |
+| Verified APIs before using | |
+| Self-reviewed code before done | |
+| Updated context file with learnings | |
+| Used specific prompts with constraints | |
+| Stopped at 2 failures and researched | |
 
 ## More Info
 
@@ -565,7 +579,7 @@ echo ""
 echo -e "${BLUE}Next steps:${NC}"
 echo "   1. Run: ${GREEN}claude${NC}"
 echo "   2. Hooks activate automatically"
-echo "   3. See DEVELOPMENT.md for the 13 Golden Rules"
+echo "   3. See DEVELOPMENT.md for the 16 Golden Rules"
 echo ""
 echo -e "${BLUE}SaneMaster commands:${NC}"
 echo "   ./Scripts/SaneMaster.rb verify      # Build, test, lint"

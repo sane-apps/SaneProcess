@@ -62,7 +62,7 @@ class SaneProcessQA
   # All hook files that should exist
   ALL_HOOK_FILES = (EXPECTED_HOOKS + SHARED_MODULES).freeze
 
-  EXPECTED_RULE_COUNT = 13
+  EXPECTED_RULE_COUNT = 16
 
   SANEMASTER_CLI = File.join(__dir__, 'SaneMaster.rb')
   SANEMASTER_DIR = File.join(__dir__, 'sanemaster')
@@ -365,7 +365,7 @@ class SaneProcessQA
 
     content = File.read(SOP_DOC)
 
-    # Look for "13 Golden Rules" or "11 Golden Rules"
+    # Look for "16 Golden Rules" or "13 Golden Rules"
     rule_counts = content.scan(/(\d+)\s+Golden Rules?/i).flatten.map(&:to_i)
 
     if rule_counts.empty?
