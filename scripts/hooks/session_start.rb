@@ -337,9 +337,12 @@ begin
   log_debug "show_mcp_verification_status done"
 
   # Output JSON to stdout for Claude Code to inject into context
-  # This is what makes SessionStart a "success" vs "error" in Claude Code
+  # Must use hookSpecificOutput format for SessionStart hooks
   result = {
-    additionalContext: build_session_context
+    hookSpecificOutput: {
+      hookEventName: 'SessionStart',
+      additionalContext: build_session_context
+    }
   }
   puts JSON.generate(result)
   log_debug "JSON output written - SUCCESS"
@@ -348,7 +351,12 @@ rescue StandardError => e
   log_debug e.backtrace&.first(5)&.join("\n") || "No backtrace"
   warn "⚠️  Session start error: #{e.message}"
   # Still output valid JSON even on error so Claude Code doesn't show "error"
-  puts JSON.generate({ additionalContext: "Session start encountered an error: #{e.message}" })
+  puts JSON.generate({
+    hookSpecificOutput: {
+      hookEventName: 'SessionStart',
+      additionalContext: "Session start encountered an error: #{e.message}"
+    }
+  })
 end
 
 exit 0
