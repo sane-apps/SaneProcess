@@ -30,33 +30,21 @@ class SaneProcessQA
   HOOKS_README = File.join(__dir__, 'hooks', 'README.md')
   SETTINGS_JSON = File.join(__dir__, '..', '.claude', 'settings.json')
 
-  # Hooks that get registered in settings.json
+  # Main hooks that get registered in settings.json (4-hook architecture)
   EXPECTED_HOOKS = %w[
-    circuit_breaker.rb
-    edit_validator.rb
-    failure_tracker.rb
-    test_quality_checker.rb
-    path_rules.rb
+    saneprompt.rb
+    sanetools.rb
+    sanetrack.rb
+    sanestop.rb
     session_start.rb
-    audit_logger.rb
-    sop_mapper.rb
-    two_fix_reminder.rb
-    verify_reminder.rb
-    version_mismatch.rb
-    deeper_look_trigger.rb
-    skill_validator.rb
-    saneloop_enforcer.rb
-    session_summary_validator.rb
-    prompt_analyzer.rb
-    pattern_learner.rb
-    process_enforcer.rb
-    research_tracker.rb
   ].freeze
 
   # Shared modules that hooks require (not registered, but must exist)
   SHARED_MODULES = %w[
     rule_tracker.rb
     state_signer.rb
+    sanetools_checks.rb
+    saneprompt_intelligence.rb
   ].freeze
 
   # All hook files that should exist
@@ -222,7 +210,7 @@ class SaneProcessQA
 
     # Extract all hook commands from settings.json
     registered_hooks = []
-    %w[UserPromptSubmit SessionStart PreToolUse PostToolUse].each do |hook_type|
+    %w[UserPromptSubmit SessionStart PreToolUse PostToolUse Stop].each do |hook_type|
       entries = hooks_section[hook_type] || []
       entries.each do |entry|
         hook_list = entry['hooks'] || []
@@ -509,7 +497,7 @@ class SaneProcessQA
   def run_hook_tests
     print "Running hook tests... "
 
-    test_file = File.join(HOOKS_DIR, 'test', 'hook_test.rb')
+    test_file = File.join(HOOKS_DIR, 'test', 'tier_tests.rb')
     unless File.exist?(test_file)
       @warnings << "Hook tests not found at #{test_file}"
       puts "⚠️  Tests not found"

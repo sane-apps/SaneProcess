@@ -148,27 +148,16 @@ echo ""
 
 echo "Downloading hooks from GitHub..."
 
+# 4-hook consolidated architecture (v2.4)
 HOOKS=(
-    "rule_tracker.rb"
-    "circuit_breaker.rb"
-    "edit_validator.rb"
-    "failure_tracker.rb"
-    "test_quality_checker.rb"
-    "path_rules.rb"
+    "saneprompt.rb"
+    "sanetools.rb"
+    "sanetrack.rb"
+    "sanestop.rb"
     "session_start.rb"
-    "audit_logger.rb"
-    "sop_mapper.rb"
-    "two_fix_reminder.rb"
-    "verify_reminder.rb"
-    "version_mismatch.rb"
-    "deeper_look_trigger.rb"
-    "skill_validator.rb"
-    "saneloop_enforcer.rb"
-    "session_summary_validator.rb"
-    "prompt_analyzer.rb"
-    "pattern_learner.rb"
-    "process_enforcer.rb"
-    "research_tracker.rb"
+    "sanetools_checks.rb"
+    "saneprompt_intelligence.rb"
+    "rule_tracker.rb"
     "state_signer.rb"
 )
 
@@ -276,81 +265,52 @@ cat > .claude/settings.json << 'EOF'
   "hooks": {
     "SessionStart": [
       {
-        "type": "command",
-        "command": "./Scripts/hooks/session_start.rb"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/Scripts/hooks/session_start.rb"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/Scripts/hooks/saneprompt.rb"
+          }
+        ]
       }
     ],
     "PreToolUse": [
       {
-        "type": "command",
-        "command": "./Scripts/hooks/circuit_breaker.rb",
-        "matchTools": ["Edit", "Bash", "Write"]
-      },
-      {
-        "type": "command",
-        "command": "./Scripts/hooks/edit_validator.rb",
-        "matchTools": ["Edit", "Write"]
-      },
-      {
-        "type": "command",
-        "command": "./Scripts/hooks/path_rules.rb",
-        "matchTools": ["Edit", "Write"]
-      },
-      {
-        "type": "command",
-        "command": "./Scripts/hooks/sop_mapper.rb",
-        "matchTools": ["Edit", "Write"]
-      },
-      {
-        "type": "command",
-        "command": "./Scripts/hooks/two_fix_reminder.rb",
-        "matchTools": ["Edit"]
-      },
-      {
-        "type": "command",
-        "command": "./Scripts/hooks/version_mismatch.rb",
-        "matchTools": ["Bash"]
-      },
-      {
-        "type": "command",
-        "command": "./Scripts/hooks/skill_validator.rb",
-        "matchTools": ["Skill"]
-      },
-      {
-        "type": "command",
-        "command": "./Scripts/hooks/saneloop_enforcer.rb",
-        "matchTools": ["Edit", "Write", "Bash"]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/Scripts/hooks/sanetools.rb"
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
-        "type": "command",
-        "command": "./Scripts/hooks/failure_tracker.rb",
-        "matchTools": ["Bash"]
-      },
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/Scripts/hooks/sanetrack.rb"
+          }
+        ]
+      }
+    ],
+    "Stop": [
       {
-        "type": "command",
-        "command": "./Scripts/hooks/test_quality_checker.rb",
-        "matchTools": ["Edit", "Write"]
-      },
-      {
-        "type": "command",
-        "command": "./Scripts/hooks/verify_reminder.rb",
-        "matchTools": ["Edit"]
-      },
-      {
-        "type": "command",
-        "command": "./Scripts/hooks/audit_logger.rb"
-      },
-      {
-        "type": "command",
-        "command": "./Scripts/hooks/deeper_look_trigger.rb",
-        "matchTools": ["Grep", "Glob", "Read"]
-      },
-      {
-        "type": "command",
-        "command": "./Scripts/hooks/session_summary_validator.rb",
-        "matchTools": ["Edit", "Write"]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/Scripts/hooks/sanestop.rb"
+          }
+        ]
       }
     ]
   }
@@ -570,7 +530,7 @@ echo -e "${GREEN}║                    Installation Complete!                  
 echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo "Installed:"
-echo "   • 16 SOP enforcement hooks"
+echo "   • 5 main hooks + 4 support modules (4-hook architecture)"
 echo "   • 6 pattern-based rules"
 echo "   • SaneMaster CLI (./Scripts/SaneMaster.rb)"
 echo "   • Claude Code settings with hook registration"

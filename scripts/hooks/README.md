@@ -8,12 +8,13 @@ Production-ready hooks for Claude Code SOP enforcement.
 
 | Hook | Type | Purpose | Tests |
 |------|------|---------|-------|
-| `saneprompt.rb` | UserPromptSubmit | Classifies prompts, handles commands (rb-, s+, etc.) | 26 |
-| `sanetools.rb` | PreToolUse | Gates edits on research, blocks paths, circuit breaker | 17 |
-| `sanetrack.rb` | PostToolUse | Tracks edits, failures, per-signature errors | 15 |
-| `sanestop.rb` | Stop | Session stats, summary reminder | 8 |
+| `saneprompt.rb` | UserPromptSubmit | Classifies prompts, handles commands (rb-, s+, etc.) | 62 |
+| `sanetools.rb` | PreToolUse | Gates edits on research, blocks paths, circuit breaker | 62 |
+| `sanetrack.rb` | PostToolUse | Tracks edits, failures, per-signature errors | 55 |
+| `sanestop.rb` | Stop | Session stats, summary reminder | 50 |
+| `session_start.rb` | SessionStart | Bootstraps session, resets state | 5 |
 
-**Total: 66 tests**
+**Total: 234 tests** (Easy/Hard/Villain tiers)
 
 ## Quick Start
 
@@ -36,13 +37,14 @@ ruby scripts/hooks/sanestop.rb --self-test
 | `s?` | Show safemode status |
 | `research` | Show research progress |
 
-## Core Modules
+## Support Modules
 
-```
-scripts/hooks/core/
-├── config.rb         # Paths, thresholds, settings
-└── state_manager.rb  # Read/write state.json (signed)
-```
+| File | Purpose |
+|------|---------|
+| `sanetools_checks.rb` | Extracted validation logic |
+| `saneprompt_intelligence.rb` | Prompt classification |
+| `rule_tracker.rb` | Rule tracking shared module |
+| `state_signer.rb` | State file signing/verification |
 
 ## State File
 
@@ -93,6 +95,9 @@ Reset with `rb-` command.
 | `.claude/bypass_active.json` | Safemode marker |
 | `.claude/*.log` | Per-hook logs |
 
-## Legacy
+## Testing
 
-Old hooks in `scripts/hooks/legacy/` - archived, not active.
+Run the full test suite:
+```bash
+ruby scripts/hooks/test/tier_tests.rb  # 234 tests
+```
