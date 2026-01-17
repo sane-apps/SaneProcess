@@ -1,48 +1,21 @@
-# SaneProcess Proprietary License
+MIT License
 
-Copyright (c) 2026 Stephan Joseph. All Rights Reserved.
+Copyright (c) 2026 Stephan Joseph
 
-## Terms and Conditions
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-This software and associated documentation files (the "Software") are proprietary
-and confidential. The Software is protected by copyright laws and international
-treaty provisions.
-
-### License Required
-
-A paid license is required for ANY use of this Software, including but not limited to:
-
-- Personal use
-- Commercial use
-- Educational use
-- Evaluation or testing
-- Internal business use
-- Redistribution in any form
-
-### Prohibited Actions
-
-Without a valid paid license, you may NOT:
-
-1. Use, copy, modify, or distribute the Software
-2. Create derivative works based on the Software
-3. Sublicense, sell, resell, or transfer the Software
-4. Reverse engineer, decompile, or disassemble the Software
-5. Remove or alter any proprietary notices or labels
-
-### Purchasing a License
-
-To purchase a license, contact: stephanjoseph2007@gmail.com
-
-### No Warranty
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM,
-DAMAGES, OR OTHER LIABILITY ARISING FROM THE USE OF THE SOFTWARE.
-
-### Enforcement
-
-Unauthorized use of this Software may result in legal action and monetary damages.
-
----
-
-For licensing inquiries: stephanjoseph2007@gmail.com
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
