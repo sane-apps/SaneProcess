@@ -374,3 +374,23 @@ SANESTOP:   50/50 (Easy: 15, Hard: 20, Villain: 15)
 
 TOTAL: 200/200 ALL PASS
 ```
+
+---
+
+## IMPORTANT: Memory MCP Removed (January 2026)
+
+The memory MCP was removed from SaneProcess in January 2026. Research categories changed from 5 to 4.
+
+**Tests affected:**
+- `real_failures_test.rb` - Memory MCP tests should be skipped
+- `tier_tests.rb` - Memory category tests should be skipped
+- `realistic_flow_test.rb` - Memory research steps removed
+
+**What was removed:**
+- `mcp__memory__read_graph`
+- `mcp__memory__search_nodes`
+- `mcp__memory__open_nodes`
+- Memory mutation blocking
+
+**Replacement:**
+Task context tracking now prevents research scope bleed instead of memory MCP isolation.
