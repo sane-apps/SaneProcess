@@ -59,7 +59,8 @@ class SaneMaster
         'verify' => { args: '[--ui] [--clean]', desc: 'Build and run tests (unit by default, --ui for UI)' },
         'clean' => { args: '[--nuclear]', desc: 'Wipe build cache and test states' },
         'lint' => { args: '', desc: 'Run SwiftLint and auto-fix issues' },
-        'audit' => { args: '', desc: 'Scan for missing accessibility identifiers' }
+        'audit' => { args: '', desc: 'Scan for missing accessibility identifiers' },
+        'system_check' => { args: '', desc: 'Verify unified hook system across all projects' }
       }
     },
     gen: {
@@ -246,6 +247,8 @@ class SaneMaster
       run_quality_report
     when 'audit'
       audit_project
+    when 'system_check', 'sc'
+      audit_unified
     when 'qa'
       system(File.join(__dir__, 'qa.rb'))
     when 'validate_test_references', 'validate-tests'

@@ -342,6 +342,9 @@ module SaneMasterModules
       puts "   ✅ .mcp.json: #{servers.keys.count} servers configured"
       servers.each_key { |s| puts "      - #{s}" }
 
+      # Check memory.json exists if memory MCP is configured
+      check_memory_json_exists(servers)
+
       check_local_settings
 
       sop_log("MCP: #{servers.keys.count} servers configured")
@@ -349,6 +352,30 @@ module SaneMasterModules
     rescue JSON::ParserError => e
       puts "   ❌ Failed to parse MCP config: #{e.message}"
       :error
+    end
+
+    def check_memory_json_exists(servers)
+      return unless servers['memory']
+
+      memory_args = servers['memory']['args'] || []
+      memory_path = memory_args.find { |a| a.include?('memory.json') }
+      return unless memory_path
+
+      # Resolve relative paths
+      if memory_path.start_with?('.') || !memory_path.start_with?('/')
+        memory_path = File.join(Dir.pwd, memory_path)
+      end
+
+      if File.exist?(memory_path)
+        puts '   ✅ memory.json exists'
+      else
+        puts "   ❌ memory.json missing: #{memory_path}"
+        puts '      Creating empty memory.json...'
+        FileUtils.mkdir_p(File.dirname(memory_path))
+        File.write(memory_path, '{"entities":[],"relations":[]}')
+        puts '   ✅ memory.json created'
+        sop_log("Created missing memory.json: #{memory_path}")
+      end
     end
 
     def check_local_settings

@@ -4,6 +4,7 @@
 
 Stop AI doom loops. Ship reliable code.
 
+
 ---
 
 ## The Problem
@@ -16,201 +17,192 @@ Claude Code is powerful but undisciplined:
 
 ## The Solution
 
-SaneProcess enforces discipline through:
+SaneProcess enforces discipline through hooks that block bad behavior before it happens.
 
 | Feature | What It Does |
 |---------|--------------|
-| **16 Golden Rules** | Memorable, enforceable rules for AI discipline |
-| **Circuit Breaker** | Auto-stops after 3 same errors or 5 total failures |
-| **Memory System** | Bug patterns persist across sessions |
-| **Compliance Loop** | Enforced task completion with verification |
-| **Self-Rating** | Accountability after every task |
-| **AI Self-Review** | Mandatory code review before shipping (Rule #15) |
+| **4 Enforcement Hooks** | Block edits until research is done |
+| **Circuit Breaker** | Auto-stops after 3 same errors |
+| **16 Golden Rules** | Memorable, enforceable discipline |
+| **259 Tests** | Including 42 from real Claude failures |
+
+---
+
+## Quick Start
+
+**After purchase:**
+
+```bash
+# Install everything with one command
+curl -sL https://raw.githubusercontent.com/sane-apps/SaneProcess/main/scripts/init.sh | bash
+```
+
+**Verify it's working:**
+
+```bash
+./scripts/SaneMaster.rb doctor    # Check environment
+./scripts/SaneMaster.rb health    # Quick health check
+```
+
+**Your first workflow:**
+
+```bash
+./scripts/SaneMaster.rb verify    # Build + test
+./scripts/SaneMaster.rb test_mode # Kill → Build → Launch → Logs
+```
+
+---
 
 ## What's Included
 
 ```
-├── docs/
-│   ├── SaneProcess.md          # Complete methodology (1,400+ lines)
-│   └── PROJECT_TEMPLATE.md     # Customize for your project
+SaneProcess/
 ├── scripts/
-│   ├── init.sh                 # One-command project setup
-│   ├── SaneMaster.rb           # CLI for build, verify, test-mode, memory
-│   ├── sanemaster/             # 19 SaneMaster modules
-│   ├── mac_context.rb          # Mac development knowledge injection
-│   ├── skill_loader.rb         # Load/unload domain-specific knowledge
-│   └── hooks/                  # 4 consolidated enforcement hooks
-│       ├── saneprompt.rb       # UserPromptSubmit: Detects intent, sets requirements
-│       ├── sanetools.rb        # PreToolUse: Blocks until research complete
-│       ├── sanetrack.rb        # PostToolUse: Tracks failures, updates state
-│       ├── sanestop.rb         # Stop: Ensures session summary before exit
-│       ├── core/               # Shared infrastructure
-│       │   ├── state_manager.rb    # Thread-safe state with HMAC signatures
-│       │   └── hook_registry.rb    # Hook configuration and routing
-│       └── test/               # 259 tests across 3 tiers
-│           ├── tier_tests.rb       # 217 tests (Easy/Hard/Villain)
-│           ├── real_failures_test.rb # 42 tests from actual Claude failures
-│           └── recovery_test.rb    # End-to-end recovery verification
-├── skills/                     # Modular expert knowledge
-│   ├── swift-concurrency.md
-│   ├── swiftui-performance.md
-│   └── crash-analysis.md
-└── .claude/rules/              # Pattern-based rules (auto-loaded)
-    ├── views.md, tests.md, services.md
-    ├── models.md, scripts.md, hooks.md
+│   ├── SaneMaster.rb          # CLI with 50+ commands (see below)
+│   ├── hooks/                 # 4 enforcement hooks
+│   │   ├── saneprompt.rb      # Analyzes intent, sets requirements
+│   │   ├── sanetools.rb       # Blocks until research complete
+│   │   ├── sanetrack.rb       # Tracks failures, trips breaker
+│   │   └── sanestop.rb        # Ensures session summary
+│   ├── qa.rb                  # Full QA suite
+│   ├── sync_check.rb          # Cross-project drift detection
+│   └── skill_loader.rb        # Load domain knowledge on demand
+├── templates/                 # Project templates and checklists
+├── skills/                    # Loadable domain knowledge
+├── .claude/rules/             # Path-specific guidance
+└── docs/                      # Full methodology (1,400+ lines)
 ```
 
-### Automation Scripts
+---
 
-Quality assurance and maintenance automation:
+## SaneMaster CLI Reference
 
-```bash
-ruby scripts/qa.rb                    # Full product QA (hooks, docs, URLs, tests)
-ruby scripts/sync_check.rb ~/SaneBar  # Cross-project drift detection
-ruby scripts/memory_audit.rb          # Find unfixed bugs in Memory MCP
-ruby scripts/version_bump.rb 2.3      # Bump version across all files
-ruby scripts/license_gen.rb           # Generate license key for customer
-ruby scripts/license_gen.rb --validate SP-XXXX-...  # Validate a key
-```
+Your project's command center. Run `./scripts/SaneMaster.rb help` for full list.
 
-Pre-push hooks via `lefthook.yml` run QA automatically before each push.
+### Build & Test
 
-### Skills System
+| Command | What It Does |
+|---------|--------------|
+| `verify [--ui] [--clean]` | Build and run tests |
+| `clean [--nuclear]` | Wipe build cache |
+| `lint` | Run SwiftLint with auto-fix |
+| `audit` | Scan for missing accessibility IDs |
+| `qa` | Full QA suite (hooks, docs, URLs, tests) |
 
-Load only what you need for your current task:
+### Debug & Launch
 
-```bash
-ruby scripts/skill_loader.rb list                    # See available skills
-ruby scripts/skill_loader.rb load swift-concurrency  # Load a skill
-ruby scripts/skill_loader.rb status                  # See what's loaded
-ruby scripts/skill_loader.rb unload --all            # Clear all skills
-```
+| Command | What It Does |
+|---------|--------------|
+| `test_mode` / `tm` | Kill → Build → Launch → Logs (one command) |
+| `launch` | Launch the app |
+| `logs [--follow]` | Show application logs |
+| `crashes [--recent]` | Analyze crash reports |
+| `diagnose [path]` | Analyze .xcresult bundle |
 
-Skills add domain-specific knowledge to your context. Base context is 757 lines; with all skills loaded: ~1,350 lines.
+### Code Generation
 
-### SaneMaster CLI
+| Command | What It Does |
+|---------|--------------|
+| `gen_test` | Generate test file from template |
+| `gen_mock` | Generate mocks using Mockolo |
+| `gen_assets` | Generate test video assets |
+| `template [save\|apply\|list]` | Manage configuration templates |
 
-Your project's command center. Installed at `Scripts/SaneMaster.rb`:
+### Static Analysis
 
-```bash
-./Scripts/SaneMaster.rb verify          # Build + test + lint
-./Scripts/SaneMaster.rb test-mode       # Build, kill, launch, stream logs
-./Scripts/SaneMaster.rb memory          # View memory graph health
-./Scripts/SaneMaster.rb deps            # Show dependency versions
-./Scripts/SaneMaster.rb export          # Export for LLM context
-./Scripts/SaneMaster.rb diag            # Analyze crash reports
-./Scripts/SaneMaster.rb bootstrap       # Reset session state
-```
+| Command | What It Does |
+|---------|--------------|
+| `verify_api <API> [Framework]` | Verify API exists in SDK before using |
+| `dead_code` | Find unused code (Periphery) |
+| `deprecations` | Scan for deprecated API usage |
+| `swift6` | Verify Swift 6 concurrency compliance |
+| `test_scan [-v]` | Find tautologies and hardcoded values in tests |
+| `check_docs` | Check docs are in sync with code |
+| `check_binary` | Audit binary for security issues |
 
-Key features:
-- **verify**: Full build cycle with lint and test
-- **test-mode**: Kill old processes, build, launch, tail logs
-- **memory**: Check Memory MCP health (entities, token estimate, unfixed bugs)
-- **deps**: Version audit of all dependencies (CocoaPods, SPM, Homebrew)
-- **diag**: Analyze crash reports and diagnose issues
-- **bootstrap**: Reset circuit breaker and session state
+### Memory & Circuit Breaker
 
-Run `./Scripts/SaneMaster.rb help` for all commands.
+Cross-session memory via MCP integration:
+
+| Command | What It Does |
+|---------|--------------|
+| `mc` | Show memory context (bugs, patterns, decisions) |
+| `mr <type> <name>` | Record new entity to memory |
+| `mp [--dry-run]` | Prune stale entities |
+| `mh` | Memory health (entity count, token estimate) |
+| `mcompact [--aggressive]` | Compact memory (trim verbose, dedupe) |
+| `mcleanup` | Analyze memory, generate cleanup commands |
+
+Circuit breaker control:
+
+| Command | What It Does |
+|---------|--------------|
+| `reset_breaker` / `rb` | Reset circuit breaker (unblock tools) |
+| `breaker_status` / `bs` | Show circuit breaker status |
+| `breaker_errors` / `be` | Show recent failure messages |
+
+### Session & SOP
+
+| Command | What It Does |
+|---------|--------------|
+| `session_end` / `se` | End session with insight extraction |
+| `saneloop <cmd>` | Native task loop (start\|status\|check\|complete) |
+| `compliance` / `cr` | Generate compliance report |
+
+### Environment
+
+| Command | What It Does |
+|---------|--------------|
+| `doctor` | Full environment health check |
+| `health` / `h` | Quick health check (< 100ms) |
+| `meta` | Audit SaneMaster tooling itself |
+| `bootstrap [--check-only]` | Full environment setup |
+| `setup` | Install gems and dependencies |
+| `versions` | Check all tool versions |
+| `deps [--dot]` | Show dependency graph |
+| `reset` | Reset TCC permissions |
+| `restore` | Fix Xcode/Launch Services issues |
+
+### Export
+
+| Command | What It Does |
+|---------|--------------|
+| `export [--highlight]` | Export code to PDF |
+| `md_export <file.md>` | Convert markdown to PDF |
+
+---
 
 ## Hook Architecture
 
-Four consolidated hooks handle all enforcement:
+Four hooks handle all enforcement:
 
 | Hook | When | What It Does |
 |------|------|--------------|
-| **saneprompt** | UserPromptSubmit | Analyzes user intent, sets research requirements |
-| **sanetools** | PreToolUse | Blocks destructive ops until research complete |
-| **sanetrack** | PostToolUse | Tracks failures, updates circuit breaker |
-| **sanestop** | Stop | Ensures session summary before exit |
+| **saneprompt** | User sends message | Analyzes intent, sets research requirements |
+| **sanetools** | Before tool runs | Blocks destructive ops until research complete |
+| **sanetrack** | After tool runs | Tracks failures, updates circuit breaker |
+| **sanestop** | Session ends | Ensures summary, extracts learnings |
 
-### Damage Potential Categorization
+### How Blocking Works
 
-Tools are blocked based on blast radius, not name:
+Tools are categorized by blast radius:
 
-| Category | Blast Radius | Examples | Blocked Until |
-|----------|--------------|----------|---------------|
-| Read-only | None | Read, Grep, search_nodes | Never |
-| Local mutation | This project | Edit, Write | Research complete |
-| Global mutation | ALL projects | memory delete/create | Research complete |
-| External mutation | Outside systems | GitHub push/merge | Research complete |
+| Category | Examples | Blocked Until |
+|----------|----------|---------------|
+| Read-only | Read, Grep, search | Never blocked |
+| Local mutation | Edit, Write | Research complete |
+| Global mutation | MCP memory delete | Research complete |
+| External mutation | GitHub push | Research complete |
 
-This prevents Claude from nuking shared resources (like MCP memory) without understanding the impact.
-
-### Test Coverage
-
-259 tests across 3 tiers:
-- **Easy (75)**: Basic functionality
-- **Hard (72)**: Edge cases and complex scenarios
-- **Villain (70)**: Adversarial bypass attempts
-- **Real Failures (42)**: Actual Claude misbehavior patterns
+**Security:** State is HMAC-signed to prevent tampering.
 
 ---
 
-## The "Supervisor" Advantage
-
-SaneProcess isn't just rules - it's a **Mac App Factory** layer:
-
-| Feature | What It Does |
-|---------|--------------|
-| **Mac Context Injection** | 757 lines of Info.plist, entitlements, sandboxing, WWDC 2025 APIs, crash analysis |
-| **Circuit Breaker** | Stops Claude after 3 same errors (prevents $20 token burn) |
-| **XcodeGen Integration** | Never let Claude touch .xcodeproj directly |
-| **Build Loop Handler** | Captures errors, strips noise, feeds back only essentials |
-
----
-
-## The Sane* Family
-
-All tools share the **Sane** prefix so you know when you're using our battle-tested components:
-
-| Tool | What It Does |
-|------|--------------|
-| **SaneProcess** | The methodology + product |
-| **SaneMaster** | CLI tool for build, verify, launch, logs |
-| **SaneLoop** | Iteration loop with enforced exit conditions |
-| **SaneSkills** | Load/unload domain knowledge on demand |
-| **SaneRules** | Path-specific guidance (Tests/, Views/, Services/) |
-| **SaneBreaker** | Circuit breaker - stops after repeated failures |
-
-Each component is designed to work together. When you see "Sane*", you know it's enforcing discipline.
-
----
-
-## Pricing
-
-**$29 one-time** - Lifetime upgrades included.
-
-No subscriptions. No recurring fees. Pay once, get all future updates.
-
-**To purchase:** [Open an issue](https://github.com/stephanjoseph/SaneProcess/issues/new) with subject "License Request"
-
-## Installation
-
-After purchasing, one command installs everything:
-
-```bash
-curl -sL https://raw.githubusercontent.com/stephanjoseph/SaneProcess/main/scripts/init.sh | bash
-```
-
-This installs:
-- 4 consolidated SOP enforcement hooks (259 tests)
-- SaneMaster CLI (`Scripts/SaneMaster.rb` + 19 modules)
-- 6 pattern-based rules
-- Claude Code settings with hook registration
-- MCP server configuration
-- DEVELOPMENT.md with the 16 Golden Rules
-
----
-
-## Preview
-
-You can view the full source code here. To use it in your projects, purchase a license.
-
-**Quick look at the 16 Golden Rules:**
+## The 16 Golden Rules
 
 ```
 #0  NAME THE RULE BEFORE YOU CODE
-#1  STAY IN YOUR LANE (files in project)
+#1  STAY IN YOUR LANE (files in project only)
 #2  VERIFY BEFORE YOU TRY (check docs first)
 #3  TWO STRIKES? INVESTIGATE
 #4  GREEN MEANS GO (tests must pass)
@@ -229,15 +221,174 @@ You can view the full source code here. To use it in your projects, purchase a l
 
 ---
 
-## License
+## Templates
 
-**Source Available** - You may view this code for evaluation. Usage requires a paid license. See [LICENSE](LICENSE) for details.
+Pre-built templates in `templates/`:
+
+| Template | Purpose |
+|----------|---------|
+| `NEW_PROJECT_TEMPLATE.md` | CLAUDE.md for new projects |
+| `FULL_PROJECT_BOOTSTRAP.md` | Complete project setup guide |
+| `FOUNDER_CHECKLIST.md` | Pre-launch checklist |
+| `RESEARCH-TEMPLATE.md` | Structured research format |
+| `RESEARCH-INDEX.md` | Track all research |
+| `state-machine-audit.md` | 13-section state machine audit |
 
 ---
 
-## Questions?
+## Skills System
 
-Open an issue or contact [@stephanjoseph](https://github.com/stephanjoseph)
+Load domain knowledge only when needed:
+
+```bash
+./scripts/skill_loader.rb list              # See available skills
+./scripts/skill_loader.rb load swift-concurrency
+./scripts/skill_loader.rb status            # See what's loaded
+./scripts/skill_loader.rb unload --all      # Clear all
+```
+
+**Available skills:**
+- `swift-concurrency` - Actor isolation, Sendable, async/await
+- `swiftui-performance` - View optimization, lazy loading
+- `crash-analysis` - Symbolication, crash report analysis
+
+---
+
+## Automation Scripts
+
+```bash
+ruby scripts/qa.rb                    # Full QA (hooks, docs, URLs, tests)
+ruby scripts/validation_report.rb     # Is SaneProcess actually working? (run daily)
+ruby scripts/sync_check.rb ~/SaneBar  # Cross-project drift detection
+ruby scripts/memory_audit.rb          # Find unfixed bugs in memory
+ruby scripts/version_bump.rb 2.3      # Bump version everywhere
+ruby scripts/license_gen.rb           # Generate license key
+ruby scripts/contamination_check.rb   # Check for leaked secrets
+```
+
+### Validation Report
+
+Answers the hard question: **Is SaneProcess making us 10x more productive, or is it BS?**
+
+```bash
+ruby scripts/validation_report.rb     # Text report
+ruby scripts/validation_report.rb --json  # JSON for tracking
+```
+
+Checks:
+- Q1: Are blocks correct? (users not constantly overriding)
+- Q2: Are doom loops caught? (breaker trips on repeat errors)
+- Q3: Is self-rating honest? (not rubber-stamping 8/10)
+- Q4: Do sessions end with passing tests?
+- Q5: Is the trend improving over time?
+
+Requires 30+ data points per metric for statistical significance. Run daily.
+
+---
+
+## Test Coverage
+
+259 tests across 3 tiers:
+
+| Tier | Count | Purpose |
+|------|-------|---------|
+| Easy | 75 | Basic functionality |
+| Hard | 72 | Edge cases |
+| Villain | 70 | Adversarial bypass attempts |
+| Real Failures | 42 | Actual Claude misbehavior |
+
+Run tests:
+```bash
+ruby scripts/hooks/test/tier_tests.rb
+```
+
+---
+
+## Troubleshooting
+
+### "BLOCKED: Research incomplete"
+
+The hook is working correctly. You need to:
+1. Check memory MCP for past bugs
+2. Verify APIs exist in docs
+3. Search codebase for patterns
+
+Run `./scripts/SaneMaster.rb reset_breaker` if stuck.
+
+### Circuit breaker tripped
+
+After 3 same errors, tools get blocked. This prevents token burn.
+
+```bash
+./scripts/SaneMaster.rb breaker_status  # See what's wrong
+./scripts/SaneMaster.rb breaker_errors  # See error messages
+./scripts/SaneMaster.rb reset_breaker   # Reset (after fixing issue)
+```
+
+### Hooks not firing
+
+Check hook registration:
+```bash
+cat ~/.claude/settings.json | grep hooks
+```
+
+Re-run install:
+```bash
+./scripts/init.sh
+```
+
+### Ruby errors
+
+```bash
+./scripts/SaneMaster.rb setup  # Install dependencies
+```
+
+---
+
+## Uninstall
+
+Remove SaneProcess from a project:
+
+```bash
+# Remove hooks from Claude settings
+# Edit ~/.claude/settings.json and remove hook entries
+
+# Remove scripts
+rm -rf scripts/hooks scripts/SaneMaster.rb scripts/sanemaster
+
+# Remove rules
+rm -rf .claude/rules
+
+# Remove CLAUDE.md additions (manual)
+```
+
+Data stored:
+- `~/.claude/` - Hook state (auto-cleaned)
+- Memory MCP - Your bugs/patterns (persists)
+
+---
+
+## Status
+
+**Internal testing** - Used across SaneApps projects (SaneBar, SaneVideo, SaneSync, SaneClip).
+
+Public release pending validation.
+
+---
+
+## Domains & Infrastructure
+
+| Asset | Status |
+|-------|--------|
+| saneprocess.com | Owned (Cloudflare) |
+| GitHub repo | Private |
+| LemonSqueezy | Account ready |
+
+---
+
+## License
+
+MIT License. See [LICENSE](LICENSE)
 
 ---
 

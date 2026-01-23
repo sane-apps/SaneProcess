@@ -19,7 +19,7 @@ SaneProcess is an SOP (Standard Operating Procedure) enforcement framework for A
 
 ```bash
 # Clone the repo
-git clone https://github.com/stephanjoseph/SaneProcess.git
+git clone https://github.com/sane-apps/SaneProcess.git
 cd SaneProcess
 
 # Install dependencies
@@ -52,7 +52,7 @@ SaneProcess/
 
 ### Before You Start
 
-1. Check [GitHub Issues](https://github.com/stephanjoseph/SaneProcess/issues) for existing discussions
+1. Check [GitHub Issues](https://github.com/sane-apps/SaneProcess/issues) for existing discussions
 2. For significant changes, open an issue first to discuss the approach
 
 ### Pull Request Process
@@ -83,6 +83,6 @@ This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). Please be r
 
 ## Questions?
 
-- Open a [GitHub Issue](https://github.com/stephanjoseph/SaneProcess/issues)
+- Open a [GitHub Issue](https://github.com/sane-apps/SaneProcess/issues)
 
 Thank you for contributing!

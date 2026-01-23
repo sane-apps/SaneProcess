@@ -17,3 +17,5 @@ test-project/
 .claude/compliance_streak.json
 .claude/user_patterns.json
 .claude/*.jsonl
+DISASTER_RECOVERY.md
+docs/archive/DISASTER_RECOVERY.md

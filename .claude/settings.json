@@ -1,7 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(./Scripts/SaneMaster.rb:*)",
+      "Bash(./scripts/SaneMaster.rb:*)",
       "Bash(xcodegen:*)",
       "Bash(bundle exec:*)",
       "Bash(killall:*)",
@@ -27,10 +27,11 @@
       "Bash(which:*)",
       "Bash(ruby:*)",
       "Bash(/opt/homebrew/opt/ruby/bin/*:*)",
-      "mcp__memory__*",
       "mcp__apple-docs__*",
       "mcp__context7__*",
-      "mcp__github__*"
+      "mcp__github__*",
+      "mcp__XcodeBuildMCP__*",
+      "mcp__macos-automator__*"
     ]
   },
   "hooks": {
@@ -39,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -f ./scripts/hooks/session_start.rb ] && ruby ./scripts/hooks/session_start.rb || true",
+            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ./scripts/hooks/session_start.rb ] && ruby ./scripts/hooks/session_start.rb || true",
             "timeout": 5
           }
         ]
@@ -50,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -f ./scripts/hooks/saneprompt.rb ] && ruby ./scripts/hooks/saneprompt.rb || true",
+            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ./scripts/hooks/saneprompt.rb ] && ruby ./scripts/hooks/saneprompt.rb || true",
             "timeout": 5
           }
         ]
@@ -61,7 +62,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -f ./scripts/hooks/sanetools.rb ] && ruby ./scripts/hooks/sanetools.rb || true",
+            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ./scripts/hooks/sanetools.rb ] && ruby ./scripts/hooks/sanetools.rb || true",
             "timeout": 5
           }
         ]
@@ -72,7 +73,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -f ./scripts/hooks/sanetrack.rb ] && ruby ./scripts/hooks/sanetrack.rb || true",
+            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ./scripts/hooks/sanetrack.rb ] && ruby ./scripts/hooks/sanetrack.rb || true",
             "timeout": 5
           }
         ]
@@ -83,7 +84,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -f ./scripts/hooks/sanestop.rb ] && ruby ./scripts/hooks/sanestop.rb || true",
+            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ./scripts/hooks/sanestop.rb ] && ruby ./scripts/hooks/sanestop.rb || true",
             "timeout": 5
           }
         ]
@@ -95,6 +96,12 @@
     "code-review@claude-plugins-official": true,
     "security-guidance@claude-plugins-official": true,
     "ralph-wiggum@claude-plugins-official": true,
-    "claude-mem@thedotmack": true
+    "claude-mem@thedotmack": true,
+    "frontend-design@claude-plugins-official": true,
+    "context7@claude-plugins-official": true,
+    "feature-dev@claude-plugins-official": true,
+    "serena@claude-plugins-official": true,
+    "hookify@claude-plugins-official": true,
+    "sane-skills@local": true
   }
 }

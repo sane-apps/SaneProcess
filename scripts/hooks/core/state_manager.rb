@@ -94,7 +94,21 @@ module StateManager
       weak_spots: {},     # { "rule_N" => count } - rules frequently violated
       triggers: {},       # { "word" => ["rule_N"] } - words that predict violations
       strengths: [],      # ["rule_N"] - rules with 100% compliance
-      session_scores: []  # Last 10 SOP scores for variance detection
+      session_scores: []  # Last 100 SOP scores (was 10 - not statistically significant)
+    },
+    # === VALIDATION: Objective productivity tracking ===
+    # This data persists across sessions to measure if SaneProcess actually works
+    validation: {
+      sessions_total: 0,
+      sessions_with_tests_passing: 0,
+      sessions_with_breaker_trip: 0,
+      blocks_that_were_correct: 0,    # User didn't override
+      blocks_that_were_wrong: 0,      # User had to override/bypass
+      doom_loops_caught: 0,           # Breaker tripped on repeated same error
+      doom_loops_missed: 0,           # 3+ same errors before any intervention
+      time_saved_estimates: [],       # Rough estimates when blocks prevent waste
+      first_tracked: nil,
+      last_updated: nil
     },
     # === MCP VERIFICATION SYSTEM ===
     # Tracks MCP health and ensures all MCPs verified before edits
@@ -111,7 +125,16 @@ module StateManager
     # === REFUSAL TO READ TRACKING ===
     # Detects when AI is blocked repeatedly for same reason but keeps trying
     # instead of reading the message and following instructions
-    refusal_tracking: {}
+    refusal_tracking: {},
+    # === TASK CONTEXT TRACKING ===
+    # Tracks what task research was done FOR, so research for Task A
+    # doesn't unlock edits for Task B (the task-scope bug fix)
+    task_context: {
+      task_type: nil,        # :bug_fix, :new_feature, :refactor, etc.
+      task_keywords: [],     # Key nouns from the task
+      task_hash: nil,        # Hash of normalized task for comparison
+      researched_at: nil     # When research was done
+    }
   }.freeze
 
   class << self
@@ -247,15 +270,40 @@ module StateManager
       state
     end
 
-    # File locking for concurrent access
+    # File locking for concurrent access with timeout
+    # Uses non-blocking lock with retry to prevent infinite hangs
+    LOCK_TIMEOUT = 2.0  # seconds - must be less than hook timeout (5s)
+    LOCK_RETRY_INTERVAL = 0.05  # 50ms between retries
+
     def with_lock
       FileUtils.mkdir_p(File.dirname(LOCK_FILE))
       File.open(LOCK_FILE, File::RDWR | File::CREAT, 0o644) do |f|
-        f.flock(File::LOCK_EX)
+        deadline = Time.now + LOCK_TIMEOUT
+        locked = false
+
+        # Try non-blocking lock with timeout
+        while Time.now < deadline
+          # LOCK_NB = non-blocking, returns immediately
+          if f.flock(File::LOCK_EX | File::LOCK_NB)
+            locked = true
+            break
+          end
+          sleep(LOCK_RETRY_INTERVAL)
+        end
+
+        unless locked
+          # Timeout! Remove stale lock and try once more
+          warn "⚠️  StateManager lock timeout - clearing stale lock"
+          f.flock(File::LOCK_UN) rescue nil
+
+          # Force acquire (last resort - better than hanging)
+          f.flock(File::LOCK_EX | File::LOCK_NB) rescue nil
+        end
+
         begin
           yield
         ensure
-          f.flock(File::LOCK_UN)
+          f.flock(File::LOCK_UN) rescue nil
         end
       end
     end

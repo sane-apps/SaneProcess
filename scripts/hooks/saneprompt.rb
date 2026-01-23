@@ -143,13 +143,14 @@ def handle_safemode_command(prompt)
     warn ''
     true
   elsif cmd.start_with?('reset research') || cmd == 'rr-'
-    # Reset research tracking (forces re-doing all 5 categories)
+    # Reset research tracking (forces re-doing all 4 categories)
+    # NOTE: Changed from 5 to 4 (Jan 2026) - memory MCP removed
     StateManager.reset(:research)
     log_reset('research', 'User reset research requirements')
     warn ''
     warn 'RESEARCH RESET'
-    warn '  All 5 research categories cleared.'
-    warn '  Must complete: memory, docs, web, github, local'
+    warn '  All 4 research categories cleared.'
+    warn '  Must complete: docs, web, github, local'
     warn '  This is NOT a bypass - you must actually do the research.'
     warn ''
     true
@@ -160,7 +161,7 @@ def handle_safemode_command(prompt)
     warn ''
     warn '  rb-  / reset breaker   → Clear circuit breaker (after 3+ failures)'
     warn '  reset blocks / unblock → Clear block counters (after repeated blocks)'
-    warn '  rr- / reset research   → Clear research (forces redo all 5 categories)'
+    warn '  rr- / reset research   → Clear research (forces redo all 4 categories)'
     warn ''
     warn 'Resets are LOGGED and do NOT disable hooks.'
     warn 'They allow retry - the hooks still enforce rules.'
@@ -325,6 +326,96 @@ def detect_task_types(prompt)
   types
 end
 
+# === TASK CONTEXT TRACKING (fixes task-scope bug) ===
+# Research for Task A should NOT unlock edits for Task B
+# Extract key nouns/topics from task to detect significant changes
+
+# Words to ignore when extracting task keywords
+STOPWORDS = %w[
+  the a an and or but in on at to for of with by from
+  this that these those it its
+  please help me i you we they
+  can could would should will
+  now just also still
+  file files code project app
+].freeze
+
+def extract_task_keywords(prompt)
+  # Normalize and tokenize
+  words = prompt.downcase.gsub(/[^a-z0-9\s]/, ' ').split
+
+  # Remove stopwords and short words
+  keywords = words.reject { |w| STOPWORDS.include?(w) || w.length < 3 }
+
+  # Take most distinctive words (longer = more specific)
+  keywords.sort_by { |w| -w.length }.first(5).sort
+end
+
+def compute_task_hash(task_types, keywords)
+  require 'digest'
+  content = "#{task_types.sort.join(',')}:#{keywords.sort.join(',')}"
+  Digest::MD5.hexdigest(content)[0..7]
+end
+
+def check_task_change_and_reset(prompt, task_types)
+  return unless [:task, :big_task].include?(classify_prompt(prompt))
+
+  keywords = extract_task_keywords(prompt)
+  new_hash = compute_task_hash(task_types, keywords)
+
+  # Get previous task context
+  prev_context = StateManager.get(:task_context)
+  prev_hash = prev_context[:task_hash]
+
+  # If no previous task, just store current
+  if prev_hash.nil?
+    store_task_context(task_types, keywords, new_hash)
+    return
+  end
+
+  # Check if task changed significantly
+  if new_hash != prev_hash
+    # Check how different (keyword overlap)
+    prev_keywords = prev_context[:task_keywords] || []
+    overlap = (keywords & prev_keywords).length
+    similarity = prev_keywords.empty? ? 0 : overlap.to_f / prev_keywords.length
+
+    # If less than 50% overlap, this is a different task
+    if similarity < 0.5
+      warn ''
+      warn '=' * 50
+      warn 'TASK CHANGE DETECTED - RESEARCH RESET'
+      warn "Previous: #{prev_context[:task_type]} (#{prev_keywords.join(', ')})"
+      warn "New: #{task_types.first} (#{keywords.join(', ')})"
+      warn ''
+      warn 'Research from previous task does NOT apply to new task.'
+      warn 'Must complete all 5 research categories for THIS task.'
+      warn '=' * 50
+      warn ''
+
+      # Reset research state
+      StateManager.reset(:research)
+      StateManager.reset(:edit_attempts)
+      log_reset('research', "Task change: #{prev_hash} -> #{new_hash}")
+    end
+
+    # Update stored context
+    store_task_context(task_types, keywords, new_hash)
+  end
+end
+
+def store_task_context(task_types, keywords, task_hash)
+  StateManager.update(:task_context) do |ctx|
+    ctx[:task_type] = task_types.first
+    ctx[:task_keywords] = keywords
+    ctx[:task_hash] = task_hash
+    ctx[:researched_at] = Time.now.iso8601
+    ctx
+  end
+rescue StandardError
+  # Don't fail on state errors
+end
+
 def rules_for_prompt(prompt)
   types = detect_task_types(prompt)
   types.flat_map { |t| RULES_BY_TASK[t] }.uniq
@@ -428,7 +519,8 @@ def output_context(prompt_type, rules, triggers, prompt, frustrations = [], dete
   # User insight: "ANY code change is a big task" - no more "no big deal" syndrome
   lines << ''
   lines << 'WORKFLOW STRUCTURE (auto-injected):'
-  lines << '  1. Research ALL 5 categories before editing (memory, docs, web, github, local)'
+  # NOTE: Changed from 5 to 4 categories (Jan 2026) - memory MCP removed
+  lines << '  1. Research ALL 4 categories before editing (docs, web, github, local)'
   lines << '  2. Define acceptance criteria: what does "done" look like?'
   lines << '  3. Edits blocked until research complete (sanetools enforces)'
   lines << '  4. Self-rate SOP compliance when done'
@@ -560,6 +652,12 @@ def process_prompt(prompt)
 
   rules = rules_for_prompt(prompt)
   triggers = detect_triggers(prompt)
+  task_types = detect_task_types(prompt)
+
+  # === TASK CONTEXT CHECK (fixes task-scope bug) ===
+  # If task changed significantly, reset research - research for Task A
+  # should NOT unlock edits for Task B
+  check_task_change_and_reset(prompt, task_types)
 
   # === INTELLIGENCE ===
 
@@ -592,10 +690,9 @@ def process_prompt(prompt)
   # 6. Get learned patterns from previous sessions
   learned_patterns = get_learned_patterns
 
-  # 7. Check for memory staging from previous session
-  memory_staging = check_memory_staging
-  # Mark as processed so it doesn't repeat on every prompt
-  mark_memory_staging_processed if memory_staging
+  # 7. Memory staging removed (Jan 2026) - memory MCP no longer exists
+  # Memory learnings now auto-captured by Sane-Mem (localhost:37777)
+  memory_staging = nil
 
   # === END INTELLIGENCE ===
 
@@ -613,15 +710,8 @@ def process_prompt(prompt)
     warn ''
   end
 
-  # Output memory staging reminder to user
-  if memory_staging
-    warn ''
-    warn '=' * 50
-    warn 'MEMORY MCP UPDATE PENDING'
-    warn 'Previous session staged learnings - Claude will save to Memory MCP'
-    warn '=' * 50
-    warn ''
-  end
+  # NOTE: Memory staging output removed (Jan 2026) - memory MCP no longer exists
+  # Memory learnings now auto-captured by Sane-Mem (localhost:37777)
 
   # Output context to Claude (stdout)
   output_context(prompt_type, rules, triggers, prompt, frustrations, detected_reqs, learning_warning, learned_patterns, memory_staging)

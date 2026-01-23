@@ -5,7 +5,7 @@ You are working on **SaneProcess** - the SOP enforcement framework itself.
 ## Project Purpose
 - Public repo for sale/distribution
 - Contains: docs, examples, hooks, skills, init scripts
-- Users install via `curl -sL https://raw.githubusercontent.com/stephanjoseph/SaneProcess/main/scripts/init.sh | bash`
+- Users install via `curl -sL https://raw.githubusercontent.com/sane-apps/SaneProcess/main/scripts/init.sh | bash`
 
 ## Key Files
 | Path | Purpose |
@@ -23,15 +23,12 @@ You are working on **SaneProcess** - the SOP enforcement framework itself.
 
 ## Memory
 
-**Two memory systems available:**
+**Memory MCP** - Curated knowledge graph
+- Run `mcp__memory__read_graph` at session start
+- Cross-project context, bug patterns
+- On "session end": save learnings via `mcp__memory__add_observations`
 
-1. **Memory MCP** - Curated knowledge graph
-   - Run `mcp__memory__read_graph` at session start
-   - Cross-project context, bug patterns
-
-2. **claude-mem** - Automatic session history
-   - Auto-captures tool usage and decisions
-   - Search with `mem-search` skill
-   - Web viewer: http://localhost:37777/
-
-When user says "check memory", check BOTH sources.
+**claude-mem** - ⚠️ DISABLED (2026-01-11)
+- Reason: Orphaned process bug causing session freezes
+- Issue: https://github.com/thedotmack/claude-mem/issues/685
+- Re-enable when fixed: set `claude-mem@thedotmack: true` in settings.json

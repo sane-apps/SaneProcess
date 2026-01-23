@@ -4,7 +4,7 @@
 # One-click setup for Claude Code SOP enforcement
 #
 # Usage:
-#   curl -sL https://raw.githubusercontent.com/stephanjoseph/SaneProcess/main/scripts/init.sh | bash
+#   curl -sL https://raw.githubusercontent.com/sane-apps/SaneProcess/main/scripts/init.sh | bash
 #
 # Version 2.4 - January 2026
 # Copyright (c) 2026 Stephan Joseph. All Rights Reserved.
@@ -20,7 +20,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-REPO_RAW="https://raw.githubusercontent.com/stephanjoseph/SaneProcess/main"
+REPO_RAW="https://raw.githubusercontent.com/sane-apps/SaneProcess/main"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # LICENSE VALIDATION
@@ -48,7 +48,7 @@ validate_license() {
         echo ""
         echo -e "${YELLOW}To purchase:${NC}"
         echo "   Email: stephanjoseph2007@gmail.com"
-        echo "   Or open an issue: https://github.com/stephanjoseph/SaneProcess/issues"
+        echo "   Or open an issue: https://github.com/sane-apps/SaneProcess/issues"
         echo ""
         echo -e "${YELLOW}To activate:${NC}"
         echo "   mkdir -p ~/.saneprocess"
@@ -360,10 +360,6 @@ echo "Creating MCP configuration..."
 cat > .mcp.json << 'EOF'
 {
   "mcpServers": {
-    "memory": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-memory", ".claude/memory.json"]
-    },
     "context7": {
       "command": "npx",
       "args": ["-y", "@upstash/context7-mcp@latest"]
@@ -378,10 +374,6 @@ case "$PROJECT_TYPE" in
         cat > .mcp.json << 'EOF'
 {
   "mcpServers": {
-    "memory": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-memory", ".claude/memory.json"]
-    },
     "context7": {
       "command": "npx",
       "args": ["-y", "@upstash/context7-mcp@latest"]
@@ -397,6 +389,10 @@ EOF
 esac
 
 echo "   ✅ .mcp.json"
+
+# Create empty memory.json for memory MCP
+echo '{"entities":[],"relations":[]}' > .claude/memory.json
+echo "   ✅ .claude/memory.json"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -468,7 +464,7 @@ After every task, Claude should rate 1-10:
 
 ## More Info
 
-Full documentation: https://github.com/stephanjoseph/SaneProcess
+Full documentation: https://github.com/sane-apps/SaneProcess
 EOF
 
     echo "   ✅ DEVELOPMENT.md"
@@ -552,5 +548,5 @@ echo "   .claude/failure_state.json"
 echo "   .claude/audit.jsonl"
 echo "   .claude/memory.json"
 echo ""
-echo "Documentation: https://github.com/stephanjoseph/SaneProcess"
+echo "Documentation: https://github.com/sane-apps/SaneProcess"
 echo ""

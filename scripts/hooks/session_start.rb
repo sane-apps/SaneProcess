@@ -141,9 +141,6 @@ def output_session_context
   unless sop_file
     warn '⚠️  No SOP file found (DEVELOPMENT.md, CONTRIBUTING.md)'
   end
-
-  # Check memory health - only warns if bloat detected
-  check_memory_health
 end
 
 # Check for pending MCP actions that need resolution
@@ -152,7 +149,7 @@ MEMORY_STAGING_FILE = File.join(CLAUDE_DIR, 'memory_staging.json')
 def check_pending_mcp_actions
   pending = []
 
-  # Check memory staging
+  # Check memory staging (now uses Sane-Mem at localhost:37777)
   if File.exist?(MEMORY_STAGING_FILE)
     begin
       staging = JSON.parse(File.read(MEMORY_STAGING_FILE))
@@ -160,7 +157,7 @@ def check_pending_mcp_actions
         pending << {
           type: 'memory_staging',
           message: "Memory staging needs saving: #{staging['suggested_entity']&.dig('name') || 'learnings'}",
-          action: 'Call mcp__memory__create_entities then delete memory_staging.json'
+          action: 'Save to Sane-Mem: curl -X POST localhost:37777/observations -d \'...\' then delete memory_staging.json'
         }
       end
     rescue StandardError
@@ -184,46 +181,10 @@ def check_pending_mcp_actions
   pending
 end
 
-# Memory health check on cached data
-# Thresholds match memory.rb: 60 entities, 8000 tokens
-ENTITY_WARN = 40  # Lower threshold for early warning
-TOKEN_WARN = 6000
-
-def check_memory_health
-  memory_file = File.join(CLAUDE_DIR, 'memory.json')
-
-  # Silent if no memory file - not an error condition
-  return unless File.exist?(memory_file)
-
-  begin
-    memory = JSON.parse(File.read(memory_file))
-    entities = memory['entities'] || []
-    entity_count = entities.count
-
-    # Estimate tokens (~4 chars per token)
-    est_tokens = (File.size(memory_file) / 4.0).round
-
-    # Check for verbose entities (>15 observations each)
-    verbose = entities.count { |e| (e['observations'] || []).count > 15 }
-
-    # Only warn if bloat detected - routine status goes to JSON context
-    if entity_count > ENTITY_WARN || est_tokens > TOKEN_WARN || verbose > 3
-      warn '⚠️  MEMORY BLOAT DETECTED'
-      warn "   Entities: #{entity_count}/#{ENTITY_WARN} | Tokens: ~#{est_tokens}/#{TOKEN_WARN}"
-      warn "   Verbose entities (>15 obs): #{verbose}" if verbose > 0
-      warn '   Run: ./Scripts/SaneMaster.rb mh        # Full health report'
-      warn '   Run: ./Scripts/SaneMaster.rb mcompact  # Trim verbose entities'
-    end
-  rescue StandardError
-    # Silent on parse errors - not critical
-  end
-end
-
 # === MCP VERIFICATION SYSTEM ===
 # Reset verification for new session and prompt Claude to verify MCPs
 
 MCP_VERIFICATION_TOOLS = {
-  memory: 'mcp__memory__read_graph',
   apple_docs: 'mcp__apple-docs__search_apple_docs',
   context7: 'mcp__context7__resolve-library-id',
   github: 'mcp__github__search_repositories'
@@ -273,6 +234,236 @@ rescue StandardError
   # Ignore logging errors
 end
 
+# === LOG FILE ROTATION ===
+# Rotate log files that exceed size limit to prevent unbounded growth
+
+LOG_FILES_TO_ROTATE = %w[
+  sanetools.log
+  sanetrack.log
+  saneprompt.log
+  saneprompt_debug.log
+  sanestop.log
+  session_start_debug.log
+].freeze
+
+LOG_MAX_SIZE = 100 * 1024  # 100KB
+
+def rotate_log_files
+  rotated = []
+
+  LOG_FILES_TO_ROTATE.each do |log_name|
+    log_path = File.join(CLAUDE_DIR, log_name)
+    next unless File.exist?(log_path)
+
+    size = File.size(log_path)
+    next if size < LOG_MAX_SIZE
+
+    # Rotate: rename to .old (overwriting previous .old)
+    old_path = "#{log_path}.old"
+    File.rename(log_path, old_path)
+    rotated << { name: log_name, size_kb: (size / 1024.0).round }
+  end
+
+  if rotated.any?
+    warn ''
+    warn "📜 Rotated #{rotated.length} log file#{rotated.length > 1 ? 's' : ''}:"
+    rotated.each { |r| warn "   #{r[:name]} (#{r[:size_kb]}KB → .old)" }
+    warn ''
+  end
+
+  rotated.length
+rescue StandardError => e
+  log_debug "Log rotation error: #{e.message}"
+  0
+end
+
+# === ORPHANED PROCESS CLEANUP ===
+# Clean up orphaned Claude processes from previous sessions
+
+# Get all ancestor PIDs of a process
+def get_ancestor_pids(pid)
+  ancestors = []
+  current = pid
+  10.times do # Max depth to prevent infinite loop
+    ppid = `ps -o ppid= -p #{current} 2>/dev/null`.strip.to_i rescue 0
+    break if ppid <= 1
+    ancestors << ppid
+    current = ppid
+  end
+  ancestors
+end
+
+# Get all PIDs in a process's descendant tree
+def get_process_tree(root_pid)
+  tree = [root_pid]
+
+  # Build parent->children map
+  ps_output = `ps -eo pid,ppid 2>/dev/null`.lines rescue []
+  children_map = Hash.new { |h, k| h[k] = [] }
+
+  ps_output.each do |line|
+    parts = line.split
+    next if parts.length < 2
+    pid = parts[0].to_i
+    ppid = parts[1].to_i
+    children_map[ppid] << pid if pid.positive? && ppid.positive?
+  end
+
+  # BFS to find all descendants
+  queue = [root_pid]
+  while queue.any?
+    current = queue.shift
+    children = children_map[current]
+    children.each do |child|
+      tree << child
+      queue << child
+    end
+  end
+
+  tree
+end
+
+# Cleanup orphaned Claude parent sessions
+def cleanup_orphaned_claude_processes
+  my_session_pid = Process.ppid
+  ancestors = get_ancestor_pids(Process.pid)
+
+  log_debug("cleanup: my_session_pid=#{my_session_pid}, ancestors=#{ancestors.inspect}")
+
+  ps_output = `ps aux 2>/dev/null`.lines rescue []
+
+  orphans_killed = 0
+  ps_output.each do |line|
+    next unless line.include?('--dangerously-skip-permissions')
+    next if line.include?('grep')
+
+    parts = line.split
+    pid = parts[1].to_i
+    next unless pid.positive?
+
+    log_debug("cleanup: evaluating PID #{pid}")
+
+    if pid == my_session_pid || ancestors.include?(pid)
+      log_debug("cleanup: SKIP #{pid} (current session or ancestor)")
+      next
+    end
+
+    log_debug("cleanup: KILL #{pid}")
+    begin
+      Process.kill('KILL', pid)
+      orphans_killed += 1
+    rescue Errno::ESRCH, Errno::EPERM => e
+      log_debug("cleanup: failed to kill #{pid}: #{e.message}")
+    end
+  end
+
+  if orphans_killed.positive?
+    warn "🧹 Cleaned up #{orphans_killed} orphaned Claude session#{orphans_killed == 1 ? '' : 's'}"
+  end
+rescue StandardError => e
+  log_debug("Orphan cleanup error: #{e.class}: #{e.message}")
+end
+
+# Cleanup orphaned MCP daemon processes
+# Fixed 2026-01-11: Now catches ALL orphaned MCPs, not just detached ones
+def cleanup_orphaned_mcp_daemons
+  my_session_pid = Process.ppid
+  session_tree = get_process_tree(my_session_pid)
+  log_debug("mcp_cleanup: session_tree size=#{session_tree.size}")
+
+  # Comprehensive list of MCP patterns - add new MCPs here as needed
+  mcp_patterns = [
+    # claude-mem plugin
+    'chroma-mcp',
+    'worker-service.cjs',
+    'mcp-server.cjs',
+    # Standard MCPs (both npm and local dev paths)
+    'xcodebuildmcp',
+    'xcodebuild-mcp',           # Local dev path variant
+    'context7-mcp',
+    'apple-docs-mcp',
+    'mcp-server-github',
+    'server-memory',            # @modelcontextprotocol/server-memory
+    'macos-automator',          # @steipete/macos-automator-mcp
+    'serena',                   # Serena MCP
+    # Generic catch-all for npm-spawned MCPs
+    'npx/.*/mcp'
+  ]
+
+  ps_output = `ps aux 2>/dev/null`.lines rescue []
+  daemons_killed = 0
+
+  ps_output.each do |line|
+    # REMOVED: next unless line.include?('??')  # Was only catching detached processes
+    # Now catches ALL orphaned MCPs regardless of TTY attachment
+
+    matched_pattern = mcp_patterns.find { |p| line.include?(p) || line.match?(Regexp.new(p)) }
+    next unless matched_pattern
+
+    parts = line.split
+    pid = parts[1].to_i
+    next unless pid.positive?
+
+    if session_tree.include?(pid)
+      log_debug("mcp_cleanup: SKIP #{pid} (#{matched_pattern}) - part of current session")
+      next
+    end
+
+    log_debug("mcp_cleanup: KILL #{pid} (#{matched_pattern})")
+    begin
+      Process.kill('KILL', pid)
+      daemons_killed += 1
+    rescue Errno::ESRCH, Errno::EPERM => e
+      log_debug("mcp_cleanup: failed to kill #{pid}: #{e.message}")
+    end
+  end
+
+  if daemons_killed.positive?
+    warn "🧹 Cleaned up #{daemons_killed} orphaned MCP daemon#{daemons_killed == 1 ? '' : 's'}"
+  end
+rescue StandardError => e
+  log_debug("MCP daemon cleanup error: #{e.class}: #{e.message}")
+end
+
+# Cleanup orphaned Claude subagents (Task tool agents with --resume)
+def cleanup_orphaned_subagents
+  my_session_pid = Process.ppid
+  session_tree = get_process_tree(my_session_pid)
+  log_debug("subagent_cleanup: session_tree size=#{session_tree.size}")
+
+  ps_output = `ps aux 2>/dev/null`.lines rescue []
+  subagents_killed = 0
+
+  ps_output.each do |line|
+    next unless line.include?('claude') && line.include?('--resume')
+    next if line.include?('--dangerously-skip-permissions')  # Parent session
+    next if line.include?('grep')
+
+    parts = line.split
+    pid = parts[1].to_i
+    next unless pid.positive?
+
+    if session_tree.include?(pid)
+      log_debug("subagent_cleanup: SKIP #{pid} - part of current session")
+      next
+    end
+
+    log_debug("subagent_cleanup: KILL #{pid}")
+    begin
+      Process.kill('KILL', pid)
+      subagents_killed += 1
+    rescue Errno::ESRCH, Errno::EPERM => e
+      log_debug("subagent_cleanup: failed to kill #{pid}: #{e.message}")
+    end
+  end
+
+  if subagents_killed.positive?
+    warn "🧹 Cleaned up #{subagents_killed} orphaned subagent#{subagents_killed == 1 ? '' : 's'}"
+  end
+rescue StandardError => e
+  log_debug("Subagent cleanup error: #{e.class}: #{e.message}")
+end
+
 # Build context for Claude (injected via stdout JSON)
 def build_session_context
   require_relative 'core/state_manager'
@@ -292,25 +483,13 @@ def build_session_context
     context_parts << "Pattern rules: #{rule_count} loaded" if rule_count.positive?
   end
 
-  # Memory status
-  memory_file = File.join(CLAUDE_DIR, 'memory.json')
-  if File.exist?(memory_file)
-    begin
-      memory = JSON.parse(File.read(memory_file))
-      entities = memory['entities'] || []
-      est_tokens = (File.size(memory_file) / 4.0).round
-      context_parts << "Memory: #{entities.count} entities (~#{est_tokens} tokens)"
-    rescue StandardError
-      # Ignore
-    end
-  end
-
   # MCP verification reminder (enforcement happens in PreToolUse)
   health = StateManager.get(:mcp_health) rescue {}
   unless health.dig(:verified_this_session)
     context_parts << ""
     context_parts << "MCP verification: Required before editing"
-    context_parts << "Verify by calling: memory read_graph, apple-docs search, context7 resolve, github search"
+    context_parts << "Verify by calling: apple-docs search, context7 resolve, github search"
+    context_parts << "Serena: Call mcp__plugin_serena_serena__activate_project with project path"
   end
 
   context_parts.join("\n")
@@ -319,8 +498,16 @@ end
 # Main execution
 begin
   log_debug "Starting session_start hook"
+  cleanup_orphaned_claude_processes  # Clean up orphan Claude sessions
+  log_debug "cleanup_orphaned_claude_processes done"
+  cleanup_orphaned_mcp_daemons        # Clean up orphan MCP daemons
+  log_debug "cleanup_orphaned_mcp_daemons done"
+  cleanup_orphaned_subagents          # Clean up orphan --resume subagents
+  log_debug "cleanup_orphaned_subagents done"
   ensure_claude_dir
   log_debug "ensure_claude_dir done"
+  rotate_log_files                  # Prevent unbounded log growth
+  log_debug "rotate_log_files done"
   reset_session_state
   log_debug "reset_session_state done"
   clear_stale_satisfaction

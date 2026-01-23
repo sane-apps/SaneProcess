@@ -117,14 +117,15 @@ module SaneMasterModules
     def audit_project
       puts '🔍 --- [ SANEMASTER ACCESSIBILITY AUDIT ] ---'
 
-      project_path = '__PROJECT_NAME__.xcodeproj/project.pbxproj'
-      unless File.exist?(project_path)
-        puts "❌ Project file not found. Run 'xcodegen generate' first."
+      # Auto-detect .xcodeproj in current directory
+      project_dir = Dir.glob('*.xcodeproj').first
+      unless project_dir && File.exist?(project_dir)
+        puts "❌ No .xcodeproj found. Run 'xcodegen generate' first."
         return
       end
 
       require 'xcodeproj'
-      project = Xcodeproj::Project.open(project_path)
+      project = Xcodeproj::Project.open(project_dir)
       swift_files = project.files.select { |f| f.path.end_with?('.swift') && !f.path.include?('Test') }.map(&:real_path)
 
       puts '📂 Scanning Swift files for missing identifiers...'
@@ -215,9 +216,10 @@ module SaneMasterModules
 
     def grant_test_permissions
       print '🔐 Granting test permissions... '
-      system('tccutil reset Camera com.sanevideo.__PROJECT_NAME__ 2>/dev/null')
-      system('tccutil reset Microphone com.sanevideo.__PROJECT_NAME__ 2>/dev/null')
-      system('tccutil reset ScreenRecording com.sanevideo.__PROJECT_NAME__ 2>/dev/null')
+      # Use dynamic bundle_id instead of hardcoded value
+      %w[Camera Microphone ScreenRecording].each do |service|
+        system("tccutil reset #{service} #{@bundle_id} 2>/dev/null")
+      end
 
       permission_pid = nil
       script_path = File.join(__dir__, '..', 'grant_permissions.applescript')
@@ -541,6 +543,169 @@ module SaneMasterModules
     def find_references_in_files(_identifier)
       # UI tests not yet implemented - return empty array
       []
+    end
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # UNIFIED SYSTEM AUDIT
+    # Verifies the centralized SaneProcess hook system is working across all projects
+    # ═══════════════════════════════════════════════════════════════════════════
+    def audit_unified
+      puts "╔══════════════════════════════════════════════════════════════╗"
+      puts "║           UNIFIED SYSTEM AUDIT - SaneProcess                 ║"
+      puts "╚══════════════════════════════════════════════════════════════╝"
+
+      results = { passed: 0, failed: 0, warnings: 0 }
+      saneprocess_hooks = File.expand_path('~/SaneApps/infra/SaneProcess/scripts/hooks')
+
+      # 1. Hook Infrastructure
+      puts "\n═══ 1. HOOK INFRASTRUCTURE ═══"
+      hooks = %w[session_start.rb saneprompt.rb sanetools.rb sanetrack.rb sanestop.rb]
+      hooks.each do |hook|
+        path = File.join(saneprocess_hooks, hook)
+        if File.exist?(path)
+          # Check syntax
+          if system("ruby -c #{path} > /dev/null 2>&1")
+            puts "  ✅ #{hook}: Syntax OK"
+            results[:passed] += 1
+          else
+            puts "  ❌ #{hook}: SYNTAX ERROR"
+            results[:failed] += 1
+          end
+        else
+          puts "  ❌ #{hook}: NOT FOUND"
+          results[:failed] += 1
+        end
+      end
+
+      # Core modules
+      puts "\n  Core Modules:"
+      core_modules = %w[state_manager.rb coordinator.rb hook_registry.rb]
+      core_modules.each do |mod|
+        path = File.join(saneprocess_hooks, 'core', mod)
+        if File.exist?(path) && system("ruby -c #{path} > /dev/null 2>&1")
+          puts "    ✅ core/#{mod}: OK"
+          results[:passed] += 1
+        else
+          puts "    ❌ core/#{mod}: MISSING or SYNTAX ERROR"
+          results[:failed] += 1
+        end
+      end
+
+      # 2. Project Configuration
+      puts "\n═══ 2. PROJECT CONFIGURATION ═══"
+      projects = {
+        'SaneBar' => '~/SaneApps/apps/SaneBar',
+        'SaneSync' => '~/SaneApps/apps/SaneSync',
+        'SaneVideo' => '~/SaneApps/apps/SaneVideo',
+        'SaneClip' => '~/SaneApps/apps/SaneClip',
+        'SaneHosts' => '~/SaneApps/apps/SaneHosts',
+        'SaneScript' => '~/SaneApps/apps/SaneScript',
+        'SaneAI' => '~/SaneApps/apps/SaneAI'
+      }
+
+      projects.each do |name, path|
+        expanded = File.expand_path(path)
+        settings = File.join(expanded, '.claude', 'settings.json')
+
+        if File.exist?(settings)
+          begin
+            require 'json'
+            content = File.read(settings)
+            JSON.parse(content)
+            if content.include?('SaneProcess')
+              puts "  ✅ #{name}: Valid JSON, references SaneProcess"
+              results[:passed] += 1
+            else
+              puts "  ⚠️  #{name}: Valid JSON but NO SaneProcess reference"
+              results[:warnings] += 1
+            end
+          rescue JSON::ParserError
+            puts "  ❌ #{name}: INVALID JSON"
+            results[:failed] += 1
+          end
+        else
+          puts "  ⚠️  #{name}: No settings.json (may not use SaneProcess)"
+          results[:warnings] += 1
+        end
+      end
+
+      # 3. Key Features
+      puts "\n═══ 3. KEY FEATURES ═══"
+      features = {
+        'Lock timeout' => { file: 'core/state_manager.rb', pattern: 'LOCK_TIMEOUT' },
+        'Feature reminders' => { file: 'sanetrack.rb', pattern: 'emit_rewind_reminder' },
+        'Log rotation' => { file: 'session_start.rb', pattern: 'rotate_log_files' },
+        'Serena reminder' => { file: 'session_start.rb', pattern: 'Serena.*activate' }
+      }
+
+      features.each do |name, spec|
+        path = File.join(saneprocess_hooks, spec[:file])
+        if File.exist?(path)
+          content = File.read(path)
+          if content.match?(Regexp.new(spec[:pattern]))
+            puts "  ✅ #{name}: Present"
+            results[:passed] += 1
+          else
+            puts "  ❌ #{name}: MISSING from #{spec[:file]}"
+            results[:failed] += 1
+          end
+        else
+          puts "  ❌ #{name}: File not found (#{spec[:file]})"
+          results[:failed] += 1
+        end
+      end
+
+      # 4. Serena MCP
+      puts "\n═══ 4. MCP CONFIGURATION ═══"
+      serena_config = File.expand_path('~/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/serena/.mcp.json')
+      if File.exist?(serena_config)
+        content = File.read(serena_config)
+        if content.include?('project-from-cwd')
+          puts "  ✅ Serena: --project-from-cwd flag present"
+          results[:passed] += 1
+        else
+          puts "  ⚠️  Serena: Missing --project-from-cwd (manual activation needed)"
+          results[:warnings] += 1
+        end
+      else
+        puts "  ⚠️  Serena config not found"
+        results[:warnings] += 1
+      end
+
+      # 5. Bootstrap Template
+      puts "\n═══ 5. BOOTSTRAP TEMPLATE ═══"
+      template = File.expand_path('~/SaneApps/infra/SaneProcess/templates/NEW_PROJECT_TEMPLATE.md')
+      if File.exist?(template)
+        content = File.read(template)
+        if content.include?('SaneProcess/scripts/hooks')
+          puts "  ✅ Template references shared hooks"
+          results[:passed] += 1
+        else
+          puts "  ❌ Template uses LOCAL hooks (will cause fragmentation!)"
+          results[:failed] += 1
+        end
+      else
+        puts "  ⚠️  Template not found"
+        results[:warnings] += 1
+      end
+
+      # Summary
+      puts "\n╔══════════════════════════════════════════════════════════════╗"
+      puts "║                        SUMMARY                               ║"
+      puts "╠══════════════════════════════════════════════════════════════╣"
+      puts "║  ✅ Passed:   #{results[:passed].to_s.ljust(4)}                                          ║"
+      puts "║  ⚠️  Warnings: #{results[:warnings].to_s.ljust(4)}                                          ║"
+      puts "║  ❌ Failed:   #{results[:failed].to_s.ljust(4)}                                          ║"
+      puts "╠══════════════════════════════════════════════════════════════╣"
+
+      if results[:failed] == 0
+        puts "║  STATUS: ✅ UNIFIED SYSTEM HEALTHY                           ║"
+      else
+        puts "║  STATUS: ❌ ISSUES DETECTED - Review above                   ║"
+      end
+      puts "╚══════════════════════════════════════════════════════════════╝"
+
+      results[:failed] == 0
     end
   end
 end

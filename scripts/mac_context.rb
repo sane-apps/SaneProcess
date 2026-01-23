@@ -10,7 +10,7 @@
 # Part of SaneProcess - The Supervisor for Claude Code
 # "Your AI Developer is drunk. Here is the Supervisor."
 #
-# https://github.com/stephanjoseph/SaneProcess
+# https://github.com/sane-apps/SaneProcess
 
 require 'fileutils'
 

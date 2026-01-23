@@ -95,9 +95,13 @@ class SyncCheck
     puts
     puts "SaneProcess: #{SANEPROCESS_ROOT}"
 
-    # Always sync global hooks first
-    puts "Checking global hooks (~/.claude/hooks/)..."
-    sync_global_hooks
+    # DEPRECATED: Global hooks are no longer used
+    # Hooks are now project-relative (./scripts/hooks/) in settings.json
+    # Legacy global sync kept for backwards compatibility only
+    if @global_mode
+      puts "Checking global hooks (~/.claude/hooks/) [LEGACY]..."
+      sync_global_hooks
+    end
 
     # C6 FIX: Sync settings.json to global
     puts "Checking global settings.json..."

@@ -16,7 +16,7 @@ Run on a fresh machine or directory without SaneProcess installed.
 mkdir /tmp/saneprocess-test && cd /tmp/saneprocess-test
 
 # 2. Run init.sh
-curl -sL https://raw.githubusercontent.com/stephanjoseph/SaneProcess/main/scripts/init.sh | bash
+curl -sL https://raw.githubusercontent.com/sane-apps/SaneProcess/main/scripts/init.sh | bash
 ```
 
 ### Verification Checklist
