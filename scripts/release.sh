@@ -310,6 +310,21 @@ log_info "Verifying code signature..."
 codesign --verify --deep --strict "${APP_PATH}"
 log_info "Code signature verified!"
 
+# Verify Info.plist has Sparkle keys
+log_info "Verifying Sparkle configuration..."
+PLIST_FEED=$(/usr/libexec/PlistBuddy -c "Print :SUFeedURL" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "")
+PLIST_KEY=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "")
+if [ -z "$PLIST_FEED" ]; then
+    log_error "SUFeedURL missing from Info.plist!"
+    exit 1
+fi
+if [ -z "$PLIST_KEY" ]; then
+    log_error "SUPublicEDKey missing from Info.plist!"
+    exit 1
+fi
+log_info "SUFeedURL: ${PLIST_FEED}"
+log_info "SUPublicEDKey: ${PLIST_KEY}"
+
 # Get version from app
 if [ -z "$VERSION" ]; then
     VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "1.0.0")
@@ -323,26 +338,48 @@ DMG_PATH="${BUILD_DIR}/${DMG_NAME}.dmg"
 DMG_TEMP="${BUILD_DIR}/dmg_temp"
 
 log_info "Creating DMG..."
-rm -rf "${DMG_TEMP}"
-mkdir -p "${DMG_TEMP}"
 
-# Copy app to temp folder
-cp -R "${APP_PATH}" "${DMG_TEMP}/"
+# Check if create-dmg is installed (preferred method)
+if command -v create-dmg >/dev/null 2>&1; then
+    log_info "Using create-dmg for professional installer..."
 
-# Create Applications symlink
-ln -s /Applications "${DMG_TEMP}/Applications"
+    # Ensure no old DMG exists (create-dmg fails if exists)
+    rm -f "${DMG_PATH}"
 
-# Create DMG (Standard)
-hdiutil_args=(create -volname "${APP_NAME}" -srcfolder "${DMG_TEMP}" -ov -format UDZO)
-# Custom icon application via hdiutil is unreliable, we use a swift script below instead.
-# However, we still create the DMG here.
+    DMG_ARGS=(
+        --volname "${APP_NAME}"
+        --window-pos 200 120
+        --window-size 800 400
+        --icon-size 100
+        --app-drop-link 600 185
+        --icon "${APP_NAME}.app" 200 185
+        --hide-extension "${APP_NAME}.app"
+    )
 
-hdiutil "${hdiutil_args[@]}" "${DMG_PATH}"
+    # Add custom volume icon if present
+    if [ -f "${PROJECT_ROOT}/Resources/DMGIcon.icns" ]; then
+        DMG_ARGS+=(--volicon "${PROJECT_ROOT}/Resources/DMGIcon.icns")
+    fi
 
-# Apply Custom Icon if present (Fallback for Finder icon)
-if [ -f "${PROJECT_ROOT}/Resources/DMGIcon.icns" ]; then
-    log_info "Setting custom Finder icon for DMG..."
-    
+    create-dmg "${DMG_ARGS[@]}" "${DMG_PATH}" "${APP_PATH}"
+
+else
+    log_warn "create-dmg not found, falling back to basic hdiutil..."
+
+    rm -rf "${DMG_TEMP}"
+    mkdir -p "${DMG_TEMP}"
+
+    cp -R "${APP_PATH}" "${DMG_TEMP}/"
+    ln -s /Applications "${DMG_TEMP}/Applications"
+
+    hdiutil create -volname "${APP_NAME}" -srcfolder "${DMG_TEMP}" -ov -format UDZO "${DMG_PATH}"
+
+    rm -rf "${DMG_TEMP}"
+fi
+
+# Apply Custom Icon to DMG file (for Finder) if hdiutil fallback was used
+if [ ! -x "$(command -v create-dmg)" ] && [ -f "${PROJECT_ROOT}/Resources/DMGIcon.icns" ]; then
+    log_info "Setting custom Finder icon for DMG (Fallback)..."
     if swift "${PROJECT_ROOT}/scripts/set_dmg_icon.swift" "${PROJECT_ROOT}/Resources/DMGIcon.icns" "${DMG_PATH}"; then
         log_info "Custom icon applied to file"
     else
@@ -390,54 +427,75 @@ log_info "========================================"
 log_info "DMG: ${FINAL_DMG}"
 log_info "Version: ${VERSION}"
 
-# Generate Sparkle Signature and Homebrew Hash
+# Generate Sparkle Signature
 if command -v swift >/dev/null 2>&1; then
     log_info ""
-    log_info "--- Generating Release Metadata ---"    
+    log_info "--- Generating Release Metadata ---"
     # Calculate SHA256
     SHA256=$(shasum -a 256 "${FINAL_DMG}" | awk '{print $1}')
-    
+    FILE_SIZE=$(stat -f%z "${FINAL_DMG}")
+
     # Try to fetch Sparkle Private Key
     log_info "Fetching Sparkle Private Key from Keychain..."
     SPARKLE_KEY=$(security find-generic-password -w -s "https://sparkle-project.org" -a "EdDSA Private Key" 2>/dev/null || echo "")
-    
+
     if [ -n "$SPARKLE_KEY" ]; then
         log_info "Sparkle Key found. Generating signature..."
-        
-        SIGNATURE=`swift "${PROJECT_ROOT}/scripts/sign_update.swift" "${FINAL_DMG}" "$SPARKLE_KEY" 2>/dev/null || echo ""`
-        
+
+        SIGNATURE=$(swift "${PROJECT_ROOT}/scripts/sign_update.swift" "${FINAL_DMG}" "$SPARKLE_KEY" 2>/dev/null || echo "")
+
         if [ -n "$SIGNATURE" ]; then
-            FILE_SIZE=$(stat -f%z "${FINAL_DMG}")
             DATE=$(date +"%a, %d %b %Y %H:%M:%S %z")
-            
+
             echo -e "${GREEN}Sparkle AppCast Item:${NC}"
-            echo "<item>"
-            echo "    <title>${VERSION}</title>"
-            echo "    <pubDate>${DATE}</pubDate>"
-            echo "    <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>"
-            echo "    <enclosure url=\"https://github.com/sane-apps/${APP_NAME}/releases/download/v${VERSION}/${APP_NAME}-${VERSION}.dmg\""
-            echo "               sparkle:version=\" ${VERSION}\""
-            echo "               sparkle:shortVersionString=\" ${VERSION}\""
-            echo "               length=\" ${FILE_SIZE}\""
-            echo "               type=\"application/x-apple-diskimage\""
-            echo "               sparkle:edSignature=\" ${SIGNATURE}\""/>"
-            echo "</item>"
+            cat <<EOF
+        <item>
+            <title>${VERSION}</title>
+            <pubDate>${DATE}</pubDate>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <description>
+                <![CDATA[
+                <p>See CHANGELOG.md for details</p>
+                ]]>
+            </description>
+            <enclosure url="https://dist.${LOWER_APP_NAME}.com/updates/${APP_NAME}-${VERSION}.dmg"
+                       sparkle:version="${BUILD_NUMBER}"
+                       sparkle:shortVersionString="${VERSION}"
+                       length="${FILE_SIZE}"
+                       type="application/x-apple-diskimage"
+                       sparkle:edSignature="${SIGNATURE}"/>
+        </item>
+EOF
         else
-            log_warn "Failed to generate Sparkle signature (Check Swift/Key format)"
+            log_warn "Failed to generate Sparkle signature. Check Swift and key format."
         fi
     else
         log_warn "Sparkle Private Key not found in Keychain. Skipping signature generation."
     fi
-    
+
     echo ""
     echo -e "${GREEN}Release Info:${NC}"
-    echo "Version: ${VERSION}"
+    echo "Version: ${VERSION} (Build ${BUILD_NUMBER})"
     echo "SHA256: ${SHA256}"
+    echo "Size: ${FILE_SIZE} bytes"
+
+    # Save metadata alongside DMG for verification after R2 upload
+    cat > "${BUILD_DIR}/${APP_NAME}-${VERSION}.meta" <<METAEOF
+VERSION=${VERSION}
+BUILD=${BUILD_NUMBER}
+SHA256=${SHA256}
+SIZE=${FILE_SIZE}
+SIGNATURE=${SIGNATURE:-UNSIGNED}
+METAEOF
+    log_info "Saved release metadata to ${BUILD_DIR}/${APP_NAME}-${VERSION}.meta"
+    log_info "IMPORTANT: After uploading to R2, run post_release.rb to verify and update appcast"
 fi
 
 log_info ""
 log_info "To test: open \"${FINAL_DMG}\""
-log_info "To upload: Upload to GitHub Releases"
+log_info "To upload to R2:"
+log_info "  npx wrangler r2 object put ${LOWER_APP_NAME}-downloads/updates/${APP_NAME}-${VERSION}.dmg --file=\"${FINAL_DMG}\""
+log_info "Then run: ./scripts/post_release.rb --version ${VERSION}"
 
 # Open the releases folder
 open "${RELEASE_DIR}"
