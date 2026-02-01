@@ -278,6 +278,7 @@ def detect_rule_from_reason(reason)
   when /Rule #2|RESEARCH.*INCOMPLETE|VERIFY/i then 'Rule #2'
   when /Rule #3|CIRCUIT BREAKER/i then 'Rule #3'
   when /Rule #10|FILE SIZE|lines.*limit/i then 'Rule #10'
+  when /SENSITIVE FILE/i then 'sensitive_file'
   when /TABLE BLOCKED/i then 'no_tables'
   when /BASH.*WRITE|STATE.*BYPASS/i then 'bypass_attempt'
   when /SUBAGENT.*BLOCKED/i then 'subagent_bypass'
@@ -393,6 +394,13 @@ def process_tool(tool_name, tool_input)
 
   # Check research before edit
   if (reason = SaneToolsChecks.check_research_before_edit(tool_name, EDIT_TOOLS, RESEARCH_CATEGORIES))
+    log_action(tool_name, true, reason)
+    output_block(reason, tool_name)
+    return 2
+  end
+
+  # Check sensitive file protection (CI/CD, entitlements, build config)
+  if (reason = SaneToolsChecks.check_sensitive_file_edit(tool_name, tool_input, EDIT_TOOLS))
     log_action(tool_name, true, reason)
     output_block(reason, tool_name)
     return 2

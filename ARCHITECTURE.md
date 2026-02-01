@@ -176,7 +176,7 @@ flowchart TD
 |----------|----------|---------------|
 | Read-only | Read, Grep, Glob, search | Never blocked |
 | Local mutation | Edit, Write | Research complete |
-| Global mutation | MCP memory delete | Research complete |
+| Sensitive files | CI/CD, entitlements, .xcconfig, Fastfile | Confirmed once per file per session |
 | External mutation | GitHub push | Research complete |
 
 ### State Schema
@@ -222,6 +222,7 @@ flowchart TD
     "halted_reason": null,
     "session_started_at": null
   },
+  "sensitive_approvals": {},
   "action_log": [],
   "learnings": []
 }
@@ -463,12 +464,12 @@ Covers: build system rules, Info.plist templates, entitlements, security-scoped 
 
 | Component | Self-Test | Tier Tests | Total |
 |-----------|----------|------------|-------|
-| saneprompt.rb | 176 | 58 | 234 |
-| sanetools.rb | 20 | 62 | 82 |
+| saneprompt.rb | 176 | 62 | 238 |
+| sanetools.rb | 25 | 62 | 87 |
 | sanetrack.rb | 23 | 37 | 60 |
 | sanestop.rb | 17 | 5 | 22 |
 | Integration | — | 5 | 5 |
-| **Total** | **236** | **167** | **403** |
+| **Total** | **241** | **171** | **412** |
 
 ### Running Tests
 

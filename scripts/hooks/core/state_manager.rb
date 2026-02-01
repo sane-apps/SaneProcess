@@ -161,6 +161,10 @@ module StateManager
       replan_count: 0,        # Times forced to re-plan (after edit limit)
       forced_at: nil          # Timestamp when planning was required
     },
+    # === SENSITIVE FILE APPROVALS ===
+    # Tracks per-file approval for high-blast-radius files (CI/CD, entitlements, etc.)
+    # First edit attempt blocks with explanation; retry proceeds (user saw the warning)
+    sensitive_approvals: {},
     # === SKILL ENFORCEMENT ===
     # Tracks when skills should be used and validates they were executed properly
     skill: {

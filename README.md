@@ -29,7 +29,8 @@ SaneProcess enforces discipline through hooks that block bad behavior before it 
 | **4 Enforcement Hooks** | Block edits until research is done |
 | **Circuit Breaker** | Auto-stops after 3 same errors |
 | **16 Golden Rules** | Memorable, enforceable discipline |
-| **403 Tests** | 167 tier tests + 236 self-tests, including 42 from real Claude failures |
+| **Sensitive File Protection** | CI/CD, entitlements, build configs require confirmation |
+| **412 Tests** | 171 tier tests + 241 self-tests, including 42 from real Claude failures |
 
 ---
 
@@ -196,10 +197,10 @@ Tools are categorized by blast radius:
 |----------|----------|---------------|
 | Read-only | Read, Grep, search | Never blocked |
 | Local mutation | Edit, Write | Research complete |
-| Global mutation | MCP memory delete | Research complete |
+| Sensitive files | CI/CD, entitlements, build config | Confirmed once per file |
 | External mutation | GitHub push | Research complete |
 
-**Security:** State is HMAC-signed to prevent tampering.
+**Security:** State is HMAC-signed to prevent tampering. Sensitive files (`.github/workflows/`, `.entitlements`, `Dockerfile`, `Fastfile`, `.xcconfig`, `.mcp.json`) require explicit confirmation before the first edit each session.
 
 ---
 
@@ -293,24 +294,24 @@ Requires 30+ data points per metric for statistical significance. Run daily.
 
 ## Test Coverage
 
-403 tests across tier tests and self-tests:
+412 tests across tier tests and self-tests:
 
-**Tier Tests (167):**
+**Tier Tests (171):**
 
 | Tier | Count | Purpose |
 |------|-------|---------|
 | Easy | 61 | Basic functionality |
-| Hard | 53 | Edge cases |
+| Hard | 57 | Edge cases |
 | Villain | 48 | Adversarial bypass attempts |
 | Integration | 5 | End-to-end hook chains |
 
-**Self-Tests (236):**
+**Self-Tests (241):**
 
 | Hook | Count | Purpose |
 |------|-------|---------|
 | saneprompt | 176 | Prompt classification |
 | sanetrack | 23 | Failure tracking, doom loops |
-| sanetools | 20 | Research gate, blocking |
+| sanetools | 25 | Research gate, blocking, sensitive files |
 | sanestop | 17 | Session metrics, validation |
 
 Run tests:

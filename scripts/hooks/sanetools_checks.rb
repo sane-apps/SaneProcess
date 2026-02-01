@@ -34,6 +34,23 @@ module SaneToolsChecks
   FILE_SIZE_HARD_LIMIT = 800
   FILE_SIZE_HARD_LIMIT_MD = 1500
 
+  # === SENSITIVE FILE PATTERNS ===
+  # Files with elevated blast radius — edits affect CI/CD, signing, deployment, or security.
+  # First edit blocks with explanation; retry auto-approves (user saw the warning).
+  SENSITIVE_FILE_PATTERNS = [
+    %r{\.github/workflows/},          # CI/CD pipelines
+    %r{\.gitlab-ci\.yml$}i,           # GitLab CI
+    /Dockerfile/i,                     # Container builds
+    /docker-compose/i,                 # Container orchestration
+    /Jenkinsfile$/i,                   # Jenkins pipelines
+    /Fastfile$/,                       # Fastlane (notarize, upload, deploy)
+    /\.entitlements$/,                 # App security permissions
+    /\.xcconfig$/,                     # Xcode build configuration
+    /Podfile$/,                        # CocoaPods dependencies
+    /Package\.resolved$/,              # SPM lockfile
+    /\.mcp\.json$/                     # MCP server configuration
+  ].freeze
+
   SAFE_REDIRECT_TARGETS = Regexp.union(
     '/dev/null',
     %r{^/tmp/},
@@ -112,6 +129,39 @@ module SaneToolsChecks
       end
 
       nil
+    end
+
+    # === SENSITIVE FILE PROTECTION ===
+    # Blocks first edit attempt on high-blast-radius files.
+    # Retry auto-approves (user saw the block message and didn't intervene).
+    def check_sensitive_file_edit(tool_name, tool_input, edit_tools)
+      return nil unless edit_tools.include?(tool_name)
+
+      path = tool_input['file_path'] || tool_input[:file_path] || ''
+      return nil if path.empty?
+
+      basename = File.basename(path)
+      matched = SENSITIVE_FILE_PATTERNS.find { |p| path.match?(p) || basename.match?(p) }
+      return nil unless matched
+
+      # Check if already approved this session
+      # Note: JSON round-trip may store path as symbol key (symbolize_names: true)
+      approvals = StateManager.get(:sensitive_approvals)
+      return nil if approvals.any? { |k, _| k.to_s == path }
+
+      # Record approval for retry
+      StateManager.update(:sensitive_approvals) do |a|
+        a[path] = { approved_at: Time.now.iso8601 }
+        a
+      end
+
+      "SENSITIVE FILE — CONFIRM INTENT\n" \
+      "File: #{path}\n" \
+      "This file has elevated blast radius (CI/CD, build config, signing, or dependencies).\n" \
+      "Changes here can affect builds, deployment, security, or dependency resolution.\n" \
+      "\n" \
+      "If this edit is intentional, retry — it will proceed.\n" \
+      "This check fires once per file per session."
     end
 
     def check_file_size(tool_name, tool_input, edit_tools)

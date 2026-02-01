@@ -326,8 +326,10 @@ class SaneProcessQA
 
     content = File.read(README)
 
-    # Look for patterns like "11 SOP enforcement hooks" or "11 production-ready hooks"
-    hook_counts = content.scan(/(\d+)\s+(?:SOP enforcement |production-ready )?hooks?/i).flatten.map(&:to_i)
+    # README says "4 Enforcement Hooks" (user-facing count = registered hooks minus session_start)
+    # Also accept "N hooks" or "N SOP enforcement hooks"
+    hook_counts = content.scan(/(\d+)\s+(?:SOP |production-ready )?enforcement\s+hooks?/i).flatten.map(&:to_i)
+    hook_counts += content.scan(/(\d+)\s+(?:SOP enforcement |production-ready )?hooks?(?!\s+registered)/i).flatten.map(&:to_i) if hook_counts.empty?
 
     if hook_counts.empty?
       @warnings << "README.md: No hook count found"
@@ -335,12 +337,14 @@ class SaneProcessQA
       return
     end
 
-    wrong_counts = hook_counts.reject { |c| c == ALL_HOOK_FILES.count }
+    # 4 enforcement hooks is correct (saneprompt, sanetools, sanetrack, sanestop)
+    enforcement_count = EXPECTED_HOOKS.count - 1  # minus session_start
+    wrong_counts = hook_counts.reject { |c| c == enforcement_count }
     if wrong_counts.empty?
-      puts "✅ Hook count correct (#{ALL_HOOK_FILES.count})"
+      puts "✅ Hook count correct (#{enforcement_count} enforcement)"
     else
-      @errors << "README.md says #{wrong_counts.first} hooks, should be #{ALL_HOOK_FILES.count}"
-      puts "❌ Says #{wrong_counts.first}, should be #{ALL_HOOK_FILES.count}"
+      @errors << "README.md says #{wrong_counts.first} hooks, should be #{enforcement_count}"
+      puts "❌ Says #{wrong_counts.first}, should be #{enforcement_count}"
     end
   end
 

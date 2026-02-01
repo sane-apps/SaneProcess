@@ -245,6 +245,97 @@ module SaneToolsTest
     StateManager.reset(:edit_attempts)
     StateManager.reset(:research)
 
+    # === SENSITIVE FILE PROTECTION TESTS ===
+    warn ''
+    warn 'Testing sensitive file protection:'
+
+    # Setup: clean state, research done, plan approved, MCP verified
+    StateManager.reset(:research)
+    StateManager.reset(:planning)
+    StateManager.reset(:edit_attempts)
+    StateManager.reset(:sensitive_approvals)
+    StateManager.update(:mcp_health) { |h| h[:verified_this_session] = true; h }
+    StateManager.update(:session_docs) { |sd| sd[:required] = []; sd[:read] = []; sd }
+    StateManager.update(:requirements) { |r| r[:is_big_task] = false; r[:is_research_only] = false; r[:requested] = []; r[:satisfied] = []; r }
+    research_categories.keys.each do |cat|
+      StateManager.update(:research) { |r| r[cat] = { completed_at: Time.now.iso8601, tool: 'test', via_task: false }; r }
+    end
+
+    # Test: First edit to .github/workflows blocks
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/.github/workflows/ci.yml' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: First edit to .github/workflows/ blocked'
+    else
+      failed += 1
+      warn "  FAIL: First edit to .github/workflows/ should block, got exit #{exit_code}"
+    end
+
+    # Test: Retry same file passes (auto-approved)
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/.github/workflows/ci.yml' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Retry same workflow file allowed (auto-approved)'
+    else
+      failed += 1
+      warn "  FAIL: Retry should allow after first block, got exit #{exit_code}"
+    end
+
+    # Test: Dockerfile blocks on first attempt
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Write', { 'file_path' => '/Users/sj/SaneProcess/Dockerfile', 'content' => 'FROM ruby:3.2' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: First edit to Dockerfile blocked'
+    else
+      failed += 1
+      warn "  FAIL: First edit to Dockerfile should block, got exit #{exit_code}"
+    end
+
+    # Test: .entitlements blocks on first attempt
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/App.entitlements' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: First edit to .entitlements blocked'
+    else
+      failed += 1
+      warn "  FAIL: First edit to .entitlements should block, got exit #{exit_code}"
+    end
+
+    # Test: Normal Swift file NOT blocked
+    StateManager.reset(:sensitive_approvals)
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/Sources/App.swift' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Normal .swift file not affected by sensitive check'
+    else
+      failed += 1
+      warn "  FAIL: Normal .swift file should not be blocked, got exit #{exit_code}"
+    end
+
+    # Cleanup
+    StateManager.reset(:sensitive_approvals)
+    StateManager.reset(:edit_attempts)
+
     # === JSON INTEGRATION TESTS ===
     warn ''
     warn 'Testing JSON parsing (integration):'
@@ -297,6 +388,7 @@ module SaneToolsTest
 
     # === CLEANUP ===
     StateManager.reset(:circuit_breaker)
+    StateManager.reset(:sensitive_approvals)
     StateManager.update(:enforcement) do |e|
       e[:halted] = false
       e[:blocks] = []

@@ -271,19 +271,19 @@ def test_saneprompt
   end
 
   # Short prompts and edge cases — crash-prevention smoke tests (honestly weak)
-  t.test(:hard, "short passthrough: 'y?'", expected_exit: 0) do
+  t.test(:hard, "short passthrough: 'y?'", expected_exit: 0, expected_not_output: 'big_task') do
     t.run_hook({ 'prompt' => 'y?' })
   end
 
-  t.test(:hard, "very short: 'go'", expected_exit: 0) do
+  t.test(:hard, "very short: 'go'", expected_exit: 0, expected_not_output: 'big_task') do
     t.run_hook({ 'prompt' => 'go' })
   end
 
-  t.test(:hard, "empty prompt", expected_exit: 0) do
+  t.test(:hard, "empty prompt", expected_exit: 0, expected_not_output: 'task') do
     t.run_hook({ 'prompt' => '' })
   end
 
-  t.test(:hard, "whitespace only", expected_exit: 0) do
+  t.test(:hard, "whitespace only", expected_exit: 0, expected_not_output: 'task') do
     t.run_hook({ 'prompt' => '   ' })
   end
 
