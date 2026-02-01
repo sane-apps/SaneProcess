@@ -24,7 +24,7 @@
 # Sections:
 #   - circuit_breaker: Failure tracking, trip state
 #   - requirements: What user requested, what's satisfied
-#   - research: 5 category completion status
+#   - research: 4 category completion status
 #   - edits: Edit count, unique files list
 #   - saneloop: Active loop state, iteration, criteria
 #   - enforcement: Enforcement breaker state
@@ -57,7 +57,6 @@ module StateManager
     },
     # Dynamic key: pending_research_write (set by sanetools, read/cleared by sanetrack_research)
     research: {
-      memory: nil,
       docs: nil,
       web: nil,
       github: nil,
@@ -77,10 +76,11 @@ module StateManager
       started_at: nil
     },
     enforcement: {
-      blocks: [],
+      blocks: [],       # Capped at 50 entries (trimmed at session start + sanetrack)
       halted: false,
       halted_at: nil,
-      halted_reason: nil
+      halted_reason: nil,
+      session_started_at: nil  # Set by session_start.rb, used by sanestop.rb for session boundary
     },
     # Edit attempt tracking (prevents "no big deal" syndrome)
     edit_attempts: {
@@ -95,7 +95,7 @@ module StateManager
       weak_spots: {},     # { "rule_N" => count } - rules frequently violated
       triggers: {},       # { "word" => ["rule_N"] } - words that predict violations
       strengths: [],      # ["rule_N"] - rules with 100% compliance
-      session_scores: []  # Last 100 SOP scores (was 10 - not statistically significant)
+      session_scores: []  # Last 10 SOP scores
     },
     # === VALIDATION: Objective productivity tracking ===
     # This data persists across sessions to measure if SaneProcess actually works
@@ -117,7 +117,6 @@ module StateManager
       verified_this_session: false,
       last_verified: nil,
       mcps: {
-        memory: { verified: false, last_success: nil, last_failure: nil, failure_count: 0 },
         apple_docs: { verified: false, last_success: nil, last_failure: nil, failure_count: 0 },
         context7: { verified: false, last_success: nil, last_failure: nil, failure_count: 0 },
         github: { verified: false, last_success: nil, last_failure: nil, failure_count: 0 }

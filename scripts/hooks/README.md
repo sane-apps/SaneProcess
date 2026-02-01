@@ -68,11 +68,10 @@ All state in `.claude/state.json`:
 
 ## Research Gate
 
-Before edits allowed, must complete 5 categories:
+Before edits allowed, must complete 4 categories:
 
 | Category | Satisfied by |
 |----------|--------------|
-| memory | `mcp__memory__*` |
 | docs | `mcp__context7__*`, `mcp__apple-docs__*` |
 | web | `WebSearch`, `WebFetch` |
 | github | `mcp__github__*` |

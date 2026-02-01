@@ -176,8 +176,8 @@ def track_research(tool_name, tool_input)
 
   # Reset edit attempt counter ONLY when:
   # 1. We just did research (research_done is true), AND
-  # 2. ALL 5 categories are now complete
-  # Not just one tool - the FULL investigation (all 5 categories)
+  # 2. ALL 4 categories are now complete
+  # Not just one tool - the FULL investigation (all 4 categories)
   # This is the SaneLoop process - it ALWAYS pays off
   if research_done
     research = StateManager.get(:research)

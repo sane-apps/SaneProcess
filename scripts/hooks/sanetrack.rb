@@ -403,6 +403,8 @@ def track_failure(tool_name, tool_response)
 
   return unless is_failure
 
+  doom_loop_caught = false
+
   StateManager.update(:circuit_breaker) do |cb|
     cb[:failures] = (cb[:failures] || 0) + 1
     cb[:last_error] = response_str[0..200]
@@ -411,10 +413,14 @@ def track_failure(tool_name, tool_response)
     if cb[:failures] >= 3 && !cb[:tripped]
       cb[:tripped] = true
       cb[:tripped_at] = Time.now.iso8601
+      doom_loop_caught = true
     end
 
     cb
   end
+
+  # Q2 validation: track doom loop catch (separate update avoids nested lock)
+  track_validation_doom_loop if doom_loop_caught
 end
 
 def reset_failure_count(tool_name)
@@ -453,6 +459,7 @@ def track_error_signature(signature, tool_name, response_str)
   return unless signature
 
   sig_key = signature.to_sym  # Use symbol for consistent hash access after JSON symbolize
+  doom_loop_caught = false
 
   StateManager.update(:circuit_breaker) do |cb|
     cb[:error_signatures] ||= {}
@@ -463,10 +470,28 @@ def track_error_signature(signature, tool_name, response_str)
       cb[:tripped] = true
       cb[:tripped_at] = Time.now.iso8601
       cb[:last_error] = "#{signature} x#{cb[:error_signatures][sig_key]}: #{response_str[0..100]}"
+      doom_loop_caught = true
     end
 
     cb
   end
+
+  # Q2 validation: track doom loop catch (separate update avoids nested lock)
+  track_validation_doom_loop if doom_loop_caught
+end
+
+# === Q2 VALIDATION: Doom Loop Tracking ===
+# Called when circuit breaker trips (from either consecutive failures or same-signature)
+# Separate function to avoid nested StateManager locks
+
+def track_validation_doom_loop
+  StateManager.update(:validation) do |v|
+    v[:doom_loops_caught] = (v[:doom_loops_caught] || 0) + 1
+    v[:last_updated] = Time.now.iso8601
+    v
+  end
+rescue StandardError
+  # Don't fail on validation tracking
 end
 
 # === INTELLIGENCE: Action Logging for Pattern Learning ===

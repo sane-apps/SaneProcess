@@ -363,7 +363,7 @@ module SanePromptTest
       { input: 'implement the fix after planning', expect: :task },
       { input: 'add the code after researching', expect: :task },
       { input: 'saneloop fix this complex bug', expect: :task, requirement: 'saneloop' },
-      { input: 'fix everything then create commit', expect: :task }
+      { input: 'fix everything then create commit', expect: :big_task }
     ]
 
     tests.each do |test|

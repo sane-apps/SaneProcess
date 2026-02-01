@@ -218,7 +218,7 @@ QUESTION_PATTERN = Regexp.union(
 ).freeze
 
 TASK_INDICATOR = Regexp.union(
-  /\b(fix|add|create|implement|build|refactor|update|change|modify|delete|remove)\b/i,
+  /\b(fix|add|create|implement|build|rebuild|refactor|update|change|modify|delete|remove|move)\b/i,
   /\b(bug|error|issue|problem|broken|failing|crash)\b/i,
   /\b(feature|functionality|capability)\b/i,
   /\b(write|make|generate|set ?up|rewrite|overhaul|redesign)\b/i
@@ -226,7 +226,7 @@ TASK_INDICATOR = Regexp.union(
 
 BIG_TASK_INDICATOR = Regexp.union(
   /\b(everything|all|entire|whole|complete|full)\b/i,
-  /\b(rewrite|overhaul|redesign|architecture)\b/i,
+  /\b(rebuild|rewrite|overhaul|redesign|architecture)\b/i,
   /\b(system|framework|infrastructure)\b/i,
   /\bmultiple (files|components|modules)\b/i
 ).freeze
@@ -415,6 +415,11 @@ def classify_prompt(prompt)
   # Check for task indicators
   return :question unless prompt.match?(TASK_INDICATOR)
 
+  # Research-only prompts classify as questions even with task keywords
+  # e.g. "research why the login is failing" has "failing" (task keyword)
+  # but intent is investigation, not changes
+  return :question if detect_research_only_mode(prompt)
+
   # Check for big task indicators
   prompt.match?(BIG_TASK_INDICATOR) ? :big_task : :task
 end
@@ -492,7 +497,7 @@ def check_task_change_and_reset(prompt, task_types)
       warn "New: #{task_types.first} (#{keywords.join(', ')})"
       warn ''
       warn 'Research from previous task does NOT apply to new task.'
-      warn 'Must complete all 5 research categories for THIS task.'
+      warn 'Must complete all 4 research categories for THIS task.'
       warn '=' * 50
       warn ''
 

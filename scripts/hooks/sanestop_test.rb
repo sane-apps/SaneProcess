@@ -193,6 +193,81 @@ module SaneStopTest
     StateManager.update(:action_log) { |_| [] }
     StateManager.update(:patterns) { |p| p[:session_scores] = []; p }
 
+    # === Q4 VALIDATION: SESSION TRACKING TESTS ===
+    warn ''
+    warn 'Testing validation metrics (Q1/Q4):'
+
+    # Reset for clean test
+    StateManager.reset(:validation)
+    StateManager.reset(:edits)
+    StateManager.reset(:verification)
+    StateManager.reset(:circuit_breaker)
+    StateManager.update(:enforcement) { |e| e[:blocks] = []; e }
+
+    # Test: Session end increments sessions_total
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    validation = StateManager.get(:validation)
+    if validation[:sessions_total] == 1
+      passed += 1
+      warn '  PASS: sessions_total incremented on session end'
+    else
+      failed += 1
+      warn "  FAIL: Expected sessions_total=1, got #{validation[:sessions_total]}"
+    end
+
+    # Test: Session with tests marks sessions_with_tests_passing
+    StateManager.update(:verification) do |v|
+      v[:tests_run] = true
+      v[:last_test_at] = Time.now.iso8601
+      v
+    end
+    $stderr.reopen('/dev/null', 'w')
+    process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    validation = StateManager.get(:validation)
+    if validation[:sessions_with_tests_passing] == 1
+      passed += 1
+      warn '  PASS: sessions_with_tests_passing incremented when tests ran'
+    else
+      failed += 1
+      warn "  FAIL: Expected sessions_with_tests_passing=1, got #{validation[:sessions_with_tests_passing]}"
+    end
+
+    # Test: Session with tripped breaker tracks sessions_with_breaker_trip
+    StateManager.update(:circuit_breaker) do |cb|
+      cb[:tripped] = true
+      cb[:tripped_at] = Time.now.iso8601
+      cb
+    end
+    $stderr.reopen('/dev/null', 'w')
+    process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    validation = StateManager.get(:validation)
+    if validation[:sessions_with_breaker_trip] == 1
+      passed += 1
+      warn '  PASS: sessions_with_breaker_trip incremented'
+    else
+      failed += 1
+      warn "  FAIL: Expected sessions_with_breaker_trip=1, got #{validation[:sessions_with_breaker_trip]}"
+    end
+
+    # Test: first_tracked and last_updated are set
+    if validation[:first_tracked] && validation[:last_updated]
+      passed += 1
+      warn '  PASS: Timestamps set (first_tracked, last_updated)'
+    else
+      failed += 1
+      warn "  FAIL: Timestamps missing: first=#{validation[:first_tracked]}, last=#{validation[:last_updated]}"
+    end
+
+    # Cleanup validation state
+    StateManager.reset(:validation)
+    StateManager.reset(:circuit_breaker)
+    StateManager.reset(:verification)
+
     # === JSON INTEGRATION TESTS ===
     warn ''
     warn 'Testing JSON parsing (integration):'

@@ -599,7 +599,7 @@ module SaneMasterModules
         'SaneVideo' => '~/SaneApps/apps/SaneVideo',
         'SaneClip' => '~/SaneApps/apps/SaneClip',
         'SaneHosts' => '~/SaneApps/apps/SaneHosts',
-        'SaneScript' => '~/SaneApps/apps/SaneScript',
+        'SaneClick' => '~/SaneApps/apps/SaneClick',
         'SaneAI' => '~/SaneApps/apps/SaneAI'
       }
 

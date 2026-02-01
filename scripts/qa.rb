@@ -543,7 +543,8 @@ class SaneProcessQA
       next unless File.exist?(hook_path)
 
       result = `ruby #{hook_path} --self-test 2>&1`
-      if (match = result.match(/(\d+)\/(\d+)/))
+      # Match "N/N tests passed" specifically — avoid false matches like "4/5 categories"
+      if (match = result.match(/(\d+)\/(\d+) tests passed/))
         passed = match[1].to_i
         total = match[2].to_i
         total_passed += passed

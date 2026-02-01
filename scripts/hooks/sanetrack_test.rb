@@ -129,6 +129,42 @@ module SaneTrackTest
       warn "  FAIL: Action log - got #{log.inspect[0..100]}"
     end
 
+    # === Q2 VALIDATION: DOOM LOOP TRACKING ===
+    warn ''
+    warn 'Testing doom loop validation tracking:'
+
+    # Test: Breaker trip on repeated signature increments doom_loops_caught
+    StateManager.reset(:circuit_breaker)
+    StateManager.reset(:validation)
+    process_result_proc.call('Bash', {}, { 'error' => 'permission denied on /etc/hosts' })
+    process_result_proc.call('Bash', {}, { 'output' => 'ok' })
+    process_result_proc.call('Bash', {}, { 'error' => 'access denied to file' })
+    process_result_proc.call('Bash', {}, { 'output' => 'ok' })
+    process_result_proc.call('Bash', {}, { 'error' => 'not permitted to write' })
+    validation = StateManager.get(:validation)
+    if validation[:doom_loops_caught] == 1
+      passed += 1
+      warn '  PASS: Doom loop caught on 3x same signature'
+    else
+      failed += 1
+      warn "  FAIL: Expected doom_loops_caught=1, got #{validation[:doom_loops_caught]}"
+    end
+
+    # Test: Breaker trip on 3 consecutive failures also counts
+    StateManager.reset(:circuit_breaker)
+    StateManager.reset(:validation)
+    process_result_proc.call('Bash', {}, { 'error' => 'fail 1' })
+    process_result_proc.call('Bash', {}, { 'error' => 'fail 2' })
+    process_result_proc.call('Bash', {}, { 'error' => 'fail 3' })
+    validation = StateManager.get(:validation)
+    if validation[:doom_loops_caught] >= 1
+      passed += 1
+      warn '  PASS: Doom loop caught on 3 consecutive failures'
+    else
+      failed += 1
+      warn "  FAIL: Expected doom_loops_caught>=1, got #{validation[:doom_loops_caught]}"
+    end
+
     # === JSON INTEGRATION TESTS ===
     warn ''
     warn 'Testing JSON parsing (integration):'

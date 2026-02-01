@@ -193,14 +193,13 @@ begin
   # Do only ONE category of research (sanetools PreToolUse tracks research!)
   run_hook(SANETOOLS, { 'tool_name' => 'Read', 'tool_input' => { 'file_path' => 'test.rb' } })
 
-  test("Edit after only local research (4 categories missing)", true, SANETOOLS,
+  test("Edit after only local research (3 categories missing)", true, SANETOOLS,
     { 'tool_name' => 'Edit', 'tool_input' => { 'file_path' => 'test.rb', 'old_string' => 'a', 'new_string' => 'b' } })
 
-  # Do 3 categories, still missing 2 (sanetools PreToolUse tracks research!)
-  run_hook(SANETOOLS, { 'tool_name' => 'mcp__memory__read_graph', 'tool_input' => {} })
+  # Do 1 more category (web), still missing docs + github
   run_hook(SANETOOLS, { 'tool_name' => 'WebSearch', 'tool_input' => { 'query' => 'test' } })
 
-  test("Edit after 3/5 research (still incomplete)", true, SANETOOLS,
+  test("Edit after 2/4 research (still incomplete)", true, SANETOOLS,
     { 'tool_name' => 'Edit', 'tool_input' => { 'file_path' => 'test.rb', 'old_string' => 'a', 'new_string' => 'b' } })
 
   # ==========================================================================
@@ -311,9 +310,8 @@ begin
 
   puts "  #{BLUE}Now doing proper research (via sanetools PreToolUse)...#{RESET}"
 
-  # 4. Finally do proper research - ALL 5 categories
+  # 4. Finally do proper research - ALL 4 categories
   # sanetools tracks research in PreToolUse, NOT sanetrack in PostToolUse!
-  run_hook(SANETOOLS, { 'tool_name' => 'mcp__memory__read_graph', 'tool_input' => {} })
   run_hook(SANETOOLS, { 'tool_name' => 'mcp__context7__query-docs', 'tool_input' => { 'libraryId' => '/x', 'query' => 'y' } })
   run_hook(SANETOOLS, { 'tool_name' => 'WebSearch', 'tool_input' => { 'query' => 'test' } })
   run_hook(SANETOOLS, { 'tool_name' => 'mcp__github__search_code', 'tool_input' => { 'q' => 'test' } })

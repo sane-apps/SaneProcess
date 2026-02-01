@@ -126,7 +126,7 @@ module SaneToolsTest
     tracked_count = research_categories.keys.count { |cat| research[cat] }
 
     warn ''
-    warn "Research tracked: #{tracked_count}/5 categories"
+    warn "Research tracked: #{tracked_count}/4 categories"
     research.each do |cat, info|
       status = info ? "done (#{info[:tool]})" : 'pending'
       warn "  #{cat}: #{status}"

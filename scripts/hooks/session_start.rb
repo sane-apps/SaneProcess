@@ -103,6 +103,14 @@ def clear_stale_satisfaction
   StateManager.reset(:verification)
   StateManager.reset(:planning)
 
+  # Record session start time (used by sanestop.rb for session boundary)
+  StateManager.update(:enforcement) do |e|
+    e[:session_started_at] = Time.now.iso8601
+    # Cap blocks array to last 50 entries (prevent unbounded growth)
+    e[:blocks] = (e[:blocks] || []).last(50)
+    e
+  end
+
   # Clear context compact warning so new session gets fresh warning
   context_warned = File.join(CLAUDE_DIR, 'context_warned_size.txt')
   File.delete(context_warned) if File.exist?(context_warned)

@@ -29,7 +29,7 @@ SaneProcess enforces discipline through hooks that block bad behavior before it 
 | **4 Enforcement Hooks** | Block edits until research is done |
 | **Circuit Breaker** | Auto-stops after 3 same errors |
 | **16 Golden Rules** | Memorable, enforceable discipline |
-| **259 Tests** | Including 42 from real Claude failures |
+| **403 Tests** | 167 tier tests + 236 self-tests, including 42 from real Claude failures |
 
 ---
 
@@ -293,14 +293,25 @@ Requires 30+ data points per metric for statistical significance. Run daily.
 
 ## Test Coverage
 
-259 tests across 3 tiers:
+403 tests across tier tests and self-tests:
+
+**Tier Tests (167):**
 
 | Tier | Count | Purpose |
 |------|-------|---------|
-| Easy | 75 | Basic functionality |
-| Hard | 72 | Edge cases |
-| Villain | 70 | Adversarial bypass attempts |
-| Real Failures | 42 | Actual Claude misbehavior |
+| Easy | 61 | Basic functionality |
+| Hard | 53 | Edge cases |
+| Villain | 48 | Adversarial bypass attempts |
+| Integration | 5 | End-to-end hook chains |
+
+**Self-Tests (236):**
+
+| Hook | Count | Purpose |
+|------|-------|---------|
+| saneprompt | 176 | Prompt classification |
+| sanetrack | 23 | Failure tracking, doom loops |
+| sanetools | 20 | Research gate, blocking |
+| sanestop | 17 | Session metrics, validation |
 
 Run tests:
 ```bash
@@ -313,10 +324,11 @@ ruby scripts/hooks/test/tier_tests.rb
 
 ### "BLOCKED: Research incomplete"
 
-The hook is working correctly. You need to:
-1. Check memory MCP for past bugs
-2. Verify APIs exist in docs
-3. Search codebase for patterns
+The hook is working correctly. Complete all 4 research categories:
+1. **docs** — Verify APIs exist (apple-docs, context7)
+2. **web** — Search for current best practices (WebSearch)
+3. **github** — Find external examples (GitHub search)
+4. **local** — Check existing codebase (Read, Grep, Glob)
 
 Run `./scripts/SaneMaster.rb reset_breaker` if stuck.
 
@@ -368,14 +380,14 @@ rm -rf .claude/rules
 ```
 
 Data stored:
-- `~/.claude/` - Hook state (auto-cleaned)
-- Memory MCP - Your bugs/patterns (persists)
+- `.claude/state.json` - Hook state (HMAC-signed, auto-cleaned per session)
+- `.claude/*.log` - Hook logs (rotated at 100KB)
 
 ---
 
 ## Status
 
-**Internal testing** - Used across SaneApps projects (SaneBar, SaneVideo, SaneSync, SaneClip).
+**Internal testing** — Used across 7 SaneApps projects (SaneBar, SaneClick, SaneClip, SaneVideo, SaneSync, SaneHosts, SaneAI).
 
 Public release pending validation.
 
@@ -397,4 +409,4 @@ MIT License. See [LICENSE](LICENSE)
 
 ---
 
-*SaneProcess v2.4 - January 2026*
+*SaneProcess v2.4 - February 2026*

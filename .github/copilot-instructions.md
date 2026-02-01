@@ -175,11 +175,10 @@ These are the product's core value proposition. Never modify their numbering or 
 
 ### Research Gate
 
-Before edits are allowed, must complete 5 research categories:
+Before edits are allowed, must complete 4 research categories:
 
 | Category | Satisfied by Tools |
 |----------|-------------------|
-| memory | `mcp__memory__*` |
 | docs | `mcp__context7__*`, `mcp__apple-docs__*` |
 | web | `WebSearch`, `WebFetch` |
 | github | `mcp__github__*` |

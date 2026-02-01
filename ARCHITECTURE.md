@@ -9,7 +9,7 @@
 
 ## 1. System Overview
 
-SaneProcess is a hook-based enforcement framework for Claude Code that implements the scientific method as a development workflow. Four Ruby hooks intercept Claude Code events (prompt submission, tool calls, tool results, session end), enforce research-before-edit discipline through a 5-category research gate, and prevent doom loops via a circuit breaker pattern. All state lives in a single HMAC-signed JSON file.
+SaneProcess is a hook-based enforcement framework for Claude Code that implements the scientific method as a development workflow. Four Ruby hooks intercept Claude Code events (prompt submission, tool calls, tool results, session end), enforce research-before-edit discipline through a 4-category research gate (docs, web, github, local), and prevent doom loops via a circuit breaker pattern. All state lives in a single HMAC-signed JSON file.
 
 ### Component Diagram
 
@@ -94,7 +94,7 @@ stateDiagram-v2
 
     ResearchRequired --> Researching : tools used
     Researching --> Researching : category completed
-    Researching --> ResearchComplete : all 5 categories done
+    Researching --> ResearchComplete : all 4 categories done
 
     ResearchComplete --> EditAllowed : gate opens
     EditAllowed --> Editing : Edit/Write tool
@@ -129,24 +129,22 @@ flowchart TD
 
 ### Research Gate
 
-Before any edit (Edit, Write, Bash with mutation) is allowed, 5 research categories must be satisfied:
+Before any edit (Edit, Write, Bash with mutation) is allowed, 4 research categories must be satisfied:
 
 ```mermaid
 flowchart LR
-    EDIT[Edit/Write Request] --> GATE{All 5 done?}
+    EDIT[Edit/Write Request] --> GATE{All 4 done?}
 
     GATE -->|No| BLOCKED[EXIT 2: BLOCKED]
     GATE -->|Yes| ALLOWED[EXIT 0: ALLOW]
 
-    subgraph "5 Categories"
-        MEM[memory<br/>mcp__memory__*]
+    subgraph "4 Categories"
         DOC[docs<br/>apple-docs / context7]
         WEB[web<br/>WebSearch / WebFetch]
         GH[github<br/>mcp__github__*]
         LOC[local<br/>Read / Grep / Glob]
     end
 
-    MEM --> GATE
     DOC --> GATE
     WEB --> GATE
     GH --> GATE
@@ -199,7 +197,6 @@ flowchart TD
     "is_big_task": false
   },
   "research": {
-    "memory": null,
     "docs": null,
     "web": null,
     "github": null,
@@ -222,7 +219,8 @@ flowchart TD
     "blocks": [],
     "halted": false,
     "halted_at": null,
-    "halted_reason": null
+    "halted_reason": null,
+    "session_started_at": null
   },
   "action_log": [],
   "learnings": []
@@ -291,7 +289,7 @@ flowchart TD
 **Decision:** Designed a multi-phase orchestration: prompt → classification → research burst → execution → checkpoint → summary. Execution modes: Autonomous, Phase-by-phase (default), Supervised, Modify plan.
 
 **Key design choices:**
-- 5-category parallel research burst before any edits
+- 4-category parallel research burst before any edits
 - Rule mapping baked into classification (bug fix → #8, #7, #4, #3; new feature → #0, #2, #9, #5)
 - Gaming detection: rating inflation (5+ consecutive 8+/10), bypass creation, research skipping, rule citation without evidence
 - Passthrough patterns for commands (`/commit`, `yes`, `continue`) skip transformation
@@ -342,7 +340,7 @@ flowchart TD
 
 **Where we lead:**
 - Circuit breaker (unique in Claude Code ecosystem)
-- Research gate (5-category verification before edits)
+- Research gate (4-category verification before edits)
 - HMAC-signed state (tamper detection)
 - 259 tests including 42 from real Claude failures
 
@@ -463,18 +461,14 @@ Covers: build system rules, Info.plist templates, entitlements, security-scoped 
 
 ## 7. Test Coverage Map
 
-| Component | Self-Test | Tier Tests | Real Failures | Total |
-|-----------|----------|------------|---------------|-------|
-| saneprompt.rb | 26 | — | — | 26 |
-| sanetools.rb | 11 | — | — | 11 |
-| sanetrack.rb | 8 | — | — | 8 |
-| sanestop.rb | 4 | — | — | 4 |
-| config.rb | 5 | — | — | 5 |
-| tier_tests.rb (Easy) | — | 75 | — | 75 |
-| tier_tests.rb (Hard) | — | 72 | — | 72 |
-| tier_tests.rb (Villain) | — | 70 | — | 70 |
-| tier_tests.rb (Real) | — | — | 42 | 42 |
-| **Total** | **54** | **217** | **42** | **313** |
+| Component | Self-Test | Tier Tests | Total |
+|-----------|----------|------------|-------|
+| saneprompt.rb | 176 | 58 | 234 |
+| sanetools.rb | 20 | 62 | 82 |
+| sanetrack.rb | 23 | 37 | 60 |
+| sanestop.rb | 17 | 5 | 22 |
+| Integration | — | 5 | 5 |
+| **Total** | **236** | **167** | **403** |
 
 ### Running Tests
 

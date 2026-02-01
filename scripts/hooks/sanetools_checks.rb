@@ -624,11 +624,11 @@ module SaneToolsChecks
         end
       end
 
-      return nil if timestamps.length < 5
+      return nil if timestamps.length < 4
 
       span = timestamps.max - timestamps.min
       if span < GAMING_THRESHOLDS[:rapid_research_seconds]
-        return "All 5 research categories in #{span.round}s (expected: >30s)"
+        return "All 4 research categories in #{span.round}s (expected: >30s)"
       end
 
       nil

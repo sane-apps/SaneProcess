@@ -47,7 +47,7 @@ These rules enforce the scientific method. Not optional guidelines - **the hooks
 
 | # | Rule | Scientific Method | What Hooks Do |
 |---|------|-------------------|---------------|
-| #2 | **VERIFY BEFORE YOU TRY** | Observe before hypothesizing | Blocks edits until 5 research categories done |
+| #2 | **VERIFY BEFORE YOU TRY** | Observe before hypothesizing | Blocks edits until 4 research categories done |
 | #3 | **TWO STRIKES? INVESTIGATE** | Reject failed hypothesis | Circuit breaker trips at 3 failures |
 | #4 | **TESTS MUST PASS** | Experimental validation | Tracks test results, blocks on red |
 
@@ -67,17 +67,16 @@ These rules enforce the scientific method. Not optional guidelines - **the hooks
 
 ### Research Categories (Required Before Edits)
 
-The hooks require ALL 5 categories before any edit is allowed:
+The hooks require ALL 4 categories before any edit is allowed:
 
 | Category | Tool | What You Learn |
 |----------|------|----------------|
-| **memory** | `mcp__memory__read_graph` | Past bugs, patterns, decisions |
 | **docs** | `mcp__apple-docs__*`, `mcp__context7__*` | API verification |
 | **web** | `WebSearch` | Current best practices |
 | **github** | `mcp__github__search_*` | External examples |
 | **local** | `Read`, `Grep`, `Glob` | Existing code patterns |
 
-**Why all 5?** Each category catches different blind spots. Skip one → miss something → fail → waste time.
+**Why all 4?** Each category catches different blind spots. Skip one → miss something → fail → waste time.
 
 ## macOS UI Testing
 
@@ -117,16 +116,16 @@ ruby scripts/hooks/test/tier_tests.rb --tier villain # Villain tier
 
 ## Cross-Project Sync
 
-SaneProcess hooks sync to: SaneBar, SaneVideo, SaneSync
+SaneProcess hooks sync to all SaneApps: SaneBar, SaneClick, SaneClip, SaneVideo, SaneSync, SaneHosts, SaneAI
 
 ```bash
 # Check sync status
-ruby scripts/sync_check.rb ~/SaneBar
+ruby scripts/sync_check.rb ~/SaneApps/apps/SaneBar
 
 # Sync hooks after changes
-rsync -av scripts/hooks/ ~/SaneBar/scripts/hooks/
-rsync -av scripts/hooks/ ~/SaneVideo/scripts/hooks/
-rsync -av scripts/hooks/ ~/SaneSync/scripts/hooks/
+for app in SaneBar SaneClick SaneClip SaneVideo SaneSync SaneHosts SaneAI; do
+  rsync -av scripts/hooks/ ~/SaneApps/apps/$app/scripts/hooks/
+done
 ```
 
 ## Before Pushing

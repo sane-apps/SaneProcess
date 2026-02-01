@@ -34,12 +34,20 @@ MIN_UNIQUE_FILES_FOR_SUMMARY = 2  # Or 2+ unique files edited
 
 # === SOP SCORE CALCULATION ===
 
+def session_start_time
+  enforcement = StateManager.get(:enforcement)
+  started_at = enforcement[:session_started_at] || enforcement['session_started_at']
+  started_at ? Time.parse(started_at) : (Time.now - 3600)
+rescue ArgumentError
+  Time.now - 3600  # Fallback if timestamp is unparseable
+end
+
 def count_session_violations
   enforcement = StateManager.get(:enforcement)
   blocks = enforcement[:blocks] || []
   return {} if blocks.empty?
 
-  session_start = Time.now - 3600  # Last hour approximates session
+  session_start = session_start_time
   violations = Hash.new(0)
 
   blocks.each do |block|
@@ -47,7 +55,6 @@ def count_session_violations
       block_time = Time.parse(block[:timestamp] || block['timestamp'])
       next if block_time < session_start
     rescue ArgumentError
-      # Invalid timestamp format - skip this block
       next
     end
 
@@ -59,15 +66,28 @@ def count_session_violations
 end
 
 def calculate_sop_score(violations)
-  unique_violations = violations.keys.count
+  # Q3 redesign: Measure blocks-before-compliance (friction), not violations.
+  # Hooks prevent violations (so violations ~= 0 always = rubber-stamp 10/10).
+  # Instead: more blocks in session = AI needed more pushback = lower score.
+  enforcement = StateManager.get(:enforcement)
+  blocks = enforcement[:blocks] || []
+  session_start = session_start_time
 
-  case unique_violations
-  when 0 then 10
-  when 1 then 9
-  when 2 then 8
-  when 3..4 then 7
-  when 5..6 then 6
-  else 5
+  session_block_count = blocks.count do |b|
+    begin
+      Time.parse(b[:timestamp] || b['timestamp']) >= session_start
+    rescue ArgumentError
+      false
+    end
+  end
+
+  case session_block_count
+  when 0 then 10      # Perfect — no blocks needed
+  when 1..2 then 9    # Minor friction
+  when 3..4 then 8    # Moderate friction
+  when 5..7 then 7    # Significant friction
+  when 8..10 then 6   # Heavy friction
+  else 5              # Excessive friction — process fought the AI hard
   end
 end
 
@@ -341,6 +361,104 @@ rescue StandardError => e
   nil  # Don't block on errors in the check itself
 end
 
+# === VALIDATION METRICS (Q1, Q2-missed, Q4) ===
+# Populates the :validation state section that validation_report.rb reads.
+# This data persists across sessions to measure if SaneProcess actually works.
+
+RESET_AUDIT_LOG = File.expand_path('../../.claude/reset_audit.log', __dir__)
+
+# Q1: Block accuracy — compare blocks vs user resets within this session
+def count_session_blocks_and_resets
+  enforcement = StateManager.get(:enforcement)
+  blocks = enforcement[:blocks] || []
+  session_start = session_start_time
+
+  session_blocks = blocks.count do |b|
+    begin
+      Time.parse(b[:timestamp] || b['timestamp']) >= session_start
+    rescue ArgumentError
+      false
+    end
+  end
+
+  session_resets = 0
+  if File.exist?(RESET_AUDIT_LOG)
+    File.readlines(RESET_AUDIT_LOG).each do |line|
+      entry = JSON.parse(line) rescue next
+      begin
+        reset_time = Time.parse(entry['timestamp'])
+        session_resets += 1 if reset_time >= session_start
+      rescue ArgumentError
+        next
+      end
+    end
+  end
+
+  { blocks: session_blocks, resets: session_resets }
+rescue StandardError
+  { blocks: 0, resets: 0 }
+end
+
+# Q2-missed: 3+ trailing consecutive failures without breaker trip
+def count_missed_doom_loops
+  action_log = StateManager.get(:action_log) || []
+  return 0 if action_log.length < 3
+
+  cb = StateManager.get(:circuit_breaker)
+  return 0 if cb[:tripped] # Breaker caught it — not missed
+
+  # Count consecutive failures at end of action log
+  trailing_failures = 0
+  action_log.reverse_each do |action|
+    success = action[:success].nil? ? action['success'] : action[:success]
+    if success == false
+      trailing_failures += 1
+    else
+      break
+    end
+  end
+
+  trailing_failures >= 3 ? 1 : 0
+rescue StandardError
+  0
+end
+
+# Update all validation metrics at session end
+def update_validation_metrics
+  verification = StateManager.get(:verification)
+  cb = StateManager.get(:circuit_breaker)
+  block_stats = count_session_blocks_and_resets
+  missed_loops = count_missed_doom_loops
+
+  StateManager.update(:validation) do |v|
+    # Q4: Session tracking
+    v[:sessions_total] = (v[:sessions_total] || 0) + 1
+    if verification[:tests_run] || verification[:verification_run]
+      v[:sessions_with_tests_passing] = (v[:sessions_with_tests_passing] || 0) + 1
+    end
+    if cb[:tripped]
+      v[:sessions_with_breaker_trip] = (v[:sessions_with_breaker_trip] || 0) + 1
+    end
+
+    # Q1: Block accuracy (resets = user disagreed with block)
+    blocks_wrong = [block_stats[:resets], block_stats[:blocks]].min
+    blocks_correct = block_stats[:blocks] - blocks_wrong
+    v[:blocks_that_were_correct] = (v[:blocks_that_were_correct] || 0) + blocks_correct
+    v[:blocks_that_were_wrong] = (v[:blocks_that_were_wrong] || 0) + blocks_wrong
+
+    # Q2: Missed doom loops (trailing failures without breaker trip)
+    v[:doom_loops_missed] = (v[:doom_loops_missed] || 0) + missed_loops
+
+    # Timestamps
+    v[:first_tracked] ||= Time.now.iso8601
+    v[:last_updated] = Time.now.iso8601
+
+    v
+  end
+rescue StandardError => e
+  warn "⚠️  Validation metrics error: #{e.message}" if ENV['DEBUG']
+end
+
 # === CHECKS ===
 
 def check_summary_needed
@@ -399,6 +517,9 @@ def save_session_learnings
 
   # Stage high-value learnings for Memory MCP
   stage_memory_learnings(violations, sop_score)
+
+  # Update validation metrics (Q1 block accuracy, Q2 missed doom loops, Q4 session counts)
+  update_validation_metrics
 
   log_session(stats)
   stats
@@ -478,7 +599,7 @@ def process_stop(stop_hook_active, transcript_path = nil)
     warn '---'
     warn 'Session Stats'
     warn "  Edits: #{stats[:edits]} (#{stats[:unique_files]} unique files)"
-    warn "  Research: #{stats[:research_done]}/5 categories"
+    warn "  Research: #{stats[:research_done]}/4 categories"
     warn "  Failures: #{stats[:failures]}"
     warn "  Blocks: #{stats[:blocks]}"
 

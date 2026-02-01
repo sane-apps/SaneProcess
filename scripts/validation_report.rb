@@ -32,7 +32,7 @@ class ValidationReport
     apps/SaneClip
     apps/SaneAI
     apps/SaneHosts
-    apps/SaneScript
+    apps/SaneClick
     infra/SaneProcess
   ].freeze
 
@@ -44,7 +44,7 @@ class ValidationReport
     apps/SaneClip
     apps/SaneAI
     apps/SaneHosts
-    apps/SaneScript
+    apps/SaneClick
   ].freeze
 
   def initialize
@@ -365,7 +365,7 @@ class ValidationReport
 
   # Check all CLAUDE.md files list all sister apps
   def check_sister_apps_lists(issues_found)
-    all_apps = %w[SaneBar SaneClip SaneVideo SaneSync SaneHosts SaneAI SaneScript]
+    all_apps = %w[SaneBar SaneClip SaneVideo SaneSync SaneHosts SaneAI SaneClick]
 
     PROJECTS.each do |project|
       claude_md = File.join(SANE_APPS_ROOT, project, 'CLAUDE.md')
@@ -1162,7 +1162,7 @@ class ValidationReport
     puts "═" * 70
     puts
 
-    all_apps = %w[SaneBar SaneClip SaneHosts SaneVideo SaneSync SaneAI SaneScript]
+    all_apps = %w[SaneBar SaneClip SaneHosts SaneVideo SaneSync SaneAI SaneClick]
 
     all_apps.each do |app_name|
       project_path = File.join(SANE_APPS_ROOT, "apps/#{app_name}")
