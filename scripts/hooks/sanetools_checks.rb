@@ -278,7 +278,8 @@ module SaneToolsChecks
 
       unless complete
         return "SUBAGENT BYPASS BLOCKED\n" \
-               "Task for editing: #{prompt[0..50]}... Complete research first."
+               "Task for editing: #{prompt[0..50]}... Complete research first.\n" \
+               "Reset: rr- (clear research to start over)"
       end
 
       nil
@@ -288,7 +289,9 @@ module SaneToolsChecks
       return nil unless edit_tools.include?(tool_name)
 
       research = StateManager.get(:research)
-      complete = research_categories.keys.all? { |cat| research[cat] }
+      total = research_categories.keys.length
+      done = research_categories.keys.count { |cat| research[cat] }
+      complete = done == total
 
       return nil if complete
 
@@ -306,11 +309,12 @@ module SaneToolsChecks
         end
       end.join("\n")
 
-      "RESEARCH INCOMPLETE\n" \
-      "Cannot edit until ALL 4 research categories are done.\n" \
+      "RESEARCH INCOMPLETE [#{done}/#{total} complete: missing #{missing.join(', ')}]\n" \
+      "Cannot edit until ALL #{total} research categories are done.\n" \
       "MISSING (do these NOW):\n" \
       "#{missing_instructions}\n" \
-      "Rule #1: VERIFY BEFORE YOU TRY. Research once, succeed once."
+      "Rule #1: VERIFY BEFORE YOU TRY. Research once, succeed once.\n" \
+      "Reset: rr- (clear research to start over)"
     end
 
     def check_external_mutations(tool_name, external_mutation_pattern, research_categories)
@@ -324,7 +328,8 @@ module SaneToolsChecks
       missing = research_categories.keys.reject { |cat| research[cat] }
       "EXTERNAL MUTATION BLOCKED\n" \
       "Tool '#{tool_name}' affects external systems. Research first.\n" \
-      "Missing: #{missing.join(', ')}. Use read-only tools to understand state first."
+      "Missing: #{missing.join(', ')}. Use read-only tools to understand state first.\n" \
+      "Reset: rr- (clear research to start over)"
     end
 
     def check_circuit_breaker
@@ -334,7 +339,7 @@ module SaneToolsChecks
       "CIRCUIT BREAKER TRIPPED\n" \
       "#{cb[:failures]} consecutive failures detected.\n" \
       "Last error: #{cb[:last_error]}\n" \
-      "User must say 'reset breaker' to continue."
+      "Reset: rb- (clear circuit breaker to retry)"
     end
 
     # === SESSION DOC ENFORCEMENT ===
@@ -352,7 +357,9 @@ module SaneToolsChecks
       unread = required - already_read
       return nil if unread.empty?
 
-      "READ REQUIRED DOCS FIRST\n" \
+      total_docs = required.length
+      read_count = already_read.length
+      "READ REQUIRED DOCS FIRST [#{read_count}/#{total_docs} read]\n" \
       "Session docs must be read before editing.\n" \
       "\n" \
       "Unread (use Read tool on each):\n" \
@@ -380,9 +387,10 @@ module SaneToolsChecks
       "PLAN REQUIRED#{note}\n" \
       "Show your approach and get user approval before editing.\n" \
       "  1. Describe plan (files, changes, approach)\n" \
-      "  2. User says 'approved'/'go ahead'/'lgtm', or type: pa+\n" \
+      "  2. User says 'approved'/'go ahead'/'lgtm'\n" \
       "  3. Or use EnterPlanMode\n" \
-      "Research tools still work. Only edits are blocked."
+      "Research tools still work. Only edits are blocked.\n" \
+      "Reset: pa+ (manually approve plan)"
     end
 
     def check_enforcement_halted
@@ -421,8 +429,7 @@ module SaneToolsChecks
       "SANELOOP REQUIRED\n" \
       "Big task detected but SaneLoop not active.\n" \
       "This task matches big-task indicators (all/complete/rewrite/system/etc).\n" \
-      "Start with: sl+ \"<task description>\"\n" \
-      "Or ask user to start: ./Scripts/SaneMaster.rb saneloop start \"Task\""
+      "Reset: sl+ \"<task description>\" (start SaneLoop for this task)"
     end
 
     def check_requirements(tool_name, bootstrap_tool_pattern, edit_tools, research_categories)
@@ -453,10 +460,12 @@ module SaneToolsChecks
 
       return nil if unsatisfied.empty?
 
-      "REQUIREMENTS NOT MET\n" \
+      satisfied_count = requested.length - unsatisfied.length
+      "REQUIREMENTS NOT MET [#{satisfied_count}/#{requested.length} satisfied]\n" \
       "User requested: #{requested.join(', ')}\n" \
       "Unsatisfied: #{unsatisfied.join(', ')}\n" \
-      "Complete these before editing."
+      "Complete these before editing.\n" \
+      "Reset: Type 'reset?' to see all available reset commands"
     end
 
     # === INTELLIGENCE: Refusal to Read Detection ===
@@ -720,12 +729,14 @@ module SaneToolsChecks
       end
 
       # Build comprehensive error message
+      total_mcps = MCP_VERIFICATION_INFO.length
+      verified_count = total_mcps - unverified.length
       unverified_list = unverified.map do |key, info|
         "  ⬜ #{info[:name]}: #{info[:tool]}"
       end.join("\n")
 
-      msg = "MCP VERIFICATION INCOMPLETE\n" \
-            "Cannot edit until all 4 MCPs are verified this session.\n" \
+      msg = "MCP VERIFICATION INCOMPLETE [#{verified_count}/#{total_mcps} verified]\n" \
+            "Cannot edit until all #{total_mcps} MCPs are verified this session.\n" \
             "\n" \
             "Unverified MCPs (run each tool once to verify):\n" \
             "#{unverified_list}\n"
@@ -781,7 +792,8 @@ module SaneToolsChecks
       "Research RESET + plan approval REVOKED. You MUST:\n" \
       "  1. Redo ALL 4 research categories (docs, web, github, local)\n" \
       "  2. Show a NEW plan and get user approval\n" \
-      "This is the process that ALWAYS works when followed."
+      "This is the process that ALWAYS works when followed.\n" \
+      "Reset: rr- (clear research), pa+ (approve plan)"
     end
 
     def reset_edit_attempts

@@ -77,6 +77,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby ~/.claude/hooks/swift_format.rb || true",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Stop": [
