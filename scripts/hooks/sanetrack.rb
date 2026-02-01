@@ -566,8 +566,8 @@ def emit_explore_reminder(tool_name, tool_input)
   record_reminder(:explore)
 
   warn ''
-  warn '💡 TIP: For large codebase searches, use Task with subagent_type: Explore'
-  warn '   Haiku-powered exploration saves context tokens'
+  warn '💡 TIP: Quick lookup? → Task(subagent_type: "Explore") — fast, disposable'
+  warn '   Real research? → Task(subagent_type: "general-purpose", model: "sonnet") — persists to .claude/research.md'
   warn ''
 end
 
