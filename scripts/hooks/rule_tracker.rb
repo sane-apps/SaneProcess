@@ -33,7 +33,10 @@ module RuleTracker
     9 => 'NEW FILE? GEN THAT PILE',
     10 => 'FIVE HUNDRED\'S FINE, EIGHT\'S THE LINE',
     11 => 'TOOL BROKE? FIX THE YOKE',
-    12 => 'TALK WHILE I WALK'
+    12 => 'TALK WHILE I WALK',
+    13 => 'CONTEXT OR CHAOS',
+    14 => 'PROMPT LIKE A PRO',
+    15 => 'REVIEW BEFORE YOU SHIP'
   }.freeze
 
   # Map hooks to their primary rule

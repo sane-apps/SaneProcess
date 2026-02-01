@@ -93,7 +93,6 @@ module SaneToolsTest
       { tool: 'Read', input: { 'file_path' => '/Users/sj/SaneProcess/test.swift' }, expect_block: false, name: 'Allow Read (tracks local)' },
       { tool: 'Grep', input: { 'pattern' => 'test' }, expect_block: false, name: 'Allow Grep' },
       { tool: 'WebSearch', input: { 'query' => 'swift patterns' }, expect_block: false, name: 'Allow WebSearch (tracks web)' },
-      { tool: 'mcp__memory__read_graph', input: {}, expect_block: false, name: 'Allow memory read (tracks memory)' },
 
       # Task agents (should allow and track)
       { tool: 'Task', input: { 'prompt' => 'Search documentation for this API' }, expect_block: false, name: 'Allow Task (tracks docs)' },
@@ -133,7 +132,12 @@ module SaneToolsTest
     end
 
     # Now edit should work (all research done)
-    if tracked_count == 5
+    # Setup remaining state so this test actually runs (was always skipped before memory removal)
+    StateManager.update(:mcp_health) { |h| h[:verified_this_session] = true; h }
+    StateManager.update(:session_docs) { |sd| sd[:required] = []; sd[:read] = []; sd }
+    StateManager.update(:requirements) { |r| r[:is_big_task] = false; r[:is_research_only] = false; r[:requested] = []; r[:satisfied] = []; r }
+
+    if tracked_count == 4
       original_stderr = $stderr.clone
       $stderr.reopen('/dev/null', 'w')
       exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })

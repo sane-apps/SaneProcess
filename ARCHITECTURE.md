@@ -194,7 +194,8 @@ flowchart TD
     "requested": [],
     "satisfied": [],
     "is_task": false,
-    "is_big_task": false
+    "is_big_task": false,
+    "is_research_only": false
   },
   "research": {
     "docs": null,
@@ -222,9 +223,76 @@ flowchart TD
     "halted_reason": null,
     "session_started_at": null
   },
+  "edit_attempts": {
+    "count": 0,
+    "last_attempt": null,
+    "reset_at": null
+  },
   "sensitive_approvals": {},
   "action_log": [],
-  "learnings": []
+  "learnings": [],
+  "patterns": {
+    "weak_spots": {},
+    "triggers": {},
+    "strengths": [],
+    "session_scores": []
+  },
+  "validation": {
+    "sessions_total": 0,
+    "sessions_with_tests_passing": 0,
+    "sessions_with_breaker_trip": 0,
+    "blocks_that_were_correct": 0,
+    "blocks_that_were_wrong": 0,
+    "doom_loops_caught": 0,
+    "doom_loops_missed": 0,
+    "time_saved_estimates": [],
+    "first_tracked": null,
+    "last_updated": null
+  },
+  "mcp_health": {
+    "verified_this_session": false,
+    "last_verified": null,
+    "mcps": {
+      "apple_docs": { "verified": false, "last_success": null, "failure_count": 0 },
+      "context7": { "verified": false, "last_success": null, "failure_count": 0 },
+      "github": { "verified": false, "last_success": null, "failure_count": 0 }
+    }
+  },
+  "refusal_tracking": {},
+  "task_context": {
+    "task_type": null,
+    "task_keywords": [],
+    "task_hash": null,
+    "researched_at": null
+  },
+  "session_docs": {
+    "required": [],
+    "read": [],
+    "enforced": true
+  },
+  "verification": {
+    "tests_run": false,
+    "verification_run": false,
+    "last_test_at": null,
+    "test_commands": [],
+    "edits_before_test": 0
+  },
+  "planning": {
+    "required": false,
+    "plan_shown": false,
+    "plan_approved": false,
+    "replan_count": 0,
+    "forced_at": null
+  },
+  "skill": {
+    "required": null,
+    "invoked": false,
+    "invoked_at": null,
+    "subagents_spawned": 0,
+    "files_read": [],
+    "satisfied": false,
+    "satisfaction_reason": null
+  }
 }
 ```
 
