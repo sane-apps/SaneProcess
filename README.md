@@ -30,7 +30,7 @@ SaneProcess enforces discipline through hooks that block bad behavior before it 
 | **Circuit Breaker** | Auto-stops after 3 same errors |
 | **16 Golden Rules** | Memorable, enforceable discipline |
 | **Sensitive File Protection** | CI/CD, entitlements, build configs require confirmation |
-| **412 Tests** | 171 tier tests + 241 self-tests, including 42 from real Claude failures |
+| **416 Tests** | 175 tier tests + 241 self-tests, including 42 from real Claude failures |
 
 ---
 
@@ -200,7 +200,7 @@ Tools are categorized by blast radius:
 | Sensitive files | CI/CD, entitlements, build config | Confirmed once per file |
 | External mutation | GitHub push | Research complete |
 
-**Security:** State is HMAC-signed to prevent tampering. Sensitive files (`.github/workflows/`, `.entitlements`, `Dockerfile`, `Fastfile`, `.xcconfig`, `.mcp.json`) require explicit confirmation before the first edit each session.
+**Security:** State is HMAC-signed to prevent tampering (key in macOS Keychain, not file-readable). Inline script execution (`python -c`, `ruby -e`, `node -e`) blocked as bash mutations. Sensitive files (`.github/workflows/`, `.entitlements`, `Dockerfile`, `Fastfile`, `.xcconfig`, `.mcp.json`) require explicit confirmation before the first edit each session.
 
 ---
 
@@ -294,15 +294,15 @@ Requires 30+ data points per metric for statistical significance. Run daily.
 
 ## Test Coverage
 
-412 tests across tier tests and self-tests:
+416 tests across tier tests and self-tests:
 
-**Tier Tests (171):**
+**Tier Tests (175):**
 
 | Tier | Count | Purpose |
 |------|-------|---------|
 | Easy | 61 | Basic functionality |
-| Hard | 57 | Edge cases |
-| Villain | 48 | Adversarial bypass attempts |
+| Hard | 55 | Edge cases |
+| Villain | 59 | Adversarial bypass attempts |
 | Integration | 5 | End-to-end hook chains |
 
 **Self-Tests (241):**

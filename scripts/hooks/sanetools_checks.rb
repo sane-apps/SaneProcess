@@ -22,7 +22,8 @@ module SaneToolsChecks
     /\.env$/,
     /credentials\.json$/i,  # Block credentials.json but not credentials_template.json
     /secrets?\.ya?ml$/i,
-    # C1 CRITICAL: Block hook secret key (Claude could forge signatures)
+    # C1: HMAC secret moved to macOS Keychain (not file-readable)
+    # Legacy file path still blocked for migration safety
     /\.claude_hook_secret$/,
     # Block netrc (contains credentials)
     /\.netrc$/

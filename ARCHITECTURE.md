@@ -486,9 +486,11 @@ Covers: build system rules, Info.plist templates, entitlements, security-scoped 
 
 **Threats addressed:**
 - **State tampering:** HMAC signing on state.json detects manual edits
+- **HMAC key protection:** Secret stored in macOS Keychain (not file-readable by agent tools)
 - **Research gate bypass:** Only PostToolUse (sanetrack) can mark research categories complete
 - **Path traversal:** Blocked system paths (`.ssh`, `.aws`, `/etc`)
 - **Edit without research:** PreToolUse blocks mutations until gate satisfied
+- **Inline script detection:** `python -c`, `ruby -e`, `node -e`, `perl -e` blocked as bash mutations
 - **Doom loops:** Circuit breaker trips after 3 consecutive failures
 
 **Known gaps:**
@@ -533,11 +535,11 @@ Covers: build system rules, Info.plist templates, entitlements, security-scoped 
 | Component | Self-Test | Tier Tests | Total |
 |-----------|----------|------------|-------|
 | saneprompt.rb | 176 | 62 | 238 |
-| sanetools.rb | 25 | 62 | 87 |
+| sanetools.rb | 25 | 66 | 91 |
 | sanetrack.rb | 23 | 37 | 60 |
 | sanestop.rb | 17 | 5 | 22 |
 | Integration | — | 5 | 5 |
-| **Total** | **241** | **171** | **412** |
+| **Total** | **241** | **175** | **416** |
 
 ### Running Tests
 

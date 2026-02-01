@@ -15,8 +15,8 @@
 #
 # Secret key sources (in order of preference):
 #   1. CLAUDE_HOOK_SECRET environment variable
-#   2. ~/.claude_hook_secret file
-#   3. Auto-generated on first use (stored in ~/.claude_hook_secret)
+#   2. macOS Keychain (service: claude_hook, account: hmac_secret)
+#   3. Auto-generated on first use (stored in keychain)
 # ==============================================================================
 
 require 'json'
@@ -26,7 +26,9 @@ require 'securerandom'
 
 module StateSigner
   SECRET_ENV_VAR = 'CLAUDE_HOOK_SECRET'
-  SECRET_FILE = File.expand_path('~/.claude_hook_secret')
+  KEYCHAIN_SERVICE = 'claude_hook'
+  KEYCHAIN_ACCOUNT = 'hmac_secret'
+  SECRET_FILE = File.expand_path('~/.claude_hook_secret')  # Legacy fallback
   SIGNATURE_KEY = '__sig__'
   TIMESTAMP_KEY = '__ts__'
 
@@ -111,17 +113,41 @@ module StateSigner
       env_secret = ENV[SECRET_ENV_VAR]
       return env_secret if env_secret && !env_secret.empty?
 
-      # Priority 2: Secret file
+      # Priority 2: macOS Keychain (not readable by Bash cat)
+      keychain_secret = read_keychain
+      return keychain_secret if keychain_secret
+
+      # Priority 3: Migrate from legacy file to keychain
       if File.exist?(SECRET_FILE)
         file_secret = File.read(SECRET_FILE).strip
-        return file_secret if file_secret && !file_secret.empty?
+        if file_secret && !file_secret.empty?
+          write_keychain(file_secret)
+          File.delete(SECRET_FILE) rescue nil
+          return file_secret
+        end
       end
 
-      # Priority 3: Generate new secret
+      # Priority 4: Generate new secret and store in keychain
       new_secret = SecureRandom.hex(32)
-      File.write(SECRET_FILE, new_secret)
-      File.chmod(0o600, SECRET_FILE) # Owner read/write only
+      write_keychain(new_secret)
       new_secret
+    end
+
+    def read_keychain
+      result = `security find-generic-password -s #{KEYCHAIN_SERVICE} -a #{KEYCHAIN_ACCOUNT} -w 2>/dev/null`.strip
+      result.empty? ? nil : result
+    rescue StandardError
+      nil
+    end
+
+    def write_keychain(secret)
+      # Delete existing entry if present (security add fails on duplicate)
+      system("security delete-generic-password -s #{KEYCHAIN_SERVICE} -a #{KEYCHAIN_ACCOUNT} 2>/dev/null")
+      system("security add-generic-password -s #{KEYCHAIN_SERVICE} -a #{KEYCHAIN_ACCOUNT} -w #{secret}")
+    rescue StandardError
+      # Fallback: write to file if keychain fails (e.g., Linux)
+      File.write(SECRET_FILE, secret)
+      File.chmod(0o600, SECRET_FILE)
     end
 
     # Constant-time comparison to prevent timing attacks

@@ -111,7 +111,13 @@ BASH_FILE_WRITE_PATTERN = Regexp.union(
   # Bulk file operations (M8 addition)
   /\bxargs\b.*\b(touch|rm|mv|cp)\b/,
   # Move/overwrite (M8 addition)
-  /\bmv\s+/
+  /\bmv\s+/,
+  # Inline script execution (can write files without redirection)
+  /\bpython3?\s+-c\b/,
+  /\bruby\s+-e\b/,
+  /\bnode\s+-e\b/,
+  /\bperl\s+-e\b/,
+  /\bswift\s+-e\b/
 ).freeze
 
 EDIT_KEYWORDS = %w[edit write create modify change update add remove delete fix patch].freeze
