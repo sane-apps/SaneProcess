@@ -131,14 +131,16 @@ If you can't find research:
 
 ## Avoiding Fragmentation
 
+**As of 2026-02:** SaneApps follows a 5-document standard per project. Research belongs in `ARCHITECTURE.md` §4. See `~/.claude/templates/DOC_STANDARD.md` for the full spec.
+
 **DO:**
-- Link all research in this index
-- Use consistent file naming: `topic-name.md`
-- Store in `.claude/archive/research/` per app
+- Put new research in the project's `ARCHITECTURE.md` §4 (Research section)
+- Link app-specific research in this index for cross-app visibility
+- Use consistent file naming for app research: `topic-name.md`
 - Cross-reference between docs
 
 **DON'T:**
-- Create random docs without linking here
+- Create standalone `RESEARCH_REPORT.md` files (merge into ARCHITECTURE.md)
 - Duplicate research across apps
 - Leave session notes unlinked
 - Forget to update when research is complete

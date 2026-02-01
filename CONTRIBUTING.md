@@ -35,11 +35,17 @@ bundle install
 
 ```
 SaneProcess/
-├── docs/                   # Methodology documentation
-│   └── SaneProcess.md      # Complete SOP (1,400+ lines)
+├── CLAUDE.md               # AI instructions
+├── README.md               # Product overview
+├── DEVELOPMENT.md          # Build, test, contribute
+├── ARCHITECTURE.md         # System design, decisions, research
+├── SESSION_HANDOFF.md      # Recent work (ephemeral)
+├── docs/
+│   ├── SaneProcess.md      # Complete SOP (1,400+ lines)
+│   └── archive/            # Confidential docs (gitignored)
 ├── scripts/
 │   ├── SaneMaster.rb       # Main CLI tool
-│   ├── hooks/              # Enforcement hooks (259 tests)
+│   ├── hooks/              # Enforcement hooks (313 tests)
 │   └── sanemaster/         # CLI subcommands
 ├── templates/              # Project templates
 ├── skills/                 # Domain-specific knowledge modules

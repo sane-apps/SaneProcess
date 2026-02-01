@@ -46,7 +46,6 @@ class ContaminationChecker
     'PROJECT_SYNC_PLAN.md',
     'SESSION_HANDOFF.md',
     # Documentation about the ecosystem
-    'LemonSqueezy_Setup.md',
     'copilot-instructions.md',
     'AUDIT_FINDINGS.md',
     'BUG_TRACKING.md',

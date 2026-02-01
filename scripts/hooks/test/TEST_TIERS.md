@@ -45,7 +45,7 @@ From memory - these correlate with Rule #3 violations:
 
 ### Gaming Patterns
 
-From SANEPROMPT_SPEC:
+From ARCHITECTURE.md §2 (SanePrompt design):
 - Rating inflation: 5+ consecutive 8+/10
 - Research skipping: Phase complete without logs
 - Rule citation without evidence

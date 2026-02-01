@@ -11,9 +11,15 @@
 [ ] .claude/rules/ (copy from SaneProcess)
 [ ] .mcp.json (project root)
 [ ] CLAUDE.md (project root)
+[ ] README.md (project root)
+[ ] DEVELOPMENT.md (project root)
+[ ] ARCHITECTURE.md (project root — use ~/.claude/templates/ARCHITECTURE.md)
+[ ] SESSION_HANDOFF.md (project root)
 [ ] ~/.zshrc alias
 [ ] Verify all files
 ```
+
+> **Doc standard:** Every project gets exactly 5 docs. See `~/.claude/templates/DOC_STANDARD.md`.
 
 ---
 

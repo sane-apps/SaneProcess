@@ -1,6 +1,11 @@
 # SaneProcess Development Guide
 
-> Ruby hooks for Claude Code enforcement. Source of truth for all Sane projects.
+> **Project Docs:** [CLAUDE.md](CLAUDE.md) · [README](README.md) · [DEVELOPMENT](DEVELOPMENT.md) · [ARCHITECTURE](ARCHITECTURE.md) · [SESSION_HANDOFF](SESSION_HANDOFF.md)
+>
+> You are reading **DEVELOPMENT.md** — how to build, test, and contribute.
+> For system design and decisions, see [ARCHITECTURE](ARCHITECTURE.md). For AI instructions, see [CLAUDE](CLAUDE.md).
+
+Ruby hooks for Claude Code enforcement. Source of truth for all Sane projects.
 
 ---
 
@@ -129,3 +134,98 @@ rsync -av scripts/hooks/ ~/SaneSync/scripts/hooks/
 1. `ruby scripts/qa.rb` - QA passes
 2. `ruby scripts/hooks/test/tier_tests.rb` - All tests pass
 3. Sync to other projects if hooks changed
+
+---
+
+## Fresh Install Testing
+
+Run on a fresh machine or directory without SaneProcess installed.
+
+### Prerequisites
+
+- macOS with Ruby installed
+- `claude` CLI installed (`npm install -g @anthropic-ai/claude-code`)
+
+### Test Steps
+
+```bash
+# 1. Create test directory
+mkdir /tmp/saneprocess-test && cd /tmp/saneprocess-test
+
+# 2. Run init.sh
+curl -sL https://raw.githubusercontent.com/sane-apps/SaneProcess/main/scripts/init.sh | bash
+```
+
+### Verification Checklist
+
+- [ ] `.claude/` and `.claude/rules/` exist
+- [ ] `Scripts/hooks/` and `Scripts/sanemaster/` exist
+- [ ] `.claude/settings.json` is valid JSON
+- [ ] `.mcp.json` is valid JSON
+- [ ] Syntax validation: `for f in Scripts/hooks/*.rb; do ruby -c "$f"; done`
+- [ ] Hook registration: `grep -c "Scripts/hooks" .claude/settings.json` (>= 13)
+- [ ] SaneMaster: `./Scripts/SaneMaster.rb --help` shows usage
+
+### Regression Tests
+
+```bash
+ruby scripts/hooks/test/hook_test.rb   # 28 tests, 0 failures
+```
+
+### Full QA
+
+```bash
+./scripts/qa.rb   # All checks passed
+```
+
+---
+
+## Lemon Squeezy Product Setup
+
+### Store Settings
+
+- **Store Name:** Sane Labs
+- **Store URL:** `sane.lemonsqueezy.com`
+- **Brand Color:** `#10B981` (emerald green)
+
+### Products
+
+| Product | Type | Price | Slug |
+|---------|------|-------|------|
+| SaneProcess | Digital Download | $29 | `saneprocess` |
+| SaneBar | macOS App | $12 | `sanebar` |
+| SaneVideo | macOS App | $39 | `sanevideo` |
+| Sane Suite Bundle | Bundle (all 3) | $59 (save $21) | `suite` |
+
+### Discount Codes
+
+| Code | Discount | Use Case |
+|------|----------|----------|
+| `LAUNCH` | 20% off | Launch week |
+| `TWITTER` | 15% off | Social followers |
+| `GITHUB` | 15% off | GitHub contributors |
+| `BUNDLE10` | Extra 10% off bundle | Push to bundle |
+
+### Checkout Settings
+
+- **Tax:** LemonSqueezy handles VAT/GST automatically
+- **Receipts:** Email receipts enabled
+- **License Keys:** Enabled for apps (future update gating)
+
+### Payment Links
+
+```
+https://sane.lemonsqueezy.com/buy/saneprocess
+https://sane.lemonsqueezy.com/buy/sanebar
+https://sane.lemonsqueezy.com/buy/sanevideo
+https://sane.lemonsqueezy.com/buy/suite
+```
+
+### API Access
+
+```bash
+# Fetch orders (keychain-stored API key)
+KEY=$(security find-generic-password -s lemonsqueezy -a api_key -w)
+curl -s "https://api.lemonsqueezy.com/v1/orders?filter[store_id]=270691" \
+  -H "Authorization: Bearer $KEY" -H "Accept: application/vnd.api+json"
+```
