@@ -102,6 +102,7 @@ def clear_stale_satisfaction
   require_relative 'core/state_manager'
   StateManager.reset(:verification)
   StateManager.reset(:planning)
+  StateManager.reset(:deployment)
 
   # Record session start time (used by sanestop.rb for session boundary)
   StateManager.update(:enforcement) do |e|
@@ -519,11 +520,14 @@ CLAUDE_MEM_LOGS_DIR = File.expand_path('~/.claude-mem/logs')
 def check_memory_health
   issues = []
 
-  # 1. Worker responding?
+  # 1. Worker responding? (2s timeout to avoid blocking hook)
   begin
     require 'net/http'
     uri = URI("http://127.0.0.1:#{CLAUDE_MEM_PORT}/api/health")
-    response = Net::HTTP.get_response(uri)
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.open_timeout = 2
+    http.read_timeout = 2
+    response = http.request(Net::HTTP::Get.new(uri))
     unless response.code == '200'
       issues << "Worker not healthy (HTTP #{response.code})"
     end
@@ -601,6 +605,93 @@ rescue StandardError => e
   []
 end
 
+# === STARTUP GATE INITIALIZATION ===
+# Sets up the gate that blocks substantive work until startup steps complete.
+# Auto-completes steps where required files don't exist (cross-project safety).
+SKILLS_REGISTRY = File.expand_path('~/.claude/SKILLS_REGISTRY.md')
+VALIDATION_SCRIPT = File.join(PROJECT_DIR, 'scripts', 'validation_report.rb')
+SANEMASTER_SCRIPT = File.join(PROJECT_DIR, 'scripts', 'SaneMaster.rb')
+
+def initialize_startup_gate
+  require_relative 'core/state_manager'
+
+  steps = {
+    session_docs: false,
+    skills_registry: false,
+    validation_report: false,
+    sanemem_check: false,
+    orphan_cleanup: true,  # Already ran in session_start
+    system_clean: false
+  }
+  timestamps = { orphan_cleanup: Time.now.iso8601 }
+
+  # Auto-complete steps where required files don't exist
+  unless File.exist?(SKILLS_REGISTRY)
+    steps[:skills_registry] = true
+    timestamps[:skills_registry] = Time.now.iso8601
+  end
+
+  unless File.exist?(VALIDATION_SCRIPT)
+    steps[:validation_report] = true
+    timestamps[:validation_report] = Time.now.iso8601
+  end
+
+  unless File.exist?(SANEMASTER_SCRIPT)
+    steps[:system_clean] = true
+    timestamps[:system_clean] = Time.now.iso8601
+  end
+
+  # If session_docs has no required docs, auto-complete that step
+  session_docs = StateManager.get(:session_docs)
+  if (session_docs[:required] || []).empty?
+    steps[:session_docs] = true
+    timestamps[:session_docs] = Time.now.iso8601
+  end
+
+  # Add SKILLS_REGISTRY.md to session_docs.required if it exists
+  if File.exist?(SKILLS_REGISTRY)
+    StateManager.update(:session_docs) do |sd|
+      sd[:required] ||= []
+      sd[:required] << 'SKILLS_REGISTRY.md' unless sd[:required].include?('SKILLS_REGISTRY.md')
+      sd
+    end
+  end
+
+  # Check if gate is already open (all steps done)
+  all_done = steps.values.all?
+  gate = {
+    open: all_done,
+    opened_at: all_done ? Time.now.iso8601 : nil,
+    steps: steps,
+    step_timestamps: timestamps
+  }
+
+  StateManager.update(:startup_gate) { |_| gate }
+
+  # Print checklist
+  pending = steps.reject { |_, v| v }
+  if pending.any?
+    warn ''
+    warn '🚦 STARTUP GATE: Complete these steps before working:'
+    pending.each_key do |step|
+      case step
+      when :session_docs    then warn '   [ ] Read session docs (SESSION_HANDOFF.md, DEVELOPMENT.md)'
+      when :skills_registry then warn '   [ ] Read ~/.claude/SKILLS_REGISTRY.md'
+      when :validation_report then warn '   [ ] Run: ruby scripts/validation_report.rb'
+      when :sanemem_check   then warn '   [ ] Check Sane-Mem: curl localhost:37777/api/health'
+      when :system_clean    then warn '   [ ] Run: ./scripts/SaneMaster.rb clean_system'
+      end
+    end
+    warn ''
+    warn '   Task, Edit, Write, Bash blocked until complete.'
+    warn ''
+  else
+    warn '🚦 STARTUP GATE: All steps auto-completed — gate open'
+  end
+rescue StandardError => e
+  warn "⚠️  Could not initialize startup gate: #{e.message}"
+end
+
 # Build context for Claude (injected via stdout JSON)
 def build_session_context
   require_relative 'core/state_manager'
@@ -674,6 +765,8 @@ begin
   log_debug "reset_mcp_verification done"
   populate_session_docs       # Discover required docs for enforcement
   log_debug "populate_session_docs done"
+  initialize_startup_gate     # Block substantive work until startup steps done
+  log_debug "initialize_startup_gate done"
   output_session_context      # User-facing messages to stderr
   log_debug "output_session_context done"
   check_pending_mcp_actions   # Alert user to pending actions

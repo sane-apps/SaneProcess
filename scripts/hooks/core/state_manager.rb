@@ -165,6 +165,28 @@ module StateManager
     # Tracks per-file approval for high-blast-radius files (CI/CD, entitlements, etc.)
     # First edit attempt blocks with explanation; retry proceeds (user saw the warning)
     sensitive_approvals: {},
+    # === STARTUP GATE ===
+    # Blocks substantive work (Task, Bash, Edit, Write) until mandatory startup steps complete.
+    # Allows only tools needed for startup itself (Read, Grep, Glob, startup-specific Bash).
+    startup_gate: {
+      open: false,
+      opened_at: nil,
+      steps: {
+        session_docs: false,
+        skills_registry: false,
+        validation_report: false,
+        sanemem_check: false,
+        orphan_cleanup: false,
+        system_clean: false
+      },
+      step_timestamps: {}
+    },
+    # === DEPLOYMENT SAFETY (session-scoped) ===
+    # Tracks Sparkle signing and stapler verification to prevent shipping unsigned DMGs
+    deployment: {
+      sparkle_signed_dmgs: [],    # Filenames signed this session
+      staple_verified_dmgs: []    # Filenames verified stapled this session
+    },
     # === SKILL ENFORCEMENT ===
     # Tracks when skills should be used and validates they were executed properly
     skill: {

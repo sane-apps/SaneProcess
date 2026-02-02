@@ -24,6 +24,17 @@ module SaneToolsTest
       e
     end
 
+    # Open startup gate for non-gate tests (gate tests will close it)
+    StateManager.update(:startup_gate) do |g|
+      g[:open] = true
+      g[:opened_at] = Time.now.iso8601
+      g[:steps] = {
+        session_docs: true, skills_registry: true, validation_report: true,
+        sanemem_check: true, orphan_cleanup: true, system_clean: true
+      }
+      g
+    end
+
     passed = 0
     failed = 0
 
@@ -338,6 +349,307 @@ module SaneToolsTest
 
     # Cleanup
     StateManager.reset(:sensitive_approvals)
+    StateManager.reset(:edit_attempts)
+
+    # === STARTUP GATE TESTS ===
+    warn ''
+    warn 'Testing startup gate enforcement:'
+
+    # Setup: close the gate with pending steps
+    StateManager.reset(:research)
+    StateManager.reset(:planning)
+    StateManager.reset(:edit_attempts)
+    StateManager.update(:mcp_health) { |h| h[:verified_this_session] = true; h }
+    StateManager.update(:session_docs) { |sd| sd[:required] = []; sd[:read] = []; sd }
+    StateManager.update(:requirements) { |r| r[:is_big_task] = false; r[:is_research_only] = false; r[:requested] = []; r[:satisfied] = []; r }
+    StateManager.update(:startup_gate) do |g|
+      g[:open] = false
+      g[:opened_at] = nil
+      g[:steps] = {
+        session_docs: true,
+        skills_registry: true,
+        validation_report: false,  # One pending step
+        sanemem_check: true,
+        orphan_cleanup: true,
+        system_clean: true
+      }
+      g[:step_timestamps] = {}
+      g
+    end
+
+    # Test: Task blocked before gate opens
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Task', { 'prompt' => 'Search for something', 'subagent_type' => 'Explore' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: Task blocked before startup gate opens'
+    else
+      failed += 1
+      warn "  FAIL: Task should be blocked before gate opens, got exit #{exit_code}"
+    end
+
+    # Test: Read allowed before gate opens
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Read', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Read allowed before startup gate opens'
+    else
+      failed += 1
+      warn "  FAIL: Read should be allowed before gate opens, got exit #{exit_code}"
+    end
+
+    # Test: Startup Bash (validation_report.rb) allowed before gate opens
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Bash', { 'command' => 'ruby scripts/validation_report.rb' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Startup Bash (validation_report.rb) allowed before gate opens'
+    else
+      failed += 1
+      warn "  FAIL: Startup Bash should be allowed before gate opens, got exit #{exit_code}"
+    end
+
+    # Test: Non-startup Bash blocked before gate opens
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Bash', { 'command' => 'npm install express' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: Non-startup Bash blocked before gate opens'
+    else
+      failed += 1
+      warn "  FAIL: Non-startup Bash should be blocked before gate opens, got exit #{exit_code}"
+    end
+
+    # Test: All tools allowed after gate opens
+    StateManager.update(:startup_gate) do |g|
+      g[:open] = true
+      g[:opened_at] = Time.now.iso8601
+      g[:steps] = {
+        session_docs: true, skills_registry: true, validation_report: true,
+        sanemem_check: true, orphan_cleanup: true, system_clean: true
+      }
+      g
+    end
+    # Complete research so edit isn't blocked for other reasons
+    research_categories.keys.each do |cat|
+      StateManager.update(:research) { |r| r[cat] = { completed_at: Time.now.iso8601, tool: 'test', via_task: false }; r }
+    end
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Edit allowed after startup gate opens'
+    else
+      failed += 1
+      warn "  FAIL: Edit should be allowed after gate opens, got exit #{exit_code}"
+    end
+
+    # Cleanup startup gate tests
+    StateManager.update(:startup_gate) do |g|
+      g[:open] = true
+      g[:opened_at] = Time.now.iso8601
+      g[:steps] = {
+        session_docs: true, skills_registry: true, validation_report: true,
+        sanemem_check: true, orphan_cleanup: true, system_clean: true
+      }
+      g
+    end
+    StateManager.reset(:research)
+    StateManager.reset(:planning)
+    StateManager.reset(:edit_attempts)
+
+    # === DEPLOYMENT SAFETY TESTS ===
+    warn ''
+    warn 'Testing deployment safety:'
+
+    # Setup: clean state for deployment tests
+    StateManager.reset(:research)
+    StateManager.reset(:planning)
+    StateManager.reset(:edit_attempts)
+    StateManager.reset(:deployment)
+    StateManager.update(:mcp_health) { |h| h[:verified_this_session] = true; h }
+    StateManager.update(:session_docs) { |sd| sd[:required] = []; sd[:read] = []; sd }
+    StateManager.update(:requirements) { |r| r[:is_big_task] = false; r[:is_research_only] = false; r[:requested] = []; r[:satisfied] = []; r }
+    StateManager.update(:startup_gate) do |g|
+      g[:open] = true; g[:opened_at] = Time.now.iso8601
+      g[:steps] = { session_docs: true, skills_registry: true, validation_report: true, sanemem_check: true, orphan_cleanup: true, system_clean: true }
+      g
+    end
+    research_categories.keys.each do |cat|
+      StateManager.update(:research) { |r| r[cat] = { completed_at: Time.now.iso8601, tool: 'test', via_task: false }; r }
+    end
+
+    # Test 1: R2 upload with wrong bucket → BLOCKED
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Bash', {
+      'command' => 'npx wrangler r2 object put saneclick-dist/SaneClick-1.0.2.dmg --file="build/SaneClick-1.0.2.dmg"'
+    })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: R2 upload with wrong bucket blocked'
+    else
+      failed += 1
+      warn "  FAIL: R2 upload with wrong bucket should block, got exit #{exit_code}"
+    end
+
+    # Test 2: R2 upload with path prefix in key → BLOCKED
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Bash', {
+      'command' => 'npx wrangler r2 object put sanebar-downloads/updates/SaneBar-1.0.17.dmg --file="build/SaneBar-1.0.17.dmg"'
+    })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: R2 upload with path prefix in key blocked'
+    else
+      failed += 1
+      warn "  FAIL: R2 upload with path prefix should block, got exit #{exit_code}"
+    end
+
+    # Test 3: Correct R2 upload (signed + stapled) → ALLOWED
+    # First, simulate that the DMG was signed and stapled
+    StateManager.update(:deployment) do |d|
+      d[:sparkle_signed_dmgs] = ['SaneBar-1.0.17.dmg']
+      d[:staple_verified_dmgs] = ['SaneBar-1.0.17.dmg']
+      d
+    end
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    # Use a non-existent file path so staple check falls through to state lookup
+    exit_code = process_tool_proc.call('Bash', {
+      'command' => 'npx wrangler r2 object put sanebar-downloads/SaneBar-1.0.17.dmg --file="/nonexistent/SaneBar-1.0.17.dmg"'
+    })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Correct R2 upload allowed (signed + stapled)'
+    else
+      failed += 1
+      warn "  FAIL: Correct R2 upload should be allowed, got exit #{exit_code}"
+    end
+
+    # Test 4: R2 upload without Sparkle signature → BLOCKED
+    StateManager.reset(:deployment)
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Bash', {
+      'command' => 'npx wrangler r2 object put sanebar-downloads/SaneBar-1.0.17.dmg --file="/nonexistent/SaneBar-1.0.17.dmg"'
+    })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: R2 upload without Sparkle signature blocked'
+    else
+      failed += 1
+      warn "  FAIL: R2 upload without signature should block, got exit #{exit_code}"
+    end
+
+    # Test 5: Appcast edit with empty edSignature → BLOCKED
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Edit', {
+      'file_path' => '/Users/sj/SaneApps/apps/SaneBar/docs/appcast.xml',
+      'old_string' => 'old content',
+      'new_string' => '<enclosure url="https://dist.sanebar.com/SaneBar-1.0.17.dmg" edSignature="" length="12345" />'
+    })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: Appcast edit with empty edSignature blocked'
+    else
+      failed += 1
+      warn "  FAIL: Appcast edit with empty signature should block, got exit #{exit_code}"
+    end
+
+    # Test 6: Appcast edit with GitHub URL → BLOCKED
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Edit', {
+      'file_path' => '/Users/sj/SaneApps/apps/SaneBar/docs/appcast.xml',
+      'old_string' => 'old content',
+      'new_string' => '<enclosure url="https://github.com/user/repo/releases/download/v1.0/SaneBar.dmg" edSignature="abc123" length="12345" />'
+    })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: Appcast edit with GitHub URL blocked'
+    else
+      failed += 1
+      warn "  FAIL: Appcast edit with GitHub URL should block, got exit #{exit_code}"
+    end
+
+    # Test 7: Valid appcast edit → ALLOWED
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Edit', {
+      'file_path' => '/Users/sj/SaneApps/apps/SaneBar/docs/appcast.xml',
+      'old_string' => 'old content',
+      'new_string' => '<enclosure url="https://dist.sanebar.com/SaneBar-1.0.17.dmg" edSignature="validSig123==" length="12345" />'
+    })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Valid appcast edit allowed'
+    else
+      failed += 1
+      warn "  FAIL: Valid appcast edit should be allowed, got exit #{exit_code}"
+    end
+
+    # Test 8: Pages deploy with bad appcast → BLOCKED
+    # Create a temp directory with a bad appcast for this test
+    require 'tmpdir'
+    test_deploy_dir = Dir.mktmpdir('deploy_test')
+    File.write(File.join(test_deploy_dir, 'appcast.xml'), '<enclosure edSignature="" />')
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Bash', {
+      'command' => "npx wrangler pages deploy #{test_deploy_dir} --project-name=sanebar-site"
+    })
+    $stderr.reopen(original_stderr)
+
+    # Cleanup temp dir
+    FileUtils.rm_rf(test_deploy_dir) rescue nil
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: Pages deploy with bad appcast blocked'
+    else
+      failed += 1
+      warn "  FAIL: Pages deploy with bad appcast should block, got exit #{exit_code}"
+    end
+
+    # Cleanup deployment tests
+    StateManager.reset(:deployment)
     StateManager.reset(:edit_attempts)
 
     # === JSON INTEGRATION TESTS ===

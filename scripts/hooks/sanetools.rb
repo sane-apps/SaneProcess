@@ -21,6 +21,7 @@ require 'fileutils'
 require 'time'
 require_relative 'core/state_manager'
 require_relative 'sanetools_checks'
+require_relative 'sanetools_startup'
 
 # === SAFEMODE BYPASS ===
 BYPASS_FILE = File.expand_path('../../.claude/bypass_active.json', __dir__)
@@ -292,6 +293,8 @@ def detect_rule_from_reason(reason)
   when /REQUIREMENTS NOT MET/i then 'requirements'
   when /SANELOOP REQUIRED/i then 'saneloop_required'
   when /READ REQUIRED DOCS/i then 'session_docs'
+  when /STARTUP GATE/i then 'startup_gate'
+  when /DEPLOYMENT SAFETY/i then 'deployment_safety'
   else 'unknown'
   end
 end
@@ -326,6 +329,13 @@ def process_tool(tool_name, tool_input)
 
   # Always check blocked paths first (pass tool_name to allow reads of state files)
   if (reason = SaneToolsChecks.check_blocked_path(tool_input, tool_name, EDIT_TOOLS))
+    log_action(tool_name, true, reason)
+    output_block(reason, tool_name)
+    return 2
+  end
+
+  # Startup gate: block substantive work until startup steps complete
+  if (reason = SaneToolsStartup.check_startup_gate(tool_name, tool_input))
     log_action(tool_name, true, reason)
     output_block(reason, tool_name)
     return 2
@@ -386,6 +396,25 @@ def process_tool(tool_name, tool_input)
 
   # Check bash bypass
   if (reason = SaneToolsChecks.check_bash_bypass(tool_name, tool_input, BASH_FILE_WRITE_PATTERN))
+    log_action(tool_name, true, reason)
+    output_block(reason, tool_name)
+    return 2
+  end
+
+  # === DEPLOYMENT SAFETY (not gated by research — bad uploads are always blocked) ===
+  if (reason = SaneToolsChecks.check_r2_upload(tool_name, tool_input))
+    log_action(tool_name, true, reason)
+    output_block(reason, tool_name)
+    return 2
+  end
+
+  if (reason = SaneToolsChecks.check_appcast_edit(tool_name, tool_input, EDIT_TOOLS))
+    log_action(tool_name, true, reason)
+    output_block(reason, tool_name)
+    return 2
+  end
+
+  if (reason = SaneToolsChecks.check_pages_deploy(tool_name, tool_input))
     log_action(tool_name, true, reason)
     output_block(reason, tool_name)
     return 2

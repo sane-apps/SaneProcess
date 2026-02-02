@@ -390,6 +390,82 @@ rescue StandardError => e
   warn "⚠️  Session doc tracking error: #{e.message}" if ENV['DEBUG']
 end
 
+# === STARTUP GATE STEP TRACKING ===
+# Detects completion of each startup step and opens the gate when all done.
+
+SKILLS_REGISTRY_BASENAME = 'SKILLS_REGISTRY.md'
+
+def track_startup_gate_step(tool_name, tool_input)
+  gate = StateManager.get(:startup_gate)
+  return if gate[:open]
+
+  steps = gate[:steps] || {}
+  changed = false
+
+  case tool_name
+  when 'Read'
+    file_path = tool_input['file_path'] || tool_input[:file_path] || ''
+    basename = File.basename(file_path)
+
+    # SKILLS_REGISTRY.md read
+    if basename == SKILLS_REGISTRY_BASENAME && !steps[:skills_registry]
+      steps[:skills_registry] = true
+      gate[:step_timestamps][:skills_registry] = Time.now.iso8601
+      changed = true
+    end
+
+    # Session docs: check if all required docs now read
+    unless steps[:session_docs]
+      session_docs = StateManager.get(:session_docs)
+      required = session_docs[:required] || []
+      already_read = session_docs[:read] || []
+      # Include current file being read (sanetrack runs after tool executes)
+      all_read = already_read | [basename]
+      if (required - all_read).empty?
+        steps[:session_docs] = true
+        gate[:step_timestamps][:session_docs] = Time.now.iso8601
+        changed = true
+      end
+    end
+
+  when 'Bash'
+    command = tool_input['command'] || tool_input[:command] || ''
+
+    if command.match?(/validation_report\.rb/) && !steps[:validation_report]
+      steps[:validation_report] = true
+      gate[:step_timestamps][:validation_report] = Time.now.iso8601
+      changed = true
+    end
+
+    if command.match?(/curl\s+.*localhost:37777|curl\s+.*127\.0\.0\.1:37777/) && !steps[:sanemem_check]
+      steps[:sanemem_check] = true
+      gate[:step_timestamps][:sanemem_check] = Time.now.iso8601
+      changed = true
+    end
+
+    if command.match?(/SaneMaster\.rb\s+clean_system/) && !steps[:system_clean]
+      steps[:system_clean] = true
+      gate[:step_timestamps][:system_clean] = Time.now.iso8601
+      changed = true
+    end
+  end
+
+  return unless changed
+
+  # Check if all steps are now done
+  all_done = steps.values.all?
+  if all_done
+    gate[:open] = true
+    gate[:opened_at] = Time.now.iso8601
+    warn '🚦 STARTUP GATE OPEN — all startup steps complete'
+  end
+
+  gate[:steps] = steps
+  StateManager.update(:startup_gate) { |_| gate }
+rescue StandardError => e
+  warn "⚠️  Startup gate tracking error: #{e.message}" if ENV['DEBUG']
+end
+
 def track_failure(tool_name, tool_response)
   return unless FAILURE_TOOLS.include?(tool_name)
 
@@ -525,6 +601,50 @@ def summarize_input(input)
     input['prompt']&.to_s&.slice(0, 50) || input[:prompt]&.to_s&.slice(0, 50)
 end
 
+# === DEPLOYMENT ACTION TRACKING ===
+# Detects successful Sparkle signing and stapler commands, records to deployment state.
+# This enables sanetools_deploy.rb to verify DMGs were signed/stapled before R2 upload.
+
+SPARKLE_SIGN_DETECT = /sign_update(?:\.swift)?\s+["']?([^"'\s]+\.dmg)["']?/i.freeze
+STAPLER_DETECT = /xcrun\s+stapler\s+(?:validate|staple)\s+["']?([^"'\s]+\.dmg)["']?/i.freeze
+
+def track_deployment_actions(tool_name, tool_input, tool_response)
+  return unless tool_name == 'Bash'
+
+  command = tool_input['command'] || tool_input[:command] || ''
+  return if command.empty?
+
+  # Detect Sparkle signing
+  sign_match = command.match(SPARKLE_SIGN_DETECT)
+  if sign_match
+    dmg_filename = File.basename(sign_match[1])
+    StateManager.update(:deployment) do |d|
+      d[:sparkle_signed_dmgs] ||= []
+      d[:sparkle_signed_dmgs] << dmg_filename unless d[:sparkle_signed_dmgs].include?(dmg_filename)
+      d
+    end
+    warn "✅ Sparkle signature recorded for #{dmg_filename}"
+  end
+
+  # Detect stapler validate/staple
+  staple_match = command.match(STAPLER_DETECT)
+  if staple_match
+    dmg_filename = File.basename(staple_match[1])
+    # Only record if the command actually succeeded (tool_response has no error)
+    error_sig = detect_actual_failure(tool_name, tool_response)
+    if error_sig.nil?
+      StateManager.update(:deployment) do |d|
+        d[:staple_verified_dmgs] ||= []
+        d[:staple_verified_dmgs] << dmg_filename unless d[:staple_verified_dmgs].include?(dmg_filename)
+        d
+      end
+      warn "✅ Staple verification recorded for #{dmg_filename}"
+    end
+  end
+rescue StandardError => e
+  warn "⚠️  Deployment tracking error: #{e.message}" if ENV['DEBUG']
+end
+
 # === FEATURE REMINDERS + LOGGING ===
 # Extracted to sanetrack_reminders.rb per Rule #10
 require_relative 'sanetrack_reminders'
@@ -595,6 +715,9 @@ def process_result(tool_name, tool_input, tool_response)
     # Track failure (legacy count)
     track_failure(tool_name, tool_response)
 
+    # === STARTUP GATE: Track even on failure (running the command counts) ===
+    track_startup_gate_step(tool_name, tool_input)
+
     # === MCP VERIFICATION: Track failures for MCP tools ===
     track_mcp_verification(tool_name, false)
 
@@ -617,6 +740,9 @@ def process_result(tool_name, tool_input, tool_response)
     # === RESEARCH PROTOCOL: Check research.md size cap ===
     SaneTrackResearch.check_research_size(tool_name, tool_input)
 
+    # === DEPLOYMENT SAFETY: Track signing and stapling ===
+    track_deployment_actions(tool_name, tool_input, tool_response)
+
     # === RULE #4: Track test/verification commands ===
     track_verification(tool_name, tool_input)
 
@@ -625,6 +751,9 @@ def process_result(tool_name, tool_input, tool_response)
 
     # === SESSION DOC TRACKING ===
     track_session_doc_read(tool_name, tool_input)
+
+    # === STARTUP GATE STEP TRACKING ===
+    track_startup_gate_step(tool_name, tool_input)
 
     # === RESEARCH OUTPUT VALIDATION ===
     # Revoke research category if output was empty/meaningless

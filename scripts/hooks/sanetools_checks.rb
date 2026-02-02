@@ -10,6 +10,7 @@
 
 require_relative 'core/state_manager'
 require_relative 'sanetools_gaming'
+require_relative 'sanetools_deploy'
 
 module SaneToolsChecks
   # Constants needed by checks
@@ -618,6 +619,10 @@ module SaneToolsChecks
     # === INTELLIGENCE: Gaming Detection ===
     # Extracted to sanetools_gaming.rb per Rule #10
     include SaneToolsGaming
+
+    # === DEPLOYMENT SAFETY ===
+    # Extracted to sanetools_deploy.rb per Rule #10
+    include SaneToolsDeploy
 
     # === PREFLIGHT: MCP Verification System ===
     # Block edits until ALL MCPs have been verified this session
