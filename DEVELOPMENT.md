@@ -105,6 +105,30 @@ scripts/
 └── qa.rb                  # Quality assurance
 ```
 
+## SaneMaster CLI (Infra)
+
+Use SaneMaster for automation in this repo (preferred over raw commands).
+
+### Core commands
+
+| Command | Purpose |
+|---------|---------|
+| `verify [--ui]` | Build + run tests (include UI tests with `--ui`) |
+| `test_mode` | Kill → Build → Launch → Logs |
+| `doctor` | Environment health check |
+| `export` | Export code/docs (PDF/MD) |
+| `debug` | Debugging helpers (logs, crashes, diagnose) |
+| `env` | Environment and setup helpers |
+
+### Verification helpers
+
+| Command | Purpose |
+|---------|---------|
+| `verify_api <API> [Framework]` | Verify SDK API exists |
+| `verify_mocks` | Check mock sync status |
+
+**Examples** and **Aliases** are listed in `./scripts/SaneMaster.rb help` — keep them current with the CLI.
+
 ## Testing
 
 ```bash

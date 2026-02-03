@@ -26,11 +26,11 @@ SaneProcess enforces discipline through hooks that block bad behavior before it 
 
 | Feature | What It Does |
 |---------|--------------|
-| **4 Enforcement Hooks** | Block edits until research is done |
-| **Circuit Breaker** | Auto-stops after 3 same errors |
-| **16 Golden Rules** | Memorable, enforceable discipline |
+| **4 Enforcement Hooks** | Block unsafe actions until research is complete |
+| **Circuit Breaker** | Auto-stops after repeated failures |
+| **Golden Rules (16 total)** | Core + supporting + operational discipline |
 | **Sensitive File Protection** | CI/CD, entitlements, build configs require confirmation |
-| **429 Tests** | 175 tier tests + 254 self-tests, including 42 from real Claude failures |
+| **Test Suite** | Tier tests + self-tests (run `ruby scripts/hooks/test/tier_tests.rb`) |
 
 ---
 
@@ -81,100 +81,17 @@ SaneProcess/
 
 ---
 
-## SaneMaster CLI Reference
+## SaneMaster CLI (Quick)
 
-Your project's command center. Run `./scripts/SaneMaster.rb help` for full list.
+Your command center. Full list: `./scripts/SaneMaster.rb help`.
 
-### Build & Test
-
-| Command | What It Does |
-|---------|--------------|
-| `verify [--ui] [--clean]` | Build and run tests |
-| `clean [--nuclear]` | Wipe build cache |
-| `lint` | Run SwiftLint with auto-fix |
-| `audit` | Scan for missing accessibility IDs |
-| `qa` | Full QA suite (hooks, docs, URLs, tests) |
-
-### Debug & Launch
-
-| Command | What It Does |
-|---------|--------------|
-| `test_mode` / `tm` | Kill → Build → Launch → Logs (one command) |
-| `launch` | Launch the app |
-| `logs [--follow]` | Show application logs |
-| `crashes [--recent]` | Analyze crash reports |
-| `diagnose [path]` | Analyze .xcresult bundle |
-
-### Code Generation
-
-| Command | What It Does |
-|---------|--------------|
-| `gen_test` | Generate test file from template |
-| `gen_mock` | Generate mocks using Mockolo |
-| `gen_assets` | Generate test video assets |
-| `template [save\|apply\|list]` | Manage configuration templates |
-
-### Static Analysis
-
-| Command | What It Does |
-|---------|--------------|
-| `verify_api <API> [Framework]` | Verify API exists in SDK before using |
-| `dead_code` | Find unused code (Periphery) |
-| `deprecations` | Scan for deprecated API usage |
-| `swift6` | Verify Swift 6 concurrency compliance |
-| `test_scan [-v]` | Find tautologies and hardcoded values in tests |
-| `check_docs` | Check docs are in sync with code |
-| `check_binary` | Audit binary for security issues |
-
-### Memory & Circuit Breaker
-
-Cross-session memory via MCP integration:
-
-| Command | What It Does |
-|---------|--------------|
-| `mc` | Show memory context (bugs, patterns, decisions) |
-| `mr <type> <name>` | Record new entity to memory |
-| `mp [--dry-run]` | Prune stale entities |
-| `mh` | Memory health (entity count, token estimate) |
-| `mcompact [--aggressive]` | Compact memory (trim verbose, dedupe) |
-| `mcleanup` | Analyze memory, generate cleanup commands |
-
-Circuit breaker control:
-
-| Command | What It Does |
-|---------|--------------|
-| `reset_breaker` / `rb` | Reset circuit breaker (unblock tools) |
-| `breaker_status` / `bs` | Show circuit breaker status |
-| `breaker_errors` / `be` | Show recent failure messages |
-
-### Session & SOP
-
-| Command | What It Does |
-|---------|--------------|
-| `session_end` / `se` | End session with insight extraction |
-| `saneloop <cmd>` | Native task loop (start\|status\|check\|complete) |
-| `compliance` / `cr` | Generate compliance report |
-
-### Environment
-
-| Command | What It Does |
-|---------|--------------|
-| `doctor` | Full environment health check |
-| `health` / `h` | Quick health check (< 100ms) |
-| `meta` | Audit SaneMaster tooling itself |
-| `bootstrap [--check-only]` | Full environment setup |
-| `setup` | Install gems and dependencies |
-| `versions` | Check all tool versions |
-| `deps [--dot]` | Show dependency graph |
-| `reset` | Reset TCC permissions |
-| `restore` | Fix Xcode/Launch Services issues |
-
-### Export
-
-| Command | What It Does |
-|---------|--------------|
-| `export [--highlight]` | Export code to PDF |
-| `md_export <file.md>` | Convert markdown to PDF |
+```bash
+./scripts/SaneMaster.rb verify        # Build + tests (use --ui for UI tests)
+./scripts/SaneMaster.rb test_mode     # Kill → Build → Launch → Logs
+./scripts/SaneMaster.rb doctor        # Environment health check
+./scripts/SaneMaster.rb qa            # Full QA suite
+./scripts/SaneMaster.rb check_docs    # Docs/tooling sync
+```
 
 ---
 
@@ -204,26 +121,31 @@ Tools are categorized by blast radius:
 
 ---
 
-## The 16 Golden Rules
+## The Golden Rules (16 total, numbered #0–#15)
 
-```
-#0  NAME THE RULE BEFORE YOU CODE
-#1  STAY IN YOUR LANE (files in project only)
-#2  VERIFY BEFORE YOU TRY (check docs first)
-#3  TWO STRIKES? INVESTIGATE
-#4  GREEN MEANS GO (tests must pass)
-#5  THEIR HOUSE, THEIR RULES (use project tools)
-#6  BUILD, KILL, LAUNCH, LOG
-#7  NO TEST? NO REST
-#8  BUG FOUND? WRITE IT DOWN
-#9  NEW FILE? GEN THAT PILE
-#10 FIVE HUNDRED'S FINE, EIGHT'S THE LINE
-#11 TOOL BROKE? FIX THE YOKE
-#12 TALK WHILE I WALK (stay responsive)
-#13 CONTEXT OR CHAOS (maintain CLAUDE.md)
-#14 PROMPT LIKE A PRO (specific prompts)
-#15 REVIEW BEFORE YOU SHIP (self-review)
-```
+**Source of truth:** `scripts/hooks/rule_tracker.rb` (used in enforcement logs).
+
+**Core (enforced by hooks):**
+- #2 VERIFY BEFORE YOU TRY
+- #3 TWO STRIKES? INVESTIGATE
+- #4 GREEN MEANS GO
+
+**Supporting (enforced by hooks):**
+- #0 NAME THE RULE BEFORE YOU CODE
+- #1 STAY IN YOUR LANE
+- #5 THEIR HOUSE, THEIR RULES (use project tools)
+- #7 NO TEST? NO REST
+- #8 BUG FOUND? WRITE IT DOWN
+- #9 NEW FILE? GEN THAT PILE
+- #10 FIVE HUNDRED'S FINE, EIGHT'S THE LINE
+
+**Operational (expected every session):**
+- #6 BUILD, KILL, LAUNCH, LOG
+- #11 TOOL BROKE? FIX THE YOKE
+- #12 TALK WHILE I WALK
+- #13 CONTEXT OR CHAOS
+- #14 PROMPT LIKE A PRO
+- #15 REVIEW BEFORE YOU SHIP
 
 ---
 

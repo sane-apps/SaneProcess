@@ -287,7 +287,7 @@ These rules are **mandatory**. Self-rate adherence after every task.
 
 Memorable rules + clear tool names = **human can audit in real-time**.
 
-Names like "SANEMASTER OR DISASTER" aren't just mnemonics—they're a **shared vocabulary**. When I say "Rule #5" you instantly know whether I'm complying or drifting. This lets you catch mistakes as they happen instead of after 20 minutes of debugging.
+Names like "THEIR HOUSE, THEIR RULES" aren't just mnemonics—they're a **shared vocabulary**. When I say "Rule #5" you instantly know whether I'm complying or drifting. This lets you catch mistakes as they happen instead of after 20 minutes of debugging.
 
 ---
 
@@ -365,7 +365,7 @@ Stopping IS compliance. Guessing a 3rd time is the violation.
 
 ---
 
-## Rule #5: SANEMASTER OR DISASTER
+## Rule #5: THEIR HOUSE, THEIR RULES
 
 ✅ DO: Use project's build tool (Makefile, package.json, Scripts/, etc.)
 ❌ DON'T: Use raw build commands
@@ -1312,7 +1312,7 @@ killall -9 <app-name>
 │   #2  VERIFY BEFORE YOU TRY (check docs)                   │
 │   #3  TWO STRIKES? INVESTIGATE                             │
 │   #4  GREEN MEANS GO (test2s must pass)                     │
-│   #5  SANEMASTER OR DISASTER (use project tools)           │
+│   #5  THEIR HOUSE, THEIR RULES (use project tools)         │
 │   #6  BUILD, KILL, LAUNCH, LOG                             │
 │   #7  NO TEST? NO REST                                     │
 │   #8  BUG FOUND? WRITE IT DOWN                             │
