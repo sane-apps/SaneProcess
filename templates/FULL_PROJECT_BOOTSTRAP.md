@@ -99,13 +99,13 @@ For bootstrap tasks, use subagents with verification:
 
 | Item | Value |
 |------|-------|
-| **Team ID** | `M78L6FXD48` |
-| **Signing Identity** | `Developer ID Application: Stephan Joseph (M78L6FXD48)` |
+| **Team ID** | `YOUR_TEAM_ID` |
+| **Signing Identity** | `Developer ID Application: Your Name (YOUR_TEAM_ID)` |
 | **Keychain Profile** | `notarytool` |
-| **API Key ID** | `7LMFF3A258` |
+| **API Key ID** | `YOUR_API_KEY_ID` |
 | **API Key Issuer** | `c98b1e0a-8d10-4fce-a417-536b31c09bfb` |
 | **GitHub Org** | `sane-apps` |
-| **Apple ID** | `stephanjoseph2007@gmail.com` |
+| **Apple ID** | `your-apple-id@example.com` |
 
 ## Distribution Model
 
@@ -146,7 +146,7 @@ ProjectName/
 │   ├── Fastfile
 │   ├── Appfile
 │   └── keys/                   # Git-ignored!
-│       └── AuthKey_7LMFF3A258.p8
+│       └── AuthKey_YOUR_API_KEY_ID.p8
 ├── scripts/
 │   ├── SaneMaster.rb
 │   └── generate_dmg_background.swift
@@ -178,9 +178,9 @@ xcrun notarytool history --keychain-profile "notarytool"
 If missing, create:
 ```bash
 xcrun notarytool store-credentials "notarytool" \
-  --apple-id stephanjoseph2007@gmail.com \
+  --apple-id your-apple-id@example.com \
   --password <app-specific-password> \
-  --team-id M78L6FXD48
+  --team-id YOUR_TEAM_ID
 ```
 
 ### 2.2 Sparkle EdDSA Keys (Per-Project)
@@ -196,7 +196,7 @@ Store private key in Keychain:
 ## IMPORTANT: All SaneApps share ONE Sparkle key (account: "EdDSA Private Key").
 ## Do NOT generate a new key per project. The shared key already exists in Keychain.
 ## To verify: security find-generic-password -s "https://sparkle-project.org" -a "EdDSA Private Key"
-## Public key: 7Pl/8cwfb2vm4Dm65AByslkMCScLJ9tbGlwGGx81qYU=
+## Public key: YOUR_SPARKLE_PUBLIC_KEY
 ```
 
 Or store in `fastlane/keys/sparkle_private_key.txt` (git-ignored).
@@ -205,7 +205,7 @@ Or store in `fastlane/keys/sparkle_private_key.txt` (git-ignored).
 
 Copy from existing project:
 ```bash
-cp /Users/sj/SaneBar/fastlane/keys/AuthKey_7LMFF3A258.p8 \
+cp /path/to/YourApp/fastlane/keys/AuthKey_YOUR_API_KEY_ID.p8 \
    /Users/sj/Projects/NewProject/fastlane/keys/
 ```
 
@@ -218,9 +218,9 @@ Set in repo Settings → Secrets → Actions:
 | `APPLE_CERTIFICATE_P12` | Base64-encoded .p12 certificate |
 | `APPLE_CERTIFICATE_PASSWORD` | Certificate password |
 | `KEYCHAIN_PASSWORD` | Temporary keychain password |
-| `APPLE_TEAM_ID` | `M78L6FXD48` |
-| `NOTARY_API_KEY` | Contents of AuthKey_7LMFF3A258.p8 |
-| `NOTARY_API_KEY_ID` | `7LMFF3A258` |
+| `APPLE_TEAM_ID` | `YOUR_TEAM_ID` |
+| `NOTARY_API_KEY` | Contents of AuthKey_YOUR_API_KEY_ID.p8 |
+| `NOTARY_API_KEY_ID` | `YOUR_API_KEY_ID` |
 | `NOTARY_API_ISSUER_ID` | `c98b1e0a-8d10-4fce-a417-536b31c09bfb` |
 
 ---
@@ -400,7 +400,7 @@ build:
 release:
   dist_host: dist.projectname.com
   site_host: projectname.com
-  r2_bucket: sanebar-downloads
+  r2_bucket: your-downloads-bucket
   use_sparkle: true
   dmg:
     file_icon: Resources/DMGIcon.icns
@@ -606,8 +606,8 @@ Brief description
 
 ```ruby
 app_identifier("com.projectname.app")
-apple_id("stephanjoseph2007@gmail.com")
-team_id("M78L6FXD48")
+apple_id("your-apple-id@example.com")
+team_id("YOUR_TEAM_ID")
 ```
 
 ### 8.2 Fastfile
@@ -615,9 +615,9 @@ team_id("M78L6FXD48")
 ```ruby
 default_platform(:mac)
 
-API_KEY_ID = "7LMFF3A258"
+API_KEY_ID = "YOUR_API_KEY_ID"
 API_KEY_ISSUER_ID = "c98b1e0a-8d10-4fce-a417-536b31c09bfb"
-API_KEY_PATH = "keys/AuthKey_7LMFF3A258.p8"
+API_KEY_PATH = "keys/AuthKey_YOUR_API_KEY_ID.p8"
 
 platform :mac do
   lane :notarize_dmg do |options|

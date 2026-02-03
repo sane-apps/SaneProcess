@@ -1,265 +1,206 @@
 # SaneProcess
 
-> **Project Docs:** [CLAUDE_PUBLIC.md](CLAUDE_PUBLIC.md) · [README](README.md) · [DEVELOPMENT](DEVELOPMENT.md) · [ARCHITECTURE](ARCHITECTURE.md)
->
-> You are reading **README.md** — what SaneProcess is and how to use it.
-> For contributing, see [DEVELOPMENT](DEVELOPMENT.md). For system internals, see [ARCHITECTURE](ARCHITECTURE.md).
->
-> Note: Local/private docs (not in this repo) include `CLAUDE.md` and `SESSION_HANDOFF.md`.
+**Stop Claude Code from wasting your time and crashing your machine.**
 
-**Battle-tested SOP enforcement for Claude Code.**
+SaneProcess is a hook-based enforcement framework for Claude Code. It kills orphaned processes, stops doom loops, and forces research before edits.
 
-Stop AI doom loops. Ship reliable code.
-
+412 tests. MIT licensed. Ruby. macOS.
 
 ---
 
-## The Problem
+## The Problems
 
-Claude Code is powerful but undisciplined:
-- Guesses the same broken fix 10 times
-- Assumes APIs exist without checking
-- Skips verification, forgets context
-- Wastes 20+ minutes on preventable mistakes
+### 1. Orphaned processes eating your RAM
 
-## The Solution
+Claude Code spawns subagents and MCP server processes that outlive their parent sessions. They accumulate silently until your machine crawls or crashes.
 
-SaneProcess enforces discipline through hooks that block bad behavior before it happens.
+SaneProcess kills them automatically on every session start — without touching your active sessions.
 
-| Feature | What It Does |
-|---------|--------------|
-| **4 Enforcement Hooks** | Block unsafe actions until research is complete |
-| **Circuit Breaker** | Auto-stops after repeated failures |
-| **Golden Rules (16 total)** | Core + supporting + operational discipline |
-| **Sensitive File Protection** | CI/CD, entitlements, build configs require confirmation |
-| **Test Suite** | Tier tests + self-tests (run `ruby scripts/hooks/test/tier_tests.rb`) |
+```
+🧹 Cleaned up 3 orphaned Claude sessions
+🧹 Cleaned up 7 orphaned MCP daemons
+🧹 Cleaned up 2 orphaned subagents
+```
+
+It uses process tree traversal (BFS) to identify which processes belong to your current session and leaves them alone. Only orphans whose parent sessions have died get cleaned up.
+
+### 2. Doom loops burning tokens
+
+Claude guesses the same broken fix over and over. You watch it burn through tokens on the same error 10 times.
+
+SaneProcess trips a circuit breaker after 3 consecutive failures or 3 identical error signatures. All edit operations are blocked until you acknowledge the problem.
+
+```
+🔴 CIRCUIT BREAKER TRIPPED
+   3 consecutive failures with same error signature
+   Say "reset breaker" after fixing the root cause.
+```
+
+The breaker persists across session restarts — Claude can't bypass it by restarting.
+
+### 3. Edits without research
+
+Claude assumes APIs exist without checking. It writes code using methods that don't exist, then fails, then tries a different nonexistent method.
+
+SaneProcess blocks all edits until research is done across four categories:
+
+```
+🔴 BLOCKED: Research incomplete
+   ✅ docs   ✅ web   ❌ github   ❌ local
+   Complete all 4 categories before editing.
+```
+
+Read-only tools (Read, Grep, Glob, search) are never blocked. The gate only applies to mutations.
 
 ---
 
-## Quick Start
-
-**After purchase:**
+## Install
 
 ```bash
-# Install everything with one command
-curl -sL https://raw.githubusercontent.com/sane-apps/SaneProcess/main/scripts/init.sh | bash
+# Clone the repo
+git clone https://github.com/sane-apps/SaneProcess.git
+
+# Run the installer from your project directory
+cd /path/to/your-project
+/path/to/SaneProcess/scripts/init.sh
 ```
 
-**Verify it's working:**
+The installer copies hooks into your project's `scripts/hooks/` directory and creates `.claude/settings.json` with hook registration.
+
+**Or configure manually** — add to `~/.claude/settings.json` (global) or `.claude/settings.json` (per-project):
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "ruby /path/to/hooks/session_start.rb", "timeout": 15000 }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "ruby /path/to/hooks/saneprompt.rb" }] }],
+    "PreToolUse": [{ "hooks": [{ "type": "command", "command": "ruby /path/to/hooks/sanetools.rb" }] }],
+    "PostToolUse": [{ "hooks": [{ "type": "command", "command": "ruby /path/to/hooks/sanetrack.rb" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "ruby /path/to/hooks/sanestop.rb" }] }]
+  }
+}
+```
+
+**Verify:**
 
 ```bash
-./scripts/SaneMaster.rb doctor    # Check environment
-./scripts/SaneMaster.rb health    # Quick health check
-```
-
-**Your first workflow:**
-
-```bash
-./scripts/SaneMaster.rb verify    # Build + test
-./scripts/SaneMaster.rb test_mode # Kill → Build → Launch → Logs
+ruby scripts/hooks/saneprompt.rb --self-test    # 176 tests
+ruby scripts/hooks/sanetools.rb --self-test     # 38 tests
+ruby scripts/hooks/sanetrack.rb --self-test     # 23 tests
 ```
 
 ---
 
-## Session Close (Default)
+## How It Works
 
-1. Confirm worktree is clean or intentionally staged
-2. Update `SESSION_HANDOFF.md` (Done / Docs / SOP / Next)
-3. Run the smallest relevant check:
-   - Docs-only: `./scripts/SaneMaster.rb check_docs`
-   - Code changes: `./scripts/SaneMaster.rb verify`
-4. Append one SOP score line to `outputs/sop_ratings.csv`
+Five hooks map to Claude Code's lifecycle events:
 
-**Run full `/docs-audit` only when needed:**
-- New user-facing feature or behavior change
-- README/website docs touched
-- Release prep or public announcement
-- Larger change sets where drift risk is higher
+| Hook | Event | Purpose |
+|------|-------|---------|
+| `session_start.rb` | SessionStart | Kills orphans, resets state, bootstraps session |
+| `saneprompt.rb` | UserPromptSubmit | Classifies intent, sets research requirements |
+| `sanetools.rb` | PreToolUse | Blocks edits until research is done |
+| `sanetrack.rb` | PostToolUse | Tracks failures, trips circuit breaker |
+| `sanestop.rb` | Stop | Captures session summary |
 
----
+All state lives in a single HMAC-signed JSON file (`.claude/state.json`). File-locked for concurrent access. Tamper-detected via macOS Keychain. Atomic writes via tempfile + rename.
 
-## What's Included
+### Orphan Cleanup
 
-```
-SaneProcess/
-├── scripts/
-│   ├── SaneMaster.rb          # CLI with 50+ commands (see below)
-│   ├── hooks/                 # 4 enforcement hooks
-│   │   ├── saneprompt.rb      # Analyzes intent, sets requirements
-│   │   ├── sanetools.rb       # Blocks until research complete
-│   │   ├── sanetrack.rb       # Tracks failures, trips breaker
-│   │   └── sanestop.rb        # Ensures session summary
-│   ├── qa.rb                  # Full QA suite
-│   ├── sync_check.rb          # Cross-project drift detection
-│   └── skill_loader.rb        # Load domain knowledge on demand
-├── templates/                 # Project templates and checklists
-├── skills/                    # Loadable domain knowledge
-├── .claude/rules/             # Path-specific guidance
-└── docs/                      # Full methodology (1,400+ lines)
-```
+On every session start, three cleanup passes run:
 
----
+1. **Parent sessions** — finds `claude` processes not in your current process tree
+2. **MCP daemons** — finds known MCP patterns (context7, apple-docs, xcodebuild, github, serena, etc.) not in your session tree
+3. **Subagents** — finds `claude --resume` processes whose parent sessions are dead
 
-## SaneMaster CLI (Quick)
+Uses BFS process tree traversal. Your active session and any other active terminal sessions are never touched.
 
-Your command center. Full list: `./scripts/SaneMaster.rb help`.
+### Circuit Breaker
 
-```bash
-./scripts/SaneMaster.rb verify        # Build + tests (use --ui for UI tests)
-./scripts/SaneMaster.rb test_mode     # Kill → Build → Launch → Logs
-./scripts/SaneMaster.rb doctor        # Environment health check
-./scripts/SaneMaster.rb qa            # Full QA suite
-./scripts/SaneMaster.rb check_docs    # Docs/tooling sync
-```
+After tool execution, error signatures are normalized and tracked:
 
----
+- **3 consecutive failures** → breaker trips
+- **3 identical error signatures** → breaker trips
 
-## Hook Architecture
+When tripped, all edit/write operations are blocked. Say `reset breaker` or `rb-` to clear after fixing the root cause.
 
-Four hooks handle all enforcement:
+### Research Gate
 
-| Hook | When | What It Does |
-|------|------|--------------|
-| **saneprompt** | User sends message | Analyzes intent, sets research requirements |
-| **sanetools** | Before tool runs | Blocks destructive ops until research complete |
-| **sanetrack** | After tool runs | Tracks failures, updates circuit breaker |
-| **sanestop** | Session ends | Ensures summary, extracts learnings |
+Before any mutation (Edit, Write, Bash with side effects), four research categories must be satisfied:
 
-### How Blocking Works
+| Category | Satisfied By | Purpose |
+|----------|-------------|---------|
+| **docs** | MCP doc tools (apple-docs, context7) | Verify APIs exist |
+| **web** | WebSearch, WebFetch | Current practices |
+| **github** | GitHub search/code search | Real-world examples |
+| **local** | Read, Grep, Glob | Existing codebase |
 
-Tools are categorized by blast radius:
+If an MCP server isn't available, its category auto-completes. The gate adapts to your setup.
+
+### Tool Categorization (Blast Radius)
 
 | Category | Examples | Blocked Until |
 |----------|----------|---------------|
-| Read-only | Read, Grep, search | Never blocked |
+| Read-only | Read, Grep, Glob, search | Never |
 | Local mutation | Edit, Write | Research complete |
-| Sensitive files | CI/CD, entitlements, build config | Confirmed once per file |
+| Sensitive files | CI/CD, entitlements, Dockerfiles | Confirmed per-file per-session |
 | External mutation | GitHub push | Research complete |
 
-**Security:** State is HMAC-signed to prevent tampering (key in macOS Keychain, not file-readable). Inline script execution (`python -c`, `ruby -e`, `node -e`) blocked as bash mutations. Sensitive files (`.github/workflows/`, `.entitlements`, `Dockerfile`, `Fastfile`, `.xcconfig`, `.mcp.json`) require explicit confirmation before the first edit each session.
+---
+
+## Security
+
+- **HMAC-signed state** — `state.json` is signed to detect tampering. Key stored in macOS Keychain.
+- **Blocked system paths** — Prevents edits to `/etc/`, `.ssh/`, `.aws/`, `.gnupg/`
+- **Inline script detection** — `python -c`, `ruby -e`, `node -e` blocked as bash mutations
+- **Sensitive file confirmation** — First edit to CI/CD configs, entitlements, Dockerfiles requires confirmation
+- **Fail-safe defaults** — If a hook errors internally, it allows the operation (exit 0). Never blocks randomly.
 
 ---
 
-## The Golden Rules (16 total, numbered #0–#15)
+## Tests
 
-**Source of truth:** `scripts/hooks/rule_tracker.rb` (used in enforcement logs).
-**No conflicts:** Rules are complementary — if multiple apply, follow all. When in doubt, follow the stricter rule.
+412 tests across two frameworks:
 
-**Core (enforced by hooks):**
-- #2 VERIFY, THEN TRY
-- #3 TWO STRIKES? STOP AND CHECK
-- #4 GREEN MEANS GO
+**Tier tests (175)** — end-to-end enforcement scenarios:
 
-**Supporting (enforced by hooks):**
-- #0 NAME IT BEFORE YOU TAME IT
-- #1 STAY IN LANE, NO PAIN
-- #5 HOUSE RULES, USE TOOLS
-- #7 NO TEST? NO REST
-- #8 BUG FOUND? WRITE IT DOWN
-- #9 NEW FILE? GEN THE PILE
-- #10 FIVE HUNDRED'S FINE, EIGHT'S THE LINE
-
-**Operational (expected every session):**
-- #6 BUILD, KILL, LAUNCH, LOG
-- #11 TOOL BROKE? FIX THE YOKE
-- #12 TALK WHILE I WALK
-- #13 CONTEXT OR CHAOS
-- #14 PROMPT LIKE A PRO
-- #15 REVIEW BEFORE YOU SHIP
-
----
-
-## Templates
-
-Pre-built templates in `templates/`:
-
-| Template | Purpose |
-|----------|---------|
-| `NEW_PROJECT_TEMPLATE.md` | CLAUDE.md for new projects |
-| `FULL_PROJECT_BOOTSTRAP.md` | Complete project setup guide |
-| `SESSION_HANDOFF_TEMPLATE.md` | Public-safe session handoff format |
-| `FOUNDER_CHECKLIST.md` | Pre-launch checklist |
-| `RESEARCH-TEMPLATE.md` | Structured research format |
-| `RESEARCH-INDEX.md` | Track all research |
-| `state-machine-audit.md` | 13-section state machine audit |
-
----
-
-## Skills System
-
-Load domain knowledge only when needed:
-
-```bash
-./scripts/skill_loader.rb list              # See available skills
-./scripts/skill_loader.rb load swift-concurrency
-./scripts/skill_loader.rb status            # See what's loaded
-./scripts/skill_loader.rb unload --all      # Clear all
-```
-
-**Available skills:**
-- `swift-concurrency` - Actor isolation, Sendable, async/await
-- `swiftui-performance` - View optimization, lazy loading
-- `crash-analysis` - Symbolication, crash report analysis
-
----
-
-## Automation Scripts
-
-```bash
-ruby scripts/qa.rb                    # Full QA (hooks, docs, URLs, tests)
-ruby scripts/validation_report.rb     # Is SaneProcess actually working? (run daily)
-ruby scripts/sync_check.rb ~/SaneBar  # Cross-project drift detection
-ruby scripts/memory_audit.rb          # Find unfixed bugs in memory
-ruby scripts/version_bump.rb 2.3      # Bump version everywhere
-ruby scripts/license_gen.rb           # Generate license key
-ruby scripts/contamination_check.rb   # Check for leaked secrets
-```
-
-### Validation Report
-
-Answers the hard question: **Is SaneProcess making us 10x more productive, or is it BS?**
-
-```bash
-ruby scripts/validation_report.rb     # Text report
-ruby scripts/validation_report.rb --json  # JSON for tracking
-```
-
-Checks:
-- Q1: Are blocks correct? (users not constantly overriding)
-- Q2: Are doom loops caught? (breaker trips on repeat errors)
-- Q3: Is self-rating honest? (not rubber-stamping 8/10)
-- Q4: Do sessions end with passing tests?
-- Q5: Is the trend improving over time?
-
-Requires 30+ data points per metric for statistical significance. Run daily.
-
----
-
-## Test Coverage
-
-429 tests across tier tests and self-tests:
-
-**Tier Tests (175):**
-
-| Tier | Count | Purpose |
-|------|-------|---------|
-| Easy | 61 | Basic functionality + integration |
-| Hard | 55 | Edge cases |
+| Tier | Count | What |
+|------|-------|------|
+| Easy | 61 | Basic functionality |
+| Hard | 55 | Edge cases, state transitions |
 | Villain | 59 | Adversarial bypass attempts |
 
-**Self-Tests (254):**
+**Self-tests (237)** — per-hook unit tests:
 
-| Hook | Count | Purpose |
-|------|-------|---------|
-| saneprompt | 176 | Prompt classification |
-| sanetrack | 23 | Failure tracking, doom loops |
-| sanetools | 38 | Research gate, blocking, sensitive files |
-| sanestop | 17 | Session metrics, validation |
+| Hook | Tests |
+|------|-------|
+| saneprompt | 176 |
+| sanetools | 38 |
+| sanetrack | 23 |
 
-Run tests:
 ```bash
+# Run all tier tests
 ruby scripts/hooks/test/tier_tests.rb
+
+# Run per-hook self-tests
+ruby scripts/hooks/saneprompt.rb --self-test
+
+# Run a specific tier
+ruby scripts/hooks/test/tier_tests.rb --tier villain
 ```
+
+---
+
+## Configuration
+
+Configurable via `scripts/hooks/core/config.rb`:
+
+| Setting | Default | What |
+|---------|---------|------|
+| Circuit breaker threshold | 3 | Consecutive failures before trip |
+| File size warning | 500 lines | Yellow warning on edit |
+| File size limit | 800 lines | Block the edit |
+| Blocked paths | `/etc/`, `.ssh/`, `.aws/` | System path protection |
 
 ---
 
@@ -267,89 +208,69 @@ ruby scripts/hooks/test/tier_tests.rb
 
 ### "BLOCKED: Research incomplete"
 
-The hook is working correctly. Complete all 4 research categories:
-1. **docs** — Verify APIs exist (apple-docs, context7)
-2. **web** — Search for current best practices (WebSearch)
-3. **github** — Find external examples (GitHub search)
-4. **local** — Check existing codebase (Read, Grep, Glob)
-
-Run `./scripts/SaneMaster.rb reset_breaker` if stuck.
+The hook is working correctly. Complete all 4 research categories before editing. Use doc tools, web search, GitHub search, and codebase search.
 
 ### Circuit breaker tripped
 
-After 3 same errors, tools get blocked. This prevents token burn.
-
-```bash
-./scripts/SaneMaster.rb breaker_status  # See what's wrong
-./scripts/SaneMaster.rb breaker_errors  # See error messages
-./scripts/SaneMaster.rb reset_breaker   # Reset (after fixing issue)
-```
+Say `reset breaker` or `rb-` in Claude after fixing the root cause.
 
 ### Hooks not firing
 
-Check hook registration:
-```bash
-cat ~/.claude/settings.json | grep hooks
+Check that `.claude/settings.json` contains hook entries pointing to your `scripts/hooks/` directory. Re-run `init.sh` if needed.
+
+---
+
+## Requirements
+
+- **macOS** (uses Keychain for HMAC key storage, `ps` for process cleanup)
+- **Ruby** (ships with macOS)
+- **Claude Code** (`npm install -g @anthropic-ai/claude-code`)
+
+---
+
+## Project Structure
+
 ```
-
-Re-run install:
-```bash
-./scripts/init.sh
-```
-
-### Ruby errors
-
-```bash
-./scripts/SaneMaster.rb setup  # Install dependencies
+scripts/
+├── hooks/                    # All enforcement hooks
+│   ├── session_start.rb      # SessionStart — orphan cleanup, state reset
+│   ├── saneprompt.rb         # UserPromptSubmit — classify, set requirements
+│   ├── sanetools.rb          # PreToolUse — block until research done
+│   ├── sanetrack.rb          # PostToolUse — track failures, circuit breaker
+│   ├── sanestop.rb           # Stop — session summary
+│   ├── core/                 # Shared infrastructure
+│   │   ├── config.rb         # Paths, thresholds, settings
+│   │   ├── state_manager.rb  # Signed state file management
+│   │   └── context_compact.rb
+│   └── test/                 # Test suites
+│       └── tier_tests.rb     # 175 enforcement tests
+├── init.sh                   # Project installer
+└── qa.rb                     # QA runner
+.claude/
+├── rules/                    # Path-specific guidance
+│   ├── views.md              # SwiftUI view patterns
+│   ├── tests.md              # Testing conventions
+│   ├── services.md           # Service layer patterns
+│   ├── models.md             # Model patterns
+│   ├── scripts.md            # Ruby script conventions
+│   └── hooks.md              # Hook conventions
+└── settings.json             # Hook registration
 ```
 
 ---
 
 ## Uninstall
 
-Remove SaneProcess from a project:
+Remove hook entries from `.claude/settings.json`. Delete `scripts/hooks/`. Delete `.claude/state.json`.
 
-```bash
-# Remove hooks from Claude settings
-# Edit ~/.claude/settings.json and remove hook entries
-
-# Remove scripts
-rm -rf scripts/hooks scripts/SaneMaster.rb scripts/sanemaster
-
-# Remove rules
-rm -rf .claude/rules
-
-# Remove CLAUDE.md additions (manual)
-```
-
-Data stored:
-- `.claude/state.json` - Hook state (HMAC-signed, auto-cleaned per session)
-- `.claude/*.log` - Hook logs (rotated at 100KB)
-
----
-
-## Status
-
-**Internal testing** — Used across 7 SaneApps projects (SaneBar, SaneClick, SaneClip, SaneVideo, SaneSync, SaneHosts, SaneAI).
-
-Public release pending validation.
-
----
-
-## Domains & Infrastructure
-
-| Asset | Status |
-|-------|--------|
-| saneprocess.com | Owned (Cloudflare) |
-| GitHub repo | Private |
-| LemonSqueezy | Account ready |
+No global state modified. No daemons installed. No system changes.
 
 ---
 
 ## License
 
-MIT License. See [LICENSE](LICENSE)
+MIT License. See [LICENSE](LICENSE).
 
 ---
 
-*SaneProcess v2.4 - February 2026*
+*Built by [SaneApps](https://saneapps.com). Used in production across 7 macOS projects.*

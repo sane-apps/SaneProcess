@@ -1,33 +1,8 @@
 # SaneProcess Development Guide
 
-> **Project Docs:** [CLAUDE.md](CLAUDE.md) · [README](README.md) · [DEVELOPMENT](DEVELOPMENT.md) · [ARCHITECTURE](ARCHITECTURE.md) · [SESSION_HANDOFF](SESSION_HANDOFF.md)
->
-> You are reading **DEVELOPMENT.md** — how to build, test, and contribute.
-> For system design and decisions, see [ARCHITECTURE](ARCHITECTURE.md). For AI instructions, see [CLAUDE](CLAUDE.md).
+> [README](README.md) · [DEVELOPMENT](DEVELOPMENT.md) · [ARCHITECTURE](ARCHITECTURE.md)
 
-Ruby hooks for Claude Code enforcement. Source of truth for all Sane projects.
-
----
-
-## Sane Philosophy
-
-```
-┌─────────────────────────────────────────────────────┐
-│           BEFORE YOU SHIP, ASK:                     │
-│                                                     │
-│  1. Does this REDUCE fear or create it?             │
-│  2. Power: Does user have control?                  │
-│  3. Love: Does this help people?                    │
-│  4. Sound Mind: Is this clear and calm?             │
-│                                                     │
-│  Grandma test: Would her life be better?            │
-│                                                     │
-│  "Not fear, but power, love, sound mind"            │
-│  — 2 Timothy 1:7                                    │
-└─────────────────────────────────────────────────────┘
-```
-
-→ Full philosophy: `~/SaneApps/meta/Brand/NORTH_STAR.md`
+How to build, test, and contribute to SaneProcess.
 
 ---
 
@@ -77,17 +52,6 @@ The hooks require ALL 4 categories before any edit is allowed:
 | **local** | `Read`, `Grep`, `Glob` | Existing code patterns |
 
 **Why all 4?** Each category catches different blind spots. Skip one → miss something → fail → waste time.
-
-## macOS UI Testing
-
-Two different tools for two different targets:
-
-| Tool | Target | Use For |
-|------|--------|---------|
-| **XcodeBuildMCP** | iOS Simulator | Build, test, simulator UI automation |
-| **macos-automator** | Real macOS Desktop | Click menu bars, test actual running apps |
-
-**For menu bar apps (SaneBar):** Use `macos-automator` to interact with real UI - XcodeBuildMCP's UI tools only work in simulator.
 
 ## Project Structure
 
@@ -140,16 +104,14 @@ ruby scripts/hooks/test/tier_tests.rb --tier villain # Villain tier
 
 ## Cross-Project Sync
 
-SaneProcess hooks sync to all SaneApps: SaneBar, SaneClick, SaneClip, SaneVideo, SaneSync, SaneHosts, SaneAI
+If you use SaneProcess across multiple projects, keep hooks in sync:
 
 ```bash
-# Check sync status
-ruby scripts/sync_check.rb ~/SaneApps/apps/SaneBar
+# Check sync status against another project
+ruby scripts/sync_check.rb /path/to/other-project
 
-# Sync hooks after changes
-for app in SaneBar SaneClick SaneClip SaneVideo SaneSync SaneHosts SaneAI; do
-  rsync -av scripts/hooks/ ~/SaneApps/apps/$app/scripts/hooks/
-done
+# Sync hooks to another project
+rsync -av scripts/hooks/ /path/to/other-project/scripts/hooks/
 ```
 
 ## Before Pushing
@@ -182,12 +144,10 @@ curl -sL https://raw.githubusercontent.com/sane-apps/SaneProcess/main/scripts/in
 ### Verification Checklist
 
 - [ ] `.claude/` and `.claude/rules/` exist
-- [ ] `Scripts/hooks/` and `Scripts/sanemaster/` exist
-- [ ] `.claude/settings.json` is valid JSON
-- [ ] `.mcp.json` is valid JSON
-- [ ] Syntax validation: `for f in Scripts/hooks/*.rb; do ruby -c "$f"; done`
-- [ ] Hook registration: `grep -c "Scripts/hooks" .claude/settings.json` (>= 13)
-- [ ] SaneMaster: `./Scripts/SaneMaster.rb --help` shows usage
+- [ ] `scripts/hooks/` and `scripts/hooks/core/` exist
+- [ ] `.claude/settings.json` is valid JSON with hook entries
+- [ ] Syntax validation: `for f in scripts/hooks/*.rb; do ruby -c "$f"; done`
+- [ ] Hook registration: `grep -c "scripts/hooks" .claude/settings.json` (>= 5)
 
 ### Regression Tests
 
@@ -203,52 +163,3 @@ ruby scripts/hooks/test/hook_test.rb   # 28 tests, 0 failures
 
 ---
 
-## Lemon Squeezy Product Setup
-
-### Store Settings
-
-- **Store Name:** Sane Labs
-- **Store URL:** `sane.lemonsqueezy.com`
-- **Brand Color:** `#10B981` (emerald green)
-
-### Products
-
-| Product | Type | Price | Slug |
-|---------|------|-------|------|
-| SaneProcess | Digital Download | $29 | `saneprocess` |
-| SaneBar | macOS App | $12 | `sanebar` |
-| SaneVideo | macOS App | $39 | `sanevideo` |
-| Sane Suite Bundle | Bundle (all 3) | $59 (save $21) | `suite` |
-
-### Discount Codes
-
-| Code | Discount | Use Case |
-|------|----------|----------|
-| `LAUNCH` | 20% off | Launch week |
-| `TWITTER` | 15% off | Social followers |
-| `GITHUB` | 15% off | GitHub contributors |
-| `BUNDLE10` | Extra 10% off bundle | Push to bundle |
-
-### Checkout Settings
-
-- **Tax:** LemonSqueezy handles VAT/GST automatically
-- **Receipts:** Email receipts enabled
-- **License Keys:** Enabled for apps (future update gating)
-
-### Payment Links
-
-```
-https://sane.lemonsqueezy.com/buy/saneprocess
-https://sane.lemonsqueezy.com/buy/sanebar
-https://sane.lemonsqueezy.com/buy/sanevideo
-https://sane.lemonsqueezy.com/buy/suite
-```
-
-### API Access
-
-```bash
-# Fetch orders (keychain-stored API key)
-KEY=$(security find-generic-password -s lemonsqueezy -a api_key -w)
-curl -s "https://api.lemonsqueezy.com/v1/orders?filter[store_id]=270691" \
-  -H "Authorization: Bearer $KEY" -H "Accept: application/vnd.api+json"
-```

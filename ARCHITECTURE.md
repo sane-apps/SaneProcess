@@ -1,9 +1,8 @@
 # SaneProcess Architecture
 
-> **Project Docs:** [CLAUDE.md](CLAUDE.md) · [README](README.md) · [DEVELOPMENT](DEVELOPMENT.md) · [ARCHITECTURE](ARCHITECTURE.md) · [SESSION_HANDOFF](SESSION_HANDOFF.md)
->
-> You are reading **ARCHITECTURE.md** — how the enforcement system works, why decisions were made, and competitive positioning.
-> For build/test procedures, see [DEVELOPMENT](DEVELOPMENT.md). For AI instructions, see [CLAUDE](CLAUDE.md).
+> [README](README.md) · [DEVELOPMENT](DEVELOPMENT.md) · [ARCHITECTURE](ARCHITECTURE.md)
+
+How the enforcement system works, why decisions were made, and where it's headed.
 
 ---
 
@@ -424,20 +423,7 @@ flowchart TD
 
 **Status:** Core classification shipped in saneprompt.rb. Advanced orchestration (phase runner, gaming detector, clarifier) designed but not implemented — the hook-based enforcement catches the same issues.
 
-### ADR-003: GitHub org migration — personal → sane-apps (2026-01-19)
-
-**Context:** All repos under personal `stephanjoseph` account. Needed professional branding for paid products.
-
-**Decision:** Transfer all repos to `sane-apps` GitHub organization. Public apps (SaneBar, SaneClip, SaneProcess, SaneHosts, SaneSync, SaneAI), private tools (SaneVideo, forks).
-
-**Completed:** Phase 1 (repo transfer), Phase 2 (file reference updates), Phase 4 (distribution model).
-**Deferred:** Phase 3 (copyright holder update), Phase 5 (bundle ID standardization — changing breaks user preferences/keychain).
-
-**Distribution model decision:** Open source (free on GitHub) + paid binaries ($5 via Lemon Squeezy). No Homebrew. DMGs served from Cloudflare R2 (`dist.{app}.com/updates/`), not GitHub Releases.
-
-**Bundle ID policy:** Keep existing inconsistent bundle IDs (`com.sanebar.app`, `com.mrsane.SaneHosts`, etc.) — changing breaks user data. Standardize only for NEW apps: `com.mrsane.{AppName}`.
-
-### ADR-004: Hook matcher wildcard feature request (2026-01-04)
+### ADR-003: Hook matcher wildcard limitation (2026-01-04)
 
 **Context:** MCP tools (e.g., `mcp__github__push_files`) bypass all enforcement because hook matchers require exact tool names. Any enforcement layer built with hooks has a fundamental bypass via dynamically-named MCP tools.
 
@@ -452,78 +438,27 @@ flowchart TD
 
 ---
 
-## 4. Research & Competitive Analysis
+## 4. Landscape
 
-### Competitive Landscape (2026-01-02)
+### Comparison
 
-**Positioning:** "Your AI Developer is drunk. Here is the Supervisor."
+| Tool | Enforcement | Orphan Cleanup | Circuit Breaker | Research Gate | Signed State | Tests |
+|------|:-:|:-:|:-:|:-:|:-:|:-:|
+| **SaneProcess** | Hooks | Yes | Yes | Yes | HMAC | 412 |
+| CLAUDE.md rules | Suggestions only | — | — | — | — | — |
+| .cursorrules | Suggestions only | — | — | — | — | — |
+| [rulesync](https://github.com/dyoshikawa/rulesync) | File sync | — | — | — | — | — |
 
-| Tool | Model | Strength | Weakness |
-|------|-------|----------|----------|
-| [steipete/agent-scripts](https://github.com/steipete/agent-scripts) | Free/OSS | Skills library, pointer workflow | Personal setup, not productized |
-| [rulesync](https://github.com/dyoshikawa/rulesync) | Free/OSS | Multi-tool sync (Cursor, Claude, Gemini) | No enforcement, just file sync |
-| [Codacy Guardrails](https://www.codacy.com/guardrails) | SaaS | Security focus, IDE integration | Enterprise pricing, not Mac-native |
-| Cursor .cursorrules | Built-in | Path-specific rules, rule types | Rules often ignored |
-
-**Where we lead:**
+**Key differentiators:**
 - Circuit breaker (unique in Claude Code ecosystem)
 - Research gate (4-category verification before edits)
 - HMAC-signed state (tamper detection)
-- 259 tests including 42 from real Claude failures
+- Orphan process cleanup (sessions, MCP daemons, subagents)
 
-**Where we lag:**
-- Path-specific rules (Cursor has, we use `.claude/rules/` convention)
-- Cross-tool sync (rulesync exports to Cursor/Gemini format)
-- Enterprise features (Codacy has IDE integration, dashboards)
+### References
 
-### Skills Ecosystem
-
-Inspired by steipete's agent-scripts library. Shipped:
-- `swift-concurrency` — Actor isolation, Sendable, Swift 6.2 (176 lines)
-- `swiftui-performance` — View anti-patterns, optimization (218 lines)
-- `crash-analysis` — Reading crash reports, symbolication (212 lines)
-
-Key insight: Skills are **loadable on demand**, not always-on context bloat.
-
-### Mac Context (757 lines shipped)
-
-Covers: build system rules, Info.plist templates, entitlements, security-scoped bookmarks, notarization workflow, crash analysis, WWDC 2025 APIs (Liquid Glass, Swift 6.2, Foundation Models, WebView, Chart3D, Spotlight App Intents), SwiftUI performance anti-patterns, menu bar patterns, Instruments profiling.
-
-### Marketing Insights
-
-**Killer differentiators:**
-- "Constraint is the Feature" — competitors add flexibility, we add discipline
-- "Zero Project Corruption" — unique value prop
-- "No pip, no npm, no brew. Double click and build." — addresses real developer pain
-
-**Refinements needed:**
-- "Zero Hallucinations" → "Supervised Hallucinations" (it still hallucinates, we catch it)
-- Add skills library to pitch: "Comes with 8 domain skills"
-- Add memory persistence: "Learns from your crashes. Remembers your patterns."
-- Add circuit breaker visual: "Stops after 3 failures. No more $20 token burns."
-
-### Trademark Landscape (2026-01-19)
-
-| Name | USPTO Status | Risk |
-|------|-------------|------|
-| SaneBar | No results | LOW |
-| SaneClip | No results | LOW |
-| SaneHosts | No results | LOW |
-| SaneApps | Potential conflict (saneapps.com "App Hits") | MEDIUM |
-| SANE | Open-source scanner project (different category) | LOW |
-
-**Recommended actions:** Search USPTO TESS directly, clarify saneapps.com ownership history, file Intent-to-Use trademark ($250-350/class), consider LLC formation.
-
-**Trademark classes:** Class 9 (computer software — primary for macOS apps), Class 42 (SaaS).
-
-### Sources
-
-- [steipete/agent-scripts](https://github.com/steipete/agent-scripts)
-- [rulesync](https://github.com/dyoshikawa/rulesync)
-- [Codacy Guardrails](https://www.codacy.com/guardrails)
 - [Anthropic - Claude Code Best Practices](https://www.anthropic.com/engineering/claude-code-best-practices)
-- [WWDC 2025 Recap](https://povio.com/blog/wwdc-2025-updates-for-apple-developers)
-- [Swift 6.2 Approachable Concurrency](https://www.avanderlee.com/concurrency/approachable-concurrency-in-swift-6-2-a-clear-guide/)
+- [steipete/agent-scripts](https://github.com/steipete/agent-scripts) — skills library inspiration
 
 ---
 
@@ -576,69 +511,14 @@ Covers: build system rules, Info.plist templates, entitlements, security-scoped 
 | OpenSSL (stdlib) | Ruby stdlib | HMAC signing | None |
 | MCP servers | Various | Research tools | Network dependency |
 
-### MCP Stack (per project)
+### MCP Servers (Optional)
 
-| MCP Server | Purpose | Required? |
-|------------|---------|-----------|
-| apple-docs | Apple API verification | For Swift projects |
-| github | External code search | For research gate |
-| context7 | Library documentation | For research gate |
-| XcodeBuildMCP | Build/test automation | For Xcode projects |
-| macos-automator | Desktop UI automation | For menu bar apps |
+The research gate works best with MCP servers that provide documentation and code search. None are required — if an MCP isn't available, its research category auto-completes.
 
-### Email & Customer Support Infrastructure
-
-**Worker:** `sane-email-automation` — Cloudflare Worker at `email-api.saneapps.com`
-**Source:** `~/SaneApps/infra/sane-email-automation/`
-**Database:** D1 `sane-email-db` (stores all inbound emails with category, status, sentiment)
-
-#### Inbound Email Flow
-
-```
-Customer → hi@saneapps.com → Cloudflare Email Workers → sane-email-automation
-                                                          ↓
-                                                    AI categorizes (praise/bug/feature/support/license/sales)
-                                                          ↓
-                                                    Auto-respond OR mark needs_human → D1 database
-```
-
-Also receives via Resend webhook at `/webhook/resend` (for `email.received` events).
-
-**Self-send loop safeguard:** Emails FROM hi@saneapps.com are blocked at both the `email()` handler (line 29) and the webhook handler (line 451). Added Jan 30, 2026 after 44 loop emails.
-
-#### API Endpoints
-
-| Endpoint | Method | What |
-|----------|--------|------|
-| `email-api.saneapps.com/api/emails/pending` | GET | Emails needing human review |
-| `email-api.saneapps.com/api/emails/today` | GET | Today's emails |
-| `email-api.saneapps.com/api/stats` | GET | Email counts by category |
-| `email-api.saneapps.com/api/digest` | GET | Daily digest |
-| `email-api.saneapps.com/api/send-reply` | POST | Send reply (emailId, body) |
-| `email-api.saneapps.com/api/testimonials` | GET | Customer testimonials |
-| `email-api.saneapps.com/webhook/resend` | POST | Resend inbound webhook |
-| `email-api.saneapps.com/webhook/lemonsqueezy` | POST | Purchase delivery webhook |
-
-#### Outbound (Resend API)
-
-Resend API (`api.resend.com/emails`) shows **outbound only**. Keychain: `resend` / `api_key`.
-Rate limit: 2 requests/sec. DO NOT batch-delete in tight loops.
-
-#### Direct D1 Queries
-
-```bash
-# All emails
-npx wrangler d1 execute sane-email-db --command "SELECT id, from_email, subject, category, status, created_at FROM emails ORDER BY created_at DESC" --remote
-
-# Mark resolved
-npx wrangler d1 execute sane-email-db --command "UPDATE emails SET status = 'resolved' WHERE id = X" --remote
-```
-
-#### Session Start: Quick Inbox Check
-
-```bash
-curl -s https://email-api.saneapps.com/api/emails/pending | python3 -m json.tool
-```
+Recommended:
+- **context7** — Library documentation lookup
+- **github** — External code search
+- **apple-docs** — Apple SDK verification (Swift projects)
 
 ---
 

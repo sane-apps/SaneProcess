@@ -27,7 +27,7 @@ All SaneApps macOS apps use **Cloudflare** for update distribution:
 **Use wrangler for R2 uploads (single shared bucket):**
 
 ```bash
-npx wrangler r2 object put sanebar-downloads/{App}-{version}.dmg \
+npx wrangler r2 object put your-downloads-bucket/{App}-{version}.dmg \
   --file="releases/{App}-{version}.dmg" --content-type="application/octet-stream" --remote
 ```
 
@@ -71,9 +71,7 @@ git push
 
 | Domain | Zone ID |
 |--------|---------|
-| dist.saneclip.com | cae3f0bc51596ed8ab14516f012d7db6 |
-| dist.sanebar.com | 97c0a91a13da737d28a56469157a5b46 |
-| dist.sanehosts.com | 07f406512f51b01fa66c5a7a55df9a28 |
+| dist.yourapp.com | YOUR_ZONE_ID |
 
 ### Adding New App Route
 
@@ -84,20 +82,20 @@ CF_TOKEN=$(security find-generic-password -s cloudflare -a api_token -w)
 curl -X POST "https://api.cloudflare.com/client/v4/zones/{zone_id}/workers/routes" \
   -H "Authorization: Bearer $CF_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"pattern": "dist.{app}.com/*", "script": "sane-dist"}'
+  -d '{"pattern": "dist.{app}.com/*", "script": "your-dist-worker"}'
 
 # Add DNS CNAME
 curl -X POST "https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records" \
   -H "Authorization: Bearer $CF_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"type": "CNAME", "name": "dist", "content": "sane-dist.saneapps.workers.dev", "proxied": true}'
+  -d '{"type": "CNAME", "name": "dist", "content": "your-worker.workers.dev", "proxied": true}'
 ```
 
 ## R2 Bucket
 
-- **Name**: `sanebar-downloads`
+- **Name**: `your-downloads-bucket`
 - **Account**: `$CLOUDFLARE_ACCOUNT_ID`
-- **Usage**: Stores all DMGs for all apps
+- **Usage**: Stores DMGs for distribution
 
 ## Critical Rules
 
@@ -106,5 +104,5 @@ curl -X POST "https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records" 
 3. **ALWAYS sign DMGs** with Sparkle EdDSA
 4. **ALWAYS verify** downloads work before announcing release
 5. **Use `wrangler`** for Pages deploy and R2 uploads
-6. **ONE Sparkle key for ALL SaneApps** — keychain account `"EdDSA Private Key"`, public key `7Pl/8cwfb2vm4Dm65AByslkMCScLJ9tbGlwGGx81qYU=`. NEVER generate per-project keys.
-7. **Verify SUPublicEDKey in built Info.plist** matches the shared key before shipping
+6. **ONE Sparkle key per org** — store in keychain, never generate per-project keys
+7. **Verify SUPublicEDKey in built Info.plist** matches your shared key before shipping

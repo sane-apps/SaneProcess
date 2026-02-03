@@ -7,20 +7,42 @@
 # Local testing
 test-project/
 
+# Private / business data (NEVER commit)
+BUSINESS_PRIVATE.md
+SESSION_HANDOFF.md
+SESSION_LOG.md
+CLAUDE.md
+
 # Claude runtime state
+.claude/research.md
+.claude/state.json
+.claude/state.json.lock
+.claude/bypass_active.json
 .claude/enforcement_breaker.json
 .claude/saneloop-state.json
+.claude/saneloop-archive/
 .claude/edit_count.json
 .claude/tool_count.json
 .claude/read_history.json
 .claude/recent_actions.json
 .claude/compliance_streak.json
 .claude/user_patterns.json
+.claude/memory_staging.json
+.claude/memory.json
+.claude/research.md
+.claude/context_warned_size.txt
+.claude/session_start_debug.log
 .claude/*.jsonl
+.claude/*.log
+.claude/*.log.old
+
+# Local-only docs
 DISASTER_RECOVERY.md
 docs/archive/DISASTER_RECOVERY.md
-CLAUDE.md
-SESSION_HANDOFF.md
-SESSION_LOG.md
 DOCS_AUDIT_FINDINGS.md
 TESTING_RESULTS.md
+
+# Runtime artifacts
+.wrangler/
+node_modules/
+outputs/

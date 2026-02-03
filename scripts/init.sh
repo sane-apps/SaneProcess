@@ -1,14 +1,14 @@
 #!/bin/bash
 #
-# SaneProcess Initialization Script
-# One-click setup for Claude Code SOP enforcement
+# SaneProcess Installation Script
+# Sets up Claude Code hook enforcement in your project
 #
 # Usage:
-#   curl -sL https://raw.githubusercontent.com/sane-apps/SaneProcess/main/scripts/init.sh | bash
+#   git clone https://github.com/sane-apps/SaneProcess.git /tmp/saneprocess
+#   /tmp/saneprocess/scripts/init.sh
 #
-# Version 2.4 - January 2026
-# Copyright (c) 2026 Stephan Joseph. All Rights Reserved.
-# License required for use: stephanjoseph2007@gmail.com
+# Or from an existing clone:
+#   /path/to/SaneProcess/scripts/init.sh
 #
 
 set -e
@@ -20,91 +20,21 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-REPO_RAW="https://raw.githubusercontent.com/sane-apps/SaneProcess/main"
+# Find the SaneProcess source directory (where this script lives)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SANEPROCESS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# LICENSE VALIDATION
-# ═══════════════════════════════════════════════════════════════════════════════
-
-LICENSE_DIR="$HOME/.saneprocess"
-LICENSE_FILE="$LICENSE_DIR/license.key"
-
-validate_license() {
-    local key=""
-
-    if [ -n "$SANEPROCESS_LICENSE" ]; then
-        key="$SANEPROCESS_LICENSE"
-    elif [ -f "$LICENSE_FILE" ]; then
-        key=$(cat "$LICENSE_FILE")
-    fi
-
-    if [ -z "$key" ]; then
-        echo ""
-        echo -e "${RED}╔═══════════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${RED}║                    LICENSE REQUIRED                           ║${NC}"
-        echo -e "${RED}╚═══════════════════════════════════════════════════════════════╝${NC}"
-        echo ""
-        echo "SaneProcess requires a valid license."
-        echo ""
-        echo -e "${YELLOW}To purchase:${NC}"
-        echo "   Email: stephanjoseph2007@gmail.com"
-        echo "   Or open an issue: https://github.com/sane-apps/SaneProcess/issues"
-        echo ""
-        echo -e "${YELLOW}To activate:${NC}"
-        echo "   mkdir -p ~/.saneprocess"
-        echo "   echo 'SP-XXXX-XXXX-XXXX-XXXX' > ~/.saneprocess/license.key"
-        echo ""
-        exit 1
-    fi
-
-    # Validate format
-    if ! echo "$key" | grep -qE '^SP-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$'; then
-        echo -e "${RED}❌ Invalid license key format${NC}"
-        exit 1
-    fi
-
-    # Validate checksum
-    local data=$(echo "$key" | cut -d'-' -f1-4)
-    local checksum=$(echo "$key" | cut -d'-' -f5)
-    local expected=$(echo -n "${data}SaneProcess2026" | shasum -a 256 | cut -c1-4 | tr 'a-z' 'A-Z')
-
-    if [ "$checksum" != "$expected" ]; then
-        echo -e "${RED}❌ Invalid license key${NC}"
-        exit 1
-    fi
-
-    echo -e "${GREEN}✅ License validated${NC}"
-}
-
-validate_license
+# Verify we're running from a valid SaneProcess clone
+if [ ! -f "$SANEPROCESS_DIR/scripts/hooks/saneprompt.rb" ]; then
+    echo -e "${RED}Error: Cannot find SaneProcess hooks at $SANEPROCESS_DIR${NC}"
+    echo "Clone the repo first: git clone https://github.com/sane-apps/SaneProcess.git"
+    exit 1
+fi
 
 echo ""
 echo -e "${BLUE}╔═══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║${NC}              ${GREEN}SaneProcess v2.4 Installation${NC}                    ${BLUE}║${NC}"
+echo -e "${BLUE}║${NC}                ${GREEN}SaneProcess Installation${NC}                       ${BLUE}║${NC}"
 echo -e "${BLUE}╚═══════════════════════════════════════════════════════════════╝${NC}"
-echo ""
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# DETECT PROJECT TYPE
-# ═══════════════════════════════════════════════════════════════════════════════
-
-detect_project_type() {
-    if [ -f "Package.swift" ]; then echo "swift-package"
-    elif [ -f "project.yml" ]; then echo "xcodegen"
-    elif ls *.xcodeproj 1>/dev/null 2>&1; then echo "xcode"
-    elif [ -f "Gemfile" ]; then echo "ruby"
-    elif [ -f "package.json" ]; then echo "node"
-    elif [ -f "Cargo.toml" ]; then echo "rust"
-    elif [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then echo "python"
-    else echo "generic"
-    fi
-}
-
-PROJECT_TYPE=$(detect_project_type)
-PROJECT_NAME=$(basename "$(pwd)")
-
-echo -e "📁 Project: ${GREEN}${PROJECT_NAME}${NC}"
-echo -e "🔍 Type: ${GREEN}${PROJECT_TYPE}${NC}"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -113,18 +43,18 @@ echo ""
 
 echo "Checking dependencies..."
 
-if ! command -v claude &>/dev/null; then
-    echo -e "${RED}❌ Claude Code not found${NC}"
-    echo "   Install: npm install -g @anthropic-ai/claude-code"
+if ! command -v ruby &>/dev/null; then
+    echo -e "${RED}Error: Ruby not found${NC}"
+    echo "   macOS ships with Ruby. If removed, install via: brew install ruby"
     exit 1
 fi
-echo -e "   ✅ claude"
+echo -e "   ${GREEN}✓${NC} ruby $(ruby -v | head -c 20)"
 
-if ! command -v curl &>/dev/null; then
-    echo -e "${RED}❌ curl not found${NC}"
-    exit 1
+if ! command -v claude &>/dev/null; then
+    echo -e "${YELLOW}Warning: Claude Code CLI not found${NC}"
+    echo "   Install: npm install -g @anthropic-ai/claude-code"
+    echo "   (Hooks will be installed but won't activate until claude is available)"
 fi
-echo -e "   ✅ curl"
 
 echo ""
 
@@ -135,135 +65,121 @@ echo ""
 echo "Creating directories..."
 
 mkdir -p .claude/rules
-mkdir -p Scripts/hooks
+mkdir -p scripts/hooks/core
 
-echo "   ✅ .claude/"
-echo "   ✅ .claude/rules/"
-echo "   ✅ Scripts/hooks/"
+echo -e "   ${GREEN}✓${NC} .claude/rules/"
+echo -e "   ${GREEN}✓${NC} scripts/hooks/core/"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# DOWNLOAD HOOKS FROM GITHUB
+# COPY HOOKS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-echo "Downloading hooks from GitHub..."
+echo "Installing hooks..."
 
-# 4-hook consolidated architecture (v2.4)
-HOOKS=(
+SRC="$SANEPROCESS_DIR/scripts/hooks"
+
+# Main hooks (5)
+MAIN_HOOKS=(
+    "session_start.rb"
     "saneprompt.rb"
     "sanetools.rb"
     "sanetrack.rb"
     "sanestop.rb"
-    "session_start.rb"
-    "sanetools_checks.rb"
-    "sanetools_gaming.rb"
+)
+
+# Support modules (required by main hooks)
+SUPPORT_MODULES=(
     "saneprompt_intelligence.rb"
     "saneprompt_commands.rb"
+    "sanetools_checks.rb"
+    "sanetools_startup.rb"
+    "sanetools_gaming.rb"
+    "sanetools_deploy.rb"
+    "sanetrack_research.rb"
+    "sanetrack_gate.rb"
     "sanetrack_reminders.rb"
-    "rule_tracker.rb"
+    "session_briefing.rb"
     "state_signer.rb"
+    "rule_tracker.rb"
 )
 
-for hook in "${HOOKS[@]}"; do
-    curl -sL "${REPO_RAW}/scripts/hooks/${hook}" -o "Scripts/hooks/${hook}"
-    chmod +x "Scripts/hooks/${hook}"
-    echo "   ✅ Scripts/hooks/${hook}"
+# Core modules (shared infrastructure)
+CORE_MODULES=(
+    "core/config.rb"
+    "core/state_manager.rb"
+    "core/context_compact.rb"
+)
+
+ERRORS=0
+
+for hook in "${MAIN_HOOKS[@]}"; do
+    if [ -f "$SRC/$hook" ]; then
+        cp "$SRC/$hook" "scripts/hooks/$hook"
+        chmod +x "scripts/hooks/$hook"
+        echo -e "   ${GREEN}✓${NC} $hook"
+    else
+        echo -e "   ${RED}✗${NC} $hook (not found in source)"
+        ERRORS=$((ERRORS + 1))
+    fi
 done
+
+for module in "${SUPPORT_MODULES[@]}"; do
+    if [ -f "$SRC/$module" ]; then
+        cp "$SRC/$module" "scripts/hooks/$module"
+    else
+        echo -e "   ${YELLOW}!${NC} $module (optional, skipped)"
+    fi
+done
+
+for core in "${CORE_MODULES[@]}"; do
+    if [ -f "$SRC/$core" ]; then
+        cp "$SRC/$core" "scripts/hooks/$core"
+    else
+        echo -e "   ${RED}✗${NC} $core (not found in source)"
+        ERRORS=$((ERRORS + 1))
+    fi
+done
+
+echo -e "   ${GREEN}✓${NC} ${#SUPPORT_MODULES[@]} support modules"
+echo -e "   ${GREEN}✓${NC} ${#CORE_MODULES[@]} core modules"
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COPY PATTERN RULES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+echo "Installing pattern rules..."
+
+RULES_SRC="$SANEPROCESS_DIR/.claude/rules"
+
+if [ -d "$RULES_SRC" ]; then
+    for rule in "$RULES_SRC"/*.md; do
+        [ -f "$rule" ] || continue
+        cp "$rule" ".claude/rules/$(basename "$rule")"
+        echo -e "   ${GREEN}✓${NC} $(basename "$rule")"
+    done
+else
+    echo -e "   ${YELLOW}!${NC} No pattern rules found (optional)"
+fi
 
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# DOWNLOAD SANEMASTER CLI
+# CREATE .claude/settings.json (project-level hooks)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-echo "Downloading SaneMaster CLI..."
+echo "Configuring hooks..."
 
-mkdir -p Scripts/sanemaster
-
-# Download main CLI
-curl -sL "${REPO_RAW}/scripts/SaneMaster.rb" -o "Scripts/SaneMaster.rb"
-chmod +x "Scripts/SaneMaster.rb"
-echo "   ✅ Scripts/SaneMaster.rb"
-
-# Download modules
-SANEMASTER_MODULES=(
-    "base.rb"
-    "bootstrap.rb"
-    "circuit_breaker_state.rb"
-    "compliance_report.rb"
-    "dependencies.rb"
-    "diagnostics.rb"
-    "export.rb"
-    "generation.rb"
-    "generation_assets.rb"
-    "generation_mocks.rb"
-    "generation_templates.rb"
-    "md_export.rb"
-    "memory.rb"
-    "meta.rb"
-    "quality.rb"
-    "session.rb"
-    "sop_loop.rb"
-    "test_mode.rb"
-    "verify.rb"
-)
-
-for module in "${SANEMASTER_MODULES[@]}"; do
-    curl -sL "${REPO_RAW}/scripts/sanemaster/${module}" -o "Scripts/sanemaster/${module}"
-done
-echo "   ✅ Scripts/sanemaster/ (${#SANEMASTER_MODULES[@]} modules)"
-
-# Replace placeholders with project name
-echo "   🔧 Configuring for ${PROJECT_NAME}..."
-BUNDLE_ID="com.example.${PROJECT_NAME,,}"  # lowercase project name
-
-sed -i '' "s/__PROJECT_NAME__/${PROJECT_NAME}/g" Scripts/SaneMaster.rb
-sed -i '' "s/__BUNDLE_ID__/${BUNDLE_ID}/g" Scripts/SaneMaster.rb
-
-for module in Scripts/sanemaster/*.rb; do
-    sed -i '' "s/__PROJECT_NAME__/${PROJECT_NAME}/g" "$module"
-    sed -i '' "s/__BUNDLE_ID__/${BUNDLE_ID}/g" "$module"
-done
-echo "   ✅ Configured for ${PROJECT_NAME}"
-
-echo ""
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# DOWNLOAD PATTERN RULES
-# ═══════════════════════════════════════════════════════════════════════════════
-
-echo "Downloading pattern rules..."
-
-RULES=(
-    "views.md"
-    "tests.md"
-    "services.md"
-    "models.md"
-    "scripts.md"
-    "hooks.md"
-)
-
-for rule in "${RULES[@]}"; do
-    curl -sL "${REPO_RAW}/.claude/rules/${rule}" -o ".claude/rules/${rule}"
-    echo "   ✅ .claude/rules/${rule}"
-done
-
-echo ""
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CREATE .claude/settings.json
-# ═══════════════════════════════════════════════════════════════════════════════
-
-echo "Creating Claude Code configuration..."
-
-cat > .claude/settings.json << 'EOF'
+# Only create if not already present (don't overwrite user config)
+if [ -f ".claude/settings.json" ]; then
+    echo -e "   ${YELLOW}!${NC} .claude/settings.json already exists — skipping"
+    echo "   Add hooks manually if needed (see README.md)"
+else
+    cat > .claude/settings.json << 'SETTINGS_EOF'
 {
   "permissions": {
-    "allow": [
-      "mcp__memory__*",
-      "mcp__apple-docs__*",
-      "mcp__context7__*"
-    ]
+    "allow": []
   },
   "hooks": {
     "SessionStart": [
@@ -271,7 +187,8 @@ cat > .claude/settings.json << 'EOF'
         "hooks": [
           {
             "type": "command",
-            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/Scripts/hooks/session_start.rb"
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/session_start.rb",
+            "timeout": 15000
           }
         ]
       }
@@ -281,7 +198,8 @@ cat > .claude/settings.json << 'EOF'
         "hooks": [
           {
             "type": "command",
-            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/Scripts/hooks/saneprompt.rb"
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/saneprompt.rb",
+            "timeout": 5000
           }
         ]
       }
@@ -291,7 +209,8 @@ cat > .claude/settings.json << 'EOF'
         "hooks": [
           {
             "type": "command",
-            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/Scripts/hooks/sanetools.rb"
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/sanetools.rb",
+            "timeout": 5000
           }
         ]
       }
@@ -301,7 +220,8 @@ cat > .claude/settings.json << 'EOF'
         "hooks": [
           {
             "type": "command",
-            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/Scripts/hooks/sanetrack.rb"
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/sanetrack.rb",
+            "timeout": 5000
           }
         ]
       }
@@ -311,213 +231,83 @@ cat > .claude/settings.json << 'EOF'
         "hooks": [
           {
             "type": "command",
-            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/Scripts/hooks/sanestop.rb"
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/sanestop.rb",
+            "timeout": 10000
           }
         ]
       }
     ]
   }
 }
-EOF
+SETTINGS_EOF
+    echo -e "   ${GREEN}✓${NC} .claude/settings.json (5 hooks registered)"
+fi
 
-echo "   ✅ .claude/settings.json (hooks configured)"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CREATE .claude/.gitignore
 # ═══════════════════════════════════════════════════════════════════════════════
 
-cat > .claude/.gitignore << 'EOF'
-# Session state (local only)
-circuit_breaker.json
-failure_state.json
-audit.jsonl
-audit_log.jsonl
+cat > .claude/.gitignore << 'GITIGNORE_EOF'
+# Hook runtime state (local only, regenerated each session)
+state.json
+state.json.lock
+bypass_active.json
+memory_staging.json
 memory.json
-sop_state.json
-edit_state.json
-edit_count.json
-build_state.json
-tool_count.json
-compliance_streak.json
-rule_tracking.jsonl
-research_progress.json
-research_findings.jsonl
-prompt_requirements.json
-process_satisfaction.json
-enforcement_log.jsonl
+context_warned_size.txt
+session_start_debug.log
+*.jsonl
+*.log
+*.log.old
 
-# Keep rules and settings
+# Keep rules and settings in version control
 !rules/
 !settings.json
-EOF
+GITIGNORE_EOF
 
-echo "   ✅ .claude/.gitignore"
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CREATE .mcp.json
-# ═══════════════════════════════════════════════════════════════════════════════
-
-echo "Creating MCP configuration..."
-
-cat > .mcp.json << 'EOF'
-{
-  "mcpServers": {
-    "context7": {
-      "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp@latest"]
-    }
-  }
-}
-EOF
-
-# Add apple-docs for Swift projects
-case "$PROJECT_TYPE" in
-    swift-package|xcodegen|xcode)
-        cat > .mcp.json << 'EOF'
-{
-  "mcpServers": {
-    "context7": {
-      "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp@latest"]
-    },
-    "apple-docs": {
-      "command": "npx",
-      "args": ["-y", "@mweinbach/apple-docs-mcp@latest"]
-    }
-  }
-}
-EOF
-        ;;
-esac
-
-echo "   ✅ .mcp.json"
-
-# Create empty memory.json for memory MCP
-echo '{"entities":[],"relations":[]}' > .claude/memory.json
-echo "   ✅ .claude/memory.json"
-echo ""
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CREATE DEVELOPMENT.md
-# ═══════════════════════════════════════════════════════════════════════════════
-
-if [ ! -f "DEVELOPMENT.md" ]; then
-    echo "Creating DEVELOPMENT.md..."
-
-    cat > DEVELOPMENT.md << 'EOF'
-# Development Guide
-
-This project uses **SaneProcess** for Claude Code SOP enforcement.
-
-## The 16 Golden Rules
-
-```
-#0  NAME IT BEFORE YOU TAME IT
-#1  STAY IN LANE, NO PAIN (files in project)
-#2  VERIFY, THEN TRY (check docs first)
-#3  TWO STRIKES? STOP AND CHECK
-#4  GREEN MEANS GO (tests must pass)
-#5  HOUSE RULES, USE TOOLS (use project tools)
-#6  BUILD, KILL, LAUNCH, LOG
-#7  NO TEST? NO REST
-#8  BUG FOUND? WRITE IT DOWN
-#9  NEW FILE? GEN THE PILE
-#10 FIVE HUNDRED'S FINE, EIGHT'S THE LINE
-#11 TOOL BROKE? FIX THE YOKE
-#12 TALK WHILE I WALK (stay responsive)
-#13 CONTEXT OR CHAOS (maintain CLAUDE.md)
-#14 PROMPT LIKE A PRO (specific prompts)
-#15 REVIEW BEFORE YOU SHIP (self-review)
-```
-
-## Installed Hooks
-
-| Hook | Type | Purpose |
-|------|------|---------|
-| `session_start.rb` | SessionStart | Bootstraps session, resets breaker |
-| `circuit_breaker.rb` | PreToolUse | Blocks after 3 failures |
-| `edit_validator.rb` | PreToolUse | Blocks dangerous paths, enforces file size |
-| `path_rules.rb` | PreToolUse | Shows context-specific rules |
-| `failure_tracker.rb` | PostToolUse | Tracks consecutive failures |
-| `test_quality_checker.rb` | PostToolUse | Warns on tautology tests |
-| `audit_logger.rb` | PostToolUse | Logs all decisions |
-
-## Self-Rating
-
-After every task, Claude should rate 1-10:
-
-| Score | Meaning |
-|-------|---------|
-| 9-10 | All rules followed |
-| 7-8 | Minor miss |
-| 5-6 | Notable gaps |
-| 1-4 | Multiple violations |
-
-## AI Usage Self-Rating
-
-| Criteria | ✅ or ❌ |
-|----------|--------|
-| Used progressive prompting (plan first) | |
-| Verified APIs before using | |
-| Self-reviewed code before done | |
-| Updated context file with learnings | |
-| Used specific prompts with constraints | |
-| Stopped at 2 failures and researched | |
-
-## More Info
-
-Full documentation: https://github.com/sane-apps/SaneProcess
-EOF
-
-    echo "   ✅ DEVELOPMENT.md"
-    echo ""
-fi
+echo -e "   ${GREEN}✓${NC} .claude/.gitignore"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # VERIFY INSTALLATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
+echo ""
 echo "Verifying installation..."
 
-ERRORS=0
-
-# Check all hooks exist and are executable
-for hook in "${HOOKS[@]}"; do
-    if [ ! -x "Scripts/hooks/${hook}" ]; then
-        echo -e "   ${RED}❌ Scripts/hooks/${hook} missing or not executable${NC}"
+# Check all main hooks exist
+for hook in "${MAIN_HOOKS[@]}"; do
+    if [ ! -f "scripts/hooks/${hook}" ]; then
+        echo -e "   ${RED}✗${NC} scripts/hooks/${hook} missing"
         ERRORS=$((ERRORS + 1))
     fi
 done
 
-# Check settings.json exists
-if [ ! -f ".claude/settings.json" ]; then
-    echo -e "   ${RED}❌ .claude/settings.json missing${NC}"
-    ERRORS=$((ERRORS + 1))
-fi
+# Check core modules exist
+for core in "${CORE_MODULES[@]}"; do
+    if [ ! -f "scripts/hooks/${core}" ]; then
+        echo -e "   ${RED}✗${NC} scripts/hooks/${core} missing"
+        ERRORS=$((ERRORS + 1))
+    fi
+done
 
-# Check .mcp.json exists
-if [ ! -f ".mcp.json" ]; then
-    echo -e "   ${RED}❌ .mcp.json missing${NC}"
-    ERRORS=$((ERRORS + 1))
-fi
-
-# Verify hooks have valid Ruby syntax
-for hook in "${HOOKS[@]}"; do
-    if ! ruby -c "Scripts/hooks/${hook}" &>/dev/null; then
-        echo -e "   ${RED}❌ Scripts/hooks/${hook} has syntax errors${NC}"
+# Verify Ruby syntax on main hooks
+for hook in "${MAIN_HOOKS[@]}"; do
+    if [ -f "scripts/hooks/${hook}" ] && ! ruby -c "scripts/hooks/${hook}" &>/dev/null; then
+        echo -e "   ${RED}✗${NC} scripts/hooks/${hook} has syntax errors"
         ERRORS=$((ERRORS + 1))
     fi
 done
 
 if [ $ERRORS -gt 0 ]; then
     echo ""
-    echo -e "${RED}❌ Installation failed with $ERRORS errors${NC}"
+    echo -e "${RED}Installation completed with $ERRORS errors${NC}"
+    echo "Some hooks may not function correctly. Check the errors above."
     exit 1
 fi
 
-echo -e "   ${GREEN}✅ All hooks installed and valid${NC}"
-echo -e "   ${GREEN}✅ Configuration files created${NC}"
+echo -e "   ${GREEN}✓${NC} All hooks installed and valid"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -525,31 +315,29 @@ echo ""
 # ═══════════════════════════════════════════════════════════════════════════════
 
 echo -e "${GREEN}╔═══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║                    Installation Complete!                     ║${NC}"
+echo -e "${GREEN}║                    Installation Complete                     ║${NC}"
 echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo "Installed:"
-echo "   • 5 main hooks + 4 support modules (4-hook architecture)"
-echo "   • 6 pattern-based rules"
-echo "   • SaneMaster CLI (./Scripts/SaneMaster.rb)"
-echo "   • Claude Code settings with hook registration"
-echo "   • MCP server configuration"
+echo "   5 main hooks + ${#SUPPORT_MODULES[@]} support modules + ${#CORE_MODULES[@]} core modules"
+echo "   $(ls .claude/rules/*.md 2>/dev/null | wc -l | tr -d ' ') pattern rules"
+echo "   Hook registration in .claude/settings.json"
 echo ""
-echo -e "${BLUE}Next steps:${NC}"
-echo "   1. Run: ${GREEN}claude${NC}"
-echo "   2. Hooks activate automatically"
-echo "   3. See DEVELOPMENT.md for the 16 Golden Rules"
+echo -e "${BLUE}What happens next:${NC}"
+echo "   1. Run: claude"
+echo "   2. Hooks activate automatically on session start"
+echo "   3. Orphaned processes cleaned up"
+echo "   4. Circuit breaker armed (trips after 3 consecutive failures)"
+echo "   5. Research gate active (4 categories before edits)"
 echo ""
-echo -e "${BLUE}SaneMaster commands:${NC}"
-echo "   ./Scripts/SaneMaster.rb verify      # Build, test, lint"
-echo "   ./Scripts/SaneMaster.rb test-mode   # Build, kill, launch, logs"
-echo "   ./Scripts/SaneMaster.rb memory      # View memory graph health"
+echo -e "${BLUE}Verify:${NC}"
+echo "   ruby scripts/hooks/saneprompt.rb --self-test"
+echo "   ruby scripts/hooks/sanetools.rb --self-test"
 echo ""
-echo -e "${YELLOW}Note:${NC} Add these to .gitignore:"
-echo "   .claude/circuit_breaker.json"
-echo "   .claude/failure_state.json"
-echo "   .claude/audit.jsonl"
-echo "   .claude/memory.json"
+echo -e "${BLUE}Troubleshooting:${NC}"
+echo "   Circuit breaker stuck: say 'reset breaker' in Claude"
+echo "   Research gate stuck: complete all 4 research categories"
+echo "   Hooks not firing: check .claude/settings.json has hook entries"
 echo ""
-echo "Documentation: https://github.com/sane-apps/SaneProcess"
+echo "Docs: https://github.com/sane-apps/SaneProcess"
 echo ""
