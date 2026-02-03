@@ -1,9 +1,11 @@
 # SaneProcess
 
-> **Project Docs:** [CLAUDE.md](CLAUDE.md) · [README](README.md) · [DEVELOPMENT](DEVELOPMENT.md) · [ARCHITECTURE](ARCHITECTURE.md) · [SESSION_HANDOFF](SESSION_HANDOFF.md)
+> **Project Docs:** [CLAUDE_PUBLIC.md](CLAUDE_PUBLIC.md) · [README](README.md) · [DEVELOPMENT](DEVELOPMENT.md) · [ARCHITECTURE](ARCHITECTURE.md)
 >
 > You are reading **README.md** — what SaneProcess is and how to use it.
 > For contributing, see [DEVELOPMENT](DEVELOPMENT.md). For system internals, see [ARCHITECTURE](ARCHITECTURE.md).
+>
+> Note: Local/private docs (not in this repo) include `CLAUDE.md` and `SESSION_HANDOFF.md`.
 
 **Battle-tested SOP enforcement for Claude Code.**
 
