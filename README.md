@@ -177,6 +177,7 @@ Pre-built templates in `templates/`:
 |----------|---------|
 | `NEW_PROJECT_TEMPLATE.md` | CLAUDE.md for new projects |
 | `FULL_PROJECT_BOOTSTRAP.md` | Complete project setup guide |
+| `SESSION_HANDOFF_TEMPLATE.md` | Public-safe session handoff format |
 | `FOUNDER_CHECKLIST.md` | Pre-launch checklist |
 | `RESEARCH-TEMPLATE.md` | Structured research format |
 | `RESEARCH-INDEX.md` | Track all research |
