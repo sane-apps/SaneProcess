@@ -152,11 +152,11 @@ def is_bootstrap_tool?(tool_name)
 end
 
 def research_complete?(research)
-  RESEARCH_CATEGORIES.keys.all? { |cat| research[cat] }
+  SaneToolsChecks.effective_research_categories(RESEARCH_CATEGORIES).all? { |cat| research[cat] }
 end
 
 def research_missing(research)
-  RESEARCH_CATEGORIES.keys.reject { |cat| research[cat] }
+  SaneToolsChecks.effective_research_categories(RESEARCH_CATEGORIES).reject { |cat| research[cat] }
 end
 
 # === RESEARCH TRACKING ===

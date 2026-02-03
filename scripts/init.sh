@@ -352,12 +352,70 @@ echo "   5 main hooks + ${#SUPPORT_MODULES[@]} support modules + ${#CORE_MODULES
 echo "   $(ls .claude/rules/*.md 2>/dev/null | wc -l | tr -d ' ') pattern rules"
 echo "   Hook registration in .claude/settings.json"
 echo ""
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RECOMMENDED MCPs
+# ═══════════════════════════════════════════════════════════════════════════════
+
+echo -e "${BLUE}Recommended MCP servers:${NC}"
+echo ""
+echo "   The research gate works best with these MCP servers."
+echo "   Without them, MCP-dependent research categories auto-skip."
+echo "   With them, Claude must verify APIs exist before editing."
+echo ""
+
+MISSING_MCPS=0
+
+# Check for context7 (library docs — works on all platforms)
+if claude mcp list 2>/dev/null | grep -q 'context7'; then
+    echo -e "   ${GREEN}✓${NC} context7 (library documentation)"
+else
+    echo -e "   ${YELLOW}○${NC} context7 — library docs lookup"
+    echo "     Install: claude mcp add context7 -- npx -y @upstash/context7-mcp@latest"
+    MISSING_MCPS=$((MISSING_MCPS + 1))
+fi
+
+# Check for GitHub MCP (works on all platforms)
+if claude mcp list 2>/dev/null | grep -q 'github'; then
+    echo -e "   ${GREEN}✓${NC} github (code search, examples)"
+else
+    echo -e "   ${YELLOW}○${NC} github — search code, find real-world examples"
+    echo "     Install: claude mcp add github -- npx -y @modelcontextprotocol/server-github"
+    echo "     Requires: GITHUB_PERSONAL_ACCESS_TOKEN env var"
+    MISSING_MCPS=$((MISSING_MCPS + 1))
+fi
+
+# Check for apple-docs (macOS only)
+if [ "$PLATFORM" = "macOS" ]; then
+    if claude mcp list 2>/dev/null | grep -q 'apple-docs'; then
+        echo -e "   ${GREEN}✓${NC} apple-docs (Apple API verification)"
+    else
+        echo -e "   ${YELLOW}○${NC} apple-docs — verify Apple APIs exist before using them"
+        echo "     Install: claude mcp add apple-docs -- npx -y @nicklima/apple-docs-mcp@latest"
+        MISSING_MCPS=$((MISSING_MCPS + 1))
+    fi
+fi
+
+echo ""
+if [ $MISSING_MCPS -eq 0 ]; then
+    echo -e "   ${GREEN}All recommended MCPs installed — full research gate active${NC}"
+else
+    echo -e "   ${YELLOW}${MISSING_MCPS} optional MCP(s) not found${NC}"
+    echo "   SaneProcess adapts — missing categories auto-skip."
+    echo "   Install them for stricter research enforcement."
+fi
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEXT STEPS
+# ═══════════════════════════════════════════════════════════════════════════════
+
 echo -e "${BLUE}What happens next:${NC}"
 echo "   1. Run: claude"
 echo "   2. Hooks activate automatically on session start"
 echo "   3. Orphaned processes cleaned up"
 echo "   4. Circuit breaker armed (trips after 3 consecutive failures)"
-echo "   5. Research gate active (4 categories before edits)"
+echo "   5. Research gate active (adapts to your installed MCPs)"
 echo ""
 echo -e "${BLUE}Verify:${NC}"
 echo "   ruby scripts/hooks/saneprompt.rb --self-test"
@@ -365,7 +423,7 @@ echo "   ruby scripts/hooks/sanetools.rb --self-test"
 echo ""
 echo -e "${BLUE}Troubleshooting:${NC}"
 echo "   Circuit breaker stuck: say 'reset breaker' in Claude"
-echo "   Research gate stuck: complete all 4 research categories"
+echo "   Research gate stuck: complete all research categories"
 echo "   Hooks not firing: check .claude/settings.json has hook entries"
 echo ""
 echo "Docs: https://github.com/sane-apps/SaneProcess"

@@ -126,16 +126,16 @@ When tripped, all edit/write operations are blocked. Say `reset breaker` or `rb-
 
 ### Research Gate
 
-Before any mutation (Edit, Write, Bash with side effects), four research categories must be satisfied:
+Before any mutation (Edit, Write, Bash with side effects), research categories must be satisfied:
 
-| Category | Satisfied By | Purpose |
-|----------|-------------|---------|
-| **docs** | MCP doc tools (apple-docs, context7) | Verify APIs exist |
-| **web** | WebSearch, WebFetch | Current practices |
-| **github** | GitHub search/code search | Real-world examples |
-| **local** | Read, Grep, Glob | Existing codebase |
+| Category | Satisfied By | Required? |
+|----------|-------------|-----------|
+| **docs** | apple-docs MCP, context7 MCP | Only if MCP installed |
+| **web** | WebSearch, WebFetch | Always |
+| **github** | GitHub MCP | Only if MCP installed |
+| **local** | Read, Grep, Glob | Always |
 
-If an MCP server isn't available, its category auto-completes. The gate adapts to your setup.
+The gate adapts to your setup. With no MCPs, only `web` + `local` are required. With apple-docs and GitHub MCPs installed, all 4 categories enforce. The installer shows which MCPs you have and gives install commands for the rest.
 
 ### Tool Categorization (Blast Radius)
 

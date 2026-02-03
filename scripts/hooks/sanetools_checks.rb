@@ -341,7 +341,7 @@ module SaneToolsChecks
       return nil unless is_edit_task
 
       research = StateManager.get(:research)
-      complete = research_categories.keys.all? { |cat| research[cat] }
+      complete = effective_research_categories(research_categories).all? { |cat| research[cat] }
 
       unless complete
         return "SUBAGENT BYPASS BLOCKED\n" \
@@ -352,25 +352,54 @@ module SaneToolsChecks
       nil
     end
 
+    # Categories that require specific MCPs — auto-satisfy if those MCPs aren't available.
+    # :web and :local use built-in tools (WebSearch, Read/Grep/Glob) so always required.
+    MCP_DEPENDENT_CATEGORIES = {
+      docs: [:apple_docs, :context7],
+      github: [:github]
+    }.freeze
+
+    # Returns only the research categories that should be enforced,
+    # skipping MCP-dependent ones if those MCPs aren't installed.
+    def effective_research_categories(research_categories)
+      research = StateManager.get(:research)
+      health = StateManager.get(:mcp_health)
+      mcps = health[:mcps] || {}
+
+      research_categories.keys.select do |cat|
+        if MCP_DEPENDENT_CATEGORIES.key?(cat) && !research[cat]
+          # Check if any MCP for this category has ever been called
+          mcp_keys = MCP_DEPENDENT_CATEGORIES[cat]
+          mcp_keys.any? do |key|
+            data = mcps[key]
+            data.is_a?(Hash) && (data[:last_success] || data[:last_failure])
+          end
+        else
+          true
+        end
+      end
+    end
+
     def check_research_before_edit(tool_name, edit_tools, research_categories)
       return nil unless edit_tools.include?(tool_name)
 
       research = StateManager.get(:research)
-      total = research_categories.keys.length
-      done = research_categories.keys.count { |cat| research[cat] }
+      effective_categories = effective_research_categories(research_categories)
+
+      total = effective_categories.length
+      done = effective_categories.count { |cat| research[cat] }
       complete = done == total
 
       return nil if complete
 
-      missing = research_categories.keys.reject { |cat| research[cat] }
+      missing = effective_categories.reject { |cat| research[cat] }
 
       # Build specific instructions for each missing category
-      # NOTE: Memory category removed Jan 2026 - using Sane-Mem auto-capture instead
       missing_instructions = missing.map do |cat|
         case cat
-        when :docs then "  1. DOCS: mcp__apple-docs or mcp__context7 (verify APIs exist)"
+        when :docs then "  1. DOCS: mcp__apple-docs, mcp__context7, or WebSearch for docs (verify APIs exist)"
         when :web then "  2. WEB: WebSearch (current best practices)"
-        when :github then "  3. GITHUB: mcp__github__search_* (external examples)"
+        when :github then "  3. GITHUB: mcp__github__search_* or WebSearch for examples (real-world code)"
         when :local then "  4. LOCAL: Read/Grep/Glob (understand existing code)"
         else "  #{cat}: Complete this research category"
         end
@@ -388,11 +417,12 @@ module SaneToolsChecks
       return nil unless tool_name.match?(external_mutation_pattern)
 
       research = StateManager.get(:research)
-      complete = research_categories.keys.all? { |cat| research[cat] }
+      effective = effective_research_categories(research_categories)
+      complete = effective.all? { |cat| research[cat] }
 
       return nil if complete
 
-      missing = research_categories.keys.reject { |cat| research[cat] }
+      missing = effective.reject { |cat| research[cat] }
       "EXTERNAL MUTATION BLOCKED\n" \
       "Tool '#{tool_name}' affects external systems. Research first.\n" \
       "Missing: #{missing.join(', ')}. Use read-only tools to understand state first.\n" \
@@ -515,7 +545,7 @@ module SaneToolsChecks
 
       if unsatisfied.include?('research')
         research = StateManager.get(:research)
-        if research_categories.keys.all? { |cat| research[cat] }
+        if effective_research_categories(research_categories).all? { |cat| research[cat] }
           StateManager.update(:requirements) do |r|
             r[:satisfied] ||= []
             r[:satisfied] << 'research' unless r[:satisfied].include?('research')
@@ -641,6 +671,10 @@ module SaneToolsChecks
 
     def check_pending_mcp_actions(tool_name, edit_tools)
       return nil unless edit_tools.include?(tool_name)
+
+      # Only enforce MCP verification for projects with .saneprocess manifest
+      project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
+      return nil unless File.exist?(File.join(project_dir, '.saneprocess'))
 
       # Get MCP health state
       health = StateManager.get(:mcp_health)
