@@ -103,7 +103,7 @@ Five hooks map to Claude Code's lifecycle events:
 | `sanetrack.rb` | PostToolUse | Tracks failures, trips circuit breaker |
 | `sanestop.rb` | Stop | Captures session summary |
 
-All state lives in a single HMAC-signed JSON file (`.claude/state.json`). File-locked for concurrent access. Tamper-detected via macOS Keychain. Atomic writes via tempfile + rename.
+All state lives in a single HMAC-signed JSON file (`.claude/state.json`). File-locked for concurrent access. Tamper-detected via HMAC key (macOS Keychain or `~/.claude_hook_secret` on Linux). Atomic writes via tempfile + rename.
 
 ### Orphan Cleanup
 
@@ -208,7 +208,7 @@ Configurable via `scripts/hooks/core/config.rb`:
 
 ### "BLOCKED: Research incomplete"
 
-The hook is working correctly. Complete all 4 research categories before editing. Use doc tools, web search, GitHub search, and codebase search.
+The hook is working correctly. Complete the required research categories before editing. The gate adapts — categories whose MCPs you don't have auto-skip. With no MCPs, only `web` + `local` are required.
 
 ### Circuit breaker tripped
 
@@ -247,13 +247,9 @@ scripts/
 ├── init.sh                   # Project installer
 └── qa.rb                     # QA runner
 .claude/
-├── rules/                    # Path-specific guidance
-│   ├── views.md              # SwiftUI view patterns
-│   ├── tests.md              # Testing conventions
-│   ├── services.md           # Service layer patterns
-│   ├── models.md             # Model patterns
-│   ├── scripts.md            # Ruby script conventions
-│   └── hooks.md              # Hook conventions
+├── rules/                    # Path-specific guidance (installed by init.sh)
+│   ├── hooks.md              # Hook conventions
+│   └── scripts.md            # Ruby script conventions
 └── settings.json             # Hook registration
 ```
 
@@ -273,4 +269,4 @@ MIT License. See [LICENSE](LICENSE).
 
 ---
 
-*Built by [SaneApps](https://saneapps.com). Used in production across 7 macOS projects.*
+*Built by [SaneApps](https://saneapps.com). Used in production across 7 projects.*

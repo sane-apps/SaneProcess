@@ -401,23 +401,25 @@ def process_tool(tool_name, tool_input)
     return 2
   end
 
-  # === DEPLOYMENT SAFETY (not gated by research — bad uploads are always blocked) ===
-  if (reason = SaneToolsChecks.check_r2_upload(tool_name, tool_input))
-    log_action(tool_name, true, reason)
-    output_block(reason, tool_name)
-    return 2
-  end
+  # === DEPLOYMENT SAFETY (SaneApps-specific — only enforce for .saneprocess projects) ===
+  if File.exist?(File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.saneprocess'))
+    if (reason = SaneToolsChecks.check_r2_upload(tool_name, tool_input))
+      log_action(tool_name, true, reason)
+      output_block(reason, tool_name)
+      return 2
+    end
 
-  if (reason = SaneToolsChecks.check_appcast_edit(tool_name, tool_input, EDIT_TOOLS))
-    log_action(tool_name, true, reason)
-    output_block(reason, tool_name)
-    return 2
-  end
+    if (reason = SaneToolsChecks.check_appcast_edit(tool_name, tool_input, EDIT_TOOLS))
+      log_action(tool_name, true, reason)
+      output_block(reason, tool_name)
+      return 2
+    end
 
-  if (reason = SaneToolsChecks.check_pages_deploy(tool_name, tool_input))
-    log_action(tool_name, true, reason)
-    output_block(reason, tool_name)
-    return 2
+    if (reason = SaneToolsChecks.check_pages_deploy(tool_name, tool_input))
+      log_action(tool_name, true, reason)
+      output_block(reason, tool_name)
+      return 2
+    end
   end
 
   # Check subagent bypass

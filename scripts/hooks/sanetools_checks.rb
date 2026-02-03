@@ -127,7 +127,7 @@ module SaneToolsChecks
         if p.match?(STATE_FILE_PATTERN) && edit_tools.include?(tool_name)
           return "STATE FILE PROTECTED: #{path}\n" \
                  "Claude cannot edit .claude/*.json files directly.\n" \
-                 "Use user commands (s+/s-/sl+/sl-) or SaneMaster.rb instead."
+                 "Use user commands (s+/s-/sl+/sl-) instead."
         end
       end
 
@@ -251,7 +251,7 @@ module SaneToolsChecks
           return "STATE BYPASS BLOCKED\n" \
                  "Command appears to manipulate .claude state files: #{command[0..60]}...\n" \
                  "Claude cannot modify enforcement state via bash.\n" \
-                 "Use user commands (s+/s-/sl+/sl-) or SaneMaster.rb instead."
+                 "Use user commands (s+/s-/sl+/sl-) instead."
         end
       end
 

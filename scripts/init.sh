@@ -182,11 +182,20 @@ echo "Installing pattern rules..."
 
 RULES_SRC="$SANEPROCESS_DIR/.claude/rules"
 
+# Only copy language-agnostic rules (hooks and scripts conventions).
+# Swift-specific rules (views, models, services, tests) are for SaneProcess
+# development only and not relevant to most projects.
+UNIVERSAL_RULES=(
+    "hooks.md"
+    "scripts.md"
+)
+
 if [ -d "$RULES_SRC" ]; then
-    for rule in "$RULES_SRC"/*.md; do
-        [ -f "$rule" ] || continue
-        cp "$rule" ".claude/rules/$(basename "$rule")"
-        echo -e "   ${GREEN}✓${NC} $(basename "$rule")"
+    for rule in "${UNIVERSAL_RULES[@]}"; do
+        if [ -f "$RULES_SRC/$rule" ]; then
+            cp "$RULES_SRC/$rule" ".claude/rules/$rule"
+            echo -e "   ${GREEN}✓${NC} $rule"
+        fi
     done
 else
     echo -e "   ${YELLOW}!${NC} No pattern rules found (optional)"
@@ -423,7 +432,7 @@ echo "   ruby scripts/hooks/sanetools.rb --self-test"
 echo ""
 echo -e "${BLUE}Troubleshooting:${NC}"
 echo "   Circuit breaker stuck: say 'reset breaker' in Claude"
-echo "   Research gate stuck: complete all research categories"
+echo "   Research gate stuck: complete required research categories (adapts to your MCPs)"
 echo "   Hooks not firing: check .claude/settings.json has hook entries"
 echo ""
 echo "Docs: https://github.com/sane-apps/SaneProcess"

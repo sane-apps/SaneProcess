@@ -25,8 +25,15 @@ module SanePromptCommands
   def handle_safemode_command(prompt)
     cmd = prompt.strip.downcase
 
-    # === SANELOOP COMMANDS (user-only) ===
+    # === SANELOOP COMMANDS (requires SaneMaster.rb — SaneApps internal tool) ===
     if cmd.start_with?('sl+') || cmd.start_with?('saneloop on') || cmd.start_with?('saneloop start')
+      unless File.exist?(SANEMASTER_PATH)
+        warn ''
+        warn 'SANELOOP: Not available (SaneMaster.rb not found)'
+        warn '  Saneloop is an internal tool for SaneApps projects.'
+        warn ''
+        return true
+      end
       task_match = prompt.match(/sl\+\s+(.+)/i) || prompt.match(/saneloop\s+(?:on|start)\s+(.+)/i)
       if task_match
         task = task_match[1].strip
@@ -43,12 +50,20 @@ module SanePromptCommands
       end
       true
     elsif cmd.start_with?('sl-') || cmd.start_with?('saneloop off') || cmd.start_with?('saneloop stop')
+      unless File.exist?(SANEMASTER_PATH)
+        warn 'SANELOOP: Not available (SaneMaster.rb not found)'
+        return true
+      end
       result = `#{SANEMASTER_PATH} saneloop cancel 2>&1`
       warn ''
       warn result
       warn ''
       true
     elsif cmd.start_with?('sl?') || cmd == 'saneloop' || cmd.start_with?('saneloop status')
+      unless File.exist?(SANEMASTER_PATH)
+        warn 'SANELOOP: Not available (SaneMaster.rb not found)'
+        return true
+      end
       result = `#{SANEMASTER_PATH} saneloop status 2>&1`
       warn ''
       warn result

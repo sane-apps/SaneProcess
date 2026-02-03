@@ -25,7 +25,7 @@ Five hooks enforce discipline at each Claude Code lifecycle event:
 
 | Block Message | What To Do |
 |--------------|------------|
-| RESEARCH INCOMPLETE | Complete all 4 research categories (docs, web, github, local) |
+| RESEARCH INCOMPLETE | Complete the required research categories (see below) |
 | CIRCUIT BREAKER | Say `reset breaker` after fixing the root cause |
 | FILE SIZE | Split the file — 500 line warning, 800 line block |
 | BLOCKED PATH | You're editing outside project scope |
@@ -33,14 +33,16 @@ Five hooks enforce discipline at each Claude Code lifecycle event:
 
 ## Research Categories
 
-Before editing, satisfy all 4:
+The gate adapts to your installed MCP servers. Categories whose MCPs have never been used auto-skip.
 
-| Category | How | Tool |
-|----------|-----|------|
-| docs | Check API documentation | apple-docs, context7 |
-| web | Search for best practices | WebSearch |
-| github | Find examples | GitHub search |
-| local | Read existing code | Read, Grep, Glob |
+| Category | How | Tool | Required? |
+|----------|-----|------|-----------|
+| docs | Check API documentation | apple-docs, context7 | Only if MCP installed |
+| web | Search for best practices | WebSearch | Always |
+| github | Find examples | GitHub search | Only if MCP installed |
+| local | Read existing code | Read, Grep, Glob | Always |
+
+With no MCPs installed, only `web` + `local` are required. Install MCPs for stricter enforcement.
 
 ## Commands
 
