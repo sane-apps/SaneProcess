@@ -59,6 +59,23 @@ curl -sL https://raw.githubusercontent.com/sane-apps/SaneProcess/main/scripts/in
 
 ---
 
+## Session Close (Default)
+
+1. Confirm worktree is clean or intentionally staged
+2. Update `SESSION_HANDOFF.md` (Done / Docs / SOP / Next)
+3. Run the smallest relevant check:
+   - Docs-only: `./scripts/SaneMaster.rb check_docs`
+   - Code changes: `./scripts/SaneMaster.rb verify`
+4. Append one SOP score line to `outputs/sop_ratings.csv`
+
+**Run full `/docs-audit` only when needed:**
+- New user-facing feature or behavior change
+- README/website docs touched
+- Release prep or public announcement
+- Larger change sets where drift risk is higher
+
+---
+
 ## What's Included
 
 ```
