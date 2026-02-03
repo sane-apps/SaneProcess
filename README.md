@@ -232,6 +232,49 @@ Check that `.claude/settings.json` contains hook entries pointing to your `scrip
 
 ---
 
+## Included Skills
+
+SaneProcess ships two multi-agent audit skills that Claude reads and executes automatically.
+
+### Critic (`/critic`)
+
+6-persona adversarial code review. Spawns parallel subagents that each review from a different angle:
+
+| Agent | Focus |
+|-------|-------|
+| Bug Hunter | Logic errors, null safety, crashes |
+| Data Flow Tracer | Feature completeness across code paths |
+| Integration Auditor | Cross-system config consistency |
+| Edge Case Explorer | Unusual states, environments |
+| UX Critic | UI/UX quality, clarity, accessibility |
+| Security Auditor | Attack vectors, data exposure |
+
+Findings are deduplicated and ranked by severity. Issues caught by multiple agents get higher confidence scores.
+
+### Docs Audit (`/docs-audit`)
+
+11-perspective documentation audit. Each perspective runs as its own subagent:
+
+| # | Perspective | Focus |
+|---|-------------|-------|
+| 1 | Engineer | Technical accuracy, API docs |
+| 2 | Designer | Screenshots, visual storytelling |
+| 3 | Marketer | Value proposition, "why should I care?" |
+| 4 | User Advocate | Onboarding clarity |
+| 5 | QA | Edge cases, gotchas, troubleshooting |
+| 6 | Hygiene | Duplication, terminology drift |
+| 7 | Security | Leaked secrets, PII, internal URLs |
+| 8 | Freshness | Stale examples, broken links |
+| 9 | Completeness | TODO placeholders, unchecked items |
+| 10 | Ops | Git hygiene, dependencies, certificates |
+| 11 | Consistency | Broken references in CLAUDE.md vs actual code |
+
+Produces a consolidated gap report with scores, critical issues, and recommended fixes — sorted by what Claude can fix vs what needs human action.
+
+Skills are installed to `.claude/skills/` during `init.sh` setup.
+
+---
+
 ## Project Structure
 
 ```
@@ -250,10 +293,18 @@ scripts/
 │       └── tier_tests.rb     # 175 enforcement tests
 ├── init.sh                   # Project installer
 └── qa.rb                     # QA runner
+skills/
+├── critic/                   # 6-persona adversarial code review
+│   ├── SKILL.md
+│   └── prompts/              # 6 agent prompts
+└── docs-audit/               # 11-perspective documentation audit
+    ├── SKILL.md
+    └── prompts/              # 11 agent prompts
 .claude/
 ├── rules/                    # Path-specific guidance (installed by init.sh)
 │   ├── hooks.md              # Hook conventions
 │   └── scripts.md            # Ruby script conventions
+├── skills/                   # Installed by init.sh from skills/
 └── settings.json             # Hook registration
 ```
 

@@ -204,6 +204,35 @@ fi
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# COPY SKILLS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+echo "Installing skills..."
+
+SKILLS_SRC="$SANEPROCESS_DIR/skills"
+
+if [ -d "$SKILLS_SRC" ]; then
+    mkdir -p .claude/skills
+    for skill_dir in "$SKILLS_SRC"/*/; do
+        skill_name=$(basename "$skill_dir")
+        if [ -f "$skill_dir/SKILL.md" ]; then
+            mkdir -p ".claude/skills/$skill_name"
+            cp "$skill_dir/SKILL.md" ".claude/skills/$skill_name/SKILL.md"
+            if [ -d "$skill_dir/prompts" ]; then
+                mkdir -p ".claude/skills/$skill_name/prompts"
+                cp "$skill_dir/prompts/"*.md ".claude/skills/$skill_name/prompts/"
+            fi
+            prompt_count=$(ls ".claude/skills/$skill_name/prompts/"*.md 2>/dev/null | wc -l | tr -d ' ')
+            echo -e "   ${GREEN}✓${NC} $skill_name ($prompt_count prompts)"
+        fi
+    done
+else
+    echo -e "   ${YELLOW}!${NC} No skills found (optional)"
+fi
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CREATE .claude/settings.json (project-level hooks)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -300,8 +329,9 @@ session_start_debug.log
 *.log
 *.log.old
 
-# Keep rules and settings in version control
+# Keep rules, skills, and settings in version control
 !rules/
+!skills/
 !settings.json
 GITIGNORE_EOF
 
@@ -359,6 +389,7 @@ echo ""
 echo "Installed:"
 echo "   5 main hooks + ${#SUPPORT_MODULES[@]} support modules + ${#CORE_MODULES[@]} core modules"
 echo "   $(ls .claude/rules/*.md 2>/dev/null | wc -l | tr -d ' ') pattern rules"
+echo "   $(ls -d .claude/skills/*/ 2>/dev/null | wc -l | tr -d ' ') skills (critic, docs-audit)"
 echo "   Hook registration in .claude/settings.json"
 echo ""
 
