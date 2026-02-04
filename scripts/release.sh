@@ -121,6 +121,15 @@ bump_project_version() {
 run_tests() {
     log_info "Running tests..."
 
+    local cache_root="${PROJECT_ROOT}/.build/cache"
+    local clang_cache="${cache_root}/clang"
+    local swiftpm_cache="${cache_root}/swiftpm"
+    mkdir -p "${clang_cache}" "${swiftpm_cache}"
+
+    if [ -d "${HOME}/Library/Caches/org.swift.swiftpm" ] && [ ! -d "${swiftpm_cache}/repositories" ]; then
+        cp -R "${HOME}/Library/Caches/org.swift.swiftpm/." "${swiftpm_cache}/" 2>/dev/null || true
+    fi
+
     local args=(test -scheme "${SCHEME}" -destination 'platform=macOS' -quiet)
     if [ -n "${WORKSPACE}" ]; then
         args=(-workspace "${WORKSPACE}" "${args[@]}")
@@ -128,7 +137,10 @@ run_tests() {
         args=(-project "${XCODEPROJ}" "${args[@]}")
     fi
 
-    if xcodebuild "${args[@]}" 2>/dev/null; then
+    if XDG_CACHE_HOME="${cache_root}" \
+       CLANG_MODULE_CACHE_PATH="${clang_cache}" \
+       SWIFTPM_CACHE_PATH="${swiftpm_cache}" \
+       xcodebuild "${args[@]}"; then
         log_info "All tests passed"
     else
         log_error "Tests failed! Aborting release."
@@ -805,8 +817,11 @@ fi
 
 log_info ""
 log_info "To test: open \"${FINAL_DMG}\""
-log_info "To upload to R2:"
-log_info "  npx wrangler r2 object put ${R2_BUCKET}/${APP_NAME}-${VERSION}.dmg --file=\"${FINAL_DMG}\""
+log_info "To upload to R2 (PRODUCTION):"
+log_info "  npx wrangler r2 object put ${R2_BUCKET}/${APP_NAME}-${VERSION}.dmg --file=\"${FINAL_DMG}\" --remote"
+log_info ""
+log_info "CRITICAL: Always use --remote flag for production uploads!"
+log_info "Without --remote, wrangler uploads to LOCAL dev bucket, not production R2."
 
 if [ -f "${PROJECT_ROOT}/scripts/post_release.rb" ]; then
     log_info "Then run: ./scripts/post_release.rb --version ${VERSION}"
