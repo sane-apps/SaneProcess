@@ -13,7 +13,7 @@
 
 **Please do NOT report security vulnerabilities through public GitHub issues.**
 
-Instead, please report them via email to: **stephanjoseph2007@gmail.com**
+Instead, please report them via email to: **hi@saneapps.com**
 
 Include:
 - Description of the vulnerability

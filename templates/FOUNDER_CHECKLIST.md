@@ -114,7 +114,7 @@
 
 | # | Task | Project | Status | Notes |
 |---|------|---------|--------|-------|
-| 5.1 | Create support email | All | [ ] | support@sanebar.com? |
+| 5.1 | Create support email | All | [ ] | hi@saneapps.com (already exists) |
 | 5.2 | Add support email to websites | All | [ ] | Visible contact method |
 | 5.3 | Add support link to app menus | All | [ ] | Help → Contact Support |
 | 5.4 | Create FAQ page | All | [ ] | Common questions |
@@ -187,7 +187,7 @@
 | 8.2 | Set up Dependabot | All | [ ] | Auto-update dependencies |
 | 8.3 | Review hardened runtime settings | All | [ ] | Security best practices |
 | 8.4 | Audit for sensitive data logging | All | [ ] | Don't log passwords/keys |
-| 8.5 | Add security contact email | All | [ ] | security@sanebar.com? |
+| 8.5 | Add security contact email | All | [ ] | hi@saneapps.com (already exists) |
 | 8.6 | Consider security audit | All | [ ] | For paid apps especially |
 
 ---

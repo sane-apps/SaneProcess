@@ -15,6 +15,8 @@
 [ ] DEVELOPMENT.md (project root)
 [ ] ARCHITECTURE.md (project root — use ~/.claude/templates/ARCHITECTURE.md)
 [ ] SESSION_HANDOFF.md (project root)
+[ ] .saneprocess (project root — release config)
+[ ] Resources/DMGIcon.icns (for DMG file icon)
 [ ] ~/.zshrc alias
 [ ] Verify all files
 ```
@@ -27,7 +29,7 @@
 
 ```bash
 # Copy rules from SaneProcess (the master hub)
-cp -r /Users/sj/SaneProcess/.claude/rules /path/to/NewProject/.claude/rules
+cp -r ~/SaneApps/infra/SaneProcess/.claude/rules /path/to/NewProject/.claude/rules
 ```
 
 The rules directory contains pattern-matched guidelines that are injected when editing files:
@@ -115,7 +117,7 @@ saneloop-archive/
       "mcp__apple-docs__*",
       "mcp__context7__*",
       "mcp__github__*",
-      "mcp__XcodeBuildMCP__*",
+      "mcp__xcode__*",
       "mcp__macos-automator__*"
     ]
   },
@@ -226,22 +228,22 @@ saneloop-archive/
 ```markdown
 # [ProjectName] Claude Code Configuration
 
-## XcodeBuildMCP Session Setup
+## Xcode Tools (Apple's Official MCP)
 
-At session start, configure:
+Requires Xcode running with the project open. Get the `tabIdentifier` first:
 
 ```
-mcp__XcodeBuildMCP__session-set-defaults:
-  workspacePath: /path/to/ProjectName.xcworkspace  # OR projectPath for .xcodeproj
-  scheme: ProjectName
-  arch: arm64
+mcp__xcode__XcodeListWindows
+mcp__xcode__BuildProject
+mcp__xcode__RunAllTests
+mcp__xcode__RenderPreview
 ```
 
 ## Build Commands
 
-- `build_macos` - Build the app
-- `test_macos` - Run tests
-- `build_run_macos` - Build and launch
+- `BuildProject` - Build the app (Xcode Tools MCP)
+- `RunAllTests` - Run tests
+- `GetBuildLog` - Inspect build output
 
 ## Project Structure
 
@@ -279,7 +281,61 @@ ProjectName/
 
 ---
 
-## Step 5: Add Alias to `~/.zshrc`
+## Step 5: Create `.saneprocess` (at project root)
+
+This config drives the unified release pipeline. See [RELEASE_SOP.md](RELEASE_SOP.md) for the full process.
+
+```yaml
+# SaneProcess compliance manifest
+name: ProjectName
+type: macos_app
+scheme: ProjectName
+project: ProjectName.xcodeproj
+bundle_id: com.projectname.app
+
+build:
+  xcodegen: true  # set false if not using XcodeGen
+
+release:
+  dist_host: dist.projectname.com
+  site_host: projectname.com
+  r2_bucket: sanebar-downloads
+  use_sparkle: true
+  min_system_version: "15.0"
+  dmg:
+    volume_icon: Resources/DMGIcon.icns
+    file_icon: Resources/DMGIcon.icns
+    window_size: "800 400"
+    app_icon_pos: "200 185"
+    drop_pos: "600 185"
+
+commands:
+  verify: ./scripts/SaneMaster.rb verify
+  test_mode: ./scripts/SaneMaster.rb tm
+  lint: ./scripts/SaneMaster.rb lint
+  clean: ./scripts/SaneMaster.rb clean
+  launch: ./scripts/SaneMaster.rb launch
+  logs: ./scripts/SaneMaster.rb logs
+
+docs:
+  - CLAUDE.md
+  - README.md
+  - DEVELOPMENT.md
+  - ARCHITECTURE.md
+  - SESSION_HANDOFF.md
+
+mcps:
+  - apple-docs
+  - context7
+  - github
+  - xcode
+```
+
+**DMGIcon.icns**: Copy from `build/Export/AppName.app/Contents/Resources/AppIcon.icns` after first build, or generate from your asset catalog. Must be full-square opaque (no squircle, no shadow).
+
+---
+
+## Step 6: Add Alias to `~/.zshrc`
 
 ```bash
 # Claude Code (2-letter code)
@@ -295,16 +351,16 @@ alias gXX='cd /path/to/ProjectName && gemini'
 
 | Alias | Project | Path |
 |-------|---------|------|
-| `sb` | SaneBar | ~/SaneBar |
-| `sc` | SaneClip | ~/SaneClip |
-| `sp` | SaneProcess | ~/SaneProcess |
-| `ss` | SaneSync | ~/SaneSync |
-| `sv` | SaneVideo | ~/SaneVideo |
-| `sah` | SaneHosts | ~/Projects/SaneHosts |
+| `sb` | SaneBar | ~/SaneApps/apps/SaneBar |
+| `sc` | SaneClip | ~/SaneApps/apps/SaneClip |
+| `sp` | SaneProcess | ~/SaneApps/infra/SaneProcess |
+| `ss` | SaneSync | ~/SaneApps/apps/SaneSync |
+| `sv` | SaneVideo | ~/SaneApps/apps/SaneVideo |
+| `sah` | SaneHosts | ~/SaneApps/apps/SaneHosts |
 
 ---
 
-## Step 6: Verify Setup
+## Step 7: Verify Setup
 
 ```bash
 # Check .claude directory
@@ -338,7 +394,7 @@ source ~/.zshrc
 
 ### Menu Bar Apps
 - Add `macos-automator` MCP for UI testing
-- XcodeBuildMCP simulator tools don't work for macOS desktop apps
+- Xcode Tools doesn't drive UI; use macos-automator for real UI
 - Use `macos-automator` to click real UI elements
 
 ### Apps with Privileged Helpers

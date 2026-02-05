@@ -206,7 +206,7 @@ Or store in `fastlane/keys/sparkle_private_key.txt` (git-ignored).
 Copy from existing project:
 ```bash
 cp /path/to/YourApp/fastlane/keys/AuthKey_YOUR_API_KEY_ID.p8 \
-   /Users/sj/Projects/NewProject/fastlane/keys/
+   ~/Projects/NewProject/fastlane/keys/
 ```
 
 ### 2.4 GitHub Secrets (For CI/CD)
@@ -664,8 +664,8 @@ end
 
 Add to `~/.zshrc`:
 ```bash
-alias pn='cd /Users/sj/Projects/ProjectName && claude --dangerously-skip-permissions'
-alias gpn='cd /Users/sj/Projects/ProjectName && gemini'
+alias pn='cd ~/Projects/ProjectName && claude --dangerously-skip-permissions'
+alias gpn='cd ~/Projects/ProjectName && gemini'
 ```
 
 ---

@@ -8,7 +8,7 @@
 
 You now have a complete human-AI development system for building macOS applications.
 
-**What is this?** A battle-test2ed process for working with Claude Code. It turns "AI that sometimes helps" into "AI that reliably ships code" through explicit rules, automated enforcement, and cross-session memory.
+**What is this?** A battle-tested process for working with Claude Code. It turns "AI that sometimes helps" into "AI that reliably ships code" through explicit rules, automated enforcement, and cross-session memory.
 
 **Why does it work?**
 - **Rules are memorable** - "TWO STRIKES? STOP AND CHECK" sticks better than "stop after failures"
@@ -51,14 +51,14 @@ A CLI that wraps your build system. Example commands:
 
 | Command | What It Does |
 |---------|--------------|
-| `verify` | Build + run test2s |
-| `test2_mode` | Kill → Build → Launch → Stream logs |
+| `verify` | Build + run tests |
+| `test_mode` | Kill → Build → Launch → Stream logs |
 | `verify_api` | Check if API exists in SDK |
 | `clean --nuclear` | Wipe all caches |
 | `logs --follow` | Stream application logs |
 | `health` | Quick environment check |
 
-**You need to provide:** A `Scripts/` folder with your own automation that implements these patterns. The rules reference `<project-test2-command>` etc. - substitute your actual commands.
+**You need to provide:** A `Scripts/` folder with your own automation that implements these patterns. The rules reference `<project-test-command>` etc. - substitute your actual commands.
 
 ## Layer 3: The Enforcement (Config Files)
 
@@ -170,7 +170,7 @@ targets:
     settings:
       SWIFT_VERSION: "6.0"
   MyAppTests:
-    type: bundle.unit-test2
+    type: bundle.unit-test
     platform: macOS
     sources: [MyAppTests]
     dependencies:
@@ -188,20 +188,20 @@ command = ARGV[0]
 
 case command
 when 'verify'
-  system('xcodebuild -scheme MyApp -destination "platform=macOS" build test2')
+  system('xcodebuild -scheme MyApp -destination "platform=macOS" build test')
 when 'clean'
   system('rm -rf ~/Library/Developer/Xcode/DerivedData/MyApp-*')
 when 'logs'
   Kernel.send(:system, 'log stream --predicate \'process == "MyApp"\'')
 when 'launch'
   system('open ~/Library/Developer/Xcode/DerivedData/MyApp-*/Build/Products/Debug/MyApp.app')
-when 'test2_mode'
+when 'test_mode'
   system('killall -9 MyApp 2>/dev/null')
   system('./Scripts/build.rb verify && ./Scripts/build.rb launch')
 when 'bootstrap'
   puts '✅ Ready'
 else
-  puts "Usage: #{$0} [verify|clean|logs|launch|test2_mode|bootstrap]"
+  puts "Usage: #{$0} [verify|clean|logs|launch|test_mode|bootstrap]"
 end
 ```
 
@@ -274,7 +274,7 @@ Start minimal, add commands as needed. Reference the full SaneMaster.rb for:
 
 **Trigger Phrases:**
 - "check our SOP" / "use our SOP" → Read project's SOP immediately
-- "test2 mode" → Kill processes, build, launch, stream logs
+- "test mode" → Kill processes, build, launch, stream logs
 - "check logs" → Monitor all diagnostic resources
 
 ---
@@ -354,14 +354,14 @@ Stopping IS compliance. Guessing a 3rd time is the violation.
 
 ## Rule #4: GREEN MEANS GO
 
-✅ DO: Fix all test2 failures before claiming done
-❌ DON'T: Ship with failing test2s
+✅ DO: Fix all test failures before claiming done
+❌ DON'T: Ship with failing tests
 
 ```
 🟢 RIGHT: "Tests failed → fix → run again → passes → done"
 🟢 RIGHT: "Tests red → not done, period"
 🔴 WRONG: "Tests failed but it's probably fine"
-🔴 WRONG: "I'll fix the test2s later"
+🔴 WRONG: "I'll fix the tests later"
 ```
 
 ---
@@ -373,7 +373,7 @@ Stopping IS compliance. Guessing a 3rd time is the violation.
 
 ```
 🟢 RIGHT: ./Scripts/<project-tool> verify
-🟢 RIGHT: npm test2
+🟢 RIGHT: npm test
 🔴 WRONG: xcodebuild -scheme MyApp build
 🔴 WRONG: tsc && node dist/index.js
 ```
@@ -386,7 +386,7 @@ Stopping IS compliance. Guessing a 3rd time is the violation.
 ❌ DON'T: Skip steps or assume it works
 
 ```bash
-<project-test2-command>        # BUILD
+<project-test-command>        # BUILD
 killall -9 <app-name>         # KILL
 <project-run-command>         # LAUNCH
 <project-logs-command>        # LOG
@@ -394,7 +394,7 @@ killall -9 <app-name>         # KILL
 
 ```
 🟢 RIGHT: Full cycle before claiming "done"
-🟢 RIGHT: Use project's test2 mode command if available
+🟢 RIGHT: Use project's test mode command if available
 🔴 WRONG: "Built successfully, we're done!"
 🔴 WRONG: Launch without killing old instance
 ```
@@ -403,7 +403,7 @@ killall -9 <app-name>         # KILL
 
 ## Rule #7: NO TEST? NO REST
 
-✅ DO: Every bug fix gets a regression test2
+✅ DO: Every bug fix gets a regression test
 ❌ DON'T: Use placeholder or tautology assertions
 
 ```
@@ -654,12 +654,12 @@ Every plan must cite which rule justifies each step.
 ### Steps
 1. Find where state updates
 2. Add reload call
-3. Rebuild and test2
+3. Rebuild and test
 
 Approve?
 ```
 
-**Why rejected:** No [Rule #X] citations, no test2 specified, vague steps.
+**Why rejected:** No [Rule #X] citations, no test specified, vague steps.
 
 ### ✅ APPROVED PLAN (Correct Format)
 
@@ -673,9 +673,9 @@ Approve?
 
 ### Steps
 
-[Rule #7: NO TEST? NO REST] - Create regression test2:
+[Rule #7: NO TEST? NO REST] - Create regression test:
   - Tests/Regression/BugXRegressionTests.swift
-  - `test2ButtonResetsAfterAction()`
+  - `testButtonResetsAfterAction()`
 
 [Rule #6: BUILD, KILL, LAUNCH, LOG] - Fix and verify:
   - Edit StateManager.swift:254
@@ -720,7 +720,7 @@ This prevents prompt ambiguity and creates audit trail for iterations.
 ## After Every Code Change
 
 ```bash
-<project-test2-command>        # Build + tests
+<project-test-command>        # Build + tests
 killall -9 <app-name>         # Kill zombie processes
 <project-run-command>         # Start fresh instance
 <project-logs-command>        # Watch live logs
@@ -728,7 +728,7 @@ killall -9 <app-name>         # Kill zombie processes
 
 ## Test Mode (Interactive Debugging)
 
-When user says "test2 mode" or you need live debugging:
+When user says "test mode" or you need live debugging:
 
 1. Kill existing processes
 2. Build the project
@@ -747,7 +747,7 @@ When user says "test2 mode" or you need live debugging:
 2. **Find the build tool**: `Makefile`, `package.json`, `Scripts/`, `Cargo.toml`
 3. **Check for linting**: `.swiftlint.yml`, `.eslintrc`, `.rubocop.yml`
 4. **Understand architecture**: Look for `Core/`, `Services/`, `src/`, `lib/`
-5. **Run the test2s**: Verify everything works before making changes
+5. **Run the tests**: Verify everything works before making changes
 
 ## Session Start
 
@@ -1007,7 +1007,7 @@ Hooks run automatically during AI tool use.
 | **SessionStart** | Bootstrap environment, display SOP reminders |
 | **SessionEnd** | Extract insights, update memory, show summary |
 | **PreToolUse** | Validate before Edit/Bash/Write |
-| **PostToolUse** | Track failures, check test2 quality, audit log |
+| **PostToolUse** | Track failures, check test quality, audit log |
 
 ## Common Hooks
 
@@ -1016,7 +1016,7 @@ Hooks run automatically during AI tool use.
 | `circuit_breaker` | Block tools after repeated failures |
 | `edit_validator` | Block dangerous paths, enforce file size |
 | `failure_tracker` | Track command failures |
-| `test2_quality_checker` | Detect tautology tests |
+| `test_quality_checker` | Detect tautology tests |
 | `audit_logger` | Log decisions for review |
 
 ## Configuration
@@ -1045,7 +1045,7 @@ Automatic checks on git commit and push. Install via `brew install lefthook`.
 | `lint` | Auto-fix style issues, stage fixed files |
 | `file_size_check` | Block files > 800 lines |
 | `project_gen_check` | Verify project config in sync |
-| `test2_reference_check` | Validate test references |
+| `test_reference_check` | Validate test references |
 | `deprecation_check` | Warn on deprecated APIs |
 
 ## Pre-Push (runs on `git push`)
@@ -1054,7 +1054,7 @@ Automatic checks on git commit and push. Install via `brew install lefthook`.
 |------|---------|
 | `security` | Check for vulnerable dependencies |
 | `doctor` | Full environment health check |
-| `verify_test2s` | Run complete test suite |
+| `verify_tests` | Run complete test suite |
 
 ## Configuration
 
@@ -1072,7 +1072,7 @@ pre-commit:
 
 pre-push:
   commands:
-    verify_test2s:
+    verify_tests:
       run: ./Scripts/verify.rb
 ```
 
@@ -1132,7 +1132,7 @@ SOP Requirements:
 1. Tests pass
 2. App launches without errors
 3. Logs checked
-4. Regression test2 added
+4. Regression test added
 5. Self-rating provided
 
 Output <promise>SOP-COMPLETE</promise> ONLY when ALL verified." \
@@ -1168,7 +1168,7 @@ MCP (Model Context Protocol) servers provide external knowledge.
 | `context7` | Real-time library documentation |
 | `github` | GitHub API (PRs, issues, code) |
 | `memory` | Persistent knowledge graph |
-| `XcodeBuildMCP` | Xcode project discovery and builds |
+| `xcode` | Xcode build/test/preview via `xcrun mcpbridge` |
 
 ## Configuration
 
@@ -1244,7 +1244,7 @@ MCP servers are configured in `.mcp.json`:
 
 ```bash
 <project-clean-command>    # Clear caches
-<project-test2-command>     # Rebuild
+<project-test-command>     # Rebuild
 ```
 
 ## Tests Timeout
@@ -1252,13 +1252,13 @@ MCP servers are configured in `.mcp.json`:
 ```bash
 # Kill stuck processes
 pkill -9 -x xcodebuild
-pkill -9 -x xctest2
+pkill -9 -x xctest
 
 # Reset permissions if needed
 tccutil reset All <bundle-id>
 
 # Try again
-<project-test2-command>
+<project-test-command>
 ```
 
 ## Circuit Breaker Blocked
@@ -1278,7 +1278,7 @@ pgrep <app-name>
 # Kill and rebuild
 killall -9 <app-name>
 <project-clean-command>
-<project-test2-command>
+<project-test-command>
 <project-run-command>
 ```
 
@@ -1312,7 +1312,7 @@ killall -9 <app-name>
 │  #1  STAY IN LANE, NO PAIN (files in project)              │
 │  #2  VERIFY, THEN TRY (check docs)                         │
 │  #3  TWO STRIKES? STOP AND CHECK                           │
-│  #4  GREEN MEANS GO (test2s must pass)                     │
+│  #4  GREEN MEANS GO (tests must pass)                     │
 │  #5  HOUSE RULES, USE TOOLS (use project tools)            │
 │  #6  BUILD, KILL, LAUNCH, LOG                              │
 │  #7  NO TEST? NO REST                                      │
