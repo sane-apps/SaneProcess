@@ -32,6 +32,7 @@ print_help() {
     echo "  --project PATH      Project root (defaults to current directory)"
     echo "  --config PATH       Config file (defaults to <project>/.saneprocess if present)"
     echo "  --full              Version bump, tests, git commit, GitHub release"
+    echo "  --deploy            Upload to R2, update appcast, deploy website (run after build)"
     echo "  --skip-notarize      Skip notarization (for local testing)"
     echo "  --skip-build         Skip build step (use existing archive)"
     echo "  --version X.Y.Z      Set version number"
@@ -353,6 +354,7 @@ VERSION=""
 RELEASE_NOTES=""
 XCODEGEN_DONE=false
 RUN_GH_RELEASE=false
+RUN_DEPLOY=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -383,6 +385,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --full)
             FULL_RELEASE=true
+            shift
+            ;;
+        --deploy)
+            RUN_DEPLOY=true
             shift
             ;;
         -h|--help)
@@ -811,22 +817,125 @@ fi
 
 if [ "${RUN_GH_RELEASE}" = true ]; then
     log_info ""
-    log_info "Creating GitHub release..."
+    log_info "Creating GitHub release (notes only, NO DMG attached)..."
     create_github_release
 fi
 
-log_info ""
-log_info "To test: open \"${FINAL_DMG}\""
-log_info "To upload to R2 (PRODUCTION):"
-log_info "  npx wrangler r2 object put ${R2_BUCKET}/${APP_NAME}-${VERSION}.dmg --file=\"${FINAL_DMG}\" --remote"
-log_info ""
-log_info "CRITICAL: Always use --remote flag for production uploads!"
-log_info "Without --remote, wrangler uploads to LOCAL dev bucket, not production R2."
+# ─── Deploy: R2 upload + appcast update + Pages deploy ───
+if [ "${RUN_DEPLOY}" = true ]; then
+    log_info ""
+    log_info "═══════════════════════════════════════════"
+    log_info "  DEPLOYING TO PRODUCTION"
+    log_info "═══════════════════════════════════════════"
 
-if [ -f "${PROJECT_ROOT}/scripts/post_release.rb" ]; then
-    log_info "Then run: ./scripts/post_release.rb --version ${VERSION}"
-elif [ -f "${PROJECT_ROOT}/scripts/generate_appcast.sh" ]; then
-    log_info "Then run: ./scripts/generate_appcast.sh"
+    # Step 1: Upload DMG to R2
+    log_info "Uploading DMG to R2 bucket ${R2_BUCKET}..."
+    ensure_cmd npx
+    npx wrangler r2 object put "${R2_BUCKET}/${APP_NAME}-${VERSION}.dmg" \
+        --file="${FINAL_DMG}" --remote
+    log_info "R2 upload complete."
+
+    # Verify R2 upload
+    log_info "Verifying download URL..."
+    HTTP_STATUS=$(curl -sI "https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.dmg" | head -1 | awk '{print $2}')
+    if [ "${HTTP_STATUS}" != "200" ]; then
+        log_error "R2 verification FAILED! https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.dmg returned ${HTTP_STATUS}"
+        log_error "Check R2 bucket key format — Worker may strip /updates/ prefix."
+        exit 1
+    fi
+    log_info "Download verified: https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.dmg (200 OK)"
+
+    # Step 2: Update appcast.xml
+    if [ "${USE_SPARKLE}" = true ] && [ -n "${SIGNATURE}" ] && [ "${SIGNATURE}" != "UNSIGNED" ]; then
+        APPCAST_PATH="${PROJECT_ROOT}/docs/appcast.xml"
+        if [ -f "${APPCAST_PATH}" ]; then
+            log_info "Updating appcast.xml with v${VERSION}..."
+            PUB_DATE=$(date -R)
+
+            NEW_ITEM=$(cat <<APPCASTEOF
+        <item>
+            <title>${VERSION}</title>
+            <pubDate>${PUB_DATE}</pubDate>
+            <sparkle:minimumSystemVersion>${MIN_SYSTEM_VERSION}</sparkle:minimumSystemVersion>
+            <description>
+                <![CDATA[
+                <h2>Changes</h2>
+                <p>${RELEASE_NOTES:-Update to version ${VERSION}}</p>
+                ]]>
+            </description>
+            <enclosure url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.dmg"
+                       sparkle:version="${BUILD_NUMBER}"
+                       sparkle:shortVersionString="${VERSION}"
+                       length="${FILE_SIZE}"
+                       type="application/x-apple-diskimage"
+                       sparkle:edSignature="${SIGNATURE}"/>
+        </item>
+APPCASTEOF
+)
+            # Insert new item after <title>...</title> (before first existing <item>)
+            # Use perl for reliable multiline insertion
+            perl -i -0pe "s|(<title>[^<]+</title>\n)(\s*<item>)|\$1${NEW_ITEM}\n\$2|" "${APPCAST_PATH}"
+
+            log_info "Appcast updated with v${VERSION} entry."
+        else
+            log_warn "No appcast.xml found at ${APPCAST_PATH}. Skipping appcast update."
+        fi
+    else
+        log_warn "No Sparkle signature available. Skipping appcast update."
+        log_warn "Run with USE_SPARKLE=true and ensure EdDSA key is in Keychain."
+    fi
+
+    # Step 3: Deploy website + appcast to Cloudflare Pages
+    PAGES_PROJECT="${LOWER_APP_NAME}-site"
+    DOCS_DIR="${PROJECT_ROOT}/docs"
+    if [ -d "${DOCS_DIR}" ]; then
+        log_info "Deploying website + appcast to Cloudflare Pages (${PAGES_PROJECT})..."
+        npx wrangler pages deploy "${DOCS_DIR}" \
+            --project-name="${PAGES_PROJECT}" \
+            --commit-dirty=true \
+            --commit-message="Release v${VERSION}"
+        log_info "Pages deploy complete."
+
+        # Verify appcast is live
+        log_info "Verifying appcast..."
+        APPCAST_CHECK=$(curl -s "https://${SITE_HOST}/appcast.xml" | head -5)
+        if echo "${APPCAST_CHECK}" | grep -q "${VERSION}"; then
+            log_info "Appcast verified: v${VERSION} is live at https://${SITE_HOST}/appcast.xml"
+        else
+            log_warn "Appcast may not have propagated yet. Check https://${SITE_HOST}/appcast.xml manually."
+        fi
+    else
+        log_warn "No docs/ directory found. Skipping Pages deploy."
+    fi
+
+    # Step 4: Commit appcast changes
+    if [ -f "${APPCAST_PATH}" ] && [ -n "$(git -C "${PROJECT_ROOT}" diff --name-only docs/appcast.xml 2>/dev/null)" ]; then
+        log_info "Committing appcast update..."
+        git -C "${PROJECT_ROOT}" add docs/appcast.xml
+        git -C "${PROJECT_ROOT}" commit -m "chore: update appcast for v${VERSION}"
+        git -C "${PROJECT_ROOT}" push
+        log_info "Appcast commit pushed."
+    fi
+
+    log_info ""
+    log_info "═══════════════════════════════════════════"
+    log_info "  RELEASE v${VERSION} DEPLOYED SUCCESSFULLY"
+    log_info "═══════════════════════════════════════════"
+    log_info "  DMG:     https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.dmg"
+    log_info "  Appcast: https://${SITE_HOST}/appcast.xml"
+    log_info "  GitHub:  https://github.com/${GITHUB_REPO}/releases/tag/v${VERSION}"
+    log_info "═══════════════════════════════════════════"
+else
+    log_info ""
+    log_info "To test: open \"${FINAL_DMG}\""
+    log_info ""
+    log_info "To deploy to production, re-run with --deploy flag:"
+    log_info "  ./scripts/release.sh --version ${VERSION} --skip-build --deploy"
+    log_info ""
+    log_info "Or deploy manually:"
+    log_info "  1. npx wrangler r2 object put ${R2_BUCKET}/${APP_NAME}-${VERSION}.dmg --file=\"${FINAL_DMG}\" --remote"
+    log_info "  2. Update docs/appcast.xml"
+    log_info "  3. npx wrangler pages deploy ./docs --project-name=${LOWER_APP_NAME}-site"
 fi
 
 open "${RELEASE_DIR}"

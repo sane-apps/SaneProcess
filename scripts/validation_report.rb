@@ -30,7 +30,6 @@ class ValidationReport
     apps/SaneVideo
     apps/SaneSync
     apps/SaneClip
-    apps/SaneAI
     apps/SaneHosts
     apps/SaneClick
     infra/SaneProcess
@@ -42,7 +41,6 @@ class ValidationReport
     apps/SaneVideo
     apps/SaneSync
     apps/SaneClip
-    apps/SaneAI
     apps/SaneHosts
     apps/SaneClick
   ].freeze
@@ -148,7 +146,6 @@ class ValidationReport
     # These MCPs should use local paths, not npm
     home_dir = File.expand_path('~')
     local_mcps = {
-      'XcodeBuildMCP' => "#{home_dir}/Dev/xcodebuild-mcp-local",
       'apple-docs' => "#{home_dir}/Dev/apple-docs-mcp-local"
     }
 
@@ -348,7 +345,7 @@ class ValidationReport
 
   # Check all CLAUDE.md files list all sister apps
   def check_sister_apps_lists(issues_found)
-    all_apps = %w[SaneBar SaneClip SaneVideo SaneSync SaneHosts SaneAI SaneClick]
+    all_apps = %w[SaneBar SaneClip SaneVideo SaneSync SaneHosts SaneClick]
 
     PROJECTS.each do |project|
       claude_md = File.join(SANE_APPS_ROOT, project, 'CLAUDE.md')
@@ -1153,7 +1150,7 @@ class ValidationReport
     puts "═" * 70
     puts
 
-    all_apps = %w[SaneBar SaneClip SaneHosts SaneVideo SaneSync SaneAI SaneClick]
+    all_apps = %w[SaneBar SaneClip SaneHosts SaneVideo SaneSync SaneClick]
 
     all_apps.each do |app_name|
       project_path = File.join(SANE_APPS_ROOT, "apps/#{app_name}")
