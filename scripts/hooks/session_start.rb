@@ -420,8 +420,7 @@ def cleanup_orphaned_mcp_daemons
     'worker-service.cjs',
     'mcp-server.cjs',
     # Standard MCPs (both npm and local dev paths)
-    'xcodebuildmcp',
-    'xcodebuild-mcp',           # Local dev path variant
+    'mcpbridge',                # Xcode official MCP bridge
     'context7-mcp',
     'apple-docs-mcp',
     'mcp-server-github',
@@ -599,6 +598,44 @@ def check_memory_health
 rescue StandardError => e
   log_debug "Memory health check error: #{e.message}"
   []
+end
+
+# === SALES INFRASTRUCTURE CHECK ===
+# Read link monitor state and alert if checkout links are broken
+LINK_MONITOR_STATE = File.expand_path('~/SaneApps/infra/SaneProcess/outputs/link_monitor_state.json')
+
+def check_sales_infrastructure
+  return unless File.exist?(LINK_MONITOR_STATE)
+
+  state = JSON.parse(File.read(LINK_MONITOR_STATE))
+  consec_failures = state['consecutive_failures'] || 0
+  last_failure_details = state['last_failure_details'] || []
+
+  if consec_failures > 0
+    warn ''
+    warn '🔴 SALES INFRASTRUCTURE: BROKEN LINKS DETECTED'
+    warn "   Consecutive failures: #{consec_failures}"
+    warn "   Last failure: #{state['last_failure']}"
+    last_failure_details.each { |d| warn "   → #{d}" }
+    warn ''
+    warn '   Revenue is being lost. Fix immediately.'
+    warn '   Run: ruby ~/SaneApps/infra/SaneProcess/scripts/link_monitor.rb'
+    warn ''
+  end
+
+  # Also check if monitor hasn't run recently (stale state = no monitoring)
+  last_success = state['last_success']
+  if last_success
+    hours_since = (Time.now - Time.parse(last_success)) / 3600.0
+    if hours_since > 2
+      warn ''
+      warn "⚠️  Link monitor hasn't reported success in #{hours_since.round(1)}h"
+      warn '   Check: launchctl list | grep link-monitor'
+      warn ''
+    end
+  end
+rescue StandardError => e
+  log_debug "Sales infrastructure check error: #{e.message}"
 end
 
 # === STARTUP GATE INITIALIZATION ===
@@ -779,6 +816,10 @@ begin
     check_memory_health
   end
   log_debug "check_memory_health done"
+
+  # Check sales infrastructure health (link monitor state)
+  check_sales_infrastructure
+  log_debug "check_sales_infrastructure done"
 
   # Output JSON to stdout for Claude Code to inject into context
   # Must use hookSpecificOutput format for SessionStart hooks

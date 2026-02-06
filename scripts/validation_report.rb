@@ -707,6 +707,40 @@ class ValidationReport
       end
     end
 
+    # Check REVENUE-CRITICAL checkout links (LemonSqueezy)
+    checkout_links = [
+      { url: 'https://saneapps.lemonsqueezy.com/checkout/buy/8a6ddf02-574e-4b20-8c94-d3fa15c1cc8e', name: 'SaneBar checkout' },
+      { url: 'https://saneapps.lemonsqueezy.com/checkout/buy/679dbd1d-b808-44e7-98c8-8e679b592e93', name: 'SaneClick checkout' },
+      { url: 'https://saneapps.lemonsqueezy.com/checkout/buy/e0d71010-bd20-49b6-b841-5522b39df95f', name: 'SaneClip checkout' },
+      { url: 'https://saneapps.lemonsqueezy.com/checkout/buy/83977cc9-900f-407f-a098-959141d474f2', name: 'SaneHosts checkout' },
+      { url: 'https://saneapps.lemonsqueezy.com', name: 'LemonSqueezy store' }
+    ]
+    checkout_links.each do |link|
+      status = check_url_status(link[:url])
+      case status
+      when '200', '301', '302'
+        # OK
+      else
+        issues_found << "REVENUE CRITICAL: #{link[:name]} (#{link[:url]}) returns #{status}"
+      end
+    end
+
+    # Scan HTML files for wrong checkout domains (e.g. old store slugs)
+    website_dirs = %w[apps/SaneBar/docs apps/SaneClip/docs apps/SaneClick/docs apps/SaneHosts/website]
+    website_dirs.each do |dir|
+      full_dir = File.join(SANE_APPS_ROOT, dir)
+      next unless Dir.exist?(full_dir)
+      Dir.glob(File.join(full_dir, '**/*.html')).each do |html_file|
+        content = File.read(html_file)
+        content.scan(%r{https?://([a-z]+)\.lemonsqueezy\.com/checkout/}).each do |match|
+          unless match[0] == 'saneapps'
+            rel = html_file.sub("#{SANE_APPS_ROOT}/", '')
+            issues_found << "REVENUE CRITICAL: Wrong checkout domain '#{match[0]}.lemonsqueezy.com' in #{rel}"
+          end
+        end
+      end
+    end
+
     @metrics[:website_distribution] = {
       issues: issues_found.size,
       warnings: warnings_found.size,
