@@ -33,6 +33,12 @@ CRITICAL_URLS = {
   "sanehosts.com" => "https://sanehosts.com",
   "saneapps.com" => "https://saneapps.com",
 
+  # Checkout redirect Worker (go.saneapps.com)
+  "SaneBar redirect" => "https://go.saneapps.com/buy/sanebar",
+  "SaneClick redirect" => "https://go.saneapps.com/buy/saneclick",
+  "SaneClip redirect" => "https://go.saneapps.com/buy/saneclip",
+  "SaneHosts redirect" => "https://go.saneapps.com/buy/sanehosts",
+
   # LemonSqueezy store
   "LemonSqueezy store" => "https://saneapps.lemonsqueezy.com",
 
