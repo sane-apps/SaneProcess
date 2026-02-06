@@ -7,6 +7,8 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -508,6 +510,16 @@ if [ "${FULL_RELEASE}" = true ]; then
     ensure_cmd git
     ensure_cmd gh
     ensure_git_clean
+
+    # README sync check — warn if features aren't documented
+    README_CHECK="${SCRIPT_DIR}/automation/nv-readme-check.sh"
+    if [ -f "${README_CHECK}" ] && [ -x "${README_CHECK}" ]; then
+        log_info "Checking README sync with shipped features..."
+        if ! "${README_CHECK}" "${PROJECT_ROOT}" 2>/dev/null; then
+            log_warn "README may be out of date with shipped features (see above)."
+            log_warn "Consider updating README.md before release. Continuing..."
+        fi
+    fi
 
     log_info "Bumping version to ${VERSION}..."
     bump_project_version "${VERSION}"
