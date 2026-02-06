@@ -639,7 +639,6 @@ class ValidationReport
     # Test each URL (just the latest, to save time)
     latest_url = urls.first
     if latest_url
-      require 'shellwords'
       status = `curl -sI -o /dev/null -w "%{http_code}" #{Shellwords.shellescape(latest_url)} 2>/dev/null`.strip
       unless ['200', '301', '302'].include?(status)
         issues << "[#{app_name}] Release DMG URL returns #{status}: #{latest_url}"
@@ -802,7 +801,6 @@ class ValidationReport
   end
 
   def check_url_status(url)
-    require 'shellwords'
     result = `curl -sI -o /dev/null -w "%{http_code}" --connect-timeout 5 #{Shellwords.shellescape(url)} 2>&1`
     return 'timeout' if result.include?('Connection timed out') || result.include?('Could not resolve')
     return 'error' if result.include?('curl:')
