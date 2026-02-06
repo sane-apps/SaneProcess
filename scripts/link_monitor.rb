@@ -11,53 +11,34 @@
 require "net/http"
 require "uri"
 require "json"
+require "yaml"
 require "time"
 require "fileutils"
 require "shellwords"
 
 SANEAPPS_ROOT = File.expand_path("../../..", __dir__)
+CONFIG_FILE = File.join(SANEAPPS_ROOT, "infra/config/products.yml")
 LOG_FILE = File.join(SANEAPPS_ROOT, "infra/SaneProcess/outputs/link_monitor.log")
 STATE_FILE = File.join(SANEAPPS_ROOT, "infra/SaneProcess/outputs/link_monitor_state.json")
 
-# Critical URLs to monitor - these are revenue/download paths
-CRITICAL_URLS = {
-  # Checkout links (from LemonSqueezy API - ALL products)
-  "SaneBar checkout" => "https://saneapps.lemonsqueezy.com/checkout/buy/8a6ddf02-574e-4b20-8c94-d3fa15c1cc8e",
-  "SaneClick checkout" => "https://saneapps.lemonsqueezy.com/checkout/buy/679dbd1d-b808-44e7-98c8-8e679b592e93",
-  "SaneClip checkout" => "https://saneapps.lemonsqueezy.com/checkout/buy/e0d71010-bd20-49b6-b841-5522b39df95f",
-  "SaneHosts checkout" => "https://saneapps.lemonsqueezy.com/checkout/buy/83977cc9-900f-407f-a098-959141d474f2",
+# Load product config — single source of truth for UUIDs, domains, etc.
+CONFIG = YAML.load_file(CONFIG_FILE)
+PRODUCTS = CONFIG.fetch("products")
+STORE = CONFIG.fetch("store")
+REDIRECT = CONFIG.fetch("redirect")
 
-  # Website homepages
-  "sanebar.com" => "https://sanebar.com",
-  "saneclip.com" => "https://saneclip.com",
-  "saneclick.com" => "https://saneclick.com",
-  "sanehosts.com" => "https://sanehosts.com",
-  "saneapps.com" => "https://saneapps.com",
-
-  # Checkout redirect Worker (go.saneapps.com)
-  "SaneBar redirect" => "https://go.saneapps.com/buy/sanebar",
-  "SaneClick redirect" => "https://go.saneapps.com/buy/saneclick",
-  "SaneClip redirect" => "https://go.saneapps.com/buy/saneclip",
-  "SaneHosts redirect" => "https://go.saneapps.com/buy/sanehosts",
-
-  # LemonSqueezy store
-  "LemonSqueezy store" => "https://saneapps.lemonsqueezy.com",
-
-  # Sparkle appcast feeds (CRITICAL - no updates if broken)
-  "SaneBar appcast" => "https://sanebar.com/appcast.xml",
-  "SaneClick appcast" => "https://saneclick.com/appcast.xml",
-  "SaneClip appcast" => "https://saneclip.com/appcast.xml",
-  "SaneHosts appcast" => "https://sanehosts.com/appcast.xml",
-
-  # Distribution download workers (Cloudflare R2)
-  "SaneBar dist worker" => "https://dist.sanebar.com/",
-  "SaneClick dist worker" => "https://dist.saneclick.com/",
-  "SaneClip dist worker" => "https://dist.saneclip.com/",
-  "SaneHosts dist worker" => "https://dist.sanehosts.com/",
-  # SaneSync and SaneVideo not yet released - uncomment when active:
-  # "SaneSync dist worker" => "https://dist.sanesync.com/",
-  # "SaneVideo dist worker" => "https://dist.sanevideo.com/",
-}.freeze
+# Build critical URLs dynamically from config
+CRITICAL_URLS = {}.tap do |urls|
+  PRODUCTS.each do |slug, product|
+    urls["#{product['name']} checkout"] = "#{STORE['checkout_base']}/#{product['checkout_uuid']}"
+    urls[product["domain"]] = "https://#{product['domain']}"
+    urls["#{product['name']} redirect"] = "#{REDIRECT['base_url']}/#{slug}"
+    urls["#{product['name']} appcast"] = product["appcast"]
+    urls["#{product['name']} dist worker"] = "https://#{product['dist_domain']}/"
+  end
+  urls["saneapps.com"] = "https://saneapps.com"
+  urls["LemonSqueezy store"] = STORE["base_url"]
+end.freeze
 
 # Also scan HTML files for checkout links and verify they match CRITICAL_URLS
 WEBSITE_DIRS = %w[
@@ -161,16 +142,8 @@ def scan_html_for_checkout_links
   bad_links
 end
 
-# Domain expiry checking
-DOMAINS_TO_MONITOR = %w[
-  sanebar.com
-  saneclip.com
-  saneclick.com
-  sanehosts.com
-  saneapps.com
-  sanesync.com
-  sanevideo.com
-].freeze
+# Domain expiry checking — from config
+DOMAINS_TO_MONITOR = CONFIG.fetch("all_domains").freeze
 
 def check_domain_expiry(domain)
   # Try Cloudflare API first (if available)

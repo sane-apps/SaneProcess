@@ -686,13 +686,19 @@ if details:
 
   echo "" >> "$REPORT_FILE"
 
-  # Check LemonSqueezy checkout links directly (belt + suspenders)
-  local checkout_urls=(
-    "https://saneapps.lemonsqueezy.com/checkout/buy/8a6ddf02-574e-4b20-8c94-d3fa15c1cc8e|SaneBar"
-    "https://saneapps.lemonsqueezy.com/checkout/buy/679dbd1d-b808-44e7-98c8-8e679b592e93|SaneClick"
-    "https://saneapps.lemonsqueezy.com/checkout/buy/e0d71010-bd20-49b6-b841-5522b39df95f|SaneClip"
-    "https://saneapps.lemonsqueezy.com/checkout/buy/83977cc9-900f-407f-a098-959141d474f2|SaneHosts"
-  )
+  # Check LemonSqueezy checkout links (UUIDs from products.yml — single source of truth)
+  local config_file="$SANEAPPS_ROOT/infra/config/products.yml"
+  local checkout_base
+  checkout_base=$(grep 'checkout_base:' "$config_file" | awk '{print $2}')
+  local checkout_urls=()
+  local current_name=""
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^[[:space:]]+name:[[:space:]]+(.*) ]]; then
+      current_name="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^[[:space:]]+checkout_uuid:[[:space:]]+(.*) ]]; then
+      checkout_urls+=("${checkout_base}/${BASH_REMATCH[1]}|${current_name}")
+    fi
+  done < "$config_file"
 
   echo "**Checkout Links:**" >> "$REPORT_FILE"
   echo "" >> "$REPORT_FILE"

@@ -17,6 +17,7 @@
 # ==============================================================================
 
 require 'json'
+require 'yaml'
 require 'date'
 require 'fileutils'
 require 'net/http'
@@ -715,14 +716,14 @@ class ValidationReport
       end
     end
 
-    # Check REVENUE-CRITICAL checkout links (LemonSqueezy)
-    checkout_links = [
-      { url: 'https://saneapps.lemonsqueezy.com/checkout/buy/8a6ddf02-574e-4b20-8c94-d3fa15c1cc8e', name: 'SaneBar checkout' },
-      { url: 'https://saneapps.lemonsqueezy.com/checkout/buy/679dbd1d-b808-44e7-98c8-8e679b592e93', name: 'SaneClick checkout' },
-      { url: 'https://saneapps.lemonsqueezy.com/checkout/buy/e0d71010-bd20-49b6-b841-5522b39df95f', name: 'SaneClip checkout' },
-      { url: 'https://saneapps.lemonsqueezy.com/checkout/buy/83977cc9-900f-407f-a098-959141d474f2', name: 'SaneHosts checkout' },
-      { url: 'https://saneapps.lemonsqueezy.com', name: 'LemonSqueezy store' }
-    ]
+    # Check REVENUE-CRITICAL checkout links (from products.yml config)
+    config_file = File.join(SANE_APPS_ROOT, 'infra/config/products.yml')
+    product_config = YAML.load_file(config_file)
+    store_base = product_config.dig('store', 'checkout_base')
+    checkout_links = product_config['products'].map do |_slug, prod|
+      { url: "#{store_base}/#{prod['checkout_uuid']}", name: "#{prod['name']} checkout" }
+    end
+    checkout_links << { url: product_config.dig('store', 'base_url'), name: 'LemonSqueezy store' }
     checkout_links.each do |link|
       status = check_url_status(link[:url])
       case status
