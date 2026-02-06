@@ -196,6 +196,7 @@ def check_cf_domain_expiry(domain, token)
   req = Net::HTTP::Get.new(uri)
   req["Authorization"] = "Bearer #{token}"
   zones_response = http.request(req)
+  return nil unless zones_response.is_a?(Net::HTTPSuccess)
   zones_data = JSON.parse(zones_response.body)
   return nil unless zones_data["success"] && zones_data["result"]&.any?
 
@@ -204,6 +205,7 @@ def check_cf_domain_expiry(domain, token)
   reg_req = Net::HTTP::Get.new(reg_uri)
   reg_req["Authorization"] = "Bearer #{token}"
   registrar_response = http.request(reg_req)
+  return nil unless registrar_response.is_a?(Net::HTTPSuccess)
   registrar_data = JSON.parse(registrar_response.body)
 
   if registrar_data["success"]

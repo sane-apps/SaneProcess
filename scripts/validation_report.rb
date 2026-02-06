@@ -665,14 +665,13 @@ class ValidationReport
     # Check if GitHub CLI is available
     return unless system('which gh > /dev/null 2>&1')
 
-    require 'shellwords'
     # DMGs must NEVER be on GitHub releases — distribution is Cloudflare R2 only
-    repo = "sane-apps/#{Shellwords.shellescape(app_name)}"
-    result = `gh release list --repo #{repo} --limit 1 2>&1`
+    safe_repo = "sane-apps/#{app_name}"
+    result = `gh release list --repo #{Shellwords.shellescape(safe_repo)} --limit 1 2>&1`
 
     if result && !result.include?('no releases found') && !result.include?('not found') && !result.strip.empty?
       # Releases exist — check if any contain DMG assets (forbidden)
-      assets = `gh release view --repo #{repo} --json assets -q '.assets[].name' 2>/dev/null`.strip
+      assets = `gh release view --repo #{Shellwords.shellescape(safe_repo)} --json assets -q '.assets[].name' 2>/dev/null`.strip
       if assets.include?('.dmg')
         issues << "[#{app_name}] DMG found on GitHub releases (FORBIDDEN — use Cloudflare R2 only)"
       end
