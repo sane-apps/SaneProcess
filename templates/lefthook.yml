@@ -1,0 +1,42 @@
+# SaneApps Standard Git Hooks (via Lefthook)
+# Source of truth: infra/SaneProcess/templates/lefthook.yml
+#
+# Install: lefthook install (once per clone)
+# Skip:    LEFTHOOK=0 git commit ...
+#
+# No Bundler required — uses system swiftlint + SaneMaster.rb directly.
+# Projects WITH Bundler can override individual commands in lefthook-local.yml.
+
+pre-commit:
+  parallel: true
+  commands:
+    lint:
+      glob: "*.swift"
+      run: swiftlint lint --fix {staged_files} && git add {staged_files}
+
+    file_size_check:
+      glob: "*.swift"
+      run: |
+        swiftlint lint --strict {staged_files} 2>&1 | grep -q "file_length.*error" \
+          && (echo "❌ File exceeds 800 lines. Refactor before committing." && exit 1) \
+          || exit 0
+
+    ai_review:
+      run: |
+        NV="$HOME/.local/bin/nv"
+        [ -x "$NV" ] || exit 0
+        DIFF=$(git diff --cached --diff-filter=ACMR 2>/dev/null)
+        [ -z "$DIFF" ] && exit 0
+        SIZE=$(printf '%s' "$DIFF" | wc -c | tr -d ' ')
+        [ "$SIZE" -gt 51200 ] && exit 0
+        echo "[ai-review] Reviewing staged changes..." >&2
+        printf '%s' "$DIFF" | "$NV" -m mistral \
+          "Review this diff for bugs, races, and security issues. Be concise. If clean, say LGTM." 2>&1 \
+          | sed 's/^/  /' >&2
+        exit 0
+
+pre-push:
+  parallel: false
+  commands:
+    verify:
+      run: ./scripts/SaneMaster.rb verify
