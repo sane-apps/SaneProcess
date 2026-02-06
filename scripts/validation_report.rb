@@ -718,7 +718,7 @@ class ValidationReport
 
     # Check REVENUE-CRITICAL checkout links (from products.yml config)
     config_file = File.join(SANE_APPS_ROOT, 'infra/config/products.yml')
-    product_config = YAML.load_file(config_file)
+    product_config = YAML.safe_load(File.read(config_file), permitted_classes: [])
     store_base = product_config.dig('store', 'checkout_base')
     checkout_links = product_config['products'].map do |_slug, prod|
       { url: "#{store_base}/#{prod['checkout_uuid']}", name: "#{prod['name']} checkout" }

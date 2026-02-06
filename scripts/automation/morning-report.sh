@@ -688,6 +688,10 @@ if details:
 
   # Check LemonSqueezy checkout links (UUIDs from products.yml — single source of truth)
   local config_file="$SANEAPPS_ROOT/infra/config/products.yml"
+  if [ ! -f "$config_file" ]; then
+    echo "- **Config missing:** $config_file not found" >> "$REPORT_FILE"
+    return
+  fi
   local checkout_base
   checkout_base=$(grep 'checkout_base:' "$config_file" | awk '{print $2}')
   local checkout_urls=()

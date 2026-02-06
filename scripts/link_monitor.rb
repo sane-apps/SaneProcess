@@ -22,7 +22,7 @@ LOG_FILE = File.join(SANEAPPS_ROOT, "infra/SaneProcess/outputs/link_monitor.log"
 STATE_FILE = File.join(SANEAPPS_ROOT, "infra/SaneProcess/outputs/link_monitor_state.json")
 
 # Load product config — single source of truth for UUIDs, domains, etc.
-CONFIG = YAML.load_file(CONFIG_FILE)
+CONFIG = YAML.safe_load(File.read(CONFIG_FILE), permitted_classes: [])
 PRODUCTS = CONFIG.fetch("products")
 STORE = CONFIG.fetch("store")
 REDIRECT = CONFIG.fetch("redirect")
