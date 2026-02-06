@@ -687,7 +687,7 @@ if details:
   echo "" >> "$REPORT_FILE"
 
   # Check LemonSqueezy checkout links (UUIDs from products.yml — single source of truth)
-  local config_file="$SANEAPPS_ROOT/infra/config/products.yml"
+  local config_file="$SANEAPPS_ROOT/infra/SaneProcess/config/products.yml"
   if [ ! -f "$config_file" ]; then
     echo "- **Config missing:** $config_file not found" >> "$REPORT_FILE"
     return

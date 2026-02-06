@@ -17,7 +17,7 @@ require "fileutils"
 require "shellwords"
 
 SANEAPPS_ROOT = File.expand_path("../../..", __dir__)
-CONFIG_FILE = File.join(SANEAPPS_ROOT, "infra/config/products.yml")
+CONFIG_FILE = File.join(SANEAPPS_ROOT, "infra/SaneProcess/config/products.yml")
 LOG_FILE = File.join(SANEAPPS_ROOT, "infra/SaneProcess/outputs/link_monitor.log")
 STATE_FILE = File.join(SANEAPPS_ROOT, "infra/SaneProcess/outputs/link_monitor_state.json")
 

@@ -1,0 +1,58 @@
+# SaneApps Product Configuration
+# Single source of truth for product identifiers across all scripts.
+# When a UUID, domain, or slug changes, update HERE — everything reads from this file.
+#
+# Used by: link_monitor.rb, validation_report.rb, morning-report.sh, sane-checkout Worker
+
+products:
+  sanebar:
+    name: SaneBar
+    checkout_uuid: 8a6ddf02-574e-4b20-8c94-d3fa15c1cc8e
+    domain: sanebar.com
+    dist_domain: dist.sanebar.com
+    github_repo: sane-apps/SaneBar
+    appcast: https://sanebar.com/appcast.xml
+
+  saneclick:
+    name: SaneClick
+    checkout_uuid: 679dbd1d-b808-44e7-98c8-8e679b592e93
+    domain: saneclick.com
+    dist_domain: dist.saneclick.com
+    github_repo: sane-apps/SaneClick
+    appcast: https://saneclick.com/appcast.xml
+
+  saneclip:
+    name: SaneClip
+    checkout_uuid: e0d71010-bd20-49b6-b841-5522b39df95f
+    domain: saneclip.com
+    dist_domain: dist.saneclip.com
+    github_repo: sane-apps/SaneClip
+    appcast: https://saneclip.com/appcast.xml
+
+  sanehosts:
+    name: SaneHosts
+    checkout_uuid: 83977cc9-900f-407f-a098-959141d474f2
+    domain: sanehosts.com
+    dist_domain: dist.sanehosts.com
+    github_repo: sane-apps/SaneHosts
+    appcast: https://sanehosts.com/appcast.xml
+
+# LemonSqueezy store configuration
+store:
+  slug: saneapps
+  base_url: https://saneapps.lemonsqueezy.com
+  checkout_base: https://saneapps.lemonsqueezy.com/checkout/buy
+
+# Redirect Worker
+redirect:
+  base_url: https://go.saneapps.com/buy
+
+# Domains to monitor for expiry (includes unreleased products)
+all_domains:
+  - sanebar.com
+  - saneclip.com
+  - saneclick.com
+  - sanehosts.com
+  - saneapps.com
+  - sanesync.com
+  - sanevideo.com
