@@ -757,8 +757,8 @@ When user says "test mode" or you need live debugging:
 
 ## Session End
 
-1. **Record learnings** to Memory MCP (if >30 min to figure out)
-2. **Check memory health** (entities < 60, tokens < 8000)
+1. **Learnings auto-captured** via Sane-Mem hooks (SQLite + Chroma at port 37777)
+2. **Update SESSION_HANDOFF.md** with completed work, pending tasks
 3. **Run project's session end command** if available
 
 ---
@@ -906,93 +906,34 @@ AI agents are notorious for "doom loops" - trying the same broken fix 10 times. 
 
 ---
 
-# 6. Memory System
+# 6. Memory System (Sane-Mem)
 
-The Memory MCP stores cross-session context. Unlike flat logs, it's a **knowledge graph** - entities with relationships that Claude can query.
+Cross-session learnings are stored via **Sane-Mem** — a SQLite + Chroma vector database running locally on port 37777.
 
-## Health Thresholds
+## How It Works
 
-| Metric | Warning | Critical |
-|--------|---------|----------|
-| Entities | 60 | 80 |
-| Est. tokens | 8,000 | 12,000 |
-| Observations/entity | 15 | 25 |
+- **Auto-capture:** The `sanestop.rb` hook captures learnings at session end
+- **Storage:** SQLite for structured data, Chroma for semantic search
+- **Access:** MCP search tool (`mcp__plugin_claude-mem_mcp-search__search`) or direct API
 
-## Entity Types
+## Quick Reference
 
-| Type | Purpose |
-|------|---------|
-| `bug_pattern` | Recurring bugs and fixes |
-| `concurrency_gotcha` | Threading/async traps |
-| `architecture_pattern` | Design decisions |
-| `file_violation` | Files that exceeded limits |
+```bash
+# Check if Sane-Mem is running
+curl http://localhost:37777/health
 
-## Auto-Compaction (Recommended)
+# Search for past learnings
+curl "http://localhost:37777/search?q=sparkle+key"
 
-Don't manually manage memory. Add this to your SessionEnd hook:
-
-```ruby
-# Scripts/hooks/memory_compactor.rb
-require 'json'
-
-MEMORY_FILE = '.claude/memory.json'
-ARCHIVE_FILE = '.claude/memory_archive.jsonl'
-MAX_ENTITIES = 60
-MAX_OBS_PER_ENTITY = 15
-
-def compact_memory
-  return unless File.exist?(MEMORY_FILE)
-
-  data = JSON.parse(File.read(MEMORY_FILE))
-  entities = data['entities'] || []
-
-  # Archive if over threshold
-  if entities.size > MAX_ENTITIES
-    old_entities = entities.sort_by { |e| e['updated_at'] || '' }
-                          .first(entities.size - MAX_ENTITIES)
-
-    File.open(ARCHIVE_FILE, 'a') do |f|
-      old_entities.each { |e| f.puts(e.to_json) }
-    end
-
-    entities -= old_entities
-    puts "📦 Archived #{old_entities.size} old entities"
-  end
-
-  # Trim verbose entities
-  entities.each do |entity|
-    obs = entity['observations'] || []
-    if obs.size > MAX_OBS_PER_ENTITY
-      entity['observations'] = obs.last(MAX_OBS_PER_ENTITY)
-      puts "✂️  Trimmed #{entity['name']} to #{MAX_OBS_PER_ENTITY} observations"
-    end
-  end
-
-  data['entities'] = entities
-  File.write(MEMORY_FILE, JSON.pretty_generate(data))
-end
-
-compact_memory
-```
-
-Hook into SessionEnd:
-```json
-{
-  "hooks": {
-    "SessionEnd": [
-      { "type": "command", "command": "ruby Scripts/hooks/memory_compactor.rb" }
-    ]
-  }
-}
+# Plugin location
+~/.claude/plugins/cache/thedotmack/claude-mem/
 ```
 
 ## Best Practices
 
-- Prefer updating existing entities over creating new ones
-- Use specific entity names (e.g., `BUG-005-MenuBarCrash` not `bug`)
-- Observations should be concise (< 200 chars each)
-- Archive is append-only - can recover old entities if needed
-- Auto-compaction runs at session end - no manual cleanup needed
+- Learnings are captured automatically — no manual management needed
+- Research findings go to `.claude/research.md` (scratchpad, 200-line cap)
+- Permanent knowledge graduates to `ARCHITECTURE.md` or `DEVELOPMENT.md`
 
 ---
 
@@ -1005,7 +946,7 @@ Hooks run automatically during AI tool use.
 | When | Purpose |
 |------|---------|
 | **SessionStart** | Bootstrap environment, display SOP reminders |
-| **SessionEnd** | Extract insights, update memory, show summary |
+| **SessionEnd** | Capture learnings to Sane-Mem, show summary |
 | **PreToolUse** | Validate before Edit/Bash/Write |
 | **PostToolUse** | Track failures, check test quality, audit log |
 
@@ -1167,7 +1108,7 @@ MCP (Model Context Protocol) servers provide external knowledge.
 | `apple-docs` | Apple Developer Documentation, WWDC videos |
 | `context7` | Real-time library documentation |
 | `github` | GitHub API (PRs, issues, code) |
-| `memory` | Persistent knowledge graph |
+| `claude-mem` | Sane-Mem (SQLite + Chroma, port 37777) |
 | `xcode` | Xcode build/test/preview via `xcrun mcpbridge` |
 
 ## Configuration
@@ -1329,7 +1270,7 @@ killall -9 <app-name>
 │   1. apple-docs MCP (Apple APIs)                           │
 │   2. context7 MCP (library docs)                           │
 │   3. SDK check (.swiftinterface)                           │
-│   4. memory MCP (past learnings)                           │
+│   4. Sane-Mem (past learnings)                             │
 │   5. Web search (last resort)                              │
 ├────────────────────────────────────────────────────────────┤
 │ CIRCUIT BREAKER                                            │

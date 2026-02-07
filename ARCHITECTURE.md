@@ -505,7 +505,7 @@ flowchart TD
 
 | Dependency | Version | Purpose | Risk |
 |------------|---------|---------|------|
-| Ruby | System (macOS) | Hook execution | None (ships with macOS) |
+| Ruby 3.x | Homebrew / system | Hook execution | `brew install ruby` on macOS |
 | Claude Code | Latest | Host platform | Breaking changes to hook API |
 | JSON (stdlib) | Ruby stdlib | State parsing | None |
 | OpenSSL (stdlib) | Ruby stdlib | HMAC signing | None |
