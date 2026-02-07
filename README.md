@@ -91,6 +91,7 @@ The installer copies hooks into your project's `scripts/hooks/` directory and cr
 ruby scripts/hooks/saneprompt.rb --self-test    # 176 tests
 ruby scripts/hooks/sanetools.rb --self-test     # 38 tests
 ruby scripts/hooks/sanetrack.rb --self-test     # 23 tests
+ruby scripts/hooks/sanestop.rb --self-test      # 17 tests
 ```
 
 ---
