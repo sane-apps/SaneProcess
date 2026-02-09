@@ -56,7 +56,7 @@ security add-generic-password -s cloudflare -a api_token -w "YOUR_TOKEN"
 | Credential | Value |
 |-----------|-------|
 | Team ID | `M78L6FXD48` |
-| Signing Identity | `Developer ID Application: Stephan Joseph (M78L6FXD48)` |
+| Signing Identity | `Developer ID Application` (Team: M78L6FXD48) |
 | Primary API Key ID | `S34998ZCRT` (SaneApps — Admin access) |
 | Issuer ID | `c98b1e0a-8d10-4fce-a417-536b31c09bfb` |
 | .p8 Location | `~/.private_keys/AuthKey_S34998ZCRT.p8` |
