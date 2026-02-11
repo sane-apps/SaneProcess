@@ -53,9 +53,12 @@ products:
 
   sanesales:
     name: SaneSales
-    type: ios
+    type: universal
     domain: sanesales.com
+    dist_domain: dist.sanesales.com
     github_repo: sane-apps/SaneSales
+    appcast: https://sanesales.com/appcast.xml
+    checkout_uuid: 5f7903d4-d6c8-4da4-b3e3-4586ef86bb51
 
 # LemonSqueezy store configuration
 store:

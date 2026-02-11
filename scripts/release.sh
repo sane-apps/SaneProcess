@@ -2,7 +2,7 @@
 # frozen_string_literal: false
 #
 # Unified Release Script
-# Builds, signs, notarizes, and packages a DMG for any SaneApps project
+# Builds, signs, notarizes, and packages a ZIP for any SaneApps project
 #
 
 set -e
@@ -442,7 +442,7 @@ SCHEME="${SCHEME:-${APP_NAME}}"
 LOWER_APP_NAME="$(echo "${APP_NAME}" | tr '[:upper:]' '[:lower:]')"
 BUNDLE_ID="${BUNDLE_ID:-com.${LOWER_APP_NAME}.app}"
 TEAM_ID="${TEAM_ID:?Set TEAM_ID env var or pass --team-id}"
-SIGNING_IDENTITY="${SIGNING_IDENTITY:-Developer ID Application: Your Name (${TEAM_ID})}"
+SIGNING_IDENTITY="${SIGNING_IDENTITY:-Developer ID Application}"
 BUILD_DIR="${BUILD_DIR:-${PROJECT_ROOT}/build}"
 ARCHIVE_PATH="${ARCHIVE_PATH:-${BUILD_DIR}/${APP_NAME}.xcarchive}"
 EXPORT_PATH="${EXPORT_PATH:-${BUILD_DIR}/Export}"
@@ -491,8 +491,42 @@ DMG_FILE_ICON="$(resolve_path "${DMG_FILE_ICON}")"
 DMG_VOLUME_ICON="$(resolve_path "${DMG_VOLUME_ICON}")"
 DMG_BACKGROUND="$(resolve_path "${DMG_BACKGROUND}")"
 DMG_BACKGROUND_GENERATOR="$(resolve_path "${DMG_BACKGROUND_GENERATOR}")"
-SIGN_UPDATE_SCRIPT="$(resolve_path "${SIGN_UPDATE_SCRIPT:-${PROJECT_ROOT}/scripts/sign_update.swift}")"
-SET_DMG_ICON_SCRIPT="$(resolve_path "${SET_DMG_ICON_SCRIPT:-${PROJECT_ROOT}/scripts/set_dmg_icon.swift}")"
+# Resolve helper scripts: check project first, fall back to SaneProcess scripts dir
+SANEPROCESS_SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -z "${SIGN_UPDATE_SCRIPT}" ]; then
+    if [ -f "${PROJECT_ROOT}/scripts/sign_update.swift" ]; then
+        SIGN_UPDATE_SCRIPT="${PROJECT_ROOT}/scripts/sign_update.swift"
+    else
+        SIGN_UPDATE_SCRIPT="${SANEPROCESS_SCRIPTS_DIR}/sign_update.swift"
+    fi
+fi
+SIGN_UPDATE_SCRIPT="$(resolve_path "${SIGN_UPDATE_SCRIPT}")"
+
+if [ -z "${SET_DMG_ICON_SCRIPT}" ]; then
+    if [ -f "${PROJECT_ROOT}/scripts/set_dmg_icon.swift" ]; then
+        SET_DMG_ICON_SCRIPT="${PROJECT_ROOT}/scripts/set_dmg_icon.swift"
+    else
+        SET_DMG_ICON_SCRIPT="${SANEPROCESS_SCRIPTS_DIR}/set_dmg_icon.swift"
+    fi
+fi
+SET_DMG_ICON_SCRIPT="$(resolve_path "${SET_DMG_ICON_SCRIPT}")"
+
+# Pre-flight validation: check that configured resources exist BEFORE building
+if [ -n "${DMG_FILE_ICON}" ] && [ ! -f "${DMG_FILE_ICON}" ]; then
+    log_error "DMG file icon not found: ${DMG_FILE_ICON}"
+    log_error "Set release.dmg.file_icon in .saneprocess to a valid path, or remove it"
+    exit 1
+fi
+if [ -n "${DMG_VOLUME_ICON}" ] && [ ! -f "${DMG_VOLUME_ICON}" ]; then
+    log_error "DMG volume icon not found: ${DMG_VOLUME_ICON}"
+    log_error "Set release.dmg.volume_icon in .saneprocess to a valid path, or remove it"
+    exit 1
+fi
+if [ -n "${DMG_BACKGROUND}" ] && [ ! -f "${DMG_BACKGROUND}" ]; then
+    log_error "DMG background not found: ${DMG_BACKGROUND}"
+    log_error "Set release.dmg.background in .saneprocess to a valid path, or remove it"
+    exit 1
+fi
 
 cd "${PROJECT_ROOT}"
 
@@ -510,6 +544,48 @@ if [ "${FULL_RELEASE}" = true ]; then
     ensure_cmd git
     ensure_cmd gh
     ensure_git_clean
+
+    # ─── Pre-release safety gates (learned from 46 issues + 200 emails) ───
+
+    # Gate 1: UserDefaults / migration change detection
+    # Settings migration is #1 cause of customer bugs (50% of critical issues)
+    DEFAULTS_CHANGED=$(git -C "${PROJECT_ROOT}" diff HEAD~5..HEAD --name-only -- '*.swift' | \
+        xargs grep -l 'UserDefaults\|setDefaultsIfNeeded\|registerDefaults\|migration\|migrate' 2>/dev/null | head -5)
+    if [ -n "${DEFAULTS_CHANGED}" ]; then
+        log_warn "═══ UPGRADE SAFETY WARNING ═══"
+        log_warn "These files touch UserDefaults/migration logic:"
+        echo "${DEFAULTS_CHANGED}" | while read f; do log_warn "  - ${f}"; done
+        log_warn "This is the #1 cause of customer regressions (v1.0.20 broke 5+ users)."
+        log_warn "BEFORE SHIPPING: test upgrade path from previous version with existing user data."
+        log_warn "════════════════════════════════"
+    fi
+
+    # Gate 2: Pending customer emails
+    EMAIL_API_KEY=$(security find-generic-password -s sane-email-automation -a api_key -w 2>/dev/null || echo "")
+    if [ -n "${EMAIL_API_KEY}" ]; then
+        PENDING_COUNT=$(curl -s "https://email-api.saneapps.com/api/emails/pending" \
+            -H "Authorization: Bearer ${EMAIL_API_KEY}" 2>/dev/null | \
+            python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+        if [ "${PENDING_COUNT}" -gt 0 ] 2>/dev/null; then
+            log_warn "${PENDING_COUNT} pending customer email(s) — review before shipping."
+        fi
+    fi
+
+    # Gate 3: Open GitHub issues
+    if [ -n "${GITHUB_REPO}" ]; then
+        OPEN_ISSUES=$(gh issue list --repo "${GITHUB_REPO}" --state open --json number 2>/dev/null | \
+            python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+        if [ "${OPEN_ISSUES}" -gt 0 ] 2>/dev/null; then
+            log_warn "${OPEN_ISSUES} open GitHub issue(s) — review before shipping."
+        fi
+    fi
+
+    # Gate 4: Evening release warning (8-18hr discovery window if broken)
+    HOUR=$(date +%H)
+    if [ "${HOUR}" -ge 17 ] || [ "${HOUR}" -lt 6 ]; then
+        log_warn "Evening/night release detected ($(date +%H:%M))."
+        log_warn "Bugs won't be discovered until morning. Prefer morning releases."
+    fi
 
     # README sync check — warn if features aren't documented
     README_CHECK="${SCRIPT_DIR}/automation/nv-readme-check.sh"
@@ -638,8 +714,18 @@ if [ "${USE_SPARKLE}" = true ]; then
         log_error "SUPublicEDKey missing from Info.plist!"
         exit 1
     fi
+    # Verify key VALUE matches the shared SaneApps key (not just exists)
+    # Per-project keys broke updates for ALL shipped customers
+    EXPECTED_SPARKLE_PUBLIC_KEY="7Pl/8cwfb2vm4Dm65AByslkMCScLJ9tbGlwGGx81qYU="
+    if [ "${PLIST_KEY}" != "${EXPECTED_SPARKLE_PUBLIC_KEY}" ]; then
+        log_error "SUPublicEDKey MISMATCH! Built app has wrong Sparkle key."
+        log_error "  Expected: ${EXPECTED_SPARKLE_PUBLIC_KEY}"
+        log_error "  Got:      ${PLIST_KEY}"
+        log_error "This will break auto-update for ALL existing customers!"
+        exit 1
+    fi
     log_info "SUFeedURL: ${PLIST_FEED}"
-    log_info "SUPublicEDKey: ${PLIST_KEY}"
+    log_info "SUPublicEDKey: ${PLIST_KEY} (verified)"
 fi
 
 # Get version from app
@@ -649,135 +735,30 @@ fi
 BUILD_NUMBER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "1")
 log_info "Version: ${VERSION} (${BUILD_NUMBER})"
 
-# Create DMG
-DMG_NAME="${APP_NAME}-${VERSION}"
-DMG_PATH="${BUILD_DIR}/${DMG_NAME}.dmg"
+# Package as ZIP (simpler, app icon survives HTTP download, no resource fork issues)
+ZIP_NAME="${APP_NAME}-${VERSION}"
+NOTARIZE_ZIP="${BUILD_DIR}/${APP_NAME}-notarize.zip"
+ZIP_PATH="${BUILD_DIR}/${ZIP_NAME}.zip"
 
-# Generate DMG background (ensures icons are visible in Finder dark mode)
-DMG_BG_OUTPUT="${BUILD_DIR}/dmg_background.png"
-if [ -n "${DMG_BACKGROUND_GENERATOR}" ] && [ -f "${DMG_BACKGROUND_GENERATOR}" ]; then
-    log_info "Generating DMG background (custom generator)..."
-    swift "${DMG_BACKGROUND_GENERATOR}" "${DMG_BG_OUTPUT}" ${DMG_WINDOW_SIZE}
-    [ -f "${DMG_BG_OUTPUT}" ] && DMG_BACKGROUND="${DMG_BG_OUTPUT}"
-elif [ -z "${DMG_BACKGROUND}" ]; then
-    # Auto-generate a default light background so icons are visible in dark mode
-    SANEPROCESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-    DEFAULT_BG_GEN="${SANEPROCESS_DIR}/scripts/generate_dmg_background.swift"
-    if [ -f "${DEFAULT_BG_GEN}" ]; then
-        log_info "Generating default DMG background..."
-        swift "${DEFAULT_BG_GEN}" "${DMG_BG_OUTPUT}" ${DMG_WINDOW_SIZE}
-        [ -f "${DMG_BG_OUTPUT}" ] && DMG_BACKGROUND="${DMG_BG_OUTPUT}"
-    fi
-fi
-
-# Remove old DMG if it exists (create-dmg won't overwrite)
-rm -f "${DMG_PATH}"
-
-log_info "Creating DMG..."
-
-if [ -z "${DMG_VOLUME_ICON}" ] && [ -f "${APP_PATH}/Contents/Resources/AppIcon.icns" ]; then
-    DMG_VOLUME_ICON="${APP_PATH}/Contents/Resources/AppIcon.icns"
-fi
-
-if command -v create-dmg >/dev/null 2>&1; then
-    log_info "Using create-dmg..."
-    DMG_ARGS=(
-        --volname "${APP_NAME}"
-        --window-pos ${DMG_WINDOW_POS}
-        --window-size ${DMG_WINDOW_SIZE}
-        --icon-size "${DMG_ICON_SIZE}"
-        --icon "${APP_NAME}.app" ${DMG_APP_ICON_POS}
-        --app-drop-link ${DMG_DROP_POS}
-    )
-
-    if [ "${DMG_HIDE_EXTENSION}" = true ]; then
-        DMG_ARGS+=(--hide-extension "${APP_NAME}.app")
-    fi
-
-    if [ -n "${DMG_VOLUME_ICON}" ] && [ -f "${DMG_VOLUME_ICON}" ]; then
-        DMG_ARGS+=(--volicon "${DMG_VOLUME_ICON}")
-    fi
-
-    if [ -n "${DMG_BACKGROUND}" ] && [ -f "${DMG_BACKGROUND}" ]; then
-        DMG_ARGS+=(--background "${DMG_BACKGROUND}")
-    fi
-
-    if [ "${DMG_NO_INTERNET_ENABLE}" = true ]; then
-        DMG_ARGS+=(--no-internet-enable)
-    fi
-
-    if [ ${#CREATE_DMG_EXTRA_ARGS[@]} -gt 0 ]; then
-        DMG_ARGS+=("${CREATE_DMG_EXTRA_ARGS[@]}")
-    fi
-
-    create-dmg "${DMG_ARGS[@]}" "${DMG_PATH}" "${APP_PATH}"
-else
-    log_warn "create-dmg not found, using basic DMG creation..."
-    DMG_TEMP="${BUILD_DIR}/dmg_temp"
-    remove_path "${DMG_TEMP}"
-    mkdir -p "${DMG_TEMP}"
-    cp -R "${APP_PATH}" "${DMG_TEMP}/"
-    ln -s /Applications "${DMG_TEMP}/Applications"
-    hdiutil create -volname "${APP_NAME}" \
-        -srcfolder "${DMG_TEMP}" \
-        -ov -format UDZO \
-        "${DMG_PATH}"
-    remove_path "${DMG_TEMP}"
-fi
-
-# Fix Applications folder icon inside the DMG (symlinks lose icons on macOS 14+)
-FIX_APPS_ICON_SCRIPT="${SANEPROCESS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/scripts/fix_dmg_apps_icon.swift"
-if [ -f "${FIX_APPS_ICON_SCRIPT}" ]; then
-    log_info "Fixing Applications icon in DMG..."
-    DMG_RW="${BUILD_DIR}/${DMG_NAME}_rw.dmg"
-    hdiutil convert "${DMG_PATH}" -format UDRW -o "${DMG_RW}" -quiet
-    MOUNT_OUTPUT=$(hdiutil attach "${DMG_RW}" -readwrite -nobrowse -quiet 2>&1)
-    MOUNT_POINT="/Volumes/${APP_NAME}"
-    if [ -d "${MOUNT_POINT}" ]; then
-        swift "${FIX_APPS_ICON_SCRIPT}" "${MOUNT_POINT}" || true
-        sleep 1
-        hdiutil detach "${MOUNT_POINT}" -quiet -force 2>/dev/null
-        rm -f "${DMG_PATH}"
-        hdiutil convert "${DMG_RW}" -format UDZO -o "${DMG_PATH}" -quiet
-        rm -f "${DMG_RW}"
-        log_info "Applications icon fixed"
-    else
-        log_warn "Could not mount DMG for icon fix (non-fatal)"
-        rm -f "${DMG_RW}"
-    fi
-fi
-
-# Set DMG file icon (for Finder)
-if [ -n "${DMG_FILE_ICON}" ]; then
-    if [ -f "${DMG_FILE_ICON}" ] && [ -f "${SET_DMG_ICON_SCRIPT}" ]; then
-        log_info "Setting DMG file icon..."
-        swift "${SET_DMG_ICON_SCRIPT}" "${DMG_FILE_ICON}" "${DMG_PATH}"
-    else
-        log_warn "DMG file icon skipped (missing icon or set_dmg_icon.swift)"
-    fi
-fi
-
-# Sign DMG
-log_info "Signing DMG..."
-codesign --sign "${SIGNING_IDENTITY}" --timestamp "${DMG_PATH}"
-codesign --verify "${DMG_PATH}"
-log_info "DMG signature verified!"
+# Create temporary zip for notarization submission
+log_info "Creating ZIP for notarization..."
+ditto -c -k --keepParent "${APP_PATH}" "${NOTARIZE_ZIP}"
 
 # Notarize (if not skipped)
 if [ "${SKIP_NOTARIZE}" = false ]; then
     log_info "Submitting for notarization..."
     log_warn "This may take several minutes..."
 
-    xcrun notarytool submit "${DMG_PATH}" \
+    xcrun notarytool submit "${NOTARIZE_ZIP}" \
         --keychain-profile "${NOTARY_PROFILE}" \
         --wait
 
-    log_info "Stapling notarization ticket..."
-    xcrun stapler staple "${DMG_PATH}"
+    log_info "Stapling notarization ticket to app..."
+    xcrun stapler staple "${APP_PATH}"
 
     if [ "${VERIFY_STAPLE}" = true ]; then
         log_info "Verifying staple..."
-        xcrun stapler validate "${DMG_PATH}"
+        xcrun stapler validate "${APP_PATH}"
     fi
 
     log_info "Notarization complete!"
@@ -785,23 +766,31 @@ else
     log_warn "Skipping notarization (--skip-notarize flag set)"
 fi
 
-# Copy to releases folder (use ditto to preserve custom icon/xattrs)
-FINAL_DMG="${RELEASE_DIR}/${DMG_NAME}.dmg"
-remove_path "${FINAL_DMG}"
-ditto "${DMG_PATH}" "${FINAL_DMG}"
+# Create final distribution ZIP (with stapled notarization ticket)
+log_info "Creating distribution ZIP..."
+rm -f "${ZIP_PATH}"
+ditto -c -k --keepParent "${APP_PATH}" "${ZIP_PATH}"
+
+# Clean up temp notarization zip
+rm -f "${NOTARIZE_ZIP}"
+
+# Copy to releases folder
+FINAL_ZIP="${RELEASE_DIR}/${ZIP_NAME}.zip"
+remove_path "${FINAL_ZIP}"
+ditto "${ZIP_PATH}" "${FINAL_ZIP}"
 
 log_info "========================================"
 log_info "Release build complete!"
 log_info "========================================"
-log_info "DMG: ${FINAL_DMG}"
+log_info "ZIP: ${FINAL_ZIP}"
 log_info "Version: ${VERSION}"
 
 # Generate Sparkle Signature
 if [ "${USE_SPARKLE}" = true ] && command -v swift >/dev/null 2>&1; then
     log_info ""
     log_info "--- Generating Release Metadata ---"
-    SHA256=$(shasum -a 256 "${FINAL_DMG}" | awk '{print $1}')
-    FILE_SIZE=$(stat -f%z "${FINAL_DMG}")
+    SHA256=$(shasum -a 256 "${FINAL_ZIP}" | awk '{print $1}')
+    FILE_SIZE=$(stat -f%z "${FINAL_ZIP}")
 
     log_info "Fetching Sparkle Private Key from Keychain..."
     SPARKLE_KEY=$(security find-generic-password -w -s "https://sparkle-project.org" -a "EdDSA Private Key" 2>/dev/null || echo "")
@@ -810,7 +799,7 @@ if [ "${USE_SPARKLE}" = true ] && command -v swift >/dev/null 2>&1; then
         log_info "Sparkle Key found. Generating signature..."
 
         if [ -f "${SIGN_UPDATE_SCRIPT}" ]; then
-            SIGNATURE=$(swift "${SIGN_UPDATE_SCRIPT}" "${FINAL_DMG}" "${SPARKLE_KEY}" 2>/dev/null || echo "")
+            SIGNATURE=$(swift "${SIGN_UPDATE_SCRIPT}" "${FINAL_ZIP}" "${SPARKLE_KEY}" 2>/dev/null || echo "")
         else
             SIGNATURE=""
         fi
@@ -829,11 +818,11 @@ if [ "${USE_SPARKLE}" = true ] && command -v swift >/dev/null 2>&1; then
                 <p>See CHANGELOG.md for details</p>
                 ]]>
             </description>
-            <enclosure url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.dmg"
+            <enclosure url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
                        sparkle:version="${BUILD_NUMBER}"
                        sparkle:shortVersionString="${VERSION}"
                        length="${FILE_SIZE}"
-                       type="application/x-apple-diskimage"
+                       type="application/octet-stream"
                        sparkle:edSignature="${SIGNATURE}"/>
         </item>
 EOF
@@ -863,7 +852,7 @@ fi
 
 if [ "${RUN_GH_RELEASE}" = true ]; then
     log_info ""
-    log_info "Creating GitHub release (notes only, NO DMG attached)..."
+    log_info "Creating GitHub release (notes only, no binary attached)..."
     create_github_release
 fi
 
@@ -874,22 +863,22 @@ if [ "${RUN_DEPLOY}" = true ]; then
     log_info "  DEPLOYING TO PRODUCTION"
     log_info "═══════════════════════════════════════════"
 
-    # Step 1: Upload DMG to R2
-    log_info "Uploading DMG to R2 bucket ${R2_BUCKET}..."
+    # Step 1: Upload ZIP to R2
+    log_info "Uploading ZIP to R2 bucket ${R2_BUCKET}..."
     ensure_cmd npx
-    npx wrangler r2 object put "${R2_BUCKET}/${APP_NAME}-${VERSION}.dmg" \
-        --file="${FINAL_DMG}" --remote
+    npx wrangler r2 object put "${R2_BUCKET}/${APP_NAME}-${VERSION}.zip" \
+        --file="${FINAL_ZIP}" --remote
     log_info "R2 upload complete."
 
     # Verify R2 upload
     log_info "Verifying download URL..."
-    HTTP_STATUS=$(curl -sI "https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.dmg" | head -1 | awk '{print $2}')
+    HTTP_STATUS=$(curl -sI "https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip" | head -1 | awk '{print $2}')
     if [ "${HTTP_STATUS}" != "200" ]; then
-        log_error "R2 verification FAILED! https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.dmg returned ${HTTP_STATUS}"
+        log_error "R2 verification FAILED! https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip returned ${HTTP_STATUS}"
         log_error "Check R2 bucket key format — Worker may strip /updates/ prefix."
         exit 1
     fi
-    log_info "Download verified: https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.dmg (200 OK)"
+    log_info "Download verified: https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip (200 OK)"
 
     # Step 2: Update appcast.xml
     if [ "${USE_SPARKLE}" = true ] && [ -n "${SIGNATURE}" ] && [ "${SIGNATURE}" != "UNSIGNED" ]; then
@@ -909,11 +898,11 @@ if [ "${RUN_DEPLOY}" = true ]; then
                 <p>${RELEASE_NOTES:-Update to version ${VERSION}}</p>
                 ]]>
             </description>
-            <enclosure url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.dmg"
+            <enclosure url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
                        sparkle:version="${BUILD_NUMBER}"
                        sparkle:shortVersionString="${VERSION}"
                        length="${FILE_SIZE}"
-                       type="application/x-apple-diskimage"
+                       type="application/octet-stream"
                        sparkle:edSignature="${SIGNATURE}"/>
         </item>
 APPCASTEOF
@@ -954,7 +943,20 @@ APPCASTEOF
         log_warn "No docs/ directory found. Skipping Pages deploy."
     fi
 
-    # Step 4: Commit appcast changes
+    # Step 4: Verify checkout/purchase link still works
+    # LemonSqueezy slug change broke 26 URLs for 44 hours ($40 lost)
+    CHECKOUT_URL="https://go.saneapps.com/${LOWER_APP_NAME}"
+    CHECKOUT_STATUS=$(curl -sI -o /dev/null -w '%{http_code}' "${CHECKOUT_URL}" 2>/dev/null || echo "000")
+    if [ "${CHECKOUT_STATUS}" = "200" ] || [ "${CHECKOUT_STATUS}" = "301" ] || [ "${CHECKOUT_STATUS}" = "302" ]; then
+        log_info "Checkout link verified: ${CHECKOUT_URL} (${CHECKOUT_STATUS})"
+    elif [ "${CHECKOUT_STATUS}" = "000" ]; then
+        log_warn "Could not reach checkout URL: ${CHECKOUT_URL} (network error)"
+    else
+        log_warn "Checkout link may be broken: ${CHECKOUT_URL} returned ${CHECKOUT_STATUS}"
+        log_warn "Test the purchase flow manually before announcing this release."
+    fi
+
+    # Step 5: Commit appcast changes
     if [ -f "${APPCAST_PATH}" ] && [ -n "$(git -C "${PROJECT_ROOT}" diff --name-only docs/appcast.xml 2>/dev/null)" ]; then
         log_info "Committing appcast update..."
         git -C "${PROJECT_ROOT}" add docs/appcast.xml
@@ -967,21 +969,16 @@ APPCASTEOF
     log_info "═══════════════════════════════════════════"
     log_info "  RELEASE v${VERSION} DEPLOYED SUCCESSFULLY"
     log_info "═══════════════════════════════════════════"
-    log_info "  DMG:     https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.dmg"
+    log_info "  ZIP:     https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
     log_info "  Appcast: https://${SITE_HOST}/appcast.xml"
     log_info "  GitHub:  https://github.com/${GITHUB_REPO}/releases/tag/v${VERSION}"
     log_info "═══════════════════════════════════════════"
 else
     log_info ""
-    log_info "To test: open \"${FINAL_DMG}\""
+    log_info "To test: open \"${FINAL_ZIP}\""
     log_info ""
     log_info "To deploy to production, re-run with --deploy flag:"
     log_info "  ./scripts/release.sh --version ${VERSION} --skip-build --deploy"
-    log_info ""
-    log_info "Or deploy manually:"
-    log_info "  1. npx wrangler r2 object put ${R2_BUCKET}/${APP_NAME}-${VERSION}.dmg --file=\"${FINAL_DMG}\" --remote"
-    log_info "  2. Update docs/appcast.xml"
-    log_info "  3. npx wrangler pages deploy ./docs --project-name=${LOWER_APP_NAME}-site"
 fi
 
 open "${RELEASE_DIR}"

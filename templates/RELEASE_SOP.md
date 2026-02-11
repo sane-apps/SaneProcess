@@ -12,6 +12,23 @@ All SaneApps macOS apps use **Cloudflare** for update distribution:
 
 ## Release Checklist
 
+### 0. Preflight (MANDATORY — Run First)
+
+```bash
+./scripts/SaneMaster.rb release_preflight
+```
+
+Runs 7 automated safety checks without building:
+1. Tests pass
+2. Git working directory clean
+3. UserDefaults/migration changes flagged (upgrade path test required if found)
+4. Sparkle SUPublicEDKey VALUE matches shared key
+5. Open GitHub issues reviewed
+6. Pending customer emails checked
+7. Release timing (warns on evening — 8-18hr discovery window if broken)
+
+**If preflight reports BLOCKED (red), fix before proceeding. Warnings (yellow) require review.**
+
 ### 1. Build, Sign, Notarize, DMG (Single Command)
 
 ```bash

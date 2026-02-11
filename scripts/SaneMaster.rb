@@ -68,7 +68,8 @@ class SaneMaster
         'lint' => { args: '', desc: 'Run SwiftLint and auto-fix issues' },
         'audit' => { args: '', desc: 'Scan for missing accessibility identifiers' },
         'system_check' => { args: '', desc: 'Verify unified hook system across all projects' },
-        'release' => { args: '[--full|--skip-notarize|--version X.Y.Z|--notes "..."]', desc: 'Build, sign, notarize, and package a DMG' }
+        'release' => { args: '[--full|--skip-notarize|--version X.Y.Z|--notes "..."]', desc: 'Build, sign, notarize, and package a DMG' },
+        'release_preflight' => { args: '', desc: 'Run all pre-release safety checks without building' }
       }
     },
     gen: {
@@ -277,6 +278,8 @@ class SaneMaster
       audit_unified
     when 'release'
       release(args)
+    when 'release_preflight'
+      release_preflight(args)
     when 'qa'
       system(File.join(__dir__, 'qa.rb'))
     when 'validate_test_references', 'validate-tests'

@@ -41,7 +41,7 @@
       "command": "/Users/sj/.claude/plugins/cache/thedotmack/claude-mem/9.0.6/scripts/mcp-server.cjs"
     },
     "openaiDeveloperDocs": {
-      "type": "sse",
+      "type": "http",
       "url": "https://developers.openai.com/mcp"
     },
     "xcode": {
