@@ -22,7 +22,7 @@ Guide for new developers to get all APIs and services working.
 | Resource | Purpose |
 |----------|---------|
 | Workers | Download gating (sane-dist), email automation, click tracking, redirects |
-| R2 Buckets | DMG file storage per app (sanebar-dist, saneclick-dist, etc.) |
+| R2 Buckets | Shared distribution bucket (sanebar-downloads) for all SaneApps (.dmg/.zip) |
 | D1 Database | Email/customer storage |
 | KV Namespace | Email caching |
 | Pages | Product websites (sanebar.com, saneclick.com, etc.) |

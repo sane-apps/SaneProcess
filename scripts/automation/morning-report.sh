@@ -8,6 +8,12 @@
 
 set -uo pipefail
 
+# Load nv API keys for background/LaunchAgent context (keychain not accessible)
+if [[ -f "$HOME/.config/nv/env" ]]; then
+  # shellcheck disable=SC1091
+  source "$HOME/.config/nv/env"
+fi
+
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR="/Users/sj/SaneApps/infra/SaneProcess/outputs"

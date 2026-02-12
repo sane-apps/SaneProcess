@@ -400,7 +400,7 @@ build:
 release:
   dist_host: dist.projectname.com
   site_host: projectname.com
-  r2_bucket: your-downloads-bucket
+  r2_bucket: sanebar-downloads  # Shared bucket for ALL SaneApps
   use_sparkle: true
   dmg:
     file_icon: Resources/DMGIcon.icns

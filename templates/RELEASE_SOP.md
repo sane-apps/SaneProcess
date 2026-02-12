@@ -44,7 +44,7 @@ Runs 7 automated safety checks without building:
 **Use wrangler for R2 uploads (single shared bucket):**
 
 ```bash
-npx wrangler r2 object put your-downloads-bucket/{App}-{version}.dmg \
+npx wrangler r2 object put sanebar-downloads/{App}-{version}.dmg \
   --file="releases/{App}-{version}.dmg" --content-type="application/octet-stream" --remote
 ```
 
@@ -110,9 +110,9 @@ curl -X POST "https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records" 
 
 ## R2 Bucket
 
-- **Name**: `your-downloads-bucket`
+- **Name**: `sanebar-downloads`
 - **Account**: `$CLOUDFLARE_ACCOUNT_ID`
-- **Usage**: Stores DMGs for distribution
+- **Usage**: Shared bucket for ALL SaneApps distribution files (.dmg and .zip)
 
 ## Critical Rules
 
