@@ -837,7 +837,8 @@ if [ "${APPSTORE_ENABLED}" = "true" ]; then
 
         appstore_archive_args=(archive -scheme "${SCHEME}" -configuration "${APPSTORE_CONFIG}" \
             -archivePath "${APPSTORE_ARCHIVE}" \
-            -destination "generic/platform=macOS" OTHER_CODE_SIGN_FLAGS="--timestamp")
+            -destination "generic/platform=macOS" OTHER_CODE_SIGN_FLAGS="--timestamp" \
+            -allowProvisioningUpdates)
         if [ -n "${WORKSPACE}" ]; then
             appstore_archive_args=(-workspace "${WORKSPACE}" "${appstore_archive_args[@]}")
         elif [ -n "${XCODEPROJ}" ]; then
@@ -860,14 +861,13 @@ if [ "${APPSTORE_ENABLED}" = "true" ]; then
     # so dyld skips the missing framework instead of crashing on launch.
     APPSTORE_APP_IN_ARCHIVE="${APPSTORE_ARCHIVE}/Products/Applications/${APP_NAME}.app"
     if [ -d "${APPSTORE_APP_IN_ARCHIVE}" ]; then
-        local archive_exec
-        archive_exec=$(defaults read "${APPSTORE_APP_IN_ARCHIVE}/Contents/Info" CFBundleExecutable 2>/dev/null || true)
-        if [ -n "${archive_exec}" ]; then
-            local archive_binary="${APPSTORE_APP_IN_ARCHIVE}/Contents/MacOS/${archive_exec}"
-            if [ -f "${archive_binary}" ]; then
-                if otool -L "${archive_binary}" 2>/dev/null | grep -q "Sparkle.framework"; then
+        ARCHIVE_EXEC=$(defaults read "${APPSTORE_APP_IN_ARCHIVE}/Contents/Info" CFBundleExecutable 2>/dev/null || true)
+        if [ -n "${ARCHIVE_EXEC}" ]; then
+            ARCHIVE_BINARY="${APPSTORE_APP_IN_ARCHIVE}/Contents/MacOS/${ARCHIVE_EXEC}"
+            if [ -f "${ARCHIVE_BINARY}" ]; then
+                if otool -L "${ARCHIVE_BINARY}" 2>/dev/null | grep -q "Sparkle.framework"; then
                     log_info "Weakening Sparkle dylib reference in App Store binary..."
-                    ruby "${SCRIPT_DIR}/weaken_sparkle.rb" "${archive_binary}"
+                    ruby "${SCRIPT_DIR}/weaken_sparkle.rb" "${ARCHIVE_BINARY}"
                     if [ $? -ne 0 ]; then
                         log_error "Failed to weaken Sparkle reference. App Store build may crash on launch."
                         exit 1
