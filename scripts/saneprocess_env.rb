@@ -83,3 +83,18 @@ emit('CREATE_DMG_EXTRA_ARGS', fetch_config(config, 'release', 'create_dmg_extra_
 emit('VERSION_BUMP_CMD', fetch_config(config, 'release', 'version_bump_cmd'))
 emit('VERSION_BUMP_RESTORE_CMD', fetch_config(config, 'release', 'version_bump_restore_cmd'))
 emit('VERSION_BUMP_FILES', fetch_config(config, 'release', 'version_bump_files'))
+
+# App Store Connect settings
+appstore = fetch_config(config, 'appstore')
+if appstore
+  emit('APPSTORE_ENABLED', fetch_config(config, 'appstore', 'enabled'))
+  emit('APPSTORE_APP_ID', fetch_config(config, 'appstore', 'app_id'))
+  emit('APPSTORE_PLATFORMS', fetch_config(config, 'appstore', 'platforms'))
+  emit('APPSTORE_CONFIGURATION', fetch_config(config, 'appstore', 'configuration'))
+  emit('APPSTORE_IOS_SCHEME', fetch_config(config, 'appstore', 'ios_scheme'))
+  emit('APPSTORE_SCREENSHOTS_MACOS', fetch_config(config, 'appstore', 'screenshots', 'macos'))
+  emit('APPSTORE_SCREENSHOTS_IOS', fetch_config(config, 'appstore', 'screenshots', 'ios'))
+  emit('APPSTORE_CONTACT_NAME', fetch_config(config, 'appstore', 'contact', 'name'))
+  emit('APPSTORE_CONTACT_PHONE', fetch_config(config, 'appstore', 'contact', 'phone'))
+  emit('APPSTORE_CONTACT_EMAIL', fetch_config(config, 'appstore', 'contact', 'email'))
+end

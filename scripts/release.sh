@@ -220,6 +220,98 @@ OPT
 OPT
 }
 
+preflight_check_dylibs() {
+    # Verify all dynamic libraries referenced by the binary are present in the bundle.
+    # Catches the Sparkle-missing-from-App-Store-build class of crash-on-launch.
+    local app_path="$1"
+    local label="$2"
+    local main_exec
+    main_exec=$(defaults read "${app_path}/Contents/Info" CFBundleExecutable 2>/dev/null || true)
+    if [ -z "${main_exec}" ]; then
+        log_warn "Could not read CFBundleExecutable for dylib check"
+        return 0
+    fi
+
+    local binary="${app_path}/Contents/MacOS/${main_exec}"
+    if [ ! -f "${binary}" ]; then
+        log_warn "Binary not found for dylib check: ${binary}"
+        return 0
+    fi
+
+    local missing=0
+    while IFS= read -r line; do
+        line=$(echo "${line}" | xargs) # trim whitespace
+        [ -z "${line}" ] && continue
+
+        # Extract the library path (first field before the parenthesized version info)
+        local lib
+        lib=$(echo "${line}" | awk '{print $1}')
+        [ -z "${lib}" ] && continue
+
+        # Skip weak references — they don't crash if missing (LC_LOAD_WEAK_DYLIB)
+        if echo "${line}" | grep -q "(weak"; then
+            continue
+        fi
+
+        # Resolve @rpath references against the app's Frameworks dir
+        if [[ "${lib}" == @rpath/* ]]; then
+            local framework_name="${lib#@rpath/}"
+            local resolved="${app_path}/Contents/Frameworks/${framework_name}"
+            if [ ! -f "${resolved}" ]; then
+                log_error "MISSING DYLIB (${label}): ${lib}"
+                log_error "  Expected at: ${resolved}"
+                missing=$((missing + 1))
+            fi
+        elif [[ "${lib}" == @executable_path/* ]]; then
+            local rel_path="${lib#@executable_path/}"
+            local resolved="${app_path}/Contents/MacOS/${rel_path}"
+            if [ ! -f "${resolved}" ]; then
+                log_error "MISSING DYLIB (${label}): ${lib}"
+                log_error "  Expected at: ${resolved}"
+                missing=$((missing + 1))
+            fi
+        fi
+        # /usr/lib and /System paths are OS-provided, skip
+    done < <(otool -L "${binary}" 2>/dev/null | tail -n +2)
+
+    if [ "${missing}" -gt 0 ]; then
+        log_error ""
+        log_error "${missing} missing dynamic library reference(s) in ${label} build."
+        log_error "The app WILL crash on launch (dyld: Library not loaded)."
+        log_error ""
+        log_error "Common cause: binary was compiled with a framework (e.g., Sparkle)"
+        log_error "that isn't included in the App Store build. Use a separate build"
+        log_error "configuration (e.g., Release-AppStore) with conditional compilation"
+        log_error "flags (#if !APP_STORE) to exclude the framework at compile time."
+        return 1
+    fi
+
+    log_info "Dylib preflight (${label}): all references resolved"
+    return 0
+}
+
+write_export_options_appstore_plist() {
+    local plist_path="$1"
+    cat > "${plist_path}" << 'OPT'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>method</key>
+    <string>app-store-connect</string>
+    <key>teamID</key>
+OPT
+    echo "    <string>${TEAM_ID}</string>" >> "${plist_path}"
+    cat >> "${plist_path}" << 'OPT'
+    <key>signingStyle</key>
+    <string>automatic</string>
+    <key>destination</key>
+    <string>upload</string>
+</dict>
+</plist>
+OPT
+}
+
 create_empty_entitlements_plist() {
     local entitlements_path="$1"
     cat > "${entitlements_path}" << 'PLIST'
@@ -449,7 +541,7 @@ EXPORT_PATH="${EXPORT_PATH:-${BUILD_DIR}/Export}"
 RELEASE_DIR="${RELEASE_DIR:-${PROJECT_ROOT}/releases}"
 DIST_HOST="${DIST_HOST:-dist.${LOWER_APP_NAME}.com}"
 SITE_HOST="${SITE_HOST:-${LOWER_APP_NAME}.com}"
-R2_BUCKET="${R2_BUCKET:-${LOWER_APP_NAME}-downloads}"
+R2_BUCKET="${R2_BUCKET:-sanebar-downloads}"  # Shared bucket for ALL SaneApps
 USE_SPARKLE="${USE_SPARKLE:-true}"
 MIN_SYSTEM_VERSION="${MIN_SYSTEM_VERSION:-15.0}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-notarytool}"
@@ -728,6 +820,99 @@ if [ "${USE_SPARKLE}" = true ]; then
     log_info "SUPublicEDKey: ${PLIST_KEY} (verified)"
 fi
 
+# App Store build + export (if enabled in .saneprocess)
+# CRITICAL: App Store builds need a SEPARATE archive with a different configuration
+# (e.g., Release-AppStore) to exclude direct-distribution frameworks like Sparkle.
+# Reusing the Developer ID archive would produce a binary that links Sparkle at
+# @rpath but doesn't include it — instant dyld crash on launch.
+if [ "${APPSTORE_ENABLED}" = "true" ]; then
+    APPSTORE_CONFIG="${APPSTORE_CONFIGURATION:-Release-AppStore}"
+    APPSTORE_ARCHIVE="${BUILD_DIR}/${APP_NAME}-AppStore.xcarchive"
+    APPSTORE_EXPORT_PATH="${BUILD_DIR}/Export-AppStore"
+    mkdir -p "${APPSTORE_EXPORT_PATH}"
+
+    if [ "${SKIP_BUILD}" = false ]; then
+        log_info ""
+        log_info "Building App Store archive (configuration: ${APPSTORE_CONFIG})..."
+
+        appstore_archive_args=(archive -scheme "${SCHEME}" -configuration "${APPSTORE_CONFIG}" \
+            -archivePath "${APPSTORE_ARCHIVE}" \
+            -destination "generic/platform=macOS" OTHER_CODE_SIGN_FLAGS="--timestamp")
+        if [ -n "${WORKSPACE}" ]; then
+            appstore_archive_args=(-workspace "${WORKSPACE}" "${appstore_archive_args[@]}")
+        elif [ -n "${XCODEPROJ}" ]; then
+            appstore_archive_args=(-project "${XCODEPROJ}" "${appstore_archive_args[@]}")
+        fi
+        if [ ${#ARCHIVE_EXTRA_ARGS[@]} -gt 0 ]; then
+            appstore_archive_args+=("${ARCHIVE_EXTRA_ARGS[@]}")
+        fi
+
+        xcodebuild "${appstore_archive_args[@]}" 2>&1 | tee -a "${BUILD_DIR}/build.log"
+
+        if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            log_error "App Store archive build failed! Check ${BUILD_DIR}/build.log"
+            exit 1
+        fi
+    fi
+
+    # Weaken Sparkle dylib reference in the archive binary.
+    # SPM links Sparkle unconditionally; this changes LC_LOAD_DYLIB → LC_LOAD_WEAK_DYLIB
+    # so dyld skips the missing framework instead of crashing on launch.
+    APPSTORE_APP_IN_ARCHIVE="${APPSTORE_ARCHIVE}/Products/Applications/${APP_NAME}.app"
+    if [ -d "${APPSTORE_APP_IN_ARCHIVE}" ]; then
+        local archive_exec
+        archive_exec=$(defaults read "${APPSTORE_APP_IN_ARCHIVE}/Contents/Info" CFBundleExecutable 2>/dev/null || true)
+        if [ -n "${archive_exec}" ]; then
+            local archive_binary="${APPSTORE_APP_IN_ARCHIVE}/Contents/MacOS/${archive_exec}"
+            if [ -f "${archive_binary}" ]; then
+                if otool -L "${archive_binary}" 2>/dev/null | grep -q "Sparkle.framework"; then
+                    log_info "Weakening Sparkle dylib reference in App Store binary..."
+                    ruby "${SCRIPT_DIR}/weaken_sparkle.rb" "${archive_binary}"
+                    if [ $? -ne 0 ]; then
+                        log_error "Failed to weaken Sparkle reference. App Store build may crash on launch."
+                        exit 1
+                    fi
+                fi
+            fi
+        fi
+    fi
+
+    log_info "Exporting for App Store..."
+    APPSTORE_PLIST="${BUILD_DIR}/ExportOptions-AppStore.plist"
+    write_export_options_appstore_plist "${APPSTORE_PLIST}"
+
+    xcodebuild -exportArchive \
+        -archivePath "${APPSTORE_ARCHIVE}" \
+        -exportPath "${APPSTORE_EXPORT_PATH}" \
+        -exportOptionsPlist "${APPSTORE_PLIST}" \
+        2>&1 | tee -a "${BUILD_DIR}/build.log"
+
+    if [ ${PIPESTATUS[0]} -ne 0 ]; then
+        log_error "App Store export failed! Check ${BUILD_DIR}/build.log"
+        exit 1
+    fi
+
+    APPSTORE_PKG="${APPSTORE_EXPORT_PATH}/${APP_NAME}.pkg"
+    if [ ! -f "${APPSTORE_PKG}" ]; then
+        log_error "App Store export failed — no .pkg produced"
+        exit 1
+    fi
+    log_info "App Store artifact: ${APPSTORE_PKG}"
+
+    # Dylib preflight: verify no missing dynamic library references
+    # This catches the Sparkle-not-stripped class of crash before we upload to ASC
+    appstore_app="${APPSTORE_ARCHIVE}/Products/Applications/${APP_NAME}.app"
+    if [ -d "${appstore_app}" ]; then
+        if ! preflight_check_dylibs "${appstore_app}" "App Store"; then
+            log_error "App Store dylib preflight FAILED — aborting."
+            log_error "The binary references frameworks not present in the bundle."
+            log_error "Ensure ${APPSTORE_CONFIG} configuration excludes direct-distribution"
+            log_error "frameworks (Sparkle, etc.) via compiler flags (#if !APP_STORE)."
+            exit 1
+        fi
+    fi
+fi
+
 # Get version from app
 if [ -z "${VERSION}" ]; then
     VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "1.0.0")
@@ -945,7 +1130,7 @@ APPCASTEOF
 
     # Step 4: Verify checkout/purchase link still works
     # LemonSqueezy slug change broke 26 URLs for 44 hours ($40 lost)
-    CHECKOUT_URL="https://go.saneapps.com/${LOWER_APP_NAME}"
+    CHECKOUT_URL="https://go.saneapps.com/buy/${LOWER_APP_NAME}"
     CHECKOUT_STATUS=$(curl -sI -o /dev/null -w '%{http_code}' "${CHECKOUT_URL}" 2>/dev/null || echo "000")
     if [ "${CHECKOUT_STATUS}" = "200" ] || [ "${CHECKOUT_STATUS}" = "301" ] || [ "${CHECKOUT_STATUS}" = "302" ]; then
         log_info "Checkout link verified: ${CHECKOUT_URL} (${CHECKOUT_STATUS})"
@@ -956,7 +1141,72 @@ APPCASTEOF
         log_warn "Test the purchase flow manually before announcing this release."
     fi
 
-    # Step 5: Commit appcast changes
+    # Step 5: App Store submission (if enabled)
+    if [ "${APPSTORE_ENABLED}" = "true" ]; then
+        log_info ""
+        log_info "═══════════════════════════════════════════"
+        log_info "  SUBMITTING TO APP STORE"
+        log_info "═══════════════════════════════════════════"
+
+        APPSTORE_SCRIPT="$(dirname "$0")/appstore_submit.rb"
+
+        if [ ! -f "${APPSTORE_SCRIPT}" ]; then
+            log_error "appstore_submit.rb not found at ${APPSTORE_SCRIPT}"
+            exit 1
+        fi
+
+        if [ -z "${APPSTORE_PKG}" ] || [ ! -f "${APPSTORE_PKG}" ]; then
+            log_error "No App Store .pkg found. Build with App Store export first (don't use --skip-build)."
+            exit 1
+        fi
+
+        ruby "${APPSTORE_SCRIPT}" \
+            --pkg "${APPSTORE_PKG}" \
+            --app-id "${APPSTORE_APP_ID}" \
+            --version "${VERSION}" \
+            --platform macos \
+            --project-root "${PROJECT_ROOT}"
+
+        # iOS build and submission (if configured)
+        if echo "${APPSTORE_PLATFORMS}" | grep -q "ios"; then
+            IOS_SCHEME="${APPSTORE_IOS_SCHEME:-${SCHEME}}"
+            log_info ""
+            log_info "Building iOS for App Store (scheme: ${IOS_SCHEME})..."
+
+            IOS_ARCHIVE="${BUILD_DIR}/${APP_NAME}-iOS.xcarchive"
+            ios_args=(archive -scheme "${IOS_SCHEME}" -configuration Release \
+                      -archivePath "${IOS_ARCHIVE}" \
+                      -destination "generic/platform=iOS")
+            [ -n "${XCODEPROJ}" ] && ios_args=(-project "${XCODEPROJ}" "${ios_args[@]}")
+            xcodebuild "${ios_args[@]}" 2>&1 | tee -a "${BUILD_DIR}/build.log"
+
+            if [ ${PIPESTATUS[0]} -ne 0 ]; then
+                log_warn "iOS archive failed — skipping iOS App Store submission"
+            else
+                IOS_EXPORT="${BUILD_DIR}/Export-AppStore-iOS"
+                mkdir -p "${IOS_EXPORT}"
+                xcodebuild -exportArchive \
+                    -archivePath "${IOS_ARCHIVE}" \
+                    -exportPath "${IOS_EXPORT}" \
+                    -exportOptionsPlist "${APPSTORE_PLIST}" \
+                    2>&1 | tee -a "${BUILD_DIR}/build.log"
+
+                IOS_IPA="${IOS_EXPORT}/${APP_NAME}.ipa"
+                if [ -f "${IOS_IPA}" ]; then
+                    ruby "${APPSTORE_SCRIPT}" \
+                        --pkg "${IOS_IPA}" \
+                        --app-id "${APPSTORE_APP_ID}" \
+                        --version "${VERSION}" \
+                        --platform ios \
+                        --project-root "${PROJECT_ROOT}"
+                else
+                    log_warn "iOS export produced no .ipa — skipping iOS submission"
+                fi
+            fi
+        fi
+    fi
+
+    # Step 6: Commit appcast changes
     if [ -f "${APPCAST_PATH}" ] && [ -n "$(git -C "${PROJECT_ROOT}" diff --name-only docs/appcast.xml 2>/dev/null)" ]; then
         log_info "Committing appcast update..."
         git -C "${PROJECT_ROOT}" add docs/appcast.xml
@@ -964,6 +1214,15 @@ APPCASTEOF
         git -C "${PROJECT_ROOT}" push
         log_info "Appcast commit pushed."
     fi
+
+    # Step 7: Remind about email webhook product config
+    # The email webhook has hardcoded product→filename mappings for purchase download links.
+    # File: infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js (PRODUCT_CONFIG)
+    log_warn ""
+    log_warn "ACTION REQUIRED: Update email webhook PRODUCT_CONFIG with new version!"
+    log_warn "  File: ~/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js"
+    log_warn "  Set ${APP_NAME} entry to: { file: '${APP_NAME}-${VERSION}.zip', domain: '${DIST_HOST}' }"
+    log_warn "  Then deploy: cd ~/SaneApps/infra/sane-email-automation && npx wrangler deploy --keep-vars"
 
     log_info ""
     log_info "═══════════════════════════════════════════"

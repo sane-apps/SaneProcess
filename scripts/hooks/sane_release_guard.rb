@@ -30,7 +30,7 @@ require 'json'
 
 SANE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo].freeze
 SANE_APP_PATTERN = Regexp.new(SANE_APPS.join('|'), Regexp::IGNORECASE)
-# R2 bucket names use lowercase (e.g. sanebar-downloads, saneclip-downloads)
+# R2 bucket pattern — all apps use shared bucket (sanebar-downloads) but match any *-downloads to catch mistakes
 SANE_BUCKET_PATTERN = Regexp.new(SANE_APPS.map { |a| "#{a.downcase}-downloads" }.join('|'))
 # Cloudflare Pages project names (e.g. sanebar-site, saneclip-site)
 SANE_PAGES_PATTERN = Regexp.new(SANE_APPS.map { |a| "#{a.downcase}-site" }.join('|'))
@@ -171,6 +171,24 @@ end
 if command.match?(/\b(?:curl|wget)\b/) && command.match?(SANE_DIST_PATTERN)
   warn '🔴 BLOCKED: Manual upload to SaneApp distribution domain'
   warn '   Distribution uploads should go through release.sh --deploy.'
+  warn ''
+  warn '   ✅ Use instead: bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project <path> --deploy'
+  exit 2
+end
+
+# Block 12: Manual altool uploads for SaneApps (must go through release.sh)
+if command.match?(/\baltool\s+--upload-app/) && command.match?(SANE_APP_PATTERN)
+  warn '🔴 BLOCKED: Manual App Store upload for SaneApp'
+  warn '   App Store uploads should go through the release pipeline.'
+  warn ''
+  warn '   ✅ Use instead: bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project <path> --deploy'
+  exit 2
+end
+
+# Block 13: Manual App Store Connect API calls for SaneApps
+if command.match?(/\bcurl\b.*api\.appstoreconnect\.apple\.com/) && command.match?(SANE_APP_PATTERN)
+  warn '🔴 BLOCKED: Manual App Store Connect API call for SaneApp'
+  warn '   ASC API operations should go through appstore_submit.rb via release.sh.'
   warn ''
   warn '   ✅ Use instead: bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project <path> --deploy'
   exit 2
