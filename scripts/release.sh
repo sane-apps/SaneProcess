@@ -249,7 +249,8 @@ preflight_check_dylibs() {
         [ -z "${lib}" ] && continue
 
         # Skip weak references — they don't crash if missing (LC_LOAD_WEAK_DYLIB)
-        if echo "${line}" | grep -q "(weak"; then
+        # otool -L shows: "... (compatibility version X.Y.Z, current version X.Y.Z, weak)"
+        if echo "${line}" | grep -q ", weak)"; then
             continue
         fi
 
@@ -877,6 +878,19 @@ if [ "${APPSTORE_ENABLED}" = "true" ]; then
         fi
     fi
 
+    # Dylib preflight: verify no missing dynamic library references BEFORE uploading
+    # This catches the Sparkle-not-stripped class of crash before we upload to ASC
+    appstore_app="${APPSTORE_ARCHIVE}/Products/Applications/${APP_NAME}.app"
+    if [ -d "${appstore_app}" ]; then
+        if ! preflight_check_dylibs "${appstore_app}" "App Store"; then
+            log_error "App Store dylib preflight FAILED — aborting before upload."
+            log_error "The binary references frameworks not present in the bundle."
+            log_error "Ensure ${APPSTORE_CONFIG} configuration excludes direct-distribution"
+            log_error "frameworks (Sparkle, etc.) via compiler flags (#if !APP_STORE)."
+            exit 1
+        fi
+    fi
+
     log_info "Exporting for App Store..."
     APPSTORE_PLIST="${BUILD_DIR}/ExportOptions-AppStore.plist"
     write_export_options_appstore_plist "${APPSTORE_PLIST}"
@@ -900,19 +914,6 @@ if [ "${APPSTORE_ENABLED}" = "true" ]; then
     else
         log_info "App Store artifact: ${APPSTORE_PKG}"
         APPSTORE_DIRECT_UPLOAD=false
-    fi
-
-    # Dylib preflight: verify no missing dynamic library references
-    # This catches the Sparkle-not-stripped class of crash before we upload to ASC
-    appstore_app="${APPSTORE_ARCHIVE}/Products/Applications/${APP_NAME}.app"
-    if [ -d "${appstore_app}" ]; then
-        if ! preflight_check_dylibs "${appstore_app}" "App Store"; then
-            log_error "App Store dylib preflight FAILED — aborting."
-            log_error "The binary references frameworks not present in the bundle."
-            log_error "Ensure ${APPSTORE_CONFIG} configuration excludes direct-distribution"
-            log_error "frameworks (Sparkle, etc.) via compiler flags (#if !APP_STORE)."
-            exit 1
-        fi
     fi
 fi
 
