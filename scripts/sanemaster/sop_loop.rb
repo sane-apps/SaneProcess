@@ -28,7 +28,6 @@ module SaneMasterModules
     REQUIREMENTS_FILE = '.claude/prompt_requirements.json'
     ENFORCEMENT_LOG = '.claude/enforcement_log.jsonl'
     TRACKING_FILE = '.claude/rule_tracking.jsonl'
-    MEMORY_CHECK_FILE = '.claude/memory_checked.json'
 
     # ===========================================================================
     # saneloop - Main entry point for SaneLoop commands
@@ -598,7 +597,6 @@ module SaneMasterModules
       FileUtils.rm_f(SATISFACTION_FILE)
       FileUtils.rm_f(REQUIREMENTS_FILE)
       FileUtils.rm_f(ENFORCEMENT_LOG)
-      FileUtils.rm_f(MEMORY_CHECK_FILE)
     end
 
     def archive_saneloop(state)

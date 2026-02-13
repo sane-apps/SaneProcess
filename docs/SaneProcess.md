@@ -757,7 +757,7 @@ When user says "test mode" or you need live debugging:
 
 ## Session End
 
-1. **Learnings auto-captured** via Sane-Mem hooks (SQLite + Chroma at port 37777)
+1. **Learnings auto-captured** via session_learnings.jsonl
 2. **Update SESSION_HANDOFF.md** with completed work, pending tasks
 3. **Run project's session end command** if available
 
@@ -906,34 +906,32 @@ AI agents are notorious for "doom loops" - trying the same broken fix 10 times. 
 
 ---
 
-# 6. Memory System (Sane-Mem)
+# 6. Memory System
 
-Cross-session learnings are stored via **Sane-Mem** — a SQLite + Chroma vector database running locally on port 37777.
+Cross-session learnings are stored through multiple complementary systems:
 
 ## How It Works
 
-- **Auto-capture:** The `sanestop.rb` hook captures learnings at session end
-- **Storage:** SQLite for structured data, Chroma for semantic search
-- **Access:** MCP search tool (`mcp__plugin_claude-mem_mcp-search__search`) or direct API
+- **Official Memory MCP:** Durable facts stored in `knowledge-graph.jsonl` (entities and relationships)
+- **Session learnings:** Automatically captured by `sanestop.rb` hook at session end, written to `session_learnings.jsonl`
+- **Serena memories:** Project-specific patterns stored in `.serena/memories/` (access via `read_memory`/`write_memory`)
 
-## Quick Reference
+## Storage Architecture
 
-```bash
-# Check if Sane-Mem is running
-curl http://localhost:37777/health
-
-# Search for past learnings
-curl "http://localhost:37777/search?q=sparkle+key"
-
-# Plugin location
-~/.claude/plugins/cache/thedotmack/claude-mem/
-```
+| System | Purpose | Format | Persistence |
+|--------|---------|--------|-------------|
+| Memory MCP | Cross-project knowledge graph | knowledge-graph.jsonl | Permanent |
+| Session learnings | Auto-captured from sessions | session_learnings.jsonl | Permanent |
+| Serena memories | Project-specific patterns | .serena/memories/*.json | Per-project |
+| Research scratchpad | Temporary findings | .claude/research.md | Session-scoped |
 
 ## Best Practices
 
-- Learnings are captured automatically — no manual management needed
-- Research findings go to `.claude/research.md` (scratchpad, 200-line cap)
-- Permanent knowledge graduates to `ARCHITECTURE.md` or `DEVELOPMENT.md`
+- **No manual management needed** — learnings captured automatically at session end
+- **Research findings** go to `.claude/research.md` first (scratchpad, 200-line cap)
+- **Permanent knowledge** graduates from research.md to `ARCHITECTURE.md` or `DEVELOPMENT.md`
+- **Project patterns** saved via Serena `write_memory` before session ends
+- **No daemon required** — all file-based, no external dependencies
 
 ---
 
@@ -946,7 +944,7 @@ Hooks run automatically during AI tool use.
 | When | Purpose |
 |------|---------|
 | **SessionStart** | Bootstrap environment, display SOP reminders |
-| **SessionEnd** | Capture learnings to Sane-Mem, show summary |
+| **SessionEnd** | Capture learnings to session_learnings.jsonl, show summary |
 | **PreToolUse** | Validate before Edit/Bash/Write |
 | **PostToolUse** | Track failures, check test quality, audit log |
 
@@ -1108,7 +1106,7 @@ MCP (Model Context Protocol) servers provide external knowledge.
 | `apple-docs` | Apple Developer Documentation, WWDC videos |
 | `context7` | Real-time library documentation |
 | `github` | GitHub API (PRs, issues, code) |
-| `claude-mem` | Sane-Mem (SQLite + Chroma, port 37777) |
+| `memory` | Official Memory MCP (knowledge-graph.jsonl) |
 | `xcode` | Xcode build/test/preview via `xcrun mcpbridge` |
 
 ## Configuration
@@ -1270,7 +1268,7 @@ killall -9 <app-name>
 │   1. apple-docs MCP (Apple APIs)                           │
 │   2. context7 MCP (library docs)                           │
 │   3. SDK check (.swiftinterface)                           │
-│   4. Sane-Mem (past learnings)                             │
+│   4. Serena memories (past learnings)                      │
 │   5. Web search (last resort)                              │
 ├────────────────────────────────────────────────────────────┤
 │ CIRCUIT BREAKER                                            │

@@ -61,12 +61,6 @@ def track_startup_gate_step(tool_name, tool_input)
       changed = true
     end
 
-    if command.match?(/curl\s+.*localhost:37777|curl\s+.*127\.0\.0\.1:37777/) && !steps[:sanemem_check]
-      steps[:sanemem_check] = true
-      gate[:step_timestamps][:sanemem_check] = Time.now.iso8601
-      changed = true
-    end
-
     if command.match?(/SaneMaster\.rb\s+clean_system/) && !steps[:system_clean]
       steps[:system_clean] = true
       gate[:step_timestamps][:system_clean] = Time.now.iso8601

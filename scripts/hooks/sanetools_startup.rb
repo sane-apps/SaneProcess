@@ -26,8 +26,6 @@ module SaneToolsStartup
   # Bash commands that are part of startup itself
   STARTUP_BASH_PATTERNS = [
     /validation_report\.rb/,
-    /curl\s+.*localhost:37777/,          # Sane-Mem health check
-    /curl\s+.*127\.0\.0\.1:37777/,
     /SaneMaster\.rb\s+clean_system/,
     /pgrep|pkill|ps\s+/,                # Orphan cleanup
     /kill\s+/,                           # Orphan cleanup
@@ -99,7 +97,6 @@ module SaneToolsStartup
       when :session_docs    then 'Read session docs (SESSION_HANDOFF.md, DEVELOPMENT.md)'
       when :skills_registry then 'Read ~/.claude/SKILLS_REGISTRY.md'
       when :validation_report then 'Run: ruby scripts/validation_report.rb'
-      when :sanemem_check   then 'Check Sane-Mem: curl localhost:37777/api/health'
       when :orphan_cleanup  then 'Kill orphaned Claude processes'
       when :system_clean    then 'Run: ./scripts/SaneMaster.rb clean_system'
       else step.to_s.tr('_', ' ')

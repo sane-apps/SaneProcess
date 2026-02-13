@@ -232,11 +232,11 @@ module QaDriftChecks
     # Patterns that should NOT appear in current codebase
     # Each entry: [pattern, description, file_glob]
     stale_patterns = [
-      ['mcp__memory__read_graph', 'Removed memory MCP reference', 'hooks/**/*.rb'],
-      ['mcp__memory__', 'Removed memory MCP reference', 'hooks/**/*.rb'],
       ['research.*5.*categor', 'Research is 4 categories (not 5) since memory removal', 'hooks/**/*.rb'],
       ['tracked_count == 5', 'Research tracks 4 categories (not 5)', 'hooks/**/*.rb'],
-      ['sane.mem.*research', 'sane-mem is not a research category', 'hooks/**/*.rb']
+      ['localhost:37777', 'claude-mem/Sane-Mem removed Feb 2026', 'hooks/**/*.rb'],
+      ['sane.mem', 'claude-mem/Sane-Mem removed Feb 2026', 'hooks/**/*.rb'],
+      ['claude.mem', 'claude-mem plugin removed Feb 2026', 'hooks/**/*.rb']
     ]
 
     found = []

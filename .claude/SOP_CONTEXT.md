@@ -23,12 +23,7 @@ You are working on **SaneProcess** - the SOP enforcement framework itself.
 
 ## Memory
 
-**Memory MCP** - Curated knowledge graph
-- Run `mcp__memory__read_graph` at session start
-- Cross-project context, bug patterns
-- On "session end": save learnings via `mcp__memory__add_observations`
-
-**claude-mem** - ⚠️ DISABLED (2026-01-11)
-- Reason: Orphaned process bug causing session freezes
-- Issue: https://github.com/thedotmack/claude-mem/issues/685
-- Re-enable when fixed: set `claude-mem@thedotmack: true` in settings.json
+**Memory MCP** - Curated knowledge graph (knowledge-graph.jsonl) + session learnings (session_learnings.jsonl)
+- Run `mcp__memory__read_graph` at session start for cross-project context
+- Session learnings auto-captured via sanestop.rb hook
+- Use Serena memories for project-specific patterns

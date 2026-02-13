@@ -187,7 +187,6 @@ Startup steps tracked:
 - `session_docs` (read required docs)
 - `skills_registry` (read `~/.claude/SKILLS_REGISTRY.md`)
 - `validation_report` (run `scripts/validation_report.rb`)
-- `sanemem_check` (curl Sane-Mem health)
 - `orphan_cleanup` (kill orphaned Claude processes)
 - `system_clean` (run `./scripts/SaneMaster.rb clean_system`)
 
@@ -275,7 +274,6 @@ flowchart TD
       "session_docs": false,
       "skills_registry": false,
       "validation_report": false,
-      "sanemem_check": false,
       "orphan_cleanup": false,
       "system_clean": false
     },

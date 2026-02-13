@@ -181,8 +181,7 @@ saneloop-archive/
   "enabledPlugins": {
     "swift-lsp@claude-plugins-official": true,
     "code-review@claude-plugins-official": true,
-    "security-guidance@claude-plugins-official": true,
-    "claude-mem@thedotmack": true
+    "security-guidance@claude-plugins-official": true
   }
 }
 ```
@@ -264,13 +263,6 @@ ProjectName/
 - **[ModelName]**: [Description]
 
 ## MCP Optimization
-
-### claude-mem 3-Layer Workflow
-```
-1. search(query, project: "ProjectName") → Index with IDs
-2. timeline(anchor=ID) → Context around results
-3. get_observations([IDs]) → Fetch ONLY filtered IDs
-```
 
 ### apple-docs
 - Use for Apple API verification before coding

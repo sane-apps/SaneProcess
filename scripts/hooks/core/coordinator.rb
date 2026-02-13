@@ -42,7 +42,7 @@ class Coordinator
   RESEARCH_TOOLS = %w[
     Read Glob Grep WebSearch WebFetch Task
     mcp__apple-docs__ mcp__context7__ mcp__github__
-    mcp__plugin_claude-mem_mcp-search__
+    mcp__memory__
   ].freeze
 
   attr_reader :input, :hook_type, :tool_name, :tool_input, :context

@@ -15,6 +15,7 @@
 #   context = build_manifest_briefing(project_dir)
 # ==============================================================================
 
+require 'json'
 require 'yaml'
 
 SANEPROCESS_PATH = File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.saneprocess')
@@ -82,6 +83,18 @@ def build_manifest_briefing(project_dir = nil)
   lines << '  Improve hooks in SaneProcess, all projects get the update.'
 
   lines.join("\n")
+end
+
+# Load recent session learnings for briefing context.
+# Returns array of parsed learning hashes, newest last.
+def load_recent_learnings(count = 5)
+  learnings_file = File.expand_path('~/.claude/session_learnings.jsonl')
+  return [] unless File.exist?(learnings_file)
+
+  lines = File.readlines(learnings_file).last(count)
+  lines.map { |l| JSON.parse(l) rescue nil }.compact
+rescue StandardError
+  []
 end
 
 # Validate manifest completeness — used by compliance checker

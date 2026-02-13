@@ -24,7 +24,11 @@ module SaneMasterModules
 
     SANEPROCESS_DIR = File.expand_path('~/SaneApps/infra/SaneProcess')
     GLOBAL_SETTINGS = File.expand_path('~/.claude/settings.json')
-    PLUGIN_CACHE = File.expand_path('~/.claude/plugins/cache/thedotmack/claude-mem')
+    CLAUDE_MEM_REMNANTS = [
+      File.expand_path('~/.claude/plugins/cache/thedotmack'),
+      File.expand_path('~/.claude/plugins/marketplaces/thedotmack'),
+      File.expand_path('~/.claude-mem')
+    ].freeze
 
     Result = Struct.new(:pass, :label, :detail, :fix, keyword_init: true)
 
@@ -342,36 +346,17 @@ module SaneMasterModules
       end
 
       def check_plugin_cache
-        unless File.directory?(PLUGIN_CACHE)
-          @results[:config] << Result.new(
-            pass: false, label: 'Plugin cache',
-            detail: 'claude-mem directory missing',
-            fix: "mkdir -p #{PLUGIN_CACHE}"
-          )
-          return
-        end
+        # Verify claude-mem remnants are fully removed (killed Feb 2026)
+        found = CLAUDE_MEM_REMNANTS.select { |path| File.exist?(path) }
 
-        # Find any symlink version dir inside
-        symlinks = Dir.glob(File.join(PLUGIN_CACHE, '*')).select { |f| File.symlink?(f) }
-        if symlinks.empty?
-          @results[:config] << Result.new(
-            pass: false, label: 'Plugin cache',
-            detail: 'claude-mem symlink missing',
-            fix: "ln -s ~/Dev/claude-mem-local/plugin #{PLUGIN_CACHE}/<version>"
-          )
-          return
-        end
-
-        # Check symlink target is valid
-        broken = symlinks.reject { |s| File.exist?(s) }
-        if broken.any?
-          @results[:config] << Result.new(
-            pass: false, label: 'Plugin cache',
-            detail: 'claude-mem symlink broken',
-            fix: "Fix symlink target: #{broken.first} -> #{File.readlink(broken.first)}"
-          )
+        if found.empty?
+          @results[:config] << Result.new(pass: true, label: 'No claude-mem remnants')
         else
-          @results[:config] << Result.new(pass: true, label: 'Plugin cache', detail: 'claude-mem linked')
+          @results[:config] << Result.new(
+            pass: false, label: 'No claude-mem remnants',
+            detail: "found: #{found.map { |f| File.basename(f) }.join(', ')}",
+            fix: "trash #{found.join(' ')}"
+          )
         end
       end
 

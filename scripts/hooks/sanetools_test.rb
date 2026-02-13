@@ -30,7 +30,7 @@ module SaneToolsTest
       g[:opened_at] = Time.now.iso8601
       g[:steps] = {
         session_docs: true, skills_registry: true, validation_report: true,
-        sanemem_check: true, orphan_cleanup: true, system_clean: true
+        orphan_cleanup: true, system_clean: true
       }
       g
     end
@@ -369,7 +369,6 @@ module SaneToolsTest
         session_docs: true,
         skills_registry: true,
         validation_report: false,  # One pending step
-        sanemem_check: true,
         orphan_cleanup: true,
         system_clean: true
       }
@@ -439,7 +438,7 @@ module SaneToolsTest
       g[:opened_at] = Time.now.iso8601
       g[:steps] = {
         session_docs: true, skills_registry: true, validation_report: true,
-        sanemem_check: true, orphan_cleanup: true, system_clean: true
+        orphan_cleanup: true, system_clean: true
       }
       g
     end
@@ -467,7 +466,7 @@ module SaneToolsTest
       g[:opened_at] = Time.now.iso8601
       g[:steps] = {
         session_docs: true, skills_registry: true, validation_report: true,
-        sanemem_check: true, orphan_cleanup: true, system_clean: true
+        orphan_cleanup: true, system_clean: true
       }
       g
     end
@@ -489,7 +488,7 @@ module SaneToolsTest
     StateManager.update(:requirements) { |r| r[:is_big_task] = false; r[:is_research_only] = false; r[:requested] = []; r[:satisfied] = []; r }
     StateManager.update(:startup_gate) do |g|
       g[:open] = true; g[:opened_at] = Time.now.iso8601
-      g[:steps] = { session_docs: true, skills_registry: true, validation_report: true, sanemem_check: true, orphan_cleanup: true, system_clean: true }
+      g[:steps] = { session_docs: true, skills_registry: true, validation_report: true, orphan_cleanup: true, system_clean: true }
       g
     end
     research_categories.keys.each do |cat|

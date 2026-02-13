@@ -165,7 +165,7 @@ MEMORY_STAGING_FILE = File.join(CLAUDE_DIR, 'memory_staging.json')
 def check_pending_mcp_actions
   pending = []
 
-  # Check memory staging (now uses Sane-Mem at localhost:37777)
+  # Check memory staging (uses official @modelcontextprotocol/server-memory)
   if File.exist?(MEMORY_STAGING_FILE)
     begin
       staging = JSON.parse(File.read(MEMORY_STAGING_FILE))
@@ -173,7 +173,7 @@ def check_pending_mcp_actions
         pending << {
           type: 'memory_staging',
           message: "Memory staging needs saving: #{staging['suggested_entity']&.dig('name') || 'learnings'}",
-          action: 'Save to Sane-Mem: curl -X POST localhost:37777/observations -d \'...\' then delete memory_staging.json'
+          action: 'Save via Memory MCP add_observations tool, then delete memory_staging.json'
         }
       end
     rescue StandardError
@@ -547,100 +547,6 @@ rescue StandardError => e
   log_debug("Subagent cleanup error: #{e.class}: #{e.message}")
 end
 
-# === MEMORY HEALTH CHECK ===
-# Catches silent memory failures: Gemini 429s, queue backlog, worker down
-# Added after Jan 28-Feb 1 2026 incident where observations stopped silently
-CLAUDE_MEM_PORT = 37777
-CLAUDE_MEM_DB = File.expand_path('~/.claude-mem/claude-mem.db')
-CLAUDE_MEM_LOGS_DIR = File.expand_path('~/.claude-mem/logs')
-
-def check_memory_health
-  issues = []
-
-  # 1. Worker responding? (2s timeout to avoid blocking hook)
-  begin
-    require 'net/http'
-    uri = URI("http://127.0.0.1:#{CLAUDE_MEM_PORT}/api/health")
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.open_timeout = 2
-    http.read_timeout = 2
-    response = http.request(Net::HTTP::Get.new(uri))
-    unless response.code == '200'
-      issues << "Worker not healthy (HTTP #{response.code})"
-    end
-  rescue StandardError => e
-    issues << "Worker unreachable on port #{CLAUDE_MEM_PORT}: #{e.message}"
-  end
-
-  # 2. Recent observations being saved? (any in last 48h)
-  if File.exist?(CLAUDE_MEM_DB)
-    begin
-      count = `sqlite3 "#{CLAUDE_MEM_DB}" "SELECT count(*) FROM observations WHERE created_at >= datetime('now', '-48 hours');" 2>/dev/null`.strip.to_i
-      if count.zero?
-        issues << "No observations saved in last 48h (memory capture broken)"
-      end
-    rescue StandardError => e
-      issues << "Cannot query observations DB: #{e.message}"
-    end
-  else
-    issues << "Observations database not found at #{CLAUDE_MEM_DB}"
-  end
-
-  # 3. Gemini 429 errors in recent logs? (crash-loop indicator)
-  today = Time.now.strftime('%Y-%m-%d')
-  yesterday = (Time.now - 86400).strftime('%Y-%m-%d')
-  [today, yesterday].each do |day|
-    log_file = File.join(CLAUDE_MEM_LOGS_DIR, "claude-mem-#{day}.log")
-    next unless File.exist?(log_file)
-
-    # Check last 500 lines for 429 errors (don't read whole 44MB file)
-    recent_lines = `tail -500 "#{log_file}" 2>/dev/null`
-    error_count = recent_lines.scan(/429|RESOURCE_EXHAUSTED/).length
-    if error_count > 10
-      issues << "Gemini rate-limited: #{error_count} 429 errors in recent #{day} log (queue likely backed up)"
-    end
-
-    # Check for crash-recovery loops
-    crash_count = recent_lines.scan(/crash-recovery/).length
-    if crash_count > 5
-      issues << "Worker crash-looping: #{crash_count} crash-recovery attempts in #{day} log"
-    end
-  end
-
-  # 4. Check for invalid model config
-  settings_file = File.expand_path('~/.claude-mem/settings.json')
-  if File.exist?(settings_file)
-    begin
-      settings = JSON.parse(File.read(settings_file))
-      model = settings['CLAUDE_MEM_GEMINI_MODEL'] || ''
-      if model.include?('preview')
-        issues << "Gemini model '#{model}' may be invalid (preview models expire)"
-      end
-      if settings['CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED'] == 'false'
-        issues << "Rate limiting disabled — will hammer API on 429s"
-      end
-    rescue StandardError
-      # Non-critical
-    end
-  end
-
-  # Report
-  if issues.any?
-    warn ''
-    warn '🧠 MEMORY HEALTH: ISSUES DETECTED'
-    issues.each { |i| warn "   🔴 #{i}" }
-    warn ''
-    warn '   Memory capture may be broken. Fix before doing significant work.'
-    warn ''
-  else
-    log_debug "Memory health: OK"
-  end
-
-  issues
-rescue StandardError => e
-  log_debug "Memory health check error: #{e.message}"
-  []
-end
 
 # === SALES INFRASTRUCTURE CHECK ===
 # Read link monitor state and alert if checkout links are broken
@@ -723,7 +629,6 @@ def initialize_startup_gate
     session_docs: false,
     skills_registry: false,
     validation_report: false,
-    sanemem_check: false,
     orphan_cleanup: true,  # Already ran in session_start
     system_clean: false
   }
@@ -743,12 +648,6 @@ def initialize_startup_gate
   unless File.exist?(SANEMASTER_SCRIPT)
     steps[:system_clean] = true
     timestamps[:system_clean] = Time.now.iso8601
-  end
-
-  # Auto-complete sanemem_check if Sane-Mem is not installed
-  unless File.exist?(CLAUDE_MEM_DB) || File.exist?(File.expand_path('~/.claude-mem'))
-    steps[:sanemem_check] = true
-    timestamps[:sanemem_check] = Time.now.iso8601
   end
 
   # If session_docs has no required docs, auto-complete that step
@@ -788,7 +687,6 @@ def initialize_startup_gate
       when :session_docs    then warn '   [ ] Read session docs (SESSION_HANDOFF.md, DEVELOPMENT.md)'
       when :skills_registry then warn '   [ ] Read ~/.claude/SKILLS_REGISTRY.md'
       when :validation_report then warn '   [ ] Run: ruby scripts/validation_report.rb'
-      when :sanemem_check   then warn '   [ ] Check Sane-Mem: curl localhost:37777/api/health'
       when :system_clean    then warn '   [ ] Run: ./scripts/SaneMaster.rb clean_system'
       end
     end
@@ -838,6 +736,16 @@ def build_session_context
     context_parts << "Verify by calling: apple-docs search, context7 resolve, github search"
   end
 
+  # Recent session learnings (replaces old Sane-Mem health briefing)
+  learnings = load_recent_learnings(5)
+  if learnings.any?
+    context_parts << ""
+    context_parts << "Recent session learnings:"
+    learnings.each do |l|
+      context_parts << "  - [#{l['date']}] #{l['project']}: #{l['summary']}"
+    end
+  end
+
   # Manifest compliance warnings
   manifest_path = File.join(PROJECT_DIR, '.saneprocess')
   if File.exist?(manifest_path)
@@ -882,11 +790,7 @@ begin
   log_debug "check_pending_mcp_actions done"
   show_mcp_verification_status # Show MCP status and prompt
   log_debug "show_mcp_verification_status done"
-  # Only check memory health if Sane-Mem is installed
-  if File.exist?(CLAUDE_MEM_DB) || File.exist?(File.expand_path('~/.claude-mem'))
-    check_memory_health
-  end
-  log_debug "check_memory_health done"
+  log_debug "session learnings briefing loaded (replaces claude-mem)"
 
   # Check sales infrastructure health (link monitor state)
   check_sales_infrastructure

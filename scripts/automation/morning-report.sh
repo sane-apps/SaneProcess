@@ -632,49 +632,10 @@ section_api_health() {
     echo "**GitHub API:** ⚠️ gh CLI not installed" >> "$REPORT_FILE"
   fi
 
-  # Sane-Mem (claude-mem) health — local memory system
-  local mem_db="$HOME/.claude-mem/claude-mem.db"
-  local mem_health
-  mem_health=$(curl -s --max-time 3 "http://127.0.0.1:37777/health" 2>/dev/null || echo "")
-  local mem_status="down"
-  if [[ -n "$mem_health" ]]; then
-    mem_status=$(echo "$mem_health" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('status','unknown'))" 2>/dev/null || echo "unknown")
-  fi
-
-  # Check queue depth and recent observations via SQLite (more reliable than API)
-  local queue_depth="?"
-  local obs_24h="?"
-  if command -v sqlite3 &>/dev/null && [[ -f "$mem_db" ]]; then
-    queue_depth=$(sqlite3 "$mem_db" "SELECT COUNT(*) FROM pending_messages" 2>/dev/null || echo "?")
-    obs_24h=$(sqlite3 "$mem_db" "SELECT COUNT(*) FROM observations WHERE created_at > datetime('now', '-24 hours')" 2>/dev/null || echo "?")
-  fi
-
-  if [[ "$mem_status" == "ok" || "$mem_status" == "healthy" ]]; then
-    if [[ "$queue_depth" != "?" ]] && [[ "$queue_depth" -gt 50 ]] 2>/dev/null; then
-      echo "**Sane-Mem:** ⚠️ Running but queue backed up ($queue_depth pending, $obs_24h obs/24h)" >> "$REPORT_FILE"
-      api_status="${api_status}Sane-Mem: QUEUE_BACKUP ($queue_depth)\n"
-    elif [[ "$obs_24h" != "?" ]] && [[ "$obs_24h" -eq 0 ]] 2>/dev/null; then
-      echo "**Sane-Mem:** ⚠️ Running but 0 observations in 24h (queue: $queue_depth)" >> "$REPORT_FILE"
-      api_status="${api_status}Sane-Mem: NO_OBS\n"
-    elif [[ "$queue_depth" == "?" ]] || [[ "$obs_24h" == "?" ]]; then
-      echo "**Sane-Mem:** ⚠️ Running but DB unreadable (queue: $queue_depth, obs/24h: $obs_24h)" >> "$REPORT_FILE"
-      api_status="${api_status}Sane-Mem: DB_ERROR\n"
-    else
-      echo "**Sane-Mem:** ✅ Healthy (queue: $queue_depth, obs/24h: $obs_24h)" >> "$REPORT_FILE"
-      api_status="${api_status}Sane-Mem: OK\n"
-    fi
-  else
-    echo "**Sane-Mem:** 🔴 Not responding (worker may be stopped)" >> "$REPORT_FILE"
-    if [[ "$queue_depth" != "?" ]]; then
-      echo "  Queue depth: $queue_depth pending | Last 24h observations: $obs_24h" >> "$REPORT_FILE"
-    fi
-    api_status="${api_status}Sane-Mem: DOWN\n"
-  fi
-
   echo "" >> "$REPORT_FILE"
 
   # Alert on any API failures or memory issues
-  if echo "$api_status" | grep -q "DOWN\|QUEUE_BACKUP\|NO_OBS\|DB_ERROR"; then
+  if echo "$api_status" | grep -q "DOWN"; then
     echo "**🚨 ACTION REQUIRED: One or more critical APIs are down!**" >> "$REPORT_FILE"
     echo "" >> "$REPORT_FILE"
     # macOS notification for critical issue

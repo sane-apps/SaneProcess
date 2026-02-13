@@ -168,7 +168,6 @@ def open_startup_gate
       session_docs: true,
       skills_registry: true,
       validation_report: true,
-      sanemem_check: true,
       orphan_cleanup: true,
       system_clean: true
     }

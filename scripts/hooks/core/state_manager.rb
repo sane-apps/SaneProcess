@@ -176,7 +176,6 @@ module StateManager
         session_docs: false,
         skills_registry: false,
         validation_report: false,
-        sanemem_check: false,
         orphan_cleanup: false,
         system_clean: false
       },

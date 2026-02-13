@@ -3,8 +3,9 @@
 # ==============================================================================
 # Memory Module (DEPRECATED - Jan 2026)
 # ==============================================================================
-# Memory MCP has been removed. Memory learnings are now auto-captured by
-# Sane-Mem (localhost:37777).
+# Old Memory MCP CLI commands have been removed. Memory is now handled by:
+#   - Official Memory MCP (@modelcontextprotocol/server-memory) for durable facts
+#   - session_learnings.jsonl for automated session capture
 #
 # This stub module exists to prevent errors from `include SaneMasterModules::Memory`
 # in SaneMaster.rb. All methods show deprecation notices.
@@ -15,12 +16,13 @@ module SaneMasterModules
     DEPRECATION_NOTICE = <<~MSG
 
       ================================================================
-      DEPRECATED: Memory MCP removed (Jan 2026)
+      DEPRECATED: Memory CLI commands removed (Jan 2026)
 
-      Memory learnings are now auto-captured by Sane-Mem (localhost:37777).
+      Memory is now handled by:
+        - Official Memory MCP for durable facts (knowledge-graph.jsonl)
+        - session_learnings.jsonl for automated session capture
+
       These CLI commands no longer function.
-
-      For memory management, use Sane-Mem directly or via hooks.
       ================================================================
 
     MSG

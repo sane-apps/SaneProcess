@@ -122,7 +122,7 @@ DistributedNotificationCenter.default().addObserver(
 
 If you can't find research:
 
-1. **Check memory MCP:** `mcp__plugin_claude-mem_mcp-search__search`
+1. **Check Serena memories:** Use `read_memory` or Official Memory MCP
 2. **Grep all projects:** `grep -r "topic" ~/SaneApps/`
 3. **Check session handoffs:** Each app has `SESSION_HANDOFF.md`
 4. **Ask Claude:** "What research exists for [topic]?"
