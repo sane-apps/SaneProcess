@@ -84,6 +84,9 @@ emit('VERSION_BUMP_CMD', fetch_config(config, 'release', 'version_bump_cmd'))
 emit('VERSION_BUMP_RESTORE_CMD', fetch_config(config, 'release', 'version_bump_restore_cmd'))
 emit('VERSION_BUMP_FILES', fetch_config(config, 'release', 'version_bump_files'))
 
+# Homebrew settings
+emit('HOMEBREW_TAP_REPO', fetch_config(config, 'homebrew', 'tap_repo'))
+
 # App Store Connect settings
 appstore = fetch_config(config, 'appstore')
 if appstore

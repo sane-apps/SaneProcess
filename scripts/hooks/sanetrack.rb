@@ -33,7 +33,6 @@ FAILURE_TOOLS = %w[Bash Edit Write].freeze  # Tools that can fail and trigger ci
 
 # === MCP VERIFICATION TOOLS ===
 # Map MCP names to their read-only verification tools
-# NOTE: Memory MCP removed Jan 2026 - using Sane-Mem (localhost:37777) instead
 MCP_VERIFICATION_PATTERNS = {
   apple_docs: /^mcp__apple-docs__/,
   context7: /^mcp__context7__/,
@@ -42,7 +41,6 @@ MCP_VERIFICATION_PATTERNS = {
 
 # === RESEARCH TRACKING ===
 # Patterns to detect which research category a Task agent is completing
-# NOTE: Memory category removed - past learnings auto-captured by Sane-Mem
 RESEARCH_PATTERNS = {
   docs: /context7|apple-docs|documentation|mcp__context7|mcp__apple-docs/i,
   web: /web.*search|websearch|mcp__.*web/i,
@@ -78,6 +76,13 @@ TAUTOLOGY_PATTERNS = [
   /XCTAssert\s*\(\s*\)/
 ].freeze
 
+# === MOCK-PASSTHROUGH DETECTION ===
+# Detects tests that only verify mock return values (testing the mock, not real code).
+# Pattern: mock sets up Handler to return X, then test asserts X came back.
+# These tests always pass regardless of real implementation correctness.
+MOCK_HANDLER_PATTERN = /Handler\s*[=:]\s*\{/i.freeze
+MOCK_VARIABLE_PATTERN = /\b(mock\w*|stub\w*|fake\w*|spy\w*)\b/i.freeze
+
 # === TEST FILE PATTERN ===
 TEST_FILE_PATTERN = %r{(Tests?/|Specs?/|_test\.|_spec\.|Tests?\.swift|Spec\.swift)}i.freeze
 
@@ -111,14 +116,54 @@ def check_tautologies(tool_name, tool_input)
   new_string = tool_input['new_string'] || tool_input[:new_string] || ''
   return nil if new_string.empty?
 
-  matches = TAUTOLOGY_PATTERNS.select { |pattern| new_string.match?(pattern) }
-  return nil if matches.empty?
+  warnings = []
 
-  # Build warning message
-  "RULE #7 WARNING: Test contains tautology (always passes)\n" \
+  # Check syntactic tautology patterns
+  matches = TAUTOLOGY_PATTERNS.select { |pattern| new_string.match?(pattern) }
+  unless matches.empty?
+    warnings << "#{matches.length} syntactic tautology pattern(s) (always-true assertions)"
+  end
+
+  # Check mock-passthrough: tests that only verify mock return values
+  mock_warning = check_mock_passthrough(new_string)
+  warnings << mock_warning if mock_warning
+
+  return nil if warnings.empty?
+
+  "RULE #7 WARNING: Test quality issue detected\n" \
   "   File: #{File.basename(file_path)}\n" \
-  "   Found: #{matches.length} suspicious pattern(s)\n" \
-  "   Fix: Replace with meaningful assertions that test actual behavior"
+  "   #{warnings.join("\n   ")}\n" \
+  "   Fix: Tests must assert real behavior via real code paths, not mock return values"
+end
+
+# Detects mock-passthrough tests: mock handler set up, then assertions only verify
+# the mock returned what it was told to. These tests always pass regardless of
+# whether the real code works.
+def check_mock_passthrough(code)
+  handler_count = code.scan(MOCK_HANDLER_PATTERN).length
+  return nil if handler_count.zero?
+
+  # Count real assertions (not tautologies)
+  assertion_count = code.scan(/#expect\s*\(|XCTAssert/).length
+  return nil if assertion_count.zero?
+
+  # If code has mock handlers but no call to a real (non-mock) service/method,
+  # it's likely testing the mock, not real code.
+  has_mock_vars = code.match?(MOCK_VARIABLE_PATTERN)
+  lines = code.lines
+
+  # Check if any assertion references real code (not just mock variables)
+  assertion_lines = lines.select { |l| l.match?(/#expect|XCTAssert/) }
+  mock_only_assertions = assertion_lines.all? do |line|
+    # Assertion only references mock variables, handler results, or literal values
+    line.match?(/mock\w*\.|stub\w*\.|fake\w*\.|\.count\s*==\s*\d|\.isEmpty|\.first\??\s*==|== \[/)
+  end
+
+  if has_mock_vars && mock_only_assertions
+    "Mock-passthrough: #{handler_count} handler(s) set up, all #{assertion_count} assertion(s) only verify mock return values"
+  elsif has_mock_vars && handler_count >= assertion_count
+    "Suspicious: #{handler_count} mock handler(s) vs #{assertion_count} assertion(s) — likely testing mock, not real code"
+  end
 end
 
 # === ERROR PATTERNS ===

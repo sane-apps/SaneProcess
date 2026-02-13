@@ -140,7 +140,34 @@ module SaneMasterModules
         end
       end
 
-      # 7. Release timing
+      # 7. License API reachable
+      print '  License API (LemonSqueezy)... '
+      ls_status, = Open3.capture2('curl', '-sI', '-o', '/dev/null', '-w', '%{http_code}',
+                                  'https://api.lemonsqueezy.com/v1/licenses/validate')
+      ls_status = ls_status.strip
+      if ls_status == '000'
+        puts '⚠️  unreachable'
+        warnings << 'LemonSqueezy license API unreachable — new activations will fail'
+      elsif ls_status.to_i >= 500
+        puts "⚠️  server error (#{ls_status})"
+        warnings << "LemonSqueezy API returned #{ls_status}"
+      else
+        puts "✅ (#{ls_status})"
+      end
+
+      # 8. Homebrew tap reachable
+      print '  Homebrew tap... '
+      tap_status, = Open3.capture2('curl', '-sI', '-o', '/dev/null', '-w', '%{http_code}',
+                                   'https://raw.githubusercontent.com/sane-apps/homebrew-tap/main/Casks/sanebar.rb')
+      tap_status = tap_status.strip
+      if tap_status == '200'
+        puts '✅'
+      else
+        puts "⚠️  returned #{tap_status}"
+        warnings << "Homebrew tap cask not reachable (#{tap_status})"
+      end
+
+      # 9. Release timing
       print '  Release timing... '
       hour = Time.now.hour
       if hour >= 17 || hour < 6

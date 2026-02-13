@@ -42,3 +42,8 @@ done
 
 echo ""
 echo "Deployed $DEPLOYED scripts."
+
+# Sync global Claude config (skills, commands, templates, CLAUDE.md)
+echo ""
+echo "Syncing global Claude config..."
+bash "$SCRIPT_DIR/sync-claude-config.sh"

@@ -72,10 +72,13 @@ class SaneTest
     @config = APPS[app_name]
     @force_local = args.include?('--local')
     @no_logs = args.include?('--no-logs')
+    @free_mode = args.include?('--free-mode')
+    @pro_mode = args.include?('--pro-mode')
     @app_dir = File.join(SANE_APPS_ROOT, app_name)
 
     abort "❌ Unknown app: #{app_name}. Known: #{APPS.keys.join(', ')}" unless @config
     abort "❌ App directory not found: #{@app_dir}" unless File.directory?(@app_dir)
+    abort '❌ Cannot use --free-mode and --pro-mode together' if @free_mode && @pro_mode
   end
 
   def run
@@ -123,7 +126,8 @@ class SaneTest
     step('3. Reset TCC permissions (mini)') { reset_tcc_remote }
     step('4. Build fresh debug build') { build_debug }
     step('5. Deploy to mini') { deploy_to_mini }
-    step('6. Launch on mini') { launch_remote }
+    step('6. Set license mode (mini)') { set_license_mode_remote } if @free_mode || @pro_mode
+    step("#{@free_mode || @pro_mode ? '7' : '6'}. Launch on mini") { launch_remote }
     stream_logs_remote unless @no_logs
   end
 
@@ -199,7 +203,8 @@ class SaneTest
     step('2. Clean stale app copies') { clean_local }
     step('3. Reset TCC permissions') { reset_tcc_local }
     step('4. Build fresh debug build') { build_debug }
-    step('5. Launch locally') { launch_local }
+    step('5. Set license mode') { set_license_mode_local } if @free_mode || @pro_mode
+    step("#{@free_mode || @pro_mode ? '6' : '5'}. Launch locally") { launch_local }
     stream_logs_local unless @no_logs
   end
 
@@ -246,6 +251,76 @@ class SaneTest
     puts '─' * 60
     Kernel.exec('log', 'stream', '--predicate',
                 "subsystem BEGINSWITH \"#{@config[:log_subsystem]}\"", '--info', '--debug', '--style', 'compact')
+  end
+
+  # ── License Mode ─────────────────────────────────────────────
+
+  LICENSE_KEYCHAIN_KEYS = %w[
+    com.sanebar.license.key
+    com.sanebar.license.instanceId
+  ].freeze
+
+  TEST_LICENSE_KEY = 'SANEBAR-TEST-KEY-FOR-AUTOMATED-TESTING'
+
+  def set_license_mode_local
+    if @free_mode
+      warn '   Clearing license data (free mode)...'
+      LICENSE_KEYCHAIN_KEYS.each do |key|
+        system('security', 'delete-generic-password', '-s', key, err: File::NULL)
+      end
+      # Clear cached validation and grandfathered flag from settings
+      clear_license_settings_local
+      warn '   License cleared — app will launch as Free user'
+    elsif @pro_mode
+      warn '   Injecting test license key (pro mode)...'
+      system('security', 'add-generic-password', '-s', LICENSE_KEYCHAIN_KEYS[0],
+             '-a', 'license', '-w', TEST_LICENSE_KEY, '-U')
+      warn "   Test key injected — app will attempt validation with #{TEST_LICENSE_KEY}"
+    end
+  end
+
+  def set_license_mode_remote
+    if @free_mode
+      warn '   Clearing license data on mini (free mode)...'
+      LICENSE_KEYCHAIN_KEYS.each do |key|
+        ssh("security delete-generic-password -s #{key} 2>/dev/null; true")
+      end
+      clear_license_settings_remote
+      warn '   License cleared on mini — app will launch as Free user'
+    elsif @pro_mode
+      warn '   Injecting test license key on mini (pro mode)...'
+      ssh("security add-generic-password -s #{LICENSE_KEYCHAIN_KEYS[0]} -a license -w #{TEST_LICENSE_KEY} -U 2>/dev/null; true")
+      warn "   Test key injected on mini — app will attempt validation"
+    end
+  end
+
+  def clear_license_settings_local
+    app_support = File.expand_path("~/Library/Application Support/SaneBar")
+    settings_path = File.join(app_support, 'settings.json')
+    return unless File.exist?(settings_path)
+
+    require 'json'
+    settings = JSON.parse(File.read(settings_path))
+    settings.delete('isGrandfathered')
+    settings.delete('cachedLicenseValidation')
+    File.write(settings_path, JSON.pretty_generate(settings))
+  rescue StandardError => e
+    warn "   ⚠️  Could not clear license settings: #{e.message}"
+  end
+
+  def clear_license_settings_remote
+    ssh(<<~SH)
+      SETTINGS="$HOME/Library/Application Support/SaneBar/settings.json"
+      if [ -f "$SETTINGS" ]; then
+        python3 -c "
+import json, sys
+with open('$SETTINGS') as f: s = json.load(f)
+s.pop('isGrandfathered', None)
+s.pop('cachedLicenseValidation', None)
+with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
+" 2>/dev/null || true
+      fi
+    SH
   end
 
   # ── Shared ──────────────────────────────────────────────────
@@ -296,13 +371,15 @@ end
 # ── Main ──────────────────────────────────────────────────────
 
 if ARGV.empty? || ARGV[0] == '--help'
-  warn 'Usage: ruby scripts/sane_test.rb <AppName> [--local] [--no-logs]'
+  warn 'Usage: ruby scripts/sane_test.rb <AppName> [options]'
   warn ''
   warn "Available apps: #{APPS.keys.join(', ')}"
   warn ''
   warn 'Options:'
-  warn '  --local    Force local testing (skip mini even if reachable)'
-  warn '  --no-logs  Skip log streaming after launch'
+  warn '  --local      Force local testing (skip mini even if reachable)'
+  warn '  --no-logs    Skip log streaming after launch'
+  warn '  --free-mode  Clear license data — launch as Free user'
+  warn '  --pro-mode   Inject test license key — launch in Pro validation mode'
   warn ''
   warn 'Default: deploys to Mac mini if reachable, local otherwise.'
   exit 0

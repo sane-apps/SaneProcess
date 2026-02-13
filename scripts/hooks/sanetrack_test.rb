@@ -289,6 +289,43 @@ module SaneTrackTest
       warn "  FAIL: Real assertion should be allowed, got #{result.inspect}"
     end
 
+    # Test: Detects mock-passthrough (handler set up, assertion only checks mock)
+    result = check_tautologies_proc.call('Edit', {
+      'file_path' => '/path/Tests/BadTests.swift',
+      'new_string' => <<~SWIFT
+        @Test func testHidden() {
+            mockSearch.cachedHiddenAppsHandler = { return [app1, app2] }
+            let result = mockSearch.cachedHiddenApps()
+            #expect(result.count == 2)
+        }
+      SWIFT
+    })
+    if result&.include?('RULE #7 WARNING') && result&.match?(/[Mm]ock/)
+      passed += 1
+      warn '  PASS: Detects mock-passthrough test'
+    else
+      failed += 1
+      warn "  FAIL: Should detect mock-passthrough, got #{result.inspect}"
+    end
+
+    # Test: Allows tests that use real objects (not mock-passthrough)
+    result = check_tautologies_proc.call('Edit', {
+      'file_path' => '/path/Tests/GoodTests.swift',
+      'new_string' => <<~SWIFT
+        @Test func classifiesZone() {
+            let zone = service.classifyZone(itemX: 200, itemWidth: 22, separatorX: 500, alwaysHiddenSeparatorX: nil)
+            #expect(zone == .hidden)
+        }
+      SWIFT
+    })
+    if result.nil?
+      passed += 1
+      warn '  PASS: Allows real service call test'
+    else
+      failed += 1
+      warn "  FAIL: Real service test should be allowed, got #{result.inspect}"
+    end
+
     # === RESEARCH OUTPUT VALIDATION TESTS ===
     warn ''
     warn 'Testing research output validation:'

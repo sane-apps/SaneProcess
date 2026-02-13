@@ -547,6 +547,7 @@ USE_SPARKLE="${USE_SPARKLE:-true}"
 MIN_SYSTEM_VERSION="${MIN_SYSTEM_VERSION:-15.0}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-notarytool}"
 GITHUB_REPO="${GITHUB_REPO:-sane-apps/${APP_NAME}}"
+HOMEBREW_TAP_REPO="${HOMEBREW_TAP_REPO:-sane-apps/homebrew-tap}"
 XCODEGEN="${XCODEGEN:-false}"
 DMG_WINDOW_POS="${DMG_WINDOW_POS:-200 120}"
 DMG_WINDOW_SIZE="${DMG_WINDOW_SIZE:-800 400}"
@@ -678,6 +679,19 @@ if [ "${FULL_RELEASE}" = true ]; then
     if [ "${HOUR}" -ge 17 ] || [ "${HOUR}" -lt 6 ]; then
         log_warn "Evening/night release detected ($(date +%H:%M))."
         log_warn "Bugs won't be discovered until morning. Prefer morning releases."
+    fi
+
+    # Gate 5: License validation endpoint reachable
+    LICENSE_API="https://api.lemonsqueezy.com/v1/licenses/validate"
+    LICENSE_STATUS=$(curl -sI -o /dev/null -w '%{http_code}' "${LICENSE_API}" 2>/dev/null || echo "000")
+    if [ "${LICENSE_STATUS}" = "000" ]; then
+        log_warn "LemonSqueezy license API unreachable (network error)."
+        log_warn "Licensing features won't work for new activations until API is back."
+    elif [ "${LICENSE_STATUS}" -ge 400 ] && [ "${LICENSE_STATUS}" -lt 500 ]; then
+        # 4xx is expected for a bare POST with no body — means API is responding
+        log_info "License API reachable (${LICENSE_STATUS} — expected without payload)"
+    elif [ "${LICENSE_STATUS}" -ge 500 ]; then
+        log_warn "LemonSqueezy API returned ${LICENSE_STATUS} — may be experiencing issues."
     fi
 
     # README sync check — warn if features aren't documented
@@ -1222,7 +1236,51 @@ APPCASTEOF
         log_info "Appcast commit pushed."
     fi
 
-    # Step 7: Remind about email webhook product config
+    # Step 7: Update Homebrew cask (if tap repo configured)
+    CASK_FILE="Casks/${LOWER_APP_NAME}.rb"
+    HOMEBREW_TAP_DIR="/tmp/homebrew-tap-update-$$"
+    if [ -n "${HOMEBREW_TAP_REPO}" ]; then
+        log_info "Updating Homebrew cask in ${HOMEBREW_TAP_REPO}..."
+
+        # Clone the tap repo
+        if git clone --depth 1 "https://github.com/${HOMEBREW_TAP_REPO}.git" "${HOMEBREW_TAP_DIR}" 2>/dev/null; then
+            if [ -f "${HOMEBREW_TAP_DIR}/${CASK_FILE}" ]; then
+                # Update version and SHA256 in the cask formula
+                sed -i '' "s/version \"[^\"]*\"/version \"${VERSION}\"/" "${HOMEBREW_TAP_DIR}/${CASK_FILE}"
+                sed -i '' "s/sha256 \"[^\"]*\"/sha256 \"${SHA256}\"/" "${HOMEBREW_TAP_DIR}/${CASK_FILE}"
+
+                # Commit and push
+                cd "${HOMEBREW_TAP_DIR}"
+                git add "${CASK_FILE}"
+                if git diff --cached --quiet; then
+                    log_info "Homebrew cask already up to date."
+                else
+                    git commit -m "chore: update ${LOWER_APP_NAME} to ${VERSION}"
+                    git push
+                    log_info "Homebrew cask updated to v${VERSION} (SHA: ${SHA256:0:12}...)"
+                fi
+                cd "${PROJECT_ROOT}"
+            else
+                log_warn "No cask found at ${CASK_FILE} in ${HOMEBREW_TAP_REPO}. Skipping."
+            fi
+            rm -rf "${HOMEBREW_TAP_DIR}"
+        else
+            log_warn "Could not clone ${HOMEBREW_TAP_REPO}. Skipping Homebrew update."
+        fi
+    fi
+
+    # Step 8: Verify Homebrew cask is correct (post-push sanity check)
+    if [ -n "${HOMEBREW_TAP_REPO}" ]; then
+        CASK_RAW_URL="https://raw.githubusercontent.com/${HOMEBREW_TAP_REPO}/main/${CASK_FILE}"
+        CASK_CHECK=$(curl -s "${CASK_RAW_URL}" 2>/dev/null)
+        if echo "${CASK_CHECK}" | grep -q "version \"${VERSION}\""; then
+            log_info "Homebrew cask verified: v${VERSION} live at ${CASK_RAW_URL}"
+        else
+            log_warn "Homebrew cask may not have propagated. Check: ${CASK_RAW_URL}"
+        fi
+    fi
+
+    # Step 9: Remind about email webhook product config
     # The email webhook has hardcoded product→filename mappings for purchase download links.
     # File: infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js (PRODUCT_CONFIG)
     log_warn ""
@@ -1235,9 +1293,10 @@ APPCASTEOF
     log_info "═══════════════════════════════════════════"
     log_info "  RELEASE v${VERSION} DEPLOYED SUCCESSFULLY"
     log_info "═══════════════════════════════════════════"
-    log_info "  ZIP:     https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
-    log_info "  Appcast: https://${SITE_HOST}/appcast.xml"
-    log_info "  GitHub:  https://github.com/${GITHUB_REPO}/releases/tag/v${VERSION}"
+    log_info "  ZIP:      https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
+    log_info "  Appcast:  https://${SITE_HOST}/appcast.xml"
+    log_info "  Homebrew: brew install --cask sane-apps/tap/${LOWER_APP_NAME}"
+    log_info "  GitHub:   https://github.com/${GITHUB_REPO}/releases/tag/v${VERSION}"
     log_info "═══════════════════════════════════════════"
 else
     log_info ""
