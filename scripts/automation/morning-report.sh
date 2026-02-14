@@ -16,11 +16,11 @@ fi
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUTPUT_DIR="/Users/sj/SaneApps/infra/SaneProcess/outputs"
+OUTPUT_DIR="$HOME/SaneApps/infra/SaneProcess/outputs"
 REPORT_FILE="$OUTPUT_DIR/morning_report.md"
 CACHE_DIR="$OUTPUT_DIR/.cache"
 RAW_DIR="$OUTPUT_DIR/.raw"
-APPS_DIR="/Users/sj/SaneApps/apps"
+APPS_DIR="$HOME/SaneApps/apps"
 DATE_DISPLAY=$(date +"%Y-%m-%d %A")
 DATE=$(date +"%Y-%m-%d")
 YESTERDAY=$(date -v-1d +"%Y-%m-%dT%H:%M:%SZ")
@@ -54,14 +54,26 @@ trap 'rm -rf "$LOCKFILE"' EXIT
 RESEND_KEY=""
 CF_TOKEN=""
 LS_KEY=""
+# Try env vars first (set in ~/.config/nv/env for headless/LaunchAgent contexts)
+# Fall back to keychain for interactive sessions
+if [[ -n "${LEMONSQUEEZY_API_KEY:-}" ]]; then
+  LS_KEY="$LEMONSQUEEZY_API_KEY"
+fi
+if [[ -n "${RESEND_API_KEY:-}" ]]; then
+  RESEND_KEY="$RESEND_API_KEY"
+fi
+if [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+  CF_TOKEN="$CLOUDFLARE_API_TOKEN"
+fi
+# Fall back to keychain if env vars not set
 if command -v security &>/dev/null; then
-  RESEND_KEY=$(security find-generic-password -s resend -a api_key -w 2>/dev/null || echo "")
-  CF_TOKEN=$(security find-generic-password -s cloudflare -a api_token -w 2>/dev/null || echo "")
-  LS_KEY=$(security find-generic-password -s lemonsqueezy -a api_key -w 2>/dev/null || echo "")
+  [[ -z "$RESEND_KEY" ]] && RESEND_KEY=$(security find-generic-password -s resend -a api_key -w 2>/dev/null || echo "")
+  [[ -z "$CF_TOKEN" ]] && CF_TOKEN=$(security find-generic-password -s cloudflare -a api_token -w 2>/dev/null || echo "")
+  [[ -z "$LS_KEY" ]] && LS_KEY=$(security find-generic-password -s lemonsqueezy -a api_key -w 2>/dev/null || echo "")
 fi
 
 # Tools check
-NV_CMD="/Users/sj/.local/bin/nv"
+NV_CMD="$HOME/.local/bin/nv"
 GH_CMD=$(command -v gh 2>/dev/null || echo "")
 
 # Cloudflare account ID (cached after first fetch)
@@ -713,7 +725,7 @@ if details:
   echo "" >> "$REPORT_FILE"
 
   # Check LemonSqueezy checkout links (UUIDs from products.yml — single source of truth)
-  local config_file="/Users/sj/SaneApps/infra/SaneProcess/config/products.yml"
+  local config_file="$HOME/SaneApps/infra/SaneProcess/config/products.yml"
   if [ ! -f "$config_file" ]; then
     echo "- **Config missing:** $config_file not found" >> "$REPORT_FILE"
     return

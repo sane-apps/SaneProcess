@@ -13,6 +13,7 @@ Usage:
 """
 import argparse
 import json
+import os
 import subprocess
 import sys
 from collections import defaultdict
@@ -20,14 +21,20 @@ from datetime import datetime, timedelta, timezone
 
 
 def get_api_key():
+    # Try env var first (headless/LaunchAgent contexts)
+    key = os.environ.get("LEMONSQUEEZY_API_KEY", "")
+    if key:
+        return key
+    # Fall back to keychain (interactive sessions)
     result = subprocess.run(
         ["security", "find-generic-password", "-s", "lemonsqueezy", "-a", "api_key", "-w"],
         capture_output=True, text=True,
     )
     key = result.stdout.strip()
     if not key:
-        print("Error: No LemonSqueezy API key in keychain.", file=sys.stderr)
-        print("  Add with: security add-generic-password -s lemonsqueezy -a api_key -w YOUR_KEY", file=sys.stderr)
+        print("Error: No LemonSqueezy API key found.", file=sys.stderr)
+        print("  Set LEMONSQUEEZY_API_KEY env var, or add to keychain:", file=sys.stderr)
+        print("  security add-generic-password -s lemonsqueezy -a api_key -w YOUR_KEY", file=sys.stderr)
         sys.exit(1)
     return key
 
