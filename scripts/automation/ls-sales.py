@@ -4,6 +4,7 @@
 
 Usage:
   ls-sales.py              # Full report (all time)
+  ls-sales.py --daily      # Today/yesterday/week/all-time breakdown
   ls-sales.py --month      # Current month only
   ls-sales.py --days 7     # Last 7 days
   ls-sales.py --fees       # Fee breakdown only
@@ -181,6 +182,72 @@ def print_products(orders):
         print(f"{name[:29]:<30} {p['orders']:>7} ${p['revenue']:>9.2f} ${p['fees']:>9.2f} ${net:>9.2f}")
 
 
+def print_daily(all_orders):
+    """Today / Yesterday / This Week / All-time breakdown."""
+    # Use local time so "today" matches the user's actual day
+    now = datetime.now().astimezone()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    yesterday_start = today_start - timedelta(days=1)
+    week_start = today_start - timedelta(days=7)
+
+    buckets = {
+        "Today": {"orders": 0, "revenue": 0, "fees": 0},
+        "Yesterday": {"orders": 0, "revenue": 0, "fees": 0},
+        "This Week": {"orders": 0, "revenue": 0, "fees": 0},
+        "All Time": {"orders": 0, "revenue": 0, "fees": 0},
+    }
+
+    for o in all_orders:
+        a = o["attributes"]
+        if a.get("status") != "paid":
+            continue
+        subtotal = a.get("subtotal_usd", 0) / 100
+        fee, _ = calc_fee(subtotal, a.get("currency", "USD"))
+        created = datetime.fromisoformat(a["created_at"].replace("Z", "+00:00"))
+
+        buckets["All Time"]["orders"] += 1
+        buckets["All Time"]["revenue"] += subtotal
+        buckets["All Time"]["fees"] += fee
+
+        if created >= week_start:
+            buckets["This Week"]["orders"] += 1
+            buckets["This Week"]["revenue"] += subtotal
+            buckets["This Week"]["fees"] += fee
+
+        if created >= today_start:
+            buckets["Today"]["orders"] += 1
+            buckets["Today"]["revenue"] += subtotal
+            buckets["Today"]["fees"] += fee
+        elif created >= yesterday_start:
+            buckets["Yesterday"]["orders"] += 1
+            buckets["Yesterday"]["revenue"] += subtotal
+            buckets["Yesterday"]["fees"] += fee
+
+    print(f"{'Period':<15} {'Orders':>7} {'Revenue':>10} {'LS Fees':>10} {'You Keep':>10}")
+    print("-" * 55)
+    for name in ["Today", "Yesterday", "This Week", "All Time"]:
+        b = buckets[name]
+        net = b["revenue"] - b["fees"]
+        print(f"{name:<15} {b['orders']:>7} ${b['revenue']:>9.2f} ${b['fees']:>9.2f} ${net:>9.2f}")
+
+    # Recent orders (last 5)
+    recent = sorted(
+        [o for o in all_orders if o["attributes"].get("status") == "paid"],
+        key=lambda o: o["attributes"]["created_at"],
+        reverse=True,
+    )[:5]
+    if recent:
+        print()
+        print("Recent Orders:")
+        for o in recent:
+            a = o["attributes"]
+            item = a.get("first_order_item") or {}
+            name = item.get("product_name", "Unknown")
+            subtotal = a.get("subtotal_usd", 0) / 100
+            date = a["created_at"][:10]
+            print(f"  {date}  ${subtotal:.2f}  {name}")
+
+
 def print_json(orders):
     """Raw JSON output for piping."""
     result = []
@@ -206,6 +273,7 @@ def print_json(orders):
 def main():
     parser = argparse.ArgumentParser(description="LemonSqueezy sales & fee report")
     parser.add_argument("--month", action="store_true", help="Current month only")
+    parser.add_argument("--daily", action="store_true", help="Today/yesterday/week/all-time breakdown")
     parser.add_argument("--days", type=int, help="Last N days")
     parser.add_argument("--fees", action="store_true", help="Fee breakdown only")
     parser.add_argument("--products", action="store_true", help="Revenue by product")
@@ -214,6 +282,17 @@ def main():
 
     api_key = get_api_key()
     all_orders = fetch_orders(api_key)
+
+    # --daily uses all orders (does its own bucketing)
+    if args.daily:
+        if not all_orders:
+            print("No orders found.")
+            sys.exit(0)
+        print(f"LemonSqueezy Sales — {datetime.now().strftime('%Y-%m-%d')}")
+        print()
+        print_daily(all_orders)
+        return
+
     orders = filter_orders(all_orders, args)
 
     if not orders:

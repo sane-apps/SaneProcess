@@ -74,6 +74,7 @@ class SaneTest
     @no_logs = args.include?('--no-logs')
     @free_mode = args.include?('--free-mode')
     @pro_mode = args.include?('--pro-mode')
+    @reset_tcc = args.include?('--reset-tcc')
     @app_dir = File.join(SANE_APPS_ROOT, app_name)
 
     abort "❌ Unknown app: #{app_name}. Known: #{APPS.keys.join(', ')}" unless @config
@@ -122,12 +123,17 @@ class SaneTest
 
   def run_remote
     step('1. Kill existing processes (mini)') { kill_remote }
-    step('2. Clean stale app copies (mini)') { clean_remote }
-    step('3. Reset TCC permissions (mini)') { reset_tcc_remote }
-    step('4. Build fresh debug build') { build_debug }
-    step('5. Deploy to mini') { deploy_to_mini }
-    step('6. Set license mode (mini)') { set_license_mode_remote } if @free_mode || @pro_mode
-    step("#{@free_mode || @pro_mode ? '7' : '6'}. Launch on mini") { launch_remote }
+    step('2. Clean ALL stale copies (mini)') { clean_remote }
+    step('3. Build fresh debug build') { build_debug }
+    step('4. Deploy to mini') { deploy_to_mini }
+    step('5. Verify single copy (mini)') { verify_single_copy_remote }
+    if @reset_tcc
+      step('6. Reset TCC permissions (mini)') { reset_tcc_remote }
+    end
+    step("#{@reset_tcc ? '7' : '6'}. Set license mode (mini)") { set_license_mode_remote } if @free_mode || @pro_mode
+    n = @reset_tcc ? 7 : 6
+    n += 1 if @free_mode || @pro_mode
+    step("#{n}. Launch on mini") { launch_remote }
     stream_logs_remote unless @no_logs
   end
 
@@ -140,6 +146,7 @@ class SaneTest
 
   def clean_remote
     count = 0
+    # Remove from ALL possible locations — there must be ZERO copies before deploy
     locations = [
       "#{MINI_APPS_DIR}/#{@app_name}.app",
       "/Applications/#{@app_name}.app",
@@ -153,8 +160,15 @@ class SaneTest
         count += 1
       end
     end
-    dd_count = ssh_capture("ls -d ~/Library/Developer/Xcode/DerivedData/#{@app_name}-* 2>/dev/null | wc -l").strip.to_i
-    warn "   Removed #{count} stale copies, #{dd_count} DerivedData dirs on mini"
+    # Also nuke any .app bundles in DerivedData on the mini (shouldn't exist but safety)
+    dd_apps = ssh_capture("find ~/Library/Developer/Xcode/DerivedData/#{@app_name}-*/Build/Products -name '#{@app_name}.app' -type d 2>/dev/null").strip
+    dd_apps.split("\n").reject(&:empty?).each do |path|
+      ssh("rm -rf '#{path}'")
+      count += 1
+    end
+    # Flush Launch Services so macOS doesn't resolve to a stale cached path
+    ssh("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -kill -r -domain local -domain system -domain user 2>/dev/null; true")
+    warn "   Removed #{count} stale copies, flushed Launch Services on mini"
   end
 
   def reset_tcc_remote
@@ -163,6 +177,26 @@ class SaneTest
       ssh("tccutil reset Accessibility #{bid} 2>/dev/null; true")
     end
     warn "   Reset TCC for: #{bundle_ids.join(', ')}"
+  end
+
+  def verify_single_copy_remote
+    # After deploy, ensure ONLY the canonical copy exists
+    canonical = "#{MINI_APPS_DIR}/#{@app_name}.app"
+    copies = ssh_capture("mdfind 'kMDItemFSName == \"#{@app_name}.app\"' 2>/dev/null").strip.split("\n").reject(&:empty?)
+    # Filter to actual .app bundles (mdfind can return partial matches)
+    copies.select! { |p| p.end_with?("#{@app_name}.app") }
+    non_canonical = copies.reject { |p| p.include?(canonical.sub('~', '')) }
+    if non_canonical.empty?
+      warn "   Single copy verified at #{canonical}"
+    else
+      warn "   ⚠️  Found #{non_canonical.size} extra copies — removing:"
+      non_canonical.each do |path|
+        warn "      #{path}"
+        ssh("rm -rf '#{path}'")
+      end
+      # Re-flush Launch Services after cleanup
+      ssh("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -kill -r -domain local -domain system -domain user 2>/dev/null; true")
+    end
   end
 
   def deploy_to_mini
@@ -200,11 +234,16 @@ class SaneTest
 
   def run_local
     step('1. Kill existing processes') { kill_local }
-    step('2. Clean stale app copies') { clean_local }
-    step('3. Reset TCC permissions') { reset_tcc_local }
-    step('4. Build fresh debug build') { build_debug }
-    step('5. Set license mode') { set_license_mode_local } if @free_mode || @pro_mode
-    step("#{@free_mode || @pro_mode ? '6' : '5'}. Launch locally") { launch_local }
+    step('2. Clean ALL stale copies') { clean_local }
+    step('3. Build fresh debug build') { build_debug }
+    step('4. Verify single copy') { verify_single_copy_local }
+    if @reset_tcc
+      step('5. Reset TCC permissions') { reset_tcc_local }
+    end
+    step("#{@reset_tcc ? '6' : '5'}. Set license mode") { set_license_mode_local } if @free_mode || @pro_mode
+    n = @reset_tcc ? 6 : 5
+    n += 1 if @free_mode || @pro_mode
+    step("#{n}. Launch locally") { launch_local }
     stream_logs_local unless @no_logs
   end
 
@@ -222,8 +261,32 @@ class SaneTest
         count += 1
       end
     end
-    dd_dirs = Dir.glob(File.expand_path("~/Library/Developer/Xcode/DerivedData/#{@app_name}-*/"))
-    warn "   Cleaned #{count} stale copies, #{dd_dirs.size} DerivedData dirs present"
+    # Don't clean DerivedData .app bundles locally — that's where we launch from
+    # But DO clean /Applications copies that shouldn't be there
+    sys_app = "/Applications/#{@app_name}.app"
+    if File.exist?(sys_app)
+      FileUtils.rm_rf(sys_app)
+      count += 1
+    end
+    warn "   Cleaned #{count} stale copies"
+  end
+
+  def verify_single_copy_local
+    dd_app = find_derived_data_app
+    abort '   ❌ Built app not found in DerivedData' unless dd_app
+    copies = `mdfind 'kMDItemFSName == "#{@app_name}.app"' 2>/dev/null`.strip.split("\n").reject(&:empty?)
+    copies.select! { |p| p.end_with?("#{@app_name}.app") }
+    # The canonical copy is in DerivedData for local builds
+    non_canonical = copies.reject { |p| p.include?('DerivedData') }
+    if non_canonical.empty?
+      warn "   Single copy verified in DerivedData"
+    else
+      warn "   ⚠️  Found #{non_canonical.size} extra copies — removing:"
+      non_canonical.each do |path|
+        warn "      #{path}"
+        FileUtils.rm_rf(path)
+      end
+    end
   end
 
   def reset_tcc_local
@@ -380,8 +443,10 @@ if ARGV.empty? || ARGV[0] == '--help'
   warn '  --no-logs    Skip log streaming after launch'
   warn '  --free-mode  Clear license data — launch as Free user'
   warn '  --pro-mode   Inject test license key — launch in Pro validation mode'
+  warn '  --reset-tcc  Reset TCC/Accessibility permissions (only for fresh installs)'
   warn ''
   warn 'Default: deploys to Mac mini if reachable, local otherwise.'
+  warn 'TCC is preserved by default — single-copy enforcement prevents stale grants.'
   exit 0
 end
 

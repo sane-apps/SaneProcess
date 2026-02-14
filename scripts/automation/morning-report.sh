@@ -118,15 +118,25 @@ section_revenue() {
 
   # LemonSqueezy sales
   if [[ -n "$LS_KEY" ]]; then
-    local ls_output
-    ls_output=$(python3 "$SCRIPT_DIR/ls-sales.py" --json 2>/dev/null || echo "[]")
-    local ls_summary
-    ls_summary=$(python3 "$SCRIPT_DIR/ls-sales.py" --month 2>/dev/null || echo "No data")
+    # Daily breakdown (today/yesterday/week/all-time)
+    local ls_daily
+    ls_daily=$(python3 "$SCRIPT_DIR/ls-sales.py" --daily 2>/dev/null || echo "No data")
     echo '```' >> "$REPORT_FILE"
-    echo "$ls_summary" >> "$REPORT_FILE"
+    echo "$ls_daily" >> "$REPORT_FILE"
     echo '```' >> "$REPORT_FILE"
     echo "" >> "$REPORT_FILE"
-    revenue_data="LEMONSQUEEZY:\n$ls_summary\n\n"
+
+    # Monthly breakdown for trend context
+    local ls_monthly
+    ls_monthly=$(python3 "$SCRIPT_DIR/ls-sales.py" --month 2>/dev/null || echo "No data")
+    echo "<details><summary>Monthly Breakdown</summary>" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    echo '```' >> "$REPORT_FILE"
+    echo "$ls_monthly" >> "$REPORT_FILE"
+    echo '```' >> "$REPORT_FILE"
+    echo "</details>" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    revenue_data="LEMONSQUEEZY DAILY:\n$ls_daily\n\nMONTHLY:\n$ls_monthly\n\n"
   else
     echo "**LemonSqueezy:** API key not found" >> "$REPORT_FILE"
     echo "" >> "$REPORT_FILE"

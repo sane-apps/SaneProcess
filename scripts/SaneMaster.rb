@@ -14,6 +14,9 @@
 #   test_mode.rb    - Interactive debugging workflow
 #   verify.rb       - Build, test execution, permissions
 #   quality.rb      - Dead code, deprecations, Swift 6 compliance
+#   release.rb      - Release pipeline, preflight checks, App Store preflight
+#   ci_helpers.rb   - CI/CD test helpers (enable_ci_tests, fix_mocks, etc.)
+#   sales.rb        - LemonSqueezy sales reporting (daily/monthly/products)
 # ==============================================================================
 
 require 'open3'
@@ -37,6 +40,8 @@ require_relative 'sanemaster/session'
 require_relative 'sanemaster/circuit_breaker_state'
 require_relative 'sanemaster/structural_compliance'
 require_relative 'sanemaster/release'
+require_relative 'sanemaster/ci_helpers'
+require_relative 'sanemaster/sales'
 
 class SaneMaster
   include SaneMasterModules::Base
@@ -55,6 +60,8 @@ class SaneMaster
   include SaneMasterModules::Session
   include SaneMasterModules::StructuralCompliance
   include SaneMasterModules::Release
+  include SaneMasterModules::CIHelpers
+  include SaneMasterModules::Sales
 
   # ═══════════════════════════════════════════════════════════════════════════
   # COMMAND REFERENCE - Organized by category for easy discovery
@@ -69,7 +76,8 @@ class SaneMaster
         'audit' => { args: '', desc: 'Scan for missing accessibility identifiers' },
         'system_check' => { args: '', desc: 'Verify unified hook system across all projects' },
         'release' => { args: '[--full|--skip-notarize|--version X.Y.Z|--notes "..."]', desc: 'Build, sign, notarize, and package a DMG' },
-        'release_preflight' => { args: '', desc: 'Run all pre-release safety checks without building' }
+        'release_preflight' => { args: '', desc: 'Run all pre-release safety checks without building' },
+        'appstore_preflight' => { args: '', desc: 'Run App Store submission compliance checks' }
       }
     },
     gen: {
@@ -133,6 +141,22 @@ class SaneMaster
         'breaker_status' => { args: '', desc: 'Show circuit breaker status' },
         'breaker_errors' => { args: '', desc: 'Show recent failure messages' },
         'saneloop' => { args: '<cmd> [opts]', desc: 'Native task loop (start|status|check|log|complete)' }
+      }
+    },
+    sales: {
+      desc: 'Sales and revenue reporting',
+      commands: {
+        'sales' => { args: '[--daily|--month|--products|--fees|--json]', desc: 'LemonSqueezy sales report (default: daily breakdown)' }
+      }
+    },
+    ci: {
+      desc: 'CI/CD test helpers',
+      commands: {
+        'enable_ci_tests' => { args: '', desc: 'Enable test targets in project.yml for CI' },
+        'restore_ci_tests' => { args: '', desc: 'Restore project.yml from CI backup' },
+        'fix_mocks' => { args: '', desc: 'Add @testable import to generated mocks' },
+        'monitor_tests' => { args: '[scheme] [test] [timeout]', desc: 'Run tests with timeout and progress' },
+        'image_info' => { args: '<path>', desc: 'Extract image info and base64' }
       }
     },
     export: {
@@ -280,6 +304,24 @@ class SaneMaster
       release(args)
     when 'release_preflight'
       release_preflight(args)
+    when 'appstore_preflight', 'asp'
+      appstore_preflight(args)
+
+    # Sales
+    when 'sales'
+      sales(args)
+
+    # CI Helpers
+    when 'enable_ci_tests'
+      enable_ci_tests(args)
+    when 'restore_ci_tests'
+      restore_ci_tests(args)
+    when 'fix_mocks'
+      fix_mocks(args)
+    when 'monitor_tests'
+      monitor_tests(args)
+    when 'image_info'
+      image_info(args)
     when 'qa'
       system(File.join(__dir__, 'qa.rb'))
     when 'validate_test_references', 'validate-tests'
@@ -713,6 +755,62 @@ class SaneMaster
         '--skip-prompts' => 'Skip interactive prompts, show summary only'
       },
       examples: ['session_end', 'se', 'session_end --skip-prompts']
+    },
+    'appstore_preflight' => {
+      usage: 'appstore_preflight (or asp)',
+      description: 'Run App Store submission compliance checks (privacy manifest, entitlements, screenshots, usage descriptions, review notes, etc.)',
+      flags: {},
+      examples: ['appstore_preflight', 'asp']
+    },
+    'sales' => {
+      usage: 'sales [--daily|--month|--products|--fees|--json]',
+      description: 'LemonSqueezy sales report. Default: daily breakdown (today/yesterday/week/all-time).',
+      flags: {
+        '--daily' => 'Today/yesterday/week/all-time breakdown (default)',
+        '--month' => 'Current month with monthly aggregates',
+        '--products' => 'Revenue by product',
+        '--fees' => 'Detailed fee breakdown',
+        '--json' => 'Raw JSON output for piping'
+      },
+      examples: [
+        'sales                # Today/yesterday/week/all-time',
+        'sales --month        # Current month',
+        'sales --products     # Revenue by product',
+        'sales --fees         # Fee breakdown'
+      ]
+    },
+    'enable_ci_tests' => {
+      usage: 'enable_ci_tests',
+      description: 'Temporarily re-enable test targets in project.yml for CI. Backs up original, regenerates Xcode project.',
+      flags: {},
+      examples: ['enable_ci_tests']
+    },
+    'restore_ci_tests' => {
+      usage: 'restore_ci_tests',
+      description: 'Restore project.yml from CI backup after tests complete.',
+      flags: {},
+      examples: ['restore_ci_tests']
+    },
+    'fix_mocks' => {
+      usage: 'fix_mocks',
+      description: 'Add @testable import to generated Mocks.swift file after mockolo generation.',
+      flags: {},
+      examples: ['fix_mocks']
+    },
+    'monitor_tests' => {
+      usage: 'monitor_tests [scheme] [test_name] [timeout_seconds]',
+      description: 'Run xcodebuild tests with live progress reporting and timeout detection.',
+      flags: {},
+      examples: [
+        'monitor_tests                          # Test current scheme, 5min timeout',
+        'monitor_tests SaneBar MyTest 120       # Specific test, 2min timeout'
+      ]
+    },
+    'image_info' => {
+      usage: 'image_info <path>',
+      description: 'Extract image file info and base64 data for analysis.',
+      flags: {},
+      examples: ['image_info screenshot.png']
     }
   }.freeze
   # rubocop:enable Lint/UselessConstantScoping
