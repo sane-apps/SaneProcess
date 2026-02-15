@@ -395,13 +395,29 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
         system('xcodegen', 'generate', out: File::NULL, err: File::NULL)
       end
 
-      stdout, status = Open3.capture2e(
+      # Check if signing certificates are available; fall back to ad-hoc if not
+      has_signing_cert = !`security find-identity -v -p codesigning 2>/dev/null`.strip.start_with?('0 valid')
+
+      build_args = [
         'xcodebuild',
         '-scheme', @config[:scheme],
         '-destination', 'platform=macOS',
-        '-configuration', 'Debug',
-        'build'
-      )
+        '-configuration', 'Debug'
+      ]
+
+      unless has_signing_cert
+        warn '   ⚠️  No signing cert found — using ad-hoc signing'
+        build_args += %w[
+          CODE_SIGN_IDENTITY=-
+          CODE_SIGNING_REQUIRED=NO
+          CODE_SIGNING_ALLOWED=NO
+          DEVELOPMENT_TEAM=
+        ]
+      end
+
+      build_args << 'build'
+
+      stdout, status = Open3.capture2e(*build_args)
 
       unless status.success?
         puts ''
