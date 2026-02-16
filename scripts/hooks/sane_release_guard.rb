@@ -167,8 +167,12 @@ if command.match?(/\bgenerate_keys\b/) || command.match?(/setup_sparkle_keys/)
   exit 2
 end
 
-# Block 11: Direct curl/wget to SaneApp dist domains (manual file upload via API)
-if command.match?(/\b(?:curl|wget)\b/) && command.match?(SANE_DIST_PATTERN)
+# Block 11: Direct curl/wget UPLOADS to SaneApp dist domains
+# Allow read-only checks (HEAD requests, download-to-null, wget --spider) for diagnostics.
+is_dist_command = command.match?(/\b(?:curl|wget)\b/) && command.match?(SANE_DIST_PATTERN)
+is_readonly = command.match?(/\bcurl\b.*(?:-I\b|--head\b|-o\s*\/dev\/null\b|-w\b)/) ||
+              command.match?(/\bwget\b.*--spider\b/)
+if is_dist_command && !is_readonly
   warn '🔴 BLOCKED: Manual upload to SaneApp distribution domain'
   warn '   Distribution uploads should go through release.sh --deploy.'
   warn ''
@@ -191,6 +195,18 @@ if command.match?(/\bcurl\b.*api\.appstoreconnect\.apple\.com/) && command.match
   warn '   ASC API operations should go through appstore_submit.rb via release.sh.'
   warn ''
   warn '   ✅ Use instead: bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project <path> --deploy'
+  exit 2
+end
+
+# Block 14: Public GitHub interactions (comments, close, review) require user approval
+# gh issue comment, gh issue close --comment, gh pr comment, gh pr review — all post publicly
+# as MrSaneApps. NEVER post without showing the user a draft first.
+# Read-only operations (gh issue view, gh issue list, gh pr view) are allowed.
+if command.match?(/\bgh\s+(?:issue|pr)\s+(?:comment|close|review|create)\b/)
+  warn '🔴 BLOCKED: Public GitHub interaction without user approval'
+  warn '   This posts publicly as MrSaneApps. Show the user a draft first.'
+  warn ''
+  warn '   ✅ Show the draft text to the user, get explicit approval, then post.'
   exit 2
 end
 
