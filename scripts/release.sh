@@ -39,6 +39,7 @@ print_help() {
     echo "  --skip-build         Skip build step (use existing archive)"
     echo "  --version X.Y.Z      Set version number"
     echo "  --notes \"...\"      Release notes for GitHub (required with --full)"
+    echo "  --website-only       Deploy website + appcast only (no build/R2/signing)"
     echo "  -h, --help           Show this help"
 }
 
@@ -83,8 +84,15 @@ remove_path() {
 project_version_from_semver() {
     local semver="$1"
     local project_version
-    project_version=$(echo "$semver" | tr -d '.' | sed 's/^0*//')
-    if [ -z "${project_version}" ]; then
+    # Parse major.minor.patch and compute major*1000 + minor*100 + patch
+    # This ensures 2.0.0 (2000) > 1.0.23 (1023) for Sparkle version comparison
+    local major minor patch
+    major=$(echo "$semver" | cut -d. -f1)
+    minor=$(echo "$semver" | cut -d. -f2)
+    patch=$(echo "$semver" | cut -d. -f3)
+    major=${major:-0}; minor=${minor:-0}; patch=${patch:-0}
+    project_version=$(( major * 1000 + minor * 100 + patch ))
+    if [ "${project_version}" -eq 0 ]; then
         project_version="1"
     fi
     echo "${project_version}"
@@ -450,6 +458,7 @@ RELEASE_NOTES=""
 XCODEGEN_DONE=false
 RUN_GH_RELEASE=false
 RUN_DEPLOY=false
+WEBSITE_ONLY=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -484,6 +493,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --deploy)
             RUN_DEPLOY=true
+            shift
+            ;;
+        --website-only)
+            WEBSITE_ONLY=true
             shift
             ;;
         -h|--help)
@@ -623,6 +636,42 @@ if [ -n "${DMG_BACKGROUND}" ] && [ ! -f "${DMG_BACKGROUND}" ]; then
 fi
 
 cd "${PROJECT_ROOT}"
+
+# Website-only deploy (no build, no R2, no signing — just push website + appcast to Pages)
+if [ "${WEBSITE_ONLY}" = true ]; then
+    PAGES_PROJECT="${LOWER_APP_NAME}-site"
+    # Prefer website/ dir (has full HTML site), fall back to docs/
+    if [ -d "${PROJECT_ROOT}/website" ]; then
+        DEPLOY_DIR="${PROJECT_ROOT}/website"
+        # Ensure appcast.xml is included
+        if [ -f "${PROJECT_ROOT}/docs/appcast.xml" ] && [ ! -f "${DEPLOY_DIR}/appcast.xml" ]; then
+            cp "${PROJECT_ROOT}/docs/appcast.xml" "${DEPLOY_DIR}/appcast.xml"
+            log_info "Copied appcast.xml from docs/ to website/"
+        fi
+    elif [ -d "${PROJECT_ROOT}/docs" ]; then
+        DEPLOY_DIR="${PROJECT_ROOT}/docs"
+    else
+        log_error "No website/ or docs/ directory found"
+        exit 1
+    fi
+    log_info "Deploying website to Cloudflare Pages (${PAGES_PROJECT}) from ${DEPLOY_DIR}..."
+    npx wrangler pages deploy "${DEPLOY_DIR}" \
+        --project-name="${PAGES_PROJECT}" \
+        --commit-dirty=true \
+        --commit-message="Website update $(date +%Y-%m-%d)"
+    log_info "Website deploy complete."
+    # Verify
+    if [ -f "${DEPLOY_DIR}/appcast.xml" ]; then
+        sleep 3
+        APPCAST_CHECK=$(curl -s "https://${SITE_HOST}/appcast.xml" | head -3)
+        if echo "${APPCAST_CHECK}" | grep -q "xml"; then
+            log_info "Appcast verified at https://${SITE_HOST}/appcast.xml"
+        else
+            log_warn "Appcast verification inconclusive — may need a few minutes to propagate"
+        fi
+    fi
+    exit 0
+fi
 
 # Full release flow
 if [ "${FULL_RELEASE}" = true ]; then
