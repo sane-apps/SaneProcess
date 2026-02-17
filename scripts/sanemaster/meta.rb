@@ -225,7 +225,7 @@ module SaneMasterModules
       puts '🔬 --- [ TEST QUALITY SCAN ] ---'
       puts 'Scanning Swift test files for anti-patterns...'
       puts ''
-      scan_test_quality(verbose: true)
+      scan_test_quality(verbose: verbose)
     end
 
     # Core scanning logic - used by both check_test_quality and run_test_scan
@@ -259,7 +259,13 @@ module SaneMasterModules
         { pattern: /#expect\s*\([^)]+\.count\s*==\s*(?!0\b|1\b|2\b|3\b|10\b)\d+\s*\)/, name: 'Hardcoded array count' }
       ]
 
-      issues = { tautologies: [], hardcoded: [] }
+      issues = {
+        tautologies: [],
+        hardcoded: [],
+        structure: [],
+        e2e: [],
+        disabled: []
+      }
       test_files = Dir.glob("#{project_tests_dir}/**/*.swift")
 
       test_files.each do |file|
@@ -294,13 +300,17 @@ module SaneMasterModules
             }
           end
         end
+
+        scan_test_structure(content, relative_path, issues)
       end
 
       total_tautologies = issues[:tautologies].count
       total_hardcoded = issues[:hardcoded].count
-      total_issues = total_tautologies + total_hardcoded
+      total_structure = issues[:structure].count
+      blocking_issues = total_tautologies + total_hardcoded + total_structure
+      advisory_issues = issues[:e2e].count + issues[:disabled].count
 
-      if total_issues > TEST_QUALITY_WARN
+      if blocking_issues > TEST_QUALITY_WARN || advisory_issues.positive?
         if verbose
           # Detailed output with line numbers
           if issues[:tautologies].any?
@@ -326,21 +336,63 @@ module SaneMasterModules
             puts ''
           end
 
+          if issues[:structure].any?
+            puts '❌ STRUCTURE ISSUES (tests not asserting behavior):'
+            issues[:structure].group_by { |i| i[:file] }.each do |file, file_issues|
+              puts "   📄 #{file}"
+              file_issues.each do |issue|
+                puts "      Line #{issue[:line]}: #{issue[:pattern]}"
+                puts "         #{issue[:snippet]}..." if issue[:snippet].length > 10
+              end
+            end
+            puts ''
+          end
+
+          if issues[:e2e].any?
+            puts '⚠️  E2E CLAIM GAPS (named as integration/e2e without clear boundary calls):'
+            issues[:e2e].group_by { |i| i[:file] }.each do |file, file_issues|
+              puts "   📄 #{file}"
+              file_issues.each do |issue|
+                puts "      Line #{issue[:line]}: #{issue[:pattern]}"
+              end
+            end
+            puts ''
+          end
+
+          if issues[:disabled].any?
+            puts '⚠️  DISABLED TESTS (verify intent before release):'
+            issues[:disabled].group_by { |i| i[:file] }.each do |file, file_issues|
+              puts "   📄 #{file}"
+              file_issues.each do |issue|
+                puts "      Line #{issue[:line]}: #{issue[:pattern]}"
+              end
+            end
+            puts ''
+          end
+
           puts '─' * 50
-          puts "📊 Summary: #{total_tautologies} tautologies, #{total_hardcoded} hardcoded values"
+          puts "📊 Summary: #{total_tautologies} tautologies, #{total_hardcoded} hardcoded values, #{total_structure} structure issues"
+          puts "📎 Advisory: #{issues[:e2e].count} e2e-claim gaps, #{issues[:disabled].count} disabled tests"
           puts ''
           puts '💡 A good test should:'
           puts '   • Test computed values, not literals'
           puts '   • Fail when code is broken'
           puts '   • Work for all valid inputs, not just test fixtures'
+          puts '   • Exercise real boundaries when labeled integration/e2e'
         else
           # Brief output for health check
-          puts "   ❌ #{total_issues} test quality issues found"
+          puts "   ❌ #{blocking_issues} blocking test quality issues found" if blocking_issues.positive?
           issues[:tautologies].group_by { |i| i[:file] }.each do |file, arr|
             puts "      ⚠️  #{file}: #{arr.count} tautological assertion(s)"
           end
           issues[:hardcoded].group_by { |i| i[:file] }.each do |file, arr|
             puts "      💡 #{file}: #{arr.count} hardcoded value(s)"
+          end
+          issues[:structure].group_by { |i| i[:file] }.each do |file, arr|
+            puts "      ❗ #{file}: #{arr.count} test(s) without assertions"
+          end
+          if advisory_issues.positive?
+            puts "   ⚠️  #{advisory_issues} advisory issue(s) (e2e claims/disabled tests)"
           end
         end
       else
@@ -348,7 +400,112 @@ module SaneMasterModules
       end
 
       puts ''
-      { status: total_issues > TEST_QUALITY_WARN ? :warning : :ok, issues: issues, count: total_issues }
+      {
+        status: blocking_issues > TEST_QUALITY_WARN ? :warning : :ok,
+        issues: issues,
+        blocking_count: blocking_issues,
+        advisory_count: advisory_issues
+      }
+    end
+
+    def scan_test_structure(content, relative_path, issues)
+      lines = content.lines
+      test_name_regex = /"(.*?)"/
+      i = 0
+
+      while i < lines.length
+        line = lines[i]
+
+        if line.match?(/^\s*@Test\b/)
+          header_start = i
+          header_text = line
+          i += 1
+          while i < lines.length && !lines[i].match?(/^\s*func\s+\w+\s*\(/)
+            header_text << lines[i]
+            i += 1
+          end
+          break if i >= lines.length
+
+          func_line = lines[i]
+          test_name = header_text[test_name_regex, 1] || func_line[/func\s+(\w+)/, 1] || 'unknown'
+          body, end_idx = extract_test_body(lines, i)
+          record_structure_issues(test_name, body, header_text, relative_path, i + 1, issues)
+          i = end_idx + 1
+          next
+        end
+
+        if line.match?(/^\s*func\s+test\w+\s*\(/)
+          test_name = line[/func\s+(\w+)/, 1] || 'unknown'
+          body, end_idx = extract_test_body(lines, i)
+          record_structure_issues(test_name, body, line, relative_path, i + 1, issues)
+          i = end_idx + 1
+          next
+        end
+
+        i += 1
+      end
+    end
+
+    def extract_test_body(lines, start_idx)
+      i = start_idx
+      depth = 0
+      started = false
+      body_lines = []
+
+      while i < lines.length
+        current = lines[i]
+        current.each_char do |ch|
+          if ch == '{'
+            depth += 1
+            started = true
+          elsif ch == '}'
+            depth -= 1 if depth.positive?
+          end
+        end
+        body_lines << current if started
+        break if started && depth.zero?
+        i += 1
+      end
+
+      [body_lines.join, i]
+    end
+
+    def record_structure_issues(test_name, body, header_text, relative_path, line_number, issues)
+      assertion_patterns = [
+        /#expect\s*\(/,
+        /#require\s*\(/,
+        /XCTAssert\w*\s*\(/,
+        /XCTFail\s*\(/
+      ]
+      assertion_count = assertion_patterns.sum { |p| body.scan(p).count }
+
+      if assertion_count.zero?
+        issues[:structure] << {
+          file: relative_path,
+          line: line_number,
+          pattern: "No assertions in test '#{test_name}'",
+          snippet: body.strip[0..80]
+        }
+      end
+
+      combined_name = "#{header_text} #{test_name}"
+      e2e_named = combined_name.match?(/e2e|end[\s-]?to[\s-]?end|integration|regression|scenario|flow/i)
+      boundary_call = body.match?(/SearchService|MenuBarManager|HidingService|AccessibilityService|BartenderImportService|ScheduleTriggerService|TriggerService|FocusModeService|StatusBarController|PersistenceService|reorderIcon|moveMenuBarIcon|clickMenuBarItem|importItems|resolveLatestClickTarget/)
+      if e2e_named && !boundary_call
+        issues[:e2e] << {
+          file: relative_path,
+          line: line_number,
+          pattern: "E2E/integration name without clear boundary interaction: '#{test_name}'"
+        }
+      end
+
+      if header_text.match?(/\.disabled\s*\(/)
+        issues[:disabled] << {
+          file: relative_path,
+          line: line_number,
+          pattern: "Disabled test: '#{test_name}'"
+        }
+      end
     end
 
     def check_mock_freshness
