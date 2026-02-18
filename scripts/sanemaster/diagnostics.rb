@@ -71,6 +71,404 @@ module SaneMasterModules
       print_crash_analysis(crash_data, show_details)
     end
 
+    # Menu bar diagnostics for detection regressions.
+    # Prints three sections so issues are quickly triaged:
+    #   1) detected (raw AX items)
+    #   2) normalized (items we can act on)
+    #   3) excluded (dropped with reason)
+    def menu_scan(args = [])
+      json_output = args.include?('--json')
+      owners = []
+
+      args.each_with_index do |arg, index|
+        if arg == '--owners'
+          owners = args[index + 1].to_s.split(',')
+        elsif arg.start_with?('--owners=')
+          owners = arg.split('=', 2).last.to_s.split(',')
+        end
+      end
+
+      owners = owners.map(&:strip).reject(&:empty?).uniq
+      owners_env = owners.join(',')
+
+      swift_script = <<~'SWIFT'
+        import AppKit
+        import ApplicationServices
+        import Foundation
+
+        struct RawItem: Codable {
+            let ownerBundleId: String
+            let ownerName: String
+            let pid: Int32
+            let root: String
+            let index: Int
+            let identifier: String?
+            let title: String?
+            let detail: String?
+            let x: Double
+            let width: Double
+            let role: String?
+            let subrole: String?
+        }
+
+        struct NormalizedItem: Codable {
+            let ownerBundleId: String
+            let ownerName: String
+            let pid: Int32
+            let canonicalIdentifier: String
+            let sourceIdentifier: String?
+            let sourceLabel: String?
+            let x: Double
+            let width: Double
+            let reason: String
+        }
+
+        struct ExcludedItem: Codable {
+            let ownerBundleId: String
+            let ownerName: String
+            let pid: Int32
+            let index: Int
+            let identifier: String?
+            let title: String?
+            let detail: String?
+            let x: Double
+            let width: Double
+            let reason: String
+        }
+
+        struct ScanOutput: Codable {
+            let detected: [RawItem]
+            let normalized: [NormalizedItem]
+            let excluded: [ExcludedItem]
+        }
+
+        func axString(_ value: CFTypeRef?) -> String? {
+            if let s = value as? String { return s }
+            if let a = value as? NSAttributedString { return a.string }
+            return nil
+        }
+
+        func safeAXUIElement(_ ref: CFTypeRef?) -> AXUIElement? {
+            guard let ref else { return nil }
+            guard CFGetTypeID(ref) == AXUIElementGetTypeID() else { return nil }
+            return unsafeDowncast(ref as AnyObject, to: AXUIElement.self)
+        }
+
+        func safeAXValue(_ ref: CFTypeRef?) -> AXValue? {
+            guard let ref else { return nil }
+            guard CFGetTypeID(ref) == AXValueGetTypeID() else { return nil }
+            return unsafeDowncast(ref as AnyObject, to: AXValue.self)
+        }
+
+        func mapKnownAppleMenuExtra(from raw: String) -> String? {
+            let lower = raw.lowercased()
+            let compact = lower.replacingOccurrences(of: "[^a-z0-9]+", with: "", options: .regularExpression)
+            let tokens = Set(lower.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+
+            let aliases: [String: String] = [
+                "battery": "com.apple.menuextra.battery",
+                "wifi": "com.apple.menuextra.wifi",
+                "bluetooth": "com.apple.menuextra.bluetooth",
+                "clock": "com.apple.menuextra.clock",
+                "airdrop": "com.apple.menuextra.airdrop",
+                "focus": "com.apple.menuextra.focusmode",
+                "focusmode": "com.apple.menuextra.focusmode",
+                "controlcenter": "com.apple.menuextra.controlcenter",
+                "display": "com.apple.menuextra.display",
+                "sound": "com.apple.menuextra.sound",
+                "airplay": "com.apple.menuextra.airplay",
+                "nowplaying": "com.apple.menuextra.now-playing",
+                "siri": "com.apple.menuextra.siri",
+                "spotlight": "com.apple.menuextra.spotlight"
+            ]
+
+            for (token, canonical) in aliases {
+                if lower == token || compact == token || tokens.contains(token) {
+                    return canonical
+                }
+            }
+
+            return nil
+        }
+
+        func canonicalIdentifier(
+            ownerBundleId: String,
+            rawIdentifier: String?,
+            label: String?,
+            width: CGFloat
+        ) -> (String?, String) {
+            let normalizedIdentifier = rawIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedLabel = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let isAppleOwner = ownerBundleId.hasPrefix("com.apple.")
+
+            if !isAppleOwner {
+                guard let normalizedIdentifier, !normalizedIdentifier.isEmpty else {
+                    return (nil, "missing_identifier")
+                }
+                return (normalizedIdentifier, "non_apple_identifier")
+            }
+
+            if let normalizedIdentifier, !normalizedIdentifier.isEmpty {
+                if normalizedIdentifier.hasPrefix("com.apple.menuextra.") {
+                    return (normalizedIdentifier.lowercased(), "apple_identifier")
+                }
+                if let mapped = mapKnownAppleMenuExtra(from: normalizedIdentifier) {
+                    return (mapped, "apple_identifier_mapped")
+                }
+            }
+
+            if width > 0, let normalizedLabel, let mapped = mapKnownAppleMenuExtra(from: normalizedLabel) {
+                return (mapped, "apple_label_fallback")
+            }
+
+            if width <= 0 {
+                return (nil, "missing_identifier_zero_width")
+            }
+
+            return (nil, "unknown_apple_extra")
+        }
+
+        func menuBarRoots(for appElement: AXUIElement, ownerBundleId: String) -> [(String, AXUIElement)] {
+            var roots: [(String, AXUIElement)] = []
+
+            var extrasBar: CFTypeRef?
+            let extrasResult = AXUIElementCopyAttributeValue(appElement, "AXExtrasMenuBar" as CFString, &extrasBar)
+            if extrasResult == .success, let extrasElement = safeAXUIElement(extrasBar) {
+                roots.append(("AXExtrasMenuBar", extrasElement))
+            }
+
+            let allowFallback = ownerBundleId == "com.apple.systemuiserver" || ownerBundleId == "com.apple.controlcenter"
+            if roots.isEmpty && allowFallback {
+                var menuBar: CFTypeRef?
+                let menuResult = AXUIElementCopyAttributeValue(appElement, kAXMenuBarAttribute as CFString, &menuBar)
+                if menuResult == .success, let menuElement = safeAXUIElement(menuBar) {
+                    roots.append(("AXMenuBar", menuElement))
+                }
+            }
+
+            return roots
+        }
+
+        func collectMenuBarItems(from root: AXUIElement) -> [AXUIElement] {
+            var result: [AXUIElement] = []
+
+            func visit(_ node: AXUIElement) {
+                var roleValue: CFTypeRef?
+                AXUIElementCopyAttributeValue(node, kAXRoleAttribute as CFString, &roleValue)
+                let role = axString(roleValue)
+                if role == (kAXMenuBarItemRole as String) || role == "AXMenuBarItem" {
+                    result.append(node)
+                    return
+                }
+
+                var childrenValue: CFTypeRef?
+                let childrenResult = AXUIElementCopyAttributeValue(node, kAXChildrenAttribute as CFString, &childrenValue)
+                guard childrenResult == .success, let children = childrenValue as? [AXUIElement] else { return }
+                for child in children {
+                    visit(child)
+                }
+            }
+
+            visit(root)
+            return result
+        }
+
+        let jsonOutput = ProcessInfo.processInfo.environment["SANEMASTER_MENU_SCAN_JSON"] == "1"
+        let ownerFilterRaw = ProcessInfo.processInfo.environment["SANEMASTER_MENU_SCAN_OWNERS"] ?? ""
+        let ownerFilter = Set(ownerFilterRaw.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+
+        if !AXIsProcessTrusted() {
+            fputs("ERROR: Accessibility permission is required for menu_scan.\n", stderr)
+            exit(2)
+        }
+
+        let selfPID = ProcessInfo.processInfo.processIdentifier
+        let runningApps = NSWorkspace.shared.runningApplications.filter { $0.processIdentifier != selfPID }
+
+        var detected: [RawItem] = []
+        var normalized: [NormalizedItem] = []
+        var excluded: [ExcludedItem] = []
+
+        for runningApp in runningApps {
+            let pid = runningApp.processIdentifier
+            let ownerBundleId = (runningApp.bundleIdentifier ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if ownerBundleId.isEmpty { continue }
+            if !ownerFilter.isEmpty && !ownerFilter.contains(ownerBundleId) { continue }
+
+            let ownerName = runningApp.localizedName ?? ownerBundleId
+            let appElement = AXUIElementCreateApplication(pid)
+            let roots = menuBarRoots(for: appElement, ownerBundleId: ownerBundleId)
+            guard !roots.isEmpty else { continue }
+
+            for (rootName, root) in roots {
+                let items = collectMenuBarItems(from: root)
+                for (index, item) in items.enumerated() {
+                    var identifierValue: CFTypeRef?
+                    AXUIElementCopyAttributeValue(item, kAXIdentifierAttribute as CFString, &identifierValue)
+                    let identifier = axString(identifierValue)?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    var titleValue: CFTypeRef?
+                    AXUIElementCopyAttributeValue(item, kAXTitleAttribute as CFString, &titleValue)
+                    let title = axString(titleValue)?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    var detailValue: CFTypeRef?
+                    AXUIElementCopyAttributeValue(item, kAXDescriptionAttribute as CFString, &detailValue)
+                    let detail = axString(detailValue)?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    var roleValue: CFTypeRef?
+                    AXUIElementCopyAttributeValue(item, kAXRoleAttribute as CFString, &roleValue)
+                    let role = axString(roleValue)
+
+                    var subroleValue: CFTypeRef?
+                    AXUIElementCopyAttributeValue(item, kAXSubroleAttribute as CFString, &subroleValue)
+                    let subrole = axString(subroleValue)
+
+                    var positionValue: CFTypeRef?
+                    AXUIElementCopyAttributeValue(item, kAXPositionAttribute as CFString, &positionValue)
+                    var point = CGPoint.zero
+                    if let pos = safeAXValue(positionValue) {
+                        AXValueGetValue(pos, .cgPoint, &point)
+                    }
+
+                    var sizeValue: CFTypeRef?
+                    AXUIElementCopyAttributeValue(item, kAXSizeAttribute as CFString, &sizeValue)
+                    var size = CGSize.zero
+                    if let axSize = safeAXValue(sizeValue) {
+                        AXValueGetValue(axSize, .cgSize, &size)
+                    }
+
+                    let raw = RawItem(
+                        ownerBundleId: ownerBundleId,
+                        ownerName: ownerName,
+                        pid: pid,
+                        root: rootName,
+                        index: index,
+                        identifier: identifier,
+                        title: title,
+                        detail: detail,
+                        x: Double(point.x),
+                        width: Double(size.width),
+                        role: role,
+                        subrole: subrole
+                    )
+                    detected.append(raw)
+
+                    let label = (title?.isEmpty == false ? title : detail)
+                    let (canonical, reason) = canonicalIdentifier(
+                        ownerBundleId: ownerBundleId,
+                        rawIdentifier: identifier,
+                        label: label,
+                        width: size.width
+                    )
+
+                    if let canonical {
+                        normalized.append(
+                            NormalizedItem(
+                                ownerBundleId: ownerBundleId,
+                                ownerName: ownerName,
+                                pid: pid,
+                                canonicalIdentifier: canonical,
+                                sourceIdentifier: identifier,
+                                sourceLabel: label,
+                                x: Double(point.x),
+                                width: Double(size.width),
+                                reason: reason
+                            )
+                        )
+                    } else {
+                        excluded.append(
+                            ExcludedItem(
+                                ownerBundleId: ownerBundleId,
+                                ownerName: ownerName,
+                                pid: pid,
+                                index: index,
+                                identifier: identifier,
+                                title: title,
+                                detail: detail,
+                                x: Double(point.x),
+                                width: Double(size.width),
+                                reason: reason
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        detected.sort { lhs, rhs in
+            if lhs.ownerBundleId != rhs.ownerBundleId { return lhs.ownerBundleId < rhs.ownerBundleId }
+            if lhs.x != rhs.x { return lhs.x < rhs.x }
+            return lhs.index < rhs.index
+        }
+        normalized.sort { lhs, rhs in
+            if lhs.ownerBundleId != rhs.ownerBundleId { return lhs.ownerBundleId < rhs.ownerBundleId }
+            if lhs.x != rhs.x { return lhs.x < rhs.x }
+            return lhs.canonicalIdentifier < rhs.canonicalIdentifier
+        }
+        excluded.sort { lhs, rhs in
+            if lhs.ownerBundleId != rhs.ownerBundleId { return lhs.ownerBundleId < rhs.ownerBundleId }
+            if lhs.reason != rhs.reason { return lhs.reason < rhs.reason }
+            return lhs.index < rhs.index
+        }
+
+        if jsonOutput {
+            let output = ScanOutput(detected: detected, normalized: normalized, excluded: excluded)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(output)
+            print(String(data: data, encoding: .utf8) ?? "{}")
+            exit(0)
+        }
+
+        print("--- [ MENU BAR DIAGNOSTICS ] ---")
+        print("")
+        print("Detected: \(detected.count)")
+        for item in detected {
+            let id = item.identifier ?? "nil"
+            let label = item.title ?? item.detail ?? ""
+            print("  [\(item.ownerBundleId)] root=\(item.root) i=\(item.index) id=\(id) label=\(label) x=\(Int(item.x)) w=\(Int(item.width))")
+        }
+
+        print("")
+        print("Normalized: \(normalized.count)")
+        for item in normalized {
+            let source = item.sourceIdentifier ?? "nil"
+            let label = item.sourceLabel ?? ""
+            print("  [\(item.ownerBundleId)] canonical=\(item.canonicalIdentifier) via=\(item.reason) source=\(source) label=\(label) x=\(Int(item.x)) w=\(Int(item.width))")
+        }
+
+        print("")
+        print("Excluded: \(excluded.count)")
+        for item in excluded {
+            let id = item.identifier ?? "nil"
+            let label = item.title ?? item.detail ?? ""
+            print("  [\(item.ownerBundleId)] reason=\(item.reason) i=\(item.index) id=\(id) label=\(label) x=\(Int(item.x)) w=\(Int(item.width))")
+        }
+      SWIFT
+
+      Tempfile.create(%w[sanemaster_menu_scan .swift]) do |tmp|
+        tmp.write(swift_script)
+        tmp.flush
+
+        env = {
+          'SANEMASTER_MENU_SCAN_JSON' => json_output ? '1' : '0',
+          'SANEMASTER_MENU_SCAN_OWNERS' => owners_env
+        }
+        stdout, stderr, status = Open3.capture3(env, 'swift', tmp.path)
+
+        if status.success?
+          puts stdout
+        else
+          puts '❌ menu_scan failed'
+          puts stderr unless stderr.to_s.strip.empty?
+          puts stdout unless stdout.to_s.strip.empty?
+          puts ''
+          puts 'Tip: Ensure Accessibility permission is granted to the terminal/Codex app.'
+          exit 1
+        end
+      end
+    end
+
     private
 
     def export_xcresult(xcresult)

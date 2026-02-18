@@ -21,6 +21,7 @@
 
 require 'open3'
 require 'json'
+require 'tempfile'
 
 # Load all modules
 require_relative 'sanemaster/base'
@@ -110,7 +111,8 @@ class SaneMaster
         'logs' => { args: '[--follow]', desc: 'Show application logs' },
         'launch' => { args: '', desc: 'Launch the app' },
         'crashes' => { args: '[--recent]', desc: 'Analyze crash reports' },
-        'diagnose' => { args: '[path]', desc: 'Analyze .xcresult bundle' }
+        'diagnose' => { args: '[path]', desc: 'Analyze .xcresult bundle' },
+        'menu_scan' => { args: '[--json] [--owners bundle1,bundle2]', desc: 'Menu bar diagnostics (detected/normalized/excluded)' }
       }
     },
     env: {
@@ -272,6 +274,8 @@ class SaneMaster
       diagnose(diagnose_args[:path], dump: diagnose_args[:dump])
     when 'crash_report', 'crashes'
       analyze_crashes(args)
+    when 'menu_scan'
+      menu_scan(args)
 
     # Environment & Health
     when 'doctor'
