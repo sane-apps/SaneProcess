@@ -264,7 +264,6 @@ module SaneMasterModules
     end
 
     def run_tests_with_progress(timeout_seconds:, include_ui: false)
-      require 'timeout'
       require 'open3'
 
       cmd = build_test_command(include_ui)
@@ -317,25 +316,40 @@ module SaneMasterModules
       success = false
       timed_out = false
 
-      begin
-        File.open('test_output.txt', 'w') do |log_file|
-          puts '   📝 Full logs: test_output.txt'
+      File.open('test_output.txt', 'w') do |log_file|
+        puts '   📝 Full logs: test_output.txt'
 
-          Timeout.timeout(timeout_seconds) do
-            Open3.popen2e(*cmd) do |stdin, stdout_err, wait_thr|
-              stdin.close
-              stdout_err.each_line do |line|
-                line = line.chomp
-                log_file.puts(line)
-                yield(line) if block_given?
-              end
-              success = wait_thr.value.success?
+        Open3.popen2e(*cmd) do |stdin, stdout_err, wait_thr|
+          stdin.close
+
+          reader = Thread.new do
+            stdout_err.each_line do |line|
+              line = line.chomp
+              log_file.puts(line)
+              yield(line) if block_given?
             end
+          rescue IOError
+            nil
           end
+
+          # Avoid Timeout.timeout here; Ruby docs explicitly warn it cannot
+          # reliably enforce deadlines for arbitrary/blocking operations.
+          if wait_thr.join(timeout_seconds).nil?
+            timed_out = true
+            handle_timeout(timeout_seconds, wait_thr.pid)
+          else
+            success = wait_thr.value.success?
+          end
+
+          begin
+            stdout_err.close unless stdout_err.closed?
+          rescue IOError
+            nil
+          end
+
+          reader.join(2)
+          reader.kill if reader.alive?
         end
-      rescue Timeout::Error
-        timed_out = true
-        handle_timeout(timeout_seconds)
       end
 
       { success: success && !timed_out, timeout: timed_out }
@@ -344,8 +358,8 @@ module SaneMasterModules
     def handle_progress_update(line, state)
       case line
       # XCTest pattern: Test Case '-[TestClass testMethod]' started/passed
-      # Swift Testing pattern: ✔ Test "test name" passed after X seconds
-      when /Test Case.*'(.+)'/, /[✔✓] Test "(.+)" passed/
+      # Swift Testing pattern can be prefixed by ✓/✔ or private-use glyphs in Xcode logs.
+      when /Test Case.*'(.+)'/, /(?:[✔✓]\s+)?Test "(.+)" passed/
         state[:current_test] = ::Regexp.last_match(1)
         state[:tests_run] += 1
         elapsed = (Time.now - state[:start_time]).to_i
@@ -353,14 +367,14 @@ module SaneMasterModules
         print "\r#{spinner} Running: #{state[:current_test]} (#{state[:tests_run]} tests, #{elapsed}s)    "
         state[:spinner_idx] += 1
         state[:last_update] = Time.now
-      # Swift Testing summary: ✔ Test run with 27 tests in 4 suites passed
-      when /[✔✓] Test run with (\d+) tests? in (\d+) suites? passed/
+      # Swift Testing summary: may appear with or without explicit checkmark glyph.
+      when /(?:[✔✓]\s+)?Test run with (\d+) tests? in (\d+) suites? passed/
         state[:swift_testing_total] = ::Regexp.last_match(1).to_i
         suites = ::Regexp.last_match(2).to_i
         print "\r"
         puts "   ✅ Swift Testing: #{state[:swift_testing_total]} tests in #{suites} suites passed"
-      # Swift Testing suite start: ◇ Suite "name" started
-      when /◇ Suite "(.+)" started/
+      # Swift Testing suite start: may include non-ASCII prefix glyphs in logs.
+      when /Suite "(.+)" started/
         suite_name = ::Regexp.last_match(1)
         elapsed = (Time.now - state[:start_time]).to_i
         spinner = state[:spinner_chars][state[:spinner_idx] % state[:spinner_chars].length]
@@ -380,10 +394,16 @@ module SaneMasterModules
       end
     end
 
-    def handle_timeout(timeout_seconds)
+    def handle_timeout(timeout_seconds, process_pid = nil)
       puts "\n\n⏱️  TIMEOUT: Test run exceeded #{timeout_seconds}s"
       puts '   This usually means a test is stuck or waiting for user input'
       puts '🔪 Force killing all test processes...'
+
+      begin
+        Process.kill('TERM', process_pid) if process_pid
+      rescue Errno::ESRCH, Errno::EPERM
+        nil
+      end
 
       3.times do |attempt|
         # Use -x for exact match to avoid killing helper processes

@@ -5,12 +5,12 @@
 # Blocks manual curl to email APIs. Forces use of check-inbox.sh.
 #
 # BLOCKS:
-#   - Direct curl to email-api.saneapps.com
-#   - Direct curl to api.resend.com for email operations
-#   - Direct curl to email-api.saneapps.com/api/send-reply
+#   - Direct curl POST/PUT to email-api.saneapps.com (send-reply, compose, status changes)
+#   - Direct curl POST to api.resend.com (sending emails bypasses Worker tracking)
 #
 # ALLOWS:
 #   - check-inbox.sh subcommands (the proper way)
+#   - GET requests to email-api.saneapps.com (reads are fine)
 #   - Non-email curl commands
 
 require 'json'
@@ -30,19 +30,18 @@ exit 0 if command.empty?
 # Always allow check-inbox.sh invocations
 exit 0 if command.include?('check-inbox.sh')
 
-# Block 1: Direct curl to email Worker API
-if command.match?(/curl\s.*email-api\.saneapps\.com/)
-  warn '🔴 BLOCKED: Direct curl to email API'
-  warn '   Manual curl to the email API is error-prone and misses emails.'
+# Block 1: Direct curl WRITE operations to email Worker API
+# GET/read is fine — only block POST/PUT/DELETE (sending, composing, status changes)
+if command.match?(/curl\s.*email-api\.saneapps\.com/) && command.match?(/-X\s*(POST|PUT|DELETE)|--data|-d\s/)
+  warn '🔴 BLOCKED: Direct write to email API'
+  warn '   Sending/modifying via curl directly bypasses check-inbox.sh tracking.'
   warn ''
   warn '   ✅ Use instead:'
-  warn '      ~/SaneApps/infra/scripts/check-inbox.sh           # Full inbox report'
-  warn '      ~/SaneApps/infra/scripts/check-inbox.sh read <id> # Read one email'
   warn '      ~/SaneApps/infra/scripts/check-inbox.sh reply <id> <body_file>'
+  warn '      ~/SaneApps/infra/scripts/check-inbox.sh compose <to> <subject> <body_file>'
   warn '      ~/SaneApps/infra/scripts/check-inbox.sh resolve <id>'
-  warn '      ~/SaneApps/infra/scripts/check-inbox.sh resolve-batch <id1,id2,...>'
   warn ''
-  warn '   Or use the /check-inbox command for the full workflow.'
+  warn '   Read operations (GET) are allowed — this only blocks writes.'
   exit 2
 end
 

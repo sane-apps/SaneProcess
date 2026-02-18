@@ -362,10 +362,13 @@ module SaneMasterModules
         issues << 'No 1024x1024 app icon found in AppIcon.appiconset'
       end
 
-      # 3b. Screenshots configured
+      # 3b. Screenshots configured and valid
       print '  │ Screenshots... '
       screenshots_config = appstore_config['screenshots'] || {}
       platforms = appstore_config['platforms'] || ['macos']
+      project_yml_content = File.exist?(project_yml) ? File.read(project_yml) : ''
+      ios_supports_ipad = project_yml_content.match?(/TARGETED_DEVICE_FAMILY:\s*["']?[^"\n]*\b2\b/)
+
       if screenshots_config.empty?
         puts '❌ not configured'
         issues << 'No screenshots configured in .saneprocess appstore.screenshots'
@@ -379,6 +382,42 @@ module SaneMasterModules
             files = Dir.glob(File.join(Dir.pwd, glob_pattern))
             if files.any?
               screenshot_summary << "#{platform}: #{files.count}"
+
+              # Validate screenshot dimensions for each device class
+              if platform == 'ios'
+                # Check for iPad-specific screenshots (not stretched iPhone images)
+                ipad_globs = [
+                  screenshots_config['ipad'],
+                  screenshots_config['ipad_13'],
+                  screenshots_config['ipad_12.9'],
+                  screenshots_config['ipad_12_9'],
+                  screenshots_config['ipad_11']
+                ].compact
+
+                if ios_supports_ipad && ipad_globs.empty?
+                  screenshot_issues << 'iOS submission includes iPad but no iPad-specific screenshot glob configured — Apple rejects stretched iPhone screenshots on iPad'
+                end
+
+                if ios_supports_ipad && !ipad_globs.empty?
+                  ipad_files = ipad_globs.flat_map { |glob| Dir.glob(File.join(Dir.pwd, glob)) }.uniq
+                  if ipad_files.empty?
+                    screenshot_issues << "No iPad screenshots found matching configured globs: #{ipad_globs.join(', ')}"
+                  else
+                    screenshot_summary << "ipad: #{ipad_files.count}"
+                    ipad_files.each do |f|
+                      dims, = Open3.capture2('sips', '-g', 'pixelWidth', '-g', 'pixelHeight', f)
+                      width = dims[/pixelWidth:\s*(\d+)/, 1].to_i
+                      height = dims[/pixelHeight:\s*(\d+)/, 1].to_i
+                      next if width.zero? || height.zero?
+
+                      # iPad screenshots should be >= 1668 on shorter edge
+                      if [width, height].min < 1668
+                        screenshot_issues << "#{File.basename(f)} (#{width}x#{height}) appears too small for iPad screenshot requirements"
+                      end
+                    end
+                  end
+                end
+              end
             else
               screenshot_issues << "No #{platform} screenshots found matching: #{glob_pattern}"
             end
@@ -423,7 +462,7 @@ module SaneMasterModules
       all_source = swift_files.map { |f| File.read(f) rescue '' }.join("\n")
 
       required_keys = {}
-      required_keys['NSAccessibilityUsageDescription'] = 'Accessibility' if all_source.match?(/AXUIElement|AXIsProcessTrusted|accessibility/i)
+      required_keys['NSAccessibilityUsageDescription'] = 'Accessibility' if all_source.match?(/AXUIElement|AXIsProcessTrusted|CGEvent\(keyboardEventSource:|CGEvent\.post\(tap:\s*\.cghidEventTap/)
       required_keys['NSCameraUsageDescription'] = 'Camera' if all_source.match?(/AVCaptureSession|AVCaptureDevice.*video/i)
       required_keys['NSMicrophoneUsageDescription'] = 'Microphone' if all_source.match?(/AVAudioSession|AVCaptureDevice.*audio/i)
       required_keys['NSPhotoLibraryUsageDescription'] = 'Photos' if all_source.match?(/PHPhotoLibrary|PHAsset/i)
@@ -555,18 +594,58 @@ module SaneMasterModules
       # ═══════════════════════════════════════════
       puts '  └── Review Preparation ──'
 
-      # 6a. Review notes
+      # 6a. Review notes — must explain EACH permission with technical justification
       print '    Review notes... '
       review_notes = appstore_config['review_notes']
       if review_notes && !review_notes.to_s.strip.empty?
-        puts "✅ (#{review_notes.to_s.length} chars)"
+        notes_text = review_notes.to_s
+        notes_issues = []
+
+        # Verify each permission-requiring API has a specific explanation in the notes
+        permission_keywords = {
+          'NSAccessibilityUsageDescription' => {
+            name: 'Accessibility',
+            required_terms: %w[CGEvent AXIsProcessTrusted paste keystroke keyboard],
+            guidance: 'Must explain WHAT specific feature uses Accessibility and HOW (e.g. CGEvent paste simulation). Generic "clipboard monitoring" is NOT sufficient — Apple will reject with Guideline 2.1'
+          },
+          'NSCameraUsageDescription' => {
+            name: 'Camera',
+            required_terms: %w[camera capture photo video scan],
+            guidance: 'Must explain what feature uses the camera and why'
+          },
+          'NSAppleEventsUsageDescription' => {
+            name: 'AppleEvents',
+            required_terms: %w[AppleScript automation scripting control],
+            guidance: 'Must explain which app(s) are controlled and why'
+          }
+        }
+
+        required_keys.each_key do |plist_key|
+          check = permission_keywords[plist_key]
+          next unless check
+
+          has_explanation = check[:required_terms].any? { |term| notes_text.downcase.include?(term.downcase) }
+          unless has_explanation
+            notes_issues << "Review notes mention #{check[:name]} but lack technical detail — #{check[:guidance]}"
+          end
+        end
+
+        if notes_issues.empty?
+          puts "✅ (#{notes_text.length} chars, permissions explained)"
+        else
+          puts "❌ #{notes_issues.count} permission(s) not adequately explained"
+          notes_issues.each do |ni|
+            puts "    - #{ni}"
+            issues << ni
+          end
+        end
       else
         # Check if app needs special explanation (e.g. Accessibility)
         needs_explanation = required_keys.key?('NSAccessibilityUsageDescription') ||
                             entitlements.any? { |e| (File.read(e) rescue '').include?('apple-events') }
         if needs_explanation
           puts '❌ missing (app uses Accessibility/AppleEvents — reviewer needs explanation)'
-          issues << 'No review_notes in .saneprocess — apps using Accessibility MUST explain why to App Review'
+          issues << 'No review_notes in .saneprocess — apps using Accessibility MUST explain why to App Review. Must include: specific feature name, API used (e.g. CGEvent), and why it cannot work without the permission'
         else
           puts '⚠️  not set'
           warnings << 'No review_notes in .saneprocess — consider adding explanation for reviewers'

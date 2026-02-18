@@ -75,6 +75,7 @@ class SaneTest
     @free_mode = args.include?('--free-mode')
     @pro_mode = args.include?('--pro-mode')
     @reset_tcc = args.include?('--reset-tcc')
+    @fresh = args.include?('--fresh')
     @app_dir = File.join(SANE_APPS_ROOT, app_name)
 
     abort "❌ Unknown app: #{app_name}. Known: #{APPS.keys.join(', ')}" unless @config
@@ -122,18 +123,16 @@ class SaneTest
   # ── Remote (Mac mini) workflow ──────────────────────────────
 
   def run_remote
-    step('1. Kill existing processes (mini)') { kill_remote }
-    step('2. Clean ALL stale copies (mini)') { clean_remote }
-    step('3. Build fresh debug build') { build_debug }
-    step('4. Deploy to mini') { deploy_to_mini }
-    step('5. Verify single copy (mini)') { verify_single_copy_remote }
-    if @reset_tcc
-      step('6. Reset TCC permissions (mini)') { reset_tcc_remote }
-    end
-    step("#{@reset_tcc ? '7' : '6'}. Set license mode (mini)") { set_license_mode_remote } if @free_mode || @pro_mode
-    n = @reset_tcc ? 7 : 6
-    n += 1 if @free_mode || @pro_mode
-    step("#{n}. Launch on mini") { launch_remote }
+    n = 0
+    step("#{n += 1}. Kill existing processes (mini)") { kill_remote }
+    step("#{n += 1}. Clean ALL stale copies (mini)") { clean_remote }
+    step("#{n += 1}. Build fresh debug build") { build_debug }
+    step("#{n += 1}. Deploy to mini") { deploy_to_mini }
+    step("#{n += 1}. Verify single copy (mini)") { verify_single_copy_remote }
+    step("#{n += 1}. Fresh reset (mini)") { fresh_reset_remote } if @fresh
+    step("#{n += 1}. Reset TCC permissions (mini)") { reset_tcc_remote } if @reset_tcc && !@fresh
+    step("#{n += 1}. Set license mode (mini)") { set_license_mode_remote } if (@free_mode || @pro_mode) && !@fresh
+    step("#{n += 1}. Launch on mini") { launch_remote }
     stream_logs_remote unless @no_logs
   end
 
@@ -177,6 +176,49 @@ class SaneTest
       ssh("tccutil reset Accessibility #{bid} 2>/dev/null; true")
     end
     warn "   Reset TCC for: #{bundle_ids.join(', ')}"
+  end
+
+  def fresh_reset_remote
+    # Wipe Application Support
+    ssh("rm -rf \"$HOME/Library/Application Support/#{@app_name}\" 2>/dev/null; true")
+    # Wipe UserDefaults for ALL bundle IDs (dev + prod) and flush preferences cache
+    bundle_ids.each do |b|
+      ssh("defaults delete #{b} 2>/dev/null; true")
+    end
+    ssh("killall cfprefsd 2>/dev/null; true")
+    # Reset TCC/Accessibility
+    bundle_ids.each do |b|
+      ssh("tccutil reset All #{b} 2>/dev/null; true")
+    end
+    # Clear license keychain entries for ALL bundle IDs
+    bundle_ids.each do |b|
+      LICENSE_KEYCHAIN_KEYS.each do |key|
+        ssh("security delete-generic-password -s #{b} -a #{key} 2>/dev/null; true")
+      end
+    end
+    warn "   Wiped App Support, UserDefaults, TCC, license for #{bundle_ids.join(', ')}"
+  end
+
+  def fresh_reset_local
+    # Wipe Application Support
+    app_support = File.expand_path("~/Library/Application Support/#{@app_name}")
+    FileUtils.rm_rf(app_support) if File.exist?(app_support)
+    # Wipe UserDefaults for ALL bundle IDs (dev + prod) and flush preferences cache
+    bundle_ids.each do |b|
+      system('defaults', 'delete', b, err: File::NULL, out: File::NULL)
+    end
+    system('killall', 'cfprefsd', err: File::NULL, out: File::NULL)
+    # Reset TCC/Accessibility
+    bundle_ids.each do |b|
+      system('tccutil', 'reset', 'All', b, out: File::NULL, err: File::NULL)
+    end
+    # Clear license keychain entries for ALL bundle IDs
+    bundle_ids.each do |b|
+      LICENSE_KEYCHAIN_KEYS.each do |key|
+        system('security', 'delete-generic-password', '-s', b, '-a', key, err: File::NULL)
+      end
+    end
+    warn "   Wiped App Support, UserDefaults, TCC, license for #{bundle_ids.join(', ')}"
   end
 
   def verify_single_copy_remote
@@ -233,17 +275,15 @@ class SaneTest
   # ── Local workflow ──────────────────────────────────────────
 
   def run_local
-    step('1. Kill existing processes') { kill_local }
-    step('2. Clean ALL stale copies') { clean_local }
-    step('3. Build fresh debug build') { build_debug }
-    step('4. Verify single copy') { verify_single_copy_local }
-    if @reset_tcc
-      step('5. Reset TCC permissions') { reset_tcc_local }
-    end
-    step("#{@reset_tcc ? '6' : '5'}. Set license mode") { set_license_mode_local } if @free_mode || @pro_mode
-    n = @reset_tcc ? 6 : 5
-    n += 1 if @free_mode || @pro_mode
-    step("#{n}. Launch locally") { launch_local }
+    n = 0
+    step("#{n += 1}. Kill existing processes") { kill_local }
+    step("#{n += 1}. Clean ALL stale copies") { clean_local }
+    step("#{n += 1}. Build fresh debug build") { build_debug }
+    step("#{n += 1}. Verify single copy") { verify_single_copy_local }
+    step("#{n += 1}. Fresh reset") { fresh_reset_local } if @fresh
+    step("#{n += 1}. Reset TCC permissions") { reset_tcc_local } if @reset_tcc && !@fresh
+    step("#{n += 1}. Set license mode") { set_license_mode_local } if (@free_mode || @pro_mode) && !@fresh
+    step("#{n += 1}. Launch locally") { launch_local }
     stream_logs_local unless @no_logs
   end
 
@@ -319,40 +359,43 @@ class SaneTest
   # ── License Mode ─────────────────────────────────────────────
 
   LICENSE_KEYCHAIN_KEYS = %w[
-    com.sanebar.license.key
-    com.sanebar.license.instanceId
+    pro_license_key
+    pro_license_email
+    pro_last_validation
   ].freeze
 
-  TEST_LICENSE_KEY = 'SANEBAR-TEST-KEY-FOR-AUTOMATED-TESTING'
+  TEST_LICENSE_KEY = '66C2DC9C-3B72-41DC-8F79-BDE07715F2DE'
 
   def set_license_mode_local
+    bid = @config[:dev]
     if @free_mode
       warn '   Clearing license data (free mode)...'
       LICENSE_KEYCHAIN_KEYS.each do |key|
-        system('security', 'delete-generic-password', '-s', key, err: File::NULL)
+        system('security', 'delete-generic-password', '-s', bid, '-a', key, err: File::NULL)
       end
       # Clear cached validation and grandfathered flag from settings
       clear_license_settings_local
       warn '   License cleared — app will launch as Free user'
     elsif @pro_mode
       warn '   Injecting test license key (pro mode)...'
-      system('security', 'add-generic-password', '-s', LICENSE_KEYCHAIN_KEYS[0],
-             '-a', 'license', '-w', TEST_LICENSE_KEY, '-U')
+      system('security', 'add-generic-password', '-s', bid,
+             '-a', LICENSE_KEYCHAIN_KEYS[0], '-w', TEST_LICENSE_KEY, '-U')
       warn "   Test key injected — app will attempt validation with #{TEST_LICENSE_KEY}"
     end
   end
 
   def set_license_mode_remote
+    bid = @config[:dev]
     if @free_mode
       warn '   Clearing license data on mini (free mode)...'
       LICENSE_KEYCHAIN_KEYS.each do |key|
-        ssh("security delete-generic-password -s #{key} 2>/dev/null; true")
+        ssh("security delete-generic-password -s #{bid} -a #{key} 2>/dev/null; true")
       end
       clear_license_settings_remote
       warn '   License cleared on mini — app will launch as Free user'
     elsif @pro_mode
       warn '   Injecting test license key on mini (pro mode)...'
-      ssh("security add-generic-password -s #{LICENSE_KEYCHAIN_KEYS[0]} -a license -w #{TEST_LICENSE_KEY} -U 2>/dev/null; true")
+      ssh("security add-generic-password -s #{bid} -a #{LICENSE_KEYCHAIN_KEYS[0]} -w #{TEST_LICENSE_KEY} -U 2>/dev/null; true")
       warn "   Test key injected on mini — app will attempt validation"
     end
   end
@@ -457,12 +500,14 @@ if ARGV.empty? || ARGV[0] == '--help'
   warn 'Options:'
   warn '  --local      Force local testing (skip mini even if reachable)'
   warn '  --no-logs    Skip log streaming after launch'
+  warn '  --fresh      Wipe ALL state (App Support, UserDefaults, TCC, license) — true first launch'
   warn '  --free-mode  Clear license data — launch as Free user'
   warn '  --pro-mode   Inject test license key — launch in Pro validation mode'
   warn '  --reset-tcc  Reset TCC/Accessibility permissions (only for fresh installs)'
   warn ''
   warn 'Default: deploys to Mac mini if reachable, local otherwise.'
   warn 'TCC is preserved by default — single-copy enforcement prevents stale grants.'
+  warn 'Use --fresh to test onboarding or first-launch experience.'
   exit 0
 end
 

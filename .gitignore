@@ -46,3 +46,8 @@ TESTING_RESULTS.md
 .wrangler/
 node_modules/
 outputs/
+test_output*.txt
+
+# Local memory/runtime caches
+.serena/
+scripts/hooks/.claude/

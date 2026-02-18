@@ -202,11 +202,31 @@ end
 # gh issue comment, gh issue close --comment, gh pr comment, gh pr review — all post publicly
 # as MrSaneApps. NEVER post without showing the user a draft first.
 # Read-only operations (gh issue view, gh issue list, gh pr view) are allowed.
+#
+# Approval flow:
+#   1. Claude shows draft text to user in conversation
+#   2. User approves (edits or says "post it")
+#   3. Claude writes /tmp/.gh_post_approved (touch file)
+#   4. Claude runs gh command — hook sees flag, allows it, deletes flag
+#   5. If no flag → block and remind Claude to show draft first
+APPROVAL_FLAG = '/tmp/.gh_post_approved'
 if command.match?(/\bgh\s+(?:issue|pr)\s+(?:comment|close|review|create)\b/)
+  if File.exist?(APPROVAL_FLAG)
+    # Check flag is recent (within 5 minutes) to prevent stale approvals
+    age = Time.now - File.mtime(APPROVAL_FLAG)
+    if age < 300
+      File.delete(APPROVAL_FLAG)
+      exit 0  # Approved — allow the post
+    else
+      File.delete(APPROVAL_FLAG)
+      # Fall through to block — stale approval
+    end
+  end
   warn '🔴 BLOCKED: Public GitHub interaction without user approval'
   warn '   This posts publicly as MrSaneApps. Show the user a draft first.'
   warn ''
   warn '   ✅ Show the draft text to the user, get explicit approval, then post.'
+  warn '   Then touch /tmp/.gh_post_approved before running the command.'
   exit 2
 end
 

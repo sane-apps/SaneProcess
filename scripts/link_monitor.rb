@@ -129,7 +129,7 @@ def scan_html_for_checkout_links
     next unless Dir.exist?(full_dir)
 
     Dir.glob(File.join(full_dir, "**/*.html")).each do |html_file|
-      content = File.read(html_file)
+      content = File.read(html_file).encode('UTF-8', 'binary', invalid: :replace, undef: :replace, replace: '')
       # Find all lemonsqueezy checkout URLs
       content.scan(%r{https?://[a-z]+\.lemonsqueezy\.com/checkout/buy/[^"'\s]+}).each do |url|
         unless url.start_with?("https://saneapps.lemonsqueezy.com/")

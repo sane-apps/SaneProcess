@@ -48,18 +48,20 @@ PLATFORM_MAP = {
   'ios' => 'IOS'
 }.freeze
 
-# Screenshot dimensions per display type
-SCREENSHOT_SPECS = {
-  'MAC_OS' => {
-    display_type: 'APP_DESKTOP',
-    width: 2880,
-    height: 1800
-  },
-  'IOS' => {
-    display_type: 'APP_IPHONE_67',
-    width: 1290,
-    height: 2796
-  }
+# Screenshot dimensions and ASC display types keyed by .saneprocess screenshot keys
+SCREENSHOT_VARIANTS = {
+  'MAC_OS' => [
+    { key: 'macos', display_type: 'APP_DESKTOP', width: 2880, height: 1800 }
+  ],
+  'IOS' => [
+    { key: 'ios', display_type: 'APP_IPHONE_67', width: 1290, height: 2796 },
+    { key: 'ios_65', display_type: 'APP_IPHONE_65', width: 1242, height: 2688 },
+    # Apple uses APP_IPAD_PRO_3GEN_129 for 12.9" iPad Pro screenshots in ASC.
+    { key: 'ipad', display_type: 'APP_IPAD_PRO_3GEN_129', width: 2048, height: 2732 },
+    { key: 'ipad_13', display_type: 'APP_IPAD_PRO_3GEN_129', width: 2048, height: 2732 },
+    { key: 'ipad_12.9', display_type: 'APP_IPAD_PRO_3GEN_129', width: 2048, height: 2732 },
+    { key: 'ipad_12_9', display_type: 'APP_IPAD_PRO_3GEN_129', width: 2048, height: 2732 }
+  ]
 }.freeze
 
 BUILD_POLL_INTERVAL = 30   # seconds
@@ -418,34 +420,26 @@ def resize_screenshot(src, target_w, target_h)
   tmp
 end
 
-def upload_screenshots(version_id, platform, project_root, config, token)
-  spec = SCREENSHOT_SPECS[platform]
-  return unless spec
+def screenshot_jobs_for(platform, config)
+  variants = SCREENSHOT_VARIANTS[platform] || []
+  screenshots_config = config.dig('appstore', 'screenshots') || {}
+  jobs = []
+  seen_display_types = {}
 
-  # Read screenshot glob from config
-  screenshot_key = platform == 'MAC_OS' ? 'macos' : 'ios'
-  screenshot_glob = config.dig('appstore', 'screenshots', screenshot_key)
-  return unless screenshot_glob
+  variants.each do |variant|
+    glob = screenshots_config[variant[:key]]
+    next unless glob
+    next if seen_display_types[variant[:display_type]]
 
-  # Resolve glob relative to project root
-  pattern = File.join(project_root, screenshot_glob)
-  files = Dir.glob(pattern).sort
-
-  if files.empty?
-    log_warn "No screenshots found matching: #{pattern}"
-    return
+    jobs << variant.merge(glob: glob)
+    seen_display_types[variant[:display_type]] = true
   end
 
-  log_info "Found #{files.length} screenshot(s) for #{platform}"
+  jobs
+end
 
-  # Get the version's localizations to find where to attach screenshots
-  path = "/appStoreVersions/#{version_id}/appStoreVersionLocalizations"
-  resp = asc_get(path, token: token)
-  return unless resp && resp['data'] && !resp['data'].empty?
-
-  localization_id = resp['data'].first['id']
-
-  # Get existing screenshot sets
+def upload_screenshot_set(localization_id, files, spec, token)
+  # Get existing screenshot set for this display type
   sets_path = "/appStoreVersionLocalizations/#{localization_id}/appScreenshotSets" \
               "?filter[screenshotDisplayType]=#{spec[:display_type]}"
   sets_resp = asc_get(sets_path, token: token)
@@ -460,7 +454,6 @@ def upload_screenshots(version_id, platform, project_root, config, token)
     if existing_resp && existing_resp['data']
       existing_resp['data'].each do |ss|
         state = ss.dig('attributes', 'assetDeliveryState', 'state')
-        # Delete failed or existing screenshots
         if %w[UPLOAD_COMPLETE COMPLETE FAILED].include?(state)
           asc_delete("/appScreenshots/#{ss['id']}", token: token)
         end
@@ -488,14 +481,12 @@ def upload_screenshots(version_id, platform, project_root, config, token)
   return unless screenshot_set_id
 
   files.each_with_index do |file, idx|
-    log_info "Uploading screenshot #{idx + 1}/#{files.length}: #{File.basename(file)}"
+    log_info "Uploading #{spec[:display_type]} screenshot #{idx + 1}/#{files.length}: #{File.basename(file)}"
 
-    # Resize to correct dimensions
     resized = resize_screenshot(file, spec[:width], spec[:height])
     file_size = File.size(resized)
     file_name = File.basename(file)
 
-    # Reserve upload slot
     body = {
       data: {
         type: 'appScreenshots',
@@ -521,7 +512,6 @@ def upload_screenshots(version_id, platform, project_root, config, token)
     screenshot_id = reservation['data']['id']
     upload_ops = reservation.dig('data', 'attributes', 'uploadOperations') || []
 
-    # Upload each part
     upload_ops.each do |op|
       upload_url = op['url']
       offset = op['offset']
@@ -542,7 +532,6 @@ def upload_screenshots(version_id, platform, project_root, config, token)
       http.request(req)
     end
 
-    # Commit upload
     source_checksum = Digest::MD5.hexdigest(File.binread(resized))
     commit_body = {
       data: {
@@ -557,6 +546,29 @@ def upload_screenshots(version_id, platform, project_root, config, token)
     asc_patch("/appScreenshots/#{screenshot_id}", body: commit_body, token: token)
 
     File.delete(resized) if File.exist?(resized)
+  end
+end
+
+def upload_screenshots(version_id, platform, project_root, config, token)
+  jobs = screenshot_jobs_for(platform, config)
+  return if jobs.empty?
+
+  # Get the version's localizations to find where to attach screenshots
+  path = "/appStoreVersions/#{version_id}/appStoreVersionLocalizations"
+  resp = asc_get(path, token: token)
+  return unless resp && resp['data'] && !resp['data'].empty?
+
+  localization_id = resp['data'].first['id']
+
+  jobs.each do |job|
+    pattern = File.join(project_root, job[:glob])
+    files = Dir.glob(pattern).sort
+    if files.empty?
+      log_warn "No screenshots found matching: #{pattern}"
+      next
+    end
+    log_info "Found #{files.length} screenshot(s) for #{job[:display_type]}"
+    upload_screenshot_set(localization_id, files, job, token)
   end
 
   log_info "Screenshot upload complete for #{platform}"
@@ -634,20 +646,24 @@ if options[:test_screenshots]
   config = YAML.safe_load(File.read(config_path)) || {}
   platform = options[:platform] || 'macos'
   asc_platform = PLATFORM_MAP[platform]
-  spec = SCREENSHOT_SPECS[asc_platform]
+  jobs = screenshot_jobs_for(asc_platform, config)
 
-  screenshot_key = asc_platform == 'MAC_OS' ? 'macos' : 'ios'
-  screenshot_glob = config.dig('appstore', 'screenshots', screenshot_key)
-  pattern = File.join(project_root, screenshot_glob)
-  files = Dir.glob(pattern).sort
+  if jobs.empty?
+    log_warn "No screenshot jobs configured for #{asc_platform} in .saneprocess"
+    exit 0
+  end
 
-  log_info "Found #{files.length} screenshot(s) matching #{pattern}"
-  files.each do |f|
-    resized = resize_screenshot(f, spec[:width], spec[:height])
-    dims = `sips -g pixelWidth -g pixelHeight #{Shellwords.escape(resized)} 2>/dev/null`
-    log_info "  #{File.basename(f)} → #{spec[:width]}x#{spec[:height]} (#{resized})"
-    log_info "    #{dims.strip.split("\n").last(2).join(', ')}"
-    File.delete(resized) if File.exist?(resized)
+  jobs.each do |job|
+    pattern = File.join(project_root, job[:glob])
+    files = Dir.glob(pattern).sort
+    log_info "Found #{files.length} screenshot(s) matching #{pattern} for #{job[:display_type]}"
+    files.each do |f|
+      resized = resize_screenshot(f, job[:width], job[:height])
+      dims = `sips -g pixelWidth -g pixelHeight #{Shellwords.escape(resized)} 2>/dev/null`
+      log_info "  #{File.basename(f)} → #{job[:width]}x#{job[:height]} (#{resized})"
+      log_info "    #{dims.strip.split("\n").last(2).join(', ')}"
+      File.delete(resized) if File.exist?(resized)
+    end
   end
   log_info 'Screenshot test complete (no API calls made).'
   exit 0

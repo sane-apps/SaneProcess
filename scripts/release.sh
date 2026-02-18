@@ -1298,7 +1298,34 @@ APPCASTEOF
         fi
     fi
 
-    # Step 6: Commit appcast changes
+    # Step 6: Commit version/link sync files that release updates indirectly
+    PROJECT_PBXPROJ_REL="${APP_NAME}.xcodeproj/project.pbxproj"
+    if [ -n "${XCODEPROJ}" ]; then
+        if [[ "${XCODEPROJ}" == "${PROJECT_ROOT}/"* ]]; then
+            PROJECT_PBXPROJ_REL="${XCODEPROJ#${PROJECT_ROOT}/}/project.pbxproj"
+        else
+            PROJECT_PBXPROJ_REL="$(basename "${XCODEPROJ}")/project.pbxproj"
+        fi
+    fi
+
+    VERSION_SYNC_FILES=()
+    for f in "project.yml" "${PROJECT_PBXPROJ_REL}" "docs/index.html"; do
+        if [ -f "${PROJECT_ROOT}/${f}" ] && ! git -C "${PROJECT_ROOT}" diff --quiet -- "${f}" 2>/dev/null; then
+            VERSION_SYNC_FILES+=("${f}")
+        fi
+    done
+
+    if [ ${#VERSION_SYNC_FILES[@]} -gt 0 ]; then
+        log_info "Committing version metadata/site link sync..."
+        git -C "${PROJECT_ROOT}" add "${VERSION_SYNC_FILES[@]}"
+        if ! git -C "${PROJECT_ROOT}" diff --cached --quiet; then
+            git -C "${PROJECT_ROOT}" commit -m "chore: sync ${VERSION} version metadata and site download links"
+            git -C "${PROJECT_ROOT}" push
+            log_info "Version metadata/site link commit pushed."
+        fi
+    fi
+
+    # Step 7: Commit appcast changes
     if [ -f "${APPCAST_PATH}" ] && [ -n "$(git -C "${PROJECT_ROOT}" diff --name-only docs/appcast.xml 2>/dev/null)" ]; then
         log_info "Committing appcast update..."
         git -C "${PROJECT_ROOT}" add docs/appcast.xml
@@ -1307,7 +1334,7 @@ APPCASTEOF
         log_info "Appcast commit pushed."
     fi
 
-    # Step 7: Update Homebrew cask (if tap repo configured)
+    # Step 8: Update Homebrew cask (if tap repo configured)
     CASK_FILE="Casks/${LOWER_APP_NAME}.rb"
     HOMEBREW_TAP_DIR="/tmp/homebrew-tap-update-$$"
     if [ -n "${HOMEBREW_TAP_REPO}" ]; then
@@ -1340,7 +1367,7 @@ APPCASTEOF
         fi
     fi
 
-    # Step 8: Verify Homebrew cask is correct (post-push sanity check)
+    # Step 9: Verify Homebrew cask is correct (post-push sanity check)
     if [ -n "${HOMEBREW_TAP_REPO}" ]; then
         CASK_RAW_URL="https://raw.githubusercontent.com/${HOMEBREW_TAP_REPO}/main/${CASK_FILE}"
         CASK_CHECK=$(curl -s "${CASK_RAW_URL}" 2>/dev/null)
@@ -1351,7 +1378,7 @@ APPCASTEOF
         fi
     fi
 
-    # Step 9: Auto-update email webhook product config
+    # Step 10: Auto-update email webhook product config
     # The email webhook has product→filename mappings for purchase download links.
     # Previously this was a manual reminder — now it's automated for ALL apps.
     WEBHOOK_JS="${HOME}/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js"

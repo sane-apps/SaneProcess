@@ -11,17 +11,19 @@ module SaneMasterModules
     def launch_app(args)
       puts '🚀 --- [ SANEMASTER LAUNCH ] ---'
 
-      dd_path = File.expand_path("~/Library/Developer/Xcode/DerivedData/#{project_name}-*/Build/Products/Debug")
+      build_config = launch_build_config(args)
+      puts "🔧 Build configuration: #{build_config}"
+      dd_path = File.expand_path("~/Library/Developer/Xcode/DerivedData/#{project_name}-*/Build/Products/#{build_config}")
       app_path = Dir.glob(File.join(dd_path, "#{project_name}.app")).first
 
       unless app_path && File.exist?(app_path)
-        puts '❌ App binary not found. Run ./Scripts/SaneMaster.rb verify to build.'
+        puts "❌ App binary not found for configuration '#{build_config}'. Run build first."
         return
       end
 
       # STALE BUILD DETECTION - prevents launching outdated binaries
       binary_time = File.mtime(app_path)
-      source_files = Dir.glob("{#{project_name},#{project_name}Tests}/**/*.swift")
+      source_files = project_swift_sources
       newest_source = source_files.max_by { |f| File.mtime(f) }
 
       if newest_source && File.mtime(newest_source) > binary_time
@@ -39,7 +41,7 @@ module SaneMasterModules
           puts '   --force flag set, launching anyway...'
         else
           puts '   Rebuilding to ensure fresh binary...'
-          unless run_build_command
+          unless run_build_command(build_config: build_config)
             puts '   ❌ Rebuild failed!'
             return
           end
@@ -54,6 +56,7 @@ module SaneMasterModules
       capture_logs = args.include?('--logs')
       env_vars = {}
       env_vars['VERIFY_PIP'] = ENV['VERIFY_PIP'] if ENV['VERIFY_PIP']
+      ensure_single_instance
 
       if capture_logs
         puts '📝 Capturing logs to stdout...'
@@ -165,6 +168,12 @@ module SaneMasterModules
       puts ''
     end
 
+    def ensure_single_instance
+      puts "🛑 Ensuring single #{project_name} instance..."
+      system('killall', '-9', project_name, err: File::NULL)
+      sleep 0.3
+    end
+
     def show_screenshots(screenshots_dir)
       puts '2️⃣  Screenshots in project:'
       if Dir.exist?(screenshots_dir)
@@ -226,7 +235,7 @@ module SaneMasterModules
 
     def build_app # rubocop:disable Naming/PredicateMethod -- performs action, not just a query
       puts '4️⃣  Building app...'
-      unless run_build_command(summary_lines: 5)
+      unless run_build_command(summary_lines: 5, build_config: launch_build_config([]))
         puts '   ❌ Build failed! Fix errors before continuing.'
         return false
       end
@@ -260,16 +269,40 @@ module SaneMasterModules
       puts ''
     end
 
-    def run_build_command(summary_lines: 3)
+    def run_build_command(summary_lines: 3, build_config: launch_build_config([]))
       require 'open3'
 
-      cmd = ['xcodebuild', *xcodebuild_container_args, '-scheme', project_scheme, '-destination', 'platform=macOS', 'build']
+      cmd = ['xcodebuild', *xcodebuild_container_args, '-scheme', project_scheme, '-configuration', build_config,
+             '-destination', 'platform=macOS', 'build']
       stdout, status = Open3.capture2e(*cmd)
 
       summary = stdout.lines.select { |line| line.match?(/BUILD|error:/) }.last(summary_lines)
       summary.each { |line| puts "   #{line.rstrip}" } if summary.any?
 
       status.success?
+    end
+
+    def launch_build_config(args)
+      return 'ProdDebug' if args.include?('--proddebug')
+      return 'Release' if args.include?('--release')
+
+      # SaneBar local testing is only supported in signed launch modes.
+      # Debug mode can trigger invisible/off-screen menu bar icon behavior.
+      if project_name == 'SaneBar'
+        requested = ENV['SANEMASTER_BUILD_CONFIG'] || ENV['SANEBAR_BUILD_CONFIG']
+        return requested if %w[ProdDebug Release].include?(requested)
+        return 'ProdDebug'
+      end
+
+      ENV['SANEMASTER_BUILD_CONFIG'] || 'Debug'
+    end
+
+    def project_swift_sources
+      ignored_roots = %w[.git build .build DerivedData node_modules vendor Pods releases fastlane].freeze
+
+      Dir.glob('**/*.swift').reject do |path|
+        path.split(File::SEPARATOR).any? { |part| ignored_roots.include?(part) }
+      end
     end
   end
 end

@@ -16,6 +16,7 @@
 require 'json'
 require 'fileutils'
 require 'time'
+require 'open3'
 require_relative 'state_signer'
 
 PROJECT_DIR = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
@@ -31,6 +32,8 @@ SANELOOP_STATE_FILE = File.join(CLAUDE_DIR, 'saneloop-state.json')
 SANELOOP_ARCHIVE_DIR = File.join(CLAUDE_DIR, 'saneloop-archive')
 EDIT_STATE_FILE = File.join(CLAUDE_DIR, 'edit_state.json')
 SUMMARY_VALIDATED_FILE = File.join(CLAUDE_DIR, 'summary_validated.json')
+XCODE_AUTOMATION_STATE_FILE = File.join(CLAUDE_DIR, 'xcode_automation_state.json')
+XCODE_AUTOMATION_RETRY_SECONDS = 600
 def ensure_claude_dir
   FileUtils.mkdir_p(CLAUDE_DIR)
 
@@ -622,6 +625,56 @@ rescue StandardError => e
   log_debug "launch_xcode error: #{e.message}"
 end
 
+def load_xcode_automation_state
+  return {} unless File.exist?(XCODE_AUTOMATION_STATE_FILE)
+
+  JSON.parse(File.read(XCODE_AUTOMATION_STATE_FILE))
+rescue StandardError
+  {}
+end
+
+def save_xcode_automation_state(state)
+  File.write(XCODE_AUTOMATION_STATE_FILE, JSON.pretty_generate(state))
+rescue StandardError => e
+  log_debug "xcode automation state write failed: #{e.message}"
+end
+
+def xcode_automation_recently_checked?
+  state = load_xcode_automation_state
+  checked_at = state['checked_at']
+  return false unless checked_at
+
+  Time.now - Time.parse(checked_at) < XCODE_AUTOMATION_RETRY_SECONDS
+rescue StandardError
+  false
+end
+
+# Prime one AppleEvent to Xcode at session start so the permission prompt is
+# handled once up front, instead of repeated runtime prompts.
+def prime_xcode_automation_permission
+  xcodeproj = Dir.glob(File.join(PROJECT_DIR, '*.xcodeproj')).first
+  return unless xcodeproj
+  return if xcode_automation_recently_checked?
+
+  _out, err, status = Open3.capture3('osascript', '-e', 'tell application id "com.apple.dt.Xcode" to id')
+  state = {
+    'checked_at' => Time.now.iso8601,
+    'ok' => status.success?
+  }
+  state['error'] = err.strip unless status.success?
+  save_xcode_automation_state(state)
+
+  return if status.success?
+
+  warn ''
+  warn '⚠️  Xcode automation permission not granted yet.'
+  warn '   Open System Settings → Privacy & Security → Automation'
+  warn '   Enable automation for Claude/Codex → Xcode'
+  warn ''
+rescue StandardError => e
+  log_debug "prime_xcode_automation_permission error: #{e.message}"
+end
+
 # Read link monitor state and alert if checkout links are broken
 LINK_MONITOR_STATE = File.expand_path('~/SaneApps/infra/SaneProcess/outputs/link_monitor_state.json')
 
@@ -809,7 +862,7 @@ def build_session_context
     context_parts << "Verify by calling: apple-docs search, context7 resolve, github search"
   end
 
-  # Recent session learnings (replaces old Sane-Mem health briefing)
+  # Recent session learnings (replaces old external memory health briefing)
   learnings = load_recent_learnings(5)
   if learnings.any?
     context_parts << ""
@@ -863,11 +916,13 @@ begin
   log_debug "check_pending_mcp_actions done"
   show_mcp_verification_status # Show MCP status and prompt
   log_debug "show_mcp_verification_status done"
-  log_debug "session learnings briefing loaded (replaces claude-mem)"
+  log_debug "session learnings briefing loaded (replaces legacy memory briefing)"
 
   # Launch Xcode if project has .xcodeproj and Xcode isn't running
   launch_xcode_if_needed
   log_debug "launch_xcode_if_needed done"
+  prime_xcode_automation_permission
+  log_debug "prime_xcode_automation_permission done"
 
   # Check sales infrastructure health (link monitor state)
   check_sales_infrastructure
