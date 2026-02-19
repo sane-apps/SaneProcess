@@ -14,6 +14,45 @@
 #   - Non-email curl commands
 
 require 'json'
+require 'shellwords'
+
+EMAIL_APPROVAL_FLAG = '/tmp/.email_post_approved'
+EMAIL_APPROVAL_TTL_SECONDS = 300
+CORPORATE_WE_PATTERN = /\b(?:we|we['’]re|we['’]ll|we['’]ve|our|us)\b/i
+THANK_PATTERN = /\bthank(s| you)?\b/i
+HELPING_MAKE_PATTERN = /\bhelping make\b.*\bbetter\b/i
+MR_SANE_SIGNOFF_PATTERN = /\bMr\.?\s+Sane\b/
+
+def email_format_valid?(body)
+  text = body.to_s
+  stripped = text.strip
+  return false if stripped.empty?
+
+  first_chunk = stripped[0, 260] || ''
+  last_chunk = stripped[-320, 320] || stripped
+
+  opens_with_thanks = first_chunk.match?(THANK_PATTERN)
+  has_two_thanks = text.scan(THANK_PATTERN).length >= 2
+  closes_with_thanks = last_chunk.match?(THANK_PATTERN)
+  has_helping_make_better = text.match?(HELPING_MAKE_PATTERN)
+  has_signoff = last_chunk.match?(MR_SANE_SIGNOFF_PATTERN)
+
+  opens_with_thanks && has_two_thanks && closes_with_thanks && has_helping_make_better && has_signoff
+end
+
+def consume_email_approval_flag
+  return false unless File.exist?(EMAIL_APPROVAL_FLAG)
+
+  age = Time.now - File.mtime(EMAIL_APPROVAL_FLAG)
+  begin
+    File.delete(EMAIL_APPROVAL_FLAG)
+  rescue Errno::ENOENT
+    return false
+  end
+  age < EMAIL_APPROVAL_TTL_SECONDS
+rescue StandardError
+  false
+end
 
 begin
   input = JSON.parse($stdin.read)
@@ -27,8 +66,56 @@ exit 0 unless tool_name == 'Bash'
 command = (input['tool_input'] || {})['command'].to_s
 exit 0 if command.empty?
 
-# Always allow check-inbox.sh invocations
-exit 0 if command.include?('check-inbox.sh')
+# check-inbox.sh reply/compose must be explicitly approved and validated.
+if command.include?('check-inbox.sh')
+  tokens = Shellwords.split(command)
+  script_idx = tokens.index { |t| t.end_with?('check-inbox.sh') }
+  subcommand = script_idx ? tokens[script_idx + 1] : nil
+
+  if %w[reply compose].include?(subcommand)
+    body_file_idx = subcommand == 'reply' ? script_idx + 3 : script_idx + 4
+    body_file = tokens[body_file_idx]
+
+    if body_file.nil? || body_file.strip.empty?
+      warn '🔴 BLOCKED: Missing email body file'
+      warn '   check-inbox.sh reply/compose requires a real body file path.'
+      exit 2
+    end
+
+    unless File.exist?(body_file)
+      warn '🔴 BLOCKED: Email body file not found'
+      warn "   Could not read: #{body_file}"
+      exit 2
+    end
+
+    body = File.read(body_file)
+
+    if body.match?(CORPORATE_WE_PATTERN)
+      warn '🔴 BLOCKED: "we/us/our" language in customer email'
+      warn '   Use first-person singular only: I/me/my.'
+      exit 2
+    end
+
+    unless email_format_valid?(body)
+      warn '🔴 BLOCKED: Email format must match your standard'
+      warn '   Required structure:'
+      warn '   1) Open with thanks'
+      warn '   2) Explain the solution'
+      warn '   3) Close with thanks + "helping make ... better"'
+      warn '   4) End with "Mr. Sane"'
+      exit 2
+    end
+
+    unless consume_email_approval_flag
+      warn '🔴 BLOCKED: Customer email send without explicit approval'
+      warn '   Show draft, get user approval, then run:'
+      warn "   touch #{EMAIL_APPROVAL_FLAG}"
+      exit 2
+    end
+  end
+
+  exit 0
+end
 
 # Block 1: Direct curl WRITE operations to email Worker API
 # GET/read is fine — only block POST/PUT/DELETE (sending, composing, status changes)
