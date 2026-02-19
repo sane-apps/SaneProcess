@@ -10,15 +10,33 @@ module SaneMasterModules
         exit 1
       end
 
+      effective_args = args.dup
+      # Keep release as a single-command flow by default.
+      # If caller explicitly asks for --full, also deploy unless they opt out.
+      if effective_args.include?('--full') && !effective_args.include?('--deploy')
+        if effective_args.delete('--no-deploy')
+          # explicit opt-out, keep build/notarize-only behavior
+        else
+          effective_args << '--deploy'
+        end
+      else
+        effective_args.delete('--no-deploy')
+      end
+
       cmd = [release_script]
       unless args.include?('--project')
         cmd += ['--project', Dir.pwd]
       end
-      cmd.concat(args)
+      cmd.concat(effective_args)
 
       puts '🚀 --- [ SANEMASTER RELEASE ] ---'
       puts "Using: #{release_script}"
       puts "Project: #{Dir.pwd}" unless args.include?('--project')
+      if effective_args.include?('--full') && effective_args.include?('--deploy')
+        puts 'Mode: full release + deploy'
+      elsif effective_args.include?('--full')
+        puts 'Mode: full release (deploy skipped by explicit --no-deploy)'
+      end
       puts ''
 
       exec(*cmd)

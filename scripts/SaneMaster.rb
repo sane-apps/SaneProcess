@@ -76,7 +76,7 @@ class SaneMaster
         'lint' => { args: '', desc: 'Run SwiftLint and auto-fix issues' },
         'audit' => { args: '', desc: 'Scan for missing accessibility identifiers' },
         'system_check' => { args: '', desc: 'Verify unified hook system across all projects' },
-        'release' => { args: '[--full|--skip-notarize|--version X.Y.Z|--notes "..."]', desc: 'Build, sign, notarize, and package a DMG' },
+        'release' => { args: '[--full|--deploy|--no-deploy|--skip-notarize|--version X.Y.Z|--notes "..."]', desc: 'Build, sign, notarize, package, and optionally deploy' },
         'release_preflight' => { args: '', desc: 'Run all pre-release safety checks without building' },
         'appstore_preflight' => { args: '', desc: 'Run App Store submission compliance checks' }
       }
