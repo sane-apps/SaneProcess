@@ -27,6 +27,7 @@ require 'securerandom'
 require 'time'
 require 'uri'
 require 'yaml'
+require 'tmpdir'
 
 begin
   require 'jwt'
@@ -439,14 +440,18 @@ def screenshot_jobs_for(platform, config)
 end
 
 def upload_screenshot_set(localization_id, files, spec, token)
-  # Get existing screenshot set for this display type
-  sets_path = "/appStoreVersionLocalizations/#{localization_id}/appScreenshotSets" \
-              "?filter[screenshotDisplayType]=#{spec[:display_type]}"
+  # Fetch all sets, then match by display type locally.
+  # ASC filtering here has been inconsistent and can return mixed sets.
+  sets_path = "/appStoreVersionLocalizations/#{localization_id}/appScreenshotSets"
   sets_resp = asc_get(sets_path, token: token)
 
   screenshot_set_id = nil
-  if sets_resp && sets_resp['data'] && !sets_resp['data'].empty?
-    screenshot_set_id = sets_resp['data'].first['id']
+  matching_set = if sets_resp && sets_resp['data']
+                   sets_resp['data'].find { |set| set.dig('attributes', 'screenshotDisplayType') == spec[:display_type] }
+                 end
+
+  if matching_set
+    screenshot_set_id = matching_set['id']
 
     # Delete existing screenshots in this set (replace with new ones)
     existing_path = "/appScreenshotSets/#{screenshot_set_id}/appScreenshots"
@@ -576,23 +581,20 @@ end
 
 # ─── Submit for Review ───
 
-def submit_for_review(version_id, token)
+def submit_for_review(app_id, asc_platform, version_id, token)
   log_info 'Submitting for App Review...'
 
-  body = {
+  submission_body = {
     data: {
       type: 'reviewSubmissions',
       relationships: {
-        items: {
-          data: [
-            { type: 'appStoreVersions', id: version_id }
-          ]
+        app: {
+          data: { type: 'apps', id: app_id }
         }
       }
     }
   }
 
-  # The reviewSubmissions endpoint uses v2
   uri = URI("https://api.appstoreconnect.apple.com/v1/reviewSubmissions")
   http = Net::HTTP.new(uri.host, uri.port)
   http.use_ssl = true
@@ -600,20 +602,66 @@ def submit_for_review(version_id, token)
   req = Net::HTTP::Post.new(uri)
   req['Authorization'] = "Bearer #{token}"
   req['Content-Type'] = 'application/json'
-  req.body = JSON.generate(body)
+  req.body = JSON.generate(submission_body)
 
   response = http.request(req)
+  submission_id = nil
 
   if response.is_a?(Net::HTTPSuccess) || response.is_a?(Net::HTTPCreated)
-    log_info 'Successfully submitted for review!'
-    true
+    parsed = JSON.parse(response.body) rescue {}
+    submission_id = parsed.dig('data', 'id')
   elsif response.code == '409'
-    log_info 'Already submitted for review.'
-    true
-  else
+    list = asc_get("/reviewSubmissions?filter[app]=#{app_id}&limit=50", token: token)
+    submission = list&.fetch('data', [])&.find do |s|
+      (s.dig('attributes', 'platform') == asc_platform || s.dig('attributes', 'platform').nil?) &&
+        s.dig('attributes', 'state') == 'READY_FOR_REVIEW'
+    end
+    submission_id = submission&.[]('id')
+  end
+
+  unless submission_id
     log_error "Submit for review failed: #{response.code}"
     log_error response.body[0..500] if response.body
-    false
+    return false
+  end
+
+  item_body = {
+    data: {
+      type: 'reviewSubmissionItems',
+      relationships: {
+        reviewSubmission: { data: { type: 'reviewSubmissions', id: submission_id } },
+        appStoreVersion: { data: { type: 'appStoreVersions', id: version_id } }
+      }
+    }
+  }
+
+  item_resp = asc_post('/reviewSubmissionItems', body: item_body, token: token)
+  if item_resp
+    log_info 'Successfully submitted for review!'
+    return true
+  end
+
+  log_warn 'Could not create reviewSubmissionItem automatically. App may require manual resubmission in ASC UI.'
+  false
+end
+
+def default_build_number(version)
+  normalized = version.tr('.', '').sub(/^0+/, '')
+  normalized.empty? ? '1' : normalized
+end
+
+def extract_build_number_from_package(pkg_path)
+  return nil unless pkg_path.end_with?('.ipa')
+
+  Dir.mktmpdir('asc_info_plist') do |tmpdir|
+    unzip_ok = system("unzip -qq -o #{Shellwords.escape(pkg_path)} 'Payload/*.app/Info.plist' -d #{Shellwords.escape(tmpdir)} >/dev/null 2>&1")
+    return nil unless unzip_ok
+
+    info_path = Dir.glob(File.join(tmpdir, 'Payload', '*.app', 'Info.plist')).first
+    return nil unless info_path && File.exist?(info_path)
+
+    bundle_version = `"/usr/libexec/PlistBuddy" -c 'Print :CFBundleVersion' #{Shellwords.escape(info_path)} 2>/dev/null`.strip
+    bundle_version.empty? ? nil : bundle_version
   end
 end
 
@@ -626,6 +674,7 @@ OptionParser.new do |opts|
   opts.on('--pkg PATH', 'Path to .pkg or .ipa') { |v| options[:pkg] = v }
   opts.on('--app-id ID', 'App Store Connect app ID') { |v| options[:app_id] = v }
   opts.on('--version VERSION', 'Version string (e.g. 1.0.1)') { |v| options[:version] = v }
+  opts.on('--build-number NUMBER', 'Build number override (CFBundleVersion)') { |v| options[:build_number] = v }
   opts.on('--platform PLATFORM', 'macos or ios') { |v| options[:platform] = v }
   opts.on('--project-root PATH', 'Project root directory') { |v| options[:project_root] = v }
   opts.on('--test-screenshots', 'Test screenshot resize only (no API calls)') { options[:test_screenshots] = true }
@@ -714,8 +763,7 @@ unless upload_build(pkg_path)
 end
 
 # Step 2: Wait for processing
-build_number = version.tr('.', '').sub(/^0+/, '')
-build_number = '1' if build_number.empty?
+build_number = options[:build_number] || extract_build_number_from_package(pkg_path) || default_build_number(version)
 build_id = wait_for_build(app_id, build_number, asc_platform, token)
 unless build_id
   # Try with the version string itself (some projects use version as build number)
@@ -764,7 +812,7 @@ upload_screenshots(version_id, asc_platform, project_root, config, token)
 
 # Step 7: Submit for review
 token = generate_jwt
-if submit_for_review(version_id, token)
+if submit_for_review(app_id, asc_platform, version_id, token)
   log_info ''
   log_info '═══════════════════════════════════════════'
   log_info "  APP STORE SUBMISSION COMPLETE"
