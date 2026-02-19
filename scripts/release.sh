@@ -160,8 +160,53 @@ run_tests() {
     fi
 }
 
+update_changelog() {
+    local changelog="${PROJECT_ROOT}/CHANGELOG.md"
+    if [ ! -f "${changelog}" ]; then
+        log_warn "No CHANGELOG.md found — skipping changelog update"
+        return 0
+    fi
+
+    local date_str
+    date_str=$(date +%Y-%m-%d)
+    local tmp_changelog="${changelog}.tmp"
+    local entry_file="${changelog}.entry"
+
+    # Write entry to temp file (avoids awk -v backslash escaping issues)
+    cat > "${entry_file}" <<CLEOF
+## [${VERSION}] - ${date_str}
+
+${RELEASE_NOTES}
+
+---
+
+CLEOF
+
+    if grep -q '^## \[' "${changelog}"; then
+        # Insert before the first existing version entry
+        local first_entry_line
+        first_entry_line=$(grep -n '^## \[' "${changelog}" | head -1 | cut -d: -f1)
+        head -n $((first_entry_line - 1)) "${changelog}" > "${tmp_changelog}"
+        cat "${entry_file}" >> "${tmp_changelog}"
+        tail -n +${first_entry_line} "${changelog}" >> "${tmp_changelog}"
+    else
+        # No existing entries — append after header
+        cp "${changelog}" "${tmp_changelog}"
+        echo "" >> "${tmp_changelog}"
+        cat "${entry_file}" >> "${tmp_changelog}"
+    fi
+
+    mv "${tmp_changelog}" "${changelog}"
+    rm -f "${entry_file}"
+    log_info "CHANGELOG.md updated with v${VERSION} entry"
+}
+
 commit_version_bump() {
     git -C "${PROJECT_ROOT}" add "${VERSION_BUMP_FILES[@]}"
+    # Also stage CHANGELOG.md if it was updated
+    if [ -f "${PROJECT_ROOT}/CHANGELOG.md" ]; then
+        git -C "${PROJECT_ROOT}" add "CHANGELOG.md"
+    fi
     if git -C "${PROJECT_ROOT}" commit -m "Bump version to ${VERSION}" >/dev/null 2>&1; then
         log_info "Version bump committed"
     else
@@ -755,6 +800,7 @@ if [ "${FULL_RELEASE}" = true ]; then
 
     log_info "Bumping version to ${VERSION}..."
     bump_project_version "${VERSION}"
+    update_changelog
 
     if [ "${XCODEGEN}" = true ]; then
         ensure_cmd xcodegen
@@ -1067,7 +1113,8 @@ if [ "${USE_SPARKLE}" = true ] && command -v swift >/dev/null 2>&1; then
             <sparkle:minimumSystemVersion>${MIN_SYSTEM_VERSION}</sparkle:minimumSystemVersion>
             <description>
                 <![CDATA[
-                <p>See CHANGELOG.md for details</p>
+                <h2>Changes</h2>
+                <p>${RELEASE_NOTES:-Update to version ${VERSION}}</p>
                 ]]>
             </description>
             <enclosure url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
@@ -1361,7 +1408,7 @@ APPCASTEOF
             else
                 log_warn "No cask found at ${CASK_FILE} in ${HOMEBREW_TAP_REPO}. Skipping."
             fi
-            rm -rf "${HOMEBREW_TAP_DIR}"
+            remove_path "${HOMEBREW_TAP_DIR}"
         else
             log_warn "Could not clone ${HOMEBREW_TAP_REPO}. Skipping Homebrew update."
         fi
