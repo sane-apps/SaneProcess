@@ -36,8 +36,13 @@ exit 0 if command.empty?
 
 # Only gate release.sh with --full or --deploy
 # Match: release.sh (with optional path prefix) AND --full or --deploy flag
-is_release = command.match?(/(?:bash\s+|sh\s+)?(?:\S+\/)?(?:full_)?release\.sh\b/)
-has_gate_flag = command.match?(/--(?:full|deploy)\b/)
+# Strip quoted strings first so commit messages like
+#   git commit -m "fix release.sh --full flow" don't false-positive
+unquoted = command.gsub(/"(?:[^"\\]|\\.)*"/m, '').gsub(/'[^']*'/m, '')
+# Also strip heredoc bodies (<<'EOF' ... EOF or <<EOF ... EOF)
+unquoted = unquoted.sub(/<<-?'?\w+'?.*/m, '')
+is_release = unquoted.match?(/(?:bash\s+|sh\s+)?(?:\S+\/)?(?:full_)?release\.sh\b/)
+has_gate_flag = unquoted.match?(/--(?:full|deploy)\b/)
 exit 0 unless is_release && has_gate_flag
 
 # Always allow SaneMaster.rb (preflight checks etc.)
