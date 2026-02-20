@@ -518,6 +518,27 @@ Recommended:
 - **github** — External code search
 - **apple-docs** — Apple SDK verification (Swift projects)
 
+### Download Analytics (sane-dist Worker)
+
+The `sane-dist` Cloudflare Worker serves app downloads (DMG/ZIP) from a shared R2 bucket across all `dist.{app}.com` domains. Download analytics use a D1 database (`sane-dist-analytics`) for privacy-first, daily-aggregate counting.
+
+**How it works:**
+1. Every successful file download triggers `logDownload()` via `ctx.waitUntil()` (non-blocking)
+2. D1 UPSERT increments daily count per unique `(app, version, mode, source, date)` tuple
+3. Source detection from User-Agent: `Sparkle/*` → sparkle, `Homebrew/*` → homebrew, other → website, empty → unknown
+4. No personal data stored (no IPs, no cookies, no fingerprints)
+5. Analytics failures are silently swallowed — D1 outage never breaks downloads
+
+**Endpoints:**
+- `GET /api/stats?days=30&app=sanebar` — Requires `Authorization: Bearer <ANALYTICS_API_KEY>`. Returns JSON with totals, by_source, by_app, and raw rows.
+
+**CLI access:**
+- `SaneMaster.rb downloads` (alias: `dl`) — calls `scripts/automation/dl-report.py`
+- Flags: `--daily`, `--days N`, `--app NAME`, `--json`
+
+**D1 database:** `sane-dist-analytics` (ID: `c1a9df59-650b-4ffe-9f80-83439d8e9e13`, region: ENAM)
+**API key:** Stored as Wrangler secret `ANALYTICS_API_KEY` and in macOS keychain as `dist-analytics`/`api_key`.
+
 ---
 
 ## 7. Test Coverage Map

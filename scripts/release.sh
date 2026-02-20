@@ -1179,6 +1179,57 @@ if [ "${RUN_DEPLOY}" = true ]; then
     fi
     log_info "Download verified: https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip (200 OK)"
 
+    # Step 1b: Clean up old versions from R2
+    # Only the current version should exist — old files attract bot traffic and waste storage.
+    # Uses Cloudflare REST API (wrangler has no object list command).
+    log_info "Cleaning old ${APP_NAME} versions from R2..."
+    CF_TOKEN=$(security find-generic-password -s cloudflare -a api_token -w 2>/dev/null)
+    if [ -z "${CF_TOKEN}" ]; then
+        CF_TOKEN="${CLOUDFLARE_API_TOKEN:-}"
+    fi
+    CF_ACCOUNT_ID="${CF_ACCOUNT_ID:-2c267ab06352ba2522114c3081a8c5fa}"
+
+    if [ -n "${CF_TOKEN}" ]; then
+        # List all objects in bucket via CF API, filter to this app's old versions.
+        # Single-quoted -c string avoids bash expansion of != and other specials.
+        # App name and version passed via sys.argv; JSON piped via stdin.
+        R2_API_URL="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/r2/buckets/${R2_BUCKET}/objects"
+        OLD_KEYS=$(curl -s "${R2_API_URL}" -H "Authorization: Bearer ${CF_TOKEN}" \
+            | python3 -c '
+import sys, json
+app_name, version = sys.argv[1], sys.argv[2]
+keep = f"{app_name}-{version}.zip"
+prefix = f"{app_name}-"
+data = json.load(sys.stdin)
+for obj in data.get("result", []):
+    key = obj.get("key", "")
+    if key.startswith(prefix) and key != keep:
+        print(key)
+' "${APP_NAME}" "${VERSION}" 2>/dev/null)
+
+        OLD_COUNT=0
+        if [ -n "${OLD_KEYS}" ]; then
+            while IFS= read -r OLD_KEY; do
+                ENCODED_KEY=$(python3 -c "from urllib.parse import quote; print(quote('${OLD_KEY}', safe=''))")
+                DEL_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+                    "${R2_API_URL}/${ENCODED_KEY}" \
+                    -H "Authorization: Bearer ${CF_TOKEN}")
+                if [ "${DEL_STATUS}" = "200" ]; then
+                    log_info "  Deleted old version: ${OLD_KEY}"
+                    OLD_COUNT=$((OLD_COUNT + 1))
+                else
+                    log_warn "  Failed to delete: ${OLD_KEY} (HTTP ${DEL_STATUS}, non-fatal)"
+                fi
+            done <<< "${OLD_KEYS}"
+            log_info "Cleaned ${OLD_COUNT} old version(s) from R2."
+        else
+            log_info "No old versions to clean up."
+        fi
+    else
+        log_warn "Skipping R2 cleanup — no Cloudflare API token available."
+        log_warn "Old versions may accumulate. Set 'cloudflare' keychain entry or CLOUDFLARE_API_TOKEN env var."
+    fi
+
     # Step 2: Update appcast.xml
     if [ "${USE_SPARKLE}" = true ] && [ -n "${SIGNATURE}" ] && [ "${SIGNATURE}" != "UNSIGNED" ]; then
         APPCAST_PATH="${PROJECT_ROOT}/docs/appcast.xml"

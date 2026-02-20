@@ -43,6 +43,7 @@ require_relative 'sanemaster/structural_compliance'
 require_relative 'sanemaster/release'
 require_relative 'sanemaster/ci_helpers'
 require_relative 'sanemaster/sales'
+require_relative 'sanemaster/downloads'
 
 class SaneMaster
   include SaneMasterModules::Base
@@ -63,6 +64,7 @@ class SaneMaster
   include SaneMasterModules::Release
   include SaneMasterModules::CIHelpers
   include SaneMasterModules::Sales
+  include SaneMasterModules::Downloads
 
   # ═══════════════════════════════════════════════════════════════════════════
   # COMMAND REFERENCE - Organized by category for easy discovery
@@ -148,7 +150,8 @@ class SaneMaster
     sales: {
       desc: 'Sales and revenue reporting',
       commands: {
-        'sales' => { args: '[--daily|--month|--products|--fees|--json]', desc: 'LemonSqueezy sales report (default: daily breakdown)' }
+        'sales' => { args: '[--daily|--month|--products|--fees|--json]', desc: 'LemonSqueezy sales report (default: daily breakdown)' },
+        'downloads' => { args: '[--daily|--days N|--app NAME|--json]', desc: 'Download analytics from dist Worker (default: daily breakdown)' }
       }
     },
     ci: {
@@ -311,9 +314,11 @@ class SaneMaster
     when 'appstore_preflight', 'asp'
       appstore_preflight(args)
 
-    # Sales
+    # Sales & Downloads
     when 'sales'
       sales(args)
+    when 'downloads', 'dl'
+      downloads(args)
 
     # CI Helpers
     when 'enable_ci_tests'
@@ -781,6 +786,22 @@ class SaneMaster
         'sales --month        # Current month',
         'sales --products     # Revenue by product',
         'sales --fees         # Fee breakdown'
+      ]
+    },
+    'downloads' => {
+      usage: 'downloads [--daily|--days N|--app NAME|--json]',
+      description: 'Download analytics from the sane-dist Worker (D1-backed daily aggregates).',
+      flags: {
+        '--daily' => 'Today/yesterday/week/all-time breakdown (default)',
+        '--days N' => 'Look back N days (default: 90)',
+        '--app NAME' => 'Filter by app name (e.g. sanebar)',
+        '--json' => 'Raw JSON output for piping'
+      },
+      examples: [
+        'downloads                # Today/yesterday/week/all-time',
+        'downloads --days 7       # Last 7 days',
+        'downloads --app sanebar  # Filter to SaneBar',
+        'downloads --json         # Raw JSON'
       ]
     },
     'enable_ci_tests' => {

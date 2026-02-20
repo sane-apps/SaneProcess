@@ -171,7 +171,7 @@ end
 # Block 11: Direct curl/wget UPLOADS to SaneApp dist domains
 # Allow read-only checks (HEAD requests, download-to-null, wget --spider) for diagnostics.
 is_dist_command = command.match?(/\b(?:curl|wget)\b/) && command.match?(SANE_DIST_PATTERN)
-is_readonly = command.match?(/\bcurl\b.*(?:-I\b|--head\b|-o\s*\/dev\/null\b|-w\b)/) ||
+is_readonly = command.match?(/\bcurl\b.*(?:-[a-zA-Z]*I[a-zA-Z]*\b|--head\b|-o\s*\/dev\/null\b|-w\b)/) ||
               command.match?(/\bwget\b.*--spider\b/)
 if is_dist_command && !is_readonly
   warn '🔴 BLOCKED: Manual upload to SaneApp distribution domain'
