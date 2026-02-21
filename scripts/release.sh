@@ -27,6 +27,330 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+extract_http_status() {
+    local url="$1"
+    curl -sI -o /dev/null -w '%{http_code}' "${url}" 2>/dev/null || echo "000"
+}
+
+extract_content_length() {
+    local url="$1"
+    curl -sI "${url}" 2>/dev/null | awk 'tolower($1)=="content-length:" {gsub("\r","",$2); print $2}' | tail -1
+}
+
+appcast_item_count_for_version() {
+    local appcast_content="$1"
+    APPCAST_CONTENT="${appcast_content}" python3 - "${VERSION}" "${BUILD_NUMBER}" <<'PY'
+import os
+import re
+import sys
+
+xml = os.environ.get("APPCAST_CONTENT", "")
+version = sys.argv[1]
+build = sys.argv[2]
+
+def matches_item(item: str) -> bool:
+    if f'sparkle:shortVersionString="{version}"' in item:
+        return True
+    if f'sparkle:version="{build}"' in item:
+        return True
+    if re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
+        return True
+    if re.search(rf"<sparkle:version>\s*{re.escape(build)}\s*</sparkle:version>", item):
+        return True
+    return False
+
+count = 0
+for match in re.finditer(r"<item>.*?</item>", xml, flags=re.S):
+    item = match.group(0)
+    if matches_item(item):
+        count += 1
+
+print(count)
+PY
+}
+
+appcast_length_for_version() {
+    local appcast_content="$1"
+    APPCAST_CONTENT="${appcast_content}" python3 - "${VERSION}" "${BUILD_NUMBER}" <<'PY'
+import os
+import re
+import sys
+
+xml = os.environ.get("APPCAST_CONTENT", "")
+version = sys.argv[1]
+build = sys.argv[2]
+
+def matches_item(item: str) -> bool:
+    if f'sparkle:shortVersionString="{version}"' in item:
+        return True
+    if f'sparkle:version="{build}"' in item:
+        return True
+    if re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
+        return True
+    if re.search(rf"<sparkle:version>\s*{re.escape(build)}\s*</sparkle:version>", item):
+        return True
+    return False
+
+for match in re.finditer(r"<item>.*?</item>", xml, flags=re.S):
+    item = match.group(0)
+    if not matches_item(item):
+        continue
+
+    enclosure = re.search(r"<enclosure\b[^>]*>", item, flags=re.S)
+    if not enclosure:
+        continue
+
+    length_match = re.search(r'length="([0-9]+)"', enclosure.group(0))
+    if length_match:
+        print(length_match.group(1))
+        sys.exit(0)
+
+print("")
+PY
+}
+
+prune_existing_appcast_entries() {
+    local appcast_path="$1"
+    local removed_count
+    removed_count=$(python3 - "${appcast_path}" "${VERSION}" "${BUILD_NUMBER}" <<'PY'
+import re
+import sys
+
+path, version, build = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path, "r", encoding="utf-8") as f:
+    xml = f.read()
+
+def matches_item(item: str) -> bool:
+    if f'sparkle:shortVersionString="{version}"' in item:
+        return True
+    if f'sparkle:version="{build}"' in item:
+        return True
+    if re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
+        return True
+    if re.search(rf"<sparkle:version>\s*{re.escape(build)}\s*</sparkle:version>", item):
+        return True
+    return False
+
+removed = 0
+parts = []
+last = 0
+for match in re.finditer(r"<item>.*?</item>", xml, flags=re.S):
+    item = match.group(0)
+    if matches_item(item):
+        parts.append(xml[last:match.start()])
+        last = match.end()
+        removed += 1
+
+parts.append(xml[last:])
+new_xml = "".join(parts)
+
+if removed > 0:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(new_xml)
+
+print(removed)
+PY
+)
+    if [ "${removed_count}" -gt 0 ] 2>/dev/null; then
+        log_warn "Removed ${removed_count} stale appcast entr$( [ "${removed_count}" = "1" ] && echo "y" || echo "ies" ) for v${VERSION} before insert"
+    fi
+}
+
+wait_for_live_appcast_version() {
+    local appcast_url="$1"
+    local max_attempts="${APPCAST_VERIFY_ATTEMPTS:-15}"
+    local sleep_seconds="${APPCAST_VERIFY_SLEEP_SECONDS:-8}"
+    local attempt=1
+
+    while [ "${attempt}" -le "${max_attempts}" ]; do
+        local status
+        status=$(extract_http_status "${appcast_url}")
+        if [ "${status}" = "200" ]; then
+            local appcast_content
+            appcast_content=$(curl -fsSL "${appcast_url}" 2>/dev/null || true)
+            if [ -n "${appcast_content}" ]; then
+                local count
+                count=$(appcast_item_count_for_version "${appcast_content}")
+                if [ "${count}" = "1" ]; then
+                    log_info "Appcast propagated with exactly one v${VERSION} entry (attempt ${attempt}/${max_attempts})"
+                    return 0
+                fi
+                log_warn "Appcast propagation attempt ${attempt}/${max_attempts}: expected 1 matching item, found ${count}"
+            fi
+        else
+            log_warn "Appcast propagation attempt ${attempt}/${max_attempts}: HTTP ${status}"
+        fi
+
+        if [ "${attempt}" -lt "${max_attempts}" ]; then
+            sleep "${sleep_seconds}"
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    return 1
+}
+
+verify_github_release_asset() {
+    local repo="$1"
+    local tag="$2"
+    local asset_name="$3"
+    local found
+    found=$(gh release view "${tag}" --repo "${repo}" --json assets --jq ".assets[]? | select(.name == \"${asset_name}\") | .name" 2>/dev/null || true)
+    if [ -z "${found}" ]; then
+        log_error "GitHub release ${tag} is missing asset ${asset_name}"
+        return 1
+    fi
+    return 0
+}
+
+appstore_duplicate_build_upload_detected() {
+    local latest_log_dir
+    latest_log_dir=$(ls -td /var/folders/*/*/*/T/${APP_NAME}_*.xcdistributionlogs 2>/dev/null | head -1 || true)
+    if [ -z "${latest_log_dir}" ]; then
+        return 1
+    fi
+
+    local content_log="${latest_log_dir}/ContentDelivery.log"
+    if [ ! -f "${content_log}" ]; then
+        return 1
+    fi
+
+    if grep -Eqi "ENTITY_ERROR\.ATTRIBUTE\.INVALID\.DUPLICATE|bundle version must be higher than the previously uploaded version" "${content_log}"; then
+        return 0
+    fi
+
+    return 1
+}
+
+run_post_release_checks() {
+    local dist_url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
+    local appcast_url="https://${SITE_HOST}/appcast.xml"
+    local checkout_url="https://go.saneapps.com/buy/${LOWER_APP_NAME}"
+    local gh_tag="v${VERSION}"
+    local asset_name="${APP_NAME}-${VERSION}.zip"
+
+    log_info "Running strict post-release checks..."
+
+    local dist_status
+    dist_status=$(extract_http_status "${dist_url}")
+    if [ "${dist_status}" != "200" ]; then
+        log_error "Download URL failed: ${dist_url} returned HTTP ${dist_status}"
+        return 1
+    fi
+
+    local dist_length
+    dist_length=$(extract_content_length "${dist_url}")
+    if [ -z "${dist_length}" ]; then
+        log_error "Download URL missing Content-Length: ${dist_url}"
+        return 1
+    fi
+
+    if [ "${USE_SPARKLE}" = true ]; then
+        local appcast_status
+        appcast_status=$(extract_http_status "${appcast_url}")
+        if [ "${appcast_status}" != "200" ]; then
+            log_error "Appcast URL failed: ${appcast_url} returned HTTP ${appcast_status}"
+            return 1
+        fi
+
+        local appcast_content
+        appcast_content=$(curl -fsSL "${appcast_url}" 2>/dev/null || true)
+        if [ -z "${appcast_content}" ]; then
+            log_error "Could not fetch appcast content from ${appcast_url}"
+            return 1
+        fi
+
+        if command -v xmllint >/dev/null 2>&1; then
+            if ! xmllint --noout - <<< "${appcast_content}" >/dev/null 2>&1; then
+                log_error "Appcast XML is invalid at ${appcast_url}"
+                return 1
+            fi
+        else
+            if ! APPCAST_CONTENT="${appcast_content}" python3 - <<'PY' >/dev/null 2>&1
+import os
+import xml.etree.ElementTree as ET
+
+ET.fromstring(os.environ.get("APPCAST_CONTENT", ""))
+PY
+            then
+                log_error "Appcast XML parse failed at ${appcast_url}"
+                return 1
+            fi
+        fi
+
+        local appcast_item_count
+        appcast_item_count=$(appcast_item_count_for_version "${appcast_content}")
+        if [ "${appcast_item_count}" != "1" ]; then
+            log_error "Appcast has ${appcast_item_count} entries for v${VERSION} (expected exactly 1)"
+            return 1
+        fi
+
+        local appcast_length
+        appcast_length=$(appcast_length_for_version "${appcast_content}")
+        if [ -z "${appcast_length}" ]; then
+            log_error "Appcast entry for v${VERSION} missing enclosure length"
+            return 1
+        fi
+
+        if [ "${appcast_length}" != "${dist_length}" ]; then
+            log_error "Length mismatch: appcast=${appcast_length}, dist=${dist_length}"
+            return 1
+        fi
+    fi
+
+    local checkout_status
+    checkout_status=$(extract_http_status "${checkout_url}")
+    if [ "${checkout_status}" != "200" ] && [ "${checkout_status}" != "301" ] && [ "${checkout_status}" != "302" ]; then
+        log_error "Checkout URL failed: ${checkout_url} returned HTTP ${checkout_status}"
+        return 1
+    fi
+
+    if [ -n "${HOMEBREW_TAP_REPO}" ]; then
+        local cask_file="Casks/${LOWER_APP_NAME}.rb"
+        local cask_raw_url="https://raw.githubusercontent.com/${HOMEBREW_TAP_REPO}/main/${cask_file}"
+        local cask_status
+        cask_status=$(extract_http_status "${cask_raw_url}")
+        if [ "${cask_status}" = "404" ]; then
+            log_warn "No Homebrew cask found for ${APP_NAME} (${cask_raw_url}); skipping Homebrew verification."
+        elif [ "${cask_status}" != "200" ]; then
+            log_error "Could not fetch Homebrew cask: ${cask_raw_url} (HTTP ${cask_status})"
+            return 1
+        else
+        local cask_attempt=1
+        local cask_max_attempts="${HOMEBREW_VERIFY_ATTEMPTS:-10}"
+        local cask_sleep_seconds="${HOMEBREW_VERIFY_SLEEP_SECONDS:-6}"
+        local cask_ok=false
+
+        while [ "${cask_attempt}" -le "${cask_max_attempts}" ]; do
+            local cask_body
+            cask_body=$(curl -fsSL "${cask_raw_url}" 2>/dev/null || true)
+            if [ -n "${cask_body}" ] && \
+               grep -q "version \"${VERSION}\"" <<< "${cask_body}" && \
+               grep -q "sha256 \"${SHA256}\"" <<< "${cask_body}"; then
+                cask_ok=true
+                break
+            fi
+            if [ "${cask_attempt}" -lt "${cask_max_attempts}" ]; then
+                sleep "${cask_sleep_seconds}"
+            fi
+            cask_attempt=$((cask_attempt + 1))
+        done
+
+        if [ "${cask_ok}" != "true" ]; then
+            log_error "Homebrew cask did not converge to v${VERSION} / ${SHA256:0:12}... at ${cask_raw_url}"
+            return 1
+        fi
+        fi
+    fi
+
+    if ! verify_github_release_asset "${GITHUB_REPO}" "${gh_tag}" "${asset_name}"; then
+        return 1
+    fi
+
+    log_info "Post-release checks passed."
+    return 0
+}
+
 print_help() {
     echo "Usage: $0 [options]"
     echo ""
@@ -216,16 +540,37 @@ commit_version_bump() {
 
 create_github_release() {
     local repo="${GITHUB_REPO}"
-    if gh release view "v${VERSION}" --repo "${repo}" >/dev/null 2>&1; then
-        log_warn "GitHub release v${VERSION} already exists"
-        return 0
+    local tag="v${VERSION}"
+    if gh release view "${tag}" --repo "${repo}" >/dev/null 2>&1; then
+        log_warn "GitHub release ${tag} already exists"
+    else
+        gh release create "${tag}" \
+            --repo "${repo}" \
+            --title "${tag}" \
+            --notes "${RELEASE_NOTES}"
+        log_info "GitHub release created: ${tag}"
     fi
 
-    gh release create "v${VERSION}" \
-        --repo "${repo}" \
-        --title "v${VERSION}" \
-        --notes "${RELEASE_NOTES}"
-    log_info "GitHub release created: v${VERSION}"
+    return 0
+}
+
+upload_github_release_asset() {
+    local repo="${GITHUB_REPO}"
+    local tag="v${VERSION}"
+    local asset_name="${APP_NAME}-${VERSION}.zip"
+
+    if [ ! -f "${FINAL_ZIP}" ]; then
+        log_error "Release asset missing: ${FINAL_ZIP}"
+        return 1
+    fi
+
+    gh release upload "${tag}" "${FINAL_ZIP}#${asset_name}" --repo "${repo}" --clobber
+    if ! verify_github_release_asset "${repo}" "${tag}" "${asset_name}"; then
+        return 1
+    fi
+
+    log_info "GitHub release asset verified: ${asset_name}"
+    return 0
 }
 
 write_export_options_plist() {
@@ -383,6 +728,31 @@ binary_has_get_task_allow() {
         return 0
     fi
     return 1
+}
+
+binary_has_strong_sparkle_load() {
+    local binary_path="$1"
+    python3 - "${binary_path}" <<'PY'
+import subprocess
+import sys
+
+binary = sys.argv[1]
+try:
+    out = subprocess.check_output(["otool", "-l", binary], text=True, stderr=subprocess.DEVNULL)
+except Exception:
+    sys.exit(1)
+
+lines = out.splitlines()
+for i, line in enumerate(lines):
+    if line.strip() != "cmd LC_LOAD_DYLIB":
+        continue
+    for j in range(i + 1, min(i + 12, len(lines))):
+        s = lines[j].strip()
+        if s.startswith("name ") and "Sparkle.framework" in s:
+            sys.exit(0)
+
+sys.exit(1)
+PY
 }
 
 sign_app_bundle_developer_id() {
@@ -707,13 +1077,24 @@ if [ "${WEBSITE_ONLY}" = true ]; then
     log_info "Website deploy complete."
     # Verify
     if [ -f "${DEPLOY_DIR}/appcast.xml" ]; then
-        sleep 3
-        APPCAST_CHECK=$(curl -s "https://${SITE_HOST}/appcast.xml" | head -3)
-        if echo "${APPCAST_CHECK}" | grep -q "xml"; then
-            log_info "Appcast verified at https://${SITE_HOST}/appcast.xml"
-        else
-            log_warn "Appcast verification inconclusive — may need a few minutes to propagate"
+        APPCAST_URL="https://${SITE_HOST}/appcast.xml"
+        APPCAST_STATUS=$(extract_http_status "${APPCAST_URL}")
+        if [ "${APPCAST_STATUS}" != "200" ]; then
+            log_error "Appcast URL failed after deploy: ${APPCAST_URL} returned HTTP ${APPCAST_STATUS}"
+            exit 1
         fi
+        APPCAST_CONTENT=$(curl -fsSL "${APPCAST_URL}" 2>/dev/null || true)
+        if [ -z "${APPCAST_CONTENT}" ]; then
+            log_error "Failed to fetch appcast content after deploy: ${APPCAST_URL}"
+            exit 1
+        fi
+        if command -v xmllint >/dev/null 2>&1; then
+            if ! xmllint --noout - <<< "${APPCAST_CONTENT}" >/dev/null 2>&1; then
+                log_error "Appcast XML invalid after website-only deploy: ${APPCAST_URL}"
+                exit 1
+            fi
+        fi
+        log_info "Appcast verified at ${APPCAST_URL}"
     fi
     exit 0
 fi
@@ -834,6 +1215,15 @@ ensure_cmd codesign
 ensure_cmd xcrun
 ensure_cmd hdiutil
 ensure_cmd ditto
+
+# Fail early if notarization credentials are missing.
+if [ "${SKIP_NOTARIZE}" = false ]; then
+    if ! xcrun notarytool history --keychain-profile "${NOTARY_PROFILE}" >/dev/null 2>&1; then
+        log_error "Notary profile '${NOTARY_PROFILE}' is missing or inaccessible."
+        log_error "Run: xcrun notarytool store-credentials \"${NOTARY_PROFILE}\" ..."
+        exit 1
+    fi
+fi
 
 # Build archive
 if [ "${SKIP_BUILD}" = false ]; then
@@ -976,11 +1366,14 @@ if [ "${APPSTORE_ENABLED}" = "true" ]; then
             ARCHIVE_BINARY="${APPSTORE_APP_IN_ARCHIVE}/Contents/MacOS/${ARCHIVE_EXEC}"
             if [ -f "${ARCHIVE_BINARY}" ]; then
                 if otool -L "${ARCHIVE_BINARY}" 2>/dev/null | grep -q "Sparkle.framework"; then
-                    log_info "Weakening Sparkle dylib reference in App Store binary..."
-                    ruby "${SCRIPT_DIR}/weaken_sparkle.rb" "${ARCHIVE_BINARY}"
-                    if [ $? -ne 0 ]; then
-                        log_error "Failed to weaken Sparkle reference. App Store build may crash on launch."
-                        exit 1
+                    if binary_has_strong_sparkle_load "${ARCHIVE_BINARY}"; then
+                        log_info "Weakening Sparkle dylib reference in App Store binary..."
+                        if ! ruby "${SCRIPT_DIR}/weaken_sparkle.rb" "${ARCHIVE_BINARY}"; then
+                            log_error "Failed to weaken Sparkle reference. App Store build may crash on launch."
+                            exit 1
+                        fi
+                    else
+                        log_info "Sparkle dylib already weak-linked in App Store binary."
                     fi
                 fi
             fi
@@ -1011,8 +1404,14 @@ if [ "${APPSTORE_ENABLED}" = "true" ]; then
         2>&1 | tee -a "${BUILD_DIR}/build.log"
 
     if [ ${PIPESTATUS[0]} -ne 0 ]; then
-        log_error "App Store export failed! Check ${BUILD_DIR}/build.log"
-        exit 1
+        if appstore_duplicate_build_upload_detected; then
+            log_warn "App Store upload skipped: this build number is already present in App Store Connect."
+            log_warn "Continuing direct-distribution deploy. Bump build number for a new App Store submission."
+            APPSTORE_DIRECT_UPLOAD=true
+        else
+            log_error "App Store export failed! Check ${BUILD_DIR}/build.log"
+            exit 1
+        fi
     fi
 
     APPSTORE_PKG="${APPSTORE_EXPORT_PATH}/${APP_NAME}.pkg"
@@ -1083,12 +1482,14 @@ log_info "========================================"
 log_info "ZIP: ${FINAL_ZIP}"
 log_info "Version: ${VERSION}"
 
+# Metadata used by deploy and post-release checks (always compute).
+SHA256=$(shasum -a 256 "${FINAL_ZIP}" | awk '{print $1}')
+FILE_SIZE=$(stat -f%z "${FINAL_ZIP}")
+
 # Generate Sparkle Signature
 if [ "${USE_SPARKLE}" = true ] && command -v swift >/dev/null 2>&1; then
     log_info ""
     log_info "--- Generating Release Metadata ---"
-    SHA256=$(shasum -a 256 "${FINAL_ZIP}" | awk '{print $1}')
-    FILE_SIZE=$(stat -f%z "${FINAL_ZIP}")
 
     log_info "Fetching Sparkle Private Key from Keychain..."
     SPARKLE_KEY=$(security find-generic-password -w -s "https://sparkle-project.org" -a "EdDSA Private Key" 2>/dev/null || echo "")
@@ -1146,13 +1547,13 @@ SIZE=${FILE_SIZE}
 SIGNATURE=${SIGNATURE:-UNSIGNED}
 METAEOF
     log_info "Saved release metadata to ${BUILD_DIR}/${APP_NAME}-${VERSION}.meta"
-    log_info "IMPORTANT: After uploading to R2, run any post-release/appcast update script"
 fi
 
 if [ "${RUN_GH_RELEASE}" = true ]; then
     log_info ""
-    log_info "Creating GitHub release (notes only, no binary attached)..."
+    log_info "Creating/updating GitHub release..."
     create_github_release
+    upload_github_release_asset
 fi
 
 # ─── Deploy: R2 upload + appcast update + Pages deploy ───
@@ -1161,6 +1562,11 @@ if [ "${RUN_DEPLOY}" = true ]; then
     log_info "═══════════════════════════════════════════"
     log_info "  DEPLOYING TO PRODUCTION"
     log_info "═══════════════════════════════════════════"
+
+    # Ensure GitHub release + asset exist even when running deploy-only mode.
+    ensure_cmd gh
+    create_github_release
+    upload_github_release_asset
 
     # Step 1: Upload ZIP to R2
     log_info "Uploading ZIP to R2 bucket ${R2_BUCKET}..."
@@ -1257,9 +1663,45 @@ for obj in data.get("result", []):
         </item>
 APPCASTEOF
 )
-            # Insert new item after <title>...</title> (before first existing <item>)
-            # Use perl for reliable multiline insertion
-            perl -i -0pe "s|(<title>[^<]+</title>\n)(\s*<item>)|\$1${NEW_ITEM}\n\$2|" "${APPCAST_PATH}"
+            # Remove stale entries for this version/build first to avoid duplicate release items.
+            prune_existing_appcast_entries "${APPCAST_PATH}"
+
+            # Insert new item before first existing <item>, or before </channel> if empty.
+            APPCAST_NEW_ITEM="${NEW_ITEM}" python3 - "${APPCAST_PATH}" <<'PY'
+import os
+import sys
+
+path = sys.argv[1]
+new_item = os.environ.get("APPCAST_NEW_ITEM", "").rstrip() + "\n"
+
+with open(path, "r", encoding="utf-8") as f:
+    xml = f.read()
+
+item_idx = xml.find("<item>")
+if item_idx != -1:
+    xml = xml[:item_idx] + new_item + xml[item_idx:]
+elif "</channel>" in xml:
+    xml = xml.replace("</channel>", f"{new_item}</channel>", 1)
+else:
+    raise SystemExit("appcast.xml missing </channel>")
+
+with open(path, "w", encoding="utf-8") as f:
+    f.write(xml)
+PY
+
+            # Validate local appcast before deploy.
+            if command -v xmllint >/dev/null 2>&1; then
+                if ! xmllint --noout "${APPCAST_PATH}" >/dev/null 2>&1; then
+                    log_error "Local appcast is invalid XML after update: ${APPCAST_PATH}"
+                    exit 1
+                fi
+            fi
+            LOCAL_APPCAST_CONTENT=$(cat "${APPCAST_PATH}")
+            LOCAL_COUNT=$(appcast_item_count_for_version "${LOCAL_APPCAST_CONTENT}")
+            if [ "${LOCAL_COUNT}" != "1" ]; then
+                log_error "Local appcast contains ${LOCAL_COUNT} entries for v${VERSION} (expected 1)"
+                exit 1
+            fi
 
             log_info "Appcast updated with v${VERSION} entry."
         else
@@ -1303,13 +1745,13 @@ APPCASTEOF
             --commit-message="Release v${VERSION}"
         log_info "Pages deploy complete."
 
-        # Verify appcast is live
-        log_info "Verifying appcast..."
-        APPCAST_CHECK=$(curl -s "https://${SITE_HOST}/appcast.xml" | head -5)
-        if echo "${APPCAST_CHECK}" | grep -q "${VERSION}"; then
-            log_info "Appcast verified: v${VERSION} is live at https://${SITE_HOST}/appcast.xml"
-        else
-            log_warn "Appcast may not have propagated yet. Check https://${SITE_HOST}/appcast.xml manually."
+        # Verify appcast propagation and uniqueness (blocking) for Sparkle apps.
+        if [ "${USE_SPARKLE}" = true ]; then
+            log_info "Verifying appcast propagation..."
+            if ! wait_for_live_appcast_version "https://${SITE_HOST}/appcast.xml"; then
+                log_error "Appcast propagation failed for v${VERSION}. Aborting release."
+                exit 1
+            fi
         fi
     else
         log_warn "No docs/ directory found. Skipping Pages deploy."
@@ -1506,6 +1948,12 @@ APPCASTEOF
         fi
     else
         log_warn "Email webhook file not found at ${WEBHOOK_JS} — update PRODUCT_CONFIG manually"
+    fi
+
+    # Step 11: Strict post-release verification gate
+    if ! run_post_release_checks; then
+        log_error "Post-release verification failed. Release is NOT considered complete."
+        exit 1
     fi
 
     log_info ""
