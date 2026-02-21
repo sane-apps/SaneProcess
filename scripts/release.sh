@@ -1574,16 +1574,10 @@ ensure_not_republishing_live_version() {
     fi
 
     local appcast_url="https://${SITE_HOST}/appcast.xml"
-    local appcast_status
-    appcast_status=$(extract_http_status "${appcast_url}")
-    if [ "${appcast_status}" != "200" ]; then
-        # If appcast is unavailable we cannot prove duplicate; continue and let later checks fail if needed.
-        return 0
-    fi
-
     local appcast_content
     appcast_content=$(curl -fsSL "${appcast_url}" 2>/dev/null || true)
     if [ -z "${appcast_content}" ]; then
+        # If appcast is unavailable we cannot prove duplicate; continue and let later checks fail if needed.
         return 0
     fi
 
