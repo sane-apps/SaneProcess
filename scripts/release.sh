@@ -1352,6 +1352,8 @@ if [ "${FULL_RELEASE}" = true ]; then
         fi
     fi
 
+    run_tests
+
     log_info "Bumping version to ${VERSION}..."
     bump_project_version "${VERSION}"
     update_changelog
@@ -1363,7 +1365,6 @@ if [ "${FULL_RELEASE}" = true ]; then
         XCODEGEN_DONE=true
     fi
 
-    run_tests
     commit_version_bump
     RUN_GH_RELEASE=true
 fi
