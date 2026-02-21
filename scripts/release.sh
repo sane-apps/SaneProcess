@@ -386,6 +386,7 @@ print_help() {
     echo "  --notes \"...\"      Release notes for GitHub (required with --full)"
     echo "  --allow-republish    Allow republishing an already-live version/build"
     echo "  --allow-unsynced-peer  Bypass Air/mini reconcile gate for this release"
+    echo "  --skip-appstore      Skip App Store archive/export/upload even if enabled in config"
     echo "  --website-only       Deploy website + appcast only (no build/R2/signing)"
     echo "  -h, --help           Show this help"
 }
@@ -1028,6 +1029,7 @@ RUN_DEPLOY=false
 WEBSITE_ONLY=false
 ALLOW_REPUBLISH=false
 ALLOW_UNSYNCED_PEER=false
+SKIP_APPSTORE=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -1062,6 +1064,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --allow-unsynced-peer)
             ALLOW_UNSYNCED_PEER=true
+            shift
+            ;;
+        --skip-appstore)
+            SKIP_APPSTORE=true
             shift
             ;;
         --full)
@@ -1492,7 +1498,7 @@ fi
 # (e.g., Release-AppStore) to exclude direct-distribution frameworks like Sparkle.
 # Reusing the Developer ID archive would produce a binary that links Sparkle at
 # @rpath but doesn't include it — instant dyld crash on launch.
-if [ "${APPSTORE_ENABLED}" = "true" ]; then
+if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
     APPSTORE_CONFIG="${APPSTORE_CONFIGURATION:-Release-AppStore}"
     APPSTORE_ARCHIVE="${BUILD_DIR}/${APP_NAME}-AppStore.xcarchive"
     APPSTORE_EXPORT_PATH="${BUILD_DIR}/Export-AppStore"
@@ -1969,7 +1975,11 @@ PY
     fi
 
     # Step 5: App Store submission (if enabled)
-    if [ "${APPSTORE_ENABLED}" = "true" ]; then
+    if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = true ]; then
+        log_warn "App Store submission skipped (--skip-appstore)."
+    fi
+
+    if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
         log_info ""
         log_info "═══════════════════════════════════════════"
         log_info "  SUBMITTING TO APP STORE"
