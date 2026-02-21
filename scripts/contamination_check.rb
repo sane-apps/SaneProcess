@@ -42,7 +42,6 @@ class ContaminationChecker
     # Sync documentation and tools
     'sync_check.rb',
     'contamination_check.rb',
-    'memory_audit.rb',
     'PROJECT_SYNC_PLAN.md',
     'SESSION_HANDOFF.md',
     # Documentation about the ecosystem

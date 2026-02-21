@@ -22,6 +22,8 @@
 require 'open3'
 require 'json'
 require 'tempfile'
+require 'shellwords'
+require 'socket'
 
 # Load all modules
 require_relative 'sanemaster/base'
@@ -182,6 +184,48 @@ class SaneMaster
     { cmd: 'export', desc: 'Export code to PDF' }
   ].freeze
 
+  MINI_FIRST_COMMANDS = Set.new(%w[
+                                  verify
+                                  clean
+                                  lint
+                                  quality
+                                  audit
+                                  system_check
+                                  release
+                                  release_preflight
+                                  appstore_preflight
+                                  asp
+                                  launch
+                                  run
+                                  logs
+                                  test_mode
+                                  tm
+                                  qa
+                                  validate_test_references
+                                  validate-tests
+                                  doctor
+                                  health
+                                  reset
+                                  check_permissions
+                                  dead_code
+                                  find_dead_code
+                                  check_deprecations
+                                  deprecations
+                                  swift6_check
+                                  swift6
+                                  concurrency_check
+                                  test_suite
+                                  suite
+                                  test_scan
+                                  scan_tests
+                                  test_quality
+                                  check_binary
+                                  diagnose
+                                  crash_report
+                                  crashes
+                                  menu_scan
+                                ]).freeze
+
   def initialize
     @bundle_id = detect_bundle_id
   end
@@ -258,10 +302,68 @@ class SaneMaster
       return
     end
 
+    maybe_route_to_mini!(command, args)
+
     dispatch_command(command, args)
   end
 
   private
+
+  def maybe_route_to_mini!(command, args)
+    return if ENV['SANEMASTER_DISABLE_MINI_ROUTING'] == '1'
+    return if running_on_mini_host?
+    return unless MINI_FIRST_COMMANDS.include?(command)
+
+    if args.include?('--local') || ENV['SANEMASTER_FORCE_LOCAL'] == '1'
+      puts '⚠️  Mini-first bypass active (--local or SANEMASTER_FORCE_LOCAL=1); running locally.'
+      return
+    end
+
+    unless mini_reachable?
+      puts '⚠️  Mac mini is unreachable. Falling back to local execution.'
+      return
+    end
+
+    remote_repo = map_local_path_to_mini(Dir.pwd)
+    unless remote_repo
+      puts "⚠️  Could not map local path to mini: #{Dir.pwd}"
+      puts '   Falling back to local execution.'
+      return
+    end
+
+    unless mini_path_exists?(remote_repo)
+      puts "⚠️  Repo not found on mini: #{remote_repo}"
+      puts '   Falling back to local execution.'
+      return
+    end
+
+    remote_cmd = "./scripts/SaneMaster.rb #{([command] + args).map { |arg| Shellwords.escape(arg) }.join(' ')}"
+    puts "📍 Mini-first routing: #{command} -> mini (#{remote_repo})"
+    exec('ssh', 'mini', "cd #{Shellwords.escape(remote_repo)} && #{remote_cmd}")
+  end
+
+  def running_on_mini_host?
+    host = Socket.gethostname.to_s.downcase
+    user = ENV.fetch('USER', '').downcase
+    host.include?('mini') || user == 'stephansmac'
+  rescue StandardError
+    false
+  end
+
+  def mini_reachable?
+    system('ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=2', 'mini', 'true', out: File::NULL, err: File::NULL)
+  end
+
+  def map_local_path_to_mini(local_path)
+    return local_path if local_path.start_with?('/Users/stephansmac/')
+    return nil unless local_path.start_with?('/Users/sj/')
+
+    "/Users/stephansmac/#{local_path.delete_prefix('/Users/sj/')}"
+  end
+
+  def mini_path_exists?(remote_path)
+    system('ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=3', 'mini', "test -d #{Shellwords.escape(remote_path)}", out: File::NULL, err: File::NULL)
+  end
 
   def dispatch_command(command, args)
     # Check for --help flag on any command

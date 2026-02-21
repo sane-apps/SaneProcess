@@ -8,7 +8,7 @@
 
 SaneProcess is a hook-based enforcement framework for Claude Code. It kills orphaned processes, stops doom loops, and forces research before edits.
 
-429 tests. MIT licensed. Ruby. macOS + Linux.
+440 tests. MIT licensed. Ruby. macOS + Linux.
 
 ---
 
@@ -165,7 +165,7 @@ The gate adapts to your setup. With no MCPs, only `web` + `local` are required. 
 
 ## Tests
 
-429 tests across two frameworks:
+440 tests across two frameworks:
 
 **Tier tests (175)** — end-to-end enforcement scenarios:
 
@@ -175,14 +175,15 @@ The gate adapts to your setup. With no MCPs, only `web` + `local` are required. 
 | Hard | 55 | Edge cases, state transitions |
 | Villain | 59 | Adversarial bypass attempts |
 
-**Self-tests (254)** — per-hook unit tests:
+**Self-tests (265)** — per-hook unit tests:
 
 | Hook | Tests |
 |------|-------|
 | saneprompt | 176 |
-| sanetools | 38 |
-| sanetrack | 23 |
+| sanetools | 42 |
+| sanetrack | 25 |
 | sanestop | 17 |
+| config | 5 |
 
 ```bash
 # Run all tier tests

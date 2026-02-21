@@ -10,6 +10,8 @@ How the enforcement system works, why decisions were made, and where it's headed
 
 SaneProcess is a hook-based enforcement framework for Claude Code that implements the scientific method as a development workflow. Four Ruby hooks intercept Claude Code events (prompt submission, tool calls, tool results, session end), enforce research-before-edit discipline through a 4-category research gate (docs, web, github, local), and prevent doom loops via a circuit breaker pattern. All state lives in a single HMAC-signed JSON file.
 
+Codex note: Codex currently has no native PreToolUse/PostToolUse hook API. For cross-client safety, critical email gates are enforced in shared paths (`check-inbox.sh` send approval + `sane_curl_guard.sh` curl wrapper), so Claude and Codex both block unsafe direct email writes.
+
 ### Component Diagram
 
 ```mermaid
@@ -42,6 +44,7 @@ graph TD
 
 | Hook Type | Script | When | Exit Codes |
 |-----------|--------|------|------------|
+| SessionStart | session_start.rb | Session begins | 0=allow |
 | UserPromptSubmit | saneprompt.rb | User sends message | 0=allow |
 | PreToolUse | sanetools.rb | Before tool executes | 0=allow, 2=block |
 | PostToolUse | sanetrack.rb | After tool completes | 0=always |
@@ -188,7 +191,7 @@ Startup steps tracked:
 - `skills_registry` (read `~/.claude/SKILLS_REGISTRY.md`)
 - `validation_report` (run `scripts/validation_report.rb`)
 - `orphan_cleanup` (kill orphaned Claude processes)
-- `system_clean` (run `./scripts/SaneMaster.rb clean_system`)
+- `system_clean` (system artifact cleanup — auto-completes if unavailable)
 
 ### Deployment Safety Flow
 
@@ -485,7 +488,7 @@ flowchart TD
 - **Doom loops:** Circuit breaker trips after 3 consecutive failures
 
 **Known gaps:**
-- MCP tools can bypass enforcement (no wildcard matcher support — see ADR-004)
+- MCP tools can bypass enforcement (no wildcard matcher support — see ADR-003)
 - State file can be deleted (hook fails safe, re-creates with defaults)
 - `|| true` in settings.json means broken hooks silently pass
 
@@ -581,11 +584,12 @@ Automated daily business report covering revenue, downloads, traffic, GitHub, cu
 | Component | Self-Test | Tier Tests | Total |
 |-----------|----------|------------|-------|
 | saneprompt.rb | 176 | 62 | 238 |
-| sanetools.rb | 25 | 66 | 91 |
-| sanetrack.rb | 23 | 37 | 60 |
+| sanetools.rb | 42 | 66 | 108 |
+| sanetrack.rb | 25 | 37 | 62 |
 | sanestop.rb | 17 | 5 | 22 |
+| config.rb | 5 | — | 5 |
 | Integration | — | 5 | 5 |
-| **Total** | **241** | **175** | **416** |
+| **Total** | **265** | **175** | **440** |
 
 ### Running Tests
 

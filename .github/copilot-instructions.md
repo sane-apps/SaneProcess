@@ -35,8 +35,7 @@ SaneProcess/
 │   │   ├── sanetools.rb     # PreToolUse hook
 │   │   ├── sanetrack.rb     # PostToolUse hook
 │   │   └── sanestop.rb      # Stop hook
-│   ├── init.sh              # Installation script
-│   └── skill_loader.rb      # Skill management
+│   └── init.sh              # Installation script
 ├── skills/                  # Modular domain-specific knowledge
 └── .claude/                 # Claude Code configuration
     ├── rules/               # Path-specific guidance
@@ -92,9 +91,6 @@ ruby scripts/qa.rb                    # Full product QA (hooks, docs, URLs, test
 
 # Cross-Project Sync
 ruby scripts/sync_check.rb ~/SaneBar  # Detect drift between projects
-
-# Memory Audit
-ruby scripts/memory_audit.rb          # Find unfixed bugs in Memory MCP
 
 # Version Management
 ruby scripts/version_bump.rb 2.4      # Bump version across all files

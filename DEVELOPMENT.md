@@ -14,6 +14,17 @@ ruby scripts/hooks/test/tier_tests.rb # Run hook tests
 ruby scripts/sync_check.rb ~/SaneBar  # Cross-project sync
 ```
 
+## Codex Compatibility
+
+Codex does not expose native Claude-style hook events. For consistent behavior across Claude and Codex:
+
+- Claude path: Ruby hooks in `scripts/hooks/*.rb`.
+- Codex path: critical email safety is enforced in shared runtime paths:
+  - `~/SaneApps/infra/scripts/check-inbox.sh` (`require_email_send_approval`)
+  - `scripts/hooks/sane_curl_guard.sh` via `~/.local/bin/curl` wrapper
+
+Run `ruby scripts/SaneMaster.rb system_check` to verify both Claude hooks and Codex guard wiring.
+
 ## The Rules: Scientific Method for AI
 
 These rules enforce the scientific method. Not optional guidelines - **the hooks block you until you comply.**
@@ -89,7 +100,7 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 | Command | Purpose |
 |---------|---------|
 | `verify_api <API> [Framework]` | Verify SDK API exists |
-| `verify_mocks` | Check mock sync status |
+| `fix_mocks` | Check and fix mock sync status |
 
 **Examples** and **Aliases** are listed in `./scripts/SaneMaster.rb help` — keep them current with the CLI.
 
@@ -155,6 +166,17 @@ release:
 
 If `file_icon` is missing, the DMG gets a generic Finder icon. The `DMGIcon.icns` file should be a full-square opaque icon (no squircle, no shadow — macOS applies its own mask).
 
+### Release Flags
+
+| Flag | Purpose |
+|------|---------|
+| `--full` | Version bump + tests + GitHub release + deploy |
+| `--website-only` | Deploy website to Cloudflare Pages only (no app build) |
+| `--skip-build` | Skip Xcode build (use existing binary) |
+| `--skip-appstore` | Skip App Store submission in full release |
+| `--allow-republish` | Allow re-release of same version |
+| `--allow-unsynced-peer` | Allow release even if peer projects are out of sync |
+
 ### Full SOP
 
 See [templates/RELEASE_SOP.md](templates/RELEASE_SOP.md) for the complete release checklist including R2 upload, appcast update, and Cloudflare Pages deployment.
@@ -197,7 +219,7 @@ curl -sL https://raw.githubusercontent.com/sane-apps/SaneProcess/main/scripts/in
 ### Regression Tests
 
 ```bash
-ruby scripts/hooks/test/hook_test.rb   # 28 tests, 0 failures
+ruby scripts/hooks/test/tier_tests.rb  # Authoritative test suite (175 tests)
 ```
 
 ### Full QA
@@ -207,4 +229,3 @@ ruby scripts/hooks/test/hook_test.rb   # 28 tests, 0 failures
 ```
 
 ---
-

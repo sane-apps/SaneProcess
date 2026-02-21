@@ -860,6 +860,7 @@ def build_session_context
     context_parts << ""
     context_parts << "MCP verification: Required before editing"
     context_parts << "Verify by calling: apple-docs search, context7 resolve, github search"
+    context_parts << "Serena activate reminder: run Serena activate for the current project before symbol-level edits"
   end
 
   # Recent session learnings (replaces old external memory health briefing)

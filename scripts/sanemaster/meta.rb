@@ -42,6 +42,7 @@ module SaneMasterModules
         crash_backlog: check_crash_backlog,
         tool_versions: check_tool_versions_smart,
         hooks: check_hooks_health,
+        codex_guards: check_codex_guard_health,
         mcp: check_mcp_health,
         commands: check_command_coverage
       }
@@ -703,6 +704,54 @@ module SaneMasterModules
       end
     end
 
+    def check_codex_guard_health
+      puts '🧷 Codex Guards:'
+
+      issues = []
+      wrapper = File.expand_path('~/.local/bin/curl')
+      expected = File.expand_path('~/SaneApps/infra/SaneProcess/scripts/hooks/sane_curl_guard.sh')
+
+      if File.symlink?(wrapper)
+        target = File.expand_path(File.readlink(wrapper), File.dirname(wrapper))
+        if target == expected
+          puts '   ✅ curl wrapper linked to sane_curl_guard.sh'
+        else
+          puts "   ❌ curl wrapper points to #{target}"
+          issues << :curl_wrapper_wrong_target
+        end
+      elsif File.exist?(wrapper)
+        puts '   ❌ ~/.local/bin/curl exists but is not a symlink'
+        issues << :curl_wrapper_not_symlink
+      else
+        puts '   ❌ ~/.local/bin/curl wrapper missing'
+        issues << :curl_wrapper_missing
+      end
+
+      inbox_script = File.expand_path('~/SaneApps/infra/scripts/check-inbox.sh')
+      if File.exist?(inbox_script)
+        content = File.read(inbox_script)
+        if content.include?('require_email_send_approval')
+          puts '   ✅ check-inbox send approval gate present'
+        else
+          puts '   ❌ check-inbox send approval gate missing'
+          issues << :check_inbox_send_gate_missing
+        end
+
+        if content.include?('SANE_EMAIL_WORKER_ALLOWED=1')
+          puts '   ✅ check-inbox exports approved worker marker'
+        else
+          puts '   ❌ check-inbox approved worker marker missing'
+          issues << :check_inbox_worker_marker_missing
+        end
+      else
+        puts '   ❌ check-inbox.sh not found at ~/SaneApps/infra/scripts/check-inbox.sh'
+        issues << :check_inbox_missing
+      end
+
+      puts ''
+      { status: issues.empty? ? :ok : :warning, issues: issues }
+    end
+
     def check_mcp_health
       puts '🔌 MCP Servers:'
 
@@ -835,6 +884,7 @@ module SaneMasterModules
       issues << 'MCP configuration issue' if results[:mcp][:status] != :ok
 
       issues << 'Hook configuration issue' if results[:hooks][:status] != :ok
+      issues << 'Codex guard configuration issue' if results[:codex_guards][:status] != :ok
 
       if issues.empty?
         puts "✅ Tooling healthy (#{elapsed_ms}ms)"

@@ -111,9 +111,11 @@ sync-codex-mini.sh mini --quiet --no-restart
 **What it does:**
 1. Forces local Codex automations to paused (prevents duplicate runs).
 2. Rewrites home paths for Mini and syncs automation TOML files.
-3. Ensures Mini has the latest `check-inbox.sh`.
-4. Sets Mini AM run active and PM run paused.
-5. Optionally restarts Codex on Mini so scheduler reloads immediately.
+3. Syncs critical control-plane scripts (`check-inbox.sh`, `git-sync-safe.sh`, hooks, validation/reporting scripts).
+4. Updates Mini automation SQLite rows from TOML so prompt/status changes apply immediately.
+5. Verifies Air↔Mini SHA-256 parity for all synced control-plane files.
+6. Sets Mini AM run active and PM run paused.
+7. Optionally restarts Codex on Mini so scheduler reloads immediately.
 
 ### start-workday.sh
 
@@ -127,10 +129,11 @@ start-workday.sh mini --no-open
 
 **What it does:**
 1. Syncs automation config to Mini.
-2. Pulls latest Mini morning/nightly reports locally.
-3. Shows Mini automation scheduler status.
-4. Runs inbox summary locally.
-5. Opens reports and Codex app (unless `--no-open`).
+2. Runs Air↔Mini git drift check (`git-sync-safe.sh --peer mini`) as advisory.
+3. Pulls latest Mini morning/nightly reports locally.
+4. Shows Mini automation scheduler status.
+5. Runs inbox summary locally.
+6. Opens reports and Codex app (unless `--no-open`).
 
 ### git-sync-safe.sh
 
@@ -139,6 +142,12 @@ Nightly safe Git sync to avoid duplicate work between machines.
 **Usage:**
 ```bash
 git-sync-safe.sh
+
+# Compare local repos against Mini for branch/head/dirty drift
+git-sync-safe.sh --peer mini
+
+# Allow dirty working trees (warning-only mode)
+git-sync-safe.sh --allow-dirty
 ```
 
 **What it does:**
@@ -146,7 +155,8 @@ git-sync-safe.sh
 2. Fetches from origin.
 3. Fast-forward pulls only when clean.
 4. Auto-pushes only clean `main/master` ahead commits.
-5. Skips dirty trees and non-main branches, then logs warnings.
+5. Flags dirty trees as issues by default (prevents false “clean” states).
+6. Optional peer mode (`--peer <host>`) checks branch/head/dirty parity over SSH.
 
 ## Models
 

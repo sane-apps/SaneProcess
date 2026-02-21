@@ -212,7 +212,7 @@ if command.match?(/\bgh\s+(?:issue|pr)\s+(?:comment|close|review|create)\b/)
   if repo
     owner, name = repo.split('/', 2)
     unless owner&.downcase == 'sane-apps' || owner&.downcase == 'mrsaneapps'
-      flag = "/tmp/.contrib_read_#{owner}_#{name}".gsub(/[^a-zA-Z0-9_\-.]/, '_')
+      flag = "/tmp/.contrib_read_#{owner}_#{name}".gsub(/[^a-zA-Z0-9_\-\/.]/, '_')
       unless File.exist?(flag)
         warn '🔴 BLOCKED: Submission to external repo without reading contribution guidelines'
         warn "   Target: #{repo}"

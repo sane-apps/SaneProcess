@@ -36,7 +36,8 @@ Research gate (when verifying or blocked):
 - Use all 4: docs (apple-docs/context7), web search, GitHub MCP, and local codebase.
 
 Codex enforcement (manual):
-- No automatic hooks here; treat these as hard gates.
+- Codex has no native PreToolUse hook API.
+- Enforce critical gates in shared scripts; email writes are auto-guarded via `~/.local/bin/curl` -> `sane_curl_guard.sh` plus `check-inbox.sh` approval checks.
 - If errors repeat, check breaker status (when available) and research before retrying.
 - Don’t invent new docs; use the 5-doc standard (README, DEVELOPMENT, ARCHITECTURE, SESSION_HANDOFF, CLAUDE).
 

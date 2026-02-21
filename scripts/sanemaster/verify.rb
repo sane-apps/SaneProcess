@@ -728,19 +728,29 @@ module SaneMasterModules
 
       # 4. Serena MCP
       puts "\n═══ 4. MCP CONFIGURATION ═══"
-      serena_config = File.expand_path('~/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/serena/.mcp.json')
-      if File.exist?(serena_config)
-        content = File.read(serena_config)
-        if content.include?('project-from-cwd')
+      serena_sources = [
+        File.expand_path('~/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/serena/.mcp.json'),
+        File.expand_path('~/SaneApps/infra/SaneProcess/.mcp.json'),
+        File.expand_path('~/.codex/config.toml')
+      ]
+      existing_sources = serena_sources.select { |p| File.exist?(p) }
+
+      if existing_sources.empty?
+        puts "  ⚠️  Serena config not found"
+        results[:warnings] += 1
+      else
+        has_project_from_cwd = existing_sources.any? do |cfg|
+          content = File.read(cfg)
+          content.include?('project-from-cwd')
+        end
+
+        if has_project_from_cwd
           puts "  ✅ Serena: --project-from-cwd flag present"
           results[:passed] += 1
         else
           puts "  ⚠️  Serena: Missing --project-from-cwd (manual activation needed)"
           results[:warnings] += 1
         end
-      else
-        puts "  ⚠️  Serena config not found"
-        results[:warnings] += 1
       end
 
       # 5. Bootstrap Template

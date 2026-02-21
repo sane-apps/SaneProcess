@@ -39,6 +39,7 @@ done
 
 ROOT="$HOME/SaneApps/infra/SaneProcess"
 SYNC_SCRIPT="$ROOT/scripts/automation/sync-codex-mini.sh"
+GIT_SYNC_SCRIPT="$ROOT/scripts/automation/git-sync-safe.sh"
 OUT_DIR="$ROOT/outputs"
 LOCAL_INBOX="$HOME/SaneApps/infra/scripts/check-inbox.sh"
 
@@ -50,16 +51,24 @@ echo "1) Syncing automation config to Mini..."
 bash "$SYNC_SCRIPT" "$MINI_HOST"
 
 echo ""
-echo "2) Fetching Mini reports..."
+echo "2) Air↔Mini git drift check (advisory)..."
+if [[ -x "$GIT_SYNC_SCRIPT" ]]; then
+  "$GIT_SYNC_SCRIPT" --peer "$MINI_HOST" || true
+else
+  echo "git-sync-safe.sh not found at $GIT_SYNC_SCRIPT"
+fi
+
+echo ""
+echo "3) Fetching Mini reports..."
 scp -q "$MINI_HOST:~/SaneApps/infra/SaneProcess/outputs/morning_report.md" "$OUT_DIR/morning_report.mini.md" 2>/dev/null || true
 scp -q "$MINI_HOST:~/SaneApps/infra/SaneProcess/outputs/nightly_report.md" "$OUT_DIR/nightly_report.mini.md" 2>/dev/null || true
 
 echo ""
-echo "3) Mini automation status:"
+echo "4) Mini automation status:"
 ssh "$MINI_HOST" 'sqlite3 -header -column ~/.codex/sqlite/codex-dev.db "SELECT id,name,status,datetime(next_run_at/1000,\"unixepoch\",\"localtime\") AS next_run_local, datetime(last_run_at/1000,\"unixepoch\",\"localtime\") AS last_run_local FROM automations;"'
 
 echo ""
-echo "4) Inbox summary (local):"
+echo "5) Inbox summary (local):"
 if [[ -x "$LOCAL_INBOX" ]]; then
   "$LOCAL_INBOX" || true
 else
