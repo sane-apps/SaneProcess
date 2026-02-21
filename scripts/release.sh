@@ -363,6 +363,7 @@ print_help() {
     echo "  --skip-build         Skip build step (use existing archive)"
     echo "  --version X.Y.Z      Set version number"
     echo "  --notes \"...\"      Release notes for GitHub (required with --full)"
+    echo "  --allow-republish    Allow republishing an already-live version/build"
     echo "  --website-only       Deploy website + appcast only (no build/R2/signing)"
     echo "  -h, --help           Show this help"
 }
@@ -874,6 +875,7 @@ XCODEGEN_DONE=false
 RUN_GH_RELEASE=false
 RUN_DEPLOY=false
 WEBSITE_ONLY=false
+ALLOW_REPUBLISH=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -901,6 +903,10 @@ while [[ $# -gt 0 ]]; do
         --notes)
             RELEASE_NOTES="$2"
             shift 2
+            ;;
+        --allow-republish)
+            ALLOW_REPUBLISH=true
+            shift
             ;;
         --full)
             FULL_RELEASE=true
@@ -1556,12 +1562,49 @@ if [ "${RUN_GH_RELEASE}" = true ]; then
     upload_github_release_asset
 fi
 
+# Guardrail: by default do not republish an already-live Sparkle version/build.
+ensure_not_republishing_live_version() {
+    if [ "${ALLOW_REPUBLISH}" = true ]; then
+        log_warn "Republish override enabled (--allow-republish)."
+        return 0
+    fi
+
+    if [ "${USE_SPARKLE}" != "true" ]; then
+        return 0
+    fi
+
+    local appcast_url="https://${SITE_HOST}/appcast.xml"
+    local appcast_status
+    appcast_status=$(extract_http_status "${appcast_url}")
+    if [ "${appcast_status}" != "200" ]; then
+        # If appcast is unavailable we cannot prove duplicate; continue and let later checks fail if needed.
+        return 0
+    fi
+
+    local appcast_content
+    appcast_content=$(curl -fsSL "${appcast_url}" 2>/dev/null || true)
+    if [ -z "${appcast_content}" ]; then
+        return 0
+    fi
+
+    local live_count
+    live_count=$(appcast_item_count_for_version "${appcast_content}")
+    if [ "${live_count}" -ge 1 ]; then
+        log_error "Refusing to republish v${VERSION} (${BUILD_NUMBER}): live appcast already has ${live_count} entr$( [ "${live_count}" = "1" ] && echo "y" || echo "ies" )."
+        log_error "Sparkle users on v${VERSION} will not receive an update without a version/build bump."
+        log_error "Bump version (recommended) or rerun with --allow-republish for emergency replacement."
+        exit 1
+    fi
+}
+
 # ─── Deploy: R2 upload + appcast update + Pages deploy ───
 if [ "${RUN_DEPLOY}" = true ]; then
     log_info ""
     log_info "═══════════════════════════════════════════"
     log_info "  DEPLOYING TO PRODUCTION"
     log_info "═══════════════════════════════════════════"
+
+    ensure_not_republishing_live_version
 
     # Ensure GitHub release + asset exist even when running deploy-only mode.
     ensure_cmd gh
