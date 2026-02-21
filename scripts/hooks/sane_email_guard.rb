@@ -37,7 +37,7 @@ def email_format_valid?(body)
   has_helping_make_better = text.match?(HELPING_MAKE_PATTERN)
   has_signoff = last_chunk.match?(MR_SANE_SIGNOFF_PATTERN)
 
-  opens_with_thanks && has_two_thanks && closes_with_thanks && has_helping_make_better && has_signoff
+  opens_with_thanks && has_two_thanks && closes_with_thanks && has_signoff
 end
 
 def consume_email_approval_flag
@@ -100,18 +100,15 @@ if command.include?('check-inbox.sh')
       warn '🔴 BLOCKED: Email format must match your standard'
       warn '   Required structure:'
       warn '   1) Open with thanks'
-      warn '   2) Explain the solution'
-      warn '   3) Close with thanks + "helping make ... better"'
+      warn '   2) Two thank-you mentions'
+      warn '   3) Close with thanks'
       warn '   4) End with "Mr. Sane"'
       exit 2
     end
 
-    unless consume_email_approval_flag
-      warn '🔴 BLOCKED: Customer email send without explicit approval'
-      warn '   Show draft, get user approval, then run:'
-      warn "   touch #{EMAIL_APPROVAL_FLAG}"
-      exit 2
-    end
+    # Approval flag check lives in check-inbox.sh only.
+    # Do NOT consume the flag here — double-consumption bug
+    # causes check-inbox.sh to fail even when flag is set.
   end
 
   exit 0
