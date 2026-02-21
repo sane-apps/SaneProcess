@@ -308,6 +308,7 @@ PY
     if [ -n "${HOMEBREW_TAP_REPO}" ]; then
         local cask_file="Casks/${LOWER_APP_NAME}.rb"
         local cask_raw_url="https://raw.githubusercontent.com/${HOMEBREW_TAP_REPO}/main/${cask_file}"
+        local cask_api_path="repos/${HOMEBREW_TAP_REPO}/contents/${cask_file}?ref=main"
         local cask_status
         cask_status=$(extract_http_status "${cask_raw_url}")
         if [ "${cask_status}" = "404" ]; then
@@ -320,6 +321,7 @@ PY
         local cask_max_attempts="${HOMEBREW_VERIFY_ATTEMPTS:-10}"
         local cask_sleep_seconds="${HOMEBREW_VERIFY_SLEEP_SECONDS:-6}"
         local cask_ok=false
+        local cask_verified_source=""
 
         while [ "${cask_attempt}" -le "${cask_max_attempts}" ]; do
             local cask_body
@@ -328,8 +330,23 @@ PY
                grep -q "version \"${VERSION}\"" <<< "${cask_body}" && \
                grep -q "sha256 \"${SHA256}\"" <<< "${cask_body}"; then
                 cask_ok=true
+                cask_verified_source="raw"
                 break
             fi
+
+            # raw.githubusercontent can lag behind Git refs after push; verify against GitHub API as fallback.
+            if command -v gh >/dev/null 2>&1; then
+                local cask_api_body
+                cask_api_body=$(gh api "${cask_api_path}" --jq '.content' 2>/dev/null | tr -d '\n' | python3 -c 'import base64,sys; data=sys.stdin.read().strip(); print(base64.b64decode(data).decode("utf-8"), end="")' 2>/dev/null || true)
+                if [ -n "${cask_api_body}" ] && \
+                   grep -q "version \"${VERSION}\"" <<< "${cask_api_body}" && \
+                   grep -q "sha256 \"${SHA256}\"" <<< "${cask_api_body}"; then
+                    cask_ok=true
+                    cask_verified_source="github-api"
+                    break
+                fi
+            fi
+
             if [ "${cask_attempt}" -lt "${cask_max_attempts}" ]; then
                 sleep "${cask_sleep_seconds}"
             fi
@@ -339,6 +356,10 @@ PY
         if [ "${cask_ok}" != "true" ]; then
             log_error "Homebrew cask did not converge to v${VERSION} / ${SHA256:0:12}... at ${cask_raw_url}"
             return 1
+        fi
+
+        if [ "${cask_verified_source}" = "github-api" ]; then
+            log_warn "Homebrew verification passed via GitHub API; raw.githubusercontent is still propagating."
         fi
         fi
     fi
