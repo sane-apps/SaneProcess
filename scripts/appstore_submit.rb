@@ -245,10 +245,11 @@ end
 # ─── App Version Management ───
 
 def find_editable_version(app_id, asc_platform, version_string, token)
-  # Look for an editable version (PREPARE_FOR_SUBMISSION or REJECTED)
+  # Look for an editable version.
+  # READY_FOR_REVIEW still accepts metadata/screenshot updates in ASC for some flows.
   path = "/apps/#{app_id}/appStoreVersions" \
          "?filter[platform]=#{asc_platform}" \
-         "&filter[appStoreState]=PREPARE_FOR_SUBMISSION,REJECTED"
+         "&filter[appStoreState]=PREPARE_FOR_SUBMISSION,REJECTED,READY_FOR_REVIEW"
   resp = asc_get(path, token: token)
 
   return nil unless resp && resp['data']
@@ -677,6 +678,7 @@ OptionParser.new do |opts|
   opts.on('--build-number NUMBER', 'Build number override (CFBundleVersion)') { |v| options[:build_number] = v }
   opts.on('--platform PLATFORM', 'macos or ios') { |v| options[:platform] = v }
   opts.on('--project-root PATH', 'Project root directory') { |v| options[:project_root] = v }
+  opts.on('--skip-upload', 'Skip binary upload; use existing processed build in ASC') { options[:skip_upload] = true }
   opts.on('--test-screenshots', 'Test screenshot resize only (no API calls)') { options[:test_screenshots] = true }
 end.parse!
 
@@ -719,7 +721,9 @@ if options[:test_screenshots]
 end
 
 # Validate required options
-%i[pkg app_id version platform project_root].each do |key|
+required = %i[app_id version platform project_root]
+required << :pkg unless options[:skip_upload]
+required.each do |key|
   unless options[key]
     log_error "Missing required option: --#{key.to_s.tr('_', '-')}"
     exit 1
@@ -738,7 +742,7 @@ unless asc_platform
   exit 1
 end
 
-unless File.exist?(pkg_path)
+if !options[:skip_upload] && !File.exist?(pkg_path)
   log_error "Package not found: #{pkg_path}"
   exit 1
 end
@@ -751,19 +755,31 @@ config = if File.exist?(config_path)
            {}
          end
 
-log_info "App Store submission: #{File.basename(pkg_path)} v#{version} (#{platform})"
+artifact_label = options[:skip_upload] ? 'existing ASC build' : File.basename(pkg_path)
+log_info "App Store submission: #{artifact_label} v#{version} (#{platform})"
 log_info "App ID: #{app_id}"
 
 token = generate_jwt
 
 # Step 1: Upload build
-unless upload_build(pkg_path)
-  log_error 'Build upload failed. Aborting.'
-  exit 1
+unless options[:skip_upload]
+  unless upload_build(pkg_path)
+    log_error 'Build upload failed. Aborting.'
+    exit 1
+  end
+else
+  log_info 'Skipping binary upload (--skip-upload).'
 end
 
 # Step 2: Wait for processing
-build_number = options[:build_number] || extract_build_number_from_package(pkg_path) || default_build_number(version)
+build_number =
+  if options[:build_number]
+    options[:build_number]
+  elsif options[:skip_upload]
+    default_build_number(version)
+  else
+    extract_build_number_from_package(pkg_path) || default_build_number(version)
+  end
 build_id = wait_for_build(app_id, build_number, asc_platform, token)
 unless build_id
   # Try with the version string itself (some projects use version as build number)

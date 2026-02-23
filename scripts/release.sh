@@ -861,8 +861,6 @@ OPT
     cat >> "${plist_path}" << 'OPT'
     <key>signingStyle</key>
     <string>automatic</string>
-    <key>destination</key>
-    <string>upload</string>
 </dict>
 </plist>
 OPT
@@ -1853,24 +1851,17 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
         2>&1 | tee -a "${BUILD_DIR}/build.log"
 
     if [ ${PIPESTATUS[0]} -ne 0 ]; then
-        if appstore_duplicate_build_upload_detected; then
-            log_warn "App Store upload skipped: this build number is already present in App Store Connect."
-            log_warn "Continuing direct-distribution deploy. Bump build number for a new App Store submission."
-            APPSTORE_DIRECT_UPLOAD=true
-        else
-            log_error "App Store export failed! Check ${BUILD_DIR}/build.log"
-            exit 1
-        fi
+        log_error "App Store export failed! Check ${BUILD_DIR}/build.log"
+        exit 1
     fi
 
     APPSTORE_PKG="${APPSTORE_EXPORT_PATH}/${APP_NAME}.pkg"
     if [ ! -f "${APPSTORE_PKG}" ]; then
-        # With destination=upload, xcodebuild uploads directly — no local .pkg
-        log_info "No local .pkg (direct upload via destination=upload)"
-        APPSTORE_DIRECT_UPLOAD=true
+        log_error "App Store export succeeded but no .pkg was produced at ${APPSTORE_PKG}"
+        log_error "Headless release requires a local .pkg for API-key upload."
+        exit 1
     else
         log_info "App Store artifact: ${APPSTORE_PKG}"
-        APPSTORE_DIRECT_UPLOAD=false
     fi
 fi
 
@@ -2276,10 +2267,7 @@ PY
             exit 1
         fi
 
-        if [ "${APPSTORE_DIRECT_UPLOAD}" = "true" ]; then
-            log_info "Build was uploaded directly during export (destination=upload)."
-            log_info "Skipping appstore_submit.rb upload — build is already on App Store Connect."
-        elif [ -z "${APPSTORE_PKG}" ] || [ ! -f "${APPSTORE_PKG}" ]; then
+        if [ -z "${APPSTORE_PKG}" ] || [ ! -f "${APPSTORE_PKG}" ]; then
             log_error "No App Store .pkg found. Build with App Store export first (don't use --skip-build)."
             exit 1
         else

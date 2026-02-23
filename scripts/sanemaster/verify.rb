@@ -31,6 +31,7 @@ module SaneMasterModules
       clean_first = args.include?('--clean')
       include_ui = args.include?('--ui')
       timeout = args.include?('--timeout') ? args[args.index('--timeout') + 1].to_i : 180
+      signed_tests = args.include?('--signed-tests') || ENV['SANEMASTER_SIGN_TEST_BUILDS'] == '1'
 
       clean([]) if clean_first
 
@@ -40,13 +41,15 @@ module SaneMasterModules
       permissions_status = auto_permissions ? '✅' : 'off (use --grant-permissions)'
       puts "⏱️  Timeout: #{timeout}s | Auto-handling permissions: #{permissions_status}"
       puts include_ui ? '📱 Including UI tests (use --ui flag)' : '⚡ Unit tests only (use --ui to include UI tests)'
+      puts signed_tests ? '🔐 Test builds will use normal code signing' : '🧪 Headless mode: test builds run without code signing'
       puts ''
 
       permission_monitor_pid = auto_permissions ? grant_test_permissions : nil
+      terminate_running_app_instance
       validate_test_references unless args.include?('--skip-test-validation')
 
       begin
-        result = run_tests_with_progress(timeout_seconds: timeout, include_ui: include_ui)
+        result = run_tests_with_progress(timeout_seconds: timeout, include_ui: include_ui, signed_tests: signed_tests)
 
         if result[:success]
           puts "\n✅ Tests passed! (#{result[:tests_run]} tests, #{result[:duration]}s)"
@@ -56,6 +59,7 @@ module SaneMasterModules
           puts "\n❌ Tests failed. Running diagnostics..."
           puts "⚠️  Test run timed out after #{timeout}s" if result[:timeout]
           diagnose(nil, dump: true)
+          exit 1
         end
       ensure
         cleanup_test_processes(permission_monitor_pid)
@@ -240,6 +244,11 @@ module SaneMasterModules
       permission_pid
     end
 
+    def terminate_running_app_instance
+      system('pkill', '-9', '-x', project_name, err: File::NULL)
+      sleep(0.2)
+    end
+
     def cleanup_test_processes(permission_monitor_pid = nil)
       print '🧹 Cleaning up test processes... '
 
@@ -263,10 +272,10 @@ module SaneMasterModules
       puts '✅'
     end
 
-    def run_tests_with_progress(timeout_seconds:, include_ui: false)
+    def run_tests_with_progress(timeout_seconds:, include_ui: false, signed_tests: false)
       require 'open3'
 
-      cmd = build_test_command(include_ui)
+      cmd = build_test_command(include_ui, signed_tests)
       state = { start_time: Time.now, tests_run: 0, swift_testing_total: 0, current_test: nil, last_update: Time.now,
                 spinner_chars: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'], spinner_idx: 0 }
 
@@ -280,7 +289,7 @@ module SaneMasterModules
       { success: result[:success], tests_run: total_tests, duration: (Time.now - state[:start_time]).to_i, timeout: result[:timeout] }
     end
 
-    def build_test_command(include_ui)
+    def build_test_command(include_ui, signed_tests = false)
       if include_ui
         # UI tests not yet implemented - warn and run unit tests only
         puts "  ⚠️  UI tests not available (#{project_ui_tests_dir} directory does not exist)"
@@ -289,18 +298,35 @@ module SaneMasterModules
       args = ['xcodebuild', 'test']
       args.concat(xcodebuild_container_args)
       args.concat(['-scheme', project_scheme, '-destination', 'platform=macOS,arch=arm64'])
-      return args if use_test_plan?
-      if include_ui
-        if ui_tests_present?
-          args.concat(["-only-testing:#{project_test_target}", "-only-testing:#{project_ui_test_target}"])
-        else
-          # UI tests not yet implemented - warn and run unit tests only
-          puts "  ⚠️  UI tests not available (#{project_ui_tests_dir} directory does not exist)"
-          puts '  📦 Running unit tests only...'
-          args << "-only-testing:#{project_test_target}"
+      if use_test_plan?
+        # Some projects include UI tests in test plans by default.
+        # Keep verify fast/headless unless --ui is explicitly requested.
+        if !include_ui && ui_tests_present?
+          args << "-skip-testing:#{project_ui_test_target}"
         end
       else
-        args << "-only-testing:#{project_test_target}"
+        if include_ui
+          if ui_tests_present?
+            args.concat(["-only-testing:#{project_test_target}", "-only-testing:#{project_ui_test_target}"])
+          else
+            # UI tests not yet implemented - warn and run unit tests only
+            puts "  ⚠️  UI tests not available (#{project_ui_tests_dir} directory does not exist)"
+            puts '  📦 Running unit tests only...'
+            args << "-only-testing:#{project_test_target}"
+          end
+        else
+          args << "-only-testing:#{project_test_target}"
+        end
+      end
+      unless signed_tests
+        args.concat([
+                      'CODE_SIGNING_ALLOWED=NO',
+                      'CODE_SIGNING_REQUIRED=NO',
+                      'CODE_SIGN_IDENTITY=',
+                      'DEVELOPMENT_TEAM=',
+                      'PROVISIONING_PROFILE_SPECIFIER=',
+                      'PROVISIONING_PROFILE='
+                    ])
       end
       args
     end
