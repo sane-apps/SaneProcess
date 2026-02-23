@@ -9,8 +9,8 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Ensure Homebrew-installed tools resolve in non-interactive shells (CI/SSH).
-export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
+# Deterministic PATH bootstrap for non-login/headless shells.
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 
 # Colors for output
 RED='\033[0;31m'
@@ -28,6 +28,67 @@ log_warn() {
 
 log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+keychain_get_service_value() {
+    local service="$1"
+    if ! command -v security >/dev/null 2>&1; then
+        return 1
+    fi
+    security find-generic-password -s "${service}" -w 2>/dev/null || true
+}
+
+set_secret_env_var() {
+    local var_name="$1"
+    local value="$2"
+    printf -v "${var_name}" '%s' "${value}"
+    export "${var_name}"
+}
+
+load_secret_with_fallback() {
+    local var_name="$1"
+    local keychain_service="$2"
+    local required="${3:-false}"
+    local help_label="${4:-${var_name}}"
+
+    local current_value="${!var_name:-}"
+    if [ -n "${current_value}" ]; then
+        return 0
+    fi
+
+    local keychain_value
+    keychain_value="$(keychain_get_service_value "${keychain_service}")"
+    if [ -n "${keychain_value}" ]; then
+        set_secret_env_var "${var_name}" "${keychain_value}"
+        return 0
+    fi
+
+    if [ "${required}" = "true" ]; then
+        log_error "Missing ${help_label}."
+        log_error "Set env var ${var_name} or seed keychain service '${keychain_service}'."
+        return 1
+    fi
+
+    return 0
+}
+
+load_keychain_password_secret() {
+    local merged_password="${SANEBAR_KEYCHAIN_PASSWORD:-${KEYCHAIN_PASSWORD:-${KEYCHAIN_PASS:-}}}"
+    if [ -n "${merged_password}" ]; then
+        set_secret_env_var "SANEBAR_KEYCHAIN_PASSWORD" "${merged_password}"
+        return 0
+    fi
+    load_secret_with_fallback "SANEBAR_KEYCHAIN_PASSWORD" "saneprocess.keychain.password" "true" "login keychain password"
+}
+
+load_release_auth_secrets() {
+    # Priority order: env var > keychain service > command-specific validation failure.
+    load_secret_with_fallback "ASC_AUTH_KEY_ID" "saneprocess.asc.key_id"
+    load_secret_with_fallback "ASC_AUTH_ISSUER_ID" "saneprocess.asc.issuer_id"
+    load_secret_with_fallback "ASC_AUTH_KEY_PATH" "saneprocess.asc.key_path"
+    load_secret_with_fallback "NOTARY_API_KEY_ID" "saneprocess.notary.key_id"
+    load_secret_with_fallback "NOTARY_API_ISSUER_ID" "saneprocess.notary.issuer_id"
+    load_secret_with_fallback "NOTARY_API_KEY_PATH" "saneprocess.notary.key_path"
 }
 
 extract_http_status() {
@@ -1079,7 +1140,12 @@ check_signing_identity_gate() {
 
 prepare_signing_session() {
     local login_keychain="${HOME}/Library/Keychains/login.keychain-db"
-    local keychain_password="${SANEBAR_KEYCHAIN_PASSWORD:-${KEYCHAIN_PASSWORD:-${KEYCHAIN_PASS:-}}}"
+    local keychain_password=""
+
+    if ! load_keychain_password_secret; then
+        return 1
+    fi
+    keychain_password="${SANEBAR_KEYCHAIN_PASSWORD:-}"
 
     security default-keychain -d user -s "${login_keychain}" >/dev/null 2>&1 || true
     security list-keychains -d user -s "${login_keychain}" >/dev/null 2>&1 || true
@@ -1099,7 +1165,8 @@ prepare_signing_session() {
     if ! /usr/bin/codesign --force --sign "${SIGNING_IDENTITY}" --timestamp=none "${codesign_probe}" >/dev/null 2>&1; then
         rm -f "${codesign_probe}"
         log_error "Codesign cannot access signing key in this session."
-        log_error "For headless releases, set SANEBAR_KEYCHAIN_PASSWORD (or KEYCHAIN_PASSWORD/KEYCHAIN_PASS)."
+        log_error "For headless releases, set SANEBAR_KEYCHAIN_PASSWORD (or KEYCHAIN_PASSWORD/KEYCHAIN_PASS)"
+        log_error "or seed keychain service 'saneprocess.keychain.password'."
         return 1
     fi
     rm -f "${codesign_probe}"
@@ -1157,24 +1224,46 @@ prepare_xcode_provisioning_auth() {
     local key_path="${ASC_AUTH_KEY_PATH}"
     local key_id="${ASC_AUTH_KEY_ID}"
     local issuer_id="${ASC_AUTH_ISSUER_ID}"
+    local any_set=0
+    local missing=()
 
-    if [ -z "${key_path}" ] || [ -z "${key_id}" ] || [ -z "${issuer_id}" ]; then
-        log_warn "ASC auth key values incomplete; xcodebuild will use interactive account auth."
+    [ -n "${key_path}" ] && any_set=1
+    [ -n "${key_id}" ] && any_set=1
+    [ -n "${issuer_id}" ] && any_set=1
+
+    [ -n "${key_path}" ] || missing+=("ASC_AUTH_KEY_PATH (service: saneprocess.asc.key_path)")
+    [ -n "${key_id}" ] || missing+=("ASC_AUTH_KEY_ID (service: saneprocess.asc.key_id)")
+    [ -n "${issuer_id}" ] || missing+=("ASC_AUTH_ISSUER_ID (service: saneprocess.asc.issuer_id)")
+
+    if [ "${any_set}" -eq 1 ] && [ ${#missing[@]} -gt 0 ]; then
+        log_error "ASC auth key config is partial. Missing: ${missing[*]}"
+        return 1
+    fi
+
+    if [ ${#missing[@]} -eq 0 ]; then
+        if [ ! -f "${key_path}" ]; then
+            log_error "ASC auth key file not found: ${key_path}"
+            return 1
+        fi
+
+        XCODE_PROVISIONING_AUTH_ARGS=(
+            -authenticationKeyPath "${key_path}"
+            -authenticationKeyID "${key_id}"
+            -authenticationKeyIssuerID "${issuer_id}"
+        )
+
+        log_info "Using ASC API key auth for xcodebuild archive/export."
         return 0
     fi
 
-    if [ ! -f "${key_path}" ]; then
-        log_warn "ASC auth key not found at ${key_path}; xcodebuild will use interactive account auth."
-        return 0
+    if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
+        log_error "App Store archive/export is enabled but ASC auth is not configured."
+        log_error "Set ASC_AUTH_KEY_ID/ASC_AUTH_ISSUER_ID/ASC_AUTH_KEY_PATH or seed keychain services:"
+        log_error "  saneprocess.asc.key_id, saneprocess.asc.issuer_id, saneprocess.asc.key_path"
+        return 1
     fi
 
-    XCODE_PROVISIONING_AUTH_ARGS=(
-        -authenticationKeyPath "${key_path}"
-        -authenticationKeyID "${key_id}"
-        -authenticationKeyIssuerID "${issuer_id}"
-    )
-
-    log_info "Using ASC API key auth for provisioning updates."
+    log_warn "ASC auth key not configured; xcodebuild auth args will be omitted."
     return 0
 }
 
@@ -1275,6 +1364,7 @@ run_release_preflight_only() {
     run_gate "Signing identity" check_signing_identity_gate
     run_gate "Keychain/signing session" prepare_signing_session
     run_gate "Notarization authentication" resolve_notary_auth
+    run_gate "ASC provisioning authentication" prepare_xcode_provisioning_auth
     run_gate "App Store configuration" check_appstore_gate
 
     if [ "${failures}" -gt 0 ]; then
@@ -1422,9 +1512,9 @@ NOTARY_API_KEY_PATH="${NOTARY_API_KEY_PATH:-}"
 NOTARY_API_KEY_ID="${NOTARY_API_KEY_ID:-}"
 NOTARY_API_ISSUER_ID="${NOTARY_API_ISSUER_ID:-}"
 NOTARY_AUTH_MODE=""
-ASC_AUTH_KEY_PATH="${ASC_AUTH_KEY_PATH:-${HOME}/.private_keys/AuthKey_S34998ZCRT.p8}"
-ASC_AUTH_KEY_ID="${ASC_AUTH_KEY_ID:-S34998ZCRT}"
-ASC_AUTH_ISSUER_ID="${ASC_AUTH_ISSUER_ID:-c98b1e0a-8d10-4fce-a417-536b31c09bfb}"
+ASC_AUTH_KEY_PATH="${ASC_AUTH_KEY_PATH:-}"
+ASC_AUTH_KEY_ID="${ASC_AUTH_KEY_ID:-}"
+ASC_AUTH_ISSUER_ID="${ASC_AUTH_ISSUER_ID:-}"
 GITHUB_REPO="${GITHUB_REPO:-sane-apps/${APP_NAME}}"
 HOMEBREW_TAP_REPO="${HOMEBREW_TAP_REPO:-sane-apps/homebrew-tap}"
 XCODEGEN="${XCODEGEN:-false}"
@@ -1463,6 +1553,9 @@ fi
 if ! declare -p XCODE_PROVISIONING_AUTH_ARGS >/dev/null 2>&1; then
     XCODE_PROVISIONING_AUTH_ARGS=()
 fi
+
+# Populate release credentials from keychain services if env vars are unset.
+load_release_auth_secrets
 
 WORKSPACE="$(resolve_path "${WORKSPACE}")"
 XCODEPROJ="$(resolve_path "${XCODEPROJ}")"
@@ -1721,6 +1814,9 @@ if [ "${SKIP_BUILD}" = false ]; then
     log_info "Building release archive..."
 
     archive_args=(archive -scheme "${SCHEME}" -configuration Release -archivePath "${ARCHIVE_PATH}" -destination "generic/platform=macOS" OTHER_CODE_SIGN_FLAGS="--timestamp")
+    if [ ${#XCODE_PROVISIONING_AUTH_ARGS[@]} -gt 0 ]; then
+        archive_args+=(-allowProvisioningUpdates "${XCODE_PROVISIONING_AUTH_ARGS[@]}")
+    fi
     if [ -n "${WORKSPACE}" ]; then
         archive_args=(-workspace "${WORKSPACE}" "${archive_args[@]}")
     elif [ -n "${XCODEPROJ}" ]; then
@@ -1762,13 +1858,14 @@ EXPORT_OPTIONS_PATH="${BUILD_DIR}/ExportOptions.plist"
 write_export_options_plist "${EXPORT_OPTIONS_PATH}"
 
 log_info "Exporting signed app..."
-xcodebuild -exportArchive \
+export_args=(-exportArchive \
     -archivePath "${ARCHIVE_PATH}" \
     -exportPath "${EXPORT_PATH}" \
-    -exportOptionsPlist "${EXPORT_OPTIONS_PATH}" \
-    -allowProvisioningUpdates \
-    "${XCODE_PROVISIONING_AUTH_ARGS[@]}" \
-    2>&1 | tee -a "${BUILD_DIR}/build.log"
+    -exportOptionsPlist "${EXPORT_OPTIONS_PATH}")
+if [ ${#XCODE_PROVISIONING_AUTH_ARGS[@]} -gt 0 ]; then
+    export_args+=(-allowProvisioningUpdates "${XCODE_PROVISIONING_AUTH_ARGS[@]}")
+fi
+xcodebuild "${export_args[@]}" 2>&1 | tee -a "${BUILD_DIR}/build.log"
 
 if [ ${PIPESTATUS[0]} -ne 0 ]; then
     log_error "Export failed! Check ${BUILD_DIR}/build.log"

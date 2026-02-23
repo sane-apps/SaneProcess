@@ -338,7 +338,19 @@ class SaneMaster
       return
     end
 
-    forwarded_env_keys = %w[SANEMASTER_APPSTORE_PREFLIGHT]
+    forwarded_env_keys = %w[
+      SANEMASTER_APPSTORE_PREFLIGHT
+      SANEPROCESS_APPSTORE_BUILD
+      ASC_AUTH_KEY_ID
+      ASC_AUTH_ISSUER_ID
+      ASC_AUTH_KEY_PATH
+      NOTARY_API_KEY_ID
+      NOTARY_API_ISSUER_ID
+      NOTARY_API_KEY_PATH
+      SANEBAR_KEYCHAIN_PASSWORD
+      KEYCHAIN_PASSWORD
+      KEYCHAIN_PASS
+    ]
     forwarded_env = forwarded_env_keys.filter_map do |key|
       value = ENV[key]
       next if value.nil? || value.empty?

@@ -782,6 +782,68 @@ def extract_build_number_from_package(pkg_path)
   end
 end
 
+def submission_lock_path(app_id)
+  sanitized = app_id.to_s.gsub(/[^a-zA-Z0-9_.-]/, '_')
+  File.join(Dir.tmpdir, "saneprocess-appstore-submit-#{sanitized}.lock")
+end
+
+def process_alive?(pid)
+  return false if pid.nil? || pid <= 0
+
+  Process.kill(0, pid)
+  true
+rescue Errno::ESRCH
+  false
+rescue Errno::EPERM
+  true
+end
+
+def stale_submission_lock?(lock_path, max_age_seconds: 6 * 60 * 60)
+  return false unless File.exist?(lock_path)
+
+  content = File.read(lock_path)
+  pid = content[/^pid=(\d+)$/m, 1]&.to_i
+  created_at = content[/^created_at=(\d+)$/m, 1]&.to_i
+  created_at ||= File.mtime(lock_path).to_i
+
+  pid_stale = pid.nil? || !process_alive?(pid)
+  age_stale = (Time.now.to_i - created_at) > max_age_seconds
+
+  pid_stale || age_stale
+rescue StandardError
+  true
+end
+
+def with_submission_lock(app_id)
+  lock_path = submission_lock_path(app_id)
+
+  if stale_submission_lock?(lock_path)
+    File.delete(lock_path) if File.exist?(lock_path)
+    log_warn "Removed stale submission lock: #{lock_path}"
+  end
+
+  lock_file = File.open(lock_path, File::RDWR | File::CREAT, 0o600)
+  unless lock_file.flock(File::LOCK_EX | File::LOCK_NB)
+    owner = lock_file.read.to_s.strip
+    detail = owner.empty? ? '' : " (#{owner.gsub("\n", ', ')})"
+    log_error "Another submission for app #{app_id} is already running: #{lock_path}#{detail}"
+    exit 1
+  end
+
+  lock_file.rewind
+  lock_file.truncate(0)
+  lock_file.write("pid=#{Process.pid}\ncreated_at=#{Time.now.to_i}\napp_id=#{app_id}\n")
+  lock_file.flush
+
+  begin
+    yield
+  ensure
+    lock_file.flock(File::LOCK_UN) rescue nil
+    lock_file.close rescue nil
+    File.delete(lock_path) if File.exist?(lock_path)
+  end
+end
+
 # ─── Main ───
 
 options = {}
@@ -875,88 +937,92 @@ artifact_label = options[:skip_upload] ? 'existing ASC build' : File.basename(pk
 log_info "App Store submission: #{artifact_label} v#{version} (#{platform})"
 log_info "App ID: #{app_id}"
 
-token = generate_jwt
+with_submission_lock(app_id) do
+  token = generate_jwt
 
-# Step 1: Upload build
-unless options[:skip_upload]
-  unless upload_build(pkg_path, app_id: app_id, version: version)
-    log_error 'Build upload failed. Aborting.'
-    exit 1
-  end
-else
-  log_info 'Skipping binary upload (--skip-upload).'
-end
-
-# Step 2: Wait for processing
-build_number =
-  if options[:build_number]
-    options[:build_number]
-  elsif options[:skip_upload]
-    detected_build_number = detect_project_build_number(project_root)
-    if detected_build_number
-      log_info "Using build number #{detected_build_number} from project metadata."
-      detected_build_number
-    else
-      default_build_number(version)
+  # Step 1: Upload build
+  unless options[:skip_upload]
+    unless upload_build(pkg_path, app_id: app_id, version: version)
+      log_error 'Build upload failed. Aborting.'
+      exit 1
     end
   else
-    extract_build_number_from_package(pkg_path) || default_build_number(version)
+    log_info 'Skipping binary upload (--skip-upload).'
   end
-build_id = wait_for_build(app_id, build_number, asc_platform, token)
-unless build_id
-  # Try with the version string itself (some projects use version as build number)
-  log_info "Retrying build lookup with version string #{version}..."
-  build_id = wait_for_build(app_id, version, asc_platform, token)
-end
 
-unless build_id
-  log_error 'Build not found after processing. Check App Store Connect manually.'
-  exit 1
-end
+  # Step 2: Wait for processing
+  build_number =
+    if options[:build_number]
+      options[:build_number]
+    elsif options[:skip_upload]
+      detected_build_number = detect_project_build_number(project_root)
+      if detected_build_number
+        log_info "Using build number #{detected_build_number} from project metadata."
+        detected_build_number
+      else
+        fallback_build = default_build_number(version)
+        log_warn "No CURRENT_PROJECT_VERSION found in project metadata; falling back to #{fallback_build}."
+        fallback_build
+      end
+    else
+      extract_build_number_from_package(pkg_path) || default_build_number(version)
+    end
+  build_id = wait_for_build(app_id, build_number, asc_platform, token)
+  unless build_id
+    # Try with the version string itself (some projects use version as build number)
+    log_info "Retrying build lookup with version string #{version}..."
+    build_id = wait_for_build(app_id, version, asc_platform, token)
+  end
 
-# Step 3: Find or create version
-version_id = find_or_create_version(app_id, asc_platform, version, token)
+  unless build_id
+    log_error 'Build not found after processing. Check App Store Connect manually.'
+    exit 1
+  end
 
-if version_id == :already_submitted
-  log_info 'Version already submitted for review. Done!'
-  exit 0
-end
+  # Step 3: Find or create version
+  version_id = find_or_create_version(app_id, asc_platform, version, token)
 
-unless version_id
-  log_error "Failed to find or create version #{version}."
-  exit 1
-end
+  if version_id == :already_submitted
+    log_info 'Version already submitted for review. Done!'
+    exit 0
+  end
 
-# Step 4: Attach build
-# Refresh token (may have expired during polling)
-token = generate_jwt
-unless attach_build_to_version(version_id, build_id, token)
-  log_error 'Failed to attach build. Continuing to try review submission...'
-end
+  unless version_id
+    log_error "Failed to find or create version #{version}."
+    exit 1
+  end
 
-# Step 5: Ensure review contact detail
-contact_name = config.dig('appstore', 'contact', 'name') || ''
-name_parts = contact_name.split(' ', 2)
-contact = {
-  first_name: name_parts[0] || 'Stephan',
-  last_name: name_parts[1] || 'Joseph',
-  phone: config.dig('appstore', 'contact', 'phone') || '+17277589785',
-  email: config.dig('appstore', 'contact', 'email') || 'hi@saneapps.com'
-}
-ensure_review_detail(version_id, contact, token)
+  # Step 4: Attach build
+  # Refresh token (may have expired during polling)
+  token = generate_jwt
+  unless attach_build_to_version(version_id, build_id, token)
+    log_error 'Failed to attach build. Continuing to try review submission...'
+  end
 
-# Step 6: Upload screenshots (if configured)
-upload_screenshots(version_id, asc_platform, project_root, config, token)
+  # Step 5: Ensure review contact detail
+  contact_name = config.dig('appstore', 'contact', 'name') || ''
+  name_parts = contact_name.split(' ', 2)
+  contact = {
+    first_name: name_parts[0] || 'Stephan',
+    last_name: name_parts[1] || 'Joseph',
+    phone: config.dig('appstore', 'contact', 'phone') || '+17277589785',
+    email: config.dig('appstore', 'contact', 'email') || 'hi@saneapps.com'
+  }
+  ensure_review_detail(version_id, contact, token)
 
-# Step 7: Submit for review
-token = generate_jwt
-if submit_for_review(app_id, asc_platform, version_id, token)
-  log_info ''
-  log_info '═══════════════════════════════════════════'
-  log_info "  APP STORE SUBMISSION COMPLETE"
-  log_info "  #{app_id} v#{version} (#{platform})"
-  log_info '═══════════════════════════════════════════'
-else
-  log_error 'Review submission failed. Check App Store Connect manually.'
-  exit 1
+  # Step 6: Upload screenshots (if configured)
+  upload_screenshots(version_id, asc_platform, project_root, config, token)
+
+  # Step 7: Submit for review
+  token = generate_jwt
+  if submit_for_review(app_id, asc_platform, version_id, token)
+    log_info ''
+    log_info '═══════════════════════════════════════════'
+    log_info "  APP STORE SUBMISSION COMPLETE"
+    log_info "  #{app_id} v#{version} (#{platform})"
+    log_info '═══════════════════════════════════════════'
+  else
+    log_error 'Review submission failed. Check App Store Connect manually.'
+    exit 1
+  end
 end
