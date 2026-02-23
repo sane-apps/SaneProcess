@@ -7,11 +7,28 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PAT
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+SECRETS_ENV_DIR="${HOME}/.config/saneprocess"
+SECRETS_ENV_FILE="${SECRETS_ENV_DIR}/secrets.env"
 
 SEED_MISSING=false
-if [ "${1:-}" = "--seed-missing" ]; then
-    SEED_MISSING=true
-fi
+EXPORT_ENV_FILE=false
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --seed-missing)
+            SEED_MISSING=true
+            ;;
+        --export-env-file)
+            EXPORT_ENV_FILE=true
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--seed-missing] [--export-env-file]"
+            exit 1
+            ;;
+    esac
+    shift
+done
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -34,26 +51,63 @@ keychain_get() {
     security find-generic-password -s "${service}" -w 2>/dev/null || true
 }
 
-resolve_secret() {
-    local var_name="$1"
-    local service="$2"
+keychain_has() {
+    local service="$1"
+    security find-generic-password -s "${service}" -w >/dev/null 2>&1
+}
 
-    local current="${!var_name:-}"
-    if [ -n "${current}" ]; then
-        printf -v "${var_name}" '%s' "${current}"
-        export "${var_name}"
-        return 0
-    fi
+env_key_for_service() {
+    case "$1" in
+        saneprocess.keychain.password) echo "SANEBAR_KEYCHAIN_PASSWORD" ;;
+        saneprocess.asc.key_id) echo "ASC_AUTH_KEY_ID" ;;
+        saneprocess.asc.issuer_id) echo "ASC_AUTH_ISSUER_ID" ;;
+        saneprocess.asc.key_path) echo "ASC_AUTH_KEY_PATH" ;;
+        saneprocess.notary.key_id) echo "NOTARY_API_KEY_ID" ;;
+        saneprocess.notary.issuer_id) echo "NOTARY_API_ISSUER_ID" ;;
+        saneprocess.notary.key_path) echo "NOTARY_API_KEY_PATH" ;;
+        *) echo "" ;;
+    esac
+}
 
-    local keychain_value
-    keychain_value="$(keychain_get "${service}")"
-    if [ -n "${keychain_value}" ]; then
-        printf -v "${var_name}" '%s' "${keychain_value}"
-        export "${var_name}"
-        return 0
-    fi
+service_for_env_key() {
+    case "$1" in
+        SANEBAR_KEYCHAIN_PASSWORD) echo "saneprocess.keychain.password" ;;
+        ASC_AUTH_KEY_ID) echo "saneprocess.asc.key_id" ;;
+        ASC_AUTH_ISSUER_ID) echo "saneprocess.asc.issuer_id" ;;
+        ASC_AUTH_KEY_PATH) echo "saneprocess.asc.key_path" ;;
+        NOTARY_API_KEY_ID) echo "saneprocess.notary.key_id" ;;
+        NOTARY_API_ISSUER_ID) echo "saneprocess.notary.issuer_id" ;;
+        NOTARY_API_KEY_PATH) echo "saneprocess.notary.key_path" ;;
+        *) echo "" ;;
+    esac
+}
 
-    return 1
+default_for_service() {
+    local default_key_path="${HOME}/.private_keys/AuthKey_S34998ZCRT.p8"
+    case "$1" in
+        saneprocess.keychain.password)
+            echo "${SANEBAR_KEYCHAIN_PASSWORD:-${KEYCHAIN_PASSWORD:-${KEYCHAIN_PASS:-}}}"
+            ;;
+        saneprocess.asc.key_id|saneprocess.notary.key_id)
+            echo "S34998ZCRT"
+            ;;
+        saneprocess.asc.issuer_id|saneprocess.notary.issuer_id)
+            echo "c98b1e0a-8d10-4fce-a417-536b31c09bfb"
+            ;;
+        saneprocess.asc.key_path|saneprocess.notary.key_path)
+            echo "${default_key_path}"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+secret_mode_for_service() {
+    case "$1" in
+        saneprocess.keychain.password) echo "true" ;;
+        *) echo "false" ;;
+    esac
 }
 
 add_keychain_secret() {
@@ -87,53 +141,155 @@ prompt_value() {
     printf '%s' "${value}"
 }
 
+ensure_service_value() {
+    local service="$1"
+    local allow_prompt="$2"
+    local value
+
+    value="$(keychain_get "${service}")"
+    if [ -n "${value}" ]; then
+        printf '%s' "${value}"
+        return 0
+    fi
+
+    if [ "${allow_prompt}" != "true" ]; then
+        return 1
+    fi
+
+    local default_value secret_mode prompt
+    default_value="$(default_for_service "${service}")"
+    secret_mode="$(secret_mode_for_service "${service}")"
+    prompt="Enter value for ${service}"
+    if [ "${service}" = "saneprocess.keychain.password" ]; then
+        prompt="Enter login keychain password for ${service}"
+    fi
+
+    value="$(prompt_value "${prompt}" "${default_value}" "${secret_mode}")"
+    if [ -z "${value}" ]; then
+        return 1
+    fi
+
+    if ! add_keychain_secret "${service}" "${value}"; then
+        return 1
+    fi
+
+    value="$(keychain_get "${service}")"
+    if [ -z "${value}" ]; then
+        return 1
+    fi
+
+    printf '%s' "${value}"
+    return 0
+}
+
+env_file_get() {
+    local key="$1"
+    if [ ! -f "${SECRETS_ENV_FILE}" ]; then
+        return 1
+    fi
+
+    local value file_escaped
+    file_escaped="$(printf '%q' "${SECRETS_ENV_FILE}")"
+    value=$(/bin/bash -lc "set -a; source ${file_escaped} >/dev/null 2>&1 || exit 1; printf '%s' \"\${${key}:-}\"" 2>/dev/null || true)
+    if [ -z "${value}" ]; then
+        return 1
+    fi
+
+    printf '%s' "${value}"
+    return 0
+}
+
+resolve_secret() {
+    local var_name="$1"
+    local service="$2"
+
+    local current="${!var_name:-}"
+    if [ -n "${current}" ]; then
+        printf -v "${var_name}" '%s' "${current}"
+        export "${var_name}"
+        return 0
+    fi
+
+    local keychain_value
+    keychain_value="$(keychain_get "${service}")"
+    if [ -n "${keychain_value}" ]; then
+        printf -v "${var_name}" '%s' "${keychain_value}"
+        export "${var_name}"
+        return 0
+    fi
+
+    local file_value
+    file_value="$(env_file_get "${var_name}" || true)"
+    if [ -n "${file_value}" ]; then
+        printf -v "${var_name}" '%s' "${file_value}"
+        export "${var_name}"
+        return 0
+    fi
+
+    return 1
+}
+
+write_secrets_env_file() {
+    local tmp_file
+
+    mkdir -p "${SECRETS_ENV_DIR}"
+    chmod 700 "${SECRETS_ENV_DIR}" 2>/dev/null || true
+
+    tmp_file=$(/usr/bin/mktemp "${SECRETS_ENV_DIR}/secrets.env.XXXXXX")
+    chmod 600 "${tmp_file}"
+
+    local env_key service value
+    for env_key in \
+        SANEBAR_KEYCHAIN_PASSWORD \
+        ASC_AUTH_KEY_ID \
+        ASC_AUTH_ISSUER_ID \
+        ASC_AUTH_KEY_PATH \
+        NOTARY_API_KEY_ID \
+        NOTARY_API_ISSUER_ID \
+        NOTARY_API_KEY_PATH; do
+        service="$(service_for_env_key "${env_key}")"
+        if [ -z "${service}" ]; then
+            rm -f "${tmp_file}"
+            echo "Unknown env key mapping: ${env_key}"
+            return 1
+        fi
+
+        if ! value="$(ensure_service_value "${service}" "true")"; then
+            rm -f "${tmp_file}"
+            echo "Could not read/store ${service}."
+            return 1
+        fi
+
+        printf '%s=%q\n' "${env_key}" "${value}" >> "${tmp_file}"
+    done
+
+    mv "${tmp_file}" "${SECRETS_ENV_FILE}"
+    chmod 600 "${SECRETS_ENV_FILE}"
+    echo "Wrote ${SECRETS_ENV_FILE}"
+    return 0
+}
+
 seed_missing_services() {
-    local service default_value secret_mode value
-
-    local default_key_path="${HOME}/.private_keys/AuthKey_S34998ZCRT.p8"
-    local default_key_id="S34998ZCRT"
-    local default_issuer_id="c98b1e0a-8d10-4fce-a417-536b31c09bfb"
-
-    local keychain_password_default="${SANEBAR_KEYCHAIN_PASSWORD:-${KEYCHAIN_PASSWORD:-${KEYCHAIN_PASS:-}}}"
-
-    while IFS='|' read -r service default_value secret_mode; do
-        if security find-generic-password -s "${service}" -w >/dev/null 2>&1; then
+    local service
+    while IFS= read -r service; do
+        [ -n "${service}" ] || continue
+        if keychain_has "${service}"; then
             continue
         fi
-
-        case "${service}" in
-            saneprocess.keychain.password)
-                value="$(prompt_value "Enter login keychain password for ${service}" "${keychain_password_default}" "true")"
-                ;;
-            *)
-                value="$(prompt_value "Enter value for ${service}" "${default_value}" "${secret_mode}")"
-                ;;
-        esac
-
-        if [ -z "${value}" ]; then
-            echo "Skipping ${service} (empty value)."
-            continue
-        fi
-
-        if ! add_keychain_secret "${service}" "${value}"; then
-            echo "Could not store ${service}."
-            continue
-        fi
-
-        if security find-generic-password -s "${service}" -w >/dev/null 2>&1; then
+        if ensure_service_value "${service}" "true" >/dev/null; then
             echo "Stored ${service}."
         else
-            echo "Stored ${service}, but retrieval verification failed."
+            echo "Could not store ${service}."
         fi
-    done <<SECRETS
-saneprocess.keychain.password||true
-saneprocess.asc.key_id|${default_key_id}|false
-saneprocess.asc.issuer_id|${default_issuer_id}|false
-saneprocess.asc.key_path|${default_key_path}|false
-saneprocess.notary.key_id|${default_key_id}|false
-saneprocess.notary.issuer_id|${default_issuer_id}|false
-saneprocess.notary.key_path|${default_key_path}|false
-SECRETS
+    done <<SERVICES
+saneprocess.keychain.password
+saneprocess.asc.key_id
+saneprocess.asc.issuer_id
+saneprocess.asc.key_path
+saneprocess.notary.key_id
+saneprocess.notary.issuer_id
+saneprocess.notary.key_path
+SERVICES
 }
 
 check_cmd() {
@@ -151,8 +307,20 @@ check_cmd() {
 check_keychain_service() {
     local service="$1"
     local remediation="$2"
+    local env_key fallback
 
-    if security find-generic-password -s "${service}" -w >/dev/null 2>&1; then
+    if keychain_has "${service}"; then
+        pass "keychain:${service}"
+        return
+    fi
+
+    env_key="$(env_key_for_service "${service}")"
+    fallback=""
+    if [ -n "${env_key}" ]; then
+        fallback="$(env_file_get "${env_key}" || true)"
+    fi
+
+    if [ -n "${fallback}" ]; then
         pass "keychain:${service}"
     else
         fail "keychain:${service}" "${remediation}"
@@ -170,7 +338,7 @@ check_codesign_probe() {
     fi
 
     if ! resolve_secret "SANEBAR_KEYCHAIN_PASSWORD" "saneprocess.keychain.password"; then
-        fail "codesign:keychain-password" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --seed-missing"
+        fail "codesign:keychain-password" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
         return
     fi
     keychain_password="${SANEBAR_KEYCHAIN_PASSWORD}"
@@ -180,7 +348,7 @@ check_codesign_probe() {
     security set-keychain-settings -lut 21600 "${login_keychain}" >/dev/null 2>&1 || true
 
     if ! security unlock-keychain -p "${keychain_password}" "${login_keychain}" >/dev/null 2>&1; then
-        fail "codesign:unlock" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --seed-missing"
+        fail "codesign:unlock" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
         return
     fi
 
@@ -191,7 +359,7 @@ check_codesign_probe() {
     if /usr/bin/codesign --force --sign "${signing_identity}" --timestamp=none "${probe}" >/dev/null 2>&1; then
         pass "codesign:probe"
     else
-        fail "codesign:probe" "export SANEBAR_KEYCHAIN_PASSWORD='<login-keychain-password>'"
+        fail "codesign:probe" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
     fi
 
     rm -f "${probe}"
@@ -201,15 +369,15 @@ check_asc_jwt() {
     local asc_path=""
 
     if ! resolve_secret "ASC_AUTH_KEY_ID" "saneprocess.asc.key_id"; then
-        fail "asc:key-id" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --seed-missing"
+        fail "asc:key-id" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
         return
     fi
     if ! resolve_secret "ASC_AUTH_ISSUER_ID" "saneprocess.asc.issuer_id"; then
-        fail "asc:issuer-id" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --seed-missing"
+        fail "asc:issuer-id" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
         return
     fi
     if ! resolve_secret "ASC_AUTH_KEY_PATH" "saneprocess.asc.key_path"; then
-        fail "asc:key-path" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --seed-missing"
+        fail "asc:key-path" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
         return
     fi
 
@@ -242,7 +410,7 @@ RUBY
     then
         pass "asc:jwt"
     else
-        fail "asc:jwt" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --seed-missing"
+        fail "asc:jwt" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
     fi
 }
 
@@ -254,6 +422,14 @@ if [ "${SEED_MISSING}" = "true" ]; then
     seed_missing_services
 fi
 
+if [ "${EXPORT_ENV_FILE}" = "true" ]; then
+    echo "Exporting ${SECRETS_ENV_FILE} from keychain..."
+    if ! write_secrets_env_file; then
+        echo "Failed to export ${SECRETS_ENV_FILE}."
+        exit 1
+    fi
+fi
+
 # 1) Tooling
 check_cmd "xcodegen" "command -v xcodegen" "brew install xcodegen"
 check_cmd "ruby" "command -v ruby" "xcode-select --install"
@@ -261,14 +437,14 @@ check_cmd "xcodebuild" "command -v xcodebuild" "xcode-select --switch /Applicati
 check_cmd "security" "command -v security" "xcode-select --install"
 check_cmd "notarytool" "xcrun -f notarytool" "xcode-select --switch /Applications/Xcode.app/Contents/Developer"
 
-# 2) Required keychain services (presence only, values never printed)
-check_keychain_service "saneprocess.keychain.password" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --seed-missing"
-check_keychain_service "saneprocess.asc.key_id" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --seed-missing"
-check_keychain_service "saneprocess.asc.issuer_id" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --seed-missing"
-check_keychain_service "saneprocess.asc.key_path" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --seed-missing"
-check_keychain_service "saneprocess.notary.key_id" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --seed-missing"
-check_keychain_service "saneprocess.notary.issuer_id" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --seed-missing"
-check_keychain_service "saneprocess.notary.key_path" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --seed-missing"
+# 2) Required keychain/file-backed secrets
+check_keychain_service "saneprocess.keychain.password" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
+check_keychain_service "saneprocess.asc.key_id" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
+check_keychain_service "saneprocess.asc.issuer_id" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
+check_keychain_service "saneprocess.asc.key_path" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
+check_keychain_service "saneprocess.notary.key_id" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
+check_keychain_service "saneprocess.notary.issuer_id" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
+check_keychain_service "saneprocess.notary.key_path" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
 
 # 3) Headless codesign probe
 check_codesign_probe

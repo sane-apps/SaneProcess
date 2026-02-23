@@ -28,6 +28,8 @@ require 'time'
 require 'uri'
 require 'yaml'
 require 'tmpdir'
+require 'open3'
+require 'shellwords'
 
 begin
   require 'jwt'
@@ -39,12 +41,100 @@ end
 
 # ─── Configuration ───
 
-ISSUER_ID = ENV['ASC_AUTH_ISSUER_ID'] || ENV['ASC_ISSUER_ID'] || 'c98b1e0a-8d10-4fce-a417-536b31c09bfb'
-KEY_ID = ENV['ASC_AUTH_KEY_ID'] || ENV['ASC_KEY_ID'] || 'S34998ZCRT'
-P8_PATH = File.expand_path(
-  ENV['ASC_AUTH_KEY_PATH'] || ENV['ASC_KEY_PATH'] || '~/.private_keys/AuthKey_S34998ZCRT.p8'
-)
+SECRETS_ENV_PATH = File.expand_path('~/.config/saneprocess/secrets.env')
 ASC_BASE = 'https://api.appstoreconnect.apple.com/v1'
+
+def keychain_secret(service)
+  output, status = Open3.capture2e('security', 'find-generic-password', '-s', service, '-w')
+  return nil unless status.success?
+
+  value = output.to_s.strip
+  value.empty? ? nil : value
+rescue StandardError
+  nil
+end
+
+def load_secrets_env_values(path, keys)
+  return {} unless File.file?(path)
+
+  begin
+    mode = File.stat(path).mode & 0o777
+    if mode != 0o600
+      warn "\033[1;33m[ASC]\033[0m #{path} permissions are #{format('%03o', mode)} (expected 600)."
+    end
+  rescue StandardError
+    # Non-fatal; parsing will still be attempted.
+  end
+
+  script = +'set -a; '
+  script << "source #{Shellwords.escape(path)} >/dev/null 2>&1 || exit 1; "
+  keys.each do |key|
+    script << "printf '%s\\n' '#{key}='\"${#{key}:-}\"; "
+  end
+
+  output, status = Open3.capture2e('/bin/bash', '-lc', script)
+  return {} unless status.success?
+
+  parsed = {}
+  output.each_line do |line|
+    entry = line.strip
+    next if entry.empty?
+
+    key, value = entry.split('=', 2)
+    next unless keys.include?(key)
+
+    parsed[key] = value.to_s
+  end
+  parsed
+rescue StandardError
+  {}
+end
+
+def resolve_secret(primary_env_key:, env_aliases:, keychain_service:, secrets_env_values:, label:)
+  ([primary_env_key] + env_aliases).each do |key|
+    value = ENV[key]
+    return value unless value.to_s.empty?
+  end
+
+  keychain_value = keychain_secret(keychain_service)
+  return keychain_value unless keychain_value.to_s.empty?
+
+  file_value = secrets_env_values[primary_env_key]
+  return file_value unless file_value.to_s.empty?
+
+  warn "\033[0;31m[ASC]\033[0m Missing #{label}."
+  warn "\033[0;31m[ASC]\033[0m Set #{primary_env_key}, keychain service '#{keychain_service}', or #{SECRETS_ENV_PATH}."
+  exit 1
+end
+
+SECRETS_ENV_VALUES = load_secrets_env_values(
+  SECRETS_ENV_PATH,
+  %w[ASC_AUTH_KEY_ID ASC_AUTH_ISSUER_ID ASC_AUTH_KEY_PATH]
+).freeze
+
+ISSUER_ID = resolve_secret(
+  primary_env_key: 'ASC_AUTH_ISSUER_ID',
+  env_aliases: %w[ASC_ISSUER_ID],
+  keychain_service: 'saneprocess.asc.issuer_id',
+  secrets_env_values: SECRETS_ENV_VALUES,
+  label: 'ASC issuer ID'
+).freeze
+KEY_ID = resolve_secret(
+  primary_env_key: 'ASC_AUTH_KEY_ID',
+  env_aliases: %w[ASC_KEY_ID],
+  keychain_service: 'saneprocess.asc.key_id',
+  secrets_env_values: SECRETS_ENV_VALUES,
+  label: 'ASC key ID'
+).freeze
+P8_PATH = File.expand_path(
+  resolve_secret(
+    primary_env_key: 'ASC_AUTH_KEY_PATH',
+    env_aliases: %w[ASC_KEY_PATH],
+    keychain_service: 'saneprocess.asc.key_path',
+    secrets_env_values: SECRETS_ENV_VALUES,
+    label: 'ASC key path'
+  )
+).freeze
 
 PLATFORM_MAP = {
   'macos' => 'MAC_OS',
@@ -860,7 +950,6 @@ OptionParser.new do |opts|
   opts.on('--test-screenshots', 'Test screenshot resize only (no API calls)') { options[:test_screenshots] = true }
 end.parse!
 
-require 'shellwords'
 require 'digest'
 
 # Test screenshots mode

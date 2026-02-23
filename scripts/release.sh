@@ -30,6 +30,135 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+SECRETS_ENV_FILE="${HOME}/.config/saneprocess/secrets.env"
+
+EXPLICIT_SANEBAR_KEYCHAIN_PASSWORD_SET=0
+EXPLICIT_KEYCHAIN_PASSWORD_SET=0
+EXPLICIT_KEYCHAIN_PASS_SET=0
+EXPLICIT_ASC_AUTH_KEY_ID_SET=0
+EXPLICIT_ASC_AUTH_ISSUER_ID_SET=0
+EXPLICIT_ASC_AUTH_KEY_PATH_SET=0
+EXPLICIT_NOTARY_API_KEY_ID_SET=0
+EXPLICIT_NOTARY_API_ISSUER_ID_SET=0
+EXPLICIT_NOTARY_API_KEY_PATH_SET=0
+
+EXPLICIT_SANEBAR_KEYCHAIN_PASSWORD=""
+EXPLICIT_KEYCHAIN_PASSWORD=""
+EXPLICIT_KEYCHAIN_PASS=""
+EXPLICIT_ASC_AUTH_KEY_ID=""
+EXPLICIT_ASC_AUTH_ISSUER_ID=""
+EXPLICIT_ASC_AUTH_KEY_PATH=""
+EXPLICIT_NOTARY_API_KEY_ID=""
+EXPLICIT_NOTARY_API_ISSUER_ID=""
+EXPLICIT_NOTARY_API_KEY_PATH=""
+
+capture_explicit_secret_env() {
+    if [ "${SANEBAR_KEYCHAIN_PASSWORD+x}" = "x" ] && [ -n "${SANEBAR_KEYCHAIN_PASSWORD}" ]; then
+        EXPLICIT_SANEBAR_KEYCHAIN_PASSWORD_SET=1
+        EXPLICIT_SANEBAR_KEYCHAIN_PASSWORD="${SANEBAR_KEYCHAIN_PASSWORD}"
+    fi
+    if [ "${KEYCHAIN_PASSWORD+x}" = "x" ] && [ -n "${KEYCHAIN_PASSWORD}" ]; then
+        EXPLICIT_KEYCHAIN_PASSWORD_SET=1
+        EXPLICIT_KEYCHAIN_PASSWORD="${KEYCHAIN_PASSWORD}"
+    fi
+    if [ "${KEYCHAIN_PASS+x}" = "x" ] && [ -n "${KEYCHAIN_PASS}" ]; then
+        EXPLICIT_KEYCHAIN_PASS_SET=1
+        EXPLICIT_KEYCHAIN_PASS="${KEYCHAIN_PASS}"
+    fi
+    if [ "${ASC_AUTH_KEY_ID+x}" = "x" ] && [ -n "${ASC_AUTH_KEY_ID}" ]; then
+        EXPLICIT_ASC_AUTH_KEY_ID_SET=1
+        EXPLICIT_ASC_AUTH_KEY_ID="${ASC_AUTH_KEY_ID}"
+    fi
+    if [ "${ASC_AUTH_ISSUER_ID+x}" = "x" ] && [ -n "${ASC_AUTH_ISSUER_ID}" ]; then
+        EXPLICIT_ASC_AUTH_ISSUER_ID_SET=1
+        EXPLICIT_ASC_AUTH_ISSUER_ID="${ASC_AUTH_ISSUER_ID}"
+    fi
+    if [ "${ASC_AUTH_KEY_PATH+x}" = "x" ] && [ -n "${ASC_AUTH_KEY_PATH}" ]; then
+        EXPLICIT_ASC_AUTH_KEY_PATH_SET=1
+        EXPLICIT_ASC_AUTH_KEY_PATH="${ASC_AUTH_KEY_PATH}"
+    fi
+    if [ "${NOTARY_API_KEY_ID+x}" = "x" ] && [ -n "${NOTARY_API_KEY_ID}" ]; then
+        EXPLICIT_NOTARY_API_KEY_ID_SET=1
+        EXPLICIT_NOTARY_API_KEY_ID="${NOTARY_API_KEY_ID}"
+    fi
+    if [ "${NOTARY_API_ISSUER_ID+x}" = "x" ] && [ -n "${NOTARY_API_ISSUER_ID}" ]; then
+        EXPLICIT_NOTARY_API_ISSUER_ID_SET=1
+        EXPLICIT_NOTARY_API_ISSUER_ID="${NOTARY_API_ISSUER_ID}"
+    fi
+    if [ "${NOTARY_API_KEY_PATH+x}" = "x" ] && [ -n "${NOTARY_API_KEY_PATH}" ]; then
+        EXPLICIT_NOTARY_API_KEY_PATH_SET=1
+        EXPLICIT_NOTARY_API_KEY_PATH="${NOTARY_API_KEY_PATH}"
+    fi
+}
+
+has_explicit_secret_value() {
+    case "$1" in
+        SANEBAR_KEYCHAIN_PASSWORD) [ "${EXPLICIT_SANEBAR_KEYCHAIN_PASSWORD_SET}" -eq 1 ] ;;
+        KEYCHAIN_PASSWORD) [ "${EXPLICIT_KEYCHAIN_PASSWORD_SET}" -eq 1 ] ;;
+        KEYCHAIN_PASS) [ "${EXPLICIT_KEYCHAIN_PASS_SET}" -eq 1 ] ;;
+        ASC_AUTH_KEY_ID) [ "${EXPLICIT_ASC_AUTH_KEY_ID_SET}" -eq 1 ] ;;
+        ASC_AUTH_ISSUER_ID) [ "${EXPLICIT_ASC_AUTH_ISSUER_ID_SET}" -eq 1 ] ;;
+        ASC_AUTH_KEY_PATH) [ "${EXPLICIT_ASC_AUTH_KEY_PATH_SET}" -eq 1 ] ;;
+        NOTARY_API_KEY_ID) [ "${EXPLICIT_NOTARY_API_KEY_ID_SET}" -eq 1 ] ;;
+        NOTARY_API_ISSUER_ID) [ "${EXPLICIT_NOTARY_API_ISSUER_ID_SET}" -eq 1 ] ;;
+        NOTARY_API_KEY_PATH) [ "${EXPLICIT_NOTARY_API_KEY_PATH_SET}" -eq 1 ] ;;
+        *) return 1 ;;
+    esac
+}
+
+explicit_secret_value_for() {
+    case "$1" in
+        SANEBAR_KEYCHAIN_PASSWORD) printf '%s' "${EXPLICIT_SANEBAR_KEYCHAIN_PASSWORD}" ;;
+        KEYCHAIN_PASSWORD) printf '%s' "${EXPLICIT_KEYCHAIN_PASSWORD}" ;;
+        KEYCHAIN_PASS) printf '%s' "${EXPLICIT_KEYCHAIN_PASS}" ;;
+        ASC_AUTH_KEY_ID) printf '%s' "${EXPLICIT_ASC_AUTH_KEY_ID}" ;;
+        ASC_AUTH_ISSUER_ID) printf '%s' "${EXPLICIT_ASC_AUTH_ISSUER_ID}" ;;
+        ASC_AUTH_KEY_PATH) printf '%s' "${EXPLICIT_ASC_AUTH_KEY_PATH}" ;;
+        NOTARY_API_KEY_ID) printf '%s' "${EXPLICIT_NOTARY_API_KEY_ID}" ;;
+        NOTARY_API_ISSUER_ID) printf '%s' "${EXPLICIT_NOTARY_API_ISSUER_ID}" ;;
+        NOTARY_API_KEY_PATH) printf '%s' "${EXPLICIT_NOTARY_API_KEY_PATH}" ;;
+        *) printf '' ;;
+    esac
+}
+
+source_secrets_env_file_safely() {
+    if [ ! -f "${SECRETS_ENV_FILE}" ]; then
+        return 0
+    fi
+
+    local owner perms current_user source_status
+    current_user="$(id -un 2>/dev/null || true)"
+    owner="$(stat -f %Su "${SECRETS_ENV_FILE}" 2>/dev/null || true)"
+    perms="$(stat -f %Lp "${SECRETS_ENV_FILE}" 2>/dev/null || true)"
+
+    if [ -n "${current_user}" ] && [ -n "${owner}" ] && [ "${owner}" != "${current_user}" ]; then
+        log_warn "Skipping ${SECRETS_ENV_FILE}: owner must be ${current_user} (found ${owner})."
+        return 0
+    fi
+
+    if [ -n "${perms}" ] && [ "${perms}" != "600" ]; then
+        log_warn "Skipping ${SECRETS_ENV_FILE}: permissions must be 600 (found ${perms})."
+        return 0
+    fi
+
+    source_status=0
+    set +e
+    set -a
+    # shellcheck disable=SC1090
+    . "${SECRETS_ENV_FILE}"
+    source_status=$?
+    set +a
+    set -e
+    if [ "${source_status}" -ne 0 ]; then
+        log_warn "Could not source ${SECRETS_ENV_FILE}; continuing without file fallback."
+    fi
+
+    return 0
+}
+
+capture_explicit_secret_env
+source_secrets_env_file_safely
+
 keychain_get_service_value() {
     local service="$1"
     if ! command -v security >/dev/null 2>&1; then
@@ -51,8 +180,8 @@ load_secret_with_fallback() {
     local required="${3:-false}"
     local help_label="${4:-${var_name}}"
 
-    local current_value="${!var_name:-}"
-    if [ -n "${current_value}" ]; then
+    if has_explicit_secret_value "${var_name}"; then
+        set_secret_env_var "${var_name}" "$(explicit_secret_value_for "${var_name}")"
         return 0
     fi
 
@@ -63,9 +192,14 @@ load_secret_with_fallback() {
         return 0
     fi
 
+    local current_value="${!var_name:-}"
+    if [ -n "${current_value}" ]; then
+        return 0
+    fi
+
     if [ "${required}" = "true" ]; then
         log_error "Missing ${help_label}."
-        log_error "Set env var ${var_name} or seed keychain service '${keychain_service}'."
+        log_error "Set env var ${var_name}, keychain service '${keychain_service}', or ${SECRETS_ENV_FILE}."
         return 1
     fi
 
@@ -73,9 +207,17 @@ load_secret_with_fallback() {
 }
 
 load_keychain_password_secret() {
-    local merged_password="${SANEBAR_KEYCHAIN_PASSWORD:-${KEYCHAIN_PASSWORD:-${KEYCHAIN_PASS:-}}}"
-    if [ -n "${merged_password}" ]; then
-        set_secret_env_var "SANEBAR_KEYCHAIN_PASSWORD" "${merged_password}"
+    local explicit_password=""
+    if has_explicit_secret_value "SANEBAR_KEYCHAIN_PASSWORD"; then
+        explicit_password="$(explicit_secret_value_for "SANEBAR_KEYCHAIN_PASSWORD")"
+    elif has_explicit_secret_value "KEYCHAIN_PASSWORD"; then
+        explicit_password="$(explicit_secret_value_for "KEYCHAIN_PASSWORD")"
+    elif has_explicit_secret_value "KEYCHAIN_PASS"; then
+        explicit_password="$(explicit_secret_value_for "KEYCHAIN_PASS")"
+    fi
+
+    if [ -n "${explicit_password}" ]; then
+        set_secret_env_var "SANEBAR_KEYCHAIN_PASSWORD" "${explicit_password}"
         return 0
     fi
     load_secret_with_fallback "SANEBAR_KEYCHAIN_PASSWORD" "saneprocess.keychain.password" "true" "login keychain password"
