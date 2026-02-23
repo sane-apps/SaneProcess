@@ -251,8 +251,16 @@ def upload_build(pkg_path, app_id:, version:)
 
   output = `#{cmd.map { |c| Shellwords.escape(c) }.join(' ')} 2>&1`
   success = $?.success?
+  output_failure_patterns = [
+    /upload failed/i,
+    /validation failed/i,
+    /state_error\.validation_error/i,
+    /missing info\.plist/i,
+    /app sandbox not enabled/i
+  ]
+  reported_failure = output_failure_patterns.any? { |pattern| output.match?(pattern) }
 
-  if success
+  if success && !reported_failure
     log_info 'Upload complete.'
   else
     if output.include?('already been uploaded') || output.include?('already exists')
@@ -722,6 +730,26 @@ def default_build_number(version)
   normalized.empty? ? '1' : normalized
 end
 
+def detect_project_build_number(project_root)
+  return nil if project_root.nil? || project_root.empty?
+
+  project_yml = File.join(project_root, 'project.yml')
+  if File.exist?(project_yml)
+    content = File.read(project_yml)
+    match = content.match(/CURRENT_PROJECT_VERSION:\s*"?([0-9]+)"?/)
+    return match[1] if match
+  end
+
+  pbxproj = Dir.glob(File.join(project_root, '*.xcodeproj', 'project.pbxproj')).first
+  if pbxproj && File.exist?(pbxproj)
+    content = File.read(pbxproj)
+    match = content.match(/CURRENT_PROJECT_VERSION = ([0-9]+);/)
+    return match[1] if match
+  end
+
+  nil
+end
+
 def extract_build_number_from_package(pkg_path)
   if pkg_path.end_with?('.ipa')
     Dir.mktmpdir('asc_info_plist') do |tmpdir|
@@ -864,7 +892,13 @@ build_number =
   if options[:build_number]
     options[:build_number]
   elsif options[:skip_upload]
-    default_build_number(version)
+    detected_build_number = detect_project_build_number(project_root)
+    if detected_build_number
+      log_info "Using build number #{detected_build_number} from project metadata."
+      detected_build_number
+    else
+      default_build_number(version)
+    end
   else
     extract_build_number_from_package(pkg_path) || default_build_number(version)
   end
