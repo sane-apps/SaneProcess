@@ -4,6 +4,7 @@ module SaneMasterModules
   # Interactive debugging workflow, app launching, logs
   module TestMode
     require 'fileutils'
+    require 'tmpdir'
 
     # Detect project name from current directory (context-specific)
     def project_name
@@ -206,13 +207,34 @@ module SaneMasterModules
       end
 
       puts "📦 Staging build to canonical path: #{target_app_path}"
-      FileUtils.rm_rf(target_app_path) if File.exist?(target_app_path)
+      lock_path = File.join(Dir.tmpdir, "saneapps-stage-#{project_name}.lock")
+      staged_ok = false
 
-      copied = system('ditto', source_app_path, target_app_path)
-      unless copied && File.exist?(target_app_path)
-        puts "❌ Failed to stage app at canonical path: #{target_app_path}"
-        return source_app_path
+      File.open(lock_path, File::RDWR | File::CREAT, 0o644) do |lock_file|
+        lock_file.flock(File::LOCK_EX)
+
+        temp_app_path = "#{target_app_path}.staging-#{Process.pid}-#{Time.now.to_i}"
+        backup_app_path = "#{target_app_path}.backup-#{Process.pid}-#{Time.now.to_i}"
+
+        begin
+          FileUtils.rm_rf(temp_app_path) if File.exist?(temp_app_path)
+          copied = system('ditto', source_app_path, temp_app_path)
+          unless copied && File.exist?(temp_app_path)
+            puts "❌ Failed to stage app at canonical path: #{target_app_path}"
+            return source_app_path
+          end
+
+          FileUtils.mv(target_app_path, backup_app_path) if File.exist?(target_app_path)
+          FileUtils.mv(temp_app_path, target_app_path)
+          staged_ok = File.exist?(target_app_path)
+        ensure
+          FileUtils.rm_rf(temp_app_path) if File.exist?(temp_app_path)
+          FileUtils.rm_rf(backup_app_path) if File.exist?(backup_app_path)
+          lock_file.flock(File::LOCK_UN)
+        end
       end
+
+      return source_app_path unless staged_ok
 
       # Flush Launch Services cache so macOS resolves the single canonical path.
       lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
