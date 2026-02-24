@@ -3,6 +3,8 @@
 module SaneMasterModules
   # Interactive debugging workflow, app launching, logs
   module TestMode
+    require 'fileutils'
+
     # Detect project name from current directory (context-specific)
     def project_name
       @project_name ||= File.basename(Dir.pwd)
@@ -52,7 +54,12 @@ module SaneMasterModules
         puts ''
       end
 
-      puts "📱 Launching: #{app_path}"
+      launch_path = app_path
+      if project_name == 'SaneBar'
+        launch_path = stage_to_canonical_local_app_path(app_path)
+      end
+
+      puts "📱 Launching: #{launch_path}"
       capture_logs = args.include?('--logs')
       env_vars = {}
       env_vars['VERIFY_PIP'] = ENV['VERIFY_PIP'] if ENV['VERIFY_PIP']
@@ -60,10 +67,10 @@ module SaneMasterModules
 
       if capture_logs
         puts '📝 Capturing logs to stdout...'
-        pid = spawn(env_vars, File.join(app_path, 'Contents', 'MacOS', project_name))
+        pid = spawn(env_vars, File.join(launch_path, 'Contents', 'MacOS', project_name))
         Process.wait(pid)
       else
-        system(env_vars, 'open', app_path)
+        system(env_vars, 'open', launch_path)
         puts '✅ App launched (fresh build verified)'
       end
     end
@@ -172,6 +179,46 @@ module SaneMasterModules
       puts "🛑 Ensuring single #{project_name} instance..."
       system('killall', '-9', project_name, err: File::NULL)
       sleep 0.3
+    end
+
+    def canonical_local_app_path
+      env_override = ENV['SANEMASTER_CANONICAL_APP_PATH']
+      return File.expand_path(env_override) if env_override && !env_override.strip.empty?
+
+      app_name = "#{project_name}.app"
+      system_app = File.join('/Applications', app_name)
+      user_app = File.expand_path(File.join('~/Applications', app_name))
+
+      return system_app if File.exist?(system_app)
+      return user_app if File.exist?(user_app)
+
+      user_app
+    end
+
+    def stage_to_canonical_local_app_path(source_app_path)
+      target_app_path = canonical_local_app_path
+      target_parent = File.dirname(target_app_path)
+      FileUtils.mkdir_p(target_parent) unless Dir.exist?(target_parent)
+
+      if File.expand_path(source_app_path) == File.expand_path(target_app_path)
+        puts "📦 Using canonical app path: #{target_app_path}"
+        return target_app_path
+      end
+
+      puts "📦 Staging build to canonical path: #{target_app_path}"
+      FileUtils.rm_rf(target_app_path) if File.exist?(target_app_path)
+
+      copied = system('ditto', source_app_path, target_app_path)
+      unless copied && File.exist?(target_app_path)
+        puts "❌ Failed to stage app at canonical path: #{target_app_path}"
+        return source_app_path
+      end
+
+      # Flush Launch Services cache so macOS resolves the single canonical path.
+      lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+      system(lsregister, '-kill', '-r', '-domain', 'user') if File.exist?(lsregister)
+
+      target_app_path
     end
 
     def show_screenshots(screenshots_dir)

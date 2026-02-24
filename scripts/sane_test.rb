@@ -78,6 +78,7 @@ class SaneTest
     @fresh = args.include?('--fresh')
     @allow_keychain = args.include?('--allow-keychain')
     @allow_unsigned_debug = args.include?('--allow-unsigned-debug')
+    @release_build = args.include?('--release')
     @target = nil
     @last_build_config = nil
     @app_dir = File.join(SANE_APPS_ROOT, app_name)
@@ -312,32 +313,16 @@ class SaneTest
         count += 1
       end
     end
-    # Don't clean DerivedData .app bundles locally — that's where we launch from
-    # But DO clean /Applications copies that shouldn't be there
-    sys_app = "/Applications/#{@app_name}.app"
-    if File.exist?(sys_app)
-      FileUtils.rm_rf(sys_app)
-      count += 1
-    end
+    # Local launch now stages to a canonical app path (not DerivedData).
+    # Keep DerivedData as build source only; do not remove canonical app here.
     warn "   Cleaned #{count} stale copies"
   end
 
   def verify_single_copy_local
     dd_app = find_derived_data_app
     abort '   ❌ Built app not found in DerivedData' unless dd_app
-    copies = `mdfind 'kMDItemFSName == "#{@app_name}.app"' 2>/dev/null`.strip.split("\n").reject(&:empty?)
-    copies.select! { |p| p.end_with?("#{@app_name}.app") }
-    # The canonical copy is in DerivedData for local builds
-    non_canonical = copies.reject { |p| p.include?('DerivedData') }
-    if non_canonical.empty?
-      warn "   Single copy verified in DerivedData"
-    else
-      warn "   ⚠️  Found #{non_canonical.size} extra copies — removing:"
-      non_canonical.each do |path|
-        warn "      #{path}"
-        FileUtils.rm_rf(path)
-      end
-    end
+    canonical = canonical_local_app_path
+    warn "   Local launch canonical path: #{canonical}"
   end
 
   def dedupe_accessibility_entries_local
@@ -367,8 +352,9 @@ class SaneTest
   end
 
   def launch_local
-    app_path = find_derived_data_app
-    abort '   ❌ Built app not found in DerivedData' unless app_path
+    source_app_path = find_derived_data_app
+    abort '   ❌ Built app not found in DerivedData' unless source_app_path
+    app_path = stage_to_canonical_local_app_path(source_app_path)
 
     if @allow_keychain
       system('open', app_path)
@@ -379,6 +365,41 @@ class SaneTest
     pid = `pgrep -x #{@app_name} 2>/dev/null`.strip
     abort '   ❌ App failed to launch' if pid.empty?
     warn "   Running (PID: #{pid})"
+  end
+
+  def canonical_local_app_path
+    env_override = ENV['SANETEST_CANONICAL_APP_PATH'] || ENV['SANEMASTER_CANONICAL_APP_PATH']
+    return File.expand_path(env_override) if env_override && !env_override.strip.empty?
+
+    app_name = "#{@app_name}.app"
+    system_app = File.join('/Applications', app_name)
+    user_app = File.expand_path(File.join('~/Applications', app_name))
+
+    return system_app if File.exist?(system_app)
+    return user_app if File.exist?(user_app)
+
+    user_app
+  end
+
+  def stage_to_canonical_local_app_path(source_app_path)
+    target_app_path = canonical_local_app_path
+    target_parent = File.dirname(target_app_path)
+    FileUtils.mkdir_p(target_parent) unless Dir.exist?(target_parent)
+
+    if File.expand_path(source_app_path) == File.expand_path(target_app_path)
+      warn "   Using canonical app path: #{target_app_path}"
+      return target_app_path
+    end
+
+    warn "   Staging app to canonical path: #{target_app_path}"
+    FileUtils.rm_rf(target_app_path) if File.exist?(target_app_path)
+    ok = system('ditto', source_app_path, target_app_path)
+    abort "   ❌ Failed to stage app to canonical path: #{target_app_path}" unless ok && File.exist?(target_app_path)
+
+    lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+    system(lsregister, '-kill', '-r', '-domain', 'user', out: File::NULL, err: File::NULL) if File.exist?(lsregister)
+
+    target_app_path
   end
 
   def stream_logs_local
@@ -485,7 +506,14 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
       # which causes WindowServer to reject status bar windows on modern macOS
       # (invisible menu bar items: windowNumber=2^32, Y=-22).
       # ProdDebug has proper signing + entitlements.
-      config_name = has_signing_cert ? 'ProdDebug' : 'Debug'
+      # Fall back to Debug if ProdDebug config doesn't exist (e.g., xcodeproj-based projects).
+      # --release: Build with Release config for production testing (e.g., license gate).
+      if @release_build
+        config_name = 'Release'
+      else
+        has_prod_debug = `xcodebuild -list 2>/dev/null`.include?('ProdDebug')
+        config_name = (has_signing_cert && has_prod_debug) ? 'ProdDebug' : 'Debug'
+      end
       @last_build_config = config_name
 
       build_args = [
@@ -503,6 +531,14 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
           if dev_bundle_id
             build_args << "PRODUCT_BUNDLE_IDENTIFIER=#{dev_bundle_id}"
           end
+        end
+        # When falling back to Debug (no ProdDebug), override signing so the
+        # binary is properly signed and can launch on remote machines (Mini).
+        unless has_prod_debug
+          build_args += [
+            'CODE_SIGN_IDENTITY=Apple Development',
+            'DEVELOPMENT_TEAM=M78L6FXD48'
+          ]
         end
       else
         warn '   ⚠️  No signing cert found — using ad-hoc signing'
