@@ -657,7 +657,7 @@ class ValidationReport
         end
       end
 
-      # Check GitHub releases exist (if repo exists)
+      # Check GitHub releases are absent (forbidden for distribution)
       check_github_releases(app_name, issues_found, warnings_found)
     end
 
@@ -714,16 +714,13 @@ class ValidationReport
     # Check if GitHub CLI is available
     return unless system('which gh > /dev/null 2>&1')
 
-    # DMGs must NEVER be on GitHub releases — distribution is Cloudflare R2 only
+    # GitHub releases must NEVER be used for distribution.
+    # All release binaries must go through Cloudflare R2/dist only.
     safe_repo = "sane-apps/#{app_name}"
     result = `gh release list --repo #{Shellwords.shellescape(safe_repo)} --limit 1 2>&1`
 
     if result && !result.include?('no releases found') && !result.include?('not found') && !result.strip.empty?
-      # Releases exist — check if any contain DMG assets (forbidden)
-      assets = `gh release view --repo #{Shellwords.shellescape(safe_repo)} --json assets -q '.assets[].name' 2>/dev/null`.strip
-      if assets.include?('.dmg')
-        issues << "[#{app_name}] DMG found on GitHub releases (FORBIDDEN — use Cloudflare R2 only)"
-      end
+      issues << "[#{app_name}] GitHub release exists (FORBIDDEN — distribution must use Cloudflare R2/dist only)"
     end
   end
 
@@ -1340,7 +1337,7 @@ class ValidationReport
     puts "Q6: CAN CUSTOMERS DOWNLOAD RELEASES?"
     m = @metrics[:release_integrity] || {}
     if m[:issues].to_i == 0 && m[:warnings].to_i == 0
-      puts "   ✅ All release URLs accessible, GitHub releases exist"
+      puts "   ✅ All release URLs accessible, no forbidden GitHub release distribution detected"
     else
       puts "   ❌ #{m[:issues]} issues, #{m[:warnings]} warnings"
       (m[:details] || []).each { |d| puts "      - #{d}" }
@@ -1444,13 +1441,13 @@ class ValidationReport
     repo_exists = system("gh repo view sane-apps/#{app_name} > /dev/null 2>&1")
     checklist << { name: "GitHub repo (sane-apps/#{app_name})", status: repo_exists ? :done : :todo }
 
-    # 2. GitHub release exists
+    # 2. GitHub release absent (distribution policy)
     if repo_exists
       releases = `gh release list --repo sane-apps/#{app_name} --limit 1 2>/dev/null`.strip
       has_release = !releases.empty? && !releases.include?('no releases')
-      checklist << { name: "GitHub release published", status: has_release ? :done : :todo }
+      checklist << { name: "No GitHub releases used for distribution", status: has_release ? :todo : :done }
     else
-      checklist << { name: "GitHub release published", status: :todo }
+      checklist << { name: "No GitHub releases used for distribution", status: :done }
     end
 
     # 3. Hardened runtime enabled (check xcconfig or project)
@@ -1601,11 +1598,10 @@ class ValidationReport
       checklist << { name: "Cloudflare DNS/CDN", status: :todo }
     end
 
-    # 16. Website has download link (check for github.com/releases, lemonsqueezy, or go.saneapps.com)
+    # 16. Website has download link (must not depend on GitHub releases)
     if website_works
       page_content = `curl -sL --connect-timeout 5 "#{website_url}" 2>/dev/null`
-      has_download = page_content.include?('github.com') && page_content.include?('releases') ||
-                     page_content.include?('lemonsqueezy.com') ||
+      has_download = page_content.include?('lemonsqueezy.com') ||
                      page_content.include?('go.saneapps.com') ||
                      page_content.include?('.dmg')
       checklist << { name: "Website has download link", status: has_download ? :done : :todo }

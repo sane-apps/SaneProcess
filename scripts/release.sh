@@ -18,6 +18,9 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# Shared Sparkle public key for all SaneApps direct-distribution builds.
+SHARED_SPARKLE_PUBLIC_KEY="7Pl/8cwfb2vm4Dm65AByslkMCScLJ9tbGlwGGx81qYU="
+
 log_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
 }
@@ -193,19 +196,6 @@ wait_for_live_appcast_version() {
     return 1
 }
 
-verify_github_release_asset() {
-    local repo="$1"
-    local tag="$2"
-    local asset_name="$3"
-    local found
-    found=$(gh release view "${tag}" --repo "${repo}" --json assets --jq ".assets[]? | select(.name == \"${asset_name}\") | .name" 2>/dev/null || true)
-    if [ -z "${found}" ]; then
-        log_error "GitHub release ${tag} is missing asset ${asset_name}"
-        return 1
-    fi
-    return 0
-}
-
 appstore_duplicate_build_upload_detected() {
     local latest_log_dir
     latest_log_dir=$(ls -td /var/folders/*/*/*/T/${APP_NAME}_*.xcdistributionlogs 2>/dev/null | head -1 || true)
@@ -229,8 +219,6 @@ run_post_release_checks() {
     local dist_url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
     local appcast_url="https://${SITE_HOST}/appcast.xml"
     local checkout_url="https://go.saneapps.com/buy/${LOWER_APP_NAME}"
-    local gh_tag="v${VERSION}"
-    local asset_name="${APP_NAME}-${VERSION}.zip"
 
     log_info "Running strict post-release checks..."
 
@@ -285,6 +273,11 @@ PY
         appcast_item_count=$(appcast_item_count_for_version "${appcast_content}")
         if [ "${appcast_item_count}" != "1" ]; then
             log_error "Appcast has ${appcast_item_count} entries for v${VERSION} (expected exactly 1)"
+            return 1
+        fi
+
+        if grep -Eqi 'github\.com/[^/]+/[^/]+/releases/download' <<< "${appcast_content}"; then
+            log_error "Appcast contains GitHub release download URLs (forbidden). Use dist.* direct-distribution URLs only."
             return 1
         fi
 
@@ -367,10 +360,6 @@ PY
         fi
     fi
 
-    if ! verify_github_release_asset "${GITHUB_REPO}" "${gh_tag}" "${asset_name}"; then
-        return 1
-    fi
-
     log_info "Post-release checks passed."
     return 0
 }
@@ -381,12 +370,12 @@ print_help() {
     echo "Options:"
     echo "  --project PATH      Project root (defaults to current directory)"
     echo "  --config PATH       Config file (defaults to <project>/.saneprocess if present)"
-    echo "  --full              Version bump, tests, git commit, GitHub release"
+    echo "  --full              Version bump, tests, git commit (no GitHub release publishing)"
     echo "  --deploy            Upload to R2, update appcast, deploy website (run after build)"
     echo "  --skip-notarize      Skip notarization (for local testing)"
     echo "  --skip-build         Skip build step (use existing archive)"
     echo "  --version X.Y.Z      Set version number"
-    echo "  --notes \"...\"      Release notes for GitHub (required with --full)"
+    echo "  --notes \"...\"      Release notes for changelog/release metadata (required with --full)"
     echo "  --allow-republish    Allow republishing an already-live version/build"
     echo "  --allow-unsynced-peer  Bypass Air/mini reconcile gate for this release"
     echo "  --skip-appstore      Skip App Store archive/export/upload even if enabled in config"
@@ -696,37 +685,12 @@ commit_version_bump() {
 }
 
 create_github_release() {
-    local repo="${GITHUB_REPO}"
-    local tag="v${VERSION}"
-    if gh release view "${tag}" --repo "${repo}" >/dev/null 2>&1; then
-        log_warn "GitHub release ${tag} already exists"
-    else
-        gh release create "${tag}" \
-            --repo "${repo}" \
-            --title "${tag}" \
-            --notes "${RELEASE_NOTES}"
-        log_info "GitHub release created: ${tag}"
-    fi
-
+    log_warn "Skipping GitHub release creation (policy: no release publishing on GitHub)."
     return 0
 }
 
 upload_github_release_asset() {
-    local repo="${GITHUB_REPO}"
-    local tag="v${VERSION}"
-    local asset_name="${APP_NAME}-${VERSION}.zip"
-
-    if [ ! -f "${FINAL_ZIP}" ]; then
-        log_error "Release asset missing: ${FINAL_ZIP}"
-        return 1
-    fi
-
-    gh release upload "${tag}" "${FINAL_ZIP}#${asset_name}" --repo "${repo}" --clobber
-    if ! verify_github_release_asset "${repo}" "${tag}" "${asset_name}"; then
-        return 1
-    fi
-
-    log_info "GitHub release asset verified: ${asset_name}"
+    log_warn "Skipping GitHub release asset upload (policy: no binary distribution on GitHub)."
     return 0
 }
 
@@ -1032,13 +996,6 @@ check_required_commands() {
         return 1
     fi
 
-    if [ "${FULL_RELEASE}" = true ] || [ "${RUN_DEPLOY}" = true ]; then
-        if ! command -v gh >/dev/null 2>&1; then
-            log_error "Missing required command for release/deploy: gh"
-            return 1
-        fi
-    fi
-
     return 0
 }
 
@@ -1068,6 +1025,93 @@ check_signing_identity_gate() {
         return 1
     fi
 
+    return 0
+}
+
+resolve_sparkle_private_key() {
+    local sparkle_key="${SPARKLE_PRIVATE_KEY:-}"
+    if [ -n "${sparkle_key}" ]; then
+        printf '%s' "${sparkle_key}"
+        return 0
+    fi
+
+    sparkle_key=$(security find-generic-password -w -s "saneprocess.sparkle.private_key" 2>/dev/null || true)
+    if [ -n "${sparkle_key}" ]; then
+        printf '%s' "${sparkle_key}"
+        return 0
+    fi
+
+    sparkle_key=$(security find-generic-password -w -s "https://sparkle-project.org" -a "EdDSA Private Key" 2>/dev/null || true)
+    if [ -n "${sparkle_key}" ]; then
+        printf '%s' "${sparkle_key}"
+        return 0
+    fi
+
+    return 1
+}
+
+derive_sparkle_public_key() {
+    local sparkle_private_key="$1"
+    if [ -z "${sparkle_private_key}" ]; then
+        return 1
+    fi
+
+    SPARKLE_PRIVATE_KEY_INPUT="${sparkle_private_key}" swift -e '
+import Foundation
+import CryptoKit
+
+guard let keyBase64 = ProcessInfo.processInfo.environment["SPARKLE_PRIVATE_KEY_INPUT"],
+      let keyData = Data(base64Encoded: keyBase64) else {
+    fputs("invalid private key\n", stderr)
+    exit(2)
+}
+
+do {
+    let key = try Curve25519.Signing.PrivateKey(rawRepresentation: keyData)
+    print(key.publicKey.rawRepresentation.base64EncodedString())
+} catch {
+    fputs("unable to derive public key\n", stderr)
+    exit(3)
+}
+' 2>/dev/null
+}
+
+check_sparkle_keypair_gate() {
+    if [ "${USE_SPARKLE}" != "true" ]; then
+        return 0
+    fi
+
+    if ! command -v swift >/dev/null 2>&1; then
+        log_error "swift is required to validate Sparkle private/public keypair."
+        return 1
+    fi
+
+    local sparkle_private_key
+    sparkle_private_key=$(resolve_sparkle_private_key || true)
+    if [ -z "${sparkle_private_key}" ]; then
+        log_error "Sparkle private key not found."
+        log_error "Set SPARKLE_PRIVATE_KEY or add Keychain item:"
+        log_error "  service=saneprocess.sparkle.private_key"
+        log_error "  or service=https://sparkle-project.org account=EdDSA Private Key"
+        return 1
+    fi
+
+    local derived_public_key
+    derived_public_key=$(derive_sparkle_public_key "${sparkle_private_key}" || true)
+    if [ -z "${derived_public_key}" ]; then
+        log_error "Unable to derive Sparkle public key from private key."
+        return 1
+    fi
+
+    if [ "${derived_public_key}" != "${SHARED_SPARKLE_PUBLIC_KEY}" ]; then
+        log_error "Sparkle keypair mismatch."
+        log_error "  Expected public key: ${SHARED_SPARKLE_PUBLIC_KEY}"
+        log_error "  Derived public key:  ${derived_public_key}"
+        log_error "Wrong Sparkle private key would break customer auto-updates."
+        return 1
+    fi
+
+    log_info "Sparkle private/public keypair matches shared key."
     return 0
 }
 
@@ -1143,6 +1187,33 @@ resolve_notary_auth() {
     log_error "Notary auth unavailable. Keychain profile '${NOTARY_PROFILE}' is inaccessible and API fallback is unset."
     log_error "Set NOTARY_API_KEY_PATH, NOTARY_API_KEY_ID, NOTARY_API_ISSUER_ID or repair notary keychain profile."
     return 1
+}
+
+prepare_xcode_provisioning_auth() {
+    XCODE_PROVISIONING_AUTH_ARGS=()
+
+    local key_path="${ASC_AUTH_KEY_PATH}"
+    local key_id="${ASC_AUTH_KEY_ID}"
+    local issuer_id="${ASC_AUTH_ISSUER_ID}"
+
+    if [ -z "${key_path}" ] || [ -z "${key_id}" ] || [ -z "${issuer_id}" ]; then
+        log_warn "ASC auth key values incomplete; xcodebuild will use interactive account auth."
+        return 0
+    fi
+
+    if [ ! -f "${key_path}" ]; then
+        log_warn "ASC auth key not found at ${key_path}; xcodebuild will use interactive account auth."
+        return 0
+    fi
+
+    XCODE_PROVISIONING_AUTH_ARGS=(
+        -authenticationKeyPath "${key_path}"
+        -authenticationKeyID "${key_id}"
+        -authenticationKeyIssuerID "${issuer_id}"
+    )
+
+    log_info "Using ASC API key auth for provisioning updates."
+    return 0
 }
 
 check_version_bump_gate() {
@@ -1240,6 +1311,7 @@ run_release_preflight_only() {
     run_gate "Machine reconcile" check_reconcile_gate
     run_gate "Version bump configuration" check_version_bump_gate
     run_gate "Signing identity" check_signing_identity_gate
+    run_gate "Sparkle keypair" check_sparkle_keypair_gate
     run_gate "Keychain/signing session" prepare_signing_session
     run_gate "Notarization authentication" resolve_notary_auth
     run_gate "App Store configuration" check_appstore_gate
@@ -1389,6 +1461,9 @@ NOTARY_API_KEY_PATH="${NOTARY_API_KEY_PATH:-}"
 NOTARY_API_KEY_ID="${NOTARY_API_KEY_ID:-}"
 NOTARY_API_ISSUER_ID="${NOTARY_API_ISSUER_ID:-}"
 NOTARY_AUTH_MODE=""
+ASC_AUTH_KEY_PATH="${ASC_AUTH_KEY_PATH:-${HOME}/.private_keys/AuthKey_S34998ZCRT.p8}"
+ASC_AUTH_KEY_ID="${ASC_AUTH_KEY_ID:-S34998ZCRT}"
+ASC_AUTH_ISSUER_ID="${ASC_AUTH_ISSUER_ID:-c98b1e0a-8d10-4fce-a417-536b31c09bfb}"
 GITHUB_REPO="${GITHUB_REPO:-sane-apps/${APP_NAME}}"
 HOMEBREW_TAP_REPO="${HOMEBREW_TAP_REPO:-sane-apps/homebrew-tap}"
 XCODEGEN="${XCODEGEN:-false}"
@@ -1424,6 +1499,15 @@ fi
 if ! declare -p VERSION_BUMP_FILES >/dev/null 2>&1; then
     VERSION_BUMP_FILES=("project.yml")
 fi
+if ! declare -p APPSTORE_BUILD_FLAGS >/dev/null 2>&1; then
+    APPSTORE_BUILD_FLAGS=()
+fi
+if ! declare -p APPSTORE_STRIP_FRAMEWORKS >/dev/null 2>&1; then
+    APPSTORE_STRIP_FRAMEWORKS=()
+fi
+if ! declare -p XCODE_PROVISIONING_AUTH_ARGS >/dev/null 2>&1; then
+    XCODE_PROVISIONING_AUTH_ARGS=()
+fi
 
 WORKSPACE="$(resolve_path "${WORKSPACE}")"
 XCODEPROJ="$(resolve_path "${XCODEPROJ}")"
@@ -1432,6 +1516,7 @@ DMG_FILE_ICON="$(resolve_path "${DMG_FILE_ICON}")"
 DMG_VOLUME_ICON="$(resolve_path "${DMG_VOLUME_ICON}")"
 DMG_BACKGROUND="$(resolve_path "${DMG_BACKGROUND}")"
 DMG_BACKGROUND_GENERATOR="$(resolve_path "${DMG_BACKGROUND_GENERATOR}")"
+ASC_AUTH_KEY_PATH="$(resolve_path "${ASC_AUTH_KEY_PATH}")"
 # Resolve helper scripts: check project first, fall back to SaneProcess scripts dir
 SANEPROCESS_SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -z "${SIGN_UPDATE_SCRIPT}" ]; then
@@ -1537,7 +1622,6 @@ if [ "${FULL_RELEASE}" = true ]; then
     fi
 
     ensure_cmd git
-    ensure_cmd gh
     ensure_git_clean
     enforce_machine_reconcile
 
@@ -1568,7 +1652,7 @@ if [ "${FULL_RELEASE}" = true ]; then
     fi
 
     # Gate 3: Open GitHub issues
-    if [ -n "${GITHUB_REPO}" ]; then
+    if [ -n "${GITHUB_REPO}" ] && command -v gh >/dev/null 2>&1; then
         OPEN_ISSUES=$(gh issue list --repo "${GITHUB_REPO}" --state open --json number 2>/dev/null | \
             python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
         if [ "${OPEN_ISSUES}" -gt 0 ] 2>/dev/null; then
@@ -1633,7 +1717,7 @@ if [ "${FULL_RELEASE}" = true ]; then
     fi
 
     commit_version_bump
-    RUN_GH_RELEASE=true
+    RUN_GH_RELEASE=false
 fi
 
 # Clean up previous builds (skip if reusing existing archive)
@@ -1663,6 +1747,10 @@ if ! prepare_signing_session; then
 fi
 
 if ! resolve_notary_auth; then
+    exit 1
+fi
+
+if ! prepare_xcode_provisioning_auth; then
     exit 1
 fi
 
@@ -1722,6 +1810,8 @@ xcodebuild -exportArchive \
     -archivePath "${ARCHIVE_PATH}" \
     -exportPath "${EXPORT_PATH}" \
     -exportOptionsPlist "${EXPORT_OPTIONS_PATH}" \
+    -allowProvisioningUpdates \
+    "${XCODE_PROVISIONING_AUTH_ARGS[@]}" \
     2>&1 | tee -a "${BUILD_DIR}/build.log"
 
 if [ ${PIPESTATUS[0]} -ne 0 ]; then
@@ -1755,10 +1845,9 @@ if [ "${USE_SPARKLE}" = true ]; then
     fi
     # Verify key VALUE matches the shared SaneApps key (not just exists)
     # Per-project keys broke updates for ALL shipped customers
-    EXPECTED_SPARKLE_PUBLIC_KEY="7Pl/8cwfb2vm4Dm65AByslkMCScLJ9tbGlwGGx81qYU="
-    if [ "${PLIST_KEY}" != "${EXPECTED_SPARKLE_PUBLIC_KEY}" ]; then
+    if [ "${PLIST_KEY}" != "${SHARED_SPARKLE_PUBLIC_KEY}" ]; then
         log_error "SUPublicEDKey MISMATCH! Built app has wrong Sparkle key."
-        log_error "  Expected: ${EXPECTED_SPARKLE_PUBLIC_KEY}"
+        log_error "  Expected: ${SHARED_SPARKLE_PUBLIC_KEY}"
         log_error "  Got:      ${PLIST_KEY}"
         log_error "This will break auto-update for ALL existing customers!"
         exit 1
@@ -1774,6 +1863,7 @@ fi
 # @rpath but doesn't include it — instant dyld crash on launch.
 if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
     APPSTORE_CONFIG="${APPSTORE_CONFIGURATION:-Release-AppStore}"
+    APPSTORE_SCHEME_VALUE="${APPSTORE_SCHEME:-${SCHEME}}"
     APPSTORE_ARCHIVE="${BUILD_DIR}/${APP_NAME}-AppStore.xcarchive"
     APPSTORE_EXPORT_PATH="${BUILD_DIR}/Export-AppStore"
     mkdir -p "${APPSTORE_EXPORT_PATH}"
@@ -1782,10 +1872,28 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
         log_info ""
         log_info "Building App Store archive (configuration: ${APPSTORE_CONFIG})..."
 
-        appstore_archive_args=(archive -scheme "${SCHEME}" -configuration "${APPSTORE_CONFIG}" \
+        appstore_archive_args=(archive -scheme "${APPSTORE_SCHEME_VALUE}" -configuration "${APPSTORE_CONFIG}" \
             -archivePath "${APPSTORE_ARCHIVE}" \
             -destination "generic/platform=macOS" OTHER_CODE_SIGN_FLAGS="--timestamp" \
             -allowProvisioningUpdates)
+        if [ -n "${APPSTORE_ENTITLEMENTS}" ]; then
+            has_entitlements_flag=false
+            for build_flag in "${APPSTORE_BUILD_FLAGS[@]}"; do
+                if [[ "${build_flag}" == CODE_SIGN_ENTITLEMENTS=* ]]; then
+                    has_entitlements_flag=true
+                    break
+                fi
+            done
+            if [ "${has_entitlements_flag}" = false ]; then
+                appstore_archive_args+=("CODE_SIGN_ENTITLEMENTS=${APPSTORE_ENTITLEMENTS}")
+            fi
+        fi
+        if [ ${#APPSTORE_BUILD_FLAGS[@]} -gt 0 ]; then
+            appstore_archive_args+=("${APPSTORE_BUILD_FLAGS[@]}")
+        fi
+        if [ ${#XCODE_PROVISIONING_AUTH_ARGS[@]} -gt 0 ]; then
+            appstore_archive_args+=("${XCODE_PROVISIONING_AUTH_ARGS[@]}")
+        fi
         if [ -n "${WORKSPACE}" ]; then
             appstore_archive_args=(-workspace "${WORKSPACE}" "${appstore_archive_args[@]}")
         elif [ -n "${XCODEPROJ}" ]; then
@@ -1801,6 +1909,16 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
             log_error "App Store archive build failed! Check ${BUILD_DIR}/build.log"
             exit 1
         fi
+    fi
+
+    if [ ${#APPSTORE_STRIP_FRAMEWORKS[@]} -gt 0 ]; then
+        for framework_name in "${APPSTORE_STRIP_FRAMEWORKS[@]}"; do
+            framework_path="${APPSTORE_ARCHIVE}/Products/Applications/${APP_NAME}.app/Contents/Frameworks/${framework_name}"
+            if [ -d "${framework_path}" ]; then
+                log_info "Removing ${framework_name} from App Store archive..."
+                remove_path "${framework_path}"
+            fi
+        done
     fi
 
     # Weaken Sparkle dylib reference in the archive binary.
@@ -1848,6 +1966,8 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
         -archivePath "${APPSTORE_ARCHIVE}" \
         -exportPath "${APPSTORE_EXPORT_PATH}" \
         -exportOptionsPlist "${APPSTORE_PLIST}" \
+        -allowProvisioningUpdates \
+        "${XCODE_PROVISIONING_AUTH_ARGS[@]}" \
         2>&1 | tee -a "${BUILD_DIR}/build.log"
 
     if [ ${PIPESTATUS[0]} -ne 0 ]; then
@@ -1940,9 +2060,21 @@ if [ "${USE_SPARKLE}" = true ] && command -v swift >/dev/null 2>&1; then
     log_info "--- Generating Release Metadata ---"
 
     log_info "Fetching Sparkle Private Key from Keychain..."
-    SPARKLE_KEY=$(security find-generic-password -w -s "https://sparkle-project.org" -a "EdDSA Private Key" 2>/dev/null || echo "")
+    SPARKLE_KEY=$(resolve_sparkle_private_key || true)
 
     if [ -n "${SPARKLE_KEY}" ]; then
+        DERIVED_SPARKLE_PUBLIC_KEY=$(derive_sparkle_public_key "${SPARKLE_KEY}" || true)
+        if [ -z "${DERIVED_SPARKLE_PUBLIC_KEY}" ]; then
+            log_error "Unable to derive Sparkle public key from private key."
+            exit 1
+        fi
+        if [ "${DERIVED_SPARKLE_PUBLIC_KEY}" != "${SHARED_SPARKLE_PUBLIC_KEY}" ]; then
+            log_error "Sparkle keypair mismatch during signing."
+            log_error "  Expected public key: ${SHARED_SPARKLE_PUBLIC_KEY}"
+            log_error "  Derived public key:  ${DERIVED_SPARKLE_PUBLIC_KEY}"
+            exit 1
+        fi
+
         log_info "Sparkle Key found. Generating signature..."
 
         if [ -f "${SIGN_UPDATE_SCRIPT}" ]; then
@@ -2041,11 +2173,6 @@ if [ "${RUN_DEPLOY}" = true ]; then
     log_info "═══════════════════════════════════════════"
 
     ensure_not_republishing_live_version
-
-    # Ensure GitHub release + asset exist even when running deploy-only mode.
-    ensure_cmd gh
-    create_github_release
-    upload_github_release_asset
 
     # Step 1: Upload ZIP to R2
     log_info "Uploading ZIP to R2 bucket ${R2_BUCKET}..."
@@ -2201,7 +2328,8 @@ PY
         INDEX_HTML="${SITE_DIR}/index.html"
         if [ -f "${INDEX_HTML}" ]; then
             # Replace any old download links (SaneBar-X.Y.Z.zip) with current version
-            OLD_LINKS=$(grep -c "${APP_NAME}-[0-9].*\.zip" "${INDEX_HTML}" 2>/dev/null || echo 0)
+            OLD_LINKS=$(grep -c "${APP_NAME}-[0-9].*\.zip" "${INDEX_HTML}" 2>/dev/null)
+            OLD_LINKS=${OLD_LINKS:-0}
             if [ "${OLD_LINKS}" -gt 0 ]; then
                 sed -i '' "s|${APP_NAME}-[0-9][0-9]*\.[0-9][0-9]*\(\.[0-9][0-9]*\)\{0,1\}\.zip|${APP_NAME}-${VERSION}.zip|g" "${INDEX_HTML}"
                 log_info "Updated ${OLD_LINKS} download link(s) in $(basename "${SITE_DIR}")/index.html → ${APP_NAME}-${VERSION}.zip"
@@ -2260,7 +2388,7 @@ PY
         log_info "  SUBMITTING TO APP STORE"
         log_info "═══════════════════════════════════════════"
 
-        APPSTORE_SCRIPT="$(dirname "$0")/appstore_submit.rb"
+        APPSTORE_SCRIPT="${SCRIPT_DIR}/appstore_submit.rb"
 
         if [ ! -f "${APPSTORE_SCRIPT}" ]; then
             log_error "appstore_submit.rb not found at ${APPSTORE_SCRIPT}"
@@ -2288,7 +2416,11 @@ PY
             IOS_ARCHIVE="${BUILD_DIR}/${APP_NAME}-iOS.xcarchive"
             ios_args=(archive -scheme "${IOS_SCHEME}" -configuration Release \
                       -archivePath "${IOS_ARCHIVE}" \
-                      -destination "generic/platform=iOS")
+                      -destination "generic/platform=iOS" \
+                      -allowProvisioningUpdates)
+            if [ ${#XCODE_PROVISIONING_AUTH_ARGS[@]} -gt 0 ]; then
+                ios_args+=("${XCODE_PROVISIONING_AUTH_ARGS[@]}")
+            fi
             [ -n "${XCODEPROJ}" ] && ios_args=(-project "${XCODEPROJ}" "${ios_args[@]}")
             xcodebuild "${ios_args[@]}" 2>&1 | tee -a "${BUILD_DIR}/build.log"
 
@@ -2301,6 +2433,8 @@ PY
                     -archivePath "${IOS_ARCHIVE}" \
                     -exportPath "${IOS_EXPORT}" \
                     -exportOptionsPlist "${APPSTORE_PLIST}" \
+                    -allowProvisioningUpdates \
+                    "${XCODE_PROVISIONING_AUTH_ARGS[@]}" \
                     2>&1 | tee -a "${BUILD_DIR}/build.log"
 
                 IOS_IPA="${IOS_EXPORT}/${APP_NAME}.ipa"
@@ -2443,7 +2577,6 @@ PY
     log_info "  ZIP:      https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
     log_info "  Appcast:  https://${SITE_HOST}/appcast.xml"
     log_info "  Homebrew: brew install --cask sane-apps/tap/${LOWER_APP_NAME}"
-    log_info "  GitHub:   https://github.com/${GITHUB_REPO}/releases/tag/v${VERSION}"
     log_info "═══════════════════════════════════════════"
 else
     log_info ""
