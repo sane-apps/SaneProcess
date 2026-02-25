@@ -5,7 +5,7 @@
 # Builds, signs, notarizes, and packages a ZIP for any SaneApps project
 #
 
-set -e
+set -eE
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -20,6 +20,15 @@ NC='\033[0m' # No Color
 
 # Shared Sparkle public key for all SaneApps direct-distribution builds.
 SHARED_SPARKLE_PUBLIC_KEY="7Pl/8cwfb2vm4Dm65AByslkMCScLJ9tbGlwGGx81qYU="
+RELEASE_STARTED_AT_UTC="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+RELEASE_RUN_ID="$(date -u +"%Y%m%dT%H%M%SZ")-$$"
+RELEASE_LEDGER_FILE="${RELEASE_LEDGER_FILE:-$(cd "${SCRIPT_DIR}/.." && pwd)/outputs/release_failure_ledger.jsonl}"
+RELEASE_LAST_ERROR=""
+RELEASE_LAST_ERR_LINE=""
+RELEASE_LAST_ERR_COMMAND=""
+CURRENT_GATE=""
+RELEASE_ERRORS=()
+RELEASE_ERR_GATE_RECORDED=""
 
 log_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
@@ -31,6 +40,271 @@ log_warn() {
 
 log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+    RELEASE_LAST_ERROR="$1"
+    RELEASE_ERRORS+=("$1")
+}
+
+release_mode_label() {
+    if [ "${PREFLIGHT_ONLY:-false}" = true ]; then
+        echo "preflight"
+        return
+    fi
+    if [ "${WEBSITE_ONLY:-false}" = true ]; then
+        echo "website-only"
+        return
+    fi
+    if [ "${RUN_DEPLOY:-false}" = true ]; then
+        if [ "${FULL_RELEASE:-false}" = true ]; then
+            echo "full+deploy"
+        else
+            echo "deploy"
+        fi
+        return
+    fi
+    if [ "${FULL_RELEASE:-false}" = true ]; then
+        echo "full"
+        return
+    fi
+    echo "build"
+}
+
+normalize_failure_signature() {
+    local raw="$1"
+    if [ -z "${raw}" ]; then
+        echo ""
+        return 0
+    fi
+    printf '%s' "${raw}" | \
+        tr '[:upper:]' '[:lower:]' | \
+        sed -E \
+            -e 's#/[A-Za-z0-9._/-]+#<path>#g' \
+            -e 's/[0-9]{8,}/<num>/g' \
+            -e 's/v[0-9]+\.[0-9]+(\.[0-9]+)?/v<ver>/g' \
+            -e 's/[[:space:]]+/ /g' \
+            -e 's/^ //; s/ $//'
+}
+
+append_release_ledger_entry() {
+    local event="$1"
+    local status="$2"
+    local gate="$3"
+    local message="$4"
+    local signature="$5"
+
+    mkdir -p "$(dirname "${RELEASE_LEDGER_FILE}")" >/dev/null 2>&1 || true
+    local max_lines="${RELEASE_LEDGER_MAX_LINES:-6000}"
+    if [ -f "${RELEASE_LEDGER_FILE}" ]; then
+        local line_count
+        line_count=$(wc -l < "${RELEASE_LEDGER_FILE}" 2>/dev/null || echo "0")
+        if [ "${line_count}" -gt "${max_lines}" ] 2>/dev/null; then
+            tail -n "${max_lines}" "${RELEASE_LEDGER_FILE}" > "${RELEASE_LEDGER_FILE}.tmp" 2>/dev/null || true
+            mv "${RELEASE_LEDGER_FILE}.tmp" "${RELEASE_LEDGER_FILE}" 2>/dev/null || true
+        fi
+    fi
+
+    local branch=""
+    if [ -n "${PROJECT_ROOT:-}" ]; then
+        branch=$(git -C "${PROJECT_ROOT}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+    fi
+
+    LEDGER_FILE="${RELEASE_LEDGER_FILE}" \
+    LEDGER_EVENT="${event}" \
+    LEDGER_STATUS="${status}" \
+    LEDGER_GATE="${gate}" \
+    LEDGER_MESSAGE="${message}" \
+    LEDGER_SIGNATURE="${signature}" \
+    LEDGER_TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    LEDGER_RUN_ID="${RELEASE_RUN_ID}" \
+    LEDGER_STARTED_AT="${RELEASE_STARTED_AT_UTC}" \
+    LEDGER_PROJECT="${PROJECT_ROOT:-}" \
+    LEDGER_APP="${APP_NAME:-}" \
+    LEDGER_MODE="$(release_mode_label)" \
+    LEDGER_VERSION="${VERSION:-}" \
+    LEDGER_BUILD="${BUILD_NUMBER:-}" \
+    LEDGER_HOST="$(hostname)" \
+    LEDGER_USER="${USER:-}" \
+    LEDGER_BRANCH="${branch}" \
+    LEDGER_COMMAND="${RELEASE_LAST_ERR_COMMAND:-}" \
+    LEDGER_LINE="${RELEASE_LAST_ERR_LINE:-}" \
+    python3 - <<'PY' >/dev/null 2>&1 || true
+import json
+import os
+
+entry = {
+    "timestamp_utc": os.environ.get("LEDGER_TIMESTAMP", ""),
+    "event": os.environ.get("LEDGER_EVENT", ""),
+    "status": os.environ.get("LEDGER_STATUS", ""),
+    "run_id": os.environ.get("LEDGER_RUN_ID", ""),
+    "run_started_at_utc": os.environ.get("LEDGER_STARTED_AT", ""),
+    "project_root": os.environ.get("LEDGER_PROJECT", ""),
+    "app_name": os.environ.get("LEDGER_APP", ""),
+    "mode": os.environ.get("LEDGER_MODE", ""),
+    "gate": os.environ.get("LEDGER_GATE", ""),
+    "message": os.environ.get("LEDGER_MESSAGE", ""),
+    "failure_signature": os.environ.get("LEDGER_SIGNATURE", ""),
+    "version": os.environ.get("LEDGER_VERSION", ""),
+    "build_number": os.environ.get("LEDGER_BUILD", ""),
+    "host": os.environ.get("LEDGER_HOST", ""),
+    "user": os.environ.get("LEDGER_USER", ""),
+    "branch": os.environ.get("LEDGER_BRANCH", ""),
+    "last_failed_command": os.environ.get("LEDGER_COMMAND", ""),
+    "last_failed_line": os.environ.get("LEDGER_LINE", ""),
+}
+
+with open(os.environ["LEDGER_FILE"], "a", encoding="utf-8") as f:
+    f.write(json.dumps(entry, ensure_ascii=True) + "\n")
+PY
+}
+
+track_gate_result() {
+    local gate="$1"
+    local status="$2"
+    local message="$3"
+    local signature=""
+    if [ "${status}" = "failure" ]; then
+        signature="$(normalize_failure_signature "${gate} :: ${message}")"
+    fi
+    append_release_ledger_entry "gate" "${status}" "${gate}" "${message}" "${signature}"
+}
+
+release_err_trap() {
+    local exit_code="$1"
+    local line="$2"
+    local cmd="$3"
+    set +e
+    RELEASE_LAST_ERR_LINE="${line}"
+    RELEASE_LAST_ERR_COMMAND="${cmd}"
+    if [ -z "${RELEASE_LAST_ERROR}" ]; then
+        RELEASE_LAST_ERROR="Command failed (exit ${exit_code}) at line ${line}: ${cmd}"
+        RELEASE_ERRORS+=("${RELEASE_LAST_ERROR}")
+    fi
+    if [ -n "${CURRENT_GATE}" ] && [ "${RELEASE_ERR_GATE_RECORDED}" != "${CURRENT_GATE}" ]; then
+        track_gate_result "${CURRENT_GATE}" "failure" "${RELEASE_LAST_ERROR}"
+        RELEASE_ERR_GATE_RECORDED="${CURRENT_GATE}"
+    fi
+}
+
+release_exit_trap() {
+    local exit_code="$1"
+    set +e
+
+    local status="success"
+    local summary="release completed"
+    local signature=""
+    if [ "${exit_code}" -ne 0 ]; then
+        status="failure"
+        if [ -n "${RELEASE_LAST_ERROR}" ]; then
+            summary="${RELEASE_LAST_ERROR}"
+        else
+            summary="release failed with exit code ${exit_code}"
+        fi
+        signature="$(normalize_failure_signature "${CURRENT_GATE} :: ${summary}")"
+    fi
+
+    append_release_ledger_entry "run" "${status}" "${CURRENT_GATE}" "${summary}" "${signature}"
+}
+
+trap 'release_err_trap $? ${LINENO} "$BASH_COMMAND"' ERR
+trap 'release_exit_trap $?' EXIT
+
+check_recent_unresolved_failures_gate() {
+    if [ "${ALLOW_REPEAT_FAILURE}" = true ]; then
+        log_warn "Repeat-failure guard bypassed (--allow-repeat-failure)."
+        return 0
+    fi
+
+    if [ ! -f "${RELEASE_LEDGER_FILE}" ]; then
+        return 0
+    fi
+
+    local threshold="${RELEASE_REPEAT_FAIL_THRESHOLD:-2}"
+    local lookback_hours="${RELEASE_REPEAT_FAIL_LOOKBACK_HOURS:-72}"
+    local unresolved
+    unresolved=$(PROJECT_FILTER="${PROJECT_ROOT}" APP_FILTER="${APP_NAME}" THRESHOLD="${threshold}" LOOKBACK_HOURS="${lookback_hours}" LEDGER_FILE="${RELEASE_LEDGER_FILE}" python3 - <<'PY'
+import datetime as dt
+import json
+import os
+
+path = os.environ.get("LEDGER_FILE", "")
+project = os.environ.get("PROJECT_FILTER", "")
+app = os.environ.get("APP_FILTER", "")
+threshold = int(os.environ.get("THRESHOLD", "2"))
+lookback_hours = int(os.environ.get("LOOKBACK_HOURS", "72"))
+
+if not path:
+    raise SystemExit(0)
+
+now = dt.datetime.now(dt.timezone.utc)
+cutoff = now - dt.timedelta(hours=lookback_hours)
+
+events = []
+with open(path, "r", encoding="utf-8") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if row.get("event") != "run":
+            continue
+        if project and row.get("project_root") != project:
+            continue
+        if app and row.get("app_name") and row.get("app_name") != app:
+            continue
+        ts = row.get("timestamp_utc", "")
+        try:
+            when = dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if when < cutoff:
+            continue
+        events.append((when, row))
+
+events.sort(key=lambda x: x[0])
+if not events:
+    raise SystemExit(0)
+
+fail_after_success = []
+for when, row in events:
+    if row.get("status") == "success":
+        fail_after_success = []
+        continue
+    fail_after_success.append(row)
+
+if len(fail_after_success) >= threshold:
+    for row in fail_after_success[-threshold:]:
+        print(f"{row.get('timestamp_utc','')} :: {row.get('message','')}")
+PY
+)
+
+    if [ -n "${unresolved}" ]; then
+        log_error "Repeat-failure guard tripped (${threshold} failures without a successful run in the last ${lookback_hours}h)."
+        while IFS= read -r row; do
+            [ -n "${row}" ] && log_error "  ${row}"
+        done <<< "${unresolved}"
+        log_error "Fix root cause before retrying, or bypass once with --allow-repeat-failure."
+        return 1
+    fi
+
+    return 0
+}
+
+run_required_step() {
+    local gate="$1"
+    shift
+    CURRENT_GATE="${gate}"
+    RELEASE_ERR_GATE_RECORDED=""
+    if "$@"; then
+        track_gate_result "${gate}" "pass" "ok"
+        CURRENT_GATE=""
+        return 0
+    fi
+    local step_error="${RELEASE_LAST_ERROR:-step failed}"
+    track_gate_result "${gate}" "failure" "${step_error}"
+    CURRENT_GATE=""
+    return 1
 }
 
 extract_http_status() {
@@ -53,6 +327,48 @@ extract_content_length_with_user_agent() {
     local url="$1"
     local user_agent="$2"
     curl -A "${user_agent}" -sI "${url}" 2>/dev/null | awk 'tolower($1)=="content-length:" {gsub("\r","",$2); print $2}' | tail -1
+}
+
+# Format release notes as clean HTML bullet list for Sparkle appcast.
+# Hard rules: plain English, never scare customers, beautifully formatted.
+# Input: newline-separated notes (one bullet per line)
+# Output: HTML <ul><li> list with "What's New" heading
+format_appcast_notes() {
+    local raw_notes="$1"
+    local version="$2"
+
+    # Validate: reject dev jargon that should never face customers
+    local bad_words="regression|hardens|corruption|backlog|reconcile|fallback|herestring|mutex|refactor|migration recovery|separator target|position seeding"
+    if echo "${raw_notes}" | grep -qiE "${bad_words}"; then
+        log_error "Release notes contain developer jargon that customers should never see."
+        log_error "Rejected words: $(echo "${raw_notes}" | grep -oiE "${bad_words}" | sort -u | tr '\n' ', ')"
+        log_error "Rewrite in plain English. Think: would grandma understand this?"
+        exit 1
+    fi
+
+    # Reject issue/PR numbers (e.g. #79, fixes #64)
+    if echo "${raw_notes}" | grep -qE '#[0-9]+'; then
+        log_error "Release notes contain issue numbers (e.g. #79). Customers don't care about issue trackers."
+        log_error "Describe what changed in plain English."
+        exit 1
+    fi
+
+    # Reject literal \n (common formatting bug)
+    if echo "${raw_notes}" | grep -qF '\n'; then
+        log_error "Release notes contain literal \\n characters. Use actual newlines to separate bullets."
+        exit 1
+    fi
+
+    # Build HTML bullet list
+    local html="<h2>What's New</h2>\n                <ul>"
+    while IFS= read -r line; do
+        line=$(echo "${line}" | sed 's/^[[:space:]]*[-*•]*//' | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
+        [ -z "${line}" ] && continue
+        html="${html}\n                <li>${line}</li>"
+    done <<< "${raw_notes}"
+    html="${html}\n                </ul>"
+
+    echo -e "${html}"
 }
 
 appcast_item_count_for_version() {
@@ -492,6 +808,7 @@ print_help() {
     echo "  --notes \"...\"      Release notes for changelog/release metadata (required with --full)"
     echo "  --allow-republish    Allow republishing an already-live version/build"
     echo "  --allow-unsynced-peer  Bypass Air/mini reconcile gate for this release"
+    echo "  --allow-repeat-failure  Bypass repeat-failure guard once"
     echo "  --skip-appstore      Skip App Store archive/export/upload even if enabled in config"
     echo "  --website-only       Deploy website + appcast only (no build/R2/signing)"
     echo "  --preflight-only     Run all release gates and exit (no build/publish)"
@@ -503,6 +820,18 @@ ensure_cmd() {
         log_error "Required command not found: $1"
         exit 1
     fi
+}
+
+array_contains() {
+    local needle="$1"
+    shift
+    local item
+    for item in "$@"; do
+        if [ "${item}" = "${needle}" ]; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 ensure_git_clean() {
@@ -521,6 +850,96 @@ shell_true() {
             return 1
             ;;
     esac
+}
+
+set_env_if_missing() {
+    local key="$1"
+    local value="$2"
+    if [ -z "${key}" ] || [ -z "${value}" ]; then
+        return 0
+    fi
+    if [ -n "${!key:-}" ]; then
+        return 0
+    fi
+    export "${key}=${value}"
+}
+
+unquote_env_value() {
+    local raw="$1"
+    raw="${raw%"${raw##*[![:space:]]}"}"
+    raw="${raw#"${raw%%[![:space:]]*}"}"
+    if [[ "${raw}" == \"*\" && "${raw}" == *\" ]]; then
+        raw="${raw:1:${#raw}-2}"
+    elif [[ "${raw}" == \'*\' && "${raw}" == *\' ]]; then
+        raw="${raw:1:${#raw}-2}"
+    fi
+    printf '%s' "${raw}"
+}
+
+load_secrets_env_file() {
+    local env_file="$1"
+    [ -f "${env_file}" ] || return 1
+
+    while IFS= read -r line || [ -n "${line}" ]; do
+        [ -z "${line}" ] && continue
+        [[ "${line}" =~ ^[[:space:]]*# ]] && continue
+        line="${line#export }"
+        [[ "${line}" == *=* ]] || continue
+        local key="${line%%=*}"
+        local value="${line#*=}"
+        key="$(echo "${key}" | tr -d '[:space:]')"
+        [ -n "${key}" ] || continue
+        value="$(unquote_env_value "${value}")"
+        set_env_if_missing "${key}" "${value}"
+    done < "${env_file}"
+
+    return 0
+}
+
+keychain_secret() {
+    local service="$1"
+    local account="${2:-}"
+    local value=""
+    if [ -n "${account}" ]; then
+        value=$(security find-generic-password -w -s "${service}" -a "${account}" 2>/dev/null || true)
+    fi
+    if [ -z "${value}" ]; then
+        value=$(security find-generic-password -w -s "${service}" 2>/dev/null || true)
+    fi
+    printf '%s' "${value}"
+}
+
+hydrate_headless_release_env() {
+    local secrets_files=(
+        "${SANEPROCESS_SECRETS_FILE:-}"
+        "${HOME}/.config/saneprocess/secrets.env"
+        "${HOME}/.saneprocess/secrets.env"
+    )
+    local env_file
+    for env_file in "${secrets_files[@]}"; do
+        [ -n "${env_file}" ] || continue
+        if load_secrets_env_file "${env_file}"; then
+            log_info "Loaded headless secrets from ${env_file}"
+            break
+        fi
+    done
+
+    set_env_if_missing "SANEBAR_KEYCHAIN_PASSWORD" "$(keychain_secret "saneprocess.keychain.password" "keychain_password")"
+    set_env_if_missing "SANEBAR_KEYCHAIN_PASSWORD" "$(keychain_secret "saneprocess.keychain.password")"
+    set_env_if_missing "ASC_AUTH_KEY_ID" "$(keychain_secret "saneprocess.asc.key_id" "asc_key_id")"
+    set_env_if_missing "ASC_AUTH_KEY_ID" "$(keychain_secret "saneprocess.asc.key_id")"
+    set_env_if_missing "ASC_AUTH_ISSUER_ID" "$(keychain_secret "saneprocess.asc.issuer_id" "asc_issuer_id")"
+    set_env_if_missing "ASC_AUTH_ISSUER_ID" "$(keychain_secret "saneprocess.asc.issuer_id")"
+    set_env_if_missing "ASC_AUTH_KEY_PATH" "$(keychain_secret "saneprocess.asc.key_path" "asc_key_path")"
+    set_env_if_missing "ASC_AUTH_KEY_PATH" "$(keychain_secret "saneprocess.asc.key_path")"
+    set_env_if_missing "NOTARY_API_KEY_ID" "$(keychain_secret "saneprocess.notary.key_id" "notary_key_id")"
+    set_env_if_missing "NOTARY_API_KEY_ID" "$(keychain_secret "saneprocess.notary.key_id")"
+    set_env_if_missing "NOTARY_API_ISSUER_ID" "$(keychain_secret "saneprocess.notary.issuer_id" "notary_issuer_id")"
+    set_env_if_missing "NOTARY_API_ISSUER_ID" "$(keychain_secret "saneprocess.notary.issuer_id")"
+    set_env_if_missing "NOTARY_API_KEY_PATH" "$(keychain_secret "saneprocess.notary.key_path" "notary_key_path")"
+    set_env_if_missing "NOTARY_API_KEY_PATH" "$(keychain_secret "saneprocess.notary.key_path")"
+    set_env_if_missing "SPARKLE_PRIVATE_KEY" "$(keychain_secret "saneprocess.sparkle.private_key" "sparkle")"
+    set_env_if_missing "SPARKLE_PRIVATE_KEY" "$(keychain_secret "https://sparkle-project.org" "EdDSA Private Key")"
 }
 
 default_peer_host_for_project() {
@@ -1401,6 +1820,64 @@ check_appstore_gate() {
         return 1
     fi
 
+    if [ -n "${APPSTORE_ENTITLEMENTS}" ]; then
+        if [ ! -f "${APPSTORE_ENTITLEMENTS}" ]; then
+            log_error "APPSTORE_ENTITLEMENTS file not found: ${APPSTORE_ENTITLEMENTS}"
+            return 1
+        fi
+        local sandbox_value
+        sandbox_value=$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.app-sandbox" "${APPSTORE_ENTITLEMENTS}" 2>/dev/null || echo "")
+        if [ "${sandbox_value}" != "true" ]; then
+            log_error "APPSTORE_ENTITLEMENTS must set app sandbox to true"
+            return 1
+        fi
+    fi
+
+    local bf
+    for bf in "${APPSTORE_BUILD_FLAGS[@]}"; do
+        if [[ "${bf}" == *"Developer ID Application"* ]] || [[ "${bf}" == CODE_SIGN_STYLE=Manual* ]]; then
+            log_error "App Store build flags include direct-distribution signing override: ${bf}"
+            log_error "Use automatic signing for App Store builds."
+            return 1
+        fi
+    done
+
+    if [ "${USE_SPARKLE}" = true ]; then
+        if ! array_contains "Sparkle.framework" "${APPSTORE_STRIP_FRAMEWORKS[@]}"; then
+            log_error "APPSTORE_STRIP_FRAMEWORKS must include Sparkle.framework when use_sparkle=true"
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+check_live_appcast_republish_gate() {
+    if [ "${ALLOW_REPUBLISH}" = true ] || [ "${USE_SPARKLE}" != "true" ]; then
+        return 0
+    fi
+
+    if [ -z "${VERSION}" ]; then
+        log_warn "No --version provided; skipping live appcast republish guard in preflight."
+        return 0
+    fi
+
+    local appcast_url="https://${SITE_HOST}/appcast.xml"
+    local appcast_content
+    appcast_content=$(curl -fsSL "${appcast_url}" 2>/dev/null || true)
+    if [ -z "${appcast_content}" ]; then
+        log_warn "Could not fetch live appcast (${appcast_url}); skipping republish guard in preflight."
+        return 0
+    fi
+
+    local live_count
+    live_count=$(appcast_item_count_for_version "${appcast_content}")
+    if [ "${live_count}" -ge 1 ]; then
+        log_error "Live appcast republish guard: v${VERSION} already exists (${live_count} entr$( [ "${live_count}" = "1" ] && echo "y" || echo "ies" ))."
+        log_error "Bump version/build before release, or use --allow-republish for emergencies."
+        return 1
+    fi
+
     return 0
 }
 
@@ -1410,16 +1887,27 @@ run_release_preflight_only() {
     run_gate() {
         local name="$1"
         shift
+        CURRENT_GATE="${name}"
+        RELEASE_ERR_GATE_RECORDED=""
         if "$@"; then
             log_info "[PASS] ${name}"
+            track_gate_result "${name}" "pass" "ok"
         else
+            local gate_error="${RELEASE_LAST_ERROR:-gate failed}"
             log_error "[FAIL] ${name}"
             failures=$((failures + 1))
+            track_gate_result "${name}" "failure" "${gate_error}"
         fi
+        CURRENT_GATE=""
     }
 
     log_info "Running release preflight-only checks..."
 
+    run_gate "Repeat-failure guard" check_recent_unresolved_failures_gate
+    if [ "${failures}" -gt 0 ]; then
+        log_error "Preflight-only aborted by repeat-failure guard."
+        return 1
+    fi
     run_gate "Required commands" check_required_commands
     run_gate "Git clean" check_git_clean_gate
     run_gate "Machine reconcile" check_reconcile_gate
@@ -1429,6 +1917,7 @@ run_release_preflight_only() {
     run_gate "Keychain/signing session" prepare_signing_session
     run_gate "Notarization authentication" resolve_notary_auth
     run_gate "App Store configuration" check_appstore_gate
+    run_gate "Live appcast republish guard" check_live_appcast_republish_gate
 
     if [ "${failures}" -gt 0 ]; then
         log_error "Preflight-only failed with ${failures} failing gate(s)."
@@ -1455,6 +1944,7 @@ ALLOW_REPUBLISH=false
 ALLOW_UNSYNCED_PEER=false
 SKIP_APPSTORE=false
 PREFLIGHT_ONLY=false
+ALLOW_REPEAT_FAILURE=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -1489,6 +1979,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --allow-unsynced-peer)
             ALLOW_UNSYNCED_PEER=true
+            shift
+            ;;
+        --allow-repeat-failure)
+            ALLOW_REPEAT_FAILURE=true
             shift
             ;;
         --skip-appstore)
@@ -1555,6 +2049,8 @@ if [ -n "${CONFIG_PATH}" ]; then
     fi
 fi
 
+hydrate_headless_release_env
+
 APP_NAME="${APP_NAME:-$(basename "${PROJECT_ROOT}")}" 
 SCHEME="${SCHEME:-${APP_NAME}}"
 LOWER_APP_NAME="$(echo "${APP_NAME}" | tr '[:upper:]' '[:lower:]')"
@@ -1619,6 +2115,9 @@ fi
 if ! declare -p APPSTORE_STRIP_FRAMEWORKS >/dev/null 2>&1; then
     APPSTORE_STRIP_FRAMEWORKS=()
 fi
+if ! declare -p APPSTORE_ARCHIVE_EXTRA_ARGS >/dev/null 2>&1; then
+    APPSTORE_ARCHIVE_EXTRA_ARGS=()
+fi
 if ! declare -p XCODE_PROVISIONING_AUTH_ARGS >/dev/null 2>&1; then
     XCODE_PROVISIONING_AUTH_ARGS=()
 fi
@@ -1631,6 +2130,7 @@ DMG_VOLUME_ICON="$(resolve_path "${DMG_VOLUME_ICON}")"
 DMG_BACKGROUND="$(resolve_path "${DMG_BACKGROUND}")"
 DMG_BACKGROUND_GENERATOR="$(resolve_path "${DMG_BACKGROUND_GENERATOR}")"
 ASC_AUTH_KEY_PATH="$(resolve_path "${ASC_AUTH_KEY_PATH}")"
+APPSTORE_ENTITLEMENTS="$(resolve_path "${APPSTORE_ENTITLEMENTS}")"
 # Resolve helper scripts: check project first, fall back to SaneProcess scripts dir
 SANEPROCESS_SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -z "${SIGN_UPDATE_SCRIPT}" ]; then
@@ -1721,6 +2221,10 @@ if [ "${PREFLIGHT_ONLY}" = true ]; then
     if run_release_preflight_only; then
         exit 0
     fi
+    exit 1
+fi
+
+if ! check_recent_unresolved_failures_gate; then
     exit 1
 fi
 
@@ -1856,15 +2360,15 @@ ensure_cmd hdiutil
 ensure_cmd ditto
 
 # Fail early if signing/notarization prerequisites are missing.
-if ! prepare_signing_session; then
+if ! run_required_step "Keychain/signing session" prepare_signing_session; then
     exit 1
 fi
 
-if ! resolve_notary_auth; then
+if ! run_required_step "Notarization authentication" resolve_notary_auth; then
     exit 1
 fi
 
-if ! prepare_xcode_provisioning_auth; then
+if ! run_required_step "ASC provisioning authentication" prepare_xcode_provisioning_auth; then
     exit 1
 fi
 
@@ -1877,6 +2381,8 @@ fi
 # Build archive
 if [ "${SKIP_BUILD}" = false ]; then
     log_info "Building release archive..."
+    CURRENT_GATE="Build release archive"
+    RELEASE_ERR_GATE_RECORDED=""
 
     archive_args=(archive -scheme "${SCHEME}" -configuration Release -archivePath "${ARCHIVE_PATH}" -destination "generic/platform=macOS" OTHER_CODE_SIGN_FLAGS="--timestamp")
     if [ -n "${WORKSPACE}" ]; then
@@ -1892,6 +2398,7 @@ if [ "${SKIP_BUILD}" = false ]; then
 
     if [ ${PIPESTATUS[0]} -ne 0 ]; then
         log_error "Archive build failed! Check ${BUILD_DIR}/build.log"
+        track_gate_result "Build release archive" "failure" "${RELEASE_LAST_ERROR}"
         exit 1
     fi
 
@@ -1910,8 +2417,11 @@ if [ "${SKIP_BUILD}" = false ]; then
 
     if [ "${archive_bundle_id}" != "${BUNDLE_ID}" ]; then
         log_error "Bundle ID mismatch: expected ${BUNDLE_ID}, got ${archive_bundle_id}"
+        track_gate_result "Build release archive" "failure" "${RELEASE_LAST_ERROR}"
         exit 1
     fi
+    track_gate_result "Build release archive" "pass" "ok"
+    CURRENT_GATE=""
 fi
 
 # Export archive
@@ -1920,6 +2430,8 @@ EXPORT_OPTIONS_PATH="${BUILD_DIR}/ExportOptions.plist"
 write_export_options_plist "${EXPORT_OPTIONS_PATH}"
 
 log_info "Exporting signed app..."
+CURRENT_GATE="Export signed app"
+RELEASE_ERR_GATE_RECORDED=""
 xcodebuild -exportArchive \
     -archivePath "${ARCHIVE_PATH}" \
     -exportPath "${EXPORT_PATH}" \
@@ -1930,8 +2442,11 @@ xcodebuild -exportArchive \
 
 if [ ${PIPESTATUS[0]} -ne 0 ]; then
     log_error "Export failed! Check ${BUILD_DIR}/build.log"
+    track_gate_result "Export signed app" "failure" "${RELEASE_LAST_ERROR}"
     exit 1
 fi
+track_gate_result "Export signed app" "pass" "ok"
+CURRENT_GATE=""
 
 APP_PATH="${EXPORT_PATH}/${APP_NAME}.app"
 
@@ -1985,6 +2500,8 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
     if [ "${SKIP_BUILD}" = false ]; then
         log_info ""
         log_info "Building App Store archive (configuration: ${APPSTORE_CONFIG})..."
+        CURRENT_GATE="Build App Store archive"
+        RELEASE_ERR_GATE_RECORDED=""
 
         appstore_archive_args=(archive -scheme "${APPSTORE_SCHEME_VALUE}" -configuration "${APPSTORE_CONFIG}" \
             -archivePath "${APPSTORE_ARCHIVE}" \
@@ -2013,16 +2530,19 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
         elif [ -n "${XCODEPROJ}" ]; then
             appstore_archive_args=(-project "${XCODEPROJ}" "${appstore_archive_args[@]}")
         fi
-        if [ ${#ARCHIVE_EXTRA_ARGS[@]} -gt 0 ]; then
-            appstore_archive_args+=("${ARCHIVE_EXTRA_ARGS[@]}")
+        if [ ${#APPSTORE_ARCHIVE_EXTRA_ARGS[@]} -gt 0 ]; then
+            appstore_archive_args+=("${APPSTORE_ARCHIVE_EXTRA_ARGS[@]}")
         fi
 
         xcodebuild "${appstore_archive_args[@]}" 2>&1 | tee -a "${BUILD_DIR}/build.log"
 
         if [ ${PIPESTATUS[0]} -ne 0 ]; then
             log_error "App Store archive build failed! Check ${BUILD_DIR}/build.log"
+            track_gate_result "Build App Store archive" "failure" "${RELEASE_LAST_ERROR}"
             exit 1
         fi
+        track_gate_result "Build App Store archive" "pass" "ok"
+        CURRENT_GATE=""
     fi
 
     if [ ${#APPSTORE_STRIP_FRAMEWORKS[@]} -gt 0 ]; then
@@ -2073,6 +2593,8 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
     fi
 
     log_info "Exporting for App Store..."
+    CURRENT_GATE="Export App Store package"
+    RELEASE_ERR_GATE_RECORDED=""
     APPSTORE_PLIST="${BUILD_DIR}/ExportOptions-AppStore.plist"
     write_export_options_appstore_plist "${APPSTORE_PLIST}"
 
@@ -2086,8 +2608,11 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
 
     if [ ${PIPESTATUS[0]} -ne 0 ]; then
         log_error "App Store export failed! Check ${BUILD_DIR}/build.log"
+        track_gate_result "Export App Store package" "failure" "${RELEASE_LAST_ERROR}"
         exit 1
     fi
+    track_gate_result "Export App Store package" "pass" "ok"
+    CURRENT_GATE=""
 
     APPSTORE_PKG="${APPSTORE_EXPORT_PATH}/${APP_NAME}.pkg"
     if [ ! -f "${APPSTORE_PKG}" ]; then
@@ -2119,6 +2644,8 @@ ditto -c -k --keepParent "${APP_PATH}" "${NOTARIZE_ZIP}"
 if [ "${SKIP_NOTARIZE}" = false ]; then
     log_info "Submitting for notarization..."
     log_warn "This may take several minutes..."
+    CURRENT_GATE="Notarization submit+staple"
+    RELEASE_ERR_GATE_RECORDED=""
 
     if [ "${NOTARY_AUTH_MODE}" = "api-key" ]; then
         xcrun notarytool submit "${NOTARIZE_ZIP}" \
@@ -2141,6 +2668,8 @@ if [ "${SKIP_NOTARIZE}" = false ]; then
     fi
 
     log_info "Notarization complete!"
+    track_gate_result "Notarization submit+staple" "pass" "ok"
+    CURRENT_GATE=""
 else
     log_warn "Skipping notarization (--skip-notarize flag set)"
 fi
@@ -2200,6 +2729,7 @@ if [ "${USE_SPARKLE}" = true ] && command -v swift >/dev/null 2>&1; then
         if [ -n "${SIGNATURE}" ]; then
             DATE=$(date +"%a, %d %b %Y %H:%M:%S %z")
 
+            FORMATTED_NOTES=$(format_appcast_notes "${RELEASE_NOTES}" "${VERSION}")
             echo -e "${GREEN}Sparkle AppCast Item:${NC}"
             cat <<EOF
         <item>
@@ -2208,8 +2738,7 @@ if [ "${USE_SPARKLE}" = true ] && command -v swift >/dev/null 2>&1; then
             <sparkle:minimumSystemVersion>${MIN_SYSTEM_VERSION}</sparkle:minimumSystemVersion>
             <description>
                 <![CDATA[
-                <h2>Changes</h2>
-                <p>${RELEASE_NOTES:-Update to version ${VERSION}}</p>
+                ${FORMATTED_NOTES}
                 ]]>
             </description>
             <enclosure url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
@@ -2291,10 +2820,14 @@ if [ "${RUN_DEPLOY}" = true ]; then
     # Step 1: Upload ZIP to R2
     log_info "Uploading ZIP to R2 bucket ${R2_BUCKET}..."
     ensure_cmd npx
+    CURRENT_GATE="Upload ZIP to R2"
+    RELEASE_ERR_GATE_RECORDED=""
     R2_OBJECT_KEY="updates/${APP_NAME}-${VERSION}.zip"
     npx wrangler r2 object put "${R2_BUCKET}/${R2_OBJECT_KEY}" \
         --file="${FINAL_ZIP}" --remote
     log_info "R2 upload complete."
+    track_gate_result "Upload ZIP to R2" "pass" "ok"
+    CURRENT_GATE=""
 
     # Verify R2 upload
     log_info "Verifying download URL..."
@@ -2367,6 +2900,7 @@ for obj in data.get("result", []):
             log_info "Updating appcast.xml with v${VERSION}..."
             PUB_DATE=$(date -R)
 
+            FORMATTED_NOTES=$(format_appcast_notes "${RELEASE_NOTES}" "${VERSION}")
             NEW_ITEM=$(cat <<APPCASTEOF
         <item>
             <title>${VERSION}</title>
@@ -2374,8 +2908,7 @@ for obj in data.get("result", []):
             <sparkle:minimumSystemVersion>${MIN_SYSTEM_VERSION}</sparkle:minimumSystemVersion>
             <description>
                 <![CDATA[
-                <h2>Changes</h2>
-                <p>${RELEASE_NOTES:-Update to version ${VERSION}}</p>
+                ${FORMATTED_NOTES}
                 ]]>
             </description>
             <enclosure url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
@@ -2464,11 +2997,15 @@ PY
     PAGES_PROJECT="${LOWER_APP_NAME}-site"
     if [ -d "${DOCS_DIR}" ]; then
         log_info "Deploying website + appcast to Cloudflare Pages (${PAGES_PROJECT})..."
+        CURRENT_GATE="Deploy website to Cloudflare Pages"
+        RELEASE_ERR_GATE_RECORDED=""
         npx wrangler pages deploy "${DOCS_DIR}" \
             --project-name="${PAGES_PROJECT}" \
             --commit-dirty=true \
             --commit-message="Release v${VERSION}"
         log_info "Pages deploy complete."
+        track_gate_result "Deploy website to Cloudflare Pages" "pass" "ok"
+        CURRENT_GATE=""
 
         # Verify appcast propagation and uniqueness (blocking) for Sparkle apps.
         if [ "${USE_SPARKLE}" = true ]; then
@@ -2517,12 +3054,20 @@ PY
             log_error "No App Store .pkg found. Build with App Store export first (don't use --skip-build)."
             exit 1
         else
-            ruby "${APPSTORE_SCRIPT}" \
+            CURRENT_GATE="App Store submit (macOS)"
+            RELEASE_ERR_GATE_RECORDED=""
+            if ! ruby "${APPSTORE_SCRIPT}" \
                 --pkg "${APPSTORE_PKG}" \
                 --app-id "${APPSTORE_APP_ID}" \
                 --version "${VERSION}" \
                 --platform macos \
-                --project-root "${PROJECT_ROOT}"
+                --project-root "${PROJECT_ROOT}"; then
+                log_error "App Store submit failed (macOS)."
+                track_gate_result "App Store submit (macOS)" "failure" "${RELEASE_LAST_ERROR}"
+                exit 1
+            fi
+            track_gate_result "App Store submit (macOS)" "pass" "ok"
+            CURRENT_GATE=""
         fi
 
         # iOS build and submission (if configured)
@@ -2557,12 +3102,20 @@ PY
 
                 IOS_IPA="${IOS_EXPORT}/${APP_NAME}.ipa"
                 if [ -f "${IOS_IPA}" ]; then
-                    ruby "${APPSTORE_SCRIPT}" \
+                    CURRENT_GATE="App Store submit (iOS)"
+                    RELEASE_ERR_GATE_RECORDED=""
+                    if ! ruby "${APPSTORE_SCRIPT}" \
                         --pkg "${IOS_IPA}" \
                         --app-id "${APPSTORE_APP_ID}" \
                         --version "${VERSION}" \
                         --platform ios \
-                        --project-root "${PROJECT_ROOT}"
+                        --project-root "${PROJECT_ROOT}"; then
+                        log_error "App Store submit failed (iOS)."
+                        track_gate_result "App Store submit (iOS)" "failure" "${RELEASE_LAST_ERROR}"
+                        exit 1
+                    fi
+                    track_gate_result "App Store submit (iOS)" "pass" "ok"
+                    CURRENT_GATE=""
                 else
                     log_warn "iOS export produced no .ipa — skipping iOS submission"
                 fi
@@ -2683,10 +3236,15 @@ PY
     fi
 
     # Step 11: Strict post-release verification gate
+    CURRENT_GATE="Post-release verification"
+    RELEASE_ERR_GATE_RECORDED=""
     if ! run_post_release_checks; then
         log_error "Post-release verification failed. Release is NOT considered complete."
+        track_gate_result "Post-release verification" "failure" "${RELEASE_LAST_ERROR}"
         exit 1
     fi
+    track_gate_result "Post-release verification" "pass" "ok"
+    CURRENT_GATE=""
 
     log_info ""
     log_info "═══════════════════════════════════════════"
