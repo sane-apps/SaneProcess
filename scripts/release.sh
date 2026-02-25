@@ -223,14 +223,14 @@ run_post_release_checks() {
     log_info "Running strict post-release checks..."
 
     local dist_status
-    dist_status=$(curl -A "Sparkle/2" -sI -o /dev/null -w '%{http_code}' "${dist_url}" 2>/dev/null || echo "000")
+    dist_status=$(curl -A "Sparkle/2" -sIL -o /dev/null -w '%{http_code}' "${dist_url}" 2>/dev/null || echo "000")
     if [ "${dist_status}" != "200" ] && [ "${dist_status}" != "206" ]; then
         log_error "Download URL failed: ${dist_url} returned HTTP ${dist_status}"
         return 1
     fi
 
     local dist_length
-    dist_length=$(curl -A "Sparkle/2" -sI "${dist_url}" 2>/dev/null | awk 'tolower($1)=="content-length:" {gsub("\r","",$2); print $2}' | tail -1)
+    dist_length=$(curl -A "Sparkle/2" -sIL "${dist_url}" 2>/dev/null | awk 'tolower($1)=="content-length:" {gsub("\r","",$2); print $2}' | tail -1)
     if [ -z "${dist_length}" ]; then
         log_error "Download URL missing Content-Length: ${dist_url}"
         return 1
