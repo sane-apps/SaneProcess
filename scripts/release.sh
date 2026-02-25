@@ -93,14 +93,6 @@ append_release_ledger_entry() {
 
     mkdir -p "$(dirname "${RELEASE_LEDGER_FILE}")" >/dev/null 2>&1 || true
     local max_lines="${RELEASE_LEDGER_MAX_LINES:-6000}"
-    if [ -f "${RELEASE_LEDGER_FILE}" ]; then
-        local line_count
-        line_count=$(wc -l < "${RELEASE_LEDGER_FILE}" 2>/dev/null || echo "0")
-        if [ "${line_count}" -gt "${max_lines}" ] 2>/dev/null; then
-            tail -n "${max_lines}" "${RELEASE_LEDGER_FILE}" > "${RELEASE_LEDGER_FILE}.tmp" 2>/dev/null || true
-            mv "${RELEASE_LEDGER_FILE}.tmp" "${RELEASE_LEDGER_FILE}" 2>/dev/null || true
-        fi
-    fi
 
     local branch=""
     if [ -n "${PROJECT_ROOT:-}" ]; then
@@ -126,9 +118,15 @@ append_release_ledger_entry() {
     LEDGER_BRANCH="${branch}" \
     LEDGER_COMMAND="${RELEASE_LAST_ERR_COMMAND:-}" \
     LEDGER_LINE="${RELEASE_LAST_ERR_LINE:-}" \
+    LEDGER_MAX_LINES="${max_lines}" \
     python3 - <<'PY' >/dev/null 2>&1 || true
+import fcntl
 import json
 import os
+
+path = os.environ["LEDGER_FILE"]
+max_lines = int(os.environ.get("LEDGER_MAX_LINES", "6000"))
+os.makedirs(os.path.dirname(path), exist_ok=True)
 
 entry = {
     "timestamp_utc": os.environ.get("LEDGER_TIMESTAMP", ""),
@@ -151,8 +149,19 @@ entry = {
     "last_failed_line": os.environ.get("LEDGER_LINE", ""),
 }
 
-with open(os.environ["LEDGER_FILE"], "a", encoding="utf-8") as f:
-    f.write(json.dumps(entry, ensure_ascii=True) + "\n")
+with open(path, "a+", encoding="utf-8") as f:
+    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+    f.seek(0)
+    lines = f.readlines()
+    lines.append(json.dumps(entry, ensure_ascii=True) + "\n")
+    if len(lines) > max_lines:
+        lines = lines[-max_lines:]
+    f.seek(0)
+    f.truncate(0)
+    f.writelines(lines)
+    f.flush()
+    os.fsync(f.fileno())
+    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 PY
 }
 
