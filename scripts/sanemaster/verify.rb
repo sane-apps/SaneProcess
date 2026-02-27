@@ -33,6 +33,7 @@ module SaneMasterModules
       timeout = args.include?('--timeout') ? args[args.index('--timeout') + 1].to_i : 180
       signed_tests = args.include?('--signed-tests') || ENV['SANEMASTER_SIGN_TEST_BUILDS'] == '1'
 
+      run_verify_preflight
       clean([]) if clean_first
 
       puts '🔨 --- [ SANEMASTER VERIFY ] ---'
@@ -64,6 +65,149 @@ module SaneMasterModules
       ensure
         cleanup_test_processes(permission_monitor_pid)
       end
+    end
+
+    def run_verify_preflight
+      return if @verify_preflight_ran
+
+      preflight_test_environment
+      @verify_preflight_ran = true
+    end
+
+    def preflight_test_environment
+      puts '🧪 --- [ SANEMASTER VERIFY PREFLIGHT ] ---'
+      guard_test_localhost_ports
+      terminate_stale_test_processes
+      puts '✅ Verify preflight complete.'
+      puts ''
+    end
+
+    def guard_test_localhost_ports
+      return unless command_available?('lsof')
+
+      test_ports = (ENV['SANEMASTER_TEST_PORTS'] || '8999')
+                   .split(',')
+                   .map(&:strip)
+                   .reject(&:empty?)
+
+      stale_ports = []
+
+      test_ports.each do |port|
+        pids = test_listeners_for_port(port)
+        next if pids.empty?
+
+        stale_ports << port
+        puts "  ⚠️  Port #{port} has active listeners: #{pids.join(', ')}"
+        kill_test_processes_for_pids(pids)
+      end
+
+      stuck = stale_ports.reject do |port|
+        test_listeners_for_port(port).empty?
+      end
+
+      return if stuck.empty?
+
+      puts "  ❌ Could not clear test listener(s) on: #{stuck.join(', ')}"
+      stuck.each do |port|
+        pids = test_listeners_for_port(port)
+        next if pids.empty?
+        puts "     Port #{port} still bound by:"
+        pids.each do |pid|
+          cmd = process_command_for_pid(pid)
+          puts "      - #{pid} => #{cmd.empty? ? '<unknown>' : cmd}"
+        end
+      end
+      puts '  🧯 Set SANEMASTER_ALLOW_PORT_OCCUPIED=1 to bypass, or stop the owning process(es) and rerun.'
+      exit 1 unless ENV['SANEMASTER_ALLOW_PORT_OCCUPIED'] == '1'
+    end
+
+    def terminate_stale_test_processes
+      pids = stale_test_processes
+      return if pids.empty?
+
+      puts "  🧹 Reaping stale test process(es): #{pids.join(', ')}"
+      pids.each do |pid|
+        begin
+          Process.kill('TERM', pid.to_i)
+        rescue Errno::ESRCH, Errno::EPERM
+          nil
+        end
+      end
+      sleep(0.5)
+
+      lingering = stale_test_processes
+      if lingering.empty?
+        puts '  ✅ Stale test processes cleared.'
+        return
+      end
+
+      puts '  ⚠️  Some stale test processes are still alive, force killing...'
+      lingering.each do |pid|
+        begin
+          Process.kill('KILL', pid.to_i)
+        rescue Errno::ESRCH, Errno::EPERM
+          nil
+        end
+      end
+    end
+
+    def stale_test_processes
+      raw = `pgrep -f '(xcodebuild|xctest|testmanagerd)' 2>/dev/null`
+      return [] if raw.nil? || raw.empty?
+
+      pids = raw.split
+      pids.select do |pid|
+        command = process_command_for_pid(pid)
+        next false unless command
+
+        command.downcase.include?(project_name.downcase) || project_related_test_process?(command)
+      end
+    end
+
+    def project_related_test_process?(command)
+      return false unless command
+
+      text = command.downcase
+      project_keyword = project_name.downcase
+
+      text.include?('xcodebuild') ||
+        text.include?('xctest') ||
+        text.include?('swift-testing') ||
+        text.include?('testmanager') ||
+        text.include?(project_keyword)
+    end
+
+    def test_listeners_for_port(port)
+      raw = `lsof -nP -iTCP:#{port} -sTCP:LISTEN -t 2>/dev/null`
+      return [] if raw.nil? || raw.empty?
+
+      pids = raw.split
+      return [] if pids.empty?
+
+      pids.select do |pid|
+        command = process_command_for_pid(pid)
+        command && project_related_test_process?(command)
+      end
+    end
+
+    def kill_test_processes_for_pids(pids)
+      pids.each do |pid|
+        begin
+          Process.kill('TERM', pid.to_i)
+        rescue Errno::ESRCH, Errno::EPERM
+          nil
+        end
+      end
+    end
+
+    def process_command_for_pid(pid)
+      `ps -p #{pid.to_i} -o command= 2>/dev/null`.strip
+    rescue StandardError
+      nil
+    end
+
+    def command_available?(command_name)
+      system("command -v #{command_name} >/dev/null 2>&1")
     end
 
     def clean(args)
@@ -275,6 +419,8 @@ module SaneMasterModules
     def run_tests_with_progress(timeout_seconds:, include_ui: false, signed_tests: false)
       require 'open3'
 
+      run_verify_preflight
+
       cmd = build_test_command(include_ui, signed_tests)
       state = { start_time: Time.now, tests_run: 0, swift_testing_total: 0, current_test: nil, last_update: Time.now,
                 spinner_chars: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'], spinner_idx: 0 }
@@ -298,11 +444,16 @@ module SaneMasterModules
       args = ['xcodebuild', 'test']
       args.concat(xcodebuild_container_args)
       args.concat(['-scheme', project_scheme, '-destination', 'platform=macOS,arch=arm64'])
+      args.concat(['-parallel-testing-enabled', 'NO'])
+      args.concat(['-parallel-testing-worker-count', '1'])
       if use_test_plan?
         # Some projects include UI tests in test plans by default.
         # Keep verify fast/headless unless --ui is explicitly requested.
-        if !include_ui && ui_tests_present?
-          args << "-skip-testing:#{project_ui_test_target}"
+        if include_ui && ui_tests_present?
+          args << "-only-testing:#{project_test_target}"
+          args << "-only-testing:#{project_ui_test_target}"
+        elsif !include_ui && ui_tests_present?
+          args << "-only-testing:#{project_test_target}"
         end
       else
         if include_ui
