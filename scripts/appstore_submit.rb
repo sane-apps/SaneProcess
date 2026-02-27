@@ -283,6 +283,32 @@ rescue StandardError => e
   [0, { 'error' => e.message }]
 end
 
+def asc_patch_with_status(path, body:, token: nil)
+  token ||= generate_jwt
+  uri = URI("#{ASC_BASE}#{path}")
+
+  http = Net::HTTP.new(uri.host, uri.port)
+  http.use_ssl = true
+  http.open_timeout = 15
+  http.read_timeout = 60
+
+  request = Net::HTTP::Patch.new(uri)
+  request['Authorization'] = "Bearer #{token}"
+  request['Content-Type'] = 'application/json'
+  request.body = body.is_a?(String) ? body : JSON.generate(body)
+
+  response = http.request(request)
+  parsed = begin
+    JSON.parse(response.body.to_s)
+  rescue StandardError
+    { 'raw' => response.body.to_s }
+  end
+  [response.code.to_i, parsed]
+rescue StandardError => e
+  log_error "ASC API raw PATCH error: #{e.message}"
+  [0, { 'error' => e.message }]
+end
+
 # ─── Package Metadata ───
 
 def extract_app_info_from_package(pkg_path)
@@ -827,6 +853,9 @@ def submit_for_review(app_id, asc_platform, version_id, token)
   submission_body = {
     data: {
       type: 'reviewSubmissions',
+      attributes: {
+        platform: asc_platform
+      },
       relationships: {
         app: {
           data: { type: 'apps', id: app_id }
@@ -851,12 +880,7 @@ def submit_for_review(app_id, asc_platform, version_id, token)
     parsed = JSON.parse(response.body) rescue {}
     submission_id = parsed.dig('data', 'id')
   elsif response.code == '409'
-    list = asc_get("/reviewSubmissions?filter[app]=#{app_id}&limit=50", token: token)
-    submission = list&.fetch('data', [])&.find do |s|
-      (s.dig('attributes', 'platform') == asc_platform || s.dig('attributes', 'platform').nil?) &&
-        s.dig('attributes', 'state') == 'READY_FOR_REVIEW'
-    end
-    submission_id = submission&.[]('id')
+    submission_id = find_best_review_submission(app_id, asc_platform, version_id, token)
   end
 
   unless submission_id
@@ -875,14 +899,157 @@ def submit_for_review(app_id, asc_platform, version_id, token)
     }
   }
 
-  item_resp = asc_post('/reviewSubmissionItems', body: item_body, token: token)
-  if item_resp
-    log_info 'Review submission item created.'
-    return verify_submitted_state(version_id, token)
+  if review_submission_has_version?(submission_id, version_id, token)
+    log_info "Review submission #{submission_id} already contains appStoreVersion #{version_id}."
+  else
+    item_code, item_resp = asc_post_with_status('/reviewSubmissionItems', body: item_body, token: token)
+    if [200, 201, 202].include?(item_code)
+      log_info 'Review submission item created.'
+    elsif item_code == 409
+      conflict_submission_id = extract_conflict_submission_id(item_resp)
+      if conflict_submission_id && conflict_submission_id != submission_id
+        log_warn "Version belongs to existing review submission #{conflict_submission_id}; switching target."
+        submission_id = conflict_submission_id
+      elsif invalid_review_item_response?(item_resp)
+        detail = item_resp.dig('errors', 0, 'detail') || item_resp.dig('errors', 0, 'title') || 'Item is invalid for review'
+        log_error "Review submission item invalid: #{detail}"
+        associated = item_resp.dig('errors', 0, 'meta', 'associatedErrors')
+        summarize_associated_errors(associated) if associated.is_a?(Hash)
+        return false
+      else
+        log_warn 'Review submission item already exists (409).'
+      end
+    else
+      detail = item_resp.dig('errors', 0, 'detail') || item_resp.dig('errors', 0, 'title') || "HTTP #{item_code}"
+      log_error "Could not create reviewSubmissionItem: #{detail}"
+      return false
+    end
   end
 
-  log_warn 'Could not create reviewSubmissionItem automatically. App may require manual resubmission in ASC UI.'
+  token = generate_jwt
+  unless review_submission_has_version?(submission_id, version_id, token)
+    log_error "Review submission #{submission_id} does not include appStoreVersion #{version_id}."
+    return false
+  end
+  log_info "Review submission includes appStoreVersion #{version_id}."
+
+  unless mark_review_submission_submitted(submission_id, token)
+    log_error 'Failed to mark review submission as submitted.'
+    return false
+  end
+  return verify_submitted_state(version_id, token)
+
+end
+
+def mark_review_submission_submitted(submission_id, token)
+  attribute_variants = [
+    { isSubmitted: true },
+    { submitted: true },
+    { state: 'SUBMITTED' }
+  ]
+
+  last_detail = nil
+  attribute_variants.each do |attrs|
+    body = {
+      data: {
+        type: 'reviewSubmissions',
+        id: submission_id,
+        attributes: attrs
+      }
+    }
+
+    code, resp = asc_patch_with_status("/reviewSubmissions/#{submission_id}", body: body, token: token)
+    if [200, 201, 202].include?(code)
+      log_info "Review submission marked as submitted (#{attrs.keys.first})."
+      return true
+    end
+
+    detail = resp.dig('errors', 0, 'detail') || resp.dig('errors', 0, 'title') || "HTTP #{code}"
+    log_warn "Review submission submit attempt failed (#{attrs.keys.first}): #{detail}"
+    associated = resp.dig('errors', 0, 'meta', 'associatedErrors')
+    summarize_associated_errors(associated) if associated.is_a?(Hash)
+    last_detail = detail
+  end
+
+  log_error "Review submission submit failed: #{last_detail || 'no accepted submission attribute'}"
   false
+end
+
+def summarize_associated_errors(associated_errors)
+  associated_errors.each do |resource, errors|
+    next unless errors.is_a?(Array)
+    errors.first(5).each do |entry|
+      message = entry['detail'] || entry['title'] || entry['code'] || 'Unknown associated error'
+      log_warn "  ↳ #{resource}: #{message}"
+    end
+    next unless errors.length > 5
+
+    log_warn "  ↳ #{resource}: ... #{errors.length - 5} more"
+  end
+end
+
+def review_submission_has_version?(submission_id, version_id, token)
+  resp = asc_get("/reviewSubmissions/#{submission_id}/items?include=appStoreVersion&limit=200", token: token)
+  return false unless resp && resp['data']
+
+  version_ids = []
+  resp['data'].each do |item|
+    linked_id = item.dig('relationships', 'appStoreVersion', 'data', 'id')
+    version_ids << linked_id if linked_id
+  end
+
+  version_ids.include?(version_id)
+end
+
+def find_best_review_submission(app_id, asc_platform, version_id, token)
+  list = asc_get("/reviewSubmissions?filter[app]=#{app_id}&limit=50", token: token)
+  return nil unless list && list['data']
+
+  candidates = list['data'].select do |s|
+    platform = s.dig('attributes', 'platform')
+    platform == asc_platform || platform.nil?
+  end
+  return nil if candidates.empty?
+
+  with_version = candidates.find { |s| review_submission_has_version?(s['id'], version_id, token) }
+  return with_version['id'] if with_version
+
+  unresolved = candidates.find { |s| s.dig('attributes', 'state') == 'UNRESOLVED_ISSUES' }
+  return unresolved['id'] if unresolved
+
+  ready = candidates.find { |s| s.dig('attributes', 'state') == 'READY_FOR_REVIEW' }
+  return ready['id'] if ready
+
+  candidates.first['id']
+end
+
+def extract_conflict_submission_id(item_resp)
+  return nil unless item_resp.is_a?(Hash)
+
+  errors = item_resp['errors']
+  return nil unless errors.is_a?(Array)
+
+  errors.each do |err|
+    detail = err['detail'].to_s
+    next if detail.empty?
+
+    match = detail.match(/reviewSubmission with id ([0-9a-f-]+)/i)
+    return match[1] if match
+  end
+
+  nil
+end
+
+def invalid_review_item_response?(item_resp)
+  return false unless item_resp.is_a?(Hash)
+
+  errors = item_resp['errors']
+  return false unless errors.is_a?(Array) && !errors.empty?
+
+  errors.any? do |err|
+    code = err['code'].to_s
+    code.start_with?('STATE_ERROR.ENTITY_STATE_INVALID') || code.start_with?('STATE_ERROR')
+  end
 end
 
 def current_app_store_state(version_id, token)
@@ -978,6 +1145,7 @@ OptionParser.new do |opts|
   opts.on('--platform PLATFORM', 'macos or ios') { |v| options[:platform] = v }
   opts.on('--project-root PATH', 'Project root directory') { |v| options[:project_root] = v }
   opts.on('--skip-upload', 'Skip binary upload; use existing processed build in ASC') { options[:skip_upload] = true }
+  opts.on('--skip-screenshots', 'Skip screenshot upload; use screenshots already present in ASC') { options[:skip_screenshots] = true }
   opts.on('--preflight-version-state', 'Check editable ASC version state only (no upload, no submission)') { options[:preflight_version_state] = true }
   opts.on('--test-screenshots', 'Test screenshot resize only (no API calls)') { options[:test_screenshots] = true }
 end.parse!
@@ -1149,7 +1317,11 @@ contact = {
 ensure_review_detail(version_id, contact, token)
 
 # Step 6: Upload screenshots (if configured)
-upload_screenshots(version_id, asc_platform, project_root, config, token)
+if options[:skip_screenshots]
+  log_info 'Skipping screenshot upload (--skip-screenshots).'
+else
+  upload_screenshots(version_id, asc_platform, project_root, config, token)
+end
 
 # Step 7: Submit for review
 token = generate_jwt
