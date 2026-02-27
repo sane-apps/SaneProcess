@@ -3083,7 +3083,9 @@ if [ "${RUN_DEPLOY}" = true ]; then
     ensure_cmd npx
     CURRENT_GATE="Upload ZIP to R2"
     RELEASE_ERR_GATE_RECORDED=""
-    R2_OBJECT_KEY="updates/${APP_NAME}-${VERSION}.zip"
+    # Dist worker maps /updates/<file> URLs to bare R2 object keys.
+    # Keep the public URL path for clients, but store object without prefix.
+    R2_OBJECT_KEY="${APP_NAME}-${VERSION}.zip"
     npx wrangler r2 object put "${R2_BUCKET}/${R2_OBJECT_KEY}" \
         --file="${FINAL_ZIP}" --remote
     log_info "R2 upload complete."
