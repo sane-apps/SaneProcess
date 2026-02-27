@@ -443,6 +443,30 @@ def find_editable_version(app_id, asc_platform, version_string, token)
   end
 end
 
+def check_version_state_preflight(app_id, asc_platform, version_string, token)
+  path = "/apps/#{app_id}/appStoreVersions" \
+         "?filter[platform]=#{asc_platform}" \
+         "&filter[appStoreState]=PREPARE_FOR_SUBMISSION,REJECTED,DEVELOPER_REJECTED,READY_FOR_REVIEW"
+  resp = asc_get(path, token: token)
+  return false unless resp
+  return true unless resp['data'] && !resp['data'].empty?
+
+  matching = resp['data'].find do |v|
+    v.dig('attributes', 'versionString') == version_string
+  end
+  if matching
+    log_info "ASC editable version preflight passed for #{version_string} (#{matching.dig('attributes', 'appStoreState')})."
+    return true
+  end
+
+  conflict = resp['data'].first
+  conflict_version = conflict.dig('attributes', 'versionString') || 'unknown'
+  conflict_state = conflict.dig('attributes', 'appStoreState') || 'unknown'
+  log_error "Editable App Store version conflict: #{conflict_version} (#{conflict_state}) exists, but release target is #{version_string}."
+  log_error "Update the existing draft to version #{version_string}, or clear that draft before submission."
+  false
+end
+
 def find_or_create_version(app_id, asc_platform, version_string, token)
   # Check for existing editable version
   version = find_editable_version(app_id, asc_platform, version_string, token)
@@ -954,6 +978,7 @@ OptionParser.new do |opts|
   opts.on('--platform PLATFORM', 'macos or ios') { |v| options[:platform] = v }
   opts.on('--project-root PATH', 'Project root directory') { |v| options[:project_root] = v }
   opts.on('--skip-upload', 'Skip binary upload; use existing processed build in ASC') { options[:skip_upload] = true }
+  opts.on('--preflight-version-state', 'Check editable ASC version state only (no upload, no submission)') { options[:preflight_version_state] = true }
   opts.on('--test-screenshots', 'Test screenshot resize only (no API calls)') { options[:test_screenshots] = true }
 end.parse!
 
@@ -990,6 +1015,28 @@ if options[:test_screenshots]
   end
   log_info 'Screenshot test complete (no API calls made).'
   exit 0
+end
+
+if options[:preflight_version_state]
+  required = %i[app_id version platform]
+  required.each do |key|
+    unless options[key]
+      log_error "Missing required option: --#{key.to_s.tr('_', '-')}"
+      exit 1
+    end
+  end
+
+  asc_platform = PLATFORM_MAP[options[:platform]]
+  unless asc_platform
+    log_error "Unknown platform: #{options[:platform]} (use macos or ios)"
+    exit 1
+  end
+
+  token = generate_jwt
+  if check_version_state_preflight(options[:app_id], asc_platform, options[:version], token)
+    exit 0
+  end
+  exit 1
 end
 
 # Validate required options

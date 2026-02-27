@@ -342,29 +342,74 @@ extract_content_length_with_user_agent() {
 # Hard rules: plain English, never scare customers, beautifully formatted.
 # Input: newline-separated notes (one bullet per line)
 # Output: HTML <ul><li> list with "What's New" heading
-format_appcast_notes() {
-    local raw_notes="$1"
-    local version="$2"
+release_notes_required_for_mode() {
+    if [ "${PREFLIGHT_ONLY}" = true ] || [ "${FULL_RELEASE}" = true ] || [ "${RUN_DEPLOY}" = true ] || [ "${RUN_GH_RELEASE}" = true ]; then
+        return 0
+    fi
+    return 1
+}
 
-    # Validate: reject dev jargon that should never face customers
+validate_release_notes_text() {
+    local raw_notes="$1"
+    local require_notes="$2"
+    local item_count=0
+
+    if [ "${require_notes}" = "true" ] && [ -z "$(echo "${raw_notes}" | tr -d '[:space:]')" ]; then
+        log_error "Release notes are required for this release mode."
+        log_error "Pass --notes with plain-English customer-facing bullets."
+        return 1
+    fi
+
+    if [ -z "$(echo "${raw_notes}" | tr -d '[:space:]')" ]; then
+        return 0
+    fi
+
     local bad_words="regression|hardens|corruption|backlog|reconcile|fallback|herestring|mutex|refactor|migration recovery|separator target|position seeding"
     if echo "${raw_notes}" | grep -qiE "${bad_words}"; then
         log_error "Release notes contain developer jargon that customers should never see."
         log_error "Rejected words: $(echo "${raw_notes}" | grep -oiE "${bad_words}" | sort -u | tr '\n' ', ')"
         log_error "Rewrite in plain English. Think: would grandma understand this?"
-        exit 1
+        return 1
     fi
 
-    # Reject issue/PR numbers (e.g. #79, fixes #64)
     if echo "${raw_notes}" | grep -qE '#[0-9]+'; then
         log_error "Release notes contain issue numbers (e.g. #79). Customers don't care about issue trackers."
         log_error "Describe what changed in plain English."
-        exit 1
+        return 1
     fi
 
-    # Reject literal \n (common formatting bug)
     if echo "${raw_notes}" | grep -qF '\n'; then
         log_error "Release notes contain literal \\n characters. Use actual newlines to separate bullets."
+        return 1
+    fi
+
+    while IFS= read -r line; do
+        line=$(echo "${line}" | sed 's/^[[:space:]]*[-*•]*//' | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
+        [ -z "${line}" ] && continue
+        item_count=$((item_count + 1))
+    done <<< "${raw_notes}"
+
+    if [ "${item_count}" -eq 0 ]; then
+        log_error "Release notes are empty after formatting cleanup."
+        log_error "Provide at least one plain-English bullet."
+        return 1
+    fi
+
+    return 0
+}
+
+check_release_notes_gate() {
+    if ! release_notes_required_for_mode; then
+        return 0
+    fi
+    validate_release_notes_text "${RELEASE_NOTES}" "true"
+}
+
+format_appcast_notes() {
+    local raw_notes="$1"
+    local item_count=0
+
+    if ! validate_release_notes_text "${raw_notes}" "true"; then
         exit 1
     fi
 
@@ -374,7 +419,12 @@ format_appcast_notes() {
         line=$(echo "${line}" | sed 's/^[[:space:]]*[-*•]*//' | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
         [ -z "${line}" ] && continue
         html="${html}\n                <li>${line}</li>"
+        item_count=$((item_count + 1))
     done <<< "${raw_notes}"
+    if [ "${item_count}" -eq 0 ]; then
+        log_error "Release notes produced zero bullets after formatting."
+        exit 1
+    fi
     html="${html}\n                </ul>"
 
     echo -e "${html}"
@@ -822,13 +872,13 @@ print_help() {
     echo "  --skip-notarize      Skip notarization (for local testing)"
     echo "  --skip-build         Skip build step (use existing archive)"
     echo "  --version X.Y.Z      Set version number"
-    echo "  --notes \"...\"      Release notes for changelog/release metadata (required with --full)"
+    echo "  --notes \"...\"      Release notes for changelog/release metadata (required for preflight/full/deploy/GitHub release)"
     echo "  --allow-republish    Allow republishing an already-live version/build"
     echo "  --allow-unsynced-peer  Bypass Air/mini reconcile gate for this release"
     echo "  --allow-repeat-failure  Bypass repeat-failure guard once"
     echo "  --skip-appstore      Skip App Store archive/export/upload even if enabled in config"
     echo "  --website-only       Deploy website + appcast only (no build/R2/signing)"
-    echo "  --preflight-only     Run all release gates and exit (no build/publish)"
+    echo "  --preflight-only     Run release gates only and exit (no build, no upload, no publish)"
     echo "  -h, --help           Show this help"
 }
 
@@ -1532,6 +1582,49 @@ OPT
 OPT
 }
 
+validate_appstore_pkg_preflight() {
+    local pkg_path="$1"
+    local tmp_root
+    local app_path
+    local entitlements
+
+    tmp_root=$(/usr/bin/mktemp -d /tmp/appstore_pkg_preflight.XXXX)
+    if ! pkgutil --expand-full "${pkg_path}" "${tmp_root}" >/dev/null 2>&1; then
+        log_error "App Store preflight failed: could not expand pkg ${pkg_path}"
+        remove_path "${tmp_root}"
+        return 1
+    fi
+
+    app_path=$(find "${tmp_root}" -type d -name "${APP_NAME}.app" | head -n 1)
+    if [ -z "${app_path}" ] || [ ! -d "${app_path}" ]; then
+        log_error "App Store preflight failed: app payload not found in pkg"
+        remove_path "${tmp_root}"
+        return 1
+    fi
+
+    if [ -d "${app_path}/Contents/Frameworks/Sparkle.framework" ]; then
+        log_error "App Store preflight failed: Sparkle.framework is still present in pkg payload"
+        remove_path "${tmp_root}"
+        return 1
+    fi
+
+    entitlements=$(codesign -d --entitlements :- "${app_path}" 2>/dev/null || true)
+    if [ -z "${entitlements}" ]; then
+        log_error "App Store preflight failed: could not read app entitlements from pkg payload"
+        remove_path "${tmp_root}"
+        return 1
+    fi
+
+    if ! echo "${entitlements}" | tr -d '[:space:]' | grep -q "<key>com.apple.security.app-sandbox</key><true/>"; then
+        log_error "App Store preflight failed: payload app is missing com.apple.security.app-sandbox=true"
+        remove_path "${tmp_root}"
+        return 1
+    fi
+
+    remove_path "${tmp_root}"
+    return 0
+}
+
 create_empty_entitlements_plist() {
     local entitlements_path="$1"
     cat > "${entitlements_path}" << 'PLIST'
@@ -2045,6 +2138,55 @@ check_appstore_gate() {
     return 0
 }
 
+check_appstore_connect_version_state_gate() {
+    if [ "${APPSTORE_ENABLED}" != "true" ] || [ "${SKIP_APPSTORE}" = true ]; then
+        return 0
+    fi
+
+    if [ -z "${VERSION}" ]; then
+        log_error "App Store version-state preflight requires --version X.Y.Z"
+        return 1
+    fi
+
+    local appstore_script="${SCRIPT_DIR}/appstore_submit.rb"
+    if [ ! -f "${appstore_script}" ]; then
+        log_error "appstore_submit.rb not found at ${appstore_script}"
+        return 1
+    fi
+
+    local raw_platforms="${APPSTORE_PLATFORMS:-macos}"
+    local platform
+    local checked=0
+
+    for platform in $(echo "${raw_platforms}" | tr ',' ' '); do
+        case "${platform}" in
+            macos|ios)
+                checked=$((checked + 1))
+                if ! ruby "${appstore_script}" \
+                    --preflight-version-state \
+                    --app-id "${APPSTORE_APP_ID}" \
+                    --version "${VERSION}" \
+                    --platform "${platform}"; then
+                    log_error "App Store Connect version-state preflight failed for platform '${platform}'."
+                    return 1
+                fi
+                ;;
+            "")
+                ;;
+            *)
+                log_warn "Skipping unsupported App Store platform in preflight: ${platform}"
+                ;;
+        esac
+    done
+
+    if [ "${checked}" -eq 0 ]; then
+        log_error "No valid App Store platforms configured for version-state preflight (APPSTORE_PLATFORMS='${raw_platforms}')."
+        return 1
+    fi
+
+    return 0
+}
+
 check_live_appcast_republish_gate() {
     if [ "${ALLOW_REPUBLISH}" = true ] || [ "${USE_SPARKLE}" != "true" ]; then
         return 0
@@ -2107,9 +2249,11 @@ run_release_preflight_only() {
     run_gate "Version bump configuration" check_version_bump_gate
     run_gate "Signing identity" check_signing_identity_gate
     run_gate "Sparkle keypair" check_sparkle_keypair_gate
+    run_gate "Release notes quality" check_release_notes_gate
     run_gate "Keychain/signing session" prepare_signing_session
     run_gate "Notarization authentication" resolve_notary_auth
     run_gate "App Store configuration" check_appstore_gate
+    run_gate "App Store Connect draft version state" check_appstore_connect_version_state_gate
     run_gate "Live appcast republish guard" check_live_appcast_republish_gate
 
     if [ "${failures}" -gt 0 ]; then
@@ -2466,6 +2610,10 @@ if [ "${WEBSITE_ONLY}" = true ]; then
 fi
 
 if [ "${PREFLIGHT_ONLY}" = true ]; then
+    if [ -z "${VERSION}" ]; then
+        log_error "--preflight-only requires --version X.Y.Z"
+        exit 1
+    fi
     if run_release_preflight_only; then
         exit 0
     fi
@@ -2476,14 +2624,14 @@ if ! check_recent_unresolved_failures_gate; then
     exit 1
 fi
 
+if ! check_release_notes_gate; then
+    exit 1
+fi
+
 # Full release flow
 if [ "${FULL_RELEASE}" = true ]; then
     if [ -z "${VERSION}" ]; then
         log_error "--full requires --version X.Y.Z"
-        exit 1
-    fi
-    if [ -z "${RELEASE_NOTES}" ]; then
-        log_error "--full requires --notes \"Release notes\""
         exit 1
     fi
 
@@ -2881,6 +3029,11 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
         exit 1
     else
         log_info "App Store artifact: ${APPSTORE_PKG}"
+        if ! validate_appstore_pkg_preflight "${APPSTORE_PKG}"; then
+            log_error "App Store package preflight failed. Fix entitlements/framework payload before upload."
+            exit 1
+        fi
+        log_info "App Store package preflight passed (sandbox + framework checks)."
     fi
 fi
 
