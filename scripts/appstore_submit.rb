@@ -1243,6 +1243,14 @@ def submit_for_review(app_id, asc_platform, version_id, token)
     end
   end
 
+  submission_state = review_submission_state(submission_id, token)
+  if submission_state != 'READY_FOR_REVIEW'
+    log_error "Review submission #{submission_id} is #{submission_state || 'unknown'}; expected READY_FOR_REVIEW."
+    log_error 'App Store Connect API cannot auto-submit this submission state with the current key.'
+    log_error "Open App Store Connect for app #{app_id}, delete stale Draft Submissions, then submit version #{version_id} manually."
+    return false
+  end
+
   unless mark_review_submission_submitted(submission_id, token)
     log_error 'Failed to mark review submission as submitted.'
     return false
@@ -1309,6 +1317,11 @@ def review_submission_has_version?(submission_id, version_id, token)
   end
 
   version_ids.include?(version_id)
+end
+
+def review_submission_state(submission_id, token)
+  resp = asc_get("/reviewSubmissions/#{submission_id}", token: token)
+  resp&.dig('data', 'attributes', 'state')
 end
 
 def find_linked_review_submission(app_id, asc_platform, version_id, token)
