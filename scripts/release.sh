@@ -900,6 +900,28 @@ PY
         fi
     fi
 
+    if [ "${RUN_GH_RELEASE}" = true ]; then
+        if ! command -v gh >/dev/null 2>&1; then
+            log_error "gh CLI is required for GitHub release post-release verification."
+            return 1
+        fi
+        if [ -z "${GITHUB_REPO}" ]; then
+            log_error "GITHUB_REPO is empty during GitHub release post-release verification."
+            return 1
+        fi
+
+        local gh_tag="v${VERSION}"
+        local gh_asset="${APP_NAME}-${VERSION}.zip"
+        if ! gh release view "${gh_tag}" --repo "${GITHUB_REPO}" >/dev/null 2>&1; then
+            log_error "GitHub release missing after deploy: ${GITHUB_REPO}@${gh_tag}"
+            return 1
+        fi
+        if ! gh release view "${gh_tag}" --repo "${GITHUB_REPO}" --json assets --jq '.assets[].name' 2>/dev/null | grep -Fxq "${gh_asset}"; then
+            log_error "GitHub release ${GITHUB_REPO}@${gh_tag} missing required asset ${gh_asset}"
+            return 1
+        fi
+    fi
+
     local checkout_status
     checkout_status=$(extract_http_status "${checkout_url}")
     if [ "${checkout_status}" != "200" ] && [ "${checkout_status}" != "301" ] && [ "${checkout_status}" != "302" ]; then
@@ -914,6 +936,10 @@ PY
         local cask_status
         cask_status=$(extract_http_status "${cask_raw_url}")
         if [ "${cask_status}" = "404" ]; then
+            if [ "${STRICT_PUBLIC_CHANNEL_SYNC}" = true ]; then
+                log_error "No Homebrew cask found for ${APP_NAME} (${cask_raw_url})."
+                return 1
+            fi
             log_warn "No Homebrew cask found for ${APP_NAME} (${cask_raw_url}); skipping Homebrew verification."
         elif [ "${cask_status}" != "200" ]; then
             log_error "Could not fetch Homebrew cask: ${cask_raw_url} (HTTP ${cask_status})"
@@ -966,6 +992,27 @@ PY
         fi
     fi
 
+    # Verify website download link matches release version
+    local site_url="https://${SITE_HOST}/"
+    local site_body
+    site_body=$(curl -fsSL "${site_url}" 2>/dev/null || true)
+    if [ -n "${site_body}" ]; then
+        local expected_download_url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
+        if ! grep -Fq "${expected_download_url}" <<< "${site_body}"; then
+            local found_download_ver
+            found_download_ver=$(grep -oE "https://${DIST_HOST}/updates/${APP_NAME}-[0-9]+\.[0-9]+\.[0-9]+\.zip" <<< "${site_body}" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+            if [ -n "${found_download_ver}" ]; then
+                log_error "Website download link points to v${found_download_ver}, expected v${VERSION}: ${site_url}"
+            else
+                log_error "Website has no download link matching ${APP_NAME}-*.zip pattern: ${site_url}"
+            fi
+            return 1
+        fi
+        log_info "Website download link verified: ${expected_download_url}"
+    else
+        log_warn "Could not fetch website for download link check: ${site_url}"
+    fi
+
     log_info "Post-release checks passed."
     return 0
 }
@@ -993,6 +1040,8 @@ print_help() {
     echo "  --allow-republish    Allow republishing an already-live version/build"
     echo "  --allow-unsynced-peer  Bypass Air/mini reconcile gate for this release"
     echo "  --allow-repeat-failure  Bypass repeat-failure guard once"
+    echo "  --allow-channel-sync-failures"
+    echo "                      Allow GitHub/Homebrew sync failures (not recommended)"
     echo "  --skip-appstore      Skip App Store archive/export/upload even if enabled in config"
     echo "  --website-only       Deploy website + appcast only (no build/R2/signing)"
     echo "  --preflight-only     Run release gates only and exit (no build, no upload, no publish)"
@@ -1437,12 +1486,21 @@ commit_version_bump() {
 }
 
 create_github_release() {
+    local strict="${STRICT_PUBLIC_CHANNEL_SYNC}"
     if ! command -v gh >/dev/null 2>&1; then
+        if [ "${strict}" = true ]; then
+            log_error "gh CLI not installed — cannot create required GitHub release."
+            return 1
+        fi
         log_warn "gh CLI not installed — skipping GitHub release creation."
         return 0
     fi
 
     if [ -z "${GITHUB_REPO}" ]; then
+        if [ "${strict}" = true ]; then
+            log_error "GITHUB_REPO is empty — cannot create required GitHub release."
+            return 1
+        fi
         log_warn "GITHUB_REPO is empty — skipping GitHub release creation."
         return 0
     fi
@@ -1467,6 +1525,10 @@ EOF
             --notes-file "${notes_file}" >/dev/null 2>&1; then
             log_info "GitHub release updated: ${GITHUB_REPO}@${tag}"
         else
+            if [ "${strict}" = true ]; then
+                log_error "Failed to edit required GitHub release ${GITHUB_REPO}@${tag}."
+                return 1
+            fi
             log_warn "Failed to edit GitHub release ${GITHUB_REPO}@${tag} (non-fatal)."
         fi
     else
@@ -1479,30 +1541,59 @@ EOF
             ${target_commit:+--target "${target_commit}"} >/dev/null 2>&1; then
             log_info "GitHub release created: ${GITHUB_REPO}@${tag}"
         else
+            if [ "${strict}" = true ]; then
+                log_error "Failed to create required GitHub release ${GITHUB_REPO}@${tag}."
+                return 1
+            fi
             log_warn "Failed to create GitHub release ${GITHUB_REPO}@${tag} (non-fatal)."
         fi
+    fi
+
+    if ! gh release view "${tag}" --repo "${GITHUB_REPO}" >/dev/null 2>&1; then
+        if [ "${strict}" = true ]; then
+            log_error "GitHub release ${GITHUB_REPO}@${tag} is not accessible after update."
+            return 1
+        fi
+        log_warn "GitHub release ${GITHUB_REPO}@${tag} not accessible after update."
     fi
 
     return 0
 }
 
 upload_github_release_asset() {
+    local strict="${STRICT_PUBLIC_CHANNEL_SYNC}"
     if [ "${PUBLIC_CHANNEL_APPROVED}" != true ]; then
+        if [ "${strict}" = true ]; then
+            log_error "GitHub binary upload is required but ${APP_NAME} is not in PUBLIC_CHANNEL_ALLOWLIST."
+            return 1
+        fi
         log_warn "Skipping GitHub binary upload: ${APP_NAME} is not in PUBLIC_CHANNEL_ALLOWLIST."
         return 0
     fi
 
     if ! command -v gh >/dev/null 2>&1; then
+        if [ "${strict}" = true ]; then
+            log_error "gh CLI not installed — cannot upload required GitHub binary."
+            return 1
+        fi
         log_warn "gh CLI not installed — skipping GitHub binary upload."
         return 0
     fi
 
     if [ -z "${GITHUB_REPO}" ]; then
+        if [ "${strict}" = true ]; then
+            log_error "GITHUB_REPO is empty — cannot upload required GitHub binary."
+            return 1
+        fi
         log_warn "GITHUB_REPO is empty — skipping GitHub binary upload."
         return 0
     fi
 
     if [ ! -f "${FINAL_ZIP}" ]; then
+        if [ "${strict}" = true ]; then
+            log_error "Release ZIP not found at ${FINAL_ZIP} — cannot upload required GitHub binary."
+            return 1
+        fi
         log_warn "Release ZIP not found at ${FINAL_ZIP} — skipping GitHub binary upload."
         return 0
     fi
@@ -1512,14 +1603,26 @@ upload_github_release_asset() {
     asset_name="$(basename "${FINAL_ZIP}")"
 
     if ! gh release view "${tag}" --repo "${GITHUB_REPO}" >/dev/null 2>&1; then
-        log_warn "GitHub release ${GITHUB_REPO}@${tag} does not exist yet. Skipping binary upload."
-        return 0
+        log_error "GitHub release ${GITHUB_REPO}@${tag} does not exist yet."
+        return 1
     fi
 
     if gh release upload "${tag}" "${FINAL_ZIP}" --repo "${GITHUB_REPO}" --clobber >/dev/null 2>&1; then
         log_info "Uploaded GitHub release asset: ${tag}/${asset_name}"
     else
+        if [ "${strict}" = true ]; then
+            log_error "Failed to upload required GitHub release asset ${tag}/${asset_name}."
+            return 1
+        fi
         log_warn "Failed to upload GitHub release asset ${tag}/${asset_name} (non-fatal)."
+    fi
+
+    if ! gh release view "${tag}" --repo "${GITHUB_REPO}" --json assets --jq '.assets[].name' 2>/dev/null | grep -Fxq "${asset_name}"; then
+        if [ "${strict}" = true ]; then
+            log_error "GitHub release ${GITHUB_REPO}@${tag} is missing required asset ${asset_name}."
+            return 1
+        fi
+        log_warn "GitHub release ${GITHUB_REPO}@${tag} is missing asset ${asset_name}."
     fi
 
     return 0
@@ -2490,6 +2593,7 @@ ALLOW_UNSYNCED_PEER=false
 SKIP_APPSTORE=false
 PREFLIGHT_ONLY=false
 ALLOW_REPEAT_FAILURE=false
+STRICT_PUBLIC_CHANNEL_SYNC=true
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -2528,6 +2632,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --allow-repeat-failure)
             ALLOW_REPEAT_FAILURE=true
+            shift
+            ;;
+        --allow-channel-sync-failures)
+            STRICT_PUBLIC_CHANNEL_SYNC=false
             shift
             ;;
         --skip-appstore)
@@ -2681,6 +2789,17 @@ if [ "${PUBLIC_CHANNEL_APPROVED}" != true ]; then
     fi
 fi
 
+if [ "${RUN_DEPLOY}" = true ] && [ "${PUBLIC_CHANNEL_APPROVED}" = true ] && [ "${RUN_GH_RELEASE}" != true ]; then
+    RUN_GH_RELEASE=true
+    log_info "Auto-enabling GitHub release sync for public-channel app ${APP_NAME}."
+fi
+
+if [ "${RUN_DEPLOY}" = true ] && [ "${PUBLIC_CHANNEL_APPROVED}" = true ] && [ "${STRICT_PUBLIC_CHANNEL_SYNC}" = true ] && [ -z "${HOMEBREW_TAP_REPO}" ]; then
+    log_error "Homebrew tap sync is required for public-channel deploys, but HOMEBREW_TAP_REPO is empty."
+    log_error "Set homebrew.tap_repo in .saneprocess or pass --allow-channel-sync-failures for emergency bypass."
+    exit 1
+fi
+
 if [ "${CRITICAL_UPDATE}" = true ] && [ -z "${MIN_AUTOUPDATE_VERSION}" ]; then
     log_warn "CRITICAL_UPDATE enabled without MIN_AUTOUPDATE_VERSION."
     log_warn "Set --minimum-autoupdate-version to force major-upgrade prompts for old builds."
@@ -2783,6 +2902,25 @@ if [ "${WEBSITE_ONLY}" = true ]; then
         log_error "No website/ or docs/ directory found"
         exit 1
     fi
+    # Version drift guard: appcast version must match website download link version
+    if [ -f "${DEPLOY_DIR}/appcast.xml" ] && [ -f "${DEPLOY_DIR}/index.html" ]; then
+        local appcast_ver
+        # Handle both element (<sparkle:shortVersionString>X.Y.Z</...) and attribute (sparkle:shortVersionString="X.Y.Z") formats
+        appcast_ver=$(grep -oE 'shortVersionString[^0-9]*[0-9]+\.[0-9]+\.[0-9]+' "${DEPLOY_DIR}/appcast.xml" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+        local site_download_ver
+        site_download_ver=$(grep -oE "${APP_NAME}-[0-9]+\.[0-9]+\.[0-9]+\.zip" "${DEPLOY_DIR}/index.html" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+        if [ -n "${appcast_ver}" ] && [ -n "${site_download_ver}" ]; then
+            if [ "${appcast_ver}" != "${site_download_ver}" ]; then
+                log_error "Version drift detected in website-only deploy:"
+                log_error "  appcast.xml version: ${appcast_ver}"
+                log_error "  index.html download link: ${site_download_ver}"
+                log_error "Update both files to the same version before deploying."
+                exit 1
+            fi
+            log_info "Version consistency check passed: appcast and website both at v${appcast_ver}"
+        fi
+    fi
+
     log_info "Deploying website to Cloudflare Pages (${PAGES_PROJECT}) from ${DEPLOY_DIR}..."
     npx wrangler pages deploy "${DEPLOY_DIR}" \
         --project-name="${PAGES_PROJECT}" \
@@ -3420,8 +3558,14 @@ fi
 if [ "${RUN_GH_RELEASE}" = true ]; then
     log_info ""
     log_info "Creating/updating GitHub release..."
-    create_github_release
-    upload_github_release_asset
+    if ! create_github_release; then
+        log_error "GitHub release sync failed."
+        exit 1
+    fi
+    if ! upload_github_release_asset; then
+        log_error "GitHub release asset sync failed."
+        exit 1
+    fi
 fi
 
 # Guardrail: by default do not republish an already-live Sparkle version/build.
@@ -3855,15 +3999,32 @@ PY
                     log_info "Homebrew cask already up to date."
                 else
                     git commit -m "chore: update ${LOWER_APP_NAME} to ${VERSION}"
-                    git push
-                    log_info "Homebrew cask updated to v${VERSION} (SHA: ${SHA256:0:12}...)"
+                    if ! git push; then
+                        cd "${PROJECT_ROOT}"
+                        remove_path "${HOMEBREW_TAP_DIR}"
+                        if [ "${STRICT_PUBLIC_CHANNEL_SYNC}" = true ]; then
+                            log_error "Homebrew tap push failed for v${VERSION}. Aborting."
+                            exit 1
+                        fi
+                        log_warn "Homebrew tap push failed for v${VERSION}. Continuing."
+                    else
+                        log_info "Homebrew cask updated to v${VERSION} (SHA: ${SHA256:0:12}...)"
+                    fi
                 fi
                 cd "${PROJECT_ROOT}"
             else
+                if [ "${STRICT_PUBLIC_CHANNEL_SYNC}" = true ]; then
+                    log_error "No cask found at ${CASK_FILE} in ${HOMEBREW_TAP_REPO}."
+                    exit 1
+                fi
                 log_warn "No cask found at ${CASK_FILE} in ${HOMEBREW_TAP_REPO}. Skipping."
             fi
             remove_path "${HOMEBREW_TAP_DIR}"
         else
+            if [ "${STRICT_PUBLIC_CHANNEL_SYNC}" = true ]; then
+                log_error "Could not clone ${HOMEBREW_TAP_REPO}."
+                exit 1
+            fi
             log_warn "Could not clone ${HOMEBREW_TAP_REPO}. Skipping Homebrew update."
         fi
     fi
@@ -3872,14 +4033,25 @@ PY
     if [ -n "${HOMEBREW_TAP_REPO}" ]; then
         CASK_RAW_URL="https://raw.githubusercontent.com/${HOMEBREW_TAP_REPO}/main/${CASK_FILE}"
         CASK_CHECK=$(curl -s "${CASK_RAW_URL}" 2>/dev/null)
-        if echo "${CASK_CHECK}" | grep -q "version \"${VERSION}\""; then
+        if echo "${CASK_CHECK}" | grep -q "version \"${VERSION}\"" && echo "${CASK_CHECK}" | grep -q "sha256 \"${SHA256}\""; then
             log_info "Homebrew cask verified: v${VERSION} live at ${CASK_RAW_URL}"
         else
             log_warn "Homebrew cask may not have propagated. Check: ${CASK_RAW_URL}"
         fi
     fi
 
-    # Step 10: Auto-update email webhook product config
+    # Step 10: Strict post-release verification gate
+    CURRENT_GATE="Post-release verification"
+    RELEASE_ERR_GATE_RECORDED=""
+    if ! run_post_release_checks; then
+        log_error "Post-release verification failed. Release is NOT considered complete."
+        track_gate_result "Post-release verification" "failure" "${RELEASE_LAST_ERROR}"
+        exit 1
+    fi
+    track_gate_result "Post-release verification" "pass" "ok"
+    CURRENT_GATE=""
+
+    # Step 11: Auto-update email webhook product config
     # The email webhook has product→filename mappings for purchase download links.
     # Previously this was a manual reminder — now it's automated for ALL apps.
     WEBHOOK_JS="${HOME}/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js"
@@ -3910,17 +4082,6 @@ PY
     else
         log_warn "Email webhook file not found at ${WEBHOOK_JS} — update PRODUCT_CONFIG manually"
     fi
-
-    # Step 11: Strict post-release verification gate
-    CURRENT_GATE="Post-release verification"
-    RELEASE_ERR_GATE_RECORDED=""
-    if ! run_post_release_checks; then
-        log_error "Post-release verification failed. Release is NOT considered complete."
-        track_gate_result "Post-release verification" "failure" "${RELEASE_LAST_ERROR}"
-        exit 1
-    fi
-    track_gate_result "Post-release verification" "pass" "ok"
-    CURRENT_GATE=""
 
     log_info ""
     log_info "═══════════════════════════════════════════"
