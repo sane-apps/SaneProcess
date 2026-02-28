@@ -13,6 +13,14 @@ Guide for new developers to get all APIs and services working.
 - [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/) (`npm i -g wrangler`)
 - [GitHub CLI](https://cli.github.com/) (`brew install gh`)
 
+## Tool Install Log (Required)
+
+When any new local tool is installed for build/release/test work, record it here immediately.
+
+| Date (YYYY-MM-DD) | Machine | Tool | Version | Install command | Why installed | Verification command |
+|---|---|---|---|---|---|---|
+| _add row_ | `mini` / `air` | _name_ | _x.y.z_ | _exact command_ | _blocking issue or workflow need_ | _exact check command_ |
+
 ---
 
 ## 1. Cloudflare

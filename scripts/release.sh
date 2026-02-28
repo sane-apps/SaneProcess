@@ -441,15 +441,31 @@ xml = os.environ.get("APPCAST_CONTENT", "")
 version = sys.argv[1]
 build = sys.argv[2]
 
-def matches_item(item: str) -> bool:
+def version_match(item: str) -> bool:
     if f'sparkle:shortVersionString="{version}"' in item:
-        return True
-    if f'sparkle:version="{build}"' in item:
         return True
     if re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
         return True
+    return False
+
+def build_match(item: str) -> bool:
+    if f'sparkle:version="{build}"' in item:
+        return True
     if re.search(rf"<sparkle:version>\s*{re.escape(build)}\s*</sparkle:version>", item):
         return True
+    return False
+
+def matches_item(item: str) -> bool:
+    has_version = bool(version)
+    has_build = bool(build)
+    vm = version_match(item) if has_version else True
+    bm = build_match(item) if has_build else True
+    if has_version and has_build:
+        return vm and bm
+    if has_version:
+        return vm
+    if has_build:
+        return bm
     return False
 
 count = 0
@@ -473,15 +489,31 @@ xml = os.environ.get("APPCAST_CONTENT", "")
 version = sys.argv[1]
 build = sys.argv[2]
 
-def matches_item(item: str) -> bool:
+def version_match(item: str) -> bool:
     if f'sparkle:shortVersionString="{version}"' in item:
-        return True
-    if f'sparkle:version="{build}"' in item:
         return True
     if re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
         return True
+    return False
+
+def build_match(item: str) -> bool:
+    if f'sparkle:version="{build}"' in item:
+        return True
     if re.search(rf"<sparkle:version>\s*{re.escape(build)}\s*</sparkle:version>", item):
         return True
+    return False
+
+def matches_item(item: str) -> bool:
+    has_version = bool(version)
+    has_build = bool(build)
+    vm = version_match(item) if has_version else True
+    bm = build_match(item) if has_build else True
+    if has_version and has_build:
+        return vm and bm
+    if has_version:
+        return vm
+    if has_build:
+        return bm
     return False
 
 for match in re.finditer(r"<item>.*?</item>", xml, flags=re.S):
@@ -496,6 +528,62 @@ for match in re.finditer(r"<item>.*?</item>", xml, flags=re.S):
     length_match = re.search(r'length="([0-9]+)"', enclosure.group(0))
     if length_match:
         print(length_match.group(1))
+        sys.exit(0)
+
+print("")
+PY
+}
+
+appcast_enclosure_url_for_version() {
+    local appcast_content="$1"
+    APPCAST_CONTENT="${appcast_content}" python3 - "${VERSION}" "${BUILD_NUMBER}" <<'PY'
+import os
+import re
+import sys
+
+xml = os.environ.get("APPCAST_CONTENT", "")
+version = sys.argv[1]
+build = sys.argv[2]
+
+def version_match(item: str) -> bool:
+    if f'sparkle:shortVersionString="{version}"' in item:
+        return True
+    if re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
+        return True
+    return False
+
+def build_match(item: str) -> bool:
+    if f'sparkle:version="{build}"' in item:
+        return True
+    if re.search(rf"<sparkle:version>\s*{re.escape(build)}\s*</sparkle:version>", item):
+        return True
+    return False
+
+def matches_item(item: str) -> bool:
+    has_version = bool(version)
+    has_build = bool(build)
+    vm = version_match(item) if has_version else True
+    bm = build_match(item) if has_build else True
+    if has_version and has_build:
+        return vm and bm
+    if has_version:
+        return vm
+    if has_build:
+        return bm
+    return False
+
+for match in re.finditer(r"<item>.*?</item>", xml, flags=re.S):
+    item = match.group(0)
+    if not matches_item(item):
+        continue
+
+    enclosure = re.search(r"<enclosure\b[^>]*>", item, flags=re.S)
+    if not enclosure:
+        continue
+
+    url_match = re.search(r'url="([^"]+)"', enclosure.group(0))
+    if url_match:
+        print(url_match.group(1))
         sys.exit(0)
 
 print("")
@@ -613,15 +701,31 @@ xml = os.environ.get("APPCAST_CONTENT", "")
 version = sys.argv[1]
 build = sys.argv[2]
 
-def matches_item(item: str) -> bool:
+def version_match(item: str) -> bool:
     if f'sparkle:shortVersionString="{version}"' in item:
-        return True
-    if f'sparkle:version="{build}"' in item:
         return True
     if re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
         return True
+    return False
+
+def build_match(item: str) -> bool:
+    if f'sparkle:version="{build}"' in item:
+        return True
     if re.search(rf"<sparkle:version>\s*{re.escape(build)}\s*</sparkle:version>", item):
         return True
+    return False
+
+def matches_item(item: str) -> bool:
+    has_version = bool(version)
+    has_build = bool(build)
+    vm = version_match(item) if has_version else True
+    bm = build_match(item) if has_build else True
+    if has_version and has_build:
+        return vm and bm
+    if has_version:
+        return vm
+    if has_build:
+        return bm
     return False
 
 for match in re.finditer(r"<item>.*?</item>", xml, flags=re.S):
@@ -756,6 +860,19 @@ PY
         appcast_item_count=$(appcast_item_count_for_version "${appcast_content}")
         if [ "${appcast_item_count}" != "1" ]; then
             log_error "Appcast has ${appcast_item_count} entries for v${VERSION} (expected exactly 1)"
+            return 1
+        fi
+
+        local appcast_enclosure_url
+        appcast_enclosure_url=$(appcast_enclosure_url_for_version "${appcast_content}")
+        if [ -z "${appcast_enclosure_url}" ]; then
+            log_error "Appcast entry for v${VERSION} missing enclosure URL"
+            return 1
+        fi
+        if [ "${appcast_enclosure_url}" != "${dist_url}" ]; then
+            log_error "Appcast enclosure URL mismatch for v${VERSION}:"
+            log_error "  appcast: ${appcast_enclosure_url}"
+            log_error "  expected: ${dist_url}"
             return 1
         fi
 
@@ -976,6 +1093,40 @@ keychain_secret() {
     printf '%s' "${value}"
 }
 
+resolve_cloudflare_api_token() {
+    local token="${CLOUDFLARE_API_TOKEN:-}"
+    if [ -n "${token}" ]; then
+        printf '%s' "${token}"
+        return 0
+    fi
+
+    token=$(keychain_secret "saneprocess.cloudflare.api_token" "cloudflare_api_token")
+    if [ -n "${token}" ]; then
+        printf '%s' "${token}"
+        return 0
+    fi
+
+    token=$(keychain_secret "saneprocess.cloudflare.api_token")
+    if [ -n "${token}" ]; then
+        printf '%s' "${token}"
+        return 0
+    fi
+
+    token=$(keychain_secret "cloudflare" "api_token")
+    if [ -n "${token}" ]; then
+        printf '%s' "${token}"
+        return 0
+    fi
+
+    token=$(keychain_secret "cloudflare")
+    if [ -n "${token}" ]; then
+        printf '%s' "${token}"
+        return 0
+    fi
+
+    return 1
+}
+
 hydrate_headless_release_env() {
     local secrets_files=(
         "${SANEPROCESS_SECRETS_FILE:-}"
@@ -1007,6 +1158,7 @@ hydrate_headless_release_env() {
     set_env_if_missing "NOTARY_API_KEY_PATH" "$(keychain_secret "saneprocess.notary.key_path")"
     set_env_if_missing "SPARKLE_PRIVATE_KEY" "$(keychain_secret "saneprocess.sparkle.private_key" "sparkle")"
     set_env_if_missing "SPARKLE_PRIVATE_KEY" "$(keychain_secret "https://sparkle-project.org" "EdDSA Private Key")"
+    set_env_if_missing "CLOUDFLARE_API_TOKEN" "$(resolve_cloudflare_api_token || true)"
 }
 
 default_peer_host_for_project() {
@@ -2248,6 +2400,25 @@ check_live_appcast_republish_gate() {
     return 0
 }
 
+check_cloudflare_auth_gate() {
+    if [ "${RUN_DEPLOY}" != "true" ] && [ "${WEBSITE_ONLY}" != "true" ]; then
+        return 0
+    fi
+
+    local token
+    token="$(resolve_cloudflare_api_token || true)"
+    if [ -z "${token}" ]; then
+        log_error "Cloudflare auth unavailable for deploy."
+        log_error "Set CLOUDFLARE_API_TOKEN or add keychain secret:"
+        log_error "  service=saneprocess.cloudflare.api_token account=cloudflare_api_token"
+        log_error "  (legacy supported: service=cloudflare account=api_token)"
+        return 1
+    fi
+
+    export CLOUDFLARE_API_TOKEN="${token}"
+    return 0
+}
+
 run_release_preflight_only() {
     local failures=0
 
@@ -2281,6 +2452,7 @@ run_release_preflight_only() {
     run_gate "Version bump configuration" check_version_bump_gate
     run_gate "Signing identity" check_signing_identity_gate
     run_gate "Sparkle keypair" check_sparkle_keypair_gate
+    run_gate "Cloudflare deploy authentication" check_cloudflare_auth_gate
     run_gate "Release notes quality" check_release_notes_gate
     run_gate "Keychain/signing session" prepare_signing_session
     run_gate "Notarization authentication" resolve_notary_auth
@@ -2473,7 +2645,7 @@ ASC_AUTH_KEY_ID="${ASC_AUTH_KEY_ID:-S34998ZCRT}"
 ASC_AUTH_ISSUER_ID="${ASC_AUTH_ISSUER_ID:-c98b1e0a-8d10-4fce-a417-536b31c09bfb}"
 GITHUB_REPO="${GITHUB_REPO:-sane-apps/${APP_NAME}}"
 HOMEBREW_TAP_REPO="${HOMEBREW_TAP_REPO:-sane-apps/homebrew-tap}"
-PUBLIC_CHANNEL_ALLOWLIST="${PUBLIC_CHANNEL_ALLOWLIST:-SaneBar,SaneClip}"
+PUBLIC_CHANNEL_ALLOWLIST="${PUBLIC_CHANNEL_ALLOWLIST:-SaneBar,SaneClip,SaneHosts}"
 XCODEGEN="${XCODEGEN:-false}"
 DMG_WINDOW_POS="${DMG_WINDOW_POS:-200 120}"
 DMG_WINDOW_SIZE="${DMG_WINDOW_SIZE:-800 400}"
@@ -3082,11 +3254,25 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
     fi
 fi
 
-# Get version from app
-if [ -z "${VERSION}" ]; then
-    VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "1.0.0")
+# Get version/build from exported app and enforce requested-version consistency.
+APP_VERSION_FROM_PLIST=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "")
+if [ -z "${APP_VERSION_FROM_PLIST}" ]; then
+    log_error "Could not read CFBundleShortVersionString from exported app at ${APP_PATH}"
+    exit 1
 fi
-BUILD_NUMBER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "1")
+if [ -z "${VERSION}" ]; then
+    VERSION="${APP_VERSION_FROM_PLIST}"
+elif [ "${VERSION}" != "${APP_VERSION_FROM_PLIST}" ]; then
+    log_error "Requested --version (${VERSION}) does not match exported app version (${APP_VERSION_FROM_PLIST})."
+    log_error "Fix version bump inputs first; refusing to publish mismatched artifact naming/metadata."
+    exit 1
+fi
+
+BUILD_NUMBER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "")
+if [ -z "${BUILD_NUMBER}" ]; then
+    log_error "Could not read CFBundleVersion from exported app at ${APP_PATH}"
+    exit 1
+fi
 log_info "Version: ${VERSION} (${BUILD_NUMBER})"
 
 # Package as ZIP (simpler, app icon survives HTTP download, no resource fork issues)
@@ -3306,10 +3492,7 @@ if [ "${RUN_DEPLOY}" = true ]; then
     # Only the current version should exist — old files attract bot traffic and waste storage.
     # Uses Cloudflare REST API (wrangler has no object list command).
     log_info "Cleaning old ${APP_NAME} versions from R2..."
-    CF_TOKEN=$(security find-generic-password -s cloudflare -a api_token -w 2>/dev/null)
-    if [ -z "${CF_TOKEN}" ]; then
-        CF_TOKEN="${CLOUDFLARE_API_TOKEN:-}"
-    fi
+    CF_TOKEN="${CLOUDFLARE_API_TOKEN:-$(resolve_cloudflare_api_token || true)}"
     CF_ACCOUNT_ID="${CF_ACCOUNT_ID:-2c267ab06352ba2522114c3081a8c5fa}"
 
     if [ -n "${CF_TOKEN}" ]; then
