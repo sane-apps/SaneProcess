@@ -16,16 +16,24 @@ module SaneMasterModules
 
       build_config = launch_build_config(args)
       puts "🔧 Build configuration: #{build_config}"
-      dd_path = File.expand_path("~/Library/Developer/Xcode/DerivedData/#{project_name}-*/Build/Products/#{build_config}")
-      app_path = Dir.glob(File.join(dd_path, "#{project_name}.app")).first
+      app_candidates = built_app_candidates(build_config)
+      app_path = app_candidates.find { |candidate| app_bundle_executable?(candidate) } || app_candidates.first
 
       unless app_path && File.exist?(app_path)
         puts "❌ App binary not found for configuration '#{build_config}'. Run build first."
-        return
+        return false
+      end
+
+      unless app_bundle_executable?(app_path)
+        puts "❌ App bundle missing executable: #{app_path}"
+        executable = app_bundle_executable_path(app_path)
+        puts "   Expected executable: #{executable}"
+        puts '   Tip: run build again to refresh DerivedData output.'
+        return false
       end
 
       # STALE BUILD DETECTION - prevents launching outdated binaries
-      binary_time = File.mtime(app_path)
+      binary_time = File.mtime(app_bundle_executable_path(app_path))
       source_files = project_swift_sources
       newest_source = source_files.max_by { |f| File.mtime(f) }
 
@@ -50,7 +58,12 @@ module SaneMasterModules
           end
           puts '   ✅ Rebuilt successfully'
           # Refresh app_path after rebuild
-          app_path = Dir.glob(File.join(dd_path, "#{project_name}.app")).first
+          refreshed_candidates = built_app_candidates(build_config)
+          app_path = refreshed_candidates.find { |candidate| app_bundle_executable?(candidate) } || refreshed_candidates.first
+          unless app_path && app_bundle_executable?(app_path)
+            puts '   ❌ Rebuild produced an app bundle without executable.'
+            return false
+          end
         end
         puts ''
       end
@@ -69,9 +82,15 @@ module SaneMasterModules
         pid = spawn(env_vars, File.join(launch_path, 'Contents', 'MacOS', project_name))
         Process.wait(pid)
       else
-        system(env_vars, 'open', launch_path)
+        opened = system(env_vars, 'open', launch_path)
+        unless opened
+          puts '❌ Failed to launch app via open. Verify staged app bundle/executable exists.'
+          return false
+        end
         puts '✅ App launched (fresh build verified)'
       end
+
+      true
     end
 
     def restore_xcode
@@ -125,7 +144,7 @@ module SaneMasterModules
       show_diagnostic_reports(crash_dir)
       return unless build_app
 
-      launch_app([])
+      return unless launch_app([])
       sleep 2
       print_test_mode_ready
 
@@ -416,10 +435,29 @@ module SaneMasterModules
              '-destination', 'platform=macOS', 'ENABLE_DEBUG_DYLIB=NO', 'build']
       stdout, status = Open3.capture2e(*cmd)
 
-      summary = stdout.lines.select { |line| line.match?(/BUILD|error:/) }.last(summary_lines)
-      summary.each { |line| puts "   #{line.rstrip}" } if summary.any?
+      summary = stdout.lines.select { |line| line.match?(/BUILD|error:|warning:|CodeSign|Signing/) }.last(summary_lines)
+      if summary.any?
+        summary.each { |line| puts "   #{line.rstrip}" }
+      elsif !status.success?
+        puts '   ⚠️  Build failed without matched summary lines. Showing tail output:'
+        stdout.lines.last(summary_lines).each { |line| puts "   #{line.rstrip}" }
+      end
 
       status.success?
+    end
+
+    def built_app_candidates(build_config)
+      dd_glob = File.expand_path("~/Library/Developer/Xcode/DerivedData/#{project_name}-*/Build/Products/#{build_config}")
+      Dir.glob(File.join(dd_glob, "#{project_name}.app")).sort_by { |path| File.mtime(path) }.reverse
+    end
+
+    def app_bundle_executable_path(app_path)
+      File.join(app_path, 'Contents', 'MacOS', project_name)
+    end
+
+    def app_bundle_executable?(app_path)
+      executable = app_bundle_executable_path(app_path)
+      File.file?(executable) && File.executable?(executable)
     end
 
     def launch_build_config(args)
@@ -429,8 +467,21 @@ module SaneMasterModules
       # SaneBar local testing is only supported in signed launch modes.
       # Debug mode can trigger invisible/off-screen menu bar icon behavior.
       if project_name == 'SaneBar'
-        requested = ENV['SANEMASTER_BUILD_CONFIG'] || ENV['SANEBAR_BUILD_CONFIG']
+        requested = (ENV['SANEMASTER_BUILD_CONFIG'] || ENV['SANEBAR_BUILD_CONFIG'] || '').strip
+        requested = case requested.downcase
+                    when 'proddebug' then 'ProdDebug'
+                    when 'release' then 'Release'
+                    when 'debug' then 'Debug'
+                    else requested
+                    end
+
         return requested if %w[ProdDebug Release].include?(requested)
+
+        if requested == 'Debug' && ENV['SANEMASTER_UNSIGNED_FALLBACK_ACTIVE'] == '1'
+          puts '⚠️  Unsigned fallback active for SaneBar: using Debug build configuration.'
+          return 'Debug'
+        end
+
         return 'ProdDebug'
       end
 

@@ -315,6 +315,16 @@ class SaneMaster
     return if running_on_mini_host?
     return unless MINI_FIRST_COMMANDS.include?(command)
 
+    if %w[launch run test_mode tm].include?(command) && repo_has_uncommitted_changes?
+      puts '⚠️  Local changes detected; running debug command locally to validate current workspace.'
+      return
+    end
+
+    if ENV['SANEMASTER_UNSIGNED_FALLBACK_ACTIVE'] == '1' && %w[launch run test_mode tm].include?(command)
+      puts '⚠️  Unsigned fallback active; running locally to honor Debug fallback.'
+      return
+    end
+
     if args.include?('--local') || ENV['SANEMASTER_FORCE_LOCAL'] == '1'
       puts '⚠️  Mini-first bypass active (--local or SANEMASTER_FORCE_LOCAL=1); running locally.'
       return
@@ -338,7 +348,14 @@ class SaneMaster
       return
     end
 
-    forwarded_env_keys = %w[SANEMASTER_APPSTORE_PREFLIGHT]
+    forwarded_env_keys = %w[
+      SANEMASTER_APPSTORE_PREFLIGHT
+      SANEMASTER_BUILD_CONFIG
+      SANEMASTER_UNSIGNED_FALLBACK_ACTIVE
+      SANEMASTER_ALLOW_UNSIGNED_FALLBACK
+      SANEBAR_BUILD_CONFIG
+      SANEMASTER_CANONICAL_APP_PATH
+    ]
     forwarded_env = forwarded_env_keys.filter_map do |key|
       value = ENV[key]
       next if value.nil? || value.empty?
@@ -348,6 +365,7 @@ class SaneMaster
     remote_env_prefix = forwarded_env.empty? ? '' : "#{forwarded_env.join(' ')} "
     remote_cmd = "#{remote_env_prefix}./scripts/SaneMaster.rb #{([command] + args).map { |arg| Shellwords.escape(arg) }.join(' ')}"
     puts "📍 Mini-first routing: #{command} -> mini (#{remote_repo})"
+    $stdout.flush
     exec('ssh', 'mini', "cd #{Shellwords.escape(remote_repo)} && #{remote_cmd}")
   end
 
@@ -372,6 +390,16 @@ class SaneMaster
 
   def mini_path_exists?(remote_path)
     system('ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=3', 'mini', "test -d #{Shellwords.escape(remote_path)}", out: File::NULL, err: File::NULL)
+  end
+
+  def repo_has_uncommitted_changes?
+    return false unless system('git', 'rev-parse', '--is-inside-work-tree', out: File::NULL, err: File::NULL)
+    return true unless system('git', 'diff', '--quiet', '--ignore-submodules=dirty', out: File::NULL, err: File::NULL)
+    return true unless system('git', 'diff', '--cached', '--quiet', '--ignore-submodules=dirty', out: File::NULL, err: File::NULL)
+
+    false
+  rescue StandardError
+    false
   end
 
   def dispatch_command(command, args)
