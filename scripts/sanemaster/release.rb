@@ -136,7 +136,7 @@ module SaneMasterModules
       end
       puts '⏭️  no Info.plist with SUPublicEDKey found' unless checked_key
 
-      # 5. Open GitHub issues
+      # 5. Open GitHub issues + PRs
       print '  Open GitHub issues... '
       saneprocess_path = File.join(Dir.pwd, '.saneprocess')
       app_name = nil
@@ -156,6 +156,20 @@ module SaneMasterModules
         if open_count.positive?
           puts "⚠️  #{open_count} open"
           warnings << "#{open_count} open GitHub issues"
+        else
+          puts '✅ none'
+        end
+
+        print '  Open GitHub PRs... '
+        pr_json, = Open3.capture2('gh', 'pr', 'list', '--repo', repo, '--state', 'open', '--json', 'number')
+        open_pr_count = begin
+          JSON.parse(pr_json).length
+        rescue StandardError
+          0
+        end
+        if open_pr_count.positive?
+          puts "⚠️  #{open_pr_count} open"
+          warnings << "#{open_pr_count} open GitHub PRs"
         else
           puts '✅ none'
         end
@@ -250,6 +264,7 @@ module SaneMasterModules
     def appstore_preflight(_args)
       require 'json'
       require 'open3'
+      require 'tmpdir'
       require 'yaml'
 
       puts '🍎 --- [ APP STORE PREFLIGHT ] ---'
@@ -634,7 +649,138 @@ module SaneMasterModules
         warnings << 'No appstore.configuration in .saneprocess — using default Release config?'
       end
 
-      # 5d. No DEBUG/development code leaking into release
+      # 5d. StoreKit product ID routing for App Store unlock flow
+      print '  │ StoreKit product ID routing... '
+      uses_storekit_unlock = all_source.match?(/\bLicenseService\s*\(/)
+      configured_product_id = appstore_config['product_id'].to_s.strip
+      pbxproj_content = Dir.glob('*.xcodeproj/project.pbxproj').map { |p| File.read(p) rescue '' }.join("\n")
+      has_product_id_marker = [project_yml_content, plist_content, pbxproj_content].join("\n").match?(/AppStoreProductID|INFOPLIST_KEY_AppStoreProductID/)
+
+      if uses_storekit_unlock
+        if configured_product_id.empty?
+          puts '❌ missing appstore.product_id'
+          issues << 'StoreKit unlock flow detected, but .saneprocess is missing appstore.product_id'
+        else
+          puts "✅ #{configured_product_id}"
+          unless has_product_id_marker
+            warnings << 'AppStoreProductID marker not found in project settings — relying on preflight/release build-flag injection'
+          end
+        end
+      elsif configured_product_id.empty?
+        puts '⚠️  not set (no StoreKit unlock detected)'
+        warnings << 'No appstore.product_id configured'
+      elsif has_product_id_marker
+        puts "✅ #{configured_product_id}"
+      else
+        puts '⚠️  set but not wired'
+        warnings << 'appstore.product_id is set, but AppStoreProductID marker not found in project settings'
+      end
+
+      # 5e. Build App Store config and audit resulting artifact for runtime blockers
+      print '  │ Compiled App Store artifact audit... '
+      platforms = Array(appstore_config['platforms'] || ['macos']).map(&:to_s)
+      if platforms.include?('macos')
+        begin
+          Dir.mktmpdir('sanemaster_asc_audit') do |tmpdir|
+            derived_data = File.join(tmpdir, 'DerivedData')
+            configuration = (asc_config_name || appstore_config['configuration'] || 'Release-AppStore').to_s
+            scheme = (appstore_config['scheme'] || config['scheme'] || app_name).to_s
+            workspace = config['workspace']
+            project = config['project'] || Dir.glob('*.xcodeproj').first
+
+            build_cmd = ['xcodebuild']
+            if workspace && File.exist?(workspace)
+              build_cmd += ['-workspace', workspace]
+            elsif project && File.exist?(project)
+              build_cmd += ['-project', project]
+            else
+              puts '❌ project/workspace not found'
+              issues << 'Cannot run compiled App Store artifact audit: missing workspace/project path'
+              break
+            end
+            build_cmd += [
+              '-scheme', scheme,
+              '-configuration', configuration,
+              '-destination', 'platform=macOS',
+              '-derivedDataPath', derived_data,
+              'CODE_SIGNING_ALLOWED=NO',
+              'build'
+            ]
+            unless configured_product_id.empty?
+              build_cmd << "INFOPLIST_KEY_AppStoreProductID=#{configured_product_id}"
+            end
+
+            build_out, build_status = Open3.capture2e(*build_cmd)
+            unless build_status.success?
+              puts '❌ build failed'
+              issues << "App Store artifact audit build failed for configuration #{configuration}"
+              next
+            end
+
+            app_dir = Dir.glob(File.join(derived_data, 'Build', 'Products', configuration, '*.app'))
+              .reject { |p| p.include?('.appex/') }.first
+            if app_dir.nil?
+              puts '❌ built app missing'
+              issues << "App Store artifact audit could not find built .app under #{configuration}"
+              next
+            end
+
+            info_plist = File.join(app_dir, 'Contents', 'Info.plist')
+            executable, = Open3.capture2('/usr/libexec/PlistBuddy', '-c', 'Print :CFBundleExecutable', info_plist)
+            executable = executable.to_s.strip
+            binary_path = File.join(app_dir, 'Contents', 'MacOS', executable)
+
+            built_product_id, = Open3.capture2('/usr/libexec/PlistBuddy', '-c', 'Print :AppStoreProductID', info_plist)
+            built_product_id = built_product_id.to_s.strip
+            if uses_storekit_unlock
+              if built_product_id.empty?
+                issues << 'Built App Store artifact is missing Info.plist key AppStoreProductID (StoreKit unlock flow detected)'
+              elsif !configured_product_id.empty? && built_product_id != configured_product_id
+                issues << "Built AppStoreProductID mismatch (expected #{configured_product_id}, got #{built_product_id})"
+              end
+            end
+
+            if File.file?(binary_path)
+              otool_out, = Open3.capture2('otool', '-L', binary_path)
+              dylib_lines = otool_out.lines.drop(1).map(&:strip).reject(&:empty?)
+              unresolved = []
+
+              dylib_lines.each do |line|
+                lib = line.split(' (').first.to_s.strip
+                next unless lib.start_with?('@rpath/')
+                next if line.include?(', weak)')
+
+                rel = lib.sub('@rpath/', '')
+                candidate = File.join(app_dir, 'Contents', 'Frameworks', rel)
+                unresolved << lib unless File.exist?(candidate)
+              end
+
+              sparkle_framework = File.join(app_dir, 'Contents', 'Frameworks', 'Sparkle.framework')
+              sparkle_ref = dylib_lines.find { |line| line.include?('@rpath/Sparkle.framework') }
+              if sparkle_ref && !sparkle_ref.include?(', weak)') && !File.exist?(sparkle_framework)
+                unresolved << '@rpath/Sparkle.framework/Versions/B/Sparkle'
+              end
+
+              if unresolved.any?
+                puts "❌ unresolved dylibs (#{unresolved.uniq.count})"
+                issues << "App Store artifact has unresolved non-weak dylib references: #{unresolved.uniq.join(', ')}"
+              else
+                puts '✅'
+              end
+            else
+              puts '❌ executable missing'
+              issues << 'App Store artifact audit could not find app executable'
+            end
+          end
+        rescue StandardError => e
+          puts "⚠️  audit error: #{e.message}"
+          warnings << "Compiled App Store artifact audit failed unexpectedly: #{e.message}"
+        end
+      else
+        puts '⏭️  skipped (non-macOS submission)'
+      end
+
+      # 5f. No DEBUG/development code leaking into release
       print '  │ Debug code audit... '
       debug_patterns = swift_files.select do |f|
         content = File.read(f) rescue ''

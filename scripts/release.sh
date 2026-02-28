@@ -1585,17 +1585,23 @@ OPT
 validate_appstore_pkg_preflight() {
     local pkg_path="$1"
     local tmp_root
+    local expanded_root
     local app_path
     local entitlements
 
     tmp_root=$(/usr/bin/mktemp -d /tmp/appstore_pkg_preflight.XXXX)
-    if ! pkgutil --expand-full "${pkg_path}" "${tmp_root}" >/dev/null 2>&1; then
-        log_error "App Store preflight failed: could not expand pkg ${pkg_path}"
-        remove_path "${tmp_root}"
-        return 1
+    expanded_root="${tmp_root}/expanded"
+    # pkgutil requires destination to NOT already exist.
+    if ! pkgutil --expand-full "${pkg_path}" "${expanded_root}" >/dev/null 2>&1; then
+        # Some macOS versions only support --expand for this artifact shape.
+        if ! pkgutil --expand "${pkg_path}" "${expanded_root}" >/dev/null 2>&1; then
+            log_error "App Store preflight failed: could not expand pkg ${pkg_path}"
+            remove_path "${tmp_root}"
+            return 1
+        fi
     fi
 
-    app_path=$(find "${tmp_root}" -type d -name "${APP_NAME}.app" | head -n 1)
+    app_path=$(find "${expanded_root}" -type d -name "${APP_NAME}.app" | head -n 1)
     if [ -z "${app_path}" ] || [ ! -d "${app_path}" ]; then
         log_error "App Store preflight failed: app payload not found in pkg"
         remove_path "${tmp_root}"

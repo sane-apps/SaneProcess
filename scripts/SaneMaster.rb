@@ -129,7 +129,8 @@ class SaneMaster
         'setup' => { args: '', desc: 'Install gems and dependencies' },
         'versions' => { args: '', desc: 'Check tool versions' },
         'reset' => { args: '', desc: 'Reset TCC permissions' },
-        'restore' => { args: '', desc: 'Fix Xcode/Launch Services issues' }
+        'restore' => { args: '', desc: 'Fix Xcode/Launch Services issues' },
+        'mcp_watchdog' => { args: '[status|doctor|clean|install|uninstall] [--max N] [--interval SEC] [--json] [--quiet]', desc: 'Detect and clean duplicate MCP daemons' }
       }
     },
     memory: {
@@ -432,6 +433,8 @@ class SaneMaster
       setup_environment
     when 'restore'
       restore_xcode
+    when 'mcp_watchdog', 'mcpw', 'mcp'
+      mcp_watchdog(args)
 
     # Build & Test
     when 'verify'

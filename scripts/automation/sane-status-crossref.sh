@@ -24,11 +24,21 @@ else
   echo "check-inbox.sh not found at $CHECK_INBOX"
 fi
 
-printf '\n[3/3] Open GitHub issues (sane-apps org)\n'
+printf '\n[3/4] Open GitHub issues (sane-apps org)\n'
 if command -v gh >/dev/null 2>&1; then
   for repo in SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo; do
     echo "\n## $repo"
     gh issue list -R "sane-apps/${repo}" --state open --limit 10 || echo "  Unable to fetch issues for ${repo} (auth missing or no issues)."
+  done
+else
+  echo "GitHub CLI (gh) not installed"
+fi
+
+printf '\n[4/4] Open GitHub PRs (sane-apps org)\n'
+if command -v gh >/dev/null 2>&1; then
+  for repo in SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo; do
+    echo "\n## $repo"
+    gh pr list -R "sane-apps/${repo}" --state open --limit 10 || echo "  Unable to fetch PRs for ${repo} (auth missing or no PRs)."
   done
 else
   echo "GitHub CLI (gh) not installed"

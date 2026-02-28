@@ -309,6 +309,31 @@ rescue StandardError => e
   [0, { 'error' => e.message }]
 end
 
+def asc_delete_with_status(path, token: nil)
+  token ||= generate_jwt
+  uri = URI("#{ASC_BASE}#{path}")
+
+  http = Net::HTTP.new(uri.host, uri.port)
+  http.use_ssl = true
+  http.open_timeout = 15
+  http.read_timeout = 60
+
+  request = Net::HTTP::Delete.new(uri)
+  request['Authorization'] = "Bearer #{token}"
+  request['Content-Type'] = 'application/json'
+
+  response = http.request(request)
+  parsed = begin
+    JSON.parse(response.body.to_s)
+  rescue StandardError
+    { 'raw' => response.body.to_s }
+  end
+  [response.code.to_i, parsed]
+rescue StandardError => e
+  log_error "ASC API raw DELETE error: #{e.message}"
+  [0, { 'error' => e.message }]
+end
+
 # ─── Package Metadata ───
 
 def extract_app_info_from_package(pkg_path)
@@ -481,6 +506,11 @@ def check_version_state_preflight(app_id, asc_platform, version_string, token)
     v.dig('attributes', 'versionString') == version_string
   end
   if matching
+    linked_submission = find_linked_review_submission(app_id, asc_platform, matching['id'], token)
+    if linked_submission && linked_submission[:state] == 'UNRESOLVED_ISSUES'
+      log_unresolved_submission_blocker(app_id, matching['id'], linked_submission)
+      return false
+    end
     log_info "ASC editable version preflight passed for #{version_string} (#{matching.dig('attributes', 'appStoreState')})."
     return true
   end
@@ -584,10 +614,13 @@ def ensure_review_detail(version_id, contact, token)
     existing = resp['data']['attributes'] || {}
 
     # Update if contact info doesn't match
+    desired_notes = contact[:notes].to_s.strip
+    existing_notes = existing['notes'].to_s.strip
     needs_update = existing['contactFirstName'] != contact[:first_name] ||
                    existing['contactLastName'] != contact[:last_name] ||
                    existing['contactPhone'] != contact[:phone] ||
-                   existing['contactEmail'] != contact[:email]
+                   existing['contactEmail'] != contact[:email] ||
+                   (!desired_notes.empty? && existing_notes != desired_notes)
 
     if needs_update
       log_info 'Updating review contact detail...'
@@ -599,7 +632,8 @@ def ensure_review_detail(version_id, contact, token)
             contactFirstName: contact[:first_name],
             contactLastName: contact[:last_name],
             contactPhone: contact[:phone],
-            contactEmail: contact[:email]
+            contactEmail: contact[:email],
+            notes: desired_notes.empty? ? existing_notes : desired_notes
           }
         }
       }
@@ -619,7 +653,8 @@ def ensure_review_detail(version_id, contact, token)
         contactFirstName: contact[:first_name],
         contactLastName: contact[:last_name],
         contactPhone: contact[:phone],
-        contactEmail: contact[:email]
+        contactEmail: contact[:email],
+        notes: contact[:notes].to_s
       },
       relationships: {
         appStoreVersion: {
@@ -819,6 +854,18 @@ end
 def submit_for_review(app_id, asc_platform, version_id, token)
   log_info 'Submitting for App Review...'
 
+  linked_submission = find_linked_review_submission(app_id, asc_platform, version_id, token)
+  if linked_submission && linked_submission[:state] == 'UNRESOLVED_ISSUES'
+    log_warn "Detected unresolved review submission #{linked_submission[:id]} for version #{version_id}."
+    clear_stale_version_submission(version_id, token)
+    token = generate_jwt
+    linked_submission = find_linked_review_submission(app_id, asc_platform, version_id, token)
+    if linked_submission && linked_submission[:state] == 'UNRESOLVED_ISSUES'
+      log_unresolved_submission_blocker(app_id, version_id, linked_submission)
+      return false
+    end
+  end
+
   # Preferred endpoint for final submission state transition.
   # Some API keys do not allow CREATE on appStoreVersionSubmissions; we detect
   # that and fall back to reviewSubmissions flow.
@@ -880,6 +927,9 @@ def submit_for_review(app_id, asc_platform, version_id, token)
     parsed = JSON.parse(response.body) rescue {}
     submission_id = parsed.dig('data', 'id')
   elsif response.code == '409'
+    parsed = JSON.parse(response.body) rescue {}
+    associated = parsed.dig('errors', 0, 'meta', 'associatedErrors')
+    summarize_associated_errors(associated) if associated.is_a?(Hash)
     submission_id = find_best_review_submission(app_id, asc_platform, version_id, token)
   end
 
@@ -932,6 +982,18 @@ def submit_for_review(app_id, asc_platform, version_id, token)
     return false
   end
   log_info "Review submission includes appStoreVersion #{version_id}."
+
+  linked_submission = find_linked_review_submission(app_id, asc_platform, version_id, token)
+  if linked_submission && linked_submission[:state] == 'UNRESOLVED_ISSUES'
+    log_warn "Review submission returned to unresolved state for version #{version_id}; attempting one automatic clear."
+    clear_stale_version_submission(version_id, token)
+    token = generate_jwt
+    linked_submission = find_linked_review_submission(app_id, asc_platform, version_id, token)
+    if linked_submission && linked_submission[:state] == 'UNRESOLVED_ISSUES'
+      log_unresolved_submission_blocker(app_id, version_id, linked_submission)
+      return false
+    end
+  end
 
   unless mark_review_submission_submitted(submission_id, token)
     log_error 'Failed to mark review submission as submitted.'
@@ -1001,6 +1063,49 @@ def review_submission_has_version?(submission_id, version_id, token)
   version_ids.include?(version_id)
 end
 
+def find_linked_review_submission(app_id, asc_platform, version_id, token)
+  list = asc_get("/reviewSubmissions?filter[app]=#{app_id}&limit=200", token: token)
+  return nil unless list && list['data']
+
+  candidates = list['data'].select do |submission|
+    platform = submission.dig('attributes', 'platform')
+    platform == asc_platform || platform.nil?
+  end
+
+  match = candidates.find { |submission| review_submission_has_version?(submission['id'], version_id, token) }
+  return nil unless match
+
+  {
+    id: match['id'],
+    state: match.dig('attributes', 'state')
+  }
+end
+
+def log_unresolved_submission_blocker(app_id, version_id, submission)
+  return unless submission
+
+  log_error "App Store version #{version_id} is linked to review submission #{submission[:id]} (#{submission[:state]})."
+  log_error 'This is a previously submitted/rejected item, and App Store Connect API will not clear it automatically.'
+  log_error "Open App Store Connect for app #{app_id}, remove/cancel the rejected item in that submission,"
+  log_error 'then run appstore_submit.rb again to submit the updated build.'
+end
+
+def clear_stale_version_submission(version_id, token)
+  code, resp = asc_delete_with_status("/appStoreVersionSubmissions/#{version_id}", token: token)
+  case code
+  when 204
+    log_warn "Cleared stale appStoreVersionSubmission for version #{version_id}."
+    true
+  when 404
+    log_warn "No appStoreVersionSubmission resource found for version #{version_id}."
+    false
+  else
+    detail = resp.dig('errors', 0, 'detail') || resp.dig('errors', 0, 'title') || "HTTP #{code}"
+    log_warn "Could not clear stale appStoreVersionSubmission for version #{version_id}: #{detail}"
+    false
+  end
+end
+
 def find_best_review_submission(app_id, asc_platform, version_id, token)
   list = asc_get("/reviewSubmissions?filter[app]=#{app_id}&limit=50", token: token)
   return nil unless list && list['data']
@@ -1014,11 +1119,11 @@ def find_best_review_submission(app_id, asc_platform, version_id, token)
   with_version = candidates.find { |s| review_submission_has_version?(s['id'], version_id, token) }
   return with_version['id'] if with_version
 
-  unresolved = candidates.find { |s| s.dig('attributes', 'state') == 'UNRESOLVED_ISSUES' }
-  return unresolved['id'] if unresolved
-
   ready = candidates.find { |s| s.dig('attributes', 'state') == 'READY_FOR_REVIEW' }
   return ready['id'] if ready
+
+  unresolved = candidates.find { |s| s.dig('attributes', 'state') == 'UNRESOLVED_ISSUES' }
+  return unresolved['id'] if unresolved
 
   candidates.first['id']
 end
@@ -1242,6 +1347,18 @@ config = if File.exist?(config_path)
            {}
          end
 
+config_app_id = config.dig('appstore', 'app_id').to_s.strip
+if !config_app_id.empty?
+  if app_id.to_s.strip.empty?
+    app_id = config_app_id
+    log_info "Using app_id from .saneprocess: #{app_id}"
+  elsif app_id.to_s.strip != config_app_id
+    log_error "App ID mismatch: --app-id #{app_id} does not match .saneprocess appstore.app_id #{config_app_id}"
+    log_error "Use the project app_id to avoid uploading to the wrong ASC app."
+    exit 1
+  end
+end
+
 artifact_label = options[:skip_upload] ? 'existing ASC build' : File.basename(pkg_path)
 log_info "App Store submission: #{artifact_label} v#{version} (#{platform})"
 log_info "App ID: #{app_id}"
@@ -1312,7 +1429,8 @@ contact = {
   first_name: name_parts[0] || 'Stephan',
   last_name: name_parts[1] || 'Joseph',
   phone: config.dig('appstore', 'contact', 'phone') || '+17277589785',
-  email: config.dig('appstore', 'contact', 'email') || 'hi@saneapps.com'
+  email: config.dig('appstore', 'contact', 'email') || 'hi@saneapps.com',
+  notes: config.dig('appstore', 'review_notes').to_s
 }
 ensure_review_detail(version_id, contact, token)
 
