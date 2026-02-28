@@ -149,6 +149,40 @@ SUBMITTED_APP_STORE_STATES = %w[
   READY_FOR_SALE
 ].freeze
 
+CATEGORY_ID_MAP = {
+  'public.app-category.utilities' => 'UTILITIES',
+  'public.app-category.productivity' => 'PRODUCTIVITY',
+  'public.app-category.finance' => 'FINANCE',
+  'public.app-category.business' => 'BUSINESS'
+}.freeze
+
+AGE_RATING_SAFE_DEFAULTS = {
+  advertising: false,
+  alcoholTobaccoOrDrugUseOrReferences: 'NONE',
+  contests: 'NONE',
+  gambling: false,
+  gamblingSimulated: 'NONE',
+  gunsOrOtherWeapons: 'NONE',
+  healthOrWellnessTopics: false,
+  lootBox: false,
+  medicalOrTreatmentInformation: 'NONE',
+  messagingAndChat: false,
+  parentalControls: false,
+  profanityOrCrudeHumor: 'NONE',
+  ageAssurance: false,
+  sexualContentGraphicAndNudity: 'NONE',
+  sexualContentOrNudity: 'NONE',
+  horrorOrFearThemes: 'NONE',
+  matureOrSuggestiveThemes: 'NONE',
+  unrestrictedWebAccess: false,
+  userGeneratedContent: false,
+  violenceCartoonOrFantasy: 'NONE',
+  violenceRealisticProlongedGraphicOrSadistic: 'NONE',
+  violenceRealistic: 'NONE',
+  ageRatingOverrideV2: 'NONE',
+  koreaAgeRatingOverride: 'NONE'
+}.freeze
+
 # ─── Logging ───
 
 def log_info(msg)
@@ -440,15 +474,27 @@ def wait_for_build(app_id, version, asc_platform, token)
 
   while Time.now < deadline
     path = "/builds?filter[app]=#{app_id}&filter[version]=#{version}" \
+           "&filter[preReleaseVersion.platform]=#{asc_platform}" \
            "&filter[processingState]=PROCESSING,VALID,INVALID" \
-           "&sort=-uploadedDate&limit=5"
+           "&sort=-uploadedDate&limit=5&include=preReleaseVersion"
     resp = asc_get(path, token: token)
 
     if resp && resp['data']
+      pr_versions = {}
+      (resp['included'] || []).each do |entry|
+        next unless entry['type'] == 'preReleaseVersions'
+
+        pr_versions[entry['id']] = entry.dig('attributes', 'platform')
+      end
+
       # Find build matching our platform
       build = resp['data'].find do |b|
         attrs = b['attributes'] || {}
-        attrs['version'].to_s == version.to_s
+        next false unless attrs['version'].to_s == version.to_s
+
+        pr_id = b.dig('relationships', 'preReleaseVersion', 'data', 'id')
+        platform = pr_versions[pr_id]
+        platform.nil? || platform == asc_platform
       end
 
       if build
@@ -587,17 +633,18 @@ def attach_build_to_version(version_id, build_id, token)
     }
   }
 
-  resp = asc_patch(
+  code, resp = asc_patch_with_status(
     "/appStoreVersions/#{version_id}/relationships/build",
     body: body,
     token: token
   )
 
-  if resp
+  if [200, 201, 202, 204].include?(code)
     log_info 'Build attached to version.'
     true
   else
-    log_error 'Failed to attach build to version.'
+    detail = resp.dig('errors', 0, 'detail') || resp.dig('errors', 0, 'title') || "HTTP #{code}"
+    log_error "Failed to attach build to version: #{detail}"
     false
   end
 end
@@ -620,6 +667,7 @@ def ensure_review_detail(version_id, contact, token)
                    existing['contactLastName'] != contact[:last_name] ||
                    existing['contactPhone'] != contact[:phone] ||
                    existing['contactEmail'] != contact[:email] ||
+                   existing['demoAccountRequired'] != false ||
                    (!desired_notes.empty? && existing_notes != desired_notes)
 
     if needs_update
@@ -633,7 +681,8 @@ def ensure_review_detail(version_id, contact, token)
             contactLastName: contact[:last_name],
             contactPhone: contact[:phone],
             contactEmail: contact[:email],
-            notes: desired_notes.empty? ? existing_notes : desired_notes
+            notes: desired_notes.empty? ? existing_notes : desired_notes,
+            demoAccountRequired: false
           }
         }
       }
@@ -654,7 +703,8 @@ def ensure_review_detail(version_id, contact, token)
         contactLastName: contact[:last_name],
         contactPhone: contact[:phone],
         contactEmail: contact[:email],
-        notes: contact[:notes].to_s
+        notes: contact[:notes].to_s,
+        demoAccountRequired: false
       },
       relationships: {
         appStoreVersion: {
@@ -672,6 +722,204 @@ def ensure_review_detail(version_id, contact, token)
     log_error 'Failed to create review contact detail.'
     false
   end
+end
+
+# ─── Listing Metadata Hydration ───
+
+def fallback_description(app_name, review_notes)
+  note = review_notes.to_s.strip
+  return note[0, 4000] unless note.empty?
+
+  "#{app_name} helps you stay productive on Apple devices with a clear free tier and a Pro upgrade."
+end
+
+def fallback_keywords(app_name)
+  base = app_name.to_s.downcase
+  case base
+  when 'sanebar'
+    'menu bar,productivity,mac utility,organization,status icons'
+  when 'saneclick'
+    'finder,right click,automation,productivity,scripts,mac utility'
+  when 'saneclip'
+    'clipboard,copy paste,history,productivity,mac utility,snippets'
+  when 'sanehosts'
+    'hosts file,focus,privacy,utilities,blocklists,mac utility'
+  when 'sanesales'
+    'sales,analytics,revenue,dashboard,productivity,business'
+  else
+    'productivity,utility,mac'
+  end
+end
+
+def latest_app_info_id(app_id, token)
+  resp = asc_get("/apps/#{app_id}/appInfos?limit=10", token: token)
+  return nil unless resp && resp['data'] && !resp['data'].empty?
+
+  resp['data'].max_by { |info| info.dig('attributes', 'createdDate').to_s }['id']
+end
+
+def find_locale_record(path, token, locale: 'en-US')
+  resp = asc_get(path, token: token)
+  return nil unless resp && resp['data'] && !resp['data'].empty?
+
+  resp['data'].find { |entry| entry.dig('attributes', 'locale') == locale } || resp['data'].first
+end
+
+def ensure_content_rights_declaration(app_id, declaration, token)
+  return if declaration.to_s.strip.empty?
+
+  app_resp = asc_get("/apps/#{app_id}", token: token)
+  existing = app_resp&.dig('data', 'attributes', 'contentRightsDeclaration').to_s
+  return if existing == declaration
+
+  body = {
+    data: {
+      type: 'apps',
+      id: app_id,
+      attributes: { contentRightsDeclaration: declaration }
+    }
+  }
+  asc_patch("/apps/#{app_id}", body: body, token: token)
+end
+
+def ensure_primary_category(app_info_id, category_id, token)
+  return if app_info_id.to_s.empty? || category_id.to_s.empty?
+
+  resp = asc_get("/appInfos/#{app_info_id}/primaryCategory", token: token)
+  return if resp && resp.dig('data', 'id') == category_id
+
+  body = {
+    data: {
+      type: 'appInfos',
+      id: app_info_id,
+      relationships: {
+        primaryCategory: {
+          data: { type: 'appCategories', id: category_id }
+        }
+      }
+    }
+  }
+  asc_patch("/appInfos/#{app_info_id}", body: body, token: token)
+end
+
+def ensure_app_info_localization(app_info_id, privacy_policy_url, token, locale: 'en-US')
+  return if app_info_id.to_s.empty? || privacy_policy_url.to_s.strip.empty?
+
+  loc = find_locale_record("/appInfos/#{app_info_id}/appInfoLocalizations?limit=50", token, locale: locale)
+  return unless loc
+
+  current = loc.dig('attributes', 'privacyPolicyUrl').to_s.strip
+  desired = privacy_policy_url.to_s.strip
+  return if desired.empty? || current == desired
+
+  body = {
+    data: {
+      type: 'appInfoLocalizations',
+      id: loc['id'],
+      attributes: { privacyPolicyUrl: desired }
+    }
+  }
+  asc_patch("/appInfoLocalizations/#{loc['id']}", body: body, token: token)
+end
+
+def ensure_version_localization(version_id, description, keywords, support_url, token, locale: 'en-US')
+  loc = find_locale_record("/appStoreVersions/#{version_id}/appStoreVersionLocalizations?limit=50", token, locale: locale)
+  return unless loc
+
+  attrs = {}
+  desc = description.to_s.strip
+  kw = keywords.to_s.strip
+  sup = support_url.to_s.strip
+
+  attrs[:description] = desc unless desc.empty?
+  attrs[:keywords] = kw unless kw.empty?
+  attrs[:supportUrl] = sup unless sup.empty?
+  return if attrs.empty?
+
+  body = {
+    data: {
+      type: 'appStoreVersionLocalizations',
+      id: loc['id'],
+      attributes: attrs
+    }
+  }
+  asc_patch("/appStoreVersionLocalizations/#{loc['id']}", body: body, token: token)
+end
+
+def ensure_version_copyright(version_id, desired_value, token)
+  return if desired_value.to_s.strip.empty?
+
+  version_resp = asc_get("/appStoreVersions/#{version_id}", token: token)
+  existing = version_resp&.dig('data', 'attributes', 'copyright').to_s.strip
+  desired = desired_value.to_s.strip
+  return if existing == desired
+
+  body = {
+    data: {
+      type: 'appStoreVersions',
+      id: version_id,
+      attributes: { copyright: desired }
+    }
+  }
+  asc_patch("/appStoreVersions/#{version_id}", body: body, token: token)
+end
+
+def ensure_age_rating_declaration(version_id, token)
+  resp = asc_get("/appStoreVersions/#{version_id}/ageRatingDeclaration", token: token)
+  age_id = resp&.dig('data', 'id')
+  return if age_id.to_s.empty?
+
+  body = {
+    data: {
+      type: 'ageRatingDeclarations',
+      id: age_id,
+      attributes: AGE_RATING_SAFE_DEFAULTS
+    }
+  }
+  asc_patch("/ageRatingDeclarations/#{age_id}", body: body, token: token)
+end
+
+def ensure_build_export_compliance(build_id, token)
+  return if build_id.to_s.empty?
+
+  build_resp = asc_get("/builds/#{build_id}", token: token)
+  uses_non_exempt = build_resp&.dig('data', 'attributes', 'usesNonExemptEncryption')
+  return if uses_non_exempt == false
+
+  body = {
+    data: {
+      type: 'builds',
+      id: build_id,
+      attributes: { usesNonExemptEncryption: false }
+    }
+  }
+  asc_patch("/builds/#{build_id}", body: body, token: token)
+end
+
+def ensure_minimum_review_metadata(app_id:, version_id:, build_id:, config:, token:)
+  appstore_cfg = config['appstore'] || {}
+  app_name = config['name'].to_s.strip
+  app_name = 'SaneApps' if app_name.empty?
+
+  content_rights = appstore_cfg['content_rights_declaration'].to_s.strip
+  content_rights = 'DOES_NOT_USE_THIRD_PARTY_CONTENT' if content_rights.empty?
+  ensure_content_rights_declaration(app_id, content_rights, token)
+
+  app_info_id = latest_app_info_id(app_id, token)
+  category_id = CATEGORY_ID_MAP[appstore_cfg['category'].to_s.strip]
+  ensure_primary_category(app_info_id, category_id, token) if app_info_id && category_id
+  ensure_app_info_localization(app_info_id, appstore_cfg['privacy_policy_url'], token) if app_info_id
+
+  description = appstore_cfg['description']
+  description = fallback_description(app_name, appstore_cfg['review_notes']) if description.to_s.strip.empty?
+  keywords = appstore_cfg['keywords']
+  keywords = fallback_keywords(app_name) if keywords.to_s.strip.empty?
+  ensure_version_localization(version_id, description, keywords, appstore_cfg['support_url'], token)
+
+  default_copyright = "#{Time.now.year} SaneApps"
+  ensure_version_copyright(version_id, appstore_cfg['copyright'].to_s.strip.empty? ? default_copyright : appstore_cfg['copyright'], token)
+  ensure_age_rating_declaration(version_id, token)
+  ensure_build_export_compliance(build_id, token)
 end
 
 # ─── Screenshot Management ───
@@ -1419,7 +1667,8 @@ end
 # Refresh token (may have expired during polling)
 token = generate_jwt
 unless attach_build_to_version(version_id, build_id, token)
-  log_error 'Failed to attach build. Continuing to try review submission...'
+  log_error 'Failed to attach build. Aborting before review submission.'
+  exit 1
 end
 
 # Step 5: Ensure review contact detail
@@ -1441,7 +1690,17 @@ else
   upload_screenshots(version_id, asc_platform, project_root, config, token)
 end
 
-# Step 7: Submit for review
+# Step 7: Fill required listing/build metadata before submission
+token = generate_jwt
+ensure_minimum_review_metadata(
+  app_id: app_id,
+  version_id: version_id,
+  build_id: build_id,
+  config: config,
+  token: token
+)
+
+# Step 8: Submit for review
 token = generate_jwt
 if submit_for_review(app_id, asc_platform, version_id, token)
   log_info ''
