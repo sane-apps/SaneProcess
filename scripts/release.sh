@@ -1346,7 +1346,8 @@ default_peer_host_for_project() {
             echo "mini"
             ;;
         /Users/stephansmac/*)
-            echo "air"
+            # `air` alias is not guaranteed on the mini; .local hostname is reliable.
+            echo "Stephans-MacBook-Air.local"
             ;;
         *)
             echo "mini"
