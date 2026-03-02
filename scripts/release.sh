@@ -1426,11 +1426,10 @@ enforce_machine_reconcile() {
     peer_path_escaped=$(printf '%q' "${peer_repo_path}")
     if ! peer_report=$(ssh -o BatchMode=yes -o ConnectTimeout=6 "${peer_host}" \
         "cd ${peer_path_escaped} >/dev/null 2>&1 && \
-         printf 'HEAD=%s\nBRANCH=%s\nDIRTY=%s\nDIRTY_FILES=%s\n' \
+         printf 'HEAD=%s\nBRANCH=%s\nDIRTY=%s\n' \
            \"\$(git rev-parse HEAD 2>/dev/null || echo)\" \
            \"\$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo)\" \
-           \"\$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')\" \
-           \"\$(git status --porcelain 2>/dev/null | sed -n '1,50p' | tr '\n' '|')\""); then
+           \"\$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')\""); then
         log_error "Could not query peer repo ${peer_host}:${peer_repo_path}."
         log_error "Fix connectivity/repo path first, or use --allow-unsynced-peer for emergencies."
         exit 1
@@ -1441,7 +1440,6 @@ enforce_machine_reconcile() {
             HEAD) peer_head="${value}" ;;
             BRANCH) peer_ref_branch="${value}" ;;
             DIRTY) peer_dirty="${value}" ;;
-            DIRTY_FILES) peer_dirty_files="${value}" ;;
         esac
     done <<< "${peer_report}"
 
@@ -1453,13 +1451,14 @@ enforce_machine_reconcile() {
     if [ "${peer_dirty}" != "0" ]; then
         log_error "Peer repo has ${peer_dirty} uncommitted change(s): ${peer_host}:${peer_repo_path}"
         log_error "Reconcile both machines before release, or use --allow-unsynced-peer for emergencies."
+        peer_dirty_files=$(ssh -o BatchMode=yes -o ConnectTimeout=6 "${peer_host}" \
+            "cd ${peer_path_escaped} >/dev/null 2>&1 && git status --porcelain 2>/dev/null | sed -n '1,50p'" 2>/dev/null || true)
         if [ -n "${peer_dirty_files}" ]; then
             log_error "Peer dirty files (first 50):"
-            IFS='|' read -r -a peer_dirty_entries <<< "${peer_dirty_files}"
             local peer_line
-            for peer_line in "${peer_dirty_entries[@]}"; do
+            while IFS= read -r peer_line; do
                 [ -n "${peer_line}" ] && log_error "  ${peer_line}"
-            done
+            done <<< "${peer_dirty_files}"
         fi
         exit 1
     fi
