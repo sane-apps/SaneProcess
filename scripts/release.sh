@@ -1383,8 +1383,9 @@ enforce_machine_reconcile() {
 
     local peer_host peer_repo_path peer_branch
     local local_branch local_head local_dirty
-    local peer_head="" peer_ref_branch="" peer_dirty=""
+    local peer_head="" peer_ref_branch="" peer_dirty="" peer_dirty_files=""
     local peer_report peer_path_escaped
+    local local_dirty_files=""
 
     peer_host="${RELEASE_PEER_HOST:-$(default_peer_host_for_project)}"
     peer_repo_path="${RELEASE_PEER_REPO_PATH:-$(default_peer_repo_path_for_project)}"
@@ -1398,7 +1399,8 @@ enforce_machine_reconcile() {
 
     local_branch=$(git -C "${PROJECT_ROOT}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
     local_head=$(git -C "${PROJECT_ROOT}" rev-parse HEAD 2>/dev/null || true)
-    local_dirty=$(git -C "${PROJECT_ROOT}" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+    local_dirty_files="$(git -C "${PROJECT_ROOT}" status --porcelain 2>/dev/null || true)"
+    local_dirty=$(printf '%s\n' "${local_dirty_files}" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
 
     if [ -z "${local_head}" ]; then
         log_error "Unable to read local git HEAD for machine reconcile gate."
@@ -1407,6 +1409,12 @@ enforce_machine_reconcile() {
 
     if [ "${local_dirty}" != "0" ]; then
         log_error "Local repo is not clean (${local_dirty} change(s)). Resolve before release."
+        if [ -n "${local_dirty_files}" ]; then
+            log_error "Local dirty files:"
+            while IFS= read -r line; do
+                [ -n "${line}" ] && log_error "  ${line}"
+            done <<< "${local_dirty_files}"
+        fi
         exit 1
     fi
 
@@ -1417,7 +1425,12 @@ enforce_machine_reconcile() {
 
     peer_path_escaped=$(printf '%q' "${peer_repo_path}")
     if ! peer_report=$(ssh -o BatchMode=yes -o ConnectTimeout=6 "${peer_host}" \
-        "cd ${peer_path_escaped} >/dev/null 2>&1 && printf 'HEAD=%s\nBRANCH=%s\nDIRTY=%s\n' \"\$(git rev-parse HEAD 2>/dev/null || echo)\" \"\$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo)\" \"\$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')\""); then
+        "cd ${peer_path_escaped} >/dev/null 2>&1 && \
+         printf 'HEAD=%s\nBRANCH=%s\nDIRTY=%s\nDIRTY_FILES=%s\n' \
+           \"\$(git rev-parse HEAD 2>/dev/null || echo)\" \
+           \"\$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo)\" \
+           \"\$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')\" \
+           \"\$(git status --porcelain 2>/dev/null | sed -n '1,50p' | tr '\n' '|')\""); then
         log_error "Could not query peer repo ${peer_host}:${peer_repo_path}."
         log_error "Fix connectivity/repo path first, or use --allow-unsynced-peer for emergencies."
         exit 1
@@ -1428,6 +1441,7 @@ enforce_machine_reconcile() {
             HEAD) peer_head="${value}" ;;
             BRANCH) peer_ref_branch="${value}" ;;
             DIRTY) peer_dirty="${value}" ;;
+            DIRTY_FILES) peer_dirty_files="${value}" ;;
         esac
     done <<< "${peer_report}"
 
@@ -1439,6 +1453,14 @@ enforce_machine_reconcile() {
     if [ "${peer_dirty}" != "0" ]; then
         log_error "Peer repo has ${peer_dirty} uncommitted change(s): ${peer_host}:${peer_repo_path}"
         log_error "Reconcile both machines before release, or use --allow-unsynced-peer for emergencies."
+        if [ -n "${peer_dirty_files}" ]; then
+            log_error "Peer dirty files (first 50):"
+            IFS='|' read -r -a peer_dirty_entries <<< "${peer_dirty_files}"
+            local peer_line
+            for peer_line in "${peer_dirty_entries[@]}"; do
+                [ -n "${peer_line}" ] && log_error "  ${peer_line}"
+            done
+        fi
         exit 1
     fi
 
@@ -1451,7 +1473,10 @@ enforce_machine_reconcile() {
         log_error "Air/mini are not reconciled."
         log_error "Local (${local_branch}) HEAD: ${local_head}"
         log_error "Peer  (${peer_ref_branch}) HEAD: ${peer_head}"
-        log_error "Merge/sync both machines first, or use --allow-unsynced-peer for emergencies."
+        log_error "Review divergence locally:"
+        log_error "  git -C \"${PROJECT_ROOT}\" log --left-right --oneline ${peer_head}...${local_head}"
+        log_error "Then keep good changes, drop bad ones, sync both machines, and rerun."
+        log_error "Emergency bypass remains --allow-unsynced-peer (typed approval)."
         exit 1
     fi
 
@@ -2730,6 +2755,18 @@ check_cloudflare_auth_gate() {
     return 0
 }
 
+check_release_path_gate() {
+    # Releasing from ad-hoc git worktrees has repeatedly caused branch/deploy drift.
+    # Require canonical project path for publish operations.
+    if [[ "${PROJECT_ROOT}" == *"/.worktrees/"* ]]; then
+        log_error "Release must run from canonical project path, not a git worktree clone:"
+        log_error "  ${PROJECT_ROOT}"
+        log_error "Use the canonical repo directory (for example ~/SaneApps/apps/${APP_NAME}) after reconcile."
+        return 1
+    fi
+    return 0
+}
+
 run_release_preflight_only() {
     local failures=0
 
@@ -3192,6 +3229,9 @@ fi
 
 if [ "${FULL_RELEASE}" = true ] || [ "${RUN_DEPLOY}" = true ] || [ "${RUN_GH_RELEASE}" = true ]; then
     ensure_cmd git
+    if ! check_release_path_gate; then
+        exit 1
+    fi
     ensure_git_clean
     enforce_machine_reconcile
 fi
