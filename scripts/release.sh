@@ -799,6 +799,7 @@ run_post_release_checks() {
     local dist_url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
     local appcast_url="https://${SITE_HOST}/appcast.xml"
     local checkout_url="https://go.saneapps.com/buy/${LOWER_APP_NAME}"
+    local strict="${STRICT_PUBLIC_CHANNEL_SYNC}"
 
     log_info "Running strict post-release checks..."
 
@@ -902,23 +903,33 @@ PY
 
     if [ "${RUN_GH_RELEASE}" = true ]; then
         if ! command -v gh >/dev/null 2>&1; then
-            log_error "gh CLI is required for GitHub release post-release verification."
-            return 1
-        fi
-        if [ -z "${GITHUB_REPO}" ]; then
-            log_error "GITHUB_REPO is empty during GitHub release post-release verification."
-            return 1
-        fi
-
-        local gh_tag="v${VERSION}"
-        local gh_asset="${APP_NAME}-${VERSION}.zip"
-        if ! gh release view "${gh_tag}" --repo "${GITHUB_REPO}" >/dev/null 2>&1; then
-            log_error "GitHub release missing after deploy: ${GITHUB_REPO}@${gh_tag}"
-            return 1
-        fi
-        if ! gh release view "${gh_tag}" --repo "${GITHUB_REPO}" --json assets --jq '.assets[].name' 2>/dev/null | grep -Fxq "${gh_asset}"; then
-            log_error "GitHub release ${GITHUB_REPO}@${gh_tag} missing required asset ${gh_asset}"
-            return 1
+            if [ "${strict}" = true ]; then
+                log_error "gh CLI is required for GitHub release post-release verification."
+                return 1
+            fi
+            log_warn "gh CLI unavailable — skipping GitHub release post-release verification."
+        elif [ -z "${GITHUB_REPO}" ]; then
+            if [ "${strict}" = true ]; then
+                log_error "GITHUB_REPO is empty during GitHub release post-release verification."
+                return 1
+            fi
+            log_warn "GITHUB_REPO is empty — skipping GitHub release post-release verification."
+        else
+            local gh_tag="v${VERSION}"
+            local gh_asset="${APP_NAME}-${VERSION}.zip"
+            if ! gh release view "${gh_tag}" --repo "${GITHUB_REPO}" >/dev/null 2>&1; then
+                if [ "${strict}" = true ]; then
+                    log_error "GitHub release missing after deploy: ${GITHUB_REPO}@${gh_tag}"
+                    return 1
+                fi
+                log_warn "GitHub release missing after deploy: ${GITHUB_REPO}@${gh_tag} (non-fatal)."
+            elif ! gh release view "${gh_tag}" --repo "${GITHUB_REPO}" --json assets --jq '.assets[].name' 2>/dev/null | grep -Fxq "${gh_asset}"; then
+                if [ "${strict}" = true ]; then
+                    log_error "GitHub release ${GITHUB_REPO}@${gh_tag} missing required asset ${gh_asset}"
+                    return 1
+                fi
+                log_warn "GitHub release ${GITHUB_REPO}@${gh_tag} missing asset ${gh_asset} (non-fatal)."
+            fi
         fi
     fi
 
@@ -1033,16 +1044,16 @@ print_help() {
     echo "                      Only mark update critical for hosts below this CFBundleVersion"
     echo "  --keep-github-binaries"
     echo "                      Do not purge old GitHub release binary assets"
-    echo "  --skip-notarize      Skip notarization (for local testing)"
-    echo "  --skip-build         Skip build step (use existing archive)"
+    echo "  --skip-notarize      Skip notarization (requires typed override approval)"
+    echo "  --skip-build         Skip build step (requires typed override approval)"
     echo "  --version X.Y.Z      Set version number"
     echo "  --notes \"...\"      Release notes for changelog/release metadata (required for preflight/full/deploy/GitHub release)"
-    echo "  --allow-republish    Allow republishing an already-live version/build"
-    echo "  --allow-unsynced-peer  Bypass Air/mini reconcile gate for this release"
+    echo "  --allow-republish    Allow republishing an already-live version/build (requires typed override approval)"
+    echo "  --allow-unsynced-peer  Bypass Air/mini reconcile gate (requires typed override approval)"
     echo "  --allow-repeat-failure  Bypass repeat-failure guard once"
     echo "  --allow-channel-sync-failures"
     echo "                      Allow GitHub/Homebrew sync failures (not recommended)"
-    echo "  --skip-appstore      Skip App Store archive/export/upload even if enabled in config"
+    echo "  --skip-appstore      Skip App Store archive/export/upload (requires typed override approval)"
     echo "  --website-only       Deploy website + appcast only (no build/R2/signing)"
     echo "  --preflight-only     Run release gates only and exit (no build, no upload, no publish)"
     echo "  -h, --help           Show this help"
@@ -1068,10 +1079,44 @@ array_contains() {
 }
 
 ensure_git_clean() {
-    if [ -n "$(git -C "${PROJECT_ROOT}" status --porcelain)" ]; then
-        log_error "Git working directory not clean. Commit or stash changes first."
-        exit 1
+    local status_output
+    status_output="$(git -C "${PROJECT_ROOT}" status --porcelain)"
+    if [ -z "${status_output}" ]; then
+        return 0
     fi
+
+    local -a expected_release_mutations unexpected_mutations
+    expected_release_mutations=()
+    unexpected_mutations=()
+
+    while IFS= read -r line; do
+        [ -z "${line}" ] && continue
+        local path="${line#?? }"
+        case "${path}" in
+            project.yml|CHANGELOG.md|docs/appcast.xml|docs/index.html|website/index.html|*.xcodeproj/project.pbxproj)
+                expected_release_mutations+=("${path}")
+                ;;
+            *)
+                unexpected_mutations+=("${path}")
+                ;;
+        esac
+    done <<< "${status_output}"
+
+    log_error "Git working directory not clean."
+    log_error "Dirty files:"
+    while IFS= read -r line; do
+        [ -n "${line}" ] && log_error "  ${line}"
+    done <<< "${status_output}"
+
+    if [ ${#unexpected_mutations[@]} -gt 0 ]; then
+        log_error "Unexpected dirty files are present. Reconcile these changes before release."
+        log_error "Review: git -C \"${PROJECT_ROOT}\" diff -- ${unexpected_mutations[*]}"
+    elif [ ${#expected_release_mutations[@]} -gt 0 ]; then
+        log_error "Only known release-mutated files are dirty."
+        log_error "Finish reconciliation first: keep/commit good changes, restore bad ones."
+        log_error "Review: git -C \"${PROJECT_ROOT}\" diff -- ${expected_release_mutations[*]}"
+    fi
+    exit 1
 }
 
 shell_true() {
@@ -1083,6 +1128,91 @@ shell_true() {
             return 1
             ;;
     esac
+}
+
+record_override_flag() {
+    local flag="$1"
+    local existing
+    for existing in "${OVERRIDE_FLAGS_USED[@]}"; do
+        if [ "${existing}" = "${flag}" ]; then
+            return 0
+        fi
+    done
+    OVERRIDE_FLAGS_USED+=("${flag}")
+}
+
+override_approval_phrase_for_flag() {
+    case "$1" in
+        --skip-notarize) echo "MR. SANE APPROVES SKIP NOTARIZATION" ;;
+        --skip-build) echo "MR. SANE APPROVES SKIP BUILD" ;;
+        --allow-republish) echo "MR. SANE APPROVES REPUBLISH OVERRIDE" ;;
+        --allow-unsynced-peer) echo "MR. SANE APPROVES UNSYNCED PEER RELEASE" ;;
+        --skip-appstore) echo "MR. SANE APPROVES SKIP APPSTORE" ;;
+        *) echo "MR. SANE APPROVES RELEASE OVERRIDE" ;;
+    esac
+}
+
+override_reason_for_flag() {
+    case "$1" in
+        --skip-notarize) echo "Notarization is being skipped." ;;
+        --skip-build) echo "Build step is being skipped (reusing prior artifacts)." ;;
+        --allow-republish) echo "Release is republishing an already-live version/build." ;;
+        --allow-unsynced-peer) echo "Air/mini reconcile gate is being bypassed." ;;
+        --skip-appstore) echo "App Store submission path is being skipped." ;;
+        *) echo "A release safety override is being requested." ;;
+    esac
+}
+
+request_override_approval_for_flag() {
+    local flag="$1"
+    local phrase reason response
+    phrase="$(override_approval_phrase_for_flag "${flag}")"
+    reason="$(override_reason_for_flag "${flag}")"
+
+    if [ ! -t 0 ] || [ ! -t 1 ]; then
+        log_error "Override ${flag} requires interactive typed approval."
+        log_error "${reason}"
+        log_error "Run this release command in an interactive terminal and type exactly:"
+        log_error "${phrase}"
+        return 1
+    fi
+
+    echo
+    log_warn "Manual approval required for ${flag}"
+    log_warn "${reason}"
+    echo "Type exactly to continue:"
+    echo "${phrase}"
+    printf '> '
+    IFS= read -r response
+
+    if [ "${response}" != "${phrase}" ]; then
+        log_error "Approval phrase mismatch for ${flag}. Override denied."
+        return 1
+    fi
+
+    log_info "Override approved for ${flag}"
+    return 0
+}
+
+enforce_release_override_approvals() {
+    local flag
+    if [ ${#OVERRIDE_FLAGS_USED[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    for flag in "${OVERRIDE_FLAGS_USED[@]}"; do
+        if ! request_override_approval_for_flag "${flag}"; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+release_guardrails_required_for_mode() {
+    if [ "${PREFLIGHT_ONLY}" = true ] || [ "${FULL_RELEASE}" = true ] || [ "${RUN_DEPLOY}" = true ]; then
+        return 0
+    fi
+    return 1
 }
 
 set_env_if_missing() {
@@ -1328,6 +1458,19 @@ enforce_machine_reconcile() {
     log_info "Machine reconcile gate passed: local and ${peer_host} are synced at ${local_head:0:12}"
 }
 
+enforce_reconcile_policy() {
+    # Do not allow silent env-based bypasses. Emergency bypass must be explicit and typed.
+    if ! shell_true "${RELEASE_RECONCILE_ENABLED}"; then
+        if [ "${ALLOW_UNSYNCED_PEER}" = true ]; then
+            log_warn "RELEASE_RECONCILE_ENABLED=false supplied, but explicit --allow-unsynced-peer override is in effect."
+            return 0
+        fi
+        log_error "RELEASE_RECONCILE_ENABLED=false is not allowed for release operations."
+        log_error "Release reconcile is mandatory. Use --allow-unsynced-peer (typed approval) for emergency-only bypass."
+        exit 1
+    fi
+}
+
 resolve_path() {
     local path="$1"
     if [ -z "${path}" ]; then
@@ -1532,20 +1675,43 @@ EOF
             log_warn "Failed to edit GitHub release ${GITHUB_REPO}@${tag} (non-fatal)."
         fi
     else
-        local target_commit
+        local target_commit gh_create_output
         target_commit=$(git -C "${PROJECT_ROOT}" rev-parse HEAD 2>/dev/null || echo "")
-        if gh release create "${tag}" \
-            --repo "${GITHUB_REPO}" \
-            --title "${title}" \
-            --notes-file "${notes_file}" \
-            ${target_commit:+--target "${target_commit}"} >/dev/null 2>&1; then
+
+        # `gh release create --target` only accepts commits reachable on remote.
+        # If this worktree is ahead locally, omit --target so tag creation can proceed.
+        local -a gh_create_args
+        gh_create_args=(
+            release
+            create
+            "${tag}"
+            --repo "${GITHUB_REPO}"
+            --title "${title}"
+            --notes-file "${notes_file}"
+        )
+
+        if [ -n "${target_commit}" ]; then
+            if git -C "${PROJECT_ROOT}" branch -r --contains "${target_commit}" 2>/dev/null | grep -q .; then
+                gh_create_args+=(--target "${target_commit}")
+            else
+                log_warn "HEAD commit ${target_commit} is not on remote; creating GitHub release without explicit --target."
+            fi
+        fi
+
+        if gh_create_output=$(gh "${gh_create_args[@]}" 2>&1); then
             log_info "GitHub release created: ${GITHUB_REPO}@${tag}"
         else
             if [ "${strict}" = true ]; then
                 log_error "Failed to create required GitHub release ${GITHUB_REPO}@${tag}."
+                if [ -n "${gh_create_output}" ]; then
+                    log_error "gh output: ${gh_create_output}"
+                fi
                 return 1
             fi
             log_warn "Failed to create GitHub release ${GITHUB_REPO}@${tag} (non-fatal)."
+            if [ -n "${gh_create_output}" ]; then
+                log_warn "gh output: ${gh_create_output}"
+            fi
         fi
     fi
 
@@ -1603,8 +1769,12 @@ upload_github_release_asset() {
     asset_name="$(basename "${FINAL_ZIP}")"
 
     if ! gh release view "${tag}" --repo "${GITHUB_REPO}" >/dev/null 2>&1; then
-        log_error "GitHub release ${GITHUB_REPO}@${tag} does not exist yet."
-        return 1
+        if [ "${strict}" = true ]; then
+            log_error "GitHub release ${GITHUB_REPO}@${tag} does not exist yet."
+            return 1
+        fi
+        log_warn "GitHub release ${GITHUB_REPO}@${tag} does not exist yet — skipping asset upload (non-fatal)."
+        return 0
     fi
 
     if gh release upload "${tag}" "${FINAL_ZIP}" --repo "${GITHUB_REPO}" --clobber >/dev/null 2>&1; then
@@ -2004,7 +2174,7 @@ fix_and_verify_zipped_apps_in_app() {
 
         # Recreate zip from the extracted directory.
         rm -f "${zip_path}"
-        (cd "${unzip_dir}" && ditto -c -k --sequesterRsrc . "${zip_path}")
+        (cd "${unzip_dir}" && ditto -c -k --norsrc . "${zip_path}")
     done < <(find "${resources_path}" -type f -name "*.zip" -print0 2>/dev/null || true)
 
     if [ "${zip_found}" = true ]; then
@@ -2425,6 +2595,44 @@ check_appstore_gate() {
     return 0
 }
 
+check_project_qa_guardrails() {
+    if ! release_guardrails_required_for_mode; then
+        return 0
+    fi
+
+    local qa_script=""
+    if [ -f "${PROJECT_ROOT}/Scripts/qa.rb" ]; then
+        qa_script="${PROJECT_ROOT}/Scripts/qa.rb"
+    elif [ -f "${PROJECT_ROOT}/scripts/qa.rb" ]; then
+        qa_script="${PROJECT_ROOT}/scripts/qa.rb"
+    fi
+
+    if [ -z "${qa_script}" ]; then
+        log_warn "No project qa.rb found — skipping project QA guardrail."
+        return 0
+    fi
+
+    if ! command -v ruby >/dev/null 2>&1; then
+        log_error "Project QA guardrail requires ruby (missing from PATH)."
+        return 1
+    fi
+
+    local app_env_prefix app_preflight_key app_stability_key
+    app_env_prefix="$(echo "${APP_NAME}" | tr '[:lower:]-' '[:upper:]_' | tr -cd 'A-Z0-9_')"
+    app_preflight_key="${app_env_prefix}_RELEASE_PREFLIGHT"
+    app_stability_key="${app_env_prefix}_RUN_STABILITY_SUITE"
+
+    if env SANEPROCESS_RELEASE_PREFLIGHT=1 SANEPROCESS_RUN_STABILITY_SUITE=1 \
+        "${app_preflight_key}=1" "${app_stability_key}=1" \
+        ruby "${qa_script}"; then
+        return 0
+    fi
+
+    log_error "Project QA guardrails failed (${qa_script})."
+    log_error "Stop release, fix the issue, verify, then rerun."
+    return 1
+}
+
 check_appstore_connect_version_state_gate() {
     if [ "${APPSTORE_ENABLED}" != "true" ] || [ "${SKIP_APPSTORE}" = true ]; then
         return 0
@@ -2550,6 +2758,7 @@ run_release_preflight_only() {
         return 1
     fi
     run_gate "Required commands" check_required_commands
+    run_gate "Project QA guardrails" check_project_qa_guardrails
     run_gate "Git clean" check_git_clean_gate
     run_gate "Machine reconcile" check_reconcile_gate
     run_gate "Version bump configuration" check_version_bump_gate
@@ -2592,6 +2801,7 @@ PURGE_GITHUB_BINARY_ASSETS=true
 ALLOW_UNSYNCED_PEER=false
 SKIP_APPSTORE=false
 PREFLIGHT_ONLY=false
+OVERRIDE_FLAGS_USED=()
 ALLOW_REPEAT_FAILURE=false
 STRICT_PUBLIC_CHANNEL_SYNC=true
 
@@ -2608,10 +2818,12 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-notarize)
             SKIP_NOTARIZE=true
+            record_override_flag "--skip-notarize"
             shift
             ;;
         --skip-build)
             SKIP_BUILD=true
+            record_override_flag "--skip-build"
             shift
             ;;
         --version)
@@ -2624,10 +2836,12 @@ while [[ $# -gt 0 ]]; do
             ;;
         --allow-republish)
             ALLOW_REPUBLISH=true
+            record_override_flag "--allow-republish"
             shift
             ;;
         --allow-unsynced-peer)
             ALLOW_UNSYNCED_PEER=true
+            record_override_flag "--allow-unsynced-peer"
             shift
             ;;
         --allow-repeat-failure)
@@ -2640,6 +2854,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-appstore)
             SKIP_APPSTORE=true
+            record_override_flag "--skip-appstore"
             shift
             ;;
         --full)
@@ -2767,6 +2982,13 @@ RELEASE_RECONCILE_ENABLED="${RELEASE_RECONCILE_ENABLED:-true}"
 RELEASE_PEER_HOST="${RELEASE_PEER_HOST:-}"
 RELEASE_PEER_REPO_PATH="${RELEASE_PEER_REPO_PATH:-}"
 RELEASE_PEER_BRANCH="${RELEASE_PEER_BRANCH:-main}"
+PAGES_BRANCH="${PAGES_BRANCH:-main}"
+
+if ! enforce_release_override_approvals; then
+    exit 1
+fi
+
+enforce_reconcile_policy
 
 PUBLIC_CHANNEL_APPROVED=false
 IFS=',' read -r -a PUBLIC_CHANNEL_APPS <<< "${PUBLIC_CHANNEL_ALLOWLIST}"
@@ -2962,6 +3184,18 @@ if [ "${PREFLIGHT_ONLY}" = true ]; then
     exit 1
 fi
 
+if [ "${FULL_RELEASE}" = true ] || [ "${RUN_DEPLOY}" = true ]; then
+    if ! check_project_qa_guardrails; then
+        exit 1
+    fi
+fi
+
+if [ "${FULL_RELEASE}" = true ] || [ "${RUN_DEPLOY}" = true ] || [ "${RUN_GH_RELEASE}" = true ]; then
+    ensure_cmd git
+    ensure_git_clean
+    enforce_machine_reconcile
+fi
+
 if ! check_recent_unresolved_failures_gate; then
     exit 1
 fi
@@ -2976,10 +3210,6 @@ if [ "${FULL_RELEASE}" = true ]; then
         log_error "--full requires --version X.Y.Z"
         exit 1
     fi
-
-    ensure_cmd git
-    ensure_git_clean
-    enforce_machine_reconcile
 
     # ─── Pre-release safety gates (learned from 46 issues + 200 emails) ───
 
@@ -3420,7 +3650,7 @@ ZIP_PATH="${BUILD_DIR}/${ZIP_NAME}.zip"
 
 # Create temporary zip for notarization submission
 log_info "Creating ZIP for notarization..."
-ditto -c -k --keepParent "${APP_PATH}" "${NOTARIZE_ZIP}"
+ditto -c -k --keepParent --norsrc "${APP_PATH}" "${NOTARIZE_ZIP}"
 
 # Notarize (if not skipped)
 if [ "${SKIP_NOTARIZE}" = false ]; then
@@ -3459,7 +3689,16 @@ fi
 # Create final distribution ZIP (with stapled notarization ticket)
 log_info "Creating distribution ZIP..."
 rm -f "${ZIP_PATH}"
-ditto -c -k --keepParent "${APP_PATH}" "${ZIP_PATH}"
+ditto -c -k --keepParent --norsrc "${APP_PATH}" "${ZIP_PATH}"
+
+# Guard: release ZIP must not contain AppleDouble metadata entries.
+# Some extraction tools (notably plain `unzip`) materialize these as files
+# inside app/framework bundles, which breaks code signing and Gatekeeper.
+if unzip -l "${ZIP_PATH}" | awk 'NR > 3 {print $4}' | grep -Eq '(^|/)\._'; then
+    log_error "Distribution ZIP contains AppleDouble (._*) entries, which can corrupt signatures after extraction."
+    log_error "Rebuild failed intentionally to prevent shipping a Gatekeeper-rejected artifact."
+    exit 1
+fi
 
 # Clean up temp notarization zip
 rm -f "${NOTARIZE_ZIP}"
@@ -3818,6 +4057,7 @@ PY
         RELEASE_ERR_GATE_RECORDED=""
         npx wrangler pages deploy "${DOCS_DIR}" \
             --project-name="${PAGES_PROJECT}" \
+            --branch="${PAGES_BRANCH}" \
             --commit-dirty=true \
             --commit-message="Release v${VERSION}"
         log_info "Pages deploy complete."
@@ -3965,7 +4205,7 @@ PY
         git -C "${PROJECT_ROOT}" add "${VERSION_SYNC_FILES[@]}"
         if ! git -C "${PROJECT_ROOT}" diff --cached --quiet; then
             git -C "${PROJECT_ROOT}" commit -m "chore: sync ${VERSION} version metadata and site download links"
-            git -C "${PROJECT_ROOT}" push
+            GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push
             log_info "Version metadata/site link commit pushed."
         fi
     fi
@@ -3975,7 +4215,7 @@ PY
         log_info "Committing appcast update..."
         git -C "${PROJECT_ROOT}" add docs/appcast.xml
         git -C "${PROJECT_ROOT}" commit -m "chore: update appcast for v${VERSION}"
-        git -C "${PROJECT_ROOT}" push
+        GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push
         log_info "Appcast commit pushed."
     fi
 
@@ -3986,7 +4226,7 @@ PY
         log_info "Updating Homebrew cask in ${HOMEBREW_TAP_REPO}..."
 
         # Clone the tap repo
-        if git clone --depth 1 "https://github.com/${HOMEBREW_TAP_REPO}.git" "${HOMEBREW_TAP_DIR}" 2>/dev/null; then
+        if GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git clone --depth 1 "https://github.com/${HOMEBREW_TAP_REPO}.git" "${HOMEBREW_TAP_DIR}" 2>/dev/null; then
             if [ -f "${HOMEBREW_TAP_DIR}/${CASK_FILE}" ]; then
                 # Update version and SHA256 in the cask formula
                 sed -i '' "s/version \"[^\"]*\"/version \"${VERSION}\"/" "${HOMEBREW_TAP_DIR}/${CASK_FILE}"
@@ -3999,7 +4239,7 @@ PY
                     log_info "Homebrew cask already up to date."
                 else
                     git commit -m "chore: update ${LOWER_APP_NAME} to ${VERSION}"
-                    if ! git push; then
+                    if ! GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git push; then
                         cd "${PROJECT_ROOT}"
                         remove_path "${HOMEBREW_TAP_DIR}"
                         if [ "${STRICT_PUBLIC_CHANNEL_SYNC}" = true ]; then
@@ -4069,7 +4309,7 @@ PY
             WEBHOOK_DIR="$(dirname "$(dirname "$(dirname "${WEBHOOK_JS}")")")"
             if cd "${WEBHOOK_DIR}" 2>/dev/null; then
                 git add -A && git commit -m "chore: update ${LOWER_APP_NAME} to ${VERSION}" --no-verify 2>/dev/null && \
-                    git push 2>/dev/null && \
+                    GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git push 2>/dev/null && \
                     log_info "Webhook committed and pushed."
                 npx wrangler deploy --keep-vars 2>/dev/null && \
                     log_info "Webhook deployed to Cloudflare Workers." || \
