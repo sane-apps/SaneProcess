@@ -1188,6 +1188,27 @@ PY
         log_warn "Could not fetch website for download link check: ${site_url}"
     fi
 
+    # Verify email webhook PRODUCT_CONFIG has the correct version
+    local webhook_js="${HOME}/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js"
+    if [ -f "${webhook_js}" ]; then
+        local webhook_entry
+        webhook_entry=$(grep "'${APP_NAME}'" "${webhook_js}" 2>/dev/null || true)
+        if [ -n "${webhook_entry}" ]; then
+            local webhook_ver
+            webhook_ver=$(echo "${webhook_entry}" | grep -oE "${APP_NAME}-[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?')
+            if [ -n "${webhook_ver}" ] && [ "${webhook_ver}" != "${VERSION}" ]; then
+                log_error "Email webhook PRODUCT_CONFIG drift: webhook sends v${webhook_ver}, expected v${VERSION}"
+                log_error "New customers will download an old build. Update ${webhook_js} and deploy the Worker."
+                return 1
+            fi
+            log_info "Email webhook version verified: ${APP_NAME}-${VERSION}"
+        else
+            log_warn "No '${APP_NAME}' entry in email webhook — new customers won't get a download link."
+        fi
+    else
+        log_warn "Email webhook file not found at ${webhook_js} — cannot verify download version."
+    fi
+
     log_info "Post-release checks passed."
     return 0
 }
