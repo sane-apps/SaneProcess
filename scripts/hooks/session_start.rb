@@ -17,6 +17,7 @@ require 'json'
 require 'fileutils'
 require 'time'
 require 'open3'
+require 'rbconfig'
 require_relative 'state_signer'
 
 PROJECT_DIR = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
@@ -568,6 +569,20 @@ rescue StandardError => e
   log_debug("MCP daemon cleanup error: #{e.class}: #{e.message}")
 end
 
+def run_mcp_watchdog_cleanup
+  sane_master = File.expand_path('../SaneMaster.rb', __dir__)
+  return unless File.exist?(sane_master)
+
+  ok = system(
+    RbConfig.ruby, sane_master, 'mcp_watchdog', 'clean',
+    '--quiet', '--max', '4',
+    out: File::NULL, err: File::NULL
+  )
+  log_debug("mcp_watchdog_cleanup done=#{ok}")
+rescue StandardError => e
+  log_debug("mcp_watchdog_cleanup error: #{e.class}: #{e.message}")
+end
+
 # Cleanup orphaned Claude subagents (Task tool agents with --resume)
 # Only kills subagents not in ANY living Claude session's tree
 def cleanup_orphaned_subagents
@@ -893,6 +908,8 @@ begin
   log_debug "cleanup_orphaned_claude_processes done"
   cleanup_orphaned_mcp_daemons        # Clean up orphan MCP daemons
   log_debug "cleanup_orphaned_mcp_daemons done"
+  run_mcp_watchdog_cleanup            # Enforce daemon cap and clear duplicates
+  log_debug "run_mcp_watchdog_cleanup done"
   cleanup_orphaned_subagents          # Clean up orphan --resume subagents
   log_debug "cleanup_orphaned_subagents done"
   ensure_claude_dir

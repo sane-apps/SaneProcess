@@ -582,7 +582,99 @@ section_health() {
 }
 
 # =============================================================================
-# Section 7: Git Status
+# Section 7: Version Drift (cross-channel consistency)
+# =============================================================================
+section_version_drift() {
+  echo "## Version Consistency" >> "$REPORT_FILE"
+  echo "" >> "$REPORT_FILE"
+
+  local webhook_js="$HOME/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js"
+
+  # App configs: name|appcast_url|site_url|cask_name
+  local app_configs=(
+    "SaneBar|https://sanebar.com/appcast.xml|https://sanebar.com|sanebar"
+    "SaneClip|https://saneclip.com/appcast.xml|https://saneclip.com|saneclip"
+    "SaneClick|https://saneclick.com/appcast.xml|https://saneclick.com|saneclick"
+    "SaneHosts|https://sanehosts.com/appcast.xml|https://sanehosts.com|sanehosts"
+  )
+
+  echo "| App | Appcast | Website | Webhook | Homebrew | Status |" >> "$REPORT_FILE"
+  echo "|-----|---------|---------|---------|----------|--------|" >> "$REPORT_FILE"
+
+  local has_drift=false
+
+  for entry in "${app_configs[@]}"; do
+    IFS='|' read -r app_name appcast_url site_url cask_name <<< "$entry"
+
+    # 1. Appcast version (live fetch — source of truth)
+    local appcast_ver="—"
+    local appcast_xml
+    appcast_xml=$(safe_curl -fsSL "$appcast_url" 2>/dev/null || echo "")
+    if [[ -n "$appcast_xml" ]]; then
+      appcast_ver=$(echo "$appcast_xml" | grep -oE 'shortVersionString[^0-9]*[0-9]+\.[0-9]+\.[0-9]+' | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "—")
+    fi
+
+    # 2. Website download link version (live fetch)
+    local site_ver="—"
+    local site_html
+    site_html=$(safe_curl -fsSL "$site_url" 2>/dev/null || echo "")
+    if [[ -n "$site_html" ]]; then
+      site_ver=$(echo "$site_html" | grep -oE "${app_name}-[0-9]+\.[0-9]+\.[0-9]+\.(zip|dmg)" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "—")
+    fi
+
+    # 3. Webhook PRODUCT_CONFIG version (local file)
+    local webhook_ver="—"
+    if [[ -f "$webhook_js" ]]; then
+      local webhook_line
+      webhook_line=$(grep "'${app_name}'" "$webhook_js" 2>/dev/null || echo "")
+      if [[ -n "$webhook_line" ]]; then
+        webhook_ver=$(echo "$webhook_line" | grep -oE "${app_name}-[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' || echo "—")
+      fi
+    fi
+
+    # 4. Homebrew cask version (live fetch)
+    local cask_ver="—"
+    if [[ -n "$cask_name" ]]; then
+      local cask_body
+      cask_body=$(safe_curl -fsSL "https://raw.githubusercontent.com/sane-apps/homebrew-tap/main/Casks/${cask_name}.rb" 2>/dev/null || echo "")
+      if [[ -n "$cask_body" ]]; then
+        cask_ver=$(echo "$cask_body" | grep -oE 'version "[0-9]+\.[0-9]+(\.[0-9]+)?"' | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' || echo "—")
+      fi
+    fi
+
+    # Compare: all present versions should match appcast
+    local status="✅"
+    if [[ "$appcast_ver" != "—" ]]; then
+      for v in "$site_ver" "$webhook_ver" "$cask_ver"; do
+        if [[ "$v" != "—" ]] && [[ "$v" != "$appcast_ver" ]]; then
+          status="❌ DRIFT"
+          has_drift=true
+          break
+        fi
+      done
+    else
+      status="⚠️ No appcast"
+    fi
+
+    echo "| $app_name | $appcast_ver | $site_ver | $webhook_ver | $cask_ver | $status |" >> "$REPORT_FILE"
+  done
+
+  echo "" >> "$REPORT_FILE"
+
+  if [[ "$has_drift" == "true" ]]; then
+    echo "**⚠️ Version drift detected!** New customers may be downloading old builds." >> "$REPORT_FILE"
+    echo "Run \`ruby scripts/validation_report.rb\` for details." >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    # macOS notification for drift
+    osascript -e "display notification \"Version drift detected across channels — check daily report\" with title \"SaneApps VERSION DRIFT\" sound name \"Sosumi\"" 2>/dev/null
+  fi
+
+  echo "---" >> "$REPORT_FILE"
+  echo "" >> "$REPORT_FILE"
+}
+
+# =============================================================================
+# Section 8: Git Status
 # =============================================================================
 section_git_status() {
   echo "## Git Status" >> "$REPORT_FILE"
@@ -669,6 +761,7 @@ safe_section "Website Traffic" section_website_traffic
 safe_section "GitHub" section_github_traction
 safe_section "Customer Intel" section_customer_intel
 safe_section "Health" section_health
+safe_section "Version Drift" section_version_drift
 safe_section "Git Status" section_git_status
 
 # Executive summary LAST (reads entire report, writes TL;DR at top)

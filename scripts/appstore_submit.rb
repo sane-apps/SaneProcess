@@ -113,6 +113,7 @@ P8_PATH = File.expand_path(
   ENV['ASC_AUTH_KEY_PATH'] || ENV['ASC_KEY_PATH'] || '~/.private_keys/AuthKey_S34998ZCRT.p8'
 )
 ASC_BASE = 'https://api.appstoreconnect.apple.com/v1'
+ASC_V2_BASE = 'https://api.appstoreconnect.apple.com/v2'
 
 PLATFORM_MAP = {
   'macos' => 'MAC_OS',
@@ -158,6 +159,37 @@ CATEGORY_ID_MAP = {
   'public.app-category.business' => 'BUSINESS'
 }.freeze
 
+ACCESSIBILITY_DEVICE_FAMILY_MAP = {
+  'iphone' => 'IPHONE',
+  'ios' => 'IPHONE',
+  'phone' => 'IPHONE',
+  'ipad' => 'IPAD',
+  'tablet' => 'IPAD',
+  'appletv' => 'APPLE_TV',
+  'tv' => 'APPLE_TV',
+  'applewatch' => 'APPLE_WATCH',
+  'watch' => 'APPLE_WATCH',
+  'mac' => 'MAC',
+  'macos' => 'MAC',
+  'vision' => 'VISION',
+  'visionpro' => 'VISION'
+}.freeze
+
+ACCESSIBILITY_ATTRIBUTE_KEY_MAP = {
+  'supportsaudiodescriptions' => 'supportsAudioDescriptions',
+  'supportscaptions' => 'supportsCaptions',
+  'supportsdarkinterface' => 'supportsDarkInterface',
+  'supportsdifferentiatewithoutcoloralone' => 'supportsDifferentiateWithoutColorAlone',
+  'supportslargertext' => 'supportsLargerText',
+  'supportsreducedmotion' => 'supportsReducedMotion',
+  'supportssufficientcontrast' => 'supportsSufficientContrast',
+  'supportsvoicecontrol' => 'supportsVoiceControl',
+  'supportsvoiceover' => 'supportsVoiceover'
+}.freeze
+
+IAP_DEFAULT_USD_PRICE = '6.99'
+IAP_DEFAULT_REVIEW_NOTE = 'One-time Pro unlock. Purchase unlocks advanced features immediately.'
+
 AGE_RATING_SAFE_DEFAULTS = {
   advertising: false,
   alcoholTobaccoOrDrugUseOrReferences: 'NONE',
@@ -197,6 +229,43 @@ end
 
 def log_error(msg)
   warn "\033[0;31m[ASC]\033[0m #{msg}"
+end
+
+def present_value(value)
+  trimmed = value.to_s.strip
+  trimmed.empty? ? nil : trimmed
+end
+
+def resolve_review_contact(config)
+  cfg_contact = config.dig('appstore', 'contact') || {}
+
+  name = present_value(ENV['APPSTORE_CONTACT_NAME']) ||
+         present_value(cfg_contact['name']) ||
+         'Mr. Sane'
+  first_name, last_name = name.split(' ', 2)
+
+  phone = present_value(ENV['APPSTORE_CONTACT_PHONE']) ||
+          present_value(cfg_contact['phone'])
+  email = present_value(ENV['APPSTORE_CONTACT_EMAIL']) ||
+          present_value(cfg_contact['email']) ||
+          'hi@saneapps.com'
+
+  missing = []
+  missing << 'APPSTORE_CONTACT_PHONE (or appstore.contact.phone)' if phone.nil?
+  missing << 'APPSTORE_CONTACT_EMAIL (or appstore.contact.email)' if email.nil?
+
+  unless missing.empty?
+    log_error "Missing App Store review contact fields: #{missing.join(', ')}"
+    log_error 'Set contact values in environment or .saneprocess before submit.'
+    exit 1
+  end
+
+  {
+    first_name: first_name || 'Mr.',
+    last_name: last_name || 'Sane',
+    phone: phone,
+    email: email
+  }
 end
 
 # ─── JWT Token Generation ───
@@ -281,6 +350,36 @@ def asc_get(path, token: nil)
   asc_request(:get, path, token: token)
 end
 
+def asc_get_with_status(path, token: nil, base: ASC_BASE)
+  token ||= generate_jwt
+  uri = URI("#{base}#{path}")
+
+  http = Net::HTTP.new(uri.host, uri.port)
+  http.use_ssl = true
+  http.open_timeout = 15
+  http.read_timeout = 60
+
+  request = Net::HTTP::Get.new(uri)
+  request['Authorization'] = "Bearer #{token}"
+  request['Content-Type'] = 'application/json'
+
+  response = http.request(request)
+  parsed = begin
+    JSON.parse(response.body.to_s)
+  rescue StandardError
+    { 'raw' => response.body.to_s }
+  end
+
+  [response.code.to_i, parsed]
+rescue StandardError => e
+  log_error "ASC API raw GET error: #{e.message}"
+  [0, { 'error' => e.message }]
+end
+
+def asc_get_v2(path, token: nil)
+  asc_get_with_status(path, token: token, base: ASC_V2_BASE)
+end
+
 def asc_post(path, body:, token: nil)
   asc_request(:post, path, body: body, token: token)
 end
@@ -293,9 +392,9 @@ def asc_delete(path, token: nil)
   asc_request(:delete, path, token: token)
 end
 
-def asc_post_with_status(path, body:, token: nil)
+def asc_post_with_status(path, body:, token: nil, base: ASC_BASE)
   token ||= generate_jwt
-  uri = URI("#{ASC_BASE}#{path}")
+  uri = URI("#{base}#{path}")
 
   http = Net::HTTP.new(uri.host, uri.port)
   http.use_ssl = true
@@ -319,9 +418,9 @@ rescue StandardError => e
   [0, { 'error' => e.message }]
 end
 
-def asc_patch_with_status(path, body:, token: nil)
+def asc_patch_with_status(path, body:, token: nil, base: ASC_BASE)
   token ||= generate_jwt
-  uri = URI("#{ASC_BASE}#{path}")
+  uri = URI("#{base}#{path}")
 
   http = Net::HTTP.new(uri.host, uri.port)
   http.use_ssl = true
@@ -345,9 +444,9 @@ rescue StandardError => e
   [0, { 'error' => e.message }]
 end
 
-def asc_delete_with_status(path, token: nil)
+def asc_delete_with_status(path, token: nil, base: ASC_BASE)
   token ||= generate_jwt
-  uri = URI("#{ASC_BASE}#{path}")
+  uri = URI("#{base}#{path}")
 
   http = Net::HTTP.new(uri.host, uri.port)
   http.use_ssl = true
@@ -555,14 +654,14 @@ def find_version_any_state(app_id, asc_platform, version_string, token)
 end
 
 def check_version_state_preflight(app_id, asc_platform, version_string, token)
-  path = "/apps/#{app_id}/appStoreVersions" \
-         "?filter[platform]=#{asc_platform}" \
-         "&filter[appStoreState]=PREPARE_FOR_SUBMISSION,REJECTED,DEVELOPER_REJECTED,READY_FOR_REVIEW"
-  resp = asc_get(path, token: token)
-  return false unless resp
-  return true unless resp['data'] && !resp['data'].empty?
+  editable_path = "/apps/#{app_id}/appStoreVersions" \
+                  "?filter[platform]=#{asc_platform}" \
+                  "&filter[appStoreState]=PREPARE_FOR_SUBMISSION,REJECTED,DEVELOPER_REJECTED,READY_FOR_REVIEW"
+  editable_resp = asc_get(editable_path, token: token)
+  return false unless editable_resp
 
-  matching = resp['data'].find do |v|
+  editable_versions = editable_resp['data'] || []
+  matching = editable_versions.find do |v|
     v.dig('attributes', 'versionString') == version_string
   end
   if matching
@@ -575,7 +674,34 @@ def check_version_state_preflight(app_id, asc_platform, version_string, token)
     return true
   end
 
-  conflict = resp['data'].first
+  # Check for non-editable active review states that block creating a new version.
+  # ASC only allows one active review submission lane per platform.
+  active_resp = asc_get("/apps/#{app_id}/appStoreVersions?filter[platform]=#{asc_platform}&limit=200", token: token)
+  return false unless active_resp
+
+  active_versions = (active_resp['data'] || []).select do |v|
+    state = v.dig('attributes', 'appStoreState').to_s
+    SUBMITTED_APP_STORE_STATES.include?(state)
+  end
+  same_active = active_versions.find { |v| v.dig('attributes', 'versionString') == version_string }
+  if same_active
+    state = same_active.dig('attributes', 'appStoreState')
+    log_info "ASC version-state preflight: #{version_string} is already #{state}; skip new version creation."
+    return true
+  end
+
+  active_conflict = active_versions.first
+  if active_conflict
+    conflict_version = active_conflict.dig('attributes', 'versionString') || 'unknown'
+    conflict_state = active_conflict.dig('attributes', 'appStoreState') || 'unknown'
+    log_error "App Store version conflict: #{conflict_version} is currently #{conflict_state}; target is #{version_string}."
+    log_error "Resolve the active submission first (e.g. remove/reject it), or submit against that same version."
+    return false
+  end
+
+  return true if editable_versions.empty?
+
+  conflict = editable_versions.first
   conflict_version = conflict.dig('attributes', 'versionString') || 'unknown'
   conflict_state = conflict.dig('attributes', 'appStoreState') || 'unknown'
   log_error "Editable App Store version conflict: #{conflict_version} (#{conflict_state}) exists, but release target is #{version_string}."
@@ -630,6 +756,17 @@ def find_or_create_version(app_id, asc_platform, version_string, token)
     log_info "Created version #{version_string} (ID: #{resp['data']['id']})"
     resp['data']['id']
   else
+    detail = resp&.dig('errors', 0, 'detail') || resp&.dig('errors', 0, 'title')
+    log_error "ASC create-version detail: #{detail}" if detail
+    existing_any = find_version_any_state(app_id, asc_platform, version_string, token)
+    if existing_any
+      state = existing_any.dig('attributes', 'appStoreState') || 'unknown'
+      if SUBMITTED_APP_STORE_STATES.include?(state)
+        log_info "Version #{version_string} already exists in ASC (#{state}) — treating as already submitted."
+        return :already_submitted
+      end
+      log_error "Version #{version_string} already exists in state #{state}; update that lane instead of creating a new one."
+    end
     log_error "Failed to create version #{version_string}"
     nil
   end
@@ -740,11 +877,8 @@ end
 
 # ─── Listing Metadata Hydration ───
 
-def fallback_description(app_name, review_notes)
-  note = review_notes.to_s.strip
-  return note[0, 4000] unless note.empty?
-
-  "#{app_name} helps you stay productive on Apple devices with a clear free tier and a Pro upgrade."
+def fallback_description(app_name)
+  "#{app_name} helps you stay productive on Apple devices with a clear free tier and a one-time Pro upgrade."
 end
 
 def fallback_keywords(app_name)
@@ -763,6 +897,185 @@ def fallback_keywords(app_name)
   else
     'productivity,utility,mac'
   end
+end
+
+def parse_boolish(value)
+  return value if value == true || value == false
+
+  case value
+  when Integer
+    return value != 0
+  when String
+    normalized = value.strip.downcase
+    return true if %w[true yes y 1 on].include?(normalized)
+    return false if %w[false no n 0 off].include?(normalized)
+  end
+
+  nil
+end
+
+def normalize_accessibility_family(raw_key)
+  normalized = raw_key.to_s.strip.downcase.gsub(/[^a-z0-9]/, '')
+  return nil if normalized.empty?
+
+  ACCESSIBILITY_DEVICE_FAMILY_MAP[normalized]
+end
+
+def normalize_accessibility_attribute(raw_key)
+  normalized = raw_key.to_s.strip.downcase.gsub(/[^a-z0-9]/, '')
+  return nil if normalized.empty?
+
+  ACCESSIBILITY_ATTRIBUTE_KEY_MAP[normalized]
+end
+
+def list_accessibility_declarations(app_id, token)
+  resp = asc_get("/apps/#{app_id}/accessibilityDeclarations?limit=200", token: token)
+  return [] unless resp && resp['data'].is_a?(Array)
+
+  resp['data']
+end
+
+def accessibility_error_detail(resp, code)
+  resp.dig('errors', 0, 'detail') || resp.dig('errors', 0, 'title') || "HTTP #{code}"
+end
+
+def parse_accessibility_decl_specs(raw_cfg)
+  return [true, {}] unless raw_cfg.is_a?(Hash)
+
+  publish = raw_cfg.key?('publish') ? parse_boolish(raw_cfg['publish']) : true
+  publish = true if publish.nil?
+  families = raw_cfg['families'].is_a?(Hash) ? raw_cfg['families'] : raw_cfg
+
+  specs = {}
+  families.each do |key, value|
+    next if %w[publish families].include?(key.to_s)
+
+    family = normalize_accessibility_family(key)
+    unless family
+      log_warn "Unknown accessibility family '#{key}' in .saneprocess; skipping."
+      next
+    end
+    unless value.is_a?(Hash)
+      log_warn "Accessibility family '#{key}' must map to a dictionary of supports_* flags; skipping."
+      next
+    end
+
+    attrs = {}
+    value.each do |attr_key, attr_value|
+      attr_name = normalize_accessibility_attribute(attr_key)
+      unless attr_name
+        log_warn "Unknown accessibility attribute '#{attr_key}' for family '#{key}'; skipping."
+        next
+      end
+      bool_value = parse_boolish(attr_value)
+      if bool_value.nil?
+        log_warn "Accessibility attribute '#{attr_key}' for family '#{key}' is not boolean; skipping."
+        next
+      end
+      attrs[attr_name.to_sym] = bool_value
+    end
+
+    if attrs.empty?
+      log_warn "No valid accessibility flags configured for family '#{key}'; skipping."
+      next
+    end
+
+    specs[family] = attrs
+  end
+
+  [publish, specs]
+end
+
+def accessibility_attrs_match?(decl_attrs, desired_attrs)
+  desired_attrs.all? do |key, value|
+    decl_attrs[key.to_s] == value
+  end
+end
+
+def accessibility_unmodifiable_state?(state)
+  %w[PUBLISHED REPLACED].include?(state.to_s.upcase)
+end
+
+def ensure_accessibility_declarations(app_id, config, token)
+  raw_cfg = config.dig('appstore', 'accessibility_declarations')
+  return true if raw_cfg.nil?
+
+  publish, specs = parse_accessibility_decl_specs(raw_cfg)
+  if specs.empty?
+    log_warn 'appstore.accessibility_declarations is configured, but no valid family specs were found.'
+    return true
+  end
+
+  existing = list_accessibility_declarations(app_id, token).each_with_object({}) do |decl, acc|
+    family = decl.dig('attributes', 'deviceFamily')
+    acc[family] = decl if family
+  end
+
+  ok = true
+  specs.each do |family, attrs|
+    existing_decl = existing[family]
+    declaration_id = existing_decl&.dig('id')
+    declaration_state = existing_decl&.dig('attributes', 'state').to_s
+    declaration_attrs = existing_decl&.dig('attributes') || {}
+
+    if declaration_id && accessibility_unmodifiable_state?(declaration_state)
+      if accessibility_attrs_match?(declaration_attrs, attrs)
+        log_info "Accessibility declaration #{declaration_id} (#{family}) already #{declaration_state} with requested attributes."
+        next
+      end
+
+      # Published declarations are immutable; create a replacement draft.
+      log_info "Accessibility declaration #{declaration_id} (#{family}) is #{declaration_state}; creating replacement declaration."
+      declaration_id = nil
+    end
+
+    if declaration_id.nil?
+      create_body = {
+        data: {
+          type: 'accessibilityDeclarations',
+          attributes: attrs.merge(deviceFamily: family),
+          relationships: {
+            app: {
+              data: { type: 'apps', id: app_id }
+            }
+          }
+        }
+      }
+      create_code, create_resp = asc_post_with_status('/accessibilityDeclarations', body: create_body, token: token)
+      if create_code == 201
+        declaration_id = create_resp.dig('data', 'id')
+        log_info "Created accessibility declaration for #{family}."
+      else
+        log_error "Failed to create accessibility declaration for #{family}: #{accessibility_error_detail(create_resp, create_code)}"
+        ok = false
+        next
+      end
+    end
+
+    update_attrs = attrs.dup
+    update_attrs[:publish] = true if publish
+    update_body = {
+      data: {
+        type: 'accessibilityDeclarations',
+        id: declaration_id,
+        attributes: update_attrs
+      }
+    }
+    update_code, update_resp = asc_patch_with_status("/accessibilityDeclarations/#{declaration_id}", body: update_body, token: token)
+    if [200, 201].include?(update_code)
+      action = publish ? 'updated + published' : 'updated'
+      log_info "Accessibility declaration #{declaration_id} (#{family}) #{action}."
+    else
+      if update_code == 409 && accessibility_unmodifiable_state?(declaration_state) && accessibility_attrs_match?(declaration_attrs, attrs)
+        log_info "Accessibility declaration #{declaration_id} (#{family}) is immutable but already matches desired attributes."
+        next
+      end
+      log_error "Failed to update accessibility declaration #{declaration_id} (#{family}): #{accessibility_error_detail(update_resp, update_code)}"
+      ok = false
+    end
+  end
+
+  ok
 end
 
 def latest_app_info_id(app_id, token)
@@ -925,15 +1238,18 @@ def ensure_minimum_review_metadata(app_id:, version_id:, build_id:, config:, tok
   ensure_app_info_localization(app_info_id, appstore_cfg['privacy_policy_url'], token) if app_info_id
 
   description = appstore_cfg['description']
-  description = fallback_description(app_name, appstore_cfg['review_notes']) if description.to_s.strip.empty?
+  description = fallback_description(app_name) if description.to_s.strip.empty?
   keywords = appstore_cfg['keywords']
   keywords = fallback_keywords(app_name) if keywords.to_s.strip.empty?
   ensure_version_localization(version_id, description, keywords, appstore_cfg['support_url'], token)
+
+  return false unless ensure_accessibility_declarations(app_id, config, token)
 
   default_copyright = "#{Time.now.year} SaneApps"
   ensure_version_copyright(version_id, appstore_cfg['copyright'].to_s.strip.empty? ? default_copyright : appstore_cfg['copyright'], token)
   ensure_age_rating_declaration(version_id, token)
   ensure_build_export_compliance(build_id, token)
+  true
 end
 
 # ─── Screenshot Management ───
@@ -1111,6 +1427,323 @@ def upload_screenshots(version_id, platform, project_root, config, token)
   log_info "Screenshot upload complete for #{platform}"
 end
 
+# ─── IAP Readiness ───
+
+def first_matching_file(project_root, globs)
+  globs.each do |glob|
+    next if glob.to_s.strip.empty?
+
+    pattern = File.join(project_root, glob.to_s)
+    match = Dir.glob(pattern).sort.first
+    return match if match && File.file?(match)
+  end
+  nil
+end
+
+def resolve_iap_review_screenshot(project_root, config)
+  screenshots = config.dig('appstore', 'screenshots') || {}
+  preferred_globs = [
+    screenshots['ios'],
+    screenshots['ios_67'],
+    screenshots['ios_65'],
+    screenshots['ipad'],
+    screenshots['macos']
+  ].compact
+
+  first_matching_file(project_root, preferred_globs)
+end
+
+def upload_presigned_chunk(upload_url, headers, chunk)
+  uri = URI(upload_url)
+  http = Net::HTTP.new(uri.host, uri.port)
+  http.use_ssl = (uri.scheme == 'https')
+  http.read_timeout = 120
+
+  req = Net::HTTP::Put.new(uri)
+  headers.each { |h| req[h['name']] = h['value'] }
+  req.body = chunk
+
+  response = http.request(req)
+  response.code.to_i
+end
+
+def ensure_iap_localization(iap_id:, iap_name:, token:)
+  code, resp = asc_get_v2("/inAppPurchases/#{iap_id}/inAppPurchaseLocalizations?limit=50", token: token)
+  unless code == 200
+    log_error "Could not read IAP localizations (HTTP #{code})."
+    return false
+  end
+
+  existing = resp.fetch('data', []).find { |loc| loc.dig('attributes', 'locale') == 'en-US' }
+  return true if existing
+
+  body = {
+    data: {
+      type: 'inAppPurchaseLocalizations',
+      attributes: {
+        locale: 'en-US',
+        name: iap_name,
+        description: 'Unlock all Pro features with a one-time purchase.'
+      },
+      relationships: {
+        inAppPurchaseV2: {
+          data: { type: 'inAppPurchases', id: iap_id }
+        }
+      }
+    }
+  }
+
+  create_code, create_resp = asc_post_with_status('/inAppPurchaseLocalizations', body: body, token: token)
+  if [200, 201].include?(create_code)
+    log_info 'Created IAP localization (en-US).'
+    true
+  else
+    detail = create_resp.dig('errors', 0, 'detail') || create_resp.dig('errors', 0, 'title') || 'unknown error'
+    log_error "Failed to create IAP localization (HTTP #{create_code}): #{detail}"
+    false
+  end
+end
+
+def ensure_iap_price_schedule(iap_id:, target_price_usd:, token:)
+  code, schedule = asc_get_v2("/inAppPurchases/#{iap_id}/iapPriceSchedule", token: token)
+  return true if code == 200 && !schedule['data'].nil?
+
+  pp_code, points = asc_get_v2("/inAppPurchases/#{iap_id}/pricePoints?filter%5Bterritory%5D=USA&limit=200", token: token)
+  unless pp_code == 200
+    log_error "Could not read IAP price points (HTTP #{pp_code})."
+    return false
+  end
+
+  point = points.fetch('data', []).find { |entry| entry.dig('attributes', 'customerPrice').to_s == target_price_usd.to_s }
+  unless point
+    log_error "No USA price point found for #{target_price_usd}."
+    return false
+  end
+
+  local_id = '${price-usd}'
+  body = {
+    data: {
+      type: 'inAppPurchasePriceSchedules',
+      relationships: {
+        inAppPurchase: { data: { type: 'inAppPurchases', id: iap_id } },
+        baseTerritory: { data: { type: 'territories', id: 'USA' } },
+        manualPrices: { data: [{ type: 'inAppPurchasePrices', id: local_id }] }
+      }
+    },
+    included: [
+      {
+        type: 'inAppPurchasePrices',
+        id: local_id,
+        attributes: { startDate: nil },
+        relationships: {
+          inAppPurchaseV2: { data: { type: 'inAppPurchases', id: iap_id } },
+          inAppPurchasePricePoint: { data: { type: 'inAppPurchasePricePoints', id: point['id'] } }
+        }
+      }
+    ]
+  }
+
+  create_code, create_resp = asc_post_with_status('/inAppPurchasePriceSchedules', body: body, token: token)
+  if [200, 201].include?(create_code)
+    log_info "Created IAP price schedule (USA #{target_price_usd})."
+    true
+  else
+    detail = create_resp.dig('errors', 0, 'detail') || create_resp.dig('errors', 0, 'title') || 'unknown error'
+    log_error "Failed to create IAP price schedule (HTTP #{create_code}): #{detail}"
+    false
+  end
+end
+
+def ensure_iap_review_screenshot(iap_id:, screenshot_path:, token:)
+  code, screenshot_resp = asc_get_v2("/inAppPurchases/#{iap_id}/appStoreReviewScreenshot", token: token)
+  return true if code == 200 && !screenshot_resp['data'].nil?
+
+  unless screenshot_path && File.file?(screenshot_path)
+    log_error 'IAP review screenshot is missing and no screenshot file was found from appstore.screenshots.'
+    return false
+  end
+
+  reservation_body = {
+    data: {
+      type: 'inAppPurchaseAppStoreReviewScreenshots',
+      attributes: {
+        fileName: File.basename(screenshot_path),
+        fileSize: File.size(screenshot_path)
+      },
+      relationships: {
+        inAppPurchaseV2: {
+          data: { type: 'inAppPurchases', id: iap_id }
+        }
+      }
+    }
+  }
+
+  reserve_code, reserve_resp = asc_post_with_status('/inAppPurchaseAppStoreReviewScreenshots', body: reservation_body, token: token)
+  unless reserve_code == 201
+    detail = reserve_resp.dig('errors', 0, 'detail') || reserve_resp.dig('errors', 0, 'title') || 'unknown error'
+    log_error "Failed to reserve IAP review screenshot upload (HTTP #{reserve_code}): #{detail}"
+    return false
+  end
+
+  screenshot_id = reserve_resp.dig('data', 'id')
+  upload_ops = reserve_resp.dig('data', 'attributes', 'uploadOperations') || []
+
+  upload_ops.each_with_index do |op, idx|
+    chunk = File.binread(screenshot_path, op['length'], op['offset'])
+    upload_code = upload_presigned_chunk(op['url'], op['requestHeaders'] || [], chunk)
+    unless upload_code.between?(200, 299)
+      log_error "IAP review screenshot chunk #{idx} upload failed (HTTP #{upload_code})."
+      return false
+    end
+  end
+
+  commit_body = {
+    data: {
+      type: 'inAppPurchaseAppStoreReviewScreenshots',
+      id: screenshot_id,
+      attributes: {
+        uploaded: true,
+        sourceFileChecksum: Digest::MD5.hexdigest(File.binread(screenshot_path))
+      }
+    }
+  }
+
+  commit_code, commit_resp = asc_patch_with_status("/inAppPurchaseAppStoreReviewScreenshots/#{screenshot_id}", body: commit_body, token: token)
+  if [200, 201].include?(commit_code)
+    log_info "Uploaded IAP review screenshot (#{File.basename(screenshot_path)})."
+    true
+  else
+    detail = commit_resp.dig('errors', 0, 'detail') || commit_resp.dig('errors', 0, 'title') || 'unknown error'
+    log_error "Failed to commit IAP review screenshot (HTTP #{commit_code}): #{detail}"
+    false
+  end
+end
+
+def ensure_iap_availability(iap_id:, token:)
+  code, availability_resp = asc_get_v2("/inAppPurchases/#{iap_id}/inAppPurchaseAvailability", token: token)
+  return true if code == 200 && !availability_resp['data'].nil?
+
+  body = {
+    data: {
+      type: 'inAppPurchaseAvailabilities',
+      attributes: { availableInNewTerritories: true },
+      relationships: {
+        inAppPurchase: { data: { type: 'inAppPurchases', id: iap_id } },
+        availableTerritories: { data: [{ type: 'territories', id: 'USA' }] }
+      }
+    }
+  }
+
+  create_code, create_resp = asc_post_with_status('/inAppPurchaseAvailabilities', body: body, token: token)
+  if [200, 201].include?(create_code)
+    log_info 'Created IAP availability.'
+    true
+  else
+    detail = create_resp.dig('errors', 0, 'detail') || create_resp.dig('errors', 0, 'title') || 'unknown error'
+    log_error "Failed to create IAP availability (HTTP #{create_code}): #{detail}"
+    false
+  end
+end
+
+def ensure_iap_review_note(iap_id:, review_note:, token:)
+  body = {
+    data: {
+      type: 'inAppPurchases',
+      id: iap_id,
+      attributes: {
+        reviewNote: review_note.to_s.strip.empty? ? IAP_DEFAULT_REVIEW_NOTE : review_note.to_s.strip
+      }
+    }
+  }
+
+  patch_code, patch_resp = asc_patch_with_status("/inAppPurchases/#{iap_id}", body: body, token: token, base: ASC_V2_BASE)
+  if [200, 201].include?(patch_code)
+    true
+  else
+    detail = patch_resp.dig('errors', 0, 'detail') || patch_resp.dig('errors', 0, 'title') || 'unknown error'
+    log_error "Failed to patch IAP review note (HTTP #{patch_code}): #{detail}"
+    false
+  end
+end
+
+def find_iap_by_product_id(app_id:, product_id:, token:)
+  resp = asc_get("/apps/#{app_id}/inAppPurchasesV2?limit=200", token: token)
+  return nil unless resp && resp['data'].is_a?(Array)
+
+  resp['data'].find { |entry| entry.dig('attributes', 'productId') == product_id }
+end
+
+def iap_associated_error_codes(submit_resp)
+  associated = submit_resp.dig('errors', 0, 'meta', 'associatedErrors')
+  return [] unless associated.is_a?(Hash)
+
+  associated.values.flatten.map { |entry| entry['code'] }.compact
+end
+
+def ensure_iap_readiness(app_id:, product_id:, project_root:, config:, token:, price_usd:)
+  iap = find_iap_by_product_id(app_id: app_id, product_id: product_id, token: token)
+  unless iap
+    log_error "Configured appstore.product_id #{product_id} was not found in ASC for app #{app_id}."
+    return false
+  end
+
+  iap_id = iap['id']
+  iap_name = iap.dig('attributes', 'name').to_s.strip
+  iap_name = product_id.split('.').map(&:capitalize).join(' ') if iap_name.empty?
+
+  log_info "Ensuring IAP readiness for #{product_id} (#{iap_id})..."
+
+  screenshot_path = resolve_iap_review_screenshot(project_root, config)
+  unless screenshot_path
+    log_warn 'No screenshot file found for IAP review screenshot from appstore.screenshots globs.'
+  end
+
+  checks = []
+  checks << ensure_iap_localization(iap_id: iap_id, iap_name: iap_name, token: token)
+  checks << ensure_iap_price_schedule(iap_id: iap_id, target_price_usd: price_usd, token: token)
+  checks << ensure_iap_review_screenshot(iap_id: iap_id, screenshot_path: screenshot_path, token: token)
+  checks << ensure_iap_availability(iap_id: iap_id, token: token)
+  checks << ensure_iap_review_note(iap_id: iap_id, review_note: config.dig('appstore', 'review_notes'), token: token)
+
+  return false unless checks.all?
+
+  final = find_iap_by_product_id(app_id: app_id, product_id: product_id, token: generate_jwt)
+  state = final.dig('attributes', 'state')
+  log_info "IAP state after readiness pass: #{state}"
+
+  return false unless state == 'READY_TO_SUBMIT' || state == 'WAITING_FOR_REVIEW' || state == 'APPROVED'
+
+  submit_body = {
+    data: {
+      type: 'inAppPurchaseSubmissions',
+      relationships: {
+        inAppPurchaseV2: {
+          data: { type: 'inAppPurchases', id: iap_id }
+        }
+      }
+    }
+  }
+  submit_code, submit_resp = asc_post_with_status('/inAppPurchaseSubmissions', body: submit_body, token: generate_jwt)
+  if [200, 201, 202].include?(submit_code)
+    log_info 'IAP submission created.'
+    return true
+  end
+
+  if submit_code == 409
+    codes = iap_associated_error_codes(submit_resp)
+    if codes.all? { |code| code == 'STATE_ERROR.FIRST_IAP_MUST_BE_SUBMITTED_ON_VERSION' }
+      log_warn 'IAP is ready. Apple requires first IAP submission together with an app version submission.'
+      return true
+    end
+    log_error "IAP submission still blocked: #{codes.join(', ')}"
+    return false
+  end
+
+  detail = submit_resp.dig('errors', 0, 'detail') || submit_resp.dig('errors', 0, 'title') || 'unknown error'
+  log_error "IAP submission probe failed (HTTP #{submit_code}): #{detail}"
+  false
+end
+
 # ─── Submit for Review ───
 
 def submit_for_review(app_id, asc_platform, version_id, token)
@@ -1120,6 +1753,18 @@ def submit_for_review(app_id, asc_platform, version_id, token)
   if linked_submission && linked_submission[:state] == 'UNRESOLVED_ISSUES'
     log_warn "Detected unresolved review submission #{linked_submission[:id]} for version #{version_id}."
     clear_stale_version_submission(version_id, token)
+    token = generate_jwt
+    attempt_resolve_unresolved_submission(linked_submission[:id], token)
+
+    # If item-level resolve moved it to READY_FOR_REVIEW, submit the lane directly.
+    submission_state = review_submission_state(linked_submission[:id], token)
+    if submission_state == 'READY_FOR_REVIEW'
+      log_info "Resolved submission #{linked_submission[:id]} is READY_FOR_REVIEW; submitting..."
+      if mark_review_submission_submitted(linked_submission[:id], token)
+        return verify_submitted_state(version_id, token)
+      end
+    end
+
     token = generate_jwt
     linked_submission = find_linked_review_submission(app_id, asc_platform, version_id, token)
     if linked_submission && linked_submission[:state] == 'UNRESOLVED_ISSUES'
@@ -1250,6 +1895,8 @@ def submit_for_review(app_id, asc_platform, version_id, token)
     log_warn "Review submission returned to unresolved state for version #{version_id}; attempting one automatic clear."
     clear_stale_version_submission(version_id, token)
     token = generate_jwt
+    attempt_resolve_unresolved_submission(linked_submission[:id], token)
+    token = generate_jwt
     linked_submission = find_linked_review_submission(app_id, asc_platform, version_id, token)
     if linked_submission && linked_submission[:state] == 'UNRESOLVED_ISSUES'
       log_unresolved_submission_blocker(app_id, version_id, linked_submission)
@@ -1338,6 +1985,52 @@ def review_submission_state(submission_id, token)
   resp&.dig('data', 'attributes', 'state')
 end
 
+def review_submission_items(submission_id, token)
+  resp = asc_get("/reviewSubmissions/#{submission_id}/items?limit=200", token: token)
+  return [] unless resp && resp['data'].is_a?(Array)
+
+  resp['data'].map do |item|
+    {
+      id: item['id'],
+      state: item.dig('attributes', 'state')
+    }
+  end
+end
+
+def attempt_resolve_unresolved_submission(submission_id, token)
+  items = review_submission_items(submission_id, token)
+  if items.empty?
+    log_warn "No review submission items found for #{submission_id}; cannot auto-resolve."
+    return false
+  end
+
+  any_changed = false
+  items.each do |item|
+    next unless item[:state] == 'REJECTED' || item[:state] == 'UNRESOLVED_ISSUES'
+
+    body = {
+      data: {
+        type: 'reviewSubmissionItems',
+        id: item[:id],
+        attributes: {
+          resolved: true
+        }
+      }
+    }
+    code, resp = asc_patch_with_status("/reviewSubmissionItems/#{item[:id]}", body: body, token: token)
+    if [200, 201].include?(code)
+      any_changed = true
+      new_state = resp.dig('data', 'attributes', 'state')
+      log_info "Marked reviewSubmissionItem #{item[:id]} as resolved (state: #{new_state})."
+    else
+      detail = resp.dig('errors', 0, 'detail') || resp.dig('errors', 0, 'title') || "HTTP #{code}"
+      log_warn "Could not resolve reviewSubmissionItem #{item[:id]}: #{detail}"
+    end
+  end
+
+  any_changed
+end
+
 def find_linked_review_submission(app_id, asc_platform, version_id, token)
   list = asc_get("/reviewSubmissions?filter[app]=#{app_id}&limit=200", token: token)
   return nil unless list && list['data']
@@ -1360,9 +2053,9 @@ def log_unresolved_submission_blocker(app_id, version_id, submission)
   return unless submission
 
   log_error "App Store version #{version_id} is linked to review submission #{submission[:id]} (#{submission[:state]})."
-  log_error 'This is a previously submitted/rejected item, and App Store Connect API will not clear it automatically.'
-  log_error "Open App Store Connect for app #{app_id}, remove/cancel the rejected item in that submission,"
-  log_error 'then run appstore_submit.rb again to submit the updated build.'
+  log_error 'Automatic unresolved-lane recovery was attempted but ASC still blocks submission.'
+  log_error "Open App Store Connect for app #{app_id}, resolve/remove the rejected item in that submission,"
+  log_error 'then rerun appstore_submit.rb to submit the updated build.'
 end
 
 def clear_stale_version_submission(version_id, token)
@@ -1527,6 +2220,8 @@ OptionParser.new do |opts|
   opts.on('--skip-upload', 'Skip binary upload; use existing processed build in ASC') { options[:skip_upload] = true }
   opts.on('--skip-screenshots', 'Skip screenshot upload; use screenshots already present in ASC') { options[:skip_screenshots] = true }
   opts.on('--screenshots-only', 'Upload screenshots to an existing ASC version (no upload, no build attach, no submission)') { options[:screenshots_only] = true }
+  opts.on('--iap-only', 'Ensure configured iOS IAP metadata is complete and exit') { options[:iap_only] = true }
+  opts.on('--iap-price-usd PRICE', 'Target US IAP price for auto-created price schedule (default: 6.99)') { |v| options[:iap_price_usd] = v }
   opts.on('--preflight-version-state', 'Check editable ASC version state only (no upload, no submission)') { options[:preflight_version_state] = true }
   opts.on('--test-screenshots', 'Test screenshot resize only (no API calls)') { options[:test_screenshots] = true }
 end.parse!
@@ -1632,6 +2327,45 @@ if options[:screenshots_only]
 
   log_info 'Screenshot-only operation complete.'
   exit 0
+end
+
+if options[:iap_only]
+  required = %i[app_id project_root]
+  required.each do |key|
+    unless options[key]
+      log_error "Missing required option: --#{key.to_s.tr('_', '-')}"
+      exit 1
+    end
+  end
+
+  project_root = options[:project_root]
+  app_id = options[:app_id]
+  config_path = File.join(project_root, '.saneprocess')
+  config = if File.exist?(config_path)
+             YAML.safe_load(File.read(config_path)) || {}
+           else
+             {}
+           end
+
+  product_id = config.dig('appstore', 'product_id').to_s.strip
+  if product_id.empty?
+    log_error 'No appstore.product_id configured in .saneprocess.'
+    exit 1
+  end
+
+  price_usd = options[:iap_price_usd].to_s.strip
+  price_usd = IAP_DEFAULT_USD_PRICE if price_usd.empty?
+
+  token = generate_jwt
+  ok = ensure_iap_readiness(
+    app_id: app_id,
+    product_id: product_id,
+    project_root: project_root,
+    config: config,
+    token: token,
+    price_usd: price_usd
+  )
+  exit(ok ? 0 : 1)
 end
 
 # Validate required options
@@ -1746,15 +2480,8 @@ unless attach_build_to_version(version_id, build_id, token)
 end
 
 # Step 5: Ensure review contact detail
-contact_name = config.dig('appstore', 'contact', 'name') || ''
-name_parts = contact_name.split(' ', 2)
-contact = {
-  first_name: name_parts[0] || 'Stephan',
-  last_name: name_parts[1] || 'Joseph',
-  phone: config.dig('appstore', 'contact', 'phone') || '+17277589785',
-  email: config.dig('appstore', 'contact', 'email') || 'hi@saneapps.com',
-  notes: config.dig('appstore', 'review_notes').to_s
-}
+contact = resolve_review_contact(config)
+contact[:notes] = config.dig('appstore', 'review_notes').to_s
 ensure_review_detail(version_id, contact, token)
 
 # Step 6: Upload screenshots (if configured)
@@ -1766,13 +2493,39 @@ end
 
 # Step 7: Fill required listing/build metadata before submission
 token = generate_jwt
-ensure_minimum_review_metadata(
+metadata_ok = ensure_minimum_review_metadata(
   app_id: app_id,
   version_id: version_id,
   build_id: build_id,
   config: config,
   token: token
 )
+unless metadata_ok
+  log_error 'App metadata/accessibility readiness failed. Resolve ASC metadata issues before submission.'
+  exit 1
+end
+
+# Step 7b: Ensure iOS IAP metadata/submission readiness (if configured)
+if platform == 'ios'
+  configured_product_id = config.dig('appstore', 'product_id').to_s.strip
+  unless configured_product_id.empty?
+    iap_price_usd = options[:iap_price_usd].to_s.strip
+    iap_price_usd = IAP_DEFAULT_USD_PRICE if iap_price_usd.empty?
+    token = generate_jwt
+    iap_ok = ensure_iap_readiness(
+      app_id: app_id,
+      product_id: configured_product_id,
+      project_root: project_root,
+      config: config,
+      token: token,
+      price_usd: iap_price_usd
+    )
+    unless iap_ok
+      log_error 'IAP readiness failed. Resolve IAP metadata/state before app review submission.'
+      exit 1
+    end
+  end
+end
 
 # Step 8: Submit for review
 token = generate_jwt

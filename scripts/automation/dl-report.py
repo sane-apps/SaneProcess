@@ -45,7 +45,7 @@ def fetch_stats(api_key, days=90, app=None):
     from urllib.parse import urlencode
     params = {"days": days}
     if app:
-        params["app"] = app
+        params["app"] = app.lower()
     url = f"{API_BASE}?{urlencode(params)}"
     result = subprocess.run(
         ["curl", "-s", "--max-time", "15", url,

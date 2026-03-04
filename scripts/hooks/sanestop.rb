@@ -20,6 +20,7 @@
 require 'json'
 require 'fileutils'
 require 'time'
+require 'rbconfig'
 require_relative 'core/state_manager'
 
 LOG_FILE = File.expand_path('../../.claude/sanestop.log', __dir__)
@@ -643,6 +644,19 @@ rescue StandardError
   # Don't fail on CSV errors
 end
 
+def run_mcp_watchdog_cleanup
+  sane_master = File.expand_path('../SaneMaster.rb', __dir__)
+  return unless File.exist?(sane_master)
+
+  system(
+    RbConfig.ruby, sane_master, 'mcp_watchdog', 'clean',
+    '--quiet', '--max', '4',
+    out: File::NULL, err: File::NULL
+  )
+rescue StandardError
+  # Never block stop hook on cleanup.
+end
+
 # === MAIN PROCESSING ===
 
 def process_stop(stop_hook_active, transcript_path = nil)
@@ -763,6 +777,9 @@ def process_stop(stop_hook_active, transcript_path = nil)
 
     warn '---'
   end
+
+  # Best-effort daemon cleanup at session end.
+  run_mcp_watchdog_cleanup
 
   0  # Allow stop
 end

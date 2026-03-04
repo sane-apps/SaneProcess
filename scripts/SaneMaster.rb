@@ -21,6 +21,7 @@
 
 require 'open3'
 require 'json'
+require 'time'
 require 'tempfile'
 require 'shellwords'
 require 'socket'
@@ -116,7 +117,8 @@ class SaneMaster
         'launch' => { args: '', desc: 'Launch the app' },
         'crashes' => { args: '[--recent]', desc: 'Analyze crash reports' },
         'diagnose' => { args: '[path]', desc: 'Analyze .xcresult bundle' },
-        'menu_scan' => { args: '[--json] [--owners bundle1,bundle2]', desc: 'Menu bar diagnostics (detected/normalized/excluded)' }
+        'menu_scan' => { args: '[--json] [--owners bundle1,bundle2]', desc: 'Menu bar diagnostics (detected/normalized/excluded)' },
+        'mode' => { args: '[<AppName>] <pro|basic|free|status|list> [--launch] [--host local|mini]', desc: 'Set/query test license mode and optionally launch a clean signed install' }
       }
     },
     env: {
@@ -185,6 +187,8 @@ class SaneMaster
     { cmd: 'doctor', desc: 'Check environment health' },
     { cmd: 'export', desc: 'Export code to PDF' }
   ].freeze
+
+  KNOWN_SANE_APPS = %w[SaneBar SaneClip SaneClick SaneHosts SaneSales SaneSync SaneVideo].freeze
 
   MINI_FIRST_COMMANDS = Set.new(%w[
                                   verify
@@ -535,6 +539,8 @@ class SaneMaster
       show_app_logs(args)
     when 'test_mode', 'tm'
       enter_test_mode(args)
+    when 'mode', 'test_mode_switch', 'license_mode'
+      app_test_mode(args)
 
     # Memory MCP
     when 'memory_context', 'mc'
@@ -662,6 +668,43 @@ class SaneMaster
     end
 
     { path: path, dump: dump }
+  end
+
+  def app_test_mode(args)
+    helper = File.join(__dir__, 'app_test_mode.sh')
+    unless File.file?(helper)
+      puts "❌ Missing helper script: #{helper}"
+      return
+    end
+
+    forwarded = args.dup
+    mode_actions = %w[pro basic free status]
+
+    if forwarded.empty?
+      puts 'Usage: ./scripts/SaneMaster.rb mode [<AppName>] <pro|basic|free|status|list> [--launch] [--host local|mini]'
+      return
+    end
+
+    first = forwarded.first
+    if first == 'list'
+      # passthrough: app_test_mode.sh list [--host ...]
+    elsif mode_actions.include?(first) || first.start_with?('--')
+      inferred_app = project_name
+      unless KNOWN_SANE_APPS.include?(inferred_app)
+        puts "❌ Could not infer app from current repo (#{inferred_app})."
+        puts "   Pass app name explicitly: mode SaneBar #{first}"
+        return
+      end
+      forwarded.unshift(inferred_app)
+    elsif !KNOWN_SANE_APPS.include?(first)
+      puts "❌ Unknown app '#{first}'."
+      puts "   Known apps: #{KNOWN_SANE_APPS.join(', ')}"
+      return
+    end
+
+    unless system('bash', helper, *forwarded)
+      puts '❌ app_test_mode helper failed.'
+    end
   end
 
   def check_binary
@@ -796,6 +839,21 @@ class SaneMaster
       description: 'Interactive debugging workflow: Kill → Build → Launch → Logs',
       flags: {},
       examples: %w[test_mode tm]
+    },
+    'mode' => {
+      usage: 'mode [<AppName>] <pro|basic|free|status|list> [--launch] [--host local|mini] [--allow-keychain]',
+      description: 'Set/query app test license mode via no-keychain defaults and optionally launch a clean signed install.',
+      flags: {
+        '--launch' => 'Launch app after switching mode',
+        '--host local|mini' => 'Run mode/launch flow on local machine or mini',
+        '--allow-keychain' => 'Use real keychain path instead of no-keychain launch'
+      },
+      examples: [
+        'mode pro --launch                 # Current app to Pro and launch',
+        'mode basic --launch --host mini   # Current app in Basic on mini',
+        'mode SaneHosts status --host mini # Query another app mode on mini',
+        'mode list                         # Show supported apps'
+      ]
     },
     'doctor' => {
       usage: 'doctor',

@@ -521,6 +521,49 @@ Recommended:
 - **github** — External code search
 - **apple-docs** — Apple SDK verification (Swift projects)
 
+### App Store Connect API Surface (Authoritative Source)
+
+Source of truth is Apple’s published OpenAPI spec ZIP:
+- `https://developer.apple.com/sample-code/app-store-connect/app-store-connect-openapi-specification.zip`
+
+Current verified snapshot:
+- OpenAPI: `3.0.1`
+- API version: `4.2`
+- Path count: `925`
+
+Refresh command:
+
+```bash
+tmpdir=$(mktemp -d)
+cd "$tmpdir"
+curl -fsSL -o asc-openapi.zip \
+  https://developer.apple.com/sample-code/app-store-connect/app-store-connect-openapi-specification.zip
+unzip -q asc-openapi.zip
+python3 - <<'PY'
+import json
+doc = json.load(open("openapi.oas.json"))
+print("openapi", doc.get("openapi"))
+print("api_version", doc.get("info", {}).get("version"))
+print("path_count", len(doc.get("paths", {})))
+PY
+```
+
+Accessibility declarations (v4.0+) are modeled as:
+- `GET /v1/apps/{id}/accessibilityDeclarations`
+- `POST /v1/accessibilityDeclarations`
+- `PATCH /v1/accessibilityDeclarations/{id}`
+- `DELETE /v1/accessibilityDeclarations/{id}`
+
+Important behavior:
+- Publish action is done with update attribute `publish: true`.
+- Sending `state: "PUBLISHED"` in PATCH is rejected.
+- Create requires `deviceFamily` (`IPHONE`, `IPAD`, `APPLE_TV`, `APPLE_WATCH`, `MAC`, `VISION`).
+
+Metadata lock behavior to plan around:
+- On live-ready lanes, ASC can return `409` for description/subtitle/support URL edits.
+- Treat this as lane-state lock, not payload format error.
+- Safe process: create/edit a new version lane, then patch localizations there.
+
 ### Download Analytics (sane-dist Worker)
 
 The `sane-dist` Cloudflare Worker serves app downloads (DMG/ZIP) from a shared R2 bucket across all `dist.{app}.com` domains. Download analytics use a D1 database (`sane-dist-analytics`) for privacy-first, daily-aggregate counting.

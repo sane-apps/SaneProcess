@@ -35,6 +35,7 @@ CLAUDE.md
 .claude/*.jsonl
 .claude/*.log
 .claude/*.log.old
+.claude/app-store-contacts.local.md
 
 # Local-only docs
 DISASTER_RECOVERY.md

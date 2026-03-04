@@ -105,6 +105,7 @@ class ValidationReport
     q8_code_signing           # Identity, notarization, entitlements
     q9_support_infrastructure # Email, API keys, keychain
     q10_documentation_currency # Version consistency, changelog, README
+    q11_cross_channel_version_consistency # Appcast vs website vs webhook vs Homebrew
     calculate_final_verdict
   end
 
@@ -1155,6 +1156,96 @@ class ValidationReport
     warnings_found.each { |w| @warnings << "Q10 DOCS: #{w}" }
   end
 
+  # Q11: CROSS-CHANNEL VERSION CONSISTENCY
+  # Are appcast, website, webhook, and Homebrew all serving the same version?
+  # This catches the SaneBar 2.1.13-2.1.18 drift where 6 releases shipped without
+  # updating the email webhook PRODUCT_CONFIG.
+  def q11_cross_channel_version_consistency
+    issues_found = []
+    warnings_found = []
+    version_table = []
+
+    webhook_js = File.expand_path('~/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js')
+    webhook_content = File.exist?(webhook_js) ? File.read(webhook_js) : nil
+
+    # Map of app name to its known channels
+    app_channels = {
+      'SaneBar'   => { site: 'sanebar.com',   cask: 'sanebar' },
+      'SaneClip'  => { site: 'saneclip.com',  cask: 'saneclip' },
+      'SaneClick' => { site: 'saneclick.com', cask: 'saneclick' },
+      'SaneHosts' => { site: 'sanehosts.com', cask: 'sanehosts' }
+    }
+
+    app_channels.each do |app_name, channels|
+      project_path = File.join(SANE_APPS_ROOT, "apps/#{app_name}")
+      next unless File.directory?(project_path)
+
+      versions = {}
+
+      # 1. Appcast version (local file — source of truth)
+      appcast_ver = get_appcast_version(project_path)
+      versions[:appcast] = appcast_ver || '—'
+
+      # 2. Website download link version (local HTML)
+      website_ver = nil
+      %w[website docs].each do |dir|
+        index_html = File.join(project_path, dir, 'index.html')
+        next unless File.exist?(index_html)
+
+        html_content = File.read(index_html)
+        match = html_content.match(/#{Regexp.escape(app_name)}-(\d+\.\d+(?:\.\d+)?)\.(zip|dmg)/)
+        website_ver = match[1] if match
+        break if website_ver
+      end
+      versions[:website] = website_ver || '—'
+
+      # 3. Webhook PRODUCT_CONFIG version (local JS file)
+      webhook_ver = nil
+      if webhook_content
+        match = webhook_content.match(/'#{Regexp.escape(app_name)}':\s*\{\s*file:\s*'#{Regexp.escape(app_name)}-([^']+)\.(zip|dmg)'/)
+        webhook_ver = match[1] if match
+      end
+      versions[:webhook] = webhook_ver || '—'
+
+      # 4. Homebrew cask version (HTTP fetch from GitHub)
+      cask_ver = nil
+      if channels[:cask]
+        cask_url = "https://raw.githubusercontent.com/sane-apps/homebrew-tap/main/Casks/#{channels[:cask]}.rb"
+        cask_body = `curl -fsSL --connect-timeout 5 --max-time 10 #{Shellwords.shellescape(cask_url)} 2>/dev/null`
+        if $?.success?
+          match = cask_body.match(/version\s+"([^"]+)"/)
+          cask_ver = match[1] if match
+        end
+      end
+      versions[:cask] = cask_ver || '—'
+
+      version_table << { app: app_name, versions: versions }
+
+      # Compare all present versions against appcast (source of truth)
+      next unless appcast_ver
+
+      %i[website webhook cask].each do |channel|
+        chan_ver = versions[channel]
+        next if chan_ver == '—'
+
+        if chan_ver != appcast_ver
+          label = { website: 'Website download link', webhook: 'Email webhook PRODUCT_CONFIG', cask: 'Homebrew cask' }[channel]
+          issues_found << "[#{app_name}] VERSION DRIFT: #{label} has v#{chan_ver} but appcast is v#{appcast_ver}"
+        end
+      end
+    end
+
+    @metrics[:cross_channel_consistency] = {
+      issues: issues_found.size,
+      warnings: warnings_found.size,
+      table: version_table,
+      details: issues_found + warnings_found
+    }
+
+    issues_found.each { |i| @issues << "Q11 DRIFT: #{i}" }
+    warnings_found.each { |w| @warnings << "Q11 DRIFT: #{w}" }
+  end
+
   def get_appcast_version(project_path)
     appcast_paths = [
       File.join(project_path, 'docs', 'appcast.xml'),
@@ -1206,8 +1297,10 @@ class ValidationReport
     website_issues = (@metrics[:website_distribution] || {})[:issues].to_i
     # Q8 SIGNING issues are CRITICAL - app won't run!
     signing_issues = (@metrics[:code_signing] || {})[:issues].to_i
+    # Q11 DRIFT issues are CRITICAL - customers get wrong builds!
+    drift_issues = (@metrics[:cross_channel_consistency] || {})[:issues].to_i
 
-    customer_facing_critical = release_issues + website_issues + signing_issues
+    customer_facing_critical = release_issues + website_issues + signing_issues + drift_issues
 
     @metrics[:final] = {
       critical_failures: critical_fails,
@@ -1380,6 +1473,25 @@ class ValidationReport
       puts "   ✅ Docs match latest versions"
     else
       puts "   ⚠️  #{m[:issues]} issues, #{m[:warnings]} warnings"
+      (m[:details] || []).each { |d| puts "      - #{d}" }
+    end
+    puts
+
+    puts "Q11: CROSS-CHANNEL VERSION CONSISTENCY"
+    m = @metrics[:cross_channel_consistency] || {}
+    table = m[:table] || []
+    if table.any?
+      puts "   %-12s %-10s %-10s %-10s %-10s" % %w[App Appcast Website Webhook Homebrew]
+      puts "   #{'─' * 12} #{'─' * 10} #{'─' * 10} #{'─' * 10} #{'─' * 10}"
+      table.each do |row|
+        v = row[:versions]
+        puts "   %-12s %-10s %-10s %-10s %-10s" % [row[:app], v[:appcast], v[:website], v[:webhook], v[:cask]]
+      end
+    end
+    if m[:issues].to_i == 0
+      puts "   ✅ All channels consistent"
+    else
+      puts "   ❌ #{m[:issues]} version drift issues detected"
       (m[:details] || []).each { |d| puts "      - #{d}" }
     end
 

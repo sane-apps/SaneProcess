@@ -6,7 +6,7 @@ module SaneMasterModules
     include Base
 
     def run_bootstrap(args)
-      check_only = args.include?('--check-only')
+      check_only = args.include?('--check-only') || args.include?('--check')
       rollback = args.include?('--rollback')
       auto_fix = !args.include?('--no-fix')
 
@@ -331,27 +331,89 @@ module SaneMasterModules
     def check_mcp_config
       puts "\n🔗 Checking MCP configuration..."
 
-      mcp_file = File.join(Dir.pwd, '.mcp.json')
-      unless File.exist?(mcp_file)
-        puts '   ❌ .mcp.json not found'
+      sources = collect_mcp_sources
+      if sources.empty?
+        puts '   ❌ No MCP configuration found (.mcp.json, ~/.config/claude/mcp-config.json, or codex mcp list)'
         return :missing
       end
 
-      mcp_config = JSON.parse(File.read(mcp_file))
-      servers = mcp_config['mcpServers'] || {}
-      puts "   ✅ .mcp.json: #{servers.keys.count} servers configured"
-      servers.each_key { |s| puts "      - #{s}" }
+      total_servers = 0
+      sources.each do |source|
+        servers = source[:servers] || {}
+        next if servers.empty?
 
-      # Check memory.json exists if memory MCP is configured
-      check_memory_json_exists(servers)
+        total_servers += servers.keys.count
+        puts "   ✅ #{source[:label]}: #{servers.keys.count} servers configured"
+        servers.keys.sort.each { |server| puts "      - #{server}" }
+
+        # Only project .mcp.json has reliable local memory.json path args.
+        check_memory_json_exists(servers) if source[:label] == '.mcp.json'
+      end
+
+      if total_servers.zero?
+        puts '   ⚠️  MCP sources found but no servers configured'
+        return :warning
+      end
 
       check_local_settings
 
-      sop_log("MCP: #{servers.keys.count} servers configured")
+      sop_log("MCP: #{total_servers} servers across #{sources.count} source(s)")
       :ok
-    rescue JSON::ParserError => e
-      puts "   ❌ Failed to parse MCP config: #{e.message}"
+    rescue StandardError => e
+      puts "   ❌ MCP check failed: #{e.message}"
       :error
+    end
+
+    def collect_mcp_sources
+      sources = []
+
+      codex_servers = codex_mcp_servers
+      sources << { label: 'codex mcp list', servers: codex_servers } if codex_servers.any?
+
+      claude_config_path = File.expand_path('~/.config/claude/mcp-config.json')
+      if File.exist?(claude_config_path)
+        begin
+          claude_config = JSON.parse(File.read(claude_config_path))
+          servers = claude_config['mcpServers'] || {}
+          sources << { label: '~/.config/claude/mcp-config.json', servers: servers }
+        rescue JSON::ParserError => e
+          puts "   ⚠️  ~/.config/claude/mcp-config.json parse error: #{e.message}"
+        end
+      end
+
+      project_mcp_path = File.join(Dir.pwd, '.mcp.json')
+      if File.exist?(project_mcp_path)
+        begin
+          project_mcp = JSON.parse(File.read(project_mcp_path))
+          servers = project_mcp['mcpServers'] || {}
+          sources << { label: '.mcp.json', servers: servers }
+        rescue JSON::ParserError => e
+          puts "   ⚠️  .mcp.json parse error: #{e.message}"
+        end
+      end
+
+      sources
+    end
+
+    def codex_mcp_servers
+      codex_cmd = `command -v codex 2>/dev/null`.strip
+      return {} if codex_cmd.empty?
+
+      output = `codex mcp list 2>/dev/null`
+      return {} if output.strip.empty?
+
+      server_names = output.lines.filter_map do |line|
+        stripped = line.strip
+        next if stripped.empty?
+        next if stripped.start_with?('Name ')
+        next unless line.match?(/^\S+\s{2,}/)
+
+        line.split(/\s{2,}/).first&.strip
+      end
+
+      server_names.uniq.each_with_object({}) { |name, acc| acc[name] = {} }
+    rescue StandardError
+      {}
     end
 
     def check_memory_json_exists(servers)
@@ -518,20 +580,14 @@ module SaneMasterModules
 
     # Check Memory MCP configuration
     def check_memory_health
-      return { status: :warning, message: 'No .mcp.json' } unless File.exist?('.mcp.json')
+      sources = collect_mcp_sources
+      return { status: :warning, message: 'No MCP configuration found' } if sources.empty?
 
-      begin
-        mcp = JSON.parse(File.read('.mcp.json'))
-        memory_config = mcp.dig('mcpServers', 'memory')
+      has_memory = sources.any? { |source| (source[:servers] || {}).key?('memory') }
+      return { status: :warning, message: 'Memory MCP not configured' } unless has_memory
 
-        return { status: :warning, message: 'Memory MCP not configured' } unless memory_config
-
-        # Memory is MCP-managed (in-process), can't check file directly
-        # Just verify configuration exists
-        { status: :ok, message: 'MCP configured (use mcp__memory__read_graph to check content)' }
-      rescue JSON::ParserError
-        { status: :warning, message: '.mcp.json parse error' }
-      end
+      # Memory is MCP-managed (in-process), can't check file directly.
+      { status: :ok, message: 'Memory MCP configured (use mcp__memory__read_graph to validate content)' }
     end
 
     # Full health check - consolidates quick checks + meta audit

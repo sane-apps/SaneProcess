@@ -18,6 +18,7 @@ require 'open3'
 require 'fileutils'
 require 'tmpdir'
 require 'shellwords'
+require 'time'
 
 APPS = {
   'SaneBar' => {
@@ -213,15 +214,9 @@ class SaneTest
       escaped_b = Shellwords.escape(b)
       ssh("tccutil reset All #{escaped_b} 2>/dev/null; true")
     end
-    # Clear license keychain entries for ALL bundle IDs
-    runtime_bids.each do |b|
-      escaped_b = Shellwords.escape(b)
-      LICENSE_KEYCHAIN_KEYS.each do |key|
-        escaped_key = Shellwords.escape(key)
-        ssh("security delete-generic-password -s #{escaped_b} -a #{escaped_key} 2>/dev/null; true")
-      end
-    end
-    warn "   Wiped App Support, UserDefaults, TCC, license for #{runtime_bids.join(', ')}"
+    # Clear no-keychain fallback license data for ALL bundle IDs
+    runtime_bids.each { |b| clear_license_fallback_remote(b) }
+    warn "   Wiped App Support, UserDefaults, TCC, fallback license for #{runtime_bids.join(', ')}"
   end
 
   def fresh_reset_local
@@ -241,13 +236,9 @@ class SaneTest
     bundle_ids.each do |b|
       system('tccutil', 'reset', 'All', b, out: File::NULL, err: File::NULL)
     end
-    # Clear license keychain entries for ALL bundle IDs
-    bundle_ids.each do |b|
-      LICENSE_KEYCHAIN_KEYS.each do |key|
-        system('security', 'delete-generic-password', '-s', b, '-a', key, err: File::NULL)
-      end
-    end
-    warn "   Wiped App Support, UserDefaults, TCC, license for #{bundle_ids.join(', ')}"
+    # Clear no-keychain fallback license data for ALL bundle IDs
+    bundle_ids.each { |b| clear_license_fallback_local(b) }
+    warn "   Wiped App Support, UserDefaults, TCC, fallback license for #{bundle_ids.join(', ')}"
   end
 
   def verify_single_copy_remote
@@ -275,12 +266,40 @@ class SaneTest
     other_bids = bundle_ids.reject { |bid| bid == runtime_bid }
     return if other_bids.empty?
 
-    other_bids.each do |bid|
+    # macOS can materialize a disabled ghost row when tccutil reset is called
+    # on bundle IDs that are not currently granted. Only reset entries that are
+    # actively granted to avoid reintroducing duplicate "SaneBar" rows.
+    granted_other_bids = other_bids.select { |bid| accessibility_auth_value_remote(bid) == 2 }
+    if granted_other_bids.empty?
+      warn "   Dedupe: no extra granted Accessibility entries to reset (running #{runtime_bid})"
+      return
+    end
+
+    granted_other_bids.each do |bid|
       escaped_bid = Shellwords.escape(bid)
       ssh("tccutil reset Accessibility #{escaped_bid} 2>/dev/null; true")
     end
 
-    warn "   Dedupe: reset Accessibility for #{other_bids.join(', ')} (running #{runtime_bid})"
+    warn "   Dedupe: reset Accessibility for #{granted_other_bids.join(', ')} (running #{runtime_bid})"
+  end
+
+  def accessibility_auth_value_remote(bundle_id)
+    escaped_bundle = bundle_id.gsub("'", "''")
+    dbs = [
+      '$HOME/Library/Application Support/com.apple.TCC/TCC.db',
+      '/Library/Application Support/com.apple.TCC/TCC.db'
+    ]
+
+    dbs.each do |db|
+      db_exists = ssh_capture("DB=\"#{db}\"; [ -f \"$DB\" ] && echo yes || echo no").strip
+      next unless db_exists == 'yes'
+
+      sql = "SELECT auth_value FROM access WHERE service='kTCCServiceAccessibility' AND client='#{escaped_bundle}' ORDER BY rowid DESC LIMIT 1;"
+      value = ssh_capture("DB=\"#{db}\"; sqlite3 \"$DB\" #{Shellwords.escape(sql)} 2>/dev/null").strip
+      return value.to_i if value.match?(/\A\d+\z/)
+    end
+
+    nil
   end
 
   def reconcile_accessibility_trust_remote
@@ -364,8 +383,7 @@ class SaneTest
   end
 
   def launch_remote
-    env_args = []
-    env_args += ['--env', 'SANEAPPS_FORCE_LICENSE_CHECK=1'] if @free_mode
+    env_args = launch_env_pairs
     launch_cmd =
       if @allow_keychain
         "open #{env_args.join(' ')} #{MINI_APPS_DIR}/#{@app_name}.app"
@@ -442,10 +460,33 @@ class SaneTest
     non_runtime = [@config[:dev], @config[:prod]].uniq.reject { |bid| bid == runtime_bundle }
     return if non_runtime.empty?
 
-    non_runtime.each do |bid|
+    granted_non_runtime = non_runtime.select { |bid| accessibility_auth_value_local(bid) == 2 }
+    if granted_non_runtime.empty?
+      warn "   Dedupe: no extra granted Accessibility entries to reset (running #{runtime_bundle})"
+      return
+    end
+
+    granted_non_runtime.each do |bid|
       system('tccutil', 'reset', 'Accessibility', bid, out: File::NULL, err: File::NULL)
     end
-    warn "   Dedupe: reset Accessibility for #{non_runtime.join(', ')} (running #{runtime_bundle})"
+    warn "   Dedupe: reset Accessibility for #{granted_non_runtime.join(', ')} (running #{runtime_bundle})"
+  end
+
+  def accessibility_auth_value_local(bundle_id)
+    escaped_bundle = bundle_id.gsub("'", "''")
+    dbs = [
+      File.expand_path('~/Library/Application Support/com.apple.TCC/TCC.db'),
+      '/Library/Application Support/com.apple.TCC/TCC.db'
+    ]
+
+    dbs.each do |db|
+      next unless File.exist?(db)
+
+      value = `sqlite3 "#{db}" "SELECT auth_value FROM access WHERE service='kTCCServiceAccessibility' AND client='#{escaped_bundle}' ORDER BY rowid DESC LIMIT 1;"`.strip
+      return value.to_i if value.match?(/\A\d+\z/)
+    end
+
+    nil
   end
 
   def reconcile_accessibility_trust_local(app_path)
@@ -512,8 +553,7 @@ class SaneTest
     app_path = stage_to_canonical_local_app_path(source_app_path)
     reconcile_accessibility_trust_local(app_path)
 
-    open_args = []
-    open_args += ['--env', 'SANEAPPS_FORCE_LICENSE_CHECK=1'] if @free_mode
+    open_args = launch_env_pairs
     if @allow_keychain
       system('open', *open_args, app_path)
     else
@@ -602,51 +642,108 @@ class SaneTest
 
   # ── License Mode ─────────────────────────────────────────────
 
-  LICENSE_KEYCHAIN_KEYS = %w[
-    pro_license_key
-    pro_license_email
-    pro_last_validation
-  ].freeze
-
-  TEST_LICENSE_KEY = '66C2DC9C-3B72-41DC-8F79-BDE07715F2DE'
+  TEST_LICENSE_KEY = 'test-pro'.freeze
+  EARLY_ADOPTER_KEY = 'early-adopter'.freeze
 
   def set_license_mode_local
     bid = @config[:dev]
     if @free_mode
-      warn '   Clearing license data (free mode)...'
-      LICENSE_KEYCHAIN_KEYS.each do |key|
-        system('security', 'delete-generic-password', '-s', bid, '-a', key, err: File::NULL)
-      end
+      warn '   Clearing fallback license data (free mode)...'
+      clear_license_fallback_local(bid)
       # Clear cached validation and grandfathered flag from settings
       clear_license_settings_local
       warn '   License cleared — app will launch as Free user'
     elsif @pro_mode
-      warn '   Injecting test license key (pro mode)...'
-      system('security', 'add-generic-password', '-s', bid,
-             '-a', LICENSE_KEYCHAIN_KEYS[0], '-w', TEST_LICENSE_KEY, '-U')
-      warn "   Test key injected — app will attempt validation with #{TEST_LICENSE_KEY}"
+      warn '   Writing fallback license data (pro mode)...'
+      set_pro_fallback_local(bid)
+      warn '   Pro fallback key written (no keychain access required)'
     end
   end
 
   def set_license_mode_remote
     bid = remote_runtime_bundle_id
     if @free_mode
-      warn '   Clearing license data on mini (free mode)...'
-      escaped_bid = Shellwords.escape(bid)
-      LICENSE_KEYCHAIN_KEYS.each do |key|
-        escaped_key = Shellwords.escape(key)
-        ssh("security delete-generic-password -s #{escaped_bid} -a #{escaped_key} 2>/dev/null; true")
-      end
+      warn '   Clearing fallback license data on mini (free mode)...'
+      clear_license_fallback_remote(bid)
       clear_license_settings_remote
       warn '   License cleared on mini — app will launch as Free user'
     elsif @pro_mode
-      warn '   Injecting test license key on mini (pro mode)...'
-      escaped_bid = Shellwords.escape(bid)
-      escaped_key = Shellwords.escape(LICENSE_KEYCHAIN_KEYS[0])
-      escaped_license = Shellwords.escape(TEST_LICENSE_KEY)
-      ssh("security add-generic-password -s #{escaped_bid} -a #{escaped_key} -w #{escaped_license} -U 2>/dev/null; true")
-      warn "   Test key injected on mini — app will attempt validation"
+      warn '   Writing fallback license data on mini (pro mode)...'
+      set_pro_fallback_remote(bid)
+      warn '   Pro fallback key written on mini (no keychain access required)'
     end
+  end
+
+  def license_key_name
+    @app_name == 'SaneBar' ? 'pro_license_key' : 'license_key'
+  end
+
+  def license_email_name
+    @app_name == 'SaneBar' ? 'pro_license_email' : 'license_email'
+  end
+
+  def license_date_name
+    @app_name == 'SaneBar' ? 'pro_last_validation' : 'last_validation'
+  end
+
+  def fallback_domain(bundle_id)
+    "#{bundle_id}.no-keychain"
+  end
+
+  def fallback_pref_key(bundle_id, key_name)
+    "sane.no-keychain.#{bundle_id}.#{key_name}"
+  end
+
+  def clear_license_fallback_local(bundle_id)
+    domain = fallback_domain(bundle_id)
+    [license_key_name, license_email_name, license_date_name].each do |name|
+      key = fallback_pref_key(bundle_id, name)
+      system('defaults', 'delete', domain, key, out: File::NULL, err: File::NULL)
+    end
+  end
+
+  def clear_license_fallback_remote(bundle_id)
+    domain = fallback_domain(bundle_id)
+    [license_key_name, license_email_name, license_date_name].each do |name|
+      key = fallback_pref_key(bundle_id, name)
+      ssh("defaults delete #{Shellwords.escape(domain)} #{Shellwords.escape(key)} 2>/dev/null; true")
+    end
+  end
+
+  def set_pro_fallback_local(bundle_id)
+    domain = fallback_domain(bundle_id)
+    key = fallback_pref_key(bundle_id, license_key_name)
+    date_key = fallback_pref_key(bundle_id, license_date_name)
+    email_key = fallback_pref_key(bundle_id, license_email_name)
+    pro_value = (@app_name == 'SaneBar') ? EARLY_ADOPTER_KEY : TEST_LICENSE_KEY
+
+    system('defaults', 'write', domain, key, '-string', pro_value)
+    system('defaults', 'write', domain, date_key, '-string', Time.now.utc.iso8601)
+    system('defaults', 'write', domain, email_key, '-string', 'test@saneapps.local') unless @app_name == 'SaneBar'
+  end
+
+  def set_pro_fallback_remote(bundle_id)
+    domain = fallback_domain(bundle_id)
+    key = fallback_pref_key(bundle_id, license_key_name)
+    date_key = fallback_pref_key(bundle_id, license_date_name)
+    email_key = fallback_pref_key(bundle_id, license_email_name)
+    pro_value = (@app_name == 'SaneBar') ? EARLY_ADOPTER_KEY : TEST_LICENSE_KEY
+    now = Time.now.utc.iso8601
+
+    ssh("defaults write #{Shellwords.escape(domain)} #{Shellwords.escape(key)} -string #{Shellwords.escape(pro_value)}")
+    ssh("defaults write #{Shellwords.escape(domain)} #{Shellwords.escape(date_key)} -string #{Shellwords.escape(now)}")
+    unless @app_name == 'SaneBar'
+      ssh("defaults write #{Shellwords.escape(domain)} #{Shellwords.escape(email_key)} -string test@saneapps.local")
+    end
+  end
+
+  def launch_env_pairs
+    env_args = []
+    if @free_mode
+      env_args += ['--env', 'SANEAPPS_FORCE_LICENSE_CHECK=1']
+      env_args += ['--env', 'SANEAPPS_FORCE_FREE_MODE=1'] unless @app_name == 'SaneBar'
+    end
+    env_args
   end
 
   def clear_license_settings_local
@@ -828,8 +925,8 @@ if ARGV.empty? || ARGV[0] == '--help'
   warn '  --local      Force local testing (skip mini even if reachable)'
   warn '  --no-logs    Skip log streaming after launch'
   warn '  --fresh      Wipe ALL state (App Support, UserDefaults, TCC, license) — true first launch'
-  warn '  --free-mode  Clear license data — launch as Free user'
-  warn '  --pro-mode   Inject test license key — launch in Pro validation mode'
+  warn '  --free-mode  Clear fallback license data — launch as Free user'
+  warn '  --pro-mode   Write fallback Pro marker — launch in Pro mode'
   warn '  --reset-tcc  Reset TCC/Accessibility permissions (only for fresh installs)'
   warn '  --allow-keychain  Allow real keychain access during app launch (default is no-keychain)'
   warn '  --allow-unsigned-debug  Allow local SaneBar Debug launch without signing certs (unsupported visibility path)'

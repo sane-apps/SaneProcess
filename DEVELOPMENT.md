@@ -94,6 +94,7 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 | `export` | Export code/docs (PDF/MD) |
 | `debug` | Debugging helpers (logs, crashes, diagnose) |
 | `env` | Environment and setup helpers |
+| `sales` | LemonSqueezy revenue reporting helpers |
 
 ### Verification helpers
 
@@ -101,8 +102,53 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 |---------|---------|
 | `verify_api <API> [Framework]` | Verify SDK API exists |
 | `fix_mocks` | Check and fix mock sync status |
+| `verify_mocks` | Verify generated mocks are synchronized |
 
 **Examples** and **Aliases** are listed in `./scripts/SaneMaster.rb help` — keep them current with the CLI.
+
+## Central Memory MCP (Postgres + pgvector)
+
+SaneProcess includes a semantic memory MCP server for cross-session retrieval.
+
+- Server code: `scripts/mcp-central-memory/server.mjs`
+- Bootstrap: `scripts/mcp-central-memory/bootstrap-local.sh`
+- Default DB: `postgresql://localhost:5432/central_memory`
+- MCP key: `central-memory` in `/Users/sj/.codex/config.toml` and `.mcp.json`
+
+Setup:
+
+```bash
+cd ~/SaneApps/infra/SaneProcess/scripts/mcp-central-memory
+./bootstrap-local.sh
+```
+
+Verify:
+
+```bash
+~/.codex/bin/check-mcps
+codex mcp list | rg central-memory
+```
+
+Requirements:
+
+- `OPENAI_API_KEY` available to the Codex app process (for embeddings)
+- Homebrew `postgresql@17` and `pgvector` (installed by bootstrap script)
+
+## Installed Link Check Tools (2026-02-28)
+
+These are installed globally on this machine and available for website verification:
+
+- `lychee` (`brew install lychee`) — version `0.23.0`
+- `linkinator` (`npm install -g linkinator`) — version `7.6.1`
+- `broken-link-checker` / `blc` (`npm install -g broken-link-checker`) — version `0.7.8`
+
+Quick verify:
+
+```bash
+lychee --version
+linkinator --version
+blc --version
+```
 
 ## Testing
 
@@ -180,6 +226,89 @@ If `file_icon` is missing, the DMG gets a generic Finder icon. The `DMGIcon.icns
 ### Full SOP
 
 See [templates/RELEASE_SOP.md](templates/RELEASE_SOP.md) for the complete release checklist including R2 upload, appcast update, and Cloudflare Pages deployment.
+
+### App Store IAP Readiness (iOS)
+
+`scripts/appstore_submit.rb` now includes an IAP readiness pass for iOS submissions when `appstore.product_id` is set in `.saneprocess`.
+
+What it auto-checks/fixes:
+- Missing IAP localization (`en-US`)
+- Missing IAP price schedule (defaults to `6.99` USD unless overridden)
+- Missing IAP review screenshot (uses first matching screenshot from `.saneprocess appstore.screenshots`)
+- Missing IAP availability
+- Missing IAP review note
+
+Useful commands:
+
+```bash
+# IAP readiness only (no build upload, no app submission)
+ruby scripts/appstore_submit.rb --iap-only --app-id <APP_ID> --project-root .
+
+# Override default IAP USD price during readiness pass
+ruby scripts/appstore_submit.rb --iap-only --app-id <APP_ID> --project-root . --iap-price-usd 4.99
+```
+
+Important Apple constraint:
+- If ASC returns `STATE_ERROR.FIRST_IAP_MUST_BE_SUBMITTED_ON_VERSION`, the IAP is ready but must be reviewed together with an app version submission.
+
+### App Store Accessibility Declarations (API 4.0+)
+
+`scripts/appstore_submit.rb` can now sync accessibility declarations from `.saneprocess` using App Store Connect API endpoints:
+- `GET /v1/apps/{id}/accessibilityDeclarations`
+- `POST /v1/accessibilityDeclarations`
+- `PATCH /v1/accessibilityDeclarations/{id}`
+
+Config shape:
+
+```yaml
+appstore:
+  accessibility_declarations:
+    publish: true
+    iphone:
+      supports_dark_interface: true
+      supports_voiceover: true
+    ipad:
+      supports_dark_interface: true
+```
+
+Notes:
+- `publish: true` maps to ASC update attribute `publish: true` (not `state: "PUBLISHED"`).
+- Family keys accept friendly forms (`iphone`, `ipad`, `mac`, `watch`, `tv`, `vision`) and normalize to ASC enums.
+- Attribute keys accept snake_case or camelCase and normalize to ASC names.
+- If this block is absent, accessibility declaration sync is skipped.
+
+### App Store Listing Metadata Safety
+
+`appstore_submit.rb` no longer uses `appstore.review_notes` as fallback public listing description.
+
+Why:
+- `review_notes` are for App Review only and can contain internal test instructions.
+- Public description now only comes from:
+  1. `appstore.description` (preferred)
+  2. a generic safe fallback string if description is missing.
+
+Recommended:
+- Set both `appstore.description` and `appstore.keywords` explicitly in each app’s `.saneprocess`.
+
+### App Store Website Link Auto-Sync (iOS)
+
+`release.sh` now auto-syncs a live App Store URL into website HTML before deployment when all are true:
+- `appstore.enabled: true`
+- `appstore.platforms` includes `ios`
+- `appstore.app_id` is configured
+
+How it works:
+- Looks up live URL via Apple lookup API (`itunes.apple.com/lookup?id=<APPSTORE_APP_ID>`).
+- If live, patches any `<a ... data-appstore-ios-link ...>` marker in `docs/index.html` and/or `website/index.html`.
+- Removes `style="display: none;"` from that marker so the CTA appears only once the URL is live.
+
+Marker example:
+
+```html
+<a href="#" data-appstore-ios-link data-appstore-ios-url="" style="display: none;">Download on App Store</a>
+```
+
+If no marker exists, deploy still proceeds and logs a warning.
 
 ## Before Pushing
 

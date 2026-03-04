@@ -31,6 +31,13 @@ Runs 9 automated safety checks without building:
 
 **If preflight reports BLOCKED (red), fix before proceeding. Warnings (yellow) require review.**
 
+**Hard rule (no workaround releases):**
+- If any release/preflight guard fails, stop immediately.
+- Fix the underlying problem first (code, config, tests, issue triage, or inbox triage).
+- Verify the fix by re-running the failing check(s) and then full preflight.
+- Continue release only after preflight is clean.
+- Never self-approve an override to bypass a failing guard.
+
 ### 1. Build, Sign, Notarize, DMG (Single Command)
 
 ```bash

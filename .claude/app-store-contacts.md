@@ -1,9 +1,9 @@
 # App Store Submission Details
 
 ## Contact Info (Apple App Review)
-- **Name:** Stephan Joseph
-- **Phone:** +17277589785
-- **Email:** hi@saneapps.com
+- **Name:** Mr. Sane (or set `APPSTORE_CONTACT_NAME`)
+- **Phone:** Set `APPSTORE_CONTACT_PHONE` locally (do not commit real numbers)
+- **Email:** Set `APPSTORE_CONTACT_EMAIL` locally (defaults to hi@saneapps.com if omitted)
 
 ## Mac App Store Screenshot Requirements
 - Must be exact dimensions: 2880x1800, 2560x1600, 1440x900, or 1280x800
@@ -12,7 +12,7 @@
 - Must composite app window onto a properly-sized canvas
 
 ## Known Issues (Feb 2026)
-- SaneSales iOS had fake phone number (+1 212 555 0100) — FIXED to real number
+- SaneSales iOS had placeholder contact metadata — resolved via local secure contact env vars
 - SaneSales macOS was stuck at PREPARE_FOR_SUBMISSION — screenshots wrong size, build not attached
 - SaneClip macOS was REJECTED (needs investigation)
-- Always use real contact info, never placeholders
+- Keep real contact details out of git-tracked files; provide them through local secrets/env

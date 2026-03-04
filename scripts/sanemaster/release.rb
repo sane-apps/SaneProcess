@@ -26,6 +26,57 @@ module SaneMasterModules
       false
     end
 
+    def safe_read(path)
+      File.read(path)
+    rescue StandardError
+      ''
+    end
+
+    def monetization_source_blob(swift_files:)
+      app_source = swift_files.map { |f| safe_read(f) }.join("\n")
+      return app_source unless app_source.include?('import SaneUI')
+
+      saneui_root = File.expand_path('~/SaneApps/infra/SaneUI/Sources/SaneUI')
+      return app_source unless Dir.exist?(saneui_root)
+
+      saneui_source = Dir.glob(File.join(saneui_root, '**/*.swift')).map { |f| safe_read(f) }.join("\n")
+      [app_source, saneui_source].join("\n")
+    end
+
+    def monetization_guardrail_report(source_blob:, configured_product_id:, has_product_id_marker:, strict_appstore_product_id:)
+      report = { applicable: false, issues: [], warnings: [], summary: '' }
+      uses_license_service = source_blob.match?(/\bLicenseService\b/)
+      return report unless uses_license_service || !configured_product_id.to_s.strip.empty?
+
+      report[:applicable] = true
+      gate_hits = source_blob.scan(/\bisPro\b|\bisLicensed\b|\busesAppStorePurchase\b/).count
+      has_runtime_gate = source_blob.match?(/guard\s+.*isPro|if\s+.*isPro|!isPro/)
+      has_purchase_path = source_blob.match?(/\bpurchasePro\s*\(/) || source_blob.match?(/\bProduct\.purchase\s*\(/)
+      has_restore_path = source_blob.match?(/\brestorePurchases\s*\(/) || source_blob.match?(/\bAppStore\.sync\s*\(/)
+      has_upgrade_ui = source_blob.match?(/Unlock Pro|Pro feature|Upgrade|Restore Purchases|One-time unlock|Buy Now/i)
+      has_checkout_fallback = source_blob.match?(/go\.saneapps\.com\/buy\//) || source_blob.match?(/\bcheckoutURL\b/)
+
+      product_id = configured_product_id.to_s.strip
+      if product_id.empty?
+        if strict_appstore_product_id
+          report[:issues] << 'appstore.product_id is missing — free App Store downloads would have no in-app Pro unlock target'
+        else
+          report[:warnings] << 'appstore.product_id not set — App Store IAP upgrade path will not be available'
+        end
+      elsif !has_product_id_marker
+        report[:issues] << 'AppStoreProductID marker not found in plist/build settings'
+      end
+
+      report[:issues] << 'No in-app purchase path found (purchasePro/Product.purchase)' unless has_purchase_path
+      report[:issues] << 'No restore purchases path found (restorePurchases/AppStore.sync)' unless has_restore_path
+      report[:issues] << 'No unlock/upgrade UI copy detected' unless has_upgrade_ui
+      report[:issues] << 'No effective runtime Pro feature gates detected (isPro/isLicensed checks)' if gate_hits < 6 || !has_runtime_gate
+      report[:warnings] << 'No direct checkout fallback found for website builds' unless has_checkout_fallback
+
+      report[:summary] = "gates=#{gate_hits}, purchase=#{has_purchase_path ? 'yes' : 'no'}, restore=#{has_restore_path ? 'yes' : 'no'}, checkout=#{has_checkout_fallback ? 'yes' : 'no'}"
+      report
+    end
+
     def release(args)
       release_script = File.expand_path('../release.sh', __dir__)
       unless File.exist?(release_script)
@@ -86,6 +137,71 @@ module SaneMasterModules
       else
         puts '❌ FAIL'
         issues << 'Tests failing'
+      end
+
+      # 1a. Project QA guardrails (if project provides qa.rb)
+      print '  Project QA guardrails... '
+      qa_script = ['Scripts/qa.rb', 'scripts/qa.rb'].find { |path| File.exist?(path) }
+      if qa_script
+        app_name_for_env = begin
+          manifest = File.join(Dir.pwd, '.saneprocess')
+          if File.exist?(manifest)
+            match = File.read(manifest).match(/^name:\s*(.+)$/)
+            match ? match[1].strip : File.basename(Dir.pwd)
+          else
+            File.basename(Dir.pwd)
+          end
+        rescue StandardError
+          File.basename(Dir.pwd)
+        end
+
+        app_prefix = app_name_for_env.upcase.gsub(/[^A-Z0-9]+/, '_')
+        qa_env = {
+          'SANEPROCESS_RELEASE_PREFLIGHT' => '1',
+          'SANEPROCESS_RUN_STABILITY_SUITE' => '1',
+          "#{app_prefix}_RELEASE_PREFLIGHT" => '1',
+          "#{app_prefix}_RUN_STABILITY_SUITE" => '1',
+        }
+        _qa_out, qa_status = Open3.capture2e(qa_env, 'ruby', qa_script)
+        if qa_status.success?
+          puts "✅ (#{qa_script})"
+        else
+          puts '❌ FAIL'
+          issues << "Project QA guardrails failed (#{qa_script})"
+        end
+      else
+        puts '⏭️  skipped (no qa.rb)'
+      end
+
+      # 1b. Monetization guardrails (protect against accidental full-free releases)
+      print '  Monetization guardrails... '
+      project_yml_content = File.exist?('project.yml') ? safe_read('project.yml') : ''
+      plist_content = Dir.glob('**/Info.plist').reject { |p| p.include?('DerivedData') || p.include?('build/') }.map { |p| safe_read(p) }.join("\n")
+      pbxproj_content = Dir.glob('*.xcodeproj/project.pbxproj').map { |p| safe_read(p) }.join("\n")
+      product_id = begin
+        cfg = YAML.safe_load(safe_read('.saneprocess')) || {}
+        (cfg.dig('appstore', 'product_id') || '').to_s
+      rescue StandardError
+        ''
+      end
+      has_product_id_marker = [project_yml_content, plist_content, pbxproj_content].join("\n").match?(/AppStoreProductID|INFOPLIST_KEY_AppStoreProductID/)
+      swift_files = Dir.glob('**/*.swift').reject { |p| p.include?('DerivedData') || p.include?('build/') || p.include?('Tests/') }
+      monetization = monetization_guardrail_report(
+        source_blob: monetization_source_blob(swift_files: swift_files),
+        configured_product_id: product_id,
+        has_product_id_marker: has_product_id_marker,
+        strict_appstore_product_id: false
+      )
+      if monetization[:applicable]
+        if monetization[:issues].empty?
+          puts "✅ #{monetization[:summary]}"
+        else
+          puts "❌ #{monetization[:issues].first}"
+          monetization[:issues].each { |m| issues << "Monetization guard: #{m}" }
+        end
+        monetization[:warnings].each { |m| warnings << "Monetization guard: #{m}" }
+      else
+        puts '⏭️  skipped (no license/pro model detected)'
       end
 
       # 2. Git clean
@@ -215,13 +331,26 @@ module SaneMasterModules
         puts "✅ (#{ls_status})"
       end
 
-      # 8. Homebrew tap reachable
+      # 8. Homebrew tap reachable + version match
       print '  Homebrew tap... '
-      tap_status, = Open3.capture2('curl', '-sI', '-o', '/dev/null', '-w', '%{http_code}',
-                                   'https://raw.githubusercontent.com/sane-apps/homebrew-tap/main/Casks/sanebar.rb')
+      cask_url = 'https://raw.githubusercontent.com/sane-apps/homebrew-tap/main/Casks/sanebar.rb'
+      tap_status, = Open3.capture2('curl', '-sI', '-o', '/dev/null', '-w', '%{http_code}', cask_url)
       tap_status = tap_status.strip
       if tap_status == '200'
-        puts '✅'
+        cask_body, = Open3.capture2('curl', '-fsSL', cask_url)
+        cask_version = cask_body[/version\s+"([^"]+)"/, 1].to_s.strip
+        project_version = project_yml_content[/MARKETING_VERSION:\s*"?([^"\s]+)"?/, 1].to_s.strip
+        if cask_version.empty?
+          puts '⚠️  could not parse cask version'
+          warnings << 'Homebrew cask version unreadable'
+        elsif project_version.empty?
+          puts "✅ reachable (v#{cask_version}, project version unknown)"
+        elsif cask_version == project_version
+          puts "✅ (v#{cask_version})"
+        else
+          puts "⚠️  cask has v#{cask_version}, project is v#{project_version}"
+          warnings << "Homebrew cask version mismatch: cask=#{cask_version} project=#{project_version}"
+        end
       else
         puts "⚠️  returned #{tap_status}"
         warnings << "Homebrew tap cask not reachable (#{tap_status})"
@@ -235,6 +364,94 @@ module SaneMasterModules
         warnings << 'Evening release — 8-18hr discovery window if broken'
       else
         puts "✅ daytime (#{Time.now.strftime('%H:%M')})"
+      end
+
+      # 10. Email webhook download version drift
+      print '  Email webhook PRODUCT_CONFIG... '
+      webhook_js = File.expand_path('~/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js')
+      if File.exist?(webhook_js)
+        webhook_content = File.read(webhook_js)
+        # Get this project's app name from .saneprocess or directory
+        saneprocess_path = File.join(Dir.pwd, '.saneprocess')
+        preflight_app_name = if File.exist?(saneprocess_path)
+                               match = File.read(saneprocess_path).match(/^name:\s*(.+)/)
+                               match ? match[1].strip : File.basename(Dir.pwd)
+                             else
+                               File.basename(Dir.pwd)
+                             end
+
+        # Get version from appcast.xml (source of truth for what's actually released)
+        appcast_paths = Dir.glob(File.join(Dir.pwd, '{website,docs}/appcast.xml'))
+        appcast_ver = nil
+        appcast_paths.each do |ac|
+          match = File.read(ac).match(/sparkle:shortVersionString[=>]+"?([^"<\s]+)/)
+          appcast_ver = match[1] if match
+          break if appcast_ver
+        end
+
+        # Get version from webhook
+        webhook_match = webhook_content.match(/'#{Regexp.escape(preflight_app_name)}':\s*\{\s*file:\s*'#{Regexp.escape(preflight_app_name)}-([^']+)\.(zip|dmg)'/)
+        webhook_ver = webhook_match ? webhook_match[1] : nil
+
+        if appcast_ver && webhook_ver
+          if appcast_ver == webhook_ver
+            puts "✅ #{preflight_app_name} v#{webhook_ver}"
+          else
+            puts "❌ DRIFT: webhook=#{webhook_ver}, appcast=#{appcast_ver}"
+            issues << "Email webhook sends #{preflight_app_name}-#{webhook_ver} but appcast is at #{appcast_ver} — new customers get old builds"
+          end
+        elsif appcast_ver && !webhook_ver
+          puts "⚠️  #{preflight_app_name} not in webhook PRODUCT_CONFIG"
+          warnings << "#{preflight_app_name} missing from email webhook PRODUCT_CONFIG"
+        else
+          puts '⏭️  no appcast.xml found'
+        end
+      else
+        puts '⏭️  webhook file not found'
+      end
+
+      # 10b. Check if deployed Worker is stale vs git
+      print '  Webhook Worker deploy freshness... '
+      if File.exist?(webhook_js)
+        webhook_dir = File.dirname(File.dirname(File.dirname(webhook_js)))
+        wrangler_toml = File.join(webhook_dir, 'wrangler.toml')
+        if File.exist?(wrangler_toml)
+          # Get last git commit time on the webhook JS file
+          last_commit_epoch, commit_status = Open3.capture2(
+            'git', '-C', webhook_dir, 'log', '-1', '--format=%ct', '--', 'src/handlers/webhook-lemonsqueezy.js'
+          )
+          last_commit_epoch = last_commit_epoch.strip.to_i if commit_status.success?
+
+          # Get latest wrangler deployment timestamp
+          deploy_output, deploy_status = Open3.capture2(
+            'npx', 'wrangler', 'deployments', 'list', '--config', wrangler_toml,
+            chdir: webhook_dir
+          )
+
+          if deploy_status.success? && last_commit_epoch.to_i > 0
+            # Parse the most recent deployment timestamp from wrangler output
+            # Format varies but typically: "Created: 2026-03-01T12:00:00Z" or ISO date in the first entry
+            deploy_dates = deploy_output.scan(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)/)
+            if deploy_dates.any?
+              latest_deploy_time = Time.parse(deploy_dates.first.first).to_i rescue 0
+              if latest_deploy_time > 0 && last_commit_epoch > latest_deploy_time
+                age_hours = ((last_commit_epoch - latest_deploy_time) / 3600.0).round(1)
+                puts "⚠️  Worker stale by #{age_hours}h"
+                warnings << "Email Worker not deployed — code committed #{age_hours}h after last deploy. Run: cd #{webhook_dir} && npx wrangler deploy --keep-vars"
+              else
+                puts '✅ Worker up to date'
+              end
+            else
+              puts '⏭️  could not parse deploy timestamps'
+            end
+          else
+            puts '⏭️  wrangler deployments list failed'
+          end
+        else
+          puts '⏭️  no wrangler.toml found'
+        end
+      else
+        puts '⏭️  webhook file not found'
       end
 
       # Summary
@@ -676,7 +893,27 @@ module SaneMasterModules
         warnings << 'appstore.product_id is set, but AppStoreProductID marker not found in project settings'
       end
 
-      # 5e. Build App Store config and audit resulting artifact for runtime blockers
+      # 5e. Monetization guardrails (hard-fail for App Store submissions)
+      print '  │ Monetization guardrails... '
+      monetization_report = monetization_guardrail_report(
+        source_blob: monetization_source_blob(swift_files: swift_files),
+        configured_product_id: configured_product_id,
+        has_product_id_marker: has_product_id_marker,
+        strict_appstore_product_id: uses_storekit_unlock
+      )
+      if monetization_report[:applicable]
+        if monetization_report[:issues].empty?
+          puts "✅ #{monetization_report[:summary]}"
+        else
+          puts "❌ #{monetization_report[:issues].first}"
+          monetization_report[:issues].each { |msg| issues << "Monetization guard: #{msg}" }
+        end
+        monetization_report[:warnings].each { |msg| warnings << "Monetization guard: #{msg}" }
+      else
+        puts '⏭️  skipped (no license/pro model detected)'
+      end
+
+      # 5f. Build App Store config and audit resulting artifact for runtime blockers
       print '  │ Compiled App Store artifact audit... '
       platforms = Array(appstore_config['platforms'] || ['macos']).map(&:to_s)
       if platforms.include?('macos')
@@ -780,7 +1017,7 @@ module SaneMasterModules
         puts '⏭️  skipped (non-macOS submission)'
       end
 
-      # 5f. No DEBUG/development code leaking into release
+      # 5g. No DEBUG/development code leaking into release
       print '  │ Debug code audit... '
       debug_patterns = swift_files.select do |f|
         content = File.read(f) rescue ''

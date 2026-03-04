@@ -338,6 +338,147 @@ extract_content_length_with_user_agent() {
     curl -A "${user_agent}" -sI "${url}" 2>/dev/null | awk 'tolower($1)=="content-length:" {gsub("\r","",$2); print $2}' | tail -1
 }
 
+lookup_live_app_store_url() {
+    local app_id="$1"
+    local country="${2:-us}"
+    if [ -z "${app_id}" ] || ! [[ "${app_id}" =~ ^[0-9]+$ ]]; then
+        echo ""
+        return 0
+    fi
+
+    local lookup_url="https://itunes.apple.com/lookup?id=${app_id}&country=${country}&entity=software"
+    local payload
+    payload=$(curl -fsSL "${lookup_url}" 2>/dev/null || true)
+    if [ -z "${payload}" ]; then
+        echo ""
+        return 0
+    fi
+
+    APPSTORE_LOOKUP_JSON="${payload}" python3 - <<'PY'
+import json
+import os
+import sys
+
+raw = os.environ.get("APPSTORE_LOOKUP_JSON", "")
+if not raw:
+    print("")
+    sys.exit(0)
+
+try:
+    data = json.loads(raw)
+except Exception:
+    print("")
+    sys.exit(0)
+
+results = data.get("results")
+if not isinstance(results, list):
+    print("")
+    sys.exit(0)
+
+for item in results:
+    if not isinstance(item, dict):
+        continue
+    url = item.get("trackViewUrl") or item.get("artistViewUrl") or ""
+    if isinstance(url, str) and "apps.apple.com" in url:
+        print(url.split("?")[0])
+        sys.exit(0)
+
+print("")
+PY
+}
+
+update_app_store_link_markers_in_file() {
+    local file_path="$1"
+    local live_url="$2"
+    APPSTORE_LINK_FILE="${file_path}" APPSTORE_LINK_URL="${live_url}" python3 - <<'PY'
+import os
+import re
+
+path = os.environ["APPSTORE_LINK_FILE"]
+url = os.environ["APPSTORE_LINK_URL"]
+
+with open(path, "r", encoding="utf-8") as f:
+    content = f.read()
+
+original = content
+
+anchor_re = re.compile(r'<a\b([^>]*)>', flags=re.IGNORECASE | re.DOTALL)
+href_re = re.compile(r'href="[^"]*"', flags=re.IGNORECASE)
+style_re = re.compile(r'\sstyle="display:\s*none;?"', flags=re.IGNORECASE)
+data_url_re = re.compile(r'data-appstore-ios-url="[^"]*"', flags=re.IGNORECASE)
+
+def patch_anchor(match):
+    attrs = match.group(1)
+    if "data-appstore-ios-link" not in attrs.lower():
+        return match.group(0)
+
+    if href_re.search(attrs):
+        attrs = href_re.sub(f'href="{url}"', attrs, count=1)
+    else:
+        attrs += f' href="{url}"'
+
+    attrs = style_re.sub("", attrs)
+
+    if data_url_re.search(attrs):
+        attrs = data_url_re.sub(f'data-appstore-ios-url="{url}"', attrs, count=1)
+    else:
+        attrs += f' data-appstore-ios-url="{url}"'
+
+    return f"<a{attrs}>"
+
+updated = anchor_re.sub(patch_anchor, content)
+if updated != original:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(updated)
+    print("updated")
+else:
+    print("noop")
+PY
+}
+
+update_website_app_store_links_if_live() {
+    if [ "${APPSTORE_ENABLED}" != "true" ]; then
+        return 0
+    fi
+    if ! echo "${APPSTORE_PLATFORMS:-}" | grep -qi "ios"; then
+        return 0
+    fi
+    if [ -z "${APPSTORE_APP_ID}" ] || ! [[ "${APPSTORE_APP_ID}" =~ ^[0-9]+$ ]]; then
+        log_warn "Skipping App Store website URL update: APPSTORE_APP_ID missing/invalid."
+        return 0
+    fi
+
+    local live_url
+    live_url=$(lookup_live_app_store_url "${APPSTORE_APP_ID}" "${APPSTORE_LOOKUP_COUNTRY:-us}")
+    if [ -z "${live_url}" ]; then
+        log_info "No live App Store URL found yet for app id ${APPSTORE_APP_ID}; website App Store links unchanged."
+        return 0
+    fi
+
+    local markers_found=false
+    for site_dir in "${PROJECT_ROOT}/docs" "${PROJECT_ROOT}/website"; do
+        local index_html="${site_dir}/index.html"
+        if [ ! -f "${index_html}" ]; then
+            continue
+        fi
+        if ! grep -q "data-appstore-ios-link" "${index_html}" 2>/dev/null; then
+            continue
+        fi
+        markers_found=true
+        local patch_result
+        patch_result=$(update_app_store_link_markers_in_file "${index_html}" "${live_url}")
+        if [ "${patch_result}" = "updated" ]; then
+            log_info "Updated App Store iOS link marker in $(basename "${site_dir}")/index.html → ${live_url}"
+        else
+            log_info "App Store iOS link marker already current in $(basename "${site_dir}")/index.html"
+        fi
+    done
+
+    if [ "${markers_found}" = false ]; then
+        log_warn "Live App Store URL found (${live_url}) but no data-appstore-ios-link markers exist in docs/website index.html."
+    fi
+}
+
 # Format release notes as clean HTML bullet list for Sparkle appcast.
 # Hard rules: plain English, never scare customers, beautifully formatted.
 # Input: newline-separated notes (one bullet per line)
@@ -940,6 +1081,16 @@ PY
         return 1
     fi
 
+    # Follow redirects and verify final destination returns 200
+    if [ "${checkout_status}" = "301" ] || [ "${checkout_status}" = "302" ]; then
+        local checkout_final_status
+        checkout_final_status=$(curl -sI -o /dev/null -w '%{http_code}' -L "${checkout_url}" 2>/dev/null || echo "000")
+        if [ "${checkout_final_status}" != "200" ]; then
+            log_error "Checkout URL redirect chain ends with HTTP ${checkout_final_status} (expected 200): ${checkout_url}"
+            return 1
+        fi
+    fi
+
     if [ -n "${HOMEBREW_TAP_REPO}" ]; then
         local cask_file="Casks/${LOWER_APP_NAME}.rb"
         local cask_raw_url="https://raw.githubusercontent.com/${HOMEBREW_TAP_REPO}/main/${cask_file}"
@@ -997,7 +1148,20 @@ PY
             return 1
         fi
 
+        # Extract and assert exact version from cask content
+        local cask_extracted_version
+        cask_body=$(curl -fsSL "${cask_raw_url}" 2>/dev/null || true)
+        cask_extracted_version=$(grep -oE 'version "[^"]+"' <<< "${cask_body}" | head -1 | sed 's/version "//;s/"//')
+        if [ -n "${cask_extracted_version}" ] && [ "${cask_extracted_version}" != "${VERSION}" ]; then
+            log_error "Homebrew cask version mismatch: cask has v${cask_extracted_version}, expected v${VERSION}"
+            return 1
+        fi
+
         if [ "${cask_verified_source}" = "github-api" ]; then
+            if [ "${STRICT_PUBLIC_CHANNEL_SYNC}" = true ]; then
+                log_error "Homebrew cask only reachable via GitHub API; raw.githubusercontent has not propagated."
+                return 1
+            fi
             log_warn "Homebrew verification passed via GitHub API; raw.githubusercontent is still propagating."
         fi
         fi
@@ -3163,10 +3327,10 @@ if [ "${WEBSITE_ONLY}" = true ]; then
     fi
     # Version drift guard: appcast version must match website download link version
     if [ -f "${DEPLOY_DIR}/appcast.xml" ] && [ -f "${DEPLOY_DIR}/index.html" ]; then
-        local appcast_ver
+        appcast_ver=""
         # Handle both element (<sparkle:shortVersionString>X.Y.Z</...) and attribute (sparkle:shortVersionString="X.Y.Z") formats
         appcast_ver=$(grep -oE 'shortVersionString[^0-9]*[0-9]+\.[0-9]+\.[0-9]+' "${DEPLOY_DIR}/appcast.xml" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-        local site_download_ver
+        site_download_ver=""
         site_download_ver=$(grep -oE "${APP_NAME}-[0-9]+\.[0-9]+\.[0-9]+\.zip" "${DEPLOY_DIR}/index.html" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
         if [ -n "${appcast_ver}" ] && [ -n "${site_download_ver}" ]; then
             if [ "${appcast_ver}" != "${site_download_ver}" ]; then
@@ -3178,7 +3342,25 @@ if [ "${WEBSITE_ONLY}" = true ]; then
             fi
             log_info "Version consistency check passed: appcast and website both at v${appcast_ver}"
         fi
+
+        # Webhook version drift warning (non-blocking — website-only deploys don't require webhook updates)
+        webhook_js_path="${HOME}/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js"
+        if [ -n "${appcast_ver}" ] && [ -f "${webhook_js_path}" ]; then
+            webhook_entry=""
+            webhook_entry=$(grep "'${APP_NAME}'" "${webhook_js_path}" 2>/dev/null || true)
+            if [ -n "${webhook_entry}" ]; then
+                webhook_ver=""
+                webhook_ver=$(echo "${webhook_entry}" | grep -oE "${APP_NAME}-[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?')
+                if [ -n "${webhook_ver}" ] && [ "${webhook_ver}" != "${appcast_ver}" ]; then
+                    log_warn "Email webhook PRODUCT_CONFIG drift: webhook has v${webhook_ver} but appcast is v${appcast_ver}"
+                    log_warn "New customers will download an old build. Update ${webhook_js_path} and deploy the Worker."
+                fi
+            fi
+        fi
     fi
+
+    # Auto-wire live iOS App Store URL into website markers (if configured and available).
+    update_website_app_store_links_if_live
 
     log_info "Deploying website to Cloudflare Pages (${PAGES_PROJECT}) from ${DEPLOY_DIR}..."
     npx wrangler pages deploy "${DEPLOY_DIR}" \
@@ -4089,6 +4271,9 @@ PY
         fi
     done
 
+    # Auto-wire live iOS App Store URL into website markers (if configured and available).
+    update_website_app_store_links_if_live
+
     # Step 3: Deploy website + appcast to Cloudflare Pages
     PAGES_PROJECT="${LOWER_APP_NAME}-site"
     if [ -d "${DOCS_DIR}" ]; then
@@ -4355,6 +4540,18 @@ PY
                     log_info "Webhook deployed to Cloudflare Workers." || \
                     log_warn "Webhook deploy failed — deploy manually: cd ${WEBHOOK_DIR} && npx wrangler deploy --keep-vars"
                 cd "${PROJECT_ROOT}"
+            fi
+
+            # Verify the sed replacement actually worked (catches silent no-match)
+            WEBHOOK_VERIFY=$(grep "'${APP_NAME}'" "${WEBHOOK_JS}" 2>/dev/null || true)
+            if [ -n "${WEBHOOK_VERIFY}" ]; then
+                if echo "${WEBHOOK_VERIFY}" | grep -q "${APP_NAME}-${VERSION}"; then
+                    log_info "Webhook version verified: ${APP_NAME}-${VERSION} in PRODUCT_CONFIG"
+                else
+                    ACTUAL_VER=$(echo "${WEBHOOK_VERIFY}" | grep -oE "${APP_NAME}-[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1)
+                    log_error "Webhook version mismatch after update: expected ${APP_NAME}-${VERSION} but found ${ACTUAL_VER:-unknown}"
+                    log_error "The sed replacement may have failed silently. Edit ${WEBHOOK_JS} manually."
+                fi
             fi
         else
             log_warn "No '${APP_NAME}' entry found in webhook — add it manually to ${WEBHOOK_JS}"

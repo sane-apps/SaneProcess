@@ -55,6 +55,18 @@
         "MEMORY_FILE_PATH": "/Users/sj/.claude/memory/knowledge-graph.jsonl"
       }
     },
+    "central-memory": {
+      "command": "node",
+      "args": [
+        "/Users/sj/SaneApps/infra/SaneProcess/scripts/mcp-central-memory/server.mjs"
+      ],
+      "env": {
+        "CENTRAL_MEMORY_DATABASE_URL": "postgresql://localhost:5432/central_memory",
+        "CENTRAL_MEMORY_EMBED_MODEL": "text-embedding-3-small",
+        "CENTRAL_MEMORY_EMBED_DIMENSIONS": "1536",
+        "OPENAI_API_KEY": "${OPENAI_API_KEY}"
+      }
+    },
     "nvidia-build": {
       "command": "/Users/sj/.local/share/nvidia-mcp-venv/bin/python3",
       "args": [

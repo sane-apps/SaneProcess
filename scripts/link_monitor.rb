@@ -39,6 +39,7 @@ CRITICAL_URLS = {}.tap do |urls|
     urls["#{product['name']} checkout"] = "#{STORE['checkout_base']}/#{checkout_uuid}"
     urls[product["domain"]] = "https://#{product['domain']}"
     urls["#{product['name']} redirect"] = "#{REDIRECT['base_url']}/#{slug}"
+    urls["#{product['name']} download"] = "https://go.saneapps.com/download/#{slug}"
     urls["#{product['name']} appcast"] = product["appcast"]
     urls["#{product['name']} dist worker"] = "https://#{product['dist_domain']}/"
   end
@@ -99,6 +100,38 @@ def check_url(url, max_redirects: MAX_REDIRECTS, attempts: 3)
   end
 
   { status: :error, code: 0, message: "Unknown check failure" }
+end
+
+def check_redirect_mapping(slug, product)
+  checkout_uuid = product["checkout_uuid"].to_s.strip
+  return { status: :error, message: "Missing checkout UUID for #{slug}" } if checkout_uuid.empty?
+
+  redirect_url = "#{REDIRECT['base_url']}/#{slug}"
+  expected_prefix = "#{STORE['checkout_base']}/#{checkout_uuid}"
+
+  uri = URI.parse(redirect_url)
+  http = Net::HTTP.new(uri.host, uri.port)
+  http.use_ssl = (uri.scheme == "https")
+  http.open_timeout = TIMEOUT
+  http.read_timeout = TIMEOUT
+
+  response = http.request_head(uri.request_uri)
+  code = response.code.to_i
+  location = response["location"].to_s
+
+  unless [301, 302, 303, 307, 308].include?(code)
+    return { status: :error, message: "Expected redirect, got HTTP #{code}" }
+  end
+
+  return { status: :error, message: "Redirect location missing" } if location.empty?
+
+  unless location.start_with?(expected_prefix)
+    return { status: :error, message: "Redirect target mismatch (expected prefix #{expected_prefix}, got #{location})" }
+  end
+
+  { status: :ok, code: code, location: location }
+rescue StandardError => e
+  { status: :error, message: e.message }
 end
 
 def fetch_url_content(url)
@@ -309,6 +342,24 @@ bad_links = scan_html_for_checkout_links
 bad_links.each do |bl|
   failures << { name: "Wrong checkout domain in #{bl[:file]}", url: bl[:url], error: "Expected saneapps.lemonsqueezy.com" }
   log "FAIL Wrong domain: #{bl[:url]} in #{bl[:file]}"
+end
+
+# 2b. Verify go.saneapps.com redirect maps to exact configured checkout UUID
+PRODUCTS.each do |slug, product|
+  checkout_uuid = product["checkout_uuid"].to_s.strip
+  monitor_links = product.fetch("monitor_links", true)
+  next if checkout_uuid.empty? || monitor_links == false
+
+  result = check_redirect_mapping(slug, product)
+  name = "#{product['name']} redirect mapping"
+  redirect_url = "#{REDIRECT['base_url']}/#{slug}"
+  if result[:status] == :ok
+    successes << name
+    log "OK  #{name} (#{result[:code]} -> #{result[:location]})"
+  else
+    failures << { name: name, url: redirect_url, error: result[:message] }
+    log "FAIL #{name}: #{result[:message]} — #{redirect_url}"
+  end
 end
 
 # 3. Check domain expiry dates

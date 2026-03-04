@@ -314,7 +314,16 @@ ssh mini 'tail -20 ~/SaneApps/outputs/nightly_report.md'
 | **context7** | Library docs | `resolve-library-id` FIRST, then `query-docs` |
 | **macos-automator** | macOS scripting, real UI testing | `get_scripting_tips search_term: "keyword"` |
 | **xcode** | Build, test, preview, diagnostics | `XcodeListWindows` → get `tabIdentifier` first |
+| **central-memory** | Shared semantic memory (Postgres + pgvector) | Use `remember` / `recall`; verify with `~/.codex/bin/check-mcps` |
 | **Serena** | Past bugs, patterns, project knowledge | `read_memory`/`write_memory` |
+
+### Central Memory MCP (Codex)
+
+- Server: `central-memory` in `/Users/sj/.codex/config.toml`
+- Runtime: PostgreSQL 17 + `pgvector` on `postgresql://localhost:5432/central_memory`
+- Bootstrap: `cd ~/SaneApps/infra/SaneProcess/scripts/mcp-central-memory && ./bootstrap-local.sh`
+- Health: `~/.codex/bin/check-mcps` (must show `central-memory` PASS)
+- Tools: `remember`, `recall`, `recent`, `stats`, `delete_by_external_id`, `import_knowledge_graph`
 
 ---
 

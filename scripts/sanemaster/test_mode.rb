@@ -73,21 +73,26 @@ module SaneMasterModules
 
       puts "📱 Launching: #{launch_path}"
       capture_logs = args.include?('--logs')
-      env_vars = {}
-      env_vars['VERIFY_PIP'] = ENV['VERIFY_PIP'] if ENV['VERIFY_PIP']
+      allow_keychain = args.include?('--allow-keychain')
+      force_free_mode = args.include?('--free-mode') || args.include?('--basic-mode') || args.include?('--basic')
+      env_vars = launch_env_vars(allow_keychain: allow_keychain, force_free_mode: force_free_mode)
+      launch_args = launch_binary_args(allow_keychain: allow_keychain)
       ensure_single_instance
 
       if capture_logs
         puts '📝 Capturing logs to stdout...'
-        pid = spawn(env_vars, File.join(launch_path, 'Contents', 'MacOS', project_name))
+        pid = spawn(env_vars, File.join(launch_path, 'Contents', 'MacOS', project_name), *launch_args)
         Process.wait(pid)
       else
-        opened = system(env_vars, 'open', launch_path)
+        open_cmd = ['open', *open_launch_env_pairs(allow_keychain: allow_keychain, force_free_mode: force_free_mode), launch_path]
+        open_cmd += ['--args', *launch_args] unless launch_args.empty?
+        opened = system(*open_cmd)
         unless opened
           puts '❌ Failed to launch app via open. Verify staged app bundle/executable exists.'
           return false
         end
-        puts '✅ App launched (fresh build verified)'
+        mode_label = allow_keychain ? 'keychain-enabled' : 'no-keychain'
+        puts "✅ App launched (fresh build verified, #{mode_label})"
       end
 
       true
@@ -131,7 +136,7 @@ module SaneMasterModules
       puts "\n✅ Setup complete."
     end
 
-    def enter_test_mode(_args)
+    def enter_test_mode(args)
       puts '🧪 --- [ TEST MODE ] ---'
       puts 'Preparing clean testing environment...'
       puts ''
@@ -140,19 +145,29 @@ module SaneMasterModules
       crash_dir = File.expand_path('~/Library/Logs/DiagnosticReports')
 
       kill_existing_processes
+      cleanup_stale_log_streams
       show_screenshots(screenshots_dir)
       show_diagnostic_reports(crash_dir)
       return unless build_app
 
-      return unless launch_app([])
+      launch_args = []
+      launch_args << '--allow-keychain' if args.include?('--allow-keychain')
+      launch_args << '--free-mode' if args.any? { |arg| %w[--free-mode --basic-mode --basic].include?(arg) }
+
+      return unless launch_app(launch_args)
       sleep 2
       print_test_mode_ready
+
+      if args.include?('--no-logs')
+        puts '📡 Live log streaming skipped (--no-logs).'
+        return
+      end
 
       # Stream logs in background - non-sandboxed app uses unified logging
       puts '📡 Streaming live logs in background...'
       puts '   (Non-sandboxed app - using unified logging)'
       puts '─' * 60
-      spawn('log', 'stream', '--predicate', "process == \"#{project_name}\"", '--style', 'compact')
+      spawn('/usr/bin/log', 'stream', '--predicate', "process == \"#{project_name}\"", '--style', 'compact')
     end
 
     def show_app_logs(args)
@@ -193,6 +208,11 @@ module SaneMasterModules
       puts ''
     end
 
+    def cleanup_stale_log_streams
+      pattern = "log stream --predicate process == \"#{project_name}\""
+      system('pkill', '-f', pattern, err: File::NULL)
+    end
+
     def ensure_single_instance
       puts "🛑 Ensuring single #{project_name} instance..."
       system('killall', '-9', project_name, err: File::NULL)
@@ -201,11 +221,22 @@ module SaneMasterModules
 
     def canonical_local_app_path
       env_override = ENV['SANEMASTER_CANONICAL_APP_PATH']
-      return File.expand_path(env_override) if env_override && !env_override.strip.empty?
-
       app_name = "#{project_name}.app"
       system_app = File.join('/Applications', app_name)
-      user_app = File.expand_path(File.join('~/Applications', app_name))
+      user_app = user_local_app_path
+
+      if env_override && !env_override.strip.empty?
+        override_path = File.expand_path(env_override)
+        if unsigned_fallback_active? && override_path.start_with?('/Applications/')
+          puts "⚠️  Ignoring SANEMASTER_CANONICAL_APP_PATH=#{override_path} during unsigned fallback."
+          puts "   Using user-level path instead to avoid replacing a signed /Applications install."
+          return user_app
+        end
+        return override_path
+      end
+
+      # Never replace a signed system install with unsigned fallback builds.
+      return user_app if unsigned_fallback_active?
 
       return system_app if File.exist?(system_app)
       return user_app if File.exist?(user_app)
@@ -215,6 +246,23 @@ module SaneMasterModules
 
     def stage_to_canonical_local_app_path(source_app_path)
       target_app_path = canonical_local_app_path
+      if should_preserve_system_release_install?(source_app_path: source_app_path, target_app_path: target_app_path)
+        puts "⚠️  Preserving signed /Applications install for #{project_name}."
+        puts "   Skipping local Apple Development staging to avoid TCC identity drift."
+        puts "   Launching existing official app at: #{target_app_path}"
+        puts "   Set SANEMASTER_ALLOW_REPLACE_DEVELOPER_ID=1 to override."
+        return target_app_path
+      end
+
+      if should_stage_apple_development_to_user_app?(source_app_path: source_app_path, target_app_path: target_app_path)
+        redirected_target = user_local_app_path
+        puts "⚠️  Staging Apple Development build to user path for #{project_name}."
+        puts "   Skipping /Applications write to avoid permission identity drift."
+        puts "   Target: #{redirected_target}"
+        puts "   Set SANEMASTER_ALLOW_STAGE_APPLE_DEVELOPMENT_TO_SYSTEM=1 to override."
+        target_app_path = redirected_target
+      end
+
       target_parent = File.dirname(target_app_path)
       FileUtils.mkdir_p(target_parent) unless Dir.exist?(target_parent)
 
@@ -273,6 +321,44 @@ module SaneMasterModules
       target_app_path
     end
 
+    def should_preserve_system_release_install?(source_app_path:, target_app_path:)
+      return false unless target_app_path.start_with?('/Applications/')
+      return false if ENV['SANEMASTER_ALLOW_REPLACE_DEVELOPER_ID'] == '1'
+      return false unless File.exist?(target_app_path)
+      return false unless source_app_path && File.exist?(source_app_path)
+
+      target_signed_release = developer_id_signed?(target_app_path)
+      source_is_dev_signed = apple_development_signed?(source_app_path)
+      target_signed_release && source_is_dev_signed
+    end
+
+    def should_stage_apple_development_to_user_app?(source_app_path:, target_app_path:)
+      return false unless target_app_path.start_with?('/Applications/')
+      return false if ENV['SANEMASTER_ALLOW_STAGE_APPLE_DEVELOPMENT_TO_SYSTEM'] == '1'
+      return false unless source_app_path && File.exist?(source_app_path)
+
+      apple_development_signed?(source_app_path)
+    end
+
+    def user_local_app_path
+      File.expand_path(File.join('~/Applications', "#{project_name}.app"))
+    end
+
+    def codesign_authority_lines(app_path)
+      return [] unless app_path && File.exist?(app_path)
+
+      output = `codesign -dv --verbose=2 "#{app_path}" 2>&1`
+      output.lines.map(&:strip).grep(/\AAuthority=/)
+    end
+
+    def developer_id_signed?(app_path)
+      codesign_authority_lines(app_path).any? { |line| line.start_with?('Authority=Developer ID Application:') }
+    end
+
+    def apple_development_signed?(app_path)
+      codesign_authority_lines(app_path).any? { |line| line.start_with?('Authority=Apple Development:') }
+    end
+
     def reconcile_accessibility_trust_local(app_path)
       bundle_id = bundle_id_for_app(app_path)
       return unless bundle_id
@@ -282,6 +368,14 @@ module SaneMasterModules
 
       escaped_bundle = bundle_id.gsub("'", "''")
       rows_raw = `sqlite3 "#{user_db}" "SELECT rowid || '|' || IFNULL(hex(csreq), '') FROM access WHERE service='kTCCServiceAccessibility' AND client='#{escaped_bundle}';"`.strip
+
+      # Clean legacy dev-bundle aliases that create duplicate Accessibility rows
+      # in System Settings and can lock users out of the actively launched app.
+      legacy_aliases = [bundle_id.sub(/\.app\z/, '.dev')].uniq.reject { |id| id == bundle_id }
+      legacy_aliases.each do |legacy_id|
+        system('tccutil', 'reset', 'Accessibility', legacy_id, out: File::NULL, err: File::NULL)
+      end
+
       return if rows_raw.empty?
 
       stale_row_ids = []
@@ -435,6 +529,21 @@ module SaneMasterModules
              '-destination', 'platform=macOS', 'ENABLE_DEBUG_DYLIB=NO', 'build']
       stdout, status = Open3.capture2e(*cmd)
 
+      if should_retry_unsigned_debug?(build_config: build_config, output: stdout, status: status)
+        puts '   ⚠️  Signed build blocked in headless session; retrying unsigned Debug build...'
+        fallback_cmd = ['xcodebuild', *xcodebuild_container_args, '-scheme', project_scheme, '-configuration', 'Debug',
+                        '-destination', 'platform=macOS', 'ENABLE_DEBUG_DYLIB=NO',
+                        'CODE_SIGNING_ALLOWED=NO', 'CODE_SIGNING_REQUIRED=NO', 'build']
+        fallback_stdout, fallback_status = Open3.capture2e(*fallback_cmd)
+        stdout = fallback_stdout
+        status = fallback_status
+
+        if fallback_status.success?
+          ENV['SANEMASTER_UNSIGNED_FALLBACK_ACTIVE'] = '1'
+          ENV['SANEMASTER_BUILD_CONFIG'] = 'Debug'
+        end
+      end
+
       summary = stdout.lines.select { |line| line.match?(/BUILD|error:|warning:|CodeSign|Signing/) }.last(summary_lines)
       if summary.any?
         summary.each { |line| puts "   #{line.rstrip}" }
@@ -444,6 +553,22 @@ module SaneMasterModules
       end
 
       status.success?
+    end
+
+    def should_retry_unsigned_debug?(build_config:, output:, status:)
+      return false if status.success?
+      return false unless (ENV['SANEMASTER_ALLOW_UNSIGNED_FALLBACK'] || '1') != '0'
+      return false unless ENV['SSH_CONNECTION'] || ENV['SANEMASTER_HEADLESS'] == '1'
+      return false if build_config == 'Debug' && ENV['SANEMASTER_UNSIGNED_FALLBACK_ACTIVE'] == '1'
+
+      signing_error_patterns = [
+        /errSecInternalComponent/,
+        /Command CodeSign failed/,
+        /User interaction is not allowed/,
+        /codesign.*nonzero exit code/i
+      ]
+
+      signing_error_patterns.any? { |pattern| output.match?(pattern) }
     end
 
     def built_app_candidates(build_config)
@@ -494,6 +619,37 @@ module SaneMasterModules
       Dir.glob('**/*.swift').reject do |path|
         path.split(File::SEPARATOR).any? { |part| ignored_roots.include?(part) }
       end
+    end
+
+    def launch_env_vars(allow_keychain:, force_free_mode:)
+      env_vars = {}
+      env_vars['VERIFY_PIP'] = ENV['VERIFY_PIP'] if ENV['VERIFY_PIP']
+      env_vars['SANEAPPS_DISABLE_KEYCHAIN'] = '1' unless allow_keychain
+      return env_vars unless force_free_mode
+
+      env_vars['SANEAPPS_FORCE_LICENSE_CHECK'] = '1'
+      env_vars['SANEAPPS_FORCE_FREE_MODE'] = '1' unless project_name == 'SaneBar'
+      env_vars
+    end
+
+    def open_launch_env_pairs(allow_keychain:, force_free_mode:)
+      pairs = []
+      pairs += ['--env', 'SANEAPPS_DISABLE_KEYCHAIN=1'] unless allow_keychain
+      return pairs unless force_free_mode
+
+      pairs += ['--env', 'SANEAPPS_FORCE_LICENSE_CHECK=1']
+      pairs += ['--env', 'SANEAPPS_FORCE_FREE_MODE=1'] unless project_name == 'SaneBar'
+      pairs
+    end
+
+    def launch_binary_args(allow_keychain:)
+      return [] if allow_keychain
+
+      ['--sane-no-keychain']
+    end
+
+    def unsigned_fallback_active?
+      ENV['SANEMASTER_UNSIGNED_FALLBACK_ACTIVE'] == '1'
     end
   end
 end

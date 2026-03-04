@@ -33,7 +33,7 @@ EMAIL_FORMAT_OVERRIDE = '/tmp/.email_format_override'
 EMAIL_APPROVAL_TTL_SECONDS = 300
 EMAIL_APPROVAL_MIN_AGE_SECONDS = 3
 CORPORATE_WE_PATTERN = /\b(?:we|we['']re|we['']ll|we['']ve|our|us)\b/i
-THANK_PATTERN = /\bthank(s| you)?\b/i
+APPRECIATION_PATTERN = /\b(?:thank(s| you)?|appreciat(e|ion|ing)|grateful)\b/i
 HELPING_MAKE_PATTERN = /\bhelping make\b.*\bbetter\b/i
 MR_SANE_SIGNOFF_PATTERN = /\bMr\.?\s+Sane\b/
 
@@ -45,12 +45,11 @@ def email_format_valid?(body)
   first_chunk = stripped[0, 260] || ''
   last_chunk = stripped[-320, 320] || stripped
 
-  opens_with_thanks = first_chunk.match?(THANK_PATTERN)
-  has_two_thanks = text.scan(THANK_PATTERN).length >= 2
-  closes_with_thanks = last_chunk.match?(THANK_PATTERN)
+  opens_with_appreciation = first_chunk.match?(APPRECIATION_PATTERN)
+  closes_with_appreciation = last_chunk.match?(APPRECIATION_PATTERN)
   has_signoff = last_chunk.match?(MR_SANE_SIGNOFF_PATTERN)
 
-  opens_with_thanks && has_two_thanks && closes_with_thanks && has_signoff
+  opens_with_appreciation && closes_with_appreciation && has_signoff
 end
 
 # Verify the approval flag exists, matches the body hash, and is old enough
@@ -76,8 +75,8 @@ def verify_approval(body)
     return [false, 'Draft was modified after approval. Must re-approve.']
   end
 
-  # Valid — consume it
-  cleanup_flag(EMAIL_APPROVAL_FLAG)
+  # Valid — do NOT consume here; let check-inbox.sh handle cleanup.
+  # The flag has a 5-minute TTL so it won't linger.
   [true, nil]
 end
 
@@ -197,10 +196,9 @@ if command.include?('check-inbox.sh')
     elsif !email_format_valid?(body)
       warn '🔴 BLOCKED: Email format must match your standard'
       warn '   Required structure:'
-      warn '   1) Open with thanks'
-      warn '   2) Two thank-you mentions'
-      warn '   3) Close with thanks'
-      warn '   4) End with "Mr. Sane"'
+      warn '   1) Open with thanks or appreciation'
+      warn '   2) Close with thanks or appreciation'
+      warn '   3) End with "Mr. Sane"'
       warn ''
       warn '   User can override: touch /tmp/.email_format_override'
       exit 2

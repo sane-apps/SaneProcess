@@ -115,7 +115,7 @@ All state lives in a single HMAC-signed JSON file (`.claude/state.json`). File-l
 On every session start, three cleanup passes run:
 
 1. **Parent sessions** — finds `claude` processes not in your current process tree
-2. **MCP daemons** — finds known MCP patterns (context7, apple-docs, xcodebuild, github, serena, etc.) not in your session tree
+2. **MCP daemons** — finds known MCP patterns (context7, apple-docs, xcodebuild, github, serena, central-memory, etc.) not in your session tree
 3. **Subagents** — finds `claude --resume` processes whose parent sessions are dead
 
 Uses BFS process tree traversal. Your active session and any other active terminal sessions are never touched.
@@ -220,6 +220,27 @@ The hook is working correctly. Complete the required research categories before 
 ### Circuit breaker tripped
 
 Say `reset breaker` or `rb-` in Claude after fixing the root cause.
+
+### central-memory MCP not working
+
+SaneProcess includes a semantic memory MCP server backed by PostgreSQL + `pgvector`.
+
+```bash
+# Provision local database + extension + schema
+cd ~/SaneApps/infra/SaneProcess/scripts/mcp-central-memory
+./bootstrap-local.sh
+
+# Verify MCP health
+~/.codex/bin/check-mcps
+codex mcp list | rg central-memory
+```
+
+Expected: `check-mcps` shows `[PASS] central-memory`.
+
+If it fails:
+
+- Ensure `OPENAI_API_KEY` is available to the Codex app process.
+- Ensure PostgreSQL is running: `brew services list | rg postgresql@17`.
 
 ### Hooks not firing
 
