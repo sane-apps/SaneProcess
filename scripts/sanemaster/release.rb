@@ -77,6 +77,136 @@ module SaneMasterModules
       report
     end
 
+    def metadata_value(hash, *keys)
+      return nil unless hash.is_a?(Hash)
+
+      keys.each do |key|
+        key_str = key.to_s
+        key_sym = key_str.to_sym
+        value = hash.key?(key_str) ? hash[key_str] : hash[key_sym]
+        next if value.nil?
+
+        text = value.to_s.strip
+        return text unless text.empty?
+      end
+      nil
+    end
+
+    def appstore_metadata_for_platform(appstore_config, platform)
+      metadata_cfg = appstore_config['metadata'].is_a?(Hash) ? appstore_config['metadata'] : {}
+      default_cfg = metadata_cfg['default'].is_a?(Hash) ? metadata_cfg['default'] : {}
+
+      aliases =
+        case platform.to_s.downcase
+        when 'ios'
+          %w[ios iphone ipad mobile]
+        when 'macos'
+          %w[macos mac macosx desktop]
+        else
+          [platform.to_s.downcase]
+        end
+
+      platform_cfg = {}
+      aliases.each do |alias_key|
+        candidate = metadata_cfg[alias_key]
+        next unless candidate.is_a?(Hash)
+
+        platform_cfg = candidate
+        break
+      end
+
+      metadata = {
+        subtitle: metadata_value(platform_cfg, 'subtitle') ||
+                  metadata_value(default_cfg, 'subtitle') ||
+                  metadata_value(appstore_config, 'subtitle'),
+        promotional_text: metadata_value(platform_cfg, 'promotional_text', 'promotionalText') ||
+                          metadata_value(default_cfg, 'promotional_text', 'promotionalText') ||
+                          metadata_value(appstore_config, 'promotional_text', 'promotionalText'),
+        description: metadata_value(platform_cfg, 'description') ||
+                     metadata_value(default_cfg, 'description') ||
+                     metadata_value(appstore_config, 'description'),
+        keywords: metadata_value(platform_cfg, 'keywords') ||
+                  metadata_value(default_cfg, 'keywords') ||
+                  metadata_value(appstore_config, 'keywords')
+      }
+
+      [metadata, platform_cfg]
+    end
+
+    def appstore_listing_copy_audit(appstore_config:, platforms:, app_name:)
+      issues = []
+      warnings = []
+      summaries = []
+
+      fallback_description = "#{app_name} helps you stay productive on Apple devices with a clear free tier and a one-time Pro upgrade."
+      placeholder_re = /\b(lorem ipsum|tbd|placeholder|coming soon|dummy text)\b/i
+      review_style_re = /(does not request|does not simulate|to test:|frontmost app|cmd\+v|manually press|keyboard events)/i
+      ios_macos_mismatch_re = /(menu bar|frontmost app|cmd\+v|cgEvent|accessibility)/i
+
+      normalized_platforms = Array(platforms).map { |p| p.to_s.downcase }.uniq
+      normalized_platforms = %w[macos] if normalized_platforms.empty?
+
+      normalized_platforms.each do |platform|
+        metadata, explicit_platform_cfg = appstore_metadata_for_platform(appstore_config, platform)
+
+        missing_fields = metadata.select { |_k, v| v.nil? }.keys
+        if missing_fields.any?
+          warnings << "[#{platform}] Missing metadata fields in .saneprocess: #{missing_fields.join(', ')}"
+        end
+
+        unless explicit_platform_cfg.is_a?(Hash) && !explicit_platform_cfg.empty?
+          warnings << "[#{platform}] No platform-specific metadata block found (appstore.metadata.#{platform}); fallback/default copy may leak into App Store listing"
+        end
+
+        description = metadata[:description].to_s
+        promo = metadata[:promotional_text].to_s
+        subtitle = metadata[:subtitle].to_s
+        keywords = metadata[:keywords].to_s
+        keyword_terms = keywords.split(',').map(&:strip).reject(&:empty?)
+
+        if description.casecmp?(fallback_description)
+          issues << "[#{platform}] Description is fallback boilerplate; set appstore.metadata.#{platform}.description"
+        end
+
+        if keywords.downcase == 'productivity,utility,mac'
+          warnings << "[#{platform}] Keywords are generic fallback terms; replace with product-specific search terms"
+        end
+
+        if [description, promo, subtitle].any? { |text| text.match?(placeholder_re) }
+          issues << "[#{platform}] Listing copy contains placeholder text (TBD/coming soon/lorem ipsum)"
+        end
+
+        if [description, promo].any? { |text| text.match?(review_style_re) }
+          warnings << "[#{platform}] Listing copy reads like review notes/debug instructions; move that language to appstore.review_notes"
+        end
+
+        if !description.empty? && description.length < 140
+          warnings << "[#{platform}] Description is short (#{description.length} chars); App Store copy usually converts better with clear feature detail"
+        end
+
+        if !promo.empty? && promo.length < 45
+          warnings << "[#{platform}] Promotional text is short (#{promo.length} chars); tighten value proposition"
+        end
+
+        if !keywords.empty? && keyword_terms.length < 5
+          warnings << "[#{platform}] Only #{keyword_terms.length} keyword term(s); target at least 5 focused terms"
+        end
+
+        if platform == 'ios' && [description, promo, subtitle].any? { |text| text.match?(ios_macos_mismatch_re) }
+          issues << '[ios] Listing copy includes macOS-specific behavior (menu bar/Cmd+V/accessibility). Keep iOS listing focused on iPhone/iPad behavior.'
+        end
+
+        present_count = metadata.count { |_k, v| !v.nil? }
+        summaries << "#{platform}: #{present_count}/4 fields"
+      end
+
+      {
+        issues: issues.uniq,
+        warnings: warnings.uniq,
+        summary: summaries.join(', ')
+      }
+    end
+
     def release(args)
       release_script = File.expand_path('../release.sh', __dir__)
       unless File.exist?(release_script)
@@ -1147,6 +1277,21 @@ module SaneMasterModules
         puts '⚠️  not specified'
         warnings << 'No appstore.age_rating in .saneprocess — defaults to 4+ in ASC'
       end
+
+      # 6d. Listing copy quality (metadata accuracy + conversion readiness)
+      print '    Listing copy quality... '
+      copy_audit = appstore_listing_copy_audit(
+        appstore_config: appstore_config,
+        platforms: platforms,
+        app_name: app_name
+      )
+      if copy_audit[:issues].empty?
+        puts "✅ #{copy_audit[:summary]}"
+      else
+        puts "❌ #{copy_audit[:issues].first}"
+      end
+      copy_audit[:issues].each { |msg| issues << msg }
+      copy_audit[:warnings].each { |msg| warnings << msg }
 
       # ═══════════════════════════════════════════
       # Summary
