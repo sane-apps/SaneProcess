@@ -7,13 +7,11 @@
       ]
     },
     "github": {
-      "command": "node",
+      "command": "bash",
       "args": [
-        "/Users/sj/.npm-global/lib/node_modules/@modelcontextprotocol/server-github/dist/index.js"
-      ],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
-      }
+        "-lc",
+        "export GITHUB_PERSONAL_ACCESS_TOKEN=\"${GITHUB_TOKEN}\"; exec node /Users/sj/.npm-global/lib/node_modules/@modelcontextprotocol/server-github/dist/index.js"
+      ]
     },
     "macos-automator": {
       "command": "node",
@@ -56,16 +54,8 @@
       }
     },
     "central-memory": {
-      "command": "node",
-      "args": [
-        "/Users/sj/SaneApps/infra/SaneProcess/scripts/mcp-central-memory/server.mjs"
-      ],
-      "env": {
-        "CENTRAL_MEMORY_DATABASE_URL": "postgresql://localhost:5432/central_memory",
-        "CENTRAL_MEMORY_EMBED_MODEL": "text-embedding-3-small",
-        "CENTRAL_MEMORY_EMBED_DIMENSIONS": "1536",
-        "OPENAI_API_KEY": "${OPENAI_API_KEY}"
-      }
+      "command": "/Users/sj/SaneApps/infra/SaneProcess/scripts/mcp-central-memory/launch.sh",
+      "args": []
     },
     "nvidia-build": {
       "command": "/Users/sj/.local/share/nvidia-mcp-venv/bin/python3",

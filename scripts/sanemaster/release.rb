@@ -157,16 +157,21 @@ module SaneMasterModules
 
         app_prefix = app_name_for_env.upcase.gsub(/[^A-Z0-9]+/, '_')
         qa_env = {
+          'LANG' => (ENV['LANG'].to_s.empty? ? 'en_US.UTF-8' : ENV['LANG']),
+          'LC_ALL' => (ENV['LC_ALL'].to_s.empty? ? 'en_US.UTF-8' : ENV['LC_ALL']),
+          'PATH' => ([ENV['PATH'], '/opt/homebrew/bin', '/usr/local/bin'].compact.join(':')),
           'SANEPROCESS_RELEASE_PREFLIGHT' => '1',
           'SANEPROCESS_RUN_STABILITY_SUITE' => '1',
           "#{app_prefix}_RELEASE_PREFLIGHT" => '1',
           "#{app_prefix}_RUN_STABILITY_SUITE" => '1',
         }
-        _qa_out, qa_status = Open3.capture2e(qa_env, 'ruby', qa_script)
+        qa_out, qa_status = Open3.capture2e(qa_env, 'ruby', qa_script)
         if qa_status.success?
           puts "✅ (#{qa_script})"
         else
           puts '❌ FAIL'
+          warn_line = qa_out.to_s.lines.last(4).map(&:strip).reject(&:empty?).join(' | ')
+          puts "    ↳ #{warn_line}" unless warn_line.empty?
           issues << "Project QA guardrails failed (#{qa_script})"
         end
       else
@@ -261,9 +266,17 @@ module SaneMasterModules
         app_name = match[1].strip if match
       end
       repo = "sane-apps/#{app_name || File.basename(Dir.pwd)}"
-      gh_path, gh_status = Open3.capture2('bash', '-lc', 'command -v gh')
-      if gh_status.success? && !gh_path.strip.empty?
-        issue_json, = Open3.capture2('gh', 'issue', 'list', '--repo', repo, '--state', 'open', '--json', 'number')
+      tool_path = [ENV['PATH'], '/opt/homebrew/bin', '/usr/local/bin'].compact.join(':')
+      gh_path, gh_status = Open3.capture2({ 'PATH' => tool_path }, 'bash', '-lc', 'command -v gh')
+      gh_bin = if gh_status.success? && !gh_path.strip.empty?
+                 gh_path.strip
+               elsif File.executable?('/opt/homebrew/bin/gh')
+                 '/opt/homebrew/bin/gh'
+               elsif File.executable?('/usr/local/bin/gh')
+                 '/usr/local/bin/gh'
+               end
+      if gh_bin
+        issue_json, = Open3.capture2({ 'PATH' => tool_path }, gh_bin, 'issue', 'list', '--repo', repo, '--state', 'open', '--json', 'number')
         open_count = begin
           JSON.parse(issue_json).length
         rescue StandardError
@@ -277,7 +290,7 @@ module SaneMasterModules
         end
 
         print '  Open GitHub PRs... '
-        pr_json, = Open3.capture2('gh', 'pr', 'list', '--repo', repo, '--state', 'open', '--json', 'number')
+        pr_json, = Open3.capture2({ 'PATH' => tool_path }, gh_bin, 'pr', 'list', '--repo', repo, '--state', 'open', '--json', 'number')
         open_pr_count = begin
           JSON.parse(pr_json).length
         rescue StandardError
@@ -434,8 +447,17 @@ module SaneMasterModules
           last_commit_epoch = last_commit_epoch.strip.to_i if commit_status.success?
 
           # Get latest wrangler deployment timestamp
+          npx_bin = if File.executable?('/opt/homebrew/bin/npx')
+                      '/opt/homebrew/bin/npx'
+                    elsif File.executable?('/usr/local/bin/npx')
+                      '/usr/local/bin/npx'
+                    else
+                      'npx'
+                    end
+          deploy_env = { 'PATH' => [ENV['PATH'], '/opt/homebrew/bin', '/usr/local/bin'].compact.join(':') }
           deploy_output, deploy_status = Open3.capture2(
-            'npx', 'wrangler', 'deployments', 'list', '--config', wrangler_toml,
+            deploy_env,
+            npx_bin, 'wrangler', 'deployments', 'list', '--config', wrangler_toml,
             chdir: webhook_dir
           )
 
