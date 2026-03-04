@@ -936,6 +936,110 @@ do {
     return 0
 }
 
+verify_archive_bundle_version() {
+    local zip_path="$1"
+    local expected_version="$2"
+    local expected_build="${3:-}"
+
+    if [ -z "${zip_path}" ] || [ ! -f "${zip_path}" ]; then
+        log_error "Archive version check failed: zip not found at ${zip_path}"
+        return 1
+    fi
+
+    local tmp_root
+    tmp_root=$(mktemp -d "/tmp/${APP_NAME}-archive-check.XXXXXX")
+    local unpack_dir="${tmp_root}/unpacked"
+    mkdir -p "${unpack_dir}"
+
+    if ! ditto -x -k "${zip_path}" "${unpack_dir}" >/dev/null 2>&1; then
+        remove_path "${tmp_root}"
+        log_error "Archive version check failed: could not unzip ${zip_path}"
+        return 1
+    fi
+
+    local app_bundle_path
+    app_bundle_path=$(find "${unpack_dir}" -maxdepth 6 -type d -name "${APP_NAME}.app" | head -1)
+    if [ -z "${app_bundle_path}" ]; then
+        app_bundle_path=$(find "${unpack_dir}" -maxdepth 6 -type d -name "*.app" | head -1)
+    fi
+    if [ -z "${app_bundle_path}" ]; then
+        remove_path "${tmp_root}"
+        log_error "Archive version check failed: no .app bundle found inside ${zip_path}"
+        return 1
+    fi
+
+    local bundle_version
+    bundle_version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "${app_bundle_path}/Contents/Info.plist" 2>/dev/null || true)
+    if [ -z "${bundle_version}" ]; then
+        remove_path "${tmp_root}"
+        log_error "Archive version check failed: missing CFBundleShortVersionString in ${app_bundle_path}"
+        return 1
+    fi
+    if [ "${bundle_version}" != "${expected_version}" ]; then
+        remove_path "${tmp_root}"
+        log_error "Archive version mismatch: expected ${expected_version}, found ${bundle_version} in ${zip_path}"
+        return 1
+    fi
+
+    if [ -n "${expected_build}" ]; then
+        local bundle_build
+        bundle_build=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "${app_bundle_path}/Contents/Info.plist" 2>/dev/null || true)
+        if [ -z "${bundle_build}" ]; then
+            remove_path "${tmp_root}"
+            log_error "Archive build check failed: missing CFBundleVersion in ${app_bundle_path}"
+            return 1
+        fi
+        if [ "${bundle_build}" != "${expected_build}" ]; then
+            remove_path "${tmp_root}"
+            log_error "Archive build mismatch: expected ${expected_build}, found ${bundle_build} in ${zip_path}"
+            return 1
+        fi
+    fi
+
+    remove_path "${tmp_root}"
+    return 0
+}
+
+verify_dist_archive_bundle_version() {
+    local dist_url="$1"
+    local expected_version="$2"
+    local expected_build="${3:-}"
+
+    local tmp_zip
+    tmp_zip=$(mktemp "/tmp/${APP_NAME}-dist-check.XXXXXX.zip")
+
+    if ! curl -fsSL "${dist_url}" -o "${tmp_zip}"; then
+        remove_path "${tmp_zip}"
+        log_error "Could not download dist archive for version check: ${dist_url}"
+        return 1
+    fi
+
+    if ! verify_archive_bundle_version "${tmp_zip}" "${expected_version}" "${expected_build}"; then
+        remove_path "${tmp_zip}"
+        return 1
+    fi
+
+    remove_path "${tmp_zip}"
+    return 0
+}
+
+sync_docs_appcast_to_website() {
+    local docs_appcast="${PROJECT_ROOT}/docs/appcast.xml"
+    local website_dir="${PROJECT_ROOT}/website"
+    local website_appcast="${website_dir}/appcast.xml"
+
+    if [ ! -f "${docs_appcast}" ] || [ ! -d "${website_dir}" ]; then
+        return 0
+    fi
+
+    if [ ! -f "${website_appcast}" ] || ! cmp -s "${docs_appcast}" "${website_appcast}" 2>/dev/null; then
+        cp "${docs_appcast}" "${website_appcast}"
+        log_info "Synced website/appcast.xml from docs/appcast.xml"
+    fi
+
+    return 0
+}
+
 run_post_release_checks() {
     local dist_url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
     local appcast_url="https://${SITE_HOST}/appcast.xml"
@@ -962,6 +1066,11 @@ run_post_release_checks() {
     dist_length=$(extract_content_length_with_user_agent "${dist_url}" "Sparkle/2")
     if [ -z "${dist_length}" ]; then
         log_error "Download URL missing Content-Length: ${dist_url}"
+        return 1
+    fi
+
+    if ! verify_dist_archive_bundle_version "${dist_url}" "${VERSION}" "${BUILD_NUMBER}"; then
+        log_error "Download archive metadata check failed for v${VERSION} (${BUILD_NUMBER})."
         return 1
     fi
 
@@ -1859,15 +1968,44 @@ run_tests() {
         args=(-project "${XCODEPROJ}" "${args[@]}")
     fi
 
+    local test_log="${PROJECT_ROOT}/.build/release_test.log"
+    local unsigned_signing_args=(
+        "CODE_SIGNING_ALLOWED=NO"
+        "CODE_SIGNING_REQUIRED=NO"
+        "CODE_SIGN_IDENTITY="
+        "DEVELOPMENT_TEAM="
+        "PROVISIONING_PROFILE_SPECIFIER="
+        "PROVISIONING_PROFILE="
+    )
+
     if XDG_CACHE_HOME="${cache_root}" \
        CLANG_MODULE_CACHE_PATH="${clang_cache}" \
        SWIFTPM_CACHE_PATH="${swiftpm_cache}" \
-       xcodebuild "${args[@]}"; then
+       xcodebuild "${args[@]}" >"${test_log}" 2>&1; then
+        cat "${test_log}"
         log_info "All tests passed"
     else
-        log_error "Tests failed! Aborting release."
-        restore_version_bump
-        exit 1
+        cat "${test_log}"
+
+        if grep -Eq 'Command CodeSign failed with a nonzero exit code|errSecInternalComponent' "${test_log}"; then
+            log_warn "Signed test build failed (headless keychain/code-signing). Retrying unsigned tests..."
+            if XDG_CACHE_HOME="${cache_root}" \
+               CLANG_MODULE_CACHE_PATH="${clang_cache}" \
+               SWIFTPM_CACHE_PATH="${swiftpm_cache}" \
+               xcodebuild "${args[@]}" "${unsigned_signing_args[@]}" >"${test_log}" 2>&1; then
+                cat "${test_log}"
+                log_info "All tests passed (unsigned fallback)"
+            else
+                cat "${test_log}"
+                log_error "Tests failed even after unsigned fallback. Aborting release."
+                restore_version_bump
+                exit 1
+            fi
+        else
+            log_error "Tests failed! Aborting release."
+            restore_version_bump
+            exit 1
+        fi
     fi
 }
 
@@ -3422,11 +3560,7 @@ if [ "${WEBSITE_ONLY}" = true ]; then
     # Prefer website/ dir (has full HTML site), fall back to docs/
     if [ -d "${PROJECT_ROOT}/website" ]; then
         DEPLOY_DIR="${PROJECT_ROOT}/website"
-        # Ensure appcast.xml is included
-        if [ -f "${PROJECT_ROOT}/docs/appcast.xml" ] && [ ! -f "${DEPLOY_DIR}/appcast.xml" ]; then
-            cp "${PROJECT_ROOT}/docs/appcast.xml" "${DEPLOY_DIR}/appcast.xml"
-            log_info "Copied appcast.xml from docs/ to website/"
-        fi
+        sync_docs_appcast_to_website
     elif [ -d "${PROJECT_ROOT}/docs" ]; then
         DEPLOY_DIR="${PROJECT_ROOT}/docs"
     else
@@ -3449,6 +3583,18 @@ if [ "${WEBSITE_ONLY}" = true ]; then
                 exit 1
             fi
             log_info "Version consistency check passed: appcast and website both at v${appcast_ver}"
+
+            dist_archive_url="https://${DIST_HOST}/updates/${APP_NAME}-${appcast_ver}.zip"
+            dist_archive_status=$(extract_http_status_with_user_agent "${dist_archive_url}" "Sparkle/2")
+            if [ "${dist_archive_status}" != "200" ] && [ "${dist_archive_status}" != "206" ]; then
+                log_error "Website-only deploy blocked: dist archive is not reachable at ${dist_archive_url} (HTTP ${dist_archive_status})"
+                exit 1
+            fi
+            if ! verify_dist_archive_bundle_version "${dist_archive_url}" "${appcast_ver}" ""; then
+                log_error "Website-only deploy blocked: dist archive bundle version does not match appcast/index version ${appcast_ver}."
+                exit 1
+            fi
+            log_info "Dist archive metadata check passed for website-only deploy: ${dist_archive_url}"
         fi
 
         # Webhook version drift warning (non-blocking — website-only deploys don't require webhook updates)
@@ -4021,6 +4167,12 @@ log_info "Creating distribution ZIP..."
 rm -f "${ZIP_PATH}"
 ditto -c -k --keepParent --norsrc "${APP_PATH}" "${ZIP_PATH}"
 
+if ! verify_archive_bundle_version "${ZIP_PATH}" "${VERSION}" "${BUILD_NUMBER}"; then
+    log_error "Distribution ZIP metadata check failed (bundle version/build mismatch)."
+    log_error "Stop release, fix artifact inputs, verify, then rerun."
+    exit 1
+fi
+
 # Guard: release ZIP must not contain AppleDouble metadata entries.
 # Some extraction tools (notably plain `unzip`) materialize these as files
 # inside app/framework bundles, which breaks code signing and Gatekeeper.
@@ -4355,6 +4507,9 @@ PY
         log_warn "Run with USE_SPARKLE=true and ensure EdDSA key is in Keychain."
     fi
 
+    # Keep website/appcast.xml aligned with docs/appcast.xml before deploy/commit checks.
+    sync_docs_appcast_to_website
+
     # Step 2.5: Auto-update website download links to current version
     # Prevents stale download URLs (v1.5.0 link shipped with v2.1.0 — never again)
     DOCS_DIR="${PROJECT_ROOT}/docs"
@@ -4422,6 +4577,8 @@ PY
         log_warn "Test the purchase flow manually before announcing this release."
     fi
 
+    APPSTORE_SUBMIT_FAILED=false
+
     # Step 5: App Store submission (if enabled)
     if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = true ]; then
         log_warn "App Store submission skipped (--skip-appstore)."
@@ -4436,14 +4593,16 @@ PY
         APPSTORE_SCRIPT="${SCRIPT_DIR}/appstore_submit.rb"
 
         if [ ! -f "${APPSTORE_SCRIPT}" ]; then
-            log_error "appstore_submit.rb not found at ${APPSTORE_SCRIPT}"
-            exit 1
+            log_warn "appstore_submit.rb not found at ${APPSTORE_SCRIPT}. Skipping App Store submit."
+            APPSTORE_SUBMIT_FAILED=true
         fi
 
-        if [ -z "${APPSTORE_PKG}" ] || [ ! -f "${APPSTORE_PKG}" ]; then
-            log_error "No App Store .pkg found. Build with App Store export first (don't use --skip-build)."
-            exit 1
-        else
+        if [ "${APPSTORE_SUBMIT_FAILED}" = false ] && { [ -z "${APPSTORE_PKG}" ] || [ ! -f "${APPSTORE_PKG}" ]; }; then
+            log_warn "No App Store .pkg found. Skipping App Store submit for this release."
+            APPSTORE_SUBMIT_FAILED=true
+        fi
+
+        if [ "${APPSTORE_SUBMIT_FAILED}" = false ]; then
             CURRENT_GATE="App Store submit (macOS)"
             RELEASE_ERR_GATE_RECORDED=""
             if ! ruby "${APPSTORE_SCRIPT}" \
@@ -4452,16 +4611,17 @@ PY
                 --version "${VERSION}" \
                 --platform macos \
                 --project-root "${PROJECT_ROOT}"; then
-                log_error "App Store submit failed (macOS)."
+                log_warn "App Store submit failed (macOS). Continuing direct-channel release."
                 track_gate_result "App Store submit (macOS)" "failure" "${RELEASE_LAST_ERROR}"
-                exit 1
+                APPSTORE_SUBMIT_FAILED=true
+            else
+                track_gate_result "App Store submit (macOS)" "pass" "ok"
             fi
-            track_gate_result "App Store submit (macOS)" "pass" "ok"
             CURRENT_GATE=""
         fi
 
         # iOS build and submission (if configured)
-        if echo "${APPSTORE_PLATFORMS}" | grep -q "ios"; then
+        if [ "${APPSTORE_SUBMIT_FAILED}" = false ] && echo "${APPSTORE_PLATFORMS}" | grep -q "ios"; then
             IOS_SCHEME="${APPSTORE_IOS_SCHEME:-${SCHEME}}"
             log_info ""
             log_info "Building iOS for App Store (scheme: ${IOS_SCHEME})..."
@@ -4503,11 +4663,12 @@ PY
                         --version "${VERSION}" \
                         --platform ios \
                         --project-root "${PROJECT_ROOT}"; then
-                        log_error "App Store submit failed (iOS)."
+                        log_warn "App Store submit failed (iOS). Continuing direct-channel release."
                         track_gate_result "App Store submit (iOS)" "failure" "${RELEASE_LAST_ERROR}"
-                        exit 1
+                        APPSTORE_SUBMIT_FAILED=true
+                    else
+                        track_gate_result "App Store submit (iOS)" "pass" "ok"
                     fi
-                    track_gate_result "App Store submit (iOS)" "pass" "ok"
                     CURRENT_GATE=""
                 else
                     log_warn "iOS export produced no .ipa — skipping iOS submission"
@@ -4543,10 +4704,16 @@ PY
         fi
     fi
 
-    # Step 7: Commit appcast changes
-    if [ -f "${APPCAST_PATH}" ] && [ -n "$(git -C "${PROJECT_ROOT}" diff --name-only docs/appcast.xml 2>/dev/null)" ]; then
+    # Step 7: Commit appcast changes (docs + website mirror if present)
+    APPCAST_SYNC_FILES=()
+    for f in "docs/appcast.xml" "website/appcast.xml"; do
+        if [ -f "${PROJECT_ROOT}/${f}" ] && ! git -C "${PROJECT_ROOT}" diff --quiet -- "${f}" 2>/dev/null; then
+            APPCAST_SYNC_FILES+=("${f}")
+        fi
+    done
+    if [ ${#APPCAST_SYNC_FILES[@]} -gt 0 ]; then
         log_info "Committing appcast update..."
-        git -C "${PROJECT_ROOT}" add docs/appcast.xml
+        git -C "${PROJECT_ROOT}" add "${APPCAST_SYNC_FILES[@]}"
         git -C "${PROJECT_ROOT}" commit -m "chore: update appcast for v${VERSION}"
         GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push
         log_info "Appcast commit pushed."
@@ -4672,6 +4839,9 @@ PY
     log_info "═══════════════════════════════════════════"
     log_info "  RELEASE v${VERSION} DEPLOYED SUCCESSFULLY"
     log_info "═══════════════════════════════════════════"
+    if [ "${APPSTORE_SUBMIT_FAILED}" = true ]; then
+        log_warn "App Store submission did not complete in this run. Direct download/Homebrew channels are live."
+    fi
     log_info "  ZIP:      https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
     log_info "  Appcast:  https://${SITE_HOST}/appcast.xml"
     log_info "  Homebrew: brew install --cask sane-apps/tap/${LOWER_APP_NAME}"

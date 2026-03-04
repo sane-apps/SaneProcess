@@ -32,6 +32,91 @@ module SaneMasterModules
       ''
     end
 
+    def project_marketing_version(project_yml_content)
+      version = project_yml_content[/MARKETING_VERSION:\s*"?([^"\s]+)"?/, 1].to_s.strip
+      return version unless version.empty?
+
+      Dir.glob('**/Config/*.xcconfig').reject { |p| p.include?('DerivedData') }.each do |xcf|
+        match = safe_read(xcf).match(/MARKETING_VERSION\s*=\s*(.+)/)
+        return match[1].strip if match
+      end
+      ''
+    end
+
+    def compare_semver(left, right)
+      return nil if left.to_s.strip.empty? || right.to_s.strip.empty?
+
+      l_parts = left.to_s.strip.split('.').map { |p| p.to_i }
+      r_parts = right.to_s.strip.split('.').map { |p| p.to_i }
+      max_len = [l_parts.length, r_parts.length, 3].max
+      l_parts += [0] * (max_len - l_parts.length)
+      r_parts += [0] * (max_len - r_parts.length)
+      l_parts <=> r_parts
+    rescue StandardError
+      nil
+    end
+
+    def parse_latest_appcast_item(xml)
+      item = xml.to_s.match(/<item>.*?<\/item>/m)&.[](0).to_s
+      item = xml.to_s if item.empty?
+
+      version = item[/<sparkle:shortVersionString>\s*([^<\s]+)\s*<\/sparkle:shortVersionString>/m, 1] ||
+                item[/sparkle:shortVersionString="([^"]+)"/, 1]
+      build = item[/<sparkle:version>\s*([^<\s]+)\s*<\/sparkle:version>/m, 1] ||
+              item[/sparkle:version="([^"]+)"/, 1]
+      enclosure = item[/<enclosure\b[^>]*>/m, 0].to_s
+      url = enclosure[/\burl="([^"]+)"/, 1]
+
+      {
+        version: version.to_s.strip,
+        build: build.to_s.strip,
+        url: url.to_s.strip
+      }
+    rescue StandardError
+      { version: '', build: '', url: '' }
+    end
+
+    def local_appcast_paths
+      [
+        File.join(Dir.pwd, 'docs', 'appcast.xml'),
+        File.join(Dir.pwd, 'website', 'appcast.xml')
+      ].select { |path| File.exist?(path) }
+    end
+
+    def local_appcast_versions
+      local_appcast_paths.each_with_object({}) do |path, acc|
+        acc[path] = parse_latest_appcast_item(safe_read(path))[:version]
+      end
+    end
+
+    def archive_bundle_versions(zip_url:, app_name:)
+      return nil if zip_url.to_s.strip.empty?
+
+      Dir.mktmpdir("sanemaster-preflight-#{app_name}-") do |tmpdir|
+        zip_path = File.join(tmpdir, 'dist.zip')
+        unpack_dir = File.join(tmpdir, 'unpacked')
+
+        _curl_out, curl_status = Open3.capture2e('curl', '-fsSL', zip_url, '-o', zip_path)
+        return nil unless curl_status.success? && File.exist?(zip_path)
+
+        _unzip_out, unzip_status = Open3.capture2e('ditto', '-x', '-k', zip_path, unpack_dir)
+        return nil unless unzip_status.success?
+
+        app_bundle = Dir.glob(File.join(unpack_dir, '**', "#{app_name}.app")).first
+        app_bundle ||= Dir.glob(File.join(unpack_dir, '**', '*.app')).first
+        return nil unless app_bundle
+
+        version, = Open3.capture2('/usr/libexec/PlistBuddy', '-c', 'Print :CFBundleShortVersionString', File.join(app_bundle, 'Contents/Info.plist'))
+        build, = Open3.capture2('/usr/libexec/PlistBuddy', '-c', 'Print :CFBundleVersion', File.join(app_bundle, 'Contents/Info.plist'))
+        {
+          version: version.to_s.strip,
+          build: build.to_s.strip
+        }
+      end
+    rescue StandardError
+      nil
+    end
+
     def monetization_source_blob(swift_files:)
       app_source = swift_files.map { |f| safe_read(f) }.join("\n")
       return app_source unless app_source.include?('import SaneUI')
@@ -251,6 +336,7 @@ module SaneMasterModules
     def release_preflight(_args)
       require 'json'
       require 'open3'
+      require 'tmpdir'
 
       puts '🛫 --- [ RELEASE PREFLIGHT ] ---'
       puts "Project: #{Dir.pwd}"
@@ -258,6 +344,13 @@ module SaneMasterModules
 
       issues = []
       warnings = []
+      saneprocess_path = File.join(Dir.pwd, '.saneprocess')
+      preflight_app_name = if File.exist?(saneprocess_path)
+                             match = safe_read(saneprocess_path).match(/^name:\s*(.+)/)
+                             match ? match[1].strip : File.basename(Dir.pwd)
+                           else
+                             File.basename(Dir.pwd)
+                           end
 
       # 1. Tests pass
       print '  Tests... '
@@ -387,15 +480,76 @@ module SaneMasterModules
       end
       puts '⏭️  no Info.plist with SUPublicEDKey found' unless checked_key
 
+      # 4b. Appcast channel integrity (appcast metadata must match downloadable archive).
+      print '  Appcast channel integrity... '
+      appcast_path = local_appcast_paths.first
+      if appcast_path.nil?
+        puts '⏭️  no appcast.xml found'
+      else
+        appcast_versions = local_appcast_versions
+        docs_appcast = File.join(Dir.pwd, 'docs', 'appcast.xml')
+        website_appcast = File.join(Dir.pwd, 'website', 'appcast.xml')
+        docs_version = appcast_versions[docs_appcast].to_s
+        website_version = appcast_versions[website_appcast].to_s
+        if !docs_version.empty? && !website_version.empty? && docs_version != website_version
+          puts "❌ docs=#{docs_version}, website=#{website_version}"
+          issues << "Appcast integrity: local drift between docs/appcast.xml (#{docs_version}) and website/appcast.xml (#{website_version})"
+        end
+
+        appcast_item = parse_latest_appcast_item(safe_read(appcast_path))
+        appcast_version = appcast_item[:version]
+        appcast_build = appcast_item[:build]
+        appcast_url = appcast_item[:url]
+        project_version = project_marketing_version(project_yml_content)
+
+        gate_failures = []
+        gate_warnings = []
+
+        if appcast_version.empty?
+          gate_failures << "Could not parse sparkle:shortVersionString from #{appcast_path}"
+        end
+        if appcast_url.empty?
+          gate_failures << "Could not parse enclosure URL from #{appcast_path}"
+        end
+
+        version_cmp = compare_semver(appcast_version, project_version)
+        if !project_version.empty? && !appcast_version.empty?
+          if version_cmp == 1
+            gate_failures << "Appcast version #{appcast_version} is newer than project MARKETING_VERSION #{project_version}"
+          elsif version_cmp == -1
+            gate_warnings << "Appcast version #{appcast_version} is older than project MARKETING_VERSION #{project_version} (expected before publish)"
+          end
+        end
+
+        archive_versions = nil
+        unless appcast_url.empty?
+          archive_versions = archive_bundle_versions(zip_url: appcast_url, app_name: preflight_app_name)
+          if archive_versions.nil?
+            gate_failures << "Could not inspect downloadable archive at #{appcast_url}"
+          else
+            if !appcast_version.empty? && archive_versions[:version] != appcast_version
+              gate_failures << "ZIP bundle version #{archive_versions[:version]} does not match appcast #{appcast_version}"
+            end
+            if !appcast_build.empty? && archive_versions[:build] != appcast_build
+              gate_failures << "ZIP bundle build #{archive_versions[:build]} does not match appcast #{appcast_build}"
+            end
+          end
+        end
+
+        if gate_failures.any?
+          puts "❌ #{gate_failures.first}"
+          gate_failures.each { |msg| issues << "Appcast integrity: #{msg}" }
+        elsif gate_warnings.any?
+          puts "⚠️  #{gate_warnings.first}"
+          gate_warnings.each { |msg| warnings << "Appcast integrity: #{msg}" }
+        else
+          puts "✅ v#{appcast_version} (#{appcast_build}) ↔ ZIP v#{archive_versions[:version]} (#{archive_versions[:build]})"
+        end
+      end
+
       # 5. Open GitHub issues + PRs
       print '  Open GitHub issues... '
-      saneprocess_path = File.join(Dir.pwd, '.saneprocess')
-      app_name = nil
-      if File.exist?(saneprocess_path)
-        match = File.read(saneprocess_path).match(/^name:\s*(.+)/)
-        app_name = match[1].strip if match
-      end
-      repo = "sane-apps/#{app_name || File.basename(Dir.pwd)}"
+      repo = "sane-apps/#{preflight_app_name || File.basename(Dir.pwd)}"
       tool_path = [ENV['PATH'], '/opt/homebrew/bin', '/usr/local/bin'].compact.join(':')
       gh_path, gh_status = Open3.capture2({ 'PATH' => tool_path }, 'bash', '-lc', 'command -v gh')
       gh_bin = if gh_status.success? && !gh_path.strip.empty?
@@ -476,24 +630,26 @@ module SaneMasterModules
 
       # 8. Homebrew tap reachable + version match
       print '  Homebrew tap... '
-      cask_app = (app_name || File.basename(Dir.pwd)).downcase
-      cask_url = "https://raw.githubusercontent.com/sane-apps/homebrew-tap/main/Casks/#{cask_app}.rb"
+      cask_app = preflight_app_name.downcase
+      cask_url_base = "https://raw.githubusercontent.com/sane-apps/homebrew-tap/main/Casks/#{cask_app}.rb"
+      cask_commit = nil
+      commits_api = "https://api.github.com/repos/sane-apps/homebrew-tap/commits?path=Casks/#{cask_app}.rb&per_page=1"
+      commits_json, commits_status = Open3.capture2('curl', '-fsSL', commits_api)
+      if commits_status.success?
+        commits = JSON.parse(commits_json) rescue []
+        cask_commit = commits.first['sha'].to_s.strip if commits.is_a?(Array) && commits.first.is_a?(Hash)
+      end
+      cask_url = if cask_commit && !cask_commit.empty?
+                   "https://raw.githubusercontent.com/sane-apps/homebrew-tap/#{cask_commit}/Casks/#{cask_app}.rb"
+                 else
+                   cask_url_base
+                 end
       tap_status, = Open3.capture2('curl', '-sI', '-o', '/dev/null', '-w', '%{http_code}', cask_url)
       tap_status = tap_status.strip
       if tap_status == '200'
         cask_body, = Open3.capture2('curl', '-fsSL', cask_url)
         cask_version = cask_body[/version\s+"([^"]+)"/, 1].to_s.strip
-        project_version = project_yml_content[/MARKETING_VERSION:\s*"?([^"\s]+)"?/, 1].to_s.strip
-        # Fallback to xcconfig if project.yml doesn't have a version
-        if project_version.empty?
-          Dir.glob('**/Config/*.xcconfig').reject { |p| p.include?('DerivedData') }.each do |xcf|
-            match = File.read(xcf).match(/MARKETING_VERSION\s*=\s*(.+)/)
-            if match
-              project_version = match[1].strip
-              break
-            end
-          end
-        end
+        project_version = project_marketing_version(project_yml_content)
         if cask_version.empty?
           puts '⚠️  could not parse cask version'
           warnings << 'Homebrew cask version unreadable'
@@ -525,17 +681,9 @@ module SaneMasterModules
       webhook_js = File.expand_path('~/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js')
       if File.exist?(webhook_js)
         webhook_content = File.read(webhook_js)
-        # Get this project's app name from .saneprocess or directory
-        saneprocess_path = File.join(Dir.pwd, '.saneprocess')
-        preflight_app_name = if File.exist?(saneprocess_path)
-                               match = File.read(saneprocess_path).match(/^name:\s*(.+)/)
-                               match ? match[1].strip : File.basename(Dir.pwd)
-                             else
-                               File.basename(Dir.pwd)
-                             end
 
         # Get version from appcast.xml (source of truth for what's actually released)
-        appcast_paths = Dir.glob(File.join(Dir.pwd, '{website,docs}/appcast.xml'))
+        appcast_paths = local_appcast_paths
         appcast_ver = nil
         appcast_paths.each do |ac|
           match = File.read(ac).match(/sparkle:shortVersionString[=>]+"?([^"<\s]+)/)
@@ -594,9 +742,11 @@ module SaneMasterModules
           if deploy_status.success? && last_commit_epoch.to_i > 0
             # Parse the most recent deployment timestamp from wrangler output
             # Format varies but typically: "Created: 2026-03-01T12:00:00Z" or ISO date in the first entry
-            deploy_dates = deploy_output.scan(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)/)
+            deploy_dates = deploy_output.scan(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)/).flatten
             if deploy_dates.any?
-              latest_deploy_time = Time.parse(deploy_dates.first.first).to_i rescue 0
+              latest_deploy_time = deploy_dates
+                .map { |ts| Time.parse(ts).to_i rescue 0 }
+                .max.to_i
               if latest_deploy_time > 0 && last_commit_epoch > latest_deploy_time
                 age_hours = ((last_commit_epoch - latest_deploy_time) / 3600.0).round(1)
                 puts "⚠️  Worker stale by #{age_hours}h"
