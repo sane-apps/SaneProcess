@@ -1,20 +1,53 @@
 #!/bin/bash
 # mini-train.sh - Automated LLM training pipeline for Mac mini
 # Runs at 3 AM daily (after nightly builds at 2 AM)
-# Usage: mini-train.sh [app_name]  (default: SaneSync)
-# Example: mini-train.sh SaneClip
+# Usage: mini-train.sh [app_name] [--model MODEL_ID] [--config CONFIG.yaml] [--challenger]
+# Example: mini-train.sh SaneSync
+# Example: mini-train.sh SaneSync --model "Qwen/Qwen3-4B-MLX-4bit" --config challenger_configs/qwen3-4b.yaml --challenger
 #
 # What it does:
 # 1. Pulls latest training data from git
 # 2. Runs training sweeps at multiple iteration counts
 # 3. Validates each checkpoint
 # 4. Generates a report comparing results
-# 5. Identifies the best adapter
+# 5. Identifies the best adapter (auto-promote only in production mode)
+#
+# Flags:
+#   --model MODEL_ID   Override base model (default: Llama-3.2-3B-Instruct-4bit)
+#   --config FILE      Override LoRA config (relative to training_data/ or absolute path)
+#   --challenger       Challenger mode: single 1000-iter sweep, no auto-promote, separate report
 
 set -uo pipefail
 
 # App selection (default: SaneSync for backward compat)
 APP_NAME="${1:-SaneSync}"
+shift 2>/dev/null || true
+
+# Parse optional flags (bash 3.2 compatible — no associative arrays)
+BASE_MODEL_OVERRIDE=""
+CONFIG_OVERRIDE=""
+CHALLENGER_MODE=false
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --model)
+      BASE_MODEL_OVERRIDE="$2"
+      shift 2
+      ;;
+    --config)
+      CONFIG_OVERRIDE="$2"
+      shift 2
+      ;;
+    --challenger)
+      CHALLENGER_MODE=true
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
 APP_DIR="$HOME/SaneApps/apps/$APP_NAME"
 
 if [ ! -d "$APP_DIR" ]; then
@@ -27,7 +60,15 @@ fi
 TRAIN_DIR="$APP_DIR/training_data"
 MODELS_DIR="$APP_DIR/models"
 OUTPUT_DIR="$HOME/SaneApps/outputs"
-REPORT="$OUTPUT_DIR/training_report_${APP_NAME}.md"
+
+# Report file: separate for challengers to avoid clobbering production report
+if [ "$CHALLENGER_MODE" = true ] && [ -n "$BASE_MODEL_OVERRIDE" ]; then
+  # Extract short model name for report filename (e.g., "Qwen3-4B" from "Qwen/Qwen3-4B-MLX-4bit")
+  MODEL_SHORT=$(echo "$BASE_MODEL_OVERRIDE" | sed 's|.*/||' | sed 's/-MLX-4bit//' | sed 's/-4bit//' | tr '[:upper:]' '[:lower:]')
+  REPORT="$OUTPUT_DIR/challenger_report_${APP_NAME}_${MODEL_SHORT}.md"
+else
+  REPORT="$OUTPUT_DIR/training_report_${APP_NAME}.md"
+fi
 VENV="$HOME/mlx-env/bin"
 PYTHON="$VENV/python3"
 MLX_LM="$PYTHON -m mlx_lm"
@@ -39,12 +80,17 @@ START_EPOCH=$(date +%s)
 # Runtime safety guards for 8GB Mac mini
 # Default: stop training after 210 minutes or when local time reaches 07:00.
 MAX_TRAIN_RUNTIME_MIN="${MAX_TRAIN_RUNTIME_MIN:-210}"
-TRAIN_HARD_STOP_HOUR="${TRAIN_HARD_STOP_HOUR:-7}"
+TRAIN_HARD_STOP_HOUR="${TRAIN_HARD_STOP_HOUR:-8}"
 
 mkdir -p "$OUTPUT_DIR" "$MODELS_DIR/sweeps"
 
 # Lock file (with stale lock detection)
-LOCKFILE="$OUTPUT_DIR/.training_${APP_NAME}.lock"
+# Challengers share a single lock to run sequentially (not parallel — GPU contention)
+if [ "$CHALLENGER_MODE" = true ]; then
+  LOCKFILE="$OUTPUT_DIR/.training_${APP_NAME}_challenger.lock"
+else
+  LOCKFILE="$OUTPUT_DIR/.training_${APP_NAME}.lock"
+fi
 if ! mkdir "$LOCKFILE" 2>/dev/null; then
   # Check if lock is stale (older than 8 hours — sweeps can take 5+ hours)
   if [ -d "$LOCKFILE" ] && [ "$(find "$LOCKFILE" -maxdepth 0 -mmin +480 2>/dev/null)" ]; then
@@ -158,8 +204,34 @@ echo "" >> "$REPORT"
 echo "## Model Setup" >> "$REPORT"
 echo "" >> "$REPORT"
 
-BASE_MODEL="mlx-community/Llama-3.2-3B-Instruct-4bit"
-echo "Base model: $BASE_MODEL" >> "$REPORT"
+# Model selection: CLI flag > config file > default
+if [ -n "$BASE_MODEL_OVERRIDE" ]; then
+  BASE_MODEL="$BASE_MODEL_OVERRIDE"
+elif [ -n "$CONFIG_OVERRIDE" ]; then
+  # Read model from config YAML (simple grep, no yq dependency)
+  CONFIG_PATH="$CONFIG_OVERRIDE"
+  if [ ! -f "$CONFIG_PATH" ]; then
+    CONFIG_PATH="$TRAIN_DIR/$CONFIG_OVERRIDE"
+  fi
+  if [ -f "$CONFIG_PATH" ]; then
+    MODEL_FROM_CONFIG=$(grep '^model:' "$CONFIG_PATH" | sed 's/model:[[:space:]]*//' | tr -d '"' | tr -d "'")
+    if [ -n "$MODEL_FROM_CONFIG" ]; then
+      BASE_MODEL="$MODEL_FROM_CONFIG"
+    else
+      BASE_MODEL="mlx-community/Llama-3.2-3B-Instruct-4bit"
+    fi
+  else
+    BASE_MODEL="mlx-community/Llama-3.2-3B-Instruct-4bit"
+  fi
+else
+  BASE_MODEL="mlx-community/Llama-3.2-3B-Instruct-4bit"
+fi
+
+if [ "$CHALLENGER_MODE" = true ]; then
+  echo "Base model: $BASE_MODEL **(CHALLENGER)**" >> "$REPORT"
+else
+  echo "Base model: $BASE_MODEL" >> "$REPORT"
+fi
 
 # Check if model is cached
 if "$PYTHON" -c "from huggingface_hub import scan_cache_dir; cache = scan_cache_dir(); models = [r.repo_id for r in cache.repos]; print('CACHED' if '$BASE_MODEL' in models else 'NEED_DOWNLOAD')" 2>/dev/null | grep -q "CACHED"; then
@@ -181,7 +253,12 @@ echo "" >> "$REPORT"
 
 # Sweep iterations: 1112 examples, so ~1 epoch=1112 iters at batch_size=1
 # Need at least 1-2 full epochs for the model to learn the task
-SWEEP_ITERS=(1000 2000)
+# Challengers only do 1000 iters to leave time budget for other models
+if [ "$CHALLENGER_MODE" = true ]; then
+  SWEEP_ITERS=(1000)
+else
+  SWEEP_ITERS=(1000 2000)
+fi
 RESULTS_FILE=$(mktemp)
 
 for ITERS in "${SWEEP_ITERS[@]}"; do
@@ -198,7 +275,12 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
     break
   fi
 
-  SWEEP_NAME="sweep_${ITERS}_${DATE}"
+  # Challenger sweeps get a model-prefixed directory to avoid collisions
+  if [ "$CHALLENGER_MODE" = true ] && [ -n "$BASE_MODEL_OVERRIDE" ]; then
+    SWEEP_NAME="challenger_${MODEL_SHORT}_${ITERS}_${DATE}"
+  else
+    SWEEP_NAME="sweep_${ITERS}_${DATE}"
+  fi
   ADAPTER_DIR="$MODELS_DIR/sweeps/$SWEEP_NAME"
 
   echo "### ${ITERS} iterations" >> "$REPORT"
@@ -218,8 +300,25 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
   # Generate per-sweep config with decay_steps matching this sweep's iteration count.
   # The base YAML has a fixed decay_steps which causes LR=0 for the tail of longer sweeps.
   SWEEP_CONFIG="$ADAPTER_DIR/lora_config_sweep.yaml"
+
+  # Select base config: challenger config > default mini config
+  if [ -n "$CONFIG_OVERRIDE" ]; then
+    BASE_CONFIG="$CONFIG_OVERRIDE"
+    if [ ! -f "$BASE_CONFIG" ]; then
+      BASE_CONFIG="$TRAIN_DIR/$CONFIG_OVERRIDE"
+    fi
+  else
+    BASE_CONFIG="$TRAIN_DIR/lora_config_mini.yaml"
+  fi
+
+  if [ ! -f "$BASE_CONFIG" ]; then
+    echo "**FAILED** — config not found: $BASE_CONFIG" >> "$REPORT"
+    echo "" >> "$REPORT"
+    continue
+  fi
+
   sed "s/arguments: \[5.0e-5, [0-9]*\]/arguments: [5.0e-5, $ITERS]/" \
-    "$TRAIN_DIR/lora_config_mini.yaml" > "$SWEEP_CONFIG"
+    "$BASE_CONFIG" > "$SWEEP_CONFIG"
 
   # Verify the config was generated and has the correct decay_steps
   if [ ! -s "$SWEEP_CONFIG" ] || ! grep -q "arguments: \[5.0e-5, $ITERS\]" "$SWEEP_CONFIG"; then
@@ -424,7 +523,19 @@ if [ -n "$BEST_ITERS" ]; then
   echo "**Best adapter: sweep_${BEST_ITERS}_${DATE} ($BEST_ACCURACY%)**" >> "$REPORT"
 
   # Auto-promote if it beats production baseline (90%)
-  if [ "$BEST_ACCURACY" -gt 90 ]; then
+  # NEVER auto-promote challengers — report only, human decides
+  if [ "$CHALLENGER_MODE" = true ]; then
+    echo "" >> "$REPORT"
+    if [ "$BEST_ACCURACY" -gt 90 ]; then
+      echo "**CHALLENGER RESULT: $BEST_ACCURACY% — BEATS BASELINE!**" >> "$REPORT"
+      echo "Model: $BASE_MODEL" >> "$REPORT"
+      echo "Adapter: sweep_${BEST_ITERS}_${DATE}" >> "$REPORT"
+      echo "Action required: Human review needed to promote to production." >> "$REPORT"
+    else
+      echo "**CHALLENGER RESULT: $BEST_ACCURACY% — below baseline.**" >> "$REPORT"
+      echo "Model: $BASE_MODEL" >> "$REPORT"
+    fi
+  elif [ "$BEST_ACCURACY" -gt 90 ]; then
     PROD_DIR="$MODELS_DIR/production_adapter"
     mkdir -p "$PROD_DIR"
     cp -r "$MODELS_DIR/sweeps/sweep_${BEST_ITERS}_${DATE}/"* "$PROD_DIR/"
@@ -445,9 +556,9 @@ PRUNE_CUTOFF=$(date -v-3d +"%Y-%m-%d")
 PRUNED_COUNT=0
 PRUNED_SIZE=0
 
-for sweep_dir in "$MODELS_DIR/sweeps"/sweep_*; do
+for sweep_dir in "$MODELS_DIR/sweeps"/sweep_* "$MODELS_DIR/sweeps"/challenger_*; do
   [ -d "$sweep_dir" ] || continue
-  # Extract date from directory name (sweep_ITERS_YYYY-MM-DD)
+  # Extract date from directory name (sweep_ITERS_YYYY-MM-DD or challenger_MODEL_ITERS_YYYY-MM-DD)
   sweep_date=$(basename "$sweep_dir" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
   [ -z "$sweep_date" ] && continue
 
