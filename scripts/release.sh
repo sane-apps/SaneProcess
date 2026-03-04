@@ -1209,6 +1209,56 @@ PY
         log_warn "Email webhook file not found at ${webhook_js} — cannot verify download version."
     fi
 
+    # Verify source code version matches released version (prevents uncommitted bump drift)
+    local source_version=""
+    if [ -f "${PROJECT_ROOT}/project.yml" ]; then
+        source_version=$(grep -m1 'MARKETING_VERSION:' "${PROJECT_ROOT}/project.yml" | sed 's/.*MARKETING_VERSION:[[:space:]]*"*//;s/".*//;s/[[:space:]]*$//')
+    fi
+    if [ -z "${source_version}" ]; then
+        while IFS= read -r xcf; do
+            [ -z "${xcf}" ] && continue
+            local xcf_ver
+            xcf_ver=$(grep -m1 'MARKETING_VERSION' "${xcf}" 2>/dev/null | sed 's/.*=[[:space:]]*//' | tr -d '[:space:]')
+            if [ -n "${xcf_ver}" ]; then
+                source_version="${xcf_ver}"
+                break
+            fi
+        done < <(find "${PROJECT_ROOT}" -name "*.xcconfig" -not -path "*/DerivedData/*" -not -path "*/build/*" 2>/dev/null)
+    fi
+    if [ -n "${source_version}" ] && [ "${source_version}" != "${VERSION}" ]; then
+        log_error "Source code version drift: project config has v${source_version}, released v${VERSION}"
+        log_error "The version bump was not committed back to the repo. Next build from source will produce a downgrade."
+        return 1
+    fi
+    if [ -n "${source_version}" ]; then
+        log_info "Source code version verified: v${source_version}"
+    fi
+
+    # Verify website JSON-LD softwareVersion matches release version
+    if [ -n "${site_body}" ]; then
+        local jsonld_version
+        jsonld_version=$(echo "${site_body}" | grep -oE '"softwareVersion"[[:space:]]*:[[:space:]]*"[^"]+"' | head -1 | grep -oE '"[0-9][^"]*"' | tr -d '"')
+        if [ -n "${jsonld_version}" ] && [ "${jsonld_version}" != "${VERSION}" ]; then
+            log_error "Website JSON-LD softwareVersion is v${jsonld_version}, expected v${VERSION}"
+            return 1
+        fi
+        if [ -n "${jsonld_version}" ]; then
+            log_info "Website JSON-LD version verified: v${jsonld_version}"
+        fi
+    fi
+
+    # Verify download redirect (go.saneapps.com/download/{app})
+    local download_redirect_url="https://go.saneapps.com/download/${LOWER_APP_NAME}"
+    local download_redirect_status
+    download_redirect_status=$(curl -sI -o /dev/null -w '%{http_code}' -L "${download_redirect_url}" 2>/dev/null || echo "000")
+    if [ "${download_redirect_status}" = "200" ]; then
+        log_info "Download redirect verified: ${download_redirect_url}"
+    elif [ "${download_redirect_status}" = "000" ]; then
+        log_warn "Download redirect unreachable: ${download_redirect_url} (network error)"
+    else
+        log_warn "Download redirect returned HTTP ${download_redirect_status}: ${download_redirect_url}"
+    fi
+
     log_info "Post-release checks passed."
     return 0
 }
@@ -1732,6 +1782,14 @@ restore_version_bump() {
         git -C "${PROJECT_ROOT}" restore --staged --worktree "project.yml" 2>/dev/null || \
             git -C "${PROJECT_ROOT}" checkout -- "project.yml" 2>/dev/null || true
     fi
+
+    # Also restore any xcconfig files that were modified
+    while IFS= read -r xcf; do
+        [ -z "${xcf}" ] && continue
+        local rel_path="${xcf#"${PROJECT_ROOT}/"}"
+        git -C "${PROJECT_ROOT}" restore --staged --worktree "${rel_path}" 2>/dev/null || \
+            git -C "${PROJECT_ROOT}" checkout -- "${rel_path}" 2>/dev/null || true
+    done < <(git -C "${PROJECT_ROOT}" diff --name-only -- '*.xcconfig' 2>/dev/null)
 }
 
 bump_project_version() {
@@ -1745,12 +1803,41 @@ bump_project_version() {
     fi
 
     if [ ! -f "${PROJECT_ROOT}/project.yml" ]; then
-        log_error "No version bump method. Set VERSION_BUMP_CMD or add project.yml."
-        exit 1
+        # Try xcconfig files before giving up
+        local xcconfig_found=false
+        while IFS= read -r xcf; do
+            [ -z "${xcf}" ] && continue
+            if grep -q 'MARKETING_VERSION' "${xcf}" 2>/dev/null; then
+                sed -i '' "s/MARKETING_VERSION = .*/MARKETING_VERSION = ${version}/" "${xcf}"
+                if grep -q 'CURRENT_PROJECT_VERSION' "${xcf}" 2>/dev/null; then
+                    sed -i '' "s/CURRENT_PROJECT_VERSION = .*/CURRENT_PROJECT_VERSION = ${project_version}/" "${xcf}"
+                fi
+                log_info "Updated version in ${xcf}"
+                xcconfig_found=true
+            fi
+        done < <(find "${PROJECT_ROOT}" -name "*.xcconfig" -not -path "*/DerivedData/*" -not -path "*/build/*" 2>/dev/null)
+
+        if [ "${xcconfig_found}" != "true" ]; then
+            log_error "No version bump method. Set VERSION_BUMP_CMD, add project.yml, or use xcconfig with MARKETING_VERSION."
+            exit 1
+        fi
+        return
     fi
 
     sed -i '' "s/MARKETING_VERSION: \".*\"/MARKETING_VERSION: \"${version}\"/" "${PROJECT_ROOT}/project.yml"
     sed -i '' "s/CURRENT_PROJECT_VERSION: \".*\"/CURRENT_PROJECT_VERSION: \"${project_version}\"/" "${PROJECT_ROOT}/project.yml"
+
+    # Also update any xcconfig files that define MARKETING_VERSION (some projects use both)
+    while IFS= read -r xcf; do
+        [ -z "${xcf}" ] && continue
+        if grep -q 'MARKETING_VERSION' "${xcf}" 2>/dev/null; then
+            sed -i '' "s/MARKETING_VERSION = .*/MARKETING_VERSION = ${version}/" "${xcf}"
+            if grep -q 'CURRENT_PROJECT_VERSION' "${xcf}" 2>/dev/null; then
+                sed -i '' "s/CURRENT_PROJECT_VERSION = .*/CURRENT_PROJECT_VERSION = ${project_version}/" "${xcf}"
+            fi
+            log_info "Also updated version in ${xcf}"
+        fi
+    done < <(find "${PROJECT_ROOT}" -name "*.xcconfig" -not -path "*/DerivedData/*" -not -path "*/build/*" 2>/dev/null)
 }
 
 run_tests() {

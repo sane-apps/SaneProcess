@@ -333,13 +333,24 @@ module SaneMasterModules
 
       # 8. Homebrew tap reachable + version match
       print '  Homebrew tap... '
-      cask_url = 'https://raw.githubusercontent.com/sane-apps/homebrew-tap/main/Casks/sanebar.rb'
+      cask_app = (app_name || File.basename(Dir.pwd)).downcase
+      cask_url = "https://raw.githubusercontent.com/sane-apps/homebrew-tap/main/Casks/#{cask_app}.rb"
       tap_status, = Open3.capture2('curl', '-sI', '-o', '/dev/null', '-w', '%{http_code}', cask_url)
       tap_status = tap_status.strip
       if tap_status == '200'
         cask_body, = Open3.capture2('curl', '-fsSL', cask_url)
         cask_version = cask_body[/version\s+"([^"]+)"/, 1].to_s.strip
         project_version = project_yml_content[/MARKETING_VERSION:\s*"?([^"\s]+)"?/, 1].to_s.strip
+        # Fallback to xcconfig if project.yml doesn't have a version
+        if project_version.empty?
+          Dir.glob('**/Config/*.xcconfig').reject { |p| p.include?('DerivedData') }.each do |xcf|
+            match = File.read(xcf).match(/MARKETING_VERSION\s*=\s*(.+)/)
+            if match
+              project_version = match[1].strip
+              break
+            end
+          end
+        end
         if cask_version.empty?
           puts '⚠️  could not parse cask version'
           warnings << 'Homebrew cask version unreadable'
