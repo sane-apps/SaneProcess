@@ -2311,6 +2311,24 @@ def extract_build_number_from_package(pkg_path)
   end
 end
 
+def wait_for_version_state_transition(app_id:, asc_platform:, version_string:, timeout_seconds: 300, interval_seconds: 8)
+  deadline = Time.now + timeout_seconds
+  last_state = nil
+
+  while Time.now < deadline
+    token = generate_jwt
+    refreshed = find_version_any_state(app_id, asc_platform, version_string, token)
+    state = refreshed&.dig('attributes', 'appStoreState')
+    last_state = state
+    return state if state.nil? || !SUBMITTED_APP_STORE_STATES.include?(state)
+
+    log_warn "Awaiting ASC cancellation propagation for #{version_string} (state: #{state})..."
+    sleep interval_seconds
+  end
+
+  last_state
+end
+
 # ─── Main ───
 
 options = {}
@@ -2330,6 +2348,7 @@ OptionParser.new do |opts|
   opts.on('--iap-price-usd PRICE', 'Target US IAP price for auto-created price schedule (default: 6.99)') { |v| options[:iap_price_usd] = v }
   opts.on('--preflight-version-state', 'Check editable ASC version state only (no upload, no submission)') { options[:preflight_version_state] = true }
   opts.on('--repair-version-state', 'Attempt ASC lane repair before version-state preflight') { options[:repair_version_state] = true }
+  opts.on('--withdraw-version VERSION', 'Withdraw an existing ASC app version lane (clears submission + linked review submission)') { |v| options[:withdraw_version] = v }
   opts.on('--test-screenshots', 'Test screenshot resize only (no API calls)') { options[:test_screenshots] = true }
 end.parse!
 
@@ -2394,6 +2413,68 @@ if options[:preflight_version_state]
     exit 0
   end
   exit 1
+end
+
+if options[:withdraw_version]
+  required = %i[app_id platform]
+  required.each do |key|
+    unless options[key]
+      log_error "Missing required option: --#{key.to_s.tr('_', '-')}"
+      exit 1
+    end
+  end
+
+  asc_platform = PLATFORM_MAP[options[:platform]]
+  unless asc_platform
+    log_error "Unknown platform: #{options[:platform]} (use macos or ios)"
+    exit 1
+  end
+
+  token = generate_jwt
+  version_string = options[:withdraw_version].to_s.strip
+  version_record = find_version_any_state(options[:app_id], asc_platform, version_string, token)
+  unless version_record
+    log_error "Could not find version #{version_string} on #{options[:platform]} for app #{options[:app_id]}."
+    exit 1
+  end
+
+  version_id = version_record['id']
+  current_state = version_record.dig('attributes', 'appStoreState') || 'unknown'
+  log_info "Withdrawing version #{version_string} (#{current_state}) id=#{version_id}..."
+
+  cleared_any = false
+  cleared_any ||= clear_stale_version_submission(version_id, token)
+
+  linked_submission = find_linked_review_submission(options[:app_id], asc_platform, version_id, token)
+  if linked_submission
+    log_warn "Clearing linked review submission #{linked_submission[:id]} (#{linked_submission[:state]})..."
+    cleared_any ||= clear_review_submission(linked_submission[:id], token)
+  end
+
+  token = generate_jwt
+  refreshed = find_version_any_state(options[:app_id], asc_platform, version_string, token)
+  refreshed_state = refreshed&.dig('attributes', 'appStoreState')
+  if refreshed_state && SUBMITTED_APP_STORE_STATES.include?(refreshed_state)
+    final_state = wait_for_version_state_transition(
+      app_id: options[:app_id],
+      asc_platform: asc_platform,
+      version_string: version_string,
+      timeout_seconds: 300,
+      interval_seconds: 8
+    )
+    if final_state && SUBMITTED_APP_STORE_STATES.include?(final_state)
+      log_error "Withdraw failed: version #{version_string} still in active submission state #{final_state}."
+      exit 1
+    end
+    refreshed_state = final_state
+  end
+
+  if cleared_any
+    log_info "Withdraw complete for version #{version_string} (current state: #{refreshed_state || 'not found'})."
+  else
+    log_warn "No submission resources were cleared for version #{version_string}."
+  end
+  exit 0
 end
 
 if options[:screenshots_only]
