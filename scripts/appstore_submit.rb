@@ -149,7 +149,6 @@ SUBMITTED_APP_STORE_STATES = %w[
   PENDING_APPLE_RELEASE
   PENDING_DEVELOPER_RELEASE
   PROCESSING_FOR_DISTRIBUTION
-  READY_FOR_SALE
 ].freeze
 
 CATEGORY_ID_MAP = {
@@ -699,13 +698,104 @@ def check_version_state_preflight(app_id, asc_platform, version_string, token)
     return false
   end
 
-  return true if editable_versions.empty?
+  if editable_versions.empty?
+    log_info "ASC version-state preflight passed for #{version_string} (no blocking editable or submitted lanes)."
+    return true
+  end
 
   conflict = editable_versions.first
   conflict_version = conflict.dig('attributes', 'versionString') || 'unknown'
   conflict_state = conflict.dig('attributes', 'appStoreState') || 'unknown'
   log_error "Editable App Store version conflict: #{conflict_version} (#{conflict_state}) exists, but release target is #{version_string}."
   log_error "Update the existing draft to version #{version_string}, or clear that draft before submission."
+  false
+end
+
+def repair_version_state_lane(app_id, asc_platform, version_string, token)
+  log_info "Attempting ASC lane repair for #{version_string} (#{asc_platform})..."
+
+  # First: if the target version already exists and is tied to an unresolved review lane, try to resolve it.
+  existing = find_version_any_state(app_id, asc_platform, version_string, token)
+  if existing
+    linked_submission = find_linked_review_submission(app_id, asc_platform, existing['id'], token)
+    if linked_submission && linked_submission[:state] == 'UNRESOLVED_ISSUES'
+      log_warn "Found unresolved review submission #{linked_submission[:id]} for existing version #{version_string}."
+      clear_stale_version_submission(existing['id'], token)
+      attempt_resolve_unresolved_submission(linked_submission[:id], token)
+      refreshed_submission = find_linked_review_submission(app_id, asc_platform, existing['id'], token)
+      if refreshed_submission && refreshed_submission[:state] == 'UNRESOLVED_ISSUES'
+        log_warn "Submission #{refreshed_submission[:id]} is still UNRESOLVED_ISSUES after item repair; attempting stale submission cleanup."
+        clear_review_submission(refreshed_submission[:id], token)
+        refreshed_submission = find_linked_review_submission(app_id, asc_platform, existing['id'], token)
+        if refreshed_submission && refreshed_submission[:state] == 'UNRESOLVED_ISSUES'
+          log_error "Lane repair failed: submission #{refreshed_submission[:id]} is still UNRESOLVED_ISSUES."
+          return false
+        end
+      end
+      log_info "Lane repair succeeded for existing version #{version_string}."
+      return true
+    end
+
+    log_info "No unresolved-lane repair needed for existing version #{version_string}."
+    return true
+  end
+
+  # Second: if target version doesn't exist, try to retarget a single editable draft lane.
+  editable_path = "/apps/#{app_id}/appStoreVersions" \
+                  "?filter[platform]=#{asc_platform}" \
+                  "&filter[appStoreState]=PREPARE_FOR_SUBMISSION,REJECTED,DEVELOPER_REJECTED,READY_FOR_REVIEW"
+  editable_resp = asc_get(editable_path, token: token)
+  return false unless editable_resp
+
+  editable_versions = editable_resp['data'] || []
+  if editable_versions.empty?
+    log_info 'No editable draft lane found to repair.'
+    return true
+  end
+
+  if editable_versions.length > 1
+    versions = editable_versions.map { |v| "#{v.dig('attributes', 'versionString')} (#{v.dig('attributes', 'appStoreState')})" }
+    log_error "Lane repair aborted: multiple editable versions present: #{versions.join(', ')}."
+    return false
+  end
+
+  candidate = editable_versions.first
+  candidate_id = candidate['id']
+  candidate_version = candidate.dig('attributes', 'versionString') || 'unknown'
+  candidate_state = candidate.dig('attributes', 'appStoreState') || 'unknown'
+
+  # Don't retarget if another active submission lane exists.
+  active_resp = asc_get("/apps/#{app_id}/appStoreVersions?filter[platform]=#{asc_platform}&limit=200", token: token)
+  return false unless active_resp
+  active_versions = (active_resp['data'] || []).select do |v|
+    state = v.dig('attributes', 'appStoreState').to_s
+    SUBMITTED_APP_STORE_STATES.include?(state)
+  end
+  active_conflict = active_versions.find { |v| v.dig('attributes', 'versionString') != version_string }
+  if active_conflict
+    conflict_version = active_conflict.dig('attributes', 'versionString') || 'unknown'
+    conflict_state = active_conflict.dig('attributes', 'appStoreState') || 'unknown'
+    log_error "Lane repair blocked by active submission: #{conflict_version} (#{conflict_state})."
+    return false
+  end
+
+  body = {
+    data: {
+      type: 'appStoreVersions',
+      id: candidate_id,
+      attributes: {
+        versionString: version_string
+      }
+    }
+  }
+  code, resp = asc_patch_with_status("/appStoreVersions/#{candidate_id}", body: body, token: token)
+  if [200, 201].include?(code)
+    log_info "Retargeted editable lane #{candidate_version} (#{candidate_state}) -> #{version_string}."
+    return true
+  end
+
+  detail = resp.dig('errors', 0, 'detail') || resp.dig('errors', 0, 'title') || "HTTP #{code}"
+  log_error "Lane retarget failed for #{candidate_id}: #{detail}"
   false
 end
 
@@ -2074,6 +2164,22 @@ def clear_stale_version_submission(version_id, token)
   end
 end
 
+def clear_review_submission(submission_id, token)
+  code, resp = asc_delete_with_status("/reviewSubmissions/#{submission_id}", token: token)
+  case code
+  when 204
+    log_warn "Cleared stale review submission #{submission_id}."
+    true
+  when 404
+    log_warn "Review submission #{submission_id} was already absent."
+    true
+  else
+    detail = resp.dig('errors', 0, 'detail') || resp.dig('errors', 0, 'title') || "HTTP #{code}"
+    log_warn "Could not clear review submission #{submission_id}: #{detail}"
+    false
+  end
+end
+
 def find_best_review_submission(app_id, asc_platform, version_id, token)
   list = asc_get("/reviewSubmissions?filter[app]=#{app_id}&limit=50", token: token)
   return nil unless list && list['data']
@@ -2223,6 +2329,7 @@ OptionParser.new do |opts|
   opts.on('--iap-only', 'Ensure configured iOS IAP metadata is complete and exit') { options[:iap_only] = true }
   opts.on('--iap-price-usd PRICE', 'Target US IAP price for auto-created price schedule (default: 6.99)') { |v| options[:iap_price_usd] = v }
   opts.on('--preflight-version-state', 'Check editable ASC version state only (no upload, no submission)') { options[:preflight_version_state] = true }
+  opts.on('--repair-version-state', 'Attempt ASC lane repair before version-state preflight') { options[:repair_version_state] = true }
   opts.on('--test-screenshots', 'Test screenshot resize only (no API calls)') { options[:test_screenshots] = true }
 end.parse!
 
@@ -2277,6 +2384,12 @@ if options[:preflight_version_state]
   end
 
   token = generate_jwt
+  if options[:repair_version_state]
+    unless repair_version_state_lane(options[:app_id], asc_platform, options[:version], token)
+      exit 1
+    end
+    token = generate_jwt
+  end
   if check_version_state_preflight(options[:app_id], asc_platform, options[:version], token)
     exit 0
   end
