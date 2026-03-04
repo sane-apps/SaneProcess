@@ -75,8 +75,13 @@ echo "|-------|--------|----------|------------|--------|" >> "$COMPARISON_REPOR
 CHALLENGERS_RUN=0
 CHALLENGERS_SKIPPED=0
 
+# Write config list to temp file so we can use redirect instead of pipe
+# (pipe creates subshell on bash 3.2, losing counter variables)
+CONFIG_LIST_TMP=$(mktemp)
+echo "$CONFIG_FILES" > "$CONFIG_LIST_TMP"
+
 # Run each challenger
-echo "$CONFIG_FILES" | while read -r config_file; do
+while read -r config_file; do
   # Check time budget
   now=$(date +%s)
   elapsed=$(( (now - CHALLENGER_START) / 60 ))
@@ -163,7 +168,8 @@ echo "$CONFIG_FILES" | while read -r config_file; do
   CHALLENGERS_RUN=$((CHALLENGERS_RUN + 1))
 
   echo "    Result: $accuracy ($status) in ${CHALLENGER_TIME}min" >&2
-done
+done < "$CONFIG_LIST_TMP"
+rm -f "$CONFIG_LIST_TMP"
 
 # =============================================================================
 # Post-training cleanup — free GPU/memory so Mini isn't fried during daytime
