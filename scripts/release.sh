@@ -4519,11 +4519,11 @@ PY
     for SITE_DIR in "${DOCS_DIR}" "${WEBSITE_DIR}"; do
         INDEX_HTML="${SITE_DIR}/index.html"
         if [ -f "${INDEX_HTML}" ]; then
-            # Replace any old download links (SaneBar-X.Y.Z.zip) with current version
-            OLD_LINKS=$(grep -c "${APP_NAME}-[0-9].*\.zip" "${INDEX_HTML}" 2>/dev/null)
+            # Replace any old download links (SaneBar-X.Y.Z.zip/.dmg) with current ZIP version.
+            OLD_LINKS=$(grep -Eoc "${APP_NAME}-[0-9]+\.[0-9]+(\.[0-9]+)?\.(zip|dmg)" "${INDEX_HTML}" 2>/dev/null)
             OLD_LINKS=${OLD_LINKS:-0}
             if [ "${OLD_LINKS}" -gt 0 ]; then
-                sed -i '' "s|${APP_NAME}-[0-9][0-9]*\.[0-9][0-9]*\(\.[0-9][0-9]*\)\{0,1\}\.zip|${APP_NAME}-${VERSION}.zip|g" "${INDEX_HTML}"
+                sed -E -i '' "s|${APP_NAME}-[0-9]+\.[0-9]+(\.[0-9]+)?\.(zip|dmg)|${APP_NAME}-${VERSION}.zip|g" "${INDEX_HTML}"
                 log_info "Updated ${OLD_LINKS} download link(s) in $(basename "${SITE_DIR}")/index.html → ${APP_NAME}-${VERSION}.zip"
             fi
             # Update softwareVersion in JSON-LD structured data
@@ -4539,11 +4539,19 @@ PY
 
     # Step 3: Deploy website + appcast to Cloudflare Pages
     PAGES_PROJECT="${LOWER_APP_NAME}-site"
-    if [ -d "${DOCS_DIR}" ]; then
-        log_info "Deploying website + appcast to Cloudflare Pages (${PAGES_PROJECT})..."
+    if [ -d "${WEBSITE_DIR}" ]; then
+        DEPLOY_DIR="${WEBSITE_DIR}"
+    elif [ -d "${DOCS_DIR}" ]; then
+        DEPLOY_DIR="${DOCS_DIR}"
+    else
+        DEPLOY_DIR=""
+    fi
+
+    if [ -n "${DEPLOY_DIR}" ]; then
+        log_info "Deploying website + appcast to Cloudflare Pages (${PAGES_PROJECT}) from ${DEPLOY_DIR}..."
         CURRENT_GATE="Deploy website to Cloudflare Pages"
         RELEASE_ERR_GATE_RECORDED=""
-        npx wrangler pages deploy "${DOCS_DIR}" \
+        npx wrangler pages deploy "${DEPLOY_DIR}" \
             --project-name="${PAGES_PROJECT}" \
             --branch="${PAGES_BRANCH}" \
             --commit-dirty=true \
@@ -4561,7 +4569,7 @@ PY
             fi
         fi
     else
-        log_warn "No docs/ directory found. Skipping Pages deploy."
+        log_warn "No website/ or docs/ directory found. Skipping Pages deploy."
     fi
 
     # Step 4: Verify checkout/purchase link still works
