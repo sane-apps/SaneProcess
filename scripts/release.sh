@@ -2096,11 +2096,49 @@ Distribution:
 - Direct download: https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip
 EOF
 
+    local target_commit
+    target_commit=$(git -C "${PROJECT_ROOT}" rev-parse HEAD 2>/dev/null || echo "")
+
+    if [ -n "${target_commit}" ]; then
+        local remote_tag_commit=""
+        remote_tag_commit=$(git -C "${PROJECT_ROOT}" ls-remote --tags origin "refs/tags/${tag}" 2>/dev/null | awk '{print $1}' | head -1)
+        if [ "${remote_tag_commit}" != "${target_commit}" ]; then
+            git -C "${PROJECT_ROOT}" tag -f "${tag}" "${target_commit}" >/dev/null 2>&1 || {
+                log_error "Failed to retarget local ${tag} tag to ${target_commit}."
+                return 1
+            }
+
+            if [ -n "${remote_tag_commit}" ]; then
+                log_info "Updating remote ${tag} tag to ${target_commit} before GitHub release sync..."
+                if ! GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push --force origin "refs/tags/${tag}" >/dev/null 2>&1; then
+                    log_error "Failed to push corrected remote ${tag} tag before GitHub release sync."
+                    return 1
+                fi
+            else
+                log_info "Pushing new remote ${tag} tag at ${target_commit} before GitHub release sync..."
+                if ! GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push origin "refs/tags/${tag}" >/dev/null 2>&1; then
+                    log_error "Failed to push remote ${tag} tag before GitHub release sync."
+                    return 1
+                fi
+            fi
+        fi
+    fi
+
     if gh release view "${tag}" --repo "${GITHUB_REPO}" >/dev/null 2>&1; then
-        if gh release edit "${tag}" \
-            --repo "${GITHUB_REPO}" \
-            --title "${title}" \
-            --notes-file "${notes_file}" >/dev/null 2>&1; then
+        local -a gh_edit_args
+        gh_edit_args=(
+            release
+            edit
+            "${tag}"
+            --repo "${GITHUB_REPO}"
+            --title "${title}"
+            --notes-file "${notes_file}"
+        )
+        if [ -n "${target_commit}" ]; then
+            gh_edit_args+=(--target "${target_commit}")
+        fi
+
+        if gh "${gh_edit_args[@]}" >/dev/null 2>&1; then
             log_info "GitHub release updated: ${GITHUB_REPO}@${tag}"
         else
             if [ "${strict}" = true ]; then
@@ -2110,11 +2148,6 @@ EOF
             log_warn "Failed to edit GitHub release ${GITHUB_REPO}@${tag} (non-fatal)."
         fi
     else
-        local target_commit gh_create_output
-        target_commit=$(git -C "${PROJECT_ROOT}" rev-parse HEAD 2>/dev/null || echo "")
-
-        # `gh release create --target` only accepts commits reachable on remote.
-        # If this worktree is ahead locally, omit --target so tag creation can proceed.
         local -a gh_create_args
         gh_create_args=(
             release
@@ -2123,15 +2156,8 @@ EOF
             --repo "${GITHUB_REPO}"
             --title "${title}"
             --notes-file "${notes_file}"
+            --verify-tag
         )
-
-        if [ -n "${target_commit}" ]; then
-            if git -C "${PROJECT_ROOT}" branch -r --contains "${target_commit}" 2>/dev/null | grep -q .; then
-                gh_create_args+=(--target "${target_commit}")
-            else
-                log_warn "HEAD commit ${target_commit} is not on remote; creating GitHub release without explicit --target."
-            fi
-        fi
 
         if gh_create_output=$(gh "${gh_create_args[@]}" 2>&1); then
             log_info "GitHub release created: ${GITHUB_REPO}@${tag}"
@@ -3606,6 +3632,11 @@ if [ "${WEBSITE_ONLY}" = true ]; then
                 webhook_ver=""
                 webhook_ver=$(echo "${webhook_entry}" | grep -oE "${APP_NAME}-[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?')
                 if [ -n "${webhook_ver}" ] && [ "${webhook_ver}" != "${appcast_ver}" ]; then
+                    if [ "${STRICT_PUBLIC_CHANNEL_SYNC}" = true ]; then
+                        log_error "Email webhook PRODUCT_CONFIG drift: webhook has v${webhook_ver} but appcast is v${appcast_ver}"
+                        log_error "New customers will download an old build. Update ${webhook_js_path} and deploy the Worker."
+                        exit 1
+                    fi
                     log_warn "Email webhook PRODUCT_CONFIG drift: webhook has v${webhook_ver} but appcast is v${appcast_ver}"
                     log_warn "New customers will download an old build. Update ${webhook_js_path} and deploy the Worker."
                 fi
@@ -4465,6 +4496,7 @@ APPCASTEOF
             APPCAST_NEW_ITEM="${NEW_ITEM}" python3 - "${APPCAST_PATH}" <<'PY'
 import os
 import sys
+import tempfile
 
 path = sys.argv[1]
 new_item = os.environ.get("APPCAST_NEW_ITEM", "").rstrip() + "\n"
@@ -4480,8 +4512,12 @@ elif "</channel>" in xml:
 else:
     raise SystemExit("appcast.xml missing </channel>")
 
-with open(path, "w", encoding="utf-8") as f:
-    f.write(xml)
+path_dir = os.path.dirname(path) or "."
+with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path_dir, delete=False) as tmp:
+    tmp.write(xml)
+    tmp_path = tmp.name
+
+os.replace(tmp_path, path)
 PY
 
             # Validate local appcast before deploy.
@@ -4514,8 +4550,6 @@ PY
     # Prevents stale download URLs (v1.5.0 link shipped with v2.1.0 — never again)
     DOCS_DIR="${PROJECT_ROOT}/docs"
     WEBSITE_DIR="${PROJECT_ROOT}/website"
-    DOWNLOAD_URL="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
-
     for SITE_DIR in "${DOCS_DIR}" "${WEBSITE_DIR}"; do
         INDEX_HTML="${SITE_DIR}/index.html"
         if [ -f "${INDEX_HTML}" ]; then
@@ -4523,6 +4557,7 @@ PY
 import os
 import pathlib
 import re
+import tempfile
 
 path = pathlib.Path(os.environ["INDEX_HTML"])
 app_name = re.escape(os.environ["APP_NAME"])
@@ -4536,7 +4571,10 @@ new_text, download_count = download_pattern.subn(f'{os.environ["APP_NAME"]}-{ver
 new_text, software_count = software_pattern.subn(f'"softwareVersion": "{version}"', new_text)
 
 if new_text != text:
-    path.write_text(new_text, encoding="utf-8")
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as tmp:
+        tmp.write(new_text)
+        tmp_path = pathlib.Path(tmp.name)
+    os.replace(tmp_path, path)
 
 print(f"{download_count},{software_count}")
 PY
