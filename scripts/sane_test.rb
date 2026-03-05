@@ -78,6 +78,7 @@ class SaneTest
     @free_mode = args.include?('--free-mode')
     @pro_mode = args.include?('--pro-mode')
     @reset_tcc = args.include?('--reset-tcc')
+    @repair_accessibility = args.include?('--repair-accessibility') || ENV['SANETEST_REPAIR_ACCESSIBILITY'] == '1'
     @fresh = args.include?('--fresh')
     @allow_keychain = args.include?('--allow-keychain')
     @allow_unsigned_debug = args.include?('--allow-unsigned-debug')
@@ -148,8 +149,8 @@ class SaneTest
     step("#{n += 1}. Fresh reset (mini)") { fresh_reset_remote } if @fresh
     step("#{n += 1}. Reset TCC permissions (mini)") { reset_tcc_remote } if @reset_tcc && !@fresh
     step("#{n += 1}. Set license mode (mini)") { set_license_mode_remote } if (@free_mode || @pro_mode) && !@fresh
-    step("#{n += 1}. Dedupe Accessibility entries (mini)") { dedupe_accessibility_entries_remote }
-    step("#{n += 1}. Repair stale Accessibility trust (mini)") { reconcile_accessibility_trust_remote }
+    step("#{n += 1}. Inspect Accessibility entries (mini)") { dedupe_accessibility_entries_remote }
+    step("#{n += 1}. Inspect Accessibility trust (mini)") { reconcile_accessibility_trust_remote }
     step("#{n += 1}. Launch on mini") { launch_remote }
     stream_logs_remote unless @no_logs
   end
@@ -275,6 +276,12 @@ class SaneTest
       return
     end
 
+    unless repair_accessibility?
+      warn "   Dedupe: found extra granted Accessibility entries for #{granted_other_bids.join(', ')}; leaving them alone"
+      warn '   Re-run with --repair-accessibility if you want those entries reset.'
+      return
+    end
+
     granted_other_bids.each do |bid|
       escaped_bid = Shellwords.escape(bid)
       ssh("tccutil reset Accessibility #{escaped_bid} 2>/dev/null; true")
@@ -362,6 +369,12 @@ class SaneTest
 
     return unless stale_detected
 
+    unless repair_accessibility?
+      warn "   Repair: stale Accessibility trust detected for #{bundle_id}; leaving it unchanged"
+      warn '   Re-run with --repair-accessibility if you want that Accessibility grant reset.'
+      return
+    end
+
     warn "   Repair: stale Accessibility trust detected for #{bundle_id}; resetting Accessibility grant"
     ssh("tccutil reset Accessibility #{bundle_id} 2>/dev/null; true")
     ssh("killall tccd 2>/dev/null; true")
@@ -413,7 +426,7 @@ class SaneTest
     step("#{n += 1}. Clean ALL stale copies") { clean_local }
     step("#{n += 1}. Build fresh debug build") { build_debug }
     step("#{n += 1}. Verify single copy") { verify_single_copy_local }
-    step("#{n += 1}. Dedupe Accessibility entries") { dedupe_accessibility_entries_local }
+    step("#{n += 1}. Inspect Accessibility entries") { dedupe_accessibility_entries_local }
     step("#{n += 1}. Fresh reset") { fresh_reset_local } if @fresh
     step("#{n += 1}. Reset TCC permissions") { reset_tcc_local } if @reset_tcc && !@fresh
     step("#{n += 1}. Set license mode") { set_license_mode_local } if (@free_mode || @pro_mode) && !@fresh
@@ -463,6 +476,12 @@ class SaneTest
     granted_non_runtime = non_runtime.select { |bid| accessibility_auth_value_local(bid) == 2 }
     if granted_non_runtime.empty?
       warn "   Dedupe: no extra granted Accessibility entries to reset (running #{runtime_bundle})"
+      return
+    end
+
+    unless repair_accessibility?
+      warn "   Dedupe: found extra granted Accessibility entries for #{granted_non_runtime.join(', ')}; leaving them alone"
+      warn '   Re-run with --repair-accessibility if you want those entries reset.'
       return
     end
 
@@ -533,6 +552,12 @@ class SaneTest
 
     return if stale_row_ids.empty?
 
+    unless repair_accessibility?
+      warn "   Repair: found #{stale_row_ids.size} stale Accessibility row(s) for #{bundle_id}; leaving them alone"
+      warn '   Re-run with --repair-accessibility if you want those stale rows removed.'
+      return
+    end
+
     warn "   Repair: removing #{stale_row_ids.size} stale Accessibility row(s) for #{bundle_id}"
     system('killall', 'tccd', out: File::NULL, err: File::NULL)
     system('sqlite3', user_db, "DELETE FROM access WHERE rowid IN (#{stale_row_ids.join(',')});", out: File::NULL, err: File::NULL)
@@ -563,6 +588,10 @@ class SaneTest
     pid = `pgrep -x #{@app_name} 2>/dev/null`.strip
     abort '   ❌ App failed to launch' if pid.empty?
     warn "   Running (PID: #{pid})"
+  end
+
+  def repair_accessibility?
+    @repair_accessibility || @fresh || @reset_tcc
   end
 
   def canonical_local_app_path
@@ -929,6 +958,7 @@ if ARGV.empty? || ARGV[0] == '--help'
   warn '  --free-mode  Clear fallback license data — launch as Free user'
   warn '  --pro-mode   Write fallback Pro marker — launch in Pro mode'
   warn '  --reset-tcc  Reset TCC/Accessibility permissions (only for fresh installs)'
+  warn '  --repair-accessibility  Repair duplicate/stale Accessibility entries if inspection finds them'
   warn '  --allow-keychain  Allow real keychain access during app launch (default is no-keychain)'
   warn '  --allow-unsigned-debug  Allow local SaneBar Debug launch without signing certs (unsupported visibility path)'
   warn ''
