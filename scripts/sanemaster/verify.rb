@@ -290,11 +290,61 @@ module SaneMasterModules
 
     def run_lint
       puts '🎨 --- [ SANEMASTER LINT ] ---'
-      if system('bundle exec fastlane lint')
+      if run_fastlane_lint
         puts '✅ Linting complete.'
       else
-        puts '❌ Linting failed or SwiftLint not found.'
+        puts 'ℹ️  Falling back to direct lint tools (SwiftLint/SwiftFormat)...'
+        if run_direct_lint
+          puts '✅ Linting complete (direct tools).'
+        else
+          puts '❌ Linting failed.'
+          exit 1
+        end
       end
+    end
+
+    def run_fastlane_lint
+      if File.exist?('Gemfile')
+        unless command_available?('bundle')
+          puts '  ⚠️  bundle is not installed; skipping bundle exec fastlane lint.'
+          return false
+        end
+
+        return true if system('bundle', 'exec', 'fastlane', 'lint')
+
+        puts '  ⚠️  bundle exec fastlane lint failed (gem/bundler or lane issue).'
+        return false
+      end
+
+      unless command_available?('fastlane')
+        puts '  ⚠️  fastlane is not installed and no Gemfile is present.'
+        return false
+      end
+
+      system('fastlane', 'lint')
+    end
+
+    def run_direct_lint
+      any_tool = false
+      ok = true
+
+      if command_available?('swiftlint')
+        any_tool = true
+        ok &&= system('swiftlint', 'lint', '--quiet')
+      else
+        puts '  ⚠️  SwiftLint not found (brew install swiftlint).'
+      end
+
+      if command_available?('swiftformat')
+        any_tool = true
+        ok &&= system('swiftformat', '.', '--lint', '--quiet')
+      else
+        puts '  ⚠️  SwiftFormat not found (brew install swiftformat).'
+      end
+
+      return false unless any_tool
+
+      ok
     end
 
     def run_quality_report
@@ -610,6 +660,8 @@ module SaneMasterModules
       assets_dir = 'Tests/Assets'
       test_asset_name = ENV['TEST_ASSET_NAME'] || 'test_video.mp4'
       test_video = File.join(assets_dir, test_asset_name)
+      max_asset_mb = (ENV['SANEMASTER_MAX_TEST_ASSET_MB'] || '200').to_i
+      max_assets_dir_mb = (ENV['SANEMASTER_MAX_TEST_ASSETS_DIR_MB'] || '500').to_i
 
       if File.exist?(test_video)
         size = File.size(test_video) / 1024 / 1024.0
@@ -618,6 +670,27 @@ module SaneMasterModules
       else
         puts "  ⚠️  #{test_asset_name} missing"
         puts '     Run: ./Scripts/SaneMaster.rb gen_assets'
+      end
+
+      return unless Dir.exist?(assets_dir)
+
+      total_bytes = 0
+      oversized = []
+      Dir.glob(File.join(assets_dir, '*')).each do |asset_path|
+        next unless File.file?(asset_path)
+
+        bytes = File.size(asset_path)
+        total_bytes += bytes
+        oversized << [asset_path, bytes] if bytes > (max_asset_mb * 1024 * 1024)
+      end
+
+      total_mb = total_bytes / 1024.0 / 1024.0
+      if total_mb > max_assets_dir_mb || oversized.any?
+        puts "  ⚠️  Assets directory is large (#{total_mb.round(1)}MB)."
+        oversized.sort_by { |(_, bytes)| -bytes }.first(5).each do |(path, bytes)|
+          puts "     - #{File.basename(path)}: #{(bytes / 1024.0 / 1024.0).round(1)}MB"
+        end
+        puts "     Keep test media lightweight. Regenerate with: ./scripts/SaneMaster.rb gen_assets"
       end
     end
 

@@ -904,7 +904,8 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
   end
 
   def ssh_capture(cmd)
-    `ssh -o ConnectTimeout=5 #{MINI_HOST} '#{cmd}' 2>/dev/null`
+    stdout, _status = Open3.capture2('ssh', '-o', 'ConnectTimeout=5', MINI_HOST, cmd, err: File::NULL)
+    stdout
   end
 
   def step(name)
