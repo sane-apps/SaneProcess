@@ -8,7 +8,7 @@ module SaneMasterModules
       @project_name ||= File.basename(Dir.pwd)
     end
 
-    def diagnose(path, dump: false)
+    def diagnose(path, dump: false, since: nil)
       puts '🔬 --- [ SANEMASTER DIAGNOSE ] ---'
 
       # Project-specific diagnostics directory
@@ -18,10 +18,16 @@ module SaneMasterModules
       # AUTO-CLEANUP: Keep only last 3 exports to prevent stale log accumulation
       cleanup_old_exports
 
-      xcresult = path || find_latest_xcresult
+      xcresult = path || find_latest_xcresult(since: since)
       unless xcresult && File.exist?(xcresult)
-        puts '❌ No .xcresult bundle found.'
-        puts '   Run tests first: ./Scripts/SaneMaster.rb verify'
+        if since
+          puts '❌ No .xcresult bundle found from the current test run.'
+          puts '   The build may have failed before producing test results.'
+          puts '   Check test_output.txt for build errors.'
+        else
+          puts '❌ No .xcresult bundle found.'
+          puts '   Run tests first: ./Scripts/SaneMaster.rb verify'
+        end
         return
       end
 
@@ -567,14 +573,17 @@ module SaneMasterModules
       logs.find { |f| f.include?('xctest') || f.include?('Test') }
     end
 
-    def find_latest_xcresult
+    def find_latest_xcresult(since: nil)
       # Project-specific DerivedData path
       system_dd_logs = Dir.glob(File.expand_path("~/Library/Developer/Xcode/DerivedData/#{project_name}-*/Logs/Test/*.xcresult"))
       dd_logs = Dir.glob('.derivedData/Logs/Test/*.xcresult')
       fl_logs = Dir.glob('fastlane/test_output/*.xcresult')
       tmp_logs = Dir.glob('/tmp/*.xcresult')
 
-      (system_dd_logs + dd_logs + fl_logs + tmp_logs).max_by { |f| File.mtime(f) }
+      all = system_dd_logs + dd_logs + fl_logs + tmp_logs
+      # Filter out stale xcresults from previous runs
+      all = all.select { |f| File.mtime(f) >= since } if since
+      all.max_by { |f| File.mtime(f) }
     end
 
     def filter_recent_crashes(crash_files)

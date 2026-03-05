@@ -50,6 +50,7 @@ module SaneMasterModules
       validate_test_references unless args.include?('--skip-test-validation')
 
       begin
+        test_start_time = Time.now
         result = run_tests_with_progress(timeout_seconds: timeout, include_ui: include_ui, signed_tests: signed_tests)
 
         if result[:success]
@@ -57,9 +58,16 @@ module SaneMasterModules
           # Suggest recording patterns after successful test run
           suggest_memory_record if respond_to?(:suggest_memory_record)
         else
-          puts "\n❌ Tests failed. Running diagnostics..."
-          puts "⚠️  Test run timed out after #{timeout}s" if result[:timeout]
-          diagnose(nil, dump: true)
+          log_size = File.exist?('test_output.txt') ? File.size('test_output.txt') : 0
+          if log_size.zero?
+            puts "\n❌ Tests failed: xcodebuild produced no output (test_output.txt is empty)."
+            puts '   This usually means the build process failed to start or was killed immediately.'
+            puts '   Try: ./scripts/SaneMaster.rb clean --nuclear && ./scripts/SaneMaster.rb verify'
+          else
+            puts "\n❌ Tests failed. Running diagnostics..."
+            puts "⚠️  Test run timed out after #{timeout}s" if result[:timeout]
+            diagnose(nil, dump: true, since: test_start_time)
+          end
           exit 1
         end
       ensure
