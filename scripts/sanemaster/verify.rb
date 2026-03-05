@@ -176,13 +176,12 @@ module SaneMasterModules
       return false unless command
 
       text = command.downcase
-      project_keyword = project_name.downcase
+      tool_marker = text.include?('xcodebuild') ||
+                    text.include?('xctest') ||
+                    text.include?('swift-testing') ||
+                    text.include?('testmanager')
 
-      text.include?('xcodebuild') ||
-        text.include?('xctest') ||
-        text.include?('swift-testing') ||
-        text.include?('testmanager') ||
-        text.include?(project_keyword)
+      tool_marker && project_process_matchers.any? { |matcher| text.include?(matcher) }
     end
 
     def test_listeners_for_port(port)
@@ -212,6 +211,27 @@ module SaneMasterModules
       `ps -p #{pid.to_i} -o command= 2>/dev/null`.strip
     rescue StandardError
       nil
+    end
+
+    def project_process_matchers
+      @project_process_matchers ||= begin
+        raw = [
+          project_name,
+          project_scheme,
+          File.basename(Dir.pwd),
+          project_xcodeproj,
+          File.basename(project_xcodeproj.to_s),
+          project_workspace,
+          File.basename(project_workspace.to_s)
+        ]
+
+        raw.compact
+          .map(&:to_s)
+          .map(&:strip)
+          .reject(&:empty?)
+          .map(&:downcase)
+          .uniq
+      end
     end
 
     def command_available?(command_name)
@@ -463,15 +483,22 @@ module SaneMasterModules
       end
 
       system('pkill', '-f', 'grant_permissions.applescript', err: File::NULL)
-      system('pkill', '-f', 'xcodebuild test', err: File::NULL)
-      system('pkill', '-f', "#{project_name}.*test", err: File::NULL)
-      # Use -x for exact match to avoid killing helper processes
-      system('pkill', '-9', '-x', 'xcodebuild', err: File::NULL)
+      terminate_project_test_processes('TERM')
       sleep(0.5)
-      system('killall', '-9', 'xcodebuild', err: File::NULL)
+      terminate_project_test_processes('KILL')
       system('killall', '-9', project_name, err: File::NULL)
 
       puts '✅'
+    end
+
+    def terminate_project_test_processes(signal)
+      stale_test_processes.each do |pid|
+        begin
+          Process.kill(signal, pid.to_i)
+        rescue Errno::ESRCH, Errno::EPERM
+          nil
+        end
+      end
     end
 
     def run_tests_with_progress(timeout_seconds:, include_ui: false, signed_tests: false)
