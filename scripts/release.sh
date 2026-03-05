@@ -2110,14 +2110,18 @@ EOF
 
             if [ -n "${remote_tag_commit}" ]; then
                 log_info "Updating remote ${tag} tag to ${target_commit} before GitHub release sync..."
-                if ! GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push --force origin "refs/tags/${tag}" >/dev/null 2>&1; then
+                local tag_push_output=""
+                if ! tag_push_output=$(GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push --force origin "refs/tags/${tag}" 2>&1); then
                     log_error "Failed to push corrected remote ${tag} tag before GitHub release sync."
+                    [ -n "${tag_push_output}" ] && log_error "git output: ${tag_push_output}"
                     return 1
                 fi
             else
                 log_info "Pushing new remote ${tag} tag at ${target_commit} before GitHub release sync..."
-                if ! GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push origin "refs/tags/${tag}" >/dev/null 2>&1; then
+                local tag_push_output=""
+                if ! tag_push_output=$(GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push origin "refs/tags/${tag}" 2>&1); then
                     log_error "Failed to push remote ${tag} tag before GitHub release sync."
+                    [ -n "${tag_push_output}" ] && log_error "git output: ${tag_push_output}"
                     return 1
                 fi
             fi
@@ -3623,7 +3627,9 @@ if [ "${WEBSITE_ONLY}" = true ]; then
             log_info "Dist archive metadata check passed for website-only deploy: ${dist_archive_url}"
         fi
 
-        # Webhook version drift warning (non-blocking — website-only deploys don't require webhook updates)
+        # Webhook version drift check.
+        # In strict public-channel mode this is blocking, because new customers would
+        # otherwise receive an old build even if the website/appcast are correct.
         webhook_js_path="${HOME}/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js"
         if [ -n "${appcast_ver}" ] && [ -f "${webhook_js_path}" ]; then
             webhook_entry=""
@@ -4513,11 +4519,15 @@ else:
     raise SystemExit("appcast.xml missing </channel>")
 
 path_dir = os.path.dirname(path) or "."
-with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path_dir, delete=False) as tmp:
-    tmp.write(xml)
-    tmp_path = tmp.name
-
-os.replace(tmp_path, path)
+tmp_path = None
+try:
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path_dir, delete=False) as tmp:
+        tmp.write(xml)
+        tmp_path = tmp.name
+    os.replace(tmp_path, path)
+finally:
+    if tmp_path and os.path.exists(tmp_path):
+        os.remove(tmp_path)
 PY
 
             # Validate local appcast before deploy.
@@ -4571,10 +4581,15 @@ new_text, download_count = download_pattern.subn(f'{os.environ["APP_NAME"]}-{ver
 new_text, software_count = software_pattern.subn(f'"softwareVersion": "{version}"', new_text)
 
 if new_text != text:
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as tmp:
-        tmp.write(new_text)
-        tmp_path = pathlib.Path(tmp.name)
-    os.replace(tmp_path, path)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as tmp:
+            tmp.write(new_text)
+            tmp_path = pathlib.Path(tmp.name)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink()
 
 print(f"{download_count},{software_count}")
 PY
