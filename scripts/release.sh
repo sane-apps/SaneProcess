@@ -4519,16 +4519,35 @@ PY
     for SITE_DIR in "${DOCS_DIR}" "${WEBSITE_DIR}"; do
         INDEX_HTML="${SITE_DIR}/index.html"
         if [ -f "${INDEX_HTML}" ]; then
-            # Replace any old download links (SaneBar-X.Y.Z.zip/.dmg) with current ZIP version.
-            OLD_LINKS=$(grep -Eoc "${APP_NAME}-[0-9]+\.[0-9]+(\.[0-9]+)?\.(zip|dmg)" "${INDEX_HTML}" 2>/dev/null)
-            OLD_LINKS=${OLD_LINKS:-0}
-            if [ "${OLD_LINKS}" -gt 0 ]; then
-                sed -E -i '' "s|${APP_NAME}-[0-9]+\.[0-9]+(\.[0-9]+)?\.(zip|dmg)|${APP_NAME}-${VERSION}.zip|g" "${INDEX_HTML}"
-                log_info "Updated ${OLD_LINKS} download link(s) in $(basename "${SITE_DIR}")/index.html → ${APP_NAME}-${VERSION}.zip"
+            UPDATE_RESULT=$(APP_NAME="${APP_NAME}" VERSION="${VERSION}" INDEX_HTML="${INDEX_HTML}" python3 <<'PY'
+import os
+import pathlib
+import re
+
+path = pathlib.Path(os.environ["INDEX_HTML"])
+app_name = re.escape(os.environ["APP_NAME"])
+version = os.environ["VERSION"]
+text = path.read_text(encoding="utf-8")
+
+download_pattern = re.compile(rf"{app_name}-[0-9]+\.[0-9]+(?:\.[0-9]+)?\.(?:zip|dmg)")
+software_pattern = re.compile(r'"softwareVersion": "[^"]*"')
+
+new_text, download_count = download_pattern.subn(f'{os.environ["APP_NAME"]}-{version}.zip', text)
+new_text, software_count = software_pattern.subn(f'"softwareVersion": "{version}"', new_text)
+
+if new_text != text:
+    path.write_text(new_text, encoding="utf-8")
+
+print(f"{download_count},{software_count}")
+PY
+)
+            DOWNLOAD_COUNT="${UPDATE_RESULT%%,*}"
+            SOFTWARE_COUNT="${UPDATE_RESULT##*,}"
+
+            if [ "${DOWNLOAD_COUNT}" -gt 0 ]; then
+                log_info "Updated ${DOWNLOAD_COUNT} download link(s) in $(basename "${SITE_DIR}")/index.html → ${APP_NAME}-${VERSION}.zip"
             fi
-            # Update softwareVersion in JSON-LD structured data
-            if grep -q '"softwareVersion"' "${INDEX_HTML}" 2>/dev/null; then
-                sed -i '' "s|\"softwareVersion\": \"[^\"]*\"|\"softwareVersion\": \"${VERSION}\"|g" "${INDEX_HTML}"
+            if [ "${SOFTWARE_COUNT}" -gt 0 ]; then
                 log_info "Updated softwareVersion in $(basename "${SITE_DIR}")/index.html → ${VERSION}"
             fi
         fi
@@ -4707,7 +4726,10 @@ PY
         git -C "${PROJECT_ROOT}" add "${VERSION_SYNC_FILES[@]}"
         if ! git -C "${PROJECT_ROOT}" diff --cached --quiet; then
             git -C "${PROJECT_ROOT}" commit -m "chore: sync ${VERSION} version metadata and site download links"
-            GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push
+            if ! GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push; then
+                log_error "Failed to push version metadata/site link commit."
+                exit 1
+            fi
             log_info "Version metadata/site link commit pushed."
         fi
     fi
@@ -4723,7 +4745,10 @@ PY
         log_info "Committing appcast update..."
         git -C "${PROJECT_ROOT}" add "${APPCAST_SYNC_FILES[@]}"
         git -C "${PROJECT_ROOT}" commit -m "chore: update appcast for v${VERSION}"
-        GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push
+        if ! GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push; then
+            log_error "Failed to push appcast commit for v${VERSION}."
+            exit 1
+        fi
         log_info "Appcast commit pushed."
     fi
 
