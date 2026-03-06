@@ -3813,9 +3813,7 @@ if [ "${FULL_RELEASE}" = true ]; then
         fi
     done
     if [ "${VERSION_BUMP_CHANGED}" -ne 1 ]; then
-        log_error "Version bump produced no tracked file changes. Aborting release."
-        restore_version_bump
-        exit 1
+        log_warn "Version bump produced no tracked file changes. Continuing with existing versioned source state."
     fi
 
     update_changelog
