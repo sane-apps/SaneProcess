@@ -1221,6 +1221,7 @@ PY
         local cask_sleep_seconds="${HOMEBREW_VERIFY_SLEEP_SECONDS:-6}"
         local cask_ok=false
         local cask_verified_source=""
+        local cask_verified_body=""
 
         while [ "${cask_attempt}" -le "${cask_max_attempts}" ]; do
             local cask_body
@@ -1230,6 +1231,7 @@ PY
                grep -q "sha256 \"${SHA256}\"" <<< "${cask_body}"; then
                 cask_ok=true
                 cask_verified_source="raw"
+                cask_verified_body="${cask_body}"
                 break
             fi
 
@@ -1242,6 +1244,7 @@ PY
                    grep -q "sha256 \"${SHA256}\"" <<< "${cask_api_body}"; then
                     cask_ok=true
                     cask_verified_source="github-api"
+                    cask_verified_body="${cask_api_body}"
                     break
                 fi
             fi
@@ -1259,8 +1262,7 @@ PY
 
         # Extract and assert exact version from cask content
         local cask_extracted_version
-        cask_body=$(curl -fsSL "${cask_raw_url}" 2>/dev/null || true)
-        cask_extracted_version=$(grep -oE 'version "[^"]+"' <<< "${cask_body}" | head -1 | sed 's/version "//;s/"//')
+        cask_extracted_version=$(grep -oE 'version "[^"]+"' <<< "${cask_verified_body}" | head -1 | sed 's/version "//;s/"//')
         if [ -n "${cask_extracted_version}" ] && [ "${cask_extracted_version}" != "${VERSION}" ]; then
             log_error "Homebrew cask version mismatch: cask has v${cask_extracted_version}, expected v${VERSION}"
             return 1
@@ -1987,8 +1989,8 @@ run_tests() {
     else
         cat "${test_log}"
 
-        if grep -Eq 'Command CodeSign failed with a nonzero exit code|errSecInternalComponent' "${test_log}"; then
-            log_warn "Signed test build failed (headless keychain/code-signing). Retrying unsigned tests..."
+        if grep -Eq 'Command CodeSign failed with a nonzero exit code|errSecInternalComponent|No profiles for .+ were found|Automatic signing is disabled and unable to generate a profile' "${test_log}"; then
+            log_warn "Signed test build failed due to signing/provisioning. Retrying unsigned tests..."
             if XDG_CACHE_HOME="${cache_root}" \
                CLANG_MODULE_CACHE_PATH="${clang_cache}" \
                SWIFTPM_CACHE_PATH="${swiftpm_cache}" \
