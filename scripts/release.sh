@@ -438,6 +438,7 @@ PY
 
 appstore_platform_tokens() {
     local raw_platforms=""
+    local parsed_platforms=()
     if declare -p APPSTORE_PLATFORMS >/dev/null 2>&1; then
         raw_platforms="${APPSTORE_PLATFORMS[*]}"
     else
@@ -445,7 +446,8 @@ appstore_platform_tokens() {
     fi
 
     raw_platforms="${raw_platforms//,/ }"
-    printf '%s\n' ${raw_platforms}
+    read -r -a parsed_platforms <<< "${raw_platforms}"
+    printf '%s\n' "${parsed_platforms[@]}"
 }
 
 appstore_platform_enabled() {
