@@ -526,19 +526,25 @@ module SaneMasterModules
         puts "  ⚠️  UI tests not available (#{project_ui_tests_dir} directory does not exist)"
         puts '  📦 Running unit tests only...'
       end
+      if use_test_plan? && !include_ui
+        package_path = package_path_for_test_target(project_test_target)
+        if package_path
+          puts "  ℹ️  Running package test target directly: #{project_test_target} (#{package_path})"
+          return ['swift', 'test', '--package-path', package_path, '--filter', project_test_target]
+        end
+      end
       args = ['xcodebuild', 'test']
       args.concat(xcodebuild_container_args)
       args.concat(['-scheme', project_scheme, '-destination', 'platform=macOS,arch=arm64'])
       args.concat(['-parallel-testing-enabled', 'NO'])
       args.concat(['-parallel-testing-worker-count', '1'])
       if use_test_plan?
-        # Some projects include UI tests in test plans by default.
-        # Keep verify fast/headless unless --ui is explicitly requested.
-        if include_ui && ui_tests_present?
-          args << "-only-testing:#{project_test_target}"
-          args << "-only-testing:#{project_ui_test_target}"
-        elsif !include_ui && ui_tests_present?
-          args << "-only-testing:#{project_test_target}"
+        puts '  ℹ️  Using scheme-managed test plan selection.'
+        unless include_ui
+          if ui_tests_present?
+            args << "-skip-testing:#{project_ui_test_target}"
+            puts "  ℹ️  Skipping UI target from test plan: #{project_ui_test_target}"
+          end
         end
       else
         if include_ui
@@ -565,6 +571,26 @@ module SaneMasterModules
                     ])
       end
       args
+    end
+
+    def package_path_for_test_target(test_target)
+      return nil if test_target.to_s.strip.empty?
+
+      manifests = Dir.glob(['Package.swift', '*/Package.swift', '*/*/Package.swift', '*/*/*/Package.swift'])
+      manifests.each do |manifest|
+        next if manifest.include?('/.build/')
+        next unless File.file?(manifest)
+
+        contents = File.read(manifest)
+        next unless contents.include?('.testTarget')
+        next unless contents.include?("name: \"#{test_target}\"")
+
+        return File.dirname(manifest)
+      rescue StandardError
+        next
+      end
+
+      nil
     end
 
     def use_test_plan?

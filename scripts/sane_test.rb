@@ -73,6 +73,7 @@ class SaneTest
   def initialize(app_name, args)
     @app_name = app_name
     @config = APPS[app_name]
+    @raw_args = args.dup
     @force_local = args.include?('--local')
     @no_logs = args.include?('--no-logs')
     @free_mode = args.include?('--free-mode')
@@ -140,19 +141,17 @@ class SaneTest
   # ── Remote (Mac mini) workflow ──────────────────────────────
 
   def run_remote
+    remote_app_dir = map_local_path_to_mini(@app_dir)
+    remote_script_path = map_local_path_to_mini(__FILE__)
+    remote_saneprocess_dir = File.dirname(File.dirname(remote_script_path))
+
+    abort "❌ Could not map app repo to mini: #{@app_dir}" unless remote_app_dir
+    abort "❌ Could not map sane_test.rb to mini: #{__FILE__}" unless remote_script_path
+
     n = 0
-    step("#{n += 1}. Kill existing processes (mini)") { kill_remote }
-    step("#{n += 1}. Clean ALL stale copies (mini)") { clean_remote }
-    step("#{n += 1}. Build fresh debug build") { build_debug }
-    step("#{n += 1}. Deploy to mini") { deploy_to_mini }
-    step("#{n += 1}. Verify single copy (mini)") { verify_single_copy_remote }
-    step("#{n += 1}. Fresh reset (mini)") { fresh_reset_remote } if @fresh
-    step("#{n += 1}. Reset TCC permissions (mini)") { reset_tcc_remote } if @reset_tcc && !@fresh
-    step("#{n += 1}. Set license mode (mini)") { set_license_mode_remote } if (@free_mode || @pro_mode) && !@fresh
-    step("#{n += 1}. Inspect Accessibility entries (mini)") { dedupe_accessibility_entries_remote }
-    step("#{n += 1}. Inspect Accessibility trust (mini)") { reconcile_accessibility_trust_remote }
-    step("#{n += 1}. Launch on mini") { launch_remote }
-    stream_logs_remote unless @no_logs
+    step("#{n += 1}. Sync SaneProcess launcher to mini") { sync_file_to_mini(__FILE__, remote_script_path) }
+    step("#{n += 1}. Sync app workspace to mini") { sync_repo_to_mini(@app_dir, remote_app_dir) }
+    step("#{n += 1}. Run full build + launch flow on mini") { exec_remote_sane_test(remote_saneprocess_dir) }
   end
 
   def kill_remote
@@ -767,7 +766,7 @@ class SaneTest
   end
 
   def launch_env_pairs
-    env_args = []
+    env_args = ['--env', 'SANEAPPS_PERMISSIONLESS_AUTOMATION=1', '--env', 'SANEVIDEO_ENABLE_HARDWARE_TESTS=0']
     if @free_mode
       env_args += ['--env', 'SANEAPPS_FORCE_LICENSE_CHECK=1']
       env_args += ['--env', 'SANEAPPS_FORCE_FREE_MODE=1'] unless @app_name == 'SaneBar'
@@ -854,12 +853,15 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
             build_args << "PRODUCT_BUNDLE_IDENTIFIER=#{dev_bundle_id}"
           end
         end
-        # When falling back to Debug (no ProdDebug), override signing so the
-        # binary is properly signed and can launch on remote machines (Mini).
+        # For apps without ProdDebug, keep Debug launches ad-hoc signed.
+        # Forcing Apple Development signing here can fail on package bundles
+        # during unattended Mini builds (errSecInternalComponent).
         unless has_prod_debug
           build_args += [
-            'CODE_SIGN_IDENTITY=Apple Development',
-            'DEVELOPMENT_TEAM=M78L6FXD48'
+            'CODE_SIGN_IDENTITY=-',
+            'CODE_SIGNING_REQUIRED=NO',
+            'CODE_SIGNING_ALLOWED=NO',
+            'DEVELOPMENT_TEAM='
           ]
         end
       else
@@ -935,6 +937,47 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
   def ssh_capture(cmd)
     stdout, _status = Open3.capture2('ssh', '-o', 'ConnectTimeout=5', MINI_HOST, cmd, err: File::NULL)
     stdout
+  end
+
+  def map_local_path_to_mini(local_path)
+    expanded = File.expand_path(local_path)
+    return expanded if expanded.start_with?('/Users/stephansmac/')
+    return nil unless expanded.start_with?('/Users/sj/')
+
+    "/Users/stephansmac/#{expanded.delete_prefix('/Users/sj/')}"
+  end
+
+  def sync_file_to_mini(local_path, remote_path)
+    remote_dir = File.dirname(remote_path)
+    ok = system('ssh', '-o', 'ConnectTimeout=5', MINI_HOST, "mkdir -p #{Shellwords.escape(remote_dir)}")
+    abort "   ❌ Failed to prepare remote directory: #{remote_dir}" unless ok
+
+    ok = system('rsync', '-az', local_path, "#{MINI_HOST}:#{remote_path}")
+    abort "   ❌ Failed to sync #{local_path} to mini" unless ok
+  end
+
+  def sync_repo_to_mini(local_repo, remote_repo)
+    ok = system(
+      'rsync',
+      '-az',
+      '--delete',
+      '--filter', ':- .gitignore',
+      '--exclude', '.git',
+      '--exclude', '.build',
+      '--exclude', 'DerivedData',
+      '--exclude', 'node_modules',
+      '--exclude', 'vendor/bundle',
+      '--exclude', 'test_output.txt',
+      "#{File.expand_path(local_repo)}/",
+      "#{MINI_HOST}:#{remote_repo}/"
+    )
+    abort "   ❌ Failed to sync app repo to mini: #{local_repo}" unless ok
+  end
+
+  def exec_remote_sane_test(remote_saneprocess_dir)
+    forwarded_args = @raw_args.reject { |arg| arg == '--local' }
+    remote_args = ([@app_name, '--local'] + forwarded_args).map { |arg| Shellwords.escape(arg) }.join(' ')
+    exec('ssh', MINI_HOST, "cd #{Shellwords.escape(remote_saneprocess_dir)} && ruby scripts/sane_test.rb #{remote_args}")
   end
 
   def step(name)

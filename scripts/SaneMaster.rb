@@ -320,11 +320,6 @@ class SaneMaster
     return if running_on_mini_host?
     return unless MINI_FIRST_COMMANDS.include?(command)
 
-    if %w[launch run test_mode tm].include?(command) && repo_has_uncommitted_changes?
-      puts '⚠️  Local changes detected; running debug command locally to validate current workspace.'
-      return
-    end
-
     if ENV['SANEMASTER_UNSIGNED_FALLBACK_ACTIVE'] == '1' && %w[launch run test_mode tm].include?(command)
       puts '⚠️  Unsigned fallback active; running locally to honor Debug fallback.'
       return
@@ -353,6 +348,15 @@ class SaneMaster
       return
     end
 
+    remote_saneprocess_repo = map_local_path_to_mini(saneprocess_repo_root)
+    unless remote_saneprocess_repo
+      abort "❌ Could not map SaneProcess to mini: #{saneprocess_repo_root}"
+    end
+
+    sync_workspace_to_mini!(remote_repo)
+    sync_local_dir_to_mini!(saneprocess_repo_root, remote_saneprocess_repo, label: 'SaneProcess')
+    prepare_remote_repo_for_command!(remote_repo)
+
     forwarded_env_keys = %w[
       SANEMASTER_APPSTORE_PREFLIGHT
       SANEMASTER_BUILD_CONFIG
@@ -368,7 +372,8 @@ class SaneMaster
       "#{key}=#{Shellwords.escape(value)}"
     end
     remote_env_prefix = forwarded_env.empty? ? '' : "#{forwarded_env.join(' ')} "
-    remote_cmd = "#{remote_env_prefix}./scripts/SaneMaster.rb #{([command] + args).map { |arg| Shellwords.escape(arg) }.join(' ')}"
+    remote_script = File.join(remote_saneprocess_repo, 'scripts', 'SaneMaster.rb')
+    remote_cmd = "#{remote_env_prefix}ruby #{Shellwords.escape(remote_script)} #{([command] + args).map { |arg| Shellwords.escape(arg) }.join(' ')}"
     puts "📍 Mini-first routing: #{command} -> mini (#{remote_repo})"
     $stdout.flush
     exec('ssh', 'mini', "cd #{Shellwords.escape(remote_repo)} && #{remote_cmd}")
@@ -405,6 +410,50 @@ class SaneMaster
     false
   rescue StandardError
     false
+  end
+
+  def sync_workspace_to_mini!(remote_repo)
+    puts "🔄 Syncing local workspace snapshot to mini (#{remote_repo})"
+    sync_local_dir_to_mini!(Dir.pwd, remote_repo, label: nil)
+  end
+
+  def saneprocess_repo_root
+    File.expand_path('..', __dir__)
+  end
+
+  def sync_local_dir_to_mini!(local_dir, remote_dir, label: nil)
+    puts "🔄 Syncing #{label} to mini (#{remote_dir})" if label
+    ok = system(
+      'rsync',
+      '-az',
+      '--delete',
+      '--filter', ':- .gitignore',
+      '--exclude', '.git',
+      '--exclude', '.build',
+      '--exclude', 'DerivedData',
+      '--exclude', 'node_modules',
+      '--exclude', 'vendor/bundle',
+      '--exclude', 'test_output.txt',
+      "#{File.expand_path(local_dir)}/",
+      "mini:#{remote_dir}/"
+    )
+    return if ok
+
+    abort "❌ Failed to sync #{label || 'the current workspace snapshot'} to the mini."
+  end
+
+  def prepare_remote_repo_for_command!(remote_repo)
+    remote_cmd = <<~SH
+      set -e
+      cd #{Shellwords.escape(remote_repo)}
+      if [ -f project.yml ]; then
+        xcodegen generate >/dev/null
+      fi
+    SH
+    ok = system('ssh', 'mini', remote_cmd)
+    return if ok
+
+    abort '❌ Failed to prepare the mini workspace after sync.'
   end
 
   def dispatch_command(command, args)

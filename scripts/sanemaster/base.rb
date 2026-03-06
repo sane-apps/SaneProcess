@@ -44,13 +44,25 @@ module SaneMasterModules
     end
 
     def xcodebuild_container_args
-      if project_workspace && !project_workspace.to_s.empty?
+      if workspace_usable_for_scheme?
         ['-workspace', project_workspace]
       elsif project_xcodeproj && !project_xcodeproj.to_s.empty?
         ['-project', project_xcodeproj]
       else
         []
       end
+    end
+
+    def workspace_usable_for_scheme?
+      return false if project_workspace.to_s.empty?
+      return false unless File.exist?(project_workspace.to_s)
+
+      list_output = `xcodebuild -list -workspace #{Shellwords.escape(project_workspace.to_s)} 2>/dev/null`
+      return false if list_output.include?('There are no schemes in workspace')
+
+      list_output.include?(project_scheme.to_s)
+    rescue StandardError
+      false
     end
 
     def project_app_dir
