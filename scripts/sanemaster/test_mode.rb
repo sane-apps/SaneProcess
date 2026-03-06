@@ -69,6 +69,8 @@ module SaneMasterModules
       end
 
       launch_path = stage_to_canonical_local_app_path(app_path)
+      trashed_copies = trash_noncanonical_local_app_copies(preserve_paths: protected_local_app_paths(launch_path))
+      puts "🧹 Trashed #{trashed_copies} stale app bundle(s) before launch" if trashed_copies.positive?
       reconcile_accessibility_trust_local(launch_path)
 
       puts "📱 Launching: #{launch_path}"
@@ -89,6 +91,12 @@ module SaneMasterModules
         opened = system(*open_cmd)
         unless opened
           puts '❌ Failed to launch app via open. Verify staged app bundle/executable exists.'
+          return false
+        end
+        unless launched_process_matches?(launch_path)
+          puts "❌ Launch resolved to a different #{project_name}.app copy."
+          puts "   Expected: #{launch_path}"
+          show_other_running_app_copies(expected_path: launch_path)
           return false
         end
         mode_label = allow_keychain ? 'keychain-enabled' : 'no-keychain'
@@ -148,9 +156,12 @@ module SaneMasterModules
       cleanup_stale_log_streams
       show_screenshots(screenshots_dir)
       show_diagnostic_reports(crash_dir)
-      return unless build_app
+      return unless build_app(args)
 
       launch_args = []
+      launch_args << '--release' if args.include?('--release')
+      launch_args << '--proddebug' if args.include?('--proddebug')
+      launch_args << '--force' if args.include?('--force')
       launch_args << '--allow-keychain' if args.include?('--allow-keychain')
       launch_args << '--free-mode' if args.any? { |arg| %w[--free-mode --basic-mode --basic].include?(arg) }
 
@@ -238,6 +249,7 @@ module SaneMasterModules
       # Never replace a signed system install with unsigned fallback builds.
       return user_app if unsigned_fallback_active?
 
+      return system_app if system_app_dir_writable?
       return system_app if File.exist?(system_app)
       return user_app if File.exist?(user_app)
 
@@ -314,9 +326,8 @@ module SaneMasterModules
 
       return source_app_path unless staged_ok
 
-      # Flush Launch Services cache so macOS resolves the single canonical path.
-      lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
-      system(lsregister, '-kill', '-r', '-domain', 'user') if File.exist?(lsregister)
+      trash_noncanonical_local_app_copies(preserve_paths: protected_local_app_paths(target_app_path))
+      flush_launch_services_cache
 
       target_app_path
     end
@@ -342,6 +353,114 @@ module SaneMasterModules
 
     def user_local_app_path
       File.expand_path(File.join('~/Applications', "#{project_name}.app"))
+    end
+
+    def system_app_dir_writable?
+      File.writable?('/Applications')
+    rescue StandardError
+      false
+    end
+
+    def local_app_copy_paths
+      patterns = [
+        File.join('/Applications', "#{project_name}.app"),
+        user_local_app_path,
+        File.expand_path("/tmp/#{project_name}.app"),
+        File.expand_path("~/Library/Developer/Xcode/DerivedData/#{project_name}-*/Build/Products/*/#{project_name}.app"),
+        File.expand_path("~/codex-runs/**/#{project_name}.app"),
+        File.expand_path("~/codex-runs/.worktrees/**/#{project_name}.app")
+      ]
+
+      patterns
+        .flat_map { |pattern| Dir.glob(pattern, File::FNM_DOTMATCH) }
+        .select { |path| File.directory?(path) }
+        .map { |path| File.expand_path(path) }
+        .uniq
+        .sort
+    end
+
+    def protected_local_app_paths(primary_path)
+      preserved = [File.expand_path(primary_path)]
+
+      system_app = File.join('/Applications', "#{project_name}.app")
+      if unsigned_fallback_active? && File.exist?(system_app)
+        preserved << File.expand_path(system_app)
+      end
+
+      preserved.uniq
+    end
+
+    def trash_noncanonical_local_app_copies(preserve_paths:)
+      preserved = Array(preserve_paths).map { |path| File.expand_path(path) }
+      stale_paths = local_app_copy_paths.reject { |path| preserved.include?(File.expand_path(path)) }
+      stale_paths.each do |path|
+        puts "🗑️  Trashing stale app bundle: #{path}"
+        trash_local_path(path)
+      end
+      stale_paths.length
+    end
+
+    def trash_local_path(path)
+      return unless File.exist?(path)
+
+      ok = system('/usr/bin/trash', path, out: File::NULL, err: File::NULL)
+      raise "Failed to move stale app bundle to Trash: #{path}" unless ok
+    end
+
+    def flush_launch_services_cache
+      lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+      return unless File.exist?(lsregister)
+
+      system(lsregister, '-kill', '-r', '-domain', 'local', '-domain', 'system', '-domain', 'user')
+    end
+
+    def local_app_processes(app_path)
+      expected_binary = File.join(File.expand_path(app_path), 'Contents', 'MacOS', project_name)
+      `ps ax -o pid=,command=`
+        .lines
+        .map(&:strip)
+        .reject(&:empty?)
+        .select do |line|
+          _pid, command = line.split(/\s+/, 2)
+          next false unless command
+
+          binary = command.split(/\s+/, 2).first.to_s
+          File.expand_path(binary) == expected_binary
+        end
+    end
+
+    def any_project_processes
+      binary_suffix = "/#{project_name}.app/Contents/MacOS/#{project_name}"
+      `ps ax -o pid=,command=`
+        .lines
+        .map(&:strip)
+        .reject(&:empty?)
+        .select { |line| line.include?(binary_suffix) }
+    end
+
+    def launched_process_matches?(app_path)
+      deadline = Time.now + 8
+      loop do
+        matches = local_app_processes(app_path)
+        return true unless matches.empty?
+
+        break if Time.now >= deadline
+
+        sleep 0.5
+      end
+
+      false
+    end
+
+    def show_other_running_app_copies(expected_path:)
+      others = any_project_processes.reject { |line| line.include?(File.expand_path(expected_path)) }
+      if others.empty?
+        puts '   No alternate running copy was detected.'
+        return
+      end
+
+      puts '   Other running copies:'
+      others.each { |line| puts "   #{line}" }
     end
 
     def codesign_authority_lines(app_path)
@@ -486,9 +605,9 @@ module SaneMasterModules
       puts "   📊 Latest test result: #{File.basename(latest)} (#{mtime})"
     end
 
-    def build_app # rubocop:disable Naming/PredicateMethod -- performs action, not just a query
+    def build_app(args = []) # rubocop:disable Naming/PredicateMethod -- performs action, not just a query
       puts '4️⃣  Building app...'
-      unless run_build_command(summary_lines: 5, build_config: launch_build_config([]))
+      unless run_build_command(summary_lines: 5, build_config: launch_build_config(args))
         puts '   ❌ Build failed! Fix errors before continuing.'
         return false
       end
@@ -524,6 +643,9 @@ module SaneMasterModules
 
     def run_build_command(summary_lines: 3, build_config: launch_build_config([]))
       require 'open3'
+
+      ENV.delete('SANEMASTER_UNSIGNED_FALLBACK_ACTIVE')
+      ENV['SANEMASTER_BUILD_CONFIG'] = build_config
 
       cmd = ['xcodebuild', *xcodebuild_container_args, '-scheme', project_scheme, '-configuration', build_config,
              '-destination', 'platform=macOS', 'ENABLE_DEBUG_DYLIB=NO', 'build']
@@ -586,6 +708,12 @@ module SaneMasterModules
     end
 
     def launch_build_config(args)
+      if ENV['SANEMASTER_UNSIGNED_FALLBACK_ACTIVE'] == '1' &&
+         ENV['SANEMASTER_BUILD_CONFIG'].to_s.strip.casecmp('debug').zero?
+        puts '⚠️  Unsigned fallback active: launching Debug build configuration.'
+        return 'Debug'
+      end
+
       return 'ProdDebug' if args.include?('--proddebug')
       return 'Release' if args.include?('--release')
 

@@ -25,6 +25,7 @@ require 'time'
 require 'tempfile'
 require 'shellwords'
 require 'socket'
+require 'fileutils'
 
 # Load all modules
 require_relative 'sanemaster/base'
@@ -118,7 +119,7 @@ class SaneMaster
         'crashes' => { args: '[--recent]', desc: 'Analyze crash reports' },
         'diagnose' => { args: '[path]', desc: 'Analyze .xcresult bundle' },
         'menu_scan' => { args: '[--json] [--owners bundle1,bundle2]', desc: 'Menu bar diagnostics (detected/normalized/excluded)' },
-        'mode' => { args: '[<AppName>] <pro|basic|free|status|list> [--launch] [--host local|mini]', desc: 'Set/query test license mode and optionally launch a clean signed install' }
+        'mode' => { args: '[<AppName>] <pro|basic|free|status|owner-check|owner-install|owner-pro|owner-verify|list> [--launch] [--host local|mini]', desc: 'Set/query test mode or owner-mode install/license state' }
       }
     },
     env: {
@@ -132,6 +133,7 @@ class SaneMaster
         'versions' => { args: '', desc: 'Check tool versions' },
         'reset' => { args: '', desc: 'Reset TCC permissions' },
         'restore' => { args: '', desc: 'Fix Xcode/Launch Services issues' },
+        'dedupe_apps' => { args: '[--host local|mini] [--apps App1,App2] [--dry-run] [--json]', desc: 'Keep one canonical app bundle per Sane app' },
         'mcp_watchdog' => { args: '[status|doctor|clean|install|uninstall] [--max N] [--interval SEC] [--json] [--quiet]', desc: 'Detect and clean duplicate MCP daemons' }
       }
     },
@@ -364,19 +366,28 @@ class SaneMaster
       SANEMASTER_ALLOW_UNSIGNED_FALLBACK
       SANEBAR_BUILD_CONFIG
       SANEMASTER_CANONICAL_APP_PATH
+      SANEPROCESS_APPROVE_FAST_RELEASE
+      SANEPROCESS_APPROVE_OPEN_REGRESSION_RELEASE
+      SANEPROCESS_APPROVE_UNCONFIRMED_REGRESSION_CLOSE
+      SANEBAR_APPROVE_FAST_RELEASE
+      SANEBAR_APPROVE_OPEN_REGRESSION_RELEASE
+      SANEBAR_APPROVE_UNCONFIRMED_REGRESSION_CLOSE
     ]
-    forwarded_env = forwarded_env_keys.filter_map do |key|
+    forwarded_env = forwarded_env_keys.map do |key|
       value = ENV[key]
       next if value.nil? || value.empty?
 
       "#{key}=#{Shellwords.escape(value)}"
-    end
+    end.compact
     remote_env_prefix = forwarded_env.empty? ? '' : "#{forwarded_env.join(' ')} "
     remote_script = File.join(remote_saneprocess_repo, 'scripts', 'SaneMaster.rb')
     remote_cmd = "#{remote_env_prefix}ruby #{Shellwords.escape(remote_script)} #{([command] + args).map { |arg| Shellwords.escape(arg) }.join(' ')}"
     puts "📍 Mini-first routing: #{command} -> mini (#{remote_repo})"
     $stdout.flush
-    exec('ssh', 'mini', "cd #{Shellwords.escape(remote_repo)} && #{remote_cmd}")
+    remote_ok = system('ssh', 'mini', "cd #{Shellwords.escape(remote_repo)} && #{remote_cmd}")
+    remote_status = $?.respond_to?(:exitstatus) ? $?.exitstatus : (remote_ok ? 0 : 1)
+    sync_outputs_from_mini!(Dir.pwd, remote_repo)
+    exit remote_status
   end
 
   def running_on_mini_host?
@@ -427,7 +438,6 @@ class SaneMaster
       'rsync',
       '-az',
       '--delete',
-      '--filter', ':- .gitignore',
       '--exclude', '.git',
       '--exclude', '.build',
       '--exclude', 'DerivedData',
@@ -471,6 +481,22 @@ class SaneMaster
     abort '❌ Failed to prepare the mini workspace after sync.'
   end
 
+  def sync_outputs_from_mini!(local_repo, remote_repo)
+    remote_outputs_dir = File.join(remote_repo, 'outputs')
+    return unless system(
+      'ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=3',
+      'mini',
+      "test -d #{Shellwords.escape(remote_outputs_dir)}",
+      out: File::NULL,
+      err: File::NULL
+    )
+
+    local_outputs_dir = File.join(File.expand_path(local_repo), 'outputs')
+    FileUtils.mkdir_p(local_outputs_dir)
+    ok = system('rsync', '-az', "mini:#{remote_outputs_dir}/", "#{local_outputs_dir}/")
+    warn '⚠️  Failed to sync Mini outputs back to the local workspace.' unless ok
+  end
+
   def dispatch_command(command, args)
     # Check for --help flag on any command
     if args.include?('--help') || args.include?('-h')
@@ -501,6 +527,8 @@ class SaneMaster
       setup_environment
     when 'restore'
       restore_xcode
+    when 'dedupe_apps', 'dedupe-apps'
+      system('ruby', File.join(__dir__, 'dedupe_sane_apps.rb'), *args)
     when 'mcp_watchdog', 'mcpw', 'mcp'
       mcp_watchdog(args)
 
@@ -742,10 +770,10 @@ class SaneMaster
     end
 
     forwarded = args.dup
-    mode_actions = %w[pro basic free status]
+    mode_actions = %w[pro basic free status owner-check owner-install owner-pro owner-verify]
 
     if forwarded.empty?
-      puts 'Usage: ./scripts/SaneMaster.rb mode [<AppName>] <pro|basic|free|status|list> [--launch] [--host local|mini]'
+      puts 'Usage: ./scripts/SaneMaster.rb mode [<AppName>] <pro|basic|free|status|owner-check|owner-install|owner-pro|owner-verify|list> [--launch] [--host local|mini]'
       return
     end
 
@@ -905,8 +933,8 @@ class SaneMaster
       examples: %w[test_mode tm]
     },
     'mode' => {
-      usage: 'mode [<AppName>] <pro|basic|free|status|list> [--launch] [--host local|mini] [--allow-keychain]',
-      description: 'Set/query app test license mode via no-keychain defaults and optionally launch a clean signed install.',
+      usage: 'mode [<AppName>] <pro|basic|free|status|owner-check|owner-install|owner-pro|owner-verify|list> [--launch] [--host local|mini] [--allow-keychain]',
+      description: 'Set/query app test license mode, or inspect owner-machine install health, via no-keychain defaults and canonical signed installs.',
       flags: {
         '--launch' => 'Launch app after switching mode',
         '--host local|mini' => 'Run mode/launch flow on local machine or mini',
@@ -916,7 +944,26 @@ class SaneMaster
         'mode pro --launch                 # Current app to Pro and launch',
         'mode basic --launch --host mini   # Current app in Basic on mini',
         'mode SaneHosts status --host mini # Query another app mode on mini',
+        'mode owner-check                  # Inspect current app install, keychain, and permissions',
+        'mode owner-install                # Prepare canonical signed owner install on this machine',
+        'mode owner-pro                    # Seed persistent Pro state for the installed owner app',
+        'mode owner-verify --launch        # Verify owner install and launch the real app normally',
         'mode list                         # Show supported apps'
+      ]
+    },
+    'dedupe_apps' => {
+      usage: 'dedupe_apps [--host local|mini] [--apps App1,App2] [--dry-run] [--json]',
+      description: 'Find duplicate installed/build app bundles and keep one canonical copy per Sane app.',
+      flags: {
+        '--host local|mini' => 'Run on this machine or over ssh on the Mini',
+        '--apps App1,App2' => 'Restrict cleanup to specific Sane apps',
+        '--dry-run' => 'Report what would be promoted/trashed without changing files',
+        '--json' => 'Emit machine-readable output'
+      },
+      examples: [
+        'dedupe_apps --dry-run            # Preview local cleanup',
+        'dedupe_apps --host mini          # Clean duplicates on the Mini',
+        'dedupe_apps --apps SaneBar,SaneHosts'
       ]
     },
     'doctor' => {

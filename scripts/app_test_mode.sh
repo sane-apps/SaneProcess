@@ -25,6 +25,10 @@ usage() {
 Usage:
   app_test_mode.sh list [--host local|mini]
   app_test_mode.sh <app> status [--host local|mini]
+  app_test_mode.sh <app> owner-check [--host local|mini]
+  app_test_mode.sh <app> owner-install [--host local|mini]
+  app_test_mode.sh <app> owner-pro [--host local|mini]
+  app_test_mode.sh <app> owner-verify [--launch] [--host local|mini]
   app_test_mode.sh <app> <basic|free|pro> [--launch] [--host local|mini] [--keep-duplicates] [--allow-keychain]
     [--allow-unsigned-install] [--allow-development-signature]
     [--no-live-verify] [--live-seconds N] [--smoke]
@@ -34,6 +38,10 @@ Examples:
   app_test_mode.sh SaneClick free --host mini --launch
   app_test_mode.sh SaneHosts pro --host local
   app_test_mode.sh SaneSales status --host mini
+  app_test_mode.sh SaneClip owner-check
+  app_test_mode.sh SaneClip owner-install
+  app_test_mode.sh SaneClip owner-pro
+  app_test_mode.sh SaneClip owner-verify --launch
 
 Notes:
   - `free` and `basic` are the same mode.
@@ -172,11 +180,257 @@ license_email_name() {
   fi
 }
 
+keychain_service_name() {
+  bundle_identifier "$1"
+}
+
 defaults_domain_for_app() {
   local app="$1"
   local bundle_id
   bundle_id="$(bundle_identifier "$app")"
   echo "${bundle_id}.no-keychain"
+}
+
+swift_keychain_upsert_script() {
+  cat <<'SWIFT'
+import Foundation
+import Security
+
+let env = ProcessInfo.processInfo.environment
+let service = env["APP_TEST_SERVICE"] ?? ""
+let lastValidation = env["APP_TEST_LAST_VALIDATION"] ?? ""
+let keyName = env["APP_TEST_LICENSE_KEY_NAME"] ?? "license_key"
+let keyValue = env["APP_TEST_LICENSE_KEY_VALUE"] ?? ""
+let emailName = env["APP_TEST_LICENSE_EMAIL_NAME"] ?? "license_email"
+let emailValue = env["APP_TEST_LICENSE_EMAIL_VALUE"] ?? ""
+let dateName = env["APP_TEST_LICENSE_DATE_NAME"] ?? "last_validation"
+
+guard !service.isEmpty else {
+    fputs("missing APP_TEST_SERVICE\n", stderr)
+    exit(1)
+}
+
+func upsert(_ value: String, account: String) throws {
+    let data = Data(value.utf8)
+    let query: [CFString: Any] = [
+        kSecClass: kSecClassGenericPassword,
+        kSecAttrService: service,
+        kSecAttrAccount: account
+    ]
+    let attrs: [CFString: Any] = [
+        kSecValueData: data,
+        kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlock
+    ]
+    let status = SecItemUpdate(query as CFDictionary, attrs as CFDictionary)
+    if status == errSecItemNotFound {
+        var add = query
+        add[kSecValueData] = data
+        add[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlock
+        let addStatus = SecItemAdd(add as CFDictionary, nil)
+        guard addStatus == errSecSuccess else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(addStatus))
+        }
+    } else if status != errSecSuccess {
+        throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+    }
+}
+
+do {
+    try upsert(keyValue, account: keyName)
+    if !emailValue.isEmpty {
+        try upsert(emailValue, account: emailName)
+    }
+    try upsert(lastValidation, account: dateName)
+} catch {
+    fputs("keychain upsert failed: \(error)\n", stderr)
+    exit(1)
+}
+SWIFT
+}
+
+swift_keychain_delete_script() {
+  cat <<'SWIFT'
+import Foundation
+import Security
+
+let env = ProcessInfo.processInfo.environment
+let service = env["APP_TEST_SERVICE"] ?? ""
+let keyName = env["APP_TEST_LICENSE_KEY_NAME"] ?? "license_key"
+let emailName = env["APP_TEST_LICENSE_EMAIL_NAME"] ?? "license_email"
+let dateName = env["APP_TEST_LICENSE_DATE_NAME"] ?? "last_validation"
+
+guard !service.isEmpty else {
+    fputs("missing APP_TEST_SERVICE\n", stderr)
+    exit(1)
+}
+
+func delete(_ account: String) {
+    let query: [CFString: Any] = [
+        kSecClass: kSecClassGenericPassword,
+        kSecAttrService: service,
+        kSecAttrAccount: account
+    ]
+    let status = SecItemDelete(query as CFDictionary)
+    if status != errSecSuccess && status != errSecItemNotFound {
+        fputs("keychain delete failed for \(account): \(status)\n", stderr)
+        exit(1)
+    }
+}
+
+delete(keyName)
+delete(emailName)
+delete(dateName)
+SWIFT
+}
+
+swift_keychain_read_script() {
+  cat <<'SWIFT'
+import Foundation
+import Security
+
+let env = ProcessInfo.processInfo.environment
+let service = env["APP_TEST_SERVICE"] ?? ""
+let keyName = env["APP_TEST_LICENSE_KEY_NAME"] ?? "license_key"
+let emailName = env["APP_TEST_LICENSE_EMAIL_NAME"] ?? "license_email"
+let dateName = env["APP_TEST_LICENSE_DATE_NAME"] ?? "last_validation"
+
+guard !service.isEmpty else {
+    fputs("missing APP_TEST_SERVICE\n", stderr)
+    exit(1)
+}
+
+func read(_ account: String) -> String {
+    let query: [CFString: Any] = [
+        kSecClass: kSecClassGenericPassword,
+        kSecAttrService: service,
+        kSecAttrAccount: account,
+        kSecReturnData: true,
+        kSecMatchLimit: kSecMatchLimitOne
+    ]
+    var result: AnyObject?
+    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    if status == errSecItemNotFound { return "" }
+    guard status == errSecSuccess,
+          let data = result as? Data,
+          let value = String(data: data, encoding: .utf8) else {
+        return "__STATUS__:\(status)"
+    }
+    return value
+}
+
+print("license_key=\(read(keyName))")
+print("license_email=\(read(emailName))")
+print("last_validation=\(read(dateName))")
+SWIFT
+}
+
+run_keychain_swift_local() {
+  local script="$1"
+  shift
+  env "$@" swift - >/dev/null 2>&1 <<SWIFT
+$(printf '%s\n' "$script")
+SWIFT
+}
+
+run_keychain_swift_remote() {
+  local script="$1"
+  shift
+  local env_cmd=""
+  local pair
+  for pair in "$@"; do
+    env_cmd+=" $(printf '%q' "$pair")"
+  done
+  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "env$env_cmd swift - >/dev/null 2>&1" <<SWIFT
+$(printf '%s\n' "$script")
+SWIFT
+}
+
+read_keychain_state_local() {
+  local service="$1"
+  local key_name="$2"
+  local email_name="$3"
+  local date_name="$4"
+
+  env \
+    APP_TEST_SERVICE="$service" \
+    APP_TEST_LICENSE_KEY_NAME="$key_name" \
+    APP_TEST_LICENSE_EMAIL_NAME="$email_name" \
+    APP_TEST_LICENSE_DATE_NAME="$date_name" \
+    swift - <<'SWIFT'
+import Foundation
+import Security
+
+let env = ProcessInfo.processInfo.environment
+let service = env["APP_TEST_SERVICE"] ?? ""
+let keyName = env["APP_TEST_LICENSE_KEY_NAME"] ?? "license_key"
+let emailName = env["APP_TEST_LICENSE_EMAIL_NAME"] ?? "license_email"
+let dateName = env["APP_TEST_LICENSE_DATE_NAME"] ?? "last_validation"
+
+func read(_ account: String) -> String {
+    let query: [CFString: Any] = [
+        kSecClass: kSecClassGenericPassword,
+        kSecAttrService: service,
+        kSecAttrAccount: account,
+        kSecReturnData: true,
+        kSecMatchLimit: kSecMatchLimitOne
+    ]
+    var result: AnyObject?
+    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    if status == errSecItemNotFound { return "" }
+    guard status == errSecSuccess,
+          let data = result as? Data,
+          let value = String(data: data, encoding: .utf8) else {
+        return "__STATUS__:\(status)"
+    }
+    return value
+}
+
+print("license_key=\(read(keyName))")
+print("license_email=\(read(emailName))")
+print("last_validation=\(read(dateName))")
+SWIFT
+}
+
+read_keychain_state_remote() {
+  local service="$1"
+  local key_name="$2"
+  local email_name="$3"
+  local date_name="$4"
+
+  ssh -o ConnectTimeout=5 -o BatchMode=yes mini \
+    "env APP_TEST_SERVICE=$(printf '%q' "$service") APP_TEST_LICENSE_KEY_NAME=$(printf '%q' "$key_name") APP_TEST_LICENSE_EMAIL_NAME=$(printf '%q' "$email_name") APP_TEST_LICENSE_DATE_NAME=$(printf '%q' "$date_name") swift -" <<'SWIFT'
+import Foundation
+import Security
+
+let env = ProcessInfo.processInfo.environment
+let service = env["APP_TEST_SERVICE"] ?? ""
+let keyName = env["APP_TEST_LICENSE_KEY_NAME"] ?? "license_key"
+let emailName = env["APP_TEST_LICENSE_EMAIL_NAME"] ?? "license_email"
+let dateName = env["APP_TEST_LICENSE_DATE_NAME"] ?? "last_validation"
+
+func read(_ account: String) -> String {
+    let query: [CFString: Any] = [
+        kSecClass: kSecClassGenericPassword,
+        kSecAttrService: service,
+        kSecAttrAccount: account,
+        kSecReturnData: true,
+        kSecMatchLimit: kSecMatchLimitOne
+    ]
+    var result: AnyObject?
+    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    if status == errSecItemNotFound { return "" }
+    guard status == errSecSuccess,
+          let data = result as? Data,
+          let value = String(data: data, encoding: .utf8) else {
+        return "__STATUS__:\(status)"
+    }
+    return value
+}
+
+print("license_key=\(read(keyName))")
+print("license_email=\(read(emailName))")
+print("last_validation=\(read(dateName))")
+SWIFT
 }
 
 defaults_fallback_key() {
@@ -589,6 +843,50 @@ set_app_mode_local() {
   esac
 }
 
+set_app_mode_keychain_local() {
+  local app="$1"
+  local mode="$2"
+  local service key_name date_name email_name pro_value now email_value
+
+  service="$(keychain_service_name "$app")"
+  key_name="$(license_key_name "$app")"
+  date_name="$(license_date_name "$app")"
+  email_name="$(license_email_name "$app")"
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  if [[ "$app" == "SaneBar" ]]; then
+    pro_value="early-adopter"
+    email_value=""
+  else
+    pro_value="test-pro"
+    email_value="test@saneapps.local"
+  fi
+
+  case "$mode" in
+    pro)
+      run_keychain_swift_local "$(swift_keychain_upsert_script)" \
+        APP_TEST_SERVICE="$service" \
+        APP_TEST_LICENSE_KEY_NAME="$key_name" \
+        APP_TEST_LICENSE_KEY_VALUE="$pro_value" \
+        APP_TEST_LICENSE_EMAIL_NAME="$email_name" \
+        APP_TEST_LICENSE_EMAIL_VALUE="$email_value" \
+        APP_TEST_LICENSE_DATE_NAME="$date_name" \
+        APP_TEST_LAST_VALIDATION="$now"
+      ;;
+    basic)
+      run_keychain_swift_local "$(swift_keychain_delete_script)" \
+        APP_TEST_SERVICE="$service" \
+        APP_TEST_LICENSE_KEY_NAME="$key_name" \
+        APP_TEST_LICENSE_EMAIL_NAME="$email_name" \
+        APP_TEST_LICENSE_DATE_NAME="$date_name"
+      ;;
+    *)
+      echo "error: unsupported keychain mode '$mode' (expected 'pro' or 'basic')" >&2
+      exit 1
+      ;;
+  esac
+}
+
 set_app_mode_remote() {
   local app="$1"
   local mode="$2"
@@ -629,6 +927,50 @@ set_app_mode_remote() {
   esac
 }
 
+set_app_mode_keychain_remote() {
+  local app="$1"
+  local mode="$2"
+  local service key_name date_name email_name pro_value now email_value
+
+  service="$(keychain_service_name "$app")"
+  key_name="$(license_key_name "$app")"
+  date_name="$(license_date_name "$app")"
+  email_name="$(license_email_name "$app")"
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  if [[ "$app" == "SaneBar" ]]; then
+    pro_value="early-adopter"
+    email_value=""
+  else
+    pro_value="test-pro"
+    email_value="test@saneapps.local"
+  fi
+
+  case "$mode" in
+    pro)
+      run_keychain_swift_remote "$(swift_keychain_upsert_script)" \
+        APP_TEST_SERVICE="$service" \
+        APP_TEST_LICENSE_KEY_NAME="$key_name" \
+        APP_TEST_LICENSE_KEY_VALUE="$pro_value" \
+        APP_TEST_LICENSE_EMAIL_NAME="$email_name" \
+        APP_TEST_LICENSE_EMAIL_VALUE="$email_value" \
+        APP_TEST_LICENSE_DATE_NAME="$date_name" \
+        APP_TEST_LAST_VALIDATION="$now"
+      ;;
+    basic)
+      run_keychain_swift_remote "$(swift_keychain_delete_script)" \
+        APP_TEST_SERVICE="$service" \
+        APP_TEST_LICENSE_KEY_NAME="$key_name" \
+        APP_TEST_LICENSE_EMAIL_NAME="$email_name" \
+        APP_TEST_LICENSE_DATE_NAME="$date_name"
+      ;;
+    *)
+      echo "error: unsupported keychain mode '$mode' (expected 'pro' or 'basic')" >&2
+      exit 1
+      ;;
+  esac
+}
+
 app_status_local() {
   local app="$1"
   local domain key_name key_key current
@@ -658,6 +1000,400 @@ app_status_remote() {
     echo "$app mode: pro (no-keychain fallback)"
   else
     echo "$app mode: basic (no-keychain fallback)"
+  fi
+}
+
+print_duplicate_paths_local() {
+  local app="$1"
+  local canonical="$2"
+  local found=0
+  local path
+  for path in "/Applications/${app}.app" "$HOME/Applications/${app}.app" "/tmp/${app}.app"; do
+    [[ -d "$path" ]] || continue
+    [[ "$path" == "$canonical" ]] && continue
+    echo "  - $path"
+    found=1
+  done
+  if [[ "$found" -eq 0 ]]; then
+    echo "  - none"
+  fi
+}
+
+print_running_processes_local() {
+  local app="$1"
+  local matches
+  matches="$(ps ax -o pid= -o command= | grep "/${app}\.app/Contents/MacOS/${app}" | grep -v grep || true)"
+  if [[ -n "$matches" ]]; then
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      echo "  - $line"
+    done <<< "$matches"
+  else
+    echo "  - none"
+  fi
+}
+
+app_owner_check_local() {
+  local app="$1"
+  local bundle info_plist expected_bundle actual_bundle sign_output signed_identifier signed_team
+  local entitlements cloudkit_status app_group_status login_item domain key_name key_key fallback_mode
+  local keychain_service date_name email_name keychain_blob keychain_license keychain_email keychain_date keychain_status
+  local prod_rows legacy_rows legacy_bundle
+
+  bundle="$(local_bundle_path "$app")"
+  expected_bundle="$(fallback_bundle_id "$app")"
+  legacy_bundle="${expected_bundle%.app}.dev"
+  domain="$(defaults_domain_for_app "$app")"
+  key_name="$(license_key_name "$app")"
+  date_name="$(license_date_name "$app")"
+  email_name="$(license_email_name "$app")"
+  key_key="$(defaults_fallback_key "$app" "$key_name")"
+  keychain_service="$(keychain_service_name "$app")"
+  fallback_mode="basic"
+  if [[ -n "$(defaults read "$domain" "$key_key" 2>/dev/null || true)" ]]; then
+    fallback_mode="pro"
+  fi
+  keychain_blob="$(read_keychain_state_local "$keychain_service" "$key_name" "$email_name" "$date_name")"
+  keychain_license="$(printf '%s\n' "$keychain_blob" | sed -n 's/^license_key=//p' | head -n 1)"
+  keychain_email="$(printf '%s\n' "$keychain_blob" | sed -n 's/^license_email=//p' | head -n 1)"
+  keychain_date="$(printf '%s\n' "$keychain_blob" | sed -n 's/^last_validation=//p' | head -n 1)"
+  keychain_status="absent"
+  if [[ -n "$keychain_license" && "$keychain_license" != __STATUS__:* ]]; then
+    keychain_status="present"
+  elif [[ "$keychain_license" == __STATUS__:* || "$keychain_email" == __STATUS__:* || "$keychain_date" == __STATUS__:* ]]; then
+    keychain_status="error"
+  fi
+
+  echo "$app owner check (host=$(display_host))"
+  echo "canonical path: $bundle"
+  echo "expected bundle id: $expected_bundle"
+  echo "fallback no-keychain mode: $fallback_mode"
+  echo "keychain license: $keychain_status"
+  if [[ "$keychain_status" == "present" ]]; then
+    echo "keychain email: ${keychain_email:-unknown}"
+    echo "last validation: ${keychain_date:-unknown}"
+  fi
+
+  if [[ -d "$bundle" ]]; then
+    info_plist="$bundle/Contents/Info.plist"
+    actual_bundle="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info_plist" 2>/dev/null || true)"
+    sign_output="$(codesign -dv --verbose=2 "$bundle" 2>&1 || true)"
+    signed_identifier="$(printf '%s\n' "$sign_output" | sed -n 's/^Identifier=//p' | head -n 1)"
+    signed_team="$(printf '%s\n' "$sign_output" | sed -n 's/^TeamIdentifier=//p' | head -n 1)"
+    entitlements="$(codesign -d --entitlements :- "$bundle" 2>/dev/null || true)"
+    cloudkit_status="no"
+    if printf '%s\n' "$entitlements" | grep -q "iCloud.com.saneclip.app"; then
+      cloudkit_status="yes"
+    fi
+    app_group_status="no"
+    if printf '%s\n' "$entitlements" | grep -q "group.com.saneclip.app"; then
+      app_group_status="yes"
+    fi
+
+    echo "installed: yes"
+    echo "bundle id: ${actual_bundle:-unknown}"
+    echo "signed identifier: ${signed_identifier:-missing}"
+    echo "signed team: ${signed_team:-missing}"
+    echo "cloudkit entitlement: $cloudkit_status"
+    echo "app group entitlement: $app_group_status"
+  else
+    echo "installed: no"
+  fi
+
+  echo "duplicate installs:"
+  print_duplicate_paths_local "$app" "$bundle"
+
+  echo "running processes:"
+  print_running_processes_local "$app"
+
+  if osascript -e "tell application \"System Events\" to exists login item \"$app\"" 2>/dev/null | grep -q "true"; then
+    login_item="present"
+  else
+    login_item="absent"
+  fi
+  echo "login item: $login_item"
+
+  prod_rows="$(sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" "SELECT COUNT(*) FROM access WHERE service='kTCCServiceAccessibility' AND client='${expected_bundle}';" 2>/dev/null || echo "0")"
+  legacy_rows="$(sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" "SELECT COUNT(*) FROM access WHERE service='kTCCServiceAccessibility' AND client='${legacy_bundle}';" 2>/dev/null || echo "0")"
+  echo "accessibility rows:"
+  echo "  - ${expected_bundle}: ${prod_rows:-0}"
+  if [[ "$legacy_bundle" != "$expected_bundle" ]]; then
+    echo "  - ${legacy_bundle}: ${legacy_rows:-0}"
+  fi
+
+  if [[ -d "$bundle" ]]; then
+    check_stale_install_local "$app" "$bundle"
+  fi
+}
+
+app_owner_check_remote() {
+  local app="$1"
+  local bundle expected_bundle legacy_bundle sign_output signed_identifier signed_team entitlements
+  local domain key_name key_key fallback_mode keychain_service date_name email_name keychain_blob keychain_license keychain_email keychain_date keychain_status
+
+  bundle="$(remote_bundle_path "$app")"
+  expected_bundle="$(fallback_bundle_id "$app")"
+  legacy_bundle="${expected_bundle%.app}.dev"
+  domain="$(defaults_domain_for_app "$app")"
+  key_name="$(license_key_name "$app")"
+  date_name="$(license_date_name "$app")"
+  email_name="$(license_email_name "$app")"
+  key_key="$(defaults_fallback_key "$app" "$key_name")"
+  keychain_service="$(keychain_service_name "$app")"
+  fallback_mode="basic"
+  if [[ -n "$(ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults read '$domain' '$key_key' 2>/dev/null || true")" ]]; then
+    fallback_mode="pro"
+  fi
+  keychain_blob="$(read_keychain_state_remote "$keychain_service" "$key_name" "$email_name" "$date_name")"
+  keychain_license="$(printf '%s\n' "$keychain_blob" | sed -n 's/^license_key=//p' | head -n 1)"
+  keychain_email="$(printf '%s\n' "$keychain_blob" | sed -n 's/^license_email=//p' | head -n 1)"
+  keychain_date="$(printf '%s\n' "$keychain_blob" | sed -n 's/^last_validation=//p' | head -n 1)"
+  keychain_status="absent"
+  if [[ -n "$keychain_license" && "$keychain_license" != __STATUS__:* ]]; then
+    keychain_status="present"
+  elif [[ "$keychain_license" == __STATUS__:* || "$keychain_email" == __STATUS__:* || "$keychain_date" == __STATUS__:* ]]; then
+    keychain_status="error"
+  fi
+
+  echo "$app owner check (host=$(display_host))"
+  echo "canonical path: $bundle"
+  echo "expected bundle id: $expected_bundle"
+  echo "fallback no-keychain mode: $fallback_mode"
+  echo "keychain license: $keychain_status"
+  if [[ "$keychain_status" == "present" ]]; then
+    echo "keychain email: ${keychain_email:-unknown}"
+    echo "last validation: ${keychain_date:-unknown}"
+  fi
+
+  if ssh -o ConnectTimeout=5 -o BatchMode=yes mini "[ -d '$bundle' ]" >/dev/null 2>&1; then
+    sign_output="$(ssh -o ConnectTimeout=5 -o BatchMode=yes mini "codesign -dv --verbose=2 '$bundle' 2>&1" || true)"
+    signed_identifier="$(printf '%s\n' "$sign_output" | sed -n 's/^Identifier=//p' | head -n 1)"
+    signed_team="$(printf '%s\n' "$sign_output" | sed -n 's/^TeamIdentifier=//p' | head -n 1)"
+    entitlements="$(ssh -o ConnectTimeout=5 -o BatchMode=yes mini "codesign -d --entitlements :- '$bundle' 2>/dev/null" || true)"
+    echo "installed: yes"
+    echo "bundle id: $(ssh -o ConnectTimeout=5 -o BatchMode=yes mini "/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' '$bundle/Contents/Info.plist' 2>/dev/null || true")"
+    echo "signed identifier: ${signed_identifier:-missing}"
+    echo "signed team: ${signed_team:-missing}"
+    if printf '%s\n' "$entitlements" | grep -q "iCloud.com.saneclip.app"; then
+      echo "cloudkit entitlement: yes"
+    else
+      echo "cloudkit entitlement: no"
+    fi
+  else
+    echo "installed: no"
+  fi
+
+  echo "duplicate installs:"
+  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "for path in '/Applications/${app}.app' \"\$HOME/Applications/${app}.app\" '/tmp/${app}.app'; do [ -d \"\$path\" ] || continue; [ \"\$path\" = '$bundle' ] && continue; echo \"  - \$path\"; done" || true
+
+  echo "running processes:"
+  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "ps ax -o pid= -o command= | grep '/${app}.app/Contents/MacOS/${app}' | grep -v grep || echo '  - none'" || true
+
+  if ssh -o ConnectTimeout=5 -o BatchMode=yes mini "osascript -e 'tell application \"System Events\" to exists login item \"${app}\"' 2>/dev/null" | grep -q "true"; then
+    echo "login item: present"
+  else
+    echo "login item: absent"
+  fi
+
+  echo "accessibility rows:"
+  echo "  - ${expected_bundle}: $(ssh -o ConnectTimeout=5 -o BatchMode=yes mini "sqlite3 \"\$HOME/Library/Application Support/com.apple.TCC/TCC.db\" \"SELECT COUNT(*) FROM access WHERE service='kTCCServiceAccessibility' AND client='${expected_bundle}';\" 2>/dev/null || echo 0")"
+  if [[ "$legacy_bundle" != "$expected_bundle" ]]; then
+    echo "  - ${legacy_bundle}: $(ssh -o ConnectTimeout=5 -o BatchMode=yes mini "sqlite3 \"\$HOME/Library/Application Support/com.apple.TCC/TCC.db\" \"SELECT COUNT(*) FROM access WHERE service='kTCCServiceAccessibility' AND client='${legacy_bundle}';\" 2>/dev/null || echo 0")"
+  fi
+}
+
+app_owner_check() {
+  local app="$1"
+  if [[ "$HOST" == "mini" ]]; then
+    app_owner_check_remote "$app"
+  else
+    app_owner_check_local "$app"
+  fi
+}
+
+owner_install_local() {
+  local app="$1"
+  local bundle
+
+  bundle="$(local_bundle_path "$app")"
+  if [[ ! -d "$bundle" ]]; then
+    if ! bootstrap_install_local "$app"; then
+      echo "error: app not found at $bundle and bootstrap failed" >&2
+      exit 1
+    fi
+  fi
+
+  bundle="$(local_bundle_path "$app")"
+  ensure_single_install_local "$app" "$bundle"
+  verify_install_identity_local "$app" "$bundle"
+  cleanup_legacy_accessibility_local "$app"
+  repair_accessibility_stale_rows_local "$app" "$bundle"
+  check_stale_install_local "$app" "$bundle"
+  echo "$app owner install prepared (host=$(display_host))"
+}
+
+owner_install_remote() {
+  local app="$1"
+  local bundle
+
+  bundle="$(remote_bundle_path "$app")"
+  if ! ssh -o ConnectTimeout=5 -o BatchMode=yes mini "[ -d \"$bundle\" ]" >/dev/null 2>&1; then
+    if ! bootstrap_install_remote "$app"; then
+      echo "error: app not found at $bundle on mini and bootstrap failed" >&2
+      exit 1
+    fi
+  fi
+
+  bundle="$(remote_bundle_path "$app")"
+  ensure_single_install_remote "$app" "$bundle"
+  verify_install_identity_remote "$app" "$bundle"
+  cleanup_legacy_accessibility_remote "$app"
+  repair_accessibility_stale_rows_remote "$app" "$bundle"
+  echo "$app owner install prepared (host=$(display_host))"
+}
+
+owner_install() {
+  local app="$1"
+  if [[ "$HOST" == "mini" ]]; then
+    owner_install_remote "$app"
+  else
+    owner_install_local "$app"
+  fi
+}
+
+owner_pro_local() {
+  local app="$1"
+  set_app_mode_keychain_local "$app" "pro"
+  set_app_mode_local "$app" "pro"
+  echo "$app owner Pro seeded (keychain + fallback, host=$(display_host))"
+}
+
+owner_pro_remote() {
+  local app="$1"
+  set_app_mode_keychain_remote "$app" "pro"
+  set_app_mode_remote "$app" "pro"
+  echo "$app owner Pro seeded (keychain + fallback, host=$(display_host))"
+}
+
+owner_pro() {
+  local app="$1"
+  if [[ "$HOST" == "mini" ]]; then
+    owner_pro_remote "$app"
+  else
+    owner_pro_local "$app"
+  fi
+}
+
+launch_owner_app_local() {
+  local app="$1"
+  local bundle binary
+
+  bundle="$(local_bundle_path "$app")"
+  if [[ ! -d "$bundle" ]]; then
+    echo "error: owner launch requires installed app at $bundle" >&2
+    exit 1
+  fi
+
+  ensure_single_install_local "$app" "$bundle"
+  pkill -x "$app" >/dev/null 2>&1 || true
+
+  binary="$bundle/Contents/MacOS/$app"
+  if [[ ! -x "$binary" ]]; then
+    echo "error: executable not found at $binary" >&2
+    exit 1
+  fi
+  verify_install_identity_local "$app" "$bundle"
+  cleanup_legacy_accessibility_local "$app"
+  repair_accessibility_stale_rows_local "$app" "$bundle"
+  check_stale_install_local "$app" "$bundle"
+
+  open -na "$bundle"
+
+  sleep 2
+  if pgrep -x "$app" >/dev/null 2>&1; then
+    echo "$app owner launch succeeded (host=$(display_host))"
+    echo "log command: log stream --predicate 'process == \"$app\"' --style compact"
+  else
+    echo "error: $app owner launch not confirmed after initial check (host=$(display_host))"
+    /usr/bin/log show --style compact --last 2m --predicate "process == \"$app\"" | tail -n 120 || true
+    exit 1
+  fi
+
+  if [[ "$VERIFY_LIVE" -eq 1 ]]; then
+    local elapsed=0
+    while [[ "$elapsed" -lt "$LIVE_VERIFY_SECONDS" ]]; do
+      if ! pgrep -x "$app" >/dev/null 2>&1; then
+        echo "error: $app exited during owner live check at t=${elapsed}s (host=$(display_host))"
+        /usr/bin/log show --style compact --last 2m --predicate "process == \"$app\"" | tail -n 120 || true
+        exit 1
+      fi
+      sleep "$LIVE_VERIFY_INTERVAL"
+      elapsed=$((elapsed + LIVE_VERIFY_INTERVAL))
+    done
+    echo "$app remained live for ${LIVE_VERIFY_SECONDS}s (host=$(display_host))"
+  fi
+}
+
+launch_owner_app_remote() {
+  local app="$1"
+  local bundle binary
+
+  bundle="$(remote_bundle_path "$app")"
+  if ! ssh -o ConnectTimeout=5 -o BatchMode=yes mini "[ -d \"$bundle\" ]" >/dev/null 2>&1; then
+    echo "error: owner launch requires installed app at $bundle on mini" >&2
+    exit 1
+  fi
+
+  ensure_single_install_remote "$app" "$bundle"
+  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "pkill -x '$app' >/dev/null 2>&1 || true"
+
+  binary="$bundle/Contents/MacOS/$app"
+  verify_install_identity_remote "$app" "$bundle"
+  cleanup_legacy_accessibility_remote "$app"
+  repair_accessibility_stale_rows_remote "$app" "$bundle"
+
+  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "open -na '$bundle'"
+  sleep 2
+
+  if ssh -o ConnectTimeout=5 -o BatchMode=yes mini "pgrep -x '$app' >/dev/null 2>&1"; then
+    echo "$app owner launch succeeded (host=$(display_host))"
+    echo "log command: ssh mini \"log stream --predicate 'process == \\\"$app\\\"' --style compact\""
+  else
+    echo "error: $app owner launch not confirmed after initial check (host=$(display_host))"
+    ssh -o ConnectTimeout=5 -o BatchMode=yes mini "/usr/bin/log show --style compact --last 2m --predicate 'process == \"$app\"' | tail -n 120" || true
+    exit 1
+  fi
+
+  if [[ "$VERIFY_LIVE" -eq 1 ]]; then
+    local elapsed=0
+    while [[ "$elapsed" -lt "$LIVE_VERIFY_SECONDS" ]]; do
+      if ! ssh -o ConnectTimeout=5 -o BatchMode=yes mini "pgrep -x '$app' >/dev/null 2>&1"; then
+        echo "error: $app exited during owner live check at t=${elapsed}s (host=$(display_host))"
+        ssh -o ConnectTimeout=5 -o BatchMode=yes mini "/usr/bin/log show --style compact --last 2m --predicate 'process == \"$app\"' | tail -n 120" || true
+        exit 1
+      fi
+      sleep "$LIVE_VERIFY_INTERVAL"
+      elapsed=$((elapsed + LIVE_VERIFY_INTERVAL))
+    done
+    echo "$app remained live for ${LIVE_VERIFY_SECONDS}s (host=$(display_host))"
+  fi
+}
+
+launch_owner_app() {
+  local app="$1"
+  if [[ "$HOST" == "mini" ]]; then
+    launch_owner_app_remote "$app"
+  else
+    launch_owner_app_local "$app"
+  fi
+}
+
+owner_verify() {
+  local app="$1"
+  owner_install "$app"
+  app_owner_check "$app"
+  if [[ "$LAUNCH" -eq 1 ]]; then
+    launch_owner_app "$app"
   fi
 }
 
@@ -1036,8 +1772,28 @@ if [[ "$ACTION" == "status" ]]; then
   exit 0
 fi
 
+if [[ "$ACTION" == "owner-check" ]]; then
+  app_owner_check "$APP"
+  exit 0
+fi
+
+if [[ "$ACTION" == "owner-install" ]]; then
+  owner_install "$APP"
+  exit 0
+fi
+
+if [[ "$ACTION" == "owner-pro" ]]; then
+  owner_pro "$APP"
+  exit 0
+fi
+
+if [[ "$ACTION" == "owner-verify" ]]; then
+  owner_verify "$APP"
+  exit 0
+fi
+
 if [[ "$ACTION" != "pro" && "$ACTION" != "basic" ]]; then
-  echo "error: action must be 'pro', 'basic', 'free', or 'status'" >&2
+  echo "error: action must be 'pro', 'basic', 'free', 'status', 'owner-check', 'owner-install', 'owner-pro', or 'owner-verify'" >&2
   usage
   exit 1
 fi

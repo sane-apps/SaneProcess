@@ -67,7 +67,8 @@ APPS = {
 
 SANE_APPS_ROOT = File.expand_path('~/SaneApps/apps')
 MINI_HOST = 'mini'
-MINI_APPS_DIR = '~/Applications'
+MINI_APPS_DIR = '/Applications'
+MINI_LEGACY_USER_APPS_DIR = '~/Applications'
 
 class SaneTest
   def initialize(app_name, args)
@@ -130,8 +131,16 @@ class SaneTest
     [@config[:dev], @config[:prod]].uniq
   end
 
+  def canonical_remote_app_path
+    "#{MINI_APPS_DIR}/#{@app_name}.app"
+  end
+
+  def legacy_remote_user_app_path
+    "#{MINI_LEGACY_USER_APPS_DIR}/#{@app_name}.app"
+  end
+
   def remote_runtime_bundle_id
-    cmd = %(APP="$HOME/Applications/#{@app_name}.app/Contents/Info.plist"; /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP" 2>/dev/null)
+    cmd = %(APP="#{canonical_remote_app_path}/Contents/Info.plist"; /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP" 2>/dev/null)
     bid = ssh_capture(cmd).strip
     return bid if bid.match?(/\A[a-zA-Z0-9.\-]+\z/)
 
@@ -165,7 +174,8 @@ class SaneTest
     count = 0
     # Remove from ALL possible locations — there must be ZERO copies before deploy
     locations = [
-      "#{MINI_APPS_DIR}/#{@app_name}.app",
+      canonical_remote_app_path,
+      legacy_remote_user_app_path,
       "/Applications/#{@app_name}.app",
       "/tmp/#{@app_name}.app",
       "/tmp/#{@app_name}-dev.tar.gz"
@@ -243,11 +253,12 @@ class SaneTest
 
   def verify_single_copy_remote
     # After deploy, ensure ONLY the canonical copy exists
-    canonical = "#{MINI_APPS_DIR}/#{@app_name}.app"
+    canonical = canonical_remote_app_path
     copies = ssh_capture("mdfind 'kMDItemFSName == \"#{@app_name}.app\"' 2>/dev/null").strip.split("\n").reject(&:empty?)
     # Filter to actual .app bundles (mdfind can return partial matches)
     copies.select! { |p| p.end_with?("#{@app_name}.app") }
-    non_canonical = copies.reject { |p| p.include?(canonical.sub('~', '')) }
+    canonical_expanded = canonical.sub('~', '$HOME')
+    non_canonical = copies.reject { |p| p == canonical || p == canonical_expanded || p == canonical.gsub('~', '/Users/stephansmac') }
     if non_canonical.empty?
       warn "   Single copy verified at #{canonical}"
     else
@@ -309,7 +320,7 @@ class SaneTest
   end
 
   def reconcile_accessibility_trust_remote
-    app_path = "#{MINI_APPS_DIR}/#{@app_name}.app"
+    app_path = canonical_remote_app_path
     info_plist = "#{app_path}/Contents/Info.plist"
     bundle_id = ssh_capture("/usr/libexec/PlistBuddy -c \"Print :CFBundleIdentifier\" #{Shellwords.escape(info_plist)} 2>/dev/null").strip
     return unless bundle_id.match?(/\A[a-zA-Z0-9.\-]+\z/)
@@ -351,7 +362,7 @@ class SaneTest
           end
 
           remote_requirement = Shellwords.escape(requirement)
-          remote_app = Shellwords.escape("#{MINI_APPS_DIR}/#{@app_name}.app")
+          remote_app = Shellwords.escape(canonical_remote_app_path)
           matches = system('ssh', MINI_HOST, "codesign -R #{remote_requirement} #{remote_app}",
                            out: File::NULL, err: File::NULL)
           unless matches
@@ -391,16 +402,16 @@ class SaneTest
     end
 
     ssh("mkdir -p #{MINI_APPS_DIR} && tar xzf /tmp/#{@app_name}-dev.tar.gz -C #{MINI_APPS_DIR}/")
-    warn "   Deployed to #{MINI_HOST}:#{MINI_APPS_DIR}/#{@app_name}.app"
+    warn "   Deployed to #{MINI_HOST}:#{canonical_remote_app_path}"
   end
 
   def launch_remote
     env_args = launch_env_pairs
     launch_cmd =
       if @allow_keychain
-        "open #{env_args.join(' ')} #{MINI_APPS_DIR}/#{@app_name}.app"
+        "open #{env_args.join(' ')} #{canonical_remote_app_path}"
       else
-        "open #{env_args.join(' ')} #{MINI_APPS_DIR}/#{@app_name}.app --args --sane-no-keychain"
+        "open #{env_args.join(' ')} #{canonical_remote_app_path} --args --sane-no-keychain"
       end
     ssh(launch_cmd)
     sleep 2
@@ -423,7 +434,8 @@ class SaneTest
     n = 0
     step("#{n += 1}. Kill existing processes") { kill_local }
     step("#{n += 1}. Clean ALL stale copies") { clean_local }
-    step("#{n += 1}. Build fresh debug build") { build_debug }
+    build_label = @release_build ? 'Build fresh release build' : 'Build fresh debug build'
+    step("#{n += 1}. #{build_label}") { build_debug }
     step("#{n += 1}. Verify single copy") { verify_single_copy_local }
     step("#{n += 1}. Inspect Accessibility entries") { dedupe_accessibility_entries_local }
     step("#{n += 1}. Fresh reset") { fresh_reset_local } if @fresh
@@ -440,23 +452,30 @@ class SaneTest
   end
 
   def clean_local
-    count = 0
-    ["/tmp/#{@app_name}.app", "/tmp/#{@app_name}-dev.tar.gz"].each do |path|
-      if File.exist?(path)
-        FileUtils.rm_rf(path)
-        count += 1
-      end
+    temp_paths = ["/tmp/#{@app_name}-dev.tar.gz"]
+    removed_temp_files = temp_paths.count do |path|
+      next false unless File.exist?(path)
+
+      FileUtils.rm_f(path)
+      true
     end
-    # Local launch now stages to a canonical app path (not DerivedData).
-    # Keep DerivedData as build source only; do not remove canonical app here.
-    warn "   Cleaned #{count} stale copies"
+    trashed_copies = trash_noncanonical_local_app_copies
+    warn "   Removed #{removed_temp_files} temp file(s), trashed #{trashed_copies} non-canonical app bundle(s)"
   end
 
   def verify_single_copy_local
     dd_app = find_derived_data_app
     abort '   ❌ Built app not found in DerivedData' unless dd_app
-    canonical = canonical_local_app_path
-    warn "   Local launch canonical path: #{canonical}"
+    canonical = stage_to_canonical_local_app_path(dd_app)
+    trashed_copies = trash_noncanonical_local_app_copies(preserve_path: canonical)
+    remaining = local_app_copy_paths.reject { |path| File.expand_path(path) == File.expand_path(canonical) }
+    unless remaining.empty?
+      warn "   Remaining copies: #{remaining.join(', ')}"
+      abort "   ❌ Expected a single runtime copy at #{canonical}"
+    end
+
+    warn "   Single runtime copy verified at #{canonical}"
+    warn "   Trashed #{trashed_copies} non-canonical app bundle(s)" if trashed_copies.positive?
   end
 
   def dedupe_accessibility_entries_local
@@ -464,7 +483,11 @@ class SaneTest
     # so System Settings doesn't show duplicate entries for the same app.
     return unless @config[:dev] && @config[:prod] && @config[:dev] != @config[:prod]
 
-    app_path = find_derived_data_app
+    app_path = if File.exist?(canonical_local_app_path)
+                 canonical_local_app_path
+               else
+                 find_derived_data_app
+               end
     return unless app_path
 
     info_plist = File.join(app_path, 'Contents', 'Info.plist')
@@ -572,9 +595,12 @@ class SaneTest
   end
 
   def launch_local
-    source_app_path = find_derived_data_app
-    abort '   ❌ Built app not found in DerivedData' unless source_app_path
-    app_path = stage_to_canonical_local_app_path(source_app_path)
+    app_path = canonical_local_app_path
+    unless File.exist?(app_path)
+      source_app_path = find_derived_data_app
+      abort '   ❌ Built app not found in DerivedData' unless source_app_path
+      app_path = stage_to_canonical_local_app_path(source_app_path)
+    end
     reconcile_accessibility_trust_local(app_path)
 
     open_args = launch_env_pairs
@@ -584,9 +610,15 @@ class SaneTest
       system('open', *open_args, app_path, '--args', '--sane-no-keychain')
     end
     sleep 2
-    pid = `pgrep -x #{@app_name} 2>/dev/null`.strip
-    abort '   ❌ App failed to launch' if pid.empty?
-    warn "   Running (PID: #{pid})"
+    processes = local_app_processes(app_path)
+    abort "   ❌ App failed to launch from #{app_path}" if processes.empty?
+    if processes.length > 1
+      warn "   Running copies: #{processes.join(' | ')}"
+      abort "   ❌ Expected one running #{@app_name} process for #{app_path}"
+    end
+
+    pid = processes.first.split(/\s+/, 2).first
+    warn "   Running canonical app at #{app_path} (PID: #{pid})"
   end
 
   def repair_accessibility?
@@ -601,10 +633,66 @@ class SaneTest
     system_app = File.join('/Applications', app_name)
     user_app = File.expand_path(File.join('~/Applications', app_name))
 
+    return system_app if system_app_dir_writable?
     return system_app if File.exist?(system_app)
-    return user_app if File.exist?(user_app)
 
     user_app
+  end
+
+  def local_app_copy_paths
+    patterns = [
+      File.join('/Applications', "#{@app_name}.app"),
+      File.expand_path(File.join('~/Applications', "#{@app_name}.app")),
+      File.expand_path("/tmp/#{@app_name}.app"),
+      File.expand_path("~/Library/Developer/Xcode/DerivedData/#{@app_name}-*/Build/Products/*/#{@app_name}.app"),
+      File.expand_path("~/codex-runs/**/#{@app_name}.app"),
+      File.expand_path("~/codex-runs/.worktrees/**/#{@app_name}.app")
+    ]
+
+    patterns
+      .flat_map { |pattern| Dir.glob(pattern, File::FNM_DOTMATCH) }
+      .select { |path| File.directory?(path) }
+      .map { |path| File.expand_path(path) }
+      .uniq
+      .sort
+  end
+
+  def system_app_dir_writable?
+    File.writable?('/Applications')
+  rescue StandardError
+    false
+  end
+
+  def trash_noncanonical_local_app_copies(preserve_path: canonical_local_app_path)
+    preserved = File.expand_path(preserve_path)
+    stale_paths = local_app_copy_paths.reject { |path| File.expand_path(path) == preserved }
+    stale_paths.each do |path|
+      warn "   Trashing stale app bundle: #{path}"
+      trash_local_path(path)
+    end
+    stale_paths.length
+  end
+
+  def trash_local_path(path)
+    return unless File.exist?(path)
+
+    ok = system('/usr/bin/trash', path, out: File::NULL, err: File::NULL)
+    abort "   ❌ Failed to move stale app bundle to Trash: #{path}" unless ok
+  end
+
+  def local_app_processes(app_path)
+    expected_binary = File.join(File.expand_path(app_path), 'Contents', 'MacOS', @app_name)
+    `ps ax -o pid=,command=`
+      .lines
+      .map(&:strip)
+      .reject(&:empty?)
+      .select do |line|
+        _pid, command = line.split(/\s+/, 2)
+        next false unless command
+
+        binary = command.split(/\s+/, 2).first.to_s
+        File.expand_path(binary) == expected_binary
+      end
   end
 
   def stage_to_canonical_local_app_path(source_app_path)
@@ -645,7 +733,10 @@ class SaneTest
     abort "   ❌ Canonical app missing after staging: #{target_app_path}" unless staged_ok
 
     lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
-    system(lsregister, '-kill', '-r', '-domain', 'user', out: File::NULL, err: File::NULL) if File.exist?(lsregister)
+    if File.exist?(lsregister)
+      system(lsregister, '-kill', '-r', '-domain', 'local', '-domain', 'system', '-domain', 'user',
+             out: File::NULL, err: File::NULL)
+    end
 
     target_app_path
   end
@@ -879,8 +970,22 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
       stdout, status = Open3.capture2e(*build_args)
 
       unless status.success?
+        if @target == :local
+          trashed_copies = trash_noncanonical_local_app_copies
+          warn "   Cleaned #{trashed_copies} non-canonical app bundle(s) after failed build" if trashed_copies.positive?
+        end
         puts ''
-        stdout.lines.select { |l| l.match?(/error:|BUILD FAILED/) }.last(5).each { |l| warn "   #{l.rstrip}" }
+        failure_lines = stdout.lines.select { |l| l.match?(/error:|BUILD FAILED|Command .* failed with a nonzero exit code/) }.last(8)
+        if failure_lines.empty?
+          warn '   Build log tail:'
+          stdout.lines.last(40).each { |l| warn "   #{l.rstrip}" }
+        else
+          failure_lines.each { |l| warn "   #{l.rstrip}" }
+        end
+        if stdout.include?('Sparkle.framework') && stdout.include?('errSecInternalComponent')
+          warn '   Mini Sparkle signing hit errSecInternalComponent.'
+          warn '   Fallback: build ProdDebug unsigned on Mini, then Developer ID sign the staged app bundle from a trusted local session.'
+        end
         abort '   ❌ Build failed'
       end
 
@@ -890,13 +995,15 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
   end
 
   def find_derived_data_app
+    fallback_configs = %w[Release ProdDebug Debug]
     configs =
       if @app_name == 'SaneBar' && @target == :local
-        %w[ProdDebug]
+        preferred = @last_build_config || 'ProdDebug'
+        [preferred] + (fallback_configs - [preferred])
       elsif @last_build_config
-        [@last_build_config] + (%w[ProdDebug Debug] - [@last_build_config])
+        [@last_build_config] + (fallback_configs - [@last_build_config])
       else
-        %w[ProdDebug Debug]
+        fallback_configs
       end
 
     configs.each do |config|
@@ -1015,6 +1122,7 @@ if ARGV.empty? || ARGV[0] == '--help'
   warn '  --repair-accessibility  Repair duplicate/stale Accessibility entries if inspection finds them'
   warn '  --allow-keychain  Allow real keychain access during app launch (default is no-keychain)'
   warn '  --allow-unsigned-debug  Allow local SaneBar Debug launch without signing certs (unsupported visibility path)'
+  warn '  --release    Build Release config and stage it to the canonical app path'
   warn ''
   warn 'Default: deploys to Mac mini if reachable, local otherwise.'
   warn 'TCC is preserved by default — single-copy enforcement prevents stale grants.'

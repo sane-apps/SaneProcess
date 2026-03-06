@@ -177,6 +177,42 @@ module SaneMasterModules
       nil
     end
 
+    def gh_auth_unavailable?(output)
+      text = output.to_s
+      return false if text.empty?
+
+      text.match?(/SecKeychainSearchCopyNext|not logged into any hosts|authentication failed|gh auth login|could not read Username/i)
+    end
+
+    def missing_cloudflare_token?(output)
+      text = output.to_s
+      return false if text.empty?
+
+      text.match?(/CLOUDFLARE_API_TOKEN|non-interactive environment/i)
+    end
+
+    def parse_json_count(output)
+      JSON.parse(output).length
+    rescue StandardError
+      0
+    end
+
+    def write_release_status_snapshot(path:, status:, issues:, warnings:)
+      FileUtils.mkdir_p(File.dirname(path))
+      payload = {
+        generatedAt: Time.now.iso8601,
+        projectName: File.basename(Dir.pwd),
+        status: status,
+        issueCount: issues.count,
+        warningCount: warnings.count,
+        issues: issues,
+        warnings: warnings
+      }
+      File.write(path, JSON.pretty_generate(payload))
+    rescue StandardError
+      nil
+    end
+
     def appstore_metadata_for_platform(appstore_config, platform)
       metadata_cfg = appstore_config['metadata'].is_a?(Hash) ? appstore_config['metadata'] : {}
       default_cfg = metadata_cfg['default'].is_a?(Hash) ? metadata_cfg['default'] : {}
@@ -344,6 +380,7 @@ module SaneMasterModules
 
       issues = []
       warnings = []
+      preflight_status_path = File.join(Dir.pwd, 'outputs', 'release_preflight_status.json')
       saneprocess_path = File.join(Dir.pwd, '.saneprocess')
       preflight_app_name = if File.exist?(saneprocess_path)
                              match = safe_read(saneprocess_path).match(/^name:\s*(.+)/)
@@ -385,8 +422,10 @@ module SaneMasterModules
           'PATH' => ([ENV['PATH'], '/opt/homebrew/bin', '/usr/local/bin'].compact.join(':')),
           'SANEPROCESS_RELEASE_PREFLIGHT' => '1',
           'SANEPROCESS_RUN_STABILITY_SUITE' => '1',
+          'SANEPROCESS_RUN_RUNTIME_SMOKE' => '1',
           "#{app_prefix}_RELEASE_PREFLIGHT" => '1',
           "#{app_prefix}_RUN_STABILITY_SUITE" => '1',
+          "#{app_prefix}_RUN_RUNTIME_SMOKE" => '1',
         }
         qa_out, qa_status = Open3.capture2e(qa_env, 'ruby', qa_script)
         if qa_status.success?
@@ -441,6 +480,40 @@ module SaneMasterModules
       else
         puts "⚠️  #{dirty.lines.count} uncommitted changes"
         warnings << "#{dirty.lines.count} uncommitted files"
+      end
+
+      # 2a. Remote branch sync (catches push failures before release work starts)
+      print '  Remote branch sync... '
+      current_branch, = Open3.capture2('git', 'rev-parse', '--abbrev-ref', 'HEAD')
+      current_branch = current_branch.strip
+      if current_branch.empty? || current_branch == 'HEAD'
+        puts '⏭️  skipped (detached HEAD)'
+      else
+        remote_ref_out, remote_ref_status = Open3.capture2('git', 'ls-remote', '--heads', 'origin', current_branch)
+        remote_ref = remote_ref_out.to_s.split.first.to_s.strip
+        if !remote_ref_status.success? || remote_ref.empty?
+          puts "⏭️  skipped (origin/#{current_branch} unavailable)"
+          warnings << "Could not read origin/#{current_branch} during preflight"
+        else
+          local_head, = Open3.capture2('git', 'rev-parse', 'HEAD')
+          local_head = local_head.strip
+
+          remote_is_ancestor = system('git', 'merge-base', '--is-ancestor', remote_ref, local_head, out: File::NULL, err: File::NULL)
+          local_is_ancestor = system('git', 'merge-base', '--is-ancestor', local_head, remote_ref, out: File::NULL, err: File::NULL)
+
+          if local_head == remote_ref
+            puts "✅ (#{current_branch} matches origin)"
+          elsif remote_is_ancestor && !local_is_ancestor
+            ahead_count, = Open3.capture2('git', 'rev-list', '--count', "#{remote_ref}..#{local_head}")
+            puts "✅ ahead #{ahead_count.strip} commit(s)"
+          elsif local_is_ancestor && !remote_is_ancestor
+            puts "❌ behind origin/#{current_branch}"
+            issues << "Local branch is behind origin/#{current_branch}"
+          else
+            puts "❌ diverged from origin/#{current_branch}"
+            issues << "Local branch diverged from origin/#{current_branch}"
+          end
+        end
       end
 
       # 3. UserDefaults / migration changes
@@ -560,31 +633,37 @@ module SaneMasterModules
                  '/usr/local/bin/gh'
                end
       if gh_bin
-        issue_json, = Open3.capture2({ 'PATH' => tool_path }, gh_bin, 'issue', 'list', '--repo', repo, '--state', 'open', '--json', 'number')
-        open_count = begin
-          JSON.parse(issue_json).length
-        rescue StandardError
-          0
-        end
-        if open_count.positive?
-          puts "⚠️  #{open_count} open"
-          warnings << "#{open_count} open GitHub issues"
+        issue_json, issue_status = Open3.capture2e({ 'PATH' => tool_path }, gh_bin, 'issue', 'list', '--repo', repo, '--state', 'open', '--json', 'number')
+        if issue_status.success?
+          open_count = parse_json_count(issue_json)
+          if open_count.positive?
+            puts "⚠️  #{open_count} open"
+            warnings << "#{open_count} open GitHub issues"
+          else
+            puts '✅ none'
+          end
+        elsif gh_auth_unavailable?(issue_json)
+          puts '⏭️  skipped (gh auth unavailable)'
         else
-          puts '✅ none'
+          puts '⏭️  gh query failed'
+          warnings << "GitHub issue query failed: #{issue_json.lines.first.to_s.strip}"
         end
 
         print '  Open GitHub PRs... '
-        pr_json, = Open3.capture2({ 'PATH' => tool_path }, gh_bin, 'pr', 'list', '--repo', repo, '--state', 'open', '--json', 'number')
-        open_pr_count = begin
-          JSON.parse(pr_json).length
-        rescue StandardError
-          0
-        end
-        if open_pr_count.positive?
-          puts "⚠️  #{open_pr_count} open"
-          warnings << "#{open_pr_count} open GitHub PRs"
+        pr_json, pr_status = Open3.capture2e({ 'PATH' => tool_path }, gh_bin, 'pr', 'list', '--repo', repo, '--state', 'open', '--json', 'number')
+        if pr_status.success?
+          open_pr_count = parse_json_count(pr_json)
+          if open_pr_count.positive?
+            puts "⚠️  #{open_pr_count} open"
+            warnings << "#{open_pr_count} open GitHub PRs"
+          else
+            puts '✅ none'
+          end
+        elsif gh_auth_unavailable?(pr_json)
+          puts '⏭️  skipped (gh auth unavailable)'
         else
-          puts '✅ none'
+          puts '⏭️  gh query failed'
+          warnings << "GitHub PR query failed: #{pr_json.lines.first.to_s.strip}"
         end
       else
         puts '⏭️  skipped (gh not installed)'
@@ -592,7 +671,7 @@ module SaneMasterModules
 
       # 6. Pending customer emails
       print '  Pending emails... '
-      api_key, = Open3.capture2('security', 'find-generic-password', '-s', 'sane-email-automation', '-a', 'api_key', '-w')
+      api_key, = Open3.capture2e('security', 'find-generic-password', '-s', 'sane-email-automation', '-a', 'api_key', '-w')
       api_key = api_key.strip
       if api_key.empty?
         puts '⏭️  skipped (no API key)'
@@ -733,7 +812,7 @@ module SaneMasterModules
                       'npx'
                     end
           deploy_env = { 'PATH' => [ENV['PATH'], '/opt/homebrew/bin', '/usr/local/bin'].compact.join(':') }
-          deploy_output, deploy_status = Open3.capture2(
+          deploy_output, deploy_status = Open3.capture2e(
             deploy_env,
             npx_bin, 'wrangler', 'deployments', 'list', '--config', wrangler_toml,
             chdir: webhook_dir
@@ -757,8 +836,11 @@ module SaneMasterModules
             else
               puts '⏭️  could not parse deploy timestamps'
             end
+          elsif missing_cloudflare_token?(deploy_output)
+            puts '⏭️  skipped (Cloudflare token unavailable)'
           else
             puts '⏭️  wrangler deployments list failed'
+            warnings << "Webhook deploy freshness check failed: #{deploy_output.lines.first.to_s.strip}"
           end
         else
           puts '⏭️  no wrangler.toml found'
@@ -784,6 +866,13 @@ module SaneMasterModules
         puts '🟡 PROCEED WITH CAUTION — review warnings above'
       end
       puts '═' * 50
+
+      write_release_status_snapshot(
+        path: preflight_status_path,
+        status: issues.any? ? 'failed' : 'passed',
+        issues: issues,
+        warnings: warnings
+      )
 
       exit 1 if issues.any?
     end

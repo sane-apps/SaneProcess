@@ -1533,8 +1533,11 @@ class ValidationReport
       # Determine status
       done_count = checklist.count { |item| item[:status] == :done }
       total_count = checklist.size
+      critical_missing = checklist.any? { |item| item[:critical] && item[:status] != :done }
 
-      status_icon = if done_count == total_count
+      status_icon = if critical_missing
+        "❌ NOT READY (critical gate failed)"
+      elsif done_count == total_count
         "✅ READY TO SHIP"
       elsif done_count >= total_count - 2
         "🟡 ALMOST READY"
@@ -1611,6 +1614,19 @@ class ValidationReport
       end
     end
     checklist << { name: "App category set (LSApplicationCategoryType)", status: has_category ? :done : :todo }
+
+    qa_status = latest_project_qa_status(project_path)
+    if qa_status
+      qa_time = qa_status['generatedAt'] ? Time.parse(qa_status['generatedAt']).strftime('%Y-%m-%d %H:%M') : 'unknown'
+      qa_passed = qa_status['status'] != 'failed'
+      qa_label =
+        if qa_passed
+          "Latest project QA gate passed (#{qa_time})"
+        else
+          "Latest project QA gate passed (latest run failed at #{qa_time})"
+        end
+      checklist << { name: qa_label, status: qa_passed ? :done : :todo, critical: true }
+    end
 
     # ===========================================
     # SIGNING & NOTARIZATION
@@ -1803,6 +1819,22 @@ class ValidationReport
     end
 
     checklist
+  end
+
+  def latest_project_qa_status(project_path)
+    candidates = [
+      File.join(project_path, 'outputs', 'qa_status.json'),
+      File.join(project_path, 'outputs', 'release_preflight_status.json'),
+      File.join(project_path, 'outputs', 'validation', 'qa_status.json')
+    ]
+    status_path = candidates
+      .select { |path| File.exist?(path) }
+      .max_by { |path| File.mtime(path) }
+    return nil unless status_path
+
+    JSON.parse(File.read(status_path))
+  rescue JSON::ParserError
+    nil
   end
 
   def zip_contains_signed_notarized_app?(zip_path)

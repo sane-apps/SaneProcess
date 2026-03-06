@@ -199,6 +199,35 @@ From any app directory with a `.saneprocess` config:
 ./scripts/SaneMaster.rb release --full --version X.Y.Z --notes "Release notes"
 ```
 
+### Release truth path
+
+For Mini-first apps, the release signal now has one canonical path:
+
+1. `./scripts/SaneMaster.rb release_preflight` runs on Mini when the command is Mini-routed.
+2. Project QA writes `outputs/qa_status.json` when available.
+3. Shared preflight also writes `outputs/release_preflight_status.json`.
+4. `SaneMaster.rb` syncs `outputs/` back from Mini to the local workspace.
+5. `ruby scripts/validation_report.rb` reads the newest available status snapshot and blocks false `READY TO SHIP` results.
+
+Canonical runtime cleanup is now a first-class step:
+
+- `./scripts/SaneMaster.rb dedupe_apps --host mini --apps SaneBar`
+- `./scripts/SaneMaster.rb dedupe_apps --apps SaneBar,SaneHosts`
+
+`dedupe_apps` keeps one installed bundle per app (`/Applications/App.app` when present, otherwise `~/Applications/App.app`) and trashes stale build/runtime copies that can confuse Launch Services.
+
+Unsigned fallback rules:
+
+- headless `test_mode --release` may build `Debug` when the Mini cannot unlock signing
+- that fallback stages to `~/Applications/App.app`
+- the shared launcher now preserves any signed `/Applications/App.app` install during that fallback
+- release-style smoke should target the signed `/Applications` install when it exists, not the transient unsigned fallback copy
+
+Non-interactive auth/tooling gaps should render as structured skips, not raw stderr noise:
+
+- missing `gh` auth/keychain access → `skipped (gh auth unavailable)`
+- missing `CLOUDFLARE_API_TOKEN` for Wrangler → `skipped (Cloudflare token unavailable)`
+
 ### DMG Icon Configuration
 
 Each app's `.saneprocess` must define both icon types:

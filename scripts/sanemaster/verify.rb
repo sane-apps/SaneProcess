@@ -389,7 +389,11 @@ module SaneMasterModules
       puts 'Checking that all test references match UI code...'
 
       unless ui_tests_present?
-        puts "  ⚠️  No UI tests found (#{project_ui_tests_dir} missing). Skipping validation."
+        if runtime_smoke_coverage_present?
+          puts "  ℹ️  No XCUITest target found (#{project_ui_tests_dir} missing). Runtime UI coverage lives in Scripts/live_zone_smoke.rb + RuntimeGuardXCTests."
+        else
+          puts "  ⚠️  No UI tests found (#{project_ui_tests_dir} missing). Skipping validation."
+        end
         return
       end
 
@@ -523,7 +527,12 @@ module SaneMasterModules
     def build_test_command(include_ui, signed_tests = false)
       if include_ui
         # UI tests not yet implemented - warn and run unit tests only
-        puts "  ⚠️  UI tests not available (#{project_ui_tests_dir} directory does not exist)"
+        if runtime_smoke_coverage_present?
+          puts "  ℹ️  No XCUITest target found (#{project_ui_tests_dir} directory does not exist)"
+          puts '  ℹ️  Runtime UI coverage lives in Scripts/live_zone_smoke.rb + RuntimeGuardXCTests.'
+        else
+          puts "  ⚠️  UI tests not available (#{project_ui_tests_dir} directory does not exist)"
+        end
         puts '  📦 Running unit tests only...'
       end
       if use_test_plan? && !include_ui
@@ -552,7 +561,12 @@ module SaneMasterModules
             args.concat(["-only-testing:#{project_test_target}", "-only-testing:#{project_ui_test_target}"])
           else
             # UI tests not yet implemented - warn and run unit tests only
-            puts "  ⚠️  UI tests not available (#{project_ui_tests_dir} directory does not exist)"
+            if runtime_smoke_coverage_present?
+              puts "  ℹ️  No XCUITest target found (#{project_ui_tests_dir} directory does not exist)"
+              puts '  ℹ️  Runtime UI coverage lives in Scripts/live_zone_smoke.rb + RuntimeGuardXCTests.'
+            else
+              puts "  ⚠️  UI tests not available (#{project_ui_tests_dir} directory does not exist)"
+            end
             puts '  📦 Running unit tests only...'
             args << "-only-testing:#{project_test_target}"
           end
@@ -925,6 +939,11 @@ module SaneMasterModules
 
     def ui_tests_present?
       Dir.exist?(project_ui_tests_dir)
+    end
+
+    def runtime_smoke_coverage_present?
+      File.exist?(File.join(Dir.pwd, 'Scripts', 'live_zone_smoke.rb')) &&
+        File.exist?(File.join(Dir.pwd, 'Tests', 'RuntimeGuardXCTests.swift'))
     end
 
     # ═══════════════════════════════════════════════════════════════════════════
