@@ -191,7 +191,8 @@ if command.include?('check-inbox.sh')
     format_override = File.exist?(EMAIL_FORMAT_OVERRIDE) &&
                       (Time.now - File.mtime(EMAIL_FORMAT_OVERRIDE)) < EMAIL_APPROVAL_TTL_SECONDS
     if format_override
-      cleanup_flag(EMAIL_FORMAT_OVERRIDE)
+      # Do NOT consume here — the send may still fail downstream (reconciliation, etc.).
+      # Let TTL handle expiry, same as the approval flag (line 78-80).
       warn '⚠️  Email format override: user approved non-standard format'
     elsif !email_format_valid?(body)
       warn '🔴 BLOCKED: Email format must match your standard'

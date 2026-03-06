@@ -1,0 +1,1054 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Safe test-mode switcher for SaneApps.
+# - Never uses `security` keychain CLI.
+# - Defaults to no-keychain launch path to avoid prompt floods.
+# - Supports local and mini hosts.
+
+APPS=(SaneBar SaneClip SaneClick SaneHosts SaneSales SaneSync SaneVideo)
+
+HOST="local"
+LAUNCH=0
+REMOTE_INVOKE=0
+KEEP_DUPLICATES=0
+ALLOW_KEYCHAIN=0
+ALLOW_UNSIGNED_INSTALL=0
+ALLOW_DEVELOPMENT_SIGNATURE=0
+VERIFY_LIVE=1
+LIVE_VERIFY_SECONDS=30
+LIVE_VERIFY_INTERVAL=5
+RUN_SANEBAR_SMOKE=0
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  app_test_mode.sh list [--host local|mini]
+  app_test_mode.sh <app> status [--host local|mini]
+  app_test_mode.sh <app> <basic|free|pro> [--launch] [--host local|mini] [--keep-duplicates] [--allow-keychain]
+    [--allow-unsigned-install] [--allow-development-signature]
+    [--no-live-verify] [--live-seconds N] [--smoke]
+
+Examples:
+  app_test_mode.sh SaneBar basic --launch
+  app_test_mode.sh SaneClick free --host mini --launch
+  app_test_mode.sh SaneHosts pro --host local
+  app_test_mode.sh SaneSales status --host mini
+
+Notes:
+  - `free` and `basic` are the same mode.
+  - Default launch is no-keychain (`SANEAPPS_DISABLE_KEYCHAIN=1` + `--sane-no-keychain`).
+  - Use `--allow-keychain` only when you explicitly want real keychain behavior.
+  - Runtime launches require a signed canonical install by default (stable TCC identity).
+  - Use `--allow-unsigned-install` only for explicit debug investigations.
+  - Local SaneBar launches require Developer ID signing by default; use
+    `--allow-development-signature` only for explicit source-debug sessions.
+  - Launches run a live-process check by default (`--live-seconds`, default: 30s).
+  - Launch prints a warning if installed app binary looks older than local repo sources.
+  - `--smoke` (SaneBar only) runs scripts/live_zone_smoke.rb for non-drag move + layout checks.
+USAGE
+}
+
+to_lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+is_known_app() {
+  local needle="$1"
+  for app in "${APPS[@]}"; do
+    if [[ "$app" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+local_bundle_path() {
+  local app="$1"
+  local sys_app="/Applications/${app}.app"
+  local user_app="$HOME/Applications/${app}.app"
+
+  # When invoked via --host mini (delegated over SSH), keep test installs
+  # in ~/Applications to avoid /Applications identity contamination.
+  if [[ "${APP_TEST_MODE_ORIGIN_HOST:-}" == "mini" ]]; then
+    echo "$user_app"
+    return 0
+  fi
+
+  if [[ -d "$sys_app" ]]; then
+    echo "$sys_app"
+  elif [[ -d "$user_app" ]]; then
+    echo "$user_app"
+  else
+    echo "$sys_app"
+  fi
+}
+
+remote_bundle_path() {
+  local app="$1"
+  local user_app="$HOME/Applications/${app}.app"
+
+  # Mini is a dedicated test host. Keep runtime installs in user-level
+  # Applications so system /Applications copies cannot re-enter test flows.
+  echo "$user_app"
+}
+
+fallback_bundle_id() {
+  local app="$1"
+  case "$app" in
+    SaneBar) echo "com.sanebar.app" ;;
+    SaneClick) echo "com.saneclick.SaneClick" ;;
+    SaneClip) echo "com.saneclip.app" ;;
+    SaneHosts) echo "com.mrsane.SaneHosts" ;;
+    SaneSales) echo "com.sanesales.app" ;;
+    SaneSync) echo "com.sanesync.SaneSync" ;;
+    SaneVideo) echo "com.sanevideo.app" ;;
+    *) echo "com.saneapps.$(to_lower "$app")" ;;
+  esac
+}
+
+local_bundle_identifier() {
+  local app="$1"
+  local bundle info_plist id
+  bundle="$(local_bundle_path "$app")"
+  info_plist="$bundle/Contents/Info.plist"
+
+  if [[ -f "$info_plist" ]]; then
+    id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info_plist" 2>/dev/null || true)"
+    if [[ -n "$id" ]]; then
+      echo "$id"
+      return 0
+    fi
+  fi
+
+  fallback_bundle_id "$app"
+}
+
+remote_bundle_identifier() {
+  local app="$1"
+  local bundle id
+  bundle="$(remote_bundle_path "$app")"
+  id="$(ssh -o ConnectTimeout=5 -o BatchMode=yes mini "APP=\"$bundle\"/Contents/Info.plist; /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \"\$APP\" 2>/dev/null" || true)"
+  if [[ -n "$id" ]]; then
+    echo "$id"
+  else
+    fallback_bundle_id "$app"
+  fi
+}
+
+bundle_identifier() {
+  local app="$1"
+  if [[ "$HOST" == "mini" ]]; then
+    remote_bundle_identifier "$app"
+  else
+    local_bundle_identifier "$app"
+  fi
+}
+
+license_key_name() {
+  local app="$1"
+  if [[ "$app" == "SaneBar" ]]; then
+    echo "pro_license_key"
+  else
+    echo "license_key"
+  fi
+}
+
+license_date_name() {
+  local app="$1"
+  if [[ "$app" == "SaneBar" ]]; then
+    echo "pro_last_validation"
+  else
+    echo "last_validation"
+  fi
+}
+
+license_email_name() {
+  local app="$1"
+  if [[ "$app" == "SaneBar" ]]; then
+    echo "pro_license_email"
+  else
+    echo "license_email"
+  fi
+}
+
+defaults_domain_for_app() {
+  local app="$1"
+  local bundle_id
+  bundle_id="$(bundle_identifier "$app")"
+  echo "${bundle_id}.no-keychain"
+}
+
+defaults_fallback_key() {
+  local app="$1"
+  local logical_key="$2"
+  local bundle_id
+  bundle_id="$(bundle_identifier "$app")"
+  echo "sane.no-keychain.${bundle_id}.${logical_key}"
+}
+
+remove_login_item_local() {
+  local app="$1"
+  osascript -e "tell application \"System Events\" to if exists login item \"${app}\" then delete login item \"${app}\"" >/dev/null 2>&1 || true
+}
+
+remove_login_item_remote() {
+  local app="$1"
+  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "osascript -e 'tell application \"System Events\" to if exists login item \"${app}\" then delete login item \"${app}\"' >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
+}
+
+ensure_single_install_local() {
+  local app="$1"
+  local canonical="$2"
+  local candidates=(
+    "/Applications/${app}.app"
+    "$HOME/Applications/${app}.app"
+    "/tmp/${app}.app"
+  )
+
+  for path in "${candidates[@]}"; do
+    [[ -d "$path" ]] || continue
+    [[ "$path" == "$canonical" ]] && continue
+    if [[ "$KEEP_DUPLICATES" -eq 0 ]]; then
+      local trash_dir="$HOME/.Trash"
+      local base_name target
+      base_name="$(basename "$path")"
+      target="$trash_dir/$base_name"
+      mkdir -p "$trash_dir"
+      if [[ -e "$target" ]]; then
+        target="$trash_dir/${base_name%.app}-$(date +%Y%m%d-%H%M%S)-$$.app"
+      fi
+      if mv "$path" "$target" 2>/dev/null; then
+        echo "moved duplicate to Trash: $target"
+      else
+        echo "warning: failed to move duplicate to Trash: $path"
+      fi
+    fi
+  done
+}
+
+ensure_single_install_remote() {
+  local app="$1"
+  local canonical="$2"
+  local script
+  script=$(cat <<REMOTE
+APP="$app"
+CANONICAL="$canonical"
+KEEP="$KEEP_DUPLICATES"
+for path in "/Applications/\${APP}.app" "\$HOME/Applications/\${APP}.app" "/tmp/\${APP}.app"; do
+  [ -d "\$path" ] || continue
+  [ "\$path" = "\$CANONICAL" ] && continue
+  if [ "\$KEEP" = "0" ]; then
+    trash_dir="\$HOME/.Trash"
+    base_name=\$(basename "\$path")
+    target="\$trash_dir/\$base_name"
+    mkdir -p "\$trash_dir"
+    if [ -e "\$target" ]; then
+      target="\$trash_dir/\${base_name%.app}-\$(date +%Y%m%d-%H%M%S)-\$\$.app"
+    fi
+    if mv "\$path" "\$target" 2>/dev/null; then
+      echo "moved duplicate to Trash: \$target"
+    else
+      echo "warning: failed to move duplicate to Trash: \$path"
+    fi
+  fi
+done
+REMOTE
+)
+  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "$script"
+}
+
+latest_repo_source_epoch_local() {
+  local app="$1"
+  local repo="$HOME/SaneApps/apps/$app"
+  if [[ ! -d "$repo" ]]; then
+    echo ""
+    return 0
+  fi
+
+  find "$repo" -type f \( \
+    -name '*.swift' -o \
+    -name '*.m' -o \
+    -name '*.mm' -o \
+    -name '*.h' -o \
+    -name '*.plist' -o \
+    -name '*.xcconfig' -o \
+    -name 'project.yml' -o \
+    -name 'Package.swift' -o \
+    -path '*/project.pbxproj' \
+  \) \
+    ! -path '*/Tests/*' \
+    ! -path '*/UITests/*' \
+    ! -path '*/Scripts/*' \
+    ! -path '*/docs/*' \
+    ! -path '*/.claude/*' \
+    -exec stat -f '%m' {} + 2>/dev/null | sort -nr | head -n 1
+}
+
+check_stale_install_local() {
+  local app="$1"
+  local bundle="$2"
+  local binary="$bundle/Contents/MacOS/$app"
+  local source_epoch binary_epoch source_ts binary_ts
+
+  [[ -x "$binary" ]] || return 0
+
+  source_epoch="$(latest_repo_source_epoch_local "$app")"
+  [[ -n "$source_epoch" ]] || return 0
+  binary_epoch="$(stat -f '%m' "$binary" 2>/dev/null || echo 0)"
+
+  if [[ "$source_epoch" -gt "$binary_epoch" ]]; then
+    source_ts="$(date -r "$source_epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$source_epoch")"
+    binary_ts="$(date -r "$binary_epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$binary_epoch")"
+    echo "warning: installed $app binary may be stale vs repo source (binary=$binary_ts, source=$source_ts)"
+    echo "warning: recommended refresh: cd \"$HOME/SaneApps/apps/$app\" && ./scripts/SaneMaster.rb launch"
+  fi
+}
+
+expected_team_id() {
+  echo "${APP_TEST_MODE_EXPECTED_TEAM_ID:-M78L6FXD48}"
+}
+
+verify_install_identity_local() {
+  local app="$1"
+  local bundle="$2"
+  local expected_bundle actual_bundle sign_output signed_identifier signed_team expected_signing_team
+  local authority_lines
+  local info_plist="$bundle/Contents/Info.plist"
+
+  expected_bundle="$(fallback_bundle_id "$app")"
+  actual_bundle="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info_plist" 2>/dev/null || true)"
+  if [[ "$actual_bundle" != "$expected_bundle" ]]; then
+    echo "error: $app install identity mismatch: expected CFBundleIdentifier '$expected_bundle' but found '$actual_bundle'" >&2
+    exit 1
+  fi
+
+  sign_output="$(codesign -dv --verbose=2 "$bundle" 2>&1 || true)"
+  signed_identifier="$(printf '%s\n' "$sign_output" | sed -n 's/^Identifier=//p' | head -n 1)"
+  signed_team="$(printf '%s\n' "$sign_output" | sed -n 's/^TeamIdentifier=//p' | head -n 1)"
+  authority_lines="$(printf '%s\n' "$sign_output" | sed -n 's/^Authority=//p')"
+  expected_signing_team="$(expected_team_id)"
+
+  if [[ "$ALLOW_UNSIGNED_INSTALL" -eq 1 ]]; then
+    return 0
+  fi
+
+  if [[ -z "$signed_team" || "$signed_team" == "not set" ]]; then
+    echo "error: $app install is unsigned/ad-hoc (TeamIdentifier missing)." >&2
+    echo "error: this causes Accessibility/TCC identity drift and permission loops." >&2
+    echo "hint: install a signed $expected_bundle build before launch, or rerun with --allow-unsigned-install for explicit debug only." >&2
+    exit 1
+  fi
+
+  if [[ "$signed_team" != "$expected_signing_team" ]]; then
+    echo "error: $app signing team mismatch: expected '$expected_signing_team' but found '$signed_team'" >&2
+    exit 1
+  fi
+
+  if [[ "$signed_identifier" != "$expected_bundle" ]]; then
+    echo "error: $app code-sign identifier mismatch: expected '$expected_bundle' but found '$signed_identifier'" >&2
+    exit 1
+  fi
+
+  # On local developer machines, keep SaneBar launches bound to official
+  # Developer ID artifacts by default to avoid TCC identity duplication with
+  # Apple Development builds staged from source.
+  if [[ "$app" == "SaneBar" && "$REMOTE_INVOKE" -eq 0 && "$ALLOW_DEVELOPMENT_SIGNATURE" -eq 0 ]]; then
+    if ! printf '%s\n' "$authority_lines" | grep -q '^Developer ID Application:'; then
+      echo "error: local $app install is not Developer ID signed." >&2
+      echo "error: this can create duplicate Accessibility identities and access loops." >&2
+      echo "hint: install the official release app in /Applications, or rerun with --allow-development-signature for explicit source debugging." >&2
+      exit 1
+    fi
+  fi
+}
+
+verify_install_identity_remote() {
+  local app="$1"
+  local bundle="$2"
+  local expected_bundle remote_cmd identity_blob actual_bundle signed_identifier signed_team expected_signing_team
+
+  expected_bundle="$(fallback_bundle_id "$app")"
+  expected_signing_team="$(expected_team_id)"
+
+  remote_cmd=$(cat <<REMOTE
+APP_BUNDLE="$bundle"
+/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "\$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true
+codesign -dv --verbose=2 "\$APP_BUNDLE" 2>&1 | sed -n 's/^Identifier=//p; s/^TeamIdentifier=//p'
+REMOTE
+)
+
+  identity_blob="$(ssh -o ConnectTimeout=5 -o BatchMode=yes mini "$remote_cmd" || true)"
+  actual_bundle="$(printf '%s\n' "$identity_blob" | sed -n '1p')"
+  signed_identifier="$(printf '%s\n' "$identity_blob" | sed -n '2p')"
+  signed_team="$(printf '%s\n' "$identity_blob" | sed -n '3p')"
+
+  if [[ "$actual_bundle" != "$expected_bundle" ]]; then
+    echo "error: $app install identity mismatch on mini: expected CFBundleIdentifier '$expected_bundle' but found '$actual_bundle'" >&2
+    exit 1
+  fi
+
+  if [[ "$ALLOW_UNSIGNED_INSTALL" -eq 1 ]]; then
+    return 0
+  fi
+
+  if [[ -z "$signed_team" || "$signed_team" == "not set" ]]; then
+    echo "error: $app install on mini is unsigned/ad-hoc (TeamIdentifier missing)." >&2
+    echo "error: this causes Accessibility/TCC identity drift and permission loops." >&2
+    echo "hint: install a signed $expected_bundle build on mini before launch, or rerun with --allow-unsigned-install for explicit debug only." >&2
+    exit 1
+  fi
+
+  if [[ "$signed_team" != "$expected_signing_team" ]]; then
+    echo "error: $app signing team mismatch on mini: expected '$expected_signing_team' but found '$signed_team'" >&2
+    exit 1
+  fi
+
+  if [[ "$signed_identifier" != "$expected_bundle" ]]; then
+    echo "error: $app code-sign identifier mismatch on mini: expected '$expected_bundle' but found '$signed_identifier'" >&2
+    exit 1
+  fi
+}
+
+cleanup_legacy_accessibility_local() {
+  local app="$1"
+  local bundle legacy
+  bundle="$(fallback_bundle_id "$app")"
+  legacy="${bundle%.app}.dev"
+  [[ "$legacy" == "$bundle" ]] && return 0
+  tccutil reset Accessibility "$legacy" >/dev/null 2>&1 || true
+}
+
+cleanup_legacy_accessibility_remote() {
+  local app="$1"
+  local bundle legacy
+  bundle="$(fallback_bundle_id "$app")"
+  legacy="${bundle%.app}.dev"
+  [[ "$legacy" == "$bundle" ]] && return 0
+  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "tccutil reset Accessibility '$legacy' >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
+}
+
+repair_accessibility_stale_rows_local() {
+  local app="$1"
+  local bundle="$2"
+  local info_plist bundle_id user_db rows_raw stale_row_ids row row_id csreq_hex req_file requirement
+
+  info_plist="$bundle/Contents/Info.plist"
+  bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info_plist" 2>/dev/null || true)"
+  if [[ -z "$bundle_id" ]]; then
+    bundle_id="$(fallback_bundle_id "$app")"
+  fi
+
+  user_db="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+  [[ -f "$user_db" ]] || return 0
+
+  rows_raw="$(sqlite3 "$user_db" "SELECT rowid || '|' || IFNULL(hex(csreq), '') FROM access WHERE service='kTCCServiceAccessibility' AND client='${bundle_id}';" 2>/dev/null || true)"
+  [[ -n "$rows_raw" ]] || return 0
+
+  stale_row_ids=""
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    row_id="${row%%|*}"
+    csreq_hex="${row#*|}"
+    [[ "$row_id" =~ ^[0-9]+$ ]] || continue
+
+    if [[ -z "$csreq_hex" ]]; then
+      stale_row_ids="${stale_row_ids:+${stale_row_ids},}${row_id}"
+      continue
+    fi
+
+    req_file="$(mktemp "/tmp/saneapps-ax-${app}-XXXXXX.csreq")"
+    perl -e 'print pack("H*", shift)' "$csreq_hex" > "$req_file" 2>/dev/null || true
+    requirement="$(csreq -r "$req_file" -t 2>/dev/null || true)"
+    rm -f "$req_file"
+
+    if [[ -z "$requirement" ]]; then
+      stale_row_ids="${stale_row_ids:+${stale_row_ids},}${row_id}"
+      continue
+    fi
+
+    if ! codesign -R="$requirement" "$bundle" >/dev/null 2>&1; then
+      stale_row_ids="${stale_row_ids:+${stale_row_ids},}${row_id}"
+    fi
+  done <<< "$rows_raw"
+
+  [[ -n "$stale_row_ids" ]] || return 0
+
+  killall tccd >/dev/null 2>&1 || true
+  sqlite3 "$user_db" "DELETE FROM access WHERE rowid IN (${stale_row_ids});" >/dev/null 2>&1 || true
+  killall tccd >/dev/null 2>&1 || true
+  echo "repaired stale Accessibility rows for $bundle_id: $stale_row_ids"
+}
+
+repair_accessibility_stale_rows_remote() {
+  local app="$1"
+  local bundle="$2"
+  local app_q bundle_q
+  printf -v app_q '%q' "$app"
+  printf -v bundle_q '%q' "$bundle"
+
+  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "APP_TEST_APP=${app_q} APP_TEST_BUNDLE=${bundle_q} bash -s" <<'REMOTE'
+set -euo pipefail
+APP="$APP_TEST_APP"
+BUNDLE="$APP_TEST_BUNDLE"
+INFO_PLIST="$BUNDLE/Contents/Info.plist"
+BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO_PLIST" 2>/dev/null || true)
+if [ -z "$BUNDLE_ID" ]; then
+  case "$APP" in
+    SaneBar) BUNDLE_ID="com.sanebar.app" ;;
+    SaneClick) BUNDLE_ID="com.saneclick.SaneClick" ;;
+    SaneClip) BUNDLE_ID="com.saneclip.app" ;;
+    SaneHosts) BUNDLE_ID="com.mrsane.SaneHosts" ;;
+    SaneSales) BUNDLE_ID="com.sanesales.app" ;;
+    SaneSync) BUNDLE_ID="com.sanesync.SaneSync" ;;
+    SaneVideo) BUNDLE_ID="com.sanevideo.app" ;;
+    *) BUNDLE_ID="com.saneapps.$(printf '%s' "$APP" | tr '[:upper:]' '[:lower:]')" ;;
+  esac
+fi
+
+USER_DB="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+[ -f "$USER_DB" ] || exit 0
+
+ROWS=$(sqlite3 "$USER_DB" "SELECT rowid || '|' || IFNULL(hex(csreq), '') FROM access WHERE service='kTCCServiceAccessibility' AND client='${BUNDLE_ID}';" 2>/dev/null || true)
+[ -n "$ROWS" ] || exit 0
+ROWS_FILE=$(mktemp "/tmp/saneapps-ax-${APP}-rows-XXXXXX.txt")
+printf '%s\n' "$ROWS" > "$ROWS_FILE"
+
+STALE_IDS=""
+while IFS= read -r ROW; do
+  [ -n "$ROW" ] || continue
+  ROW_ID=${ROW%%|*}
+  CSREQ_HEX=${ROW#*|}
+  printf '%s' "$ROW_ID" | grep -Eq '^[0-9]+$' || continue
+
+  if [ -z "$CSREQ_HEX" ]; then
+    if [ -n "$STALE_IDS" ]; then STALE_IDS="$STALE_IDS,$ROW_ID"; else STALE_IDS="$ROW_ID"; fi
+    continue
+  fi
+
+  REQ_FILE=$(mktemp "/tmp/saneapps-ax-${APP}-XXXXXX.csreq")
+  perl -e 'print pack("H*", shift)' "$CSREQ_HEX" > "$REQ_FILE" 2>/dev/null || true
+  REQUIREMENT=$(csreq -r "$REQ_FILE" -t 2>/dev/null || true)
+  rm -f "$REQ_FILE"
+
+  if [ -z "$REQUIREMENT" ]; then
+    if [ -n "$STALE_IDS" ]; then STALE_IDS="$STALE_IDS,$ROW_ID"; else STALE_IDS="$ROW_ID"; fi
+    continue
+  fi
+
+  if ! codesign -R="$REQUIREMENT" "$BUNDLE" >/dev/null 2>&1; then
+    if [ -n "$STALE_IDS" ]; then STALE_IDS="$STALE_IDS,$ROW_ID"; else STALE_IDS="$ROW_ID"; fi
+  fi
+done < "$ROWS_FILE"
+rm -f "$ROWS_FILE"
+
+[ -n "$STALE_IDS" ] || exit 0
+killall tccd >/dev/null 2>&1 || true
+sqlite3 "$USER_DB" "DELETE FROM access WHERE rowid IN (${STALE_IDS});" >/dev/null 2>&1 || true
+killall tccd >/dev/null 2>&1 || true
+echo "repaired stale Accessibility rows for $BUNDLE_ID: $STALE_IDS"
+REMOTE
+}
+
+set_app_mode_local() {
+  local app="$1"
+  local mode="$2"
+  local domain key_name date_name email_name key_key key_date key_email pro_value
+
+  domain="$(defaults_domain_for_app "$app")"
+  key_name="$(license_key_name "$app")"
+  date_name="$(license_date_name "$app")"
+  email_name="$(license_email_name "$app")"
+  key_key="$(defaults_fallback_key "$app" "$key_name")"
+  key_date="$(defaults_fallback_key "$app" "$date_name")"
+  key_email="$(defaults_fallback_key "$app" "$email_name")"
+
+  if [[ "$app" == "SaneBar" ]]; then
+    pro_value="early-adopter"
+  else
+    pro_value="test-pro"
+  fi
+
+  case "$mode" in
+    pro)
+      defaults write "$domain" "$key_key" -string "$pro_value"
+      defaults write "$domain" "$key_date" -string "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      if [[ "$app" != "SaneBar" ]]; then
+        defaults write "$domain" "$key_email" -string "test@saneapps.local"
+      fi
+      ;;
+    basic)
+      defaults delete "$domain" "$key_key" >/dev/null 2>&1 || true
+      defaults delete "$domain" "$key_date" >/dev/null 2>&1 || true
+      defaults delete "$domain" "$key_email" >/dev/null 2>&1 || true
+      ;;
+    *)
+      echo "error: unsupported mode '$mode' (expected 'pro' or 'basic')" >&2
+      exit 1
+      ;;
+  esac
+}
+
+set_app_mode_remote() {
+  local app="$1"
+  local mode="$2"
+  local domain key_name date_name email_name key_key key_date key_email pro_value now
+
+  domain="$(defaults_domain_for_app "$app")"
+  key_name="$(license_key_name "$app")"
+  date_name="$(license_date_name "$app")"
+  email_name="$(license_email_name "$app")"
+  key_key="$(defaults_fallback_key "$app" "$key_name")"
+  key_date="$(defaults_fallback_key "$app" "$date_name")"
+  key_email="$(defaults_fallback_key "$app" "$email_name")"
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  if [[ "$app" == "SaneBar" ]]; then
+    pro_value="early-adopter"
+  else
+    pro_value="test-pro"
+  fi
+
+  case "$mode" in
+    pro)
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults write '$domain' '$key_key' -string '$pro_value'"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults write '$domain' '$key_date' -string '$now'"
+      if [[ "$app" != "SaneBar" ]]; then
+        ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults write '$domain' '$key_email' -string 'test@saneapps.local'"
+      fi
+      ;;
+    basic)
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$domain' '$key_key' >/dev/null 2>&1 || true"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$domain' '$key_date' >/dev/null 2>&1 || true"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$domain' '$key_email' >/dev/null 2>&1 || true"
+      ;;
+    *)
+      echo "error: unsupported mode '$mode' (expected 'pro' or 'basic')" >&2
+      exit 1
+      ;;
+  esac
+}
+
+app_status_local() {
+  local app="$1"
+  local domain key_name key_key current
+
+  domain="$(defaults_domain_for_app "$app")"
+  key_name="$(license_key_name "$app")"
+  key_key="$(defaults_fallback_key "$app" "$key_name")"
+
+  current="$(defaults read "$domain" "$key_key" 2>/dev/null || true)"
+  if [[ -n "$current" ]]; then
+    echo "$app mode: pro (no-keychain fallback)"
+  else
+    echo "$app mode: basic (no-keychain fallback)"
+  fi
+}
+
+app_status_remote() {
+  local app="$1"
+  local domain key_name key_key current
+
+  domain="$(defaults_domain_for_app "$app")"
+  key_name="$(license_key_name "$app")"
+  key_key="$(defaults_fallback_key "$app" "$key_name")"
+
+  current="$(ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults read '$domain' '$key_key' 2>/dev/null || true")"
+  if [[ -n "$current" ]]; then
+    echo "$app mode: pro (no-keychain fallback)"
+  else
+    echo "$app mode: basic (no-keychain fallback)"
+  fi
+}
+
+bootstrap_install_local() {
+  local app="$1"
+  local repo="$HOME/SaneApps/apps/$app"
+
+  if [[ ! -d "$repo" ]]; then
+    return 1
+  fi
+
+  echo "info: $app not installed. Bootstrapping from $repo ..."
+  (
+    cd "$repo"
+    SANEMASTER_CANONICAL_APP_PATH="$HOME/Applications/${app}.app" ./scripts/SaneMaster.rb launch
+  ) >/tmp/"$(to_lower "$app")"-bootstrap.log 2>&1
+}
+
+bootstrap_install_remote() {
+  local app="$1"
+  local remote_repo="\$HOME/SaneApps/apps/$app"
+  local remote_cmd
+
+  remote_cmd=$(cat <<REMOTE
+set -e
+repo="$remote_repo"
+if [ ! -d "\$repo" ]; then
+  exit 1
+fi
+cd "\$repo"
+SANEMASTER_CANONICAL_APP_PATH="\$HOME/Applications/${app}.app" ./scripts/SaneMaster.rb launch >/tmp/$(to_lower "$app")-bootstrap.log 2>&1
+REMOTE
+)
+
+  echo "info: $app not installed on mini. Bootstrapping from \$HOME/SaneApps/apps/$app ..."
+  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "$remote_cmd"
+}
+
+launch_app_local() {
+  local app="$1"
+  local mode="$2"
+  local bundle binary
+
+  bundle="$(local_bundle_path "$app")"
+  if [[ ! -d "$bundle" ]]; then
+    if ! bootstrap_install_local "$app"; then
+      echo "error: app not found at $bundle and bootstrap failed" >&2
+      exit 1
+    fi
+    bundle="$(local_bundle_path "$app")"
+    if [[ ! -d "$bundle" ]]; then
+      echo "error: app bootstrap did not produce install at $bundle" >&2
+      exit 1
+    fi
+  fi
+
+  ensure_single_install_local "$app" "$bundle"
+  pkill -x "$app" >/dev/null 2>&1 || true
+  remove_login_item_local "$app"
+
+  binary="$bundle/Contents/MacOS/$app"
+  if [[ ! -x "$binary" ]]; then
+    echo "error: executable not found at $binary" >&2
+    exit 1
+  fi
+  verify_install_identity_local "$app" "$bundle"
+  cleanup_legacy_accessibility_local "$app"
+  repair_accessibility_stale_rows_local "$app" "$bundle"
+  check_stale_install_local "$app" "$bundle"
+
+  local open_cmd=(open -na "$bundle")
+  local launch_args=()
+  if [[ "$ALLOW_KEYCHAIN" -eq 1 ]]; then
+    if [[ "$mode" == "basic" && "$app" != "SaneBar" ]]; then
+      open_cmd+=(--env SANEAPPS_FORCE_FREE_MODE=1)
+    fi
+  else
+    open_cmd+=(--env SANEAPPS_DISABLE_KEYCHAIN=1)
+    launch_args+=(--sane-no-keychain)
+    if [[ "$mode" == "basic" && "$app" != "SaneBar" ]]; then
+      open_cmd+=(--env SANEAPPS_FORCE_FREE_MODE=1)
+    fi
+  fi
+
+  if [[ ${#launch_args[@]} -gt 0 ]]; then
+    open_cmd+=(--args "${launch_args[@]}")
+  fi
+
+  "${open_cmd[@]}"
+
+  sleep 2
+  if pgrep -x "$app" >/dev/null 2>&1; then
+    echo "$app launched in $mode mode (host=$(display_host))"
+    echo "log command: log stream --predicate 'process == \"$app\"' --style compact"
+  else
+    echo "error: $app launch not confirmed after initial check (host=$(display_host))"
+    /usr/bin/log show --style compact --last 2m --predicate "process == \"$app\"" | tail -n 120 || true
+    exit 1
+  fi
+
+  if [[ "$VERIFY_LIVE" -eq 1 ]]; then
+    local elapsed=0
+    while [[ "$elapsed" -lt "$LIVE_VERIFY_SECONDS" ]]; do
+      if ! pgrep -x "$app" >/dev/null 2>&1; then
+        echo "error: $app exited during live check at t=${elapsed}s (host=$(display_host))"
+        /usr/bin/log show --style compact --last 2m --predicate "process == \"$app\"" | tail -n 120 || true
+        exit 1
+      fi
+      sleep "$LIVE_VERIFY_INTERVAL"
+      elapsed=$((elapsed + LIVE_VERIFY_INTERVAL))
+    done
+    echo "$app remained live for ${LIVE_VERIFY_SECONDS}s (host=$(display_host))"
+  fi
+}
+
+launch_app_remote() {
+  local app="$1"
+  local mode="$2"
+  local bundle binary script
+
+  bundle="$(remote_bundle_path "$app")"
+  if ! ssh -o ConnectTimeout=5 -o BatchMode=yes mini "[ -d \"$bundle\" ]" >/dev/null 2>&1; then
+    if ! bootstrap_install_remote "$app"; then
+      echo "error: app not found at $bundle on mini and bootstrap failed" >&2
+      exit 1
+    fi
+    bundle="$(remote_bundle_path "$app")"
+    if ! ssh -o ConnectTimeout=5 -o BatchMode=yes mini "[ -d \"$bundle\" ]" >/dev/null 2>&1; then
+      echo "error: app bootstrap did not produce install at $bundle on mini" >&2
+      exit 1
+    fi
+  fi
+
+  ensure_single_install_remote "$app" "$bundle"
+  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "pkill -x '$app' >/dev/null 2>&1 || true"
+  remove_login_item_remote "$app"
+
+  binary="$bundle/Contents/MacOS/$app"
+  verify_install_identity_remote "$app" "$bundle"
+  cleanup_legacy_accessibility_remote "$app"
+  repair_accessibility_stale_rows_remote "$app" "$bundle"
+
+  if [[ "$ALLOW_KEYCHAIN" -eq 1 ]]; then
+    if [[ "$mode" == "basic" && "$app" != "SaneBar" ]]; then
+      script="open -na '$bundle' --env SANEAPPS_FORCE_FREE_MODE=1"
+    else
+      script="open -na '$bundle'"
+    fi
+  else
+    if [[ "$mode" == "basic" && "$app" != "SaneBar" ]]; then
+      script="open -na '$bundle' --env SANEAPPS_DISABLE_KEYCHAIN=1 --env SANEAPPS_FORCE_FREE_MODE=1 --args --sane-no-keychain"
+    else
+      script="open -na '$bundle' --env SANEAPPS_DISABLE_KEYCHAIN=1 --args --sane-no-keychain"
+    fi
+  fi
+
+  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "$script"
+  sleep 2
+
+  if ssh -o ConnectTimeout=5 -o BatchMode=yes mini "pgrep -x '$app' >/dev/null 2>&1"; then
+    echo "$app launched in $mode mode (host=$(display_host))"
+    echo "log command: ssh mini \"log stream --predicate 'process == \\\"$app\\\"' --style compact\""
+  else
+    echo "error: $app launch not confirmed after initial check (host=$(display_host))"
+    ssh -o ConnectTimeout=5 -o BatchMode=yes mini "/usr/bin/log show --style compact --last 2m --predicate 'process == \"$app\"' | tail -n 120" || true
+    exit 1
+  fi
+
+  if [[ "$VERIFY_LIVE" -eq 1 ]]; then
+    local elapsed=0
+    while [[ "$elapsed" -lt "$LIVE_VERIFY_SECONDS" ]]; do
+      if ! ssh -o ConnectTimeout=5 -o BatchMode=yes mini "pgrep -x '$app' >/dev/null 2>&1"; then
+        echo "error: $app exited during live check at t=${elapsed}s (host=$(display_host))"
+        ssh -o ConnectTimeout=5 -o BatchMode=yes mini "/usr/bin/log show --style compact --last 2m --predicate 'process == \"$app\"' | tail -n 120" || true
+        exit 1
+      fi
+      sleep "$LIVE_VERIFY_INTERVAL"
+      elapsed=$((elapsed + LIVE_VERIFY_INTERVAL))
+    done
+    echo "$app remained live for ${LIVE_VERIFY_SECONDS}s (host=$(display_host))"
+  fi
+}
+
+display_host() {
+  if [[ -n "${APP_TEST_MODE_ORIGIN_HOST:-}" ]]; then
+    echo "$APP_TEST_MODE_ORIGIN_HOST"
+  else
+    echo "$HOST"
+  fi
+}
+
+set_app_mode() {
+  local app="$1"
+  local mode="$2"
+  if [[ "$HOST" == "mini" ]]; then
+    set_app_mode_remote "$app" "$mode"
+  else
+    set_app_mode_local "$app" "$mode"
+  fi
+}
+
+app_status() {
+  local app="$1"
+  if [[ "$HOST" == "mini" ]]; then
+    app_status_remote "$app"
+  else
+    app_status_local "$app"
+  fi
+}
+
+launch_app() {
+  local app="$1"
+  local mode="$2"
+  if [[ "$HOST" == "mini" ]]; then
+    launch_app_remote "$app" "$mode"
+  else
+    launch_app_local "$app" "$mode"
+  fi
+}
+
+run_sanebar_smoke() {
+  local app="$1"
+  local repo="$HOME/SaneApps/apps/$app"
+  local smoke_script="$repo/scripts/live_zone_smoke.rb"
+
+  if [[ "$app" != "SaneBar" ]]; then
+    echo "error: --smoke is currently supported only for SaneBar" >&2
+    exit 1
+  fi
+
+  if [[ ! -x "$smoke_script" ]]; then
+    echo "error: smoke script missing or not executable: $smoke_script" >&2
+    exit 1
+  fi
+
+  echo "running SaneBar live zone smoke..."
+  (
+    cd "$repo"
+    ./scripts/live_zone_smoke.rb
+  )
+}
+
+parse_global_flags() {
+  local argv=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --host)
+        HOST="${2:-}"
+        shift 2
+        ;;
+      --launch)
+        LAUNCH=1
+        shift
+        ;;
+      --remote-invoke)
+        REMOTE_INVOKE=1
+        shift
+        ;;
+      --keep-duplicates)
+        KEEP_DUPLICATES=1
+        shift
+        ;;
+      --allow-keychain)
+        ALLOW_KEYCHAIN=1
+        shift
+        ;;
+      --allow-unsigned-install)
+        ALLOW_UNSIGNED_INSTALL=1
+        shift
+        ;;
+      --allow-development-signature)
+        ALLOW_DEVELOPMENT_SIGNATURE=1
+        shift
+        ;;
+      --no-live-verify)
+        VERIFY_LIVE=0
+        shift
+        ;;
+      --live-seconds)
+        LIVE_VERIFY_SECONDS="${2:-}"
+        if [[ -z "$LIVE_VERIFY_SECONDS" || ! "$LIVE_VERIFY_SECONDS" =~ ^[0-9]+$ ]]; then
+          echo "error: --live-seconds requires an integer value" >&2
+          exit 1
+        fi
+        shift 2
+        ;;
+      --smoke)
+        RUN_SANEBAR_SMOKE=1
+        shift
+        ;;
+      *)
+        argv+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if [[ ${#argv[@]} -eq 0 ]]; then
+    ARGV=()
+  else
+    ARGV=("${argv[@]}")
+  fi
+}
+
+delegate_to_mini() {
+  local remote_script="/tmp/saneapps_app_test_mode.sh"
+  local remote_args=()
+  local arg
+
+  for arg in "${ORIGINAL_ARGS[@]}"; do
+    if [[ "$arg" == "--host" ]]; then
+      SKIP_NEXT=1
+      continue
+    fi
+    if [[ "${SKIP_NEXT:-0}" -eq 1 ]]; then
+      SKIP_NEXT=0
+      continue
+    fi
+    remote_args+=("$arg")
+  done
+
+  remote_args+=("--host" "local" "--remote-invoke")
+
+  local quoted=""
+  for arg in "${remote_args[@]}"; do
+    quoted+=" $(printf '%q' "$arg")"
+  done
+
+  scp -q -o ConnectTimeout=5 "$0" "mini:$remote_script"
+  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "bash -lc 'chmod +x \"$remote_script\" && APP_TEST_MODE_ORIGIN_HOST=mini \"$remote_script\"$quoted'"
+}
+
+ORIGINAL_ARGS=("$@")
+parse_global_flags "$@"
+
+if [[ "$HOST" != "local" && "$HOST" != "mini" ]]; then
+  echo "error: --host must be 'local' or 'mini'" >&2
+  exit 1
+fi
+
+if [[ "$HOST" == "mini" && "$REMOTE_INVOKE" -eq 0 ]]; then
+  delegate_to_mini
+  exit $?
+fi
+
+if [[ ${#ARGV[@]} -lt 1 ]]; then
+  usage
+  exit 1
+fi
+
+if [[ "${ARGV[0]}" == "list" ]]; then
+  printf '%s\n' "${APPS[@]}"
+  exit 0
+fi
+
+if [[ ${#ARGV[@]} -lt 2 ]]; then
+  usage
+  exit 1
+fi
+
+APP="${ARGV[0]}"
+ACTION="${ARGV[1]}"
+
+if ! is_known_app "$APP"; then
+  echo "error: unknown app '$APP'" >&2
+  echo "run: app_test_mode.sh list"
+  exit 1
+fi
+
+if [[ "$ACTION" == "free" ]]; then
+  ACTION="basic"
+fi
+
+if [[ "$ACTION" == "status" ]]; then
+  app_status "$APP"
+  exit 0
+fi
+
+if [[ "$ACTION" != "pro" && "$ACTION" != "basic" ]]; then
+  echo "error: action must be 'pro', 'basic', 'free', or 'status'" >&2
+  usage
+  exit 1
+fi
+
+set_app_mode "$APP" "$ACTION"
+echo "$APP set to $ACTION (host=$(display_host), no-keychain fallback state)"
+
+if [[ "$LAUNCH" -eq 1 ]]; then
+  launch_app "$APP" "$ACTION"
+fi
+
+if [[ "$RUN_SANEBAR_SMOKE" -eq 1 ]]; then
+  run_sanebar_smoke "$APP"
+fi

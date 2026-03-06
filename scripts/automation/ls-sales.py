@@ -20,6 +20,29 @@ import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
+# Store-specific fee configuration.
+# Defaults reflect SaneApps Lemon Squeezy pricing update confirmed on 2026-03-03.
+PLATFORM_FEE_RATE = float(os.environ.get("LEMONSQUEEZY_PLATFORM_FEE_RATE", "0.05"))
+INTERNATIONAL_FEE_RATE = float(os.environ.get("LEMONSQUEEZY_INTERNATIONAL_FEE_RATE", "0.015"))
+FLAT_FEE_BEFORE = float(os.environ.get("LEMONSQUEEZY_FLAT_FEE_CENTS_BEFORE", "50")) / 100
+FLAT_FEE_AFTER = float(os.environ.get("LEMONSQUEEZY_FLAT_FEE_CENTS_AFTER", "30")) / 100
+FLAT_FEE_EFFECTIVE_UTC_RAW = os.environ.get(
+    "LEMONSQUEEZY_FLAT_FEE_EFFECTIVE_UTC",
+    "2026-03-03T05:47:45Z",
+)
+
+
+def parse_order_timestamp(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+FLAT_FEE_EFFECTIVE_UTC = parse_order_timestamp(FLAT_FEE_EFFECTIVE_UTC_RAW)
+
 
 def get_api_key():
     # Try env var first (headless/LaunchAgent contexts)
@@ -64,11 +87,20 @@ def fetch_orders(api_key):
     return all_orders
 
 
-def calc_fee(subtotal, currency):
+def flat_fee_for_order(created_at):
+    if not FLAT_FEE_EFFECTIVE_UTC:
+        return FLAT_FEE_AFTER
+    if created_at and created_at >= FLAT_FEE_EFFECTIVE_UTC:
+        return FLAT_FEE_AFTER
+    return FLAT_FEE_BEFORE
+
+
+def calc_fee(subtotal, currency, created_at=None):
     """Calculate estimated LS fee for an order."""
-    base = (subtotal * 0.05) + 0.50
-    intl = subtotal * 0.015 if currency != "USD" else 0
-    return base + intl, intl
+    flat = flat_fee_for_order(created_at)
+    base = (subtotal * PLATFORM_FEE_RATE) + flat
+    intl = subtotal * INTERNATIONAL_FEE_RATE if currency != "USD" else 0
+    return base + intl, intl, flat
 
 
 def filter_orders(orders, args):
@@ -87,7 +119,9 @@ def filter_orders(orders, args):
         if a.get("status") != "paid":
             continue
         if cutoff:
-            created = datetime.fromisoformat(a["created_at"].replace("Z", "+00:00"))
+            created = parse_order_timestamp(a.get("created_at"))
+            if created is None:
+                continue
             if created < cutoff:
                 continue
         filtered.append(o)
@@ -102,7 +136,8 @@ def print_monthly(orders):
         a = o["attributes"]
         subtotal = a.get("subtotal_usd", 0) / 100
         tax = a.get("tax_usd", 0) / 100
-        fee, _ = calc_fee(subtotal, a.get("currency", "USD"))
+        created = parse_order_timestamp(a.get("created_at"))
+        fee, _, _ = calc_fee(subtotal, a.get("currency", "USD"), created)
         month = a["created_at"][:7]
         monthly[month]["revenue"] += subtotal
         monthly[month]["orders"] += 1
@@ -128,26 +163,45 @@ def print_fees(orders):
     """Detailed fee breakdown."""
     total_revenue = 0
     total_intl = 0
+    total_flat = 0
+    pre_change_flat = 0
+    post_change_flat = 0
+    pre_change_count = 0
+    post_change_count = 0
     paid_count = 0
 
     for o in orders:
         a = o["attributes"]
         subtotal = a.get("subtotal_usd", 0) / 100
-        _, intl = calc_fee(subtotal, a.get("currency", "USD"))
+        created = parse_order_timestamp(a.get("created_at"))
+        _, intl, flat = calc_fee(subtotal, a.get("currency", "USD"), created)
         total_revenue += subtotal
         total_intl += intl
+        total_flat += flat
         paid_count += 1
+        if FLAT_FEE_EFFECTIVE_UTC and created and created >= FLAT_FEE_EFFECTIVE_UTC:
+            post_change_count += 1
+            post_change_flat += flat
+        else:
+            pre_change_count += 1
+            pre_change_flat += flat
 
-    platform_pct = total_revenue * 0.05
-    flat_fee = paid_count * 0.50
-    total_fees = platform_pct + flat_fee + total_intl
+    platform_pct = total_revenue * PLATFORM_FEE_RATE
+    total_fees = platform_pct + total_flat + total_intl
     eff = (total_fees / total_revenue * 100) if total_revenue > 0 else 0
 
     print()
     print("Fee Breakdown")
-    print(f"  Platform cut (5%):            ${platform_pct:>8.2f}")
-    print(f"  Per-txn flat ($0.50 x {paid_count:<4}):   ${flat_fee:>8.2f}")
-    print(f"  International (+1.5%):        ${total_intl:>8.2f}")
+    print(f"  Platform cut ({PLATFORM_FEE_RATE * 100:.1f}%):            ${platform_pct:>8.2f}")
+    if pre_change_count > 0 and post_change_count > 0:
+        print(f"  Per-txn flat (variable):      ${total_flat:>8.2f}")
+        print(f"    Pre-change (${FLAT_FEE_BEFORE:.2f} x {pre_change_count:<4}):    ${pre_change_flat:>8.2f}")
+        print(f"    Post-change (${FLAT_FEE_AFTER:.2f} x {post_change_count:<4}):   ${post_change_flat:>8.2f}")
+    elif post_change_count > 0:
+        print(f"  Per-txn flat (${FLAT_FEE_AFTER:.2f} x {post_change_count:<4}):   ${post_change_flat:>8.2f}")
+    else:
+        print(f"  Per-txn flat (${FLAT_FEE_BEFORE:.2f} x {pre_change_count:<4}):   ${pre_change_flat:>8.2f}")
+    print(f"  International (+{INTERNATIONAL_FEE_RATE * 100:.1f}%):        ${total_intl:>8.2f}")
     print(f"                                ---------")
     print(f"  Total fees to LS:             ${total_fees:>8.2f}")
     print(f"  Effective rate:               {eff:>7.1f}%")
@@ -158,13 +212,18 @@ def print_fees(orders):
     # Show what rate would be at different price points
     if paid_count > 0:
         avg = total_revenue / paid_count
+        current_rate = ((avg * PLATFORM_FEE_RATE + FLAT_FEE_AFTER) / avg * 100)
         print()
-        print(f"  Avg order: ${avg:.2f} -> {((avg * 0.05 + 0.50) / avg * 100):.1f}% effective rate")
+        print(f"  Avg order: ${avg:.2f} -> {current_rate:.1f}% effective rate (current)")
         print()
         print("  Rate at different price points:")
         for price in [5, 10, 15, 20, 30, 50]:
-            rate = ((price * 0.05 + 0.50) / price * 100)
-            print(f"    ${price:>3} -> {rate:.1f}%")
+            current = ((price * PLATFORM_FEE_RATE + FLAT_FEE_AFTER) / price * 100)
+            if FLAT_FEE_BEFORE != FLAT_FEE_AFTER:
+                legacy = ((price * PLATFORM_FEE_RATE + FLAT_FEE_BEFORE) / price * 100)
+                print(f"    ${price:>3} -> {current:.1f}% current ({legacy:.1f}% legacy)")
+            else:
+                print(f"    ${price:>3} -> {current:.1f}%")
 
 
 def print_products(orders):
@@ -176,7 +235,8 @@ def print_products(orders):
         item = a.get("first_order_item") or {}
         name = item.get("product_name", "Unknown")
         subtotal = a.get("subtotal_usd", 0) / 100
-        fee, _ = calc_fee(subtotal, a.get("currency", "USD"))
+        created = parse_order_timestamp(a.get("created_at"))
+        fee, _, _ = calc_fee(subtotal, a.get("currency", "USD"), created)
         products[name]["revenue"] += subtotal
         products[name]["orders"] += 1
         products[name]["fees"] += fee
@@ -201,7 +261,8 @@ def print_product_variants(orders):
         variant = item.get("variant_name") or "Default"
         key = f"{product} | {variant}"
         subtotal = a.get("subtotal_usd", 0) / 100
-        fee, _ = calc_fee(subtotal, a.get("currency", "USD"))
+        created = parse_order_timestamp(a.get("created_at"))
+        fee, _, _ = calc_fee(subtotal, a.get("currency", "USD"), created)
         products[key]["revenue"] += subtotal
         products[key]["orders"] += 1
         products[key]["fees"] += fee
@@ -235,8 +296,10 @@ def print_daily(all_orders):
         if a.get("status") != "paid":
             continue
         subtotal = a.get("subtotal_usd", 0) / 100
-        fee, _ = calc_fee(subtotal, a.get("currency", "USD"))
-        created = datetime.fromisoformat(a["created_at"].replace("Z", "+00:00"))
+        created = parse_order_timestamp(a.get("created_at"))
+        if created is None:
+            continue
+        fee, _, _ = calc_fee(subtotal, a.get("currency", "USD"), created)
 
         buckets["All Time"]["orders"] += 1
         buckets["All Time"]["revenue"] += subtotal
@@ -287,7 +350,8 @@ def print_json(orders):
     for o in orders:
         a = o["attributes"]
         subtotal = a.get("subtotal_usd", 0) / 100
-        fee, intl = calc_fee(subtotal, a.get("currency", "USD"))
+        created = parse_order_timestamp(a.get("created_at"))
+        fee, intl, flat = calc_fee(subtotal, a.get("currency", "USD"), created)
         item = a.get("first_order_item") or {}
         result.append({
             "date": a["created_at"][:10],
@@ -295,6 +359,7 @@ def print_json(orders):
             "subtotal": subtotal,
             "tax": a.get("tax_usd", 0) / 100,
             "fee": round(fee, 2),
+            "flat_fee": round(flat, 2),
             "net": round(subtotal - fee, 2),
             "currency": a.get("currency", "USD"),
             "refunded": a.get("refunded", False),

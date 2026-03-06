@@ -715,13 +715,24 @@ class ValidationReport
     # Check if GitHub CLI is available
     return unless system('which gh > /dev/null 2>&1')
 
-    # GitHub releases must NEVER be used for distribution.
-    # All release binaries must go through Cloudflare R2/dist only.
+    # Policy: Apps with license_gated: true in products.yml can use all release channels
+    # (GitHub, Homebrew, R2). Apps without gating must use Cloudflare R2/dist only.
+    config_file = File.join(SANE_APPS_ROOT, 'infra/SaneProcess/config/products.yml')
+    product_config = YAML.safe_load(File.read(config_file), permitted_classes: [])
+    product_key = app_name.downcase
+    license_gated = product_config.dig('products', product_key, 'license_gated')
+
     safe_repo = "sane-apps/#{app_name}"
     result = `gh release list --repo #{Shellwords.shellescape(safe_repo)} --limit 1 2>&1`
+    has_releases = result && !result.include?('no releases found') && !result.include?('not found') && !result.strip.empty?
 
-    if result && !result.include?('no releases found') && !result.include?('not found') && !result.strip.empty?
-      issues << "[#{app_name}] GitHub release exists (FORBIDDEN — distribution must use Cloudflare R2/dist only)"
+    return unless has_releases
+
+    if license_gated
+      # Gated app — GitHub releases are fine, just note it
+      # (no issue, no warning — this is expected)
+    else
+      issues << "[#{app_name}] GitHub release exists (FORBIDDEN — no license gating; distribution must use Cloudflare R2/dist only)"
     end
   end
 
@@ -1553,13 +1564,21 @@ class ValidationReport
     repo_exists = system("gh repo view sane-apps/#{app_name} > /dev/null 2>&1")
     checklist << { name: "GitHub repo (sane-apps/#{app_name})", status: repo_exists ? :done : :todo }
 
-    # 2. GitHub release absent (distribution policy)
+    # 2. GitHub release policy (license-gated apps allow all channels; ungated = R2 only)
+    config_file = File.join(SANE_APPS_ROOT, 'infra/SaneProcess/config/products.yml')
+    product_config = YAML.safe_load(File.read(config_file), permitted_classes: [])
+    license_gated = product_config.dig('products', app_name.downcase, 'license_gated')
+
     if repo_exists
       releases = `gh release list --repo sane-apps/#{app_name} --limit 1 2>/dev/null`.strip
       has_release = !releases.empty? && !releases.include?('no releases')
-      checklist << { name: "No GitHub releases used for distribution", status: has_release ? :todo : :done }
+      if license_gated
+        checklist << { name: "GitHub releases (allowed — license gated)", status: :done }
+      else
+        checklist << { name: "No GitHub releases (no license gating)", status: has_release ? :todo : :done }
+      end
     else
-      checklist << { name: "No GitHub releases used for distribution", status: :done }
+      checklist << { name: "GitHub release policy", status: :done }
     end
 
     # 3. Hardened runtime enabled (check xcconfig or project)

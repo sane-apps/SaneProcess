@@ -6,11 +6,14 @@
 # NOTE:
 # - checkout_uuid present = product is live, include in critical link monitoring
 # - checkout_uuid missing = unreleased, skip checkout/redirect/appcast checks
+# - license_gated: true = Basic/Pro gating active, all release channels allowed (GitHub, Homebrew, R2)
+# - license_gated missing/false = no gating, distribution restricted to Cloudflare R2/dist only
 
 products:
   sanebar:
     name: SaneBar
     checkout_uuid: 8a6ddf02-574e-4b20-8c94-d3fa15c1cc8e
+    license_gated: true    # Basic/Pro gating active — all release channels allowed
     domain: sanebar.com
     dist_domain: dist.sanebar.com
     github_repo: sane-apps/SaneBar
@@ -19,6 +22,7 @@ products:
   saneclick:
     name: SaneClick
     checkout_uuid: 679dbd1d-b808-44e7-98c8-8e679b592e93
+    license_gated: true    # Basic/Pro gating active — all release channels allowed
     domain: saneclick.com
     dist_domain: dist.saneclick.com
     github_repo: sane-apps/SaneClick
@@ -27,6 +31,7 @@ products:
   saneclip:
     name: SaneClip
     checkout_uuid: e0d71010-bd20-49b6-b841-5522b39df95f
+    license_gated: true    # Basic/Pro gating active — all release channels allowed
     domain: saneclip.com
     dist_domain: dist.saneclip.com
     github_repo: sane-apps/SaneClip
@@ -35,6 +40,7 @@ products:
   sanehosts:
     name: SaneHosts
     checkout_uuid: 83977cc9-900f-407f-a098-959141d474f2
+    license_gated: true    # Basic/Pro gating active — all release channels allowed
     domain: sanehosts.com
     dist_domain: dist.sanehosts.com
     github_repo: sane-apps/SaneHosts
@@ -59,6 +65,7 @@ products:
   sanesales:
     name: SaneSales
     type: universal
+    license_gated: true    # Basic/Pro gating active — all release channels allowed
     domain: sanesales.com
     dist_domain: dist.sanesales.com
     github_repo: sane-apps/SaneSales

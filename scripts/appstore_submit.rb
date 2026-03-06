@@ -186,6 +186,11 @@ ACCESSIBILITY_ATTRIBUTE_KEY_MAP = {
   'supportsvoiceover' => 'supportsVoiceover'
 }.freeze
 
+ACCESSIBILITY_FAMILIES_BY_PLATFORM = {
+  'MAC_OS' => %w[MAC],
+  'IOS' => %w[IPHONE IPAD APPLE_TV APPLE_WATCH VISION]
+}.freeze
+
 IAP_DEFAULT_USD_PRICE = '6.99'
 IAP_DEFAULT_REVIEW_NOTE = 'One-time Pro unlock. Purchase unlocks advanced features immediately.'
 
@@ -233,6 +238,128 @@ end
 def present_value(value)
   trimmed = value.to_s.strip
   trimmed.empty? ? nil : trimmed
+end
+
+def config_value(hash, *keys)
+  return nil unless hash.is_a?(Hash)
+
+  keys.each do |key|
+    str_key = key.to_s
+    sym_key = str_key.to_sym
+    value = hash.key?(str_key) ? hash[str_key] : hash[sym_key]
+    present = present_value(value)
+    return present if present
+  end
+
+  nil
+end
+
+def metadata_overrides_for_platform(appstore_cfg, asc_platform)
+  metadata_cfg = appstore_cfg['metadata'].is_a?(Hash) ? appstore_cfg['metadata'] : {}
+  default_cfg = metadata_cfg['default'].is_a?(Hash) ? metadata_cfg['default'] : {}
+
+  platform_keys =
+    case asc_platform
+    when 'MAC_OS'
+      %w[macos mac macosx desktop]
+    when 'IOS'
+      %w[ios iphone ipad mobile]
+    else
+      []
+    end
+
+  platform_cfg = {}
+  platform_keys.each do |key|
+    candidate = metadata_cfg[key]
+    if candidate.is_a?(Hash)
+      platform_cfg = candidate
+      break
+    end
+  end
+
+  [default_cfg, platform_cfg]
+end
+
+def trim_metadata_to_limits(metadata)
+  limits = {
+    subtitle: 30,
+    promotionalText: 170,
+    keywords: 100,
+    description: 4000,
+    whatsNew: 4000
+  }
+
+  trimmed = metadata.dup
+  limits.each do |key, max_len|
+    value = trimmed[key]
+    next unless value && value.length > max_len
+
+    log_warn "Metadata field #{key} exceeds #{max_len} chars (#{value.length}); truncating."
+    trimmed[key] = value[0, max_len].rstrip
+  end
+  trimmed
+end
+
+def resolve_version_metadata(appstore_cfg:, app_name:, asc_platform:)
+  default_cfg, platform_cfg = metadata_overrides_for_platform(appstore_cfg, asc_platform)
+
+  description =
+    config_value(platform_cfg, 'description') ||
+    config_value(default_cfg, 'description') ||
+    config_value(appstore_cfg, 'description') ||
+    fallback_description(app_name)
+
+  keywords =
+    config_value(platform_cfg, 'keywords') ||
+    config_value(default_cfg, 'keywords') ||
+    config_value(appstore_cfg, 'keywords') ||
+    fallback_keywords(app_name)
+
+  metadata = {
+    description: description,
+    keywords: keywords,
+    subtitle: config_value(platform_cfg, 'subtitle') ||
+              config_value(default_cfg, 'subtitle') ||
+              config_value(appstore_cfg, 'subtitle'),
+    promotionalText: config_value(platform_cfg, 'promotional_text', 'promotionalText') ||
+                     config_value(default_cfg, 'promotional_text', 'promotionalText') ||
+                     config_value(appstore_cfg, 'promotional_text', 'promotionalText'),
+    supportUrl: config_value(platform_cfg, 'support_url', 'supportUrl') ||
+                config_value(default_cfg, 'support_url', 'supportUrl') ||
+                config_value(appstore_cfg, 'support_url', 'supportUrl'),
+    marketingUrl: config_value(platform_cfg, 'marketing_url', 'marketingUrl') ||
+                  config_value(default_cfg, 'marketing_url', 'marketingUrl') ||
+                  config_value(appstore_cfg, 'marketing_url', 'marketingUrl'),
+    whatsNew: config_value(platform_cfg, 'whats_new', 'whatsNew') ||
+              config_value(default_cfg, 'whats_new', 'whatsNew') ||
+              config_value(appstore_cfg, 'whats_new', 'whatsNew')
+  }.compact
+
+  trim_metadata_to_limits(metadata)
+end
+
+def resolve_review_notes(config, asc_platform)
+  appstore_cfg = config['appstore'] || {}
+  by_platform = appstore_cfg['review_notes_by_platform']
+
+  if by_platform.is_a?(Hash)
+    platform_keys =
+      case asc_platform
+      when 'MAC_OS'
+        %w[macos mac]
+      when 'IOS'
+        %w[ios iphone ipad]
+      else
+        []
+      end
+
+    platform_keys.each do |key|
+      note = config_value(by_platform, key)
+      return note if note
+    end
+  end
+
+  config_value(appstore_cfg, 'review_notes').to_s
 end
 
 def resolve_review_contact(config)
@@ -331,7 +458,7 @@ def asc_request(method, path, body: nil, token: nil, retry_on_unauthorized: true
     )
   end
 
-  unless response.is_a?(Net::HTTPSuccess) || response.is_a?(Net::HTTPCreated) || response.code == '409'
+  unless response.is_a?(Net::HTTPSuccess) || response.is_a?(Net::HTTPCreated)
     log_error "ASC API #{method.upcase} #{path} → #{response.code}"
     log_error response.body[0..500] if response.body
     return nil
@@ -1029,6 +1156,62 @@ def accessibility_error_detail(resp, code)
   resp.dig('errors', 0, 'detail') || resp.dig('errors', 0, 'title') || "HTTP #{code}"
 end
 
+def accessibility_publish_requires_live_app?(error_detail)
+  detail = error_detail.to_s.downcase
+  detail.include?("must be available on the app store to publish")
+end
+
+def normalize_attr_name(name)
+  name.to_s.gsub(/[^a-z0-9]/i, '').downcase
+end
+
+def locked_attribute_from_error(error)
+  pointer = error.dig('source', 'pointer').to_s
+  if pointer =~ %r{/data/attributes/([^/]+)$}
+    return Regexp.last_match(1)
+  end
+
+  detail = error['detail'].to_s
+  return Regexp.last_match(1) if detail =~ /Attribute '([^']+)' cannot be edited/i
+  return Regexp.last_match(1) if detail =~ /field '([^']+)' can not be modified/i
+
+  nil
+end
+
+def patch_resource_attrs_with_lock_retry(path:, resource_type:, resource_id:, attrs:, token:, label:)
+  pending = attrs.dup
+  return true if pending.empty?
+
+  loop do
+    body = {
+      data: {
+        type: resource_type,
+        id: resource_id,
+        attributes: pending
+      }
+    }
+    code, resp = asc_patch_with_status(path, body: body, token: token)
+    return true if [200, 201].include?(code)
+
+    errors = resp&.dig('errors')
+    locked_name = Array(errors).map { |e| locked_attribute_from_error(e) }.compact.first
+
+    if locked_name
+      normalized_locked = normalize_attr_name(locked_name)
+      key_to_drop = pending.keys.find { |k| normalize_attr_name(k) == normalized_locked }
+      if key_to_drop
+        pending.delete(key_to_drop)
+        log_warn "#{label}: '#{key_to_drop}' is locked in current ASC state; skipping for now."
+        return true if pending.empty?
+        next
+      end
+    end
+
+    log_error "#{label} update failed: #{accessibility_error_detail(resp, code)}"
+    return false
+  end
+end
+
 def parse_accessibility_decl_specs(raw_cfg)
   return [true, {}] unless raw_cfg.is_a?(Hash)
 
@@ -1086,11 +1269,15 @@ def accessibility_unmodifiable_state?(state)
   %w[PUBLISHED REPLACED].include?(state.to_s.upcase)
 end
 
-def ensure_accessibility_declarations(app_id, config, token)
+def ensure_accessibility_declarations(app_id, config, token, asc_platform: nil)
   raw_cfg = config.dig('appstore', 'accessibility_declarations')
   return true if raw_cfg.nil?
 
   publish, specs = parse_accessibility_decl_specs(raw_cfg)
+  if asc_platform
+    allowed = ACCESSIBILITY_FAMILIES_BY_PLATFORM[asc_platform] || []
+    specs = specs.select { |family, _| allowed.include?(family) }
+  end
   if specs.empty?
     log_warn 'appstore.accessibility_declarations is configured, but no valid family specs were found.'
     return true
@@ -1156,11 +1343,16 @@ def ensure_accessibility_declarations(app_id, config, token)
       action = publish ? 'updated + published' : 'updated'
       log_info "Accessibility declaration #{declaration_id} (#{family}) #{action}."
     else
+      detail = accessibility_error_detail(update_resp, update_code)
+      if publish && accessibility_publish_requires_live_app?(detail)
+        log_warn "Accessibility declaration #{declaration_id} (#{family}) updated as draft; publish deferred until this platform is live."
+        next
+      end
       if update_code == 409 && accessibility_unmodifiable_state?(declaration_state) && accessibility_attrs_match?(declaration_attrs, attrs)
         log_info "Accessibility declaration #{declaration_id} (#{family}) is immutable but already matches desired attributes."
         next
       end
-      log_error "Failed to update accessibility declaration #{declaration_id} (#{family}): #{accessibility_error_detail(update_resp, update_code)}"
+      log_error "Failed to update accessibility declaration #{declaration_id} (#{family}): #{detail}"
       ok = false
     end
   end
@@ -1219,48 +1411,66 @@ def ensure_primary_category(app_info_id, category_id, token)
   asc_patch("/appInfos/#{app_info_id}", body: body, token: token)
 end
 
-def ensure_app_info_localization(app_info_id, privacy_policy_url, token, locale: 'en-US')
-  return if app_info_id.to_s.empty? || privacy_policy_url.to_s.strip.empty?
+def ensure_app_info_localization(app_info_id, privacy_policy_url, token, locale: 'en-US', subtitle: nil)
+  return true if app_info_id.to_s.empty?
 
   loc = find_locale_record("/appInfos/#{app_info_id}/appInfoLocalizations?limit=50", token, locale: locale)
-  return unless loc
-
-  current = loc.dig('attributes', 'privacyPolicyUrl').to_s.strip
-  desired = privacy_policy_url.to_s.strip
-  return if desired.empty? || current == desired
-
-  body = {
-    data: {
-      type: 'appInfoLocalizations',
-      id: loc['id'],
-      attributes: { privacyPolicyUrl: desired }
-    }
-  }
-  asc_patch("/appInfoLocalizations/#{loc['id']}", body: body, token: token)
-end
-
-def ensure_version_localization(version_id, description, keywords, support_url, token, locale: 'en-US')
-  loc = find_locale_record("/appStoreVersions/#{version_id}/appStoreVersionLocalizations?limit=50", token, locale: locale)
-  return unless loc
+  return false unless loc
 
   attrs = {}
-  desc = description.to_s.strip
-  kw = keywords.to_s.strip
-  sup = support_url.to_s.strip
 
-  attrs[:description] = desc unless desc.empty?
-  attrs[:keywords] = kw unless kw.empty?
-  attrs[:supportUrl] = sup unless sup.empty?
-  return if attrs.empty?
+  desired_privacy = privacy_policy_url.to_s.strip
+  current_privacy = loc.dig('attributes', 'privacyPolicyUrl').to_s.strip
+  attrs[:privacyPolicyUrl] = desired_privacy if !desired_privacy.empty? && current_privacy != desired_privacy
 
-  body = {
-    data: {
-      type: 'appStoreVersionLocalizations',
-      id: loc['id'],
-      attributes: attrs
-    }
-  }
-  asc_patch("/appStoreVersionLocalizations/#{loc['id']}", body: body, token: token)
+  desired_subtitle = subtitle.to_s.strip
+  current_subtitle = loc.dig('attributes', 'subtitle').to_s.strip
+  attrs[:subtitle] = desired_subtitle if !desired_subtitle.empty? && current_subtitle != desired_subtitle
+
+  return true if attrs.empty?
+
+  patch_resource_attrs_with_lock_retry(
+    path: "/appInfoLocalizations/#{loc['id']}",
+    resource_type: 'appInfoLocalizations',
+    resource_id: loc['id'],
+    attrs: attrs,
+    token: token,
+    label: 'App info localization'
+  )
+end
+
+def ensure_version_localization(version_id, metadata, token, locale: 'en-US')
+  loc = find_locale_record("/appStoreVersions/#{version_id}/appStoreVersionLocalizations?limit=50", token, locale: locale)
+  return false unless loc
+
+  attrs = {}
+  {
+    description: 'description',
+    keywords: 'keywords',
+    promotionalText: 'promotionalText',
+    supportUrl: 'supportUrl',
+    marketingUrl: 'marketingUrl',
+    whatsNew: 'whatsNew'
+  }.each do |target_key, metadata_key|
+    value = present_value(metadata[metadata_key]) || present_value(metadata[target_key])
+    attrs[target_key] = value if value
+  end
+  return true if attrs.empty?
+
+  log_info "Updating version localization fields: #{attrs.keys.join(', ')}"
+  patch_resource_attrs_with_lock_retry(
+    path: "/appStoreVersionLocalizations/#{loc['id']}",
+    resource_type: 'appStoreVersionLocalizations',
+    resource_id: loc['id'],
+    attrs: attrs,
+    token: token,
+    label: 'Version localization'
+  )
+end
+
+def version_build_id(version_id, token)
+  resp = asc_get("/appStoreVersions/#{version_id}/build", token: token)
+  resp&.dig('data', 'id')
 end
 
 def ensure_version_copyright(version_id, desired_value, token)
@@ -1313,7 +1523,7 @@ def ensure_build_export_compliance(build_id, token)
   asc_patch("/builds/#{build_id}", body: body, token: token)
 end
 
-def ensure_minimum_review_metadata(app_id:, version_id:, build_id:, config:, token:)
+def ensure_minimum_review_metadata(app_id:, version_id:, build_id:, config:, token:, asc_platform:)
   appstore_cfg = config['appstore'] || {}
   app_name = config['name'].to_s.strip
   app_name = 'SaneApps' if app_name.empty?
@@ -1325,15 +1535,20 @@ def ensure_minimum_review_metadata(app_id:, version_id:, build_id:, config:, tok
   app_info_id = latest_app_info_id(app_id, token)
   category_id = CATEGORY_ID_MAP[appstore_cfg['category'].to_s.strip]
   ensure_primary_category(app_info_id, category_id, token) if app_info_id && category_id
-  ensure_app_info_localization(app_info_id, appstore_cfg['privacy_policy_url'], token) if app_info_id
 
-  description = appstore_cfg['description']
-  description = fallback_description(app_name) if description.to_s.strip.empty?
-  keywords = appstore_cfg['keywords']
-  keywords = fallback_keywords(app_name) if keywords.to_s.strip.empty?
-  ensure_version_localization(version_id, description, keywords, appstore_cfg['support_url'], token)
+  metadata = resolve_version_metadata(
+    appstore_cfg: appstore_cfg,
+    app_name: app_name,
+    asc_platform: asc_platform
+  )
+  subtitle = metadata[:subtitle] || metadata['subtitle']
+  unless ensure_app_info_localization(app_info_id, appstore_cfg['privacy_policy_url'], token, subtitle: subtitle)
+    log_error 'Failed to update app info localization.'
+    return false
+  end
+  return false unless ensure_version_localization(version_id, metadata, token)
 
-  return false unless ensure_accessibility_declarations(app_id, config, token)
+  return false unless ensure_accessibility_declarations(app_id, config, token, asc_platform: asc_platform)
 
   default_copyright = "#{Time.now.year} SaneApps"
   ensure_version_copyright(version_id, appstore_cfg['copyright'].to_s.strip.empty? ? default_copyright : appstore_cfg['copyright'], token)
@@ -2349,6 +2564,8 @@ OptionParser.new do |opts|
   opts.on('--preflight-version-state', 'Check editable ASC version state only (no upload, no submission)') { options[:preflight_version_state] = true }
   opts.on('--repair-version-state', 'Attempt ASC lane repair before version-state preflight') { options[:repair_version_state] = true }
   opts.on('--withdraw-version VERSION', 'Withdraw an existing ASC app version lane (clears submission + linked review submission)') { |v| options[:withdraw_version] = v }
+  opts.on('--list-builds', 'List ASC builds for app/platform (diagnostic)') { options[:list_builds] = true }
+  opts.on('--sync-metadata-only', 'Sync metadata/accessibility/review fields for an existing version (no upload, no submission)') { options[:sync_metadata_only] = true }
   opts.on('--test-screenshots', 'Test screenshot resize only (no API calls)') { options[:test_screenshots] = true }
 end.parse!
 
@@ -2477,6 +2694,59 @@ if options[:withdraw_version]
   exit 0
 end
 
+if options[:list_builds]
+  required = %i[app_id platform]
+  required.each do |key|
+    unless options[key]
+      log_error "Missing required option: --#{key.to_s.tr('_', '-')}"
+      exit 1
+    end
+  end
+
+  asc_platform = PLATFORM_MAP[options[:platform]]
+  unless asc_platform
+    log_error "Unknown platform: #{options[:platform]} (use macos or ios)"
+    exit 1
+  end
+
+  token = generate_jwt
+  path = "/builds?filter[app]=#{options[:app_id]}&filter[preReleaseVersion.platform]=#{asc_platform}&include=preReleaseVersion&limit=200"
+  resp = asc_get(path, token: token)
+  unless resp && resp['data']
+    log_error 'Failed to list builds from ASC.'
+    exit 1
+  end
+
+  pre_versions = {}
+  (resp['included'] || []).each do |inc|
+    next unless inc['type'] == 'preReleaseVersions'
+    pre_versions[inc['id']] = inc.dig('attributes', 'version')
+  end
+
+  rows = (resp['data'] || []).map do |b|
+    attrs = b['attributes'] || {}
+    pre_id = b.dig('relationships', 'preReleaseVersion', 'data', 'id')
+    {
+      id: b['id'],
+      build: attrs['version'],
+      processing: attrs['processingState'],
+      expired: attrs['expired'],
+      uploaded: attrs['uploadedDate'],
+      prerelease: pre_versions[pre_id]
+    }
+  end
+
+  if rows.empty?
+    log_warn "No builds found for app #{options[:app_id]} on #{options[:platform]}."
+    exit 0
+  end
+
+  rows.sort_by { |r| [r[:uploaded].to_s, r[:build].to_s] }.reverse.each do |r|
+    log_info "build=#{r[:build]} prerelease=#{r[:prerelease]} state=#{r[:processing]} expired=#{r[:expired]} uploaded=#{r[:uploaded]} id=#{r[:id]}"
+  end
+  exit 0
+end
+
 if options[:screenshots_only]
   required = %i[app_id version platform project_root]
   required.each do |key|
@@ -2520,6 +2790,65 @@ if options[:screenshots_only]
   end
 
   log_info 'Screenshot-only operation complete.'
+  exit 0
+end
+
+if options[:sync_metadata_only]
+  required = %i[app_id version platform project_root]
+  required.each do |key|
+    unless options[key]
+      log_error "Missing required option: --#{key.to_s.tr('_', '-')}"
+      exit 1
+    end
+  end
+
+  asc_platform = PLATFORM_MAP[options[:platform]]
+  unless asc_platform
+    log_error "Unknown platform: #{options[:platform]} (use macos or ios)"
+    exit 1
+  end
+
+  project_root = options[:project_root]
+  app_id = options[:app_id]
+  version = options[:version]
+  config_path = File.join(project_root, '.saneprocess')
+  config = if File.exist?(config_path)
+             YAML.safe_load(File.read(config_path)) || {}
+           else
+             {}
+           end
+
+  token = generate_jwt
+  version_record = find_version_any_state(app_id, asc_platform, version, token)
+  unless version_record
+    log_error "Could not find App Store version #{version} on #{options[:platform]} for app #{app_id}."
+    exit 1
+  end
+
+  version_id = version_record['id']
+  build_id = version_build_id(version_id, token)
+  log_info "Syncing metadata for app=#{app_id} version=#{version} platform=#{options[:platform]} (state=#{version_record.dig('attributes', 'appStoreState')})"
+
+  token = generate_jwt
+  metadata_ok = ensure_minimum_review_metadata(
+    app_id: app_id,
+    version_id: version_id,
+    build_id: build_id,
+    config: config,
+    token: token,
+    asc_platform: asc_platform
+  )
+
+  contact = resolve_review_contact(config)
+  contact[:notes] = resolve_review_notes(config, asc_platform)
+  ensure_review_detail(version_id, contact, token)
+
+  unless metadata_ok
+    log_error 'Metadata sync failed. Resolve listed issues and retry.'
+    exit 1
+  end
+
+  log_info 'Metadata sync complete.'
   exit 0
 end
 
@@ -2675,7 +3004,7 @@ end
 
 # Step 5: Ensure review contact detail
 contact = resolve_review_contact(config)
-contact[:notes] = config.dig('appstore', 'review_notes').to_s
+contact[:notes] = resolve_review_notes(config, asc_platform)
 ensure_review_detail(version_id, contact, token)
 
 # Step 6: Upload screenshots (if configured)
@@ -2692,7 +3021,8 @@ metadata_ok = ensure_minimum_review_metadata(
   version_id: version_id,
   build_id: build_id,
   config: config,
-  token: token
+  token: token,
+  asc_platform: asc_platform
 )
 unless metadata_ok
   log_error 'App metadata/accessibility readiness failed. Resolve ASC metadata issues before submission.'

@@ -81,6 +81,113 @@ rotate_if_large() {
   fi
 }
 
+safe_remove_path() {
+  local path="$1"
+  case "$path" in
+    "$HOME/SaneApps/apps/"*|"$HOME/Library/Developer/Xcode/DerivedData/"*)
+      ;;
+    *)
+      log "Refusing delete outside safe roots: $path"
+      return 1
+      ;;
+  esac
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "DRY RUN: would remove $path"
+    return 0
+  fi
+
+  rm -rf "$path"
+}
+
+prune_sweep_dirs() {
+  local sweeps_root="$1"
+  local keep_days="$2"
+  local label="$3"
+  local min_keep="$4"
+
+  [ -d "$sweeps_root" ] || return 0
+  [[ "$keep_days" =~ ^[0-9]+$ ]] || keep_days=3
+  [[ "$min_keep" =~ ^[0-9]+$ ]] || min_keep=4
+
+  local cutoff
+  cutoff=$(date -v-"${keep_days}"d +"%Y-%m-%d")
+  local removed=0
+  local freed_mb=0
+
+  local sweep_idx=0
+  for sweep_dir in $(ls -1dt "$sweeps_root"/sweep_* "$sweeps_root"/challenger_* 2>/dev/null); do
+    [ -d "$sweep_dir" ] || continue
+    sweep_idx=$((sweep_idx + 1))
+    if [ "$sweep_idx" -le "$min_keep" ]; then
+      continue
+    fi
+
+    local sweep_date
+    sweep_date=$(basename "$sweep_dir" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
+    [ -z "$sweep_date" ] && continue
+
+    if [[ "$sweep_date" < "$cutoff" ]]; then
+      local dir_mb
+      dir_mb=$(du -sm "$sweep_dir" 2>/dev/null | awk '{print $1}')
+      safe_remove_path "$sweep_dir" || continue
+      removed=$((removed + 1))
+      freed_mb=$((freed_mb + dir_mb))
+    fi
+  done
+
+  if [ "$removed" -gt 0 ]; then
+    log "Pruned $removed ${label} dir(s), freed ${freed_mb}MB (keep_days=$keep_days min_keep=$min_keep)"
+  else
+    log "No ${label} dirs older than ${keep_days} day(s) beyond min_keep=$min_keep"
+  fi
+}
+
+cleanup_training_artifacts() {
+  # Production sweeps should be short-lived checkpoints; keep recent history only.
+  prune_sweep_dirs "$HOME/SaneApps/apps/SaneAI/models/sweeps" "${SANEAI_SWEEP_KEEP_DAYS:-3}" "SaneAI sweep" "${SANEAI_SWEEP_MIN_KEEP:-4}"
+  prune_sweep_dirs "$HOME/SaneApps/apps/SaneSync/models/sweeps" "${SANESYNC_SWEEP_KEEP_DAYS:-7}" "SaneSync sweep" "${SANESYNC_SWEEP_MIN_KEEP:-4}"
+
+  # Temporary fusion test outputs can be multi-GB and are safe to discard.
+  for tmp_dir in "$HOME/SaneApps/apps/SaneSync/models"/_fuse_test_*; do
+    [ -d "$tmp_dir" ] || continue
+    local dir_mb
+    dir_mb=$(du -sm "$tmp_dir" 2>/dev/null | awk '{print $1}')
+    safe_remove_path "$tmp_dir" || continue
+    log "Removed temporary fusion dir $(basename "$tmp_dir") (${dir_mb}MB)"
+  done
+}
+
+cleanup_large_deriveddata() {
+  local dd_root="$HOME/Library/Developer/Xcode/DerivedData"
+  local max_gb="${DERIVEDDATA_MAX_GB:-5}"
+  [ -d "$dd_root" ] || return 0
+
+  local dd_mb
+  dd_mb=$(du -sm "$dd_root" 2>/dev/null | awk '{print $1}')
+  [ -n "$dd_mb" ] || dd_mb=0
+
+  local max_mb=$((max_gb * 1024))
+  if [ "$dd_mb" -le "$max_mb" ]; then
+    log "DerivedData within limit (${dd_mb}MB <= ${max_mb}MB)"
+    return 0
+  fi
+
+  if is_training_running || is_nightly_running; then
+    log "DerivedData is large (${dd_mb}MB) but build/training is active; skipping cleanup."
+    return 0
+  fi
+
+  local removed=0
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    safe_remove_path "$path" || continue
+    removed=$((removed + 1))
+  done < <(find "$dd_root" -mindepth 1 -maxdepth 1 -print)
+
+  log "DerivedData cleanup removed $removed path(s) (pre-clean size: ${dd_mb}MB)"
+}
+
 cleanup_stale_deriveddata_apps() {
   local stale_count
   stale_count=$(ps -axo command | awk '/\/DerivedData\/.*\/Sane[^ ]*\.app\/Contents\/MacOS\/Sane/{count++} END{print count+0}')
@@ -191,6 +298,8 @@ main() {
   rotate_if_large "$OUTPUT_DIR/nightly.stdout.log" 10485760 2097152
   rotate_if_large "$OUTPUT_DIR/nightly.stderr.log" 10485760 2097152
 
+  cleanup_training_artifacts
+  cleanup_large_deriveddata
   cleanup_stale_deriveddata_apps
   maybe_reboot
 

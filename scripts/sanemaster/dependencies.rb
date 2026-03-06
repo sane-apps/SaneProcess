@@ -495,7 +495,8 @@ module SaneMasterModules
         orphan_count: analysis[:orphan_processes].length,
         max_per_server: max_per_server,
         launch_agent: mcp_watchdog_launch_agent_status,
-        recent_errors: mcp_watchdog_recent_errors
+        recent_errors: mcp_watchdog_recent_errors,
+        session_transport: mcp_watchdog_session_transport_errors
       }
     end
 
@@ -537,6 +538,23 @@ module SaneMasterModules
         doctor[:recent_errors].each { |line| puts "   - #{line}" }
       else
         puts '   ✅ No recent watchdog errors.'
+      end
+
+      session_transport = doctor[:session_transport] || {}
+      if session_transport[:total].to_i.positive?
+        puts ''
+        puts "   ⚠️  Session transport failures (last #{session_transport[:window_seconds]}s): #{session_transport[:total]}"
+        by_server = session_transport[:by_server] || {}
+        by_server.sort_by { |name, _| name.to_s }.each do |name, count|
+          puts "   - #{name}: #{count}"
+        end
+        if session_transport[:latest_session]
+          puts "   Latest session: #{session_transport[:latest_session]}"
+        end
+        puts '   Likely stale MCP bridge in current Codex session.'
+        puts '   Fastest recovery: restart Codex app/session.'
+      else
+        puts '   ✅ No recent session transport failures detected.'
       end
 
       puts ''
@@ -613,6 +631,79 @@ module SaneMasterModules
       hits.uniq.last(6)
     rescue StandardError
       []
+    end
+
+    def mcp_watchdog_session_transport_errors(window_seconds = 3600)
+      sessions_root = File.expand_path('~/.codex/sessions')
+      latest = Dir.glob(File.join(sessions_root, '**', '*.jsonl'))
+                  .max_by { |path| File.mtime(path) rescue Time.at(0) }
+
+      result = {
+        window_seconds: window_seconds,
+        total: 0,
+        by_server: {},
+        latest_session: latest
+      }
+      return result unless latest && File.exist?(latest)
+
+      cutoff = Time.now - window_seconds
+      call_to_tool = {}
+      by_tool = Hash.new(0)
+
+      File.foreach(latest) do |line|
+        begin
+          row = JSON.parse(line)
+          payload = row['payload']
+          next unless payload.is_a?(Hash)
+
+          ts = parse_mcp_row_timestamp(row['timestamp'])
+          next if ts && ts < cutoff
+
+          if payload['type'] == 'function_call'
+            name = payload['name'].to_s
+            call_id = payload['call_id'].to_s
+            if name.start_with?('mcp__') && !call_id.empty?
+              call_to_tool[call_id] = name
+            end
+          elsif payload['type'] == 'function_call_output'
+            output = payload['output'].to_s
+            next unless output.include?('Transport closed')
+
+            call_id = payload['call_id'].to_s
+            tool_name = call_to_tool[call_id]
+            next if tool_name.to_s.empty?
+
+            by_tool[tool_name] += 1
+          end
+        rescue StandardError
+          next
+        end
+      end
+
+      by_server = Hash.new(0)
+      by_tool.each do |tool_name, count|
+        server = extract_mcp_server_name(tool_name)
+        by_server[server] += count
+      end
+
+      result[:total] = by_tool.values.sum
+      result[:by_server] = by_server
+      result
+    end
+
+    def parse_mcp_row_timestamp(value)
+      return nil if value.to_s.strip.empty?
+
+      Time.parse(value.to_s)
+    rescue StandardError
+      nil
+    end
+
+    def extract_mcp_server_name(tool_name)
+      match = tool_name.to_s.match(/^mcp__([^_]+)__/)
+      return 'unknown' unless match
+
+      normalize_server_name(match[1])
     end
 
     def persist_mcp_doctor_snapshot(payload)

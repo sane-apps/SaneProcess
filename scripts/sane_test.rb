@@ -972,6 +972,17 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
       "#{MINI_HOST}:#{remote_repo}/"
     )
     abort "   ❌ Failed to sync app repo to mini: #{local_repo}" unless ok
+
+    sync_ignored_test_assets_to_mini(local_repo, remote_repo)
+  end
+
+  def sync_ignored_test_assets_to_mini(local_repo, remote_repo)
+    assets_dir = File.join(File.expand_path(local_repo), 'Tests', 'Assets')
+    return unless Dir.exist?(assets_dir)
+
+    remote_assets_dir = File.join(remote_repo, 'Tests', 'Assets')
+    ok = system('rsync', '-az', '--delete', "#{assets_dir}/", "#{MINI_HOST}:#{remote_assets_dir}/")
+    abort "   ❌ Failed to sync ignored test assets to mini: #{assets_dir}" unless ok
   end
 
   def exec_remote_sane_test(remote_saneprocess_dir)

@@ -437,9 +437,24 @@ class SaneMaster
       "#{File.expand_path(local_dir)}/",
       "mini:#{remote_dir}/"
     )
-    return if ok
+    abort "❌ Failed to sync #{label || 'the current workspace snapshot'} to the mini." unless ok
 
-    abort "❌ Failed to sync #{label || 'the current workspace snapshot'} to the mini."
+    sync_ignored_test_assets_to_mini!(local_dir, remote_dir)
+  end
+
+  def sync_ignored_test_assets_to_mini!(local_dir, remote_dir)
+    assets_dir = File.join(File.expand_path(local_dir), 'Tests', 'Assets')
+    return unless Dir.exist?(assets_dir)
+
+    remote_assets_dir = File.join(remote_dir, 'Tests', 'Assets')
+    ok = system(
+      'rsync',
+      '-az',
+      '--delete',
+      "#{assets_dir}/",
+      "mini:#{remote_assets_dir}/"
+    )
+    abort "❌ Failed to sync ignored test assets to the mini." unless ok
   end
 
   def prepare_remote_repo_for_command!(remote_repo)

@@ -177,5 +177,6 @@
     "serena@claude-plugins-official": true,
     "hookify@claude-plugins-official": true
   },
-  "skipDangerousModePermissionPrompt": true
+  "skipDangerousModePermissionPrompt": true,
+  "effortLevel": "high"
 }

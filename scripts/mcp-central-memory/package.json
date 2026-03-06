@@ -1,0 +1,14 @@
+{
+  "name": "mcp-central-memory",
+  "version": "1.0.0",
+  "description": "Central semantic memory MCP server backed by Postgres + pgvector",
+  "private": true,
+  "scripts": {
+    "start": "node ./server.mjs",
+    "bootstrap": "./bootstrap-local.sh"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "pg": "^8.19.0"
+  }
+}

@@ -102,11 +102,65 @@ if ! mkdir "$LOCKFILE" 2>/dev/null; then
     exit 1
   fi
 fi
+prune_old_sweeps() {
+  local report_file="${1:-}"
+  local keep_days="${SWEEP_KEEP_DAYS:-3}"
+  local min_keep="${MIN_SWEEPS_TO_KEEP:-4}"
+
+  if ! [[ "$keep_days" =~ ^[0-9]+$ ]]; then
+    keep_days=3
+  fi
+  if ! [[ "$min_keep" =~ ^[0-9]+$ ]]; then
+    min_keep=4
+  fi
+
+  local prune_cutoff
+  prune_cutoff=$(date -v-"${keep_days}"d +"%Y-%m-%d")
+  local pruned_count=0
+  local pruned_size=0
+
+  local sweep_idx=0
+  for sweep_dir in $(ls -1dt "$MODELS_DIR/sweeps"/sweep_* "$MODELS_DIR/sweeps"/challenger_* 2>/dev/null); do
+    [ -d "$sweep_dir" ] || continue
+    sweep_idx=$((sweep_idx + 1))
+    if [ "$sweep_idx" -le "$min_keep" ]; then
+      continue
+    fi
+
+    local sweep_date
+    sweep_date=$(basename "$sweep_dir" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
+    [ -z "$sweep_date" ] && continue
+
+    if [[ "$sweep_date" < "$prune_cutoff" ]]; then
+      local dir_size
+      dir_size=$(du -sm "$sweep_dir" 2>/dev/null | awk '{print $1}')
+      rm -rf "$sweep_dir"
+      pruned_count=$((pruned_count + 1))
+      pruned_size=$((pruned_size + dir_size))
+    fi
+  done
+
+  if [ "$pruned_count" -gt 0 ]; then
+    local summary
+    summary="Pruned $pruned_count old sweep(s), freed ${pruned_size}MB (keep_days=$keep_days, min_keep=$min_keep)."
+    echo "$summary" >&2
+    if [ -n "$report_file" ] && [ -f "$report_file" ]; then
+      echo "" >> "$report_file"
+      echo "**Pruned:** $pruned_count old sweep(s) removed (${pruned_size}MB freed). Keeping last ${keep_days} day(s), minimum ${min_keep} sweep dir(s)." >> "$report_file"
+    fi
+  fi
+}
+
 cleanup() {
+  prune_old_sweeps "" || true
   rm -rf "$LOCKFILE"
   rm -f "${RESULTS_FILE:-}"
 }
 trap cleanup EXIT
+
+# Backstop: prune stale sweeps before training starts so old checkpoints
+# cannot accumulate after prior interrupted runs.
+prune_old_sweeps "" || true
 
 remaining_budget_seconds() {
   now=$(date +%s)
@@ -550,30 +604,9 @@ fi
 echo "" >> "$REPORT"
 
 # =============================================================================
-# Step 6: Prune old sweeps (keep last 3 days)
+# Step 6: Prune old sweeps (default keep last 3 days)
 # =============================================================================
-PRUNE_CUTOFF=$(date -v-3d +"%Y-%m-%d")
-PRUNED_COUNT=0
-PRUNED_SIZE=0
-
-for sweep_dir in "$MODELS_DIR/sweeps"/sweep_* "$MODELS_DIR/sweeps"/challenger_*; do
-  [ -d "$sweep_dir" ] || continue
-  # Extract date from directory name (sweep_ITERS_YYYY-MM-DD or challenger_MODEL_ITERS_YYYY-MM-DD)
-  sweep_date=$(basename "$sweep_dir" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
-  [ -z "$sweep_date" ] && continue
-
-  if [[ "$sweep_date" < "$PRUNE_CUTOFF" ]]; then
-    dir_size=$(du -sm "$sweep_dir" 2>/dev/null | awk '{print $1}')
-    rm -rf "$sweep_dir"
-    PRUNED_COUNT=$((PRUNED_COUNT + 1))
-    PRUNED_SIZE=$((PRUNED_SIZE + dir_size))
-  fi
-done
-
-if [ $PRUNED_COUNT -gt 0 ]; then
-  echo "" >> "$REPORT"
-  echo "**Pruned:** $PRUNED_COUNT old sweep(s) removed (${PRUNED_SIZE}MB freed). Keeping last 3 days." >> "$REPORT"
-fi
+prune_old_sweeps "$REPORT"
 
 # Footer
 cat >> "$REPORT" <<EOF
