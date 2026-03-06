@@ -446,7 +446,7 @@ class SaneMaster
     remote_cmd = <<~SH
       set -e
       cd #{Shellwords.escape(remote_repo)}
-      if [ -f project.yml ]; then
+      if [ -f project.yml ] && ! ls *.xcodeproj >/dev/null 2>&1; then
         xcodegen generate >/dev/null
       fi
     SH
