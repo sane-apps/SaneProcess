@@ -436,11 +436,28 @@ else:
 PY
 }
 
+appstore_platform_tokens() {
+    local raw_platforms=""
+    if declare -p APPSTORE_PLATFORMS >/dev/null 2>&1; then
+        raw_platforms="${APPSTORE_PLATFORMS[*]}"
+    else
+        raw_platforms="${APPSTORE_PLATFORMS:-macos}"
+    fi
+
+    raw_platforms="${raw_platforms//,/ }"
+    printf '%s\n' ${raw_platforms}
+}
+
+appstore_platform_enabled() {
+    local target="$1"
+    appstore_platform_tokens | grep -qx "${target}"
+}
+
 update_website_app_store_links_if_live() {
     if [ "${APPSTORE_ENABLED}" != "true" ]; then
         return 0
     fi
-    if ! echo "${APPSTORE_PLATFORMS:-}" | grep -qi "ios"; then
+    if ! appstore_platform_enabled "ios"; then
         return 0
     fi
     if [ -z "${APPSTORE_APP_ID}" ] || ! [[ "${APPSTORE_APP_ID}" =~ ^[0-9]+$ ]]; then
@@ -3116,11 +3133,12 @@ check_appstore_connect_version_state_gate() {
         return 1
     fi
 
-    local raw_platforms="${APPSTORE_PLATFORMS:-macos}"
+    local raw_platforms
+    raw_platforms="$(appstore_platform_tokens)"
     local platform
     local checked=0
 
-    for platform in $(echo "${raw_platforms}" | tr ',' ' '); do
+    for platform in ${raw_platforms}; do
         case "${platform}" in
             macos|ios)
                 checked=$((checked + 1))
@@ -4701,13 +4719,13 @@ PY
         fi
 
         # iOS build and submission (if configured)
-        if [ "${APPSTORE_SUBMIT_FAILED}" = false ] && echo "${APPSTORE_PLATFORMS}" | grep -q "ios"; then
+        if [ "${APPSTORE_SUBMIT_FAILED}" = false ] && appstore_platform_enabled "ios"; then
             IOS_SCHEME="${APPSTORE_IOS_SCHEME:-${SCHEME}}"
             log_info ""
             log_info "Building iOS for App Store (scheme: ${IOS_SCHEME})..."
 
             IOS_ARCHIVE="${BUILD_DIR}/${APP_NAME}-iOS.xcarchive"
-            ios_args=(archive -scheme "${IOS_SCHEME}" -configuration Release \
+            ios_args=(archive -scheme "${IOS_SCHEME}" -configuration "${APPSTORE_CONFIG}" \
                       -archivePath "${IOS_ARCHIVE}" \
                       -destination "generic/platform=iOS" \
                       -allowProvisioningUpdates)
