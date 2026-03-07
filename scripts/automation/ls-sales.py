@@ -118,6 +118,8 @@ def filter_orders(orders, args):
         a = o["attributes"]
         if a.get("status") != "paid":
             continue
+        if a.get("total", 0) == 0:
+            continue
         if cutoff:
             created = parse_order_timestamp(a.get("created_at"))
             if created is None:
@@ -291,6 +293,8 @@ def print_daily(all_orders):
         "All Time": {"orders": 0, "revenue": 0, "fees": 0},
     }
 
+    redemptions = {"Today": 0, "Yesterday": 0, "This Week": 0, "All Time": 0}
+
     for o in all_orders:
         a = o["attributes"]
         if a.get("status") != "paid":
@@ -299,6 +303,19 @@ def print_daily(all_orders):
         created = parse_order_timestamp(a.get("created_at"))
         if created is None:
             continue
+
+        # Track $0 discount redemptions separately (check total, not subtotal —
+        # LS keeps subtotal_usd at full price and applies discount_total separately)
+        if a.get("total", 0) == 0:
+            redemptions["All Time"] += 1
+            if created >= week_start:
+                redemptions["This Week"] += 1
+            if created >= today_start:
+                redemptions["Today"] += 1
+            elif created >= yesterday_start:
+                redemptions["Yesterday"] += 1
+            continue
+
         fee, _, _ = calc_fee(subtotal, a.get("currency", "USD"), created)
 
         buckets["All Time"]["orders"] += 1
@@ -325,6 +342,15 @@ def print_daily(all_orders):
         b = buckets[name]
         net = b["revenue"] - b["fees"]
         print(f"{name:<15} {b['orders']:>7} ${b['revenue']:>9.2f} ${b['fees']:>9.2f} ${net:>9.2f}")
+
+    total_redemptions = sum(redemptions.values())
+    if total_redemptions > 0:
+        print()
+        parts = []
+        for name in ["Today", "Yesterday", "This Week", "All Time"]:
+            if redemptions[name] > 0:
+                parts.append(f"{name}: {redemptions[name]}")
+        print(f"Discount redemptions ($0): {', '.join(parts)}")
 
     # Recent orders (last 5)
     recent = sorted(
