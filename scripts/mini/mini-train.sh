@@ -230,11 +230,23 @@ fi
 # Validate training data exists
 if [ ! -f "$TRAIN_DIR/train.jsonl" ]; then
   echo "**ERROR:** train.jsonl not found at $TRAIN_DIR" >> "$REPORT"
+  echo "- App dir: $APP_DIR" >> "$REPORT"
+  echo "- Working directory: $(pwd)" >> "$REPORT"
+  echo "- training_data contents:" >> "$REPORT"
+  ls -la "$TRAIN_DIR" >> "$REPORT" 2>&1 || echo "  (training_data directory missing)" >> "$REPORT"
+  echo "- Git status:" >> "$REPORT"
+  git status --short --branch >> "$REPORT" 2>&1 || echo "  (git status unavailable)" >> "$REPORT"
   echo "Training data missing" >&2
   exit 1
 fi
 if [ ! -f "$TRAIN_DIR/valid.jsonl" ]; then
   echo "**ERROR:** valid.jsonl not found at $TRAIN_DIR" >> "$REPORT"
+  echo "- App dir: $APP_DIR" >> "$REPORT"
+  echo "- Working directory: $(pwd)" >> "$REPORT"
+  echo "- training_data contents:" >> "$REPORT"
+  ls -la "$TRAIN_DIR" >> "$REPORT" 2>&1 || echo "  (training_data directory missing)" >> "$REPORT"
+  echo "- Git status:" >> "$REPORT"
+  git status --short --branch >> "$REPORT" 2>&1 || echo "  (git status unavailable)" >> "$REPORT"
   echo "Validation data missing" >&2
   exit 1
 fi
@@ -381,18 +393,28 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
     continue
   fi
 
+  STEPS_PER_EVAL=$(grep '^steps_per_eval:' "$SWEEP_CONFIG" | awk '{print $2}' | tail -1)
+  if ! [[ "$STEPS_PER_EVAL" =~ ^[0-9]+$ ]]; then
+    STEPS_PER_EVAL=100
+  fi
+
+  VAL_BATCHES=$(grep '^val_batches:' "$SWEEP_CONFIG" | awk '{print $2}' | tail -1)
+  if ! [[ "$VAL_BATCHES" =~ ^[0-9]+$ ]]; then
+    VAL_BATCHES=10
+  fi
+
   # Run training (mlx-lm 0.30+ syntax)
   # YAML config provides: LoRA params (rank=16, dropout=0.05, scale=32),
   # LR schedule (warmup → 5e-5 → cosine decay over full sweep), batch_size=1
-  # CLI overrides: iters (per sweep), steps-per-eval, adapter-path
+  # CLI overrides: iters (per sweep), adapter-path. Eval settings come from config.
   nice -n 15 "$PYTHON" -m mlx_lm lora \
     --train \
     --model "$BASE_MODEL" \
     --data "$TRAIN_DIR" \
     -c "$SWEEP_CONFIG" \
     --iters "$ITERS" \
-    --steps-per-eval 100 \
-    --val-batches 10 \
+    --steps-per-eval "$STEPS_PER_EVAL" \
+    --val-batches "$VAL_BATCHES" \
     --adapter-path "$ADAPTER_DIR" \
     > "$ADAPTER_DIR/train.log" 2>&1 &
   TRAIN_PID=$!
