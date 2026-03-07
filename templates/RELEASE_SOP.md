@@ -38,6 +38,19 @@ Runs 9 automated safety checks without building:
 - Continue release only after preflight is clean.
 - Never self-approve an override to bypass a failing guard.
 
+**Headless App Store rule:**
+- If `.saneprocess` enables `appstore.platforms: [macos, ios]`, run the mini bootstrap before release:
+
+```bash
+bash ~/SaneApps/infra/SaneProcess/scripts/mini/bootstrap-build-server.sh
+```
+
+- Required signals before calling the machine ready:
+  - `codesign:probe`
+  - `asc:jwt`
+  - `codesign:ios-probe` when an iOS signing identity is installed
+- The release path now sets the login-keychain partition list automatically. Do not bypass that with raw `xcodebuild` unless you are intentionally doing recovery work.
+
 ### 1. Build, Sign, Notarize, DMG (Single Command)
 
 ```bash
@@ -46,6 +59,48 @@ Runs 9 automated safety checks without building:
 
 # Full release (version bump + tests + GitHub metadata)
 ./scripts/SaneMaster.rb release --full --version X.Y.Z --notes "Release notes"
+```
+
+For dual-platform App Store releases, `release.sh` is still the primary path. If the iOS leg needs recovery after a partial release, the known-good fallback is:
+
+```bash
+# 1. Archive the iOS scheme
+xcodebuild archive \
+  -project AppName.xcodeproj \
+  -scheme AppNameIOS \
+  -configuration Release-AppStore \
+  -archivePath build/AppName-iOS.xcarchive \
+  -destination 'generic/platform=iOS' \
+  -allowProvisioningUpdates
+
+# 2. Export the IPA with ASC auth
+xcodebuild -exportArchive \
+  -archivePath build/AppName-iOS.xcarchive \
+  -exportPath build/Export-AppStore-iOS \
+  -exportOptionsPlist build/ExportOptions-AppStore.plist \
+  -allowProvisioningUpdates \
+  -authenticationKeyPath "$ASC_AUTH_KEY_PATH" \
+  -authenticationKeyID "$ASC_AUTH_KEY_ID" \
+  -authenticationKeyIssuerID "$ASC_AUTH_ISSUER_ID"
+
+# 3. Submit the exported IPA
+ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
+  --pkg build/Export-AppStore-iOS/AppName.ipa \
+  --app-id YOUR_APP_ID \
+  --version X.Y.Z \
+  --platform ios \
+  --project-root "$(pwd)"
+```
+
+If App Store Connect has a stale editable lane, repair it first:
+
+```bash
+ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
+  --app-id YOUR_APP_ID \
+  --platform ios \
+  --version X.Y.Z \
+  --repair-version-state \
+  --preflight-version-state
 ```
 
 ### 2. Upload to Cloudflare R2
@@ -137,3 +192,4 @@ curl -X POST "https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records" 
 5. **Use `wrangler`** for Pages deploy and R2 uploads
 6. **ONE Sparkle key per org** — store in keychain, never generate per-project keys
 7. **Verify SUPublicEDKey in built Info.plist** matches your shared key before shipping
+8. **Homebrew tap sync uses SSH** — `owner/repo` tap names resolve to `git@github.com:owner/repo.git` for headless push

@@ -361,6 +361,10 @@ check_codesign_probe() {
     local signing_identity="${SIGNING_IDENTITY:-Developer ID Application}"
     local login_keychain="${HOME}/Library/Keychains/login.keychain-db"
     local keychain_password=""
+    local identities=""
+    local identity=""
+    local ios_probe_identity=""
+    local probe=""
 
     if ! security find-identity -v -p codesigning 2>/dev/null | grep -q "${signing_identity}"; then
         fail "codesign:identity" "security find-identity -v -p codesigning"
@@ -374,7 +378,7 @@ check_codesign_probe() {
     keychain_password="${SANEBAR_KEYCHAIN_PASSWORD}"
 
     security default-keychain -d user -s "${login_keychain}" >/dev/null 2>&1 || true
-    security list-keychains -d user -s "${login_keychain}" >/dev/null 2>&1 || true
+    security list-keychains -d user -s "${login_keychain}" /Library/Keychains/System.keychain >/dev/null 2>&1 || true
     security set-keychain-settings -lut 21600 "${login_keychain}" >/dev/null 2>&1 || true
 
     if ! security unlock-keychain -p "${keychain_password}" "${login_keychain}" >/dev/null 2>&1; then
@@ -382,17 +386,50 @@ check_codesign_probe() {
         return
     fi
 
-    local probe
+    identities="$(
+        security find-identity -v -p codesigning "${login_keychain}" 2>/dev/null |
+            sed -n 's/^[[:space:]]*[0-9][0-9]*) [0-9A-F]\{40\} "\(.*\)"$/\1/p'
+    )"
+
+    while IFS= read -r identity; do
+        [ -n "${identity}" ] || continue
+        security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "${keychain_password}" \
+            -D "${identity}" \
+            -t private \
+            "${login_keychain}" >/dev/null 2>&1 || true
+
+        case "${identity}" in
+            Apple\ Development:*|Apple\ Distribution:*|iPhone\ Distribution:*)
+                if [ -z "${ios_probe_identity}" ]; then
+                    ios_probe_identity="${identity}"
+                fi
+                ;;
+        esac
+    done <<< "${identities}"
+
     probe=$(/usr/bin/mktemp /tmp/bootstrap_codesign.XXXXXX)
     echo "sane" > "${probe}"
 
-    if /usr/bin/codesign --force --sign "${signing_identity}" --timestamp=none "${probe}" >/dev/null 2>&1; then
+    if /usr/bin/codesign --force --sign "${signing_identity}" --keychain "${login_keychain}" --timestamp=none "${probe}" >/dev/null 2>&1; then
         pass "codesign:probe"
     else
         fail "codesign:probe" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
     fi
-
     rm -f "${probe}"
+
+    if [ -n "${ios_probe_identity}" ]; then
+        probe=$(/usr/bin/mktemp /tmp/bootstrap_ios_codesign.XXXXXX)
+        echo "sane" > "${probe}"
+        if /usr/bin/codesign --force --sign "${ios_probe_identity}" --keychain "${login_keychain}" --timestamp=none "${probe}" >/dev/null 2>&1; then
+            pass "codesign:ios-probe"
+        else
+            fail "codesign:ios-probe" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
+        fi
+        rm -f "${probe}"
+    fi
 }
 
 check_asc_jwt() {

@@ -20,6 +20,14 @@ Do ALL of these BEFORE any work:
 2. Update `SESSION_HANDOFF.md` — include: open GitHub issues (`gh issue list`), research.md topics, feature requests
 3. Append SOP rating to `outputs/sop_ratings.csv`
 
+## Live Memory Rule
+
+Do not wait until session end.
+
+- When you find a new bug, issue cluster, regression, or root-cause change, update Serena memory and the knowledge graph immediately.
+- When you fix, close, merge, or downgrade an issue, update the same memory/graph entries immediately.
+- Keep bug memory live enough that it can be used directly for support replies, App Store submissions, website release notes, and future debugging without re-discovery.
+
 ```
 ## Session Summary
 ### Done: [1-3 bullets]
@@ -42,7 +50,7 @@ Do ALL of these BEFORE any work:
 | 5 | HOUSE RULES, USE TOOLS | Use SaneMaster, release.sh, sane_test.rb — NOT raw commands |
 | 6 | BUILD, KILL, LAUNCH, LOG | Full cycle after every code change |
 | 7 | NO TEST? NO REST | Every fix gets a test. No tautologies (`#expect(true)` is useless) |
-| 8 | BUG FOUND? WRITE IT DOWN | Document bugs in memory/issues |
+| 8 | BUG FOUND? WRITE IT DOWN | Update Serena memory + knowledge graph when bugs are found, reclassified, fixed, or closed |
 | 9 | NEW FILE? GEN THE PILE | Use scaffolding tools and templates |
 | 10 | FIVE HUNDRED'S FINE, EIGHT'S THE LINE | Max 500 lines, must split at 800 |
 | 11 | TOOL BROKE? FIX THE YOKE | Fix broken tools, don't work around them |
@@ -142,6 +150,14 @@ When the user says something matching these, run the command/skill immediately:
 bash ~/SaneApps/infra/SaneProcess/scripts/release.sh \
   --project $(pwd) --full --version X.Y.Z --notes "..." --deploy
 ```
+
+If `.saneprocess` includes iOS App Store release:
+
+```bash
+bash ~/SaneApps/infra/SaneProcess/scripts/mini/bootstrap-build-server.sh
+```
+
+Do not treat the mini as ready unless the bootstrap passes. The release path must prove headless keychain unlock, partition-list access, and ASC auth before a dual-platform App Store release counts as complete.
 
 **Critical rules:**
 - **Bump version BEFORE release** — Sparkle ignores same-version updates
@@ -276,10 +292,10 @@ M1 Mac mini (8GB). Access: `ssh mini`.
 | `mini-prepare-automation-root.sh` | On demand | Creates/updates clean automation clones under `~/SaneApps-automation` |
 | `mini-install-nightly-agent.sh` | On demand | Installs/updates nightly LaunchAgent |
 | `mini-install-training-agents.sh` | On demand | Installs/updates weekly + challenger training LaunchAgents |
-| `mini-nightly.sh` | 2 AM daily | Nightly builds for all repos |
+| `mini-nightly.sh` | 8:45 AM daily | Nightly builds for all repos |
 | `mini-train.sh` | Manual / wrapper | MLX LoRA fine-tuning |
-| `mini-train-challengers.sh` | 1 AM daily | Daily challenger training for SaneSync |
-| `mini-train-all.sh` | 3 AM Sunday | Weekly production training for SaneAI, then challengers |
+| `mini-train-challengers.sh` | 1 AM daily | Daily alternating challenger training for SaneSync (skips Sundays, hard stop 8:30 AM) |
+| `mini-train-all.sh` | 1 AM Sunday | Weekly production training for SaneAI with archived metrics history and SaneSync readiness tracking |
 
 **Bash 3.2 warning:** Mini runs macOS default bash. No `+=()` array append, no `<<<` herestrings.
 

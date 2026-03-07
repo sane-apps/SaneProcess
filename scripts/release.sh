@@ -2827,13 +2827,92 @@ check_sparkle_keypair_gate() {
     return 0
 }
 
+list_codesign_identities() {
+    local keychain="${1:-}"
+    if [ -n "${keychain}" ] && [ -f "${keychain}" ]; then
+        security find-identity -v -p codesigning "${keychain}" 2>/dev/null |
+            sed -n 's/^[[:space:]]*[0-9][0-9]*) [0-9A-F]\{40\} "\(.*\)"$/\1/p'
+    else
+        security find-identity -v -p codesigning 2>/dev/null |
+            sed -n 's/^[[:space:]]*[0-9][0-9]*) [0-9A-F]\{40\} "\(.*\)"$/\1/p'
+    fi
+}
+
+grant_keychain_partition_access() {
+    local keychain="$1"
+    local keychain_password="$2"
+    local identities identity
+
+    [ -n "${keychain_password}" ] || return 0
+    [ -f "${keychain}" ] || return 0
+
+    identities="$(list_codesign_identities "${keychain}")"
+    [ -n "${identities}" ] || return 0
+
+    while IFS= read -r identity; do
+        [ -n "${identity}" ] || continue
+        security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "${keychain_password}" \
+            -D "${identity}" \
+            -t private \
+            "${keychain}" >/dev/null 2>&1 || true
+    done <<< "${identities}"
+}
+
+probe_codesign_identity() {
+    local identity="$1"
+    local keychain="${2:-}"
+    local probe_path=""
+
+    [ -n "${identity}" ] || return 1
+
+    probe_path=$(/usr/bin/mktemp /tmp/codesign_probe.XXXXXX)
+    echo "sane" > "${probe_path}"
+
+    if [ -n "${keychain}" ] && [ -f "${keychain}" ]; then
+        if /usr/bin/codesign --force --sign "${identity}" --keychain "${keychain}" --timestamp=none "${probe_path}" >/dev/null 2>&1; then
+            rm -f "${probe_path}"
+            return 0
+        fi
+    elif /usr/bin/codesign --force --sign "${identity}" --timestamp=none "${probe_path}" >/dev/null 2>&1; then
+        rm -f "${probe_path}"
+        return 0
+    fi
+
+    rm -f "${probe_path}"
+    return 1
+}
+
+resolve_ios_signing_probe_identity() {
+    local keychain="${1:-}"
+    local identity
+
+    while IFS= read -r identity; do
+        case "${identity}" in
+            Apple\ Development:*|Apple\ Distribution:*|iPhone\ Distribution:*)
+                printf '%s' "${identity}"
+                return 0
+                ;;
+        esac
+    done < <(list_codesign_identities "${keychain}")
+
+    return 1
+}
+
 prepare_signing_session() {
-    local login_keychain="${HOME}/Library/Keychains/login.keychain-db"
+    local login_keychain="${SANEBAR_KEYCHAIN_PATH:-${KEYCHAIN_PATH:-${HOME}/Library/Keychains/login.keychain-db}}"
     local keychain_password="${SANEBAR_KEYCHAIN_PASSWORD:-${KEYCHAIN_PASSWORD:-${KEYCHAIN_PASS:-}}}"
+    local ios_probe_identity=""
 
     security default-keychain -d user -s "${login_keychain}" >/dev/null 2>&1 || true
-    security list-keychains -d user -s "${login_keychain}" >/dev/null 2>&1 || true
+    security list-keychains -d user -s "${login_keychain}" /Library/Keychains/System.keychain >/dev/null 2>&1 || true
     security set-keychain-settings -lut 21600 "${login_keychain}" >/dev/null 2>&1 || true
+
+    if [ -f "${login_keychain}" ] && [[ "${OTHER_CODE_SIGN_FLAGS:-}" != *"--keychain ${login_keychain}"* ]]; then
+        export OTHER_CODE_SIGN_FLAGS="--keychain ${login_keychain}${OTHER_CODE_SIGN_FLAGS:+ ${OTHER_CODE_SIGN_FLAGS}}"
+    fi
 
     if [ -n "${keychain_password}" ]; then
         if ! security unlock-keychain -p "${keychain_password}" "${login_keychain}" >/dev/null 2>&1; then
@@ -2841,20 +2920,49 @@ prepare_signing_session() {
             log_error "Check SANEBAR_KEYCHAIN_PASSWORD / KEYCHAIN_PASSWORD / KEYCHAIN_PASS."
             return 1
         fi
+        grant_keychain_partition_access "${login_keychain}" "${keychain_password}"
     fi
 
-    local codesign_probe
-    codesign_probe=$(/usr/bin/mktemp /tmp/codesign_probe.XXXXXX)
-    echo "sane" > "${codesign_probe}"
-    if ! /usr/bin/codesign --force --sign "${SIGNING_IDENTITY}" --timestamp=none "${codesign_probe}" >/dev/null 2>&1; then
-        rm -f "${codesign_probe}"
+    if ! probe_codesign_identity "${SIGNING_IDENTITY}" "${login_keychain}"; then
         log_error "Codesign cannot access signing key in this session."
         log_error "For headless releases, set SANEBAR_KEYCHAIN_PASSWORD (or KEYCHAIN_PASSWORD/KEYCHAIN_PASS)."
         return 1
     fi
-    rm -f "${codesign_probe}"
+
+    if [ "${APPSTORE_ENABLED}" = "true" ] && appstore_platform_enabled "ios"; then
+        ios_probe_identity="$(resolve_ios_signing_probe_identity "${login_keychain}" || true)"
+        if [ -z "${ios_probe_identity}" ]; then
+            log_error "iOS App Store release is enabled, but no Apple Development/Distribution signing identity is visible."
+            log_error "Open Xcode once on this machine and confirm the iOS signing identity is installed in the login keychain."
+            return 1
+        fi
+
+        if ! probe_codesign_identity "${ios_probe_identity}" "${login_keychain}"; then
+            log_error "iOS codesign cannot access signing key in this session: ${ios_probe_identity}"
+            log_error "Headless iOS App Store releases need login-keychain unlock plus partition-list access."
+            return 1
+        fi
+    fi
 
     return 0
+}
+
+resolve_homebrew_tap_git_url() {
+    local repo="${HOMEBREW_TAP_REPO:-}"
+
+    if [ -n "${HOMEBREW_TAP_GIT_URL:-}" ]; then
+        printf '%s' "${HOMEBREW_TAP_GIT_URL}"
+        return 0
+    fi
+
+    case "${repo}" in
+        git@*|ssh://*|https://*|http://*|/*)
+            printf '%s' "${repo}"
+            ;;
+        *)
+            printf 'git@github.com:%s.git' "${repo}"
+            ;;
+    esac
 }
 
 resolve_notary_auth() {
@@ -4830,10 +4938,11 @@ PY
     CASK_FILE="Casks/${LOWER_APP_NAME}.rb"
     HOMEBREW_TAP_DIR="/tmp/homebrew-tap-update-$$"
     if [ -n "${HOMEBREW_TAP_REPO}" ]; then
+        HOMEBREW_TAP_GIT_URL_RESOLVED="$(resolve_homebrew_tap_git_url)"
         log_info "Updating Homebrew cask in ${HOMEBREW_TAP_REPO}..."
 
         # Clone the tap repo
-        if GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git clone --depth 1 "https://github.com/${HOMEBREW_TAP_REPO}.git" "${HOMEBREW_TAP_DIR}" 2>/dev/null; then
+        if GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git clone --depth 1 "${HOMEBREW_TAP_GIT_URL_RESOLVED}" "${HOMEBREW_TAP_DIR}" 2>/dev/null; then
             if [ -f "${HOMEBREW_TAP_DIR}/${CASK_FILE}" ]; then
                 # Update version and SHA256 in the cask formula
                 sed -i '' "s/version \"[^\"]*\"/version \"${VERSION}\"/" "${HOMEBREW_TAP_DIR}/${CASK_FILE}"
