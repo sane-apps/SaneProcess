@@ -273,9 +273,13 @@ M1 Mac mini (8GB). Access: `ssh mini`.
 
 | Script | Schedule | Purpose |
 |--------|----------|---------|
+| `mini-prepare-automation-root.sh` | On demand | Creates/updates clean automation clones under `~/SaneApps-automation` |
+| `mini-install-nightly-agent.sh` | On demand | Installs/updates nightly LaunchAgent |
+| `mini-install-training-agents.sh` | On demand | Installs/updates weekly + challenger training LaunchAgents |
 | `mini-nightly.sh` | 2 AM daily | Nightly builds for all repos |
-| `mini-train.sh` | 3 AM daily | MLX LoRA fine-tuning |
-| `mini-train-all.sh` | 3 AM daily | Wrapper that calls mini-train.sh for SaneAI |
+| `mini-train.sh` | Manual / wrapper | MLX LoRA fine-tuning |
+| `mini-train-challengers.sh` | 1 AM daily | Daily challenger training for SaneSync |
+| `mini-train-all.sh` | 3 AM Sunday | Weekly production training for SaneAI, then challengers |
 
 **Bash 3.2 warning:** Mini runs macOS default bash. No `+=()` array append, no `<<<` herestrings.
 

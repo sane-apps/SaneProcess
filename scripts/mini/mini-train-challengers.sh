@@ -1,6 +1,6 @@
 #!/bin/bash
 # mini-train-challengers.sh - Run challenger model training
-# Called by LaunchAgent at 1 AM daily (or by mini-train-all.sh after production training).
+# Called by a daily LaunchAgent or by mini-train-all.sh after production training.
 #
 # Reads challenger configs from $APP_DIR/training_data/challenger_configs/*.yaml
 # Runs each through mini-train.sh with --challenger flag.
@@ -11,10 +11,13 @@
 
 set -uo pipefail
 
+SANE_ROOT="${SANE_ROOT:-$HOME/SaneApps}"
+SANE_OUTPUT_DIR="${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}"
+
 APP_NAME="${1:-SaneSync}"
-APP_DIR="$HOME/SaneApps/apps/$APP_NAME"
+APP_DIR="$SANE_ROOT/apps/$APP_NAME"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-OUTPUT_DIR="$HOME/SaneApps/outputs"
+OUTPUT_DIR="$SANE_OUTPUT_DIR"
 DATE=$(date +"%Y-%m-%d")
 COMPARISON_REPORT="$OUTPUT_DIR/challenger_comparison_${APP_NAME}_${DATE}.md"
 
@@ -124,6 +127,8 @@ while read -r config_file; do
   # Run mini-train.sh with challenger flags
   # Pass remaining time as budget (divided by remaining challengers would be smarter,
   # but for now just let the script's own budget/hard-stop guards handle it)
+  SANE_ROOT="$SANE_ROOT" \
+  SANE_OUTPUT_DIR="$SANE_OUTPUT_DIR" \
   MAX_TRAIN_RUNTIME_MIN="$remaining" \
   TRAIN_HARD_STOP_HOUR="$TRAIN_HARD_STOP_HOUR" \
     bash "$SCRIPT_DIR/mini-train.sh" "$APP_NAME" \
@@ -206,7 +211,7 @@ cat >> "$COMPARISON_REPORT" <<EOF
 
 **Challengers run:** $CHALLENGERS_RUN of $TOTAL_CHALLENGERS
 **Report:** $COMPARISON_REPORT
-**Next run:** Tomorrow after production training
+**Next scheduled lane:** Daily challenger agent at 1:00 AM, plus Sunday weekly follow-up after production training
 
 > Challengers NEVER auto-promote. If a model beats Llama, review the report and manually promote.
 EOF

@@ -1,6 +1,6 @@
 #!/bin/bash
 # mini-train-all.sh - Train unified SaneAI model + challenger models
-# Called by LaunchAgent at 3 AM daily
+# Called by a weekly LaunchAgent or run manually.
 #
 # Pipeline:
 # 1. Merge training data from all products into SaneAI
@@ -10,39 +10,73 @@
 # Architecture (Option B): One unified SaneAI model trained on all product data.
 # Per-product behavior comes from system prompts at inference time, not separate models.
 
-SCRIPT_DIR="$(dirname "$0")"
-LOG_DIR="$HOME/SaneApps/outputs"
+SANE_ROOT="${SANE_ROOT:-$HOME/SaneApps}"
+SANE_OUTPUT_DIR="${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LOG_DIR="$SANE_OUTPUT_DIR"
 PYTHON="$HOME/mlx-env/bin/python3"
 mkdir -p "$LOG_DIR"
 
+run_saneai_merge() {
+  local merge_script="$1"
+  local merge_home merge_exit
+
+  merge_home=$(mktemp -d -t saneai-merge-home)
+  ln -s "$SANE_ROOT" "$merge_home/SaneApps"
+
+  echo "=== Merge root: $SANE_ROOT — $(date) ===" >> "$STDOUT_LOG"
+  HOME="$merge_home" SANE_ROOT="$SANE_ROOT" "$PYTHON" "$merge_script" >> "$STDOUT_LOG" 2>&1
+  merge_exit=$?
+
+  rm -rf "$merge_home"
+  return "$merge_exit"
+}
+
 # Rotate stderr log if >1MB (LaunchAgent appends, never truncates)
-STDERR_LOG="$LOG_DIR/training.stderr.log"
+STDOUT_LOG="${TRAIN_STDOUT_LOG:-$LOG_DIR/training.stdout.log}"
+STDERR_LOG="${TRAIN_STDERR_LOG:-$LOG_DIR/training.stderr.log}"
 if [ -f "$STDERR_LOG" ] && [ "$(stat -f%z "$STDERR_LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
   mv "$STDERR_LOG" "$STDERR_LOG.old"
 fi
 
-echo "=== Training SaneAI (unified model) — $(date) ===" >> "$LOG_DIR/training.stdout.log"
+echo "=== Training SaneAI (unified model) — $(date) ===" >> "$STDOUT_LOG"
 
 # Step 1: Merge latest per-product training data into SaneAI
-SANEAI_DIR="$HOME/SaneApps/apps/SaneAI/training_data"
+SANEAI_DIR="$SANE_ROOT/apps/SaneAI/training_data"
+MERGE_EXIT=0
 if [ -f "$SANEAI_DIR/merge_training_data.py" ]; then
-  "$PYTHON" "$SANEAI_DIR/merge_training_data.py" >> "$LOG_DIR/training.stdout.log" 2>&1
+  run_saneai_merge "$SANEAI_DIR/merge_training_data.py"
+  MERGE_EXIT=$?
+  echo "=== SaneAI merge complete (exit $MERGE_EXIT) — $(date) ===" >> "$STDOUT_LOG"
+  if [ "$MERGE_EXIT" -ne 0 ]; then
+    echo "=== Merge failed. Falling back to any existing SaneAI train/valid files. ===" >> "$STDOUT_LOG"
+  fi
+fi
+
+if [ ! -f "$SANEAI_DIR/train.jsonl" ] || [ ! -f "$SANEAI_DIR/valid.jsonl" ]; then
+  echo "=== ERROR: SaneAI training data missing after merge stage — $(date) ===" >> "$STDOUT_LOG"
+  exit 1
 fi
 
 # Step 2: Train the production Llama model
 PROD_START=$(date +%s)
-bash "$SCRIPT_DIR/mini-train.sh" SaneAI
+SANE_ROOT="$SANE_ROOT" \
+SANE_OUTPUT_DIR="$SANE_OUTPUT_DIR" \
+  bash "$SCRIPT_DIR/mini-train.sh" SaneAI
 PROD_EXIT=$?
 PROD_END=$(date +%s)
 PROD_MINUTES=$(( (PROD_END - PROD_START) / 60 ))
-echo "=== SaneAI complete (exit $PROD_EXIT, ${PROD_MINUTES}min) — $(date) ===" >> "$LOG_DIR/training.stdout.log"
+echo "=== SaneAI complete (exit $PROD_EXIT, ${PROD_MINUTES}min) — $(date) ===" >> "$STDOUT_LOG"
 
 # Step 3: Run challenger models (using SaneSync training data)
 # Only run if production training succeeded and we have time before 8 AM
 hour_now=$(date +%H)
 hour_now=$((10#$hour_now))
 
-if [ "$hour_now" -lt 8 ]; then
+if [ "$PROD_EXIT" -ne 0 ]; then
+  echo "=== Skipping challengers — production training failed (exit $PROD_EXIT) ===" >> "$STDOUT_LOG"
+elif [ "$hour_now" -lt 8 ]; then
   # Calculate remaining minutes until hard stop
   minutes_until_8=$(( (8 - hour_now) * 60 - $(date +%M | sed 's/^0//') ))
   # Cap at 120 min (don't hog the machine even if lots of time)
@@ -50,17 +84,19 @@ if [ "$hour_now" -lt 8 ]; then
     minutes_until_8=120
   fi
 
-  echo "=== Challenger training (budget: ${minutes_until_8}min) — $(date) ===" >> "$LOG_DIR/training.stdout.log"
+  echo "=== Challenger training (budget: ${minutes_until_8}min) — $(date) ===" >> "$STDOUT_LOG"
 
+  SANE_ROOT="$SANE_ROOT" \
+  SANE_OUTPUT_DIR="$SANE_OUTPUT_DIR" \
   CHALLENGER_BUDGET_MIN="$minutes_until_8" \
   TRAIN_HARD_STOP_HOUR=8 \
     bash "$SCRIPT_DIR/mini-train-challengers.sh" SaneSync \
-    >> "$LOG_DIR/training.stdout.log" 2>&1
+    >> "$STDOUT_LOG" 2>&1
 
   CHALLENGER_EXIT=$?
-  echo "=== Challengers complete (exit $CHALLENGER_EXIT) — $(date) ===" >> "$LOG_DIR/training.stdout.log"
+  echo "=== Challengers complete (exit $CHALLENGER_EXIT) — $(date) ===" >> "$STDOUT_LOG"
 else
-  echo "=== Skipping challengers — past 8 AM ===" >> "$LOG_DIR/training.stdout.log"
+  echo "=== Skipping challengers — past 8 AM ===" >> "$STDOUT_LOG"
 fi
 
 exit $PROD_EXIT

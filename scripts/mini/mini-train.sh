@@ -1,6 +1,6 @@
 #!/bin/bash
 # mini-train.sh - Automated LLM training pipeline for Mac mini
-# Runs at 3 AM daily (after nightly builds at 2 AM)
+# Called by launchd wrappers or run manually against a specific app repo
 # Usage: mini-train.sh [app_name] [--model MODEL_ID] [--config CONFIG.yaml] [--challenger]
 # Example: mini-train.sh SaneSync
 # Example: mini-train.sh SaneSync --model "Qwen/Qwen3-4B-MLX-4bit" --config challenger_configs/qwen3-4b.yaml --challenger
@@ -19,9 +19,19 @@
 
 set -uo pipefail
 
+SANE_ROOT="${SANE_ROOT:-$HOME/SaneApps}"
+SANE_OUTPUT_DIR="${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}"
+
 # App selection (default: SaneSync for backward compat)
-APP_NAME="${1:-SaneSync}"
-shift 2>/dev/null || true
+APP_NAME="SaneSync"
+case "${1:-}" in
+  ""|-*)
+    ;;
+  *)
+    APP_NAME="$1"
+    shift
+    ;;
+esac
 
 # Parse optional flags (bash 3.2 compatible — no associative arrays)
 BASE_MODEL_OVERRIDE=""
@@ -31,10 +41,12 @@ CHALLENGER_MODE=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --model)
+      [ $# -ge 2 ] || { echo "ERROR: --model requires a value" >&2; exit 2; }
       BASE_MODEL_OVERRIDE="$2"
       shift 2
       ;;
     --config)
+      [ $# -ge 2 ] || { echo "ERROR: --config requires a value" >&2; exit 2; }
       CONFIG_OVERRIDE="$2"
       shift 2
       ;;
@@ -48,18 +60,18 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-APP_DIR="$HOME/SaneApps/apps/$APP_NAME"
+APP_DIR="$SANE_ROOT/apps/$APP_NAME"
 
 if [ ! -d "$APP_DIR" ]; then
   echo "ERROR: App directory not found: $APP_DIR" >&2
-  echo "Available: $(ls ~/SaneApps/apps/ | tr '\n' ' ')" >&2
+  echo "Available: $(ls "$SANE_ROOT/apps" 2>/dev/null | tr '\n' ' ')" >&2
   exit 1
 fi
 
 # Paths
 TRAIN_DIR="$APP_DIR/training_data"
 MODELS_DIR="$APP_DIR/models"
-OUTPUT_DIR="$HOME/SaneApps/outputs"
+OUTPUT_DIR="$SANE_OUTPUT_DIR"
 
 # Report file: separate for challengers to avoid clobbering production report
 if [ "$CHALLENGER_MODE" = true ] && [ -n "$BASE_MODEL_OVERRIDE" ]; then
@@ -81,6 +93,11 @@ START_EPOCH=$(date +%s)
 # Default: stop training after 210 minutes or when local time reaches 07:00.
 MAX_TRAIN_RUNTIME_MIN="${MAX_TRAIN_RUNTIME_MIN:-210}"
 TRAIN_HARD_STOP_HOUR="${TRAIN_HARD_STOP_HOUR:-8}"
+if [ "$CHALLENGER_MODE" = true ]; then
+  NEXT_RUN_HINT="Daily challenger agent at 1:00 AM, plus Sunday weekly follow-up."
+else
+  NEXT_RUN_HINT="Weekly training agent on Sunday at 3:00 AM."
+fi
 
 mkdir -p "$OUTPUT_DIR" "$MODELS_DIR/sweeps"
 
@@ -221,11 +238,41 @@ echo "## Git Sync" >> "$REPORT"
 echo "" >> "$REPORT"
 
 cd "$APP_DIR"
-if git pull --ff-only 2>/dev/null; then
-  echo "Training data synced to latest." >> "$REPORT"
-else
-  echo "Git pull failed (offline or conflict). Using existing data." >> "$REPORT"
+FETCH_STATUS="ok"
+if ! git fetch origin --prune 2>/dev/null; then
+  FETCH_STATUS="fetch_failed"
 fi
+
+BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "DETACHED")
+DIRTY_COUNT=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+BEHIND="?"
+AHEAD="?"
+if [ "$BRANCH" != "DETACHED" ]; then
+  BEHIND=$(git rev-list --count HEAD..origin/"$BRANCH" 2>/dev/null || echo "?")
+  AHEAD=$(git rev-list --count origin/"$BRANCH"..HEAD 2>/dev/null || echo "?")
+fi
+
+if [ "$FETCH_STATUS" = "fetch_failed" ]; then
+  echo "Git fetch failed. Using existing data." >> "$REPORT"
+elif [ "$BRANCH" = "DETACHED" ]; then
+  echo "Detached HEAD. Using existing data." >> "$REPORT"
+elif [ "$DIRTY_COUNT" -gt 0 ]; then
+  echo "Git sync skipped: working tree dirty (${DIRTY_COUNT} change(s)). Using existing data." >> "$REPORT"
+elif [ "$BEHIND" != "0" ] && [ "$BEHIND" != "?" ]; then
+  if git pull --ff-only origin "$BRANCH" 2>/dev/null; then
+    echo "Training data synced to latest." >> "$REPORT"
+    BEHIND="0"
+  else
+    echo "Git pull failed. Using existing data." >> "$REPORT"
+  fi
+else
+  echo "Training data already up to date." >> "$REPORT"
+fi
+echo "- Repo root: $APP_DIR" >> "$REPORT"
+echo "- Branch: $BRANCH" >> "$REPORT"
+echo "- Dirty files: $DIRTY_COUNT" >> "$REPORT"
+echo "- Behind origin: $BEHIND" >> "$REPORT"
+echo "- Ahead of origin: $AHEAD" >> "$REPORT"
 
 # Validate training data exists
 if [ ! -f "$TRAIN_DIR/train.jsonl" ]; then
@@ -581,6 +628,7 @@ echo "|-----------|----------|------------|--------|" >> "$REPORT"
 
 BEST_ITERS=""
 BEST_ACCURACY=0
+SCRIPT_EXIT=0
 
 while IFS=: read -r iters acc time; do
   status=$([ "$acc" -ge 80 ] && echo "PASS" || echo "NEEDS WORK")
@@ -621,6 +669,7 @@ if [ -n "$BEST_ITERS" ]; then
   fi
 else
   echo "**No successful training runs.**" >> "$REPORT"
+  SCRIPT_EXIT=1
 fi
 
 echo "" >> "$REPORT"
@@ -638,7 +687,8 @@ cat >> "$REPORT" <<EOF
 **Report generated:** $(date +"%Y-%m-%d %H:%M:%S")
 **Training data:** $TRAIN_EXAMPLES examples (train), $VALID_EXAMPLES (validation)
 **Base model:** $BASE_MODEL
-**Next run:** Tomorrow at 3:00 AM
+**Next scheduled lane:** $NEXT_RUN_HINT
 EOF
 
 echo "Training report complete: $REPORT" >&2
+exit "$SCRIPT_EXIT"

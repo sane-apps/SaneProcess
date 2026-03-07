@@ -5,9 +5,12 @@
 
 set -uo pipefail
 
-APPS_DIR="$HOME/SaneApps/apps"
-INFRA_DIR="$HOME/SaneApps/infra"
-OUTPUT_DIR="$HOME/SaneApps/outputs"
+SANE_ROOT="${SANE_ROOT:-$HOME/SaneApps}"
+SANE_OUTPUT_DIR="${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}"
+
+APPS_DIR="$SANE_ROOT/apps"
+INFRA_DIR="$SANE_ROOT/infra"
+OUTPUT_DIR="$SANE_OUTPUT_DIR"
 REPORT="$OUTPUT_DIR/nightly_report.md"
 DATE=$(date +"%Y-%m-%d %A")
 TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
@@ -43,8 +46,8 @@ EOF
 # =============================================================================
 echo "## Git Sync" >> "$REPORT"
 echo "" >> "$REPORT"
-echo "| Repo | Status | Behind | Ahead |" >> "$REPORT"
-echo "|------|--------|--------|-------|" >> "$REPORT"
+echo "| Repo | Status | Dirty | Behind | Ahead |" >> "$REPORT"
+echo "|------|--------|-------|--------|-------|" >> "$REPORT"
 
 for repo_dir in "$APPS_DIR"/* "$INFRA_DIR"/*; do
   [ -d "$repo_dir/.git" ] || continue
@@ -52,33 +55,34 @@ for repo_dir in "$APPS_DIR"/* "$INFRA_DIR"/*; do
 
   cd "$repo_dir" || continue
 
-  # Fetch and check status
   if ! git fetch origin 2>/dev/null; then
-    echo "| $repo_name | Fetch failed (offline?) | - | - |" >> "$REPORT"
+    echo "| $repo_name | Fetch failed | - | - | - |" >> "$REPORT"
     continue
   fi
 
   local_branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
   if [ -z "$local_branch" ]; then
-    echo "| $repo_name | Detached HEAD (skipped) | - | - |" >> "$REPORT"
+    echo "| $repo_name | Detached HEAD | - | - | - |" >> "$REPORT"
     continue
   fi
 
+  dirty=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
   behind=$(git rev-list --count HEAD..origin/"$local_branch" 2>/dev/null || echo "?")
   ahead=$(git rev-list --count origin/"$local_branch"..HEAD 2>/dev/null || echo "?")
 
-  # Pull if behind
-  if [ "$behind" != "0" ] && [ "$behind" != "?" ]; then
+  if [ "$dirty" != "0" ]; then
+    status="Dirty (pull skipped)"
+  elif [ "$behind" != "0" ] && [ "$behind" != "?" ]; then
     if git pull --ff-only origin "$local_branch" 2>/dev/null; then
       status="Updated (+$behind commits)"
     else
-      status="Merge conflict"
+      status="Pull failed"
     fi
   else
     status="Up to date"
   fi
 
-  echo "| $repo_name | $status | $behind | $ahead |" >> "$REPORT"
+  echo "| $repo_name | $status | $dirty | $behind | $ahead |" >> "$REPORT"
 done
 
 echo "" >> "$REPORT"

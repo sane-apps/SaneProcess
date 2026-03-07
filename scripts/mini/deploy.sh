@@ -43,6 +43,16 @@ done
 echo ""
 echo "Deployed $DEPLOYED scripts."
 
+echo ""
+echo "Preparing clean automation root on mini..."
+ssh mini "if [ -f $REMOTE_DIR/mini-prepare-automation-root.sh ]; then AUTOMATION_ROOT=\$HOME/SaneApps-automation SANE_SOURCE_ROOT=\$HOME/SaneApps bash $REMOTE_DIR/mini-prepare-automation-root.sh; fi"
+
+echo ""
+echo "Refreshing launch agents on mini..."
+ssh mini "if [ -f $REMOTE_DIR/mini-install-nightly-agent.sh ]; then SANE_ROOT=\$HOME/SaneApps-automation SANE_OUTPUT_DIR=\$HOME/SaneApps/outputs bash $REMOTE_DIR/mini-install-nightly-agent.sh; fi"
+ssh mini "if [ -f $REMOTE_DIR/mini-install-training-agents.sh ]; then SANE_ROOT=\$HOME/SaneApps-automation SANE_OUTPUT_DIR=\$HOME/SaneApps/outputs bash $REMOTE_DIR/mini-install-training-agents.sh; fi"
+ssh mini "if [ -f $REMOTE_DIR/mini-install-memory-guard.sh ]; then bash $REMOTE_DIR/mini-install-memory-guard.sh; fi"
+
 # Sync global Claude config (skills, commands, templates, CLAUDE.md)
 echo ""
 echo "Syncing global Claude config..."
