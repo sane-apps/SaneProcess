@@ -29,8 +29,10 @@ require 'shellwords'
 require 'digest'
 
 EMAIL_APPROVAL_FLAG = '/tmp/.email_post_approved'
+EMAIL_BATCH_APPROVAL_FLAG = '/tmp/.email_batch_post_approved.json'
 EMAIL_FORMAT_OVERRIDE = '/tmp/.email_format_override'
 EMAIL_APPROVAL_TTL_SECONDS = 300
+EMAIL_BATCH_APPROVAL_TTL_SECONDS = 43_200
 EMAIL_APPROVAL_MIN_AGE_SECONDS = 3
 CORPORATE_WE_PATTERN = /\b(?:we|we['']re|we['']ll|we['']ve|our|us)\b/i
 APPRECIATION_PATTERN = /\b(?:thank(s| you)?|appreciat(e|ion|ing)|grateful)\b/i
@@ -77,6 +79,37 @@ def verify_approval(body)
 
   # Valid — do NOT consume here; let check-inbox.sh handle cleanup.
   # The flag has a 5-minute TTL so it won't linger.
+  [true, nil]
+end
+
+def verify_batch_approval(body, to_addr, subject)
+  return [false, 'No batch approval flag found'] unless File.exist?(EMAIL_BATCH_APPROVAL_FLAG)
+
+  begin
+    payload = JSON.parse(File.read(EMAIL_BATCH_APPROVAL_FLAG))
+  rescue JSON::ParserError
+    return [false, 'Batch approval file is invalid']
+  end
+
+  created_at = payload['created_at'].to_i
+  return [false, 'Batch approval is malformed'] if created_at <= 0
+
+  age = Time.now.to_i - created_at
+  return [false, 'Batch approval expired'] if age > EMAIL_BATCH_APPROVAL_TTL_SECONDS
+  return [false, "Batch approval too fresh (#{age}s old, need #{EMAIL_APPROVAL_MIN_AGE_SECONDS}s)"] if age < EMAIL_APPROVAL_MIN_AGE_SECONDS
+
+  remaining = payload['remaining']
+  return [false, 'Batch approval entries missing'] unless remaining.is_a?(Array)
+
+  body_hash = Digest::SHA256.hexdigest(body.strip)
+  match = remaining.any? do |item|
+    item['to'].to_s.strip.downcase == to_addr.to_s.strip.downcase &&
+      item['subject'].to_s == subject.to_s &&
+      item['body_hash'].to_s == body_hash
+  end
+
+  return [false, 'Email not in approved batch'] unless match
+
   [true, nil]
 end
 
@@ -213,16 +246,26 @@ if command.include?('check-inbox.sh')
     #   - Be less than 5 minutes old (not stale)
     approved, reason = verify_approval(body)
     unless approved
-      warn '🔴 BLOCKED: Email not approved for sending'
-      warn "   #{reason}"
-      warn ''
-      warn '   Required workflow:'
-      warn '   1. Write the draft to a file'
-      warn '   2. Show the EXACT final text to the user'
-      warn '   3. User says "send"'
-      warn '   4. Set approval: echo "<sha256 of body>" > /tmp/.email_post_approved'
-      warn '   5. Send (separate command)'
-      exit 2
+      # Fall back to batch approval if individual approval absent
+      compose_to = subcommand == 'compose' ? tokens[script_idx + 2] : nil
+      compose_subject = subcommand == 'compose' ? tokens[script_idx + 3] : nil
+
+      if compose_to && compose_subject
+        batch_approved, _batch_reason = verify_batch_approval(body, compose_to, compose_subject)
+      end
+
+      unless batch_approved
+        warn '🔴 BLOCKED: Email not approved for sending'
+        warn "   #{reason}"
+        warn ''
+        warn '   Required workflow:'
+        warn '   1. Write the draft to a file'
+        warn '   2. Show the EXACT final text to the user'
+        warn '   3. User says "send"'
+        warn '   4. Set approval: echo "<sha256 of body>" > /tmp/.email_post_approved'
+        warn '   5. Send (separate command)'
+        exit 2
+      end
     end
   end
 
