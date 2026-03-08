@@ -4996,20 +4996,10 @@ PY
         fi
     fi
 
-    # Step 10: Strict post-release verification gate
-    CURRENT_GATE="Post-release verification"
-    RELEASE_ERR_GATE_RECORDED=""
-    if ! run_post_release_checks; then
-        log_error "Post-release verification failed. Release is NOT considered complete."
-        track_gate_result "Post-release verification" "failure" "${RELEASE_LAST_ERROR}"
-        exit 1
-    fi
-    track_gate_result "Post-release verification" "pass" "ok"
-    CURRENT_GATE=""
-
-    # Step 11: Auto-update email webhook product config
+    # Step 10: Auto-update email webhook product config
     # The email webhook has product→filename mappings for purchase download links.
-    # Previously this was a manual reminder — now it's automated for ALL apps.
+    # Update it BEFORE strict post-release verification so the gate measures the
+    # same customer-facing state the release just deployed.
     WEBHOOK_JS="${HOME}/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js"
     if [ -f "${WEBHOOK_JS}" ]; then
         # Match: 'AppName': { file: 'AppName-X.Y.Z.zip', ... } or .dmg
@@ -5050,6 +5040,17 @@ PY
     else
         log_warn "Email webhook file not found at ${WEBHOOK_JS} — update PRODUCT_CONFIG manually"
     fi
+
+    # Step 11: Strict post-release verification gate
+    CURRENT_GATE="Post-release verification"
+    RELEASE_ERR_GATE_RECORDED=""
+    if ! run_post_release_checks; then
+        log_error "Post-release verification failed. Release is NOT considered complete."
+        track_gate_result "Post-release verification" "failure" "${RELEASE_LAST_ERROR}"
+        exit 1
+    fi
+    track_gate_result "Post-release verification" "pass" "ok"
+    CURRENT_GATE=""
 
     log_info ""
     log_info "═══════════════════════════════════════════"
