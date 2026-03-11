@@ -9,7 +9,11 @@ AGENT_LABEL="com.saneapps.nightly"
 PLIST="$HOME/Library/LaunchAgents/${AGENT_LABEL}.plist"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/mini-nightly.sh"
-SANE_ROOT="${SANE_ROOT:-$HOME/SaneApps}"
+DEFAULT_SANE_ROOT="$HOME/SaneApps"
+if [ -d "$HOME/SaneApps-automation/apps" ]; then
+  DEFAULT_SANE_ROOT="$HOME/SaneApps-automation"
+fi
+SANE_ROOT="${SANE_ROOT:-$DEFAULT_SANE_ROOT}"
 OUTPUT_DIR="${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}"
 NIGHTLY_HOUR="${NIGHTLY_HOUR:-2}"
 NIGHTLY_MINUTE="${NIGHTLY_MINUTE:-0}"

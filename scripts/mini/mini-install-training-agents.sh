@@ -7,7 +7,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
-SANE_ROOT="${SANE_ROOT:-$HOME/SaneApps}"
+DEFAULT_SANE_ROOT="$HOME/SaneApps"
+if [ -d "$HOME/SaneApps-automation/apps" ]; then
+  DEFAULT_SANE_ROOT="$HOME/SaneApps-automation"
+fi
+SANE_ROOT="${SANE_ROOT:-$DEFAULT_SANE_ROOT}"
 OUTPUT_DIR="${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}"
 MLX_BIN_DIR="${MLX_BIN_DIR:-$HOME/mlx-env/bin}"
 

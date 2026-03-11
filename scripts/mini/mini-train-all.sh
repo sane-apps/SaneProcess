@@ -10,7 +10,11 @@
 # Architecture (Option B): One unified SaneAI model trained on all product data.
 # Per-product behavior comes from system prompts at inference time, not separate models.
 
-SANE_ROOT="${SANE_ROOT:-$HOME/SaneApps}"
+DEFAULT_SANE_ROOT="$HOME/SaneApps"
+if [ -d "$HOME/SaneApps-automation/apps" ]; then
+  DEFAULT_SANE_ROOT="$HOME/SaneApps-automation"
+fi
+SANE_ROOT="${SANE_ROOT:-$DEFAULT_SANE_ROOT}"
 SANE_OUTPUT_DIR="${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
