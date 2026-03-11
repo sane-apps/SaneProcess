@@ -1059,6 +1059,39 @@ sync_docs_appcast_to_website() {
     return 0
 }
 
+fetch_remote_email_webhook_js() {
+    local github_api_path="repos/sane-apps/sane-email-automation/contents/src/handlers/webhook-lemonsqueezy.js?ref=main"
+    local raw_url="https://raw.githubusercontent.com/sane-apps/sane-email-automation/main/src/handlers/webhook-lemonsqueezy.js"
+    local body=""
+
+    if command -v gh >/dev/null 2>&1; then
+        body=$(gh api "${github_api_path}" --jq '.content' 2>/dev/null | tr -d '\n' | python3 -c 'import base64,sys; data=sys.stdin.read().strip(); print(base64.b64decode(data).decode("utf-8"), end="")' 2>/dev/null || true)
+    fi
+
+    if [ -z "${body}" ]; then
+        body=$(curl -fsSL "${raw_url}" 2>/dev/null || true)
+    fi
+
+    printf '%s' "${body}"
+}
+
+extract_email_webhook_version() {
+    local webhook_content="$1"
+    local app_name="${2:-${APP_NAME}}"
+    local webhook_entry=""
+
+    if [ -z "${webhook_content}" ] || [ -z "${app_name}" ]; then
+        return 0
+    fi
+
+    webhook_entry=$(grep "'${app_name}'" <<< "${webhook_content}" 2>/dev/null || true)
+    if [ -z "${webhook_entry}" ]; then
+        return 0
+    fi
+
+    echo "${webhook_entry}" | grep -oE "${app_name}-[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?'
+}
+
 run_post_release_checks() {
     local dist_url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
     local appcast_url="https://${SITE_HOST}/appcast.xml"
@@ -1318,25 +1351,31 @@ PY
         log_warn "Could not fetch website for download link check: ${site_url}"
     fi
 
-    # Verify email webhook PRODUCT_CONFIG has the correct version
-    local webhook_js="${HOME}/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js"
-    if [ -f "${webhook_js}" ]; then
-        local webhook_entry
-        webhook_entry=$(grep "'${APP_NAME}'" "${webhook_js}" 2>/dev/null || true)
-        if [ -n "${webhook_entry}" ]; then
-            local webhook_ver
-            webhook_ver=$(echo "${webhook_entry}" | grep -oE "${APP_NAME}-[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?')
-            if [ -n "${webhook_ver}" ] && [ "${webhook_ver}" != "${VERSION}" ]; then
-                log_error "Email webhook PRODUCT_CONFIG drift: webhook sends v${webhook_ver}, expected v${VERSION}"
-                log_error "New customers will download an old build. Update ${webhook_js} and deploy the Worker."
-                return 1
-            fi
-            log_info "Email webhook version verified: ${APP_NAME}-${VERSION}"
-        else
-            log_warn "No '${APP_NAME}' entry in email webhook — new customers won't get a download link."
+    # Verify email webhook PRODUCT_CONFIG has the correct version.
+    # Remote main is the source of truth for future release audits; local is only a fallback.
+    local webhook_ver=""
+    local webhook_source="remote main"
+    local webhook_body=""
+    webhook_body=$(fetch_remote_email_webhook_js)
+    if [ -n "${webhook_body}" ]; then
+        webhook_ver=$(extract_email_webhook_version "${webhook_body}" "${APP_NAME}")
+    fi
+    if [ -z "${webhook_ver}" ]; then
+        local webhook_js="${HOME}/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js"
+        webhook_source="local checkout"
+        if [ -f "${webhook_js}" ]; then
+            webhook_ver=$(extract_email_webhook_version "$(cat "${webhook_js}")" "${APP_NAME}")
         fi
+    fi
+    if [ -n "${webhook_ver}" ]; then
+        if [ "${webhook_ver}" != "${VERSION}" ]; then
+            log_error "Email webhook PRODUCT_CONFIG drift: ${webhook_source} sends v${webhook_ver}, expected v${VERSION}"
+            log_error "New customers will download an old build. Update sane-email-automation and deploy the Worker."
+            return 1
+        fi
+        log_info "Email webhook version verified: ${APP_NAME}-${VERSION} (${webhook_source})"
     else
-        log_warn "Email webhook file not found at ${webhook_js} — cannot verify download version."
+        log_warn "No '${APP_NAME}' entry found in email webhook PRODUCT_CONFIG."
     fi
 
     # Verify source code version matches released version (prevents uncommitted bump drift)
@@ -5014,25 +5053,40 @@ PY
             # Commit and deploy
             WEBHOOK_DIR="$(dirname "$(dirname "$(dirname "${WEBHOOK_JS}")")")"
             if cd "${WEBHOOK_DIR}" 2>/dev/null; then
-                git add -A && git commit -m "chore: update ${LOWER_APP_NAME} to ${VERSION}" --no-verify 2>/dev/null && \
-                    GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git push 2>/dev/null && \
-                    log_info "Webhook committed and pushed."
+                if git add -A && git commit -m "chore: update ${LOWER_APP_NAME} to ${VERSION}" --no-verify 2>/dev/null; then
+                    if GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git push 2>/dev/null; then
+                        log_info "Webhook committed and pushed."
+                    else
+                        log_warn "Webhook push failed — remote main may still point at an older version."
+                    fi
+                fi
                 npx wrangler deploy --keep-vars 2>/dev/null && \
                     log_info "Webhook deployed to Cloudflare Workers." || \
                     log_warn "Webhook deploy failed — deploy manually: cd ${WEBHOOK_DIR} && npx wrangler deploy --keep-vars"
                 cd "${PROJECT_ROOT}"
             fi
 
-            # Verify the sed replacement actually worked (catches silent no-match)
+            # Verify both the local replacement and remote main version.
             WEBHOOK_VERIFY=$(grep "'${APP_NAME}'" "${WEBHOOK_JS}" 2>/dev/null || true)
             if [ -n "${WEBHOOK_VERIFY}" ]; then
                 if echo "${WEBHOOK_VERIFY}" | grep -q "${APP_NAME}-${VERSION}"; then
-                    log_info "Webhook version verified: ${APP_NAME}-${VERSION} in PRODUCT_CONFIG"
+                    log_info "Webhook local version verified: ${APP_NAME}-${VERSION} in PRODUCT_CONFIG"
                 else
                     ACTUAL_VER=$(echo "${WEBHOOK_VERIFY}" | grep -oE "${APP_NAME}-[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1)
                     log_error "Webhook version mismatch after update: expected ${APP_NAME}-${VERSION} but found ${ACTUAL_VER:-unknown}"
                     log_error "The sed replacement may have failed silently. Edit ${WEBHOOK_JS} manually."
                 fi
+            fi
+            REMOTE_WEBHOOK_BODY=$(fetch_remote_email_webhook_js)
+            REMOTE_WEBHOOK_VER=$(extract_email_webhook_version "${REMOTE_WEBHOOK_BODY}" "${APP_NAME}")
+            if [ -n "${REMOTE_WEBHOOK_VER}" ]; then
+                if [ "${REMOTE_WEBHOOK_VER}" = "${VERSION}" ]; then
+                    log_info "Webhook remote version verified: ${APP_NAME}-${VERSION} in GitHub main"
+                else
+                    log_error "Webhook remote version mismatch: expected ${APP_NAME}-${VERSION} but GitHub main has ${APP_NAME}-${REMOTE_WEBHOOK_VER}"
+                fi
+            else
+                log_warn "Could not verify webhook version on GitHub main."
             fi
         else
             log_warn "No '${APP_NAME}' entry found in webhook — add it manually to ${WEBHOOK_JS}"
