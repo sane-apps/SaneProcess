@@ -158,11 +158,36 @@ module SaneMasterModules
       print_mcp_verification_summary(all_valid)
     end
 
+    DEFAULT_PER_CODEX_SERVER_CAP = 1
+
+    CODEX_APP_SERVER_PATTERN = %r{(?:/Applications/Codex\.app/Contents/Resources/)?codex app-server(?:\s|$)}.freeze
+
+    CODEX_SIDECAR_PATTERNS = [
+      {
+        kind: 'ssh-sanemaster-release',
+        regex: /\bssh\b.*\bSaneMaster\.rb release(?:\s|$)/,
+        grace_seconds: 3600,
+        max_cpu: 0.2
+      },
+      {
+        kind: 'pmset-thermlog',
+        regex: /\bpmset -g thermlog\b/,
+        grace_seconds: 120
+      },
+      {
+        kind: 'sanemaster-release',
+        regex: %r{/SaneMaster\.rb release(?:\s|$)},
+        grace_seconds: 3600,
+        max_cpu: 0.2
+      }
+    ].freeze
+
     def mcp_watchdog(args)
       action = 'status'
       quiet = false
       as_json = false
       max_per_server = 6
+      per_codex_server_cap = DEFAULT_PER_CODEX_SERVER_CAP
       duplicate_grace_seconds = 900
       interval_seconds = 300
 
@@ -177,6 +202,9 @@ module SaneMasterModules
         when '--max'
           i += 1
           max_per_server = [args[i].to_i, 1].max if args[i]
+        when '--per-codex-cap'
+          i += 1
+          per_codex_server_cap = [args[i].to_i, 1].max if args[i]
         when '--interval'
           i += 1
           interval_seconds = [args[i].to_i, 60].max if args[i]
@@ -190,8 +218,13 @@ module SaneMasterModules
       end
 
       snapshot = capture_mcp_process_snapshot
-      analysis = analyze_mcp_processes(snapshot, max_per_server)
+      analysis = analyze_mcp_processes(
+        snapshot,
+        max_per_server,
+        per_codex_server_cap: per_codex_server_cap
+      )
       analysis[:duplicate_grace_seconds] = duplicate_grace_seconds
+      analysis[:per_codex_server_cap] = per_codex_server_cap
 
       case action
       when 'status'
@@ -229,7 +262,7 @@ module SaneMasterModules
       ['context7', /context7-mcp|context7/i],
       ['github', /mcp-server-github|server-github|@modelcontextprotocol\/server-github/i],
       ['xcode', /mcpbridge/i],
-      ['memory', /server-memory/i],
+      ['memory', /server-memory|mcp-memory-enhanced\/server\.mjs|mcp-memory-enhanced/i],
       ['central-memory', /mcp-central-memory\/server\.mjs|central-memory-mcp/i],
       ['macos-automator', /macos-automator/i],
       ['serena', /serena start-mcp-server|github\.com\/oraios\/serena/i],
@@ -256,32 +289,52 @@ module SaneMasterModules
     }.freeze
 
     def capture_mcp_process_snapshot
-      all_pids = {}
-      processes = []
+      process_index = {}
 
-      `ps -axo pid=,ppid=,etime=,command=`.each_line do |line|
-        match = line.match(/^\s*(\d+)\s+(\d+)\s+([0-9:\-]+)\s+(.*)$/)
+      `ps -axo pid=,ppid=,etime=,%cpu=,state=,command=`.each_line do |line|
+        match = line.match(/^\s*(\d+)\s+(\d+)\s+([0-9:\-]+)\s+([0-9.]+)\s+(\S+)\s+(.*)$/)
         next unless match
 
         pid = match[1].to_i
         ppid = match[2].to_i
         etimes = parse_etime_seconds(match[3].to_s)
-        cmd = match[4].to_s.strip
-        all_pids[pid] = true
+        cpu = match[4].to_f
+        state = match[5].to_s.strip
+        cmd = match[6].to_s.strip
 
-        server = identify_mcp_server(cmd)
-        next unless server
-
-        processes << {
+        process_index[pid] = {
           pid: pid,
           ppid: ppid,
           etimes: etimes,
-          command: cmd,
-          server: server
+          cpu: cpu,
+          state: state,
+          command: cmd
         }
       end
 
-      { processes: processes, all_pids: all_pids }
+      build_mcp_process_snapshot(process_index)
+    end
+
+    def build_mcp_process_snapshot(process_index)
+      annotate_codex_ownership!(process_index)
+
+      processes = process_index.values.map do |proc_info|
+        server = identify_mcp_server(proc_info[:command])
+        next unless server
+
+        proc_info.merge(
+          server: server,
+          instance_root_pid: mcp_instance_root_pid_for(proc_info[:pid], process_index, server: server)
+        )
+      end.compact
+
+      all_pids = process_index.each_key.each_with_object({}) { |pid, memo| memo[pid] = true }
+
+      {
+        processes: processes,
+        all_pids: all_pids,
+        all_processes: process_index
+      }
     end
 
     def parse_etime_seconds(etime)
@@ -331,7 +384,68 @@ module SaneMasterModules
       false
     end
 
-    def analyze_mcp_processes(snapshot, max_per_server)
+    def annotate_codex_ownership!(process_index)
+      cache = {}
+
+      process_index.each_value do |proc_info|
+        owner_pid = codex_owner_pid_for(proc_info[:pid], process_index, cache)
+        proc_info[:codex_owner_pid] = owner_pid
+        proc_info[:codex_owner_command] = process_index[owner_pid]&.dig(:command)
+        proc_info[:parent_command] = process_index[proc_info[:ppid]]&.dig(:command)
+      end
+    end
+
+    def codex_owner_pid_for(pid, process_index, cache = {})
+      return cache[pid] if cache.key?(pid)
+
+      visited = {}
+      current = pid
+      owner_pid = nil
+
+      while current && (proc_info = process_index[current])
+        break if visited[current]
+
+        if codex_app_server_command?(proc_info[:command])
+          owner_pid = current
+          break
+        end
+
+        visited[current] = true
+        parent_pid = proc_info[:ppid].to_i
+        break if parent_pid <= 1 || parent_pid == current
+
+        current = parent_pid
+      end
+
+      cache[pid] = owner_pid
+    end
+
+    def codex_app_server_command?(command)
+      command.to_s.match?(CODEX_APP_SERVER_PATTERN)
+    end
+
+    def mcp_instance_root_pid_for(pid, process_index, server:)
+      current = pid
+      visited = {}
+
+      while current && (proc_info = process_index[current])
+        break if visited[current]
+
+        visited[current] = true
+        parent_pid = proc_info[:ppid].to_i
+        break if parent_pid <= 1 || parent_pid == current
+
+        parent_info = process_index[parent_pid]
+        break unless parent_info
+        break unless identify_mcp_server(parent_info[:command]) == server
+
+        current = parent_pid
+      end
+
+      current
+    end
+
+    def analyze_mcp_processes(snapshot, max_per_server, per_codex_server_cap: DEFAULT_PER_CODEX_SERVER_CAP)
       processes = snapshot[:processes]
       all_pids = snapshot[:all_pids]
 
@@ -340,7 +454,9 @@ module SaneMasterModules
         proc_info[:orphan] = ppid <= 1 || !all_pids[ppid]
       end
 
-      by_server = processes.group_by { |p| p[:server] }
+      instances = build_mcp_instances(processes, snapshot[:all_processes], all_pids)
+      by_server = instances.group_by { |instance| instance[:server] }
+      raw_by_server = processes.group_by { |proc_info| proc_info[:server] }
       duplicate_servers = []
       by_server.each do |server, procs|
         server_cap = cap_for_server(server, max_per_server)
@@ -349,38 +465,29 @@ module SaneMasterModules
         duplicate_servers << { server: server, count: procs.length, cap: server_cap }
       end
 
+      duplicate_codex_groups = build_duplicate_codex_groups(instances, per_codex_server_cap)
+      codex_sidecars = detect_codex_sidecars(snapshot[:all_processes])
+
       {
         checked_at: Time.now.iso8601,
         total_processes: processes.length,
+        total_instances: instances.length,
         max_per_server: max_per_server,
         by_server: by_server.transform_values(&:length),
+        raw_by_server: raw_by_server.transform_values(&:length),
         orphan_processes: processes.select { |p| p[:orphan] },
+        orphan_instances: instances.select { |instance| instance[:orphan] },
         duplicate_servers: duplicate_servers,
+        duplicate_codex_groups: duplicate_codex_groups,
+        codex_sidecars: codex_sidecars,
+        instances: instances,
         processes: processes
       }
     end
 
     def cleanup_mcp_processes(analysis, max_per_server, quiet: false, duplicate_grace_seconds: 900)
-      processes = analysis[:processes]
-      by_server = processes.group_by { |p| p[:server] }
-      pids_to_kill = []
-
-      # Always prioritize orphaned daemons.
-      pids_to_kill.concat(analysis[:orphan_processes].map { |p| p[:pid] })
-
-      # Then enforce per-server caps to prevent runaway duplicate MCP trees.
-      by_server.each do |server, procs|
-        server_cap = cap_for_server(server, max_per_server)
-        next unless procs.length > server_cap
-
-        survivors = procs.sort_by { |p| [p[:orphan] ? 1 : 0, p[:etimes]] }.first(server_cap)
-        survivor_ids = survivors.map { |p| p[:pid] }
-        extras = procs.reject { |p| survivor_ids.include?(p[:pid]) }
-        extras = extras.select { |p| p[:orphan] || p[:etimes].to_i >= duplicate_grace_seconds }
-        pids_to_kill.concat(extras.map { |p| p[:pid] })
-      end
-
-      pids_to_kill = pids_to_kill.uniq
+      plan = plan_mcp_cleanup(analysis, max_per_server, duplicate_grace_seconds: duplicate_grace_seconds)
+      pids_to_kill = plan[:pids].uniq
       killed = []
       failed = []
 
@@ -402,6 +509,8 @@ module SaneMasterModules
         puts "   Killed: #{killed.length}"
         puts "   Failed: #{failed.length}"
         puts "   Duplicate grace: #{duplicate_grace_seconds}s"
+        puts "   MCP instance groups planned: #{plan[:instance_roots].length}"
+        puts "   Codex sidecars planned: #{plan[:sidecar_pids].length}"
         puts ''
       end
 
@@ -414,6 +523,129 @@ module SaneMasterModules
       end
 
       { killed: killed, failed: failed }
+    end
+
+    def plan_mcp_cleanup(analysis, max_per_server, duplicate_grace_seconds: 900)
+      instances = analysis[:instances] || analysis[:processes].group_by { |proc_info| proc_info[:instance_root_pid] }.values.map do |members|
+        build_mcp_instance(members)
+      end
+
+      pids_to_kill = []
+      instance_roots = []
+      sidecar_pids = []
+
+      analysis[:orphan_instances].each do |instance|
+        instance_roots << instance[:root_pid]
+        pids_to_kill.concat(instance[:pids])
+      end
+
+      instances.group_by { |instance| instance[:server] }.each do |server, server_instances|
+        server_cap = cap_for_server(server, max_per_server)
+        next unless server_instances.length > server_cap
+
+        extras = cleanup_excess_instances(server_instances, server_cap, duplicate_grace_seconds)
+        instance_roots.concat(extras.map { |instance| instance[:root_pid] })
+        pids_to_kill.concat(extras.flat_map { |instance| instance[:pids] })
+      end
+
+      duplicate_codex_groups = analysis[:duplicate_codex_groups] || []
+      duplicate_codex_groups.each do |group|
+        group_instances = group[:instances] || []
+        extras = cleanup_excess_instances(group_instances, group[:cap], duplicate_grace_seconds)
+        instance_roots.concat(extras.map { |instance| instance[:root_pid] })
+        pids_to_kill.concat(extras.flat_map { |instance| instance[:pids] })
+      end
+
+      sidecars = Array(analysis[:codex_sidecars]).select { |sidecar| sidecar[:cleanup_eligible] }
+      sidecar_pids.concat(sidecars.map { |sidecar| sidecar[:pid] })
+      pids_to_kill.concat(sidecar_pids)
+
+      {
+        pids: pids_to_kill.uniq,
+        instance_roots: instance_roots.uniq,
+        sidecar_pids: sidecar_pids.uniq
+      }
+    end
+
+    def cleanup_excess_instances(instances, cap, duplicate_grace_seconds)
+      survivors = instances.sort_by { |instance| [instance[:orphan] ? 1 : 0, instance[:etimes], instance[:root_pid]] }.first(cap)
+      survivor_ids = survivors.map { |instance| instance[:root_pid] }
+      extras = instances.reject { |instance| survivor_ids.include?(instance[:root_pid]) }
+
+      extras.select do |instance|
+        instance[:orphan] || instance[:etimes].to_i >= duplicate_grace_seconds
+      end
+    end
+
+    def build_mcp_instances(processes, process_index, all_pids)
+      processes.group_by { |proc_info| proc_info[:instance_root_pid] }.values.map do |members|
+        build_mcp_instance(members, process_index: process_index, all_pids: all_pids)
+      end
+    end
+
+    def build_mcp_instance(members, process_index: nil, all_pids: nil)
+      root_member = members.find { |member| member[:pid] == member[:instance_root_pid] } ||
+                    members.min_by { |member| [member[:etimes], member[:pid]] }
+      root_pid = root_member[:instance_root_pid] || root_member[:pid]
+      root_proc = process_index&.[](root_pid) || root_member
+      root_ppid = root_proc[:ppid].to_i
+      orphan = if all_pids
+                 root_ppid <= 1 || !all_pids[root_ppid]
+               else
+                 members.any? { |member| member[:orphan] }
+               end
+
+      {
+        root_pid: root_pid,
+        server: root_member[:server],
+        codex_owner_pid: root_member[:codex_owner_pid],
+        codex_owner_command: root_member[:codex_owner_command],
+        pids: members.map { |member| member[:pid] }.sort,
+        etimes: root_proc[:etimes] || root_member[:etimes],
+        cpu: members.sum { |member| member[:cpu].to_f },
+        orphan: orphan,
+        process_count: members.length
+      }
+    end
+
+    def build_duplicate_codex_groups(instances, per_codex_server_cap)
+      instances.group_by { |instance| [instance[:server], instance[:codex_owner_pid]] }
+               .map do |(server, owner_pid), owner_instances|
+        next unless owner_pid.to_i.positive?
+        next unless owner_instances.length > per_codex_server_cap
+
+        {
+          server: server,
+          owner_pid: owner_pid,
+          count: owner_instances.length,
+          cap: per_codex_server_cap,
+          instances: owner_instances
+        }
+      end.compact
+    end
+
+    def detect_codex_sidecars(process_index)
+      process_index.values.map do |proc_info|
+        next unless proc_info[:codex_owner_pid].to_i.positive?
+
+        pattern = CODEX_SIDECAR_PATTERNS.find { |candidate| proc_info[:command].match?(candidate[:regex]) }
+        next unless pattern
+
+        cleanup_eligible = proc_info[:etimes].to_i >= pattern[:grace_seconds].to_i
+        cleanup_eligible &&= proc_info[:cpu].to_f <= pattern[:max_cpu].to_f if pattern.key?(:max_cpu)
+
+        {
+          pid: proc_info[:pid],
+          ppid: proc_info[:ppid],
+          kind: pattern[:kind],
+          etimes: proc_info[:etimes],
+          cpu: proc_info[:cpu],
+          command: proc_info[:command],
+          codex_owner_pid: proc_info[:codex_owner_pid],
+          cleanup_eligible: cleanup_eligible,
+          grace_seconds: pattern[:grace_seconds]
+        }
+      end.compact
     end
 
     def process_alive?(pid)
@@ -454,7 +686,9 @@ module SaneMasterModules
     def print_mcp_watchdog_status(analysis, max_per_server)
       puts '🔌 --- [ MCP WATCHDOG STATUS ] ---'
       puts "   Total MCP processes: #{analysis[:total_processes]}"
+      puts "   MCP instances: #{analysis[:total_instances]}"
       puts "   Max per server: #{max_per_server}"
+      puts "   Per Codex cap: #{analysis[:per_codex_server_cap]}"
       puts ''
 
       if analysis[:by_server].empty?
@@ -463,16 +697,19 @@ module SaneMasterModules
         analysis[:by_server].sort_by { |server, _| server }.each do |server, count|
           server_cap = cap_for_server(server, max_per_server)
           marker = count > server_cap ? '⚠️' : '✅'
-          puts "   #{marker} #{server}: #{count} (cap #{server_cap})"
+          raw_count = analysis[:raw_by_server].fetch(server, count)
+          puts "   #{marker} #{server}: #{count} instance#{count == 1 ? '' : 's'} / #{raw_count} proc#{raw_count == 1 ? '' : 's'} (cap #{server_cap})"
         end
       end
 
-      orphan_count = analysis[:orphan_processes].length
+      orphan_count = analysis[:orphan_instances].length
       puts ''
-      puts "   Orphans: #{orphan_count}"
+      puts "   Orphan instances: #{orphan_count}"
       puts "   Duplicates over cap: #{analysis[:duplicate_servers].length}"
+      puts "   Duplicate Codex groups: #{analysis[:duplicate_codex_groups].length}"
+      puts "   Stale Codex sidecars: #{Array(analysis[:codex_sidecars]).count { |sidecar| sidecar[:cleanup_eligible] }}"
 
-      if analysis[:duplicate_servers].any?
+      if analysis[:duplicate_servers].any? || analysis[:duplicate_codex_groups].any? || Array(analysis[:codex_sidecars]).any? { |sidecar| sidecar[:cleanup_eligible] }
         puts ''
         puts '   Run: ./scripts/SaneMaster.rb mcp_watchdog clean'
       end
@@ -485,6 +722,8 @@ module SaneMasterModules
       required_runtime_servers = required_runtime_mcp_servers(configured_servers)
       missing_runtime = required_runtime_servers - running_servers
       duplicate_servers = analysis[:duplicate_servers].map { |d| d[:server] }.sort
+      duplicate_codex_servers = Array(analysis[:duplicate_codex_groups]).map { |d| d[:server] }.sort.uniq
+      stale_sidecars = Array(analysis[:codex_sidecars]).select { |sidecar| sidecar[:cleanup_eligible] }
 
       {
         configured_servers: configured_servers,
@@ -492,7 +731,9 @@ module SaneMasterModules
         required_runtime_servers: required_runtime_servers,
         missing_runtime: missing_runtime,
         duplicate_servers: duplicate_servers,
-        orphan_count: analysis[:orphan_processes].length,
+        duplicate_codex_servers: duplicate_codex_servers,
+        orphan_count: analysis[:orphan_instances].length,
+        stale_sidecars: stale_sidecars,
         max_per_server: max_per_server,
         launch_agent: mcp_watchdog_launch_agent_status,
         recent_errors: mcp_watchdog_recent_errors,
@@ -520,10 +761,23 @@ module SaneMasterModules
         puts "   ⚠️  Servers over cap: #{doctor[:duplicate_servers].join(', ')}"
       end
 
+      if doctor[:duplicate_codex_servers].empty?
+        puts '   ✅ No per-session Codex duplicates detected.'
+      else
+        puts "   ⚠️  Per-session Codex duplicates: #{doctor[:duplicate_codex_servers].join(', ')}"
+      end
+
       if doctor[:orphan_count].zero?
         puts '   ✅ No orphan MCP processes.'
       else
         puts "   ⚠️  Orphan MCP processes: #{doctor[:orphan_count]}"
+      end
+
+      if doctor[:stale_sidecars].empty?
+        puts '   ✅ No stale Codex sidecars detected.'
+      else
+        kinds = doctor[:stale_sidecars].map { |sidecar| "#{sidecar[:kind]}(pid #{sidecar[:pid]})" }
+        puts "   ⚠️  Stale Codex sidecars: #{kinds.join(', ')}"
       end
 
       launch = doctor[:launch_agent]
@@ -868,10 +1122,10 @@ module SaneMasterModules
     end
 
     def scan_homebrew_deps
-      TOOL_SOURCES.keys.filter_map do |tool|
+      TOOL_SOURCES.keys.map do |tool|
         version = get_installed_version(tool)
         { name: tool, version: version } if version != 'not installed'
-      end
+      end.compact
     end
 
     def scan_frameworks
