@@ -27,6 +27,11 @@ bash scripts/mini/deploy.sh
 scp scripts/mini/mini-train.sh mini:~/SaneApps/infra/scripts/
 ```
 
+Default root behavior:
+- Mini training runners and mini LaunchAgent installers now auto-prefer `~/SaneApps-automation` when that clone exists.
+- Explicit `SANE_ROOT=...` still wins if you set it yourself.
+- Outputs still write to `~/SaneApps/outputs` unless `SANE_OUTPUT_DIR` is overridden.
+
 ## Release Readiness
 
 Before any headless App Store release from the mini, run:
