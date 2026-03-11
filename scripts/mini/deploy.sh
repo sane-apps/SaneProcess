@@ -49,8 +49,8 @@ ssh mini "if [ -f $REMOTE_DIR/mini-prepare-automation-root.sh ]; then AUTOMATION
 
 echo ""
 echo "Refreshing launch agents on mini..."
-ssh mini "if [ -f $REMOTE_DIR/mini-install-nightly-agent.sh ]; then SANE_ROOT=\$HOME/SaneApps-automation SANE_OUTPUT_DIR=\$HOME/SaneApps/outputs bash $REMOTE_DIR/mini-install-nightly-agent.sh; fi"
-ssh mini "if [ -f $REMOTE_DIR/mini-install-training-agents.sh ]; then SANE_ROOT=\$HOME/SaneApps-automation SANE_OUTPUT_DIR=\$HOME/SaneApps/outputs bash $REMOTE_DIR/mini-install-training-agents.sh; fi"
+ssh mini "if [ -f $REMOTE_DIR/mini-install-nightly-agent.sh ]; then NIGHTLY_HOUR=8 NIGHTLY_MINUTE=45 SANE_ROOT=\$HOME/SaneApps-automation SANE_OUTPUT_DIR=\$HOME/SaneApps/outputs bash $REMOTE_DIR/mini-install-nightly-agent.sh; fi"
+ssh mini "if [ -f $REMOTE_DIR/mini-install-training-agents.sh ]; then SANE_ROOT=\$HOME/SaneApps-automation SANE_OUTPUT_DIR=\$HOME/SaneApps/outputs ENABLE_WEEKLY_TRAINING=true TRAIN_HARD_STOP_TIME=08:30 READINESS_TARGET_APP=SaneSync CHALLENGER_SELECTION_MODE=alternate CHALLENGER_ROTATION_ANCHOR_DATE=2026-03-07 CHALLENGER_ROTATION_ORDER=phi4-mini,smollm3-3b CHALLENGER_BUDGET_MIN=0 CHALLENGER_SKIP_WEEKDAY=0 RUN_CHALLENGERS_AFTER_WEEKLY=false WEEKLY_TRAIN_HOUR=1 WEEKLY_TRAIN_MINUTE=0 bash $REMOTE_DIR/mini-install-training-agents.sh; fi"
 ssh mini "if [ -f $REMOTE_DIR/mini-install-memory-guard.sh ]; then bash $REMOTE_DIR/mini-install-memory-guard.sh; fi"
 
 # Sync global Claude config (skills, commands, templates, CLAUDE.md)

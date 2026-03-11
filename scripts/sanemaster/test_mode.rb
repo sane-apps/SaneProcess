@@ -12,6 +12,8 @@ module SaneMasterModules
     end
 
     def launch_app(args)
+      return false unless ensure_research_gate_clear!('launch')
+
       puts '🚀 --- [ SANEMASTER LAUNCH ] ---'
 
       build_config = launch_build_config(args)
@@ -145,6 +147,8 @@ module SaneMasterModules
     end
 
     def enter_test_mode(args)
+      return unless ensure_research_gate_clear!('test_mode')
+
       puts '🧪 --- [ TEST MODE ] ---'
       puts 'Preparing clean testing environment...'
       puts ''
@@ -291,9 +295,6 @@ module SaneMasterModules
         lock_file.flock(File::LOCK_EX)
 
         temp_app_path = "#{target_app_path}.staging-#{Process.pid}-#{Time.now.to_i}"
-        backup_app_path = "#{target_app_path}.backup-#{Process.pid}-#{Time.now.to_i}"
-        moved_original = false
-
         begin
           FileUtils.rm_rf(temp_app_path) if File.exist?(temp_app_path)
           copied = system('ditto', source_app_path, temp_app_path)
@@ -303,23 +304,16 @@ module SaneMasterModules
           end
 
           if File.exist?(target_app_path)
-            FileUtils.mv(target_app_path, backup_app_path)
-            moved_original = true
+            # Avoid creating backup app bundle identities under /Applications.
+            # TCC can retain those paths and keep stale camera attribution alive.
+            FileUtils.rm_rf(target_app_path)
           end
 
-          begin
-            FileUtils.mv(temp_app_path, target_app_path)
-          rescue StandardError
-            if moved_original && File.exist?(backup_app_path)
-              FileUtils.mv(backup_app_path, target_app_path)
-            end
-            raise
-          end
+          FileUtils.mv(temp_app_path, target_app_path)
 
           staged_ok = File.exist?(target_app_path)
         ensure
           FileUtils.rm_rf(temp_app_path) if File.exist?(temp_app_path)
-          FileUtils.rm_rf(backup_app_path) if File.exist?(backup_app_path)
           lock_file.flock(File::LOCK_UN)
         end
       end
@@ -384,6 +378,15 @@ module SaneMasterModules
 
       system_app = File.join('/Applications', "#{project_name}.app")
       if unsigned_fallback_active? && File.exist?(system_app)
+        preserved << File.expand_path(system_app)
+      end
+
+      # If the caller explicitly stages to a user-level path, keep any
+      # official signed /Applications install intact. It should not be treated
+      # as a stale duplicate of an Apple Development build.
+      if !File.expand_path(primary_path).start_with?('/Applications/') &&
+         File.exist?(system_app) &&
+         developer_id_signed?(system_app)
         preserved << File.expand_path(system_app)
       end
 
@@ -482,11 +485,8 @@ module SaneMasterModules
       bundle_id = bundle_id_for_app(app_path)
       return unless bundle_id
 
-      user_db = File.expand_path('~/Library/Application Support/com.apple.TCC/TCC.db')
-      return unless File.exist?(user_db)
-
-      escaped_bundle = bundle_id.gsub("'", "''")
-      rows_raw = `sqlite3 "#{user_db}" "SELECT rowid || '|' || IFNULL(hex(csreq), '') FROM access WHERE service='kTCCServiceAccessibility' AND client='#{escaped_bundle}';"`.strip
+      db_paths = accessibility_tcc_db_paths
+      return if db_paths.empty?
 
       # Clean legacy dev-bundle aliases that create duplicate Accessibility rows
       # in System Settings and can lock users out of the actively launched app.
@@ -495,45 +495,87 @@ module SaneMasterModules
         system('tccutil', 'reset', 'Accessibility', legacy_id, out: File::NULL, err: File::NULL)
       end
 
-      return if rows_raw.empty?
+      denied_rows_by_db = {}
 
-      stale_row_ids = []
+      db_paths.each do |db_path|
+        rows = accessibility_tcc_rows(db_path, bundle_id)
+        next if rows.empty?
 
-      rows_raw.each_line do |line|
-        row = line.strip
-        next if row.empty?
+        denied_rows = rows.select { |row| row[:auth_value].to_i.zero? }
+        denied_rows_by_db[db_path] = denied_rows unless denied_rows.empty?
 
-        row_id, csreq_hex = row.split('|', 2)
-        next unless row_id && row_id.match?(/\A\d+\z/)
+        stale_row_ids = []
+        rows.each do |row|
+          row_id = row[:row_id]
+          csreq_hex = row[:csreq_hex]
 
-        if csreq_hex.nil? || csreq_hex.empty?
-          stale_row_ids << row_id
-          next
-        end
-
-        csreq_path = File.join(Dir.tmpdir, "sanemaster-ax-#{project_name}-#{row_id}.csreq")
-        begin
-          File.binwrite(csreq_path, [csreq_hex].pack('H*'))
-          requirement = `csreq -r "#{csreq_path}" -t 2>/dev/null`.strip
-
-          if requirement.empty?
+          if csreq_hex.nil? || csreq_hex.empty?
             stale_row_ids << row_id
             next
           end
 
-          matches = system('codesign', "-R=#{requirement}", app_path, out: File::NULL, err: File::NULL)
-          stale_row_ids << row_id unless matches
-        ensure
-          FileUtils.rm_f(csreq_path)
+          csreq_path = File.join(Dir.tmpdir, "sanemaster-ax-#{project_name}-#{row_id}.csreq")
+          begin
+            File.binwrite(csreq_path, [csreq_hex].pack('H*'))
+            requirement = `csreq -r "#{csreq_path}" -t 2>/dev/null`.strip
+
+            if requirement.empty?
+              stale_row_ids << row_id
+              next
+            end
+
+            matches = system('codesign', "-R=#{requirement}", app_path, out: File::NULL, err: File::NULL)
+            stale_row_ids << row_id unless matches
+          ensure
+            FileUtils.rm_f(csreq_path)
+          end
         end
+
+        next if stale_row_ids.empty?
+
+        puts "🧹 Repairing stale Accessibility rows for #{bundle_id} in #{db_path}"
+        system('killall', 'tccd', out: File::NULL, err: File::NULL)
+        system('sqlite3', db_path, "DELETE FROM access WHERE rowid IN (#{stale_row_ids.join(',')});", out: File::NULL, err: File::NULL)
+        system('killall', 'tccd', out: File::NULL, err: File::NULL)
       end
 
-      return if stale_row_ids.empty?
+      denied_rows = denied_rows_by_db[system_accessibility_tcc_db_path]
+      return if denied_rows.nil? || denied_rows.empty?
 
-      puts "🧹 Repairing stale Accessibility rows for #{bundle_id}"
-      system('killall', 'tccd', out: File::NULL, err: File::NULL)
-      system('sqlite3', user_db, "DELETE FROM access WHERE rowid IN (#{stale_row_ids.join(',')});", out: File::NULL, err: File::NULL)
-      system('killall', 'tccd', out: File::NULL, err: File::NULL)
+      auth_values = denied_rows.map { |row| row[:auth_value] }.uniq.sort.join(',')
+      puts "⚠️  System Accessibility row for #{bundle_id} is denied (auth_value=#{auth_values})."
+      puts '   Live AX verification is blocked until the password-gated Modify Settings sheet is completed.'
+    end
+
+    def accessibility_tcc_rows(db_path, bundle_id)
+      escaped_bundle = bundle_id.gsub("'", "''")
+      rows_raw = `sqlite3 "#{db_path}" "SELECT rowid || '|' || auth_value || '|' || IFNULL(hex(csreq), '') FROM access WHERE service='kTCCServiceAccessibility' AND client='#{escaped_bundle}';"`.strip
+      return [] if rows_raw.empty?
+
+      rows_raw.each_line.map do |line|
+        row = line.strip
+        next if row.empty?
+
+        row_id, auth_value, csreq_hex = row.split('|', 3)
+        next unless row_id && row_id.match?(/\A\d+\z/)
+
+        {
+          row_id: row_id,
+          auth_value: auth_value.to_i,
+          csreq_hex: csreq_hex.to_s
+        }
+      end.compact
+    end
+
+    def accessibility_tcc_db_paths
+      [
+        File.expand_path('~/Library/Application Support/com.apple.TCC/TCC.db'),
+        system_accessibility_tcc_db_path
+      ].uniq.select { |path| File.exist?(path) }
+    end
+
+    def system_accessibility_tcc_db_path
+      '/Library/Application Support/com.apple.TCC/TCC.db'
     end
 
     def bundle_id_for_app(app_path)
@@ -644,6 +686,8 @@ module SaneMasterModules
     def run_build_command(summary_lines: 3, build_config: launch_build_config([]))
       require 'open3'
 
+      prepare_signing_session_for_build(build_config)
+
       ENV.delete('SANEMASTER_UNSIGNED_FALLBACK_ACTIVE')
       ENV['SANEMASTER_BUILD_CONFIG'] = build_config
 
@@ -675,6 +719,76 @@ module SaneMasterModules
       end
 
       status.success?
+    end
+
+    def prepare_signing_session_for_build(build_config)
+      return unless %w[ProdDebug Release].include?(build_config)
+
+      load_saneprocess_secrets_env
+
+      login_keychain = ENV['SANEBAR_KEYCHAIN_PATH'] || ENV['KEYCHAIN_PATH'] || File.expand_path('~/Library/Keychains/login.keychain-db')
+      return unless File.exist?(login_keychain)
+
+      keychain_password = ENV['SANEBAR_KEYCHAIN_PASSWORD'] || ENV['KEYCHAIN_PASSWORD'] || ENV['KEYCHAIN_PASS']
+      return if keychain_password.to_s.strip.empty?
+
+      system('security', 'default-keychain', '-d', 'user', '-s', login_keychain, out: File::NULL, err: File::NULL)
+      system('security', 'list-keychains', '-d', 'user', '-s', login_keychain, '/Library/Keychains/System.keychain',
+             out: File::NULL, err: File::NULL)
+      system('security', 'set-keychain-settings', '-lut', '21600', login_keychain, out: File::NULL, err: File::NULL)
+
+      unless system('security', 'unlock-keychain', '-p', keychain_password, login_keychain,
+                    out: File::NULL, err: File::NULL)
+        puts "   ⚠️  Could not unlock login keychain for #{build_config} signing."
+        return
+      end
+
+      unless ENV['OTHER_CODE_SIGN_FLAGS'].to_s.include?("--keychain #{login_keychain}")
+        existing = ENV['OTHER_CODE_SIGN_FLAGS'].to_s.strip
+        prefix = "--keychain #{login_keychain}"
+        ENV['OTHER_CODE_SIGN_FLAGS'] = existing.empty? ? prefix : "#{prefix} #{existing}"
+      end
+
+      identities = `security find-identity -v -p codesigning "#{login_keychain}" 2>/dev/null`
+      identities.each_line do |line|
+        identity = line[/^\s*\d+\)\s+[0-9A-F]{40}\s+"([^"]+)"/, 1]
+        next if identity.nil? || identity.empty?
+
+        system('security', 'set-key-partition-list',
+               '-S', 'apple-tool:,apple:,codesign:',
+               '-s',
+               '-k', keychain_password,
+               '-D', identity,
+               '-t', 'private',
+               login_keychain,
+               out: File::NULL,
+               err: File::NULL)
+      end
+    end
+
+    def load_saneprocess_secrets_env
+      env_file = File.expand_path('~/.config/saneprocess/secrets.env')
+      return unless File.file?(env_file)
+
+      File.foreach(env_file) do |line|
+        next if line.strip.empty? || line.lstrip.start_with?('#')
+
+        text = line.sub(/\A\s*export\s+/, '').strip
+        next unless text.include?('=')
+
+        key, raw_value = text.split('=', 2)
+        key = key.to_s.strip
+        next if key.empty? || ENV.key?(key)
+
+        value = raw_value.to_s.strip
+        if value.start_with?('"') && value.end_with?('"') && value.length >= 2
+          value = value[1..-2]
+        elsif value.start_with?("'") && value.end_with?("'") && value.length >= 2
+          value = value[1..-2]
+        end
+
+        ENV[key] = value
+      end
     end
 
     def should_retry_unsigned_debug?(build_config:, output:, status:)

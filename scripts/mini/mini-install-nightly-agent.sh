@@ -15,8 +15,8 @@ if [ -d "$HOME/SaneApps-automation/apps" ]; then
 fi
 SANE_ROOT="${SANE_ROOT:-$DEFAULT_SANE_ROOT}"
 OUTPUT_DIR="${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}"
-NIGHTLY_HOUR="${NIGHTLY_HOUR:-2}"
-NIGHTLY_MINUTE="${NIGHTLY_MINUTE:-0}"
+NIGHTLY_HOUR="${NIGHTLY_HOUR:-8}"
+NIGHTLY_MINUTE="${NIGHTLY_MINUTE:-45}"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$OUTPUT_DIR"
 

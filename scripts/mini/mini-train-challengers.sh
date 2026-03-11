@@ -26,10 +26,16 @@ DATE=$(date +"%Y-%m-%d")
 COMPARISON_REPORT="$OUTPUT_DIR/challenger_comparison_${APP_NAME}_${DATE}.md"
 
 # Inherit time budget from environment (set by mini-train-all.sh)
-# Default: 120 minutes for all challengers combined
-CHALLENGER_BUDGET_MIN="${CHALLENGER_BUDGET_MIN:-120}"
-TRAIN_HARD_STOP_HOUR="${TRAIN_HARD_STOP_HOUR:-8}"
+# Default daily bakeoff mode: one alternating challenger, unlimited runtime until 08:30.
+CHALLENGER_BUDGET_MIN="${CHALLENGER_BUDGET_MIN:-0}"
+TRAIN_HARD_STOP_TIME="${TRAIN_HARD_STOP_TIME:-08:30}"
+CHALLENGER_SELECTION_MODE="${CHALLENGER_SELECTION_MODE:-all}"
+CHALLENGER_ROTATION_ANCHOR_DATE="${CHALLENGER_ROTATION_ANCHOR_DATE:-2026-03-07}"
+CHALLENGER_ROTATION_ORDER="${CHALLENGER_ROTATION_ORDER:-phi4-mini,smollm3-3b}"
+CHALLENGER_ROTATION_DATE="${CHALLENGER_ROTATION_DATE:-$DATE}"
+CHALLENGER_SKIP_WEEKDAY="${CHALLENGER_SKIP_WEEKDAY:-}"
 CHALLENGER_START=$(date +%s)
+SELECTED_CONFIG_NAME=""
 
 CONFIGS_DIR="$APP_DIR/training_data/challenger_configs"
 
@@ -38,10 +44,101 @@ if [ ! -d "$CONFIGS_DIR" ]; then
   exit 0
 fi
 
-# Find all challenger YAML configs
-CONFIG_FILES=$(find "$CONFIGS_DIR" -name "*.yaml" -o -name "*.yml" 2>/dev/null | sort)
+if [ -n "$CHALLENGER_SKIP_WEEKDAY" ] && [ "$(date +%w)" = "$CHALLENGER_SKIP_WEEKDAY" ]; then
+  cat > "$COMPARISON_REPORT" <<EOF
+# Challenger Model Comparison — $APP_NAME — $DATE
+
+Generated at $(date +"%Y-%m-%d %H:%M:%S")
+
+## Status
+
+- Skipped: weekday $(date +%w)
+- Reason: Sunday window reserved for weekly SaneAI training
+- Next scheduled lane: Daily alternating challenger agent at 1:00 AM on non-Sundays
+EOF
+  echo "Skipping challenger lane on weekday $(date +%w); weekly SaneAI owns this window." >&2
+  exit 0
+fi
+
+select_rotation_config_name() {
+  local days_since old_ifs order_count selected_index selected_name
+
+  days_since=$(ruby -e 'require "date"; puts((Date.iso8601(ARGV[1]) - Date.iso8601(ARGV[0])).to_i)' \
+    "$CHALLENGER_ROTATION_ANCHOR_DATE" "$CHALLENGER_ROTATION_DATE" 2>/dev/null || echo "")
+
+  if ! [[ "$days_since" =~ ^-?[0-9]+$ ]]; then
+    printf '%s' "phi4-mini"
+    return
+  fi
+
+  if [ "$days_since" -lt 0 ]; then
+    days_since=0
+  fi
+
+  old_ifs="$IFS"
+  IFS=','
+  set -- $CHALLENGER_ROTATION_ORDER
+  IFS="$old_ifs"
+
+  order_count=$#
+  if [ "$order_count" -eq 0 ]; then
+    printf '%s' "phi4-mini"
+    return
+  fi
+
+  selected_index=$((days_since % order_count + 1))
+  eval "selected_name=\${$selected_index}"
+  printf '%s' "$(printf '%s' "$selected_name" | sed 's/^ *//; s/ *$//')"
+}
+
+is_past_hard_stop_time() {
+  local hard_stop_hour hard_stop_minute hour_now minute_now
+
+  hard_stop_hour=$(printf '%s' "$TRAIN_HARD_STOP_TIME" | cut -d: -f1)
+  hard_stop_minute=$(printf '%s' "$TRAIN_HARD_STOP_TIME" | cut -d: -f2)
+  if ! [[ "$hard_stop_hour" =~ ^[0-9]{1,2}$ ]] || ! [[ "$hard_stop_minute" =~ ^[0-9]{2}$ ]]; then
+    hard_stop_hour="08"
+    hard_stop_minute="30"
+  fi
+
+  hour_now=$(date +%H)
+  minute_now=$(date +%M)
+  hour_now=$((10#$hour_now))
+  minute_now=$((10#$minute_now))
+  hard_stop_hour=$((10#$hard_stop_hour))
+  hard_stop_minute=$((10#$hard_stop_minute))
+
+  if [ "$hour_now" -gt "$hard_stop_hour" ]; then
+    return 0
+  fi
+  if [ "$hour_now" -eq "$hard_stop_hour" ] && [ "$minute_now" -ge "$hard_stop_minute" ]; then
+    return 0
+  fi
+  return 1
+}
+
+CONFIG_LIST_ALL=$(mktemp)
+find "$CONFIGS_DIR" \( -name "*.yaml" -o -name "*.yml" \) 2>/dev/null | sort > "$CONFIG_LIST_ALL"
+CONFIG_LIST_SELECTED="$CONFIG_LIST_ALL"
+
+if [ "$CHALLENGER_SELECTION_MODE" = "alternate" ]; then
+  SELECTED_CONFIG_NAME=$(select_rotation_config_name)
+  CONFIG_LIST_SELECTED=$(mktemp)
+  while read -r config_file; do
+    [ -n "$config_file" ] || continue
+    config_name=$(basename "$config_file")
+    config_name="${config_name%.yaml}"
+    config_name="${config_name%.yml}"
+    if [ "$config_name" = "$SELECTED_CONFIG_NAME" ]; then
+      echo "$config_file" >> "$CONFIG_LIST_SELECTED"
+    fi
+  done < "$CONFIG_LIST_ALL"
+fi
+
+CONFIG_FILES=$(cat "$CONFIG_LIST_SELECTED")
 
 if [ -z "$CONFIG_FILES" ]; then
+  rm -f "$CONFIG_LIST_ALL" "$CONFIG_LIST_SELECTED"
   echo "No challenger config files in $CONFIGS_DIR" >&2
   exit 0
 fi
@@ -55,7 +152,7 @@ cat > "$COMPARISON_REPORT" <<EOF
 # Challenger Model Comparison — $APP_NAME — $DATE
 
 Generated at $(date +"%Y-%m-%d %H:%M:%S")
-Budget: ${CHALLENGER_BUDGET_MIN} minutes, hard stop at ${TRAIN_HARD_STOP_HOUR}:00
+Budget: $([ "$CHALLENGER_BUDGET_MIN" -gt 0 ] && printf '%s minutes' "$CHALLENGER_BUDGET_MIN" || printf 'until hard stop'), hard stop at ${TRAIN_HARD_STOP_TIME}
 
 ## Production Baseline
 EOF
@@ -76,6 +173,13 @@ fi
 echo "" >> "$COMPARISON_REPORT"
 echo "## Challenger Results" >> "$COMPARISON_REPORT"
 echo "" >> "$COMPARISON_REPORT"
+if [ "$CHALLENGER_SELECTION_MODE" = "alternate" ]; then
+  echo "- **Selection mode:** alternating nightly bakeoff" >> "$COMPARISON_REPORT"
+  echo "- **Rotation anchor:** $CHALLENGER_ROTATION_ANCHOR_DATE (Phi-4 mini first)" >> "$COMPARISON_REPORT"
+  echo "- **Effective date:** $CHALLENGER_ROTATION_DATE" >> "$COMPARISON_REPORT"
+  echo "- **Scheduled model tonight:** $SELECTED_CONFIG_NAME" >> "$COMPARISON_REPORT"
+  echo "" >> "$COMPARISON_REPORT"
+fi
 echo "| Model | Config | Accuracy | Time (min) | Status |" >> "$COMPARISON_REPORT"
 echo "|-------|--------|----------|------------|--------|" >> "$COMPARISON_REPORT"
 
@@ -84,29 +188,28 @@ CHALLENGERS_SKIPPED=0
 
 # Write config list to temp file so we can use redirect instead of pipe
 # (pipe creates subshell on bash 3.2, losing counter variables)
-CONFIG_LIST_TMP=$(mktemp)
-echo "$CONFIG_FILES" > "$CONFIG_LIST_TMP"
+RUN_CONFIG_LIST_TMP=$(mktemp)
+echo "$CONFIG_FILES" > "$RUN_CONFIG_LIST_TMP"
 
 # Run each challenger
 while read -r config_file; do
-  # Check time budget
-  now=$(date +%s)
-  elapsed=$(( (now - CHALLENGER_START) / 60 ))
-  remaining=$((CHALLENGER_BUDGET_MIN - elapsed))
+  remaining="until ${TRAIN_HARD_STOP_TIME}"
+  if [ "$CHALLENGER_BUDGET_MIN" -gt 0 ]; then
+    now=$(date +%s)
+    elapsed=$(( (now - CHALLENGER_START) / 60 ))
+    remaining=$((CHALLENGER_BUDGET_MIN - elapsed))
 
-  if [ "$remaining" -le 5 ]; then
-    echo "Time budget nearly exhausted ($elapsed min used). Skipping remaining challengers." >&2
-    config_name=$(basename "$config_file" .yaml)
-    echo "| $(basename "$config_file") | $config_name | — | — | SKIPPED (time) |" >> "$COMPARISON_REPORT"
-    CHALLENGERS_SKIPPED=$((CHALLENGERS_SKIPPED + 1))
-    continue
+    if [ "$remaining" -le 5 ]; then
+      echo "Time budget nearly exhausted ($elapsed min used). Skipping remaining challengers." >&2
+      config_name=$(basename "$config_file" .yaml)
+      echo "| $(basename "$config_file") | $config_name | — | — | SKIPPED (time) |" >> "$COMPARISON_REPORT"
+      CHALLENGERS_SKIPPED=$((CHALLENGERS_SKIPPED + 1))
+      continue
+    fi
   fi
 
-  # Check hard stop hour
-  hour_now=$(date +%H)
-  hour_now=$((10#$hour_now))
-  if [ "$hour_now" -ge "$TRAIN_HARD_STOP_HOUR" ]; then
-    echo "Past hard stop hour (${TRAIN_HARD_STOP_HOUR}:00). Skipping remaining challengers." >&2
+  if is_past_hard_stop_time; then
+    echo "Past hard stop time (${TRAIN_HARD_STOP_TIME}). Skipping remaining challengers." >&2
     config_name=$(basename "$config_file" .yaml)
     echo "| $(basename "$config_file") | $config_name | — | — | SKIPPED (hard stop) |" >> "$COMPARISON_REPORT"
     CHALLENGERS_SKIPPED=$((CHALLENGERS_SKIPPED + 1))
@@ -124,21 +227,29 @@ while read -r config_file; do
   fi
 
   echo "--- Running challenger: $config_name ($model_id) ---" >&2
-  echo "    Time remaining: $remaining min" >&2
+  echo "    Time remaining: $remaining" >&2
 
   CHALLENGER_RUN_START=$(date +%s)
 
   # Run mini-train.sh with challenger flags
-  # Pass remaining time as budget (divided by remaining challengers would be smarter,
-  # but for now just let the script's own budget/hard-stop guards handle it)
-  SANE_ROOT="$SANE_ROOT" \
-  SANE_OUTPUT_DIR="$SANE_OUTPUT_DIR" \
-  MAX_TRAIN_RUNTIME_MIN="$remaining" \
-  TRAIN_HARD_STOP_HOUR="$TRAIN_HARD_STOP_HOUR" \
-    bash "$SCRIPT_DIR/mini-train.sh" "$APP_NAME" \
-      --model "$model_id" \
-      --config "$config_file" \
-      --challenger
+  if [ "$CHALLENGER_BUDGET_MIN" -gt 0 ]; then
+    SANE_ROOT="$SANE_ROOT" \
+    SANE_OUTPUT_DIR="$SANE_OUTPUT_DIR" \
+    MAX_TRAIN_RUNTIME_MIN="$remaining" \
+    TRAIN_HARD_STOP_TIME="$TRAIN_HARD_STOP_TIME" \
+      bash "$SCRIPT_DIR/mini-train.sh" "$APP_NAME" \
+        --model "$model_id" \
+        --config "$config_file" \
+        --challenger
+  else
+    SANE_ROOT="$SANE_ROOT" \
+    SANE_OUTPUT_DIR="$SANE_OUTPUT_DIR" \
+    TRAIN_HARD_STOP_TIME="$TRAIN_HARD_STOP_TIME" \
+      bash "$SCRIPT_DIR/mini-train.sh" "$APP_NAME" \
+        --model "$model_id" \
+        --config "$config_file" \
+        --challenger
+  fi
 
   CHALLENGER_EXIT=$?
   CHALLENGER_RUN_END=$(date +%s)
@@ -177,8 +288,8 @@ while read -r config_file; do
   CHALLENGERS_RUN=$((CHALLENGERS_RUN + 1))
 
   echo "    Result: $accuracy ($status) in ${CHALLENGER_TIME}min" >&2
-done < "$CONFIG_LIST_TMP"
-rm -f "$CONFIG_LIST_TMP"
+done < "$RUN_CONFIG_LIST_TMP"
+rm -f "$CONFIG_LIST_ALL" "$CONFIG_LIST_SELECTED" "$RUN_CONFIG_LIST_TMP"
 
 # =============================================================================
 # Post-training cleanup — free GPU/memory so Mini isn't fried during daytime
@@ -215,7 +326,7 @@ cat >> "$COMPARISON_REPORT" <<EOF
 
 **Challengers run:** $CHALLENGERS_RUN of $TOTAL_CHALLENGERS
 **Report:** $COMPARISON_REPORT
-**Next scheduled lane:** Daily challenger agent at 1:00 AM, plus Sunday weekly follow-up after production training
+**Next scheduled lane:** Daily alternating challenger agent at 1:00 AM, nightly builds at 8:45 AM
 
 > Challengers NEVER auto-promote. If a model beats Llama, review the report and manually promote.
 EOF

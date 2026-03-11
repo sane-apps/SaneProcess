@@ -1,6 +1,6 @@
 # Automation Scripts
 
-Scripts for automating development tasks across SaneApps projects using the `nv` CLI.
+Scripts for automating development and business tasks across SaneApps projects.
 
 ## Prerequisites
 
@@ -9,6 +9,30 @@ Scripts for automating development tasks across SaneApps projects using the `nv`
 - SaneApps projects at `~/SaneApps/apps/`
 
 ## Scripts
+
+### lead-research.py
+
+Lead discovery with Exa plus read-friendly site dossiers from Firecrawl.
+
+**Usage:**
+```bash
+lead-research.py --query "mac app review sites"
+lead-research.py --query "developer newsletters for privacy tools" --site-limit 8
+lead-research.py --domain setapp.com --domain macstories.net
+```
+
+**What it does:**
+1. Uses Exa search to find candidate URLs for a query.
+2. Dedupes those hits down to unique domains.
+3. Uses Firecrawl `map` to find relevant pages on each site.
+4. Uses Firecrawl `scrape` to turn those pages into readable markdown.
+5. Saves one `.json` bundle plus one `.md` summary to `outputs/leads/`.
+
+**Secrets:**
+- `EXA_API_KEY` env var, or keychain service `exa` / account `api_key`
+- `FIRECRAWL_API_KEY` env var, or keychain service `firecrawl` / account `api_key`
+
+**Output location:** `~/SaneApps/infra/SaneProcess/outputs/leads/`
 
 ### nv-audit.sh
 

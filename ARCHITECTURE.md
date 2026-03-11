@@ -564,6 +564,19 @@ Metadata lock behavior to plan around:
 - Treat this as lane-state lock, not payload format error.
 - Safe process: create/edit a new version lane, then patch localizations there.
 
+Submission hardening rules now enforced in shared tooling:
+- `appstore_submit.rb` blocks submission when platform metadata falls back to generic copy or required review fields are missing.
+- `release.rb` / `appstore_preflight` treat known App Review policy failures as first-class gates, not warnings:
+  - non-IAP App Store unlock paths
+  - reviewer access/demo path gaps
+  - Accessibility/synthetic-input automation for clipboard or third-party UI tasks
+  - App Store artifacts that still surface direct-purchase/key-entry strings
+- IAP validation now checks review-readiness state (`READY_TO_SUBMIT`, `WAITING_FOR_REVIEW`, `APPROVED`, `READY_FOR_SALE`), not just existence.
+
+Why this exists:
+- Prior submissions lost multiple weeks to predictable App Review failures because the pipeline proved “builds/upload” but not “App Store compliant”.
+- The shared release layer is now responsible for rejecting likely-bad submissions before Apple has to.
+
 ### Download Analytics (sane-dist Worker)
 
 The `sane-dist` Cloudflare Worker serves app downloads (DMG/ZIP) from a shared R2 bucket across all `dist.{app}.com` domains. Download analytics use a D1 database (`sane-dist-analytics`) for privacy-first, daily-aggregate counting.

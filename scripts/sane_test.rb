@@ -713,19 +713,20 @@ class SaneTest
       lock_file.flock(File::LOCK_EX)
 
       temp_app_path = "#{target_app_path}.staging-#{Process.pid}-#{Time.now.to_i}"
-      backup_app_path = "#{target_app_path}.backup-#{Process.pid}-#{Time.now.to_i}"
-
       begin
         FileUtils.rm_rf(temp_app_path) if File.exist?(temp_app_path)
         ok = system('ditto', source_app_path, temp_app_path)
         abort "   ❌ Failed to stage app to canonical path: #{target_app_path}" unless ok && File.exist?(temp_app_path)
 
-        FileUtils.mv(target_app_path, backup_app_path) if File.exist?(target_app_path)
+        if File.exist?(target_app_path)
+          # Avoid creating backup app bundle identities under /Applications.
+          # TCC can retain those paths and keep stale camera attribution alive.
+          FileUtils.rm_rf(target_app_path)
+        end
         FileUtils.mv(temp_app_path, target_app_path)
         staged_ok = File.exist?(target_app_path)
       ensure
         FileUtils.rm_rf(temp_app_path) if File.exist?(temp_app_path)
-        FileUtils.rm_rf(backup_app_path) if File.exist?(backup_app_path)
         lock_file.flock(File::LOCK_UN)
       end
     end

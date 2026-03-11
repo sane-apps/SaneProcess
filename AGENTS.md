@@ -27,6 +27,7 @@ Do not wait until session end.
 - When you find a new bug, issue cluster, regression, or root-cause change, update Serena memory and the knowledge graph immediately.
 - When you fix, close, merge, or downgrade an issue, update the same memory/graph entries immediately.
 - Keep bug memory live enough that it can be used directly for support replies, App Store submissions, website release notes, and future debugging without re-discovery.
+- Every product website must have a public privacy policy URL before release. Missing privacy pages are release blockers for App Store products and should be treated as SOP violations for every product.
 
 ```
 ## Session Summary
@@ -80,6 +81,7 @@ Run with no args for full help. Run `help <category>` for category details.
 | **sales** | `sales`, `sales --products`, `sales --month`, `sales --daily`, `sales --fees` | LemonSqueezy revenue (today/yesterday/week/all-time) |
 | **sales** | `downloads` (dl), `downloads --app NAME`, `downloads --days N`, `downloads --json` | Download analytics from sane-dist Worker (D1-backed) |
 | **sales** | `events`, `events --days N`, `events --app NAME`, `events --json` | User-type events: new_free_user, early_adopter_grant, license_activated |
+| **sales** | `leads --query "TEXT"`, `leads --domain DOMAIN`, `leads --json` | Prospect discovery with Exa + Firecrawl site dossiers |
 | **check** | `verify_api`, `dead_code`, `deprecations`, `swift6`, `test_scan`, `structural`, `compliance`, `check_docs`, `check_binary`, `menu_scan` | Static analysis, API verification, code quality |
 | **debug** | `test_mode` (tm), `logs --follow`, `launch`, `crashes`, `diagnose` | Interactive debugging, crash analysis |
 | **ci** | `enable_ci_tests`, `restore_ci_tests`, `fix_mocks`, `monitor_tests`, `image_info` | CI/CD test helpers |
@@ -95,6 +97,7 @@ Run with no args for full help. Run `help <category>` for category details.
 - Sales/revenue → `SaneMaster.rb sales` (NOT manual curl to LemonSqueezy)
 - Download stats → `SaneMaster.rb downloads` (NOT manual curl to dist Worker)
 - Conversion funnel → `SaneMaster.rb events` (new users, upgrades, activations)
+- Lead research → `SaneMaster.rb leads --query "..."` (NOT ad-hoc vendor API curl chains)
 - Build/test → `SaneMaster.rb verify` (NOT raw `xcodebuild`)
 - App launch → `sane_test.rb` (NOT `open SaneBar.app`)
 - Release → `release.sh` + `SaneMaster.rb release_preflight` (NOT manual DMG creation)
@@ -117,6 +120,24 @@ The `events` command shows:
 
 Cross-reference events with sales to understand conversion rates.
 
+### Lead Research
+
+When I need new prospect lists or cleaner website reads, use:
+
+```bash
+./scripts/SaneMaster.rb leads --query "mac app review sites"
+./scripts/SaneMaster.rb leads --query "developer newsletters for privacy tools" --site-limit 8
+./scripts/SaneMaster.rb leads --domain setapp.com --domain macstories.net
+```
+
+Secrets:
+- `EXA_API_KEY` env var or keychain service `exa` / account `api_key`
+- `FIRECRAWL_API_KEY` env var or keychain service `firecrawl` / account `api_key`
+
+Outputs:
+- `outputs/leads/*.json`
+- `outputs/leads/*.md`
+
 ---
 
 ## Trigger Map
@@ -128,6 +149,7 @@ When the user says something matching these, run the command/skill immediately:
 | "how are sales", "revenue" | `SaneMaster.rb sales` + `events` |
 | "download stats", "how many downloads" | `SaneMaster.rb downloads` |
 | "conversions", "upgrades", "new users", "funnel", "source of sales" | `SaneMaster.rb events` |
+| "leads", "prospects", "research sites", "research companies" | `SaneMaster.rb leads --query "..."` |
 | "check email", "inbox" | `~/SaneApps/infra/scripts/check-inbox.sh check` |
 | "project status", "health check" | `SaneMaster.rb sales` + `events` + `downloads` + git status |
 | "verify", "does it build" | `SaneMaster.rb verify` |
@@ -233,17 +255,24 @@ Script handles: kill → clean → TCC reset → build → deploy → launch →
 
 ## Keychain Secrets
 
-**ONE keychain lookup at a time. Sequential, never parallel.**
+**ONE PROMPT, ONE SECRET, ONE TASK. Sequential, never parallel.**
 
 ```bash
 # CORRECT
 TOKEN=$(security find-generic-password -s cloudflare -a api_token -w)
 curl -H "Authorization: Bearer $TOKEN" ...
 
-# WRONG — parallel calls = popup flood
-curl ... $(security find-generic-password ...) &
+# WRONG — loops, retries, and parallel calls = popup flood
+for key in a b c; do security find-generic-password ...; done
+security find-generic-password ... && security find-generic-password ...
 curl ... $(security find-generic-password ...) &
 ```
+
+Permanent SOP:
+- One intentional Keychain prompt per task. If one lookup succeeds, reuse that value.
+- No repeated probing "just to check". If you need another secret, explain why first.
+- No `security` calls in loops, background jobs, sweeps, or parallel tool runs.
+- Codex shells are guarded by `~/.local/bin/security -> sane_security_guard.sh`, which blocks overlapping and rapid repeat secret reads.
 
 | Service | Account | Usage |
 |---------|---------|-------|
@@ -317,6 +346,7 @@ ssh mini 'tail -20 ~/SaneApps/outputs/nightly_report.md'
 | **Released with same version** | ALWAYS bump version before release. Sparkle ignores same-version. |
 | **Posted about SaneApps without disclosure** | ALWAYS identify as the developer: "I built [App]." |
 | **Tested on MacBook Air** | ALWAYS use Mac Mini (`ssh mini`). Only `--local` if mini is down. |
+| **Left the mini cluttered after testing** | Close dead Terminal windows / remote shells and kill test-only app instances when the run is done. |
 | **Used gray text in UI** | ALL text MUST be bright white. `.white` primary, `.white.opacity(0.9)` min for secondary. NEVER `.secondary` or gray. |
 | **Sent email without showing draft** | ALWAYS show exact draft to user and get "send" approval first. |
 | **Inverted what I just read** | STATE IT BACK: "The doc says X, therefore I will Y." |

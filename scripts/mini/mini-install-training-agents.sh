@@ -14,6 +14,15 @@ fi
 SANE_ROOT="${SANE_ROOT:-$DEFAULT_SANE_ROOT}"
 OUTPUT_DIR="${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}"
 MLX_BIN_DIR="${MLX_BIN_DIR:-$HOME/mlx-env/bin}"
+ENABLE_WEEKLY_TRAINING="${ENABLE_WEEKLY_TRAINING:-true}"
+TRAIN_HARD_STOP_TIME="${TRAIN_HARD_STOP_TIME:-08:30}"
+READINESS_TARGET_APP="${READINESS_TARGET_APP:-}"
+CHALLENGER_SELECTION_MODE="${CHALLENGER_SELECTION_MODE:-alternate}"
+CHALLENGER_ROTATION_ANCHOR_DATE="${CHALLENGER_ROTATION_ANCHOR_DATE:-2026-03-07}"
+CHALLENGER_ROTATION_ORDER="${CHALLENGER_ROTATION_ORDER:-phi4-mini,smollm3-3b}"
+CHALLENGER_BUDGET_MIN="${CHALLENGER_BUDGET_MIN:-0}"
+CHALLENGER_SKIP_WEEKDAY="${CHALLENGER_SKIP_WEEKDAY:-0}"
+RUN_CHALLENGERS_AFTER_WEEKLY="${RUN_CHALLENGERS_AFTER_WEEKLY:-false}"
 
 CHALLENGER_LABEL="com.saneapps.training-challengers"
 CHALLENGER_PLIST="$LAUNCH_AGENTS_DIR/${CHALLENGER_LABEL}.plist"
@@ -25,7 +34,7 @@ WEEKLY_LABEL="com.saneapps.training-weekly"
 WEEKLY_PLIST="$LAUNCH_AGENTS_DIR/${WEEKLY_LABEL}.plist"
 WEEKLY_SCRIPT="$SCRIPT_DIR/mini-train-all.sh"
 WEEKLY_TRAIN_WEEKDAY="${WEEKLY_TRAIN_WEEKDAY:-0}"
-WEEKLY_TRAIN_HOUR="${WEEKLY_TRAIN_HOUR:-3}"
+WEEKLY_TRAIN_HOUR="${WEEKLY_TRAIN_HOUR:-1}"
 WEEKLY_TRAIN_MINUTE="${WEEKLY_TRAIN_MINUTE:-0}"
 
 LEGACY_LABEL="com.saneapps.training"
@@ -69,6 +78,18 @@ cat > "$CHALLENGER_PLIST" <<EOF
     <string>${SANE_ROOT}</string>
     <key>SANE_OUTPUT_DIR</key>
     <string>${OUTPUT_DIR}</string>
+    <key>TRAIN_HARD_STOP_TIME</key>
+    <string>${TRAIN_HARD_STOP_TIME}</string>
+    <key>CHALLENGER_SELECTION_MODE</key>
+    <string>${CHALLENGER_SELECTION_MODE}</string>
+    <key>CHALLENGER_ROTATION_ANCHOR_DATE</key>
+    <string>${CHALLENGER_ROTATION_ANCHOR_DATE}</string>
+    <key>CHALLENGER_ROTATION_ORDER</key>
+    <string>${CHALLENGER_ROTATION_ORDER}</string>
+    <key>CHALLENGER_BUDGET_MIN</key>
+    <string>${CHALLENGER_BUDGET_MIN}</string>
+    <key>CHALLENGER_SKIP_WEEKDAY</key>
+    <string>${CHALLENGER_SKIP_WEEKDAY}</string>
   </dict>
 
   <key>Nice</key>
@@ -118,6 +139,12 @@ cat > "$WEEKLY_PLIST" <<EOF
     <string>${OUTPUT_DIR}/training-weekly.stdout.log</string>
     <key>TRAIN_STDERR_LOG</key>
     <string>${OUTPUT_DIR}/training-weekly.stderr.log</string>
+    <key>TRAIN_HARD_STOP_TIME</key>
+    <string>${TRAIN_HARD_STOP_TIME}</string>
+    <key>RUN_CHALLENGERS_AFTER_WEEKLY</key>
+    <string>${RUN_CHALLENGERS_AFTER_WEEKLY}</string>
+    <key>READINESS_TARGET_APP</key>
+    <string>${READINESS_TARGET_APP}</string>
   </dict>
 
   <key>Nice</key>
@@ -134,12 +161,22 @@ for label in "$CHALLENGER_LABEL" "$WEEKLY_LABEL"; do
 done
 
 launchctl bootstrap "gui/$(id -u)" "$CHALLENGER_PLIST"
-launchctl bootstrap "gui/$(id -u)" "$WEEKLY_PLIST"
 launchctl enable "gui/$(id -u)/${CHALLENGER_LABEL}" 2>/dev/null || true
-launchctl enable "gui/$(id -u)/${WEEKLY_LABEL}" 2>/dev/null || true
+
+if [ "$ENABLE_WEEKLY_TRAINING" = "true" ]; then
+  launchctl bootstrap "gui/$(id -u)" "$WEEKLY_PLIST"
+  launchctl enable "gui/$(id -u)/${WEEKLY_LABEL}" 2>/dev/null || true
+else
+  rm -f "$WEEKLY_PLIST"
+fi
 
 echo "Installed ${CHALLENGER_LABEL}"
 plutil -p "$CHALLENGER_PLIST"
-echo ""
-echo "Installed ${WEEKLY_LABEL}"
-plutil -p "$WEEKLY_PLIST"
+if [ "$ENABLE_WEEKLY_TRAINING" = "true" ]; then
+  echo ""
+  echo "Installed ${WEEKLY_LABEL}"
+  plutil -p "$WEEKLY_PLIST"
+else
+  echo ""
+  echo "Weekly training disabled (${WEEKLY_LABEL})"
+fi

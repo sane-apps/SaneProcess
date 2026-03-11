@@ -43,6 +43,56 @@ module SaneMasterModules
       ''
     end
 
+    def project_build_number(project_yml_content)
+      build = project_yml_content[/CURRENT_PROJECT_VERSION:\s*"?([^"\s]+)"?/, 1].to_s.strip
+      return build unless build.empty?
+
+      Dir.glob('**/Config/*.xcconfig').reject { |p| p.include?('DerivedData') }.each do |xcf|
+        match = safe_read(xcf).match(/CURRENT_PROJECT_VERSION\s*=\s*(.+)/)
+        return match[1].strip if match
+      end
+      ''
+    end
+
+    def macos_release_target_config(project_yml_path = 'project.yml')
+      return {} unless File.exist?(project_yml_path)
+
+      config = YAML.safe_load(File.read(project_yml_path)) || {}
+      targets = config['targets'].is_a?(Hash) ? config['targets'] : {}
+      _target_name, target_config = targets.find do |_name, target|
+        target.is_a?(Hash) &&
+          target['type'].to_s == 'application' &&
+          target['platform'].to_s.downcase == 'macos'
+      end
+      return {} unless target_config.is_a?(Hash)
+
+      release_config = target_config.dig('settings', 'configs', 'Release')
+
+      {
+        bundle_id: target_config['bundleId'].to_s,
+        info_path: target_config.dig('info', 'path').to_s,
+        entitlements_path: release_config.is_a?(Hash) ? release_config['CODE_SIGN_ENTITLEMENTS'].to_s : ''
+      }
+    rescue StandardError
+      {}
+    end
+
+    def shared_or_package_app_store_branch?(swift_files:)
+      package_files = swift_files.select do |path|
+        path.include?('/Sources/') || path.include?('Package/Sources/')
+      end
+
+      package_branch = package_files.any? { |path| safe_read(path).match?(/^\s*#if\s+!?APP_STORE\b/m) }
+      return true if package_branch
+
+      saneui_root = File.expand_path('~/SaneApps/infra/SaneUI/Sources/SaneUI')
+      return false unless Dir.exist?(saneui_root)
+
+      Dir.glob(File.join(saneui_root, '**/*.swift')).any? do |path|
+        safe_read(path).match?(/^\s*#if\s+!?APP_STORE\b/m)
+      end
+    end
+
     def compare_semver(left, right)
       return nil if left.to_s.strip.empty? || right.to_s.strip.empty?
 
@@ -74,6 +124,18 @@ module SaneMasterModules
       }
     rescue StandardError
       { version: '', build: '', url: '' }
+    end
+
+    def verify_output_indicates_success?(output)
+      text = output.to_s
+      text.include?('✅ Tests passed!') || text.match?(/Swift Testing:\s+\d+ tests .* passed/)
+    end
+
+    def summarized_output_tail(output, lines: 4)
+      text = output.to_s.encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: '?')
+      text.lines.last(lines).map(&:strip).reject(&:empty?).join(' | ')
+    rescue StandardError
+      ''
     end
 
     def local_appcast_paths
@@ -128,7 +190,7 @@ module SaneMasterModules
       [app_source, saneui_source].join("\n")
     end
 
-    def monetization_guardrail_report(source_blob:, configured_product_id:, has_product_id_marker:, strict_appstore_product_id:)
+    def monetization_guardrail_report(source_blob:, configured_product_id:, has_product_id_marker:, strict_appstore_product_id:, shared_or_package_branch:)
       report = { applicable: false, issues: [], warnings: [], summary: '' }
       uses_license_service = source_blob.match?(/\bLicenseService\b/)
       return report unless uses_license_service || !configured_product_id.to_s.strip.empty?
@@ -157,6 +219,9 @@ module SaneMasterModules
       report[:issues] << 'No unlock/upgrade UI copy detected' unless has_upgrade_ui
       report[:issues] << 'No effective runtime Pro feature gates detected (isPro/isLicensed checks)' if gate_hits < 6 || !has_runtime_gate
       report[:warnings] << 'No direct checkout fallback found for website builds' unless has_checkout_fallback
+      if shared_or_package_branch
+        report[:warnings] << 'Shared/package source contains #if APP_STORE branches. Xcode app-target flags do not automatically propagate into Swift package targets; rely on runtime gates or package-level defines instead of assuming compile-time stripping.'
+      end
 
       report[:summary] = "gates=#{gate_hits}, purchase=#{has_purchase_path ? 'yes' : 'no'}, restore=#{has_restore_path ? 'yes' : 'no'}, checkout=#{has_checkout_fallback ? 'yes' : 'no'}"
       report
@@ -175,6 +240,207 @@ module SaneMasterModules
         return text unless text.empty?
       end
       nil
+    end
+
+    def mini_route_context_path
+      File.join(Dir.pwd, '.sanemaster', 'mini_route_context.json')
+    end
+
+    def mini_route_context
+      return @mini_route_context if defined?(@mini_route_context)
+
+      @mini_route_context = begin
+        path = mini_route_context_path
+        if File.exist?(path)
+          JSON.parse(safe_read(path))
+        else
+          nil
+        end
+      rescue StandardError
+        nil
+      end
+    end
+
+    def routed_workspace_context
+      workspace = mini_route_context.is_a?(Hash) ? mini_route_context['workspace'] : nil
+      workspace.is_a?(Hash) ? workspace : nil
+    end
+
+    def routed_webhook_context
+      webhook = mini_route_context.is_a?(Hash) ? mini_route_context['webhook'] : nil
+      webhook.is_a?(Hash) ? webhook : nil
+    end
+
+    def load_env_file(path)
+      return unless File.file?(path)
+
+      File.foreach(path) do |line|
+        next if line.strip.empty? || line.lstrip.start_with?('#')
+
+        text = line.sub(/\A\s*export\s+/, '').strip
+        next unless text.include?('=')
+
+        key, raw_value = text.split('=', 2)
+        key = key.to_s.strip
+        next if key.empty? || ENV.key?(key)
+
+        value = raw_value.to_s.strip
+        if value.start_with?('"') && value.end_with?('"') && value.length >= 2
+          value = value[1..-2]
+        elsif value.start_with?("'") && value.end_with?("'") && value.length >= 2
+          value = value[1..-2]
+        end
+        ENV[key] = value
+      end
+    end
+
+    def appstore_connect_token
+      require 'jwt'
+      require 'net/http'
+      require 'openssl'
+
+      load_env_file(File.expand_path('~/.config/saneprocess/secrets.env'))
+
+      issuer_id = ENV['ASC_AUTH_ISSUER_ID'] || ENV['ASC_ISSUER_ID'] || 'c98b1e0a-8d10-4fce-a417-536b31c09bfb'
+      key_id = ENV['ASC_AUTH_KEY_ID'] || ENV['ASC_KEY_ID'] || 'S34998ZCRT'
+      p8_path = File.expand_path(
+        ENV['ASC_AUTH_KEY_PATH'] ||
+        ENV['ASC_KEY_PATH'] ||
+        '~/.private_keys/AuthKey_S34998ZCRT.p8'
+      )
+
+      return nil unless File.exist?(p8_path)
+
+      private_key = OpenSSL::PKey::EC.new(File.read(p8_path))
+      now = Time.now.to_i
+      payload = {
+        iss: issuer_id,
+        iat: now,
+        exp: now + 1200,
+        aud: 'appstoreconnect-v1'
+      }
+      header = {
+        kid: key_id,
+        typ: 'JWT'
+      }
+      JWT.encode(payload, private_key, 'ES256', header)
+    rescue StandardError
+      nil
+    end
+
+    def asc_get_json(path, token:)
+      require 'net/http'
+      require 'json'
+
+      uri = URI("https://api.appstoreconnect.apple.com/v1#{path}")
+      request = Net::HTTP::Get.new(uri)
+      request['Authorization'] = "Bearer #{token}"
+      response = Net::HTTP.start(uri.host, uri.port, use_ssl: true) { |http| http.request(request) }
+      return nil unless response.code.to_i.between?(200, 299)
+
+      JSON.parse(response.body)
+    rescue StandardError
+      nil
+    end
+
+    def asc_iap_status(app_id:, product_id:)
+      return nil if app_id.to_s.strip.empty? || product_id.to_s.strip.empty?
+
+      token = appstore_connect_token
+      return nil if token.nil?
+
+      response = asc_get_json("/apps/#{app_id}/inAppPurchasesV2?limit=200", token: token)
+      return nil unless response.is_a?(Hash)
+
+      row = Array(response['data']).find do |entry|
+        entry.dig('attributes', 'productId').to_s.strip == product_id.to_s.strip
+      end
+      return { exists: false, state: nil } unless row
+
+      {
+        exists: true,
+        state: row.dig('attributes', 'state').to_s.strip
+      }
+    end
+
+    def normalized_cloudkit_config(config)
+      cloudkit = config.is_a?(Hash) ? config['cloudkit'] : nil
+      return nil unless cloudkit.is_a?(Hash) && cloudkit['enabled']
+
+      release_cfg = config['release'].is_a?(Hash) ? config['release'] : {}
+
+      {
+        container_id: metadata_value(cloudkit, 'container_id'),
+        team_id: metadata_value(cloudkit, 'team_id') || metadata_value(release_cfg, 'team_id'),
+        required_record_types: Array(cloudkit['required_record_types']).map { |value| value.to_s.strip }.reject(&:empty?)
+      }
+    end
+
+    def cloudkit_schema_guardrail_report(config:, environment: 'production')
+      report = { applicable: false, issues: [], warnings: [], summary: '' }
+      cloudkit = normalized_cloudkit_config(config)
+      return report unless cloudkit
+
+      report[:applicable] = true
+
+      container_id = cloudkit[:container_id].to_s
+      team_id = cloudkit[:team_id].to_s
+      required_record_types = cloudkit[:required_record_types]
+
+      report[:issues] << 'cloudkit.container_id is missing in .saneprocess' if container_id.empty?
+      report[:issues] << 'CloudKit team ID is missing (set cloudkit.team_id or release.team_id in .saneprocess)' if team_id.empty?
+      report[:warnings] << 'No cloudkit.required_record_types configured in .saneprocess' if required_record_types.empty?
+      return report unless report[:issues].empty?
+
+      _version_out, version_status = Open3.capture2e('xcrun', 'cktool', 'version')
+      unless version_status.success?
+        report[:issues] << 'CloudKit schema verification requires xcrun cktool, but cktool is unavailable'
+        return report
+      end
+
+      Dir.mktmpdir('sanemaster-cloudkit-schema-') do |tmpdir|
+        output_path = File.join(tmpdir, 'schema.ckdb')
+        cmd = [
+          'xcrun', 'cktool', 'export-schema',
+          '--team-id', team_id,
+          '--container-id', container_id,
+          '--environment', environment,
+          '--output-file', output_path
+        ]
+
+        export_out, export_status = Open3.capture2e(*cmd)
+        unless export_status.success?
+          first_line = export_out.to_s.lines.map(&:strip).reject(&:empty?).first.to_s
+          if export_out.to_s.match?(/No management token found/i)
+            report[:issues] << 'CloudKit production schema cannot be verified because cktool has no management token. Run `xcrun cktool save-token --type management --method file` on the release machine.'
+          else
+            report[:issues] << "CloudKit #{environment} schema export failed: #{first_line}"
+          end
+          return report
+        end
+
+        schema_blob = safe_read(output_path)
+        if schema_blob.strip.empty?
+          report[:issues] << "CloudKit #{environment} schema export returned an empty schema file"
+          return report
+        end
+
+        missing_record_types = required_record_types.reject do |record_type|
+          schema_blob.match?(/\b#{Regexp.escape(record_type)}\b/)
+        end
+
+        if missing_record_types.any?
+          report[:issues] << "CloudKit #{environment} schema is missing record types: #{missing_record_types.join(', ')}"
+        else
+          report[:summary] = "verified #{environment} schema for #{container_id}"
+        end
+      end
+
+      report
+    rescue StandardError => e
+      report[:applicable] = true
+      report[:issues] << "CloudKit schema verification crashed: #{e.class}: #{e.message}"
+      report
     end
 
     def gh_auth_unavailable?(output)
@@ -262,7 +528,7 @@ module SaneMasterModules
       fallback_description = "#{app_name} helps you stay productive on Apple devices with a clear free tier and a one-time Pro upgrade."
       placeholder_re = /\b(lorem ipsum|tbd|placeholder|coming soon|dummy text)\b/i
       review_style_re = /(does not request|does not simulate|to test:|frontmost app|cmd\+v|manually press|keyboard events)/i
-      ios_macos_mismatch_re = /(menu bar|frontmost app|cmd\+v|cgEvent|accessibility)/i
+      ios_macos_mismatch_re = /(menu bar|frontmost app|cmd\+v|cgevent|accessibility|finder|right-click|notch|applescript|status item|apple silicon)/i
 
       normalized_platforms = Array(platforms).map { |p| p.to_s.downcase }.uniq
       normalized_platforms = %w[macos] if normalized_platforms.empty?
@@ -328,7 +594,220 @@ module SaneMasterModules
       }
     end
 
+    def review_notes_for_platform(appstore_config, platform)
+      notes_by_platform = appstore_config['review_notes_by_platform']
+      platform_aliases =
+        case platform.to_s.downcase
+        when 'ios'
+          %w[ios iphone ipad mobile]
+        when 'macos'
+          %w[macos mac desktop]
+        else
+          [platform.to_s.downcase]
+        end
+
+      if notes_by_platform.is_a?(Hash)
+        platform_aliases.each do |key|
+          note = metadata_value(notes_by_platform, key)
+          return note if note
+        end
+      end
+
+      metadata_value(appstore_config, 'review_notes').to_s
+    end
+
+    def reviewer_guardrail_source_blobs(swift_files:)
+      blobs = Hash.new { |hash, key| hash[key] = [] }
+
+      swift_files.each do |file|
+        content = safe_read(file)
+        next if content.empty?
+
+        normalized = file.tr('\\', '/')
+        ios_only = normalized.start_with?('iOS/') || normalized.start_with?('iOSWidgets/') || normalized.start_with?('iOSShareExtension/')
+        macos_only = normalized.start_with?('UI/') ||
+                     normalized.start_with?('Widgets/') ||
+                     normalized.start_with?('SaneClip/') ||
+                     normalized == 'SaneClipApp.swift' ||
+                     normalized == 'main.swift' ||
+                     normalized == 'ProFeature.swift'
+
+        blobs['all'] << content
+        blobs['macos'] << content unless ios_only
+        blobs['ios'] << content unless macos_only
+      end
+
+      blobs.transform_values { |parts| parts.join("\n") }
+    end
+
+    def local_package_swift_files(project_yml_path)
+      return [] unless File.exist?(project_yml_path)
+
+      config = YAML.safe_load(File.read(project_yml_path))
+      packages = config.is_a?(Hash) ? config['packages'] : nil
+      return [] unless packages.is_a?(Hash)
+
+      project_root = File.dirname(project_yml_path)
+      packages.values.flat_map do |pkg|
+        next [] unless pkg.is_a?(Hash)
+
+        rel_path = pkg['path'].to_s.strip
+        next [] if rel_path.empty?
+
+        abs_path = File.expand_path(rel_path, project_root)
+        Dir.glob(File.join(abs_path, 'Sources', '**', '*.swift'))
+      end.uniq
+    rescue StandardError
+      []
+    end
+
+    def reviewer_access_guardrail_report(source_blob:, appstore_config:, platforms:)
+      report = { applicable: false, issues: [], warnings: [], summary: '' }
+      normalized_platforms = Array(platforms).map { |p| p.to_s.downcase }.uniq
+      normalized_platforms = %w[macos] if normalized_platforms.empty?
+
+      combined_source = source_blob.is_a?(Hash) ? source_blob['all'].to_s : source_blob.to_s
+      has_external_credentials = combined_source.match?(/Paste your API key|set(LemonSqueezy|Gumroad|Stripe)APIKey|KeychainService\.(lemonSqueezyAPIKey|gumroadAPIKey|stripeAPIKey)|Connect .* Account/i)
+      has_demo_mode = combined_source.match?(/Try Demo Data|Enable Demo Mode|demoMode|DemoData|demo data/i)
+      uses_license_service = combined_source.match?(/\bLicenseService\b/)
+
+      return report unless has_external_credentials || has_demo_mode || uses_license_service
+
+      report[:applicable] = true
+
+      normalized_platforms.each do |platform|
+        platform_source = source_blob.is_a?(Hash) ? source_blob.fetch(platform, combined_source) : combined_source
+        platform_has_demo_mode = platform_source.match?(/Try Demo Data|Enable Demo Mode|demoMode|DemoData|demo data/i)
+        platform_has_try_demo_action = platform_source.match?(/Try Demo Data/i)
+        platform_has_settings_demo_toggle = platform_source.match?(/Enable Demo Mode|Disable Demo Mode/i)
+        notes_text = review_notes_for_platform(appstore_config, platform).to_s
+        notes_downcase = notes_text.downcase
+        no_account_path = notes_downcase.match?(/no account required|no api key required|no credentials required|no sign.?in required|no .*payment .*launch|no .*payment .*demo/)
+        demo_path = notes_downcase.match?(/demo|sample data|try demo data|enable demo mode/)
+        business_model_path = notes_downcase.match?(/basic is free|free\./) &&
+                              notes_downcase.match?(/in-app purchase|app store/) &&
+                              notes_downcase.match?(/no external checkout|no license key|no license keys/)
+        external_account_clarity = notes_downcase.match?(/existing merchant|their own .*api|their own sales data|not sold by|do not unlock paid app features|do not unlock paid app features or digital content/)
+        business_model_answers = {
+          'who the paid/external users are' => /merchant|seller|creator|business|store owner/,
+          'where external services are purchased' => /outside the app|existing .*account|with lemonsqueezy|with gumroad|with stripe/,
+          'what external paid content is accessed' => /their own sales data|read-only|analytics|orders|products|refunds/,
+          'what non-IAP app unlocks exist' => /no paid content in the app|no paid digital content|none|do not unlock paid app features/,
+          'whether account creation requires payment' => /no account signup|no account or api key is required|no payment is required|no fee to create an account/,
+          'whether enterprise services are involved' => /not enterprise|not an enterprise service|no enterprise services|existing merchants/
+        }
+
+        if has_external_credentials
+          if notes_text.strip.empty?
+            report[:issues] << "[#{platform}] Missing review notes for credential-gated app — tell App Review how to access the app"
+          elsif platform_has_demo_mode
+            unless demo_path
+              report[:issues] << "[#{platform}] Review notes do not explain the demo-mode reviewer path for a credential-gated app"
+            end
+            unless no_account_path
+              report[:issues] << "[#{platform}] Review notes do not clearly state that no account/API key/payment is required for the reviewer path"
+            end
+          elsif !notes_downcase.match?(/api key|credential|username|password|sign in|login|demo account/)
+            report[:issues] << "[#{platform}] Review notes do not provide usable review credentials or access steps"
+          end
+
+          missing_answers = business_model_answers.each_with_object([]) do |(label, pattern), acc|
+            acc << label unless notes_downcase.match?(pattern)
+          end
+          if missing_answers.any?
+            report[:issues] << "[#{platform}] Review notes do not answer App Review's business-model questions clearly enough: #{missing_answers.join(', ')}"
+          end
+        elsif platform_has_demo_mode && !notes_downcase.match?(/demo|sample data|try demo data|enable demo mode/)
+          report[:warnings] << "[#{platform}] Demo mode exists in code, but review notes do not mention it"
+        end
+
+        if notes_downcase.include?('try demo data') && !platform_has_try_demo_action
+          report[:issues] << "[#{platform}] Review notes mention “Try Demo Data”, but that action is not present in the code"
+        end
+
+        if notes_downcase.include?('enable demo mode') && !platform_has_settings_demo_toggle
+          report[:issues] << "[#{platform}] Review notes mention “Enable Demo Mode”, but that settings action is not present in the code"
+        end
+
+        next unless uses_license_service
+
+        unless business_model_path
+          report[:warnings] << "[#{platform}] Review notes do not clearly explain the App Store business model (free/basic, Pro unlock path, no website license flow)"
+        end
+
+        if has_external_credentials && !external_account_clarity
+          report[:warnings] << "[#{platform}] Review notes do not clearly explain that external provider accounts are optional existing merchant accounts and do not unlock paid app features"
+        end
+      end
+
+      if has_external_credentials &&
+         normalized_platforms.length > 1 &&
+         !appstore_config['review_notes_by_platform'].is_a?(Hash)
+        report[:warnings] << 'Credential-gated app uses one shared review_notes block across multiple platforms — prefer review_notes_by_platform'
+      end
+
+      report[:summary] = [
+        ('credentials' if has_external_credentials),
+        ('demo' if has_demo_mode),
+        ('license' if uses_license_service)
+      ].compact.join(', ')
+      report
+    end
+
+    def appstore_policy_guardrail_report(source_blob:, review_notes_blob:)
+      report = { applicable: false, issues: [], warnings: [], summary: '' }
+      normalized_source = source_blob.to_s
+      normalized_notes = review_notes_blob.to_s
+
+      has_accessibility_runtime =
+        normalized_source.match?(/AXIsProcessTrusted|AXUIElement|NSAccessibilityUsageDescription|AccessibilityService/i)
+      has_synthetic_input =
+        normalized_source.match?(/CGEvent|keyboard events|simulatePaste|keyDown|mouseDown|mouseDragged/i)
+      automates_clipboard =
+        normalized_source.match?(/simulatePaste|automatic paste|paste in another app|pasteSelected|auto.?paste/i)
+      automates_third_party_ui =
+        normalized_source.match?(/moveMenuBarIcon|reorderMenuBarIcon|Cmd\+drag|drag.*menu bar|listMenuBarItemsWithPositions/i)
+      mentions_apple_events =
+        normalized_source.match?(/NSAppleEventsUsageDescription|osascript|AppleScript|System Events/i)
+      clipboard_review_notes =
+        normalized_notes.match?(/paste manually|cmd\+v|frontmost app/i)
+      strips_appstore_automation_usage =
+        normalized_source.match?(/Delete :NSAppleEventsUsageDescription/i) &&
+        normalized_source.match?(/Delete :NSAccessibilityUsageDescription/i)
+
+      return report unless has_accessibility_runtime || has_synthetic_input || mentions_apple_events
+
+      report[:applicable] = true
+
+      if has_accessibility_runtime && (automates_clipboard || (has_synthetic_input && clipboard_review_notes))
+        if strips_appstore_automation_usage && clipboard_review_notes
+          report[:warnings] << 'Source contains clipboard automation for non-App-Store builds, but the App Store build script strips automation usage descriptions and review notes describe manual paste. Verify the compiled App Store artifact before blocking submission.'
+        else
+          report[:issues] << 'App Store build appears to use Accessibility or synthetic input for clipboard/paste automation. Apple rejects this under Guideline 2.4.5.'
+        end
+      end
+
+      if has_accessibility_runtime && has_synthetic_input && automates_third_party_ui
+        report[:issues] << 'App Store build appears to inspect or reposition third-party UI with Accessibility/CGEvent automation. This is high-risk under Guideline 2.4.5 and should be removed from the App Store build.'
+      end
+
+      if mentions_apple_events && normalized_notes.to_s.strip.empty?
+        report[:warnings] << 'App uses Apple Events / AppleScript but review notes do not explain when or why permission is requested.'
+      end
+
+      tags = []
+      tags << 'accessibility' if has_accessibility_runtime
+      tags << 'synthetic-input' if has_synthetic_input
+      tags << 'apple-events' if mentions_apple_events
+      tags << 'clipboard-automation' if automates_clipboard
+      tags << 'ui-automation' if automates_third_party_ui
+      report[:summary] = tags.join(', ')
+      report
+    end
+
     def release(args)
+      return unless ensure_research_gate_clear!('release')
+
       release_script = File.expand_path('../release.sh', __dir__)
       unless File.exist?(release_script)
         puts "❌ Release script not found: #{release_script}"
@@ -370,9 +849,12 @@ module SaneMasterModules
     # Standalone release preflight — runs all safety checks without building.
     # Derived from 46 GitHub issues, 200+ customer emails, 34 documented burns.
     def release_preflight(_args)
+      return unless ensure_research_gate_clear!('release_preflight')
+
       require 'json'
       require 'open3'
       require 'tmpdir'
+      require 'yaml'
 
       puts '🛫 --- [ RELEASE PREFLIGHT ] ---'
       puts "Project: #{Dir.pwd}"
@@ -382,24 +864,89 @@ module SaneMasterModules
       warnings = []
       preflight_status_path = File.join(Dir.pwd, 'outputs', 'release_preflight_status.json')
       saneprocess_path = File.join(Dir.pwd, '.saneprocess')
-      preflight_app_name = if File.exist?(saneprocess_path)
-                             match = safe_read(saneprocess_path).match(/^name:\s*(.+)/)
-                             match ? match[1].strip : File.basename(Dir.pwd)
-                           else
-                             File.basename(Dir.pwd)
-                           end
+      preflight_config = if File.exist?(saneprocess_path)
+                           YAML.safe_load(safe_read(saneprocess_path)) || {}
+                         else
+                           {}
+                         end
+      preflight_app_name = metadata_value(preflight_config, 'name') || File.basename(Dir.pwd)
 
       # 1. Tests pass
       print '  Tests... '
-      out, status = Open3.capture2e('./scripts/SaneMaster.rb', 'verify', '--quiet')
-      if status.success?
+      verify_env = { 'SANEMASTER_RELEASE_PREFLIGHT' => '1' }
+      out, status = Open3.capture2e(verify_env, './scripts/SaneMaster.rb', 'verify', '--quiet')
+      if status.success? || verify_output_indicates_success?(out)
         puts '✅'
       else
         puts '❌ FAIL'
+        hint = summarized_output_tail(out)
+        puts "    ↳ #{hint}" unless hint.empty?
         issues << 'Tests failing'
       end
 
       # 1a. Project QA guardrails (if project provides qa.rb)
+      normalize_chunk = lambda do |chunk|
+        normalized = chunk.dup
+        normalized.force_encoding(Encoding::UTF_8)
+        next normalized if normalized.valid_encoding?
+
+        chunk.encode(Encoding::UTF_8, Encoding::BINARY, invalid: :replace, undef: :replace, replace: '?')
+      rescue StandardError
+        chunk.to_s.encode(Encoding::UTF_8, Encoding::BINARY, invalid: :replace, undef: :replace, replace: '?')
+      end
+
+      qa_capture = lambda do |env, *cmd, heartbeat_label:, heartbeat_seconds: 8|
+        output = +''
+        status = nil
+        started_at = Time.now
+        last_output_at = Time.now
+        last_heartbeat_at = Time.at(0)
+
+        Open3.popen2e(env, *cmd) do |_stdin, stdout_err, wait_thr|
+          loop do
+            ready = IO.select([stdout_err], nil, nil, 1)
+            if ready
+              begin
+                chunk = normalize_chunk.call(stdout_err.read_nonblock(4096))
+                output << chunk
+                print chunk
+                $stdout.flush
+                last_output_at = Time.now unless chunk.empty?
+              rescue IO::WaitReadable
+                nil
+              rescue EOFError
+                nil
+              end
+            end
+
+            if wait_thr.join(0)
+              status = wait_thr.value
+              break
+            end
+
+            next unless (Time.now - last_output_at) >= heartbeat_seconds
+            next unless (Time.now - last_heartbeat_at) >= heartbeat_seconds
+
+            elapsed = (Time.now - started_at).round(1)
+            puts "    … #{heartbeat_label} still running (#{elapsed}s)"
+            last_heartbeat_at = Time.now
+          end
+
+          loop do
+            chunk = normalize_chunk.call(stdout_err.read_nonblock(4096))
+            output << chunk
+            print chunk
+            $stdout.flush
+          rescue IO::WaitReadable
+            break
+          rescue EOFError
+            break
+          end
+        end
+
+        [output, status]
+      end
+
       print '  Project QA guardrails... '
       qa_script = ['Scripts/qa.rb', 'scripts/qa.rb'].find { |path| File.exist?(path) }
       if qa_script
@@ -427,12 +974,19 @@ module SaneMasterModules
           "#{app_prefix}_RUN_STABILITY_SUITE" => '1',
           "#{app_prefix}_RUN_RUNTIME_SMOKE" => '1',
         }
-        qa_out, qa_status = Open3.capture2e(qa_env, 'ruby', qa_script)
+        puts
+        qa_out, qa_status = qa_capture.call(
+          qa_env,
+          'ruby',
+          qa_script,
+          heartbeat_label: 'project QA guardrails'
+        )
         if qa_status.success?
-          puts "✅ (#{qa_script})"
+          puts "  Project QA guardrails... ✅ (#{qa_script})"
         else
-          puts '❌ FAIL'
-          warn_line = qa_out.to_s.lines.last(4).map(&:strip).reject(&:empty?).join(' | ')
+          puts '  Project QA guardrails... ❌ FAIL'
+          warn_line = qa_out.to_s.encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: '?')
+            .lines.last(4).map(&:strip).reject(&:empty?).join(' | ')
           puts "    ↳ #{warn_line}" unless warn_line.empty?
           issues << "Project QA guardrails failed (#{qa_script})"
         end
@@ -440,7 +994,7 @@ module SaneMasterModules
         puts '⏭️  skipped (no qa.rb)'
       end
 
-      # 1b. Monetization guardrails (protect against accidental full-free releases)
+    # 1b. Monetization guardrails (protect against accidental full-free releases)
       print '  Monetization guardrails... '
       project_yml_content = File.exist?('project.yml') ? safe_read('project.yml') : ''
       plist_content = Dir.glob('**/Info.plist').reject { |p| p.include?('DerivedData') || p.include?('build/') }.map { |p| safe_read(p) }.join("\n")
@@ -457,7 +1011,8 @@ module SaneMasterModules
         source_blob: monetization_source_blob(swift_files: swift_files),
         configured_product_id: product_id,
         has_product_id_marker: has_product_id_marker,
-        strict_appstore_product_id: false
+        strict_appstore_product_id: false,
+        shared_or_package_branch: shared_or_package_app_store_branch?(swift_files: swift_files)
       )
       if monetization[:applicable]
         if monetization[:issues].empty?
@@ -471,55 +1026,104 @@ module SaneMasterModules
         puts '⏭️  skipped (no license/pro model detected)'
       end
 
+      # 1c. CloudKit production schema readiness
+      print '  CloudKit production schema... '
+      cloudkit_report = cloudkit_schema_guardrail_report(config: preflight_config, environment: 'production')
+      if cloudkit_report[:applicable]
+        if cloudkit_report[:issues].empty?
+          puts "✅ #{cloudkit_report[:summary]}"
+        else
+          puts "❌ #{cloudkit_report[:issues].first}"
+          cloudkit_report[:issues].each { |m| issues << "CloudKit: #{m}" }
+        end
+        cloudkit_report[:warnings].each { |m| warnings << "CloudKit: #{m}" }
+      else
+        puts '⏭️  skipped (no CloudKit release config)'
+      end
+
       # 2. Git clean
       print '  Git clean... '
-      dirty, = Open3.capture2('git', 'status', '--porcelain')
-      dirty = dirty.strip
-      if dirty.empty?
+      routed_workspace = routed_workspace_context
+      dirty_count = if routed_workspace
+                      routed_workspace['dirty_count'].to_i
+                    else
+                      dirty, = Open3.capture2('git', 'status', '--porcelain')
+                      dirty.to_s.lines.reject { |line| line.strip.empty? }.count
+                    end
+      if dirty_count.zero?
         puts '✅'
       else
-        puts "⚠️  #{dirty.lines.count} uncommitted changes"
-        warnings << "#{dirty.lines.count} uncommitted files"
+        puts "⚠️  #{dirty_count} uncommitted changes"
+        warnings << "#{dirty_count} uncommitted files"
       end
 
       # 2a. Remote branch sync (catches push failures before release work starts)
       print '  Remote branch sync... '
-      current_branch, = Open3.capture2('git', 'rev-parse', '--abbrev-ref', 'HEAD')
-      current_branch = current_branch.strip
-      if current_branch.empty? || current_branch == 'HEAD'
-        puts '⏭️  skipped (detached HEAD)'
-      else
-        remote_ref_out, remote_ref_status = Open3.capture2('git', 'ls-remote', '--heads', 'origin', current_branch)
-        remote_ref = remote_ref_out.to_s.split.first.to_s.strip
-        if !remote_ref_status.success? || remote_ref.empty?
+      routed_sync = routed_workspace.is_a?(Hash) ? routed_workspace['remote_sync'] : nil
+      if routed_sync.is_a?(Hash)
+        current_branch = metadata_value(routed_sync, 'branch') || metadata_value(routed_workspace, 'branch')
+        case metadata_value(routed_sync, 'status')
+        when 'detached'
+          puts '⏭️  skipped (detached HEAD)'
+        when 'unavailable'
           puts "⏭️  skipped (origin/#{current_branch} unavailable)"
           warnings << "Could not read origin/#{current_branch} during preflight"
+        when 'matches'
+          puts "✅ (#{current_branch} matches origin)"
+        when 'ahead'
+          puts "✅ ahead #{metadata_value(routed_sync, 'ahead_count') || '0'} commit(s)"
+        when 'behind'
+          puts "❌ behind origin/#{current_branch}"
+          issues << "Local branch is behind origin/#{current_branch}"
+        when 'diverged'
+          puts "❌ diverged from origin/#{current_branch}"
+          issues << "Local branch diverged from origin/#{current_branch}"
         else
-          local_head, = Open3.capture2('git', 'rev-parse', 'HEAD')
-          local_head = local_head.strip
-
-          remote_is_ancestor = system('git', 'merge-base', '--is-ancestor', remote_ref, local_head, out: File::NULL, err: File::NULL)
-          local_is_ancestor = system('git', 'merge-base', '--is-ancestor', local_head, remote_ref, out: File::NULL, err: File::NULL)
-
-          if local_head == remote_ref
-            puts "✅ (#{current_branch} matches origin)"
-          elsif remote_is_ancestor && !local_is_ancestor
-            ahead_count, = Open3.capture2('git', 'rev-list', '--count', "#{remote_ref}..#{local_head}")
-            puts "✅ ahead #{ahead_count.strip} commit(s)"
-          elsif local_is_ancestor && !remote_is_ancestor
-            puts "❌ behind origin/#{current_branch}"
-            issues << "Local branch is behind origin/#{current_branch}"
+          puts '⏭️  skipped (route context unavailable)'
+        end
+      else
+        current_branch, = Open3.capture2('git', 'rev-parse', '--abbrev-ref', 'HEAD')
+        current_branch = current_branch.strip
+        if current_branch.empty? || current_branch == 'HEAD'
+          puts '⏭️  skipped (detached HEAD)'
+        else
+          remote_ref_out, remote_ref_status = Open3.capture2('git', 'ls-remote', '--heads', 'origin', current_branch)
+          remote_ref = remote_ref_out.to_s.split.first.to_s.strip
+          if !remote_ref_status.success? || remote_ref.empty?
+            puts "⏭️  skipped (origin/#{current_branch} unavailable)"
+            warnings << "Could not read origin/#{current_branch} during preflight"
           else
-            puts "❌ diverged from origin/#{current_branch}"
-            issues << "Local branch diverged from origin/#{current_branch}"
+            local_head, = Open3.capture2('git', 'rev-parse', 'HEAD')
+            local_head = local_head.strip
+
+            remote_is_ancestor = system('git', 'merge-base', '--is-ancestor', remote_ref, local_head, out: File::NULL, err: File::NULL)
+            local_is_ancestor = system('git', 'merge-base', '--is-ancestor', local_head, remote_ref, out: File::NULL, err: File::NULL)
+
+            if local_head == remote_ref
+              puts "✅ (#{current_branch} matches origin)"
+            elsif remote_is_ancestor && !local_is_ancestor
+              ahead_count, = Open3.capture2('git', 'rev-list', '--count', "#{remote_ref}..#{local_head}")
+              puts "✅ ahead #{ahead_count.strip} commit(s)"
+            elsif local_is_ancestor && !remote_is_ancestor
+              puts "❌ behind origin/#{current_branch}"
+              issues << "Local branch is behind origin/#{current_branch}"
+            else
+              puts "❌ diverged from origin/#{current_branch}"
+              issues << "Local branch diverged from origin/#{current_branch}"
+            end
           end
         end
       end
 
       # 3. UserDefaults / migration changes
       print '  Defaults/migration changes... '
-      changed_files, = Open3.capture2('git', 'diff', 'HEAD~5..HEAD', '--name-only', '--', '*.swift')
-      defaults_files = changed_files.strip.split("\n")
+      changed_files = if routed_workspace
+                        Array(routed_workspace['recent_changed_swift_files']).join("\n")
+                      else
+                        output, = Open3.capture2('git', 'diff', 'HEAD~5..HEAD', '--name-only', '--', '*.swift')
+                        output
+                      end
+      defaults_files = changed_files.to_s.strip.split("\n")
         .select { |f| File.exist?(f) }
         .select do |f|
           content = File.read(f) rescue ''
@@ -552,6 +1156,37 @@ module SaneMasterModules
         end
       end
       puts '⏭️  no Info.plist with SUPublicEDKey found' unless checked_key
+
+      # 4a. Sparkle sandbox installer launcher requirements
+      print '  Sparkle sandbox installer launcher... '
+      sparkle_target = macos_release_target_config
+      if checked_key && sparkle_target[:info_path].to_s != '' && sparkle_target[:entitlements_path].to_s != ''
+        info_content = safe_read(sparkle_target[:info_path])
+        entitlements_content = safe_read(sparkle_target[:entitlements_path])
+        sandboxed = entitlements_content.include?('com.apple.security.app-sandbox')
+
+        if sandboxed
+          info_has_launcher = info_content.match?(/<key>SUEnableInstallerLauncherService<\/key>\s*<true\/>/m)
+          bundle_id = sparkle_target[:bundle_id].to_s
+          spki_token = bundle_id.empty? ? '$(PRODUCT_BUNDLE_IDENTIFIER)-spki' : "#{bundle_id}-spki"
+          spks_token = bundle_id.empty? ? '$(PRODUCT_BUNDLE_IDENTIFIER)-spks' : "#{bundle_id}-spks"
+          has_spki = entitlements_content.include?('$(PRODUCT_BUNDLE_IDENTIFIER)-spki') || entitlements_content.include?(spki_token)
+          has_spks = entitlements_content.include?('$(PRODUCT_BUNDLE_IDENTIFIER)-spks') || entitlements_content.include?(spks_token)
+
+          if info_has_launcher && has_spki && has_spks
+            puts '✅'
+          else
+            puts '❌ missing required Sparkle sandbox config'
+            issues << 'Sparkle sandboxed direct build must set SUEnableInstallerLauncherService=true'
+            issues << 'Sparkle sandboxed direct build must grant mach lookup exception $(PRODUCT_BUNDLE_IDENTIFIER)-spki' unless has_spki
+            issues << 'Sparkle sandboxed direct build must grant mach lookup exception $(PRODUCT_BUNDLE_IDENTIFIER)-spks' unless has_spks
+          end
+        else
+          puts '⏭️  not sandboxed'
+        end
+      else
+        puts '⏭️  skipped'
+      end
 
       # 4b. Appcast channel integrity (appcast metadata must match downloadable archive).
       print '  Appcast channel integrity... '
@@ -758,10 +1393,8 @@ module SaneMasterModules
       # 10. Email webhook download version drift
       print '  Email webhook PRODUCT_CONFIG... '
       webhook_js = File.expand_path('~/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js')
-      if File.exist?(webhook_js)
-        webhook_content = File.read(webhook_js)
-
-        # Get version from appcast.xml (source of truth for what's actually released)
+      routed_webhook = routed_webhook_context
+      if File.exist?(webhook_js) || routed_webhook
         appcast_paths = local_appcast_paths
         appcast_ver = nil
         appcast_paths.each do |ac|
@@ -770,9 +1403,13 @@ module SaneMasterModules
           break if appcast_ver
         end
 
-        # Get version from webhook
-        webhook_match = webhook_content.match(/'#{Regexp.escape(preflight_app_name)}':\s*\{\s*file:\s*'#{Regexp.escape(preflight_app_name)}-([^']+)\.(zip|dmg)'/)
-        webhook_ver = webhook_match ? webhook_match[1] : nil
+        webhook_ver = if routed_webhook
+                        metadata_value(routed_webhook['product_versions'], preflight_app_name)
+                      else
+                        webhook_content = File.read(webhook_js)
+                        webhook_match = webhook_content.match(/'#{Regexp.escape(preflight_app_name)}':\s*\{\s*file:\s*'#{Regexp.escape(preflight_app_name)}-([^']+)\.(zip|dmg)'/)
+                        webhook_match ? webhook_match[1] : nil
+                      end
 
         if appcast_ver && webhook_ver
           if appcast_ver == webhook_ver
@@ -798,10 +1435,14 @@ module SaneMasterModules
         wrangler_toml = File.join(webhook_dir, 'wrangler.toml')
         if File.exist?(wrangler_toml)
           # Get last git commit time on the webhook JS file
-          last_commit_epoch, commit_status = Open3.capture2(
-            'git', '-C', webhook_dir, 'log', '-1', '--format=%ct', '--', 'src/handlers/webhook-lemonsqueezy.js'
-          )
-          last_commit_epoch = last_commit_epoch.strip.to_i if commit_status.success?
+          last_commit_epoch = if routed_webhook
+                                routed_webhook['last_commit_epoch'].to_i
+                              else
+                                output, commit_status = Open3.capture2(
+                                  'git', '-C', webhook_dir, 'log', '-1', '--format=%ct', '--', 'src/handlers/webhook-lemonsqueezy.js'
+                                )
+                                commit_status.success? ? output.strip.to_i : 0
+                              end
 
           # Get latest wrangler deployment timestamp
           npx_bin = if File.executable?('/opt/homebrew/bin/npx')
@@ -881,6 +1522,8 @@ module SaneMasterModules
     # Derived from Apple's App Review Guidelines + community rejection checklists.
     # Works for any SaneApps project with a .saneprocess config.
     def appstore_preflight(_args)
+      return unless ensure_research_gate_clear!('appstore_preflight')
+
       require 'json'
       require 'open3'
       require 'tmpdir'
@@ -957,23 +1600,17 @@ module SaneMasterModules
       # 2a. Version and build number
       print '  │ Version/build number... '
       project_yml = File.join(Dir.pwd, 'project.yml')
-      version_str = nil
-      build_num = nil
-      if File.exist?(project_yml)
-        yml_content = File.read(project_yml)
-        version_match = yml_content.match(/MARKETING_VERSION:\s*"?([^"\s]+)"?/)
-        build_match = yml_content.match(/CURRENT_PROJECT_VERSION:\s*"?([^"\s]+)"?/)
-        version_str = version_match[1] if version_match
-        build_num = build_match[1] if build_match
-      end
+      yml_content = File.exist?(project_yml) ? File.read(project_yml) : ''
+      version_str = project_marketing_version(yml_content)
+      build_num = project_build_number(yml_content)
       if version_str && build_num
         puts "✅ v#{version_str} (#{build_num})"
       elsif version_str
         puts "⚠️  v#{version_str} but no CURRENT_PROJECT_VERSION"
-        warnings << 'Missing CURRENT_PROJECT_VERSION in project.yml'
+        warnings << 'Missing CURRENT_PROJECT_VERSION in project.yml/xcconfig'
       else
-        puts '⚠️  could not read from project.yml'
-        warnings << 'Could not read version info from project.yml'
+        puts '⚠️  could not read from project.yml/xcconfig'
+        warnings << 'Could not read version info from project.yml/xcconfig'
       end
 
       # 2b. Entitlements file
@@ -1068,6 +1705,9 @@ module SaneMasterModules
             files = Dir.glob(File.join(Dir.pwd, glob_pattern))
             if files.any?
               screenshot_summary << "#{platform}: #{files.count}"
+              if platform == 'macos' && files.count < 3
+                warnings << "Only #{files.count} macOS screenshot(s) configured — Apple allows one, but 3-5 screenshots is a safer review baseline"
+              end
 
               # Validate screenshot dimensions for each device class
               if platform == 'ios'
@@ -1145,6 +1785,7 @@ module SaneMasterModules
       print '  │ Usage descriptions... '
       # Check source code for permission-requiring APIs
       swift_files = Dir.glob('**/*.swift').reject { |p| p.include?('DerivedData') || p.include?('build/') || p.include?('Tests/') }
+      swift_files.concat(local_package_swift_files(project_yml)).uniq!
       all_source = swift_files.map { |f| File.read(f) rescue '' }.join("\n")
 
       required_keys = {}
@@ -1162,6 +1803,7 @@ module SaneMasterModules
 
       # Also check project.yml for plist values
       yml_content = File.exist?(project_yml) ? File.read(project_yml) : ''
+      effective_required_keys = required_keys.dup
 
       missing_keys = []
       required_keys.each do |key, api|
@@ -1177,11 +1819,28 @@ module SaneMasterModules
           puts '✅ no permissions detected'
         end
       else
-        puts "❌ #{missing_keys.count} missing"
-        missing_keys.each do |k|
-          puts "  │   - #{k}"
+        provisional = []
+        definite = []
+        missing_keys.each do |entry|
+          if entry.start_with?('NSAccessibilityUsageDescription') || entry.start_with?('NSAppleEventsUsageDescription')
+            provisional << entry
+          else
+            definite << entry
+          end
         end
-        issues << "Missing Info.plist usage descriptions: #{missing_keys.join(', ')}"
+
+        if definite.any?
+          puts "❌ #{missing_keys.count} missing"
+          missing_keys.each { |k| puts "  │   - #{k}" }
+          issues << "Missing Info.plist usage descriptions: #{definite.join(', ')}"
+        else
+          puts "⚠️  #{missing_keys.count} provisional"
+          missing_keys.each { |k| puts "  │   - #{k}" }
+        end
+
+        if provisional.any?
+          warnings << "Source references automation permissions that may be compiled out for App Store builds: #{provisional.join(', ')}"
+        end
       end
 
       # 4b. Privacy policy URL
@@ -1221,7 +1880,7 @@ module SaneMasterModules
       print '  │ Tests... '
       verify_env = { 'SANEMASTER_APPSTORE_PREFLIGHT' => '1' }
       out, status = Open3.capture2e(verify_env, './scripts/SaneMaster.rb', 'verify', '--quiet')
-      if status.success?
+      if status.success? || verify_output_indicates_success?(out)
         puts '✅'
       elsif out.include?('Newest appcast entry should match MARKETING_VERSION') &&
             out.scan('Expectation failed:').length == 1
@@ -1232,7 +1891,24 @@ module SaneMasterModules
         warnings << 'Direct-download appcast is one version behind MARKETING_VERSION (non-blocking for App Store submission)'
       else
         puts '❌ FAIL'
+        hint = summarized_output_tail(out)
+        puts "  │   ↳ #{hint}" unless hint.empty?
         issues << 'Tests failing — fix before submission'
+      end
+
+      # 5a1. CloudKit production schema
+      print '  │ CloudKit production schema... '
+      cloudkit_report = cloudkit_schema_guardrail_report(config: config, environment: 'production')
+      if cloudkit_report[:applicable]
+        if cloudkit_report[:issues].empty?
+          puts "✅ #{cloudkit_report[:summary]}"
+        else
+          puts "❌ #{cloudkit_report[:issues].first}"
+          cloudkit_report[:issues].each { |m| issues << "CloudKit: #{m}" }
+        end
+        cloudkit_report[:warnings].each { |m| warnings << "CloudKit: #{m}" }
+      else
+        puts '⏭️  skipped (no CloudKit release config)'
       end
 
       # 5b. Git clean
@@ -1260,8 +1936,13 @@ module SaneMasterModules
             issues << "Build configuration '#{asc_config_name}' referenced in .saneprocess but not in project.yml"
           end
         else
-          puts "⚠️  #{asc_config_name} (can't verify — no project.yml)"
-          warnings << "Can't verify build configuration without project.yml"
+          pbxproj = Dir.glob('*.xcodeproj/project.pbxproj').map { |p| File.read(p) rescue '' }.join("\n")
+          if pbxproj.include?(asc_config_name)
+            puts "✅ #{asc_config_name} (verified in project.pbxproj)"
+          else
+            puts "⚠️  #{asc_config_name} (can't verify — no project.yml)"
+            warnings << "Can't verify build configuration without project.yml/project.pbxproj"
+          end
         end
       else
         puts '⚠️  not specified'
@@ -1273,7 +1954,10 @@ module SaneMasterModules
       uses_storekit_unlock = all_source.match?(/\bLicenseService\s*\(/)
       configured_product_id = appstore_config['product_id'].to_s.strip
       pbxproj_content = Dir.glob('*.xcodeproj/project.pbxproj').map { |p| File.read(p) rescue '' }.join("\n")
-      has_product_id_marker = [project_yml_content, plist_content, pbxproj_content].join("\n").match?(/AppStoreProductID|INFOPLIST_KEY_AppStoreProductID/)
+      appstore_build_flags = Array(appstore_config['build_flags']).join("\n")
+      has_product_id_marker = [project_yml_content, plist_content, pbxproj_content, appstore_build_flags]
+        .join("\n")
+        .match?(/AppStoreProductID|INFOPLIST_KEY_AppStoreProductID/)
 
       if uses_storekit_unlock
         if configured_product_id.empty?
@@ -1295,13 +1979,46 @@ module SaneMasterModules
         warnings << 'appstore.product_id is set, but AppStoreProductID marker not found in project settings'
       end
 
+      # 5d2. App Store Connect IAP record exists
+      print '  │ ASC IAP record... '
+      if configured_product_id.empty?
+        puts '⏭️  skipped (no appstore.product_id configured)'
+      elsif asc_app_id.to_s.strip.empty?
+        puts '⚠️  skipped (no ASC app_id)'
+        warnings << 'Cannot verify IAP in App Store Connect without appstore.app_id'
+      else
+        iap_status = asc_iap_status(app_id: asc_app_id, product_id: configured_product_id)
+        case iap_status
+        when Hash
+          if !iap_status[:exists]
+            puts "❌ #{configured_product_id} not found"
+            issues << "App Store Connect has no in-app purchase with product_id #{configured_product_id}"
+          elsif %w[WAITING_FOR_REVIEW APPROVED READY_FOR_SALE].include?(iap_status[:state])
+            puts "✅ #{configured_product_id} (#{iap_status[:state]})"
+          elsif iap_status[:state] == 'READY_TO_SUBMIT'
+            puts "❌ #{configured_product_id} (READY_TO_SUBMIT)"
+            issues << "App Store Connect IAP #{configured_product_id} is still READY_TO_SUBMIT — Apple requires it to be added to the app version's In-App Purchases and Subscriptions section before submission."
+          else
+            puts "❌ #{configured_product_id} (#{iap_status[:state]})"
+            issues << "App Store Connect IAP #{configured_product_id} exists but is not review-ready (state=#{iap_status[:state]})"
+          end
+        when nil
+          puts '⚠️  lookup failed'
+          warnings << "Could not verify App Store Connect IAP record for #{configured_product_id}"
+        else
+          puts "❌ #{configured_product_id} not found"
+          issues << "App Store Connect has no in-app purchase with product_id #{configured_product_id}"
+        end
+      end
+
       # 5e. Monetization guardrails (hard-fail for App Store submissions)
       print '  │ Monetization guardrails... '
       monetization_report = monetization_guardrail_report(
         source_blob: monetization_source_blob(swift_files: swift_files),
         configured_product_id: configured_product_id,
         has_product_id_marker: has_product_id_marker,
-        strict_appstore_product_id: uses_storekit_unlock
+        strict_appstore_product_id: uses_storekit_unlock,
+        shared_or_package_branch: shared_or_package_app_store_branch?(swift_files: swift_files)
       )
       if monetization_report[:applicable]
         if monetization_report[:issues].empty?
@@ -1315,10 +2032,49 @@ module SaneMasterModules
         puts '⏭️  skipped (no license/pro model detected)'
       end
 
-      # 5f. Build App Store config and audit resulting artifact for runtime blockers
+      # 5f. Reviewer access + business-model guardrails
+      print '  │ Reviewer access guardrails... '
+      reviewer_access_report = reviewer_access_guardrail_report(
+        source_blob: reviewer_guardrail_source_blobs(swift_files: swift_files),
+        appstore_config: appstore_config,
+        platforms: platforms
+      )
+      if reviewer_access_report[:applicable]
+        if reviewer_access_report[:issues].empty?
+          puts "✅ #{reviewer_access_report[:summary]}"
+        else
+          puts "❌ #{reviewer_access_report[:issues].first}"
+          reviewer_access_report[:issues].each { |msg| issues << "Review access guard: #{msg}" }
+        end
+        reviewer_access_report[:warnings].each { |msg| warnings << "Review access guard: #{msg}" }
+      else
+        puts '⏭️  skipped (no account/demo/license reviewer path detected)'
+      end
+
+      # 5f2. App Store policy guardrails for common rejection classes
+      print '  │ App Store policy guardrails... '
+      review_notes_blob = platforms.map { |platform| review_notes_for_platform(appstore_config, platform) }.join("\n")
+      policy_report = appstore_policy_guardrail_report(
+        source_blob: [all_source, project_yml_content, plist_content, pbxproj_content].join("\n"),
+        review_notes_blob: review_notes_blob
+      )
+      if policy_report[:applicable]
+        if policy_report[:issues].empty?
+          puts "✅ #{policy_report[:summary]}"
+        else
+          puts "❌ #{policy_report[:issues].first}"
+          policy_report[:issues].each { |msg| issues << "Policy guard: #{msg}" }
+        end
+        policy_report[:warnings].each { |msg| warnings << "Policy guard: #{msg}" }
+      else
+        puts '⏭️  skipped (no high-risk App Store automation patterns detected)'
+      end
+
+      # 5g. Build App Store config and audit resulting artifact for runtime blockers
       print '  │ Compiled App Store artifact audit... '
       platforms = Array(appstore_config['platforms'] || ['macos']).map(&:to_s)
       if platforms.include?('macos')
+        compiled_artifact_verified_clean = false
         begin
           Dir.mktmpdir('sanemaster_asc_audit') do |tmpdir|
             derived_data = File.join(tmpdir, 'DerivedData')
@@ -1345,13 +2101,18 @@ module SaneMasterModules
               'CODE_SIGNING_ALLOWED=NO',
               'build'
             ]
-            unless configured_product_id.empty?
-              build_cmd << "INFOPLIST_KEY_AppStoreProductID=#{configured_product_id}"
+            effective_build_flags = Array(appstore_config['build_flags']).map(&:to_s).reject(&:empty?)
+            unless configured_product_id.empty? || effective_build_flags.any? { |flag| flag.start_with?('INFOPLIST_KEY_AppStoreProductID=') }
+              effective_build_flags << "INFOPLIST_KEY_AppStoreProductID=#{configured_product_id}"
             end
+            build_cmd.concat(effective_build_flags)
+            build_cmd.concat(Array(appstore_config['archive_extra_args']).map(&:to_s).reject(&:empty?))
 
             build_out, build_status = Open3.capture2e(*build_cmd)
             unless build_status.success?
               puts '❌ build failed'
+              hint = summarized_output_tail(build_out)
+              puts "  │   ↳ #{hint}" unless hint.empty?
               issues << "App Store artifact audit build failed for configuration #{configuration}"
               next
             end
@@ -1365,10 +2126,10 @@ module SaneMasterModules
             end
 
             info_plist = File.join(app_dir, 'Contents', 'Info.plist')
+            plist_dump = File.read(info_plist) rescue ''
             executable, = Open3.capture2('/usr/libexec/PlistBuddy', '-c', 'Print :CFBundleExecutable', info_plist)
             executable = executable.to_s.strip
             binary_path = File.join(app_dir, 'Contents', 'MacOS', executable)
-
             built_product_id, = Open3.capture2('/usr/libexec/PlistBuddy', '-c', 'Print :AppStoreProductID', info_plist)
             built_product_id = built_product_id.to_s.strip
             if uses_storekit_unlock
@@ -1381,6 +2142,8 @@ module SaneMasterModules
 
             if File.file?(binary_path)
               otool_out, = Open3.capture2('otool', '-L', binary_path)
+              strings_out, = Open3.capture2('strings', '-a', binary_path)
+              nm_out, = Open3.capture2('nm', '-m', binary_path)
               dylib_lines = otool_out.lines.drop(1).map(&:strip).reject(&:empty?)
               unresolved = []
 
@@ -1404,7 +2167,54 @@ module SaneMasterModules
                 puts "❌ unresolved dylibs (#{unresolved.uniq.count})"
                 issues << "App Store artifact has unresolved non-weak dylib references: #{unresolved.uniq.join(', ')}"
               else
-                puts '✅'
+                artifact_blob = [plist_dump, strings_out, nm_out, otool_out].join("\n")
+                artifact_issues = []
+                artifact_warnings = []
+
+                direct_purchase_markers = []
+                direct_purchase_markers << 'website checkout URL' if artifact_blob.match?(/go\.saneapps\.com\/buy\//i)
+                direct_purchase_markers << 'license key entry copy' if artifact_blob.match?(/Enter License Key|license key/i)
+                direct_purchase_markers << 'purchase key entry copy' if artifact_blob.match?(/Use Purchase Key|purchase key/i)
+                direct_purchase_markers << 'manual key entry CTA' if artifact_blob.match?(/I Have a Key|Enter Key|Activate License/i)
+                if direct_purchase_markers.any?
+                  artifact_issues << "Built App Store artifact still exposes direct-purchase markers (#{direct_purchase_markers.join(', ')})"
+                elsif artifact_blob.match?(%r{api\.lemonsqueezy\.com/v1/licenses/validate}i) && !built_product_id.empty?
+                  artifact_warnings << 'Built App Store artifact still contains LemonSqueezy license-validation strings — verify website-license code is unreachable in the App Store build'
+                end
+
+                if review_notes_blob.match?(/does not request accessibility/i) &&
+                   artifact_blob.include?('NSAccessibilityUsageDescription')
+                  artifact_issues << 'Review notes claim no Accessibility request, but built Info.plist still declares NSAccessibilityUsageDescription'
+                end
+
+                if review_notes_blob.match?(/does not request.*apple events|no apple events/i) &&
+                   artifact_blob.include?('NSAppleEventsUsageDescription')
+                  artifact_issues << 'Review notes claim no Apple Events request, but built Info.plist still declares NSAppleEventsUsageDescription'
+                end
+
+                accessibility_markers = []
+                accessibility_markers << 'ApplicationServices linkage' if otool_out.include?('ApplicationServices.framework')
+                accessibility_markers << 'AXIsProcessTrusted symbol' if nm_out.match?(/_AXIsProcessTrusted/)
+                accessibility_markers << 'Accessibility settings deep link' if strings_out.include?('Privacy_Accessibility')
+                if accessibility_markers.any?
+                  artifact_issues << "Built App Store artifact still contains Accessibility markers (#{accessibility_markers.join(', ')})"
+                end
+
+                apple_events_markers = []
+                apple_events_markers << 'osascript runtime' if artifact_blob.include?('/usr/bin/osascript')
+                apple_events_markers << 'Apple Events usage description' if artifact_blob.include?('NSAppleEventsUsageDescription')
+                if apple_events_markers.any?
+                  artifact_warnings << "Built App Store artifact still contains Apple Events markers (#{apple_events_markers.join(', ')}) — verify App Review notes and App Store policy fit"
+                end
+
+                if artifact_issues.empty?
+                  puts '✅'
+                  compiled_artifact_verified_clean = true
+                else
+                  puts "❌ #{artifact_issues.first}"
+                  artifact_issues.each { |msg| issues << msg }
+                end
+                artifact_warnings.each { |msg| warnings << msg }
               end
             else
               puts '❌ executable missing'
@@ -1415,11 +2225,30 @@ module SaneMasterModules
           puts "⚠️  audit error: #{e.message}"
           warnings << "Compiled App Store artifact audit failed unexpectedly: #{e.message}"
         end
+        if compiled_artifact_verified_clean
+          warnings.delete('Policy guard: Source contains clipboard automation for non-App-Store builds, but the App Store build script strips automation usage descriptions and review notes describe manual paste. Verify the compiled App Store artifact before blocking submission.')
+        end
       else
         puts '⏭️  skipped (non-macOS submission)'
       end
 
-      # 5g. No DEBUG/development code leaking into release
+      # 5h. No DEBUG/development code leaking into release
+      print '  │ Reserved shortcuts... '
+      lsui_element = plist_content.include?('LSUIElement') || project_yml_content.include?('LSUIElement:')
+      quit_shortcut_wired =
+        all_source.match?(/app\.mainMenu\s*=|CommandGroup\s*\(\s*replacing:\s*\.appTermination|CommandMenu\s*\(\s*"App"|keyEquivalent:\s*"q"/)
+      if lsui_element
+        if quit_shortcut_wired
+          puts '✅ menu bar app exposes explicit quit command wiring'
+        else
+          puts '❌ no explicit quit wiring found'
+          issues << 'Menu bar app has LSUIElement enabled, but preflight could not find explicit Command-Q / quit-menu wiring'
+        end
+      else
+        puts '⏭️  skipped (not an LSUIElement app)'
+      end
+
+      # 5i. No DEBUG/development code leaking into release
       print '  │ Debug code audit... '
       debug_patterns = swift_files.select do |f|
         content = File.read(f) rescue ''
@@ -1441,9 +2270,14 @@ module SaneMasterModules
 
       # 6a. Review notes — must explain EACH permission with technical justification
       print '    Review notes... '
-      review_notes = appstore_config['review_notes']
-      if review_notes && !review_notes.to_s.strip.empty?
-        notes_text = review_notes.to_s
+      normalized_platforms = Array(platforms).map { |p| p.to_s.downcase }.uniq
+      normalized_platforms = %w[macos] if normalized_platforms.empty?
+      platform_notes = normalized_platforms.to_h do |platform|
+        [platform, review_notes_for_platform(appstore_config, platform).to_s]
+      end
+      notes_text = platform_notes.values.reject(&:empty?).join("\n")
+
+      if notes_text && !notes_text.strip.empty?
         notes_issues = []
 
         # Verify each permission-requiring API has a specific explanation in the notes
@@ -1465,7 +2299,11 @@ module SaneMasterModules
           }
         }
 
-        required_keys.each_key do |plist_key|
+        review_permission_keys = effective_required_keys.reject do |plist_key, _|
+          %w[NSAccessibilityUsageDescription NSAppleEventsUsageDescription].include?(plist_key)
+        end
+
+        review_permission_keys.each_key do |plist_key|
           check = permission_keywords[plist_key]
           next unless check
 
@@ -1476,7 +2314,7 @@ module SaneMasterModules
         end
 
         if notes_issues.empty?
-          puts "✅ (#{notes_text.length} chars, permissions explained)"
+          puts "✅ (#{platform_notes.values.reject(&:empty?).count} note variant(s), #{notes_text.length} chars total)"
         else
           puts "❌ #{notes_issues.count} permission(s) not adequately explained"
           notes_issues.each do |ni|

@@ -24,6 +24,10 @@ module SaneMasterModules
   module SOPLoop
     SANELOOP_STATE_FILE = '.claude/saneloop-state.json'
     VERIFY_STATE_FILE = '.claude/sop-verify-state.json'
+    RESEARCH_LOCK_FILE = '.claude/research-locks.json'
+    RESEARCH_MD_FILE = '.claude/research.md'
+    AUTO_RESEARCH_LOCK_REFRESH_SECONDS = 900
+    AUTO_RESEARCH_LOCK_APPS = %w[SaneBar SaneClip].freeze
     SATISFACTION_FILE = '.claude/process_satisfaction.json'
     REQUIREMENTS_FILE = '.claude/prompt_requirements.json'
     ENFORCEMENT_LOG = '.claude/enforcement_log.jsonl'
@@ -526,16 +530,13 @@ module SaneMasterModules
     def verify_gate(args)
       puts '🚦 --- [ SOP VERIFY GATE ] ---'
 
-      state = load_verify_state
       passed = run_verify_check
 
+      state = record_verify_attempt(success: passed, message: 'verify_gate')
+
       if passed
-        state[:consecutive_failures] = 0
-        state[:last_result] = 'passed'
         puts '✅ Verification passed'
       else
-        state[:consecutive_failures] += 1
-        state[:last_result] = 'failed'
         puts "❌ Verification failed (attempt #{state[:consecutive_failures]})"
       end
 
@@ -561,10 +562,137 @@ module SaneMasterModules
     end
 
     def reset_escalation(_args)
-      state = load_verify_state
-      state[:consecutive_failures] = 0
-      save_verify_state(state)
+      clear_verify_escalation!
       puts '✅ Escalation state cleared'
+    end
+
+    def research_status(_args = [])
+      puts '🔎 --- [ RESEARCH GATE STATUS ] ---'
+      puts ''
+
+      state = load_verify_state
+      research_time = research_updated_at
+      verify_block = verify_escalation_block(state: state, research_time: research_time)
+      locks = load_research_locks
+      unsatisfied_locks = active_research_locks(locks: locks, research_time: research_time)
+
+      if verify_block.nil? && unsatisfied_locks.empty?
+        puts '   Status: 🟢 clear'
+        puts "   research.md: #{research_time ? research_time.iso8601 : 'missing'}"
+        puts "   locks on file: #{locks.length}"
+        puts ''
+        return
+      end
+
+      puts '   Status: 🔴 research required'
+      puts "   research.md: #{research_time ? research_time.iso8601 : 'missing'}"
+      puts ''
+
+      if verify_block
+        puts '   Verify escalation:'
+        puts "   - #{verify_block[:message]}"
+        puts ''
+      end
+
+      if unsatisfied_locks.any?
+        puts '   Research locks:'
+        unsatisfied_locks.each do |lock|
+          puts "   - #{lock[:slug]}: #{lock[:reason]}"
+        end
+        puts ''
+      end
+    end
+
+    def research_lock(args)
+      slug = args.shift.to_s.strip
+      reason = args.join(' ').strip
+
+      if slug.empty?
+        warn '❌ Usage: ./scripts/SaneMaster.rb research_lock <slug> [reason]'
+        return
+      end
+
+      reason = 'Fresh docs + web + GitHub + local research required before more work.' if reason.empty?
+      now = Time.now.iso8601
+      locks = load_research_locks.reject { |entry| entry[:slug] == slug }
+      locks << { slug: slug, reason: reason, created_at: now }
+      save_research_locks(locks)
+
+      puts "🔒 Research lock added: #{slug}"
+      puts "   Reason: #{reason}"
+      puts "   Created: #{now}"
+    end
+
+    def research_unlock(args)
+      slug = args.shift.to_s.strip
+
+      if slug.empty?
+        warn '❌ Usage: ./scripts/SaneMaster.rb research_unlock <slug|--all>'
+        return
+      end
+
+      if slug == '--all'
+        save_research_locks([])
+        puts '🔓 Cleared all research locks'
+        return
+      end
+
+      locks = load_research_locks
+      remaining = locks.reject { |entry| entry[:slug] == slug }
+      if remaining.length == locks.length
+        warn "❌ No research lock found for #{slug}"
+        return
+      end
+
+      save_research_locks(remaining)
+      puts "🔓 Cleared research lock: #{slug}"
+    end
+
+    def ensure_research_gate_clear!(command_name)
+      maybe_refresh_auto_research_locks!
+
+      research_time = research_updated_at
+      verify_block = verify_escalation_block(research_time: research_time)
+      unsatisfied_locks = active_research_locks(research_time: research_time)
+
+      return true if verify_block.nil? && unsatisfied_locks.empty?
+
+      puts '🛑 --- [ RESEARCH REQUIRED ] ---'
+      puts "Blocked command: #{command_name}"
+      puts ''
+
+      puts "1. #{verify_block[:message]}" if verify_block
+      unsatisfied_locks.each_with_index do |lock, index|
+        offset = verify_block ? 2 : 1
+        puts "#{index + offset}. #{lock[:slug]}: #{lock[:reason]}"
+      end
+
+      puts ''
+      puts 'Next step: update .claude/research.md with fresh docs + web + GitHub + local findings.'
+      puts 'Then rerun the command. This guard auto-clears once research.md is newer than the block.'
+      puts ''
+      exit 1
+    end
+
+    def record_verify_attempt(success:, message:)
+      state = load_verify_state
+
+      if success
+        state[:consecutive_failures] = 0
+        state[:last_result] = 'passed'
+        state[:last_failure_at] = nil
+        state[:last_failure_message] = nil
+        state[:escalated_at] = nil
+      else
+        state[:consecutive_failures] = state[:consecutive_failures].to_i + 1
+        state[:last_result] = 'failed'
+        state[:last_failure_at] = Time.now.iso8601
+        state[:last_failure_message] = message
+        state[:escalated_at] ||= state[:last_failure_at] if state[:consecutive_failures] >= 2
+      end
+
+      save_verify_state(state)
+      state
     end
 
     private
@@ -626,7 +754,13 @@ module SaneMasterModules
 
     # Verify state helpers (for Two-Fix Rule)
     def load_verify_state
-      return { consecutive_failures: 0, last_result: nil } unless File.exist?(VERIFY_STATE_FILE)
+      return {
+        consecutive_failures: 0,
+        last_result: nil,
+        last_failure_at: nil,
+        last_failure_message: nil,
+        escalated_at: nil
+      } unless File.exist?(VERIFY_STATE_FILE)
 
       JSON.parse(File.read(VERIFY_STATE_FILE), symbolize_names: true)
     end
@@ -634,6 +768,88 @@ module SaneMasterModules
     def save_verify_state(state)
       FileUtils.mkdir_p(File.dirname(VERIFY_STATE_FILE))
       File.write(VERIFY_STATE_FILE, JSON.pretty_generate(state))
+    end
+
+    def clear_verify_escalation!
+      state = load_verify_state
+      state[:consecutive_failures] = 0
+      state[:last_result] = 'cleared'
+      state[:last_failure_at] = nil
+      state[:last_failure_message] = nil
+      state[:escalated_at] = nil
+      save_verify_state(state)
+    end
+
+    def load_research_locks
+      return [] unless File.exist?(RESEARCH_LOCK_FILE)
+
+      JSON.parse(File.read(RESEARCH_LOCK_FILE), symbolize_names: true)
+    rescue JSON::ParserError
+      []
+    end
+
+    def save_research_locks(locks)
+      FileUtils.mkdir_p(File.dirname(RESEARCH_LOCK_FILE))
+      File.write(RESEARCH_LOCK_FILE, JSON.pretty_generate(locks))
+    end
+
+    def research_updated_at
+      return nil unless File.exist?(RESEARCH_MD_FILE)
+
+      File.mtime(RESEARCH_MD_FILE)
+    end
+
+    def maybe_refresh_auto_research_locks!
+      app_name = File.basename(Dir.pwd)
+      return unless AUTO_RESEARCH_LOCK_APPS.include?(app_name)
+
+      if File.exist?(RESEARCH_LOCK_FILE)
+        age = Time.now - File.mtime(RESEARCH_LOCK_FILE)
+        return if age < AUTO_RESEARCH_LOCK_REFRESH_SECONDS
+      end
+
+      sync_script = File.expand_path('../../../scripts/check-inbox.sh', __dir__)
+      return unless File.exist?(sync_script)
+
+      system(sync_script, 'sync-research-locks', '--app', app_name, '--repo-path', Dir.pwd,
+             out: File::NULL, err: File::NULL)
+    rescue StandardError
+      nil
+    end
+
+    def active_research_locks(locks: load_research_locks, research_time: research_updated_at)
+      locks.select do |lock|
+        trigger_time = lock_trigger_time(lock)
+        research_time.nil? || trigger_time.nil? || research_time <= trigger_time
+      end
+    end
+
+    def verify_escalation_block(state: load_verify_state, research_time: research_updated_at)
+      return nil unless state[:consecutive_failures].to_i >= 2
+
+      escalated_at = parse_gate_time(state[:escalated_at] || state[:last_failure_at])
+      if research_time && escalated_at && research_time > escalated_at
+        clear_verify_escalation!
+        return nil
+      end
+
+      {
+        message: "#{state[:consecutive_failures]} failed verify attempts on the same problem. Fresh research is required before more work.",
+        last_failure_at: state[:last_failure_at],
+        last_failure_message: state[:last_failure_message]
+      }
+    end
+
+    def parse_gate_time(value)
+      return nil if value.to_s.strip.empty?
+
+      Time.parse(value.to_s)
+    rescue ArgumentError
+      nil
+    end
+
+    def lock_trigger_time(lock)
+      parse_gate_time(lock[:source_updated_at] || lock[:created_at])
     end
 
     def run_verify_check

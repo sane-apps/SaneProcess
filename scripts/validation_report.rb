@@ -1177,7 +1177,7 @@ class ValidationReport
     version_table = []
 
     webhook_js = File.expand_path('~/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js')
-    webhook_content = File.exist?(webhook_js) ? File.read(webhook_js) : nil
+    webhook_content = fetch_webhook_product_config(webhook_js)
 
     # Map of app name to its known channels
     app_channels = {
@@ -1255,6 +1255,19 @@ class ValidationReport
 
     issues_found.each { |i| @issues << "Q11 DRIFT: #{i}" }
     warnings_found.each { |w| @warnings << "Q11 DRIFT: #{w}" }
+  end
+
+  def fetch_webhook_product_config(local_path)
+    github_api_path = 'repos/sane-apps/sane-email-automation/contents/src/handlers/webhook-lemonsqueezy.js?ref=main'
+    raw_url = 'https://raw.githubusercontent.com/sane-apps/sane-email-automation/main/src/handlers/webhook-lemonsqueezy.js'
+
+    gh_content = `gh api #{Shellwords.shellescape(github_api_path)} --jq .content 2>/dev/null | tr -d '\\n' | base64 -d 2>/dev/null`
+    return gh_content if $?.success? && !gh_content.to_s.empty?
+
+    raw_content = `curl -fsSL --connect-timeout 5 --max-time 10 #{Shellwords.shellescape(raw_url)} 2>/dev/null`
+    return raw_content if $?.success? && !raw_content.to_s.empty?
+
+    File.exist?(local_path) ? File.read(local_path) : nil
   end
 
   def get_appcast_version(project_path)

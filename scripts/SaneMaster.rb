@@ -26,6 +26,7 @@ require 'tempfile'
 require 'shellwords'
 require 'socket'
 require 'fileutils'
+require 'digest'
 
 # Load all modules
 require_relative 'sanemaster/base'
@@ -48,6 +49,7 @@ require_relative 'sanemaster/release'
 require_relative 'sanemaster/ci_helpers'
 require_relative 'sanemaster/sales'
 require_relative 'sanemaster/downloads'
+require_relative 'sanemaster/leads'
 
 class SaneMaster
   include SaneMasterModules::Base
@@ -69,6 +71,7 @@ class SaneMaster
   include SaneMasterModules::CIHelpers
   include SaneMasterModules::Sales
   include SaneMasterModules::Downloads
+  include SaneMasterModules::Leads
 
   # ═══════════════════════════════════════════════════════════════════════════
   # COMMAND REFERENCE - Organized by category for easy discovery
@@ -151,6 +154,9 @@ class SaneMaster
         'reset_breaker' => { args: '', desc: 'Reset circuit breaker (unblock tools)' },
         'breaker_status' => { args: '', desc: 'Show circuit breaker status' },
         'breaker_errors' => { args: '', desc: 'Show recent failure messages' },
+        'research_status' => { args: '', desc: 'Show active research gates and locks' },
+        'research_lock' => { args: '<slug> [reason]', desc: 'Require fresh research before more work on an issue family' },
+        'research_unlock' => { args: '<slug|--all>', desc: 'Clear a manual research lock' },
         'saneloop' => { args: '<cmd> [opts]', desc: 'Native task loop (start|status|check|log|complete)' }
       }
     },
@@ -159,7 +165,8 @@ class SaneMaster
       commands: {
         'sales' => { args: '[--daily|--month|--products|--fees|--json]', desc: 'LemonSqueezy sales report (default: daily breakdown)' },
         'downloads' => { args: '[--daily|--days N|--app NAME|--json]', desc: 'Download analytics from dist Worker (default: daily breakdown)' },
-        'events' => { args: '[--days N|--app NAME|--json]', desc: 'User-type event analytics (new_free, early_adopter, activated)' }
+        'events' => { args: '[--days N|--app NAME|--json]', desc: 'User-type event analytics (new_free, early_adopter, activated)' },
+        'leads' => { args: '--query "TEXT" [--site-limit N] [--page-limit N] [--domain example.com]', desc: 'Lead discovery with Exa + Firecrawl site dossiers' }
       }
     },
     ci: {
@@ -355,39 +362,74 @@ class SaneMaster
       abort "❌ Could not map SaneProcess to mini: #{saneprocess_repo_root}"
     end
 
-    sync_workspace_to_mini!(remote_repo)
-    sync_local_dir_to_mini!(saneprocess_repo_root, remote_saneprocess_repo, label: 'SaneProcess')
-    prepare_remote_repo_for_command!(remote_repo)
+    with_mini_route_lock(remote_repo, command) do
+      sync_workspace_to_mini!(remote_repo)
+      if workspace_uses_saneui?(Dir.pwd) && Dir.exist?(saneui_repo_root)
+        remote_saneui_repo = map_local_path_to_mini(saneui_repo_root)
+        unless remote_saneui_repo
+          abort "❌ Could not map SaneUI to mini: #{saneui_repo_root}"
+        end
+        sync_local_dir_to_mini!(saneui_repo_root, remote_saneui_repo, label: 'SaneUI')
+      end
+      sync_local_dir_to_mini!(saneprocess_repo_root, remote_saneprocess_repo, label: 'SaneProcess')
+      if release_routed_command?(command)
+        sync_release_support_repos_to_mini!
+        sync_cktool_auth_to_mini!
+        write_route_context_to_mini!(remote_repo, command)
+      end
+      prepare_remote_repo_for_command!(remote_repo)
 
-    forwarded_env_keys = %w[
-      SANEMASTER_APPSTORE_PREFLIGHT
-      SANEMASTER_BUILD_CONFIG
-      SANEMASTER_UNSIGNED_FALLBACK_ACTIVE
-      SANEMASTER_ALLOW_UNSIGNED_FALLBACK
-      SANEBAR_BUILD_CONFIG
-      SANEMASTER_CANONICAL_APP_PATH
-      SANEPROCESS_APPROVE_FAST_RELEASE
-      SANEPROCESS_APPROVE_OPEN_REGRESSION_RELEASE
-      SANEPROCESS_APPROVE_UNCONFIRMED_REGRESSION_CLOSE
-      SANEBAR_APPROVE_FAST_RELEASE
-      SANEBAR_APPROVE_OPEN_REGRESSION_RELEASE
-      SANEBAR_APPROVE_UNCONFIRMED_REGRESSION_CLOSE
-    ]
-    forwarded_env = forwarded_env_keys.map do |key|
-      value = ENV[key]
-      next if value.nil? || value.empty?
+      forwarded_env_keys = %w[
+        SANEMASTER_APPSTORE_PREFLIGHT
+        SANEMASTER_BUILD_CONFIG
+        SANEMASTER_UNSIGNED_FALLBACK_ACTIVE
+        SANEMASTER_ALLOW_UNSIGNED_FALLBACK
+        SANEBAR_BUILD_CONFIG
+        SANEMASTER_CANONICAL_APP_PATH
+        SANEPROCESS_APPROVE_FAST_RELEASE
+        SANEPROCESS_APPROVE_OPEN_REGRESSION_RELEASE
+        SANEPROCESS_APPROVE_UNCONFIRMED_REGRESSION_CLOSE
+        SANEBAR_APPROVE_FAST_RELEASE
+        SANEBAR_APPROVE_OPEN_REGRESSION_RELEASE
+        SANEBAR_APPROVE_UNCONFIRMED_REGRESSION_CLOSE
+      ]
+      forwarded_env = forwarded_env_keys.map do |key|
+        value = ENV[key]
+        next if value.nil? || value.empty?
 
-      "#{key}=#{Shellwords.escape(value)}"
-    end.compact
-    remote_env_prefix = forwarded_env.empty? ? '' : "#{forwarded_env.join(' ')} "
-    remote_script = File.join(remote_saneprocess_repo, 'scripts', 'SaneMaster.rb')
-    remote_cmd = "#{remote_env_prefix}ruby #{Shellwords.escape(remote_script)} #{([command] + args).map { |arg| Shellwords.escape(arg) }.join(' ')}"
-    puts "📍 Mini-first routing: #{command} -> mini (#{remote_repo})"
-    $stdout.flush
-    remote_ok = system('ssh', 'mini', "cd #{Shellwords.escape(remote_repo)} && #{remote_cmd}")
-    remote_status = $?.respond_to?(:exitstatus) ? $?.exitstatus : (remote_ok ? 0 : 1)
-    sync_outputs_from_mini!(Dir.pwd, remote_repo)
-    exit remote_status
+        "#{key}=#{Shellwords.escape(value)}"
+      end.compact
+      remote_env_prefix = forwarded_env.empty? ? '' : "#{forwarded_env.join(' ')} "
+      remote_script = File.join(remote_saneprocess_repo, 'scripts', 'SaneMaster.rb')
+      remote_cmd = "#{remote_env_prefix}ruby #{Shellwords.escape(remote_script)} #{([command] + args).map { |arg| Shellwords.escape(arg) }.join(' ')}"
+      puts "📍 Mini-first routing: #{command} -> mini (#{remote_repo})"
+      $stdout.flush
+      remote_ok = system('ssh', 'mini', "cd #{Shellwords.escape(remote_repo)} && #{remote_cmd}")
+      remote_status = $?.respond_to?(:exitstatus) ? $?.exitstatus : (remote_ok ? 0 : 1)
+      sync_outputs_from_mini!(Dir.pwd, remote_repo)
+      exit remote_status
+    end
+  end
+
+  def with_mini_route_lock(remote_repo, command)
+    digest = Digest::SHA256.hexdigest(remote_repo)[0, 16]
+    lock_path = File.join(Dir.tmpdir, "sanemaster-mini-route-#{digest}.lock")
+    FileUtils.mkdir_p(File.dirname(lock_path))
+
+    File.open(lock_path, File::RDWR | File::CREAT, 0o644) do |lock_file|
+      waited = !lock_file.flock(File::LOCK_EX | File::LOCK_NB)
+      if waited
+        puts "⏳ Waiting for mini workspace lock: #{command} @ #{remote_repo}"
+        lock_file.flock(File::LOCK_EX)
+      end
+      yield
+    ensure
+      begin
+        lock_file.flock(File::LOCK_UN)
+      rescue StandardError
+        nil
+      end
+    end
   end
 
   def running_on_mini_host?
@@ -428,8 +470,91 @@ class SaneMaster
     sync_local_dir_to_mini!(Dir.pwd, remote_repo, label: nil)
   end
 
+  def release_routed_command?(command)
+    %w[release release_preflight appstore_preflight asp].include?(command)
+  end
+
   def saneprocess_repo_root
     File.expand_path('..', __dir__)
+  end
+
+  def saneui_repo_root
+    File.expand_path('../../SaneUI', __dir__)
+  end
+
+  def workspace_uses_saneui?(local_dir)
+    system(
+      'rg',
+      '-q',
+      '\bimport\s+SaneUI\b',
+      File.expand_path(local_dir),
+      out: File::NULL,
+      err: File::NULL
+    )
+  rescue StandardError
+    false
+  end
+
+  def sane_email_automation_repo_root
+    File.expand_path('~/SaneApps/infra/sane-email-automation')
+  end
+
+  def sync_release_support_repos_to_mini!
+    webhook_repo = sane_email_automation_repo_root
+    return unless Dir.exist?(webhook_repo)
+
+    remote_webhook_repo = map_local_path_to_mini(webhook_repo)
+    abort "❌ Could not map sane-email-automation to mini: #{webhook_repo}" unless remote_webhook_repo
+
+    sync_local_dir_to_mini!(webhook_repo, remote_webhook_repo, label: 'sane-email-automation')
+  end
+
+  def sync_cktool_auth_to_mini!
+    local_cktool_path = File.expand_path('~/.config/cktool')
+    return unless File.exist?(local_cktool_path)
+
+    remote_cktool_path = map_local_path_to_mini(local_cktool_path)
+    abort "❌ Could not map cktool config to mini: #{local_cktool_path}" unless remote_cktool_path
+
+    remote_parent = File.dirname(remote_cktool_path)
+    ok = system('ssh', 'mini', "mkdir -p #{Shellwords.escape(remote_parent)}")
+    abort '❌ Failed to prepare cktool auth parent on the mini.' unless ok
+
+    if File.directory?(local_cktool_path)
+      puts "⚠️ Local cktool auth path is a directory; syncing legacy contents to mini (#{remote_cktool_path})"
+      ok = system(
+        'ssh',
+        'mini',
+        "if [ -f #{Shellwords.escape(remote_cktool_path)} ]; then /usr/bin/trash #{Shellwords.escape(remote_cktool_path)}; fi && mkdir -p #{Shellwords.escape(remote_cktool_path)}"
+      )
+      abort '❌ Failed to prepare legacy cktool auth directory on the mini.' unless ok
+
+      ok = system(
+        'rsync',
+        '-az',
+        '--delete',
+        "#{local_cktool_path}/",
+        "mini:#{remote_cktool_path}/"
+      )
+      abort '❌ Failed to sync legacy cktool auth directory to the mini.' unless ok
+      return
+    end
+
+    ok = system(
+      'ssh',
+      'mini',
+      "if [ -d #{Shellwords.escape(remote_cktool_path)} ]; then /usr/bin/trash #{Shellwords.escape(remote_cktool_path)} 2>/dev/null || [ ! -e #{Shellwords.escape(remote_cktool_path)} ]; fi"
+    )
+    abort '❌ Failed to clear stale cktool auth directory on the mini.' unless ok
+
+    puts "🔄 Syncing cktool auth to mini (#{remote_cktool_path})"
+    ok = system(
+      'rsync',
+      '-az',
+      local_cktool_path,
+      "mini:#{remote_cktool_path}"
+    )
+    abort '❌ Failed to sync cktool auth file to the mini.' unless ok
   end
 
   def sync_local_dir_to_mini!(local_dir, remote_dir, label: nil)
@@ -440,6 +565,7 @@ class SaneMaster
       '--delete',
       '--exclude', '.git',
       '--exclude', '.build',
+      '--exclude', 'build',
       '--exclude', 'DerivedData',
       '--exclude', 'node_modules',
       '--exclude', 'vendor/bundle',
@@ -479,6 +605,130 @@ class SaneMaster
     return if ok
 
     abort '❌ Failed to prepare the mini workspace after sync.'
+  end
+
+  def write_route_context_to_mini!(remote_repo, command)
+    context = build_route_context(command)
+    remote_context_dir = File.join(remote_repo, '.sanemaster')
+    remote_context_path = File.join(remote_context_dir, 'mini_route_context.json')
+    ok = system('ssh', 'mini', "mkdir -p #{Shellwords.escape(remote_context_dir)}")
+    abort '❌ Failed to prepare the mini route-context directory.' unless ok
+
+    Tempfile.create(['sanemaster-route-context', '.json']) do |tmp|
+      tmp.write(JSON.pretty_generate(context))
+      tmp.flush
+      ok = system('rsync', '-az', tmp.path, "mini:#{remote_context_path}")
+      abort '❌ Failed to sync Mini route context.' unless ok
+    end
+  end
+
+  def build_route_context(command)
+    context = {
+      'created_at' => Time.now.utc.iso8601,
+      'source_host' => Socket.gethostname,
+      'command' => command,
+      'workspace' => local_repo_route_context(Dir.pwd)
+    }
+    webhook_repo = sane_email_automation_repo_root
+    if Dir.exist?(webhook_repo)
+      context['webhook'] = webhook_route_context(webhook_repo)
+    end
+    context
+  end
+
+  def local_repo_route_context(repo_dir)
+    dirty_output, = Open3.capture2('git', '-C', repo_dir, 'status', '--porcelain')
+    branch, = Open3.capture2('git', '-C', repo_dir, 'rev-parse', '--abbrev-ref', 'HEAD')
+    head, = Open3.capture2('git', '-C', repo_dir, 'rev-parse', 'HEAD')
+    changed_files_output, changed_files_status = Open3.capture2(
+      'git', '-C', repo_dir, 'diff', 'HEAD~5..HEAD', '--name-only', '--', '*.swift'
+    )
+
+    {
+      'path' => repo_dir,
+      'branch' => branch.to_s.strip,
+      'head' => head.to_s.strip,
+      'dirty_count' => dirty_output.to_s.lines.reject { |line| line.strip.empty? }.count,
+      'dirty_files' => dirty_output.to_s.lines.map(&:chomp).reject(&:empty?),
+      'recent_changed_swift_files' => if changed_files_status.success?
+                                        changed_files_output.to_s.lines.map(&:strip).reject(&:empty?)
+                                      else
+                                        []
+                                      end,
+      'remote_sync' => local_repo_remote_sync_context(repo_dir, branch.to_s.strip, head.to_s.strip)
+    }
+  rescue StandardError
+    {
+      'path' => repo_dir,
+      'branch' => '',
+      'head' => '',
+      'dirty_count' => 0,
+      'dirty_files' => [],
+      'recent_changed_swift_files' => [],
+      'remote_sync' => { 'status' => 'unavailable' }
+    }
+  end
+
+  def local_repo_remote_sync_context(repo_dir, branch, head)
+    return { 'status' => 'detached', 'branch' => branch } if branch.empty? || branch == 'HEAD'
+
+    remote_ref_out, remote_ref_status = Open3.capture2('git', '-C', repo_dir, 'ls-remote', '--heads', 'origin', branch)
+    remote_ref = remote_ref_out.to_s.split.first.to_s.strip
+    unless remote_ref_status.success? && !remote_ref.empty?
+      return { 'status' => 'unavailable', 'branch' => branch }
+    end
+
+    remote_is_ancestor = system('git', '-C', repo_dir, 'merge-base', '--is-ancestor', remote_ref, head,
+                                out: File::NULL, err: File::NULL)
+    local_is_ancestor = system('git', '-C', repo_dir, 'merge-base', '--is-ancestor', head, remote_ref,
+                               out: File::NULL, err: File::NULL)
+
+    return { 'status' => 'matches', 'branch' => branch, 'remote_ref' => remote_ref } if head == remote_ref
+
+    if remote_is_ancestor && !local_is_ancestor
+      ahead_count, = Open3.capture2('git', '-C', repo_dir, 'rev-list', '--count', "#{remote_ref}..#{head}")
+      return {
+        'status' => 'ahead',
+        'branch' => branch,
+        'remote_ref' => remote_ref,
+        'ahead_count' => ahead_count.to_s.strip
+      }
+    end
+
+    if local_is_ancestor && !remote_is_ancestor
+      return { 'status' => 'behind', 'branch' => branch, 'remote_ref' => remote_ref }
+    end
+
+    { 'status' => 'diverged', 'branch' => branch, 'remote_ref' => remote_ref }
+  rescue StandardError
+    { 'status' => 'unavailable', 'branch' => branch }
+  end
+
+  def webhook_route_context(repo_dir)
+    webhook_file = File.join(repo_dir, 'src', 'handlers', 'webhook-lemonsqueezy.js')
+    content = File.exist?(webhook_file) ? File.read(webhook_file) : ''
+    product_versions = {}
+    content.scan(/'([^']+)':\s*\{\s*file:\s*'[^']+-([^']+)\.(?:zip|dmg)'/).each do |product_name, version|
+      product_versions[product_name] = version
+    end
+
+    last_commit_epoch, status = Open3.capture2(
+      'git', '-C', repo_dir, 'log', '-1', '--format=%ct', '--', 'src/handlers/webhook-lemonsqueezy.js'
+    )
+
+    {
+      'path' => repo_dir,
+      'file_path' => webhook_file,
+      'product_versions' => product_versions,
+      'last_commit_epoch' => status.success? ? last_commit_epoch.to_s.strip.to_i : 0
+    }
+  rescue StandardError
+    {
+      'path' => repo_dir,
+      'file_path' => File.join(repo_dir, 'src', 'handlers', 'webhook-lemonsqueezy.js'),
+      'product_versions' => {},
+      'last_commit_epoch' => 0
+    }
   end
 
   def sync_outputs_from_mini!(local_repo, remote_repo)
@@ -559,6 +809,8 @@ class SaneMaster
       downloads(args)
     when 'events'
       events(args)
+    when 'leads', 'prospects'
+      leads(args)
 
     # CI Helpers
     when 'enable_ci_tests'
@@ -657,6 +909,12 @@ class SaneMaster
       show_breaker_status
     when 'breaker_errors', 'be'
       show_breaker_errors
+    when 'research_status', 'rs'
+      research_status(args)
+    when 'research_lock', 'rl'
+      research_lock(args)
+    when 'research_unlock', 'ru'
+      research_unlock(args)
     when 'structural', 'sc'
       run_structural_compliance(args)
     when 'compliance', 'cr'
@@ -1129,6 +1387,25 @@ class SaneMaster
         'events                   # Event breakdown by period',
         'events --days 7          # Last 7 days of events',
         'events --app sanebar     # SaneBar events only'
+      ]
+    },
+    'leads' => {
+      usage: 'leads --query "TEXT" [--site-limit N] [--page-limit N] [--domain example.com] [--json]',
+      description: 'Find candidate sites with Exa and build readable site dossiers with Firecrawl.',
+      flags: {
+        '--query "TEXT"' => 'Lead research query sent to Exa',
+        '--domain DOMAIN' => 'Research a known domain directly (repeatable)',
+        '--search-results N' => 'How many Exa hits to request before deduping domains (default: 12)',
+        '--site-limit N' => 'How many unique domains to research (default: 5)',
+        '--page-limit N' => 'How many pages to scrape per site (default: 4)',
+        '--map-limit N' => 'How many mapped URLs to fetch from Firecrawl (default: 25)',
+        '--skip-map' => 'Skip the site map step and scrape homepage/source pages only',
+        '--json' => 'Print the saved report JSON to stdout'
+      },
+      examples: [
+        'leads --query "mac app review sites"',
+        'leads --query "security newsletters for developers" --site-limit 8',
+        'leads --domain setapp.com --domain macstories.net'
       ]
     },
     'enable_ci_tests' => {

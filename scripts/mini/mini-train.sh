@@ -91,16 +91,46 @@ MLX_LM="$PYTHON -m mlx_lm"
 
 DATE=$(date +"%Y-%m-%d")
 TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
+TIMESTAMP_FILE=$(date +"%Y-%m-%d_%H-%M-%S")
 START_EPOCH=$(date +%s)
+MODE_LABEL="production"
+READINESS_TARGET_APP="${READINESS_TARGET_APP:-}"
+if [ "$CHALLENGER_MODE" = true ]; then
+  MODE_LABEL="challenger"
+fi
 
 # Runtime safety guards for 8GB Mac mini
-# Default: stop training after 210 minutes or when local time reaches 07:00.
-MAX_TRAIN_RUNTIME_MIN="${MAX_TRAIN_RUNTIME_MIN:-210}"
-TRAIN_HARD_STOP_HOUR="${TRAIN_HARD_STOP_HOUR:-8}"
+# Default challenger behavior is "run until hard stop time unless the process stalls."
+MAX_TRAIN_RUNTIME_MIN="${MAX_TRAIN_RUNTIME_MIN:-0}"
+TRAIN_STALL_TIMEOUT_MIN="${TRAIN_STALL_TIMEOUT_MIN:-45}"
+
+parse_hard_stop_time() {
+  local raw_time="${TRAIN_HARD_STOP_TIME:-}"
+  local parsed_hour parsed_minute
+
+  if [ -z "$raw_time" ]; then
+    raw_time="$(printf '%02d:00' "${TRAIN_HARD_STOP_HOUR:-8}")"
+  fi
+
+  parsed_hour=$(printf '%s' "$raw_time" | cut -d: -f1)
+  parsed_minute=$(printf '%s' "$raw_time" | cut -d: -f2)
+
+  if ! [[ "$parsed_hour" =~ ^[0-9]{1,2}$ ]] || ! [[ "$parsed_minute" =~ ^[0-9]{2}$ ]]; then
+    parsed_hour="08"
+    parsed_minute="00"
+  fi
+
+  TRAIN_HARD_STOP_HOUR=$((10#$parsed_hour))
+  TRAIN_HARD_STOP_MINUTE=$((10#$parsed_minute))
+  TRAIN_HARD_STOP_TIME=$(printf '%02d:%02d' "$TRAIN_HARD_STOP_HOUR" "$TRAIN_HARD_STOP_MINUTE")
+}
+
+parse_hard_stop_time
+
 if [ "$CHALLENGER_MODE" = true ]; then
-  NEXT_RUN_HINT="Daily challenger agent at 1:00 AM, plus Sunday weekly follow-up."
+  NEXT_RUN_HINT="Daily alternating challenger agent at 1:00 AM, except Sunday when SaneAI owns the window."
 else
-  NEXT_RUN_HINT="Weekly training agent on Sunday at 3:00 AM."
+  NEXT_RUN_HINT="Weekly SaneAI agent on Sunday at 1:00 AM."
 fi
 
 mkdir -p "$OUTPUT_DIR" "$MODELS_DIR/sweeps"
@@ -184,16 +214,117 @@ trap cleanup EXIT
 prune_old_sweeps "" || true
 
 remaining_budget_seconds() {
+  if [ "$MAX_TRAIN_RUNTIME_MIN" -le 0 ]; then
+    echo "-1"
+    return
+  fi
   now=$(date +%s)
   elapsed=$((now - START_EPOCH))
   budget=$((MAX_TRAIN_RUNTIME_MIN * 60 - elapsed))
   echo "$budget"
 }
 
-is_past_hard_stop_hour() {
+is_past_hard_stop_time() {
+  local hour_now minute_now
   hour_now=$(date +%H)
+  minute_now=$(date +%M)
   hour_now=$((10#$hour_now))
-  [ "$hour_now" -ge "$TRAIN_HARD_STOP_HOUR" ]
+  minute_now=$((10#$minute_now))
+
+  if [ "$hour_now" -gt "$TRAIN_HARD_STOP_HOUR" ]; then
+    return 0
+  fi
+  if [ "$hour_now" -eq "$TRAIN_HARD_STOP_HOUR" ] && [ "$minute_now" -ge "$TRAIN_HARD_STOP_MINUTE" ]; then
+    return 0
+  fi
+  return 1
+}
+
+is_training_stalled() {
+  local log_path="$1"
+  local last_activity now
+
+  if [ "$TRAIN_STALL_TIMEOUT_MIN" -le 0 ]; then
+    return 1
+  fi
+
+  if [ ! -f "$log_path" ]; then
+    return 1
+  fi
+
+  last_activity=$(stat -f %m "$log_path" 2>/dev/null || echo "")
+  if [ -z "$last_activity" ]; then
+    return 1
+  fi
+
+  now=$(date +%s)
+  [ $((now - last_activity)) -ge $((TRAIN_STALL_TIMEOUT_MIN * 60)) ]
+}
+
+is_active_pid() {
+  local pid="$1"
+  local proc_state
+
+  proc_state=$(ps -o stat= -p "$pid" 2>/dev/null | awk '{print $1}')
+  case "$proc_state" in
+    ""|Z*)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+append_metrics_header_if_needed() {
+  if [ ! -f "$METRICS_FILE" ]; then
+    printf 'app\tmode\tmodel\ttimestamp\ttrain_examples\tvalid_examples\tbest_iters\tbest_accuracy\tbest_time_min\tsuccessful_sweeps\tscript_exit\tstatus\treport_archive\n' > "$METRICS_FILE"
+  fi
+}
+
+find_previous_successful_metric() {
+  if [ ! -f "$METRICS_FILE" ]; then
+    return 1
+  fi
+
+  awk -F '\t' -v app="$APP_NAME" -v mode="$MODE_LABEL" -v model="$BASE_MODEL" '
+    NR == 1 { next }
+    $1 == app && $2 == mode && $3 == model && $12 == "success" { line = $0 }
+    END {
+      if (line != "") {
+        print line
+      } else {
+        exit 1
+      }
+    }
+  ' "$METRICS_FILE"
+}
+
+find_latest_target_production_metric() {
+  local target_app="$1"
+  local target_metrics_file="$SANE_OUTPUT_DIR/history/$target_app/training_metrics.tsv"
+
+  if [ ! -f "$target_metrics_file" ]; then
+    return 1
+  fi
+
+  awk -F '\t' -v app="$target_app" '
+    NR == 1 { next }
+    $1 == app && $2 == "production" && $12 == "success" { line = $0 }
+    END {
+      if (line != "") {
+        print line
+      } else {
+        exit 1
+      }
+    }
+  ' "$target_metrics_file"
+}
+
+append_readiness_header_if_needed() {
+  if [ ! -f "$READINESS_FILE" ]; then
+    printf 'source_app\ttarget_app\ttimestamp\tsource_model\tsource_best_accuracy\ttarget_model\ttarget_best_accuracy\tdelta\tstatus\tsource_report\ttarget_report\n' > "$READINESS_FILE"
+  fi
 }
 
 # Check MLX is available
@@ -229,7 +360,7 @@ cat > "$REPORT" <<EOF
 
 Generated at $TIMESTAMP
 Machine: $(hostname) ($(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple Silicon"), $(sysctl -n hw.memsize | awk '{printf "%.0f GB", $1/1073741824}') RAM)
-Runtime guard: max ${MAX_TRAIN_RUNTIME_MIN} minutes, hard stop at ${TRAIN_HARD_STOP_HOUR}:00 local time
+Runtime guard: $([ "$MAX_TRAIN_RUNTIME_MIN" -gt 0 ] && printf 'max %s minutes, ' "$MAX_TRAIN_RUNTIME_MIN" || printf 'no max runtime, ')hard stop at ${TRAIN_HARD_STOP_TIME} local time, stall timeout ${TRAIN_STALL_TIMEOUT_MIN} minutes
 
 ---
 
@@ -350,6 +481,25 @@ else
   echo "Base model: $BASE_MODEL" >> "$REPORT"
 fi
 
+if [ -z "${MODEL_SHORT:-}" ]; then
+  MODEL_SHORT=$(echo "$BASE_MODEL" | sed 's|.*/||' | sed 's/-MLX-4bit//' | sed 's/-4bit//' | tr '[:upper:]' '[:lower:]')
+fi
+
+HISTORY_DIR="$OUTPUT_DIR/history/$APP_NAME"
+mkdir -p "$HISTORY_DIR"
+if [ "$CHALLENGER_MODE" = true ]; then
+  REPORT_ARCHIVE="$HISTORY_DIR/${MODE_LABEL}_${MODEL_SHORT}_${TIMESTAMP_FILE}.md"
+else
+  REPORT_ARCHIVE="$HISTORY_DIR/${MODE_LABEL}_${APP_NAME}_${TIMESTAMP_FILE}.md"
+fi
+METRICS_FILE="$HISTORY_DIR/training_metrics.tsv"
+append_metrics_header_if_needed
+READINESS_FILE=""
+if [ -n "$READINESS_TARGET_APP" ]; then
+  READINESS_FILE="$HISTORY_DIR/readiness_vs_${READINESS_TARGET_APP}.tsv"
+  append_readiness_header_if_needed
+fi
+
 # Check if model is cached
 if "$PYTHON" -c "from huggingface_hub import scan_cache_dir; cache = scan_cache_dir(); models = [r.repo_id for r in cache.repos]; print('CACHED' if '$BASE_MODEL' in models else 'NEED_DOWNLOAD')" 2>/dev/null | grep -q "CACHED"; then
   echo "Status: Cached locally" >> "$REPORT"
@@ -377,16 +527,17 @@ else
   SWEEP_ITERS=(1000 2000)
 fi
 RESULTS_FILE=$(mktemp)
+SUCCESSFUL_SWEEPS=0
 
 for ITERS in "${SWEEP_ITERS[@]}"; do
-  if is_past_hard_stop_hour; then
+  if is_past_hard_stop_time; then
     echo "" >> "$REPORT"
-    echo "**Stopped before ${ITERS} iterations** — reached hard stop hour (${TRAIN_HARD_STOP_HOUR}:00)." >> "$REPORT"
+    echo "**Stopped before ${ITERS} iterations** — reached hard stop time (${TRAIN_HARD_STOP_TIME})." >> "$REPORT"
     break
   fi
 
   BUDGET_SECONDS=$(remaining_budget_seconds)
-  if [ "$BUDGET_SECONDS" -le 0 ]; then
+  if [ "$BUDGET_SECONDS" -ne -1 ] && [ "$BUDGET_SECONDS" -le 0 ]; then
     echo "" >> "$REPORT"
     echo "**Stopped before ${ITERS} iterations** — runtime budget exhausted (${MAX_TRAIN_RUNTIME_MIN} min)." >> "$REPORT"
     break
@@ -471,9 +622,9 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
   TRAIN_PID=$!
 
   TRAIN_EXIT=""
-  while kill -0 "$TRAIN_PID" 2>/dev/null; do
-    if is_past_hard_stop_hour; then
-      echo "Stopping training at hard stop hour (${TRAIN_HARD_STOP_HOUR}:00)." >> "$ADAPTER_DIR/train.log"
+  while is_active_pid "$TRAIN_PID"; do
+    if is_past_hard_stop_time; then
+      echo "Stopping training at hard stop time (${TRAIN_HARD_STOP_TIME})." >> "$ADAPTER_DIR/train.log"
       kill -TERM "$TRAIN_PID" 2>/dev/null || true
       sleep 3
       kill -KILL "$TRAIN_PID" 2>/dev/null || true
@@ -482,12 +633,21 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
     fi
 
     BUDGET_SECONDS=$(remaining_budget_seconds)
-    if [ "$BUDGET_SECONDS" -le 0 ]; then
+    if [ "$BUDGET_SECONDS" -ne -1 ] && [ "$BUDGET_SECONDS" -le 0 ]; then
       echo "Stopping training: runtime budget exceeded (${MAX_TRAIN_RUNTIME_MIN} min)." >> "$ADAPTER_DIR/train.log"
       kill -TERM "$TRAIN_PID" 2>/dev/null || true
       sleep 3
       kill -KILL "$TRAIN_PID" 2>/dev/null || true
       TRAIN_EXIT=124
+      break
+    fi
+
+    if is_training_stalled "$ADAPTER_DIR/train.log"; then
+      echo "Stopping training: no log progress for ${TRAIN_STALL_TIMEOUT_MIN} minutes." >> "$ADAPTER_DIR/train.log"
+      kill -TERM "$TRAIN_PID" 2>/dev/null || true
+      sleep 3
+      kill -KILL "$TRAIN_PID" 2>/dev/null || true
+      TRAIN_EXIT=125
       break
     fi
 
@@ -509,7 +669,9 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
   if [ $TRAIN_EXIT -ne 0 ]; then
     echo "**FAILED** (exit $TRAIN_EXIT, ${TRAIN_TIME}min)" >> "$REPORT"
     if [ "$TRAIN_EXIT" -eq 124 ]; then
-      echo "Stopped by runtime guard to protect mini daytime responsiveness." >> "$REPORT"
+      echo "Stopped by runtime guard (hard stop time or runtime budget)." >> "$REPORT"
+    elif [ "$TRAIN_EXIT" -eq 125 ]; then
+      echo "Stopped by stall guard after no log progress for ${TRAIN_STALL_TIMEOUT_MIN} minutes." >> "$REPORT"
     fi
     echo "" >> "$REPORT"
     continue
@@ -517,6 +679,7 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
 
   echo "**Completed** in ${TRAIN_TIME} minutes" >> "$REPORT"
   echo "" >> "$REPORT"
+  SUCCESSFUL_SWEEPS=$((SUCCESSFUL_SWEEPS + 1))
 
   # =============================================================================
   # Step 4: Validate this checkpoint
@@ -632,6 +795,7 @@ echo "|-----------|----------|------------|--------|" >> "$REPORT"
 
 BEST_ITERS=""
 BEST_ACCURACY=0
+BEST_TIME_MIN=""
 SCRIPT_EXIT=0
 
 while IFS=: read -r iters acc time; do
@@ -641,6 +805,7 @@ while IFS=: read -r iters acc time; do
   if [ "$acc" -gt "$BEST_ACCURACY" ]; then
     BEST_ACCURACY=$acc
     BEST_ITERS=$iters
+    BEST_TIME_MIN=$time
   fi
 done < "$RESULTS_FILE"
 rm -f "$RESULTS_FILE"
@@ -678,6 +843,89 @@ fi
 
 echo "" >> "$REPORT"
 
+PREVIOUS_SUCCESS_LINE=""
+if [ -n "$BEST_ITERS" ]; then
+  PREVIOUS_SUCCESS_LINE=$(find_previous_successful_metric 2>/dev/null || true)
+fi
+READINESS_STATUS=""
+READINESS_TARGET_MODEL=""
+READINESS_TARGET_ACCURACY=""
+READINESS_TARGET_REPORT=""
+READINESS_DELTA=""
+
+echo "## Metrics" >> "$REPORT"
+echo "" >> "$REPORT"
+echo "- Successful sweeps this run: $SUCCESSFUL_SWEEPS" >> "$REPORT"
+echo "- Archived report: $REPORT_ARCHIVE" >> "$REPORT"
+echo "- Metrics history: $METRICS_FILE" >> "$REPORT"
+echo "" >> "$REPORT"
+
+if [ -n "$PREVIOUS_SUCCESS_LINE" ]; then
+  PREV_TIMESTAMP=$(printf '%s\n' "$PREVIOUS_SUCCESS_LINE" | awk -F '\t' '{print $4}')
+  PREV_BEST_ITERS=$(printf '%s\n' "$PREVIOUS_SUCCESS_LINE" | awk -F '\t' '{print $7}')
+  PREV_BEST_ACCURACY=$(printf '%s\n' "$PREVIOUS_SUCCESS_LINE" | awk -F '\t' '{print $8}')
+  PREV_BEST_TIME_MIN=$(printf '%s\n' "$PREVIOUS_SUCCESS_LINE" | awk -F '\t' '{print $9}')
+  PREV_SUCCESSFUL_SWEEPS=$(printf '%s\n' "$PREVIOUS_SUCCESS_LINE" | awk -F '\t' '{print $10}')
+  ACC_DELTA=$((BEST_ACCURACY - PREV_BEST_ACCURACY))
+
+  echo "## Progress vs Previous Successful Run" >> "$REPORT"
+  echo "" >> "$REPORT"
+  echo "- Previous success: $PREV_TIMESTAMP" >> "$REPORT"
+  echo "- Previous best: ${PREV_BEST_ACCURACY}% at ${PREV_BEST_ITERS} iterations (${PREV_BEST_TIME_MIN} min)" >> "$REPORT"
+  echo "- Accuracy delta: ${ACC_DELTA}% points" >> "$REPORT"
+  echo "- Successful sweeps delta: $((SUCCESSFUL_SWEEPS - PREV_SUCCESSFUL_SWEEPS))" >> "$REPORT"
+  echo "" >> "$REPORT"
+else
+  echo "## Progress vs Previous Successful Run" >> "$REPORT"
+  echo "" >> "$REPORT"
+  echo "- No previous successful run recorded for $APP_NAME / $MODE_LABEL / $BASE_MODEL." >> "$REPORT"
+  echo "" >> "$REPORT"
+fi
+
+if [ -n "$READINESS_TARGET_APP" ]; then
+  echo "## Readiness for $READINESS_TARGET_APP" >> "$REPORT"
+  echo "" >> "$REPORT"
+
+  if [ -z "$BEST_ITERS" ]; then
+    READINESS_STATUS="source_failed"
+    echo "- No readiness assessment because this run produced no successful adapter." >> "$REPORT"
+  else
+    TARGET_PRODUCTION_LINE=$(find_latest_target_production_metric "$READINESS_TARGET_APP" 2>/dev/null || true)
+    if [ -z "$TARGET_PRODUCTION_LINE" ]; then
+      READINESS_STATUS="missing_target_baseline"
+      echo "- No production baseline found for $READINESS_TARGET_APP in $OUTPUT_DIR/history/$READINESS_TARGET_APP/training_metrics.tsv." >> "$REPORT"
+    else
+      READINESS_TARGET_MODEL=$(printf '%s\n' "$TARGET_PRODUCTION_LINE" | awk -F '\t' '{print $3}')
+      READINESS_TARGET_ACCURACY=$(printf '%s\n' "$TARGET_PRODUCTION_LINE" | awk -F '\t' '{print $8}')
+      READINESS_TARGET_REPORT=$(printf '%s\n' "$TARGET_PRODUCTION_LINE" | awk -F '\t' '{print $13}')
+      READINESS_DELTA=$((BEST_ACCURACY - READINESS_TARGET_ACCURACY))
+
+      if [ "$BEST_ACCURACY" -ge "$READINESS_TARGET_ACCURACY" ]; then
+        READINESS_STATUS="ready"
+        READINESS_NOTE="Meets or beats the latest $READINESS_TARGET_APP production score on the same validation harness."
+      elif [ "$BEST_ACCURACY" -ge $((READINESS_TARGET_ACCURACY - 3)) ]; then
+        READINESS_STATUS="shadow_eval"
+        READINESS_NOTE="Within 3 points of the latest $READINESS_TARGET_APP production score. Good candidate for shadow evaluation, not replacement yet."
+      else
+        READINESS_STATUS="not_ready"
+        READINESS_NOTE="Still too far behind the latest $READINESS_TARGET_APP production score to replace it."
+      fi
+
+      echo "- Target baseline model: $READINESS_TARGET_MODEL" >> "$REPORT"
+      echo "- Target baseline score: ${READINESS_TARGET_ACCURACY}% ($READINESS_TARGET_APP production)" >> "$REPORT"
+      echo "- Source score: ${BEST_ACCURACY}% ($APP_NAME $MODE_LABEL)" >> "$REPORT"
+      echo "- Delta vs target: ${READINESS_DELTA}% points" >> "$REPORT"
+      echo "- Status: $READINESS_STATUS" >> "$REPORT"
+      echo "- Decision hint: $READINESS_NOTE" >> "$REPORT"
+      if [ -n "$READINESS_TARGET_REPORT" ]; then
+        echo "- Target report: $READINESS_TARGET_REPORT" >> "$REPORT"
+      fi
+    fi
+  fi
+
+  echo "" >> "$REPORT"
+fi
+
 # =============================================================================
 # Step 6: Prune old sweeps (default keep last 3 days)
 # =============================================================================
@@ -693,6 +941,43 @@ cat >> "$REPORT" <<EOF
 **Base model:** $BASE_MODEL
 **Next scheduled lane:** $NEXT_RUN_HINT
 EOF
+
+cp "$REPORT" "$REPORT_ARCHIVE"
+
+RUN_STATUS="failure"
+if [ "$SCRIPT_EXIT" -eq 0 ]; then
+  RUN_STATUS="success"
+fi
+
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  "$APP_NAME" \
+  "$MODE_LABEL" \
+  "$BASE_MODEL" \
+  "$TIMESTAMP" \
+  "$TRAIN_EXAMPLES" \
+  "$VALID_EXAMPLES" \
+  "${BEST_ITERS:-}" \
+  "${BEST_ACCURACY:-0}" \
+  "${BEST_TIME_MIN:-}" \
+  "$SUCCESSFUL_SWEEPS" \
+  "$SCRIPT_EXIT" \
+  "$RUN_STATUS" \
+  "$REPORT_ARCHIVE" >> "$METRICS_FILE"
+
+if [ -n "$READINESS_TARGET_APP" ]; then
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$APP_NAME" \
+    "$READINESS_TARGET_APP" \
+    "$TIMESTAMP" \
+    "$BASE_MODEL" \
+    "${BEST_ACCURACY:-0}" \
+    "$READINESS_TARGET_MODEL" \
+    "$READINESS_TARGET_ACCURACY" \
+    "$READINESS_DELTA" \
+    "$READINESS_STATUS" \
+    "$REPORT_ARCHIVE" \
+    "$READINESS_TARGET_REPORT" >> "$READINESS_FILE"
+fi
 
 echo "Training report complete: $REPORT" >&2
 exit "$SCRIPT_EXIT"

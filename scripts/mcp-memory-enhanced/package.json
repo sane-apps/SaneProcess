@@ -1,0 +1,9 @@
+{
+  "name": "mcp-memory-enhanced",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.2",
+    "zod": "^4.1.5"
+  }
+}

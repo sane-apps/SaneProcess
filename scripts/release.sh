@@ -68,6 +68,45 @@ release_mode_label() {
     echo "build"
 }
 
+mini_route_context_path() {
+    printf '%s/.sanemaster/mini_route_context.json' "${PROJECT_ROOT}"
+}
+
+mini_route_workspace_field() {
+    local field_path="$1"
+    local context_path
+    context_path="$(mini_route_context_path)"
+    [ -f "${context_path}" ] || return 1
+
+    python3 - "${context_path}" "${field_path}" <<'PY'
+import json
+import sys
+
+path, field_path = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+value = payload.get("workspace", {})
+for part in field_path.split("."):
+    if not isinstance(value, dict) or part not in value:
+        sys.exit(1)
+    value = value[part]
+
+if value is None:
+    sys.exit(1)
+if isinstance(value, bool):
+    print("true" if value else "false")
+elif isinstance(value, (dict, list)):
+    print(json.dumps(value))
+else:
+    print(value)
+PY
+}
+
+mini_route_context_active() {
+    [ -f "$(mini_route_context_path)" ]
+}
+
 normalize_failure_signature() {
     local raw="$1"
     if [ -z "${raw}" ]; then
@@ -1483,6 +1522,15 @@ array_contains() {
 }
 
 ensure_git_clean() {
+    if mini_route_context_active; then
+        local routed_dirty_count
+        routed_dirty_count="$(mini_route_workspace_field 'dirty_count' 2>/dev/null || true)"
+        if [ "${routed_dirty_count}" = "0" ]; then
+            log_info "Git clean verified from routed workspace context."
+            return 0
+        fi
+    fi
+
     local status_output
     status_output="$(git -C "${PROJECT_ROOT}" status --porcelain)"
     if [ -z "${status_output}" ]; then
@@ -1802,10 +1850,17 @@ enforce_machine_reconcile() {
         exit 1
     fi
 
-    local_branch=$(git -C "${PROJECT_ROOT}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-    local_head=$(git -C "${PROJECT_ROOT}" rev-parse HEAD 2>/dev/null || true)
-    local_dirty_files="$(git -C "${PROJECT_ROOT}" status --porcelain 2>/dev/null || true)"
-    local_dirty=$(printf '%s\n' "${local_dirty_files}" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
+    if mini_route_context_active; then
+        local_branch="$(mini_route_workspace_field 'branch' 2>/dev/null || true)"
+        local_head="$(mini_route_workspace_field 'head' 2>/dev/null || true)"
+        local_dirty="$(mini_route_workspace_field 'dirty_count' 2>/dev/null || true)"
+        local_dirty_files="$(mini_route_workspace_field 'dirty_files' 2>/dev/null || true)"
+    else
+        local_branch=$(git -C "${PROJECT_ROOT}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+        local_head=$(git -C "${PROJECT_ROOT}" rev-parse HEAD 2>/dev/null || true)
+        local_dirty_files="$(git -C "${PROJECT_ROOT}" status --porcelain 2>/dev/null || true)"
+        local_dirty=$(printf '%s\n' "${local_dirty_files}" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
+    fi
 
     if [ -z "${local_head}" ]; then
         log_error "Unable to read local git HEAD for machine reconcile gate."
@@ -2047,7 +2102,7 @@ run_tests() {
     else
         cat "${test_log}"
 
-        if grep -Eq 'Command CodeSign failed with a nonzero exit code|errSecInternalComponent|No profiles for .+ were found|Automatic signing is disabled and unable to generate a profile' "${test_log}"; then
+        if grep -Eq 'Command CodeSign failed with a nonzero exit code|errSecInternalComponent|No profiles for .+ were found|Automatic signing is disabled and unable to generate a profile|requires a provisioning profile with the .+ feature' "${test_log}"; then
             log_warn "Signed test build failed due to signing/provisioning. Retrying unsigned tests..."
             if XDG_CACHE_HOME="${cache_root}" \
                CLANG_MODULE_CACHE_PATH="${clang_cache}" \
@@ -4125,6 +4180,7 @@ if [ "${USE_SPARKLE}" = true ]; then
     log_info "Verifying Sparkle configuration..."
     PLIST_FEED=$(/usr/libexec/PlistBuddy -c "Print :SUFeedURL" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "")
     PLIST_KEY=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "")
+    PLIST_INSTALLER_LAUNCHER=$(/usr/libexec/PlistBuddy -c "Print :SUEnableInstallerLauncherService" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "")
     if [ -z "${PLIST_FEED}" ]; then
         log_error "SUFeedURL missing from Info.plist!"
         exit 1
@@ -4141,6 +4197,27 @@ if [ "${USE_SPARKLE}" = true ]; then
         log_error "  Got:      ${PLIST_KEY}"
         log_error "This will break auto-update for ALL existing customers!"
         exit 1
+    fi
+    APP_ENTITLEMENTS_XML=$(codesign -d --entitlements :- "${APP_PATH}" 2>/dev/null | tr -d '\n\t ')
+    if echo "${APP_ENTITLEMENTS_XML}" | grep -q "<key>com.apple.security.app-sandbox</key><true/>"; then
+        APP_BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || echo "")
+        if [ "${PLIST_INSTALLER_LAUNCHER}" != "true" ]; then
+            log_error "SUEnableInstallerLauncherService missing from Info.plist for sandboxed Sparkle app."
+            exit 1
+        fi
+        if [ -z "${APP_BUNDLE_ID}" ]; then
+            log_error "CFBundleIdentifier missing from Info.plist; cannot verify Sparkle installer mach services."
+            exit 1
+        fi
+        if ! echo "${APP_ENTITLEMENTS_XML}" | grep -q -- "${APP_BUNDLE_ID}-spki"; then
+            log_error "Sandboxed Sparkle app is missing mach-lookup exception ${APP_BUNDLE_ID}-spki"
+            exit 1
+        fi
+        if ! echo "${APP_ENTITLEMENTS_XML}" | grep -q -- "${APP_BUNDLE_ID}-spks"; then
+            log_error "Sandboxed Sparkle app is missing mach-lookup exception ${APP_BUNDLE_ID}-spks"
+            exit 1
+        fi
+        log_info "Sparkle installer launcher service verified for sandboxed app ${APP_BUNDLE_ID}"
     fi
     log_info "SUFeedURL: ${PLIST_FEED}"
     log_info "SUPublicEDKey: ${PLIST_KEY} (verified)"
@@ -4925,6 +5002,9 @@ PY
         fi
     fi
 
+    POST_RELEASE_REPO_SYNC_FAILED=false
+    POST_RELEASE_REPO_SYNC_DETAILS=()
+
     # Step 6: Commit version/link sync files that release updates indirectly
     PROJECT_PBXPROJ_REL="${APP_NAME}.xcodeproj/project.pbxproj"
     if [ -n "${XCODEPROJ}" ]; then
@@ -4949,9 +5029,12 @@ PY
             git -C "${PROJECT_ROOT}" commit -m "chore: sync ${VERSION} version metadata and site download links"
             if ! GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push; then
                 log_error "Failed to push version metadata/site link commit."
-                exit 1
+                POST_RELEASE_REPO_SYNC_FAILED=true
+                POST_RELEASE_REPO_SYNC_DETAILS+=("Version metadata/site link commit push failed.")
             fi
-            log_info "Version metadata/site link commit pushed."
+            if [ "${POST_RELEASE_REPO_SYNC_FAILED}" != true ]; then
+                log_info "Version metadata/site link commit pushed."
+            fi
         fi
     fi
 
@@ -4968,9 +5051,12 @@ PY
         git -C "${PROJECT_ROOT}" commit -m "chore: update appcast for v${VERSION}"
         if ! GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push; then
             log_error "Failed to push appcast commit for v${VERSION}."
-            exit 1
+            POST_RELEASE_REPO_SYNC_FAILED=true
+            POST_RELEASE_REPO_SYNC_DETAILS+=("Appcast commit push failed.")
         fi
-        log_info "Appcast commit pushed."
+        if [ "${POST_RELEASE_REPO_SYNC_FAILED}" != true ]; then
+            log_info "Appcast commit pushed."
+        fi
     fi
 
     # Step 8: Update Homebrew cask (if tap repo configured)
@@ -5112,6 +5198,13 @@ PY
     log_info "═══════════════════════════════════════════"
     if [ "${APPSTORE_SUBMIT_FAILED}" = true ]; then
         log_warn "App Store submission did not complete in this run. Direct download/Homebrew channels are live."
+    fi
+    if [ "${POST_RELEASE_REPO_SYNC_FAILED}" = true ]; then
+        log_error "Customer-facing release checks passed, but source repo sync failed."
+        for detail in "${POST_RELEASE_REPO_SYNC_DETAILS[@]}"; do
+            log_error "  - ${detail}"
+        done
+        exit 1
     fi
     log_info "  ZIP:      https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
     log_info "  Appcast:  https://${SITE_HOST}/appcast.xml"

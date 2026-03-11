@@ -20,6 +20,8 @@ SANE_OUTPUT_DIR="${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_DIR="$SANE_OUTPUT_DIR"
 PYTHON="$HOME/mlx-env/bin/python3"
+TRAIN_HARD_STOP_TIME="${TRAIN_HARD_STOP_TIME:-08:30}"
+RUN_CHALLENGERS_AFTER_WEEKLY="${RUN_CHALLENGERS_AFTER_WEEKLY:-false}"
 mkdir -p "$LOG_DIR"
 
 run_saneai_merge() {
@@ -73,34 +75,47 @@ PROD_END=$(date +%s)
 PROD_MINUTES=$(( (PROD_END - PROD_START) / 60 ))
 echo "=== SaneAI complete (exit $PROD_EXIT, ${PROD_MINUTES}min) — $(date) ===" >> "$STDOUT_LOG"
 
-# Step 3: Run challenger models (using SaneSync training data)
-# Only run if production training succeeded and we have time before 8 AM
+# Step 3: Optionally run challenger models after SaneAI training.
+# Default is off so Sunday belongs entirely to weekly SaneAI training.
 hour_now=$(date +%H)
+minute_now=$(date +%M)
 hour_now=$((10#$hour_now))
+minute_now=$((10#$minute_now))
+hard_stop_hour=$(printf '%s' "$TRAIN_HARD_STOP_TIME" | cut -d: -f1)
+hard_stop_minute=$(printf '%s' "$TRAIN_HARD_STOP_TIME" | cut -d: -f2)
+if ! [[ "$hard_stop_hour" =~ ^[0-9]{1,2}$ ]] || ! [[ "$hard_stop_minute" =~ ^[0-9]{2}$ ]]; then
+  hard_stop_hour="08"
+  hard_stop_minute="30"
+fi
+hard_stop_hour=$((10#$hard_stop_hour))
+hard_stop_minute=$((10#$hard_stop_minute))
+current_minutes=$((hour_now * 60 + minute_now))
+hard_stop_minutes=$((hard_stop_hour * 60 + hard_stop_minute))
 
-if [ "$PROD_EXIT" -ne 0 ]; then
+if [ "$RUN_CHALLENGERS_AFTER_WEEKLY" != "true" ]; then
+  echo "=== Skipping challengers — weekly SaneAI owns the Sunday window ===" >> "$STDOUT_LOG"
+elif [ "$PROD_EXIT" -ne 0 ]; then
   echo "=== Skipping challengers — production training failed (exit $PROD_EXIT) ===" >> "$STDOUT_LOG"
-elif [ "$hour_now" -lt 8 ]; then
-  # Calculate remaining minutes until hard stop
-  minutes_until_8=$(( (8 - hour_now) * 60 - $(date +%M | sed 's/^0//') ))
+elif [ "$current_minutes" -lt "$hard_stop_minutes" ]; then
+  minutes_until_stop=$((hard_stop_minutes - current_minutes))
   # Cap at 120 min (don't hog the machine even if lots of time)
-  if [ "$minutes_until_8" -gt 120 ]; then
-    minutes_until_8=120
+  if [ "$minutes_until_stop" -gt 120 ]; then
+    minutes_until_stop=120
   fi
 
-  echo "=== Challenger training (budget: ${minutes_until_8}min) — $(date) ===" >> "$STDOUT_LOG"
+  echo "=== Challenger training (budget: ${minutes_until_stop}min, hard stop ${TRAIN_HARD_STOP_TIME}) — $(date) ===" >> "$STDOUT_LOG"
 
   SANE_ROOT="$SANE_ROOT" \
   SANE_OUTPUT_DIR="$SANE_OUTPUT_DIR" \
-  CHALLENGER_BUDGET_MIN="$minutes_until_8" \
-  TRAIN_HARD_STOP_HOUR=8 \
+  CHALLENGER_BUDGET_MIN="$minutes_until_stop" \
+  TRAIN_HARD_STOP_TIME="$TRAIN_HARD_STOP_TIME" \
     bash "$SCRIPT_DIR/mini-train-challengers.sh" SaneSync \
     >> "$STDOUT_LOG" 2>&1
 
   CHALLENGER_EXIT=$?
   echo "=== Challengers complete (exit $CHALLENGER_EXIT) — $(date) ===" >> "$STDOUT_LOG"
 else
-  echo "=== Skipping challengers — past 8 AM ===" >> "$STDOUT_LOG"
+  echo "=== Skipping challengers — past hard stop ${TRAIN_HARD_STOP_TIME} ===" >> "$STDOUT_LOG"
 fi
 
 exit $PROD_EXIT

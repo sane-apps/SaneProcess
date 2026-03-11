@@ -96,6 +96,8 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 | `env` | Environment and setup helpers |
 | `sales` | LemonSqueezy revenue reporting helpers |
 
+License support rule: real customer license keys come only from LemonSqueezy-backed orders and license-key records. Use `check-inbox.sh review` + `whois` + the LemonSqueezy recovery/backfill flow for missing-key support. Do not generate local fallback keys.
+
 ### Verification helpers
 
 | Command | Purpose |
@@ -133,6 +135,20 @@ Requirements:
 
 - `OPENAI_API_KEY` available to the Codex app process (for embeddings)
 - Homebrew `postgresql@17` and `pgvector` (installed by bootstrap script)
+
+## Knowledge Graph Memory MCP (JSONL)
+
+Codex also uses a separate graph-style memory MCP for entity/relation storage.
+
+- Server code: `scripts/mcp-memory-enhanced/server.mjs`
+- Backing store: `/Users/sj/.claude/memory/knowledge-graph.jsonl`
+- MCP key: `memory` in `/Users/sj/.codex/config.toml`
+
+Notes:
+
+- This is the graph tool behind `create_entities`, `create_relations`, `open_nodes`, and `search_nodes`.
+- Search is tokenized and relation-aware. It is intentionally separate from `central-memory`, which is semantic/vector recall.
+- Keep SaneBar issue/email maps in this graph when you want exact cross-reference, not embedding recall.
 
 ## Installed Link Check Tools (2026-02-28)
 
@@ -256,9 +272,9 @@ If `file_icon` is missing, the DMG gets a generic Finder icon. The `DMGIcon.icns
 
 See [templates/RELEASE_SOP.md](templates/RELEASE_SOP.md) for the complete release checklist including R2 upload, appcast update, and Cloudflare Pages deployment.
 
-### App Store IAP Readiness (iOS)
+### App Store IAP Readiness
 
-`scripts/appstore_submit.rb` now includes an IAP readiness pass for iOS submissions when `appstore.product_id` is set in `.saneprocess`.
+`scripts/appstore_submit.rb` now includes an IAP readiness pass for any App Store submission when `appstore.product_id` is set in `.saneprocess` (macOS or iOS).
 
 What it auto-checks/fixes:
 - Missing IAP localization (`en-US`)
@@ -318,6 +334,33 @@ Why:
 
 Recommended:
 - Set both `appstore.description` and `appstore.keywords` explicitly in each app’s `.saneprocess`.
+
+`appstore_submit.rb` now hard-fails submission if the target platform is missing:
+- a platform-specific metadata block (`appstore.metadata.macos` or `appstore.metadata.ios`)
+- description
+- subtitle
+- keywords
+- support URL
+- privacy policy URL
+- review notes
+
+It also blocks generic fallback descriptions/keywords and flags iOS listing copy that still talks about macOS-only behavior.
+
+### App Store Policy Guardrails
+
+`SaneMaster.rb appstore_preflight` now hard-fails known App Review rejection classes before submission:
+- Accessibility or synthetic input used for clipboard/paste automation (`2.4.5`)
+- Accessibility or CGEvent-driven third-party UI manipulation in an App Store build (`2.4.5`)
+- App Store artifacts that still expose direct-purchase markers like website checkout URLs or key-entry CTAs (`3.1.1`)
+- IAP products that merely exist in ASC but are not actually review-ready
+
+This is deliberate. The goal is to stop wasting review cycles on builds Apple is likely to reject.
+
+Additional lessons now enforced in the shared flow:
+- `appstore_submit.rb --skip-upload` fails fast if the requested existing build is not actually visible in ASC for that platform. It now prints the visible build candidates instead of polling for 45 minutes on a bad build number.
+- Reviewer access is treated as a first-class requirement. If the app needs outside credentials, review notes must explain the exact demo/review path and must state when no account, API key, or payment is required.
+- “App Store-safe” means the compiled artifact, not just the source tree. Preflight must verify that the App Store binary no longer exposes website checkout URLs, license-key CTAs, or automation permission declarations that contradict the review notes.
+- Apps whose core App Store build still depends on Accessibility/CGEvent control of third-party UI should be treated as high-risk or ineligible for Mac App Store review until that functionality is removed or isolated from the App Store build.
 
 ### App Store Website Link Auto-Sync (iOS)
 

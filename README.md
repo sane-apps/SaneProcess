@@ -242,6 +242,22 @@ If it fails:
 - Ensure `OPENAI_API_KEY` is available to the Codex app process.
 - Ensure PostgreSQL is running: `brew services list | rg postgresql@17`.
 
+### memory MCP search feels weak
+
+Codex uses a separate graph-style memory MCP for entity/relation recall.
+
+- Config key: `memory` in `/Users/sj/.codex/config.toml`
+- Server: `~/SaneApps/infra/SaneProcess/scripts/mcp-memory-enhanced/server.mjs`
+- Store: `~/.claude/memory/knowledge-graph.jsonl`
+
+Use `memory` when you need exact graph cross-reference like:
+
+- issue ↔ email thread ↔ root cause bucket
+- canonical entity names
+- linked neighbors from a matched node
+
+Use `central-memory` when you need semantic recall across free-form notes.
+
 ### Hooks not firing
 
 Check that `.claude/settings.json` contains hook entries pointing to your `scripts/hooks/` directory. Re-run `init.sh` if needed.

@@ -23,6 +23,9 @@ module SaneMasterModules
     end
 
     def verify(args)
+      running_from_preflight = verify_running_as_preflight?
+      return unless running_from_preflight || ensure_research_gate_clear!('verify')
+
       if test_targets_disabled?
         handle_disabled_tests(args)
         return
@@ -30,7 +33,7 @@ module SaneMasterModules
 
       clean_first = args.include?('--clean')
       include_ui = args.include?('--ui')
-      timeout = args.include?('--timeout') ? args[args.index('--timeout') + 1].to_i : 180
+      timeout = args.include?('--timeout') ? args[args.index('--timeout') + 1].to_i : 300
       signed_tests = args.include?('--signed-tests') || ENV['SANEMASTER_SIGN_TEST_BUILDS'] == '1'
 
       run_verify_preflight
@@ -54,10 +57,17 @@ module SaneMasterModules
         result = run_tests_with_progress(timeout_seconds: timeout, include_ui: include_ui, signed_tests: signed_tests)
 
         if result[:success]
+          record_verify_attempt(success: true, message: 'verify') unless running_from_preflight
           puts "\n✅ Tests passed! (#{result[:tests_run]} tests, #{result[:duration]}s)"
           # Suggest recording patterns after successful test run
           suggest_memory_record if respond_to?(:suggest_memory_record)
         else
+          failure_message = result[:timeout] ? 'verify timeout' : 'verify failure'
+          state = if running_from_preflight
+                    { consecutive_failures: load_verify_state[:consecutive_failures].to_i }
+                  else
+                    record_verify_attempt(success: false, message: failure_message)
+                  end
           log_size = File.exist?('test_output.txt') ? File.size('test_output.txt') : 0
           if log_size.zero?
             puts "\n❌ Tests failed: xcodebuild produced no output (test_output.txt is empty)."
@@ -67,6 +77,11 @@ module SaneMasterModules
             puts "\n❌ Tests failed. Running diagnostics..."
             puts "⚠️  Test run timed out after #{timeout}s" if result[:timeout]
             diagnose(nil, dump: true, since: test_start_time)
+          end
+          if !running_from_preflight && state[:consecutive_failures].to_i >= 2
+            puts ''
+            puts '🛑 TWO-STRIKE RULE TRIGGERED'
+            puts '   Fresh research is now required before more app work.'
           end
           exit 1
         end
@@ -88,6 +103,10 @@ module SaneMasterModules
       terminate_stale_test_processes
       puts '✅ Verify preflight complete.'
       puts ''
+    end
+
+    def verify_running_as_preflight?
+      ENV['SANEMASTER_RELEASE_PREFLIGHT'] == '1' || ENV['SANEMASTER_APPSTORE_PREFLIGHT'] == '1'
     end
 
     def guard_test_localhost_ports
