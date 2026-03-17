@@ -388,11 +388,15 @@ Minimum sign-off before any Setapp ship:
 - Universal build support is the largest likely technical blocker for current arm64-only projects.
 - SaneBar is a menu bar app, so Setapp usage reporting is not optional polish.
 - SaneClip has more bundle surfaces than SaneBar (widgets / extensions), so Setapp bundle-family drift needs an explicit review even if the first Setapp lane ships with fewer surfaces.
+- Current local persistence is mixed:
+  - app-support data paths are app-name based (`Application Support/SaneBar`, `Application Support/SaneClip`)
+  - keychain service defaults are bundle-ID based
+  - result: direct and Setapp builds are likely to share settings/data but not share license state unless we deliberately unify or separate that behavior
 - SaneBar App Store is intentionally dead. Setapp does not reopen that lane.
 - Website copy must stay channel-specific:
   - `sanebar.com` / `saneclip.com` still describe the direct build unless there is an intentional Setapp landing page
   - do not silently mix Setapp onboarding language into the direct site
-- Support tooling needs to know the customer channel before troubleshooting licensing or updates.
+- Setapp handles first-line billing/licensing support in the published model, so support tooling needs to know the customer channel before troubleshooting licensing or updates.
 
 ### App Store IAP Readiness
 
