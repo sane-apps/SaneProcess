@@ -439,6 +439,7 @@ class SaneMaster
       remote_status = $?.respond_to?(:exitstatus) ? $?.exitstatus : (remote_ok ? 0 : 1)
       sync_outputs_from_mini!(Dir.pwd, execution_repo)
       sync_release_artifacts_from_mini!(Dir.pwd, execution_repo, warn_only: true) if release_routed
+      sync_release_support_repos_from_origin! if release_routed && remote_status.zero?
       exit remote_status
     end
   end
@@ -678,6 +679,42 @@ class SaneMaster
       sync_local_dir_to_mini!(webhook_repo, remote_webhook_repo, label: 'sane-email-automation')
       remote_webhook_repo
     end
+  end
+
+  def sync_release_support_repos_from_origin!
+    webhook_repo = sane_email_automation_repo_root
+    return unless Dir.exist?(webhook_repo)
+
+    fast_forward_local_repo_from_origin!(webhook_repo, label: 'sane-email-automation')
+  end
+
+  def fast_forward_local_repo_from_origin!(repo_dir, label:)
+    status_output, status = Open3.capture2('git', '-C', repo_dir, 'status', '--porcelain')
+    unless status.success?
+      warn "⚠️  Could not inspect #{label} status after routed release; skipping local sync."
+      return
+    end
+
+    unless status_output.to_s.strip.empty?
+      warn "⚠️  #{label} has local changes after routed release; skipping automatic local sync from origin."
+      return
+    end
+
+    branch_output, branch_status = Open3.capture2('git', '-C', repo_dir, 'rev-parse', '--abbrev-ref', 'HEAD')
+    branch = branch_output.to_s.strip
+    unless branch_status.success? && !branch.empty? && branch != 'HEAD'
+      warn "⚠️  Could not determine #{label} branch after routed release; skipping local sync."
+      return
+    end
+
+    fetch_ok = system('git', '-C', repo_dir, 'fetch', 'origin', branch)
+    unless fetch_ok
+      warn "⚠️  Failed to fetch #{label} from origin after routed release."
+      return
+    end
+
+    pull_ok = system('git', '-C', repo_dir, 'pull', '--ff-only', 'origin', branch)
+    warn "⚠️  Failed to fast-forward #{label} from origin after routed release." unless pull_ok
   end
 
   def sync_cktool_auth_to_mini!

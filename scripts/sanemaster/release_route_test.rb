@@ -6,12 +6,14 @@ require_relative '../hooks/test/test_framework'
 require_relative '../SaneMaster'
 
 class ReleaseRoutingHarness < SaneMaster
-  attr_reader :system_calls
+  attr_reader :system_calls, :ff_calls
 
   def initialize
     @system_calls = []
     @existing_paths = []
     @directory_paths = []
+    @ff_calls = []
+    @webhook_repo_root = nil
   end
 
   def set_existing_paths(paths)
@@ -28,6 +30,18 @@ class ReleaseRoutingHarness < SaneMaster
 
   def mini_directory?(remote_path)
     @directory_paths.include?(remote_path)
+  end
+
+  def set_webhook_repo_root(path)
+    @webhook_repo_root = path
+  end
+
+  def sane_email_automation_repo_root
+    @webhook_repo_root || super
+  end
+
+  def fast_forward_local_repo_from_origin!(repo_dir, label:)
+    @ff_calls << { repo_dir:, label: }
   end
 
   private
@@ -124,6 +138,22 @@ exit(run_tests('SaneMaster Release Routing Tests') do
 
         rsync_calls = subject.system_calls.select { |call| call.first == 'rsync' }
         assert_eq(rsync_calls.length, 0, 'expected no rsync calls when the scratch workspace has no saved artifacts')
+        true
+      end
+    end
+  end
+
+  test_category('Support repo sync after routed release') do
+    test('fast-forwards sane-email-automation from origin after routed release') do
+      with_temp_repo do |repo|
+        subject.ff_calls.clear
+        subject.set_webhook_repo_root(repo)
+
+        subject.send(:sync_release_support_repos_from_origin!)
+
+        assert_eq(subject.ff_calls.length, 1, 'expected one fast-forward sync call')
+        assert_eq(subject.ff_calls.first[:repo_dir], repo)
+        assert_eq(subject.ff_calls.first[:label], 'sane-email-automation')
         true
       end
     end
