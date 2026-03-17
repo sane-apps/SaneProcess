@@ -96,7 +96,7 @@ stateDiagram-v2
 
     ResearchRequired --> Researching : tools used
     Researching --> Researching : category completed
-    Researching --> ResearchComplete : all 4 categories done
+    Researching --> ResearchComplete : required categories done
 
     ResearchComplete --> EditAllowed : gate opens
     EditAllowed --> Editing : Edit/Write tool
@@ -285,6 +285,12 @@ flowchart TD
   "deployment": {
     "sparkle_signed_dmgs": [],
     "staple_verified_dmgs": []
+  },
+  "handoff_tracking": {
+    "significant_edits": 0,
+    "significant_files": [],
+    "handoff_updated": false,
+    "memory_updated": false
   },
   "action_log": [],
   "reminders": {},
@@ -640,12 +646,12 @@ Automated daily business report covering revenue, downloads, traffic, GitHub, cu
 | Component | Self-Test | Tier Tests | Total |
 |-----------|----------|------------|-------|
 | saneprompt.rb | 176 | 62 | 238 |
-| sanetools.rb | 42 | 66 | 108 |
-| sanetrack.rb | 25 | 37 | 62 |
-| sanestop.rb | 17 | 5 | 22 |
+| sanetools.rb | 44 | 69 | 113 |
+| sanetrack.rb | 30 | 37 | 67 |
+| sanestop.rb | 24 | 5 | 29 |
 | config.rb | 5 | — | 5 |
 | Integration | — | 5 | 5 |
-| **Total** | **265** | **175** | **440** |
+| **Total** | **279** | **178** | **457** |
 
 ### Running Tests
 

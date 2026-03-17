@@ -10,13 +10,17 @@ require 'json'
 require 'open3'
 require 'fileutils'
 require 'time'
+require_relative '../self_test_environment'
 
 HOOKS_DIR = File.expand_path('..', __dir__)
-PROJECT_DIR = File.expand_path('../..', HOOKS_DIR)
+PROJECT_DIR = SelfTestEnvironment.create_project('tier-tests')
 TEST_HOOK_SECRET = ENV['CLAUDE_HOOK_SECRET'] || 'tier-tests-secret'
+ENV['CLAUDE_PROJECT_DIR'] = PROJECT_DIR
 ENV['CLAUDE_HOOK_SECRET'] = TEST_HOOK_SECRET
 
 require_relative '../core/state_manager'
+
+at_exit { FileUtils.rm_rf(PROJECT_DIR) if File.exist?(PROJECT_DIR) }
 
 # === TEST FRAMEWORK ===
 
@@ -44,6 +48,7 @@ class TierTest
     hook_path = File.join(HOOKS_DIR, "#{@hook_name}.rb")
     env_with_defaults = {
       'CLAUDE_PROJECT_DIR' => PROJECT_DIR,
+      'HOME' => PROJECT_DIR,
       'TIER_TEST_MODE' => 'true', # Hooks can detect test mode
       'CLAUDE_HOOK_SECRET' => TEST_HOOK_SECRET
     }.merge(env)
@@ -183,6 +188,33 @@ def reset_rewind_reminder
     r[:rewind_count] = 0
     r
   end
+end
+
+def write_mcp_config(*servers)
+  config = {
+    'mcpServers' => servers.each_with_object({}) do |name, hash|
+      hash[name] = { 'command' => 'node', 'args' => ['stub.js'] }
+    end
+  }
+  File.write(File.join(PROJECT_DIR, '.mcp.json'), JSON.pretty_generate(config))
+end
+
+def clear_mcp_config
+  mcp_file = File.join(PROJECT_DIR, '.mcp.json')
+  File.delete(mcp_file) if File.exist?(mcp_file)
+end
+
+def prepare_edit_ready_state
+  open_startup_gate
+  StateManager.update(:session_docs) { |sd| sd[:required] = []; sd[:read] = []; sd }
+  StateManager.update(:requirements) do |r|
+    r[:is_big_task] = false
+    r[:is_research_only] = false
+    r[:requested] = []
+    r[:satisfied] = []
+    r
+  end
+  StateManager.update(:planning) { |p| p[:required] = false; p[:plan_approved] = false; p[:replan_count] = 0; p }
 end
 
 # === SANEPROMPT TESTS ===
@@ -554,6 +586,65 @@ def test_sanetools
 
   # --- HARD TIER (15 tests) ---
   warn "\n  [HARD] Edge cases"
+
+  t.test(:hard, 'ALLOW: edit after web+local research when no MCPs configured', expected_exit: 0,
+         expected_not_output: 'BLOCKED') do
+    clear_mcp_config
+    StateManager.reset_all
+    prepare_edit_ready_state
+    StateManager.update(:research) do |r|
+      r[:web] = Time.now.iso8601
+      r[:local] = Time.now.iso8601
+      r
+    end
+
+    t.run_hook({
+      'tool_name' => 'Edit',
+      'tool_input' => { 'file_path' => '/tmp/test.rb', 'old_string' => 'a', 'new_string' => 'b' }
+    })
+  ensure
+    clear_mcp_config
+  end
+
+  t.test(:hard, 'BLOCK: configured GitHub MCP adds github research requirement', expected_exit: 2,
+         expected_output: 'github') do
+    write_mcp_config('github')
+    StateManager.reset_all
+    prepare_edit_ready_state
+    StateManager.update(:mcp_health) { |h| h[:verified_this_session] = true; h }
+    StateManager.update(:research) do |r|
+      r[:web] = Time.now.iso8601
+      r[:local] = Time.now.iso8601
+      r
+    end
+
+    t.run_hook({
+      'tool_name' => 'Edit',
+      'tool_input' => { 'file_path' => '/tmp/test.rb', 'old_string' => 'a', 'new_string' => 'b' }
+    })
+  ensure
+    clear_mcp_config
+  end
+
+  t.test(:hard, 'BLOCK: configured GitHub MCP must be verified before edit', expected_exit: 2,
+         expected_output: 'MCP VERIFICATION INCOMPLETE') do
+    write_mcp_config('github')
+    StateManager.reset_all
+    prepare_edit_ready_state
+    StateManager.update(:research) do |r|
+      r[:web] = Time.now.iso8601
+      r[:local] = Time.now.iso8601
+      r[:github] = Time.now.iso8601
+      r
+    end
+
+    t.run_hook({
+      'tool_name' => 'Edit',
+      'tool_input' => { 'file_path' => '/tmp/test.rb', 'old_string' => 'a', 'new_string' => 'b' }
+    })
+  ensure
+    clear_mcp_config
+  end
 
   # Path edge cases - directories (5)
   t.test(:hard, "BLOCK: '/etc' (dir itself)", expected_exit: 2) do
@@ -1373,12 +1464,7 @@ end
 
 def reset_state_between_suites
   require_relative '../core/state_manager'
-  StateManager.reset(:circuit_breaker)
-  StateManager.reset(:research)
-  StateManager.reset(:edits)
-  StateManager.reset(:verification)
-  StateManager.reset(:enforcement)
-  StateManager.reset(:requirements)
+  StateManager.reset_all
 rescue StandardError
   # Don't fail if state can't be reset
 end

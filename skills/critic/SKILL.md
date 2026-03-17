@@ -15,7 +15,7 @@
 ## CRITICAL: SPAWN AGENTS, DON'T REVIEW YOURSELF
 
 **When this skill is triggered, you MUST:**
-1. **Spawn 6 parallel sub-agents** using the Task tool
+1. **Spawn 7 parallel GPT subagents** using `spawn_agent`
 2. **Wait for all results** before synthesizing
 3. **Present the consolidated report** to the user
 
@@ -39,6 +39,7 @@
 | 4 | Edge Case Explorer | Unusual states, environments | `prompts/edge-case-explorer.md` |
 | 5 | UX Critic | UI/UX quality, clarity, accessibility | `prompts/ux-critic.md` |
 | 6 | Security Auditor | Attack vectors, data exposure | `prompts/security-auditor.md` |
+| 7 | Pipeline Tracer | End-to-end value flow, hardcoded assumptions | `prompts/pipeline-tracer.md` |
 
 ---
 
@@ -50,15 +51,15 @@ Ask the user (or infer from context):
 - What to review? (recent changes, specific feature, entire component)
 - Which files are involved?
 
-### Step 2: Spawn 6 Agents in PARALLEL
+### Step 2: Spawn 7 Agents in PARALLEL
 
-**IMPORTANT: Send a SINGLE message with 6 Task tool calls.**
+**IMPORTANT: Send a SINGLE message with 7 `spawn_agent` calls.**
 
 For each agent, use these parameters:
-- `subagent_type`: `feature-dev:code-reviewer`
-- `model`: `sonnet` (reliable for catching real issues in parallel work)
-- `description`: "[Agent Name] Review"
-- `prompt`: Include the full prompt from the corresponding `prompts/*.md` file, followed by the files/feature to review
+- `agent_type`: `default`
+- `model`: `gpt-5.4`
+- `reasoning_effort`: `high`
+- `message`: Include the full prompt from the corresponding `prompts/*.md` file, followed by the files/feature to review
 
 **Example prompt structure:**
 ```
@@ -80,7 +81,7 @@ Report findings in the format specified in your prompt.
 
 ### Step 3: Collect and Synthesize Results
 
-Wait for all 6 agents to complete. Then:
+Wait for all 7 agents to complete. Then:
 1. Collect all findings
 2. Deduplicate (same issue found by multiple agents = higher confidence)
 3. Prioritize: CRITICAL > HIGH > MEDIUM > LOW
@@ -100,6 +101,7 @@ Wait for all 6 agents to complete. Then:
 - [x] Edge Case Explorer
 - [x] UX Critic
 - [x] Security Auditor
+- [x] Pipeline Tracer
 
 ### Critical Issues (Must Fix)
 | Issue | Found By | Location | Impact |

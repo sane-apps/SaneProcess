@@ -529,30 +529,50 @@ module SaneMasterModules
 
       run_verify_preflight
 
-      cmd = build_test_command(include_ui, signed_tests)
+      commands = build_test_commands(include_ui, signed_tests)
       state = { start_time: Time.now, tests_run: 0, swift_testing_total: 0, current_test: nil, last_update: Time.now,
                 spinner_chars: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'], spinner_idx: 0 }
 
-      result = execute_with_logging(cmd, timeout_seconds) { |line| handle_progress_update(line, state) }
+      result = { success: true, timeout: false }
+      commands.each_with_index do |entry, index|
+        puts "▶️  #{entry[:label]}" if commands.length > 1
+        result = execute_with_logging(entry[:cmd], timeout_seconds, append: index.positive?, label: entry[:label]) do |line|
+          handle_progress_update(line, state)
+        end
+        break unless result[:success]
+      end
 
       print "\r"
       cleanup_test_processes
 
       # Use Swift Testing total if available (more accurate), otherwise fall back to counted tests
-      total_tests = state[:swift_testing_total].positive? ? state[:swift_testing_total] : state[:tests_run]
+      total_tests = [state[:swift_testing_total].to_i, state[:tests_run].to_i].max
       { success: result[:success], tests_run: total_tests, duration: (Time.now - state[:start_time]).to_i, timeout: result[:timeout] }
+    end
+
+    def build_test_commands(include_ui, signed_tests = false)
+      if include_ui && mixed_platform_ui_tests?
+        return [
+          { label: "#{project_scheme} unit tests", cmd: build_test_command(false, signed_tests) },
+          { label: "#{project_ui_scheme} UI tests", cmd: build_ui_test_command(signed_tests) }
+        ]
+      end
+
+      [{ label: include_ui ? "#{project_scheme} unit + UI tests" : "#{project_scheme} unit tests",
+         cmd: build_test_command(include_ui, signed_tests) }]
     end
 
     def build_test_command(include_ui, signed_tests = false)
       if include_ui
-        # UI tests not yet implemented - warn and run unit tests only
-        if runtime_smoke_coverage_present?
-          puts "  ℹ️  No XCUITest target found (#{project_ui_tests_dir} directory does not exist)"
-          puts '  ℹ️  Runtime UI coverage lives in Scripts/live_zone_smoke.rb + RuntimeGuardXCTests.'
-        else
-          puts "  ⚠️  UI tests not available (#{project_ui_tests_dir} directory does not exist)"
+        unless ui_tests_present?
+          if runtime_smoke_coverage_present?
+            puts "  ℹ️  No XCUITest target found (#{project_ui_tests_dir} directory does not exist)"
+            puts '  ℹ️  Runtime UI coverage lives in Scripts/live_zone_smoke.rb + RuntimeGuardXCTests.'
+          else
+            puts "  ⚠️  UI tests not available (#{project_ui_tests_dir} directory does not exist)"
+          end
+          puts '  📦 Running unit tests only...'
         end
-        puts '  📦 Running unit tests only...'
       end
       if use_test_plan? && !include_ui
         package_path = package_path_for_test_target(project_test_target)
@@ -606,6 +626,26 @@ module SaneMasterModules
       args
     end
 
+    def build_ui_test_command(signed_tests = false)
+      args = ['xcodebuild', 'test']
+      args.concat(xcodebuild_container_args_for_scheme(project_ui_scheme))
+      args.concat(['-scheme', project_ui_scheme, '-destination', project_ui_destination])
+      args.concat(['-parallel-testing-enabled', 'NO'])
+      args.concat(['-parallel-testing-worker-count', '1'])
+      args << "-only-testing:#{project_ui_test_target}"
+      unless signed_tests
+        args.concat([
+                      'CODE_SIGNING_ALLOWED=NO',
+                      'CODE_SIGNING_REQUIRED=NO',
+                      'CODE_SIGN_IDENTITY=',
+                      'DEVELOPMENT_TEAM=',
+                      'PROVISIONING_PROFILE_SPECIFIER=',
+                      'PROVISIONING_PROFILE='
+                    ])
+      end
+      args
+    end
+
     def package_path_for_test_target(test_target)
       return nil if test_target.to_s.strip.empty?
 
@@ -633,12 +673,19 @@ module SaneMasterModules
       value == true || value.to_s.downcase == 'true'
     end
 
-    def execute_with_logging(cmd, timeout_seconds)
+    def mixed_platform_ui_tests?
+      return false unless ui_tests_present?
+
+      project_ui_scheme.to_s != project_scheme.to_s || !project_ui_destination.to_s.include?('platform=macOS')
+    end
+
+    def execute_with_logging(cmd, timeout_seconds, append: false, label: nil)
       success = false
       timed_out = false
 
-      File.open('test_output.txt', 'w') do |log_file|
+      File.open('test_output.txt', append ? 'a' : 'w') do |log_file|
         puts '   📝 Full logs: test_output.txt'
+        log_file.puts("\n=== #{label} ===") if label
 
         Open3.popen2e(*cmd) do |stdin, stdout_err, wait_thr|
           stdin.close
@@ -936,11 +983,21 @@ module SaneMasterModules
         next unless File.exist?(file)
 
         content = File.read(file)
-        content.scan(/accessibilityIdentifier\(["']([^"']+)["']\)/) { |match| identifiers << match[0] }
-        content.scan(/\bapp\.\w+(?:\.\w+)*\s*\[\s*["']([^"']+)["']\s*\]/) { |match| identifiers << match[0] }
+        content.scan(/accessibilityIdentifier\(["']([^"']+)["']\)/) do |match|
+          value = match[0]
+          identifiers << value if looks_like_custom_ui_identifier?(value)
+        end
+        content.scan(/\bapp\.(?!launchEnvironment\b)(?!launchArguments\b)\w+(?:\.\w+)*\s*\[\s*["']([^"']+)["']\s*\]/) do |match|
+          value = match[0]
+          identifiers << value if looks_like_custom_ui_identifier?(value)
+        end
       end
 
       identifiers.to_a
+    end
+
+    def looks_like_custom_ui_identifier?(value)
+      value.match?(/\A[a-z0-9]+(?:[._-][A-Za-z0-9]+)+\z/)
     end
 
     def find_references_in_files(identifier)

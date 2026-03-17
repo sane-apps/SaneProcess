@@ -1,12 +1,14 @@
 #!/bin/bash
 # Sync SaneOps Codex automation config from local machine to Mac mini.
-# Local role: paused (no duplicate runs). Mini role: AM active, PM paused.
+# Safe default: local and mini are both paused unless the caller explicitly
+# opts into activating the mini morning run.
 
 set -euo pipefail
 
 MINI_HOST="mini"
 QUIET=0
 RESTART_CODEX=1
+REMOTE_AM_STATUS="PAUSED"
 
 usage() {
   cat <<USAGE
@@ -16,6 +18,7 @@ Examples:
   $(basename "$0")
   $(basename "$0") mini --quiet
   $(basename "$0") mini --no-restart
+  $(basename "$0") mini --enable-mini-am
 USAGE
 }
 
@@ -42,6 +45,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-restart)
       RESTART_CODEX=0
+      shift
+      ;;
+    --enable-mini-am)
+      REMOTE_AM_STATUS="ACTIVE"
       shift
       ;;
     --*)
@@ -127,8 +134,8 @@ PY
 rewrite_paths "$TMP_AM"
 rewrite_paths "$TMP_PM"
 
-# Mini role: AM active, PM paused.
-set_status_in_file "$TMP_AM" "ACTIVE"
+# Mini role: paused by default; opt-in for AM active.
+set_status_in_file "$TMP_AM" "$REMOTE_AM_STATUS"
 set_status_in_file "$TMP_PM" "PAUSED"
 
 log "Syncing SaneOps automation files to $MINI_HOST..."
@@ -288,4 +295,8 @@ log "Mini scheduler DB:"
 ssh "$MINI_HOST" "sqlite3 -header -column \"$REMOTE_HOME/.codex/sqlite/codex-dev.db\" \"SELECT id,name,status,datetime(next_run_at/1000,'unixepoch','localtime') AS next_run_local, datetime(last_run_at/1000,'unixepoch','localtime') AS last_run_local FROM automations;\""
 
 log ""
-log "Done. Mini is the active runner; local automations remain paused."
+if [[ "$REMOTE_AM_STATUS" == "ACTIVE" ]]; then
+  log "Done. Mini AM automation is ACTIVE by explicit opt-in; local automations remain paused."
+else
+  log "Done. Local and mini automations are both PAUSED by default."
+fi

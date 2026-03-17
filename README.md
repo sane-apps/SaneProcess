@@ -8,7 +8,7 @@
 
 SaneProcess is a hook-based enforcement framework for Claude Code. It kills orphaned processes, stops doom loops, and forces research before edits.
 
-440 tests. MIT licensed. Ruby. macOS + Linux.
+452 tests. MIT licensed. Ruby. macOS + Linux.
 
 ---
 
@@ -46,12 +46,12 @@ The breaker persists across session restarts — Claude can't bypass it by resta
 
 Claude assumes APIs exist without checking. It writes code using methods that don't exist, then fails, then tries a different nonexistent method.
 
-SaneProcess blocks all edits until research is done across four categories:
+SaneProcess blocks all edits until research is done across the required categories:
 
 ```
 🔴 BLOCKED: Research incomplete
    ✅ docs   ✅ web   ❌ github   ❌ local
-   Complete all 4 categories before editing.
+   Complete all required categories before editing.
 ```
 
 Read-only tools (Read, Grep, Glob, search) are never blocked. The gate only applies to mutations.
@@ -88,17 +88,17 @@ The installer copies hooks into your project's `scripts/hooks/` directory and cr
 **Verify:**
 
 ```bash
-ruby scripts/hooks/saneprompt.rb --self-test    # 176 tests
-ruby scripts/hooks/sanetools.rb --self-test     # 38 tests
-ruby scripts/hooks/sanetrack.rb --self-test     # 23 tests
-ruby scripts/hooks/sanestop.rb --self-test      # 17 tests
+ruby scripts/hooks/saneprompt.rb --self-test
+ruby scripts/hooks/sanetools.rb --self-test
+ruby scripts/hooks/sanetrack.rb --self-test
+ruby scripts/hooks/sanestop.rb --self-test
 ```
 
 ---
 
 ## How It Works
 
-Five hooks map to Claude Code's lifecycle events:
+4 enforcement hooks plus 1 session-start bootstrap hook map to Claude Code's lifecycle events:
 
 | Hook | Event | Purpose |
 |------|-------|---------|
@@ -135,12 +135,22 @@ Before any mutation (Edit, Write, Bash with side effects), research categories m
 
 | Category | Satisfied By | Required? |
 |----------|-------------|-----------|
-| **docs** | apple-docs MCP, context7 MCP | Only if MCP installed |
+| **docs** | apple-docs MCP, context7 MCP | Only if MCP configured |
 | **web** | WebSearch, WebFetch | Always |
-| **github** | GitHub MCP | Only if MCP installed |
+| **github** | GitHub MCP | Only if MCP configured |
 | **local** | Read, Grep, Glob | Always |
 
-The gate adapts to your setup. With no MCPs, only `web` + `local` are required. With apple-docs and GitHub MCPs installed, all 4 categories enforce. The installer shows which MCPs you have and gives install commands for the rest.
+The gate adapts to your setup. With no configured MCPs, only `web` + `local` are required. Configure apple-docs/context7 and GitHub in `.mcp.json` to make `docs` and `github` required too. The installer shows recommended MCPs and install commands.
+
+### Tool Discovery Receipt
+
+Before saying a tool is missing, using a workaround, or adding new tooling, generate the receipt:
+
+```bash
+ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"
+```
+
+That receipt checks the skills registry, runs `doctor`, runs `validation_report.rb`, searches local scripts/docs, and writes proof artifacts to `outputs/tool-discovery/`.
 
 ### Tool Categorization (Blast Radius)
 
@@ -165,25 +175,24 @@ The gate adapts to your setup. With no MCPs, only `web` + `local` are required. 
 
 ## Tests
 
-440 tests across two frameworks:
+452 tests across two frameworks:
 
-**Tier tests (175)** — end-to-end enforcement scenarios:
+**Tier tests (178)** — end-to-end enforcement scenarios:
 
 | Tier | Count | What |
 |------|-------|------|
 | Easy | 61 | Basic functionality |
-| Hard | 55 | Edge cases, state transitions |
+| Hard | 58 | Edge cases, state transitions |
 | Villain | 59 | Adversarial bypass attempts |
 
-**Self-tests (265)** — per-hook unit tests:
+**Self-tests (274)** — per-hook unit tests:
 
 | Hook | Tests |
 |------|-------|
 | saneprompt | 176 |
-| sanetools | 42 |
-| sanetrack | 25 |
-| sanestop | 17 |
-| config | 5 |
+| sanetools | 44 |
+| sanetrack | 30 |
+| sanestop | 24 |
 
 ```bash
 # Run all tier tests
@@ -330,7 +339,7 @@ scripts/
 │   │   ├── state_manager.rb  # Signed state file management
 │   │   └── context_compact.rb
 │   └── test/                 # Test suites
-│       └── tier_tests.rb     # 175 enforcement tests
+│       └── tier_tests.rb     # 178 enforcement tests
 ├── init.sh                   # Project installer
 └── qa.rb                     # QA runner
 skills/

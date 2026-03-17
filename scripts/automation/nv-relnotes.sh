@@ -11,7 +11,7 @@ OUTPUT_DIR="/Users/sj/SaneApps/infra/SaneProcess/outputs/relnotes"
 DATE=$(date +%Y%m%d-%H%M%S)
 
 # Release notes prompt
-RELNOTES_PROMPT="Write user-facing release notes from these commits. Format as 3-5 bullet points. Focus on what changed for the user, not internal refactoring. Keep each bullet under 100 characters. No technical jargon."
+RELNOTES_PROMPT="Write user-facing release notes from these commits and any recent customer-facing research notes. Format as 3-5 bullet points. Focus on what changed for the user, not internal refactoring. Keep each bullet under 100 characters. No technical jargon. Do not omit shipped fixes just because the commit title is vague. Pay special attention to customer-visible fixes that were promised in support replies or issue comments."
 
 # Parse arguments
 REPO_PATH="${1:-.}"
@@ -77,8 +77,18 @@ fi
 echo "Fetching diff stats..."
 DIFF_STATS=$(git diff --stat "$TAG1".."$TAG2")
 
+# Pull recent research notes when available so customer-facing fixes do not get lost
+RESEARCH_CONTEXT=""
+if [[ -f ".claude/research.md" ]]; then
+  echo "Fetching recent research notes..."
+  RESEARCH_CONTEXT=$(tail -n 120 .claude/research.md)
+fi
+
 # Combine for context
 CONTEXT="# Commits:\n$COMMIT_LOG\n\n# Changes:\n$DIFF_STATS"
+if [[ -n "$RESEARCH_CONTEXT" ]]; then
+  CONTEXT="${CONTEXT}\n\n# Recent Research Notes:\n$RESEARCH_CONTEXT"
+fi
 
 # Create output directory
 mkdir -p "$OUTPUT_DIR"

@@ -5,6 +5,7 @@ Scripts for automating development and business tasks across SaneApps projects.
 ## Prerequisites
 
 - `nv` CLI installed at `/Users/sj/.local/bin/nv`
+- `OPENAI_API_KEY` available in the shell environment
 - Git repositories with tags (for release notes)
 - SaneApps projects at `~/SaneApps/apps/`
 
@@ -34,7 +35,51 @@ lead-research.py --domain setapp.com --domain macstories.net
 
 **Output location:** `~/SaneApps/infra/SaneProcess/outputs/leads/`
 
+### gpt_audit.py
+
+Standalone GPT audit runner for scripted or non-interactive audit batches.
+
+**Usage:**
+```bash
+python3 gpt_audit.py \
+  --title "Docs Audit" \
+  --bundle /tmp/audit_bundle.txt \
+  --prompts-dir ~/.codex/skills/audit/prompts \
+  --out-dir /tmp/docs_audit_outputs \
+  --report DOCS_AUDIT_FINDINGS.md
+```
+
+**What it does:**
+1. Loads all perspective prompts from a prompt directory.
+2. Sends the same audit bundle to multiple GPT perspectives in parallel through the Responses API.
+3. Writes one raw markdown file per perspective.
+4. Runs a synthesis pass to merge duplicates and contradictions.
+5. Writes a consolidated markdown report plus a JSON manifest.
+
+**Status:** `/audit` now uses GPT subagents as the standard path. Use `gpt_audit.py` only when
+you explicitly need a scripted fallback.
+
+### tool_discovery_receipt.rb
+
+Standard proof command for “do I already have this?” before using a workaround or adding tooling.
+
+**Usage:**
+```bash
+ruby tool_discovery_receipt.rb --query "missing screenshot diff tool"
+ruby tool_discovery_receipt.rb --query "workaround for docs audit" --json
+```
+
+**What it does:**
+1. Checks the global skills registry.
+2. Searches installed global skills for matching workflows.
+3. Searches local scripts, hooks, templates, and core docs.
+4. Runs `SaneMaster.rb doctor`.
+5. Runs `validation_report.rb --json`.
+6. Writes JSON and markdown receipts to `outputs/tool-discovery/`.
+
 ### nv-audit.sh
+
+Legacy bulk review helper. Do not use this for `/audit` or release-clearance docs audits.
 
 Multi-app codebase audit using LLM review.
 
@@ -47,7 +92,7 @@ nv-audit.sh
 nv-audit.sh SaneBar
 
 # Audit with different model
-nv-audit.sh -m claude-3-5-sonnet-20250514
+nv-audit.sh -m MODEL
 
 # Auto-detect current project
 cd ~/SaneApps/apps/SaneBar && nv-audit.sh
@@ -233,7 +278,8 @@ outputs/
 
 ## Tips
 
-- Run `nv-audit.sh` before releases to catch issues
+- Use `/audit` for the real GPT subagent audit path
+- Use `nv-audit.sh` only for ad hoc bulk sweeps, not release clearance
 - Run `nv-relnotes.sh` after tagging to generate changelog
-- Use `-m claude-3-5-sonnet-20250514` for higher quality audits (costs tokens)
+- Use `-m MODEL` only if you intentionally need a different nv model
 - Review all council responses in `nv-relnotes.sh` — pick the best one manually

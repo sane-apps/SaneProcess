@@ -13,7 +13,7 @@ require_relative 'core/state_manager'
 module SanePromptTest
   def self.run(classify_proc, rules_proc, detect_triggers_proc, detect_frustration_proc,
                extract_requirements_proc, detect_research_only_proc, handle_safemode_proc,
-               check_plan_approval_proc = nil)
+               check_plan_approval_proc = nil, detect_skill_trigger_proc = nil)
     warn 'SanePrompt Self-Test'
     warn '=' * 40
 
@@ -52,7 +52,8 @@ module SanePromptTest
     end
 
     # Test s- creates bypass file
-    bypass_file = File.expand_path('../../.claude/bypass_active.json', __dir__)
+    project_dir = ENV['CLAUDE_PROJECT_DIR'] || File.expand_path('../..', __dir__)
+    bypass_file = File.join(project_dir, '.claude', 'bypass_active.json')
     File.delete(bypass_file) if File.exist?(bypass_file)
     $stderr.reopen('/dev/null', 'w')
     handle_safemode_proc.call('s-')
@@ -179,6 +180,22 @@ module SanePromptTest
 
     # Cleanup
     StateManager.reset(:planning)
+
+    if detect_skill_trigger_proc
+      warn ''
+      warn 'Testing skill detection:'
+
+      audit_skill = detect_skill_trigger_proc.call('run a full docs audit')
+      if audit_skill && audit_skill[:name] == :docs_audit &&
+         audit_skill[:requires_subagents] == true &&
+         audit_skill[:min_subagents] == 5
+        passed += 1
+        warn '  PASS: docs_audit trigger requires GPT subagent swarm'
+      else
+        failed += 1
+        warn "  FAIL: docs_audit trigger config incorrect: #{audit_skill.inspect}"
+      end
+    end
 
     warn ''
     warn 'Testing prompt classification:'
@@ -414,8 +431,9 @@ module SanePromptTest
       end
     end
 
+    total = passed + failed
     warn ''
-    warn "#{passed}/#{tests.length + 11} tests passed"  # +11 for command tests (7 original + 4 planning)
+    warn "#{passed}/#{total} tests passed"
 
     if failed == 0
       warn ''

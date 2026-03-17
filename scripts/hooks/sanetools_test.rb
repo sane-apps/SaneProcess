@@ -9,6 +9,7 @@
 # ==============================================================================
 
 require_relative 'core/state_manager'
+require_relative 'sanetools_test_scenarios'
 
 module SaneToolsTest
   def self.run(process_tool_proc, research_categories)
@@ -259,6 +260,51 @@ module SaneToolsTest
     StateManager.reset(:planning)
     StateManager.reset(:edit_attempts)
     StateManager.reset(:research)
+
+    # === TOOL DISCOVERY ENFORCEMENT TESTS ===
+    warn ''
+    warn 'Testing tool discovery enforcement:'
+
+    StateManager.reset(:skill)
+    StateManager.reset(:research)
+    StateManager.update(:mcp_health) { |h| h[:verified_this_session] = true; h }
+    StateManager.update(:session_docs) { |sd| sd[:required] = []; sd[:read] = []; sd }
+    StateManager.update(:requirements) { |r| r[:is_big_task] = false; r[:is_research_only] = false; r[:requested] = []; r[:satisfied] = []; r }
+    StateManager.update(:skill) do |s|
+      s[:required] = 'evolve'
+      s[:required_prompt] = 'missing screenshot diff tool'
+      s[:runner_used] = false
+      s[:runner_commands] = []
+      s
+    end
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: Missing tool-discovery receipt blocks edits'
+    else
+      failed += 1
+      warn "  FAIL: Missing tool-discovery receipt should block edits, got #{exit_code}"
+    end
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Bash', { 'command' => 'ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: tool_discovery receipt command is allowed'
+    else
+      failed += 1
+      warn "  FAIL: tool_discovery receipt command should be allowed, got #{exit_code}"
+    end
+
+    StateManager.reset(:skill)
 
     # === SENSITIVE FILE PROTECTION TESTS ===
     warn ''
@@ -573,232 +619,13 @@ module SaneToolsTest
 
     File.delete(approval_flag) if File.exist?(approval_flag)
 
-    # === DEPLOYMENT SAFETY TESTS ===
-    warn ''
-    warn 'Testing deployment safety:'
+    scenario_passed, scenario_failed = SaneToolsTestScenarios.run_deployment_safety_tests(process_tool_proc, research_categories)
+    passed += scenario_passed
+    failed += scenario_failed
 
-    # Setup: clean state for deployment tests
-    StateManager.reset(:research)
-    StateManager.reset(:planning)
-    StateManager.reset(:edit_attempts)
-    StateManager.reset(:deployment)
-    StateManager.update(:mcp_health) { |h| h[:verified_this_session] = true; h }
-    StateManager.update(:session_docs) { |sd| sd[:required] = []; sd[:read] = []; sd }
-    StateManager.update(:requirements) { |r| r[:is_big_task] = false; r[:is_research_only] = false; r[:requested] = []; r[:satisfied] = []; r }
-    StateManager.update(:startup_gate) do |g|
-      g[:open] = true; g[:opened_at] = Time.now.iso8601
-      g[:steps] = { session_docs: true, skills_registry: true, validation_report: true, orphan_cleanup: true, system_clean: true }
-      g
-    end
-    research_categories.keys.each do |cat|
-      StateManager.update(:research) { |r| r[cat] = { completed_at: Time.now.iso8601, tool: 'test', via_task: false }; r }
-    end
-
-    # Test 1: R2 upload with wrong bucket → BLOCKED
-    original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
-    exit_code = process_tool_proc.call('Bash', {
-      'command' => 'npx wrangler r2 object put saneclick-dist/SaneClick-1.0.2.dmg --file="build/SaneClick-1.0.2.dmg"'
-    })
-    $stderr.reopen(original_stderr)
-
-    if exit_code == 2
-      passed += 1
-      warn '  PASS: R2 upload with wrong bucket blocked'
-    else
-      failed += 1
-      warn "  FAIL: R2 upload with wrong bucket should block, got exit #{exit_code}"
-    end
-
-    # Test 2: R2 upload with path prefix in key → BLOCKED
-    original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
-    exit_code = process_tool_proc.call('Bash', {
-      'command' => 'npx wrangler r2 object put sanebar-downloads/updates/SaneBar-1.0.17.dmg --file="build/SaneBar-1.0.17.dmg"'
-    })
-    $stderr.reopen(original_stderr)
-
-    if exit_code == 2
-      passed += 1
-      warn '  PASS: R2 upload with path prefix in key blocked'
-    else
-      failed += 1
-      warn "  FAIL: R2 upload with path prefix should block, got exit #{exit_code}"
-    end
-
-    # Test 3: Correct R2 upload (signed + stapled) → ALLOWED
-    # First, simulate that the DMG was signed and stapled
-    StateManager.update(:deployment) do |d|
-      d[:sparkle_signed_dmgs] = ['SaneBar-1.0.17.dmg']
-      d[:staple_verified_dmgs] = ['SaneBar-1.0.17.dmg']
-      d
-    end
-
-    original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
-    # Use a non-existent file path so staple check falls through to state lookup
-    exit_code = process_tool_proc.call('Bash', {
-      'command' => 'npx wrangler r2 object put sanebar-downloads/SaneBar-1.0.17.dmg --file="/nonexistent/SaneBar-1.0.17.dmg"'
-    })
-    $stderr.reopen(original_stderr)
-
-    if exit_code == 0
-      passed += 1
-      warn '  PASS: Correct R2 upload allowed (signed + stapled)'
-    else
-      failed += 1
-      warn "  FAIL: Correct R2 upload should be allowed, got exit #{exit_code}"
-    end
-
-    # Test 4: R2 upload without Sparkle signature → BLOCKED
-    StateManager.reset(:deployment)
-
-    original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
-    exit_code = process_tool_proc.call('Bash', {
-      'command' => 'npx wrangler r2 object put sanebar-downloads/SaneBar-1.0.17.dmg --file="/nonexistent/SaneBar-1.0.17.dmg"'
-    })
-    $stderr.reopen(original_stderr)
-
-    if exit_code == 2
-      passed += 1
-      warn '  PASS: R2 upload without Sparkle signature blocked'
-    else
-      failed += 1
-      warn "  FAIL: R2 upload without signature should block, got exit #{exit_code}"
-    end
-
-    # Test 5: Appcast edit with empty edSignature → BLOCKED
-    original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
-    exit_code = process_tool_proc.call('Edit', {
-      'file_path' => '/Users/sj/SaneApps/apps/SaneBar/docs/appcast.xml',
-      'old_string' => 'old content',
-      'new_string' => '<enclosure url="https://dist.sanebar.com/SaneBar-1.0.17.dmg" edSignature="" length="12345" />'
-    })
-    $stderr.reopen(original_stderr)
-
-    if exit_code == 2
-      passed += 1
-      warn '  PASS: Appcast edit with empty edSignature blocked'
-    else
-      failed += 1
-      warn "  FAIL: Appcast edit with empty signature should block, got exit #{exit_code}"
-    end
-
-    # Test 6: Appcast edit with GitHub URL → BLOCKED
-    original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
-    exit_code = process_tool_proc.call('Edit', {
-      'file_path' => '/Users/sj/SaneApps/apps/SaneBar/docs/appcast.xml',
-      'old_string' => 'old content',
-      'new_string' => '<enclosure url="https://github.com/user/repo/releases/download/v1.0/SaneBar.dmg" edSignature="abc123" length="12345" />'
-    })
-    $stderr.reopen(original_stderr)
-
-    if exit_code == 2
-      passed += 1
-      warn '  PASS: Appcast edit with GitHub URL blocked'
-    else
-      failed += 1
-      warn "  FAIL: Appcast edit with GitHub URL should block, got exit #{exit_code}"
-    end
-
-    # Test 7: Valid appcast edit → ALLOWED
-    original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
-    exit_code = process_tool_proc.call('Edit', {
-      'file_path' => '/Users/sj/SaneApps/apps/SaneBar/docs/appcast.xml',
-      'old_string' => 'old content',
-      'new_string' => '<enclosure url="https://dist.sanebar.com/SaneBar-9.9.9-test.dmg" edSignature="validSig123==" length="12345" />'
-    })
-    $stderr.reopen(original_stderr)
-
-    if exit_code == 0
-      passed += 1
-      warn '  PASS: Valid appcast edit allowed'
-    else
-      failed += 1
-      warn "  FAIL: Valid appcast edit should be allowed, got exit #{exit_code}"
-    end
-
-    # Test 8: Pages deploy with bad appcast → BLOCKED
-    # Create a temp directory with a bad appcast for this test
-    require 'tmpdir'
-    test_deploy_dir = Dir.mktmpdir('deploy_test')
-    File.write(File.join(test_deploy_dir, 'appcast.xml'), '<enclosure edSignature="" />')
-
-    original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
-    exit_code = process_tool_proc.call('Bash', {
-      'command' => "npx wrangler pages deploy #{test_deploy_dir} --project-name=sanebar-site"
-    })
-    $stderr.reopen(original_stderr)
-
-    # Cleanup temp dir
-    FileUtils.rm_rf(test_deploy_dir) rescue nil
-
-    if exit_code == 2
-      passed += 1
-      warn '  PASS: Pages deploy with bad appcast blocked'
-    else
-      failed += 1
-      warn "  FAIL: Pages deploy with bad appcast should block, got exit #{exit_code}"
-    end
-
-    # Cleanup deployment tests
-    StateManager.reset(:deployment)
-    StateManager.reset(:edit_attempts)
-
-    # === JSON INTEGRATION TESTS ===
-    warn ''
-    warn 'Testing JSON parsing (integration):'
-
-    require 'open3'
-    script_path = File.expand_path('sanetools.rb', __dir__)
-
-    # Test valid JSON with tool_name and tool_input
-    json_input = '{"tool_name":"Read","tool_input":{"file_path":"/Users/sj/SaneProcess/test.swift"}}'
-    _stdout, _stderr, status = Open3.capture3("ruby #{script_path}", stdin_data: json_input)
-    if status.exitstatus == 0
-      passed += 1
-      warn '  PASS: Valid JSON parsed correctly (Read tool allowed)'
-    else
-      failed += 1
-      warn "  FAIL: Valid JSON parsing - exit #{status.exitstatus}"
-    end
-
-    # Test blocked path via JSON
-    json_input = '{"tool_name":"Read","tool_input":{"file_path":"~/.ssh/id_rsa"}}'
-    _stdout, _stderr, status = Open3.capture3("ruby #{script_path}", stdin_data: json_input)
-    if status.exitstatus == 2
-      passed += 1
-      warn '  PASS: Blocked path correctly blocked via JSON'
-    else
-      failed += 1
-      warn "  FAIL: Blocked path should return exit 2, got #{status.exitstatus}"
-    end
-
-    # Test invalid JSON doesn't crash
-    json_input = 'not valid json at all'
-    _stdout, _stderr, status = Open3.capture3("ruby #{script_path}", stdin_data: json_input)
-    if status.exitstatus == 0
-      passed += 1
-      warn '  PASS: Invalid JSON returns exit 0 (fail safe)'
-    else
-      failed += 1
-      warn "  FAIL: Invalid JSON should return exit 0, got #{status.exitstatus}"
-    end
-
-    # Test empty input doesn't crash
-    _stdout, _stderr, status = Open3.capture3("ruby #{script_path}", stdin_data: '')
-    if status.exitstatus == 0
-      passed += 1
-      warn '  PASS: Empty input returns exit 0 (fail safe)'
-    else
-      failed += 1
-      warn "  FAIL: Empty input should return exit 0, got #{status.exitstatus}"
-    end
+    scenario_passed, scenario_failed = SaneToolsTestScenarios.run_json_integration_tests
+    passed += scenario_passed
+    failed += scenario_failed
 
     # === CLEANUP ===
     StateManager.reset(:circuit_breaker)

@@ -5,7 +5,11 @@
 
 set -uo pipefail
 
-SANE_ROOT="${SANE_ROOT:-$HOME/SaneApps}"
+DEFAULT_SANE_ROOT="$HOME/SaneApps"
+if [ -d "$HOME/SaneApps-automation/apps" ]; then
+  DEFAULT_SANE_ROOT="$HOME/SaneApps-automation"
+fi
+SANE_ROOT="${SANE_ROOT:-$DEFAULT_SANE_ROOT}"
 SANE_OUTPUT_DIR="${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}"
 
 APPS_DIR="$SANE_ROOT/apps"
@@ -14,6 +18,10 @@ OUTPUT_DIR="$SANE_OUTPUT_DIR"
 REPORT="$OUTPUT_DIR/nightly_report.md"
 DATE=$(date +"%Y-%m-%d %A")
 TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+EVAL_SUITE_WEIGHTS="${EVAL_SUITE_WEIGHTS:-commentary_workflow=4,workflow_packs=2,workflow_guardrails=2,core=1}"
+PRIMARY_WORKFLOW_SUITE="${PRIMARY_WORKFLOW_SUITE:-commentary_workflow}"
+PRIMARY_WORKFLOW_MIN_PCT="${PRIMARY_WORKFLOW_MIN_PCT:-50}"
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -259,7 +267,105 @@ echo "---" >> "$REPORT"
 echo "" >> "$REPORT"
 
 # =============================================================================
-# Section 4: Disk & System Health
+# Section 4: SaneAI Workflow Readiness
+# =============================================================================
+echo "## SaneAI Workflow Readiness" >> "$REPORT"
+echo "" >> "$REPORT"
+
+EVAL_SCRIPT="$SCRIPT_DIR/evaluate_model.py"
+SANEAI_DIR="$APPS_DIR/SaneAI"
+SANEAI_TRAIN_DIR="$SANEAI_DIR/training_data"
+SANEAI_ADAPTER="$SANEAI_DIR/models/production_adapter"
+PYTHON="$HOME/mlx-env/bin/python3"
+SANEAI_MODEL="mlx-community/Llama-3.2-3B-Instruct-4bit"
+
+if [ -f "$EVAL_SCRIPT" ] && [ -d "$SANEAI_ADAPTER" ] && [ -f "$SANEAI_TRAIN_DIR/train.jsonl" ]; then
+  EVAL_CMD=(
+    "$PYTHON"
+    "$EVAL_SCRIPT"
+    --model "$SANEAI_MODEL"
+    --adapter-path "$SANEAI_ADAPTER"
+    --train-file "$SANEAI_TRAIN_DIR/train.jsonl"
+    --system-prompt-file "$SANEAI_TRAIN_DIR/system_prompt.txt"
+    --eval-glob "$SANEAI_TRAIN_DIR/eval_*.jsonl"
+    --primary-suite "$PRIMARY_WORKFLOW_SUITE"
+    --primary-min-pct "$PRIMARY_WORKFLOW_MIN_PCT"
+  )
+  old_ifs="$IFS"
+  IFS=','
+  for suite_weight in $EVAL_SUITE_WEIGHTS; do
+    suite_weight=$(printf '%s' "$suite_weight" | sed 's/^ *//; s/ *$//')
+    if [ -n "$suite_weight" ]; then
+      EVAL_CMD=("${EVAL_CMD[@]}" --suite-weight "$suite_weight")
+    fi
+  done
+  IFS="$old_ifs"
+
+  eval_output=$("${EVAL_CMD[@]}" 2>&1)
+  eval_exit=$?
+
+  if [ "$eval_exit" -eq 0 ] && [ -n "$eval_output" ]; then
+    echo "- Scoring weights: $EVAL_SUITE_WEIGHTS" >> "$REPORT"
+    echo "- Primary suite gate: ${PRIMARY_WORKFLOW_SUITE} >= ${PRIMARY_WORKFLOW_MIN_PCT}%" >> "$REPORT"
+    echo "" >> "$REPORT"
+    echo "$eval_output" | grep -vE "^(SCORE:|RAW_SCORE:|WEIGHTED_SCORE:|PRIMARY_SUITE:|SUITE:)" >> "$REPORT"
+    echo "" >> "$REPORT"
+
+    suite_lines=$(echo "$eval_output" | grep "^SUITE:" || true)
+    if [ -n "$suite_lines" ]; then
+      echo "Suite scores:" >> "$REPORT"
+      while IFS=: read -r _ suite_name suite_pass suite_total suite_pct; do
+        display_suite=$(echo "$suite_name" | tr '_' ' ')
+        echo "- $display_suite: $suite_pass/$suite_total ($suite_pct%)" >> "$REPORT"
+      done <<EOF
+$suite_lines
+EOF
+      echo "" >> "$REPORT"
+    fi
+
+    raw_score_line=$(echo "$eval_output" | grep "^RAW_SCORE:" | head -1 || true)
+    weighted_score_line=$(echo "$eval_output" | grep "^WEIGHTED_SCORE:" | head -1 || true)
+    primary_suite_line=$(echo "$eval_output" | grep "^PRIMARY_SUITE:" | head -1 || true)
+
+    if [ -n "$primary_suite_line" ]; then
+      primary_suite_name=$(echo "$primary_suite_line" | cut -d: -f2)
+      primary_pass=$(echo "$primary_suite_line" | cut -d: -f3)
+      primary_total=$(echo "$primary_suite_line" | cut -d: -f4)
+      primary_pct=$(echo "$primary_suite_line" | cut -d: -f5)
+      primary_threshold=$(echo "$primary_suite_line" | cut -d: -f6)
+      primary_status=$(echo "$primary_suite_line" | cut -d: -f7)
+      echo "**Workflow gate:** $primary_status ($primary_suite_name $primary_pass/$primary_total, $primary_pct%, threshold $primary_threshold%)" >> "$REPORT"
+    fi
+
+    if [ -n "$weighted_score_line" ]; then
+      eval_pass=$(echo "$weighted_score_line" | cut -d: -f2)
+      eval_total=$(echo "$weighted_score_line" | cut -d: -f3)
+      eval_pct=$(echo "$weighted_score_line" | cut -d: -f4)
+      echo "**Workflow-first score:** $eval_pass/$eval_total ($eval_pct%)" >> "$REPORT"
+    fi
+
+    if [ -n "$raw_score_line" ]; then
+      raw_pass=$(echo "$raw_score_line" | cut -d: -f2)
+      raw_total=$(echo "$raw_score_line" | cut -d: -f3)
+      raw_pct=$(echo "$raw_score_line" | cut -d: -f4)
+      echo "**Raw score:** $raw_pass/$raw_total ($raw_pct%)" >> "$REPORT"
+    fi
+  else
+    echo "**Skipped** - workflow readiness eval failed (exit $eval_exit)" >> "$REPORT"
+    echo '```' >> "$REPORT"
+    echo "$eval_output" | tail -20 >> "$REPORT"
+    echo '```' >> "$REPORT"
+  fi
+else
+  echo "**Skipped** - missing evaluator, training data, or production adapter" >> "$REPORT"
+fi
+
+echo "" >> "$REPORT"
+echo "---" >> "$REPORT"
+echo "" >> "$REPORT"
+
+# =============================================================================
+# Section 5: Disk & System Health
 # =============================================================================
 echo "## System Health" >> "$REPORT"
 echo "" >> "$REPORT"

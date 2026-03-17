@@ -262,6 +262,14 @@ module SaneMasterModules
 
     def stage_to_canonical_local_app_path(source_app_path)
       target_app_path = canonical_local_app_path
+      if should_block_apple_development_tcc_drift?(source_app_path: source_app_path, target_app_path: target_app_path)
+        puts "❌ Refusing to stage an Apple Development build over the trusted #{project_name} install."
+        puts '   That breaks the existing Accessibility/TCC identity and can trap the app in a permissions loop.'
+        puts "   Use: ./scripts/SaneMaster.rb test_mode --release"
+        puts '   Set SANEMASTER_ALLOW_TCC_IDENTITY_DRIFT=1 to override if you really want a fresh untrusted identity.'
+        exit 1
+      end
+
       if should_preserve_system_release_install?(source_app_path: source_app_path, target_app_path: target_app_path)
         puts "⚠️  Preserving signed /Applications install for #{project_name}."
         puts "   Skipping local Apple Development staging to avoid TCC identity drift."
@@ -312,6 +320,7 @@ module SaneMasterModules
           FileUtils.mv(temp_app_path, target_app_path)
 
           staged_ok = File.exist?(target_app_path)
+          staged_ok &&= ad_hoc_sign_app_bundle(target_app_path) if staged_ok && unsigned_fallback_active?
         ensure
           FileUtils.rm_rf(temp_app_path) if File.exist?(temp_app_path)
           lock_file.flock(File::LOCK_UN)
@@ -345,8 +354,39 @@ module SaneMasterModules
       apple_development_signed?(source_app_path)
     end
 
+    def should_block_apple_development_tcc_drift?(source_app_path:, target_app_path:)
+      return false if ENV['SANEMASTER_ALLOW_TCC_IDENTITY_DRIFT'] == '1'
+      return false unless project_name == 'SaneBar'
+      return false unless source_app_path && File.exist?(source_app_path)
+      return false unless target_app_path.start_with?('/Applications/')
+      return false unless File.exist?(target_app_path)
+      return false unless developer_id_signed?(target_app_path)
+
+      apple_development_signed?(source_app_path)
+    end
+
     def user_local_app_path
       File.expand_path(File.join('~/Applications', "#{project_name}.app"))
+    end
+
+    def ad_hoc_sign_app_bundle(app_path)
+      signable_paths = []
+      signable_paths.concat(Dir.glob(File.join(app_path, 'Contents', 'PlugIns', '*.appex')))
+      signable_paths.concat(Dir.glob(File.join(app_path, 'Contents', 'Frameworks', '*.framework')))
+      signable_paths.concat(Dir.glob(File.join(app_path, 'Contents', 'XPCServices', '*.xpc')))
+      signable_paths.concat(Dir.glob(File.join(app_path, 'Contents', 'Helpers', '*')))
+      signable_paths.select! { |path| File.exist?(path) }
+      signable_paths.sort_by! { |path| -path.count('/') }
+      signable_paths << app_path
+
+      signable_paths.each do |path|
+        next if system('codesign', '--force', '--sign', '-', '--timestamp=none', path, out: File::NULL, err: File::NULL)
+
+        puts "❌ Failed to ad-hoc sign #{path}"
+        return false
+      end
+
+      true
     end
 
     def system_app_dir_writable?
@@ -696,8 +736,9 @@ module SaneMasterModules
       stdout, status = Open3.capture2e(*cmd)
 
       if should_retry_unsigned_debug?(build_config: build_config, output: stdout, status: status)
-        puts '   ⚠️  Signed build blocked in headless session; retrying unsigned Debug build...'
-        fallback_cmd = ['xcodebuild', *xcodebuild_container_args, '-scheme', project_scheme, '-configuration', 'Debug',
+        fallback_config = build_config == 'Release-AppStore' ? build_config : 'Debug'
+        puts "   ⚠️  Signed build blocked in headless session; retrying unsigned #{fallback_config} build..."
+        fallback_cmd = ['xcodebuild', *xcodebuild_container_args, '-scheme', project_scheme, '-configuration', fallback_config,
                         '-destination', 'platform=macOS', 'ENABLE_DEBUG_DYLIB=NO',
                         'CODE_SIGNING_ALLOWED=NO', 'CODE_SIGNING_REQUIRED=NO', 'build']
         fallback_stdout, fallback_status = Open3.capture2e(*fallback_cmd)
@@ -706,7 +747,7 @@ module SaneMasterModules
 
         if fallback_status.success?
           ENV['SANEMASTER_UNSIGNED_FALLBACK_ACTIVE'] = '1'
-          ENV['SANEMASTER_BUILD_CONFIG'] = 'Debug'
+          ENV['SANEMASTER_BUILD_CONFIG'] = fallback_config
         end
       end
 

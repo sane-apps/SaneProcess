@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ EXA_CONTENTS_URL = "https://api.exa.ai/contents"
 FIRECRAWL_MAP_URL = "https://api.firecrawl.dev/v2/map"
 FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v2/scrape"
 OUTPUT_DIR = Path(__file__).resolve().parents[2] / "outputs" / "leads"
+ENV_CACHE_FILE = Path(os.environ.get("SANE_ENV_CACHE_FILE", "~/.config/nv/env")).expanduser()
 US_LOCATION = {"country": "US", "languages": ["en-US"]}
 PAGE_HINTS = (
     "pricing about features integrations customers case studies "
@@ -71,6 +73,55 @@ NEGATIVE_PATH_HINTS = {
 
 class ResearchError(RuntimeError):
     """Raised when an external API call fails."""
+
+
+def load_env_cache():
+    if not ENV_CACHE_FILE.is_file():
+        return
+    try:
+        for raw_line in ENV_CACHE_FILE.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[7:].strip()
+            if "=" not in line:
+                continue
+            key, raw_value = line.split("=", 1)
+            key = key.strip()
+            if not key or key in os.environ:
+                continue
+            parts = shlex.split(raw_value, posix=True)
+            value = parts[0] if len(parts) == 1 else raw_value.strip()
+            os.environ[key] = os.path.expandvars(value)
+    except OSError:
+        return
+
+
+def persist_secret_to_env_cache(value: str, *env_names: str) -> None:
+    if not value or os.environ.get("SANE_ENV_CACHE_WRITE", "1") == "0":
+        return
+    names = [name for name in env_names if name]
+    if not names:
+        return
+    ENV_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        ENV_CACHE_FILE.parent.chmod(0o700)
+    except OSError:
+        pass
+    lines = []
+    if ENV_CACHE_FILE.exists():
+        lines = ENV_CACHE_FILE.read_text(encoding="utf-8").splitlines()
+    filtered = []
+    for line in lines:
+        stripped = line.strip()
+        if any(stripped.startswith(f"export {name}=") for name in names):
+            continue
+        filtered.append(line)
+    for name in names:
+        filtered.append(f"export {name}={shlex.quote(value)}")
+    ENV_CACHE_FILE.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+    ENV_CACHE_FILE.chmod(0o600)
 
 @dataclass
 class CandidateSite:
@@ -119,9 +170,14 @@ def summarize_text(text: str, limit: int = 320) -> str:
 
 
 def get_secret(env_var: str, service: str, account: str = "api_key") -> str:
+    load_env_cache()
     value = os.environ.get(env_var, "").strip()
     if value:
         return value
+    if os.environ.get("SANE_NO_KEYCHAIN") == "1" or os.environ.get("SANE_KEYCHAIN_FALLBACK") == "0":
+        raise ResearchError(
+            f"Missing secret for {env_var}. Set it in ~/.config/nv/env or the environment."
+        )
     result = subprocess.run(
         ["security", "find-generic-password", "-s", service, "-a", account, "-w"],
         capture_output=True,
@@ -129,9 +185,10 @@ def get_secret(env_var: str, service: str, account: str = "api_key") -> str:
     )
     value = result.stdout.strip()
     if value:
+        persist_secret_to_env_cache(value, env_var)
         return value
     raise ResearchError(
-        f"Missing secret for {env_var}. Set the env var or add it to keychain with:\n"
+        f"Missing secret for {env_var}. Set it in ~/.config/nv/env or the environment, or add it to keychain with:\n"
         f"security add-generic-password -s {service} -a {account} -w YOUR_KEY"
     )
 

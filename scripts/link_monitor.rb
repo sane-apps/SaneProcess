@@ -20,6 +20,8 @@ SANEAPPS_ROOT = File.expand_path("../../..", __dir__)
 CONFIG_FILE = File.join(SANEAPPS_ROOT, "infra/SaneProcess/config/products.yml")
 LOG_FILE = File.join(SANEAPPS_ROOT, "infra/SaneProcess/outputs/link_monitor.log")
 STATE_FILE = File.join(SANEAPPS_ROOT, "infra/SaneProcess/outputs/link_monitor_state.json")
+ENV_CACHE_FILE = File.expand_path(ENV.fetch("SANE_ENV_CACHE_FILE", "~/.config/nv/env"))
+KEYCHAIN_FALLBACK_ENABLED = ENV.fetch("SANE_KEYCHAIN_FALLBACK", "1") == "1" && ENV["SANE_NO_KEYCHAIN"] != "1"
 
 # Load product config — single source of truth for UUIDs, domains, etc.
 CONFIG = YAML.safe_load(File.read(CONFIG_FILE), permitted_classes: [])
@@ -57,6 +59,69 @@ WEBSITE_DIRS = %w[
 
 TIMEOUT = 10
 MAX_REDIRECTS = 3
+
+def load_env_cache
+  return unless File.exist?(ENV_CACHE_FILE)
+
+  File.foreach(ENV_CACHE_FILE) do |raw_line|
+    line = raw_line.strip
+    next if line.empty? || line.start_with?("#")
+
+    line = line.delete_prefix("export ").strip
+    next unless line.include?("=")
+
+    key, raw_value = line.split("=", 2)
+    next if key.nil? || key.empty? || ENV.key?(key)
+
+    value = Shellwords.split(raw_value.to_s).first || raw_value.to_s.strip
+    ENV[key] = File.expand_path(value) if key.end_with?("_PATH") && value.start_with?("~")
+    ENV[key] ||= value
+  end
+rescue StandardError
+  nil
+end
+
+def persist_secret_to_env_cache(value, *env_names)
+  return if value.nil? || value.empty?
+  return if ENV.fetch("SANE_ENV_CACHE_WRITE", "1") == "0"
+
+  names = env_names.compact.reject(&:empty?)
+  return if names.empty?
+
+  env_dir = File.dirname(ENV_CACHE_FILE)
+  FileUtils.mkdir_p(env_dir)
+  File.chmod(0o700, env_dir) rescue nil
+
+  lines = File.exist?(ENV_CACHE_FILE) ? File.readlines(ENV_CACHE_FILE, chomp: true) : []
+  filtered = lines.reject do |line|
+    stripped = line.strip
+    names.any? { |name| stripped.start_with?("export #{name}=") }
+  end
+  names.each do |name|
+    filtered << "export #{name}=#{Shellwords.escape(value)}"
+  end
+  File.write(ENV_CACHE_FILE, filtered.join("\n") + "\n")
+  File.chmod(0o600, ENV_CACHE_FILE)
+rescue StandardError
+  nil
+end
+
+def resolve_secret_value(service, account, *env_names)
+  load_env_cache
+
+  env_names.flatten.each do |env_name|
+    value = ENV[env_name].to_s.strip
+    return value unless value.empty?
+  end
+
+  return "" unless KEYCHAIN_FALLBACK_ENABLED
+
+  value = `security find-generic-password -s "#{service}" -a "#{account}" -w 2>/dev/null`.strip
+  persist_secret_to_env_cache(value, *env_names) unless value.empty?
+  value
+rescue StandardError
+  ""
+end
 
 def check_url(url, max_redirects: MAX_REDIRECTS, attempts: 3)
   attempts.times do |attempt|
@@ -201,7 +266,7 @@ DOMAINS_TO_MONITOR = CONFIG.fetch("all_domains").freeze
 
 def check_domain_expiry(domain)
   # Try Cloudflare API first (if available)
-  cf_token = `security find-generic-password -s cloudflare -a api_token -w 2>/dev/null`.strip
+  cf_token = resolve_secret_value("cloudflare", "api_token", "CLOUDFLARE_API_TOKEN")
   if !cf_token.empty?
     cf_expiry = check_cf_domain_expiry(domain, cf_token)
     return cf_expiry if cf_expiry

@@ -24,7 +24,7 @@ require_relative 'sanetools_checks'
 require_relative 'sanetools_startup'
 
 # === SAFEMODE BYPASS ===
-BYPASS_FILE = File.expand_path('../../.claude/bypass_active.json', __dir__)
+BYPASS_FILE = File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.claude', 'bypass_active.json')
 BYPASS_ACTIVE = File.exist?(BYPASS_FILE)
 
 LOG_FILE = File.expand_path('../../.claude/sanetools.log', __dir__)
@@ -183,7 +183,7 @@ def track_research(tool_name, tool_input)
   # This is the SaneLoop process - it ALWAYS pays off
   if research_done
     research = StateManager.get(:research)
-    all_complete = RESEARCH_CATEGORIES.keys.all? { |cat| research[cat] }
+    all_complete = SaneToolsChecks.effective_research_categories(RESEARCH_CATEGORIES).all? { |cat| research[cat] }
     if all_complete
       SaneToolsChecks.reset_edit_attempts
       SaneToolsChecks.reward_correct_behavior(:research_done)
@@ -193,7 +193,7 @@ end
 
 def mark_research_done(category, tool, via_task)
   current = StateManager.get(:research, category)
-  return if current && current[:via_task] && !via_task
+  return if current.is_a?(Hash) && current[:via_task] && !via_task
 
   StateManager.update(:research) do |r|
     r[category] = {
@@ -374,6 +374,12 @@ def process_tool(tool_name, tool_input)
 
   # Check research-only mode
   if (reason = SaneToolsChecks.check_research_only_mode(tool_name, EDIT_TOOLS, GLOBAL_MUTATION_PATTERN, EXTERNAL_MUTATION_PATTERN))
+    log_action(tool_name, true, reason)
+    output_block(reason, tool_name)
+    return 2
+  end
+
+  if (reason = SaneToolsChecks.check_tool_discovery_required(tool_name, tool_input, EDIT_TOOLS))
     log_action(tool_name, true, reason)
     output_block(reason, tool_name)
     return 2
@@ -567,6 +573,9 @@ end
 # === MAIN ===
 
 if ARGV.include?('--self-test')
+  require_relative 'self_test_environment'
+  exit SelfTestEnvironment.run_isolated(__FILE__)
+elsif ARGV.include?('--self-test-internal')
   require_relative 'sanetools_test'
   exit SaneToolsTest.run(method(:process_tool), RESEARCH_CATEGORIES)
 elsif ARGV.include?('--status')

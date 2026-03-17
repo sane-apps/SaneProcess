@@ -4,17 +4,17 @@ Production-ready hooks for Claude Code SOP enforcement.
 
 ## Architecture
 
-4 hooks, 4 core modules, 1 state file:
+5 hooks, shared helpers, self-test helpers, and 1 state file:
 
 | Hook | Type | Purpose | Tests |
 |------|------|---------|-------|
 | `saneprompt.rb` | UserPromptSubmit | Classifies prompts, handles commands (rb-, s+, etc.) | 62 |
-| `sanetools.rb` | PreToolUse | Gates edits on research, blocks paths, circuit breaker | 62 |
-| `sanetrack.rb` | PostToolUse | Tracks edits, failures, per-signature errors | 55 |
-| `sanestop.rb` | Stop | Session stats, summary reminder | 50 |
-| `session_start.rb` | SessionStart | Bootstraps session, resets state | 5 |
+| `sanetools.rb` | PreToolUse | Gates edits on research, blocks paths, circuit breaker | 66 |
+| `sanetrack.rb` | PostToolUse | Tracks edits, failures, per-signature errors | 37 |
+| `sanestop.rb` | Stop | Session stats, summary reminder | 5 |
+| `session_start.rb` | SessionStart | Bootstraps session, resets state | bootstrap only |
 
-**Total: 234 tests** (Easy/Hard/Villain tiers)
+**Tier suite:** 178 tests (including integration)
 
 ## Quick Start
 
@@ -42,12 +42,39 @@ ruby scripts/hooks/sanestop.rb --self-test
 | File | Purpose |
 |------|---------|
 | `sanetools_checks.rb` | Extracted validation logic |
+| `sanetools_startup.rb` | Startup-gate enforcement helpers |
 | `sanetools_gaming.rb` | Gaming detection (research cheating) |
+| `sanetools_deploy.rb` | Deployment safety checks |
+| `sanetools_github_guard.rb` | GitHub posting approval guard |
 | `saneprompt_intelligence.rb` | Prompt classification |
 | `saneprompt_commands.rb` | Safemode, breaker, planning user commands |
+| `sanetrack_research.rb` | Research write/size validation |
+| `sanetrack_state_updates.rb` | State mutation helpers for PostToolUse |
+| `sanetrack_gate.rb` | Post-edit enforcement helpers |
 | `sanetrack_reminders.rb` | Feature reminders and logging |
+| `session_briefing.rb` | Session-start briefing output |
+| `session_start_cleanup.rb` | Session-start cleanup helpers |
+| `self_test_environment.rb` | Isolated temp project for `--self-test` |
 | `rule_tracker.rb` | Rule tracking shared module |
 | `state_signer.rb` | State file signing/verification |
+
+## Core Modules
+
+| File | Purpose |
+|------|---------|
+| `core/config.rb` | Shared project/config lookup |
+| `core/state_manager.rb` | Locked, signed state store |
+| `core/context_compact.rb` | Context compaction helpers |
+
+## Self-Test Modules
+
+| File | Purpose |
+|------|---------|
+| `saneprompt_test.rb` | saneprompt self-tests |
+| `sanetools_test.rb` | sanetools self-tests |
+| `sanetools_test_scenarios.rb` | shared sanetools self-test fixtures |
+| `sanetrack_test.rb` | sanetrack self-tests |
+| `sanestop_test.rb` | sanestop self-tests |
 
 ## State File
 
@@ -71,14 +98,14 @@ All state in `.claude/state.json`:
 
 ## Research Gate
 
-Before edits allowed, must complete 4 categories:
+Before edits allowed, complete the always-required categories plus any MCP-backed categories you configured:
 
-| Category | Satisfied by |
-|----------|--------------|
-| docs | `mcp__context7__*`, `mcp__apple-docs__*` |
-| web | `WebSearch`, `WebFetch` |
-| github | `mcp__github__*` |
-| local | `Read`, `Grep`, `Glob` |
+| Category | Satisfied by | Required? |
+|----------|--------------|-----------|
+| docs | `mcp__context7__*`, `mcp__apple-docs__*` | If docs MCPs configured |
+| web | `WebSearch`, `WebFetch` | Always |
+| github | `mcp__github__*` | If GitHub MCP configured |
+| local | `Read`, `Grep`, `Glob` | Always |
 
 ## Circuit Breaker
 
@@ -101,5 +128,5 @@ Reset with `rb-` command.
 
 Run the full test suite:
 ```bash
-ruby scripts/hooks/test/tier_tests.rb  # 234 tests
+ruby scripts/hooks/test/tier_tests.rb  # 178 tests
 ```

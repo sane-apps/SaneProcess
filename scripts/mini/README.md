@@ -12,8 +12,8 @@ Scripts that run on the Mac mini (M1, 8GB) build server. This is the **source of
 | `mini-memory-guard.sh` | 5:40 AM daily | Mini hygiene + safe reboot gate (only when idle and needed) |
 | `mini-install-memory-guard.sh` | On demand | Installs/updates memory guard LaunchAgent |
 | `mini-train.sh` | Manual / wrapper | MLX LoRA fine-tuning pipeline (sweeps, validation, reporting) |
-| `mini-train-all.sh` | 1 AM Sunday | Weekly production training for SaneAI + SaneSync readiness check |
-| `mini-train-challengers.sh` | 1 AM daily | Daily challenger training for SaneSync |
+| `mini-train-all.sh` | 1 AM Sunday | Weekly production training for SaneAI |
+| `mini-train-challengers.sh` | 1 AM daily | Daily challenger training for SaneAI |
 | `mini-nightly.sh` | 8:45 AM daily | Nightly builds + tests for all SaneApps repos |
 
 ## Deploying
@@ -52,10 +52,10 @@ If this script fails, stop and fix the machine first. Do not push through with r
 
 ```
 LaunchAgent (1 AM daily)
-  → mini-train-challengers.sh SaneSync
-    → mini-train.sh SaneSync --challenger
+  → mini-train-challengers.sh SaneAI
+    → mini-train.sh SaneAI --challenger
       → runs against clean automation root (`~/SaneApps-automation`)
-      → alternating nightly bakeoff (Phi-4 mini ↔ SmolLM3)
+      → alternating nightly bakeoff (Llama 3.2 3B ↔ SmolLM3)
       → skips Sundays so weekly SaneAI owns that window
       → no artificial runtime cap; hard stop at 8:30 AM
       → stall guard kills only hung training (45 min no log progress)
@@ -69,10 +69,9 @@ LaunchAgent (1 AM Sunday)
       → git fetch + honest repo-state report
       → sed (per-sweep LR config)
       → mlx_lm lora --train (1000 + 2000 iters)
-      → Python validation (13 test cases)
+      → Python validation with workflow-first scoring (commentary x4, broader workflow packs x2, guardrails x2, core x1)
+      → primary gate requires commentary workflow suite to clear its threshold
       → archives a timestamped report + appends metrics history TSV
-      → compares latest SaneAI result against latest SaneSync production baseline
-      → writes a readiness TSV so replacement decisions have history
       → Summary report → ~/SaneApps/outputs/training_report_SaneAI.md
 
 LaunchAgent (8:45 AM daily)
@@ -96,10 +95,11 @@ LaunchAgent (5:40 AM)
 - **Lock files** — both scripts use `mkdir`-based locks with 8-hour stale detection.
 - **Logs** — LaunchAgent stderr appends (never truncates). `mini-train-all.sh` rotates at 1MB.
 - **Isolation enabled** — deploy refreshes `~/SaneApps-automation`, and launch agents point `SANE_ROOT` there so scheduled jobs do not touch the human-used `~/SaneApps` tree.
-- **Training data hydration** — `mini-prepare-automation-root.sh` copies local-only `train.jsonl` / `valid.jsonl` datasets for SaneSync, SaneClip, and SaneAI into the clean clones before training.
-- **Current bakeoff mode** — the daily challenger agent alternates `phi4-mini` and `smollm3-3b` by date, runs until `08:30`, and skips Sundays so the weekly `SaneAI` run gets the full window.
+- **Training data hydration** — `mini-prepare-automation-root.sh` copies local-only `train.jsonl` / `valid.jsonl` datasets for SaneSync, SaneClip, SaneAI, and SaneVideo into the clean clones before training.
+- **Current bakeoff mode** — the daily challenger agent alternates `llama32-3b` and `smollm3-3b` on `SaneAI`, runs until `08:30`, and skips Sundays so the weekly `SaneAI` run gets the full window.
 - **Progress tracking** — every training run now archives a timestamped report under `outputs/history/<App>/` and appends a TSV metrics row so week-over-week comparisons survive report overwrites.
-- **Replacement tracking** — weekly `SaneAI` runs also compare themselves against the latest `SaneSync` production result and append a readiness TSV under `outputs/history/SaneAI/`.
+- **Workflow focus** — nightly `SaneAI` training keeps the unified SaneSync/SaneClip corpus but now weights SaneVideo workflow data so the shared model learns the broader commentary/repurposing surface.
+- **Workflow-first scoring** — training and nightly reports now treat `commentary_workflow` as the primary gate and weight it above legacy action JSON accuracy, while still scoring the broader SaneVideo workflow packs and schema guardrails.
 - **SaneVideo fixtures** — `mini-prepare-automation-root.sh` hydrates ignored `Tests/Assets` media in the clean clone when `ffmpeg` is available on the Mini.
 
 ## LaunchAgents (on mini)

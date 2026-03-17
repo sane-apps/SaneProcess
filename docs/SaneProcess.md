@@ -1152,7 +1152,7 @@ MCP servers are configured in `.mcp.json`:
       "env": { "MEMORY_FILE_PATH": "/Users/sj/.claude/memory/knowledge-graph.jsonl" }
     },
     "nvidia-build": { "command": "/Users/sj/.local/share/nvidia-mcp-venv/bin/python3", "args": ["/Users/sj/.local/share/nvidia-mcp-venv/nvidia_mcp_server.py"] },
-    "openaiDeveloperDocs": { "url": "https://developers.openai.com/mcp" },
+    "openaiDeveloperDocs": { "url": "https://developers.openai.com/codex/mcp/" },
     "serena": {
       "command": "uvx",
       "args": ["--from", "git+https://github.com/oraios/serena", "serena", "start-mcp-server", "--context", "claude-code", "--project-from-cwd"],

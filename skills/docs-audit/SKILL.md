@@ -16,15 +16,16 @@
 **When user says "audit", you MUST:**
 1. **Create `DOCS_AUDIT_FINDINGS.md`** in project root with header + timestamp
 2. **Run ALL 11 perspectives** by reading each `prompts/*.md` file
-3. **Spawn subagents as `general-purpose` type with `model: "sonnet"`** — each writes its own findings file
+3. **Spawn GPT subagents** — each writes its own findings file
 4. **Consolidate** all per-agent files into the main `DOCS_AUDIT_FINDINGS.md`
 5. **Present the full Gap Report** before any updates
 6. **Get user approval** before making changes
 
 **SUBAGENT PIPELINE (CRITICAL — READ THIS):**
 
-Each audit perspective runs as a `general-purpose` subagent with `model: "sonnet"` (NOT `Explore` — Explore agents
-cannot write files). Sonnet catches issues Haiku misses — worth the cost for reliable audits.
+Each audit perspective runs as a GPT subagent with `model: "gpt-5.4"` (NOT `explorer` —
+explorer agents are for narrow lookups, not broad audits). Use the same shared bundle for every
+perspective so the agents can challenge the same evidence set instead of skimming different slices.
 Each agent writes findings to its own file to avoid parallel write conflicts:
 
 ```
@@ -42,16 +43,18 @@ DOCS_AUDIT_FINDINGS_consistency.md
 ```
 
 **How to spawn each agent:**
-```
-Task tool:
-  subagent_type: "general-purpose"
-  model: "sonnet"
-  allowed_tools: ["Read", "Glob", "Grep", "Write", "WebFetch"]
-  prompt: |
+```text
+Codex `spawn_agent`:
+  agent_type: "default"
+  model: "gpt-5.4"
+  reasoning_effort: "medium"
+  fork_context: true
+  message: |
     You are the [PERSPECTIVE] auditor for a documentation audit.
 
     PROJECT ROOT: [absolute path to project]
-
+    CONTEXT BRIEF: [path or contents of the shared context brief]
+    SHARED BUNDLE: [path or contents of the shared audit bundle]
     INSTRUCTIONS: [contents of prompts/[perspective].md]
 
     FINDINGS FILE: Write your findings to [PROJECT_ROOT]/DOCS_AUDIT_FINDINGS_[perspective].md
@@ -76,8 +79,10 @@ Task tool:
     ## Summary
     [2-3 sentence summary]
 
-    IMPORTANT: You MUST write your findings file before completing.
-    Do NOT just return findings as text — WRITE THE FILE.
+    IMPORTANT:
+    - Use the full shared bundle, not a narrow skim.
+    - You MUST write your findings file before completing.
+    - Do NOT start fixing files during the audit pass.
 ```
 
 **After all agents complete — Consolidation Phase:**
@@ -161,7 +166,7 @@ Before ANYTHING else, audit the codebase to understand what's actually there:
 
 Run these 11 specialized audits. Each one thinks deeply from their expertise.
 
-**⚠️ SUBAGENT TYPE: `general-purpose` with `model: "sonnet"`** (NOT `Explore` — Explore agents cannot write files!)
+**⚠️ SUBAGENT TYPE: GPT subagent with `model: "gpt-5.4"`** (NOT `explorer` — explorer agents are for narrow file lookups)
 **⚠️ Each agent MUST write its findings file before completing.**
 **⚠️ Launch agents in parallel batches (5-6 at a time) for efficiency.**
 
@@ -229,7 +234,7 @@ Focus: Broken references in CLAUDE.md, rules, settings vs actual code
 - Scripts mentioned but deleted
 - Hook paths in settings.json that are broken
 
-**This is WHY Claude fails when following instructions - the instructions reference things that don't exist.**
+**This is WHY the agent fails when following instructions - the instructions reference things that don't exist.**
 
 ---
 

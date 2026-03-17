@@ -127,17 +127,24 @@ SKILL_TRIGGERS = {
       /\bfull\s+audit\b/i
     ],
     requires_subagents: true,
-    min_subagents: 3,  # Should spawn at least 3 Task subagents
-    description: 'Multi-perspective documentation audit'
+    min_subagents: 5,
+    description: 'Multi-perspective GPT subagent documentation audit'
   },
   evolve: {
     patterns: [
       /\b(evolve|\/evolve)\b/i,
       /\bupdate\s+(tools|dependencies|mcps?)\b/i,
-      /\bcheck\s+for\s+updates\b/i
+      /\bcheck\s+for\s+updates\b/i,
+      /\b(missing|lack|need)\s+(a\s+)?tool\b/i,
+      /\bworkaround\b/i,
+      /\bduplicate\s+work\b/i,
+      /\bfragment(ed|ation)\b/i,
+      /\bwhat\s+(am\s+)?i\s+missing\b/i,
+      /\bdo\s+we\s+already\s+have\b/i,
+      /\binstall\s+(the\s+)?tool\b/i
     ],
     requires_subagents: false,
-    description: 'Technology scouting and tool updates'
+    description: 'Tool discovery, upgrade, and gap check'
   },
   outreach: {
     patterns: [
@@ -392,14 +399,17 @@ def detect_skill_trigger(prompt)
   nil
 end
 
-def set_skill_requirement(skill_info)
+def set_skill_requirement(skill_info, prompt = nil)
   return unless skill_info
 
   StateManager.update(:skill) do |s|
     s[:required] = skill_info[:name].to_s
+    s[:required_prompt] = prompt.to_s.strip[0, 240]
     s[:invoked] = false
     s[:invoked_at] = nil
     s[:subagents_spawned] = 0
+    s[:runner_used] = false
+    s[:runner_commands] = []
     s[:files_read] = []
     s[:satisfied] = false
     s[:satisfaction_reason] = nil
@@ -419,6 +429,9 @@ def set_skill_requirement(skill_info)
   end
   warn ''
   warn '  Use the Skill tool to invoke this skill properly.'
+  if skill_info[:name] == :evolve
+    warn '  Required receipt: ruby scripts/SaneMaster.rb tool_discovery --query "..."'
+  end
   warn '=' * 50
   warn ''
 rescue StandardError => e
@@ -513,12 +526,16 @@ def output_context(prompt_type, rules, triggers, prompt, frustrations = [], dete
   lines << '  1. Research ALL 4 categories before editing (docs, web, github, local)'
   lines << '  2. Define acceptance criteria: what does "done" look like?'
   lines << '  3. Edits blocked until research complete (sanetools enforces)'
-  lines << '  4. Self-rate SOP compliance when done'
+  lines << '  4. If you touch hooks, tools, skills, templates, or durable docs, update handoff + memory'
+  lines << '  5. Before saying a tool is missing or using a workaround, run: ruby scripts/SaneMaster.rb tool_discovery --query "..."'
+  lines << '  6. If a recurring tool is truly missing, install it, document it, and make it the standard path'
+  lines << '  7. Self-rate SOP compliance when done'
   lines << ''
   lines << 'GUARDRAILS ACTIVE (all code tasks):'
   lines << '  - Max 3 edit attempts before mandatory research pause (ENFORCED)'
   lines << '  - If stuck after 2 tries: STOP and investigate, do not guess'
   lines << '  - Circuit breaker trips at 3 consecutive failures'
+  lines << '  - Tooling/docs work is persistent work, not optional cleanup'
   if prompt_type == :big_task
     lines << ''
     lines << 'BIG TASK - Additional guardrails:'
@@ -687,7 +704,7 @@ def process_prompt(prompt)
 
   # 6. Detect skill triggers (docs-audit, evolve, outreach)
   skill_trigger = detect_skill_trigger(prompt)
-  set_skill_requirement(skill_trigger) if skill_trigger
+  set_skill_requirement(skill_trigger, prompt) if skill_trigger
 
   # 7. Get learned patterns from previous sessions
   learned_patterns = get_learned_patterns
@@ -735,7 +752,8 @@ def self_test
     method(:extract_requirements),
     method(:detect_research_only_mode),
     method(:handle_safemode_command),
-    method(:check_plan_approval)
+    method(:check_plan_approval),
+    method(:detect_skill_trigger)
   )
 end
 
@@ -766,6 +784,9 @@ end
 # === MAIN ===
 
 if ARGV.include?('--self-test')
+  require_relative 'self_test_environment'
+  exit SelfTestEnvironment.run_isolated(__FILE__)
+elsif ARGV.include?('--self-test-internal')
   self_test
 elsif ARGV.include?('--check-heartbeat')
   check_heartbeat

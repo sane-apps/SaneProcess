@@ -174,8 +174,8 @@ module SaneMasterModules
 
     def generate_xctest_content(test_name, options)
       target_class = options[:target] || 'TargetClass'
-      async_suffix = options[:async] ? ' async throws' : ''
-      await_prefix = options[:async] ? 'await ' : ''
+      test_signature_suffix = options[:async] ? ' async throws' : ' throws'
+      skip_reason = "Replace template with behavior-specific assertions for #{target_class}."
       timeout = options[:type] == 'ui' ? '300.0' : '60.0'
       timeout_comment = options[:type] == 'ui' ? '5 minutes' : '1 minute'
 
@@ -216,25 +216,12 @@ module SaneMasterModules
 
             // MARK: - Test Cases
 
-            func testInitialState()#{async_suffix} {
-                // Arrange - (Setup is done in setUp)
-
-                // Act
-                // TODO: Replace with actual behavior verification
-
-                // Assert
-                XCTAssertNotNil(sut, "SUT should be initialized")
+            func testInitialState()#{test_signature_suffix} {
+                throw XCTSkip("#{skip_reason}")
             }
 
-            func testBasicFunctionality()#{async_suffix} {
-                // Arrange
-                let expectedValue = "expected"
-
-                // Act
-                #{await_prefix}let result = sut.someMethod()
-
-                // Assert
-                XCTAssertEqual(result, expectedValue, "Result should match expected value")
+            func testBehaviorTemplate()#{test_signature_suffix} {
+                throw XCTSkip("#{skip_reason}")
             }
         }
       SWIFT
@@ -243,7 +230,7 @@ module SaneMasterModules
     def generate_testing_framework_content(test_name, options)
       target_class = options[:target] || 'TargetClass'
       async_suffix = options[:async] ? ' async throws' : ''
-      await_prefix = options[:async] ? 'await ' : ''
+      skip_reason = "Replace template with behavior-specific assertions for #{target_class}."
 
       <<~SWIFT
         //
@@ -264,17 +251,14 @@ module SaneMasterModules
 
             var sut: #{target_class} { #{target_class}() }
 
-            @Test("Initial state verification")
+            @Test("Initial state verification", .disabled("#{skip_reason}"))
             func initialState()#{async_suffix} {
-                let systemUnderTest = sut
-                #expect(systemUnderTest != nil)
+                let _ = sut
             }
 
-            @Test("Basic functionality")
-            func basicFunctionality()#{async_suffix} {
-                let expectedValue = "expected"
-                #{await_prefix}let result = sut.someMethod()
-                #expect(result == expectedValue)
+            @Test("Behavior template", .disabled("#{skip_reason}"))
+            func behaviorTemplate()#{async_suffix} {
+                let _ = sut
             }
         }
       SWIFT

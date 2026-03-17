@@ -9,7 +9,10 @@ REAL_SECURITY="${SANE_REAL_SECURITY:-/usr/bin/security}"
 GUARD_DIR="${TMPDIR:-/tmp}/sane-security-guard"
 LOCK_DIR="${GUARD_DIR}/lock"
 STAMP_FILE="${GUARD_DIR}/last_lookup"
-COOLDOWN_SECONDS="${SANE_SECURITY_COOLDOWN_SECONDS:-120}"
+HISTORY_FILE="${GUARD_DIR}/history"
+REPEAT_COOLDOWN_SECONDS="${SANE_SECURITY_REPEAT_COOLDOWN_SECONDS:-30}"
+BURST_WINDOW_SECONDS="${SANE_SECURITY_BURST_WINDOW_SECONDS:-60}"
+BURST_MAX_LOOKUPS="${SANE_SECURITY_BURST_MAX_LOOKUPS:-12}"
 
 is_ai_session() {
   [[ -n "${CODEX_SHELL:-}" || -n "${CLAUDE_CODE:-}" || -n "${CLAUDE_WORKTREES:-}" ]]
@@ -29,6 +32,10 @@ ensure_guard_dir() {
   mkdir -p "$GUARD_DIR"
 }
 
+command_string() {
+  printf '%s ' "$@"
+}
+
 acquire_lock() {
   if mkdir "$LOCK_DIR" 2>/dev/null; then
     trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
@@ -40,22 +47,46 @@ acquire_lock() {
   exit 2
 }
 
-last_lookup_is_recent() {
+same_lookup_is_recent() {
+  local current_cmd="$1"
   [[ -f "$STAMP_FILE" ]] || return 1
 
-  local now last_ts
+  local now last_ts last_cmd
   now=$(date +%s)
   last_ts=$(awk -F'|' 'NR==1 { print $1 }' "$STAMP_FILE" 2>/dev/null || true)
+  last_cmd=$(cut -d'|' -f2- "$STAMP_FILE" 2>/dev/null || true)
   [[ "$last_ts" =~ ^[0-9]+$ ]] || return 1
 
-  (( now - last_ts < COOLDOWN_SECONDS ))
+  [[ "$last_cmd" == "$current_cmd" ]] || return 1
+  (( now - last_ts < REPEAT_COOLDOWN_SECONDS ))
 }
 
 write_stamp() {
   local now cmd
   now=$(date +%s)
-  cmd=$(printf '%s ' "$@")
+  cmd=$(command_string "$@")
   printf '%s|%s\n' "$now" "${cmd% }" > "$STAMP_FILE"
+}
+
+append_history() {
+  local now cmd cutoff tmp_file
+  now=$(date +%s)
+  cmd=$(command_string "$@")
+  printf '%s|%s\n' "$now" "${cmd% }" >> "$HISTORY_FILE"
+
+  cutoff=$(( now - BURST_WINDOW_SECONDS ))
+  tmp_file="${HISTORY_FILE}.tmp"
+  awk -F'|' -v cutoff="$cutoff" '($1 ~ /^[0-9]+$/) && ($1 >= cutoff) { print }' "$HISTORY_FILE" > "$tmp_file" 2>/dev/null || true
+  mv "$tmp_file" "$HISTORY_FILE"
+}
+
+recent_lookup_count() {
+  [[ -f "$HISTORY_FILE" ]] || { echo 0; return; }
+
+  local now cutoff
+  now=$(date +%s)
+  cutoff=$(( now - BURST_WINDOW_SECONDS ))
+  awk -F'|' -v cutoff="$cutoff" '($1 ~ /^[0-9]+$/) && ($1 >= cutoff) { count++ } END { print count + 0 }' "$HISTORY_FILE"
 }
 
 guarded=0
@@ -65,16 +96,31 @@ if is_ai_session && is_secret_read "${1:-}"; then
   ensure_guard_dir
   acquire_lock
 
-  if [[ "${SANE_SECURITY_ALLOW_REPEAT:-0}" != "1" ]] && last_lookup_is_recent; then
+  current_cmd=$(command_string "$@")
+  current_cmd="${current_cmd% }"
+
+  if [[ "${SANE_SECURITY_ALLOW_REPEAT:-0}" != "1" ]] && same_lookup_is_recent "$current_cmd"; then
     local_prev=$(cut -d'|' -f2- "$STAMP_FILE" 2>/dev/null || echo "unknown")
     echo "🔴 BLOCKED: Repeated Keychain lookup too soon." >&2
-    echo "   Rule: one intentional Keychain prompt per task. Reuse the first value instead of probing again." >&2
+    echo "   Rule: avoid repeated probes of the same secret. Reuse the value you already fetched." >&2
     echo "   Last lookup: $local_prev" >&2
-    echo "   If you truly need another prompt right now, explain it first and rerun once with SANE_SECURITY_ALLOW_REPEAT=1." >&2
+    echo "   Different secrets are allowed sequentially. This block only applies to rapid repeats of the same lookup." >&2
     exit 2
   fi
 
+  if [[ "${SANE_SECURITY_ALLOW_REPEAT:-0}" != "1" ]]; then
+    recent_count=$(recent_lookup_count)
+    if (( recent_count >= BURST_MAX_LOOKUPS )); then
+      echo "🔴 BLOCKED: Too many Keychain lookups in a short burst." >&2
+      echo "   Rule: sequential lookups are fine when needed, but loops/retries/prompt floods are not." >&2
+      echo "   Recent lookups: $recent_count in ${BURST_WINDOW_SECONDS}s (limit ${BURST_MAX_LOOKUPS})." >&2
+      echo "   Reuse cached secrets or slow down instead of hammering Keychain." >&2
+      exit 2
+    fi
+  fi
+
   write_stamp "$@"
+  append_history "$@"
 fi
 
 if [[ "$guarded" == "1" ]]; then

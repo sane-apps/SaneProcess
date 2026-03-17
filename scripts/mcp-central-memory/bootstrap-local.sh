@@ -2,7 +2,7 @@
 set -euo pipefail
 
 DB_NAME="${CENTRAL_MEMORY_DB_NAME:-central_memory}"
-DB_URL="${CENTRAL_MEMORY_DATABASE_URL:-postgresql://localhost:5432/${DB_NAME}}"
+DB_URL="${CENTRAL_MEMORY_DATABASE_URL:-postgresql://${USER:-sj}@localhost:5432/${DB_NAME}}"
 EMBED_DIM="${CENTRAL_MEMORY_EMBED_DIMENSIONS:-1536}"
 
 if ! command -v brew >/dev/null 2>&1; then

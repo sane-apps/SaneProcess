@@ -7,7 +7,7 @@
 # Respects time budget — skips remaining challengers if budget exhausted.
 # NEVER auto-promotes — generates comparison reports for human review.
 #
-# Usage: mini-train-challengers.sh [app_name]  (default: SaneSync)
+# Usage: mini-train-challengers.sh [app_name]  (default: SaneAI)
 
 set -uo pipefail
 
@@ -18,7 +18,7 @@ fi
 SANE_ROOT="${SANE_ROOT:-$DEFAULT_SANE_ROOT}"
 SANE_OUTPUT_DIR="${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}"
 
-APP_NAME="${1:-SaneSync}"
+APP_NAME="${1:-SaneAI}"
 APP_DIR="$SANE_ROOT/apps/$APP_NAME"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT_DIR="$SANE_OUTPUT_DIR"
@@ -31,7 +31,7 @@ CHALLENGER_BUDGET_MIN="${CHALLENGER_BUDGET_MIN:-0}"
 TRAIN_HARD_STOP_TIME="${TRAIN_HARD_STOP_TIME:-08:30}"
 CHALLENGER_SELECTION_MODE="${CHALLENGER_SELECTION_MODE:-all}"
 CHALLENGER_ROTATION_ANCHOR_DATE="${CHALLENGER_ROTATION_ANCHOR_DATE:-2026-03-07}"
-CHALLENGER_ROTATION_ORDER="${CHALLENGER_ROTATION_ORDER:-phi4-mini,smollm3-3b}"
+CHALLENGER_ROTATION_ORDER="${CHALLENGER_ROTATION_ORDER:-llama32-3b,smollm3-3b}"
 CHALLENGER_ROTATION_DATE="${CHALLENGER_ROTATION_DATE:-$DATE}"
 CHALLENGER_SKIP_WEEKDAY="${CHALLENGER_SKIP_WEEKDAY:-}"
 CHALLENGER_START=$(date +%s)
@@ -67,7 +67,7 @@ select_rotation_config_name() {
     "$CHALLENGER_ROTATION_ANCHOR_DATE" "$CHALLENGER_ROTATION_DATE" 2>/dev/null || echo "")
 
   if ! [[ "$days_since" =~ ^-?[0-9]+$ ]]; then
-    printf '%s' "phi4-mini"
+    printf '%s' "llama32-3b"
     return
   fi
 
@@ -82,7 +82,7 @@ select_rotation_config_name() {
 
   order_count=$#
   if [ "$order_count" -eq 0 ]; then
-    printf '%s' "phi4-mini"
+    printf '%s' "llama32-3b"
     return
   fi
 
@@ -162,12 +162,12 @@ PROD_REPORT="$OUTPUT_DIR/training_report_${APP_NAME}.md"
 if [ -f "$PROD_REPORT" ]; then
   PROD_BEST=$(grep "Best adapter:" "$PROD_REPORT" 2>/dev/null | grep -oE '[0-9]+%' | head -1)
   if [ -n "$PROD_BEST" ]; then
-    echo "- **Llama 3.2 3B (production):** $PROD_BEST" >> "$COMPARISON_REPORT"
+    echo "- **Production baseline ($APP_NAME):** $PROD_BEST" >> "$COMPARISON_REPORT"
   else
-    echo "- **Llama 3.2 3B (production):** (no result today)" >> "$COMPARISON_REPORT"
+    echo "- **Production baseline ($APP_NAME):** (no result today)" >> "$COMPARISON_REPORT"
   fi
 else
-  echo "- **Llama 3.2 3B (production):** (no training report today)" >> "$COMPARISON_REPORT"
+  echo "- **Production baseline ($APP_NAME):** (no training report today)" >> "$COMPARISON_REPORT"
 fi
 
 echo "" >> "$COMPARISON_REPORT"
@@ -175,7 +175,7 @@ echo "## Challenger Results" >> "$COMPARISON_REPORT"
 echo "" >> "$COMPARISON_REPORT"
 if [ "$CHALLENGER_SELECTION_MODE" = "alternate" ]; then
   echo "- **Selection mode:** alternating nightly bakeoff" >> "$COMPARISON_REPORT"
-  echo "- **Rotation anchor:** $CHALLENGER_ROTATION_ANCHOR_DATE (Phi-4 mini first)" >> "$COMPARISON_REPORT"
+  echo "- **Rotation anchor:** $CHALLENGER_ROTATION_ANCHOR_DATE" >> "$COMPARISON_REPORT"
   echo "- **Effective date:** $CHALLENGER_ROTATION_DATE" >> "$COMPARISON_REPORT"
   echo "- **Scheduled model tonight:** $SELECTED_CONFIG_NAME" >> "$COMPARISON_REPORT"
   echo "" >> "$COMPARISON_REPORT"
@@ -264,21 +264,25 @@ while read -r config_file; do
     if [ -z "$accuracy" ]; then
       accuracy=$(grep "Best adapter:" "$challenger_report" | grep -oE '[0-9]+%' | head -1)
     fi
+    workflow_gate=$(grep "Workflow gate:" "$challenger_report" | grep -oE 'PASS|FAIL' | head -1)
   else
     accuracy=""
+    workflow_gate=""
   fi
 
   if [ -z "$accuracy" ]; then
     accuracy="N/A"
     status="FAILED"
+  elif [ "$workflow_gate" = "FAIL" ]; then
+    status="Workflow gate failed"
   elif echo "$accuracy" | grep -qE '^[0-9]+'; then
     acc_num=$(echo "$accuracy" | tr -d '%')
-    if [ "$acc_num" -gt 90 ]; then
-      status="BEATS BASELINE"
-    elif [ "$acc_num" -gt 70 ]; then
+    if [ "$acc_num" -ge 85 ]; then
+      status="Strong"
+    elif [ "$acc_num" -ge 60 ]; then
       status="Promising"
     else
-      status="Below baseline"
+      status="Below target"
     fi
   else
     status="Unknown"

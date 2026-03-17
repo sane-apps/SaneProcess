@@ -8,11 +8,18 @@
 # Contains all check_* functions for PreToolUse enforcement
 # ==============================================================================
 
+require 'json'
 require_relative 'core/state_manager'
 require_relative 'sanetools_gaming'
 require_relative 'sanetools_deploy'
+require_relative 'sanetools_github_guard'
 
 module SaneToolsChecks
+  TOOL_DISCOVERY_ALLOWED_COMMAND = Regexp.union(
+    %r{SaneMaster\.rb\s+(?:tool_discovery|tool_receipt)\b}i,
+    %r{scripts/automation/tool_discovery_receipt\.rb}i
+  ).freeze
+
   # Constants needed by checks
   BLOCKED_PATH_PATTERN = Regexp.union(
     %r{^~?/\.ssh},
@@ -70,20 +77,9 @@ module SaneToolsChecks
     %r{docs/.*\.md$}
   ].freeze
 
-  GITHUB_PUBLIC_POST_TOOLS = %w[
-    mcp__github__add_issue_comment
-    mcp__github__update_issue
-    mcp__github__create_issue
-    mcp__github__create_pull_request_review
-    mcp__github__create_pull_request
-  ].freeze
-
-  GITHUB_APPROVAL_FLAG = '/tmp/.gh_post_approved'
-  GITHUB_APPROVAL_TTL_SECONDS = 300
-  SANE_OWNER_PATTERN = /\A(?:sane-apps|mrsaneapps)\z/i
-  CORPORATE_WE_PATTERN = /\b(?:we|we['’]re|we['’]ll|we['’]ve|our|us)\b/i
-
   class << self
+    include SaneToolsGitHubGuard
+
     def check_blocked_path(tool_input, tool_name = nil, edit_tools = [])
       path = tool_input['file_path'] || tool_input['path'] || tool_input[:file_path] || tool_input[:path]
       return nil unless path
@@ -348,21 +344,43 @@ module SaneToolsChecks
       github: [:github]
     }.freeze
 
+    MCP_SERVER_NAME_MAP = {
+      apple_docs: 'apple-docs',
+      context7: 'context7',
+      github: 'github'
+    }.freeze
+
+    def configured_mcp_keys(project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
+      server_names = [File.expand_path('~/.mcp.json'), File.join(project_dir, '.mcp.json')].uniq.each_with_object([]) do |path, names|
+        next unless File.exist?(path)
+
+        begin
+          config = JSON.parse(File.read(path))
+          names.concat((config['mcpServers'] || {}).keys)
+        rescue JSON::ParserError
+          next
+        end
+      end.uniq
+
+      MCP_SERVER_NAME_MAP.each_with_object([]) do |(key, server_name), configured|
+        configured << key if server_names.include?(server_name)
+      end
+    end
+
+    def configured_mcp_verification_info(project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
+      configured = configured_mcp_keys(project_dir)
+      MCP_VERIFICATION_INFO.select { |key, _info| configured.include?(key) }
+    end
+
     # Returns only the research categories that should be enforced,
-    # skipping MCP-dependent ones if those MCPs aren't installed.
+    # skipping MCP-dependent ones if those MCPs aren't configured.
     def effective_research_categories(research_categories)
       research = StateManager.get(:research)
-      health = StateManager.get(:mcp_health)
-      mcps = health[:mcps] || {}
+      configured = configured_mcp_keys
 
       research_categories.keys.select do |cat|
         if MCP_DEPENDENT_CATEGORIES.key?(cat) && !research[cat]
-          # Check if any MCP for this category has ever been called
-          mcp_keys = MCP_DEPENDENT_CATEGORIES[cat]
-          mcp_keys.any? do |key|
-            data = mcps[key]
-            data.is_a?(Hash) && (data[:last_success] || data[:last_failure])
-          end
+          (MCP_DEPENDENT_CATEGORIES[cat] & configured).any?
         else
           true
         end
@@ -416,28 +434,6 @@ module SaneToolsChecks
       "Tool '#{tool_name}' affects external systems. Research first.\n" \
       "Missing: #{missing.join(', ')}. Use read-only tools to understand state first.\n" \
       "Reset: rr- (clear research to start over)"
-    end
-
-    # Public GitHub messages/issues for SaneApps require explicit approval AND
-    # must use first-person singular language.
-    def check_github_post_guard(tool_name, tool_input)
-      return nil unless GITHUB_PUBLIC_POST_TOOLS.include?(tool_name)
-      return nil unless sane_owner?(tool_input)
-
-      public_text = extract_public_text(tool_input)
-      if public_text.match?(CORPORATE_WE_PATTERN)
-        return "GITHUB POST BLOCKED\n" \
-               'Use first-person singular language only for client/public replies.' \
-               "\nReplace: we/us/our -> I/me/my."
-      end
-
-      status = consume_github_approval_flag
-      return nil if status == :valid
-
-      "GITHUB POST BLOCKED\n" \
-      "This action posts publicly and requires explicit user approval first.\n" \
-      "Show the final draft, get approval, then run:\n" \
-      "  touch #{GITHUB_APPROVAL_FLAG}"
     end
 
     def check_circuit_breaker
@@ -509,43 +505,6 @@ module SaneToolsChecks
       nil
     end
 
-    def sane_owner?(tool_input)
-      owner = (tool_input['owner'] || tool_input[:owner]).to_s.strip
-      return false if owner.empty?
-
-      owner.match?(SANE_OWNER_PATTERN)
-    end
-
-    def extract_public_text(tool_input)
-      pieces = []
-
-      %w[title body comment].each do |key|
-        value = tool_input[key] || tool_input[key.to_sym]
-        pieces << value.to_s unless value.nil?
-      end
-
-      comments = tool_input['comments'] || tool_input[:comments]
-      if comments.is_a?(Array)
-        comments.each { |value| pieces << value.to_s }
-      elsif !comments.nil?
-        pieces << comments.to_s
-      end
-
-      pieces.join("\n")
-    end
-
-    def consume_github_approval_flag
-      return :missing unless File.exist?(GITHUB_APPROVAL_FLAG)
-
-      age = Time.now - File.mtime(GITHUB_APPROVAL_FLAG)
-      File.delete(GITHUB_APPROVAL_FLAG)
-      return :valid if age < GITHUB_APPROVAL_TTL_SECONDS
-
-      :stale
-    rescue StandardError
-      :missing
-    end
-
     def check_research_only_mode(tool_name, edit_tools, global_mutation_pattern, external_mutation_pattern)
       reqs = StateManager.get(:requirements)
       return nil unless reqs[:is_research_only]
@@ -560,6 +519,29 @@ module SaneToolsChecks
       end
 
       nil
+    end
+
+    def check_tool_discovery_required(tool_name, tool_input, edit_tools)
+      skill = StateManager.get(:skill)
+      return nil unless skill[:required] == 'evolve'
+      return nil if skill[:runner_used]
+
+      if tool_name == 'Bash'
+        command = tool_input['command'] || tool_input[:command] || ''
+        return nil if command.match?(TOOL_DISCOVERY_ALLOWED_COMMAND)
+      end
+
+      return nil unless edit_tools.include?(tool_name) || %w[Bash Task].include?(tool_name)
+
+      prompt = skill[:required_prompt].to_s.strip
+      query = prompt.empty? ? 'describe the missing tool or workaround' : prompt
+      escaped = query.gsub('"', '\"')
+
+      "TOOL DISCOVERY REQUIRED\n" \
+      "A missing-tool/workaround/fragmentation prompt triggered the evolve path.\n" \
+      "Run this first:\n" \
+      "  ruby scripts/SaneMaster.rb tool_discovery --query \"#{escaped}\"\n" \
+      "Then continue once the receipt exists."
     end
 
     def check_saneloop_required(tool_name, edit_tools)
@@ -724,6 +706,9 @@ module SaneToolsChecks
       project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
       return nil unless File.exist?(File.join(project_dir, '.saneprocess'))
 
+      configured_mcps = configured_mcp_verification_info(project_dir)
+      return nil if configured_mcps.empty?
+
       # Get MCP health state
       health = StateManager.get(:mcp_health)
 
@@ -732,7 +717,7 @@ module SaneToolsChecks
 
       # Check which MCPs are still unverified
       mcps = health[:mcps] || {}
-      unverified = MCP_VERIFICATION_INFO.select do |key, _info|
+      unverified = configured_mcps.select do |key, _info|
         mcp_data = mcps[key]
         !mcp_data || !mcp_data[:verified]
       end
@@ -758,14 +743,14 @@ module SaneToolsChecks
       end
 
       # Build comprehensive error message
-      total_mcps = MCP_VERIFICATION_INFO.length
+      total_mcps = configured_mcps.length
       verified_count = total_mcps - unverified.length
       unverified_list = unverified.map do |key, info|
         "  ⬜ #{info[:name]}: #{info[:tool]}"
       end.join("\n")
 
       msg = "MCP VERIFICATION INCOMPLETE [#{verified_count}/#{total_mcps} verified]\n" \
-            "Cannot edit until all #{total_mcps} MCPs are verified this session.\n" \
+            "Cannot edit until all #{total_mcps} configured MCPs are verified this session.\n" \
             "\n" \
             "Unverified MCPs (run each tool once to verify):\n" \
             "#{unverified_list}\n"

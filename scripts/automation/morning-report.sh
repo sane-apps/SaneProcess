@@ -13,6 +13,10 @@ if [[ -f "$HOME/.config/nv/env" ]]; then
   source "$HOME/.config/nv/env"
 fi
 
+ENV_CACHE_FILE="${SANE_ENV_CACHE_FILE:-$HOME/.config/nv/env}"
+KEYCHAIN_FALLBACK_ENABLED="${SANE_KEYCHAIN_FALLBACK:-1}"
+[[ "${SANE_NO_KEYCHAIN:-0}" == "1" ]] && KEYCHAIN_FALLBACK_ENABLED="0"
+
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR="$HOME/SaneApps/infra/SaneProcess/outputs"
@@ -20,15 +24,85 @@ REPORT_FILE="$OUTPUT_DIR/morning_report.md"
 ARCHIVE_DIR="$OUTPUT_DIR/reports"
 CACHE_DIR="$OUTPUT_DIR/.cache"
 APPS_DIR="$HOME/SaneApps/apps"
+PRODUCTS_YML="$HOME/SaneApps/infra/SaneProcess/config/products.yml"
 DATE_DISPLAY=$(date +"%Y-%m-%d %A")
 DATE=$(date +"%Y-%m-%d")
 YESTERDAY_DATE=$(date -v-1d +"%Y-%m-%d")
 WEEK_AGO=$(date -v-7d +"%Y-%m-%d")
 GH_ORG="sane-apps"
-PRODUCT_SITES="sanebar.com saneclick.com saneclip.com sanehosts.com sanesync.com sanevideo.com saneapps.com"
-REPOS="SaneBar SaneClick SaneClip SaneHosts SaneSync SaneVideo"
+PRODUCT_SITES=""
+REPOS=""
 
 mkdir -p "$CACHE_DIR" "$ARCHIVE_DIR"
+
+persist_secret_to_env_cache() {
+  local value="$1"
+  shift
+
+  [[ -n "$value" ]] || return 0
+  [[ "${SANE_ENV_CACHE_WRITE:-1}" != "0" ]] || return 0
+  [[ $# -gt 0 ]] || return 0
+
+  local env_dir
+  env_dir="$(dirname "$ENV_CACHE_FILE")"
+  mkdir -p "$env_dir"
+  chmod 700 "$env_dir" 2>/dev/null || true
+
+  python3 - "$ENV_CACHE_FILE" "$value" "$@" <<'PY'
+import pathlib
+import shlex
+import sys
+
+env_path = pathlib.Path(sys.argv[1]).expanduser()
+value = sys.argv[2]
+names = [name for name in sys.argv[3:] if name]
+if not names:
+    raise SystemExit(0)
+
+lines = []
+if env_path.exists():
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+
+filtered = []
+for line in lines:
+    stripped = line.strip()
+    if any(stripped.startswith(f"export {name}=") for name in names):
+        continue
+    filtered.append(line)
+
+for name in names:
+    filtered.append(f"export {name}={shlex.quote(value)}")
+
+env_path.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+env_path.chmod(0o600)
+PY
+}
+
+load_secret() {
+  local service="$1"
+  local account="$2"
+  shift 2
+
+  local env_name value=""
+  for env_name in "$@"; do
+    value="${!env_name:-}"
+    if [[ -n "$value" ]]; then
+      printf '%s' "$value"
+      return 0
+    fi
+  done
+
+  if [[ "$KEYCHAIN_FALLBACK_ENABLED" == "1" ]] && command -v security &>/dev/null; then
+    value=$(security find-generic-password -s "$service" -a "$account" -w 2>/dev/null || echo "")
+    if [[ -n "$value" ]]; then
+      persist_secret_to_env_cache "$value" "$@"
+      printf '%s' "$value"
+      return 0
+    fi
+  fi
+
+  return 1
+}
 
 # Archive previous report before overwriting
 if [[ -f "$REPORT_FILE" ]]; then
@@ -57,19 +131,11 @@ fi
 trap 'rm -rf "$LOCKFILE"' EXIT
 
 # Pre-fetch API keys from env (loaded from ~/.config/nv/env above)
-LS_KEY="${LEMONSQUEEZY_API_KEY:-}"
-CF_TOKEN="${CLOUDFLARE_API_TOKEN:-}"
-RESEND_KEY="${RESEND_API_KEY:-}"
-DIST_KEY="${DIST_ANALYTICS_KEY:-}"
-
-# Keychain fallback for interactive sessions
-KEYCHAIN_FALLBACK_ENABLED="${SANE_KEYCHAIN_FALLBACK:-0}"
-if [[ "$KEYCHAIN_FALLBACK_ENABLED" == "1" ]] && command -v security &>/dev/null; then
-  [[ -z "$RESEND_KEY" ]] && RESEND_KEY=$(security find-generic-password -s resend -a api_key -w 2>/dev/null || echo "")
-  [[ -z "$CF_TOKEN" ]] && CF_TOKEN=$(security find-generic-password -s cloudflare -a api_token -w 2>/dev/null || echo "")
-  [[ -z "$LS_KEY" ]] && LS_KEY=$(security find-generic-password -s lemonsqueezy -a api_key -w 2>/dev/null || echo "")
-  [[ -z "$DIST_KEY" ]] && DIST_KEY=$(security find-generic-password -s dist-analytics -a api_key -w 2>/dev/null || echo "")
-fi
+LS_KEY="$(load_secret "lemonsqueezy" "api_key" "LEMONSQUEEZY_API_KEY" || true)"
+CF_TOKEN="$(load_secret "cloudflare" "api_token" "CLOUDFLARE_API_TOKEN" || true)"
+RESEND_KEY="$(load_secret "resend" "api_key" "RESEND_API_KEY" || true)"
+DIST_KEY="$(load_secret "dist-analytics" "api_key" "DIST_ANALYTICS_KEY" || true)"
+EMAIL_API_KEY="$(load_secret "sane-email-automation" "api_key" "SANE_EMAIL_API_KEY" "EMAIL_API_KEY" || true)"
 
 # Tools check
 NV_CMD="$HOME/.local/bin/nv"
@@ -109,6 +175,41 @@ safe_section() {
 safe_curl() {
   curl --connect-timeout 10 --max-time 30 "$@"
 }
+
+product_config_rows() {
+  local mode="$1"
+  ruby -ryaml - "$PRODUCTS_YML" "$mode" <<'RUBY'
+config = YAML.safe_load(File.read(ARGV[0]), permitted_classes: []) || {}
+products = config['products'].is_a?(Hash) ? config['products'] : {}
+mode = ARGV[1].to_s
+
+case mode
+when 'domains'
+  products.values.map { |product| product['domain'].to_s.strip }.reject(&:empty?).uniq.each { |domain| puts domain }
+when 'repos'
+  products.values.map { |product| product['github_repo'].to_s.split('/').last }.reject(&:empty?).uniq.each { |repo| puts repo }
+when 'released'
+  products.each do |slug, product|
+    next unless product.is_a?(Hash)
+    next if product['checkout_uuid'].to_s.strip.empty?
+
+    name = product['name'].to_s.strip
+    domain = product['domain'].to_s.strip
+    next if name.empty? || domain.empty?
+
+    puts [name, "https://#{domain}/appcast.xml", "https://#{domain}", slug.to_s].join('|')
+  end
+end
+RUBY
+}
+
+PRODUCT_SITES="$(
+  {
+    echo "saneapps.com"
+    product_config_rows domains
+  } | awk 'NF' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//'
+)"
+REPOS="$(product_config_rows repos | awk 'NF' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
 
 # Initialize report
 cat > "$REPORT_FILE" <<EOF
@@ -581,6 +682,55 @@ section_health() {
   echo "" >> "$REPORT_FILE"
 }
 
+fetch_live_email_worker_snapshot() {
+  [[ -n "$EMAIL_API_KEY" ]] || return 0
+
+  safe_curl -fsSL "https://email-api.saneapps.com/api/debug/download-config" \
+    -H "Authorization: Bearer $EMAIL_API_KEY" 2>/dev/null || true
+}
+
+extract_live_email_worker_version() {
+  local snapshot_json="$1"
+  local app_name="$2"
+
+  [[ -n "$snapshot_json" ]] || return 0
+  [[ -n "$app_name" ]] || return 0
+
+  SNAPSHOT_JSON="$snapshot_json" python3 - "$app_name" <<'PY'
+import json
+import os
+import sys
+
+app_name = sys.argv[1]
+try:
+    payload = json.loads(os.environ.get("SNAPSHOT_JSON", ""))
+except Exception:
+    raise SystemExit(0)
+
+product = (payload.get("products") or {}).get(app_name) or {}
+version = product.get("version", "")
+if version is None:
+    version = ""
+sys.stdout.write(str(version))
+PY
+}
+
+fetch_homebrew_cask_body() {
+  local cask_name="$1"
+  local github_api_path="repos/sane-apps/homebrew-tap/contents/Casks/${cask_name}.rb?ref=main"
+
+  if [[ -n "$GH_CMD" ]]; then
+    local gh_content
+    gh_content=$("$GH_CMD" api "$github_api_path" --jq .content 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null || echo "")
+    if [[ -n "$gh_content" ]]; then
+      printf '%s' "$gh_content"
+      return 0
+    fi
+  fi
+
+  safe_curl -fsSL "https://raw.githubusercontent.com/sane-apps/homebrew-tap/main/Casks/${cask_name}.rb" 2>/dev/null || true
+}
+
 # =============================================================================
 # Section 7: Version Drift (cross-channel consistency)
 # =============================================================================
@@ -588,22 +738,19 @@ section_version_drift() {
   echo "## Version Consistency" >> "$REPORT_FILE"
   echo "" >> "$REPORT_FILE"
 
-  local webhook_js="$HOME/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js"
+  local webhook_snapshot
+  webhook_snapshot=$(fetch_live_email_worker_snapshot)
 
-  # App configs: name|appcast_url|site_url|cask_name
-  local app_configs=(
-    "SaneBar|https://sanebar.com/appcast.xml|https://sanebar.com|sanebar"
-    "SaneClip|https://saneclip.com/appcast.xml|https://saneclip.com|saneclip"
-    "SaneClick|https://saneclick.com/appcast.xml|https://saneclick.com|saneclick"
-    "SaneHosts|https://sanehosts.com/appcast.xml|https://sanehosts.com|sanehosts"
-  )
+  local app_configs
+  app_configs=$(product_config_rows released)
 
   echo "| App | Appcast | Website | Webhook | Homebrew | Status |" >> "$REPORT_FILE"
   echo "|-----|---------|---------|---------|----------|--------|" >> "$REPORT_FILE"
 
   local has_drift=false
 
-  for entry in "${app_configs[@]}"; do
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
     IFS='|' read -r app_name appcast_url site_url cask_name <<< "$entry"
 
     # 1. Appcast version (live fetch — source of truth)
@@ -622,21 +769,18 @@ section_version_drift() {
       site_ver=$(echo "$site_html" | grep -oE "${app_name}-[0-9]+\.[0-9]+\.[0-9]+\.(zip|dmg)" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "—")
     fi
 
-    # 3. Webhook PRODUCT_CONFIG version (local file)
+    # 3. Webhook PRODUCT_CONFIG version (live worker)
     local webhook_ver="—"
-    if [[ -f "$webhook_js" ]]; then
-      local webhook_line
-      webhook_line=$(grep "'${app_name}'" "$webhook_js" 2>/dev/null || echo "")
-      if [[ -n "$webhook_line" ]]; then
-        webhook_ver=$(echo "$webhook_line" | grep -oE "${app_name}-[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' || echo "—")
-      fi
+    if [[ -n "$webhook_snapshot" ]]; then
+      webhook_ver=$(extract_live_email_worker_version "$webhook_snapshot" "$app_name" || echo "—")
+      webhook_ver="${webhook_ver:-—}"
     fi
 
-    # 4. Homebrew cask version (live fetch)
+    # 4. Homebrew cask version (GitHub content API, raw fallback only if needed)
     local cask_ver="—"
     if [[ -n "$cask_name" ]]; then
       local cask_body
-      cask_body=$(safe_curl -fsSL "https://raw.githubusercontent.com/sane-apps/homebrew-tap/main/Casks/${cask_name}.rb" 2>/dev/null || echo "")
+      cask_body=$(fetch_homebrew_cask_body "$cask_name")
       if [[ -n "$cask_body" ]]; then
         cask_ver=$(echo "$cask_body" | grep -oE 'version "[0-9]+\.[0-9]+(\.[0-9]+)?"' | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' || echo "—")
       fi
@@ -657,7 +801,9 @@ section_version_drift() {
     fi
 
     echo "| $app_name | $appcast_ver | $site_ver | $webhook_ver | $cask_ver | $status |" >> "$REPORT_FILE"
-  done
+  done <<EOF
+$app_configs
+EOF
 
   echo "" >> "$REPORT_FILE"
 

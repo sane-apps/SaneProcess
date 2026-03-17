@@ -9,6 +9,7 @@ module SaneMasterModules
   #   SaneMaster.rb sales --month      # Current month breakdown
   #   SaneMaster.rb sales --products   # Revenue by product
   #   SaneMaster.rb sales --fees       # Fee breakdown
+  #   SaneMaster.rb sales --refund-order 1234
   #   SaneMaster.rb sales --json       # Raw JSON for piping
   module Sales
     def sales(args)

@@ -1,41 +1,25 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-
 # ==============================================================================
 # SaneStop - Stop Hook
 # ==============================================================================
 # Fires when Claude finishes responding. Validates session and saves learnings.
 #
-# Exit codes:
-#   0 = allow Claude to stop
-#   2 = block with reason (Claude must address it)
-#
-# What this does:
-#   1. Checks if session summary is needed (significant edits made)
-#   2. Validates summary format if present
-#   3. Saves session learnings
-#   4. Reports to user
+# Exit codes: 0 = allow Claude to stop, 2 = block with reason.
+# Checks summary need/format, saves session learnings, and reports stats.
 # ==============================================================================
-
 require 'json'
 require 'fileutils'
 require 'time'
 require 'rbconfig'
 require_relative 'core/state_manager'
-
 LOG_FILE = File.expand_path('../../.claude/sanestop.log', __dir__)
 SOP_CSV = File.expand_path('../../outputs/sop_ratings.csv', __dir__)
 SESSION_LEARNINGS_FILE = File.expand_path('~/.claude/session_learnings.jsonl')
 SESSION_LEARNINGS_ARCHIVE = File.expand_path('~/.claude/session_learnings_archive.jsonl')
 SESSION_LEARNINGS_MAX_LINES = 200
-
-# === CONFIGURATION ===
-
 MIN_EDITS_FOR_SUMMARY = 3  # Require summary after 3+ edits
 MIN_UNIQUE_FILES_FOR_SUMMARY = 2  # Or 2+ unique files edited
-
-# === SOP SCORE CALCULATION ===
-
 def session_start_time
   enforcement = StateManager.get(:enforcement)
   started_at = enforcement[:session_started_at] || enforcement['session_started_at']
@@ -268,10 +252,39 @@ end
 # Check if required skill was properly executed
 
 SKILL_REQUIREMENTS = {
-  'docs_audit' => { min_subagents: 3, description: 'Multi-perspective documentation audit' },
-  'evolve' => { min_subagents: 0, description: 'Technology scouting' },
+  'docs_audit' => {
+    min_subagents: 5,
+    description: 'Multi-perspective GPT subagent documentation audit'
+  },
+  'evolve' => {
+    min_subagents: 0,
+    requires_runner: true,
+    description: 'Tool discovery receipt before workarounds'
+  },
   'outreach' => { min_subagents: 0, description: 'GitHub competitor monitoring' }
 }.freeze
+
+def tool_discovery_block_message(skill_state)
+  prompt = skill_state[:required_prompt].to_s.strip
+  query = prompt.empty? ? 'describe the missing tool or workaround' : prompt
+  escaped_query = query.gsub('"', '\"')
+
+  "Tool discovery proof is missing.\n" \
+  "   This session asked about a missing tool, workaround, duplicate work, or fragmentation.\n" \
+  "   Run: ruby scripts/SaneMaster.rb tool_discovery --query \"#{escaped_query}\"\n" \
+  "   Then use that receipt before claiming the tool is missing or adding new tooling."
+end
+
+def check_tool_discovery_required
+  skill_state = StateManager.get(:skill)
+  return nil unless skill_state[:required] == 'evolve'
+  return nil if skill_state[:runner_used]
+
+  tool_discovery_block_message(skill_state)
+rescue StandardError => e
+  warn "⚠️  Tool discovery enforcement error: #{e.message}" if ENV['DEBUG']
+  nil
+end
 
 def validate_skill_execution
   skill_state = StateManager.get(:skill)
@@ -280,9 +293,11 @@ def validate_skill_execution
   required_skill = skill_state[:required]
   invoked = skill_state[:invoked]
   subagents_spawned = skill_state[:subagents_spawned] || 0
+  runner_used = skill_state[:runner_used] || false
 
   requirements = SKILL_REQUIREMENTS[required_skill] || {}
   min_subagents = requirements[:min_subagents] || 0
+  requires_runner = requirements[:requires_runner] || false
 
   issues = []
 
@@ -296,6 +311,20 @@ def validate_skill_execution
   if min_subagents > 0 && subagents_spawned < min_subagents
     issues << "Skill '#{required_skill}' requires #{min_subagents}+ subagents, only #{subagents_spawned} spawned"
     issues << "  You should have used Task tool to spawn subagents for heavy work"
+  end
+
+  if requires_runner && !runner_used
+    if required_skill == 'evolve'
+      issues << "Skill '#{required_skill}' requires the tool-discovery receipt and none was detected"
+      issues << "  Run ruby scripts/SaneMaster.rb tool_discovery --query \"...\" before claiming a tool is missing"
+    else
+      issues << "Skill '#{required_skill}' requires the approved runner/proof command and none was detected"
+    end
+  end
+
+  if required_skill == 'docs_audit' && runner_used && subagents_spawned < min_subagents
+    issues << "Skill '#{required_skill}' no longer accepts runner-only execution"
+    issues << "  Spawn GPT subagents for the audit swarm instead of using gpt_audit.py"
   end
 
   return nil if issues.empty?
@@ -452,7 +481,8 @@ end
 
 # === HANDOFF ENFORCEMENT ===
 # Block session end when significant edits were made but SESSION_HANDOFF.md
-# and/or memory files were NOT updated. This prevents stale handoffs.
+# and/or memory files were NOT updated. Some paths (hooks/tooling/durable docs)
+# bypass the normal threshold and always require persistence.
 
 MIN_EDITS_FOR_HANDOFF = 2  # At least 2 significant edits to trigger
 MIN_FILES_FOR_HANDOFF = 1  # At least 1 significant file to trigger
@@ -462,12 +492,15 @@ def check_handoff_required
 
   sig_edits = tracking[:significant_edits] || 0
   sig_files = tracking[:significant_files] || []
+  always_persist_required = tracking[:always_persist_required] || false
+  always_persist_files = tracking[:always_persist_files] || []
   handoff_updated = tracking[:handoff_updated] || false
   memory_updated = tracking[:memory_updated] || false
 
-  # No significant edits = nothing to report
-  return nil if sig_edits < MIN_EDITS_FOR_HANDOFF
-  return nil if sig_files.length < MIN_FILES_FOR_HANDOFF
+  threshold_hit = sig_edits >= MIN_EDITS_FOR_HANDOFF && sig_files.length >= MIN_FILES_FOR_HANDOFF
+
+  # No tracked work = nothing to report
+  return nil unless always_persist_required || threshold_hit
 
   # Both updated = good
   return nil if handoff_updated && memory_updated
@@ -476,15 +509,24 @@ def check_handoff_required
   missing = []
   missing << 'SESSION_HANDOFF.md' unless handoff_updated
   missing << 'memory (MEMORY.md or Serena write_memory)' unless memory_updated
+  file_list = always_persist_required ? always_persist_files : sig_files
+  why = if always_persist_required
+          "These files are tooling or durable docs and must be persisted even for a single edit."
+        else
+          "These edits crossed the normal significant-edit threshold."
+        end
 
-  "   #{sig_edits} significant edit(s) to #{sig_files.length} file(s):\n" \
-  "   #{sig_files.first(10).join(', ')}\n" \
+  "   #{sig_edits} tracked edit(s) to #{file_list.length} file(s):\n" \
+  "   #{file_list.first(10).join(', ')}\n" \
+  "   \n" \
+  "   Why this blocks:\n" \
+  "   • #{why}\n" \
   "   \n" \
   "   Missing updates: #{missing.join(' AND ')}\n" \
   "   \n" \
   "   What to do:\n" \
   "   • Update SESSION_HANDOFF.md with what was done + what's pending\n" \
-  "   • Update memory with any reusable learnings or patterns\n" \
+  "   • Update memory with the reusable tooling/docs learnings or decisions\n" \
   "   • Both must be updated before the session can end"
 rescue StandardError => e
   warn "⚠️  Handoff check error: #{e.message}" if ENV['DEBUG']
@@ -650,7 +692,7 @@ def run_mcp_watchdog_cleanup
 
   system(
     RbConfig.ruby, sane_master, 'mcp_watchdog', 'clean',
-    '--quiet', '--max', '4',
+    '--quiet', '--max', '4', '--grace', '0',
     out: File::NULL, err: File::NULL
   )
 rescue StandardError
@@ -669,12 +711,20 @@ def process_stop(stop_hook_active, transcript_path = nil)
   # === SKILL VALIDATION (warn if skill was required but not properly executed) ===
   skill_issues = validate_skill_execution
   if skill_issues&.any?
+    required_skill = StateManager.get(:skill)[:required]
     warn ''
     warn '=' * 50
-    warn 'SKILL EXECUTION WARNING'
+    warn required_skill == 'docs_audit' ? '🔴 SKILL EXECUTION BLOCK' : 'SKILL EXECUTION WARNING'
     warn ''
     skill_issues.each { |issue| warn "  #{issue}" }
     warn ''
+    if required_skill == 'docs_audit'
+      warn 'This is blocking because docs_audit is required for this session.'
+      warn 'Re-run the audit with the required GPT subagent swarm, then try again.'
+      warn '=' * 50
+      warn ''
+      return 2
+    end
     warn 'This is logged but NOT blocking.'
     warn 'Consider re-running with proper skill invocation.'
     warn '=' * 50
@@ -695,6 +745,21 @@ def process_stop(stop_hook_active, transcript_path = nil)
     warn ''
     warn '  Consider completing these tasks or marking done.'
     warn '---'
+  end
+
+  # === HANDOFF ENFORCEMENT: Significant edits require handoff + memory update ===
+  tool_discovery_block = check_tool_discovery_required
+  if tool_discovery_block
+    warn ''
+    warn '=' * 50
+    warn '🔴 TOOL DISCOVERY BLOCK'
+    warn ''
+    warn tool_discovery_block
+    warn ''
+    warn '   No workaround claim without a receipt.'
+    warn '=' * 50
+    warn ''
+    return 2
   end
 
   # === HANDOFF ENFORCEMENT: Significant edits require handoff + memory update ===
@@ -787,6 +852,9 @@ end
 # === MAIN ===
 
 if ARGV.include?('--self-test')
+  require_relative 'self_test_environment'
+  exit SelfTestEnvironment.run_isolated(__FILE__)
+elsif ARGV.include?('--self-test-internal')
   require_relative 'sanestop_test'
   exit SaneStopTest.run(
     method(:process_stop),

@@ -403,6 +403,81 @@ module SaneTrackTest
       warn "  FAIL: Serena write_memory should set memory_updated, got #{handoff.inspect}"
     end
 
+    # Test: Hook file edit marks always-persist work
+    StateManager.reset(:handoff_tracking)
+    process_result_proc.call('Edit', { 'file_path' => '/tmp/project/scripts/hooks/sanestop.rb' }, { 'success' => true })
+    handoff = StateManager.get(:handoff_tracking)
+    if handoff[:always_persist_required] == true && handoff[:always_persist_files]&.include?('sanestop.rb')
+      passed += 1
+      warn '  PASS: Hook edits mark always-persist work'
+    else
+      failed += 1
+      warn "  FAIL: Hook edits should mark always-persist work, got #{handoff.inspect}"
+    end
+
+    # Test: Durable doc edit marks always-persist work
+    StateManager.reset(:handoff_tracking)
+    process_result_proc.call('Edit', { 'file_path' => '/tmp/project/AGENTS.md' }, { 'success' => true })
+    handoff = StateManager.get(:handoff_tracking)
+    if handoff[:always_persist_required] == true && handoff[:always_persist_files]&.include?('AGENTS.md')
+      passed += 1
+      warn '  PASS: Durable docs mark always-persist work'
+    else
+      failed += 1
+      warn "  FAIL: Durable docs should mark always-persist work, got #{handoff.inspect}"
+    end
+
+    # === TOOL DISCOVERY RECEIPT TESTS ===
+    warn ''
+    warn 'Testing tool discovery receipt tracking:'
+
+    StateManager.reset(:skill)
+    StateManager.update(:skill) do |s|
+      s[:required] = 'docs_audit'
+      s[:invoked] = true
+      s[:subagents_spawned] = 0
+      s[:runner_used] = false
+      s[:runner_commands] = []
+      s
+    end
+    process_result_proc.call('Task', { 'prompt' => 'Run engineer audit perspective', 'subagent_type' => 'general-purpose' }, { 'output' => 'ok' })
+    skill = StateManager.get(:skill)
+    if skill[:subagents_spawned] == 1
+      passed += 1
+      warn '  PASS: docs_audit Task call increments subagent count'
+    else
+      failed += 1
+      warn "  FAIL: docs_audit subagent count should increment, got #{skill.inspect}"
+    end
+
+    process_result_proc.call('Bash', { 'command' => 'python3 scripts/automation/gpt_audit.py --title Test' }, { 'output' => 'ok' })
+    skill = StateManager.get(:skill)
+    if skill[:runner_used] != true
+      passed += 1
+      warn '  PASS: gpt_audit.py no longer satisfies docs_audit'
+    else
+      failed += 1
+      warn "  FAIL: gpt_audit.py should not satisfy docs_audit, got #{skill.inspect}"
+    end
+
+    StateManager.reset(:skill)
+    StateManager.update(:skill) do |s|
+      s[:required] = 'evolve'
+      s[:required_prompt] = 'missing screenshot diff tool'
+      s[:runner_used] = false
+      s[:runner_commands] = []
+      s
+    end
+    process_result_proc.call('Bash', { 'command' => 'ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"' }, { 'output' => 'ok' })
+    skill = StateManager.get(:skill)
+    if skill[:runner_used] == true && skill[:runner_commands].any? { |cmd| cmd.include?('tool_discovery') }
+      passed += 1
+      warn '  PASS: SaneMaster tool_discovery command satisfies evolve receipt'
+    else
+      failed += 1
+      warn "  FAIL: tool_discovery command should satisfy evolve receipt, got #{skill.inspect}"
+    end
+
     # === CLEANUP: Reset circuit breaker only (don't reset research - breaks normal ops) ===
     StateManager.reset(:circuit_breaker)
     StateManager.update(:enforcement) { |e| e[:halted] = false; e[:blocks] = []; e }

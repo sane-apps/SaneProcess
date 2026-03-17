@@ -5,7 +5,7 @@
 # Pipeline:
 # 1. Merge training data from all products into SaneAI
 # 2. Train production Llama model (auto-promotes if >90%)
-# 3. Run challenger models on SaneSync data (report only, never auto-promote)
+# 3. Run challenger models on the configured app data (report only, never auto-promote)
 #
 # Architecture (Option B): One unified SaneAI model trained on all product data.
 # Per-product behavior comes from system prompts at inference time, not separate models.
@@ -22,6 +22,7 @@ LOG_DIR="$SANE_OUTPUT_DIR"
 PYTHON="$HOME/mlx-env/bin/python3"
 TRAIN_HARD_STOP_TIME="${TRAIN_HARD_STOP_TIME:-08:30}"
 RUN_CHALLENGERS_AFTER_WEEKLY="${RUN_CHALLENGERS_AFTER_WEEKLY:-false}"
+CHALLENGER_APP="${CHALLENGER_APP:-SaneAI}"
 mkdir -p "$LOG_DIR"
 
 run_saneai_merge() {
@@ -109,7 +110,8 @@ elif [ "$current_minutes" -lt "$hard_stop_minutes" ]; then
   SANE_OUTPUT_DIR="$SANE_OUTPUT_DIR" \
   CHALLENGER_BUDGET_MIN="$minutes_until_stop" \
   TRAIN_HARD_STOP_TIME="$TRAIN_HARD_STOP_TIME" \
-    bash "$SCRIPT_DIR/mini-train-challengers.sh" SaneSync \
+  CHALLENGER_APP="$CHALLENGER_APP" \
+    bash "$SCRIPT_DIR/mini-train-challengers.sh" "$CHALLENGER_APP" \
     >> "$STDOUT_LOG" 2>&1
 
   CHALLENGER_EXIT=$?

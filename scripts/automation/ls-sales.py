@@ -10,15 +10,19 @@ Usage:
   ls-sales.py --fees       # Fee breakdown only
   ls-sales.py --products   # Revenue by product
   ls-sales.py --product-variants  # Revenue by product + variant
+  ls-sales.py --refund-order 1234 # Full refund for order id 1234
+  ls-sales.py --refund-order-number 5678 # Full refund by order number
   ls-sales.py --json       # Raw JSON output (for piping)
 """
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 # Store-specific fee configuration.
 # Defaults reflect SaneApps Lemon Squeezy pricing update confirmed on 2026-03-03.
@@ -42,13 +46,68 @@ def parse_order_timestamp(value):
 
 
 FLAT_FEE_EFFECTIVE_UTC = parse_order_timestamp(FLAT_FEE_EFFECTIVE_UTC_RAW)
+ENV_CACHE_FILE = Path(os.environ.get("SANE_ENV_CACHE_FILE", "~/.config/nv/env")).expanduser()
+
+
+def load_env_cache():
+    if not ENV_CACHE_FILE.is_file():
+        return
+    try:
+        for raw_line in ENV_CACHE_FILE.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[7:].strip()
+            if "=" not in line:
+                continue
+            key, raw_value = line.split("=", 1)
+            key = key.strip()
+            if not key or key in os.environ:
+                continue
+            parts = shlex.split(raw_value, posix=True)
+            value = parts[0] if len(parts) == 1 else raw_value.strip()
+            os.environ[key] = os.path.expandvars(value)
+    except OSError:
+        return
+
+
+def persist_secret_to_env_cache(value, *env_names):
+    if not value or os.environ.get("SANE_ENV_CACHE_WRITE", "1") == "0":
+        return
+    names = [name for name in env_names if name]
+    if not names:
+        return
+    ENV_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        ENV_CACHE_FILE.parent.chmod(0o700)
+    except OSError:
+        pass
+    lines = []
+    if ENV_CACHE_FILE.exists():
+        lines = ENV_CACHE_FILE.read_text(encoding="utf-8").splitlines()
+    filtered = []
+    for line in lines:
+        stripped = line.strip()
+        if any(stripped.startswith(f"export {name}=") for name in names):
+            continue
+        filtered.append(line)
+    for name in names:
+        filtered.append(f"export {name}={shlex.quote(value)}")
+    ENV_CACHE_FILE.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+    ENV_CACHE_FILE.chmod(0o600)
 
 
 def get_api_key():
+    load_env_cache()
     # Try env var first (headless/LaunchAgent contexts)
     key = os.environ.get("LEMONSQUEEZY_API_KEY", "")
     if key:
         return key
+    if os.environ.get("SANE_NO_KEYCHAIN") == "1" or os.environ.get("SANE_KEYCHAIN_FALLBACK") == "0":
+        print("Error: No LemonSqueezy API key found.", file=sys.stderr)
+        print("  Set LEMONSQUEEZY_API_KEY in ~/.config/nv/env or the environment.", file=sys.stderr)
+        sys.exit(1)
     # Fall back to keychain (interactive sessions)
     result = subprocess.run(
         ["security", "find-generic-password", "-s", "lemonsqueezy", "-a", "api_key", "-w"],
@@ -57,9 +116,10 @@ def get_api_key():
     key = result.stdout.strip()
     if not key:
         print("Error: No LemonSqueezy API key found.", file=sys.stderr)
-        print("  Set LEMONSQUEEZY_API_KEY env var, or add to keychain:", file=sys.stderr)
+        print("  Set LEMONSQUEEZY_API_KEY in ~/.config/nv/env or the environment, or add it to keychain:", file=sys.stderr)
         print("  security add-generic-password -s lemonsqueezy -a api_key -w YOUR_KEY", file=sys.stderr)
         sys.exit(1)
+    persist_secret_to_env_cache(key, "LEMONSQUEEZY_API_KEY")
     return key
 
 
@@ -77,14 +137,127 @@ def fetch_orders(api_key):
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
-            print(f"Error: Bad API response on page {page}", file=sys.stderr)
-            break
+            body = (result.stdout or "").lower()
+            if "just a moment" in body:
+                raise RuntimeError("LemonSqueezy API is returning a Cloudflare challenge. Order lookup is temporarily unavailable.")
+            raise RuntimeError(f"Bad API response on page {page}")
         orders = data.get("data", [])
         all_orders.extend(orders)
         if len(orders) < 50:
             break
         page += 1
     return all_orders
+
+
+def order_to_summary(order):
+    attrs = order.get("attributes", {})
+    item = attrs.get("first_order_item") or {}
+    return {
+        "id": order.get("id"),
+        "order_number": attrs.get("order_number"),
+        "status": attrs.get("status"),
+        "refunded": attrs.get("refunded", False),
+        "refunded_amount_formatted": attrs.get("refunded_amount_formatted", "$0.00"),
+        "refunded_at": attrs.get("refunded_at"),
+        "created_at": attrs.get("created_at"),
+        "updated_at": attrs.get("updated_at"),
+        "user_name": attrs.get("user_name", ""),
+        "user_email": attrs.get("user_email", ""),
+        "product": item.get("product_name", "Unknown"),
+        "total_formatted": attrs.get("total_formatted", "$0.00"),
+        "receipt_url": (attrs.get("urls") or {}).get("receipt"),
+    }
+
+
+def find_order_by_number(orders, order_number):
+    needle = str(order_number).strip()
+    for order in orders:
+        if str((order.get("attributes") or {}).get("order_number", "")).strip() == needle:
+            return order
+    return None
+
+
+def issue_order_refund(api_key, order_id, amount=None):
+    payload = {
+        "data": {
+            "type": "orders",
+            "id": str(order_id),
+        }
+    }
+    if amount is not None:
+        payload["data"]["attributes"] = {"amount": int(amount)}
+
+    result = subprocess.run(
+        [
+            "curl",
+            "-sS",
+            "-X",
+            "POST",
+            f"https://api.lemonsqueezy.com/v1/orders/{order_id}/refund",
+            "-H",
+            f"Authorization: Bearer {api_key}",
+            "-H",
+            "Accept: application/vnd.api+json",
+            "-H",
+            "Content-Type: application/vnd.api+json",
+            "-d",
+            json.dumps(payload),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"Error: Refund request failed for order {order_id}: {result.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        response = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        body = (result.stdout or "").lower()
+        if "just a moment" in body:
+            print("Error: LemonSqueezy API is returning a Cloudflare challenge. Refund did not go through.", file=sys.stderr)
+        else:
+            print(f"Error: Refund response was not valid JSON: {result.stdout[:400]}", file=sys.stderr)
+        sys.exit(1)
+    if "errors" in response:
+        print(json.dumps(response["errors"], indent=2), file=sys.stderr)
+        sys.exit(1)
+    data = response.get("data")
+    if not isinstance(data, dict):
+        print(f"Error: Refund response missing order payload: {result.stdout[:400]}", file=sys.stderr)
+        sys.exit(1)
+    return data
+
+
+def write_proof_file(path, summary):
+    lines = [
+        "Lemon Squeezy refund confirmation",
+        f"Order ID: {summary.get('id')}",
+        f"Order number: {summary.get('order_number')}",
+        f"Customer: {summary.get('user_name') or '?'} <{summary.get('user_email') or '?'}>",
+        f"Product: {summary.get('product')}",
+        f"Order total: {summary.get('total_formatted')}",
+        f"Refunded amount: {summary.get('refunded_amount_formatted')}",
+        f"Refunded flag: {summary.get('refunded')}",
+        f"Refunded at: {summary.get('refunded_at') or 'partial/not-finalized timestamp unavailable'}",
+        f"Receipt: {summary.get('receipt_url') or 'n/a'}",
+        f"Updated at: {summary.get('updated_at') or 'n/a'}",
+    ]
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+
+
+def print_refund_summary(summary):
+    print("Refund issued")
+    print(f"  Order ID: {summary.get('id')}")
+    print(f"  Order number: {summary.get('order_number')}")
+    print(f"  Customer: {summary.get('user_name') or '?'} <{summary.get('user_email') or '?'}>")
+    print(f"  Product: {summary.get('product')}")
+    print(f"  Order total: {summary.get('total_formatted')}")
+    print(f"  Refunded amount: {summary.get('refunded_amount_formatted')}")
+    print(f"  Refunded flag: {summary.get('refunded')}")
+    print(f"  Refunded at: {summary.get('refunded_at') or 'partial/not-finalized timestamp unavailable'}")
+    if summary.get("receipt_url"):
+        print(f"  Receipt: {summary['receipt_url']}")
 
 
 def flat_fee_for_order(created_at):
@@ -402,11 +575,64 @@ def main():
     parser.add_argument("--fees", action="store_true", help="Fee breakdown only")
     parser.add_argument("--products", action="store_true", help="Revenue by product")
     parser.add_argument("--product-variants", action="store_true", help="Revenue by product + variant")
+    parser.add_argument("--refund-order", type=str, help="Issue a refund for Lemon Squeezy order ID")
+    parser.add_argument("--refund-order-number", type=str, help="Issue a refund for Lemon Squeezy order number")
+    parser.add_argument("--amount", type=int, help="Refund amount in cents (omit for full refund)")
+    parser.add_argument("--proof-file", type=str, help="Write a human-readable refund proof file")
     parser.add_argument("--json", action="store_true", help="Raw JSON output")
     args = parser.parse_args()
 
     api_key = get_api_key()
-    all_orders = fetch_orders(api_key)
+    try:
+        all_orders = fetch_orders(api_key)
+    except RuntimeError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.refund_order and args.refund_order_number:
+        print("Error: use either --refund-order or --refund-order-number, not both.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.refund_order or args.refund_order_number:
+        target_order = None
+        if args.refund_order:
+            target_id = str(args.refund_order).strip()
+            for order in all_orders:
+                if str(order.get("id", "")).strip() == target_id:
+                    target_order = order
+                    break
+            if target_order is None:
+                print(f"Error: order id {target_id} not found.", file=sys.stderr)
+                sys.exit(1)
+        else:
+            target_order = find_order_by_number(all_orders, args.refund_order_number)
+            if target_order is None:
+                print(f"Error: order number {args.refund_order_number} not found.", file=sys.stderr)
+                sys.exit(1)
+            target_id = str(target_order.get("id", "")).strip()
+
+        target_attrs = target_order.get("attributes", {})
+        if target_attrs.get("refunded"):
+            summary = order_to_summary(target_order)
+            if args.json:
+                json.dump(summary, sys.stdout, indent=2)
+                print()
+            else:
+                print_refund_summary(summary)
+            if args.proof_file:
+                write_proof_file(args.proof_file, summary)
+            return
+
+        refunded_order = issue_order_refund(api_key, target_id, amount=args.amount)
+        summary = order_to_summary(refunded_order)
+        if args.proof_file:
+            write_proof_file(args.proof_file, summary)
+        if args.json:
+            json.dump(summary, sys.stdout, indent=2)
+            print()
+        else:
+            print_refund_summary(summary)
+        return
 
     # --daily uses all orders (does its own bucketing)
     if args.daily:

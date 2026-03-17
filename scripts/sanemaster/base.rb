@@ -21,6 +21,32 @@ module SaneMasterModules
     VERSION_CACHE_MAX_AGE = 7 * 24 * 60 * 60 # 7 days in seconds
     TEMPLATE_DIR = File.expand_path('~/.sanemaster/templates')
     MEMORY_FILE = File.join(Dir.pwd, '.claude', 'memory.json')
+    WORK_SESSION_STATE_FILE = File.expand_path('~/.sanemaster/work_session_state.json')
+    WORK_SESSION_CAFFEINATE_PID_FILE = File.expand_path('~/.sanemaster/work_session_caffeinate.pid')
+    WORK_SESSION_CAFFEINATE_LOG = File.expand_path('~/.sanemaster/work_session_caffeinate.log')
+    WORK_SESSION_COMMANDS = Set.new(%w[
+                                      verify
+                                      clean
+                                      lint
+                                      audit
+                                      tool_discovery
+                                      tool_receipt
+                                      system_check
+                                      doctor
+                                      qa
+                                      launch
+                                      run
+                                      logs
+                                      test_mode
+                                      tm
+                                      diagnose
+                                      crash_report
+                                      crashes
+                                      release
+                                      release_preflight
+                                      appstore_preflight
+                                      asp
+                                    ]).freeze
 
     # --- Project Resolution ---
 
@@ -44,7 +70,11 @@ module SaneMasterModules
     end
 
     def xcodebuild_container_args
-      if workspace_usable_for_scheme?
+      xcodebuild_container_args_for_scheme(project_scheme)
+    end
+
+    def xcodebuild_container_args_for_scheme(scheme)
+      if workspace_usable_for_scheme?(scheme)
         ['-workspace', project_workspace]
       elsif project_xcodeproj && !project_xcodeproj.to_s.empty?
         ['-project', project_xcodeproj]
@@ -53,14 +83,14 @@ module SaneMasterModules
       end
     end
 
-    def workspace_usable_for_scheme?
+    def workspace_usable_for_scheme?(scheme = project_scheme)
       return false if project_workspace.to_s.empty?
       return false unless File.exist?(project_workspace.to_s)
 
       list_output = `xcodebuild -list -workspace #{Shellwords.escape(project_workspace.to_s)} 2>/dev/null`
       return false if list_output.include?('There are no schemes in workspace')
 
-      list_output.include?(project_scheme.to_s)
+      list_output.include?(scheme.to_s)
     rescue StandardError
       false
     end
@@ -83,6 +113,14 @@ module SaneMasterModules
 
     def project_ui_test_target
       @project_ui_test_target ||= config_value(%w[tests ui_target], 'SANEMASTER_UI_TEST_TARGET', project_ui_tests_dir)
+    end
+
+    def project_ui_scheme
+      @project_ui_scheme ||= config_value(%w[tests ui_scheme], 'SANEMASTER_UI_SCHEME', saneprocess_value('appstore', 'ios_scheme') || project_scheme)
+    end
+
+    def project_ui_destination
+      @project_ui_destination ||= config_value(%w[tests ui_destination], 'SANEMASTER_UI_DESTINATION', 'platform=iOS Simulator,name=iPhone 17 Pro')
     end
 
     def saneprocess_config
@@ -139,10 +177,199 @@ module SaneMasterModules
       FileUtils.mkdir_p(SOP_LOG_DIR)
     end
 
+    def work_session_command?(command)
+      WORK_SESSION_COMMANDS.include?(command.to_s)
+    end
+
+    def ensure_work_session_ready!(command)
+      return unless work_session_command?(command)
+      return if ENV['SANEMASTER_DISABLE_WORK_SESSION'] == '1'
+      return unless RUBY_PLATFORM.include?('darwin')
+
+      ensure_sop_dirs
+      FileUtils.mkdir_p(File.dirname(WORK_SESSION_STATE_FILE))
+
+      activate_work_session_caffeinate
+      capture_work_session_defaults unless File.exist?(WORK_SESSION_STATE_FILE)
+      apply_work_session_defaults
+    end
+
+    def work_session_on
+      puts '🔒 --- [ WORK SESSION ON ] ---'
+      ensure_work_session_ready!('verify')
+      print_work_session_status
+    end
+
+    def work_session_off
+      puts '🔓 --- [ WORK SESSION OFF ] ---'
+      restore_work_session_defaults
+      stop_work_session_caffeinate
+      print_work_session_status
+    end
+
+    def work_session_status
+      puts '🛠️  --- [ WORK SESSION STATUS ] ---'
+      print_work_session_status
+    end
+
     def sop_log(message)
       return unless @sop_log
 
       File.open(@sop_log, 'a') { |f| f.puts "[#{Time.now.iso8601}] #{message}" }
+    end
+
+    def activate_work_session_caffeinate
+      existing_pid = read_work_session_caffeinate_pid
+      return if existing_pid && process_alive?(existing_pid)
+
+      FileUtils.rm_f(WORK_SESSION_CAFFEINATE_PID_FILE)
+      cmd = [
+        '/bin/sh', '-lc',
+        "nohup /usr/bin/caffeinate -dimsu >> #{Shellwords.escape(WORK_SESSION_CAFFEINATE_LOG)} 2>&1 & echo $! > #{Shellwords.escape(WORK_SESSION_CAFFEINATE_PID_FILE)}"
+      ]
+      ok = system(*cmd, out: File::NULL, err: File::NULL)
+      pid = read_work_session_caffeinate_pid
+      raise 'unable to confirm caffeinate pid' unless ok && pid
+
+      sop_log("Started work-session caffeinate pid=#{pid}")
+    rescue StandardError => e
+      warn "⚠️  Failed to start work-session caffeinate: #{e.message}"
+    end
+
+    def stop_work_session_caffeinate
+      pid = read_work_session_caffeinate_pid
+      if pid && process_alive?(pid)
+        Process.kill('TERM', pid)
+      end
+    rescue Errno::ESRCH
+      nil
+    rescue StandardError => e
+      warn "⚠️  Failed to stop work-session caffeinate: #{e.message}"
+    ensure
+      FileUtils.rm_f(WORK_SESSION_CAFFEINATE_PID_FILE)
+    end
+
+    def read_work_session_caffeinate_pid
+      return nil unless File.exist?(WORK_SESSION_CAFFEINATE_PID_FILE)
+
+      Integer(File.read(WORK_SESSION_CAFFEINATE_PID_FILE).strip)
+    rescue StandardError
+      nil
+    end
+
+    def process_alive?(pid)
+      Process.kill(0, pid)
+      true
+    rescue Errno::ESRCH
+      false
+    rescue Errno::EPERM
+      true
+    end
+
+    def capture_work_session_defaults
+      state = {
+        'saved_at' => Time.now.iso8601,
+        'host' => Socket.gethostname,
+        'idle_time' => read_defaults_value(current_host: true, domain: 'com.apple.screensaver', key: 'idleTime'),
+        'ask_for_password' => read_defaults_value(current_host: false, domain: 'com.apple.screensaver', key: 'askForPassword'),
+        'screen_lock_status' => current_screen_lock_status
+      }
+      File.write(WORK_SESSION_STATE_FILE, JSON.pretty_generate(state))
+      sop_log("Captured work-session defaults for #{state['host']}")
+    rescue StandardError => e
+      warn "⚠️  Failed to capture work-session defaults: #{e.message}"
+    end
+
+    def apply_work_session_defaults
+      write_defaults_value(current_host: true, domain: 'com.apple.screensaver', key: 'idleTime', type: '-int', value: '0')
+      write_defaults_value(current_host: false, domain: 'com.apple.screensaver', key: 'askForPassword', type: '-int', value: '0')
+      system('killall', 'cfprefsd', out: File::NULL, err: File::NULL)
+      sop_log('Applied work-session screensaver/lock defaults')
+    rescue StandardError => e
+      warn "⚠️  Failed to apply work-session defaults: #{e.message}"
+    end
+
+    def restore_work_session_defaults
+      return unless File.exist?(WORK_SESSION_STATE_FILE)
+
+      state = JSON.parse(File.read(WORK_SESSION_STATE_FILE))
+      restore_defaults_value(current_host: true, domain: 'com.apple.screensaver', key: 'idleTime', snapshot: state['idle_time'])
+      restore_defaults_value(current_host: false, domain: 'com.apple.screensaver', key: 'askForPassword', snapshot: state['ask_for_password'])
+      system('killall', 'cfprefsd', out: File::NULL, err: File::NULL)
+      FileUtils.rm_f(WORK_SESSION_STATE_FILE)
+      sop_log("Restored work-session defaults for #{state['host']}")
+    rescue StandardError => e
+      warn "⚠️  Failed to restore work-session defaults: #{e.message}"
+    end
+
+    def read_defaults_value(current_host:, domain:, key:)
+      cmd = ['defaults']
+      cmd << '-currentHost' if current_host
+      cmd += ['read', domain, key]
+      output = `#{cmd.map { |part| Shellwords.escape(part) }.join(' ')} 2>/dev/null`
+      status = $CHILD_STATUS.success?
+      {
+        'exists' => status,
+        'value' => status ? output.strip : nil
+      }
+    end
+
+    def write_defaults_value(current_host:, domain:, key:, type:, value:)
+      cmd = ['defaults']
+      cmd << '-currentHost' if current_host
+      cmd += ['write', domain, key, type, value]
+      system(*cmd, out: File::NULL, err: File::NULL)
+    end
+
+    def restore_defaults_value(current_host:, domain:, key:, snapshot:)
+      return unless snapshot.is_a?(Hash)
+
+      if snapshot['exists']
+        write_defaults_value(
+          current_host: current_host,
+          domain: domain,
+          key: key,
+          type: defaults_type_for(snapshot['value']),
+          value: snapshot['value'].to_s
+        )
+      else
+        cmd = ['defaults']
+        cmd << '-currentHost' if current_host
+        cmd += ['delete', domain, key]
+        system(*cmd, out: File::NULL, err: File::NULL)
+      end
+    end
+
+    def defaults_type_for(value)
+      return '-int' if value.to_s.match?(/\A-?\d+\z/)
+      return '-float' if value.to_s.match?(/\A-?\d+\.\d+\z/)
+
+      '-string'
+    end
+
+    def current_screen_lock_status
+      `sysadminctl -screenLock status 2>&1`.strip
+    rescue StandardError
+      'unavailable'
+    end
+
+    def print_work_session_status
+      caffeinate_pid = read_work_session_caffeinate_pid
+      caffeinate_status = if caffeinate_pid && process_alive?(caffeinate_pid)
+                            "running (pid #{caffeinate_pid})"
+                          else
+                            'stopped'
+                          end
+      idle_time = read_defaults_value(current_host: true, domain: 'com.apple.screensaver', key: 'idleTime')
+      ask_for_password = read_defaults_value(current_host: false, domain: 'com.apple.screensaver', key: 'askForPassword')
+
+      puts "   caffeinate: #{caffeinate_status}"
+      puts "   screensaver idleTime: #{idle_time['exists'] ? idle_time['value'] : '(default)'}"
+      puts "   askForPassword: #{ask_for_password['exists'] ? ask_for_password['value'] : '(default)'}"
+      puts "   sysadminctl: #{current_screen_lock_status}"
+      if current_screen_lock_status.include?('immediate')
+        puts "   note: full unattended no-lock still requires a one-time 'sysadminctl -screenLock off -password -' on this Mac."
+      end
     end
 
     # --- Memory Helpers ---

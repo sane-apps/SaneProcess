@@ -1,8 +1,16 @@
 # frozen_string_literal: true
 
+require 'fileutils'
+require 'shellwords'
+require 'net/http'
+require 'tempfile'
+require 'uri'
+
 module SaneMasterModules
   # Unified release entrypoint (delegates to SaneProcess release.sh)
   module Release
+    ENV_CACHE_FILE = File.expand_path(ENV.fetch('SANE_ENV_CACHE_FILE', '~/.config/nv/env'))
+
     def appcast_drift_failure_only?(verify_output)
       xcresult_path = verify_output[/Analyzing result:\s+(.+\.xcresult)/, 1]
       return false unless xcresult_path && File.directory?(xcresult_path)
@@ -30,6 +38,116 @@ module SaneMasterModules
       File.read(path)
     rescue StandardError
       ''
+    end
+
+    def plist_bool_true?(content, key)
+      content.to_s.match?(%r{<key>#{Regexp.escape(key)}</key>\s*<true/>}m)
+    end
+
+    def plist_file_to_hash(path)
+      return {} unless path && File.exist?(path)
+
+      script = <<~'PY'
+        import json
+        import plistlib
+        import sys
+
+        with open(sys.argv[1], 'rb') as handle:
+          print(json.dumps(plistlib.load(handle), default=str))
+      PY
+      out, status = Open3.capture2e('python3', '-c', script, path)
+      return {} unless status.success?
+
+      JSON.parse(out)
+    rescue StandardError
+      {}
+    end
+
+    def decode_mobileprovision(path)
+      return nil unless path && File.exist?(path)
+
+      Tempfile.create(['mobileprovision', '.plist']) do |plist_file|
+        cms_out, cms_status = Open3.capture2e('security', 'cms', '-D', '-i', path)
+        return nil unless cms_status.success?
+
+        plist_file.write(cms_out)
+        plist_file.flush
+
+        script = <<~'PY'
+          import json
+          import plistlib
+          import sys
+
+          with open(sys.argv[1], 'rb') as handle:
+            payload = plistlib.load(handle)
+          subset = {
+            'Name': payload.get('Name'),
+            'UUID': payload.get('UUID'),
+            'Entitlements': payload.get('Entitlements', {})
+          }
+          print(json.dumps(subset, default=str))
+        PY
+        json_out, json_status = Open3.capture2e('python3', '-c', script, plist_file.path)
+        return nil unless json_status.success?
+
+        return JSON.parse(json_out)
+      end
+    rescue StandardError
+      nil
+    end
+
+    def installed_mobileprovision_by_name(profile_name, cache = {})
+      return cache[profile_name] if cache.key?(profile_name)
+
+      match = nil
+      Dir.glob(File.expand_path('~/Library/MobileDevice/Provisioning Profiles/*.mobileprovision')).sort.each do |path|
+        payload = decode_mobileprovision(path)
+        next unless payload.is_a?(Hash)
+        next unless payload['Name'].to_s == profile_name.to_s
+
+        match = payload.merge('__path' => path)
+        break
+      end
+
+      cache[profile_name] = match
+    end
+
+    def appstore_mobile_signing_targets(project_yml_path)
+      return [] unless project_yml_path && File.exist?(project_yml_path)
+
+      project = YAML.safe_load(File.read(project_yml_path)) || {}
+      targets = project['targets'] || {}
+      project_root = File.dirname(project_yml_path)
+
+      targets.each_with_object([]) do |(name, spec), list|
+        next unless spec.is_a?(Hash)
+
+        platform = spec['platform'].to_s
+        next unless %w[iOS watchOS].include?(platform)
+
+        release_appstore = spec.dig('settings', 'configs', 'Release-AppStore') || {}
+        next if release_appstore.empty?
+
+        groups = Array(spec.dig('entitlements', 'properties', 'com.apple.security.application-groups')).map(&:to_s)
+        entitlements_path = spec.dig('entitlements', 'path')
+        if entitlements_path
+          entitlements_hash = plist_file_to_hash(File.join(project_root, entitlements_path))
+          file_groups = Array(entitlements_hash['com.apple.security.application-groups']).map(&:to_s)
+          groups = file_groups unless file_groups.empty?
+        end
+
+        list << {
+          name: name,
+          platform: platform,
+          bundle_id: release_appstore['PRODUCT_BUNDLE_IDENTIFIER'] || spec['bundleId'],
+          code_sign_style: release_appstore['CODE_SIGN_STYLE'].to_s,
+          code_sign_identity: release_appstore['CODE_SIGN_IDENTITY'].to_s,
+          provisioning_profile: release_appstore['PROVISIONING_PROFILE_SPECIFIER'].to_s,
+          app_groups: groups.reject(&:empty?)
+        }
+      end
+    rescue StandardError
+      []
     end
 
     def project_marketing_version(project_yml_content)
@@ -285,21 +403,127 @@ module SaneMasterModules
         next if key.empty? || ENV.key?(key)
 
         value = raw_value.to_s.strip
-        if value.start_with?('"') && value.end_with?('"') && value.length >= 2
-          value = value[1..-2]
-        elsif value.start_with?("'") && value.end_with?("'") && value.length >= 2
-          value = value[1..-2]
+        value = if value.start_with?('"') && value.end_with?('"') && value.length >= 2
+                  value[1..-2]
+                elsif value.start_with?("'") && value.end_with?("'") && value.length >= 2
+                  value[1..-2]
+                else
+                  value
+                end
+        value = value.gsub(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/) do
+          ENV.fetch(Regexp.last_match(1) || Regexp.last_match(2), Regexp.last_match(0))
         end
         ENV[key] = value
       end
     end
 
+    def load_default_env_files
+      load_env_file(File.expand_path('~/.config/nv/env'))
+      load_env_file(File.expand_path('~/.config/saneprocess/secrets.env'))
+    end
+
+    def keychain_fallback_enabled?
+      ENV.fetch('SANE_NO_KEYCHAIN', '0') != '1' && ENV.fetch('SANE_KEYCHAIN_FALLBACK', '1') != '0'
+    end
+
+    def persist_secret_to_env_cache(value, *env_names)
+      return if value.to_s.strip.empty?
+      return if ENV.fetch('SANE_ENV_CACHE_WRITE', '1') == '0'
+
+      names = env_names.flatten.compact.map(&:to_s).map(&:strip).reject(&:empty?).uniq
+      return if names.empty?
+
+      env_path = ENV_CACHE_FILE
+      FileUtils.mkdir_p(File.dirname(env_path))
+      lines = File.exist?(env_path) ? File.readlines(env_path, chomp: true) : []
+      filtered = lines.reject do |line|
+        stripped = line.strip
+        names.any? { |name| stripped.start_with?("export #{name}=") }
+      end
+      names.each do |name|
+        filtered << "export #{name}=#{Shellwords.escape(value)}"
+      end
+      File.write(env_path, filtered.join("\n") + "\n")
+      File.chmod(0o600, env_path)
+    rescue StandardError
+      nil
+    end
+
+    def resolve_secret(service:, account:, env_names:)
+      load_default_env_files
+      env_names.each do |name|
+        value = ENV[name].to_s.strip
+        return value unless value.empty?
+      end
+      return '' unless keychain_fallback_enabled?
+
+      output, status = Open3.capture2e('security', 'find-generic-password', '-s', service, '-a', account, '-w')
+      value = status.success? ? output.to_s.strip : ''
+      unless value.empty?
+        env_names.each { |name| ENV[name] = value if name && !name.to_s.strip.empty? }
+        persist_secret_to_env_cache(value, env_names)
+      end
+      value
+    rescue StandardError
+      ''
+    end
+
+    def fetch_text(url, headers: {})
+      uri = URI(url)
+      request = Net::HTTP::Get.new(uri)
+      headers.each { |key, value| request[key] = value }
+
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = uri.scheme == 'https'
+      http.open_timeout = 5
+      http.read_timeout = 20
+
+      response = http.request(request)
+      return '' unless response.is_a?(Net::HTTPSuccess)
+
+      response.body.to_s
+    rescue StandardError
+      ''
+    end
+
+    def fetch_live_email_worker_snapshot(product_name:, include_signed:)
+      api_key = resolve_secret(
+        service: 'sane-email-automation',
+        account: 'api_key',
+        env_names: %w[SANE_EMAIL_API_KEY EMAIL_API_KEY]
+      )
+      return nil if api_key.to_s.strip.empty?
+
+      uri = URI('https://email-api.saneapps.com/api/debug/download-config')
+      params = { 'product' => product_name.to_s }
+      params['signed'] = '1' if include_signed
+      uri.query = URI.encode_www_form(params)
+
+      body = fetch_text(uri.to_s, headers: { 'Authorization' => "Bearer #{api_key}" })
+      return nil if body.empty?
+
+      JSON.parse(body)
+    rescue StandardError
+      nil
+    end
+
+    def live_email_worker_value(snapshot, product_name, field_name)
+      return nil unless snapshot.is_a?(Hash)
+
+      products = snapshot['products'].is_a?(Hash) ? snapshot['products'] : {}
+      product = products[product_name.to_s]
+      return nil unless product.is_a?(Hash)
+
+      value = product[field_name.to_s]
+      text = value.to_s.strip
+      text.empty? ? nil : text
+    end
+
     def appstore_connect_token
       require 'jwt'
-      require 'net/http'
       require 'openssl'
 
-      load_env_file(File.expand_path('~/.config/saneprocess/secrets.env'))
+      load_default_env_files
 
       issuer_id = ENV['ASC_AUTH_ISSUER_ID'] || ENV['ASC_ISSUER_ID'] || 'c98b1e0a-8d10-4fce-a417-536b31c09bfb'
       key_id = ENV['ASC_AUTH_KEY_ID'] || ENV['ASC_KEY_ID'] || 'S34998ZCRT'
@@ -1163,7 +1387,7 @@ module SaneMasterModules
       if checked_key && sparkle_target[:info_path].to_s != '' && sparkle_target[:entitlements_path].to_s != ''
         info_content = safe_read(sparkle_target[:info_path])
         entitlements_content = safe_read(sparkle_target[:entitlements_path])
-        sandboxed = entitlements_content.include?('com.apple.security.app-sandbox')
+        sandboxed = plist_bool_true?(entitlements_content, 'com.apple.security.app-sandbox')
 
         if sandboxed
           info_has_launcher = info_content.match?(/<key>SUEnableInstallerLauncherService<\/key>\s*<true\/>/m)
@@ -1306,8 +1530,11 @@ module SaneMasterModules
 
       # 6. Pending customer emails
       print '  Pending emails... '
-      api_key, = Open3.capture2e('security', 'find-generic-password', '-s', 'sane-email-automation', '-a', 'api_key', '-w')
-      api_key = api_key.strip
+      api_key = resolve_secret(
+        service: 'sane-email-automation',
+        account: 'api_key',
+        env_names: %w[SANE_EMAIL_API_KEY EMAIL_API_KEY]
+      )
       if api_key.empty?
         puts '⏭️  skipped (no API key)'
       else
@@ -1392,102 +1619,56 @@ module SaneMasterModules
 
       # 10. Email webhook download version drift
       print '  Email webhook PRODUCT_CONFIG... '
-      webhook_js = File.expand_path('~/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js')
-      routed_webhook = routed_webhook_context
-      if File.exist?(webhook_js) || routed_webhook
-        appcast_paths = local_appcast_paths
-        appcast_ver = nil
-        appcast_paths.each do |ac|
-          match = File.read(ac).match(/sparkle:shortVersionString[=>]+"?([^"<\s]+)/)
-          appcast_ver = match[1] if match
-          break if appcast_ver
-        end
-
-        webhook_ver = if routed_webhook
-                        metadata_value(routed_webhook['product_versions'], preflight_app_name)
-                      else
-                        webhook_content = File.read(webhook_js)
-                        webhook_match = webhook_content.match(/'#{Regexp.escape(preflight_app_name)}':\s*\{\s*file:\s*'#{Regexp.escape(preflight_app_name)}-([^']+)\.(zip|dmg)'/)
-                        webhook_match ? webhook_match[1] : nil
-                      end
-
-        if appcast_ver && webhook_ver
-          if appcast_ver == webhook_ver
-            puts "✅ #{preflight_app_name} v#{webhook_ver}"
-          else
-            puts "❌ DRIFT: webhook=#{webhook_ver}, appcast=#{appcast_ver}"
-            issues << "Email webhook sends #{preflight_app_name}-#{webhook_ver} but appcast is at #{appcast_ver} — new customers get old builds"
-          end
-        elsif appcast_ver && !webhook_ver
-          puts "⚠️  #{preflight_app_name} not in webhook PRODUCT_CONFIG"
-          warnings << "#{preflight_app_name} missing from email webhook PRODUCT_CONFIG"
-        else
-          puts '⏭️  no appcast.xml found'
-        end
-      else
-        puts '⏭️  webhook file not found'
+      live_appcast_item = { version: '', build: '', url: '' }
+      website_domain = preflight_config['website_domain'].to_s.strip
+      if !website_domain.empty?
+        live_appcast_body = fetch_text("https://#{website_domain}/appcast.xml")
+        live_appcast_item = parse_latest_appcast_item(live_appcast_body) unless live_appcast_body.empty?
       end
 
-      # 10b. Check if deployed Worker is stale vs git
-      print '  Webhook Worker deploy freshness... '
-      if File.exist?(webhook_js)
-        webhook_dir = File.dirname(File.dirname(File.dirname(webhook_js)))
-        wrangler_toml = File.join(webhook_dir, 'wrangler.toml')
-        if File.exist?(wrangler_toml)
-          # Get last git commit time on the webhook JS file
-          last_commit_epoch = if routed_webhook
-                                routed_webhook['last_commit_epoch'].to_i
-                              else
-                                output, commit_status = Open3.capture2(
-                                  'git', '-C', webhook_dir, 'log', '-1', '--format=%ct', '--', 'src/handlers/webhook-lemonsqueezy.js'
-                                )
-                                commit_status.success? ? output.strip.to_i : 0
-                              end
+      webhook_snapshot = fetch_live_email_worker_snapshot(
+        product_name: preflight_app_name,
+        include_signed: true
+      )
+      webhook_ver = live_email_worker_value(webhook_snapshot, preflight_app_name, 'version')
 
-          # Get latest wrangler deployment timestamp
-          npx_bin = if File.executable?('/opt/homebrew/bin/npx')
-                      '/opt/homebrew/bin/npx'
-                    elsif File.executable?('/usr/local/bin/npx')
-                      '/usr/local/bin/npx'
-                    else
-                      'npx'
-                    end
-          deploy_env = { 'PATH' => [ENV['PATH'], '/opt/homebrew/bin', '/usr/local/bin'].compact.join(':') }
-          deploy_output, deploy_status = Open3.capture2e(
-            deploy_env,
-            npx_bin, 'wrangler', 'deployments', 'list', '--config', wrangler_toml,
-            chdir: webhook_dir
-          )
+      if live_appcast_item[:version].to_s.empty? && webhook_ver.to_s.empty?
+        puts '⏭️  no live appcast or worker snapshot'
+      elsif live_appcast_item[:version].to_s.empty?
+        puts "✅ #{preflight_app_name} v#{webhook_ver} (worker live)"
+      elsif webhook_ver.to_s.empty?
+        puts "⚠️  #{preflight_app_name} missing from live email worker"
+        warnings << "#{preflight_app_name} missing from live email worker snapshot"
+      elsif live_appcast_item[:version] == webhook_ver
+        puts "✅ #{preflight_app_name} v#{webhook_ver}"
+      else
+        puts "❌ DRIFT: worker=#{webhook_ver}, appcast=#{live_appcast_item[:version]}"
+        issues << "Live email worker serves #{preflight_app_name}-#{webhook_ver} but live appcast is at #{live_appcast_item[:version]} — new customers get old builds"
+      end
 
-          if deploy_status.success? && last_commit_epoch.to_i > 0
-            # Parse the most recent deployment timestamp from wrangler output
-            # Format varies but typically: "Created: 2026-03-01T12:00:00Z" or ISO date in the first entry
-            deploy_dates = deploy_output.scan(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)/).flatten
-            if deploy_dates.any?
-              latest_deploy_time = deploy_dates
-                .map { |ts| Time.parse(ts).to_i rescue 0 }
-                .max.to_i
-              if latest_deploy_time > 0 && last_commit_epoch > latest_deploy_time
-                age_hours = ((last_commit_epoch - latest_deploy_time) / 3600.0).round(1)
-                puts "⚠️  Worker stale by #{age_hours}h"
-                warnings << "Email Worker not deployed — code committed #{age_hours}h after last deploy. Run: cd #{webhook_dir} && npx wrangler deploy --keep-vars"
-              else
-                puts '✅ Worker up to date'
-              end
-            else
-              puts '⏭️  could not parse deploy timestamps'
-            end
-          elsif missing_cloudflare_token?(deploy_output)
-            puts '⏭️  skipped (Cloudflare token unavailable)'
-          else
-            puts '⏭️  wrangler deployments list failed'
-            warnings << "Webhook deploy freshness check failed: #{deploy_output.lines.first.to_s.strip}"
-          end
+      # 10b. Check the live worker's signed download URL, not just source freshness.
+      print '  Webhook Worker signed download... '
+      webhook_download_url = live_email_worker_value(webhook_snapshot, preflight_app_name, 'downloadUrl')
+      webhook_file = live_email_worker_value(webhook_snapshot, preflight_app_name, 'file')
+      if webhook_download_url.to_s.empty?
+        puts '⏭️  no signed download URL'
+      elsif webhook_file.to_s.end_with?('.zip')
+        archive_versions = archive_bundle_versions(zip_url: webhook_download_url, app_name: preflight_app_name)
+        if archive_versions.nil?
+          puts '❌ bundle unreadable'
+          issues << "Live email worker signed download for #{preflight_app_name} could not be inspected"
+        elsif !webhook_ver.to_s.empty? && archive_versions[:version] != webhook_ver
+          puts "❌ v#{archive_versions[:version]} != worker #{webhook_ver}"
+          issues << "Live email worker signed download bundle version #{archive_versions[:version]} does not match worker #{webhook_ver}"
+        elsif !live_appcast_item[:build].to_s.empty? && archive_versions[:build] != live_appcast_item[:build]
+          puts "❌ build #{archive_versions[:build]} != appcast #{live_appcast_item[:build]}"
+          issues << "Live email worker signed download bundle build #{archive_versions[:build]} does not match live appcast #{live_appcast_item[:build]}"
         else
-          puts '⏭️  no wrangler.toml found'
+          puts "✅ v#{archive_versions[:version]} (#{archive_versions[:build]})"
         end
       else
-        puts '⏭️  webhook file not found'
+        puts "⚠️  unsupported file #{webhook_file}"
+        warnings << "Live email worker signed download uses unsupported archive type: #{webhook_file}"
       end
 
       # Summary
@@ -1627,7 +1808,7 @@ module SaneMasterModules
       target_ent = appstore_ent || named_ent || mac_like.first || entitlements.first
       if target_ent
         ent_content = File.read(target_ent) rescue ''
-        has_sandbox = ent_content.include?('com.apple.security.app-sandbox')
+        has_sandbox = plist_bool_true?(ent_content, 'com.apple.security.app-sandbox')
         has_hardened = true # Hardened runtime is in build settings, not entitlements
         puts "✅ #{target_ent}"
         unless has_sandbox
@@ -1949,6 +2130,27 @@ module SaneMasterModules
         warnings << 'No appstore.configuration in .saneprocess — using default Release config?'
       end
 
+      # 5c1. launchd daemon / helper architecture audit
+      print '  │ launchd daemon audit... '
+      if platforms.include?('macos')
+        daemon_markers = []
+        daemon_markers << 'SMAppService.daemon source' if all_source.match?(/SMAppService\.daemon\s*\(/)
+        daemon_markers << 'LaunchDaemons payload copy step' if project_yml_content.match?(/LaunchDaemons/i) || yml_content.match?(/LaunchDaemons/i)
+
+        xcodeproj_blob = Dir.glob('*.xcodeproj/project.pbxproj').map { |p| File.read(p) rescue '' }.join("\n")
+        daemon_markers << 'embedded helper tool target' if xcodeproj_blob.match?(/productType = "com\.apple\.product-type\.tool"/) &&
+                                                            xcodeproj_blob.match?(/Embed Helper|LaunchDaemons/i)
+
+        if daemon_markers.empty?
+          puts '✅'
+        else
+          puts "❌ #{daemon_markers.join(', ')}"
+          issues << "Mac App Store build still relies on launchd daemon/helper architecture (#{daemon_markers.join(', ')}) — Mac App Store apps cannot ship launchd daemons or agents; redesign the App Store build or disable the lane"
+        end
+      else
+        puts '⏭️  skipped (non-macOS submission)'
+      end
+
       # 5d. StoreKit product ID routing for App Store unlock flow
       print '  │ StoreKit product ID routing... '
       uses_storekit_unlock = all_source.match?(/\bLicenseService\s*\(/)
@@ -1993,7 +2195,7 @@ module SaneMasterModules
           if !iap_status[:exists]
             puts "❌ #{configured_product_id} not found"
             issues << "App Store Connect has no in-app purchase with product_id #{configured_product_id}"
-          elsif %w[WAITING_FOR_REVIEW APPROVED READY_FOR_SALE].include?(iap_status[:state])
+          elsif %w[WAITING_FOR_REVIEW IN_REVIEW APPROVED READY_FOR_SALE].include?(iap_status[:state])
             puts "✅ #{configured_product_id} (#{iap_status[:state]})"
           elsif iap_status[:state] == 'READY_TO_SUBMIT'
             puts "❌ #{configured_product_id} (READY_TO_SUBMIT)"
@@ -2032,7 +2234,64 @@ module SaneMasterModules
         puts '⏭️  skipped (no license/pro model detected)'
       end
 
-      # 5f. Reviewer access + business-model guardrails
+      # 5f. iOS/watch signing and provisioning profile entitlement audit
+      print '  │ iOS signing & profiles... '
+      mobile_signing_targets = appstore_mobile_signing_targets(project_yml)
+      if platforms.include?('ios') || mobile_signing_targets.any?
+        signing_issues = []
+        signing_warnings = []
+        identities_out, = Open3.capture2e('security', 'find-identity', '-v', '-p', 'codesigning')
+        unless identities_out.include?('Apple Distribution:')
+          signing_issues << 'Apple Distribution signing identity is missing from the local keychain — iOS/watch App Store archives cannot sign'
+        end
+
+        profile_cache = {}
+        if mobile_signing_targets.empty?
+          signing_warnings << 'No iOS/watch Release-AppStore targets found in project.yml — verify the mobile App Store lane manually'
+        end
+
+        mobile_signing_targets.each do |target|
+          unless target[:code_sign_identity].include?('Apple Distribution')
+            signing_issues << "#{target[:name]} Release-AppStore is not using Apple Distribution signing"
+          end
+
+          if target[:provisioning_profile].to_s.empty?
+            signing_issues << "#{target[:name]} Release-AppStore is missing PROVISIONING_PROFILE_SPECIFIER"
+            next
+          end
+
+          if target[:code_sign_style] != 'Manual'
+            signing_warnings << "#{target[:name]} Release-AppStore still uses automatic signing — the Mini path is safer with explicit App Store profiles"
+          end
+
+          profile = installed_mobileprovision_by_name(target[:provisioning_profile], profile_cache)
+          unless profile.is_a?(Hash)
+            signing_issues << "Provisioning profile \"#{target[:provisioning_profile]}\" for #{target[:name]} is not installed locally"
+            next
+          end
+
+          profile_entitlements = profile['Entitlements'].is_a?(Hash) ? profile['Entitlements'] : {}
+          profile_groups = Array(profile_entitlements['com.apple.security.application-groups']).map(&:to_s)
+          target[:app_groups].each do |group|
+            next if profile_groups.include?(group)
+
+            signing_issues << "Provisioning profile \"#{target[:provisioning_profile]}\" for #{target[:name]} does not allow app group #{group}"
+          end
+        end
+
+        if signing_issues.empty?
+          detail = mobile_signing_targets.empty? ? 'no mobile targets found' : "#{mobile_signing_targets.count} target(s) checked"
+          puts "✅ #{detail}"
+        else
+          puts "❌ #{signing_issues.first}"
+          signing_issues.each { |msg| issues << msg }
+        end
+        signing_warnings.each { |msg| warnings << msg }
+      else
+        puts '⏭️  skipped (no iOS App Store lane)'
+      end
+
+      # 5g. Reviewer access + business-model guardrails
       print '  │ Reviewer access guardrails... '
       reviewer_access_report = reviewer_access_guardrail_report(
         source_blob: reviewer_guardrail_source_blobs(swift_files: swift_files),
@@ -2051,7 +2310,7 @@ module SaneMasterModules
         puts '⏭️  skipped (no account/demo/license reviewer path detected)'
       end
 
-      # 5f2. App Store policy guardrails for common rejection classes
+      # 5g2. App Store policy guardrails for common rejection classes
       print '  │ App Store policy guardrails... '
       review_notes_blob = platforms.map { |platform| review_notes_for_platform(appstore_config, platform) }.join("\n")
       policy_report = appstore_policy_guardrail_report(
@@ -2170,6 +2429,11 @@ module SaneMasterModules
                 artifact_blob = [plist_dump, strings_out, nm_out, otool_out].join("\n")
                 artifact_issues = []
                 artifact_warnings = []
+                launch_daemons_dir = File.join(app_dir, 'Contents', 'Library', 'LaunchDaemons')
+
+                if Dir.exist?(launch_daemons_dir)
+                  artifact_issues << 'Built App Store artifact still embeds LaunchDaemons payload — Mac App Store apps cannot ship launchd daemons or agents'
+                end
 
                 direct_purchase_markers = []
                 direct_purchase_markers << 'website checkout URL' if artifact_blob.match?(/go\.saneapps\.com\/buy\//i)

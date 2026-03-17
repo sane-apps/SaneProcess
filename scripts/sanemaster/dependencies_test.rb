@@ -97,6 +97,22 @@ exit(run_tests('SaneMaster MCP Watchdog Tests') do
       assert_eq(cleanup[:pids], [], 'cross-session backends should not be trimmed')
       true
     end
+
+    test('ignores singleton bridge wrappers and tracks only their backends') do
+      rows = [
+        process_row(pid: 500, ppid: 1, etimes: 600, command: '/usr/local/bin/node /Users/sj/SaneApps/infra/SaneProcess/scripts/mcp_singleton_bridge.cjs serve apple-docs'),
+        process_row(pid: 501, ppid: 500, etimes: 590, command: '/usr/local/bin/node /Users/sj/Dev/apple-docs-mcp-local/dist/index.js'),
+        process_row(pid: 510, ppid: 1, etimes: 600, command: '/usr/local/bin/node /Users/sj/SaneApps/infra/SaneProcess/scripts/mcp_singleton_bridge.cjs serve macos-automator'),
+        process_row(pid: 511, ppid: 510, etimes: 590, command: '/usr/local/bin/node /Users/sj/.npm-global/lib/node_modules/@steipete/macos-automator-mcp/dist/server.js')
+      ]
+
+      analysis = build_analysis(subject, rows)
+
+      assert_eq(analysis[:orphan_instances].length, 0, 'bridge wrappers should not create orphan MCP instances')
+      assert_eq(analysis[:by_server]['apple-docs'], 1, 'only the apple-docs backend should be counted')
+      assert_eq(analysis[:by_server]['macos-automator'], 1, 'only the macos-automator backend should be counted')
+      true
+    end
   end
 
   test_category('Codex sidecar cleanup') do

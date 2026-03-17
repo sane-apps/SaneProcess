@@ -989,6 +989,46 @@ def applescript_quote(text)
   text.to_s.gsub('\\', '\\\\\\').gsub('"', '\"')
 end
 
+def run_safari_javascript(url:, javascript:, delay_seconds: 8, navigate: true)
+  script = <<~APPLESCRIPT
+    tell application "Safari"
+      if not running then
+        error "Safari is not running."
+      end if
+
+      if (count of windows) = 0 then
+        make new document with properties {URL:"#{applescript_quote(url)}"}
+      end if
+
+      if #{navigate ? 'true' : 'false'} then
+        set URL of current tab of front window to "#{applescript_quote(url)}"
+      end if
+
+      delay #{delay_seconds}
+      return do JavaScript "#{applescript_quote(javascript)}" in current tab of front window
+    end tell
+  APPLESCRIPT
+
+  stdout, stderr, status = Open3.capture3('osascript', stdin_data: script)
+  raise(stderr.strip.empty? ? 'Safari automation failed.' : stderr.strip) unless status.success?
+
+  stdout
+end
+
+def safari_page_snapshot(url:, delay_seconds: 8, navigate: true)
+  javascript = <<~JAVASCRIPT
+    JSON.stringify({
+      url: location.href,
+      body: document.body ? document.body.innerText.slice(0, 20000) : ""
+    })
+  JAVASCRIPT
+
+  raw = run_safari_javascript(url: url, javascript: javascript, delay_seconds: delay_seconds, navigate: navigate)
+  JSON.parse(raw)
+rescue JSON::ParserError
+  { 'url' => url, 'body' => raw.to_s }
+end
+
 def normalize_review_page_text(text)
   clean = text.to_s.gsub("\u00A0", ' ').gsub("\r\n", "\n").gsub("\r", "\n")
   clean = clean.gsub(/[ \t]+\n/, "\n").gsub(/\n{3,}/, "\n\n").strip
@@ -998,13 +1038,99 @@ def normalize_review_page_text(text)
     /Apple(?:Today|Yesterday|[A-Z][a-z]{2}.*\d{4})/,
     /Hello,/
   ]
-  start_index = anchors.filter_map { |pattern| clean.index(pattern) }.min
+  start_index = anchors.map { |pattern| clean.index(pattern) }.compact.min
   start_index ? clean[start_index..].strip : clean
 end
 
 def fetch_review_message_from_safari(app_id:, submission_id:)
   review_url = "https://appstoreconnect.apple.com/apps/#{app_id}/distribution/reviewsubmissions/details/#{submission_id}"
   javascript = 'document.body.innerText'
+  normalize_review_page_text(run_safari_javascript(url: review_url, javascript: javascript, delay_seconds: 8))
+end
+
+def delete_empty_draft_submissions_from_safari(app_id:, max_iterations: 20)
+  review_url = "https://appstoreconnect.apple.com/apps/#{app_id}/distribution/reviewsubmissions"
+  deleted_count = 0
+
+  max_iterations.times do |index|
+    delay_seconds = index.zero? ? 8 : 2
+    javascript = <<~JAVASCRIPT
+      (() => {
+        const body = document.body ? document.body.innerText : "";
+        const match = body.match(/Draft Submissions \\((\\d+)\\)/);
+        const buttons = Array.from(document.querySelectorAll('button[aria-label="Delete"]'));
+        if (!buttons.length) {
+          return JSON.stringify({
+            action: "none",
+            remaining: match ? Number(match[1]) : 0,
+            body: body.slice(0, 12000)
+          });
+        }
+        buttons[0].click();
+        return JSON.stringify({
+          action: "clicked",
+          remainingBefore: match ? Number(match[1]) : buttons.length
+        });
+      })()
+    JAVASCRIPT
+
+    raw = run_safari_javascript(url: review_url, javascript: javascript, delay_seconds: delay_seconds)
+    payload = JSON.parse(raw, symbolize_names: true)
+
+    if payload[:action] == 'clicked'
+      deleted_count += 1
+      sleep 2
+      next
+    end
+
+    return {
+      deleted_count: deleted_count,
+      remaining_count: payload[:remaining].to_i,
+      body: payload[:body].to_s
+    }
+  end
+
+  raise 'Timed out while deleting draft submissions in Safari.'
+end
+
+def remove_app_from_safari(app_id:)
+  info_url = "https://appstoreconnect.apple.com/apps/#{app_id}/distribution/info"
+  click_remove_app = <<~JAVASCRIPT
+    (() => {
+      const normalize = (text) => (text || "").replace(/\\s+/g, " ").trim();
+      const body = document.body ? document.body.innerText : "";
+      const button = Array.from(document.querySelectorAll('button')).find((candidate) =>
+        normalize(candidate.innerText || candidate.textContent || candidate.getAttribute('aria-label')) === "Remove App"
+      );
+      if (!button) {
+        return JSON.stringify({ stage: "missing-remove-app", url: location.href, body: body.slice(0, 12000) });
+      }
+      button.click();
+      return JSON.stringify({ stage: "opened-confirm" });
+    })()
+  JAVASCRIPT
+
+  click_confirm = <<~JAVASCRIPT
+    (() => {
+      const normalize = (text) => (text || "").replace(/\\s+/g, " ").trim();
+      const body = document.body ? document.body.innerText : "";
+      const button = Array.from(document.querySelectorAll('button')).find((candidate) =>
+        normalize(candidate.innerText || candidate.textContent || candidate.getAttribute('aria-label')) === "Remove"
+      );
+      if (!button) {
+        return JSON.stringify({ stage: "missing-confirm", body: body.slice(0, 12000) });
+      }
+      button.click();
+      return JSON.stringify({ stage: "confirmed" });
+    })()
+  JAVASCRIPT
+  snapshot_script = <<~JAVASCRIPT
+    JSON.stringify({
+      url: location.href,
+      body: document.body ? document.body.innerText.slice(0, 20000) : ""
+    })
+  JAVASCRIPT
+
   script = <<~APPLESCRIPT
     tell application "Safari"
       if not running then
@@ -1012,20 +1138,46 @@ def fetch_review_message_from_safari(app_id:, submission_id:)
       end if
 
       if (count of documents) = 0 then
-        make new document with properties {URL:"#{applescript_quote(review_url)}"}
+        make new document with properties {URL:"#{applescript_quote(info_url)}"}
       else
-        set URL of front document to "#{applescript_quote(review_url)}"
+        set URL of front document to "#{applescript_quote(info_url)}"
       end if
+      delay 10
 
-      delay 8
-      return do JavaScript "#{applescript_quote(javascript)}" in front document
+      set stepOne to do JavaScript "#{applescript_quote(click_remove_app)}" in front document
+      delay 2
+      set stepTwo to do JavaScript "#{applescript_quote(click_confirm)}" in front document
+      delay 4
+      set snapshot to do JavaScript "#{applescript_quote(snapshot_script)}" in front document
+
+      return stepOne & linefeed & "<<<ASC_SPLIT>>>" & linefeed & stepTwo & linefeed & "<<<ASC_SPLIT>>>" & linefeed & snapshot
     end tell
   APPLESCRIPT
 
   stdout, stderr, status = Open3.capture3('osascript', stdin_data: script)
-  raise(stderr.strip.empty? ? 'Safari scrape failed.' : stderr.strip) unless status.success?
+  raise(stderr.strip.empty? ? 'Safari remove-app automation failed.' : stderr.strip) unless status.success?
 
-  normalize_review_page_text(stdout)
+  parts = stdout.split("\n<<<ASC_SPLIT>>>\n", 3)
+  step_one = JSON.parse(parts[0].to_s, symbolize_names: true)
+  return step_one if step_one[:stage] != 'opened-confirm'
+
+  step_two = JSON.parse(parts[1].to_s, symbolize_names: true)
+  return step_two if step_two[:stage] != 'confirmed'
+
+  snapshot = JSON.parse(parts[2].to_s)
+  body = snapshot['body'].to_s
+  if body.include?('This app is unable to be removed right now.') || body.include?('This app cannot be removed.')
+    {
+      stage: 'blocked',
+      body: body
+    }
+  else
+    {
+      stage: 'completed',
+      url: snapshot['url'].to_s,
+      body: body
+    }
+  end
 end
 
 def check_version_state_preflight(app_id, asc_platform, version_string, token)
@@ -1853,6 +2005,18 @@ def screenshot_jobs_for(platform, config)
   jobs
 end
 
+def wait_for_app_screenshot_removal(screenshot_id:, token:, timeout_seconds: 20)
+  deadline = Time.now + timeout_seconds
+
+  loop do
+    code, resp = asc_get_with_status("/appScreenshots/#{screenshot_id}", token: token)
+    return true if code == 404 || resp['data'].nil?
+    return false if Time.now >= deadline
+
+    sleep 2
+  end
+end
+
 def upload_screenshot_set(localization_id, files, spec, token)
   # Fetch all sets, then match by display type locally.
   # ASC filtering here has been inconsistent and can return mixed sets.
@@ -1872,10 +2036,16 @@ def upload_screenshot_set(localization_id, files, spec, token)
     existing_resp = asc_get(existing_path, token: token)
     if existing_resp && existing_resp['data']
       existing_resp['data'].each do |ss|
+        screenshot_id = ss['id']
         state = ss.dig('attributes', 'assetDeliveryState', 'state')
-        if %w[UPLOAD_COMPLETE COMPLETE FAILED].include?(state)
-          asc_delete("/appScreenshots/#{ss['id']}", token: token)
+        delete_code, delete_resp = asc_delete_with_status("/appScreenshots/#{screenshot_id}", token: token)
+        unless [200, 202, 204, 404].include?(delete_code)
+          detail = delete_resp.dig('errors', 0, 'detail') || delete_resp.dig('errors', 0, 'title') || 'unknown error'
+          log_warn "Failed to remove existing screenshot #{screenshot_id} (#{state || 'unknown'}): #{detail}"
+          next
         end
+
+        wait_for_app_screenshot_removal(screenshot_id: screenshot_id, token: token, timeout_seconds: 20)
       end
     end
   else
@@ -2065,8 +2235,11 @@ def normalized_iap_localization_name(name)
   value[0, IAP_LOCALIZATION_NAME_MAX].rstrip
 end
 
-def normalized_iap_localization_description
-  IAP_DEFAULT_LOCALIZATION_DESCRIPTION[0, IAP_LOCALIZATION_DESCRIPTION_MAX].rstrip
+def normalized_iap_localization_description(description = nil)
+  value = description.to_s.strip
+  value = IAP_DEFAULT_LOCALIZATION_DESCRIPTION if value.empty?
+  value = value.gsub(/\s+/, ' ')
+  value[0, IAP_LOCALIZATION_DESCRIPTION_MAX].rstrip
 end
 
 def upload_presigned_chunk(upload_url, headers, chunk)
@@ -2083,9 +2256,9 @@ def upload_presigned_chunk(upload_url, headers, chunk)
   response.code.to_i
 end
 
-def ensure_iap_localization(iap_id:, iap_name:, token:)
+def ensure_iap_localization(iap_id:, iap_name:, iap_description:, token:)
   desired_name = normalized_iap_localization_name(iap_name)
-  desired_description = normalized_iap_localization_description
+  desired_description = normalized_iap_localization_description(iap_description)
 
   code, resp = asc_get_v2("/inAppPurchases/#{iap_id}/inAppPurchaseLocalizations?limit=50", token: token)
   unless code == 200
@@ -2094,6 +2267,12 @@ def ensure_iap_localization(iap_id:, iap_name:, token:)
   end
 
   existing = resp.fetch('data', []).find { |loc| loc.dig('attributes', 'locale') == 'en-US' }
+  if existing && existing.dig('attributes', 'state') == 'REJECTED'
+    log_error 'ASC has this IAP localization in REJECTED state.'
+    log_error 'Apple requires a new In-App Purchase for rejected IAP metadata. Rotate appstore.product_id and rerun.'
+    return false
+  end
+
   if existing
     attrs = {}
     current_name = existing.dig('attributes', 'name').to_s.strip
@@ -2424,6 +2603,9 @@ def find_iap_by_product_id(app_id:, product_id:, token:)
 end
 
 def default_iap_name(config:, project_root:, product_id:)
+  explicit = config.dig('appstore', 'iap', 'display_name').to_s.strip
+  return explicit unless explicit.empty?
+
   explicit = config.dig('appstore', 'iap_name').to_s.strip
   return explicit unless explicit.empty?
 
@@ -2435,7 +2617,8 @@ end
 
 def create_iap(app_id:, product_id:, project_root:, config:, token:)
   iap_name = default_iap_name(config: config, project_root: project_root, product_id: product_id)
-  review_note = config.dig('appstore', 'review_notes').to_s.strip
+  review_note = config.dig('appstore', 'iap', 'review_note').to_s.strip
+  review_note = config.dig('appstore', 'review_notes').to_s.strip if review_note.empty?
 
   body = {
     data: {
@@ -2502,8 +2685,16 @@ def ensure_iap_readiness(app_id:, product_id:, project_root:, config:, token:, p
   end
 
   iap_id = iap['id']
-  iap_name = iap.dig('attributes', 'name').to_s.strip
+  configured_iap = config.dig('appstore', 'iap') || {}
+  iap_name = configured_iap['display_name'].to_s.strip
+  iap_name = configured_iap[:display_name].to_s.strip if iap_name.empty?
+  iap_name = iap.dig('attributes', 'name').to_s.strip if iap_name.empty?
   iap_name = product_id.split('.').map(&:capitalize).join(' ') if iap_name.empty?
+  iap_description = configured_iap['description'].to_s.strip
+  iap_description = configured_iap[:description].to_s.strip if iap_description.empty?
+  iap_review_note = configured_iap['review_note'].to_s.strip
+  iap_review_note = configured_iap[:review_note].to_s.strip if iap_review_note.empty?
+  iap_review_note = config.dig('appstore', 'review_notes').to_s.strip if iap_review_note.empty?
 
   log_info "Ensuring IAP readiness for #{product_id} (#{iap_id})..."
 
@@ -2513,7 +2704,12 @@ def ensure_iap_readiness(app_id:, product_id:, project_root:, config:, token:, p
   end
 
   checks = []
-  checks << ensure_iap_localization(iap_id: iap_id, iap_name: iap_name, token: token)
+  checks << ensure_iap_localization(
+    iap_id: iap_id,
+    iap_name: iap_name,
+    iap_description: iap_description,
+    token: token
+  )
   checks << ensure_iap_price_schedule(iap_id: iap_id, target_price_usd: price_usd, token: token)
   checks << ensure_iap_review_screenshot(
     iap_id: iap_id,
@@ -2522,7 +2718,7 @@ def ensure_iap_readiness(app_id:, product_id:, project_root:, config:, token:, p
     token: token
   )
   checks << ensure_iap_availability(iap_id: iap_id, token: token)
-  checks << ensure_iap_review_note(iap_id: iap_id, review_note: config.dig('appstore', 'review_notes'), token: token)
+  checks << ensure_iap_review_note(iap_id: iap_id, review_note: iap_review_note, token: token)
 
   return false unless checks.all?
 
@@ -2682,27 +2878,44 @@ def submit_for_review(app_id, asc_platform, version_id, token)
   if review_submission_has_version?(submission_id, version_id, token)
     log_info "Review submission #{submission_id} already contains appStoreVersion #{version_id}."
   else
-    item_code, item_resp = asc_post_with_status('/reviewSubmissionItems', body: item_body, token: token)
-    if [200, 201, 202].include?(item_code)
-      log_info 'Review submission item created.'
-    elsif item_code == 409
-      conflict_submission_id = extract_conflict_submission_id(item_resp)
-      if conflict_submission_id && conflict_submission_id != submission_id
-        log_warn "Version belongs to existing review submission #{conflict_submission_id}; switching target."
-        submission_id = conflict_submission_id
-      elsif invalid_review_item_response?(item_resp)
-        detail = item_resp.dig('errors', 0, 'detail') || item_resp.dig('errors', 0, 'title') || 'Item is invalid for review'
-        log_error "Review submission item invalid: #{detail}"
-        associated = item_resp.dig('errors', 0, 'meta', 'associatedErrors')
-        summarize_associated_errors(associated) if associated.is_a?(Hash)
-        return false
+    processing_retry_deadline = Time.now + 300
+
+    loop do
+      item_code, item_resp = asc_post_with_status('/reviewSubmissionItems', body: item_body, token: token)
+      if [200, 201, 202].include?(item_code)
+        log_info 'Review submission item created.'
+        break
+      elsif item_code == 409
+        conflict_submission_id = extract_conflict_submission_id(item_resp)
+        if conflict_submission_id && conflict_submission_id != submission_id
+          log_warn "Version belongs to existing review submission #{conflict_submission_id}; switching target."
+          submission_id = conflict_submission_id
+          break
+        elsif invalid_review_item_response?(item_resp)
+          detail = item_resp.dig('errors', 0, 'detail') || item_resp.dig('errors', 0, 'title') || 'Item is invalid for review'
+          associated = item_resp.dig('errors', 0, 'meta', 'associatedErrors')
+          blockers = review_item_processing_blockers(item_resp)
+
+          if !blockers.empty? && Time.now < processing_retry_deadline
+            log_warn 'Review submission item blocked by screenshot processing. Waiting 8s and retrying.'
+            summarize_associated_errors(associated) if associated.is_a?(Hash)
+            sleep 8
+            token = generate_jwt
+            next
+          end
+
+          log_error "Review submission item invalid: #{detail}"
+          summarize_associated_errors(associated) if associated.is_a?(Hash)
+          return false
+        else
+          log_warn 'Review submission item already exists (409).'
+          break
+        end
       else
-        log_warn 'Review submission item already exists (409).'
+        detail = item_resp.dig('errors', 0, 'detail') || item_resp.dig('errors', 0, 'title') || "HTTP #{item_code}"
+        log_error "Could not create reviewSubmissionItem: #{detail}"
+        return false
       end
-    else
-      detail = item_resp.dig('errors', 0, 'detail') || item_resp.dig('errors', 0, 'title') || "HTTP #{item_code}"
-      log_error "Could not create reviewSubmissionItem: #{detail}"
-      return false
     end
   end
 
@@ -2909,6 +3122,7 @@ def clear_review_submission(submission_id, token)
   else
     detail = resp.dig('errors', 0, 'detail') || resp.dig('errors', 0, 'title') || "HTTP #{code}"
     log_warn "Could not clear review submission #{submission_id}: #{detail}"
+    log_warn 'If App Review still shows empty Draft Submissions, run appstore_submit.rb --clear-draft-submissions-ui on the signed-in Safari host.'
     false
   end
 end
@@ -2962,6 +3176,27 @@ def invalid_review_item_response?(item_resp)
     code = err['code'].to_s
     code.start_with?('STATE_ERROR.ENTITY_STATE_INVALID') || code.start_with?('STATE_ERROR')
   end
+end
+
+def review_item_processing_blockers(item_resp)
+  return [] unless item_resp.is_a?(Hash)
+
+  associated = item_resp.dig('errors', 0, 'meta', 'associatedErrors')
+  return [] unless associated.is_a?(Hash)
+
+  blockers = []
+  associated.each do |resource, errors|
+    next unless resource.to_s.include?('/appScreenshots/')
+
+    Array(errors).each do |entry|
+      message = entry['detail'] || entry['title'] || entry['code'] || 'Unknown screenshot processing blocker'
+      next unless message.to_s.match?(/still in progress/i)
+
+      blockers << "#{resource}: #{message}"
+    end
+  end
+
+  blockers.uniq
 end
 
 def current_app_store_state(version_id, token)
@@ -3085,6 +3320,8 @@ OptionParser.new do |opts|
   opts.on('--list-builds', 'List ASC builds for app/platform (diagnostic)') { options[:list_builds] = true }
   opts.on('--list-versions', 'List ASC app versions and review states (diagnostic)') { options[:list_versions] = true }
   opts.on('--fetch-review-message', 'Open linked App Review detail in Safari and print the visible reviewer message text') { options[:fetch_review_message] = true }
+  opts.on('--clear-draft-submissions-ui', 'Delete empty Draft Submissions for this app using signed-in Safari') { options[:clear_draft_submissions_ui] = true }
+  opts.on('--remove-app-ui', 'Remove this app from App Store Connect using signed-in Safari') { options[:remove_app_ui] = true }
   opts.on('--sync-metadata-only', 'Sync metadata/accessibility/review fields for an existing version (no upload, no submission)') { options[:sync_metadata_only] = true }
   opts.on('--test-screenshots', 'Test screenshot resize only (no API calls)') { options[:test_screenshots] = true }
 end.parse!
@@ -3342,6 +3579,59 @@ if options[:fetch_review_message]
 
   puts text
   exit 0
+end
+
+if options[:clear_draft_submissions_ui]
+  unless options[:app_id]
+    log_error 'Missing required option: --app-id'
+    exit 1
+  end
+
+  begin
+    result = delete_empty_draft_submissions_from_safari(app_id: options[:app_id])
+  rescue StandardError => e
+    log_error "Failed to clear draft submissions in Safari: #{e.message}"
+    log_error 'Requirements: run this on the host where Safari is signed into App Store Connect and Apple Events JS is enabled.'
+    exit 1
+  end
+
+  if result[:remaining_count].positive?
+    log_warn "Deleted #{result[:deleted_count]} draft submission(s), but #{result[:remaining_count]} still remain."
+    log_warn result[:body].lines.first(20).join
+    exit 1
+  end
+
+  log_info "Deleted #{result[:deleted_count]} empty draft submission(s). No draft submissions remain."
+  exit 0
+end
+
+if options[:remove_app_ui]
+  unless options[:app_id]
+    log_error 'Missing required option: --app-id'
+    exit 1
+  end
+
+  begin
+    result = remove_app_from_safari(app_id: options[:app_id])
+  rescue StandardError => e
+    log_error "Failed to remove app in Safari: #{e.message}"
+    log_error 'Requirements: run this on the host where Safari is signed into App Store Connect and Apple Events JS is enabled.'
+    exit 1
+  end
+
+  case result[:stage]
+  when 'completed'
+    log_info "Remove App completed for app #{options[:app_id]}."
+    exit 0
+  when 'blocked'
+    log_error "App #{options[:app_id]} still cannot be removed."
+    log_error result[:body].lines.first(20).join
+    exit 1
+  else
+    log_error "Could not complete Remove App for #{options[:app_id]} (stage=#{result[:stage]})."
+    log_error result[:body].to_s.lines.first(20).join unless result[:body].to_s.empty?
+    exit 1
+  end
 end
 
 if options[:screenshots_only]

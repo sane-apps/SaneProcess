@@ -41,19 +41,42 @@ class SaneProcessQA
     session_start.rb
   ].freeze
 
-  # Shared modules that hooks require (not registered, but must exist)
+  # Shared runtime modules that hooks require (not registered, but must exist)
   SHARED_MODULES = %w[
     rule_tracker.rb
     state_signer.rb
     sanetools_checks.rb
     sanetools_gaming.rb
+    sanetools_deploy.rb
+    sanetools_startup.rb
+    sanetools_github_guard.rb
     saneprompt_intelligence.rb
     saneprompt_commands.rb
+    sanetrack_research.rb
+    sanetrack_state_updates.rb
+    sanetrack_gate.rb
     sanetrack_reminders.rb
+    session_briefing.rb
+    session_start_cleanup.rb
+    self_test_environment.rb
   ].freeze
 
-  # All hook files that should exist
-  ALL_HOOK_FILES = (EXPECTED_HOOKS + SHARED_MODULES).freeze
+  CORE_MODULES = %w[
+    core/config.rb
+    core/state_manager.rb
+    core/context_compact.rb
+  ].freeze
+
+  SELF_TEST_MODULES = %w[
+    saneprompt_test.rb
+    sanetools_test.rb
+    sanetools_test_scenarios.rb
+    sanetrack_test.rb
+    sanestop_test.rb
+  ].freeze
+
+  # All files required for the advertised runtime + per-hook self-tests
+  ALL_HOOK_FILES = (EXPECTED_HOOKS + SHARED_MODULES + CORE_MODULES + SELF_TEST_MODULES).freeze
 
   EXPECTED_RULE_COUNT = 17
 
@@ -100,6 +123,7 @@ class SaneProcessQA
     check_hooks_registered
     check_sanemaster_syntax
     check_init_script
+    check_hook_dependency_manifest
     check_readme_hook_count
     check_sop_doc_rule_count
     check_hooks_readme
@@ -148,7 +172,7 @@ class SaneProcessQA
     end
 
     if missing.empty?
-      puts "✅ #{ALL_HOOK_FILES.count} hooks present"
+      puts "✅ #{ALL_HOOK_FILES.count} runtime/test hook files present"
     else
       @errors << "Missing hooks: #{missing.join(', ')}"
       puts "❌ Missing: #{missing.join(', ')}"
@@ -168,7 +192,7 @@ class SaneProcessQA
     end
 
     if invalid.empty?
-      puts "✅ All hooks have valid syntax"
+      puts "✅ All runtime/test hook files have valid syntax"
     else
       @errors << "Invalid syntax in: #{invalid.join(', ')}"
       puts "❌ Invalid: #{invalid.join(', ')}"
@@ -308,26 +332,46 @@ end
 
     content = File.read(INIT_SCRIPT)
 
-    # Extract hooks from the HOOKS array in init.sh
-    hooks_match = content.match(/HOOKS=\(\s*([\s\S]*?)\s*\)/)
-    unless hooks_match
-      @errors << "init.sh: Cannot find HOOKS array"
-      puts "❌ HOOKS array not found"
-      return
+    init_hooks = []
+    %w[MAIN_HOOKS SUPPORT_MODULES CORE_MODULES SELF_TEST_MODULES].each do |array_name|
+      match = content.match(/#{array_name}=\(\s*([\s\S]*?)\s*\)/)
+      next unless match
+
+      init_hooks.concat(match[1].scan(/"([^"]+)"/).flatten)
     end
 
-    # Parse the hooks list
-    init_hooks = hooks_match[1].scan(/"([^"]+)"/).flatten
+    if init_hooks.empty?
+      @errors << "init.sh: Cannot find hook install arrays"
+      puts "❌ Install arrays not found"
+      return
+    end
 
     missing = ALL_HOOK_FILES - init_hooks
     extra = init_hooks - ALL_HOOK_FILES
 
-    if missing.empty? && extra.empty?
-      puts "✅ init.sh lists all #{ALL_HOOK_FILES.count} hooks"
+    if missing.empty?
+      if extra.empty?
+        puts "✅ init.sh lists all #{ALL_HOOK_FILES.count} required runtime/test files"
+      else
+        puts "✅ init.sh lists all #{ALL_HOOK_FILES.count} required runtime/test files (+#{extra.count} optional modules)"
+      end
     else
       @errors << "init.sh missing: #{missing.join(', ')}" unless missing.empty?
-      @warnings << "init.sh has extra: #{extra.join(', ')}" unless extra.empty?
       puts "❌ Mismatch (missing: #{missing.count}, extra: #{extra.count})"
+    end
+  end
+
+  def check_hook_dependency_manifest
+    print "Checking hook dependency coverage... "
+
+    known_files = ALL_HOOK_FILES.dup
+    missing = top_level_hook_dependencies.reject { |dep| known_files.include?(dep) }
+
+    if missing.empty?
+      puts "✅ All top-level require_relative deps are covered"
+    else
+      @errors << "Hook dependency manifest missing: #{missing.join(', ')}"
+      puts "❌ Missing: #{missing.join(', ')}"
     end
   end
 
@@ -603,7 +647,7 @@ end
       strong = match[1].to_i
       weak = match[2].to_i
       if weak == 0
-        puts "✅ #{strong} tests, all strong"
+        puts "✅ Tier audit: #{strong} strong, 0 weak"
       else
         pct = ((strong.to_f / (strong + weak)) * 100).round(1)
         @warnings << "#{weak} weak tests (#{pct}% assertion coverage)"
@@ -612,6 +656,31 @@ end
     else
       puts "⚠️  Could not parse audit output"
     end
+  end
+
+  def top_level_hook_dependencies
+    sources = EXPECTED_HOOKS + SHARED_MODULES + SELF_TEST_MODULES
+    sources.each_with_object([]) do |relative_path, deps|
+      path = File.join(HOOKS_DIR, relative_path)
+      next unless File.exist?(path)
+
+      File.foreach(path) do |line|
+        next unless (match = line.match(/^require_relative ['"]([^'"]+)['"]/))
+
+        dep = normalize_hook_dependency(relative_path, match[1])
+        deps << dep if dep
+      end
+    end.uniq.sort
+  end
+
+  def normalize_hook_dependency(source_relative_path, dependency)
+    dep_with_ext = dependency.end_with?('.rb') ? dependency : "#{dependency}.rb"
+    source_dir = File.dirname(File.join(HOOKS_DIR, source_relative_path))
+    resolved = File.expand_path(dep_with_ext, source_dir)
+    hooks_root = "#{File.expand_path(HOOKS_DIR)}/"
+    return nil unless resolved.start_with?(hooks_root)
+
+    resolved.delete_prefix(hooks_root)
   end
 end
 

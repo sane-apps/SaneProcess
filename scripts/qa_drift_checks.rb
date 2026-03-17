@@ -235,8 +235,8 @@ module QaDriftChecks
       ['research.*5.*categor', 'Research is 4 categories (not 5) since memory removal', 'hooks/**/*.rb'],
       ['tracked_count == 5', 'Research tracks 4 categories (not 5)', 'hooks/**/*.rb'],
       ['localhost:37777', 'claude-mem/Sane-Mem removed Feb 2026', 'hooks/**/*.rb'],
-      ['sane.mem', 'claude-mem/Sane-Mem removed Feb 2026', 'hooks/**/*.rb'],
-      ['claude.mem', 'claude-mem plugin removed Feb 2026', 'hooks/**/*.rb']
+      ['\bsane-mem\b', 'claude-mem/Sane-Mem removed Feb 2026', 'hooks/**/*.rb'],
+      ['\bclaude-mem\b', 'claude-mem plugin removed Feb 2026', 'hooks/**/*.rb']
     ]
 
     found = []

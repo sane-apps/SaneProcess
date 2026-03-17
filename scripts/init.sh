@@ -125,10 +125,14 @@ SUPPORT_MODULES=(
     "sanetools_startup.rb"
     "sanetools_gaming.rb"
     "sanetools_deploy.rb"
+    "sanetools_github_guard.rb"
     "sanetrack_research.rb"
+    "sanetrack_state_updates.rb"
     "sanetrack_gate.rb"
     "sanetrack_reminders.rb"
     "session_briefing.rb"
+    "session_start_cleanup.rb"
+    "self_test_environment.rb"
     "state_signer.rb"
     "rule_tracker.rb"
 )
@@ -138,6 +142,15 @@ CORE_MODULES=(
     "core/config.rb"
     "core/state_manager.rb"
     "core/context_compact.rb"
+)
+
+# Self-test support (required for advertised --self-test commands)
+SELF_TEST_MODULES=(
+    "saneprompt_test.rb"
+    "sanetools_test.rb"
+    "sanetools_test_scenarios.rb"
+    "sanetrack_test.rb"
+    "sanestop_test.rb"
 )
 
 ERRORS=0
@@ -170,8 +183,18 @@ for core in "${CORE_MODULES[@]}"; do
     fi
 done
 
+for module in "${SELF_TEST_MODULES[@]}"; do
+    if [ -f "$SRC/$module" ]; then
+        cp "$SRC/$module" "scripts/hooks/$module"
+    else
+        echo -e "   ${RED}✗${NC} $module (missing self-test support)"
+        ERRORS=$((ERRORS + 1))
+    fi
+done
+
 echo -e "   ${GREEN}✓${NC} ${#SUPPORT_MODULES[@]} support modules"
 echo -e "   ${GREEN}✓${NC} ${#CORE_MODULES[@]} core modules"
+echo -e "   ${GREEN}✓${NC} ${#SELF_TEST_MODULES[@]} self-test modules"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -455,7 +478,7 @@ echo "   1. Run: claude"
 echo "   2. Hooks activate automatically on session start"
 echo "   3. Orphaned processes cleaned up"
 echo "   4. Circuit breaker armed (trips after 3 consecutive failures)"
-echo "   5. Research gate active (adapts to your installed MCPs)"
+echo "   5. Research gate active (adapts to your configured MCPs)"
 echo ""
 echo -e "${BLUE}Verify:${NC}"
 echo "   ruby scripts/hooks/saneprompt.rb --self-test"

@@ -22,6 +22,7 @@ require 'date'
 require 'time'
 require 'fileutils'
 require 'net/http'
+require 'open3'
 require 'uri'
 require 'shellwords'
 require 'tmpdir'
@@ -29,6 +30,7 @@ require 'tmpdir'
 class ValidationReport
   SANE_APPS_ROOT = File.expand_path('~/SaneApps')
   REPORT_DIR = File.join(File.dirname(__FILE__), '..', 'outputs', 'validation')
+  PRODUCT_CONFIG_PATH = File.join(SANE_APPS_ROOT, 'infra/SaneProcess/config/products.yml')
   MIN_SAMPLES_FOR_SIGNIFICANCE = 30  # Bare minimum, 100+ preferred
 
   PROJECTS = %w[
@@ -368,7 +370,7 @@ class ValidationReport
     zshrc = File.expand_path('~/.zshrc')
     zprofile = File.expand_path('~/.zprofile')
 
-    tokens_to_check = %w[GITHUB_TOKEN CLOUDFLARE_API_TOKEN LEMON_SQUEEZY_API_KEY]
+    tokens_to_check = %w[GITHUB_TOKEN CLOUDFLARE_API_TOKEN LEMONSQUEEZY_API_KEY]
 
     tokens_to_check.each do |token|
       in_zshrc = File.exist?(zshrc) && File.read(zshrc).include?(token)
@@ -384,7 +386,7 @@ class ValidationReport
 
   # Check all CLAUDE.md files list all sister apps
   def check_sister_apps_lists(issues_found)
-    all_apps = %w[SaneBar SaneClip SaneVideo SaneSync SaneHosts SaneClick]
+    all_apps = product_definitions.map { |product| product[:name] }
 
     PROJECTS.each do |project|
       claude_md = File.join(SANE_APPS_ROOT, project, 'CLAUDE.md')
@@ -630,36 +632,20 @@ class ValidationReport
     issues_found = []
     warnings_found = []
 
-    APP_PROJECTS.each do |project|
-      project_path = File.join(SANE_APPS_ROOT, project)
-      next unless File.directory?(project_path)
+    released_product_definitions.each do |product|
+      next unless product[:project_exists]
 
-      app_name = project.split('/').last
-
-      # Check appcast.xml exists and has valid URLs
-      appcast_paths = [
-        File.join(project_path, 'docs', 'appcast.xml'),
-        File.join(project_path, 'appcast.xml')
-      ]
-
-      appcast = appcast_paths.find { |p| File.exist?(p) }
-      if appcast
-        check_appcast_urls(appcast, app_name, issues_found, warnings_found)
+      app_name = product[:name]
+      site_host = product[:domain]
+      live_appcast = fetch_live_appcast_snapshot(site_host)
+      if live_appcast
+        check_live_appcast_snapshot(live_appcast, app_name, issues_found, warnings_found)
       else
-        warnings_found << "[#{app_name}] No appcast.xml found (OK if not using Sparkle)"
-      end
-
-      # Check releases folder has DMGs
-      releases_dir = File.join(project_path, 'releases')
-      if Dir.exist?(releases_dir)
-        release_artifacts = Dir.glob(File.join(releases_dir, '*.{dmg,zip}'))
-        if release_artifacts.empty?
-          warnings_found << "[#{app_name}] releases/ folder exists but has no DMG/ZIP artifacts"
-        end
+        warnings_found << "[#{app_name}] No live appcast found at https://#{site_host}/appcast.xml"
       end
 
       # Check GitHub releases are absent (forbidden for distribution)
-      check_github_releases(app_name, issues_found, warnings_found)
+      check_github_releases(product, issues_found, warnings_found)
     end
 
     @metrics[:release_integrity] = {
@@ -672,8 +658,8 @@ class ValidationReport
     warnings_found.each { |w| @warnings << "Q6 RELEASE: #{w}" }
   end
 
-  def check_appcast_urls(appcast_path, app_name, issues, warnings)
-    content = File.read(appcast_path)
+  def check_live_appcast_snapshot(snapshot, app_name, issues, warnings)
+    content = snapshot[:body].to_s
 
     # Verify it's valid XML first
     unless content.include?('<rss') || content.include?('<item')
@@ -681,10 +667,8 @@ class ValidationReport
       return
     end
 
-    # Extract latest <item> and its enclosure URL (Sparkle reads latest item first)
-    latest_item = content.scan(/<item\b.*?<\/item>/m).first || content
-    latest_url_match = latest_item.match(/<enclosure[^>]*\burl="([^"]+)"/m)
-    latest_url = latest_url_match && latest_url_match[1]
+    latest_item = snapshot[:latest_item].to_s
+    latest_url = snapshot[:enclosure_url].to_s
 
     if latest_url.nil? || latest_url.empty?
       warnings << "[#{app_name}] appcast.xml has no enclosure URL in latest item"
@@ -697,13 +681,13 @@ class ValidationReport
     end
 
     # Check Sparkle signatures exist
-    unless latest_item.include?('sparkle:edSignature') || latest_item.include?('sparkle:dsaSignature')
+    unless snapshot[:has_signature]
       warnings << "[#{app_name}] appcast.xml missing Sparkle signatures"
     end
 
     # Check minimumSystemVersion on latest entry isn't blocking users
-    latest_min_version = latest_item.scan(/minimumSystemVersion>([^<]+)</).flatten.first
-    if latest_min_version
+    latest_min_version = snapshot[:minimum_system_version].to_s
+    unless latest_min_version.empty?
       major = latest_min_version.to_f.floor
       if major > 14  # macOS 14 is Sonoma (2023)
         warnings << "[#{app_name}] Latest release requires macOS #{latest_min_version} (excludes Sonoma users)"
@@ -711,28 +695,21 @@ class ValidationReport
     end
   end
 
-  def check_github_releases(app_name, issues, warnings)
+  def check_github_releases(product, issues, warnings)
     # Check if GitHub CLI is available
     return unless system('which gh > /dev/null 2>&1')
 
-    # Policy: Apps with license_gated: true in products.yml can use all release channels
-    # (GitHub, Homebrew, R2). Apps without gating must use Cloudflare R2/dist only.
-    config_file = File.join(SANE_APPS_ROOT, 'infra/SaneProcess/config/products.yml')
-    product_config = YAML.safe_load(File.read(config_file), permitted_classes: [])
-    product_key = app_name.downcase
-    license_gated = product_config.dig('products', product_key, 'license_gated')
-
-    safe_repo = "sane-apps/#{app_name}"
+    safe_repo = product[:github_repo].to_s.empty? ? "sane-apps/#{product[:name]}" : product[:github_repo]
     result = `gh release list --repo #{Shellwords.shellescape(safe_repo)} --limit 1 2>&1`
     has_releases = result && !result.include?('no releases found') && !result.include?('not found') && !result.strip.empty?
 
     return unless has_releases
 
-    if license_gated
+    if product[:license_gated]
       # Gated app — GitHub releases are fine, just note it
       # (no issue, no warning — this is expected)
     else
-      issues << "[#{app_name}] GitHub release exists (FORBIDDEN — no license gating; distribution must use Cloudflare R2/dist only)"
+      issues << "[#{product[:name]}] GitHub release exists (FORBIDDEN — no license gating; distribution must use Cloudflare R2/dist only)"
     end
   end
 
@@ -743,12 +720,15 @@ class ValidationReport
     warnings_found = []
 
     # Check main domains
-    domains = [
-      { url: 'https://saneapps.com', name: 'Main site' },
-      { url: 'https://sanebar.com', name: 'SaneBar site' },
-      { url: 'https://saneclip.com', name: 'SaneClip site' },
-      { url: 'https://sanehosts.com', name: 'SaneHosts site' }
-    ]
+    domains = [{ url: 'https://saneapps.com', name: 'Main site' }]
+    domains.concat(
+      product_definitions.map do |product|
+        next if product[:domain].to_s.empty?
+
+        { url: "https://#{product[:domain]}", name: "#{product[:name]} site" }
+      end.compact
+    )
+    domains = domains.uniq { |domain| domain[:url] }
 
     domains.each do |domain|
       status = check_url_status(domain[:url])
@@ -775,14 +755,13 @@ class ValidationReport
     end
 
     # Check REVENUE-CRITICAL checkout links (from products.yml config)
-    config_file = File.join(SANE_APPS_ROOT, 'infra/SaneProcess/config/products.yml')
-    product_config = YAML.safe_load(File.read(config_file), permitted_classes: [])
-    store_base = product_config.dig('store', 'checkout_base')
-    checkout_links = product_config['products'].map do |_slug, prod|
+    config = load_product_config
+    store_base = config[:checkout_base]
+    checkout_links = config[:products].map do |_slug, prod|
       next unless prod['checkout_uuid']
       { url: "#{store_base}/#{prod['checkout_uuid']}", name: "#{prod['name']} checkout" }
     end.compact
-    checkout_links << { url: product_config.dig('store', 'base_url'), name: 'LemonSqueezy store' }
+    checkout_links << { url: config[:store_base], name: 'LemonSqueezy store' } unless config[:store_base].to_s.empty?
     checkout_links.each do |link|
       status = check_url_status(link[:url], follow_redirects: true)
       case status
@@ -794,9 +773,13 @@ class ValidationReport
     end
 
     # Scan HTML files for wrong checkout domains (e.g. old store slugs)
-    website_dirs = %w[apps/SaneBar/docs apps/SaneClip/docs apps/SaneClick/docs apps/SaneHosts/website]
-    website_dirs.each do |dir|
-      full_dir = File.join(SANE_APPS_ROOT, dir)
+    website_dirs = product_definitions.flat_map do |product|
+      [
+        File.join(product[:project_path], 'docs'),
+        File.join(product[:project_path], 'website')
+      ]
+    end.uniq
+    website_dirs.each do |full_dir|
       next unless Dir.exist?(full_dir)
       Dir.glob(File.join(full_dir, '**/*.html')).each do |html_file|
         content = File.read(html_file)
@@ -810,12 +793,11 @@ class ValidationReport
     end
 
     # Check Sparkle appcast feeds (CRITICAL - no updates if broken)
-    appcast_urls = [
-      { url: 'https://sanebar.com/appcast.xml', name: 'SaneBar appcast' },
-      { url: 'https://saneclick.com/appcast.xml', name: 'SaneClick appcast' },
-      { url: 'https://saneclip.com/appcast.xml', name: 'SaneClip appcast' },
-      { url: 'https://sanehosts.com/appcast.xml', name: 'SaneHosts appcast' }
-    ]
+    appcast_urls = released_product_definitions.map do |product|
+      next if product[:domain].to_s.empty?
+
+      { url: "https://#{product[:domain]}/appcast.xml", name: "#{product[:name]} appcast" }
+    end.compact
     appcast_urls.each do |appcast|
       status = check_url_status(appcast[:url])
       case status
@@ -831,15 +813,11 @@ class ValidationReport
     end
 
     # Check distribution workers (Cloudflare R2 endpoints)
-    dist_urls = [
-      { url: 'https://dist.sanebar.com/', name: 'SaneBar dist worker' },
-      { url: 'https://dist.saneclick.com/', name: 'SaneClick dist worker' },
-      { url: 'https://dist.saneclip.com/', name: 'SaneClip dist worker' },
-      { url: 'https://dist.sanehosts.com/', name: 'SaneHosts dist worker' }
-      # SaneSync and SaneVideo not yet released - uncomment when active:
-      # { url: 'https://dist.sanesync.com/', name: 'SaneSync dist worker' },
-      # { url: 'https://dist.sanevideo.com/', name: 'SaneVideo dist worker' }
-    ]
+    dist_urls = released_product_definitions.map do |product|
+      next if product[:dist_domain].to_s.empty?
+
+      { url: "https://#{product[:dist_domain]}/", name: "#{product[:name]} dist worker" }
+    end.compact
     dist_urls.each do |dist|
       status = check_url_status(dist[:url])
       case status
@@ -928,9 +906,11 @@ class ValidationReport
     end
 
     # Check each app's recent build is signed
-    APP_PROJECTS.each do |project|
-      project_path = File.join(SANE_APPS_ROOT, project)
-      app_name = project.split('/').last
+    product_definitions.each do |product|
+      next unless product[:project_exists]
+
+      project_path = product[:project_path]
+      app_name = product[:name]
 
       # Find most recent .app in DerivedData or build folder
       app_bundle = find_recent_app_bundle(project_path, app_name)
@@ -1077,11 +1057,11 @@ class ValidationReport
     issues_found = []
     warnings_found = []
 
-    APP_PROJECTS.each do |project|
-      project_path = File.join(SANE_APPS_ROOT, project)
-      next unless File.directory?(project_path)
+    product_definitions.each do |product|
+      next unless product[:project_exists]
 
-      app_name = project.split('/').last
+      project_path = product[:project_path]
+      app_name = product[:name]
 
       # Get version from appcast (latest release version)
       appcast_version = get_appcast_version(project_path)
@@ -1176,57 +1156,53 @@ class ValidationReport
     warnings_found = []
     version_table = []
 
-    webhook_js = File.expand_path('~/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js')
-    webhook_content = fetch_webhook_product_config(webhook_js)
+    webhook_snapshot = fetch_live_email_worker_snapshot
+    warnings_found << 'Live email worker snapshot unavailable; webhook drift check skipped where data is missing' if webhook_snapshot.nil?
 
-    # Map of app name to its known channels
-    app_channels = {
-      'SaneBar'   => { site: 'sanebar.com',   cask: 'sanebar' },
-      'SaneClip'  => { site: 'saneclip.com',  cask: 'saneclip' },
-      'SaneClick' => { site: 'saneclick.com', cask: 'saneclick' },
-      'SaneHosts' => { site: 'sanehosts.com', cask: 'sanehosts' }
-    }
+    released_product_definitions.each do |product|
+      next unless product[:project_exists]
 
-    app_channels.each do |app_name, channels|
-      project_path = File.join(SANE_APPS_ROOT, "apps/#{app_name}")
-      next unless File.directory?(project_path)
+      app_name = product[:name]
+      site_host = product[:domain]
 
       versions = {}
 
-      # 1. Appcast version (local file — source of truth)
-      appcast_ver = get_appcast_version(project_path)
+      # 1. Appcast version (live fetch — customer-facing source of truth)
+      appcast_ver = nil
+      appcast_body = fetch_url_text("https://#{site_host}/appcast.xml")
+      unless appcast_body.empty?
+        appcast_match = appcast_body.match(/sparkle:shortVersionString="([^"]+)"/)
+        appcast_ver = appcast_match[1] if appcast_match
+        if appcast_ver.nil?
+          appcast_match = appcast_body.match(/sparkle:shortVersionString[=>]+"?([^"<\s]+)/)
+          appcast_ver = appcast_match[1] if appcast_match
+        end
+      end
       versions[:appcast] = appcast_ver || '—'
 
-      # 2. Website download link version (local HTML)
+      # 2. Website download link version (live HTML)
       website_ver = nil
-      %w[website docs].each do |dir|
-        index_html = File.join(project_path, dir, 'index.html')
-        next unless File.exist?(index_html)
-
-        html_content = File.read(index_html)
+      html_content = fetch_url_text("https://#{site_host}")
+      unless html_content.empty?
         match = html_content.match(/#{Regexp.escape(app_name)}-(\d+\.\d+(?:\.\d+)?)\.(zip|dmg)/)
         website_ver = match[1] if match
-        break if website_ver
       end
       versions[:website] = website_ver || '—'
 
-      # 3. Webhook PRODUCT_CONFIG version (local JS file)
+      # 3. Webhook PRODUCT_CONFIG version (live worker snapshot)
       webhook_ver = nil
-      if webhook_content
-        match = webhook_content.match(/'#{Regexp.escape(app_name)}':\s*\{\s*file:\s*'#{Regexp.escape(app_name)}-([^']+)\.(zip|dmg)'/)
-        webhook_ver = match[1] if match
+      if webhook_snapshot.is_a?(Hash)
+        webhook_product = webhook_snapshot.dig('products', app_name)
+        webhook_ver = webhook_product['version'] if webhook_product.is_a?(Hash)
       end
       versions[:webhook] = webhook_ver || '—'
 
-      # 4. Homebrew cask version (HTTP fetch from GitHub)
+      # 4. Homebrew cask version (GitHub content API, raw fallback only if needed)
       cask_ver = nil
-      if channels[:cask]
-        cask_url = "https://raw.githubusercontent.com/sane-apps/homebrew-tap/main/Casks/#{channels[:cask]}.rb"
-        cask_body = `curl -fsSL --connect-timeout 5 --max-time 10 #{Shellwords.shellescape(cask_url)} 2>/dev/null`
-        if $?.success?
-          match = cask_body.match(/version\s+"([^"]+)"/)
-          cask_ver = match[1] if match
-        end
+      cask_body = fetch_homebrew_cask_body(product[:slug])
+      unless cask_body.empty?
+        match = cask_body.match(/version\s+"([^"]+)"/)
+        cask_ver = match[1] if match
       end
       versions[:cask] = cask_ver || '—'
 
@@ -1257,17 +1233,136 @@ class ValidationReport
     warnings_found.each { |w| @warnings << "Q11 DRIFT: #{w}" }
   end
 
-  def fetch_webhook_product_config(local_path)
-    github_api_path = 'repos/sane-apps/sane-email-automation/contents/src/handlers/webhook-lemonsqueezy.js?ref=main'
-    raw_url = 'https://raw.githubusercontent.com/sane-apps/sane-email-automation/main/src/handlers/webhook-lemonsqueezy.js'
+  def fetch_url_text(url, headers: {})
+    uri = URI(url)
+    request = Net::HTTP::Get.new(uri)
+    headers.each { |key, value| request[key] = value }
 
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.use_ssl = uri.scheme == 'https'
+    http.open_timeout = 5
+    http.read_timeout = 15
+
+    response = http.request(request)
+    return '' unless response.is_a?(Net::HTTPSuccess)
+
+    response.body.to_s
+  rescue StandardError
+    ''
+  end
+
+  def resolve_secret_value(service, account, *env_names)
+    env_names.flatten.each do |env_name|
+      value = ENV[env_name].to_s.strip
+      return value unless value.empty?
+    end
+
+    keychain_fallback_enabled = ENV.fetch('SANE_KEYCHAIN_FALLBACK', '1') == '1'
+    keychain_fallback_enabled = false if ENV['SANE_NO_KEYCHAIN'] == '1'
+    return '' unless keychain_fallback_enabled
+
+    `security find-generic-password -s "#{service}" -a "#{account}" -w 2>/dev/null`.strip
+  end
+
+  def fetch_live_email_worker_snapshot
+    api_key = resolve_secret_value('sane-email-automation', 'api_key', 'SANE_EMAIL_API_KEY', 'EMAIL_API_KEY')
+    return nil if api_key.empty?
+
+    body = fetch_url_text(
+      'https://email-api.saneapps.com/api/debug/download-config',
+      headers: { 'Authorization' => "Bearer #{api_key}" }
+    )
+    return nil if body.empty?
+
+    JSON.parse(body)
+  rescue StandardError
+    nil
+  end
+
+  def fetch_homebrew_cask_body(cask_name)
+    github_api_path = "repos/sane-apps/homebrew-tap/contents/Casks/#{cask_name}.rb?ref=main"
     gh_content = `gh api #{Shellwords.shellescape(github_api_path)} --jq .content 2>/dev/null | tr -d '\\n' | base64 -d 2>/dev/null`
     return gh_content if $?.success? && !gh_content.to_s.empty?
 
+    raw_url = "https://raw.githubusercontent.com/sane-apps/homebrew-tap/main/Casks/#{cask_name}.rb"
     raw_content = `curl -fsSL --connect-timeout 5 --max-time 10 #{Shellwords.shellescape(raw_url)} 2>/dev/null`
     return raw_content if $?.success? && !raw_content.to_s.empty?
 
-    File.exist?(local_path) ? File.read(local_path) : nil
+    ''
+  end
+
+  def website_domain_for_project(project_path, app_name)
+    saneprocess_path = File.join(project_path, '.saneprocess')
+    if File.exist?(saneprocess_path)
+      config = YAML.safe_load(File.read(saneprocess_path), permitted_classes: []) || {}
+      domain = config['website_domain'].to_s.strip
+      return domain unless domain.empty?
+    end
+
+    "#{app_name.downcase}.com"
+  rescue StandardError
+    "#{app_name.downcase}.com"
+  end
+
+  def fetch_live_appcast_snapshot(site_host)
+    return nil if site_host.to_s.strip.empty?
+
+    appcast_url = "https://#{site_host}/appcast.xml"
+    body = fetch_url_text(appcast_url)
+    return nil if body.empty?
+
+    latest_item = body.scan(/<item\b.*?<\/item>/m).first || body
+    enclosure_url = latest_item[/<enclosure[^>]*\burl="([^"]+)"/m, 1].to_s
+    version = latest_item[/sparkle:shortVersionString="([^"]+)"/, 1] ||
+              latest_item[/<sparkle:shortVersionString>\s*([^<]+)\s*<\/sparkle:shortVersionString>/m, 1]
+    build = latest_item[/sparkle:version="([^"]+)"/, 1] ||
+            latest_item[/<sparkle:version>\s*([^<]+)\s*<\/sparkle:version>/m, 1]
+    minimum_system_version = latest_item[/minimumSystemVersion>([^<]+)</, 1] ||
+                             latest_item[/sparkle:minimumSystemVersion="([^"]+)"/, 1]
+    has_signature = latest_item.include?('sparkle:edSignature') || latest_item.include?('sparkle:dsaSignature')
+
+    {
+      appcast_url: appcast_url,
+      body: body,
+      latest_item: latest_item,
+      enclosure_url: enclosure_url,
+      version: version.to_s.strip,
+      build: build.to_s.strip,
+      minimum_system_version: minimum_system_version.to_s.strip,
+      has_signature: has_signature
+    }
+  rescue StandardError
+    nil
+  end
+
+  def inspect_live_release_artifact(url)
+    return { artifact_name: nil, signed: false, notarized: false, available: false } if url.to_s.strip.empty?
+
+    uri = URI(url)
+    artifact_name = File.basename(uri.path.to_s)
+
+    Dir.mktmpdir('validation_live_release_') do |dir|
+      local_path = File.join(dir, artifact_name.empty? ? 'release_artifact' : artifact_name)
+      _out, status = Open3.capture2e('curl', '-fsSL', url, '-o', local_path)
+      return { artifact_name: artifact_name, signed: false, notarized: false, available: false } unless status.success? && File.exist?(local_path)
+
+      if local_path.end_with?('.zip')
+        signed, notarized = zip_contains_signed_notarized_app?(local_path)
+        return { artifact_name: artifact_name, signed: signed, notarized: notarized, available: true }
+      end
+
+      if local_path.end_with?('.dmg')
+        codesign_output = `codesign -dv "#{local_path}" 2>&1`
+        stapler_result = `xcrun stapler validate "#{local_path}" 2>&1`
+        signed = codesign_output.include?('Developer ID') || codesign_output.include?('TeamIdentifier=')
+        notarized = stapler_result.include?('validated')
+        return { artifact_name: artifact_name, signed: signed, notarized: notarized, available: true }
+      end
+
+      { artifact_name: artifact_name, signed: false, notarized: false, available: true }
+    end
+  rescue StandardError
+    { artifact_name: nil, signed: false, notarized: false, available: false }
   end
 
   def get_appcast_version(project_path)
@@ -1535,13 +1630,10 @@ class ValidationReport
     puts "═" * 70
     puts
 
-    all_apps = %w[SaneBar SaneClip SaneHosts SaneVideo SaneSync SaneClick]
+    product_definitions.each do |product|
+      next unless product[:project_exists]
 
-    all_apps.each do |app_name|
-      project_path = File.join(SANE_APPS_ROOT, "apps/#{app_name}")
-      next unless File.directory?(project_path)
-
-      checklist = generate_app_checklist(app_name, project_path)
+      checklist = generate_app_checklist(product)
 
       # Determine status
       done_count = checklist.count { |item| item[:status] == :done }
@@ -1558,7 +1650,7 @@ class ValidationReport
         "❌ NOT READY (#{total_count - done_count} items remaining)"
       end
 
-      puts "#{app_name}: #{status_icon}"
+      puts "#{product[:name]}: #{status_icon}"
       checklist.each do |item|
         icon = item[:status] == :done ? "✓" : "☐"
         puts "   [#{icon}] #{item[:name]}"
@@ -1569,21 +1661,29 @@ class ValidationReport
     puts "─" * 70
   end
 
-  def generate_app_checklist(app_name, project_path)
+  def generate_app_checklist(product)
     checklist = []
+    app_name = product[:name]
+    project_path = product[:project_path]
+    site_host = product[:domain].to_s.empty? ? website_domain_for_project(project_path, app_name) : product[:domain]
+    website_url = "https://#{site_host}"
+    live_appcast = fetch_live_appcast_snapshot(site_host)
+    live_release_url = live_appcast && live_appcast[:enclosure_url].to_s
+    live_artifact = inspect_live_release_artifact(live_release_url)
+    page_content = fetch_url_text(website_url)
+    page_links = extract_page_links(page_content, base_url: website_url)
 
     # ===========================================
     # CODE & BUILD
     # ===========================================
 
     # 1. GitHub repo exists
-    repo_exists = system("gh repo view sane-apps/#{app_name} > /dev/null 2>&1")
-    checklist << { name: "GitHub repo (sane-apps/#{app_name})", status: repo_exists ? :done : :todo }
+    github_repo = product[:github_repo].to_s.empty? ? "sane-apps/#{app_name}" : product[:github_repo]
+    repo_exists = system("gh repo view #{Shellwords.shellescape(github_repo)} > /dev/null 2>&1")
+    checklist << { name: "GitHub repo (#{github_repo})", status: repo_exists ? :done : :todo }
 
     # 2. GitHub release policy (license-gated apps allow all channels; ungated = R2 only)
-    config_file = File.join(SANE_APPS_ROOT, 'infra/SaneProcess/config/products.yml')
-    product_config = YAML.safe_load(File.read(config_file), permitted_classes: [])
-    license_gated = product_config.dig('products', app_name.downcase, 'license_gated')
+    license_gated = product[:license_gated]
 
     if repo_exists
       releases = `gh release list --repo sane-apps/#{app_name} --limit 1 2>/dev/null`.strip
@@ -1631,91 +1731,70 @@ class ValidationReport
     qa_status = latest_project_qa_status(project_path)
     if qa_status
       qa_time = qa_status['generatedAt'] ? Time.parse(qa_status['generatedAt']).strftime('%Y-%m-%d %H:%M') : 'unknown'
-      qa_passed = qa_status['status'] != 'failed'
+      stale_reasons = Array(qa_status['staleReasons']).reject(&:empty?)
+      qa_current = stale_reasons.empty?
+      qa_passed = qa_status['status'] != 'failed' && qa_current
       qa_label =
-        if qa_passed
+        if !qa_current
+          "Latest project QA gate is current (snapshot stale: #{stale_reasons.join('; ')})"
+        elsif qa_passed
           "Latest project QA gate passed (#{qa_time})"
         else
           "Latest project QA gate passed (latest run failed at #{qa_time})"
         end
       checklist << { name: qa_label, status: qa_passed ? :done : :todo, critical: true }
+    else
+      checklist << { name: 'Latest project QA gate passed', status: :todo, critical: true }
     end
 
     # ===========================================
     # SIGNING & NOTARIZATION
     # ===========================================
 
-    # 6. Release artifact exists in releases folder (DMG or ZIP)
-    releases_dir = File.join(project_path, 'releases')
-    artifact_files = if Dir.exist?(releases_dir)
-                       Dir.glob(File.join(releases_dir, '*.{dmg,zip}'))
-                     else
-                       []
-                     end
-    latest_artifact = artifact_files.max_by { |f| File.mtime(f) }
-    artifact_name = latest_artifact ? File.basename(latest_artifact) : nil
+    # 6. Live release artifact exists
+    artifact_name = live_artifact[:artifact_name]
     checklist << {
-      name: artifact_name ? "Release artifact in releases folder (#{artifact_name})" : 'Release artifact in releases folder',
-      status: latest_artifact ? :done : :todo
+      name: artifact_name ? "Live release archive (#{artifact_name})" : 'Live release archive',
+      status: live_artifact[:available] ? :done : :todo
     }
 
     # 7. Artifact signing check
     # 8. Artifact notarization check
-    if latest_artifact
-      if latest_artifact.end_with?('.dmg')
-        codesign_output = `codesign -dv "#{latest_artifact}" 2>&1`
-        signed_with_dev_id = codesign_output.include?('Developer ID')
-        checklist << { name: 'DMG signed with Developer ID', status: signed_with_dev_id ? :done : :todo }
-
-        stapler_result = `xcrun stapler validate "#{latest_artifact}" 2>&1`
-        is_stapled = stapler_result.include?('validated')
-        checklist << { name: 'DMG notarized & stapled', status: is_stapled ? :done : :todo }
+    if live_artifact[:available]
+      if artifact_name.to_s.end_with?('.dmg')
+        checklist << { name: 'Live DMG signed with Developer ID', status: live_artifact[:signed] ? :done : :todo }
+        checklist << { name: 'Live DMG notarized & stapled', status: live_artifact[:notarized] ? :done : :todo }
       else
-        signed_with_dev_id, notarized = zip_contains_signed_notarized_app?(latest_artifact)
-        checklist << { name: 'ZIP contains Developer ID signed app', status: signed_with_dev_id ? :done : :todo }
-        checklist << { name: 'ZIP app notarization check', status: notarized ? :done : :todo }
+        checklist << { name: 'Live ZIP contains Developer ID signed app', status: live_artifact[:signed] ? :done : :todo }
+        checklist << { name: 'Live ZIP app notarization check', status: live_artifact[:notarized] ? :done : :todo }
       end
     else
-      checklist << { name: 'DMG signed with Developer ID', status: :todo }
-      checklist << { name: 'DMG notarized & stapled', status: :todo }
+      checklist << { name: 'Live ZIP contains Developer ID signed app', status: :todo }
+      checklist << { name: 'Live ZIP app notarization check', status: :todo }
     end
 
     # ===========================================
     # SPARKLE AUTO-UPDATE
     # ===========================================
 
-    # 9. Appcast.xml exists and has entries
-    appcast_paths = [
-      File.join(project_path, 'docs', 'appcast.xml'),
-      File.join(project_path, 'appcast.xml')
-    ]
-    appcast = appcast_paths.find { |p| File.exist?(p) }
-    if appcast
-      content = File.read(appcast)
-      has_entries = content.include?('sparkle:version') && !content.match?(/<!--.*sparkle:version.*-->/m)
-      has_signature = content.include?('sparkle:edSignature') && !content.include?('TODO')
-      checklist << { name: "Appcast.xml with active entries", status: has_entries ? :done : :todo }
-      checklist << { name: "Sparkle EdDSA signature", status: has_signature ? :done : :todo }
+    # 9. Live appcast exists and has active entries
+    if live_appcast
+      has_entries = !live_appcast[:version].to_s.empty? && !live_release_url.to_s.empty?
+      has_signature = live_appcast[:has_signature]
+      checklist << { name: "Live appcast.xml with active entry", status: has_entries ? :done : :todo }
+      checklist << { name: "Live Sparkle EdDSA signature", status: has_signature ? :done : :todo }
     else
-      checklist << { name: "Appcast.xml with active entries", status: :todo }
-      checklist << { name: "Sparkle EdDSA signature", status: :todo }
+      checklist << { name: "Live appcast.xml with active entry", status: :todo }
+      checklist << { name: "Live Sparkle EdDSA signature", status: :todo }
     end
 
     # 10. Release URL accessible
-    if appcast
-      content = File.read(appcast)
-      latest_item = content.scan(/<item\b.*?<\/item>/m).first || content
-      url_match = latest_item.match(/<enclosure[^>]*\burl="([^"]+)"/m)
-      if url_match
-        url = url_match[1]
-        status = check_url_status(url, follow_redirects: true)
-        url_works = %w[200 301 302].include?(status)
-        checklist << { name: "Release URL accessible (#{status})", status: url_works ? :done : :todo }
-      else
-        checklist << { name: "Release URL accessible", status: :todo }
-      end
+    if live_release_url && !live_release_url.empty?
+      status = check_url_status(live_release_url, follow_redirects: true)
+      url_works = %w[200 301 302].include?(status)
+      checklist << { name: "Live release URL accessible (#{status})", status: url_works ? :done : :todo }
     else
-      checklist << { name: "Release URL accessible", status: :todo }
+      checklist << { name: "Live release URL accessible", status: :todo }
     end
 
     # ===========================================
@@ -1743,10 +1822,9 @@ class ValidationReport
     # ===========================================
 
     # 14. Website accessible
-    website_url = "https://#{app_name.downcase}.com"
-    website_status = `curl -sI -o /dev/null -w "%{http_code}" --connect-timeout 3 "#{website_url}" 2>/dev/null`.strip
-    website_works = ['200', '301', '302'].include?(website_status)
-    checklist << { name: "Website (#{app_name.downcase}.com)", status: website_works ? :done : :todo }
+    website_status = check_url_status(website_url, follow_redirects: true)
+    website_works = %w[200 301 302].include?(website_status)
+    checklist << { name: "Website (#{site_host})", status: website_works ? :done : :todo }
 
     # 15. Cloudflare DNS (check if using Cloudflare nameservers)
     if website_works
@@ -1760,10 +1838,7 @@ class ValidationReport
 
     # 16. Website has download link (must not depend on GitHub releases)
     if website_works
-      page_content = `curl -sL --connect-timeout 5 "#{website_url}" 2>/dev/null`
-      has_download = page_content.include?('lemonsqueezy.com') ||
-                     page_content.include?('go.saneapps.com') ||
-                     page_content.include?('.dmg')
+      has_download = page_has_live_download_link?(page_links, live_release_url)
       checklist << { name: "Website has download link", status: has_download ? :done : :todo }
     else
       checklist << { name: "Website has download link", status: :todo }
@@ -1771,12 +1846,7 @@ class ValidationReport
 
     # 17. Privacy policy on website
     if website_works
-      privacy_url = "#{website_url}/privacy"
-      privacy_status = `curl -sI -o /dev/null -w "%{http_code}" --connect-timeout 3 "#{privacy_url}" 2>/dev/null`.strip
-      # Also check if main page links to privacy
-      page_content = `curl -sL --connect-timeout 5 "#{website_url}" 2>/dev/null` rescue ''
-      has_privacy_link = ['200', '301', '302'].include?(privacy_status) ||
-                         page_content.downcase.include?('privacy')
+      has_privacy_link = page_has_privacy_link?(page_links, website_url)
       checklist << { name: "Privacy policy on website", status: has_privacy_link ? :done : :todo }
     else
       checklist << { name: "Privacy policy on website", status: :todo }
@@ -1788,20 +1858,7 @@ class ValidationReport
 
     # 18. Lemon Squeezy product configured (check website or products.yml for checkout config)
     if website_works
-      page_content = `curl -sL --connect-timeout 5 "#{website_url}" 2>/dev/null` rescue ''
-      has_lemonsqueezy = page_content.include?('lemonsqueezy.com') ||
-                         page_content.include?('lemon-squeezy') ||
-                         page_content.include?('go.saneapps.com/buy') ||
-                         page_content.include?('checkout')
-      # Also check products.yml as the canonical source of truth
-      unless has_lemonsqueezy
-        config_file = File.join(SANE_APPS_ROOT, 'infra/SaneProcess/config/products.yml')
-        if File.exist?(config_file)
-          product_config = YAML.safe_load(File.read(config_file), permitted_classes: [])
-          slug = app_name.downcase.gsub(/^sane/, 'sane')
-          has_lemonsqueezy = product_config['products']&.dig(slug, 'checkout_uuid') ? true : false
-        end
-      end
+      has_lemonsqueezy = page_has_checkout_link?(page_links, product)
       checklist << { name: "Lemon Squeezy store configured", status: has_lemonsqueezy ? :done : :todo }
     else
       checklist << { name: "Lemon Squeezy store configured", status: :todo }
@@ -1813,23 +1870,15 @@ class ValidationReport
 
     # 19. Support email configured (check website for contact/support)
     if website_works
-      page_content = `curl -sL --connect-timeout 5 "#{website_url}" 2>/dev/null` rescue ''
-      has_support = page_content.include?('support') ||
-                    page_content.include?('contact') ||
-                    page_content.include?('hi@saneapps.com') ||
-                    page_content.include?('mailto:')
+      has_support = page_has_support_contact?(page_links, github_repo)
       checklist << { name: "Support contact on website", status: has_support ? :done : :todo }
     else
       checklist << { name: "Support contact on website", status: :todo }
     end
 
     # 20. GitHub issues enabled (for bug reports)
-    if repo_exists
-      # If we can view the repo, issues are likely enabled
-      checklist << { name: "GitHub issues for bug reports", status: :done }
-    else
-      checklist << { name: "GitHub issues for bug reports", status: :todo }
-    end
+    has_issues = repo_exists && github_repo_has_issues?(github_repo)
+    checklist << { name: "GitHub issues for bug reports", status: has_issues ? :done : :todo }
 
     checklist
   end
@@ -1845,9 +1894,151 @@ class ValidationReport
       .max_by { |path| File.mtime(path) }
     return nil unless status_path
 
-    JSON.parse(File.read(status_path))
+    status = JSON.parse(File.read(status_path))
+    snapshot_time = begin
+      Time.parse(status['generatedAt'].to_s)
+    rescue ArgumentError
+      File.mtime(status_path)
+    end
+    head_epoch = `git -C #{Shellwords.shellescape(project_path)} log -1 --format=%ct 2>/dev/null`.to_s.strip.to_i
+    dirty = !`git -C #{Shellwords.shellescape(project_path)} status --porcelain 2>/dev/null`.to_s.strip.empty?
+    stale_reasons = []
+    stale_reasons << 'snapshot predates current HEAD commit' if head_epoch.positive? && snapshot_time.to_i < head_epoch
+    stale_reasons << 'repository has uncommitted changes' if dirty
+    status['staleReasons'] = stale_reasons
+    status
   rescue JSON::ParserError
     nil
+  rescue StandardError
+    nil
+  end
+
+  def load_product_config
+    @load_product_config ||= begin
+      raw = YAML.safe_load(File.read(PRODUCT_CONFIG_PATH), permitted_classes: []) || {}
+      products = raw['products'].is_a?(Hash) ? raw['products'] : {}
+      store = raw['store'].is_a?(Hash) ? raw['store'] : {}
+      redirect = raw['redirect'].is_a?(Hash) ? raw['redirect'] : {}
+
+      {
+        products: products,
+        store_base: store['base_url'].to_s.strip,
+        checkout_base: store['checkout_base'].to_s.strip,
+        redirect_base: redirect['base_url'].to_s.strip,
+        all_domains: Array(raw['all_domains']).map(&:to_s).map(&:strip).reject(&:empty?)
+      }
+    rescue StandardError
+      { products: {}, store_base: '', checkout_base: '', redirect_base: '', all_domains: [] }
+    end
+  end
+
+  def product_definitions
+    @product_definitions ||= begin
+      load_product_config[:products].map do |slug, prod|
+        next unless prod.is_a?(Hash)
+
+        app_name = prod['name'].to_s.strip
+        next if app_name.empty?
+
+        project_path = File.join(SANE_APPS_ROOT, 'apps', app_name)
+        {
+          slug: slug.to_s,
+          name: app_name,
+          domain: prod['domain'].to_s.strip,
+          dist_domain: prod['dist_domain'].to_s.strip,
+          github_repo: prod['github_repo'].to_s.strip,
+          checkout_uuid: prod['checkout_uuid'].to_s.strip,
+          license_gated: !!prod['license_gated'],
+          project_path: project_path,
+          project_exists: File.directory?(project_path)
+        }
+      end.compact
+    end
+  end
+
+  def released_product_definitions
+    product_definitions.select { |product| !product[:checkout_uuid].to_s.empty? }
+  end
+
+  def extract_page_links(html, base_url:)
+    return [] if html.to_s.empty?
+
+    html.scan(/href\s*=\s*["']([^"']+)["']/i).flatten.map do |href|
+      next if href.to_s.strip.empty? || href.start_with?('#', 'javascript:')
+
+      begin
+        uri = URI.parse(href)
+        if uri.scheme.nil?
+          URI.join(base_url, href).to_s
+        elsif %w[http https mailto].include?(uri.scheme)
+          uri.to_s
+        end
+      rescue URI::InvalidURIError
+        nil
+      end
+    end.compact.uniq
+  end
+
+  def link_status_ok?(url)
+    %w[200 301 302].include?(check_url_status(url, follow_redirects: true))
+  end
+
+  def page_has_live_download_link?(links, live_release_url)
+    return false if live_release_url.to_s.strip.empty?
+
+    expected_name = File.basename(URI(live_release_url).path.to_s)
+    candidate = links.find do |link|
+      begin
+        File.basename(URI(link).path.to_s) == expected_name
+      rescue URI::InvalidURIError
+        false
+      end
+    end
+    candidate ? link_status_ok?(candidate) : false
+  rescue StandardError
+    false
+  end
+
+  def page_has_checkout_link?(links, product)
+    config = load_product_config
+    expected_prefixes = []
+    unless config[:redirect_base].empty?
+      expected_prefixes << "#{config[:redirect_base]}/#{product[:slug]}"
+    end
+    unless config[:checkout_base].empty? || product[:checkout_uuid].to_s.empty?
+      expected_prefixes << "#{config[:checkout_base]}/#{product[:checkout_uuid]}"
+    end
+    candidate = links.find do |link|
+      expected_prefixes.any? { |prefix| link.start_with?(prefix) }
+    end
+    candidate ? link_status_ok?(candidate) : false
+  end
+
+  def page_has_privacy_link?(links, website_url)
+    candidates = links.select { |link| link.downcase.include?('/privacy') || link.downcase.include?('privacy.html') }
+    candidates.concat([
+      "#{website_url}/privacy",
+      "#{website_url}/privacy.html"
+    ])
+    candidates.uniq.any? { |link| link_status_ok?(link) }
+  end
+
+  def page_has_support_contact?(links, github_repo)
+    issue_prefix = "https://github.com/#{github_repo}/issues"
+    links.any? do |link|
+      link.start_with?('mailto:') ||
+        link.include?('/cdn-cgi/l/email-protection') ||
+        link.start_with?(issue_prefix) ||
+        link == "#{issue_prefix}/new" ||
+        link_status_ok?(link) && link.include?('/support')
+    end
+  end
+
+  def github_repo_has_issues?(github_repo)
+    result = `gh api repos/#{Shellwords.shellescape(github_repo)} --jq .has_issues 2>/dev/null`.to_s.strip
+    result == 'true'
+  rescue StandardError
+    false
   end
 
   def zip_contains_signed_notarized_app?(zip_path)

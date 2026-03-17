@@ -8,6 +8,9 @@
 set -eE
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SECRETS_ENV_CACHE_FILE="${SANE_ENV_CACHE_FILE:-$HOME/.config/nv/env}"
+KEYCHAIN_FALLBACK_ENABLED="${SANE_KEYCHAIN_FALLBACK:-1}"
+[ "${SANE_NO_KEYCHAIN:-0}" = "1" ] && KEYCHAIN_FALLBACK_ENABLED="0"
 
 # Ensure Homebrew-installed tools resolve in non-interactive shells (CI/SSH).
 export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
@@ -42,6 +45,29 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
     RELEASE_LAST_ERROR="$1"
     RELEASE_ERRORS+=("$1")
+}
+
+run_logged_command() {
+    local log_path="$1"
+    shift
+
+    local pipe_status=()
+    local command_status=0
+    local tee_status=0
+
+    set +e
+    "$@" 2>&1 | tee -a "${log_path}"
+    pipe_status=("${PIPESTATUS[@]}")
+    set -e
+
+    command_status="${pipe_status[0]:-0}"
+    tee_status="${pipe_status[1]:-0}"
+
+    if [ "${tee_status}" -ne 0 ] && [ "${tee_status}" -ne 141 ]; then
+        log_warn "Log stream helper exited ${tee_status} while writing ${log_path}; using command exit ${command_status}."
+    fi
+
+    return "${command_status}"
 }
 
 release_mode_label() {
@@ -87,6 +113,37 @@ with open(path, encoding="utf-8") as handle:
     payload = json.load(handle)
 
 value = payload.get("workspace", {})
+for part in field_path.split("."):
+    if not isinstance(value, dict) or part not in value:
+        sys.exit(1)
+    value = value[part]
+
+if value is None:
+    sys.exit(1)
+if isinstance(value, bool):
+    print("true" if value else "false")
+elif isinstance(value, (dict, list)):
+    print(json.dumps(value))
+else:
+    print(value)
+PY
+}
+
+mini_route_webhook_field() {
+    local field_path="$1"
+    local context_path
+    context_path="$(mini_route_context_path)"
+    [ -f "${context_path}" ] || return 1
+
+    python3 - "${context_path}" "${field_path}" <<'PY'
+import json
+import sys
+
+path, field_path = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+value = payload.get("webhook", {})
 for part in field_path.split("."):
     if not isinstance(value, dict) or part not in value:
         sys.exit(1)
@@ -357,24 +414,45 @@ run_required_step() {
 
 extract_http_status() {
     local url="$1"
-    curl -sI -o /dev/null -w '%{http_code}' "${url}" 2>/dev/null || echo "000"
+    curl --connect-timeout 10 --max-time 20 -sI -o /dev/null -w '%{http_code}' "${url}" 2>/dev/null || echo "000"
 }
 
 extract_http_status_with_user_agent() {
     local url="$1"
     local user_agent="$2"
-    curl -A "${user_agent}" -sI -o /dev/null -w '%{http_code}' "${url}" 2>/dev/null || echo "000"
+    curl --connect-timeout 10 --max-time 20 -A "${user_agent}" -sI -o /dev/null -w '%{http_code}' "${url}" 2>/dev/null || echo "000"
+}
+
+extract_http_effective_url() {
+    local url="$1"
+    local user_agent="${2:-Mozilla/5.0}"
+    curl -A "${user_agent}" -sSL -o /dev/null -w '%{url_effective}' "${url}" 2>/dev/null || true
+}
+
+extract_redirect_location() {
+    local url="$1"
+    local user_agent="${2:-Mozilla/5.0}"
+    curl --connect-timeout 10 --max-time 20 -A "${user_agent}" -sSI "${url}" 2>/dev/null | awk 'tolower($1)=="location:" {sub(/\r$/, "", $2); print $2; exit}'
+}
+
+lookup_checkout_uuid_for_slug() {
+    local slug="$1"
+    ruby -ryaml -e '
+      cfg = YAML.load_file(ARGV[0]) || {}
+      product = cfg.fetch("products", {}).fetch(ARGV[1], {})
+      puts(product.fetch("checkout_uuid", "").to_s)
+    ' "${SCRIPT_DIR}/../config/products.yml" "${slug}" 2>/dev/null || true
 }
 
 extract_content_length() {
     local url="$1"
-    curl -sI "${url}" 2>/dev/null | awk 'tolower($1)=="content-length:" {gsub("\r","",$2); print $2}' | tail -1
+    curl --connect-timeout 10 --max-time 20 -sI "${url}" 2>/dev/null | awk 'tolower($1)=="content-length:" {gsub("\r","",$2); print $2}' | tail -1
 }
 
 extract_content_length_with_user_agent() {
     local url="$1"
     local user_agent="$2"
-    curl -A "${user_agent}" -sI "${url}" 2>/dev/null | awk 'tolower($1)=="content-length:" {gsub("\r","",$2); print $2}' | tail -1
+    curl --connect-timeout 10 --max-time 20 -A "${user_agent}" -sI "${url}" 2>/dev/null | awk 'tolower($1)=="content-length:" {gsub("\r","",$2); print $2}' | tail -1
 }
 
 lookup_live_app_store_url() {
@@ -1114,6 +1192,110 @@ fetch_remote_email_webhook_js() {
     printf '%s' "${body}"
 }
 
+resolve_email_api_key() {
+    local token="${EMAIL_API_KEY:-${SANE_EMAIL_API_KEY:-}}"
+    if [ -n "${token}" ]; then
+        EMAIL_API_KEY="${token}"
+        SANE_EMAIL_API_KEY="${token}"
+        export EMAIL_API_KEY SANE_EMAIL_API_KEY
+        printf '%s' "${token}"
+        return 0
+    fi
+
+    token=$(keychain_secret "sane-email-automation" "api_key" "SANE_EMAIL_API_KEY" "EMAIL_API_KEY")
+    if [ -n "${token}" ]; then
+        EMAIL_API_KEY="${token}"
+        SANE_EMAIL_API_KEY="${token}"
+        export EMAIL_API_KEY SANE_EMAIL_API_KEY
+        printf '%s' "${token}"
+        return 0
+    fi
+
+    return 1
+}
+
+fetch_live_email_webhook_snapshot() {
+    local product_name="${1:-}"
+    local include_signed="${2:-0}"
+    local api_key url response
+
+    api_key=$(resolve_email_api_key 2>/dev/null || true)
+    if [ -z "${api_key}" ]; then
+        return 0
+    fi
+
+    url="https://email-api.saneapps.com/api/debug/download-config"
+    if [ -n "${product_name}" ]; then
+        url="${url}?product=${product_name}"
+        if [ "${include_signed}" = "1" ]; then
+            url="${url}&signed=1"
+        fi
+    elif [ "${include_signed}" = "1" ]; then
+        url="${url}?signed=1"
+    fi
+
+    response=$(curl -fsSL "${url}" \
+        -H "Authorization: Bearer ${api_key}" 2>/dev/null || true)
+    printf '%s' "${response}"
+}
+
+extract_live_email_webhook_field() {
+    local snapshot_json="$1"
+    local app_name="${2:-${APP_NAME}}"
+    local field_name="$3"
+
+    [ -n "${snapshot_json}" ] || return 0
+    [ -n "${app_name}" ] || return 0
+    [ -n "${field_name}" ] || return 0
+
+    SNAPSHOT_JSON="${snapshot_json}" python3 - "${app_name}" "${field_name}" <<'PY'
+import json
+import os
+import sys
+
+app_name = sys.argv[1]
+field_name = sys.argv[2]
+
+try:
+    payload = json.loads(os.environ.get("SNAPSHOT_JSON", ""))
+except Exception:
+    raise SystemExit(0)
+
+product = (payload.get("products") or {}).get(app_name) or {}
+value = product.get(field_name, "")
+if value is None:
+    value = ""
+sys.stdout.write(str(value))
+PY
+}
+
+wait_for_live_email_webhook_version() {
+    local expected_version="$1"
+    local app_name="${2:-${APP_NAME}}"
+    local include_signed="${3:-0}"
+    local max_attempts="${4:-10}"
+    local sleep_seconds="${5:-6}"
+    local attempt=1
+    local snapshot=""
+    local actual_version=""
+
+    while [ "${attempt}" -le "${max_attempts}" ]; do
+        snapshot=$(fetch_live_email_webhook_snapshot "${app_name}" "${include_signed}")
+        actual_version=$(extract_live_email_webhook_field "${snapshot}" "${app_name}" "version")
+        if [ -n "${actual_version}" ] && [ "${actual_version}" = "${expected_version}" ]; then
+            printf '%s' "${snapshot}"
+            return 0
+        fi
+        if [ "${attempt}" -lt "${max_attempts}" ]; then
+            sleep "${sleep_seconds}"
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    printf '%s' "${snapshot}"
+    return 1
+}
+
 extract_email_webhook_version() {
     local webhook_content="$1"
     local app_name="${2:-${APP_NAME}}"
@@ -1281,13 +1463,51 @@ PY
         return 1
     fi
 
-    # Follow redirects and verify final destination returns 200
+    # Follow redirects and verify the checkout lands on the expected Lemon Squeezy flow.
     if [ "${checkout_status}" = "301" ] || [ "${checkout_status}" = "302" ]; then
+        local expected_checkout_uuid
+        local expected_checkout_prefix=""
+        local checkout_first_hop
+        local checkout_first_hop_ok=false
         local checkout_final_status
-        checkout_final_status=$(curl -sI -o /dev/null -w '%{http_code}' -L "${checkout_url}" 2>/dev/null || echo "000")
-        if [ "${checkout_final_status}" != "200" ]; then
-            log_error "Checkout URL redirect chain ends with HTTP ${checkout_final_status} (expected 200): ${checkout_url}"
+        local checkout_final_url
+        expected_checkout_uuid=$(lookup_checkout_uuid_for_slug "${LOWER_APP_NAME}")
+        [ -n "${expected_checkout_uuid}" ] && expected_checkout_prefix="https://saneapps.lemonsqueezy.com/checkout/buy/${expected_checkout_uuid}"
+        checkout_first_hop=$(extract_redirect_location "${checkout_url}" "Mozilla/5.0")
+        if [ -n "${expected_checkout_prefix}" ] && [[ "${checkout_first_hop}" == "${expected_checkout_prefix}"* ]]; then
+            checkout_first_hop_ok=true
+        elif [ -n "${expected_checkout_prefix}" ]; then
+            log_error "Checkout URL first hop mismatch for ${checkout_url}"
+            log_error "  first hop: ${checkout_first_hop:-<none>}"
+            log_error "  expected:  ${expected_checkout_prefix}"
             return 1
+        fi
+
+        checkout_final_status=$(curl -A 'Mozilla/5.0' -sSL -o /dev/null -w '%{http_code}' "${checkout_url}" 2>/dev/null || echo "000")
+        checkout_final_url=$(extract_http_effective_url "${checkout_url}" "Mozilla/5.0")
+        if [ -z "${checkout_final_url}" ]; then
+            if [ "${checkout_first_hop_ok}" = true ]; then
+                log_warn "Checkout final destination was blank after provider redirects, but first-hop UUID matched ${expected_checkout_uuid}. Treating first hop as authoritative."
+            else
+                log_error "Checkout URL redirect chain did not resolve a final destination: ${checkout_url}"
+                return 1
+            fi
+        fi
+
+        if [ -n "${checkout_final_url}" ] && ! [[ "${checkout_final_url}" =~ ^https://([A-Za-z0-9-]+\.)?lemonsqueezy\.com/checkout/buy/ ]]; then
+            if [ "${checkout_first_hop_ok}" = true ] && [[ "${checkout_final_url}" =~ ^https://([A-Za-z0-9-]+\.)?lemonsqueezy\.com/checkout/?$ ]]; then
+                log_warn "Checkout final URL resolved to a provider anti-bot landing page (${checkout_final_url}); first-hop UUID matched ${expected_checkout_uuid}, so checkout is treated as healthy."
+            else
+                log_error "Checkout URL redirect chain landed on unexpected destination: ${checkout_final_url}"
+                return 1
+            fi
+        fi
+
+        if [ -n "${checkout_final_url}" ] && [[ "${checkout_final_url}" =~ ^https://([A-Za-z0-9-]+\.)?lemonsqueezy\.com/checkout/buy/ ]]; then
+            if [ "${checkout_final_status}" != "200" ] && [ "${checkout_final_status}" != "403" ]; then
+                log_error "Checkout URL redirect chain ended with unexpected HTTP ${checkout_final_status}: ${checkout_final_url}"
+                return 1
+            fi
         fi
     fi
 
@@ -1360,11 +1580,8 @@ PY
         fi
 
         if [ "${cask_verified_source}" = "github-api" ]; then
-            if [ "${STRICT_PUBLIC_CHANNEL_SYNC}" = true ]; then
-                log_error "Homebrew cask only reachable via GitHub API; raw.githubusercontent has not propagated."
-                return 1
-            fi
             log_warn "Homebrew verification passed via GitHub API; raw.githubusercontent is still propagating."
+            log_warn "Continuing because the tap repo already has the correct cask content and raw propagation is eventually consistent."
         fi
         fi
     fi
@@ -1387,35 +1604,56 @@ PY
         fi
         log_info "Website download link verified: ${expected_download_url}"
     else
-        log_warn "Could not fetch website for download link check: ${site_url}"
+        log_error "Could not fetch website for download link check: ${site_url}"
+        return 1
     fi
 
-    # Verify email webhook PRODUCT_CONFIG has the correct version.
-    # Remote main is the source of truth for future release audits; local is only a fallback.
-    local webhook_ver=""
-    local webhook_source="remote main"
-    local webhook_body=""
-    webhook_body=$(fetch_remote_email_webhook_js)
-    if [ -n "${webhook_body}" ]; then
-        webhook_ver=$(extract_email_webhook_version "${webhook_body}" "${APP_NAME}")
+    # Verify the deployed email worker serves the current build, not just repo state.
+    local webhook_snapshot webhook_ver webhook_file webhook_download_url
+    webhook_snapshot=$(fetch_live_email_webhook_snapshot "${APP_NAME}" "1")
+    if [ -z "${webhook_snapshot}" ]; then
+        log_error "Could not fetch live email webhook snapshot from email-api.saneapps.com"
+        return 1
     fi
+
+    webhook_ver=$(extract_live_email_webhook_field "${webhook_snapshot}" "${APP_NAME}" "version")
+    webhook_file=$(extract_live_email_webhook_field "${webhook_snapshot}" "${APP_NAME}" "file")
+    webhook_download_url=$(extract_live_email_webhook_field "${webhook_snapshot}" "${APP_NAME}" "downloadUrl")
+
     if [ -z "${webhook_ver}" ]; then
-        local webhook_js="${HOME}/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js"
-        webhook_source="local checkout"
-        if [ -f "${webhook_js}" ]; then
-            webhook_ver=$(extract_email_webhook_version "$(cat "${webhook_js}")" "${APP_NAME}")
-        fi
+        log_error "Live email webhook snapshot has no '${APP_NAME}' entry."
+        return 1
     fi
-    if [ -n "${webhook_ver}" ]; then
-        if [ "${webhook_ver}" != "${VERSION}" ]; then
-            log_error "Email webhook PRODUCT_CONFIG drift: ${webhook_source} sends v${webhook_ver}, expected v${VERSION}"
-            log_error "New customers will download an old build. Update sane-email-automation and deploy the Worker."
-            return 1
-        fi
-        log_info "Email webhook version verified: ${APP_NAME}-${VERSION} (${webhook_source})"
-    else
-        log_warn "No '${APP_NAME}' entry found in email webhook PRODUCT_CONFIG."
+
+    if [ "${webhook_ver}" != "${VERSION}" ]; then
+        log_error "Live email webhook drift: deployed worker serves v${webhook_ver}, expected v${VERSION}"
+        log_error "New customers will download an old build until the Worker is updated."
+        return 1
     fi
+
+    if [ "${webhook_file}" != "${APP_NAME}-${VERSION}.zip" ]; then
+        log_error "Live email webhook file mismatch: ${webhook_file:-missing}, expected ${APP_NAME}-${VERSION}.zip"
+        return 1
+    fi
+
+    if [ -z "${webhook_download_url}" ]; then
+        log_error "Live email webhook snapshot did not return a signed download URL for ${APP_NAME}."
+        return 1
+    fi
+
+    local webhook_download_status
+    webhook_download_status=$(curl -sL -o /dev/null -w '%{http_code}' "${webhook_download_url}" 2>/dev/null || echo "000")
+    if [ "${webhook_download_status}" != "200" ] && [ "${webhook_download_status}" != "206" ]; then
+        log_error "Live email webhook download URL failed: HTTP ${webhook_download_status}"
+        return 1
+    fi
+
+    if ! verify_dist_archive_bundle_version "${webhook_download_url}" "${VERSION}" "${BUILD_NUMBER}"; then
+        log_error "Live email webhook archive metadata check failed for v${VERSION} (${BUILD_NUMBER})."
+        return 1
+    fi
+
+    log_info "Live email webhook verified: ${webhook_file}"
 
     # Verify source code version matches released version (prevents uncommitted bump drift)
     local source_version=""
@@ -1461,10 +1699,9 @@ PY
     download_redirect_status=$(curl -sI -o /dev/null -w '%{http_code}' -L "${download_redirect_url}" 2>/dev/null || echo "000")
     if [ "${download_redirect_status}" = "200" ]; then
         log_info "Download redirect verified: ${download_redirect_url}"
-    elif [ "${download_redirect_status}" = "000" ]; then
-        log_warn "Download redirect unreachable: ${download_redirect_url} (network error)"
     else
-        log_warn "Download redirect returned HTTP ${download_redirect_status}: ${download_redirect_url}"
+        log_error "Download redirect failed with HTTP ${download_redirect_status}: ${download_redirect_url}"
+        return 1
     fi
 
     log_info "Post-release checks passed."
@@ -1679,6 +1916,50 @@ set_env_if_missing() {
     export "${key}=${value}"
 }
 
+persist_secret_to_env_cache() {
+    local value="$1"
+    shift
+
+    [ -n "${value}" ] || return 0
+    [ "${SANE_ENV_CACHE_WRITE:-1}" != "0" ] || return 0
+    [ ${#} -gt 0 ] || return 0
+
+    local env_file="${SECRETS_ENV_CACHE_FILE}"
+    local env_dir
+    env_dir="$(dirname "${env_file}")"
+    mkdir -p "${env_dir}"
+    chmod 700 "${env_dir}" 2>/dev/null || true
+
+    python3 - "${env_file}" "${value}" "$@" <<'PY'
+import pathlib
+import shlex
+import sys
+
+env_path = pathlib.Path(sys.argv[1]).expanduser()
+value = sys.argv[2]
+names = [name for name in sys.argv[3:] if name]
+if not names:
+    raise SystemExit(0)
+
+lines = []
+if env_path.exists():
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+
+filtered = []
+for line in lines:
+    stripped = line.strip()
+    if any(stripped.startswith(f"export {name}=") for name in names):
+        continue
+    filtered.append(line)
+
+for name in names:
+    filtered.append(f"export {name}={shlex.quote(value)}")
+
+env_path.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+env_path.chmod(0o600)
+PY
+}
+
 unquote_env_value() {
     local raw="$1"
     raw="${raw%"${raw##*[![:space:]]}"}"
@@ -1714,12 +1995,17 @@ load_secrets_env_file() {
 keychain_secret() {
     local service="$1"
     local account="${2:-}"
+    shift 2 || true
     local value=""
+    [ "${KEYCHAIN_FALLBACK_ENABLED}" = "1" ] || return 0
     if [ -n "${account}" ]; then
         value=$(security find-generic-password -w -s "${service}" -a "${account}" 2>/dev/null || true)
     fi
     if [ -z "${value}" ]; then
         value=$(security find-generic-password -w -s "${service}" 2>/dev/null || true)
+    fi
+    if [ -n "${value}" ] && [ ${#} -gt 0 ]; then
+        persist_secret_to_env_cache "${value}" "$@"
     fi
     printf '%s' "${value}"
 }
@@ -1731,25 +2017,25 @@ resolve_cloudflare_api_token() {
         return 0
     fi
 
-    token=$(keychain_secret "saneprocess.cloudflare.api_token" "cloudflare_api_token")
+    token=$(keychain_secret "saneprocess.cloudflare.api_token" "cloudflare_api_token" "CLOUDFLARE_API_TOKEN")
     if [ -n "${token}" ]; then
         printf '%s' "${token}"
         return 0
     fi
 
-    token=$(keychain_secret "saneprocess.cloudflare.api_token")
+    token=$(keychain_secret "saneprocess.cloudflare.api_token" "" "CLOUDFLARE_API_TOKEN")
     if [ -n "${token}" ]; then
         printf '%s' "${token}"
         return 0
     fi
 
-    token=$(keychain_secret "cloudflare" "api_token")
+    token=$(keychain_secret "cloudflare" "api_token" "CLOUDFLARE_API_TOKEN")
     if [ -n "${token}" ]; then
         printf '%s' "${token}"
         return 0
     fi
 
-    token=$(keychain_secret "cloudflare")
+    token=$(keychain_secret "cloudflare" "" "CLOUDFLARE_API_TOKEN")
     if [ -n "${token}" ]; then
         printf '%s' "${token}"
         return 0
@@ -1760,6 +2046,7 @@ resolve_cloudflare_api_token() {
 
 hydrate_headless_release_env() {
     local secrets_files=(
+        "${SECRETS_ENV_CACHE_FILE}"
         "${SANEPROCESS_SECRETS_FILE:-}"
         "${HOME}/.config/saneprocess/secrets.env"
         "${HOME}/.saneprocess/secrets.env"
@@ -1773,22 +2060,24 @@ hydrate_headless_release_env() {
         fi
     done
 
-    set_env_if_missing "SANEBAR_KEYCHAIN_PASSWORD" "$(keychain_secret "saneprocess.keychain.password" "keychain_password")"
-    set_env_if_missing "SANEBAR_KEYCHAIN_PASSWORD" "$(keychain_secret "saneprocess.keychain.password")"
-    set_env_if_missing "ASC_AUTH_KEY_ID" "$(keychain_secret "saneprocess.asc.key_id" "asc_key_id")"
-    set_env_if_missing "ASC_AUTH_KEY_ID" "$(keychain_secret "saneprocess.asc.key_id")"
-    set_env_if_missing "ASC_AUTH_ISSUER_ID" "$(keychain_secret "saneprocess.asc.issuer_id" "asc_issuer_id")"
-    set_env_if_missing "ASC_AUTH_ISSUER_ID" "$(keychain_secret "saneprocess.asc.issuer_id")"
-    set_env_if_missing "ASC_AUTH_KEY_PATH" "$(keychain_secret "saneprocess.asc.key_path" "asc_key_path")"
-    set_env_if_missing "ASC_AUTH_KEY_PATH" "$(keychain_secret "saneprocess.asc.key_path")"
-    set_env_if_missing "NOTARY_API_KEY_ID" "$(keychain_secret "saneprocess.notary.key_id" "notary_key_id")"
-    set_env_if_missing "NOTARY_API_KEY_ID" "$(keychain_secret "saneprocess.notary.key_id")"
-    set_env_if_missing "NOTARY_API_ISSUER_ID" "$(keychain_secret "saneprocess.notary.issuer_id" "notary_issuer_id")"
-    set_env_if_missing "NOTARY_API_ISSUER_ID" "$(keychain_secret "saneprocess.notary.issuer_id")"
-    set_env_if_missing "NOTARY_API_KEY_PATH" "$(keychain_secret "saneprocess.notary.key_path" "notary_key_path")"
-    set_env_if_missing "NOTARY_API_KEY_PATH" "$(keychain_secret "saneprocess.notary.key_path")"
-    set_env_if_missing "SPARKLE_PRIVATE_KEY" "$(keychain_secret "saneprocess.sparkle.private_key" "sparkle")"
-    set_env_if_missing "SPARKLE_PRIVATE_KEY" "$(keychain_secret "https://sparkle-project.org" "EdDSA Private Key")"
+    set_env_if_missing "SANEBAR_KEYCHAIN_PASSWORD" "$(keychain_secret "saneprocess.keychain.password" "keychain_password" "SANEBAR_KEYCHAIN_PASSWORD")"
+    set_env_if_missing "SANEBAR_KEYCHAIN_PASSWORD" "$(keychain_secret "saneprocess.keychain.password" "" "SANEBAR_KEYCHAIN_PASSWORD")"
+    set_env_if_missing "ASC_AUTH_KEY_ID" "$(keychain_secret "saneprocess.asc.key_id" "asc_key_id" "ASC_AUTH_KEY_ID")"
+    set_env_if_missing "ASC_AUTH_KEY_ID" "$(keychain_secret "saneprocess.asc.key_id" "" "ASC_AUTH_KEY_ID")"
+    set_env_if_missing "ASC_AUTH_ISSUER_ID" "$(keychain_secret "saneprocess.asc.issuer_id" "asc_issuer_id" "ASC_AUTH_ISSUER_ID")"
+    set_env_if_missing "ASC_AUTH_ISSUER_ID" "$(keychain_secret "saneprocess.asc.issuer_id" "" "ASC_AUTH_ISSUER_ID")"
+    set_env_if_missing "ASC_AUTH_KEY_PATH" "$(keychain_secret "saneprocess.asc.key_path" "asc_key_path" "ASC_AUTH_KEY_PATH")"
+    set_env_if_missing "ASC_AUTH_KEY_PATH" "$(keychain_secret "saneprocess.asc.key_path" "" "ASC_AUTH_KEY_PATH")"
+    set_env_if_missing "NOTARY_API_KEY_ID" "$(keychain_secret "saneprocess.notary.key_id" "notary_key_id" "NOTARY_API_KEY_ID")"
+    set_env_if_missing "NOTARY_API_KEY_ID" "$(keychain_secret "saneprocess.notary.key_id" "" "NOTARY_API_KEY_ID")"
+    set_env_if_missing "NOTARY_API_ISSUER_ID" "$(keychain_secret "saneprocess.notary.issuer_id" "notary_issuer_id" "NOTARY_API_ISSUER_ID")"
+    set_env_if_missing "NOTARY_API_ISSUER_ID" "$(keychain_secret "saneprocess.notary.issuer_id" "" "NOTARY_API_ISSUER_ID")"
+    set_env_if_missing "NOTARY_API_KEY_PATH" "$(keychain_secret "saneprocess.notary.key_path" "notary_key_path" "NOTARY_API_KEY_PATH")"
+    set_env_if_missing "NOTARY_API_KEY_PATH" "$(keychain_secret "saneprocess.notary.key_path" "" "NOTARY_API_KEY_PATH")"
+    # The shared Sparkle key lives at sparkle-project.org; prefer that exact entry
+    # so the keychain guard does not burn a lookup on the legacy alias first.
+    set_env_if_missing "SPARKLE_PRIVATE_KEY" "$(keychain_secret "https://sparkle-project.org" "EdDSA Private Key" "SPARKLE_PRIVATE_KEY")"
+    set_env_if_missing "SPARKLE_PRIVATE_KEY" "$(keychain_secret "saneprocess.sparkle.private_key" "sparkle" "SPARKLE_PRIVATE_KEY")"
     set_env_if_missing "CLOUDFLARE_API_TOKEN" "$(resolve_cloudflare_api_token || true)"
 }
 
@@ -2806,11 +3095,7 @@ check_required_commands() {
 }
 
 check_git_clean_gate() {
-    if [ -n "$(git -C "${PROJECT_ROOT}" status --porcelain 2>/dev/null)" ]; then
-        log_error "Git working directory is not clean."
-        return 1
-    fi
-    return 0
+    ensure_git_clean
 }
 
 check_reconcile_gate() {
@@ -2834,6 +3119,27 @@ check_signing_identity_gate() {
     return 0
 }
 
+ensure_skip_build_artifacts_present() {
+    [ "${SKIP_BUILD}" = true ] || return 0
+
+    if [ ! -d "${ARCHIVE_PATH}" ]; then
+        log_error "--skip-build requires an existing release archive at ${ARCHIVE_PATH}."
+        log_error "Rerun a full release build first, or use the routed resume path after artifact sync."
+        return 1
+    fi
+
+    if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
+        local appstore_archive_path="${BUILD_DIR}/${APP_NAME}-AppStore.xcarchive"
+        if [ ! -d "${appstore_archive_path}" ]; then
+            log_error "--skip-build requires an existing App Store archive at ${appstore_archive_path}."
+            log_error "Rerun a full release build first, or skip the App Store leg explicitly."
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
 resolve_sparkle_private_key() {
     local sparkle_key="${SPARKLE_PRIVATE_KEY:-}"
     if [ -n "${sparkle_key}" ]; then
@@ -2841,13 +3147,13 @@ resolve_sparkle_private_key() {
         return 0
     fi
 
-    sparkle_key=$(security find-generic-password -w -s "saneprocess.sparkle.private_key" 2>/dev/null || true)
+    sparkle_key=$(security find-generic-password -w -s "https://sparkle-project.org" -a "EdDSA Private Key" 2>/dev/null || true)
     if [ -n "${sparkle_key}" ]; then
         printf '%s' "${sparkle_key}"
         return 0
     fi
 
-    sparkle_key=$(security find-generic-password -w -s "https://sparkle-project.org" -a "EdDSA Private Key" 2>/dev/null || true)
+    sparkle_key=$(security find-generic-password -w -s "saneprocess.sparkle.private_key" 2>/dev/null || true)
     if [ -n "${sparkle_key}" ]; then
         printf '%s' "${sparkle_key}"
         return 0
@@ -3610,6 +3916,13 @@ if [ -z "${PROJECT_ROOT}" ]; then
 fi
 PROJECT_ROOT="$(cd "${PROJECT_ROOT}" && pwd)"
 
+EXPLICIT_APPSTORE_PLATFORMS_SET=0
+EXPLICIT_APPSTORE_PLATFORMS=""
+if [ "${APPSTORE_PLATFORMS+x}" = "x" ] && [ -n "${APPSTORE_PLATFORMS}" ]; then
+    EXPLICIT_APPSTORE_PLATFORMS_SET=1
+    EXPLICIT_APPSTORE_PLATFORMS="${APPSTORE_PLATFORMS}"
+fi
+
 if [ -n "${CRITICAL_UPDATE_BELOW_VERSION}" ] && [ "${CRITICAL_UPDATE}" != true ]; then
     CRITICAL_UPDATE=true
 fi
@@ -3643,6 +3956,12 @@ if [ -n "${CONFIG_PATH}" ]; then
 fi
 
 hydrate_headless_release_env
+
+if [ "${EXPLICIT_APPSTORE_PLATFORMS_SET}" -eq 1 ]; then
+    unset APPSTORE_PLATFORMS
+    APPSTORE_PLATFORMS=("${EXPLICIT_APPSTORE_PLATFORMS}")
+    export APPSTORE_PLATFORMS
+fi
 
 APP_NAME="${APP_NAME:-$(basename "${PROJECT_ROOT}")}" 
 SCHEME="${SCHEME:-${APP_NAME}}"
@@ -3852,25 +4171,25 @@ if [ "${WEBSITE_ONLY}" = true ]; then
             log_info "Dist archive metadata check passed for website-only deploy: ${dist_archive_url}"
         fi
 
-        # Webhook version drift check.
+        # Live webhook version drift check.
         # In strict public-channel mode this is blocking, because new customers would
         # otherwise receive an old build even if the website/appcast are correct.
-        webhook_js_path="${HOME}/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js"
-        if [ -n "${appcast_ver}" ] && [ -f "${webhook_js_path}" ]; then
-            webhook_entry=""
-            webhook_entry=$(grep "'${APP_NAME}'" "${webhook_js_path}" 2>/dev/null || true)
-            if [ -n "${webhook_entry}" ]; then
-                webhook_ver=""
-                webhook_ver=$(echo "${webhook_entry}" | grep -oE "${APP_NAME}-[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?')
-                if [ -n "${webhook_ver}" ] && [ "${webhook_ver}" != "${appcast_ver}" ]; then
-                    if [ "${STRICT_PUBLIC_CHANNEL_SYNC}" = true ]; then
-                        log_error "Email webhook PRODUCT_CONFIG drift: webhook has v${webhook_ver} but appcast is v${appcast_ver}"
-                        log_error "New customers will download an old build. Update ${webhook_js_path} and deploy the Worker."
-                        exit 1
-                    fi
-                    log_warn "Email webhook PRODUCT_CONFIG drift: webhook has v${webhook_ver} but appcast is v${appcast_ver}"
-                    log_warn "New customers will download an old build. Update ${webhook_js_path} and deploy the Worker."
+        if [ -n "${appcast_ver}" ]; then
+            webhook_snapshot=""
+            webhook_ver=""
+            webhook_snapshot=$(fetch_live_email_webhook_snapshot "${APP_NAME}" "0")
+            webhook_ver=$(extract_live_email_webhook_field "${webhook_snapshot}" "${APP_NAME}" "version")
+            if [ -n "${webhook_ver}" ] && [ "${webhook_ver}" != "${appcast_ver}" ]; then
+                if [ "${STRICT_PUBLIC_CHANNEL_SYNC}" = true ]; then
+                    log_error "Live email webhook drift: worker has v${webhook_ver} but appcast is v${appcast_ver}"
+                    log_error "New customers will download an old build until the Worker is updated."
+                    exit 1
                 fi
+                log_warn "Live email webhook drift: worker has v${webhook_ver} but appcast is v${appcast_ver}"
+                log_warn "New customers will download an old build until the Worker is updated."
+            elif [ -z "${webhook_ver}" ] && [ "${STRICT_PUBLIC_CHANNEL_SYNC}" = true ]; then
+                log_error "Could not verify live email webhook state for ${APP_NAME} during website-only deploy."
+                exit 1
             fi
         fi
     fi
@@ -3881,6 +4200,7 @@ if [ "${WEBSITE_ONLY}" = true ]; then
     log_info "Deploying website to Cloudflare Pages (${PAGES_PROJECT}) from ${DEPLOY_DIR}..."
     npx wrangler pages deploy "${DEPLOY_DIR}" \
         --project-name="${PAGES_PROJECT}" \
+        --branch="${PAGES_BRANCH}" \
         --commit-dirty=true \
         --commit-message="Website update $(date +%Y-%m-%d)"
     log_info "Website deploy complete."
@@ -3965,7 +4285,10 @@ if [ "${FULL_RELEASE}" = true ]; then
     fi
 
     # Gate 2: Pending customer emails
-    EMAIL_API_KEY=$(security find-generic-password -s sane-email-automation -a api_key -w 2>/dev/null || echo "")
+    EMAIL_API_KEY="${SANE_EMAIL_API_KEY:-${EMAIL_API_KEY:-}}"
+    if [ -z "${EMAIL_API_KEY}" ]; then
+        EMAIL_API_KEY=$(keychain_secret "sane-email-automation" "api_key" "SANE_EMAIL_API_KEY" "EMAIL_API_KEY")
+    fi
     if [ -n "${EMAIL_API_KEY}" ]; then
         PENDING_COUNT=$(curl -s "https://email-api.saneapps.com/api/emails/pending" \
             -H "Authorization: Bearer ${EMAIL_API_KEY}" 2>/dev/null | \
@@ -4072,6 +4395,10 @@ ensure_cmd xcrun
 ensure_cmd hdiutil
 ensure_cmd ditto
 
+if ! ensure_skip_build_artifacts_present; then
+    exit 1
+fi
+
 # Fail early if signing/notarization prerequisites are missing.
 if ! run_required_step "Keychain/signing session" prepare_signing_session; then
     exit 1
@@ -4148,15 +4475,13 @@ write_export_options_plist "${EXPORT_OPTIONS_PATH}"
 log_info "Exporting signed app..."
 CURRENT_GATE="Export signed app"
 RELEASE_ERR_GATE_RECORDED=""
-xcodebuild -exportArchive \
-    -archivePath "${ARCHIVE_PATH}" \
-    -exportPath "${EXPORT_PATH}" \
-    -exportOptionsPlist "${EXPORT_OPTIONS_PATH}" \
-    -allowProvisioningUpdates \
-    "${XCODE_PROVISIONING_AUTH_ARGS[@]}" \
-    2>&1 | tee -a "${BUILD_DIR}/build.log"
-
-if [ ${PIPESTATUS[0]} -ne 0 ]; then
+if ! run_logged_command "${BUILD_DIR}/build.log" \
+    xcodebuild -exportArchive \
+        -archivePath "${ARCHIVE_PATH}" \
+        -exportPath "${EXPORT_PATH}" \
+        -exportOptionsPlist "${EXPORT_OPTIONS_PATH}" \
+        -allowProvisioningUpdates \
+        "${XCODE_PROVISIONING_AUTH_ARGS[@]}"; then
     log_error "Export failed! Check ${BUILD_DIR}/build.log"
     track_gate_result "Export signed app" "failure" "${RELEASE_LAST_ERROR}"
     exit 1
@@ -4285,9 +4610,7 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
             appstore_archive_args+=("${APPSTORE_ARCHIVE_EXTRA_ARGS[@]}")
         fi
 
-        xcodebuild "${appstore_archive_args[@]}" 2>&1 | tee -a "${BUILD_DIR}/build.log"
-
-        if [ ${PIPESTATUS[0]} -ne 0 ]; then
+        if ! run_logged_command "${BUILD_DIR}/build.log" xcodebuild "${appstore_archive_args[@]}"; then
             log_error "App Store archive build failed! Check ${BUILD_DIR}/build.log"
             track_gate_result "Build App Store archive" "failure" "${RELEASE_LAST_ERROR}"
             exit 1
@@ -4349,15 +4672,13 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
     APPSTORE_PLIST="${BUILD_DIR}/ExportOptions-AppStore.plist"
     write_export_options_appstore_plist "${APPSTORE_PLIST}"
 
-    xcodebuild -exportArchive \
-        -archivePath "${APPSTORE_ARCHIVE}" \
-        -exportPath "${APPSTORE_EXPORT_PATH}" \
-        -exportOptionsPlist "${APPSTORE_PLIST}" \
-        -allowProvisioningUpdates \
-        "${XCODE_PROVISIONING_AUTH_ARGS[@]}" \
-        2>&1 | tee -a "${BUILD_DIR}/build.log"
-
-    if [ ${PIPESTATUS[0]} -ne 0 ]; then
+    if ! run_logged_command "${BUILD_DIR}/build.log" \
+        xcodebuild -exportArchive \
+            -archivePath "${APPSTORE_ARCHIVE}" \
+            -exportPath "${APPSTORE_EXPORT_PATH}" \
+            -exportOptionsPlist "${APPSTORE_PLIST}" \
+            -allowProvisioningUpdates \
+            "${XCODE_PROVISIONING_AUTH_ARGS[@]}"; then
         log_error "App Store export failed! Check ${BUILD_DIR}/build.log"
         track_gate_result "Export App Store package" "failure" "${RELEASE_LAST_ERROR}"
         exit 1
@@ -4963,20 +5284,20 @@ PY
                 ios_args+=("${XCODE_PROVISIONING_AUTH_ARGS[@]}")
             fi
             [ -n "${XCODEPROJ}" ] && ios_args=(-project "${XCODEPROJ}" "${ios_args[@]}")
-            xcodebuild "${ios_args[@]}" 2>&1 | tee -a "${BUILD_DIR}/build.log"
-
-            if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            if ! run_logged_command "${BUILD_DIR}/build.log" xcodebuild "${ios_args[@]}"; then
                 log_warn "iOS archive failed — skipping iOS App Store submission"
             else
                 IOS_EXPORT="${BUILD_DIR}/Export-AppStore-iOS"
                 mkdir -p "${IOS_EXPORT}"
-                xcodebuild -exportArchive \
-                    -archivePath "${IOS_ARCHIVE}" \
-                    -exportPath "${IOS_EXPORT}" \
-                    -exportOptionsPlist "${APPSTORE_PLIST}" \
-                    -allowProvisioningUpdates \
-                    "${XCODE_PROVISIONING_AUTH_ARGS[@]}" \
-                    2>&1 | tee -a "${BUILD_DIR}/build.log"
+                if ! run_logged_command "${BUILD_DIR}/build.log" \
+                    xcodebuild -exportArchive \
+                        -archivePath "${IOS_ARCHIVE}" \
+                        -exportPath "${IOS_EXPORT}" \
+                        -exportOptionsPlist "${APPSTORE_PLIST}" \
+                        -allowProvisioningUpdates \
+                        "${XCODE_PROVISIONING_AUTH_ARGS[@]}"; then
+                    log_warn "iOS export failed — skipping iOS submission"
+                fi
 
                 IOS_IPA="${IOS_EXPORT}/${APP_NAME}.ipa"
                 if [ -f "${IOS_IPA}" ]; then
@@ -5125,7 +5446,16 @@ PY
     # The email webhook has product→filename mappings for purchase download links.
     # Update it BEFORE strict post-release verification so the gate measures the
     # same customer-facing state the release just deployed.
-    WEBHOOK_JS="${HOME}/SaneApps/infra/sane-email-automation/src/handlers/webhook-lemonsqueezy.js"
+    WEBHOOK_DIR="${HOME}/SaneApps/infra/sane-email-automation"
+    WEBHOOK_JS="${WEBHOOK_DIR}/src/handlers/webhook-lemonsqueezy.js"
+    if mini_route_context_active; then
+        ROUTED_WEBHOOK_DIR="$(mini_route_webhook_field 'remote_path' 2>/dev/null || true)"
+        ROUTED_WEBHOOK_JS="$(mini_route_webhook_field 'remote_file_path' 2>/dev/null || true)"
+        if [ -n "${ROUTED_WEBHOOK_DIR}" ] && [ -d "${ROUTED_WEBHOOK_DIR}" ]; then
+            WEBHOOK_DIR="${ROUTED_WEBHOOK_DIR}"
+            WEBHOOK_JS="${ROUTED_WEBHOOK_JS:-${WEBHOOK_DIR}/src/handlers/webhook-lemonsqueezy.js}"
+        fi
+    fi
     if [ -f "${WEBHOOK_JS}" ]; then
         # Match: 'AppName': { file: 'AppName-X.Y.Z.zip', ... } or .dmg
         OLD_ENTRY=$(grep "'${APP_NAME}'" "${WEBHOOK_JS}" 2>/dev/null || true)
@@ -5137,22 +5467,70 @@ PY
             log_info "Updated email webhook: ${APP_NAME} → ${APP_NAME}-${VERSION}${CURRENT_EXT}"
 
             # Commit and deploy
-            WEBHOOK_DIR="$(dirname "$(dirname "$(dirname "${WEBHOOK_JS}")")")"
             if cd "${WEBHOOK_DIR}" 2>/dev/null; then
-                if git add -A && git commit -m "chore: update ${LOWER_APP_NAME} to ${VERSION}" --no-verify 2>/dev/null; then
-                    if GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git push 2>/dev/null; then
-                        log_info "Webhook committed and pushed."
-                    else
-                        log_warn "Webhook push failed — remote main may still point at an older version."
-                    fi
+                WEBHOOK_REL_PATH="src/handlers/webhook-lemonsqueezy.js"
+                WEBHOOK_UNRELATED_CHANGES=$(git status --porcelain --untracked-files=all 2>/dev/null | \
+                    grep -vE '^[ MARCUD?]{2} src/handlers/webhook-lemonsqueezy\.js$' || true)
+                if [ -n "${WEBHOOK_UNRELATED_CHANGES}" ]; then
+                    log_error "sane-email-automation has unrelated dirty changes. Refusing to deploy a mixed Worker checkout."
+                    printf '%s\n' "${WEBHOOK_UNRELATED_CHANGES}" >&2
+                    cd "${PROJECT_ROOT}"
+                    exit 1
                 fi
-                npx wrangler deploy --keep-vars 2>/dev/null && \
-                    log_info "Webhook deployed to Cloudflare Workers." || \
-                    log_warn "Webhook deploy failed — deploy manually: cd ${WEBHOOK_DIR} && npx wrangler deploy --keep-vars"
+
+                git add "${WEBHOOK_REL_PATH}"
+                if git diff --cached --quiet; then
+                    log_info "Webhook source already at ${APP_NAME}-${VERSION}${CURRENT_EXT}."
+                else
+                    if ! git commit -m "chore: update ${LOWER_APP_NAME} to ${VERSION}" --no-verify 2>/dev/null; then
+                        log_error "Failed to commit email webhook update for ${APP_NAME}-${VERSION}."
+                        cd "${PROJECT_ROOT}"
+                        exit 1
+                    fi
+                    if ! GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git push 2>/dev/null; then
+                        log_error "Webhook push failed — remote main is not updated."
+                        cd "${PROJECT_ROOT}"
+                        exit 1
+                    fi
+                    log_info "Webhook committed and pushed."
+                fi
+
+                if [ -f "package-lock.json" ]; then
+                    log_info "Installing email webhook dependencies with npm ci..."
+                    WEBHOOK_INSTALL_OUTPUT=$(npm ci --no-audit --no-fund 2>&1)
+                    WEBHOOK_INSTALL_STATUS=$?
+                elif [ -f "package.json" ]; then
+                    log_info "Installing email webhook dependencies with npm install..."
+                    WEBHOOK_INSTALL_OUTPUT=$(npm install --no-audit --no-fund 2>&1)
+                    WEBHOOK_INSTALL_STATUS=$?
+                else
+                    WEBHOOK_INSTALL_OUTPUT=""
+                    WEBHOOK_INSTALL_STATUS=0
+                fi
+
+                if [ "${WEBHOOK_INSTALL_STATUS}" -ne 0 ]; then
+                    log_error "Webhook dependency install failed."
+                    printf '%s\n' "${WEBHOOK_INSTALL_OUTPUT}" >&2
+                    cd "${PROJECT_ROOT}"
+                    exit 1
+                fi
+
+                WEBHOOK_DEPLOY_OUTPUT=$(npx wrangler deploy --keep-vars 2>&1)
+                WEBHOOK_DEPLOY_STATUS=$?
+                if [ "${WEBHOOK_DEPLOY_STATUS}" -ne 0 ]; then
+                    log_error "Webhook deploy failed."
+                    printf '%s\n' "${WEBHOOK_DEPLOY_OUTPUT}" >&2
+                    cd "${PROJECT_ROOT}"
+                    exit 1
+                fi
+                log_info "Webhook deployed to Cloudflare Workers."
                 cd "${PROJECT_ROOT}"
+            else
+                log_error "Could not enter sane-email-automation checkout at ${WEBHOOK_DIR}"
+                exit 1
             fi
 
-            # Verify both the local replacement and remote main version.
+            # Verify local replacement, remote source, and the deployed worker.
             WEBHOOK_VERIFY=$(grep "'${APP_NAME}'" "${WEBHOOK_JS}" 2>/dev/null || true)
             if [ -n "${WEBHOOK_VERIFY}" ]; then
                 if echo "${WEBHOOK_VERIFY}" | grep -q "${APP_NAME}-${VERSION}"; then
@@ -5161,6 +5539,7 @@ PY
                     ACTUAL_VER=$(echo "${WEBHOOK_VERIFY}" | grep -oE "${APP_NAME}-[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1)
                     log_error "Webhook version mismatch after update: expected ${APP_NAME}-${VERSION} but found ${ACTUAL_VER:-unknown}"
                     log_error "The sed replacement may have failed silently. Edit ${WEBHOOK_JS} manually."
+                    exit 1
                 fi
             fi
             REMOTE_WEBHOOK_BODY=$(fetch_remote_email_webhook_js)
@@ -5170,15 +5549,32 @@ PY
                     log_info "Webhook remote version verified: ${APP_NAME}-${VERSION} in GitHub main"
                 else
                     log_error "Webhook remote version mismatch: expected ${APP_NAME}-${VERSION} but GitHub main has ${APP_NAME}-${REMOTE_WEBHOOK_VER}"
+                    exit 1
                 fi
             else
-                log_warn "Could not verify webhook version on GitHub main."
+                log_error "Could not verify webhook version on GitHub main."
+                exit 1
             fi
+
+            LIVE_WEBHOOK_SNAPSHOT=$(wait_for_live_email_webhook_version "${VERSION}" "${APP_NAME}" "1" "12" "5")
+            LIVE_WEBHOOK_VER=$(extract_live_email_webhook_field "${LIVE_WEBHOOK_SNAPSHOT}" "${APP_NAME}" "version")
+            if [ "${LIVE_WEBHOOK_VER}" != "${VERSION}" ]; then
+                log_error "Live webhook version mismatch after deploy: expected ${APP_NAME}-${VERSION} but worker serves ${APP_NAME}-${LIVE_WEBHOOK_VER:-unknown}"
+                exit 1
+            fi
+            LIVE_WEBHOOK_URL=$(extract_live_email_webhook_field "${LIVE_WEBHOOK_SNAPSHOT}" "${APP_NAME}" "downloadUrl")
+            if [ -z "${LIVE_WEBHOOK_URL}" ]; then
+                log_error "Live webhook deploy verification did not return a signed download URL for ${APP_NAME}."
+                exit 1
+            fi
+            log_info "Webhook live version verified: ${APP_NAME}-${VERSION} on email-api.saneapps.com"
         else
-            log_warn "No '${APP_NAME}' entry found in webhook — add it manually to ${WEBHOOK_JS}"
+            log_error "No '${APP_NAME}' entry found in webhook — update ${WEBHOOK_JS} before releasing."
+            exit 1
         fi
     else
-        log_warn "Email webhook file not found at ${WEBHOOK_JS} — update PRODUCT_CONFIG manually"
+        log_error "Email webhook file not found at ${WEBHOOK_JS}"
+        exit 1
     fi
 
     # Step 11: Strict post-release verification gate
@@ -5192,13 +5588,19 @@ PY
     track_gate_result "Post-release verification" "pass" "ok"
     CURRENT_GATE=""
 
+    if [ "${APPSTORE_SUBMIT_FAILED}" = true ]; then
+        log_info ""
+        log_error "═══════════════════════════════════════════"
+        log_error "  RELEASE v${VERSION} DIRECT CHANNELS LIVE"
+        log_error "  APP STORE SUBMISSION STILL FAILED"
+        log_error "═══════════════════════════════════════════"
+        log_error "App Store submission did not complete in this run. Direct download/Homebrew channels are live, but the overall release is NOT complete."
+        exit 1
+    fi
     log_info ""
     log_info "═══════════════════════════════════════════"
     log_info "  RELEASE v${VERSION} DEPLOYED SUCCESSFULLY"
     log_info "═══════════════════════════════════════════"
-    if [ "${APPSTORE_SUBMIT_FAILED}" = true ]; then
-        log_warn "App Store submission did not complete in this run. Direct download/Homebrew channels are live."
-    fi
     if [ "${POST_RELEASE_REPO_SYNC_FAILED}" = true ]; then
         log_error "Customer-facing release checks passed, but source repo sync failed."
         for detail in "${POST_RELEASE_REPO_SYNC_DETAILS[@]}"; do

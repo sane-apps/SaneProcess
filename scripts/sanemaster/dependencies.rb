@@ -189,7 +189,7 @@ module SaneMasterModules
       max_per_server = 6
       per_codex_server_cap = DEFAULT_PER_CODEX_SERVER_CAP
       duplicate_grace_seconds = 900
-      interval_seconds = 300
+      interval_seconds = 15
 
       i = 0
       while i < args.length
@@ -207,7 +207,7 @@ module SaneMasterModules
           per_codex_server_cap = [args[i].to_i, 1].max if args[i]
         when '--interval'
           i += 1
-          interval_seconds = [args[i].to_i, 60].max if args[i]
+          interval_seconds = [args[i].to_i, 5].max if args[i]
         when '--grace'
           i += 1
           duplicate_grace_seconds = [args[i].to_i, 0].max if args[i]
@@ -380,6 +380,7 @@ module SaneMasterModules
     def shell_wrapper_command?(command)
       cmd = command.to_s.strip
       return true if cmd.start_with?('/bin/zsh -lc', '/bin/bash -lc', 'zsh -lc', 'bash -lc')
+      return true if cmd.match?(%r{/mcp_singleton_bridge\.cjs\s+serve\s+\S+})
 
       false
     end
@@ -551,7 +552,7 @@ module SaneMasterModules
       duplicate_codex_groups = analysis[:duplicate_codex_groups] || []
       duplicate_codex_groups.each do |group|
         group_instances = group[:instances] || []
-        extras = cleanup_excess_instances(group_instances, group[:cap], duplicate_grace_seconds)
+        extras = cleanup_excess_instances(group_instances, group[:cap], 0)
         instance_roots.concat(extras.map { |instance| instance[:root_pid] })
         pids_to_kill.concat(extras.flat_map { |instance| instance[:pids] })
       end
@@ -1000,6 +1001,8 @@ module SaneMasterModules
             <string>--quiet</string>
             <string>--max</string>
             <string>#{max_per_server}</string>
+            <string>--grace</string>
+            <string>0</string>
           </array>
           <key>StartInterval</key>
           <integer>#{interval_seconds}</integer>

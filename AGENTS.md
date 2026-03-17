@@ -26,7 +26,10 @@ Do not wait until session end.
 
 - When you find a new bug, issue cluster, regression, or root-cause change, update Serena memory and the knowledge graph immediately.
 - When you fix, close, merge, or downgrade an issue, update the same memory/graph entries immediately.
+- When you change hooks, tools, automation, skills, templates, or durable docs like `AGENTS.md`, `CLAUDE.md`, `README.md`, `DEVELOPMENT.md`, or `ARCHITECTURE.md`, update Serena memory and `SESSION_HANDOFF.md` immediately. Do not treat this as optional cleanup.
+- When you add a new durable document, either fold it into the 5-doc standard or record why it exists and where future sessions should look for it.
 - Keep bug memory live enough that it can be used directly for support replies, App Store submissions, website release notes, and future debugging without re-discovery.
+- Before any release, audit release notes against recent support promises, recent GitHub replies, and `research.md`. If a customer-visible fix shipped, the notes should mention it.
 - Every product website must have a public privacy policy URL before release. Missing privacy pages are release blockers for App Store products and should be treated as SOP violations for every product.
 
 ```
@@ -59,13 +62,23 @@ Do not wait until session end.
 | 13 | CONTEXT OR CHAOS | Maintain CLAUDE.md, load at start, save at end |
 | 14 | PROMPT LIKE A PRO | Specific prompts with file paths, constraints, context |
 | 15 | REVIEW BEFORE YOU SHIP | Self-review for security, edge cases, correctness |
-| 16 | DON'T FRAGMENT, INTEGRATE | Upgrade existing files. 5-doc standard (README, DEVELOPMENT, ARCHITECTURE, SESSION_HANDOFF, CLAUDE). No orphan files |
+| 16 | DON'T FRAGMENT, INTEGRATE | Upgrade existing files. 5-doc standard (README, DEVELOPMENT, ARCHITECTURE, SESSION_HANDOFF, CLAUDE). No orphan files. New tooling/docs must be recorded in memory + handoff |
 
 **Workflow:** PLAN → VERIFY → BUILD → TEST → CONFIRM (user approves, then commit)
 
 **Circuit Breaker:** After 3 consecutive failures: STOP. Read error messages. Research the actual API.
 
 **Research gate:** Use all 4 categories: docs (apple-docs/context7), web search, GitHub, and local codebase.
+
+## Tool Discovery Before Workarounds
+
+Before I say a tool is missing or switch to a workaround, I must:
+1. Check `~/.claude/SKILLS_REGISTRY.md`
+2. Run `ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb tool_discovery --query "..."` so the receipt captures registry, doctor, validation, and local-path checks
+3. Search `scripts/`, hooks, skills, and the 5-doc standard for an existing path
+4. If the capability is still missing and the workflow repeats, add it to SaneProcess, document it, and make it the standard path
+
+If I cannot name which of those checks I ran, I have not checked enough.
 
 ---
 
@@ -88,7 +101,7 @@ Run with no args for full help. Run `help <category>` for category details.
 | **gen** | `gen_test`, `gen_mock`, `gen_assets`, `template` | Code generation, mocks, assets |
 | **memory** | `msync`, `session_end`, `reset_breaker` | Cross-session memory sync, circuit breaker |
 | **breaker** | `breaker_status` (bs), `breaker_errors` (be), `reset_breaker` (rb) | Circuit breaker inspection and reset |
-| **env** | `doctor`, `health`, `bootstrap`, `setup`, `versions`, `reset`, `restore` | Environment setup, health checks |
+| **env** | `doctor`, `tool_discovery --query "..."`, `health`, `bootstrap`, `setup`, `versions`, `reset`, `restore` | Environment setup, health checks |
 | **saneloop** | `saneloop` (sl), `saneloop start`, `saneloop status`, `saneloop check`, `saneloop complete` | Structured iteration loops for big tasks |
 | **meta** | `meta`, `audit`, `system_check` | Tooling self-audit, system verification |
 | **export** | `export`, `md_export`, `deps`, `quality` | PDF export, dependency graphs |
@@ -151,6 +164,7 @@ When the user says something matching these, run the command/skill immediately:
 | "conversions", "upgrades", "new users", "funnel", "source of sales" | `SaneMaster.rb events` |
 | "leads", "prospects", "research sites", "research companies" | `SaneMaster.rb leads --query "..."` |
 | "check email", "inbox" | `~/SaneApps/infra/scripts/check-inbox.sh check` |
+| "what are we missing", "missing tool", "workaround", "duplicate work", "fragmentation" | `/evolve` |
 | "project status", "health check" | `SaneMaster.rb sales` + `events` + `downloads` + git status |
 | "verify", "does it build" | `SaneMaster.rb verify` |
 | "ship it", "prepare for release" | `SaneMaster.rb release_preflight` first, then `release.sh` |
@@ -255,7 +269,7 @@ Script handles: kill → clean → TCC reset → build → deploy → launch →
 
 ## Keychain Secrets
 
-**ONE PROMPT, ONE SECRET, ONE TASK. Sequential, never parallel.**
+**NO KEYCHAIN PROMPT FLOODS. Sequential is fine. Parallel is not.**
 
 ```bash
 # CORRECT
@@ -269,10 +283,11 @@ curl ... $(security find-generic-password ...) &
 ```
 
 Permanent SOP:
-- One intentional Keychain prompt per task. If one lookup succeeds, reuse that value.
-- No repeated probing "just to check". If you need another secret, explain why first.
+- Sequential Keychain lookups are fine when they are actually needed. Reuse fetched values when you can.
+- Keep frequently used API keys cached in `~/.config/nv/env` (`chmod 600`) and source that file in shells/tools. Keychain is fallback, not the primary hot path.
+- No repeated probing of the same secret "just to check."
 - No `security` calls in loops, background jobs, sweeps, or parallel tool runs.
-- Codex shells are guarded by `~/.local/bin/security -> sane_security_guard.sh`, which blocks overlapping and rapid repeat secret reads.
+- Codex shells are guarded by `~/.local/bin/security -> sane_security_guard.sh`, which blocks overlapping lookups, rapid repeats of the same lookup, and short-burst prompt floods.
 
 | Service | Account | Usage |
 |---------|---------|-------|
@@ -281,6 +296,10 @@ Permanent SOP:
 | `grok` | `api_key` | xAI Grok API |
 | `gemini` | `api_key` | Google Gemini API |
 | `openai` | `api_key` | OpenAI ChatGPT API |
+| `x-api` | `consumer_key` | X posting consumer key (`X_API_CONSUMER_KEY`) |
+| `x-api` | `consumer_secret` | X posting consumer secret (`X_API_CONSUMER_SECRET`) |
+| `x-api` | `access_token` | X posting access token (`X_API_ACCESS_TOKEN`) |
+| `x-api` | `access_token_secret` | X posting access token secret (`X_API_ACCESS_TOKEN_SECRET`) |
 | `cloudflare` | `api_token` | Cloudflare API |
 | `lemonsqueezy` | `api_key` | Lemon Squeezy API |
 | `resend` | `api_key` | Resend email API |
@@ -370,7 +389,7 @@ ssh mini 'tail -20 ~/SaneApps/outputs/nightly_report.md'
 ### Central Memory MCP (Codex)
 
 - Server: `central-memory` in `/Users/sj/.codex/config.toml`
-- Runtime: PostgreSQL 17 + `pgvector` on `postgresql://localhost:5432/central_memory`
+- Runtime: PostgreSQL 17 + `pgvector` on `postgresql://<local-user>@localhost:5432/central_memory`
 - Bootstrap: `cd ~/SaneApps/infra/SaneProcess/scripts/mcp-central-memory && ./bootstrap-local.sh`
 - Health: `~/.codex/bin/check-mcps` (must show `central-memory` PASS)
 - Tools: `remember`, `recall`, `recent`, `stats`, `delete_by_external_id`, `import_knowledge_graph`

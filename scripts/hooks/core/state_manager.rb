@@ -192,8 +192,10 @@ module StateManager
     # sanetrack.rb sets needs_update when non-trivial files are edited.
     # sanestop.rb blocks session end if updates are missing.
     handoff_tracking: {
-      significant_edits: 0,       # Count of non-doc, non-handoff edits
-      significant_files: [],      # Which files triggered the flag
+      significant_edits: 0,       # Count of non-trivial edits that should affect handoff hygiene
+      significant_files: [],      # Which files triggered the general significant-edit flag
+      always_persist_required: false, # Tooling/durable-doc edits that must update handoff+memory even below threshold
+      always_persist_files: [],   # Which tooling/durable-doc files triggered immediate persistence
       handoff_updated: false,     # SESSION_HANDOFF.md was edited this session
       memory_updated: false       # Any memory file was edited this session
     },
@@ -201,9 +203,12 @@ module StateManager
     # Tracks when skills should be used and validates they were executed properly
     skill: {
       required: nil,           # Skill name that SHOULD be invoked (e.g., :docs_audit)
+      required_prompt: nil,    # User prompt that triggered the skill requirement
       invoked: false,          # Whether Skill tool was actually called
       invoked_at: nil,         # Timestamp of invocation
       subagents_spawned: 0,    # Count of Task tool calls (subagents)
+      runner_used: false,      # Whether a runner-backed skill proof was seen (currently evolve/tool discovery)
+      runner_commands: [],     # Matching runner/proof commands seen this session
       files_read: [],          # Files read during skill execution
       satisfied: false,        # Whether skill requirements were met
       satisfaction_reason: nil # Why satisfied/unsatisfied

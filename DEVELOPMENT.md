@@ -91,6 +91,7 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 | `verify [--ui]` | Build + run tests (include UI tests with `--ui`) |
 | `test_mode` | Kill → Build → Launch → Logs |
 | `doctor` | Environment health check |
+| `tool_discovery --query "..."` | Generate a proof receipt before using a workaround or adding a tool |
 | `export` | Export code/docs (PDF/MD) |
 | `debug` | Debugging helpers (logs, crashes, diagnose) |
 | `env` | Environment and setup helpers |
@@ -114,7 +115,7 @@ SaneProcess includes a semantic memory MCP server for cross-session retrieval.
 
 - Server code: `scripts/mcp-central-memory/server.mjs`
 - Bootstrap: `scripts/mcp-central-memory/bootstrap-local.sh`
-- Default DB: `postgresql://localhost:5432/central_memory`
+- Default DB: `postgresql://<local-user>@localhost:5432/central_memory`
 - MCP key: `central-memory` in `/Users/sj/.codex/config.toml` and `.mcp.json`
 
 Setup:
@@ -231,6 +232,38 @@ Canonical runtime cleanup is now a first-class step:
 - `./scripts/SaneMaster.rb dedupe_apps --apps SaneBar,SaneHosts`
 
 `dedupe_apps` keeps one installed bundle per app (`/Applications/App.app` when present, otherwise `~/Applications/App.app`) and trashes stale build/runtime copies that can confuse Launch Services.
+
+### Work Session Guard
+
+SaneMaster now has a shared work-session guard for unattended local and Mini-routed work.
+
+What it does:
+- starts `caffeinate -dimsu`
+- disables idle screensaver start with `defaults -currentHost write com.apple.screensaver idleTime -int 0`
+- disables screensaver password prompt with `defaults write com.apple.screensaver askForPassword -int 0`
+- saves the previous values to `~/.sanemaster/work_session_state.json` so they can be restored later
+
+It auto-runs for active work commands such as:
+- `verify`
+- `launch`
+- `test_mode`
+- release/debug flows
+
+Manual commands:
+
+```bash
+./scripts/SaneMaster.rb work_session_on
+./scripts/SaneMaster.rb work_session_status
+./scripts/SaneMaster.rb work_session_off
+```
+
+Important:
+- `caffeinate` prevents sleep, not macOS screen lock.
+- If `sysadminctl -screenLock status` still reports `immediate`, true unattended no-lock still requires a one-time manual host change:
+
+```bash
+sysadminctl -screenLock off -password -
+```
 
 Unsigned fallback rules:
 
@@ -420,7 +453,7 @@ curl -sL https://raw.githubusercontent.com/sane-apps/SaneProcess/main/scripts/in
 ### Regression Tests
 
 ```bash
-ruby scripts/hooks/test/tier_tests.rb  # Authoritative test suite (175 tests)
+ruby scripts/hooks/test/tier_tests.rb  # Authoritative test suite (178 tests)
 ```
 
 ### Full QA

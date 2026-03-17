@@ -9,7 +9,8 @@ import { Pool } from 'pg';
 const SERVER_NAME = 'central-memory-mcp';
 const SERVER_VERSION = '1.0.0';
 
-const DB_URL = process.env.CENTRAL_MEMORY_DATABASE_URL || process.env.DATABASE_URL || 'postgresql://localhost:5432/central_memory';
+const DEFAULT_DB_URL = `postgresql://${encodeURIComponent(process.env.USER || 'sj')}@localhost:5432/central_memory`;
+const DB_URL = process.env.CENTRAL_MEMORY_DATABASE_URL || process.env.DATABASE_URL || DEFAULT_DB_URL;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const OPENAI_BASE_URL = process.env.CENTRAL_MEMORY_OPENAI_BASE_URL || 'https://api.openai.com/v1';
 const EMBEDDING_MODEL = process.env.CENTRAL_MEMORY_EMBED_MODEL || 'text-embedding-3-small';

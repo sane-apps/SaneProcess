@@ -23,6 +23,8 @@ require 'time'
 require_relative 'core/state_manager'
 require_relative 'core/context_compact'
 require_relative 'sanetrack_research'
+require_relative 'sanetrack_state_updates'
+require_relative 'sanetools_checks'
 
 LOG_FILE = File.expand_path('../../.claude/sanetrack.log', __dir__)
 
@@ -195,9 +197,17 @@ ERROR_SIGNATURES = {
 
 # === INTELLIGENCE: Action Log for Pattern Learning ===
 MAX_ACTION_LOG = 20
+include SaneTrackStateUpdates
 
 # === SKILL TRACKING ===
 # Track Skill tool invocations and Task tool calls (subagents)
+
+SKILL_RUNNER_PATTERNS = {
+  'evolve' => [
+    %r{SaneMaster\.rb\s+(?:tool_discovery|tool_receipt)\b}i,
+    %r{scripts/automation/tool_discovery_receipt\.rb}i
+  ]
+}.freeze
 
 def track_skill_invocation(tool_name, tool_input)
   return unless tool_name == 'Skill'
@@ -228,6 +238,31 @@ def track_subagent_spawn(tool_name, tool_input)
   end
 rescue StandardError => e
   warn "⚠️  Subagent tracking error: #{e.message}" if ENV['DEBUG']
+end
+
+def track_skill_runner(tool_name, tool_input)
+  return unless tool_name == 'Bash'
+
+  skill_state = StateManager.get(:skill)
+  required_skill = skill_state[:required]
+  return unless required_skill
+
+  command = tool_input['command'] || tool_input[:command] || ''
+  return if command.empty?
+
+  patterns = SKILL_RUNNER_PATTERNS[required_skill] || []
+  return unless patterns.any? { |pattern| command.match?(pattern) }
+
+  StateManager.update(:skill) do |s|
+    s[:runner_used] = true
+    s[:runner_commands] ||= []
+    trimmed = command.strip
+    s[:runner_commands] << trimmed unless s[:runner_commands].include?(trimmed)
+    s[:runner_commands] = s[:runner_commands].last(10)
+    s
+  end
+rescue StandardError => e
+  warn "⚠️  Skill runner tracking error: #{e.message}" if ENV['DEBUG']
 end
 
 # === RESEARCH OUTPUT VALIDATION ===
@@ -381,15 +416,16 @@ def track_mcp_verification(tool_name, success)
       health[:mcps][mcp_name][:last_success] = Time.now.iso8601
       # Don't reset failure_count - it's historical data
 
-      # Check if ALL MCPs are now verified
-      all_verified = MCP_VERIFICATION_PATTERNS.keys.all? do |mcp|
+      # Only require verification for MCPs that are actually configured.
+      configured_mcps = SaneToolsChecks.configured_mcp_verification_info.keys
+      all_verified = configured_mcps.any? && configured_mcps.all? do |mcp|
         health[:mcps][mcp] && health[:mcps][mcp][:verified]
       end
 
       if all_verified && !health[:verified_this_session]
         health[:verified_this_session] = true
         health[:last_verified] = Time.now.iso8601
-        warn '✅ ALL MCPs VERIFIED - edits now allowed'
+        warn '✅ ALL CONFIGURED MCPs VERIFIED - edits now allowed'
       end
     else
       health[:mcps][mcp_name][:last_failure] = Time.now.iso8601
@@ -574,126 +610,6 @@ def summarize_input(input)
     input['prompt']&.to_s&.slice(0, 50) || input[:prompt]&.to_s&.slice(0, 50)
 end
 
-# === DEPLOYMENT ACTION TRACKING ===
-# Detects successful Sparkle signing and stapler commands, records to deployment state.
-# This enables sanetools_deploy.rb to verify DMGs were signed/stapled before R2 upload.
-
-SPARKLE_SIGN_DETECT = /sign_update(?:\.swift)?\s+["']?([^"'\s]+\.dmg)["']?/i.freeze
-STAPLER_DETECT = /xcrun\s+stapler\s+(?:validate|staple)\s+["']?([^"'\s]+\.dmg)["']?/i.freeze
-
-def track_deployment_actions(tool_name, tool_input, tool_response)
-  return unless tool_name == 'Bash'
-
-  command = tool_input['command'] || tool_input[:command] || ''
-  return if command.empty?
-
-  # Detect Sparkle signing
-  sign_match = command.match(SPARKLE_SIGN_DETECT)
-  if sign_match
-    dmg_filename = File.basename(sign_match[1])
-    StateManager.update(:deployment) do |d|
-      d[:sparkle_signed_dmgs] ||= []
-      d[:sparkle_signed_dmgs] << dmg_filename unless d[:sparkle_signed_dmgs].include?(dmg_filename)
-      d
-    end
-    warn "✅ Sparkle signature recorded for #{dmg_filename}"
-  end
-
-  # Detect stapler validate/staple
-  staple_match = command.match(STAPLER_DETECT)
-  if staple_match
-    dmg_filename = File.basename(staple_match[1])
-    # Only record if the command actually succeeded (tool_response has no error)
-    error_sig = detect_actual_failure(tool_name, tool_response)
-    if error_sig.nil?
-      StateManager.update(:deployment) do |d|
-        d[:staple_verified_dmgs] ||= []
-        d[:staple_verified_dmgs] << dmg_filename unless d[:staple_verified_dmgs].include?(dmg_filename)
-        d
-      end
-      warn "✅ Staple verification recorded for #{dmg_filename}"
-    end
-  end
-rescue StandardError => e
-  warn "⚠️  Deployment tracking error: #{e.message}" if ENV['DEBUG']
-end
-
-# === HANDOFF TRACKING ===
-# Tracks whether significant code changes were made and whether
-# SESSION_HANDOFF.md and memory files were updated accordingly.
-# sanestop.rb blocks session end if significant edits happened without handoff update.
-
-# Files that don't count as "significant" edits (updating these IS the handoff)
-HANDOFF_FILE_PATTERNS = [
-  /SESSION_HANDOFF\.md$/i,
-  /MEMORY\.md$/i,
-  %r{memory/.*\.md$}i,
-  %r{\.serena/memories/}i,
-  /sop_ratings\.csv$/i,
-  /state\.json$/i,
-  /sanetrack\.log$/i,
-  /sanestop\.log$/i,
-  /session_learnings/i
-].freeze
-
-# Files that are trivial and don't require handoff updates
-TRIVIAL_FILE_PATTERNS = [
-  /\.log$/i,
-  /\.csv$/i,
-  /\.lock$/i,
-  /\.json\.lock$/i
-].freeze
-
-def track_handoff_status(tool_name, tool_input)
-  # Serena memory writes count as memory updates even without a file path.
-  if tool_name == 'mcp__serena__write_memory'
-    StateManager.update(:handoff_tracking) do |h|
-      h[:memory_updated] = true
-      h
-    end
-    return
-  end
-
-  return unless EDIT_TOOLS.include?(tool_name)
-
-  file_path = tool_input['file_path'] || tool_input[:file_path]
-  return unless file_path
-
-  basename = File.basename(file_path)
-
-  # Check if this edit IS a handoff/memory update
-  if file_path.match?(/SESSION_HANDOFF\.md$/i)
-    StateManager.update(:handoff_tracking) do |h|
-      h[:handoff_updated] = true
-      h
-    end
-    return
-  end
-
-  if file_path.match?(/MEMORY\.md$/i) || file_path.match?(%r{memory/.*\.md$}i) || file_path.match?(%r{\.serena/memories/}i)
-    StateManager.update(:handoff_tracking) do |h|
-      h[:memory_updated] = true
-      h
-    end
-    return
-  end
-
-  # Skip if this is a handoff-related or trivial file
-  return if HANDOFF_FILE_PATTERNS.any? { |p| file_path.match?(p) }
-  return if TRIVIAL_FILE_PATTERNS.any? { |p| file_path.match?(p) }
-
-  # This is a significant edit — track it
-  StateManager.update(:handoff_tracking) do |h|
-    h[:significant_edits] = (h[:significant_edits] || 0) + 1
-    h[:significant_files] ||= []
-    h[:significant_files] << basename unless h[:significant_files].include?(basename)
-    h[:significant_files] = h[:significant_files].last(20) # Cap at 20
-    h
-  end
-rescue StandardError => e
-  warn "⚠️  Handoff tracking error: #{e.message}" if ENV['DEBUG']
-end
-
 # === FEATURE REMINDERS + LOGGING ===
 # Extracted to sanetrack_reminders.rb per Rule #10
 require_relative 'sanetrack_reminders'
@@ -752,6 +668,7 @@ def process_result(tool_name, tool_input, tool_response)
   # === SKILL TRACKING (before error detection) ===
   track_skill_invocation(tool_name, tool_input)
   track_subagent_spawn(tool_name, tool_input)
+  track_skill_runner(tool_name, tool_input)
 
   # === RESEARCH PROTOCOL: Validate research agent writes ===
   SaneTrackResearch.validate_research_write(tool_name)
@@ -894,6 +811,9 @@ end
 
 if __FILE__ == $PROGRAM_NAME
   if ARGV.include?('--self-test')
+    require_relative 'self_test_environment'
+    exit SelfTestEnvironment.run_isolated(__FILE__)
+  elsif ARGV.include?('--self-test-internal')
     self_test
   elsif ARGV.include?('--status')
     show_status

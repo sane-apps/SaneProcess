@@ -270,8 +270,161 @@ module SaneStopTest
       warn "  FAIL: Below threshold should allow, got exit #{exit_code}"
     end
 
+    # Test: Always-persist file below threshold still blocks without handoff/memory
+    StateManager.reset(:handoff_tracking)
+    StateManager.update(:handoff_tracking) do |h|
+      h[:significant_edits] = 1
+      h[:significant_files] = ['sanestop.rb']
+      h[:always_persist_required] = true
+      h[:always_persist_files] = ['sanestop.rb']
+      h[:handoff_updated] = false
+      h[:memory_updated] = false
+      h
+    end
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: Always-persist work blocks even below threshold'
+    else
+      failed += 1
+      warn "  FAIL: Always-persist work should block, got exit #{exit_code}"
+    end
+
+    # Test: Always-persist file with handoff + memory allows stop
+    StateManager.reset(:verification)
+    StateManager.update(:handoff_tracking) do |h|
+      h[:significant_edits] = 1
+      h[:significant_files] = ['sanestop.rb']
+      h[:always_persist_required] = true
+      h[:always_persist_files] = ['sanestop.rb']
+      h[:handoff_updated] = true
+      h[:memory_updated] = true
+      h
+    end
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Always-persist work allows stop after handoff + memory'
+    else
+      failed += 1
+      warn "  FAIL: Always-persist work should allow with handoff+memory, got exit #{exit_code}"
+    end
+
+    # === TOOL DISCOVERY ENFORCEMENT TESTS ===
+    warn ''
+    warn 'Testing tool discovery enforcement:'
+
+    StateManager.reset(:skill)
+    StateManager.update(:skill) do |s|
+      s[:required] = 'docs_audit'
+      s[:invoked] = true
+      s[:subagents_spawned] = 0
+      s[:runner_used] = false
+      s[:runner_commands] = []
+      s
+    end
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: docs_audit without subagents blocks stop'
+    else
+      failed += 1
+      warn "  FAIL: docs_audit without subagents should block, got #{exit_code}"
+    end
+
+    StateManager.update(:skill) do |s|
+      s[:required] = 'docs_audit'
+      s[:invoked] = true
+      s[:subagents_spawned] = 0
+      s[:runner_used] = true
+      s[:runner_commands] = ['python3 scripts/automation/gpt_audit.py --title Test']
+      s
+    end
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: docs_audit runner-only path still blocks stop'
+    else
+      failed += 1
+      warn "  FAIL: docs_audit runner-only path should block, got #{exit_code}"
+    end
+
+    StateManager.update(:skill) do |s|
+      s[:required] = 'docs_audit'
+      s[:invoked] = true
+      s[:subagents_spawned] = 5
+      s[:runner_used] = false
+      s[:runner_commands] = []
+      s
+    end
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: docs_audit subagent swarm allows stop'
+    else
+      failed += 1
+      warn "  FAIL: docs_audit subagent swarm should allow stop, got #{exit_code}"
+    end
+
+    StateManager.reset(:skill)
+    StateManager.update(:skill) do |s|
+      s[:required] = 'evolve'
+      s[:required_prompt] = 'missing screenshot diff tool'
+      s[:invoked] = true
+      s[:runner_used] = false
+      s[:runner_commands] = []
+      s
+    end
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: Missing tool-discovery receipt blocks stop'
+    else
+      failed += 1
+      warn "  FAIL: Missing tool-discovery receipt should block, got exit #{exit_code}"
+    end
+
+    StateManager.update(:skill) do |s|
+      s[:required] = 'evolve'
+      s[:required_prompt] = 'missing screenshot diff tool'
+      s[:invoked] = true
+      s[:runner_used] = true
+      s[:runner_commands] = ['ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"']
+      s
+    end
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Tool-discovery receipt allows stop'
+    else
+      failed += 1
+      warn "  FAIL: Tool-discovery receipt should allow stop, got exit #{exit_code}"
+    end
+
     # Cleanup
     StateManager.reset(:handoff_tracking)
+    StateManager.reset(:skill)
 
     # === Q4 VALIDATION: SESSION TRACKING TESTS ===
     warn ''

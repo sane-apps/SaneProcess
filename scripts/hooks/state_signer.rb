@@ -24,12 +24,14 @@ require 'json'
 require 'openssl'
 require 'fileutils'
 require 'securerandom'
+require 'shellwords'
 
 module StateSigner
   SECRET_ENV_VAR = 'CLAUDE_HOOK_SECRET'
   KEYCHAIN_SERVICE = 'claude_hook'
   KEYCHAIN_ACCOUNT = 'hmac_secret'
   SECRET_FILE = File.expand_path('~/.claude_hook_secret')  # Legacy fallback
+  ENV_CACHE_FILE = File.expand_path(ENV.fetch('SANE_ENV_CACHE_FILE', '~/.config/nv/env'))
   SIGNATURE_KEY = '__sig__'
   TIMESTAMP_KEY = '__ts__'
 
@@ -113,7 +115,48 @@ module StateSigner
       RUBY_PLATFORM.include?('darwin')
     end
 
+    def load_env_cache
+      return unless File.exist?(ENV_CACHE_FILE)
+
+      File.foreach(ENV_CACHE_FILE) do |raw_line|
+        line = raw_line.strip
+        next if line.empty? || line.start_with?('#')
+
+        line = line.delete_prefix('export ').strip
+        next unless line.include?('=')
+
+        key, raw_value = line.split('=', 2)
+        next if key.nil? || key.empty? || ENV.key?(key)
+
+        value = Shellwords.split(raw_value.to_s).first || raw_value.to_s.strip
+        value = File.expand_path(value) if key.end_with?('_PATH') && value.start_with?('~')
+        ENV[key] = value
+      end
+    rescue StandardError
+      nil
+    end
+
+    def persist_secret_to_env_cache(secret)
+      return if secret.nil? || secret.empty?
+      return if ENV.fetch('SANE_ENV_CACHE_WRITE', '1') == '0'
+
+      env_dir = File.dirname(ENV_CACHE_FILE)
+      FileUtils.mkdir_p(env_dir)
+      File.chmod(0o700, env_dir) rescue nil
+
+      lines = File.exist?(ENV_CACHE_FILE) ? File.readlines(ENV_CACHE_FILE, chomp: true) : []
+      filtered = lines.reject { |line| line.strip.start_with?("export #{SECRET_ENV_VAR}=") }
+      filtered << "export #{SECRET_ENV_VAR}=#{Shellwords.escape(secret)}"
+      File.write(ENV_CACHE_FILE, filtered.join("\n") + "\n")
+      File.chmod(0o600, ENV_CACHE_FILE)
+      ENV[SECRET_ENV_VAR] = secret
+    rescue StandardError
+      nil
+    end
+
     def load_or_generate_secret
+      load_env_cache
+
       # Priority 1: Environment variable (all platforms)
       env_secret = ENV[SECRET_ENV_VAR]
       return env_secret if env_secret && !env_secret.empty?
@@ -149,6 +192,7 @@ module StateSigner
 
     def read_keychain
       result = `security find-generic-password -s #{KEYCHAIN_SERVICE} -a #{KEYCHAIN_ACCOUNT} -w 2>/dev/null`.strip
+      persist_secret_to_env_cache(result) unless result.empty?
       result.empty? ? nil : result
     rescue StandardError
       nil
@@ -158,6 +202,7 @@ module StateSigner
       # Delete existing entry if present (security add fails on duplicate)
       system("security delete-generic-password -s #{KEYCHAIN_SERVICE} -a #{KEYCHAIN_ACCOUNT} 2>/dev/null")
       success = system("security add-generic-password -s #{KEYCHAIN_SERVICE} -a #{KEYCHAIN_ACCOUNT} -w #{secret} 2>/dev/null")
+      persist_secret_to_env_cache(secret) if success
       # Fall back to file if Keychain write fails
       write_secret_file(secret) unless success
     rescue StandardError

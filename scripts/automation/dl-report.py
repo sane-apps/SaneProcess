@@ -13,20 +13,77 @@ Usage:
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import sys
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
 
 
 API_BASE = "https://dist.saneapps.com/api/stats"
+ENV_CACHE_FILE = Path(os.environ.get("SANE_ENV_CACHE_FILE", "~/.config/nv/env")).expanduser()
+
+
+def load_env_cache():
+    if not ENV_CACHE_FILE.is_file():
+        return
+    try:
+        for raw_line in ENV_CACHE_FILE.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[7:].strip()
+            if "=" not in line:
+                continue
+            key, raw_value = line.split("=", 1)
+            key = key.strip()
+            if not key or key in os.environ:
+                continue
+            parts = shlex.split(raw_value, posix=True)
+            value = parts[0] if len(parts) == 1 else raw_value.strip()
+            os.environ[key] = os.path.expandvars(value)
+    except OSError:
+        return
+
+
+def persist_secret_to_env_cache(value, *env_names):
+    if not value or os.environ.get("SANE_ENV_CACHE_WRITE", "1") == "0":
+        return
+    names = [name for name in env_names if name]
+    if not names:
+        return
+    ENV_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        ENV_CACHE_FILE.parent.chmod(0o700)
+    except OSError:
+        pass
+    lines = []
+    if ENV_CACHE_FILE.exists():
+        lines = ENV_CACHE_FILE.read_text(encoding="utf-8").splitlines()
+    filtered = []
+    for line in lines:
+        stripped = line.strip()
+        if any(stripped.startswith(f"export {name}=") for name in names):
+            continue
+        filtered.append(line)
+    for name in names:
+        filtered.append(f"export {name}={shlex.quote(value)}")
+    ENV_CACHE_FILE.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+    ENV_CACHE_FILE.chmod(0o600)
 
 
 def get_api_key():
+    load_env_cache()
     # Try env var first (headless/LaunchAgent contexts)
     key = os.environ.get("DIST_ANALYTICS_KEY", "")
     if key:
         return key
+    if os.environ.get("SANE_NO_KEYCHAIN") == "1" or os.environ.get("SANE_KEYCHAIN_FALLBACK") == "0":
+        print("Error: No dist analytics API key found.", file=sys.stderr)
+        print("  Set DIST_ANALYTICS_KEY in ~/.config/nv/env or the environment.", file=sys.stderr)
+        sys.exit(1)
     # Fall back to keychain (interactive sessions)
     result = subprocess.run(
         ["security", "find-generic-password", "-s", "dist-analytics", "-a", "api_key", "-w"],
@@ -35,9 +92,10 @@ def get_api_key():
     key = result.stdout.strip()
     if not key:
         print("Error: No dist analytics API key found.", file=sys.stderr)
-        print("  Set DIST_ANALYTICS_KEY env var, or add to keychain:", file=sys.stderr)
+        print("  Set DIST_ANALYTICS_KEY in ~/.config/nv/env or the environment, or add it to keychain:", file=sys.stderr)
         print("  security add-generic-password -s dist-analytics -a api_key -w YOUR_KEY", file=sys.stderr)
         sys.exit(1)
+    persist_secret_to_env_cache(key, "DIST_ANALYTICS_KEY")
     return key
 
 

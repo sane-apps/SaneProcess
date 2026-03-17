@@ -38,6 +38,27 @@ Runs 9 automated safety checks without building:
 - Continue release only after preflight is clean.
 - Never self-approve an override to bypass a failing guard.
 
+### 0a. Release Notes Audit (MANDATORY Before `--notes`)
+
+Before drafting or approving release notes, do a customer-facing audit instead of writing bullets from memory:
+
+1. Check recent customer promises:
+   - recent email replies where I said `next build`, `next release`, or similar
+   - recent GitHub issue comments with the same promise
+2. Check recent research and memory:
+   - `.claude/research.md`
+   - Serena memory / knowledge graph notes for the app
+3. Check the actual user-facing fixes since the last tag:
+   - commits between tags
+   - recent shipped/unshipped issue fixes
+4. Make sure every customer-visible fix that shipped is either:
+   - mentioned in the release notes, or
+   - explicitly deferred and not claimed as shipped
+
+Hard rule:
+- Do not publish release notes that omit a fix I already promised to a customer for `the next release`.
+- If a fix shipped and matters to a reporter, close the loop in both the notes and the customer follow-up.
+
 **Headless App Store rule:**
 - If `.saneprocess` enables `appstore.platforms: [macos, ios]`, run the mini bootstrap before release:
 
@@ -50,6 +71,61 @@ bash ~/SaneApps/infra/SaneProcess/scripts/mini/bootstrap-build-server.sh
   - `asc:jwt`
   - `codesign:ios-probe` when an iOS signing identity is installed
 - The release path now sets the login-keychain partition list automatically. Do not bypass that with raw `xcodebuild` unless you are intentionally doing recovery work.
+
+### 0b. App Store Rejection / Resubmission Workflow
+
+When App Review rejects a lane, do this in order:
+
+1. Read the exact reviewer message first.
+
+```bash
+ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
+  --app-id YOUR_APP_ID \
+  --platform macos \
+  --fetch-review-message
+```
+
+2. Run App Store preflight before changing code.
+
+```bash
+./scripts/SaneMaster.rb appstore_preflight
+```
+
+3. Fix the reviewer issue at the root:
+- Accessibility request for non-accessibility use: remove the runtime path from the App Store build.
+- Direct license keys / external checkout: remove them from the App Store build and use StoreKit only.
+- Free plan incompleteness: verify a fresh install can complete the free path without special reviewer steps.
+- `launchd` daemon / privileged helper / `SMAppService.daemon`: stop and reassess the product architecture.
+
+4. Do **not** keep resubmitting a macOS App Store build that still depends on a `launchd` daemon, agent, or privileged helper.
+- Mac App Store apps cannot ship `launchd` daemons or agents.
+- Either redesign the App Store build around an App-Store-safe architecture or disable/remove the App Store lane for that app.
+
+5. After the code fix, rerun:
+
+```bash
+./scripts/SaneMaster.rb verify
+./scripts/SaneMaster.rb appstore_preflight
+```
+
+6. Repair the ASC lane before upload:
+
+```bash
+ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
+  --app-id YOUR_APP_ID \
+  --platform macos \
+  --withdraw-version X.Y.Z
+
+ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
+  --app-id YOUR_APP_ID \
+  --platform macos \
+  --version X.Y.Z \
+  --preflight-version-state
+```
+
+7. Build/export with the standard release script, then submit the pkg with `appstore_submit.rb`.
+- Use full `release.sh --deploy` only when the direct channel should also ship.
+- Use build/export plus `appstore_submit.rb --pkg` when you only need to repair the App Store lane.
 
 ### 1. Build, Sign, Notarize, DMG (Single Command)
 

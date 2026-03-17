@@ -186,6 +186,64 @@ hydrate_training_dataset() {
   echo "SYNC  apps/$app_name training data [$copied copied, $unchanged unchanged, $missing missing]"
 }
 
+hydrate_training_support_files() {
+  local app_name="$1"
+  shift
+  local source_dir="$SOURCE_ROOT/apps/$app_name/training_data"
+  local target_dir="$AUTOMATION_ROOT/apps/$app_name/training_data"
+  local copied=0
+  local unchanged=0
+  local missing=0
+  local pattern source_file rel_file target_file matched
+
+  [ -d "$AUTOMATION_ROOT/apps/$app_name" ] || return 0
+  [ -d "$source_dir" ] || return 0
+
+  for pattern in "$@"; do
+    matched=0
+    for source_file in "$source_dir"/$pattern; do
+      if [ ! -f "$source_file" ]; then
+        continue
+      fi
+      matched=1
+      rel_file="${source_file#$source_dir/}"
+      target_file="$target_dir/$rel_file"
+      if copy_if_changed "$source_file" "$target_file"; then
+        echo "DATA  apps/$app_name/training_data/$rel_file"
+        copied=$((copied + 1))
+      else
+        unchanged=$((unchanged + 1))
+      fi
+    done
+
+    if [ "$matched" -eq 0 ]; then
+      echo "WARN  apps/$app_name/training_data/$pattern missing in source root"
+      WARNINGS=$((WARNINGS + 1))
+      missing=$((missing + 1))
+    fi
+  done
+
+  echo "SYNC  apps/$app_name training support [$copied copied, $unchanged unchanged, $missing missing]"
+}
+
+hydrate_training_subdir() {
+  local app_name="$1"
+  local rel_dir="$2"
+  local source_dir="$SOURCE_ROOT/apps/$app_name/training_data/$rel_dir"
+  local target_dir="$AUTOMATION_ROOT/apps/$app_name/training_data/$rel_dir"
+
+  [ -d "$AUTOMATION_ROOT/apps/$app_name" ] || return 0
+  if [ ! -d "$source_dir" ]; then
+    echo "WARN  apps/$app_name/training_data/$rel_dir missing in source root"
+    WARNINGS=$((WARNINGS + 1))
+    return 0
+  fi
+
+  mkdir -p "$target_dir"
+  rsync -a --delete "$source_dir"/ "$target_dir"/ >/dev/null 2>&1
+  echo "SYNC  apps/$app_name/training_data/$rel_dir [mirrored]"
+}
+
 hydrate_sanevideo_assets() {
   local video_root="$AUTOMATION_ROOT/apps/SaneVideo"
   local assets_dir="$video_root/Tests/Assets"
@@ -237,6 +295,10 @@ done
 hydrate_training_dataset "SaneSync" train.jsonl valid.jsonl test.jsonl
 hydrate_training_dataset "SaneClip" train.jsonl valid.jsonl test.jsonl
 hydrate_training_dataset "SaneAI" train.jsonl valid.jsonl
+hydrate_training_dataset "SaneVideo" train.jsonl valid.jsonl
+hydrate_training_support_files "SaneAI" merge_training_data.py system_prompt.txt lora_config_mini.yaml eval_*.jsonl
+hydrate_training_subdir "SaneAI" challenger_configs
+hydrate_training_subdir "SaneSync" challenger_configs
 
 hydrate_sanevideo_assets
 
