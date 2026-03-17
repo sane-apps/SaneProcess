@@ -305,6 +305,95 @@ If `file_icon` is missing, the DMG gets a generic Finder icon. The `DMGIcon.icns
 
 See [templates/RELEASE_SOP.md](templates/RELEASE_SOP.md) for the complete release checklist including R2 upload, appcast update, and Cloudflare Pages deployment.
 
+### Multi-Channel Distribution Rules
+
+Setapp is a third macOS channel. It is **not** a replacement for direct distribution, and it is **not** an App Store variant.
+
+| Channel | Licensing / Commerce | Updates | UI rules | Ops rules |
+|---------|----------------------|---------|----------|-----------|
+| Direct | Lemon Squeezy | Sparkle + appcast | Direct checkout/key entry allowed. Donate/support links allowed. | Website, dist ZIP, appcast, GitHub release, Homebrew, email helper stay aligned. |
+| App Store | StoreKit | App Store | No external purchase path. No donation/support links that can trigger review issues. | ASC metadata, screenshots, IAP, and review notes must stay aligned. |
+| Setapp | Setapp Framework + Setapp commerce | Setapp agent / framework path | No Sparkle. No Lemon Squeezy activation UI. No donate/buy prompts. | Separate bundle ID, Setapp public key, Setapp update policy, Setapp verification lane. |
+
+Non-negotiable rule:
+- Do **not** switch the direct website/business lane from Lemon Squeezy to Stripe just because Setapp uses Stripe.
+
+### Setapp Implementation Checklist
+
+Do these in order:
+
+1. Add an explicit distribution-channel abstraction in shared code.
+   - Do not keep inferring everything from `AppStoreProductID` and `SUFeedURL`.
+   - Expected end state: channel-aware code paths for `direct`, `appStore`, and `setapp`.
+2. Add Setapp-specific build configs.
+   - Expected names: `Debug-Setapp`, `Release-Setapp` or the nearest equivalent that keeps the lane obvious.
+3. Register separate Setapp bundle IDs.
+   - Setapp docs treat bundle ID choice as effectively permanent.
+   - Use the `-setapp` suffix convention.
+4. Add Setapp resources and entitlements.
+   - `setappPublicKey.pem`
+   - `NSUpdateSecurityPolicy` for `com.setapp.DesktopClient.SetappAgent` on macOS 13+
+   - `com.setapp.ProvisioningService` mach-lookup exception if the build is sandboxed
+   - `MPSupportedArchitectures` if the Setapp lane needs explicit architecture declaration
+5. Remove direct/App Store monetization surfaces from the Setapp build.
+   - no Sparkle row
+   - no Lemon Squeezy key entry
+   - no direct checkout button
+   - no Donate / GitHub Sponsors section
+6. Implement Setapp-specific runtime hooks.
+   - release notes / What's New path
+   - menu bar usage reporting for menu bar apps
+7. Add channel-aware verification.
+   - direct, App Store, and Setapp all need their own smoke checks
+   - Setapp must not be "verified" by direct/App Store tests
+
+### Setapp Update Strategy
+
+Think about updates as three separate truths:
+
+- Direct:
+  - Sparkle remains the updater
+  - appcast remains the source of truth
+  - Homebrew/email helper/site links remain part of the direct release checklist
+- App Store:
+  - App Store Connect remains the updater and billing path
+- Setapp:
+  - Setapp handles install/update
+  - Sparkle must be absent
+  - the app should surface Setapp release notes through the Setapp framework path, not through the direct updater UI
+
+Version policy:
+- Keep marketing versions aligned across channels whenever feature parity is the same.
+- If a Setapp-only or App-Store-only constraint forces different behavior, the version number can still match; the release notes should explain only the channel-specific differences.
+- Avoid channel-only hidden fixes that never get documented. This is how support drift starts.
+
+### Setapp Verification Matrix
+
+Minimum sign-off before any Setapp ship:
+
+1. Build and launch the Setapp config on the mini.
+2. Verify the built app is on the expected Setapp bundle ID.
+3. Verify `setappPublicKey.pem` is embedded.
+4. Verify Sparkle is absent from the build product and absent from visible settings/about UI.
+5. Verify no Lemon Squeezy purchase/key-entry path is visible.
+6. Verify no Donate / GitHub Sponsors UI is visible.
+7. Verify Setapp-specific usage reporting is wired where required.
+8. Verify macOS 13+ update policy is present in the built Info.plist.
+9. If sandboxed, verify the Setapp Mach service entitlement is present.
+10. Verify direct and App Store builds still behave correctly after the Setapp code lands.
+
+### Hidden Gotchas To Plan For Up Front
+
+- Setapp docs still publicly describe a narrower rollout than the email offer. Trust the live business thread for eligibility, but still code to the published technical requirements.
+- Universal build support is the largest likely technical blocker for current arm64-only projects.
+- SaneBar is a menu bar app, so Setapp usage reporting is not optional polish.
+- SaneClip has more bundle surfaces than SaneBar (widgets / extensions), so Setapp bundle-family drift needs an explicit review even if the first Setapp lane ships with fewer surfaces.
+- SaneBar App Store is intentionally dead. Setapp does not reopen that lane.
+- Website copy must stay channel-specific:
+  - `sanebar.com` / `saneclip.com` still describe the direct build unless there is an intentional Setapp landing page
+  - do not silently mix Setapp onboarding language into the direct site
+- Support tooling needs to know the customer channel before troubleshooting licensing or updates.
+
 ### App Store IAP Readiness
 
 `scripts/appstore_submit.rb` now includes an IAP readiness pass for any App Store submission when `appstore.product_id` is set in `.saneprocess` (macOS or iOS).

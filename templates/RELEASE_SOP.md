@@ -127,6 +127,38 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
 - Use full `release.sh --deploy` only when the direct channel should also ship.
 - Use build/export plus `appstore_submit.rb --pkg` when you only need to repair the App Store lane.
 
+### 0c. Setapp Lane Prep
+
+Treat Setapp as a separate channel, not as a direct-build shortcut.
+
+Before any Setapp submission or handoff:
+
+1. Confirm the business lane:
+- Direct website sales stay on Lemon Squeezy.
+- Setapp's Stripe onboarding does **not** replace the website/direct flow.
+
+2. Confirm the product lane:
+- separate `-setapp` bundle ID
+- explicit Setapp build config
+- no Sparkle in the Setapp build
+- no direct key-entry / Lemon Squeezy purchase UI
+- no Donate / GitHub Sponsors UI
+
+3. Confirm Setapp resources and policies:
+- `setappPublicKey.pem` bundled
+- macOS 13+ update policy for `com.setapp.DesktopClient.SetappAgent`
+- if sandboxed, `com.setapp.ProvisioningService` Mach exception
+
+4. Confirm the app-specific gotchas:
+- menu bar apps must report Setapp usage events such as `.userInteraction`
+- arm64-only projects must not assume Setapp universal readiness without proof
+- widget/extension bundle families must be reviewed explicitly if they ship in the Setapp lane
+
+5. Confirm channel drift is not being introduced:
+- direct release notes still describe the direct lane
+- App Store text still describes the App Store lane
+- Setapp wording stays in the Setapp-specific surfaces only
+
 ### 1. Build, Sign, Notarize, DMG (Single Command)
 
 ```bash
@@ -269,3 +301,5 @@ curl -X POST "https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records" 
 6. **ONE Sparkle key per org** — store in keychain, never generate per-project keys
 7. **Verify SUPublicEDKey in built Info.plist** matches your shared key before shipping
 8. **Homebrew tap sync uses SSH** — `owner/repo` tap names resolve to `git@github.com:owner/repo.git` for headless push
+9. **Setapp is a third lane** — do not replace direct Lemon Squeezy with Stripe because Setapp uses Stripe
+10. **No channel drift** — every release lane must keep its own licensing, updater, and support surfaces clean

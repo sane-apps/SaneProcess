@@ -443,6 +443,48 @@ flowchart TD
 
 **Status:** Request filed. Workaround (explicit matchers) in use.
 
+### ADR-004: Treat Setapp as a third distribution channel, not a direct/App Store variant (2026-03-17)
+
+**Context:** SaneApps now has three real macOS distribution realities:
+1. direct download with Lemon Squeezy licensing and Sparkle updates
+2. App Store builds where relevant
+3. Setapp single-app distribution, which has its own licensing, update, and packaging rules
+
+The current shared purchase logic mostly infers "direct vs App Store" from `AppStoreProductID` and `SUFeedURL`. That inference was good enough for two lanes, but it becomes brittle once Setapp is added. The failure mode is channel drift: wrong purchase UI, wrong updater, wrong support copy, or a build that technically runs but violates the channel's rules.
+
+**Decision:**
+1. Model distribution explicitly in code as three channels:
+   - `direct`
+   - `appStore`
+   - `setapp`
+2. Keep channel responsibilities strict:
+   - `direct` = Lemon Squeezy, Sparkle, website checkout/download flow, email helper, Homebrew where applicable
+   - `appStore` = StoreKit, App Store updates, no external purchase/donation path that can trigger review problems
+   - `setapp` = Setapp Framework entitlement/update path, Setapp release notes/usage reporting, no Sparkle, no Lemon Squeezy key entry, no donation/purchase prompts
+3. Treat Stripe as Setapp onboarding/payout only. Do **not** replace Lemon Squeezy for direct sales.
+4. Keep the user-facing app as close to one product as possible across channels:
+   - same app name
+   - same core behavior
+   - same version numbers where feasible
+   - differences only where the distribution channel requires them
+5. Use separate `-setapp` bundle IDs for Setapp builds and treat them as immutable once registered in Setapp.
+
+**Rationale:**
+- Explicit channels are simpler than runtime guesswork once three lanes exist.
+- This keeps direct revenue plumbing stable instead of rewriting working Lemon Squeezy flows around Setapp's Stripe requirement.
+- It limits channel drift to licensing, updates, and compliance surfaces rather than letting the whole app fork.
+
+**Consequences:**
+- Shared SaneUI purchase/update/about surfaces need a first-class channel abstraction instead of only `direct` vs `appStore`.
+- Every Setapp app needs a dedicated build config, bundle ID, resource set, and verification lane.
+- Setapp lane release work must verify:
+  - no Sparkle
+  - no Lemon Squeezy purchase path in visible UI
+  - no Donate/GitHub Sponsors affordance
+  - Setapp update/auth resources are present
+- Menu bar apps need explicit Setapp `.userInteraction` reporting.
+- Universal build support becomes a real release concern for the Setapp lane.
+
 ---
 
 ## 4. Landscape
