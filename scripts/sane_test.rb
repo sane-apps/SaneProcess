@@ -1071,6 +1071,7 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
       '--delete',
       '--filter', ':- .gitignore',
       '--exclude', '.git',
+      '--exclude', '.worktrees',
       '--exclude', '.build',
       '--exclude', 'DerivedData',
       '--exclude', 'node_modules',

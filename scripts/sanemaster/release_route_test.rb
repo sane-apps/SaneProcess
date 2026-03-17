@@ -75,6 +75,22 @@ exit(run_tests('SaneMaster Release Routing Tests') do
     end
   end
 
+  test_category('Workspace sync to mini') do
+    test('excludes local worktree archives from routed workspace sync') do
+      with_temp_repo do |repo|
+        FileUtils.mkdir_p(File.join(repo, '.worktrees', 'archive'))
+
+        subject.system_calls.clear
+        subject.send(:sync_local_dir_to_mini!, repo, '/Users/stephansmac/.sanemaster/routed-workspaces/abcd/SaneApps/apps/SaneBar', label: nil)
+
+        rsync_call = subject.system_calls.find { |call| call.first == 'rsync' }
+        assert(rsync_call, 'expected an rsync call')
+        assert_includes(rsync_call, '.worktrees')
+        true
+      end
+    end
+  end
+
   test_category('Artifact sync from mini') do
     test('pulls back build and release artifacts from the routed scratch workspace') do
       with_temp_repo do |repo|

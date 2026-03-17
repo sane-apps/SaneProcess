@@ -739,6 +739,7 @@ class SaneMaster
       '-az',
       '--delete',
       '--exclude', '.git',
+      '--exclude', '.worktrees',
       '--exclude', '.build',
       '--exclude', 'build',
       '--exclude', 'DerivedData',
