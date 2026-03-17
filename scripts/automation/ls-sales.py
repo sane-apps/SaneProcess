@@ -24,6 +24,9 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+sys.path.insert(0, "/Users/sj/SaneApps/infra/scripts")
+from customer_email_corrections import canonical_email
+
 # Store-specific fee configuration.
 # Defaults reflect SaneApps Lemon Squeezy pricing update confirmed on 2026-03-03.
 PLATFORM_FEE_RATE = float(os.environ.get("LEMONSQUEEZY_PLATFORM_FEE_RATE", "0.05"))
@@ -152,6 +155,7 @@ def fetch_orders(api_key):
 def order_to_summary(order):
     attrs = order.get("attributes", {})
     item = attrs.get("first_order_item") or {}
+    raw_email = attrs.get("user_email", "")
     return {
         "id": order.get("id"),
         "order_number": attrs.get("order_number"),
@@ -162,7 +166,8 @@ def order_to_summary(order):
         "created_at": attrs.get("created_at"),
         "updated_at": attrs.get("updated_at"),
         "user_name": attrs.get("user_name", ""),
-        "user_email": attrs.get("user_email", ""),
+        "user_email": canonical_email(raw_email),
+        "user_email_raw": raw_email,
         "product": item.get("product_name", "Unknown"),
         "total_formatted": attrs.get("total_formatted", "$0.00"),
         "receipt_url": (attrs.get("urls") or {}).get("receipt"),
