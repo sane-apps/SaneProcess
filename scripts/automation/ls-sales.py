@@ -24,7 +24,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, "/Users/sj/SaneApps/infra/scripts")
+INFRA_SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
+sys.path.insert(0, str(INFRA_SCRIPTS_DIR))
 from customer_email_corrections import canonical_email
 
 # Store-specific fee configuration.
