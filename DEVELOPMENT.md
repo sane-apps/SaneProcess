@@ -347,6 +347,28 @@ Do these in order:
    - direct, App Store, and Setapp all need their own smoke checks
    - Setapp must not be "verified" by direct/App Store tests
 
+### Interim Setapp Bundle Sanitizer
+
+Current Xcode target build order is not enough to make a same-target Setapp config truthful on its own.
+
+- Sparkle can still be re-embedded and `SU*` keys can still reappear after an app target shell phase runs.
+- For now, the authoritative final-bundle cleanup step is:
+
+```bash
+ruby /Users/sj/SaneApps/infra/SaneProcess/scripts/sanitize_distribution_bundle.rb \
+  --channel setapp \
+  /path/to/App.app
+```
+
+- That sanitizer:
+  - removes embedded `Sparkle.framework`
+  - strips direct-update keys from the built `Info.plist`
+  - weakens Sparkle load commands across every Mach-O under `Contents/MacOS`
+- Important:
+  - sanitizing a built bundle mutates the code signature
+  - local verification therefore needs an ad hoc re-sign after sanitation
+  - real release/sign/notarize flow must sanitize before final signing, or re-sign immediately afterward
+
 ### Setapp Update Strategy
 
 Think about updates as three separate truths:
@@ -381,6 +403,7 @@ Minimum sign-off before any Setapp ship:
 8. Verify macOS 13+ update policy is present in the built Info.plist.
 9. If sandboxed, verify the Setapp Mach service entitlement is present.
 10. Verify direct and App Store builds still behave correctly after the Setapp code lands.
+11. If the Setapp lane still shares a target with the direct lane, run `sanitize_distribution_bundle.rb` and then re-sign the bundle before launch verification.
 
 ### Hidden Gotchas To Plan For Up Front
 
@@ -388,6 +411,8 @@ Minimum sign-off before any Setapp ship:
 - Universal build support is the largest likely technical blocker for current arm64-only projects.
 - SaneBar is a menu bar app, so Setapp usage reporting is not optional polish.
 - SaneClip has more bundle surfaces than SaneBar (widgets / extensions), so Setapp bundle-family drift needs an explicit review even if the first Setapp lane ships with fewer surfaces.
+- Xcode same-target Setapp configs can look clean in source while still re-embedding Sparkle after target shell phases. Do not trust the raw built bundle without the final sanitizer check.
+- A sanitized bundle that launches locally after ad hoc re-sign is good verification signal, but it is not a substitute for the real signed Setapp release path.
 - Current local persistence is mixed:
   - app-support data paths are app-name based (`Application Support/SaneBar`, `Application Support/SaneClip`)
   - keychain service defaults are bundle-ID based

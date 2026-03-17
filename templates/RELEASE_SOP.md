@@ -143,6 +143,7 @@ Before any Setapp submission or handoff:
 - no Sparkle in the Setapp build
 - no direct key-entry / Lemon Squeezy purchase UI
 - no Donate / GitHub Sponsors UI
+- if the Setapp build still shares a target with the direct lane, plan a final bundle sanitation + re-sign step
 
 3. Confirm Setapp resources and policies:
 - `setappPublicKey.pem` bundled
@@ -158,6 +159,14 @@ Before any Setapp submission or handoff:
 - direct release notes still describe the direct lane
 - App Store text still describes the App Store lane
 - Setapp wording stays in the Setapp-specific surfaces only
+
+6. Confirm the built artifact, not just the source config:
+- run `sanitize_distribution_bundle.rb --channel setapp /path/to/App.app`
+- re-sign the sanitized bundle before launch verification
+- verify the sanitized bundle has:
+  - no embedded `Sparkle.framework`
+  - no `SU*` keys
+  - no direct key-entry / checkout copy
 
 ### 1. Build, Sign, Notarize, DMG (Single Command)
 
