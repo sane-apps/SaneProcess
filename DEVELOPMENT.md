@@ -355,7 +355,7 @@ Current Xcode target build order is not enough to make a same-target Setapp conf
 - For now, the authoritative final-bundle cleanup step is:
 
 ```bash
-ruby /Users/sj/SaneApps/infra/SaneProcess/scripts/sanitize_distribution_bundle.rb \
+./scripts/sanitize_distribution_bundle.rb \
   --channel setapp \
   /path/to/App.app
 ```
