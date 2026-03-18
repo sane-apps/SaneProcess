@@ -332,6 +332,7 @@ Do these in order:
    - Use the `-setapp` suffix convention.
 4. Add Setapp resources and entitlements.
    - `setappPublicKey.pem`
+   - current convention: keep it at `Setapp/setappPublicKey.pem` inside the app repo and let the Setapp build script copy it into the bundle resources
    - `NSUpdateSecurityPolicy` for `com.setapp.DesktopClient.SetappAgent` on macOS 13+
    - `com.setapp.ProvisioningService` mach-lookup exception if the build is sandboxed
    - `MPSupportedArchitectures` if the Setapp lane needs explicit architecture declaration
@@ -413,6 +414,13 @@ Minimum sign-off before any Setapp ship:
 - SaneClip has more bundle surfaces than SaneBar (widgets / extensions), so Setapp bundle-family drift needs an explicit review even if the first Setapp lane ships with fewer surfaces.
 - Xcode same-target Setapp configs can look clean in source while still re-embedding Sparkle after target shell phases. Do not trust the raw built bundle without the final sanitizer check.
 - A sanitized bundle that launches locally after ad hoc re-sign is good verification signal, but it is not a substitute for the real signed Setapp release path.
+- Current mini verification state as of 2026-03-18:
+  - SaneBar and SaneClip clean mini worktrees build as Setapp bundles with the right `-setapp` bundle IDs.
+  - Their built Info.plists now include `NSUpdateSecurityPolicy` and `MPSupportedArchitectures = [arm64]`.
+  - SaneClip's Setapp-specific entitlement file includes `com.setapp.ProvisioningService`.
+  - Both sanitized bundles launch on the mini after ad hoc re-sign.
+  - `setappPublicKey.pem` is still absent, so runtime entitlement validation is still incomplete.
+  - A real signed SaneClip Setapp build is still blocked by provisioning/iCloud profile setup, not by code logic.
 - Current local persistence is mixed:
   - app-support data paths are app-name based (`Application Support/SaneBar`, `Application Support/SaneClip`)
   - keychain service defaults are bundle-ID based
