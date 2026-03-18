@@ -21,7 +21,7 @@ Scripts that run on the Mac mini (M1, 8GB) build server. This is the **source of
 ```bash
 # Deploy all mini scripts to the build server
 bash scripts/mini/deploy.sh
-  # Also refreshes ~/SaneApps-automation and repoints launch agents to it
+  # Refreshes agents even if automation-root prep warns, but exits nonzero if prep failed
 
 # Or deploy a single script
 scp scripts/mini/mini-train.sh mini:~/SaneApps/infra/scripts/
@@ -58,7 +58,7 @@ LaunchAgent (1 AM daily)
       → alternating nightly bakeoff (Llama 3.2 3B ↔ SmolLM3)
       → skips Sundays so weekly SaneAI owns that window
       → no artificial runtime cap; hard stop at 8:30 AM
-      → stall guard kills only hung training (45 min no log progress)
+      → stall guard only fires when both logs and process CPU stop moving
       → challenger report + comparison report
 
 LaunchAgent (1 AM Sunday)
@@ -95,12 +95,81 @@ LaunchAgent (5:40 AM)
 - **Lock files** — both scripts use `mkdir`-based locks with 8-hour stale detection.
 - **Logs** — LaunchAgent stderr appends (never truncates). `mini-train-all.sh` rotates at 1MB.
 - **Isolation enabled** — deploy refreshes `~/SaneApps-automation`, and launch agents point `SANE_ROOT` there so scheduled jobs do not touch the human-used `~/SaneApps` tree.
+- **Managed overlays only** — automation-root prep is allowed to reset hydrated training overlays (`train.jsonl`, eval packs, challenger configs, generated fixtures) before syncing. Any other dirt still fails the prep step.
 - **Training data hydration** — `mini-prepare-automation-root.sh` copies local-only `train.jsonl` / `valid.jsonl` datasets for SaneSync, SaneClip, SaneAI, and SaneVideo into the clean clones before training.
 - **Current bakeoff mode** — the daily challenger agent alternates `llama32-3b` and `smollm3-3b` on `SaneAI`, runs until `08:30`, and skips Sundays so the weekly `SaneAI` run gets the full window.
 - **Progress tracking** — every training run now archives a timestamped report under `outputs/history/<App>/` and appends a TSV metrics row so week-over-week comparisons survive report overwrites.
 - **Workflow focus** — nightly `SaneAI` training keeps the unified SaneSync/SaneClip corpus but now weights SaneVideo workflow data so the shared model learns the broader commentary/repurposing surface.
 - **Workflow-first scoring** — training and nightly reports now treat `commentary_workflow` as the primary gate and weight it above legacy action JSON accuracy, while still scoring the broader SaneVideo workflow packs and schema guardrails.
+- **8 GB stable baseline** — `SaneAI` production + challenger configs should use `val_batches: 1` on the Mini. `val_batches: 10` is no longer stable with the workflow-expanded corpus and reproducibly trips Metal OOM.
+- **8 GB eval baseline** — keep `EVAL_MAX_TOKENS=128` on the Mini and clear the MLX Metal cache between eval cases. Longer generations are not stable enough on this box.
 - **SaneVideo fixtures** — `mini-prepare-automation-root.sh` hydrates ignored `Tests/Assets` media in the clean clone when `ffmpeg` is available on the Mini.
+- **Bad training is a hard failure** — `mini-train.sh` now fails the sweep if the train log shows `nan` loss or `Trained Tokens 0`, and emits a training alert instead of treating that as success.
+
+## Standard Process
+
+Only use this path on the Mini:
+- Deploy from `scripts/mini/` in `SaneProcess`.
+- Train against `SANE_ROOT=~/SaneApps-automation`.
+- Write reports and alerts under `~/SaneApps/outputs`.
+- Do not run scheduled training against the human repo at `~/SaneApps`.
+
+### Smoke Test
+
+Use this to prove the runtime, wrapper, reporting, and alert plumbing after any training change:
+
+```bash
+ssh mini '
+  TRAIN_SWEEP_ITERS=2 \
+  TRAIN_HARD_STOP_TIME=23:59 \
+  TRAIN_POLL_INTERVAL_SEC=5 \
+  TRAIN_STALL_TIMEOUT_MIN=15 \
+  EVAL_SUITES=commentary_workflow,core \
+  EVAL_MAX_CASES=6 \
+  EVAL_MAX_TOKENS=128 \
+  TRAIN_ALERT_NOTIFY=false \
+  SANE_ROOT=$HOME/SaneApps-automation \
+  SANE_OUTPUT_DIR=$HOME/SaneApps/outputs/automation-smoke/manual \
+  /bin/bash $HOME/SaneApps/infra/SaneProcess/scripts/mini/mini-train.sh \
+    SaneAI --model mlx-community/SmolLM3-3B-4bit \
+    --config $HOME/SaneApps-automation/apps/SaneAI/training_data/challenger_configs/smollm3-3b.yaml \
+    --challenger
+'
+```
+
+Smoke must prove all of this:
+- a new sweep directory is created
+- the report is archived under `outputs/history/`
+- no `nan` loss appears
+- no `Trained Tokens 0` appears
+- no current failure alert is left behind
+- the post-train eval completes quickly because it is capped to a small smoke suite
+
+### Bounded E2E
+
+Use this after smoke passes:
+
+```bash
+ssh mini '
+  TRAIN_SWEEP_ITERS=1000 \
+  MAX_TRAIN_RUNTIME_MIN=30 \
+  TRAIN_HARD_STOP_TIME=23:59 \
+  TRAIN_POLL_INTERVAL_SEC=15 \
+  EVAL_MAX_TOKENS=128 \
+  SANE_ROOT=$HOME/SaneApps-automation \
+  SANE_OUTPUT_DIR=$HOME/SaneApps/outputs/automation-e2e \
+  /bin/bash $HOME/SaneApps/infra/SaneProcess/scripts/mini/mini-train.sh \
+    SaneAI --model mlx-community/SmolLM3-3B-4bit \
+    --config $HOME/SaneApps-automation/apps/SaneAI/training_data/challenger_configs/smollm3-3b.yaml \
+    --challenger
+'
+```
+
+Bounded e2e is only considered healthy if:
+- the process stays alive past the first validation
+- the report records the real exit reason
+- alerts are written for failures
+- the next nightly report surfaces active training alerts
 
 ## LaunchAgents (on mini)
 

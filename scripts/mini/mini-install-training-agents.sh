@@ -24,6 +24,10 @@ CHALLENGER_BUDGET_MIN="${CHALLENGER_BUDGET_MIN:-0}"
 CHALLENGER_SKIP_WEEKDAY="${CHALLENGER_SKIP_WEEKDAY:-0}"
 RUN_CHALLENGERS_AFTER_WEEKLY="${RUN_CHALLENGERS_AFTER_WEEKLY:-false}"
 CHALLENGER_APP="${CHALLENGER_APP:-SaneAI}"
+TRAIN_ALERT_NOTIFY="${TRAIN_ALERT_NOTIFY:-true}"
+TRAIN_ALERT_SUPPRESS_MIN="${TRAIN_ALERT_SUPPRESS_MIN:-360}"
+TRAIN_ALERT_COMMAND="${TRAIN_ALERT_COMMAND:-}"
+TRAIN_POLL_INTERVAL_SEC="${TRAIN_POLL_INTERVAL_SEC:-30}"
 
 CHALLENGER_LABEL="com.saneapps.training-challengers"
 CHALLENGER_PLIST="$LAUNCH_AGENTS_DIR/${CHALLENGER_LABEL}.plist"
@@ -91,6 +95,14 @@ cat > "$CHALLENGER_PLIST" <<EOF
     <string>${CHALLENGER_BUDGET_MIN}</string>
     <key>CHALLENGER_SKIP_WEEKDAY</key>
     <string>${CHALLENGER_SKIP_WEEKDAY}</string>
+    <key>TRAIN_ALERT_NOTIFY</key>
+    <string>${TRAIN_ALERT_NOTIFY}</string>
+    <key>TRAIN_ALERT_SUPPRESS_MIN</key>
+    <string>${TRAIN_ALERT_SUPPRESS_MIN}</string>
+    <key>TRAIN_ALERT_COMMAND</key>
+    <string>${TRAIN_ALERT_COMMAND}</string>
+    <key>TRAIN_POLL_INTERVAL_SEC</key>
+    <string>${TRAIN_POLL_INTERVAL_SEC}</string>
   </dict>
 
   <key>Nice</key>
@@ -146,6 +158,14 @@ cat > "$WEEKLY_PLIST" <<EOF
     <string>${RUN_CHALLENGERS_AFTER_WEEKLY}</string>
     <key>READINESS_TARGET_APP</key>
     <string>${READINESS_TARGET_APP}</string>
+    <key>TRAIN_ALERT_NOTIFY</key>
+    <string>${TRAIN_ALERT_NOTIFY}</string>
+    <key>TRAIN_ALERT_SUPPRESS_MIN</key>
+    <string>${TRAIN_ALERT_SUPPRESS_MIN}</string>
+    <key>TRAIN_ALERT_COMMAND</key>
+    <string>${TRAIN_ALERT_COMMAND}</string>
+    <key>TRAIN_POLL_INTERVAL_SEC</key>
+    <string>${TRAIN_POLL_INTERVAL_SEC}</string>
   </dict>
 
   <key>Nice</key>

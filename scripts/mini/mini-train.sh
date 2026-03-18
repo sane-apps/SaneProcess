@@ -98,6 +98,9 @@ START_EPOCH=$(date +%s)
 MODE_LABEL="production"
 READINESS_TARGET_APP="${READINESS_TARGET_APP:-}"
 EVAL_SUITE_WEIGHTS="${EVAL_SUITE_WEIGHTS:-commentary_workflow=4,workflow_packs=2,workflow_guardrails=2,core=1}"
+EVAL_MAX_CASES="${EVAL_MAX_CASES:-0}"
+EVAL_MAX_TOKENS="${EVAL_MAX_TOKENS:-128}"
+EVAL_SUITES="${EVAL_SUITES:-}"
 PRIMARY_WORKFLOW_SUITE="${PRIMARY_WORKFLOW_SUITE:-commentary_workflow}"
 PRIMARY_WORKFLOW_MIN_PCT="${PRIMARY_WORKFLOW_MIN_PCT:-50}"
 WORKFLOW_PASS_SCORE="${WORKFLOW_PASS_SCORE:-75}"
@@ -110,13 +113,19 @@ fi
 # Default challenger behavior is "run until hard stop time unless the process stalls."
 MAX_TRAIN_RUNTIME_MIN="${MAX_TRAIN_RUNTIME_MIN:-0}"
 TRAIN_STALL_TIMEOUT_MIN="${TRAIN_STALL_TIMEOUT_MIN:-45}"
+TRAIN_POLL_INTERVAL_SEC="${TRAIN_POLL_INTERVAL_SEC:-30}"
+TRAIN_FAILURE_LOG_LINES="${TRAIN_FAILURE_LOG_LINES:-20}"
+TRAIN_ALERT_NOTIFY="${TRAIN_ALERT_NOTIFY:-true}"
+TRAIN_ALERT_SUPPRESS_MIN="${TRAIN_ALERT_SUPPRESS_MIN:-360}"
+TRAIN_ALERT_COMMAND="${TRAIN_ALERT_COMMAND:-}"
+TRAIN_SWEEP_ITERS="${TRAIN_SWEEP_ITERS:-}"
 
 parse_hard_stop_time() {
   local raw_time="${TRAIN_HARD_STOP_TIME:-}"
   local parsed_hour parsed_minute
 
   if [ -z "$raw_time" ]; then
-    raw_time="$(printf '%02d:00' "${TRAIN_HARD_STOP_HOUR:-8}")"
+    raw_time="$(printf '%02d:%02d' "${TRAIN_HARD_STOP_HOUR:-8}" "${TRAIN_HARD_STOP_MINUTE:-30}")"
   fi
 
   parsed_hour=$(printf '%s' "$raw_time" | cut -d: -f1)
@@ -124,7 +133,7 @@ parse_hard_stop_time() {
 
   if ! [[ "$parsed_hour" =~ ^[0-9]{1,2}$ ]] || ! [[ "$parsed_minute" =~ ^[0-9]{2}$ ]]; then
     parsed_hour="08"
-    parsed_minute="00"
+    parsed_minute="30"
   fi
 
   TRAIN_HARD_STOP_HOUR=$((10#$parsed_hour))
@@ -141,6 +150,13 @@ else
 fi
 
 mkdir -p "$OUTPUT_DIR" "$MODELS_DIR/sweeps"
+
+ALERTS_DIR="$OUTPUT_DIR/alerts/training"
+CURRENT_ALERTS_DIR="$ALERTS_DIR/current"
+CURRENT_ALERT_FILE="$CURRENT_ALERTS_DIR/${APP_NAME}_${MODE_LABEL}.md"
+ALERT_STATE_FILE="$ALERTS_DIR/${APP_NAME}_${MODE_LABEL}.state"
+ALERT_HISTORY_LOG="$ALERTS_DIR/history.log"
+mkdir -p "$CURRENT_ALERTS_DIR"
 
 # Lock file (with stale lock detection)
 # Challengers share a single lock to run sequentially (not parallel — GPU contention)
@@ -249,23 +265,138 @@ is_past_hard_stop_time() {
 
 is_training_stalled() {
   local log_path="$1"
-  local last_activity now
+  local train_pid="$2"
+  local now current_log_mtime current_cpu_seconds
 
   if [ "$TRAIN_STALL_TIMEOUT_MIN" -le 0 ]; then
     return 1
   fi
 
+  current_log_mtime=$(log_mtime_epoch "$log_path")
+  current_cpu_seconds=$(pid_cpu_seconds "$train_pid")
+  now=$(date +%s)
+
+  if [ "$current_log_mtime" -gt "$TRAIN_LAST_LOG_MTIME" ] || [ "$current_cpu_seconds" -gt "$TRAIN_LAST_CPU_SECONDS" ]; then
+    TRAIN_LAST_PROGRESS_AT="$now"
+  fi
+
+  TRAIN_LAST_LOG_MTIME="$current_log_mtime"
+  TRAIN_LAST_CPU_SECONDS="$current_cpu_seconds"
+
+  [ $((now - TRAIN_LAST_PROGRESS_AT)) -ge $((TRAIN_STALL_TIMEOUT_MIN * 60)) ]
+}
+
+log_mtime_epoch() {
+  local log_path="$1"
+  local last_activity
+
   if [ ! -f "$log_path" ]; then
-    return 1
+    echo "0"
+    return
   fi
 
   last_activity=$(stat -f %m "$log_path" 2>/dev/null || echo "")
   if [ -z "$last_activity" ]; then
-    return 1
+    echo "0"
+    return
   fi
 
-  now=$(date +%s)
-  [ $((now - last_activity)) -ge $((TRAIN_STALL_TIMEOUT_MIN * 60)) ]
+  echo "$last_activity"
+}
+
+parse_ps_time_to_seconds() {
+  local raw_time="$1"
+  local days=0 hours=0 minutes=0 seconds=0 time_part
+
+  raw_time=$(printf '%s' "$raw_time" | tr -d '[:space:]')
+  raw_time="${raw_time%%.*}"
+  if [ -z "$raw_time" ]; then
+    echo "0"
+    return
+  fi
+
+  if [[ "$raw_time" == *-* ]]; then
+    days="${raw_time%%-*}"
+    time_part="${raw_time#*-}"
+  else
+    time_part="$raw_time"
+  fi
+
+  case "$time_part" in
+    *:*:*)
+      hours="${time_part%%:*}"
+      time_part="${time_part#*:}"
+      minutes="${time_part%%:*}"
+      seconds="${time_part##*:}"
+      ;;
+    *:*)
+      minutes="${time_part%%:*}"
+      seconds="${time_part##*:}"
+      ;;
+    *)
+      seconds="$time_part"
+      ;;
+  esac
+
+  echo $((10#$days * 86400 + 10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds))
+}
+
+pid_cpu_seconds() {
+  local pid="$1"
+  local raw_time
+
+  raw_time=$(ps -o time= -p "$pid" 2>/dev/null | awk '{$1=$1; print $1}')
+  parse_ps_time_to_seconds "$raw_time"
+}
+
+init_training_progress_watch() {
+  local log_path="$1"
+  local train_pid="$2"
+
+  TRAIN_LAST_PROGRESS_AT=$(date +%s)
+  TRAIN_LAST_LOG_MTIME=$(log_mtime_epoch "$log_path")
+  TRAIN_LAST_CPU_SECONDS=$(pid_cpu_seconds "$train_pid")
+}
+
+training_log_has_invalid_metrics() {
+  local log_path="$1"
+
+  [ -f "$log_path" ] || return 1
+
+  if grep -Eq 'Val loss nan|Train loss nan|Trained Tokens 0([^0-9]|$)' "$log_path"; then
+    return 0
+  fi
+
+  return 1
+}
+
+build_sweep_iters() {
+  local raw_iters normalized iter
+  local sweep_count=0
+
+  raw_iters="$TRAIN_SWEEP_ITERS"
+  SWEEP_ITERS=()
+  if [ -n "$raw_iters" ]; then
+    normalized=$(printf '%s' "$raw_iters" | tr ',:' '  ')
+    for iter in $normalized; do
+      if [[ "$iter" =~ ^[0-9]+$ ]] && [ "$iter" -gt 0 ]; then
+        if [ "$sweep_count" -eq 0 ]; then
+          SWEEP_ITERS=("$iter")
+        else
+          SWEEP_ITERS=("${SWEEP_ITERS[@]}" "$iter")
+        fi
+        sweep_count=$((sweep_count + 1))
+      fi
+    done
+  fi
+
+  if [ "$sweep_count" -eq 0 ]; then
+    if [ "$CHALLENGER_MODE" = true ]; then
+      SWEEP_ITERS=(1000)
+    else
+      SWEEP_ITERS=(1000 2000)
+    fi
+  fi
 }
 
 is_active_pid() {
@@ -281,6 +412,112 @@ is_active_pid() {
       return 0
       ;;
   esac
+}
+
+load_training_alert_state() {
+  LAST_ALERT_STATUS=""
+  LAST_ALERT_AT=0
+  LAST_ALERT_KEY=""
+  LAST_ALERT_REPORT=""
+
+  if [ -f "$ALERT_STATE_FILE" ]; then
+    IFS=$'\t' read -r LAST_ALERT_STATUS LAST_ALERT_AT LAST_ALERT_KEY LAST_ALERT_REPORT < "$ALERT_STATE_FILE" || true
+  fi
+}
+
+save_training_alert_state() {
+  printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" > "$ALERT_STATE_FILE"
+}
+
+append_training_alert_history() {
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$TIMESTAMP" \
+    "$APP_NAME" \
+    "$MODE_LABEL" \
+    "$BASE_MODEL" \
+    "$1" \
+    "$2" >> "$ALERT_HISTORY_LOG"
+}
+
+notify_training_event() {
+  local title="$1"
+  local message="$2"
+  local safe_title safe_message
+
+  safe_title=$(printf '%s' "$title" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  safe_message=$(printf '%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g')
+
+  if [ "$TRAIN_ALERT_NOTIFY" = "true" ]; then
+    osascript -e "display notification \"$safe_message\" with title \"$safe_title\" sound name \"Sosumi\"" >/dev/null 2>&1 || true
+  fi
+
+  if [ -n "$TRAIN_ALERT_COMMAND" ]; then
+    TRAIN_ALERT_TITLE="$title" \
+    TRAIN_ALERT_MESSAGE="$message" \
+    TRAIN_ALERT_APP="$APP_NAME" \
+    TRAIN_ALERT_MODE="$MODE_LABEL" \
+    TRAIN_ALERT_MODEL="$BASE_MODEL" \
+    TRAIN_ALERT_REPORT="${REPORT_ARCHIVE:-$REPORT}" \
+      /bin/bash -lc "$TRAIN_ALERT_COMMAND" >/dev/null 2>&1 || true
+  fi
+}
+
+write_current_training_alert() {
+  local status="$1"
+  local summary="$2"
+  local log_path="${3:-}"
+
+  cat > "$CURRENT_ALERT_FILE" <<EOF
+# Training Alert — $APP_NAME ($MODE_LABEL)
+
+- Status: $status
+- Generated: $TIMESTAMP
+- Model: $BASE_MODEL
+- Summary: $summary
+- Report: ${REPORT_ARCHIVE:-$REPORT}
+EOF
+
+  if [ -n "$log_path" ]; then
+    cat >> "$CURRENT_ALERT_FILE" <<EOF
+- Log: $log_path
+EOF
+  fi
+}
+
+emit_training_failure_alert() {
+  local summary="$1"
+  local log_path="${2:-}"
+  local now key suppress_seconds
+
+  load_training_alert_state
+  now=$(date +%s)
+  key="${APP_NAME}|${MODE_LABEL}|${BASE_MODEL}|failure|${summary}"
+  suppress_seconds=$((TRAIN_ALERT_SUPPRESS_MIN * 60))
+
+  write_current_training_alert "failure" "$summary" "$log_path"
+  append_training_alert_history "failure" "$summary"
+
+  if [ "$LAST_ALERT_STATUS" != "failure" ] || [ "$LAST_ALERT_KEY" != "$key" ] || [ $((now - LAST_ALERT_AT)) -ge "$suppress_seconds" ]; then
+    notify_training_event "Mini training failed" "$APP_NAME $MODE_LABEL: $summary"
+  fi
+
+  save_training_alert_state "failure" "$now" "$key" "${REPORT_ARCHIVE:-$REPORT}"
+}
+
+emit_training_recovery_alert() {
+  local summary="$1"
+  local now
+
+  load_training_alert_state
+  now=$(date +%s)
+
+  if [ "$LAST_ALERT_STATUS" = "failure" ]; then
+    notify_training_event "Mini training recovered" "$APP_NAME $MODE_LABEL: $summary"
+    append_training_alert_history "recovered" "$summary"
+  fi
+
+  rm -f "$CURRENT_ALERT_FILE"
+  save_training_alert_state "success" "$now" "${APP_NAME}|${MODE_LABEL}|${BASE_MODEL}|success" "${REPORT_ARCHIVE:-$REPORT}"
 }
 
 append_metrics_header_if_needed() {
@@ -309,7 +546,11 @@ find_previous_successful_metric() {
 
 find_latest_target_production_metric() {
   local target_app="$1"
-  local target_metrics_file="$SANE_OUTPUT_DIR/history/$target_app/training_metrics.tsv"
+  local target_metrics_file="$SANE_OUTPUT_DIR/history/$target_app/training_metrics_workflow_v1.tsv"
+
+  if [ ! -f "$target_metrics_file" ]; then
+    target_metrics_file="$SANE_OUTPUT_DIR/history/$target_app/training_metrics.tsv"
+  fi
 
   if [ ! -f "$target_metrics_file" ]; then
     return 1
@@ -337,7 +578,7 @@ append_readiness_header_if_needed() {
 build_eval_command() {
   local model_name="$1"
   local adapter_path="${2:-}"
-  local old_ifs suite_weight
+  local old_ifs suite_name suite_weight
 
   EVAL_CMD=(
     "$PYTHON"
@@ -354,6 +595,13 @@ build_eval_command() {
 
   old_ifs="$IFS"
   IFS=','
+  for suite_name in $EVAL_SUITES; do
+    suite_name=$(printf '%s' "$suite_name" | sed 's/^ *//; s/ *$//')
+    if [ -n "$suite_name" ]; then
+      EVAL_CMD=("${EVAL_CMD[@]}" --suite "$suite_name")
+    fi
+  done
+
   for suite_weight in $EVAL_SUITE_WEIGHTS; do
     suite_weight=$(printf '%s' "$suite_weight" | sed 's/^ *//; s/ *$//')
     if [ -n "$suite_weight" ]; then
@@ -361,6 +609,14 @@ build_eval_command() {
     fi
   done
   IFS="$old_ifs"
+
+  if [ "$EVAL_MAX_CASES" -gt 0 ]; then
+    EVAL_CMD=("${EVAL_CMD[@]}" --max-cases "$EVAL_MAX_CASES")
+  fi
+
+  if [ "$EVAL_MAX_TOKENS" -gt 0 ]; then
+    EVAL_CMD=("${EVAL_CMD[@]}" --max-tokens "$EVAL_MAX_TOKENS")
+  fi
 
   if [ -n "$PRIMARY_WORKFLOW_SUITE" ]; then
     EVAL_CMD=("${EVAL_CMD[@]}"
@@ -618,15 +874,17 @@ echo "" >> "$REPORT"
 # Sweep iterations: 1112 examples, so ~1 epoch=1112 iters at batch_size=1
 # Need at least 1-2 full epochs for the model to learn the task
 # Challengers only do 1000 iters to leave time budget for other models
-if [ "$CHALLENGER_MODE" = true ]; then
-  SWEEP_ITERS=(1000)
-else
-  SWEEP_ITERS=(1000 2000)
-fi
+SWEEP_ITERS=()
+build_sweep_iters
 RESULTS_FILE=$(mktemp)
 SUCCESSFUL_SWEEPS=0
+LAST_SWEEP_LOG=""
+LAST_FAILURE_SUMMARY=""
+SKIPPED_EXISTING_SWEEPS=0
+REQUESTED_SWEEPS=0
 
 for ITERS in "${SWEEP_ITERS[@]}"; do
+  REQUESTED_SWEEPS=$((REQUESTED_SWEEPS + 1))
   if is_past_hard_stop_time; then
     echo "" >> "$REPORT"
     echo "**Stopped before ${ITERS} iterations** — reached hard stop time (${TRAIN_HARD_STOP_TIME})." >> "$REPORT"
@@ -647,6 +905,7 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
     SWEEP_NAME="sweep_${ITERS}_${DATE}"
   fi
   ADAPTER_DIR="$MODELS_DIR/sweeps/$SWEEP_NAME"
+  LAST_SWEEP_LOG="$ADAPTER_DIR/train.log"
 
   echo "### ${ITERS} iterations" >> "$REPORT"
   echo "" >> "$REPORT"
@@ -655,6 +914,7 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
   if [ -f "$ADAPTER_DIR/adapter_config.json" ]; then
     echo "Already trained today. Skipping." >> "$REPORT"
     echo "" >> "$REPORT"
+    SKIPPED_EXISTING_SWEEPS=$((SKIPPED_EXISTING_SWEEPS + 1))
     continue
   fi
 
@@ -717,6 +977,7 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
     --adapter-path "$ADAPTER_DIR" \
     > "$ADAPTER_DIR/train.log" 2>&1 &
   TRAIN_PID=$!
+  init_training_progress_watch "$ADAPTER_DIR/train.log" "$TRAIN_PID"
 
   TRAIN_EXIT=""
   while is_active_pid "$TRAIN_PID"; do
@@ -739,7 +1000,7 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
       break
     fi
 
-    if is_training_stalled "$ADAPTER_DIR/train.log"; then
+    if is_training_stalled "$ADAPTER_DIR/train.log" "$TRAIN_PID"; then
       echo "Stopping training: no log progress for ${TRAIN_STALL_TIMEOUT_MIN} minutes." >> "$ADAPTER_DIR/train.log"
       kill -TERM "$TRAIN_PID" 2>/dev/null || true
       sleep 3
@@ -748,12 +1009,16 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
       break
     fi
 
-    sleep 30
+    sleep "$TRAIN_POLL_INTERVAL_SEC"
   done
 
   if [ -z "$TRAIN_EXIT" ]; then
     wait "$TRAIN_PID"
     TRAIN_EXIT=$?
+  fi
+
+  if [ "$TRAIN_EXIT" -eq 0 ] && training_log_has_invalid_metrics "$ADAPTER_DIR/train.log"; then
+    TRAIN_EXIT=126
   fi
 
   # Extract key training metrics for report
@@ -767,8 +1032,22 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
     echo "**FAILED** (exit $TRAIN_EXIT, ${TRAIN_TIME}min)" >> "$REPORT"
     if [ "$TRAIN_EXIT" -eq 124 ]; then
       echo "Stopped by runtime guard (hard stop time or runtime budget)." >> "$REPORT"
+      LAST_FAILURE_SUMMARY="runtime guard stopped ${ITERS}-iteration sweep (exit 124)"
     elif [ "$TRAIN_EXIT" -eq 125 ]; then
       echo "Stopped by stall guard after no log progress for ${TRAIN_STALL_TIMEOUT_MIN} minutes." >> "$REPORT"
+      LAST_FAILURE_SUMMARY="stalled after ${TRAIN_STALL_TIMEOUT_MIN} minutes with no log progress during ${ITERS}-iteration sweep"
+    elif [ "$TRAIN_EXIT" -eq 126 ]; then
+      echo "Stopped because training produced invalid metrics (nan loss or zero trained tokens)." >> "$REPORT"
+      LAST_FAILURE_SUMMARY="invalid training metrics detected during ${ITERS}-iteration sweep"
+    else
+      LAST_FAILURE_SUMMARY="training process exited $TRAIN_EXIT during ${ITERS}-iteration sweep"
+    fi
+    if [ -f "$ADAPTER_DIR/train.log" ]; then
+      echo "" >> "$REPORT"
+      echo "Last training log lines:" >> "$REPORT"
+      echo '```' >> "$REPORT"
+      tail -n "$TRAIN_FAILURE_LOG_LINES" "$ADAPTER_DIR/train.log" >> "$REPORT"
+      echo '```' >> "$REPORT"
     fi
     echo "" >> "$REPORT"
     continue
@@ -782,10 +1061,13 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
   # Step 4: Validate this checkpoint
   # =============================================================================
   echo "**Validation:**" >> "$REPORT"
+  EVAL_LOG="$ADAPTER_DIR/eval.log"
+  rm -f "$EVAL_LOG"
 
   if [ -f "$EVAL_SCRIPT" ]; then
     build_eval_command "$BASE_MODEL" "$ADAPTER_DIR"
-    VALIDATION_OUTPUT=$("${EVAL_CMD[@]}" 2>/dev/null)
+    VALIDATION_OUTPUT=$("${EVAL_CMD[@]}" 2>&1)
+    printf '%s\n' "$VALIDATION_OUTPUT" > "$EVAL_LOG"
   else
     VALIDATION_OUTPUT=""
   fi
@@ -794,6 +1076,12 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
 
   if [ $VALIDATE_EXIT -ne 0 ] || [ -z "$VALIDATION_OUTPUT" ]; then
     echo "  - Validation script failed (exit $VALIDATE_EXIT)" >> "$REPORT"
+    if [ -f "$EVAL_LOG" ]; then
+      echo "  - Eval log: $EVAL_LOG" >> "$REPORT"
+      echo '```' >> "$REPORT"
+      tail -n "$TRAIN_FAILURE_LOG_LINES" "$EVAL_LOG" >> "$REPORT"
+      echo '```' >> "$REPORT"
+    fi
     ACCURACY=0
     PASS=0
     TOTAL=0
@@ -806,6 +1094,8 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
     PRIMARY_STATUS="FAIL"
     PRIMARY_THRESHOLD="$PRIMARY_WORKFLOW_MIN_PCT"
     PRIMARY_SUITE_NAME="$PRIMARY_WORKFLOW_SUITE"
+    VALIDATION_ROW_STATUS="error"
+    LAST_FAILURE_SUMMARY="validation failed with exit $VALIDATE_EXIT during ${ITERS}-iteration sweep"
   else
     # Write individual results to report
     echo "$VALIDATION_OUTPUT" | grep -vE "^(SCORE:|RAW_SCORE:|WEIGHTED_SCORE:|PRIMARY_SUITE:|SUITE:)" >> "$REPORT"
@@ -826,6 +1116,7 @@ EOF
     PASS="$WEIGHTED_PASS"
     TOTAL="$WEIGHTED_TOTAL"
     ACCURACY="$WEIGHTED_ACCURACY"
+    VALIDATION_ROW_STATUS="ok"
   fi
 
   echo "" >> "$REPORT"
@@ -840,7 +1131,7 @@ EOF
   echo "**Result:** $VALIDATION_STATUS" >> "$REPORT"
   echo "" >> "$REPORT"
 
-  echo "$ITERS:$ACCURACY:$RAW_ACCURACY:$PRIMARY_PCT:$PRIMARY_STATUS:$TRAIN_TIME" >> "$RESULTS_FILE"
+  echo "$ITERS:$ACCURACY:$RAW_ACCURACY:$PRIMARY_PCT:$PRIMARY_STATUS:$TRAIN_TIME:$VALIDATION_ROW_STATUS" >> "$RESULTS_FILE"
 done
 
 # =============================================================================
@@ -861,8 +1152,10 @@ BEST_PRIMARY_STATUS="FAIL"
 BEST_TIME_MIN=""
 SCRIPT_EXIT=0
 
-while IFS=: read -r iters acc raw_acc primary_pct primary_status time; do
-  if [ "$primary_status" = "PASS" ] && [ "$acc" -ge "$WORKFLOW_PASS_SCORE" ]; then
+while IFS=: read -r iters acc raw_acc primary_pct primary_status time validation_row_status; do
+  if [ "$validation_row_status" != "ok" ]; then
+    status="VALIDATION FAIL"
+  elif [ "$primary_status" = "PASS" ] && [ "$acc" -ge "$WORKFLOW_PASS_SCORE" ]; then
     status="PASS"
   elif [ "$primary_status" = "PASS" ]; then
     status="LOW SCORE"
@@ -871,9 +1164,10 @@ while IFS=: read -r iters acc raw_acc primary_pct primary_status time; do
   fi
   echo "| $iters | $acc% | $raw_acc% | $primary_pct% | $time | $status |" >> "$REPORT"
 
-  if [ "$acc" -gt "$BEST_ACCURACY" ] || \
-     { [ "$acc" -eq "$BEST_ACCURACY" ] && [ "$primary_pct" -gt "$BEST_PRIMARY_PCT" ]; } || \
-     { [ "$acc" -eq "$BEST_ACCURACY" ] && [ "$primary_pct" -eq "$BEST_PRIMARY_PCT" ] && [ "$raw_acc" -gt "$BEST_RAW_ACCURACY" ]; }; then
+  if [ "$validation_row_status" = "ok" ] && \
+     { [ -z "$BEST_ITERS" ] || [ "$acc" -gt "$BEST_ACCURACY" ] || \
+       { [ "$acc" -eq "$BEST_ACCURACY" ] && [ "$primary_pct" -gt "$BEST_PRIMARY_PCT" ]; } || \
+       { [ "$acc" -eq "$BEST_ACCURACY" ] && [ "$primary_pct" -eq "$BEST_PRIMARY_PCT" ] && [ "$raw_acc" -gt "$BEST_RAW_ACCURACY" ]; }; }; then
     BEST_ACCURACY=$acc
     BEST_RAW_ACCURACY=$raw_acc
     BEST_PRIMARY_PCT=$primary_pct
@@ -917,8 +1211,13 @@ if [ -n "$BEST_ITERS" ]; then
     echo "Adapter: sweep_${BEST_ITERS}_${DATE} -> production_adapter/" >> "$REPORT"
   fi
 else
-  echo "**No successful training runs.**" >> "$REPORT"
-  SCRIPT_EXIT=1
+  if [ "$REQUESTED_SWEEPS" -gt 0 ] && [ "$SKIPPED_EXISTING_SWEEPS" -eq "$REQUESTED_SWEEPS" ]; then
+    echo "**No new sweeps ran.** All requested adapters already existed for today." >> "$REPORT"
+    SCRIPT_EXIT=0
+  else
+    echo "**No successful training runs.**" >> "$REPORT"
+    SCRIPT_EXIT=1
+  fi
 fi
 
 echo "" >> "$REPORT"
@@ -1061,6 +1360,19 @@ if [ -n "$READINESS_TARGET_APP" ]; then
     "$READINESS_STATUS" \
     "$REPORT_ARCHIVE" \
     "$READINESS_TARGET_REPORT" >> "$READINESS_FILE"
+fi
+
+if [ "$SCRIPT_EXIT" -eq 0 ]; then
+  if [ -n "$BEST_ITERS" ]; then
+    emit_training_recovery_alert "best adapter sweep_${BEST_ITERS}_${DATE} reached ${BEST_ACCURACY}% workflow-first"
+  else
+    emit_training_recovery_alert "training completed successfully"
+  fi
+else
+  if [ -z "$LAST_FAILURE_SUMMARY" ]; then
+    LAST_FAILURE_SUMMARY="no successful training runs"
+  fi
+  emit_training_failure_alert "$LAST_FAILURE_SUMMARY" "$LAST_SWEEP_LOG"
 fi
 
 echo "Training report complete: $REPORT" >&2

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import glob
 import json
 import re
@@ -11,6 +12,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+import mlx.core as mx
 from mlx_lm import generate, load
 
 
@@ -40,6 +42,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-files", nargs="*", default=[], help="Explicit eval JSONL files")
     parser.add_argument("--eval-glob", help="Glob for eval JSONL files")
     parser.add_argument("--suite", action="append", default=[], help="Only run matching suite(s)")
+    parser.add_argument(
+        "--max-cases",
+        type=int,
+        default=0,
+        help="Limit eval cases after suite filtering. 0 means run the full suite.",
+    )
     parser.add_argument(
         "--suite-weight",
         action="append",
@@ -256,6 +264,17 @@ def build_messages(system_prompt: str, case: dict) -> list[dict]:
     return messages
 
 
+def clear_metal_cache() -> None:
+    gc.collect()
+    try:
+        if hasattr(mx, "clear_cache"):
+            mx.clear_cache()
+        else:
+            mx.metal.clear_cache()
+    except Exception:
+        pass
+
+
 def main() -> int:
     args = parse_args()
     train_file = Path(args.train_file).expanduser() if args.train_file else None
@@ -274,9 +293,14 @@ def main() -> int:
     if selected_suites:
         eval_cases = [case for case in eval_cases if case.get("suite") in selected_suites]
 
+    if args.max_cases and args.max_cases > 0:
+        eval_cases = eval_cases[: args.max_cases]
+
     if not eval_cases:
         print("No eval cases matched the requested suites.", file=sys.stderr)
         return 2
+
+    clear_metal_cache()
 
     if args.adapter_path:
         model, tokenizer = load(args.model, adapter_path=args.adapter_path)
@@ -308,6 +332,7 @@ def main() -> int:
             max_tokens=int(case.get("max_tokens", args.max_tokens)),
             verbose=False,
         )
+        clear_metal_cache()
 
         if expect_type == "workflow_plan":
             ok, reason = check_workflow_plan(response, case)
@@ -349,6 +374,7 @@ def main() -> int:
     print(f"RAW_SCORE:{passed}:{total}:{raw_pct}")
     print(f"WEIGHTED_SCORE:{weighted_passed}:{weighted_total}:{weighted_pct}")
     print(f"SCORE:{weighted_passed}:{weighted_total}:{weighted_pct}")
+    clear_metal_cache()
     return 0
 
 

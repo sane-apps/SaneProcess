@@ -1,6 +1,6 @@
 #!/bin/bash
 # mini-nightly.sh - Nightly automation for Mac mini build server
-# Runs at 2 AM daily via LaunchAgent
+# Runs at 8:45 AM daily via LaunchAgent
 # Results available via: ssh mini cat ~/SaneApps/outputs/nightly_report.md
 
 set -uo pipefail
@@ -365,7 +365,28 @@ echo "---" >> "$REPORT"
 echo "" >> "$REPORT"
 
 # =============================================================================
-# Section 5: Disk & System Health
+# Section 5: Active Training Alerts
+# =============================================================================
+echo "## Active Training Alerts" >> "$REPORT"
+echo "" >> "$REPORT"
+
+TRAIN_ALERT_DIR="$OUTPUT_DIR/alerts/training/current"
+if ls "$TRAIN_ALERT_DIR"/*.md 1>/dev/null 2>&1; then
+  for alert_file in "$TRAIN_ALERT_DIR"/*.md; do
+    echo "### $(basename "$alert_file" .md)" >> "$REPORT"
+    sed -n '1,120p' "$alert_file" >> "$REPORT"
+    echo "" >> "$REPORT"
+  done
+else
+  echo "None." >> "$REPORT"
+  echo "" >> "$REPORT"
+fi
+
+echo "---" >> "$REPORT"
+echo "" >> "$REPORT"
+
+# =============================================================================
+# Section 6: Disk & System Health
 # =============================================================================
 echo "## System Health" >> "$REPORT"
 echo "" >> "$REPORT"
@@ -391,7 +412,7 @@ cat >> "$REPORT" <<EOF
 
 **Report generated:** $TIMESTAMP
 **Machine:** $(hostname) ($(sysctl -n hw.ncpu) cores, $(sysctl -n hw.memsize | awk '{printf "%.0f GB", $1/1073741824}') RAM)
-**Next run:** Tomorrow at 2:00 AM
+**Next run:** Tomorrow at 8:45 AM
 EOF
 
 echo "Nightly report complete: $REPORT" >&2

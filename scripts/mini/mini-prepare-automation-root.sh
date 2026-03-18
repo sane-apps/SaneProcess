@@ -38,6 +38,106 @@ default_branch_for_repo() {
   printf '%s' "$branch"
 }
 
+managed_overlay_path_allowed() {
+  local rel_path="$1"
+  local repo_path="$2"
+
+  case "$rel_path:$repo_path" in
+    apps/SaneAI:training_data/train.jsonl|\
+    apps/SaneAI:training_data/valid.jsonl|\
+    apps/SaneAI:training_data/merge_training_data.py|\
+    apps/SaneAI:training_data/system_prompt.txt|\
+    apps/SaneAI:training_data/lora_config_mini.yaml|\
+    apps/SaneAI:training_data/eval_*.jsonl|\
+    apps/SaneAI:training_data/*.yaml|\
+    apps/SaneAI:training_data/*.yml|\
+    apps/SaneAI:training_data/challenger_configs/*|\
+    apps/SaneClip:training_data/train.jsonl|\
+    apps/SaneClip:training_data/valid.jsonl|\
+    apps/SaneClip:training_data/test.jsonl|\
+    apps/SaneSync:training_data/train.jsonl|\
+    apps/SaneSync:training_data/valid.jsonl|\
+    apps/SaneSync:training_data/test.jsonl|\
+    apps/SaneSync:training_data/challenger_configs/*|\
+    apps/SaneVideo:training_data/train.jsonl|\
+    apps/SaneVideo:training_data/valid.jsonl|\
+    apps/SaneVideo:Tests/Assets/*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+reset_managed_overlay_paths() {
+  local target_repo="$1"
+  local rel_path="$2"
+  local entry status path
+  local tracked_reset=0
+  local untracked_reset=0
+  local tracked_count=0
+  local unexpected_count=0
+  local untracked_count=0
+  local -a tracked_paths unexpected_paths untracked_paths
+
+  tracked_paths=()
+  unexpected_paths=()
+  untracked_paths=()
+
+  while IFS= read -r -d '' entry; do
+    [ -n "$entry" ] || continue
+    status="${entry:0:2}"
+    path="${entry:3}"
+
+    if ! managed_overlay_path_allowed "$rel_path" "$path"; then
+      if [ "$unexpected_count" -eq 0 ]; then
+        unexpected_paths=("$path")
+      else
+        unexpected_paths=("${unexpected_paths[@]}" "$path")
+      fi
+      unexpected_count=$((unexpected_count + 1))
+      continue
+    fi
+
+    case "$status" in
+      \?\?)
+        if [ "$untracked_count" -eq 0 ]; then
+          untracked_paths=("$path")
+        else
+          untracked_paths=("${untracked_paths[@]}" "$path")
+        fi
+        untracked_count=$((untracked_count + 1))
+        ;;
+      *)
+        if [ "$tracked_count" -eq 0 ]; then
+          tracked_paths=("$path")
+        else
+          tracked_paths=("${tracked_paths[@]}" "$path")
+        fi
+        tracked_count=$((tracked_count + 1))
+        ;;
+    esac
+  done < <(git -C "$target_repo" status --porcelain=v1 -z --untracked-files=all 2>/dev/null)
+
+  if [ "$unexpected_count" -gt 0 ]; then
+    echo "WARN  $rel_path unexpected dirt remains: ${unexpected_paths[0]}"
+    return 1
+  fi
+
+  if [ "$tracked_count" -gt 0 ]; then
+    git -C "$target_repo" restore --source=HEAD --staged --worktree -- "${tracked_paths[@]}" >/dev/null 2>&1
+    tracked_reset="$tracked_count"
+  fi
+
+  if [ "$untracked_count" -gt 0 ]; then
+    git -C "$target_repo" clean -fd -- "${untracked_paths[@]}" >/dev/null 2>&1
+    untracked_reset="$untracked_count"
+  fi
+
+  echo "CLEAN $rel_path (reset managed overlay: ${tracked_reset} tracked, ${untracked_reset} untracked)"
+  return 0
+}
+
 prepare_repo() {
   local source_repo="$1"
   local rel_path="$2"
@@ -52,9 +152,9 @@ prepare_repo() {
 
   origin_url=$(git -C "$source_repo" remote get-url origin 2>/dev/null || true)
   if [ -z "$origin_url" ]; then
-    echo "FAIL  $rel_path (missing origin)"
-    FAILURES=$((FAILURES + 1))
-    return 1
+    echo "SKIP  $rel_path (missing origin)"
+    SKIPPED=$((SKIPPED + 1))
+    return 0
   fi
 
   branch=$(default_branch_for_repo "$source_repo")
@@ -70,9 +170,18 @@ prepare_repo() {
 
   dirty_count=$(git -C "$target_repo" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
   if [ "$dirty_count" != "0" ]; then
-    echo "FAIL  $rel_path (automation repo dirty: $dirty_count)"
-    FAILURES=$((FAILURES + 1))
-    return 1
+    if ! reset_managed_overlay_paths "$target_repo" "$rel_path"; then
+      echo "FAIL  $rel_path (automation repo dirty: $dirty_count)"
+      FAILURES=$((FAILURES + 1))
+      return 1
+    fi
+
+    dirty_count=$(git -C "$target_repo" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$dirty_count" != "0" ]; then
+      echo "FAIL  $rel_path (automation repo still dirty: $dirty_count)"
+      FAILURES=$((FAILURES + 1))
+      return 1
+    fi
   fi
 
   if ! git -C "$target_repo" fetch origin --prune >/dev/null 2>&1; then
@@ -146,10 +255,69 @@ copy_if_changed() {
   return 0
 }
 
+source_training_root_candidates() {
+  local app_name="$1"
+  local -a candidates
+  local candidate
+
+  if [ "$app_name" = "SaneAI" ]; then
+    candidates=(
+      "$SOURCE_ROOT/$app_name/training_data"
+      "$SOURCE_ROOT/apps/$app_name/training_data"
+    )
+  else
+    candidates=(
+      "$SOURCE_ROOT/apps/$app_name/training_data"
+      "$SOURCE_ROOT/$app_name/training_data"
+    )
+  fi
+
+  for candidate in "${candidates[@]}"; do
+    printf '%s\n' "$candidate"
+  done
+}
+
+resolve_source_training_path() {
+  local app_name="$1"
+  local rel_path="$2"
+  local candidate_root candidate_path fallback_path=""
+
+  while IFS= read -r candidate_root; do
+    [ -n "$candidate_root" ] || continue
+    if [ -z "$fallback_path" ]; then
+      fallback_path="$candidate_root/$rel_path"
+    fi
+    candidate_path="$candidate_root/$rel_path"
+    if [ -e "$candidate_path" ]; then
+      printf '%s' "$candidate_path"
+      return 0
+    fi
+  done < <(source_training_root_candidates "$app_name")
+
+  printf '%s' "$fallback_path"
+  return 1
+}
+
+source_training_dir_for_app() {
+  local app_name="$1"
+  local candidate_root
+
+  while IFS= read -r candidate_root; do
+    [ -n "$candidate_root" ] || continue
+    if [ -d "$candidate_root" ]; then
+      printf '%s' "$candidate_root"
+      return 0
+    fi
+  done < <(source_training_root_candidates "$app_name")
+
+  printf '%s' "$(source_training_root_candidates "$app_name" | head -1)"
+  return 1
+}
+
 hydrate_training_dataset() {
   local app_name="$1"
   shift
-  local source_dir="$SOURCE_ROOT/apps/$app_name/training_data"
+  local source_dir
   local target_dir="$AUTOMATION_ROOT/apps/$app_name/training_data"
   local copied=0
   local unchanged=0
@@ -158,6 +326,8 @@ hydrate_training_dataset() {
 
   [ -d "$AUTOMATION_ROOT/apps/$app_name" ] || return 0
 
+  source_dir=$(source_training_dir_for_app "$app_name")
+
   if [ ! -d "$source_dir" ]; then
     echo "WARN  apps/$app_name training_data missing in source root"
     WARNINGS=$((WARNINGS + 1))
@@ -165,7 +335,7 @@ hydrate_training_dataset() {
   fi
 
   for rel_file in "$@"; do
-    source_file="$source_dir/$rel_file"
+    source_file=$(resolve_source_training_path "$app_name" "$rel_file")
     target_file="$target_dir/$rel_file"
 
     if [ ! -f "$source_file" ]; then
@@ -189,7 +359,7 @@ hydrate_training_dataset() {
 hydrate_training_support_files() {
   local app_name="$1"
   shift
-  local source_dir="$SOURCE_ROOT/apps/$app_name/training_data"
+  local source_dir
   local target_dir="$AUTOMATION_ROOT/apps/$app_name/training_data"
   local copied=0
   local unchanged=0
@@ -197,24 +367,28 @@ hydrate_training_support_files() {
   local pattern source_file rel_file target_file matched
 
   [ -d "$AUTOMATION_ROOT/apps/$app_name" ] || return 0
+  source_dir=$(source_training_dir_for_app "$app_name")
   [ -d "$source_dir" ] || return 0
 
   for pattern in "$@"; do
     matched=0
-    for source_file in "$source_dir"/$pattern; do
-      if [ ! -f "$source_file" ]; then
-        continue
-      fi
-      matched=1
-      rel_file="${source_file#$source_dir/}"
-      target_file="$target_dir/$rel_file"
-      if copy_if_changed "$source_file" "$target_file"; then
-        echo "DATA  apps/$app_name/training_data/$rel_file"
-        copied=$((copied + 1))
-      else
-        unchanged=$((unchanged + 1))
-      fi
-    done
+    while IFS= read -r source_dir; do
+      [ -d "$source_dir" ] || continue
+      for source_file in "$source_dir"/$pattern; do
+        if [ ! -f "$source_file" ]; then
+          continue
+        fi
+        matched=1
+        rel_file="${source_file#$source_dir/}"
+        target_file="$target_dir/$rel_file"
+        if copy_if_changed "$source_file" "$target_file"; then
+          echo "DATA  apps/$app_name/training_data/$rel_file"
+          copied=$((copied + 1))
+        else
+          unchanged=$((unchanged + 1))
+        fi
+      done
+    done < <(source_training_root_candidates "$app_name")
 
     if [ "$matched" -eq 0 ]; then
       echo "WARN  apps/$app_name/training_data/$pattern missing in source root"
@@ -229,10 +403,11 @@ hydrate_training_support_files() {
 hydrate_training_subdir() {
   local app_name="$1"
   local rel_dir="$2"
-  local source_dir="$SOURCE_ROOT/apps/$app_name/training_data/$rel_dir"
+  local source_dir
   local target_dir="$AUTOMATION_ROOT/apps/$app_name/training_data/$rel_dir"
 
   [ -d "$AUTOMATION_ROOT/apps/$app_name" ] || return 0
+  source_dir=$(resolve_source_training_path "$app_name" "$rel_dir")
   if [ ! -d "$source_dir" ]; then
     echo "WARN  apps/$app_name/training_data/$rel_dir missing in source root"
     WARNINGS=$((WARNINGS + 1))
