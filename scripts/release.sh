@@ -3628,6 +3628,30 @@ check_project_qa_guardrails() {
     return 1
 }
 
+check_public_source_build_guardrails() {
+    if ! release_guardrails_required_for_mode; then
+        return 0
+    fi
+
+    local guard_script="${SCRIPT_DIR}/automation/public-source-build-guard.sh"
+    if [ ! -f "${guard_script}" ]; then
+        log_error "Public source-build guard script not found: ${guard_script}"
+        return 1
+    fi
+
+    if [ ! -x "${guard_script}" ]; then
+        log_error "Public source-build guard script is not executable: ${guard_script}"
+        return 1
+    fi
+
+    if "${guard_script}" "${PROJECT_ROOT}"; then
+        return 0
+    fi
+
+    log_error "Public source-build guardrails failed."
+    return 1
+}
+
 check_appstore_connect_version_state_gate() {
     if [ "${APPSTORE_ENABLED}" != "true" ] || [ "${SKIP_APPSTORE}" = true ]; then
         return 0
@@ -3786,6 +3810,7 @@ run_release_preflight_only() {
     fi
     run_gate "Required commands" check_required_commands
     run_gate "Project QA guardrails" check_project_qa_guardrails
+    run_gate "Public source-build guardrails" check_public_source_build_guardrails
     run_gate "Git clean" check_git_clean_gate
     run_gate "Machine reconcile" check_reconcile_gate
     run_gate "Version bump configuration" check_version_bump_gate
@@ -4262,6 +4287,9 @@ fi
 
 if [ "${FULL_RELEASE}" = true ] || [ "${RUN_DEPLOY}" = true ]; then
     if ! check_project_qa_guardrails; then
+        exit 1
+    fi
+    if ! check_public_source_build_guardrails; then
         exit 1
     fi
 fi
