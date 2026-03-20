@@ -58,6 +58,10 @@ Before drafting or approving release notes, do a customer-facing audit instead o
 Hard rule:
 - Do not publish release notes that omit a fix I already promised to a customer for `the next release`.
 - If a fix shipped and matters to a reporter, close the loop in both the notes and the customer follow-up.
+- Release notes must reduce fear, not create it. Write calm, reassuring, benefit-first bullets.
+- Do not use alarming words like `critical`, `severe`, `broken`, `failure`, `corruption`, or `regression` in customer-facing notes.
+- Every bullet should answer the customer's question: `what does this do for me?`
+- Prefer outcomes like `opens faster`, `stays in place after restart`, or `less nagging`, not internal causes or engineering details.
 
 **Headless App Store rule:**
 - If `.saneprocess` enables `appstore.platforms: [macos, ios]`, run the mini bootstrap before release:
@@ -126,6 +130,7 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
 7. Build/export with the standard release script, then submit the pkg with `appstore_submit.rb`.
 - Use full `release.sh --deploy` only when the direct channel should also ship.
 - Use build/export plus `appstore_submit.rb --pkg` when you only need to repair the App Store lane.
+- `release.sh` now hard-runs `./scripts/SaneMaster.rb appstore_preflight` before any App Store submit step. Do not bypass that with manual ASC resubmits unless you are explicitly debugging the lane.
 
 ### 0c. Setapp Lane Prep
 

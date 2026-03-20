@@ -1307,7 +1307,7 @@ launch_owner_app_local() {
   repair_accessibility_stale_rows_local "$app" "$bundle"
   check_stale_install_local "$app" "$bundle"
 
-  open -na "$bundle"
+  open "$bundle"
 
   sleep 2
   if pgrep -x "$app" >/dev/null 2>&1; then
@@ -1352,7 +1352,7 @@ launch_owner_app_remote() {
   cleanup_legacy_accessibility_remote "$app"
   repair_accessibility_stale_rows_remote "$app" "$bundle"
 
-  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "open -na '$bundle'"
+  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "open '$bundle'"
   sleep 2
 
   if ssh -o ConnectTimeout=5 -o BatchMode=yes mini "pgrep -x '$app' >/dev/null 2>&1"; then
@@ -1464,7 +1464,7 @@ launch_app_local() {
   repair_accessibility_stale_rows_local "$app" "$bundle"
   check_stale_install_local "$app" "$bundle"
 
-  local open_cmd=(open -na "$bundle")
+  local open_cmd=(open "$bundle")
   local launch_args=()
   if [[ "$ALLOW_KEYCHAIN" -eq 1 ]]; then
     if [[ "$mode" == "basic" && "$app" != "SaneBar" ]]; then
@@ -1538,15 +1538,15 @@ launch_app_remote() {
 
   if [[ "$ALLOW_KEYCHAIN" -eq 1 ]]; then
     if [[ "$mode" == "basic" && "$app" != "SaneBar" ]]; then
-      script="open -na '$bundle' --env SANEAPPS_FORCE_FREE_MODE=1"
+      script="open '$bundle' --env SANEAPPS_FORCE_FREE_MODE=1"
     else
-      script="open -na '$bundle'"
+      script="open '$bundle'"
     fi
   else
     if [[ "$mode" == "basic" && "$app" != "SaneBar" ]]; then
-      script="open -na '$bundle' --env SANEAPPS_DISABLE_KEYCHAIN=1 --env SANEAPPS_FORCE_FREE_MODE=1 --args --sane-no-keychain"
+      script="open '$bundle' --env SANEAPPS_DISABLE_KEYCHAIN=1 --env SANEAPPS_FORCE_FREE_MODE=1 --args --sane-no-keychain"
     else
-      script="open -na '$bundle' --env SANEAPPS_DISABLE_KEYCHAIN=1 --args --sane-no-keychain"
+      script="open '$bundle' --env SANEAPPS_DISABLE_KEYCHAIN=1 --args --sane-no-keychain"
     fi
   fi
 

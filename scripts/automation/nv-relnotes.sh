@@ -11,7 +11,7 @@ OUTPUT_DIR="/Users/sj/SaneApps/infra/SaneProcess/outputs/relnotes"
 DATE=$(date +%Y%m%d-%H%M%S)
 
 # Release notes prompt
-RELNOTES_PROMPT="Write user-facing release notes from these commits and any recent customer-facing research notes. Format as 3-5 bullet points. Focus on what changed for the user, not internal refactoring. Keep each bullet under 100 characters. No technical jargon. Do not omit shipped fixes just because the commit title is vague. Pay special attention to customer-visible fixes that were promised in support replies or issue comments."
+RELNOTES_PROMPT="Write user-facing release notes from these commits and any recent customer-facing research notes. Format as 3-5 bullet points. Each bullet must answer: what does this do for me? Focus on the user benefit, the improved behavior, or the annoyance that is now gone. Keep each bullet under 100 characters. No technical jargon. Never use alarming language or words that scare customers. Avoid words like critical, severe, broken, failure, corruption, regression, telemetry, or privacy-risk framing unless the user benefit truly requires it. Phrase each bullet calmly and clearly. Do not omit shipped fixes just because the commit title is vague. Pay special attention to customer-visible fixes that were promised in support replies or issue comments."
 
 # Parse arguments
 REPO_PATH="${1:-.}"

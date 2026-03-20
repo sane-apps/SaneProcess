@@ -641,11 +641,12 @@ validate_release_notes_text() {
         return 0
     fi
 
-    local bad_words="regression|hardens|corruption|backlog|reconcile|fallback|herestring|mutex|refactor|migration recovery|separator target|position seeding"
+    local bad_words="regression|hardens|corruption|backlog|reconcile|fallback|herestring|mutex|refactor|migration recovery|separator target|position seeding|critical|severe|broken|failure|catastrophic|fatal"
     if echo "${raw_notes}" | grep -qiE "${bad_words}"; then
-        log_error "Release notes contain developer jargon that customers should never see."
+        log_error "Release notes contain jargon or alarming language that customers should never see."
         log_error "Rejected words: $(echo "${raw_notes}" | grep -oiE "${bad_words}" | sort -u | tr '\n' ', ')"
-        log_error "Rewrite in plain English. Think: would grandma understand this?"
+        log_error "Rewrite in calm plain English. Answer: what does this do for me?"
+        log_error "Focus on the user benefit, not the scary failure mode or technical cause."
         return 1
     fi
 
@@ -3677,6 +3678,25 @@ check_appstore_connect_version_state_gate() {
     return 0
 }
 
+check_appstore_submission_guardrails_gate() {
+    if [ "${APPSTORE_ENABLED}" != "true" ] || [ "${SKIP_APPSTORE}" = true ]; then
+        return 0
+    fi
+
+    local sanemaster_script="${SCRIPT_DIR}/SaneMaster.rb"
+    if [ ! -f "${sanemaster_script}" ]; then
+        log_error "SaneMaster.rb not found at ${sanemaster_script}"
+        return 1
+    fi
+
+    if ! ruby "${sanemaster_script}" appstore_preflight; then
+        log_error "App Store artifact/policy preflight failed."
+        return 1
+    fi
+
+    return 0
+}
+
 check_live_appcast_republish_gate() {
     if [ "${ALLOW_REPUBLISH}" = true ] || [ "${USE_SPARKLE}" != "true" ]; then
         return 0
@@ -3777,6 +3797,7 @@ run_release_preflight_only() {
     run_gate "Notarization authentication" resolve_notary_auth
     run_gate "App Store configuration" check_appstore_gate
     run_gate "App Store Connect draft version state" check_appstore_connect_version_state_gate
+    run_gate "App Store artifact/policy preflight" check_appstore_submission_guardrails_gate
     run_gate "Live appcast republish guard" check_live_appcast_republish_gate
 
     if [ "${failures}" -gt 0 ]; then
@@ -5235,6 +5256,17 @@ PY
         log_info "═══════════════════════════════════════════"
         log_info "  SUBMITTING TO APP STORE"
         log_info "═══════════════════════════════════════════"
+
+        CURRENT_GATE="App Store artifact/policy preflight"
+        RELEASE_ERR_GATE_RECORDED=""
+        if ! check_appstore_submission_guardrails_gate; then
+            track_gate_result "App Store artifact/policy preflight" "failure" "${RELEASE_LAST_ERROR}"
+            CURRENT_GATE=""
+            APPSTORE_SUBMIT_FAILED=true
+        else
+            track_gate_result "App Store artifact/policy preflight" "pass" "ok"
+            CURRENT_GATE=""
+        fi
 
         APPSTORE_SCRIPT="${SCRIPT_DIR}/appstore_submit.rb"
 

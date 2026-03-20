@@ -517,6 +517,8 @@ This is deliberate. The goal is to stop wasting review cycles on builds Apple is
 
 Additional lessons now enforced in the shared flow:
 - `appstore_submit.rb --skip-upload` fails fast if the requested existing build is not actually visible in ASC for that platform. It now prints the visible build candidates instead of polling for 45 minutes on a bad build number.
+- `release.sh` now hard-runs `SaneMaster.rb appstore_preflight` before any App Store submission step, so full releases cannot skip the compiled-artifact policy gate by accident.
+- `appstore_submit.rb` now validates that support and privacy URLs actually resolve successfully, not just that metadata strings exist.
 - Reviewer access is treated as a first-class requirement. If the app needs outside credentials, review notes must explain the exact demo/review path and must state when no account, API key, or payment is required.
 - “App Store-safe” means the compiled artifact, not just the source tree. Preflight must verify that the App Store binary no longer exposes website checkout URLs, license-key CTAs, or automation permission declarations that contradict the review notes.
 - Apps whose core App Store build still depends on Accessibility/CGEvent control of third-party UI should be treated as high-risk or ineligible for Mac App Store review until that functionality is removed or isolated from the App Store build.
