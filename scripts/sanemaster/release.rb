@@ -486,6 +486,163 @@ module SaneMasterModules
       ''
     end
 
+    def appstore_fetch_url_status(url)
+      uri = URI(url.to_s)
+      request = Net::HTTP::Get.new(uri)
+
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = uri.scheme == 'https'
+      http.open_timeout = 5
+      http.read_timeout = 20
+
+      response = http.request(request)
+      {
+        code: response.code.to_i,
+        location: response['location'].to_s.strip,
+        error: nil
+      }
+    rescue StandardError => e
+      { code: 0, location: '', error: e.message }
+    end
+
+    def appstore_url_health(url, limit: 5)
+      current_url = url.to_s.strip
+      return { ok: false, code: 0, final_url: current_url, error: 'missing URL' } if current_url.empty?
+
+      redirects = 0
+      while redirects <= limit
+        status = appstore_fetch_url_status(current_url)
+        return status.merge(ok: false, final_url: current_url) if status[:error]
+
+        code = status[:code].to_i
+        if code.between?(200, 299)
+          return { ok: true, code: code, final_url: current_url, error: nil }
+        end
+
+        if code.between?(300, 399)
+          location = status[:location].to_s
+          return { ok: false, code: code, final_url: current_url, error: 'redirect missing location' } if location.empty?
+
+          current_url = URI.join(current_url, location).to_s
+          redirects += 1
+          next
+        end
+
+        return { ok: false, code: code, final_url: current_url, error: "HTTP #{code}" }
+      end
+
+      { ok: false, code: 0, final_url: current_url, error: 'too many redirects' }
+    rescue StandardError => e
+      { ok: false, code: 0, final_url: current_url, error: e.message }
+    end
+
+    def appstore_direct_purchase_markers(artifact_blob)
+      markers = []
+      markers << 'website checkout URL' if artifact_blob.match?(/go\.saneapps\.com\/buy\//i)
+      markers << 'license key entry copy' if artifact_blob.match?(/Enter License Key|license key/i)
+      markers << 'purchase key entry copy' if artifact_blob.match?(/Use Purchase Key|purchase key|Activation Code/i)
+      markers << 'manual key entry CTA' if artifact_blob.match?(/I Have a Key|Enter Key|Activate License/i)
+      markers
+    end
+
+    def appstore_donation_markers(artifact_blob)
+      markers = []
+      markers << 'Donate button/copy' if artifact_blob.match?(/\bDonate\b|Donate to/i)
+      markers << 'GitHub Sponsors link/copy' if artifact_blob.match?(/Sponsor on GitHub|GitHub Sponsors|github\.com\/sponsors/i)
+      markers << 'supporter appeal copy' if artifact_blob.match?(/Support independent development|keep .* alive/i)
+      markers << 'crypto donation copy' if artifact_blob.match?(/\bsend crypto\b|\bBTC\b|\bSOL\b|\bZEC\b/i)
+      markers
+    end
+
+    def appstore_update_markers(strings_out:, otool_out:)
+      markers = []
+      markers << 'Sparkle framework linkage' if otool_out.match?(/Sparkle\.framework/)
+      markers << 'Sparkle settings UI' if strings_out.match?(/SaneSparkleRow|Check for updates automatically|Check Now/i)
+      markers << 'outside-update menu copy' if strings_out.match?(/Check for Updates/i)
+      markers << 'updater service type' if strings_out.match?(/\bUpdateService\b/)
+      markers
+    end
+
+    def appstore_scheme_build_targets(manifest, scheme_name)
+      return [] unless manifest.is_a?(Hash)
+
+      scheme = manifest.fetch('schemes', {}).fetch(scheme_name.to_s, nil)
+      return [] unless scheme.is_a?(Hash)
+
+      build_targets = scheme.fetch('build', {}).fetch('targets', nil)
+      case build_targets
+      when Hash
+        build_targets.keys.map(&:to_s)
+      when Array
+        build_targets.map(&:to_s)
+      else
+        []
+      end
+    end
+
+    def appstore_target_graph_issues(manifest:, direct_scheme:, appstore_scheme:, platform:)
+      return [] unless manifest.is_a?(Hash)
+
+      targets = manifest['targets']
+      return [] unless targets.is_a?(Hash)
+
+      normalized_platform = platform.to_s.downcase
+      select_app_targets = lambda do |target_names|
+        target_names.select do |target_name|
+          target = targets[target_name]
+          next false unless target.is_a?(Hash)
+
+          target['type'].to_s == 'application' && target['platform'].to_s.downcase == normalized_platform
+        end
+      end
+
+      direct_targets = select_app_targets.call(appstore_scheme_build_targets(manifest, direct_scheme))
+      appstore_targets = select_app_targets.call(appstore_scheme_build_targets(manifest, appstore_scheme))
+
+      issues = []
+      if appstore_targets.empty?
+        issues << "App Store scheme #{appstore_scheme} does not build a #{platform} application target"
+        return issues
+      end
+
+      shared_targets = direct_targets & appstore_targets
+      if shared_targets.any?
+        issues << "App Store scheme #{appstore_scheme} reuses direct application target(s): #{shared_targets.join(', ')}"
+      end
+
+      appstore_targets.each do |target_name|
+        target = targets[target_name]
+        dependencies = Array(target['dependencies'])
+        linked_packages = dependencies.each_with_object([]) do |dependency, packages|
+          next unless dependency.is_a?(Hash) && dependency.key?('package')
+
+          packages << dependency['package'].to_s
+        end
+        if linked_packages.include?('Sparkle')
+          issues << "App Store target #{target_name} still links Sparkle at the target graph level"
+        end
+
+        info_properties = target.dig('info', 'properties')
+        if info_properties.is_a?(Hash)
+          sparkle_keys = info_properties.keys.map(&:to_s).grep(/\ASU[A-Z]/)
+          if sparkle_keys.any?
+            issues << "App Store target #{target_name} still declares Sparkle Info.plist keys (#{sparkle_keys.join(', ')})"
+          end
+        end
+
+        scripts_blob = Array(target['postBuildScripts']).map do |script|
+          next '' unless script.is_a?(Hash)
+
+          [script['name'], script['script']].compact.join("\n")
+        end.join("\n")
+        if scripts_blob.match?(/Strip Sparkle|weaken_sparkle|Sparkle stripped and weak-linked/i)
+          issues << "App Store target #{target_name} still relies on Sparkle strip/weaken scripts"
+        end
+      end
+
+      issues
+    end
+
     def fetch_live_email_worker_snapshot(product_name:, include_signed:)
       api_key = resolve_secret(
         service: 'sane-email-automation',
@@ -552,11 +709,11 @@ module SaneMasterModules
       nil
     end
 
-    def asc_get_json(path, token:)
+    def asc_get_json(path, token:, base: 'https://api.appstoreconnect.apple.com/v1')
       require 'net/http'
       require 'json'
 
-      uri = URI("https://api.appstoreconnect.apple.com/v1#{path}")
+      uri = URI("#{base}#{path}")
       request = Net::HTTP::Get.new(uri)
       request['Authorization'] = "Bearer #{token}"
       response = Net::HTTP.start(uri.host, uri.port, use_ssl: true) { |http| http.request(request) }
@@ -581,10 +738,28 @@ module SaneMasterModules
       end
       return { exists: false, state: nil } unless row
 
-      {
+      status = {
         exists: true,
         state: row.dig('attributes', 'state').to_s.strip
       }
+
+      iap_id = row['id'].to_s.strip
+      unless iap_id.empty?
+        localization_response = asc_get_json(
+          "/inAppPurchases/#{iap_id}/inAppPurchaseLocalizations?limit=50",
+          token: token,
+          base: 'https://api.appstoreconnect.apple.com/v2'
+        )
+        if localization_response.is_a?(Hash)
+          localization_states = Array(localization_response['data']).map do |entry|
+            entry.dig('attributes', 'state').to_s.strip
+          end.reject(&:empty?).uniq
+          status[:localization_states] = localization_states
+          status[:rejected_localization] = localization_states.include?('REJECTED')
+        end
+      end
+
+      status
     end
 
     def normalized_cloudkit_config(config)
@@ -954,6 +1129,18 @@ module SaneMasterModules
         end
 
         next unless uses_license_service
+
+        purchase_surface_path = notes_downcase.match?(/settings\s*>\s*license|license tab|unlock pro|upgrade to pro|restore purchases|browse library|locked categor|open .*license/i)
+        durable_purchase_surface_path = notes_downcase.match?(/settings\s*>\s*license|license tab|browse library|locked categor|open .*license/i)
+        one_shot_onboarding_path = platform_source.match?(/hasSeenWelcome|WelcomeGateView/)
+
+        unless purchase_surface_path
+          report[:issues] << "[#{platform}] Review notes do not tell App Review where to find the optional Pro unlock (for example Settings > License or another visible Unlock Pro path)"
+        end
+
+        if one_shot_onboarding_path && !durable_purchase_surface_path
+          report[:warnings] << "[#{platform}] Onboarding paywall appears one-shot in code, but review notes do not mention a durable post-onboarding upgrade path like Settings > License"
+        end
 
         unless business_model_path
           report[:warnings] << "[#{platform}] Review notes do not clearly explain the App Store business model (free/basic, Pro unlock path, no website license flow)"
@@ -2026,28 +2213,38 @@ module SaneMasterModules
 
       # 4b. Privacy policy URL
       print '  │ Privacy policy URL... '
-      privacy_url = appstore_config['privacy_policy_url'] || config.dig('website_domain')
-      if appstore_config['privacy_policy_url']
-        puts "✅ #{appstore_config['privacy_policy_url']}"
-      elsif config['website_domain']
-        puts "⚠️  not explicit — using https://#{config['website_domain']}/privacy"
-        warnings << "No explicit privacy_policy_url in .saneprocess — Apple requires this in metadata"
-      else
+      privacy_url = appstore_config['privacy_policy_url'].to_s.strip
+      privacy_url = "https://#{config['website_domain']}/privacy" if privacy_url.empty? && config['website_domain']
+      if privacy_url.empty?
         puts '❌ missing'
         issues << 'No privacy policy URL — required for all App Store submissions'
+      else
+        health = appstore_url_health(privacy_url)
+        if health[:ok]
+          puts "✅ #{privacy_url} (#{health[:code]})"
+          warnings << "No explicit privacy_policy_url in .saneprocess — Apple requires this in metadata" unless appstore_config['privacy_policy_url']
+        else
+          puts "❌ #{health[:error]}"
+          issues << "Privacy policy URL #{privacy_url} did not resolve successfully (#{health[:error]})"
+        end
       end
 
       # 4c. Support URL
       print '  │ Support URL... '
-      support_url = appstore_config['support_url']
-      if support_url
-        puts "✅ #{support_url}"
-      elsif config['website_domain']
-        puts "⚠️  not explicit — assuming https://#{config['website_domain']}/support"
-        warnings << "No explicit support_url in .saneprocess — Apple requires this"
-      else
+      support_url = appstore_config['support_url'].to_s.strip
+      support_url = "https://#{config['website_domain']}/support" if support_url.empty? && config['website_domain']
+      if support_url.empty?
         puts '❌ missing'
         issues << 'No support URL — required for App Store'
+      else
+        health = appstore_url_health(support_url)
+        if health[:ok]
+          puts "✅ #{support_url} (#{health[:code]})"
+          warnings << "No explicit support_url in .saneprocess — Apple requires this" unless appstore_config['support_url']
+        else
+          puts "❌ #{health[:error]}"
+          issues << "Support URL #{support_url} did not resolve successfully (#{health[:error]})"
+        end
       end
 
       puts '  │'
@@ -2195,6 +2392,9 @@ module SaneMasterModules
           if !iap_status[:exists]
             puts "❌ #{configured_product_id} not found"
             issues << "App Store Connect has no in-app purchase with product_id #{configured_product_id}"
+          elsif iap_status[:rejected_localization]
+            puts "❌ #{configured_product_id} (#{iap_status[:state]})"
+            issues << "App Store Connect IAP #{configured_product_id} has a REJECTED localization — Apple requires a new product_id for a replacement IAP."
           elsif %w[WAITING_FOR_REVIEW IN_REVIEW APPROVED READY_FOR_SALE].include?(iap_status[:state])
             puts "✅ #{configured_product_id} (#{iap_status[:state]})"
           elsif iap_status[:state] == 'READY_TO_SUBMIT'
@@ -2329,7 +2529,33 @@ module SaneMasterModules
         puts '⏭️  skipped (no high-risk App Store automation patterns detected)'
       end
 
-      # 5g. Build App Store config and audit resulting artifact for runtime blockers
+      # 5g3. App Store target graph audit
+      print '  │ App Store target graph... '
+      project_manifest = if project_yml && File.exist?(project_yml)
+                           YAML.safe_load(File.read(project_yml)) || {}
+                         else
+                           nil
+                         end
+      if platforms.include?('macos') && project_manifest.is_a?(Hash)
+        direct_scheme = (config['scheme'] || app_name).to_s
+        appstore_scheme = (appstore_config['scheme'] || direct_scheme).to_s
+        graph_issues = appstore_target_graph_issues(
+          manifest: project_manifest,
+          direct_scheme: direct_scheme,
+          appstore_scheme: appstore_scheme,
+          platform: 'macOS'
+        )
+        if graph_issues.empty?
+          puts "✅ #{appstore_scheme}"
+        else
+          puts "❌ #{graph_issues.first}"
+          graph_issues.each { |msg| issues << "App Store target graph: #{msg}" }
+        end
+      else
+        puts '⏭️  skipped'
+      end
+
+      # 5h. Build App Store config and audit resulting artifact for runtime blockers
       print '  │ Compiled App Store artifact audit... '
       platforms = Array(appstore_config['platforms'] || ['macos']).map(&:to_s)
       if platforms.include?('macos')
@@ -2435,15 +2661,21 @@ module SaneMasterModules
                   artifact_issues << 'Built App Store artifact still embeds LaunchDaemons payload — Mac App Store apps cannot ship launchd daemons or agents'
                 end
 
-                direct_purchase_markers = []
-                direct_purchase_markers << 'website checkout URL' if artifact_blob.match?(/go\.saneapps\.com\/buy\//i)
-                direct_purchase_markers << 'license key entry copy' if artifact_blob.match?(/Enter License Key|license key/i)
-                direct_purchase_markers << 'purchase key entry copy' if artifact_blob.match?(/Use Purchase Key|purchase key/i)
-                direct_purchase_markers << 'manual key entry CTA' if artifact_blob.match?(/I Have a Key|Enter Key|Activate License/i)
+                direct_purchase_markers = appstore_direct_purchase_markers(artifact_blob)
                 if direct_purchase_markers.any?
                   artifact_issues << "Built App Store artifact still exposes direct-purchase markers (#{direct_purchase_markers.join(', ')})"
                 elsif artifact_blob.match?(%r{api\.lemonsqueezy\.com/v1/licenses/validate}i) && !built_product_id.empty?
                   artifact_warnings << 'Built App Store artifact still contains LemonSqueezy license-validation strings — verify website-license code is unreachable in the App Store build'
+                end
+
+                donation_markers = appstore_donation_markers(artifact_blob)
+                if donation_markers.any?
+                  artifact_issues << "Built App Store artifact still exposes donation/support markers (#{donation_markers.join(', ')})"
+                end
+
+                update_markers = appstore_update_markers(strings_out: strings_out, otool_out: otool_out)
+                if update_markers.any?
+                  artifact_issues << "Built App Store artifact still exposes outside-update markers (#{update_markers.join(', ')})"
                 end
 
                 if review_notes_blob.match?(/does not request accessibility/i) &&

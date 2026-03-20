@@ -423,6 +423,28 @@ def metadata_review_readiness_report(config:, asc_platform:, app_name:, project_
     warnings << "#{platform_label} keywords field has fewer than 5 focused terms"
   end
 
+  privacy_url = appstore_cfg['privacy_policy_url'].to_s.strip
+  if !support_url.strip.empty?
+    support_health = metadata_url_health(support_url)
+    unless support_health[:ok]
+      issues << "#{platform_label} support URL #{support_url} did not resolve successfully (#{support_health[:error]})"
+    end
+  end
+
+  if !privacy_url.empty?
+    privacy_health = metadata_url_health(privacy_url)
+    unless privacy_health[:ok]
+      issues << "#{platform_label} privacy policy URL #{privacy_url} did not resolve successfully (#{privacy_health[:error]})"
+    end
+  end
+
+  if !marketing_url.strip.empty?
+    marketing_health = metadata_url_health(marketing_url)
+    unless marketing_health[:ok]
+      warnings << "#{platform_label} marketing URL #{marketing_url} did not resolve successfully (#{marketing_health[:error]})"
+    end
+  end
+
   if has_external_credentials
     if review_notes.strip.empty?
       issues << "#{platform_label} review notes are missing the reviewer-access path for a credential-gated app"
@@ -449,6 +471,18 @@ def metadata_review_readiness_report(config:, asc_platform:, app_name:, project_
   end
 
   if uses_license_service
+    purchase_surface_path = notes_downcase.match?(/settings\s*>\s*license|license tab|unlock pro|upgrade to pro|restore purchases|browse library|locked categor|open .*license/i)
+    durable_purchase_surface_path = notes_downcase.match?(/settings\s*>\s*license|license tab|browse library|locked categor|open .*license/i)
+    one_shot_onboarding_path = source_blob.match?(/hasSeenWelcome|WelcomeGateView/)
+
+    unless purchase_surface_path
+      issues << "#{platform_label} review notes do not tell App Review where to find the optional Pro unlock"
+    end
+
+    if one_shot_onboarding_path && !durable_purchase_surface_path
+      warnings << "#{platform_label} onboarding paywall appears one-shot; review notes should mention a durable post-onboarding upgrade path like Settings > License"
+    end
+
     unless notes_downcase.match?(/basic is free|free\./) &&
            notes_downcase.match?(/in-app purchase|app store/) &&
            notes_downcase.match?(/no external checkout|no license key|no license keys/)
@@ -465,6 +499,59 @@ def metadata_review_readiness_report(config:, asc_platform:, app_name:, project_
     issues: issues.uniq,
     warnings: warnings.uniq
   }
+end
+
+def metadata_fetch_url_status(url)
+  uri = URI(url)
+  http = Net::HTTP.new(uri.host, uri.port)
+  http.use_ssl = uri.scheme == 'https'
+  http.open_timeout = 10
+  http.read_timeout = 20
+
+  request = Net::HTTP::Head.new(uri)
+  response = http.request(request)
+  {
+    code: response.code.to_i,
+    location: response['location'].to_s,
+    error: nil
+  }
+rescue StandardError => e
+  {
+    code: 0,
+    location: '',
+    error: e.message
+  }
+end
+
+def metadata_url_health(url, limit: 4)
+  current = url.to_s.strip
+  redirects = 0
+
+  while !current.empty? && redirects <= limit
+    status = metadata_fetch_url_status(current)
+    return { ok: false, code: status[:code], final_url: current, error: status[:error] } if status[:error]
+
+    code = status[:code].to_i
+    if code >= 200 && code < 400
+      location = status[:location].to_s.strip
+      if code >= 300 && !location.empty?
+        next_url = begin
+          URI.join(current, location).to_s
+        rescue StandardError
+          location
+        end
+        redirects += 1
+        current = next_url
+        next
+      end
+
+      return { ok: true, code: code, final_url: current, error: nil }
+    end
+
+    return { ok: false, code: code, final_url: current, error: "HTTP #{code}" }
+  end
+
+  { ok: false, code: 0, final_url: current, error: 'too many redirects' }
 end
 
 def resolve_review_notes(config, asc_platform)
@@ -2647,6 +2734,11 @@ def create_iap(app_id:, product_id:, project_root:, config:, token:)
     response['data']
   else
     detail = response.dig('errors', 0, 'detail') || response.dig('errors', 0, 'title') || 'unknown error'
+    if code == 409 && detail.match?(/name is already being used by another in-app purchase/i)
+      log_error "Failed to create IAP #{product_id}: the display name \"#{iap_name}\" is already in use for this app."
+      log_error 'Change appstore.iap.display_name in .saneprocess, then rerun the IAP readiness step.'
+      return nil
+    end
     log_error "Failed to create IAP #{product_id} (HTTP #{code}): #{detail}"
     nil
   end
@@ -2725,6 +2817,12 @@ def ensure_iap_readiness(app_id:, product_id:, project_root:, config:, token:, p
   final = find_iap_by_product_id(app_id: app_id, product_id: product_id, token: generate_jwt)
   state = final.dig('attributes', 'state')
   log_info "IAP state after readiness pass: #{state}"
+
+  if state == 'DEVELOPER_ACTION_NEEDED'
+    log_error "IAP #{product_id} is DEVELOPER_ACTION_NEEDED."
+    log_error 'Open App Store Connect, finish the missing IAP fields Apple still expects, then rerun submit.'
+    return false
+  end
 
   return false unless state == 'READY_TO_SUBMIT' || state == 'WAITING_FOR_REVIEW' || state == 'APPROVED'
 
@@ -3299,6 +3397,7 @@ end
 
 # ─── Main ───
 
+if __FILE__ == $PROGRAM_NAME
 options = {}
 OptionParser.new do |opts|
   opts.banner = 'Usage: appstore_submit.rb [options]'
@@ -3312,7 +3411,7 @@ OptionParser.new do |opts|
   opts.on('--skip-upload', 'Skip binary upload; use existing processed build in ASC') { options[:skip_upload] = true }
   opts.on('--skip-screenshots', 'Skip screenshot upload; use screenshots already present in ASC') { options[:skip_screenshots] = true }
   opts.on('--screenshots-only', 'Upload screenshots to an existing ASC version (no upload, no build attach, no submission)') { options[:screenshots_only] = true }
-  opts.on('--iap-only', 'Ensure configured iOS IAP metadata is complete and exit') { options[:iap_only] = true }
+  opts.on('--iap-only', 'Ensure configured App Store IAP metadata is complete and exit') { options[:iap_only] = true }
   opts.on('--iap-price-usd PRICE', 'Target US IAP price for auto-created price schedule (default: 6.99)') { |v| options[:iap_price_usd] = v }
   opts.on('--preflight-version-state', 'Check editable ASC version state only (no upload, no submission)') { options[:preflight_version_state] = true }
   opts.on('--repair-version-state', 'Attempt ASC lane repair before version-state preflight') { options[:repair_version_state] = true }
@@ -3957,4 +4056,5 @@ if submit_for_review(app_id, asc_platform, version_id, token)
 else
   log_error 'Review submission failed. Check App Store Connect manually.'
   exit 1
+end
 end
