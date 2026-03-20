@@ -3633,6 +3633,11 @@ check_public_source_build_guardrails() {
         return 0
     fi
 
+    if [ -z "${PROJECT_ROOT}" ] || [ ! -d "${PROJECT_ROOT}" ]; then
+        log_error "Public source-build guardrails require a valid PROJECT_ROOT (got '${PROJECT_ROOT:-}')"
+        return 1
+    fi
+
     local guard_script="${SCRIPT_DIR}/automation/public-source-build-guard.sh"
     if [ ! -f "${guard_script}" ]; then
         log_error "Public source-build guard script not found: ${guard_script}"
