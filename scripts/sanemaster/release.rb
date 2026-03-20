@@ -762,6 +762,132 @@ module SaneMasterModules
       status
     end
 
+    APP_STORE_EDITABLE_STATES = %w[
+      PREPARE_FOR_SUBMISSION
+      REJECTED
+      DEVELOPER_REJECTED
+      READY_FOR_REVIEW
+    ].freeze
+
+    APP_STORE_ACTIVE_SUBMISSION_STATES = %w[
+      WAITING_FOR_REVIEW
+      IN_REVIEW
+      PENDING_APPLE_RELEASE
+      PENDING_DEVELOPER_RELEASE
+      PROCESSING_FOR_DISTRIBUTION
+    ].freeze
+
+    APP_STORE_FINALIZED_STATES = %w[
+      READY_FOR_SALE
+      DEVELOPER_REMOVED_FROM_SALE
+      REMOVED_FROM_SALE
+      REPLACED_WITH_NEW_VERSION
+    ].freeze
+
+    def asc_version_lane_guardrail_report(app_id:, platform:, version_string:)
+      report = { applicable: false, issues: [], warnings: [], summary: '', target_state: nil }
+      return report if app_id.to_s.strip.empty? || version_string.to_s.strip.empty?
+
+      token = appstore_connect_token
+      return report if token.nil?
+
+      asc_platform = platform.to_s.downcase == 'ios' ? 'IOS' : 'MAC_OS'
+      response = asc_get_json("/apps/#{app_id}/appStoreVersions?filter[platform]=#{asc_platform}&limit=200", token: token)
+      return report unless response.is_a?(Hash)
+
+      versions = Array(response['data']).map do |entry|
+        {
+          id: entry['id'].to_s.strip,
+          version: entry.dig('attributes', 'versionString').to_s.strip,
+          state: entry.dig('attributes', 'appStoreState').to_s.strip
+        }
+      end
+
+      report[:applicable] = true
+
+      target = versions.find { |entry| entry[:version] == version_string.to_s.strip }
+      editable_conflicts = versions.select do |entry|
+        APP_STORE_EDITABLE_STATES.include?(entry[:state]) && entry[:version] != version_string.to_s.strip
+      end
+      active_conflicts = versions.select do |entry|
+        APP_STORE_ACTIVE_SUBMISSION_STATES.include?(entry[:state]) && entry[:version] != version_string.to_s.strip
+      end
+
+      if target
+        state = target[:state]
+        report[:target_state] = state
+        report[:summary] = "#{version_string} (#{state})"
+        if APP_STORE_FINALIZED_STATES.include?(state)
+          report[:issues] << "App Store Connect already has #{platform} version #{version_string} in final state #{state} — bump MARKETING_VERSION before submission."
+        end
+        return report
+      end
+
+      if active_conflicts.any?
+        conflicts = active_conflicts.map { |entry| "#{entry[:version]} (#{entry[:state]})" }.join(', ')
+        report[:issues] << "App Store Connect has active #{platform} submission lane(s) #{conflicts}, but local target is #{version_string}."
+        report[:summary] = "conflict: #{conflicts}"
+        return report
+      end
+
+      if editable_conflicts.any?
+        conflicts = editable_conflicts.map { |entry| "#{entry[:version]} (#{entry[:state]})" }.join(', ')
+        report[:issues] << "App Store Connect has editable #{platform} lane(s) #{conflicts}, but local target is #{version_string}. Retarget or clear that lane before submission."
+        report[:summary] = "conflict: #{conflicts}"
+        return report
+      end
+
+      report[:summary] = "#{version_string} clear"
+      report
+    end
+
+    def appstore_version_ui_includes_iap?(app_id:, platform:, product_id:)
+      return nil if app_id.to_s.strip.empty? || product_id.to_s.strip.empty?
+
+      platform_path = platform.to_s.downcase == 'ios' ? 'ios' : 'macos'
+      target_url = "https://appstoreconnect.apple.com/apps/#{app_id}/distribution/#{platform_path}/version/inflight"
+      escaped_product = product_id.to_s.gsub('\\', '\\\\').gsub('"', '\"')
+      escaped_url = target_url.gsub('\\', '\\\\').gsub('"', '\"')
+
+      script = <<~APPLESCRIPT
+        tell application "Safari"
+          if not running then return "UNAVAILABLE"
+          if (count of documents) = 0 then return "UNAVAILABLE"
+
+          set originalURL to URL of front document
+          try
+            set URL of front document to "#{escaped_url}"
+            delay 10
+            set pageText to do JavaScript "document.body ? document.body.innerText : ''" in front document
+            if pageText contains "Included Assets" and pageText contains "#{escaped_product}" then
+              set probeResult to "FOUND"
+            else
+              set probeResult to "MISSING"
+            end if
+          on error errMsg
+            set probeResult to "ERROR:" & errMsg
+          end try
+
+          try
+            set URL of front document to originalURL
+          end try
+
+          return probeResult
+        end tell
+      APPLESCRIPT
+
+      out, status = Open3.capture2e('osascript', stdin_data: script)
+      return nil unless status.success?
+
+      result = out.to_s.strip
+      return true if result == 'FOUND'
+      return false if result == 'MISSING'
+
+      nil
+    rescue StandardError
+      nil
+    end
+
     def normalized_cloudkit_config(config)
       cloudkit = config.is_a?(Hash) ? config['cloudkit'] : nil
       return nil unless cloudkit.is_a?(Hash) && cloudkit['enabled']
@@ -2327,6 +2453,40 @@ module SaneMasterModules
         warnings << 'No appstore.configuration in .saneprocess — using default Release config?'
       end
 
+      lane_reports = []
+
+      # 5c0. App Store Connect version lane matches local target
+      print '  │ ASC version lane... '
+      if asc_app_id.to_s.strip.empty?
+        puts '⚠️  skipped (no ASC app_id)'
+        warnings << 'Cannot verify App Store Connect version lane without appstore.app_id'
+      elsif version_str.to_s.strip.empty?
+        puts '⚠️  skipped (no MARKETING_VERSION)'
+        warnings << 'Cannot verify App Store Connect version lane without MARKETING_VERSION'
+      else
+        lane_reports = Array(platforms).map do |platform|
+          [platform, asc_version_lane_guardrail_report(app_id: asc_app_id, platform: platform, version_string: version_str)]
+        end
+
+        applicable_reports = lane_reports.select { |_platform, report| report[:applicable] }
+        if applicable_reports.empty?
+          puts '⚠️  lookup failed'
+          warnings << 'Could not verify App Store Connect version lane state'
+        else
+          lane_issues = applicable_reports.flat_map { |_platform, report| Array(report[:issues]) }
+          if lane_issues.empty?
+            summary = applicable_reports.map do |platform, report|
+              "#{platform}: #{report[:summary]}"
+            end.join(' | ')
+            puts "✅ #{summary}"
+          else
+            first_platform, first_report = applicable_reports.find { |_platform, report| Array(report[:issues]).any? }
+            puts "❌ #{first_platform}: #{first_report[:summary]}"
+            lane_issues.each { |message| issues << message }
+          end
+        end
+      end
+
       # 5c1. launchd daemon / helper architecture audit
       print '  │ launchd daemon audit... '
       if platforms.include?('macos')
@@ -2398,8 +2558,25 @@ module SaneMasterModules
           elsif %w[WAITING_FOR_REVIEW IN_REVIEW APPROVED READY_FOR_SALE].include?(iap_status[:state])
             puts "✅ #{configured_product_id} (#{iap_status[:state]})"
           elsif iap_status[:state] == 'READY_TO_SUBMIT'
-            puts "❌ #{configured_product_id} (READY_TO_SUBMIT)"
-            issues << "App Store Connect IAP #{configured_product_id} is still READY_TO_SUBMIT — Apple requires it to be added to the app version's In-App Purchases and Subscriptions section before submission."
+            ready_lane = lane_reports.find do |_platform, report|
+              %w[READY_FOR_REVIEW WAITING_FOR_REVIEW IN_REVIEW].include?(report[:target_state].to_s)
+            end
+            ready_lane_platform = ready_lane&.first
+            ui_attached = if ready_lane_platform
+                            appstore_version_ui_includes_iap?(
+                              app_id: asc_app_id,
+                              platform: ready_lane_platform,
+                              product_id: configured_product_id
+                            )
+                          end
+
+            if ui_attached
+              puts "⚠️  #{configured_product_id} (READY_TO_SUBMIT, attached on version page)"
+              warnings << "App Store Connect still reports IAP #{configured_product_id} as READY_TO_SUBMIT, but Safari verified it is attached under Included Assets for #{ready_lane_platform} #{version_str}"
+            else
+              puts "❌ #{configured_product_id} (READY_TO_SUBMIT)"
+              issues << "App Store Connect IAP #{configured_product_id} is still READY_TO_SUBMIT — Apple requires it to be added to the app version's In-App Purchases and Subscriptions section before submission."
+            end
           else
             puts "❌ #{configured_product_id} (#{iap_status[:state]})"
             issues << "App Store Connect IAP #{configured_product_id} exists but is not review-ready (state=#{iap_status[:state]})"

@@ -9,6 +9,7 @@ class ReleaseGuardrailHarness
 
   def initialize
     @stubbed_url_statuses = {}
+    @stubbed_asc_paths = {}
   end
 
   def stub_url_status(url, code:, location: '', error: nil)
@@ -19,6 +20,20 @@ class ReleaseGuardrailHarness
     @stubbed_url_statuses.fetch(url) do
       { code: 0, location: '', error: "missing stub for #{url}" }
     end
+  end
+
+  def stub_asc_json(path, payload)
+    @stubbed_asc_paths[path] = payload
+  end
+
+  def appstore_connect_token
+    'stub-token'
+  end
+
+  def asc_get_json(path, token:, base: 'https://api.appstoreconnect.apple.com/v1')
+    _ = token
+    _ = base
+    @stubbed_asc_paths[path]
   end
 end
 
@@ -175,6 +190,83 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_includes(
         report[:warnings],
         '[macos] Onboarding paywall appears one-shot in code, but review notes do not mention a durable post-onboarding upgrade path like Settings > License'
+      )
+      true
+    end
+  end
+
+  test_category('ASC version lane guardrails') do
+    test('fails when a different editable ASC lane exists for the platform') do
+      subject.stub_asc_json(
+        '/apps/123/appStoreVersions?filter[platform]=MAC_OS&limit=200',
+        {
+          'data' => [
+            { 'id' => 'lane-1', 'attributes' => { 'versionString' => '1.2.2', 'appStoreState' => 'REJECTED' } }
+          ]
+        }
+      )
+
+      report = subject.send(
+        :asc_version_lane_guardrail_report,
+        app_id: '123',
+        platform: 'macos',
+        version_string: '1.2.3'
+      )
+
+      assert(report[:applicable], 'expected report to apply')
+      assert_eq(report[:summary], 'conflict: 1.2.2 (REJECTED)')
+      assert_includes(
+        report[:issues],
+        'App Store Connect has editable macos lane(s) 1.2.2 (REJECTED), but local target is 1.2.3. Retarget or clear that lane before submission.'
+      )
+      true
+    end
+
+    test('passes when the target ASC lane already matches the local version') do
+      subject.stub_asc_json(
+        '/apps/123/appStoreVersions?filter[platform]=IOS&limit=200',
+        {
+          'data' => [
+            { 'id' => 'lane-2', 'attributes' => { 'versionString' => '2.0.0', 'appStoreState' => 'READY_FOR_REVIEW' } }
+          ]
+        }
+      )
+
+      report = subject.send(
+        :asc_version_lane_guardrail_report,
+        app_id: '123',
+        platform: 'ios',
+        version_string: '2.0.0'
+      )
+
+      assert(report[:applicable], 'expected report to apply')
+      assert_eq(report[:summary], '2.0.0 (READY_FOR_REVIEW)')
+      assert_eq(report[:issues], [])
+      true
+    end
+
+    test('fails when the local version already exists in a final ASC state') do
+      subject.stub_asc_json(
+        '/apps/123/appStoreVersions?filter[platform]=MAC_OS&limit=200',
+        {
+          'data' => [
+            { 'id' => 'lane-3', 'attributes' => { 'versionString' => '3.1.0', 'appStoreState' => 'READY_FOR_SALE' } }
+          ]
+        }
+      )
+
+      report = subject.send(
+        :asc_version_lane_guardrail_report,
+        app_id: '123',
+        platform: 'macos',
+        version_string: '3.1.0'
+      )
+
+      assert(report[:applicable], 'expected report to apply')
+      assert_eq(report[:summary], '3.1.0 (READY_FOR_SALE)')
+      assert_includes(
+        report[:issues],
+        'App Store Connect already has macos version 3.1.0 in final state READY_FOR_SALE — bump MARKETING_VERSION before submission.'
       )
       true
     end
