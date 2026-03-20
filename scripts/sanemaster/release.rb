@@ -40,6 +40,14 @@ module SaneMasterModules
       ''
     end
 
+    def applescript_string_literal(text)
+      text.to_s
+          .gsub('\\', '\\\\')
+          .gsub('"', '\"')
+          .gsub("\r", "\\r")
+          .gsub("\n", "\\n")
+    end
+
     def plist_bool_true?(content, key)
       content.to_s.match?(%r{<key>#{Regexp.escape(key)}</key>\s*<true/>}m)
     end
@@ -846,8 +854,8 @@ module SaneMasterModules
 
       platform_path = platform.to_s.downcase == 'ios' ? 'ios' : 'macos'
       target_url = "https://appstoreconnect.apple.com/apps/#{app_id}/distribution/#{platform_path}/version/inflight"
-      escaped_product = product_id.to_s.gsub('\\', '\\\\').gsub('"', '\"')
-      escaped_url = target_url.gsub('\\', '\\\\').gsub('"', '\"')
+      escaped_product = applescript_string_literal(product_id)
+      escaped_url = applescript_string_literal(target_url)
 
       script = <<~APPLESCRIPT
         tell application "Safari"
@@ -857,8 +865,12 @@ module SaneMasterModules
           set originalURL to URL of front document
           try
             set URL of front document to "#{escaped_url}"
-            delay 10
-            set pageText to do JavaScript "document.body ? document.body.innerText : ''" in front document
+            set pageText to ""
+            repeat 20 times
+              delay 1
+              set pageText to do JavaScript "document.body ? document.body.innerText : ''" in front document
+              if pageText contains "Included Assets" then exit repeat
+            end repeat
             if pageText contains "Included Assets" and pageText contains "#{escaped_product}" then
               set probeResult to "FOUND"
             else
