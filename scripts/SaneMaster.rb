@@ -585,7 +585,9 @@ class SaneMaster
         fi
       done
     SH
-    system('ssh', 'mini', remote_cmd)
+    ok = system('ssh', 'mini', remote_cmd)
+    warn '⚠️  Failed to prune stale routed workspaces on the mini.' unless ok
+    ok
   end
 
   def release_artifact_resume_requested?(command, args)
