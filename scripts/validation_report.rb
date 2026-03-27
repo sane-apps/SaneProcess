@@ -1158,6 +1158,8 @@ class ValidationReport
 
     webhook_snapshot = fetch_live_email_worker_snapshot
     warnings_found << 'Live email worker snapshot unavailable; webhook drift check skipped where data is missing' if webhook_snapshot.nil?
+    lemonsqueezy_snapshot = fetch_live_lemonsqueezy_hosted_versions
+    warnings_found << 'Live Lemon Squeezy hosted file snapshot unavailable; hosted-file drift check skipped where data is missing' if lemonsqueezy_snapshot.nil?
 
     released_product_definitions.each do |product|
       next unless product[:project_exists]
@@ -1206,17 +1208,30 @@ class ValidationReport
       end
       versions[:cask] = cask_ver || '—'
 
+      # 5. Lemon Squeezy hosted file version
+      lemonsqueezy_ver = nil
+      if lemonsqueezy_snapshot.is_a?(Hash)
+        hosted_file = lemonsqueezy_snapshot[app_name]
+        lemonsqueezy_ver = hosted_file['version'] if hosted_file.is_a?(Hash)
+      end
+      versions[:lemonsqueezy] = lemonsqueezy_ver || '—'
+
       version_table << { app: app_name, versions: versions }
 
       # Compare all present versions against appcast (source of truth)
       next unless appcast_ver
 
-      %i[website webhook cask].each do |channel|
+      %i[website webhook cask lemonsqueezy].each do |channel|
         chan_ver = versions[channel]
         next if chan_ver == '—'
 
         if chan_ver != appcast_ver
-          label = { website: 'Website download link', webhook: 'Email webhook PRODUCT_CONFIG', cask: 'Homebrew cask' }[channel]
+          label = {
+            website: 'Website download link',
+            webhook: 'Email webhook PRODUCT_CONFIG',
+            cask: 'Homebrew cask',
+            lemonsqueezy: 'Lemon Squeezy hosted file'
+          }[channel]
           issues_found << "[#{app_name}] VERSION DRIFT: #{label} has v#{chan_ver} but appcast is v#{appcast_ver}"
         end
       end
@@ -1289,6 +1304,66 @@ class ValidationReport
     return raw_content if $?.success? && !raw_content.to_s.empty?
 
     ''
+  end
+
+  def fetch_live_lemonsqueezy_hosted_versions
+    api_key = resolve_secret_value('lemonsqueezy', 'api_key', 'LEMONSQUEEZY_API_KEY')
+    return nil if api_key.empty?
+
+    products = fetch_lemonsqueezy_collection('/v1/products?page[size]=100', api_key)
+    variants = fetch_lemonsqueezy_collection('/v1/variants?page[size]=100', api_key)
+    return nil unless products.is_a?(Array) && variants.is_a?(Array)
+
+    released_product_definitions.each_with_object({}) do |product, snapshot|
+      product_record = products.find do |record|
+        name = record.dig('attributes', 'name').to_s.strip
+        name == product[:name] || name.start_with?("#{product[:name]}:")
+      end
+      next unless product_record
+
+      variant_record = variants.find do |record|
+        record.dig('attributes', 'product_id').to_s == product_record['id'].to_s
+      end
+      next unless variant_record
+
+      files = fetch_lemonsqueezy_collection("/v1/variants/#{variant_record['id']}/files?page[size]=100", api_key)
+      next unless files.is_a?(Array)
+
+      published_file = files.find { |record| record.dig('attributes', 'status').to_s == 'published' } || files.first
+      next unless published_file
+
+      filename = published_file.dig('attributes', 'name').to_s.strip
+      version = extract_release_version_from_filename(filename)
+      next if filename.empty? && version.nil?
+
+      snapshot[product[:name]] = {
+        'filename' => filename,
+        'version' => version
+      }
+    end
+  rescue StandardError
+    nil
+  end
+
+  def fetch_lemonsqueezy_collection(path, api_key)
+    body = fetch_url_text(
+      "https://api.lemonsqueezy.com#{path}",
+      headers: {
+        'Authorization' => "Bearer #{api_key}",
+        'Accept' => 'application/vnd.api+json'
+      }
+    )
+    return nil if body.empty?
+
+    parsed = JSON.parse(body)
+    parsed['data']
+  rescue StandardError
+    nil
+  end
+
+  def extract_release_version_from_filename(filename)
+    match = filename.to_s.match(/-(\d+\.\d+(?:\.\d+)?)\.(zip|dmg)\z/i)
+    match && match[1]
   end
 
   def website_domain_for_project(project_path, app_name)

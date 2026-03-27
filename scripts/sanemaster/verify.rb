@@ -963,8 +963,14 @@ module SaneMasterModules
         content.scan(/static let \w+ = ["']([^"']+)["']/) { |match| identifiers << match[0] }
       end
 
-      Dir.glob(File.join(project_app_dir, '**/*.swift')).each do |file|
-        next if file.include?('/Tests/') || file.include?('/Mocks/') || file.include?('AccessibilityIdentifiers.swift')
+      Dir.glob(File.join(Dir.pwd, '**/*.swift')).each do |file|
+        next if file.include?('/Tests/') ||
+                file.include?('/UITests/') ||
+                file.include?('/Mocks/') ||
+                file.include?('/.build/') ||
+                file.include?('/DerivedData/') ||
+                file.include?('/docs/') ||
+                file.include?('AccessibilityIdentifiers.swift')
         next unless File.exist?(file)
 
         content = File.read(file)

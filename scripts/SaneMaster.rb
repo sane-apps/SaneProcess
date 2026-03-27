@@ -169,7 +169,7 @@ class SaneMaster
     sales: {
       desc: 'Sales and revenue reporting',
       commands: {
-        'sales' => { args: '[--daily|--month|--products|--fees|--refund-order ID|--refund-order-number N|--json]', desc: 'LemonSqueezy sales report and refunds (default: daily breakdown)' },
+        'sales' => { args: '[--daily|--month|--products|--fees|--refund-order ID|--refund-order-number N|--approval-note PATH|--include-refunded|--json]', desc: 'LemonSqueezy sales report and guarded refunds (default: daily breakdown)' },
         'downloads' => { args: '[--daily|--days N|--app NAME|--json]', desc: 'Download analytics from dist Worker (default: daily breakdown)' },
         'events' => { args: '[--days N|--app NAME|--json]', desc: 'User-type event analytics (new_free, early_adopter, activated)' },
         'leads' => { args: '--query "TEXT" [--site-limit N] [--page-limit N] [--domain example.com]', desc: 'Lead discovery with Exa + Firecrawl site dossiers' }
@@ -415,6 +415,7 @@ class SaneMaster
         SANEBAR_APPROVE_FAST_RELEASE
         SANEBAR_APPROVE_OPEN_REGRESSION_RELEASE
         SANEBAR_APPROVE_UNCONFIRMED_REGRESSION_CLOSE
+        SANEBAR_RELEASE_SMOKE_SCREENSHOTS
       ]
       routed_release_env = release_routed ? routed_release_env_context(Dir.pwd) : {}
       forwarded_env = forwarded_env_keys.map do |key|
@@ -1643,8 +1644,8 @@ class SaneMaster
       examples: ['appstore_preflight', 'asp']
     },
     'sales' => {
-      usage: 'sales [--daily|--month|--products|--fees|--refund-order ID|--refund-order-number N|--json]',
-      description: 'LemonSqueezy sales report and order refunds. Default: daily breakdown (today/yesterday/week/all-time).',
+      usage: 'sales [--daily|--month|--products|--fees|--refund-order ID|--refund-order-number N|--approval-note PATH|--include-refunded|--json]',
+      description: 'LemonSqueezy sales report and guarded order refunds. Default: daily breakdown (today/yesterday/week/all-time).',
       flags: {
         '--daily' => 'Today/yesterday/week/all-time breakdown (default)',
         '--month' => 'Current month with monthly aggregates',
@@ -1653,7 +1654,9 @@ class SaneMaster
         '--refund-order ID' => 'Issue a refund for a Lemon Squeezy order ID',
         '--refund-order-number N' => 'Issue a refund for a Lemon Squeezy order number',
         '--amount CENTS' => 'Refund a specific amount in cents (omit for full refund)',
-        '--proof-file PATH' => 'Write a human-readable refund proof file',
+        '--proof-file PATH' => 'Write a human-readable refund proof file (required for new refunds)',
+        '--approval-note PATH' => 'Path to the explicit refund approval note (required for new refunds)',
+        '--include-refunded' => 'Include refunded orders in report/json output',
         '--json' => 'Raw JSON output for piping'
       },
       examples: [
@@ -1661,7 +1664,7 @@ class SaneMaster
         'sales --month        # Current month',
         'sales --products     # Revenue by product',
         'sales --fees         # Fee breakdown',
-        'sales --refund-order 7679013 --proof-file /tmp/refund.txt'
+        'SANE_REFUND_APPROVED=1 sales --refund-order 7679013 --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt'
       ]
     },
     'downloads' => {

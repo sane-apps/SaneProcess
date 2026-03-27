@@ -5,6 +5,9 @@ require 'shellwords'
 require 'net/http'
 require 'tempfile'
 require 'uri'
+require 'yaml'
+require 'json'
+require 'open3'
 
 module SaneMasterModules
   # Unified release entrypoint (delegates to SaneProcess release.sh)
@@ -154,6 +157,34 @@ module SaneMasterModules
           app_groups: groups.reject(&:empty?)
         }
       end
+    rescue StandardError
+      []
+    end
+
+    def appstore_macos_signing_targets(project_yml_path)
+      return [] unless project_yml_path && File.exist?(project_yml_path)
+
+      project = YAML.safe_load(File.read(project_yml_path)) || {}
+      targets = project['targets'] || {}
+      results = []
+
+      targets.each do |name, spec|
+        next unless spec.is_a?(Hash)
+        next unless spec['platform'].to_s == 'macOS'
+        next if spec['type'].to_s.start_with?('bundle.')
+
+        release_appstore = spec.dig('settings', 'configs', 'Release-AppStore') || {}
+        next if release_appstore.empty?
+
+        results << {
+          name: name,
+          bundle_id: release_appstore['PRODUCT_BUNDLE_IDENTIFIER'] || spec['bundleId'],
+          code_sign_style: release_appstore['CODE_SIGN_STYLE'].to_s,
+          code_sign_identity: release_appstore['CODE_SIGN_IDENTITY'].to_s
+        }
+      end
+
+      results
     rescue StandardError
       []
     end
@@ -565,10 +596,75 @@ module SaneMasterModules
     def appstore_update_markers(strings_out:, otool_out:)
       markers = []
       markers << 'Sparkle framework linkage' if otool_out.match?(/Sparkle\.framework/)
-      markers << 'Sparkle settings UI' if strings_out.match?(/SaneSparkleRow|Check for updates automatically|Check Now/i)
+      markers << 'Sparkle settings UI' if strings_out.match?(/SaneSparkleRow|Check for updates automatically|Check Now|Software Updates/i)
       markers << 'outside-update menu copy' if strings_out.match?(/Check for Updates/i)
       markers << 'updater service type' if strings_out.match?(/\bUpdateService\b/)
       markers
+    end
+
+    def image_edge_luminance_report(path)
+      return nil unless path && File.file?(path)
+
+      script = <<~PYTHON
+        import json
+        import sys
+
+        try:
+            from PIL import Image
+        except Exception as exc:
+            print(json.dumps({"error": "pil_missing", "detail": str(exc)}))
+            raise SystemExit(0)
+
+        img = Image.open(sys.argv[1]).convert("RGB")
+        width, height = img.size
+        samples = [
+            (0, 0),
+            (0, height - 1),
+            (width - 1, 0),
+            (width - 1, height - 1),
+            (width // 2, 20),
+            (20, height // 2),
+            (max(width - 21, 0), height // 2),
+            (width // 2, max(height - 21, 0))
+        ]
+
+        luminances = []
+        for x, y in samples:
+            r, g, b = img.getpixel((x, y))
+            luminances.append(0.2126 * r + 0.7152 * g + 0.0722 * b)
+
+        print(json.dumps({
+            "average_edge_luminance": sum(luminances) / len(luminances),
+            "min_edge_luminance": min(luminances),
+            "max_edge_luminance": max(luminances)
+        }))
+      PYTHON
+
+      out, status = Open3.capture2e('python3', '-c', script, path.to_s)
+      return nil unless status.success?
+
+      JSON.parse(out)
+    rescue StandardError
+      nil
+    end
+
+    def watch_marketing_icon_warning(path)
+      report = image_edge_luminance_report(path)
+      return nil unless report.is_a?(Hash)
+
+      if report['error'] == 'pil_missing'
+        return 'Could not audit the watch marketing icon automatically because Pillow is unavailable; inspect the watch icon manually before submission'
+      end
+
+      average = report['average_edge_luminance'].to_f
+      minimum = report['min_edge_luminance'].to_f
+      return nil unless average < 40.0 || minimum < 15.0
+
+      format(
+        'Watch marketing icon edges are very dark (avg %.1f, min %.1f). Apple can reject watch icons that do not read clearly as circular on watchOS.',
+        average,
+        minimum
+      )
     end
 
     def appstore_scheme_build_targets(manifest, scheme_name)
@@ -854,50 +950,58 @@ module SaneMasterModules
 
       platform_path = platform.to_s.downcase == 'ios' ? 'ios' : 'macos'
       target_url = "https://appstoreconnect.apple.com/apps/#{app_id}/distribution/#{platform_path}/version/inflight"
-      escaped_product = applescript_string_literal(product_id)
-      escaped_url = applescript_string_literal(target_url)
+      script = <<~JXA
+        var safari = Application('Safari');
+        safari.includeStandardAdditions = true;
+        if (!safari.running()) {
+          console.log('UNAVAILABLE');
+        } else if (safari.documents().length === 0) {
+          console.log('UNAVAILABLE');
+        } else {
+          var tab = safari.windows[0].currentTab();
+          var originalURL = '';
+          try { originalURL = String(tab.url()); } catch (originalUrlError) {}
+          function run(js) {
+            return safari.doJavaScript(js, { in: tab });
+          }
+          try {
+            tab.url = #{target_url.to_json};
+            var pageText = '';
+            for (var i = 0; i < 30; i++) {
+              delay(1);
+              pageText = run("document.body ? document.body.innerText : ''") || '';
+              if (pageText.indexOf(#{product_id.to_json}) !== -1) break;
+              if (pageText.indexOf('Included Assets') !== -1) break;
+              if (pageText.indexOf('In-App Purchases and Subscriptions') !== -1) break;
+            }
+            console.log(pageText.indexOf(#{product_id.to_json}) !== -1 ? 'FOUND' : 'MISSING');
+          } catch (error) {
+            console.log('ERROR:' + error.toString());
+          }
+          if (originalURL && originalURL.length > 0) {
+            try { tab.url = originalURL; } catch (restoreError) {}
+          }
+        }
+      JXA
 
-      script = <<~APPLESCRIPT
-        tell application "Safari"
-          if not running then return "UNAVAILABLE"
-          if (count of documents) = 0 then return "UNAVAILABLE"
-
-          set originalURL to URL of front document
-          try
-            set URL of front document to "#{escaped_url}"
-            set pageText to ""
-            repeat 20 times
-              delay 1
-              set pageText to do JavaScript "document.body ? document.body.innerText : ''" in front document
-              if pageText contains "Included Assets" then exit repeat
-            end repeat
-            if pageText contains "Included Assets" and pageText contains "#{escaped_product}" then
-              set probeResult to "FOUND"
-            else
-              set probeResult to "MISSING"
-            end if
-          on error errMsg
-            set probeResult to "ERROR:" & errMsg
-          end try
-
-          try
-            set URL of front document to originalURL
-          end try
-
-          return probeResult
-        end tell
-      APPLESCRIPT
-
-      out, status = Open3.capture2e('osascript', stdin_data: script)
+      out, status = run_osascript_jxa(script)
+      lines = out.to_s.lines.map(&:strip).reject(&:empty?)
+      return true if lines.include?('FOUND')
+      return false if lines.include?('MISSING')
+      return nil if lines.include?('UNAVAILABLE')
       return nil unless status.success?
 
-      result = out.to_s.strip
+      result = lines.last.to_s
       return true if result == 'FOUND'
       return false if result == 'MISSING'
 
       nil
     rescue StandardError
       nil
+    end
+
+    def run_osascript_jxa(script)
+      Open3.capture2e('osascript', '-l', 'JavaScript', stdin_data: script)
     end
 
     def normalized_cloudkit_config(config)
@@ -1189,9 +1293,14 @@ module SaneMasterModules
         next [] unless pkg.is_a?(Hash)
 
         rel_path = pkg['path'].to_s.strip
-        next [] if rel_path.empty?
+        abs_path =
+          if !rel_path.empty?
+            File.expand_path(rel_path, project_root)
+          elsif pkg['url'].to_s.match?(%r{sane-apps/SaneUI(\.git)?}i)
+            File.expand_path('../../infra/SaneUI', project_root)
+          end
 
-        abs_path = File.expand_path(rel_path, project_root)
+        next [] unless abs_path && Dir.exist?(abs_path)
         Dir.glob(File.join(abs_path, 'Sources', '**', '*.swift'))
       end.uniq
     rescue StandardError
@@ -1271,9 +1380,26 @@ module SaneMasterModules
         purchase_surface_path = notes_downcase.match?(/settings\s*>\s*license|license tab|unlock pro|upgrade to pro|restore purchases|browse library|locked categor|open .*license/i)
         durable_purchase_surface_path = notes_downcase.match?(/settings\s*>\s*license|license tab|browse library|locked categor|open .*license/i)
         one_shot_onboarding_path = platform_source.match?(/hasSeenWelcome|WelcomeGateView/)
+        has_license_surface = platform_source.match?(/Section\("License"\)|GlassSection\("License"|LicenseSettingsView/)
+        has_welcome_gate_surface = platform_source.match?(/WelcomeGateView\(/)
+        has_unlock_pro_surface = platform_source.match?(/Unlock Pro|purchasePro\(|restorePurchases\(/i) ||
+                                 (notes_downcase.match?(/welcome screen|onboarding/) && has_welcome_gate_surface)
+        has_browse_library_surface = platform_source.match?(/Browse Library/i)
 
         unless purchase_surface_path
           report[:issues] << "[#{platform}] Review notes do not tell App Review where to find the optional Pro unlock (for example Settings > License or another visible Unlock Pro path)"
+        end
+
+        if notes_downcase.match?(/settings\s*>\s*license|license tab/) && !has_license_surface
+          report[:issues] << "[#{platform}] Review notes mention a License screen/section, but no License surface exists in the #{platform} source"
+        end
+
+        if notes_downcase.include?('unlock pro') && !has_unlock_pro_surface
+          report[:issues] << "[#{platform}] Review notes mention “Unlock Pro”, but that action is not present in the #{platform} source"
+        end
+
+        if notes_downcase.include?('browse library') && !has_browse_library_surface
+          report[:issues] << "[#{platform}] Review notes mention “Browse Library”, but that action is not present in the #{platform} source"
         end
 
         if one_shot_onboarding_path && !durable_purchase_surface_path
@@ -2107,6 +2233,7 @@ module SaneMasterModules
       print '  │ Version/build number... '
       project_yml = File.join(Dir.pwd, 'project.yml')
       yml_content = File.exist?(project_yml) ? File.read(project_yml) : ''
+      project_yml_content = yml_content
       version_str = project_marketing_version(yml_content)
       build_num = project_build_number(yml_content)
       if version_str && build_num
@@ -2171,6 +2298,8 @@ module SaneMasterModules
       # SECTION 3: App Store Assets
       # ═══════════════════════════════════════════
       puts '  ├── App Store Assets ──'
+      screenshots_config = appstore_config['screenshots'] || {}
+      platforms = appstore_config['platforms'] || ['macos']
 
       # 3a. App icon (1024x1024)
       print '  │ App icon (1024x1024)... '
@@ -2191,11 +2320,32 @@ module SaneMasterModules
         issues << 'No 1024x1024 app icon found in AppIcon.appiconset'
       end
 
+      # 3a1. Watch marketing icon audit
+      print '  │ Watch marketing icon... '
+      watch_assets_expected = project_yml_content.include?('WATCHOS_DEPLOYMENT_TARGET') || screenshots_config.key?('watch')
+      watch_marketing_icons = Dir.glob('**/WatchAppIcon.appiconset/*.png').reject { |p| p.include?('DerivedData') || p.include?('build/') }.select do |path|
+        dims, = Open3.capture2('sips', '-g', 'pixelWidth', '-g', 'pixelHeight', path)
+        dims[/pixelWidth:\s*(\d+)/, 1].to_i == 1024 && dims[/pixelHeight:\s*(\d+)/, 1].to_i == 1024
+      end
+      if watch_assets_expected
+        if watch_marketing_icons.empty?
+          puts '❌ not found'
+          issues << 'watchOS target detected but no 1024x1024 marketing icon was found in WatchAppIcon.appiconset'
+        else
+          warning = watch_marketing_icon_warning(watch_marketing_icons.first)
+          if warning
+            puts '⚠️  inspect contrast'
+            warnings << warning
+          else
+            puts '✅'
+          end
+        end
+      else
+        puts '⏭️  skipped (no watch lane detected)'
+      end
+
       # 3b. Screenshots configured and valid
       print '  │ Screenshots... '
-      screenshots_config = appstore_config['screenshots'] || {}
-      platforms = appstore_config['platforms'] || ['macos']
-      project_yml_content = File.exist?(project_yml) ? File.read(project_yml) : ''
       ios_supports_ipad = project_yml_content.match?(/TARGETED_DEVICE_FAMILY:\s*["']?[^"\n]*\b2\b/)
 
       if screenshots_config.empty?
@@ -2570,8 +2720,9 @@ module SaneMasterModules
           elsif %w[WAITING_FOR_REVIEW IN_REVIEW APPROVED READY_FOR_SALE].include?(iap_status[:state])
             puts "✅ #{configured_product_id} (#{iap_status[:state]})"
           elsif iap_status[:state] == 'READY_TO_SUBMIT'
+            attachable_lane_states = (APP_STORE_EDITABLE_STATES + APP_STORE_ACTIVE_SUBMISSION_STATES).uniq
             ready_lane = lane_reports.find do |_platform, report|
-              %w[READY_FOR_REVIEW WAITING_FOR_REVIEW IN_REVIEW].include?(report[:target_state].to_s)
+              attachable_lane_states.include?(report[:target_state].to_s)
             end
             ready_lane_platform = ready_lane&.first
             ui_attached = if ready_lane_platform
@@ -2678,6 +2829,48 @@ module SaneMasterModules
         signing_warnings.each { |msg| warnings << msg }
       else
         puts '⏭️  skipped (no iOS App Store lane)'
+      end
+
+      # 5f2. macOS App Store signing audit
+      print '  │ macOS App Store signing... '
+      mac_signing_targets = appstore_macos_signing_targets(project_yml)
+      if platforms.include?('macos') || mac_signing_targets.any?
+        mac_signing_issues = []
+        mac_signing_warnings = []
+        identities_out, = Open3.capture2e('security', 'find-identity', '-v', '-p', 'codesigning')
+        unless identities_out.include?('Apple Distribution:')
+          mac_signing_issues << 'Apple Distribution signing identity is missing from the local keychain — macOS App Store archives cannot sign correctly'
+        end
+
+        installer_identities_out, = Open3.capture2e('security', 'find-identity', '-v', '-p', 'basic')
+        unless installer_identities_out.include?('Mac Installer Distribution')
+          mac_signing_warnings << 'Mac Installer Distribution identity is missing from the local keychain — macOS App Store export/upload will fail after archive'
+        end
+
+        if mac_signing_targets.empty?
+          mac_signing_warnings << 'No macOS Release-AppStore targets found in project.yml — verify the desktop App Store lane manually'
+        end
+
+        mac_signing_targets.each do |target|
+          unless target[:code_sign_identity].include?('Apple Distribution')
+            mac_signing_issues << "#{target[:name]} Release-AppStore is not pinned to Apple Distribution signing"
+          end
+
+          if target[:code_sign_style] == 'Automatic'
+            mac_signing_warnings << "#{target[:name]} Release-AppStore still uses automatic signing — verify the archive is actually signed with Apple Distribution on the Mini"
+          end
+        end
+
+        if mac_signing_issues.empty?
+          detail = mac_signing_targets.empty? ? 'no macOS targets found' : "#{mac_signing_targets.count} target(s) checked"
+          puts "✅ #{detail}"
+        else
+          puts "❌ #{mac_signing_issues.first}"
+          mac_signing_issues.each { |msg| issues << msg }
+        end
+        mac_signing_warnings.each { |msg| warnings << msg }
+      else
+        puts '⏭️  skipped (no macOS App Store lane)'
       end
 
       # 5g. Reviewer access + business-model guardrails

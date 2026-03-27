@@ -9,16 +9,99 @@ require_relative 'appstore_submit'
 class AppStoreSubmitGuardrailHarness
   def initialize
     @stubbed_url_statuses = {}
+    @stubbed_safari_snapshot = nil
+    @stubbed_safari_snapshots = nil
+    @safari_snapshot_calls = []
+    @stubbed_safari_javascript = nil
+    @stubbed_patch_result = nil
+    @stubbed_iap_record = nil
   end
 
   def stub_url_status(url, code:, location: '', error: nil)
-    @stubbed_url_statuses[url] = { code:, location:, error: }
+    @stubbed_url_statuses[url] = { code: code, location: location, error: error }
   end
 
   def metadata_fetch_url_status(url)
     @stubbed_url_statuses.fetch(url) do
       { code: 0, location: '', error: "missing stub for #{url}" }
     end
+  end
+
+  def stub_safari_snapshot(snapshot)
+    @stubbed_safari_snapshot = snapshot
+  end
+
+  def stub_safari_snapshots(snapshots)
+    @stubbed_safari_snapshots = Array(snapshots).dup
+    @safari_snapshot_calls = []
+  end
+
+  attr_reader :safari_snapshot_calls
+
+  def safari_page_snapshot(url:, delay_seconds: 8, navigate: true)
+    @safari_snapshot_calls << {
+      url: url,
+      delay_seconds: delay_seconds,
+      navigate: navigate
+    }
+    if @stubbed_safari_snapshots && !@stubbed_safari_snapshots.empty?
+      return @stubbed_safari_snapshots.shift
+    end
+    @stubbed_safari_snapshot || { 'url' => '', 'body' => '' }
+  end
+
+  def stub_safari_javascript(output)
+    @stubbed_safari_javascript = output
+  end
+
+  def run_safari_javascript(url:, javascript:, delay_seconds: 8, navigate: true)
+    _ = url
+    _ = javascript
+    _ = delay_seconds
+    _ = navigate
+    @stubbed_safari_javascript || JSON.generate('url' => '', 'clicks' => [], 'body' => '')
+  end
+
+  def stub_patch_result(code, resp)
+    @stubbed_patch_result = [code, resp]
+  end
+
+  def asc_patch_with_status(*_args, **_kwargs)
+    return @stubbed_patch_result if @stubbed_patch_result
+
+    raise 'missing patch stub'
+  end
+
+  def stub_iap_record(record)
+    @stubbed_iap_record = record
+  end
+
+  def find_iap_by_product_id(*_args, **_kwargs)
+    @stubbed_iap_record
+  end
+
+  def ensure_iap_localization(**_kwargs)
+    true
+  end
+
+  def ensure_iap_price_schedule(**_kwargs)
+    true
+  end
+
+  def ensure_iap_review_screenshot(**_kwargs)
+    true
+  end
+
+  def ensure_iap_availability(**_kwargs)
+    true
+  end
+
+  def ensure_iap_review_note(**_kwargs)
+    true
+  end
+
+  def generate_jwt
+    'stub-jwt'
   end
 end
 
@@ -152,6 +235,139 @@ exit(run_tests('App Store Submit Guardrail Tests') do
           report[:warnings],
           'macOS onboarding paywall appears one-shot; review notes should mention a durable post-onboarding upgrade path like Settings > License'
         )
+      end
+      true
+    end
+  end
+
+  test_category('IAP submission guardrails') do
+    test('detects an attached IAP from the live version page snapshot') do
+      subject.stub_safari_snapshot(
+        'url' => 'https://appstoreconnect.apple.com/apps/123/distribution/macos/version/inflight',
+        'body' => "Included Assets\nIn-App Purchases and Subscriptions\ncom.example.pro.unlock\n"
+      )
+
+      found = subject.send(
+        :version_page_includes_iap?,
+        app_id: '123',
+        platform: 'macos',
+        product_id: 'com.example.pro.unlock'
+      )
+
+      assert_eq(found, true)
+      true
+    end
+
+    test('treats locked IAP review-note fields as non-fatal') do
+      subject.stub_patch_result(
+        409,
+        {
+          'errors' => [
+            {
+              'detail' => 'The field (APP_STORE_REVIEW_INFO) can not be modified'
+            }
+          ]
+        }
+      )
+
+      ok = subject.send(
+        :ensure_iap_review_note,
+        iap_id: 'iap-1',
+        review_note: 'Test note',
+        token: 'stub-token'
+      )
+
+      assert_eq(ok, true)
+      true
+    end
+
+    test('treats IN_REVIEW as already review-ready') do
+      subject.stub_iap_record(
+        {
+          'id' => 'iap-1',
+          'attributes' => { 'state' => 'IN_REVIEW', 'name' => 'Example Pro' }
+        }
+      )
+
+      ok = subject.send(
+        :ensure_iap_readiness,
+        app_id: 'app-1',
+        product_id: 'com.example.pro',
+        project_root: '/tmp',
+        config: { 'appstore' => { 'iap' => { 'display_name' => 'Example Pro' } } },
+        token: 'stub-token',
+        price_usd: '6.99',
+        platform: 'macos',
+        version_string: '1.0.0'
+      )
+
+      assert_eq(ok, true)
+      true
+    end
+  end
+
+  test_category('Review package capture') do
+    test('polls the review page without renavigating after the first Safari load') do
+      subject.stub_safari_snapshots(
+        [
+          {
+            'url' => 'https://appstoreconnect.apple.com/apps/123/distribution/reviewsubmissions/details/sub-1',
+            'body' => "SaneSales\nDistribution\n"
+          },
+          {
+            'url' => 'https://appstoreconnect.apple.com/apps/123/distribution/reviewsubmissions/details/sub-1',
+            'body' => "Messages (1)\nApple\nHello,\nSubmission ID: sub-1\n"
+          }
+        ]
+      )
+
+      review_text = subject.send(
+        :fetch_review_message_from_safari,
+        app_id: '123',
+        submission_id: 'sub-1'
+      )
+
+      assert_includes(review_text, 'Messages (1)')
+      assert_eq(subject.safari_snapshot_calls.length, 2)
+      assert_eq(subject.safari_snapshot_calls[0][:navigate], true)
+      assert_eq(subject.safari_snapshot_calls[1][:navigate], false)
+      true
+    end
+
+    test('captures review evidence and copies downloaded attachments') do
+      subject.stub_safari_snapshot(
+        'url' => 'https://appstoreconnect.apple.com/apps/123/distribution/reviewsubmissions/details/sub-1',
+        'body' => "Messages (1)\nApple\nHello,\nGuideline 2.4.5(vii)\n"
+      )
+      subject.stub_safari_javascript(
+        JSON.generate(
+          'url' => 'https://appstoreconnect.apple.com/apps/123/distribution/reviewsubmissions/details/sub-1',
+          'clicks' => ['Download screenshot'],
+          'body' => "Messages (1)\nApple\nHello,\nGuideline 2.4.5(vii)\n"
+        )
+      )
+
+      Dir.mktmpdir('appstore-review-package') do |dir|
+        downloads_dir = File.join(dir, 'Downloads')
+        output_dir = File.join(dir, 'output')
+        FileUtils.mkdir_p(downloads_dir)
+        File.write(File.join(downloads_dir, 'Screenshot-0326-125858.png'), 'fresh attachment')
+
+        package = subject.send(
+          :fetch_review_package_from_safari,
+          app_id: '123',
+          submission_id: 'sub-1',
+          downloads_dir: downloads_dir,
+          download_wait_seconds: 0
+        )
+        package['downloaded_files'] = [File.join(downloads_dir, 'Screenshot-0326-125858.png')]
+
+        summary = subject.send(:persist_review_package, package: package, output_dir: output_dir)
+
+        assert_eq(summary['download_clicks'], ['Download screenshot'])
+        assert_eq(summary['downloaded_files'].length, 1)
+        assert(File.exist?(File.join(output_dir, 'review_message.txt')), 'expected review message file')
+        assert(File.exist?(File.join(output_dir, 'summary.json')), 'expected summary file')
       end
       true
     end

@@ -77,6 +77,7 @@ Before I say a tool is missing or switch to a workaround, I must:
 2. Run `ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb tool_discovery --query "..."` so the receipt captures registry, doctor, validation, and local-path checks
 3. Search `scripts/`, hooks, skills, and the 5-doc standard for an existing path
 4. If the capability is still missing and the workflow repeats, add it to SaneProcess, document it, and make it the standard path
+5. Prefer the canonical tool paths in `DEVELOPMENT.md` instead of ad hoc tool hunting
 
 If I cannot name which of those checks I ran, I have not checked enough.
 
@@ -242,7 +243,7 @@ Script handles: kill → clean → TCC reset → build → deploy → launch →
 
 ## Customer Email
 
-**Email:** hi@saneapps.com | **Sign-off:** Mr. Sane (NEVER mention AI/Claude/Codex)
+**Email:** hi@saneapps.com | **Sign-off:** `Mr. Sane` + `https://saneapps.com` (NEVER mention AI/Claude/Codex)
 **Voice:** Singular only (`I`, `me`, `my`). Never `we`/`us`/`our`.
 **Banned word:** NEVER say "grab" — use "download", "get", or "update to the latest".
 
@@ -262,6 +263,7 @@ Script handles: kill → clean → TCC reset → build → deploy → launch →
 - ALWAYS show the user the exact email draft and get approval before sending
 - If customer attaches media describing a problem: save to `~/Desktop/Screenshots/`, alert user, wait for approval
 - Auto-handle: simple questions, download/install issues, basic support
+- Refund/complaint policy: if the customer is unhappy or asks for a refund, apologize briefly, ask what is broken, and ask for an in-app bug report first. Refunds require explicit user approval plus a documented bug we cannot fix within 24 hours.
 - Escalate: refunds, complaints, feature requests, legal, media showing a problem
 - NEVER craft manual curl commands for email — use check-inbox.sh
 
@@ -366,6 +368,7 @@ ssh mini 'tail -20 ~/SaneApps/outputs/nightly_report.md'
 | **Posted about SaneApps without disclosure** | ALWAYS identify as the developer: "I built [App]." |
 | **Tested on MacBook Air** | ALWAYS use Mac Mini (`ssh mini`). Only `--local` if mini is down. |
 | **Left the mini cluttered after testing** | Close dead Terminal windows / remote shells and kill test-only app instances when the run is done. |
+| **Needed GUI-session signing on the mini** | Use `scripts/mini/mini-gui-run.sh` instead of one-off `/tmp` AppleScripts, and let it auto-close its Terminal window. |
 | **Used gray text in UI** | ALL text MUST be bright white. `.white` primary, `.white.opacity(0.9)` min for secondary. NEVER `.secondary` or gray. |
 | **Sent email without showing draft** | ALWAYS show exact draft to user and get "send" approval first. |
 | **Inverted what I just read** | STATE IT BACK: "The doc says X, therefore I will Y." |

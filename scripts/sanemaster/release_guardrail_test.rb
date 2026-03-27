@@ -10,10 +10,11 @@ class ReleaseGuardrailHarness
   def initialize
     @stubbed_url_statuses = {}
     @stubbed_asc_paths = {}
+    @stubbed_jxa_result = nil
   end
 
   def stub_url_status(url, code:, location: '', error: nil)
-    @stubbed_url_statuses[url] = { code:, location:, error: }
+    @stubbed_url_statuses[url] = { code: code, location: location, error: error }
   end
 
   def appstore_fetch_url_status(url)
@@ -34,6 +35,16 @@ class ReleaseGuardrailHarness
     _ = token
     _ = base
     @stubbed_asc_paths[path]
+  end
+
+  def stub_osascript_jxa(output, success:)
+    @stubbed_jxa_result = [output, success]
+  end
+
+  def run_osascript_jxa(_script)
+    output, success = @stubbed_jxa_result || ['', true]
+    status = Struct.new(:success?).new(success)
+    [output, status]
   end
 end
 
@@ -82,7 +93,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
     test('detects outside-update markers in App Store artifacts') do
       hits = subject.send(
         :appstore_update_markers,
-        strings_out: "SaneSparkleRow\nCheck for updates automatically\nUpdateService",
+        strings_out: "SaneSparkleRow\nCheck for updates automatically\nSoftware Updates\nUpdateService",
         otool_out: "@rpath/Sparkle.framework/Versions/B/Sparkle"
       )
 
@@ -100,6 +111,20 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
 
       assert_includes(hits, 'website checkout URL')
       assert_includes(hits, 'purchase key entry copy')
+      true
+    end
+
+    test('warns when watch marketing icon edges are too dark') do
+      subject.define_singleton_method(:image_edge_luminance_report) do |_path|
+        {
+          'average_edge_luminance' => 18.0,
+          'min_edge_luminance' => 4.0
+        }
+      end
+
+      warning = subject.send(:watch_marketing_icon_warning, '/tmp/watch-marketing-1024.png')
+
+      assert_includes(warning, 'Watch marketing icon edges are very dark')
       true
     end
   end
@@ -170,6 +195,20 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
   end
 
   test_category('Reviewer IAP path guardrails') do
+    test('accepts FOUND from Safari probe even if Safari exits non-zero') do
+      subject.stub_osascript_jxa("FOUND\nERROR:Error: Can't convert types.\n", success: false)
+
+      found = subject.send(
+        :appstore_version_ui_includes_iap?,
+        app_id: '123',
+        platform: 'macos',
+        product_id: 'com.example.unlock'
+      )
+
+      assert_eq(found, true)
+      true
+    end
+
     test('fails when review notes do not tell App Review where to find Pro') do
       report = subject.send(
         :reviewer_access_guardrail_report,
@@ -193,6 +232,29 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       )
       true
     end
+
+    test('fails when review notes mention Settings > License but source has no license surface') do
+      report = subject.send(
+        :reviewer_access_guardrail_report,
+        source_blob: {
+          'all' => "import Foundation\nfinal class LicenseService {}\nfunc purchasePro() {}\n",
+          'ios' => "import Foundation\nfinal class LicenseService {}\nfunc purchasePro() {}\n"
+        },
+        appstore_config: {
+          'review_notes_by_platform' => {
+            'ios' => 'Basic is free. Unlock Pro is optional. Open Settings > License and tap Unlock Pro. No external checkout or license keys.'
+          }
+        },
+        platforms: ['ios']
+      )
+
+      assert_includes(
+        report[:issues],
+        '[ios] Review notes mention a License screen/section, but no License surface exists in the ios source'
+      )
+      true
+    end
+
   end
 
   test_category('ASC version lane guardrails') do
@@ -268,6 +330,41 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         report[:issues],
         'App Store Connect already has macos version 3.1.0 in final state READY_FOR_SALE — bump MARKETING_VERSION before submission.'
       )
+      true
+    end
+  end
+
+  test_category('macOS App Store signing audit') do
+    test('ignores test bundles when collecting macOS App Store signing targets') do
+      Dir.mktmpdir do |dir|
+        project_yml = File.join(dir, 'project.yml')
+        File.write(project_yml, <<~YAML)
+          targets:
+            MainApp:
+              type: application
+              platform: macOS
+              bundleId: com.example.app
+              settings:
+                configs:
+                  Release-AppStore:
+                    CODE_SIGN_STYLE: Automatic
+                    CODE_SIGN_IDENTITY: "Apple Distribution"
+            MainAppTests:
+              type: bundle.unit-test
+              platform: macOS
+              bundleId: com.example.appTests
+              settings:
+                configs:
+                  Release-AppStore:
+                    CODE_SIGN_STYLE: Automatic
+                    CODE_SIGN_IDENTITY: "-"
+        YAML
+
+        targets = subject.send(:appstore_macos_signing_targets, project_yml)
+
+        assert_eq(targets.length, 1)
+        assert_eq(targets.first[:name], 'MainApp')
+      end
       true
     end
   end

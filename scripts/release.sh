@@ -1723,8 +1723,12 @@ print_help() {
     echo "                      Set <sparkle:minimumAutoupdateVersion> (CFBundleVersion)"
     echo "  --critical-below-version BUILD"
     echo "                      Only mark update critical for hosts below this CFBundleVersion"
+    echo "  --purge-r2-binaries"
+    echo "                      Delete older direct-download ZIPs from R2 after deploy"
+    echo "  --purge-github-binaries"
+    echo "                      Delete older GitHub release ZIP/DMG assets after deploy"
     echo "  --keep-github-binaries"
-    echo "                      Do not purge old GitHub release binary assets"
+    echo "                      Legacy alias: do not purge old GitHub release binary assets"
     echo "  --skip-notarize      Skip notarization (requires typed override approval)"
     echo "  --skip-build         Skip build step (requires typed override approval)"
     echo "  --version X.Y.Z      Set version number"
@@ -3855,7 +3859,8 @@ ALLOW_REPUBLISH=false
 CRITICAL_UPDATE=false
 MIN_AUTOUPDATE_VERSION=""
 CRITICAL_UPDATE_BELOW_VERSION=""
-PURGE_GITHUB_BINARY_ASSETS=true
+PURGE_R2_BINARY_ASSETS=false
+PURGE_GITHUB_BINARY_ASSETS=false
 ALLOW_UNSYNCED_PEER=false
 SKIP_APPSTORE=false
 PREFLIGHT_ONLY=false
@@ -3938,6 +3943,14 @@ while [[ $# -gt 0 ]]; do
         --critical-below-version)
             CRITICAL_UPDATE_BELOW_VERSION="$2"
             shift 2
+            ;;
+        --purge-r2-binaries)
+            PURGE_R2_BINARY_ASSETS=true
+            shift
+            ;;
+        --purge-github-binaries)
+            PURGE_GITHUB_BINARY_ASSETS=true
+            shift
             ;;
         --keep-github-binaries)
             PURGE_GITHUB_BINARY_ASSETS=false
@@ -5010,16 +5023,17 @@ if [ "${RUN_DEPLOY}" = true ]; then
     fi
     log_info "Download verified: https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip (browser=${HTTP_STATUS_BROWSER}, sparkle=${HTTP_STATUS_SPARKLE})"
 
-    # Step 1b: Clean up old versions from R2
-    # Only the current version should exist — old files attract bot traffic and waste storage.
-    # Uses Cloudflare REST API (wrangler has no object list command).
-    log_info "Cleaning old ${APP_NAME} versions from R2..."
-    CF_TOKEN="${CLOUDFLARE_API_TOKEN:-$(resolve_cloudflare_api_token || true)}"
-    CF_ACCOUNT_ID="${CF_ACCOUNT_ID:-2c267ab06352ba2522114c3081a8c5fa}"
+    # Step 1b: Optionally clean up old versions from R2.
+    # Historical binaries stay available by default so downgrade links and
+    # appcast history do not silently rot after a new release.
+    if [ "${PURGE_R2_BINARY_ASSETS}" = true ]; then
+        log_info "Cleaning old ${APP_NAME} versions from R2..."
+        CF_TOKEN="${CLOUDFLARE_API_TOKEN:-$(resolve_cloudflare_api_token || true)}"
+        CF_ACCOUNT_ID="${CF_ACCOUNT_ID:-2c267ab06352ba2522114c3081a8c5fa}"
 
-    if [ -n "${CF_TOKEN}" ]; then
-        R2_API_URL="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/r2/buckets/${R2_BUCKET}/objects"
-        OLD_KEYS=$(CF_TOKEN="${CF_TOKEN}" R2_API_URL="${R2_API_URL}" APP_NAME="${APP_NAME}" VERSION="${VERSION}" python3 - <<'PY' 2>/dev/null || true
+        if [ -n "${CF_TOKEN}" ]; then
+            R2_API_URL="https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/r2/buckets/${R2_BUCKET}/objects"
+            OLD_KEYS=$(CF_TOKEN="${CF_TOKEN}" R2_API_URL="${R2_API_URL}" APP_NAME="${APP_NAME}" VERSION="${VERSION}" python3 - <<'PY' 2>/dev/null || true
 import json
 import os
 import urllib.parse
@@ -5061,30 +5075,33 @@ while True:
 PY
 )
 
-        OLD_COUNT=0
-        if [ -n "${OLD_KEYS}" ]; then
-            while IFS= read -r OLD_KEY; do
-                ENCODED_KEY=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "${OLD_KEY}")
-                DEL_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-                    "${R2_API_URL}/${ENCODED_KEY}" \
-                    -H "Authorization: Bearer ${CF_TOKEN}")
-                if [ "${DEL_STATUS}" = "200" ]; then
-                    log_info "  Deleted old version: ${OLD_KEY}"
-                    OLD_COUNT=$((OLD_COUNT + 1))
-                else
-                    log_warn "  Failed to delete: ${OLD_KEY} (HTTP ${DEL_STATUS}, non-fatal)"
-                fi
-            done <<< "${OLD_KEYS}"
-            log_info "Cleaned ${OLD_COUNT} old version(s) from R2."
+            OLD_COUNT=0
+            if [ -n "${OLD_KEYS}" ]; then
+                while IFS= read -r OLD_KEY; do
+                    ENCODED_KEY=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "${OLD_KEY}")
+                    DEL_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+                        "${R2_API_URL}/${ENCODED_KEY}" \
+                        -H "Authorization: Bearer ${CF_TOKEN}")
+                    if [ "${DEL_STATUS}" = "200" ]; then
+                        log_info "  Deleted old version: ${OLD_KEY}"
+                        OLD_COUNT=$((OLD_COUNT + 1))
+                    else
+                        log_warn "  Failed to delete: ${OLD_KEY} (HTTP ${DEL_STATUS}, non-fatal)"
+                    fi
+                done <<< "${OLD_KEYS}"
+                log_info "Cleaned ${OLD_COUNT} old version(s) from R2."
+            else
+                log_info "No old versions to clean up."
+            fi
         else
-            log_info "No old versions to clean up."
+            log_warn "Skipping R2 cleanup — no Cloudflare API token available."
+            log_warn "Old versions may accumulate. Set 'cloudflare' keychain entry or CLOUDFLARE_API_TOKEN env var."
         fi
     else
-        log_warn "Skipping R2 cleanup — no Cloudflare API token available."
-        log_warn "Old versions may accumulate. Set 'cloudflare' keychain entry or CLOUDFLARE_API_TOKEN env var."
+        log_info "Keeping historical ${APP_NAME} versions in R2 (default)."
     fi
 
-    # Step 1c: Remove legacy GitHub binary assets (if any)
+    # Step 1c: Optionally remove legacy GitHub binary assets.
     purge_github_binary_assets
 
     # Step 2: Update appcast.xml

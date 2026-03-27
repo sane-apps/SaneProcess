@@ -38,6 +38,7 @@ CORPORATE_WE_PATTERN = /\b(?:we|we['']re|we['']ll|we['']ve|our|us)\b/i
 APPRECIATION_PATTERN = /\b(?:thank(s| you)?|appreciat(e|ion|ing)|grateful)\b/i
 HELPING_MAKE_PATTERN = /\bhelping make\b.*\bbetter\b/i
 MR_SANE_SIGNOFF_PATTERN = /\bMr\.?\s+Sane\b/
+STANDARD_EMAIL_SIGNOFF_PATTERN = /(?:^|\n)Mr\.?\s+Sane\s*(?:\nhttps:\/\/saneapps\.com)?\s*\z/i
 
 def email_format_valid?(body)
   text = body.to_s
@@ -49,7 +50,7 @@ def email_format_valid?(body)
 
   opens_with_appreciation = first_chunk.match?(APPRECIATION_PATTERN)
   closes_with_appreciation = last_chunk.match?(APPRECIATION_PATTERN)
-  has_signoff = last_chunk.match?(MR_SANE_SIGNOFF_PATTERN)
+  has_signoff = stripped.match?(STANDARD_EMAIL_SIGNOFF_PATTERN)
 
   opens_with_appreciation && closes_with_appreciation && has_signoff
 end
@@ -233,6 +234,7 @@ if command.include?('check-inbox.sh')
       warn '   1) Open with thanks or appreciation'
       warn '   2) Close with thanks or appreciation'
       warn '   3) End with "Mr. Sane"'
+      warn '      Optional final line: "https://saneapps.com"'
       warn ''
       warn '   User can override: touch /tmp/.email_format_override'
       exit 2

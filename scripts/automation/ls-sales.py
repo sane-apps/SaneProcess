@@ -10,8 +10,8 @@ Usage:
   ls-sales.py --fees       # Fee breakdown only
   ls-sales.py --products   # Revenue by product
   ls-sales.py --product-variants  # Revenue by product + variant
-  ls-sales.py --refund-order 1234 # Full refund for order id 1234
-  ls-sales.py --refund-order-number 5678 # Full refund by order number
+  ls-sales.py --refund-order 1234 --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt
+  ls-sales.py --refund-order-number 5678 --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt
   ls-sales.py --json       # Raw JSON output (for piping)
 """
 import argparse
@@ -234,7 +234,37 @@ def issue_order_refund(api_key, order_id, amount=None):
     return data
 
 
-def write_proof_file(path, summary):
+def validate_refund_approval(args):
+    approval_gate = os.environ.get("SANE_REFUND_APPROVED", "").strip()
+    if approval_gate != "1":
+        print("Error: Refund blocked.", file=sys.stderr)
+        print("  Refunds require explicit user approval plus a documented unresolved bug (>24h).", file=sys.stderr)
+        print("  Re-run with: SANE_REFUND_APPROVED=1 ...", file=sys.stderr)
+        sys.exit(1)
+
+    if not args.proof_file:
+        print("Error: Refund blocked. --proof-file is required so refund actions leave an audit trail.", file=sys.stderr)
+        sys.exit(1)
+
+    if not args.approval_note:
+        print("Error: Refund blocked. --approval-note is required.", file=sys.stderr)
+        print("  The note should capture user approval and the documented bug/unresolved status.", file=sys.stderr)
+        sys.exit(1)
+
+    note_path = Path(args.approval_note).expanduser()
+    if not note_path.is_file():
+        print(f"Error: Refund approval note not found: {note_path}", file=sys.stderr)
+        sys.exit(1)
+
+    note_text = note_path.read_text(encoding="utf-8").strip()
+    if not note_text:
+        print(f"Error: Refund approval note is empty: {note_path}", file=sys.stderr)
+        sys.exit(1)
+
+    return note_path, note_text
+
+
+def write_proof_file(path, summary, approval_note_path=None, approval_note_text=None):
     lines = [
         "Lemon Squeezy refund confirmation",
         f"Order ID: {summary.get('id')}",
@@ -248,6 +278,14 @@ def write_proof_file(path, summary):
         f"Receipt: {summary.get('receipt_url') or 'n/a'}",
         f"Updated at: {summary.get('updated_at') or 'n/a'}",
     ]
+    if approval_note_path:
+        lines.append(f"Approval note: {approval_note_path}")
+    if approval_note_text:
+        lines.extend([
+            "",
+            "Approval note contents:",
+            approval_note_text,
+        ])
     with open(path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
 
@@ -286,6 +324,7 @@ def filter_orders(orders, args):
     """Filter orders by date range."""
     now = datetime.now(timezone.utc)
     cutoff = None
+    include_refunded = bool(getattr(args, "include_refunded", False) or args.json)
 
     if args.month:
         cutoff = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -295,8 +334,14 @@ def filter_orders(orders, args):
     filtered = []
     for o in orders:
         a = o["attributes"]
-        if a.get("status") != "paid":
-            continue
+        status = str(a.get("status") or "").strip().lower()
+        refunded = bool(a.get("refunded", False))
+        if include_refunded:
+            if status not in {"paid", "refunded"} and not refunded:
+                continue
+        else:
+            if status != "paid":
+                continue
         if a.get("total", 0) == 0:
             continue
         if cutoff:
@@ -559,6 +604,11 @@ def print_json(orders):
         fee, intl, flat = calc_fee(subtotal, a.get("currency", "USD"), created)
         item = a.get("first_order_item") or {}
         result.append({
+            "id": o.get("id"),
+            "order_number": a.get("order_number"),
+            "status": a.get("status"),
+            "created_at": a.get("created_at"),
+            "updated_at": a.get("updated_at"),
             "date": a["created_at"][:10],
             "product": item.get("product_name", "Unknown"),
             "subtotal": subtotal,
@@ -568,6 +618,8 @@ def print_json(orders):
             "net": round(subtotal - fee, 2),
             "currency": a.get("currency", "USD"),
             "refunded": a.get("refunded", False),
+            "refunded_at": a.get("refunded_at"),
+            "refunded_amount_formatted": a.get("refunded_amount_formatted", "$0.00"),
         })
     json.dump(result, sys.stdout, indent=2)
     print()
@@ -585,6 +637,8 @@ def main():
     parser.add_argument("--refund-order-number", type=str, help="Issue a refund for Lemon Squeezy order number")
     parser.add_argument("--amount", type=int, help="Refund amount in cents (omit for full refund)")
     parser.add_argument("--proof-file", type=str, help="Write a human-readable refund proof file")
+    parser.add_argument("--approval-note", type=str, help="Path to the explicit refund approval note")
+    parser.add_argument("--include-refunded", action="store_true", help="Include refunded orders in report/json output")
     parser.add_argument("--json", action="store_true", help="Raw JSON output")
     args = parser.parse_args()
 
@@ -629,10 +683,11 @@ def main():
                 write_proof_file(args.proof_file, summary)
             return
 
+        approval_note_path, approval_note_text = validate_refund_approval(args)
         refunded_order = issue_order_refund(api_key, target_id, amount=args.amount)
         summary = order_to_summary(refunded_order)
         if args.proof_file:
-            write_proof_file(args.proof_file, summary)
+            write_proof_file(args.proof_file, summary, str(approval_note_path), approval_note_text)
         if args.json:
             json.dump(summary, sys.stdout, indent=2)
             print()

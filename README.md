@@ -12,6 +12,19 @@ SaneProcess is a hook-based enforcement framework for Claude Code. It kills orph
 
 ---
 
+## Documentation Layout
+
+SaneProcess is the source of truth for the anti-fragmentation rule used across SaneApps.
+
+- Update an existing canonical doc before creating a new one.
+- The normal app-repo skeleton is `README.md`, `ARCHITECTURE.md`, `DEVELOPMENT.md`, `PRIVACY.md`, and `SECURITY.md`.
+- If a repo needs extra docs, the owning canonical doc and the README must point to them clearly.
+- Public site pages should live in one obvious folder and the README should say where that folder is.
+
+See [DEVELOPMENT.md](DEVELOPMENT.md) for the operating procedure behind this rule.
+
+---
+
 ## The Problems
 
 ### 1. Orphaned processes eating your RAM

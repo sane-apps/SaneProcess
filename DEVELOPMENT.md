@@ -14,6 +14,15 @@ ruby scripts/hooks/test/tier_tests.rb # Run hook tests
 ruby scripts/sync_check.rb ~/SaneBar  # Cross-project sync
 ```
 
+## Documentation Normalization SOP
+
+Use the same anti-fragmentation rule across every SaneApps repo:
+
+- In app repos, update `README.md`, `ARCHITECTURE.md`, `DEVELOPMENT.md`, `PRIVACY.md`, or `SECURITY.md` before creating a new root doc.
+- If you must add an extra doc, link it from the README and from the canonical doc that owns that topic.
+- Keep public site content in one obvious folder per repo and say where it lives in the README.
+- When docs drift, fix the root canonical file first, then sync the website or supporting docs.
+
 ## Codex Compatibility
 
 Codex does not expose native Claude-style hook events. For consistent behavior across Claude and Codex:
@@ -98,6 +107,23 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 | `sales` | LemonSqueezy revenue reporting helpers |
 
 License support rule: real customer license keys come only from LemonSqueezy-backed orders and license-key records. Use `check-inbox.sh review` + `whois` + the LemonSqueezy recovery/backfill flow for missing-key support. Do not generate local fallback keys.
+
+### Canonical Tool Paths
+
+Do not hunt around for ad hoc tools.
+Use the documented standard path first, then use `tool_discovery` if you still think something is missing.
+
+| Need | Standard path | Not this |
+|------|---------------|----------|
+| Find the right tool first | `ruby scripts/SaneMaster.rb tool_discovery --query "..."` | Random searches, guessing, or inventing a new script first |
+| Build and test app code | `ruby scripts/SaneMaster.rb verify [--ui]` | Raw `xcodebuild` unless the tool itself is what you are fixing |
+| Launch and smoke-test an app | `ruby scripts/SaneMaster.rb test_mode --release --no-logs` | Manual local launches and stale DerivedData builds |
+| App Store review readiness | `ruby scripts/SaneMaster.rb appstore_preflight` | Clicking around ASC first and guessing what Apple meant |
+| App Review evidence collection | `ruby scripts/appstore_submit.rb --app-id <id> --platform macos|ios --version X.Y.Z --project-root <repo> --fetch-review-package` | Reading only the rejection text and ignoring Apple’s screenshot/video/PDF evidence |
+| Direct release readiness | `ruby scripts/SaneMaster.rb release_preflight` | Manual release spot checks |
+| Customer support triage | `/Users/sj/SaneApps/infra/scripts/check-inbox.sh review <id>` | Manual API calls, ad hoc email drafts, or skipping review |
+| Sales / downloads / funnel | `ruby scripts/SaneMaster.rb sales`, `downloads`, `events` | Manual vendor curls or spreadsheet guesses |
+| MCP and tool health | `ruby scripts/SaneMaster.rb mcp_watchdog doctor` and `/Users/sj/.codex/bin/check-mcps` | Killing random daemons first and hoping |
 
 ### Verification helpers
 
@@ -516,6 +542,8 @@ It also blocks generic fallback descriptions/keywords and flags iOS listing copy
 This is deliberate. The goal is to stop wasting review cycles on builds Apple is likely to reject.
 
 Additional lessons now enforced in the shared flow:
+- When a lane is rejected, the first step is evidence collection, not diagnosis. Read the full reviewer message, record the exact platform/version/build/submission ID, download every App Review attachment, and open all screenshot/video/PDF evidence before changing code or drafting a reply.
+- `scripts/appstore_submit.rb --fetch-review-package` is the canonical evidence collector. It saves the reviewer message, page text, and any downloaded App Review attachments into an evidence folder instead of relying on manual browser memory.
 - `appstore_submit.rb --skip-upload` fails fast if the requested existing build is not actually visible in ASC for that platform. It now prints the visible build candidates instead of polling for 45 minutes on a bad build number.
 - `release.sh` now hard-runs `SaneMaster.rb appstore_preflight` before any App Store submission step, so full releases cannot skip the compiled-artifact policy gate by accident.
 - `appstore_submit.rb` now validates that support and privacy URLs actually resolve successfully, not just that metadata strings exist.

@@ -195,6 +195,15 @@ module SanePromptTest
         failed += 1
         warn "  FAIL: docs_audit trigger config incorrect: #{audit_skill.inspect}"
       end
+
+      evolve_skill = detect_skill_trigger_proc.call('you should not be hunting around for tools, they should be well documented and part of our SOP and enforced')
+      if evolve_skill && evolve_skill[:name] == :evolve
+        passed += 1
+        warn '  PASS: evolve trigger catches tool-hunting/SOP complaint'
+      else
+        failed += 1
+        warn "  FAIL: evolve trigger should catch tool-hunting/SOP complaint: #{evolve_skill.inspect}"
+      end
     end
 
     warn ''

@@ -26,6 +26,7 @@ require 'optparse'
 require 'securerandom'
 require 'shellwords'
 require 'digest'
+require 'fileutils'
 require 'time'
 require 'uri'
 require 'yaml'
@@ -1116,6 +1117,32 @@ rescue JSON::ParserError
   { 'url' => url, 'body' => raw.to_s }
 end
 
+def version_page_includes_iap?(app_id:, platform:, product_id:)
+  return nil if app_id.to_s.strip.empty? || product_id.to_s.strip.empty?
+
+  platform_path = platform.to_s.downcase == 'ios' ? 'ios' : 'macos'
+  url = "https://appstoreconnect.apple.com/apps/#{app_id}/distribution/#{platform_path}/version/inflight"
+
+  6.times do |attempt|
+    snapshot = safari_page_snapshot(
+      url: url,
+      delay_seconds: attempt.zero? ? 8 : 2,
+      navigate: attempt.zero?
+    )
+    body = snapshot['body'].to_s
+    next if body.empty?
+
+    return true if body.include?(product_id.to_s) &&
+                   body.include?('Included Assets') &&
+                   body.include?('In-App Purchases and Subscriptions')
+    return false if body.include?('Included Assets') || body.include?('In-App Purchases and Subscriptions')
+  end
+
+  false
+rescue StandardError
+  nil
+end
+
 def normalize_review_page_text(text)
   clean = text.to_s.gsub("\u00A0", ' ').gsub("\r\n", "\n").gsub("\r", "\n")
   clean = clean.gsub(/[ \t]+\n/, "\n").gsub(/\n{3,}/, "\n\n").strip
@@ -1131,8 +1158,166 @@ end
 
 def fetch_review_message_from_safari(app_id:, submission_id:)
   review_url = "https://appstoreconnect.apple.com/apps/#{app_id}/distribution/reviewsubmissions/details/#{submission_id}"
-  javascript = 'document.body.innerText'
-  normalize_review_page_text(run_safari_javascript(url: review_url, javascript: javascript, delay_seconds: 8))
+  delays = [10, 5, 5, 5]
+  delays.each_with_index do |delay_seconds, attempt|
+    snapshot = safari_page_snapshot(
+      url: review_url,
+      delay_seconds: delay_seconds,
+      navigate: attempt.zero?
+    )
+    current_url = snapshot['url'].to_s
+    body = snapshot['body'].to_s
+    url_matches = current_url.include?(app_id.to_s) && current_url.include?(submission_id.to_s)
+    body_matches = body.include?(submission_id.to_s) || body.include?('Messages (')
+    return normalize_review_page_text(body) if url_matches && body_matches
+  end
+
+  raise "Safari did not open the expected App Review page for app #{app_id} submission #{submission_id}."
+end
+
+def review_downloads_dir
+  override = ENV['APPSTORE_REVIEW_DOWNLOADS_DIR'].to_s.strip
+  return File.expand_path(override) unless override.empty?
+
+  File.expand_path('~/Downloads')
+end
+
+def snapshot_downloads(downloads_dir)
+  return {} unless Dir.exist?(downloads_dir)
+
+  Dir.children(downloads_dir).each_with_object({}) do |entry, memo|
+    path = File.join(downloads_dir, entry)
+    next unless File.file?(path)
+
+    stat = File.stat(path)
+    memo[path] = {
+      mtime: stat.mtime.to_f,
+      size: stat.size
+    }
+  end
+end
+
+def new_downloads_since(before_snapshot, downloads_dir)
+  current = snapshot_downloads(downloads_dir)
+  current.keys.select do |path|
+    previous = before_snapshot[path]
+    previous.nil? || previous[:mtime] != current[path][:mtime] || previous[:size] != current[path][:size]
+  end.sort_by { |path| File.mtime(path) }.reverse
+end
+
+def click_review_downloads_in_safari(app_id:, submission_id:)
+  review_url = "https://appstoreconnect.apple.com/apps/#{app_id}/distribution/reviewsubmissions/details/#{submission_id}"
+  javascript = <<~JAVASCRIPT
+    JSON.stringify((() => {
+      const bodyText = document.body ? document.body.innerText.slice(0, 20000) : "";
+      const isVisible = (el) => {
+        if (!el) return false;
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        return rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          style.opacity !== "0";
+      };
+      const labelFor = (el) => {
+        return [
+          el.innerText,
+          el.getAttribute("aria-label"),
+          el.getAttribute("title"),
+          el.getAttribute("download"),
+          el.getAttribute("href")
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .replace(/\\s+/g, " ")
+          .trim();
+      };
+
+      const seen = new Set();
+      const clicks = [];
+      for (const el of Array.from(document.querySelectorAll('a, button, [role="button"]'))) {
+        if (!isVisible(el)) continue;
+        const label = labelFor(el);
+        if (!/download/i.test(label)) continue;
+        const key = label || `download-${clicks.length + 1}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        try {
+          el.click();
+          clicks.push(key);
+        } catch (error) {
+          clicks.push(`ERROR:${key}:${String(error)}`);
+        }
+      }
+
+      return {
+        url: location.href,
+        clicks,
+        body: bodyText
+      };
+    })())
+  JAVASCRIPT
+
+  raw = run_safari_javascript(url: review_url, javascript: javascript, delay_seconds: 2, navigate: false)
+  JSON.parse(raw)
+rescue JSON::ParserError
+  {
+    'url' => review_url,
+    'clicks' => [],
+    'body' => ''
+  }
+end
+
+def fetch_review_package_from_safari(app_id:, submission_id:, downloads_dir: review_downloads_dir, download_wait_seconds: 5)
+  review_text = fetch_review_message_from_safari(app_id: app_id, submission_id: submission_id)
+  before_snapshot = snapshot_downloads(downloads_dir)
+  click_payload = click_review_downloads_in_safari(app_id: app_id, submission_id: submission_id)
+  sleep download_wait_seconds if download_wait_seconds.to_i.positive?
+  downloaded_files = new_downloads_since(before_snapshot, downloads_dir)
+
+  {
+    'review_url' => "https://appstoreconnect.apple.com/apps/#{app_id}/distribution/reviewsubmissions/details/#{submission_id}",
+    'page_url' => click_payload['url'].to_s,
+    'review_text' => review_text,
+    'page_text' => normalize_review_page_text(click_payload['body'].to_s),
+    'download_clicks' => Array(click_payload['clicks']).map(&:to_s),
+    'downloaded_files' => downloaded_files
+  }
+end
+
+def review_package_output_dir(project_root:, platform:, version:, submission_id:)
+  timestamp = Time.now.strftime('%Y%m%d-%H%M%S')
+  base_dir =
+    if project_root && !project_root.to_s.strip.empty?
+      File.join(project_root, 'outputs')
+    else
+      Dir.pwd
+    end
+
+  File.join(base_dir, "appreview-#{platform}-#{version}-#{submission_id}-#{timestamp}")
+end
+
+def persist_review_package(package:, output_dir:)
+  FileUtils.mkdir_p(output_dir)
+
+  copied_files = []
+  Array(package['downloaded_files']).each do |path|
+    next unless File.file?(path)
+
+    destination = File.join(output_dir, File.basename(path))
+    FileUtils.cp(path, destination)
+    copied_files << destination
+  rescue StandardError
+    next
+  end
+
+  summary = package.merge('copied_files' => copied_files)
+  File.write(File.join(output_dir, 'review_message.txt'), package['review_text'].to_s)
+  File.write(File.join(output_dir, 'review_page.txt'), package['page_text'].to_s)
+  File.write(File.join(output_dir, 'summary.json'), JSON.pretty_generate(summary))
+
+  summary
 end
 
 def delete_empty_draft_submissions_from_safari(app_id:, max_iterations: 20)
@@ -2677,6 +2862,10 @@ def ensure_iap_review_note(iap_id:, review_note:, token:)
     true
   else
     detail = patch_resp.dig('errors', 0, 'detail') || patch_resp.dig('errors', 0, 'title') || 'unknown error'
+    if patch_code == 409 && detail.to_s.match?(/APP_STORE_REVIEW_INFO|can not be modified|cannot be edited/i)
+      log_warn "IAP review note is locked in the current ASC state; leaving it unchanged."
+      return true
+    end
     log_error "Failed to patch IAP review note (HTTP #{patch_code}): #{detail}"
     false
   end
@@ -2824,7 +3013,8 @@ def ensure_iap_readiness(app_id:, product_id:, project_root:, config:, token:, p
     return false
   end
 
-  return false unless state == 'READY_TO_SUBMIT' || state == 'WAITING_FOR_REVIEW' || state == 'APPROVED'
+  return true if %w[WAITING_FOR_REVIEW IN_REVIEW APPROVED READY_FOR_SALE].include?(state)
+  return false unless state == 'READY_TO_SUBMIT'
 
   submit_body = {
     data: {
@@ -2845,6 +3035,13 @@ def ensure_iap_readiness(app_id:, product_id:, project_root:, config:, token:, p
   if submit_code == 409
     codes = iap_associated_error_codes(submit_resp)
     if codes.all? { |code| code == 'STATE_ERROR.FIRST_IAP_MUST_BE_SUBMITTED_ON_VERSION' }
+      ui_attached = version_page_includes_iap?(app_id: app_id, platform: platform, product_id: product_id)
+      if ui_attached
+        lane = [platform, version_string].compact.reject(&:empty?).join(' ')
+        label = lane.empty? ? product_id : "#{product_id} (attached on #{lane} version page)"
+        log_warn "IAP #{label} is already attached under Included Assets; continuing with app submission."
+        return true
+      end
       log_first_iap_submission_blocker(
         product_id: product_id,
         platform: platform,
@@ -3419,6 +3616,8 @@ OptionParser.new do |opts|
   opts.on('--list-builds', 'List ASC builds for app/platform (diagnostic)') { options[:list_builds] = true }
   opts.on('--list-versions', 'List ASC app versions and review states (diagnostic)') { options[:list_versions] = true }
   opts.on('--fetch-review-message', 'Open linked App Review detail in Safari and print the visible reviewer message text') { options[:fetch_review_message] = true }
+  opts.on('--fetch-review-package', 'Open linked App Review detail in Safari, click visible Download actions, and save reviewer evidence locally') { options[:fetch_review_package] = true }
+  opts.on('--review-package-dir PATH', 'Output directory for --fetch-review-package (default: PROJECT_ROOT/outputs/appreview-...)') { |v| options[:review_package_dir] = v }
   opts.on('--clear-draft-submissions-ui', 'Delete empty Draft Submissions for this app using signed-in Safari') { options[:clear_draft_submissions_ui] = true }
   opts.on('--remove-app-ui', 'Remove this app from App Store Connect using signed-in Safari') { options[:remove_app_ui] = true }
   opts.on('--sync-metadata-only', 'Sync metadata/accessibility/review fields for an existing version (no upload, no submission)') { options[:sync_metadata_only] = true }
@@ -3677,6 +3876,70 @@ if options[:fetch_review_message]
   end
 
   puts text
+  exit 0
+end
+
+if options[:fetch_review_package]
+  required = %i[app_id platform version]
+  required.each do |key|
+    unless options[key]
+      log_error "Missing required option: --#{key.to_s.tr('_', '-')}"
+      exit 1
+    end
+  end
+
+  asc_platform = PLATFORM_MAP[options[:platform]]
+  unless asc_platform
+    log_error "Unknown platform: #{options[:platform]} (use macos or ios)"
+    exit 1
+  end
+
+  token = generate_jwt
+  version_record = find_version_any_state(options[:app_id], asc_platform, options[:version], token)
+  unless version_record
+    log_error "Could not find version #{options[:version]} on #{options[:platform]} for app #{options[:app_id]}."
+    exit 1
+  end
+
+  submission = find_linked_review_submission(options[:app_id], asc_platform, version_record['id'], token)
+  unless submission && submission[:id]
+    log_error "No linked review submission found for version #{options[:version]} on #{options[:platform]}."
+    exit 1
+  end
+
+  begin
+    package = fetch_review_package_from_safari(
+      app_id: options[:app_id],
+      submission_id: submission[:id]
+    )
+  rescue StandardError => e
+    log_error "Failed to fetch review package from Safari: #{e.message}"
+    log_error 'Requirements: Safari signed into App Store Connect, and "Allow JavaScript from Apple Events" enabled in Safari Develop menu.'
+    exit 1
+  end
+
+  output_dir = options[:review_package_dir].to_s.strip
+  output_dir = review_package_output_dir(
+    project_root: options[:project_root],
+    platform: options[:platform],
+    version: options[:version],
+    submission_id: submission[:id]
+  ) if output_dir.empty?
+  summary = persist_review_package(package: package.merge(
+    'app_id' => options[:app_id],
+    'platform' => options[:platform],
+    'version' => options[:version],
+    'version_id' => version_record['id'],
+    'version_state' => version_record.dig('attributes', 'appStoreState'),
+    'submission_id' => submission[:id],
+    'submission_state' => submission[:state]
+  ), output_dir: output_dir)
+
+  log_info "Saved review package to #{output_dir}"
+  log_info "Review submission #{submission[:id]} (#{submission[:state] || 'unknown'})"
+  log_info "Download clicks: #{Array(summary['download_clicks']).length}"
+  Array(summary['copied_files']).each { |path| log_info "Attachment: #{path}" }
+  puts summary['review_text'].to_s
   exit 0
 end
 

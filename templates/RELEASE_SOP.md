@@ -38,6 +38,23 @@ Runs 9 automated safety checks without building:
 - Continue release only after preflight is clean.
 - Never self-approve an override to bypass a failing guard.
 
+**Hard rule (known open bug issues):**
+- Do not ship a patch while a known bug issue is still open and unreproduced, reconfirmed by customers, or explicitly confirmed as `not fixed` in the current candidate.
+- `Please update and retest` is not enough if the current candidate has not been proven against the reported path.
+- Before release, audit the full open bug queue, not just the current regression cluster.
+- If a bug is still live, either fix it, prove it is already fixed with current evidence, or hold the release.
+
+**Hard rule (appcast and historical downloads):**
+- Never publish an appcast that points at dead download URLs.
+- If appcast history is kept, every advertised enclosure URL must resolve.
+- Do not delete historical direct-download binaries by default. Only purge them intentionally after also pruning any public references.
+- A docs-only/appcast repair deploy is valid when the feed is wrong and the binary is not changing.
+
+Preflight review requirement:
+- Review every open bug-like GitHub issue that could plausibly affect the release, including tint/appearance, updater behavior, build-from-source, browse/focus, and layout/reset issues.
+- If a bug is open only because we are waiting on reporter confirmation and we have current proof, note that explicitly before release.
+- If there is no current proof, the issue is still release-blocking.
+
 ### 0a. Release Notes Audit (MANDATORY Before `--notes`)
 
 Before drafting or approving release notes, do a customer-facing audit instead of writing bullets from memory:
@@ -80,32 +97,64 @@ bash ~/SaneApps/infra/SaneProcess/scripts/mini/bootstrap-build-server.sh
 
 When App Review rejects a lane, do this in order:
 
-1. Read the exact reviewer message first.
+1. Collect the full review package before diagnosing or replying.
+
+- Record the exact platform, version, build, submission ID, and review date.
+- Read the exact reviewer message first.
+- Download every attachment from the App Review page: screenshots, video, PDF, or any other file.
+- Open every downloaded image/video file locally and inspect what Apple actually captured.
+- Do not draft a reviewer reply, change code, or resubmit until all reviewer evidence has been reviewed.
 
 ```bash
 ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
   --app-id YOUR_APP_ID \
   --platform macos \
-  --fetch-review-message
+  --version X.Y.Z \
+  --project-root "$(pwd)" \
+  --fetch-review-package
 ```
 
-2. Run App Store preflight before changing code.
+- This command is the canonical evidence collector.
+- It saves the reviewer message, page text, and any downloaded App Review attachments into a local evidence folder.
+- Review that saved package before drafting a reviewer reply or changing code.
+
+2. Confirm whether the rejection matches the current source tree or an older uploaded build.
+
+- Compare the rejected version/build from App Review against the current local version/build.
+- If the rejected evidence is from an older build, do not assume the current tree is still broken. Verify it.
+
+3. Run App Store preflight before changing code.
 
 ```bash
 ./scripts/SaneMaster.rb appstore_preflight
 ```
 
-3. Fix the reviewer issue at the root:
+4. Fix the reviewer issue at the root:
 - Accessibility request for non-accessibility use: remove the runtime path from the App Store build.
 - Direct license keys / external checkout: remove them from the App Store build and use StoreKit only.
+- Outside updates / Sparkle / manual update UI: remove every update check surface from the App Store build and verify the compiled artifact no longer exposes update strings or Sparkle linkage.
 - Free plan incompleteness: verify a fresh install can complete the free path without special reviewer steps.
 - `launchd` daemon / privileged helper / `SMAppService.daemon`: stop and reassess the product architecture.
 
-4. Do **not** keep resubmitting a macOS App Store build that still depends on a `launchd` daemon, agent, or privileged helper.
+5. Do **not** keep resubmitting a macOS App Store build that still depends on a `launchd` daemon, agent, or privileged helper.
 - Mac App Store apps cannot ship `launchd` daemons or agents.
 - Either redesign the App Store build around an App-Store-safe architecture or disable/remove the App Store lane for that app.
 
-5. After the code fix, rerun:
+6. If Mini signing works only in the logged-in GUI session and plain `ssh` shells still fail with `errSecInternalComponent`, use the shared GUI runner instead of ad hoc AppleScripts:
+
+```bash
+ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-gui-run.sh \
+  --title "App Store archive" \
+  --log-file /tmp/appstore-archive.log \
+  --close-window \
+  -- "cd ~/SaneApps/apps/<App> && xcodebuild archive ..."'
+```
+
+- This is the standard recovery path for GUI-only codesign access on the Mini.
+- The runner must close its own Terminal window when the command is done.
+- Do not leave throwaway remote Terminal windows behind after App Store work.
+
+7. After the code fix, rerun:
 
 ```bash
 ./scripts/SaneMaster.rb verify

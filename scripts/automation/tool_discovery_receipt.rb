@@ -40,7 +40,75 @@ class ToolDiscoveryReceipt
     README.md
     DEVELOPMENT.md
     ARCHITECTURE.md
+  ].freeze
+  SESSION_DOC_CANDIDATES = %w[
     SESSION_HANDOFF.md
+  ].freeze
+  SESSION_QUERY_TERMS = %w[
+    session
+    handoff
+    recent
+    latest
+    current
+    today
+  ].freeze
+  CANONICAL_TOOL_PATHS = [
+    {
+      name: 'Tool discovery and canonical path selection',
+      keywords: %w[tool tools missing workflow sop standard documented enforce enforced path best hunting workaround],
+      command: 'ruby scripts/SaneMaster.rb tool_discovery --query "..."',
+      source: 'scripts/SaneMaster.rb tool_discovery',
+      why: 'Proof step before claiming a tool is missing or inventing a workaround.'
+    },
+    {
+      name: 'Build and test an app',
+      keywords: %w[build test verify compile xcode unit ui failing],
+      command: 'ruby scripts/SaneMaster.rb verify [--ui]',
+      source: 'scripts/SaneMaster.rb verify',
+      why: 'Canonical build and test path. Routes to the Mini when required.'
+    },
+    {
+      name: 'Run and verify a live app',
+      keywords: %w[launch run smoke runtime end-to-end e2e screenshot visual qa],
+      command: 'ruby scripts/SaneMaster.rb test_mode --release --no-logs',
+      source: 'scripts/SaneMaster.rb test_mode',
+      why: 'Canonical kill → build → launch path for real runtime checks.'
+    },
+    {
+      name: 'App Store submission and review readiness',
+      keywords: %w[appstore review submission submit asc metadata iap rejected approve approved],
+      command: 'ruby scripts/SaneMaster.rb appstore_preflight',
+      source: 'scripts/SaneMaster.rb appstore_preflight',
+      why: 'Canonical App Store compliance and submission check before resubmitting.'
+    },
+    {
+      name: 'Release readiness and shipping',
+      keywords: %w[release ship publish notarize appcast deploy dist sparkle],
+      command: 'ruby scripts/SaneMaster.rb release_preflight',
+      source: 'scripts/SaneMaster.rb release_preflight',
+      why: 'Canonical preflight before any direct-release publish path.'
+    },
+    {
+      name: 'Customer support triage and replies',
+      keywords: %w[email inbox support license github issue customer reply resolve],
+      command: '/Users/sj/SaneApps/infra/scripts/check-inbox.sh review <id>',
+      source: 'infra/scripts/check-inbox.sh',
+      why: 'Canonical review gate for customer email and linked GitHub issue work.'
+    },
+    {
+      name: 'Revenue, downloads, and funnel analytics',
+      keywords: %w[sales revenue downloads events funnel conversion orders refunds],
+      command: 'ruby scripts/SaneMaster.rb sales && ruby scripts/SaneMaster.rb downloads && ruby scripts/SaneMaster.rb events',
+      source: 'scripts/SaneMaster.rb sales/downloads/events',
+      why: 'Canonical sales and analytics path instead of ad hoc vendor curls.'
+    },
+    {
+      name: 'MCP and tooling health',
+      keywords: %w[mcp toolserver transport doctor health duplicate orphan crashed crash],
+      command: 'ruby scripts/SaneMaster.rb mcp_watchdog doctor && /Users/sj/.codex/bin/check-mcps',
+      source: 'scripts/SaneMaster.rb mcp_watchdog',
+      why: 'Canonical MCP health and duplicate-daemon check.'
+    }
   ].freeze
 
   def initialize(argv)
@@ -69,6 +137,7 @@ class ToolDiscoveryReceipt
       query_terms: query_terms,
       project_root: @options[:project_root],
       checks: {
+        canonical_paths: canonical_path_matches,
         skills_registry: search_skills_registry,
         global_skills: search_global_skills,
         local_code: search_local_code,
@@ -118,9 +187,29 @@ class ToolDiscoveryReceipt
   end
 
   def project_docs
-    DOC_CANDIDATES
+    docs = DOC_CANDIDATES.dup
+    if (query_terms & SESSION_QUERY_TERMS).any?
+      docs.concat(SESSION_DOC_CANDIDATES)
+    end
+
+    docs
       .map { |name| File.join(@options[:project_root], name) }
       .select { |path| File.exist?(path) }
+  end
+
+  def canonical_path_matches
+    downcased_query = query.downcase
+    matches = CANONICAL_TOOL_PATHS.filter_map do |entry|
+      score = entry[:keywords].count do |keyword|
+        downcased_query.include?(keyword) || query_terms.include?(keyword)
+      end
+      next if score.zero?
+
+      entry.merge(score: score)
+    end
+
+    matches = [CANONICAL_TOOL_PATHS.first.merge(score: 1)] if matches.empty?
+    matches.sort_by { |entry| [-entry[:score], entry[:name]] }.first(5)
   end
 
   def search_skills_registry
@@ -245,6 +334,7 @@ class ToolDiscoveryReceipt
   end
 
   def build_summary(receipt)
+    canonical_matches = receipt.dig(:checks, :canonical_paths).to_a.length
     skill_matches = receipt.dig(:checks, :skills_registry, :matches).to_a.length +
                     receipt.dig(:checks, :global_skills, :matches).to_a.length
     local_matches = receipt.dig(:checks, :local_code, :matches).to_a.length +
@@ -252,7 +342,7 @@ class ToolDiscoveryReceipt
     doctor = receipt.dig(:checks, :doctor) || {}
     validation = receipt.dig(:checks, :validation_report) || {}
 
-    existing_path_found = skill_matches.positive? || local_matches.positive?
+    existing_path_found = canonical_matches.positive? || skill_matches.positive? || local_matches.positive?
     recommendation = if existing_path_found
                        'Existing path found. Reuse or extend what is already here before adding a new tool.'
                      else
@@ -264,15 +354,17 @@ class ToolDiscoveryReceipt
       recommendation: recommendation,
       doctor_ok: doctor[:status] == 'ok',
       validation_ok: validation[:status] == 'ok',
+      canonical_commands: receipt.dig(:checks, :canonical_paths).to_a.map { |entry| entry[:command] },
       top_existing_paths: top_paths(receipt)
     }
   end
 
   def top_paths(receipt)
+    canonical = receipt.dig(:checks, :canonical_paths).to_a.map { |entry| entry[:source] }
     groups = %i[skills_registry global_skills local_code project_docs]
-    groups.flat_map do |group|
+    (canonical + groups.flat_map do |group|
       receipt.dig(:checks, group, :matches).to_a.map { |match| match[:file] }
-    end.uniq.first(10)
+    end).uniq.first(10)
   end
 
   def write_receipt(receipt)
@@ -297,6 +389,20 @@ class ToolDiscoveryReceipt
     lines << ''
     lines << "## Recommendation"
     lines << receipt.dig(:summary, :recommendation).to_s
+    lines << ''
+
+    lines << '## Canonical Tool Paths'
+    canonical_paths = receipt.dig(:checks, :canonical_paths).to_a
+    if canonical_paths.empty?
+      lines << 'No canonical tool match found.'
+    else
+      canonical_paths.each do |entry|
+        lines << "- **#{entry[:name]}**"
+        lines << "  - Command: `#{entry[:command]}`"
+        lines << "  - Why: #{entry[:why]}"
+        lines << "  - Source: `#{entry[:source]}`"
+      end
+    end
     lines << ''
 
     {
@@ -337,6 +443,9 @@ class ToolDiscoveryReceipt
     puts "Validation: #{receipt.dig(:checks, :validation_report, :status) || 'skipped'}"
     puts "JSON: #{json_path}"
     puts "Markdown: #{markdown_path}"
+    receipt.dig(:checks, :canonical_paths).to_a.first(3).each do |entry|
+      puts "  * #{entry[:command]} — #{entry[:why]}"
+    end
     top_paths(receipt).first(5).each { |path| puts "  - #{path}" }
   end
 

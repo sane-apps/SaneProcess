@@ -842,7 +842,10 @@ module SaneMasterModules
         /errSecInternalComponent/,
         /Command CodeSign failed/,
         /User interaction is not allowed/,
-        /codesign.*nonzero exit code/i
+        /codesign.*nonzero exit code/i,
+        /No profiles for .+ were found/,
+        /Automatic signing is disabled and unable to generate a profile/,
+        /requires a provisioning profile with the .+ feature/
       ]
 
       signing_error_patterns.any? { |pattern| output.match?(pattern) }
@@ -907,6 +910,9 @@ module SaneMasterModules
     def launch_env_vars(allow_keychain:, force_free_mode:)
       env_vars = {}
       env_vars['VERIFY_PIP'] = ENV['VERIFY_PIP'] if ENV['VERIFY_PIP']
+      passthrough_launch_env_vars.each do |key, value|
+        env_vars[key] = value
+      end
       env_vars['SANEAPPS_DISABLE_KEYCHAIN'] = '1' unless allow_keychain
       return env_vars unless force_free_mode
 
@@ -917,12 +923,31 @@ module SaneMasterModules
 
     def open_launch_env_pairs(allow_keychain:, force_free_mode:)
       pairs = []
+      passthrough_launch_env_vars.each do |key, value|
+        pairs += ['--env', "#{key}=#{value}"]
+      end
       pairs += ['--env', 'SANEAPPS_DISABLE_KEYCHAIN=1'] unless allow_keychain
       return pairs unless force_free_mode
 
       pairs += ['--env', 'SANEAPPS_FORCE_LICENSE_CHECK=1']
       pairs += ['--env', 'SANEAPPS_FORCE_FREE_MODE=1'] unless project_name == 'SaneBar'
       pairs
+    end
+
+    def passthrough_launch_env_vars
+      allowed_exact = %w[
+        OPEN_PROJECT_PATH
+        SANEAPPS_PERMISSIONLESS_AUTOMATION
+        TEST_PROJECT_PATH
+        VERIFY_PIP
+      ].freeze
+
+      ENV.each_with_object({}) do |(key, value), vars|
+        next if value.nil? || value.empty?
+        next unless key.start_with?('SANEVIDEO_') || allowed_exact.include?(key)
+
+        vars[key] = value
+      end
     end
 
     def launch_binary_args(allow_keychain:)

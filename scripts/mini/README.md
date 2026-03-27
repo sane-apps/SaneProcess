@@ -11,6 +11,7 @@ Scripts that run on the Mac mini (M1, 8GB) build server. This is the **source of
 | `mini-install-training-agents.sh` | On demand | Installs/updates weekly + challenger training LaunchAgents |
 | `mini-memory-guard.sh` | 5:40 AM daily | Mini hygiene + safe reboot gate (only when idle and needed) |
 | `mini-install-memory-guard.sh` | On demand | Installs/updates memory guard LaunchAgent |
+| `mini-gui-run.sh` | Manual / wrapper | Runs a shell command inside the Mini's logged-in GUI Terminal session |
 | `mini-train.sh` | Manual / wrapper | MLX LoRA fine-tuning pipeline (sweeps, validation, reporting) |
 | `mini-train-all.sh` | 1 AM Sunday | Weekly production training for SaneAI |
 | `mini-train-challengers.sh` | 1 AM daily | Daily challenger training for SaneAI |
@@ -47,6 +48,27 @@ What it proves:
 - iOS signing is probe-tested when an Apple Development or Distribution identity is installed
 
 If this script fails, stop and fix the machine first. Do not push through with raw `xcodebuild`.
+
+## GUI Session Runner
+
+If App Store signing works in the Mini GUI session but fails in plain `ssh` shells with `errSecInternalComponent`, use:
+
+```bash
+ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-gui-run.sh \
+  --title "SaneSales archive" \
+  --log-file /tmp/sanesales-archive.log \
+  --close-window \
+  -- "cd ~/SaneApps/apps/SaneSales && xcodebuild archive ..."'
+```
+
+What it does:
+- opens a real Terminal window in the logged-in Mini GUI session
+- runs the command there
+- tees output to the requested log file
+- waits for completion
+- closes its own Terminal window by default
+
+Use this for App Store archive/export/upload recovery on the Mini. Do not leave throwaway Terminal windows open.
 
 ## Architecture
 
