@@ -1,13 +1,13 @@
 #!/bin/bash
 # mini-install-memory-guard.sh - Install/update the memory guard LaunchAgent on mini
 # Usage:
-#   bash ~/SaneApps/infra/scripts/mini-install-memory-guard.sh
+#   bash ~/SaneApps/infra/SaneProcess/scripts/mini/mini-install-memory-guard.sh
 
 set -euo pipefail
 
 AGENT_LABEL="com.saneapps.memory-guard"
 PLIST="$HOME/Library/LaunchAgents/${AGENT_LABEL}.plist"
-SCRIPT_PATH="$HOME/SaneApps/infra/scripts/mini-memory-guard.sh"
+SCRIPT_PATH="$HOME/SaneApps/infra/SaneProcess/scripts/mini/mini-memory-guard.sh"
 OUTPUT_DIR="$HOME/SaneApps/outputs"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$OUTPUT_DIR"
@@ -57,4 +57,3 @@ launchctl enable "gui/$(id -u)/${AGENT_LABEL}" 2>/dev/null || true
 
 echo "Installed ${AGENT_LABEL}"
 defaults read "$PLIST" StartCalendarInterval
-

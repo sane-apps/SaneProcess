@@ -525,6 +525,7 @@ class SaneMaster
 
     scratch_root = mini_release_workspace_root(local_repo)
     scratch_repo = routed_release_path_for_local(local_repo)
+    prune_stale_mini_release_workspaces!(local_repo, current_workspace_root: scratch_root)
     sync_release_artifacts_from_mini!(local_repo, scratch_repo, warn_only: true) if preserve_release_artifacts
     remote_bundle_path = File.join('/tmp', "sanemaster-route-#{Digest::SHA256.hexdigest("#{File.expand_path(local_repo)}:#{head}")[0, 16]}.bundle")
     sync_git_bundle_to_mini!(local_repo, branch, remote_bundle_path) unless mini_repo_has_commit?(remote_repo, head)
@@ -560,6 +561,31 @@ class SaneMaster
     puts "🔄 Syncing local workspace snapshot to mini (#{scratch_repo})"
     sync_local_dir_to_mini!(local_repo, scratch_repo, label: nil)
     scratch_repo
+  end
+
+  def prune_stale_mini_release_workspaces!(local_repo, current_workspace_root: nil, keep_days: 3, min_keep: 2)
+    workspace_parent = File.dirname(mini_release_workspace_root(local_repo))
+    remote_cmd = <<~SH
+      set -e
+      root=#{Shellwords.escape(workspace_parent)}
+      current=#{Shellwords.escape(current_workspace_root.to_s)}
+      keep_days=#{keep_days.to_i}
+      min_keep=#{min_keep.to_i}
+      [ -d "$root" ] || exit 0
+      kept=0
+      for dir in $(ls -1dt "$root"/* 2>/dev/null); do
+        [ -d "$dir" ] || continue
+        [ -n "$current" ] && [ "$dir" = "$current" ] && continue
+        kept=$((kept + 1))
+        if [ "$kept" -le "$min_keep" ]; then
+          continue
+        fi
+        if [ -n "$(find "$dir" -maxdepth 0 -mtime +$keep_days -print -quit 2>/dev/null)" ]; then
+          rm -rf "$dir"
+        fi
+      done
+    SH
+    system('ssh', 'mini', remote_cmd)
   end
 
   def release_artifact_resume_requested?(command, args)
@@ -780,6 +806,7 @@ class SaneMaster
       '--exclude', '.worktrees',
       '--exclude', '.build',
       '--exclude', 'build',
+      '--exclude', 'outputs',
       '--exclude', 'DerivedData',
       '--exclude', 'node_modules',
       '--exclude', 'vendor/bundle',

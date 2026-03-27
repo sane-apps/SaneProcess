@@ -90,9 +90,10 @@ exit(run_tests('SaneMaster Release Routing Tests') do
   end
 
   test_category('Workspace sync to mini') do
-    test('excludes local worktree archives from routed workspace sync') do
+    test('excludes local worktree archives and outputs from routed workspace sync') do
       with_temp_repo do |repo|
         FileUtils.mkdir_p(File.join(repo, '.worktrees', 'archive'))
+        FileUtils.mkdir_p(File.join(repo, 'outputs', 'huge'))
 
         subject.system_calls.clear
         subject.send(:sync_local_dir_to_mini!, repo, '/Users/stephansmac/.sanemaster/routed-workspaces/abcd/SaneApps/apps/SaneBar', label: nil)
@@ -100,6 +101,27 @@ exit(run_tests('SaneMaster Release Routing Tests') do
         rsync_call = subject.system_calls.find { |call| call.first == 'rsync' }
         assert(rsync_call, 'expected an rsync call')
         assert_includes(rsync_call, '.worktrees')
+        assert_includes(rsync_call, 'outputs')
+        true
+      end
+    end
+  end
+
+  test_category('Workspace pruning on mini') do
+    test('prunes stale routed workspaces while protecting the current scratch root') do
+      with_temp_repo do |repo|
+        subject.system_calls.clear
+
+        current_root = '/Users/stephansmac/.sanemaster/routed-workspaces/current123'
+        subject.send(:prune_stale_mini_release_workspaces!, repo, current_workspace_root: current_root, keep_days: 3, min_keep: 2)
+
+        ssh_call = subject.system_calls.find { |call| call.first == 'ssh' && call[1] == 'mini' }
+        assert(ssh_call, 'expected an ssh prune call')
+        remote_cmd = ssh_call[2]
+        assert_includes(remote_cmd, '/Users/stephansmac/.sanemaster/routed-workspaces')
+        assert_includes(remote_cmd, 'current123')
+        assert_includes(remote_cmd, 'keep_days=3')
+        assert_includes(remote_cmd, 'min_keep=2')
         true
       end
     end

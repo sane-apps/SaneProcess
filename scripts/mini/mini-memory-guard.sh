@@ -5,6 +5,7 @@
 # Goals:
 # - Keep the mini responsive as a build server.
 # - Kill stale dev app binaries from DerivedData.
+# - Prune stale routed release workspaces and validation output.
 # - Rotate oversized logs.
 # - Reboot only when safe (night window, no critical jobs).
 
@@ -55,6 +56,10 @@ get_uptime_days() {
   fi
 }
 
+get_data_disk_free_gb() {
+  df -g /System/Volumes/Data | tail -1 | awk '{print $4}'
+}
+
 is_training_running() {
   pgrep -f "mlx_lm lora --train" >/dev/null 2>&1 || \
     pgrep -f "mini-train.sh" >/dev/null 2>&1 || \
@@ -84,7 +89,11 @@ rotate_if_large() {
 safe_remove_path() {
   local path="$1"
   case "$path" in
-    "$HOME/SaneApps/apps/"*|"$HOME/Library/Developer/Xcode/DerivedData/"*)
+    "$HOME/SaneApps/apps/"*|\
+    "$HOME/Library/Developer/Xcode/DerivedData/"*|\
+    "$HOME/.sanemaster/routed-workspaces/"*|\
+    "$HOME/.codex-sync-backups/"*|\
+    "$HOME/.Trash/"*)
       ;;
     *)
       log "Refusing delete outside safe roots: $path"
@@ -98,6 +107,55 @@ safe_remove_path() {
   fi
 
   rm -rf "$path"
+}
+
+prune_old_dirs_by_mtime() {
+  local root="$1"
+  local pattern="$2"
+  local keep_days="$3"
+  local label="$4"
+  local min_keep="$5"
+
+  [ -d "$root" ] || return 0
+  [[ "$keep_days" =~ ^[0-9]+$ ]] || keep_days=3
+  [[ "$min_keep" =~ ^[0-9]+$ ]] || min_keep=1
+
+  local matches=()
+  local path
+  shopt -s nullglob
+  for path in "$root"/$pattern; do
+    [ -d "$path" ] || continue
+    matches+=("$path")
+  done
+  shopt -u nullglob
+
+  [ "${#matches[@]}" -gt 0 ] || return 0
+
+  local removed=0
+  local freed_mb=0
+  local idx=0
+  local dir
+  while IFS= read -r dir; do
+    [ -d "$dir" ] || continue
+    idx=$((idx + 1))
+    if [ "$idx" -le "$min_keep" ]; then
+      continue
+    fi
+    if [ -z "$(find "$dir" -maxdepth 0 -mtime +"$keep_days" -print -quit 2>/dev/null)" ]; then
+      continue
+    fi
+    local dir_mb
+    dir_mb=$(du -sm "$dir" 2>/dev/null | awk '{print $1}')
+    safe_remove_path "$dir" || continue
+    removed=$((removed + 1))
+    freed_mb=$((freed_mb + dir_mb))
+  done < <(printf '%s\n' "${matches[@]}" | xargs ls -1dt 2>/dev/null)
+
+  if [ "$removed" -gt 0 ]; then
+    log "Pruned $removed ${label} dir(s), freed ${freed_mb}MB (keep_days=$keep_days min_keep=$min_keep)"
+  else
+    log "No ${label} dirs older than ${keep_days} day(s) beyond min_keep=$min_keep"
+  fi
 }
 
 prune_sweep_dirs() {
@@ -156,6 +214,46 @@ cleanup_training_artifacts() {
     safe_remove_path "$tmp_dir" || continue
     log "Removed temporary fusion dir $(basename "$tmp_dir") (${dir_mb}MB)"
   done
+}
+
+cleanup_routed_workspaces() {
+  prune_old_dirs_by_mtime "$HOME/.sanemaster/routed-workspaces" "*" "${ROUTED_WORKSPACE_KEEP_DAYS:-2}" "routed workspace" "${ROUTED_WORKSPACE_MIN_KEEP:-1}"
+}
+
+cleanup_sanevideo_outputs() {
+  local outputs_root="$HOME/SaneApps/apps/SaneVideo/outputs"
+  [ -d "$outputs_root" ] || return 0
+  prune_old_dirs_by_mtime "$outputs_root" "recording_validation_*" "${SANEVIDEO_OUTPUT_KEEP_DAYS:-2}" "SaneVideo recording validation" 0
+  prune_old_dirs_by_mtime "$outputs_root" "local_air_*" "${SANEVIDEO_OUTPUT_KEEP_DAYS:-2}" "SaneVideo local Air build" 0
+  prune_old_dirs_by_mtime "$outputs_root" "hardware_validation" "${SANEVIDEO_OUTPUT_KEEP_DAYS:-2}" "SaneVideo hardware validation" 0
+}
+
+cleanup_codex_sync_backups() {
+  prune_old_dirs_by_mtime "$HOME/.codex-sync-backups" "*" "${CODEX_BACKUP_KEEP_DAYS:-14}" "Codex sync backup" "${CODEX_BACKUP_MIN_KEEP:-1}"
+}
+
+cleanup_trash() {
+  local trash_root="$HOME/.Trash"
+  local max_mb="${TRASH_MAX_MB:-256}"
+  [ -d "$trash_root" ] || return 0
+
+  local trash_mb
+  trash_mb=$(du -sm "$trash_root" 2>/dev/null | awk '{print $1}')
+  [ -n "$trash_mb" ] || trash_mb=0
+  if [ "$trash_mb" -le "$max_mb" ]; then
+    log "Trash within limit (${trash_mb}MB <= ${max_mb}MB)"
+    return 0
+  fi
+
+  local removed=0
+  local path
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    safe_remove_path "$path" || continue
+    removed=$((removed + 1))
+  done < <(find "$trash_root" -mindepth 1 -maxdepth 1 -print)
+
+  log "Trash cleanup removed $removed path(s) (pre-clean size: ${trash_mb}MB)"
 }
 
 cleanup_large_deriveddata() {
@@ -284,14 +382,15 @@ maybe_reboot() {
 }
 
 main() {
-  local load1 swap_mb free_pct uptime_days
+  local load1 swap_mb free_pct uptime_days disk_free_gb
   load1="$(get_load1)"
   swap_mb="$(get_swap_used_mb)"
   free_pct="$(get_free_pct)"
   uptime_days="$(get_uptime_days)"
+  disk_free_gb="$(get_data_disk_free_gb)"
 
   log "mini-memory-guard start (dry_run=$DRY_RUN force_reboot=$FORCE_REBOOT)"
-  log "Health before: load1=$load1 swap_used_mb=$swap_mb free_pct=${free_pct:-unknown} uptime_days=$uptime_days"
+  log "Health before: load1=$load1 swap_used_mb=$swap_mb free_pct=${free_pct:-unknown} uptime_days=$uptime_days disk_free_gb=${disk_free_gb:-unknown}"
 
   rotate_if_large "$OUTPUT_DIR/training.stdout.log" 31457280 8388608
   rotate_if_large "$OUTPUT_DIR/training.stderr.log" 10485760 2097152
@@ -299,6 +398,10 @@ main() {
   rotate_if_large "$OUTPUT_DIR/nightly.stderr.log" 10485760 2097152
 
   cleanup_training_artifacts
+  cleanup_routed_workspaces
+  cleanup_sanevideo_outputs
+  cleanup_codex_sync_backups
+  cleanup_trash
   cleanup_large_deriveddata
   cleanup_stale_deriveddata_apps
   maybe_reboot
@@ -307,7 +410,8 @@ main() {
   swap_mb="$(get_swap_used_mb)"
   free_pct="$(get_free_pct)"
   uptime_days="$(get_uptime_days)"
-  log "Health after: load1=$load1 swap_used_mb=$swap_mb free_pct=${free_pct:-unknown} uptime_days=$uptime_days"
+  disk_free_gb="$(get_data_disk_free_gb)"
+  log "Health after: load1=$load1 swap_used_mb=$swap_mb free_pct=${free_pct:-unknown} uptime_days=$uptime_days disk_free_gb=${disk_free_gb:-unknown}"
   log "mini-memory-guard complete"
 }
 
