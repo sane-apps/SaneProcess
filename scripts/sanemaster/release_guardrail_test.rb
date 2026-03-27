@@ -11,6 +11,7 @@ class ReleaseGuardrailHarness
     @stubbed_url_statuses = {}
     @stubbed_asc_paths = {}
     @stubbed_jxa_result = nil
+    @last_jxa_script = nil
   end
 
   def stub_url_status(url, code:, location: '', error: nil)
@@ -42,10 +43,13 @@ class ReleaseGuardrailHarness
   end
 
   def run_osascript_jxa(_script)
+    @last_jxa_script = _script
     output, success = @stubbed_jxa_result || ['', true]
     status = Struct.new(:success?).new(success)
     [output, status]
   end
+
+  attr_reader :last_jxa_script
 end
 
 include TestFramework
@@ -206,6 +210,21 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       )
 
       assert_eq(found, true)
+      true
+    end
+
+    test('scopes Safari IAP probe to the requested platform version page URL') do
+      subject.stub_osascript_jxa("MISSING\n", success: true)
+
+      subject.send(
+        :appstore_version_ui_includes_iap?,
+        app_id: '123',
+        platform: 'macos',
+        product_id: 'com.example.unlock'
+      )
+
+      assert_includes(subject.last_jxa_script, 'location.href')
+      assert_includes(subject.last_jxa_script, 'https://appstoreconnect.apple.com/apps/123/distribution/macos/version/inflight')
       true
     end
 

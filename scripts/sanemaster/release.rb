@@ -967,14 +967,18 @@ module SaneMasterModules
           try {
             tab.url = #{target_url.to_json};
             var pageText = '';
+            var pageUrl = '';
             for (var i = 0; i < 30; i++) {
               delay(1);
+              pageUrl = String(run("location.href") || '');
               pageText = run("document.body ? document.body.innerText : ''") || '';
-              if (pageText.indexOf(#{product_id.to_json}) !== -1) break;
-              if (pageText.indexOf('Included Assets') !== -1) break;
-              if (pageText.indexOf('In-App Purchases and Subscriptions') !== -1) break;
+              var onTargetPage = pageUrl.indexOf(#{target_url.to_json}) !== -1;
+              if (onTargetPage && pageText.indexOf(#{product_id.to_json}) !== -1) break;
+              if (onTargetPage && pageText.indexOf('Included Assets') !== -1) break;
+              if (onTargetPage && pageText.indexOf('In-App Purchases and Subscriptions') !== -1) break;
             }
-            console.log(pageText.indexOf(#{product_id.to_json}) !== -1 ? 'FOUND' : 'MISSING');
+            var found = pageUrl.indexOf(#{target_url.to_json}) !== -1 && pageText.indexOf(#{product_id.to_json}) !== -1;
+            console.log(found ? 'FOUND' : 'MISSING');
           } catch (error) {
             console.log('ERROR:' + error.toString());
           }
