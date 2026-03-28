@@ -4,9 +4,9 @@
 
 # SaneProcess
 
-**Stop Claude Code from wasting your time and crashing your machine.**
+**Stop coding agents from wasting your time and crashing your machine.**
 
-SaneProcess is a hook-based enforcement framework for Claude Code. It kills orphaned processes, stops doom loops, and forces research before edits.
+SaneProcess is workflow enforcement for Claude Code, Codex, and compatible coding agents. It combines Claude-native hooks with Codex-native instructions, skills, MCP, and shared shell/script guardrails so the same SOP survives across clients.
 
 452 tests. MIT licensed. Ruby. macOS + Linux.
 
@@ -25,11 +25,25 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for the operating procedure behind this rul
 
 ---
 
+## Client Support
+
+SaneProcess is intentionally split into stable layers instead of pretending every client exposes the same API.
+
+| Client | Native surface | Stable SaneProcess path |
+|--------|----------------|-------------------------|
+| **Claude Code** | Lifecycle hooks (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, plus newer subagent events) | `scripts/hooks/*.rb` + `.claude/settings.json` + MCP + shared guards |
+| **Codex** | `AGENTS.md`, `.codex/config.toml`, `.agents/skills`, MCP, approvals/sandbox/config | `AGENTS.md` + `.agents/skills` + MCP + shared guards + `SaneMaster.rb` |
+| **Other agents** | Varies by tool | `AGENTS.md` + repo scripts + git/pre-commit checks + shared shell/script guards |
+
+Important: Codex now documents an experimental `features.codex_hooks` flag, but it is still under development and off by default. SaneProcess does not rely on that as the primary path today.
+
+---
+
 ## The Problems
 
 ### 1. Orphaned processes eating your RAM
 
-Claude Code spawns subagents and MCP server processes that outlive their parent sessions. They accumulate silently until your machine crawls or crashes.
+Claude Code and Codex both spawn agent and MCP sidecars that can outlive their parent sessions. They accumulate silently until your machine crawls or crashes.
 
 SaneProcess kills them automatically on every session start — without touching your active sessions.
 
@@ -82,7 +96,7 @@ cd /path/to/your-project
 /path/to/SaneProcess/scripts/init.sh
 ```
 
-The installer copies hooks into your project's `scripts/hooks/` directory and creates `.claude/settings.json` with hook registration.
+The installer copies hooks into your project's `scripts/hooks/` directory, creates `.claude/settings.json` with Claude hook registration, seeds a starter `AGENTS.md` when missing, and mirrors repo skills into `.agents/skills/` for Codex-compatible clients.
 
 **Or configure manually** — add to `~/.claude/settings.json` (global) or `.claude/settings.json` (per-project):
 
@@ -107,11 +121,33 @@ ruby scripts/hooks/sanetrack.rb --self-test
 ruby scripts/hooks/sanestop.rb --self-test
 ```
 
+### Codex Setup
+
+Codex does not need Claude-style hook registration to use SaneProcess well.
+
+1. Keep the repo-level `AGENTS.md` accurate and practical.
+2. Put repo skills in `.agents/skills/` so Codex can discover them.
+3. Configure MCP in `~/.codex/config.toml` or project-scoped `.codex/config.toml`.
+4. Use the shared runtime guards for risky paths such as email writes.
+
+Useful commands:
+
+```bash
+codex mcp list
+codex mcp add context7 -- npx -y @upstash/context7-mcp
+codex mcp add github -- npx -y @modelcontextprotocol/server-github
+```
+
 ---
 
 ## How It Works
 
-4 enforcement hooks plus 1 session-start bootstrap hook map to Claude Code's lifecycle events:
+SaneProcess has one SOP and two main runtime shapes:
+
+- **Claude Code:** 4 enforcement hooks plus 1 session-start bootstrap hook.
+- **Codex:** repo instructions, repo skills, MCP, `SaneMaster.rb`, and shared shell/script guards.
+
+Claude's native hooks map to these lifecycle events:
 
 | Hook | Event | Purpose |
 |------|-------|---------|
@@ -131,7 +167,7 @@ On every session start, three cleanup passes run:
 2. **MCP daemons** — finds known MCP patterns (context7, apple-docs, xcodebuild, github, serena, central-memory, etc.) not in your session tree
 3. **Subagents** — finds `claude --resume` processes whose parent sessions are dead
 
-Uses BFS process tree traversal. Your active session and any other active terminal sessions are never touched.
+Uses BFS process tree traversal. Your active session and any other active terminal sessions are never touched. The same process inspection logic also feeds the Codex MCP watchdog tooling.
 
 ### Circuit Breaker
 
@@ -291,12 +327,13 @@ Check that `.claude/settings.json` contains hook entries pointing to your `scrip
 - **macOS or Linux** (process cleanup uses POSIX `ps`; HMAC key uses Keychain on macOS, file-based on Linux)
 - **Ruby 3.x** (`brew install ruby` on macOS; `apt install ruby` or `dnf install ruby` on Linux)
 - **Claude Code** (`npm install -g @anthropic-ai/claude-code`)
+- **Codex** (`brew install codex`, or the desktop/IDE client)
 
 ---
 
 ## Included Skills
 
-SaneProcess ships two multi-agent audit skills that Claude reads and executes automatically.
+SaneProcess ships two reusable audit skills. Claude projects can install them into `.claude/skills/`. Codex-compatible projects should install them into `.agents/skills/`.
 
 ### Critic (`/critic`)
 
@@ -331,9 +368,9 @@ Findings are deduplicated and ranked by severity. Issues caught by multiple agen
 | 10 | Ops | Git hygiene, dependencies, certificates |
 | 11 | Consistency | Broken references in CLAUDE.md vs actual code |
 
-Produces a consolidated gap report with scores, critical issues, and recommended fixes — sorted by what Claude can fix vs what needs human action.
+Produces a consolidated gap report with scores, critical issues, and recommended fixes — sorted by what the agent can fix vs what needs human action.
 
-Skills are installed to `.claude/skills/` during `init.sh` setup.
+Skills are mirrored into `.claude/skills/` and `.agents/skills/` during `init.sh` setup.
 
 ---
 
@@ -355,6 +392,7 @@ scripts/
 │       └── tier_tests.rb     # 178 enforcement tests
 ├── init.sh                   # Project installer
 └── qa.rb                     # QA runner
+AGENTS.md                     # Shared agent instructions
 skills/
 ├── critic/                   # 6-persona adversarial code review
 │   ├── SKILL.md
@@ -368,6 +406,8 @@ skills/
 │   └── scripts.md            # Ruby script conventions
 ├── skills/                   # Installed by init.sh from skills/
 └── settings.json             # Hook registration
+.agents/
+└── skills/                   # Codex-compatible repo skills (installed by init.sh)
 ```
 
 ---

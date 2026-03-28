@@ -1,6 +1,8 @@
 # SaneProcess Hooks
 
-Production-ready hooks for Claude Code SOP enforcement.
+Production-ready Claude-native hooks for SaneProcess SOP enforcement.
+
+For Codex and other clients, treat these as one layer of the system, not the whole system. The stable cross-client path is `AGENTS.md`, repo skills, MCP, `SaneMaster.rb`, and shared shell/script guards.
 
 ## Architecture
 

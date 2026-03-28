@@ -6,7 +6,7 @@ Thanks for your interest in contributing to SaneProcess! This document explains 
 
 ## What is SaneProcess?
 
-SaneProcess is an SOP (Standard Operating Procedure) enforcement framework for AI-assisted development with Claude Code. It helps developers ship reliable code through:
+SaneProcess is an SOP (Standard Operating Procedure) enforcement framework for AI-assisted development with Claude Code, Codex, and compatible coding agents. It helps developers ship reliable code through:
 
 - 17 Golden Rules for AI-assisted development
 - Automated compliance hooks
@@ -35,6 +35,7 @@ bundle install
 
 ```
 SaneProcess/
+├── AGENTS.md               # Shared agent instructions
 ├── CLAUDE.md               # AI instructions
 ├── README.md               # Product overview
 ├── DEVELOPMENT.md          # Build, test, contribute
@@ -49,7 +50,8 @@ SaneProcess/
 │   └── sanemaster/         # CLI subcommands
 ├── templates/              # Project templates
 ├── skills/                 # Domain-specific knowledge modules
-└── .claude/                # Claude Code configuration
+├── .claude/                # Claude Code hook configuration
+└── .agents/                # Repo skills for Codex-compatible clients
 ```
 
 ---

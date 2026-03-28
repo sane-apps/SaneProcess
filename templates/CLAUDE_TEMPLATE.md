@@ -1,6 +1,6 @@
-# [AppName] Project Configuration
+# [AppName] Claude Overlay
 
-> Project-specific settings that override/extend the global ~/CLAUDE.md
+> Claude-specific settings that extend the shared repo AGENTS.md and the global ~/CLAUDE.md
 
 ---
 
@@ -46,6 +46,7 @@
 |------|-------|
 | Build/test commands | `./scripts/SaneMaster.rb --help` |
 | Project structure | `project.yml` (XcodeGen config) |
+| Shared repo rules | `AGENTS.md` |
 | Past bugs/learnings | `.claude/memory.json` or MCP memory |
 | Code patterns | `.claude/rules/` directory |
 | Swift services | `Core/Services/` directory |
@@ -53,7 +54,7 @@
 
 ---
 
-## PRIME DIRECTIVE (from ~/CLAUDE.md)
+## PRIME DIRECTIVE (from AGENTS.md + ~/CLAUDE.md)
 
 > When hooks fire: **READ THE MESSAGE FIRST**. The answer is in the prompt/hook/memory/SOP.
 > Stop guessing. Start reading.
@@ -101,6 +102,7 @@
 
 | Document | When to Use |
 |----------|-------------|
+| [AGENTS.md](AGENTS.md) | Shared repo rules for any coding agent |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Full SOP, 12 rules, compliance |
 | [.claude/rules/](/.claude/rules/) | Code style rules by file type |
 
@@ -135,7 +137,7 @@ Note: This is a **macOS app**. Use `macos-automator` for real UI interaction.
 
 ---
 
-## Claude Code Features (USE THESE!)
+## Claude Features (USE THESE!)
 
 ### Key Commands
 

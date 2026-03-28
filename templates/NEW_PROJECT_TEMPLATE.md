@@ -1,6 +1,6 @@
 # Sane* Project Template
 
-> Use this template when setting up a new Sane* project with Claude Code configuration.
+> Use this template when setting up a new Sane* project for Claude Code, Codex, and other compatible coding agents.
 > Trigger: "set up project template for X" or "use project template for X"
 
 ## Quick Setup Checklist
@@ -9,7 +9,9 @@
 [ ] .claude/.gitignore
 [ ] .claude/settings.json
 [ ] .claude/rules/ (copy from SaneProcess)
+[ ] .agents/skills/ (mirror shared repo skills for Codex)
 [ ] .mcp.json (project root)
+[ ] AGENTS.md (project root)
 [ ] CLAUDE.md (project root)
 [ ] README.md (project root)
 [ ] DEVELOPMENT.md (project root)
@@ -224,6 +226,30 @@ saneloop-archive/
 
 ## Step 4: Create `CLAUDE.md` (at project root)
 
+Before the Claude overlay, add a shared `AGENTS.md` at the project root so Codex and other agents land on the same rules first:
+
+```markdown
+# Project Agent Instructions
+
+Use plain English. Keep it short and direct.
+
+## Read First
+1. README.md
+2. DEVELOPMENT.md
+3. ARCHITECTURE.md
+4. SESSION_HANDOFF.md if it exists
+5. CLAUDE.md for Claude-specific overlays
+
+## Rules
+1. Verify tools and APIs before using them.
+2. After two failures, stop and research.
+3. Use project scripts instead of ad hoc commands.
+4. Do not say "done" without checks or approval.
+5. Update existing docs before creating new ones.
+```
+
+Then add `CLAUDE.md` only for Claude-specific overlays:
+
 ```markdown
 # [ProjectName] Claude Code Configuration
 
@@ -310,6 +336,7 @@ commands:
   logs: ./scripts/SaneMaster.rb logs
 
 docs:
+  - AGENTS.md
   - CLAUDE.md
   - README.md
   - DEVELOPMENT.md
@@ -359,7 +386,7 @@ alias gXX='cd /path/to/ProjectName && gemini'
 ls -la PROJECT/.claude/
 
 # Check root config files
-ls -la PROJECT/.mcp.json PROJECT/CLAUDE.md
+ls -la PROJECT/.mcp.json PROJECT/AGENTS.md PROJECT/CLAUDE.md
 
 # Check aliases
 grep "alias.*PROJECT" ~/.zshrc
@@ -390,7 +417,7 @@ source ~/.zshrc
 - Use `macos-automator` to click real UI elements
 
 ### Apps with Privileged Helpers
-- Document XPC service in CLAUDE.md
+- Document XPC service in AGENTS.md and CLAUDE.md if Claude needs extra overlay detail
 - Note SMAppService registration
 - Security considerations for admin privileges
 

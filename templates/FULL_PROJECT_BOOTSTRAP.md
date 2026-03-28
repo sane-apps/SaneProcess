@@ -123,6 +123,7 @@ For bootstrap tasks, use subagents with verification:
 ### Directory Layout
 ```
 ProjectName/
+├── AGENTS.md                   # Shared agent instructions
 ├── .claude/                    # Claude Code config
 │   ├── .gitignore
 │   ├── settings.json
@@ -156,7 +157,7 @@ ProjectName/
 │   ├── ProjectName.entitlements
 │   └── [Source files]
 ├── .mcp.json
-├── CLAUDE.md
+├── CLAUDE.md                   # Optional Claude-specific overlay
 ├── CONTRIBUTING.md
 ├── README.md
 ├── PRIVACY.md
@@ -634,7 +635,7 @@ end
 
 ---
 
-## Part 9: Claude Code Setup
+## Part 9: Agent Setup
 
 ### 9.1 .mcp.json
 
@@ -667,6 +668,12 @@ Add to `~/.zshrc`:
 alias pn='cd ~/Projects/ProjectName && claude --dangerously-skip-permissions'
 alias gpn='cd ~/Projects/ProjectName && gemini'
 ```
+
+### 9.3 Shared Repo Instructions
+
+- Create `AGENTS.md` in the project root for the shared, client-neutral workflow.
+- Keep `CLAUDE.md` only for Claude-specific overlays.
+- For Codex, commit shared team skills under `.agents/skills/`.
 
 ---
 
@@ -757,7 +764,7 @@ ps aux | grep claude | grep -v grep  # Check for stale processes
 
 ### Phase 2: Project Setup
 3. Create repo and clone
-4. Copy `.claude/`, `.mcp.json`, `CLAUDE.md` from template
+4. Copy `.claude/`, `.mcp.json`, `AGENTS.md`, and optional `CLAUDE.md` from template
 5. Add `scripts/SaneMaster.rb` wrapper pointing to `infra/SaneProcess/scripts/SaneMaster.rb`
 6. Copy `fastlane/` folder, update bundle ID
 

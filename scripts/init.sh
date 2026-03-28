@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # SaneProcess Installation Script
-# Sets up Claude Code hook enforcement in your project
+# Sets up SaneProcess for Claude Code, Codex, and compatible agents
 #
 # Usage:
 #   git clone https://github.com/sane-apps/SaneProcess.git /tmp/saneprocess
@@ -82,8 +82,21 @@ echo -e "   ${GREEN}✓${NC} ruby $(ruby -v | head -c 20)"
 if ! command -v claude &>/dev/null; then
     echo -e "${YELLOW}Warning: Claude Code CLI not found${NC}"
     echo "   Install: npm install -g @anthropic-ai/claude-code"
-    echo "   (Hooks will be installed but won't activate until claude is available)"
+    echo "   (Claude hooks will be installed but won't activate until claude is available)"
+else
+    HAS_CLAUDE=1
 fi
+
+if ! command -v codex &>/dev/null; then
+    echo -e "${YELLOW}Warning: Codex CLI not found${NC}"
+    echo "   Install: npm install -g @openai/codex"
+    echo "   (AGENTS.md and .agents/skills will still be installed for later use)"
+else
+    HAS_CODEX=1
+fi
+
+HAS_CLAUDE="${HAS_CLAUDE:-0}"
+HAS_CODEX="${HAS_CODEX:-0}"
 
 echo ""
 
@@ -94,9 +107,13 @@ echo ""
 echo "Creating directories..."
 
 mkdir -p .claude/rules
+mkdir -p .claude/skills
+mkdir -p .agents/skills
 mkdir -p scripts/hooks/core
 
 echo -e "   ${GREEN}✓${NC} .claude/rules/"
+echo -e "   ${GREEN}✓${NC} .claude/skills/"
+echo -e "   ${GREEN}✓${NC} .agents/skills/"
 echo -e "   ${GREEN}✓${NC} scripts/hooks/core/"
 echo ""
 
@@ -235,18 +252,21 @@ echo "Installing skills..."
 SKILLS_SRC="$SANEPROCESS_DIR/skills"
 
 if [ -d "$SKILLS_SRC" ]; then
-    mkdir -p .claude/skills
     for skill_dir in "$SKILLS_SRC"/*/; do
         skill_name=$(basename "$skill_dir")
         if [ -f "$skill_dir/SKILL.md" ]; then
             mkdir -p ".claude/skills/$skill_name"
+            mkdir -p ".agents/skills/$skill_name"
             cp "$skill_dir/SKILL.md" ".claude/skills/$skill_name/SKILL.md"
+            cp "$skill_dir/SKILL.md" ".agents/skills/$skill_name/SKILL.md"
             if [ -d "$skill_dir/prompts" ]; then
                 mkdir -p ".claude/skills/$skill_name/prompts"
+                mkdir -p ".agents/skills/$skill_name/prompts"
                 cp "$skill_dir/prompts/"*.md ".claude/skills/$skill_name/prompts/"
+                cp "$skill_dir/prompts/"*.md ".agents/skills/$skill_name/prompts/"
             fi
             prompt_count=$(ls ".claude/skills/$skill_name/prompts/"*.md 2>/dev/null | wc -l | tr -d ' ')
-            echo -e "   ${GREEN}✓${NC} $skill_name ($prompt_count prompts)"
+            echo -e "   ${GREEN}✓${NC} $skill_name ($prompt_count prompts, mirrored to .claude and .agents)"
         fi
     done
 else
@@ -256,7 +276,27 @@ fi
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CREATE .claude/settings.json (project-level hooks)
+# CREATE AGENTS.md
+# ═══════════════════════════════════════════════════════════════════════════════
+
+echo "Installing agent instructions..."
+
+if [ -f "AGENTS.md" ]; then
+    echo -e "   ${YELLOW}!${NC} AGENTS.md already exists — skipping"
+else
+    if [ -f "$SANEPROCESS_DIR/templates/AGENTS_TEMPLATE.md" ]; then
+        cp "$SANEPROCESS_DIR/templates/AGENTS_TEMPLATE.md" "AGENTS.md"
+        echo -e "   ${GREEN}✓${NC} AGENTS.md (shared instructions for Codex, Claude, and compatible agents)"
+    else
+        echo -e "   ${RED}✗${NC} templates/AGENTS_TEMPLATE.md missing"
+        ERRORS=$((ERRORS + 1))
+    fi
+fi
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREATE .claude/settings.json (Claude-specific native hooks)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 echo "Configuring hooks..."
@@ -330,7 +370,7 @@ else
   }
 }
 SETTINGS_EOF
-    echo -e "   ${GREEN}✓${NC} .claude/settings.json (5 hooks registered)"
+    echo -e "   ${GREEN}✓${NC} .claude/settings.json (5 Claude hooks registered)"
 fi
 
 echo ""
@@ -412,8 +452,8 @@ echo ""
 echo "Installed:"
 echo "   5 main hooks + ${#SUPPORT_MODULES[@]} support modules + ${#CORE_MODULES[@]} core modules"
 echo "   $(ls .claude/rules/*.md 2>/dev/null | wc -l | tr -d ' ') pattern rules"
-echo "   $(ls -d .claude/skills/*/ 2>/dev/null | wc -l | tr -d ' ') skills (critic, docs-audit)"
-echo "   Hook registration in .claude/settings.json"
+echo "   $(ls -d .claude/skills/*/ 2>/dev/null | wc -l | tr -d ' ') skills mirrored to .claude/skills and .agents/skills"
+echo "   Starter AGENTS.md + Claude hook registration in .claude/settings.json"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -424,37 +464,61 @@ echo -e "${BLUE}Recommended MCP servers:${NC}"
 echo ""
 echo "   The research gate works best with these MCP servers."
 echo "   Without them, MCP-dependent research categories auto-skip."
-echo "   With them, Claude must verify APIs exist before editing."
+echo "   With them, agents must verify APIs exist before editing."
 echo ""
 
 MISSING_MCPS=0
 
+show_install_commands() {
+    local server_name="$1"
+    local stdio_cmd="$2"
+    local extra_note="$3"
+
+    if [ "$HAS_CLAUDE" -eq 1 ]; then
+        echo "     Claude: claude mcp add ${server_name} -- ${stdio_cmd}"
+    else
+        echo "     Claude: claude mcp add ${server_name} -- ${stdio_cmd}"
+    fi
+
+    if [ "$HAS_CODEX" -eq 1 ]; then
+        echo "     Codex:  codex mcp add ${server_name} -- ${stdio_cmd}"
+    else
+        echo "     Codex:  codex mcp add ${server_name} -- ${stdio_cmd}"
+    fi
+
+    if [ -n "$extra_note" ]; then
+        echo "     ${extra_note}"
+    fi
+}
+
 # Check for context7 (library docs — works on all platforms)
-if claude mcp list 2>/dev/null | grep -q 'context7'; then
+if { [ "$HAS_CLAUDE" -eq 1 ] && claude mcp list 2>/dev/null | grep -q 'context7'; } || \
+   { [ "$HAS_CODEX" -eq 1 ] && codex mcp list 2>/dev/null | grep -q 'context7'; }; then
     echo -e "   ${GREEN}✓${NC} context7 (library documentation)"
 else
     echo -e "   ${YELLOW}○${NC} context7 — library docs lookup"
-    echo "     Install: claude mcp add context7 -- npx -y @upstash/context7-mcp@latest"
+    show_install_commands "context7" "npx -y @upstash/context7-mcp@latest" ""
     MISSING_MCPS=$((MISSING_MCPS + 1))
 fi
 
 # Check for GitHub MCP (works on all platforms)
-if claude mcp list 2>/dev/null | grep -q 'github'; then
+if { [ "$HAS_CLAUDE" -eq 1 ] && claude mcp list 2>/dev/null | grep -q 'github'; } || \
+   { [ "$HAS_CODEX" -eq 1 ] && codex mcp list 2>/dev/null | grep -q 'github'; }; then
     echo -e "   ${GREEN}✓${NC} github (code search, examples)"
 else
     echo -e "   ${YELLOW}○${NC} github — search code, find real-world examples"
-    echo "     Install: claude mcp add github -- npx -y @modelcontextprotocol/server-github"
-    echo "     Requires: GITHUB_PERSONAL_ACCESS_TOKEN env var"
+    show_install_commands "github" "npx -y @modelcontextprotocol/server-github" "Requires: GITHUB_PERSONAL_ACCESS_TOKEN env var"
     MISSING_MCPS=$((MISSING_MCPS + 1))
 fi
 
 # Check for apple-docs (macOS only)
 if [ "$PLATFORM" = "macOS" ]; then
-    if claude mcp list 2>/dev/null | grep -q 'apple-docs'; then
+    if { [ "$HAS_CLAUDE" -eq 1 ] && claude mcp list 2>/dev/null | grep -q 'apple-docs'; } || \
+       { [ "$HAS_CODEX" -eq 1 ] && codex mcp list 2>/dev/null | grep -q 'apple-docs'; }; then
         echo -e "   ${GREEN}✓${NC} apple-docs (Apple API verification)"
     else
         echo -e "   ${YELLOW}○${NC} apple-docs — verify Apple APIs exist before using them"
-        echo "     Install: claude mcp add apple-docs -- npx -y @nicklima/apple-docs-mcp@latest"
+        show_install_commands "apple-docs" "npx -y @mweinbach/apple-docs-mcp@latest" ""
         MISSING_MCPS=$((MISSING_MCPS + 1))
     fi
 fi
@@ -474,11 +538,11 @@ echo ""
 # ═══════════════════════════════════════════════════════════════════════════════
 
 echo -e "${BLUE}What happens next:${NC}"
-echo "   1. Run: claude"
-echo "   2. Hooks activate automatically on session start"
-echo "   3. Orphaned processes cleaned up"
-echo "   4. Circuit breaker armed (trips after 3 consecutive failures)"
-echo "   5. Research gate active (adapts to your configured MCPs)"
+echo "   1. Open this repo in Claude, Codex, or another coding agent"
+echo "   2. Claude uses .claude/settings.json for native hooks"
+echo "   3. Codex and compatible agents use AGENTS.md + .agents/skills + shared guards"
+echo "   4. Orphaned processes can be cleaned up by the shared SOP/tooling"
+echo "   5. Circuit breaker and research gate stay active through the shared runtime"
 echo ""
 echo -e "${BLUE}Verify:${NC}"
 echo "   ruby scripts/hooks/saneprompt.rb --self-test"
@@ -487,7 +551,8 @@ echo ""
 echo -e "${BLUE}Troubleshooting:${NC}"
 echo "   Circuit breaker stuck: say 'reset breaker' in Claude"
 echo "   Research gate stuck: complete required research categories (adapts to your MCPs)"
-echo "   Hooks not firing: check .claude/settings.json has hook entries"
+echo "   Claude hooks not firing: check .claude/settings.json has hook entries"
+echo "   Codex not following repo rules: confirm it trusts the project and sees AGENTS.md"
 echo ""
 echo "Docs: https://github.com/sane-apps/SaneProcess"
 echo ""

@@ -1,11 +1,13 @@
-# SaneProcess - Claude Code Instructions (Public)
+# SaneProcess - Public Agent Instructions
 
-This file provides AI-readable guidance for projects using SaneProcess.
+This file provides public AI-readable guidance for projects using SaneProcess.
 See [README.md](README.md) for full documentation.
 
 Private/local files (not tracked in git):
 - `CLAUDE.md` — project-specific AI rules and session procedures
 - `SESSION_HANDOFF.md` — recent work context between sessions
+
+Codex note: Codex reads repo `AGENTS.md` first. Treat this file as the public reference for the Claude-native hook runtime and the shared SOP concepts behind it.
 
 ---
 
@@ -43,6 +45,12 @@ The gate adapts to your installed MCP servers. Categories whose MCPs have never 
 | local | Read existing code | Read, Grep, Glob | Always |
 
 With no MCPs installed, only `web` + `local` are required. Install MCPs for stricter enforcement.
+
+## Client Model
+
+- **Claude Code:** native lifecycle hooks plus this file and local/private `CLAUDE.md`.
+- **Codex:** repo `AGENTS.md`, `.agents/skills`, `.codex/config.toml`, MCP, and shared shell/script guardrails.
+- **Other agents:** use the same SOP if they can honor `AGENTS.md`, repo scripts, and MCP.
 
 ## Commands
 

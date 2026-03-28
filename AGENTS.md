@@ -27,7 +27,7 @@ Do not wait until session end.
 - When you find a new bug, issue cluster, regression, or root-cause change, update Serena memory and the knowledge graph immediately.
 - When you fix, close, merge, or downgrade an issue, update the same memory/graph entries immediately.
 - When you change hooks, tools, automation, skills, templates, or durable docs like `AGENTS.md`, `CLAUDE.md`, `README.md`, `DEVELOPMENT.md`, or `ARCHITECTURE.md`, update Serena memory and `SESSION_HANDOFF.md` immediately. Do not treat this as optional cleanup.
-- When you add a new durable document, either fold it into the 5-doc standard or record why it exists and where future sessions should look for it.
+- When you add a new durable document, either fold it into the core docs + `AGENTS.md` standard or record why it exists and where future sessions should look for it.
 - Keep bug memory live enough that it can be used directly for support replies, App Store submissions, website release notes, and future debugging without re-discovery.
 - Before any release, audit release notes against recent support promises, recent GitHub replies, and `research.md`. If a customer-visible fix shipped, the notes should mention it.
 - Every product website must have a public privacy policy URL before release. Missing privacy pages are release blockers for App Store products and should be treated as SOP violations for every product.
@@ -59,10 +59,10 @@ Do not wait until session end.
 | 10 | FIVE HUNDRED'S FINE, EIGHT'S THE LINE | Max 500 lines, must split at 800 |
 | 11 | TOOL BROKE? FIX THE YOKE | Fix broken tools, don't work around them |
 | 12 | TALK WHILE I WALK | Subagents for heavy work, stay responsive |
-| 13 | CONTEXT OR CHAOS | Maintain CLAUDE.md, load at start, save at end |
+| 13 | CONTEXT OR CHAOS | Maintain AGENTS.md, plus CLAUDE.md only when Claude-specific overlay guidance is needed |
 | 14 | PROMPT LIKE A PRO | Specific prompts with file paths, constraints, context |
 | 15 | REVIEW BEFORE YOU SHIP | Self-review for security, edge cases, correctness |
-| 16 | DON'T FRAGMENT, INTEGRATE | Upgrade existing files. 5-doc standard (README, DEVELOPMENT, ARCHITECTURE, SESSION_HANDOFF, CLAUDE). No orphan files. New tooling/docs must be recorded in memory + handoff |
+| 16 | DON'T FRAGMENT, INTEGRATE | Upgrade existing files. Core standard is README, DEVELOPMENT, ARCHITECTURE, SESSION_HANDOFF, and AGENTS; add CLAUDE only when needed. No orphan files. New tooling/docs must be recorded in memory + handoff |
 
 **Workflow:** PLAN → VERIFY → BUILD → TEST → CONFIRM (user approves, then commit)
 
@@ -75,7 +75,7 @@ Do not wait until session end.
 Before I say a tool is missing or switch to a workaround, I must:
 1. Check `~/.claude/SKILLS_REGISTRY.md`
 2. Run `ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb tool_discovery --query "..."` so the receipt captures registry, doctor, validation, and local-path checks
-3. Search `scripts/`, hooks, skills, and the 5-doc standard for an existing path
+3. Search `scripts/`, hooks, skills, and the core docs + `AGENTS.md` standard for an existing path
 4. If the capability is still missing and the workflow repeats, add it to SaneProcess, document it, and make it the standard path
 5. Prefer the canonical tool paths in `DEVELOPMENT.md` instead of ad hoc tool hunting
 
@@ -403,7 +403,7 @@ ssh mini 'tail -20 ~/SaneApps/outputs/nightly_report.md'
 
 - Codex has no native PreToolUse hook API — critical gates are enforced in shared scripts
 - Email writes are guarded via `~/.local/bin/curl` → `sane_curl_guard.sh` plus `check-inbox.sh` approval checks
-- Don't invent new docs — use the 5-doc standard
+- Don't invent new docs — use the core docs + `AGENTS.md` standard
 - Use `trash` not `rm -rf`
 
 ---

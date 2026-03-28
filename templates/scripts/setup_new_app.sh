@@ -318,6 +318,7 @@ commands:
   logs: ./scripts/SaneMaster.rb logs
 
 docs:
+  - AGENTS.md
   - CLAUDE.md
   - README.md
   - DEVELOPMENT.md

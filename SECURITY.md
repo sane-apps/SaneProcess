@@ -30,7 +30,7 @@ You should receive a response within 48 hours.
 SaneProcess is a **development tooling framework** that:
 
 1. **Runs locally** on your development machine
-2. **Integrates with Claude Code** for AI-assisted development
+2. **Integrates with Claude Code, Codex, and compatible coding-agent setups**
 3. **Uses file-based state** stored in `.claude/` directory
 4. **Makes no network requests** — all processing is local
 

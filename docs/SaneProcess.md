@@ -8,7 +8,7 @@
 
 You now have a complete human-AI development system for building macOS applications.
 
-**What is this?** A battle-tested process for working with Claude Code. It turns "AI that sometimes helps" into "AI that reliably ships code" through explicit rules, automated enforcement, and cross-session memory.
+**What is this?** A battle-tested process for working with Claude Code, Codex, and compatible coding agents. It turns "AI that sometimes helps" into "AI that reliably ships code" through explicit rules, automated enforcement, and cross-session memory.
 
 **Why does it work?**
 - **Rules are memorable** - "TWO STRIKES? STOP AND CHECK" sticks better than "stop after failures"
@@ -21,7 +21,7 @@ You now have a complete human-AI development system for building macOS applicati
 | Option | Do This |
 |--------|---------|
 | **Instant Setup** | Run `curl -sL https://raw.githubusercontent.com/sane-apps/SaneProcess/main/scripts/init.sh \| bash` in your project folder |
-| **Manual Setup** | Open Terminal, run `claude`, paste this document, say "set up SaneProcess" |
+| **Manual Setup** | Open Terminal, run `claude` or `codex`, paste this document, say "set up SaneProcess" |
 | **Learn First** | Keep reading to understand the rules, then set up manually |
 
 The init script detects your project type (Swift/Ruby/Node) and creates all config files automatically. Full SOP enforcement in 2 minutes.
@@ -36,7 +36,7 @@ This is a **process framework** with three layers:
 |-------|-----------|---------------|
 | **1. The Rules** | 17 Golden Rules + workflows + research protocol | ✅ Yes - copy this document |
 | **2. The Tooling** | CLI automation (SaneMaster.rb or equivalent) | ⚠️ Adapt - needs project setup |
-| **3. The Enforcement** | Claude Code hooks + MCP servers | ⚠️ Adapt - config files provided |
+| **3. The Enforcement** | Claude hooks, Codex instructions/config, MCP, shared guards | ⚠️ Adapt - config files provided |
 
 ## Layer 1: The Rules (This Document)
 
@@ -62,11 +62,13 @@ A CLI that wraps your build system. Example commands:
 
 ## Layer 3: The Enforcement (Config Files)
 
-Claude Code hooks and MCP servers that automate rule checking:
+Client-specific enforcement surfaces that automate rule checking:
 
 | File | Purpose |
 |------|---------|
-| `.claude/settings.json` | Hook configuration |
+| `.claude/settings.json` | Claude hook configuration |
+| `AGENTS.md` | Shared repo instructions for Codex and other agents |
+| `.agents/skills/` | Repo-local Codex skill discovery |
 | `.mcp.json` | MCP server configuration |
 | `Scripts/hooks/*.rb` | Hook scripts (circuit breaker, edit validator, etc.) |
 | `lefthook.yml` | Git pre-commit/pre-push automation |
@@ -95,6 +97,9 @@ bundle install
 claude plugin install swift-lsp@claude-plugins-official
 claude plugin install code-review@claude-plugins-official
 claude plugin install sane-loop@claude-plugins-official
+
+# Codex reads AGENTS.md and supports repo-shared skills
+mkdir -p .agents/skills
 ```
 
 ## Step 2: Create Project Structure (3 min)
@@ -221,8 +226,8 @@ lefthook install
 # Run first build
 ./Scripts/build.rb verify
 
-# Start Claude Code
-claude
+# Start your coding agent
+claude   # or: codex
 ```
 
 ## What You Get
@@ -230,7 +235,7 @@ claude
 After setup:
 - ✅ Xcode project generated from `project.yml`
 - ✅ Git hooks auto-run on commit/push
-- ✅ Claude Code loads MCP servers + hooks
+- ✅ Claude loads native hooks; Codex reads AGENTS.md and repo skills
 - ✅ SOP enforcement via session start hook
 - ✅ Memory persists across sessions
 
@@ -497,18 +502,18 @@ User talks, you listen, work continues uninterrupted.
 
 ## Rule #13: CONTEXT OR CHAOS
 
-✅ DO: Maintain and update CLAUDE.md context file in project root
+✅ DO: Maintain and update AGENTS.md for shared rules, plus CLAUDE.md when Claude-specific overlay is needed
 ❌ DON'T: Start sessions without loading context or updating it with learnings
 
 ```
-🟢 RIGHT: Load CLAUDE.md at session start, update with new patterns
+🟢 RIGHT: Load AGENTS.md at session start, then CLAUDE.md if the client uses it
 🟢 RIGHT: Add discovered APIs, gotchas, and commands to context file
 🔴 WRONG: "I'll remember this pattern for next session"
 🔴 WRONG: Starting work without checking existing context
 ```
 
 **Context File Requirements:**
-- **Location**: Project root as `CLAUDE.md` or `.claude/CONTEXT.md`
+- **Location**: Project root as `AGENTS.md`, with optional `CLAUDE.md` overlay
 - **Contents**: Build commands, code styles, testing instructions, env setup
 - **Updates**: Add new learnings during sessions with `# key` notation
 - **Auto-generate**: Use `/init` command to create initial context files
@@ -572,7 +577,7 @@ User talks, you listen, work continues uninterrupted.
 🔴 WRONG: Duplicate a global skill into a project directory
 ```
 
-**The 5-doc standard:** CLAUDE.md, README.md, DEVELOPMENT.md, ARCHITECTURE.md, SESSION_HANDOFF.md. No sixth doc. Research → ARCHITECTURE §4. Testing → DEVELOPMENT.
+**Core standard:** README.md, DEVELOPMENT.md, ARCHITECTURE.md, SESSION_HANDOFF.md, and one shared agent entrypoint (`AGENTS.md`). Add `CLAUDE.md` only when Claude-specific overlay guidance is actually needed.
 
 **Before creating anything new, ask:**
 1. Does something already exist that does this? → Improve it.
@@ -653,7 +658,7 @@ Real failures from past sessions. Don't repeat them.
 | **Trusted web search** | Stack Overflow said use `.preferredCamera`. API doesn't exist. | SDK is source of truth |
 | **No regression test** | Fixed bug, shipped, bug came back 2 weeks later | Every fix gets a test (Rule #7) |
 | **AI hallucinated API** | Generated code using non-existent method signature | Verify with SDK before using (Rule #2) |
-| **No context file** | Repeated same mistakes across sessions | Maintain CLAUDE.md (Rule #13) |
+| **No context file** | Repeated same mistakes across sessions | Maintain AGENTS.md, plus CLAUDE.md only when needed (Rule #13) |
 | **Vague prompt** | "Fix it" led to 3 wrong approaches | Be specific with constraints (Rule #14) |
 | **Skipped self-review** | Security vulnerability in generated code shipped | Review before ship (Rule #15) |
 
@@ -960,7 +965,7 @@ Cross-session learnings are stored through multiple complementary systems:
 
 # 7. Claude Code Hooks
 
-Hooks run automatically during AI tool use.
+Hooks run automatically during Claude tool use. Codex should rely on `AGENTS.md`, `.agents/skills`, MCP, and shared script/shell guardrails instead of pretending Claude hook APIs exist everywhere.
 
 ## Hook Types
 
@@ -1301,10 +1306,10 @@ killall -9 <app-name>
 │  #10 FIVE HUNDRED'S FINE, EIGHT'S THE LINE                 │
 │  #11 TOOL BROKE? FIX THE YOKE                              │
 │  #12 TALK WHILE I WALK (subagents)                         │
-│  #13 CONTEXT OR CHAOS (maintain CLAUDE.md)                 │
+│  #13 CONTEXT OR CHAOS (maintain AGENTS.md)                 │
 │  #14 PROMPT LIKE A PRO (specific prompts)                  │
 │  #15 REVIEW BEFORE YOU SHIP (self-review)                  │
-│  #16 DON'T FRAGMENT, INTEGRATE (5-doc standard)            │
+│  #16 DON'T FRAGMENT, INTEGRATE (core docs + AGENTS.md)     │
 ├────────────────────────────────────────────────────────────┤
 │ RESEARCH ORDER                                             │
 │   1. apple-docs MCP (Apple APIs)                           │

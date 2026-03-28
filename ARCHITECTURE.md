@@ -8,9 +8,9 @@ How the enforcement system works, why decisions were made, and where it's headed
 
 ## 1. System Overview
 
-SaneProcess is a hook-based enforcement framework for Claude Code that implements the scientific method as a development workflow. Four Ruby hooks intercept Claude Code events (prompt submission, tool calls, tool results, session end), enforce research-before-edit discipline through a 4-category research gate (docs, web, github, local), and prevent doom loops via a circuit breaker pattern. All state lives in a single HMAC-signed JSON file.
+SaneProcess is agent workflow enforcement built around the scientific method. Today it has a Claude-native hook runtime, a Codex-native instruction/config/skill runtime, and shared shell/script guardrails that both clients can hit. The Claude side uses four Ruby hooks plus one session bootstrap hook to enforce research-before-edit discipline through a 4-category research gate (docs, web, github, local) and to prevent doom loops via a circuit breaker. Shared state lives in a single HMAC-signed JSON file for the Claude hook runtime.
 
-Codex note: Codex currently has no native PreToolUse/PostToolUse hook API. For cross-client safety, critical email gates are enforced in shared paths (`check-inbox.sh` send approval + `sane_curl_guard.sh` curl wrapper), so Claude and Codex both block unsafe direct email writes.
+Codex note: the stable Codex contract is `AGENTS.md`, `.agents/skills`, `.codex/config.toml`, MCP, and shared runtime guardrails such as `check-inbox.sh` send approval plus `sane_curl_guard.sh`. Codex documents an experimental `features.codex_hooks` flag, but SaneProcess does not treat it as production-ready yet.
 
 ### Component Diagram
 
@@ -20,6 +20,8 @@ graph TD
     CC -->|PreToolUse| ST[sanetools.rb]
     CC -->|PostToolUse| SK[sanetrack.rb]
     CC -->|Stop| SS[sanestop.rb]
+    CX[Codex] -->|AGENTS.md + .agents/skills + MCP| SH[Shared SOP]
+    CX -->|Shared shell/script guards| GUARD[sane_curl_guard.sh + check-inbox.sh]
 
     SP --> STATE[state.json]
     ST --> STATE
@@ -38,6 +40,8 @@ graph TD
     ST --> CFG
     SK --> CFG
     SS --> CFG
+    SH --> CFG
+    GUARD --> SH
 ```
 
 ### Entry Points

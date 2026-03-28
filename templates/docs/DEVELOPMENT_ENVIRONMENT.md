@@ -26,7 +26,7 @@ brew install lefthook periphery mockolo
 
 ---
 
-## Claude Code Setup
+## Agent Setup
 
 ### Install Claude Code
 
@@ -36,6 +36,12 @@ npm install -g @anthropic-ai/claude-code
 
 # Or via Homebrew
 brew install claude-code
+```
+
+### Install Codex
+
+```bash
+npm install -g @openai/codex
 ```
 
 ### MCP Servers
@@ -138,7 +144,30 @@ Copy to `~/.claude/settings.json`:
 }
 ```
 
-### Claude Code Rules (CLAUDE.md)
+### Shared Repo Instructions (AGENTS.md)
+
+Every SaneApp should have a root `AGENTS.md` that any coding agent can follow:
+
+```markdown
+# Project Agent Instructions
+
+Use plain English. Keep it short and direct.
+
+## Read First
+1. README.md
+2. DEVELOPMENT.md
+3. ARCHITECTURE.md
+4. SESSION_HANDOFF.md if it exists
+5. CLAUDE.md for Claude-specific overlays
+
+## Rules
+1. Verify tools and APIs before using them.
+2. After two failures, stop and research.
+3. Use project scripts instead of ad hoc commands.
+4. Do not say "done" without checks or approval.
+```
+
+### Claude Overlay (CLAUDE.md)
 
 Every SaneApp should have a project-level `.claude/CLAUDE.md` or root `CLAUDE.md` with:
 
@@ -250,6 +279,12 @@ cd /path/to/AppName
 xcodegen generate
 open AppName.xcodeproj
 ```
+
+### Codex Notes
+
+- Codex reads `AGENTS.md` first.
+- Shared team skills can be checked into `.agents/skills/`.
+- MCP servers can be added with `codex mcp add <name> -- <command ...>`.
 
 ---
 

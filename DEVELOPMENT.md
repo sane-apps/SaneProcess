@@ -23,16 +23,24 @@ Use the same anti-fragmentation rule across every SaneApps repo:
 - Keep public site content in one obvious folder per repo and say where it lives in the README.
 - When docs drift, fix the root canonical file first, then sync the website or supporting docs.
 
-## Codex Compatibility
+## Client Compatibility
 
-Codex does not expose native Claude-style hook events. For consistent behavior across Claude and Codex:
+SaneProcess has one SOP and multiple client-specific enforcement surfaces.
 
-- Claude path: Ruby hooks in `scripts/hooks/*.rb`.
-- Codex path: critical email safety is enforced in shared runtime paths:
-  - `~/SaneApps/infra/scripts/check-inbox.sh` (`require_email_send_approval`)
-  - `scripts/hooks/sane_curl_guard.sh` via `~/.local/bin/curl` wrapper
+| Client | First-class path | What is stable today |
+|--------|------------------|----------------------|
+| **Claude Code** | Native lifecycle hooks | `scripts/hooks/*.rb` + `.claude/settings.json` |
+| **Codex** | Repo instructions + repo skills + config | `AGENTS.md`, `.agents/skills`, `~/.codex/config.toml` or `.codex/config.toml`, MCP, shared script/shell guards |
+| **Other LLM agents** | Repo instructions + scripts | `AGENTS.md`, `SaneMaster.rb`, git hooks, MCP, and whatever local runtime guards the client can honor |
 
-Run `ruby scripts/SaneMaster.rb system_check` to verify both Claude hooks and Codex guard wiring.
+Codex now documents an experimental `features.codex_hooks` flag, but it is still under development and off by default. Do not make it the primary SaneProcess contract yet.
+
+Stable cross-client guardrails already enforced in shared runtime paths:
+
+- `~/SaneApps/infra/scripts/check-inbox.sh` (`require_email_send_approval`)
+- `scripts/hooks/sane_curl_guard.sh` via `~/.local/bin/curl` wrapper
+
+Run `ruby scripts/SaneMaster.rb system_check` to verify both Claude hooks and Codex/shared guard wiring.
 
 ## The Rules: Scientific Method for AI
 
