@@ -334,6 +334,31 @@ exit(run_tests('App Store Submit Guardrail Tests') do
       true
     end
 
+    test('does not accept a submission header without the actual reviewer message') do
+      subject.stub_safari_snapshots(
+        [
+          {
+            'url' => 'https://appstoreconnect.apple.com/apps/123/distribution/reviewsubmissions/details/sub-1',
+            'body' => "App Review\nSubmission ID: sub-1\nDraft Submissions (3)\n"
+          },
+          {
+            'url' => 'https://appstoreconnect.apple.com/apps/123/distribution/reviewsubmissions/details/sub-1',
+            'body' => "Messages (1)\nAppleYesterday 2:46 PM\nHello,\nSubmission ID: sub-1\n"
+          }
+        ]
+      )
+
+      review_text = subject.send(
+        :fetch_review_message_from_safari,
+        app_id: '123',
+        submission_id: 'sub-1'
+      )
+
+      assert_includes(review_text, 'Hello,')
+      assert_eq(subject.safari_snapshot_calls.length, 2)
+      true
+    end
+
     test('captures review evidence and copies downloaded attachments') do
       subject.stub_safari_snapshot(
         'url' => 'https://appstoreconnect.apple.com/apps/123/distribution/reviewsubmissions/details/sub-1',

@@ -125,6 +125,12 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
 
 3. Run App Store preflight before changing code.
 
+4. If macOS export fails, read the full Xcode distribution logs before trying another upload.
+
+- Inspect `IDEDistribution.standard.log`, `IDEDistributionPipeline.log`, and `IDEDistribution.verbose.log`.
+- If the failure is `productbuild failed` with `errSecInteractionNotAllowed` / `CSSMERR_CSP_NO_USER_INTERACTION`, the Mini is missing headless keychain access for the installer identity.
+- Fix the keychain session first. Do not retry uploads blindly.
+
 ```bash
 ./scripts/SaneMaster.rb appstore_preflight
 ```
@@ -133,6 +139,8 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
 - Accessibility request for non-accessibility use: remove the runtime path from the App Store build.
 - Direct license keys / external checkout: remove them from the App Store build and use StoreKit only.
 - Outside updates / Sparkle / manual update UI: remove every update check surface from the App Store build and verify the compiled artifact no longer exposes update strings or Sparkle linkage.
+- Rejected IAP metadata: rotate both the `appstore.product_id` and the IAP display name before recreating the product in ASC. Apple keeps the old rejected IAP record, and duplicate names will block the replacement.
+- First IAP submission blocker: if ASC leaves the replacement IAP in `READY_TO_SUBMIT`, attach it under `Included Assets > In-App Purchases and Subscriptions` on the rejected/inflight platform version page before resubmitting.
 - Free plan incompleteness: verify a fresh install can complete the free path without special reviewer steps.
 - `launchd` daemon / privileged helper / `SMAppService.daemon`: stop and reassess the product architecture.
 

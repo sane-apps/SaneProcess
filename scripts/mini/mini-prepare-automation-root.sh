@@ -298,6 +298,24 @@ resolve_source_training_path() {
   return 1
 }
 
+target_repo_tracks_training_path() {
+  local app_name="$1"
+  local rel_path="$2"
+  local target_repo="$AUTOMATION_ROOT/apps/$app_name"
+
+  [ -d "$target_repo/.git" ] || return 1
+  git -C "$target_repo" ls-files --error-unmatch -- "training_data/$rel_path" >/dev/null 2>&1
+}
+
+target_repo_tracks_training_prefix() {
+  local app_name="$1"
+  local rel_prefix="$2"
+  local target_repo="$AUTOMATION_ROOT/apps/$app_name"
+
+  [ -d "$target_repo/.git" ] || return 1
+  git -C "$target_repo" ls-files | grep -q "^training_data/$rel_prefix/"
+}
+
 source_training_dir_for_app() {
   local app_name="$1"
   local candidate_root
@@ -337,6 +355,12 @@ hydrate_training_dataset() {
   for rel_file in "$@"; do
     source_file=$(resolve_source_training_path "$app_name" "$rel_file")
     target_file="$target_dir/$rel_file"
+
+    if target_repo_tracks_training_path "$app_name" "$rel_file"; then
+      echo "KEEP  apps/$app_name/training_data/$rel_file [git-managed]"
+      unchanged=$((unchanged + 1))
+      continue
+    fi
 
     if [ ! -f "$source_file" ]; then
       echo "WARN  apps/$app_name/training_data/$rel_file missing in source root"
@@ -381,6 +405,13 @@ hydrate_training_support_files() {
         matched=1
         rel_file="${source_file#$source_dir/}"
         target_file="$target_dir/$rel_file"
+
+        if target_repo_tracks_training_path "$app_name" "$rel_file"; then
+          echo "KEEP  apps/$app_name/training_data/$rel_file [git-managed]"
+          unchanged=$((unchanged + 1))
+          continue
+        fi
+
         if copy_if_changed "$source_file" "$target_file"; then
           echo "DATA  apps/$app_name/training_data/$rel_file"
           copied=$((copied + 1))
@@ -411,6 +442,11 @@ hydrate_training_subdir() {
   if [ ! -d "$source_dir" ]; then
     echo "WARN  apps/$app_name/training_data/$rel_dir missing in source root"
     WARNINGS=$((WARNINGS + 1))
+    return 0
+  fi
+
+  if target_repo_tracks_training_prefix "$app_name" "$rel_dir"; then
+    echo "KEEP  apps/$app_name/training_data/$rel_dir [git-managed]"
     return 0
   fi
 
@@ -463,7 +499,7 @@ for base in apps infra; do
   for source_repo in "$SOURCE_ROOT/$base"/*; do
     [ -d "$source_repo/.git" ] || continue
     rel_path="${source_repo#$SOURCE_ROOT/}"
-    prepare_repo "$source_repo" "$rel_path"
+    prepare_repo "$source_repo" "$rel_path" || true
   done
 done
 

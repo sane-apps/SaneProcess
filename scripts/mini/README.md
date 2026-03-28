@@ -1,6 +1,6 @@
 # Mac Mini Build Server Scripts
 
-Scripts that run on the Mac mini (M1, 8GB) build server. This is the **source of truth** — edit here, deploy via `deploy.sh`.
+Scripts for the Mac mini training/build pipeline and the local monitoring that watches it. This is the **source of truth** — edit here, deploy via `deploy.sh`.
 
 ## Scripts
 
@@ -11,11 +11,13 @@ Scripts that run on the Mac mini (M1, 8GB) build server. This is the **source of
 | `mini-install-training-agents.sh` | On demand | Installs/updates weekly + challenger training LaunchAgents |
 | `mini-memory-guard.sh` | 5:40 AM daily | Mini hygiene + safe reboot gate (only when idle and needed) |
 | `mini-install-memory-guard.sh` | On demand | Installs/updates memory guard LaunchAgent |
+| `install-training-daily-check-agent.sh` | On demand (local Mac) | Installs/updates the daily local alert for Mini training results |
 | `mini-gui-run.sh` | Manual / wrapper | Runs a shell command inside the Mini's logged-in GUI Terminal session |
 | `mini-train.sh` | Manual / wrapper | MLX LoRA fine-tuning pipeline (sweeps, validation, reporting) |
 | `mini-train-all.sh` | 1 AM Sunday | Weekly production training for SaneAI |
 | `mini-train-challengers.sh` | 1 AM daily | Daily challenger training for SaneAI |
 | `mini-nightly.sh` | 8:45 AM daily | Nightly builds + tests for all SaneApps repos |
+| `training-daily-check.py` | 9:15 AM daily (local Mac) | Pulls the latest Mini training state, writes a local summary, and raises a macOS notification |
 
 ## Deploying
 
@@ -104,6 +106,12 @@ LaunchAgent (8:45 AM daily)
     → System health (disk, memory, uptime)
     → Report → ~/SaneApps/outputs/nightly_report.md
 
+LaunchAgent (9:15 AM daily on local Mac)
+  → training-daily-check.py --host mini
+    → pulls latest Mini metrics, readiness, and active alert files over SSH
+    → writes local summary report
+    → raises a macOS notification when training is stale, blocked, or failing
+
 LaunchAgent (5:40 AM)
   → mini-memory-guard.sh
     → health snapshot + stale-process cleanup
@@ -119,6 +127,7 @@ LaunchAgent (5:40 AM)
 - **Isolation enabled** — deploy refreshes `~/SaneApps-automation`, and launch agents point `SANE_ROOT` there so scheduled jobs do not touch the human-used `~/SaneApps` tree.
 - **Managed overlays only** — automation-root prep is allowed to reset hydrated training overlays (`train.jsonl`, eval packs, challenger configs, generated fixtures) before syncing. Any other dirt still fails the prep step.
 - **Training data hydration** — `mini-prepare-automation-root.sh` copies local-only `train.jsonl` / `valid.jsonl` datasets for SaneSync, SaneClip, SaneAI, and SaneVideo into the clean clones before training.
+- **Dataset regression guard** — `mini-train.sh` now fails before spending GPU time if the current train/valid counts shrink too far versus the latest successful run for that lane.
 - **Current bakeoff mode** — the daily challenger agent alternates `llama32-3b` and `smollm3-3b` on `SaneAI`, runs until `08:30`, and skips Sundays so the weekly `SaneAI` run gets the full window.
 - **Progress tracking** — every training run now archives a timestamped report under `outputs/history/<App>/` and appends a TSV metrics row so week-over-week comparisons survive report overwrites.
 - **Workflow focus** — nightly `SaneAI` training keeps the unified SaneSync/SaneClip corpus but now weights SaneVideo workflow data so the shared model learns the broader commentary/repurposing surface.
@@ -200,6 +209,12 @@ Bounded e2e is only considered healthy if:
 ~/Library/LaunchAgents/com.saneapps.training-weekly.plist      → mini-train-all.sh (1 AM Sunday)
 ~/Library/LaunchAgents/com.saneapps.nightly.plist              → mini-nightly.sh (8:45 AM)
 ~/Library/LaunchAgents/com.saneapps.memory-guard.plist → mini-memory-guard.sh (5:40 AM)
+```
+
+## LaunchAgent (local Mac)
+
+```
+~/Library/LaunchAgents/com.saneapps.training-daily-check.plist → training-daily-check.py (9:15 AM)
 ```
 
 ## Outputs (on mini)

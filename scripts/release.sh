@@ -3234,11 +3234,14 @@ check_sparkle_keypair_gate() {
 
 list_codesign_identities() {
     local keychain="${1:-}"
+    # `-p basic` includes installer identities such as
+    # "3rd Party Mac Developer Installer", which productbuild needs during
+    # headless Mac App Store exports.
     if [ -n "${keychain}" ] && [ -f "${keychain}" ]; then
-        security find-identity -v -p codesigning "${keychain}" 2>/dev/null |
+        security find-identity -v -p basic "${keychain}" 2>/dev/null |
             sed -n 's/^[[:space:]]*[0-9][0-9]*) [0-9A-F]\{40\} "\(.*\)"$/\1/p'
     else
-        security find-identity -v -p codesigning 2>/dev/null |
+        security find-identity -v -p basic 2>/dev/null |
             sed -n 's/^[[:space:]]*[0-9][0-9]*) [0-9A-F]\{40\} "\(.*\)"$/\1/p'
     fi
 }

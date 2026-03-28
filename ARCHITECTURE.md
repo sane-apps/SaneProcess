@@ -685,6 +685,28 @@ Automated daily business report covering revenue, downloads, traffic, GitHub, cu
 
 **Output:** `outputs/morning_report.md` (latest) + `outputs/reports/` (archive)
 
+### Mini Training Daily Check
+
+Mini training already emits per-run reports, history TSVs, and current alert files under `~/SaneApps/outputs`, but those artifacts were too easy to ignore after overnight runs. A separate local LaunchAgent now pulls that state every morning and turns it into a short local report plus a macOS notification.
+
+**LaunchAgent:** `~/Library/LaunchAgents/com.saneapps.training-daily-check.plist`
+- Label: `com.saneapps.training-daily-check`
+- Schedule: `StartCalendarInterval` Hour=9 Minute=15 (local time)
+- Script: `scripts/mini/training-daily-check.py`
+- Installer: `scripts/mini/install-training-daily-check-agent.sh`
+- Output: `outputs/training_daily_check.md`
+
+**What it checks:**
+1. Latest `SaneAI` metrics row
+2. Latest `SaneSync` metrics row
+3. Latest readiness row for `SaneAI → SaneSync`
+4. Current active training alert markdown files on the Mini
+
+**Why it exists:**
+- The nightly training lane can fail or go stale without anyone reading the raw Mini reports.
+- The earlier failure mode was a silent dataset regression, not a hard crash.
+- Daily visibility matters more than raw automation volume; if nobody notices the report, the run was not useful.
+
 ---
 
 ## 7. Test Coverage Map

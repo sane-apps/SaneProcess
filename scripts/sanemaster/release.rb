@@ -2847,8 +2847,11 @@ module SaneMasterModules
         end
 
         installer_identities_out, = Open3.capture2e('security', 'find-identity', '-v', '-p', 'basic')
-        unless installer_identities_out.include?('Mac Installer Distribution')
-          mac_signing_warnings << 'Mac Installer Distribution identity is missing from the local keychain — macOS App Store export/upload will fail after archive'
+        has_mac_app_store_installer_identity =
+          installer_identities_out.include?('3rd Party Mac Developer Installer') ||
+          installer_identities_out.include?('Mac Installer Distribution')
+        unless has_mac_app_store_installer_identity
+          mac_signing_warnings << 'Mac App Store installer signing identity is missing from the local keychain — macOS App Store export/upload will fail after archive'
         end
 
         if mac_signing_targets.empty?

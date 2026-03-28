@@ -119,6 +119,8 @@ TRAIN_ALERT_NOTIFY="${TRAIN_ALERT_NOTIFY:-true}"
 TRAIN_ALERT_SUPPRESS_MIN="${TRAIN_ALERT_SUPPRESS_MIN:-360}"
 TRAIN_ALERT_COMMAND="${TRAIN_ALERT_COMMAND:-}"
 TRAIN_SWEEP_ITERS="${TRAIN_SWEEP_ITERS:-}"
+TRAIN_EXAMPLE_DROP_MAX_PCT="${TRAIN_EXAMPLE_DROP_MAX_PCT:-20}"
+VALID_EXAMPLE_DROP_MAX_PCT="${VALID_EXAMPLE_DROP_MAX_PCT:-20}"
 
 parse_hard_stop_time() {
   local raw_time="${TRAIN_HARD_STOP_TIME:-}"
@@ -544,9 +546,30 @@ find_previous_successful_metric() {
   ' "$METRICS_FILE"
 }
 
-find_latest_target_production_metric() {
+find_latest_successful_metric_for_mode() {
+  if [ ! -f "$METRICS_FILE" ]; then
+    return 1
+  fi
+
+  awk -F '\t' -v app="$APP_NAME" -v mode="$MODE_LABEL" '
+    NR == 1 { next }
+    $1 == app && $2 == mode && $12 == "success" { line = $0 }
+    END {
+      if (line != "") {
+        print line
+      } else {
+        exit 1
+      }
+    }
+  ' "$METRICS_FILE"
+}
+
+TARGET_BASELINE_MODE=""
+
+find_latest_target_baseline_metric() {
   local target_app="$1"
   local target_metrics_file="$SANE_OUTPUT_DIR/history/$target_app/training_metrics_workflow_v1.tsv"
+  local baseline_line=""
 
   if [ ! -f "$target_metrics_file" ]; then
     target_metrics_file="$SANE_OUTPUT_DIR/history/$target_app/training_metrics.tsv"
@@ -556,7 +579,51 @@ find_latest_target_production_metric() {
     return 1
   fi
 
-  awk -F '\t' -v app="$target_app" '
+  baseline_line=$(
+    awk -F '\t' -v app="$target_app" '
+      NR == 1 { next }
+      $1 == app && $2 == "production" && $12 == "success" { line = $0 }
+      END {
+        if (line != "") {
+          print line
+        } else {
+          exit 1
+        }
+      }
+    ' "$target_metrics_file" 2>/dev/null || true
+  )
+
+  if [ -n "$baseline_line" ]; then
+    TARGET_BASELINE_MODE="production"
+    printf '%s\n' "$baseline_line"
+    return 0
+  fi
+
+  baseline_line=$(
+    awk -F '\t' -v app="$target_app" '
+      NR == 1 { next }
+      $1 == app && $12 == "success" { line = $0 }
+      END {
+        if (line != "") {
+          print line
+        } else {
+          exit 1
+        }
+      }
+    ' "$target_metrics_file" 2>/dev/null || true
+  )
+
+  if [ -n "$baseline_line" ]; then
+    TARGET_BASELINE_MODE=$(printf '%s\n' "$baseline_line" | awk -F '\t' '{print $2}')
+    printf '%s\n' "$baseline_line"
+    return 0
+  fi
+
+  return 1
+}
+
+find_latest_target_production_metric() {
+  awk -F '\t' -v app="$1" '
     NR == 1 { next }
     $1 == app && $2 == "production" && $12 == "success" { line = $0 }
     END {
@@ -573,6 +640,15 @@ append_readiness_header_if_needed() {
   if [ ! -f "$READINESS_FILE" ]; then
     printf 'source_app\ttarget_app\ttimestamp\tsource_model\tsource_best_accuracy\ttarget_model\ttarget_best_accuracy\tdelta\tstatus\tsource_report\ttarget_report\n' > "$READINESS_FILE"
   fi
+}
+
+dataset_guard_failed() {
+  local summary="$1"
+
+  echo "**ERROR:** $summary" >> "$REPORT"
+  echo "" >> "$REPORT"
+  emit_training_failure_alert "$summary"
+  exit 1
 }
 
 build_eval_command() {
@@ -852,6 +928,41 @@ if [ -n "$READINESS_TARGET_APP" ]; then
   READINESS_FILE="$HISTORY_DIR/readiness_vs_${READINESS_TARGET_APP}_workflow_v1.tsv"
   append_readiness_header_if_needed
 fi
+
+echo "## Dataset Guard" >> "$REPORT"
+echo "" >> "$REPORT"
+echo "- Allowed train drop vs latest successful $MODE_LABEL run: ${TRAIN_EXAMPLE_DROP_MAX_PCT}%" >> "$REPORT"
+echo "- Allowed valid drop vs latest successful $MODE_LABEL run: ${VALID_EXAMPLE_DROP_MAX_PCT}%" >> "$REPORT"
+
+DATASET_BASELINE_LINE=$(find_latest_successful_metric_for_mode 2>/dev/null || true)
+if [ -n "$DATASET_BASELINE_LINE" ]; then
+  BASELINE_TIMESTAMP=$(printf '%s\n' "$DATASET_BASELINE_LINE" | awk -F '\t' '{print $4}')
+  BASELINE_MODEL=$(printf '%s\n' "$DATASET_BASELINE_LINE" | awk -F '\t' '{print $3}')
+  BASELINE_TRAIN_EXAMPLES=$(printf '%s\n' "$DATASET_BASELINE_LINE" | awk -F '\t' '{print $5}')
+  BASELINE_VALID_EXAMPLES=$(printf '%s\n' "$DATASET_BASELINE_LINE" | awk -F '\t' '{print $6}')
+  MIN_ALLOWED_TRAIN=$((BASELINE_TRAIN_EXAMPLES * (100 - TRAIN_EXAMPLE_DROP_MAX_PCT) / 100))
+  MIN_ALLOWED_VALID=$((BASELINE_VALID_EXAMPLES * (100 - VALID_EXAMPLE_DROP_MAX_PCT) / 100))
+
+  echo "- Baseline success: $BASELINE_TIMESTAMP ($BASELINE_MODEL)" >> "$REPORT"
+  echo "- Baseline train/valid: ${BASELINE_TRAIN_EXAMPLES} / ${BASELINE_VALID_EXAMPLES}" >> "$REPORT"
+  echo "- Minimum allowed train/valid: ${MIN_ALLOWED_TRAIN} / ${MIN_ALLOWED_VALID}" >> "$REPORT"
+
+  if [ "$TRAIN_EXAMPLES" -lt "$MIN_ALLOWED_TRAIN" ]; then
+    dataset_guard_failed "Dataset guard failed: train examples dropped to ${TRAIN_EXAMPLES} from ${BASELINE_TRAIN_EXAMPLES} (allowed minimum ${MIN_ALLOWED_TRAIN})."
+  fi
+
+  if [ "$VALID_EXAMPLES" -lt "$MIN_ALLOWED_VALID" ]; then
+    dataset_guard_failed "Dataset guard failed: validation examples dropped to ${VALID_EXAMPLES} from ${BASELINE_VALID_EXAMPLES} (allowed minimum ${MIN_ALLOWED_VALID})."
+  fi
+else
+  echo "- No prior successful $MODE_LABEL metrics found. Skipping drop guard." >> "$REPORT"
+fi
+
+echo "- Current train/valid: ${TRAIN_EXAMPLES} / ${VALID_EXAMPLES}" >> "$REPORT"
+echo "- Result: PASS" >> "$REPORT"
+echo "" >> "$REPORT"
+echo "---" >> "$REPORT"
+echo "" >> "$REPORT"
 
 # Check if model is cached
 if "$PYTHON" -c "from huggingface_hub import scan_cache_dir; cache = scan_cache_dir(); models = [r.repo_id for r in cache.repos]; print('CACHED' if '$BASE_MODEL' in models else 'NEED_DOWNLOAD')" 2>/dev/null | grep -q "CACHED"; then
@@ -1269,7 +1380,8 @@ if [ -n "$READINESS_TARGET_APP" ]; then
     READINESS_STATUS="source_failed"
     echo "- No readiness assessment because this run produced no successful adapter." >> "$REPORT"
   else
-    TARGET_PRODUCTION_LINE=$(find_latest_target_production_metric "$READINESS_TARGET_APP" 2>/dev/null || true)
+    TARGET_BASELINE_MODE=""
+    TARGET_PRODUCTION_LINE=$(find_latest_target_baseline_metric "$READINESS_TARGET_APP" 2>/dev/null || true)
     if [ -z "$TARGET_PRODUCTION_LINE" ]; then
       READINESS_STATUS="missing_target_baseline"
       echo "- No production baseline found for $READINESS_TARGET_APP in $OUTPUT_DIR/history/$READINESS_TARGET_APP/training_metrics.tsv." >> "$REPORT"
@@ -1282,6 +1394,9 @@ if [ -n "$READINESS_TARGET_APP" ]; then
       if [ "$BEST_PRIMARY_STATUS" != "PASS" ]; then
         READINESS_STATUS="workflow_gate_failed"
         READINESS_NOTE="Workflow gate failed, so this run is not a valid replacement candidate."
+      elif [ "$TARGET_BASELINE_MODE" != "production" ]; then
+        READINESS_STATUS="missing_target_production_baseline"
+        READINESS_NOTE="Compared against the latest successful $READINESS_TARGET_APP ${TARGET_BASELINE_MODE} run for reference only. Record a production baseline before using this as a replacement gate."
       elif [ "$BEST_ACCURACY" -ge "$READINESS_TARGET_ACCURACY" ]; then
         READINESS_STATUS="ready"
         READINESS_NOTE="Meets or beats the latest $READINESS_TARGET_APP production score on the same validation harness."
@@ -1294,7 +1409,8 @@ if [ -n "$READINESS_TARGET_APP" ]; then
       fi
 
       echo "- Target baseline model: $READINESS_TARGET_MODEL" >> "$REPORT"
-      echo "- Target baseline workflow-first score: ${READINESS_TARGET_ACCURACY}% ($READINESS_TARGET_APP production)" >> "$REPORT"
+      echo "- Target baseline mode: ${TARGET_BASELINE_MODE:-unknown}" >> "$REPORT"
+      echo "- Target baseline workflow-first score: ${READINESS_TARGET_ACCURACY}% ($READINESS_TARGET_APP ${TARGET_BASELINE_MODE:-unknown})" >> "$REPORT"
       echo "- Source workflow-first score: ${BEST_ACCURACY}% ($APP_NAME $MODE_LABEL)" >> "$REPORT"
       echo "- Source primary suite: ${PRIMARY_WORKFLOW_SUITE} ${BEST_PRIMARY_PCT}% (status $BEST_PRIMARY_STATUS)" >> "$REPORT"
       echo "- Delta vs target: ${READINESS_DELTA}% points" >> "$REPORT"

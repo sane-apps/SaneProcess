@@ -1168,7 +1168,7 @@ def fetch_review_message_from_safari(app_id:, submission_id:)
     current_url = snapshot['url'].to_s
     body = snapshot['body'].to_s
     url_matches = current_url.include?(app_id.to_s) && current_url.include?(submission_id.to_s)
-    body_matches = body.include?(submission_id.to_s) || body.include?('Messages (')
+    body_matches = body.include?('Messages (') || body.include?('Hello,') || body.match?(/Apple(?:Today|Yesterday|[A-Z][a-z]{2})/)
     return normalize_review_page_text(body) if url_matches && body_matches
   end
 
@@ -2165,7 +2165,9 @@ def ensure_version_copyright(version_id, desired_value, token)
 end
 
 def ensure_age_rating_declaration(version_id, token)
-  resp = asc_get("/appStoreVersions/#{version_id}/ageRatingDeclaration", token: token)
+  code, resp = asc_get_with_status("/appStoreVersions/#{version_id}/ageRatingDeclaration", token: token)
+  return if code == 404
+
   age_id = resp&.dig('data', 'id')
   return if age_id.to_s.empty?
 
