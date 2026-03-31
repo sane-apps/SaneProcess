@@ -10,7 +10,7 @@ Do ALL of these BEFORE any work:
 
 1. Read `SESSION_HANDOFF.md` if it exists — recent work, pending tasks, gotchas
 2. Check Serena memories (`read_memory`) for project-specific learnings
-3. Read `~/.claude/SKILLS_REGISTRY.md` — know what global skills/tools exist
+3. Read the active client skill registry — Codex: `~/.codex/SKILLS_REGISTRY.md`, Claude: `~/.claude/SKILLS_REGISTRY.md`
 4. Run `ruby ~/SaneApps/infra/SaneProcess/scripts/validation_report.rb`
 5. Launch Xcode if needed: `pgrep -x Xcode >/dev/null || open -a Xcode`
 
@@ -73,13 +73,21 @@ Do not wait until session end.
 ## Tool Discovery Before Workarounds
 
 Before I say a tool is missing or switch to a workaround, I must:
-1. Check `~/.claude/SKILLS_REGISTRY.md`
+1. Check the active client skill registry — Codex: `~/.codex/SKILLS_REGISTRY.md`, Claude: `~/.claude/SKILLS_REGISTRY.md`
 2. Run `ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb tool_discovery --query "..."` so the receipt captures registry, doctor, validation, and local-path checks
 3. Search `scripts/`, hooks, skills, and the core docs + `AGENTS.md` standard for an existing path
 4. If the capability is still missing and the workflow repeats, add it to SaneProcess, document it, and make it the standard path
 5. Prefer the canonical tool paths in `DEVELOPMENT.md` instead of ad hoc tool hunting
 
 If I cannot name which of those checks I ran, I have not checked enough.
+
+## SaneUI Source Of Truth
+
+- For any SaneApps settings, About, license, updater, button-style, or typography work, inspect `~/SaneApps/infra/SaneUI/Sources/SaneUICatalog/SaneUICatalogApp.swift` first.
+- Shared settings chrome belongs in `~/SaneApps/infra/SaneUI/`, not in app-local clones.
+- App repos should compose shared `SaneSettingsContainer`, `SaneAboutView`, `LicenseSettingsView`, and `SaneSparkleRow` instead of redefining them.
+- In shared settings surfaces, all text must be bright white and at least 13pt.
+- Do not ship `.secondary`/gray helper text, `mailto:` bug-report paths, `Manage Access` copy, local `SaneSparkleRow` definitions, or `.buttonStyle(.bordered)` in settings/About/license/update UI.
 
 ---
 
@@ -96,7 +104,7 @@ Run with no args for full help. Run `help <category>` for category details.
 | **sales** | `downloads` (dl), `downloads --app NAME`, `downloads --days N`, `downloads --json` | Download analytics from sane-dist Worker (D1-backed) |
 | **sales** | `events`, `events --days N`, `events --app NAME`, `events --json` | User-type events: new_free_user, early_adopter_grant, license_activated |
 | **sales** | `leads --query "TEXT"`, `leads --domain DOMAIN`, `leads --json` | Prospect discovery with Exa + Firecrawl site dossiers |
-| **check** | `verify_api`, `dead_code`, `deprecations`, `swift6`, `test_scan`, `structural`, `compliance`, `check_docs`, `check_binary`, `menu_scan` | Static analysis, API verification, code quality |
+| **check** | `verify_api`, `dead_code`, `deprecations`, `swift6`, `saneui_guard`, `test_scan`, `structural`, `compliance`, `check_docs`, `check_binary`, `menu_scan` | Static analysis, API verification, code quality |
 | **debug** | `test_mode` (tm), `logs --follow`, `launch`, `crashes`, `diagnose` | Interactive debugging, crash analysis |
 | **ci** | `enable_ci_tests`, `restore_ci_tests`, `fix_mocks`, `monitor_tests`, `image_info` | CI/CD test helpers |
 | **gen** | `gen_test`, `gen_mock`, `gen_assets`, `template` | Code generation, mocks, assets |
@@ -417,7 +425,7 @@ ssh mini 'tail -20 ~/SaneApps/outputs/nightly_report.md'
 - **Outputs**: `~/SaneApps/infra/SaneProcess/outputs/`
 - **Templates**: `~/SaneApps/infra/SaneProcess/templates/`
 - **Shared UI**: `~/SaneApps/infra/SaneUI/`
-- **Global skills**: `~/.claude/skills/`
+- **Global skills**: Codex `~/.codex/skills/`, Claude `~/.claude/skills/`
 
 ## References (for deep dives)
 

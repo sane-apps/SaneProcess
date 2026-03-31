@@ -606,9 +606,27 @@ section_health() {
   fi
 
   if [[ -n "$GH_CMD" ]]; then
-    if ! "$GH_CMD" api user --jq '.login' &>/dev/null; then
-      echo "- GitHub API: DOWN" >> "$REPORT_FILE"
-      all_ok=false
+    local github_ok=false
+    local attempt=1
+    local gh_status=""
+
+    while [[ "$attempt" -le 2 ]]; do
+      if "$GH_CMD" api rate_limit --jq '.rate.remaining' &>/dev/null; then
+        github_ok=true
+        break
+      fi
+      attempt=$((attempt + 1))
+      sleep 1
+    done
+
+    if [[ "$github_ok" == false ]]; then
+      gh_status=$(safe_curl -s -o /dev/null -w "%{http_code}" "https://api.github.com" 2>/dev/null || echo "error")
+      if [[ "$gh_status" == "200" ]]; then
+        echo "- GitHub CLI auth check failed, but api.github.com is responding" >> "$REPORT_FILE"
+      else
+        echo "- GitHub API: DOWN ($gh_status)" >> "$REPORT_FILE"
+        all_ok=false
+      fi
     fi
   fi
 

@@ -95,12 +95,32 @@ module SaneToolsStartup
     def format_step(step)
       case step
       when :session_docs    then 'Read session docs (SESSION_HANDOFF.md, DEVELOPMENT.md)'
-      when :skills_registry then 'Read ~/.claude/SKILLS_REGISTRY.md'
+      when :skills_registry then "Read #{skills_registry_label}"
       when :validation_report then 'Run: ruby scripts/validation_report.rb'
       when :orphan_cleanup  then 'Kill orphaned Claude processes'
       when :system_clean    then 'Run: ./scripts/SaneMaster.rb clean_system'
       else step.to_s.tr('_', ' ')
       end
+    end
+
+    def skills_registry_label
+      active_skills_registry_path.sub(File.expand_path('~'), '~')
+    end
+
+    def active_skills_registry_path
+      codex_registry = File.expand_path('~/.codex/SKILLS_REGISTRY.md')
+      claude_registry = File.expand_path('~/.claude/SKILLS_REGISTRY.md')
+      preferred = codex_runtime? ? codex_registry : claude_registry
+      fallback = codex_runtime? ? claude_registry : codex_registry
+
+      return preferred if File.exist?(preferred)
+      return fallback if File.exist?(fallback)
+
+      preferred
+    end
+
+    def codex_runtime?
+      ENV['CODEX_SHELL'] == '1' || ENV['CODEX_INTERNAL_ORIGINATOR_OVERRIDE'].to_s.include?('Codex')
     end
   end
 end

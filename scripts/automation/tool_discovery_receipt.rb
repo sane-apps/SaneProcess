@@ -213,19 +213,30 @@ class ToolDiscoveryReceipt
   end
 
   def search_skills_registry
-    registry = File.expand_path('~/.claude/SKILLS_REGISTRY.md')
+    registries = [
+      File.expand_path('~/.codex/SKILLS_REGISTRY.md'),
+      File.expand_path('~/.claude/SKILLS_REGISTRY.md')
+    ].uniq.select { |path| File.exist?(path) }
+
     {
-      source: registry,
-      matches: File.exist?(registry) ? rg_matches([registry]) : [],
-      exists: File.exist?(registry)
+      source: registries,
+      matches: registries.empty? ? [] : rg_matches(registries),
+      exists: !registries.empty?
     }
   end
 
   def search_global_skills
-    skill_root = File.expand_path('~/.codex/skills')
-    files = Dir.glob(File.join(skill_root, '**', 'SKILL.md')).sort
+    skill_roots = [
+      File.expand_path('~/.codex/skills'),
+      File.expand_path('~/.claude/skills')
+    ].uniq.select { |path| Dir.exist?(path) }
+
+    files = skill_roots.flat_map do |skill_root|
+      Dir.glob(File.join(skill_root, '**', 'SKILL.md'))
+    end.sort
+
     {
-      source: skill_root,
+      source: skill_roots,
       matches: rg_matches(files),
       file_count: files.length
     }

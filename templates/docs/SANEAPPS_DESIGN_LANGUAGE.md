@@ -2,6 +2,15 @@
 
 A cohesive design system for all SaneApps (SaneClip, SaneHosts, SaneBar, etc.) ensuring a premium, unified user experience across macOS applications.
 
+## Source Of Truth
+
+- Shared settings, About, license, updater, and button styling live in `~/SaneApps/infra/SaneUI/`.
+- The visual reference entry point is `~/SaneApps/infra/SaneUI/Sources/SaneUICatalog/SaneUICatalogApp.swift`.
+- App repos should compose shared `SaneSettingsContainer`, `SaneAboutView`, `LicenseSettingsView`, and `SaneSparkleRow` instead of cloning them locally.
+- Do not ship `.secondary` or gray helper text in shared settings surfaces.
+- Shared settings text must stay bright white and at least 13pt.
+- Bug-report flows should route through GitHub-backed shared SaneUI diagnostics, not `mailto:` links.
+
 ## Core Principles
 
 1. **Glass Morphism** - Translucent backgrounds with subtle blur effects
@@ -9,6 +18,7 @@ A cohesive design system for all SaneApps (SaneClip, SaneHosts, SaneBar, etc.) e
 3. **Compact Density** - Efficient use of space without feeling cramped
 4. **Dark Mode First** - Designed for dark mode, adapted for light mode
 5. **Meaningful Icons** - SF Symbols with semantic naming
+6. **One Shared Settings Shell** - Settings layout is designed once in SaneUI and reused across apps
 
 ---
 
@@ -78,10 +88,12 @@ Color.teal.opacity(0.15)
 
 ## Typography
 
+- **Minimum size in shared settings surfaces**: `13pt`
+- **Primary and secondary settings text**: bright white (`.white` primary, `.white.opacity(0.9)` minimum for supporting copy)
 - **Section titles**: `.font(.headline)`
-- **Body text**: `.font(.body)`
-- **Secondary text**: `.font(.caption)` + `.foregroundStyle(.secondary)`
-- **Monospace**: `.font(.system(.body, design: .monospaced))` for code/paths
+- **Body text**: `.font(.system(size: 13, weight: .medium))` or larger
+- **Monospace**: `.font(.system(size: 13, design: .monospaced))` for code/paths
+- **Never use**: `.foregroundStyle(.secondary)` or gray helper text in shared settings surfaces
 
 ---
 

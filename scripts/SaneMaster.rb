@@ -46,6 +46,7 @@ require_relative 'sanemaster/tool_discovery'
 require_relative 'sanemaster/session'
 require_relative 'sanemaster/circuit_breaker_state'
 require_relative 'sanemaster/structural_compliance'
+require_relative 'sanemaster/saneui_guard'
 require_relative 'sanemaster/release'
 require_relative 'sanemaster/ci_helpers'
 require_relative 'sanemaster/sales'
@@ -108,6 +109,7 @@ class SaneMaster
         'dead_code' => { args: '', desc: 'Find unused code (Periphery)' },
         'deprecations' => { args: '', desc: 'Scan for deprecated API usage' },
         'swift6' => { args: '', desc: 'Verify Swift 6 concurrency compliance' },
+        'saneui_guard' => { args: '[path]', desc: 'Scan app settings UI for shared SaneUI drift' },
         'check_docs' => { args: '', desc: 'Check docs are in sync with code' },
         'check_binary' => { args: '', desc: 'Audit binary for security issues' },
         'test_scan' => { args: '[-v]', desc: 'Scan tests for tautologies and hardcoded values' },
@@ -532,11 +534,20 @@ class SaneMaster
     remote_cmd = <<~SH
       set -e
       bundle_path=#{Shellwords.escape(remote_bundle_path)}
+      scratch_root=#{Shellwords.escape(scratch_root)}
       cleanup() {
         rm -f "$bundle_path"
       }
       trap cleanup EXIT
-      rm -rf #{Shellwords.escape(scratch_root)}
+      python3 - <<'PY'
+import os
+import shutil
+
+scratch_root = #{scratch_root.dump}
+if os.path.exists(scratch_root):
+    shutil.rmtree(scratch_root, ignore_errors=False)
+PY
+      [ ! -e "$scratch_root" ]
       mkdir -p #{Shellwords.escape(File.dirname(scratch_repo))}
       git clone --no-checkout #{Shellwords.escape(remote_repo)} #{Shellwords.escape(scratch_repo)} >/dev/null
       cd #{Shellwords.escape(scratch_repo)}
@@ -1175,6 +1186,10 @@ class SaneMaster
       check_deprecations
     when 'swift6_check', 'swift6', 'concurrency_check'
       swift6_check
+    when 'saneui_guard', 'ui_guard'
+      target = args.first || Dir.pwd
+      success = SaneMasterModules::SaneUIGuard.run_cli(target)
+      exit(success ? 0 : 1)
     when 'test_suite', 'suite'
       run_test_suite(args)
     when 'test_scan', 'scan_tests', 'test_quality'

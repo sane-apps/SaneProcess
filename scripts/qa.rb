@@ -99,6 +99,7 @@ class SaneProcessQA
     memory.rb
     meta.rb
     quality.rb
+    saneui_guard.rb
     session.rb
     sop_loop.rb
     structural_compliance.rb

@@ -9,6 +9,7 @@
 
 require 'yaml'
 require 'json'
+require_relative 'saneui_guard'
 
 module SaneMasterModules
   module StructuralCompliance
@@ -77,6 +78,7 @@ module SaneMasterModules
         # Tier 3: Best practices
         check_mcp_consistency
         check_website_config
+        check_saneui_source_of_truth
       end
 
       def errors?
@@ -589,6 +591,46 @@ module SaneMasterModules
             pass: false, label: 'Website config complete',
             detail: 'website: true but no website_domain',
             fix: 'Add website_domain: yourdomain.com to .saneprocess'
+          )
+        end
+      end
+
+      def check_saneui_source_of_truth
+        report = SaneMasterModules::SaneUIGuard.report_for_path(@path)
+
+        unless report[:applicable]
+          @results[:practice] << Result.new(
+            pass: true,
+            label: 'SaneUI source of truth',
+            detail: 'skipped — not an app repo'
+          )
+          return
+        end
+
+        warnings = report[:warnings] || []
+        errors = report[:errors] || []
+
+        if errors.empty?
+          @results[:practice] << Result.new(
+            pass: true,
+            label: 'SaneUI source of truth',
+            detail: warnings.empty? ? 'shared settings surfaces look clean' : 'warnings present'
+          )
+        else
+          @results[:config] << Result.new(
+            pass: false,
+            label: 'SaneUI source of truth',
+            detail: errors.map { |finding| "#{finding.label}: #{finding.detail}" }.join(' | '),
+            fix: errors.first.fix
+          )
+        end
+
+        warnings.each do |finding|
+          @results[:practice] << Result.new(
+            pass: false,
+            label: finding.label,
+            detail: finding.detail,
+            fix: finding.fix
           )
         end
       end

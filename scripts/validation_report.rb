@@ -249,6 +249,10 @@ class ValidationReport
     # All CLAUDE.md files should list all sister apps
     check_sister_apps_lists(issues_found)
 
+    # === CODEX SKILL HEALTH CHECK ===
+    # Local Codex skills should use real entrypoint files and match the Codex registry.
+    check_codex_skill_health(issues_found)
+
     @metrics[:config_consistency] = {
       issues: issues_found.size,
       details: issues_found
@@ -408,6 +412,59 @@ class ValidationReport
       if missing.any?
         issues_found << "[#{project}] CLAUDE.md missing sister apps: #{missing.join(', ')}"
       end
+    end
+  end
+
+  def check_codex_skill_health(issues_found)
+    skill_root = File.expand_path('~/.codex/skills')
+    registry_path = File.expand_path('~/.codex/SKILLS_REGISTRY.md')
+    return unless Dir.exist?(skill_root) || File.exist?(registry_path)
+
+    local_skill_names = []
+
+    if Dir.exist?(skill_root)
+      Dir.children(skill_root).sort.each do |entry|
+        next if entry.start_with?('.')
+
+        skill_dir = File.join(skill_root, entry)
+        next unless File.directory?(skill_dir)
+
+        skill_file = File.join(skill_dir, 'SKILL.md')
+        unless File.exist?(skill_file)
+          @warnings << "Q0: [codex] skill directory missing SKILL.md: #{entry}"
+          next
+        end
+
+        local_skill_names << entry
+
+        if File.symlink?(skill_file)
+          issues_found << "[codex] symlinked SKILL.md entrypoint: #{skill_file}"
+        elsif !File.file?(skill_file)
+          issues_found << "[codex] SKILL.md is not a regular file: #{skill_file}"
+        elsif !File.readable?(skill_file)
+          issues_found << "[codex] unreadable SKILL.md: #{skill_file}"
+        end
+
+        header = File.read(skill_file, 512)
+        issues_found << "[codex] missing `name:` in #{skill_file}" unless header.match?(/^\s*name:\s*.+$/)
+        issues_found << "[codex] missing `description:` in #{skill_file}" unless header.match?(/^\s*description:\s*.+$/)
+      end
+    end
+
+    return unless File.exist?(registry_path)
+
+    registry_content = File.read(registry_path)
+    registry_skill_names = registry_content.scan(/^\|\s*`([^`]+)`\s*\|/).flatten.uniq.sort
+
+    missing_from_registry = local_skill_names.sort - registry_skill_names
+    registry_only = registry_skill_names - local_skill_names.sort
+
+    if missing_from_registry.any?
+      issues_found << "[codex] local skills missing from SKILLS_REGISTRY.md: #{missing_from_registry.join(', ')}"
+    end
+
+    if registry_only.any?
+      @warnings << "Q0: [codex] SKILLS_REGISTRY.md entries missing local skill dirs: #{registry_only.join(', ')}"
     end
   end
 
