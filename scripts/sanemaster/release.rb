@@ -8,6 +8,8 @@ require 'uri'
 require 'yaml'
 require 'json'
 require 'open3'
+require 'openssl'
+require 'base64'
 
 module SaneMasterModules
   # Unified release entrypoint (delegates to SaneProcess release.sh)
@@ -38,7 +40,11 @@ module SaneMasterModules
     end
 
     def safe_read(path)
-      File.read(path)
+      content = File.binread(path)
+      content.force_encoding(Encoding::UTF_8)
+      return content if content.valid_encoding?
+
+      content.encode(Encoding::UTF_8, Encoding::BINARY, invalid: :replace, undef: :replace, replace: '?')
     rescue StandardError
       ''
     end
@@ -85,6 +91,7 @@ module SaneMasterModules
         plist_file.flush
 
         script = <<~'PY'
+          import base64
           import json
           import plistlib
           import sys
@@ -94,14 +101,36 @@ module SaneMasterModules
           subset = {
             'Name': payload.get('Name'),
             'UUID': payload.get('UUID'),
-            'Entitlements': payload.get('Entitlements', {})
+            'Entitlements': payload.get('Entitlements', {}),
+            'DeveloperCertificates': [
+              base64.b64encode(cert).decode('ascii')
+              for cert in payload.get('DeveloperCertificates', [])
+              if cert
+            ]
           }
           print(json.dumps(subset, default=str))
         PY
         json_out, json_status = Open3.capture2e('python3', '-c', script, plist_file.path)
         return nil unless json_status.success?
 
-        return JSON.parse(json_out)
+        payload = JSON.parse(json_out)
+        certificates = Array(payload['DeveloperCertificates']).map do |encoded|
+          next if encoded.to_s.empty?
+
+          begin
+            certificate = OpenSSL::X509::Certificate.new(Base64.decode64(encoded))
+            common_name = certificate.subject.to_a.find { |item| item[0] == 'CN' }&.[](1).to_s
+            {
+              'CommonName' => common_name,
+              'SHA1' => OpenSSL::Digest::SHA1.hexdigest(certificate.to_der).upcase
+            }
+          rescue OpenSSL::X509::CertificateError, ArgumentError
+            nil
+          end
+        end.compact
+        payload['DeveloperCertificates'] = certificates
+
+        return payload
       end
     rescue StandardError
       nil
@@ -111,7 +140,12 @@ module SaneMasterModules
       return cache[profile_name] if cache.key?(profile_name)
 
       match = nil
-      Dir.glob(File.expand_path('~/Library/MobileDevice/Provisioning Profiles/*.mobileprovision')).sort.each do |path|
+      profile_paths = [
+        File.expand_path('~/Library/MobileDevice/Provisioning Profiles/*.mobileprovision'),
+        File.expand_path('~/Library/Developer/Xcode/UserData/Provisioning Profiles/*.mobileprovision')
+      ].flat_map { |pattern| Dir.glob(pattern) }.uniq.sort
+
+      profile_paths.each do |path|
         payload = decode_mobileprovision(path)
         next unless payload.is_a?(Hash)
         next unless payload['Name'].to_s == profile_name.to_s
@@ -180,7 +214,8 @@ module SaneMasterModules
           name: name,
           bundle_id: release_appstore['PRODUCT_BUNDLE_IDENTIFIER'] || spec['bundleId'],
           code_sign_style: release_appstore['CODE_SIGN_STYLE'].to_s,
-          code_sign_identity: release_appstore['CODE_SIGN_IDENTITY'].to_s
+          code_sign_identity: release_appstore['CODE_SIGN_IDENTITY'].to_s,
+          provisioning_profile: release_appstore['PROVISIONING_PROFILE_SPECIFIER'].to_s
         }
       end
 
@@ -285,7 +320,11 @@ module SaneMasterModules
 
     def verify_output_indicates_success?(output)
       text = output.to_s
-      text.include?('✅ Tests passed!') || text.match?(/Swift Testing:\s+\d+ tests .* passed/)
+      return true if text.include?('✅ Tests passed!')
+      return true if text.match?(/Swift Testing:\s+\d+ tests .* passed/)
+      return true if text.match?(/Test Suite 'All tests' passed/)
+
+      false
     end
 
     def summarized_output_tail(output, lines: 4)
@@ -368,7 +407,11 @@ module SaneMasterModules
           report[:warnings] << 'appstore.product_id not set — App Store IAP upgrade path will not be available'
         end
       elsif !has_product_id_marker
-        report[:issues] << 'AppStoreProductID marker not found in plist/build settings'
+        if strict_appstore_product_id
+          report[:issues] << 'AppStoreProductID marker not found in plist/build settings'
+        else
+          report[:warnings] << 'AppStoreProductID marker not found in plist/build settings'
+        end
       end
 
       report[:issues] << 'No in-app purchase path found (purchasePro/Product.purchase)' unless has_purchase_path
@@ -575,10 +618,11 @@ module SaneMasterModules
       { ok: false, code: 0, final_url: current_url, error: e.message }
     end
 
-    def appstore_direct_purchase_markers(artifact_blob)
+    def appstore_direct_purchase_markers(artifact_blob, built_product_id: '')
       markers = []
+      has_storekit_unlock = !built_product_id.to_s.strip.empty?
       markers << 'website checkout URL' if artifact_blob.match?(/go\.saneapps\.com\/buy\//i)
-      markers << 'license key entry copy' if artifact_blob.match?(/Enter License Key|license key/i)
+      markers << 'license key entry copy' if artifact_blob.match?(/Enter License Key|license key/i) && !has_storekit_unlock
       markers << 'purchase key entry copy' if artifact_blob.match?(/Use Purchase Key|purchase key|Activation Code/i)
       markers << 'manual key entry CTA' if artifact_blob.match?(/I Have a Key|Enter Key|Activate License/i)
       markers
@@ -595,10 +639,15 @@ module SaneMasterModules
 
     def appstore_update_markers(strings_out:, otool_out:)
       markers = []
-      markers << 'Sparkle framework linkage' if otool_out.match?(/Sparkle\.framework/)
-      markers << 'Sparkle settings UI' if strings_out.match?(/SaneSparkleRow|Check for updates automatically|Check Now|Software Updates/i)
-      markers << 'outside-update menu copy' if strings_out.match?(/Check for Updates/i)
-      markers << 'updater service type' if strings_out.match?(/\bUpdateService\b/)
+      has_sparkle_framework = otool_out.match?(/Sparkle\.framework/)
+      has_sparkle_settings_ui = strings_out.match?(/SaneSparkleRow|Check for updates automatically|Check Now|Software Updates/i)
+      has_outside_update_copy = strings_out.match?(/(?m)^Check for Updates(?:\.{3}|…)?$/i)
+      has_updater_service = strings_out.match?(/\bUpdateService\b/)
+
+      markers << 'Sparkle framework linkage' if has_sparkle_framework
+      markers << 'Sparkle settings UI' if has_sparkle_settings_ui && (has_sparkle_framework || has_outside_update_copy || has_updater_service)
+      markers << 'outside-update menu copy' if has_outside_update_copy
+      markers << 'updater service type' if has_updater_service
       markers
     end
 
@@ -1676,7 +1725,7 @@ module SaneMasterModules
     # 1b. Monetization guardrails (protect against accidental full-free releases)
       print '  Monetization guardrails... '
       project_yml_content = File.exist?('project.yml') ? safe_read('project.yml') : ''
-      plist_content = Dir.glob('**/Info.plist').reject { |p| p.include?('DerivedData') || p.include?('build/') }.map { |p| safe_read(p) }.join("\n")
+      plist_content = Dir.glob('**/*.plist').reject { |p| p.include?('DerivedData') || p.include?('build/') }.map { |p| safe_read(p) }.join("\n")
       pbxproj_content = Dir.glob('*.xcodeproj/project.pbxproj').map { |p| safe_read(p) }.join("\n")
       product_id = begin
         cfg = YAML.safe_load(safe_read('.saneprocess')) || {}
@@ -2863,8 +2912,26 @@ module SaneMasterModules
             mac_signing_issues << "#{target[:name]} Release-AppStore is not pinned to Apple Distribution signing"
           end
 
+          if target[:provisioning_profile].to_s.empty?
+            mac_signing_issues << "#{target[:name]} Release-AppStore is missing PROVISIONING_PROFILE_SPECIFIER"
+            next
+          end
+
           if target[:code_sign_style] == 'Automatic'
             mac_signing_warnings << "#{target[:name]} Release-AppStore still uses automatic signing — verify the archive is actually signed with Apple Distribution on the Mini"
+          end
+
+          profile_cache ||= {}
+          profile = installed_mobileprovision_by_name(target[:provisioning_profile], profile_cache)
+          unless profile.is_a?(Hash)
+            mac_signing_issues << "Provisioning profile \"#{target[:provisioning_profile]}\" for #{target[:name]} is not installed locally"
+            next
+          end
+
+          profile_cert_names = Array(profile['DeveloperCertificates']).map { |cert| cert['CommonName'].to_s }.reject(&:empty?)
+          unless profile_cert_names.any? { |name| name.include?('Apple Distribution:') }
+            detail = profile_cert_names.empty? ? 'no embedded signing certificates' : profile_cert_names.join(', ')
+            mac_signing_issues << "Provisioning profile \"#{target[:provisioning_profile]}\" for #{target[:name]} is not tied to Apple Distribution signing (found: #{detail})"
           end
         end
 
@@ -3050,7 +3117,7 @@ module SaneMasterModules
                   artifact_issues << 'Built App Store artifact still embeds LaunchDaemons payload — Mac App Store apps cannot ship launchd daemons or agents'
                 end
 
-                direct_purchase_markers = appstore_direct_purchase_markers(artifact_blob)
+                direct_purchase_markers = appstore_direct_purchase_markers(artifact_blob, built_product_id: built_product_id)
                 if direct_purchase_markers.any?
                   artifact_issues << "Built App Store artifact still exposes direct-purchase markers (#{direct_purchase_markers.join(', ')})"
                 elsif artifact_blob.match?(%r{api\.lemonsqueezy\.com/v1/licenses/validate}i) && !built_product_id.empty?

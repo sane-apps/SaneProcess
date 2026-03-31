@@ -172,7 +172,9 @@ prompt_value() {
 ensure_service_value() {
     local service="$1"
     local allow_prompt="$2"
-    local value
+    local value env_key default_value
+
+    env_key="$(env_key_for_service "${service}")"
 
     value="$(keychain_get "${service}")"
     if [ -n "${value}" ]; then
@@ -180,12 +182,31 @@ ensure_service_value() {
         return 0
     fi
 
+    if [ -n "${env_key}" ]; then
+        value="${!env_key:-}"
+        if [ -n "${value}" ]; then
+            printf '%s' "${value}"
+            return 0
+        fi
+
+        value="$(env_file_get "${env_key}" || true)"
+        if [ -n "${value}" ]; then
+            printf '%s' "${value}"
+            return 0
+        fi
+    fi
+
+    default_value="$(default_for_service "${service}")"
+    if [ -n "${default_value}" ] && [ ! -t 0 ] && [ ! -e /dev/tty ]; then
+        printf '%s' "${default_value}"
+        return 0
+    fi
+
     if [ "${allow_prompt}" != "true" ]; then
         return 1
     fi
 
-    local default_value secret_mode prompt
-    default_value="$(default_for_service "${service}")"
+    local secret_mode prompt
     secret_mode="$(secret_mode_for_service "${service}")"
     prompt="Enter value for ${service}"
     if [ "${service}" = "saneprocess.keychain.password" ]; then
@@ -413,7 +434,17 @@ check_codesign_probe() {
     probe=$(/usr/bin/mktemp /tmp/bootstrap_codesign.XXXXXX)
     echo "sane" > "${probe}"
 
-    if /usr/bin/codesign --force --sign "${signing_identity}" --keychain "${login_keychain}" --timestamp=none "${probe}" >/dev/null 2>&1; then
+    local probe_args=(/usr/bin/codesign --force --sign "${signing_identity}" --keychain "${login_keychain}")
+    case "${signing_identity}" in
+        Apple\ Distribution:*|Developer\ ID\ Application:*)
+            probe_args+=(--timestamp --options runtime)
+            ;;
+        *)
+            probe_args+=(--timestamp=none)
+            ;;
+    esac
+
+    if "${probe_args[@]}" "${probe}" >/dev/null 2>&1; then
         pass "codesign:probe"
     else
         fail "codesign:probe" "${REPO_ROOT}/scripts/mini/bootstrap-build-server.sh --export-env-file"
