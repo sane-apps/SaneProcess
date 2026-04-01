@@ -2386,6 +2386,7 @@ run_tests() {
         "PROVISIONING_PROFILE_SPECIFIER="
         "PROVISIONING_PROFILE="
     )
+    local sanemaster_verify="${PROJECT_ROOT}/scripts/SaneMaster.rb"
 
     test_log_indicates_success() {
         local log_path="$1"
@@ -2434,6 +2435,19 @@ run_tests() {
                 if test_log_indicates_success "${test_log}"; then
                     log_warn "Unsigned test runner returned non-zero despite a clean pass. Continuing with release."
                     return 0
+                fi
+                if [ -x "${sanemaster_verify}" ]; then
+                    log_warn "Unsigned xcodebuild fallback failed. Retrying through SaneMaster verify for the authoritative project test lane..."
+                    if SANEMASTER_RELEASE_PREFLIGHT=1 "${sanemaster_verify}" verify --quiet >"${test_log}" 2>&1; then
+                        cat "${test_log}"
+                        log_info "All tests passed (SaneMaster verify fallback)"
+                        return 0
+                    fi
+                    cat "${test_log}"
+                    if test_log_indicates_success "${test_log}"; then
+                        log_warn "SaneMaster verify returned non-zero despite a clean pass. Continuing with release."
+                        return 0
+                    fi
                 fi
                 log_error "Tests failed even after unsigned fallback. Aborting release."
                 restore_version_bump
