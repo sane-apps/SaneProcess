@@ -142,7 +142,9 @@ module SaneMasterModules
       match = nil
       profile_paths = [
         File.expand_path('~/Library/MobileDevice/Provisioning Profiles/*.mobileprovision'),
-        File.expand_path('~/Library/Developer/Xcode/UserData/Provisioning Profiles/*.mobileprovision')
+        File.expand_path('~/Library/MobileDevice/Provisioning Profiles/*.provisionprofile'),
+        File.expand_path('~/Library/Developer/Xcode/UserData/Provisioning Profiles/*.mobileprovision'),
+        File.expand_path('~/Library/Developer/Xcode/UserData/Provisioning Profiles/*.provisionprofile')
       ].flat_map { |pattern| Dir.glob(pattern) }.uniq.sort
 
       profile_paths.each do |path|
