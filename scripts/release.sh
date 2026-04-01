@@ -4595,11 +4595,33 @@ if ! run_logged_command "${BUILD_DIR}/build.log" \
         -exportOptionsPlist "${EXPORT_OPTIONS_PATH}" \
         -allowProvisioningUpdates \
         "${XCODE_PROVISIONING_AUTH_ARGS[@]}"; then
-    log_error "Export failed! Check ${BUILD_DIR}/build.log"
-    track_gate_result "Export signed app" "failure" "${RELEASE_LAST_ERROR}"
-    exit 1
+    if [ "${USE_SPARKLE}" = true ] && \
+       grep -q 'exportArchive codesign command failed' "${BUILD_DIR}/build.log" && \
+       grep -q 'Sparkle.framework/Versions/B/' "${BUILD_DIR}/build.log" && \
+       grep -q 'errSecInternalComponent' "${BUILD_DIR}/build.log"; then
+        log_warn "Developer ID export hit the known Sparkle nested-bundle re-sign failure."
+        log_warn "Reusing the already signed archive app for notarization and release packaging."
+        if ! codesign --verify --deep --strict "${archive_app_path}"; then
+            log_error "Archive app is not validly signed, so export fallback is unsafe."
+            track_gate_result "Export signed app" "failure" "${RELEASE_LAST_ERROR}"
+            exit 1
+        fi
+        mkdir -p "${EXPORT_PATH}"
+        rm -rf "${EXPORT_PATH:?}/${APP_NAME}.app"
+        if ! /usr/bin/ditto "${archive_app_path}" "${EXPORT_PATH}/${APP_NAME}.app"; then
+            log_error "Failed to stage archive app into export path."
+            track_gate_result "Export signed app" "failure" "${RELEASE_LAST_ERROR}"
+            exit 1
+        fi
+        track_gate_result "Export signed app" "pass" "archive app fallback after Sparkle export resign failure"
+    else
+        log_error "Export failed! Check ${BUILD_DIR}/build.log"
+        track_gate_result "Export signed app" "failure" "${RELEASE_LAST_ERROR}"
+        exit 1
+    fi
+else
+    track_gate_result "Export signed app" "pass" "ok"
 fi
-track_gate_result "Export signed app" "pass" "ok"
 CURRENT_GATE=""
 
 APP_PATH="${EXPORT_PATH}/${APP_NAME}.app"
