@@ -70,6 +70,65 @@ run_logged_command() {
     return "${command_status}"
 }
 
+running_on_mini_host() {
+    case "${PROJECT_ROOT:-$PWD}" in
+        /Users/stephansmac/*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+mini_gui_runner_path() {
+    printf '%s/mini/mini-gui-run.sh' "${SCRIPT_DIR}"
+}
+
+appstore_gui_fallback_marker_present() {
+    local log_path="$1"
+    [ -f "${log_path}" ] || return 1
+    grep -Eq \
+        'errSecInternalComponent|doesn.t include signing certificate|No Accounts|No profiles for|conflicting provisioning settings' \
+        "${log_path}"
+}
+
+run_mini_gui_logged_command() {
+    local log_path="$1"
+    local title="$2"
+    local working_dir="$3"
+    shift 3
+
+    local runner
+    local inner_command=""
+    local command_string=""
+    local gui_log_path="${log_path}.gui"
+    local env_source=""
+
+    runner="$(mini_gui_runner_path)"
+    [ -x "${runner}" ] || return 1
+
+    if [ -n "${SECRETS_ENV_CACHE_FILE:-}" ] && [ -f "${SECRETS_ENV_CACHE_FILE}" ]; then
+        printf -v env_source '. %q >/dev/null 2>&1 || true; ' "${SECRETS_ENV_CACHE_FILE}"
+    fi
+
+    printf -v inner_command '%q ' "$@"
+    inner_command="${inner_command% }"
+
+    if [ -n "${working_dir}" ]; then
+        printf -v command_string '%scd %q && %s' "${env_source}" "${working_dir}" "${inner_command}"
+    else
+        command_string="${env_source}${inner_command}"
+    fi
+
+    run_logged_command "${log_path}" \
+        "${runner}" \
+        --title "${title}" \
+        --log-file "${gui_log_path}" \
+        --close-window \
+        -- "${command_string}"
+}
+
 release_mode_label() {
     if [ "${PREFLIGHT_ONLY:-false}" = true ]; then
         echo "preflight"
@@ -4746,9 +4805,23 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
         fi
 
         if ! run_logged_command "${BUILD_DIR}/build.log" xcodebuild "${appstore_archive_args[@]}"; then
-            log_error "App Store archive build failed! Check ${BUILD_DIR}/build.log"
-            track_gate_result "Build App Store archive" "failure" "${RELEASE_LAST_ERROR}"
-            exit 1
+            if running_on_mini_host && appstore_gui_fallback_marker_present "${BUILD_DIR}/build.log"; then
+                log_warn "Headless App Store archive failed on the Mini. Retrying in the Mini GUI session with automatic signing fallback..."
+                gui_archive_args=(xcodebuild archive -scheme "${APPSTORE_SCHEME_VALUE}" -configuration "${APPSTORE_CONFIG}" \
+                    -archivePath "${APPSTORE_ARCHIVE}" CODE_SIGN_STYLE=Automatic CODE_SIGN_IDENTITY= DEVELOPMENT_TEAM="${TEAM_ID}")
+                if [ ${#XCODE_PROVISIONING_AUTH_ARGS[@]} -gt 0 ]; then
+                    gui_archive_args+=("${XCODE_PROVISIONING_AUTH_ARGS[@]}")
+                fi
+                if ! run_mini_gui_logged_command "${BUILD_DIR}/build.log" "${APP_NAME} App Store archive" "${PROJECT_ROOT}" "${gui_archive_args[@]}"; then
+                    log_error "App Store archive build failed! Check ${BUILD_DIR}/build.log"
+                    track_gate_result "Build App Store archive" "failure" "${RELEASE_LAST_ERROR}"
+                    exit 1
+                fi
+            else
+                log_error "App Store archive build failed! Check ${BUILD_DIR}/build.log"
+                track_gate_result "Build App Store archive" "failure" "${RELEASE_LAST_ERROR}"
+                exit 1
+            fi
         fi
         track_gate_result "Build App Store archive" "pass" "ok"
         CURRENT_GATE=""
@@ -4807,16 +4880,28 @@ if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" = false ]; then
     APPSTORE_PLIST="${BUILD_DIR}/ExportOptions-AppStore.plist"
     write_export_options_appstore_plist "${APPSTORE_PLIST}"
 
-    if ! run_logged_command "${BUILD_DIR}/build.log" \
-        xcodebuild -exportArchive \
-            -archivePath "${APPSTORE_ARCHIVE}" \
-            -exportPath "${APPSTORE_EXPORT_PATH}" \
-            -exportOptionsPlist "${APPSTORE_PLIST}" \
-            -allowProvisioningUpdates \
-            "${XCODE_PROVISIONING_AUTH_ARGS[@]}"; then
-        log_error "App Store export failed! Check ${BUILD_DIR}/build.log"
-        track_gate_result "Export App Store package" "failure" "${RELEASE_LAST_ERROR}"
-        exit 1
+    appstore_export_args=(xcodebuild -exportArchive \
+        -archivePath "${APPSTORE_ARCHIVE}" \
+        -exportPath "${APPSTORE_EXPORT_PATH}" \
+        -exportOptionsPlist "${APPSTORE_PLIST}" \
+        -allowProvisioningUpdates)
+    if [ ${#XCODE_PROVISIONING_AUTH_ARGS[@]} -gt 0 ]; then
+        appstore_export_args+=("${XCODE_PROVISIONING_AUTH_ARGS[@]}")
+    fi
+
+    if ! run_logged_command "${BUILD_DIR}/build.log" "${appstore_export_args[@]}"; then
+        if running_on_mini_host && appstore_gui_fallback_marker_present "${BUILD_DIR}/build.log"; then
+            log_warn "Headless App Store export failed on the Mini. Retrying in the Mini GUI session..."
+            if ! run_mini_gui_logged_command "${BUILD_DIR}/build.log" "${APP_NAME} App Store export" "${PROJECT_ROOT}" "${appstore_export_args[@]}"; then
+                log_error "App Store export failed! Check ${BUILD_DIR}/build.log"
+                track_gate_result "Export App Store package" "failure" "${RELEASE_LAST_ERROR}"
+                exit 1
+            fi
+        else
+            log_error "App Store export failed! Check ${BUILD_DIR}/build.log"
+            track_gate_result "Export App Store package" "failure" "${RELEASE_LAST_ERROR}"
+            exit 1
+        fi
     fi
     track_gate_result "Export App Store package" "pass" "ok"
     CURRENT_GATE=""
