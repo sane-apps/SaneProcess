@@ -502,14 +502,18 @@ def metadata_review_readiness_report(config:, asc_platform:, app_name:, project_
   }
 end
 
-def metadata_fetch_url_status(url)
+def metadata_fetch_url_status(url, method: :head)
   uri = URI(url)
   http = Net::HTTP.new(uri.host, uri.port)
   http.use_ssl = uri.scheme == 'https'
   http.open_timeout = 10
   http.read_timeout = 20
 
-  request = Net::HTTP::Head.new(uri)
+  request =
+    case method
+    when :get then Net::HTTP::Get.new(uri)
+    else Net::HTTP::Head.new(uri)
+    end
   response = http.request(request)
   {
     code: response.code.to_i,
@@ -529,7 +533,20 @@ def metadata_url_health(url, limit: 4)
   redirects = 0
 
   while !current.empty? && redirects <= limit
-    status = metadata_fetch_url_status(current)
+    status = nil
+
+    3.times do |attempt|
+      status = metadata_fetch_url_status(current, method: :head)
+      break unless status[:error]
+
+      sleep 1 if attempt < 2
+    end
+
+    if status[:error] || [403, 405].include?(status[:code].to_i)
+      fallback_status = metadata_fetch_url_status(current, method: :get)
+      status = fallback_status unless fallback_status[:error]
+    end
+
     return { ok: false, code: status[:code], final_url: current, error: status[:error] } if status[:error]
 
     code = status[:code].to_i
@@ -897,7 +914,14 @@ def upload_build(pkg_path, app_id:, version:)
   if success && !reported_failure
     log_info 'Upload complete.'
   else
-    if output.include?('already been uploaded') || output.include?('already exists')
+    duplicate_upload_patterns = [
+      /already been uploaded/i,
+      /already exists/i,
+      /bundle version must be higher than the previously uploaded version/i,
+      /ENTITY_ERROR\.ATTRIBUTE\.INVALID\.DUPLICATE/i,
+      /attribute with a value that has already been used/i
+    ]
+    if duplicate_upload_patterns.any? { |pattern| output.match?(pattern) }
       log_info 'Build already uploaded — continuing.'
       return true
     end
@@ -2516,6 +2540,15 @@ def normalized_iap_localization_description(description = nil)
   value[0, IAP_LOCALIZATION_DESCRIPTION_MAX].rstrip
 end
 
+def iap_localization_locked_for_active_state?(code, detail)
+  return false unless code == 409
+
+  message = detail.to_s
+  return false if message.empty?
+
+  message.match?(/ACTIVE state/i) && message.match?(/cannot edit|cannot be edited|can not be modified/i)
+end
+
 def upload_presigned_chunk(upload_url, headers, chunk)
   uri = URI(upload_url)
   http = Net::HTTP.new(uri.host, uri.port)
@@ -2573,6 +2606,11 @@ def ensure_iap_localization(iap_id:, iap_name:, iap_description:, token:)
     end
 
     detail = patch_resp.dig('errors', 0, 'detail') || patch_resp.dig('errors', 0, 'title') || 'unknown error'
+    if iap_localization_locked_for_active_state?(patch_code, detail)
+      state = existing.dig('attributes', 'state').to_s
+      log_warn "IAP localization (en-US) is locked in ASC state #{state}; leaving the current live copy unchanged."
+      return true
+    end
     log_error "Failed to update IAP localization (HTTP #{patch_code}): #{detail}"
     return false
   end

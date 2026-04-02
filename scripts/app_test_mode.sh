@@ -188,7 +188,19 @@ defaults_domain_for_app() {
   local app="$1"
   local bundle_id
   bundle_id="$(bundle_identifier "$app")"
+  echo "${bundle_id}"
+}
+
+legacy_defaults_domain_for_app() {
+  local app="$1"
+  local bundle_id
+  bundle_id="$(bundle_identifier "$app")"
   echo "${bundle_id}.no-keychain"
+}
+
+defaults_plist_path_for_domain() {
+  local domain="$1"
+  echo "$HOME/Library/Preferences/${domain}.plist"
 }
 
 swift_keychain_upsert_script() {
@@ -807,9 +819,12 @@ REMOTE
 set_app_mode_local() {
   local app="$1"
   local mode="$2"
-  local domain key_name date_name email_name key_key key_date key_email pro_value
+  local domain legacy_domain domain_plist legacy_plist key_name date_name email_name key_key key_date key_email pro_value
 
   domain="$(defaults_domain_for_app "$app")"
+  legacy_domain="$(legacy_defaults_domain_for_app "$app")"
+  domain_plist="$(defaults_plist_path_for_domain "$domain")"
+  legacy_plist="$(defaults_plist_path_for_domain "$legacy_domain")"
   key_name="$(license_key_name "$app")"
   date_name="$(license_date_name "$app")"
   email_name="$(license_email_name "$app")"
@@ -826,15 +841,33 @@ set_app_mode_local() {
   case "$mode" in
     pro)
       defaults write "$domain" "$key_key" -string "$pro_value"
+      defaults write "$domain_plist" "$key_key" -string "$pro_value"
       defaults write "$domain" "$key_date" -string "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      defaults write "$domain_plist" "$key_date" -string "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       if [[ "$app" != "SaneBar" ]]; then
         defaults write "$domain" "$key_email" -string "test@saneapps.local"
+        defaults write "$domain_plist" "$key_email" -string "test@saneapps.local"
       fi
+      defaults delete "$legacy_domain" "$key_key" >/dev/null 2>&1 || true
+      defaults delete "$legacy_plist" "$key_key" >/dev/null 2>&1 || true
+      defaults delete "$legacy_domain" "$key_date" >/dev/null 2>&1 || true
+      defaults delete "$legacy_plist" "$key_date" >/dev/null 2>&1 || true
+      defaults delete "$legacy_domain" "$key_email" >/dev/null 2>&1 || true
+      defaults delete "$legacy_plist" "$key_email" >/dev/null 2>&1 || true
       ;;
     basic)
       defaults delete "$domain" "$key_key" >/dev/null 2>&1 || true
+      defaults delete "$domain_plist" "$key_key" >/dev/null 2>&1 || true
       defaults delete "$domain" "$key_date" >/dev/null 2>&1 || true
+      defaults delete "$domain_plist" "$key_date" >/dev/null 2>&1 || true
       defaults delete "$domain" "$key_email" >/dev/null 2>&1 || true
+      defaults delete "$domain_plist" "$key_email" >/dev/null 2>&1 || true
+      defaults delete "$legacy_domain" "$key_key" >/dev/null 2>&1 || true
+      defaults delete "$legacy_plist" "$key_key" >/dev/null 2>&1 || true
+      defaults delete "$legacy_domain" "$key_date" >/dev/null 2>&1 || true
+      defaults delete "$legacy_plist" "$key_date" >/dev/null 2>&1 || true
+      defaults delete "$legacy_domain" "$key_email" >/dev/null 2>&1 || true
+      defaults delete "$legacy_plist" "$key_email" >/dev/null 2>&1 || true
       ;;
     *)
       echo "error: unsupported mode '$mode' (expected 'pro' or 'basic')" >&2
@@ -890,9 +923,12 @@ set_app_mode_keychain_local() {
 set_app_mode_remote() {
   local app="$1"
   local mode="$2"
-  local domain key_name date_name email_name key_key key_date key_email pro_value now
+  local domain legacy_domain domain_plist legacy_plist key_name date_name email_name key_key key_date key_email pro_value now
 
   domain="$(defaults_domain_for_app "$app")"
+  legacy_domain="$(legacy_defaults_domain_for_app "$app")"
+  domain_plist="$(defaults_plist_path_for_domain "$domain")"
+  legacy_plist="$(defaults_plist_path_for_domain "$legacy_domain")"
   key_name="$(license_key_name "$app")"
   date_name="$(license_date_name "$app")"
   email_name="$(license_email_name "$app")"
@@ -910,15 +946,33 @@ set_app_mode_remote() {
   case "$mode" in
     pro)
       ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults write '$domain' '$key_key' -string '$pro_value'"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults write '$domain_plist' '$key_key' -string '$pro_value'"
       ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults write '$domain' '$key_date' -string '$now'"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults write '$domain_plist' '$key_date' -string '$now'"
       if [[ "$app" != "SaneBar" ]]; then
         ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults write '$domain' '$key_email' -string 'test@saneapps.local'"
+        ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults write '$domain_plist' '$key_email' -string 'test@saneapps.local'"
       fi
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$legacy_domain' '$key_key' >/dev/null 2>&1 || true"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$legacy_plist' '$key_key' >/dev/null 2>&1 || true"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$legacy_domain' '$key_date' >/dev/null 2>&1 || true"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$legacy_plist' '$key_date' >/dev/null 2>&1 || true"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$legacy_domain' '$key_email' >/dev/null 2>&1 || true"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$legacy_plist' '$key_email' >/dev/null 2>&1 || true"
       ;;
     basic)
       ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$domain' '$key_key' >/dev/null 2>&1 || true"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$domain_plist' '$key_key' >/dev/null 2>&1 || true"
       ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$domain' '$key_date' >/dev/null 2>&1 || true"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$domain_plist' '$key_date' >/dev/null 2>&1 || true"
       ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$domain' '$key_email' >/dev/null 2>&1 || true"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$domain_plist' '$key_email' >/dev/null 2>&1 || true"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$legacy_domain' '$key_key' >/dev/null 2>&1 || true"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$legacy_plist' '$key_key' >/dev/null 2>&1 || true"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$legacy_domain' '$key_date' >/dev/null 2>&1 || true"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$legacy_plist' '$key_date' >/dev/null 2>&1 || true"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$legacy_domain' '$key_email' >/dev/null 2>&1 || true"
+      ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults delete '$legacy_plist' '$key_email' >/dev/null 2>&1 || true"
       ;;
     *)
       echo "error: unsupported mode '$mode' (expected 'pro' or 'basic')" >&2
@@ -973,13 +1027,17 @@ set_app_mode_keychain_remote() {
 
 app_status_local() {
   local app="$1"
-  local domain key_name key_key current
+  local domain legacy_domain key_name key_key current
 
   domain="$(defaults_domain_for_app "$app")"
+  legacy_domain="$(legacy_defaults_domain_for_app "$app")"
   key_name="$(license_key_name "$app")"
   key_key="$(defaults_fallback_key "$app" "$key_name")"
 
   current="$(defaults read "$domain" "$key_key" 2>/dev/null || true)"
+  if [[ -z "$current" ]]; then
+    current="$(defaults read "$legacy_domain" "$key_key" 2>/dev/null || true)"
+  fi
   if [[ -n "$current" ]]; then
     echo "$app mode: pro (no-keychain fallback)"
   else
@@ -989,13 +1047,17 @@ app_status_local() {
 
 app_status_remote() {
   local app="$1"
-  local domain key_name key_key current
+  local domain legacy_domain key_name key_key current
 
   domain="$(defaults_domain_for_app "$app")"
+  legacy_domain="$(legacy_defaults_domain_for_app "$app")"
   key_name="$(license_key_name "$app")"
   key_key="$(defaults_fallback_key "$app" "$key_name")"
 
   current="$(ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults read '$domain' '$key_key' 2>/dev/null || true")"
+  if [[ -z "$current" ]]; then
+    current="$(ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults read '$legacy_domain' '$key_key' 2>/dev/null || true")"
+  fi
   if [[ -n "$current" ]]; then
     echo "$app mode: pro (no-keychain fallback)"
   else
@@ -1036,7 +1098,7 @@ print_running_processes_local() {
 app_owner_check_local() {
   local app="$1"
   local bundle info_plist expected_bundle actual_bundle sign_output signed_identifier signed_team
-  local entitlements cloudkit_status app_group_status login_item domain key_name key_key fallback_mode
+  local entitlements cloudkit_status app_group_status login_item domain legacy_domain key_name key_key fallback_mode
   local keychain_service date_name email_name keychain_blob keychain_license keychain_email keychain_date keychain_status
   local prod_rows legacy_rows legacy_bundle
 
@@ -1044,13 +1106,14 @@ app_owner_check_local() {
   expected_bundle="$(fallback_bundle_id "$app")"
   legacy_bundle="${expected_bundle%.app}.dev"
   domain="$(defaults_domain_for_app "$app")"
+  legacy_domain="$(legacy_defaults_domain_for_app "$app")"
   key_name="$(license_key_name "$app")"
   date_name="$(license_date_name "$app")"
   email_name="$(license_email_name "$app")"
   key_key="$(defaults_fallback_key "$app" "$key_name")"
   keychain_service="$(keychain_service_name "$app")"
   fallback_mode="basic"
-  if [[ -n "$(defaults read "$domain" "$key_key" 2>/dev/null || true)" ]]; then
+  if [[ -n "$(defaults read "$domain" "$key_key" 2>/dev/null || true)" || -n "$(defaults read "$legacy_domain" "$key_key" 2>/dev/null || true)" ]]; then
     fallback_mode="pro"
   fi
   keychain_blob="$(read_keychain_state_local "$keychain_service" "$key_name" "$email_name" "$date_name")"
@@ -1129,19 +1192,20 @@ app_owner_check_local() {
 app_owner_check_remote() {
   local app="$1"
   local bundle expected_bundle legacy_bundle sign_output signed_identifier signed_team entitlements
-  local domain key_name key_key fallback_mode keychain_service date_name email_name keychain_blob keychain_license keychain_email keychain_date keychain_status
+  local domain legacy_domain key_name key_key fallback_mode keychain_service date_name email_name keychain_blob keychain_license keychain_email keychain_date keychain_status
 
   bundle="$(remote_bundle_path "$app")"
   expected_bundle="$(fallback_bundle_id "$app")"
   legacy_bundle="${expected_bundle%.app}.dev"
   domain="$(defaults_domain_for_app "$app")"
+  legacy_domain="$(legacy_defaults_domain_for_app "$app")"
   key_name="$(license_key_name "$app")"
   date_name="$(license_date_name "$app")"
   email_name="$(license_email_name "$app")"
   key_key="$(defaults_fallback_key "$app" "$key_name")"
   keychain_service="$(keychain_service_name "$app")"
   fallback_mode="basic"
-  if [[ -n "$(ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults read '$domain' '$key_key' 2>/dev/null || true")" ]]; then
+  if [[ -n "$(ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults read '$domain' '$key_key' 2>/dev/null || true")" || -n "$(ssh -o ConnectTimeout=5 -o BatchMode=yes mini "defaults read '$legacy_domain' '$key_key' 2>/dev/null || true")" ]]; then
     fallback_mode="pro"
   fi
   keychain_blob="$(read_keychain_state_remote "$keychain_service" "$key_name" "$email_name" "$date_name")"
@@ -1408,7 +1472,7 @@ bootstrap_install_local() {
   echo "info: $app not installed. Bootstrapping from $repo ..."
   (
     cd "$repo"
-    SANEMASTER_CANONICAL_APP_PATH="$HOME/Applications/${app}.app" ./scripts/SaneMaster.rb launch
+    SANEMASTER_CANONICAL_APP_PATH="$HOME/Applications/${app}.app" ./scripts/SaneMaster.rb test_mode --release --no-logs
   ) >/tmp/"$(to_lower "$app")"-bootstrap.log 2>&1
 }
 
@@ -1424,7 +1488,7 @@ if [ ! -d "\$repo" ]; then
   exit 1
 fi
 cd "\$repo"
-SANEMASTER_CANONICAL_APP_PATH="\$HOME/Applications/${app}.app" ./scripts/SaneMaster.rb launch >/tmp/$(to_lower "$app")-bootstrap.log 2>&1
+SANEMASTER_CANONICAL_APP_PATH="\$HOME/Applications/${app}.app" ./scripts/SaneMaster.rb test_mode --release --no-logs >/tmp/$(to_lower "$app")-bootstrap.log 2>&1
 REMOTE
 )
 

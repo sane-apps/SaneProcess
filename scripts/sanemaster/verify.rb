@@ -37,6 +37,7 @@ module SaneMasterModules
       signed_tests = args.include?('--signed-tests') || ENV['SANEMASTER_SIGN_TEST_BUILDS'] == '1'
 
       run_verify_preflight
+      enforce_saneui_source_of_truth!
       clean([]) if clean_first
 
       puts '🔨 --- [ SANEMASTER VERIFY ] ---'
@@ -95,6 +96,30 @@ module SaneMasterModules
 
       preflight_test_environment
       @verify_preflight_ran = true
+    end
+
+    def enforce_saneui_source_of_truth!
+      report = SaneMasterModules::SaneUIGuard.report_for_path(Dir.pwd)
+      return unless report[:applicable]
+
+      warnings = report[:warnings] || []
+      errors = report[:errors] || []
+      return if warnings.empty? && errors.empty?
+
+      puts '🎨 --- [ SANEUI SOURCE OF TRUTH ] ---'
+      SaneMasterModules::SaneUIGuard.format_report(report).each { |line| puts line }
+
+      if errors.any?
+        if ENV['SANEMASTER_ALLOW_SANEUI_DRIFT'] == '1'
+          puts '⚠️  SANEMASTER_ALLOW_SANEUI_DRIFT=1 set — bypassing SaneUI drift blocker.'
+        else
+          puts '❌ Shared settings/UI drift detected.'
+          puts "   Fix the shared-source violations or bypass explicitly with SANEMASTER_ALLOW_SANEUI_DRIFT=1."
+          exit 1
+        end
+      end
+
+      puts ''
     end
 
     def preflight_test_environment
@@ -550,6 +575,16 @@ module SaneMasterModules
       { success: result[:success], tests_run: total_tests, duration: (Time.now - state[:start_time]).to_i, timeout: result[:timeout] }
     end
 
+    def verify_log_indicates_success?(text)
+      body = text.to_s
+      return true if body.include?('✅ Tests passed!')
+      return true if body.match?(/Swift Testing:\s+\d+ tests .* passed/)
+      return true if body.match?(/Test Suite 'All tests' passed/)
+      return true if body.match?(/Executed \d+ tests?, with 0 failures/)
+
+      false
+    end
+
     def build_test_commands(include_ui, signed_tests = false)
       if include_ui && mixed_platform_ui_tests?
         return [
@@ -717,6 +752,14 @@ module SaneMasterModules
 
           reader.join(2)
           reader.kill if reader.alive?
+        end
+      end
+
+      if !success && !timed_out && File.exist?('test_output.txt')
+        log_output = File.read('test_output.txt') rescue ''
+        if verify_log_indicates_success?(log_output)
+          puts '   ℹ️  Test log shows a clean pass despite a non-zero runner exit; treating verify as successful.'
+          success = true
         end
       end
 

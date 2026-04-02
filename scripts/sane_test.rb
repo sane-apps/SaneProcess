@@ -807,7 +807,15 @@ class SaneTest
   end
 
   def fallback_domain(bundle_id)
+    bundle_id
+  end
+
+  def legacy_fallback_domain(bundle_id)
     "#{bundle_id}.no-keychain"
+  end
+
+  def fallback_plist_path(domain)
+    File.expand_path("~/Library/Preferences/#{domain}.plist")
   end
 
   def fallback_pref_key(bundle_id, key_name)
@@ -816,34 +824,61 @@ class SaneTest
 
   def clear_license_fallback_local(bundle_id)
     domain = fallback_domain(bundle_id)
+    legacy_domain = legacy_fallback_domain(bundle_id)
+    domain_plist = fallback_plist_path(domain)
+    legacy_plist = fallback_plist_path(legacy_domain)
     [license_key_name, license_email_name, license_date_name].each do |name|
       key = fallback_pref_key(bundle_id, name)
       system('defaults', 'delete', domain, key, out: File::NULL, err: File::NULL)
+      system('defaults', 'delete', domain_plist, key, out: File::NULL, err: File::NULL)
+      system('defaults', 'delete', legacy_domain, key, out: File::NULL, err: File::NULL)
+      system('defaults', 'delete', legacy_plist, key, out: File::NULL, err: File::NULL)
     end
   end
 
   def clear_license_fallback_remote(bundle_id)
     domain = fallback_domain(bundle_id)
+    legacy_domain = legacy_fallback_domain(bundle_id)
+    domain_plist = fallback_plist_path(domain)
+    legacy_plist = fallback_plist_path(legacy_domain)
     [license_key_name, license_email_name, license_date_name].each do |name|
       key = fallback_pref_key(bundle_id, name)
       ssh("defaults delete #{Shellwords.escape(domain)} #{Shellwords.escape(key)} 2>/dev/null; true")
+      ssh("defaults delete #{Shellwords.escape(domain_plist)} #{Shellwords.escape(key)} 2>/dev/null; true")
+      ssh("defaults delete #{Shellwords.escape(legacy_domain)} #{Shellwords.escape(key)} 2>/dev/null; true")
+      ssh("defaults delete #{Shellwords.escape(legacy_plist)} #{Shellwords.escape(key)} 2>/dev/null; true")
     end
   end
 
   def set_pro_fallback_local(bundle_id)
     domain = fallback_domain(bundle_id)
+    legacy_domain = legacy_fallback_domain(bundle_id)
+    domain_plist = fallback_plist_path(domain)
+    legacy_plist = fallback_plist_path(legacy_domain)
     key = fallback_pref_key(bundle_id, license_key_name)
     date_key = fallback_pref_key(bundle_id, license_date_name)
     email_key = fallback_pref_key(bundle_id, license_email_name)
     pro_value = (@app_name == 'SaneBar') ? EARLY_ADOPTER_KEY : TEST_LICENSE_KEY
 
     system('defaults', 'write', domain, key, '-string', pro_value)
+    system('defaults', 'write', domain_plist, key, '-string', pro_value)
     system('defaults', 'write', domain, date_key, '-string', Time.now.utc.iso8601)
+    system('defaults', 'write', domain_plist, date_key, '-string', Time.now.utc.iso8601)
     system('defaults', 'write', domain, email_key, '-string', 'test@saneapps.local') unless @app_name == 'SaneBar'
+    system('defaults', 'write', domain_plist, email_key, '-string', 'test@saneapps.local') unless @app_name == 'SaneBar'
+    system('defaults', 'delete', legacy_domain, key, out: File::NULL, err: File::NULL)
+    system('defaults', 'delete', legacy_plist, key, out: File::NULL, err: File::NULL)
+    system('defaults', 'delete', legacy_domain, date_key, out: File::NULL, err: File::NULL)
+    system('defaults', 'delete', legacy_plist, date_key, out: File::NULL, err: File::NULL)
+    system('defaults', 'delete', legacy_domain, email_key, out: File::NULL, err: File::NULL)
+    system('defaults', 'delete', legacy_plist, email_key, out: File::NULL, err: File::NULL)
   end
 
   def set_pro_fallback_remote(bundle_id)
     domain = fallback_domain(bundle_id)
+    legacy_domain = legacy_fallback_domain(bundle_id)
+    domain_plist = fallback_plist_path(domain)
+    legacy_plist = fallback_plist_path(legacy_domain)
     key = fallback_pref_key(bundle_id, license_key_name)
     date_key = fallback_pref_key(bundle_id, license_date_name)
     email_key = fallback_pref_key(bundle_id, license_email_name)
@@ -851,10 +886,19 @@ class SaneTest
     now = Time.now.utc.iso8601
 
     ssh("defaults write #{Shellwords.escape(domain)} #{Shellwords.escape(key)} -string #{Shellwords.escape(pro_value)}")
+    ssh("defaults write #{Shellwords.escape(domain_plist)} #{Shellwords.escape(key)} -string #{Shellwords.escape(pro_value)}")
     ssh("defaults write #{Shellwords.escape(domain)} #{Shellwords.escape(date_key)} -string #{Shellwords.escape(now)}")
+    ssh("defaults write #{Shellwords.escape(domain_plist)} #{Shellwords.escape(date_key)} -string #{Shellwords.escape(now)}")
     unless @app_name == 'SaneBar'
       ssh("defaults write #{Shellwords.escape(domain)} #{Shellwords.escape(email_key)} -string test@saneapps.local")
+      ssh("defaults write #{Shellwords.escape(domain_plist)} #{Shellwords.escape(email_key)} -string test@saneapps.local")
     end
+    ssh("defaults delete #{Shellwords.escape(legacy_domain)} #{Shellwords.escape(key)} 2>/dev/null; true")
+    ssh("defaults delete #{Shellwords.escape(legacy_plist)} #{Shellwords.escape(key)} 2>/dev/null; true")
+    ssh("defaults delete #{Shellwords.escape(legacy_domain)} #{Shellwords.escape(date_key)} 2>/dev/null; true")
+    ssh("defaults delete #{Shellwords.escape(legacy_plist)} #{Shellwords.escape(date_key)} 2>/dev/null; true")
+    ssh("defaults delete #{Shellwords.escape(legacy_domain)} #{Shellwords.escape(email_key)} 2>/dev/null; true")
+    ssh("defaults delete #{Shellwords.escape(legacy_plist)} #{Shellwords.escape(email_key)} 2>/dev/null; true")
   end
 
   def launch_env_pairs

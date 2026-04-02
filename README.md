@@ -127,8 +127,9 @@ Codex does not need Claude-style hook registration to use SaneProcess well.
 
 1. Keep the repo-level `AGENTS.md` accurate and practical.
 2. Put repo skills in `.agents/skills/` so Codex can discover them.
-3. Configure MCP in `~/.codex/config.toml` or project-scoped `.codex/config.toml`.
-4. Use the shared runtime guards for risky paths such as email writes.
+3. Keep the Codex registry and user skills coherent: `~/.codex/SKILLS_REGISTRY.md` and `~/.codex/skills/`.
+4. Configure MCP in `~/.codex/config.toml` or project-scoped `.codex/config.toml`.
+5. Use the shared runtime guards for risky paths such as email writes.
 
 Useful commands:
 
@@ -234,14 +235,14 @@ That receipt checks the skills registry, runs `doctor`, runs `validation_report.
 | Hard | 58 | Edge cases, state transitions |
 | Villain | 59 | Adversarial bypass attempts |
 
-**Self-tests (274)** — per-hook unit tests:
+**Self-tests (282)** — per-hook unit tests:
 
 | Hook | Tests |
 |------|-------|
-| saneprompt | 176 |
+| saneprompt | 179 |
 | sanetools | 44 |
-| sanetrack | 30 |
-| sanestop | 24 |
+| sanetrack | 32 |
+| sanestop | 27 |
 
 ```bash
 # Run all tier tests

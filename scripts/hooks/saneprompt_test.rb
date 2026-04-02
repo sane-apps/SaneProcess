@@ -119,6 +119,17 @@ module SanePromptTest
       warn "  FAIL: Invalid JSON should exit 0, not crash"
     end
 
+    # Test SaneUI source-of-truth guidance is injected for settings tasks
+    json_input = '{"session_id":"test","prompt":"fix the settings button style and about layout"}'
+    stdout, _stderr, status = Open3.capture3("ruby #{script_path}", stdin_data: json_input)
+    if status.exitstatus == 0 && stdout.include?('SaneUI source of truth')
+      passed += 1
+      warn '  PASS: Settings prompts inject SaneUI source-of-truth guidance'
+    else
+      failed += 1
+      warn '  FAIL: Settings prompts should inject SaneUI source-of-truth guidance'
+    end
+
     # Test pa+ approves plan
     StateManager.update(:planning) { |p| p[:required] = true; p[:plan_approved] = false; p }
     $stderr.reopen('/dev/null', 'w')

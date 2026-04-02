@@ -107,6 +107,17 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('ignores generic updater copy without a real updater signal') do
+      hits = subject.send(
+        :appstore_update_markers,
+        strings_out: "SaneSparkleRow\nCheck for updates automatically\nCheck for updates right now\nSoftware Updates",
+        otool_out: ''
+      )
+
+      assert_eq(hits, [])
+      true
+    end
+
     test('detects direct purchase markers in App Store artifacts') do
       hits = subject.send(
         :appstore_direct_purchase_markers,
@@ -115,6 +126,17 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
 
       assert_includes(hits, 'website checkout URL')
       assert_includes(hits, 'purchase key entry copy')
+      true
+    end
+
+    test('ignores generic license-key copy when StoreKit unlock is configured') do
+      hits = subject.send(
+        :appstore_direct_purchase_markers,
+        "Enter License Key\nLicense",
+        built_product_id: 'com.example.unlock'
+      )
+
+      assert_eq(hits, [])
       true
     end
 

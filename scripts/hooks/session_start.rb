@@ -463,7 +463,24 @@ end
 # === STARTUP GATE INITIALIZATION ===
 # Sets up the gate that blocks substantive work until startup steps complete.
 # Auto-completes steps where required files don't exist (cross-project safety).
-SKILLS_REGISTRY = File.expand_path('~/.claude/SKILLS_REGISTRY.md')
+def codex_runtime?
+  ENV['CODEX_SHELL'] == '1' || ENV['CODEX_INTERNAL_ORIGINATOR_OVERRIDE'].to_s.include?('Codex')
+end
+
+def active_skills_registry_path
+  codex_registry = File.expand_path('~/.codex/SKILLS_REGISTRY.md')
+  claude_registry = File.expand_path('~/.claude/SKILLS_REGISTRY.md')
+  preferred = codex_runtime? ? codex_registry : claude_registry
+  fallback = codex_runtime? ? claude_registry : codex_registry
+
+  return preferred if File.exist?(preferred)
+  return fallback if File.exist?(fallback)
+
+  preferred
+end
+
+SKILLS_REGISTRY = active_skills_registry_path
+SKILLS_REGISTRY_LABEL = SKILLS_REGISTRY.sub(File.expand_path('~'), '~')
 VALIDATION_SCRIPT = File.join(PROJECT_DIR, 'scripts', 'validation_report.rb')
 SANEMASTER_SCRIPT = File.join(PROJECT_DIR, 'scripts', 'SaneMaster.rb')
 
@@ -530,7 +547,7 @@ def initialize_startup_gate
     pending.each_key do |step|
       case step
       when :session_docs    then warn '   [ ] Read session docs (SESSION_HANDOFF.md, DEVELOPMENT.md)'
-      when :skills_registry then warn '   [ ] Read ~/.claude/SKILLS_REGISTRY.md'
+      when :skills_registry then warn "   [ ] Read #{SKILLS_REGISTRY_LABEL}"
       when :validation_report then warn '   [ ] Run: ruby scripts/validation_report.rb'
       when :system_clean    then warn '   [ ] Run: ./scripts/SaneMaster.rb clean_system'
       end
