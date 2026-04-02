@@ -2918,6 +2918,31 @@ def find_iap_by_product_id(app_id:, product_id:, token:)
   resp['data'].find { |entry| entry.dig('attributes', 'productId') == product_id }
 end
 
+def list_app_iaps(app_id:, token:)
+  resp = asc_get("/apps/#{app_id}/inAppPurchasesV2?limit=200", token: token)
+  return [] unless resp && resp['data'].is_a?(Array)
+
+  resp['data']
+end
+
+def extra_active_iaps(app_id:, product_id:, token:)
+  active_states = %w[
+    READY_TO_SUBMIT
+    WAITING_FOR_REVIEW
+    IN_REVIEW
+    APPROVED
+    READY_FOR_SALE
+    DEVELOPER_ACTION_NEEDED
+  ]
+
+  list_app_iaps(app_id: app_id, token: token).select do |entry|
+    attrs = entry.fetch('attributes', {})
+    next false if attrs['productId'] == product_id
+
+    active_states.include?(attrs['state'].to_s)
+  end
+end
+
 def default_iap_name(config:, project_root:, product_id:)
   explicit = config.dig('appstore', 'iap', 'display_name').to_s.strip
   return explicit unless explicit.empty?
@@ -2992,6 +3017,17 @@ def log_first_iap_submission_blocker(product_id:, platform:, version_string:)
 end
 
 def ensure_iap_readiness(app_id:, product_id:, project_root:, config:, token:, price_usd:, platform: nil, version_string: nil)
+  extras = extra_active_iaps(app_id: app_id, product_id: product_id, token: token)
+  unless extras.empty?
+    log_error "ASC has #{extras.length} extra active/pending IAP record(s) for app #{app_id}."
+    extras.each do |entry|
+      attrs = entry.fetch('attributes', {})
+      log_error "Extra IAP: #{attrs['name']} | #{attrs['productId']} | #{attrs['state']}"
+    end
+    log_error "Delete or retire the extra IAPs before submitting. Review should only see the configured product #{product_id}."
+    return false
+  end
+
   iap = find_iap_by_product_id(app_id: app_id, product_id: product_id, token: token)
   unless iap
     log_warn "Configured appstore.product_id #{product_id} was not found in ASC for app #{app_id}; creating it now."

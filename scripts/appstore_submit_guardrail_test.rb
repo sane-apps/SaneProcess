@@ -15,13 +15,15 @@ class AppStoreSubmitGuardrailHarness
     @stubbed_safari_javascript = nil
     @stubbed_patch_result = nil
     @stubbed_iap_record = nil
+    @stubbed_iap_records = nil
   end
 
   def stub_url_status(url, code:, location: '', error: nil)
     @stubbed_url_statuses[url] = { code: code, location: location, error: error }
   end
 
-  def metadata_fetch_url_status(url)
+  def metadata_fetch_url_status(url, method: :head)
+    _ = method
     @stubbed_url_statuses.fetch(url) do
       { code: 0, location: '', error: "missing stub for #{url}" }
     end
@@ -76,8 +78,16 @@ class AppStoreSubmitGuardrailHarness
     @stubbed_iap_record = record
   end
 
+  def stub_iap_records(records)
+    @stubbed_iap_records = records
+  end
+
   def find_iap_by_product_id(*_args, **_kwargs)
     @stubbed_iap_record
+  end
+
+  def list_app_iaps(*_args, **_kwargs)
+    @stubbed_iap_records || []
   end
 
   def ensure_iap_localization(**_kwargs)
@@ -285,8 +295,24 @@ exit(run_tests('App Store Submit Guardrail Tests') do
       subject.stub_iap_record(
         {
           'id' => 'iap-1',
-          'attributes' => { 'state' => 'IN_REVIEW', 'name' => 'Example Pro' }
+          'attributes' => {
+            'state' => 'IN_REVIEW',
+            'name' => 'Example Pro',
+            'productId' => 'com.example.pro'
+          }
         }
+      )
+      subject.stub_iap_records(
+        [
+          {
+            'id' => 'iap-1',
+            'attributes' => {
+              'state' => 'IN_REVIEW',
+              'name' => 'Example Pro',
+              'productId' => 'com.example.pro'
+            }
+          }
+        ]
       )
 
       ok = subject.send(
@@ -302,6 +328,54 @@ exit(run_tests('App Store Submit Guardrail Tests') do
       )
 
       assert_eq(ok, true)
+      true
+    end
+
+    test('fails when extra active IAP records exist for the app') do
+      subject.stub_iap_record(
+        {
+          'id' => 'iap-1',
+          'attributes' => {
+            'state' => 'WAITING_FOR_REVIEW',
+            'name' => 'Example Pro',
+            'productId' => 'com.example.pro'
+          }
+        }
+      )
+      subject.stub_iap_records(
+        [
+          {
+            'id' => 'iap-1',
+            'attributes' => {
+              'state' => 'WAITING_FOR_REVIEW',
+              'name' => 'Example Pro',
+              'productId' => 'com.example.pro'
+            }
+          },
+          {
+            'id' => 'iap-2',
+            'attributes' => {
+              'state' => 'WAITING_FOR_REVIEW',
+              'name' => 'Old Pro Unlock',
+              'productId' => 'com.example.pro.old'
+            }
+          }
+        ]
+      )
+
+      ok = subject.send(
+        :ensure_iap_readiness,
+        app_id: 'app-1',
+        product_id: 'com.example.pro',
+        project_root: '/tmp',
+        config: { 'appstore' => { 'iap' => { 'display_name' => 'Example Pro' } } },
+        token: 'stub-token',
+        price_usd: '6.99',
+        platform: 'macos',
+        version_string: '1.0.0'
+      )
+
+      assert_eq(ok, false)
       true
     end
   end
