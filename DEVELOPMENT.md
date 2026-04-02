@@ -553,11 +553,12 @@ This is deliberate. The goal is to stop wasting review cycles on builds Apple is
 
 Additional lessons now enforced in the shared flow:
 - When a lane is rejected, the first step is evidence collection, not diagnosis. Read the full reviewer message, record the exact platform/version/build/submission ID, download every App Review attachment, and open all screenshot/video/PDF evidence before changing code or drafting a reply.
+- Inspect the saved `review_message.txt`, `review_page.txt`, and `summary.json` together, then compare Apple’s captured media against the current configured screenshot set so stale metadata is caught before resubmission.
 - `scripts/appstore_submit.rb --fetch-review-package` is the canonical evidence collector. It saves the reviewer message, page text, and any downloaded App Review attachments into an evidence folder instead of relying on manual browser memory.
 - Safari evidence helpers must prove they are on the exact target ASC page before trusting DOM text. If the tab never lands on the requested version/review URL, treat the probe as invalid instead of reusing stale page content from another platform.
 - `appstore_submit.rb --skip-upload` fails fast if the requested existing build is not actually visible in ASC for that platform. It now prints the visible build candidates instead of polling for 45 minutes on a bad build number.
 - `release.sh` now hard-runs `SaneMaster.rb appstore_preflight` before any App Store submission step, so full releases cannot skip the compiled-artifact policy gate by accident.
-- For macOS App Store exports, `xcodebuild -exportArchive` must run with ASC API-key auth on the Mini. If export reaches `productbuild` and then fails with `errSecInteractionNotAllowed`, the fix is installer-key keychain access, not another upload attempt.
+- For macOS App Store exports, `xcodebuild -exportArchive` must run with ASC API-key auth on the Mini. If export reaches `productbuild` and then fails with `errSecInteractionNotAllowed`, the fix is installer-key keychain access, not another upload attempt. Read the full distribution logs first and name the exact failing step before retrying.
 - `appstore_submit.rb` now validates that support and privacy URLs actually resolve successfully, not just that metadata strings exist.
 - Reviewer access is treated as a first-class requirement. If the app needs outside credentials, review notes must explain the exact demo/review path and must state when no account, API key, or payment is required.
 - “App Store-safe” means the compiled artifact, not just the source tree. Preflight must verify that the App Store binary no longer exposes website checkout URLs, license-key CTAs, or automation permission declarations that contradict the review notes.

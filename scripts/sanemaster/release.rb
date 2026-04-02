@@ -3069,7 +3069,8 @@ module SaneMasterModules
             end
 
             info_plist = File.join(app_dir, 'Contents', 'Info.plist')
-            plist_dump = File.read(info_plist) rescue ''
+            plist_dump, = Open3.capture2('/usr/libexec/PlistBuddy', '-c', 'Print', info_plist)
+            plist_dump = plist_dump.to_s
             executable, = Open3.capture2('/usr/libexec/PlistBuddy', '-c', 'Print :CFBundleExecutable', info_plist)
             executable = executable.to_s.strip
             binary_path = File.join(app_dir, 'Contents', 'MacOS', executable)
@@ -3137,12 +3138,12 @@ module SaneMasterModules
                 end
 
                 if review_notes_blob.match?(/does not request accessibility/i) &&
-                   artifact_blob.include?('NSAccessibilityUsageDescription')
+                   plist_dump.include?('NSAccessibilityUsageDescription')
                   artifact_issues << 'Review notes claim no Accessibility request, but built Info.plist still declares NSAccessibilityUsageDescription'
                 end
 
                 if review_notes_blob.match?(/does not request.*apple events|no apple events/i) &&
-                   artifact_blob.include?('NSAppleEventsUsageDescription')
+                   plist_dump.include?('NSAppleEventsUsageDescription')
                   artifact_issues << 'Review notes claim no Apple Events request, but built Info.plist still declares NSAppleEventsUsageDescription'
                 end
 

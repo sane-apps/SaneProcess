@@ -102,7 +102,9 @@ When App Review rejects a lane, do this in order:
 - Record the exact platform, version, build, submission ID, and review date.
 - Read the exact reviewer message first.
 - Download every attachment from the App Review page: screenshots, video, PDF, or any other file.
-- Open every downloaded image/video file locally and inspect what Apple actually captured.
+- Open every downloaded image/video/PDF file locally and inspect what Apple actually captured at full size.
+- Review the saved `review_message.txt`, `review_page.txt`, and `summary.json` together so the attachment set, submission ID, and page state all agree.
+- Compare Apple’s captured screenshots against the current configured App Store screenshot set before changing code or metadata.
 - Do not draft a reviewer reply, change code, or resubmit until all reviewer evidence has been reviewed.
 
 ```bash
@@ -128,6 +130,7 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
 4. If macOS export fails, read the full Xcode distribution logs before trying another upload.
 
 - Inspect `IDEDistribution.standard.log`, `IDEDistributionPipeline.log`, and `IDEDistribution.verbose.log`.
+- Treat those logs as required evidence, not optional debugging. Do not retry export/upload until the exact failing signing or packaging step is identified.
 - If the failure is `productbuild failed` with `errSecInteractionNotAllowed` / `CSSMERR_CSP_NO_USER_INTERACTION`, the Mini is missing headless keychain access for the installer identity.
 - Fix the keychain session first. Do not retry uploads blindly.
 
