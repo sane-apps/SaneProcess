@@ -131,6 +131,17 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
 - If the failure is `productbuild failed` with `errSecInteractionNotAllowed` / `CSSMERR_CSP_NO_USER_INTERACTION`, the Mini is missing headless keychain access for the installer identity.
 - Fix the keychain session first. Do not retry uploads blindly.
 
+5. If App Store Connect or Apple Developer portal state must be inspected or repaired, drive Safari on the Mini directly before looking for new browser tools.
+
+- App Store Connect login and `developer.apple.com` login are separate. Verify both on the Mini.
+- Preferred control path is Mini Safari + AppleScript/JavaScript:
+  - `tell application "Safari" to return URL of front document`
+  - `tell application "Safari" to do JavaScript "document.body.innerText"` in front document
+  - use `document.querySelector(...)` / `.click()` only after confirming the tab URL is the exact target review/profile page
+- Use this path to inspect reviewer screenshots/download links, App Review page text, and Apple Developer profile detail/edit pages.
+- Do not blind-click. Prove the front tab URL and visible text first.
+- If a provisioning profile is stale, inspect the exact certificate shown on the Apple Developer edit page before regenerating it.
+
 ```bash
 ./scripts/SaneMaster.rb appstore_preflight
 ```
