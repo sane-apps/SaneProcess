@@ -1550,6 +1550,22 @@ launch_app_local() {
 
   sleep 2
   if pgrep -x "$app" >/dev/null 2>&1; then
+    if [[ "$ALLOW_KEYCHAIN" -eq 0 ]]; then
+      if ! ps ax -o comm=,command= | awk -v app="$app" -v needle="$binary --sane-no-keychain" '
+        $1 == app && index($0, needle) > 0 { found = 1 }
+        END { exit found ? 0 : 1 }
+      ' >/dev/null 2>&1; then
+        echo "warning: Launch Services dropped --sane-no-keychain for $app; relaunching executable directly"
+        pkill -x "$app" >/dev/null 2>&1 || true
+        local -a direct_env=(env)
+        direct_env+=(SANEAPPS_DISABLE_KEYCHAIN=1)
+        if [[ "$mode" == "basic" && "$app" != "SaneBar" ]]; then
+          direct_env+=(SANEAPPS_FORCE_FREE_MODE=1)
+        fi
+        nohup "${direct_env[@]}" "$binary" --sane-no-keychain >/tmp/"$(to_lower "$app")"-app_test_mode.log 2>&1 &
+        sleep 2
+      fi
+    fi
     echo "$app launched in $mode mode (host=$(display_host))"
     echo "log command: log stream --predicate 'process == \"$app\"' --style compact"
   else
@@ -1618,6 +1634,18 @@ launch_app_remote() {
   sleep 2
 
   if ssh -o ConnectTimeout=5 -o BatchMode=yes mini "pgrep -x '$app' >/dev/null 2>&1"; then
+    if [[ "$ALLOW_KEYCHAIN" -eq 0 ]]; then
+      if ! ssh -o ConnectTimeout=5 -o BatchMode=yes mini "ps ax -o comm=,command= | awk -v app='$app' -v needle='$binary --sane-no-keychain' '\$1 == app && index(\$0, needle) > 0 { found = 1 } END { exit found ? 0 : 1 }' >/dev/null 2>&1"; then
+        echo "warning: Launch Services dropped --sane-no-keychain for $app on mini; relaunching executable directly"
+        ssh -o ConnectTimeout=5 -o BatchMode=yes mini "pkill -x '$app' >/dev/null 2>&1 || true"
+        local direct_env="env SANEAPPS_DISABLE_KEYCHAIN=1"
+        if [[ "$mode" == "basic" && "$app" != "SaneBar" ]]; then
+          direct_env="$direct_env SANEAPPS_FORCE_FREE_MODE=1"
+        fi
+        ssh -o ConnectTimeout=5 -o BatchMode=yes mini "nohup $direct_env '$binary' --sane-no-keychain >/tmp/$(to_lower "$app")-app_test_mode.log 2>&1 &"
+        sleep 2
+      fi
+    fi
     echo "$app launched in $mode mode (host=$(display_host))"
     echo "log command: ssh mini \"log stream --predicate 'process == \\\"$app\\\"' --style compact\""
   else
