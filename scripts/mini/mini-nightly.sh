@@ -386,7 +386,41 @@ echo "---" >> "$REPORT"
 echo "" >> "$REPORT"
 
 # =============================================================================
-# Section 6: Disk & System Health
+# Section 6: Automation Root Cleanup
+# =============================================================================
+echo "## Automation Root Cleanup" >> "$REPORT"
+echo "" >> "$REPORT"
+
+AUTOMATION_PREP_SCRIPT="$SCRIPT_DIR/mini-prepare-automation-root.sh"
+CANONICAL_SOURCE_ROOT="$HOME/SaneApps"
+cleanup_exit=0
+cleanup_output=""
+
+if [ "$SANE_ROOT" = "$CANONICAL_SOURCE_ROOT" ]; then
+  echo "**Skipped** - nightly is running against the canonical human repo" >> "$REPORT"
+elif [ ! -x "$AUTOMATION_PREP_SCRIPT" ]; then
+  echo "**Skipped** - missing automation-root prep script" >> "$REPORT"
+else
+  cleanup_output=$(AUTOMATION_ROOT="$SANE_ROOT" SANE_SOURCE_ROOT="$CANONICAL_SOURCE_ROOT" /bin/bash "$AUTOMATION_PREP_SCRIPT" 2>&1) || cleanup_exit=$?
+  if [ "$cleanup_exit" -eq 0 ]; then
+    echo "**PASS** - automation root re-synced and cleaned after nightly work" >> "$REPORT"
+  else
+    echo "**FAIL** (exit $cleanup_exit) - automation root cleanup reported problems" >> "$REPORT"
+  fi
+
+  if [ -n "$cleanup_output" ]; then
+    echo '```' >> "$REPORT"
+    echo "$cleanup_output" | tail -40 >> "$REPORT"
+    echo '```' >> "$REPORT"
+  fi
+fi
+
+echo "" >> "$REPORT"
+echo "---" >> "$REPORT"
+echo "" >> "$REPORT"
+
+# =============================================================================
+# Section 7: Disk & System Health
 # =============================================================================
 echo "## System Health" >> "$REPORT"
 echo "" >> "$REPORT"

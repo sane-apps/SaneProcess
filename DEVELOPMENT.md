@@ -37,7 +37,7 @@ Codex now documents an experimental `features.codex_hooks` flag, but it is still
 
 Stable cross-client guardrails already enforced in shared runtime paths:
 
-- `~/SaneApps/infra/scripts/check-inbox.sh` (`require_email_send_approval`)
+- `~/SaneApps/infra/scripts/check-inbox.sh` (`present-draft` / `approve --user-approval` / `require_email_send_approval`)
 - `scripts/hooks/sane_curl_guard.sh` via `~/.local/bin/curl` wrapper
 
 Run `ruby scripts/SaneMaster.rb system_check` to verify both Claude hooks and Codex/shared guard wiring.
@@ -126,6 +126,8 @@ Use the documented standard path first, then use `tool_discovery` if you still t
 | Find the right tool first | `ruby scripts/SaneMaster.rb tool_discovery --query "..."` | Random searches, guessing, or inventing a new script first |
 | Build and test app code | `ruby scripts/SaneMaster.rb verify [--ui]` | Raw `xcodebuild` unless the tool itself is what you are fixing |
 | Launch and smoke-test an app | `ruby scripts/SaneMaster.rb test_mode --release --no-logs` | Manual local launches and stale DerivedData builds |
+| Mini live window screenshots | `scripts/mini/capture-mini-screenshot.sh --app "<App>" --window-name "<Window>" --mode temp` | Plain `ssh` + `screencapture` guessing from a non-GUI shell |
+| Mini Safari tab control | `scripts/mini/mini-safari.sh open-read "<url>"` | One-off raw `ssh mini osascript` snippets for Safari evidence, listing links, or portal checks |
 | App Store review readiness | `ruby scripts/SaneMaster.rb appstore_preflight` | Clicking around ASC first and guessing what Apple meant |
 | App Review evidence collection | `ruby scripts/appstore_submit.rb --app-id <id> --platform macos|ios --version X.Y.Z --project-root <repo> --fetch-review-package` | Reading only the rejection text and ignoring Apple’s screenshot/video/PDF evidence |
 | Direct release readiness | `ruby scripts/SaneMaster.rb release_preflight` | Manual release spot checks |
@@ -258,6 +260,52 @@ For Mini-first apps, the release signal now has one canonical path:
 2. Project QA writes `outputs/qa_status.json` when available.
 3. Shared preflight also writes `outputs/release_preflight_status.json`.
 4. `SaneMaster.rb` syncs `outputs/` back from Mini to the local workspace.
+
+## Mini Visual Verification SOP
+
+For SaneApps desktop UI, use this verification ladder on the Mini:
+
+1. **Launch the signed/release-like app on the Mini**
+
+```bash
+./scripts/SaneMaster.rb test_mode --release --no-logs
+```
+
+2. **Live screenshot path (preferred when Screen Recording is granted)**
+
+Run this from the controlling machine with Codex installed. The capture itself still happens on the Mini GUI session.
+
+```bash
+/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh \
+  --list-windows --app "SaneClip"
+
+/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh \
+  --app "SaneClip" --window-name "Settings" --mode temp
+```
+
+- This runs inside the Mini's logged-in GUI Terminal session through `mini-gui-run.sh`.
+- First use may trigger a one-time Screen Recording permission request for Terminal on the Mini.
+- Do **not** trust plain `ssh ... screencapture` as the primary path for live app windows.
+
+3. **Deterministic render fallback for SwiftUI settings/surfaces**
+
+Use this when live capture is blocked by permissions or when you need a stable artifact for review.
+
+```bash
+echo /tmp/app-renders > /tmp/saneclip_screenshot_dir.txt
+./scripts/SaneMaster.rb verify
+ls -1 /tmp/app-renders
+```
+
+- SaneClip already writes `settings-*.png` renders from tests when the hint file is present.
+- Use these renders to verify layout, copy, spacing, and destructive-action affordances.
+
+4. **iOS simulator screenshots**
+
+When the issue is iPhone/iPad-only, use the app's simulator screenshot script or the iOS screenshot lane instead of desktop capture.
+
+Hard rule:
+- For any release-critical UI claim, keep at least one saved visual artifact: live Mini screenshot when available, otherwise a deterministic render PNG.
 5. `ruby scripts/validation_report.rb` reads the newest available status snapshot and blocks false `READY TO SHIP` results.
 
 Canonical runtime cleanup is now a first-class step:
@@ -556,6 +604,12 @@ Additional lessons now enforced in the shared flow:
 - `scripts/appstore_submit.rb --fetch-review-package` is the canonical evidence collector. It saves the reviewer message, page text, and any downloaded App Review attachments into an evidence folder instead of relying on manual browser memory.
 - Safari evidence helpers must prove they are on the exact target ASC page before trusting DOM text. If the tab never lands on the requested version/review URL, treat the probe as invalid instead of reusing stale page content from another platform.
 - Before hunting for new browser automation tools, use Mini Safari itself as the control surface. AppleScript plus Safari `do JavaScript` is the default path for inspecting reviewer evidence, download links, and Apple Developer profile pages. Always prove the exact front-tab URL first.
+- For repeat Mini Safari work, use `scripts/mini/mini-safari.sh` instead of rebuilding AppleScript by hand. Minimum useful subcommands:
+  - `list-tabs`
+  - `open-read "<url>"`
+  - `read <tab_index>`
+  - `js <tab_index> "<javascript>"`
+- Use `mini-safari.sh` for directory/listing activation links too, not just App Store pages. Capture the final URL, title, and body snippet so status can distinguish `live`, `needs activation`, `queued`, and `upsell only`.
 - App Store Connect and `developer.apple.com` can have separate login state. Check both before concluding a profile or review page is inaccessible.
 - When a macOS App Store profile needs repair, inspect the certificate shown on the Apple Developer profile edit page and confirm it is tied to `Apple Distribution`, not a stale `3rd Party Mac Developer Application` or `Mac App Distribution` cert.
 - `appstore_submit.rb --skip-upload` fails fast if the requested existing build is not actually visible in ASC for that platform. It now prints the visible build candidates instead of polling for 45 minutes on a bad build number.

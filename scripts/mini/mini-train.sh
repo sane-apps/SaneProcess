@@ -19,12 +19,35 @@
 
 set -uo pipefail
 
+expand_home_path() {
+  case "$1" in
+    "")
+      printf '%s' ""
+      ;;
+    "~")
+      printf '%s' "$HOME"
+      ;;
+    "~/"*)
+      printf '%s' "$HOME/${1#~/}"
+      ;;
+    '$HOME')
+      printf '%s' "$HOME"
+      ;;
+    '$HOME/'*)
+      printf '%s' "$HOME/${1#\$HOME/}"
+      ;;
+    *)
+      printf '%s' "$1"
+      ;;
+  esac
+}
+
 DEFAULT_SANE_ROOT="$HOME/SaneApps"
 if [ -d "$HOME/SaneApps-automation/apps" ]; then
   DEFAULT_SANE_ROOT="$HOME/SaneApps-automation"
 fi
-SANE_ROOT="${SANE_ROOT:-$DEFAULT_SANE_ROOT}"
-SANE_OUTPUT_DIR="${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}"
+SANE_ROOT="$(expand_home_path "${SANE_ROOT:-$DEFAULT_SANE_ROOT}")"
+SANE_OUTPUT_DIR="$(expand_home_path "${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}")"
 
 # App selection (default: SaneAI)
 APP_NAME="SaneAI"
@@ -100,6 +123,7 @@ READINESS_TARGET_APP="${READINESS_TARGET_APP:-}"
 EVAL_SUITE_WEIGHTS="${EVAL_SUITE_WEIGHTS:-commentary_workflow=4,workflow_packs=2,workflow_guardrails=2,core=1}"
 EVAL_MAX_CASES="${EVAL_MAX_CASES:-0}"
 EVAL_MAX_TOKENS="${EVAL_MAX_TOKENS:-128}"
+EVAL_MAX_TOKENS_CAP="${EVAL_MAX_TOKENS_CAP:-0}"
 EVAL_SUITES="${EVAL_SUITES:-}"
 PRIMARY_WORKFLOW_SUITE="${PRIMARY_WORKFLOW_SUITE:-commentary_workflow}"
 PRIMARY_WORKFLOW_MIN_PCT="${PRIMARY_WORKFLOW_MIN_PCT:-50}"
@@ -107,6 +131,33 @@ WORKFLOW_PASS_SCORE="${WORKFLOW_PASS_SCORE:-75}"
 PRODUCTION_PROMOTE_SCORE="${PRODUCTION_PROMOTE_SCORE:-90}"
 if [ "$CHALLENGER_MODE" = true ]; then
   MODE_LABEL="challenger"
+fi
+
+detect_eval_token_cap() {
+  local raw_memsize mem_gb
+
+  if [ "$EVAL_MAX_TOKENS_CAP" -gt 0 ]; then
+    return
+  fi
+
+  raw_memsize=$(sysctl -n hw.memsize 2>/dev/null || echo "0")
+  if ! [[ "$raw_memsize" =~ ^[0-9]+$ ]] || [ "$raw_memsize" -le 0 ]; then
+    EVAL_MAX_TOKENS_CAP=192
+    return
+  fi
+
+  mem_gb=$((raw_memsize / 1024 / 1024 / 1024))
+  if [ "$mem_gb" -le 8 ]; then
+    EVAL_MAX_TOKENS_CAP=192
+  else
+    EVAL_MAX_TOKENS_CAP=256
+  fi
+}
+
+detect_eval_token_cap
+
+if [ "$EVAL_MAX_TOKENS" -gt "$EVAL_MAX_TOKENS_CAP" ]; then
+  EVAL_MAX_TOKENS="$EVAL_MAX_TOKENS_CAP"
 fi
 
 # Runtime safety guards for 8GB Mac mini
@@ -121,6 +172,8 @@ TRAIN_ALERT_COMMAND="${TRAIN_ALERT_COMMAND:-}"
 TRAIN_SWEEP_ITERS="${TRAIN_SWEEP_ITERS:-}"
 TRAIN_EXAMPLE_DROP_MAX_PCT="${TRAIN_EXAMPLE_DROP_MAX_PCT:-20}"
 VALID_EXAMPLE_DROP_MAX_PCT="${VALID_EXAMPLE_DROP_MAX_PCT:-20}"
+PARTIAL_CHECKPOINT_EVAL="${PARTIAL_CHECKPOINT_EVAL:-true}"
+CHECKPOINT_FILES_TO_KEEP="${CHECKPOINT_FILES_TO_KEEP:-1}"
 
 parse_hard_stop_time() {
   local raw_time="${TRAIN_HARD_STOP_TIME:-}"
@@ -146,7 +199,7 @@ parse_hard_stop_time() {
 parse_hard_stop_time
 
 if [ "$CHALLENGER_MODE" = true ]; then
-  NEXT_RUN_HINT="Daily alternating challenger agent at 1:00 AM, except Sunday when SaneAI owns the window."
+  NEXT_RUN_HINT="Daily challenger agent at 1:00 AM, except Sunday when SaneAI owns the window."
 else
   NEXT_RUN_HINT="Weekly SaneAI agent on Sunday at 1:00 AM."
 fi
@@ -370,6 +423,81 @@ training_log_has_invalid_metrics() {
   fi
 
   return 1
+}
+
+latest_saved_checkpoint_step() {
+  local adapter_dir="$1"
+  local checkpoint_path checkpoint_step latest_step
+
+  latest_step=0
+  for checkpoint_path in "$adapter_dir"/*_adapters.safetensors; do
+    [ -f "$checkpoint_path" ] || continue
+    checkpoint_step=$(basename "$checkpoint_path" | sed 's/_adapters\.safetensors$//' | sed 's/^0*//')
+    if [ -z "$checkpoint_step" ]; then
+      checkpoint_step=0
+    fi
+    if [[ "$checkpoint_step" =~ ^[0-9]+$ ]] && [ "$checkpoint_step" -gt "$latest_step" ]; then
+      latest_step=$checkpoint_step
+    fi
+  done
+
+  printf '%s\n' "$latest_step"
+}
+
+prune_checkpoint_files() {
+  local adapter_dir="$1"
+  local keep_latest="${2:-1}"
+  local report_file="${3:-}"
+  local checkpoint_list keep_list checkpoint_path
+  local total_checkpoints removed_checkpoints removed_mb checkpoint_mb
+
+  [ -d "$adapter_dir" ] || return 0
+
+  if ! [[ "$keep_latest" =~ ^[0-9]+$ ]] || [ "$keep_latest" -lt 1 ]; then
+    keep_latest=1
+  fi
+
+  checkpoint_list=$(mktemp)
+  keep_list=$(mktemp)
+  removed_checkpoints=0
+  removed_mb=0
+
+  for checkpoint_path in "$adapter_dir"/*_adapters.safetensors; do
+    [ -f "$checkpoint_path" ] || continue
+    printf '%s\n' "$checkpoint_path" >> "$checkpoint_list"
+  done
+
+  if [ ! -s "$checkpoint_list" ]; then
+    rm -f "$checkpoint_list" "$keep_list"
+    return 0
+  fi
+
+  sort "$checkpoint_list" -o "$checkpoint_list"
+  total_checkpoints=$(wc -l < "$checkpoint_list" | tr -d ' ')
+  if [ "$total_checkpoints" -le "$keep_latest" ]; then
+    rm -f "$checkpoint_list" "$keep_list"
+    return 0
+  fi
+
+  tail -n "$keep_latest" "$checkpoint_list" > "$keep_list"
+
+  while IFS= read -r checkpoint_path; do
+    [ -n "$checkpoint_path" ] || continue
+    if grep -Fxq "$checkpoint_path" "$keep_list"; then
+      continue
+    fi
+    checkpoint_mb=$(du -sm "$checkpoint_path" 2>/dev/null | awk '{print $1}')
+    [ -n "$checkpoint_mb" ] || checkpoint_mb=0
+    rm -f "$checkpoint_path"
+    removed_checkpoints=$((removed_checkpoints + 1))
+    removed_mb=$((removed_mb + checkpoint_mb))
+  done < "$checkpoint_list"
+
+  rm -f "$checkpoint_list" "$keep_list"
+
+  if [ "$removed_checkpoints" -gt 0 ] && [ -n "$report_file" ] && [ -f "$report_file" ]; then
+    echo "- Pruned intermediate checkpoints: ${removed_checkpoints} file(s), ${removed_mb}MB freed, kept latest ${keep_latest}" >> "$report_file"
+  fi
 }
 
 build_sweep_iters() {
@@ -694,6 +822,10 @@ build_eval_command() {
     EVAL_CMD=("${EVAL_CMD[@]}" --max-tokens "$EVAL_MAX_TOKENS")
   fi
 
+  if [ "$EVAL_MAX_TOKENS_CAP" -gt 0 ]; then
+    EVAL_CMD=("${EVAL_CMD[@]}" --max-tokens-cap "$EVAL_MAX_TOKENS_CAP")
+  fi
+
   if [ -n "$PRIMARY_WORKFLOW_SUITE" ]; then
     EVAL_CMD=("${EVAL_CMD[@]}"
       --primary-suite "$PRIMARY_WORKFLOW_SUITE"
@@ -982,9 +1114,9 @@ echo "" >> "$REPORT"
 echo "## Training Sweeps" >> "$REPORT"
 echo "" >> "$REPORT"
 
-# Sweep iterations: 1112 examples, so ~1 epoch=1112 iters at batch_size=1
-# Need at least 1-2 full epochs for the model to learn the task
-# Challengers only do 1000 iters to leave time budget for other models
+# Sweep defaults predate the workflow-expanded corpus. The Mini now relies on
+# earlier checkpoints plus interrupted-checkpoint eval so nightly runs still
+# produce usable signal even when the hard stop hits before a full sweep.
 SWEEP_ITERS=()
 build_sweep_iters
 RESULTS_FILE=$(mktemp)
@@ -1160,6 +1292,85 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
       tail -n "$TRAIN_FAILURE_LOG_LINES" "$ADAPTER_DIR/train.log" >> "$REPORT"
       echo '```' >> "$REPORT"
     fi
+
+    if [ "$PARTIAL_CHECKPOINT_EVAL" = "true" ] && [ -f "$ADAPTER_DIR/adapters.safetensors" ]; then
+      CHECKPOINT_STEP=$(latest_saved_checkpoint_step "$ADAPTER_DIR")
+      if [ "$CHECKPOINT_STEP" -gt 0 ]; then
+        RESULT_DISPLAY_LABEL="checkpoint ${CHECKPOINT_STEP}/${ITERS}"
+      else
+        RESULT_DISPLAY_LABEL="checkpoint latest/${ITERS}"
+      fi
+
+      echo "" >> "$REPORT"
+      echo "**Interrupted checkpoint evaluation:** $RESULT_DISPLAY_LABEL" >> "$REPORT"
+      PARTIAL_EVAL_LOG="$ADAPTER_DIR/eval_partial.log"
+      rm -f "$PARTIAL_EVAL_LOG"
+
+      if [ -f "$EVAL_SCRIPT" ]; then
+        build_eval_command "$BASE_MODEL" "$ADAPTER_DIR"
+        VALIDATION_OUTPUT=$("${EVAL_CMD[@]}" 2>&1)
+      else
+        VALIDATION_OUTPUT=""
+      fi
+      VALIDATE_EXIT=$?
+      printf '%s\n' "$VALIDATION_OUTPUT" > "$PARTIAL_EVAL_LOG"
+
+      if [ $VALIDATE_EXIT -ne 0 ] || [ -z "$VALIDATION_OUTPUT" ]; then
+        echo "  - Interrupted checkpoint eval failed (exit $VALIDATE_EXIT)" >> "$REPORT"
+        if [ -f "$PARTIAL_EVAL_LOG" ]; then
+          echo "  - Eval log: $PARTIAL_EVAL_LOG" >> "$REPORT"
+          echo '```' >> "$REPORT"
+          tail -n "$TRAIN_FAILURE_LOG_LINES" "$PARTIAL_EVAL_LOG" >> "$REPORT"
+          echo '```' >> "$REPORT"
+        fi
+      else
+        echo "$VALIDATION_OUTPUT" | grep -vE "^(SCORE:|RAW_SCORE:|WEIGHTED_SCORE:|PRIMARY_SUITE:|SUITE:)" >> "$REPORT"
+
+        SUITE_LINES=$(echo "$VALIDATION_OUTPUT" | grep "^SUITE:" || true)
+        if [ -n "$SUITE_LINES" ]; then
+          echo "" >> "$REPORT"
+          echo "  Suite scores:" >> "$REPORT"
+          while IFS=: read -r _ SUITE_NAME SUITE_PASS SUITE_TOTAL SUITE_PCT; do
+            DISPLAY_SUITE=$(echo "$SUITE_NAME" | tr '_' ' ')
+            echo "  - $DISPLAY_SUITE: $SUITE_PASS/$SUITE_TOTAL ($SUITE_PCT%)" >> "$REPORT"
+          done <<EOF
+$SUITE_LINES
+EOF
+        fi
+
+        parse_eval_summary "$VALIDATION_OUTPUT"
+        PASS="$WEIGHTED_PASS"
+        TOTAL="$WEIGHTED_TOTAL"
+        ACCURACY="$WEIGHTED_ACCURACY"
+        RAW_SCORE_VALUE="$RAW_ACCURACY"
+        PRIMARY_SCORE_VALUE="$PRIMARY_PCT"
+        if [ "$PRIMARY_STATUS" = "PASS" ] && [ "$ACCURACY" -ge "$WORKFLOW_PASS_SCORE" ]; then
+          PARTIAL_VALIDATION_STATUS="PARTIAL PASS"
+        else
+          PARTIAL_VALIDATION_STATUS="PARTIAL NEEDS WORK"
+        fi
+
+        echo "" >> "$REPORT"
+        echo "**Workflow gate:** $PRIMARY_STATUS ($PRIMARY_SUITE_NAME $PRIMARY_PASS/$PRIMARY_TOTAL, $PRIMARY_PCT%, threshold $PRIMARY_THRESHOLD%)" >> "$REPORT"
+        echo "**Workflow-first score:** $PASS/$TOTAL ($ACCURACY%)" >> "$REPORT"
+        echo "**Raw score:** $RAW_PASS/$RAW_TOTAL ($RAW_SCORE_VALUE%)" >> "$REPORT"
+        echo "**Result:** $PARTIAL_VALIDATION_STATUS" >> "$REPORT"
+
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+          "$RESULT_DISPLAY_LABEL" \
+          "$ACCURACY" \
+          "$RAW_SCORE_VALUE" \
+          "$PRIMARY_SCORE_VALUE" \
+          "$PRIMARY_STATUS" \
+          "$TRAIN_TIME" \
+          "ok" \
+          "$ADAPTER_DIR" \
+          "partial" >> "$RESULTS_FILE"
+
+        LAST_FAILURE_SUMMARY="${LAST_FAILURE_SUMMARY}; ${RESULT_DISPLAY_LABEL} reached ${ACCURACY}% workflow-first"
+      fi
+    fi
+    prune_checkpoint_files "$ADAPTER_DIR" "$CHECKPOINT_FILES_TO_KEEP" "$REPORT"
     echo "" >> "$REPORT"
     continue
   fi
@@ -1242,7 +1453,17 @@ EOF
   echo "**Result:** $VALIDATION_STATUS" >> "$REPORT"
   echo "" >> "$REPORT"
 
-  echo "$ITERS:$ACCURACY:$RAW_ACCURACY:$PRIMARY_PCT:$PRIMARY_STATUS:$TRAIN_TIME:$VALIDATION_ROW_STATUS" >> "$RESULTS_FILE"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$ITERS" \
+    "$ACCURACY" \
+    "$RAW_ACCURACY" \
+    "$PRIMARY_PCT" \
+    "$PRIMARY_STATUS" \
+    "$TRAIN_TIME" \
+    "$VALIDATION_ROW_STATUS" \
+    "$ADAPTER_DIR" \
+    "complete" >> "$RESULTS_FILE"
+  prune_checkpoint_files "$ADAPTER_DIR" "$CHECKPOINT_FILES_TO_KEEP" "$REPORT"
 done
 
 # =============================================================================
@@ -1256,6 +1477,8 @@ echo "| Iterations | Workflow score | Raw score | Primary suite | Time (min) | S
 echo "|-----------|----------------|-----------|---------------|------------|--------|" >> "$REPORT"
 
 BEST_ITERS=""
+BEST_ADAPTER_DIR=""
+BEST_COMPLETION_STATE=""
 BEST_ACCURACY=0
 BEST_RAW_ACCURACY=0
 BEST_PRIMARY_PCT=0
@@ -1263,9 +1486,15 @@ BEST_PRIMARY_STATUS="FAIL"
 BEST_TIME_MIN=""
 SCRIPT_EXIT=0
 
-while IFS=: read -r iters acc raw_acc primary_pct primary_status time validation_row_status; do
+while IFS=$'\t' read -r iters acc raw_acc primary_pct primary_status time validation_row_status adapter_dir completion_state; do
   if [ "$validation_row_status" != "ok" ]; then
     status="VALIDATION FAIL"
+  elif [ "$completion_state" = "partial" ] && [ "$primary_status" = "PASS" ] && [ "$acc" -ge "$WORKFLOW_PASS_SCORE" ]; then
+    status="PARTIAL PASS"
+  elif [ "$completion_state" = "partial" ] && [ "$primary_status" = "PASS" ]; then
+    status="PARTIAL LOW SCORE"
+  elif [ "$completion_state" = "partial" ]; then
+    status="PARTIAL WORKFLOW GATE FAIL"
   elif [ "$primary_status" = "PASS" ] && [ "$acc" -ge "$WORKFLOW_PASS_SCORE" ]; then
     status="PASS"
   elif [ "$primary_status" = "PASS" ]; then
@@ -1284,6 +1513,8 @@ while IFS=: read -r iters acc raw_acc primary_pct primary_status time validation
     BEST_PRIMARY_PCT=$primary_pct
     BEST_PRIMARY_STATUS=$primary_status
     BEST_ITERS=$iters
+    BEST_ADAPTER_DIR="$adapter_dir"
+    BEST_COMPLETION_STATE="$completion_state"
     BEST_TIME_MIN=$time
   fi
 done < "$RESULTS_FILE"
@@ -1292,7 +1523,12 @@ rm -f "$RESULTS_FILE"
 echo "" >> "$REPORT"
 
 if [ -n "$BEST_ITERS" ]; then
-  echo "**Best adapter: sweep_${BEST_ITERS}_${DATE} ($BEST_ACCURACY% workflow-first, $BEST_RAW_ACCURACY% raw)**" >> "$REPORT"
+  if [ "$BEST_COMPLETION_STATE" = "partial" ]; then
+    echo "**Best evaluated checkpoint: $(basename "$BEST_ADAPTER_DIR") ($BEST_ITERS, $BEST_ACCURACY% workflow-first, $BEST_RAW_ACCURACY% raw)**" >> "$REPORT"
+    echo "**Checkpoint state:** Interrupted run. Use as directional signal only until a full sweep completes." >> "$REPORT"
+  else
+    echo "**Best adapter: $(basename "$BEST_ADAPTER_DIR") ($BEST_ACCURACY% workflow-first, $BEST_RAW_ACCURACY% raw)**" >> "$REPORT"
+  fi
   echo "**Workflow gate:** $BEST_PRIMARY_STATUS (${PRIMARY_WORKFLOW_SUITE} ${BEST_PRIMARY_PCT}%, threshold ${PRIMARY_WORKFLOW_MIN_PCT}%)" >> "$REPORT"
 
   # Auto-promote if it clears the workflow gate and beats the promotion target.
@@ -1303,23 +1539,35 @@ if [ -n "$BEST_ITERS" ]; then
       echo "**CHALLENGER RESULT: $BEST_ACCURACY% — workflow gate failed.**" >> "$REPORT"
       echo "Model: $BASE_MODEL" >> "$REPORT"
       echo "Primary suite: ${PRIMARY_WORKFLOW_SUITE} ${BEST_PRIMARY_PCT}% (threshold ${PRIMARY_WORKFLOW_MIN_PCT}%)" >> "$REPORT"
+      if [ "$BEST_COMPLETION_STATE" != "complete" ]; then
+        echo "Checkpoint source: interrupted run ($BEST_ITERS)." >> "$REPORT"
+      fi
     elif [ "$BEST_ACCURACY" -ge "$PRODUCTION_PROMOTE_SCORE" ]; then
       echo "**CHALLENGER RESULT: $BEST_ACCURACY% — BEATS WORKFLOW BASELINE!**" >> "$REPORT"
       echo "Model: $BASE_MODEL" >> "$REPORT"
-      echo "Adapter: sweep_${BEST_ITERS}_${DATE}" >> "$REPORT"
+      echo "Adapter: $(basename "$BEST_ADAPTER_DIR")" >> "$REPORT"
+      if [ "$BEST_COMPLETION_STATE" != "complete" ]; then
+        echo "Checkpoint source: interrupted run ($BEST_ITERS). Treat this as directional until a full sweep finishes." >> "$REPORT"
+      fi
       echo "Action required: Human review needed to promote to production." >> "$REPORT"
     else
       echo "**CHALLENGER RESULT: $BEST_ACCURACY% — below workflow baseline.**" >> "$REPORT"
       echo "Model: $BASE_MODEL" >> "$REPORT"
       echo "Primary suite: ${PRIMARY_WORKFLOW_SUITE} ${BEST_PRIMARY_PCT}% (threshold ${PRIMARY_WORKFLOW_MIN_PCT}%)" >> "$REPORT"
+      if [ "$BEST_COMPLETION_STATE" != "complete" ]; then
+        echo "Checkpoint source: interrupted run ($BEST_ITERS)." >> "$REPORT"
+      fi
     fi
+  elif [ "$BEST_COMPLETION_STATE" != "complete" ]; then
+    echo "" >> "$REPORT"
+    echo "**Auto-promotion skipped:** interrupted checkpoint only. Require a fully completed sweep before production promotion." >> "$REPORT"
   elif [ "$BEST_PRIMARY_STATUS" = "PASS" ] && [ "$BEST_ACCURACY" -ge "$PRODUCTION_PROMOTE_SCORE" ]; then
     PROD_DIR="$MODELS_DIR/production_adapter"
     mkdir -p "$PROD_DIR"
-    cp -r "$MODELS_DIR/sweeps/sweep_${BEST_ITERS}_${DATE}/"* "$PROD_DIR/"
+    cp -r "$BEST_ADAPTER_DIR/"* "$PROD_DIR/"
     echo "" >> "$REPORT"
     echo "**Auto-promoted to production!** Workflow-first score $BEST_ACCURACY% cleared the ${PRODUCTION_PROMOTE_SCORE}% promotion target." >> "$REPORT"
-    echo "Adapter: sweep_${BEST_ITERS}_${DATE} -> production_adapter/" >> "$REPORT"
+    echo "Adapter: $(basename "$BEST_ADAPTER_DIR") -> production_adapter/" >> "$REPORT"
   fi
 else
   if [ "$REQUESTED_SWEEPS" -gt 0 ] && [ "$SKIPPED_EXISTING_SWEEPS" -eq "$REQUESTED_SWEEPS" ]; then
@@ -1379,6 +1627,9 @@ if [ -n "$READINESS_TARGET_APP" ]; then
   if [ -z "$BEST_ITERS" ]; then
     READINESS_STATUS="source_failed"
     echo "- No readiness assessment because this run produced no successful adapter." >> "$REPORT"
+  elif [ "$BEST_COMPLETION_STATE" != "complete" ] || [ "$SCRIPT_EXIT" -ne 0 ]; then
+    READINESS_STATUS="source_incomplete"
+    echo "- No readiness assessment because the best evaluated result came from an interrupted run." >> "$REPORT"
   else
     TARGET_BASELINE_MODE=""
     TARGET_PRODUCTION_LINE=$(find_latest_target_baseline_metric "$READINESS_TARGET_APP" 2>/dev/null || true)

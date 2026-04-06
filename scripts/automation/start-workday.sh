@@ -39,11 +39,12 @@ done
 
 ROOT="$HOME/SaneApps/infra/SaneProcess"
 SYNC_SCRIPT="$ROOT/scripts/automation/sync-codex-mini.sh"
-GIT_SYNC_SCRIPT="$ROOT/scripts/automation/git-sync-safe.sh"
+RECONCILE_SCRIPT="$ROOT/scripts/automation/reconcile-air-mini.sh"
 OUT_DIR="$ROOT/outputs"
 LOCAL_INBOX="$HOME/SaneApps/infra/scripts/check-inbox.sh"
 
 [[ -x "$SYNC_SCRIPT" ]] || { echo "ERROR: Missing sync script: $SYNC_SCRIPT" >&2; exit 1; }
+[[ -x "$RECONCILE_SCRIPT" ]] || { echo "ERROR: Missing reconcile script: $RECONCILE_SCRIPT" >&2; exit 1; }
 mkdir -p "$OUT_DIR"
 
 echo "== SaneOps Workday Start =="
@@ -51,11 +52,9 @@ echo "1) Syncing automation config to Mini..."
 bash "$SYNC_SCRIPT" "$MINI_HOST"
 
 echo ""
-echo "2) Air↔Mini git drift check (advisory)..."
-if [[ -x "$GIT_SYNC_SCRIPT" ]]; then
-  "$GIT_SYNC_SCRIPT" --peer "$MINI_HOST" || true
-else
-  echo "git-sync-safe.sh not found at $GIT_SYNC_SCRIPT"
+echo "2) Air↔Mini repo reconcile..."
+if ! "$RECONCILE_SCRIPT" "$MINI_HOST" --no-sync-control-plane; then
+  echo "WARNING: Air↔Mini reconcile reported issues"
 fi
 
 echo ""

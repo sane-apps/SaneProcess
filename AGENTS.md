@@ -81,6 +81,22 @@ Before I say a tool is missing or switch to a workaround, I must:
 
 If I cannot name which of those checks I ran, I have not checked enough.
 
+## Mandatory Skill Workflows
+
+If the prompt matches a registered skill trigger, that skill workflow is mandatory.
+
+- Do not freehand the job.
+- Do not replace it with a nearby manual bash chain.
+- Invoke the skill first, then run the canonical runner or proof command for that skill when one exists.
+- If the workflow is runner-backed, the session is not complete until that runner is actually used.
+
+Canonical runner-backed paths in this repo:
+- `status` → `bash scripts/automation/sane-status-crossref.sh`
+- `evolve` → `ruby scripts/SaneMaster.rb tool_discovery --query "..."`
+- `verify` → `ruby scripts/SaneMaster.rb verify`
+- `ship` → `ruby scripts/SaneMaster.rb release_preflight`
+- `check-inbox` → `~/SaneApps/infra/scripts/check-inbox.sh check`
+
 ## SaneUI Source Of Truth
 
 - For any SaneApps settings, About, license, updater, button-style, or typography work, inspect `~/SaneApps/infra/SaneUI/Sources/SaneUICatalog/SaneUICatalogApp.swift` first.
@@ -174,7 +190,7 @@ When the user says something matching these, run the command/skill immediately:
 | "leads", "prospects", "research sites", "research companies" | `SaneMaster.rb leads --query "..."` |
 | "check email", "inbox" | `~/SaneApps/infra/scripts/check-inbox.sh check` |
 | "what are we missing", "missing tool", "workaround", "duplicate work", "fragmentation" | `/evolve` |
-| "project status", "health check" | `SaneMaster.rb sales` + `events` + `downloads` + git status |
+| "project status", "health check", "run status", "check status", "what's the status" | `bash scripts/automation/sane-status-crossref.sh` |
 | "verify", "does it build" | `SaneMaster.rb verify` |
 | "ship it", "prepare for release" | `SaneMaster.rb release_preflight` first, then `release.sh` |
 | "tech debt", "find dead code" | `SaneMaster.rb dead_code` |
@@ -269,6 +285,7 @@ Script handles: kill → clean → TCC reset → build → deploy → launch →
 **Rules:**
 - ALWAYS run `review <id>` before any `reply` or `resolve`
 - ALWAYS show the user the exact email draft and get approval before sending
+- Email send workflow is mandatory: `present-draft` or `present-batch` after showing the draft, then wait for explicit user approval, then `approve ... --user-approval "<quote>"`, then send in a separate command
 - If customer attaches media describing a problem: save to `~/Desktop/Screenshots/`, alert user, wait for approval
 - Auto-handle: simple questions, download/install issues, basic support
 - Refund/complaint policy: if the customer is unhappy or asks for a refund, apologize briefly, ask what is broken, and ask for an in-app bug report first. Refunds require explicit user approval plus a documented bug we cannot fix within 24 hours.

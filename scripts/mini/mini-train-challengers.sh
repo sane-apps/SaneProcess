@@ -11,12 +11,49 @@
 
 set -uo pipefail
 
+expand_home_path() {
+  case "$1" in
+    "")
+      printf '%s' ""
+      ;;
+    "~")
+      printf '%s' "$HOME"
+      ;;
+    "~/"*)
+      printf '%s' "$HOME/${1#~/}"
+      ;;
+    '$HOME')
+      printf '%s' "$HOME"
+      ;;
+    '$HOME/'*)
+      printf '%s' "$HOME/${1#\$HOME/}"
+      ;;
+    *)
+      printf '%s' "$1"
+      ;;
+  esac
+}
+
+run_saneai_merge() {
+  local merge_script="$1"
+  local merge_home merge_exit
+
+  merge_home=$(mktemp -d -t saneai-merge-home)
+  ln -s "$SANE_ROOT" "$merge_home/SaneApps"
+
+  HOME="$merge_home" "$HOME/mlx-env/bin/python3" "$merge_script"
+  merge_exit=$?
+
+  rm -rf "$merge_home"
+  return "$merge_exit"
+}
+
 DEFAULT_SANE_ROOT="$HOME/SaneApps"
 if [ -d "$HOME/SaneApps-automation/apps" ]; then
   DEFAULT_SANE_ROOT="$HOME/SaneApps-automation"
 fi
-SANE_ROOT="${SANE_ROOT:-$DEFAULT_SANE_ROOT}"
-SANE_OUTPUT_DIR="${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}"
+SANE_ROOT="$(expand_home_path "${SANE_ROOT:-$DEFAULT_SANE_ROOT}")"
+SANE_OUTPUT_DIR="$(expand_home_path "${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}")"
 
 APP_NAME="${1:-SaneAI}"
 APP_DIR="$SANE_ROOT/apps/$APP_NAME"
@@ -24,20 +61,31 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT_DIR="$SANE_OUTPUT_DIR"
 DATE=$(date +"%Y-%m-%d")
 COMPARISON_REPORT="$OUTPUT_DIR/challenger_comparison_${APP_NAME}_${DATE}.md"
+mkdir -p "$OUTPUT_DIR"
 
 # Inherit time budget from environment (set by mini-train-all.sh)
-# Default daily bakeoff mode: one alternating challenger, unlimited runtime until 08:30.
+# Default daily lane stays on the last stable 8 GB candidate unless explicitly widened.
 CHALLENGER_BUDGET_MIN="${CHALLENGER_BUDGET_MIN:-0}"
 TRAIN_HARD_STOP_TIME="${TRAIN_HARD_STOP_TIME:-08:30}"
 CHALLENGER_SELECTION_MODE="${CHALLENGER_SELECTION_MODE:-all}"
 CHALLENGER_ROTATION_ANCHOR_DATE="${CHALLENGER_ROTATION_ANCHOR_DATE:-2026-03-07}"
-CHALLENGER_ROTATION_ORDER="${CHALLENGER_ROTATION_ORDER:-llama32-3b,smollm3-3b}"
+CHALLENGER_ROTATION_ORDER="${CHALLENGER_ROTATION_ORDER:-smollm3-3b}"
 CHALLENGER_ROTATION_DATE="${CHALLENGER_ROTATION_DATE:-$DATE}"
 CHALLENGER_SKIP_WEEKDAY="${CHALLENGER_SKIP_WEEKDAY:-}"
 CHALLENGER_START=$(date +%s)
 SELECTED_CONFIG_NAME=""
 
 CONFIGS_DIR="$APP_DIR/training_data/challenger_configs"
+MERGE_STATUS="not-needed"
+
+if [ "$APP_NAME" = "SaneAI" ] && [ -f "$APP_DIR/training_data/merge_training_data.py" ]; then
+  if run_saneai_merge "$APP_DIR/training_data/merge_training_data.py" >/dev/null 2>&1; then
+    MERGE_STATUS="refreshed"
+  else
+    MERGE_STATUS="failed"
+    echo "WARNING: SaneAI merge refresh failed. Continuing with existing unified dataset." >&2
+  fi
+fi
 
 if [ ! -d "$CONFIGS_DIR" ]; then
   echo "No challenger configs found at $CONFIGS_DIR" >&2
@@ -54,7 +102,7 @@ Generated at $(date +"%Y-%m-%d %H:%M:%S")
 
 - Skipped: weekday $(date +%w)
 - Reason: Sunday window reserved for weekly SaneAI training
-- Next scheduled lane: Daily alternating challenger agent at 1:00 AM on non-Sundays
+- Next scheduled lane: Daily challenger agent at 1:00 AM on non-Sundays
 EOF
   echo "Skipping challenger lane on weekday $(date +%w); weekly SaneAI owns this window." >&2
   exit 0
@@ -67,7 +115,7 @@ select_rotation_config_name() {
     "$CHALLENGER_ROTATION_ANCHOR_DATE" "$CHALLENGER_ROTATION_DATE" 2>/dev/null || echo "")
 
   if ! [[ "$days_since" =~ ^-?[0-9]+$ ]]; then
-    printf '%s' "llama32-3b"
+    printf '%s' "smollm3-3b"
     return
   fi
 
@@ -82,7 +130,7 @@ select_rotation_config_name() {
 
   order_count=$#
   if [ "$order_count" -eq 0 ]; then
-    printf '%s' "llama32-3b"
+    printf '%s' "smollm3-3b"
     return
   fi
 
@@ -157,6 +205,12 @@ Budget: $([ "$CHALLENGER_BUDGET_MIN" -gt 0 ] && printf '%s minutes' "$CHALLENGER
 ## Production Baseline
 EOF
 
+if [ "$MERGE_STATUS" = "refreshed" ]; then
+  echo "- Unified SaneAI dataset: refreshed from current app corpora before challenger training" >> "$COMPARISON_REPORT"
+elif [ "$MERGE_STATUS" = "failed" ]; then
+  echo "- Unified SaneAI dataset: merge refresh failed, using the existing merged files" >> "$COMPARISON_REPORT"
+fi
+
 # Read production accuracy from today's training report (if available)
 PROD_REPORT="$OUTPUT_DIR/training_report_${APP_NAME}.md"
 if [ -f "$PROD_REPORT" ]; then
@@ -174,7 +228,8 @@ echo "" >> "$COMPARISON_REPORT"
 echo "## Challenger Results" >> "$COMPARISON_REPORT"
 echo "" >> "$COMPARISON_REPORT"
 if [ "$CHALLENGER_SELECTION_MODE" = "alternate" ]; then
-  echo "- **Selection mode:** alternating nightly bakeoff" >> "$COMPARISON_REPORT"
+  echo "- **Selection mode:** scheduled nightly challenger lane" >> "$COMPARISON_REPORT"
+  echo "- **Rotation order:** $CHALLENGER_ROTATION_ORDER" >> "$COMPARISON_REPORT"
   echo "- **Rotation anchor:** $CHALLENGER_ROTATION_ANCHOR_DATE" >> "$COMPARISON_REPORT"
   echo "- **Effective date:** $CHALLENGER_ROTATION_DATE" >> "$COMPARISON_REPORT"
   echo "- **Scheduled model tonight:** $SELECTED_CONFIG_NAME" >> "$COMPARISON_REPORT"
@@ -330,7 +385,7 @@ cat >> "$COMPARISON_REPORT" <<EOF
 
 **Challengers run:** $CHALLENGERS_RUN of $TOTAL_CHALLENGERS
 **Report:** $COMPARISON_REPORT
-**Next scheduled lane:** Daily alternating challenger agent at 1:00 AM, nightly builds at 8:45 AM
+**Next scheduled lane:** Daily challenger agent at 1:00 AM, nightly builds at 8:45 AM
 
 > Challengers NEVER auto-promote. If a model beats Llama, review the report and manually promote.
 EOF

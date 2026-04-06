@@ -2,24 +2,98 @@
 # Safe Git sync + optional peer drift check.
 # - Auto-pushes clean main/master commits.
 # - Auto-pulls fast-forward when clean.
-# - Never auto-commits. Never pushes dirty trees.
-# - Flags dirty repos so "clean" cannot be a false positive.
+# - Never auto-commits.
+# - Flags dirty repos by default so "clean" cannot be a false positive.
+# - Optional reconcile mode auto-stashes dirty canonical repos before syncing.
 # - Optional: compare local repo state against a peer machine.
 
 set -euo pipefail
 
 PEER_HOST=""
 STRICT_DIRTY=1
+RECONCILE_DIRTY=0
+ROOT="$HOME/SaneApps"
+OUT_DIR="$ROOT/infra/SaneProcess/outputs"
+LOG_FILE="$OUT_DIR/git_sync_safe.log"
+NOW_LOCAL=$(date '+%Y-%m-%d %H:%M:%S')
+RUN_TAG=$(date '+%Y%m%d-%H%M%S')
+HOST_TAG=$(hostname -s 2>/dev/null || hostname)
+HOST_TAG=$(printf '%s' "$HOST_TAG" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9._-')
+PEER_HOME=""
 
 usage() {
   cat <<'USAGE'
-Usage: git-sync-safe.sh [--peer <host>] [--allow-dirty]
+Usage: git-sync-safe.sh [--peer <host>] [--allow-dirty] [--reconcile-dirty]
 
 Options:
-  --peer <host>   Compare each repo against a peer machine over SSH.
-                  Marks mismatched branch/head/dirty state as an issue.
-  --allow-dirty   Do not fail when working trees are dirty.
+  --peer <host>         Compare each repo against a peer machine over SSH.
+                        Marks mismatched branch/head/dirty state as an issue.
+  --allow-dirty         Do not fail when working trees are dirty.
+  --reconcile-dirty     Auto-stash dirty canonical repos, then continue sync.
 USAGE
+}
+
+log() {
+  echo "$*" | tee -a "$LOG_FILE"
+}
+
+refresh_repo_state() {
+  local repo="$1"
+  local branch="$2"
+
+  dirty=$(git -C "$repo" status --porcelain | wc -l | tr -d ' ')
+  local_head=$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo "")
+  behind=$(git -C "$repo" rev-list --count "HEAD..origin/$branch" 2>/dev/null || echo "0")
+  ahead=$(git -C "$repo" rev-list --count "origin/$branch..HEAD" 2>/dev/null || echo "0")
+}
+
+is_syncable_repo_name() {
+  local name="$1"
+  case "$name" in
+    *-reconcile-preview-*|*-release-main|*-release-peer|*-release-run|*_codex_*|*-codex-*|*codex_sync*|*codex_test*|*-preview-*|*-worktree-*)
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+collect_repos() {
+  local repo_path repo_name
+
+  repos=()
+
+  for repo_path in "$ROOT/apps"/*; do
+    [[ -d "$repo_path/.git" ]] || continue
+    repo_name=$(basename "$repo_path")
+    if ! is_syncable_repo_name "$repo_name"; then
+      log "SKIP transient repo: $repo_path"
+      continue
+    fi
+    repos+=("$repo_path")
+  done
+
+  [[ -d "$ROOT/SaneAI/.git" ]] && repos+=("$ROOT/SaneAI")
+  [[ -d "$ROOT/infra/SaneProcess/.git" ]] && repos+=("$ROOT/infra/SaneProcess")
+}
+
+reconcile_dirty_repo() {
+  local repo="$1"
+  local label="auto-reconcile-$RUN_TAG-$HOST_TAG"
+  local output=""
+
+  if output=$(git -C "$repo" stash push -u -m "$label" 2>&1); then
+    log "  - Reconciled dirty tree via stash '$label'"
+    if [[ -n "$output" ]]; then
+      log "  - $output"
+    fi
+    return 0
+  fi
+
+  log "  - ERROR: auto-stash failed"
+  if [[ -n "$output" ]]; then
+    log "  - $output"
+  fi
+  return 1
 }
 
 while [[ $# -gt 0 ]]; do
@@ -31,6 +105,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-dirty)
       STRICT_DIRTY=0
+      shift
+      ;;
+    --reconcile-dirty)
+      RECONCILE_DIRTY=1
       shift
       ;;
     -h|--help)
@@ -45,29 +123,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-ROOT="$HOME/SaneApps"
-OUT_DIR="$ROOT/infra/SaneProcess/outputs"
-LOG_FILE="$OUT_DIR/git_sync_safe.log"
-NOW_LOCAL=$(date '+%Y-%m-%d %H:%M:%S')
-PEER_HOME=""
-
 mkdir -p "$OUT_DIR"
-
-log() {
-  echo "$*" | tee -a "$LOG_FILE"
-}
-
-repos=()
-for d in "$ROOT/apps"/*; do
-  [[ -d "$d/.git" ]] && repos+=("$d")
-done
-[[ -d "$ROOT/SaneAI/.git" ]] && repos+=("$ROOT/SaneAI")
-[[ -d "$ROOT/infra/SaneProcess/.git" ]] && repos+=("$ROOT/infra/SaneProcess")
-
-if [[ ${#repos[@]} -eq 0 ]]; then
-  echo "[$NOW_LOCAL] No repos found under $ROOT" >> "$LOG_FILE"
-  exit 0
-fi
 
 {
   echo
@@ -75,8 +131,16 @@ fi
   echo "[$NOW_LOCAL] Safe Git Sync Start"
   echo "Host: $(hostname)"
   [[ -n "$PEER_HOST" ]] && echo "Peer: $PEER_HOST"
+  echo "Reconcile dirty: $RECONCILE_DIRTY"
   echo "================================================================"
 } >> "$LOG_FILE"
+
+collect_repos
+
+if [[ ${#repos[@]} -eq 0 ]]; then
+  echo "[$NOW_LOCAL] No repos found under $ROOT" >> "$LOG_FILE"
+  exit 0
+fi
 
 issues=0
 if [[ -n "$PEER_HOST" ]]; then
@@ -114,20 +178,30 @@ for repo in "${repos[@]}"; do
     continue
   fi
 
-  dirty=$(git -C "$repo" status --porcelain | wc -l | tr -d ' ')
-  local_head=$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo "")
-  behind=$(git -C "$repo" rev-list --count "HEAD..origin/$branch" 2>/dev/null || echo "0")
-  ahead=$(git -C "$repo" rev-list --count "origin/$branch..HEAD" 2>/dev/null || echo "0")
+  refresh_repo_state "$repo" "$branch"
 
   log "  - branch=$branch dirty=$dirty behind=$behind ahead=$ahead"
+
+  if [[ "$dirty" -gt 0 && "$RECONCILE_DIRTY" -eq 1 ]]; then
+    if reconcile_dirty_repo "$repo"; then
+      refresh_repo_state "$repo" "$branch"
+      log "  - post-reconcile dirty=$dirty behind=$behind ahead=$ahead"
+    else
+      issues=$((issues + 1))
+      continue
+    fi
+  fi
+
   if [[ "$dirty" -gt 0 && "$STRICT_DIRTY" -eq 1 ]]; then
     log "  - WARNING: dirty working tree; requires manual reconcile"
     issues=$((issues + 1))
   fi
 
   if [[ "$dirty" -eq 0 && "$behind" -gt 0 ]]; then
+    pulled_count="$behind"
     if git -C "$repo" pull --ff-only >/dev/null 2>&1; then
-      log "  - Pulled: fast-forwarded $behind commit(s)"
+      refresh_repo_state "$repo" "$branch"
+      log "  - Pulled: fast-forwarded $pulled_count commit(s)"
     else
       log "  - ERROR: ff-only pull failed"
       issues=$((issues + 1))
@@ -138,9 +212,11 @@ for repo in "${repos[@]}"; do
   fi
 
   if [[ "$dirty" -eq 0 && "$ahead" -gt 0 ]]; then
+    pushed_count="$ahead"
     if [[ "$branch" == "main" || "$branch" == "master" ]]; then
       if git -C "$repo" push >/dev/null 2>&1; then
-        log "  - Pushed: $ahead commit(s)"
+        refresh_repo_state "$repo" "$branch"
+        log "  - Pushed: $pushed_count commit(s)"
       else
         log "  - ERROR: push failed"
         issues=$((issues + 1))
@@ -157,6 +233,7 @@ for repo in "${repos[@]}"; do
   if [[ -n "$PEER_HOST" ]]; then
     rel="${repo#$ROOT/}"
     peer_repo="$PEER_HOME/SaneApps/$rel"
+
     if ! peer_report=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$PEER_HOST" \
       "repo=\"$peer_repo\"; if [ ! -d \"\$repo/.git\" ] && [ \"$rel\" = \"SaneAI\" ]; then repo=\"$PEER_HOME/SaneApps/apps/SaneAI\"; fi; if [ -d \"\$repo/.git\" ]; then printf 'HEAD=%s\nBRANCH=%s\nDIRTY=%s\nPATH=%s\n' \"\$(git -C \"\$repo\" rev-parse HEAD 2>/dev/null || echo)\" \"\$(git -C \"\$repo\" rev-parse --abbrev-ref HEAD 2>/dev/null || echo)\" \"\$(git -C \"\$repo\" status --porcelain 2>/dev/null | wc -l | tr -d ' ')\" \"\$repo\"; else echo 'MISSING=1'; fi" 2>/dev/null); then
       log "  - ERROR: peer check failed ($PEER_HOST:$peer_repo)"
@@ -204,7 +281,6 @@ for repo in "${repos[@]}"; do
       issues=$((issues + 1))
     fi
   fi
-
 done
 
 log ""

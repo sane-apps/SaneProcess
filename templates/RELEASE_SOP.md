@@ -137,8 +137,13 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
 - Preferred control path is Mini Safari + AppleScript/JavaScript:
   - `tell application "Safari" to return URL of front document`
   - `tell application "Safari" to do JavaScript "document.body.innerText"` in front document
+  - `/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh list-tabs`
+  - `/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh open-read "<url>"`
+  - `/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh read <tab_index>`
+  - `/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh js <tab_index> "<javascript>"`
   - use `document.querySelector(...)` / `.click()` only after confirming the tab URL is the exact target review/profile page
 - Use this path to inspect reviewer screenshots/download links, App Review page text, and Apple Developer profile detail/edit pages.
+- Use the same path for listing/directory activation links when distribution status matters.
 - Do not blind-click. Prove the front tab URL and visible text first.
 - If a provisioning profile is stale, inspect the exact certificate shown on the Apple Developer edit page before regenerating it.
 
@@ -199,6 +204,42 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
 - Use full `release.sh --deploy` only when the direct channel should also ship.
 - Use build/export plus `appstore_submit.rb --pkg` when you only need to repair the App Store lane.
 - `release.sh` now hard-runs `./scripts/SaneMaster.rb appstore_preflight` before any App Store submit step. Do not bypass that with manual ASC resubmits unless you are explicitly debugging the lane.
+
+### 0d. Mini Visual Verification Workflow
+
+For user-facing desktop changes, do visual verification on the Mini before release.
+
+Preferred order:
+
+1. Launch the signed or release-like app on the Mini:
+
+```bash
+./scripts/SaneMaster.rb test_mode --release --no-logs
+```
+
+2. Capture the live Mini window through the GUI session:
+
+Run this wrapper from the controlling machine with Codex installed. It copies the helper to the Mini and executes the capture inside the Mini's logged-in GUI Terminal session.
+
+```bash
+/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh \
+  --list-windows --app "SaneClip"
+
+/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh \
+  --app "SaneClip" --window-name "Settings" --mode temp
+```
+
+- This wrapper copies the shared screenshot helper to the Mini and runs it through `mini-gui-run.sh`.
+- It is the canonical live-window path.
+- First use may require one-time Screen Recording permission for Terminal on the Mini.
+
+3. If live capture is blocked, use a deterministic render artifact from tests.
+
+- For SwiftUI settings/screens, prefer test-generated PNG renders over guessing from logs.
+- Save at least one visual artifact for the release record.
+
+Hard rule:
+- Do not claim a user-facing fix is visually verified unless you have a saved screenshot/render from the Mini path or the deterministic render lane.
 
 ### 0c. Setapp Lane Prep
 

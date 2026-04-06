@@ -198,11 +198,28 @@ start-workday.sh mini --no-open
 
 **What it does:**
 1. Syncs automation config to Mini.
-2. Runs Air↔Mini git drift check (`git-sync-safe.sh --peer mini`) as advisory.
+2. Runs the canonical Air↔Mini reconcile wrapper (`reconcile-air-mini.sh mini --no-sync-control-plane`).
 3. Pulls latest Mini morning/nightly reports locally.
 4. Shows Mini automation scheduler status.
 5. Runs inbox summary locally.
 6. Opens reports and Codex app (unless `--no-open`).
+
+### reconcile-air-mini.sh
+
+Canonical cross-machine repo reconcile for the local Mac plus Mini.
+
+**Usage:**
+```bash
+reconcile-air-mini.sh
+reconcile-air-mini.sh mini --quiet
+reconcile-air-mini.sh mini --no-sync-control-plane
+```
+
+**What it does:**
+1. Optionally syncs control-plane files to Mini without restarting Codex.
+2. Runs `git-sync-safe.sh --reconcile-dirty` on the Mini first.
+3. Runs `git-sync-safe.sh --peer mini --reconcile-dirty` locally.
+4. Leaves canonical repos clean on both machines or fails loudly.
 
 ### git-sync-safe.sh
 
@@ -215,17 +232,38 @@ git-sync-safe.sh
 # Compare local repos against Mini for branch/head/dirty drift
 git-sync-safe.sh --peer mini
 
+# Auto-stash dirty canonical repos before syncing
+git-sync-safe.sh --reconcile-dirty
+
+# Reconcile local canonical repos and verify Mini parity
+git-sync-safe.sh --peer mini --reconcile-dirty
+
 # Allow dirty working trees (warning-only mode)
 git-sync-safe.sh --allow-dirty
 ```
 
 **What it does:**
 1. Scans SaneApps repos (`apps/*`, `SaneAI`, `infra/SaneProcess`).
-2. Fetches from origin.
-3. Fast-forward pulls only when clean.
-4. Auto-pushes only clean `main/master` ahead commits.
-5. Flags dirty trees as issues by default (prevents false “clean” states).
-6. Optional peer mode (`--peer <host>`) checks branch/head/dirty parity over SSH.
+2. Skips known transient repo clones such as release/preview/worktree scratch dirs.
+3. Fetches from origin.
+4. Fast-forward pulls only when clean.
+5. Auto-pushes only clean `main/master` ahead commits.
+6. Flags dirty trees as issues by default, or auto-stashes them first in `--reconcile-dirty` mode.
+7. Optional peer mode (`--peer <host>`) checks branch/head/dirty parity over SSH.
+
+### install-repo-reconcile-agent.sh
+
+Install the local LaunchAgent that runs unattended Air↔Mini reconcile twice daily.
+
+**Usage:**
+```bash
+install-repo-reconcile-agent.sh
+```
+
+**What it does:**
+1. Installs `~/Library/LaunchAgents/com.saneapps.repo-reconcile.plist`.
+2. Runs `reconcile-air-mini.sh mini` at `05:55` and `21:55` local time by default.
+3. Writes logs to `infra/SaneProcess/outputs/repo_reconcile.stdout.log` and `.stderr.log`.
 
 ### sane-status-crossref.sh
 
