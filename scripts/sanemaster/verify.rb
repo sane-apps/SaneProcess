@@ -34,7 +34,14 @@ module SaneMasterModules
       clean_first = args.include?('--clean')
       include_ui = args.include?('--ui')
       default_timeout = config_value(%w[tests verify_timeout_seconds], 'SANEMASTER_VERIFY_TIMEOUT', 300).to_i
-      timeout = args.include?('--timeout') ? args[args.index('--timeout') + 1].to_i : default_timeout
+      timeout_flag_index = args.index('--timeout')
+      timeout = if timeout_flag_index
+                  override = args[timeout_flag_index + 1]
+                  parsed_override = override&.to_i
+                  parsed_override.to_i.positive? ? parsed_override.to_i : default_timeout
+                else
+                  default_timeout
+                end
       signed_tests = args.include?('--signed-tests') || ENV['SANEMASTER_SIGN_TEST_BUILDS'] == '1'
 
       run_verify_preflight
