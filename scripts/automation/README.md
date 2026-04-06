@@ -183,7 +183,7 @@ sync-codex-mini.sh mini --quiet --no-restart
 3. Syncs critical control-plane scripts (`check-inbox.sh`, `git-sync-safe.sh`, hooks, validation/reporting scripts).
 4. Updates Mini automation SQLite rows from TOML so prompt/status changes apply immediately.
 5. Verifies Air↔Mini SHA-256 parity for all synced control-plane files.
-6. Sets Mini AM run active and PM run paused.
+6. Sets Mini AM and PM runs active by default, with explicit pause flags when needed.
 7. Optionally restarts Codex on Mini so scheduler reloads immediately.
 
 ### start-workday.sh

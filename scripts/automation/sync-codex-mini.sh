@@ -1,14 +1,15 @@
 #!/bin/bash
 # Sync SaneOps Codex automation config from local machine to Mac mini.
-# Safe default: local and mini are both paused unless the caller explicitly
-# opts into activating the mini morning run.
+# Local role: paused (no duplicate runs). Mini role: unattended runner for
+# both morning and nightly SaneOps unless explicitly paused.
 
 set -euo pipefail
 
 MINI_HOST="mini"
 QUIET=0
 RESTART_CODEX=1
-REMOTE_AM_STATUS="PAUSED"
+REMOTE_AM_STATUS="ACTIVE"
+REMOTE_PM_STATUS="ACTIVE"
 
 usage() {
   cat <<USAGE
@@ -18,7 +19,8 @@ Examples:
   $(basename "$0")
   $(basename "$0") mini --quiet
   $(basename "$0") mini --no-restart
-  $(basename "$0") mini --enable-mini-am
+  $(basename "$0") mini --pause-mini-am
+  $(basename "$0") mini --pause-mini-pm
 USAGE
 }
 
@@ -47,8 +49,12 @@ while [[ $# -gt 0 ]]; do
       RESTART_CODEX=0
       shift
       ;;
-    --enable-mini-am)
-      REMOTE_AM_STATUS="ACTIVE"
+    --pause-mini-am)
+      REMOTE_AM_STATUS="PAUSED"
+      shift
+      ;;
+    --pause-mini-pm)
+      REMOTE_PM_STATUS="PAUSED"
       shift
       ;;
     --*)
@@ -137,9 +143,9 @@ PY
 rewrite_paths "$TMP_AM"
 rewrite_paths "$TMP_PM"
 
-# Mini role: paused by default; opt-in for AM active.
+# Mini role: active unattended runner unless explicitly paused.
 set_status_in_file "$TMP_AM" "$REMOTE_AM_STATUS"
-set_status_in_file "$TMP_PM" "PAUSED"
+set_status_in_file "$TMP_PM" "$REMOTE_PM_STATUS"
 
 log "Syncing SaneOps automation files to $MINI_HOST..."
 scp -q "$TMP_AM" "$TMP_PM" "$MINI_HOST:$REMOTE_HOME/"
@@ -301,8 +307,12 @@ log "Mini scheduler DB:"
 ssh "$MINI_HOST" "sqlite3 -header -column \"$REMOTE_HOME/.codex/sqlite/codex-dev.db\" \"SELECT id,name,status,datetime(next_run_at/1000,'unixepoch','localtime') AS next_run_local, datetime(last_run_at/1000,'unixepoch','localtime') AS last_run_local FROM automations;\""
 
 log ""
-if [[ "$REMOTE_AM_STATUS" == "ACTIVE" ]]; then
-  log "Done. Mini AM automation is ACTIVE by explicit opt-in; local automations remain paused."
+if [[ "$REMOTE_AM_STATUS" == "ACTIVE" && "$REMOTE_PM_STATUS" == "ACTIVE" ]]; then
+  log "Done. Mini AM and PM automations are ACTIVE; local automations remain paused."
+elif [[ "$REMOTE_AM_STATUS" == "ACTIVE" ]]; then
+  log "Done. Mini AM automation is ACTIVE and Mini PM is PAUSED; local automations remain paused."
+elif [[ "$REMOTE_PM_STATUS" == "ACTIVE" ]]; then
+  log "Done. Mini PM automation is ACTIVE and Mini AM is PAUSED; local automations remain paused."
 else
-  log "Done. Local and mini automations are both PAUSED by default."
+  log "Done. Mini AM and PM automations are PAUSED; local automations remain paused."
 fi
