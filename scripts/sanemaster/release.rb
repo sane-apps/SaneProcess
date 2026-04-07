@@ -236,8 +236,10 @@ module SaneMasterModules
       skipped = []
 
       candidates.group_by { |candidate| candidate[:name].to_s }.each_value do |group|
+        app_store_group = group.any? { |candidate| candidate[:name].to_s.include?('App Store') }
         winner = group.max_by do |candidate|
           [
+            provisioning_profile_distribution_rank(candidate, app_store_group: app_store_group),
             candidate[:expiration_time] || Time.at(0),
             candidate[:creation_time] || Time.at(0),
             candidate[:mtime],
@@ -255,10 +257,25 @@ module SaneMasterModules
       }
     end
 
+    def provisioning_profile_distribution_rank(candidate, app_store_group: false)
+      return 0 unless app_store_group
+
+      names = Array(candidate.dig(:payload, 'DeveloperCertificates')).map { |cert| cert['CommonName'].to_s }
+      return 2 if names.any? { |name| name.include?('Apple Distribution:') }
+      return 1 if names.any? { |name| name.include?('3rd Party Mac Developer Application:') }
+
+      0
+    end
+
     def install_provisioning_profiles(paths, remove_source: false, destination_roots: provisioning_profile_destination_roots)
       with_provisioning_profile_install_lock do
         selection = canonicalize_provisioning_profile_inputs(paths)
         results = selection[:skipped].map do |candidate|
+          removed_source = false
+          if remove_source
+            FileUtils.rm_f(candidate[:path])
+            removed_source = !File.exist?(candidate[:path])
+          end
           {
             path: candidate[:path],
             name: candidate[:name],
@@ -267,7 +284,8 @@ module SaneMasterModules
             removed_existing: [],
             ok: true,
             skipped: true,
-            reason: 'older duplicate download'
+            reason: 'older duplicate download',
+            removed_source: removed_source
           }
         end
 
@@ -310,7 +328,8 @@ module SaneMasterModules
               removed_existing: removed_existing,
               ok: true,
               skipped: false,
-              reason: nil
+              reason: nil,
+              removed_source: remove_source && !File.exist?(candidate[:path])
             }
           rescue StandardError => e
             results << {
@@ -321,7 +340,8 @@ module SaneMasterModules
               removed_existing: removed_existing,
               ok: false,
               skipped: false,
-              reason: e.message
+              reason: e.message,
+              removed_source: false
             }
           end
         end
@@ -352,14 +372,16 @@ module SaneMasterModules
 
       results.each do |result|
         if result[:skipped]
-          puts "⏭️  #{result[:name]} (#{File.basename(result[:path])}) skipped: #{result[:reason]}"
+          removed_suffix = result[:removed_source] ? ' | source removed' : ''
+          puts "⏭️  #{result[:name]} (#{File.basename(result[:path])}) skipped: #{result[:reason]}#{removed_suffix}"
           next
         end
 
         if result[:ok]
           removed = result[:removed_existing].map { |path| File.basename(path) }
           removed_suffix = removed.empty? ? '' : " | removed: #{removed.join(', ')}"
-          puts "✅ #{result[:name]} -> #{result[:destination]}#{removed_suffix}"
+          source_suffix = result[:removed_source] ? ' | source removed' : ''
+          puts "✅ #{result[:name]} -> #{result[:destination]}#{removed_suffix}#{source_suffix}"
         else
           puts "❌ #{result[:name]} (#{File.basename(result[:path])}) failed: #{result[:reason]}"
         end

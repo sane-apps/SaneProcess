@@ -218,7 +218,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         subject.define_singleton_method(:decode_mobileprovision) do |path|
           {
             'Name' => 'SaneClick Mac App Store',
-            'UUID' => path.end_with?('-2.provisionprofile') ? 'uuid-new' : 'uuid-old'
+            'UUID' => (path.end_with?('-2.provisionprofile') || path.include?('uuid-new')) ? 'uuid-new' : 'uuid-old'
           }
         end
 
@@ -236,8 +236,51 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         skipped = results.find { |result| result[:skipped] }
 
         assert_eq(installed[:uuid], 'uuid-new')
+        assert_eq(installed[:ok], true)
         assert(File.exist?(File.join(xcode_dir, 'uuid-new.provisionprofile')))
         assert_eq(skipped[:reason], 'older duplicate download')
+      end
+      true
+    end
+
+    test('removes skipped duplicate downloads when delete-source is enabled') do
+      Dir.mktmpdir do |dir|
+        mobile_dir = File.join(dir, 'mobile')
+        xcode_dir = File.join(dir, 'xcode')
+        downloads_dir = File.join(dir, 'downloads')
+        FileUtils.mkdir_p(downloads_dir)
+
+        older = File.join(downloads_dir, 'SaneClick_Finder_Sync_Mac_App_Store.provisionprofile')
+        newer = File.join(downloads_dir, 'SaneClick_Finder_Sync_Mac_App_Store-2.provisionprofile')
+        File.write(older, 'older')
+        File.write(newer, 'newer')
+        File.utime(Time.now - 60, Time.now - 60, older)
+        File.utime(Time.now, Time.now, newer)
+
+        subject.define_singleton_method(:decode_mobileprovision) do |path|
+          {
+            'Name' => 'SaneClick Finder Sync Mac App Store',
+            'UUID' => (path.end_with?('-2.provisionprofile') || path.include?('uuid-new')) ? 'uuid-new' : 'uuid-old'
+          }
+        end
+
+        results = subject.send(
+          :install_provisioning_profiles,
+          [older, newer],
+          remove_source: true,
+          destination_roots: {
+            mobileprovision: mobile_dir,
+            provisionprofile: xcode_dir
+          }
+        )
+
+        skipped = results.find { |result| result[:skipped] }
+        installed = results.find { |result| !result[:skipped] }
+
+        assert(!File.exist?(older), 'expected skipped duplicate source to be deleted')
+        assert(!File.exist?(newer), 'expected installed source to be deleted')
+        assert_eq(skipped[:removed_source], true)
+        assert_eq(installed[:removed_source], true)
       end
       true
     end
@@ -275,6 +318,45 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         assert_eq(selection[:chosen].length, 1)
         assert_eq(selection[:chosen].first[:uuid], 'uuid-new')
         assert_eq(selection[:skipped].first[:uuid], 'uuid-old')
+      end
+      true
+    end
+
+    test('prefers Apple Distribution app store profiles over stale 3rd party profiles with the same name') do
+      Dir.mktmpdir do |dir|
+        legacy = File.join(dir, 'SaneClick_Finder_Sync_Mac_App_Store.provisionprofile')
+        modern = File.join(dir, 'SaneClick_Finder_Sync_Mac_App_Store-2.provisionprofile')
+        File.write(legacy, 'legacy')
+        File.write(modern, 'modern')
+        same_time = Time.now
+        File.utime(same_time, same_time, legacy)
+        File.utime(same_time, same_time, modern)
+
+        subject.define_singleton_method(:decode_mobileprovision) do |path|
+          if path.end_with?('-2.provisionprofile')
+            {
+              'Name' => 'SaneClick Finder Sync Mac App Store',
+              'UUID' => 'uuid-modern',
+              'CreationDate' => '2026-04-03 19:06:58 +0000',
+              'ExpirationDate' => '2027-03-09 21:13:27 +0000',
+              'DeveloperCertificates' => [{ 'CommonName' => 'Apple Distribution: Stephan Joseph (M78L6FXD48)' }]
+            }
+          else
+            {
+              'Name' => 'SaneClick Finder Sync Mac App Store',
+              'UUID' => 'uuid-legacy',
+              'CreationDate' => '2026-03-26 17:29:29 +0000',
+              'ExpirationDate' => '2027-03-09 21:17:04 +0000',
+              'DeveloperCertificates' => [{ 'CommonName' => '3rd Party Mac Developer Application: Stephan Joseph (M78L6FXD48)' }]
+            }
+          end
+        end
+
+        selection = subject.send(:canonicalize_provisioning_profile_inputs, [legacy, modern])
+
+        assert_eq(selection[:chosen].length, 1)
+        assert_eq(selection[:chosen].first[:uuid], 'uuid-modern')
+        assert_eq(selection[:skipped].first[:uuid], 'uuid-legacy')
       end
       true
     end
