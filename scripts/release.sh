@@ -5061,6 +5061,7 @@ if [ "${USE_SPARKLE}" = true ] && command -v swift >/dev/null 2>&1; then
             cat <<EOF
         <item>
             <title>${VERSION}</title>
+            <link>https://${SITE_HOST}/download</link>
             <pubDate>${DATE}</pubDate>
             <sparkle:minimumSystemVersion>${MIN_SYSTEM_VERSION}</sparkle:minimumSystemVersion>
 ${OPTIONAL_SPARKLE_FIELDS}            <description>
@@ -5269,6 +5270,7 @@ PY
             NEW_ITEM=$(cat <<APPCASTEOF
         <item>
             <title>${VERSION}</title>
+            <link>https://${SITE_HOST}/download</link>
             <pubDate>${PUB_DATE}</pubDate>
             <sparkle:minimumSystemVersion>${MIN_SYSTEM_VERSION}</sparkle:minimumSystemVersion>
 ${OPTIONAL_SPARKLE_FIELDS}            <description>

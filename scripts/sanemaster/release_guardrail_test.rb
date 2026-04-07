@@ -155,6 +155,134 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
     end
   end
 
+  test_category('Appcast guardrails') do
+    test('flags informational appcast entries that cannot route to a manual download page') do
+      xml = <<~XML
+        <rss><channel>
+          <item>
+            <title>2.2.12</title>
+            <sparkle:informationalUpdate>
+              <sparkle:belowVersion>2.2.8</sparkle:belowVersion>
+            </sparkle:informationalUpdate>
+            <enclosure url="https://example.com/SaneClip-2.2.12.zip"
+                       sparkle:version="2212"
+                       sparkle:shortVersionString="2.2.12" />
+          </item>
+        </channel></rss>
+      XML
+
+      hits = subject.send(:informational_appcast_entries_missing_links, xml)
+
+      assert_eq(hits, ['2.2.12'])
+      true
+    end
+
+    test('accepts informational appcast entries that include a manual download link') do
+      xml = <<~XML
+        <rss><channel>
+          <item>
+            <title>2.2.12</title>
+            <link>https://example.com/download</link>
+            <sparkle:informationalUpdate>
+              <sparkle:belowVersion>2.2.8</sparkle:belowVersion>
+            </sparkle:informationalUpdate>
+            <enclosure url="https://example.com/SaneClip-2.2.12.zip"
+                       sparkle:version="2212"
+                       sparkle:shortVersionString="2.2.12" />
+          </item>
+        </channel></rss>
+      XML
+
+      hits = subject.send(:informational_appcast_entries_missing_links, xml)
+
+      assert_eq(hits, [])
+      true
+    end
+  end
+
+  test_category('Provisioning profile installer') do
+    test('keeps the newest duplicate download and installs it by UUID') do
+      Dir.mktmpdir do |dir|
+        mobile_dir = File.join(dir, 'mobile')
+        xcode_dir = File.join(dir, 'xcode')
+        downloads_dir = File.join(dir, 'downloads')
+        FileUtils.mkdir_p(downloads_dir)
+
+        older = File.join(downloads_dir, 'SaneClick_Mac_App_Store.provisionprofile')
+        newer = File.join(downloads_dir, 'SaneClick_Mac_App_Store-2.provisionprofile')
+        File.write(older, 'older')
+        File.write(newer, 'newer')
+        File.utime(Time.now - 60, Time.now - 60, older)
+        File.utime(Time.now, Time.now, newer)
+
+        subject.define_singleton_method(:decode_mobileprovision) do |path|
+          {
+            'Name' => 'SaneClick Mac App Store',
+            'UUID' => path.end_with?('-2.provisionprofile') ? 'uuid-new' : 'uuid-old'
+          }
+        end
+
+        results = subject.send(
+          :install_provisioning_profiles,
+          [older, newer],
+          remove_source: false,
+          destination_roots: {
+            mobileprovision: mobile_dir,
+            provisionprofile: xcode_dir
+          }
+        )
+
+        installed = results.find { |result| !result[:skipped] }
+        skipped = results.find { |result| result[:skipped] }
+
+        assert_eq(installed[:uuid], 'uuid-new')
+        assert(File.exist?(File.join(xcode_dir, 'uuid-new.provisionprofile')))
+        assert_eq(skipped[:reason], 'older duplicate download')
+      end
+      true
+    end
+
+    test('removes stale installed copies with the same name before copying the new profile') do
+      Dir.mktmpdir do |dir|
+        mobile_dir = File.join(dir, 'mobile')
+        xcode_dir = File.join(dir, 'xcode')
+        downloads_dir = File.join(dir, 'downloads')
+        FileUtils.mkdir_p(mobile_dir)
+        FileUtils.mkdir_p(downloads_dir)
+
+        stale = File.join(mobile_dir, 'uuid-old.mobileprovision')
+        fresh = File.join(downloads_dir, 'SaneClip_iOS_App_Store.mobileprovision')
+        File.write(stale, 'stale')
+        File.write(fresh, 'fresh')
+
+        subject.define_singleton_method(:decode_mobileprovision) do |path|
+          if path.include?('uuid-old')
+            { 'Name' => 'SaneClip iOS App Store', 'UUID' => 'uuid-old' }
+          else
+            { 'Name' => 'SaneClip iOS App Store', 'UUID' => 'uuid-new' }
+          end
+        end
+
+        results = subject.send(
+          :install_provisioning_profiles,
+          [fresh],
+          remove_source: true,
+          destination_roots: {
+            mobileprovision: mobile_dir,
+            provisionprofile: xcode_dir
+          }
+        )
+
+        installed = results.find { |result| result[:ok] && !result[:skipped] }
+        assert(!File.exist?(stale), 'expected stale installed profile to be removed')
+        assert(File.exist?(File.join(mobile_dir, 'uuid-new.mobileprovision')))
+        assert(!File.exist?(fresh), 'expected source download to be deleted after successful install')
+        assert_includes(installed[:removed_existing], stale)
+      end
+      true
+    end
+  end
+
   test_category('App Store target graph audit') do
     test('fails when the App Store scheme reuses the direct macOS target') do
       manifest = {

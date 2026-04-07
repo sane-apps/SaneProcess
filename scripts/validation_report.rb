@@ -726,10 +726,15 @@ class ValidationReport
 
     latest_item = snapshot[:latest_item].to_s
     latest_url = snapshot[:enclosure_url].to_s
+    informational_entries_missing_links = Array(snapshot[:informational_entries_missing_links])
 
     if latest_url.nil? || latest_url.empty?
       warnings << "[#{app_name}] appcast.xml has no enclosure URL in latest item"
       return
+    end
+
+    unless informational_entries_missing_links.empty?
+      issues << "[#{app_name}] Informational appcast entries are missing item <link>: #{informational_entries_missing_links.join(', ')}"
     end
 
     status = check_url_status(latest_url, follow_redirects: true)
@@ -1452,6 +1457,18 @@ class ValidationReport
     minimum_system_version = latest_item[/minimumSystemVersion>([^<]+)</, 1] ||
                              latest_item[/sparkle:minimumSystemVersion="([^"]+)"/, 1]
     has_signature = latest_item.include?('sparkle:edSignature') || latest_item.include?('sparkle:dsaSignature')
+    informational_entries_missing_links = body.scan(/<item\b.*?<\/item>/m).filter_map do |item|
+      next unless item.include?('<sparkle:informationalUpdate')
+      next unless item.match?(/<enclosure\b/m)
+
+      item_link = item[/<link>\s*([^<]+)\s*<\/link>/m, 1].to_s.strip
+      next unless item_link.empty?
+
+      version = item[/sparkle:shortVersionString="([^"]+)"/, 1] ||
+                item[/<sparkle:shortVersionString>\s*([^<]+)\s*<\/sparkle:shortVersionString>/m, 1] ||
+                item[/<title>\s*([^<]+)\s*<\/title>/m, 1]
+      version.to_s.strip.empty? ? '<unknown version>' : version.to_s.strip
+    end
 
     {
       appcast_url: appcast_url,
@@ -1461,7 +1478,8 @@ class ValidationReport
       version: version.to_s.strip,
       build: build.to_s.strip,
       minimum_system_version: minimum_system_version.to_s.strip,
-      has_signature: has_signature
+      has_signature: has_signature,
+      informational_entries_missing_links: informational_entries_missing_links
     }
   rescue StandardError
     nil

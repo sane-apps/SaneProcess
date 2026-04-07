@@ -141,6 +141,7 @@ class SaneMaster
         'versions' => { args: '', desc: 'Check tool versions' },
         'reset' => { args: '', desc: 'Reset TCC permissions' },
         'restore' => { args: '', desc: 'Fix Xcode/Launch Services issues' },
+        'install_provisioning_profiles' => { args: '[--delete-source] [glob ...]', desc: 'Install downloaded provisioning profiles deterministically by UUID' },
         'dedupe_apps' => { args: '[--host local|mini] [--apps App1,App2] [--dry-run] [--json]', desc: 'Keep one canonical app bundle per Sane app' },
         'mcp_watchdog' => { args: '[status|doctor|clean|install|uninstall] [--max N] [--interval SEC] [--json] [--quiet]', desc: 'Detect and clean duplicate MCP daemons' },
         'work_session_on' => { args: '', desc: 'Start keep-awake + no-lock work session guard' },
@@ -1098,6 +1099,8 @@ PY
       setup_environment
     when 'restore'
       restore_xcode
+    when 'install_provisioning_profiles', 'install_profiles', 'install-profiles'
+      install_provisioning_profiles_command(args)
     when 'dedupe_apps', 'dedupe-apps'
       system('ruby', File.join(__dir__, 'dedupe_sane_apps.rb'), *args)
     when 'mcp_watchdog', 'mcpw', 'mcp'

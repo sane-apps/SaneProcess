@@ -159,6 +159,176 @@ module SaneMasterModules
       cache[profile_name] = match
     end
 
+    def provisioning_profile_destination_roots
+      {
+        mobileprovision: File.expand_path('~/Library/MobileDevice/Provisioning Profiles'),
+        provisionprofile: File.expand_path('~/Library/Developer/Xcode/UserData/Provisioning Profiles')
+      }
+    end
+
+    def provisioning_profile_paths(destination_roots = provisioning_profile_destination_roots)
+      patterns = [
+        File.join(destination_roots[:mobileprovision].to_s, '*.{mobileprovision,provisionprofile}'),
+        File.join(destination_roots[:provisionprofile].to_s, '*.{mobileprovision,provisionprofile}')
+      ]
+
+      patterns.flat_map { |pattern| Dir.glob(pattern, File::FNM_EXTGLOB) }.uniq.sort
+    end
+
+    def default_downloaded_provisioning_profiles
+      [
+        File.expand_path('~/Downloads/*.mobileprovision'),
+        File.expand_path('~/Downloads/*.provisionprofile')
+      ].flat_map { |pattern| Dir.glob(pattern) }.uniq.sort
+    end
+
+    def canonicalize_provisioning_profile_inputs(paths)
+      candidates = Array(paths).filter_map do |path|
+        expanded = File.expand_path(path.to_s)
+        next unless File.file?(expanded)
+
+        ext = File.extname(expanded).downcase
+        next unless %w[.mobileprovision .provisionprofile].include?(ext)
+
+        payload = decode_mobileprovision(expanded)
+        next unless payload.is_a?(Hash)
+
+        {
+          path: expanded,
+          ext: ext,
+          payload: payload,
+          name: payload['Name'].to_s,
+          uuid: payload['UUID'].to_s,
+          mtime: File.mtime(expanded)
+        }
+      end
+
+      chosen = []
+      skipped = []
+
+      candidates.group_by { |candidate| candidate[:name].to_s }.each_value do |group|
+        winner = group.max_by { |candidate| [candidate[:mtime], candidate[:path]] }
+        chosen << winner
+        skipped.concat(group - [winner])
+      end
+
+      {
+        chosen: chosen.sort_by { |candidate| candidate[:path] },
+        skipped: skipped.sort_by { |candidate| candidate[:path] }
+      }
+    end
+
+    def install_provisioning_profiles(paths, remove_source: false, destination_roots: provisioning_profile_destination_roots)
+      selection = canonicalize_provisioning_profile_inputs(paths)
+      results = selection[:skipped].map do |candidate|
+        {
+          path: candidate[:path],
+          name: candidate[:name],
+          uuid: candidate[:uuid],
+          destination: nil,
+          removed_existing: [],
+          ok: true,
+          skipped: true,
+          reason: 'older duplicate download'
+        }
+      end
+
+      selection[:chosen].each do |candidate|
+        destination_root = candidate[:ext] == '.provisionprofile' ? destination_roots[:provisionprofile] : destination_roots[:mobileprovision]
+        removed_existing = []
+
+        begin
+          FileUtils.mkdir_p(destination_root)
+          existing_matches = provisioning_profile_paths(destination_roots).select do |existing_path|
+            next false if File.expand_path(existing_path) == candidate[:path]
+
+            existing_payload = decode_mobileprovision(existing_path)
+            next false unless existing_payload.is_a?(Hash)
+
+            existing_uuid = existing_payload['UUID'].to_s
+            existing_name = existing_payload['Name'].to_s
+            existing_uuid == candidate[:uuid] || (!candidate[:name].empty? && existing_name == candidate[:name])
+          end
+
+          existing_matches.each do |existing_path|
+            FileUtils.rm_f(existing_path)
+            removed_existing << existing_path
+          end
+
+          destination_path = File.join(destination_root, "#{candidate[:uuid]}#{candidate[:ext]}")
+          FileUtils.cp(candidate[:path], destination_path)
+          installed_payload = decode_mobileprovision(destination_path)
+          unless installed_payload.is_a?(Hash) && installed_payload['UUID'].to_s == candidate[:uuid]
+            raise "verification failed for #{destination_path}"
+          end
+
+          FileUtils.rm_f(candidate[:path]) if remove_source && File.expand_path(candidate[:path]) != File.expand_path(destination_path)
+
+          results << {
+            path: candidate[:path],
+            name: candidate[:name],
+            uuid: candidate[:uuid],
+            destination: destination_path,
+            removed_existing: removed_existing,
+            ok: true,
+            skipped: false,
+            reason: nil
+          }
+        rescue StandardError => e
+          results << {
+            path: candidate[:path],
+            name: candidate[:name],
+            uuid: candidate[:uuid],
+            destination: nil,
+            removed_existing: removed_existing,
+            ok: false,
+            skipped: false,
+            reason: e.message
+          }
+        end
+      end
+
+      results
+    end
+
+    def install_provisioning_profiles_command(args)
+      remove_source = args.delete('--delete-source')
+      requested_paths = if args.empty?
+                          default_downloaded_provisioning_profiles
+                        else
+                          args.flat_map { |arg| Dir.glob(File.expand_path(arg)) }.uniq.sort
+                        end
+
+      filtered_paths = requested_paths.select do |path|
+        File.file?(path) && %w[.mobileprovision .provisionprofile].include?(File.extname(path).downcase)
+      end
+
+      if filtered_paths.empty?
+        puts 'No provisioning profiles found.'
+        return
+      end
+
+      results = install_provisioning_profiles(filtered_paths, remove_source: remove_source)
+      failures = results.reject { |result| result[:ok] }
+
+      results.each do |result|
+        if result[:skipped]
+          puts "⏭️  #{result[:name]} (#{File.basename(result[:path])}) skipped: #{result[:reason]}"
+          next
+        end
+
+        if result[:ok]
+          removed = result[:removed_existing].map { |path| File.basename(path) }
+          removed_suffix = removed.empty? ? '' : " | removed: #{removed.join(', ')}"
+          puts "✅ #{result[:name]} -> #{result[:destination]}#{removed_suffix}"
+        else
+          puts "❌ #{result[:name]} (#{File.basename(result[:path])}) failed: #{result[:reason]}"
+        end
+      end
+
+      raise SystemExit, 1 unless failures.empty?
+    end
+
     def appstore_mobile_signing_targets(project_yml_path)
       return [] unless project_yml_path && File.exist?(project_yml_path)
 
@@ -318,6 +488,23 @@ module SaneMasterModules
       }
     rescue StandardError
       { version: '', build: '', url: '' }
+    end
+
+    def informational_appcast_entries_missing_links(xml)
+      xml.to_s.scan(/<item\b.*?<\/item>/m).filter_map do |item|
+        next unless item.include?('<sparkle:informationalUpdate')
+        next unless item.match?(/<enclosure\b/m)
+
+        item_link = item[/<link>\s*([^<]+)\s*<\/link>/m, 1].to_s.strip
+        next unless item_link.empty?
+
+        version = item[/<sparkle:shortVersionString>\s*([^<\s]+)\s*<\/sparkle:shortVersionString>/m, 1] ||
+                  item[/sparkle:shortVersionString="([^"]+)"/, 1] ||
+                  item[/<title>\s*([^<]+)\s*<\/title>/m, 1]
+        version.to_s.strip.empty? ? '<unknown version>' : version.to_s.strip
+      end
+    rescue StandardError
+      []
     end
 
     def verify_output_indicates_success?(output)
@@ -1939,6 +2126,7 @@ module SaneMasterModules
         appcast_build = appcast_item[:build]
         appcast_url = appcast_item[:url]
         project_version = project_marketing_version(project_yml_content)
+        informational_entries_missing_links = informational_appcast_entries_missing_links(safe_read(appcast_path))
 
         gate_failures = []
         gate_warnings = []
@@ -1948,6 +2136,9 @@ module SaneMasterModules
         end
         if appcast_url.empty?
           gate_failures << "Could not parse enclosure URL from #{appcast_path}"
+        end
+        unless informational_entries_missing_links.empty?
+          gate_failures << "Informational appcast entries missing item <link>: #{informational_entries_missing_links.join(', ')}"
         end
 
         version_cmp = compare_semver(appcast_version, project_version)
