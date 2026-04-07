@@ -1457,7 +1457,7 @@ class ValidationReport
     minimum_system_version = latest_item[/minimumSystemVersion>([^<]+)</, 1] ||
                              latest_item[/sparkle:minimumSystemVersion="([^"]+)"/, 1]
     has_signature = latest_item.include?('sparkle:edSignature') || latest_item.include?('sparkle:dsaSignature')
-    informational_entries_missing_links = body.scan(/<item\b.*?<\/item>/m).filter_map do |item|
+    informational_entries_missing_links = body.scan(/<item\b.*?<\/item>/m).each_with_object([]) do |item, acc|
       next unless item.include?('<sparkle:informationalUpdate')
       next unless item.match?(/<enclosure\b/m)
 
@@ -1467,7 +1467,7 @@ class ValidationReport
       version = item[/sparkle:shortVersionString="([^"]+)"/, 1] ||
                 item[/<sparkle:shortVersionString>\s*([^<]+)\s*<\/sparkle:shortVersionString>/m, 1] ||
                 item[/<title>\s*([^<]+)\s*<\/title>/m, 1]
-      version.to_s.strip.empty? ? '<unknown version>' : version.to_s.strip
+      acc << (version.to_s.strip.empty? ? '<unknown version>' : version.to_s.strip)
     end
 
     {
