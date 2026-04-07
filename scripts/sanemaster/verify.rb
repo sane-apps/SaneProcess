@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require 'shellwords'
+require 'open3'
 
 module SaneMasterModules
   # Build, test execution, permissions, test validation
@@ -479,11 +479,14 @@ module SaneMasterModules
     private
 
     def git_status_snapshot(repo_path = Dir.pwd)
-      root = `git -C #{Shellwords.escape(repo_path)} rev-parse --show-toplevel 2>/dev/null`.strip
-      return [] if root.empty?
+      root_out, root_status = Open3.capture2('git', '-C', repo_path, 'rev-parse', '--show-toplevel')
+      return [] unless root_status.success?
 
-      `git -C #{Shellwords.escape(root)} status --porcelain=1 --untracked-files=all 2>/dev/null`
-        .lines
+      root = root_out.strip
+      status_out, status_result = Open3.capture2('git', '-C', root, 'status', '--porcelain=1', '--untracked-files=all')
+      raise "git status failed for #{root}" unless status_result.success?
+
+      status_out.lines
         .map(&:chomp)
         .reject(&:empty?)
         .sort
