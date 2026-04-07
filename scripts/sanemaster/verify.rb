@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'shellwords'
+
 module SaneMasterModules
   # Build, test execution, permissions, test validation
   module Verify
@@ -47,6 +49,7 @@ module SaneMasterModules
       run_verify_preflight
       enforce_saneui_source_of_truth!
       clean([]) if clean_first
+      repo_status_before = git_status_snapshot
 
       puts '🔨 --- [ SANEMASTER VERIFY ] ---'
       puts 'Building and running tests with progress monitoring...'
@@ -66,6 +69,7 @@ module SaneMasterModules
         result = run_tests_with_progress(timeout_seconds: timeout, include_ui: include_ui, signed_tests: signed_tests)
 
         if result[:success]
+          verify_repo_cleanliness!(before_snapshot: repo_status_before)
           record_verify_attempt(success: true, message: 'verify') unless running_from_preflight
           puts "\n✅ Tests passed! (#{result[:tests_run]} tests, #{result[:duration]}s)"
           # Suggest recording patterns after successful test run
@@ -473,6 +477,38 @@ module SaneMasterModules
     end
 
     private
+
+    def git_status_snapshot(repo_path = Dir.pwd)
+      root = `git -C #{Shellwords.escape(repo_path)} rev-parse --show-toplevel 2>/dev/null`.strip
+      return [] if root.empty?
+
+      `git -C #{Shellwords.escape(root)} status --porcelain=1 --untracked-files=all 2>/dev/null`
+        .lines
+        .map(&:chomp)
+        .reject(&:empty?)
+        .sort
+    end
+
+    def verify_repo_dirt_report(before_snapshot:, repo_path: Dir.pwd)
+      after_snapshot = git_status_snapshot(repo_path)
+      {
+        before: before_snapshot,
+        after: after_snapshot,
+        introduced: after_snapshot - before_snapshot
+      }
+    end
+
+    def verify_repo_cleanliness!(before_snapshot:)
+      report = verify_repo_dirt_report(before_snapshot: before_snapshot)
+      return if report[:introduced].empty?
+      return if ENV['SANEMASTER_ALLOW_VERIFY_REPO_DRIFT'] == '1'
+
+      puts "\n❌ Verify introduced new git dirt:"
+      report[:introduced].each { |entry| puts "   - #{entry}" }
+      puts '   Fix the generated drift or ignore it properly before claiming verify passed.'
+      puts '   Set SANEMASTER_ALLOW_VERIFY_REPO_DRIFT=1 only if you intentionally need to bypass this guard.'
+      exit 1
+    end
 
     def test_targets_disabled?
       project_yml = File.join(Dir.pwd, 'project.yml')
