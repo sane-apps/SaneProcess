@@ -1478,7 +1478,7 @@ PY
         fi
 
         local informational_constraint_mismatches
-        informational_constraint_mismatches=$(appcast_informational_constraint_version_mismatches "${appcast_content}")
+        informational_constraint_mismatches=$(appcast_informational_constraint_version_mismatches "${appcast_content}") || return 1
         if [ -n "${informational_constraint_mismatches}" ]; then
             log_error "Appcast informational update cutoffs must use CFBundleVersion/build values, not display versions: ${informational_constraint_mismatches}"
             return 1
@@ -5373,7 +5373,7 @@ PY
                 exit 1
             fi
 
-            LOCAL_INFO_MISMATCHES=$(appcast_informational_constraint_version_mismatches "${LOCAL_APPCAST_CONTENT}")
+            LOCAL_INFO_MISMATCHES=$(appcast_informational_constraint_version_mismatches "${LOCAL_APPCAST_CONTENT}") || exit 1
             if [ -n "${LOCAL_INFO_MISMATCHES}" ]; then
                 log_error "Local appcast informational update cutoffs must use CFBundleVersion/build values, not display versions: ${LOCAL_INFO_MISMATCHES}"
                 exit 1
