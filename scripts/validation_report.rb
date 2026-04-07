@@ -727,6 +727,7 @@ class ValidationReport
     latest_item = snapshot[:latest_item].to_s
     latest_url = snapshot[:enclosure_url].to_s
     informational_entries_missing_links = Array(snapshot[:informational_entries_missing_links])
+    informational_constraint_version_mismatches = Array(snapshot[:informational_constraint_version_mismatches])
 
     if latest_url.nil? || latest_url.empty?
       warnings << "[#{app_name}] appcast.xml has no enclosure URL in latest item"
@@ -735,6 +736,9 @@ class ValidationReport
 
     unless informational_entries_missing_links.empty?
       issues << "[#{app_name}] Informational appcast entries are missing item <link>: #{informational_entries_missing_links.join(', ')}"
+    end
+    unless informational_constraint_version_mismatches.empty?
+      issues << "[#{app_name}] Informational appcast entries compare against display versions instead of CFBundleVersion: #{informational_constraint_version_mismatches.join(', ')}"
     end
 
     status = check_url_status(latest_url, follow_redirects: true)
@@ -1469,6 +1473,22 @@ class ValidationReport
                 item[/<title>\s*([^<]+)\s*<\/title>/m, 1]
       acc << (version.to_s.strip.empty? ? '<unknown version>' : version.to_s.strip)
     end
+    informational_constraint_version_mismatches = body.scan(/<item\b.*?<\/item>/m).each_with_object([]) do |item, acc|
+      next unless item.include?('<sparkle:informationalUpdate')
+
+      item_build = item[/sparkle:version="([^"]+)"/, 1] ||
+                   item[/<sparkle:version>\s*([^<]+)\s*<\/sparkle:version>/m, 1]
+      next unless item_build.to_s.match?(/\A\d+\z/)
+
+      constraints = item.scan(/<sparkle:(?:version|belowVersion)>\s*([^<\s]+)\s*<\/sparkle:(?:version|belowVersion)>/m).flatten
+      next if constraints.empty?
+      next unless constraints.any? { |constraint| constraint.include?('.') }
+
+      version = item[/sparkle:shortVersionString="([^"]+)"/, 1] ||
+                item[/<sparkle:shortVersionString>\s*([^<]+)\s*<\/sparkle:shortVersionString>/m, 1] ||
+                item[/<title>\s*([^<]+)\s*<\/title>/m, 1]
+      acc << (version.to_s.strip.empty? ? '<unknown version>' : version.to_s.strip)
+    end
 
     {
       appcast_url: appcast_url,
@@ -1479,7 +1499,8 @@ class ValidationReport
       build: build.to_s.strip,
       minimum_system_version: minimum_system_version.to_s.strip,
       has_signature: has_signature,
-      informational_entries_missing_links: informational_entries_missing_links
+      informational_entries_missing_links: informational_entries_missing_links,
+      informational_constraint_version_mismatches: informational_constraint_version_mismatches
     }
   rescue StandardError
     nil

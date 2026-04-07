@@ -815,6 +815,36 @@ print(count)
 PY
 }
 
+appcast_informational_constraint_version_mismatches() {
+    local appcast_content="$1"
+    APPCAST_CONTENT="${appcast_content}" python3 - <<'PY'
+import os
+import re
+
+xml = os.environ.get("APPCAST_CONTENT", "")
+hits = []
+
+for match in re.finditer(r"<item>.*?</item>", xml, flags=re.S):
+    item = match.group(0)
+    if "<sparkle:informationalUpdate" not in item:
+        continue
+
+    build_match = re.search(r'sparkle:version="([^"]+)"', item) or re.search(r"<sparkle:version>\s*([^<\s]+)\s*</sparkle:version>", item)
+    item_build = build_match.group(1).strip() if build_match else ""
+    if not re.fullmatch(r"\d+", item_build):
+        continue
+
+    constraints = re.findall(r"<sparkle:(?:version|belowVersion)>\s*([^<\s]+)\s*</sparkle:(?:version|belowVersion)>", item)
+    if not constraints or not any("." in constraint for constraint in constraints):
+        continue
+
+    version_match = re.search(r'sparkle:shortVersionString="([^"]+)"', item) or re.search(r"<sparkle:shortVersionString>\s*([^<\s]+)\s*</sparkle:shortVersionString>", item) or re.search(r"<title>\s*([^<]+)\s*</title>", item)
+    hits.append((version_match.group(1).strip() if version_match else "<unknown version>"))
+
+print(",".join(hits))
+PY
+}
+
 appcast_length_for_version() {
     local appcast_content="$1"
     APPCAST_CONTENT="${appcast_content}" python3 - "${VERSION}" "${BUILD_NUMBER}" <<'PY'
@@ -1444,6 +1474,13 @@ PY
         appcast_item_count=$(appcast_item_count_for_version "${appcast_content}")
         if [ "${appcast_item_count}" != "1" ]; then
             log_error "Appcast has ${appcast_item_count} entries for v${VERSION} (expected exactly 1)"
+            return 1
+        fi
+
+        local informational_constraint_mismatches
+        informational_constraint_mismatches=$(appcast_informational_constraint_version_mismatches "${appcast_content}")
+        if [ -n "${informational_constraint_mismatches}" ]; then
+            log_error "Appcast informational update cutoffs must use CFBundleVersion/build values, not display versions: ${informational_constraint_mismatches}"
             return 1
         fi
 
@@ -5333,6 +5370,12 @@ PY
             LOCAL_COUNT=$(appcast_item_count_for_version "${LOCAL_APPCAST_CONTENT}")
             if [ "${LOCAL_COUNT}" != "1" ]; then
                 log_error "Local appcast contains ${LOCAL_COUNT} entries for v${VERSION} (expected 1)"
+                exit 1
+            fi
+
+            LOCAL_INFO_MISMATCHES=$(appcast_informational_constraint_version_mismatches "${LOCAL_APPCAST_CONTENT}")
+            if [ -n "${LOCAL_INFO_MISMATCHES}" ]; then
+                log_error "Local appcast informational update cutoffs must use CFBundleVersion/build values, not display versions: ${LOCAL_INFO_MISMATCHES}"
                 exit 1
             fi
 

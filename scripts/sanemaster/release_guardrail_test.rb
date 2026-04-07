@@ -198,6 +198,50 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_eq(hits, [])
       true
     end
+
+    test('flags informational appcast entries that compare display versions against numeric build versions') do
+      xml = <<~XML
+        <rss><channel>
+          <item>
+            <title>2.2.12</title>
+            <link>https://example.com/download</link>
+            <sparkle:informationalUpdate>
+              <sparkle:belowVersion>2.2.8</sparkle:belowVersion>
+            </sparkle:informationalUpdate>
+            <enclosure url="https://example.com/SaneClip-2.2.12.zip"
+                       sparkle:version="2212"
+                       sparkle:shortVersionString="2.2.12" />
+          </item>
+        </channel></rss>
+      XML
+
+      hits = subject.send(:informational_appcast_entries_mismatched_constraint_versions, xml)
+
+      assert_eq(hits, ['2.2.12'])
+      true
+    end
+
+    test('accepts informational appcast entries that compare against numeric build cutoffs') do
+      xml = <<~XML
+        <rss><channel>
+          <item>
+            <title>2.2.12</title>
+            <link>https://example.com/download</link>
+            <sparkle:informationalUpdate>
+              <sparkle:belowVersion>2208</sparkle:belowVersion>
+            </sparkle:informationalUpdate>
+            <enclosure url="https://example.com/SaneClip-2.2.12.zip"
+                       sparkle:version="2212"
+                       sparkle:shortVersionString="2.2.12" />
+          </item>
+        </channel></rss>
+      XML
+
+      hits = subject.send(:informational_appcast_entries_mismatched_constraint_versions, xml)
+
+      assert_eq(hits, [])
+      true
+    end
   end
 
   test_category('Provisioning profile installer') do
