@@ -30,6 +30,7 @@ CLAUDE.md
 .claude/memory_staging.json
 .claude/memory.json
 .claude/research.md
+.claude/sop-verify-state.json
 .claude/context_warned_size.txt
 .claude/session_start_debug.log
 .claude/*.jsonl

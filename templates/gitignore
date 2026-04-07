@@ -94,6 +94,7 @@ releases/
 .claude/saneloop-archive/
 .claude/research/
 .claude/rule_tracking.jsonl
+.claude/sop-verify-state.json
 .claude/bugs.md
 .claude/hook_*.md
 .claude/SOP*.md

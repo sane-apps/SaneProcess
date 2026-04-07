@@ -436,9 +436,7 @@ class SaneMaster
       remote_cmd = "#{remote_env_prefix}ruby #{Shellwords.escape(remote_script)} #{([command] + args).map { |arg| Shellwords.escape(arg) }.join(' ')}"
       puts "📍 Mini-first routing: #{command} -> mini (#{execution_repo})"
       $stdout.flush
-      ssh_args = ['ssh']
-      ssh_args << '-tt' if $stdout.tty?
-      remote_ok = system(*ssh_args, 'mini', "cd #{Shellwords.escape(execution_repo)} && #{remote_cmd}")
+      remote_ok = ssh_system('mini', "cd #{Shellwords.escape(execution_repo)} && #{remote_cmd}")
       remote_status = $?.respond_to?(:exitstatus) ? $?.exitstatus : (remote_ok ? 0 : 1)
       sync_outputs_from_mini!(Dir.pwd, execution_repo)
       sync_release_artifacts_from_mini!(Dir.pwd, execution_repo, warn_only: true) if release_routed
@@ -476,8 +474,14 @@ class SaneMaster
     false
   end
 
+  def ssh_system(*args, tty: false, **options)
+    ssh_args = ['ssh', '-n']
+    ssh_args << '-tt' if tty && $stdout.tty?
+    system(*ssh_args, *args, **options)
+  end
+
   def mini_reachable?
-    system('ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=2', 'mini', 'true', out: File::NULL, err: File::NULL)
+    ssh_system('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=2', 'mini', 'true', out: File::NULL, err: File::NULL)
   end
 
   def map_local_path_to_mini(local_path)
@@ -488,7 +492,8 @@ class SaneMaster
   end
 
   def mini_path_exists?(remote_path)
-    system('ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=3', 'mini', "test -d #{Shellwords.escape(remote_path)}", out: File::NULL, err: File::NULL)
+    ssh_system('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=3', 'mini',
+               "test -d #{Shellwords.escape(remote_path)}", out: File::NULL, err: File::NULL)
   end
 
   def repo_has_uncommitted_changes?
@@ -566,7 +571,7 @@ PY
       git reset --hard #{Shellwords.escape(head)} >/dev/null 2>&1
       git clean -fdx >/dev/null 2>&1
     SH
-    ok = system('ssh', 'mini', remote_cmd)
+    ok = ssh_system('mini', remote_cmd)
     abort '❌ Failed to prepare a clean routed release workspace on the mini.' unless ok
 
     puts "🔄 Syncing local workspace snapshot to mini (#{scratch_repo})"
@@ -596,7 +601,7 @@ PY
         fi
       done
     SH
-    ok = system('ssh', 'mini', remote_cmd)
+    ok = ssh_system('mini', remote_cmd)
     warn '⚠️  Failed to prune stale routed workspaces on the mini.' unless ok
     ok
   end
@@ -606,8 +611,7 @@ PY
   end
 
   def mini_repo_has_commit?(remote_repo, commit)
-    system(
-      'ssh',
+    ssh_system(
       '-o', 'BatchMode=yes',
       '-o', 'ConnectTimeout=3',
       'mini',
@@ -623,7 +627,7 @@ PY
       abort '❌ Failed to create the routed release git bundle.' unless ok
 
       remote_parent = File.dirname(remote_bundle_path)
-      ok = system('ssh', 'mini', "mkdir -p #{Shellwords.escape(remote_parent)}")
+      ok = ssh_system('mini', "mkdir -p #{Shellwords.escape(remote_parent)}")
       abort '❌ Failed to prepare the routed release bundle path on the mini.' unless ok
 
       ok = system('rsync', '-az', tmp.path, "mini:#{remote_bundle_path}")
@@ -765,13 +769,12 @@ PY
     abort "❌ Could not map cktool config to mini: #{local_cktool_path}" unless remote_cktool_path
 
     remote_parent = File.dirname(remote_cktool_path)
-    ok = system('ssh', 'mini', "mkdir -p #{Shellwords.escape(remote_parent)}")
+    ok = ssh_system('mini', "mkdir -p #{Shellwords.escape(remote_parent)}")
     abort '❌ Failed to prepare cktool auth parent on the mini.' unless ok
 
     if File.directory?(local_cktool_path)
       puts "⚠️ Local cktool auth path is a directory; syncing legacy contents to mini (#{remote_cktool_path})"
-      ok = system(
-        'ssh',
+      ok = ssh_system(
         'mini',
         "if [ -f #{Shellwords.escape(remote_cktool_path)} ]; then /usr/bin/trash #{Shellwords.escape(remote_cktool_path)}; fi && mkdir -p #{Shellwords.escape(remote_cktool_path)}"
       )
@@ -788,8 +791,7 @@ PY
       return
     end
 
-    ok = system(
-      'ssh',
+    ok = ssh_system(
       'mini',
       "if [ -d #{Shellwords.escape(remote_cktool_path)} ]; then /usr/bin/trash #{Shellwords.escape(remote_cktool_path)} 2>/dev/null || [ ! -e #{Shellwords.escape(remote_cktool_path)} ]; fi"
     )
@@ -808,7 +810,7 @@ PY
   def sync_local_dir_to_mini!(local_dir, remote_dir, label: nil)
     puts "🔄 Syncing #{label} to mini (#{remote_dir})" if label
     remote_parent = File.dirname(remote_dir)
-    ok = system('ssh', 'mini', "mkdir -p #{Shellwords.escape(remote_parent)}")
+    ok = ssh_system('mini', "mkdir -p #{Shellwords.escape(remote_parent)}")
     abort "❌ Failed to prepare mini destination for #{label || 'the current workspace snapshot'}." unless ok
 
     ok = system(
@@ -855,7 +857,7 @@ PY
         xcodegen generate >/dev/null
       fi
     SH
-    ok = system('ssh', 'mini', remote_cmd)
+    ok = ssh_system('mini', remote_cmd)
     return if ok
 
     abort '❌ Failed to prepare the mini workspace after sync.'
@@ -865,7 +867,7 @@ PY
     context = build_route_context(command, webhook_remote_repo: webhook_remote_repo)
     remote_context_dir = File.join(remote_repo, '.sanemaster')
     remote_context_path = File.join(remote_context_dir, 'mini_route_context.json')
-    ok = system('ssh', 'mini', "mkdir -p #{Shellwords.escape(remote_context_dir)}")
+    ok = ssh_system('mini', "mkdir -p #{Shellwords.escape(remote_context_dir)}")
     abort '❌ Failed to prepare the mini route-context directory.' unless ok
 
     Tempfile.create(['sanemaster-route-context', '.json']) do |tmp|
@@ -1007,7 +1009,7 @@ PY
 
       remote_path = File.join(remote_repo, relative_path)
       remote_parent = File.dirname(remote_path)
-      ok = system('ssh', 'mini', "mkdir -p #{Shellwords.escape(remote_parent)}")
+      ok = ssh_system('mini', "mkdir -p #{Shellwords.escape(remote_parent)}")
       abort "❌ Failed to prepare mini destination for routed release artifacts (#{relative_path})." unless ok
 
       puts "🔄 Syncing routed release artifacts to mini (#{remote_path})"
@@ -1045,8 +1047,8 @@ PY
   end
 
   def mini_directory?(remote_path)
-    system(
-      'ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=3',
+    ssh_system(
+      '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=3',
       'mini',
       "test -d #{Shellwords.escape(remote_path)}",
       out: File::NULL,
@@ -1055,8 +1057,8 @@ PY
   end
 
   def mini_path_exists_fast?(remote_path)
-    system(
-      'ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=3',
+    ssh_system(
+      '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=3',
       'mini',
       "test -e #{Shellwords.escape(remote_path)}",
       out: File::NULL,
