@@ -101,6 +101,8 @@ module SaneMasterModules
           subset = {
             'Name': payload.get('Name'),
             'UUID': payload.get('UUID'),
+            'CreationDate': payload.get('CreationDate'),
+            'ExpirationDate': payload.get('ExpirationDate'),
             'Entitlements': payload.get('Entitlements', {}),
             'DeveloperCertificates': [
               base64.b64encode(cert).decode('ascii')
@@ -182,6 +184,30 @@ module SaneMasterModules
       ].flat_map { |pattern| Dir.glob(pattern) }.uniq.sort
     end
 
+    def provisioning_profile_time(value)
+      return nil if value.to_s.strip.empty?
+
+      Time.parse(value.to_s)
+    rescue StandardError
+      nil
+    end
+
+    def provisioning_profile_install_lockfile
+      File.expand_path('~/.sanemaster/provisioning_profile_install.lock')
+    end
+
+    def with_provisioning_profile_install_lock
+      lock_path = provisioning_profile_install_lockfile
+      FileUtils.mkdir_p(File.dirname(lock_path))
+
+      File.open(lock_path, File::RDWR | File::CREAT, 0o600) do |lock_file|
+        lock_file.flock(File::LOCK_EX)
+        yield
+      ensure
+        lock_file.flock(File::LOCK_UN)
+      end
+    end
+
     def canonicalize_provisioning_profile_inputs(paths)
       candidates = Array(paths).filter_map do |path|
         expanded = File.expand_path(path.to_s)
@@ -199,6 +225,8 @@ module SaneMasterModules
           payload: payload,
           name: payload['Name'].to_s,
           uuid: payload['UUID'].to_s,
+          creation_time: provisioning_profile_time(payload['CreationDate']),
+          expiration_time: provisioning_profile_time(payload['ExpirationDate']),
           mtime: File.mtime(expanded)
         }
       end
@@ -207,7 +235,15 @@ module SaneMasterModules
       skipped = []
 
       candidates.group_by { |candidate| candidate[:name].to_s }.each_value do |group|
-        winner = group.max_by { |candidate| [candidate[:mtime], candidate[:path]] }
+        winner = group.max_by do |candidate|
+          [
+            candidate[:expiration_time] || Time.at(0),
+            candidate[:creation_time] || Time.at(0),
+            candidate[:mtime],
+            candidate[:uuid],
+            candidate[:path]
+          ]
+        end
         chosen << winner
         skipped.concat(group - [winner])
       end
@@ -219,76 +255,78 @@ module SaneMasterModules
     end
 
     def install_provisioning_profiles(paths, remove_source: false, destination_roots: provisioning_profile_destination_roots)
-      selection = canonicalize_provisioning_profile_inputs(paths)
-      results = selection[:skipped].map do |candidate|
-        {
-          path: candidate[:path],
-          name: candidate[:name],
-          uuid: candidate[:uuid],
-          destination: nil,
-          removed_existing: [],
-          ok: true,
-          skipped: true,
-          reason: 'older duplicate download'
-        }
-      end
-
-      selection[:chosen].each do |candidate|
-        destination_root = candidate[:ext] == '.provisionprofile' ? destination_roots[:provisionprofile] : destination_roots[:mobileprovision]
-        removed_existing = []
-
-        begin
-          FileUtils.mkdir_p(destination_root)
-          existing_matches = provisioning_profile_paths(destination_roots).select do |existing_path|
-            next false if File.expand_path(existing_path) == candidate[:path]
-
-            existing_payload = decode_mobileprovision(existing_path)
-            next false unless existing_payload.is_a?(Hash)
-
-            existing_uuid = existing_payload['UUID'].to_s
-            existing_name = existing_payload['Name'].to_s
-            existing_uuid == candidate[:uuid] || (!candidate[:name].empty? && existing_name == candidate[:name])
-          end
-
-          existing_matches.each do |existing_path|
-            FileUtils.rm_f(existing_path)
-            removed_existing << existing_path
-          end
-
-          destination_path = File.join(destination_root, "#{candidate[:uuid]}#{candidate[:ext]}")
-          FileUtils.cp(candidate[:path], destination_path)
-          installed_payload = decode_mobileprovision(destination_path)
-          unless installed_payload.is_a?(Hash) && installed_payload['UUID'].to_s == candidate[:uuid]
-            raise "verification failed for #{destination_path}"
-          end
-
-          FileUtils.rm_f(candidate[:path]) if remove_source && File.expand_path(candidate[:path]) != File.expand_path(destination_path)
-
-          results << {
-            path: candidate[:path],
-            name: candidate[:name],
-            uuid: candidate[:uuid],
-            destination: destination_path,
-            removed_existing: removed_existing,
-            ok: true,
-            skipped: false,
-            reason: nil
-          }
-        rescue StandardError => e
-          results << {
+      with_provisioning_profile_install_lock do
+        selection = canonicalize_provisioning_profile_inputs(paths)
+        results = selection[:skipped].map do |candidate|
+          {
             path: candidate[:path],
             name: candidate[:name],
             uuid: candidate[:uuid],
             destination: nil,
-            removed_existing: removed_existing,
-            ok: false,
-            skipped: false,
-            reason: e.message
+            removed_existing: [],
+            ok: true,
+            skipped: true,
+            reason: 'older duplicate download'
           }
         end
-      end
 
-      results
+        selection[:chosen].each do |candidate|
+          destination_root = candidate[:ext] == '.provisionprofile' ? destination_roots[:provisionprofile] : destination_roots[:mobileprovision]
+          removed_existing = []
+
+          begin
+            FileUtils.mkdir_p(destination_root)
+            existing_matches = provisioning_profile_paths(destination_roots).select do |existing_path|
+              next false if File.expand_path(existing_path) == candidate[:path]
+
+              existing_payload = decode_mobileprovision(existing_path)
+              next false unless existing_payload.is_a?(Hash)
+
+              existing_uuid = existing_payload['UUID'].to_s
+              existing_name = existing_payload['Name'].to_s
+              existing_uuid == candidate[:uuid] || (!candidate[:name].empty? && existing_name == candidate[:name])
+            end
+
+            existing_matches.each do |existing_path|
+              FileUtils.rm_f(existing_path)
+              removed_existing << existing_path
+            end
+
+            destination_path = File.join(destination_root, "#{candidate[:uuid]}#{candidate[:ext]}")
+            FileUtils.cp(candidate[:path], destination_path)
+            installed_payload = decode_mobileprovision(destination_path)
+            unless installed_payload.is_a?(Hash) && installed_payload['UUID'].to_s == candidate[:uuid]
+              raise "verification failed for #{destination_path}"
+            end
+
+            FileUtils.rm_f(candidate[:path]) if remove_source && File.expand_path(candidate[:path]) != File.expand_path(destination_path)
+
+            results << {
+              path: candidate[:path],
+              name: candidate[:name],
+              uuid: candidate[:uuid],
+              destination: destination_path,
+              removed_existing: removed_existing,
+              ok: true,
+              skipped: false,
+              reason: nil
+            }
+          rescue StandardError => e
+            results << {
+              path: candidate[:path],
+              name: candidate[:name],
+              uuid: candidate[:uuid],
+              destination: nil,
+              removed_existing: removed_existing,
+              ok: false,
+              skipped: false,
+              reason: e.message
+            }
+          end
+        end
+
+        results
+      end
     end
 
     def install_provisioning_profiles_command(args)

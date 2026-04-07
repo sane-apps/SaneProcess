@@ -242,6 +242,43 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('breaks duplicate ties by the newer profile lifetime instead of filesystem order') do
+      Dir.mktmpdir do |dir|
+        first = File.join(dir, 'A-SaneClip.mobileprovision')
+        second = File.join(dir, 'B-SaneClip.mobileprovision')
+        File.write(first, 'first')
+        File.write(second, 'second')
+        same_time = Time.now
+        File.utime(same_time, same_time, first)
+        File.utime(same_time, same_time, second)
+
+        subject.define_singleton_method(:decode_mobileprovision) do |path|
+          if path.end_with?('A-SaneClip.mobileprovision')
+            {
+              'Name' => 'SaneClip iOS App Store',
+              'UUID' => 'uuid-old',
+              'CreationDate' => '2026-04-01 12:00:00 +0000',
+              'ExpirationDate' => '2026-04-15 12:00:00 +0000'
+            }
+          else
+            {
+              'Name' => 'SaneClip iOS App Store',
+              'UUID' => 'uuid-new',
+              'CreationDate' => '2026-04-02 12:00:00 +0000',
+              'ExpirationDate' => '2026-05-15 12:00:00 +0000'
+            }
+          end
+        end
+
+        selection = subject.send(:canonicalize_provisioning_profile_inputs, [first, second])
+
+        assert_eq(selection[:chosen].length, 1)
+        assert_eq(selection[:chosen].first[:uuid], 'uuid-new')
+        assert_eq(selection[:skipped].first[:uuid], 'uuid-old')
+      end
+      true
+    end
+
     test('removes stale installed copies with the same name before copying the new profile') do
       Dir.mktmpdir do |dir|
         mobile_dir = File.join(dir, 'mobile')
