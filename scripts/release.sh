@@ -5396,8 +5396,11 @@ PY
     DOCS_DIR="${PROJECT_ROOT}/docs"
     WEBSITE_DIR="${PROJECT_ROOT}/website"
     for SITE_DIR in "${DOCS_DIR}" "${WEBSITE_DIR}"; do
-        INDEX_HTML="${SITE_DIR}/index.html"
-        if [ -f "${INDEX_HTML}" ]; then
+        for PAGE_NAME in index.html download.html; do
+            INDEX_HTML="${SITE_DIR}/${PAGE_NAME}"
+            if [ ! -f "${INDEX_HTML}" ]; then
+                continue
+            fi
             UPDATE_RESULT=$(APP_NAME="${APP_NAME}" VERSION="${VERSION}" INDEX_HTML="${INDEX_HTML}" python3 <<'PY'
 import os
 import pathlib
@@ -5433,12 +5436,12 @@ PY
             SOFTWARE_COUNT="${UPDATE_RESULT##*,}"
 
             if [ "${DOWNLOAD_COUNT}" -gt 0 ]; then
-                log_info "Updated ${DOWNLOAD_COUNT} download link(s) in $(basename "${SITE_DIR}")/index.html → ${APP_NAME}-${VERSION}.zip"
+                log_info "Updated ${DOWNLOAD_COUNT} download link(s) in $(basename "${SITE_DIR}")/${PAGE_NAME} → ${APP_NAME}-${VERSION}.zip"
             fi
             if [ "${SOFTWARE_COUNT}" -gt 0 ]; then
-                log_info "Updated softwareVersion in $(basename "${SITE_DIR}")/index.html → ${VERSION}"
+                log_info "Updated softwareVersion in $(basename "${SITE_DIR}")/${PAGE_NAME} → ${VERSION}"
             fi
-        fi
+        done
     done
 
     # Auto-wire live iOS App Store URL into website markers (if configured and available).
