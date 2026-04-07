@@ -377,6 +377,7 @@ class SaneMaster
       release_routed = release_routed_command?(command)
       preserve_release_artifacts = release_artifact_resume_requested?(command, args)
       routed_webhook_repo = nil
+      remote_saneui_repo = nil
       execution_repo = if release_routed
                          prepare_release_workspace_on_mini!(Dir.pwd, remote_repo, preserve_release_artifacts: preserve_release_artifacts)
                        else
@@ -442,6 +443,11 @@ class SaneMaster
       sync_outputs_from_mini!(Dir.pwd, execution_repo)
       sync_release_artifacts_from_mini!(Dir.pwd, execution_repo, warn_only: true) if release_routed
       sync_release_support_repos_from_origin! if release_routed && remote_status.zero?
+      if !release_routed && remote_status.zero?
+        normalize_mini_repo_after_route!(Dir.pwd, execution_repo, label: 'workspace')
+        normalize_mini_repo_after_route!(saneprocess_repo_root, execution_saneprocess_repo, label: 'SaneProcess')
+        normalize_mini_repo_after_route!(saneui_repo_root, remote_saneui_repo, label: 'SaneUI') if remote_saneui_repo
+      end
       exit remote_status
     end
   end
@@ -501,6 +507,16 @@ class SaneMaster
     return false unless system('git', 'rev-parse', '--is-inside-work-tree', out: File::NULL, err: File::NULL)
     return true unless system('git', 'diff', '--quiet', '--ignore-submodules=dirty', out: File::NULL, err: File::NULL)
     return true unless system('git', 'diff', '--cached', '--quiet', '--ignore-submodules=dirty', out: File::NULL, err: File::NULL)
+
+    false
+  rescue StandardError
+    false
+  end
+
+  def repo_has_uncommitted_changes_at?(repo_dir)
+    return false unless system('git', '-C', repo_dir, 'rev-parse', '--is-inside-work-tree', out: File::NULL, err: File::NULL)
+    return true unless system('git', '-C', repo_dir, 'diff', '--quiet', '--ignore-submodules=dirty', out: File::NULL, err: File::NULL)
+    return true unless system('git', '-C', repo_dir, 'diff', '--cached', '--quiet', '--ignore-submodules=dirty', out: File::NULL, err: File::NULL)
 
     false
   rescue StandardError
@@ -760,6 +776,33 @@ PY
 
     pull_ok = system('git', '-C', repo_dir, 'pull', '--ff-only', 'origin', branch)
     warn "⚠️  Failed to fast-forward #{label} from origin after routed release." unless pull_ok
+  end
+
+  def normalize_mini_repo_after_route!(local_repo, remote_repo, label:)
+    return if remote_repo.nil? || remote_repo.empty?
+    return if repo_has_uncommitted_changes_at?(local_repo)
+
+    branch = current_git_branch(local_repo)
+    head = current_git_head(local_repo)
+    remote_sync = local_repo_remote_sync_context(local_repo, branch, head)
+    return unless remote_sync['status'] == 'matches'
+
+    remote_cmd = <<~SH
+      set -e
+      cd #{Shellwords.escape(remote_repo)}
+      branch=#{Shellwords.escape(branch)}
+      git fetch origin "$branch" >/dev/null 2>&1 || exit 0
+      current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
+      [ "$current_branch" = "$branch" ] || exit 0
+      counts=$(git rev-list --left-right --count "$branch...origin/$branch" 2>/dev/null || echo "0 0")
+      ahead=$(printf '%s' "$counts" | awk '{print $1}')
+      [ "${ahead:-0}" = "0" ] || exit 0
+      git reset --mixed "origin/$branch" >/dev/null 2>&1 || exit 0
+    SH
+
+    ok = ssh_system('mini', remote_cmd, out: File::NULL, err: File::NULL)
+    warn "⚠️  Failed to normalize #{label} on the mini after routed sync." unless ok
+    ok
   end
 
   def sync_cktool_auth_to_mini!

@@ -14,6 +14,10 @@ class ReleaseRoutingHarness < SaneMaster
     @directory_paths = []
     @ff_calls = []
     @webhook_repo_root = nil
+    @repo_dirty = {}
+    @branches = {}
+    @heads = {}
+    @remote_sync = {}
   end
 
   def set_existing_paths(paths)
@@ -36,12 +40,44 @@ class ReleaseRoutingHarness < SaneMaster
     @webhook_repo_root = path
   end
 
+  def set_repo_dirty(repo, dirty)
+    @repo_dirty[repo] = dirty
+  end
+
+  def set_branch(repo, branch)
+    @branches[repo] = branch
+  end
+
+  def set_head(repo, head)
+    @heads[repo] = head
+  end
+
+  def set_remote_sync(repo, status)
+    @remote_sync[repo] = status
+  end
+
   def sane_email_automation_repo_root
     @webhook_repo_root || super
   end
 
   def fast_forward_local_repo_from_origin!(repo_dir, label:)
     @ff_calls << { repo_dir:, label: }
+  end
+
+  def repo_has_uncommitted_changes_at?(repo_dir)
+    @repo_dirty.fetch(repo_dir, false)
+  end
+
+  def current_git_branch(repo_dir)
+    @branches.fetch(repo_dir, 'main')
+  end
+
+  def current_git_head(repo_dir)
+    @heads.fetch(repo_dir, 'abc123')
+  end
+
+  def local_repo_remote_sync_context(repo_dir, branch, head)
+    { 'status' => @remote_sync.fetch(repo_dir, 'matches'), 'branch' => branch, 'remote_ref' => head }
   end
 
   private
@@ -115,9 +151,9 @@ exit(run_tests('SaneMaster Release Routing Tests') do
         current_root = '/Users/stephansmac/.sanemaster/routed-workspaces/current123'
         subject.send(:prune_stale_mini_release_workspaces!, repo, current_workspace_root: current_root, keep_days: 3, min_keep: 2)
 
-        ssh_call = subject.system_calls.find { |call| call.first == 'ssh' && call[1] == 'mini' }
+        ssh_call = subject.system_calls.find { |call| call.first == 'ssh' && call.include?('mini') }
         assert(ssh_call, 'expected an ssh prune call')
-        remote_cmd = ssh_call[2]
+        remote_cmd = ssh_call.reverse.find { |entry| entry.is_a?(String) && entry.include?('keep_days=3') }
         assert_includes(remote_cmd, '/Users/stephansmac/.sanemaster/routed-workspaces')
         assert_includes(remote_cmd, 'current123')
         assert_includes(remote_cmd, 'keep_days=3')
@@ -176,6 +212,40 @@ exit(run_tests('SaneMaster Release Routing Tests') do
         assert_eq(subject.ff_calls.length, 1, 'expected one fast-forward sync call')
         assert_eq(subject.ff_calls.first[:repo_dir], repo)
         assert_eq(subject.ff_calls.first[:label], 'sane-email-automation')
+        true
+      end
+    end
+  end
+
+  test_category('Mini repo normalization after routed verify') do
+    test('resets the mini branch to origin when the local repo is clean and matched') do
+      with_temp_repo do |repo|
+        subject.system_calls.clear
+        subject.set_repo_dirty(repo, false)
+        subject.set_branch(repo, 'main')
+        subject.set_head(repo, '0189a7b')
+        subject.set_remote_sync(repo, 'matches')
+
+        subject.send(:normalize_mini_repo_after_route!, repo, '/Users/stephansmac/SaneApps/apps/SaneClip', label: 'workspace')
+
+        ssh_call = subject.system_calls.find { |call| call.first == 'ssh' && call.include?('mini') }
+        assert(ssh_call, 'expected an ssh normalization call')
+        remote_cmd = ssh_call.reverse.find { |entry| entry.is_a?(String) && entry.include?('git fetch origin') }
+        assert_includes(remote_cmd, 'git fetch origin "$branch"')
+        assert_includes(remote_cmd, 'git reset --mixed "origin/$branch"')
+        true
+      end
+    end
+
+    test('skips normalization when the local repo still has uncommitted changes') do
+      with_temp_repo do |repo|
+        subject.system_calls.clear
+        subject.set_repo_dirty(repo, true)
+
+        subject.send(:normalize_mini_repo_after_route!, repo, '/Users/stephansmac/SaneApps/apps/SaneClip', label: 'workspace')
+
+        ssh_call = subject.system_calls.find { |call| call.first == 'ssh' && call.include?('mini') }
+        assert_eq(ssh_call, nil, 'expected no ssh call when local repo is dirty')
         true
       end
     end
