@@ -578,7 +578,14 @@ module SaneMasterModules
     def check_rubocop_issues
       puts '🔍 Code Quality:'
 
-      output = `bundle exec rubocop Scripts/ --format simple 2>/dev/null | tail -5`
+      unless bundle_available?
+        puts '   ⚠️  bundle is not installed; skipping rubocop bundle lane'
+        puts ''
+        return 0
+      end
+
+      output, _status = capture2e_with_bundle_env(preferred_bundle_bin, 'exec', 'rubocop', 'Scripts/', '--format', 'simple')
+      output = output.lines.last(5).join
 
       if output.match(/(\d+) offenses? detected/)
         count = ::Regexp.last_match(1).to_i

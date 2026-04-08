@@ -3,6 +3,7 @@
 require 'English'
 require 'json'
 require 'fileutils'
+require 'open3'
 require 'tmpdir'
 require 'optparse'
 require 'set'
@@ -47,6 +48,65 @@ module SaneMasterModules
                                       appstore_preflight
                                       asp
                                     ]).freeze
+
+    def homebrew_ruby_path
+      HOMEBREW_RUBY
+    end
+
+    def homebrew_bundle_path
+      HOMEBREW_BUNDLE
+    end
+
+    def preferred_ruby_bin
+      File.executable?(homebrew_ruby_path) ? homebrew_ruby_path : 'ruby'
+    end
+
+    def preferred_bundle_bin
+      File.executable?(homebrew_bundle_path) ? homebrew_bundle_path : 'bundle'
+    end
+
+    def bundle_available?
+      File.executable?(homebrew_bundle_path) || system('command -v bundle >/dev/null 2>&1')
+    end
+
+    def ruby_tool_env(base_env = ENV.to_h)
+      return {} unless File.executable?(homebrew_ruby_path)
+
+      ruby_bin_dir = File.dirname(homebrew_ruby_path)
+      current_path = base_env.fetch('PATH', ENV.fetch('PATH', ''))
+      path_entries = current_path.split(File::PATH_SEPARATOR).reject(&:empty?)
+      path_entries = [ruby_bin_dir] + path_entries.reject { |entry| entry == ruby_bin_dir }
+
+      { 'PATH' => path_entries.join(File::PATH_SEPARATOR) }
+    end
+
+    def bundle_tool_env(base_env = ENV.to_h)
+      env = ruby_tool_env(base_env)
+      env['BUNDLE_PATH'] = base_env.fetch('BUNDLE_PATH', ENV.fetch('BUNDLE_PATH', 'vendor/bundle'))
+      env
+    end
+
+    def system_with_ruby_env(*command, extra_env: {}, out: nil, err: nil)
+      options = {}
+      options[:out] = out unless out.nil?
+      options[:err] = err unless err.nil?
+      system(ruby_tool_env.merge(extra_env), *command, **options)
+    end
+
+    def capture2e_with_ruby_env(*command, extra_env: {})
+      Open3.capture2e(ruby_tool_env.merge(extra_env), *command)
+    end
+
+    def system_with_bundle_env(*command, extra_env: {}, out: nil, err: nil)
+      options = {}
+      options[:out] = out unless out.nil?
+      options[:err] = err unless err.nil?
+      system(bundle_tool_env.merge(extra_env), *command, **options)
+    end
+
+    def capture2e_with_bundle_env(*command, extra_env: {})
+      Open3.capture2e(bundle_tool_env.merge(extra_env), *command)
+    end
 
     # --- Project Resolution ---
 

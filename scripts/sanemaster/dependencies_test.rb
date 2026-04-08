@@ -143,4 +143,95 @@ exit(run_tests('SaneMaster MCP Watchdog Tests') do
       true
     end
   end
+
+  test_category('Ruby subprocess env') do
+    test('prepends the Homebrew Ruby bin to subprocess PATH once') do
+      Dir.mktmpdir('ruby-env-') do |dir|
+        ruby_bin = File.join(dir, 'ruby')
+        bundle_bin = File.join(dir, 'bundle')
+        File.write(ruby_bin, "#!/bin/sh\nexit 0\n")
+        File.write(bundle_bin, "#!/bin/sh\nexit 0\n")
+        FileUtils.chmod(0o755, ruby_bin)
+        FileUtils.chmod(0o755, bundle_bin)
+
+        subject.define_singleton_method(:homebrew_ruby_path) { ruby_bin }
+        subject.define_singleton_method(:homebrew_bundle_path) { bundle_bin }
+
+        env = subject.send(:ruby_tool_env, { 'PATH' => '/usr/bin:/bin' })
+        entries = env.fetch('PATH').split(File::PATH_SEPARATOR)
+
+        assert_eq(entries.first, dir)
+        assert_eq(entries.count(dir), 1)
+      end
+      true
+    end
+
+    test('runs bundle-like subprocesses with the Homebrew Ruby bin first in PATH') do
+      Dir.mktmpdir('ruby-env-capture-') do |dir|
+        ruby_bin = File.join(dir, 'ruby')
+        bundle_bin = File.join(dir, 'bundle')
+        File.write(ruby_bin, "#!/bin/sh\nexit 0\n")
+        File.write(bundle_bin, "#!/bin/sh\nexit 0\n")
+        FileUtils.chmod(0o755, ruby_bin)
+        FileUtils.chmod(0o755, bundle_bin)
+
+        subject.define_singleton_method(:homebrew_ruby_path) { ruby_bin }
+        subject.define_singleton_method(:homebrew_bundle_path) { bundle_bin }
+
+        output, status = subject.send(:capture2e_with_ruby_env, '/bin/sh', '-c', 'printf %s "$PATH"')
+
+        assert(status.success?, 'expected PATH probe command to succeed')
+        assert_eq(output.split(File::PATH_SEPARATOR).first, dir)
+      end
+      true
+    end
+
+    test('merges extra env without dropping the Homebrew Ruby PATH') do
+      Dir.mktmpdir('ruby-env-extra-') do |dir|
+        ruby_bin = File.join(dir, 'ruby')
+        bundle_bin = File.join(dir, 'bundle')
+        File.write(ruby_bin, "#!/bin/sh\nexit 0\n")
+        File.write(bundle_bin, "#!/bin/sh\nexit 0\n")
+        FileUtils.chmod(0o755, ruby_bin)
+        FileUtils.chmod(0o755, bundle_bin)
+
+        subject.define_singleton_method(:homebrew_ruby_path) { ruby_bin }
+        subject.define_singleton_method(:homebrew_bundle_path) { bundle_bin }
+
+        output, status = subject.send(
+          :capture2e_with_ruby_env,
+          '/bin/sh',
+          '-c',
+          'printf "%s\n%s" "$BUNDLE_PATH" "$PATH"',
+          extra_env: { 'BUNDLE_PATH' => 'vendor/bundle' }
+        )
+
+        lines = output.lines.map(&:strip)
+        assert(status.success?, 'expected env probe command to succeed')
+        assert_eq(lines[0], 'vendor/bundle')
+        assert_eq(lines[1].split(File::PATH_SEPARATOR).first, dir)
+      end
+      true
+    end
+
+    test('defaults bundle subprocesses to vendor bundle path') do
+      Dir.mktmpdir('ruby-env-bundle-') do |dir|
+        ruby_bin = File.join(dir, 'ruby')
+        bundle_bin = File.join(dir, 'bundle')
+        File.write(ruby_bin, "#!/bin/sh\nexit 0\n")
+        File.write(bundle_bin, "#!/bin/sh\nexit 0\n")
+        FileUtils.chmod(0o755, ruby_bin)
+        FileUtils.chmod(0o755, bundle_bin)
+
+        subject.define_singleton_method(:homebrew_ruby_path) { ruby_bin }
+        subject.define_singleton_method(:homebrew_bundle_path) { bundle_bin }
+
+        output, status = subject.send(:capture2e_with_bundle_env, '/bin/sh', '-c', 'printf %s "$BUNDLE_PATH"')
+
+        assert(status.success?, 'expected bundle env probe command to succeed')
+        assert_eq(output, 'vendor/bundle')
+      end
+      true
+    end
+  end
 end)

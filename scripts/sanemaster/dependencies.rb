@@ -97,10 +97,10 @@ module SaneMasterModules
         output = `lefthook --version 2>/dev/null`
         output.match(/lefthook version ([\d.]+)/)&.[](1) || 'not installed'
       when 'fastlane'
-        output = `#{HOMEBREW_BUNDLE} exec fastlane --version 2>/dev/null`
+        output, _status = capture2e_with_bundle_env(preferred_bundle_bin, 'exec', 'fastlane', '--version')
         output.match(/fastlane ([\d.]+)/)&.[](1) || 'not installed'
       when 'ruby'
-        output = `#{HOMEBREW_RUBY} --version 2>/dev/null`
+        output, _status = capture2e_with_ruby_env(preferred_ruby_bin, '--version')
         output.match(/ruby ([\d.]+)/)&.[](1) || 'not installed'
       else
         'unknown'

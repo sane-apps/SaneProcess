@@ -131,7 +131,12 @@ module SaneMasterModules
       puts '🛠️ --- [ SANEMASTER SETUP ] ---'
 
       print '📦 Running bundle install... '
-      if system('bundle install --path vendor/bundle > /dev/null 2>&1')
+      if system_with_bundle_env(
+        preferred_bundle_bin,
+        'install',
+        out: File::NULL,
+        err: File::NULL
+      )
         puts '✅'
       else
         puts '⚠️  Bundle install failed or not needed'

@@ -389,12 +389,12 @@ module SaneMasterModules
 
     def run_fastlane_lint
       if File.exist?('Gemfile')
-        unless command_available?('bundle')
+        unless bundle_available?
           puts '  ⚠️  bundle is not installed; skipping bundle exec fastlane lint.'
           return false
         end
 
-        return true if system('bundle', 'exec', 'fastlane', 'lint')
+        return true if system_with_bundle_env(preferred_bundle_bin, 'exec', 'fastlane', 'lint')
 
         puts '  ⚠️  bundle exec fastlane lint failed (gem/bundler or lane issue).'
         return false
@@ -433,9 +433,19 @@ module SaneMasterModules
 
     def run_quality_report
       puts '📊 --- [ SANEMASTER QUALITY ] ---'
-      if system('bundle exec fastlane quality')
+      unless bundle_available?
+        puts '❌ Quality report generation failed.'
+        return
+      end
+
+      output, status = capture2e_with_bundle_env(preferred_bundle_bin, 'exec', 'fastlane', 'quality')
+      if status.success?
         puts '✅ Quality report generation complete.'
+      elsif output.include?('Could not find lane')
+        puts 'ℹ️  No fastlane quality lane; falling back to the bundled rubocop report.'
+        check_rubocop_issues
       else
+        puts output unless output.to_s.strip.empty?
         puts '❌ Quality report generation failed.'
       end
     end
