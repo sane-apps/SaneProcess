@@ -1245,7 +1245,7 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
 
   sed -E \
     -e "s/^(iters: )[0-9]+/\\1$ITERS/" \
-    -e "s/^([[:space:]]*arguments: \\[[^,]+, )[0-9]+(\\])$/\\1$ITERS\\2/" \
+    -e "s/^([[:space:]]*arguments: \\[[^,]+, )[0-9]+(\\].*)$/\\1$ITERS\\2/" \
     -e "s/^([[:space:]]*warmup: )[0-9]+/\\1$WARMUP_STEPS/" \
     "$BASE_CONFIG" > "$SWEEP_CONFIG"
 
