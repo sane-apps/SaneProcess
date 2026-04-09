@@ -700,4 +700,28 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
   end
+
+  test_category('Verify output parsing') do
+    test('does not treat mixed pass and failure output as a release-safe success') do
+      body = <<~LOG
+        ✔ Test run with 686 tests in 101 suites passed after 14.545 seconds.
+        /tmp/SaneVideoTests.swift:42: error: -[SaneVideoTests.ExampleTests testExample] : XCTAssertTrue failed
+        ** TEST FAILED **
+      LOG
+
+      assert(subject.send(:verify_output_indicates_failure?, body), 'expected failure markers to be detected')
+      assert(!subject.send(:verify_output_indicates_success?, body), 'mixed output must not be treated as success')
+      true
+    end
+
+    test('accepts a clean Swift Testing summary when no failure markers are present') do
+      body = <<~LOG
+        ✔ Test run with 686 tests in 101 suites passed after 14.545 seconds.
+      LOG
+
+      assert(!subject.send(:verify_output_indicates_failure?, body), 'clean output should not report failure')
+      assert(subject.send(:verify_output_indicates_success?, body), 'clean output should still count as success')
+      true
+    end
+  end
 end)

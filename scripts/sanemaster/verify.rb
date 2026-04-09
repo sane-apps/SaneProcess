@@ -632,10 +632,24 @@ module SaneMasterModules
       { success: result[:success], tests_run: total_tests, duration: (Time.now - state[:start_time]).to_i, timeout: result[:timeout] }
     end
 
+    def verify_log_indicates_failure?(text)
+      body = text.to_s
+      return true if body.match?(/\*\* TEST FAILED \*\*/)
+      return true if body.match?(/\*\* BUILD FAILED \*\*/)
+      return true if body.match?(/error:\s+-\[[^\]]+\]/)
+      return true if body.match?(/Executed \d+ tests?, with [1-9]\d* failures?/)
+      return true if body.match?(/Executed \d+ tests?, with \d+ failures?, with [1-9]\d* unexpected/)
+
+      false
+    end
+
     def verify_log_indicates_success?(text)
       body = text.to_s
+      return false if verify_log_indicates_failure?(body)
+
       return true if body.include?('✅ Tests passed!')
       return true if body.match?(/Swift Testing:\s+\d+ tests .* passed/)
+      return true if body.match?(/Test run with \d+ tests? in \d+ suites? passed/)
       return true if body.match?(/Test Suite 'All tests' passed/)
       return true if body.match?(/Executed \d+ tests?, with 0 failures/)
 
@@ -840,7 +854,9 @@ module SaneMasterModules
 
       if !success && !timed_out && File.exist?('test_output.txt')
         log_output = File.read('test_output.txt') rescue ''
-        if verify_log_indicates_success?(log_output)
+        if verify_log_indicates_failure?(log_output)
+          puts '   ℹ️  Test log contains explicit failure markers; preserving the non-zero verify result.'
+        elsif verify_log_indicates_success?(log_output)
           puts '   ℹ️  Test log shows a clean pass despite a non-zero runner exit; treating verify as successful.'
           success = true
         end

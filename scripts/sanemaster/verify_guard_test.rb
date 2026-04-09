@@ -170,4 +170,28 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
       true
     end
   end
+
+  test_category('Verify log parser') do
+    test('does not treat mixed Swift Testing and XCTest failure output as success') do
+      body = <<~LOG
+        ✔ Test run with 686 tests in 101 suites passed after 14.545 seconds.
+        /tmp/SaneVideoTests.swift:42: error: -[SaneVideoTests.ExampleTests testExample] : XCTAssertTrue failed
+        ** TEST FAILED **
+      LOG
+
+      assert_eq(subject.send(:verify_log_indicates_failure?, body), true)
+      assert_eq(subject.send(:verify_log_indicates_success?, body), false)
+      true
+    end
+
+    test('accepts a clean Swift Testing summary when no failure markers are present') do
+      body = <<~LOG
+        ✔ Test run with 686 tests in 101 suites passed after 14.545 seconds.
+      LOG
+
+      assert_eq(subject.send(:verify_log_indicates_failure?, body), false)
+      assert_eq(subject.send(:verify_log_indicates_success?, body), true)
+      true
+    end
+  end
 end)

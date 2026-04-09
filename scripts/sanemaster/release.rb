@@ -589,10 +589,24 @@ module SaneMasterModules
       []
     end
 
+    def verify_output_indicates_failure?(output)
+      text = output.to_s
+      return true if text.match?(/\*\* TEST FAILED \*\*/)
+      return true if text.match?(/\*\* BUILD FAILED \*\*/)
+      return true if text.match?(/error:\s+-\[[^\]]+\]/)
+      return true if text.match?(/Executed \d+ tests?, with [1-9]\d* failures?/)
+      return true if text.match?(/Executed \d+ tests?, with \d+ failures?, with [1-9]\d* unexpected/)
+
+      false
+    end
+
     def verify_output_indicates_success?(output)
       text = output.to_s
+      return false if verify_output_indicates_failure?(text)
+
       return true if text.include?('✅ Tests passed!')
       return true if text.match?(/Swift Testing:\s+\d+ tests .* passed/)
+      return true if text.match?(/Test run with \d+ tests? in \d+ suites? passed/)
       return true if text.match?(/Test Suite 'All tests' passed/)
 
       false
