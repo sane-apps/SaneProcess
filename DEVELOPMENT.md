@@ -109,6 +109,7 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 | `test_mode` | Kill → Build → Launch → Logs |
 | `doctor` | Environment health check |
 | `tool_discovery --query "..."` | Generate a proof receipt before using a workaround or adding a tool |
+| `universal_control_reset [--status|--reboot-mini|--cleanup-mini]` | Recover Air↔Mini Universal Control / pointer handoff |
 | `export` | Export code/docs (PDF/MD) |
 | `listing_actions` | Export the current listing/setup action tracker from inbox history |
 | `debug` | Debugging helpers (logs, crashes, diagnose) |
@@ -149,7 +150,8 @@ These scripts are real, but they are not the default daily path. Keep their role
 | `ruby scripts/scaffold.rb <AppName> [--type macos\|ios]` | One-time bootstrap utility | New Sane* repo skeleton generation before project-specific cleanup and Codex/AGENTS refresh |
 | `bash scripts/automation/website-consistency-check.sh` | Manual website audit | Static consistency checks across product sites and guide hubs after website/release copy changes |
 | `bash scripts/mini/mini-license-test.sh` | Manual deep Mini probe | Full SaneBar license lifecycle testing on the Mini when license activation/deactivation/offline caching changes |
-| `bash scripts/mini/sync-claude-config.sh` | Legacy fallback only | Claude-specific config sync; do not use for Codex parity, which is now `bash scripts/automation/sync-codex-mini.sh mini` |
+| `bash scripts/mini/sync-claude-config.sh` | Deprecated wrapper only | Prints or routes to the canonical `bash scripts/automation/sync-codex-mini.sh mini --no-restart` path |
+| `bash scripts/app_test_mode.sh ...` | Manual runtime lane control | Force app mode, owner-license state, or live-launch verification on local host or Mini without ad hoc defaults writes |
 
 Listing/directory follow-up rule: do not maintain separate manual spreadsheets by hand. Regenerate the tracker from inbox history with the canonical command below. New recognized listing/setup emails are folded into the workbook the next time the command runs.
 
@@ -178,6 +180,14 @@ Tracker columns are designed for owner action, not inbox triage:
 Do not hunt around for ad hoc tools.
 Use the documented standard path first, then use `tool_discovery` if you still think something is missing.
 
+### Release README Gate
+
+`scripts/release.sh` now runs `scripts/automation/nv-readme-check.sh` as part of the release flow.
+Treat that as a real release gate, not optional polish:
+
+- if it says the README is stale, fix the README before release
+- do not bypass it by calling shipped user-facing changes “internal”
+
 | Need | Standard path | Not this |
 |------|---------------|----------|
 | Find the right tool first | `ruby scripts/SaneMaster.rb tool_discovery --query "..."` | Random searches, guessing, or inventing a new script first |
@@ -185,6 +195,7 @@ Use the documented standard path first, then use `tool_discovery` if you still t
 | Launch and smoke-test an app | `ruby scripts/SaneMaster.rb test_mode --release --no-logs` | Manual local launches and stale DerivedData builds |
 | Mini live window screenshots | `scripts/mini/capture-mini-screenshot.sh --app "<App>" --window-name "<Window>" --mode temp` | Plain `ssh` + `screencapture` guessing from a non-GUI shell |
 | Mini Safari tab control | `scripts/mini/mini-safari.sh open-read "<url>"` | One-off raw `ssh mini osascript` snippets for Safari evidence, listing links, or portal checks |
+| Air↔Mini pointer handoff recovery | `ruby scripts/SaneMaster.rb universal_control_reset` | Random killall / reboot guessing when Universal Control breaks |
 | App Store review readiness | `ruby scripts/SaneMaster.rb appstore_preflight` | Clicking around ASC first and guessing what Apple meant |
 | App Review evidence collection | `ruby scripts/appstore_submit.rb --app-id <id> --platform macos|ios --version X.Y.Z --project-root <repo> --fetch-review-package` | Reading only the rejection text and ignoring Apple’s screenshot/video/PDF evidence |
 | Direct release readiness | `ruby scripts/SaneMaster.rb release_preflight` | Manual release spot checks |
@@ -258,6 +269,35 @@ Quick verify:
 ```bash
 lychee --version
 linkinator --version
+
+## Universal Control Recovery
+
+When the Air pointer stops crossing to the Mini, use the shared recovery command instead of ad hoc shell snippets:
+
+```bash
+ruby scripts/SaneMaster.rb universal_control_reset
+```
+
+What it does:
+
+- forces Handoff advertise/receive on
+- clears the saved `com.apple.UniversalControl` state
+- restarts `UniversalControl`, `sharingd`, `useractivityd`, `bluetoothd`, and `ControlCenter`
+- bounces Wi-Fi on the affected host(s)
+
+Useful flags:
+
+- `--status` prints local + Mini discovery state without changing anything
+- `--cleanup-mini` hides Mini Terminal/Codex and closes Preview/Safari
+- `--reboot-mini` runs the reset and then restarts the Mini
+- `--local-only` or `--mini-only` limits which host gets touched
+- `--dry-run` prints the exact commands before executing them
+
+Escalation order:
+
+1. `ruby scripts/SaneMaster.rb universal_control_reset`
+2. If the pointer still does not cross, rerun with `--reboot-mini`
+3. Reboot the Air only after the Mini reboot path still fails
 blc --version
 ```
 

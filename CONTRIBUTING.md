@@ -42,7 +42,7 @@ SaneProcess/
 ├── ARCHITECTURE.md         # System design, decisions, research
 ├── SESSION_HANDOFF.md      # Recent work (ephemeral)
 ├── docs/
-│   ├── SaneProcess.md      # Complete SOP (1,400+ lines)
+│   ├── SaneProcess.md      # Legacy landing page that points to canonical docs
 │   └── archive/            # Confidential docs (gitignored)
 ├── scripts/
 │   ├── SaneMaster.rb       # Main CLI tool
@@ -80,6 +80,17 @@ Fixes #123
 ```
 
 Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
+
+---
+
+## Canonical Docs
+
+Use these instead of treating `docs/SaneProcess.md` as the full manual:
+
+- `README.md` for overview and install path
+- `DEVELOPMENT.md` for daily commands and release flow
+- `ARCHITECTURE.md` for system design and graduated research
+- `AGENTS.md` plus local `CLAUDE.md` for agent rules and session flow
 
 ---
 

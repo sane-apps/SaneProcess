@@ -1,6 +1,6 @@
 # Mac Mini Build Server Scripts
 
-Scripts for the Mac mini training/build pipeline and the local monitoring that watches it. This is the **source of truth** for Mini runtime scripts — edit here, deploy via `deploy.sh`.
+Scripts for the Mac mini training/build pipeline and the local monitoring that watches it. This is the source of truth for Mini runtime scripts only. Canonical Mini control-plane parity now lives in `scripts/automation/sync-codex-mini.sh`.
 
 ## Scripts
 
@@ -30,7 +30,7 @@ bash scripts/mini/deploy.sh
 # Sync the active Codex automation + skill profile to Mini
 bash scripts/automation/sync-codex-mini.sh mini --no-restart
 
-# Legacy Claude-only fallback (do not use for normal Codex parity)
+# Legacy compatibility wrapper (prints guidance or routes to the canonical path)
 bash scripts/mini/sync-claude-config.sh --dry-run
 
 # Or deploy a single script
@@ -38,9 +38,9 @@ scp scripts/mini/mini-train.sh mini:~/SaneApps/infra/scripts/
 ```
 
 Legacy note:
-- `scripts/mini/sync-claude-config.sh` is kept only for Claude-specific fallback work.
+- `scripts/mini/sync-claude-config.sh` is a deprecation wrapper, not a separate sync system.
 - Canonical Mini control-plane parity is `scripts/automation/sync-codex-mini.sh`.
-- `deploy.sh` should not be used to revive the old Claude sync path.
+- `deploy.sh` manages Mini runtime scripts only and should not be used to recreate a second config-sync lane.
 
 Default root behavior:
 - Mini training runners and mini LaunchAgent installers now auto-prefer `~/SaneApps-automation` when that clone exists.
