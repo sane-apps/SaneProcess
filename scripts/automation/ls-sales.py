@@ -227,7 +227,7 @@ def fuzzy_token_matches(left_tokens, right_tokens, min_ratio=0.75):
     return matches
 
 
-def validate_license_key_public(license_key):
+def validate_license_key_public(license_key, allow_failure=False):
     payload = urllib.parse.urlencode({"license_key": license_key})
     result = subprocess.run(
         [
@@ -247,14 +247,80 @@ def validate_license_key_public(license_key):
         text=True,
     )
     if result.returncode != 0:
+        if allow_failure:
+            return {
+                "valid": False,
+                "error": f"license validation request failed: {result.stderr.strip()}",
+                "license_key_id": None,
+                "license_key": license_key,
+                "license_key_status": "unknown",
+                "activation_limit": None,
+                "activation_usage": None,
+                "order_id": None,
+                "order_item_id": None,
+                "customer_id": None,
+                "customer_name": "",
+                "customer_email": "",
+                "customer_email_raw": "",
+                "product_id": None,
+                "product_name": "",
+                "store_id": None,
+                "raw": None,
+                "disabled": False,
+                "validation_failed": True,
+            }
         print(f"Error: license validation request failed: {result.stderr.strip()}", file=sys.stderr)
         sys.exit(1)
     try:
         data = json.loads(result.stdout or "{}")
     except json.JSONDecodeError:
+        if allow_failure:
+            return {
+                "valid": False,
+                "error": f"license validation response was not valid JSON: {result.stdout[:400]}",
+                "license_key_id": None,
+                "license_key": license_key,
+                "license_key_status": "unknown",
+                "activation_limit": None,
+                "activation_usage": None,
+                "order_id": None,
+                "order_item_id": None,
+                "customer_id": None,
+                "customer_name": "",
+                "customer_email": "",
+                "customer_email_raw": "",
+                "product_id": None,
+                "product_name": "",
+                "store_id": None,
+                "raw": result.stdout,
+                "disabled": False,
+                "validation_failed": True,
+            }
         print(f"Error: license validation response was not valid JSON: {result.stdout[:400]}", file=sys.stderr)
         sys.exit(1)
     if not isinstance(data, dict):
+        if allow_failure:
+            return {
+                "valid": False,
+                "error": f"unexpected license validation payload: {result.stdout[:400]}",
+                "license_key_id": None,
+                "license_key": license_key,
+                "license_key_status": "unknown",
+                "activation_limit": None,
+                "activation_usage": None,
+                "order_id": None,
+                "order_item_id": None,
+                "customer_id": None,
+                "customer_name": "",
+                "customer_email": "",
+                "customer_email_raw": "",
+                "product_id": None,
+                "product_name": "",
+                "store_id": None,
+                "raw": data,
+                "disabled": False,
+                "validation_failed": True,
+            }
         print(f"Error: unexpected license validation payload: {result.stdout[:400]}", file=sys.stderr)
         sys.exit(1)
     return summarize_license_validation(data)
@@ -283,6 +349,7 @@ def summarize_license_validation(data):
         "store_id": meta.get("store_id"),
         "raw": data,
         "disabled": status == "disabled",
+        "validation_failed": False,
     }
 
 
@@ -448,6 +515,10 @@ def write_duplicate_license_proof_file(path, duplicate_summary, approval_note_pa
         f"Refunded key disabled: {disabled_license.get('disabled')}",
         f"Refunded key final status: {duplicate_summary['refunded_license_final'].get('license_key_status')}",
     ]
+    if kept_license.get("validation_failed"):
+        lines.append(f"Kept key post-check warning: {kept_license.get('error') or 'validation failed'}")
+    if duplicate_summary["refunded_license_final"].get("validation_failed"):
+        lines.append(f"Refunded key post-check warning: {duplicate_summary['refunded_license_final'].get('error') or 'validation failed'}")
     if approval_note_path:
         lines.append(f"Approval note: {approval_note_path}")
     if approval_note_text:
@@ -520,8 +591,8 @@ def refund_duplicate_license(api_key, orders, args):
             "raw": refunded_license.get("raw"),
         }
 
-    kept_license_final = validate_license_key_public(args.keep_license_key)
-    refunded_license_final = validate_license_key_public(args.refund_duplicate_license_key)
+    kept_license_final = validate_license_key_public(args.keep_license_key, allow_failure=True)
+    refunded_license_final = validate_license_key_public(args.refund_duplicate_license_key, allow_failure=True)
 
     summary = {
         "kept_license": kept_license_final,
@@ -548,6 +619,10 @@ def print_duplicate_license_summary(summary):
     print(f"  Keep key valid: {kept_license.get('valid')}")
     print(f"  Refunded key: {refunded_license.get('license_key')}")
     print(f"  Refunded key final status: {refunded_license_final.get('license_key_status')}")
+    if kept_license.get("validation_failed"):
+        print(f"  Keep key post-check warning: {kept_license.get('error')}")
+    if refunded_license_final.get("validation_failed"):
+        print(f"  Refunded key post-check warning: {refunded_license_final.get('error')}")
 
 
 def issue_order_refund(api_key, order_id, amount=None):

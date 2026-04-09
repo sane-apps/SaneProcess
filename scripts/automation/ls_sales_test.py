@@ -189,7 +189,7 @@ class LsSalesTests(unittest.TestCase):
 
                 LS_SALES.validate_refund_approval = lambda _args: (note, "Approved duplicate refund.")
 
-                def fake_validate_license_key_public(key):
+                def fake_validate_license_key_public(key, allow_failure=False):
                     calls.append(("validate", key))
                     if key == keep_key:
                         return dict(keep_summary)
@@ -262,7 +262,7 @@ class LsSalesTests(unittest.TestCase):
                     amount=None,
                 )
                 LS_SALES.validate_refund_approval = lambda _args: (note, "Approved duplicate refund.")
-                LS_SALES.validate_license_key_public = lambda key: {
+                LS_SALES.validate_license_key_public = lambda key, allow_failure=False: {
                     "valid": True,
                     "license_key_id": 1 if key == keep_key else 2,
                     "license_key": key,
@@ -280,6 +280,125 @@ class LsSalesTests(unittest.TestCase):
         finally:
             LS_SALES.validate_refund_approval = old_validate_refund_approval
             LS_SALES.validate_license_key_public = old_validate_license_key_public
+
+    def test_refund_duplicate_license_post_validation_failure_is_soft(self):
+        keep_key = "KEEP-KEY"
+        refund_key = "REFUND-KEY"
+        orders = [
+            make_order(
+                order_id="7980352",
+                order_number=270691528,
+                product_name="SaneBar",
+                user_name="Syed Raed Al Hashmi",
+                user_email="raed-a@outlook.com",
+            )
+        ]
+        old_validate_refund_approval = LS_SALES.validate_refund_approval
+        old_validate_license_key_public = LS_SALES.validate_license_key_public
+        old_issue_order_refund = LS_SALES.issue_order_refund
+        old_disable_license_key = LS_SALES.disable_license_key
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                proof = Path(tmp) / "duplicate_refund.txt"
+                note = Path(tmp) / "approval.txt"
+                note.write_text("Approved duplicate refund.\n", encoding="utf-8")
+                args = SimpleNamespace(
+                    proof_file=str(proof),
+                    approval_note=str(note),
+                    keep_license_key=keep_key,
+                    refund_duplicate_license_key=refund_key,
+                    refund_order_number="270691528",
+                    amount=None,
+                )
+
+                def fake_validate_license_key_public(key, allow_failure=False):
+                    if key == keep_key and not allow_failure:
+                        return {
+                            "valid": True,
+                            "license_key_id": 1,
+                            "license_key": keep_key,
+                            "license_key_status": "inactive",
+                            "order_id": "7980310",
+                            "customer_id": 8245281,
+                            "customer_name": "Syed Raed Al Hashmi",
+                            "customer_email": "raed-a@outlook.com",
+                            "product_id": 778575,
+                            "product_name": "SaneBar",
+                            "raw": {},
+                            "validation_failed": False,
+                        }
+                    if key == refund_key and not allow_failure:
+                        return {
+                            "valid": True,
+                            "license_key_id": 2,
+                            "license_key": refund_key,
+                            "license_key_status": "inactive",
+                            "order_id": "7980352",
+                            "customer_id": 8245281,
+                            "customer_name": "Syed Raed Al Hashmi",
+                            "customer_email": "raed-a@outlook.com",
+                            "product_id": 778575,
+                            "product_name": "SaneBar",
+                            "raw": {},
+                            "validation_failed": False,
+                        }
+                    return {
+                        "valid": False,
+                        "error": "post-action validation timeout",
+                        "license_key_id": None,
+                        "license_key": key,
+                        "license_key_status": "unknown",
+                        "activation_limit": None,
+                        "activation_usage": None,
+                        "order_id": None,
+                        "order_item_id": None,
+                        "customer_id": None,
+                        "customer_name": "",
+                        "customer_email": "",
+                        "customer_email_raw": "",
+                        "product_id": None,
+                        "product_name": "",
+                        "store_id": None,
+                        "raw": None,
+                        "disabled": False,
+                        "validation_failed": True,
+                    }
+
+                LS_SALES.validate_refund_approval = lambda _args: (note, "Approved duplicate refund.")
+                LS_SALES.validate_license_key_public = fake_validate_license_key_public
+                LS_SALES.issue_order_refund = lambda api_key, order_id, amount=None: make_order(
+                    status="refunded",
+                    refunded=True,
+                    order_id=order_id,
+                    order_number=270691528,
+                    product_name="SaneBar",
+                    user_name="Syed Raed Al Hashmi",
+                    user_email="raed-a@outlook.com",
+                )
+                LS_SALES.disable_license_key = lambda api_key, license_key_id: {
+                    "license_key_id": license_key_id,
+                    "license_key": refund_key,
+                    "status": "disabled",
+                    "disabled": True,
+                    "order_id": "7980352",
+                    "customer_email": "raed-a@outlook.com",
+                    "customer_name": "Syed Raed Al Hashmi",
+                    "product_id": 778575,
+                    "raw": {},
+                }
+
+                summary = LS_SALES.refund_duplicate_license("api-key", orders, args)
+                self.assertTrue(summary["kept_license"]["validation_failed"])
+                self.assertTrue(summary["refunded_license_final"]["validation_failed"])
+                self.assertTrue(proof.exists())
+                proof_text = proof.read_text(encoding="utf-8")
+                self.assertIn("Kept key post-check warning: post-action validation timeout", proof_text)
+                self.assertIn("Refunded key post-check warning: post-action validation timeout", proof_text)
+        finally:
+            LS_SALES.validate_refund_approval = old_validate_refund_approval
+            LS_SALES.validate_license_key_public = old_validate_license_key_public
+            LS_SALES.issue_order_refund = old_issue_order_refund
+            LS_SALES.disable_license_key = old_disable_license_key
 
 
 if __name__ == "__main__":
