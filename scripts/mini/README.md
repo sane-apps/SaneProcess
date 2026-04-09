@@ -1,6 +1,6 @@
 # Mac Mini Build Server Scripts
 
-Scripts for the Mac mini training/build pipeline and the local monitoring that watches it. This is the **source of truth** — edit here, deploy via `deploy.sh`.
+Scripts for the Mac mini training/build pipeline and the local monitoring that watches it. This is the **source of truth** for Mini runtime scripts — edit here, deploy via `deploy.sh`.
 
 ## Scripts
 
@@ -25,6 +25,9 @@ Scripts for the Mac mini training/build pipeline and the local monitoring that w
 # Deploy all mini scripts to the build server
 bash scripts/mini/deploy.sh
   # Refreshes agents even if automation-root prep warns, but exits nonzero if prep failed
+
+# Sync the active Codex automation + skill profile to Mini
+bash scripts/automation/sync-codex-mini.sh mini --no-restart
 
 # Or deploy a single script
 scp scripts/mini/mini-train.sh mini:~/SaneApps/infra/scripts/

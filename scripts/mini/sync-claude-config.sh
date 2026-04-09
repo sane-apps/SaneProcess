@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # frozen_string_literal: true
-# Syncs global ~/.claude/ config (skills, commands, templates, CLAUDE.md) to Mac mini.
-# Source of truth: MacBook. Mini receives copies.
-# Run after updating skills, commands, or global CLAUDE.md.
+# Legacy helper: syncs global ~/.claude/ config (skills, commands, templates,
+# CLAUDE.md) to Mac mini for Claude-specific setups only.
+# Active Codex parity should use scripts/automation/sync-codex-mini.sh instead.
 #
 # Usage: bash scripts/mini/sync-claude-config.sh [--dry-run]
 

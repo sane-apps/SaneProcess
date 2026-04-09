@@ -188,7 +188,7 @@ morning-report.sh
 
 ### sync-codex-mini.sh
 
-Sync SaneOps Codex automation config from MacBook to Mini and enforce runner roles.
+Sync SaneOps Codex automation config plus the active Codex skill registry from MacBook to Mini and enforce runner roles.
 
 **Usage:**
 ```bash
@@ -202,11 +202,12 @@ sync-codex-mini.sh mini --quiet --no-restart
 **What it does:**
 1. Forces local Codex automations to paused (prevents duplicate runs).
 2. Rewrites home paths for Mini and syncs automation TOML files.
-3. Syncs critical control-plane scripts (`check-inbox.sh`, `git-sync-safe.sh`, hooks, validation/reporting scripts).
-4. Updates Mini automation SQLite rows from TOML so prompt/status changes apply immediately.
-5. Verifies Air↔Mini SHA-256 parity for all synced control-plane files.
-6. Sets Mini AM and PM runs active by default, with explicit pause flags when needed.
-7. Optionally restarts Codex on Mini so scheduler reloads immediately.
+3. Syncs the active Codex skill registry (`~/.codex/SKILLS_REGISTRY.md`) and `~/.codex/skills/` to Mini.
+4. Syncs critical control-plane scripts (`check-inbox.sh`, `git-sync-safe.sh`, hooks, validation/reporting scripts).
+5. Updates Mini automation SQLite rows from TOML so prompt/status changes apply immediately.
+6. Verifies Air↔Mini SHA-256 parity for synced control-plane files and dry-run `rsync` parity for Codex skills.
+7. Sets Mini AM and PM runs active by default, with explicit pause flags when needed.
+8. Optionally restarts Codex on Mini so scheduler reloads immediately.
 
 ### start-workday.sh
 

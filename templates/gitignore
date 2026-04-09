@@ -67,6 +67,7 @@ releases/
 
 # Claude Code - track project config, ignore user/transient state
 .claude/settings.local.json
+.claude/mcp_doctor_last.json
 .claude/edit_state.json
 .claude/memory.json
 .claude/state.json

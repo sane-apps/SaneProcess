@@ -353,6 +353,10 @@ Hard rule:
 - For any release-critical UI claim, keep at least one saved visual artifact: live Mini screenshot when available, otherwise a deterministic render PNG.
 5. `ruby scripts/validation_report.rb` reads the newest available status snapshot and blocks false `READY TO SHIP` results.
 
+Validation-report nuance:
+- Broken website/appcast/webhook/Homebrew drift still counts as a real broken release pipeline.
+- Lemon Squeezy hosted-file drift is reported separately as `NEEDS DASHBOARD SYNC` with product/variant references, because it still affects customer downloads but requires dashboard follow-up rather than code or deploy repair.
+
 Canonical runtime cleanup is now a first-class step:
 
 - `./scripts/SaneMaster.rb dedupe_apps --host mini --apps SaneBar`

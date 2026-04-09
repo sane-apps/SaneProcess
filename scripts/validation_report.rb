@@ -1219,6 +1219,7 @@ class ValidationReport
   # updating the email webhook PRODUCT_CONFIG.
   def q11_cross_channel_version_consistency
     issues_found = []
+    hosted_file_actions = []
     warnings_found = []
     version_table = []
 
@@ -1292,25 +1293,34 @@ class ValidationReport
         next if chan_ver == '—'
 
         if chan_ver != appcast_ver
-          label = {
-            website: 'Website download link',
-            webhook: 'Email webhook PRODUCT_CONFIG',
-            cask: 'Homebrew cask',
-            lemonsqueezy: 'Lemon Squeezy hosted file'
-          }[channel]
-          issues_found << "[#{app_name}] VERSION DRIFT: #{label} has v#{chan_ver} but appcast is v#{appcast_ver}"
+          if channel == :lemonsqueezy
+            hosted_file = lemonsqueezy_snapshot[app_name]
+            hosted_file_actions << build_lemonsqueezy_hosted_file_action(app_name, chan_ver, appcast_ver, hosted_file)
+          else
+            label = {
+              website: 'Website download link',
+              webhook: 'Email webhook PRODUCT_CONFIG',
+              cask: 'Homebrew cask'
+            }[channel]
+            issues_found << "[#{app_name}] VERSION DRIFT: #{label} has v#{chan_ver} but appcast is v#{appcast_ver}"
+          end
         end
       end
     end
 
     @metrics[:cross_channel_consistency] = {
-      issues: issues_found.size,
+      issues: issues_found.size + hosted_file_actions.size,
+      canonical_issues: issues_found.size,
+      hosted_file_actions: hosted_file_actions.size,
       warnings: warnings_found.size,
       table: version_table,
-      details: issues_found + warnings_found
+      canonical_details: issues_found,
+      hosted_file_details: hosted_file_actions,
+      details: issues_found + hosted_file_actions + warnings_found
     }
 
     issues_found.each { |i| @issues << "Q11 DRIFT: #{i}" }
+    hosted_file_actions.each { |i| @warnings << "Q11 HOSTED FILE ACTION: #{i}" }
     warnings_found.each { |w| @warnings << "Q11 DRIFT: #{w}" }
   end
 
@@ -1404,11 +1414,31 @@ class ValidationReport
 
       snapshot[product[:name]] = {
         'filename' => filename,
-        'version' => version
+        'version' => version,
+        'product_id' => product_record['id'].to_s,
+        'product_slug' => product_record.dig('attributes', 'slug').to_s,
+        'variant_id' => variant_record['id'].to_s
       }
     end
   rescue StandardError
     nil
+  end
+
+  def build_lemonsqueezy_hosted_file_action(app_name, current_version, expected_version, hosted_file)
+    hosted_file ||= {}
+    filename = hosted_file['filename'].to_s.strip
+    product_id = hosted_file['product_id'].to_s.strip
+    product_slug = hosted_file['product_slug'].to_s.strip
+    variant_id = hosted_file['variant_id'].to_s.strip
+
+    refs = []
+    refs << "product_id=#{product_id}" unless product_id.empty?
+    refs << "product_slug=#{product_slug}" unless product_slug.empty?
+    refs << "variant_id=#{variant_id}" unless variant_id.empty?
+    refs_text = refs.empty? ? '' : " (#{refs.join(', ')})"
+    filename_text = filename.empty? ? '' : " file #{filename}"
+
+    "[#{app_name}] Lemon Squeezy hosted#{filename_text} has v#{current_version} but appcast is v#{expected_version}; replace the published hosted file#{refs_text}"
   end
 
   def fetch_lemonsqueezy_collection(path, api_key)
@@ -1587,14 +1617,17 @@ class ValidationReport
     website_issues = (@metrics[:website_distribution] || {})[:issues].to_i
     # Q8 SIGNING issues are CRITICAL - app won't run!
     signing_issues = (@metrics[:code_signing] || {})[:issues].to_i
-    # Q11 DRIFT issues are CRITICAL - customers get wrong builds!
-    drift_issues = (@metrics[:cross_channel_consistency] || {})[:issues].to_i
+    # Q11 canonical drift is CRITICAL. Hosted-file drift is real, but it is a dashboard action,
+    # not the same class of failure as a broken website, webhook, or appcast.
+    canonical_drift_issues = (@metrics[:cross_channel_consistency] || {})[:canonical_issues].to_i
+    hosted_file_actions = (@metrics[:cross_channel_consistency] || {})[:hosted_file_actions].to_i
 
-    customer_facing_critical = release_issues + website_issues + signing_issues + drift_issues
+    customer_facing_critical = release_issues + website_issues + signing_issues + canonical_drift_issues
 
     @metrics[:final] = {
       critical_failures: critical_fails,
       customer_facing_critical: customer_facing_critical,
+      hosted_file_actions: hosted_file_actions,
       data_gaps: data_gaps,
       projects_with_data: @data.size
     }
@@ -1602,6 +1635,8 @@ class ValidationReport
     @verdict = if customer_facing_critical > 0
       # ANY customer-facing issue is a showstopper
       { status: 'BROKEN RELEASE PIPELINE', detail: "#{customer_facing_critical} customer-facing issues - CUSTOMERS AFFECTED", color: :red }
+    elsif hosted_file_actions > 0
+      { status: 'NEEDS DASHBOARD SYNC', detail: "#{hosted_file_actions} Lemon Squeezy hosted file updates pending", color: :yellow }
     elsif !has_data
       { status: 'INSUFFICIENT DATA', detail: 'Need data from 3+ projects', color: :yellow }
     elsif critical_fails >= 3
@@ -1771,18 +1806,23 @@ class ValidationReport
     m = @metrics[:cross_channel_consistency] || {}
     table = m[:table] || []
     if table.any?
-      puts "   %-12s %-10s %-10s %-10s %-10s" % %w[App Appcast Website Webhook Homebrew]
-      puts "   #{'─' * 12} #{'─' * 10} #{'─' * 10} #{'─' * 10} #{'─' * 10}"
+      puts "   %-12s %-10s %-10s %-10s %-10s %-10s" % %w[App Appcast Website Webhook Homebrew Lemon]
+      puts "   #{'─' * 12} #{'─' * 10} #{'─' * 10} #{'─' * 10} #{'─' * 10} #{'─' * 10}"
       table.each do |row|
         v = row[:versions]
-        puts "   %-12s %-10s %-10s %-10s %-10s" % [row[:app], v[:appcast], v[:website], v[:webhook], v[:cask]]
+        puts "   %-12s %-10s %-10s %-10s %-10s %-10s" % [row[:app], v[:appcast], v[:website], v[:webhook], v[:cask], v[:lemonsqueezy]]
       end
     end
-    if m[:issues].to_i == 0
+    canonical_issues = m[:canonical_issues].to_i
+    hosted_file_actions = m[:hosted_file_actions].to_i
+    if canonical_issues == 0 && hosted_file_actions == 0
       puts "   ✅ All channels consistent"
     else
-      puts "   ❌ #{m[:issues]} version drift issues detected"
-      (m[:details] || []).each { |d| puts "      - #{d}" }
+      puts "   ❌ #{canonical_issues} canonical drift issues detected" if canonical_issues > 0
+      puts "   ⚠️  #{hosted_file_actions} Lemon Squeezy hosted file updates pending" if hosted_file_actions > 0
+      (m[:canonical_details] || []).each { |d| puts "      - #{d}" }
+      (m[:hosted_file_details] || []).each { |d| puts "      - #{d}" }
+      @warnings.grep(/^Q11 DRIFT:/).each { |d| puts "      - #{d.sub(/^Q11 DRIFT: /, '')}" }
     end
 
     puts "─" * 70
