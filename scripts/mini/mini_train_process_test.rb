@@ -44,6 +44,15 @@ exit(run_tests('Mini Train Process Tests') do
     end
   end
 
+  test_category('Unsafe model guard') do
+    test('blocks known-unsafe Llama training on the 8 GB Mini unless explicitly overridden') do
+      assert_includes(train_source, 'ALLOW_UNSAFE_TRAINING')
+      assert_includes(train_source, 'reproducibly OOMs on the 8 GB Mini')
+      assert_includes(train_source, 'ALLOW_UNSAFE_TRAINING=true')
+      true
+    end
+  end
+
   test_category('Eval contract') do
     test('evaluate_model.py accepts the max token cap used by mini-train.sh') do
       assert_includes(eval_source, '--max-tokens-cap')

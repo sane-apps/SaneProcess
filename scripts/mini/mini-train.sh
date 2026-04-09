@@ -174,6 +174,7 @@ TRAIN_EXAMPLE_DROP_MAX_PCT="${TRAIN_EXAMPLE_DROP_MAX_PCT:-20}"
 VALID_EXAMPLE_DROP_MAX_PCT="${VALID_EXAMPLE_DROP_MAX_PCT:-20}"
 PARTIAL_CHECKPOINT_EVAL="${PARTIAL_CHECKPOINT_EVAL:-true}"
 CHECKPOINT_FILES_TO_KEEP="${CHECKPOINT_FILES_TO_KEEP:-1}"
+ALLOW_UNSAFE_TRAINING="${ALLOW_UNSAFE_TRAINING:-false}"
 
 resolve_base_config() {
   local candidate=""
@@ -1118,6 +1119,37 @@ else
 fi
 METRICS_FILE="$HISTORY_DIR/training_metrics_workflow_v1.tsv"
 append_metrics_header_if_needed
+
+TOTAL_RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}')
+UNSAFE_TRAINING_REASON=""
+if [ "$ALLOW_UNSAFE_TRAINING" != "true" ] && \
+   [ "${TOTAL_RAM_GB:-0}" -le 8 ] && \
+   [ "$BASE_MODEL" = "mlx-community/Llama-3.2-3B-Instruct-4bit" ]; then
+  UNSAFE_TRAINING_REASON="Blocked before launch: ${BASE_MODEL} reproducibly OOMs on the 8 GB Mini with the current SaneAI corpus. Use SmolLM on this machine or override with ALLOW_UNSAFE_TRAINING=true for manual experiments."
+fi
+
+if [ -n "$UNSAFE_TRAINING_REASON" ]; then
+  echo "**BLOCKED:** $UNSAFE_TRAINING_REASON" >> "$REPORT"
+  echo "" >> "$REPORT"
+  cp "$REPORT" "$REPORT_ARCHIVE"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$APP_NAME" \
+    "$MODE_LABEL" \
+    "$BASE_MODEL" \
+    "$TIMESTAMP" \
+    "$TRAIN_EXAMPLES" \
+    "$VALID_EXAMPLES" \
+    "" \
+    "0" \
+    "" \
+    "0" \
+    "1" \
+    "blocked" \
+    "$REPORT_ARCHIVE" >> "$METRICS_FILE"
+  emit_training_failure_alert "$UNSAFE_TRAINING_REASON"
+  exit 1
+fi
+
 READINESS_FILE=""
 if [ -n "$READINESS_TARGET_APP" ]; then
   READINESS_FILE="$HISTORY_DIR/readiness_vs_${READINESS_TARGET_APP}_workflow_v1.tsv"
