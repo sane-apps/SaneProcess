@@ -20,6 +20,10 @@ class HostedFileActionTests(unittest.TestCase):
             HOSTED_FILE_ACTIONS.extract_version_from_filename("SaneBar-2.1.39.zip"),
             "2.1.39",
         )
+        self.assertEqual(
+            HOSTED_FILE_ACTIONS.extract_version_from_filename("SaneBar-1.0.0-beta-2.1.39.zip"),
+            "2.1.39",
+        )
         self.assertEqual(HOSTED_FILE_ACTIONS.extract_version_from_filename("README.txt"), "")
 
     def test_build_snapshot_rows_flags_drift_and_builds_dashboard_links(self):

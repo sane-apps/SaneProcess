@@ -146,7 +146,11 @@ def load_product_config() -> dict[str, Any]:
         "require 'yaml'; require 'json'; "
         f"puts JSON.dump(YAML.load_file({json.dumps(str(PRODUCTS_YML))}))"
     )
-    result = subprocess.run(["ruby", "-e", ruby], capture_output=True, text=True, check=True)
+    try:
+        result = subprocess.run(["ruby", "-e", ruby], capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"Error: could not load products.yml from {PRODUCTS_YML}: {exc}", file=sys.stderr)
+        sys.exit(1)
     return json.loads(result.stdout)
 
 
@@ -200,8 +204,8 @@ def fetch_appcast_release(url: str) -> tuple[str, str]:
 
 
 def extract_version_from_filename(filename: str) -> str:
-    match = re.search(r"(\d+\.\d+\.\d+)", filename or "")
-    return match.group(1) if match else ""
+    matches = re.findall(r"(\d+\.\d+\.\d+)", filename or "")
+    return matches[-1] if matches else ""
 
 
 def dashboard_url_for(product_id: str) -> str:
@@ -398,6 +402,13 @@ def output_path_from_args(args: argparse.Namespace) -> Path:
     return DEFAULT_OUTPUT_DIR / f"saneapps_hosted_file_actions_{stamp}.xlsx"
 
 
+def copy_latest_atomic(source: Path, latest_path: Path) -> None:
+    latest_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = latest_path.with_suffix(f"{latest_path.suffix}.tmp")
+    tmp_path.write_bytes(source.read_bytes())
+    os.replace(tmp_path, latest_path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Export Lemon Squeezy hosted-file dashboard action tracker."
@@ -435,7 +446,7 @@ def main() -> None:
         ],
     )
     latest_path = output_path.parent / "latest.xlsx"
-    latest_path.write_bytes(output_path.read_bytes())
+    copy_latest_atomic(output_path, latest_path)
     print(f"Wrote {output_path}")
     print(f"Updated {latest_path}")
     print(f"Current actions: {len(current_actions)}")
