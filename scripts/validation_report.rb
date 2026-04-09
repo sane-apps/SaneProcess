@@ -392,11 +392,13 @@ class ValidationReport
   def check_sister_apps_lists(issues_found)
     all_apps = product_definitions.map { |product| product[:name] }
 
-    PROJECTS.each do |project|
-      claude_md = File.join(SANE_APPS_ROOT, project, 'CLAUDE.md')
+    validation_projects.each do |project|
+      claude_md = File.join(sane_apps_root, project, 'CLAUDE.md')
       next unless File.exist?(claude_md)
 
       content = File.read(claude_md)
+      next if private_local_claude_file?(content)
+
       # Find sister apps line
       match = content.match(/\*\*Sister apps:\*\*\s*(.+)$/) ||
               content.match(/\*\*Apps using this:\*\*\s*(.+)$/) ||
@@ -413,6 +415,19 @@ class ValidationReport
         issues_found << "[#{project}] CLAUDE.md missing sister apps: #{missing.join(', ')}"
       end
     end
+  end
+
+  def sane_apps_root
+    SANE_APPS_ROOT
+  end
+
+  def validation_projects
+    PROJECTS
+  end
+
+  def private_local_claude_file?(content)
+    content.include?('private to your local environment') ||
+      content.include?('Public guidance lives in `CLAUDE_PUBLIC.md`')
   end
 
   def check_codex_skill_health(issues_found)

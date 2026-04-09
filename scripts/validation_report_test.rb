@@ -81,6 +81,27 @@ class HostedVersionSnapshotHarness < ValidationReport
   end
 end
 
+class SisterAppsHarness < ValidationReport
+  def initialize(root:, projects:, products:)
+    super()
+    @root = root
+    @projects = projects
+    @products = products
+  end
+
+  def sane_apps_root
+    @root
+  end
+
+  def validation_projects
+    @projects
+  end
+
+  def product_definitions
+    @products
+  end
+end
+
 include TestFramework
 
 def product_definition(name, slug:, domain:)
@@ -186,6 +207,54 @@ exit(run_tests('Validation report tests') do
       assert_eq(snapshot['SaneBar']['product_id'], '123')
       assert_eq(snapshot['SaneBar']['product_slug'], 'sanebar')
       assert_eq(snapshot['SaneBar']['variant_id'], '456')
+      true
+    end
+  end
+
+  test_category('Q0 sister app list checks') do
+    test('skips private local CLAUDE files when checking sister app completeness') do
+      Dir.mktmpdir('validation-report-sister-apps') do |tmpdir|
+        infra_dir = File.join(tmpdir, 'infra/SaneProcess')
+        app_dir = File.join(tmpdir, 'apps/SaneBar')
+        FileUtils.mkdir_p(infra_dir)
+        FileUtils.mkdir_p(app_dir)
+
+        File.write(
+          File.join(infra_dir, 'CLAUDE.md'),
+          <<~MD
+            # SaneProcess - Claude Code Instructions (PRIVATE / LOCAL ONLY)
+            This file is private to your local environment and is intentionally not tracked in git.
+            Public guidance lives in `CLAUDE_PUBLIC.md`.
+            **Apps using this:** SaneBar
+          MD
+        )
+
+        File.write(
+          File.join(app_dir, 'CLAUDE.md'),
+          '**Sister apps:** SaneClip, SaneVideo, SaneSync, SaneHosts, SaneAI, SaneClick, SaneSales'
+        )
+
+        subject = SisterAppsHarness.new(
+          root: tmpdir,
+          projects: ['infra/SaneProcess', 'apps/SaneBar'],
+          products: [
+            product_definition('SaneBar', slug: 'sanebar', domain: 'sanebar.com'),
+            product_definition('SaneClip', slug: 'saneclip', domain: 'saneclip.com'),
+            product_definition('SaneVideo', slug: 'sanevideo', domain: 'sanevideo.com'),
+            product_definition('SaneSync', slug: 'sanesync', domain: 'sanesync.com'),
+            product_definition('SaneHosts', slug: 'sanehosts', domain: 'sanehosts.com'),
+            product_definition('SaneClick', slug: 'saneclick', domain: 'saneclick.com'),
+            product_definition('SaneAI', slug: 'saneai', domain: 'saneai.com'),
+            product_definition('SaneSales', slug: 'sanesales', domain: 'sanesales.com')
+          ]
+        )
+
+        issues = []
+        subject.send(:check_sister_apps_lists, issues)
+
+        assert_eq(issues, [])
+      end
+
       true
     end
   end
