@@ -112,6 +112,7 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 | `universal_control_reset [--status|--reboot-mini|--cleanup-mini]` | Recover Air↔Mini Universal Control / pointer handoff |
 | `export` | Export code/docs (PDF/MD) |
 | `listing_actions` | Export the current listing/setup action tracker from inbox history |
+| `hosted_file_actions` | Export the current Lemon Squeezy hosted-file dashboard action tracker |
 | `debug` | Debugging helpers (logs, crashes, diagnose) |
 | `env` | Environment and setup helpers |
 | `sales` | LemonSqueezy revenue reporting helpers |
@@ -163,6 +164,18 @@ Outputs:
 - dated workbook: `outputs/listing_actions/sanebar_listing_actions_<date>.xlsx`
 - latest stable path: `outputs/listing_actions/latest.xlsx`
 
+Hosted-file dashboard sync rule: do not leave Lemon Squeezy hosted-file drift as tribal knowledge or a one-line validation warning. Regenerate the current workbook from live appcast + Lemon Squeezy API data:
+
+```bash
+ruby scripts/SaneMaster.rb hosted_file_actions
+```
+
+Outputs:
+- dated workbook: `outputs/hosted_file_actions/saneapps_hosted_file_actions_<date>.xlsx`
+- latest stable path: `outputs/hosted_file_actions/latest.xlsx`
+
+This is a dashboard-action tracker, not an uploader. Lemon Squeezy currently exposes read APIs for files, but not a public file-replacement API. Use the workbook to open the exact product dashboard page and replace the published file with the appcast-matching ZIP.
+
 Operational SOP:
 - `scripts/automation/morning-report.sh` now regenerates the workbook automatically, so new listing/setup emails show up in the nightly report without a manual spreadsheet pass.
 - `scripts/automation/sane-status-crossref.sh` now shows the live listing-action counts and current `Needs action` rows.
@@ -202,6 +215,7 @@ Treat that as a real release gate, not optional polish:
 | Customer support triage | `/Users/sj/SaneApps/infra/scripts/check-inbox.sh review <id>` | Manual API calls, ad hoc email drafts, or skipping review |
 | Sales / downloads / funnel | `ruby scripts/SaneMaster.rb sales`, `downloads`, `events` | Manual vendor curls or spreadsheet guesses |
 | Listing/setup tracker | `ruby scripts/SaneMaster.rb listing_actions` | Manual inbox sweeps and hand-built spreadsheets |
+| Hosted-file dashboard tracker | `ruby scripts/SaneMaster.rb hosted_file_actions` | Grepping validation output and manually hunting Lemon Squeezy product/variant pages |
 | MCP and tool health | `ruby scripts/SaneMaster.rb mcp_watchdog doctor` and `/Users/sj/.codex/bin/check-mcps` | Killing random daemons first and hoping |
 
 ### Verification helpers

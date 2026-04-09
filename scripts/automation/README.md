@@ -99,6 +99,27 @@ python3 listing-actions.py --xlsx /tmp/sanebar_listings.xlsx
 
 **Canonical path:** prefer `ruby ../SaneMaster.rb listing_actions` from the repo root.
 
+### hosted-file-actions.py
+
+Build the current Lemon Squeezy hosted-file dashboard tracker from live appcast + store API data.
+
+**Usage:**
+```bash
+python3 hosted-file-actions.py
+python3 hosted-file-actions.py --json
+python3 hosted-file-actions.py --xlsx /tmp/hosted_file_actions.xlsx
+```
+
+**What it does:**
+1. Fetches the current SaneApps product/variant/file snapshot from the Lemon Squeezy API.
+2. Fetches the live appcast version + dist ZIP URL for each direct-download app.
+3. Flags version drift where the published hosted file is older than the live appcast.
+4. Writes a `Current Actions` sheet with the exact product ID, variant ID, dashboard URL, and dist ZIP to upload.
+5. Writes a `Live Snapshot` sheet so the full current state is visible even when only some apps drift.
+6. Saves a dated workbook plus `outputs/hosted_file_actions/latest.xlsx`.
+
+**Canonical path:** prefer `ruby ../SaneMaster.rb hosted_file_actions` from the repo root.
+
 ### nv-audit.sh
 
 Legacy bulk review helper. Do not use this for `/audit` or release-clearance docs audits.

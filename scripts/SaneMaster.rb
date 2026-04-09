@@ -44,6 +44,7 @@ require_relative 'sanemaster/md_export'
 require_relative 'sanemaster/meta'
 require_relative 'sanemaster/tool_discovery'
 require_relative 'sanemaster/universal_control'
+require_relative 'sanemaster/hosted_file_actions'
 require_relative 'sanemaster/session'
 require_relative 'sanemaster/circuit_breaker_state'
 require_relative 'sanemaster/structural_compliance'
@@ -71,6 +72,7 @@ class SaneMaster
   include SaneMasterModules::Meta
   include SaneMasterModules::ToolDiscovery
   include SaneMasterModules::UniversalControl
+  include SaneMasterModules::HostedFileActions
   include SaneMasterModules::Session
   include SaneMasterModules::StructuralCompliance
   include SaneMasterModules::Release
@@ -199,6 +201,7 @@ class SaneMaster
         'export' => { args: '[--highlight]', desc: 'Export code to PDF (~/Downloads)' },
         'md_export' => { args: '<file.md>', desc: 'Convert markdown to PDF' },
         'listing_actions' => { args: '[--json|--json-out PATH|--xlsx PATH|--max-pages N]', desc: 'Export listing/setup action tracker from inbox history (XLSX)' },
+        'hosted_file_actions' => { args: '[--json|--json-out PATH|--xlsx PATH]', desc: 'Export Lemon Squeezy hosted-file dashboard actions (XLSX)' },
         'deps' => { args: '[--dot]', desc: 'Show dependency graph' },
         'quality' => { args: '', desc: 'Generate Ruby quality report' }
       }
@@ -1333,6 +1336,8 @@ PY
       export_markdown(args)
     when 'listing_actions', 'listing-actions'
       listing_actions(args)
+    when 'hosted_file_actions', 'hosted-file-actions'
+      hosted_file_actions(args)
 
     else
       puts "❌ Unknown command: #{command}"
@@ -1681,6 +1686,20 @@ PY
         'listing_actions --json',
         'listing_actions --json-out /tmp/sanebar_listings.json',
         'listing_actions --xlsx /tmp/sanebar_listings.xlsx'
+      ]
+    },
+    'hosted_file_actions' => {
+      usage: 'hosted_file_actions [--json|--json-out PATH|--xlsx PATH]',
+      description: 'Export Lemon Squeezy hosted-file dashboard sync actions with exact product, variant, version, and dashboard links.',
+      flags: {
+        '--json' => 'Print JSON instead of writing XLSX',
+        '--json-out PATH' => 'Write the JSON payload to a file while still generating XLSX output',
+        '--xlsx PATH' => 'Custom XLSX output path (default: outputs/hosted_file_actions/saneapps_hosted_file_actions_<date>.xlsx)'
+      },
+      examples: [
+        'hosted_file_actions',
+        'hosted_file_actions --json',
+        'hosted_file_actions --xlsx /tmp/hosted_file_actions.xlsx'
       ]
     },
     'gen_test' => {

@@ -691,6 +691,7 @@ module SaneMasterModules
         { label: 'SaneProcess test mode tests', cmd: ['ruby', 'scripts/sanemaster/test_mode_test.rb'] },
         { label: 'SaneProcess verify guard tests', cmd: ['ruby', 'scripts/sanemaster/verify_guard_test.rb'] },
         { label: 'SaneProcess validation report tests', cmd: ['ruby', 'scripts/validation_report_test.rb'] },
+        { label: 'SaneProcess hosted file action tests', cmd: ['python3', '-B', 'scripts/automation/hosted_file_actions_test.py'] },
         { label: 'SaneProcess LemonSqueezy sales tests', cmd: ['python3', '-B', 'scripts/automation/ls_sales_test.py'] },
         { label: 'SaneProcess listing action tests', cmd: ['python3', '-B', 'scripts/automation/listing_actions_test.py'] }
       ]
