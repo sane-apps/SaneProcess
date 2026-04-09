@@ -93,6 +93,17 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert(verify_index < xcodebuild_index, 'expected SaneMaster verify path before raw xcodebuild fallback')
       true
     end
+
+    test('release.sh commits website metadata pages alongside appcast updates') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+
+      assert_includes(release_script, '"docs/index.html"')
+      assert_includes(release_script, '"docs/download.html"')
+      assert_includes(release_script, '"website/index.html"')
+      assert_includes(release_script, '"website/download.html"')
+      assert_includes(release_script, 'sync release metadata for v${VERSION}')
+      true
+    end
   end
 
   test_category('Artifact marker detection') do

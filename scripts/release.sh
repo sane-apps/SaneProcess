@@ -5647,24 +5647,30 @@ PY
         fi
     fi
 
-    # Step 7: Commit appcast changes (docs + website mirror if present)
-    APPCAST_SYNC_FILES=()
-    for f in "docs/appcast.xml" "website/appcast.xml"; do
+    # Step 7: Commit tracked release metadata changes (appcast + website download pages)
+    RELEASE_METADATA_SYNC_FILES=()
+    for f in \
+        "docs/appcast.xml" \
+        "website/appcast.xml" \
+        "docs/index.html" \
+        "docs/download.html" \
+        "website/index.html" \
+        "website/download.html"; do
         if [ -f "${PROJECT_ROOT}/${f}" ] && ! git -C "${PROJECT_ROOT}" diff --quiet -- "${f}" 2>/dev/null; then
-            APPCAST_SYNC_FILES+=("${f}")
+            RELEASE_METADATA_SYNC_FILES+=("${f}")
         fi
     done
-    if [ ${#APPCAST_SYNC_FILES[@]} -gt 0 ]; then
-        log_info "Committing appcast update..."
-        git -C "${PROJECT_ROOT}" add "${APPCAST_SYNC_FILES[@]}"
-        git -C "${PROJECT_ROOT}" commit -m "chore: update appcast for v${VERSION}"
+    if [ ${#RELEASE_METADATA_SYNC_FILES[@]} -gt 0 ]; then
+        log_info "Committing release metadata update..."
+        git -C "${PROJECT_ROOT}" add "${RELEASE_METADATA_SYNC_FILES[@]}"
+        git -C "${PROJECT_ROOT}" commit -m "chore: sync release metadata for v${VERSION}"
         if ! GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push; then
-            log_error "Failed to push appcast commit for v${VERSION}."
+            log_error "Failed to push release metadata commit for v${VERSION}."
             POST_RELEASE_REPO_SYNC_FAILED=true
-            POST_RELEASE_REPO_SYNC_DETAILS+=("Appcast commit push failed.")
+            POST_RELEASE_REPO_SYNC_DETAILS+=("Release metadata commit push failed.")
         fi
         if [ "${POST_RELEASE_REPO_SYNC_FAILED}" != true ]; then
-            log_info "Appcast commit pushed."
+            log_info "Release metadata commit pushed."
         fi
     fi
 
