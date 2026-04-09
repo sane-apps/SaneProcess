@@ -6,6 +6,8 @@ module SaneMasterModules
   module SaneUIGuard
     module_function
 
+    LICENSE_SETTINGS_VIEW_PATTERN = /LicenseSettingsView(?:<[^>]+>)?\s*\(/.freeze
+
     Finding = Struct.new(:severity, :label, :detail, :fix, keyword_init: true)
 
     MACOS_APP_TYPES = %w[macos_app universal_app].freeze
@@ -106,7 +108,7 @@ module SaneMasterModules
       end
 
       if contents.values.any? { |content| content.include?('LicenseService(') } &&
-         !contents.values.any? { |content| content.include?('LicenseSettingsView(') }
+         !contents.values.any? { |content| content.match?(LICENSE_SETTINGS_VIEW_PATTERN) }
         warnings << Finding.new(
           severity: :warning,
           label: 'License pane not using shared LicenseSettingsView',

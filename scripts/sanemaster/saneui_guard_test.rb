@@ -91,6 +91,36 @@ exit(run_tests('SaneUI Guard Tests') do
         true
       end
     end
+
+    test('does not warn when the shared license view is specialized with a bridged service') do
+      with_repo(
+        manifest_type: 'macos_app',
+        files: {
+          'UI/Settings/SettingsView.swift' => <<~SWIFT
+            import SaneUI
+            import SwiftUI
+
+            final class LicenseService {}
+            final class SaneBarLicenseSettingsAdapter {}
+
+            struct SettingsView: View {
+                var body: some View {
+                    LicenseSettingsView<SaneBarLicenseSettingsAdapter>(
+                        licenseService: SaneBarLicenseSettingsAdapter(),
+                        style: .panel
+                    )
+                }
+            }
+          SWIFT
+        }
+      ) do |dir|
+        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
+        labels = report[:warnings].map(&:label)
+
+        assert(!labels.include?('License pane not using shared LicenseSettingsView'))
+        true
+      end
+    end
   end
 
   test_category('Scope') do
