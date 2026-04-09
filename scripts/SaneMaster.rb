@@ -43,6 +43,7 @@ require_relative 'sanemaster/export'
 require_relative 'sanemaster/md_export'
 require_relative 'sanemaster/meta'
 require_relative 'sanemaster/tool_discovery'
+require_relative 'sanemaster/universal_control'
 require_relative 'sanemaster/session'
 require_relative 'sanemaster/circuit_breaker_state'
 require_relative 'sanemaster/structural_compliance'
@@ -69,6 +70,7 @@ class SaneMaster
   include SaneMasterModules::MdExport
   include SaneMasterModules::Meta
   include SaneMasterModules::ToolDiscovery
+  include SaneMasterModules::UniversalControl
   include SaneMasterModules::Session
   include SaneMasterModules::StructuralCompliance
   include SaneMasterModules::Release
@@ -146,6 +148,7 @@ class SaneMaster
         'install_provisioning_profiles' => { args: '[--delete-source] [glob ...]', desc: 'Install downloaded provisioning profiles deterministically by UUID' },
         'dedupe_apps' => { args: '[--host local|mini] [--apps App1,App2] [--dry-run] [--json]', desc: 'Keep one canonical app bundle per Sane app' },
         'mcp_watchdog' => { args: '[status|doctor|clean|install|uninstall] [--max N] [--interval SEC] [--json] [--quiet]', desc: 'Detect and clean duplicate MCP daemons' },
+        'universal_control_reset' => { args: '[--status] [--dry-run] [--local-only|--mini-only] [--cleanup-mini] [--reboot-mini]', desc: 'Recover Air↔Mini Universal Control / pointer handoff' },
         'work_session_on' => { args: '', desc: 'Start keep-awake + no-lock work session guard' },
         'work_session_off' => { args: '', desc: 'Restore previous lock settings and stop work-session guard' },
         'work_session_status' => { args: '', desc: 'Show current work-session guard state' }
@@ -1151,6 +1154,8 @@ PY
       system('ruby', File.join(__dir__, 'dedupe_sane_apps.rb'), *args)
     when 'mcp_watchdog', 'mcpw', 'mcp'
       mcp_watchdog(args)
+    when 'universal_control_reset', 'uc_reset', 'ucr'
+      universal_control_reset(args)
     when 'work_session_on', 'wson'
       work_session_on
     when 'work_session_off', 'wsof'
@@ -1628,6 +1633,24 @@ PY
         'tool_discovery --query "missing screenshot diff tool"',
         'tool_discovery --query "workaround for docs audit"',
         'tool_receipt --query "do we already have a website crawler?"'
+      ]
+    },
+    'universal_control_reset' => {
+      usage: 'universal_control_reset [--status] [--dry-run] [--local-only|--mini-only] [--cleanup-mini] [--reboot-mini]',
+      description: 'Reset Universal Control / Continuity state between this Mac and the Mini, then optionally reboot or clean the Mini.',
+      flags: {
+        '--status' => 'Print local + Mini discovery state without changing anything',
+        '--dry-run' => 'Print the exact reset steps without executing them',
+        '--local-only' => 'Only reset the current Mac',
+        '--mini-only' => 'Only reset the Mini over SSH',
+        '--cleanup-mini' => 'Hide Terminal/Codex and close Preview/Safari on the Mini',
+        '--reboot-mini' => 'Ask the Mini to restart after the reset sequence'
+      },
+      examples: [
+        'universal_control_reset                      # Standard Air + Mini recovery',
+        'universal_control_reset --status            # Inspect discovery state first',
+        'universal_control_reset --cleanup-mini      # Reset and clear Mini clutter',
+        'universal_control_reset --reboot-mini       # Reset, then restart the Mini'
       ]
     },
     'export' => {
