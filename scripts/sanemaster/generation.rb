@@ -110,8 +110,9 @@ module SaneMasterModules
       puts '📚 --- [ DOCUMENTATION SYNC CHECK ] ---'
 
       issues = []
-      dev_doc = File.read('DEVELOPMENT.md')
-      help_output = `./scripts/SaneMaster.rb 2>&1`
+      saneprocess_root = saneprocess_repo_root
+      dev_doc = File.read(File.join(saneprocess_root, 'DEVELOPMENT.md'))
+      help_output = Dir.chdir(saneprocess_root) { `./scripts/SaneMaster.rb 2>&1` }
 
       commands_in_help = help_output.scan(/^\s+(\w+)/).flatten.uniq
       commands_in_help.reject! { |c| %w[Examples: Commands: console check_xcodegen check_protocol_changes].include?(c) }
@@ -122,15 +123,15 @@ module SaneMasterModules
 
       check_documentation_flags(dev_doc, issues)
 
-      readme = File.read('README.md')
+      readme = File.read(File.join(saneprocess_root, 'README.md'))
       issues << "README.md missing SaneProcess operator docs map" unless readme.include?('## Operator Docs Map')
 
-      mini_readme = File.read('scripts/mini/README.md')
+      mini_readme = File.read(File.join(saneprocess_root, 'scripts/mini/README.md'))
       unless mini_readme.match?(/\|\s*`bootstrap-build-server\.sh`\s*\|\s*On demand\s*\|/)
         issues << 'scripts/mini/README.md missing bootstrap-build-server.sh in the top script inventory'
       end
 
-      automation_readme = File.read('scripts/automation/README.md')
+      automation_readme = File.read(File.join(saneprocess_root, 'scripts/automation/README.md'))
       unless automation_readme.include?('repo-root-safe')
         issues << 'scripts/automation/README.md missing repo-root-safe usage guidance'
       end

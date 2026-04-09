@@ -685,6 +685,7 @@ module SaneMasterModules
         { label: 'SaneProcess app release guard tests', cmd: ['ruby', 'scripts/app_test_mode_test.rb'] },
         { label: 'SaneProcess App Store guard tests', cmd: ['ruby', 'scripts/appstore_submit_guardrail_test.rb'] },
         { label: 'SaneProcess dependency watchdog tests', cmd: ['ruby', 'scripts/sanemaster/dependencies_test.rb'] },
+        { label: 'SaneProcess generation tests', cmd: ['ruby', 'scripts/sanemaster/generation_test.rb'] },
         { label: 'SaneProcess release guardrail tests', cmd: ['ruby', 'scripts/sanemaster/release_guardrail_test.rb'] },
         { label: 'SaneProcess release route tests', cmd: ['ruby', 'scripts/sanemaster/release_route_test.rb'] },
         { label: 'SaneProcess SaneUI guard tests', cmd: ['ruby', 'scripts/sanemaster/saneui_guard_test.rb'] },
