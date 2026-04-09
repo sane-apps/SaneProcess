@@ -16,6 +16,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 import zipfile
@@ -404,9 +405,15 @@ def output_path_from_args(args: argparse.Namespace) -> Path:
 
 def copy_latest_atomic(source: Path, latest_path: Path) -> None:
     latest_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = latest_path.with_suffix(f"{latest_path.suffix}.tmp")
-    tmp_path.write_bytes(source.read_bytes())
-    os.replace(tmp_path, latest_path)
+    fd, tmp_name = tempfile.mkstemp(prefix=".latest-", suffix=".xlsx", dir=latest_path.parent)
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(source.read_bytes())
+        os.replace(tmp_path, latest_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
 
 
 def main() -> None:
