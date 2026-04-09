@@ -116,6 +116,27 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 
 License support rule: real customer license keys come only from LemonSqueezy-backed orders and license-key records. Use `check-inbox.sh review` + `whois` + the LemonSqueezy recovery/backfill flow for missing-key support. Do not generate local fallback keys.
 
+Duplicate-purchase refund rule: when you can prove the same customer paid twice for the same product, you may auto-refund the duplicate order without waiting on the normal “documented unresolved bug >24h” threshold, as long as the action still has an audit note and proof file. Standard investigation path:
+
+```bash
+# 1. Find likely matching orders even if the support email differs from the purchase email.
+ruby scripts/SaneMaster.rb sales --find-customer-orders --email reed@reed-a.ca --name Reed --product SaneBar
+
+# 2. Check the exact keys the customer sent.
+ruby scripts/SaneMaster.rb sales --license-status 766800DD-3877-4EAA-938F-D60D42FFA0D7
+ruby scripts/SaneMaster.rb sales --license-status D1918A18-BCC3-4DA2-AC6B-C67CC912CA5C
+
+# 3. Refund the duplicate order and disable the refunded key in one audited step.
+SANE_REFUND_APPROVED=1 ruby scripts/SaneMaster.rb sales \
+  --refund-duplicate-license-key D1918A18-BCC3-4DA2-AC6B-C67CC912CA5C \
+  --keep-license-key 766800DD-3877-4EAA-938F-D60D42FFA0D7 \
+  --refund-order-number 270691528 \
+  --proof-file /tmp/reed_duplicate_refund.txt \
+  --approval-note /tmp/reed_duplicate_refund_approval.txt
+```
+
+Customer-reply rule for duplicate-license refunds: say explicitly which order was refunded, say the refunded key is disabled and will not work, and say which remaining key is the live working key.
+
 ### Canonical Tool Paths
 
 Do not hunt around for ad hoc tools.

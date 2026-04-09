@@ -10,23 +10,30 @@ Usage:
   ls-sales.py --fees       # Fee breakdown only
   ls-sales.py --products   # Revenue by product
   ls-sales.py --product-variants  # Revenue by product + variant
+  ls-sales.py --find-customer-orders --email reed@reed-a.ca --name Reed --product SaneBar
+  ls-sales.py --license-status 766800DD-3877-4EAA-938F-D60D42FFA0D7
+  ls-sales.py --disable-license-key D1918A18-BCC3-4DA2-AC6B-C67CC912CA5C
   ls-sales.py --refund-order 1234 --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt
   ls-sales.py --refund-order-number 5678 --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt
+  ls-sales.py --refund-duplicate-license-key D1918... --keep-license-key 7668... --refund-order-number 270691528 --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt
   ls-sales.py --json       # Raw JSON output (for piping)
 """
 import argparse
+import difflib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
+import urllib.parse
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 INFRA_SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
 sys.path.insert(0, str(INFRA_SCRIPTS_DIR))
-from customer_email_corrections import canonical_email
+from customer_email_corrections import canonical_email, email_variants
 
 # Store-specific fee configuration.
 # Defaults reflect SaneApps Lemon Squeezy pricing update confirmed on 2026-03-03.
@@ -181,6 +188,366 @@ def find_order_by_number(orders, order_number):
         if str((order.get("attributes") or {}).get("order_number", "")).strip() == needle:
             return order
     return None
+
+
+def find_order_by_id(orders, order_id):
+    needle = str(order_id).strip()
+    for order in orders:
+        if str(order.get("id", "")).strip() == needle:
+            return order
+    return None
+
+
+def normalize_customer_name(value):
+    tokens = re.findall(r"[a-z0-9]+", (value or "").lower())
+    return " ".join(tokens)
+
+
+def identity_tokens(value):
+    return {token for token in re.findall(r"[a-z0-9]+", (value or "").lower()) if len(token) >= 2}
+
+
+def email_local_part_tokens(value):
+    email = canonical_email(value)
+    if not email or "@" not in email:
+        return set()
+    local = email.split("@", 1)[0]
+    return identity_tokens(local)
+
+
+def fuzzy_token_matches(left_tokens, right_tokens, min_ratio=0.75):
+    matches = set()
+    for left in left_tokens:
+        for right in right_tokens:
+            if left == right:
+                matches.add((left, right))
+                continue
+            if difflib.SequenceMatcher(a=left, b=right).ratio() >= min_ratio:
+                matches.add((left, right))
+    return matches
+
+
+def validate_license_key_public(license_key):
+    payload = urllib.parse.urlencode({"license_key": license_key})
+    result = subprocess.run(
+        [
+            "curl",
+            "-sS",
+            "-X",
+            "POST",
+            "https://api.lemonsqueezy.com/v1/licenses/validate",
+            "-H",
+            "Accept: application/json",
+            "-H",
+            "Content-Type: application/x-www-form-urlencoded",
+            "--data",
+            payload,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"Error: license validation request failed: {result.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        data = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        print(f"Error: license validation response was not valid JSON: {result.stdout[:400]}", file=sys.stderr)
+        sys.exit(1)
+    if not isinstance(data, dict):
+        print(f"Error: unexpected license validation payload: {result.stdout[:400]}", file=sys.stderr)
+        sys.exit(1)
+    return summarize_license_validation(data)
+
+
+def summarize_license_validation(data):
+    license_key = data.get("license_key") or {}
+    meta = data.get("meta") or {}
+    status = str(license_key.get("status") or "")
+    return {
+        "valid": bool(data.get("valid")),
+        "error": data.get("error"),
+        "license_key_id": license_key.get("id"),
+        "license_key": license_key.get("key"),
+        "license_key_status": status,
+        "activation_limit": license_key.get("activation_limit"),
+        "activation_usage": license_key.get("activation_usage"),
+        "order_id": meta.get("order_id"),
+        "order_item_id": meta.get("order_item_id"),
+        "customer_id": meta.get("customer_id"),
+        "customer_name": meta.get("customer_name") or "",
+        "customer_email": canonical_email(meta.get("customer_email", "")),
+        "customer_email_raw": meta.get("customer_email", ""),
+        "product_id": meta.get("product_id"),
+        "product_name": meta.get("product_name") or "",
+        "store_id": meta.get("store_id"),
+        "raw": data,
+        "disabled": status == "disabled",
+    }
+
+
+def disable_license_key(api_key, license_key_id):
+    payload = {
+        "data": {
+            "type": "license-keys",
+            "id": str(license_key_id),
+            "attributes": {
+                "disabled": True,
+            },
+        },
+    }
+    result = subprocess.run(
+        [
+            "curl",
+            "-sS",
+            "-X",
+            "PATCH",
+            f"https://api.lemonsqueezy.com/v1/license-keys/{license_key_id}",
+            "-H",
+            f"Authorization: Bearer {api_key}",
+            "-H",
+            "Accept: application/vnd.api+json",
+            "-H",
+            "Content-Type: application/vnd.api+json",
+            "-d",
+            json.dumps(payload),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"Error: disable license key request failed for {license_key_id}: {result.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        response = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        print(f"Error: disable license key response was not valid JSON: {result.stdout[:400]}", file=sys.stderr)
+        sys.exit(1)
+    if "errors" in response:
+        print(json.dumps(response["errors"], indent=2), file=sys.stderr)
+        sys.exit(1)
+    data = response.get("data")
+    if not isinstance(data, dict):
+        print(f"Error: disable license key response missing payload: {result.stdout[:400]}", file=sys.stderr)
+        sys.exit(1)
+    attrs = data.get("attributes") or {}
+    return {
+        "license_key_id": data.get("id"),
+        "license_key": attrs.get("key"),
+        "status": attrs.get("status"),
+        "disabled": bool(attrs.get("disabled", False)),
+        "order_id": attrs.get("order_id"),
+        "customer_email": canonical_email(attrs.get("user_email", "")),
+        "customer_name": attrs.get("user_name") or "",
+        "product_id": attrs.get("product_id"),
+        "raw": response,
+    }
+
+
+def score_order_candidate(order, query_email="", query_name="", product=None):
+    summary = order_to_summary(order)
+    if product and summary.get("product") != product:
+        return None
+
+    score = 0
+    reasons = []
+
+    query_emails = email_variants(query_email)
+    order_emails = email_variants(summary.get("user_email_raw") or summary.get("user_email"))
+    email_match = query_emails & order_emails
+    if email_match:
+        score += 100
+        reasons.append(f"email={sorted(email_match)[0]}")
+
+    query_name_norm = normalize_customer_name(query_name)
+    order_name_norm = normalize_customer_name(summary.get("user_name"))
+    if query_name_norm and order_name_norm:
+        if query_name_norm == order_name_norm:
+            score += 60
+            reasons.append("name=exact")
+        else:
+            shared_name_tokens = identity_tokens(query_name_norm) & identity_tokens(order_name_norm)
+            if shared_name_tokens:
+                score += 20 + (10 * len(shared_name_tokens))
+                reasons.append("name_tokens=" + ",".join(sorted(shared_name_tokens)))
+
+    query_identity_tokens = identity_tokens(query_name) | email_local_part_tokens(query_email)
+    order_identity_tokens = identity_tokens(summary.get("user_name")) | email_local_part_tokens(summary.get("user_email"))
+    fuzzy_matches = fuzzy_token_matches(query_identity_tokens, order_identity_tokens)
+    fuzzy_pairs = {(left, right) for left, right in fuzzy_matches if left != right}
+    if fuzzy_pairs:
+        score += 12 * len(fuzzy_pairs)
+        sample = sorted(f"{left}~{right}" for left, right in fuzzy_pairs)[:3]
+        reasons.append("fuzzy=" + ",".join(sample))
+
+    if score == 0:
+        return None
+
+    summary["match_score"] = score
+    summary["match_reasons"] = reasons
+    return summary
+
+
+def find_customer_order_candidates(orders, query_email="", query_name="", product=None, limit=10):
+    matches = []
+    for order in orders:
+        candidate = score_order_candidate(order, query_email=query_email, query_name=query_name, product=product)
+        if candidate:
+            matches.append(candidate)
+    grouped_counts = defaultdict(int)
+    for candidate in matches:
+        customer_key = candidate.get("user_email") or normalize_customer_name(candidate.get("user_name")) or str(candidate.get("order_number"))
+        grouped_counts[(customer_key, candidate.get("product"))] += 1
+    for candidate in matches:
+        customer_key = candidate.get("user_email") or normalize_customer_name(candidate.get("user_name")) or str(candidate.get("order_number"))
+        duplicate_count = grouped_counts[(customer_key, candidate.get("product"))]
+        if duplicate_count > 1:
+            candidate["match_score"] += 30 * (duplicate_count - 1)
+            candidate.setdefault("match_reasons", []).append(f"repeat_product_orders={duplicate_count}")
+    matches.sort(
+        key=lambda item: (
+            -item.get("match_score", 0),
+            item.get("created_at") or "",
+            item.get("order_number") or 0,
+        ),
+        reverse=False,
+    )
+    return matches[:limit]
+
+
+def print_customer_order_candidates(candidates, query_email="", query_name="", product=None):
+    print("Customer order candidates")
+    if query_email:
+        print(f"  Query email: {query_email}")
+    if query_name:
+        print(f"  Query name: {query_name}")
+    if product:
+        print(f"  Product filter: {product}")
+    for candidate in candidates:
+        print(f"  - score={candidate['match_score']} order={candidate.get('order_number')} product={candidate.get('product')} customer={candidate.get('user_name') or '?'} <{candidate.get('user_email') or '?'}>")
+        print(f"    reasons: {', '.join(candidate.get('match_reasons') or [])}")
+
+
+def write_duplicate_license_proof_file(path, duplicate_summary, approval_note_path=None, approval_note_text=None):
+    refunded_order = duplicate_summary["refunded_order"]
+    kept_license = duplicate_summary["kept_license"]
+    refunded_license = duplicate_summary["refunded_license"]
+    disabled_license = duplicate_summary["disabled_license"]
+    lines = [
+        "Lemon Squeezy duplicate-license resolution",
+        f"Refunded order ID: {refunded_order.get('id')}",
+        f"Refunded order number: {refunded_order.get('order_number')}",
+        f"Customer: {refunded_order.get('user_name') or '?'} <{refunded_order.get('user_email') or '?'}>",
+        f"Product: {refunded_order.get('product')}",
+        f"Refunded amount: {refunded_order.get('refunded_amount_formatted')}",
+        f"Refunded at: {refunded_order.get('refunded_at') or 'n/a'}",
+        f"Kept key: {kept_license.get('license_key') or '?'}",
+        f"Kept key valid: {kept_license.get('valid')}",
+        f"Kept key order ID: {kept_license.get('order_id')}",
+        f"Refunded key: {refunded_license.get('license_key') or '?'}",
+        f"Refunded key disabled: {disabled_license.get('disabled')}",
+        f"Refunded key final status: {duplicate_summary['refunded_license_final'].get('license_key_status')}",
+    ]
+    if approval_note_path:
+        lines.append(f"Approval note: {approval_note_path}")
+    if approval_note_text:
+        lines.extend([
+            "",
+            "Approval note contents:",
+            approval_note_text,
+        ])
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+
+
+def refund_duplicate_license(api_key, orders, args):
+    approval_note_path, approval_note_text = validate_refund_approval(args)
+    if not args.keep_license_key:
+        print("Error: --keep-license-key is required for duplicate-license refunds.", file=sys.stderr)
+        sys.exit(1)
+    if not args.refund_order_number:
+        print("Error: --refund-order-number is required for duplicate-license refunds.", file=sys.stderr)
+        sys.exit(1)
+
+    kept_license = validate_license_key_public(args.keep_license_key)
+    refunded_license = validate_license_key_public(args.refund_duplicate_license_key)
+
+    if not kept_license.get("valid"):
+        print(f"Error: keep-license-key is not currently valid: {kept_license.get('error') or 'unknown error'}", file=sys.stderr)
+        sys.exit(1)
+    if not refunded_license.get("license_key_id"):
+        print("Error: refunded duplicate key could not be resolved to a Lemon Squeezy license key.", file=sys.stderr)
+        sys.exit(1)
+
+    if kept_license.get("product_id") and refunded_license.get("product_id") and kept_license["product_id"] != refunded_license["product_id"]:
+        print("Error: keep/refund keys belong to different products.", file=sys.stderr)
+        sys.exit(1)
+    if kept_license.get("customer_id") and refunded_license.get("customer_id") and kept_license["customer_id"] != refunded_license["customer_id"]:
+        print("Error: keep/refund keys belong to different customers.", file=sys.stderr)
+        sys.exit(1)
+
+    refund_order = find_order_by_number(orders, args.refund_order_number)
+    if refund_order is None:
+        print(f"Error: order number {args.refund_order_number} not found.", file=sys.stderr)
+        sys.exit(1)
+    refund_order_id = str(refund_order.get("id", "")).strip()
+    if str(refunded_license.get("order_id", "")).strip() != refund_order_id:
+        print(
+            f"Error: refund-order-number {args.refund_order_number} does not match refunded key order id {refunded_license.get('order_id')}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    refund_attrs = refund_order.get("attributes", {})
+    if refund_attrs.get("refunded"):
+        refunded_order_payload = refund_order
+    else:
+        refunded_order_payload = issue_order_refund(api_key, refund_order_id, amount=args.amount)
+    refunded_order = order_to_summary(refunded_order_payload)
+
+    if refunded_license.get("license_key_status") != "disabled":
+        disabled_license = disable_license_key(api_key, refunded_license["license_key_id"])
+    else:
+        disabled_license = {
+            "license_key_id": refunded_license["license_key_id"],
+            "license_key": refunded_license.get("license_key"),
+            "status": refunded_license.get("license_key_status"),
+            "disabled": True,
+            "order_id": refunded_license.get("order_id"),
+            "customer_email": refunded_license.get("customer_email"),
+            "customer_name": refunded_license.get("customer_name"),
+            "product_id": refunded_license.get("product_id"),
+            "raw": refunded_license.get("raw"),
+        }
+
+    kept_license_final = validate_license_key_public(args.keep_license_key)
+    refunded_license_final = validate_license_key_public(args.refund_duplicate_license_key)
+
+    summary = {
+        "kept_license": kept_license_final,
+        "refunded_license": refunded_license,
+        "refunded_license_final": refunded_license_final,
+        "disabled_license": disabled_license,
+        "refunded_order": refunded_order,
+    }
+    if args.proof_file:
+        write_duplicate_license_proof_file(args.proof_file, summary, str(approval_note_path), approval_note_text)
+    return summary
+
+
+def print_duplicate_license_summary(summary):
+    kept_license = summary["kept_license"]
+    refunded_license = summary["refunded_license"]
+    refunded_license_final = summary["refunded_license_final"]
+    refunded_order = summary["refunded_order"]
+    print("Duplicate license refund completed")
+    print(f"  Refunded order: {refunded_order.get('order_number')} (ID {refunded_order.get('id')})")
+    print(f"  Customer: {refunded_order.get('user_name') or '?'} <{refunded_order.get('user_email') or '?'}>")
+    print(f"  Refunded amount: {refunded_order.get('refunded_amount_formatted')}")
+    print(f"  Keep key: {kept_license.get('license_key')}")
+    print(f"  Keep key valid: {kept_license.get('valid')}")
+    print(f"  Refunded key: {refunded_license.get('license_key')}")
+    print(f"  Refunded key final status: {refunded_license_final.get('license_key_status')}")
 
 
 def issue_order_refund(api_key, order_id, amount=None):
@@ -633,8 +1000,17 @@ def main():
     parser.add_argument("--fees", action="store_true", help="Fee breakdown only")
     parser.add_argument("--products", action="store_true", help="Revenue by product")
     parser.add_argument("--product-variants", action="store_true", help="Revenue by product + variant")
+    parser.add_argument("--find-customer-orders", action="store_true", help="Find likely orders for a customer using email/name heuristics")
+    parser.add_argument("--email", type=str, help="Customer support email or suspected purchase email for customer/order lookup")
+    parser.add_argument("--name", type=str, help="Customer display name for customer/order lookup")
+    parser.add_argument("--product", type=str, help="Optional product filter for customer/order lookup")
+    parser.add_argument("--limit", type=int, default=10, help="Max customer order candidates to print")
+    parser.add_argument("--license-status", type=str, help="Inspect a Lemon Squeezy license key using the public validation endpoint")
+    parser.add_argument("--disable-license-key", type=str, help="Disable a Lemon Squeezy license key by key string")
     parser.add_argument("--refund-order", type=str, help="Issue a refund for Lemon Squeezy order ID")
     parser.add_argument("--refund-order-number", type=str, help="Issue a refund for Lemon Squeezy order number")
+    parser.add_argument("--refund-duplicate-license-key", type=str, help="Refund the order tied to a duplicate license key and disable that key")
+    parser.add_argument("--keep-license-key", type=str, help="Companion key to keep active during duplicate-license refund handling")
     parser.add_argument("--amount", type=int, help="Refund amount in cents (omit for full refund)")
     parser.add_argument("--proof-file", type=str, help="Write a human-readable refund proof file")
     parser.add_argument("--approval-note", type=str, help="Path to the explicit refund approval note")
@@ -653,14 +1029,73 @@ def main():
         print("Error: use either --refund-order or --refund-order-number, not both.", file=sys.stderr)
         sys.exit(1)
 
+    if args.find_customer_orders:
+        candidates = find_customer_order_candidates(
+            all_orders,
+            query_email=args.email or "",
+            query_name=args.name or "",
+            product=args.product,
+            limit=max(int(args.limit or 10), 1),
+        )
+        if args.json:
+            json.dump(candidates, sys.stdout, indent=2)
+            print()
+        else:
+            if not candidates:
+                print("No likely customer order matches found.")
+            else:
+                print_customer_order_candidates(candidates, query_email=args.email or "", query_name=args.name or "", product=args.product)
+        return
+
+    if args.license_status:
+        summary = validate_license_key_public(args.license_status)
+        if args.json:
+            json.dump(summary, sys.stdout, indent=2)
+            print()
+        else:
+            print("License key status")
+            print(f"  Key: {summary.get('license_key') or args.license_status}")
+            print(f"  Valid: {summary.get('valid')}")
+            print(f"  Status: {summary.get('license_key_status') or 'unknown'}")
+            print(f"  Customer: {summary.get('customer_name') or '?'} <{summary.get('customer_email') or summary.get('customer_email_raw') or '?'}>")
+            print(f"  Product: {summary.get('product_name') or '?'}")
+            print(f"  Order ID: {summary.get('order_id') or '?'}")
+            if summary.get("error"):
+                print(f"  Error: {summary['error']}")
+        return
+
+    if args.disable_license_key:
+        api_key = get_api_key()
+        summary = validate_license_key_public(args.disable_license_key)
+        license_key_id = summary.get("license_key_id")
+        if not license_key_id:
+            print("Error: could not resolve license key id for disable operation.", file=sys.stderr)
+            sys.exit(1)
+        disabled = disable_license_key(api_key, license_key_id)
+        if args.json:
+            json.dump(disabled, sys.stdout, indent=2)
+            print()
+        else:
+            print("License key disabled")
+            print(f"  Key: {disabled.get('license_key') or args.disable_license_key}")
+            print(f"  Status: {disabled.get('status') or 'unknown'}")
+            print(f"  Customer: {disabled.get('customer_name') or '?'} <{disabled.get('customer_email') or '?'}>")
+        return
+
+    if args.refund_duplicate_license_key:
+        summary = refund_duplicate_license(api_key, all_orders, args)
+        if args.json:
+            json.dump(summary, sys.stdout, indent=2)
+            print()
+        else:
+            print_duplicate_license_summary(summary)
+        return
+
     if args.refund_order or args.refund_order_number:
         target_order = None
         if args.refund_order:
             target_id = str(args.refund_order).strip()
-            for order in all_orders:
-                if str(order.get("id", "")).strip() == target_id:
-                    target_order = order
-                    break
+            target_order = find_order_by_id(all_orders, target_id)
             if target_order is None:
                 print(f"Error: order id {target_id} not found.", file=sys.stderr)
                 sys.exit(1)

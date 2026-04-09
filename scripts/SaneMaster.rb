@@ -172,7 +172,7 @@ class SaneMaster
     sales: {
       desc: 'Sales and revenue reporting',
       commands: {
-        'sales' => { args: '[--daily|--month|--products|--fees|--refund-order ID|--refund-order-number N|--approval-note PATH|--include-refunded|--json]', desc: 'LemonSqueezy sales report and guarded refunds (default: daily breakdown)' },
+        'sales' => { args: '[--daily|--month|--products|--fees|--find-customer-orders --email E --name N --product P|--license-status KEY|--disable-license-key KEY|--refund-order ID|--refund-order-number N|--refund-duplicate-license-key KEY --keep-license-key KEY --approval-note PATH|--include-refunded|--json]', desc: 'LemonSqueezy sales report and guarded order refunds (default: daily breakdown)' },
         'downloads' => { args: '[--daily|--days N|--app NAME|--json]', desc: 'Download analytics from dist Worker (default: daily breakdown)' },
         'events' => { args: '[--days N|--app NAME|--json]', desc: 'User-type event analytics (new_free, early_adopter, activated)' },
         'leads' => { args: '--query "TEXT" [--site-limit N] [--page-limit N] [--domain example.com]', desc: 'Lead discovery with Exa + Firecrawl site dossiers' }
@@ -1738,15 +1738,24 @@ PY
       examples: ['appstore_preflight', 'asp']
     },
     'sales' => {
-      usage: 'sales [--daily|--month|--products|--fees|--refund-order ID|--refund-order-number N|--approval-note PATH|--include-refunded|--json]',
+      usage: 'sales [--daily|--month|--products|--fees|--find-customer-orders --email E --name N --product P|--license-status KEY|--disable-license-key KEY|--refund-order ID|--refund-order-number N|--refund-duplicate-license-key KEY --keep-license-key KEY --approval-note PATH|--include-refunded|--json]',
       description: 'LemonSqueezy sales report and guarded order refunds. Default: daily breakdown (today/yesterday/week/all-time).',
       flags: {
         '--daily' => 'Today/yesterday/week/all-time breakdown (default)',
         '--month' => 'Current month with monthly aggregates',
         '--products' => 'Revenue by product',
         '--fees' => 'Detailed fee breakdown',
+        '--find-customer-orders' => 'Find likely orders for a customer using email/name heuristics',
+        '--email E' => 'Customer support email or suspected purchase email for customer/order lookup',
+        '--name N' => 'Customer display name for customer/order lookup',
+        '--product P' => 'Optional product filter for customer/order lookup',
+        '--limit N' => 'Max customer order candidates to print',
+        '--license-status KEY' => 'Inspect a LemonSqueezy license key using the public validation endpoint',
+        '--disable-license-key KEY' => 'Disable a LemonSqueezy license key by key string',
         '--refund-order ID' => 'Issue a refund for a Lemon Squeezy order ID',
         '--refund-order-number N' => 'Issue a refund for a Lemon Squeezy order number',
+        '--refund-duplicate-license-key KEY' => 'Refund the order tied to a duplicate license key and disable that key',
+        '--keep-license-key KEY' => 'Companion key to keep active during duplicate-license refund handling',
         '--amount CENTS' => 'Refund a specific amount in cents (omit for full refund)',
         '--proof-file PATH' => 'Write a human-readable refund proof file (required for new refunds)',
         '--approval-note PATH' => 'Path to the explicit refund approval note (required for new refunds)',
@@ -1758,7 +1767,10 @@ PY
         'sales --month        # Current month',
         'sales --products     # Revenue by product',
         'sales --fees         # Fee breakdown',
-        'SANE_REFUND_APPROVED=1 sales --refund-order 7679013 --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt'
+        'sales --find-customer-orders --email reed@reed-a.ca --name Reed --product SaneBar',
+        'sales --license-status 766800DD-3877-4EAA-938F-D60D42FFA0D7',
+        'SANE_REFUND_APPROVED=1 sales --refund-order 7679013 --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt',
+        'SANE_REFUND_APPROVED=1 sales --refund-duplicate-license-key D1918... --keep-license-key 7668... --refund-order-number 270691528 --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt'
       ]
     },
     'downloads' => {

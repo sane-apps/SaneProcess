@@ -199,13 +199,13 @@ class ToolDiscoveryReceipt
 
   def canonical_path_matches
     downcased_query = query.downcase
-    matches = CANONICAL_TOOL_PATHS.filter_map do |entry|
+    matches = CANONICAL_TOOL_PATHS.each_with_object([]) do |entry, acc|
       score = entry[:keywords].count do |keyword|
         downcased_query.include?(keyword) || query_terms.include?(keyword)
       end
       next if score.zero?
 
-      entry.merge(score: score)
+      acc << entry.merge(score: score)
     end
 
     matches = [CANONICAL_TOOL_PATHS.first.merge(score: 1)] if matches.empty?
