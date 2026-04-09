@@ -1251,9 +1251,9 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
 
   # Verify the config was generated and has the correct schedule for this sweep.
   if [ ! -s "$SWEEP_CONFIG" ] || \
-     ! grep -q "^iters: $ITERS\$" "$SWEEP_CONFIG" || \
-     ! grep -Eq "^[[:space:]]*arguments: \\[[^,]+, $ITERS\\]\$" "$SWEEP_CONFIG" || \
-     ! grep -Eq "^[[:space:]]*warmup: $WARMUP_STEPS\$" "$SWEEP_CONFIG"; then
+     ! grep -Eq "^iters: $ITERS([[:space:]]+#.*)?\$" "$SWEEP_CONFIG" || \
+     ! grep -Eq "^[[:space:]]*arguments: \\[[^,]+, $ITERS\\]([[:space:]]+#.*)?\$" "$SWEEP_CONFIG" || \
+     ! grep -Eq "^[[:space:]]*warmup: $WARMUP_STEPS([[:space:]]+#.*)?\$" "$SWEEP_CONFIG"; then
     echo "**FAILED** — could not generate sweep config (sed failed)" >> "$REPORT"
     echo "" >> "$REPORT"
     continue
