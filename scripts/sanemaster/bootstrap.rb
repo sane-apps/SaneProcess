@@ -525,7 +525,7 @@ module SaneMasterModules
 
       unless check_only
         puts "\n💡 Session log: #{@sop_log}"
-        puts '💾 Rollback available: ./Scripts/SaneMaster.rb sop --rollback'
+        puts '💾 Rollback available: ./scripts/SaneMaster.rb sop --rollback'
       end
 
       # Session-ready toast (SOP requirement)

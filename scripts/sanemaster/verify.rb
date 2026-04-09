@@ -964,7 +964,7 @@ module SaneMasterModules
         puts "  ✅ #{test_asset_name} exists (#{size_str})"
       else
         puts "  ⚠️  #{test_asset_name} missing"
-        puts '     Run: ./Scripts/SaneMaster.rb gen_assets'
+        puts '     Run: ./scripts/SaneMaster.rb gen_assets'
       end
 
       return unless Dir.exist?(assets_dir)
@@ -1015,7 +1015,7 @@ module SaneMasterModules
           puts "  ✅ Project appears in sync (#{project_swift_count} Swift files)"
         end
       rescue LoadError
-        puts '  ⚠️  Skipping sync check (run with: bundle exec ./Scripts/SaneMaster.rb doctor)'
+        puts '  ⚠️  Skipping sync check (run with: bundle exec ./scripts/SaneMaster.rb doctor)'
       rescue StandardError => e
         puts "  ⚠️  Could not verify sync: #{e.message}"
       end
@@ -1083,7 +1083,7 @@ module SaneMasterModules
       if dd_dirs.any?
         total_size = dd_dirs.map { |d| `du -sh "#{d}" 2>/dev/null`.split.first }.join(', ')
         puts "  📦 Size: #{total_size}"
-        puts '     Clean with: ./Scripts/SaneMaster.rb clean --nuclear'
+        puts '     Clean with: ./scripts/SaneMaster.rb clean --nuclear'
       else
         puts '  ✅ No DerivedData cache'
       end

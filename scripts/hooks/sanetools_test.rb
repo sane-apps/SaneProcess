@@ -9,6 +9,7 @@
 # ==============================================================================
 
 require_relative 'core/state_manager'
+require_relative 'core/mandatory_workflows'
 require_relative 'sanetools_test_scenarios'
 
 module SaneToolsTest
@@ -302,6 +303,48 @@ module SaneToolsTest
     else
       failed += 1
       warn "  FAIL: tool_discovery receipt command should be allowed, got #{exit_code}"
+    end
+
+    {
+      'status' => 'ruby scripts/SaneMaster.rb status',
+      'verify' => 'ruby scripts/SaneMaster.rb verify',
+      'ship' => 'ruby scripts/SaneMaster.rb release_preflight',
+      'check_inbox' => 'ruby scripts/SaneMaster.rb check_inbox'
+    }.each do |workflow, runner_command|
+      StateManager.reset(:skill)
+      StateManager.update(:skill) do |s|
+        s[:required] = workflow
+        s[:required_prompt] = "workflow #{workflow}"
+        s[:runner_used] = false
+        s[:runner_commands] = []
+        s
+      end
+
+      original_stderr = $stderr.clone
+      $stderr.reopen('/dev/null', 'w')
+      exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })
+      $stderr.reopen(original_stderr)
+
+      if exit_code == 2
+        passed += 1
+        warn "  PASS: Missing #{workflow} runner proof blocks edits"
+      else
+        failed += 1
+        warn "  FAIL: Missing #{workflow} runner proof should block edits, got #{exit_code}"
+      end
+
+      original_stderr = $stderr.clone
+      $stderr.reopen('/dev/null', 'w')
+      exit_code = process_tool_proc.call('Bash', { 'command' => runner_command })
+      $stderr.reopen(original_stderr)
+
+      if exit_code == 0
+        passed += 1
+        warn "  PASS: #{workflow} runner command is allowed"
+      else
+        failed += 1
+        warn "  FAIL: #{workflow} runner command should be allowed, got #{exit_code}"
+      end
     end
 
     StateManager.reset(:skill)

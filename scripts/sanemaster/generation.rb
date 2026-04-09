@@ -46,7 +46,7 @@ module SaneMasterModules
       puts "\n📝 Next steps:"
       puts '  1. Review the generated test template'
       puts '  2. Add your test cases following AAA pattern (Arrange-Act-Assert)'
-      puts '  3. Run: ./Scripts/SaneMaster.rb verify'
+      puts '  3. Run: ./scripts/SaneMaster.rb verify'
     end
 
     def check_xcodegen(files)
@@ -61,7 +61,7 @@ module SaneMasterModules
       begin
         require 'xcodeproj'
       rescue LoadError
-        puts '⚠️  Skipping XcodeGen check (run with: bundle exec ./Scripts/SaneMaster.rb)'
+        puts '⚠️  Skipping XcodeGen check (run with: bundle exec ./scripts/SaneMaster.rb)'
         return
       end
 
@@ -111,7 +111,7 @@ module SaneMasterModules
 
       issues = []
       dev_doc = File.read('DEVELOPMENT.md')
-      help_output = `./Scripts/SaneMaster.rb 2>&1`
+      help_output = `./scripts/SaneMaster.rb 2>&1`
 
       commands_in_help = help_output.scan(/^\s+(\w+)/).flatten.uniq
       commands_in_help.reject! { |c| %w[Examples: Commands: console check_xcodegen check_protocol_changes].include?(c) }
@@ -121,6 +121,19 @@ module SaneMasterModules
       end
 
       check_documentation_flags(dev_doc, issues)
+
+      readme = File.read('README.md')
+      issues << "README.md missing SaneProcess operator docs map" unless readme.include?('## Operator Docs Map')
+
+      mini_readme = File.read('scripts/mini/README.md')
+      unless mini_readme.match?(/\|\s*`bootstrap-build-server\.sh`\s*\|\s*On demand\s*\|/)
+        issues << 'scripts/mini/README.md missing bootstrap-build-server.sh in the top script inventory'
+      end
+
+      automation_readme = File.read('scripts/automation/README.md')
+      unless automation_readme.include?('repo-root-safe')
+        issues << 'scripts/automation/README.md missing repo-root-safe usage guidance'
+      end
 
       if issues.empty?
         puts '✅ Documentation is in sync with tools'
@@ -136,7 +149,7 @@ module SaneMasterModules
     private
 
     def print_test_generator_help
-      puts 'Usage: ./Scripts/SaneMaster.rb gen_test <test_name> [options]'
+      puts 'Usage: ./scripts/SaneMaster.rb gen_test <test_name> [options]'
       puts ''
       puts 'Options:'
       puts '  --type <unit|ui>     Test type (default: unit)'
@@ -145,8 +158,8 @@ module SaneMasterModules
       puts '  --async              Include async/await patterns'
       puts ''
       puts 'Examples:'
-      puts '  ./Scripts/SaneMaster.rb gen_test MyFeatureTests --target MyFeature'
-      puts '  ./Scripts/SaneMaster.rb gen_test MyUITests --type ui --framework xctest'
+      puts '  ./scripts/SaneMaster.rb gen_test MyFeatureTests --target MyFeature'
+      puts '  ./scripts/SaneMaster.rb gen_test MyUITests --type ui --framework xctest'
     end
 
     def parse_test_options(args)
@@ -301,11 +314,11 @@ module SaneMasterModules
     end
 
     def print_verify_api_help
-      puts 'Usage: ./Scripts/SaneMaster.rb verify_api <APIName> [Framework]'
+      puts 'Usage: ./scripts/SaneMaster.rb verify_api <APIName> [Framework]'
       puts ''
       puts 'Examples:'
-      puts '  ./Scripts/SaneMaster.rb verify_api faceCaptureQuality Vision'
-      puts '  ./Scripts/SaneMaster.rb verify_api SCContentSharingPicker ScreenCaptureKit'
+      puts '  ./scripts/SaneMaster.rb verify_api faceCaptureQuality Vision'
+      puts '  ./scripts/SaneMaster.rb verify_api SCContentSharingPicker ScreenCaptureKit'
     end
 
     def find_sdk

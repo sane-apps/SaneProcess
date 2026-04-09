@@ -106,15 +106,21 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 | Command | Purpose |
 |---------|---------|
 | `verify [--ui]` | Build + run tests (include UI tests with `--ui`) |
+| `status` | Live cross-reference across git, inbox, issues, release lanes, and current signals |
+| `check_inbox [check|review <id>|read <id>|reply ...]` | Canonical support inbox workflow wrapper |
 | `test_mode` | Kill → Build → Launch → Logs |
 | `doctor` | Environment health check |
 | `tool_discovery --query "..."` | Generate a proof receipt before using a workaround or adding a tool |
+| `sync_mini [mini] [--quiet] [--no-restart]` | Sync the active Codex control-plane profile to the Mini |
 | `universal_control_reset [--status|--reboot-mini|--cleanup-mini]` | Recover Air↔Mini Universal Control / pointer handoff |
 | `export` | Export code/docs (PDF/MD) |
 | `listing_actions` | Export the current listing/setup action tracker from inbox history |
 | `hosted_file_actions` | Export the current Lemon Squeezy hosted-file dashboard action tracker |
+| `install_provisioning_profiles [--delete-source] [glob ...]` | Deterministically install downloaded provisioning profiles |
+| `dedupe_apps [--host local|mini] [--apps App1,App2] [--dry-run] [--json]` | Keep one canonical app bundle per Sane app |
 | `debug` | Debugging helpers (logs, crashes, diagnose) |
 | `env` | Environment and setup helpers |
+| `meta` | Tooling self-audit helpers (`meta`, `audit`, `system_check`) |
 | `sales` | LemonSqueezy revenue reporting helpers |
 
 License support rule: real customer license keys come only from LemonSqueezy-backed orders and license-key records. Use `check-inbox.sh review` + `whois` + the LemonSqueezy recovery/backfill flow for missing-key support. Do not generate local fallback keys.
@@ -151,7 +157,7 @@ These scripts are real, but they are not the default daily path. Keep their role
 | `ruby scripts/scaffold.rb <AppName> [--type macos\|ios]` | One-time bootstrap utility | New Sane* repo skeleton generation before project-specific cleanup and Codex/AGENTS refresh |
 | `bash scripts/automation/website-consistency-check.sh` | Manual website audit | Static consistency checks across product sites and guide hubs after website/release copy changes |
 | `bash scripts/mini/mini-license-test.sh` | Manual deep Mini probe | Full SaneBar license lifecycle testing on the Mini when license activation/deactivation/offline caching changes |
-| `bash scripts/mini/sync-claude-config.sh` | Deprecated wrapper only | Prints or routes to the canonical `bash scripts/automation/sync-codex-mini.sh mini --no-restart` path |
+| `bash scripts/mini/sync-claude-config.sh` | Deprecated wrapper only | Prints or routes to the canonical `ruby scripts/SaneMaster.rb sync_mini --no-restart` path |
 | `bash scripts/app_test_mode.sh ...` | Manual runtime lane control | Force app mode, owner-license state, or live-launch verification on local host or Mini without ad hoc defaults writes |
 
 Listing/directory follow-up rule: do not maintain separate manual spreadsheets by hand. Regenerate the tracker from inbox history with the canonical command below. New recognized listing/setup emails are folded into the workbook the next time the command runs.
@@ -204,19 +210,23 @@ Treat that as a real release gate, not optional polish:
 | Need | Standard path | Not this |
 |------|---------------|----------|
 | Find the right tool first | `ruby scripts/SaneMaster.rb tool_discovery --query "..."` | Random searches, guessing, or inventing a new script first |
+| Check live project status | `ruby scripts/SaneMaster.rb status` | Piecing status together manually from git, inbox, sales, and issues |
 | Build and test app code | `ruby scripts/SaneMaster.rb verify [--ui]` | Raw `xcodebuild` unless the tool itself is what you are fixing |
 | Launch and smoke-test an app | `ruby scripts/SaneMaster.rb test_mode --release --no-logs` | Manual local launches and stale DerivedData builds |
 | Mini live window screenshots | `scripts/mini/capture-mini-screenshot.sh --app "<App>" --window-name "<Window>" --mode temp` | Plain `ssh` + `screencapture` guessing from a non-GUI shell |
 | Mini Safari tab control | `scripts/mini/mini-safari.sh open-read "<url>"` | One-off raw `ssh mini osascript` snippets for Safari evidence, listing links, or portal checks |
+| Sync Codex control-plane to the Mini | `ruby scripts/SaneMaster.rb sync_mini [mini] [--quiet] [--no-restart]` | Manual sync script hunting or recreating a second Mini config lane |
 | Air↔Mini pointer handoff recovery | `ruby scripts/SaneMaster.rb universal_control_reset` | Random killall / reboot guessing when Universal Control breaks |
 | App Store review readiness | `ruby scripts/SaneMaster.rb appstore_preflight` | Clicking around ASC first and guessing what Apple meant |
+| Headless Mini signing bootstrap | `bash scripts/mini/bootstrap-build-server.sh` | Trying App Store archive/export first and debugging signing after the failure |
 | App Review evidence collection | `ruby scripts/appstore_submit.rb --app-id <id> --platform macos|ios --version X.Y.Z --project-root <repo> --fetch-review-package` | Reading only the rejection text and ignoring Apple’s screenshot/video/PDF evidence |
 | Direct release readiness | `ruby scripts/SaneMaster.rb release_preflight` | Manual release spot checks |
-| Customer support triage | `/Users/sj/SaneApps/infra/scripts/check-inbox.sh review <id>` | Manual API calls, ad hoc email drafts, or skipping review |
+| Customer support triage | `ruby scripts/SaneMaster.rb check_inbox review <id>` | Manual API calls, ad hoc email drafts, or skipping review |
 | Sales / downloads / funnel | `ruby scripts/SaneMaster.rb sales`, `downloads`, `events` | Manual vendor curls or spreadsheet guesses |
 | Listing/setup tracker | `ruby scripts/SaneMaster.rb listing_actions` | Manual inbox sweeps and hand-built spreadsheets |
 | Hosted-file dashboard tracker | `ruby scripts/SaneMaster.rb hosted_file_actions` | Grepping validation output and manually hunting Lemon Squeezy product/variant pages |
-| MCP and tool health | `ruby scripts/SaneMaster.rb mcp_watchdog doctor` and `/Users/sj/.codex/bin/check-mcps` | Killing random daemons first and hoping |
+| MCP and tool health | `ruby scripts/SaneMaster.rb mcp_watchdog doctor` and `~/.codex/bin/check-mcps` | Killing random daemons first and hoping |
+  `mcp_watchdog doctor` is the background-machine truth. `check-mcps` is the live active-session tool-call probe and expects the current machine to have active MCP bridges.
 
 ### Verification helpers
 
@@ -236,6 +246,7 @@ SaneProcess includes a semantic memory MCP server for cross-session retrieval.
 - Bootstrap: `scripts/mcp-central-memory/bootstrap-local.sh`
 - Default DB: `postgresql://<local-user>@localhost:5432/central_memory`
 - MCP key: `central-memory` in `/Users/sj/.codex/config.toml` and `.mcp.json`
+- Codex control-plane helper source lives in `scripts/codex-bin/`; `ruby scripts/SaneMaster.rb sync_mini` installs that source into local `~/.codex/bin/` and mirrors it to Mini
 
 Setup:
 

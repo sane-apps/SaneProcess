@@ -422,6 +422,55 @@ module SaneStopTest
       warn "  FAIL: Tool-discovery receipt should allow stop, got exit #{exit_code}"
     end
 
+    {
+      'status' => 'ruby scripts/SaneMaster.rb status',
+      'verify' => 'ruby scripts/SaneMaster.rb verify',
+      'ship' => 'ruby scripts/SaneMaster.rb release_preflight',
+      'check_inbox' => 'ruby scripts/SaneMaster.rb check_inbox'
+    }.each do |workflow, runner_command|
+      StateManager.reset(:skill)
+      StateManager.update(:skill) do |s|
+        s[:required] = workflow
+        s[:required_prompt] = "workflow #{workflow}"
+        s[:invoked] = true
+        s[:runner_used] = false
+        s[:runner_commands] = []
+        s
+      end
+
+      original_stderr = $stderr.clone
+      $stderr.reopen('/dev/null', 'w')
+      exit_code = process_stop_proc.call(false)
+      $stderr.reopen(original_stderr)
+      if exit_code == 2
+        passed += 1
+        warn "  PASS: Missing #{workflow} runner proof blocks stop"
+      else
+        failed += 1
+        warn "  FAIL: Missing #{workflow} runner proof should block stop, got #{exit_code}"
+      end
+
+      StateManager.update(:skill) do |s|
+        s[:required] = workflow
+        s[:required_prompt] = "workflow #{workflow}"
+        s[:invoked] = true
+        s[:runner_used] = true
+        s[:runner_commands] = [runner_command]
+        s
+      end
+      original_stderr = $stderr.clone
+      $stderr.reopen('/dev/null', 'w')
+      exit_code = process_stop_proc.call(false)
+      $stderr.reopen(original_stderr)
+      if exit_code == 0
+        passed += 1
+        warn "  PASS: #{workflow} runner proof allows stop"
+      else
+        failed += 1
+        warn "  FAIL: #{workflow} runner proof should allow stop, got #{exit_code}"
+      end
+    end
+
     # Cleanup
     StateManager.reset(:handoff_tracking)
     StateManager.reset(:skill)

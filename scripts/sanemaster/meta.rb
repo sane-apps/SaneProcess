@@ -803,7 +803,7 @@ module SaneMasterModules
       puts '📋 Command Coverage:'
 
       # Count commands in COMMANDS hash (approximate by grepping)
-      main_file = File.read('Scripts/SaneMaster.rb')
+      main_file = File.read('scripts/SaneMaster.rb')
       command_count = main_file.scan(/when '[\w_]+'/).count
 
       puts "   📊 #{command_count} commands registered"
@@ -870,13 +870,13 @@ module SaneMasterModules
       # Mocks freshness
       if results[:mocks][:status] == :warning
         issues << 'Mocks may be stale'
-        actions << './Scripts/SaneMaster.rb gen_mock'
+        actions << './scripts/SaneMaster.rb gen_mock'
       end
 
       # Crash backlog
       if results[:crash_backlog][:status] == :warning
         issues << "#{results[:crash_backlog][:count]} unaddressed crashes"
-        actions << './Scripts/SaneMaster.rb crashes --recent'
+        actions << './scripts/SaneMaster.rb crashes --recent'
       end
 
       # Tool versions - only if there are recommended (non-major) updates

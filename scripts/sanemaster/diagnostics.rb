@@ -26,7 +26,7 @@ module SaneMasterModules
           puts '   Check test_output.txt for build errors.'
         else
           puts '❌ No .xcresult bundle found.'
-          puts '   Run tests first: ./Scripts/SaneMaster.rb verify'
+          puts '   Run tests first: ./scripts/SaneMaster.rb verify'
         end
         return
       end

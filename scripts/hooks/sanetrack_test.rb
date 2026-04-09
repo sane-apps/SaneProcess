@@ -478,6 +478,31 @@ module SaneTrackTest
       warn "  FAIL: tool_discovery command should satisfy evolve receipt, got #{skill.inspect}"
     end
 
+    {
+      'status' => 'ruby scripts/SaneMaster.rb status',
+      'verify' => 'ruby scripts/SaneMaster.rb verify',
+      'ship' => 'ruby scripts/SaneMaster.rb release_preflight',
+      'check_inbox' => 'ruby scripts/SaneMaster.rb check_inbox'
+    }.each do |workflow, runner_command|
+      StateManager.reset(:skill)
+      StateManager.update(:skill) do |s|
+        s[:required] = workflow
+        s[:runner_used] = false
+        s[:runner_commands] = []
+        s
+      end
+
+      process_result_proc.call('Bash', { 'command' => runner_command }, { 'output' => 'ok' })
+      skill = StateManager.get(:skill)
+      if skill[:runner_used] == true && skill[:runner_commands].include?(runner_command)
+        passed += 1
+        warn "  PASS: #{workflow} runner command satisfies workflow proof"
+      else
+        failed += 1
+        warn "  FAIL: #{workflow} runner command should satisfy workflow proof, got #{skill.inspect}"
+      end
+    end
+
     # === CLEANUP: Reset circuit breaker only (don't reset research - breaks normal ops) ===
     StateManager.reset(:circuit_breaker)
     StateManager.update(:enforcement) { |e| e[:halted] = false; e[:blocks] = []; e }

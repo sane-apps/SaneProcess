@@ -10,7 +10,7 @@ module SaneMasterModules
 
       input_file = args.find { |a| a.end_with?('.md') }
       unless input_file && File.exist?(input_file)
-        puts 'Usage: ./Scripts/SaneMaster.rb md_export <file.md>'
+        puts 'Usage: ./scripts/SaneMaster.rb md_export <file.md>'
         puts '       Converts markdown to PDF'
         return
       end

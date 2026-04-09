@@ -377,7 +377,7 @@ def test_process_enforcer
   # Test 5: Allows saneloop start command (bootstrap fix)
   result = run_hook('process_enforcer.rb', {
     tool_name: 'Bash',
-    tool_input: { command: './Scripts/SaneMaster.rb saneloop start "test"' }
+    tool_input: { command: './scripts/SaneMaster.rb saneloop start "test"' }
   })
   assert_exit_code(result, 0, 'Allows saneloop start command')
 

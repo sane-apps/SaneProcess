@@ -73,11 +73,20 @@ command -v scp >/dev/null 2>&1 || die "scp not found"
 command -v rsync >/dev/null 2>&1 || die "rsync not found"
 
 LOCAL_CODEX_DIR="$HOME/.codex"
+LOCAL_CODEX_CONFIG="$LOCAL_CODEX_DIR/config.toml"
+LOCAL_CODEX_BIN_DIR="$LOCAL_CODEX_DIR/bin"
+REPO_CODEX_BIN_DIR="$HOME/SaneApps/infra/SaneProcess/scripts/codex-bin"
 LOCAL_AM="$LOCAL_CODEX_DIR/automations/saneops-am-run/automation.toml"
 LOCAL_PM="$LOCAL_CODEX_DIR/automations/saneops-pm-run/automation.toml"
 LOCAL_DB="$LOCAL_CODEX_DIR/sqlite/codex-dev.db"
 LOCAL_SKILLS_REGISTRY="$LOCAL_CODEX_DIR/SKILLS_REGISTRY.md"
 LOCAL_SKILLS_DIR="$LOCAL_CODEX_DIR/skills"
+LOCAL_KNOWLEDGE_GRAPH="$HOME/.claude/memory/knowledge-graph.jsonl"
+CODEX_BIN_FILES=(
+  "check-mcps"
+  "github-mcp-bridge.mjs"
+  "xcode-mcpbridge-wrapper.sh"
+)
 CONTROL_PLANE_REL_FILES=(
   "SaneApps/infra/scripts/check-inbox.sh"
   "SaneApps/infra/SaneProcess/scripts/automation/git-sync-safe.sh"
@@ -93,16 +102,27 @@ CONTROL_PLANE_REL_FILES=(
 
 [[ -f "$LOCAL_AM" ]] || die "Missing local automation file: $LOCAL_AM"
 [[ -f "$LOCAL_PM" ]] || die "Missing local automation file: $LOCAL_PM"
+[[ -f "$LOCAL_CODEX_CONFIG" ]] || die "Missing local Codex config: $LOCAL_CODEX_CONFIG"
 [[ -f "$LOCAL_SKILLS_REGISTRY" ]] || die "Missing local Codex skills registry: $LOCAL_SKILLS_REGISTRY"
 [[ -d "$LOCAL_SKILLS_DIR" ]] || die "Missing local Codex skills dir: $LOCAL_SKILLS_DIR"
+[[ -d "$REPO_CODEX_BIN_DIR" ]] || die "Missing repo Codex bin dir: $REPO_CODEX_BIN_DIR"
 
 for rel in "${CONTROL_PLANE_REL_FILES[@]}"; do
   [[ -f "$HOME/$rel" ]] || die "Missing control-plane file: $HOME/$rel"
 done
 
+for bin_name in "${CODEX_BIN_FILES[@]}"; do
+  [[ -f "$REPO_CODEX_BIN_DIR/$bin_name" ]] || die "Missing repo Codex bin helper: $REPO_CODEX_BIN_DIR/$bin_name"
+done
+
 # Keep local Codex guard wiring consistent too.
 mkdir -p "$HOME/.local/bin"
+mkdir -p "$LOCAL_CODEX_BIN_DIR"
 ln -sfn "$HOME/SaneApps/infra/SaneProcess/scripts/hooks/sane_curl_guard.sh" "$HOME/.local/bin/curl"
+for bin_name in "${CODEX_BIN_FILES[@]}"; do
+  cp "$REPO_CODEX_BIN_DIR/$bin_name" "$LOCAL_CODEX_BIN_DIR/$bin_name"
+  chmod +x "$LOCAL_CODEX_BIN_DIR/$bin_name"
+done
 
 set_status_in_file() {
   local file="$1"
@@ -122,12 +142,15 @@ if [[ -f "$LOCAL_DB" ]]; then
 fi
 
 REMOTE_HOME=$(ssh -o ConnectTimeout=8 "$MINI_HOST" 'printf %s "$HOME"') || die "Could not reach $MINI_HOST"
+REMOTE_NODE=$(ssh -o ConnectTimeout=8 "$MINI_HOST" 'command -v node') || die "Could not resolve node on $MINI_HOST"
 
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+TMP_CONFIG="$TMP_DIR/config.toml"
 TMP_AM="$TMP_DIR/saneops-am-run.toml"
 TMP_PM="$TMP_DIR/saneops-pm-run.toml"
+cp "$LOCAL_CODEX_CONFIG" "$TMP_CONFIG"
 cp "$LOCAL_AM" "$TMP_AM"
 cp "$LOCAL_PM" "$TMP_PM"
 
@@ -138,14 +161,32 @@ import pathlib
 import sys
 
 path = pathlib.Path(sys.argv[1])
-local_home = sys.argv[2].rstrip("/") + "/"
-remote_home = sys.argv[3].rstrip("/") + "/"
+local_home = sys.argv[2].rstrip("/")
+remote_home = sys.argv[3].rstrip("/")
 text = path.read_text(encoding="utf-8")
 text = text.replace(local_home, remote_home)
 path.write_text(text, encoding="utf-8")
 PY
 }
 
+rewrite_codex_config() {
+  local file="$1"
+  local remote_node="$2"
+  python3 - "$file" "$remote_node" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+remote_node = sys.argv[2]
+text = path.read_text(encoding="utf-8")
+text = re.sub(r'^command = ".*node"$', f'command = "{remote_node}"', text, flags=re.MULTILINE)
+path.write_text(text, encoding="utf-8")
+PY
+}
+
+rewrite_paths "$TMP_CONFIG"
+rewrite_codex_config "$TMP_CONFIG" "$REMOTE_NODE"
 rewrite_paths "$TMP_AM"
 rewrite_paths "$TMP_PM"
 
@@ -158,8 +199,21 @@ scp -q "$TMP_AM" "$TMP_PM" "$MINI_HOST:$REMOTE_HOME/"
 
 log "Syncing Codex skill registry and skills to $MINI_HOST..."
 ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.codex/skills\""
+scp -q "$TMP_CONFIG" "$MINI_HOST:$REMOTE_HOME/.codex/config.toml"
 scp -q "$LOCAL_SKILLS_REGISTRY" "$MINI_HOST:$REMOTE_HOME/.codex/SKILLS_REGISTRY.md"
 rsync -a --delete "$LOCAL_SKILLS_DIR/" "$MINI_HOST:$REMOTE_HOME/.codex/skills/"
+
+log "Syncing Codex control-plane helpers to $MINI_HOST..."
+ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.codex/bin\""
+for bin_name in "${CODEX_BIN_FILES[@]}"; do
+  scp -q "$REPO_CODEX_BIN_DIR/$bin_name" "$MINI_HOST:$REMOTE_HOME/.codex/bin/$bin_name"
+done
+
+if [[ -f "$LOCAL_KNOWLEDGE_GRAPH" ]]; then
+  log "Seeding knowledge graph cache on $MINI_HOST..."
+  ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.claude/memory\""
+  scp -q "$LOCAL_KNOWLEDGE_GRAPH" "$MINI_HOST:$REMOTE_HOME/.claude/memory/knowledge-graph.jsonl"
+fi
 
 log "Syncing control-plane files to $MINI_HOST..."
 for rel in "${CONTROL_PLANE_REL_FILES[@]}"; do
@@ -175,6 +229,9 @@ ssh "$MINI_HOST" "
   mkdir -p \"$REMOTE_HOME/.codex/automations/saneops-am-run\" \"$REMOTE_HOME/.codex/automations/saneops-pm-run\"
   cp \"$REMOTE_HOME/saneops-am-run.toml\" \"$REMOTE_HOME/.codex/automations/saneops-am-run/automation.toml\"
   cp \"$REMOTE_HOME/saneops-pm-run.toml\" \"$REMOTE_HOME/.codex/automations/saneops-pm-run/automation.toml\"
+  chmod +x \"$REMOTE_HOME/.codex/bin/check-mcps\"
+  chmod +x \"$REMOTE_HOME/.codex/bin/github-mcp-bridge.mjs\"
+  chmod +x \"$REMOTE_HOME/.codex/bin/xcode-mcpbridge-wrapper.sh\"
   chmod +x \"$REMOTE_HOME/SaneApps/infra/scripts/check-inbox.sh\"
   chmod +x \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/automation/git-sync-safe.sh\"
   chmod +x \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/automation/reconcile-air-mini.sh\"
@@ -302,6 +359,16 @@ fi
 local_registry_hash=$(shasum -a 256 "$LOCAL_SKILLS_REGISTRY" | cut -d' ' -f1)
 remote_registry_hash=$(ssh "$MINI_HOST" "shasum -a 256 \"$REMOTE_HOME/.codex/SKILLS_REGISTRY.md\" | cut -d' ' -f1" 2>/dev/null || echo "")
 [[ -n "$remote_registry_hash" && "$local_registry_hash" == "$remote_registry_hash" ]] || die "Codex skills registry parity check failed"
+
+for bin_name in "${CODEX_BIN_FILES[@]}"; do
+  local_bin_hash=$(shasum -a 256 "$REPO_CODEX_BIN_DIR/$bin_name" | cut -d' ' -f1)
+  remote_bin_hash=$(ssh "$MINI_HOST" "shasum -a 256 \"$REMOTE_HOME/.codex/bin/$bin_name\" | cut -d' ' -f1" 2>/dev/null || echo "")
+  [[ -n "$remote_bin_hash" && "$local_bin_hash" == "$remote_bin_hash" ]] || die "Codex bin parity check failed for $bin_name"
+done
+
+local_config_hash=$(shasum -a 256 "$TMP_CONFIG" | cut -d' ' -f1)
+remote_config_hash=$(ssh "$MINI_HOST" "shasum -a 256 \"$REMOTE_HOME/.codex/config.toml\" | cut -d' ' -f1" 2>/dev/null || echo "")
+[[ -n "$remote_config_hash" && "$local_config_hash" == "$remote_config_hash" ]] || die "Codex config parity check failed"
 
 skills_dry_run=$(rsync -a --delete --checksum --dry-run "$LOCAL_SKILLS_DIR/" "$MINI_HOST:$REMOTE_HOME/.codex/skills/" 2>/dev/null || true)
 if [[ -n "${skills_dry_run//[[:space:]]/}" ]]; then

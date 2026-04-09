@@ -68,6 +68,13 @@ class ToolDiscoveryReceipt
       why: 'Canonical build and test path. Routes to the Mini when required.'
     },
     {
+      name: 'Live project status',
+      keywords: %w[status health summary crossref cross-reference issue inbox release git],
+      command: 'ruby scripts/SaneMaster.rb status',
+      source: 'scripts/SaneMaster.rb status',
+      why: 'Canonical live status path across git, inbox, issues, release lanes, and current signals.'
+    },
+    {
       name: 'Run and verify a live app',
       keywords: %w[launch run smoke runtime end-to-end e2e screenshot visual qa],
       command: 'ruby scripts/SaneMaster.rb test_mode --release --no-logs',
@@ -91,9 +98,16 @@ class ToolDiscoveryReceipt
     {
       name: 'Customer support triage and replies',
       keywords: %w[email inbox support license github issue customer reply resolve],
-      command: '/Users/sj/SaneApps/infra/scripts/check-inbox.sh review <id>',
-      source: 'infra/scripts/check-inbox.sh',
+      command: 'ruby scripts/SaneMaster.rb check_inbox [check|review <id>|read <id>|reply ...]',
+      source: 'scripts/SaneMaster.rb check_inbox',
       why: 'Canonical review gate for customer email and linked GitHub issue work.'
+    },
+    {
+      name: 'Mini control-plane sync',
+      keywords: %w[mini sync codex profile control-plane automation restart],
+      command: 'ruby scripts/SaneMaster.rb sync_mini [mini] [--quiet] [--no-restart]',
+      source: 'scripts/SaneMaster.rb sync_mini',
+      why: 'Canonical Mini control-plane parity path instead of hunting automation scripts.'
     },
     {
       name: 'Revenue, downloads, and funnel analytics',
@@ -103,11 +117,25 @@ class ToolDiscoveryReceipt
       why: 'Canonical sales and analytics path instead of ad hoc vendor curls.'
     },
     {
+      name: 'Listing and setup action tracker',
+      keywords: %w[listing listings directory directories portal setup tracker workbook spreadsheet],
+      command: 'ruby scripts/SaneMaster.rb listing_actions',
+      source: 'scripts/SaneMaster.rb listing_actions',
+      why: 'Canonical listing/setup action tracker generated from inbox history.'
+    },
+    {
+      name: 'Hosted-file dashboard tracker',
+      keywords: %w[hosted file hosted-file lemonsqueezy dashboard drift upload workbook],
+      command: 'ruby scripts/SaneMaster.rb hosted_file_actions',
+      source: 'scripts/SaneMaster.rb hosted_file_actions',
+      why: 'Canonical hosted-file dashboard tracker for Lemon Squeezy drift.'
+    },
+    {
       name: 'MCP and tooling health',
       keywords: %w[mcp toolserver transport doctor health duplicate orphan crashed crash],
-      command: 'ruby scripts/SaneMaster.rb mcp_watchdog doctor && /Users/sj/.codex/bin/check-mcps',
+      command: 'ruby scripts/SaneMaster.rb mcp_watchdog doctor && ~/.codex/bin/check-mcps',
       source: 'scripts/SaneMaster.rb mcp_watchdog',
-      why: 'Canonical MCP health and duplicate-daemon check.'
+      why: 'Watchdog is the background-machine truth; check-mcps is the live active-session tool-call probe.'
     }
   ].freeze
 
@@ -454,7 +482,7 @@ class ToolDiscoveryReceipt
     puts "Validation: #{receipt.dig(:checks, :validation_report, :status) || 'skipped'}"
     puts "JSON: #{json_path}"
     puts "Markdown: #{markdown_path}"
-    receipt.dig(:checks, :canonical_paths).to_a.first(3).each do |entry|
+    receipt.dig(:checks, :canonical_paths).to_a.first(5).each do |entry|
       puts "  * #{entry[:command]} — #{entry[:why]}"
     end
     top_paths(receipt).first(5).each { |path| puts "  - #{path}" }

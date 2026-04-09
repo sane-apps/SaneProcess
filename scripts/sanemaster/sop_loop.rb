@@ -68,8 +68,8 @@ module SaneMasterModules
     def saneloop_start(args)
       if saneloop_active?
         warn '❌ A SaneLoop is already active!'
-        warn '   Use: ./Scripts/SaneMaster.rb saneloop status'
-        warn '   Or:  ./Scripts/SaneMaster.rb saneloop cancel'
+        warn '   Use: ./scripts/SaneMaster.rb saneloop status'
+        warn '   Or:  ./scripts/SaneMaster.rb saneloop cancel'
         return
       end
 
@@ -113,7 +113,7 @@ module SaneMasterModules
       if task_str.empty?
         warn '❌ No task provided'
         warn ''
-        warn 'Usage: ./Scripts/SaneMaster.rb saneloop start "Task description" [options]'
+        warn 'Usage: ./scripts/SaneMaster.rb saneloop start "Task description" [options]'
         warn ''
         warn 'Options:'
         warn '  --max-iterations N   Maximum iterations (default: 15)'
@@ -165,7 +165,7 @@ module SaneMasterModules
       unless saneloop_active?
         puts 'No SaneLoop active.'
         puts ''
-        puts 'Start one with: ./Scripts/SaneMaster.rb saneloop start "Task" --promise "Done"'
+        puts 'Start one with: ./scripts/SaneMaster.rb saneloop start "Task" --promise "Done"'
         return
       end
 
@@ -493,7 +493,7 @@ module SaneMasterModules
         SaneLoop - Native structured task loop
 
         USAGE:
-          ./Scripts/SaneMaster.rb saneloop <command> [options]
+          ./scripts/SaneMaster.rb saneloop <command> [options]
 
         COMMANDS:
           start "Task" [opts]  Start a new loop
@@ -515,7 +515,7 @@ module SaneMasterModules
           --promise "text"     Completion promise (REQUIRED)
 
         EXAMPLE:
-          ./Scripts/SaneMaster.rb saneloop start "Fix auth bug" \\
+          ./scripts/SaneMaster.rb saneloop start "Fix auth bug" \\
             --criteria "Tests pass" \\
             --criteria "No regression" \\
             --promise "Auth works and tests green"
@@ -853,7 +853,7 @@ module SaneMasterModules
     end
 
     def run_verify_check
-      system('./Scripts/SaneMaster.rb', 'verify', out: File::NULL, err: File::NULL)
+      system('./scripts/SaneMaster.rb', 'verify', out: File::NULL, err: File::NULL)
     end
   end
 end

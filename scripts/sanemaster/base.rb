@@ -461,9 +461,9 @@ module SaneMasterModules
         warn 'To use memory commands, pipe from MCP:'
         warn '  1. Ask Claude to run: mcp__memory__read_graph'
         warn '  2. Copy the JSON output'
-        warn '  3. Run: echo \'<json>\' | ./Scripts/SaneMaster.rb <command>'
+        warn '  3. Run: echo \'<json>\' | ./scripts/SaneMaster.rb <command>'
         warn ''
-        warn 'Or use: ./Scripts/SaneMaster.rb msync to create a cache.'
+        warn 'Or use: ./scripts/SaneMaster.rb msync to create a cache.'
         warn ''
         nil
       end

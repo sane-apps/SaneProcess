@@ -56,7 +56,7 @@ module SaneMasterModules
       mocks_file = File.join(project_tests_dir, 'Mocks', 'Mocks.swift')
       unless File.exist?(mocks_file)
         puts "❌ Mocks file not found: #{mocks_file}"
-        puts '   Run: ./Scripts/SaneMaster.rb gen_mock --target Core/Protocols'
+        puts '   Run: ./scripts/SaneMaster.rb gen_mock --target Core/Protocols'
         return
       end
 
@@ -80,14 +80,14 @@ module SaneMasterModules
       puts "\n⚠️  Protocol files with @mockable were modified:"
       changed_mockable.each { |f| puts "   - #{f}" }
       puts "\n💡 Remember to regenerate mocks:"
-      puts '   ./Scripts/SaneMaster.rb gen_mock --target Core/Protocols'
+      puts '   ./scripts/SaneMaster.rb gen_mock --target Core/Protocols'
       puts "\n   (This is a reminder - commit will proceed)"
     end
 
     private
 
     def print_mock_generator_help
-      puts 'Usage: ./Scripts/SaneMaster.rb gen_mock [options]'
+      puts 'Usage: ./scripts/SaneMaster.rb gen_mock [options]'
       puts ''
       puts 'Options:'
       puts '  --target <dir>        Generate mocks for all protocols in directory'
@@ -95,8 +95,8 @@ module SaneMasterModules
       puts "  --output <dir>        Output directory (default: #{project_tests_dir}/Mocks)"
       puts ''
       puts 'Examples:'
-      puts '  ./Scripts/SaneMaster.rb gen_mock --target Services/Camera'
-      puts '  ./Scripts/SaneMaster.rb gen_mock --protocol CameraServiceProtocol'
+      puts '  ./scripts/SaneMaster.rb gen_mock --target Services/Camera'
+      puts '  ./scripts/SaneMaster.rb gen_mock --protocol CameraServiceProtocol'
     end
 
     def parse_mock_options(args)
@@ -212,7 +212,7 @@ module SaneMasterModules
         puts '⚠️  Mocks may be out of sync:'
         puts "   Missing mocks: #{missing.join(', ')}" if missing.any?
         puts "   Extra mocks: #{extra.join(', ')}" if extra.any?
-        puts "\n💡 Regenerate mocks: ./Scripts/SaneMaster.rb gen_mock --target Core/Protocols"
+        puts "\n💡 Regenerate mocks: ./scripts/SaneMaster.rb gen_mock --target Core/Protocols"
       end
     end
   end

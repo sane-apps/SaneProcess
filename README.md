@@ -23,6 +23,19 @@ SaneProcess is the source of truth for the anti-fragmentation rule used across S
 
 See [DEVELOPMENT.md](DEVELOPMENT.md) for the operating procedure behind this rule.
 
+## Operator Docs Map
+
+If I am using SaneProcess as an operator, the doc ownership is:
+
+- [AGENTS.md](AGENTS.md): rules, trigger map, mandatory workflows, and session behavior
+- [DEVELOPMENT.md](DEVELOPMENT.md): canonical CLI/tool paths and day-to-day SOP
+- [scripts/automation/README.md](scripts/automation/README.md): automation scripts that are not normal daily wrappers
+- [scripts/mini/README.md](scripts/mini/README.md): Mini runtime/build-server scripts and headless/GUI recovery paths
+- [scripts/codex-bin/README.md](scripts/codex-bin/README.md): git-owned source for the Codex control-plane helpers that get installed into `~/.codex/bin/` and mirrored to Mini
+  `check-mcps` is the live active-session MCP probe. Use `ruby scripts/SaneMaster.rb mcp_watchdog doctor` for background-machine state.
+
+If a tool is operator-facing and not obvious from one of those docs, that is documentation drift.
+
 ---
 
 ## Client Support

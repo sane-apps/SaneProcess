@@ -400,7 +400,7 @@ module SaneMasterModules
 
     def check_linting(results)
       puts "\n3️⃣  Code Linting..."
-      lint_output = `./Scripts/SaneMaster.rb lint 2>&1`
+      lint_output = `./scripts/SaneMaster.rb lint 2>&1`
       if lint_output.include?('✅') || $CHILD_STATUS.success?
         puts '   ✅ Linting passed'
         results[:passed] << 'Lint'
@@ -412,7 +412,7 @@ module SaneMasterModules
 
     def check_test_references(results)
       puts "\n4️⃣  Test Reference Validation..."
-      test_ref_output = `./Scripts/SaneMaster.rb validate_test_references 2>&1`
+      test_ref_output = `./scripts/SaneMaster.rb validate_test_references 2>&1`
       if test_ref_output.include?('✅') && $CHILD_STATUS.success?
         puts '   ✅ All test references valid'
         results[:passed] << 'Test References'
@@ -424,7 +424,7 @@ module SaneMasterModules
 
     def check_documentation_sync(results)
       puts "\n5️⃣  Documentation Sync..."
-      docs_output = `./Scripts/SaneMaster.rb check_docs 2>&1`
+      docs_output = `./scripts/SaneMaster.rb check_docs 2>&1`
       if docs_output.include?('✅') || !docs_output.include?('drift')
         puts '   ✅ Documentation in sync'
         results[:passed] << 'Documentation'
@@ -450,7 +450,7 @@ module SaneMasterModules
 
     def check_mock_sync(results)
       puts "\n6️⃣  Mock Synchronization..."
-      mock_output = `./Scripts/SaneMaster.rb verify_mocks 2>&1`
+      mock_output = `./scripts/SaneMaster.rb verify_mocks 2>&1`
       if mock_output.include?('✅') || $CHILD_STATUS.success?
         puts '   ✅ Mocks in sync'
         results[:passed] << 'Mocks'
@@ -463,7 +463,7 @@ module SaneMasterModules
     def check_deprecations_phase(results, full_mode, ci_mode)
       if full_mode || ci_mode
         puts "\n7️⃣  Deprecation Check..."
-        deprec_output = `./Scripts/SaneMaster.rb check_deprecations 2>&1`
+        deprec_output = `./scripts/SaneMaster.rb check_deprecations 2>&1`
         if deprec_output.include?('✅') || !deprec_output.include?('Found')
           puts '   ✅ No deprecations found'
           results[:passed] << 'Deprecations'
@@ -483,7 +483,7 @@ module SaneMasterModules
         puts '─' * 50
 
         puts "\n8️⃣  Dead Code Detection..."
-        dead_code_output = `./Scripts/SaneMaster.rb dead_code 2>&1`
+        dead_code_output = `./scripts/SaneMaster.rb dead_code 2>&1`
         if dead_code_output.include?('✅') || $CHILD_STATUS.success?
           puts '   ✅ No dead code detected'
           results[:passed] << 'Dead Code'

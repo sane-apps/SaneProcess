@@ -722,7 +722,7 @@ module SaneMasterModules
       puts '═' * 60
       puts ''
       puts '📋 Logs: Using unified logging (non-sandboxed app)'
-      puts '   View with: ./Scripts/SaneMaster.rb logs --follow'
+      puts '   View with: ./scripts/SaneMaster.rb logs --follow'
       puts ''
       puts "🕐 Session started: #{Time.now.strftime('%Y-%m-%d %H:%M:%S')}"
       puts ''

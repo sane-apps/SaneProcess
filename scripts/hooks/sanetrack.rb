@@ -20,6 +20,7 @@
 require 'json'
 require 'fileutils'
 require 'time'
+require_relative 'core/mandatory_workflows'
 require_relative 'core/state_manager'
 require_relative 'core/context_compact'
 require_relative 'sanetrack_research'
@@ -202,12 +203,12 @@ include SaneTrackStateUpdates
 # === SKILL TRACKING ===
 # Track Skill tool invocations and Task tool calls (subagents)
 
-SKILL_RUNNER_PATTERNS = {
-  'evolve' => [
-    %r{SaneMaster\.rb\s+(?:tool_discovery|tool_receipt)\b}i,
-    %r{scripts/automation/tool_discovery_receipt\.rb}i
-  ]
-}.freeze
+SKILL_RUNNER_PATTERNS = MandatoryWorkflows.skill_requirements.each_with_object({}) do |(name, config), acc|
+  patterns = MandatoryWorkflows.runner_patterns_for(name)
+  next if patterns.empty? || !config[:requires_runner]
+
+  acc[name.to_s] = patterns
+end.freeze
 
 def track_skill_invocation(tool_name, tool_input)
   return unless tool_name == 'Skill'

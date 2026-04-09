@@ -13,7 +13,7 @@ require_relative 'core/state_manager'
 module SanePromptTest
   def self.run(classify_proc, rules_proc, detect_triggers_proc, detect_frustration_proc,
                extract_requirements_proc, detect_research_only_proc, handle_safemode_proc,
-               check_plan_approval_proc = nil, detect_skill_trigger_proc = nil)
+               check_plan_approval_proc = nil, detect_skill_trigger_proc = nil, process_prompt_proc = nil)
     warn 'SanePrompt Self-Test'
     warn '=' * 40
 
@@ -214,6 +214,75 @@ module SanePromptTest
       else
         failed += 1
         warn "  FAIL: evolve trigger should catch tool-hunting/SOP complaint: #{evolve_skill.inspect}"
+      end
+
+      status_skill = detect_skill_trigger_proc.call('/status')
+      if status_skill && status_skill[:name] == :status
+        passed += 1
+        warn '  PASS: /status trigger maps to status workflow'
+      else
+        failed += 1
+        warn "  FAIL: /status should map to status workflow: #{status_skill.inspect}"
+      end
+
+      verify_skill = detect_skill_trigger_proc.call('/verify')
+      if verify_skill && verify_skill[:name] == :verify
+        passed += 1
+        warn '  PASS: /verify trigger maps to verify workflow'
+      else
+        failed += 1
+        warn "  FAIL: /verify should map to verify workflow: #{verify_skill.inspect}"
+      end
+
+      ship_skill = detect_skill_trigger_proc.call('ship it')
+      if ship_skill && ship_skill[:name] == :ship
+        passed += 1
+        warn '  PASS: ship-it trigger maps to ship workflow'
+      else
+        failed += 1
+        warn "  FAIL: ship-it should map to ship workflow: #{ship_skill.inspect}"
+      end
+
+      inbox_skill = detect_skill_trigger_proc.call('/check-inbox')
+      if inbox_skill && inbox_skill[:name] == :check_inbox
+        passed += 1
+        warn '  PASS: /check-inbox trigger maps to inbox workflow'
+      else
+        failed += 1
+        warn "  FAIL: /check-inbox should map to inbox workflow: #{inbox_skill.inspect}"
+      end
+    end
+
+    if process_prompt_proc
+      warn ''
+      warn 'Testing workflow passthrough overrides:'
+
+      StateManager.reset(:skill)
+      original_stderr = $stderr.clone
+      $stderr.reopen('/dev/null', 'w')
+      result = process_prompt_proc.call('/status')
+      $stderr.reopen(original_stderr)
+      skill_state = StateManager.get(:skill)
+      if result == 0 && skill_state[:required] == 'status'
+        passed += 1
+        warn '  PASS: /status no longer bypasses mandatory workflow enforcement'
+      else
+        failed += 1
+        warn "  FAIL: /status should set required workflow before passthrough: #{skill_state.inspect}"
+      end
+
+      StateManager.reset(:skill)
+      original_stderr = $stderr.clone
+      $stderr.reopen('/dev/null', 'w')
+      result = process_prompt_proc.call('/check-inbox')
+      $stderr.reopen(original_stderr)
+      skill_state = StateManager.get(:skill)
+      if result == 0 && skill_state[:required] == 'check_inbox'
+        passed += 1
+        warn '  PASS: /check-inbox no longer bypasses mandatory workflow enforcement'
+      else
+        failed += 1
+        warn "  FAIL: /check-inbox should set required workflow before passthrough: #{skill_state.inspect}"
       end
     end
 

@@ -21,6 +21,7 @@
 require 'json'
 require 'fileutils'
 require 'time'
+require_relative 'core/mandatory_workflows'
 require_relative 'core/state_manager'
 require_relative 'saneprompt_intelligence'
 require_relative 'saneprompt_commands'
@@ -123,52 +124,7 @@ REQUIREMENT_TRIGGERS = {
 # === SKILL TRIGGERS ===
 # When user says these, a skill SHOULD be invoked (not manual work)
 # These skills require subagents for proper execution
-SKILL_TRIGGERS = {
-  docs_audit: {
-    patterns: [
-      /\b(docs[- ]?audit|\/docs-audit)\b/i,
-      /\baudit\b.*\b(docs|documentation)\b/i,
-      /\bdocumentation\s+audit\b/i,
-      /\b14[- ]?perspective\b/i,
-      /\bfull\s+audit\b/i
-    ],
-    requires_subagents: true,
-    min_subagents: 5,
-    description: 'Multi-perspective GPT subagent documentation audit'
-  },
-  evolve: {
-    patterns: [
-      /\b(evolve|\/evolve)\b/i,
-      /\bupdate\s+(tools|dependencies|mcps?)\b/i,
-      /\bcheck\s+for\s+updates\b/i,
-      /\b(missing|lack|need)\s+(a\s+)?tool\b/i,
-      /\bhunting\s+around\s+for\s+tools?\b/i,
-      /\bbest\s+tools?\b/i,
-      /\bwell[- ]document(ed|ation)\b/i,
-      /\b(part\s+of\s+(our\s+)?)?sop\b.*\b(tools?|tooling)\b/i,
-      /\b(tools?|tooling)\b.*\b(enforced|enforce)\b/i,
-      /\bcanonical\s+tool\b/i,
-      /\bstandard\s+tool\s+path\b/i,
-      /\bworkaround\b/i,
-      /\bduplicate\s+work\b/i,
-      /\bfragment(ed|ation)\b/i,
-      /\bwhat\s+(am\s+)?i\s+missing\b/i,
-      /\bdo\s+we\s+already\s+have\b/i,
-      /\binstall\s+(the\s+)?tool\b/i
-    ],
-    requires_subagents: false,
-    description: 'Tool discovery, upgrade, and gap check'
-  },
-  outreach: {
-    patterns: [
-      /\b(outreach|\/outreach)\b/i,
-      /\bcompetitor\s+(monitoring|analysis)\b/i,
-      /\bgithub\s+opportunities\b/i
-    ],
-    requires_subagents: false,
-    description: 'GitHub competitor monitoring'
-  }
-}.freeze
+SKILL_TRIGGERS = MandatoryWorkflows.skill_triggers.freeze
 
 # Research-only mode: user wants research WITHOUT any edits
 # When detected, ALL mutations blocked for the session (even after research complete)
@@ -672,7 +628,9 @@ def process_prompt(prompt)
   # Without this, natural approval phrases never reach check_plan_approval.
   check_plan_approval(prompt)
 
+  early_skill_trigger = detect_skill_trigger(prompt)
   prompt_type = classify_prompt(prompt)
+  prompt_type = :question if prompt_type == :passthrough && early_skill_trigger
 
   if prompt_type == :passthrough
     log_prompt(:passthrough, [], [])
@@ -719,8 +677,8 @@ def process_prompt(prompt)
   # 5. Detect research-only mode
   is_research_only = detect_research_only_mode(prompt)
 
-  # 6. Detect skill triggers (docs-audit, evolve, outreach)
-  skill_trigger = detect_skill_trigger(prompt)
+  # 6. Detect skill triggers (docs-audit, evolve, status, verify, ship, check_inbox, outreach)
+  skill_trigger = early_skill_trigger || detect_skill_trigger(prompt)
   set_skill_requirement(skill_trigger, prompt) if skill_trigger
 
   # 7. Get learned patterns from previous sessions
@@ -770,7 +728,8 @@ def self_test
     method(:detect_research_only_mode),
     method(:handle_safemode_command),
     method(:check_plan_approval),
-    method(:detect_skill_trigger)
+    method(:detect_skill_trigger),
+    method(:process_prompt)
   )
 end
 

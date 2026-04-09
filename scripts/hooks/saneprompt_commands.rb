@@ -19,7 +19,7 @@ require_relative 'core/state_manager'
 module SanePromptCommands
   CLAUDE_DIR = File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.claude')
   BYPASS_FILE = File.join(CLAUDE_DIR, 'bypass_active.json')
-  SANEMASTER_PATH = File.expand_path('../../Scripts/SaneMaster.rb', __dir__)
+  SANEMASTER_PATH = File.expand_path('../../scripts/SaneMaster.rb', __dir__)
 
   # rubocop:disable Metrics/MethodLength, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
   def handle_safemode_command(prompt)

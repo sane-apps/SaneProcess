@@ -91,11 +91,11 @@ If the prompt matches a registered skill trigger, that skill workflow is mandato
 - If the workflow is runner-backed, the session is not complete until that runner is actually used.
 
 Canonical runner-backed paths in this repo:
-- `status` → `bash scripts/automation/sane-status-crossref.sh`
+- `status` → `ruby scripts/SaneMaster.rb status`
 - `evolve` → `ruby scripts/SaneMaster.rb tool_discovery --query "..."`
 - `verify` → `ruby scripts/SaneMaster.rb verify`
 - `ship` → `ruby scripts/SaneMaster.rb release_preflight`
-- `check-inbox` → `~/SaneApps/infra/scripts/check-inbox.sh check`
+- `check-inbox` → `ruby scripts/SaneMaster.rb check_inbox`
 
 ## SaneUI Source Of Truth
 
@@ -188,9 +188,9 @@ When the user says something matching these, run the command/skill immediately:
 | "download stats", "how many downloads" | `SaneMaster.rb downloads` |
 | "conversions", "upgrades", "new users", "funnel", "source of sales" | `SaneMaster.rb events` |
 | "leads", "prospects", "research sites", "research companies" | `SaneMaster.rb leads --query "..."` |
-| "check email", "inbox" | `~/SaneApps/infra/scripts/check-inbox.sh check` |
+| "check email", "inbox" | `SaneMaster.rb check_inbox` |
 | "what are we missing", "missing tool", "workaround", "duplicate work", "fragmentation" | `/evolve` |
-| "project status", "health check", "run status", "check status", "what's the status" | `bash scripts/automation/sane-status-crossref.sh` |
+| "project status", "health check", "run status", "check status", "what's the status" | `SaneMaster.rb status` |
 | "verify", "does it build" | `SaneMaster.rb verify` |
 | "ship it", "prepare for release" | `SaneMaster.rb release_preflight` first, then `release.sh` |
 | "tech debt", "find dead code" | `SaneMaster.rb dead_code` |
@@ -420,6 +420,10 @@ ssh mini 'tail -20 ~/SaneApps/outputs/nightly_report.md'
 - Runtime: PostgreSQL 17 + `pgvector` on `postgresql://<local-user>@localhost:5432/central_memory`
 - Bootstrap: `cd ~/SaneApps/infra/SaneProcess/scripts/mcp-central-memory && ./bootstrap-local.sh`
 - Health: `~/.codex/bin/check-mcps` (must show `central-memory` PASS)
+- Background-machine health: `ruby scripts/SaneMaster.rb mcp_watchdog doctor`
+- Control-plane helper source: `scripts/codex-bin/`
+- Installed binaries: `~/.codex/bin/check-mcps`, `~/.codex/bin/github-mcp-bridge.mjs`, and `~/.codex/bin/xcode-mcpbridge-wrapper.sh`
+- Sync/install path: `ruby scripts/SaneMaster.rb sync_mini` installs the repo-owned helpers locally and mirrors them to Mini
 - Tools: `remember`, `recall`, `recent`, `stats`, `delete_by_external_id`, `import_knowledge_graph`
 
 ---

@@ -8,7 +8,7 @@
 #   4. Restart terminal or run: source ~/.zshrc
 #
 # Or add alias to ~/.zshrc:
-#   alias sm='./Scripts/SaneMaster.rb'
+#   alias sm='./scripts/SaneMaster.rb'
 #   source /path/to/sanemaster_completions.zsh
 
 _sanemaster() {
@@ -181,5 +181,5 @@ _sanemaster() {
 }
 
 # Register completion for both full path and alias
-compdef _sanemaster './Scripts/SaneMaster.rb'
+compdef _sanemaster './scripts/SaneMaster.rb'
 compdef _sanemaster 'sm'

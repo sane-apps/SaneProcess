@@ -12,6 +12,7 @@ require 'json'
 require 'fileutils'
 require 'time'
 require 'rbconfig'
+require_relative 'core/mandatory_workflows'
 require_relative 'core/state_manager'
 LOG_FILE = File.expand_path('../../.claude/sanestop.log', __dir__)
 SOP_CSV = File.expand_path('../../outputs/sop_ratings.csv', __dir__)
@@ -251,36 +252,33 @@ end
 # === SKILL VALIDATION ===
 # Check if required skill was properly executed
 
-SKILL_REQUIREMENTS = {
-  'docs_audit' => {
-    min_subagents: 5,
-    description: 'Multi-perspective GPT subagent documentation audit'
-  },
-  'evolve' => {
-    min_subagents: 0,
-    requires_runner: true,
-    description: 'Tool discovery receipt before workarounds'
-  },
-  'outreach' => { min_subagents: 0, description: 'GitHub competitor monitoring' }
-}.freeze
+SKILL_REQUIREMENTS = MandatoryWorkflows.skill_requirements.transform_keys(&:to_s).freeze
 
-def tool_discovery_block_message(skill_state)
-  prompt = skill_state[:required_prompt].to_s.strip
-  query = prompt.empty? ? 'describe the missing tool or workaround' : prompt
-  escaped_query = query.gsub('"', '\"')
+def runner_block_message(skill_name, skill_state)
+  runner_command = MandatoryWorkflows.runner_command_for(skill_name)
+  description = SKILL_REQUIREMENTS.dig(skill_name.to_s, :description).to_s
 
-  "Tool discovery proof is missing.\n" \
-  "   This session asked about a missing tool, workaround, duplicate work, or fragmentation.\n" \
-  "   Run: ruby scripts/SaneMaster.rb tool_discovery --query \"#{escaped_query}\"\n" \
-  "   Then use that receipt before claiming the tool is missing or adding new tooling."
+  if skill_name.to_s == 'evolve'
+    prompt = skill_state[:required_prompt].to_s.strip
+    query = prompt.empty? ? 'describe the missing tool or workaround' : prompt
+    escaped_query = query.gsub('"', '\"')
+    runner_command = "ruby scripts/SaneMaster.rb tool_discovery --query \"#{escaped_query}\""
+  end
+
+  "Runner-backed workflow proof is missing.\n" \
+  "   Required workflow: #{skill_name}#{description.empty? ? '' : " (#{description})"}\n" \
+  "   Run: #{runner_command}\n" \
+  "   Then use that proof before continuing."
 end
 
 def check_tool_discovery_required
   skill_state = StateManager.get(:skill)
-  return nil unless skill_state[:required] == 'evolve'
+  required_skill = skill_state[:required].to_s
+  requirements = SKILL_REQUIREMENTS[required_skill]
+  return nil unless requirements && requirements[:requires_runner]
   return nil if skill_state[:runner_used]
 
-  tool_discovery_block_message(skill_state)
+  runner_block_message(required_skill, skill_state)
 rescue StandardError => e
   warn "⚠️  Tool discovery enforcement error: #{e.message}" if ENV['DEBUG']
   nil
@@ -314,12 +312,8 @@ def validate_skill_execution
   end
 
   if requires_runner && !runner_used
-    if required_skill == 'evolve'
-      issues << "Skill '#{required_skill}' requires the tool-discovery receipt and none was detected"
-      issues << "  Run ruby scripts/SaneMaster.rb tool_discovery --query \"...\" before claiming a tool is missing"
-    else
-      issues << "Skill '#{required_skill}' requires the approved runner/proof command and none was detected"
-    end
+    issues << "Skill '#{required_skill}' requires the approved runner/proof command and none was detected"
+    issues << "  Run #{MandatoryWorkflows.runner_command_for(required_skill)}" if MandatoryWorkflows.runner_command_for(required_skill)
   end
 
   if required_skill == 'docs_audit' && runner_used && subagents_spawned < min_subagents

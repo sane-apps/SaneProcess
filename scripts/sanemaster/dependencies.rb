@@ -36,10 +36,10 @@ module SaneMasterModules
       if all_current
         puts '✅ All tools are up to date!'
       else
-        puts '💡 Run `brew upgrade <tool>` or `./Scripts/SaneMaster.rb bootstrap` to update'
+        puts '💡 Run `brew upgrade <tool>` or `./scripts/SaneMaster.rb bootstrap` to update'
       end
 
-      puts "\n🔄 To refresh cache: ./Scripts/SaneMaster.rb versions --refresh"
+      puts "\n🔄 To refresh cache: ./scripts/SaneMaster.rb versions --refresh"
     end
 
     def load_version_cache(force_refresh: false)

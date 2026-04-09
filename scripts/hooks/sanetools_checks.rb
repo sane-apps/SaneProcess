@@ -9,17 +9,13 @@
 # ==============================================================================
 
 require 'json'
+require_relative 'core/mandatory_workflows'
 require_relative 'core/state_manager'
 require_relative 'sanetools_gaming'
 require_relative 'sanetools_deploy'
 require_relative 'sanetools_github_guard'
 
 module SaneToolsChecks
-  TOOL_DISCOVERY_ALLOWED_COMMAND = Regexp.union(
-    %r{SaneMaster\.rb\s+(?:tool_discovery|tool_receipt)\b}i,
-    %r{scripts/automation/tool_discovery_receipt\.rb}i
-  ).freeze
-
   # Constants needed by checks
   BLOCKED_PATH_PATTERN = Regexp.union(
     %r{^~?/\.ssh},
@@ -69,6 +65,35 @@ module SaneToolsChecks
     %r{\.build/},
     %r{^build/}
   ).freeze
+
+  def workflow_runner_block_message(skill_name, skill_state)
+    runner_command = MandatoryWorkflows.runner_command_for(skill_name)
+    description = MandatoryWorkflows.skill_requirements.dig(skill_name.to_sym, :description).to_s
+    header = if skill_name.to_s == 'evolve'
+               'TOOL DISCOVERY REQUIRED'
+             else
+               'RUNNER-BACKED WORKFLOW REQUIRED'
+             end
+
+    reason = if description.empty?
+               "The '#{skill_name}' workflow is mandatory for this prompt."
+             else
+               "The '#{skill_name}' workflow is mandatory for this prompt (#{description})."
+             end
+
+    if skill_name.to_s == 'evolve'
+      prompt = skill_state[:required_prompt].to_s.strip
+      query = prompt.empty? ? 'describe the missing tool or workaround' : prompt
+      escaped_query = query.gsub('"', '\"')
+      runner_command = "ruby scripts/SaneMaster.rb tool_discovery --query \"#{escaped_query}\""
+    end
+
+    "#{header}\n" \
+    "#{reason}\n" \
+    "Run this first:\n" \
+    "  #{runner_command}\n" \
+    "Then continue once the workflow proof exists."
+  end
 
   SIGNIFICANT_FILE_PATTERNS = [
     %r{scripts/hooks/.*\.rb$},
@@ -521,28 +546,22 @@ module SaneToolsChecks
       nil
     end
 
-    def check_tool_discovery_required(tool_name, tool_input, edit_tools)
-      skill = StateManager.get(:skill)
-      return nil unless skill[:required] == 'evolve'
-      return nil if skill[:runner_used]
+  def check_tool_discovery_required(tool_name, tool_input, edit_tools)
+    skill = StateManager.get(:skill)
+    required_skill = skill[:required].to_s
+    requirements = MandatoryWorkflows.skill_requirements[required_skill.to_sym]
+    return nil unless requirements && requirements[:requires_runner]
+    return nil if skill[:runner_used]
 
-      if tool_name == 'Bash'
-        command = tool_input['command'] || tool_input[:command] || ''
-        return nil if command.match?(TOOL_DISCOVERY_ALLOWED_COMMAND)
-      end
-
-      return nil unless edit_tools.include?(tool_name) || %w[Bash Task].include?(tool_name)
-
-      prompt = skill[:required_prompt].to_s.strip
-      query = prompt.empty? ? 'describe the missing tool or workaround' : prompt
-      escaped = query.gsub('"', '\"')
-
-      "TOOL DISCOVERY REQUIRED\n" \
-      "A missing-tool/workaround/fragmentation prompt triggered the evolve path.\n" \
-      "Run this first:\n" \
-      "  ruby scripts/SaneMaster.rb tool_discovery --query \"#{escaped}\"\n" \
-      "Then continue once the receipt exists."
+    if tool_name == 'Bash'
+      command = tool_input['command'] || tool_input[:command] || ''
+      allowed_patterns = MandatoryWorkflows.runner_patterns_for(required_skill)
+      return nil if allowed_patterns.any? { |pattern| command.match?(pattern) }
     end
+
+    return nil unless edit_tools.include?(tool_name) || %w[Bash Task].include?(tool_name)
+    workflow_runner_block_message(required_skill, skill)
+  end
 
     def check_saneloop_required(tool_name, edit_tools)
       return nil unless edit_tools.include?(tool_name)

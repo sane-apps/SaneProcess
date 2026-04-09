@@ -92,8 +92,6 @@ class SaneMaster
         'verify' => { args: '[--ui] [--clean] [--grant-permissions] [--timeout seconds]', desc: 'Build and run tests (unit by default, --ui for UI)' },
         'clean' => { args: '[--nuclear]', desc: 'Wipe build cache and test states' },
         'lint' => { args: '', desc: 'Run SwiftLint and auto-fix issues' },
-        'audit' => { args: '', desc: 'Scan for missing accessibility identifiers' },
-        'system_check' => { args: '', desc: 'Verify unified hook system across all projects' },
         'release' => { args: '[--full|--deploy|--no-deploy|--skip-notarize|--version X.Y.Z|--notes "..."]', desc: 'Build, sign, notarize, package, and optionally deploy' },
         'release_preflight' => { args: '', desc: 'Run all pre-release safety checks without building' },
         'appstore_preflight' => { args: '', desc: 'Run App Store submission compliance checks' }
@@ -141,7 +139,6 @@ class SaneMaster
         'doctor' => { args: '', desc: 'Check environment health' },
         'tool_discovery' => { args: '--query "TEXT"', desc: 'Generate a proof receipt before workarounds or new tools' },
         'health' => { args: '', desc: 'Quick health check (< 100ms)' },
-        'meta' => { args: '', desc: 'Audit SaneMaster tooling itself' },
         'bootstrap' => { args: '[--check-only]', desc: 'Full environment setup' },
         'setup' => { args: '', desc: 'Install gems and dependencies' },
         'versions' => { args: '', desc: 'Check tool versions' },
@@ -154,6 +151,22 @@ class SaneMaster
         'work_session_on' => { args: '', desc: 'Start keep-awake + no-lock work session guard' },
         'work_session_off' => { args: '', desc: 'Restore previous lock settings and stop work-session guard' },
         'work_session_status' => { args: '', desc: 'Show current work-session guard state' }
+      }
+    },
+    meta: {
+      desc: 'SaneProcess tooling and release hygiene',
+      commands: {
+        'meta' => { args: '', desc: 'Audit SaneMaster tooling itself' },
+        'audit' => { args: '', desc: 'Scan for missing accessibility identifiers' },
+        'system_check' => { args: '', desc: 'Verify unified hook system across all projects' }
+      }
+    },
+    ops: {
+      desc: 'Status, support, and Mini control-plane workflows',
+      commands: {
+        'status' => { args: '', desc: 'Run the live cross-reference status report' },
+        'check_inbox' => { args: '[check|review <id>|read <id>|reply ...]', desc: 'Forward to the canonical support inbox workflow' },
+        'sync_mini' => { args: '[mini] [--quiet] [--no-restart]', desc: 'Sync the Codex control-plane profile to the Mini' }
       }
     },
     memory: {
@@ -209,11 +222,12 @@ class SaneMaster
   }.freeze
 
   QUICK_START = [
+    { cmd: 'status', desc: 'Live project status cross-reference' },
     { cmd: 'verify', desc: 'Build + run tests' },
+    { cmd: 'check_inbox', desc: 'Support inbox status and review' },
     { cmd: 'test_mode', desc: 'Kill → Build → Launch → Logs' },
     { cmd: 'doctor', desc: 'Check environment health' },
-    { cmd: 'tool_discovery', desc: 'Prove existing-tool checks before workarounds' },
-    { cmd: 'export', desc: 'Export code to PDF' }
+    { cmd: 'tool_discovery', desc: 'Prove existing-tool checks before workarounds' }
   ].freeze
 
   KNOWN_SANE_APPS = %w[SaneBar SaneClip SaneClick SaneHosts SaneSales SaneSync SaneVideo].freeze
@@ -327,9 +341,13 @@ class SaneMaster
 
     # Handle 'help <category>' specially
     if command == 'help'
-      category = args.shift
-      if category
-        print_category_help(category.to_sym)
+      topic = args.shift
+      if topic
+        if COMMANDS.key?(topic.to_sym)
+          print_category_help(topic.to_sym)
+        else
+          print_command_detail(topic)
+        end
       else
         print_help
       end
@@ -715,6 +733,10 @@ PY
     File.expand_path('..', __dir__)
   end
 
+  def infra_scripts_root
+    File.expand_path('../scripts', saneprocess_repo_root)
+  end
+
   def saneui_repo_root
     File.expand_path('../../SaneUI', __dir__)
   end
@@ -734,6 +756,32 @@ PY
 
   def sane_email_automation_repo_root
     File.expand_path('~/SaneApps/infra/sane-email-automation')
+  end
+
+  def run_external_command(*command)
+    success = system(*command)
+    exit($CHILD_STATUS&.exitstatus || (success ? 0 : 1))
+  end
+
+  def run_status(_args = [])
+    script = File.join(saneprocess_repo_root, 'scripts', 'automation', 'sane-status-crossref.sh')
+    run_external_command('bash', script)
+  end
+
+  def run_check_inbox(args = [])
+    script = File.join(infra_scripts_root, 'check-inbox.sh')
+    forwarded_args = args.empty? ? ['check'] : args
+    run_external_command(script, *forwarded_args)
+  end
+
+  def run_sync_mini(args = [])
+    script = File.join(saneprocess_repo_root, 'scripts', 'automation', 'sync-codex-mini.sh')
+    forwarded_args = if args.empty? || args.first.start_with?('-')
+                       ['mini', *args]
+                     else
+                       args
+                     end
+    run_external_command('bash', script, *forwarded_args)
   end
 
   def sync_release_support_repos_to_mini!(release_routed: false)
@@ -1139,6 +1187,12 @@ PY
     # Environment & Health
     when 'doctor'
       doctor
+    when 'status'
+      run_status(args)
+    when 'check_inbox', 'check-inbox', 'inbox'
+      run_check_inbox(args)
+    when 'sync_mini', 'sync-mini'
+      run_sync_mini(args)
     when 'tool_discovery', 'tool_receipt', 'tool-receipt'
       tool_discovery(args)
     when 'health', 'h'
@@ -1355,8 +1409,8 @@ PY
       puts "   Reason: #{status[:trip_reason]}" if status[:trip_reason]
       puts "   Blocked: #{status[:blocked_tools].join(', ')}"
       puts ''
-      puts '   To see errors: ./Scripts/SaneMaster.rb breaker_errors'
-      puts '   To reset: ./Scripts/SaneMaster.rb reset_breaker'
+      puts '   To see errors: ./scripts/SaneMaster.rb breaker_errors'
+      puts '   To reset: ./scripts/SaneMaster.rb reset_breaker'
     else
       puts "   Status: 🟢 #{status[:status]}"
       puts "   #{status[:message]}"
@@ -1518,11 +1572,11 @@ PY
     puts <<~FOOTER
 
       Examples:
-        ./Scripts/SaneMaster.rb verify          # Build + test
-        ./Scripts/SaneMaster.rb help build      # Show build commands
-        ./Scripts/SaneMaster.rb help check      # Show analysis commands
+        ./scripts/SaneMaster.rb status          # Live cross-reference report
+        ./scripts/SaneMaster.rb verify          # Build + test
+        ./scripts/SaneMaster.rb help build      # Show build commands
 
-      Aliases: sm = ./Scripts/SaneMaster.rb (if configured)
+      Aliases: sm = ./scripts/SaneMaster.rb (if configured)
     FOOTER
   end
 
@@ -1638,6 +1692,36 @@ PY
         'tool_discovery --query "missing screenshot diff tool"',
         'tool_discovery --query "workaround for docs audit"',
         'tool_receipt --query "do we already have a website crawler?"'
+      ]
+    },
+    'status' => {
+      usage: 'status',
+      description: 'Run the live status cross-reference across git, inbox, issues, releases, and current signals.',
+      flags: {},
+      examples: [
+        'status'
+      ]
+    },
+    'check_inbox' => {
+      usage: 'check_inbox [check|review <id>|read <id>|reply ...]',
+      description: 'Forward to the canonical support inbox script with the same subcommands.',
+      flags: {},
+      examples: [
+        'check_inbox',
+        'check_inbox review 538',
+        'check_inbox read 545'
+      ]
+    },
+    'sync_mini' => {
+      usage: 'sync_mini [mini] [--quiet] [--no-restart]',
+      description: 'Sync the Codex control-plane profile to the Mini without hunting for the automation script path.',
+      flags: {
+        '--quiet' => 'Reduce sync logging',
+        '--no-restart' => 'Do not restart services after sync'
+      },
+      examples: [
+        'sync_mini',
+        'sync_mini mini --quiet --no-restart'
       ]
     },
     'universal_control_reset' => {
@@ -1939,7 +2023,8 @@ PY
     # Check for alias mappings
     aliases = {
       'tm' => 'test_mode', 'crashes' => 'crash_report', 'versions' => 'version_check',
-      'deprecations' => 'check_deprecations', 'pdf' => 'export'
+      'deprecations' => 'check_deprecations', 'pdf' => 'export',
+      'check-inbox' => 'check_inbox', 'inbox' => 'check_inbox', 'sync-mini' => 'sync_mini'
     }
     command = aliases[command] if aliases.key?(command)
 
@@ -1953,7 +2038,7 @@ PY
     HEADER
 
     if details
-      puts "Usage: ./Scripts/SaneMaster.rb #{details[:usage]}"
+      puts "Usage: ./scripts/SaneMaster.rb #{details[:usage]}"
       puts
       puts 'Description:'
       puts "  #{details[:description]}"
@@ -1969,10 +2054,10 @@ PY
       if details[:examples].any?
         puts
         puts 'Examples:'
-        details[:examples].each { |ex| puts "  ./Scripts/SaneMaster.rb #{ex}" }
+        details[:examples].each { |ex| puts "  ./scripts/SaneMaster.rb #{ex}" }
       end
     elsif cmd_info
-      puts "Usage: ./Scripts/SaneMaster.rb #{command} #{cmd_info[:args]}"
+      puts "Usage: ./scripts/SaneMaster.rb #{command} #{cmd_info[:args]}"
       puts
       puts 'Description:'
       puts "  #{cmd_info[:desc]}"
@@ -1981,7 +2066,7 @@ PY
     else
       puts "No detailed help available for '#{command}'"
       puts
-      puts "Run './Scripts/SaneMaster.rb' to see all available commands."
+      puts "Run './scripts/SaneMaster.rb' to see all available commands."
     end
   end
 end

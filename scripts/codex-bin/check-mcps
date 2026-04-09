@@ -1,0 +1,610 @@
+#!/usr/bin/env node
+
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { spawn } = require("node:child_process");
+const { spawnSync } = require("node:child_process");
+
+const HOME_DIR = os.homedir();
+
+function unique(values) {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function homePath(...parts) {
+  return path.join(HOME_DIR, ...parts);
+}
+
+function npmRootCandidates() {
+  const roots = [
+    homePath(".npm-global", "lib", "node_modules"),
+    "/opt/homebrew/lib/node_modules",
+    "/usr/local/lib/node_modules",
+  ];
+  for (const bin of ["npm", "/opt/homebrew/bin/npm", "/usr/local/bin/npm"]) {
+    const res = spawnSync(bin, ["root", "-g"], { encoding: "utf8" });
+    if (res.status === 0) roots.push((res.stdout || "").trim());
+  }
+  return unique(roots);
+}
+
+const SDK_BASE_CANDIDATES = npmRootCandidates().flatMap((root) => [
+  path.join(root, "@modelcontextprotocol", "server-memory", "node_modules", "@modelcontextprotocol", "sdk", "dist", "cjs"),
+  path.join(root, "@steipete", "macos-automator-mcp", "node_modules", "@modelcontextprotocol", "sdk", "dist", "cjs"),
+]);
+
+function resolveSdkBase() {
+  for (const candidate of SDK_BASE_CANDIDATES) {
+    const clientPath = path.join(candidate, "client", "index.js");
+    const httpPath = path.join(candidate, "client", "streamableHttp.js");
+    if (fs.existsSync(clientPath) && fs.existsSync(httpPath)) {
+      return candidate;
+    }
+  }
+  throw new Error("Unable to locate @modelcontextprotocol/sdk runtime");
+}
+
+let Client = null;
+let StreamableHTTPClientTransport = null;
+let sdkLoadError = null;
+
+try {
+  const SDK_BASE = resolveSdkBase();
+  ({ Client } = require(path.join(SDK_BASE, "client", "index.js")));
+  ({ StreamableHTTPClientTransport } = require(path.join(SDK_BASE, "client", "streamableHttp.js")));
+} catch (err) {
+  sdkLoadError = err;
+}
+
+class StdioMcpClient {
+  constructor(command, args, extraEnv = {}) {
+    this.command = command;
+    this.args = args;
+    this.extraEnv = extraEnv;
+    this.nextId = 1;
+    this.pending = new Map();
+    this.buffer = "";
+    this.child = null;
+  }
+
+  async start() {
+    this.child = spawn(this.command, this.args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, ...this.extraEnv },
+    });
+
+    this.child.stdout.on("data", (chunk) => this._onData(chunk));
+    this.child.stderr.on("data", () => {});
+    this.child.on("exit", (code, signal) => {
+      for (const [, pending] of this.pending) {
+        pending.reject(new Error(`process exited (code=${code}, signal=${signal})`));
+      }
+      this.pending.clear();
+    });
+  }
+
+  _handleParsed(parsed) {
+    if (Object.prototype.hasOwnProperty.call(parsed, "id")) {
+      const p = this.pending.get(parsed.id);
+      if (p) {
+        this.pending.delete(parsed.id);
+        p.resolve(parsed);
+      }
+    }
+  }
+
+  _onData(chunk) {
+    this.buffer += chunk.toString("utf8");
+    while (true) {
+      while (this.buffer.startsWith("\n") || this.buffer.startsWith("\r")) {
+        this.buffer = this.buffer.slice(1);
+      }
+      if (!this.buffer) return;
+
+      if (this.buffer.startsWith("Content-Length:")) {
+        const headerEnd = this.buffer.indexOf("\r\n\r\n");
+        if (headerEnd === -1) return;
+        const header = this.buffer.slice(0, headerEnd);
+        const match = header.match(/Content-Length:\s*(\d+)/i);
+        if (!match) {
+          this.buffer = this.buffer.slice(headerEnd + 4);
+          continue;
+        }
+        const len = Number(match[1]);
+        const total = headerEnd + 4 + len;
+        if (this.buffer.length < total) return;
+
+        const body = this.buffer.slice(headerEnd + 4, total);
+        this.buffer = this.buffer.slice(total);
+        try {
+          this._handleParsed(JSON.parse(body));
+        } catch {}
+        continue;
+      }
+
+      const nl = this.buffer.indexOf("\n");
+      if (nl === -1) return;
+      const line = this.buffer.slice(0, nl).trim();
+      this.buffer = this.buffer.slice(nl + 1);
+      if (!line || !line.startsWith("{")) continue;
+      try {
+        this._handleParsed(JSON.parse(line));
+      } catch {}
+    }
+  }
+
+  request(method, params = {}, timeoutMs = 15000) {
+    const id = this.nextId++;
+    const payload = JSON.stringify({ jsonrpc: "2.0", id, method, params });
+    this.child.stdin.write(`${payload}\n`);
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`timeout waiting for ${method}`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (msg) => {
+          clearTimeout(timeout);
+          resolve(msg);
+        },
+        reject: (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        },
+      });
+    });
+  }
+
+  stop() {
+    if (!this.child) return;
+    this.child.kill("SIGTERM");
+  }
+}
+
+async function probeStdioServer(spec) {
+  const result = { name: spec.name, status: "PASS", detail: "ok" };
+  const client = new StdioMcpClient(spec.command, spec.args, spec.env || {});
+  try {
+    await client.start();
+    const init = await client.request("initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "mcp-health-check", version: "1.0" },
+    });
+    if (init.error) throw new Error(`initialize: ${init.error.message}`);
+
+    if (!spec.checkInitializeOnly) {
+      const toolsList = await client.request("tools/list", {});
+      if (toolsList.error) throw new Error(`tools/list: ${toolsList.error.message}`);
+      if (!toolsList.result || !Array.isArray(toolsList.result.tools)) {
+        throw new Error("tools/list returned no tools");
+      }
+    }
+
+    if (spec.toolCall) {
+      const call = await client.request("tools/call", {
+        name: spec.toolCall.name,
+        arguments: spec.toolCall.arguments || {},
+      });
+      if (call.error) {
+        const msg = String(call.error.message || "");
+        if (spec.allowErrorContains && msg.includes(spec.allowErrorContains)) {
+          result.status = "WARN";
+          result.detail = msg;
+        } else {
+          throw new Error(`tools/call ${spec.toolCall.name}: ${msg}`);
+        }
+      }
+    }
+  } catch (err) {
+    if (spec.optional) {
+      result.status = "WARN";
+      result.detail = String(err.message || err);
+    } else {
+      result.status = "FAIL";
+      result.detail = String(err.message || err);
+    }
+  } finally {
+    client.stop();
+  }
+  return result;
+}
+
+async function probeHttpServer(spec) {
+  if (!Client || !StreamableHTTPClientTransport) {
+    return probeHttpServerWithoutSdk(spec);
+  }
+
+  const result = { name: spec.name, status: "PASS", detail: "ok" };
+  let client = null;
+  let transport = null;
+
+  try {
+    transport = new StreamableHTTPClientTransport(new URL(spec.url));
+    client = new Client(
+      { name: "mcp-health-check", version: "1.0" },
+      { capabilities: {} },
+    );
+    await client.connect(transport);
+
+    if (!spec.checkInitializeOnly) {
+      const toolsList = await client.listTools();
+      if (!toolsList || !Array.isArray(toolsList.tools)) {
+        throw new Error("tools/list returned no tools");
+      }
+    }
+
+    if (spec.toolCall) {
+      await client.callTool({
+        name: spec.toolCall.name,
+        arguments: spec.toolCall.arguments || {},
+      });
+    }
+
+    result.detail = spec.url;
+  } catch (err) {
+    const message = String(err.message || err);
+    if (spec.allowErrorContains && message.includes(spec.allowErrorContains)) {
+      result.status = "WARN";
+      result.detail = message;
+    } else if (spec.optional) {
+      result.status = "WARN";
+      result.detail = message;
+    } else {
+      result.status = "FAIL";
+      result.detail = message;
+    }
+  } finally {
+    if (client) {
+      try {
+        await client.close();
+      } catch {}
+    }
+    if (transport && typeof transport.close === "function") {
+      try {
+        await transport.close();
+      } catch {}
+    }
+  }
+
+  return result;
+}
+
+function parseJsonRpcText(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) throw new Error("empty response");
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {}
+
+  const sseDataLines = [];
+  for (const line of trimmed.split(/\r?\n/)) {
+    const clean = line.trim();
+    if (clean.startsWith("data:")) {
+      sseDataLines.push(clean.slice(5).trim());
+    }
+  }
+  for (let i = sseDataLines.length - 1; i >= 0; i--) {
+    try {
+      return JSON.parse(sseDataLines[i]);
+    } catch {}
+  }
+
+  for (const line of trimmed.split(/\r?\n/)) {
+    const clean = line.trim();
+    if (!clean.startsWith("{")) continue;
+    try {
+      return JSON.parse(clean);
+    } catch {}
+  }
+
+  throw new Error("no JSON-RPC payload in response");
+}
+
+async function mcpHttpRequest(url, payload, sessionId = null) {
+  const headers = {
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+  };
+  if (sessionId) headers["mcp-session-id"] = sessionId;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(15000),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+  return {
+    parsed: parseJsonRpcText(text),
+    sessionId: res.headers.get("mcp-session-id") || sessionId,
+  };
+}
+
+async function probeHttpServerWithoutSdk(spec) {
+  const result = { name: spec.name, status: "PASS", detail: "ok" };
+  let sessionId = null;
+
+  try {
+    const init = await mcpHttpRequest(spec.url, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "mcp-health-check", version: "1.0" },
+      },
+    });
+    sessionId = init.sessionId;
+    if (init.parsed?.error) {
+      throw new Error(`initialize: ${init.parsed.error.message}`);
+    }
+
+    if (!spec.checkInitializeOnly) {
+      const toolsList = await mcpHttpRequest(spec.url, {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/list",
+        params: {},
+      }, sessionId);
+      sessionId = toolsList.sessionId;
+      if (toolsList.parsed?.error) {
+        throw new Error(`tools/list: ${toolsList.parsed.error.message}`);
+      }
+      if (!toolsList.parsed?.result || !Array.isArray(toolsList.parsed.result.tools)) {
+        throw new Error("tools/list returned no tools");
+      }
+    }
+
+    if (spec.toolCall) {
+      const call = await mcpHttpRequest(spec.url, {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: {
+          name: spec.toolCall.name,
+          arguments: spec.toolCall.arguments || {},
+        },
+      }, sessionId);
+      sessionId = call.sessionId;
+      if (call.parsed?.error) {
+        const msg = String(call.parsed.error.message || "");
+        if (spec.allowErrorContains && msg.includes(spec.allowErrorContains)) {
+          result.status = "WARN";
+          result.detail = msg;
+          return result;
+        }
+        throw new Error(`tools/call ${spec.toolCall.name}: ${msg}`);
+      }
+    }
+
+    result.detail = sdkLoadError ? `${spec.url} (SDK fallback)` : spec.url;
+  } catch (err) {
+    const message = String(err.message || err);
+    if (spec.allowErrorContains && message.includes(spec.allowErrorContains)) {
+      result.status = "WARN";
+      result.detail = message;
+    } else if (spec.optional) {
+      result.status = "WARN";
+      result.detail = message;
+    } else {
+      result.status = "FAIL";
+      result.detail = message;
+    }
+  } finally {
+    if (sessionId) {
+      try {
+        await fetch(spec.url, {
+          method: "DELETE",
+          headers: { "mcp-session-id": sessionId },
+          signal: AbortSignal.timeout(5000),
+        });
+      } catch {}
+    }
+  }
+
+  return result;
+}
+
+async function probeOpenAIDocsHttp() {
+  const result = { name: "openaiDeveloperDocs", status: "PASS", detail: "ok" };
+  try {
+    let ok = false;
+    let lastErr = "unknown error";
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const res = await fetch("https://developers.openai.com/mcp", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name: "list_api_endpoints", arguments: {} },
+          }),
+          signal: AbortSignal.timeout(30000),
+        });
+        const text = await res.text();
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!text.includes('"result"')) throw new Error("no result in response");
+        ok = true;
+        break;
+      } catch (err) {
+        lastErr = String(err.message || err);
+      }
+    }
+    if (!ok) throw new Error(lastErr);
+  } catch (err) {
+    result.status = "FAIL";
+    result.detail = String(err.message || err);
+  }
+  return result;
+}
+
+function loadConfiguredMcpServers() {
+  const py = `
+import json
+import os
+import tomllib
+
+path = os.path.expanduser("~/.codex/config.toml")
+with open(path, "rb") as f:
+    cfg = tomllib.load(f)
+
+servers = cfg.get("mcp_servers", {})
+out = {}
+for name, spec in servers.items():
+    out[name] = {
+        "command": spec.get("command"),
+        "args": spec.get("args", []),
+        "url": spec.get("url"),
+        "env": spec.get("env", {})
+    }
+
+print(json.dumps(out))
+`.trim();
+
+  const res = spawnSync("python3", ["-c", py], { encoding: "utf8" });
+  if (res.status !== 0) {
+    throw new Error(res.stderr?.trim() || "failed to parse ~/.codex/config.toml");
+  }
+  const parsed = JSON.parse(res.stdout || "{}");
+  return parsed;
+}
+
+function mergeSpec(name, defaults, configured) {
+  const merged = { name, ...defaults };
+  if (configured?.url) {
+    merged.url = configured.url;
+    delete merged.command;
+    delete merged.args;
+    delete merged.env;
+    return merged;
+  }
+  if (configured?.command) {
+    merged.command = configured.command;
+    merged.args = Array.isArray(configured.args) ? configured.args : [];
+    merged.env = configured.env && typeof configured.env === "object" ? configured.env : {};
+  }
+  return merged;
+}
+
+async function main() {
+  const configured = loadConfiguredMcpServers();
+  const defaultChecks = {
+    github: {
+      command: "node",
+      args: [homePath(".codex", "bin", "github-mcp-bridge.mjs")],
+      toolCall: { name: "search_repositories", arguments: { query: "org:openai codex", perPage: 1 } },
+    },
+    "apple-docs": {
+      command: "node",
+      args: [homePath("Dev", "apple-docs-mcp-local", "dist", "index.js")],
+      toolCall: { name: "list_wwdc_years", arguments: {} },
+    },
+    "macos-automator": {
+      command: "node",
+      args: [homePath(".npm-global", "lib", "node_modules", "@steipete", "macos-automator-mcp", "dist", "server.js")],
+      toolCall: { name: "get_scripting_tips", arguments: { search_term: "Safari URL", limit: 1 } },
+    },
+    memory: {
+      command: "node",
+      args: [homePath(".npm-global", "lib", "node_modules", "@modelcontextprotocol", "server-memory", "dist", "index.js")],
+      env: { MEMORY_FILE_PATH: homePath(".claude", "memory", "knowledge-graph.jsonl") },
+      toolCall: { name: "search_nodes", arguments: { query: "SaneBar" } },
+    },
+    "central-memory": {
+      command: "node",
+      args: [homePath("SaneApps", "infra", "SaneProcess", "scripts", "mcp-central-memory", "server.mjs")],
+      env: {
+        CENTRAL_MEMORY_DATABASE_URL: "postgresql://localhost:5432/central_memory",
+        CENTRAL_MEMORY_EMBED_MODEL: "text-embedding-3-small",
+        CENTRAL_MEMORY_EMBED_DIMENSIONS: "1536",
+      },
+      toolCall: { name: "stats", arguments: {} },
+    },
+    "nvidia-build": {
+      command: homePath(".local", "share", "nvidia-mcp-venv", "bin", "python3"),
+      args: [homePath(".local", "share", "nvidia-mcp-venv", "nvidia_mcp_server.py")],
+      toolCall: { name: "nvidia_models", arguments: {} },
+    },
+    serena: {
+      command: "uvx",
+      args: ["--from", "git+https://github.com/oraios/serena", "serena", "start-mcp-server", "--context", "claude-code", "--project-from-cwd"],
+      env: { ENABLE_TOOL_SEARCH: "true" },
+      toolCall: { name: "get_current_config", arguments: {} },
+      allowErrorContains: "No active project",
+    },
+    xcode: {
+      command: homePath(".codex", "bin", "xcode-mcpbridge-wrapper.sh"),
+      args: [],
+      optional: true,
+      checkInitializeOnly: true,
+    },
+  };
+  const specs = [];
+
+  const results = [];
+  const known = new Set(Object.keys(defaultChecks));
+
+  for (const [name, defaults] of Object.entries(defaultChecks)) {
+    specs.push(mergeSpec(name, defaults, configured[name]));
+  }
+
+  for (const [name, spec] of Object.entries(configured)) {
+    if (name === "openaiDeveloperDocs") continue;
+    if (known.has(name)) continue;
+    if (!spec.command && !spec.url) {
+      results.push({
+        name,
+        status: "WARN",
+        detail: "configured but has no command/url; skipped",
+      });
+      continue;
+    }
+    specs.push(mergeSpec(name, { checkInitializeOnly: false }, spec));
+    known.add(name);
+  }
+
+  for (const spec of specs) {
+    if (spec.url) {
+      results.push(await probeHttpServer(spec));
+    } else {
+      results.push(await probeStdioServer(spec));
+    }
+  }
+  if (configured.openaiDeveloperDocs) {
+    results.push(await probeOpenAIDocsHttp());
+  }
+
+  for (const name of Object.keys(configured)) {
+    if (!known.has(name) && name !== "openaiDeveloperDocs") {
+      results.push({
+        name,
+        status: "WARN",
+        detail: "configured but not probed",
+      });
+    }
+  }
+
+  for (const r of results) {
+    console.log(`[${r.status}] ${r.name} - ${r.detail}`);
+  }
+
+  const failCount = results.filter((r) => r.status === "FAIL").length;
+  if (failCount) process.exit(1);
+}
+
+main().catch((err) => {
+  console.error(`[FAIL] health-check crashed: ${String(err.message || err)}`);
+  process.exit(2);
+});

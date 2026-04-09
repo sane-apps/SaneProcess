@@ -47,7 +47,7 @@ module SaneMasterModules
 
       puts "✅ Template saved: #{template_path}"
       puts "   Files: #{saved.join(', ')}"
-      puts "\n💡 Apply to new project: ./Scripts/SaneMaster.rb template apply #{name}"
+      puts "\n💡 Apply to new project: ./scripts/SaneMaster.rb template apply #{name}"
     end
 
     def copy_template_files(template_files, template_path)
@@ -90,7 +90,7 @@ module SaneMasterModules
       if applied.any?
         puts "\n✅ Applied files:"
         applied.each { |f| puts "   - #{f}" }
-        puts "\n💡 Run ./Scripts/SaneMaster.rb bootstrap to complete setup"
+        puts "\n💡 Run ./scripts/SaneMaster.rb bootstrap to complete setup"
       else
         puts '⚠️  No new files applied (all exist already)'
       end
@@ -132,7 +132,7 @@ module SaneMasterModules
 
       if templates.empty?
         puts '   No templates saved yet.'
-        puts "\n💡 Save current project as template: ./Scripts/SaneMaster.rb template save mytemplate"
+        puts "\n💡 Save current project as template: ./scripts/SaneMaster.rb template save mytemplate"
         return
       end
 

@@ -108,7 +108,7 @@ ruby scripts/license_gen.rb --validate SP-XXXX-...  # Validate key
 2. **Never break the 17 Golden Rules** - They're the product's core value
 3. **Never write files outside the project** - Respect #1: STAY IN YOUR LANE
 4. **Never remove tests** - Only add or update them
-5. **Never use raw build commands** - Always use project tools (./Scripts/SaneMaster.rb)
+5. **Never use raw build commands** - Always use project tools (./scripts/SaneMaster.rb)
 6. **Never commit state files** - They're in .gitignore for a reason
 
 ### Always Do This
@@ -187,7 +187,7 @@ Trips when either:
 - 3 consecutive failures, OR
 - 3x same error signature (even with successes between)
 
-Reset with `rb-` command or `./Scripts/SaneMaster.rb bootstrap`
+Reset with `rb-` command or `./scripts/SaneMaster.rb bootstrap`
 
 ## Security Considerations
 

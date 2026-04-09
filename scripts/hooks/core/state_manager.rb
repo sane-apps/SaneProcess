@@ -207,7 +207,7 @@ module StateManager
       invoked: false,          # Whether Skill tool was actually called
       invoked_at: nil,         # Timestamp of invocation
       subagents_spawned: 0,    # Count of Task tool calls (subagents)
-      runner_used: false,      # Whether a runner-backed skill proof was seen (currently evolve/tool discovery)
+      runner_used: false,      # Whether a runner-backed workflow proof was seen for the active skill
       runner_commands: [],     # Matching runner/proof commands seen this session
       files_read: [],          # Files read during skill execution
       satisfied: false,        # Whether skill requirements were met

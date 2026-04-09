@@ -285,6 +285,7 @@ class ValidationReport
           if local_arg.nil?
             issues_found << "[#{label}] #{name} points to wrong local path"
           elsif local_arg.start_with?('/') && !File.exist?(local_arg)
+            next if codex_server_uses_http?(name)
             @warnings << "Q0: [#{label}] #{name} local path missing on this machine: #{local_arg}"
           end
         end
@@ -292,6 +293,19 @@ class ValidationReport
     rescue JSON::ParserError
       issues_found << "[#{label}] .mcp.json is corrupt"
     end
+  end
+
+  def codex_server_uses_http?(name)
+    codex_config = File.expand_path('~/.codex/config.toml')
+    return false unless File.exist?(codex_config)
+
+    content = File.read(codex_config)
+    block = content[/^\[mcp_servers\.#{Regexp.escape(name)}\]\s*\n(.*?)(?=^\[|\z)/m, 1]
+    return false unless block
+
+    block.match?(/^\s*url\s*=/)
+  rescue StandardError
+    false
   end
 
   def load_headless_env

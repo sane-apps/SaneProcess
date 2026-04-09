@@ -12,6 +12,7 @@ Scripts for the Mac mini training/build pipeline and the local monitoring that w
 | `mini-memory-guard.sh` | 5:40 AM daily | Mini hygiene + safe reboot gate (only when idle and needed) |
 | `mini-install-memory-guard.sh` | On demand | Installs/updates memory guard LaunchAgent |
 | `install-training-daily-check-agent.sh` | On demand (local Mac) | Installs/updates the daily local alert for Mini training results |
+| `bootstrap-build-server.sh` | On demand | Proves headless signing, keychain unlock, and ASC auth before App Store work |
 | `mini-gui-run.sh` | Manual / wrapper | Runs a shell command inside the Mini's logged-in GUI Terminal session |
 | `mini-license-test.sh` | Manual deep probe | Runs the SaneBar end-to-end license lifecycle on the Mini |
 | `mini-train.sh` | Manual / wrapper | MLX LoRA fine-tuning pipeline (sweeps, validation, reporting) |

@@ -2,6 +2,10 @@
 
 Scripts for automating development and business tasks across SaneApps projects.
 
+repo-root-safe rule:
+- Prefer `ruby scripts/SaneMaster.rb ...`, `bash scripts/automation/...`, or `python3 scripts/automation/...` from the repo root.
+- Bare commands in this directory are implementation detail examples, not the primary operator path.
+
 ## Prerequisites
 
 - `nv` CLI installed at `/Users/sj/.local/bin/nv`
@@ -83,9 +87,9 @@ Build the current SaneBar listing/setup tracker from inbox history and write it 
 
 **Usage:**
 ```bash
-python3 listing-actions.py
-python3 listing-actions.py --json
-python3 listing-actions.py --xlsx /tmp/sanebar_listings.xlsx
+python3 scripts/automation/listing-actions.py
+python3 scripts/automation/listing-actions.py --json
+python3 scripts/automation/listing-actions.py --xlsx /tmp/sanebar_listings.xlsx
 ```
 
 **What it does:**
@@ -97,7 +101,7 @@ python3 listing-actions.py --xlsx /tmp/sanebar_listings.xlsx
 6. Saves a dated workbook plus `outputs/listing_actions/latest.xlsx`.
 7. Feeds the same workbook/JSON data into the nightly `morning-report.sh` summary and the `sane-status-crossref.sh` status runner.
 
-**Canonical path:** prefer `ruby ../SaneMaster.rb listing_actions` from the repo root.
+**Canonical path:** prefer `ruby scripts/SaneMaster.rb listing_actions` from the repo root.
 
 ### hosted-file-actions.py
 
@@ -105,9 +109,9 @@ Build the current Lemon Squeezy hosted-file dashboard tracker from live appcast 
 
 **Usage:**
 ```bash
-python3 hosted-file-actions.py
-python3 hosted-file-actions.py --json
-python3 hosted-file-actions.py --xlsx /tmp/hosted_file_actions.xlsx
+python3 scripts/automation/hosted-file-actions.py
+python3 scripts/automation/hosted-file-actions.py --json
+python3 scripts/automation/hosted-file-actions.py --xlsx /tmp/hosted_file_actions.xlsx
 ```
 
 **What it does:**
@@ -209,26 +213,29 @@ morning-report.sh
 
 ### sync-codex-mini.sh
 
-Sync SaneOps Codex automation config plus the active Codex skill registry from MacBook to Mini and enforce runner roles.
+Sync SaneOps Codex automation config plus the active Codex skill registry and Codex control-plane helpers from MacBook to Mini and enforce runner roles.
 
 **Usage:**
 ```bash
 # Sync to default host "mini" and restart Codex on Mini
-sync-codex-mini.sh
+ruby scripts/SaneMaster.rb sync_mini
 
 # Sync quietly without restarting Codex
-sync-codex-mini.sh mini --quiet --no-restart
+ruby scripts/SaneMaster.rb sync_mini mini --quiet --no-restart
 ```
 
 **What it does:**
 1. Forces local Codex automations to paused (prevents duplicate runs).
 2. Rewrites home paths for Mini and syncs automation TOML files.
 3. Syncs the active Codex skill registry (`~/.codex/SKILLS_REGISTRY.md`) and `~/.codex/skills/` to Mini.
-4. Syncs critical control-plane scripts (`check-inbox.sh`, `git-sync-safe.sh`, hooks, validation/reporting scripts).
-5. Updates Mini automation SQLite rows from TOML so prompt/status changes apply immediately.
-6. Verifies Air↔Mini SHA-256 parity for synced control-plane files and dry-run `rsync` parity for Codex skills.
-7. Sets Mini AM and PM runs active by default, with explicit pause flags when needed.
-8. Optionally restarts Codex on Mini so scheduler reloads immediately.
+4. Installs the repo-owned Codex control-plane helpers from `scripts/codex-bin/` into local `~/.codex/bin/`.
+5. Mirrors those same helpers to Mini, including `check-mcps`, `github-mcp-bridge.mjs`, and `xcode-mcpbridge-wrapper.sh`.
+6. Syncs critical control-plane scripts (`check-inbox.sh`, `git-sync-safe.sh`, hooks, validation/reporting scripts).
+7. Seeds Mini's local knowledge graph cache from `~/.claude/memory/knowledge-graph.jsonl` when present.
+8. Updates Mini automation SQLite rows from TOML so prompt/status changes apply immediately.
+9. Verifies Air↔Mini SHA-256 parity for synced control-plane files, Codex binaries, and dry-run `rsync` parity for Codex skills.
+10. Sets Mini AM and PM runs active by default, with explicit pause flags when needed.
+11. Optionally restarts Codex on Mini so scheduler reloads immediately.
 
 ### start-workday.sh
 
@@ -333,7 +340,7 @@ One-command cross-reference run for business health (sales, inbox, and GitHub is
 
 **Usage:**
 ```bash
-sane-status-crossref.sh
+ruby scripts/SaneMaster.rb status
 ```
 
 **What it does:**
