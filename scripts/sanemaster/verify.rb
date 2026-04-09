@@ -820,13 +820,11 @@ module SaneMasterModules
             nil
           end
 
-          # Avoid Timeout.timeout here; Ruby docs explicitly warn it cannot
-          # reliably enforce deadlines for arbitrary/blocking operations.
-          if wait_thr.join(timeout_seconds).nil?
+          if wait_for_process_with_timeout(wait_thr, timeout_seconds)
+            success = wait_thr.value.success?
+          else
             timed_out = true
             handle_timeout(timeout_seconds, wait_thr.pid)
-          else
-            success = wait_thr.value.success?
           end
 
           begin
@@ -849,6 +847,17 @@ module SaneMasterModules
       end
 
       { success: success && !timed_out, timeout: timed_out }
+    end
+
+    def wait_for_process_with_timeout(wait_thr, timeout_seconds)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds.to_f
+
+      loop do
+        return true unless wait_thr.alive?
+        return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+        sleep(0.25)
+      end
     end
 
     def handle_progress_update(line, state)

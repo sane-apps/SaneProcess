@@ -151,4 +151,23 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
       true
     end
   end
+
+  test_category('Verify timeout handling') do
+    test('execute_with_logging returns on timeout for a stuck child process') do
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      result = subject.send(
+        :execute_with_logging,
+        ['ruby', '-e', 'STDOUT.sync = true; puts "starting"; trap("TERM") { exit! 0 }; sleep 10'],
+        1,
+        append: false,
+        label: 'timeout regression'
+      ) { |_line| nil }
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+      assert_eq(result[:success], false)
+      assert_eq(result[:timeout], true)
+      assert(elapsed < 4, "expected timeout path to return promptly, got #{elapsed.round(2)}s")
+      true
+    end
+  end
 end)
