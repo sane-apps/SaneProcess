@@ -1691,8 +1691,13 @@ PY
     site_body=$(curl -fsSL "${site_url}" 2>/dev/null || true)
     if [ -n "${site_body}" ]; then
         local expected_download_url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
+        local homepage_download_ver=""
+        homepage_download_ver=$(grep -oE "https://${DIST_HOST}/updates/${APP_NAME}-[0-9]+\.[0-9]+\.[0-9]+\.zip" <<< "${site_body}" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
         if grep -Fq "${expected_download_url}" <<< "${site_body}"; then
             log_info "Website download link verified: ${expected_download_url}"
+        elif [ -n "${homepage_download_ver}" ]; then
+            log_error "Website download link points to v${homepage_download_ver}, expected v${VERSION}: ${site_url}"
+            return 1
         else
             local download_page_url="https://${SITE_HOST}/download"
             local download_page_body=""

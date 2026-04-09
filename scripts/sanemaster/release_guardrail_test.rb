@@ -109,6 +109,8 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
 
       assert_includes(release_script, 'local download_page_url="https://${SITE_HOST}/download"')
+      assert_includes(release_script, 'local homepage_download_ver=""')
+      assert_includes(release_script, 'Website download link points to v${homepage_download_ver}, expected v${VERSION}: ${site_url}')
       assert_includes(release_script, 'Website download flow verified via ${download_page_url}: ${expected_download_url}')
       true
     end
