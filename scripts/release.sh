@@ -1683,23 +1683,38 @@ PY
         fi
     fi
 
-    # Verify website download link matches release version
+    # Verify website download flow matches the release version.
+    # Some sites link directly to the ZIP from the homepage; others route the
+    # homepage CTA to /download and keep the versioned ZIP there.
     local site_url="https://${SITE_HOST}/"
     local site_body
     site_body=$(curl -fsSL "${site_url}" 2>/dev/null || true)
     if [ -n "${site_body}" ]; then
         local expected_download_url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
-        if ! grep -Fq "${expected_download_url}" <<< "${site_body}"; then
-            local found_download_ver
-            found_download_ver=$(grep -oE "https://${DIST_HOST}/updates/${APP_NAME}-[0-9]+\.[0-9]+\.[0-9]+\.zip" <<< "${site_body}" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-            if [ -n "${found_download_ver}" ]; then
-                log_error "Website download link points to v${found_download_ver}, expected v${VERSION}: ${site_url}"
-            else
-                log_error "Website has no download link matching ${APP_NAME}-*.zip pattern: ${site_url}"
+        if grep -Fq "${expected_download_url}" <<< "${site_body}"; then
+            log_info "Website download link verified: ${expected_download_url}"
+        else
+            local download_page_url="https://${SITE_HOST}/download"
+            local download_page_body=""
+            local found_download_ver=""
+            if grep -Fq 'href="/download"' <<< "${site_body}" || grep -Fq "${download_page_url}" <<< "${site_body}"; then
+                download_page_body=$(curl -fsSL "${download_page_url}" 2>/dev/null || true)
             fi
-            return 1
+
+            if [ -n "${download_page_body}" ] && grep -Fq "${expected_download_url}" <<< "${download_page_body}"; then
+                log_info "Website download flow verified via ${download_page_url}: ${expected_download_url}"
+            else
+                found_download_ver=$(printf '%s\n%s' "${site_body}" "${download_page_body}" | \
+                    grep -oE "https://${DIST_HOST}/updates/${APP_NAME}-[0-9]+\.[0-9]+\.[0-9]+\.zip" | \
+                    head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+                if [ -n "${found_download_ver}" ]; then
+                    log_error "Website download flow points to v${found_download_ver}, expected v${VERSION}: ${download_page_url}"
+                else
+                    log_error "Website has no download link matching ${APP_NAME}-*.zip pattern on ${site_url} or ${download_page_url}"
+                fi
+                return 1
+            fi
         fi
-        log_info "Website download link verified: ${expected_download_url}"
     else
         log_error "Could not fetch website for download link check: ${site_url}"
         return 1

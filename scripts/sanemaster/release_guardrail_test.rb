@@ -104,6 +104,14 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_includes(release_script, 'sync release metadata for v${VERSION}')
       true
     end
+
+    test('release.sh accepts websites that route downloads through /download') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+
+      assert_includes(release_script, 'local download_page_url="https://${SITE_HOST}/download"')
+      assert_includes(release_script, 'Website download flow verified via ${download_page_url}: ${expected_download_url}')
+      true
+    end
   end
 
   test_category('Artifact marker detection') do
