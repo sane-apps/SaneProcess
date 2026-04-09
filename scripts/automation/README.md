@@ -288,6 +288,23 @@ install-repo-reconcile-agent.sh
 2. Runs `reconcile-air-mini.sh mini` at `05:55` and `21:55` local time by default.
 3. Writes logs to `infra/SaneProcess/outputs/repo_reconcile.stdout.log` and `.stderr.log`.
 
+### website-consistency-check.sh
+
+Manual static site consistency pass for SaneApps marketing/docs surfaces.
+
+**Usage:**
+```bash
+website-consistency-check.sh
+```
+
+**What it does:**
+1. Checks product index pages and guide hubs for required CTA and support copy.
+2. Verifies expected crypto-payment copy still exists where required.
+3. Writes a TSV report plus summary markdown under `outputs/website-consistency-<date>/`.
+4. Exits nonzero on any failed consistency check.
+
+Use this after website copy or release-page changes. It is a manual audit helper, not part of the nightly reconcile path.
+
 ### sane-status-crossref.sh
 
 One-command cross-reference run for business health (sales, inbox, and GitHub issues).

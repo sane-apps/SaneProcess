@@ -13,6 +13,7 @@ Scripts for the Mac mini training/build pipeline and the local monitoring that w
 | `mini-install-memory-guard.sh` | On demand | Installs/updates memory guard LaunchAgent |
 | `install-training-daily-check-agent.sh` | On demand (local Mac) | Installs/updates the daily local alert for Mini training results |
 | `mini-gui-run.sh` | Manual / wrapper | Runs a shell command inside the Mini's logged-in GUI Terminal session |
+| `mini-license-test.sh` | Manual deep probe | Runs the SaneBar end-to-end license lifecycle on the Mini |
 | `mini-train.sh` | Manual / wrapper | MLX LoRA fine-tuning pipeline (sweeps, validation, reporting) |
 | `mini-train-all.sh` | 1 AM Sunday | Weekly production training for SaneAI |
 | `mini-train-challengers.sh` | 1 AM daily | Daily challenger training for SaneAI |
@@ -29,9 +30,17 @@ bash scripts/mini/deploy.sh
 # Sync the active Codex automation + skill profile to Mini
 bash scripts/automation/sync-codex-mini.sh mini --no-restart
 
+# Legacy Claude-only fallback (do not use for normal Codex parity)
+bash scripts/mini/sync-claude-config.sh --dry-run
+
 # Or deploy a single script
 scp scripts/mini/mini-train.sh mini:~/SaneApps/infra/scripts/
 ```
+
+Legacy note:
+- `scripts/mini/sync-claude-config.sh` is kept only for Claude-specific fallback work.
+- Canonical Mini control-plane parity is `scripts/automation/sync-codex-mini.sh`.
+- `deploy.sh` should not be used to revive the old Claude sync path.
 
 Default root behavior:
 - Mini training runners and mini LaunchAgent installers now auto-prefer `~/SaneApps-automation` when that clone exists.

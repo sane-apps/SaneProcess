@@ -138,6 +138,19 @@ SANE_REFUND_APPROVED=1 ruby scripts/SaneMaster.rb sales \
 
 Customer-reply rule for duplicate-license refunds: say explicitly which order was refunded, say the refunded key is disabled and will not work, and say which remaining key is the live working key.
 
+### Manual and Specialized Scripts
+
+These scripts are real, but they are not the default daily path. Keep their role explicit so they do not turn into shadow systems.
+
+| Script | Status | Use it for |
+|--------|--------|------------|
+| `ruby scripts/contamination_check.rb [path\|--all]` | Manual audit utility | Cross-project contamination scans when you suspect one repo leaked another repo's names, paths, or configs |
+| `ruby scripts/link_monitor.rb` | Manual or LaunchAgent utility | Critical checkout/download/site URL monitoring backed by `config/products.yml` |
+| `ruby scripts/scaffold.rb <AppName> [--type macos\|ios]` | One-time bootstrap utility | New Sane* repo skeleton generation before project-specific cleanup and Codex/AGENTS refresh |
+| `bash scripts/automation/website-consistency-check.sh` | Manual website audit | Static consistency checks across product sites and guide hubs after website/release copy changes |
+| `bash scripts/mini/mini-license-test.sh` | Manual deep Mini probe | Full SaneBar license lifecycle testing on the Mini when license activation/deactivation/offline caching changes |
+| `bash scripts/mini/sync-claude-config.sh` | Legacy fallback only | Claude-specific config sync; do not use for Codex parity, which is now `bash scripts/automation/sync-codex-mini.sh mini` |
+
 Listing/directory follow-up rule: do not maintain separate manual spreadsheets by hand. Regenerate the tracker from inbox history with the canonical command below. New recognized listing/setup emails are folded into the workbook the next time the command runs.
 
 ```bash
