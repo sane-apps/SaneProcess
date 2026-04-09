@@ -81,6 +81,20 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
     end
   end
 
+  test_category('Release test lane policy') do
+    test('release.sh prefers SaneMaster verify before raw xcodebuild fallbacks') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+
+      verify_index = release_script.index('Using SaneMaster verify as the authoritative release test lane.')
+      xcodebuild_index = release_script.index('xcodebuild "${args[@]}"')
+
+      assert(!verify_index.nil?, 'expected release.sh to invoke SaneMaster verify first')
+      assert(!xcodebuild_index.nil?, 'expected raw xcodebuild fallback to remain available')
+      assert(verify_index < xcodebuild_index, 'expected SaneMaster verify path before raw xcodebuild fallback')
+      true
+    end
+  end
+
   test_category('Artifact marker detection') do
     test('detects donation and support markers in App Store artifacts') do
       hits = subject.send(

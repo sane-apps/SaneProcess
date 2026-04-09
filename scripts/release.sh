@@ -2504,57 +2504,62 @@ run_tests() {
         return 1
     }
 
+    if [ -x "${sanemaster_verify}" ]; then
+        log_info "Using SaneMaster verify as the authoritative release test lane."
+        if SANEMASTER_RELEASE_PREFLIGHT=1 "${sanemaster_verify}" verify --quiet >"${test_log}" 2>&1; then
+            cat "${test_log}"
+            log_info "All tests passed (SaneMaster verify)"
+            return 0
+        fi
+
+        cat "${test_log}"
+        if test_log_indicates_success "${test_log}"; then
+            log_warn "SaneMaster verify returned non-zero despite a clean pass. Continuing with release."
+            return 0
+        fi
+
+        log_error "SaneMaster verify failed. Aborting release."
+        restore_version_bump
+        exit 1
+    fi
+
     if XDG_CACHE_HOME="${cache_root}" \
        CLANG_MODULE_CACHE_PATH="${clang_cache}" \
        SWIFTPM_CACHE_PATH="${swiftpm_cache}" \
        xcodebuild "${args[@]}" >"${test_log}" 2>&1; then
         cat "${test_log}"
         log_info "All tests passed"
-    else
-        cat "${test_log}"
+        return 0
+    fi
 
-        if test_log_indicates_success "${test_log}"; then
-            log_warn "Test runner returned non-zero despite a clean pass. Continuing with release."
+    cat "${test_log}"
+
+    if test_log_indicates_success "${test_log}"; then
+        log_warn "Test runner returned non-zero despite a clean pass. Continuing with release."
+        return 0
+    fi
+
+    if grep -Eq 'Command CodeSign failed with a nonzero exit code|errSecInternalComponent|No profiles for .+ were found|Automatic signing is disabled and unable to generate a profile|requires a provisioning profile with the .+ feature' "${test_log}"; then
+        log_warn "Signed test build failed due to signing/provisioning. Retrying unsigned tests..."
+        if XDG_CACHE_HOME="${cache_root}" \
+           CLANG_MODULE_CACHE_PATH="${clang_cache}" \
+           SWIFTPM_CACHE_PATH="${swiftpm_cache}" \
+           xcodebuild "${args[@]}" "${unsigned_signing_args[@]}" >"${test_log}" 2>&1; then
+            cat "${test_log}"
+            log_info "All tests passed (unsigned fallback)"
             return 0
         fi
 
-        if grep -Eq 'Command CodeSign failed with a nonzero exit code|errSecInternalComponent|No profiles for .+ were found|Automatic signing is disabled and unable to generate a profile|requires a provisioning profile with the .+ feature' "${test_log}"; then
-            log_warn "Signed test build failed due to signing/provisioning. Retrying unsigned tests..."
-            if XDG_CACHE_HOME="${cache_root}" \
-               CLANG_MODULE_CACHE_PATH="${clang_cache}" \
-               SWIFTPM_CACHE_PATH="${swiftpm_cache}" \
-               xcodebuild "${args[@]}" "${unsigned_signing_args[@]}" >"${test_log}" 2>&1; then
-                cat "${test_log}"
-                log_info "All tests passed (unsigned fallback)"
-            else
-                cat "${test_log}"
-                if test_log_indicates_success "${test_log}"; then
-                    log_warn "Unsigned test runner returned non-zero despite a clean pass. Continuing with release."
-                    return 0
-                fi
-                if [ -x "${sanemaster_verify}" ]; then
-                    log_warn "Unsigned xcodebuild fallback failed. Retrying through SaneMaster verify for the authoritative project test lane..."
-                    if SANEMASTER_RELEASE_PREFLIGHT=1 "${sanemaster_verify}" verify --quiet >"${test_log}" 2>&1; then
-                        cat "${test_log}"
-                        log_info "All tests passed (SaneMaster verify fallback)"
-                        return 0
-                    fi
-                    cat "${test_log}"
-                    if test_log_indicates_success "${test_log}"; then
-                        log_warn "SaneMaster verify returned non-zero despite a clean pass. Continuing with release."
-                        return 0
-                    fi
-                fi
-                log_error "Tests failed even after unsigned fallback. Aborting release."
-                restore_version_bump
-                exit 1
-            fi
-        else
-            log_error "Tests failed! Aborting release."
-            restore_version_bump
-            exit 1
+        cat "${test_log}"
+        if test_log_indicates_success "${test_log}"; then
+            log_warn "Unsigned test runner returned non-zero despite a clean pass. Continuing with release."
+            return 0
         fi
     fi
+
+    log_error "Tests failed. Aborting release."
+    restore_version_bump
+    exit 1
 }
 
 update_changelog() {
