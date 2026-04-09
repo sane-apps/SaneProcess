@@ -25,6 +25,29 @@ RUN_CHALLENGERS_AFTER_WEEKLY="${RUN_CHALLENGERS_AFTER_WEEKLY:-false}"
 CHALLENGER_APP="${CHALLENGER_APP:-SaneAI}"
 mkdir -p "$LOG_DIR"
 
+prepare_automation_root_if_needed() {
+  local prep_script="$SCRIPT_DIR/mini-prepare-automation-root.sh"
+  local source_root="${CANONICAL_SOURCE_ROOT:-$HOME/SaneApps}"
+
+  case "$SANE_ROOT" in
+    "$HOME/SaneApps-automation"|"${HOME}/SaneApps-automation/"*)
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  if [ ! -f "$prep_script" ]; then
+    echo "=== ERROR: automation prep script missing: $prep_script ===" >> "$STDOUT_LOG"
+    return 1
+  fi
+
+  echo "=== Refreshing automation root before weekly training: $SANE_ROOT ===" >> "$STDOUT_LOG"
+  AUTOMATION_ROOT="$SANE_ROOT" \
+  SANE_SOURCE_ROOT="$source_root" \
+    /bin/bash "$prep_script" >> "$STDOUT_LOG" 2>&1
+}
+
 run_saneai_merge() {
   local merge_script="$1"
   local merge_home merge_exit
@@ -48,6 +71,10 @@ if [ -f "$STDERR_LOG" ] && [ "$(stat -f%z "$STDERR_LOG" 2>/dev/null || echo 0)" 
 fi
 
 echo "=== Training SaneAI (unified model) — $(date) ===" >> "$STDOUT_LOG"
+
+if ! prepare_automation_root_if_needed; then
+  exit 1
+fi
 
 # Step 1: Merge latest per-product training data into SaneAI
 SANEAI_DIR="$SANE_ROOT/apps/SaneAI/training_data"

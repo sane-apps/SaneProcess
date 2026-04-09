@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
+import shlex
 import subprocess
 import sys
 from datetime import datetime
@@ -103,8 +105,14 @@ print(json.dumps(payload))
 
 
 def fetch_remote_snapshot(host: str) -> dict:
+    ssh_opts = os.environ.get("TRAIN_DAILY_CHECK_SSH_OPTS") or os.environ.get("MINI_SSH_OPTS") or ""
+    ssh_cmd = ["ssh"]
+    if ssh_opts:
+        ssh_cmd.extend(shlex.split(ssh_opts))
+    ssh_cmd.extend(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, "python3", "-"])
+
     result = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, "python3", "-"],
+        ssh_cmd,
         input=REMOTE_SNAPSHOT_SCRIPT,
         capture_output=True,
         text=True,
@@ -232,8 +240,9 @@ def notify(title: str, message: str) -> None:
 
 
 def main() -> int:
+    default_host = os.environ.get("TRAIN_DAILY_CHECK_HOST") or os.environ.get("MINI_HOST") or "mini"
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", default="mini", help="SSH host for the Mini")
+    parser.add_argument("--host", default=default_host, help="SSH host for the Mini")
     parser.add_argument("--no-notify", action="store_true", help="Skip the local macOS notification")
     parser.add_argument("--print", action="store_true", dest="print_summary", help="Print the summary after writing the report")
     args = parser.parse_args()

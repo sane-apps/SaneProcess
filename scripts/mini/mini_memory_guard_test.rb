@@ -17,7 +17,15 @@ exit(run_tests('Mini Memory Guard Tests') do
       assert_includes(guard_source, '$HOME/.sanemaster/routed-workspaces/')
       assert_includes(guard_source, '$HOME/.codex-sync-backups/')
       assert_includes(guard_source, '$HOME/.Trash/')
+      assert_includes(guard_source, '$HOME/SaneApps-automation/apps/')
       assert_includes(guard_source, '$HOME/SaneApps/apps/SaneVideo/outputs')
+      true
+    end
+
+    test('prunes training artifacts from both human and automation roots') do
+      assert_includes(guard_source, 'for sane_root in "$HOME/SaneApps" "$HOME/SaneApps-automation"; do')
+      assert_includes(guard_source, '"$sane_root/apps/SaneAI/models/sweeps"')
+      assert_includes(guard_source, '"$sane_root/apps/SaneSync/models/sweeps"')
       true
     end
 
@@ -32,6 +40,14 @@ exit(run_tests('Mini Memory Guard Tests') do
     test('logs disk free space before and after cleanup') do
       assert_includes(guard_source, 'disk_free_gb')
       assert_includes(guard_source, 'get_data_disk_free_gb')
+      true
+    end
+
+    test('rotates challenger, weekly, and guard logs') do
+      assert_includes(guard_source, 'training-challengers.stdout.log')
+      assert_includes(guard_source, 'training-weekly.stderr.log')
+      assert_includes(guard_source, 'memory-guard.stdout.log')
+      assert_includes(guard_source, 'alerts/training/history.log')
       true
     end
   end

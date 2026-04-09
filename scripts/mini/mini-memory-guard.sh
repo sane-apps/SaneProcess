@@ -90,6 +90,7 @@ safe_remove_path() {
   local path="$1"
   case "$path" in
     "$HOME/SaneApps/apps/"*|\
+    "$HOME/SaneApps-automation/apps/"*|\
     "$HOME/Library/Developer/Xcode/DerivedData/"*|\
     "$HOME/.sanemaster/routed-workspaces/"*|\
     "$HOME/.codex-sync-backups/"*|\
@@ -203,16 +204,20 @@ prune_sweep_dirs() {
 
 cleanup_training_artifacts() {
   # Production sweeps should be short-lived checkpoints; keep recent history only.
-  prune_sweep_dirs "$HOME/SaneApps/apps/SaneAI/models/sweeps" "${SANEAI_SWEEP_KEEP_DAYS:-3}" "SaneAI sweep" "${SANEAI_SWEEP_MIN_KEEP:-4}"
-  prune_sweep_dirs "$HOME/SaneApps/apps/SaneSync/models/sweeps" "${SANESYNC_SWEEP_KEEP_DAYS:-7}" "SaneSync sweep" "${SANESYNC_SWEEP_MIN_KEEP:-4}"
+  for sane_root in "$HOME/SaneApps" "$HOME/SaneApps-automation"; do
+    [ -d "$sane_root/apps" ] || continue
 
-  # Temporary fusion test outputs can be multi-GB and are safe to discard.
-  for tmp_dir in "$HOME/SaneApps/apps/SaneSync/models"/_fuse_test_*; do
-    [ -d "$tmp_dir" ] || continue
-    local dir_mb
-    dir_mb=$(du -sm "$tmp_dir" 2>/dev/null | awk '{print $1}')
-    safe_remove_path "$tmp_dir" || continue
-    log "Removed temporary fusion dir $(basename "$tmp_dir") (${dir_mb}MB)"
+    prune_sweep_dirs "$sane_root/apps/SaneAI/models/sweeps" "${SANEAI_SWEEP_KEEP_DAYS:-3}" "SaneAI sweep" "${SANEAI_SWEEP_MIN_KEEP:-4}"
+    prune_sweep_dirs "$sane_root/apps/SaneSync/models/sweeps" "${SANESYNC_SWEEP_KEEP_DAYS:-7}" "SaneSync sweep" "${SANESYNC_SWEEP_MIN_KEEP:-4}"
+
+    # Temporary fusion test outputs can be multi-GB and are safe to discard.
+    for tmp_dir in "$sane_root/apps/SaneSync/models"/_fuse_test_*; do
+      [ -d "$tmp_dir" ] || continue
+      local dir_mb
+      dir_mb=$(du -sm "$tmp_dir" 2>/dev/null | awk '{print $1}')
+      safe_remove_path "$tmp_dir" || continue
+      log "Removed temporary fusion dir $(basename "$tmp_dir") (${dir_mb}MB)"
+    done
   done
 }
 
@@ -394,8 +399,16 @@ main() {
 
   rotate_if_large "$OUTPUT_DIR/training.stdout.log" 31457280 8388608
   rotate_if_large "$OUTPUT_DIR/training.stderr.log" 10485760 2097152
+  rotate_if_large "$OUTPUT_DIR/training-challengers.stdout.log" 20971520 4194304
+  rotate_if_large "$OUTPUT_DIR/training-challengers.stderr.log" 10485760 2097152
+  rotate_if_large "$OUTPUT_DIR/training-weekly.stdout.log" 20971520 4194304
+  rotate_if_large "$OUTPUT_DIR/training-weekly.stderr.log" 10485760 2097152
   rotate_if_large "$OUTPUT_DIR/nightly.stdout.log" 10485760 2097152
   rotate_if_large "$OUTPUT_DIR/nightly.stderr.log" 10485760 2097152
+  rotate_if_large "$OUTPUT_DIR/memory-guard.stdout.log" 5242880 1048576
+  rotate_if_large "$OUTPUT_DIR/memory-guard.stderr.log" 2097152 524288
+  rotate_if_large "$OUTPUT_DIR/mini_memory_guard.log" 5242880 1048576
+  rotate_if_large "$OUTPUT_DIR/alerts/training/history.log" 5242880 524288
 
   cleanup_training_artifacts
   cleanup_routed_workspaces

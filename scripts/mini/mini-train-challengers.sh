@@ -63,6 +63,29 @@ DATE=$(date +"%Y-%m-%d")
 COMPARISON_REPORT="$OUTPUT_DIR/challenger_comparison_${APP_NAME}_${DATE}.md"
 mkdir -p "$OUTPUT_DIR"
 
+prepare_automation_root_if_needed() {
+  local prep_script="$SCRIPT_DIR/mini-prepare-automation-root.sh"
+  local source_root="${CANONICAL_SOURCE_ROOT:-$HOME/SaneApps}"
+
+  case "$SANE_ROOT" in
+    "$HOME/SaneApps-automation"|"${HOME}/SaneApps-automation/"*)
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  if [ ! -f "$prep_script" ]; then
+    echo "Automation prep script missing: $prep_script" >&2
+    return 1
+  fi
+
+  echo "Refreshing automation root before challenger training: $SANE_ROOT" >&2
+  AUTOMATION_ROOT="$SANE_ROOT" \
+  SANE_SOURCE_ROOT="$source_root" \
+    /bin/bash "$prep_script"
+}
+
 # Inherit time budget from environment (set by mini-train-all.sh)
 # Default daily lane stays on the last stable 8 GB candidate unless explicitly widened.
 CHALLENGER_BUDGET_MIN="${CHALLENGER_BUDGET_MIN:-0}"
@@ -77,6 +100,11 @@ SELECTED_CONFIG_NAME=""
 
 CONFIGS_DIR="$APP_DIR/training_data/challenger_configs"
 MERGE_STATUS="not-needed"
+
+if ! prepare_automation_root_if_needed; then
+  echo "Automation root refresh failed. Aborting challenger lane." >&2
+  exit 1
+fi
 
 if [ "$APP_NAME" = "SaneAI" ] && [ -f "$APP_DIR/training_data/merge_training_data.py" ]; then
   if run_saneai_merge "$APP_DIR/training_data/merge_training_data.py" >/dev/null 2>&1; then

@@ -175,6 +175,65 @@ VALID_EXAMPLE_DROP_MAX_PCT="${VALID_EXAMPLE_DROP_MAX_PCT:-20}"
 PARTIAL_CHECKPOINT_EVAL="${PARTIAL_CHECKPOINT_EVAL:-true}"
 CHECKPOINT_FILES_TO_KEEP="${CHECKPOINT_FILES_TO_KEEP:-1}"
 
+resolve_base_config() {
+  local candidate=""
+
+  if [ -n "$CONFIG_OVERRIDE" ]; then
+    candidate="$CONFIG_OVERRIDE"
+    if [ ! -f "$candidate" ]; then
+      candidate="$TRAIN_DIR/$CONFIG_OVERRIDE"
+    fi
+  else
+    candidate="$TRAIN_DIR/lora_config_mini.yaml"
+  fi
+
+  printf '%s\n' "$candidate"
+}
+
+config_iters_from_file() {
+  local config_file="$1"
+  awk '/^iters:/ {print $2; exit}' "$config_file" 2>/dev/null
+}
+
+config_warmup_from_file() {
+  local config_file="$1"
+  awk '/^[[:space:]]*warmup:/ {print $2; exit}' "$config_file" 2>/dev/null
+}
+
+warmup_steps_for_sweep() {
+  local config_file="$1"
+  local sweep_iters="$2"
+  local base_iters base_warmup scaled
+
+  base_iters=$(config_iters_from_file "$config_file")
+  base_warmup=$(config_warmup_from_file "$config_file")
+
+  if ! [[ "$sweep_iters" =~ ^[0-9]+$ ]] || [ "$sweep_iters" -le 1 ]; then
+    printf '%s\n' "0"
+    return
+  fi
+
+  if ! [[ "$base_iters" =~ ^[0-9]+$ ]] || [ "$base_iters" -le 0 ] || \
+     ! [[ "$base_warmup" =~ ^[0-9]+$ ]] || [ "$base_warmup" -lt 0 ]; then
+    scaled=$((sweep_iters / 20))
+    if [ "$scaled" -lt 1 ]; then
+      scaled=1
+    fi
+    printf '%s\n' "$scaled"
+    return
+  fi
+
+  scaled=$(( (base_warmup * sweep_iters + base_iters - 1) / base_iters ))
+  if [ "$base_warmup" -gt 0 ] && [ "$scaled" -lt 1 ]; then
+    scaled=1
+  fi
+  if [ "$scaled" -ge "$sweep_iters" ]; then
+    scaled=$((sweep_iters - 1))
+  fi
+
+  printf '%s\n' "$scaled"
+}
+
 parse_hard_stop_time() {
   local raw_time="${TRAIN_HARD_STOP_TIME:-}"
   local parsed_hour parsed_minute
@@ -501,7 +560,8 @@ prune_checkpoint_files() {
 }
 
 build_sweep_iters() {
-  local raw_iters normalized iter
+  local base_config="$1"
+  local raw_iters normalized iter configured_iters
   local sweep_count=0
 
   raw_iters="$TRAIN_SWEEP_ITERS"
@@ -517,11 +577,14 @@ build_sweep_iters() {
         fi
         sweep_count=$((sweep_count + 1))
       fi
-    done
+  done
   fi
 
   if [ "$sweep_count" -eq 0 ]; then
-    if [ "$CHALLENGER_MODE" = true ]; then
+    configured_iters=$(config_iters_from_file "$base_config")
+    if [[ "$configured_iters" =~ ^[0-9]+$ ]] && [ "$configured_iters" -gt 0 ]; then
+      SWEEP_ITERS=("$configured_iters")
+    elif [ "$CHALLENGER_MODE" = true ]; then
       SWEEP_ITERS=(1000)
     else
       SWEEP_ITERS=(1000 2000)
@@ -1114,17 +1177,26 @@ echo "" >> "$REPORT"
 echo "## Training Sweeps" >> "$REPORT"
 echo "" >> "$REPORT"
 
+BASE_CONFIG="$(resolve_base_config)"
+
 # Sweep defaults predate the workflow-expanded corpus. The Mini now relies on
 # earlier checkpoints plus interrupted-checkpoint eval so nightly runs still
 # produce usable signal even when the hard stop hits before a full sweep.
 SWEEP_ITERS=()
-build_sweep_iters
 RESULTS_FILE=$(mktemp)
 SUCCESSFUL_SWEEPS=0
 LAST_SWEEP_LOG=""
 LAST_FAILURE_SUMMARY=""
 SKIPPED_EXISTING_SWEEPS=0
 REQUESTED_SWEEPS=0
+
+if [ ! -f "$BASE_CONFIG" ]; then
+  echo "**FAILED** — config not found: $BASE_CONFIG" >> "$REPORT"
+  echo "" >> "$REPORT"
+  LAST_FAILURE_SUMMARY="config not found: $BASE_CONFIG"
+else
+  build_sweep_iters "$BASE_CONFIG"
+fi
 
 for ITERS in "${SWEEP_ITERS[@]}"; do
   REQUESTED_SWEEPS=$((REQUESTED_SWEEPS + 1))
@@ -1166,34 +1238,29 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
   TRAIN_START=$(date +%s)
 
   # Generate per-sweep config with decay_steps matching this sweep's iteration count.
-  # The base YAML has a fixed decay_steps which causes LR=0 for the tail of longer sweeps.
+  # The base YAML also carries warmup tuned for its default length, so rescale it
+  # whenever we shorten the sweep for the overnight Mini budget.
   SWEEP_CONFIG="$ADAPTER_DIR/lora_config_sweep.yaml"
+  WARMUP_STEPS=$(warmup_steps_for_sweep "$BASE_CONFIG" "$ITERS")
 
-  # Select base config: challenger config > default mini config
-  if [ -n "$CONFIG_OVERRIDE" ]; then
-    BASE_CONFIG="$CONFIG_OVERRIDE"
-    if [ ! -f "$BASE_CONFIG" ]; then
-      BASE_CONFIG="$TRAIN_DIR/$CONFIG_OVERRIDE"
-    fi
-  else
-    BASE_CONFIG="$TRAIN_DIR/lora_config_mini.yaml"
-  fi
-
-  if [ ! -f "$BASE_CONFIG" ]; then
-    echo "**FAILED** — config not found: $BASE_CONFIG" >> "$REPORT"
-    echo "" >> "$REPORT"
-    continue
-  fi
-
-  sed "s/arguments: \[5.0e-5, [0-9]*\]/arguments: [5.0e-5, $ITERS]/" \
+  sed -E \
+    -e "s/^(iters: )[0-9]+/\\1$ITERS/" \
+    -e "s/^([[:space:]]*arguments: \\[[^,]+, )[0-9]+(\\])$/\\1$ITERS\\2/" \
+    -e "s/^([[:space:]]*warmup: )[0-9]+/\\1$WARMUP_STEPS/" \
     "$BASE_CONFIG" > "$SWEEP_CONFIG"
 
-  # Verify the config was generated and has the correct decay_steps
-  if [ ! -s "$SWEEP_CONFIG" ] || ! grep -q "arguments: \[5.0e-5, $ITERS\]" "$SWEEP_CONFIG"; then
+  # Verify the config was generated and has the correct schedule for this sweep.
+  if [ ! -s "$SWEEP_CONFIG" ] || \
+     ! grep -q "^iters: $ITERS\$" "$SWEEP_CONFIG" || \
+     ! grep -Eq "^[[:space:]]*arguments: \\[[^,]+, $ITERS\\]\$" "$SWEEP_CONFIG" || \
+     ! grep -Eq "^[[:space:]]*warmup: $WARMUP_STEPS\$" "$SWEEP_CONFIG"; then
     echo "**FAILED** — could not generate sweep config (sed failed)" >> "$REPORT"
     echo "" >> "$REPORT"
     continue
   fi
+
+  echo "- Sweep schedule: warmup=${WARMUP_STEPS}, decay_steps=${ITERS}" >> "$REPORT"
+  echo "" >> "$REPORT"
 
   STEPS_PER_EVAL=$(grep '^steps_per_eval:' "$SWEEP_CONFIG" | awk '{print $2}' | tail -1)
   if ! [[ "$STEPS_PER_EVAL" =~ ^[0-9]+$ ]]; then

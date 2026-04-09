@@ -62,6 +62,12 @@ def parse_args() -> argparse.Namespace:
         help="Minimum percentage required for the primary suite gate",
     )
     parser.add_argument("--max-tokens", type=int, default=384, help="Max tokens per response")
+    parser.add_argument(
+        "--max-tokens-cap",
+        type=int,
+        default=0,
+        help="Optional hard ceiling applied after case-specific max_tokens overrides",
+    )
     return parser.parse_args()
 
 
@@ -325,11 +331,14 @@ def main() -> int:
             tokenize=False,
             add_generation_prompt=True,
         )
+        max_tokens = int(case.get("max_tokens", args.max_tokens))
+        if args.max_tokens_cap > 0:
+            max_tokens = min(max_tokens, args.max_tokens_cap)
         response = generate(
             model,
             tokenizer,
             prompt=prompt,
-            max_tokens=int(case.get("max_tokens", args.max_tokens)),
+            max_tokens=max_tokens,
             verbose=False,
         )
         clear_metal_cache()

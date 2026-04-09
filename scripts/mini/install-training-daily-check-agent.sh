@@ -11,7 +11,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/training-daily-check.py"
 OUTPUT_DIR="$HOME/SaneApps/infra/SaneProcess/outputs"
 PYTHON_BIN="${PYTHON_BIN:-$(command -v python3)}"
-TRAIN_DAILY_CHECK_HOST="${TRAIN_DAILY_CHECK_HOST:-mini}"
+TRAIN_DAILY_CHECK_HOST="${TRAIN_DAILY_CHECK_HOST:-${MINI_HOST:-mini}}"
+TRAIN_DAILY_CHECK_SSH_OPTS="${TRAIN_DAILY_CHECK_SSH_OPTS:-${MINI_SSH_OPTS:-}}"
 TRAIN_DAILY_CHECK_HOUR="${TRAIN_DAILY_CHECK_HOUR:-9}"
 TRAIN_DAILY_CHECK_MINUTE="${TRAIN_DAILY_CHECK_MINUTE:-15}"
 
@@ -53,6 +54,8 @@ cat > "$PLIST" <<EOF
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>
     <string>${HOME}</string>
+    <key>TRAIN_DAILY_CHECK_SSH_OPTS</key>
+    <string>${TRAIN_DAILY_CHECK_SSH_OPTS}</string>
   </dict>
 </dict>
 </plist>

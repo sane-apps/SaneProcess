@@ -28,6 +28,11 @@ Scripts for the Mac mini training/build pipeline and the local monitoring that w
 bash scripts/mini/deploy.sh
   # Refreshes agents even if automation-root prep warns, but exits nonzero if prep failed
 
+# If the local machine does not have a `mini` ssh alias or default key, override both explicitly
+MINI_HOST=sj@Stephans-Mac-mini.local \
+MINI_SSH_OPTS='-i ~/.ssh/id_ed25519_codex_loopback' \
+  bash scripts/mini/deploy.sh
+
 # Sync the active Codex automation + skill profile to Mini
 bash scripts/automation/sync-codex-mini.sh mini --no-restart
 
@@ -90,22 +95,26 @@ Use this for App Store archive/export/upload recovery on the Mini. Do not leave 
 ```
 LaunchAgent (1 AM daily)
   → mini-train-challengers.sh SaneAI
+    → mini-prepare-automation-root.sh (fail fast if clean automation root cannot be refreshed)
     → mini-train.sh SaneAI --challenger
       → runs against clean automation root (`~/SaneApps-automation`)
-      → alternating nightly bakeoff (Llama 3.2 3B ↔ SmolLM3)
+      → nightly SmolLM3-only challenger lane on the 8 GB Mini
       → skips Sundays so weekly SaneAI owns that window
       → no artificial runtime cap; hard stop at 8:30 AM
       → stall guard only fires when both logs and process CPU stop moving
+      → evaluates the latest saved checkpoint when the hard stop interrupts a sweep
+      → default sweep target comes from the challenger YAML (currently `50` iters for SmolLM3)
       → challenger report + comparison report
 
 LaunchAgent (1 AM Sunday)
   → mini-train-all.sh
+    → mini-prepare-automation-root.sh (fail fast if clean automation root cannot be refreshed)
     → merge_training_data.py (if exists, forced to read from clean automation root)
     → mini-train.sh SaneAI
       → runs against clean automation root (`~/SaneApps-automation`)
       → git fetch + honest repo-state report
-      → sed (per-sweep LR config)
-      → mlx_lm lora --train (1000 + 2000 iters)
+      → sed (per-sweep LR + warmup config)
+      → mlx_lm lora --train (default weekly target now comes from YAML, currently `100` iters)
       → Python validation with workflow-first scoring (commentary x4, broader workflow packs x2, guardrails x2, core x1)
       → primary gate requires commentary workflow suite to clear its threshold
       → archives a timestamped report + appends metrics history TSV
@@ -137,18 +146,23 @@ LaunchAgent (5:40 AM)
 - **8GB RAM** — training uses ~3.7GB peak. One sweep at a time.
 - **Lock files** — both scripts use `mkdir`-based locks with 8-hour stale detection.
 - **Logs** — LaunchAgent stderr appends (never truncates). `mini-train-all.sh` rotates at 1MB.
-- **Isolation enabled** — deploy refreshes `~/SaneApps-automation`, and launch agents point `SANE_ROOT` there so scheduled jobs do not touch the human-used `~/SaneApps` tree.
+- **Isolation enabled** — deploy refreshes `~/SaneApps-automation`, launch agents point `SANE_ROOT` there, and each scheduled training lane now re-runs `mini-prepare-automation-root.sh` before training so stale dirty clones fail fast instead of silently training on drifted state.
 - **Managed overlays only** — automation-root prep is allowed to reset hydrated training overlays (`train.jsonl`, eval packs, challenger configs, generated fixtures) before syncing. Any other dirt still fails the prep step.
 - **Training data hydration** — `mini-prepare-automation-root.sh` copies local-only `train.jsonl` / `valid.jsonl` datasets for SaneSync, SaneClip, SaneAI, and SaneVideo into the clean clones before training.
 - **Dataset regression guard** — `mini-train.sh` now fails before spending GPU time if the current train/valid counts shrink too far versus the latest successful run for that lane.
-- **Current bakeoff mode** — the daily challenger agent alternates `llama32-3b` and `smollm3-3b` on `SaneAI`, runs until `08:30`, and skips Sundays so the weekly `SaneAI` run gets the full window.
+- **Current bakeoff mode** — the daily challenger agent is pinned to `smollm3-3b` on `SaneAI` because `llama32-3b` reproducibly OOMs on the 8 GB Mini, runs until `08:30`, and skips Sundays so the weekly `SaneAI` run gets the full window.
 - **Progress tracking** — every training run now archives a timestamped report under `outputs/history/<App>/` and appends a TSV metrics row so week-over-week comparisons survive report overwrites.
+- **Interrupted run recovery** — `mini-train.sh` now evaluates the latest saved checkpoint when the hard stop interrupts a sweep, so overnight runs still produce scored signal instead of defaulting to `0%`.
+- **Realistic sweep sizing** — `mini-train.sh` now takes its default sweep length from the config file instead of hardcoded `1000` / `2000` defaults, and rescales warmup alongside decay steps so shortened overnight sweeps do not spend most of their life in warmup.
 - **Workflow focus** — nightly `SaneAI` training keeps the unified SaneSync/SaneClip corpus but now weights SaneVideo workflow data so the shared model learns the broader commentary/repurposing surface.
 - **Workflow-first scoring** — training and nightly reports now treat `commentary_workflow` as the primary gate and weight it above legacy action JSON accuracy, while still scoring the broader SaneVideo workflow packs and schema guardrails.
 - **8 GB stable baseline** — `SaneAI` production + challenger configs should use `val_batches: 1` on the Mini. `val_batches: 10` is no longer stable with the workflow-expanded corpus and reproducibly trips Metal OOM.
+- **8 GB sequence ceiling** — the audited merged corpus peaks at `1665` tokens on the SmolLM3 tokenizer and `1580` on the cached Llama tokenizer, so the Mini configs now use `max_seq_length: 1664` instead of carrying wasted `1792` / `2048` headroom.
+- **Checkpoint cadence** — the Mini configs save every `25` steps, with current default sweep targets of `50` iterations for the nightly SmolLM challenger lane and `100` iterations for the weekly Llama production lane.
 - **8 GB eval baseline** — keep `EVAL_MAX_TOKENS=128` on the Mini and clear the MLX Metal cache between eval cases. Longer generations are not stable enough on this box.
 - **SaneVideo fixtures** — `mini-prepare-automation-root.sh` hydrates ignored `Tests/Assets` media in the clean clone when `ffmpeg` is available on the Mini.
 - **Bad training is a hard failure** — `mini-train.sh` now fails the sweep if the train log shows `nan` loss or `Trained Tokens 0`, and emits a training alert instead of treating that as success.
+- **Cleanup hygiene** — `mini-memory-guard.sh` now prunes training artifacts under both `~/SaneApps` and `~/SaneApps-automation`, rotates challenger/weekly/guard logs, and trims the training alert history log.
 
 ## Standard Process
 
@@ -160,7 +174,7 @@ Only use this path on the Mini:
 
 ### Smoke Test
 
-Use this to prove the runtime, wrapper, reporting, and alert plumbing after any training change:
+Use this to prove the runtime, wrapper, automation-root prep, reporting, and alert plumbing after any training change:
 
 ```bash
 ssh mini '
@@ -168,20 +182,20 @@ ssh mini '
   TRAIN_HARD_STOP_TIME=23:59 \
   TRAIN_POLL_INTERVAL_SEC=5 \
   TRAIN_STALL_TIMEOUT_MIN=15 \
+  CHALLENGER_SELECTION_MODE=alternate \
+  CHALLENGER_ROTATION_ORDER=smollm3-3b \
   EVAL_SUITES=commentary_workflow,core \
   EVAL_MAX_CASES=6 \
   EVAL_MAX_TOKENS=128 \
   TRAIN_ALERT_NOTIFY=false \
   SANE_ROOT=$HOME/SaneApps-automation \
   SANE_OUTPUT_DIR=$HOME/SaneApps/outputs/automation-smoke/manual \
-  /bin/bash $HOME/SaneApps/infra/SaneProcess/scripts/mini/mini-train.sh \
-    SaneAI --model mlx-community/SmolLM3-3B-4bit \
-    --config $HOME/SaneApps-automation/apps/SaneAI/training_data/challenger_configs/smollm3-3b.yaml \
-    --challenger
+  /bin/bash $HOME/SaneApps/infra/SaneProcess/scripts/mini/mini-train-challengers.sh SaneAI
 '
 ```
 
 Smoke must prove all of this:
+- the automation root refresh runs cleanly before training
 - a new sweep directory is created
 - the report is archived under `outputs/history/`
 - no `nan` loss appears
@@ -195,17 +209,16 @@ Use this after smoke passes:
 
 ```bash
 ssh mini '
-  TRAIN_SWEEP_ITERS=1000 \
+  TRAIN_SWEEP_ITERS=25 \
   MAX_TRAIN_RUNTIME_MIN=30 \
   TRAIN_HARD_STOP_TIME=23:59 \
   TRAIN_POLL_INTERVAL_SEC=15 \
+  CHALLENGER_SELECTION_MODE=alternate \
+  CHALLENGER_ROTATION_ORDER=smollm3-3b \
   EVAL_MAX_TOKENS=128 \
   SANE_ROOT=$HOME/SaneApps-automation \
   SANE_OUTPUT_DIR=$HOME/SaneApps/outputs/automation-e2e \
-  /bin/bash $HOME/SaneApps/infra/SaneProcess/scripts/mini/mini-train.sh \
-    SaneAI --model mlx-community/SmolLM3-3B-4bit \
-    --config $HOME/SaneApps-automation/apps/SaneAI/training_data/challenger_configs/smollm3-3b.yaml \
-    --challenger
+  /bin/bash $HOME/SaneApps/infra/SaneProcess/scripts/mini/mini-train-challengers.sh SaneAI
 '
 ```
 
