@@ -289,10 +289,11 @@ git-sync-safe.sh --allow-dirty
 **What it does:**
 1. Scans SaneApps repos (`apps/*`, `SaneAI`, `infra/SaneProcess`).
 2. Skips known transient repo clones such as release/preview/worktree scratch dirs.
-3. Fetches from origin.
-4. Fast-forward pulls only when clean.
-5. Auto-pushes only clean `main/master` ahead commits.
-6. Flags dirty trees as issues by default, or auto-stashes them first in `--reconcile-dirty` mode.
+3. Prunes untracked Finder and patch residue (`.DS_Store`, `*.orig`, `*.rej`) before status checks.
+4. Fetches from origin.
+5. Fast-forward pulls only when clean.
+6. Auto-pushes only clean `main/master` ahead commits.
+7. Flags dirty trees as issues by default, or auto-stashes them first in `--reconcile-dirty` mode.
 7. Optional peer mode (`--peer <host>`) checks branch/head/dirty parity over SSH.
 
 ### install-repo-reconcile-agent.sh

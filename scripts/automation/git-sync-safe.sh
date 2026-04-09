@@ -47,6 +47,35 @@ refresh_repo_state() {
   ahead=$(git -C "$repo" rev-list --count "origin/$branch..HEAD" 2>/dev/null || echo "0")
 }
 
+prune_root_noise() {
+  local path
+  for path in "$ROOT/apps/.DS_Store" "$ROOT/infra/.DS_Store"; do
+    [[ -f "$path" ]] || continue
+    rm -f "$path"
+    log "Pruned root noise: ${path#$ROOT/}"
+  done
+}
+
+prune_repo_noise() {
+  local repo="$1"
+  local path rel count
+  count=0
+
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    rel="${path#$repo/}"
+    if git -C "$repo" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
+      continue
+    fi
+    rm -f "$path"
+    count=$((count + 1))
+  done < <(find "$repo" -type f \( -name '.DS_Store' -o -name '*.orig' -o -name '*.rej' \) -print)
+
+  if [[ "$count" -gt 0 ]]; then
+    log "  - Pruned $count untracked noise file(s)"
+  fi
+}
+
 is_syncable_repo_name() {
   local name="$1"
   case "$name" in
@@ -124,6 +153,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 mkdir -p "$OUT_DIR"
+prune_root_noise
 
 {
   echo
@@ -165,6 +195,8 @@ for repo in "${repos[@]}"; do
     log "  - Skipped: no origin remote"
     continue
   fi
+
+  prune_repo_noise "$repo"
 
   branch=$(git -C "$repo" symbolic-ref --short HEAD 2>/dev/null || echo "DETACHED")
   if [[ "$branch" == "DETACHED" ]]; then
