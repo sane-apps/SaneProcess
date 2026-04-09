@@ -110,6 +110,7 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 | `doctor` | Environment health check |
 | `tool_discovery --query "..."` | Generate a proof receipt before using a workaround or adding a tool |
 | `export` | Export code/docs (PDF/MD) |
+| `listing_actions` | Export the current listing/setup action tracker from inbox history |
 | `debug` | Debugging helpers (logs, crashes, diagnose) |
 | `env` | Environment and setup helpers |
 | `sales` | LemonSqueezy revenue reporting helpers |
@@ -137,6 +138,28 @@ SANE_REFUND_APPROVED=1 ruby scripts/SaneMaster.rb sales \
 
 Customer-reply rule for duplicate-license refunds: say explicitly which order was refunded, say the refunded key is disabled and will not work, and say which remaining key is the live working key.
 
+Listing/directory follow-up rule: do not maintain separate manual spreadsheets by hand. Regenerate the tracker from inbox history with the canonical command below. New recognized listing/setup emails are folded into the workbook the next time the command runs.
+
+```bash
+ruby scripts/SaneMaster.rb listing_actions
+```
+
+Outputs:
+- dated workbook: `outputs/listing_actions/sanebar_listing_actions_<date>.xlsx`
+- latest stable path: `outputs/listing_actions/latest.xlsx`
+
+Operational SOP:
+- `scripts/automation/morning-report.sh` now regenerates the workbook automatically, so new listing/setup emails show up in the nightly report without a manual spreadsheet pass.
+- `scripts/automation/sane-status-crossref.sh` now shows the live listing-action counts and current `Needs action` rows.
+- Known recurring vendors should get explicit rules in `scripts/automation/listing_actions_rules.py`.
+- New unknown listing/setup senders are still surfaced via the generic heuristic path, with a note saying they should be promoted to a dedicated rule if they recur.
+
+Tracker columns are designed for owner action, not inbox triage:
+- `action_status`: `Needs action`, `Optional`, or `Monitor`
+- `primary_link` / `secondary_link`: the exact vendor links from the emails
+- `instructions`: the concrete setup step to do next
+- `source_email_ids`: inbox evidence backing that row
+
 ### Canonical Tool Paths
 
 Do not hunt around for ad hoc tools.
@@ -154,6 +177,7 @@ Use the documented standard path first, then use `tool_discovery` if you still t
 | Direct release readiness | `ruby scripts/SaneMaster.rb release_preflight` | Manual release spot checks |
 | Customer support triage | `/Users/sj/SaneApps/infra/scripts/check-inbox.sh review <id>` | Manual API calls, ad hoc email drafts, or skipping review |
 | Sales / downloads / funnel | `ruby scripts/SaneMaster.rb sales`, `downloads`, `events` | Manual vendor curls or spreadsheet guesses |
+| Listing/setup tracker | `ruby scripts/SaneMaster.rb listing_actions` | Manual inbox sweeps and hand-built spreadsheets |
 | MCP and tool health | `ruby scripts/SaneMaster.rb mcp_watchdog doctor` and `/Users/sj/.codex/bin/check-mcps` | Killing random daemons first and hoping |
 
 ### Verification helpers

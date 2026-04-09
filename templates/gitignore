@@ -113,6 +113,8 @@ releases/
 # Node/Wrangler
 node_modules/
 .wrangler/
+__pycache__/
+*.pyc
 
 # Serena
 .serena/

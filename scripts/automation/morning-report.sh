@@ -140,6 +140,7 @@ EMAIL_API_KEY="$(load_secret "sane-email-automation" "api_key" "SANE_EMAIL_API_K
 # Tools check
 NV_CMD="$HOME/.local/bin/nv"
 GH_CMD=$(command -v gh 2>/dev/null || echo "")
+LISTING_ACTIONS_SCRIPT="$SCRIPT_DIR/listing-actions.py"
 
 # Cloudflare account ID (cached to file — survives subshells)
 CF_ACCOUNT_FILE="$CACHE_DIR/.cf_account_id"
@@ -578,7 +579,81 @@ else:
 }
 
 # =============================================================================
-# Section 6: API & Infrastructure Health
+# Section 6: Listing / Directory Actions
+# =============================================================================
+section_listing_actions() {
+  echo "## Listing Actions" >> "$REPORT_FILE"
+  echo "" >> "$REPORT_FILE"
+
+  if [[ -z "$EMAIL_API_KEY" ]]; then
+    echo "**Status:** Email API key not found" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    echo "---" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    return 0
+  fi
+
+  if [[ ! -f "$LISTING_ACTIONS_SCRIPT" ]]; then
+    echo "**Status:** listing-actions.py not found at $LISTING_ACTIONS_SCRIPT" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    echo "---" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    return 0
+  fi
+
+  local listing_json="$CACHE_DIR/listing_actions.json"
+  local listing_xlsx="$OUTPUT_DIR/listing_actions/latest.xlsx"
+
+  if ! SANE_EMAIL_API_KEY="$EMAIL_API_KEY" SANE_KEYCHAIN_FALLBACK=0 \
+    python3 "$LISTING_ACTIONS_SCRIPT" --json-out "$listing_json" >/dev/null 2>&1; then
+    echo "**Status:** Listing action export failed" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    echo "---" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    return 0
+  fi
+
+  python3 - "$listing_json" "$listing_xlsx" >> "$REPORT_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+workbook_path = sys.argv[2]
+current = payload.get("current_actions", [])
+needs = [row for row in current if row.get("action_status") == "Needs action"]
+optional = [row for row in current if row.get("action_status") == "Optional"]
+monitor = [row for row in current if row.get("action_status") == "Monitor"]
+
+print(f"**Workbook:** `{workbook_path}`")
+print(f"**Current actions:** {len(current)}")
+print(f"- Needs action: {len(needs)}")
+print(f"- Optional: {len(optional)}")
+print(f"- Monitor: {len(monitor)}")
+print("")
+
+if needs:
+    print("| Site | Workflow | Email | Next step |")
+    print("|------|----------|-------|-----------|")
+    for row in needs[:10]:
+        action = (row.get("action") or "").replace("|", "/").strip()
+        if len(action) > 90:
+            action = action[:87] + "..."
+        print(
+            f"| {row.get('site', '')} | {row.get('workflow', '')} | "
+            f"#{row.get('latest_email_id', '')} | {action} |"
+        )
+else:
+    print("No live listing/setup actions right now.")
+PY
+
+  echo "" >> "$REPORT_FILE"
+  echo "---" >> "$REPORT_FILE"
+  echo "" >> "$REPORT_FILE"
+}
+
+# =============================================================================
+# Section 7: API & Infrastructure Health
 # =============================================================================
 section_health() {
   echo "## Health" >> "$REPORT_FILE"
@@ -750,7 +825,7 @@ fetch_homebrew_cask_body() {
 }
 
 # =============================================================================
-# Section 7: Version Drift (cross-channel consistency)
+# Section 8: Version Drift (cross-channel consistency)
 # =============================================================================
 section_version_drift() {
   echo "## Version Consistency" >> "$REPORT_FILE"
@@ -838,7 +913,7 @@ EOF
 }
 
 # =============================================================================
-# Section 8: Git Status
+# Section 9: Git Status
 # =============================================================================
 section_git_status() {
   echo "## Git Status" >> "$REPORT_FILE"
@@ -924,6 +999,7 @@ safe_section "Downloads" section_downloads
 safe_section "Website Traffic" section_website_traffic
 safe_section "GitHub" section_github_traction
 safe_section "Customer Intel" section_customer_intel
+safe_section "Listing Actions" section_listing_actions
 safe_section "Health" section_health
 safe_section "Version Drift" section_version_drift
 safe_section "Git Status" section_git_status

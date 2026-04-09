@@ -47,6 +47,8 @@ TESTING_RESULTS.md
 # Runtime artifacts
 .wrangler/
 node_modules/
+__pycache__/
+*.pyc
 outputs/
 test_output*.txt
 

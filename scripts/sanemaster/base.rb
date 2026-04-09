@@ -121,7 +121,7 @@ module SaneMasterModules
     def project_xcodeproj
       @project_xcodeproj ||= begin
         from_config = config_value(%w[build xcodeproj], 'SANEMASTER_XCODEPROJ', nil) || saneprocess_value('project')
-        from_config || Dir.glob('*.xcodeproj').first || "#{project_name}.xcodeproj"
+        from_config || Dir.glob('*.xcodeproj').first
       end
     end
 

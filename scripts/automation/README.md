@@ -77,6 +77,28 @@ ruby tool_discovery_receipt.rb --query "workaround for docs audit" --json
 5. Runs `validation_report.rb --json`.
 6. Writes JSON and markdown receipts to `outputs/tool-discovery/`.
 
+### listing-actions.py
+
+Build the current SaneBar listing/setup tracker from inbox history and write it to Excel.
+
+**Usage:**
+```bash
+python3 listing-actions.py
+python3 listing-actions.py --json
+python3 listing-actions.py --xlsx /tmp/sanebar_listings.xlsx
+```
+
+**What it does:**
+1. Fetches inbox history from the email API with the cached/keychain-backed API key.
+2. Classifies known listing/setup vendors like SaaSworthy, SourceForge, Gartner Digital Markets, StartupSubmit, and related directory flows.
+3. Falls back to a generic listing/setup heuristic for new unknown senders so new action emails still surface before a dedicated rule exists.
+4. Writes a `Current Actions` sheet with `Needs action / Optional / Monitor` rows.
+5. Writes an `Email History` sheet so the inbox evidence stays attached to each action.
+6. Saves a dated workbook plus `outputs/listing_actions/latest.xlsx`.
+7. Feeds the same workbook/JSON data into the nightly `morning-report.sh` summary and the `sane-status-crossref.sh` status runner.
+
+**Canonical path:** prefer `ruby ../SaneMaster.rb listing_actions` from the repo root.
+
 ### nv-audit.sh
 
 Legacy bulk review helper. Do not use this for `/audit` or release-clearance docs audits.

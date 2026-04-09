@@ -643,6 +643,12 @@ module SaneMasterModules
     end
 
     def build_test_commands(include_ui, signed_tests = false)
+      script_commands = script_only_verify_commands
+      if script_commands
+        puts '  ℹ️  No Xcode project detected. Running the scripted SaneProcess verify suite.'
+        return script_commands
+      end
+
       if include_ui && mixed_platform_ui_tests?
         return [
           { label: "#{project_scheme} unit tests", cmd: build_test_command(false, signed_tests) },
@@ -652,6 +658,27 @@ module SaneMasterModules
 
       [{ label: include_ui ? "#{project_scheme} unit + UI tests" : "#{project_scheme} unit tests",
          cmd: build_test_command(include_ui, signed_tests) }]
+    end
+
+    def script_only_verify_commands
+      return nil unless project_name == 'SaneProcess'
+      return nil if workspace_usable_for_scheme?(project_scheme)
+      return nil if project_xcodeproj && File.exist?(project_xcodeproj.to_s)
+      return nil if package_path_for_test_target(project_test_target)
+
+      [
+        { label: 'SaneProcess hook enforcement tests', cmd: ['ruby', 'scripts/hooks/test/tier_tests.rb'] },
+        { label: 'SaneProcess app release guard tests', cmd: ['ruby', 'scripts/app_test_mode_test.rb'] },
+        { label: 'SaneProcess App Store guard tests', cmd: ['ruby', 'scripts/appstore_submit_guardrail_test.rb'] },
+        { label: 'SaneProcess dependency watchdog tests', cmd: ['ruby', 'scripts/sanemaster/dependencies_test.rb'] },
+        { label: 'SaneProcess release guardrail tests', cmd: ['ruby', 'scripts/sanemaster/release_guardrail_test.rb'] },
+        { label: 'SaneProcess release route tests', cmd: ['ruby', 'scripts/sanemaster/release_route_test.rb'] },
+        { label: 'SaneProcess SaneUI guard tests', cmd: ['ruby', 'scripts/sanemaster/saneui_guard_test.rb'] },
+        { label: 'SaneProcess test mode tests', cmd: ['ruby', 'scripts/sanemaster/test_mode_test.rb'] },
+        { label: 'SaneProcess verify guard tests', cmd: ['ruby', 'scripts/sanemaster/verify_guard_test.rb'] },
+        { label: 'SaneProcess LemonSqueezy sales tests', cmd: ['python3', '-B', 'scripts/automation/ls_sales_test.py'] },
+        { label: 'SaneProcess listing action tests', cmd: ['python3', '-B', 'scripts/automation/listing_actions_test.py'] }
+      ]
     end
 
     def build_test_command(include_ui, signed_tests = false)
@@ -937,6 +964,11 @@ module SaneMasterModules
 
     def check_xcodegen_sync
       puts "\n📁 XcodeGen Sync:"
+      unless project_xcodeproj && !project_xcodeproj.to_s.empty?
+        puts '  ℹ️  No Xcode project for this repo. Skipping XcodeGen sync check.'
+        return
+      end
+
       project_path = File.join(project_xcodeproj, 'project.pbxproj')
       unless File.exist?(project_path)
         puts '  ❌ Project file missing. Run: xcodegen generate'

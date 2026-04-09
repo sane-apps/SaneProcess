@@ -52,6 +52,7 @@ require_relative 'sanemaster/ci_helpers'
 require_relative 'sanemaster/sales'
 require_relative 'sanemaster/downloads'
 require_relative 'sanemaster/leads'
+require_relative 'sanemaster/listing_actions'
 
 class SaneMaster
   include SaneMasterModules::Base
@@ -75,6 +76,7 @@ class SaneMaster
   include SaneMasterModules::Sales
   include SaneMasterModules::Downloads
   include SaneMasterModules::Leads
+  include SaneMasterModules::ListingActions
 
   # ═══════════════════════════════════════════════════════════════════════════
   # COMMAND REFERENCE - Organized by category for easy discovery
@@ -193,6 +195,7 @@ class SaneMaster
       commands: {
         'export' => { args: '[--highlight]', desc: 'Export code to PDF (~/Downloads)' },
         'md_export' => { args: '<file.md>', desc: 'Convert markdown to PDF' },
+        'listing_actions' => { args: '[--json|--json-out PATH|--xlsx PATH|--max-pages N]', desc: 'Export listing/setup action tracker from inbox history (XLSX)' },
         'deps' => { args: '[--dot]', desc: 'Show dependency graph' },
         'quality' => { args: '', desc: 'Generate Ruby quality report' }
       }
@@ -1323,6 +1326,8 @@ PY
       export_pdf(args)
     when 'md_export', 'mdpdf'
       export_markdown(args)
+    when 'listing_actions', 'listing-actions'
+      listing_actions(args)
 
     else
       puts "❌ Unknown command: #{command}"
@@ -1637,6 +1642,22 @@ PY
         'export                    # Basic export',
         'export --highlight        # With syntax highlighting',
         'export --include-tests    # Include test files'
+      ]
+    },
+    'listing_actions' => {
+      usage: 'listing_actions [--json|--json-out PATH|--xlsx PATH|--max-pages N]',
+      description: 'Export SaneBar listing/setup action items from inbox history to XLSX or JSON.',
+      flags: {
+        '--json' => 'Print the tracker payload as JSON instead of writing XLSX',
+        '--json-out PATH' => 'Write the JSON payload to a file while still generating XLSX output',
+        '--xlsx PATH' => 'Custom XLSX output path (default: outputs/listing_actions/sanebar_listing_actions_<date>.xlsx)',
+        '--max-pages N' => 'Max inbox pages to fetch at 200 emails/page'
+      },
+      examples: [
+        'listing_actions',
+        'listing_actions --json',
+        'listing_actions --json-out /tmp/sanebar_listings.json',
+        'listing_actions --xlsx /tmp/sanebar_listings.xlsx'
       ]
     },
     'gen_test' => {

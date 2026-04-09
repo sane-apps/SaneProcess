@@ -61,7 +61,7 @@ class ReleaseRoutingHarness < SaneMaster
   end
 
   def fast_forward_local_repo_from_origin!(repo_dir, label:)
-    @ff_calls << { repo_dir:, label: }
+    @ff_calls << { repo_dir: repo_dir, label: label }
   end
 
   def repo_has_uncommitted_changes_at?(repo_dir)

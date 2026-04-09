@@ -84,6 +84,36 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
     end
   end
 
+  test_category('Script-only verify fallback') do
+    test('does not invent a fake xcodeproj path when none exists') do
+      Dir.mktmpdir('verify-base-no-xcodeproj-') do |dir|
+        Dir.chdir(dir) do
+          fresh_subject = VerifyHarness.new
+          assert_eq(fresh_subject.send(:project_xcodeproj), nil)
+        end
+      end
+      true
+    end
+
+    test('uses the scripted SaneProcess verify suite when no Xcode project exists') do
+      subject.define_singleton_method(:project_name) { 'SaneProcess' }
+      subject.define_singleton_method(:project_scheme) { 'SaneProcess' }
+      subject.define_singleton_method(:project_xcodeproj) { nil }
+      subject.define_singleton_method(:project_workspace) { nil }
+      subject.define_singleton_method(:workspace_usable_for_scheme?) { |_scheme = nil| false }
+      subject.define_singleton_method(:project_test_target) { 'SaneProcessTests' }
+      subject.define_singleton_method(:package_path_for_test_target) { |_target| nil }
+
+      commands = subject.send(:script_only_verify_commands)
+
+      assert(commands, 'expected scripted verify commands')
+      assert_eq(commands.first[:label], 'SaneProcess hook enforcement tests')
+      assert_eq(commands.first[:cmd].first, 'ruby')
+      assert_includes(commands.map { |entry| entry[:cmd].join(' ') }, 'python3 -B scripts/automation/listing_actions_test.py')
+      true
+    end
+  end
+
   test_category('Quality command fallback') do
     test('falls back to rubocop when no fastlane quality lane exists') do
       fallback_called = false
