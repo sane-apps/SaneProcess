@@ -61,7 +61,7 @@ prune_repo_noise() {
   local path rel count
   count=0
 
-  while IFS= read -r path; do
+  while IFS= read -r -d '' path; do
     [[ -n "$path" ]] || continue
     rel="${path#$repo/}"
     if git -C "$repo" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
@@ -69,7 +69,7 @@ prune_repo_noise() {
     fi
     rm -f "$path"
     count=$((count + 1))
-  done < <(find "$repo" -type f \( -name '.DS_Store' -o -name '*.orig' -o -name '*.rej' \) -print)
+  done < <(find "$repo" -type f \( -name '.DS_Store' -o -name '*.orig' -o -name '*.rej' \) -print0)
 
   if [[ "$count" -gt 0 ]]; then
     log "  - Pruned $count untracked noise file(s)"
