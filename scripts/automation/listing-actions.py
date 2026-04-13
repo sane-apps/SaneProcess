@@ -12,6 +12,8 @@ import os
 import shlex
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +28,11 @@ from listing_actions_rules import build_current_actions, build_email_history
 ENV_CACHE_FILE = Path(os.environ.get("SANE_ENV_CACHE_FILE", "~/.config/nv/env")).expanduser()
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "outputs" / "listing_actions"
 API_BASE = "https://email-api.saneapps.com"
+RESOLVE_TIMEOUT_SECONDS = 10
+RESOLVABLE_LINK_TOKENS = (
+    "/ls/click",
+    "l.sourceforge.net/",
+)
 CURRENT_COLUMNS = [
     "site",
     "workflow",
@@ -156,6 +163,44 @@ def fetch_emails(api_key, page_size=200, max_pages=10):
     return all_rows
 
 
+def should_resolve_link(url):
+    if not url:
+        return False
+    lower = str(url).strip().lower()
+    if not lower or lower.startswith("mailto:"):
+        return False
+    return any(token in lower for token in RESOLVABLE_LINK_TOKENS)
+
+
+def resolve_final_url(url, cache):
+    if not should_resolve_link(url):
+        return url
+    cached = cache.get(url)
+    if cached is not None:
+        return cached
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "SaneProcess listing-actions/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=RESOLVE_TIMEOUT_SECONDS) as response:
+            final_url = response.geturl() or url
+    except (urllib.error.URLError, ValueError):
+        final_url = url
+    cache[url] = final_url
+    return final_url
+
+
+def resolve_link_fields(records):
+    if os.environ.get("SANE_LISTING_RESOLVE_LINKS", "1") == "0":
+        return records
+    cache = {}
+    for record in records:
+        record["primary_link"] = resolve_final_url(record.get("primary_link", ""), cache)
+        record["secondary_link"] = resolve_final_url(record.get("secondary_link", ""), cache)
+    return records
+
+
 def column_name(index):
     result = ""
     while index:
@@ -273,6 +318,7 @@ def main():
 
     api_key = get_email_api_key()
     history = build_email_history(fetch_emails(api_key, max_pages=max(args.max_pages, 1)))
+    resolve_link_fields(history)
     current = build_current_actions(history)
 
     payload = {

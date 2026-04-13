@@ -273,6 +273,38 @@ class ListingActionTests(unittest.TestCase):
             self.assertIn("SourceForge", sheet_xml)
             self.assertIn("Needs action", sheet_xml)
 
+    def test_resolve_link_fields_follows_wrapped_links(self):
+        records = [
+            {
+                "primary_link": "https://sendgrid.net/ls/click/abc",
+                "secondary_link": "mailto:support@example.com",
+            }
+        ]
+
+        class FakeResponse:
+            def __init__(self, final_url):
+                self.final_url = final_url
+
+            def geturl(self):
+                return self.final_url
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        with mock.patch.object(
+            LISTING_ACTIONS.urllib.request,
+            "urlopen",
+            return_value=FakeResponse("https://vendors.example.com/portal"),
+        ) as urlopen:
+            LISTING_ACTIONS.resolve_link_fields(records)
+
+        self.assertEqual(records[0]["primary_link"], "https://vendors.example.com/portal")
+        self.assertEqual(records[0]["secondary_link"], "mailto:support@example.com")
+        urlopen.assert_called_once()
+
     def test_main_writes_json_out_and_xlsx(self):
         sample_payload = [make_email(email_id=508, body_text="Verify https://sendgrid.net/ls/click/abc")]
         with tempfile.TemporaryDirectory() as tmp:
@@ -280,6 +312,7 @@ class ListingActionTests(unittest.TestCase):
             json_path = Path(tmp) / "listing_actions.json"
             with mock.patch.object(LISTING_ACTIONS, "get_email_api_key", return_value="test-key"), \
                 mock.patch.object(LISTING_ACTIONS, "fetch_emails", return_value=sample_payload), \
+                mock.patch.object(LISTING_ACTIONS, "resolve_link_fields"), \
                 mock.patch.object(LISTING_ACTIONS.sys, "argv", [
                     "listing-actions.py",
                     "--xlsx",
