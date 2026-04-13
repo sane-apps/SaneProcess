@@ -193,6 +193,42 @@ class ListingActionTests(unittest.TestCase):
         self.assertIn(("StartupSubmit", "Decide whether vendor must redo manual setups"), workflows)
         self.assertNotIn(("StartupSubmit", "Review master sheet deliverables"), workflows)
 
+    def test_gartner_invite_older_than_seven_days_flips_to_recovery_action(self):
+        row = make_email(
+            from_email="noreply-digitalmarkets@gartner.com",
+            subject="Activate Your Gartner Digital Markets Account",
+            body_text=(
+                "Activate https://example.com/activate "
+                "Recover https://example.com/password-recover"
+            ),
+            created_at="2026-04-01 09:32:02",
+        )
+        classified = LISTING_RULES.classify_email(row)
+        self.assertEqual(classified["site"], "Gartner Digital Markets")
+        self.assertEqual(
+            classified["action"],
+            "Request a fresh Gartner activation path and complete the profile.",
+        )
+        self.assertEqual(classified["primary_link"], "https://example.com/password-recover")
+        self.assertIn("already past that window", classified["note"])
+
+    def test_startupsubmit_complaint_transcript_flips_to_redo_action(self):
+        row = make_email(
+            from_email="transcripts@startupsubmit.on.crisp.email",
+            subject="Chat transcript (#b55)",
+            body_text=(
+                "You guys are going to have to redo all these applications. "
+                "It's all asking me to set everything up and it went to the wrong address."
+            ),
+        )
+        classified = LISTING_RULES.classify_email(row)
+        self.assertEqual(classified["site"], "StartupSubmit")
+        self.assertEqual(
+            classified["action"],
+            "Require StartupSubmit to redo manual setups under the correct email path.",
+        )
+        self.assertIn("redo request", classified["note"])
+
     def test_generic_listing_email_is_captured(self):
         rows = [
             make_email(

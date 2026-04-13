@@ -6,7 +6,7 @@ from __future__ import annotations
 import html
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 URL_RE = re.compile(r"https?://[^\s<>()\"']+")
 LISTING_CONTEXT_TOKENS = (
@@ -266,16 +266,25 @@ def classify_email(row):
             )
 
     if "gartner.com" in from_email or "digitalmarkets" in from_email:
+        created_at = parse_timestamp(row.get("created_at"))
+        expired = created_at != datetime.min.replace(tzinfo=timezone.utc) and (
+            datetime.now(timezone.utc) - created_at
+        ) > timedelta(days=7)
         return action_item(
             "Gartner Digital Markets",
             "Activate account and complete profile",
             "Required",
+            "Request a fresh Gartner activation path and complete the profile."
+            if expired else
             "Activate the Gartner Digital Markets account and fill in the remaining profile details.",
+            "The original activation link is stale now. Use the password recovery link in the same email to request a fresh activation path, then finish the remaining profile details."
+            if expired else
             "Use the activation link from the email. If it expired, use the password recovery link in the same email to request a fresh activation path.",
             urls,
-            primary_include=("activate", "click?upn="),
-            secondary_include=("password", "recover"),
-            note="The email said the activation link expires in 7 days.",
+            primary_include=("password", "recover") if expired else ("activate", "click?upn="),
+            secondary_include=("activate", "click?upn=") if expired else ("password", "recover"),
+            note="The email said the activation link expires in 7 days."
+            + (" This one is already past that window." if expired else ""),
         )
 
     if "startupstash.com" in from_email:
@@ -330,16 +339,34 @@ def classify_email(row):
                 secondary_include=("reddit-marketing", "startupsubmit.app"),
                 note="This is the main deliverable from StartupSubmit.",
             )
+        body_text = (row.get("body_text") or "").lower()
+        needs_redo = any(
+            phrase in body_text
+            for phrase in (
+                "wrong address",
+                "redo",
+                "all asking me to set everything up",
+                "im not doing",
+                "i'm not doing",
+                "manual setup",
+                "wrong email",
+            )
+        )
         return action_item(
             "StartupSubmit",
             "Decide whether vendor must redo manual setups",
             "Required",
+            "Require StartupSubmit to redo manual setups under the correct email path."
+            if needs_redo else
             "Decide whether to accept the current StartupSubmit deliverables or require them to redo any directories that still need manual setup under the correct email path.",
+            "The transcript already shows they routed setup to the wrong email path and pushed manual work back onto you. Use the chat record and Airtable sheet to force cleanup/redelivery."
+            if needs_redo else
             "The transcript shows you explicitly said you did not want to do all the setup yourself. Use the Airtable sheet and chat record to force cleanup/redelivery if needed.",
             urls,
             primary_include=("airtable.com", "resume", "startupsubmit.app"),
             secondary_link="https://startupsubmit.app/",
-            note="Vendor admitted some directories routed to the business email because of site requirements.",
+            note="Vendor admitted some directories routed to the business email because of site requirements."
+            + (" Current transcript clearly points to a redo request." if needs_redo else ""),
         )
 
     if "startupbuffer.com" in from_email:
