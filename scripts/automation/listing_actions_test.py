@@ -109,6 +109,90 @@ class ListingActionTests(unittest.TestCase):
         self.assertEqual(history[0]["email_id"], 508)
         self.assertEqual(history[0]["primary_link"], "https://sendgrid.net/ls/click/abc")
 
+    def test_build_current_actions_suppresses_superseded_saasworthy_invite(self):
+        history = [
+            {
+                "site": "SaaSworthy",
+                "workflow": "Verify vendor portal invite",
+                "required": "Required",
+                "action": "Verify the invite",
+                "instructions": "Click the invite link.",
+                "primary_link": "https://example.com/verify",
+                "secondary_link": "",
+                "note": "Initial step.",
+                "email_id": 508,
+                "status": "resolved",
+                "category": "other",
+                "from_email": "team@saasworthy.com",
+                "subject": "Welcome to SaaSworthy!",
+                "created_at": "2026-04-03 09:27:11",
+                "all_urls": "",
+            },
+            {
+                "site": "SaaSworthy",
+                "workflow": "Complete vendor portal profile",
+                "required": "Required",
+                "action": "Finish the profile",
+                "instructions": "Log in and fill it out.",
+                "primary_link": "https://example.com/vendor",
+                "secondary_link": "",
+                "note": "Current setup step.",
+                "email_id": 531,
+                "status": "resolved",
+                "category": "other",
+                "from_email": "team@saasworthy.com",
+                "subject": "Portal active",
+                "created_at": "2026-04-04 02:32:12",
+                "all_urls": "",
+            },
+        ]
+        current = LISTING_RULES.build_current_actions(history)
+        workflows = {(item["site"], item["workflow"]) for item in current}
+        self.assertIn(("SaaSworthy", "Complete vendor portal profile"), workflows)
+        self.assertNotIn(("SaaSworthy", "Verify vendor portal invite"), workflows)
+
+    def test_build_current_actions_suppresses_superseded_startupsubmit_review(self):
+        history = [
+            {
+                "site": "StartupSubmit",
+                "workflow": "Review master sheet deliverables",
+                "required": "Required",
+                "action": "Review the Airtable sheet",
+                "instructions": "Open the master sheet.",
+                "primary_link": "https://airtable.com/example",
+                "secondary_link": "",
+                "note": "Initial deliverable.",
+                "email_id": 527,
+                "status": "resolved",
+                "category": "other",
+                "from_email": "ops@startupsubmit.app",
+                "subject": "Your Submission Report is Ready!",
+                "created_at": "2026-04-03 18:00:03",
+                "all_urls": "",
+            },
+            {
+                "site": "StartupSubmit",
+                "workflow": "Decide whether vendor must redo manual setups",
+                "required": "Required",
+                "action": "Decide whether to require cleanup.",
+                "instructions": "Use the transcript to decide.",
+                "primary_link": "https://startupsubmit.app",
+                "secondary_link": "",
+                "note": "Later transcript supersedes review.",
+                "email_id": 552,
+                "status": "resolved",
+                "category": "support",
+                "from_email": "transcripts@startupsubmit.on.crisp.email",
+                "subject": "Chat transcript (#b55)",
+                "created_at": "2026-04-07 18:50:58",
+                "all_urls": "",
+            },
+        ]
+        current = LISTING_RULES.build_current_actions(history)
+        workflows = {(item["site"], item["workflow"]) for item in current}
+        self.assertIn(("StartupSubmit", "Decide whether vendor must redo manual setups"), workflows)
+        self.assertNotIn(("StartupSubmit", "Review master sheet deliverables"), workflows)
+
     def test_generic_listing_email_is_captured(self):
         rows = [
             make_email(

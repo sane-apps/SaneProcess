@@ -438,6 +438,18 @@ def build_current_actions(history_rows):
                 "note": latest["note"],
             }
         )
+
+    superseded_workflows = {
+        ("SaaSworthy", "Verify vendor portal invite"): ("SaaSworthy", "Complete vendor portal profile"),
+        ("StartupSubmit", "Review master sheet deliverables"): ("StartupSubmit", "Decide whether vendor must redo manual setups"),
+    }
+    active_workflows = {(item["site"], item["workflow"]) for item in current}
+    current = [
+        item
+        for item in current
+        if superseded_workflows.get((item["site"], item["workflow"])) not in active_workflows
+    ]
+
     status_rank = {"Needs action": 0, "Optional": 1, "Monitor": 2}
     current.sort(key=lambda item: (status_rank.get(item["action_status"], 9), item["site"], item["workflow"]))
     return current
