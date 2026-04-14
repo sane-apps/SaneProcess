@@ -103,7 +103,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 EVAL_SCRIPT="$SCRIPT_DIR/evaluate_model.py"
 
 report_model_short_from_value() {
-  printf '%s' "$1" | sed 's|.*/||' | sed 's/\.ya\?ml$//' | sed 's/-MLX-4bit//' | sed 's/-4bit//' | tr '[:upper:]' '[:lower:]'
+  printf '%s' "$1" | sed 's|.*/||' | sed 's/\.yaml$//' | sed 's/\.yml$//' | sed 's/-MLX-4bit//' | sed 's/-4bit//' | tr '[:upper:]' '[:lower:]'
 }
 
 # Report file: separate for challengers to avoid clobbering production report

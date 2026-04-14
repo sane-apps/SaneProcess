@@ -56,6 +56,8 @@ exit(run_tests('Mini Train Process Tests') do
       assert_includes(train_source, 'report_model_short_from_value()')
       assert_includes(train_source, 'elif [ -n "$CONFIG_OVERRIDE" ]; then')
       assert_includes(train_source, 'REPORT="$OUTPUT_DIR/challenger_report_${APP_NAME}_${MODEL_SHORT}.md"')
+      assert_includes(train_source, "sed 's/\\.yaml$//'")
+      assert_includes(train_source, "sed 's/\\.yml$//'")
       true
     end
 
