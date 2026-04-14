@@ -74,19 +74,9 @@ is_known_app() {
 local_bundle_path() {
   local app="$1"
   local sys_app="/Applications/${app}.app"
-  local user_app="$HOME/Applications/${app}.app"
-
-  # When invoked via --host mini (delegated over SSH), keep test installs
-  # in ~/Applications to avoid /Applications identity contamination.
-  if [[ "${APP_TEST_MODE_ORIGIN_HOST:-}" == "mini" ]]; then
-    echo "$user_app"
-    return 0
-  fi
 
   if [[ -d "$sys_app" ]]; then
     echo "$sys_app"
-  elif [[ -d "$user_app" ]]; then
-    echo "$user_app"
   else
     echo "$sys_app"
   fi
@@ -94,11 +84,7 @@ local_bundle_path() {
 
 remote_bundle_path() {
   local app="$1"
-  local user_app="$HOME/Applications/${app}.app"
-
-  # Mini is a dedicated test host. Keep runtime installs in user-level
-  # Applications so system /Applications copies cannot re-enter test flows.
-  echo "$user_app"
+  echo "/Applications/${app}.app"
 }
 
 fallback_bundle_id() {
@@ -468,7 +454,7 @@ ensure_single_install_local() {
   local canonical="$2"
   local candidates=(
     "/Applications/${app}.app"
-    "$HOME/Applications/${app}.app"
+    "/tmp/saneapps-staging.noindex/${app}.app"
     "/tmp/${app}.app"
   )
 
@@ -497,11 +483,11 @@ ensure_single_install_remote() {
   local app="$1"
   local canonical="$2"
   local script
-  script=$(cat <<REMOTE
+script=$(cat <<REMOTE
 APP="$app"
 CANONICAL="$canonical"
 KEEP="$KEEP_DUPLICATES"
-for path in "/Applications/\${APP}.app" "\$HOME/Applications/\${APP}.app" "/tmp/\${APP}.app"; do
+for path in "/Applications/\${APP}.app" "/tmp/saneapps-staging.noindex/\${APP}.app" "/tmp/\${APP}.app"; do
   [ -d "\$path" ] || continue
   [ "\$path" = "\$CANONICAL" ] && continue
   if [ "\$KEEP" = "0" ]; then
@@ -1070,7 +1056,7 @@ print_duplicate_paths_local() {
   local canonical="$2"
   local found=0
   local path
-  for path in "/Applications/${app}.app" "$HOME/Applications/${app}.app" "/tmp/${app}.app"; do
+  for path in "/Applications/${app}.app" "/tmp/saneapps-staging.noindex/${app}.app" "/tmp/${app}.app"; do
     [[ -d "$path" ]] || continue
     [[ "$path" == "$canonical" ]] && continue
     echo "  - $path"
@@ -1248,7 +1234,7 @@ app_owner_check_remote() {
   fi
 
   echo "duplicate installs:"
-  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "for path in '/Applications/${app}.app' \"\$HOME/Applications/${app}.app\" '/tmp/${app}.app'; do [ -d \"\$path\" ] || continue; [ \"\$path\" = '$bundle' ] && continue; echo \"  - \$path\"; done" || true
+  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "for path in '/Applications/${app}.app' '/tmp/saneapps-staging.noindex/${app}.app' '/tmp/${app}.app'; do [ -d \"\$path\" ] || continue; [ \"\$path\" = '$bundle' ] && continue; echo \"  - \$path\"; done" || true
 
   echo "running processes:"
   ssh -o ConnectTimeout=5 -o BatchMode=yes mini "ps ax -o pid= -o command= | grep '/${app}.app/Contents/MacOS/${app}' | grep -v grep || echo '  - none'" || true
@@ -1472,7 +1458,7 @@ bootstrap_install_local() {
   echo "info: $app not installed. Bootstrapping from $repo ..."
   (
     cd "$repo"
-    SANEMASTER_CANONICAL_APP_PATH="$HOME/Applications/${app}.app" ./scripts/SaneMaster.rb test_mode --release --no-logs
+    SANEMASTER_CANONICAL_APP_PATH="/Applications/${app}.app" ./scripts/SaneMaster.rb test_mode --release --no-logs
   ) >/tmp/"$(to_lower "$app")"-bootstrap.log 2>&1
 }
 
@@ -1488,7 +1474,7 @@ if [ ! -d "\$repo" ]; then
   exit 1
 fi
 cd "\$repo"
-SANEMASTER_CANONICAL_APP_PATH="\$HOME/Applications/${app}.app" ./scripts/SaneMaster.rb test_mode --release --no-logs >/tmp/$(to_lower "$app")-bootstrap.log 2>&1
+SANEMASTER_CANONICAL_APP_PATH="/Applications/${app}.app" ./scripts/SaneMaster.rb test_mode --release --no-logs >/tmp/$(to_lower "$app")-bootstrap.log 2>&1
 REMOTE
 )
 

@@ -9,6 +9,8 @@ require 'time'
 APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo].freeze
 LOCAL_HOSTS = %w[local localhost].freeze
 LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+NEVER_INDEX_MARKER = '.metadata_never_index'
+TRANSIENT_STAGE_ROOT = File.expand_path('/tmp/saneapps-staging.noindex')
 
 class DedupeSaneApps
   def initialize(args)
@@ -64,13 +66,14 @@ class DedupeSaneApps
   end
 
   def dedupe_app(app)
+    ensure_never_index_roots(app)
     paths = candidate_paths(app)
     canonical = canonical_path(app)
     promoted_from = nil
     installed_paths = installed_candidate_paths(paths)
 
     if !File.exist?(canonical)
-      source = choose_promotion_source(installed_paths, canonical)
+      source = choose_promotion_source(paths, canonical)
       if source
         promote(source, canonical)
         promoted_from = source
@@ -102,9 +105,16 @@ class DedupeSaneApps
       "/Applications/#{app}.app",
       File.expand_path("~/Applications/#{app}.app"),
       File.expand_path("/tmp/#{app}.app"),
+      File.join(TRANSIENT_STAGE_ROOT, "#{app}.app"),
       File.expand_path("~/Library/Developer/Xcode/DerivedData/#{app}-*/Build/Products/*/#{app}.app"),
       File.expand_path("~/codex-runs/**/#{app}.app"),
-      File.expand_path("~/SaneApps/apps/#{app}/build/**/#{app}.app")
+      File.expand_path("~/SaneApps/apps/#{app}/build/**/#{app}.app"),
+      File.expand_path("~/SaneApps/apps/#{app}/outputs/**/#{app}.app"),
+      File.expand_path("~/SaneApps/release/**/#{app}.app"),
+      File.expand_path("~/SaneApps/release-publish/**/#{app}.app"),
+      File.expand_path("~/SaneApps/release-worktrees/**/#{app}.app"),
+      File.expand_path("~/SaneApps/tmp/**/#{app}.app"),
+      File.expand_path("~/tmp/**/#{app}.app")
     ]
 
     patterns
@@ -117,18 +127,7 @@ class DedupeSaneApps
   end
 
   def canonical_path(app)
-    system_path = "/Applications/#{app}.app"
-    user_path = File.expand_path("~/Applications/#{app}.app")
-
-    return system_path if File.exist?(system_path)
-    return user_path if File.exist?(user_path)
-    return system_path if system_writable?
-
-    user_path
-  end
-
-  def system_writable?
-    @system_writable ||= File.writable?('/Applications')
+    "/Applications/#{app}.app"
   end
 
   def choose_promotion_source(paths, canonical)
@@ -152,12 +151,15 @@ class DedupeSaneApps
 
   def path_priority(path)
     return 0 if path.start_with?('/Applications/')
-    return 1 if path.start_with?(File.expand_path('~/Applications/'))
-    return 2 if path.include?('/build/Export/')
-    return 3 if path.include?('/build/') && path.include?('.xcarchive/')
-    return 4 if path.include?('/DerivedData/')
+    return 1 if path.start_with?(TRANSIENT_STAGE_ROOT)
+    return 2 if path.start_with?(File.expand_path('~/Applications/'))
+    return 3 if path.include?('/build/Export/')
+    return 4 if path.include?('/build/') && path.include?('.xcarchive/')
+    return 5 if path.include?('/outputs/')
+    return 6 if path.include?('/release/') || path.include?('/release-publish/') || path.include?('/release-worktrees/')
+    return 7 if path.include?('/DerivedData/')
 
-    5
+    8
   end
 
   def artifact_mtime(app_bundle_path)
@@ -204,6 +206,32 @@ class DedupeSaneApps
 
     system(LSREGISTER, '-kill', '-r', '-domain', 'local', '-domain', 'system', '-domain', 'user',
            out: File::NULL, err: File::NULL)
+  end
+
+  def ensure_never_index_roots(app)
+    roots = [
+      File.expand_path("~/Library/Developer/Xcode/DerivedData"),
+      File.expand_path("~/SaneApps/apps/#{app}/build"),
+      File.expand_path("~/SaneApps/apps/#{app}/outputs"),
+      File.expand_path('~/SaneApps/release'),
+      File.expand_path('~/SaneApps/tmp'),
+      File.expand_path('~/SaneApps/release-publish'),
+      File.expand_path('~/SaneApps/release-worktrees'),
+      File.expand_path('~/tmp'),
+      TRANSIENT_STAGE_ROOT
+    ].uniq
+
+    roots.each do |root|
+      next unless Dir.exist?(root)
+
+      marker = File.join(root, NEVER_INDEX_MARKER)
+      next if File.exist?(marker)
+
+      puts "Marking #{root} as never-index" unless @json
+      next if @dry_run
+
+      File.write(marker, '')
+    end
   end
 
   def same_path?(left, right)

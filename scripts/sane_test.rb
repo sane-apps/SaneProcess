@@ -69,6 +69,7 @@ SANE_APPS_ROOT = File.expand_path('~/SaneApps/apps')
 MINI_HOST = 'mini'
 MINI_APPS_DIR = '/Applications'
 MINI_LEGACY_USER_APPS_DIR = '~/Applications'
+TRANSIENT_STAGE_ROOT = '/tmp/saneapps-staging.noindex'
 
 class SaneTest
   def initialize(app_name, args)
@@ -631,22 +632,29 @@ class SaneTest
 
     app_name = "#{@app_name}.app"
     system_app = File.join('/Applications', app_name)
-    user_app = File.expand_path(File.join('~/Applications', app_name))
+    transient_app = File.expand_path(File.join(TRANSIENT_STAGE_ROOT, app_name))
 
     return system_app if system_app_dir_writable?
     return system_app if File.exist?(system_app)
 
-    user_app
+    transient_app
   end
 
   def local_app_copy_paths
     patterns = [
       File.join('/Applications', "#{@app_name}.app"),
-      File.expand_path(File.join('~/Applications', "#{@app_name}.app")),
+      File.expand_path(File.join(TRANSIENT_STAGE_ROOT, "#{@app_name}.app")),
       File.expand_path("/tmp/#{@app_name}.app"),
       File.expand_path("~/Library/Developer/Xcode/DerivedData/#{@app_name}-*/Build/Products/*/#{@app_name}.app"),
       File.expand_path("~/codex-runs/**/#{@app_name}.app"),
-      File.expand_path("~/codex-runs/.worktrees/**/#{@app_name}.app")
+      File.expand_path("~/codex-runs/.worktrees/**/#{@app_name}.app"),
+      File.expand_path("~/SaneApps/apps/#{@app_name}/build/**/#{@app_name}.app"),
+      File.expand_path("~/SaneApps/apps/#{@app_name}/outputs/**/#{@app_name}.app"),
+      File.expand_path("~/SaneApps/release/**/#{@app_name}.app"),
+      File.expand_path("~/SaneApps/release-publish/**/#{@app_name}.app"),
+      File.expand_path("~/SaneApps/release-worktrees/**/#{@app_name}.app"),
+      File.expand_path("~/SaneApps/tmp/**/#{@app_name}.app"),
+      File.expand_path("~/tmp/**/#{@app_name}.app")
     ]
 
     patterns

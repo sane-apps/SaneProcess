@@ -15,7 +15,7 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
 
       assert_includes(
         source,
-        'SANEMASTER_CANONICAL_APP_PATH="$HOME/Applications/${app}.app" ./scripts/SaneMaster.rb test_mode --release --no-logs'
+        'SANEMASTER_CANONICAL_APP_PATH="/Applications/${app}.app" ./scripts/SaneMaster.rb test_mode --release --no-logs'
       )
       assert(!source.include?('SANEMASTER_CANONICAL_APP_PATH="$HOME/Applications/${app}.app" ./scripts/SaneMaster.rb launch'),
              'bootstrap should not rely on launch without a prebuilt Debug app')
@@ -27,8 +27,19 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
 
       assert_includes(
         source,
-        'SANEMASTER_CANONICAL_APP_PATH="\$HOME/Applications/${app}.app" ./scripts/SaneMaster.rb test_mode --release --no-logs >/tmp/$(to_lower "$app")-bootstrap.log 2>&1'
+        'SANEMASTER_CANONICAL_APP_PATH="/Applications/${app}.app" ./scripts/SaneMaster.rb test_mode --release --no-logs >/tmp/$(to_lower "$app")-bootstrap.log 2>&1'
       )
+      true
+    end
+  end
+
+  test_category('No user Applications fallback') do
+    test('app_test_mode avoids ~/Applications installs and transient duplicates') do
+      source = File.read(SCRIPT_PATH)
+
+      assert(!source.include?('$HOME/Applications/${app}.app'),
+             'app_test_mode should not stage runtime copies into ~/Applications')
+      assert_includes(source, '/tmp/saneapps-staging.noindex/${app}.app')
       true
     end
   end

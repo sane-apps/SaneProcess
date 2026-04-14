@@ -249,26 +249,25 @@ module SaneMasterModules
       env_override = ENV['SANEMASTER_CANONICAL_APP_PATH']
       app_name = "#{project_name}.app"
       system_app = File.join('/Applications', app_name)
-      user_app = user_local_app_path
+      transient_app = transient_local_app_path
 
       if env_override && !env_override.strip.empty?
         override_path = File.expand_path(env_override)
         if unsigned_fallback_active? && override_path.start_with?('/Applications/')
           puts "⚠️  Ignoring SANEMASTER_CANONICAL_APP_PATH=#{override_path} during unsigned fallback."
-          puts "   Using user-level path instead to avoid replacing a signed /Applications install."
-          return user_app
+          puts "   Using a transient non-indexed staging path instead to avoid replacing a signed /Applications install."
+          return transient_app
         end
         return override_path
       end
 
       # Never replace a signed system install with unsigned fallback builds.
-      return user_app if unsigned_fallback_active?
+      return transient_app if unsigned_fallback_active?
 
       return system_app if system_app_dir_writable?
       return system_app if File.exist?(system_app)
-      return user_app if File.exist?(user_app)
 
-      user_app
+      system_app
     end
 
     def stage_to_canonical_local_app_path(source_app_path)
@@ -289,10 +288,10 @@ module SaneMasterModules
         return target_app_path
       end
 
-      if should_stage_apple_development_to_user_app?(source_app_path: source_app_path, target_app_path: target_app_path)
-        redirected_target = user_local_app_path
-        puts "⚠️  Staging Apple Development build to user path for #{project_name}."
-        puts "   Skipping /Applications write to avoid permission identity drift."
+      if should_stage_apple_development_to_transient_path?(source_app_path: source_app_path, target_app_path: target_app_path)
+        redirected_target = transient_local_app_path
+        puts "⚠️  Staging Apple Development build to transient non-indexed path for #{project_name}."
+        puts "   Skipping /Applications write to avoid permission identity drift and duplicate installed app identities."
         puts "   Target: #{redirected_target}"
         puts "   Set SANEMASTER_ALLOW_STAGE_APPLE_DEVELOPMENT_TO_SYSTEM=1 to override."
         target_app_path = redirected_target
@@ -357,7 +356,7 @@ module SaneMasterModules
       target_signed_release && source_is_dev_signed
     end
 
-    def should_stage_apple_development_to_user_app?(source_app_path:, target_app_path:)
+    def should_stage_apple_development_to_transient_path?(source_app_path:, target_app_path:)
       return false unless target_app_path.start_with?('/Applications/')
       return false if ENV['SANEMASTER_ALLOW_STAGE_APPLE_DEVELOPMENT_TO_SYSTEM'] == '1'
       return false unless source_app_path && File.exist?(source_app_path)
@@ -376,8 +375,8 @@ module SaneMasterModules
       apple_development_signed?(source_app_path)
     end
 
-    def user_local_app_path
-      File.expand_path(File.join('~/Applications', "#{project_name}.app"))
+    def transient_local_app_path
+      File.expand_path(File.join('/tmp/saneapps-staging.noindex', "#{project_name}.app"))
     end
 
     def ad_hoc_sign_app_bundle(app_path)
@@ -409,11 +408,18 @@ module SaneMasterModules
     def local_app_copy_paths
       patterns = [
         File.join('/Applications', "#{project_name}.app"),
-        user_local_app_path,
+        transient_local_app_path,
         File.expand_path("/tmp/#{project_name}.app"),
         File.expand_path("~/Library/Developer/Xcode/DerivedData/#{project_name}-*/Build/Products/*/#{project_name}.app"),
         File.expand_path("~/codex-runs/**/#{project_name}.app"),
-        File.expand_path("~/codex-runs/.worktrees/**/#{project_name}.app")
+        File.expand_path("~/codex-runs/.worktrees/**/#{project_name}.app"),
+        File.expand_path("~/SaneApps/apps/#{project_name}/build/**/#{project_name}.app"),
+        File.expand_path("~/SaneApps/apps/#{project_name}/outputs/**/#{project_name}.app"),
+        File.expand_path("~/SaneApps/release/**/#{project_name}.app"),
+        File.expand_path("~/SaneApps/release-publish/**/#{project_name}.app"),
+        File.expand_path("~/SaneApps/release-worktrees/**/#{project_name}.app"),
+        File.expand_path("~/SaneApps/tmp/**/#{project_name}.app"),
+        File.expand_path("~/tmp/**/#{project_name}.app")
       ]
 
       patterns
@@ -432,9 +438,9 @@ module SaneMasterModules
         preserved << File.expand_path(system_app)
       end
 
-      # If the caller explicitly stages to a user-level path, keep any
-      # official signed /Applications install intact. It should not be treated
-      # as a stale duplicate of an Apple Development build.
+      # If the caller explicitly stages to a transient non-/Applications path,
+      # keep any official signed /Applications install intact. It should not be
+      # treated as a stale duplicate of an Apple Development build.
       if !File.expand_path(primary_path).start_with?('/Applications/') &&
          File.exist?(system_app) &&
          developer_id_signed?(system_app)

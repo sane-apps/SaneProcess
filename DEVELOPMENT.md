@@ -125,6 +125,8 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 
 License support rule: real customer license keys come only from LemonSqueezy-backed orders and license-key records. Use `check-inbox.sh review` + `whois` + the LemonSqueezy recovery/backfill flow for missing-key support. Do not generate local fallback keys.
 
+Email delivery rule: do not treat Worker acceptance as success. Normal inbox operations must only count an outbound as sent when Resend shows delivery evidence (`delivered`, `opened`, `clicked`, or `complained`). A `bounced` or still-unconfirmed outbound remains actionable and must be surfaced in `check`, `context`, `audit`, and `check-reply` until it is fixed and resent.
+
 Duplicate-purchase refund rule: when you can prove the same customer paid twice for the same product, you may auto-refund the duplicate order without waiting on the normal “documented unresolved bug >24h” threshold, as long as the action still has an audit note and proof file. Standard investigation path:
 
 ```bash
@@ -451,7 +453,14 @@ Canonical runtime cleanup is now a first-class step:
 - `./scripts/SaneMaster.rb dedupe_apps --host mini --apps SaneBar`
 - `./scripts/SaneMaster.rb dedupe_apps --apps SaneBar,SaneHosts`
 
-`dedupe_apps` keeps one installed bundle per app (`/Applications/App.app` when present, otherwise `~/Applications/App.app`) and trashes stale build/runtime copies that can confuse Launch Services.
+`dedupe_apps` keeps one canonical installed bundle per app at `/Applications/App.app` and trashes stale build/runtime copies that can confuse Launch Services, Spotlight, TCC, and Launch Services.
+
+Hard rule:
+- SaneApps runtime installs on both the Air and Mini must resolve to exactly one canonical `/Applications/App.app` per app.
+- Do not leave fallback runtime bundles in `~/Applications`.
+- Do not leave Spotlight-visible duplicate bundles in `build/`, `outputs/`, `release/`, `release-publish/`, `release-worktrees/`, `~/SaneApps/tmp`, or `DerivedData`.
+- Unsigned or Apple Development fallback launches must stage to a transient non-indexed path under `/tmp/saneapps-staging.noindex`, never to another installed Applications location.
+- Standard verify/launch/test flows should auto-run `dedupe_apps` afterward. If you bypass the standard flow, run dedupe manually before claiming the machine is clean.
 
 ### Work Session Guard
 
@@ -488,8 +497,8 @@ sysadminctl -screenLock off -password -
 Unsigned fallback rules:
 
 - headless `test_mode --release` may build `Debug` when the Mini cannot unlock signing
-- that fallback stages to `~/Applications/App.app`
-- the shared launcher now preserves any signed `/Applications/App.app` install during that fallback
+- that fallback stages to `/tmp/saneapps-staging.noindex/App.app`
+- the shared launcher preserves any signed `/Applications/App.app` install during that fallback
 - release-style smoke should target the signed `/Applications` install when it exists, not the transient unsigned fallback copy
 
 Non-interactive auth/tooling gaps should render as structured skips, not raw stderr noise:

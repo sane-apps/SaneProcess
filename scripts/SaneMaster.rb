@@ -231,6 +231,17 @@ class SaneMaster
   ].freeze
 
   KNOWN_SANE_APPS = %w[SaneBar SaneClip SaneClick SaneHosts SaneSales SaneSync SaneVideo].freeze
+  AUTO_DEDUPE_COMMANDS = Set.new(%w[
+    verify
+    launch
+    run
+    test_mode
+    tm
+    mode
+    test_mode_switch
+    license_mode
+    release_preflight
+  ]).freeze
 
   MINI_FIRST_COMMANDS = Set.new(%w[
                                   verify
@@ -358,9 +369,26 @@ class SaneMaster
     maybe_route_to_mini!(command, args)
 
     dispatch_command(command, args)
+  ensure
+    auto_dedupe_runtime_apps!(command)
   end
 
   private
+
+  def auto_dedupe_runtime_apps!(command)
+    return if command.nil?
+    return unless AUTO_DEDUPE_COMMANDS.include?(command)
+    return if ENV['SANEMASTER_SKIP_AUTO_DEDUPE'] == '1'
+
+    app = project_name
+    return unless KNOWN_SANE_APPS.include?(app)
+
+    dedupe_script = File.join(__dir__, 'dedupe_sane_apps.rb')
+    return unless File.exist?(dedupe_script)
+
+    puts "🧹 Auto-deduping runtime app copies for #{app}..."
+    system('ruby', dedupe_script, '--apps', app)
+  end
 
   def maybe_route_to_mini!(command, args)
     return if ENV['SANEMASTER_DISABLE_MINI_ROUTING'] == '1'

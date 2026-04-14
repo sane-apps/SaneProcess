@@ -11,6 +11,7 @@ end
 include TestFramework
 
 Status = Struct.new(:success?) unless defined?(Status)
+TEST_MODE_PATH = File.expand_path('test_mode.rb', __dir__)
 
 exit(run_tests('SaneMaster Test Mode Fallback Tests') do
   subject = TestModeHarness.new
@@ -76,6 +77,17 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
       )
 
       assert(!result, 'expected default launches without special env/args to keep using open')
+      true
+    end
+  end
+
+  test_category('Transient staging path') do
+    test('test_mode uses transient noindex path instead of ~/Applications for unsigned fallback') do
+      source = File.read(TEST_MODE_PATH)
+
+      assert_includes(source, "File.expand_path(File.join('/tmp/saneapps-staging.noindex', \"\#{project_name}.app\"))")
+      assert(!source.include?("File.expand_path(File.join('~/Applications', \"\#{project_name}.app\"))"),
+             'unsigned fallback should not use ~/Applications for runtime staging')
       true
     end
   end

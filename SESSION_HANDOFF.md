@@ -1,4 +1,81 @@
 
+## Session 104 (2026-04-14)
+
+### Done
+- Fixed the shared duplicate-app cleanup policy so both the Air and Mini end in exactly one canonical `/Applications/App.app` per Sane app.
+- Root cause: shared tooling still treated `~/Applications` as a fallback install target, only auto-promoted missing canonicals from already-installed paths, and missed older staging roots like `~/SaneApps/release/**`.
+- Updated `scripts/dedupe_sane_apps.rb` to:
+  - always treat `/Applications/App.app` as canonical
+  - promote missing canonicals from the best available artifact root
+  - mark artifact roots as never-index
+  - scan and clean `build/`, `outputs/`, `release/`, `release-publish/`, `release-worktrees/`, `~/SaneApps/tmp`, `~/tmp`, and DerivedData
+- Updated shared runtime helpers so unsigned/dev fallback staging uses `/tmp/saneapps-staging.noindex` instead of `~/Applications`, and so post-run dedupe happens automatically after the normal verify/launch/test lanes.
+- Updated the shared SOP text in `DEVELOPMENT.md` to make `/Applications`-only installs the explicit rule for both Air and Mini.
+
+### Live Verification
+- Local focused infra tests passed:
+  - `ruby scripts/app_test_mode_test.rb`
+  - `ruby scripts/sanemaster/test_mode_test.rb`
+  - `ruby scripts/dedupe_sane_apps_test.rb`
+- Mini focused infra tests passed with the same results after syncing the updated files.
+- Air cleanup:
+  - removed stale bundles from DerivedData, repo `build/`, repo `outputs/`, `~/SaneApps/tmp`, and `~/SaneApps/release`
+  - promoted `SaneSync` from a stale archive bundle into `/Applications/SaneSync.app`
+- Mini cleanup:
+  - removed stale bundles from DerivedData, repo `build/`, `release-publish/`, `~/SaneApps/tmp`, and `~/tmp`
+- Final filesystem inventory on both Air and Mini now shows exactly one bundle for each of `SaneBar`, `SaneClick`, `SaneClip`, `SaneHosts`, `SaneSales`, `SaneSync`, and `SaneVideo`, all in `/Applications`.
+- Final Spotlight (`mdfind`) inventory on both Air and Mini also shows exactly one bundle per app, all in `/Applications`.
+
+### Current State
+- The duplicate-app/TCC/LaunchServices drift class is now guarded in shared infra instead of being left to manual cleanup.
+- Air and Mini are both clean right now for the core Sane apps.
+- Older staging roots like `~/SaneApps/release` are now part of the same dedupe/no-index policy as the newer release worktrees.
+
+### Next
+- Commit and push the SaneProcess duplicate-app policy changes after checking around the unrelated untracked `scripts/automation/email_delivery*.py` files.
+- If another app bundle family appears outside `/Applications`, treat it as a shared tooling regression first and extend `dedupe_sane_apps.rb` rather than hand-cleaning it again.
+
+### SOP: 10/10
+- (+) Fixed the shared install/dedupe policy instead of just deleting the current duplicates.
+- (+) Proved the final state with both filesystem and Spotlight inventories on both machines.
+
+## Session 103 (2026-04-14)
+
+### Done
+- Fixed a shared email-ops regression in `/Users/sj/SaneApps/infra/scripts/check-inbox.sh`.
+- Root cause: the workflow treated Worker acceptance and D1 reply records as proof that an email landed, so a bounced outbound could still look “sent” or even “resolved”.
+- Added shared delivery classification in `scripts/automation/email_delivery.py` so reply evidence now requires Resend delivery signals (`delivered`, `opened`, `clicked`, or `complained`).
+- `check`, `context`, and `audit` now surface bounced outbound mail as active blockers instead of hiding it behind resolved/replied states.
+- `reply` and `compose` no longer report success unless delivery is confirmed; bounced or still-unconfirmed sends now fail closed.
+- Fixed the worker-side `reconcileReplies()` blind spot in `sane-email-automation/src/index.js` so D1 no longer promotes threads to `replied_external` from undelivered/bounced `Re:` traffic.
+- Changed the reply API default status from `resolved` to `pending` so send acceptance alone no longer looks like the thread is finished.
+- Hardened the audit path so null HTML bodies no longer crash the report.
+- Updated the shared SOP docs to state that “sent” means delivery-confirmed, not merely accepted by the Worker.
+
+### Live Verification
+- Local: `bash -n /Users/sj/SaneApps/infra/scripts/check-inbox.sh`
+- Local: `python3 -m py_compile scripts/automation/email_delivery.py scripts/automation/email_delivery_test.py`
+- Local: `python3 scripts/automation/email_delivery_test.py` passed `2/2`
+- Local: `node --test /Users/sj/SaneApps/infra/sane-email-automation/test/resend-delivery.test.mjs` passed
+- Mini proof with temp copies:
+  - `bash /tmp/inboxfix/check-inbox.sh context 551` now reports `Delivery: bounced=1 delivered=0 pending=0` and recommends reopen/fix/resend.
+  - `bash /tmp/inboxfix/check-inbox.sh check` now surfaces StartupSubmit `#551` under `BOUNCED OUTBOUND — NEEDS FIX`.
+  - `bash /tmp/inboxfix/check-inbox.sh audit` now completes instead of crashing and reports StartupSubmit `#551` under `CUSTOMERS WITH BOUNCED OUTBOUND ONLY`.
+
+### Current State
+- Shared email status is now delivery-aware instead of Worker-acceptance-aware.
+- Worker reconciliation now agrees with the shell workflow instead of reintroducing false `replied_external` states.
+- The known confirmed bounced thread is StartupSubmit `#551` on 2026-04-10; it is now surfaced by the normal inbox flows instead of being silently treated as handled.
+- Resend/delivery confirmation is now the required truth source for “sent”.
+
+### Next
+- Present the exact StartupSubmit resend draft, record user approval, and resend through the corrected flow.
+- If other bounced human replies are found in audit, handle them as active blockers rather than historical noise.
+
+### SOP: 10/10
+- (+) Fixed the shared workflow instead of patching one thread by hand.
+- (+) Added a focused regression test plus Mini proof against real inbox data.
+
 ## Session 101 (2026-04-14)
 
 ### Done
