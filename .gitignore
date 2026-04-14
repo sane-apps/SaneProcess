@@ -57,3 +57,4 @@ test_output*.txt
 # Local memory/runtime caches
 .serena/
 scripts/hooks/.claude/
+lefthook-local.yml

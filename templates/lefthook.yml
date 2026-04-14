@@ -5,7 +5,8 @@
 # Skip:    LEFTHOOK=0 git commit ...
 #
 # No Bundler required — uses system swiftlint + SaneMaster.rb directly.
-# Projects WITH Bundler can override individual commands in lefthook-local.yml.
+# Projects WITH Bundler can override individual commands in lefthook-local.yml,
+# but that file must stay untracked and machine-local.
 
 pre-commit:
   parallel: true
