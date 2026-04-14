@@ -845,7 +845,7 @@ PY
         git reset --hard "origin/$branch" >/dev/null 2>&1
       else
         git checkout "$(git rev-parse HEAD)" >/dev/null 2>&1
-      end
+      fi
       git clean -fdx >/dev/null 2>&1
     SH
     ok = ssh_system('mini', remote_cmd)

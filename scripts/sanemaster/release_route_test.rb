@@ -259,6 +259,8 @@ exit(run_tests('SaneMaster Release Routing Tests') do
         assert_includes(remote_cmd, 'git clone --no-checkout')
         assert_includes(remote_cmd, 'git fetch --tags origin')
         assert_includes(remote_cmd, 'git reset --hard "origin/$branch"')
+        assert_includes(remote_cmd, "fi\n")
+        assert(!remote_cmd.include?("\n      end\n"), 'expected routed support repo shell to use fi, not Ruby end')
         true
       end
     end
