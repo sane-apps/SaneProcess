@@ -102,10 +102,19 @@ OUTPUT_DIR="$SANE_OUTPUT_DIR"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 EVAL_SCRIPT="$SCRIPT_DIR/evaluate_model.py"
 
+report_model_short_from_value() {
+  printf '%s' "$1" | sed 's|.*/||' | sed 's/\.ya\?ml$//' | sed 's/-MLX-4bit//' | sed 's/-4bit//' | tr '[:upper:]' '[:lower:]'
+}
+
 # Report file: separate for challengers to avoid clobbering production report
-if [ "$CHALLENGER_MODE" = true ] && [ -n "$BASE_MODEL_OVERRIDE" ]; then
-  # Extract short model name for report filename (e.g., "Qwen3-4B" from "Qwen/Qwen3-4B-MLX-4bit")
-  MODEL_SHORT=$(echo "$BASE_MODEL_OVERRIDE" | sed 's|.*/||' | sed 's/-MLX-4bit//' | sed 's/-4bit//' | tr '[:upper:]' '[:lower:]')
+if [ "$CHALLENGER_MODE" = true ]; then
+  if [ -n "$BASE_MODEL_OVERRIDE" ]; then
+    MODEL_SHORT=$(report_model_short_from_value "$BASE_MODEL_OVERRIDE")
+  elif [ -n "$CONFIG_OVERRIDE" ]; then
+    MODEL_SHORT=$(report_model_short_from_value "$CONFIG_OVERRIDE")
+  else
+    MODEL_SHORT="challenger"
+  fi
   REPORT="$OUTPUT_DIR/challenger_report_${APP_NAME}_${MODEL_SHORT}.md"
 else
   REPORT="$OUTPUT_DIR/training_report_${APP_NAME}.md"

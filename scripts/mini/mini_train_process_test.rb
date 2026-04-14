@@ -52,6 +52,13 @@ exit(run_tests('Mini Train Process Tests') do
       true
     end
 
+    test('challenger reports stay separate even when the run is selected by config only') do
+      assert_includes(train_source, 'report_model_short_from_value()')
+      assert_includes(train_source, 'elif [ -n "$CONFIG_OVERRIDE" ]; then')
+      assert_includes(train_source, 'REPORT="$OUTPUT_DIR/challenger_report_${APP_NAME}_${MODEL_SHORT}.md"')
+      true
+    end
+
     test('all Mini training modes share one MLX lock and drain stale processes before launch') do
       assert_includes(train_source, 'LOCKFILE="$OUTPUT_DIR/.training_mlx.lock"')
       assert_includes(train_source, 'wait_for_clean_training_processes()')
