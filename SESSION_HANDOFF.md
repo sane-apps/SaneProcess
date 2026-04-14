@@ -1,4 +1,30 @@
 
+## Session 101 (2026-04-14)
+
+### Done
+- Fixed a real Mini/local verification-lane bug in `scripts/sanemaster/test_mode.rb`.
+- Root cause: the non-log signed launch path still used LaunchServices `open` even when the launch depended on `SANEAPPS_DISABLE_KEYCHAIN=1` and `--sane-no-keychain`.
+- On SaneBar this made the staged signed app come up as Basic even though `mode status` still reported Pro fallback state in defaults.
+- Changed the launcher so any launch that depends on env vars or launch args bypasses `open` and spawns the app executable directly.
+- Added `scripts/sanemaster/test_mode_test.rb` coverage for the launch-mode preservation decision.
+
+### Live Verification
+- `ruby scripts/sanemaster/test_mode_test.rb` passed `4/4`.
+- `ruby -c scripts/sanemaster/test_mode.rb` passed.
+- Mini `./scripts/SaneMaster.rb test_mode --release --no-logs` for SaneBar launched `/Applications/SaneBar.app` with `--sane-no-keychain` present in the live process list.
+- Mini SaneBar `layout snapshot` then reported `licenseIsPro=true`, confirming the runtime lane was no longer silently downgrading to Basic.
+
+### Current State
+- Mini/local signed verification is trustworthy again for no-keychain launch modes.
+- If a launch depends on env/args, `test_mode` no longer relies on LaunchServices to preserve them.
+
+### Next
+- Keep treating any Mini/local “mode says Pro but runtime acts Basic” mismatch as a tooling regression first, not an app regression.
+
+### SOP: 10/10
+- (+) Fixed the shared launcher instead of normalizing the false-Basic workaround.
+- (+) Added a regression test and verified it on the real Mini lane.
+
 ## Session 100 (2026-04-14)
 
 ### Done

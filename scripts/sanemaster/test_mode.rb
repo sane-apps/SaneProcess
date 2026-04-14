@@ -83,17 +83,23 @@ module SaneMasterModules
       launch_args = launch_binary_args(allow_keychain: allow_keychain)
       ensure_single_instance
 
+      executable_path = File.join(launch_path, 'Contents', 'MacOS', project_name)
+
       if capture_logs
         puts '📝 Capturing logs to stdout...'
-        pid = spawn(env_vars, File.join(launch_path, 'Contents', 'MacOS', project_name), *launch_args)
+        pid = spawn(env_vars, executable_path, *launch_args)
         Process.wait(pid)
       else
-        open_cmd = ['open', *open_launch_env_pairs(allow_keychain: allow_keychain, force_free_mode: force_free_mode), launch_path]
-        open_cmd += ['--args', *launch_args] unless launch_args.empty?
-        opened = system(*open_cmd)
-        unless opened
-          puts '❌ Failed to launch app via open. Verify staged app bundle/executable exists.'
-          return false
+        if should_direct_launch?(env_vars: env_vars, launch_args: launch_args)
+          pid = spawn(env_vars, executable_path, *launch_args, out: File::NULL, err: File::NULL, pgroup: true)
+          Process.detach(pid)
+        else
+          open_cmd = ['open', launch_path]
+          opened = system(*open_cmd)
+          unless opened
+            puts '❌ Failed to launch app via open. Verify staged app bundle/executable exists.'
+            return false
+          end
         end
         unless launched_process_matches?(launch_path)
           puts "❌ Launch resolved to a different #{project_name}.app copy."
@@ -959,6 +965,10 @@ module SaneMasterModules
       return [] if allow_keychain
 
       ['--sane-no-keychain']
+    end
+
+    def should_direct_launch?(env_vars:, launch_args:)
+      !env_vars.empty? || !launch_args.empty?
     end
 
     def unsigned_fallback_active?
