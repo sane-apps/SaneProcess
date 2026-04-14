@@ -144,14 +144,16 @@ LaunchAgent (5:40 AM)
 
 - **Bash 3.2** — mini runs macOS default bash. No `+=()` arrays, no `<<<` herestrings. Use file-based alternatives.
 - **8GB RAM** — training uses ~3.7GB peak. One sweep at a time.
-- **Lock files** — both scripts use `mkdir`-based locks with 8-hour stale detection.
+- **Lock files** — Mini training now uses one shared `mkdir`-based MLX lock with 8-hour stale detection so production and challenger lanes cannot overlap on the 8 GB GPU.
 - **Logs** — LaunchAgent stderr appends (never truncates). `mini-train-all.sh` rotates at 1MB.
 - **Isolation enabled** — deploy refreshes `~/SaneApps-automation`, launch agents point `SANE_ROOT` there, and each scheduled training lane now re-runs `mini-prepare-automation-root.sh` before training so stale dirty clones fail fast instead of silently training on drifted state.
 - **Managed overlays only** — automation-root prep is allowed to reset hydrated training overlays (`train.jsonl`, eval packs, challenger configs, generated fixtures) before syncing. Any other dirt still fails the prep step.
 - **Training data hydration** — `mini-prepare-automation-root.sh` copies local-only `train.jsonl` / `valid.jsonl` datasets for SaneSync, SaneClip, SaneAI, and SaneVideo into the clean clones before training.
 - **Dataset regression guard** — `mini-train.sh` now fails before spending GPU time if the current train/valid counts shrink too far versus the latest successful run for that lane.
 - **Current bakeoff mode** — the daily challenger agent is pinned to `smollm3-3b` on `SaneAI` because `llama32-3b` reproducibly OOMs on the 8 GB Mini, runs until `08:30`, and skips Sundays so the weekly `SaneAI` run gets the full window.
+- **Production Mini baseline** — `lora_config_mini.yaml` now points at `smollm3-3b` as the scheduled production model on the 8 GB Mini; `llama32-3b` remains a manual off-Mini experiment until it is requalified.
 - **Unsafe-model preflight** — `mini-train.sh` now blocks `mlx-community/Llama-3.2-3B-Instruct-4bit` before launch on the 8 GB Mini unless `ALLOW_UNSAFE_TRAINING=true` is set, so the weekly lane fails cleanly with a report/alert instead of crashing Python on Metal OOM.
+- **Clean-start training** — `mini-train.sh` now drains stale `mlx_lm` / `evaluate_model.py` processes before each run and purges inactive memory so one crashed/manual lane does not poison the next scheduled lane.
 - **Progress tracking** — every training run now archives a timestamped report under `outputs/history/<App>/` and appends a TSV metrics row so week-over-week comparisons survive report overwrites.
 - **Interrupted run recovery** — `mini-train.sh` now evaluates the latest saved checkpoint when the hard stop interrupts a sweep, so overnight runs still produce scored signal instead of defaulting to `0%`.
 - **Realistic sweep sizing** — `mini-train.sh` now takes its default sweep length from the config file instead of hardcoded `1000` / `2000` defaults, and rescales warmup alongside decay steps so shortened overnight sweeps do not spend most of their life in warmup.
@@ -159,7 +161,7 @@ LaunchAgent (5:40 AM)
 - **Workflow-first scoring** — training and nightly reports now treat `commentary_workflow` as the primary gate and weight it above legacy action JSON accuracy, while still scoring the broader SaneVideo workflow packs and schema guardrails.
 - **8 GB stable baseline** — `SaneAI` production + challenger configs should use `val_batches: 1` on the Mini. `val_batches: 10` is no longer stable with the workflow-expanded corpus and reproducibly trips Metal OOM.
 - **8 GB sequence ceiling** — the audited merged corpus peaks at `1665` tokens on the SmolLM3 tokenizer and `1580` on the cached Llama tokenizer, so the Mini configs now use `max_seq_length: 1664` instead of carrying wasted `1792` / `2048` headroom.
-- **Checkpoint cadence** — the Mini configs save every `25` steps, with current default sweep targets of `50` iterations for the nightly SmolLM challenger lane and `100` iterations for the weekly Llama production lane.
+- **Checkpoint cadence** — the Mini configs save every `25` steps, with current default sweep targets of `50` iterations for the nightly SmolLM challenger lane and `100` iterations for the weekly SmolLM production lane.
 - **8 GB eval baseline** — keep `EVAL_MAX_TOKENS=128` on the Mini and clear the MLX Metal cache between eval cases. Longer generations are not stable enough on this box.
 - **SaneVideo fixtures** — `mini-prepare-automation-root.sh` hydrates ignored `Tests/Assets` media in the clean clone when `ffmpeg` is available on the Mini.
 - **Bad training is a hard failure** — `mini-train.sh` now fails the sweep if the train log shows `nan` loss or `Trained Tokens 0`, and emits a training alert instead of treating that as success.

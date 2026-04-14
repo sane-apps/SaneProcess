@@ -4,7 +4,7 @@
 #
 # Pipeline:
 # 1. Merge training data from all products into SaneAI
-# 2. Train production Llama model (auto-promotes if >90%)
+# 2. Train the production config selected for the Mini (auto-promotes if >90%)
 # 3. Run challenger models on the configured app data (report only, never auto-promote)
 #
 # Architecture (Option B): One unified SaneAI model trained on all product data.
@@ -93,11 +93,11 @@ if [ ! -f "$SANEAI_DIR/train.jsonl" ] || [ ! -f "$SANEAI_DIR/valid.jsonl" ]; the
   exit 1
 fi
 
-# Step 2: Train the production Llama model
+# Step 2: Train the production model selected by lora_config_mini.yaml
 PROD_START=$(date +%s)
 SANE_ROOT="$SANE_ROOT" \
 SANE_OUTPUT_DIR="$SANE_OUTPUT_DIR" \
-  bash "$SCRIPT_DIR/mini-train.sh" SaneAI
+  bash "$SCRIPT_DIR/mini-train.sh" SaneAI --config lora_config_mini.yaml
 PROD_EXIT=$?
 PROD_END=$(date +%s)
 PROD_MINUTES=$(( (PROD_END - PROD_START) / 60 ))

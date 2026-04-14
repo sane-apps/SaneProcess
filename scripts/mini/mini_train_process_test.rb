@@ -44,6 +44,23 @@ exit(run_tests('Mini Train Process Tests') do
     end
   end
 
+  test_category('Model selection + process hygiene') do
+    test('production training reads the model from the resolved base config') do
+      assert_includes(train_source, 'config_model_from_file()')
+      assert_includes(train_source, 'MODEL_FROM_BASE_CONFIG=$(config_model_from_file "$BASE_CONFIG")')
+      assert_includes(train_all_source, '--config lora_config_mini.yaml')
+      true
+    end
+
+    test('all Mini training modes share one MLX lock and drain stale processes before launch') do
+      assert_includes(train_source, 'LOCKFILE="$OUTPUT_DIR/.training_mlx.lock"')
+      assert_includes(train_source, 'wait_for_clean_training_processes()')
+      assert_includes(train_source, 'list_lingering_training_processes()')
+      assert_includes(train_source, 'purge 2>/dev/null || true')
+      true
+    end
+  end
+
   test_category('Unsafe model guard') do
     test('blocks known-unsafe Llama training on the 8 GB Mini unless explicitly overridden') do
       assert_includes(train_source, 'ALLOW_UNSAFE_TRAINING')

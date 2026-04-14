@@ -175,6 +175,9 @@ VALID_EXAMPLE_DROP_MAX_PCT="${VALID_EXAMPLE_DROP_MAX_PCT:-20}"
 PARTIAL_CHECKPOINT_EVAL="${PARTIAL_CHECKPOINT_EVAL:-true}"
 CHECKPOINT_FILES_TO_KEEP="${CHECKPOINT_FILES_TO_KEEP:-1}"
 ALLOW_UNSAFE_TRAINING="${ALLOW_UNSAFE_TRAINING:-false}"
+TRAIN_PROCESS_DRAIN_WAIT_SEC="${TRAIN_PROCESS_DRAIN_WAIT_SEC:-30}"
+TRAIN_PROCESS_KILL_GRACE_SEC="${TRAIN_PROCESS_KILL_GRACE_SEC:-5}"
+TRAIN_PREFLIGHT_PURGE="${TRAIN_PREFLIGHT_PURGE:-true}"
 
 resolve_base_config() {
   local candidate=""
@@ -199,6 +202,11 @@ config_iters_from_file() {
 config_warmup_from_file() {
   local config_file="$1"
   awk '/^[[:space:]]*warmup:/ {print $2; exit}' "$config_file" 2>/dev/null
+}
+
+config_model_from_file() {
+  local config_file="$1"
+  awk -F': ' '/^model:/ {gsub(/"/, "", $2); gsub(/\047/, "", $2); print $2; exit}' "$config_file" 2>/dev/null
 }
 
 warmup_steps_for_sweep() {
@@ -274,12 +282,8 @@ ALERT_HISTORY_LOG="$ALERTS_DIR/history.log"
 mkdir -p "$CURRENT_ALERTS_DIR"
 
 # Lock file (with stale lock detection)
-# Challengers share a single lock to run sequentially (not parallel — GPU contention)
-if [ "$CHALLENGER_MODE" = true ]; then
-  LOCKFILE="$OUTPUT_DIR/.training_${APP_NAME}_challenger.lock"
-else
-  LOCKFILE="$OUTPUT_DIR/.training_${APP_NAME}.lock"
-fi
+# The 8 GB Mini can only support one MLX train/eval workload at a time.
+LOCKFILE="$OUTPUT_DIR/.training_mlx.lock"
 if ! mkdir "$LOCKFILE" 2>/dev/null; then
   # Check if lock is stale (older than 8 hours — sweeps can take 5+ hours)
   if [ -d "$LOCKFILE" ] && [ "$(find "$LOCKFILE" -maxdepth 0 -mmin +480 2>/dev/null)" ]; then
@@ -341,11 +345,30 @@ prune_old_sweeps() {
 }
 
 cleanup() {
+  local child_pids pid
+
+  if [ -n "${TRAIN_PID:-}" ] && is_active_pid "$TRAIN_PID"; then
+    kill -TERM "$TRAIN_PID" 2>/dev/null || true
+    sleep 1
+    kill -KILL "$TRAIN_PID" 2>/dev/null || true
+  fi
+
+  child_pids=$(pgrep -P $$ 2>/dev/null || true)
+  for pid in $child_pids; do
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+  if [ -n "$child_pids" ]; then
+    sleep 1
+    for pid in $child_pids; do
+      kill -KILL "$pid" 2>/dev/null || true
+    done
+  fi
+
   prune_old_sweeps "" || true
   rm -rf "$LOCKFILE"
   rm -f "${RESULTS_FILE:-}"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 # Backstop: prune stale sweeps before training starts so old checkpoints
 # cannot accumulate after prior interrupted runs.
@@ -606,6 +629,87 @@ is_active_pid() {
       return 0
       ;;
   esac
+}
+
+list_lingering_training_processes() {
+  ps -axo pid=,ppid=,command= | awk \
+    -v self_pid="$$" \
+    -v sane_root="$SANE_ROOT" \
+    -v output_dir="$OUTPUT_DIR" '
+    {
+      pid=$1
+      ppid=$2
+      $1=""
+      $2=""
+      sub(/^  */, "", $0)
+      cmd=$0
+
+      if (pid == self_pid || ppid == self_pid) {
+        next
+      }
+
+      if (cmd ~ /mlx_lm lora/ || cmd ~ /evaluate_model\.py/) {
+        if (index(cmd, sane_root) || index(cmd, output_dir)) {
+          print pid "\t" cmd
+        }
+      }
+    }'
+}
+
+wait_for_clean_training_processes() {
+  local waited=0
+  local lingering_lines pid cmd
+
+  while true; do
+    lingering_lines=$(list_lingering_training_processes)
+    if [ -z "$lingering_lines" ]; then
+      break
+    fi
+
+    if [ "$waited" -lt "$TRAIN_PROCESS_DRAIN_WAIT_SEC" ]; then
+      if [ "$waited" -eq 0 ]; then
+        echo "Waiting for prior MLX training/eval processes to exit..." >&2
+      fi
+      sleep 5
+      waited=$((waited + 5))
+      continue
+    fi
+
+    echo "Draining lingering MLX training/eval processes before starting a new run." >&2
+    while IFS=$'\t' read -r pid cmd; do
+      [ -n "$pid" ] || continue
+      kill -TERM "$pid" 2>/dev/null || true
+    done <<EOF
+$lingering_lines
+EOF
+
+    sleep "$TRAIN_PROCESS_KILL_GRACE_SEC"
+
+    lingering_lines=$(list_lingering_training_processes)
+    if [ -n "$lingering_lines" ]; then
+      while IFS=$'\t' read -r pid cmd; do
+        [ -n "$pid" ] || continue
+        kill -KILL "$pid" 2>/dev/null || true
+      done <<EOF
+$lingering_lines
+EOF
+      sleep 2
+    fi
+
+    lingering_lines=$(list_lingering_training_processes)
+    if [ -n "$lingering_lines" ]; then
+      echo "Could not clear prior MLX training/eval processes:" >&2
+      printf '%s\n' "$lingering_lines" >&2
+      return 1
+    fi
+    break
+  done
+
+  if [ "$TRAIN_PREFLIGHT_PURGE" = "true" ] && command -v purge > /dev/null 2>&1; then
+    purge 2>/dev/null || true
+  fi
+
+  return 0
 }
 
 load_training_alert_state() {
@@ -1077,25 +1181,17 @@ echo "" >> "$REPORT"
 echo "## Model Setup" >> "$REPORT"
 echo "" >> "$REPORT"
 
-# Model selection: CLI flag > config file > default
+# Model selection: CLI flag > resolved base config > hard default
+BASE_CONFIG="$(resolve_base_config)"
+MODEL_FROM_BASE_CONFIG=""
+if [ -f "$BASE_CONFIG" ]; then
+  MODEL_FROM_BASE_CONFIG=$(config_model_from_file "$BASE_CONFIG")
+fi
+
 if [ -n "$BASE_MODEL_OVERRIDE" ]; then
   BASE_MODEL="$BASE_MODEL_OVERRIDE"
-elif [ -n "$CONFIG_OVERRIDE" ]; then
-  # Read model from config YAML (simple grep, no yq dependency)
-  CONFIG_PATH="$CONFIG_OVERRIDE"
-  if [ ! -f "$CONFIG_PATH" ]; then
-    CONFIG_PATH="$TRAIN_DIR/$CONFIG_OVERRIDE"
-  fi
-  if [ -f "$CONFIG_PATH" ]; then
-    MODEL_FROM_CONFIG=$(grep '^model:' "$CONFIG_PATH" | sed 's/model:[[:space:]]*//' | tr -d '"' | tr -d "'")
-    if [ -n "$MODEL_FROM_CONFIG" ]; then
-      BASE_MODEL="$MODEL_FROM_CONFIG"
-    else
-      BASE_MODEL="mlx-community/Llama-3.2-3B-Instruct-4bit"
-    fi
-  else
-    BASE_MODEL="mlx-community/Llama-3.2-3B-Instruct-4bit"
-  fi
+elif [ -n "$MODEL_FROM_BASE_CONFIG" ]; then
+  BASE_MODEL="$MODEL_FROM_BASE_CONFIG"
 else
   BASE_MODEL="mlx-community/Llama-3.2-3B-Instruct-4bit"
 fi
@@ -1119,6 +1215,28 @@ else
 fi
 METRICS_FILE="$HISTORY_DIR/training_metrics_workflow_v1.tsv"
 append_metrics_header_if_needed
+
+if ! wait_for_clean_training_processes; then
+  echo "**FAILED:** Could not clear prior MLX training/eval processes before starting." >> "$REPORT"
+  echo "" >> "$REPORT"
+  cp "$REPORT" "$REPORT_ARCHIVE"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$APP_NAME" \
+    "$MODE_LABEL" \
+    "$BASE_MODEL" \
+    "$TIMESTAMP" \
+    "0" \
+    "0" \
+    "" \
+    "0" \
+    "" \
+    "0" \
+    "1" \
+    "failure" \
+    "$REPORT_ARCHIVE" >> "$METRICS_FILE"
+  emit_training_failure_alert "Could not clear prior MLX training/eval processes before starting."
+  exit 1
+fi
 
 TOTAL_RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}')
 UNSAFE_TRAINING_REASON=""
@@ -1208,8 +1326,6 @@ echo "" >> "$REPORT"
 # =============================================================================
 echo "## Training Sweeps" >> "$REPORT"
 echo "" >> "$REPORT"
-
-BASE_CONFIG="$(resolve_base_config)"
 
 # Sweep defaults predate the workflow-expanded corpus. The Mini now relies on
 # earlier checkpoints plus interrupted-checkpoint eval so nightly runs still
