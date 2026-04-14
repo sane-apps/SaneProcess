@@ -25,6 +25,36 @@
 - (+) Fixed the shared launcher instead of normalizing the false-Basic workaround.
 - (+) Added a regression test and verified it on the real Mini lane.
 
+## Session 102 (2026-04-14)
+
+### Done
+- Fixed a release-lane harness bug in `apps/SaneBar/Scripts/qa.rb`.
+- Root cause: release smoke pass 2 reused the same staged app process from pass 1 but still enforced a fresh `launch` idle budget, so a hot second pass could fail as a fake launch regression.
+- Changed the smoke runner to relaunch the staged target before every pass after pass 1.
+- Added a matching structural guard in `apps/SaneBar/Tests/RuntimeGuardXCTests.swift`.
+- Hardened routed release support-repo handling in `scripts/SaneMaster.rb`:
+  - `release_preflight` no longer routes `sane-email-automation` at all because that command only inspects the live deployed worker
+  - real routed `release` now falls back to a clean Mini/origin clone of `sane-email-automation` when the local worker repo is dirty or behind, instead of aborting before the app release lane can even start
+- Added `scripts/sanemaster/release_route_test.rb` coverage for both routing changes.
+
+### Live Verification
+- `ruby scripts/sanemaster/release_route_test.rb` passed `11/11`.
+- Local SaneBar `RuntimeGuardXCTests` passed after the QA structural change.
+- Mini `./scripts/SaneMaster.rb verify` for SaneBar passed (`1069` tests).
+- Mini routed `./scripts/SaneMaster.rb release_preflight` now gets past the old `sane-email-automation` route blocker and reaches the true remaining release blockers:
+  - active runtime smoke average CPU `16.1% > 15.0%`
+  - open regression policy gate on `#129`
+  - live email worker drift serving `2.1.38` / build `2138` while appcast is `2.1.40` / build `2140`
+
+### Current State
+- The release lane is no longer blocked by a false pass-2 smoke artifact or by unrelated local email-worker dirt.
+- If `release_preflight` fails now, it is failing on actual runtime/perf/governance/channel state.
+
+### Next
+- Investigate the active runtime smoke overrun in the staged signed SaneBar app.
+- Decide whether `#129` is closeable or whether a manual open-regression release approval is warranted.
+- Bring the live email worker back in sync before trusting the direct-download lane.
+
 ## Session 100 (2026-04-14)
 
 ### Done

@@ -423,7 +423,7 @@ class SaneMaster
       sync_local_dir_to_mini!(saneprocess_repo_root, execution_saneprocess_repo, label: 'SaneProcess')
       sync_release_artifacts_to_mini!(Dir.pwd, execution_repo) if preserve_release_artifacts
       if release_routed
-        routed_webhook_repo = sync_release_support_repos_to_mini!(release_routed: true)
+        routed_webhook_repo = sync_release_support_repos_to_mini!(release_routed: true, command: command)
         sync_cktool_auth_to_mini!
         write_route_context_to_mini!(execution_repo, command, webhook_remote_repo: routed_webhook_repo)
       end
@@ -469,7 +469,8 @@ class SaneMaster
       remote_status = $?.respond_to?(:exitstatus) ? $?.exitstatus : (remote_ok ? 0 : 1)
       sync_outputs_from_mini!(Dir.pwd, execution_repo)
       sync_release_artifacts_from_mini!(Dir.pwd, execution_repo, warn_only: true) if release_routed
-      sync_release_support_repos_from_origin! if release_routed && remote_status.zero?
+      sync_release_support_repos_from_origin! if release_routed && remote_status.zero? &&
+                                                routed_command_requires_support_repo_sync?(command)
       if !release_routed && remote_status.zero?
         normalize_mini_repo_after_route!(Dir.pwd, execution_repo, label: 'workspace')
         normalize_mini_repo_after_route!(saneprocess_repo_root, execution_saneprocess_repo, label: 'SaneProcess')
@@ -729,6 +730,10 @@ PY
     %w[release release_preflight appstore_preflight asp].include?(command)
   end
 
+  def routed_command_requires_support_repo_sync?(command)
+    command == 'release'
+  end
+
   def saneprocess_repo_root
     File.expand_path('..', __dir__)
   end
@@ -784,7 +789,7 @@ PY
     run_external_command('bash', script, *forwarded_args)
   end
 
-  def sync_release_support_repos_to_mini!(release_routed: false)
+  def sync_release_support_repos_to_mini!(release_routed: false, command: nil)
     webhook_repo = sane_email_automation_repo_root
     return unless Dir.exist?(webhook_repo)
 
@@ -792,11 +797,61 @@ PY
     abort "❌ Could not map sane-email-automation to mini: #{webhook_repo}" unless remote_webhook_repo
 
     if release_routed
-      prepare_release_workspace_on_mini!(webhook_repo, remote_webhook_repo)
+      return nil unless routed_command_requires_support_repo_sync?(command)
+
+      prepare_release_support_repo_on_mini!(webhook_repo, remote_webhook_repo)
     else
       sync_local_dir_to_mini!(webhook_repo, remote_webhook_repo, label: 'sane-email-automation')
       remote_webhook_repo
     end
+  end
+
+  def prepare_release_support_repo_on_mini!(local_repo, remote_repo)
+    branch = current_git_branch(local_repo)
+    branch = 'main' if branch.empty? || branch == 'HEAD'
+    head = current_git_head(local_repo)
+    remote_sync = local_repo_remote_sync_context(local_repo, branch, head)
+
+    if !repo_has_uncommitted_changes_at?(local_repo) && remote_sync['status'] == 'matches'
+      return prepare_release_workspace_on_mini!(local_repo, remote_repo)
+    end
+
+    puts "⚠️  sane-email-automation local #{branch} is #{remote_sync['status']}; using a clean mini/origin checkout for routed release support."
+    scratch_root = mini_release_workspace_root(local_repo)
+    scratch_repo = routed_release_path_for_local(local_repo)
+    prune_stale_mini_release_workspaces!(local_repo, current_workspace_root: scratch_root)
+    remote_cmd = <<~SH
+      set -e
+      scratch_root=#{Shellwords.escape(scratch_root)}
+      scratch_repo=#{Shellwords.escape(scratch_repo)}
+      remote_repo=#{Shellwords.escape(remote_repo)}
+      branch=#{Shellwords.escape(branch)}
+      python3 - <<'PY'
+import os
+import shutil
+
+scratch_root = #{scratch_root.dump}
+if os.path.exists(scratch_root):
+    shutil.rmtree(scratch_root, ignore_errors=False)
+PY
+      [ ! -e "$scratch_root" ]
+      mkdir -p #{Shellwords.escape(File.dirname(scratch_repo))}
+      git clone --no-checkout "$remote_repo" "$scratch_repo" >/dev/null
+      cd "$scratch_repo"
+      GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git fetch --tags origin >/dev/null 2>&1 || true
+      if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+        git checkout -B "$branch" "origin/$branch" >/dev/null 2>&1
+        git branch --set-upstream-to "origin/$branch" "$branch" >/dev/null 2>&1 || true
+        git reset --hard "origin/$branch" >/dev/null 2>&1
+      else
+        git checkout "$(git rev-parse HEAD)" >/dev/null 2>&1
+      end
+      git clean -fdx >/dev/null 2>&1
+    SH
+    ok = ssh_system('mini', remote_cmd)
+    abort '❌ Failed to prepare a clean routed sane-email-automation workspace on the mini.' unless ok
+
+    scratch_repo
   end
 
   def sync_release_support_repos_from_origin!

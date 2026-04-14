@@ -80,6 +80,14 @@ class ReleaseRoutingHarness < SaneMaster
     { 'status' => @remote_sync.fetch(repo_dir, 'matches'), 'branch' => branch, 'remote_ref' => head }
   end
 
+  def map_local_path_to_mini(local_path)
+    "/mini#{local_path}"
+  end
+
+  def routed_release_path_for_local(local_path, _local_repo = Dir.pwd)
+    File.join('/Users/stephansmac/.sanemaster/routed-workspaces/testcase', File.basename(local_path))
+  end
+
   private
 
   def system(*args)
@@ -212,6 +220,45 @@ exit(run_tests('SaneMaster Release Routing Tests') do
         assert_eq(subject.ff_calls.length, 1, 'expected one fast-forward sync call')
         assert_eq(subject.ff_calls.first[:repo_dir], repo)
         assert_eq(subject.ff_calls.first[:label], 'sane-email-automation')
+        true
+      end
+    end
+
+    test('skips routed support repo sync for release_preflight') do
+      with_temp_repo do |repo|
+        subject.system_calls.clear
+        subject.set_webhook_repo_root(repo)
+
+        result = subject.send(:sync_release_support_repos_to_mini!, release_routed: true, command: 'release_preflight')
+
+        assert_eq(result, nil)
+        assert_eq(subject.system_calls.length, 0, 'expected no routing work for release_preflight')
+        true
+      end
+    end
+
+    test('uses a clean mini clone when routed release support repo is dirty locally') do
+      with_temp_repo do |repo|
+        subject.system_calls.clear
+        subject.set_webhook_repo_root(repo)
+        subject.set_repo_dirty(repo, true)
+        subject.set_branch(repo, 'main')
+        subject.set_head(repo, 'abc123')
+        subject.set_remote_sync(repo, 'behind')
+
+        routed_repo = subject.send(:sync_release_support_repos_to_mini!, release_routed: true, command: 'release')
+
+        assert(routed_repo.to_s.include?('/Users/stephansmac/.sanemaster/routed-workspaces/'))
+        ssh_call = subject.system_calls.find do |call|
+          call.first == 'ssh' &&
+            call.include?('mini') &&
+            call.any? { |entry| entry.is_a?(String) && entry.include?('git clone --no-checkout') }
+        end
+        assert(ssh_call, 'expected an ssh call that prepares the clean routed support workspace')
+        remote_cmd = ssh_call.reverse.find { |entry| entry.is_a?(String) && entry.include?('git clone --no-checkout') }
+        assert_includes(remote_cmd, 'git clone --no-checkout')
+        assert_includes(remote_cmd, 'git fetch --tags origin')
+        assert_includes(remote_cmd, 'git reset --hard "origin/$branch"')
         true
       end
     end
