@@ -210,9 +210,13 @@ cp /path/to/YourApp/fastlane/keys/AuthKey_YOUR_API_KEY_ID.p8 \
    ~/Projects/NewProject/fastlane/keys/
 ```
 
-### 2.4 GitHub Secrets (For CI/CD)
+### 2.4 GitHub Secrets (Optional manual GitHub fallback only)
 
-Set in repo Settings → Secrets → Actions:
+Only add these if you intentionally keep a manual GitHub-hosted fallback workflow.
+Mini/local release remains the default.
+Do not add `dependabot.yml` by default. Handle dependency sweeps locally unless a repo carries a documented hosted exception.
+
+Set in repo Settings → Secrets → Actions only when needed:
 
 | Secret | Description |
 |--------|-------------|

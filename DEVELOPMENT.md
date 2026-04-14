@@ -207,6 +207,17 @@ Treat that as a real release gate, not optional polish:
 - if it says the README is stale, fix the README before release
 - do not bypass it by calling shipped user-facing changes “internal”
 
+### GitHub Actions Policy
+
+SaneApps is Mini/local first.
+
+- Default verification, release prep, and smoke testing should run on the Mini or locally through `SaneMaster.rb`.
+- GitHub workflows should be manual fallbacks, not automatic `push`, `pull_request`, or `schedule` spend by default.
+- Dependabot should stay off by default too. Do dependency sweeps locally unless a repo documents a real hosted exception.
+- If a repo needs GitHub-hosted automation again, document the reason first. Convenience alone is not enough.
+- GitHub is only justified when you specifically need a GitHub-hosted lane to produce an externally visible status check or artifact.
+- Validation treats any non-manual workflow trigger or repo-level `dependabot.yml` as drift unless the file includes `SANEAPPS_GITHUB_HOSTED_EXCEPTION: <reason>`.
+
 | Need | Standard path | Not this |
 |------|---------------|----------|
 | Find the right tool first | `ruby scripts/SaneMaster.rb tool_discovery --query "..."` | Random searches, guessing, or inventing a new script first |

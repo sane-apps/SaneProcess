@@ -18,7 +18,6 @@
 #   ├── .claude/research.md     (empty stub)
 #   ├── .github/
 #   │   ├── FUNDING.yml
-#   │   ├── dependabot.yml
 #   │   └── ISSUE_TEMPLATE/bug_report.md
 #   ├── scripts/
 #   │   └── generate_download_link.rb
@@ -193,15 +192,6 @@ def main
   File.write(File.join(project_dir, '.github', 'FUNDING.yml'), <<~YML)
     custom:
       - https://saneapps.lemonsqueezy.com
-  YML
-
-  File.write(File.join(project_dir, '.github', 'dependabot.yml'), <<~YML)
-    version: 2
-    updates:
-      - package-ecosystem: "bundler"
-        directory: "/"
-        schedule:
-          interval: "weekly"
   YML
 
   File.write(File.join(project_dir, '.github', 'ISSUE_TEMPLATE', 'bug_report.md'), <<~MD)

@@ -102,6 +102,17 @@ class SisterAppsHarness < ValidationReport
   end
 end
 
+class WorkflowPolicyHarness < ValidationReport
+  def initialize(root:)
+    super()
+    @root = root
+  end
+
+  def sane_apps_root
+    @root
+  end
+end
+
 include TestFramework
 
 def product_definition(name, slug:, domain:)
@@ -251,6 +262,155 @@ exit(run_tests('Validation report tests') do
 
         issues = []
         subject.send(:check_sister_apps_lists, issues)
+
+        assert_eq(issues, [])
+      end
+
+      true
+    end
+  end
+
+  test_category('Q0 GitHub workflow policy checks') do
+    test('flags automatic GitHub workflow triggers without an explicit exception') do
+      Dir.mktmpdir('validation-report-workflow-policy') do |tmpdir|
+        workflow_dir = File.join(tmpdir, 'apps/SaneBar/.github/workflows')
+        FileUtils.mkdir_p(workflow_dir)
+        File.write(
+          File.join(workflow_dir, 'ci.yml'),
+          <<~YAML
+            name: CI
+            on:
+              push:
+                branches: [main]
+              workflow_dispatch:
+            jobs:
+              verify:
+                runs-on: macos-latest
+                steps:
+                  - run: echo hi
+          YAML
+        )
+
+        subject = WorkflowPolicyHarness.new(root: tmpdir)
+        issues = []
+        subject.send(:check_github_workflow_policy, issues)
+
+        assert_eq(issues.length, 1)
+        assert(issues.first.include?('automatic GitHub triggers (push)'))
+      end
+
+      true
+    end
+
+    test('allows manual-only workflows') do
+      Dir.mktmpdir('validation-report-workflow-manual') do |tmpdir|
+        workflow_dir = File.join(tmpdir, 'mcp/Sane-Mem/.github/workflows')
+        FileUtils.mkdir_p(workflow_dir)
+        File.write(
+          File.join(workflow_dir, 'summary.yml'),
+          <<~YAML
+            name: Summary
+            on:
+              workflow_dispatch:
+                inputs:
+                  issue_number:
+                    required: true
+                    type: number
+            jobs:
+              summary:
+                runs-on: ubuntu-latest
+                steps:
+                  - run: echo hi
+          YAML
+        )
+
+        subject = WorkflowPolicyHarness.new(root: tmpdir)
+        issues = []
+        subject.send(:check_github_workflow_policy, issues)
+
+        assert_eq(issues, [])
+      end
+
+      true
+    end
+
+    test('allows documented hosted exceptions') do
+      Dir.mktmpdir('validation-report-workflow-exception') do |tmpdir|
+        workflow_dir = File.join(tmpdir, 'infra/SaneProcess/.github/workflows')
+        FileUtils.mkdir_p(workflow_dir)
+        File.write(
+          File.join(workflow_dir, 'nightly.yml'),
+          <<~YAML
+            # SANEAPPS_GITHUB_HOSTED_EXCEPTION: required for externally visible nightly artifact publication
+            name: Nightly
+            on:
+              schedule:
+                - cron: "0 3 * * *"
+            jobs:
+              nightly:
+                runs-on: ubuntu-latest
+                steps:
+                  - run: echo hi
+          YAML
+        )
+
+        subject = WorkflowPolicyHarness.new(root: tmpdir)
+        issues = []
+        subject.send(:check_github_workflow_policy, issues)
+
+        assert_eq(issues, [])
+      end
+
+      true
+    end
+
+    test('flags repo-level dependabot automation and covers web repos too') do
+      Dir.mktmpdir('validation-report-dependabot') do |tmpdir|
+        github_dir = File.join(tmpdir, 'web/saneapps.com/.github')
+        FileUtils.mkdir_p(github_dir)
+        File.write(
+          File.join(github_dir, 'dependabot.yml'),
+          <<~YAML
+            version: 2
+            updates:
+              - package-ecosystem: "npm"
+                directory: "/"
+                schedule:
+                  interval: "weekly"
+          YAML
+        )
+
+        subject = WorkflowPolicyHarness.new(root: tmpdir)
+        issues = []
+        subject.send(:check_github_workflow_policy, issues)
+
+        assert_eq(issues.length, 1)
+        assert(issues.first.include?('dependabot.yml enables automatic GitHub dependency PR automation'))
+      end
+
+      true
+    end
+
+    test('allows documented dependabot exceptions') do
+      Dir.mktmpdir('validation-report-dependabot-exception') do |tmpdir|
+        github_dir = File.join(tmpdir, 'apps/SaneBar/.github')
+        FileUtils.mkdir_p(github_dir)
+        File.write(
+          File.join(github_dir, 'dependabot.yml'),
+          <<~YAML
+            # SANEAPPS_GITHUB_HOSTED_EXCEPTION: temporary external dependency audit while local sweep is being replaced
+            version: 2
+            updates:
+              - package-ecosystem: "bundler"
+                directory: "/"
+                schedule:
+                  interval: "weekly"
+          YAML
+        )
+
+        subject = WorkflowPolicyHarness.new(root: tmpdir)
+        issues = []
+        subject.send(:check_github_workflow_policy, issues)
 
         assert_eq(issues, [])
       end

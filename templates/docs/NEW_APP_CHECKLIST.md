@@ -8,7 +8,9 @@
 - [ ] Run setup script: `./scripts/setup_new_app.sh AppName com.appname.app`
 - [ ] Create GitHub repo: `gh repo create sane-apps/AppName --public`
 - [ ] Push initial commit
-- [ ] Add GitHub Secrets for CI/CD:
+- [ ] Keep GitHub workflows manual-only by default (`workflow_dispatch` only)
+- [ ] Do not add `dependabot.yml` by default; run dependency sweeps locally unless a hosted exception is documented
+- [ ] Add GitHub Secrets only if you intentionally keep a manual GitHub-hosted fallback:
   - `APPLE_CERTIFICATE_BASE64`
   - `APPLE_CERTIFICATE_PASSWORD`
   - `KEYCHAIN_PASSWORD`

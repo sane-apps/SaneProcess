@@ -32,6 +32,9 @@ class ValidationReport
   REPORT_DIR = File.join(File.dirname(__FILE__), '..', 'outputs', 'validation')
   PRODUCT_CONFIG_PATH = File.join(SANE_APPS_ROOT, 'infra/SaneProcess/config/products.yml')
   MIN_SAMPLES_FOR_SIGNIFICANCE = 30  # Bare minimum, 100+ preferred
+  WORKFLOW_POLICY_EXCEPTION_MARKER = 'SANEAPPS_GITHUB_HOSTED_EXCEPTION:'
+  MANUAL_WORKFLOW_TRIGGERS = %w[workflow_dispatch workflow_call].freeze
+  GITHUB_POLICY_SEGMENTS = %w[apps infra mcp web].freeze
 
   PROJECTS = %w[
     apps/SaneBar
@@ -252,6 +255,10 @@ class ValidationReport
     # === CODEX SKILL HEALTH CHECK ===
     # Local Codex skills should use real entrypoint files and match the Codex registry.
     check_codex_skill_health(issues_found)
+
+    # === GITHUB HOSTED AUTOMATION CHECK ===
+    # Repo-owned workflows and Dependabot should stay local-first unless explicitly excepted.
+    check_github_workflow_policy(issues_found)
 
     @metrics[:config_consistency] = {
       issues: issues_found.size,
@@ -494,6 +501,69 @@ class ValidationReport
 
     if registry_only.any?
       @warnings << "Q0: [codex] SKILLS_REGISTRY.md entries missing local skill dirs: #{registry_only.join(', ')}"
+    end
+  end
+
+  def check_github_workflow_policy(issues_found)
+    workflow_policy_repositories.each do |repo_root|
+      repo_label = repo_root.delete_prefix("#{sane_apps_root}/")
+      github_dir = File.join(repo_root, '.github')
+      workflow_dir = File.join(github_dir, 'workflows')
+      dependabot_file = File.join(github_dir, 'dependabot.yml')
+
+      if Dir.exist?(workflow_dir)
+        Dir.glob(File.join(workflow_dir, '*.{yml,yaml}')).sort.each do |workflow_file|
+          content = File.read(workflow_file)
+          next if content.include?(WORKFLOW_POLICY_EXCEPTION_MARKER)
+
+          begin
+            config = YAML.safe_load(content, permitted_classes: [], aliases: true) || {}
+          rescue Psych::SyntaxError => e
+            issues_found << "[#{repo_label}] #{File.basename(workflow_file)} has invalid workflow YAML (#{e.message})"
+            next
+          end
+
+          triggers = workflow_trigger_keys(config)
+          non_manual = triggers - MANUAL_WORKFLOW_TRIGGERS
+          next if non_manual.empty?
+
+          issues_found << "[#{repo_label}] #{File.basename(workflow_file)} uses automatic GitHub triggers (#{non_manual.join(', ')}); default must stay manual workflow_dispatch unless the file documents #{WORKFLOW_POLICY_EXCEPTION_MARKER} <reason>"
+        end
+      end
+
+      next unless File.exist?(dependabot_file)
+
+      dependabot_content = File.read(dependabot_file)
+      next if dependabot_content.include?(WORKFLOW_POLICY_EXCEPTION_MARKER)
+
+      issues_found << "[#{repo_label}] dependabot.yml enables automatic GitHub dependency PR automation; default must stay local-first unless the file documents #{WORKFLOW_POLICY_EXCEPTION_MARKER} <reason>"
+    end
+  end
+
+  def workflow_policy_repositories
+    GITHUB_POLICY_SEGMENTS.flat_map do |segment|
+      root = File.join(sane_apps_root, segment)
+      next [] unless Dir.exist?(root)
+
+      Dir.children(root).sort.map { |child| File.join(root, child) }
+    end.select do |repo_root|
+      next false unless File.directory?(repo_root)
+
+      File.directory?(File.join(repo_root, '.github'))
+    end
+  end
+
+  def workflow_trigger_keys(config)
+    on_config = config['on'] || config[:on] || config[true]
+    case on_config
+    when String
+      [on_config]
+    when Array
+      on_config.map(&:to_s)
+    when Hash
+      on_config.keys.map(&:to_s)
+    else
+      []
     end
   end
 

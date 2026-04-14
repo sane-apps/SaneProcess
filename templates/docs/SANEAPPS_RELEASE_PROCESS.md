@@ -236,14 +236,19 @@ custom:
 
 ---
 
-## 8. CI/CD Automation
+## 8. GitHub Workflow Policy
 
-### GitHub Actions Workflow
+Mini/local release is canonical.
 
-See `templates/release.yml` for the standard workflow:
+- Use `SaneMaster.rb` and local or Mini release scripts first.
+- GitHub-hosted workflows are optional fallback paths only.
+- Default GitHub workflow trigger should be `workflow_dispatch`, not automatic `push`, `pull_request`, or `schedule`.
+- Do not enable repo-level `dependabot.yml` by default. Handle dependency updates locally unless there is a documented hosted exception.
+- If a workflow genuinely needs automatic GitHub-hosted execution, the file must carry `SANEAPPS_GITHUB_HOSTED_EXCEPTION: <reason>`.
 
-- Triggered on: manual dispatch, weekly schedule, or version tag
-- Steps: build → sign → notarize → DMG → upload to distribution
+### Required Secrets
+
+Only needed if you intentionally keep a manual GitHub-hosted fallback:
 
 ### Required Secrets
 
