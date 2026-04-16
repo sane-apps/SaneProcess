@@ -62,6 +62,12 @@ LISTING_IGNORE_TOKENS = (
     "webinar",
     "newsletter",
 )
+STARTUPSUBMIT_VENDOR_REMEDIATION_WORKFLOWS = {
+    ("Gartner Digital Markets", "Activate account and complete profile"),
+    ("SaaSworthy", "Complete vendor portal profile"),
+    ("SourceForge", "Create vendor account"),
+    ("SourceForge", "Claim the SaneBar page"),
+}
 
 
 def extract_urls(*chunks):
@@ -218,7 +224,7 @@ def classify_email(row):
                 "Complete vendor portal profile",
                 "Required",
                 "Log into the SaaSworthy Vendor Portal and finish the SaneBar profile.",
-                "Use hi@saneapps.com, request the OTP, then update product details, pricing, screenshots, and listing copy in the vendor portal.",
+                "Use the approved listing email path for OTP and portal access, then update product details, pricing, screenshots, and listing copy in the vendor portal.",
                 urls,
                 primary_include=("sendgrid.net/ls/click",),
                 secondary_link="mailto:support@saasworthy.com",
@@ -476,6 +482,29 @@ def build_current_actions(history_rows):
         for item in current
         if superseded_workflows.get((item["site"], item["workflow"])) not in active_workflows
     ]
+
+    startupsubmit_redo_active = any(
+        item["site"] == "StartupSubmit"
+        and item["workflow"] == "Decide whether vendor must redo manual setups"
+        and item["action_status"] == "Needs action"
+        for item in current
+    )
+    if startupsubmit_redo_active:
+        for item in current:
+            if (item["site"], item["workflow"]) not in STARTUPSUBMIT_VENDOR_REMEDIATION_WORKFLOWS:
+                continue
+            item["action_status"] = "Monitor"
+            item["required"] = "Monitor"
+            item["action"] = "Blocked on StartupSubmit remediation under the correct email path."
+            item["instructions"] = (
+                "Do not do this setup by hand. Keep the vendor email/thread as evidence, but require "
+                "StartupSubmit to complete or transfer the setup using the approved listing inbox path "
+                "and to include the result in their remediation spreadsheet."
+            )
+            item["note"] = (
+                f"{item['note']} Blocked behind the open StartupSubmit remediation issue because this "
+                "setup work belongs to the paid vendor deliverable, not direct operator action."
+            )
 
     status_rank = {"Needs action": 0, "Optional": 1, "Monitor": 2}
     current.sort(key=lambda item: (status_rank.get(item["action_status"], 9), item["site"], item["workflow"]))

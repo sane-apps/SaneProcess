@@ -229,6 +229,132 @@ class ListingActionTests(unittest.TestCase):
         )
         self.assertIn("redo request", classified["note"])
 
+    def test_saasworthy_portal_instruction_does_not_use_hi_inbox(self):
+        row = make_email(
+            from_email="team@saasworthy.com",
+            subject="Vendor Portal Access is now active",
+            body_text="Log in https://sendgrid.net/ls/click/portal",
+        )
+        classified = LISTING_RULES.classify_email(row)
+        self.assertEqual(classified["site"], "SaaSworthy")
+        self.assertNotIn("hi@saneapps.com", classified["instructions"])
+        self.assertIn("approved listing email path", classified["instructions"])
+
+    def test_build_current_actions_downgrades_vendor_setup_when_startupsubmit_redo_is_active(self):
+        history = [
+            {
+                "site": "Gartner Digital Markets",
+                "workflow": "Activate account and complete profile",
+                "required": "Required",
+                "action": "Activate Gartner",
+                "instructions": "Use the activation link.",
+                "primary_link": "https://example.com/gartner",
+                "secondary_link": "",
+                "note": "Stale activation link.",
+                "email_id": 511,
+                "status": "needs_human",
+                "category": "other",
+                "from_email": "noreply-digitalmarkets@gartner.com",
+                "subject": "Activate Your Gartner Digital Markets Account",
+                "created_at": "2026-04-09 09:32:02",
+                "all_urls": "",
+            },
+            {
+                "site": "SaaSworthy",
+                "workflow": "Complete vendor portal profile",
+                "required": "Required",
+                "action": "Finish the profile",
+                "instructions": "Log in and fill it out.",
+                "primary_link": "https://example.com/vendor",
+                "secondary_link": "",
+                "note": "Current setup step.",
+                "email_id": 531,
+                "status": "needs_human",
+                "category": "other",
+                "from_email": "team@saasworthy.com",
+                "subject": "Vendor Portal Access is now active",
+                "created_at": "2026-04-08 12:00:00",
+                "all_urls": "",
+            },
+            {
+                "site": "SourceForge",
+                "workflow": "Create vendor account",
+                "required": "Required",
+                "action": "Create the account",
+                "instructions": "Register the business account.",
+                "primary_link": "https://sourceforge.net/user/registration_business",
+                "secondary_link": "",
+                "note": "Account needed first.",
+                "email_id": 526,
+                "status": "needs_human",
+                "category": "other",
+                "from_email": "noreply@sourceforge.net",
+                "subject": "Software Request: SaneBar",
+                "created_at": "2026-04-08 08:57:23",
+                "all_urls": "",
+            },
+            {
+                "site": "SourceForge",
+                "workflow": "Claim the SaneBar page",
+                "required": "Required",
+                "action": "Claim the page",
+                "instructions": "Click the claim link.",
+                "primary_link": "https://sourceforge.net/software/product/SaneBar/claim",
+                "secondary_link": "",
+                "note": "Live page exists.",
+                "email_id": 528,
+                "status": "needs_human",
+                "category": "other",
+                "from_email": "software@slashdotmedia.com",
+                "subject": "SaneBar on SourceForge",
+                "created_at": "2026-04-09 03:08:52",
+                "all_urls": "",
+            },
+            {
+                "site": "StartupSubmit",
+                "workflow": "Decide whether vendor must redo manual setups",
+                "required": "Required",
+                "action": "Require cleanup.",
+                "instructions": "Use the transcript to force cleanup.",
+                "primary_link": "https://startupsubmit.app",
+                "secondary_link": "",
+                "note": "Later transcript supersedes review.",
+                "email_id": 552,
+                "status": "needs_human",
+                "category": "support",
+                "from_email": "transcripts@startupsubmit.on.crisp.email",
+                "subject": "Chat transcript (#b55)",
+                "created_at": "2026-04-10 18:50:58",
+                "all_urls": "",
+            },
+        ]
+        current = LISTING_RULES.build_current_actions(history)
+        vendor_rows = {
+            (item["site"], item["workflow"]): item
+            for item in current
+            if item["site"] in {"Gartner Digital Markets", "SaaSworthy", "SourceForge"}
+        }
+        self.assertEqual(
+            vendor_rows[("Gartner Digital Markets", "Activate account and complete profile")]["action_status"],
+            "Monitor",
+        )
+        self.assertEqual(
+            vendor_rows[("SaaSworthy", "Complete vendor portal profile")]["action_status"],
+            "Monitor",
+        )
+        self.assertEqual(
+            vendor_rows[("SourceForge", "Create vendor account")]["action_status"],
+            "Monitor",
+        )
+        self.assertEqual(
+            vendor_rows[("SourceForge", "Claim the SaneBar page")]["action_status"],
+            "Monitor",
+        )
+        self.assertIn(
+            "Do not do this setup by hand.",
+            vendor_rows[("SourceForge", "Claim the SaneBar page")]["instructions"],
+        )
+
     def test_generic_listing_email_is_captured(self):
         rows = [
             make_email(

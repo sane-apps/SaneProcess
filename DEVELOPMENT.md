@@ -189,6 +189,7 @@ Operational SOP:
 - `scripts/automation/sane-status-crossref.sh` now shows the live listing-action counts and current `Needs action` rows.
 - Known recurring vendors should get explicit rules in `scripts/automation/listing_actions_rules.py`.
 - New unknown listing/setup senders are still surfaced via the generic heuristic path, with a note saying they should be promoted to a dedicated rule if they recur.
+- If the open queue includes `StartupSubmit — Decide whether vendor must redo manual setups`, then downstream setup rows like Gartner, SaaSworthy, and SourceForge are vendor-owned remediation, not direct operator work. Keep them visible as evidence/monitoring, but do not manually complete those setups unless the user explicitly overrides that rule.
 
 Tracker columns are designed for owner action, not inbox triage:
 - `action_status`: `Needs action`, `Optional`, or `Monitor`
