@@ -1,4 +1,43 @@
 
+## Session 105 (2026-04-20)
+
+### Done
+- Root-caused a shared inbox/status regression after the canonical `status` runner failed in `[2/5] Inbox status` with `ModuleNotFoundError: No module named 'email_delivery'`.
+- Confirmed the real failure chain:
+  - `infra/scripts/check-inbox.sh` imports `email_delivery`
+  - `scripts/automation/email_delivery.py` and `scripts/automation/email_delivery_test.py` existed only in the untracked auto-reconcile stash commit `e3f0836`
+  - those files never landed on tracked `main` / `origin/main`
+  - durable memory/handoff language had claimed the delivery-aware inbox fix was complete even though the helper file was missing from the real tree
+- Restored the missing tracked helper + regression test into `infra/SaneProcess`, committed `57fd824` (`fix: restore tracked email delivery helper`), and pushed it to `origin/main`.
+- Reconciled Air and Mini with the canonical path `scripts/automation/reconcile-air-mini.sh mini`.
+
+### Live Verification
+- `python3 scripts/automation/email_delivery_test.py` passed `3/3`.
+- `bash /Users/sj/SaneApps/infra/scripts/check-inbox.sh check` now runs cleanly again and shows live inbox state instead of crashing on import.
+- `bash scripts/automation/sane-status-crossref.sh` now completes end-to-end again:
+  - Sales: 74 orders / $576.26 gross / $525.25 kept over the last 30 days
+  - Inbox: 3 action-needed threads (`#608`, `#606`, `#604`)
+  - Listings: 1 needs-action row (`StartupSubmit`, email `#600`)
+  - Open GitHub issues: `SaneBar #129` only
+  - Open PRs: `SaneClip #8`, `SaneVideo #13-17`
+- Canonical repo reconcile results:
+  - Air: `SaneBar`, `SaneClick`, `SaneClip`, `SaneHosts`, `SaneSales`, `SaneSync`, `SaneVideo`, `SaneAI`, and `SaneProcess` all clean and aligned
+  - Mini: same repos reconciled clean; dirty `SaneBar` and dirty/behind `SaneProcess` were auto-stashed then synchronized successfully
+
+### Current State
+- The immediate split-brain repo problem is fixed. Air and Mini now agree on the tracked `SaneProcess` control-plane state.
+- The shared inbox/status workflow is trustworthy again because the missing `email_delivery.py` helper is now tracked and pushed.
+- One non-git fragmentation source remains: local Codex automation state differs between Air and Mini for `saneops-am-run` and `saneops-pm-run` (`PAUSED` on Air vs `ACTIVE` on Mini). That drift is outside repo sync and still needs an explicit automation decision if host parity matters.
+
+### Next
+- Decide whether to normalize the Mini `saneops-am-run` / `saneops-pm-run` automation status to match the Air (`PAUSED`), since that drift can still create “system looks out of sync” confusion even with repo parity restored.
+- Resume the App Store screenshot/public-lane work from a clean synchronized base.
+
+### SOP: 9/10
+- (+) Fixed the shared tool instead of working around the broken status output.
+- (+) Verified the actual root cause through memory/history plus current git state before changing code.
+- (-) Durable notes previously claimed the inbox delivery fix was complete even though the helper files were never tracked on `main`.
+
 ## Session 104 (2026-04-14)
 
 ### Done
