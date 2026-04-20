@@ -32,6 +32,7 @@ RELEASE_LAST_ERR_COMMAND=""
 CURRENT_GATE=""
 RELEASE_ERRORS=()
 RELEASE_ERR_GATE_RECORDED=""
+RELEASE_TEMP_PATHS=()
 
 log_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
@@ -351,6 +352,14 @@ release_err_trap() {
 release_exit_trap() {
     local exit_code="$1"
     set +e
+
+    if [ "${#RELEASE_TEMP_PATHS[@]}" -gt 0 ]; then
+        local temp_path=""
+        for temp_path in "${RELEASE_TEMP_PATHS[@]}"; do
+            [ -n "${temp_path}" ] || continue
+            remove_path "${temp_path}" >/dev/null 2>&1 || true
+        done
+    fi
 
     local status="success"
     local summary="release completed"
@@ -2386,6 +2395,97 @@ remove_path() {
         else
             rm -rf "${path}"
         fi
+    fi
+}
+
+register_release_temp_path() {
+    local path="$1"
+    [ -n "${path}" ] || return 0
+    RELEASE_TEMP_PATHS+=("${path}")
+}
+
+webhook_checkout_branch() {
+    local repo_dir="$1"
+    local branch=""
+
+    branch=$(git -C "${repo_dir}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+    if [ -z "${branch}" ] || [ "${branch}" = "HEAD" ]; then
+        branch="main"
+    fi
+    printf '%s' "${branch}"
+}
+
+prepare_clean_webhook_checkout() {
+    local source_dir="$1"
+    local branch="$2"
+    local remote_url=""
+    local clean_root=""
+    local clean_repo=""
+
+    remote_url=$(git -C "${source_dir}" remote get-url origin 2>/dev/null || true)
+    if [ -z "${remote_url}" ]; then
+        log_error "Could not resolve sane-email-automation origin URL from ${source_dir}"
+        return 1
+    fi
+
+    clean_root=$(mktemp -d "/tmp/sane-email-automation-release.XXXXXX")
+    clean_repo="${clean_root}/repo"
+    register_release_temp_path "${clean_root}"
+
+    if ! GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git clone --no-checkout "${remote_url}" "${clean_repo}" >/dev/null 2>&1; then
+        log_error "Could not clone sane-email-automation from ${remote_url}"
+        return 1
+    fi
+
+    if ! (
+        cd "${clean_repo}" &&
+        GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git fetch --tags origin >/dev/null 2>&1 || true
+        if git show-ref --verify --quiet "refs/remotes/origin/${branch}"; then
+            git checkout -B "${branch}" "origin/${branch}" >/dev/null 2>&1
+            git branch --set-upstream-to "origin/${branch}" "${branch}" >/dev/null 2>&1 || true
+            git reset --hard "origin/${branch}" >/dev/null 2>&1
+        else
+            git checkout "$(git rev-parse HEAD)" >/dev/null 2>&1
+        fi
+        git clean -fdx >/dev/null 2>&1
+    ); then
+        log_error "Could not prepare a clean sane-email-automation checkout for release sync."
+        return 1
+    fi
+
+    printf '%s' "${clean_repo}"
+}
+
+resolve_release_webhook_checkout() {
+    local source_dir="$1"
+    local source_js="$2"
+    local branch="$3"
+    local unrelated_changes=""
+    local current_head=""
+    local remote_head=""
+    local clean_repo=""
+
+    WEBHOOK_WORK_DIR="${source_dir}"
+    WEBHOOK_WORK_JS="${source_js}"
+
+    unrelated_changes=$(git -C "${source_dir}" status --porcelain --untracked-files=all 2>/dev/null | \
+        grep -vE '^[ MARCUD?]{2} src/handlers/webhook-lemonsqueezy\.js$' || true)
+    if [ -n "${unrelated_changes}" ]; then
+        log_warn "sane-email-automation checkout has unrelated dirty changes; using a clean temporary clone for webhook release sync."
+        clean_repo=$(prepare_clean_webhook_checkout "${source_dir}" "${branch}") || return 1
+        WEBHOOK_WORK_DIR="${clean_repo}"
+        WEBHOOK_WORK_JS="${clean_repo}/src/handlers/webhook-lemonsqueezy.js"
+        return 0
+    fi
+
+    GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${source_dir}" fetch origin "${branch}" >/dev/null 2>&1 || true
+    current_head=$(git -C "${source_dir}" rev-parse HEAD 2>/dev/null || true)
+    remote_head=$(git -C "${source_dir}" rev-parse "origin/${branch}" 2>/dev/null || true)
+    if [ -n "${current_head}" ] && [ -n "${remote_head}" ] && [ "${current_head}" != "${remote_head}" ]; then
+        log_warn "sane-email-automation checkout is not aligned with origin/${branch}; using a clean temporary clone for webhook release sync."
+        clean_repo=$(prepare_clean_webhook_checkout "${source_dir}" "${branch}") || return 1
+        WEBHOOK_WORK_DIR="${clean_repo}"
+        WEBHOOK_WORK_JS="${clean_repo}/src/handlers/webhook-lemonsqueezy.js"
     fi
 }
 
@@ -5771,27 +5871,26 @@ PY
         fi
     fi
     if [ -f "${WEBHOOK_JS}" ]; then
+        WEBHOOK_BRANCH="$(webhook_checkout_branch "${WEBHOOK_DIR}")"
+        WEBHOOK_WORK_DIR="${WEBHOOK_DIR}"
+        WEBHOOK_WORK_JS="${WEBHOOK_JS}"
+        if ! resolve_release_webhook_checkout "${WEBHOOK_DIR}" "${WEBHOOK_JS}" "${WEBHOOK_BRANCH}"; then
+            log_error "Could not prepare sane-email-automation for webhook release sync."
+            exit 1
+        fi
+
         # Match: 'AppName': { file: 'AppName-X.Y.Z.zip', ... } or .dmg
-        OLD_ENTRY=$(grep "'${APP_NAME}'" "${WEBHOOK_JS}" 2>/dev/null || true)
+        OLD_ENTRY=$(grep "'${APP_NAME}'" "${WEBHOOK_WORK_JS}" 2>/dev/null || true)
         if [ -n "${OLD_ENTRY}" ]; then
             # Determine extension from current entry (zip or dmg)
             CURRENT_EXT=$(echo "${OLD_ENTRY}" | grep -o '\.\(zip\|dmg\)' | head -1)
             CURRENT_EXT="${CURRENT_EXT:-.zip}"
-            sed -i '' "s|'${APP_NAME}': { file: '${APP_NAME}-[^']*'|'${APP_NAME}': { file: '${APP_NAME}-${VERSION}${CURRENT_EXT}'|" "${WEBHOOK_JS}"
+            sed -i '' "s|'${APP_NAME}': { file: '${APP_NAME}-[^']*'|'${APP_NAME}': { file: '${APP_NAME}-${VERSION}${CURRENT_EXT}'|" "${WEBHOOK_WORK_JS}"
             log_info "Updated email webhook: ${APP_NAME} → ${APP_NAME}-${VERSION}${CURRENT_EXT}"
 
             # Commit and deploy
-            if cd "${WEBHOOK_DIR}" 2>/dev/null; then
+            if cd "${WEBHOOK_WORK_DIR}" 2>/dev/null; then
                 WEBHOOK_REL_PATH="src/handlers/webhook-lemonsqueezy.js"
-                WEBHOOK_UNRELATED_CHANGES=$(git status --porcelain --untracked-files=all 2>/dev/null | \
-                    grep -vE '^[ MARCUD?]{2} src/handlers/webhook-lemonsqueezy\.js$' || true)
-                if [ -n "${WEBHOOK_UNRELATED_CHANGES}" ]; then
-                    log_error "sane-email-automation has unrelated dirty changes. Refusing to deploy a mixed Worker checkout."
-                    printf '%s\n' "${WEBHOOK_UNRELATED_CHANGES}" >&2
-                    cd "${PROJECT_ROOT}"
-                    exit 1
-                fi
-
                 git add "${WEBHOOK_REL_PATH}"
                 if git diff --cached --quiet; then
                     log_info "Webhook source already at ${APP_NAME}-${VERSION}${CURRENT_EXT}."
@@ -5845,7 +5944,7 @@ PY
             fi
 
             # Verify local replacement, remote source, and the deployed worker.
-            WEBHOOK_VERIFY=$(grep "'${APP_NAME}'" "${WEBHOOK_JS}" 2>/dev/null || true)
+            WEBHOOK_VERIFY=$(grep "'${APP_NAME}'" "${WEBHOOK_WORK_JS}" 2>/dev/null || true)
             if [ -n "${WEBHOOK_VERIFY}" ]; then
                 if echo "${WEBHOOK_VERIFY}" | grep -q "${APP_NAME}-${VERSION}"; then
                     log_info "Webhook local version verified: ${APP_NAME}-${VERSION} in PRODUCT_CONFIG"
@@ -5883,7 +5982,7 @@ PY
             fi
             log_info "Webhook live version verified: ${APP_NAME}-${VERSION} on email-api.saneapps.com"
         else
-            log_error "No '${APP_NAME}' entry found in webhook — update ${WEBHOOK_JS} before releasing."
+            log_error "No '${APP_NAME}' entry found in webhook — update ${WEBHOOK_WORK_JS} before releasing."
             exit 1
         fi
     else

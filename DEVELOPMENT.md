@@ -547,6 +547,7 @@ Setapp is a third macOS channel. It is **not** a replacement for direct distribu
 
 Non-negotiable rule:
 - Do **not** switch the direct website/business lane from Lemon Squeezy to Stripe just because Setapp uses Stripe.
+- Direct-release worker sync must stay isolated too: if `sane-email-automation` is dirty or behind `origin/main`, `release.sh` should use a fresh temporary clone for the worker deploy step instead of mixing unrelated worker changes into the app release.
 
 ### Setapp Implementation Checklist
 

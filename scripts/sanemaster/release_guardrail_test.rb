@@ -114,6 +114,18 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_includes(release_script, 'Website download flow verified via ${download_page_url}: ${expected_download_url}')
       true
     end
+
+    test('release.sh falls back to a clean webhook clone when the local worker checkout is dirty or behind') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+
+      assert_includes(release_script, 'resolve_release_webhook_checkout()')
+      assert_includes(release_script, 'using a clean temporary clone for webhook release sync')
+      assert_includes(release_script, 'git clone --no-checkout "${remote_url}" "${clean_repo}"')
+      assert_includes(release_script, 'WEBHOOK_WORK_DIR="${clean_repo}"')
+      assert(!release_script.include?('Refusing to deploy a mixed Worker checkout.'),
+             'expected the old hard stop on dirty sane-email-automation checkout to be removed')
+      true
+    end
   end
 
   test_category('Artifact marker detection') do

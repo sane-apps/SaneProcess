@@ -426,3 +426,4 @@ curl -X POST "https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records" 
 8. **Homebrew tap sync uses SSH** — `owner/repo` tap names resolve to `git@github.com:owner/repo.git` for headless push
 9. **Setapp is a third lane** — do not replace direct Lemon Squeezy with Stripe because Setapp uses Stripe
 10. **No channel drift** — every release lane must keep its own licensing, updater, and support surfaces clean
+11. **Email worker deploys need a clean repo** — if `sane-email-automation` is dirty or behind `origin/main`, the release lane should use a fresh temporary clone instead of failing or mixing unrelated worker changes into the app release

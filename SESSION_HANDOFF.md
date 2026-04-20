@@ -1,4 +1,52 @@
 
+## Session 107 (2026-04-20)
+
+### Done
+- Fixed the last shared release-lane blocker after the `SaneClip 2.2.15` ship: `scripts/release.sh` no longer dies when `infra/sane-email-automation` is dirty or behind `origin/main`.
+- Root cause was the old Step 10 webhook deploy path:
+  - it edited the live local worker checkout in place
+  - it hard-failed on unrelated worker dirt
+  - it had no clean-checkout fallback even though the routed SaneMaster release path already did
+- Added a shared fallback in `scripts/release.sh`:
+  - release now checks the worker checkout first
+  - if `sane-email-automation` has unrelated dirt or is off `origin/<branch>`, it clones a fresh temporary checkout and deploys from that clean clone instead
+  - temporary release clones are cleaned automatically on exit
+- Added a regression guard in `scripts/sanemaster/release_guardrail_test.rb`.
+- Updated the release SOP/docs so this is now documented policy, not tribal knowledge.
+
+### Live Verification
+- Local structural proof:
+  - `bash -n scripts/release.sh`
+  - `ruby scripts/sanemaster/release_guardrail_test.rb` passed `33/33`
+- Release-state proof from the real `SaneClip 2.2.15` ship:
+  - the earlier dirty/behind Mini worker checkout reproduced the failure exactly
+  - a clean temporary Mini clone of `sane-email-automation` successfully committed `SaneClip-2.2.15.zip`, deployed the Worker, and verified the live signed download config
+- Worker/live proof after the clean-clone deploy:
+  - GitHub `sane-email-automation` advanced to `e226c3a`
+  - Cloudflare Worker deploy succeeded
+  - live debug snapshot returned `SaneClip 2.2.15` with `SaneClip-2.2.15.zip`
+  - signed worker download URL returned HTTP `200`
+- Final release state:
+  - `SaneClip` direct release `2.2.15` is live
+  - App Store submission reached `WAITING_FOR_REVIEW`
+  - Air and Mini `SaneClip` repos are aligned at `3ba7a40`
+  - Mini `/Applications/SaneClip.app` is `2.2.15 (2215)`
+
+### Current State
+- The shared direct-release path is now safer:
+  - dirty local `sane-email-automation` work no longer blocks or contaminates an app release
+  - the release lane has a canonical clean-clone fallback instead of requiring manual operator cleanup first
+- `SaneClip 2.2.15` is fully live on direct channels and submitted to the Mac App Store review lane.
+
+### Next
+- If another app release hits the email-worker step while `sane-email-automation` is dirty, trust the standard `release.sh` path first before doing any manual worker clone/deploy workaround.
+- The next cleanup candidate in SaneProcess is the same concept for any other support/deploy sidecar repo that still assumes a pristine local checkout.
+
+### SOP: 10/10
+- (+) Fixed the shared tool instead of leaving the manual clean-clone workaround as tribal knowledge.
+- (+) Added an explicit regression guard and durable doc updates.
+- (+) Verified the real worker deploy outcome, not just static code strings.
+
 ## Session 106 (2026-04-20)
 
 ### Done
