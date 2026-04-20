@@ -68,6 +68,20 @@ exit(run_tests('Mini Train Process Tests') do
       assert_includes(train_source, 'purge 2>/dev/null || true')
       true
     end
+
+    test('production promotion clears stale adapter contents before copying the new winner') do
+      assert_includes(train_source, 'rm -rf "$PROD_DIR"')
+      assert_includes(train_source, 'cp -r "$BEST_ADAPTER_DIR/"* "$PROD_DIR/"')
+      true
+    end
+
+    test('nightly readiness derives the base model from production adapter metadata') do
+      nightly_source = File.read(File.expand_path('mini-nightly.sh', __dir__))
+      assert_includes(nightly_source, 'adapter_config.json')
+      assert_includes(nightly_source, 'payload.get("model", "")')
+      assert_includes(nightly_source, 'if [ -z "$SANEAI_MODEL" ]; then')
+      true
+    end
   end
 
   test_category('Unsafe model guard') do

@@ -31,6 +31,27 @@ EOF
   echo "Run this wrapper from the controlling machine where Codex is installed, not from a plain ssh shell on the Mini." >&2
   exit 1
 }
+
+has_active_window=false
+has_explicit_target=false
+for arg in "$@"; do
+  case "$arg" in
+    --active-window)
+      has_active_window=true
+      ;;
+    --app|--window-name|--window-id|--region|--interactive)
+      has_explicit_target=true
+      ;;
+  esac
+done
+
+if $has_active_window && ! $has_explicit_target; then
+  echo "Refusing Mini screenshot capture with bare --active-window." >&2
+  echo "That path often captures the automation Terminal instead of the intended app window." >&2
+  echo "Use --app/--window-name or --window-id, then close Safari/Preview after the capture." >&2
+  exit 2
+fi
+
 remote_cmd() {
   local out=""
   local arg
@@ -41,10 +62,30 @@ remote_cmd() {
   printf '%s' "$out"
 }
 
-rsync -az "$LOCAL_SKILL_DIR/" "${MINI_HOST}:${REMOTE_HELPER_DIR}/"
+resolve_mini_host() {
+  local host="$1"
+  local resolved_host=""
+
+  if ssh -o BatchMode=yes -o ConnectTimeout=2 "$host" true >/dev/null 2>&1; then
+    printf '%s' "$host"
+    return 0
+  fi
+
+  resolved_host="$(ssh -G "$host" 2>/dev/null | awk '/^hostname /{print $2; exit}')"
+  if [ -n "$resolved_host" ]; then
+    printf '%s' "$resolved_host"
+    return 0
+  fi
+
+  printf '%s' "$host"
+}
+
+resolved_mini_host="$(resolve_mini_host "$MINI_HOST")"
+
+rsync -az "$LOCAL_SKILL_DIR/" "${resolved_mini_host}:${REMOTE_HELPER_DIR}/"
 
 forwarded_args="$(remote_cmd "$@")"
 cmd="bash ${REMOTE_HELPER_DIR}/ensure_macos_permissions.sh && python3 ${REMOTE_HELPER_DIR}/take_screenshot.py ${forwarded_args}"
-remote_runner="$(remote_cmd bash "$REMOTE_MINI_GUI_RUN" --title "Mini Screenshot" --close-window -- "$cmd")"
+remote_runner="$(remote_cmd bash "$REMOTE_MINI_GUI_RUN" --title "Mini Screenshot" --reclaim-all --close-window -- "$cmd")"
 
-ssh "$MINI_HOST" "$remote_runner"
+ssh "$resolved_mini_host" "$remote_runner"

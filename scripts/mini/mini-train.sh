@@ -1787,6 +1787,7 @@ if [ -n "$BEST_ITERS" ]; then
     echo "**Auto-promotion skipped:** interrupted checkpoint only. Require a fully completed sweep before production promotion." >> "$REPORT"
   elif [ "$BEST_PRIMARY_STATUS" = "PASS" ] && [ "$BEST_ACCURACY" -ge "$PRODUCTION_PROMOTE_SCORE" ]; then
     PROD_DIR="$MODELS_DIR/production_adapter"
+    rm -rf "$PROD_DIR"
     mkdir -p "$PROD_DIR"
     cp -r "$BEST_ADAPTER_DIR/"* "$PROD_DIR/"
     echo "" >> "$REPORT"

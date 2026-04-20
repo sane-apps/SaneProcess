@@ -83,12 +83,21 @@ ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-gui-run.sh \
 
 What it does:
 - opens a real Terminal window in the logged-in Mini GUI session
+- tags that window with the shared `SaneApps Automation:` prefix
+- reclaims stale automation windows for the same job before launching
 - runs the command there
 - tees output to the requested log file
 - waits for completion
 - closes its own Terminal window by default
+- hides Terminal again after cleanup so old automation windows do not linger on the desktop
 
 Use this for App Store archive/export/upload recovery on the Mini. Do not leave throwaway Terminal windows open.
+
+If the Mini already looks polluted, run:
+
+```bash
+ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-reclaim-automation-windows.sh --all --hide-terminal'
+```
 
 ## Architecture
 

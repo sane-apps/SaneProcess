@@ -277,7 +277,24 @@ SANEAI_DIR="$APPS_DIR/SaneAI"
 SANEAI_TRAIN_DIR="$SANEAI_DIR/training_data"
 SANEAI_ADAPTER="$SANEAI_DIR/models/production_adapter"
 PYTHON="$HOME/mlx-env/bin/python3"
-SANEAI_MODEL="mlx-community/Llama-3.2-3B-Instruct-4bit"
+SANEAI_MODEL=""
+
+if [ -f "$SANEAI_ADAPTER/adapter_config.json" ]; then
+  SANEAI_MODEL=$("$PYTHON" - <<'PY' "$SANEAI_ADAPTER/adapter_config.json"
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+print(payload.get("model", ""))
+PY
+)
+fi
+
+if [ -z "$SANEAI_MODEL" ]; then
+  SANEAI_MODEL="mlx-community/Llama-3.2-3B-Instruct-4bit"
+fi
 
 if [ -f "$EVAL_SCRIPT" ] && [ -d "$SANEAI_ADAPTER" ] && [ -f "$SANEAI_TRAIN_DIR/train.jsonl" ]; then
   EVAL_CMD=(

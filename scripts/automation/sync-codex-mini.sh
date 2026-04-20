@@ -92,6 +92,7 @@ CONTROL_PLANE_REL_FILES=(
   "SaneApps/infra/SaneProcess/scripts/automation/git-sync-safe.sh"
   "SaneApps/infra/SaneProcess/scripts/automation/reconcile-air-mini.sh"
   "SaneApps/infra/SaneProcess/scripts/hooks/sane_curl_guard.sh"
+  "SaneApps/infra/SaneProcess/scripts/mini/mini-reclaim-automation-windows.sh"
   "SaneApps/infra/SaneProcess/scripts/mini/mini-nightly.sh"
   "SaneApps/infra/SaneProcess/scripts/mini/mini-prepare-automation-root.sh"
   "SaneApps/infra/SaneProcess/scripts/validation_report.rb"
