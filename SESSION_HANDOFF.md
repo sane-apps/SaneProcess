@@ -1,4 +1,71 @@
 
+## Session 106 (2026-04-20)
+
+### Done
+- Root-caused the remaining morning control-plane drift after repo sync was fixed: the canonical Air↔Mini wrappers still re-enabled Mini unattended runs by default.
+- Confirmed the actual failure chain:
+  - `sync-codex-mini.sh` still defaulted Mini AM/PM to `ACTIVE`
+  - `reconcile-air-mini.sh` always called that default sync path
+  - `start-workday.sh` also called the same default sync path
+  - result: even after manually pausing both hosts, the next normal reconcile/start-workday run silently flipped the Mini back to `ACTIVE`
+- Changed the shared control-plane policy so safe manual mode is the default:
+  - `sync-codex-mini.sh` now keeps Mini AM/PM paused by default
+  - explicit Mini runner activation is now opt-in via `--activate-mini-runs`
+  - `reconcile-air-mini.sh` defaults to the paused sync path and only re-enables Mini runs when explicitly asked
+  - `start-workday.sh` now keeps Mini runs paused by default and only activates them with `--activate-mini-runs`
+- Added `--dump-config` to `sync-codex-mini.sh` and `reconcile-air-mini.sh` so mode selection can be proven locally without touching the Mini.
+- Added focused regression coverage in `scripts/automation/control_plane_sync_test.rb`.
+- Updated shared operator docs in `DEVELOPMENT.md` and `scripts/automation/README.md` so the new safe default is documented.
+- Committed and pushed the change as `7ee1924` (`fix: make mini sync default to safe paused state`).
+
+### Live Verification
+- Local structural proof:
+  - `bash -n scripts/automation/sync-codex-mini.sh`
+  - `bash -n scripts/automation/reconcile-air-mini.sh`
+  - `bash -n scripts/automation/start-workday.sh`
+  - `ruby scripts/automation/control_plane_sync_test.rb` passed `4/4`
+- Validation / control-plane proof:
+  - `ruby scripts/validation_report.rb` ran cleanly enough to prove the tracked tree, and still flagged one real remaining hosted-file action: SaneBar Lemon hosted ZIP is `2.1.41` while appcast is `2.1.42`
+- Live Air↔Mini proof from committed tree:
+  - `bash scripts/automation/sync-codex-mini.sh mini --quiet --no-restart` now leaves both Air and Mini AM/PM TOMLs at `PAUSED`, and the Mini scheduler DB rows are also `PAUSED`
+  - `bash scripts/automation/reconcile-air-mini.sh mini --quiet` now preserves the paused state instead of reactivating Mini runs
+  - `bash scripts/automation/start-workday.sh mini --no-open` completed end to end:
+    - Mini control-plane sync passed
+    - Air↔Mini repo reconcile finished clean
+    - Mini automation status showed both AM/PM `PAUSED`
+    - local inbox summary rendered successfully
+  - `ruby scripts/SaneMaster.rb status` completed end to end
+- Current live status after the fixed morning pass:
+  - Sales last 30 days: `74` orders / `$576.26` gross / `$525.25` kept
+  - Inbox needs reply: `#608`, `#606`, `#604`
+  - Replied and ready to resolve: `#603`, `#600`
+  - Listings action-needed: only StartupSubmit follow-up on `#600`
+  - Open GitHub issue: `SaneBar #129`
+  - Open PRs: `SaneClip #8`, `SaneVideo #13-17`
+
+### Current State
+- The shared morning control-plane path is now self-consistent:
+  - local manual-work default = paused
+  - Mini paused state stays paused across sync, reconcile, and start-workday unless explicit activation is requested
+- `SaneProcess` is clean and aligned on Air and Mini after the committed reconcile pass.
+- Morning startup is ready to use again from the canonical scripts.
+- One real non-tooling follow-up remains from validation: replace the stale SaneBar Lemon hosted file (`2.1.41`) so it matches the live appcast (`2.1.42`).
+
+### Next
+- If unattended Mini runs are intentionally needed again, use the explicit activation path instead of relying on hidden defaults:
+  - `ruby scripts/SaneMaster.rb sync_mini mini --activate-mini-runs`
+  - or `bash scripts/automation/start-workday.sh mini --activate-mini-runs`
+- Clear the remaining real queue in order:
+  - inbox `#608`, `#606`, `#604`
+  - resolve delivered threads `#603` and `#600`
+  - SaneBar `#129`
+  - SaneBar hosted-file dashboard mismatch
+
+### SOP: 10/10
+- (+) Fixed the shared system behavior instead of manually re-pausing the Mini every morning.
+- (+) Added a local dry-run proof path and a focused regression test so the mode logic can be verified without touching the Mini.
+- (+) Re-ran the actual canonical wrappers (`sync-codex-mini`, `reconcile-air-mini`, `start-workday`, `SaneMaster status`) from the committed tree before calling the workflow ready.
+
 ## Session 105 (2026-04-20)
 
 ### Done
