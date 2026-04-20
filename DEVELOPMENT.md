@@ -111,7 +111,7 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 | `test_mode` | Kill → Build → Launch → Logs |
 | `doctor` | Environment health check |
 | `tool_discovery --query "..."` | Generate a proof receipt before using a workaround or adding a tool |
-| `sync_mini [mini] [--quiet] [--no-restart]` | Sync the active Codex control-plane profile to the Mini |
+| `sync_mini [mini] [--quiet] [--no-restart] [--activate-mini-runs]` | Sync the active Codex control-plane profile to the Mini; default keeps Mini AM/PM runs paused unless activation is explicit |
 | `universal_control_reset [--status|--reboot-mini|--cleanup-mini]` | Recover Air↔Mini Universal Control / pointer handoff |
 | `export` | Export code/docs (PDF/MD) |
 | `listing_actions` | Export the current listing/setup action tracker from inbox history |
@@ -229,7 +229,7 @@ SaneApps is Mini/local first.
 | Launch and smoke-test an app | `ruby scripts/SaneMaster.rb test_mode --release --no-logs` | Manual local launches and stale DerivedData builds |
 | Mini live window screenshots | `scripts/mini/capture-mini-screenshot.sh --app "<App>" --window-name "<Window>" --mode temp` | Plain `ssh` + `screencapture` guessing from a non-GUI shell |
 | Mini Safari tab control | `scripts/mini/mini-safari.sh open-read "<url>"` | One-off raw `ssh mini osascript` snippets for Safari evidence, listing links, or portal checks |
-| Sync Codex control-plane to the Mini | `ruby scripts/SaneMaster.rb sync_mini [mini] [--quiet] [--no-restart]` | Manual sync script hunting or recreating a second Mini config lane |
+| Sync Codex control-plane to the Mini | `ruby scripts/SaneMaster.rb sync_mini [mini] [--quiet] [--no-restart] [--activate-mini-runs]` | Manual sync script hunting or recreating a second Mini config lane |
 | Air↔Mini pointer handoff recovery | `ruby scripts/SaneMaster.rb universal_control_reset` | Random killall / reboot guessing when Universal Control breaks |
 | App Store review readiness | `ruby scripts/SaneMaster.rb appstore_preflight` | Clicking around ASC first and guessing what Apple meant |
 | Headless Mini signing bootstrap | `bash scripts/mini/bootstrap-build-server.sh` | Trying App Store archive/export first and debugging signing after the failure |
@@ -260,7 +260,7 @@ SaneProcess includes a semantic memory MCP server for cross-session retrieval.
 - Bootstrap: `scripts/mcp-central-memory/bootstrap-local.sh`
 - Default DB: `postgresql://<local-user>@localhost:5432/central_memory`
 - MCP key: `central-memory` in `/Users/sj/.codex/config.toml` and `.mcp.json`
-- Codex control-plane helper source lives in `scripts/codex-bin/`; `ruby scripts/SaneMaster.rb sync_mini` installs that source into local `~/.codex/bin/` and mirrors it to Mini
+- Codex control-plane helper source lives in `scripts/codex-bin/`; `ruby scripts/SaneMaster.rb sync_mini` installs that source into local `~/.codex/bin/` and mirrors it to Mini. Safe default keeps Mini AM/PM runs paused so manual Air sessions do not silently reactivate unattended Mini work. Use `--activate-mini-runs` only when you intentionally want the Mini scheduler active again.
 
 Setup:
 

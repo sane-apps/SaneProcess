@@ -1,10 +1,12 @@
 #!/bin/bash
-# Start-of-day workflow from MacBook Air while Mini runs automation.
+# Start-of-day workflow from MacBook Air. Default behavior keeps Mini
+# automations paused so a manual work session does not fight unattended runs.
 
 set -euo pipefail
 
 MINI_HOST="mini"
 OPEN_FILES=1
+ACTIVATE_MINI_RUNS=0
 
 usage() {
   cat <<USAGE
@@ -13,6 +15,7 @@ Usage: $(basename "$0") [mini-host] [--no-open]
 Examples:
   $(basename "$0")
   $(basename "$0") mini --no-open
+  $(basename "$0") mini --activate-mini-runs
 USAGE
 }
 
@@ -24,6 +27,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-open)
       OPEN_FILES=0
+      shift
+      ;;
+    --activate-mini-runs)
+      ACTIVATE_MINI_RUNS=1
       shift
       ;;
     --*)
@@ -48,8 +55,13 @@ LOCAL_INBOX="$HOME/SaneApps/infra/scripts/check-inbox.sh"
 mkdir -p "$OUT_DIR"
 
 echo "== SaneOps Workday Start =="
-echo "1) Syncing automation config to Mini..."
-bash "$SYNC_SCRIPT" "$MINI_HOST"
+if [[ "$ACTIVATE_MINI_RUNS" -eq 1 ]]; then
+  echo "1) Syncing automation config to Mini and activating Mini runs..."
+  bash "$SYNC_SCRIPT" "$MINI_HOST" --activate-mini-runs
+else
+  echo "1) Syncing automation config to Mini and keeping Mini runs paused..."
+  bash "$SYNC_SCRIPT" "$MINI_HOST" --pause-mini-am --pause-mini-pm
+fi
 
 echo ""
 echo "2) Air↔Mini repo reconcile..."

@@ -6,6 +6,8 @@ set -euo pipefail
 MINI_HOST="mini"
 QUIET=0
 SYNC_CONTROL_PLANE=1
+ACTIVATE_MINI_RUNS=0
+DUMP_CONFIG=0
 
 usage() {
   cat <<USAGE
@@ -14,7 +16,9 @@ Usage: $(basename "$0") [mini-host] [--quiet] [--no-sync-control-plane]
 Examples:
   $(basename "$0")
   $(basename "$0") mini --quiet
+  $(basename "$0") mini --activate-mini-runs
   $(basename "$0") mini --no-sync-control-plane
+  $(basename "$0") --dump-config
 USAGE
 }
 
@@ -43,6 +47,14 @@ while [[ $# -gt 0 ]]; do
       SYNC_CONTROL_PLANE=0
       shift
       ;;
+    --activate-mini-runs)
+      ACTIVATE_MINI_RUNS=1
+      shift
+      ;;
+    --dump-config)
+      DUMP_CONFIG=1
+      shift
+      ;;
     --*)
       die "Unknown option: $1"
       ;;
@@ -53,6 +65,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$DUMP_CONFIG" -eq 1 ]]; then
+  printf 'MINI_HOST=%s\n' "$MINI_HOST"
+  printf 'QUIET=%s\n' "$QUIET"
+  printf 'SYNC_CONTROL_PLANE=%s\n' "$SYNC_CONTROL_PLANE"
+  printf 'ACTIVATE_MINI_RUNS=%s\n' "$ACTIVATE_MINI_RUNS"
+  exit 0
+fi
+
 ROOT="$HOME/SaneApps/infra/SaneProcess"
 SYNC_SCRIPT="$ROOT/scripts/automation/sync-codex-mini.sh"
 GIT_SYNC_SCRIPT="$ROOT/scripts/automation/git-sync-safe.sh"
@@ -62,7 +82,11 @@ GIT_SYNC_SCRIPT="$ROOT/scripts/automation/git-sync-safe.sh"
 if [[ "$SYNC_CONTROL_PLANE" -eq 1 ]]; then
   [[ -x "$SYNC_SCRIPT" ]] || die "Missing control-plane sync script: $SYNC_SCRIPT"
   log "1) Syncing control-plane files to $MINI_HOST..."
-  bash "$SYNC_SCRIPT" "$MINI_HOST" --quiet --no-restart
+  sync_args=("$MINI_HOST" --quiet --no-restart --pause-mini-am --pause-mini-pm)
+  if [[ "$ACTIVATE_MINI_RUNS" -eq 1 ]]; then
+    sync_args=("$MINI_HOST" --quiet --no-restart --activate-mini-runs)
+  fi
+  bash "$SYNC_SCRIPT" "${sync_args[@]}"
 fi
 
 remote_home=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$MINI_HOST" 'printf %s "$HOME"') || die "Could not resolve $MINI_HOST home"

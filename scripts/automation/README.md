@@ -234,12 +234,12 @@ ruby scripts/SaneMaster.rb sync_mini mini --quiet --no-restart
 7. Seeds Mini's local knowledge graph cache from `~/.claude/memory/knowledge-graph.jsonl` when present.
 8. Updates Mini automation SQLite rows from TOML so prompt/status changes apply immediately.
 9. Verifies Air↔Mini SHA-256 parity for synced control-plane files, Codex binaries, and dry-run `rsync` parity for Codex skills.
-10. Sets Mini AM and PM runs active by default, with explicit pause flags when needed.
+10. Mirrors the safe local paused state by default so sync/reconcile cannot silently re-enable Mini background runs. Use explicit activation flags when you intentionally want Mini unattended runs.
 11. Optionally restarts Codex on Mini so scheduler reloads immediately.
 
 ### start-workday.sh
 
-One-command MacBook workflow start while Mini runs unattended.
+One-command MacBook workflow start that keeps Mini runs paused by default so manual sessions do not race unattended automation.
 
 **Usage:**
 ```bash
@@ -249,6 +249,7 @@ start-workday.sh mini --no-open
 
 **What it does:**
 1. Syncs automation config to Mini.
+   Default behavior keeps Mini AM/PM runs paused. Use `--activate-mini-runs` only when you explicitly want unattended Mini runs re-enabled.
 2. Runs the canonical Air↔Mini reconcile wrapper (`reconcile-air-mini.sh mini --no-sync-control-plane`).
 3. Pulls latest Mini morning/nightly reports locally.
 4. Shows Mini automation scheduler status.
@@ -268,6 +269,7 @@ reconcile-air-mini.sh mini --no-sync-control-plane
 
 **What it does:**
 1. Optionally syncs control-plane files to Mini without restarting Codex.
+   Default behavior keeps Mini AM/PM runs paused. Use `--activate-mini-runs` only when you explicitly want unattended Mini runs re-enabled.
 2. Runs `git-sync-safe.sh --reconcile-dirty` on the Mini first.
 3. Runs `git-sync-safe.sh --peer mini --reconcile-dirty` locally.
 4. Leaves canonical repos clean on both machines or fails loudly.

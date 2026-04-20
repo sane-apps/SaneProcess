@@ -1,16 +1,17 @@
 #!/bin/bash
 # Sync SaneOps Codex automation config and active Codex skill metadata from the
 # local machine to the Mac mini. Local role: paused (no duplicate runs). Mini
-# role: unattended runner for both morning and nightly SaneOps unless
-# explicitly paused.
+# role now mirrors that safe paused state by default so reconcile/start-workday
+# cannot silently re-enable background runs. Explicit activation is opt-in.
 
 set -euo pipefail
 
 MINI_HOST="mini"
 QUIET=0
 RESTART_CODEX=1
-REMOTE_AM_STATUS="ACTIVE"
-REMOTE_PM_STATUS="ACTIVE"
+REMOTE_AM_STATUS="PAUSED"
+REMOTE_PM_STATUS="PAUSED"
+DUMP_CONFIG=0
 
 usage() {
   cat <<USAGE
@@ -20,8 +21,12 @@ Examples:
   $(basename "$0")
   $(basename "$0") mini --quiet
   $(basename "$0") mini --no-restart
+  $(basename "$0") mini --activate-mini-runs
+  $(basename "$0") mini --activate-mini-am
+  $(basename "$0") mini --activate-mini-pm
   $(basename "$0") mini --pause-mini-am
   $(basename "$0") mini --pause-mini-pm
+  $(basename "$0") --dump-config
 USAGE
 }
 
@@ -50,12 +55,29 @@ while [[ $# -gt 0 ]]; do
       RESTART_CODEX=0
       shift
       ;;
+    --activate-mini-runs)
+      REMOTE_AM_STATUS="ACTIVE"
+      REMOTE_PM_STATUS="ACTIVE"
+      shift
+      ;;
+    --activate-mini-am)
+      REMOTE_AM_STATUS="ACTIVE"
+      shift
+      ;;
+    --activate-mini-pm)
+      REMOTE_PM_STATUS="ACTIVE"
+      shift
+      ;;
     --pause-mini-am)
       REMOTE_AM_STATUS="PAUSED"
       shift
       ;;
     --pause-mini-pm)
       REMOTE_PM_STATUS="PAUSED"
+      shift
+      ;;
+    --dump-config)
+      DUMP_CONFIG=1
       shift
       ;;
     --*)
@@ -67,6 +89,15 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$DUMP_CONFIG" -eq 1 ]]; then
+  printf 'MINI_HOST=%s\n' "$MINI_HOST"
+  printf 'QUIET=%s\n' "$QUIET"
+  printf 'RESTART_CODEX=%s\n' "$RESTART_CODEX"
+  printf 'REMOTE_AM_STATUS=%s\n' "$REMOTE_AM_STATUS"
+  printf 'REMOTE_PM_STATUS=%s\n' "$REMOTE_PM_STATUS"
+  exit 0
+fi
 
 command -v ssh >/dev/null 2>&1 || die "ssh not found"
 command -v scp >/dev/null 2>&1 || die "scp not found"
