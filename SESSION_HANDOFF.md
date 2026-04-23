@@ -1,4 +1,36 @@
 
+## Session 108 (2026-04-23)
+
+### Done
+- Updated the shared SaneApps SOP/docs for current Codex capabilities instead of leaving them as ad hoc operator knowledge.
+- Added permanent guidance to:
+  - run `tool_search` before declaring a Codex app/MCP capability missing
+  - keep Mini runtime/capture as the canonical SaneApps UI verification path
+  - use `mcp__nvidia_build__nvidia_vision` as a second-pass screenshot audit for clipping, overlap, wrong selected state, and contrast drift
+  - use `computer-use` only when Codex is attached to the same machine as the live GUI
+  - use `macos-automator` discovery before writing raw AppleScript/JXA
+  - use `automation_update` for recurring checks/follow-ups when the user wants ongoing monitoring
+- Updated the canonical docs:
+  - `/Users/sj/AGENTS.md`
+  - `/Users/sj/.claude/CLAUDE.md`
+  - `CLAUDE.md`
+  - `DEVELOPMENT.md`
+
+### Current State
+- Shared SOP now explicitly covers the newer Codex UI/tooling lanes.
+- Future Mini verification should combine:
+  - canonical Mini launch/capture
+  - clean saved screenshot/render evidence
+  - optional `nvidia_vision` second-pass screenshot review
+  - optional `computer-use` only when the active GUI is on the same host as Codex
+
+### Next
+- Fold the new screenshot/vision lane into ongoing Mini audits and release-readiness checks instead of treating it as a one-off extra.
+
+### SOP: 10/10
+- (+) Updated the canonical docs and memory immediately after changing durable workflow guidance.
+- (+) Captured the new Codex capabilities as explicit standard paths instead of tribal knowledge.
+
 ## Session 107 (2026-04-20)
 
 ### Done

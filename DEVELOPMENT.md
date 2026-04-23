@@ -35,6 +35,13 @@ SaneProcess has one SOP and multiple client-specific enforcement surfaces.
 
 Codex now documents an experimental `features.codex_hooks` flag, but it is still under development and off by default. Do not make it the primary SaneProcess contract yet.
 
+Codex extras that are stable enough to use in SOPs today:
+- `tool_search` for deferred app/MCP capability discovery before claiming a tool is missing
+- `computer-use` for live accessibility-tree inspection on the machine hosting the GUI
+- `macos-automator` for reusable AppleScript/JXA discovery before writing raw scripts
+- `mcp__nvidia_build__nvidia_vision` for second-pass screenshot audits after capture
+- `automation_update` for user-approved recurring checks or follow-ups
+
 Stable cross-client guardrails already enforced in shared runtime paths:
 
 - `~/SaneApps/infra/scripts/check-inbox.sh` (`present-draft` / `approve --user-approval` / `require_email_send_approval`)
@@ -440,6 +447,13 @@ ls -1 /tmp/app-renders
 4. **iOS simulator screenshots**
 
 When the issue is iPhone/iPad-only, use the app's simulator screenshot script or the iOS screenshot lane instead of desktop capture.
+
+4.5 **Codex second-pass visual audit**
+
+- After saving a Mini screenshot or deterministic render, run a screenshot-analysis pass such as `mcp__nvidia_build__nvidia_vision` when available.
+- Use it to check for clipped controls, overlap, wrong selected state, unreadable copy, and obvious contrast drift.
+- If Codex is attached to the same machine as the live GUI, `computer-use` can inspect the accessibility tree before or after capture.
+- These are supplements. The canonical proof is still the clean Mini screenshot or deterministic render artifact.
 
 Hard rule:
 - For any release-critical UI claim, keep at least one saved visual artifact: live Mini screenshot when available, otherwise a deterministic render PNG.
