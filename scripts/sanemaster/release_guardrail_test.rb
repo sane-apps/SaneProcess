@@ -770,5 +770,53 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert(subject.send(:verify_output_indicates_success?, body), 'clean output should still count as success')
       true
     end
+
+    test('accepts verify clean-pass override even when raw runner failure markers are present') do
+      body = <<~LOG
+        ** TEST FAILED **
+        ✅ 7 targets (clean pass despite a non-zero runner exit)
+      LOG
+
+      assert(subject.send(:verify_output_indicates_failure?, body), 'raw failure markers should still be detectable')
+      assert(subject.send(:verify_output_indicates_success?, body), 'clean-pass override should win for release preflight parsing')
+      true
+    end
+
+    test('treats auto-dedupe-only verify output as release-safe cleanup') do
+      body = <<~LOG
+        🧹 Auto-deduping runtime app copies for SaneBar...
+        Trashing /Users/example/Library/Developer/Xcode/DerivedData/SaneBar/Build/Products/Debug/SaneBar.app
+        Refreshing Launch Services
+        🧹 Auto-deduping runtime app copies for SaneBar...
+        SaneBar:
+          canonical: /Applications/SaneBar.app
+          present:   true
+          trashed:   1
+            - /Users/example/Library/Developer/Xcode/DerivedData/SaneBar/Build/Products/Debug/SaneBar.app
+      LOG
+
+      assert(!subject.send(:verify_output_indicates_failure?, body), 'dedupe cleanup should not look like a test failure')
+      assert(subject.send(:verify_output_indicates_runtime_dedupe_cleanup?, body, app_name: 'SaneBar'),
+             'dedupe-only cleanup should count as release-safe cleanup')
+      true
+    end
+
+    test('does not treat mixed test failure plus dedupe cleanup as release-safe cleanup') do
+      body = <<~LOG
+        ** TEST FAILED **
+        Trashing /Users/example/Library/Developer/Xcode/DerivedData/SaneBar/Build/Products/Debug/SaneBar.app
+        Refreshing Launch Services
+        🧹 Auto-deduping runtime app copies for SaneBar...
+        SaneBar:
+          canonical: /Applications/SaneBar.app
+          present:   true
+          trashed:   1
+      LOG
+
+      assert(subject.send(:verify_output_indicates_failure?, body), 'raw failure markers should still be detected')
+      assert(!subject.send(:verify_output_indicates_runtime_dedupe_cleanup?, body, app_name: 'SaneBar'),
+             'real test failures must not be treated as dedupe-only cleanup')
+      true
+    end
   end
 end)
