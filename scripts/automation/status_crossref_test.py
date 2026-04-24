@@ -79,17 +79,21 @@ class StatusCrossrefScriptTests(unittest.TestCase):
 
             bin_dir = root / "bin"
             bin_dir.mkdir()
+            gh_log = root / "gh-args.log"
             write_executable(
                 bin_dir / "gh",
                 textwrap.dedent(
                     """\
                     #!/usr/bin/env bash
-                    if [[ "$1" == "issue" && "$2" == "list" ]]; then
-                      printf '123\\tOPEN\\tStub issue\\n'
+                    printf '%s\\n' "$*" >> "$GH_LOG"
+                    if [[ "$1" == "search" && "$2" == "issues" ]]; then
+                      printf '## sane-apps/SaneProcess\\n'
+                      printf '  #8\\tOPEN\\tStub process issue\\tenhancement\\t2026-04-24T00:45:15Z\\n'
                       exit 0
                     fi
-                    if [[ "$1" == "pr" && "$2" == "list" ]]; then
-                      printf '17\\tOPEN\\tStub pr\\n'
+                    if [[ "$1" == "search" && "$2" == "prs" ]]; then
+                      printf '## sane-apps/Sane-AppleDocs\\n'
+                      printf '  #13\\tOPEN\\tStub docs dependency pr\\tdependabot[bot]\\tdependencies\\t2026-04-16T01:40:27Z\\n'
                       exit 0
                     fi
                     echo "unexpected gh args: $*" >&2
@@ -101,6 +105,7 @@ class StatusCrossrefScriptTests(unittest.TestCase):
             env = os.environ.copy()
             env["HOME"] = str(fake_home)
             env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            env["GH_LOG"] = str(gh_log)
 
             result = subprocess.run(
                 ["bash", str(script_copy)],
@@ -118,10 +123,17 @@ class StatusCrossrefScriptTests(unittest.TestCase):
                 result.stdout,
             )
             self.assertIn("[4/5] Open GitHub issues", result.stdout)
-            self.assertIn("123\tOPEN\tStub issue", result.stdout)
+            self.assertIn("## sane-apps/SaneProcess", result.stdout)
+            self.assertIn("#8\tOPEN\tStub process issue", result.stdout)
             self.assertIn("[5/5] Open GitHub PRs", result.stdout)
-            self.assertIn("17\tOPEN\tStub pr", result.stdout)
+            self.assertIn("## sane-apps/Sane-AppleDocs", result.stdout)
+            self.assertIn("#13\tOPEN\tStub docs dependency pr", result.stdout)
             self.assertIn("Done.", result.stdout)
+            gh_calls = gh_log.read_text(encoding="utf-8")
+            self.assertIn("search issues --owner sane-apps --state open", gh_calls)
+            self.assertIn("search prs --owner sane-apps --state open", gh_calls)
+            self.assertNotIn("issue list", gh_calls)
+            self.assertNotIn("pr list", gh_calls)
 
 
 if __name__ == "__main__":

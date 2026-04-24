@@ -1,4 +1,31 @@
 
+## Session 109 (2026-04-24)
+
+### Done
+- Fixed the canonical status runner after a fresh post-release check showed it was still printing GitHub issues/PRs from a hardcoded seven-app allowlist.
+- `scripts/automation/sane-status-crossref.sh` now uses org-wide `gh search --owner sane-apps --state open` for both issues and PRs.
+- Updated `scripts/automation/status_crossref_test.py` so the regression test fails if the runner falls back to `gh issue list` / `gh pr list` per app and proves non-app repos like `SaneProcess` and `Sane-AppleDocs` are included.
+
+### Live Verification
+- `python3 scripts/automation/status_crossref_test.py` passed.
+- `bash -n scripts/automation/sane-status-crossref.sh` passed.
+- Fresh `ruby scripts/SaneMaster.rb status` now surfaces:
+  - open issues: `SaneBar #136`, `SaneBar #129`, `SaneProcess #8`
+  - open PRs across `Sane-AppleDocs`, `Sane-XcodeBuildMCP`, `SaneClip`, `SaneProcess`, and `SaneVideo`
+
+### Current State
+- The status runner no longer hides SaneProcess/tooling repo work behind the app-repo allowlist.
+- The fresh status still shows `sane-email-automation` dirty/behind locally on the Mini, but direct app releases can use the clean-clone fallback from Session 107.
+
+### Next
+- Use the org-wide status output as the default triage queue before app-only issue work.
+- Triage the live GitHub work in this order: SaneBar `#136` / `#129`, SaneProcess `#8`, then dependency PR batches.
+
+### SOP: 10/10
+- (+) Reproduced the exact status omission with live GitHub data before patching.
+- (+) Fixed the shared status tool instead of relying on a one-off manual cross-check.
+- (+) Added a regression test that covers the previously missed non-app repos.
+
 ## Session 108 (2026-04-23)
 
 ### Done

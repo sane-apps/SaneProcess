@@ -71,20 +71,60 @@ fi
 
 printf '\n[4/5] Open GitHub issues (sane-apps org)\n'
 if command -v gh >/dev/null 2>&1; then
-  for repo in SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo; do
-    printf '\n## %s\n' "$repo"
-    gh issue list -R "sane-apps/${repo}" --state open --limit 10 || echo "  Unable to fetch issues for ${repo} (auth missing or no issues)."
-  done
+  issue_output="$(
+    gh search issues --owner sane-apps --state open --limit "${STATUS_GITHUB_LIMIT:-200}" \
+      --json repository,number,title,labels,updatedAt \
+      --jq '
+        group_by(.repository.nameWithOwner)[]
+        | "## " + .[0].repository.nameWithOwner + "\n"
+          + (map(
+              "  #" + (.number | tostring)
+              + "\tOPEN\t" + .title
+              + "\t" + (([.labels[].name] | join(", ")) // "")
+              + "\t" + .updatedAt
+            ) | join("\n"))
+      ' 2>&1
+  )" || {
+    echo "  Unable to fetch org-wide issues (auth missing or GitHub search unavailable)."
+    echo "$issue_output"
+    issue_output=""
+  }
+  if [[ -n "${issue_output:-}" ]]; then
+    printf '%s\n' "$issue_output"
+  else
+    echo "No open GitHub issues found."
+  fi
 else
   echo "GitHub CLI (gh) not installed"
 fi
 
 printf '\n[5/5] Open GitHub PRs (sane-apps org)\n'
 if command -v gh >/dev/null 2>&1; then
-  for repo in SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo; do
-    printf '\n## %s\n' "$repo"
-    gh pr list -R "sane-apps/${repo}" --state open --limit 10 || echo "  Unable to fetch PRs for ${repo} (auth missing or no PRs)."
-  done
+  pr_output="$(
+    gh search prs --owner sane-apps --state open --limit "${STATUS_GITHUB_LIMIT:-200}" \
+      --json repository,number,title,labels,updatedAt,author,isDraft \
+      --jq '
+        group_by(.repository.nameWithOwner)[]
+        | "## " + .[0].repository.nameWithOwner + "\n"
+          + (map(
+              "  #" + (.number | tostring)
+              + "\t" + (if .isDraft then "DRAFT" else "OPEN" end)
+              + "\t" + .title
+              + "\t" + .author.login
+              + "\t" + (([.labels[].name] | join(", ")) // "")
+              + "\t" + .updatedAt
+            ) | join("\n"))
+      ' 2>&1
+  )" || {
+    echo "  Unable to fetch org-wide PRs (auth missing or GitHub search unavailable)."
+    echo "$pr_output"
+    pr_output=""
+  }
+  if [[ -n "${pr_output:-}" ]]; then
+    printf '%s\n' "$pr_output"
+  else
+    echo "No open GitHub PRs found."
+  fi
 else
   echo "GitHub CLI (gh) not installed"
 fi
