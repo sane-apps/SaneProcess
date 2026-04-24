@@ -64,6 +64,23 @@ class StatusCrossrefScriptTests(unittest.TestCase):
                       }
                       File.write(json_out, JSON.pretty_generate(payload))
                       puts "stub listing actions written"
+                    when "hosted_file_actions"
+                      if ARGV.include?("--json")
+                        payload = {
+                          current_actions: [
+                            {
+                              app: "SaneBar",
+                              hosted_version: "2.1.41",
+                              expected_version: "2.1.45",
+                              variant_id: "1227172"
+                            }
+                          ]
+                        }
+                        puts JSON.generate(payload)
+                      else
+                        warn "expected --json"
+                        exit 1
+                      end
                     else
                       warn "unexpected command: #{command.inspect}"
                       exit 1
@@ -120,17 +137,23 @@ class StatusCrossrefScriptTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, msg=result.stderr)
-            self.assertIn("[3/5] Listing actions", result.stdout)
+            self.assertIn("[3/6] Listing actions", result.stdout)
             self.assertIn("Current actions: 1", result.stdout)
             self.assertIn(
                 "- SaaSworthy: Complete vendor portal profile (email #531)",
                 result.stdout,
             )
-            self.assertIn("[4/5] Open GitHub issues", result.stdout)
+            self.assertIn("[4/6] Hosted-file dashboard actions", result.stdout)
+            self.assertIn("Needs dashboard sync: 1", result.stdout)
+            self.assertIn(
+                "- SaneBar: hosted 2.1.41 -> expected 2.1.45 (variant 1227172)",
+                result.stdout,
+            )
+            self.assertIn("[5/6] Open GitHub issues", result.stdout)
             self.assertIn("Scope: org-wide", result.stdout)
             self.assertIn("## sane-apps/SaneProcess", result.stdout)
             self.assertIn("#8\tOPEN\tStub process issue", result.stdout)
-            self.assertIn("[5/5] Open GitHub PRs", result.stdout)
+            self.assertIn("[6/6] Open GitHub PRs", result.stdout)
             self.assertIn("## sane-apps/Sane-AppleDocs", result.stdout)
             self.assertIn("#13\tOPEN\tStub docs dependency pr", result.stdout)
             self.assertIn("Done.", result.stdout)

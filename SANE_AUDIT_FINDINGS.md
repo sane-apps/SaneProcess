@@ -11,6 +11,7 @@ Patched on 2026-04-24 after this audit:
 - Added shared `scripts/automation/github-queue.sh` and routed status/morning-report/default inbox GitHub views through explicit scopes.
 - Added local process metrics JSONL recording for verify, gate-review, hook blocks, release preflight, App Store preflight, and support-send outcomes.
 - Added `hosted-file-actions.py --evidence-out` for Markdown release evidence.
+- Added hosted-file dashboard actions to `SaneMaster status`, so Lemon Squeezy drift is part of the live status picture.
 - Added SaneBar repeated-regression gate fixtures for icon visibility/drag recovery and installer signing/update.
 - Extended the test quality scan to include Ruby/Python test files for basic tautology checks.
 

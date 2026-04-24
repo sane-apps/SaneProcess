@@ -197,6 +197,7 @@ This is a dashboard-action tracker, not an uploader. Lemon Squeezy currently exp
 Operational SOP:
 - `scripts/automation/morning-report.sh` now regenerates the workbook automatically, so new listing/setup emails show up in the nightly report without a manual spreadsheet pass.
 - `scripts/automation/sane-status-crossref.sh` now shows the live listing-action counts and current `Needs action` rows.
+- `scripts/automation/sane-status-crossref.sh` also shows hosted-file dashboard sync actions, so `ruby scripts/SaneMaster.rb status` surfaces Lemon Squeezy file drift alongside inbox, sales, listing actions, and org-wide GitHub issues/PRs.
 - Known recurring vendors should get explicit rules in `scripts/automation/listing_actions_rules.py`.
 - New unknown listing/setup senders are still surfaced via the generic heuristic path, with a note saying they should be promoted to a dedicated rule if they recur.
 - If the open queue includes `StartupSubmit — Decide whether vendor must redo manual setups`, then downstream setup rows like Gartner, SaaSworthy, and SourceForge are vendor-owned remediation, not direct operator work. Keep them visible as evidence/monitoring, but do not manually complete those setups unless the user explicitly overrides that rule.

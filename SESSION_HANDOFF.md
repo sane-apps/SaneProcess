@@ -17,6 +17,7 @@
   - validation Q4 now includes recorded verify attempts.
 - Release preflight now checks app-specific prevention gate fixtures from `test/fixtures/gates/<app>_*.json` before shipping.
 - Added hosted-file release evidence through `hosted-file-actions.py --evidence-out <path>`.
+- Added hosted-file dashboard actions to `ruby scripts/SaneMaster.rb status`, so status now reports Lemon Squeezy file drift directly.
 - Added SaneBar recurring-regression gate fixtures under `test/fixtures/gates/`.
 - Made `session_docs_test.rb` a real hermetic E2E with an isolated in-repo project and a test-only `CLAUDE_HOOK_SECRET`.
 - Fixed Mini Ruby 2.6 compatibility found by the expanded suite (`filter_map` and explicit `require "time"`).
@@ -31,6 +32,7 @@
 - Fresh Mini `ruby scripts/SaneMaster.rb status` after the patch:
   - no open GitHub PRs
   - open org-wide issues: SaneBar `#136`, SaneBar `#129`, SaneProcess `#8`
+  - hosted-file dashboard actions: SaneBar `2.1.41 -> 2.1.45`, SaneClip `2.2.14 -> 2.2.15`, SaneSales `1.2.7 -> 1.3.0`
   - SaneProcess `#8` is explicitly labeled `watching-external` and has a follow-up comment documenting the no-default-dependency decision.
   - inbox has one needs-reply sales/spam-looking thread: email `#621` (`Unique guest posting websites`)
   - listing actions still show StartupSubmit as one needs-action item; user said to ignore/chalk up for now
