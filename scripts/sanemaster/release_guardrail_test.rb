@@ -2,9 +2,11 @@
 # frozen_string_literal: true
 
 require_relative '../hooks/test/test_framework'
+require_relative 'gate_review'
 require_relative 'release'
 
 class ReleaseGuardrailHarness
+  include SaneMasterModules::GateReview
   include SaneMasterModules::Release
 
   def initialize
@@ -12,6 +14,13 @@ class ReleaseGuardrailHarness
     @stubbed_asc_paths = {}
     @stubbed_jxa_result = nil
     @last_jxa_script = nil
+    @saneprocess_repo_root = File.expand_path('../..', __dir__)
+  end
+
+  attr_writer :saneprocess_repo_root
+
+  def saneprocess_repo_root
+    @saneprocess_repo_root
   end
 
   def stub_url_status(url, code:, location: '', error: nil)
@@ -124,6 +133,55 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_includes(release_script, 'WEBHOOK_WORK_DIR="${clean_repo}"')
       assert(!release_script.include?('Refusing to deploy a mixed Worker checkout.'),
              'expected the old hard stop on dirty sane-email-automation checkout to be removed')
+      true
+    end
+  end
+
+  test_category('Release gate fixtures') do
+    test('finds app-specific gate fixtures in the SaneProcess fixture registry') do
+      Dir.mktmpdir('release-gates-') do |dir|
+        fixtures_dir = File.join(dir, 'test', 'fixtures', 'gates')
+        FileUtils.mkdir_p(fixtures_dir)
+        File.write(
+          File.join(fixtures_dir, 'sanebar_icon_visibility_drag.json'),
+          JSON.generate(
+            'rules' => [
+              {
+                'id' => 'sanebar-icon',
+                'trigger' => 'SaneBar icon visibility drag',
+                'seed' => 'SaneBar icon visibility drag regressed',
+                'block' => ['Release SaneBar icon visibility drag without coverage'],
+                'allow' => ['Release SaneClip listing update']
+              }
+            ]
+          )
+        )
+        File.write(File.join(fixtures_dir, 'saneclip_listing.json'), '{}')
+        subject.saneprocess_repo_root = dir
+
+        paths = subject.send(:release_gate_fixture_paths, 'SaneBar')
+        reports = subject.send(:release_gate_fixture_reports, 'SaneBar')
+
+        assert_eq(paths.length, 1)
+        assert(paths.first.end_with?('sanebar_icon_visibility_drag.json'))
+        assert_eq(reports.length, 1)
+        assert(reports.first[:passed], "expected fixture to pass: #{reports.first.inspect}")
+      end
+      true
+    end
+
+    test('reports malformed app-specific gate fixtures as failed release evidence') do
+      Dir.mktmpdir('release-gates-bad-') do |dir|
+        fixtures_dir = File.join(dir, 'test', 'fixtures', 'gates')
+        FileUtils.mkdir_p(fixtures_dir)
+        File.write(File.join(fixtures_dir, 'sanebar_bad.json'), '{"rules": [')
+        subject.saneprocess_repo_root = dir
+
+        reports = subject.send(:release_gate_fixture_reports, 'SaneBar')
+
+        assert_eq(reports.length, 1)
+        assert_eq(reports.first[:passed], false)
+      end
       true
     end
   end

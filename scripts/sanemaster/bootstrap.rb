@@ -402,14 +402,14 @@ module SaneMasterModules
       output = `codex mcp list 2>/dev/null`
       return {} if output.strip.empty?
 
-      server_names = output.lines.filter_map do |line|
+      server_names = output.lines.map do |line|
         stripped = line.strip
         next if stripped.empty?
         next if stripped.start_with?('Name ')
         next unless line.match?(/^\S+\s{2,}/)
 
         line.split(/\s{2,}/).first&.strip
-      end
+      end.compact
 
       server_names.uniq.each_with_object({}) { |name, acc| acc[name] = {} }
     rescue StandardError

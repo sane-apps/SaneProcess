@@ -118,6 +118,7 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 | `test_mode` | Kill → Build → Launch → Logs |
 | `doctor` | Environment health check |
 | `tool_discovery --query "..."` | Generate a proof receipt before using a workaround or adding a tool |
+| `gate_review <fixture.json> [--json]` | Deterministically review candidate prevention gates before promoting them into enforcement |
 | `sync_mini [mini] [--quiet] [--no-restart] [--activate-mini-runs]` | Sync the active Codex control-plane profile to the Mini; default keeps Mini AM/PM runs paused unless activation is explicit |
 | `universal_control_reset [--status|--reboot-mini|--cleanup-mini]` | Recover Air↔Mini Universal Control / pointer handoff |
 | `export` | Export code/docs (PDF/MD) |
@@ -133,6 +134,8 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 License support rule: real customer license keys come only from LemonSqueezy-backed orders and license-key records. Use `check-inbox.sh review` + `whois` + the LemonSqueezy recovery/backfill flow for missing-key support. Do not generate local fallback keys.
 
 Email delivery rule: do not treat Worker acceptance as success. Normal inbox operations must only count an outbound as sent when Resend shows delivery evidence (`delivered`, `opened`, `clicked`, or `complained`). A `bounced` or still-unconfirmed outbound remains actionable and must be surfaced in `check`, `context`, `audit`, and `check-reply` until it is fixed and resent.
+
+Support-send metrics rule: reply/compose outcomes append local-only `support_send` events to `~/.sanemaster/process_metrics.jsonl` when they reach a terminal delivery, bounce, unconfirmed, or API-failure state. These metrics must not record recipient address or subject; use email ids, delivery ids, lane, and status evidence instead.
 
 Duplicate-purchase refund rule: when you can prove the same customer paid twice for the same product, you may auto-refund the duplicate order without waiting on the normal “documented unresolved bug >24h” threshold, as long as the action still has an audit note and proof file. Standard investigation path:
 
@@ -217,6 +220,26 @@ Treat that as a real release gate, not optional polish:
 - if it says the README is stale, fix the README before release
 - do not bypass it by calling shipped user-facing changes “internal”
 
+### Candidate Gate Review
+
+Use `ruby scripts/SaneMaster.rb gate_review <fixture.json>` before adding a new blocking hook or SOP rule. A fixture must include the incident seed, examples that must block, and examples that must remain allowed. The command is local and deterministic: no external package, cloud call, telemetry path, or automatic rule promotion.
+
+Release preflight also loads app-specific fixtures from `test/fixtures/gates/<normalized-app-name>_*.json`. A malformed or failing fixture blocks release until the prevention evidence is fixed or deliberately removed.
+
+```json
+{
+  "rules": [
+    {
+      "id": "no-force-push-main",
+      "trigger": "force push main",
+      "seed": "A release was damaged by force push main",
+      "block": ["git push --force origin main"],
+      "allow": ["git push origin feature-branch", "git status --short"]
+    }
+  ]
+}
+```
+
 ### GitHub Actions Policy
 
 SaneApps is Mini/local first.
@@ -233,6 +256,7 @@ SaneApps is Mini/local first.
 | Find the right tool first | `ruby scripts/SaneMaster.rb tool_discovery --query "..."` | Random searches, guessing, or inventing a new script first |
 | Check live project status | `ruby scripts/SaneMaster.rb status` | Piecing status together manually from git, inbox, sales, and issues |
 | Build and test app code | `ruby scripts/SaneMaster.rb verify [--ui]` | Raw `xcodebuild` unless the tool itself is what you are fixing |
+| Promote a new prevention gate | `ruby scripts/SaneMaster.rb gate_review <fixture.json>` | Adding hook blocks from one anecdote or untested pattern matching |
 | Launch and smoke-test an app | `ruby scripts/SaneMaster.rb test_mode --release --no-logs` | Manual local launches and stale DerivedData builds |
 | Mini live window screenshots | `scripts/mini/capture-mini-screenshot.sh --app "<App>" --window-name "<Window>" --mode temp` | Plain `ssh` + `screencapture` guessing from a non-GUI shell |
 | Mini Safari tab control | `scripts/mini/mini-safari.sh open-read "<url>"` | One-off raw `ssh mini osascript` snippets for Safari evidence, listing links, or portal checks |
@@ -354,7 +378,20 @@ ruby scripts/hooks/test/tier_tests.rb           # All tests
 ruby scripts/hooks/test/tier_tests.rb --tier easy    # Easy tier
 ruby scripts/hooks/test/tier_tests.rb --tier hard    # Hard tier
 ruby scripts/hooks/test/tier_tests.rb --tier villain # Villain tier
+ruby scripts/SaneMaster.rb verify --timeout 900      # Full registry-backed SaneProcess verify
 ```
+
+### Script Test Registry
+
+SaneProcess is script-only: full `verify` uses `scripts/test_registry.json`, not Xcode. Every `scripts/**/*_test.rb`, `scripts/**/*_test.py`, plus required scenario tests such as `scripts/hooks/test/tier_tests.rb`, must be registered as one of:
+
+- `required`: runs in full `ruby scripts/SaneMaster.rb verify`
+- `manual`: kept for targeted/legacy/operator runs
+- `support`: helper loaded by another test, not a standalone executable test
+
+If a new test-like file appears without a registry entry, full verify fails. This is intentional; do not bypass it by adding hardcoded commands back into `verify.rb`.
+
+The Mini currently runs the registry with system Ruby 2.6, so required Ruby tests must avoid Ruby 2.7+ only APIs such as `filter_map` unless they guard them.
 
 ## Cross-Project Sync
 

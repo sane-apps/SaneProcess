@@ -224,7 +224,7 @@ module SaneMasterModules
     def run_test_scan(args = [])
       verbose = args.include?('--verbose') || args.include?('-v')
       puts '🔬 --- [ TEST QUALITY SCAN ] ---'
-      puts 'Scanning Swift test files for anti-patterns...'
+      puts 'Scanning Swift/Ruby/Python test files for anti-patterns...'
       puts ''
       scan_test_quality(verbose: verbose)
     end
@@ -239,6 +239,11 @@ module SaneMasterModules
         { pattern: /XCTAssertTrue\s*\(\s*true\s*\)/i, name: 'XCTAssertTrue(true)' },
         { pattern: /XCTAssertFalse\s*\(\s*false\s*\)/i, name: 'XCTAssertFalse(false)' },
         { pattern: /XCTAssert\s*\(\s*true\s*\)/i, name: 'XCTAssert(true)' },
+        { pattern: /\bassert\s*\(\s*true\s*(?:,|\))/i, name: 'assert(true)' },
+        { pattern: /\bassert_eq\s*\(\s*([0-9]+|"[^"]*"|'[^']*')\s*,\s*\1\s*(?:,|\))/i, name: 'assert_eq(literal, same literal)' },
+        { pattern: /\bself\.assertTrue\s*\(\s*True\s*(?:,|\))/i, name: 'self.assertTrue(True)' },
+        { pattern: /\bself\.assertEqual\s*\(\s*([0-9]+|"[^"]*"|'[^']*')\s*,\s*\1\s*(?:,|\))/i, name: 'self.assertEqual(literal, same literal)' },
+        { pattern: /^\s*assert\s+True\b/i, name: 'assert True' },
         # Always-true boolean logic
         { pattern: /== true\s*\|\|\s*.*== false/i, name: 'x == true || x == false (always true)' },
         { pattern: /== false\s*\|\|\s*.*== true/i, name: 'x == false || x == true (always true)' },
@@ -267,7 +272,9 @@ module SaneMasterModules
         e2e: [],
         disabled: []
       }
-      test_files = Dir.glob("#{project_tests_dir}/**/*.swift")
+      test_files = Dir.glob("#{project_tests_dir}/**/*.swift") +
+                   Dir.glob('scripts/**/*_test.rb') +
+                   Dir.glob('scripts/**/*_test.py')
 
       test_files.each do |file|
         content = File.read(file)

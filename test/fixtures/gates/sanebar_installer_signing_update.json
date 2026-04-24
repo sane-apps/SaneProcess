@@ -1,0 +1,17 @@
+{
+  "rules": [
+    {
+      "id": "sanebar-installer-signing-update",
+      "trigger": "SaneBar installer signing update",
+      "seed": "SaneBar installer signing update failures have recurred across Sparkle and packaged releases.",
+      "block": [
+        "Release SaneBar installer signing update without Sparkle installer verification",
+        "Ship SaneBar update package without installer signing update evidence"
+      ],
+      "allow": [
+        "Run SaneProcess status crossref for open GitHub issues",
+        "Review ThumbGate collaboration comment"
+      ]
+    }
+  ]
+}

@@ -19,6 +19,7 @@ KEYCHAIN_FALLBACK_ENABLED="${SANE_KEYCHAIN_FALLBACK:-1}"
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GITHUB_QUEUE="$SCRIPT_DIR/github-queue.sh"
 OUTPUT_DIR="$HOME/SaneApps/infra/SaneProcess/outputs"
 REPORT_FILE="$OUTPUT_DIR/morning_report.md"
 ARCHIVE_DIR="$OUTPUT_DIR/reports"
@@ -456,23 +457,15 @@ if refs:
     echo "" >> "$REPORT_FILE"
   fi
 
-  # Open issues (compact — just counts + titles)
-  local total_issues=0
+  # Open issues: use the same org-wide queue as status so infra repos do not vanish.
   local issue_text=""
-  for repo in $REPOS; do
-    local issues
-    issues=$("$GH_CMD" issue list -R "$GH_ORG/$repo" --state open --json title,number --jq '.[] | "  - #\(.number) \(.title)"' 2>/dev/null || echo "")
-    if [[ -n "$issues" ]]; then
-      local count
-      count=$(echo "$issues" | wc -l | tr -d ' ')
-      total_issues=$((total_issues + count))
-      issue_text="${issue_text}- **$repo** ($count):\n$issues\n"
-    fi
-  done
+  if [[ -x "$GITHUB_QUEUE" ]]; then
+    issue_text=$("$GITHUB_QUEUE" issues --scope org-wide --format markdown --limit "${STATUS_GITHUB_LIMIT:-200}" 2>/dev/null || echo "")
+  fi
 
-  if [[ $total_issues -gt 0 ]]; then
-    echo "**Open Issues ($total_issues):**" >> "$REPORT_FILE"
-    echo -e "$issue_text" >> "$REPORT_FILE"
+  if [[ -n "$issue_text" ]]; then
+    echo "**Open Issues:**" >> "$REPORT_FILE"
+    echo "$issue_text" >> "$REPORT_FILE"
   else
     echo "**Open Issues:** None" >> "$REPORT_FILE"
   fi

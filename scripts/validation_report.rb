@@ -31,6 +31,7 @@ class ValidationReport
   SANE_APPS_ROOT = File.expand_path('~/SaneApps')
   REPORT_DIR = File.join(File.dirname(__FILE__), '..', 'outputs', 'validation')
   PRODUCT_CONFIG_PATH = File.join(SANE_APPS_ROOT, 'infra/SaneProcess/config/products.yml')
+  PROCESS_METRICS_PATH = File.expand_path('~/.sanemaster/process_metrics.jsonl')
   MIN_SAMPLES_FOR_SIGNIFICANCE = 30  # Bare minimum, 100+ preferred
   WORKFLOW_POLICY_EXCEPTION_MARKER = 'SANEAPPS_GITHUB_HOSTED_EXCEPTION:'
   MANUAL_WORKFLOW_TRIGGERS = %w[workflow_dispatch workflow_call].freeze
@@ -112,6 +113,25 @@ class ValidationReport
     q10_documentation_currency # Version consistency, changelog, README
     q11_cross_channel_version_consistency # Appcast vs website vs webhook vs Homebrew
     calculate_final_verdict
+  end
+
+  def process_metric_events(type: nil)
+    @process_metric_events ||= begin
+      if File.exist?(PROCESS_METRICS_PATH)
+        File.readlines(PROCESS_METRICS_PATH, chomp: true).map do |line|
+          next if line.strip.empty?
+
+          JSON.parse(line)
+        rescue JSON::ParserError
+          nil
+        end.compact
+      else
+        []
+      end
+    end
+    return @process_metric_events unless type
+
+    @process_metric_events.select { |event| event['type'] == type.to_s }
   end
 
   # Q0: Is config CONSISTENT across all projects?
@@ -701,19 +721,30 @@ class ValidationReport
   def q4_test_outcomes
     total_sessions = 0
     passing_sessions = 0
+    state_sessions = 0
+    state_passing_sessions = 0
 
     @data.each do |_, info|
       v = info[:state]['validation'] || {}
-      total_sessions += v['sessions_total'].to_i
-      passing_sessions += v['sessions_with_tests_passing'].to_i
+      state_sessions += v['sessions_total'].to_i
+      state_passing_sessions += v['sessions_with_tests_passing'].to_i
     end
+
+    verify_events = process_metric_events(type: 'verify')
+    metric_sessions = verify_events.length
+    metric_passing_sessions = verify_events.count { |event| event['success'] == true }
+    total_sessions = state_sessions + metric_sessions
+    passing_sessions = state_passing_sessions + metric_passing_sessions
 
     pass_rate = total_sessions > 0 ? ((passing_sessions.to_f / total_sessions) * 100).round(1) : nil
 
     @metrics[:test_outcomes] = {
       total_sessions: total_sessions,
       sessions_tests_passing: passing_sessions,
-      pass_rate: pass_rate
+      pass_rate: pass_rate,
+      state_sessions: state_sessions,
+      process_metric_verify_attempts: metric_sessions,
+      process_metric_verify_passes: metric_passing_sessions
     }
 
     if total_sessions >= MIN_SAMPLES_FOR_SIGNIFICANCE

@@ -1900,6 +1900,21 @@ module SaneMasterModules
                          end
       preflight_app_name = metadata_value(preflight_config, 'name') || File.basename(Dir.pwd)
 
+      # 0. Repeated issue gate fixtures
+      print '  Repeated issue gate fixtures... '
+      gate_reports = release_gate_fixture_reports(preflight_app_name)
+      failed_gate_reports = gate_reports.reject { |report| report[:passed] }
+      if gate_reports.empty?
+        puts '⏭️  none configured'
+      elsif failed_gate_reports.empty?
+        puts "✅ #{gate_reports.length} fixture(s)"
+      else
+        puts '❌ FAIL'
+        failed_gate_reports.each do |report|
+          issues << "Gate fixture failed: #{File.basename(report[:fixture].to_s)}"
+        end
+      end
+
       # 1. Tests pass
       print '  Tests... '
       verify_env = { 'SANEMASTER_RELEASE_PREFLIGHT' => '1' }
@@ -2513,8 +2528,36 @@ module SaneMasterModules
         issues: issues,
         warnings: warnings
       )
+      record_process_metric(
+        'release_preflight',
+        success: issues.empty?,
+        app: preflight_app_name,
+        issues_count: issues.length,
+        warnings_count: warnings.length
+      ) if respond_to?(:record_process_metric)
 
       exit 1 if issues.any?
+    end
+
+    def release_gate_fixture_reports(app_name)
+      release_gate_fixture_paths(app_name).map do |fixture_path|
+        review_gate_fixture(JSON.parse(File.read(fixture_path)), fixture_path: fixture_path)
+      rescue JSON::ParserError, ArgumentError => e
+        {
+          fixture: fixture_path,
+          passed: false,
+          failed_count: 1,
+          rules: [{ issues: [e.message] }]
+        }
+      end
+    end
+
+    def release_gate_fixture_paths(app_name)
+      normalized = app_name.to_s.downcase.gsub(/[^a-z0-9]+/, '')
+      return [] if normalized.empty?
+
+      root = respond_to?(:saneprocess_repo_root) ? saneprocess_repo_root : File.expand_path('../..', __dir__)
+      Dir.glob(File.join(root, 'test', 'fixtures', 'gates', "#{normalized}_*.json")).sort
     end
 
     # App Store submission preflight — validates everything Apple checks during review.
@@ -3667,6 +3710,14 @@ module SaneMasterModules
         puts '  🔴 FIX ISSUES ABOVE before submitting'
       end
       puts '═' * 55
+
+      record_process_metric(
+        'appstore_preflight',
+        success: issues.empty?,
+        app: app_name,
+        issues_count: issues.length,
+        warnings_count: warnings.length
+      ) if respond_to?(:record_process_metric)
 
       exit 1 if issues.any?
     end

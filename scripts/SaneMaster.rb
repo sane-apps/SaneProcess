@@ -36,6 +36,7 @@ require_relative 'sanemaster/generation'
 require_relative 'sanemaster/diagnostics'
 require_relative 'sanemaster/bootstrap'
 require_relative 'sanemaster/test_mode'
+require_relative 'sanemaster/process_metrics'
 require_relative 'sanemaster/verify'
 require_relative 'sanemaster/quality'
 require_relative 'sanemaster/sop_loop'
@@ -43,6 +44,7 @@ require_relative 'sanemaster/export'
 require_relative 'sanemaster/md_export'
 require_relative 'sanemaster/meta'
 require_relative 'sanemaster/tool_discovery'
+require_relative 'sanemaster/gate_review'
 require_relative 'sanemaster/universal_control'
 require_relative 'sanemaster/hosted_file_actions'
 require_relative 'sanemaster/session'
@@ -64,6 +66,7 @@ class SaneMaster
   include SaneMasterModules::Diagnostics
   include SaneMasterModules::Bootstrap
   include SaneMasterModules::TestMode
+  include SaneMasterModules::ProcessMetrics
   include SaneMasterModules::Verify
   include SaneMasterModules::Quality
   include SaneMasterModules::SOPLoop
@@ -71,6 +74,7 @@ class SaneMaster
   include SaneMasterModules::MdExport
   include SaneMasterModules::Meta
   include SaneMasterModules::ToolDiscovery
+  include SaneMasterModules::GateReview
   include SaneMasterModules::UniversalControl
   include SaneMasterModules::HostedFileActions
   include SaneMasterModules::Session
@@ -117,6 +121,7 @@ class SaneMaster
         'check_docs' => { args: '', desc: 'Check docs are in sync with code' },
         'check_binary' => { args: '', desc: 'Audit binary for security issues' },
         'test_scan' => { args: '[-v]', desc: 'Scan tests for tautologies and hardcoded values' },
+        'gate_review' => { args: '<fixture.json> [--json]', desc: 'Review candidate prevention gates against seed/block/allow fixtures' },
         'structural' => { args: '[path]', desc: 'Structural compliance check (sc)' },
         'compliance' => { args: '[path]', desc: 'Structural + session compliance (cr)' }
       }
@@ -1390,6 +1395,9 @@ PY
       run_test_suite(args)
     when 'test_scan', 'scan_tests', 'test_quality'
       run_test_scan(args)
+    when 'gate_review', 'review_gate', 'gate_rule_review'
+      success = run_gate_review(args)
+      exit(success ? 0 : 1)
     when 'check_binary'
       check_binary
 

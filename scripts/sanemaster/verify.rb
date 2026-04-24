@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'json'
 require 'open3'
 
 module SaneMasterModules
@@ -70,12 +71,29 @@ module SaneMasterModules
 
         if result[:success]
           verify_repo_cleanliness!(before_snapshot: repo_status_before)
+          record_process_metric(
+            'verify',
+            success: true,
+            tests_run: result[:tests_run],
+            duration_seconds: result[:duration],
+            include_ui: include_ui,
+            signed_tests: signed_tests
+          ) if respond_to?(:record_process_metric)
           record_verify_attempt(success: true, message: 'verify') unless running_from_preflight
           puts "\n✅ Tests passed! (#{result[:tests_run]} tests, #{result[:duration]}s)"
           # Suggest recording patterns after successful test run
           suggest_memory_record if respond_to?(:suggest_memory_record)
         else
           failure_message = result[:timeout] ? 'verify timeout' : 'verify failure'
+          record_process_metric(
+            'verify',
+            success: false,
+            tests_run: result[:tests_run],
+            duration_seconds: result[:duration],
+            include_ui: include_ui,
+            signed_tests: signed_tests,
+            reason: failure_message
+          ) if respond_to?(:record_process_metric)
           state = if running_from_preflight
                     { consecutive_failures: load_verify_state[:consecutive_failures].to_i }
                   else
@@ -680,22 +698,77 @@ module SaneMasterModules
       return nil if project_xcodeproj && File.exist?(project_xcodeproj.to_s)
       return nil if package_path_for_test_target(project_test_target)
 
-      [
-        { label: 'SaneProcess hook enforcement tests', cmd: ['ruby', 'scripts/hooks/test/tier_tests.rb'] },
-        { label: 'SaneProcess app release guard tests', cmd: ['ruby', 'scripts/app_test_mode_test.rb'] },
-        { label: 'SaneProcess App Store guard tests', cmd: ['ruby', 'scripts/appstore_submit_guardrail_test.rb'] },
-        { label: 'SaneProcess dependency watchdog tests', cmd: ['ruby', 'scripts/sanemaster/dependencies_test.rb'] },
-        { label: 'SaneProcess generation tests', cmd: ['ruby', 'scripts/sanemaster/generation_test.rb'] },
-        { label: 'SaneProcess release guardrail tests', cmd: ['ruby', 'scripts/sanemaster/release_guardrail_test.rb'] },
-        { label: 'SaneProcess release route tests', cmd: ['ruby', 'scripts/sanemaster/release_route_test.rb'] },
-        { label: 'SaneProcess SaneUI guard tests', cmd: ['ruby', 'scripts/sanemaster/saneui_guard_test.rb'] },
-        { label: 'SaneProcess test mode tests', cmd: ['ruby', 'scripts/sanemaster/test_mode_test.rb'] },
-        { label: 'SaneProcess verify guard tests', cmd: ['ruby', 'scripts/sanemaster/verify_guard_test.rb'] },
-        { label: 'SaneProcess validation report tests', cmd: ['ruby', 'scripts/validation_report_test.rb'] },
-        { label: 'SaneProcess hosted file action tests', cmd: ['python3', '-B', 'scripts/automation/hosted_file_actions_test.py'] },
-        { label: 'SaneProcess LemonSqueezy sales tests', cmd: ['python3', '-B', 'scripts/automation/ls_sales_test.py'] },
-        { label: 'SaneProcess listing action tests', cmd: ['python3', '-B', 'scripts/automation/listing_actions_test.py'] }
-      ]
+      issues = script_only_verify_registry_issues
+      if issues.any?
+        puts '❌ SaneProcess script test registry is incomplete:'
+        issues.each { |issue| puts "   - #{issue}" }
+        exit 1
+      end
+
+      script_only_verify_required_entries.map do |entry|
+        { label: entry.fetch('label'), cmd: entry.fetch('cmd') }
+      end
+    end
+
+    def script_only_test_registry_path
+      File.expand_path('../test_registry.json', __dir__)
+    end
+
+    def script_only_test_registry
+      JSON.parse(File.read(script_only_test_registry_path))
+    end
+
+    def script_only_test_entries
+      script_only_test_registry.fetch('tests')
+    end
+
+    def script_only_verify_required_entries
+      script_only_test_entries.select { |entry| entry['status'] == 'required' }
+    end
+
+    def script_only_verify_registry_issues(registry = script_only_test_registry)
+      entries = registry['tests']
+      return ['registry is missing tests array'] unless entries.is_a?(Array)
+
+      issues = []
+      by_path = {}
+      entries.each_with_index do |entry, index|
+        unless entry.is_a?(Hash)
+          issues << "tests[#{index}] is not an object"
+          next
+        end
+
+        path = entry['path'].to_s
+        status = entry['status'].to_s
+        issues << "tests[#{index}] is missing path" if path.empty?
+        issues << "tests[#{index}] has invalid status #{status.inspect}" unless %w[required manual support].include?(status)
+        issues << "duplicate registry entry: #{path}" if by_path.key?(path)
+        by_path[path] = entry unless path.empty?
+
+        next unless status == 'required'
+
+        cmd = entry['cmd']
+        issues << "#{path} is required but has no cmd array" unless cmd.is_a?(Array) && cmd.any?
+        issues << "#{path} is required but has no label" if entry['label'].to_s.strip.empty?
+      end
+
+      discovered = discovered_script_test_paths
+      registered = by_path.keys
+      (discovered - registered).each { |path| issues << "unregistered test-like file: #{path}" }
+      (registered - discovered).each do |path|
+        next if File.exist?(path)
+
+        issues << "registered test file is missing: #{path}"
+      end
+
+      issues
+    end
+
+    def discovered_script_test_paths
+      paths = Dir.glob('scripts/**/*_test.rb') + Dir.glob('scripts/**/*_test.py')
+      tier_tests = 'scripts/hooks/test/tier_tests.rb'
+      paths << tier_tests if File.exist?(tier_tests)
+      paths.sort.uniq
     end
 
     def build_test_command(include_ui, signed_tests = false)
@@ -896,6 +969,18 @@ module SaneMasterModules
         suites = ::Regexp.last_match(2).to_i
         print "\r"
         puts "   ✅ Swift Testing: #{state[:swift_testing_total]} tests in #{suites} suites passed"
+      when /RESULTS:\s+(\d+)\/(\d+)\s+passed/i,
+           /Results:\s+(\d+)\/(\d+)\s+passed/i,
+           /\bPASS\s+(\d+)\/(\d+)\b/i
+        total = ::Regexp.last_match(2).to_i
+        state[:tests_run] += total
+        print "\r"
+        puts "   ✅ Script tests: #{total} reported"
+      when /Ran\s+(\d+)\s+tests?\b/i
+        total = ::Regexp.last_match(1).to_i
+        state[:tests_run] += total
+        print "\r"
+        puts "   ✅ Script tests: #{total} reported"
       # Swift Testing suite start: may include non-ASCII prefix glyphs in logs.
       when /Suite "(.+)" started/
         suite_name = ::Regexp.last_match(1)

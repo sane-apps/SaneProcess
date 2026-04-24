@@ -111,6 +111,7 @@ class HostedFileActionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             output_path = Path(tmp) / "hosted_file_actions.xlsx"
             json_path = Path(tmp) / "hosted_file_actions.json"
+            evidence_path = Path(tmp) / "hosted_file_actions.md"
             with mock.patch.object(HOSTED_FILE_ACTIONS, "get_lemonsqueezy_api_key", return_value="test-key"), \
                 mock.patch.object(HOSTED_FILE_ACTIONS, "load_product_config", return_value={"products": {}}), \
                 mock.patch.object(HOSTED_FILE_ACTIONS, "build_snapshot_rows", return_value=(sample_actions, sample_snapshot)), \
@@ -120,11 +121,14 @@ class HostedFileActionTests(unittest.TestCase):
                     str(output_path),
                     "--json-out",
                     str(json_path),
+                    "--evidence-out",
+                    str(evidence_path),
                 ]):
                 HOSTED_FILE_ACTIONS.main()
 
             self.assertTrue(output_path.exists())
             self.assertTrue(json_path.exists())
+            self.assertTrue(evidence_path.exists())
             with zipfile.ZipFile(output_path) as zf:
                 workbook_xml = zf.read("xl/workbook.xml").decode("utf-8")
                 sheet_xml = zf.read("xl/worksheets/sheet1.xml").decode("utf-8")
@@ -132,6 +136,10 @@ class HostedFileActionTests(unittest.TestCase):
             self.assertIn('sheet name="Live Snapshot"', workbook_xml)
             self.assertIn("Needs dashboard sync", sheet_xml)
             self.assertIn("current_actions", json_path.read_text(encoding="utf-8"))
+            evidence = evidence_path.read_text(encoding="utf-8")
+            self.assertIn("Hosted File Action Evidence", evidence)
+            self.assertIn("Current actions: 1", evidence)
+            self.assertIn("SaneBar", evidence)
 
 
 if __name__ == "__main__":

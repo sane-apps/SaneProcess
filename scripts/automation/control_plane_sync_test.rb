@@ -19,12 +19,12 @@ def run(*command)
 end
 
 def parse_dump(text)
-  text.lines.filter_map do |line|
+  text.lines.map do |line|
     next unless line.include?('=')
 
     key, value = line.strip.split('=', 2)
     [key, value]
-  end.to_h
+  end.compact.to_h
 end
 
 tests = []

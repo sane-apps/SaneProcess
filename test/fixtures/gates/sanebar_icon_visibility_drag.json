@@ -1,0 +1,17 @@
+{
+  "rules": [
+    {
+      "id": "sanebar-icon-visibility-drag",
+      "trigger": "SaneBar icon visibility drag recovery",
+      "seed": "SaneBar icon visibility drag recovery repeatedly regressed after layout and persistence changes.",
+      "block": [
+        "Ship SaneBar icon visibility drag recovery without reset reinstall coverage",
+        "Release SaneBar persistence fix without icon visibility drag recovery fixture"
+      ],
+      "allow": [
+        "Ship SaneBar cursor input fix after focused keyboard tests",
+        "Update SaneClip listing copy"
+      ]
+    }
+  ]
+}

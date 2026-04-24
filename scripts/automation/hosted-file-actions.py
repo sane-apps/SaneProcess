@@ -72,6 +72,18 @@ SNAPSHOT_COLUMNS = [
 ]
 
 
+def markdown_table(headers: list[str], rows: list[list[str]]) -> str:
+    if not rows:
+        return "_None._\n"
+    header = "| " + " | ".join(headers) + " |"
+    separator = "| " + " | ".join(["---"] * len(headers)) + " |"
+    body = [
+        "| " + " | ".join(str(cell).replace("\n", " ").replace("|", "\\|") for cell in row) + " |"
+        for row in rows
+    ]
+    return "\n".join([header, separator, *body]) + "\n"
+
+
 def load_env_cache() -> None:
     if not ENV_CACHE_FILE.is_file():
         return
@@ -416,12 +428,64 @@ def copy_latest_atomic(source: Path, latest_path: Path) -> None:
             tmp_path.unlink(missing_ok=True)
 
 
+def write_evidence(path: Path, payload: dict[str, Any]) -> None:
+    current_actions = payload.get("current_actions") or []
+    snapshot = payload.get("snapshot") or []
+    generated_at = str(payload.get("generated_at") or "")
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    action_rows = [
+        [
+            row.get("app", ""),
+            row.get("expected_version", ""),
+            row.get("hosted_version", ""),
+            row.get("dashboard_url", ""),
+            row.get("dist_url", ""),
+        ]
+        for row in current_actions
+    ]
+    snapshot_rows = [
+        [
+            row.get("app", ""),
+            row.get("expected_version", ""),
+            row.get("hosted_version", ""),
+            row.get("status", ""),
+        ]
+        for row in snapshot
+    ]
+
+    path.write_text(
+        "\n".join(
+            [
+                "# Hosted File Action Evidence",
+                "",
+                f"Generated: {generated_at}",
+                f"Current actions: {len(current_actions)}",
+                "",
+                "Lemon Squeezy exposes read APIs for hosted files, but replacement is still a dashboard action.",
+                "After replacing files, rerun this exporter and keep the new evidence file with the release notes.",
+                "",
+                "## Current Actions",
+                "",
+                markdown_table(["App", "Expected", "Hosted", "Dashboard", "Dist"], action_rows).rstrip(),
+                "",
+                "## Live Snapshot",
+                "",
+                markdown_table(["App", "Expected", "Hosted", "Status"], snapshot_rows).rstrip(),
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Export Lemon Squeezy hosted-file dashboard action tracker."
     )
     parser.add_argument("--json", action="store_true", help="Print JSON instead of writing XLSX")
     parser.add_argument("--json-out", help="Also write JSON payload to a file while generating XLSX")
+    parser.add_argument("--evidence-out", help="Also write Markdown release evidence to a file")
     parser.add_argument("--xlsx", help="Output XLSX path")
     args = parser.parse_args()
 
@@ -444,6 +508,10 @@ def main() -> None:
         json_out_path.parent.mkdir(parents=True, exist_ok=True)
         json_out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
+    if args.evidence_out:
+        evidence_path = Path(args.evidence_out).expanduser()
+        write_evidence(evidence_path, payload)
+
     output_path = output_path_from_args(args)
     write_named_xlsx(
         output_path,
@@ -458,6 +526,8 @@ def main() -> None:
     print(f"Updated {latest_path}")
     print(f"Current actions: {len(current_actions)}")
     print(f"Snapshot rows: {len(snapshot)}")
+    if args.evidence_out:
+        print(f"Wrote evidence {Path(args.evidence_out).expanduser()}")
 
 
 if __name__ == "__main__":

@@ -5,10 +5,20 @@
 # Run from SaneProcess dir: ruby scripts/hooks/session_docs_test.rb
 
 require 'json'
+require 'fileutils'
 require 'open3'
+require 'time'
 
-PROJECT_DIR = '/Users/sj/SaneApps/apps/SaneBar'
+TEST_ROOT = File.join(File.expand_path('../..', __dir__), '.session_docs_test')
+FileUtils.rm_rf(TEST_ROOT)
+PROJECT_DIR = File.join(TEST_ROOT, 'SaneBar')
+FileUtils.mkdir_p(File.join(PROJECT_DIR, '.claude'))
+File.write(File.join(PROJECT_DIR, 'SESSION_HANDOFF.md'), "handoff\n")
+File.write(File.join(PROJECT_DIR, 'DEVELOPMENT.md'), "development\n")
+
 ENV['CLAUDE_PROJECT_DIR'] = PROJECT_DIR
+ENV['CLAUDE_HOOK_SECRET'] = 'session-docs-test-secret'
+at_exit { FileUtils.rm_rf(TEST_ROOT) }
 
 require_relative 'core/state_manager'
 
@@ -17,7 +27,10 @@ $total = 0
 
 HOOK_DIR = File.expand_path(__dir__)
 SANEPROCESS_DIR = File.expand_path('../..', __dir__)
-CHILD_ENV = { 'CLAUDE_PROJECT_DIR' => PROJECT_DIR }.freeze
+CHILD_ENV = {
+  'CLAUDE_PROJECT_DIR' => PROJECT_DIR,
+  'CLAUDE_HOOK_SECRET' => ENV.fetch('CLAUDE_HOOK_SECRET')
+}.freeze
 
 def t(name, ok)
   $total += 1
@@ -63,6 +76,18 @@ def full_reset
   StateManager.reset(:circuit_breaker)
   StateManager.reset(:refusal_tracking)
   StateManager.update(:enforcement) { |e| e[:halted] = false; e[:blocks] = []; e }
+  StateManager.update(:startup_gate) do |g|
+    g[:open] = true
+    g[:opened_at] = Time.now.iso8601
+    g[:steps] = {
+      session_docs: true,
+      skills_registry: true,
+      validation_report: true,
+      orphan_cleanup: true,
+      system_clean: true
+    }
+    g
+  end
   StateManager.update(:requirements) { |r| r[:requested] = []; r[:is_big_task] = false; r[:is_research_only] = false; r }
   StateManager.update(:edit_attempts) { |a| a[:count] = 0; a[:reset_at] = Time.now.iso8601; a }
   StateManager.reset(:session_docs)

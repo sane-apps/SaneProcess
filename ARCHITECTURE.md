@@ -489,6 +489,53 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
 - Menu bar apps need explicit Setapp `.userInteraction` reporting.
 - Universal build support becomes a real release concern for the Setapp lane.
 
+### ADR-005: Candidate prevention gates require local fixture review (2026-04-24)
+
+**Context:** ThumbGate showed a useful pattern: evaluate a proposed rule against examples before promoting it. The repo also has cloud, telemetry, dashboard, npm-hook, and fail-open surfaces that do not fit SaneProcess as a default dependency.
+
+**Decision:**
+1. Do not add ThumbGate as a runtime dependency or default hook layer.
+2. Keep prevention-gate review inside SaneProcess with `ruby scripts/SaneMaster.rb gate_review <fixture.json>`.
+3. Require every candidate gate fixture to include:
+   - the incident seed that justifies the gate
+   - examples that must block
+   - examples that must remain allowed
+4. Treat review as evidence, not promotion. A passing fixture is still a human decision point before enforcement changes.
+
+**Rationale:**
+- Local deterministic fixtures are easier to audit than a live npm hook dependency.
+- Seed/block/allow examples catch both weak tautologies and overbroad pattern matching.
+- No cloud, telemetry, dashboard, or package-install path is needed for SaneApps process enforcement.
+
+**Consequences:**
+- New blocking hooks and SOP rules should come with gate-review fixture evidence.
+- The review command can be expanded later, but it must stay local, explicit, deterministic, and dependency-light.
+
+### ADR-006: Full verify is registry-backed for script-only repos (2026-04-24)
+
+**Context:** SaneProcess has no Xcode project, but the scripted verify suite had grown as a hardcoded list inside `verify.rb`. The audit found many real test files that full verify did not run, which made status/support/release regressions capable of passing a false-green verify.
+
+**Decision:** Script-only verification is driven by `scripts/test_registry.json`. Each test-like file must be explicitly classified as `required`, `manual`, or `support`. Full verify fails when a discovered test-like file is missing from the registry.
+
+**Consequences:**
+- Adding a test now requires an explicit execution decision.
+- Legacy/stateful tests stay visible without silently slowing or destabilizing every verify.
+- Verify can report real script test counts.
+- Required tests must stay compatible with the Mini's system Ruby unless the registry command deliberately selects another runtime.
+
+---
+
+### ADR-007: Process metrics stay local and evidence-based (2026-04-24)
+
+**Context:** Validation was reporting process-health gaps from tiny samples, while repeated incidents showed that the most useful evidence lives in local actions: verify runs, prevention gate reviews, hook blocks, release preflights, App Store preflights, and support-send delivery outcomes.
+
+**Decision:** SaneProcess writes append-only JSONL process metrics to `~/.sanemaster/process_metrics.jsonl` by default, with `SANEMASTER_PROCESS_METRICS_PATH` for tests. Metrics are local-only and record operational evidence, not cloud telemetry. Support-send metrics deliberately omit recipient addresses and subjects.
+
+**Consequences:**
+- Validation can graduate from "no data" to measured process health as real sessions accumulate.
+- Release and support operations leave auditable local breadcrumbs without adding a service dependency.
+- Tests can redirect metrics into temp files and assert real records without touching user data.
+
 ---
 
 ## 4. Landscape

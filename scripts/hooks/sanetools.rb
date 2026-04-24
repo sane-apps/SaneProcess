@@ -20,6 +20,7 @@ require 'json'
 require 'fileutils'
 require 'time'
 require_relative 'core/state_manager'
+require_relative 'core/process_metrics'
 require_relative 'sanetools_checks'
 require_relative 'sanetools_startup'
 
@@ -301,7 +302,15 @@ def output_block(reason, tool_name = nil)
   warn reason
 
   # Check for refusal to read (repeated same block)
-  if tool_name && (escalation = SaneToolsChecks.check_refusal_to_read(tool_name, reason))
+  escalation = tool_name ? SaneToolsChecks.check_refusal_to_read(tool_name, reason) : nil
+  SaneProcessMetrics.record(
+    'hook_block',
+    tool: tool_name,
+    rule: detect_rule_from_reason(reason),
+    reason: reason.lines.first&.strip,
+    escalated: !escalation.nil?
+  )
+  if escalation
     warn ''
     warn escalation
   end

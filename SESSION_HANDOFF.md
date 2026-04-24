@@ -1,4 +1,152 @@
 
+## Session 112 (2026-04-24)
+
+### Done
+- Patched the audit findings instead of leaving them as notes:
+  - added `scripts/test_registry.json`
+  - made full SaneProcess `verify` fail on unregistered script tests
+  - expanded full verify from 15 scripted tests to 27 required entries, covering 186 assertions/checks on the Mini
+  - marked legacy/support test-like files explicitly as `manual` or `support`
+- Added `scripts/automation/github-queue.sh` as the shared GitHub queue provider.
+  - `sane-status-crossref.sh` and `morning-report.sh` now use org-wide queue mode.
+  - `check-inbox.sh` now labels its default GitHub section as support-apps scope and can use the shared provider.
+- Added local process metrics:
+  - `scripts/sanemaster/process_metrics.rb`
+  - verify, gate-review, hook-block, release preflight, App Store preflight, and support-send outcomes append JSONL evidence under `~/.sanemaster/process_metrics.jsonl`
+  - `check-inbox.sh` support-send metrics avoid recipient address/subject PII and now have a registry-backed no-network test.
+  - validation Q4 now includes recorded verify attempts.
+- Release preflight now checks app-specific prevention gate fixtures from `test/fixtures/gates/<app>_*.json` before shipping.
+- Added hosted-file release evidence through `hosted-file-actions.py --evidence-out <path>`.
+- Added SaneBar recurring-regression gate fixtures under `test/fixtures/gates/`.
+- Made `session_docs_test.rb` a real hermetic E2E with an isolated in-repo project and a test-only `CLAUDE_HOOK_SECRET`.
+- Fixed Mini Ruby 2.6 compatibility found by the expanded suite (`filter_map` and explicit `require "time"`).
+
+### Live Verification
+- Mini targeted:
+  - `ruby scripts/automation/control_plane_sync_test.rb` -> `PASS 4/4`
+  - `ruby scripts/hooks/session_docs_test.rb` -> `29/29`
+- Mini full:
+  - `ruby scripts/SaneMaster.rb verify --timeout 900` -> passed
+  - latest final line: `✅ Tests passed! (190 tests, 29s)`
+- Fresh Mini `ruby scripts/SaneMaster.rb status` after the patch:
+  - no open GitHub PRs
+  - open org-wide issues: SaneBar `#136`, SaneBar `#129`, SaneProcess `#8`
+  - SaneProcess `#8` is explicitly labeled `watching-external` and has a follow-up comment documenting the no-default-dependency decision.
+  - inbox has one needs-reply sales/spam-looking thread: email `#621` (`Unique guest posting websites`)
+  - listing actions still show StartupSubmit as one needs-action item; user said to ignore/chalk up for now
+- The two-strike research gate triggered during patching and was handled with fresh `.claude/research.md` findings before continuing.
+
+### Current State
+- Full SaneProcess verify is now registry-backed and materially more exhaustive.
+- Process-health metrics are now being recorded, but the sample count is still immature until more sessions accumulate.
+- Lemon Squeezy hosted-file dashboard drifts still require owner action in the dashboard; this patch makes the evidence auditable but does not replace files.
+
+### Next
+- Keep SaneProcess `#8` open in `watching-external`; only revisit if Igor posts a focused local/offline-safe proposal or PR.
+- Treat email `#621` as low-value sales/noise unless the user wants outreach triage.
+- Do not split release mega-files cosmetically; split only along the proven boundaries from this patch.
+
+### SOP: 10/10
+- (+) Let the expanded tests expose real stale/weak tests instead of downgrading them.
+- (+) Used the two-strike research gate and documented the finding before continuing.
+- (+) Verified the final result on the Mini.
+
+## Session 111 (2026-04-24)
+
+### Done
+- Updated the SaneProcess `#8` GitHub reply to Igor:
+  - explained the local, explicit, deterministic, dependency-light SaneProcess philosophy
+  - stated that SaneProcess is MIT licensed and he is free to use/adapt it under the license
+  - kept the collaboration path narrow: local by default, no cloud/telemetry/package-hook dependency, clear absent/offline behavior
+- Ran a fresh SaneProcess audit using Mini evidence, GitHub issue/PR history, inbox patterns, validation report, status, meta checks, and Serena memory.
+- Wrote `SANE_AUDIT_FINDINGS.md`.
+
+### Live Verification / Evidence
+- Verified updated GitHub comment through the GitHub connector.
+- Mini `ruby scripts/SaneMaster.rb status`:
+  - no open PRs
+  - open issues: SaneBar `#136`, SaneBar `#129`, SaneProcess `#8`
+- Mini `ruby scripts/validation_report.rb`:
+  - verdict `NEEDS DASHBOARD SYNC`
+  - three Lemon Squeezy hosted-file drifts remain: SaneBar, SaneClip, SaneSales
+  - process metrics still have weak sample counts
+- Mini `check-inbox.sh healthcheck` passed, with warnings only for no live attachment/send-path exercise.
+- Mini `check-inbox.sh patterns`:
+  - SaneBar `icon_visibility_drag`: 64 total, 1 open
+  - SaneBar `installer_signing_update`: 17 total
+  - SaneBar `cursor_input`: 7 total
+  - SaneBar `permissions_access`: 3 total
+- Mini `ruby scripts/SaneMaster.rb meta`:
+  - DerivedData 19G
+  - 15 Ruby files need splitting
+  - xcodegen update available
+- Mini test-registry audit found full `verify` includes 15 scripted tests while 35 test files exist; 20 are not explicitly run by full verify.
+
+### Top Audit Findings
+- Full `verify` is not exhaustive; add an explicit test registry and fail on unregistered tests.
+- Status and inbox still have different GitHub issue scopes; extract one queue provider with explicit support/org-wide modes.
+- Validation process metrics are too sparse to trust as process health.
+- Release/verify/status/validation files are too large and map directly to repeated regression classes.
+- Lemon Squeezy hosted-file dashboard actions remain outside git and are easy to forget post-release.
+- SaneBar repeated issue clusters should feed into gate-review fixtures before future persistence releases.
+
+### Current State
+- Audit report is written but no audit fixes were started.
+- Existing gate-review implementation remains verified from Session 110.
+- Worktree now includes the Session 110 implementation plus the Session 111 audit report/handoff update.
+
+### Next
+- Review `SANE_AUDIT_FINDINGS.md` with the user.
+- If approved, start with the explicit test registry because it prevents false-green verification across all future fixes.
+
+### SOP: 10/10
+- (+) Changed the external GitHub reply first, as requested.
+- (+) Used live Mini evidence, GitHub, inbox, validation, meta, and memory.
+- (+) Presented audit findings before starting fixes.
+
+## Session 110 (2026-04-24)
+
+### Done
+- Adopted the useful ThumbGate idea without taking ThumbGate as a dependency.
+- Added `ruby scripts/SaneMaster.rb gate_review <fixture.json> [--json]` for local deterministic review of candidate prevention gates.
+- Gate fixtures now require real evidence:
+  - a seed incident that matches the trigger
+  - at least one must-block example
+  - at least one must-allow example
+  - no false positives in allowed examples
+- Added `scripts/sanemaster/gate_review_test.rb` with real pass/fail cases, including the weak-test case where a seed/block-only fixture is rejected.
+- Wired the new test into the scripted SaneProcess `verify` suite so future full verifies exercise it by default.
+- Documented the command in `DEVELOPMENT.md` and captured the design decision in `ARCHITECTURE.md` ADR-005.
+
+### Live Verification
+- Mini syntax checks passed for:
+  - `scripts/SaneMaster.rb`
+  - `scripts/sanemaster/gate_review.rb`
+  - `scripts/sanemaster/gate_review_test.rb`
+  - `scripts/sanemaster/verify.rb`
+  - `scripts/sanemaster/verify_guard_test.rb`
+- Mini targeted tests passed:
+  - `ruby scripts/sanemaster/gate_review_test.rb` -> 7/7
+  - `ruby scripts/sanemaster/verify_guard_test.rb` -> 11/11
+- Mini CLI behavior passed:
+  - known-good fixture exits 0
+  - overbroad allow-match fixture exits 1
+- Full Mini `ruby scripts/SaneMaster.rb verify` passed, and the output now includes `SaneProcess gate review tests`.
+
+### Current State
+- ThumbGate remains a watched external project, not a SaneProcess runtime dependency.
+- New prevention gates should be promoted only after a local `gate_review` fixture passes and the human decision still makes sense.
+- The StartupSubmit check-back automation remains set for Friday 2026-05-01 at 9:00 AM local; no further action needed now.
+
+### Next
+- Use `gate_review` for the next proposed blocking hook/SOP rule instead of adding pattern matches from a single anecdote.
+- If this proves useful, add a repo-local examples directory for recurring gate-review fixtures.
+
+### SOP: 10/10
+- (+) Kept the adopted ThumbGate idea local, deterministic, and dependency-free.
+- (+) Added tests that check real false-negative and false-positive behavior instead of tautologies.
+- (+) Verified on the Mini and wired the new test into full verify.
+
 ## Session 109 (2026-04-24)
 
 ### Done

@@ -109,7 +109,23 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
       assert(commands, 'expected scripted verify commands')
       assert_eq(commands.first[:label], 'SaneProcess hook enforcement tests')
       assert_eq(commands.first[:cmd].first, 'ruby')
+      assert_includes(commands.map { |entry| entry[:cmd].join(' ') }, 'ruby scripts/sanemaster/gate_review_test.rb')
+      assert_includes(commands.map { |entry| entry[:cmd].join(' ') }, 'ruby scripts/sanemaster/process_metrics_test.rb')
+      assert_includes(commands.map { |entry| entry[:cmd].join(' ') }, 'ruby scripts/sanemaster/universal_control_test.rb')
+      assert_includes(commands.map { |entry| entry[:cmd].join(' ') }, 'ruby scripts/mini/mini_gui_run_test.rb')
+      assert_includes(commands.map { |entry| entry[:cmd].join(' ') }, 'python3 -B scripts/automation/status_crossref_test.py')
+      assert_includes(commands.map { |entry| entry[:cmd].join(' ') }, 'python3 -B scripts/automation/email_delivery_test.py')
       assert_includes(commands.map { |entry| entry[:cmd].join(' ') }, 'python3 -B scripts/automation/listing_actions_test.py')
+      true
+    end
+
+    test('requires an explicit registry decision for every script test-like file') do
+      issues = subject.send(:script_only_verify_registry_issues)
+
+      assert_eq(issues, [])
+      registered_paths = subject.send(:script_only_test_entries).map { |entry| entry.fetch('path') }
+      assert_includes(registered_paths, 'scripts/hooks/test/hook_test.rb')
+      assert_includes(registered_paths, 'scripts/sane_test.rb')
       true
     end
   end
@@ -191,6 +207,27 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
 
       assert_eq(subject.send(:verify_log_indicates_failure?, body), false)
       assert_eq(subject.send(:verify_log_indicates_success?, body), true)
+      true
+    end
+
+    test('counts script test summaries instead of reporting zero tests') do
+      state = {
+        start_time: Time.now,
+        tests_run: 0,
+        swift_testing_total: 0,
+        current_test: nil,
+        last_update: Time.now,
+        spinner_chars: ['-'],
+        spinner_idx: 0
+      }
+
+      capture_stdout do
+        subject.send(:handle_progress_update, 'RESULTS: 4/4 passed', state)
+        subject.send(:handle_progress_update, 'Ran 3 tests in 0.001s', state)
+        subject.send(:handle_progress_update, 'PASS 2/2', state)
+      end
+
+      assert_eq(state[:tests_run], 9)
       true
     end
   end

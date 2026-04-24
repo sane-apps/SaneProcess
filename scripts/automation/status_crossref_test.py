@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 SCRIPT_PATH = Path(__file__).with_name("sane-status-crossref.sh")
+GITHUB_QUEUE_PATH = Path(__file__).with_name("github-queue.sh")
 
 
 def write_executable(path: Path, body: str) -> None:
@@ -30,6 +31,9 @@ class StatusCrossrefScriptTests(unittest.TestCase):
             script_copy = automation_dir / "sane-status-crossref.sh"
             script_copy.write_text(SCRIPT_PATH.read_text(encoding="utf-8"), encoding="utf-8")
             script_copy.chmod(SCRIPT_PATH.stat().st_mode)
+            github_queue_copy = automation_dir / "github-queue.sh"
+            github_queue_copy.write_text(GITHUB_QUEUE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+            github_queue_copy.chmod(GITHUB_QUEUE_PATH.stat().st_mode | stat.S_IXUSR)
 
             sane_master = repo_root / "SaneMaster.rb"
             sane_master.write_text(
@@ -123,6 +127,7 @@ class StatusCrossrefScriptTests(unittest.TestCase):
                 result.stdout,
             )
             self.assertIn("[4/5] Open GitHub issues", result.stdout)
+            self.assertIn("Scope: org-wide", result.stdout)
             self.assertIn("## sane-apps/SaneProcess", result.stdout)
             self.assertIn("#8\tOPEN\tStub process issue", result.stdout)
             self.assertIn("[5/5] Open GitHub PRs", result.stdout)

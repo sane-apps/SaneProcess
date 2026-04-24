@@ -113,6 +113,21 @@ class WorkflowPolicyHarness < ValidationReport
   end
 end
 
+class ProcessMetricsValidationHarness < ValidationReport
+  attr_reader :metrics, :warnings
+
+  def initialize(events)
+    super()
+    @events = events
+  end
+
+  def process_metric_events(type: nil)
+    return @events unless type
+
+    @events.select { |event| event['type'] == type.to_s }
+  end
+end
+
 include TestFramework
 
 def product_definition(name, slug:, domain:)
@@ -415,6 +430,26 @@ exit(run_tests('Validation report tests') do
         assert_eq(issues, [])
       end
 
+      true
+    end
+  end
+
+  test_category('Q4 process metrics') do
+    test('uses recorded verify attempts as real test outcome samples') do
+      subject = ProcessMetricsValidationHarness.new(
+        [
+          { 'type' => 'verify', 'success' => true },
+          { 'type' => 'verify', 'success' => false },
+          { 'type' => 'gate_review', 'success' => true }
+        ]
+      )
+
+      subject.send(:q4_test_outcomes)
+
+      assert_eq(subject.metrics[:test_outcomes][:total_sessions], 2)
+      assert_eq(subject.metrics[:test_outcomes][:sessions_tests_passing], 1)
+      assert_eq(subject.metrics[:test_outcomes][:pass_rate], 50.0)
+      assert_eq(subject.metrics[:test_outcomes][:process_metric_verify_attempts], 2)
       true
     end
   end

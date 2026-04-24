@@ -1,0 +1,227 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "path": "scripts/hooks/test/tier_tests.rb",
+      "label": "SaneProcess hook enforcement tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/hooks/test/tier_tests.rb"]
+    },
+    {
+      "path": "scripts/app_test_mode_test.rb",
+      "label": "SaneProcess app test mode tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/app_test_mode_test.rb"]
+    },
+    {
+      "path": "scripts/appstore_public_screenshot_audit_test.rb",
+      "label": "SaneProcess public screenshot audit tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/appstore_public_screenshot_audit_test.rb"]
+    },
+    {
+      "path": "scripts/appstore_submit_guardrail_test.rb",
+      "label": "SaneProcess App Store guard tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/appstore_submit_guardrail_test.rb"]
+    },
+    {
+      "path": "scripts/automation/control_plane_sync_test.rb",
+      "label": "SaneProcess control plane sync tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/automation/control_plane_sync_test.rb"]
+    },
+    {
+      "path": "scripts/automation/email_delivery_test.py",
+      "label": "SaneProcess email delivery tests",
+      "status": "required",
+      "cmd": ["python3", "-B", "scripts/automation/email_delivery_test.py"]
+    },
+    {
+      "path": "scripts/automation/check_inbox_metrics_test.py",
+      "label": "SaneProcess check-inbox process metric tests",
+      "status": "required",
+      "cmd": ["python3", "-B", "scripts/automation/check_inbox_metrics_test.py"]
+    },
+    {
+      "path": "scripts/automation/hosted_file_actions_test.py",
+      "label": "SaneProcess hosted file action tests",
+      "status": "required",
+      "cmd": ["python3", "-B", "scripts/automation/hosted_file_actions_test.py"]
+    },
+    {
+      "path": "scripts/automation/listing_actions_test.py",
+      "label": "SaneProcess listing action tests",
+      "status": "required",
+      "cmd": ["python3", "-B", "scripts/automation/listing_actions_test.py"]
+    },
+    {
+      "path": "scripts/automation/ls_sales_test.py",
+      "label": "SaneProcess LemonSqueezy sales tests",
+      "status": "required",
+      "cmd": ["python3", "-B", "scripts/automation/ls_sales_test.py"]
+    },
+    {
+      "path": "scripts/automation/status_crossref_test.py",
+      "label": "SaneProcess status cross-reference tests",
+      "status": "required",
+      "cmd": ["python3", "-B", "scripts/automation/status_crossref_test.py"]
+    },
+    {
+      "path": "scripts/dedupe_sane_apps_test.rb",
+      "label": "SaneProcess dedupe tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/dedupe_sane_apps_test.rb"]
+    },
+    {
+      "path": "scripts/hooks/session_docs_test.rb",
+      "label": "SaneProcess session document enforcement tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/hooks/session_docs_test.rb"]
+    },
+    {
+      "path": "scripts/mini/mini_gui_run_test.rb",
+      "label": "SaneProcess Mini GUI runner tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/mini/mini_gui_run_test.rb"]
+    },
+    {
+      "path": "scripts/mini/mini_memory_guard_test.rb",
+      "label": "SaneProcess Mini memory guard tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/mini/mini_memory_guard_test.rb"]
+    },
+    {
+      "path": "scripts/mini/mini_train_cleanup_test.rb",
+      "label": "SaneProcess Mini train cleanup tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/mini/mini_train_cleanup_test.rb"]
+    },
+    {
+      "path": "scripts/mini/mini_train_process_test.rb",
+      "label": "SaneProcess Mini train process tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/mini/mini_train_process_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/dependencies_test.rb",
+      "label": "SaneProcess dependency watchdog tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/dependencies_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/gate_review_test.rb",
+      "label": "SaneProcess gate review tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/gate_review_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/generation_test.rb",
+      "label": "SaneProcess generation tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/generation_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/process_metrics_test.rb",
+      "label": "SaneProcess process metrics tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/process_metrics_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/release_guardrail_test.rb",
+      "label": "SaneProcess release guardrail tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/release_guardrail_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/release_route_test.rb",
+      "label": "SaneProcess release route tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/release_route_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/saneui_guard_test.rb",
+      "label": "SaneProcess SaneUI guard tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/saneui_guard_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/test_mode_test.rb",
+      "label": "SaneProcess test mode tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/test_mode_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/universal_control_test.rb",
+      "label": "SaneProcess Universal Control recovery tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/universal_control_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/verify_guard_test.rb",
+      "label": "SaneProcess verify guard tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/verify_guard_test.rb"]
+    },
+    {
+      "path": "scripts/validation_report_test.rb",
+      "label": "SaneProcess validation report tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/validation_report_test.rb"]
+    },
+    {
+      "path": "scripts/hooks/saneprompt_test.rb",
+      "label": "saneprompt self-test support module",
+      "status": "support",
+      "reason": "Loaded by hook tier tests; it is not a standalone executable test."
+    },
+    {
+      "path": "scripts/hooks/sanestop_test.rb",
+      "label": "sanestop self-test support module",
+      "status": "support",
+      "reason": "Loaded by hook tier tests; it is not a standalone executable test."
+    },
+    {
+      "path": "scripts/hooks/sanetools_test.rb",
+      "label": "sanetools self-test support module",
+      "status": "support",
+      "reason": "Loaded by hook tier tests; it is not a standalone executable test."
+    },
+    {
+      "path": "scripts/hooks/sanetrack_test.rb",
+      "label": "sanetrack self-test support module",
+      "status": "support",
+      "reason": "Loaded by hook tier tests; it is not a standalone executable test."
+    },
+    {
+      "path": "scripts/hooks/test/hook_test.rb",
+      "label": "legacy hook scenario suite",
+      "status": "manual",
+      "reason": "Superseded by tier_tests.rb; still registered so it cannot disappear unnoticed."
+    },
+    {
+      "path": "scripts/hooks/test/real_failures_test.rb",
+      "label": "legacy real failure replay suite",
+      "status": "manual",
+      "reason": "Stateful replay suite kept for targeted forensic runs, not every verify."
+    },
+    {
+      "path": "scripts/hooks/test/realistic_flow_test.rb",
+      "label": "legacy realistic hook flow suite",
+      "status": "manual",
+      "reason": "Stateful scenario suite kept for targeted forensic runs, not every verify."
+    },
+    {
+      "path": "scripts/hooks/test/recovery_test.rb",
+      "label": "legacy hook recovery suite",
+      "status": "manual",
+      "reason": "Stateful recovery suite kept for targeted forensic runs, not every verify."
+    },
+    {
+      "path": "scripts/sane_test.rb",
+      "label": "SaneApps app test launcher",
+      "status": "manual",
+      "reason": "Operational app launcher, not a SaneProcess unit test."
+    }
+  ]
+}

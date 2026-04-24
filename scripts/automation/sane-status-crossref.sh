@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 CHECK_INBOX="${HOME}/SaneApps/infra/scripts/check-inbox.sh"
 SANE_MASTER="${REPO_ROOT}/SaneMaster.rb"
+GITHUB_QUEUE="${SCRIPT_DIR}/github-queue.sh"
 LISTING_JSON_PATH="${STATUS_LISTING_JSON_PATH:-}"
 LISTING_JSON_CLEANUP=0
 
@@ -70,63 +71,17 @@ else
 fi
 
 printf '\n[4/5] Open GitHub issues (sane-apps org)\n'
-if command -v gh >/dev/null 2>&1; then
-  issue_output="$(
-    gh search issues --owner sane-apps --state open --limit "${STATUS_GITHUB_LIMIT:-200}" \
-      --json repository,number,title,labels,updatedAt \
-      --jq '
-        group_by(.repository.nameWithOwner)[]
-        | "## " + .[0].repository.nameWithOwner + "\n"
-          + (map(
-              "  #" + (.number | tostring)
-              + "\tOPEN\t" + .title
-              + "\t" + (([.labels[].name] | join(", ")) // "")
-              + "\t" + .updatedAt
-            ) | join("\n"))
-      ' 2>&1
-  )" || {
-    echo "  Unable to fetch org-wide issues (auth missing or GitHub search unavailable)."
-    echo "$issue_output"
-    issue_output=""
-  }
-  if [[ -n "${issue_output:-}" ]]; then
-    printf '%s\n' "$issue_output"
-  else
-    echo "No open GitHub issues found."
-  fi
+if [[ -x "$GITHUB_QUEUE" ]]; then
+  "$GITHUB_QUEUE" issues --scope org-wide --limit "${STATUS_GITHUB_LIMIT:-200}"
 else
-  echo "GitHub CLI (gh) not installed"
+  echo "github-queue.sh not found at $GITHUB_QUEUE"
 fi
 
 printf '\n[5/5] Open GitHub PRs (sane-apps org)\n'
-if command -v gh >/dev/null 2>&1; then
-  pr_output="$(
-    gh search prs --owner sane-apps --state open --limit "${STATUS_GITHUB_LIMIT:-200}" \
-      --json repository,number,title,labels,updatedAt,author,isDraft \
-      --jq '
-        group_by(.repository.nameWithOwner)[]
-        | "## " + .[0].repository.nameWithOwner + "\n"
-          + (map(
-              "  #" + (.number | tostring)
-              + "\t" + (if .isDraft then "DRAFT" else "OPEN" end)
-              + "\t" + .title
-              + "\t" + .author.login
-              + "\t" + (([.labels[].name] | join(", ")) // "")
-              + "\t" + .updatedAt
-            ) | join("\n"))
-      ' 2>&1
-  )" || {
-    echo "  Unable to fetch org-wide PRs (auth missing or GitHub search unavailable)."
-    echo "$pr_output"
-    pr_output=""
-  }
-  if [[ -n "${pr_output:-}" ]]; then
-    printf '%s\n' "$pr_output"
-  else
-    echo "No open GitHub PRs found."
-  fi
+if [[ -x "$GITHUB_QUEUE" ]]; then
+  "$GITHUB_QUEUE" prs --scope org-wide --limit "${STATUS_GITHUB_LIMIT:-200}"
 else
-  echo "GitHub CLI (gh) not installed"
+  echo "github-queue.sh not found at $GITHUB_QUEUE"
 fi
 
 printf '\nDone.\n'
