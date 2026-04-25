@@ -59,6 +59,8 @@ managed_overlay_path_allowed() {
     apps/SaneSync:training_data/valid.jsonl|\
     apps/SaneSync:training_data/test.jsonl|\
     apps/SaneSync:training_data/challenger_configs/*|\
+    apps/SaneSync:models/sweeps/*|\
+    apps/SaneSync:models/production_adapter/*|\
     apps/SaneVideo:training_data/train.jsonl|\
     apps/SaneVideo:training_data/valid.jsonl|\
     apps/SaneVideo:training_data/system_prompt.txt|\
@@ -67,6 +69,8 @@ managed_overlay_path_allowed() {
     apps/SaneVideo:training_data/*.yaml|\
     apps/SaneVideo:training_data/*.yml|\
     apps/SaneVideo:training_data/challenger_configs/*|\
+    apps/SaneVideo:models/sweeps/*|\
+    apps/SaneVideo:models/production_adapter/*|\
     apps/SaneVideo:Tests/Assets/*)
       return 0
       ;;
