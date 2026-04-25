@@ -14,6 +14,7 @@ fi
 SANE_ROOT="${SANE_ROOT:-$DEFAULT_SANE_ROOT}"
 OUTPUT_DIR="${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}"
 MLX_BIN_DIR="${MLX_BIN_DIR:-$HOME/mlx-env/bin}"
+MLX_VENV_ROOT="${MLX_VENV_ROOT:-$HOME/mlx-env}"
 ENABLE_WEEKLY_TRAINING="${ENABLE_WEEKLY_TRAINING:-true}"
 TRAIN_HARD_STOP_TIME="${TRAIN_HARD_STOP_TIME:-08:30}"
 READINESS_TARGET_APP="${READINESS_TARGET_APP:-}"
@@ -30,6 +31,9 @@ TRAIN_ALERT_COMMAND="${TRAIN_ALERT_COMMAND:-}"
 TRAIN_POLL_INTERVAL_SEC="${TRAIN_POLL_INTERVAL_SEC:-30}"
 TRAIN_EXAMPLE_DROP_MAX_PCT="${TRAIN_EXAMPLE_DROP_MAX_PCT:-20}"
 VALID_EXAMPLE_DROP_MAX_PCT="${VALID_EXAMPLE_DROP_MAX_PCT:-20}"
+TRAINING_MODE_ENABLED="${TRAINING_MODE_ENABLED:-true}"
+TRAINING_MODE_AGENT_SUSPEND_LIST="${TRAINING_MODE_AGENT_SUSPEND_LIST:-com.saneapps.always-awake,com.saneapps.codex-keepalive,com.saneapps.evening,com.saneapps.git-sync-safe,com.saneapps.mcp-watchdog,com.saneapps.memory-guard,com.saneapps.morning,com.saneapps.nightly,com.saneapps.nv-benchmark,com.saneapps.training-daily-check,com.google.GoogleUpdater.wake,com.google.keystone.agent,com.google.keystone.xpcservice,com.grammarly.ProjectLlama.Shepherd,com.grammarly.ProjectLlama.cleanup,com.logos.LogosIndexer,com.logos.desktop.logosindexer}"
+TRAINING_MODE_APP_QUIT_LIST="${TRAINING_MODE_APP_QUIT_LIST:-Codex,Xcode,SaneBar,SaneClip,SaneHosts,Shottr,MenuMeters,gfxCardStatus,Safari}"
 
 CHALLENGER_LABEL="com.saneapps.training-challengers"
 CHALLENGER_PLIST="$LAUNCH_AGENTS_DIR/${CHALLENGER_LABEL}.plist"
@@ -81,6 +85,10 @@ cat > "$CHALLENGER_PLIST" <<EOF
   <dict>
     <key>PATH</key>
     <string>${MLX_BIN_DIR}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>MLX_VENV_ROOT</key>
+    <string>${MLX_VENV_ROOT}</string>
+    <key>MLX_PYTHON_BIN</key>
+    <string>${MLX_VENV_ROOT}/bin/python3</string>
     <key>SANE_ROOT</key>
     <string>${SANE_ROOT}</string>
     <key>SANE_OUTPUT_DIR</key>
@@ -109,6 +117,12 @@ cat > "$CHALLENGER_PLIST" <<EOF
     <string>${TRAIN_EXAMPLE_DROP_MAX_PCT}</string>
     <key>VALID_EXAMPLE_DROP_MAX_PCT</key>
     <string>${VALID_EXAMPLE_DROP_MAX_PCT}</string>
+    <key>TRAINING_MODE_ENABLED</key>
+    <string>${TRAINING_MODE_ENABLED}</string>
+    <key>TRAINING_MODE_AGENT_SUSPEND_LIST</key>
+    <string>${TRAINING_MODE_AGENT_SUSPEND_LIST}</string>
+    <key>TRAINING_MODE_APP_QUIT_LIST</key>
+    <string>${TRAINING_MODE_APP_QUIT_LIST}</string>
   </dict>
 
   <key>Nice</key>
@@ -150,6 +164,10 @@ cat > "$WEEKLY_PLIST" <<EOF
   <dict>
     <key>PATH</key>
     <string>${MLX_BIN_DIR}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>MLX_VENV_ROOT</key>
+    <string>${MLX_VENV_ROOT}</string>
+    <key>MLX_PYTHON_BIN</key>
+    <string>${MLX_VENV_ROOT}/bin/python3</string>
     <key>SANE_ROOT</key>
     <string>${SANE_ROOT}</string>
     <key>SANE_OUTPUT_DIR</key>
@@ -176,6 +194,12 @@ cat > "$WEEKLY_PLIST" <<EOF
     <string>${TRAIN_EXAMPLE_DROP_MAX_PCT}</string>
     <key>VALID_EXAMPLE_DROP_MAX_PCT</key>
     <string>${VALID_EXAMPLE_DROP_MAX_PCT}</string>
+    <key>TRAINING_MODE_ENABLED</key>
+    <string>${TRAINING_MODE_ENABLED}</string>
+    <key>TRAINING_MODE_AGENT_SUSPEND_LIST</key>
+    <string>${TRAINING_MODE_AGENT_SUSPEND_LIST}</string>
+    <key>TRAINING_MODE_APP_QUIT_LIST</key>
+    <string>${TRAINING_MODE_APP_QUIT_LIST}</string>
   </dict>
 
   <key>Nice</key>

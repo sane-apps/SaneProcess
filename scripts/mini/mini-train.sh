@@ -64,6 +64,7 @@ esac
 BASE_MODEL_OVERRIDE=""
 CONFIG_OVERRIDE=""
 CHALLENGER_MODE=false
+BASE_MODEL="unknown"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -101,6 +102,7 @@ MODELS_DIR="$APP_DIR/models"
 OUTPUT_DIR="$SANE_OUTPUT_DIR"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 EVAL_SCRIPT="$SCRIPT_DIR/evaluate_model.py"
+TRAINING_MODE_SCRIPT="$SCRIPT_DIR/mini-training-mode.sh"
 
 report_model_short_from_value() {
   printf '%s' "$1" | sed 's|.*/||' | sed 's/\.yaml$//' | sed 's/\.yml$//' | sed 's/-MLX-4bit//' | sed 's/-4bit//' | tr '[:upper:]' '[:lower:]'
@@ -119,8 +121,9 @@ if [ "$CHALLENGER_MODE" = true ]; then
 else
   REPORT="$OUTPUT_DIR/training_report_${APP_NAME}.md"
 fi
-VENV="$HOME/mlx-env/bin"
-PYTHON="$VENV/python3"
+MLX_VENV_ROOT="${MLX_VENV_ROOT:-$HOME/mlx-env}"
+VENV_BIN="$MLX_VENV_ROOT/bin"
+PYTHON="$VENV_BIN/python3"
 MLX_LM="$PYTHON -m mlx_lm"
 
 DATE=$(date +"%Y-%m-%d")
@@ -129,11 +132,17 @@ TIMESTAMP_FILE=$(date +"%Y-%m-%d_%H-%M-%S")
 START_EPOCH=$(date +%s)
 MODE_LABEL="production"
 READINESS_TARGET_APP="${READINESS_TARGET_APP:-}"
-EVAL_SUITE_WEIGHTS="${EVAL_SUITE_WEIGHTS:-commentary_workflow=4,workflow_packs=2,workflow_guardrails=2,core=1}"
+DEFAULT_EVAL_SUITE_WEIGHTS="commentary_workflow=4,workflow_packs=2,workflow_guardrails=2,core=1"
+DEFAULT_EVAL_SUITES=""
+if [ "$APP_NAME" = "SaneVideo" ]; then
+  DEFAULT_EVAL_SUITE_WEIGHTS="commentary_workflow=4,workflow_packs=2,workflow_guardrails=2"
+  DEFAULT_EVAL_SUITES="commentary_workflow,workflow_packs,workflow_guardrails"
+fi
+EVAL_SUITE_WEIGHTS="${EVAL_SUITE_WEIGHTS:-$DEFAULT_EVAL_SUITE_WEIGHTS}"
 EVAL_MAX_CASES="${EVAL_MAX_CASES:-0}"
 EVAL_MAX_TOKENS="${EVAL_MAX_TOKENS:-128}"
 EVAL_MAX_TOKENS_CAP="${EVAL_MAX_TOKENS_CAP:-0}"
-EVAL_SUITES="${EVAL_SUITES:-}"
+EVAL_SUITES="${EVAL_SUITES:-$DEFAULT_EVAL_SUITES}"
 PRIMARY_WORKFLOW_SUITE="${PRIMARY_WORKFLOW_SUITE:-commentary_workflow}"
 PRIMARY_WORKFLOW_MIN_PCT="${PRIMARY_WORKFLOW_MIN_PCT:-50}"
 WORKFLOW_PASS_SCORE="${WORKFLOW_PASS_SCORE:-75}"
@@ -156,6 +165,15 @@ detect_eval_token_cap() {
   fi
 
   mem_gb=$((raw_memsize / 1024 / 1024 / 1024))
+  if [ "$APP_NAME" = "SaneVideo" ]; then
+    if [ "$mem_gb" -le 8 ]; then
+      EVAL_MAX_TOKENS_CAP=384
+    else
+      EVAL_MAX_TOKENS_CAP=448
+    fi
+    return
+  fi
+
   if [ "$mem_gb" -le 8 ]; then
     EVAL_MAX_TOKENS_CAP=192
   else
@@ -183,10 +201,55 @@ TRAIN_EXAMPLE_DROP_MAX_PCT="${TRAIN_EXAMPLE_DROP_MAX_PCT:-20}"
 VALID_EXAMPLE_DROP_MAX_PCT="${VALID_EXAMPLE_DROP_MAX_PCT:-20}"
 PARTIAL_CHECKPOINT_EVAL="${PARTIAL_CHECKPOINT_EVAL:-true}"
 CHECKPOINT_FILES_TO_KEEP="${CHECKPOINT_FILES_TO_KEEP:-1}"
+TRAIN_DISABLE_INLINE_VALIDATION="${TRAIN_DISABLE_INLINE_VALIDATION:-true}"
 ALLOW_UNSAFE_TRAINING="${ALLOW_UNSAFE_TRAINING:-false}"
 TRAIN_PROCESS_DRAIN_WAIT_SEC="${TRAIN_PROCESS_DRAIN_WAIT_SEC:-30}"
 TRAIN_PROCESS_KILL_GRACE_SEC="${TRAIN_PROCESS_KILL_GRACE_SEC:-5}"
 TRAIN_PREFLIGHT_PURGE="${TRAIN_PREFLIGHT_PURGE:-true}"
+TRAINING_MODE_ENABLED="${TRAINING_MODE_ENABLED:-true}"
+TRAINING_MODE_TAG="${TRAINING_MODE_TAG:-${APP_NAME}_${MODE_LABEL}_$$}"
+TRAINING_MODE_ENTERED=false
+
+enter_training_mode_if_needed() {
+  local training_mode_output training_mode_exit
+
+  if [ "$TRAINING_MODE_ENABLED" != "true" ]; then
+    return 0
+  fi
+
+  if [ ! -f "$TRAINING_MODE_SCRIPT" ]; then
+    echo "**FAILED:** Training mode script missing: $TRAINING_MODE_SCRIPT" >> "$REPORT"
+    return 1
+  fi
+
+  echo "## Training Mode" >> "$REPORT"
+  echo "" >> "$REPORT"
+  training_mode_output=$(TRAINING_MODE_TAG="$TRAINING_MODE_TAG" \
+    SANE_OUTPUT_DIR="$SANE_OUTPUT_DIR" \
+    /bin/bash "$TRAINING_MODE_SCRIPT" enter 2>&1)
+  training_mode_exit=$?
+  printf '%s\n' "$training_mode_output" | sed 's/^/- /' >> "$REPORT"
+  echo "" >> "$REPORT"
+  echo "---" >> "$REPORT"
+  echo "" >> "$REPORT"
+
+  if [ "$training_mode_exit" -ne 0 ]; then
+    return 1
+  fi
+
+  TRAINING_MODE_ENTERED=true
+  return 0
+}
+
+exit_training_mode_if_needed() {
+  if [ "$TRAINING_MODE_ENTERED" != "true" ]; then
+    return 0
+  fi
+
+  TRAINING_MODE_TAG="$TRAINING_MODE_TAG" \
+  SANE_OUTPUT_DIR="$SANE_OUTPUT_DIR" \
+    /bin/bash "$TRAINING_MODE_SCRIPT" exit >/dev/null 2>&1 || true
+}
 
 resolve_base_config() {
   local candidate=""
@@ -216,6 +279,28 @@ config_warmup_from_file() {
 config_model_from_file() {
   local config_file="$1"
   awk -F': ' '/^model:/ {gsub(/"/, "", $2); gsub(/\047/, "", $2); print $2; exit}' "$config_file" 2>/dev/null
+}
+
+numeric_or_zero() {
+  local value="${1:-}"
+  if [[ "$value" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$value"
+  else
+    printf '0\n'
+  fi
+}
+
+create_results_file() {
+  local template output_path
+
+  template="$OUTPUT_DIR/.training_results_${APP_NAME}_${MODE_LABEL}.XXXXXX"
+  output_path=$(mktemp "$template" 2>/dev/null || true)
+  if [ -n "$output_path" ]; then
+    printf '%s\n' "$output_path"
+    return
+  fi
+
+  mktemp
 }
 
 warmup_steps_for_sweep() {
@@ -278,7 +363,11 @@ parse_hard_stop_time
 if [ "$CHALLENGER_MODE" = true ]; then
   NEXT_RUN_HINT="Daily challenger agent at 1:00 AM, except Sunday when SaneAI owns the window."
 else
-  NEXT_RUN_HINT="Weekly SaneAI agent on Sunday at 1:00 AM."
+  if [ "$APP_NAME" = "SaneVideo" ]; then
+    NEXT_RUN_HINT="Run the standalone SaneVideo lane manually or wire it to stronger hardware once the workflow-only gate is green."
+  else
+    NEXT_RUN_HINT="Weekly SaneAI agent on Sunday at 1:00 AM."
+  fi
 fi
 
 mkdir -p "$OUTPUT_DIR" "$MODELS_DIR/sweeps"
@@ -373,6 +462,7 @@ cleanup() {
     done
   fi
 
+  exit_training_mode_if_needed
   prune_old_sweeps "" || true
   rm -rf "$LOCKFILE"
   rm -f "${RESULTS_FILE:-}"
@@ -419,9 +509,12 @@ is_training_stalled() {
     return 1
   fi
 
-  current_log_mtime=$(log_mtime_epoch "$log_path")
-  current_cpu_seconds=$(pid_cpu_seconds "$train_pid")
-  now=$(date +%s)
+  current_log_mtime=$(numeric_or_zero "$(log_mtime_epoch "$log_path")")
+  current_cpu_seconds=$(numeric_or_zero "$(pid_cpu_seconds "$train_pid")")
+  now=$(numeric_or_zero "$(date +%s)")
+  TRAIN_LAST_LOG_MTIME=$(numeric_or_zero "${TRAIN_LAST_LOG_MTIME:-0}")
+  TRAIN_LAST_CPU_SECONDS=$(numeric_or_zero "${TRAIN_LAST_CPU_SECONDS:-0}")
+  TRAIN_LAST_PROGRESS_AT=$(numeric_or_zero "${TRAIN_LAST_PROGRESS_AT:-$now}")
 
   if [ "$current_log_mtime" -gt "$TRAIN_LAST_LOG_MTIME" ] || [ "$current_cpu_seconds" -gt "$TRAIN_LAST_CPU_SECONDS" ]; then
     TRAIN_LAST_PROGRESS_AT="$now"
@@ -623,6 +716,25 @@ build_sweep_iters() {
       SWEEP_ITERS=(1000 2000)
     fi
   fi
+}
+
+prepare_training_data_dir() {
+  local sweep_dir="$1"
+  local data_root="$2"
+  local run_data_dir
+
+  if [ "$TRAIN_DISABLE_INLINE_VALIDATION" != "true" ]; then
+    printf '%s\n' "$data_root"
+    return
+  fi
+
+  run_data_dir="$sweep_dir/train_data_runtime"
+  rm -rf "$run_data_dir"
+  mkdir -p "$run_data_dir"
+
+  ln -sf "$data_root/train.jsonl" "$run_data_dir/train.jsonl"
+
+  printf '%s\n' "$run_data_dir"
 }
 
 is_active_pid() {
@@ -1064,26 +1176,43 @@ parse_eval_summary() {
   fi
 }
 
+wait_for_nightly_lock_release() {
+  local nightly_lock="$1"
+  local wait_limit_min="${NIGHTLY_WAIT_MAX_MIN:-60}"
+  local waited=0
+
+  if [ ! -d "$nightly_lock" ]; then
+    return 0
+  fi
+
+  if ! [[ "$wait_limit_min" =~ ^[0-9]+$ ]]; then
+    wait_limit_min=60
+  fi
+
+  echo "Waiting for nightly build to complete..." >&2
+  while [ -d "$nightly_lock" ] && [ "$waited" -lt "$wait_limit_min" ]; do
+    sleep 60
+    waited=$((waited + 1))
+  done
+
+  if [ -d "$nightly_lock" ]; then
+    echo "Nightly still running after ${wait_limit_min} minutes. Aborting training instead of overlapping workloads." >&2
+    return 1
+  fi
+
+  return 0
+}
+
 # Check MLX is available
 if [ ! -f "$PYTHON" ]; then
-  echo "ERROR: Python venv not found at $VENV" >&2
-  echo "Setup: python3 -m venv ~/mlx-env && ~/mlx-env/bin/pip install mlx-lm" >&2
+  echo "ERROR: Python venv not found at $VENV_BIN" >&2
+  echo "Setup: python3 -m venv $MLX_VENV_ROOT && $VENV_BIN/pip install mlx-lm" >&2
   exit 1
 fi
 
 # Wait for nightly builds to finish if running
 NIGHTLY_LOCK="$OUTPUT_DIR/.nightly.lock"
-if [ -d "$NIGHTLY_LOCK" ]; then
-  echo "Waiting for nightly build to complete..." >&2
-  WAIT_COUNT=0
-  while [ -d "$NIGHTLY_LOCK" ] && [ $WAIT_COUNT -lt 60 ]; do
-    sleep 60
-    WAIT_COUNT=$((WAIT_COUNT + 1))
-  done
-  if [ -d "$NIGHTLY_LOCK" ]; then
-    echo "Nightly still running after 60 minutes. Proceeding anyway." >&2
-  fi
-fi
+wait_for_nightly_lock_release "$NIGHTLY_LOCK" || exit 1
 
 # Check disk space (need at least 10GB free for training)
 disk_free_gb=$(df -g / | tail -1 | awk '{print $4}')
@@ -1103,6 +1232,12 @@ Workflow scoring: weights [$EVAL_SUITE_WEIGHTS], primary suite ${PRIMARY_WORKFLO
 ---
 
 EOF
+
+if ! enter_training_mode_if_needed; then
+  cp "$REPORT" "$REPORT_ARCHIVE" 2>/dev/null || true
+  emit_training_failure_alert "Training mode could not isolate the Mini before launch."
+  exit 1
+fi
 
 # =============================================================================
 # Step 1: Pull latest training data
@@ -1340,7 +1475,7 @@ echo "" >> "$REPORT"
 # earlier checkpoints plus interrupted-checkpoint eval so nightly runs still
 # produce usable signal even when the hard stop hits before a full sweep.
 SWEEP_ITERS=()
-RESULTS_FILE=$(mktemp)
+RESULTS_FILE=$(create_results_file)
 SUCCESSFUL_SWEEPS=0
 LAST_SWEEP_LOG=""
 LAST_FAILURE_SUMMARY=""
@@ -1391,6 +1526,7 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
   fi
 
   mkdir -p "$ADAPTER_DIR"
+  TRAIN_RUN_DATA_DIR=$(prepare_training_data_dir "$ADAPTER_DIR" "$TRAIN_DIR")
 
   TRAIN_START=$(date +%s)
 
@@ -1417,6 +1553,9 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
   fi
 
   echo "- Sweep schedule: warmup=${WARMUP_STEPS}, decay_steps=${ITERS}" >> "$REPORT"
+  if [ "$TRAIN_DISABLE_INLINE_VALIDATION" = "true" ]; then
+    echo "- Inline validation: disabled on Mini training run to avoid MLX residency stalls; rely on post-train eval" >> "$REPORT"
+  fi
   echo "" >> "$REPORT"
 
   STEPS_PER_EVAL=$(grep '^steps_per_eval:' "$SWEEP_CONFIG" | awk '{print $2}' | tail -1)
@@ -1436,7 +1575,7 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
   nice -n 15 "$PYTHON" -m mlx_lm lora \
     --train \
     --model "$BASE_MODEL" \
-    --data "$TRAIN_DIR" \
+    --data "$TRAIN_RUN_DATA_DIR" \
     -c "$SWEEP_CONFIG" \
     --iters "$ITERS" \
     --steps-per-eval "$STEPS_PER_EVAL" \

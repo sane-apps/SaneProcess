@@ -1,4 +1,257 @@
 
+## Session 120 (2026-04-25)
+
+### Done
+- Ran a controlled standalone `SaneVideo` workflow-only training pass directly on the Mini with daytime isolation and live monitoring.
+- Fixed `mini-training-mode.sh` so training mode also drains leftover helper processes by pattern, not just GUI apps:
+  - `xcodebuildmcp`
+  - `validation_report.rb`
+- Confirmed the Mini is not the blocker for standalone `SaneVideo`:
+  - challenger `125`-iter run completed cleanly in `12 min`
+  - production `250`-iter run completed cleanly in `25 min`
+  - no OOM, no stall, no forced restart, no lingering MLX/eval processes afterward
+- Fixed a scoring bug in `mini-train.sh`: standalone `SaneVideo` eval cases already request `256` tokens, but the Mini cap was clipping them to `192`, which inflated invalid-JSON failures. `SaneVideo` now gets a higher eval token cap on the Mini.
+- Fixed an automation-root hygiene bug in `mini-prepare-automation-root.sh`: generated training outputs under `models/sweeps/` and `models/production_adapter/` are now treated as managed overlays so prep can clean them instead of blocking the next run.
+
+### Live Verification
+- `bash -n scripts/mini/mini-training-mode.sh` -> passed
+- `bash -n scripts/mini/mini-train.sh` -> passed
+- `bash -n scripts/mini/mini-prepare-automation-root.sh` -> passed
+- `ruby scripts/mini/mini_train_process_test.rb` -> `15/15`
+- First challenger run:
+  - report: `~/SaneApps/outputs/daytrain-sanevideo-2026-04-25/challenger_report_SaneVideo_smollm3-3b.md`
+  - training result: stable, peak mem `2.902 GB`
+  - wrapper score under old cap: `9%`
+  - manual uncapped re-eval of the same adapter: `23%` workflow-first / `26%` raw
+- Full production run:
+  - report: `~/SaneApps/outputs/daytrain-sanevideo-prod-2026-04-25/training_report_SaneVideo.md`
+  - training result: stable, peak mem `2.975 GB`
+  - final score: `47%` workflow-first / `46%` raw
+  - primary gate: `commentary_workflow 3/6 (50%)` -> PASS
+  - overall status: `LOW SCORE`
+- Post-run check:
+  - no lingering `mlx_lm`, `evaluate_model.py`, or `mini-train.sh SaneVideo` processes
+  - suspended launch agents restored
+
+### Current State
+- The standalone `SaneVideo` lane is operationally healthy on the 8 GB Mini when the machine is isolated.
+- The merged-lane instability diagnosis was directionally right: contention and bad process hygiene were real problems.
+- After fixing the eval-cap bug, the model is better than the old `9%` report implied, but still not good enough:
+  - strong progress on commentary and guardrails
+  - workflow packs remain the weakest area
+  - remaining failures are mostly wrong item shaping / item count and some still-truncated JSON in multi-item packs
+
+### Next
+- Keep the standalone `SaneVideo` lane on the Mini for now; hardware is not the first blocker anymore.
+- Next training improvement work should target data/prompt quality, especially:
+  - multi-item workflow packs
+  - `meetingReview`, `salesCoach`, `supportQA`, and `teachingStudy`
+  - exact item-shape matching for commentary concepts/claims
+- Do not regress the SaneVideo eval cap back to `192` on the Mini.
+
+## Session 119 (2026-04-25)
+
+### Done
+- Clarified the SaneApps privacy standard: anonymous aggregate business analytics are allowed when disclosed plainly; spyware means personal/customer-content/device surveillance, hidden tracking, or user-level data sale/sharing.
+- Updated durable SaneProcess SOP docs to stop treating conversion/download analytics as inherently suspicious.
+- Replaced scaffolded `no analytics` / `no telemetry` privacy boilerplate with privacy-preserving aggregate analytics language.
+
+### Live Verification
+- `ruby -c scripts/scaffold.rb` -> `Syntax OK`
+- `ruby scripts/sanemaster/release_guardrail_test.rb` -> `41/41 passed`
+- `rg` confirmed the new privacy standard appears in `AGENTS.md`, `DEVELOPMENT.md`, `ARCHITECTURE.md`, `templates/RELEASE_SOP.md`, and `scripts/scaffold.rb`.
+
+### Current State
+- The approved standard allows aggregate counts for downloads, updates, app launches, free/pro mix, button clicks, purchase lifecycle, activations, crashes, and broad feature adoption.
+- Forbidden analytics payloads include names, emails, license keys, API keys, customer content, clipboard data, file names, host entries, videos, sales/order data, app-internal clicked URLs, ad IDs, cross-site IDs, and raw IP retention for analytics.
+- Cloudflare-style cookie-free website analytics are acceptable only with honest disclosure; do not promise no page/referrer analytics if using a tool that provides those dimensions.
+
+### Next
+- Align app privacy pages and website CTA helpers with this standard, starting with stale `no analytics`, `no telemetry`, `zero tracking`, and old clicked-URL CTA stubs.
+
+## Session 118 (2026-04-25)
+
+### Done
+- Traced the recurring “Codex will not intelligently use sub-agents unless explicitly requested” restriction to the installed Codex runtime payload, not to repo-local config.
+- Confirmed both machines already had `multi_agent = true`; the missing piece was standing explicit authorization that survives machine switches.
+- Added a global standing authorization block to `~/.codex/AGENTS.md` on the Mini:
+  - user explicitly authorizes useful sub-agent/delegation/parallel work unless opted out in the current message
+- Extended `scripts/automation/sync-codex-mini.sh` so Air↔Mini sync now also mirrors `~/.codex/AGENTS.md` and parity-checks it.
+- Added regression coverage in `scripts/automation/control_plane_sync_test.rb` and updated `scripts/automation/README.md`.
+- Ran the live Mini -> Air sync with restart so the Air Codex instance reloaded the updated global instructions.
+
+### Live Verification
+- `bash -n scripts/automation/sync-codex-mini.sh` -> passed
+- `ruby scripts/automation/control_plane_sync_test.rb` -> `PASS 7/7`
+- Live sync:
+  - `bash scripts/automation/sync-codex-mini.sh Stephans-MacBook-Air.local --quiet`
+- Post-sync Air verification:
+  - `~/.codex/AGENTS.md` hash matches the Mini
+  - Air `~/.codex/AGENTS.md` contains:
+    - `SUBAGENT AUTHORIZATION: ALWAYS ON UNLESS OPTED OUT`
+    - `The user explicitly authorizes Codex to use sub-agents...`
+
+### Current State
+- The restrictive language is still embedded in the Codex app/runtime bundle.
+- The effective local fix is to provide standing explicit user authorization in global Codex instructions and keep that file synced across both machines.
+- Air↔Mini context sync now covers:
+  - global Codex instructions (`~/.codex/AGENTS.md`)
+  - Codex config/skills
+  - machine-local memory files
+  - repo Serena memories
+
+### Next
+- If the Air still shows the same notice after a fresh session, inspect whether the UI text is static messaging versus actual agent-policy behavior.
+- Keep global `~/.codex/AGENTS.md` in the sync path; do not treat it as machine-local-only state.
+
+## Session 117 (2026-04-25)
+
+### Done
+- Hardened the Air↔Mini context sync path so direct Mini work no longer falls out of Air context.
+- `scripts/automation/sync-codex-mini.sh` now:
+  - detects local machine role and defaults the peer host accordingly
+  - merges `~/.claude/memory/knowledge-graph.jsonl`
+  - merges `~/.claude/session_learnings.jsonl`
+  - syncs canonical repo `.serena/memories/` directories both ways
+- `scripts/automation/reconcile-air-mini.sh` now uses the same machine-role detection, so it works when run from the Mini directly instead of assuming the Air is always the controller.
+- `scripts/hooks/session_start.rb` now prints the active host/role at session start.
+
+### Live Verification
+- `bash -n scripts/automation/sync-codex-mini.sh` -> passed
+- `bash -n scripts/automation/reconcile-air-mini.sh` -> passed
+- `ruby scripts/automation/control_plane_sync_test.rb` -> `PASS 7/7`
+- Live Mini -> Air sync passed with:
+  - `bash scripts/automation/sync-codex-mini.sh Stephans-MacBook-Air.local --no-restart`
+- Post-sync evidence on the Air:
+  - `infra/SaneProcess/.serena/memories/SaneVideo/standalone-workflow-lane-apr25-2026.md` exists
+  - `~/.claude/memory/knowledge-graph.jsonl` line count matches the Mini: `517`
+  - `~/.claude/session_learnings.jsonl` line count matches the Mini: `29`
+
+### Current State
+- The standard sync path now carries both control-plane config and durable machine-local context.
+- Direct Mini training/debug sessions should no longer disappear from the Air-side memory state after the next reconcile/sync.
+- This does not replace git sync for normal repo files; it closes the specific memory/context gap across hosts.
+
+### Next
+- Prefer `ruby scripts/SaneMaster.rb sync_mini` or `reconcile-air-mini.sh` after any direct Mini-only context work.
+- Keep training-specific repo changes on the normal repo/git path; use the memory parity lane for cross-session context, not as a repo sync substitute.
+
+## Session 116 (2026-04-25)
+
+### Done
+- Split the workflow-training target so `SaneVideo` now has a standalone workflow-only lane instead of relying on the merged generic `SaneAI` path.
+- Added/verified the standalone `SaneVideo` files under `apps/SaneVideo/training_data/`:
+  - workflow-only `system_prompt.txt`
+  - Mini configs
+  - strict workflow eval packs
+- Updated `scripts/mini/mini-train.sh` so `SaneVideo` defaults to workflow-only eval weighting and does not drag the generic `core` suite into the standalone lane.
+- Fixed `scripts/mini/mini-prepare-automation-root.sh` so the automation clone now hydrates the standalone `SaneVideo` support files too:
+  - `system_prompt.txt`
+  - `lora_config_mini.yaml`
+  - `eval_*.jsonl`
+  - `challenger_configs/`
+
+### Live Verification
+- `bash -n scripts/mini/mini-train.sh` passed earlier in the training audit pass.
+- `python3 -m py_compile apps/SaneVideo/training_data/generate_workflow_dataset.py` passed.
+- `ruby scripts/mini/mini_train_process_test.rb` passed `15/15`.
+- Local standalone Mini smoke completed cleanly:
+  - report: `~/SaneApps/outputs/sanevideo-smoke-local/training_report_SaneVideo.md`
+  - model: `mlx-community/SmolLM3-3B-4bit`
+  - sweep length: `2` steps
+  - peak memory: `3.256 GB`
+  - score: `0%` workflow-first, which is expectedly non-diagnostic for such a tiny smoke
+
+### Current State
+- The previous sync gap was real: the automation clone only hydrated `SaneVideo` `train.jsonl` and `valid.jsonl`, so the standalone lane could disappear on the next prep.
+- That gap is now closed in the source-of-truth prep script.
+- `SaneVideo` is now the workflow-specific model target.
+- `SaneSync` remains the generic operations-model target.
+
+### Next
+- Sync the updated human repo state into `~/SaneApps-automation` and use that root for the first real bounded standalone `SaneVideo` run.
+- Keep the merged `SaneAI` lane out of the promotion path for `SaneVideo` quality.
+- If standalone `SaneVideo` still fails the strict gate after a real bounded Mini run with training mode enabled, move only that lane off-Mini.
+
+## Session 115 (2026-04-25)
+
+### Done
+- Tightened the SaneSales conversion report so the funnel now shows launch, upsell, website CTA, purchase lifecycle, and activation counts in one table.
+- `scripts/automation/dl-report.py` now reports:
+  - New Free, Launch Free, Launch Pro, Upsell, Buy Click, Web Buy, Web Download, Purchase Start, Purchase Done, Activated
+  - top "Other Events" so locked-feature demand is visible instead of buried
+- Confirmed canonical SaneSales data on the Mini:
+  - 30d downloads: 2,664 total, 2,647 website
+  - 30d events: 297 new free, 735 free launches, 181 Pro launches, 7 upsell views, 2 buy clicks, 0 purchase starts, 0 purchase completions, 0 activations
+  - all-time LemonSqueezy product sales: no SaneSales orders
+- `scripts/link_monitor.rb` passed all 38 checks, including SaneSales checkout, redirect, download, appcast, and domain checks.
+
+### Live Verification
+- `python3 -m py_compile scripts/automation/dl-report.py` passed.
+- `ruby scripts/SaneMaster.rb events --app SaneSales --days 30` shows the new funnel columns.
+- Synthetic local report fixture confirmed Web Buy/Web Download columns render with counts.
+- Open GitHub issues: SaneProcess `#8` remains open as `watching-external`.
+
+### Current State
+- The funnel report is now good enough to distinguish:
+  - website buy intent
+  - in-app upsell buy intent
+  - App Store purchase starts/completions
+  - direct license activations
+- Existing validation report is still red for unrelated repo-wide issues in MCP repos, Q4 process metrics, and stale SaneClip docs.
+
+## Session 114 (2026-04-25)
+
+### Done
+- Updated release-note SOP so public update copy answers the customer question: `why should I download this update?`
+- Added release-note gate coverage in `scripts/release.sh`:
+  - rejects Basic-vs-Pro / entitlement / paywall / monetization / business-model framing
+  - allows `General updates and improvements.` as the fallback when there is no stronger customer-visible benefit
+  - accepts concrete customer-benefit copy like reliability, saving, speed, compatibility, or workflow improvements
+- Updated `AGENTS.md`, `DEVELOPMENT.md`, and `templates/RELEASE_SOP.md` with the new release-note rule.
+
+### Live Verification
+- Local targeted:
+  - `ruby scripts/sanemaster/release_guardrail_test.rb` -> `41/41`
+  - `bash -n scripts/release.sh` -> passed
+- Mini full:
+  - `ruby scripts/SaneMaster.rb verify --timeout 900` -> passed
+  - latest final line: `✅ Tests passed! (202 tests, 30s)`
+
+### Current State
+- Public update notes should never say the release is about internal Basic-vs-Pro framing.
+- If there is no better customer-facing reason, use `General updates and improvements.`
+
+## Session 113 (2026-04-25)
+
+### Done
+- Restored and tested the optional external agent-tool lane:
+  - `ruby scripts/SaneMaster.rb external_tools`
+  - safe probes for `cass`, `ubs`, `dcg`, `br`/`bv`, and `asb`
+  - strict Mini-first routing by default, with explicit `--local`
+  - registry-backed `scripts/sanemaster/external_tools_test.rb`
+- Ran live status on the Mini.
+- Ran the restored `external_tools` command through the Mini router after status.
+
+### Live Verification
+- Mini `ruby scripts/SaneMaster.rb status`:
+  - 30-day LemonSqueezy total: `53` orders, `$488.47` gross, `$448.15` keep
+  - inbox action needed: `0`
+  - open GitHub issues: SaneBar `#136`, SaneBar `#129`, SaneProcess `#8`
+  - open GitHub PRs: none
+  - hosted-file dashboard sync still needed for SaneBar, SaneClip, and SaneSales
+- Mini-routed `ruby scripts/SaneMaster.rb external_tools --timeout 30`:
+  - installed: `cass`, `ubs`
+  - missing: `dcg`, `br`/`bv`, `asb`
+  - `cass`: `installed_but_index_unhealthy`
+  - `ubs`: `installed_but_module_checksum_mismatch`
+- Local targeted `ruby scripts/sanemaster/external_tools_test.rb` -> `9/9`
+
+### Current State
+- `cass` is useful only for session listing until its index/search path is repaired.
+- `ubs` is not usable yet because the Ruby scan module checksum fails.
+- The external tools remain outside default `verify`, release, support, and status paths.
+
 ## Session 112 (2026-04-24)
 
 ### Done
@@ -2517,3 +2770,22 @@ Public guidance lives in `CLAUDE_PUBLIC.md`.
 - Verified `./scripts/check-inbox.sh repair-replied-status --all-open` now runs cleanly after removing the brittle bulk-shell path; current run found `0` additional stale open threads with reply evidence.
 - Reviewed current refund thread `#574` on the Mini so it is cleared for reply without `--force`.
 - Net effect: the stale "already replied but still needs_human" drift for refund / duplicate-key threads is fixed at the API level, not just papered over in the shell wrapper.
+# 2026-04-25 - SaneVideo standalone Mini lane now passes the real commentary gate
+- Confirmed a real measurement bug in the standalone SaneVideo lane:
+  - the wrapper still capped SaneVideo eval outputs too tightly for multi-item workflow suites
+  - manual re-eval of the same adapter at `384` tokens moved the score from `28%` workflow-first / `16%` commentary to `47%` workflow-first / `16%` commentary with `workflow_packs 5/5`
+- Fixed the Mini process path:
+  - `scripts/mini/mini-train.sh` now gives `SaneVideo` a `384` token eval cap on the 8 GB Mini and `448` above that
+  - this preserves the valid longer JSON needed by the standalone workflow suites
+- Fixed commentary-lane training inputs in `apps/SaneVideo/training_data/`:
+  - one-moment commentary requests now explicitly train toward exactly one item
+  - `old_issues_framing` and `repentance_vs_qualification` no longer teach overbroad timestamp spans
+  - compact commentary refs no longer truncate mid-reference
+- Live verification on the Mini:
+  - standalone challenger rerun report: `~/SaneApps/outputs/daytrain-sanevideo-commentaryfix-2026-04-25/challenger_report_SaneVideo_smollm3-3b.md`
+  - result: `commentary_workflow 4/6 (66%)`, `workflow_packs 5/5 (100%)`, `workflow_guardrails 2/4 (50%)`
+  - workflow-first `71%`, raw `73%`
+  - stable `125`-iter run in `21 min`, peak mem `3.398 GB`
+- Remaining work is now sharply defined:
+  - fix four residual suite misses (`optics_over_substance`, `repentance_vs_qualification`, `meeting_voice_brief`, `teaching_empty_refs_ok`)
+  - shorten the overlong multi-item repair/guarded training examples that still trigger repeated `>1024` truncation warnings during training

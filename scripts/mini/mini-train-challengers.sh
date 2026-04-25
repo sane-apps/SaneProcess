@@ -41,7 +41,7 @@ run_saneai_merge() {
   merge_home=$(mktemp -d -t saneai-merge-home)
   ln -s "$SANE_ROOT" "$merge_home/SaneApps"
 
-  HOME="$merge_home" "$HOME/mlx-env/bin/python3" "$merge_script"
+  HOME="$merge_home" "${MLX_PYTHON_BIN:-$HOME/mlx-env/bin/python3}" "$merge_script"
   merge_exit=$?
 
   rm -rf "$merge_home"
@@ -90,11 +90,12 @@ prepare_automation_root_if_needed() {
 # Default daily lane stays on the last stable 8 GB candidate unless explicitly widened.
 CHALLENGER_BUDGET_MIN="${CHALLENGER_BUDGET_MIN:-0}"
 TRAIN_HARD_STOP_TIME="${TRAIN_HARD_STOP_TIME:-08:30}"
-CHALLENGER_SELECTION_MODE="${CHALLENGER_SELECTION_MODE:-all}"
+CHALLENGER_SELECTION_MODE="${CHALLENGER_SELECTION_MODE:-alternate}"
 CHALLENGER_ROTATION_ANCHOR_DATE="${CHALLENGER_ROTATION_ANCHOR_DATE:-2026-03-07}"
 CHALLENGER_ROTATION_ORDER="${CHALLENGER_ROTATION_ORDER:-smollm3-3b}"
 CHALLENGER_ROTATION_DATE="${CHALLENGER_ROTATION_DATE:-$DATE}"
 CHALLENGER_SKIP_WEEKDAY="${CHALLENGER_SKIP_WEEKDAY:-}"
+ALLOW_MULTI_CHALLENGER_RUNS="${ALLOW_MULTI_CHALLENGER_RUNS:-false}"
 CHALLENGER_START=$(date +%s)
 SELECTED_CONFIG_NAME=""
 
@@ -217,6 +218,15 @@ if [ -z "$CONFIG_FILES" ]; then
   rm -f "$CONFIG_LIST_ALL" "$CONFIG_LIST_SELECTED"
   echo "No challenger config files in $CONFIGS_DIR" >&2
   exit 0
+fi
+
+if [ "$CHALLENGER_SELECTION_MODE" = "all" ] && [ "$ALLOW_MULTI_CHALLENGER_RUNS" != "true" ]; then
+  CONFIG_COUNT=$(printf '%s\n' "$CONFIG_FILES" | awk 'NF {count++} END {print count+0}')
+  if [ "$CONFIG_COUNT" -gt 1 ]; then
+    rm -f "$CONFIG_LIST_ALL" "$CONFIG_LIST_SELECTED"
+    echo "Refusing to run ${CONFIG_COUNT} challenger configs in one lane. Set ALLOW_MULTI_CHALLENGER_RUNS=true for an explicit bakeoff." >&2
+    exit 1
+  fi
 fi
 
 # Count challengers

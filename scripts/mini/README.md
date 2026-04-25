@@ -45,7 +45,7 @@ scp scripts/mini/mini-train.sh mini:~/SaneApps/infra/scripts/
 
 Legacy note:
 - `scripts/mini/sync-claude-config.sh` is a deprecation wrapper, not a separate sync system.
-- Canonical Mini control-plane parity is `scripts/automation/sync-codex-mini.sh`.
+- Canonical Air↔Mini control-plane and memory parity is `scripts/automation/sync-codex-mini.sh`.
 - `deploy.sh` manages Mini runtime scripts only and should not be used to recreate a second config-sync lane.
 
 Default root behavior:
@@ -183,6 +183,55 @@ Only use this path on the Mini:
 - Train against `SANE_ROOT=~/SaneApps-automation`.
 - Write reports and alerts under `~/SaneApps/outputs`.
 - Do not run scheduled training against the human repo at `~/SaneApps`.
+
+### Split-Lane Recommendation
+
+- `SaneVideo` should train as a standalone workflow-only model.
+- `SaneSync` should continue as the generic operations model.
+- The merged `SaneAI` lane is no longer the promotion target for strict SaneVideo workflow quality.
+- Use the Mini first for `SaneVideo` smoke + bounded workflow-only runs because the corpus is small (`115/29`) and the task is narrow.
+- If the standalone `SaneVideo` lane still misses the strict gate after the split, move only that lane to stronger hardware or rented GPU compute.
+
+### Standalone SaneVideo Lane
+
+Canonical standalone files now live in:
+
+```text
+apps/SaneVideo/training_data/system_prompt.txt
+apps/SaneVideo/training_data/lora_config_mini.yaml
+apps/SaneVideo/training_data/challenger_configs/smollm3-3b.yaml
+apps/SaneVideo/training_data/eval_commentary_workflow.jsonl
+apps/SaneVideo/training_data/eval_workflow_packs.jsonl
+apps/SaneVideo/training_data/eval_workflow_guardrails.jsonl
+```
+
+Run the production-style standalone lane manually with:
+
+```bash
+ssh mini '
+  TRAIN_HARD_STOP_TIME=23:59 \
+  TRAIN_POLL_INTERVAL_SEC=15 \
+  SANE_ROOT=$HOME/SaneApps-automation \
+  SANE_OUTPUT_DIR=$HOME/SaneApps/outputs/sanevideo-workflow \
+  /bin/bash $HOME/SaneApps/infra/SaneProcess/scripts/mini/mini-train.sh \
+    SaneVideo --config lora_config_mini.yaml
+'
+```
+
+Run the bounded challenger-style lane with:
+
+```bash
+ssh mini '
+  TRAIN_HARD_STOP_TIME=23:59 \
+  TRAIN_POLL_INTERVAL_SEC=15 \
+  SANE_ROOT=$HOME/SaneApps-automation \
+  SANE_OUTPUT_DIR=$HOME/SaneApps/outputs/sanevideo-workflow \
+  /bin/bash $HOME/SaneApps/infra/SaneProcess/scripts/mini/mini-train.sh \
+    SaneVideo --config challenger_configs/smollm3-3b.yaml --challenger
+'
+```
+
+`mini-train.sh` now defaults `SaneVideo` to workflow-only eval suites and removes the irrelevant generic `core` suite from the weighted score unless you override the env manually.
 
 ### Smoke Test
 

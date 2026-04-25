@@ -61,6 +61,12 @@ managed_overlay_path_allowed() {
     apps/SaneSync:training_data/challenger_configs/*|\
     apps/SaneVideo:training_data/train.jsonl|\
     apps/SaneVideo:training_data/valid.jsonl|\
+    apps/SaneVideo:training_data/system_prompt.txt|\
+    apps/SaneVideo:training_data/lora_config_mini.yaml|\
+    apps/SaneVideo:training_data/eval_*.jsonl|\
+    apps/SaneVideo:training_data/*.yaml|\
+    apps/SaneVideo:training_data/*.yml|\
+    apps/SaneVideo:training_data/challenger_configs/*|\
     apps/SaneVideo:Tests/Assets/*)
       return 0
       ;;
@@ -508,8 +514,10 @@ hydrate_training_dataset "SaneClip" train.jsonl valid.jsonl test.jsonl
 hydrate_training_dataset "SaneAI" train.jsonl valid.jsonl
 hydrate_training_dataset "SaneVideo" train.jsonl valid.jsonl
 hydrate_training_support_files "SaneAI" merge_training_data.py system_prompt.txt lora_config_mini.yaml eval_*.jsonl
+hydrate_training_support_files "SaneVideo" system_prompt.txt lora_config_mini.yaml eval_*.jsonl
 hydrate_training_subdir "SaneAI" challenger_configs
 hydrate_training_subdir "SaneSync" challenger_configs
+hydrate_training_subdir "SaneVideo" challenger_configs
 
 hydrate_sanevideo_assets
 

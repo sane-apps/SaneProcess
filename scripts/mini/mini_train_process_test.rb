@@ -14,6 +14,7 @@ train_source = File.read(TRAIN_PATH)
 train_all_source = File.read(TRAIN_ALL_PATH)
 train_challengers_source = File.read(TRAIN_CHALLENGERS_PATH)
 eval_source = File.read(EVAL_PATH)
+training_mode_source = File.read(File.expand_path('mini-training-mode.sh', __dir__))
 
 exit(run_tests('Mini Train Process Tests') do
   test_category('Sweep scheduling') do
@@ -28,6 +29,13 @@ exit(run_tests('Mini Train Process Tests') do
       assert_includes(train_source, 'Sweep schedule: warmup=')
       true
     end
+
+    test('mini training disables inline valid.jsonl pressure and relies on post-train eval by default') do
+      assert_includes(train_source, 'TRAIN_DISABLE_INLINE_VALIDATION="${TRAIN_DISABLE_INLINE_VALIDATION:-true}"')
+      assert_includes(train_source, 'prepare_training_data_dir()')
+      assert_includes(train_source, 'Inline validation: disabled on Mini training run')
+      true
+    end
   end
 
   test_category('Automation root hygiene') do
@@ -40,6 +48,13 @@ exit(run_tests('Mini Train Process Tests') do
     test('challenger training refreshes the automation root before merge + train') do
       assert_includes(train_challengers_source, 'mini-prepare-automation-root.sh')
       assert_includes(train_challengers_source, 'prepare_automation_root_if_needed')
+      true
+    end
+
+    test('challenger lane defaults to one rotated config unless multi-run is explicitly allowed') do
+      assert_includes(train_challengers_source, 'CHALLENGER_SELECTION_MODE="${CHALLENGER_SELECTION_MODE:-alternate}"')
+      assert_includes(train_challengers_source, 'ALLOW_MULTI_CHALLENGER_RUNS="${ALLOW_MULTI_CHALLENGER_RUNS:-false}"')
+      assert_includes(train_challengers_source, 'Refusing to run ${CONFIG_COUNT} challenger configs in one lane.')
       true
     end
   end
@@ -66,6 +81,26 @@ exit(run_tests('Mini Train Process Tests') do
       assert_includes(train_source, 'wait_for_clean_training_processes()')
       assert_includes(train_source, 'list_lingering_training_processes()')
       assert_includes(train_source, 'purge 2>/dev/null || true')
+      true
+    end
+
+    test('standalone SaneVideo runs default to workflow-only eval suites') do
+      assert_includes(train_source, 'if [ "$APP_NAME" = "SaneVideo" ]; then')
+      assert_includes(train_source, 'DEFAULT_EVAL_SUITE_WEIGHTS="commentary_workflow=4,workflow_packs=2,workflow_guardrails=2"')
+      assert_includes(train_source, 'DEFAULT_EVAL_SUITES="commentary_workflow,workflow_packs,workflow_guardrails"')
+      assert_includes(train_source, 'EVAL_MAX_TOKENS_CAP=256')
+      true
+    end
+
+    test('training mode isolates user apps and launch agents before training starts') do
+      assert_includes(train_source, 'TRAINING_MODE_ENABLED="${TRAINING_MODE_ENABLED:-true}"')
+      assert_includes(train_source, 'enter_training_mode_if_needed()')
+      assert_includes(train_source, 'exit_training_mode_if_needed')
+      assert_includes(training_mode_source, 'TRAINING_MODE_AGENT_SUSPEND_LIST')
+      assert_includes(training_mode_source, 'TRAINING_MODE_APP_QUIT_LIST')
+      assert_includes(training_mode_source, 'TRAINING_MODE_PROCESS_KILL_PATTERNS')
+      assert_includes(training_mode_source, 'kill_matching_patterns()')
+      assert_includes(training_mode_source, 'launchctl bootout')
       true
     end
 
