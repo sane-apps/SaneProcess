@@ -15,7 +15,7 @@
 ### Verification
 - `bash -n scripts/mini/mini-memory-guard.sh scripts/mini/mini-prepare-automation-root.sh scripts/mini/mini-install-training-agents.sh scripts/mini/deploy.sh`
 - `ruby scripts/mini/mini_memory_guard_test.rb` -> `7/7 passed`
-- `ruby scripts/mini/mini_train_process_test.rb` -> `16/16 passed`
+- `ruby scripts/mini/mini_train_process_test.rb` -> `17/17 passed`
 - `ruby scripts/mini/mini_train_cleanup_test.rb` -> `3/3 passed`
 - `ruby scripts/mini/mini_gui_run_test.rb` -> `5/5 passed`
 - `bash scripts/mini/deploy.sh` completed; all 17 Mini scripts checksum-matched and LaunchAgents refreshed.
@@ -24,7 +24,7 @@
 
 ### Next
 - Let the 1:00 AM challenger lane run once, then compare the new small-model reports against the previous SmolLM3/Llama baselines.
-- Commit/push the SaneProcess and SaneAI changes so future repo syncs cannot revert the cleanup and challenger rotation fixes.
+- SaneProcess commit `26d3710` and SaneAI commit `f231bc5` were pushed to `main`, so future repo syncs should preserve the cleanup and challenger rotation fixes.
 
 ## Session 121 (2026-04-30)
 
