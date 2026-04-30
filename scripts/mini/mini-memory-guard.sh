@@ -91,7 +91,12 @@ safe_remove_path() {
   case "$path" in
     "$HOME/SaneApps/apps/"*|\
     "$HOME/SaneApps-automation/apps/"*|\
+    "$HOME/SaneApps/outputs/setapp_review/"*|\
+    "$HOME/SaneApps/outputs/automation-smoke/"*|\
+    "$HOME/SaneApps/tmp/"*|\
+    "$HOME/tmp/"*|\
     "$HOME/Library/Developer/Xcode/DerivedData/"*|\
+    "$HOME/Library/Developer/CoreSimulator/Devices/"*|\
     "$HOME/.sanemaster/routed-workspaces/"*|\
     "$HOME/.codex-sync-backups/"*|\
     "$HOME/.Trash/"*)
@@ -235,6 +240,78 @@ cleanup_sanevideo_outputs() {
 
 cleanup_codex_sync_backups() {
   prune_old_dirs_by_mtime "$HOME/.codex-sync-backups" "*" "${CODEX_BACKUP_KEEP_DAYS:-14}" "Codex sync backup" "${CODEX_BACKUP_MIN_KEEP:-1}"
+}
+
+cleanup_stale_automation_git_locks() {
+  local automation_root="${AUTOMATION_ROOT:-$HOME/SaneApps-automation}"
+  local stale_after_min="${GIT_INDEX_LOCK_STALE_MIN:-30}"
+  local removed=0
+  local lock_file
+
+  [ -d "$automation_root" ] || return 0
+
+  if ps axww -o pid= -o comm= -o command= | awk -v root="$automation_root" '
+    $2 ~ /(^|\/)git$/ && index($0, root) { found = 1 }
+    END { exit found ? 0 : 1 }
+  '; then
+    log "Automation git process is active; skipping stale index lock cleanup."
+    return 0
+  fi
+
+  while IFS= read -r lock_file; do
+    [ -n "$lock_file" ] || continue
+    if [ "$DRY_RUN" -eq 1 ]; then
+      log "DRY RUN: would remove stale automation git lock $lock_file"
+    else
+      rm -f "$lock_file"
+      log "Removed stale automation git lock: $lock_file"
+    fi
+    removed=$((removed + 1))
+  done < <(find "$automation_root" -path "*/.git/index.lock" -mmin +"$stale_after_min" -print 2>/dev/null)
+
+  if [ "$removed" -eq 0 ]; then
+    log "No stale automation git index locks older than ${stale_after_min} minute(s)"
+  fi
+}
+
+cleanup_setapp_review_outputs() {
+  prune_old_dirs_by_mtime "$HOME/SaneApps/outputs/setapp_review" "*" "${SETAPP_REVIEW_KEEP_DAYS:-1}" "Setapp review output" "${SETAPP_REVIEW_MIN_KEEP:-2}"
+}
+
+cleanup_tmp_workspaces() {
+  prune_old_dirs_by_mtime "$HOME/tmp" "*" "${TMP_WORKSPACE_KEEP_DAYS:-3}" "home tmp workspace" "${TMP_WORKSPACE_MIN_KEEP:-2}"
+  prune_old_dirs_by_mtime "$HOME/SaneApps/tmp" "*" "${SANEAPPS_TMP_KEEP_DAYS:-3}" "SaneApps tmp workspace" "${SANEAPPS_TMP_MIN_KEEP:-2}"
+}
+
+cleanup_coresimulator_devices() {
+  local devices_root="$HOME/Library/Developer/CoreSimulator/Devices"
+  local max_gb="${CORESIMULATOR_DEVICES_MAX_GB:-8}"
+  [ -d "$devices_root" ] || return 0
+
+  local devices_mb
+  devices_mb=$(du -sm "$devices_root" 2>/dev/null | awk '{print $1}')
+  [ -n "$devices_mb" ] || devices_mb=0
+
+  local max_mb=$((max_gb * 1024))
+  if [ "$devices_mb" -le "$max_mb" ]; then
+    log "CoreSimulator devices within limit (${devices_mb}MB <= ${max_mb}MB)"
+    return 0
+  fi
+
+  if is_training_running || is_nightly_running; then
+    log "CoreSimulator devices are large (${devices_mb}MB) but build/training is active; skipping cleanup."
+    return 0
+  fi
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "DRY RUN: would shutdown and delete all CoreSimulator devices (${devices_mb}MB)"
+    return 0
+  fi
+
+  xcrun simctl shutdown all >/dev/null 2>&1 || true
+  xcrun simctl delete all >/dev/null 2>&1 || true
+  xcrun simctl delete unavailable >/dev/null 2>&1 || true
+  log "CoreSimulator cleanup deleted devices (pre-clean size: ${devices_mb}MB)"
 }
 
 cleanup_trash() {
@@ -414,7 +491,11 @@ main() {
   cleanup_routed_workspaces
   cleanup_sanevideo_outputs
   cleanup_codex_sync_backups
+  cleanup_stale_automation_git_locks
+  cleanup_setapp_review_outputs
+  cleanup_tmp_workspaces
   cleanup_trash
+  cleanup_coresimulator_devices
   cleanup_large_deriveddata
   cleanup_stale_deriveddata_apps
   maybe_reboot

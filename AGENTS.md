@@ -64,7 +64,9 @@ Do not wait until session end.
 | 15 | REVIEW BEFORE YOU SHIP | Self-review for security, edge cases, correctness |
 | 16 | DON'T FRAGMENT, INTEGRATE | Upgrade existing files. Core standard is README, DEVELOPMENT, ARCHITECTURE, SESSION_HANDOFF, and AGENTS; add CLAUDE only when needed. No orphan files. New tooling/docs must be recorded in memory + handoff |
 
-**Workflow:** PLAN → VERIFY → BUILD → TEST → CONFIRM (user approves, then commit)
+**Workflow:** PLAN → VERIFY → BUILD → TEST → CONFIRM → COMMIT + PUSH
+
+For major completed work, commit and push the relevant changes before ending the task unless the user explicitly says not to. Keep unrelated dirty files out of the commit.
 
 **Circuit Breaker:** After 3 consecutive failures: STOP. Read error messages. Research the actual API.
 

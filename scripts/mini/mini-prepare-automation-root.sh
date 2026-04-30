@@ -9,11 +9,70 @@ set -euo pipefail
 SOURCE_ROOT="${SANE_SOURCE_ROOT:-$HOME/SaneApps}"
 AUTOMATION_ROOT="${AUTOMATION_ROOT:-$HOME/SaneApps-automation}"
 AUTOMATION_MARKER="$AUTOMATION_ROOT/.sane_automation_root"
+PREPARE_LOCK="$AUTOMATION_ROOT/.prepare.lock"
 FAILURES=0
 UPDATED=0
 CLONED=0
 SKIPPED=0
 WARNINGS=0
+
+cleanup_prepare_lock() {
+  if [ -n "${PREPARE_LOCK_HELD:-}" ] && [ -d "$PREPARE_LOCK" ]; then
+    rmdir "$PREPARE_LOCK" 2>/dev/null || true
+  fi
+}
+
+trap cleanup_prepare_lock EXIT INT TERM
+
+acquire_prepare_lock() {
+  local waited=0
+  local wait_limit_sec="${PREPARE_LOCK_WAIT_SEC:-600}"
+  local stale_after_min="${PREPARE_LOCK_STALE_MIN:-45}"
+
+  mkdir -p "$AUTOMATION_ROOT"
+
+  while ! mkdir "$PREPARE_LOCK" 2>/dev/null; do
+    if [ -n "$(find "$PREPARE_LOCK" -maxdepth 0 -mmin +"$stale_after_min" -print -quit 2>/dev/null)" ]; then
+      echo "WARN  removing stale automation prep lock: $PREPARE_LOCK"
+      rmdir "$PREPARE_LOCK" 2>/dev/null || true
+      continue
+    fi
+
+    if [ "$waited" -ge "$wait_limit_sec" ]; then
+      echo "FAIL  automation prep lock busy after ${wait_limit_sec}s: $PREPARE_LOCK"
+      return 1
+    fi
+
+    sleep 10
+    waited=$((waited + 10))
+  done
+
+  PREPARE_LOCK_HELD=1
+  return 0
+}
+
+cleanup_stale_git_index_locks() {
+  local lock_file removed=0
+  local stale_after_min="${GIT_INDEX_LOCK_STALE_MIN:-30}"
+
+  if ps axww -o pid= -o comm= -o command= | awk -v root="$AUTOMATION_ROOT" '
+    $2 ~ /(^|\/)git$/ && index($0, root) { found = 1 }
+    END { exit found ? 0 : 1 }
+  '; then
+    return 0
+  fi
+
+  while IFS= read -r lock_file; do
+    [ -n "$lock_file" ] || continue
+    echo "WARN  removing stale git index lock: $lock_file"
+    rm -f "$lock_file"
+    removed=$((removed + 1))
+  done < <(find "$AUTOMATION_ROOT" -path "*/.git/index.lock" -mmin +"$stale_after_min" -print 2>/dev/null)
+
+  if [ "$removed" -gt 0 ]; then
+    echo "CLEAN automation git locks [$removed removed]"
+  fi
+}
 
 is_syncable_repo_name() {
   local name="$1"
@@ -455,7 +514,7 @@ hydrate_training_subdir() {
     return 0
   fi
 
-  if target_repo_tracks_training_prefix "$app_name" "$rel_dir"; then
+  if [ "$rel_dir" != "challenger_configs" ] && target_repo_tracks_training_prefix "$app_name" "$rel_dir"; then
     echo "KEEP  apps/$app_name/training_data/$rel_dir [git-managed]"
     return 0
   fi
@@ -502,6 +561,8 @@ hydrate_sanevideo_assets() {
 }
 
 mkdir -p "$AUTOMATION_ROOT/apps" "$AUTOMATION_ROOT/infra"
+acquire_prepare_lock || exit 1
+cleanup_stale_git_index_locks
 printf 'managed_by=mini-prepare-automation-root\nsource_root=%s\nprepared_at=%s\n' \
   "$SOURCE_ROOT" "$(date '+%Y-%m-%d %H:%M:%S')" > "$AUTOMATION_MARKER"
 

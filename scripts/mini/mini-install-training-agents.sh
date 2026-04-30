@@ -19,8 +19,8 @@ ENABLE_WEEKLY_TRAINING="${ENABLE_WEEKLY_TRAINING:-true}"
 TRAIN_HARD_STOP_TIME="${TRAIN_HARD_STOP_TIME:-08:30}"
 READINESS_TARGET_APP="${READINESS_TARGET_APP:-}"
 CHALLENGER_SELECTION_MODE="${CHALLENGER_SELECTION_MODE:-alternate}"
-CHALLENGER_ROTATION_ANCHOR_DATE="${CHALLENGER_ROTATION_ANCHOR_DATE:-2026-03-07}"
-CHALLENGER_ROTATION_ORDER="${CHALLENGER_ROTATION_ORDER:-smollm3-3b}"
+CHALLENGER_ROTATION_ANCHOR_DATE="${CHALLENGER_ROTATION_ANCHOR_DATE:-2026-05-01}"
+CHALLENGER_ROTATION_ORDER="${CHALLENGER_ROTATION_ORDER:-qwen3-0.6b,qwen25-1.5b,gemma3-1b-it,qwen35-0.8b-optiq,smollm3-3b}"
 CHALLENGER_BUDGET_MIN="${CHALLENGER_BUDGET_MIN:-0}"
 CHALLENGER_SKIP_WEEKDAY="${CHALLENGER_SKIP_WEEKDAY:-0}"
 RUN_CHALLENGERS_AFTER_WEEKLY="${RUN_CHALLENGERS_AFTER_WEEKLY:-false}"
@@ -34,6 +34,11 @@ VALID_EXAMPLE_DROP_MAX_PCT="${VALID_EXAMPLE_DROP_MAX_PCT:-20}"
 TRAINING_MODE_ENABLED="${TRAINING_MODE_ENABLED:-true}"
 TRAINING_MODE_AGENT_SUSPEND_LIST="${TRAINING_MODE_AGENT_SUSPEND_LIST:-com.saneapps.always-awake,com.saneapps.codex-keepalive,com.saneapps.evening,com.saneapps.git-sync-safe,com.saneapps.mcp-watchdog,com.saneapps.memory-guard,com.saneapps.morning,com.saneapps.nightly,com.saneapps.nv-benchmark,com.saneapps.training-daily-check,com.google.GoogleUpdater.wake,com.google.keystone.agent,com.google.keystone.xpcservice,com.grammarly.ProjectLlama.Shepherd,com.grammarly.ProjectLlama.cleanup,com.logos.LogosIndexer,com.logos.desktop.logosindexer}"
 TRAINING_MODE_APP_QUIT_LIST="${TRAINING_MODE_APP_QUIT_LIST:-Codex,Xcode,SaneBar,SaneClip,SaneHosts,Shottr,MenuMeters,gfxCardStatus,Safari}"
+
+if ! [[ "$CHALLENGER_ROTATION_ORDER" =~ ^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$ ]]; then
+  echo "Invalid CHALLENGER_ROTATION_ORDER: $CHALLENGER_ROTATION_ORDER" >&2
+  exit 2
+fi
 
 CHALLENGER_LABEL="com.saneapps.training-challengers"
 CHALLENGER_PLIST="$LAUNCH_AGENTS_DIR/${CHALLENGER_LABEL}.plist"

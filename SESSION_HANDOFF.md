@@ -1,4 +1,47 @@
 
+## Session 122 (2026-04-30)
+
+### Done
+- Investigated Mini SaneAI training after a week of drift: no active training was running, daily challenger jobs had stopped producing useful runs after the automation root lost challenger configs, and the LaunchAgent had reverted to `smollm3-3b` only.
+- Cleaned Mini storage from critically low space to healthy headroom; final live check showed `62Gi` free, Trash `20M`, CoreSimulator devices `1M`, DerivedData `994M`, `~/tmp` `99M`, and `~/SaneApps/tmp` `223M`.
+- Expanded `scripts/mini/mini-memory-guard.sh` so automatic cleanup now covers Setapp review outputs, automation-smoke outputs, `~/tmp`, `~/SaneApps/tmp`, and oversized CoreSimulator devices.
+- Restored SaneAI small-model challenger configs and redeployed the Mini LaunchAgent rotation: `smollm3-3b,qwen3-0.6b,qwen25-1.5b,gemma3-1b-it,qwen35-0.8b-optiq`.
+- Fixed `mini-prepare-automation-root.sh` so `training_data/challenger_configs` is mirrored into the automation checkout instead of being left stale when tracked files exist.
+- Checked the MacBook Air for the same failure mode: disk is healthy at `412Gi` free, Trash is empty, SaneApps temp/output roots are under 1GB, and top memory users are normal foreground apps.
+- Root-caused the stale `.git/index.lock` failures and hardened automation prep: `mini-prepare-automation-root.sh` now serializes with `$AUTOMATION_ROOT/.prepare.lock` and removes stale automation git index locks when no automation git process is active.
+- Added matching stale automation git lock cleanup to `mini-memory-guard.sh`.
+- Re-anchored the challenger rotation for the new small-model test: `2026-05-01 qwen3-0.6b`, `2026-05-02 qwen25-1.5b`, `2026-05-03 gemma3-1b-it`, `2026-05-04 qwen35-0.8b-optiq`, `2026-05-05 smollm3-3b` control.
+
+### Verification
+- `bash -n scripts/mini/mini-memory-guard.sh scripts/mini/mini-prepare-automation-root.sh scripts/mini/mini-install-training-agents.sh scripts/mini/deploy.sh`
+- `ruby scripts/mini/mini_memory_guard_test.rb` -> `7/7 passed`
+- `ruby scripts/mini/mini_train_process_test.rb` -> `16/16 passed`
+- `ruby scripts/mini/mini_train_cleanup_test.rb` -> `3/3 passed`
+- `ruby scripts/mini/mini_gui_run_test.rb` -> `5/5 passed`
+- `bash scripts/mini/deploy.sh` completed; all 17 Mini scripts checksum-matched and LaunchAgents refreshed.
+- Live Mini `mini-memory-guard.sh` run completed and pruned stale temp workspaces.
+- Final Mini smoke: `mini-prepare-automation-root.sh` exited `0`, reported `0 failed / 0 warned`, and mirrored all SaneAI challenger configs.
+
+### Next
+- Let the 1:00 AM challenger lane run once, then compare the new small-model reports against the previous SmolLM3/Llama baselines.
+- Commit/push the SaneProcess and SaneAI changes so future repo syncs cannot revert the cleanup and challenger rotation fixes.
+
+## Session 121 (2026-04-30)
+
+### Done
+- Fixed `scripts/sane_test.rb` license-mode targeting for local release runs. `--free-mode` / `--pro-mode` now use the staged runtime bundle ID from `/Applications/<App>.app` when available, instead of always targeting the dev bundle ID.
+- Added regression coverage in `scripts/app_test_mode_test.rb` so this does not regress.
+
+### Live Verification
+- `ruby scripts/app_test_mode_test.rb` -> `6/6 passed`
+- SaneBar Mini release/free-mode rerun confirmed `com.sanebar.app` no longer retained no-keychain `pro_license` / `pro_last_validation` defaults after the fix.
+
+### Current State
+- This fixes the SaneBar Basic/Pro visual verification trap where `sane_test.rb SaneBar --release --free-mode --no-logs` reported free mode while the staged production bundle still read an old `early-adopter` fallback key.
+
+### Next
+- If other apps use different release bundle IDs, keep testing free/pro launch mode against the actual staged bundle ID rather than the configured dev ID.
+
 ## Session 120 (2026-04-25)
 
 ### Done

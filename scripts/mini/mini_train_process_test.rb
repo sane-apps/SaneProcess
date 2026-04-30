@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require 'open3'
 require_relative '../hooks/test/test_framework'
 
 include TestFramework
@@ -8,6 +9,7 @@ include TestFramework
 TRAIN_PATH = File.expand_path('mini-train.sh', __dir__)
 TRAIN_ALL_PATH = File.expand_path('mini-train-all.sh', __dir__)
 TRAIN_CHALLENGERS_PATH = File.expand_path('mini-train-challengers.sh', __dir__)
+TRAIN_INSTALLER_PATH = File.expand_path('mini-install-training-agents.sh', __dir__)
 EVAL_PATH = File.expand_path('evaluate_model.py', __dir__)
 
 train_source = File.read(TRAIN_PATH)
@@ -51,10 +53,33 @@ exit(run_tests('Mini Train Process Tests') do
       true
     end
 
+    test('automation root refresh is serialized and heals stale git locks') do
+      prepare_source = File.read(File.expand_path('mini-prepare-automation-root.sh', __dir__))
+      assert_includes(prepare_source, 'PREPARE_LOCK="$AUTOMATION_ROOT/.prepare.lock"')
+      assert_includes(prepare_source, 'acquire_prepare_lock')
+      assert_includes(prepare_source, 'cleanup_stale_git_index_locks')
+      assert_includes(prepare_source, 'find "$AUTOMATION_ROOT" -path "*/.git/index.lock"')
+      true
+    end
+
     test('challenger lane defaults to one rotated config unless multi-run is explicitly allowed') do
       assert_includes(train_challengers_source, 'CHALLENGER_SELECTION_MODE="${CHALLENGER_SELECTION_MODE:-alternate}"')
       assert_includes(train_challengers_source, 'ALLOW_MULTI_CHALLENGER_RUNS="${ALLOW_MULTI_CHALLENGER_RUNS:-false}"')
       assert_includes(train_challengers_source, 'Refusing to run ${CONFIG_COUNT} challenger configs in one lane.')
+      true
+    end
+
+    test('training agent installer validates challenger rotation order') do
+      installer_source = File.read(TRAIN_INSTALLER_PATH)
+      assert_includes(installer_source, 'Invalid CHALLENGER_ROTATION_ORDER')
+      assert_includes(installer_source, '^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$')
+      _stdout, stderr, status = Open3.capture3(
+        { 'CHALLENGER_ROTATION_ORDER' => 'qwen3-0.6b,,smollm3-3b' },
+        'bash',
+        TRAIN_INSTALLER_PATH
+      )
+      assert_eq(status.exitstatus, 2)
+      assert_includes(stderr, 'Invalid CHALLENGER_ROTATION_ORDER')
       true
     end
   end
