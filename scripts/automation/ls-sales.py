@@ -13,9 +13,9 @@ Usage:
   ls-sales.py --find-customer-orders --email reed@reed-a.ca --name Reed --product SaneBar
   ls-sales.py --license-status 766800DD-3877-4EAA-938F-D60D42FFA0D7
   ls-sales.py --disable-license-key D1918A18-BCC3-4DA2-AC6B-C67CC912CA5C
-  ls-sales.py --refund-order 1234 --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt
-  ls-sales.py --refund-order-number 5678 --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt
-  ls-sales.py --refund-duplicate-license-key D1918... --keep-license-key 7668... --refund-order-number 270691528 --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt
+  ls-sales.py --refund-order 1234 --refund-type discretionary --customer-thread email#123 --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt
+  ls-sales.py --refund-order-number 5678 --refund-type duplicate_purchase --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt
+  ls-sales.py --refund-duplicate-license-key D1918... --keep-license-key 7668... --refund-order-number 270691528 --customer-thread email#542 --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt
   ls-sales.py --json       # Raw JSON output (for piping)
 """
 import argparse
@@ -44,6 +44,27 @@ FLAT_FEE_AFTER = float(os.environ.get("LEMONSQUEEZY_FLAT_FEE_CENTS_AFTER", "30")
 FLAT_FEE_EFFECTIVE_UTC_RAW = os.environ.get(
     "LEMONSQUEEZY_FLAT_FEE_EFFECTIVE_UTC",
     "2026-03-03T05:47:45Z",
+)
+REFUND_AUDIT_DIR = Path(os.environ.get("SANE_REFUND_AUDIT_DIR", "~/.sanemaster/refunds")).expanduser()
+
+OWNER_APPROVAL_RE = re.compile(
+    r"\b("
+    r"user approved|owner approved|approved by (?:user|owner|sj|stephan|mr\.?\s*sane)|"
+    r"(?:sj|stephan|mr\.?\s*sane) approved|explicit (?:user|owner) approval"
+    r")\b",
+    re.I,
+)
+DISCRETIONARY_REFUND_REASON_RE = re.compile(
+    r"\b("
+    r"documented bug|unresolved bug|cannot fix within 24|can't fix within 24|"
+    r"cannot be fixed within 24|unresolved after 24|license/payment broken|"
+    r"core functionality|major accessibility|data loss|case-by-case"
+    r")\b",
+    re.I,
+)
+DUPLICATE_REFUND_REASON_RE = re.compile(
+    r"\b(duplicate|double[- ]purchase|paid twice|charged twice|transactional)\b",
+    re.I,
 )
 
 
@@ -532,7 +553,7 @@ def write_duplicate_license_proof_file(path, duplicate_summary, approval_note_pa
 
 
 def refund_duplicate_license(api_key, orders, args):
-    approval_note_path, approval_note_text = validate_refund_approval(args)
+    approval_note_path, approval_note_text = validate_refund_approval(args, refund_type="duplicate_purchase")
     if not args.keep_license_key:
         print("Error: --keep-license-key is required for duplicate-license refunds.", file=sys.stderr)
         sys.exit(1)
@@ -603,6 +624,14 @@ def refund_duplicate_license(api_key, orders, args):
     }
     if args.proof_file:
         write_duplicate_license_proof_file(args.proof_file, summary, str(approval_note_path), approval_note_text)
+        write_refund_audit_record(
+            refunded_order,
+            "duplicate_purchase",
+            args,
+            approval_note_path=str(approval_note_path),
+            approval_note_text=approval_note_text,
+            action="duplicate_license_refund",
+        )
     return summary
 
 
@@ -676,7 +705,7 @@ def issue_order_refund(api_key, order_id, amount=None):
     return data
 
 
-def validate_refund_approval(args):
+def validate_refund_approval(args, refund_type="discretionary"):
     approval_gate = os.environ.get("SANE_REFUND_APPROVED", "").strip()
     if approval_gate != "1":
         print("Error: Refund blocked.", file=sys.stderr)
@@ -703,7 +732,77 @@ def validate_refund_approval(args):
         print(f"Error: Refund approval note is empty: {note_path}", file=sys.stderr)
         sys.exit(1)
 
+    if not OWNER_APPROVAL_RE.search(note_text):
+        print("Error: Refund blocked. Approval note must include explicit owner/user approval.", file=sys.stderr)
+        print("  Example: 'Owner approved refund for order ... on YYYY-MM-DD.'", file=sys.stderr)
+        sys.exit(1)
+
+    if refund_type == "duplicate_purchase":
+        if not DUPLICATE_REFUND_REASON_RE.search(note_text):
+            print("Error: Duplicate-purchase refund blocked. Approval note must document the duplicate/transactional reason.", file=sys.stderr)
+            sys.exit(1)
+    elif refund_type == "discretionary":
+        if not DISCRETIONARY_REFUND_REASON_RE.search(note_text):
+            print("Error: Discretionary refund blocked. Approval note must document the unresolved qualifying issue.", file=sys.stderr)
+            print("  Use duplicate_purchase for proven duplicate charges; otherwise document the bug and 24h fix status.", file=sys.stderr)
+            sys.exit(1)
+
     return note_path, note_text
+
+
+def refund_audit_slug(summary, refund_type):
+    order_number = summary.get("order_number") or summary.get("id") or "unknown"
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    clean_type = re.sub(r"[^a-z0-9_-]+", "-", str(refund_type).lower()).strip("-") or "unknown"
+    return f"{timestamp}_order_{order_number}_{clean_type}"
+
+
+def write_refund_audit_record(summary, refund_type, args, approval_note_path=None, approval_note_text=None, action="issued"):
+    REFUND_AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        REFUND_AUDIT_DIR.chmod(0o700)
+    except OSError:
+        pass
+
+    slug = refund_audit_slug(summary, refund_type)
+    path = REFUND_AUDIT_DIR / f"{slug}.md"
+    proof_path = Path(args.proof_file).expanduser() if getattr(args, "proof_file", None) else None
+    customer_thread = getattr(args, "customer_thread", None) or "not recorded"
+    approval_source = getattr(args, "approval_source", None) or "approval note"
+    amount = getattr(args, "amount", None)
+
+    lines = [
+        "# Lemon Squeezy Refund Audit",
+        "",
+        f"- Action: {action}",
+        f"- Refund type: {refund_type}",
+        f"- Order ID: {summary.get('id')}",
+        f"- Order number: {summary.get('order_number')}",
+        f"- Customer: {summary.get('user_name') or '?'} <{summary.get('user_email') or '?'}>",
+        f"- Product: {summary.get('product')}",
+        f"- Order total: {summary.get('total_formatted')}",
+        f"- Refunded amount: {summary.get('refunded_amount_formatted')}",
+        f"- Requested partial amount: {amount if amount is not None else 'full refund'}",
+        f"- Refunded flag: {summary.get('refunded')}",
+        f"- Refunded at: {summary.get('refunded_at') or 'partial/not-finalized timestamp unavailable'}",
+        f"- Customer thread: {customer_thread}",
+        f"- Approval source: {approval_source}",
+        f"- Approval note path: {approval_note_path or 'not recorded'}",
+        f"- Proof file path: {proof_path or 'not requested'}",
+        f"- Receipt: {summary.get('receipt_url') or 'n/a'}",
+        f"- Recorded at: {datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')}",
+    ]
+    if approval_note_text:
+        lines.extend(["", "## Approval Note", "", approval_note_text])
+    if proof_path and proof_path.is_file():
+        lines.extend(["", "## Proof File Snapshot", "", proof_path.read_text(encoding="utf-8", errors="replace")])
+
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return path
 
 
 def write_proof_file(path, summary, approval_note_path=None, approval_note_text=None):
@@ -732,8 +831,8 @@ def write_proof_file(path, summary, approval_note_path=None, approval_note_text=
         handle.write("\n".join(lines) + "\n")
 
 
-def print_refund_summary(summary):
-    print("Refund issued")
+def print_refund_summary(summary, heading="Refund issued"):
+    print(heading)
     print(f"  Order ID: {summary.get('id')}")
     print(f"  Order number: {summary.get('order_number')}")
     print(f"  Customer: {summary.get('user_name') or '?'} <{summary.get('user_email') or '?'}>")
@@ -1089,6 +1188,14 @@ def main():
     parser.add_argument("--amount", type=int, help="Refund amount in cents (omit for full refund)")
     parser.add_argument("--proof-file", type=str, help="Write a human-readable refund proof file")
     parser.add_argument("--approval-note", type=str, help="Path to the explicit refund approval note")
+    parser.add_argument(
+        "--refund-type",
+        choices=["discretionary", "duplicate_purchase", "external"],
+        default="discretionary",
+        help="Refund classification for audit and approval policy",
+    )
+    parser.add_argument("--customer-thread", type=str, help="Support thread, issue, or customer record tied to the refund")
+    parser.add_argument("--approval-source", type=str, help="Where explicit owner approval was captured")
     parser.add_argument("--include-refunded", action="store_true", help="Include refunded orders in report/json output")
     parser.add_argument("--json", action="store_true", help="Raw JSON output")
     args = parser.parse_args()
@@ -1188,21 +1295,37 @@ def main():
                 json.dump(summary, sys.stdout, indent=2)
                 print()
             else:
-                print_refund_summary(summary)
+                print_refund_summary(summary, heading="Refund already recorded")
             if args.proof_file:
                 write_proof_file(args.proof_file, summary)
+                audit_path = write_refund_audit_record(summary, "external", args, action="already_refunded_observed")
+                if not args.json:
+                    print(f"  Audit record: {audit_path}")
             return
 
-        approval_note_path, approval_note_text = validate_refund_approval(args)
+        approval_note_path, approval_note_text = validate_refund_approval(args, refund_type=args.refund_type)
         refunded_order = issue_order_refund(api_key, target_id, amount=args.amount)
         summary = order_to_summary(refunded_order)
+        audit_path = None
         if args.proof_file:
             write_proof_file(args.proof_file, summary, str(approval_note_path), approval_note_text)
+            audit_path = write_refund_audit_record(
+                summary,
+                args.refund_type,
+                args,
+                approval_note_path=str(approval_note_path),
+                approval_note_text=approval_note_text,
+            )
         if args.json:
-            json.dump(summary, sys.stdout, indent=2)
+            payload = dict(summary)
+            if audit_path:
+                payload["audit_record"] = str(audit_path)
+            json.dump(payload, sys.stdout, indent=2)
             print()
         else:
             print_refund_summary(summary)
+            if audit_path:
+                print(f"  Audit record: {audit_path}")
         return
 
     # --daily uses all orders (does its own bucketing)

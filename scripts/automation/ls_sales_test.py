@@ -91,6 +91,62 @@ class LsSalesTests(unittest.TestCase):
             self.assertEqual(note_path, note)
             self.assertIn("User approved refund", note_text)
 
+    def test_validate_refund_approval_rejects_customer_only_request(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            note = Path(tmp) / "approval.txt"
+            note.write_text("Customer requested a refund because the app was not a fit.\n", encoding="utf-8")
+            args = SimpleNamespace(proof_file=str(Path(tmp) / "refund.txt"), approval_note=str(note))
+            old = os.environ.get("SANE_REFUND_APPROVED")
+            os.environ["SANE_REFUND_APPROVED"] = "1"
+            try:
+                with self.assertRaises(SystemExit):
+                    LS_SALES.validate_refund_approval(args)
+            finally:
+                if old is None:
+                    os.environ.pop("SANE_REFUND_APPROVED", None)
+                else:
+                    os.environ["SANE_REFUND_APPROVED"] = old
+
+    def test_write_refund_audit_record_persists_proof_and_note(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_dir = LS_SALES.REFUND_AUDIT_DIR
+            LS_SALES.REFUND_AUDIT_DIR = Path(tmp) / "refunds"
+            proof = Path(tmp) / "proof.txt"
+            proof.write_text("Refund proof body\n", encoding="utf-8")
+            try:
+                summary = {
+                    "id": "8188124",
+                    "order_number": 270691572,
+                    "user_name": "Alan Makota",
+                    "user_email": "x61wq1ve@addy.to",
+                    "product": "SaneBar",
+                    "total_formatted": "$14.99",
+                    "refunded_amount_formatted": "$14.99",
+                    "refunded": True,
+                    "refunded_at": "2026-04-30T07:38:09.000000Z",
+                    "receipt_url": "https://example.test/receipt",
+                }
+                args = SimpleNamespace(
+                    proof_file=str(proof),
+                    customer_thread="Lemon Squeezy dashboard",
+                    approval_source="external provider refund",
+                    amount=None,
+                )
+                audit_path = LS_SALES.write_refund_audit_record(
+                    summary,
+                    "external",
+                    args,
+                    approval_note_path="/tmp/note.txt",
+                    approval_note_text="Owner approved external audit note.",
+                    action="already_refunded_observed",
+                )
+                text = audit_path.read_text(encoding="utf-8")
+                self.assertIn("Order number: 270691572", text)
+                self.assertIn("Lemon Squeezy dashboard", text)
+                self.assertIn("Refund proof body", text)
+            finally:
+                LS_SALES.REFUND_AUDIT_DIR = old_dir
+
     def test_find_customer_order_candidates_surfaces_alt_email_match(self):
         orders = [
             make_order(
@@ -183,11 +239,15 @@ class LsSalesTests(unittest.TestCase):
                     refund_duplicate_license_key=refund_key,
                     refund_order_number="270691528",
                     amount=None,
+                    customer_thread="email #542",
+                    approval_source="owner approval note",
                 )
 
                 calls = []
 
-                LS_SALES.validate_refund_approval = lambda _args: (note, "Approved duplicate refund.")
+                LS_SALES.validate_refund_approval = lambda _args, refund_type="discretionary": (note, "User approved duplicate refund.")
+                old_dir = LS_SALES.REFUND_AUDIT_DIR
+                LS_SALES.REFUND_AUDIT_DIR = Path(tmp) / "audit"
 
                 def fake_validate_license_key_public(key, allow_failure=False):
                     calls.append(("validate", key))
@@ -229,7 +289,9 @@ class LsSalesTests(unittest.TestCase):
                 self.assertIn("Refunded order number: 270691528", proof_text)
                 self.assertIn(f"Kept key: {keep_key}", proof_text)
                 self.assertIn(f"Refunded key: {refund_key}", proof_text)
+                self.assertEqual(len(list((Path(tmp) / "audit").glob("*.md"))), 1)
         finally:
+            LS_SALES.REFUND_AUDIT_DIR = old_dir
             LS_SALES.validate_refund_approval = old_validate_refund_approval
             LS_SALES.validate_license_key_public = old_validate_license_key_public
             LS_SALES.issue_order_refund = old_issue_order_refund
@@ -261,7 +323,7 @@ class LsSalesTests(unittest.TestCase):
                     refund_order_number="270691528",
                     amount=None,
                 )
-                LS_SALES.validate_refund_approval = lambda _args: (note, "Approved duplicate refund.")
+                LS_SALES.validate_refund_approval = lambda _args, refund_type="discretionary": (note, "User approved duplicate refund.")
                 LS_SALES.validate_license_key_public = lambda key, allow_failure=False: {
                     "valid": True,
                     "license_key_id": 1 if key == keep_key else 2,
@@ -364,7 +426,7 @@ class LsSalesTests(unittest.TestCase):
                         "validation_failed": True,
                     }
 
-                LS_SALES.validate_refund_approval = lambda _args: (note, "Approved duplicate refund.")
+                LS_SALES.validate_refund_approval = lambda _args, refund_type="discretionary": (note, "User approved duplicate refund.")
                 LS_SALES.validate_license_key_public = fake_validate_license_key_public
                 LS_SALES.issue_order_refund = lambda api_key, order_id, amount=None: make_order(
                     status="refunded",

@@ -2019,6 +2019,9 @@ PY
         '--amount CENTS' => 'Refund a specific amount in cents (omit for full refund)',
         '--proof-file PATH' => 'Write a human-readable refund proof file (required for new refunds)',
         '--approval-note PATH' => 'Path to the explicit refund approval note (required for new refunds)',
+        '--refund-type TYPE' => 'Refund classification: discretionary, duplicate_purchase, or external',
+        '--customer-thread REF' => 'Support thread, issue, or customer record tied to the refund audit',
+        '--approval-source REF' => 'Where explicit owner approval was captured for the refund audit',
         '--include-refunded' => 'Include refunded orders in report/json output',
         '--json' => 'Raw JSON output for piping'
       },
@@ -2029,8 +2032,8 @@ PY
         'sales --fees         # Fee breakdown',
         'sales --find-customer-orders --email reed@reed-a.ca --name Reed --product SaneBar',
         'sales --license-status 766800DD-3877-4EAA-938F-D60D42FFA0D7',
-        'SANE_REFUND_APPROVED=1 sales --refund-order 7679013 --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt',
-        'SANE_REFUND_APPROVED=1 sales --refund-duplicate-license-key D1918... --keep-license-key 7668... --refund-order-number 270691528 --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt'
+        'SANE_REFUND_APPROVED=1 sales --refund-order 7679013 --refund-type discretionary --customer-thread email#123 --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt',
+        'SANE_REFUND_APPROVED=1 sales --refund-duplicate-license-key D1918... --keep-license-key 7668... --refund-order-number 270691528 --customer-thread email#542 --proof-file /tmp/refund.txt --approval-note /tmp/refund-note.txt'
       ]
     },
     'downloads' => {

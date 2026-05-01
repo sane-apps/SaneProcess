@@ -152,9 +152,13 @@ SANE_REFUND_APPROVED=1 ruby scripts/SaneMaster.rb sales \
   --refund-duplicate-license-key D1918A18-BCC3-4DA2-AC6B-C67CC912CA5C \
   --keep-license-key 766800DD-3877-4EAA-938F-D60D42FFA0D7 \
   --refund-order-number 270691528 \
+  --customer-thread "email #542" \
+  --approval-source "owner approval note" \
   --proof-file /tmp/reed_duplicate_refund.txt \
   --approval-note /tmp/reed_duplicate_refund_approval.txt
 ```
+
+Refund audit rule: every refund action now writes a durable audit record under `~/.sanemaster/refunds`, even if the proof file was created in `/tmp`. Approval notes must include explicit owner/user approval. Discretionary refunds must also document the unresolved qualifying issue; duplicate-purchase refunds must document the duplicate/transactional reason. A customer saying “I want a refund” is not enough.
 
 Customer-reply rule for duplicate-license refunds: say explicitly which order was refunded, say the refunded key is disabled and will not work, and say which remaining key is the live working key.
 
