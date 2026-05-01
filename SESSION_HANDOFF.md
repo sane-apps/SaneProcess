@@ -8,16 +8,18 @@
 - Removed the regression test that enshrined the false Llama OOM assumption and updated `scripts/mini/README.md` so Llama remains a valid focused challenger.
 - Redeployed Mini scripts and refreshed LaunchAgents; training mode now also suspends Google updater, Grammarly ProjectLlama, Logos indexers, and other competing agents during runs.
 - Started corrected Llama challenger run `corrected-llama32-20260501-185746`; live Mini process proof showed real MLX LoRA training active for `Llama-3.2-3B-Instruct-4bit`.
+- Corrected Llama finished successfully on the Mini at `25%` workflow-first / `39%` raw with peak memory `4.418 GB`, proving Llama fits the focused 8GB Mini path.
+- Expanded the next challenger rotation to test fresh candidates first: `ministral3-3b-instruct`, `fusechat-llama32-3b`, `llama32-1b`, then `llama32-3b` and `granite33-2b-instruct` controls.
 
 ### Verification
 - `bash -n scripts/mini/mini-train.sh`
 - `ruby scripts/mini/mini_train_process_test.rb` -> `19/19 passed`
 - `bash scripts/mini/deploy.sh` completed; all 17 Mini scripts checksum-matched.
 - Live Mini proof: `mini-train-challengers.sh` -> `mini-train.sh` -> `python -m mlx_lm lora --train --model mlx-community/Llama-3.2-3B-Instruct-4bit`.
+- Expanded challenger config sanity checked with Ruby YAML parser.
 
 ### Next
-- Monitor `~/SaneApps/outputs/weekend_challengers/corrected-llama32-20260501-185746.*.log` and `~/SaneApps/outputs/challenger_report_SaneAI_llama-3.2-3b-instruct.md`.
-- If the real Llama run hits actual memory pressure, pare back competing LaunchAgents/apps and safe junk/output caches before reclassifying the model.
+- Continue the expanded bakeoff with Ministral 3B first; current target to beat is Llama 3B at `25%` workflow-first, while production remains `94%`.
 
 ## Session 122 (2026-04-30)
 
