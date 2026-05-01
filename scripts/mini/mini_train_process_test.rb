@@ -27,7 +27,7 @@ exit(run_tests('Mini Train Process Tests') do
     end
 
     test('does not treat incomplete adapter dirs as completed sweeps') do
-      assert_includes(train_source, '[ -f "$ADAPTER_DIR/adapter_config.json" ] && [ -f "$ADAPTER_DIR/adapters.safetensors" ]')
+      assert_includes(train_source, '[ -f "$ADAPTER_DIR/adapter_config.json" ] && [ -s "$ADAPTER_DIR/adapters.safetensors" ]')
       true
     end
 

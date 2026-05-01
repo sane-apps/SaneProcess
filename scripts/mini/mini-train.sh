@@ -1513,7 +1513,7 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
 
   # Skip only completed sweeps. Crashed/stalled launches can leave config/log
   # files behind without a final adapter; those must rerun.
-  if [ -f "$ADAPTER_DIR/adapter_config.json" ] && [ -f "$ADAPTER_DIR/adapters.safetensors" ]; then
+  if [ -f "$ADAPTER_DIR/adapter_config.json" ] && [ -s "$ADAPTER_DIR/adapters.safetensors" ]; then
     echo "Already trained today. Skipping." >> "$REPORT"
     echo "" >> "$REPORT"
     SKIPPED_EXISTING_SWEEPS=$((SKIPPED_EXISTING_SWEEPS + 1))
