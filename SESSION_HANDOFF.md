@@ -1,4 +1,23 @@
 
+## Session 124 (2026-05-01)
+
+### Done
+- Corrected the Mini Llama training diagnosis: the `llama32-3b` challenger had been blocked by a stale hardcoded unsafe-model preflight, not by a real focused-training OOM during the current run.
+- Removed the stale `mini-train.sh` block that prevented `mlx-community/Llama-3.2-3B-Instruct-4bit` from launching on the 8GB Mini.
+- Removed the regression test that enshrined the false Llama OOM assumption and updated `scripts/mini/README.md` so Llama remains a valid focused challenger.
+- Redeployed Mini scripts and refreshed LaunchAgents; training mode now also suspends Google updater, Grammarly ProjectLlama, Logos indexers, and other competing agents during runs.
+- Started corrected Llama challenger run `corrected-llama32-20260501-185746`; live Mini process proof showed real MLX LoRA training active for `Llama-3.2-3B-Instruct-4bit`.
+
+### Verification
+- `bash -n scripts/mini/mini-train.sh`
+- `ruby scripts/mini/mini_train_process_test.rb` -> `18/18 passed`
+- `bash scripts/mini/deploy.sh` completed; all 17 Mini scripts checksum-matched.
+- Live Mini proof: `mini-train-challengers.sh` -> `mini-train.sh` -> `python -m mlx_lm lora --train --model mlx-community/Llama-3.2-3B-Instruct-4bit`.
+
+### Next
+- Monitor `~/SaneApps/outputs/weekend_challengers/corrected-llama32-20260501-185746.*.log` and `~/SaneApps/outputs/challenger_report_SaneAI_llama-3.2-3b-instruct.md`.
+- If the real Llama run hits actual memory pressure, pare back competing LaunchAgents/apps and safe junk/output caches before reclassifying the model.
+
 ## Session 122 (2026-04-30)
 
 ### Done

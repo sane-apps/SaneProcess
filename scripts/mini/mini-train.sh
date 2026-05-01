@@ -1382,13 +1382,7 @@ if ! wait_for_clean_training_processes; then
   exit 1
 fi
 
-TOTAL_RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}')
 UNSAFE_TRAINING_REASON=""
-if [ "$ALLOW_UNSAFE_TRAINING" != "true" ] && \
-   [ "${TOTAL_RAM_GB:-0}" -le 8 ] && \
-   [ "$BASE_MODEL" = "mlx-community/Llama-3.2-3B-Instruct-4bit" ]; then
-  UNSAFE_TRAINING_REASON="Blocked before launch: ${BASE_MODEL} reproducibly OOMs on the 8 GB Mini with the current SaneAI corpus. Use SmolLM on this machine or override with ALLOW_UNSAFE_TRAINING=true for manual experiments."
-fi
 
 if [ -n "$UNSAFE_TRAINING_REASON" ]; then
   echo "**BLOCKED:** $UNSAFE_TRAINING_REASON" >> "$REPORT"
