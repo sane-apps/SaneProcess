@@ -74,12 +74,12 @@ exit(run_tests('Mini Train Process Tests') do
       true
     end
 
-    test('git-managed challenger config dirs are not overwritten by stale source checkouts') do
+    test('challenger config hydration does not delete tracked configs from stale source checkouts') do
       prepare_source = File.read(File.expand_path('mini-prepare-automation-root.sh', __dir__))
-      assert_includes(prepare_source, 'if target_repo_tracks_training_prefix "$app_name" "$rel_dir"; then')
-      assert_includes(prepare_source, 'KEEP  apps/$app_name/training_data/$rel_dir [git-managed]')
-      refute_includes = !prepare_source.include?('[ "$rel_dir" != "challenger_configs" ] && target_repo_tracks_training_prefix')
-      assert(refute_includes, 'challenger_configs should not bypass the git-managed KEEP guard')
+      assert_includes(prepare_source, 'if [ "$rel_dir" = "challenger_configs" ]; then')
+      assert_includes(prepare_source, 'rsync -a "$source_dir"/ "$target_dir"/')
+      assert_includes(prepare_source, 'SYNC  apps/$app_name/training_data/$rel_dir [merged]')
+      assert_includes(prepare_source, 'rsync -a --delete "$source_dir"/ "$target_dir"/')
       true
     end
 
