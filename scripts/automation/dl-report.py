@@ -23,6 +23,23 @@ from pathlib import Path
 
 API_BASE = "https://dist.saneapps.com/api/stats"
 ENV_CACHE_FILE = Path(os.environ.get("SANE_ENV_CACHE_FILE", "~/.config/nv/env")).expanduser()
+FUNNEL_EVENT_TYPES = [
+    "app_launch_free",
+    "app_launch_pro",
+    "new_free_user",
+    "onboarding_started",
+    "onboarding_completed",
+    "demo_started",
+    "provider_connect_started",
+    "provider_connect_success",
+    "provider_connect_failed",
+    "paywall_seen",
+    "upsell_shown",
+    "checkout_clicked",
+    "upsell_clicked_buy",
+    "license_activated",
+    "first_value_action",
+]
 
 
 def load_env_cache():
@@ -201,7 +218,6 @@ def print_events(events, window_days=90):
     week_dates = set((now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7))
     window_label = f"Last {window_days}d"
 
-    event_types = ["new_free_user", "early_adopter_grant", "license_activated"]
     buckets = {
         "Today": defaultdict(int),
         "Yesterday": defaultdict(int),
@@ -230,6 +246,38 @@ def print_events(events, window_days=90):
         print(f"{name:<15} {b.get('new_free_user', 0):>10} {b.get('early_adopter_grant', 0):>15} {b.get('license_activated', 0):>11}")
 
 
+def print_funnel_events(events, window_days=90):
+    """Aggregate privacy-safe funnel event breakdown."""
+    from datetime import timedelta, timezone
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    week_dates = set((now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7))
+    window_label = f"Last {window_days}d"
+
+    totals = {event: defaultdict(int) for event in FUNNEL_EVENT_TYPES}
+
+    for row in events:
+        event = row["event"]
+        if event not in totals:
+            continue
+        count = row["count"]
+        date = row["date"]
+        totals[event][window_label] += count
+        if date in week_dates:
+            totals[event]["This Week"] += count
+        if date == today:
+            totals[event]["Today"] += count
+
+    print(f"\nFunnel Events — aggregate only")
+    print(f"{'Event':<28} {'Today':>8} {'This Week':>10} {window_label:>12}")
+    print("-" * 62)
+    for event in FUNNEL_EVENT_TYPES:
+        b = totals[event]
+        if b[window_label] == 0:
+            continue
+        print(f"{event:<28} {b['Today']:>8} {b['This Week']:>10} {b[window_label]:>12}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="SaneApps download analytics report")
     parser.add_argument("--daily", action="store_true", help="Today/yesterday/week/all-time breakdown")
@@ -256,6 +304,7 @@ def main():
         app_label = args.app or "all apps"
         print(f"Event Analytics — {app_label} — {datetime.now().strftime('%Y-%m-%d')}")
         print_events(events, window_days=args.days)
+        print_funnel_events(events, window_days=args.days)
         return
 
     rows = data.get("rows", [])
@@ -272,11 +321,13 @@ def main():
         print_daily(rows, window_days=args.days)
         if events:
             print_events(events, window_days=args.days)
+            print_funnel_events(events, window_days=args.days)
     else:
         print_by_app(rows)
         print_by_version(rows)
         if events:
             print_events(events, window_days=args.days)
+            print_funnel_events(events, window_days=args.days)
 
 
 if __name__ == "__main__":
