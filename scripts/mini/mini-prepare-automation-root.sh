@@ -509,7 +509,7 @@ hydrate_training_subdir() {
     return 0
   fi
 
-  if [ "$rel_dir" != "challenger_configs" ] && target_repo_tracks_training_prefix "$app_name" "$rel_dir"; then
+  if target_repo_tracks_training_prefix "$app_name" "$rel_dir"; then
     echo "KEEP  apps/$app_name/training_data/$rel_dir [git-managed]"
     return 0
   fi
