@@ -26,6 +26,28 @@
 - Let the 1:00 AM challenger lane run once, then compare the new small-model reports against the previous SmolLM3/Llama baselines.
 - SaneProcess commit `26d3710` and SaneAI commit `f231bc5` were pushed to `main`, so future repo syncs should preserve the cleanup and challenger rotation fixes.
 
+## Session 123 (2026-05-01)
+
+### Done
+- Reviewed the first restored SaneAI challenger run: `qwen3-0.6b` completed successfully at `2026-05-01 01:00`, but only scored `14%` workflow-first / `28%` raw with `0/6` commentary workflow. Main failure pattern was Qwen thinking tags before JSON.
+- Recorded the model-selection lesson: Qwen-family models remain low-priority for SaneAI strict JSON/workflow behavior unless a future candidate has strong direct evidence.
+- Replaced the active challenger rotation with non-Qwen candidates:
+  - `2026-05-02 llama32-3b`
+  - `2026-05-03 phi4-mini-instruct`
+  - `2026-05-04 granite33-2b-instruct`
+  - `2026-05-05 gemma3-1b-it`
+  - `2026-05-06 smollm3-3b`
+- Added SaneAI challenger configs for MLX-ready `Phi-4-mini-instruct-4bit` and `granite-3.3-2b-instruct-4bit`.
+
+### Verification
+- `bash -n scripts/mini/mini-install-training-agents.sh scripts/mini/deploy.sh`
+- `ruby scripts/mini/mini_train_process_test.rb` -> `17/17 passed`
+- Rotation proof showed `2026-05-02: llama32-3b`, `2026-05-03: phi4-mini-instruct`, `2026-05-04: granite33-2b-instruct`, `2026-05-05: gemma3-1b-it`, `2026-05-06: smollm3-3b`.
+
+### Next
+- Let the `llama32-3b` lane run on `2026-05-02` and compare against the prior Llama/SmolLM3 baseline.
+- Consider a Granite 4.1 3B MLX conversion only after the MLX-ready Granite 3.3 2B lane produces a useful signal.
+
 ## Session 121 (2026-04-30)
 
 ### Done
