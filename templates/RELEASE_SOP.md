@@ -282,6 +282,22 @@ Before any Setapp submission or handoff:
   - no `SU*` keys
   - no direct key-entry / checkout copy
 
+7. Upload through the standard Setapp lane:
+- Preferred: `./scripts/SaneMaster.rb setapp_upload --zip /path/to/App-Setapp.zip --release-notes-file /path/to/notes.txt` with `SETAPP_AUTOMATION_TOKEN`.
+- Fallback for the known portal defect where an in-review page shows `Reupload .ZIP` but clicking it does nothing:
+
+```bash
+./scripts/SaneMaster.rb setapp_upload \
+  --portal-fallback \
+  --app-id <setapp_app_id> \
+  --version-id <existing_version_id> \
+  --zip /path/to/App-Setapp.zip \
+  --release-notes-file /path/to/notes.txt
+```
+
+- After fallback upload, verify both the Apps page and `GET /v1/versions/<version_id>` show the expected build/display versions.
+- Never print or store Setapp browser `access_token` / `refresh_token` values.
+
 ### 1. Build, Sign, Notarize, DMG (Single Command)
 
 ```bash

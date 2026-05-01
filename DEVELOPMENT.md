@@ -689,6 +689,42 @@ Minimum sign-off before any Setapp ship:
 10. Verify direct and App Store builds still behave correctly after the Setapp code lands.
 11. If the Setapp lane still shares a target with the direct lane, run `sanitize_distribution_bundle.rb` and then re-sign the bundle before launch verification.
 
+### Setapp Upload / Replacement Standard
+
+Use the shared upload lane instead of hand-clicking portal forms:
+
+```bash
+./scripts/SaneMaster.rb setapp_upload \
+  --zip /path/to/App-Setapp-X.Y.Z.zip \
+  --release-notes-file /path/to/setapp-notes.txt
+```
+
+Preferred path:
+- Use `SETAPP_AUTOMATION_TOKEN` with Setapp's documented `POST /v1/ci/version` endpoint.
+- Include `--allow-overwrite true` when replacing a build that is waiting for review.
+
+Portal fallback path:
+- Use only when the web portal is logged in but the visible `Reupload .ZIP` button is inert or read-only.
+- Run on the Mini with Safari logged into `developer.setapp.com`.
+- Pass the existing Setapp app id and version id:
+
+```bash
+./scripts/SaneMaster.rb setapp_upload \
+  --portal-fallback \
+  --app-id 1848 \
+  --version-id 46885 \
+  --zip /path/to/SaneBar-Setapp-2.1.47-iconfix.zip \
+  --release-notes-file /path/to/setapp-notes.txt
+```
+
+What the fallback does:
+1. Uploads the archive through the portal-backed `/v1/versions/upload_archive` endpoint.
+2. Verifies Setapp extracted the bundle id, build version, display version, and icon.
+3. Patches the existing version record with the temporary archive reference and release notes.
+4. Recheck the Setapp Apps page and API record; do not trust the stale page label alone.
+
+Do not print, paste, or save Setapp `access_token` / `refresh_token` values. The script reads the Safari token only in-process and uses temp curl config files with `0600` permissions.
+
 ### Hidden Gotchas To Plan For Up Front
 
 - Setapp docs still publicly describe a narrower rollout than the email offer. Trust the live business thread for eligibility, but still code to the published technical requirements.

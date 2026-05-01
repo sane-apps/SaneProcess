@@ -14,6 +14,12 @@
       "cmd": ["ruby", "scripts/app_test_mode_test.rb"]
     },
     {
+      "path": "scripts/setapp_upload_test.rb",
+      "label": "SaneProcess Setapp upload tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/setapp_upload_test.rb"]
+    },
+    {
       "path": "scripts/appstore_public_screenshot_audit_test.rb",
       "label": "SaneProcess public screenshot audit tests",
       "status": "required",

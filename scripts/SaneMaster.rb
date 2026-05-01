@@ -171,7 +171,8 @@ class SaneMaster
       commands: {
         'status' => { args: '', desc: 'Run the live cross-reference status report' },
         'check_inbox' => { args: '[check|review <id>|read <id>|reply ...]', desc: 'Forward to the canonical support inbox workflow' },
-        'sync_mini' => { args: '[mini] [--quiet] [--no-restart]', desc: 'Sync the Codex control-plane profile to the Mini' }
+        'sync_mini' => { args: '[mini] [--quiet] [--no-restart]', desc: 'Sync the Codex control-plane profile to the Mini' },
+        'setapp_upload' => { args: '--zip ZIP --release-notes TEXT [--portal-fallback --app-id ID --version-id ID]', desc: 'Upload or replace a Setapp review build using the standard Setapp lane' }
       }
     },
     memory: {
@@ -259,6 +260,8 @@ class SaneMaster
                                   release_preflight
                                   appstore_preflight
                                   asp
+                                  setapp_upload
+                                  setapp-upload
                                   launch
                                   run
                                   logs
@@ -1281,6 +1284,8 @@ PY
       run_check_inbox(args)
     when 'sync_mini', 'sync-mini'
       run_sync_mini(args)
+    when 'setapp_upload', 'setapp-upload'
+      system('ruby', File.join(__dir__, 'setapp_upload.rb'), *args)
     when 'tool_discovery', 'tool_receipt', 'tool-receipt'
       tool_discovery(args)
     when 'health', 'h'
@@ -1813,6 +1818,23 @@ PY
       examples: [
         'sync_mini',
         'sync_mini mini --quiet --no-restart'
+      ]
+    },
+    'setapp_upload' => {
+      usage: 'setapp_upload --zip ZIP --release-notes TEXT [--portal-fallback --app-id ID --version-id ID]',
+      description: 'Upload a Setapp build. Uses the official CI endpoint when SETAPP_AUTOMATION_TOKEN is present; use --portal-fallback only for a logged-in portal replacement when the in-review Reupload button is inert.',
+      flags: {
+        '--zip PATH' => 'Setapp ZIP archive to upload',
+        '--release-notes TEXT' => 'Release notes text',
+        '--release-notes-file PATH' => 'Read release notes from a file',
+        '--portal-fallback' => 'Use developer portal upload_archive + version PATCH path',
+        '--app-id ID' => 'Setapp application id for portal fallback',
+        '--version-id ID' => 'Existing Setapp version id for portal fallback',
+        '--dry-run' => 'Validate and print the planned path without uploading'
+      },
+      examples: [
+        'setapp_upload --zip outputs/SaneBar-Setapp.zip --release-notes "SaneBar 2.1.47..."',
+        'setapp_upload --portal-fallback --app-id 1848 --version-id 46885 --zip outputs/SaneBar-Setapp.zip --release-notes-file /tmp/setapp-notes.txt'
       ]
     },
     'universal_control_reset' => {
