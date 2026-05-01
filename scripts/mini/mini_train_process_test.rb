@@ -62,6 +62,18 @@ exit(run_tests('Mini Train Process Tests') do
       true
     end
 
+    test('source training data prefers synced app repos over stale top-level fallbacks') do
+      prepare_source = File.read(File.expand_path('mini-prepare-automation-root.sh', __dir__))
+      assert_includes(prepare_source, 'Order matters: the first existing path wins.')
+      assert_includes(prepare_source, 'stale top-level compatibility checkouts cannot overwrite fresh data')
+      assert_includes(prepare_source, '"$SOURCE_ROOT/apps/$app_name/training_data"')
+      assert_includes(prepare_source, '"$SOURCE_ROOT/$app_name/training_data"')
+      apps_index = prepare_source.index('"$SOURCE_ROOT/apps/$app_name/training_data"')
+      top_level_index = prepare_source.index('"$SOURCE_ROOT/$app_name/training_data"')
+      assert(apps_index < top_level_index, 'Expected apps/ training data to be preferred over top-level fallback')
+      true
+    end
+
     test('challenger lane defaults to one rotated config unless multi-run is explicitly allowed') do
       assert_includes(train_challengers_source, 'CHALLENGER_SELECTION_MODE="${CHALLENGER_SELECTION_MODE:-alternate}"')
       assert_includes(train_challengers_source, 'ALLOW_MULTI_CHALLENGER_RUNS="${ALLOW_MULTI_CHALLENGER_RUNS:-false}"')

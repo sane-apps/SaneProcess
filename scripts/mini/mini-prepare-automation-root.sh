@@ -329,17 +329,12 @@ source_training_root_candidates() {
   local -a candidates
   local candidate
 
-  if [ "$app_name" = "SaneAI" ]; then
-    candidates=(
-      "$SOURCE_ROOT/$app_name/training_data"
-      "$SOURCE_ROOT/apps/$app_name/training_data"
-    )
-  else
-    candidates=(
-      "$SOURCE_ROOT/apps/$app_name/training_data"
-      "$SOURCE_ROOT/$app_name/training_data"
-    )
-  fi
+  # Order matters: the first existing path wins. Prefer synced repos under
+  # apps/ so stale top-level compatibility checkouts cannot overwrite fresh data.
+  candidates=(
+    "$SOURCE_ROOT/apps/$app_name/training_data"
+    "$SOURCE_ROOT/$app_name/training_data"
+  )
 
   for candidate in "${candidates[@]}"; do
     printf '%s\n' "$candidate"
