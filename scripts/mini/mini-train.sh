@@ -1511,8 +1511,9 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
   echo "### ${ITERS} iterations" >> "$REPORT"
   echo "" >> "$REPORT"
 
-  # Skip if already trained today
-  if [ -f "$ADAPTER_DIR/adapter_config.json" ]; then
+  # Skip only completed sweeps. Crashed/stalled launches can leave config/log
+  # files behind without a final adapter; those must rerun.
+  if [ -f "$ADAPTER_DIR/adapter_config.json" ] && [ -f "$ADAPTER_DIR/adapters.safetensors" ]; then
     echo "Already trained today. Skipping." >> "$REPORT"
     echo "" >> "$REPORT"
     SKIPPED_EXISTING_SWEEPS=$((SKIPPED_EXISTING_SWEEPS + 1))

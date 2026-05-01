@@ -26,6 +26,11 @@ exit(run_tests('Mini Train Process Tests') do
       true
     end
 
+    test('does not treat incomplete adapter dirs as completed sweeps') do
+      assert_includes(train_source, '[ -f "$ADAPTER_DIR/adapter_config.json" ] && [ -f "$ADAPTER_DIR/adapters.safetensors" ]')
+      true
+    end
+
     test('rescales warmup when the overnight sweep length changes') do
       assert_includes(train_source, 'warmup_steps_for_sweep()')
       assert_includes(train_source, 'Sweep schedule: warmup=')
