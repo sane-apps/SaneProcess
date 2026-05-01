@@ -509,13 +509,15 @@ hydrate_training_subdir() {
     return 0
   fi
 
-  if [ "$rel_dir" != "challenger_configs" ] && target_repo_tracks_training_prefix "$app_name" "$rel_dir"; then
+  if target_repo_tracks_training_prefix "$app_name" "$rel_dir"; then
     echo "KEEP  apps/$app_name/training_data/$rel_dir [git-managed]"
     return 0
   fi
 
   mkdir -p "$target_dir"
   if [ "$rel_dir" = "challenger_configs" ]; then
+    # Compatibility path for legacy repos where challenger configs are not tracked.
+    # Tracked config dirs are kept above; new candidates must be committed.
     rsync -a "$source_dir"/ "$target_dir"/ >/dev/null 2>&1
     echo "SYNC  apps/$app_name/training_data/$rel_dir [merged]"
   else
