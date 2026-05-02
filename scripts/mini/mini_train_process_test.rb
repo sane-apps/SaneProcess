@@ -56,6 +56,7 @@ exit(run_tests('Mini Train Process Tests') do
       assert_includes(train_source, 'compute_hard_stop_epoch()')
       assert_includes(train_source, 'target += 86_400 if target <= start')
       assert_includes(train_source, '"$START_EPOCH" "$TRAIN_HARD_STOP_TIME"')
+      assert_includes(train_source, 'Invalid hard stop epoch; treating hard stop as reached.')
       assert_includes(train_source, 'now=$(date +%s)')
       assert_includes(train_challengers_source, 'compute_hard_stop_epoch()')
       assert_includes(train_challengers_source, '"$CHALLENGER_START" "$TRAIN_HARD_STOP_TIME"')

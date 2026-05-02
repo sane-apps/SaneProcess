@@ -514,7 +514,8 @@ is_past_hard_stop_time() {
   local now
 
   if ! [[ "${TRAIN_HARD_STOP_EPOCH:-0}" =~ ^[0-9]+$ ]] || [ "${TRAIN_HARD_STOP_EPOCH:-0}" -le 0 ]; then
-    return 1
+    echo "Invalid hard stop epoch; treating hard stop as reached." >&2
+    return 0
   fi
 
   now=$(date +%s)
