@@ -169,7 +169,7 @@ select_rotation_config_name() {
 }
 
 compute_hard_stop_epoch() {
-  local hard_stop_hour hard_stop_minute run_date target_epoch next_epoch
+  local hard_stop_hour hard_stop_minute
 
   hard_stop_hour=$(printf '%s' "$TRAIN_HARD_STOP_TIME" | cut -d: -f1)
   hard_stop_minute=$(printf '%s' "$TRAIN_HARD_STOP_TIME" | cut -d: -f2)
@@ -177,22 +177,27 @@ compute_hard_stop_epoch() {
     TRAIN_HARD_STOP_TIME="08:30"
   fi
 
-  run_date=$(date -r "$CHALLENGER_START" +"%Y-%m-%d" 2>/dev/null || date +"%Y-%m-%d")
-  target_epoch=$(date -j -f "%Y-%m-%d %H:%M" "$run_date $TRAIN_HARD_STOP_TIME" +%s 2>/dev/null || echo "0")
+  TRAIN_HARD_STOP_EPOCH=$(ruby -e '
+    require "time"
 
-  if ! [[ "$target_epoch" =~ ^[0-9]+$ ]] || [ "$target_epoch" -le 0 ]; then
-    TRAIN_HARD_STOP_EPOCH=0
-    return
-  fi
+    start_epoch = Integer(ARGV[0])
+    raw_time = ARGV[1].to_s
+    unless raw_time.match?(/\A\d{1,2}:\d{2}\z/)
+      puts 0
+      exit
+    end
 
-  if [ "$target_epoch" -le "$CHALLENGER_START" ]; then
-    next_epoch=$(date -j -v+1d -f "%Y-%m-%d %H:%M" "$run_date $TRAIN_HARD_STOP_TIME" +%s 2>/dev/null || echo "0")
-    if [[ "$next_epoch" =~ ^[0-9]+$ ]] && [ "$next_epoch" -gt 0 ]; then
-      target_epoch="$next_epoch"
-    fi
-  fi
+    hour, minute = raw_time.split(":").map(&:to_i)
+    unless hour.between?(0, 23) && minute.between?(0, 59)
+      puts 0
+      exit
+    end
 
-  TRAIN_HARD_STOP_EPOCH="$target_epoch"
+    start = Time.at(start_epoch)
+    target = Time.local(start.year, start.month, start.day, hour, minute, 0)
+    target += 86_400 if target <= start
+    puts target.to_i
+  ' "$CHALLENGER_START" "$TRAIN_HARD_STOP_TIME" 2>/dev/null || echo "0")
 }
 
 compute_hard_stop_epoch
