@@ -51,6 +51,16 @@ exit(run_tests('Mini Train Process Tests') do
       assert_includes(train_source, 'Inline validation: disabled on Mini training run')
       true
     end
+
+    test('hard stop is epoch based so late-night runs can target the next morning') do
+      assert_includes(train_source, 'compute_hard_stop_epoch()')
+      assert_includes(train_source, 'date -j -v+1d -f "%Y-%m-%d %H:%M" "$run_date $TRAIN_HARD_STOP_TIME"')
+      assert_includes(train_source, 'if [ "$target_epoch" -le "$START_EPOCH" ]; then')
+      assert_includes(train_source, 'now=$(date +%s)')
+      assert_includes(train_challengers_source, 'compute_hard_stop_epoch()')
+      assert_includes(train_challengers_source, 'if [ "$target_epoch" -le "$CHALLENGER_START" ]; then')
+      true
+    end
   end
 
   test_category('Automation root hygiene') do

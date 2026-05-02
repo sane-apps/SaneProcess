@@ -168,27 +168,44 @@ select_rotation_config_name() {
   printf '%s' "$(printf '%s' "$selected_name" | sed 's/^ *//; s/ *$//')"
 }
 
-is_past_hard_stop_time() {
-  local hard_stop_hour hard_stop_minute hour_now minute_now
+compute_hard_stop_epoch() {
+  local hard_stop_hour hard_stop_minute run_date target_epoch next_epoch
 
   hard_stop_hour=$(printf '%s' "$TRAIN_HARD_STOP_TIME" | cut -d: -f1)
   hard_stop_minute=$(printf '%s' "$TRAIN_HARD_STOP_TIME" | cut -d: -f2)
   if ! [[ "$hard_stop_hour" =~ ^[0-9]{1,2}$ ]] || ! [[ "$hard_stop_minute" =~ ^[0-9]{2}$ ]]; then
-    hard_stop_hour="08"
-    hard_stop_minute="30"
+    TRAIN_HARD_STOP_TIME="08:30"
   fi
 
-  hour_now=$(date +%H)
-  minute_now=$(date +%M)
-  hour_now=$((10#$hour_now))
-  minute_now=$((10#$minute_now))
-  hard_stop_hour=$((10#$hard_stop_hour))
-  hard_stop_minute=$((10#$hard_stop_minute))
+  run_date=$(date -r "$CHALLENGER_START" +"%Y-%m-%d" 2>/dev/null || date +"%Y-%m-%d")
+  target_epoch=$(date -j -f "%Y-%m-%d %H:%M" "$run_date $TRAIN_HARD_STOP_TIME" +%s 2>/dev/null || echo "0")
 
-  if [ "$hour_now" -gt "$hard_stop_hour" ]; then
-    return 0
+  if ! [[ "$target_epoch" =~ ^[0-9]+$ ]] || [ "$target_epoch" -le 0 ]; then
+    TRAIN_HARD_STOP_EPOCH=0
+    return
   fi
-  if [ "$hour_now" -eq "$hard_stop_hour" ] && [ "$minute_now" -ge "$hard_stop_minute" ]; then
+
+  if [ "$target_epoch" -le "$CHALLENGER_START" ]; then
+    next_epoch=$(date -j -v+1d -f "%Y-%m-%d %H:%M" "$run_date $TRAIN_HARD_STOP_TIME" +%s 2>/dev/null || echo "0")
+    if [[ "$next_epoch" =~ ^[0-9]+$ ]] && [ "$next_epoch" -gt 0 ]; then
+      target_epoch="$next_epoch"
+    fi
+  fi
+
+  TRAIN_HARD_STOP_EPOCH="$target_epoch"
+}
+
+compute_hard_stop_epoch
+
+is_past_hard_stop_time() {
+  local now
+
+  if ! [[ "${TRAIN_HARD_STOP_EPOCH:-0}" =~ ^[0-9]+$ ]] || [ "${TRAIN_HARD_STOP_EPOCH:-0}" -le 0 ]; then
+    return 1
+  fi
+
+  now=$(date +%s)
+  if [ "$now" -ge "$TRAIN_HARD_STOP_EPOCH" ]; then
     return 0
   fi
   return 1

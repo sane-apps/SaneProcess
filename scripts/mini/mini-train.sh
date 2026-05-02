@@ -360,6 +360,29 @@ parse_hard_stop_time() {
 
 parse_hard_stop_time
 
+compute_hard_stop_epoch() {
+  local run_date target_epoch next_epoch
+
+  run_date=$(date -r "$START_EPOCH" +"%Y-%m-%d" 2>/dev/null || date +"%Y-%m-%d")
+  target_epoch=$(date -j -f "%Y-%m-%d %H:%M" "$run_date $TRAIN_HARD_STOP_TIME" +%s 2>/dev/null || echo "0")
+
+  if ! [[ "$target_epoch" =~ ^[0-9]+$ ]] || [ "$target_epoch" -le 0 ]; then
+    TRAIN_HARD_STOP_EPOCH=0
+    return
+  fi
+
+  if [ "$target_epoch" -le "$START_EPOCH" ]; then
+    next_epoch=$(date -j -v+1d -f "%Y-%m-%d %H:%M" "$run_date $TRAIN_HARD_STOP_TIME" +%s 2>/dev/null || echo "0")
+    if [[ "$next_epoch" =~ ^[0-9]+$ ]] && [ "$next_epoch" -gt 0 ]; then
+      target_epoch="$next_epoch"
+    fi
+  fi
+
+  TRAIN_HARD_STOP_EPOCH="$target_epoch"
+}
+
+compute_hard_stop_epoch
+
 if [ "$CHALLENGER_MODE" = true ]; then
   NEXT_RUN_HINT="Daily challenger agent at 1:00 AM, except Sunday when SaneAI owns the window."
 else
@@ -485,16 +508,14 @@ remaining_budget_seconds() {
 }
 
 is_past_hard_stop_time() {
-  local hour_now minute_now
-  hour_now=$(date +%H)
-  minute_now=$(date +%M)
-  hour_now=$((10#$hour_now))
-  minute_now=$((10#$minute_now))
+  local now
 
-  if [ "$hour_now" -gt "$TRAIN_HARD_STOP_HOUR" ]; then
-    return 0
+  if ! [[ "${TRAIN_HARD_STOP_EPOCH:-0}" =~ ^[0-9]+$ ]] || [ "${TRAIN_HARD_STOP_EPOCH:-0}" -le 0 ]; then
+    return 1
   fi
-  if [ "$hour_now" -eq "$TRAIN_HARD_STOP_HOUR" ] && [ "$minute_now" -ge "$TRAIN_HARD_STOP_MINUTE" ]; then
+
+  now=$(date +%s)
+  if [ "$now" -ge "$TRAIN_HARD_STOP_EPOCH" ]; then
     return 0
   fi
   return 1
