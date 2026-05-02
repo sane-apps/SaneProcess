@@ -31,6 +31,12 @@ exit(run_tests('Mini Train Process Tests') do
       true
     end
 
+    test('challenger sweep dirs include config fingerprint') do
+      assert_includes(train_source, 'config_fingerprint()')
+      assert_includes(train_source, 'SWEEP_NAME="challenger_${MODEL_SHORT}_${ITERS}_${CONFIG_FINGERPRINT}_${DATE}"')
+      true
+    end
+
     test('rescales warmup when the overnight sweep length changes') do
       assert_includes(train_source, 'warmup_steps_for_sweep()')
       assert_includes(train_source, 'Sweep schedule: warmup=')

@@ -718,6 +718,19 @@ build_sweep_iters() {
   fi
 }
 
+config_fingerprint() {
+  local config_file="$1"
+  local fingerprint
+
+  if [ ! -f "$config_file" ]; then
+    printf 'missing\n'
+    return 0
+  fi
+
+  fingerprint=$(cksum "$config_file" | awk '{print $1}')
+  printf '%s\n' "$fingerprint"
+}
+
 prepare_training_data_dir() {
   local sweep_dir="$1"
   local data_root="$2"
@@ -1499,9 +1512,13 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
     break
   fi
 
-  # Challenger sweeps get a model-prefixed directory to avoid collisions
+  CONFIG_FINGERPRINT=$(config_fingerprint "$BASE_CONFIG")
+
+  # Challenger sweeps get a model-prefixed directory to avoid collisions.
+  # Include the config fingerprint so same-day model-specific tuning changes
+  # produce a new adapter instead of reusing a stale incompatible sweep.
   if [ "$CHALLENGER_MODE" = true ] && [ -n "$BASE_MODEL_OVERRIDE" ]; then
-    SWEEP_NAME="challenger_${MODEL_SHORT}_${ITERS}_${DATE}"
+    SWEEP_NAME="challenger_${MODEL_SHORT}_${ITERS}_${CONFIG_FINGERPRINT}_${DATE}"
   else
     SWEEP_NAME="sweep_${ITERS}_${DATE}"
   fi
