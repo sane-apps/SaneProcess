@@ -33,6 +33,7 @@ exit(run_tests('Mini Train Process Tests') do
 
     test('challenger sweep dirs include config fingerprint') do
       assert_includes(train_source, 'config_fingerprint()')
+      assert_includes(train_source, 'shasum -a 256')
       assert_includes(train_source, 'SWEEP_NAME="challenger_${MODEL_SHORT}_${ITERS}_${CONFIG_FINGERPRINT}_${DATE}"')
       true
     end

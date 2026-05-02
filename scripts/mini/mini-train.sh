@@ -727,7 +727,11 @@ config_fingerprint() {
     return 0
   fi
 
-  fingerprint=$(cksum "$config_file" | awk '{print $1}')
+  if command -v shasum >/dev/null 2>&1; then
+    fingerprint=$(shasum -a 256 "$config_file" | awk '{print substr($1, 1, 12)}')
+  else
+    fingerprint=$(cksum "$config_file" | awk '{print $1}')
+  fi
   printf '%s\n' "$fingerprint"
 }
 
