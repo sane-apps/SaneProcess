@@ -1325,6 +1325,20 @@ echo "- Dirty files: $DIRTY_COUNT" >> "$REPORT"
 echo "- Behind origin: $BEHIND" >> "$REPORT"
 echo "- Ahead of origin: $AHEAD" >> "$REPORT"
 
+MERGE_SCRIPT="$TRAIN_DIR/merge_training_data.py"
+if [ -f "$MERGE_SCRIPT" ]; then
+  echo "- Merge script: $MERGE_SCRIPT" >> "$REPORT"
+  if "$PYTHON" "$MERGE_SCRIPT" >> "$REPORT" 2>&1; then
+    echo "- Merge result: refreshed train.jsonl/valid.jsonl" >> "$REPORT"
+  else
+    echo "**ERROR:** training data merge failed via $MERGE_SCRIPT" >> "$REPORT"
+    echo "Training data merge failed" >&2
+    exit 1
+  fi
+else
+  echo "- Merge script: none" >> "$REPORT"
+fi
+
 # Validate training data exists
 if [ ! -f "$TRAIN_DIR/train.jsonl" ]; then
   echo "**ERROR:** train.jsonl not found at $TRAIN_DIR" >> "$REPORT"
