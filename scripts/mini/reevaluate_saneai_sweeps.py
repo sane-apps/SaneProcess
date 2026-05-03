@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -256,9 +257,9 @@ def main() -> int:
         parsed["log"] = str(log_path)
         rows.append(parsed)
         write_reports(rows, output_dir, args.token_cap)
-        mx_cache_clear = run(["/usr/bin/purge"])
-        if mx_cache_clear.returncode != 0:
-            pass
+        purge_path = shutil.which("purge")
+        if purge_path:
+            run([purge_path])
 
     write_reports(rows, output_dir, args.token_cap)
     latest_md = output_root / f"corrected_saneai_sweeps_cap{args.token_cap}_latest.md"
