@@ -165,7 +165,7 @@ detect_eval_token_cap() {
   fi
 
   mem_gb=$((raw_memsize / 1024 / 1024 / 1024))
-  if [ "$APP_NAME" = "SaneVideo" ]; then
+  if [ "$APP_NAME" = "SaneVideo" ] || [ "$APP_NAME" = "SaneAI" ]; then
     if [ "$mem_gb" -le 8 ]; then
       EVAL_MAX_TOKENS_CAP=384
     else

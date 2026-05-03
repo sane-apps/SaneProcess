@@ -160,7 +160,13 @@ exit(run_tests('Mini Train Process Tests') do
       assert_includes(train_source, 'if [ "$APP_NAME" = "SaneVideo" ]; then')
       assert_includes(train_source, 'DEFAULT_EVAL_SUITE_WEIGHTS="commentary_workflow=4,workflow_packs=2,workflow_guardrails=2"')
       assert_includes(train_source, 'DEFAULT_EVAL_SUITES="commentary_workflow,workflow_packs,workflow_guardrails"')
-      assert_includes(train_source, 'EVAL_MAX_TOKENS_CAP=256')
+      assert_includes(train_source, 'EVAL_MAX_TOKENS_CAP=384')
+      true
+    end
+
+    test('SaneAI workflow evals use a non-truncating Mini token cap') do
+      assert_includes(train_source, 'if [ "$APP_NAME" = "SaneVideo" ] || [ "$APP_NAME" = "SaneAI" ]; then')
+      assert_includes(train_source, 'EVAL_MAX_TOKENS_CAP=384')
       true
     end
 
