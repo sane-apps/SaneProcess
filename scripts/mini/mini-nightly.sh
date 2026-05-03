@@ -19,8 +19,8 @@ REPORT="$OUTPUT_DIR/nightly_report.md"
 DATE=$(date +"%Y-%m-%d %A")
 TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-EVAL_SUITE_WEIGHTS="${EVAL_SUITE_WEIGHTS:-commentary_workflow=4,workflow_packs=2,workflow_guardrails=2,core=1}"
-PRIMARY_WORKFLOW_SUITE="${PRIMARY_WORKFLOW_SUITE:-commentary_workflow}"
+EVAL_SUITE_WEIGHTS="${EVAL_SUITE_WEIGHTS:-mac_operator=4,core=2,workflow_guardrails=1,commentary_workflow=1,workflow_packs=1}"
+PRIMARY_WORKFLOW_SUITE="${PRIMARY_WORKFLOW_SUITE:-mac_operator}"
 PRIMARY_WORKFLOW_MIN_PCT="${PRIMARY_WORKFLOW_MIN_PCT:-50}"
 
 mkdir -p "$OUTPUT_DIR"

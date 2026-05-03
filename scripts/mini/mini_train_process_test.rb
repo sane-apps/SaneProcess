@@ -164,6 +164,14 @@ exit(run_tests('Mini Train Process Tests') do
       true
     end
 
+    test('SaneAI defaults to local Mac operator evals') do
+      assert_includes(train_source, 'if [ "$APP_NAME" = "SaneAI" ]; then')
+      assert_includes(train_source, 'DEFAULT_EVAL_SUITE_WEIGHTS="mac_operator=4,core=2,workflow_guardrails=1,commentary_workflow=1,workflow_packs=1"')
+      assert_includes(train_source, 'DEFAULT_EVAL_SUITES="mac_operator,core,workflow_guardrails,commentary_workflow,workflow_packs"')
+      assert_includes(train_source, 'PRIMARY_WORKFLOW_SUITE="${PRIMARY_WORKFLOW_SUITE:-mac_operator}"')
+      true
+    end
+
     test('SaneAI workflow evals use a non-truncating Mini token cap') do
       assert_includes(train_source, 'if [ "$APP_NAME" = "SaneVideo" ] || [ "$APP_NAME" = "SaneAI" ]; then')
       assert_includes(train_source, 'EVAL_MAX_TOKENS_CAP=384')

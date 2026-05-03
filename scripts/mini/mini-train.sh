@@ -134,9 +134,15 @@ MODE_LABEL="production"
 READINESS_TARGET_APP="${READINESS_TARGET_APP:-}"
 DEFAULT_EVAL_SUITE_WEIGHTS="commentary_workflow=4,workflow_packs=2,workflow_guardrails=2,core=1"
 DEFAULT_EVAL_SUITES=""
+if [ "$APP_NAME" = "SaneAI" ]; then
+  DEFAULT_EVAL_SUITE_WEIGHTS="mac_operator=4,core=2,workflow_guardrails=1,commentary_workflow=1,workflow_packs=1"
+  DEFAULT_EVAL_SUITES="mac_operator,core,workflow_guardrails,commentary_workflow,workflow_packs"
+  PRIMARY_WORKFLOW_SUITE="${PRIMARY_WORKFLOW_SUITE:-mac_operator}"
+fi
 if [ "$APP_NAME" = "SaneVideo" ]; then
   DEFAULT_EVAL_SUITE_WEIGHTS="commentary_workflow=4,workflow_packs=2,workflow_guardrails=2"
   DEFAULT_EVAL_SUITES="commentary_workflow,workflow_packs,workflow_guardrails"
+  PRIMARY_WORKFLOW_SUITE="${PRIMARY_WORKFLOW_SUITE:-commentary_workflow}"
 fi
 EVAL_SUITE_WEIGHTS="${EVAL_SUITE_WEIGHTS:-$DEFAULT_EVAL_SUITE_WEIGHTS}"
 EVAL_MAX_CASES="${EVAL_MAX_CASES:-0}"

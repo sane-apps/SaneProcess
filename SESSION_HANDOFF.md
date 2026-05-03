@@ -1,4 +1,23 @@
 
+## Session 125 (2026-05-03)
+
+### Done
+- Refocused SaneAI Mini training defaults on the local Mac operator product
+  lane instead of strict SaneVideo transcript workflow JSON.
+- Added `mac_operator` as the default primary SaneAI workflow suite with
+  heavier weighting than commentary/workflow packs.
+- Extended `evaluate_model.py` so operation, block, and confirmation eval cases
+  can validate required operation types, required terms, forbidden terms, and
+  blocked-reason text instead of only checking generic JSON validity.
+
+### Verification
+- `python3 -m py_compile scripts/mini/evaluate_model.py`
+- `ruby scripts/mini/mini_train_process_test.rb` -> `23/23 passed`
+
+### Next
+- Deploy/pull this SaneProcess update to the Mini before the next SaneAI
+  optimization run so reports use `mac_operator` as the primary gate.
+
 ## Session 124 (2026-05-01)
 
 ### Done

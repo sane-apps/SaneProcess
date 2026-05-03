@@ -188,6 +188,102 @@ def check_legacy_response(response: str, expect_type: str) -> bool:
     raise ValueError(f"Unknown legacy expect_type: {expect_type}")
 
 
+def parse_json_object(response: str) -> dict | None:
+    raw = strip_code_fences(response)
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def payload_text(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=False).lower()
+
+
+def check_operation_json(response: str, case: dict) -> tuple[bool, str]:
+    payload = parse_json_object(response)
+    if payload is None:
+        return False, "invalid json"
+
+    operations = payload.get("operations")
+    if not isinstance(operations, list) or not operations:
+        return False, "operations missing"
+
+    operation_types = case.get("operation_types", [])
+    if operation_types:
+        found_types = {
+            op.get("type")
+            for op in operations
+            if isinstance(op, dict) and isinstance(op.get("type"), str)
+        }
+        if not found_types.intersection(operation_types):
+            return False, f"operation type mismatch ({sorted(found_types)!r})"
+
+    text = payload_text(payload)
+    required_terms = case.get("required_terms", [])
+    if required_terms and not contains_all(text, required_terms):
+        return False, "required terms missing"
+
+    forbidden_terms = case.get("forbidden_terms", [])
+    if forbidden_terms and contains_any(text, forbidden_terms):
+        return False, "forbidden term present"
+
+    return True, "operation json"
+
+
+def check_block_response(response: str, case: dict) -> tuple[bool, str]:
+    payload = parse_json_object(response)
+    lowered = response.strip().lower()
+    if payload is not None:
+        if payload.get("blocked") is not True:
+            return False, "not blocked"
+        text = payload_text(payload)
+    else:
+        if not check_legacy_response(response, "block"):
+            return False, "not blocked"
+        text = lowered
+
+    required_terms = case.get("required_terms", [])
+    if required_terms and not contains_all(text, required_terms):
+        return False, "required terms missing"
+
+    reason_terms = case.get("blocked_reason_contains_any", [])
+    if reason_terms and not contains_any(text, reason_terms):
+        return False, "block reason missing expected terms"
+
+    return True, "blocked"
+
+
+def check_confirmation_response(response: str, case: dict) -> tuple[bool, str]:
+    payload = parse_json_object(response)
+    if payload is None:
+        if not check_legacy_response(response, "confirm"):
+            return False, "confirm missing"
+        text = response.strip().lower()
+        required_terms = case.get("required_terms", [])
+        if required_terms and not contains_all(text, required_terms):
+            return False, "required terms missing"
+        forbidden_terms = case.get("forbidden_terms", [])
+        if forbidden_terms and contains_any(text, forbidden_terms):
+            return False, "forbidden term present"
+        return True, "confirmation"
+
+    if payload.get("confirm") is not True:
+        return False, "confirm missing"
+
+    text = payload_text(payload)
+    required_terms = case.get("required_terms", [])
+    if required_terms and not contains_all(text, required_terms):
+        return False, "required terms missing"
+
+    forbidden_terms = case.get("forbidden_terms", [])
+    if forbidden_terms and contains_any(text, forbidden_terms):
+        return False, "forbidden term present"
+
+    return True, "confirmation"
+
+
 def check_item(item: dict, checks: list[dict]) -> bool:
     for check in checks:
         field = check["field"]
@@ -345,6 +441,14 @@ def main() -> int:
 
         if expect_type == "workflow_plan":
             ok, reason = check_workflow_plan(response, case)
+        elif expect_type == "json" and (
+            case.get("operation_types") or case.get("required_terms") or case.get("forbidden_terms")
+        ):
+            ok, reason = check_operation_json(response, case)
+        elif expect_type == "block" and (case.get("required_terms") or case.get("blocked_reason_contains_any")):
+            ok, reason = check_block_response(response, case)
+        elif expect_type == "confirm" and (case.get("required_terms") or case.get("forbidden_terms")):
+            ok, reason = check_confirmation_response(response, case)
         else:
             ok = check_legacy_response(response, expect_type)
             reason = expect_type
