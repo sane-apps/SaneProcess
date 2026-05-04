@@ -71,7 +71,7 @@ module ContextCompact
     parts << "files: #{files.join(', ')}" if files.any?
     parts << "#{edits[:count]} edits" if (edits[:count] || 0) > 0
     parts << "plan pending approval" if planning[:required] && !planning[:plan_approved]
-    if verification[:tests_run]
+    if verification[:tests_passed] || verification[:verification_succeeded] || verification[:tests_run]
       parts << "tests passed"
     elsif (edits[:count] || 0) > 0
       parts << "tests NOT YET RUN"

@@ -39,7 +39,6 @@ Codex extras that are stable enough to use in SOPs today:
 - `tool_search` for deferred app/MCP capability discovery before claiming a tool is missing
 - `computer-use` for live accessibility-tree inspection on the machine hosting the GUI
 - `macos-automator` for reusable AppleScript/JXA discovery before writing raw scripts
-- `mcp__nvidia_build__nvidia_vision` for second-pass screenshot audits after capture
 - `automation_update` for user-approved recurring checks or follow-ups
 
 Stable cross-client guardrails already enforced in shared runtime paths:
@@ -118,7 +117,19 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 | `test_mode` | Kill → Build → Launch → Logs |
 | `doctor` | Environment health check |
 | `tool_discovery --query "..."` | Generate a proof receipt before using a workaround or adding a tool |
+| `process_metrics [--json]` | Dashboard for verify churn, session quality, SOP score caps, and hook blocks |
+| `refresh_qa_snapshots [--dry-run|--run]` | List stale app QA snapshots, then explicitly refresh selected stale snapshots |
 | `gate_review <fixture.json> [--json]` | Deterministically review candidate prevention gates before promoting them into enforcement |
+
+### Validation Hardening
+
+`scripts/validation_report.rb` separates findings into system health, release readiness, app readiness, and advisory buckets. Keep legacy `issues` and `warnings` JSON keys for compatibility, but use `findings` and `verdict.sections` for new tooling.
+
+GitHub-hosted workflow exceptions can be documented inline with `SANEAPPS_GITHUB_HOSTED_EXCEPTION: <reason>` or centrally in `config/github_workflow_exceptions.yml`. Central exceptions are for repos outside the current edit scope; inline comments are preferred when editing that repo directly.
+
+Red-noise budget: a validation finding older than seven days must be fixed, explicitly accepted, or downgraded. Do not leave permanent unexplained red output in the daily report.
+
+QA snapshot refresh is intentionally explicit. Run `ruby scripts/SaneMaster.rb refresh_qa_snapshots --dry-run` first, review the app commands it would run, then rerun with `--run` only for deliberate app-readiness work.
 | `sync_mini [mini] [--quiet] [--no-restart] [--activate-mini-runs]` | Sync the active Codex control-plane profile to the Mini; default keeps Mini AM/PM runs paused unless activation is explicit |
 | `universal_control_reset [--status|--reboot-mini|--cleanup-mini]` | Recover Air↔Mini Universal Control / pointer handoff |
 | `export` | Export code/docs (PDF/MD) |
@@ -492,9 +503,9 @@ When the issue is iPhone/iPad-only, use the app's simulator screenshot script or
 
 4.5 **Codex second-pass visual audit**
 
-- After saving a Mini screenshot or deterministic render, run a screenshot-analysis pass such as `mcp__nvidia_build__nvidia_vision` when available.
+- After saving a Mini screenshot or deterministic render, inspect it with Codex visual tools and, when the GUI is available to Codex, `computer-use` accessibility inspection.
 - Use it to check for clipped controls, overlap, wrong selected state, unreadable copy, and obvious contrast drift.
-- If Codex is attached to the same machine as the live GUI, `computer-use` can inspect the accessibility tree before or after capture.
+- Do not use NVIDIA vision helpers for normal SaneApps verification. They are legacy/exception-only and require an explicit user request for that specific run.
 - These are supplements. The canonical proof is still the clean Mini screenshot or deterministic render artifact.
 
 Hard rule:

@@ -82,6 +82,8 @@ class HostedVersionSnapshotHarness < ValidationReport
 end
 
 class SisterAppsHarness < ValidationReport
+  attr_reader :metrics
+
   def initialize(root:, projects:, products:)
     super()
     @root = root
@@ -103,13 +105,18 @@ class SisterAppsHarness < ValidationReport
 end
 
 class WorkflowPolicyHarness < ValidationReport
-  def initialize(root:)
+  def initialize(root:, workflow_exceptions: nil)
     super()
     @root = root
+    @workflow_exceptions = workflow_exceptions
   end
 
   def sane_apps_root
     @root
+  end
+
+  def github_workflow_exceptions
+    @workflow_exceptions || super
   end
 end
 
@@ -379,6 +386,47 @@ exit(run_tests('Validation report tests') do
       true
     end
 
+    test('allows central hosted workflow exceptions with reasons') do
+      Dir.mktmpdir('validation-report-workflow-central-exception') do |tmpdir|
+        workflow_dir = File.join(tmpdir, 'mcp/Sane-AppleDocs/.github/workflows')
+        FileUtils.mkdir_p(workflow_dir)
+        File.write(
+          File.join(workflow_dir, 'ci.yml'),
+          <<~YAML
+            name: CI
+            on:
+              push:
+                branches: [main]
+              pull_request:
+            jobs:
+              verify:
+                runs-on: macos-latest
+                steps:
+                  - run: echo hi
+          YAML
+        )
+
+        subject = WorkflowPolicyHarness.new(
+          root: tmpdir,
+          workflow_exceptions: {
+            'repositories' => {
+              'mcp/Sane-AppleDocs' => {
+                'workflows' => {
+                  'ci.yml' => { 'reason' => 'Public MCP repo needs hosted CI for contributors.' }
+                }
+              }
+            }
+          }
+        )
+        issues = []
+        subject.send(:check_github_workflow_policy, issues)
+
+        assert_eq(issues, [])
+      end
+
+      true
+    end
+
     test('flags repo-level dependabot automation and covers web repos too') do
       Dir.mktmpdir('validation-report-dependabot') do |tmpdir|
         github_dir = File.join(tmpdir, 'web/saneapps.com/.github')
@@ -434,22 +482,120 @@ exit(run_tests('Validation report tests') do
     end
   end
 
+  test_category('Q10 context size checks') do
+    test('flags bloated active context files before instructions silently degrade') do
+      Dir.mktmpdir('validation-report-context-size') do |tmpdir|
+        File.write(File.join(tmpdir, 'AGENTS.md'), ("short instruction\n" * 451))
+        File.write(File.join(tmpdir, 'SESSION_HANDOFF.md'), ("old session\n" * 801))
+        FileUtils.mkdir_p(File.join(tmpdir, '.claude'))
+        File.write(File.join(tmpdir, '.claude', 'research.md'), ("verified finding\n" * 201))
+
+        subject = ValidationReport.new
+        issues = []
+        warnings = []
+        subject.send(:check_context_file_sizes, tmpdir, 'SaneProcess', issues, warnings)
+
+        assert(warnings.any? { |warning| warning.include?('AGENTS.md') && warning.include?('nearing Codex') })
+        assert(issues.any? { |issue| issue.include?('.claude/research.md is 201 lines') })
+        assert(issues.any? { |issue| issue.include?('SESSION_HANDOFF.md is 801 lines') })
+      end
+
+      true
+    end
+
+    test('checks non-product validation projects such as SaneProcess') do
+      Dir.mktmpdir('validation-report-context-projects') do |tmpdir|
+        process_dir = File.join(tmpdir, 'infra/SaneProcess')
+        FileUtils.mkdir_p(process_dir)
+        File.write(File.join(process_dir, 'SESSION_HANDOFF.md'), ("old session\n" * 801))
+
+        subject = SisterAppsHarness.new(root: tmpdir, projects: ['infra/SaneProcess'], products: [])
+        subject.send(:q10_documentation_currency)
+
+        assert(subject.metrics[:documentation_currency][:details].any? do |detail|
+          detail.include?('[SaneProcess] SESSION_HANDOFF.md is 801 lines')
+        end)
+      end
+
+      true
+    end
+  end
+
   test_category('Q4 process metrics') do
-    test('uses recorded verify attempts as real test outcome samples') do
+    test('reports verify attempt churn separately from final grouped outcomes') do
       subject = ProcessMetricsValidationHarness.new(
         [
-          { 'type' => 'verify', 'success' => true },
-          { 'type' => 'verify', 'success' => false },
-          { 'type' => 'gate_review', 'success' => true }
+          { 'type' => 'verify', 'success' => false, 'tests_run' => 0, 'timestamp' => '2026-05-04T10:00:00Z', 'project' => 'SaneBar' },
+          { 'type' => 'verify', 'success' => true, 'tests_run' => 10, 'timestamp' => '2026-05-04T10:05:00Z', 'project' => 'SaneBar' },
+          { 'type' => 'verify', 'success' => false, 'tests_run' => 9, 'timestamp' => '2026-05-04T10:10:00Z', 'project' => 'SaneClip' },
+          { 'type' => 'gate_review', 'success' => true, 'timestamp' => '2026-05-04T10:11:00Z', 'project' => 'SaneClip' }
         ]
       )
 
       subject.send(:q4_test_outcomes)
 
-      assert_eq(subject.metrics[:test_outcomes][:total_sessions], 2)
-      assert_eq(subject.metrics[:test_outcomes][:sessions_tests_passing], 1)
-      assert_eq(subject.metrics[:test_outcomes][:pass_rate], 50.0)
-      assert_eq(subject.metrics[:test_outcomes][:process_metric_verify_attempts], 2)
+      assert_eq(subject.metrics[:test_outcomes][:process_metric_verify_attempts], 3)
+      assert_eq(subject.metrics[:test_outcomes][:process_metric_verify_passes], 1)
+      assert_eq(subject.metrics[:test_outcomes][:verify_attempt_pass_rate], 33.3)
+      assert_eq(subject.metrics[:test_outcomes][:verify_zero_test_failures], 1)
+      assert_eq(subject.metrics[:test_outcomes][:day_project_final_verify_groups], 2)
+      assert_eq(subject.metrics[:test_outcomes][:day_project_final_verify_pass_rate], 50.0)
+      true
+    end
+
+    test('summarizes session quality from session_end metrics') do
+      subject = ProcessMetricsValidationHarness.new(
+        [
+          { 'type' => 'session_end', 'success' => true, 'sop_score' => 10, 'edits' => 2, 'verify_failures' => 0, 'timestamp' => '2026-05-04T10:00:00Z' },
+          { 'type' => 'session_end', 'success' => true, 'sop_score' => 8, 'edits' => 4, 'verify_failures' => 1, 'timestamp' => '2026-05-04T11:00:00Z' },
+          { 'type' => 'session_end', 'success' => false, 'sop_score' => 6, 'edits' => 1, 'verify_failures' => 1, 'timestamp' => '2026-05-04T12:00:00Z' }
+        ]
+      )
+
+      quality = subject.send(:session_quality_metrics)
+
+      assert_eq(quality[:sample_size], 3)
+      assert_eq(quality[:clean_green], 1)
+      assert_eq(quality[:recovered_green], 1)
+      assert_eq(quality[:unrecovered_failures], 1)
+      assert_eq(quality[:clean_green_rate], 33.3)
+      assert_eq(quality[:average_sop_score], 8.0)
+      true
+    end
+  end
+
+  test_category('Finding classification') do
+    test('classifies process and release findings separately with actions') do
+      subject = ValidationReport.new
+
+      process_area = subject.send(:finding_area, 'Q4 FAIL: Only 66.1% verify attempts pass.')
+      release_area = subject.send(:finding_area, 'Q6 RELEASE: [SaneBar] Live release archive missing')
+      action = subject.send(:finding_action, 'Q6 RELEASE: [SaneBar] Latest project QA gate is current (snapshot stale)')
+
+      assert_eq(process_area, :system_health)
+      assert_eq(release_area, :release_readiness)
+      assert(action.include?('refresh_qa_snapshots'))
+      true
+    end
+
+    test('keeps app-readiness blockers separate from process-health verdicts') do
+      subject = ValidationReport.new
+      subject.instance_variable_set(:@data, { 'infra/SaneProcess' => {}, 'apps/SaneBar' => {}, 'apps/SaneClip' => {} })
+      subject.instance_variable_set(:@issues, ['Q10 DOCS: [SaneClip] CHANGELOG missing version 2.3.0'])
+      subject.instance_variable_set(:@warnings, ['Q4: Only 66.2% verify attempts pass.'])
+      subject.instance_variable_set(:@metrics, {
+        release_integrity: { issues: 0 },
+        website_distribution: { issues: 0 },
+        code_signing: { issues: 0 },
+        cross_channel_consistency: { canonical_issues: 0, hosted_file_actions: 0 }
+      })
+
+      subject.send(:calculate_final_verdict)
+      verdict = subject.instance_variable_get(:@verdict)
+
+      assert_eq(verdict[:status], 'APP READINESS BLOCKED')
+      assert_eq(verdict[:sections][:system_health][:status], 'WARN')
+      assert_eq(verdict[:sections][:app_readiness][:status], 'BLOCKED')
       true
     end
   end

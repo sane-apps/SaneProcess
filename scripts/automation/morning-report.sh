@@ -2,7 +2,8 @@
 # Daily Report Generator - SaneApps business intelligence
 # Runs at 7 PM EST daily via LaunchAgent (com.saneapps.daily-report)
 #
-# Architecture: fetch raw data -> nv analyzes for free -> concise markdown report
+# Architecture: fetch raw data -> deterministic concise markdown report
+# Optional legacy nv summary stays opt-in via SANE_ENABLE_LEGACY_NV_SUMMARY=1.
 # Goal: scannable in 30 seconds, actionable, no noise
 
 set -uo pipefail
@@ -139,7 +140,8 @@ DIST_KEY="$(load_secret "dist-analytics" "api_key" "DIST_ANALYTICS_KEY" || true)
 EMAIL_API_KEY="$(load_secret "sane-email-automation" "api_key" "SANE_EMAIL_API_KEY" "EMAIL_API_KEY" || true)"
 
 # Tools check
-NV_CMD="$HOME/.local/bin/nv"
+NV_CMD="${SANE_LEGACY_NV_CMD:-$HOME/.local/bin/nv}"
+ENABLE_LEGACY_NV_SUMMARY="${SANE_ENABLE_LEGACY_NV_SUMMARY:-0}"
 GH_CMD=$(command -v gh 2>/dev/null || echo "")
 LISTING_ACTIONS_SCRIPT="$SCRIPT_DIR/listing-actions.py"
 
@@ -948,9 +950,10 @@ section_git_status() {
 }
 
 # =============================================================================
-# Executive Summary (nv reads everything, writes TL;DR at top)
+# Executive Summary (optional legacy nv path; disabled by default)
 # =============================================================================
 section_executive_summary() {
+  if [[ "$ENABLE_LEGACY_NV_SUMMARY" != "1" ]]; then return 0; fi
   if [[ ! -x "$NV_CMD" ]]; then return 0; fi
 
   local report_so_far

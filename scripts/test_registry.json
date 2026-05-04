@@ -110,6 +110,12 @@
       "cmd": ["ruby", "scripts/mini/mini_train_process_test.rb"]
     },
     {
+      "path": "scripts/mini/training_daily_check_test.py",
+      "label": "SaneProcess Mini training daily check tests",
+      "status": "required",
+      "cmd": ["python3", "-B", "scripts/mini/training_daily_check_test.py"]
+    },
+    {
       "path": "scripts/sanemaster/dependencies_test.rb",
       "label": "SaneProcess dependency watchdog tests",
       "status": "required",

@@ -107,14 +107,111 @@ class StatusCrossrefScriptTests(unittest.TestCase):
                     """\
                     #!/usr/bin/env bash
                     printf '%s\\n' "$*" >> "$GH_LOG"
+                    has_jq=0
+                    for arg in "$@"; do
+                      [[ "$arg" == "--jq" ]] && has_jq=1
+                    done
+                    if [[ "$1" == "api" && "$2" == "notifications" ]]; then
+                      cat <<'JSON'
+                    [
+                      {
+                        "repository": {"full_name": "sane-apps/SaneBar"},
+                        "subject": {
+                          "title": "New SaneBar evidence",
+                          "type": "Issue",
+                          "url": "https://api.github.com/repos/sane-apps/SaneBar/issues/142"
+                        },
+                        "reason": "comment",
+                        "updated_at": "2026-05-04T11:00:00Z"
+                      }
+                    ]
+                    JSON
+                      exit 0
+                    fi
                     if [[ "$1" == "search" && "$2" == "issues" ]]; then
-                      printf '## sane-apps/SaneProcess\\n'
-                      printf '  #8\\tOPEN\\tStub process issue\\tenhancement\\t2026-04-24T00:45:15Z\\n'
+                      if [[ "$has_jq" -eq 1 ]]; then
+                        printf '## sane-apps/SaneProcess\\n'
+                        printf '  #8\\tOPEN\\tStub process issue\\tenhancement\\t2026-04-24T00:45:15Z\\n'
+                      else
+                        cat <<'JSON'
+                    [
+                      {
+                        "repository": {"nameWithOwner": "sane-apps/SaneProcess"},
+                        "number": 8,
+                        "title": "Stub process issue",
+                        "updatedAt": "2026-04-24T00:45:15Z",
+                        "url": "https://github.com/sane-apps/SaneProcess/issues/8"
+                      }
+                    ]
+                    JSON
+                      fi
                       exit 0
                     fi
                     if [[ "$1" == "search" && "$2" == "prs" ]]; then
-                      printf '## sane-apps/Sane-AppleDocs\\n'
-                      printf '  #13\\tOPEN\\tStub docs dependency pr\\tdependabot[bot]\\tdependencies\\t2026-04-16T01:40:27Z\\n'
+                      if [[ "$has_jq" -eq 1 ]]; then
+                        printf '## sane-apps/Sane-AppleDocs\\n'
+                        printf '  #13\\tOPEN\\tStub docs dependency pr\\tdependabot[bot]\\tdependencies\\t2026-04-16T01:40:27Z\\n'
+                      else
+                        cat <<'JSON'
+                    [
+                      {
+                        "repository": {"nameWithOwner": "sane-apps/Sane-AppleDocs"},
+                        "number": 13,
+                        "title": "Stub docs dependency pr",
+                        "updatedAt": "2026-04-16T01:40:27Z",
+                        "url": "https://github.com/sane-apps/Sane-AppleDocs/pull/13",
+                        "author": {"login": "dependabot[bot]"},
+                        "isDraft": false
+                      }
+                    ]
+                    JSON
+                      fi
+                      exit 0
+                    fi
+                    if [[ "$1" == "issue" && "$2" == "view" ]]; then
+                      cat <<'JSON'
+                    {
+                      "title": "Stub process issue",
+                      "url": "https://github.com/sane-apps/SaneProcess/issues/8",
+                      "updatedAt": "2026-04-24T00:45:15Z",
+                      "labels": [{"name": "enhancement"}],
+                      "comments": [
+                        {
+                          "author": {"login": "MrSaneApps"},
+                          "createdAt": "2026-05-04T10:00:00Z",
+                          "body": "Latest comment explains the remaining blocker."
+                        }
+                      ]
+                    }
+                    JSON
+                      exit 0
+                    fi
+                    if [[ "$1" == "pr" && "$2" == "view" ]]; then
+                      cat <<'JSON'
+                    {
+                      "title": "Stub docs dependency pr",
+                      "url": "https://github.com/sane-apps/Sane-AppleDocs/pull/13",
+                      "updatedAt": "2026-04-16T01:40:27Z",
+                      "labels": [{"name": "dependencies"}],
+                      "author": {"login": "dependabot[bot]"},
+                      "isDraft": false,
+                      "comments": [
+                        {
+                          "author": {"login": "reviewer"},
+                          "createdAt": "2026-05-04T10:30:00Z",
+                          "body": "Please rerun CI before merge."
+                        }
+                      ],
+                      "reviews": [
+                        {
+                          "author": {"login": "maintainer"},
+                          "submittedAt": "2026-05-04T10:35:00Z",
+                          "state": "COMMENTED",
+                          "body": "Looks fine after CI."
+                        }
+                      ]
+                    }
+                    JSON
                       exit 0
                     fi
                     echo "unexpected gh args: $*" >&2
@@ -137,29 +234,40 @@ class StatusCrossrefScriptTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, msg=result.stderr)
-            self.assertIn("[3/6] Listing actions", result.stdout)
+            self.assertIn("[3/8] Listing actions", result.stdout)
             self.assertIn("Current actions: 1", result.stdout)
             self.assertIn(
                 "- SaaSworthy: Complete vendor portal profile (email #531)",
                 result.stdout,
             )
-            self.assertIn("[4/6] Hosted-file dashboard actions", result.stdout)
+            self.assertIn("[4/8] Hosted-file dashboard actions", result.stdout)
             self.assertIn("Needs dashboard sync: 1", result.stdout)
             self.assertIn(
                 "- SaneBar: hosted 2.1.41 -> expected 2.1.45 (variant 1227172)",
                 result.stdout,
             )
-            self.assertIn("[5/6] Open GitHub issues", result.stdout)
+            self.assertIn("[5/8] GitHub notifications", result.stdout)
+            self.assertIn("Notifications: 1", result.stdout)
+            self.assertIn("New SaneBar evidence", result.stdout)
+            self.assertIn("[6/8] Open GitHub issues", result.stdout)
             self.assertIn("Scope: org-wide", result.stdout)
             self.assertIn("## sane-apps/SaneProcess", result.stdout)
             self.assertIn("#8\tOPEN\tStub process issue", result.stdout)
-            self.assertIn("[6/6] Open GitHub PRs", result.stdout)
+            self.assertIn("[7/8] Open GitHub PRs", result.stdout)
             self.assertIn("## sane-apps/Sane-AppleDocs", result.stdout)
             self.assertIn("#13\tOPEN\tStub docs dependency pr", result.stdout)
+            self.assertIn("[8/8] GitHub comment/review activity", result.stdout)
+            self.assertIn("Comments read: 1", result.stdout)
+            self.assertIn("Latest comment explains the remaining blocker.", result.stdout)
+            self.assertIn("Reviews read: 1", result.stdout)
+            self.assertIn("Please rerun CI before merge.", result.stdout)
             self.assertIn("Done.", result.stdout)
             gh_calls = gh_log.read_text(encoding="utf-8")
+            self.assertIn("api notifications --paginate", gh_calls)
             self.assertIn("search issues --owner sane-apps --state open", gh_calls)
             self.assertIn("search prs --owner sane-apps --state open", gh_calls)
+            self.assertIn("issue view 8 --repo sane-apps/SaneProcess --comments", gh_calls)
+            self.assertIn("pr view 13 --repo sane-apps/Sane-AppleDocs --comments", gh_calls)
             self.assertNotIn("issue list", gh_calls)
             self.assertNotIn("pr list", gh_calls)
 

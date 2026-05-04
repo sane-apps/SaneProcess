@@ -8,8 +8,7 @@ repo-root-safe rule:
 
 ## Prerequisites
 
-- `nv` CLI installed at `/Users/sj/.local/bin/nv`
-- `OPENAI_API_KEY` available in the shell environment
+- `OPENAI_API_KEY` available in the shell environment for GPT audit fallbacks
 - Git repositories with tags (for release notes)
 - SaneApps projects at `~/SaneApps/apps/`
 
@@ -50,7 +49,7 @@ python3 gpt_audit.py \
   --bundle /tmp/audit_bundle.txt \
   --prompts-dir ~/.codex/skills/audit/prompts \
   --out-dir /tmp/docs_audit_outputs \
-  --report DOCS_AUDIT_FINDINGS.md
+  --report /tmp/docs_audit_outputs/summary.md
 ```
 
 **What it does:**
@@ -126,7 +125,8 @@ python3 scripts/automation/hosted-file-actions.py --xlsx /tmp/hosted_file_action
 
 ### nv-audit.sh
 
-Legacy bulk review helper. Do not use this for `/audit` or release-clearance docs audits.
+Legacy bulk review helper. Do not use this for normal SaneApps work, `/audit`, or
+release-clearance docs audits unless the user explicitly asks for an `nv`/NVIDIA run.
 
 Multi-app codebase audit using LLM review.
 
@@ -156,7 +156,9 @@ cd ~/SaneApps/apps/SaneBar && nv-audit.sh
 
 ### nv-relnotes.sh
 
-Generate user-facing release notes from git history using LLM council.
+Legacy release-note helper using the old `nv` council path. Prefer release notes from
+the verified release workflow and current support/GitHub/research evidence unless the
+user explicitly asks for an `nv`/NVIDIA run.
 
 **Usage:**
 ```bash
@@ -178,7 +180,9 @@ nv-relnotes.sh ~/SaneApps/apps/SaneClip
 
 ### nv-buildlog.sh
 
-Analyze Xcode build errors using LLM.
+Legacy build-log helper using the old `nv` path. Prefer `SaneMaster.rb verify`,
+`sane_test.rb`, and the standard build logs unless the user explicitly asks for an
+`nv`/NVIDIA run.
 
 **Usage:**
 ```bash
@@ -191,7 +195,8 @@ nv-buildlog.sh /path/to/build.log
 
 ### nv-tests.sh
 
-Analyze test failures using LLM.
+Legacy test-log helper using the old `nv` path. Prefer `SaneMaster.rb verify` and the
+project test suite unless the user explicitly asks for an `nv`/NVIDIA run.
 
 **Usage:**
 ```bash
@@ -363,9 +368,9 @@ sane-support-kickoff.sh
 1. Runs the inbox report.
 2. Reprints `NEEDS REPLY` items for fast intake and prioritization.
 
-## Models
+## Legacy Model Notes
 
-Default models used:
+These notes apply only when maintaining or explicitly running the legacy `nv-*` helpers:
 - **nv-audit.sh**: `kimi-fast` (fast, free, decent quality)
 - **nv-relnotes.sh**: council mode (queries 3 models automatically)
 
@@ -388,7 +393,5 @@ outputs/
 ## Tips
 
 - Use `/audit` for the real GPT subagent audit path
-- Use `nv-audit.sh` only for ad hoc bulk sweeps, not release clearance
-- Run `nv-relnotes.sh` after tagging to generate changelog
-- Use `-m MODEL` only if you intentionally need a different nv model
-- Review all council responses in `nv-relnotes.sh` — pick the best one manually
+- Treat `nv-*` helpers as legacy/explicit-only, not the default SaneApps process
+- Use `-m MODEL` only when maintaining a legacy helper or running an explicitly requested `nv` job

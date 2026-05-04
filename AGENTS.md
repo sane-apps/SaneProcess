@@ -6,13 +6,19 @@ Speak in plain English. Keep it short and direct. Use `I`/`me`/`my` — never `w
 
 ## Session Start
 
-Do ALL of these BEFORE any work:
+Use a right-sized startup.
+
+Small read-only answers and single local command requests need only the nearest
+`AGENTS.md` plus the directly relevant file or command surface. Full startup is
+required for mutation, build/test, release, support, UI/runtime, payment, App Store,
+automation, policy, or multi-file investigation work.
 
 1. Read `SESSION_HANDOFF.md` if it exists — recent work, pending tasks, gotchas
 2. Check Serena memories (`read_memory`) for project-specific learnings
 3. Read the active client skill registry — Codex: `~/.codex/SKILLS_REGISTRY.md`, Claude: `~/.claude/SKILLS_REGISTRY.md`
 4. Run `ruby ~/SaneApps/infra/SaneProcess/scripts/validation_report.rb`
-5. Launch Xcode if needed: `pgrep -x Xcode >/dev/null || open -a Xcode`
+5. Launch Xcode only for explicit local IDE work. For SaneApps app inspection,
+   build, test, screenshots, and runtime verification, use the Mac Mini first.
 
 ## Session End
 
@@ -48,10 +54,10 @@ Do not wait until session end.
 |---|------|---------------|
 | 0 | NAME IT BEFORE YOU TAME IT | State which rule applies before acting |
 | 1 | STAY IN LANE, NO PAIN | No edits outside project without asking |
-| 2 | VERIFY, THEN TRY | Check APIs/tools exist before using. Write findings to `research.md` with TTL |
+| 2 | VERIFY, THEN TRY | Check uncertain APIs/tools before using. Write durable findings to the project research cache with TTL |
 | 3 | TWO STRIKES? STOP AND CHECK | Failed twice → STOP, read the error, research |
 | 4 | GREEN MEANS GO | Tests must pass before "done" |
-| 5 | HOUSE RULES, USE TOOLS | Use SaneMaster, release.sh, sane_test.rb — NOT raw commands |
+| 5 | HOUSE RULES, USE TOOLS | Use canonical wrappers for stateful build/test/release/launch/email workflows |
 | 6 | BUILD, KILL, LAUNCH, LOG | Full cycle after every code change |
 | 7 | NO TEST? NO REST | Every fix gets a test. No tautologies (`#expect(true)` is useless) |
 | 8 | BUG FOUND? WRITE IT DOWN | Update Serena memory + knowledge graph when bugs are found, reclassified, fixed, or closed |
@@ -64,22 +70,25 @@ Do not wait until session end.
 | 15 | REVIEW BEFORE YOU SHIP | Self-review for security, edge cases, correctness |
 | 16 | DON'T FRAGMENT, INTEGRATE | Upgrade existing files. Core standard is README, DEVELOPMENT, ARCHITECTURE, SESSION_HANDOFF, and AGENTS; add CLAUDE only when needed. No orphan files. New tooling/docs must be recorded in memory + handoff |
 
-**Workflow:** PLAN → VERIFY → BUILD → TEST → CONFIRM → COMMIT + PUSH
+**Workflow:** PLAN → VERIFY → BUILD → TEST → CONFIRM → PROPOSE COMMIT
 
-For major completed work, commit and push the relevant changes before ending the task unless the user explicitly says not to. Keep unrelated dirty files out of the commit.
+Do not commit or push unless the user asks, the task explicitly includes release/PR/publish, or a project workflow requires it. For completed implementation work, propose the verified diff for commit when intent is unclear. Keep unrelated dirty files out of any commit.
 
 **Circuit Breaker:** After 3 consecutive failures: STOP. Read error messages. Research the actual API.
 
-**Research gate:** Use all 4 categories: docs (apple-docs/context7), web search, GitHub, and local codebase.
+**Research gate:** Local inspection is always required before editing. Docs, web, and GitHub are conditional: use them when APIs are uncertain, external facts may have changed, third-party behavior matters, or the decision is durable/high-stakes. Do not run broad research just because the task contains discussion words.
 
 ## Tool Discovery Before Workarounds
 
-Before I say a tool is missing or switch to a workaround, I must:
+Before I say a tool is missing, choose a new canonical tool path, install/upgrade tooling, or switch to a repeated workaround, I must:
 1. Check the active client skill registry — Codex: `~/.codex/SKILLS_REGISTRY.md`, Claude: `~/.claude/SKILLS_REGISTRY.md`
 2. Run `ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb tool_discovery --query "..."` so the receipt captures registry, doctor, validation, and local-path checks
 3. Search `scripts/`, hooks, skills, and the core docs + `AGENTS.md` standard for an existing path
 4. If the capability is still missing and the workflow repeats, add it to SaneProcess, document it, and make it the standard path
 5. Prefer the canonical tool paths in `DEVELOPMENT.md` instead of ad hoc tool hunting
+
+Mentioning "workaround", "fragmentation", or "what am I missing" inside a policy
+or design audit does not trigger tool discovery by itself.
 
 If I cannot name which of those checks I ran, I have not checked enough.
 
@@ -111,7 +120,11 @@ Canonical runner-backed paths in this repo:
 
 ## SaneMaster Quick Reference
 
-**`./scripts/SaneMaster.rb`** — unified automation CLI for ALL SaneApps projects. Use this instead of raw commands.
+**`./scripts/SaneMaster.rb`** — unified automation CLI for ALL SaneApps projects. Use this for stateful build/test/release workflows.
+
+Read-only shell commands and focused diagnostics are allowed. Prefer wrappers for
+workflows that can bypass safety/tracking: app launch, release/deploy, build/test,
+customer email, and sales/support analytics. If you bypass a wrapper, state why.
 
 Run with no args for full help. Run `help <category>` for category details.
 
@@ -191,7 +204,7 @@ When the user says something matching these, run the command/skill immediately:
 | "conversions", "upgrades", "new users", "funnel", "source of sales" | `SaneMaster.rb events` |
 | "leads", "prospects", "research sites", "research companies" | `SaneMaster.rb leads --query "..."` |
 | "check email", "inbox" | `SaneMaster.rb check_inbox` |
-| "what are we missing", "missing tool", "workaround", "duplicate work", "fragmentation" | `/evolve` |
+| "missing tool", "install/upgrade tool", "better tool for this workflow" | `/evolve` |
 | "project status", "health check", "run status", "check status", "what's the status" | `SaneMaster.rb status` |
 | "verify", "does it build" | `SaneMaster.rb verify` |
 | "ship it", "prepare for release" | `SaneMaster.rb release_preflight` first, then `release.sh` |
@@ -300,61 +313,12 @@ Script handles: kill → clean → TCC reset → build → deploy → launch →
 
 **NO KEYCHAIN PROMPT FLOODS. Sequential is fine. Parallel is not.**
 
-```bash
-# CORRECT
-TOKEN=$(security find-generic-password -s cloudflare -a api_token -w)
-curl -H "Authorization: Bearer $TOKEN" ...
-
-# WRONG — loops, retries, and parallel calls = popup flood
-for key in a b c; do security find-generic-password ...; done
-security find-generic-password ... && security find-generic-password ...
-curl ... $(security find-generic-password ...) &
-```
-
-Permanent SOP:
-- Sequential Keychain lookups are fine when they are actually needed. Reuse fetched values when you can.
-- Keep frequently used API keys cached in `~/.config/nv/env` (`chmod 600`) and source that file in shells/tools. Keychain is fallback, not the primary hot path.
-- No repeated probing of the same secret "just to check."
-- No `security` calls in loops, background jobs, sweeps, or parallel tool runs.
-- Codex shells are guarded by `~/.local/bin/security -> sane_security_guard.sh`, which blocks overlapping lookups, rapid repeats of the same lookup, and short-burst prompt floods.
-
-| Service | Account | Usage |
-|---------|---------|-------|
-| `nvidia` | `api_key` | NVIDIA Build API (nv CLI) |
-| `openrouter` | `api_key` | OpenRouter API (nv CLI, paid) |
-| `grok` | `api_key` | xAI Grok API |
-| `gemini` | `api_key` | Google Gemini API |
-| `openai` | `api_key` | OpenAI ChatGPT API |
-| `x-api` | `consumer_key` | X posting consumer key (`X_API_CONSUMER_KEY`) |
-| `x-api` | `consumer_secret` | X posting consumer secret (`X_API_CONSUMER_SECRET`) |
-| `x-api` | `access_token` | X posting access token (`X_API_ACCESS_TOKEN`) |
-| `x-api` | `access_token_secret` | X posting access token secret (`X_API_ACCESS_TOKEN_SECRET`) |
-| `cloudflare` | `api_token` | Cloudflare API |
-| `lemonsqueezy` | `api_key` | Lemon Squeezy API |
-| `resend` | `api_key` | Resend email API |
-| `dist-analytics` | `api_key` | sane-dist Worker analytics API |
-| `notarytool` | (keychain profile) | Apple notarization + TestFlight |
-
-Mac Mini keys: `~/.config/nv/env` (keychain doesn't work over SSH).
-
----
-
-## Apple Developer Credentials
-
-| Key | ID | Access |
-|-----|----|--------|
-| **SaneApps (primary)** | `S34998ZCRT` | Admin — notarization, TestFlight, altool |
-| SaneBar Notarization (legacy) | `7LMFF3A258` | Developer |
-
-- **Issuer ID**: `c98b1e0a-8d10-4fce-a417-536b31c09bfb`
-- **Team ID**: `M78L6FXD48`
-- **`.p8` file**: `~/.private_keys/AuthKey_S34998ZCRT.p8`
-- **Keychain Profile**: `notarytool`
-
-```bash
-xcrun notarytool submit /path/to/app.dmg --keychain-profile "notarytool" --wait
-xcrun stapler staple /path/to/app.dmg
-```
+- Fetch each secret once, reuse it, and never call `security` in loops, retries, background jobs, sweeps, or parallel tool calls.
+- Keep hot-path keys in `~/.config/nv/env` (`chmod 600`); use Keychain as fallback.
+- Codex shells are guarded by `~/.local/bin/security -> sane_security_guard.sh`.
+- Mac Mini keys live in `~/.config/nv/env` because Keychain prompts do not work over SSH.
+- Apple release identity: primary key `S34998ZCRT`, Team `M78L6FXD48`, Issuer `c98b1e0a-8d10-4fce-a417-536b31c09bfb`, profile `notarytool`.
+- Full secret/account map and notarization commands live in `DEVELOPMENT.md`.
 
 ---
 

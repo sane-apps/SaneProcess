@@ -492,7 +492,7 @@ def initialize_startup_gate
     skills_registry: false,
     validation_report: false,
     orphan_cleanup: true,  # Already ran in session_start
-    system_clean: false
+    system_clean: ENV['SANE_REQUIRE_SYSTEM_CLEAN'] != '1'
   }
   timestamps = { orphan_cleanup: Time.now.iso8601 }
 
@@ -549,11 +549,11 @@ def initialize_startup_gate
       when :session_docs    then warn '   [ ] Read session docs (SESSION_HANDOFF.md, DEVELOPMENT.md)'
       when :skills_registry then warn "   [ ] Read #{SKILLS_REGISTRY_LABEL}"
       when :validation_report then warn '   [ ] Run: ruby scripts/validation_report.rb'
-      when :system_clean    then warn '   [ ] Run: ./scripts/SaneMaster.rb clean_system'
+      when :system_clean    then warn '   [ ] Run: ./scripts/SaneMaster.rb clean_system (only when explicitly required)'
       end
     end
     warn ''
-    warn '   Task, Edit, Write, Bash blocked until complete.'
+    warn '   Substantive mutation is blocked until complete. Small read-only answers do not need the full gate.'
     warn ''
   else
     warn '🚦 STARTUP GATE: All steps auto-completed — gate open'
@@ -657,11 +657,15 @@ begin
   log_debug "show_mcp_verification_status done"
   log_debug "session learnings briefing loaded (replaces legacy memory briefing)"
 
-  # Launch Xcode if project has .xcodeproj and Xcode isn't running
-  launch_xcode_if_needed
-  log_debug "launch_xcode_if_needed done"
-  prime_xcode_automation_permission
-  log_debug "prime_xcode_automation_permission done"
+  if ENV['SANE_STARTUP_LAUNCH_XCODE'] == '1'
+    # Launch Xcode only for explicit local IDE work. SaneApps app work is Mini-first.
+    launch_xcode_if_needed
+    log_debug "launch_xcode_if_needed done"
+    prime_xcode_automation_permission
+    log_debug "prime_xcode_automation_permission done"
+  else
+    log_debug "launch_xcode_if_needed skipped (SANE_STARTUP_LAUNCH_XCODE != 1)"
+  end
 
   # Check sales infrastructure health (link monitor state)
   check_sales_infrastructure

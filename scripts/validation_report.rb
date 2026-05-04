@@ -36,6 +36,13 @@ class ValidationReport
   WORKFLOW_POLICY_EXCEPTION_MARKER = 'SANEAPPS_GITHUB_HOSTED_EXCEPTION:'
   MANUAL_WORKFLOW_TRIGGERS = %w[workflow_dispatch workflow_call].freeze
   GITHUB_POLICY_SEGMENTS = %w[apps infra mcp web].freeze
+  AGENTS_WARNING_BYTES = 28 * 1024
+  AGENTS_HARD_BYTES = 32 * 1024
+  AGENTS_WARNING_LINES = 450
+  RESEARCH_CACHE_MAX_LINES = 200
+  HANDOFF_MAX_LINES = 800
+  WORKFLOW_EXCEPTIONS_CONFIG_PATH = File.join(File.dirname(__FILE__), '..', 'config', 'github_workflow_exceptions.yml')
+  RED_NOISE_BUDGET_DAYS = 7
 
   PROJECTS = %w[
     apps/SaneBar
@@ -64,6 +71,7 @@ class ValidationReport
     @warnings = []
     @metrics = {}
     @verdict = nil
+    @workflow_policy_exception_count = 0
   end
 
   def run(format: :text)
@@ -112,6 +120,7 @@ class ValidationReport
     q9_support_infrastructure # Email, API keys, keychain
     q10_documentation_currency # Version consistency, changelog, README
     q11_cross_channel_version_consistency # Appcast vs website vs webhook vs Homebrew
+    q12_red_noise_budget
     calculate_final_verdict
   end
 
@@ -132,6 +141,88 @@ class ValidationReport
     return @process_metric_events unless type
 
     @process_metric_events.select { |event| event['type'] == type.to_s }
+  end
+
+  def finding_area(finding)
+    text = finding.to_s
+    case text
+    when /^Q[0-5]\b/, /^Q[0-5]\s/, /^Q[0-5]:/, /^Q[0-5] FAIL:/, /^Q0 CONFIG:/
+      :system_health
+    when /^Q6 RELEASE:/, /^Q7 WEBSITE:/, /^Q8 SIGNING:/, /^Q11 DRIFT:/, /^Q11 HOSTED FILE ACTION:/
+      :release_readiness
+    when /^Q10 DOCS:/
+      :app_readiness
+    when /^Q9 SUPPORT:/
+      :system_health
+    else
+      :advisory
+    end
+  end
+
+  def finding_action(finding)
+    text = finding.to_s
+    case text
+    when /automatic GitHub triggers/
+      'Add an inline SANEAPPS_GITHUB_HOSTED_EXCEPTION marker or a central config/github_workflow_exceptions.yml entry with a concrete reason.'
+    when /verify attempts pass/
+      'Use the process metrics dashboard to identify the noisiest project/failure class, then remove the repeated red/green failure source.'
+    when /final verify groups finish green/
+      'Inspect the latest failed verify event for each project/day and rerun the standard Mini verify after fixing the blocker.'
+    when /Scores don't reflect verify churn/
+      'Keep score caps tied to recovered/unrecovered verification failures; do not raise SOP scores manually without final green evidence.'
+    when /failed verify attempts recorded zero tests/
+      'Classify build-start/environment failures separately from test-suite failures and fix the top repeat setup blocker.'
+    when /AGENTS\.md/
+      'Move durable detail into DEVELOPMENT.md or ARCHITECTURE.md and keep AGENTS.md to active operating rules.'
+    when /\.claude\/research\.md/
+      'Promote stale verified research into ARCHITECTURE.md, DEVELOPMENT.md, Serena, memory, or issues, then compact the active cache.'
+    when /SESSION_HANDOFF\.md/
+      'Compact old session history into durable docs or memory; keep only active state, recent sessions, and next actions.'
+    when /Latest project QA gate/
+      'Run `ruby scripts/SaneMaster.rb refresh_qa_snapshots --dry-run`, review the commands, then rerun with `--run` for the target apps.'
+    when /CHANGELOG/
+      'Update the app CHANGELOG entry for the latest shipped version or mark the version as unreleased in product config.'
+    when /Website has download link/
+      'Update the website download href or product release config so validation can find the canonical download path.'
+    when /Live release archive|Live ZIP|Live appcast|Sparkle|release URL/
+      'Run release_preflight for the app and repair the missing live distribution artifact before considering that app release-ready.'
+    when /Lemon Squeezy hosted file/
+      'Use the hosted-file dashboard action export and update the Lemon Squeezy hosted file to the canonical release artifact.'
+    else
+      'Open the matching Q-section in validation_report.rb, fix the named source of truth, and rerun `ruby scripts/validation_report.rb` on the Mini.'
+    end
+  end
+
+  def finding_records
+    issue_records = @issues.map do |finding|
+      {
+        severity: 'critical',
+        area: finding_area(finding).to_s,
+        text: finding,
+        action: finding_action(finding)
+      }
+    end
+    warning_records = @warnings.map do |finding|
+      {
+        severity: 'warning',
+        area: finding_area(finding).to_s,
+        text: finding,
+        action: finding_action(finding)
+      }
+    end
+    issue_records + warning_records
+  end
+
+  def finding_summary_metrics
+    records = finding_records
+    areas = %i[system_health release_readiness app_readiness advisory]
+    areas.each_with_object({}) do |area, summary|
+      area_records = records.select { |record| record[:area] == area.to_s }
+      summary[area] = {
+        critical: area_records.count { |record| record[:severity] == 'critical' },
+        warnings: area_records.count { |record| record[:severity] == 'warning' }
+      }
+    end
   end
 
   # Q0: Is config CONSISTENT across all projects?
@@ -282,6 +373,7 @@ class ValidationReport
 
     @metrics[:config_consistency] = {
       issues: issues_found.size,
+      workflow_policy_exceptions: @workflow_policy_exception_count,
       details: issues_found
     }
 
@@ -534,7 +626,8 @@ class ValidationReport
       if Dir.exist?(workflow_dir)
         Dir.glob(File.join(workflow_dir, '*.{yml,yaml}')).sort.each do |workflow_file|
           content = File.read(workflow_file)
-          next if content.include?(WORKFLOW_POLICY_EXCEPTION_MARKER)
+          basename = File.basename(workflow_file)
+          next if workflow_policy_exception?(repo_label, basename, :workflow, content)
 
           begin
             config = YAML.safe_load(content, permitted_classes: [], aliases: true) || {}
@@ -547,16 +640,54 @@ class ValidationReport
           non_manual = triggers - MANUAL_WORKFLOW_TRIGGERS
           next if non_manual.empty?
 
-          issues_found << "[#{repo_label}] #{File.basename(workflow_file)} uses automatic GitHub triggers (#{non_manual.join(', ')}); default must stay manual workflow_dispatch unless the file documents #{WORKFLOW_POLICY_EXCEPTION_MARKER} <reason>"
+          issues_found << "[#{repo_label}] #{basename} uses automatic GitHub triggers (#{non_manual.join(', ')}); default must stay manual workflow_dispatch unless the file documents #{WORKFLOW_POLICY_EXCEPTION_MARKER} <reason>"
         end
       end
 
       next unless File.exist?(dependabot_file)
 
       dependabot_content = File.read(dependabot_file)
-      next if dependabot_content.include?(WORKFLOW_POLICY_EXCEPTION_MARKER)
+      next if workflow_policy_exception?(repo_label, 'dependabot.yml', :dependabot, dependabot_content)
 
       issues_found << "[#{repo_label}] dependabot.yml enables automatic GitHub dependency PR automation; default must stay local-first unless the file documents #{WORKFLOW_POLICY_EXCEPTION_MARKER} <reason>"
+    end
+  end
+
+  def workflow_policy_exception?(repo_label, file_name, type, content)
+    if content.include?(WORKFLOW_POLICY_EXCEPTION_MARKER)
+      @workflow_policy_exception_count += 1
+      return true
+    end
+
+    reason = workflow_policy_exception_reason(repo_label, file_name, type)
+    return false if reason.to_s.strip.empty?
+
+    @workflow_policy_exception_count += 1
+    true
+  end
+
+  def workflow_policy_exception_reason(repo_label, file_name, type)
+    repo_config = github_workflow_exceptions.dig('repositories', repo_label)
+    return nil unless repo_config.is_a?(Hash)
+
+    if type == :dependabot
+      entry = repo_config['dependabot']
+    else
+      entry = repo_config.dig('workflows', file_name)
+    end
+
+    entry.is_a?(Hash) ? entry['reason'] : entry
+  end
+
+  def github_workflow_exceptions
+    @github_workflow_exceptions ||= begin
+      if File.exist?(WORKFLOW_EXCEPTIONS_CONFIG_PATH)
+        YAML.safe_load(File.read(WORKFLOW_EXCEPTIONS_CONFIG_PATH), permitted_classes: [], aliases: true) || {}
+      else
+        {}
+      end
+    rescue Psych::SyntaxError
+      {}
     end
   end
 
@@ -719,8 +850,6 @@ class ValidationReport
   # Q4: Do sessions end with tests PASSING?
   # High scores but failing tests = scores are meaningless
   def q4_test_outcomes
-    total_sessions = 0
-    passing_sessions = 0
     state_sessions = 0
     state_passing_sessions = 0
 
@@ -730,36 +859,121 @@ class ValidationReport
       state_passing_sessions += v['sessions_with_tests_passing'].to_i
     end
 
-    verify_events = process_metric_events(type: 'verify')
-    metric_sessions = verify_events.length
-    metric_passing_sessions = verify_events.count { |event| event['success'] == true }
-    total_sessions = state_sessions + metric_sessions
-    passing_sessions = state_passing_sessions + metric_passing_sessions
-
-    pass_rate = total_sessions > 0 ? ((passing_sessions.to_f / total_sessions) * 100).round(1) : nil
+    verify_metrics = verify_outcome_metrics
+    session_quality = session_quality_metrics
+    pass_rate = verify_metrics[:attempt_pass_rate]
+    final_pass_rate = verify_metrics[:final_pass_rate]
 
     @metrics[:test_outcomes] = {
-      total_sessions: total_sessions,
-      sessions_tests_passing: passing_sessions,
+      total_sessions: state_sessions + verify_metrics[:attempt_total],
+      sessions_tests_passing: state_passing_sessions + verify_metrics[:attempt_passes],
       pass_rate: pass_rate,
       state_sessions: state_sessions,
-      process_metric_verify_attempts: metric_sessions,
-      process_metric_verify_passes: metric_passing_sessions
+      state_passing_sessions: state_passing_sessions,
+      process_metric_verify_attempts: verify_metrics[:attempt_total],
+      process_metric_verify_passes: verify_metrics[:attempt_passes],
+      verify_attempt_pass_rate: verify_metrics[:attempt_pass_rate],
+      verify_zero_test_failures: verify_metrics[:zero_test_failures],
+      day_project_final_verify_groups: verify_metrics[:final_total],
+      day_project_final_verify_passes: verify_metrics[:final_passes],
+      day_project_final_verify_pass_rate: verify_metrics[:final_pass_rate],
+      session_quality: session_quality
     }
 
-    if total_sessions >= MIN_SAMPLES_FOR_SIGNIFICANCE
+    if verify_metrics[:attempt_total] >= MIN_SAMPLES_FOR_SIGNIFICANCE
       if pass_rate && pass_rate < 80
-        @issues << "Q4 FAIL: Only #{pass_rate}% sessions end with passing tests. Ship quality is low."
+        @warnings << "Q4: Only #{pass_rate}% verify attempts pass. Process has too much red/green churn."
+      end
+
+      if verify_metrics[:zero_test_failures].positive?
+        @warnings << "Q4: #{verify_metrics[:zero_test_failures]} failed verify attempts recorded zero tests; prioritize build-start/environment failure prevention."
+      end
+
+      if verify_metrics[:final_total] >= 10 && final_pass_rate && final_pass_rate < 90
+        @warnings << "Q4: Only #{final_pass_rate}% day/project final verify groups finish green."
       end
 
       # Cross-check: High scores but low pass rate = scores are BS
       avg_score = @metrics.dig(:score_integrity, :average)
       if avg_score && avg_score >= 8 && pass_rate && pass_rate < 70
-        @issues << "Q4 FAIL: Average score #{avg_score} but pass rate #{pass_rate}%. Scores don't reflect reality."
+        @warnings << "Q4: Average SOP score #{avg_score} but verify-attempt pass rate #{pass_rate}%. Scores don't reflect verify churn."
       end
     else
-      @warnings << "Q4: Only #{total_sessions} sessions tracked. Need #{MIN_SAMPLES_FOR_SIGNIFICANCE}+."
+      @warnings << "Q4: Only #{verify_metrics[:attempt_total]} verify attempts tracked. Need #{MIN_SAMPLES_FOR_SIGNIFICANCE}+."
     end
+
+    if session_quality[:sample_size].positive?
+      if session_quality[:clean_green_rate] && session_quality[:clean_green_rate] < 70
+        @warnings << "Q4: Only #{session_quality[:clean_green_rate]}% session_end metrics were clean green. Recovered sessions are allowed but should not look like flawless SOP."
+      end
+
+      if session_quality[:unrecovered_failures].positive?
+        @issues << "Q4 FAIL: #{session_quality[:unrecovered_failures]} session_end metrics finished without successful verification."
+      end
+    end
+  end
+
+  def verify_outcome_metrics
+    verify_events = process_metric_events(type: 'verify').sort_by { |event| event['timestamp'].to_s }
+    attempt_total = verify_events.length
+    attempt_passes = verify_events.count { |event| event['success'] == true }
+    attempt_pass_rate = attempt_total.positive? ? ((attempt_passes.to_f / attempt_total) * 100).round(1) : nil
+    zero_test_failures = verify_events.count do |event|
+      event['success'] != true && event['tests_run'].to_i.zero?
+    end
+
+    grouped = {}
+    verify_events.each do |event|
+      day = event['timestamp'].to_s[0, 10]
+      key = [day, event['project'].to_s]
+      grouped[key] ||= []
+      grouped[key] << event
+    end
+
+    final_events = grouped.values.map { |events| events.max_by { |event| event['timestamp'].to_s } }
+    final_total = final_events.length
+    final_passes = final_events.count { |event| event['success'] == true }
+    final_pass_rate = final_total.positive? ? ((final_passes.to_f / final_total) * 100).round(1) : nil
+
+    {
+      attempt_total: attempt_total,
+      attempt_passes: attempt_passes,
+      attempt_pass_rate: attempt_pass_rate,
+      zero_test_failures: zero_test_failures,
+      final_total: final_total,
+      final_passes: final_passes,
+      final_pass_rate: final_pass_rate
+    }
+  end
+
+  def session_quality_metrics
+    session_events = process_metric_events(type: 'session_end').sort_by { |event| event['timestamp'].to_s }
+    total = session_events.length
+    clean_green = session_events.count do |event|
+      event['success'] == true && event['verify_failures'].to_i.zero?
+    end
+    recovered_green = session_events.count do |event|
+      event['success'] == true && event['verify_failures'].to_i.positive?
+    end
+    unrecovered = session_events.count do |event|
+      event['success'] != true && event['edits'].to_i.positive?
+    end
+    with_edits = session_events.count { |event| event['edits'].to_i.positive? }
+    avg_score = if total.positive?
+      scores = session_events.map { |event| event['sop_score'].to_f }.reject(&:zero?)
+      scores.empty? ? nil : (scores.sum / scores.length).round(2)
+    end
+
+    {
+      sample_size: total,
+      sessions_with_edits: with_edits,
+      clean_green: clean_green,
+      recovered_green: recovered_green,
+      unrecovered_failures: unrecovered,
+      clean_green_rate: total.positive? ? ((clean_green.to_f / total) * 100).round(1) : nil,
+      recovered_green_rate: total.positive? ? ((recovered_green.to_f / total) * 100).round(1) : nil,
+      average_sop_score: avg_score
+    }
   end
 
   # Q5: Is the TREND improving?
@@ -805,6 +1019,42 @@ class ValidationReport
     Dir.glob(File.join(REPORT_DIR, '*.json')).sort.map do |f|
       JSON.parse(File.read(f)) rescue nil
     end.compact
+  end
+
+  def q12_red_noise_budget
+    snapshots = load_historical_snapshots
+    current = (@issues + @warnings).uniq
+    first_seen = {}
+
+    snapshots.each do |snapshot|
+      date = snapshot['generated_at'].to_s[0, 10]
+      next if date.empty?
+
+      Array(snapshot['issues']).each { |finding| first_seen[finding] ||= date }
+      Array(snapshot['warnings']).each { |finding| first_seen[finding] ||= date }
+    end
+
+    stale = current.map do |finding|
+      seen_on = first_seen[finding]
+      next unless seen_on
+
+      age_days = (Date.today - Date.parse(seen_on)).to_i
+      next if age_days < RED_NOISE_BUDGET_DAYS
+
+      { finding: finding, first_seen: seen_on, age_days: age_days, action: finding_action(finding) }
+    rescue ArgumentError
+      nil
+    end.compact
+
+    @metrics[:red_noise_budget] = {
+      budget_days: RED_NOISE_BUDGET_DAYS,
+      stale_count: stale.length,
+      details: stale.first(20)
+    }
+
+    return if stale.empty?
+
+    @warnings << "Q12 RED NOISE: #{stale.length} findings have stayed red for #{RED_NOISE_BUDGET_DAYS}+ days; fix, explicitly accept, or downgrade them."
   end
 
   # ==========================================================================
@@ -1107,6 +1357,8 @@ class ValidationReport
 
       project_path = product[:project_path]
       app_name = product[:name]
+      checked_context_paths ||= []
+      checked_context_paths << File.expand_path(project_path)
 
       # Find most recent .app in DerivedData or build folder
       app_bundle = find_recent_app_bundle(project_path, app_name)
@@ -1298,6 +1550,7 @@ class ValidationReport
           warnings_found << "[#{app_name}] SESSION_HANDOFF.md is #{age_days.round} days old"
         end
       end
+      check_context_file_sizes(project_path, app_name, issues_found, warnings_found)
 
       # Q10.6: 5-Doc Standard (CHANGELOG + SESSION_HANDOFF checked above)
       unless File.exist?(readme)
@@ -1333,6 +1586,16 @@ class ValidationReport
       end
     end
 
+    checked_context_paths ||= []
+    validation_projects.each do |relative_project|
+      project_path = File.join(sane_apps_root, relative_project)
+      expanded_path = File.expand_path(project_path)
+      next unless Dir.exist?(expanded_path)
+      next if checked_context_paths.include?(expanded_path)
+
+      check_context_file_sizes(expanded_path, File.basename(expanded_path), issues_found, warnings_found)
+    end
+
     @metrics[:documentation_currency] = {
       issues: issues_found.size,
       warnings: warnings_found.size,
@@ -1341,6 +1604,39 @@ class ValidationReport
 
     issues_found.each { |i| @issues << "Q10 DOCS: #{i}" }
     warnings_found.each { |w| @warnings << "Q10 DOCS: #{w}" }
+  end
+
+  def check_context_file_sizes(project_path, app_name, issues_found, warnings_found)
+    agents_path = File.join(project_path, 'AGENTS.md')
+    if File.exist?(agents_path)
+      bytes = File.size(agents_path)
+      lines = line_count(agents_path)
+      if bytes >= AGENTS_HARD_BYTES
+        issues_found << "[#{app_name}] AGENTS.md is #{bytes} bytes (Codex default instruction cap: #{AGENTS_HARD_BYTES}); split or shrink active guidance"
+      elsif bytes >= AGENTS_WARNING_BYTES || lines > AGENTS_WARNING_LINES
+        warnings_found << "[#{app_name}] AGENTS.md is #{bytes} bytes / #{lines} lines; nearing Codex instruction-context limits"
+      end
+    end
+
+    research_path = File.join(project_path, '.claude', 'research.md')
+    if File.exist?(research_path)
+      lines = line_count(research_path)
+      if lines > RESEARCH_CACHE_MAX_LINES
+        issues_found << "[#{app_name}] .claude/research.md is #{lines} lines (active cache cap: #{RESEARCH_CACHE_MAX_LINES}); promote stale verified findings before appending more research"
+      end
+    end
+
+    handoff_path = File.join(project_path, 'SESSION_HANDOFF.md')
+    if File.exist?(handoff_path)
+      lines = line_count(handoff_path)
+      if lines > HANDOFF_MAX_LINES
+        issues_found << "[#{app_name}] SESSION_HANDOFF.md is #{lines} lines (active handoff cap: #{HANDOFF_MAX_LINES}); compact older sessions into durable docs or memory"
+      end
+    end
+  end
+
+  def line_count(path)
+    File.foreach(path).count
   end
 
   # Q11: CROSS-CHANNEL VERSION CONSISTENCY
@@ -1737,6 +2033,7 @@ class ValidationReport
   def calculate_final_verdict
     critical_fails = @issues.count { |i| i.include?('FAIL') }
     data_gaps = @warnings.size
+    finding_summary = finding_summary_metrics
 
     # Sufficient data?
     has_data = @data.size >= 3
@@ -1759,16 +2056,24 @@ class ValidationReport
       customer_facing_critical: customer_facing_critical,
       hosted_file_actions: hosted_file_actions,
       data_gaps: data_gaps,
-      projects_with_data: @data.size
+      projects_with_data: @data.size,
+      finding_summary: finding_summary
     }
 
-    @verdict = if customer_facing_critical > 0
+    system_critical = finding_summary[:system_health][:critical].to_i
+    app_critical = finding_summary[:app_readiness][:critical].to_i
+
+    overall = if customer_facing_critical > 0
       # ANY customer-facing issue is a showstopper
       { status: 'BROKEN RELEASE PIPELINE', detail: "#{customer_facing_critical} customer-facing issues - CUSTOMERS AFFECTED", color: :red }
     elsif hosted_file_actions > 0
       { status: 'NEEDS DASHBOARD SYNC', detail: "#{hosted_file_actions} Lemon Squeezy hosted file updates pending", color: :yellow }
     elsif !has_data
       { status: 'INSUFFICIENT DATA', detail: 'Need data from 3+ projects', color: :yellow }
+    elsif system_critical.positive?
+      { status: 'PROCESS HEALTH BLOCKED', detail: "#{system_critical} system-health issues to fix", color: :red }
+    elsif app_critical.positive?
+      { status: 'APP READINESS BLOCKED', detail: "#{app_critical} app-readiness issues to fix", color: :yellow }
     elsif critical_fails >= 3
       { status: 'NOT WORKING', detail: "#{critical_fails} critical failures", color: :red }
     elsif critical_fails >= 1
@@ -1777,6 +2082,29 @@ class ValidationReport
       { status: 'PROMISING BUT UNPROVEN', detail: "Not enough data to confirm", color: :yellow }
     else
       { status: 'WORKING', detail: "Objective metrics support effectiveness", color: :green }
+    end
+
+    @verdict = overall.merge(
+      sections: {
+        system_health: section_verdict(:system_health, finding_summary[:system_health]),
+        release_readiness: section_verdict(:release_readiness, finding_summary[:release_readiness]),
+        app_readiness: section_verdict(:app_readiness, finding_summary[:app_readiness]),
+        advisory: section_verdict(:advisory, finding_summary[:advisory])
+      }
+    )
+  end
+
+  def section_verdict(area, summary)
+    critical = summary[:critical].to_i
+    warnings = summary[:warnings].to_i
+    label = area.to_s.split('_').map(&:capitalize).join(' ')
+
+    if critical.positive?
+      { status: 'BLOCKED', detail: "#{critical} critical, #{warnings} warning", label: label }
+    elsif warnings.positive?
+      { status: 'WARN', detail: "#{warnings} warning", label: label }
+    else
+      { status: 'PASS', detail: 'No open findings', label: label }
     end
   end
 
@@ -1804,17 +2132,36 @@ class ValidationReport
     puts "  #{@verdict[:detail]}"
     puts
 
+    if @verdict[:sections]
+      puts "SECTION VERDICTS:"
+      @verdict[:sections].each_value do |section|
+        icon = case section[:status]
+               when 'PASS' then '✅'
+               when 'WARN' then '⚠️ '
+               else '❌'
+               end
+        puts "   #{icon} #{section[:label]}: #{section[:status]} (#{section[:detail]})"
+      end
+      puts
+    end
+
     # CRITICAL ISSUES
     if @issues.any?
       puts "❌ CRITICAL ISSUES (#{@issues.size}):"
-      @issues.each { |i| puts "   #{i}" }
+      @issues.each do |i|
+        puts "   #{i}"
+        puts "      Action: #{finding_action(i)}"
+      end
       puts
     end
 
     # WARNINGS
     if @warnings.any?
       puts "⚠️  DATA GAPS (#{@warnings.size}):"
-      @warnings.each { |w| puts "   #{w}" }
+      @warnings.each do |w|
+        puts "   #{w}"
+        puts "      Action: #{finding_action(w)}"
+      end
       puts
     end
 
@@ -1862,6 +2209,11 @@ class ValidationReport
     m = @metrics[:test_outcomes]
     if m[:total_sessions] > 0
       puts "   Pass rate: #{m[:pass_rate]}% (#{m[:sessions_tests_passing]}/#{m[:total_sessions]})"
+      if m[:session_quality] && m[:session_quality][:sample_size].positive?
+        q = m[:session_quality]
+        puts "   Session quality: #{q[:clean_green]} clean green, #{q[:recovered_green]} recovered, #{q[:unrecovered_failures]} unrecovered"
+        puts "   Clean green rate: #{q[:clean_green_rate]}%, Avg SOP score: #{q[:average_sop_score] || 'N/A'}"
+      end
     else
       puts "   NO DATA - sessions_total not tracked yet"
     end
@@ -1953,6 +2305,19 @@ class ValidationReport
       (m[:canonical_details] || []).each { |d| puts "      - #{d}" }
       (m[:hosted_file_details] || []).each { |d| puts "      - #{d}" }
       @warnings.grep(/^Q11 DRIFT:/).each { |d| puts "      - #{d.sub(/^Q11 DRIFT: /, '')}" }
+    end
+
+    puts
+    puts "Q12: RED-NOISE BUDGET"
+    m = @metrics[:red_noise_budget] || {}
+    if m[:stale_count].to_i.zero?
+      puts "   ✅ No findings older than #{RED_NOISE_BUDGET_DAYS} days in the active report"
+    else
+      puts "   ⚠️  #{m[:stale_count]} findings are older than #{RED_NOISE_BUDGET_DAYS} days"
+      Array(m[:details]).first(8).each do |detail|
+        puts "      - #{detail[:age_days]}d: #{detail[:finding]}"
+        puts "        Action: #{detail[:action]}"
+      end
     end
 
     puts "─" * 70
@@ -2411,6 +2776,7 @@ class ValidationReport
       verdict: @verdict,
       issues: @issues,
       warnings: @warnings,
+      findings: finding_records,
       metrics: @metrics
     })
   end
@@ -2424,6 +2790,7 @@ class ValidationReport
         verdict: @verdict,
         issues: @issues,
         warnings: @warnings,
+        findings: finding_records,
         metrics: @metrics
       })
     )

@@ -1303,7 +1303,12 @@ def test_sanestop
     # First ensure there are edits in state so stats show
     require_relative '../core/state_manager'
     StateManager.update(:edits) { |e| e[:count] = 1; e[:unique_files] = ['test.rb']; e }
-    StateManager.update(:verification) { |v| v[:tests_run] = true; v }
+    StateManager.update(:verification) do |v|
+      v[:tests_run] = true
+      v[:tests_passed] = true
+      v[:verification_succeeded] = true
+      v
+    end
     StateManager.reset(:handoff_tracking)
     result = t.run_hook({ 'stop_hook_active' => false })
     # Clean up

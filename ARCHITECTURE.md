@@ -709,7 +709,7 @@ Automated daily business report covering revenue, downloads, traffic, GitHub, cu
 **Script:** `scripts/automation/morning-report.sh`
 
 **Report sections (in order):**
-1. **Executive Summary** — 2-line AI-generated overview (via `nv`, 60s timeout)
+1. **Executive Summary** — optional legacy AI overview only when the explicit `nv` helper remains enabled; tracked for migration to a deterministic or Codex-compatible summary path
 2. **Revenue** — LemonSqueezy sales (today/yesterday/week/all-time) + GitHub Sponsors
 3. **Downloads** — From `dl-report.py` calling the sane-dist `/api/stats` endpoint (7-day window, by-app and by-version breakdowns)
 4. **Website Traffic** — Cloudflare analytics per domain (7-day views/uniques)
@@ -719,13 +719,13 @@ Automated daily business report covering revenue, downloads, traffic, GitHub, cu
 8. **Git Status** — Last commit date and clean/dirty status per app repo
 
 **Environment & API keys:**
-- All keys loaded from `~/.config/nv/env` (keychain is inaccessible in headless LaunchAgent context)
-- Required keys: `GITHUB_TOKEN`, `LEMONSQUEEZY_API_KEY`, `CLOUDFLARE_API_TOKEN`, `RESEND_API_KEY`, `DIST_ANALYTICS_KEY`, `NV_API_KEY`
+- Runtime keys are loaded from `~/.config/nv/env` because keychain is inaccessible in headless LaunchAgent context. The filename is historical; it is the shared env cache, not approval to use `nv` for normal SaneApps work.
+- Required keys: `GITHUB_TOKEN`, `LEMONSQUEEZY_API_KEY`, `CLOUDFLARE_API_TOKEN`, `RESEND_API_KEY`, `DIST_ANALYTICS_KEY`
 - File permissions: 600
 
 **Reliability features:**
 - `safe_curl` wrapper enforces timeouts on all HTTP calls (10s connect, 30s max)
-- `timeout 60` on `nv` CLI calls (AI summary generation)
+- Any legacy `nv` CLI summary call must stay timeout-bound and non-fatal while it exists; migrate it out of the normal daily-report path rather than expanding it.
 - Lock file with 30-minute stale detection prevents overlapping runs
 - All analytics/AI failures are non-fatal — report always generates
 - Archive copy saved to `outputs/reports/YYYY-MM-DD.md` before overwriting

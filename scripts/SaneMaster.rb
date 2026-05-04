@@ -121,6 +121,8 @@ class SaneMaster
         'check_docs' => { args: '', desc: 'Check docs are in sync with code' },
         'check_binary' => { args: '', desc: 'Audit binary for security issues' },
         'test_scan' => { args: '[-v]', desc: 'Scan tests for tautologies and hardcoded values' },
+        'process_metrics' => { args: '[--json]', desc: 'Summarize verify churn, session quality, and hook blocks' },
+        'refresh_qa_snapshots' => { args: '[--dry-run|--run] [--json]', desc: 'List or refresh stale app QA snapshots' },
         'gate_review' => { args: '<fixture.json> [--json]', desc: 'Review candidate prevention gates against seed/block/allow fixtures' },
         'structural' => { args: '[path]', desc: 'Structural compliance check (sc)' },
         'compliance' => { args: '[path]', desc: 'Structural + session compliance (cr)' }
@@ -291,6 +293,10 @@ class SaneMaster
                                   crash_report
                                   crashes
                                   menu_scan
+                                  process_metrics
+                                  sop_metrics
+                                  refresh_qa_snapshots
+                                  qa_refresh
                                 ]).freeze
 
   def initialize
@@ -1274,6 +1280,10 @@ PY
       analyze_crashes(args)
     when 'menu_scan'
       menu_scan(args)
+    when 'process_metrics', 'sop_metrics'
+      process_metrics_dashboard(args)
+    when 'refresh_qa_snapshots', 'qa_refresh'
+      refresh_qa_snapshots(args)
 
     # Environment & Health
     when 'doctor'

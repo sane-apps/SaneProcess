@@ -481,7 +481,7 @@ def process_tool(tool_name, tool_input)
     return 2
   end
 
-  # NOTE: check_global_mutations removed Jan 2026 - memory MCP no longer exists
+  # NOTE: memory is a persistence target, not a pre-edit research category
 
   # Check external mutations
   if (reason = SaneToolsChecks.check_external_mutations(tool_name, EXTERNAL_MUTATION_PATTERN, RESEARCH_CATEGORIES))

@@ -13,6 +13,7 @@ require 'fileutils'
 require 'time'
 require 'rbconfig'
 require_relative 'core/mandatory_workflows'
+require_relative 'core/process_metrics'
 require_relative 'core/state_manager'
 LOG_FILE = File.expand_path('../../.claude/sanestop.log', __dir__)
 SOP_CSV = File.expand_path('../../outputs/sop_ratings.csv', __dir__)
@@ -68,7 +69,7 @@ def calculate_sop_score(violations)
     end
   end
 
-  case session_block_count
+  base_score = case session_block_count
   when 0 then 10      # Perfect — no blocks needed
   when 1..2 then 9    # Minor friction
   when 3..4 then 8    # Moderate friction
@@ -76,6 +77,51 @@ def calculate_sop_score(violations)
   when 8..10 then 6   # Heavy friction
   else 5              # Excessive friction — process fought the AI hard
   end
+
+  cap = verification_score_cap
+  cap ? [base_score, cap].min : base_score
+end
+
+def session_verify_events
+  path = SaneProcessMetrics.metrics_path
+  return [] unless File.exist?(path)
+
+  started = session_start_time
+  File.readlines(path).map do |line|
+    event = JSON.parse(line)
+    next unless event['type'] == 'verify'
+
+    timestamp = Time.parse(event['timestamp'])
+    timestamp >= started ? event : nil
+  rescue JSON::ParserError, ArgumentError
+    nil
+  end.compact.sort_by { |event| event['timestamp'].to_s }
+rescue StandardError
+  []
+end
+
+def session_verify_status
+  events = session_verify_events
+  failures = events.count { |event| event['success'] != true }
+  zero_test_failures = events.count { |event| event['success'] != true && event['tests_run'].to_i.zero? }
+  last = events.last
+  {
+    attempts: events.length,
+    failures: failures,
+    zero_test_failures: zero_test_failures,
+    last_success: last ? last['success'] == true : nil,
+    last_timestamp: last && last['timestamp']
+  }
+end
+
+def verification_score_cap
+  status = session_verify_status
+  return nil if status[:attempts].zero?
+
+  return 6 unless status[:last_success]
+  return 8 if status[:failures].positive?
+
+  nil
 end
 
 # === SOP SCORE VARIANCE DETECTION ===
@@ -354,8 +400,8 @@ def check_verification_required
   # No edits = nothing to verify
   return nil if edit_count.zero?
 
-  # If tests were run, we're good
-  return nil if verification[:tests_run] || verification[:verification_run]
+  # If tests/verification succeeded, we're good.
+  return nil if verification[:tests_passed] || verification[:verification_succeeded]
 
   # Check if ALL edits were doc-only (markdown, txt) — don't require tests for pure docs
   non_doc_edits = unique_files.reject { |f| DOC_ONLY_EXTENSIONS.include?(File.extname(f).downcase) }
@@ -443,11 +489,12 @@ def update_validation_metrics
   cb = StateManager.get(:circuit_breaker)
   block_stats = count_session_blocks_and_resets
   missed_loops = count_missed_doom_loops
+  verify_status = session_verify_status
 
   StateManager.update(:validation) do |v|
     # Q4: Session tracking
     v[:sessions_total] = (v[:sessions_total] || 0) + 1
-    if verification[:tests_run] || verification[:verification_run]
+    if verify_status[:last_success] || verification[:tests_passed] || verification[:verification_succeeded]
       v[:sessions_with_tests_passing] = (v[:sessions_with_tests_passing] || 0) + 1
     end
     if cb[:tripped]
@@ -562,6 +609,7 @@ def save_session_learnings
   sop_score = calculate_sop_score(violations)
 
   # Calculate session stats
+  verify_status = session_verify_status
   stats = {
     timestamp: Time.now.iso8601,
     edits: edits[:count] || 0,
@@ -571,8 +619,23 @@ def save_session_learnings
     blocks: enf[:blocks]&.length || 0,
     halted: enf[:halted] || false,
     violations: violations,
-    sop_score: sop_score
+    sop_score: sop_score,
+    verify_attempts: verify_status[:attempts],
+    verify_failures: verify_status[:failures],
+    verify_zero_test_failures: verify_status[:zero_test_failures],
+    final_verify_success: verify_status[:last_success]
   }
+
+  SaneProcessMetrics.record(
+    'session_end',
+    success: verify_status[:last_success],
+    sop_score: sop_score,
+    edits: stats[:edits],
+    unique_files: stats[:unique_files],
+    verify_attempts: verify_status[:attempts],
+    verify_failures: verify_status[:failures],
+    verify_zero_test_failures: verify_status[:zero_test_failures]
+  )
 
   # Update patterns for future sessions
   update_session_patterns(violations, sop_score)
@@ -854,6 +917,7 @@ elsif ARGV.include?('--self-test-internal')
     method(:process_stop),
     method(:check_score_variance),
     method(:check_weasel_words),
+    method(:calculate_sop_score),
     LOG_FILE
   )
 else

@@ -147,8 +147,10 @@ module StateManager
     # Tracks whether tests/verification ran after edits were made.
     # sanestop.rb blocks session end if edits > 0 and verified == false.
     verification: {
-      tests_run: false,        # Any test command detected this session
-      verification_run: false, # Any verification command (curl, health check, etc.)
+      tests_run: false,        # Any successful test command detected this session (legacy key)
+      verification_run: false, # Any successful verification command detected this session (legacy key)
+      tests_passed: false,     # Successful test command detected this session
+      verification_succeeded: false, # Successful verification command detected this session
       last_test_at: nil,       # Timestamp of last test
       test_commands: [],       # What was run (for audit trail)
       edits_before_test: 0     # Edits made since last test (resets on test run)

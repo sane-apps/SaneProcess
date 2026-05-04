@@ -5,16 +5,17 @@
 # SaneTrack Research Module
 # ==============================================================================
 # Extracted from sanetrack.rb per Rule #10 (file size limit)
-# Research protocol enforcement: write validation + size cap
+# Research protocol enforcement: write validation + active-cache size cap
 #
 # Two checks:
 #   1. validate_research_write - After Task completes, verify research.md changed
-#   2. check_research_size - After Edit/Write to research.md, warn if > 200 lines
+#   2. check_research_size - After Edit/Write to research.md, warn if > active-cache cap
 # ==============================================================================
 
 require_relative 'core/state_manager'
 
 module SaneTrackResearch
+  RESEARCH_SOFT_CAP = 160
   RESEARCH_SIZE_CAP = 200
 
   # Called after Task completions. Checks if a pending research write actually happened.
@@ -62,13 +63,19 @@ module SaneTrackResearch
     return unless File.exist?(file_path)
 
     line_count = File.readlines(file_path).length
-    return unless line_count > RESEARCH_SIZE_CAP
+    return unless line_count > RESEARCH_SOFT_CAP
 
     warn ''
-    warn 'RESEARCH CACHE OVERFLOW'
-    warn "   research.md is #{line_count} lines (cap: #{RESEARCH_SIZE_CAP})"
-    warn '   Graduate oldest verified findings to ARCHITECTURE.md or DEVELOPMENT.md'
-    warn '   Keep research.md lean — it is a scratchpad, not permanent storage.'
+    if line_count > RESEARCH_SIZE_CAP
+      warn 'RESEARCH CACHE OVERFLOW'
+      warn "   research.md is #{line_count} lines (hard cap: #{RESEARCH_SIZE_CAP})"
+      warn '   Do not append new raw research until stale topics are expired or verified findings are promoted.'
+    else
+      warn 'RESEARCH CACHE NEAR CAP'
+      warn "   research.md is #{line_count} lines (soft cap: #{RESEARCH_SOFT_CAP}, hard cap: #{RESEARCH_SIZE_CAP})"
+    end
+    warn '   research.md is a rolling index/scratchpad, not an archive.'
+    warn '   Never delete verified research just to satisfy the cap; first promote durable conclusions to ARCHITECTURE.md, DEVELOPMENT.md, AGENTS.md, SESSION_HANDOFF.md, Serena, or the knowledge graph.'
     warn ''
   rescue StandardError => e
     warn "  Research size check error: #{e.message}" if ENV['DEBUG']

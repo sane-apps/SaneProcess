@@ -491,12 +491,15 @@ def output_context(prompt_type, rules, triggers, prompt, frustrations = [], dete
   # User insight: "ANY code change is a big task" - no more "no big deal" syndrome
   lines << ''
   lines << 'WORKFLOW STRUCTURE (auto-injected):'
-  # NOTE: Changed from 5 to 4 categories (Jan 2026) - memory MCP removed
-  lines << '  1. Research ALL 4 categories before editing (docs, web, github, local)'
+  lines << '  1. Use the smallest evidence set that makes the task defensible'
+  lines << '     - local inspection before edits'
+  lines << '     - docs for uncertain APIs/libraries'
+  lines << '     - web for current external facts'
+  lines << '     - GitHub for upstream/repo/issue state'
   lines << '  2. Define acceptance criteria: what does "done" look like?'
   lines << '  3. Edits blocked until research complete (sanetools enforces)'
   lines << '  4. If you touch hooks, tools, skills, templates, or durable docs, update handoff + memory'
-  lines << '  5. Before saying a tool is missing or using a workaround, run: ruby scripts/SaneMaster.rb tool_discovery --query "..."'
+  lines << '  5. Before saying a tool is missing, choosing a new canonical tool path, or using a repeated tool-deficiency workaround, run: ruby scripts/SaneMaster.rb tool_discovery --query "..."'
   lines << '  6. If a recurring tool is truly missing, install it, document it, and make it the standard path'
   lines << '  7. Self-rate SOP compliance when done'
   lines << ''
@@ -516,7 +519,7 @@ def output_context(prompt_type, rules, triggers, prompt, frustrations = [], dete
     lines << '  - Max 20 iterations before human check-in'
   end
 
-  # INTELLIGENCE: Memory MCP update needed from previous session
+  # INTELLIGENCE: memory update needed from previous session
   memory_context = format_memory_staging_context(memory_staging)
   if memory_context
     lines << ''

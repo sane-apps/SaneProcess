@@ -808,11 +808,8 @@ module SaneToolsChecks
         return nil
       end
 
-      # At or over limit - reset research AND revoke plan approval
-      # If 3 edits didn't work, your understanding is wrong - research AGAIN
-      StateManager.reset(:research)
-
-      # Revoke plan approval - must show a NEW plan
+      # At or over limit - revoke plan approval and require targeted re-research.
+      # Do not wipe existing research; refresh only stale or missing evidence.
       StateManager.update(:planning) do |p|
         p[:plan_approved] = false
         p[:plan_shown] = false
@@ -822,11 +819,11 @@ module SaneToolsChecks
 
       "EDIT ATTEMPT LIMIT + REPLAN REQUIRED\n" \
       "#{count} edit attempts failed. Your approach is wrong.\n" \
-      "Research RESET + plan approval REVOKED. You MUST:\n" \
-      "  1. Redo ALL 4 research categories (docs, web, github, local)\n" \
+      "Plan approval REVOKED. You MUST:\n" \
+      "  1. Refresh stale or missing evidence only (local always; docs/web/GitHub when relevant)\n" \
       "  2. Show a NEW plan and get user approval\n" \
       "This is the process that ALWAYS works when followed.\n" \
-      "Reset: rr- (clear research), pa+ (approve plan)"
+      "Use pa+ only after the new plan is actually approved."
     end
 
     def reset_edit_attempts

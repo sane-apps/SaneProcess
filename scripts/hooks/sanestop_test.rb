@@ -9,10 +9,13 @@
 # ==============================================================================
 
 require 'stringio'
+require 'tmpdir'
+require 'json'
+require 'time'
 require_relative 'core/state_manager'
 
 module SaneStopTest
-  def self.run(process_stop_proc, check_score_variance_proc, check_weasel_words_proc, log_file)
+  def self.run(process_stop_proc, check_score_variance_proc, check_weasel_words_proc, calculate_sop_score_proc, log_file)
     warn 'SaneStop Self-Test'
     warn '=' * 40
 
@@ -71,6 +74,8 @@ module SaneStopTest
       v[:tests_run] = true
       v[:last_test_at] = Time.now.iso8601
       v[:test_commands] = ['xcodebuild test']
+      v[:tests_passed] = true
+      v[:verification_succeeded] = true
       v
     end
 
@@ -172,6 +177,46 @@ module SaneStopTest
     else
       failed += 1
       warn '  FAIL: Normal variance should not warn'
+    end
+
+    Dir.mktmpdir('sanestop-metrics') do |tmpdir|
+      old_metrics_path = ENV['SANEMASTER_PROCESS_METRICS_PATH']
+      metrics_path = File.join(tmpdir, 'process_metrics.jsonl')
+      ENV['SANEMASTER_PROCESS_METRICS_PATH'] = metrics_path
+      StateManager.update(:enforcement) do |e|
+        e[:session_started_at] = (Time.now - 60).iso8601
+        e[:blocks] = []
+        e
+      end
+
+      File.write(
+        metrics_path,
+        [
+          { timestamp: (Time.now - 30).utc.iso8601, type: 'verify', success: false, tests_run: 0 },
+          { timestamp: (Time.now - 20).utc.iso8601, type: 'verify', success: true, tests_run: 12 }
+        ].map { |event| JSON.generate(event) }.join("\n") + "\n"
+      )
+      if calculate_sop_score_proc.call({}) == 8
+        passed += 1
+        warn '  PASS: Recovered verify failure caps SOP score at 8'
+      else
+        failed += 1
+        warn '  FAIL: Recovered verify failure should cap SOP score at 8'
+      end
+
+      File.write(
+        metrics_path,
+        JSON.generate({ timestamp: (Time.now - 10).utc.iso8601, type: 'verify', success: false, tests_run: 7 }) + "\n"
+      )
+      if calculate_sop_score_proc.call({}) == 6
+        passed += 1
+        warn '  PASS: Unrecovered verify failure caps SOP score at 6'
+      else
+        failed += 1
+        warn '  FAIL: Unrecovered verify failure should cap SOP score at 6'
+      end
+    ensure
+      ENV['SANEMASTER_PROCESS_METRICS_PATH'] = old_metrics_path
     end
 
     # === WEASEL WORD DETECTION TESTS ===
@@ -504,6 +549,8 @@ module SaneStopTest
     # Test: Session with tests marks sessions_with_tests_passing
     StateManager.update(:verification) do |v|
       v[:tests_run] = true
+      v[:tests_passed] = true
+      v[:verification_succeeded] = true
       v[:last_test_at] = Time.now.iso8601
       v
     end

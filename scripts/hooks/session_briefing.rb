@@ -55,7 +55,7 @@ def build_manifest_briefing(project_dir = nil)
   if m['mcps'].is_a?(Array) && m['mcps'].any?
     lines << ''
     lines << "**MCPs available:** #{m['mcps'].join(', ')}"
-    lines << '  Research order: apple-docs/context7 FIRST, WebSearch LAST'
+    lines << '  Use the evidence source that matches the risk: docs for APIs, web for current external facts, GitHub for upstream/repo/issue state.'
   end
 
   # Required docs — what must exist

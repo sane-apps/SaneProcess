@@ -213,12 +213,6 @@ Code that "works" isn't good enough. Code that's correct, maintainable, and robu
 
 ---
 
-## MANDATORY: Persistent Record
+## Audit Artifact Policy
 
-**You MUST write findings to `DOCS_AUDIT_FINDINGS.md` in the project root.**
-
-- Append your findings to the appropriate section as you discover them
-- Use the Edit tool to update the file incrementally (don't wait until the end)
-- On subsequent audits, mark resolved issues as `[RESOLVED YYYY-MM-DD]`
-- Never delete old findings - maintain the audit trail
-- This file is the permanent record that survives context loss
+Write perspective findings to the audit run artifact directory (`/tmp/docs_audit_outputs/` by default). Do not create a repo-root `DOCS_AUDIT_FINDINGS.md` unless the user explicitly asks for a durable audit trail. Promote durable conclusions into existing source-of-truth docs, Serena, or the knowledge graph.

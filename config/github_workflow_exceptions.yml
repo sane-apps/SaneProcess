@@ -1,0 +1,39 @@
+# Central registry for intentional GitHub-hosted workflow exceptions.
+# Prefer inline workflow comments when editing that repo directly:
+# SANEAPPS_GITHUB_HOSTED_EXCEPTION: <reason>
+
+repositories:
+  mcp/Sane-AppleDocs:
+    workflows:
+      ci.yml:
+        reason: "Public MCP repo needs push/PR CI to prove package health for contributors."
+      claude-code-review.yml:
+        reason: "Public MCP repo intentionally runs PR review automation for incoming contributor changes."
+      claude.yml:
+        reason: "Public MCP repo intentionally supports issue/PR comment automation for maintainer workflow."
+      pr-check.yml:
+        reason: "Public MCP repo needs pull request checks before external contributions merge."
+      release.yml:
+        reason: "Public MCP repo publishes package releases from tags/pushes."
+
+  mcp/Sane-Mem:
+    workflows:
+      claude-code-review.yml:
+        reason: "Public MCP repo intentionally runs PR review automation for incoming contributor changes."
+      claude.yml:
+        reason: "Public MCP repo intentionally supports issue/PR comment automation for maintainer workflow."
+      convert-feature-requests.yml:
+        reason: "Public MCP repo intentionally converts labeled issues into tracked feature requests."
+      summary.yml:
+        reason: "Public MCP repo intentionally summarizes new issues for maintainer triage."
+
+  mcp/Sane-XcodeBuildMCP:
+    workflows:
+      ci.yml:
+        reason: "Public MCP repo needs push/PR CI to prove package health for contributors."
+      release.yml:
+        reason: "Public MCP repo publishes package releases from tags/pushes."
+      sentry.yml:
+        reason: "Public MCP repo uploads release/debug metadata for crash diagnostics."
+      stale.yml:
+        reason: "Public MCP repo uses scheduled issue hygiene for external support load."
