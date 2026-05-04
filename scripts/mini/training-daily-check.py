@@ -136,6 +136,18 @@ def age_hours(timestamp: str | None) -> int | None:
     return int((datetime.now() - dt).total_seconds() // 3600)
 
 
+def readiness_matches_latest_run(latest_ai: dict, latest_readiness: dict) -> bool:
+    """Return true only when the readiness row belongs to the latest SaneAI run."""
+    if not latest_ai or not latest_readiness:
+        return False
+
+    ai_report = latest_ai.get("report_archive") or ""
+    readiness_report = latest_readiness.get("source_report") or ""
+    if not ai_report or not readiness_report:
+        return False
+    return ai_report == readiness_report
+
+
 def write_report(report_path: Path, snapshot: dict, summary: str) -> None:
     latest_ai = snapshot.get("latest_saneai") or {}
     latest_sync = snapshot.get("latest_sanesync") or {}
@@ -175,6 +187,7 @@ def write_report(report_path: Path, snapshot: dict, summary: str) -> None:
         "",
         f"- Timestamp: {latest_readiness.get('timestamp', 'missing')}",
         f"- Status: {latest_readiness.get('status', 'missing')}",
+        f"- Applies to latest SaneAI run: {readiness_matches_latest_run(latest_ai, latest_readiness)}",
         f"- Delta: {latest_readiness.get('delta', 'missing')}",
         f"- Source report: {latest_readiness.get('source_report', 'missing')}",
         f"- Target report: {latest_readiness.get('target_report', 'missing') or 'missing'}",
@@ -202,6 +215,8 @@ def build_summary(snapshot: dict) -> tuple[str, str]:
     ai_timestamp = latest_ai.get("timestamp")
     ai_age = age_hours(ai_timestamp)
     readiness_status = latest_readiness.get("status", "missing")
+    readiness_current = readiness_matches_latest_run(latest_ai, latest_readiness)
+    displayed_readiness_status = readiness_status if readiness_current else "not_assessed_for_latest_run"
     workflow_gate = ai_report.get("workflow_gate", "missing")
 
     if alerts:
@@ -213,7 +228,7 @@ def build_summary(snapshot: dict) -> tuple[str, str]:
     elif ai_age is not None and ai_age > 36:
         title = "SaneAI training stale"
         message = f"Latest SaneAI metric is {ai_age}h old. Check the Mini run."
-    elif readiness_status in {"missing_target_baseline", "missing_target_production_baseline"}:
+    elif readiness_current and readiness_status in {"missing_target_baseline", "missing_target_production_baseline"}:
         title = "SaneAI needs baseline"
         message = f"SaneAI {ai_score}% and readiness is blocked: {readiness_status}."
     elif "FAIL" in workflow_gate or ai_report.get("result") == "NEEDS WORK":
@@ -221,7 +236,7 @@ def build_summary(snapshot: dict) -> tuple[str, str]:
         message = f"SaneAI is still at {ai_score}% with workflow gate failing."
     else:
         title = "SaneAI daily check"
-        message = f"SaneAI latest score {ai_score}%. Readiness: {readiness_status}."
+        message = f"SaneAI latest score {ai_score}%. Readiness: {displayed_readiness_status}."
 
     return title, message
 
