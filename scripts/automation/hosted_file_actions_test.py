@@ -112,6 +112,9 @@ class HostedFileActionTests(unittest.TestCase):
             output_path = Path(tmp) / "hosted_file_actions.xlsx"
             json_path = Path(tmp) / "hosted_file_actions.json"
             evidence_path = Path(tmp) / "hosted_file_actions.md"
+            uploads_path = Path(tmp) / "LemonSqueezy-Uploads"
+            uploads_path.mkdir()
+            (uploads_path / "SaneBar-2.1.36.zip").write_text("stale", encoding="utf-8")
             with mock.patch.object(HOSTED_FILE_ACTIONS, "get_lemonsqueezy_api_key", return_value="test-key"), \
                 mock.patch.object(HOSTED_FILE_ACTIONS, "load_product_config", return_value={"products": {}}), \
                 mock.patch.object(HOSTED_FILE_ACTIONS, "build_snapshot_rows", return_value=(sample_actions, sample_snapshot)), \
@@ -123,6 +126,8 @@ class HostedFileActionTests(unittest.TestCase):
                     str(json_path),
                     "--evidence-out",
                     str(evidence_path),
+                    "--uploads-dir",
+                    str(uploads_path),
                 ]):
                 HOSTED_FILE_ACTIONS.main()
 
@@ -136,10 +141,38 @@ class HostedFileActionTests(unittest.TestCase):
             self.assertIn('sheet name="Live Snapshot"', workbook_xml)
             self.assertIn("Needs dashboard sync", sheet_xml)
             self.assertIn("current_actions", json_path.read_text(encoding="utf-8"))
+            self.assertIn("upload_folder", json_path.read_text(encoding="utf-8"))
             evidence = evidence_path.read_text(encoding="utf-8")
             self.assertIn("Hosted File Action Evidence", evidence)
             self.assertIn("Current actions: 1", evidence)
+            self.assertIn("Upload Folder Audit", evidence)
+            self.assertIn("SaneBar-2.1.36.zip", evidence)
             self.assertIn("SaneBar", evidence)
+
+    def test_audit_upload_folder_flags_stale_and_missing_latest_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            uploads_path = Path(tmp)
+            (uploads_path / "SaneBar-2.1.47.zip").write_text("old", encoding="utf-8")
+            (uploads_path / "SaneSales-1.3.1.zip").write_text("current", encoding="utf-8")
+            snapshot = [
+                {
+                    "app": "SaneBar",
+                    "expected_version": "2.1.48",
+                    "dist_url": "https://dist.sanebar.com/updates/SaneBar-2.1.48.zip",
+                },
+                {
+                    "app": "SaneSales",
+                    "expected_version": "1.3.1",
+                    "dist_url": "https://dist.sanesales.com/updates/SaneSales-1.3.1.zip",
+                },
+            ]
+
+            audit = HOSTED_FILE_ACTIONS.audit_upload_folder(uploads_path, snapshot)
+
+            self.assertEqual(audit["stale_files"][0]["filename"], "SaneBar-2.1.47.zip")
+            self.assertEqual(audit["stale_files"][0]["expected_filename"], "SaneBar-2.1.48.zip")
+            self.assertEqual(audit["missing_latest"][0]["expected_filename"], "SaneBar-2.1.48.zip")
+            self.assertEqual(audit["ok_files"][0]["filename"], "SaneSales-1.3.1.zip")
 
 
 if __name__ == "__main__":

@@ -119,7 +119,10 @@ python3 scripts/automation/hosted-file-actions.py --xlsx /tmp/hosted_file_action
 3. Flags version drift where the published hosted file is older than the live appcast.
 4. Writes a `Current Actions` sheet with the exact product ID, variant ID, dashboard URL, and dist ZIP to upload.
 5. Writes a `Live Snapshot` sheet so the full current state is visible even when only some apps drift.
-6. Saves a dated workbook plus `outputs/hosted_file_actions/latest.xlsx`.
+6. Audits `~/Desktop/LemonSqueezy-Uploads` and flags stale or missing latest ZIPs so dashboard uploads start from a clean file picker.
+7. Saves a dated workbook plus `outputs/hosted_file_actions/latest.xlsx`.
+
+**Upload staging rule:** `~/Desktop/LemonSqueezy-Uploads` should contain only the latest ZIP for each direct-download app. Move older app ZIPs to Trash before opening Lemon Squeezy; do not leave old release files in the picker.
 
 **Canonical path:** prefer `ruby ../SaneMaster.rb hosted_file_actions` from the repo root.
 

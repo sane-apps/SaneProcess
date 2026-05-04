@@ -31,9 +31,12 @@
 - Final Mini validation JSON after verify still reports `APP READINESS BLOCKED` with exactly one critical issue: `Q10 DOCS: [SaneClip] CHANGELOG missing version 2.3.0`; system health is WARN only.
 - Upgraded the global Codex `status` skill and `scripts/automation/sane-status-crossref.sh` so valid daily SaneApps status now includes GitHub notifications plus comment/review activity for open org-wide issues and PRs.
 - Live Mini status smoke after the upgrade completed all 8 sections and read recent comments for open SaneBar/SaneProcess issues; SaneBar `#139`, `#138`, `#137`, `#136`, and `#129` now show latest comment evidence directly in the status output.
+- Reconciled release cleanup across repos after SaneSales 1.3.1: committed SaneProcess validation/status hardening, SaneUI funnel telemetry, email automation DMARC filtering, app research-cache compactions, SaneClip 2.3.0 docs, and SaneSales 1.3.1 README.
+- Verified Lemon Squeezy hosted files after manual dashboard completion: SaneBar `2.1.48`, SaneSales `1.3.1`, SaneClick `1.1.5`, SaneClip `2.3.0`, and SaneHosts `1.1.8` all read `In sync`.
+- Hardened `hosted_file_actions` to audit `~/Desktop/LemonSqueezy-Uploads`; the staging folder is now latest-only and stale older ZIPs were moved to Trash.
 
 ### Next
-- Fix the remaining app-readiness blocker in SaneClip or leave it as an explicit app-lane issue outside SaneProcess.
+- Rerun full validation after the hosted-file audit hardening lands on Mini; expected hosted-file action count is `0`.
 - Use `SaneMaster.rb process_metrics` to monitor whether new session-end scores improve after the scoring cap change.
 - For daily status, classify GitHub comment activity into new evidence, needs response, waiting on reporter, patched pending confirmation, or old backlog.
 

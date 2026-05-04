@@ -39,6 +39,7 @@ LISTING_ACTIONS_SPEC.loader.exec_module(LISTING_ACTIONS)
 ENV_CACHE_FILE = Path(os.environ.get("SANE_ENV_CACHE_FILE", "~/.config/nv/env")).expanduser()
 PRODUCTS_YML = Path(__file__).resolve().parents[2] / "config" / "products.yml"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "outputs" / "hosted_file_actions"
+DEFAULT_UPLOADS_DIR = Path("~/Desktop/LemonSqueezy-Uploads").expanduser()
 API_BASE = "https://api.lemonsqueezy.com"
 
 CURRENT_COLUMNS = [
@@ -69,6 +70,14 @@ SNAPSHOT_COLUMNS = [
     "variant_id",
     "api_files_url",
     "status",
+]
+
+UPLOAD_FOLDER_COLUMNS = [
+    "status",
+    "app",
+    "filename",
+    "expected_filename",
+    "path",
 ]
 
 
@@ -318,6 +327,97 @@ def rows_for_sheet(columns: list[str], records: list[dict[str, str]]) -> list[li
     return [[record.get(column, "") for column in columns] for record in records]
 
 
+def expected_filename_for_snapshot(row: dict[str, str]) -> str:
+    dist_url = str(row.get("dist_url") or "").strip()
+    if dist_url:
+        filename = dist_url.rstrip("/").split("/")[-1]
+        if filename.endswith(".zip"):
+            return filename
+    app = str(row.get("app") or "").strip()
+    version = str(row.get("expected_version") or "").strip()
+    return f"{app}-{version}.zip" if app and version else ""
+
+
+def audit_upload_folder(path: Path, snapshot: list[dict[str, str]]) -> dict[str, Any]:
+    expected_by_app: dict[str, str] = {}
+    for row in snapshot:
+        app = str(row.get("app") or "").strip()
+        expected = expected_filename_for_snapshot(row)
+        if app and expected:
+            expected_by_app[app] = expected
+
+    result: dict[str, Any] = {
+        "path": str(path),
+        "exists": path.is_dir(),
+        "stale_files": [],
+        "missing_latest": [],
+        "unexpected_files": [],
+        "ok_files": [],
+    }
+    if not path.is_dir():
+        return result
+
+    app_names = sorted(expected_by_app, key=len, reverse=True)
+    seen_expected: set[str] = set()
+    for candidate in sorted(path.glob("*.zip")):
+        if not candidate.is_file():
+            continue
+        matched_app = next(
+            (app for app in app_names if candidate.name.startswith(f"{app}-")),
+            "",
+        )
+        if not matched_app:
+            result["unexpected_files"].append({
+                "status": "unexpected",
+                "app": "",
+                "filename": candidate.name,
+                "expected_filename": "",
+                "path": str(candidate),
+            })
+            continue
+        expected = expected_by_app[matched_app]
+        row = {
+            "status": "ok" if candidate.name == expected else "stale",
+            "app": matched_app,
+            "filename": candidate.name,
+            "expected_filename": expected,
+            "path": str(candidate),
+        }
+        if candidate.name == expected:
+            seen_expected.add(expected)
+            result["ok_files"].append(row)
+        else:
+            result["stale_files"].append(row)
+
+    for app, expected in sorted(expected_by_app.items()):
+        if expected not in seen_expected:
+            result["missing_latest"].append({
+                "status": "missing_latest",
+                "app": app,
+                "filename": "",
+                "expected_filename": expected,
+                "path": str(path / expected),
+            })
+    return result
+
+
+def upload_folder_rows(upload_folder: dict[str, Any] | None) -> list[dict[str, str]]:
+    if not upload_folder:
+        return []
+    rows: list[dict[str, str]] = []
+    for key in ("stale_files", "missing_latest", "unexpected_files", "ok_files"):
+        rows.extend(upload_folder.get(key) or [])
+    if not upload_folder.get("exists"):
+        rows.append({
+            "status": "missing_folder",
+            "app": "",
+            "filename": "",
+            "expected_filename": "",
+            "path": str(upload_folder.get("path") or ""),
+        })
+    return rows
+
+
 def write_named_xlsx(path: Path, sheets: list[tuple[str, list[str], list[list[str]]]]) -> None:
     created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -431,6 +531,7 @@ def copy_latest_atomic(source: Path, latest_path: Path) -> None:
 def write_evidence(path: Path, payload: dict[str, Any]) -> None:
     current_actions = payload.get("current_actions") or []
     snapshot = payload.get("snapshot") or []
+    upload_folder = payload.get("upload_folder") or {}
     generated_at = str(payload.get("generated_at") or "")
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -453,6 +554,17 @@ def write_evidence(path: Path, payload: dict[str, Any]) -> None:
         ]
         for row in snapshot
     ]
+    upload_rows = [
+        [
+            row.get("status", ""),
+            row.get("app", ""),
+            row.get("filename", ""),
+            row.get("expected_filename", ""),
+            row.get("path", ""),
+        ]
+        for row in upload_folder_rows(upload_folder)
+        if row.get("status") != "ok"
+    ]
 
     path.write_text(
         "\n".join(
@@ -461,13 +573,19 @@ def write_evidence(path: Path, payload: dict[str, Any]) -> None:
                 "",
                 f"Generated: {generated_at}",
                 f"Current actions: {len(current_actions)}",
+                f"Upload folder stale/missing rows: {len(upload_rows)}",
                 "",
                 "Lemon Squeezy exposes read APIs for hosted files, but replacement is still a dashboard action.",
                 "After replacing files, rerun this exporter and keep the new evidence file with the release notes.",
+                "The local LemonSqueezy-Uploads folder should contain only the latest ZIP for each direct-download app.",
                 "",
                 "## Current Actions",
                 "",
                 markdown_table(["App", "Expected", "Hosted", "Dashboard", "Dist"], action_rows).rstrip(),
+                "",
+                "## Upload Folder Audit",
+                "",
+                markdown_table(["Status", "App", "File", "Expected", "Path"], upload_rows).rstrip(),
                 "",
                 "## Live Snapshot",
                 "",
@@ -486,16 +604,23 @@ def main() -> None:
     parser.add_argument("--json", action="store_true", help="Print JSON instead of writing XLSX")
     parser.add_argument("--json-out", help="Also write JSON payload to a file while generating XLSX")
     parser.add_argument("--evidence-out", help="Also write Markdown release evidence to a file")
+    parser.add_argument(
+        "--uploads-dir",
+        default=str(DEFAULT_UPLOADS_DIR),
+        help="Audit the local LemonSqueezy-Uploads staging folder for stale ZIPs",
+    )
     parser.add_argument("--xlsx", help="Output XLSX path")
     args = parser.parse_args()
 
     api_key = get_lemonsqueezy_api_key()
     config = load_product_config()
     current_actions, snapshot = build_snapshot_rows(config, api_key)
+    upload_folder = audit_upload_folder(Path(args.uploads_dir).expanduser(), snapshot)
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "current_actions": current_actions,
         "snapshot": snapshot,
+        "upload_folder": upload_folder,
     }
 
     if args.json:
@@ -518,6 +643,7 @@ def main() -> None:
         [
             ("Current Actions", CURRENT_COLUMNS, rows_for_sheet(CURRENT_COLUMNS, current_actions)),
             ("Live Snapshot", SNAPSHOT_COLUMNS, rows_for_sheet(SNAPSHOT_COLUMNS, snapshot)),
+            ("Upload Folder Audit", UPLOAD_FOLDER_COLUMNS, rows_for_sheet(UPLOAD_FOLDER_COLUMNS, upload_folder_rows(upload_folder))),
         ],
     )
     latest_path = output_path.parent / "latest.xlsx"
@@ -526,6 +652,10 @@ def main() -> None:
     print(f"Updated {latest_path}")
     print(f"Current actions: {len(current_actions)}")
     print(f"Snapshot rows: {len(snapshot)}")
+    stale_uploads = len(upload_folder.get("stale_files") or [])
+    missing_uploads = len(upload_folder.get("missing_latest") or [])
+    unexpected_uploads = len(upload_folder.get("unexpected_files") or [])
+    print(f"Upload folder stale: {stale_uploads}, missing latest: {missing_uploads}, unexpected: {unexpected_uploads}")
     if args.evidence_out:
         print(f"Wrote evidence {Path(args.evidence_out).expanduser()}")
 

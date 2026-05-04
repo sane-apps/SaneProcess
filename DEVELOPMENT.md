@@ -209,6 +209,8 @@ Outputs:
 
 This is a dashboard-action tracker, not an uploader. Lemon Squeezy currently exposes read APIs for files, but not a public file-replacement API. Use the workbook to open the exact product dashboard page and replace the published file with the appcast-matching ZIP.
 
+Upload-folder rule: `~/Desktop/LemonSqueezy-Uploads` is a latest-only staging folder. Before any Lemon Squeezy dashboard upload, move older app ZIPs to Trash so the file picker cannot select the wrong release. The hosted-file tracker audits this folder and reports stale, missing-latest, and unexpected ZIPs alongside the dashboard action list.
+
 Operational SOP:
 - `scripts/automation/morning-report.sh` now regenerates the workbook automatically, so new listing/setup emails show up in the nightly report without a manual spreadsheet pass.
 - `scripts/automation/sane-status-crossref.sh` now shows the live listing-action counts and current `Needs action` rows.
