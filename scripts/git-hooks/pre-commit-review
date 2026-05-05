@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# pre-commit-review — advisory AI code review on staged changes
+# pre-commit-review — optional legacy nv review on staged changes
 # Called by git pre-commit hook. NEVER blocks commits (always exits 0).
 
 set -euo pipefail
+
+# NVIDIA/nv is legacy/explicit-only for SaneApps. Normal Codex work uses
+# Codex/GPT agents instead. Keep this hook inert unless explicitly requested.
+if [ "${SANE_ENABLE_NV_REVIEW:-0}" != "1" ]; then
+  exit 0
+fi
 
 # Skip if requested
 if [ "${NV_SKIP_REVIEW:-0}" = "1" ]; then

@@ -123,6 +123,16 @@ class StatusCrossrefScriptTests(unittest.TestCase):
                         },
                         "reason": "comment",
                         "updated_at": "2026-05-04T11:00:00Z"
+                      },
+                      {
+                        "repository": {"full_name": "open-saas-directory/awesome-native-macosx-apps"},
+                        "subject": {
+                          "title": "Add SaneClip to Clipboard Managers",
+                          "type": "PullRequest",
+                          "url": "https://api.github.com/repos/open-saas-directory/awesome-native-macosx-apps/pulls/34"
+                        },
+                        "reason": "mention",
+                        "updated_at": "2026-03-26T19:30:09Z"
                       }
                     ]
                     JSON
@@ -247,7 +257,7 @@ class StatusCrossrefScriptTests(unittest.TestCase):
                 result.stdout,
             )
             self.assertIn("[5/8] GitHub notifications", result.stdout)
-            self.assertIn("Notifications: 1", result.stdout)
+            self.assertIn("Notifications: 2", result.stdout)
             self.assertIn("New SaneBar evidence", result.stdout)
             self.assertIn("[6/8] Open GitHub issues", result.stdout)
             self.assertIn("Scope: org-wide", result.stdout)
@@ -261,6 +271,12 @@ class StatusCrossrefScriptTests(unittest.TestCase):
             self.assertIn("Latest comment explains the remaining blocker.", result.stdout)
             self.assertIn("Reviews read: 1", result.stdout)
             self.assertIn("Please rerun CI before merge.", result.stdout)
+            self.assertIn("External notification-backed GitHub threads:", result.stdout)
+            self.assertIn(
+                "open-saas-directory/awesome-native-macosx-apps PR #34",
+                result.stdout,
+            )
+            self.assertIn("Notification: mention", result.stdout)
             self.assertIn("Done.", result.stdout)
             gh_calls = gh_log.read_text(encoding="utf-8")
             self.assertIn("api notifications --paginate", gh_calls)
@@ -268,6 +284,10 @@ class StatusCrossrefScriptTests(unittest.TestCase):
             self.assertIn("search prs --owner sane-apps --state open", gh_calls)
             self.assertIn("issue view 8 --repo sane-apps/SaneProcess --comments", gh_calls)
             self.assertIn("pr view 13 --repo sane-apps/Sane-AppleDocs --comments", gh_calls)
+            self.assertIn(
+                "pr view 34 --repo open-saas-directory/awesome-native-macosx-apps --comments",
+                gh_calls,
+            )
             self.assertNotIn("issue list", gh_calls)
             self.assertNotIn("pr list", gh_calls)
 
