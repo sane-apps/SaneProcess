@@ -64,7 +64,7 @@ Do not wait until session end.
 | 9 | NEW FILE? GEN THE PILE | Use scaffolding tools and templates |
 | 10 | FIVE HUNDRED'S FINE, EIGHT'S THE LINE | Max 500 lines, must split at 800 |
 | 11 | TOOL BROKE? FIX THE YOKE | Fix broken tools, don't work around them |
-| 12 | TALK WHILE I WALK | Subagents for heavy work, stay responsive |
+| 12 | TALK WHILE I WALK | Subagents for heavy work, stay responsive, and close completed/stale agents promptly |
 | 13 | CONTEXT OR CHAOS | Maintain AGENTS.md, plus CLAUDE.md only when Claude-specific overlay guidance is needed |
 | 14 | PROMPT LIKE A PRO | Specific prompts with file paths, constraints, context |
 | 15 | REVIEW BEFORE YOU SHIP | Self-review for security, edge cases, correctness |
@@ -77,6 +77,8 @@ Do not commit or push unless the user asks, the task explicitly includes release
 **Circuit Breaker:** After 3 consecutive failures: STOP. Read error messages. Research the actual API.
 
 **Research gate:** Local inspection is always required before editing. Docs, web, and GitHub are conditional: use them when APIs are uncertain, external facts may have changed, third-party behavior matters, or the decision is durable/high-stakes. Do not run broad research just because the task contains discussion words.
+
+**Subagent hygiene:** Before spawning Codex subagents, close stale/completed agents that are no longer needed. After a subagent returns, capture the useful result and close it unless it is actively needed for a follow-up. If spawning fails because the agent limit is reached, cleanup is the required first step.
 
 ## Tool Discovery Before Workarounds
 
@@ -114,7 +116,8 @@ Canonical runner-backed paths in this repo:
 - Shared settings chrome belongs in `~/SaneApps/infra/SaneUI/`, not in app-local clones.
 - App repos should compose shared `SaneSettingsContainer`, `SaneAboutView`, `LicenseSettingsView`, and `SaneSparkleRow` instead of redefining them.
 - In shared settings surfaces, all text must be bright white and at least 13pt.
-- Do not ship `.secondary`/gray helper text, `mailto:` bug-report paths, `Manage Access` copy, local `SaneSparkleRow` definitions, or `.buttonStyle(.bordered)` in settings/About/license/update UI.
+- Do not ship `.secondary`/gray helper text, `mailto:` bug-report paths, `Manage Access` copy, app-local updater rows, local `SaneSparkleRow` definitions, or `.buttonStyle(.bordered)` in settings/About/license/update UI.
+- Current automated coverage: `ruby scripts/SaneMaster.rb saneui_guard` catches app-local settings chrome drift, local `SaneSparkleRow`, `mailto:` support links, `Manage Access` copy, and `.buttonStyle(.bordered)`. Typography, opacity-based gray text, and broader visual drift still require human review until the guard checks them directly.
 
 ---
 

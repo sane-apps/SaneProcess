@@ -8,7 +8,7 @@ For Codex and other clients, treat these as one layer of the system, not the who
 
 5 hooks, shared helpers, self-test helpers, and 1 state file:
 
-| Hook | Type | Purpose | Tests |
+| Hook | Type | Purpose | Current self-test count |
 |------|------|---------|-------|
 | `saneprompt.rb` | UserPromptSubmit | Classifies prompts, handles commands (rb-, s+, etc.) | 62 |
 | `sanetools.rb` | PreToolUse | Gates edits on research, blocks paths, circuit breaker | 66 |
@@ -16,17 +16,21 @@ For Codex and other clients, treat these as one layer of the system, not the who
 | `sanestop.rb` | Stop | Session stats, summary reminder | 5 |
 | `session_start.rb` | SessionStart | Bootstraps session, resets state | bootstrap only |
 
-**Tier suite:** 178 tests (including integration)
+**Tier suite:** 178 hook-layer tests (including integration).
+
+These are hook-layer counts only. Full repo verification is registry-backed and also runs Ruby/Python/SaneMaster/Mini-support tests through `ruby scripts/SaneMaster.rb verify`.
 
 ## Quick Start
 
 ```bash
 # Run all tests
 ruby scripts/hooks/saneprompt.rb --self-test
-ruby scripts/hooks/sanetools.rb --self-test
 ruby scripts/hooks/sanetrack.rb --self-test
 ruby scripts/hooks/sanestop.rb --self-test
+ruby scripts/hooks/test/tier_tests.rb
 ```
+
+`sanetools` coverage is included in the tier/full verification paths. Do not advertise its standalone self-test until the tool-discovery self-test path is repaired.
 
 ## User Commands
 

@@ -13,8 +13,8 @@ truth is now split across the standard project docs:
 | Product overview and install path | `README.md` |
 | Daily commands, release flow, manual utilities | `DEVELOPMENT.md` |
 | Design decisions, research graduation, system shape | `ARCHITECTURE.md` |
-| Agent rules, hooks, session flow | `AGENTS.md` and local `CLAUDE.md` |
-| Current operational state | `SESSION_HANDOFF.md` |
+| Agent rules, hooks, session flow | `AGENTS.md`, plus client-specific overlays when applicable |
+| Current operational state | local handoff notes when present |
 
 ## The 17 Golden Rules
 
@@ -70,5 +70,5 @@ Start here, in order:
 1. `README.md`
 2. `DEVELOPMENT.md`
 3. `AGENTS.md`
-4. `CLAUDE.md`
-5. `SESSION_HANDOFF.md`
+4. `ARCHITECTURE.md`
+5. client-specific overlays only when they apply

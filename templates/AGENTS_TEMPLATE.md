@@ -37,7 +37,7 @@ This file is the durable, client-neutral instruction surface for the repo.
 - Extend shared SaneUI components instead of creating app-local settings chrome.
 - Use shared `SaneSettingsContainer`, `SaneAboutView`, `LicenseSettingsView`, and `SaneSparkleRow` where applicable.
 - In shared settings surfaces, keep all text bright white and at least 13pt.
-- Do not use `.secondary`, gray helper text, `mailto:` bug-report paths, `Manage Access` copy, or `.buttonStyle(.bordered)` in settings/About/license/update UI.
+- Do not use `.secondary`, gray helper text, `mailto:` bug-report paths, `Manage Access` copy, app-local updater rows, local `SaneSparkleRow`, or `.buttonStyle(.bordered)` in settings/About/license/update UI.
 
 ## Client Notes
 

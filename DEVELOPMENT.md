@@ -120,6 +120,25 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 | `process_metrics [--json]` | Dashboard for verify churn, session quality, SOP score caps, and hook blocks |
 | `refresh_qa_snapshots [--dry-run|--run]` | List stale app QA snapshots, then explicitly refresh selected stale snapshots |
 | `gate_review <fixture.json> [--json]` | Deterministically review candidate prevention gates before promoting them into enforcement |
+| `saneui_guard [path]` | Scan SaneApps settings/About/license/update surfaces for shared SaneUI drift |
+
+### SaneUI Guard
+
+Run this before shipping any settings, About, license, updater, button-style, or shared typography change:
+
+```bash
+ruby scripts/SaneMaster.rb saneui_guard /path/to/app
+```
+
+The guard checks current high-risk drift:
+
+- app-local settings chrome instead of shared `SaneSettingsContainer`
+- local `SaneSparkleRow` definitions or app-local updater rows
+- `mailto:` support paths in settings/About/license/update UI
+- `Manage Access` copy
+- `.buttonStyle(.bordered)` in shared settings surfaces
+
+The guard does not yet fully automate visual review for bright-white text, `13pt` minimum text, opacity-based gray text, or broader layout polish. For those, inspect `~/SaneApps/infra/SaneUI/Sources/SaneUICatalog/SaneUICatalogApp.swift` and review the actual UI before release.
 
 ### Validation Hardening
 

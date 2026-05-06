@@ -1,110 +1,87 @@
 # Contributing to SaneProcess
 
-Thanks for your interest in contributing to SaneProcess! This document explains how to get started.
+Thanks for your interest in contributing to SaneProcess.
 
----
+## What It Is
 
-## What is SaneProcess?
-
-SaneProcess is an SOP (Standard Operating Procedure) enforcement framework for AI-assisted development with Claude Code, Codex, and compatible coding agents. It helps developers ship reliable code through:
-
-- 17 Golden Rules for AI-assisted development
-- Automated compliance hooks
-- Circuit breaker pattern for error prevention
-- Cross-session memory for bug patterns
-
----
+SaneProcess is workflow enforcement for AI-assisted development across compatible coding agents. It combines client-neutral instructions, native hook adapters, skills/MCP guidance, `SaneMaster.rb` wrappers, and shared runtime guards.
 
 ## Quick Start
 
 ```bash
-# Clone the repo
 git clone https://github.com/sane-apps/SaneProcess.git
 cd SaneProcess
 
-# Install dependencies
-bundle install
-
-# Run QA checks
-./scripts/qa.rb
+ruby scripts/SaneMaster.rb verify
 ```
 
----
+There is no `Gemfile` today. Use the system Ruby or your normal Ruby install.
 
 ## Project Structure
 
-```
+```text
 SaneProcess/
-├── AGENTS.md               # Shared agent instructions
-├── CLAUDE.md               # AI instructions
-├── README.md               # Product overview
-├── DEVELOPMENT.md          # Build, test, contribute
-├── ARCHITECTURE.md         # System design, decisions, research
-├── SESSION_HANDOFF.md      # Recent work (ephemeral)
-├── docs/
-│   ├── SaneProcess.md      # Legacy landing page that points to canonical docs
-│   └── archive/            # Confidential docs (gitignored)
-├── scripts/
-│   ├── SaneMaster.rb       # Main CLI tool
-│   ├── hooks/              # Enforcement hooks (313 tests)
-│   └── sanemaster/         # CLI subcommands
-├── templates/              # Project templates
-├── skills/                 # Domain-specific knowledge modules
-├── .claude/                # Claude Code hook configuration
-└── .agents/                # Repo skills for Codex-compatible clients
+  AGENTS.md             Client-neutral agent instructions
+  README.md             Public overview and install path
+  DEVELOPMENT.md        Commands, workflow, and definition of done
+  ARCHITECTURE.md       System design and durable decisions
+  SECURITY.md           Security and reporting policy
+  scripts/
+    SaneMaster.rb       Main workflow CLI
+    hooks/              Native hook layer
+    sanemaster/         CLI command modules
+    mini/               Mac Mini runtime scripts
+    automation/         Helper scripts behind canonical wrappers
+  templates/            Project/docs/release/UI templates
+  skills/               Reusable agent skills
 ```
 
----
+`SESSION_HANDOFF.md`, `.claude` runtime state, and archive snapshots are local operator artifacts, not public source-of-truth docs.
 
-## Making Changes
+## Before You Start
 
-### Before You Start
+1. Check existing [issues](https://github.com/sane-apps/SaneProcess/issues).
+2. For significant behavior changes, open an issue first.
+3. Read `AGENTS.md` and `DEVELOPMENT.md`.
+4. Prefer updating existing docs/scripts over adding parallel files.
 
-1. Check [GitHub Issues](https://github.com/sane-apps/SaneProcess/issues) for existing discussions
-2. For significant changes, open an issue first to discuss the approach
+## Pull Request Process
 
-### Pull Request Process
+1. Fork the repository.
+2. Create a branch from `main`.
+3. Make the smallest focused change.
+4. Run the relevant verification.
+5. Open a PR with a clear summary and test evidence.
 
-1. **Fork** the repository
-2. **Create a branch** from `main`
-3. **Make your changes**
-4. **Run QA**: `./scripts/qa.rb`
-5. **Submit a PR** with clear description
+Useful checks:
 
-### Commit Messages
-
+```bash
+ruby scripts/SaneMaster.rb verify
+ruby scripts/hooks/test/tier_tests.rb
+ruby scripts/hooks/saneprompt.rb --self-test
+ruby scripts/hooks/sanetrack.rb --self-test
+ruby scripts/hooks/sanestop.rb --self-test
 ```
+
+Hook and repo test counts change as registry-backed tests are added. Treat `ruby scripts/SaneMaster.rb verify` as the source of truth.
+
+## Commit Messages
+
+```text
 type: short description
 
 Fixes #123
 ```
 
-Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
+Common types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`.
 
----
-
-## Canonical Docs
-
-Use these instead of treating `docs/SaneProcess.md` as the full manual:
-
-- `README.md` for overview and install path
-- `DEVELOPMENT.md` for daily commands and release flow
-- `ARCHITECTURE.md` for system design and graduated research
-- `AGENTS.md` plus local `CLAUDE.md` for agent rules and session flow
-
----
-
-## Code of Conduct
+## Code Of Conduct
 
 This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). Please be respectful and constructive.
 
----
+## Questions
 
-## Questions?
-
-- Open a [GitHub Issue](https://github.com/sane-apps/SaneProcess/issues)
-
-Thank you for contributing!
+Open a [GitHub Issue](https://github.com/sane-apps/SaneProcess/issues).
 
 <!-- SANEAPPS_AI_CONTRIB_START -->
 ## Become a Contributor (Even if You Don't Code)
@@ -114,7 +91,7 @@ Do you have a great idea that could help everyone in the community, but think yo
 
 Good news: you actually can.
 
-Copy and paste this into Claude or Codex, then describe your bug or idea:
+Copy and paste this into your preferred coding agent, then describe your bug or idea:
 
 ```text
 I want to contribute to this repo, but I'm not a coder.

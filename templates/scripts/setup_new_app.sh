@@ -207,7 +207,8 @@ struct ContentView: View {
                     .fontWeight(.bold)
 
                 Text("TODO: Build something amazing!")
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.9))
             }
         }
         .frame(minWidth: 600, minHeight: 400)
@@ -234,7 +235,8 @@ struct SettingsView: View {
                     CompactSection("General", icon: "gear", iconColor: .gray) {
                         CompactRow("Version", icon: "info.circle", iconColor: .blue) {
                             Text("1.0.0")
-                                .foregroundStyle(.secondary)
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.9))
                         }
                     }
                 }
