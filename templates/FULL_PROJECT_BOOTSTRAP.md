@@ -1,6 +1,7 @@
 # Full Sane* Project Bootstrap Guide
 
 > **Complete checklist for launching a new macOS app from scratch to distribution**
+> **SaneApps internal template:** replace SaneApps paths, shared keys, app names, release host choices, and private operational assumptions before reusing outside the SaneApps fleet.
 > Last updated: 2026-01-20 (Migrated to sane-apps org, removed Homebrew, added paid distribution model)
 
 ---

@@ -2,14 +2,14 @@
 
 ## Project Overview
 
-SaneProcess is workflow enforcement for AI-assisted development across Claude Code, Codex, and compatible coding agents.
+SaneProcess is workflow enforcement for AI-assisted development across Codex, Claude Code, and compatible coding agents.
 
 It provides:
 
 - Client-neutral `AGENTS.md` operating rules
-- Claude-native lifecycle hooks
+- Native lifecycle-hook adapters
 - Codex-compatible skills, MCP guidance, and shared runtime guards
-- `SaneMaster.rb` wrappers for verify, release, status, tool discovery, support, Mini sync, metrics, and quality checks
+- `SaneMaster.rb` wrappers for verify, release, status, tool discovery, metrics, remote runners, and quality checks
 - SaneUI guardrails for shared settings/About/license/update surfaces
 
 ## Source Of Truth
@@ -29,8 +29,7 @@ Use `CLAUDE.md` only for Claude-specific overlay behavior. Do not put general po
 scripts/
   SaneMaster.rb        Main workflow CLI
   sanemaster/          SaneMaster command modules
-  hooks/               Claude-native hooks and tests
-  mini/                Mac Mini runtime/build-server scripts
+  hooks/               Native hook adapters and tests
   automation/          Automation helpers behind SaneMaster paths
   codex-bin/           Codex helper source mirrored to ~/.codex/bin/
 skills/                Reusable agent skills
@@ -51,7 +50,7 @@ templates/             Project/docs/release/UI templates
 
 For settings, About, license, updater, button-style, or typography work:
 
-- Inspect `~/SaneApps/infra/SaneUI/Sources/SaneUICatalog/SaneUICatalogApp.swift` first.
+- Inspect the shared SaneUI catalog/source of truth first.
 - Use shared `SaneSettingsContainer`, `SaneAboutView`, `LicenseSettingsView`, and `SaneSparkleRow` where applicable.
 - Keep shared settings text bright white and at least `13pt`.
 - Do not use `.secondary`, gray helper text, `mailto:` bug-report paths, `Manage Access` copy, app-local updater rows, local `SaneSparkleRow`, or `.buttonStyle(.bordered)` in settings/About/license/update UI.
@@ -75,4 +74,4 @@ ruby scripts/hooks/sanetrack.rb --self-test
 ruby scripts/hooks/sanestop.rb --self-test
 ```
 
-For SaneApps app runtime work, use the Mac Mini first. Do not replace Mini-first verification with local launches.
+Use `SaneMaster.rb verify` as the default proof path. When a project configures a remote runner or CI host, keep it behind a project wrapper so contributors do not need that private setup to understand or use SaneProcess.
