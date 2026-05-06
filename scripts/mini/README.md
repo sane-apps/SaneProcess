@@ -1,6 +1,14 @@
 # Mac Mini Build Server Scripts
 
-Scripts for the Mac mini training/build pipeline and the local monitoring that watches it. This is the source of truth for Mini runtime scripts only. Canonical Mini control-plane parity now lives in `scripts/automation/sync-codex-mini.sh`.
+Scripts for the Mac mini training/build pipeline and the local monitoring that watches it. This is the source of truth for Mini runtime scripts only.
+
+For operator control-plane parity, use the wrapper:
+
+```bash
+ruby scripts/SaneMaster.rb sync_mini
+```
+
+`scripts/automation/sync-codex-mini.sh` is the implementation helper behind that workflow, not the primary operator entrypoint.
 
 ## Scripts
 
@@ -34,6 +42,9 @@ MINI_SSH_OPTS='-i ~/.ssh/id_ed25519_codex_loopback' \
   bash scripts/mini/deploy.sh
 
 # Sync the active Codex automation + skill profile to Mini
+ruby scripts/SaneMaster.rb sync_mini
+
+# Direct helper path when debugging the wrapper itself
 bash scripts/automation/sync-codex-mini.sh mini --no-restart
 
 # Legacy compatibility wrapper (prints guidance or routes to the canonical path)
@@ -45,7 +56,7 @@ scp scripts/mini/mini-train.sh mini:~/SaneApps/infra/scripts/
 
 Legacy note:
 - `scripts/mini/sync-claude-config.sh` is a deprecation wrapper, not a separate sync system.
-- Canonical Air↔Mini control-plane and memory parity is `scripts/automation/sync-codex-mini.sh`.
+- Canonical Air↔Mini control-plane and memory parity is `ruby scripts/SaneMaster.rb sync_mini`; the automation script is the implementation helper.
 - `deploy.sh` manages Mini runtime scripts only and should not be used to recreate a second config-sync lane.
 
 Default root behavior:

@@ -39,12 +39,20 @@ CLAUDE.md
 .claude/*.log
 .claude/*.log.old
 .claude/app-store-contacts.local.md
+.claude/SOP_CONTEXT.md
+.claude/active_skills.json
+.claude/app-store-contacts.md
+.claude/settings.backup.json
+.claude/HOOKS_CONFIG_TO_MERGE.json
+.claude/settings.local.json
 
 # Local-only docs
 DISASTER_RECOVERY.md
 docs/archive/DISASTER_RECOVERY.md
 DOCS_AUDIT_FINDINGS.md
+SANE_AUDIT_FINDINGS.md
 TESTING_RESULTS.md
+archives/local_hooks_backup_20260120/
 
 # Runtime artifacts
 .wrangler/

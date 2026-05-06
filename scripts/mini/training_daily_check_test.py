@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -20,17 +21,21 @@ def assert_equal(actual, expected, message):
         raise AssertionError(f"{message}: expected {expected!r}, got {actual!r}")
 
 
+def timestamp_hours_ago(hours):
+    return (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def snapshot_with_stale_readiness():
     latest_report = "/tmp/current_saneai_report.md"
     old_report = "/tmp/old_saneai_report.md"
     return {
         "latest_saneai": {
-            "timestamp": "2026-05-04 07:06:48",
+            "timestamp": timestamp_hours_ago(4),
             "best_accuracy": "46",
             "report_archive": latest_report,
         },
         "latest_readiness": {
-            "timestamp": "2026-05-03 01:00:40",
+            "timestamp": timestamp_hours_ago(28),
             "status": "missing_target_production_baseline",
             "source_report": old_report,
         },
@@ -46,12 +51,12 @@ def snapshot_with_current_missing_baseline():
     latest_report = "/tmp/current_saneai_report.md"
     return {
         "latest_saneai": {
-            "timestamp": "2026-05-04 07:06:48",
+            "timestamp": timestamp_hours_ago(4),
             "best_accuracy": "46",
             "report_archive": latest_report,
         },
         "latest_readiness": {
-            "timestamp": "2026-05-04 07:06:48",
+            "timestamp": timestamp_hours_ago(4),
             "status": "missing_target_production_baseline",
             "source_report": latest_report,
         },

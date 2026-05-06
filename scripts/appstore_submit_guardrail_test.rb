@@ -54,13 +54,21 @@ class AppStoreSubmitGuardrailHarness
 
   def stub_safari_javascript(output)
     @stubbed_safari_javascript = output
+    @safari_snapshot_calls = []
   end
 
   def run_safari_javascript(url:, javascript:, delay_seconds: 8, navigate: true)
-    _ = url
+    @safari_snapshot_calls << {
+      url: url,
+      delay_seconds: delay_seconds,
+      navigate: navigate,
+      javascript: javascript
+    }
     _ = javascript
-    _ = delay_seconds
-    _ = navigate
+    if @stubbed_safari_javascript.is_a?(Array) && !@stubbed_safari_javascript.empty?
+      return @stubbed_safari_javascript.shift
+    end
+
     @stubbed_safari_javascript || JSON.generate('url' => '', 'clicks' => [], 'body' => '')
   end
 
@@ -468,6 +476,26 @@ exit(run_tests('App Store Submit Guardrail Tests') do
         assert(File.exist?(File.join(output_dir, 'review_message.txt')), 'expected review message file')
         assert(File.exist?(File.join(output_dir, 'summary.json')), 'expected summary file')
       end
+      true
+    end
+
+    test('clears every visible empty draft submission before reporting success') do
+      subject.stub_safari_javascript(
+        [
+          JSON.generate('action' => 'clicked', 'remainingBefore' => 2),
+          JSON.generate('action' => 'clicked', 'remainingBefore' => 1),
+          JSON.generate('action' => 'none', 'remaining' => 0, 'body' => "App Review\nDraft Submissions (0)\n")
+        ]
+      )
+
+      result = subject.send(:delete_empty_draft_submissions_from_safari, app_id: '123')
+
+      assert_eq(result[:deleted_count], 2)
+      assert_eq(result[:remaining_count], 0)
+      assert_eq(subject.safari_snapshot_calls.length, 3)
+      assert_eq(subject.safari_snapshot_calls[0][:navigate], true)
+      assert_eq(subject.safari_snapshot_calls[1][:navigate], false)
+      assert_eq(subject.safari_snapshot_calls[2][:navigate], false)
       true
     end
   end

@@ -1355,6 +1355,14 @@ def delete_empty_draft_submissions_from_safari(app_id:, max_iterations: 20)
         const body = document.body ? document.body.innerText : "";
         const match = body.match(/Draft Submissions \\((\\d+)\\)/);
         const buttons = Array.from(document.querySelectorAll('button[aria-label="Delete"]'));
+        const loaded = /App Review/.test(body) && (/Drafts/.test(body) || /Submissions/.test(body));
+        if (!loaded) {
+          return JSON.stringify({
+            action: "loading",
+            remaining: match ? Number(match[1]) : null,
+            body: body.slice(0, 12000)
+          });
+        }
         if (!buttons.length) {
           return JSON.stringify({
             action: "none",
@@ -1370,7 +1378,12 @@ def delete_empty_draft_submissions_from_safari(app_id:, max_iterations: 20)
       })()
     JAVASCRIPT
 
-    raw = run_safari_javascript(url: review_url, javascript: javascript, delay_seconds: delay_seconds)
+    raw = run_safari_javascript(
+      url: review_url,
+      javascript: javascript,
+      delay_seconds: delay_seconds,
+      navigate: index.zero?
+    )
     payload = JSON.parse(raw, symbolize_names: true)
 
     if payload[:action] == 'clicked'
@@ -1378,6 +1391,8 @@ def delete_empty_draft_submissions_from_safari(app_id:, max_iterations: 20)
       sleep 2
       next
     end
+
+    next if payload[:action] == 'loading'
 
     return {
       deleted_count: deleted_count,
@@ -3140,6 +3155,15 @@ def submit_for_review(app_id, asc_platform, version_id, token)
   log_info 'Submitting for App Review...'
 
   linked_submission = find_linked_review_submission(app_id, asc_platform, version_id, token)
+  if linked_submission && linked_submission[:state] == 'READY_FOR_REVIEW'
+    log_info "Detected existing READY_FOR_REVIEW submission #{linked_submission[:id]} for version #{version_id}; submitting..."
+    if mark_review_submission_submitted(linked_submission[:id], token)
+      return verify_submitted_state(version_id, token)
+    end
+
+    return false
+  end
+
   if linked_submission && linked_submission[:state] == 'UNRESOLVED_ISSUES'
     log_warn "Detected unresolved review submission #{linked_submission[:id]} for version #{version_id}."
     clear_stale_version_submission(version_id, token)
@@ -3256,7 +3280,17 @@ def submit_for_review(app_id, asc_platform, version_id, token)
       if [200, 201, 202].include?(item_code)
         log_info 'Review submission item created.'
         break
-      elsif item_code == 409
+
+      end
+
+      conflict_submission_id = extract_conflict_submission_id(item_resp)
+      if conflict_submission_id && conflict_submission_id != submission_id
+        log_warn "Version belongs to existing review submission #{conflict_submission_id}; switching target."
+        submission_id = conflict_submission_id
+        break
+      end
+
+      if item_code == 409
         conflict_submission_id = extract_conflict_submission_id(item_resp)
         if conflict_submission_id && conflict_submission_id != submission_id
           log_warn "Version belongs to existing review submission #{conflict_submission_id}; switching target."

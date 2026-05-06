@@ -30,14 +30,16 @@ You should receive a response within 48 hours.
 SaneProcess is a **development tooling framework** that:
 
 1. **Runs locally** on your development machine
-2. **Integrates with Claude Code, Codex, and compatible coding-agent setups**
-3. **Uses file-based state** stored in `.claude/` directory
-4. **Makes no network requests** — all processing is local
+2. **Integrates with compatible coding-agent setups**
+3. **Uses file-based local state** for runtime adapters
+4. **Keeps hook enforcement local** — hook state, hook logs, and hook decisions stay on your machine
+
+The hook runtime does not send telemetry. Optional operator-run automation scripts can call external services such as GitHub, App Store Connect, Cloudflare, email, or sales/download APIs when you explicitly run those workflows.
 
 ### Data Handling
 
-- Session state is stored locally in `.claude/state.json`
-- No data is transmitted externally
+- Runtime adapter state is stored locally. The current lifecycle-hook adapter uses `.claude/state.json`
+- Hook enforcement does not transmit data externally
 - Hook logs are stored locally and not shared
 
 ### Hook Security

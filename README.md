@@ -1,438 +1,236 @@
 <p align="center">
-  <img src="assets/hero-shield.jpeg" alt="SaneProcess" width="100%">
+  <img src="assets/hero-shield.jpeg" alt="SaneProcess - workflow enforcement for coding agents" width="100%">
 </p>
 
 # SaneProcess
 
-**Stop coding agents from wasting your time and crashing your machine.**
+**Workflow guardrails for coding agents and LLM-assisted development.**
 
-SaneProcess is workflow enforcement for Claude Code, Codex, and compatible coding agents. It combines Claude-native hooks with Codex-native instructions, skills, MCP, and shared shell/script guardrails so the same SOP survives across clients.
+SaneProcess keeps AI-assisted development on rails: use native hooks where a client supports them, and use `AGENTS.md`, skills, MCP, `SaneMaster.rb`, and shared shell/script guards everywhere else.
+The source of truth is client-neutral, so one LLM tool never owns the workflow.
 
-452 tests. MIT licensed. Ruby. macOS + Linux.
-
----
-
-## Documentation Layout
-
-SaneProcess is the source of truth for the anti-fragmentation rule used across SaneApps.
-
-- Update an existing canonical doc before creating a new one.
-- The normal app-repo skeleton is `README.md`, `ARCHITECTURE.md`, `DEVELOPMENT.md`, `PRIVACY.md`, and `SECURITY.md`.
-- If a repo needs extra docs, the owning canonical doc and the README must point to them clearly.
-- Public site pages should live in one obvious folder and the README should say where that folder is.
-
-See [DEVELOPMENT.md](DEVELOPMENT.md) for the operating procedure behind this rule.
-
-## Operator Docs Map
-
-If I am using SaneProcess as an operator, the doc ownership is:
-
-- [AGENTS.md](AGENTS.md): rules, trigger map, mandatory workflows, and session behavior
-- [DEVELOPMENT.md](DEVELOPMENT.md): canonical CLI/tool paths and day-to-day SOP
-- [scripts/automation/README.md](scripts/automation/README.md): automation scripts that are not normal daily wrappers
-- [scripts/mini/README.md](scripts/mini/README.md): Mini runtime/build-server scripts and headless/GUI recovery paths
-- [scripts/codex-bin/README.md](scripts/codex-bin/README.md): git-owned source for the Codex control-plane helpers that get installed into `~/.codex/bin/` and mirrored to Mini
-  `check-mcps` is the live active-session MCP probe. Use `ruby scripts/SaneMaster.rb mcp_watchdog doctor` for background-machine state.
-
-If a tool is operator-facing and not obvious from one of those docs, that is documentation drift.
+MIT licensed. Ruby. macOS + Linux. Used across 7 SaneApps repos.
 
 ---
 
-## Client Support
+## Quick Start
 
-SaneProcess is intentionally split into stable layers instead of pretending every client exposes the same API.
-
-| Client | Native surface | Stable SaneProcess path |
-|--------|----------------|-------------------------|
-| **Claude Code** | Lifecycle hooks (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, plus newer subagent events) | `scripts/hooks/*.rb` + `.claude/settings.json` + MCP + shared guards |
-| **Codex** | `AGENTS.md`, `.codex/config.toml`, `.agents/skills`, MCP, approvals/sandbox/config | `AGENTS.md` + `.agents/skills` + MCP + shared guards + `SaneMaster.rb` |
-| **Other agents** | Varies by tool | `AGENTS.md` + repo scripts + git/pre-commit checks + shared shell/script guards |
-
-Important: Codex now documents an experimental `features.codex_hooks` flag, but it is still under development and off by default. SaneProcess does not rely on that as the primary path today.
-
----
-
-## The Problems
-
-### 1. Orphaned processes eating your RAM
-
-Claude Code and Codex both spawn agent and MCP sidecars that can outlive their parent sessions. They accumulate silently until your machine crawls or crashes.
-
-SaneProcess kills them automatically on every session start — without touching your active sessions.
-
-```
-🧹 Cleaned up 3 orphaned Claude sessions
-🧹 Cleaned up 7 orphaned MCP daemons
-🧹 Cleaned up 2 orphaned subagents
-```
-
-It uses process tree traversal (BFS) to identify which processes belong to your current session and leaves them alone. Only orphans whose parent sessions have died get cleaned up.
-
-### 2. Doom loops burning tokens
-
-Claude guesses the same broken fix over and over. You watch it burn through tokens on the same error 10 times.
-
-SaneProcess trips a circuit breaker after 3 consecutive failures or 3 identical error signatures. All edit operations are blocked until you acknowledge the problem.
-
-```
-🔴 CIRCUIT BREAKER TRIPPED
-   3 consecutive failures with same error signature
-   Say "reset breaker" after fixing the root cause.
-```
-
-The breaker persists across session restarts — Claude can't bypass it by restarting.
-
-### 3. Edits without research
-
-Claude assumes APIs exist without checking. It writes code using methods that don't exist, then fails, then tries a different nonexistent method.
-
-SaneProcess blocks all edits until research is done across the required categories:
-
-```
-🔴 BLOCKED: Research incomplete
-   ✅ docs   ✅ web   ❌ github   ❌ local
-   Complete all required categories before editing.
-```
-
-Read-only tools (Read, Grep, Glob, search) are never blocked. The gate only applies to mutations.
-
----
-
-## Install
+Install into an existing project:
 
 ```bash
-# Clone the repo
 git clone https://github.com/sane-apps/SaneProcess.git
-
-# Run the installer from your project directory
 cd /path/to/your-project
 /path/to/SaneProcess/scripts/init.sh
 ```
 
-The installer copies hooks into your project's `scripts/hooks/` directory, creates `.claude/settings.json` with Claude hook registration, seeds a starter `AGENTS.md` when missing, and mirrors repo skills into `.agents/skills/` for Codex-compatible clients.
+The installer seeds a client-neutral `AGENTS.md`, mirrors reusable skills for supported agent clients, installs native hook wiring when that client/runtime is present, copies shared support modules and self-tests, protects local runtime state, and prints recommended MCP setup commands.
 
-**Or configure manually** — add to `~/.claude/settings.json` (global) or `.claude/settings.json` (per-project):
-
-```json
-{
-  "hooks": {
-    "SessionStart": [{ "hooks": [{ "type": "command", "command": "ruby /path/to/hooks/session_start.rb", "timeout": 15000 }] }],
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "ruby /path/to/hooks/saneprompt.rb" }] }],
-    "PreToolUse": [{ "hooks": [{ "type": "command", "command": "ruby /path/to/hooks/sanetools.rb" }] }],
-    "PostToolUse": [{ "hooks": [{ "type": "command", "command": "ruby /path/to/hooks/sanetrack.rb" }] }],
-    "Stop": [{ "hooks": [{ "type": "command", "command": "ruby /path/to/hooks/sanestop.rb" }] }]
-  }
-}
-```
-
-**Verify:**
+Verify the install:
 
 ```bash
 ruby scripts/hooks/saneprompt.rb --self-test
-ruby scripts/hooks/sanetools.rb --self-test
 ruby scripts/hooks/sanetrack.rb --self-test
 ruby scripts/hooks/sanestop.rb --self-test
 ```
 
-### Codex Setup
+## What You Get
 
-Codex does not need Claude-style hook registration to use SaneProcess well.
+| Layer | What it does |
+|-------|--------------|
+| Agent rules | One `AGENTS.md` source of truth for compatible coding agents |
+| Native hook adapters | Prompt classification, research gates, path blocking, circuit breaker, session summaries where the client supports lifecycle hooks |
+| Codex path | `AGENTS.md`, `.agents/skills`, MCP, `~/.codex/config.toml`, and shared runtime guards |
+| `SaneMaster.rb` | One CLI for verify, release, status, tool discovery, support, metrics, Mini sync, and quality checks |
+| Shared guards | Shell/script guardrails for risky paths where a client has no native pre-tool hook |
+| Mini-first workflows | Remote build/test/runtime verification on the Mac Mini build server for SaneApps work |
+| Design-system checks | SaneUI drift detection for settings, About, license, and updater surfaces |
 
-1. Keep the repo-level `AGENTS.md` accurate and practical.
-2. Put repo skills in `.agents/skills/` so Codex can discover them.
-3. Keep the Codex registry and user skills coherent: `~/.codex/SKILLS_REGISTRY.md` and `~/.codex/skills/`.
-4. Configure MCP in `~/.codex/config.toml` or project-scoped `.codex/config.toml`.
-5. Use the shared runtime guards for risky paths such as email writes.
+## Supported Clients
 
-Useful commands:
+SaneProcess is intentionally layered instead of pretending every coding agent has the same API.
 
-```bash
-codex mcp list
-codex mcp add context7 -- npx -y @upstash/context7-mcp
-codex mcp add github -- npx -y @modelcontextprotocol/server-github
+| Client | Native surface | Stable SaneProcess path |
+|--------|----------------|-------------------------|
+| Codex | `AGENTS.md`, skills, MCP, approvals/sandbox/config | `AGENTS.md`, `.agents/skills`, `~/.codex/config.toml`, `SaneMaster.rb`, shared guards |
+| Claude Code | Lifecycle hooks (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`) | `scripts/hooks/*.rb`, `.claude/settings.json`, MCP, shared guards |
+| Other agents | Varies by tool | `AGENTS.md`, repo scripts, git/pre-commit checks, shared shell/script guards |
+
+Codex currently documents an experimental `features.codex_hooks` flag. SaneProcess does not rely on that as the production contract today.
+
+## Core Guardrails
+
+### Orphan cleanup
+
+Coding agents and MCP servers can leave sidecars running after the parent session exits. SaneProcess identifies only dead-session descendants and leaves active sessions alone.
+
+```text
+Cleaned up 3 orphaned coding-agent sessions
+Cleaned up 7 orphaned MCP daemons
+Cleaned up 2 orphaned subagents
 ```
 
----
+### Circuit breaker
+
+After repeated failures, SaneProcess stops edit attempts until the root cause is handled.
+
+```text
+CIRCUIT BREAKER TRIPPED
+3 consecutive failures with the same error signature.
+Reset only after fixing the root cause.
+```
+
+### Research gate
+
+Mutation is blocked until the required research categories are satisfied. Read-only inspection stays available.
+
+| Category | Typical sources |
+|----------|-----------------|
+| docs | apple-docs, context7, official references |
+| web | web search or fetch when current external facts matter |
+| github | GitHub issue/PR/repo context when configured |
+| local | file reads, search, existing project docs |
+
+Native hook adapters enforce this at tool time where the client exposes lifecycle hooks. Codex and compatible clients use `AGENTS.md`, skills, MCP, `SaneMaster.rb`, and shell/script guards.
+
+## SaneMaster
+
+`./scripts/SaneMaster.rb` is the canonical workflow wrapper. It prevents each repo from inventing a separate build, release, status, support, or verification path.
+
+Useful public commands:
+
+```bash
+ruby scripts/SaneMaster.rb verify
+ruby scripts/SaneMaster.rb status
+ruby scripts/SaneMaster.rb release_preflight
+ruby scripts/SaneMaster.rb appstore_preflight
+ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"
+ruby scripts/SaneMaster.rb process_metrics --json
+ruby scripts/SaneMaster.rb gate_review test/fixtures/gates/example.json
+ruby scripts/SaneMaster.rb saneui_guard /path/to/app
+```
+
+SaneApps-specific installs also use it for sales/download/event reporting, support inbox workflows, release evidence, Mini sync, QA snapshots, and hosted-file drift checks. See [DEVELOPMENT.md](DEVELOPMENT.md) for the full command map.
+
+## Mini-First Verification
+
+For SaneApps app work, the Mac Mini is the canonical build/test/runtime host. This keeps the controller machine clean and makes UI/runtime proof reproducible.
+
+```bash
+ruby scripts/SaneMaster.rb sync_mini
+ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb SaneBar
+```
+
+Mini runtime scripts live in [scripts/mini/README.md](scripts/mini/README.md). The direct `scripts/automation/sync-codex-mini.sh` script remains available, but operators should prefer the `SaneMaster.rb sync_mini` wrapper.
+
+## SaneUI Guardrails
+
+SaneProcess also carries SaneApps design-system policy because visual drift is part of workflow drift.
+
+For settings, About, license, updater, button-style, or typography work:
+
+- Inspect `~/SaneApps/infra/SaneUI/Sources/SaneUICatalog/SaneUICatalogApp.swift` first.
+- Compose shared `SaneSettingsContainer`, `SaneAboutView`, `LicenseSettingsView`, and `SaneSparkleRow`.
+- Keep shared settings text bright white and at least `13pt`.
+- Do not use `.secondary`, gray helper text, `mailto:` bug-report paths, `Manage Access` copy, app-local updater rows, local `SaneSparkleRow`, or `.buttonStyle(.bordered)` in those surfaces.
+
+Run:
+
+```bash
+ruby scripts/SaneMaster.rb saneui_guard /path/to/app
+```
+
+The guard currently catches shared-shell drift, local `SaneSparkleRow`, `mailto:` support links, `Manage Access` copy, and `.buttonStyle(.bordered)`. Typography and color compliance still require human review until the automated scanner covers those patterns directly.
 
 ## How It Works
 
-SaneProcess has one SOP and two main runtime shapes:
+SaneProcess has one SOP and multiple enforcement shapes:
 
-- **Claude Code:** 4 enforcement hooks plus 1 session-start bootstrap hook.
-- **Codex:** repo instructions, repo skills, MCP, `SaneMaster.rb`, and shared shell/script guards.
+```text
+User prompt
+  -> AGENTS.md / client instructions
+  -> hooks or shared guards
+  -> MCP / local research / tool discovery
+  -> SaneMaster wrapper
+  -> verified action
+```
 
-Claude's native hooks map to these lifecycle events:
+Native hook adapter mapping:
 
 | Hook | Event | Purpose |
 |------|-------|---------|
-| `session_start.rb` | SessionStart | Kills orphans, resets state, bootstraps session |
-| `saneprompt.rb` | UserPromptSubmit | Classifies intent, sets research requirements |
-| `sanetools.rb` | PreToolUse | Blocks edits until research is done |
-| `sanetrack.rb` | PostToolUse | Tracks failures, trips circuit breaker |
-| `sanestop.rb` | Stop | Captures session summary |
+| `session_start.rb` | SessionStart | Cleanup, state bootstrap, session briefing |
+| `saneprompt.rb` | UserPromptSubmit | Intent classification and workflow reminders |
+| `sanetools.rb` | PreToolUse | Research gate, path blocks, circuit breaker blocks |
+| `sanetrack.rb` | PostToolUse | Failure tracking, research evidence, edit/test state |
+| `sanestop.rb` | Stop | Session summary and verification reminders |
 
-All state lives in a single HMAC-signed JSON file (`.claude/state.json`). File-locked for concurrent access. Tamper-detected via HMAC key (macOS Keychain or `~/.claude_hook_secret` on Linux). Atomic writes via tempfile + rename.
+Client adapter state is stored locally in the relevant runtime directory; shared scripts and guards are used by any compatible client.
 
-### Orphan Cleanup
+## Documentation Map
 
-On every session start, three cleanup passes run:
+| File | Owns |
+|------|------|
+| [AGENTS.md](AGENTS.md) | Client-neutral operating rules, trigger map, required workflows |
+| [DEVELOPMENT.md](DEVELOPMENT.md) | Canonical commands, verification paths, Mini workflows, daily SOP |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | System design, decisions, research notes, tradeoffs |
+| [scripts/hooks/README.md](scripts/hooks/README.md) | Native hook layer |
+| [scripts/mini/README.md](scripts/mini/README.md) | Mini runtime/build-server scripts |
+| [scripts/codex-bin/README.md](scripts/codex-bin/README.md) | Codex helper source mirrored to `~/.codex/bin/` |
 
-1. **Parent sessions** — finds `claude` processes not in your current process tree
-2. **MCP daemons** — finds known MCP patterns (context7, apple-docs, xcodebuild, github, serena, central-memory, etc.) not in your session tree
-3. **Subagents** — finds `claude --resume` processes whose parent sessions are dead
-
-Uses BFS process tree traversal. Your active session and any other active terminal sessions are never touched. The same process inspection logic also feeds the Codex MCP watchdog tooling.
-
-### Circuit Breaker
-
-After tool execution, error signatures are normalized and tracked:
-
-- **3 consecutive failures** → breaker trips
-- **3 identical error signatures** → breaker trips
-
-When tripped, all edit/write operations are blocked. Say `reset breaker` or `rb-` to clear after fixing the root cause.
-
-### Research Gate
-
-Before any mutation (Edit, Write, Bash with side effects), research categories must be satisfied:
-
-| Category | Satisfied By | Required? |
-|----------|-------------|-----------|
-| **docs** | apple-docs MCP, context7 MCP | Only if MCP configured |
-| **web** | WebSearch, WebFetch | Always |
-| **github** | GitHub MCP | Only if MCP configured |
-| **local** | Read, Grep, Glob | Always |
-
-The gate adapts to your setup. With no configured MCPs, only `web` + `local` are required. Configure apple-docs/context7 and GitHub in `.mcp.json` to make `docs` and `github` required too. The installer shows recommended MCPs and install commands.
-
-### Tool Discovery Receipt
-
-Before saying a tool is missing, using a workaround, or adding new tooling, generate the receipt:
-
-```bash
-ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"
-```
-
-That receipt checks the skills registry, runs `doctor`, runs `validation_report.rb`, searches local scripts/docs, and writes proof artifacts to `outputs/tool-discovery/`.
-
-### Tool Categorization (Blast Radius)
-
-| Category | Examples | Blocked Until |
-|----------|----------|---------------|
-| Read-only | Read, Grep, Glob, search | Never |
-| Local mutation | Edit, Write | Research complete |
-| Sensitive files | CI/CD, entitlements, Dockerfiles | Confirmed per-file per-session |
-| External mutation | GitHub push | Research complete |
-
----
-
-## Security
-
-- **HMAC-signed state** — `state.json` is signed to detect tampering. Key stored in macOS Keychain (macOS) or `~/.claude_hook_secret` with 600 permissions (Linux).
-- **Blocked system paths** — Prevents edits to `/etc/`, `.ssh/`, `.aws/`, `.gnupg/`
-- **Inline script detection** — `python -c`, `ruby -e`, `node -e` blocked as bash mutations
-- **Sensitive file confirmation** — First edit to CI/CD configs, entitlements, Dockerfiles requires confirmation
-- **Fail-safe defaults** — If a hook errors internally, it allows the operation (exit 0). Never blocks randomly.
-
----
-
-## Tests
-
-452 tests across two frameworks:
-
-**Tier tests (178)** — end-to-end enforcement scenarios:
-
-| Tier | Count | What |
-|------|-------|------|
-| Easy | 61 | Basic functionality |
-| Hard | 58 | Edge cases, state transitions |
-| Villain | 59 | Adversarial bypass attempts |
-
-**Self-tests (282)** — per-hook unit tests:
-
-| Hook | Tests |
-|------|-------|
-| saneprompt | 179 |
-| sanetools | 44 |
-| sanetrack | 32 |
-| sanestop | 27 |
-
-```bash
-# Run all tier tests
-ruby scripts/hooks/test/tier_tests.rb
-
-# Run per-hook self-tests
-ruby scripts/hooks/saneprompt.rb --self-test
-
-# Run a specific tier
-ruby scripts/hooks/test/tier_tests.rb --tier villain
-```
-
----
-
-## Configuration
-
-Configurable via `scripts/hooks/core/config.rb`:
-
-| Setting | Default | What |
-|---------|---------|------|
-| Circuit breaker threshold | 3 | Consecutive failures before trip |
-| File size warning | 500 lines | Yellow warning on edit |
-| File size limit | 800 lines | Block the edit |
-| Blocked paths | `/etc/`, `.ssh/`, `.aws/` | System path protection |
-
----
-
-## Troubleshooting
-
-### "BLOCKED: Research incomplete"
-
-The hook is working correctly. Complete the required research categories before editing. The gate adapts — categories whose MCPs you don't have auto-skip. With no MCPs, only `web` + `local` are required.
-
-### Circuit breaker tripped
-
-Say `reset breaker` or `rb-` in Claude after fixing the root cause.
-
-### central-memory MCP not working
-
-SaneProcess includes a semantic memory MCP server backed by PostgreSQL + `pgvector`.
-
-```bash
-# Provision local database + extension + schema
-cd ~/SaneApps/infra/SaneProcess/scripts/mcp-central-memory
-./bootstrap-local.sh
-
-# Verify MCP health
-~/.codex/bin/check-mcps
-codex mcp list | rg central-memory
-```
-
-Expected: `check-mcps` shows `[PASS] central-memory`.
-
-If it fails:
-
-- Ensure `OPENAI_API_KEY` is available to the Codex app process.
-- Ensure PostgreSQL is running: `brew services list | rg postgresql@17`.
-
-### memory MCP search feels weak
-
-Codex uses a separate graph-style memory MCP for entity/relation recall.
-
-- Config key: `memory` in `/Users/sj/.codex/config.toml`
-- Server: `~/SaneApps/infra/SaneProcess/scripts/mcp-memory-enhanced/server.mjs`
-- Store: `~/.claude/memory/knowledge-graph.jsonl`
-
-Use `memory` when you need exact graph cross-reference like:
-
-- issue ↔ email thread ↔ root cause bucket
-- canonical entity names
-- linked neighbors from a matched node
-
-Use `central-memory` when you need semantic recall across free-form notes.
-
-### Hooks not firing
-
-Check that `.claude/settings.json` contains hook entries pointing to your `scripts/hooks/` directory. Re-run `init.sh` if needed.
-
----
-
-## Requirements
-
-- **macOS or Linux** (process cleanup uses POSIX `ps`; HMAC key uses Keychain on macOS, file-based on Linux)
-- **Ruby 3.x** (`brew install ruby` on macOS; `apt install ruby` or `dnf install ruby` on Linux)
-- **Claude Code** (`npm install -g @anthropic-ai/claude-code`)
-- **Codex** (`brew install codex`, or the desktop/IDE client)
-
----
+The rule is deliberate: update an existing source-of-truth doc before adding another markdown file.
 
 ## Included Skills
 
-SaneProcess ships two reusable audit skills. Claude projects can install them into `.claude/skills/`. Codex-compatible projects should install them into `.agents/skills/`.
+SaneProcess ships reusable skills that can be mirrored into `.agents/skills/` or another client-specific skill directory.
 
-### Critic (`/critic`)
-
-6-persona adversarial code review. Spawns parallel subagents that each review from a different angle:
-
-| Agent | Focus |
-|-------|-------|
-| Bug Hunter | Logic errors, null safety, crashes |
-| Data Flow Tracer | Feature completeness across code paths |
-| Integration Auditor | Cross-system config consistency |
-| Edge Case Explorer | Unusual states, environments |
-| UX Critic | UI/UX quality, clarity, accessibility |
-| Security Auditor | Attack vectors, data exposure |
-
-Findings are deduplicated and ranked by severity. Issues caught by multiple agents get higher confidence scores.
-
-### Docs Audit (`/docs-audit`)
-
-11-perspective documentation audit. Each perspective runs as its own subagent:
-
-| # | Perspective | Focus |
-|---|-------------|-------|
-| 1 | Engineer | Technical accuracy, API docs |
-| 2 | Designer | Screenshots, visual storytelling |
-| 3 | Marketer | Value proposition, "why should I care?" |
-| 4 | User Advocate | Onboarding clarity |
-| 5 | QA | Edge cases, gotchas, troubleshooting |
-| 6 | Hygiene | Duplication, terminology drift |
-| 7 | Security | Leaked secrets, PII, internal URLs |
-| 8 | Freshness | Stale examples, broken links |
-| 9 | Completeness | TODO placeholders, unchecked items |
-| 10 | Ops | Git hygiene, dependencies, certificates |
-| 11 | Consistency | Broken references in CLAUDE.md vs actual code |
-
-Produces a consolidated gap report with scores, critical issues, and recommended fixes — sorted by what the agent can fix vs what needs human action.
-
-Skills are mirrored into `.claude/skills/` and `.agents/skills/` during `init.sh` setup.
-
----
+| Skill | Purpose |
+|-------|---------|
+| `critic` | Multi-perspective code review: bugs, data flow, integration, edge cases, UX, security |
+| `docs-audit` | Compatibility shim for the global audit workflow; keeps audit artifacts temporary and promotes durable conclusions into source-of-truth docs |
 
 ## Project Structure
 
-```
+```text
 scripts/
-├── hooks/                    # All enforcement hooks
-│   ├── session_start.rb      # SessionStart — orphan cleanup, state reset
-│   ├── saneprompt.rb         # UserPromptSubmit — classify, set requirements
-│   ├── sanetools.rb          # PreToolUse — block until research done
-│   ├── sanetrack.rb          # PostToolUse — track failures, circuit breaker
-│   ├── sanestop.rb           # Stop — session summary
-│   ├── core/                 # Shared infrastructure
-│   │   ├── config.rb         # Paths, thresholds, settings
-│   │   ├── state_manager.rb  # Signed state file management
-│   │   └── context_compact.rb
-│   └── test/                 # Test suites
-│       └── tier_tests.rb     # 178 enforcement tests
-├── init.sh                   # Project installer
-└── qa.rb                     # QA runner
-AGENTS.md                     # Shared agent instructions
-skills/
-├── critic/                   # 6-persona adversarial code review
-│   ├── SKILL.md
-│   └── prompts/              # 6 agent prompts
-└── docs-audit/               # 11-perspective documentation audit
-    ├── SKILL.md
-    └── prompts/              # 11 agent prompts
-.claude/
-├── rules/                    # Path-specific guidance (installed by init.sh)
-│   ├── hooks.md              # Hook conventions
-│   └── scripts.md            # Ruby script conventions
-├── skills/                   # Installed by init.sh from skills/
-└── settings.json             # Hook registration
-.agents/
-└── skills/                   # Codex-compatible repo skills (installed by init.sh)
+  hooks/          Native enforcement hooks and tests
+  sanemaster/     SaneMaster command modules
+  mini/           Mac Mini runtime/build-server scripts
+  automation/     Scripted automation helpers
+  codex-bin/      Codex control-plane helper source
+skills/           Reusable repo skills
+templates/        Project, docs, release, and UI templates
+AGENTS.md         Shared agent instructions
+DEVELOPMENT.md    Operating procedure and commands
+ARCHITECTURE.md   System design and durable decisions
 ```
 
----
+## Requirements
+
+- macOS or Linux
+- Ruby available on the target machine. Current hooks are written to run on the system Ruby used by macOS automation lanes; Ruby 3.x is recommended for local development.
+- A compatible coding agent that can follow repo instructions and scripts. Codex and native lifecycle-hook paths have the best-documented support today.
+
+## Tests
+
+The full verification path is registry-backed so new script tests cannot silently fall out of `verify`.
+
+```bash
+ruby scripts/SaneMaster.rb verify
+ruby scripts/hooks/test/tier_tests.rb
+ruby scripts/hooks/saneprompt.rb --self-test
+ruby scripts/hooks/sanetrack.rb --self-test
+ruby scripts/hooks/sanestop.rb --self-test
+```
+
+Hook-layer docs list hook-specific counts. Full repo counts change as registry-backed Ruby, Python, shell, and hook tests are added; use `SaneMaster.rb verify` as the source of truth. `sanetools` coverage is included in the tier and full verification paths; its standalone self-test is not advertised until the tool-discovery self-test path is repaired.
+
+## Security
+
+The enforcement runtime is local-first: adapter state and logs stay on your machine, and hooks do not send telemetry. Some optional automation scripts can call external services such as GitHub, App Store Connect, Cloudflare, email, or sales/download APIs when an operator runs those commands. See [SECURITY.md](SECURITY.md).
 
 ## Uninstall
 
-Remove hook entries from `.claude/settings.json`. Delete `scripts/hooks/`. Delete `.claude/state.json`.
-
-No global state modified. No daemons installed. No system changes.
-
----
+Remove installed hook entries for any client adapter you enabled, delete copied `scripts/hooks/` if you installed them into a project, and remove generated local runtime state for that adapter.
 
 ## License
 
@@ -440,7 +238,7 @@ MIT License. See [LICENSE](LICENSE).
 
 ---
 
-*Built by [SaneApps](https://saneapps.com). Used in production across 7 projects.*
+Built by [SaneApps](https://saneapps.com).
 
 <!-- SANEAPPS_AI_CONTRIB_START -->
 ### Become a Contributor (Even if You Don't Code)
@@ -450,7 +248,7 @@ Do you have a great idea that could help everyone in the community, but think yo
 
 Good news: you actually can.
 
-Copy and paste this into Claude or Codex, then describe your bug or idea:
+Copy and paste this into your preferred coding agent, then describe your bug or idea:
 
 ```text
 I want to contribute to this repo, but I'm not a coder.

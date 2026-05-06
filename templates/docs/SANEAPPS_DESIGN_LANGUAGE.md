@@ -303,14 +303,15 @@ struct SaneEmptyState: View {
         VStack(spacing: 16) {
             Image(systemName: icon)
                 .font(.system(size: 48))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.white.opacity(0.9))
 
             VStack(spacing: 4) {
                 Text(title)
                     .font(.headline)
+                    .foregroundStyle(.white)
                 Text(description)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.9))
                     .multilineTextAlignment(.center)
             }
 
@@ -342,8 +343,8 @@ struct LoadingOverlay: View {
                     .scaleEffect(1.2)
                 if let message = message {
                     Text(message)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.9))
                 }
             }
             .padding(24)
@@ -446,14 +447,15 @@ Button("Action") { }
 ### Secondary Action
 ```swift
 Button("Cancel") { }
-    .buttonStyle(.bordered)
+    .buttonStyle(.plain)
+    .foregroundStyle(.white)
 ```
 
 ### Destructive Action
 ```swift
 Button("Delete", role: .destructive) { }
-    .buttonStyle(.bordered)
-    .tint(.red)
+    .buttonStyle(.plain)
+    .foregroundStyle(.red)
 ```
 
 ---
@@ -480,7 +482,8 @@ VStack(spacing: 24) {
     HStack(spacing: 12) {
         Button("Cancel") { }
             .keyboardShortcut(.cancelAction)
-            .buttonStyle(.bordered)
+            .buttonStyle(.plain)
+            .foregroundStyle(.white)
 
         Button("Primary Action") { }
             .keyboardShortcut(.defaultAction)
