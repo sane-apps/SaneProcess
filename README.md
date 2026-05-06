@@ -6,7 +6,8 @@
 
 **Workflow guardrails for coding agents and LLM-assisted development.**
 
-SaneProcess keeps AI-assisted development on rails: use native hooks where a client supports them, and use `AGENTS.md`, skills, MCP, `SaneMaster.rb`, and shared shell/script guards everywhere else.
+SaneProcess gives coding agents a shared operating system for development work: clear instructions, stop conditions, research gates, verification commands, and release checks that keep them from looping, skipping tests, or mutating the wrong files.
+It uses native hooks where a client supports them, and falls back to `AGENTS.md`, skills, MCP, `SaneMaster.rb`, and shared shell/script guards everywhere else.
 The source of truth is client-neutral, so one LLM tool never owns the workflow.
 
 MIT licensed. Ruby. macOS + Linux. Used across 7 SaneApps repos.
