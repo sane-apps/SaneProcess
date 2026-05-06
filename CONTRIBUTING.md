@@ -30,7 +30,6 @@ SaneProcess/
     SaneMaster.rb       Main workflow CLI
     hooks/              Native hook layer
     sanemaster/         CLI command modules
-    mini/               Mac Mini runtime scripts
     automation/         Helper scripts behind canonical wrappers
   templates/            Project/docs/release/UI templates
   skills/               Reusable agent skills

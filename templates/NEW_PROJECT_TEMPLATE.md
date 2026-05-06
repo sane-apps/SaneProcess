@@ -1,6 +1,7 @@
 # Sane* Project Template
 
-> Use this template when setting up a new Sane* project for Claude Code, Codex, and other compatible coding agents.
+> SaneApps internal template. Use this when setting up a new Sane* project for Claude Code, Codex, and other compatible coding agents.
+> Public adopters should treat hardcoded `~/SaneApps/...` paths and Sane* app names as examples to replace with their own repo paths and products.
 > Trigger: "set up project template for X" or "use project template for X"
 
 ## Quick Setup Checklist

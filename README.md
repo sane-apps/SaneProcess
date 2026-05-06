@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/hero-shield.jpeg" alt="SaneProcess - workflow enforcement for coding agents" width="100%">
+  <img src="assets/hero-process.jpeg" alt="SaneProcess - workflow guardrails for coding agents" width="100%">
 </p>
 
 # SaneProcess
@@ -40,9 +40,9 @@ ruby scripts/hooks/sanestop.rb --self-test
 | Agent rules | One `AGENTS.md` source of truth for compatible coding agents |
 | Native hook adapters | Prompt classification, research gates, path blocking, circuit breaker, session summaries where the client supports lifecycle hooks |
 | Codex path | `AGENTS.md`, `.agents/skills`, MCP, `~/.codex/config.toml`, and shared runtime guards |
-| `SaneMaster.rb` | One CLI for verify, release, status, tool discovery, support, metrics, Mini sync, and quality checks |
+| `SaneMaster.rb` | One CLI for verify, release, status, tool discovery, metrics, and quality checks |
 | Shared guards | Shell/script guardrails for risky paths where a client has no native pre-tool hook |
-| Mini-first workflows | Remote build/test/runtime verification on the Mac Mini build server for SaneApps work |
+| Optional runner adapters | Use local checks by default, or plug in your own remote runner/build host if your team has one |
 | Design-system checks | SaneUI drift detection for settings, About, license, and updater surfaces |
 
 ## Supported Clients
@@ -109,26 +109,25 @@ ruby scripts/SaneMaster.rb gate_review test/fixtures/gates/example.json
 ruby scripts/SaneMaster.rb saneui_guard /path/to/app
 ```
 
-SaneApps-specific installs also use it for sales/download/event reporting, support inbox workflows, release evidence, Mini sync, QA snapshots, and hosted-file drift checks. See [DEVELOPMENT.md](DEVELOPMENT.md) for the full command map.
+Project-specific installs can add their own release, support, analytics, or remote-runner commands behind the same wrapper pattern. See [DEVELOPMENT.md](DEVELOPMENT.md) for the full command map.
 
-## Mini-First Verification
+## Optional Remote Runners
 
-For SaneApps app work, the Mac Mini is the canonical build/test/runtime host. This keeps the controller machine clean and makes UI/runtime proof reproducible.
+SaneProcess does not require a second machine. The default path is local verification:
 
 ```bash
-ruby scripts/SaneMaster.rb sync_mini
-ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb SaneBar
+ruby scripts/SaneMaster.rb verify
 ```
 
-Mini runtime scripts live in [scripts/mini/README.md](scripts/mini/README.md). The direct `scripts/automation/sync-codex-mini.sh` script remains available, but operators should prefer the `SaneMaster.rb sync_mini` wrapper.
+Teams that already use a remote builder, CI runner, or dedicated test host can wire that through `SaneMaster.rb` so agents still call one safe project command instead of inventing raw build/test steps.
 
 ## SaneUI Guardrails
 
-SaneProcess also carries SaneApps design-system policy because visual drift is part of workflow drift.
+SaneProcess also carries SaneApps design-system policy as an example of enforcing product-specific UI rules alongside code workflow rules.
 
-For settings, About, license, updater, button-style, or typography work:
+For projects using SaneUI settings, About, license, updater, button-style, or typography surfaces:
 
-- Inspect `~/SaneApps/infra/SaneUI/Sources/SaneUICatalog/SaneUICatalogApp.swift` first.
+- Inspect the shared SaneUI catalog/source of truth first.
 - Compose shared `SaneSettingsContainer`, `SaneAboutView`, `LicenseSettingsView`, and `SaneSparkleRow`.
 - Keep shared settings text bright white and at least `13pt`.
 - Do not use `.secondary`, gray helper text, `mailto:` bug-report paths, `Manage Access` copy, app-local updater rows, local `SaneSparkleRow`, or `.buttonStyle(.bordered)` in those surfaces.
@@ -171,10 +170,9 @@ Client adapter state is stored locally in the relevant runtime directory; shared
 | File | Owns |
 |------|------|
 | [AGENTS.md](AGENTS.md) | Client-neutral operating rules, trigger map, required workflows |
-| [DEVELOPMENT.md](DEVELOPMENT.md) | Canonical commands, verification paths, Mini workflows, daily SOP |
+| [DEVELOPMENT.md](DEVELOPMENT.md) | Canonical commands, verification paths, daily SOP |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design, decisions, research notes, tradeoffs |
 | [scripts/hooks/README.md](scripts/hooks/README.md) | Native hook layer |
-| [scripts/mini/README.md](scripts/mini/README.md) | Mini runtime/build-server scripts |
 | [scripts/codex-bin/README.md](scripts/codex-bin/README.md) | Codex helper source mirrored to `~/.codex/bin/` |
 
 The rule is deliberate: update an existing source-of-truth doc before adding another markdown file.
@@ -194,7 +192,6 @@ SaneProcess ships reusable skills that can be mirrored into `.agents/skills/` or
 scripts/
   hooks/          Native enforcement hooks and tests
   sanemaster/     SaneMaster command modules
-  mini/           Mac Mini runtime/build-server scripts
   automation/     Scripted automation helpers
   codex-bin/      Codex control-plane helper source
 skills/           Reusable repo skills
