@@ -7,7 +7,7 @@
 **Workflow guardrails for coding agents and LLM-assisted development.**
 
 SaneProcess gives coding agents a shared operating system for development work: clear instructions, stop conditions, research gates, verification commands, and release checks that keep them from looping, skipping tests, or mutating the wrong files.
-It uses native hooks where a client supports them, and falls back to `AGENTS.md`, skills, MCP, `SaneMaster.rb`, and shared shell/script guards everywhere else.
+Claude Code gets the strongest native hook enforcement today. Codex and other repo-aware agents can use the same SOP through `AGENTS.md`, reusable skills, MCP, `SaneMaster.rb`, and project scripts.
 The source of truth is client-neutral, so one LLM tool never owns the workflow.
 
 MIT licensed. Ruby. macOS + Linux. Used across 7 SaneApps repos.
@@ -21,17 +21,31 @@ Install into an existing project:
 ```bash
 git clone https://github.com/sane-apps/SaneProcess.git
 cd /path/to/your-project
-/path/to/SaneProcess/scripts/init.sh
+/path/to/SaneProcess/scripts/init.sh --client generic
 ```
 
-The installer seeds a client-neutral `AGENTS.md`, mirrors reusable skills for supported agent clients, installs native hook wiring when that client/runtime is present, copies shared support modules and self-tests, protects local runtime state, and prints recommended MCP setup commands.
+Choose the adapter you actually use:
 
-Verify the install:
+| Setup | Command | Installs |
+|-------|---------|----------|
+| Generic agent | `scripts/init.sh --client generic` | `AGENTS.md` only |
+| Codex-style | `scripts/init.sh --client codex` | `AGENTS.md` + `.agents/skills` |
+| Claude Code | `scripts/init.sh --client claude` | `AGENTS.md` + `.claude/settings.json` + native hooks |
+| Full SaneApps-style setup | `scripts/init.sh --client all` | Claude hooks + `.agents/skills` |
+
+No hosted service, SaneApps account, second machine, or specific model backend is required. The default with no flags is `--client all` so existing SaneApps workflows keep the full surface.
+
+Verify the install path you chose:
 
 ```bash
+# Every install mode
+test -f AGENTS.md
+
+# Codex or all
+test -d .agents/skills
+
+# Claude or all
 ruby scripts/hooks/saneprompt.rb --self-test
-ruby scripts/hooks/sanetrack.rb --self-test
-ruby scripts/hooks/sanestop.rb --self-test
 ```
 
 ## What You Get
@@ -40,23 +54,23 @@ ruby scripts/hooks/sanestop.rb --self-test
 |-------|--------------|
 | Agent rules | One `AGENTS.md` source of truth for compatible coding agents |
 | Native hook adapters | Prompt classification, research gates, path blocking, circuit breaker, session summaries where the client supports lifecycle hooks |
-| Codex path | `AGENTS.md`, `.agents/skills`, MCP, `~/.codex/config.toml`, and shared runtime guards |
+| Codex path | `AGENTS.md`, `.agents/skills`, MCP, client config, and shared project scripts |
 | `SaneMaster.rb` | One CLI for verify, release, status, tool discovery, metrics, and quality checks |
 | Shared guards | Shell/script guardrails for risky paths where a client has no native pre-tool hook |
 | Optional runner adapters | Use local checks by default, or plug in your own remote runner/build host if your team has one |
-| Design-system checks | SaneUI drift detection for settings, About, license, and updater surfaces |
+| Optional policy checks | Add product-specific checks such as design-system rules behind the same wrapper pattern |
 
 ## Supported Clients
 
 SaneProcess is intentionally layered instead of pretending every coding agent has the same API.
 
-| Client | Native surface | Stable SaneProcess path |
-|--------|----------------|-------------------------|
-| Codex | `AGENTS.md`, skills, MCP, approvals/sandbox/config | `AGENTS.md`, `.agents/skills`, `~/.codex/config.toml`, `SaneMaster.rb`, shared guards |
-| Claude Code | Lifecycle hooks (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`) | `scripts/hooks/*.rb`, `.claude/settings.json`, MCP, shared guards |
-| Other agents | Varies by tool | `AGENTS.md`, repo scripts, git/pre-commit checks, shared shell/script guards |
+| Client | Install mode | What is enforced today |
+|--------|--------------|------------------------|
+| Claude Code | `--client claude` | Native lifecycle hooks plus `AGENTS.md`, MCP, skills, and shared scripts |
+| Codex | `--client codex` | `AGENTS.md`, `.agents/skills`, MCP, client config, approvals/sandboxing, and shared scripts |
+| Other agents | `--client generic` | `AGENTS.md`, repo scripts, git/pre-commit checks, MCP if supported, and whatever runtime guards the client can honor |
 
-Codex currently documents an experimental `features.codex_hooks` flag. SaneProcess does not rely on that as the production contract today.
+Codex now documents hook support, but SaneProcess still treats Codex hooks as an adapter layer rather than the universal enforcement base. The portable contract remains `AGENTS.md` plus project-owned scripts.
 
 ## Core Guardrails
 
@@ -122,9 +136,9 @@ ruby scripts/SaneMaster.rb verify
 
 Teams that already use a remote builder, CI runner, or dedicated test host can wire that through `SaneMaster.rb` so agents still call one safe project command instead of inventing raw build/test steps.
 
-## SaneUI Guardrails
+## Optional Policy Packs
 
-SaneProcess also carries SaneApps design-system policy as an example of enforcing product-specific UI rules alongside code workflow rules.
+SaneProcess can carry product-specific policy packs alongside generic process rules. SaneApps uses this for SaneUI design-system checks, but outside teams can remove or replace that policy.
 
 For projects using SaneUI settings, About, license, updater, button-style, or typography surfaces:
 
@@ -139,7 +153,7 @@ Run:
 ruby scripts/SaneMaster.rb saneui_guard /path/to/app
 ```
 
-The guard currently catches shared-shell drift, local `SaneSparkleRow`, `mailto:` support links, `Manage Access` copy, and `.buttonStyle(.bordered)`. Typography and color compliance still require human review until the automated scanner covers those patterns directly.
+The SaneUI guard currently catches shared-shell drift, local `SaneSparkleRow`, `mailto:` support links, `Manage Access` copy, and `.buttonStyle(.bordered)`. Typography and color compliance still require human review until the automated scanner covers those patterns directly.
 
 ## How It Works
 

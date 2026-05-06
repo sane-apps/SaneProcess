@@ -8,9 +8,9 @@ How the enforcement system works, why decisions were made, and where it's headed
 
 ## 1. System Overview
 
-SaneProcess is agent workflow enforcement built around the scientific method. Today it has a Claude-native hook runtime, a Codex-native instruction/config/skill runtime, and shared shell/script guardrails that both clients can hit. The Claude side uses four Ruby hooks plus one session bootstrap hook to enforce research-before-edit discipline through a 4-category research gate (docs, web, github, local) and to prevent doom loops via a circuit breaker. Shared state lives in a single HMAC-signed JSON file for the Claude hook runtime.
+SaneProcess is agent workflow enforcement built around the scientific method. It has one portable SOP and several adapter layers: a Claude-native hook runtime, a Codex-oriented instruction/config/skill path, and a generic `AGENTS.md` baseline for any repo-aware coding agent. The Claude side uses four Ruby hooks plus one session bootstrap hook to enforce research-before-edit discipline through a 4-category research gate (docs, web, github, local) and to prevent doom loops via a circuit breaker. Shared state lives in a single HMAC-signed JSON file for the Claude hook runtime.
 
-Codex note: the stable Codex contract is `AGENTS.md`, `.agents/skills`, `.codex/config.toml`, MCP, and shared runtime guardrails such as `check-inbox.sh` send approval plus `sane_curl_guard.sh`. Codex documents an experimental `features.codex_hooks` flag, but SaneProcess does not treat it as production-ready yet.
+Codex note: the stable Codex contract is `AGENTS.md`, `.agents/skills`, Codex config, MCP, and shared runtime guardrails such as `check-inbox.sh` send approval plus `sane_curl_guard.sh`. Codex now documents hook support, but SaneProcess treats hooks as an adapter layer rather than the portable enforcement base.
 
 ### Component Diagram
 
@@ -21,6 +21,7 @@ graph TD
     CC -->|PostToolUse| SK[sanetrack.rb]
     CC -->|Stop| SS[sanestop.rb]
     CX[Codex] -->|AGENTS.md + .agents/skills + MCP| SH[Shared SOP]
+    GA[Generic agents] -->|AGENTS.md + repo scripts| SH
     CX -->|Shared shell/script guards| GUARD[sane_curl_guard.sh + check-inbox.sh]
 
     SP --> STATE[state.json]

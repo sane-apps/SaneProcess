@@ -31,13 +31,16 @@ This file is the durable, client-neutral instruction surface for the repo.
 - User-facing docs changed if behavior or workflow changed.
 - Open questions and risks are written down plainly.
 
-## Shared UI Source Of Truth
+## Optional Project Policy
 
-- For settings, About, license, updater, button-style, or typography work, inspect `~/SaneApps/infra/SaneUI/Sources/SaneUICatalog/SaneUICatalogApp.swift` first.
-- Extend shared SaneUI components instead of creating app-local settings chrome.
-- Use shared `SaneSettingsContainer`, `SaneAboutView`, `LicenseSettingsView`, and `SaneSparkleRow` where applicable.
-- In shared settings surfaces, keep all text bright white and at least 13pt.
-- Do not use `.secondary`, gray helper text, `mailto:` bug-report paths, `Manage Access` copy, app-local updater rows, local `SaneSparkleRow`, or `.buttonStyle(.bordered)` in settings/About/license/update UI.
+Add product-specific rules here only when they apply to this repo.
+
+Examples:
+- Design-system source of truth and typography rules
+- Release, support, privacy, or billing gates
+- Required local, CI, or remote-runner verification commands
+
+Keep these rules concrete and replaceable so the repo is not tied to one AI client, one machine, or one company's private workflow.
 
 ## Client Notes
 

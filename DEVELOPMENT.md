@@ -25,15 +25,16 @@ Use the same anti-fragmentation rule across every SaneApps repo:
 
 ## Client Compatibility
 
-SaneProcess has one SOP and multiple client-specific enforcement surfaces.
+SaneProcess has one SOP and multiple client-specific enforcement surfaces. The installer is adapter-selectable so public users do not get client-specific files they do not use.
 
-| Client | First-class path | What is stable today |
-|--------|------------------|----------------------|
-| **Claude Code** | Native lifecycle hooks | `scripts/hooks/*.rb` + `.claude/settings.json` |
-| **Codex** | Repo instructions + repo skills + config | `AGENTS.md`, `.agents/skills`, `~/.codex/config.toml` or `.codex/config.toml`, MCP, shared script/shell guards |
-| **Other LLM agents** | Repo instructions + scripts | `AGENTS.md`, `SaneMaster.rb`, git hooks, MCP, and whatever local runtime guards the client can honor |
+| Client | Install mode | What is stable today |
+|--------|--------------|----------------------|
+| **Claude Code** | `scripts/init.sh --client claude` | `AGENTS.md`, native lifecycle hooks in `.claude/settings.json`, `.claude/skills`, MCP, shared scripts |
+| **Codex** | `scripts/init.sh --client codex` | `AGENTS.md`, `.agents/skills`, Codex config, MCP, shared script/shell guards |
+| **Other LLM agents** | `scripts/init.sh --client generic` | `AGENTS.md`, repo scripts, git hooks, MCP if supported, and whatever local runtime guards the client can honor |
+| **SaneApps/internal full setup** | `scripts/init.sh --client all` | Claude hooks plus `.agents/skills`; this is also the no-flag default for backward compatibility |
 
-Codex now documents an experimental `features.codex_hooks` flag, but it is still under development and off by default. Do not make it the primary SaneProcess contract yet.
+Codex now documents hook support, but SaneProcess treats it as a client adapter layer. Do not make Codex hooks the only enforcement path for a rule that should remain portable.
 
 Codex extras that are stable enough to use in SOPs today:
 - `tool_search` for deferred app/MCP capability discovery before claiming a tool is missing
@@ -46,7 +47,7 @@ Stable cross-client guardrails already enforced in shared runtime paths:
 - `~/SaneApps/infra/scripts/check-inbox.sh` (`present-draft` / `approve --user-approval` / `require_email_send_approval`)
 - `scripts/hooks/sane_curl_guard.sh` via `~/.local/bin/curl` wrapper
 
-Run `ruby scripts/SaneMaster.rb system_check` to verify both Claude hooks and Codex/shared guard wiring.
+Run `ruby scripts/SaneMaster.rb system_check` to verify SaneApps' full Claude/Codex/shared guard wiring. Public adopters can verify the selected install mode with `scripts/init.sh --client <mode>` in a temporary directory.
 
 ## The Rules: Scientific Method for AI
 
@@ -928,25 +929,25 @@ Run on a fresh machine or directory without SaneProcess installed.
 ### Prerequisites
 
 - macOS with Ruby installed
-- `claude` CLI installed (`npm install -g @anthropic-ai/claude-code`)
+- Optional: Claude Code or Codex CLI if you are testing those adapters
 
 ### Test Steps
 
 ```bash
-# 1. Create test directory
-mkdir /tmp/saneprocess-test && cd /tmp/saneprocess-test
-
-# 2. Run init.sh
-curl -sL https://raw.githubusercontent.com/sane-apps/SaneProcess/main/scripts/init.sh | bash
+for client in generic codex claude all; do
+  mkdir "/tmp/saneprocess-$client"
+  cd "/tmp/saneprocess-$client"
+  /path/to/SaneProcess/scripts/init.sh --client "$client"
+done
 ```
 
 ### Verification Checklist
 
-- [ ] `.claude/` and `.claude/rules/` exist
-- [ ] `scripts/hooks/` and `scripts/hooks/core/` exist
-- [ ] `.claude/settings.json` is valid JSON with hook entries
-- [ ] Syntax validation: `for f in scripts/hooks/*.rb; do ruby -c "$f"; done`
-- [ ] Hook registration: `grep -c "scripts/hooks" .claude/settings.json` (>= 5)
+- [ ] `--client generic` creates `AGENTS.md` and does not create `.claude/` or `.agents/`
+- [ ] `--client codex` creates `AGENTS.md` and `.agents/skills/`, but not `.claude/settings.json`
+- [ ] `--client claude` creates `AGENTS.md`, `.claude/settings.json`, `.claude/skills/`, and `scripts/hooks/`
+- [ ] `--client all` creates both Claude hook wiring and `.agents/skills/`
+- [ ] Claude hook syntax validation passes: `for f in scripts/hooks/*.rb; do ruby -c "$f"; done`
 
 ### Regression Tests
 
