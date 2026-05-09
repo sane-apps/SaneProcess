@@ -117,12 +117,15 @@ python3 scripts/automation/hosted-file-actions.py --xlsx /tmp/hosted_file_action
 1. Fetches the current SaneApps product/variant/file snapshot from the Lemon Squeezy API.
 2. Fetches the live appcast version + dist ZIP URL for each direct-download app.
 3. Flags version drift where the published hosted file is older than the live appcast.
-4. Writes a `Current Actions` sheet with the exact product ID, variant ID, dashboard URL, and dist ZIP to upload.
-5. Writes a `Live Snapshot` sheet so the full current state is visible even when only some apps drift.
-6. Audits `~/Desktop/LemonSqueezy-Uploads` and flags stale or missing latest ZIPs so dashboard uploads start from a clean file picker.
-7. Saves a dated workbook plus `outputs/hosted_file_actions/latest.xlsx`.
+4. Flags cleanup drift where the latest hosted file exists but old ZIPs are still published beside it.
+5. Writes a `Current Actions` sheet with the exact product ID, variant ID, dashboard URL, dist ZIP to upload, and old hosted ZIPs to remove.
+6. Writes a `Live Snapshot` sheet so the full current state is visible even when only some apps drift.
+7. Audits `~/Desktop/LemonSqueezy-Uploads` and flags stale or missing latest ZIPs so dashboard uploads start from a clean file picker.
+8. Saves a dated workbook plus `outputs/hosted_file_actions/latest.xlsx`.
 
 **Upload staging rule:** `~/Desktop/LemonSqueezy-Uploads` should contain only the latest ZIP for each direct-download app. Move older app ZIPs to Trash before opening Lemon Squeezy; do not leave old release files in the picker.
+
+**Dashboard cleanup rule:** after replacing a product file in Lemon Squeezy, delete or unpublish old hosted ZIPs for that variant so customers see only the current release. Rerun the tracker and keep the evidence with the release notes.
 
 **Canonical path:** prefer `ruby ../SaneMaster.rb hosted_file_actions` from the repo root.
 
@@ -278,9 +281,9 @@ reconcile-air-mini.sh mini --no-sync-control-plane
 **What it does:**
 1. Optionally syncs control-plane files to Mini without restarting Codex.
    Default behavior keeps Mini AM/PM runs paused. Use `--activate-mini-runs` only when you explicitly want unattended Mini runs re-enabled.
-2. Runs `git-sync-safe.sh --reconcile-dirty` on the Mini first.
-3. Runs `git-sync-safe.sh --peer mini --reconcile-dirty` locally.
-4. Leaves canonical repos clean on both machines or fails loudly.
+2. Runs `git-sync-safe.sh` on the Mini first.
+3. Runs `git-sync-safe.sh --peer mini` locally.
+4. Fails loudly on dirty canonical repos so work is reconciled explicitly.
 
 ### git-sync-safe.sh
 
@@ -293,11 +296,12 @@ git-sync-safe.sh
 # Compare local repos against Mini for branch/head/dirty drift
 git-sync-safe.sh --peer mini
 
-# Auto-stash dirty canonical repos before syncing
-git-sync-safe.sh --reconcile-dirty
+# Legacy manual recovery only: auto-stash dirty canonical repos before syncing.
+# This is disabled unless SANEPROCESS_ALLOW_AUTO_STASH=1 is set.
+SANEPROCESS_ALLOW_AUTO_STASH=1 git-sync-safe.sh --reconcile-dirty
 
-# Reconcile local canonical repos and verify Mini parity
-git-sync-safe.sh --peer mini --reconcile-dirty
+# Legacy manual recovery with Mini parity check.
+SANEPROCESS_ALLOW_AUTO_STASH=1 git-sync-safe.sh --peer mini --reconcile-dirty
 
 # Allow dirty working trees (warning-only mode)
 git-sync-safe.sh --allow-dirty
@@ -310,7 +314,7 @@ git-sync-safe.sh --allow-dirty
 4. Fetches from origin.
 5. Fast-forward pulls only when clean.
 6. Auto-pushes only clean `main/master` ahead commits.
-7. Flags dirty trees as issues by default, or auto-stashes them first in `--reconcile-dirty` mode.
+7. Flags dirty trees as issues by default. `--reconcile-dirty` is a legacy manual recovery path and refuses to run unless `SANEPROCESS_ALLOW_AUTO_STASH=1` is set.
 7. Optional peer mode (`--peer <host>`) checks branch/head/dirty parity over SSH.
 
 ### install-repo-reconcile-agent.sh

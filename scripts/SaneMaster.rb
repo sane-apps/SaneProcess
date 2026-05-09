@@ -226,7 +226,7 @@ class SaneMaster
         'export' => { args: '[--highlight]', desc: 'Export code to PDF (~/Downloads)' },
         'md_export' => { args: '<file.md>', desc: 'Convert markdown to PDF' },
         'listing_actions' => { args: '[--json|--json-out PATH|--xlsx PATH|--max-pages N]', desc: 'Export listing/setup action tracker from inbox history (XLSX)' },
-        'hosted_file_actions' => { args: '[--json|--json-out PATH|--xlsx PATH]', desc: 'Export Lemon Squeezy hosted-file dashboard actions (XLSX)' },
+        'hosted_file_actions' => { args: '[--json|--json-out PATH|--xlsx PATH|--evidence-out PATH]', desc: 'Export Lemon Squeezy hosted-file dashboard actions (XLSX)' },
         'deps' => { args: '[--dot]', desc: 'Show dependency graph' },
         'quality' => { args: '', desc: 'Generate Ruby quality report' }
       }
@@ -1907,12 +1907,13 @@ PY
       ]
     },
     'hosted_file_actions' => {
-      usage: 'hosted_file_actions [--json|--json-out PATH|--xlsx PATH]',
+      usage: 'hosted_file_actions [--json|--json-out PATH|--xlsx PATH|--evidence-out PATH]',
       description: 'Export Lemon Squeezy hosted-file dashboard sync actions with exact product, variant, version, and dashboard links.',
       flags: {
         '--json' => 'Print JSON instead of writing XLSX',
         '--json-out PATH' => 'Write the JSON payload to a file while still generating XLSX output',
-        '--xlsx PATH' => 'Custom XLSX output path (default: outputs/hosted_file_actions/saneapps_hosted_file_actions_<date>.xlsx)'
+        '--xlsx PATH' => 'Custom XLSX output path (default: outputs/hosted_file_actions/saneapps_hosted_file_actions_<date>.xlsx)',
+        '--evidence-out PATH' => 'Write Markdown release evidence with current actions, upload-folder audit, and live snapshot'
       },
       examples: [
         'hosted_file_actions',

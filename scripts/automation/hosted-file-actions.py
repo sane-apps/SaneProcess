@@ -48,6 +48,8 @@ CURRENT_COLUMNS = [
     "expected_version",
     "hosted_version",
     "filename",
+    "published_file_count",
+    "extra_filenames",
     "dashboard_url",
     "dist_url",
     "product_id",
@@ -63,6 +65,8 @@ SNAPSHOT_COLUMNS = [
     "expected_version",
     "hosted_version",
     "filename",
+    "published_file_count",
+    "extra_filenames",
     "dashboard_url",
     "dist_url",
     "product_id",
@@ -190,11 +194,25 @@ def fetch_json(url: str, api_key: str | None = None) -> dict[str, Any] | list[An
 
 
 def fetch_text(url: str) -> str:
-    result = subprocess.run(
-        ["curl", "-fsSL", "-A", "SaneProcess/1.0", url],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "curl",
+                "-fsSL",
+                "--connect-timeout",
+                "5",
+                "--max-time",
+                "20",
+                "-A",
+                "SaneProcess/1.0",
+                url,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=25,
+        )
+    except subprocess.TimeoutExpired:
+        return ""
     return result.stdout if result.returncode == 0 else ""
 
 
@@ -228,6 +246,44 @@ def fetch_appcast_release(url: str) -> tuple[str, str]:
 def extract_version_from_filename(filename: str) -> str:
     matches = re.findall(r"(\d+\.\d+\.\d+)", filename or "")
     return matches[-1] if matches else ""
+
+
+def file_name(record: dict[str, Any] | None) -> str:
+    return str((record or {}).get("attributes", {}).get("name", "")).strip()
+
+
+def published_files(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        record
+        for record in files
+        if str(record.get("attributes", {}).get("status", "")) == "published"
+    ]
+
+
+def select_display_file(
+    files: list[dict[str, Any]],
+    expected_version: str,
+) -> dict[str, Any] | None:
+    candidates = published_files(files) or files
+    for record in candidates:
+        if expected_version and extract_version_from_filename(file_name(record)) == expected_version:
+            return record
+    return candidates[0] if candidates else None
+
+
+def stale_published_file_names(
+    files: list[dict[str, Any]],
+    expected_version: str,
+) -> list[str]:
+    stale_names: list[str] = []
+    for record in published_files(files):
+        name = file_name(record)
+        if not name:
+            continue
+        version = extract_version_from_filename(name)
+        if not expected_version or version != expected_version:
+            stale_names.append(name)
+    return stale_names
 
 
 def dashboard_url_for(product_id: str) -> str:
@@ -275,23 +331,27 @@ def build_snapshot_rows(config: dict[str, Any], api_key: str) -> tuple[list[dict
         variant_id = str(variant_record.get("id", "")).strip() if variant_record else ""
 
         files = fetch_collection(f"/v1/variants/{variant_id}/files?page[size]=100", api_key) if variant_id else []
-        published_file = None
-        for record in files:
-            if str(record.get("attributes", {}).get("status", "")) == "published":
-                published_file = record
-                break
-        if not published_file and files:
-            published_file = files[0]
-
-        filename = str((published_file or {}).get("attributes", {}).get("name", "")).strip()
+        visible_files = published_files(files)
+        displayed_file = select_display_file(files, expected_version)
+        filename = file_name(displayed_file)
         hosted_version = extract_version_from_filename(filename)
-        status = "In sync" if expected_version and hosted_version == expected_version else "Needs dashboard sync"
+        extra_filenames = stale_published_file_names(files, expected_version) if expected_version else []
+        if not expected_version:
+            status = "Needs appcast evidence"
+        elif hosted_version == expected_version and not extra_filenames:
+            status = "In sync"
+        elif hosted_version == expected_version:
+            status = "Needs dashboard cleanup"
+        else:
+            status = "Needs dashboard sync"
 
         row = {
             "app": app_name,
             "expected_version": expected_version,
             "hosted_version": hosted_version or "—",
             "filename": filename or "—",
+            "published_file_count": str(len(visible_files)),
+            "extra_filenames": ", ".join(extra_filenames) or "—",
             "dashboard_url": dashboard_url_for(product_id),
             "dist_url": dist_url,
             "product_id": product_id,
@@ -302,19 +362,33 @@ def build_snapshot_rows(config: dict[str, Any], api_key: str) -> tuple[list[dict
         }
         snapshot_rows.append(row)
 
-        if status != "Needs dashboard sync":
+        if status == "In sync":
             continue
+
+        if status == "Needs appcast evidence":
+            instructions = (
+                f"Check {appcast_url} from the Mini, confirm the latest Sparkle version, "
+                "then rerun this tracker before changing Lemon Squeezy hosted files."
+            )
+        elif status == "Needs dashboard cleanup":
+            instructions = (
+                f"Open {row['dashboard_url']}, go to Files for variant {variant_id or 'Default'}, "
+                f"delete or unpublish every old file ({row['extra_filenames']}), and leave only "
+                f"{filename or f'{app_name}-{expected_version}.zip'} published for customers."
+            )
+        else:
+            instructions = (
+                f"Open {row['dashboard_url']}, go to Files for variant {variant_id or 'Default'}, "
+                f"replace the published file with the {expected_version} archive from {dist_url or appcast_url}, "
+                "delete or unpublish old files, and confirm only the appcast-matching ZIP remains published."
+            )
 
         actions.append(
             {
                 **row,
-                "action_status": "Needs dashboard sync",
-                "instructions": (
-                    f"Open {row['dashboard_url']}, go to Files for variant {variant_id or 'Default'}, "
-                    f"replace the published file with the {expected_version} archive from {dist_url or appcast_url}, "
-                    "then confirm the hosted filename/version matches the appcast."
-                ),
-                "note": "Lemon Squeezy exposes read APIs for hosted files, but file replacement is still a dashboard action.",
+                "action_status": status,
+                "instructions": instructions,
+                "note": "Lemon Squeezy exposes read APIs for hosted files, but file replacement and cleanup are still dashboard actions.",
             }
         )
 
@@ -540,6 +614,8 @@ def write_evidence(path: Path, payload: dict[str, Any]) -> None:
             row.get("app", ""),
             row.get("expected_version", ""),
             row.get("hosted_version", ""),
+            row.get("published_file_count", ""),
+            row.get("extra_filenames", ""),
             row.get("dashboard_url", ""),
             row.get("dist_url", ""),
         ]
@@ -576,12 +652,12 @@ def write_evidence(path: Path, payload: dict[str, Any]) -> None:
                 f"Upload folder stale/missing rows: {len(upload_rows)}",
                 "",
                 "Lemon Squeezy exposes read APIs for hosted files, but replacement is still a dashboard action.",
-                "After replacing files, rerun this exporter and keep the new evidence file with the release notes.",
+                "After replacing files, delete or unpublish old hosted ZIPs, rerun this exporter, and keep the new evidence file with the release notes.",
                 "The local LemonSqueezy-Uploads folder should contain only the latest ZIP for each direct-download app.",
                 "",
                 "## Current Actions",
                 "",
-                markdown_table(["App", "Expected", "Hosted", "Dashboard", "Dist"], action_rows).rstrip(),
+                markdown_table(["App", "Expected", "Hosted", "Published", "Old files", "Dashboard", "Dist"], action_rows).rstrip(),
                 "",
                 "## Upload Folder Audit",
                 "",

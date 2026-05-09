@@ -256,7 +256,7 @@ Outputs:
 - dated workbook: `outputs/hosted_file_actions/saneapps_hosted_file_actions_<date>.xlsx`
 - latest stable path: `outputs/hosted_file_actions/latest.xlsx`
 
-This is a dashboard-action tracker, not an uploader. Lemon Squeezy currently exposes read APIs for files, but not a public file-replacement API. Use the workbook to open the exact product dashboard page and replace the published file with the appcast-matching ZIP.
+This is a dashboard-action tracker, not an uploader. Lemon Squeezy currently exposes read APIs for files, but not a public file-replacement API. Use the workbook to open the exact product dashboard page, replace the published file with the appcast-matching ZIP, and delete or unpublish every old hosted ZIP so customers see only the current release.
 
 Upload-folder rule: `~/Desktop/LemonSqueezy-Uploads` is a latest-only staging folder. Before any Lemon Squeezy dashboard upload, move older app ZIPs to Trash so the file picker cannot select the wrong release. The hosted-file tracker audits this folder and reports stale, missing-latest, and unexpected ZIPs alongside the dashboard action list.
 
@@ -508,6 +508,8 @@ For Mini-first apps, the release signal now has one canonical path:
 2. Project QA writes `outputs/qa_status.json` when available.
 3. Shared preflight also writes `outputs/release_preflight_status.json`.
 4. `SaneMaster.rb` syncs `outputs/` back from Mini to the local workspace.
+
+Release preflight also fails when the repo has an `auto-reconcile-*` stash containing release-relevant files. Resolve those stashes by applying or explicitly discarding the work before publishing, because a clean `main` branch is not enough evidence if real source changes are parked in the stash stack.
 
 ## Mini Visual Verification SOP
 

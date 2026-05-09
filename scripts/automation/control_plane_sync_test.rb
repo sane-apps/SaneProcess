@@ -51,5 +51,19 @@ tests << lambda do
   assert(dump['ACTIVATE_MINI_RUNS'] == '1', 'reconcile activate flag should opt into Mini runs')
 end
 
+tests << lambda do
+  reconcile_source = File.read(RECONCILE)
+  assert(!reconcile_source.include?('--reconcile-dirty'),
+         'unattended Air/Mini reconcile must not auto-stash dirty app repos')
+end
+
+tests << lambda do
+  git_sync_source = File.read(File.join(ROOT, 'automation', 'git-sync-safe.sh'))
+  assert(git_sync_source.include?('SANEPROCESS_ALLOW_AUTO_STASH'),
+         'legacy auto-stash path must require explicit operator opt-in')
+  assert(git_sync_source.include?('no longer auto-stashes canonical repos by default'),
+         'auto-stash refusal should explain why it stopped')
+end
+
 tests.each(&:call)
 puts "PASS #{tests.length}/#{tests.length}"

@@ -50,6 +50,78 @@ module SaneMasterModules
       ''
     end
 
+    def auto_reconcile_stash_noise_file?(path)
+      normalized = path.to_s.sub(%r{\A\./}, '')
+      return true if normalized.empty?
+      return true if normalized.end_with?('/.DS_Store') || normalized == '.DS_Store'
+      return true if normalized == 'default.profraw'
+      return true if normalized == 'fastlane/report.xml'
+      return true if normalized.start_with?('fastlane/reports/')
+      return true if normalized.match?(%r{\A\.claude/(audit_log\.jsonl|edit_count\.json|tool_count\.json|active_skills\.json)\z})
+
+      false
+    end
+
+    def blocking_auto_reconcile_stash_files(files)
+      Array(files)
+        .map { |path| path.to_s.strip }
+        .reject(&:empty?)
+        .reject { |path| auto_reconcile_stash_noise_file?(path) }
+        .uniq
+        .sort
+    end
+
+    def git_object_content(repo_path, object_spec)
+      output, status = Open3.capture2e('git', '-C', repo_path, 'show', object_spec)
+      [status.success?, output]
+    end
+
+    def stash_file_matches_head?(repo_path, ref, path)
+      stash_ok, stash_content = git_object_content(repo_path, "#{ref}:#{path}")
+      head_ok, head_content = git_object_content(repo_path, "HEAD:#{path}")
+      return true if !stash_ok && !head_ok
+      return false unless stash_ok && head_ok
+
+      stash_content == head_content
+    end
+
+    def unresolved_auto_reconcile_stash_files(repo_path, ref, files)
+      blocking_auto_reconcile_stash_files(files).reject do |path|
+        stash_file_matches_head?(repo_path, ref, path)
+      end
+    end
+
+    def auto_reconcile_stash_reports(repo_path: Dir.pwd, limit: 30)
+      return [] unless File.directory?(File.join(repo_path, '.git'))
+
+      list_output, list_status = Open3.capture2e(
+        'git', '-C', repo_path, 'stash', 'list', '--format=%gd%x09%gs'
+      )
+      return [] unless list_status.success?
+
+      reports = []
+      list_output.lines.each do |line|
+        ref, subject = line.chomp.split("\t", 2)
+        next unless ref && subject&.include?('auto-reconcile-')
+
+        files_output, files_status = Open3.capture2e(
+          'git', '-C', repo_path, 'stash', 'show', '--include-untracked',
+          '--name-only', '--format=', ref
+        )
+        next unless files_status.success?
+
+        blocking_files = unresolved_auto_reconcile_stash_files(repo_path, ref, files_output.lines)
+        next if blocking_files.empty?
+
+        reports << {
+          ref: ref,
+          subject: subject,
+          blocking_files: blocking_files
+        }
+      end
+      reports.first(limit)
+    end
+
     def applescript_string_literal(text)
       text.to_s
           .gsub('\\', '\\\\')
@@ -1899,6 +1971,22 @@ module SaneMasterModules
                            {}
                          end
       preflight_app_name = metadata_value(preflight_config, 'name') || File.basename(Dir.pwd)
+
+      # 0. Auto-reconcile stash gate
+      print '  Auto-reconcile stashes... '
+      stash_reports = auto_reconcile_stash_reports(repo_path: Dir.pwd)
+      if stash_reports.empty?
+        puts '✅ none blocking'
+      else
+        puts '❌ FAIL'
+        stash_reports.each do |report|
+          sample = report[:blocking_files].first(6).join(', ')
+          hidden_count = report[:blocking_files].length - 6
+          suffix = hidden_count.positive? ? " (+#{hidden_count} more)" : ''
+          puts "    ↳ #{report[:ref]} #{sample}#{suffix}"
+          issues << "Unreviewed auto-reconcile stash #{report[:ref]} contains release-relevant files"
+        end
+      end
 
       # 0. Repeated issue gate fixtures
       print '  Repeated issue gate fixtures... '

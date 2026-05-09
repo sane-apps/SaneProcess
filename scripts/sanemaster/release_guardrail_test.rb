@@ -91,6 +91,91 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
   end
 
   test_category('Release test lane policy') do
+    test('release preflight treats auto-reconcile source stashes as release blockers') do
+      files = [
+        'SaneClick/SaneClickApp.swift',
+        'Tests/AppStoreReviewGuardrailTests.swift',
+        '.DS_Store',
+        'fastlane/report.xml',
+        '.claude/tool_count.json'
+      ]
+
+      blocking = subject.send(:blocking_auto_reconcile_stash_files, files)
+
+      assert_eq(blocking, ['SaneClick/SaneClickApp.swift', 'Tests/AppStoreReviewGuardrailTests.swift'])
+      true
+    end
+
+    test('release preflight allows only known generated noise in auto-reconcile stashes') do
+      files = [
+        './.DS_Store',
+        'default.profraw',
+        'fastlane/reports/rubocop.html',
+        '.claude/audit_log.jsonl',
+        '.claude/research.md'
+      ]
+
+      blocking = subject.send(:blocking_auto_reconcile_stash_files, files)
+
+      assert_eq(blocking, ['.claude/research.md'])
+      true
+    end
+
+    test('release preflight detects real auto-reconcile git stashes') do
+      Dir.mktmpdir('auto-reconcile-stash-') do |dir|
+        git = lambda do |*args|
+          output, status = Open3.capture2e('git', '-C', dir, *args)
+          assert(status.success?, "git #{args.join(' ')} failed: #{output}")
+          output
+        end
+
+        git.call('init')
+        git.call('config', 'user.email', 'test@example.invalid')
+        git.call('config', 'user.name', 'SaneProcess Test')
+        FileUtils.mkdir_p(File.join(dir, 'SaneClick'))
+        File.write(File.join(dir, 'SaneClick', 'SaneClickApp.swift'), "let shipped = true\n")
+        git.call('add', '.')
+        git.call('commit', '-m', 'baseline')
+        File.write(File.join(dir, 'SaneClick', 'SaneClickApp.swift'), "let shipped = false\n")
+        git.call('stash', 'push', '-m', 'auto-reconcile-20260509-test')
+
+        reports = subject.send(:auto_reconcile_stash_reports, repo_path: dir)
+
+        assert_eq(reports.length, 1)
+        assert_eq(reports.first[:ref], 'stash@{0}')
+        assert_eq(reports.first[:blocking_files], ['SaneClick/SaneClickApp.swift'])
+      end
+      true
+    end
+
+    test('release preflight ignores auto-reconcile stash content already present in HEAD') do
+      Dir.mktmpdir('auto-reconcile-stash-applied-') do |dir|
+        git = lambda do |*args|
+          output, status = Open3.capture2e('git', '-C', dir, *args)
+          assert(status.success?, "git #{args.join(' ')} failed: #{output}")
+          output
+        end
+
+        git.call('init')
+        git.call('config', 'user.email', 'test@example.invalid')
+        git.call('config', 'user.name', 'SaneProcess Test')
+        FileUtils.mkdir_p(File.join(dir, 'SaneClick'))
+        File.write(File.join(dir, 'SaneClick', 'SaneClickApp.swift'), "let shipped = true\n")
+        git.call('add', '.')
+        git.call('commit', '-m', 'baseline')
+        File.write(File.join(dir, 'SaneClick', 'SaneClickApp.swift'), "let shipped = false\n")
+        git.call('stash', 'push', '-m', 'auto-reconcile-20260509-test')
+        File.write(File.join(dir, 'SaneClick', 'SaneClickApp.swift'), "let shipped = false\n")
+        git.call('add', '.')
+        git.call('commit', '-m', 'recover stashed work')
+
+        reports = subject.send(:auto_reconcile_stash_reports, repo_path: dir)
+
+        assert_eq(reports.length, 0)
+      end
+      true
+    end
+
     test('release.sh prefers SaneMaster verify before raw xcodebuild fallbacks') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
 

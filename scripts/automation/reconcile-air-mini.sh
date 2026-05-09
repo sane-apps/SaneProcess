@@ -93,9 +93,9 @@ remote_home=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$MINI_HOST" 'printf %s "
 remote_git_sync="$remote_home/SaneApps/infra/SaneProcess/scripts/automation/git-sync-safe.sh"
 
 log "2) Reconciling canonical repos on $MINI_HOST..."
-ssh -o BatchMode=yes -o ConnectTimeout=8 "$MINI_HOST" "bash \"$remote_git_sync\" --reconcile-dirty"
+ssh -o BatchMode=yes -o ConnectTimeout=8 "$MINI_HOST" "bash \"$remote_git_sync\""
 
 log "3) Reconciling canonical repos locally and verifying parity with $MINI_HOST..."
-bash "$GIT_SYNC_SCRIPT" --peer "$MINI_HOST" --reconcile-dirty
+bash "$GIT_SYNC_SCRIPT" --peer "$MINI_HOST"
 
 log "Air/Mini reconcile complete."

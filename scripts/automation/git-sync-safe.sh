@@ -4,7 +4,8 @@
 # - Auto-pulls fast-forward when clean.
 # - Never auto-commits.
 # - Flags dirty repos by default so "clean" cannot be a false positive.
-# - Optional reconcile mode auto-stashes dirty canonical repos before syncing.
+# - Legacy reconcile mode is disabled by default; dirty canonical repos must be
+#   resolved explicitly so real work cannot disappear into stashes.
 # - Optional: compare local repo state against a peer machine.
 
 set -euo pipefail
@@ -29,7 +30,8 @@ Options:
   --peer <host>         Compare each repo against a peer machine over SSH.
                         Marks mismatched branch/head/dirty state as an issue.
   --allow-dirty         Do not fail when working trees are dirty.
-  --reconcile-dirty     Auto-stash dirty canonical repos, then continue sync.
+  --reconcile-dirty     Legacy escape hatch. Refuses to auto-stash unless
+                        SANEPROCESS_ALLOW_AUTO_STASH=1 is set explicitly.
 USAGE
 }
 
@@ -153,6 +155,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 mkdir -p "$OUT_DIR"
+
+if [[ "$RECONCILE_DIRTY" -eq 1 && "${SANEPROCESS_ALLOW_AUTO_STASH:-0}" != "1" ]]; then
+  log "ERROR: --reconcile-dirty no longer auto-stashes canonical repos by default."
+  log "Resolve dirty work explicitly, or set SANEPROCESS_ALLOW_AUTO_STASH=1 for a one-off manual recovery."
+  exit 2
+fi
+
 prune_root_noise
 
 {

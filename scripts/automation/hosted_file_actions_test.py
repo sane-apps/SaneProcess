@@ -71,9 +71,98 @@ class HostedFileActionTests(unittest.TestCase):
         self.assertEqual(actions[0]["app"], "SaneBar")
         self.assertEqual(actions[0]["hosted_version"], "2.1.36")
         self.assertEqual(actions[0]["expected_version"], "2.1.39")
+        self.assertEqual(actions[0]["published_file_count"], "1")
+        self.assertEqual(actions[0]["extra_filenames"], "SaneBar-2.1.36.zip")
         self.assertEqual(actions[0]["dashboard_url"], "https://app.lemonsqueezy.com/products/778575")
         self.assertIn("variant 1227172", actions[0]["instructions"])
+        self.assertIn("delete or unpublish old files", actions[0]["instructions"])
         self.assertEqual(snapshot[0]["status"], "Needs dashboard sync")
+
+    def test_build_snapshot_rows_flags_extra_published_files_when_latest_exists(self):
+        config = {
+            "products": {
+                "sanebar": {
+                    "name": "SaneBar",
+                    "appcast": "https://sanebar.com/appcast.xml",
+                }
+            }
+        }
+        products = [
+            {
+                "id": "778575",
+                "attributes": {"name": "SaneBar", "slug": "sanebar"},
+            }
+        ]
+        variants = [
+            {
+                "id": "1227172",
+                "attributes": {"product_id": 778575},
+            }
+        ]
+        files = [
+            {
+                "attributes": {
+                    "status": "published",
+                    "name": "SaneBar-2.1.36.zip",
+                }
+            },
+            {
+                "attributes": {
+                    "status": "published",
+                    "name": "SaneBar-2.1.39.zip",
+                }
+            },
+        ]
+
+        def fake_fetch_collection(path, _api_key):
+            if "products" in path:
+                return products
+            if "variants?page" in path:
+                return variants
+            return files
+
+        with mock.patch.object(HOSTED_FILE_ACTIONS, "fetch_collection", side_effect=fake_fetch_collection), \
+            mock.patch.object(HOSTED_FILE_ACTIONS, "fetch_appcast_release", return_value=("2.1.39", "https://dist.sanebar.com/updates/SaneBar-2.1.39.zip")):
+            actions, snapshot = HOSTED_FILE_ACTIONS.build_snapshot_rows(config, "test-key")
+
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["action_status"], "Needs dashboard cleanup")
+        self.assertEqual(actions[0]["hosted_version"], "2.1.39")
+        self.assertEqual(actions[0]["published_file_count"], "2")
+        self.assertEqual(actions[0]["extra_filenames"], "SaneBar-2.1.36.zip")
+        self.assertIn("leave only SaneBar-2.1.39.zip published", actions[0]["instructions"])
+        self.assertEqual(snapshot[0]["status"], "Needs dashboard cleanup")
+
+    def test_build_snapshot_rows_does_not_infer_cleanup_when_appcast_version_is_missing(self):
+        config = {
+            "products": {
+                "sanebar": {
+                    "name": "SaneBar",
+                    "appcast": "https://sanebar.com/appcast.xml",
+                }
+            }
+        }
+        products = [{"id": "778575", "attributes": {"name": "SaneBar", "slug": "sanebar"}}]
+        variants = [{"id": "1227172", "attributes": {"product_id": 778575}}]
+        files = [{"attributes": {"status": "published", "name": "SaneBar-2.1.39.zip"}}]
+
+        def fake_fetch_collection(path, _api_key):
+            if "products" in path:
+                return products
+            if "variants?page" in path:
+                return variants
+            return files
+
+        with mock.patch.object(HOSTED_FILE_ACTIONS, "fetch_collection", side_effect=fake_fetch_collection), \
+            mock.patch.object(HOSTED_FILE_ACTIONS, "fetch_appcast_release", return_value=("", "")):
+            actions, snapshot = HOSTED_FILE_ACTIONS.build_snapshot_rows(config, "test-key")
+
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["action_status"], "Needs appcast evidence")
+        self.assertEqual(actions[0]["hosted_version"], "2.1.39")
+        self.assertEqual(actions[0]["extra_filenames"], "—")
+        self.assertIn("before changing Lemon Squeezy hosted files", actions[0]["instructions"])
+        self.assertEqual(snapshot[0]["status"], "Needs appcast evidence")
 
     def test_main_writes_json_out_and_xlsx(self):
         sample_actions = [
@@ -83,6 +172,8 @@ class HostedFileActionTests(unittest.TestCase):
                 "expected_version": "2.1.39",
                 "hosted_version": "2.1.36",
                 "filename": "SaneBar-2.1.36.zip",
+                "published_file_count": "1",
+                "extra_filenames": "SaneBar-2.1.36.zip",
                 "dashboard_url": "https://app.lemonsqueezy.com/products/778575",
                 "dist_url": "https://dist.sanebar.com/updates/SaneBar-2.1.39.zip",
                 "product_id": "778575",
@@ -99,6 +190,8 @@ class HostedFileActionTests(unittest.TestCase):
                 "expected_version": "2.1.39",
                 "hosted_version": "2.1.36",
                 "filename": "SaneBar-2.1.36.zip",
+                "published_file_count": "1",
+                "extra_filenames": "SaneBar-2.1.36.zip",
                 "dashboard_url": "https://app.lemonsqueezy.com/products/778575",
                 "dist_url": "https://dist.sanebar.com/updates/SaneBar-2.1.39.zip",
                 "product_id": "778575",
