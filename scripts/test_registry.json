@@ -158,6 +158,12 @@
       "cmd": ["ruby", "scripts/sanemaster/runtime_snapshot_test.rb"]
     },
     {
+      "path": "scripts/sanemaster/visual_smoke_test.rb",
+      "label": "SaneProcess visual smoke evidence tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/visual_smoke_test.rb"]
+    },
+    {
       "path": "scripts/sanemaster/saneui_guard_test.rb",
       "label": "SaneProcess SaneUI guard tests",
       "status": "required",

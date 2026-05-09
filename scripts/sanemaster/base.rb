@@ -40,6 +40,8 @@ module SaneMasterModules
                                       logs
                                       test_mode
                                       tm
+                                      visual_smoke
+                                      visual-smoke
                                       diagnose
                                       crash_report
                                       crashes

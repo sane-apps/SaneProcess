@@ -117,6 +117,7 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 | `check_inbox [check|review <id>|read <id>|reply ...]` | Canonical support inbox workflow wrapper |
 | `test_mode` | Kill → Build → Launch → Logs |
 | `runtime_evidence` | LLDB-backed runtime evidence bundle for reproducible Swift/macOS bugs |
+| `visual_smoke` | Optional Peekaboo-backed screenshot/AX evidence bundle for release-critical UI claims |
 | `doctor` | Environment health check |
 | `tool_discovery --query "..."` | Generate a proof receipt before using a workaround or adding a tool |
 | `process_metrics [--json]` | Dashboard for verify churn, session quality, SOP score caps, and hook blocks |
@@ -159,6 +160,42 @@ launch apps. For SaneApps app bugs, launch through the canonical Mini-first
 `test_mode` path first, then attach to the already-running process by PID.
 Treat `--expr` like code execution in the debuggee; use side-effect-free
 expressions only.
+
+### Visual Smoke Evidence
+
+Use `visual_smoke` after launching an app through the canonical Mini-first
+`test_mode` path when a release claim depends on visible UI state, menu-bar
+state, or accessibility structure:
+
+```bash
+ruby scripts/SaneMaster.rb test_mode --release --no-logs
+ruby scripts/SaneMaster.rb visual_smoke --app SaneBar
+```
+
+When Peekaboo is installed on the Mini, the command captures a full-screen
+screenshot, menu-bar screenshot, annotated app `see` snapshot,
+window/app/menubar lists, permissions, and a JSON/Markdown receipt under
+`outputs/visual_smoke/`. The default runner launches Peekaboo through
+Terminal.app on the Mini because Terminal already holds the macOS Screen
+Recording grant needed for captures from SSH-routed automation.
+The command now has a hard cleanliness gate: it refuses to capture when another
+`visual_smoke` run is active, when Terminal windows are already open, or when a
+SaneApps permission prompt is unresolved. Clean up the Mini first, handle the
+prompt, then re-run the visual check. Dirty screenshots are not release
+evidence.
+When Peekaboo is absent it records a skipped receipt instead of blocking normal
+release work. Use `--require-peekaboo` only for lanes where the Mini has been
+explicitly configured with:
+
+```bash
+brew install steipete/tap/peekaboo
+```
+
+Peekaboo requires macOS Screen Recording and Accessibility permissions. Do not
+replace `verify`, `test_mode`, or app-specific smoke tests with this command;
+use it as the visual proof layer for claims such as settings-menu access,
+fullscreen overlay behavior, onboarding visibility, license/update surfaces, and
+menu-bar item presence.
 
 ### App Hardware Verification
 
@@ -325,11 +362,12 @@ SaneApps is Mini/local first.
 | Build and test app code | `ruby scripts/SaneMaster.rb verify [--ui]` | Raw `xcodebuild` unless the tool itself is what you are fixing |
 | Promote a new prevention gate | `ruby scripts/SaneMaster.rb gate_review <fixture.json>` | Adding hook blocks from one anecdote or untested pattern matching |
 | Launch and smoke-test an app | `ruby scripts/SaneMaster.rb test_mode --release --no-logs` | Manual local launches and stale DerivedData builds |
+| API compatibility before release | `ruby scripts/SaneMaster.rb release_preflight` | Shipping symbols from newer SDKs than `release.min_system_version` supports |
 | Mini live window screenshots | `scripts/mini/capture-mini-screenshot.sh --app "<App>" --window-name "<Window>" --mode temp` | Plain `ssh` + `screencapture` guessing from a non-GUI shell |
 | Mini Safari tab control | `scripts/mini/mini-safari.sh open-read "<url>"` | One-off raw `ssh mini osascript` snippets for Safari evidence, listing links, or portal checks |
 | Sync Codex control-plane to the Mini | `ruby scripts/SaneMaster.rb sync_mini [mini] [--quiet] [--no-restart] [--activate-mini-runs]` | Manual sync script hunting or recreating a second Mini config lane |
 | Air↔Mini pointer handoff recovery | `ruby scripts/SaneMaster.rb universal_control_reset` | Random killall / reboot guessing when Universal Control breaks |
-| App Store review readiness | `ruby scripts/SaneMaster.rb appstore_preflight` | Clicking around ASC first and guessing what Apple meant |
+| App Store review readiness | `ruby scripts/SaneMaster.rb appstore_preflight` only when `.saneprocess appstore.enabled: true` | Clicking around ASC first, guessing what Apple meant, or running ASC gates for direct-only apps |
 | Headless Mini signing bootstrap | `bash scripts/mini/bootstrap-build-server.sh` | Trying App Store archive/export first and debugging signing after the failure |
 | App Review evidence collection | `ruby scripts/appstore_submit.rb --app-id <id> --platform macos|ios --version X.Y.Z --project-root <repo> --fetch-review-package` | Reading only the rejection text and ignoring Apple’s screenshot/video/PDF evidence |
 | Direct release readiness | `ruby scripts/SaneMaster.rb release_preflight` | Manual release spot checks |
@@ -904,6 +942,8 @@ It also blocks generic fallback descriptions/keywords and flags iOS listing copy
 
 This is deliberate. The goal is to stop wasting review cycles on builds Apple is likely to reject.
 
+This command is an App Store lane gate, not a normal direct-download release step. If `.saneprocess` has `appstore.enabled: false`, it prints a skip message and exits successfully. SaneBar and SaneClick are direct-download-only unless the lane is deliberately re-enabled after explicit approval and fresh review of policy, pricing, and metadata.
+
 Additional lessons now enforced in the shared flow:
 - When a lane is rejected, the first step is evidence collection, not diagnosis. Read the full reviewer message, record the exact platform/version/build/submission ID, download every App Review attachment, and open all screenshot/video/PDF evidence before changing code or drafting a reply.
 - `scripts/appstore_submit.rb --fetch-review-package` is the canonical evidence collector. It saves the reviewer message, page text, and any downloaded App Review attachments into an evidence folder instead of relying on manual browser memory.
@@ -918,12 +958,16 @@ Additional lessons now enforced in the shared flow:
 - App Store Connect and `developer.apple.com` can have separate login state. Check both before concluding a profile or review page is inaccessible.
 - When a macOS App Store profile needs repair, inspect the certificate shown on the Apple Developer profile edit page and confirm it is tied to `Apple Distribution`, not a stale `3rd Party Mac Developer Application` or `Mac App Distribution` cert.
 - `appstore_submit.rb --skip-upload` fails fast if the requested existing build is not actually visible in ASC for that platform. It now prints the visible build candidates instead of polling for 45 minutes on a bad build number.
-- `release.sh` now hard-runs `SaneMaster.rb appstore_preflight` before any App Store submission step, so full releases cannot skip the compiled-artifact policy gate by accident.
+- `release.sh` runs `SaneMaster.rb appstore_preflight` before any active App Store submission step, so full releases cannot skip the compiled-artifact policy gate by accident. Direct-download-only apps skip this step by config.
 - For macOS App Store exports, `xcodebuild -exportArchive` must run with ASC API-key auth on the Mini. If export reaches `productbuild` and then fails with `errSecInteractionNotAllowed`, the fix is installer-key keychain access, not another upload attempt.
 - `appstore_submit.rb` now validates that support and privacy URLs actually resolve successfully, not just that metadata strings exist.
 - Reviewer access is treated as a first-class requirement. If the app needs outside credentials, review notes must explain the exact demo/review path and must state when no account, API key, or payment is required.
 - “App Store-safe” means the compiled artifact, not just the source tree. Preflight must verify that the App Store binary no longer exposes website checkout URLs, license-key CTAs, or automation permission declarations that contradict the review notes.
 - Apps whose core App Store build still depends on Accessibility/CGEvent control of third-party UI should be treated as high-risk or ineligible for Mac App Store review until that functionality is removed or isolated from the App Store build.
+
+### Release API Compatibility Guardrails
+
+`SaneMaster.rb release_preflight` checks app source against `release.min_system_version` for known SDK symbols that can hard-crash before launch on older supported macOS versions. The first guarded class is the ScreenCaptureKit macOS 26 screenshot API family (`SCScreenshotConfiguration`, `SCScreenshotOutput`, and `captureScreenshot(...)`), which must not appear in direct macOS 15 builds. If a future release intentionally raises the minimum OS, update `.saneprocess` first so the compatibility gate and public requirements agree.
 
 ### App Store Website Link Auto-Sync (iOS)
 

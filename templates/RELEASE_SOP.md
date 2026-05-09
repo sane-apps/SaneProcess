@@ -18,16 +18,19 @@ All SaneApps macOS apps use **Cloudflare** for update distribution:
 ./scripts/SaneMaster.rb release_preflight
 ```
 
-Runs 9 automated safety checks without building:
+Runs automated safety checks before release, including:
 1. Tests pass
-2. Git working directory clean
-3. UserDefaults/migration changes flagged (upgrade path test required if found)
-4. Sparkle SUPublicEDKey VALUE matches shared key
-5. Open GitHub issues reviewed
-6. Pending customer emails checked
-7. Release timing (warns on evening — 8-18hr discovery window if broken)
-8. License API connectivity verified
-9. Homebrew cask/tap consistency checked
+2. API compatibility against `release.min_system_version`
+3. Git working directory clean
+4. UserDefaults/migration changes flagged (upgrade path test required if found)
+5. Sparkle SUPublicEDKey VALUE matches shared key
+6. Open GitHub issues reviewed
+7. Pending customer emails checked
+8. Release timing (warns on evening — 8-18hr discovery window if broken)
+9. License API connectivity verified
+10. Homebrew cask/tap consistency checked
+
+The API compatibility gate blocks known newer-SDK symbols that can crash before launch on supported macOS versions. Example: macOS 15 direct builds must not reference the ScreenCaptureKit macOS 26 screenshot API family (`SCScreenshotConfiguration`, `SCScreenshotOutput`, `captureScreenshot(...)`) unless `.saneprocess` deliberately raises `release.min_system_version`.
 
 **If preflight reports BLOCKED (red), fix before proceeding. Warnings (yellow) require review.**
 
@@ -123,7 +126,7 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
 - Compare the rejected version/build from App Review against the current local version/build.
 - If the rejected evidence is from an older build, do not assume the current tree is still broken. Verify it.
 
-3. Run App Store preflight before changing code.
+3. Run App Store preflight before changing code only if `.saneprocess` has `appstore.enabled: true`.
 
 4. If macOS export fails, read the full Xcode distribution logs before trying another upload.
 
@@ -148,8 +151,10 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
 - If a provisioning profile is stale, inspect the exact certificate shown on the Apple Developer edit page before regenerating it.
 
 ```bash
-./scripts/SaneMaster.rb appstore_preflight
+./scripts/SaneMaster.rb appstore_preflight  # active App Store lanes only
 ```
+
+If the lane is disabled, do not diagnose App Store policy failures for that app as part of a normal release. Use `release_preflight` for direct-download readiness and treat App Store metadata as dormant reference until the lane is explicitly re-enabled. SaneBar and SaneClick are direct-download-only under the current strategy.
 
 4. Fix the reviewer issue at the root:
 - Accessibility request for non-accessibility use: remove the runtime path from the App Store build.
@@ -182,7 +187,7 @@ ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-gui-run.sh \
 
 ```bash
 ./scripts/SaneMaster.rb verify
-./scripts/SaneMaster.rb appstore_preflight
+./scripts/SaneMaster.rb appstore_preflight  # active App Store lanes only
 ```
 
 6. Repair the ASC lane before upload:
@@ -203,7 +208,7 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
 7. Build/export with the standard release script, then submit the pkg with `appstore_submit.rb`.
 - Use full `release.sh --deploy` only when the direct channel should also ship.
 - Use build/export plus `appstore_submit.rb --pkg` when you only need to repair the App Store lane.
-- `release.sh` now hard-runs `./scripts/SaneMaster.rb appstore_preflight` before any App Store submit step. Do not bypass that with manual ASC resubmits unless you are explicitly debugging the lane.
+- `release.sh` runs `./scripts/SaneMaster.rb appstore_preflight` before any active App Store submit step. Direct-download-only apps skip this lane because `.saneprocess appstore.enabled: false` is authoritative.
 
 ### 0d. Mini Visual Verification Workflow
 

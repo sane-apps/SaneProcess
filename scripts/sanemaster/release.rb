@@ -91,17 +91,36 @@ module SaneMasterModules
       end
     end
 
+    def reviewed_auto_reconcile_stash?(config, report)
+      entries = config.dig('release', 'reviewed_auto_reconcile_stashes')
+      return false unless entries.is_a?(Array)
+
+      entries.any? do |entry|
+        next false unless entry.is_a?(Hash)
+
+        decision = entry['decision'].to_s.strip
+        stash_sha = entry['stash_sha'].to_s.strip
+        subject = entry['subject'].to_s.strip
+        reason = entry['reason'].to_s.strip
+        next false unless %w[recovered superseded deferred archived].include?(decision)
+        next false if reason.empty?
+        next false unless !stash_sha.empty? && stash_sha == report[:stash_sha].to_s
+
+        subject.empty? || subject == report[:subject].to_s
+      end
+    end
+
     def auto_reconcile_stash_reports(repo_path: Dir.pwd, limit: 30)
       return [] unless File.directory?(File.join(repo_path, '.git'))
 
       list_output, list_status = Open3.capture2e(
-        'git', '-C', repo_path, 'stash', 'list', '--format=%gd%x09%gs'
+        'git', '-C', repo_path, 'stash', 'list', '--format=%gd%x09%H%x09%gs'
       )
       return [] unless list_status.success?
 
       reports = []
       list_output.lines.each do |line|
-        ref, subject = line.chomp.split("\t", 2)
+        ref, stash_sha, subject = line.chomp.split("\t", 3)
         next unless ref && subject&.include?('auto-reconcile-')
 
         files_output, files_status = Open3.capture2e(
@@ -115,6 +134,7 @@ module SaneMasterModules
 
         reports << {
           ref: ref,
+          stash_sha: stash_sha.to_s,
           subject: subject,
           blocking_files: blocking_files
         }
@@ -601,6 +621,85 @@ module SaneMasterModules
       l_parts <=> r_parts
     rescue StandardError
       nil
+    end
+
+    def release_source_files_for_api_compatibility
+      Dir.glob('**/*.swift').reject do |path|
+        path.include?('/Tests/') ||
+          path.start_with?('Tests/') ||
+          path.include?('/DerivedData/') ||
+          path.include?('/.build/') ||
+          path.include?('/build/') ||
+          path.include?('/outputs/')
+      end
+    end
+
+    def api_compatibility_guardrail_rules
+      [
+        {
+          symbol: 'SCScreenshotConfiguration',
+          introduced: '26.0',
+          framework: 'ScreenCaptureKit',
+          reason: 'macOS 26 screenshot configuration class causes dyld launch crashes on macOS 15 builds'
+        },
+        {
+          symbol: 'SCScreenshotOutput',
+          introduced: '26.0',
+          framework: 'ScreenCaptureKit',
+          reason: 'macOS 26 screenshot output class causes dyld launch crashes on macOS 15 builds'
+        },
+        {
+          symbol: 'captureScreenshot(contentFilter:',
+          introduced: '26.0',
+          framework: 'ScreenCaptureKit',
+          reason: 'macOS 26 screenshot API requires SCScreenshotConfiguration/SCScreenshotOutput'
+        },
+        {
+          symbol: 'captureScreenshot(rect:',
+          introduced: '26.0',
+          framework: 'ScreenCaptureKit',
+          reason: 'macOS 26 screenshot API requires SCScreenshotConfiguration/SCScreenshotOutput'
+        },
+        {
+          symbol: 'SCStreamConfigurationPresetCaptureHDRScreenshotLocalDisplay',
+          introduced: '26.0',
+          framework: 'ScreenCaptureKit',
+          reason: 'macOS 26 HDR screenshot preset is unavailable on older supported systems'
+        },
+        {
+          symbol: 'SCStreamConfigurationPresetCaptureHDRScreenshotCanonicalDisplay',
+          introduced: '26.0',
+          framework: 'ScreenCaptureKit',
+          reason: 'macOS 26 HDR screenshot preset is unavailable on older supported systems'
+        }
+      ]
+    end
+
+    def api_compatibility_guardrail_report(config:, source_files: nil)
+      min_system_version = config.dig('release', 'min_system_version').to_s.strip
+      return { applicable: false, issues: [], warnings: [], summary: 'no release.min_system_version configured' } if min_system_version.empty?
+
+      files = source_files || release_source_files_for_api_compatibility
+      issues = []
+      api_compatibility_guardrail_rules.each do |rule|
+        next unless compare_semver(min_system_version, rule[:introduced]) == -1
+
+        matching_files = files.select do |path|
+          File.exist?(path) && safe_read(path).include?(rule[:symbol])
+        end
+        next if matching_files.empty?
+
+        sample = matching_files.first(4).join(', ')
+        suffix = matching_files.length > 4 ? " (+#{matching_files.length - 4} more)" : ''
+        issues << "#{rule[:framework]} #{rule[:symbol]} requires macOS #{rule[:introduced]} but release.min_system_version is #{min_system_version}: #{sample}#{suffix} — #{rule[:reason]}"
+      end
+
+      {
+        applicable: true,
+        issues: issues,
+        warnings: [],
+        summary: issues.empty? ? "checked #{files.length} Swift source file(s) against macOS #{min_system_version}" : "#{issues.length} incompatible API marker(s)"
+      }
     end
 
     def parse_latest_appcast_item(xml)
@@ -1974,7 +2073,20 @@ module SaneMasterModules
 
       # 0. Auto-reconcile stash gate
       print '  Auto-reconcile stashes... '
-      stash_reports = auto_reconcile_stash_reports(repo_path: Dir.pwd)
+      routed_workspace = routed_workspace_context
+      stash_reports = if routed_workspace && routed_workspace.key?('auto_reconcile_stash_reports')
+                        Array(routed_workspace['auto_reconcile_stash_reports']).map do |report|
+                          {
+                            ref: report['ref'].to_s,
+                            stash_sha: report['stash_sha'].to_s,
+                            subject: report['subject'].to_s,
+                            blocking_files: Array(report['blocking_files']).map(&:to_s)
+                          }
+                        end
+                      else
+                        auto_reconcile_stash_reports(repo_path: Dir.pwd)
+                      end
+      stash_reports = stash_reports.reject { |report| reviewed_auto_reconcile_stash?(preflight_config, report) }
       if stash_reports.empty?
         puts '✅ none blocking'
       else
@@ -2178,9 +2290,23 @@ module SaneMasterModules
         puts '⏭️  skipped (no CloudKit release config)'
       end
 
+      # 1d. API availability compatibility guardrails
+      print '  API compatibility... '
+      api_compatibility = api_compatibility_guardrail_report(config: preflight_config)
+      if api_compatibility[:applicable]
+        if api_compatibility[:issues].empty?
+          puts "✅ #{api_compatibility[:summary]}"
+        else
+          puts "❌ #{api_compatibility[:summary]}"
+          api_compatibility[:issues].each { |m| issues << "API compatibility: #{m}" }
+        end
+        api_compatibility[:warnings].each { |m| warnings << "API compatibility: #{m}" }
+      else
+        puts "⏭️  skipped (#{api_compatibility[:summary]})"
+      end
+
       # 2. Git clean
       print '  Git clean... '
-      routed_workspace = routed_workspace_context
       dirty_count = if routed_workspace
                       routed_workspace['dirty_count'].to_i
                     else
@@ -2675,6 +2801,13 @@ module SaneMasterModules
 
       app_name = config['name'] || File.basename(Dir.pwd)
       appstore_config = config['appstore'] || {}
+
+      unless appstore_config['enabled'] == true
+        puts '  ⏭️  App Store lane disabled in .saneprocess; skipping App Store preflight.'
+        puts '  Use release_preflight for direct-download release readiness.'
+        puts '  Re-enable only after an explicit App Store strategy decision and fresh review of policy, pricing, and metadata.'
+        return true
+      end
 
       # ═══════════════════════════════════════════
       # SECTION 1: App Store Connect Setup

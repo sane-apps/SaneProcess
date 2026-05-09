@@ -18,6 +18,7 @@ class ReleaseRoutingHarness < SaneMaster
     @branches = {}
     @heads = {}
     @remote_sync = {}
+    @stash_reports = {}
   end
 
   def set_existing_paths(paths)
@@ -56,6 +57,10 @@ class ReleaseRoutingHarness < SaneMaster
     @remote_sync[repo] = status
   end
 
+  def set_stash_reports(repo, reports)
+    @stash_reports[repo] = reports
+  end
+
   def sane_email_automation_repo_root
     @webhook_repo_root || super
   end
@@ -78,6 +83,10 @@ class ReleaseRoutingHarness < SaneMaster
 
   def local_repo_remote_sync_context(repo_dir, branch, head)
     { 'status' => @remote_sync.fetch(repo_dir, 'matches'), 'branch' => branch, 'remote_ref' => head }
+  end
+
+  def auto_reconcile_stash_reports(repo_path:, limit: 30)
+    @stash_reports.fetch(repo_path, []).first(limit)
   end
 
   def map_local_path_to_mini(local_path)
@@ -134,6 +143,34 @@ exit(run_tests('SaneMaster Release Routing Tests') do
   end
 
   test_category('Workspace sync to mini') do
+    test('route context carries local auto-reconcile stash blockers into the Mini preflight') do
+      with_temp_repo do |repo|
+        Open3.capture2e('git', '-C', repo, 'init')
+        Open3.capture2e('git', '-C', repo, 'config', 'user.email', 'test@example.invalid')
+        Open3.capture2e('git', '-C', repo, 'config', 'user.name', 'SaneProcess Test')
+        File.write(File.join(repo, 'README.md'), "test\n")
+        Open3.capture2e('git', '-C', repo, 'add', '.')
+        Open3.capture2e('git', '-C', repo, 'commit', '-m', 'baseline')
+        subject.set_stash_reports(
+          repo,
+          [
+            {
+              ref: 'stash@{0}',
+              subject: 'auto-reconcile-20260509-test',
+              blocking_files: ['SaneClipApp.swift']
+            }
+          ]
+        )
+
+        context = subject.send(:local_repo_route_context, repo)
+
+        assert_eq(context['auto_reconcile_stash_reports'].length, 1)
+        assert_eq(context['auto_reconcile_stash_reports'].first['ref'], 'stash@{0}')
+        assert_eq(context['auto_reconcile_stash_reports'].first['blocking_files'], ['SaneClipApp.swift'])
+      end
+      true
+    end
+
     test('excludes local worktree archives and outputs from routed workspace sync') do
       with_temp_repo do |repo|
         FileUtils.mkdir_p(File.join(repo, '.worktrees', 'archive'))

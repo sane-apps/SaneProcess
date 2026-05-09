@@ -1,9 +1,21 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require 'stringio'
+
 require_relative '../hooks/test/test_framework'
 require_relative 'gate_review'
 require_relative 'release'
+
+def capture_stdout
+  original_stdout = $stdout
+  buffer = StringIO.new
+  $stdout = buffer
+  yield
+  buffer.string
+ensure
+  $stdout = original_stdout
+end
 
 class ReleaseGuardrailHarness
   include SaneMasterModules::GateReview
@@ -41,6 +53,10 @@ class ReleaseGuardrailHarness
     'stub-token'
   end
 
+  def ensure_research_gate_clear!(_command_name)
+    true
+  end
+
   def asc_get_json(path, token:, base: 'https://api.appstoreconnect.apple.com/v1')
     _ = token
     _ = base
@@ -65,6 +81,33 @@ include TestFramework
 
 exit(run_tests('SaneMaster App Store Guardrail Tests') do
   subject = ReleaseGuardrailHarness.new
+
+  test_category('App Store lane gating') do
+    test('appstore preflight skips projects whose App Store lane is disabled') do
+      Dir.mktmpdir('disabled-appstore-lane-') do |dir|
+        File.write(
+          File.join(dir, '.saneprocess'),
+          <<~YAML
+            name: DirectOnlyApp
+            appstore:
+              enabled: false
+              app_id: "1234567890"
+          YAML
+        )
+
+        result = nil
+        output = nil
+        Dir.chdir(dir) do
+          output = capture_stdout { result = subject.appstore_preflight([]) }
+        end
+
+        assert_eq(result, true)
+        assert_includes(output, 'App Store lane disabled in .saneprocess')
+        assert_includes(output, 'Use release_preflight for direct-download release readiness')
+      end
+      true
+    end
+  end
 
   test_category('Metadata URL health') do
     test('follows redirects to a healthy final URL') do
@@ -91,6 +134,42 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
   end
 
   test_category('Release test lane policy') do
+    test('release preflight blocks macOS 26 ScreenCaptureKit symbols below the release minimum') do
+      Dir.mktmpdir('api-compat-') do |dir|
+        source = File.join(dir, 'ScreenCaptureService.swift')
+        File.write(source, "let configuration = SCScreenshotConfiguration()\n")
+
+        report = subject.send(
+          :api_compatibility_guardrail_report,
+          config: { 'release' => { 'min_system_version' => '15.0' } },
+          source_files: [source]
+        )
+
+        assert(report[:applicable], 'expected release API compatibility report to apply')
+        assert_eq(report[:issues].length, 1)
+        assert_includes(report[:issues].first, 'requires macOS 26.0')
+        assert_includes(report[:issues].first, 'release.min_system_version is 15.0')
+      end
+      true
+    end
+
+    test('release preflight allows macOS 26 symbols when the release minimum is high enough') do
+      Dir.mktmpdir('api-compat-') do |dir|
+        source = File.join(dir, 'ScreenCaptureService.swift')
+        File.write(source, "let configuration = SCScreenshotConfiguration()\n")
+
+        report = subject.send(
+          :api_compatibility_guardrail_report,
+          config: { 'release' => { 'min_system_version' => '26.0' } },
+          source_files: [source]
+        )
+
+        assert(report[:applicable], 'expected release API compatibility report to apply')
+        assert_eq(report[:issues], [])
+      end
+      true
+    end
+
     test('release preflight treats auto-reconcile source stashes as release blockers') do
       files = [
         'SaneClick/SaneClickApp.swift',
@@ -143,8 +222,57 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
 
         assert_eq(reports.length, 1)
         assert_eq(reports.first[:ref], 'stash@{0}')
+        assert(reports.first[:stash_sha].to_s.match?(/\A[0-9a-f]{40}\z/), 'expected stash SHA in report')
         assert_eq(reports.first[:blocking_files], ['SaneClick/SaneClickApp.swift'])
       end
+      true
+    end
+
+    test('release preflight can mark an exact auto-reconcile stash as reviewed') do
+      report = {
+        ref: 'stash@{0}',
+        stash_sha: 'abc123',
+        subject: 'On main: auto-reconcile-20260509-test',
+        blocking_files: ['SaneClick/SaneClickApp.swift']
+      }
+      config = {
+        'release' => {
+          'reviewed_auto_reconcile_stashes' => [
+            {
+              'stash_sha' => 'abc123',
+              'subject' => 'On main: auto-reconcile-20260509-test',
+              'decision' => 'superseded',
+              'reason' => 'Reviewed against current release candidate; stale App Store-only branch work is not part of direct release.'
+            }
+          ]
+        }
+      }
+
+      assert(subject.send(:reviewed_auto_reconcile_stash?, config, report), 'expected exact reviewed stash to be allowed')
+      true
+    end
+
+    test('release preflight refuses reviewed auto-reconcile entries without a reason') do
+      report = {
+        ref: 'stash@{0}',
+        stash_sha: 'abc123',
+        subject: 'On main: auto-reconcile-20260509-test',
+        blocking_files: ['SaneClick/SaneClickApp.swift']
+      }
+      config = {
+        'release' => {
+          'reviewed_auto_reconcile_stashes' => [
+            {
+              'stash_sha' => 'abc123',
+              'subject' => 'On main: auto-reconcile-20260509-test',
+              'decision' => 'superseded',
+              'reason' => ''
+            }
+          ]
+        }
+      }
+
+      assert(!subject.send(:reviewed_auto_reconcile_stash?, config, report), 'expected missing review reason to keep blocking')
       true
     end
 

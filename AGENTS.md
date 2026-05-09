@@ -133,7 +133,7 @@ Run with no args for full help. Run `help <category>` for category details.
 
 | Category | Key Commands | What It Does |
 |----------|-------------|--------------|
-| **build** | `verify`, `clean`, `lint`, `release`, `release_preflight`, `appstore_preflight` | Build, test, release pipeline, App Store compliance |
+| **build** | `verify`, `clean`, `lint`, `release`, `release_preflight`, `appstore_preflight` | Build, test, release pipeline, active App Store lane compliance |
 | **sales** | `sales`, `sales --products`, `sales --month`, `sales --daily`, `sales --fees` | LemonSqueezy revenue (today/yesterday/week/all-time) |
 | **sales** | `downloads` (dl), `downloads --app NAME`, `downloads --days N`, `downloads --json` | Download analytics from sane-dist Worker (D1-backed) |
 | **sales** | `events`, `events --days N`, `events --app NAME`, `events --json` | User-type events: new_free_user, early_adopter_grant, license_activated |
@@ -223,7 +223,8 @@ When the user says something matching these, run the command/skill immediately:
 
 # 2. Preflight checks
 ./scripts/SaneMaster.rb release_preflight    # 9 safety checks (direct download)
-./scripts/SaneMaster.rb appstore_preflight   # App Store submission compliance
+# Run App Store submission compliance only when `.saneprocess` has `appstore.enabled: true`
+./scripts/SaneMaster.rb appstore_preflight   # active App Store lanes only
 
 # 3. Full release
 bash ~/SaneApps/infra/SaneProcess/scripts/release.sh \
@@ -240,6 +241,7 @@ Do not treat the mini as ready unless the bootstrap passes. The release path mus
 
 **Critical rules:**
 - **Bump version BEFORE release** — Sparkle ignores same-version updates
+- **Direct-only apps do not run App Store lanes** — SaneBar and SaneClick are direct-download-only unless `.saneprocess appstore.enabled` is deliberately re-enabled after explicit approval and fresh policy review.
 - **ONE Sparkle key** for all apps: `7Pl/8cwfb2vm4Dm65AByslkMCScLJ9tbGlwGGx81qYU=`
 - **ONE shared R2 bucket** (`sanebar-downloads`) for ALL apps
 - **Morning releases preferred** — full day to monitor

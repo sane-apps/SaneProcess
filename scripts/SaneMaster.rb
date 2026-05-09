@@ -36,6 +36,7 @@ require_relative 'sanemaster/dependencies'
 require_relative 'sanemaster/generation'
 require_relative 'sanemaster/diagnostics'
 require_relative 'sanemaster/runtime_snapshot'
+require_relative 'sanemaster/visual_smoke'
 require_relative 'sanemaster/bootstrap'
 require_relative 'sanemaster/test_mode'
 require_relative 'sanemaster/process_metrics'
@@ -67,6 +68,7 @@ class SaneMaster
   include SaneMasterModules::Generation
   include SaneMasterModules::Diagnostics
   include SaneMasterModules::RuntimeSnapshot
+  include SaneMasterModules::VisualSmoke
   include SaneMasterModules::Bootstrap
   include SaneMasterModules::TestMode
   include SaneMasterModules::ProcessMetrics
@@ -101,7 +103,7 @@ class SaneMaster
         'lint' => { args: '', desc: 'Run SwiftLint and auto-fix issues' },
         'release' => { args: '[--full|--deploy|--no-deploy|--skip-notarize|--version X.Y.Z|--notes "..."]', desc: 'Build, sign, notarize, package, and optionally deploy' },
         'release_preflight' => { args: '', desc: 'Run all pre-release safety checks without building' },
-        'appstore_preflight' => { args: '', desc: 'Run App Store submission compliance checks' }
+        'appstore_preflight' => { args: '', desc: 'Run App Store submission compliance checks for active App Store lanes' }
       }
     },
     gen: {
@@ -140,6 +142,7 @@ class SaneMaster
         'crashes' => { args: '[--recent]', desc: 'Analyze crash reports' },
         'diagnose' => { args: '[path]', desc: 'Analyze .xcresult bundle' },
         'runtime_evidence' => { args: '[--executable PATH|--pid PID] [--break File.swift:LINE] [--expr EXPR]', desc: 'Capture LLDB runtime evidence without launching apps' },
+        'visual_smoke' => { args: '[--app NAME] [--require-peekaboo] [--json] [--dry-run]', desc: 'Capture Peekaboo visual/AX evidence receipt' },
         'menu_scan' => { args: '[--json] [--owners bundle1,bundle2]', desc: 'Menu bar diagnostics (detected/normalized/excluded)' },
         'mode' => { args: '[<AppName>] <pro|basic|free|status|owner-check|owner-install|owner-pro|owner-verify|list> [--launch] [--host local|mini]', desc: 'Set/query test mode or owner-mode install/license state' }
       }
@@ -298,6 +301,8 @@ class SaneMaster
                                   runtime_evidence
                                   runtime-evidence
                                   lldb_snapshot
+                                  visual_smoke
+                                  visual-smoke
                                   crash_report
                                   crashes
                                   menu_scan
@@ -497,6 +502,7 @@ class SaneMaster
         SANEBAR_APPROVE_OPEN_REGRESSION_RELEASE
         SANEBAR_APPROVE_UNCONFIRMED_REGRESSION_CLOSE
         SANEBAR_RELEASE_SMOKE_SCREENSHOTS
+        PEEKABOO_BIN
       ]
       routed_release_env = release_routed ? routed_release_env_context(Dir.pwd) : {}
       forwarded_env = forwarded_env_keys.map do |key|
@@ -1102,9 +1108,30 @@ PY
     dirty_output, = Open3.capture2('git', '-C', repo_dir, 'status', '--porcelain')
     branch, = Open3.capture2('git', '-C', repo_dir, 'rev-parse', '--abbrev-ref', 'HEAD')
     head, = Open3.capture2('git', '-C', repo_dir, 'rev-parse', 'HEAD')
-    changed_files_output, changed_files_status = Open3.capture2(
-      'git', '-C', repo_dir, 'diff', 'HEAD~5..HEAD', '--name-only', '--', '*.swift'
-    )
+    history_base, history_base_status = Open3.capture2e('git', '-C', repo_dir, 'rev-parse', '--verify', 'HEAD~5')
+    changed_files_output, changed_files_status = if history_base_status.success?
+                                                   Open3.capture2(
+                                                     'git', '-C', repo_dir, 'diff',
+                                                     "#{history_base.strip}..HEAD", '--name-only', '--', '*.swift'
+                                                   )
+                                                 else
+                                                   Open3.capture2(
+                                                     'git', '-C', repo_dir, 'diff',
+                                                     '--name-only', 'HEAD', '--', '*.swift'
+                                                   )
+                                                 end
+    stash_reports = if respond_to?(:auto_reconcile_stash_reports)
+                      auto_reconcile_stash_reports(repo_path: repo_dir).map do |report|
+                        {
+                          'ref' => report[:ref].to_s,
+                          'stash_sha' => report[:stash_sha].to_s,
+                          'subject' => report[:subject].to_s,
+                          'blocking_files' => Array(report[:blocking_files]).map(&:to_s)
+                        }
+                      end
+                    else
+                      []
+                    end
 
     {
       'path' => repo_dir,
@@ -1112,6 +1139,7 @@ PY
       'head' => head.to_s.strip,
       'dirty_count' => dirty_output.to_s.lines.reject { |line| line.strip.empty? }.count,
       'dirty_files' => dirty_output.to_s.lines.map(&:chomp).reject(&:empty?),
+      'auto_reconcile_stash_reports' => stash_reports,
       'recent_changed_swift_files' => if changed_files_status.success?
                                         changed_files_output.to_s.lines.map(&:strip).reject(&:empty?)
                                       else
@@ -1126,6 +1154,7 @@ PY
       'head' => '',
       'dirty_count' => 0,
       'dirty_files' => [],
+      'auto_reconcile_stash_reports' => [],
       'recent_changed_swift_files' => [],
       'remote_sync' => { 'status' => 'unavailable' }
     }
@@ -1286,6 +1315,9 @@ PY
       diagnose(diagnose_args[:path], dump: diagnose_args[:dump])
     when 'runtime_snapshot', 'runtime_evidence', 'runtime-evidence', 'lldb_snapshot'
       success = runtime_snapshot(args)
+      exit(success ? 0 : 1)
+    when 'visual_smoke', 'visual-smoke'
+      success = visual_smoke(args)
       exit(success ? 0 : 1)
     when 'crash_report', 'crashes'
       analyze_crashes(args)
@@ -2004,6 +2036,30 @@ PY
         'runtime_evidence --pid 12345 --expr "state.description"'
       ]
     },
+    'visual_smoke' => {
+      usage: 'visual_smoke [--app NAME] [--bundle-id ID] [--output DIR] [--peekaboo PATH] [--timeout seconds] [--require-peekaboo] [--terminal-host|--direct] [--dry-run] [--json]',
+      description: 'Capture a Peekaboo-backed visual/AX evidence bundle for an already launched app. Uses the Mini Terminal host by default so Screen Recording grants apply.',
+      flags: {
+        '--app NAME' => 'App name to target for Peekaboo see output (default: current project)',
+        '--bundle-id ID' => 'Bundle ID recorded in the receipt',
+        '--output DIR' => 'Output root (default: outputs/visual_smoke)',
+        '--peekaboo PATH' => 'Peekaboo binary path or command name',
+        '--timeout seconds' => 'Per-command timeout, minimum 5s',
+        '--require-peekaboo' => 'Fail instead of skipping when Peekaboo is not installed',
+        '--terminal-host' => 'Run Peekaboo through Terminal.app so macOS Screen Recording grants apply',
+        '--direct' => 'Run Peekaboo directly in the current shell instead of Terminal.app',
+        '--no-screen' => 'Skip full-screen screenshot capture',
+        '--no-menu' => 'Skip menu-bar screenshot capture',
+        '--no-app' => 'Skip app-specific AX snapshot',
+        '--dry-run' => 'Write the planned command receipt without running Peekaboo',
+        '--json' => 'Print machine-readable result JSON'
+      },
+      examples: [
+        'visual_smoke --dry-run',
+        'visual_smoke --app SaneBar --require-peekaboo',
+        'visual_smoke --app SaneClick --no-menu --json'
+      ]
+    },
     'mc' => {
       usage: 'mc',
       description: 'Show current Memory MCP context',
@@ -2034,7 +2090,7 @@ PY
     },
     'appstore_preflight' => {
       usage: 'appstore_preflight (or asp)',
-      description: 'Run App Store submission compliance checks (privacy manifest, entitlements, screenshots, usage descriptions, review notes, etc.)',
+      description: 'Run App Store submission compliance checks for active App Store lanes; skips direct-only apps with appstore.enabled: false',
       flags: {},
       examples: ['appstore_preflight', 'asp']
     },
@@ -2183,7 +2239,8 @@ PY
       'deprecations' => 'check_deprecations', 'pdf' => 'export',
       'check-inbox' => 'check_inbox', 'inbox' => 'check_inbox', 'sync-mini' => 'sync_mini',
       'runtime_snapshot' => 'runtime_evidence', 'runtime-evidence' => 'runtime_evidence',
-      'lldb_snapshot' => 'runtime_evidence'
+      'lldb_snapshot' => 'runtime_evidence',
+      'visual-smoke' => 'visual_smoke'
     }
     command = aliases[command] if aliases.key?(command)
 

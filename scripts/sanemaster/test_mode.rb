@@ -272,8 +272,8 @@ module SaneMasterModules
 
     def stage_to_canonical_local_app_path(source_app_path)
       target_app_path = canonical_local_app_path
-      if should_block_apple_development_tcc_drift?(source_app_path: source_app_path, target_app_path: target_app_path)
-        puts "❌ Refusing to stage an Apple Development build over the trusted #{project_name} install."
+      if should_block_local_signing_tcc_drift?(source_app_path: source_app_path, target_app_path: target_app_path)
+        puts "❌ Refusing to stage a locally signed build over the trusted #{project_name} install."
         puts '   That breaks the existing Accessibility/TCC identity and can trap the app in a permissions loop.'
         puts "   Use: ./scripts/SaneMaster.rb test_mode --release"
         puts '   Set SANEMASTER_ALLOW_TCC_IDENTITY_DRIFT=1 to override if you really want a fresh untrusted identity.'
@@ -364,15 +364,19 @@ module SaneMasterModules
       apple_development_signed?(source_app_path)
     end
 
-    def should_block_apple_development_tcc_drift?(source_app_path:, target_app_path:)
+    def should_block_local_signing_tcc_drift?(source_app_path:, target_app_path:)
       return false if ENV['SANEMASTER_ALLOW_TCC_IDENTITY_DRIFT'] == '1'
-      return false unless project_name == 'SaneBar'
+      return false unless tcc_identity_sensitive_project?
       return false unless source_app_path && File.exist?(source_app_path)
       return false unless target_app_path.start_with?('/Applications/')
       return false unless File.exist?(target_app_path)
       return false unless developer_id_signed?(target_app_path)
 
-      apple_development_signed?(source_app_path)
+      !developer_id_signed?(source_app_path)
+    end
+
+    def tcc_identity_sensitive_project?
+      %w[SaneBar SaneClick SaneVideo].include?(project_name)
     end
 
     def transient_local_app_path
@@ -749,7 +753,7 @@ module SaneMasterModules
       ENV['SANEMASTER_BUILD_CONFIG'] = build_config
 
       cmd = ['xcodebuild', *xcodebuild_container_args, '-scheme', project_scheme, '-configuration', build_config,
-             '-destination', 'platform=macOS', 'ENABLE_DEBUG_DYLIB=NO', 'build']
+             '-destination', 'platform=macOS', 'ENABLE_DEBUG_DYLIB=NO', *release_runtime_build_args(build_config), 'build']
       stdout, status = Open3.capture2e(*cmd)
 
       if should_retry_unsigned_debug?(build_config: build_config, output: stdout, status: status)
@@ -777,6 +781,14 @@ module SaneMasterModules
       end
 
       status.success?
+    end
+
+    def release_runtime_build_args(build_config)
+      return [] unless %w[ProdDebug Release].include?(build_config)
+
+      configured = saneprocess_value('release', 'test_mode_extra_args') ||
+                   saneprocess_value('release', 'archive_extra_args')
+      Array(configured).map(&:to_s).map(&:strip).reject(&:empty?)
     end
 
     def prepare_signing_session_for_build(build_config)

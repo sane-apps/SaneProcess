@@ -1,10 +1,13 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require 'tmpdir'
 require_relative '../hooks/test/test_framework'
+require_relative 'base'
 require_relative 'test_mode'
 
 class TestModeHarness
+  include SaneMasterModules::Base
   include SaneMasterModules::TestMode
 end
 
@@ -81,6 +84,56 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
     end
   end
 
+  test_category('Release runtime signing') do
+    test('release test_mode build uses archive signing args from .saneprocess') do
+      Dir.mktmpdir('sanemaster-test-mode-signing') do |dir|
+        File.write(
+          File.join(dir, '.saneprocess'),
+          <<~YAML
+            name: ExampleApp
+            release:
+              archive_extra_args:
+                - DEVELOPMENT_TEAM=M78L6FXD48
+                - CODE_SIGN_STYLE=Manual
+                - "CODE_SIGN_IDENTITY=Developer ID Application"
+          YAML
+        )
+
+        Dir.chdir(dir) do
+          harness = TestModeHarness.new
+          args = harness.send(:release_runtime_build_args, 'Release')
+
+          assert_includes(args, 'DEVELOPMENT_TEAM=M78L6FXD48')
+          assert_includes(args, 'CODE_SIGN_STYLE=Manual')
+          assert_includes(args, 'CODE_SIGN_IDENTITY=Developer ID Application')
+        end
+      end
+
+      true
+    end
+
+    test('debug test_mode build does not inherit release signing args') do
+      Dir.mktmpdir('sanemaster-test-mode-debug-signing') do |dir|
+        File.write(
+          File.join(dir, '.saneprocess'),
+          <<~YAML
+            release:
+              archive_extra_args:
+                - CODE_SIGN_STYLE=Manual
+          YAML
+        )
+
+        Dir.chdir(dir) do
+          harness = TestModeHarness.new
+
+          assert(harness.send(:release_runtime_build_args, 'Debug').empty?)
+        end
+      end
+
+      true
+    end
+  end
+
   test_category('Transient staging path') do
     test('test_mode uses transient noindex path instead of ~/Applications for unsigned fallback') do
       source = File.read(TEST_MODE_PATH)
@@ -89,6 +142,28 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
       assert(!source.include?("File.expand_path(File.join('~/Applications', \"\#{project_name}.app\"))"),
              'unsigned fallback should not use ~/Applications for runtime staging')
       true
+    end
+  end
+
+  test_category('TCC identity protection') do
+    test('SaneClick is protected from trusted-install identity drift') do
+      original_name = subject.instance_variable_get(:@project_name)
+      subject.instance_variable_set(:@project_name, 'SaneClick')
+
+      assert(subject.send(:tcc_identity_sensitive_project?), 'expected SaneClick to be TCC identity sensitive')
+      true
+    ensure
+      subject.instance_variable_set(:@project_name, original_name)
+    end
+
+    test('unknown apps are not marked TCC identity sensitive') do
+      original_name = subject.instance_variable_get(:@project_name)
+      subject.instance_variable_set(:@project_name, 'ExampleApp')
+
+      assert(!subject.send(:tcc_identity_sensitive_project?), 'unexpected TCC identity sensitivity for unrelated app')
+      true
+    ensure
+      subject.instance_variable_set(:@project_name, original_name)
     end
   end
 end)
