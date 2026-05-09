@@ -119,6 +119,7 @@ ruby scripts/SaneMaster.rb status
 ruby scripts/SaneMaster.rb release_preflight
 ruby scripts/SaneMaster.rb appstore_preflight
 ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"
+ruby scripts/SaneMaster.rb runtime_evidence --dry-run --break Sources/App.swift:42
 ruby scripts/SaneMaster.rb process_metrics --json
 ruby scripts/SaneMaster.rb gate_review test/fixtures/gates/example.json
 ruby scripts/SaneMaster.rb saneui_guard /path/to/app

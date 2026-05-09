@@ -3,6 +3,7 @@
 
 require_relative 'hooks/test/test_framework'
 require_relative 'validation_report'
+require 'tmpdir'
 
 class ValidationReportHarness < ValidationReport
   attr_reader :issues, :warnings, :metrics, :verdict
@@ -78,6 +79,27 @@ class HostedVersionSnapshotHarness < ValidationReport
     return @variants_response if path == '/v1/variants?page[size]=100'
 
     @files_response.fetch(path)
+  end
+end
+
+class DownloadRedirectValidationHarness < ValidationReport
+  def initialize(resolved: {}, landing_pages: {}, ok_links: [])
+    super()
+    @resolved = resolved
+    @landing_pages = landing_pages
+    @ok_links = ok_links
+  end
+
+  def link_resolves_to_live_release?(link, expected_name)
+    @resolved[link] == expected_name
+  end
+
+  def fetch_url_text(link)
+    @landing_pages[link].to_s
+  end
+
+  def link_status_ok?(link)
+    @ok_links.include?(link)
   end
 end
 
@@ -565,6 +587,74 @@ exit(run_tests('Validation report tests') do
   end
 
   test_category('Finding classification') do
+    test('detects app category declared through xcconfig Info.plist build settings') do
+      Dir.mktmpdir('saneprocess-category-test') do |dir|
+        config_dir = File.join(dir, 'Config')
+        Dir.mkdir(config_dir)
+        File.write(
+          File.join(config_dir, 'Shared.xcconfig'),
+          "INFOPLIST_KEY_LSApplicationCategoryType = public.app-category.utilities\n"
+        )
+
+        assert(
+          ValidationReport.new.send(:project_declares_app_category?, dir),
+          'expected xcconfig Info.plist category setting to satisfy app category check'
+        )
+      end
+      true
+    end
+
+    test('accepts canonical website download redirects for live release links') do
+      subject = DownloadRedirectValidationHarness.new(
+        resolved: { 'https://saneclip.com/download' => 'SaneClip-2.3.2.zip' }
+      )
+
+      assert(
+        subject.send(
+          :page_has_live_download_link?,
+          ['https://saneclip.com/download'],
+          'https://dist.saneclip.com/updates/SaneClip-2.3.2.zip'
+        ),
+        'expected /download redirect to satisfy website download check'
+      )
+      true
+    end
+
+    test('rejects generic download links that do not resolve to the live release archive') do
+      subject = DownloadRedirectValidationHarness.new(
+        resolved: { 'https://saneclip.com/download' => 'SaneClip-2.3.1.zip' }
+      )
+
+      assert(
+        !subject.send(
+          :page_has_live_download_link?,
+          ['https://saneclip.com/download'],
+          'https://dist.saneclip.com/updates/SaneClip-2.3.2.zip'
+        ),
+        'expected stale /download redirect to fail website download check'
+      )
+      true
+    end
+
+    test('accepts download landing pages that link to the live release archive') do
+      subject = DownloadRedirectValidationHarness.new(
+        landing_pages: {
+          'https://saneclip.com/download' => '<a href="https://dist.saneclip.com/updates/SaneClip-2.3.2.zip">Download</a>'
+        },
+        ok_links: ['https://dist.saneclip.com/updates/SaneClip-2.3.2.zip']
+      )
+
+      assert(
+        subject.send(
+          :page_has_live_download_link?,
+          ['https://saneclip.com/download'],
+          'https://dist.saneclip.com/updates/SaneClip-2.3.2.zip'
+        ),
+        'expected /download landing page to satisfy website download check'
+      )
+      true
+    end
+
     test('classifies process and release findings separately with actions') do
       subject = ValidationReport.new
 

@@ -116,6 +116,7 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 | `status` | Live cross-reference across git, inbox, issues, release lanes, and current signals |
 | `check_inbox [check|review <id>|read <id>|reply ...]` | Canonical support inbox workflow wrapper |
 | `test_mode` | Kill → Build → Launch → Logs |
+| `runtime_evidence` | LLDB-backed runtime evidence bundle for reproducible Swift/macOS bugs |
 | `doctor` | Environment health check |
 | `tool_discovery --query "..."` | Generate a proof receipt before using a workaround or adding a tool |
 | `process_metrics [--json]` | Dashboard for verify churn, session quality, SOP score caps, and hook blocks |
@@ -140,6 +141,34 @@ The guard checks current high-risk drift:
 - `.buttonStyle(.bordered)` in shared settings surfaces
 
 The guard does not yet fully automate visual review for bright-white text, `13pt` minimum text, opacity-based gray text, or broader layout polish. For those, inspect `~/SaneApps/infra/SaneUI/Sources/SaneUICatalog/SaneUICatalogApp.swift` and review the actual UI before release.
+
+### Runtime Evidence
+
+Use `runtime_evidence` when a Swift/macOS bug is reproducible and stack frames,
+locals, or side-effect-free expression results would prevent guessing:
+
+```bash
+ruby scripts/SaneMaster.rb runtime_evidence --dry-run --break Sources/App.swift:42
+ruby scripts/SaneMaster.rb runtime_evidence --executable /tmp/Repro --break /tmp/Repro.swift:8 --expr value
+ruby scripts/SaneMaster.rb runtime_evidence --pid 12345 --expr "state.description"
+```
+
+This command writes a timestamped bundle under `outputs/debug/` with metadata,
+source context, recent logs, LLDB commands, and LLDB output. It does not build or
+launch apps. For SaneApps app bugs, launch through the canonical Mini-first
+`test_mode` path first, then attach to the already-running process by PID.
+Treat `--expr` like code execution in the debuggee; use side-effect-free
+expressions only.
+
+### App Hardware Verification
+
+Use the shared app launcher for runtime checks instead of manual `open` or direct binary execution:
+
+```bash
+ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb SaneVideo --hardware --no-logs
+```
+
+`--hardware` is intentionally explicit. Normal automation suppresses hardware and permission prompts with `SANEAPPS_PERMISSIONLESS_AUTOMATION=1`; hardware verification sets `SANEAPPS_PERMISSIONLESS_AUTOMATION=0` and `SANEVIDEO_ENABLE_HARDWARE_TESTS=1` so SaneVideo can exercise real camera/TCC flows on the Mini.
 
 ### Validation Hardening
 

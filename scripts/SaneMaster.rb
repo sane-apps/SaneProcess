@@ -10,6 +10,7 @@
 #   dependencies.rb - Version checking, dependency graphs
 #   generation.rb   - Test/mock generation, templates
 #   diagnostics.rb  - Crash analysis, xcresult diagnosis
+#   runtime_snapshot.rb - LLDB runtime evidence snapshots
 #   bootstrap.rb    - Environment setup, auto-update
 #   test_mode.rb    - Interactive debugging workflow
 #   verify.rb       - Build, test execution, permissions
@@ -34,6 +35,7 @@ require_relative 'sanemaster/memory'
 require_relative 'sanemaster/dependencies'
 require_relative 'sanemaster/generation'
 require_relative 'sanemaster/diagnostics'
+require_relative 'sanemaster/runtime_snapshot'
 require_relative 'sanemaster/bootstrap'
 require_relative 'sanemaster/test_mode'
 require_relative 'sanemaster/process_metrics'
@@ -64,6 +66,7 @@ class SaneMaster
   include SaneMasterModules::Dependencies
   include SaneMasterModules::Generation
   include SaneMasterModules::Diagnostics
+  include SaneMasterModules::RuntimeSnapshot
   include SaneMasterModules::Bootstrap
   include SaneMasterModules::TestMode
   include SaneMasterModules::ProcessMetrics
@@ -136,6 +139,7 @@ class SaneMaster
         'launch' => { args: '', desc: 'Launch the app' },
         'crashes' => { args: '[--recent]', desc: 'Analyze crash reports' },
         'diagnose' => { args: '[path]', desc: 'Analyze .xcresult bundle' },
+        'runtime_evidence' => { args: '[--executable PATH|--pid PID] [--break File.swift:LINE] [--expr EXPR]', desc: 'Capture LLDB runtime evidence without launching apps' },
         'menu_scan' => { args: '[--json] [--owners bundle1,bundle2]', desc: 'Menu bar diagnostics (detected/normalized/excluded)' },
         'mode' => { args: '[<AppName>] <pro|basic|free|status|owner-check|owner-install|owner-pro|owner-verify|list> [--launch] [--host local|mini]', desc: 'Set/query test mode or owner-mode install/license state' }
       }
@@ -290,6 +294,10 @@ class SaneMaster
                                   test_quality
                                   check_binary
                                   diagnose
+                                  runtime_snapshot
+                                  runtime_evidence
+                                  runtime-evidence
+                                  lldb_snapshot
                                   crash_report
                                   crashes
                                   menu_scan
@@ -1276,6 +1284,9 @@ PY
     when 'diagnose'
       diagnose_args = parse_diagnose_args(args)
       diagnose(diagnose_args[:path], dump: diagnose_args[:dump])
+    when 'runtime_snapshot', 'runtime_evidence', 'runtime-evidence', 'lldb_snapshot'
+      success = runtime_snapshot(args)
+      exit(success ? 0 : 1)
     when 'crash_report', 'crashes'
       analyze_crashes(args)
     when 'menu_scan'
@@ -1973,6 +1984,25 @@ PY
       },
       examples: ['crashes', 'crashes --recent']
     },
+    'runtime_evidence' => {
+      usage: 'runtime_evidence [--executable PATH|--pid PID] [--break File.swift:LINE] [--symbol NAME] [--expr EXPR] [--arg ARG] [--dry-run]',
+      description: 'Capture a timestamped LLDB runtime-evidence bundle without building or launching apps. For SaneApps app work, launch through test_mode on the Mini first, then attach by PID.',
+      flags: {
+        '--executable PATH' => 'Run a reproducible Swift executable under LLDB',
+        '--pid PID' => 'Attach to an already-running process',
+        '--break File.swift:LINE' => 'Set a source breakpoint before capture',
+        '--symbol NAME' => 'Set a symbol breakpoint before capture',
+        '--expr EXPR' => 'Evaluate a side-effect-free expression in the stopped frame',
+        '--arg ARG' => 'Pass an argument to the executable; repeat for multiple args',
+        '--dry-run' => 'Write the evidence plan without invoking LLDB',
+        '--json' => 'Print machine-readable result JSON'
+      },
+      examples: [
+        'runtime_evidence --dry-run --break Sources/App.swift:42',
+        'runtime_evidence --executable /tmp/Repro --break /tmp/Repro.swift:8 --expr value',
+        'runtime_evidence --pid 12345 --expr "state.description"'
+      ]
+    },
     'mc' => {
       usage: 'mc',
       description: 'Show current Memory MCP context',
@@ -2150,7 +2180,9 @@ PY
     aliases = {
       'tm' => 'test_mode', 'crashes' => 'crash_report', 'versions' => 'version_check',
       'deprecations' => 'check_deprecations', 'pdf' => 'export',
-      'check-inbox' => 'check_inbox', 'inbox' => 'check_inbox', 'sync-mini' => 'sync_mini'
+      'check-inbox' => 'check_inbox', 'inbox' => 'check_inbox', 'sync-mini' => 'sync_mini',
+      'runtime_snapshot' => 'runtime_evidence', 'runtime-evidence' => 'runtime_evidence',
+      'lldb_snapshot' => 'runtime_evidence'
     }
     command = aliases[command] if aliases.key?(command)
 

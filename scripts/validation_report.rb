@@ -2423,15 +2423,7 @@ class ValidationReport
     checklist << { name: "Entitlements file exists", status: entitlements ? :done : :todo }
 
     # 5. App category set (check Info.plist or xcconfig)
-    has_category = false
-    info_plist_paths = Dir.glob(File.join(project_path, '**/Info.plist'))
-    info_plist_paths.each do |plist|
-      content = File.read(plist) rescue ''
-      if content.include?('LSApplicationCategoryType')
-        has_category = true
-        break
-      end
-    end
+    has_category = project_declares_app_category?(project_path)
     checklist << { name: "App category set (LSApplicationCategoryType)", status: has_category ? :done : :todo }
 
     qa_status = latest_project_qa_status(project_path)
@@ -2619,6 +2611,18 @@ class ValidationReport
     nil
   end
 
+  def project_declares_app_category?(project_path)
+    candidate_paths = Dir.glob(File.join(project_path, '**/Info.plist')) +
+      Dir.glob(File.join(project_path, '**/*.xcconfig')) +
+      Dir.glob(File.join(project_path, '**/*.pbxproj'))
+
+    candidate_paths.any? do |path|
+      content = File.read(path) rescue ''
+      content.include?('LSApplicationCategoryType') ||
+        content.include?('INFOPLIST_KEY_LSApplicationCategoryType')
+    end
+  end
+
   def load_product_config
     @load_product_config ||= begin
       raw = YAML.safe_load(File.read(PRODUCT_CONFIG_PATH), permitted_classes: []) || {}
@@ -2693,14 +2697,66 @@ class ValidationReport
     return false if live_release_url.to_s.strip.empty?
 
     expected_name = File.basename(URI(live_release_url).path.to_s)
-    candidate = links.find do |link|
+    direct_candidate = links.find do |link|
       begin
         File.basename(URI(link).path.to_s) == expected_name
       rescue URI::InvalidURIError
         false
       end
     end
-    candidate ? link_status_ok?(candidate) : false
+    return true if direct_candidate && link_status_ok?(direct_candidate)
+
+    redirect_candidate = links.find { |link| download_redirect_candidate?(link) }
+    return false unless redirect_candidate
+
+    link_resolves_to_live_release?(redirect_candidate, expected_name) ||
+      download_landing_page_links_to_live_release?(redirect_candidate, expected_name)
+  rescue StandardError
+    false
+  end
+
+  def download_redirect_candidate?(link)
+    uri = URI(link)
+    return false unless %w[http https].include?(uri.scheme)
+
+    segments = uri.path.to_s.split('/').reject(&:empty?)
+    segments.any? { |segment| segment.downcase == 'download' }
+  rescue URI::InvalidURIError
+    false
+  end
+
+  def link_resolves_to_live_release?(link, expected_name)
+    output, status = Open3.capture2e(
+      'curl',
+      '-sIL',
+      '--max-redirs', '5',
+      '--connect-timeout', '5',
+      '--max-time', '15',
+      '-o', '/dev/null',
+      '-w', '%{url_effective} %{http_code}',
+      link
+    )
+    return false unless status.success?
+
+    effective_url, status_code = output.to_s.strip.rpartition(' ').values_at(0, 2)
+    return false unless %w[200 301 302].include?(status_code)
+
+    File.basename(URI(effective_url).path.to_s) == expected_name
+  rescue StandardError
+    false
+  end
+
+  def download_landing_page_links_to_live_release?(link, expected_name)
+    html = fetch_url_text(link)
+    links = extract_page_links(html, base_url: link)
+    direct_candidate = links.find do |candidate|
+      begin
+        File.basename(URI(candidate).path.to_s) == expected_name
+      rescue URI::InvalidURIError
+        false
+      end
+    end
+    direct_candidate ? link_status_ok?(direct_candidate) : false
   rescue StandardError
     false
   end

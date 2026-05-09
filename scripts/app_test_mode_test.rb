@@ -66,4 +66,16 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
       true
     end
   end
+
+  test_category('Hardware verification mode') do
+    test('sane_test supports real SaneVideo camera launches') do
+      source = File.read(SANE_TEST_PATH)
+
+      assert_includes(source, "@hardware = args.include?('--hardware')")
+      assert_includes(source, 'SANEAPPS_PERMISSIONLESS_AUTOMATION=#{permissionless_automation}')
+      assert_includes(source, 'SANEVIDEO_ENABLE_HARDWARE_TESTS=#{hardware_tests}')
+      assert_includes(source, 'Allow real hardware/permission prompts for SaneVideo camera verification')
+      true
+    end
+  end
 end)

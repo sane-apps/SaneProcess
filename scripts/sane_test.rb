@@ -7,6 +7,7 @@
 #   ruby scripts/sane_test.rb SaneBar
 #   ruby scripts/sane_test.rb SaneClip --local
 #   ruby scripts/sane_test.rb SaneBar --no-logs
+#   ruby scripts/sane_test.rb SaneVideo --hardware
 #
 # Default behavior:
 #   1. Detects if Mac mini is reachable (2s timeout)
@@ -86,6 +87,7 @@ class SaneTest
     @allow_keychain = args.include?('--allow-keychain')
     @allow_unsigned_debug = args.include?('--allow-unsigned-debug')
     @release_build = args.include?('--release')
+    @hardware = args.include?('--hardware')
     @target = nil
     @last_build_config = nil
     @app_dir = File.join(SANE_APPS_ROOT, app_name)
@@ -910,7 +912,12 @@ class SaneTest
   end
 
   def launch_env_pairs
-    env_args = ['--env', 'SANEAPPS_PERMISSIONLESS_AUTOMATION=1', '--env', 'SANEVIDEO_ENABLE_HARDWARE_TESTS=0']
+    permissionless_automation = @hardware ? '0' : '1'
+    hardware_tests = @hardware ? '1' : '0'
+    env_args = [
+      '--env', "SANEAPPS_PERMISSIONLESS_AUTOMATION=#{permissionless_automation}",
+      '--env', "SANEVIDEO_ENABLE_HARDWARE_TESTS=#{hardware_tests}"
+    ]
     if @free_mode
       env_args += ['--env', 'SANEAPPS_FORCE_LICENSE_CHECK=1']
       env_args += ['--env', 'SANEAPPS_FORCE_FREE_MODE=1'] unless @app_name == 'SaneBar'
@@ -1177,6 +1184,7 @@ if ARGV.empty? || ARGV[0] == '--help'
   warn '  --allow-keychain  Allow real keychain access during app launch (default is no-keychain)'
   warn '  --allow-unsigned-debug  Allow local SaneBar Debug launch without signing certs (unsupported visibility path)'
   warn '  --release    Build Release config and stage it to the canonical app path'
+  warn '  --hardware   Allow real hardware/permission prompts for SaneVideo camera verification'
   warn ''
   warn 'Default: deploys to Mac mini if reachable, local otherwise.'
   warn 'TCC is preserved by default — single-copy enforcement prevents stale grants.'
