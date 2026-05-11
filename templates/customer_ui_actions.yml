@@ -1,0 +1,16 @@
+version: 1
+app: AppName
+actions:
+  - id: primary-action-id
+    title: Customer-visible action name
+    surfaces:
+      - Main window
+    steps:
+      - Click or trigger the control exactly as a customer would.
+    assertions:
+      - Visible state changes match the promised behavior.
+      - Persisted state and other app surfaces agree after relaunch.
+      - No invalid customer-visible state appears.
+    evidence:
+      - Mini AX click transcript
+      - Screenshot or rendered screenshot

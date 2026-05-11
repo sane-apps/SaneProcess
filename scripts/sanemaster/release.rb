@@ -2243,7 +2243,25 @@ module SaneMasterModules
         puts '⏭️  skipped (no qa.rb)'
       end
 
-    # 1b. Monetization guardrails (protect against accidental full-free releases)
+      # 1b. Customer-facing UI/UX action contract.
+      print '  Customer UI action contract... '
+      if respond_to?(:customer_ui_contract_report)
+        ui_contract_report = customer_ui_contract_report(config: preflight_config)
+        if ui_contract_report[:ok]
+          puts "✅ #{ui_contract_report[:action_count]} action(s)"
+        else
+          puts '❌ FAIL'
+          Array(ui_contract_report[:issues]).each do |issue|
+            puts "    ↳ #{issue}"
+            issues << "Customer UI action contract: #{issue}"
+          end
+        end
+      else
+        puts '❌ FAIL'
+        issues << 'Customer UI action contract checker is not loaded'
+      end
+
+    # 1c. Monetization guardrails (protect against accidental full-free releases)
       print '  Monetization guardrails... '
       project_yml_content = File.exist?('project.yml') ? safe_read('project.yml') : ''
       plist_content = Dir.glob('**/*.plist').reject { |p| p.include?('DerivedData') || p.include?('build/') }.map { |p| safe_read(p) }.join("\n")

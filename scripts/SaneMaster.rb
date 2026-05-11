@@ -37,6 +37,7 @@ require_relative 'sanemaster/generation'
 require_relative 'sanemaster/diagnostics'
 require_relative 'sanemaster/runtime_snapshot'
 require_relative 'sanemaster/visual_smoke'
+require_relative 'sanemaster/customer_ui_contract'
 require_relative 'sanemaster/bootstrap'
 require_relative 'sanemaster/test_mode'
 require_relative 'sanemaster/process_metrics'
@@ -69,6 +70,7 @@ class SaneMaster
   include SaneMasterModules::Diagnostics
   include SaneMasterModules::RuntimeSnapshot
   include SaneMasterModules::VisualSmoke
+  include SaneMasterModules::CustomerUIContract
   include SaneMasterModules::Bootstrap
   include SaneMasterModules::TestMode
   include SaneMasterModules::ProcessMetrics
@@ -143,6 +145,7 @@ class SaneMaster
         'diagnose' => { args: '[path]', desc: 'Analyze .xcresult bundle' },
         'runtime_evidence' => { args: '[--executable PATH|--pid PID] [--break File.swift:LINE] [--expr EXPR]', desc: 'Capture LLDB runtime evidence without launching apps' },
         'visual_smoke' => { args: '[--app NAME] [--require-peekaboo] [--json] [--dry-run]', desc: 'Capture Peekaboo visual/AX evidence receipt' },
+        'customer_ui_contract' => { args: '[--json] [--no-exit]', desc: 'Validate release-required customer UI action QA manifest and fresh receipt' },
         'menu_scan' => { args: '[--json] [--owners bundle1,bundle2]', desc: 'Menu bar diagnostics (detected/normalized/excluded)' },
         'mode' => { args: '[<AppName>] <pro|basic|free|status|owner-check|owner-install|owner-pro|owner-verify|list> [--launch] [--host local|mini]', desc: 'Set/query test mode or owner-mode install/license state' }
       }
@@ -1379,6 +1382,8 @@ PY
       audit_project
     when 'system_check'
       audit_unified
+    when 'customer_ui_contract'
+      customer_ui_contract(args)
     when 'release'
       release(args)
     when 'release_preflight'

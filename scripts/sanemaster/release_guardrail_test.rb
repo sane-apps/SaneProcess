@@ -1,9 +1,13 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require 'fileutils'
+require 'json'
 require 'stringio'
+require 'tmpdir'
 
 require_relative '../hooks/test/test_framework'
+require_relative 'customer_ui_contract'
 require_relative 'gate_review'
 require_relative 'release'
 
@@ -18,6 +22,7 @@ ensure
 end
 
 class ReleaseGuardrailHarness
+  include SaneMasterModules::CustomerUIContract
   include SaneMasterModules::GateReview
   include SaneMasterModules::Release
 
@@ -81,6 +86,213 @@ include TestFramework
 
 exit(run_tests('SaneMaster App Store Guardrail Tests') do
   subject = ReleaseGuardrailHarness.new
+
+  test_category('Customer UI action release contract') do
+    test('blocks release when customer UI contract is missing') do
+      Dir.mktmpdir('missing-customer-ui-contract-') do |dir|
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected missing customer UI contract to block')
+        assert_includes(report[:issues].join("\n"), 'Missing customer UI action contract')
+      end
+      true
+    end
+
+    test('requires receipt to match manifest and current source fingerprint') do
+      Dir.mktmpdir('customer-ui-contract-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        manifest_path = File.join(dir, 'Tests', 'CustomerUIActions.yml')
+        File.write(
+          manifest_path,
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: primary-toggle
+                title: Primary toggle works
+                surfaces: [Main window]
+                steps: [Click primary toggle]
+                assertions: [Visible state changes]
+                evidence: [screenshot]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          File.write(
+            File.join(dir, 'outputs', 'customer_ui_action_receipt.json'),
+            JSON.pretty_generate(
+              app: 'SaneExample',
+              status: 'passed',
+              host: 'mini',
+              generated_at: Time.now.utc.iso8601,
+              manifest_sha256: report[:manifest_sha256],
+              source_fingerprint: report[:source_fingerprint],
+              tested_action_ids: ['primary-toggle'],
+              screenshots: ['/tmp/saneexample-main.png']
+            )
+          )
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(report[:ok], "expected matching customer UI receipt to pass: #{report[:issues].inspect}")
+      end
+      true
+    end
+
+    test('blocks stale customer UI receipt after source changes') do
+      Dir.mktmpdir('stale-customer-ui-contract-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        source_path = File.join(dir, 'SaneExample', 'ContentView.swift')
+        File.write(source_path, 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: primary-toggle
+                title: Primary toggle works
+                surfaces: [Main window]
+                steps: [Click primary toggle]
+                assertions: [Visible state changes]
+                evidence: [screenshot]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          File.write(
+            File.join(dir, 'outputs', 'customer_ui_action_receipt.json'),
+            JSON.pretty_generate(
+              app: 'SaneExample',
+              status: 'passed',
+              host: 'mini',
+              generated_at: Time.now.utc.iso8601,
+              manifest_sha256: report[:manifest_sha256],
+              source_fingerprint: report[:source_fingerprint],
+              tested_action_ids: ['primary-toggle'],
+              screenshots: ['/tmp/saneexample-main.png']
+            )
+          )
+          File.write(source_path, 'struct ContentView { let changed = true }')
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected stale customer UI receipt to block')
+        assert_includes(report[:issues].join("\n"), 'source fingerprint is stale')
+      end
+      true
+    end
+
+    test('allows tracked .sane receipt without making the source fingerprint circular') do
+      Dir.mktmpdir('tracked-customer-ui-receipt-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, '.sane'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: primary-toggle
+                title: Primary toggle works
+                surfaces: [Main window]
+                steps: [Click primary toggle]
+                assertions: [Visible state changes]
+                evidence: [screenshot]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          File.write(
+            File.join(dir, '.sane', 'customer_ui_action_receipt.json'),
+            JSON.pretty_generate(
+              app: 'SaneExample',
+              status: 'passed',
+              host: 'mini',
+              generated_at: Time.now.utc.iso8601,
+              manifest_sha256: report[:manifest_sha256],
+              source_fingerprint: report[:source_fingerprint],
+              tested_action_ids: ['primary-toggle'],
+              screenshots: ['/tmp/saneexample-main.png']
+            )
+          )
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(report[:ok], "expected tracked .sane customer UI receipt to pass: #{report[:issues].inspect}")
+      end
+      true
+    end
+
+    test('ignores SaneMaster scratch files when validating a customer UI receipt') do
+      Dir.mktmpdir('customer-ui-scratch-files-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: primary-toggle
+                title: Primary toggle works
+                surfaces: [Main window]
+                steps: [Click primary toggle]
+                assertions: [Visible state changes]
+                evidence: [screenshot]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          File.write(
+            File.join(dir, 'outputs', 'customer_ui_action_receipt.json'),
+            JSON.pretty_generate(
+              app: 'SaneExample',
+              status: 'passed',
+              host: 'mini',
+              generated_at: Time.now.utc.iso8601,
+              manifest_sha256: report[:manifest_sha256],
+              source_fingerprint: report[:source_fingerprint],
+              tested_action_ids: ['primary-toggle'],
+              screenshots: ['/tmp/saneexample-main.png']
+            )
+          )
+          FileUtils.mkdir_p(File.join(dir, '.sanemaster'))
+          File.write(File.join(dir, '.sanemaster', 'release_preflight_status.json'), '{"status":"running"}')
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(report[:ok], "expected SaneMaster scratch files not to stale receipt: #{report[:issues].inspect}")
+      end
+      true
+    end
+  end
 
   test_category('App Store lane gating') do
     test('appstore preflight skips projects whose App Store lane is disabled') do

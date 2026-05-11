@@ -549,6 +549,28 @@ For Mini-first apps, the release signal now has one canonical path:
 
 Release preflight also fails when the repo has an `auto-reconcile-*` stash containing release-relevant files. Resolve those stashes by applying or explicitly discarding the work before publishing, because a clean `main` branch is not enough evidence if real source changes are parked in the stash stack.
 
+### Customer UI Action Contract
+
+Every customer-facing app release must have a current customer UI action contract. Passing unit tests, signing, notarization, and upload checks is not enough release evidence.
+
+Required per app:
+
+- `Tests/CustomerUIActions.yml` or one of the supported equivalents listed by `SaneMaster.rb customer_ui_contract`
+- `outputs/customer_ui_action_receipt.json` generated from the Mini after the signed/release-like app is click-tested
+- screenshot evidence from the Mini or deterministic SwiftUI renders
+
+The contract must list every release-required customer-visible control path: primary buttons, toggles, menus, settings tabs, license/update/about/support actions, onboarding, import/export, destructive actions, and app-specific promised workflows. The receipt must cover every required action id, report `status: passed`, use `host: mini`, match the manifest SHA-256, and match the current source fingerprint. Any source change after the click sweep makes the receipt stale and blocks `release_preflight`.
+
+Useful commands:
+
+```bash
+./scripts/SaneMaster.rb customer_ui_contract --no-exit
+./scripts/SaneMaster.rb customer_ui_contract --json --no-exit
+./scripts/SaneMaster.rb release_preflight
+```
+
+Start new contracts from `~/SaneApps/infra/SaneProcess/templates/customer_ui_actions.yml`. Do not mark a release cleared until the shipped binary has been driven through its customer-facing actions and the visible state, persisted state, and cross-surface state agree.
+
 ## Mini Visual Verification SOP
 
 For SaneApps desktop UI, use this verification ladder on the Mini:
