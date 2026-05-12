@@ -1,16 +1,81 @@
 version: 1
 app: AppName
 actions:
-  - id: primary-action-id
-    title: Customer-visible action name
+  - id: primary-window-actions
+    title: Primary window actions are live
     surfaces:
       - Main window
+      - Primary toolbar
+      - Primary list/detail rows
     steps:
-      - Click or trigger the control exactly as a customer would.
+      - Click every primary button, toggle, segmented control, menu, row action, and empty-state action exactly as a customer would.
+      - Verify the visible state, persisted state, and relaunch state agree.
+      - Cancel destructive or externally visible actions unless the app has an isolated test account or fixture.
     assertions:
-      - Visible state changes match the promised behavior.
-      - Persisted state and other app surfaces agree after relaunch.
-      - No invalid customer-visible state appears.
+      - No visible control is decorative or dead.
+      - Counts, enabled states, and row state agree after each action.
+      - Empty, loading, error, Basic, and Pro states do not expose impossible actions.
     evidence:
       - Mini AX click transcript
-      - Screenshot or rendered screenshot
+      - Mini screenshot or deterministic render
+
+  - id: menus-and-entry-points
+    title: Menus and alternate entry points are live
+    surfaces:
+      - Menu bar or status item menu
+      - Dock menu
+      - Context menus
+      - Keyboard shortcuts
+      - URL schemes, App Intents, AppleScript, Finder extensions, or other app-specific integrations
+    steps:
+      - Open every customer-facing menu and context menu.
+      - Trigger every non-destructive command.
+      - Verify destructive, purchase, send, delete, quit, and external-link commands reach the intended confirmation or first safe surface.
+      - Exercise every advertised automation or system-integration entry point.
+    assertions:
+      - Every advertised command is present, enabled when applicable, and wired to behavior.
+      - Alternate entry points match the primary UI behavior.
+      - Permission, auth, and Pro gates fail visibly instead of silently succeeding.
+    evidence:
+      - Mini menu/action transcript
+      - Automation transcript
+
+  - id: settings-onboarding-license-support
+    title: Settings, onboarding, license, update, and support flows are complete
+    surfaces:
+      - Settings tabs
+      - Onboarding
+      - License or purchase views
+      - Updates
+      - About, diagnostics, support, feedback, and bug report views
+    steps:
+      - Select every settings tab and click every customer-facing control family.
+      - Run clean-state onboarding through Basic, Pro, permission, import, restore, and existing-customer paths where applicable.
+      - Open purchase, restore, activate, deactivate, update, about, diagnostics, support, and bug-report surfaces without completing real external actions.
+    assertions:
+      - Every tab/view renders without clipped, overlapped, blank, stale, or disabled-by-mistake controls.
+      - Permission and purchase boundaries match the app’s public copy.
+      - Support and diagnostics paths produce the expected report or safe external destination.
+    evidence:
+      - Mini settings/onboarding screenshot set
+      - Mini click transcript
+
+  - id: import-export-reset-and-recovery
+    title: Data import, export, reset, migration, and recovery flows are safe
+    surfaces:
+      - Import/export controls
+      - Reset confirmations
+      - Migration/import preview
+      - Repair/recovery tools
+    steps:
+      - Export to a temporary file and validate the file.
+      - Import valid and invalid fixtures, including cancel/apply paths.
+      - Open reset/delete confirmations, cancel them, and run isolated apply scenarios when safe.
+      - Exercise repair/recovery actions and confirm the app remains usable after relaunch.
+    assertions:
+      - User data is not lost without confirmation.
+      - Invalid imports fail with visible errors and no partial state.
+      - Recovery actions leave the app in a usable, internally consistent state.
+    evidence:
+      - Mini file-state transcript
+      - Before/after state receipt

@@ -184,6 +184,7 @@ module SaneMasterModules
       required_ids = required_actions.map { |action| action['id'].to_s }.reject(&:empty?)
       missing_ids = required_ids - tested_ids
       issues << "Receipt does not cover release-required action(s): #{missing_ids.join(', ')}" unless missing_ids.empty?
+      issues.concat(customer_ui_action_result_issues(required_ids, receipt))
 
       begin
         generated_at = Time.parse(receipt['generated_at'].to_s)
@@ -192,6 +193,43 @@ module SaneMasterModules
         issues << 'Receipt generated_at is missing or invalid'
       end
 
+      issues
+    end
+
+    def customer_ui_action_result_issues(required_ids, receipt)
+      issues = []
+      results = receipt['action_results']
+      unless results.is_a?(Hash)
+        return ['Receipt is missing per-action results; do not mark customer-facing actions covered from a coarse smoke bucket']
+      end
+
+      required_ids.each do |id|
+        result = results[id]
+        if result.nil?
+          issues << "#{id}: missing per-action result"
+          next
+        end
+
+        unless result.is_a?(Hash)
+          issues << "#{id}: per-action result must be an object"
+          next
+        end
+
+        issues << "#{id}: status is #{result['status'].inspect}, expected \"passed\"" unless result['status'].to_s == 'passed'
+        evidence = Array(result['evidence'])
+        issues << "#{id}: missing per-action evidence" if evidence.empty?
+        evidence.each_with_index do |item, index|
+          if item.is_a?(Hash)
+            issues << "#{id}: evidence ##{index + 1} missing type" if item['type'].to_s.strip.empty?
+            issues << "#{id}: evidence ##{index + 1} missing detail" if item['detail'].to_s.strip.empty?
+          elsif item.to_s.strip.empty?
+            issues << "#{id}: evidence ##{index + 1} is blank"
+          end
+        end
+      end
+
+      extra_ids = results.keys.map(&:to_s) - required_ids
+      issues << "Receipt has per-action result(s) not in manifest: #{extra_ids.join(', ')}" unless extra_ids.empty?
       issues
     end
 

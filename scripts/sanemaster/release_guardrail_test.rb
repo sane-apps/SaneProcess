@@ -139,6 +139,17 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
               manifest_sha256: report[:manifest_sha256],
               source_fingerprint: report[:source_fingerprint],
               tested_action_ids: ['primary-toggle'],
+              action_results: {
+                'primary-toggle' => {
+                  status: 'passed',
+                  evidence: [
+                    {
+                      type: 'mini_click',
+                      detail: 'Clicked primary toggle on the Mini and observed state change'
+                    }
+                  ]
+                }
+              },
               screenshots: ['/tmp/saneexample-main.png']
             )
           )
@@ -186,6 +197,17 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
               manifest_sha256: report[:manifest_sha256],
               source_fingerprint: report[:source_fingerprint],
               tested_action_ids: ['primary-toggle'],
+              action_results: {
+                'primary-toggle' => {
+                  status: 'passed',
+                  evidence: [
+                    {
+                      type: 'mini_click',
+                      detail: 'Clicked primary toggle on the Mini and observed state change'
+                    }
+                  ]
+                }
+              },
               screenshots: ['/tmp/saneexample-main.png']
             )
           )
@@ -234,6 +256,17 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
               manifest_sha256: report[:manifest_sha256],
               source_fingerprint: report[:source_fingerprint],
               tested_action_ids: ['primary-toggle'],
+              action_results: {
+                'primary-toggle' => {
+                  status: 'passed',
+                  evidence: [
+                    {
+                      type: 'mini_click',
+                      detail: 'Clicked primary toggle on the Mini and observed state change'
+                    }
+                  ]
+                }
+              },
               screenshots: ['/tmp/saneexample-main.png']
             )
           )
@@ -280,6 +313,17 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
               manifest_sha256: report[:manifest_sha256],
               source_fingerprint: report[:source_fingerprint],
               tested_action_ids: ['primary-toggle'],
+              action_results: {
+                'primary-toggle' => {
+                  status: 'passed',
+                  evidence: [
+                    {
+                      type: 'mini_click',
+                      detail: 'Clicked primary toggle on the Mini and observed state change'
+                    }
+                  ]
+                }
+              },
               screenshots: ['/tmp/saneexample-main.png']
             )
           )
@@ -289,6 +333,53 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         end
 
         assert(report[:ok], "expected SaneMaster scratch files not to stale receipt: #{report[:issues].inspect}")
+      end
+      true
+    end
+
+    test('blocks coarse customer UI receipts that only list covered ids') do
+      Dir.mktmpdir('coarse-customer-ui-contract-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: primary-toggle
+                title: Primary toggle works
+                surfaces: [Main window]
+                steps: [Click primary toggle]
+                assertions: [Visible state changes]
+                evidence: [screenshot]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          File.write(
+            File.join(dir, 'outputs', 'customer_ui_action_receipt.json'),
+            JSON.pretty_generate(
+              app: 'SaneExample',
+              status: 'passed',
+              host: 'mini',
+              generated_at: Time.now.utc.iso8601,
+              manifest_sha256: report[:manifest_sha256],
+              source_fingerprint: report[:source_fingerprint],
+              tested_action_ids: ['primary-toggle'],
+              screenshots: ['/tmp/saneexample-main.png']
+            )
+          )
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected coarse customer UI receipt to block')
+        assert_includes(report[:issues].join("\n"), 'missing per-action results')
       end
       true
     end
