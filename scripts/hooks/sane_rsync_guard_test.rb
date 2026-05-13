@@ -41,6 +41,26 @@ exit(run_tests('Sane rsync guard') do
       true
     end
 
+    test('blocks multiple file sources into a tilde-based app repo root') do
+      Dir.mktmpdir do |dir|
+        one = File.join(dir, 'CHANGELOG.md')
+        two = File.join(dir, 'README.md')
+        File.write(one, 'one')
+        File.write(two, 'two')
+
+        code, stderr = guard_status(
+          '-av',
+          one,
+          two,
+          'mini:~/SaneApps/apps/SaneClip/'
+        )
+
+        assert_eq(code, 2)
+        assert_includes(stderr, 'risky rsync into a SaneApps app repo root')
+      end
+      true
+    end
+
     test('blocks nested file source into an app repo root') do
       Dir.mktmpdir do |dir|
         nested_dir = File.join(dir, 'docs')
@@ -52,6 +72,25 @@ exit(run_tests('Sane rsync guard') do
           '-av',
           nested,
           'mini:/Users/stephansmac/SaneApps/apps/SaneClip'
+        )
+
+        assert_eq(code, 2)
+        assert_includes(stderr, 'docs/index.html become ./index.html')
+      end
+      true
+    end
+
+    test('blocks nested file source into a tilde-based app repo root') do
+      Dir.mktmpdir do |dir|
+        nested_dir = File.join(dir, 'Tests')
+        Dir.mkdir(nested_dir)
+        nested = File.join(nested_dir, 'CustomerUIActions.yml')
+        File.write(nested, 'actions')
+
+        code, stderr = guard_status(
+          '-av',
+          nested,
+          'mini:~/SaneApps/apps/SaneClip/'
         )
 
         assert_eq(code, 2)

@@ -722,23 +722,28 @@ module SaneMasterModules
       puts '🧷 Codex Guards:'
 
       issues = []
-      wrapper = File.expand_path('~/.local/bin/curl')
-      expected = File.expand_path('~/SaneApps/infra/SaneProcess/scripts/hooks/sane_curl_guard.sh')
+      {
+        curl: 'sane_curl_guard.sh',
+        rsync: 'sane_rsync_guard.sh'
+      }.each do |command, guard_file|
+        wrapper = File.expand_path("~/.local/bin/#{command}")
+        expected = File.expand_path("~/SaneApps/infra/SaneProcess/scripts/hooks/#{guard_file}")
 
-      if File.symlink?(wrapper)
-        target = File.expand_path(File.readlink(wrapper), File.dirname(wrapper))
-        if target == expected
-          puts '   ✅ curl wrapper linked to sane_curl_guard.sh'
+        if File.symlink?(wrapper)
+          target = File.expand_path(File.readlink(wrapper), File.dirname(wrapper))
+          if target == expected
+            puts "   ✅ #{command} wrapper linked to #{guard_file}"
+          else
+            puts "   ❌ #{command} wrapper points to #{target}"
+            issues << :"#{command}_wrapper_wrong_target"
+          end
+        elsif File.exist?(wrapper)
+          puts "   ❌ ~/.local/bin/#{command} exists but is not a symlink"
+          issues << :"#{command}_wrapper_not_symlink"
         else
-          puts "   ❌ curl wrapper points to #{target}"
-          issues << :curl_wrapper_wrong_target
+          puts "   ❌ ~/.local/bin/#{command} wrapper missing"
+          issues << :"#{command}_wrapper_missing"
         end
-      elsif File.exist?(wrapper)
-        puts '   ❌ ~/.local/bin/curl exists but is not a symlink'
-        issues << :curl_wrapper_not_symlink
-      else
-        puts '   ❌ ~/.local/bin/curl wrapper missing'
-        issues << :curl_wrapper_missing
       end
 
       inbox_script = File.expand_path('~/SaneApps/infra/scripts/check-inbox.sh')

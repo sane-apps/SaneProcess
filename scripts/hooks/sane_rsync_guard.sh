@@ -38,7 +38,7 @@ strip_remote_prefix() {
     *:/*) value="${value#*:}" ;;
     *:~/*) value="${value#*:}" ;;
   esac
-  value="${value/#\~\/SaneApps/\/Users\/stephansmac\/SaneApps}"
+  value="${value/#\~\/SaneApps//Users/stephansmac/SaneApps}"
   printf '%s' "${value%/}"
 }
 
