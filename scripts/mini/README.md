@@ -110,6 +110,18 @@ If the Mini already looks polluted, run:
 ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-reclaim-automation-windows.sh --all --hide-terminal'
 ```
 
+For release/customer-surface screenshots, also run the visual workspace guard
+for the app under test:
+
+```bash
+ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-visual-workspace-guard.sh --cleanup --app SaneClip'
+```
+
+The screenshot wrapper calls this automatically for app-targeted captures. If
+stale SaneApps windows, helper apps, Terminal windows, SaneClick extension
+helpers, or SaneSync inference servers remain, the capture is blocked because
+the Mini is not clean enough for release evidence.
+
 ## Architecture
 
 ```

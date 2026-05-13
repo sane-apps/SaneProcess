@@ -70,6 +70,20 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
       assert_eq(options.terminal_host, false)
       true
     end
+
+    test('no-app visual precheck does not require target app windows') do
+      Dir.mktmpdir do |dir|
+        options = subject.parse_visual_smoke_args(['--output', dir, '--dry-run', '--no-app'])
+        result = subject.build_visual_smoke(options)
+        names = result[:commands].map { |command| command[:name] }
+
+        assert(!names.include?('windows'), 'precheck should not fail because the target app is not already running')
+        assert(!names.include?('app-see'), 'precheck should not capture a target app image')
+        assert_includes(names, 'screen-image')
+        assert_includes(names, 'menu-image')
+      end
+      true
+    end
   end
 
   test_category('Receipts') do
@@ -129,6 +143,89 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
       true
     ensure
       subject.singleton_class.remove_method(:visual_smoke_cleanliness_issues) rescue nil
+    end
+
+    test('cleanliness check rejects visible stale apps and helper apps') do
+      subject.define_singleton_method(:visual_smoke_terminal_window_count) { 0 }
+      subject.define_singleton_method(:visual_smoke_permission_prompt_hits) { |_app| [] }
+      subject.define_singleton_method(:visual_smoke_visible_process_names) do
+        ['Finder', 'SaneSales', 'Preview', 'SaneClip']
+      end
+      subject.define_singleton_method(:visual_smoke_running_sane_process_lines) { [] }
+
+      options = subject.parse_visual_smoke_args(%w[--app SaneClip])
+      issues = subject.visual_smoke_cleanliness_issues(options)
+
+      assert_includes(issues, 'Visible stale SaneApps window: SaneSales while testing SaneClip')
+      assert_includes(issues, 'Visible helper app can contaminate screenshot: Preview')
+      assert(!issues.any? { |issue| issue.include?('SaneClip while testing SaneClip') },
+             'target app should remain allowed while capturing it')
+      true
+    ensure
+      %i[
+        visual_smoke_terminal_window_count
+        visual_smoke_permission_prompt_hits
+        visual_smoke_visible_process_names
+        visual_smoke_running_sane_process_lines
+      ].each { |method| subject.singleton_class.remove_method(method) rescue nil }
+    end
+
+    test('cleanliness check rejects stale helper processes from prior app tests') do
+      subject.define_singleton_method(:visual_smoke_terminal_window_count) { 0 }
+      subject.define_singleton_method(:visual_smoke_permission_prompt_hits) { |_app| [] }
+      subject.define_singleton_method(:visual_smoke_visible_process_names) { ['Finder', 'SaneVideo'] }
+      subject.define_singleton_method(:visual_smoke_running_sane_process_lines) do
+        [
+          '61317 /Applications/SaneClick.app/Contents/PlugIns/SaneClickExtension.appex/Contents/MacOS/SaneClickExtension',
+          '16441 /opt/homebrew/bin/python3 /Users/stephansmac/SaneApps/apps/SaneSync/scripts/inference_server.py',
+          '62999 ruby ./scripts/SaneMaster.rb visual_smoke --app SaneVideo',
+          '62849 tee -a /Users/stephansmac/SaneApps/outputs/customer-ui-audit/SaneVideo.run.log'
+        ]
+      end
+
+      options = subject.parse_visual_smoke_args(%w[--app SaneVideo])
+      issues = subject.visual_smoke_cleanliness_issues(options)
+
+      assert_includes(issues, 'Stale SaneClickExtension helper is still running')
+      assert_includes(issues, 'Stale SaneSync inference server is still running')
+      assert(!issues.any? { |issue| issue.include?('visual_smoke --app') },
+             'the visual_smoke command itself should not block its own capture')
+      assert(!issues.any? { |issue| issue.include?('tee -a') },
+             'background harness/log commands should not be treated as app UI pollution')
+      true
+    ensure
+      %i[
+        visual_smoke_terminal_window_count
+        visual_smoke_permission_prompt_hits
+        visual_smoke_visible_process_names
+        visual_smoke_running_sane_process_lines
+      ].each { |method| subject.singleton_class.remove_method(method) rescue nil }
+    end
+
+    test('cleanliness check rejects known desktop test artifacts') do
+      subject.define_singleton_method(:visual_smoke_terminal_window_count) { 0 }
+      subject.define_singleton_method(:visual_smoke_permission_prompt_hits) { |_app| [] }
+      subject.define_singleton_method(:visual_smoke_visible_process_names) { ['Finder'] }
+      subject.define_singleton_method(:visual_smoke_running_sane_process_lines) { [] }
+      subject.define_singleton_method(:visual_smoke_desktop_artifacts) do
+        ['SaneProcess-rsync-misfire-20260509-110236', 'Screenshots']
+      end
+
+      options = subject.parse_visual_smoke_args(%w[--app SaneClip])
+      issues = subject.visual_smoke_cleanliness_issues(options)
+      joined = issues.join("\n")
+
+      assert_includes(joined, 'Desktop contains leftover test artifact: SaneProcess-rsync-misfire')
+      assert(!joined.include?('Screenshots'), 'normal desktop folders should not be rejected by artifact-pattern guard')
+      true
+    ensure
+      %i[
+        visual_smoke_terminal_window_count
+        visual_smoke_permission_prompt_hits
+        visual_smoke_visible_process_names
+        visual_smoke_running_sane_process_lines
+        visual_smoke_desktop_artifacts
+      ].each { |method| subject.singleton_class.remove_method(method) rescue nil }
     end
 
     test('visual smoke refuses overlapping runs instead of opening parallel Terminal windows') do

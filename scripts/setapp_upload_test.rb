@@ -2,7 +2,9 @@
 # frozen_string_literal: true
 
 require 'open3'
+require 'fileutils'
 require 'tempfile'
+require 'tmpdir'
 require_relative 'hooks/test/test_framework'
 
 include TestFramework
@@ -59,6 +61,60 @@ exit(run_tests('Setapp Upload Tests') do
       true
     end
 
+    test('rejects Setapp archives whose AppIcon is too small before upload') do
+      Dir.mktmpdir('setapp-upload-test') do |dir|
+        app_resources = File.join(dir, 'SaneBar.app', 'Contents', 'Resources')
+        FileUtils.mkdir_p(app_resources)
+        source_icon = '/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/AlertNoteIcon.icns'
+        small_icon = File.join(app_resources, 'AppIcon.icns')
+        output, status = Open3.capture2e(
+          'sips',
+          '-s',
+          'format',
+          'png',
+          source_icon,
+          '--resampleHeightWidth',
+          '256',
+          '256',
+          '--out',
+          small_icon
+        )
+        assert(status.success?, output)
+
+        zip_path = File.join(dir, 'SaneBar-Setapp.zip')
+        output, status = Open3.capture2e(
+          'ditto',
+          '--norsrc',
+          '-c',
+          '-k',
+          '--keepParent',
+          File.join(dir, 'SaneBar.app'),
+          zip_path
+        )
+        assert(status.success?, output)
+
+        output, status = Open3.capture2e(
+          'ruby',
+          SCRIPT_PATH,
+          '--portal-fallback',
+          '--zip',
+          zip_path,
+          '--app-id',
+          '1848',
+          '--version-id',
+          '46885',
+          '--release-notes',
+          'test notes',
+          '--no-safari-token'
+        )
+
+        assert(!status.success?, output)
+        assert_includes(output, 'Setapp archive AppIcon.icns is 256x256')
+        assert_includes(output, 'Setapp requires at least 512x512')
+      end
+      true
+    end
+
     test('SaneMaster exposes setapp_upload as a Mini-first command') do
       source = File.read(SANEMASTER_PATH)
       base_source = File.read(SANEMASTER_BASE_PATH)
@@ -67,6 +123,22 @@ exit(run_tests('Setapp Upload Tests') do
       assert_includes(source, "when 'setapp_upload', 'setapp-upload'")
       assert_includes(source, 'setapp_upload')
       assert_includes(base_source, 'setapp_upload')
+      true
+    end
+
+    test('SaneMaster propagates setapp_upload failures') do
+      output, status = Open3.capture2e(
+        'ruby',
+        SANEMASTER_PATH,
+        'setapp_upload',
+        '--zip',
+        '/tmp/definitely-missing-setapp-upload-test.zip',
+        '--release-notes',
+        'test notes'
+      )
+
+      assert(!status.success?, output)
+      assert_includes(output, 'ZIP not found')
       true
     end
   end

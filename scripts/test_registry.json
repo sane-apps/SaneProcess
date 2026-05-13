@@ -8,6 +8,12 @@
       "cmd": ["ruby", "scripts/hooks/test/tier_tests.rb"]
     },
     {
+      "path": "scripts/hooks/sane_rsync_guard_test.rb",
+      "label": "SaneProcess rsync guard tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/hooks/sane_rsync_guard_test.rb"]
+    },
+    {
       "path": "scripts/app_test_mode_test.rb",
       "label": "SaneProcess app test mode tests",
       "status": "required",

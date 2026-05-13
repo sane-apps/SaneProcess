@@ -4,6 +4,7 @@ require 'fileutils'
 require 'json'
 require 'open3'
 require 'shellwords'
+require 'socket'
 require 'time'
 require 'tmpdir'
 
@@ -26,6 +27,15 @@ module SaneMasterModules
       :capture_app,
       keyword_init: true
     )
+
+    VISUAL_SMOKE_SANE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo].freeze
+    VISUAL_SMOKE_ALLOWED_VISIBLE_PROCESSES = %w[Finder SystemUIServer ControlCenter Dock NotificationCenter].freeze
+    VISUAL_SMOKE_HELPER_APPS = ['Preview', 'Safari', 'TextEdit', 'QuickTime Player'].freeze
+    VISUAL_SMOKE_DESKTOP_ARTIFACT_PATTERNS = [
+      /\ASaneProcess-rsync-misfire-/,
+      /\ASaneUI-test-output-.*\.txt\z/,
+      /\ASaneClip OCR final proof .+\.txt\z/
+    ].freeze
 
     def visual_smoke(args)
       options = parse_visual_smoke_args(args)
@@ -142,7 +152,11 @@ module SaneMasterModules
         },
         runner: options.terminal_host ? 'terminal-host' : 'direct',
         commands: commands,
-        artifacts: []
+        artifacts: [],
+        cleanliness: {
+          checked: false,
+          issues: []
+        }
       }
 
       visual_smoke_with_lock(result) do
@@ -154,6 +168,10 @@ module SaneMasterModules
           result[:reason] = 'Peekaboo CLI not found. Install on the Mini with: brew install steipete/tap/peekaboo'
         else
           cleanliness_issues = visual_smoke_cleanliness_issues(options)
+          result[:cleanliness] = {
+            checked: true,
+            issues: cleanliness_issues
+          }
           unless cleanliness_issues.empty?
             result[:ok] = false
             result[:status] = 'failed'
@@ -188,9 +206,14 @@ module SaneMasterModules
       commands = [
         visual_smoke_json_command('permissions', smoke_dir, [options.peekaboo_bin, 'permissions', 'status', '--json']),
         visual_smoke_json_command('apps', smoke_dir, [options.peekaboo_bin, 'list', 'apps', '--json']),
-        visual_smoke_json_command('windows', smoke_dir, [options.peekaboo_bin, 'list', 'windows', '--app', options.app_name, '--json']),
         visual_smoke_json_command('menubar-list', smoke_dir, [options.peekaboo_bin, 'list', 'menubar', '--json'])
       ]
+      if options.capture_app
+        commands.insert(
+          2,
+          visual_smoke_json_command('windows', smoke_dir, [options.peekaboo_bin, 'list', 'windows', '--app', options.app_name, '--json'])
+        )
+      end
       if options.capture_screen
         commands << visual_smoke_artifact_command(
           'screen-image',
@@ -334,6 +357,20 @@ module SaneMasterModules
       nil
     end
 
+    def visual_smoke_dismiss_system_popovers
+      apple_script = <<~APPLESCRIPT
+        tell application "System Events"
+          key code 53
+          delay 0.1
+          key code 53
+        end tell
+        tell application "Finder" to activate
+      APPLESCRIPT
+      Open3.capture2e('/usr/bin/osascript', '-e', apple_script)
+    rescue StandardError
+      nil
+    end
+
     def visual_smoke_with_lock(result)
       lock_path = File.join(Dir.tmpdir, 'sanemaster-visual-smoke.lock')
       File.open(lock_path, File::RDWR | File::CREAT, 0o600) do |lock|
@@ -353,6 +390,11 @@ module SaneMasterModules
       return [] if ENV['SANEMASTER_VISUAL_SMOKE_ALLOW_DIRTY_GUI'] == '1'
 
       issues = []
+      if visual_smoke_mini_host?
+        visual_smoke_dismiss_system_popovers
+        visual_smoke_close_terminal_host
+        sleep 0.5
+      end
       terminal_windows = visual_smoke_terminal_window_count
       if terminal_windows.positive?
         issues << "Terminal has #{terminal_windows} open window(s); close them before visual capture"
@@ -360,6 +402,9 @@ module SaneMasterModules
 
       prompt_hits = visual_smoke_permission_prompt_hits(options.app_name)
       issues.concat(prompt_hits)
+      issues.concat(visual_smoke_visible_process_issues(options.app_name))
+      issues.concat(visual_smoke_running_sane_process_issues(options.app_name))
+      issues.concat(visual_smoke_desktop_artifact_issues)
       issues
     end
 
@@ -383,7 +428,7 @@ module SaneMasterModules
     end
 
     def visual_smoke_permission_prompt_hits(app_name)
-      app_names = (['SaneBar', 'SaneClick', 'SaneClip', 'SaneHosts', 'SaneSales', app_name].compact).uniq
+      app_names = (VISUAL_SMOKE_SANE_APPS + [app_name]).compact.uniq
       quoted_names = app_names.map { |name| %("#{name.gsub('"', '\"')}") }.join(', ')
       script = <<~APPLESCRIPT
         set hits to {}
@@ -414,6 +459,99 @@ module SaneMasterModules
       []
     end
 
+    def visual_smoke_visible_process_issues(app_name)
+      visible_names = visual_smoke_visible_process_names
+      visible_names.each_with_object([]) do |name, issues|
+        next if name.nil? || name.empty?
+        next if VISUAL_SMOKE_ALLOWED_VISIBLE_PROCESSES.include?(name)
+        next if name == app_name
+
+        if name == 'Terminal'
+          issues << 'Terminal is visible; hide or close automation windows before visual capture'
+        elsif VISUAL_SMOKE_SANE_APPS.include?(name)
+          issues << "Visible stale SaneApps window: #{name} while testing #{app_name}"
+        elsif VISUAL_SMOKE_HELPER_APPS.include?(name)
+          issues << "Visible helper app can contaminate screenshot: #{name}"
+        end
+      end
+    end
+
+    def visual_smoke_visible_process_names
+      script = <<~APPLESCRIPT
+        set output to {}
+        tell application "System Events"
+          repeat with proc in application processes
+            try
+              if visible of proc is true then set end of output to name of proc
+            end try
+          end repeat
+        end tell
+        return output
+      APPLESCRIPT
+      stdout, status = Open3.capture2('/usr/bin/osascript', '-e', script)
+      return [] unless status.success?
+
+      stdout.split(',').map(&:strip).reject(&:empty?)
+    rescue StandardError
+      []
+    end
+
+    def visual_smoke_desktop_artifact_issues
+      visual_smoke_desktop_artifacts.each_with_object([]) do |name, issues|
+        next unless VISUAL_SMOKE_DESKTOP_ARTIFACT_PATTERNS.any? { |pattern| name.match?(pattern) }
+
+        issues << "Desktop contains leftover test artifact: #{name}"
+      end
+    end
+
+    def visual_smoke_desktop_artifacts
+      desktop = File.expand_path('~/Desktop')
+      return [] unless Dir.exist?(desktop)
+
+      Dir.children(desktop).reject { |name| name.start_with?('.') }
+    rescue StandardError
+      []
+    end
+
+    def visual_smoke_running_sane_process_issues(app_name)
+      visual_smoke_running_sane_process_lines.each_with_object([]) do |line, issues|
+        next unless line.include?('/Applications/Sane') ||
+                    line.include?('SaneClickExtension') ||
+                    line.include?('/SaneSync/scripts/inference_server.py')
+        next if visual_smoke_process_allowed_for_app?(line, app_name)
+
+        if line.include?('SaneClickExtension')
+          issues << 'Stale SaneClickExtension helper is still running'
+        elsif line.include?('/SaneSync/scripts/inference_server.py')
+          issues << 'Stale SaneSync inference server is still running'
+        else
+          issues << "Stale SaneApps process while testing #{app_name}: #{line}"
+        end
+      end
+    end
+
+    def visual_smoke_running_sane_process_lines
+      commands = [
+        ['/usr/bin/pgrep', '-fl', 'Sane(Bar|Click|Clip|Hosts|Sales|Sync|Video)'],
+        ['/usr/bin/pgrep', '-fl', '/SaneSync/scripts/inference_server.py']
+      ]
+      commands.flat_map do |command|
+        stdout, = Open3.capture2e(*command)
+        stdout.lines.map(&:strip)
+      end.reject(&:empty?).uniq
+    rescue StandardError
+      []
+    end
+
+    def visual_smoke_process_allowed_for_app?(line, app_name)
+      return true if line.include?("/Applications/#{app_name}.app/")
+      return true if line.match?(/\A\d+\s+.*\/#{Regexp.escape(app_name)}(\s|\z)/)
+      return true if app_name == 'SaneClick' && line.include?('SaneClickExtension')
+      return true if app_name == 'SaneSync' && line.include?('/SaneSync/scripts/inference_server.py')
+
+      false
+    end
+
     def visual_smoke_close_terminal_host
       apple_script = <<~APPLESCRIPT
         tell application "Terminal"
@@ -421,9 +559,22 @@ module SaneMasterModules
           quit
         end tell
       APPLESCRIPT
-      Open3.capture2e('/usr/bin/osascript', '-e', apple_script)
+      Open3.popen2e('/usr/bin/osascript', '-e', apple_script) do |_stdin, _stdout_err, wait_thr|
+        unless wait_thr.join(2)
+          Process.kill('TERM', wait_thr.pid) rescue nil
+          sleep 0.2
+          Process.kill('KILL', wait_thr.pid) rescue nil
+        end
+      end
+      system('/usr/bin/pkill', '-x', 'Terminal', out: File::NULL, err: File::NULL)
     rescue StandardError
       nil
+    end
+
+    def visual_smoke_mini_host?
+      Socket.gethostname.downcase.include?('mini') || ENV.fetch('USER', '').downcase == 'stephansmac'
+    rescue StandardError
+      false
     end
 
     def visual_smoke_terminal_host_available?

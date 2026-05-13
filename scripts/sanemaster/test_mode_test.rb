@@ -145,6 +145,19 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
     end
   end
 
+  test_category('Mini visual workspace cleanup') do
+    test('test_mode closes other SaneApps and stale helpers before launch') do
+      source = File.read(TEST_MODE_PATH)
+
+      assert_includes(source, 'SANEAPPS_TEST_MODE_APPS')
+      assert_includes(source, 'kill_other_saneapps_processes')
+      assert_includes(source, 'SaneClickExtension')
+      assert_includes(source, '/SaneSync/scripts/inference_server.py')
+      assert_includes(source, 'Closing other SaneApps before testing')
+      true
+    end
+  end
+
   test_category('TCC identity protection') do
     test('SaneClick is protected from trusted-install identity drift') do
       original_name = subject.instance_variable_get(:@project_name)

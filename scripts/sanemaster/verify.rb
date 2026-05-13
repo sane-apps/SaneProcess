@@ -2,6 +2,8 @@
 
 require 'json'
 require 'open3'
+require 'time'
+require 'tmpdir'
 
 module SaneMasterModules
   # Build, test execution, permissions, test validation
@@ -54,14 +56,14 @@ module SaneMasterModules
 
       puts '🔨 --- [ SANEMASTER VERIFY ] ---'
       puts 'Building and running tests with progress monitoring...'
-      auto_permissions = args.include?('--grant-permissions') || ENV['SANEMASTER_GRANT_PERMISSIONS'] == '1'
-      permissions_status = auto_permissions ? '✅' : 'off (use --grant-permissions)'
+      auto_permissions = !args.include?('--no-grant-permissions') && ENV['SANEMASTER_GRANT_PERMISSIONS'] != '0'
+      permissions_status = auto_permissions ? '✅ monitor active' : 'off (--no-grant-permissions)'
       puts "⏱️  Timeout: #{timeout}s | Auto-handling permissions: #{permissions_status}"
       puts include_ui ? '📱 Including UI tests (use --ui flag)' : '⚡ Unit tests only (use --ui to include UI tests)'
       puts signed_tests ? '🔐 Test builds will use normal code signing' : '🧪 Headless mode: test builds run without code signing'
       puts ''
 
-      permission_monitor_pid = auto_permissions ? grant_test_permissions : nil
+      permission_monitor = auto_permissions ? grant_test_permissions(timeout_seconds: timeout) : nil
       terminate_running_app_instance
       validate_test_references unless args.include?('--skip-test-validation')
 
@@ -70,6 +72,7 @@ module SaneMasterModules
         result = run_tests_with_progress(timeout_seconds: timeout, include_ui: include_ui, signed_tests: signed_tests)
 
         if result[:success]
+          enforce_no_unresolved_permission_prompt!(permission_monitor)
           verify_repo_cleanliness!(before_snapshot: repo_status_before)
           record_process_metric(
             'verify',
@@ -117,7 +120,7 @@ module SaneMasterModules
           exit 1
         end
       ensure
-        cleanup_test_processes(permission_monitor_pid)
+        cleanup_test_processes(permission_monitor)
       end
     end
 
@@ -571,7 +574,7 @@ module SaneMasterModules
       end
     end
 
-    def grant_test_permissions
+    def grant_test_permissions(timeout_seconds:)
       print '🔐 Granting test permissions... '
       # Use dynamic bundle_id instead of hardcoded value
       %w[Camera Microphone ScreenRecording].each do |service|
@@ -579,14 +582,38 @@ module SaneMasterModules
       end
 
       permission_pid = nil
+      log_path = nil
       script_path = File.join(__dir__, '..', 'grant_permissions.applescript')
       if File.exist?(script_path)
-        permission_pid = Process.spawn("osascript '#{script_path}' #{project_name} > /dev/null 2>&1")
+        log_path = File.join(Dir.tmpdir, "sanemaster_permission_monitor_#{project_name}.log")
+        File.write(log_path, "Permission monitor for #{project_name} started at #{Time.now.utc.iso8601}\n")
+        monitor_duration = [timeout_seconds.to_i + 120, 300].max
+        permission_pid = Process.spawn(
+          'osascript',
+          script_path,
+          project_name,
+          monitor_duration.to_s,
+          out: log_path,
+          err: [:child, :out]
+        )
         Process.detach(permission_pid)
       end
 
       puts '✅'
-      permission_pid
+      { pid: permission_pid, log_path: log_path }
+    end
+
+    def enforce_no_unresolved_permission_prompt!(permission_monitor)
+      log_path = permission_monitor.is_a?(Hash) ? permission_monitor[:log_path] : nil
+      return unless log_path && File.exist?(log_path)
+
+      log = File.read(log_path)
+      return unless log.include?('manual grant may be needed')
+
+      puts "\n❌ Permission prompt/manual grant detected during verify."
+      puts "   Permission monitor log: #{log_path}"
+      puts '   Resolve the Mini prompt, then rerun verify. Do not treat this run as release evidence.'
+      exit 1
     end
 
     def terminate_running_app_instance
@@ -594,9 +621,10 @@ module SaneMasterModules
       sleep(0.2)
     end
 
-    def cleanup_test_processes(permission_monitor_pid = nil)
+    def cleanup_test_processes(permission_monitor = nil)
       print '🧹 Cleaning up test processes... '
 
+      permission_monitor_pid = permission_monitor.is_a?(Hash) ? permission_monitor[:pid] : permission_monitor
       if permission_monitor_pid
         begin
           Process.kill('TERM', permission_monitor_pid) if permission_monitor_pid.positive?

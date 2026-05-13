@@ -1,5 +1,10 @@
 version: 1
 app: AppName
+# Pair this manifest with an app runner at scripts/customer_ui_action_sweep.rb.
+# The runner must be invoked through ./scripts/SaneMaster.rb customer_ui_sweep
+# and must write outputs/customer_ui_action_receipt.json with per-action:
+#   workflow.runner, workflow.steps_completed, workflow.outcome, workflow.artifacts
+#   evidence entries whose path/artifact/file values point at real Mini artifacts.
 actions:
   - id: primary-window-actions
     title: Primary window actions are live
@@ -18,6 +23,19 @@ actions:
     evidence:
       - Mini AX click transcript
       - Mini screenshot or deterministic render
+    required_proof_level: runtime_visual
+    required_evidence_types:
+      - mini_click
+      - screenshot
+    historical_failure_classes:
+      - activation_noop
+      - state_count_drift
+    functional_state:
+      description: Seeded workspace with representative rows/items so controls are enabled the way a customer sees them.
+      setup_steps:
+        - Launch the app with the standard customer UI fixture before clicking.
+    expected_outputs:
+      - Visible state changes match the clicked control and persist after relaunch where promised.
 
   - id: menus-and-entry-points
     title: Menus and alternate entry points are live
@@ -39,6 +57,20 @@ actions:
     evidence:
       - Mini menu/action transcript
       - Automation transcript
+    required_proof_level: runtime_visual
+    required_evidence_types:
+      - mini_click
+      - screenshot
+    historical_failure_classes:
+      - menu_entry_missing
+      - duplicate_or_stale_menu_item
+      - shortcut_focus_or_dispatch
+    functional_state:
+      description: Seeded app state with at least one representative file/project/item selected where menu commands depend on selection.
+      setup_steps:
+        - Create or select the fixture item before opening menus and context menus.
+    expected_outputs:
+      - Menu command appears, is enabled only when valid, and reaches its promised safe surface or completed state.
 
   - id: settings-onboarding-license-support
     title: Settings, onboarding, license, update, and support flows are complete
@@ -59,6 +91,21 @@ actions:
     evidence:
       - Mini settings/onboarding screenshot set
       - Mini click transcript
+    required_proof_level: safe_first_surface
+    required_evidence_types:
+      - mini_click
+      - screenshot
+    historical_failure_classes:
+      - permission_recovery_dead_end
+      - pro_basic_gate_drift
+      - docs_promise_drift
+    functional_state:
+      description: Clean-state and existing-user states are both available so onboarding, permissions, license, and support paths are tested as customers encounter them.
+      setup_steps:
+        - Reset app defaults for clean-state onboarding.
+        - Seed an existing-user fixture for settings/license/support surfaces.
+    expected_outputs:
+      - Each setup, license, permission, update, support, or diagnostic action reaches the correct visible result or safe first surface.
 
   - id: import-export-reset-and-recovery
     title: Data import, export, reset, migration, and recovery flows are safe
@@ -79,3 +126,21 @@ actions:
     evidence:
       - Mini file-state transcript
       - Before/after state receipt
+    required_proof_level: fixture_completion
+    required_evidence_types:
+      - fixture
+    historical_failure_classes:
+      - data_loss_or_unexpected_mutation
+      - persistence_or_relaunch_reset
+    functional_state:
+      description: Temporary files/projects are seeded so import, export, reset, migration, and recovery actions operate on real data.
+      fixture_paths:
+        - Tests/Fixtures/customer-ui/
+    user_inputs:
+      - Valid fixture import
+      - Invalid fixture import
+      - Temporary export destination
+    expected_outputs:
+      - Exported file is valid.
+      - Valid import changes state as promised.
+      - Invalid import fails visibly without partial mutation.

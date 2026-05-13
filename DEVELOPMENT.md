@@ -112,7 +112,7 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 
 | Command | Purpose |
 |---------|---------|
-| `verify [--ui]` | Build + run tests (include UI tests with `--ui`) |
+| `verify [--ui]` | Build + run tests with the Mini permission monitor active by default |
 | `status` | Live cross-reference across git, inbox, issues, release lanes, and current signals |
 | `check_inbox [check|review <id>|read <id>|reply ...]` | Canonical support inbox workflow wrapper |
 | `test_mode` | Kill → Build → Launch → Logs |
@@ -179,10 +179,13 @@ window/app/menubar lists, permissions, and a JSON/Markdown receipt under
 Terminal.app on the Mini because Terminal already holds the macOS Screen
 Recording grant needed for captures from SSH-routed automation.
 The command now has a hard cleanliness gate: it refuses to capture when another
-`visual_smoke` run is active, when Terminal windows are already open, or when a
-SaneApps permission prompt is unresolved. Clean up the Mini first, handle the
-prompt, then re-run the visual check. Dirty screenshots are not release
-evidence.
+`visual_smoke` run is active, when Terminal windows are already open, when any
+other SaneApps app/helper is visible or still running from a prior test, when
+Preview/Safari/helper windows can contaminate the frame, or when a SaneApps
+permission prompt is unresolved. It also rejects known desktop test artifacts
+from prior runs, because a visually polluted Desktop is not release evidence.
+Clean up the Mini first, handle the prompt, then re-run the visual check. Dirty
+screenshots are not release evidence.
 When Peekaboo is absent it records a skipped receipt instead of blocking normal
 release work. Use `--require-peekaboo` only for lanes where the Mini has been
 explicitly configured with:
@@ -192,10 +195,13 @@ brew install steipete/tap/peekaboo
 ```
 
 Peekaboo requires macOS Screen Recording and Accessibility permissions. Do not
-replace `verify`, `test_mode`, or app-specific smoke tests with this command;
-use it as the visual proof layer for claims such as settings-menu access,
-fullscreen overlay behavior, onboarding visibility, license/update surfaces, and
-menu-bar item presence.
+run direct `ssh mini peekaboo image ...` for release evidence; that bypasses
+the Terminal-host grant path and can trigger fresh Screen Recording prompts.
+Use `SaneMaster.rb visual_smoke` or `capture-mini-screenshot.sh`, which route
+through the configured Mini GUI session. Do not replace `verify`, `test_mode`,
+or app-specific smoke tests with this command; use it as the visual proof layer
+for claims such as settings-menu access, fullscreen overlay behavior, onboarding
+visibility, license/update surfaces, and menu-bar item presence.
 
 ### App Hardware Verification
 
@@ -217,6 +223,29 @@ Red-noise budget: a validation finding older than seven days must be fixed, expl
 
 QA snapshot refresh is intentionally explicit. Run `ruby scripts/SaneMaster.rb refresh_qa_snapshots --dry-run` first, review the app commands it would run, then rerun with `--run` only for deliberate app-readiness work.
 | `sync_mini [mini] [--quiet] [--no-restart] [--activate-mini-runs]` | Sync the active Codex control-plane profile to the Mini; default keeps Mini AM/PM runs paused unless activation is explicit |
+
+### SaneApps rsync Guard
+
+Codex shells install `~/.local/bin/rsync` as a wrapper around
+`scripts/hooks/sane_rsync_guard.sh`. The guard blocks basename-flattening syncs
+into SaneApps app repo roots, such as:
+
+```bash
+rsync -av docs/index.html mini:/Users/stephansmac/SaneApps/apps/SaneClip
+rsync -av CHANGELOG.md README.md mini:/Users/stephansmac/SaneApps/apps/SaneClip
+```
+
+Those commands copy files into the remote repo root by basename and have caused
+stale or nested files to appear as root-level files. Use exact remote file paths
+or full directory syncs instead:
+
+```bash
+rsync -av docs/index.html mini:/Users/stephansmac/SaneApps/apps/SaneClip/docs/index.html
+rsync -av ./ mini:/Users/stephansmac/SaneApps/apps/SaneClip/
+```
+
+Only set `SANE_RSYNC_ALLOW_FLATTEN=1` for an intentional one-off override with
+a stated reason.
 | `universal_control_reset [--status|--reboot-mini|--cleanup-mini]` | Recover Air↔Mini Universal Control / pointer handoff |
 | `export` | Export code/docs (PDF/MD) |
 | `listing_actions` | Export the current listing/setup action tracker from inbox history |
@@ -558,12 +587,56 @@ Required per app:
 - `Tests/CustomerUIActions.yml` or one of the supported equivalents listed by `SaneMaster.rb customer_ui_contract`
 - `outputs/customer_ui_action_receipt.json` generated from the Mini after the signed/release-like app is click-tested
 - screenshot evidence from the Mini or deterministic SwiftUI renders
+- an app runner at `scripts/customer_ui_action_sweep.rb` or another supported sweep path, invoked through `./scripts/SaneMaster.rb customer_ui_sweep`
 
-The contract must list every release-required customer-visible control path: primary buttons, toggles, menus, settings tabs, license/update/about/support actions, onboarding, import/export, destructive actions, and app-specific promised workflows. The receipt must cover every required action id, report `status: passed`, use `host: mini`, match the manifest SHA-256, and match the current source fingerprint. Any source change after the click sweep makes the receipt stale and blocks `release_preflight`.
+The contract must list every release-required customer-visible control path: primary buttons, toggles, menus, settings tabs, license/update/about/support actions, onboarding, import/export, destructive actions, and app-specific promised workflows. Every action must declare a `required_proof_level`, any `required_evidence_types` needed for that promise, the `historical_failure_classes` it is meant to catch, and the `functional_state` needed for the app to behave like a real customer session. Empty-state-only testing is not enough unless the manifest explicitly says that state is intentional and explains why no seeded fixture is required.
+
+The receipt must cover every required action id, report `status: passed`, use `host: mini`, match the manifest SHA-256, match the current source fingerprint, include per-action `proof_level`, prove the declared `functional_state` was established or not required, and include real image artifacts when visual proof is claimed or required. Runtime receipts must include structured workflow proof for each action: the runner used, the declared manifest steps completed, the observed outcome, and artifact paths. Action evidence such as click transcripts, screenshots, logs, fixtures, file-state receipts, API responses, or model responses must point at real files, not prose-only notes. For `fixture_completion` and `full_runtime_completion`, the manifest must declare `user_inputs` or fixture paths plus `expected_outputs`, and the receipt must include the exercised inputs, output assertions, and real output evidence such as a fixture result, file-state receipt, log, API response, or model response. Any source change after the click sweep makes the receipt stale and blocks `release_preflight`.
+
+Valid proof levels, from weakest to strongest for release gating:
+
+- `source_guard`: code path exists only. This is not enough for a live customer-facing control unless the manifest explicitly scopes the action to source inventory.
+- `unit_guard`: source plus unit-level behavior proof.
+- `fixture_completion`: isolated fixture proves completion without touching customer data or external services.
+- `safe_first_surface`: real UI/UX reaches the first safe confirmation, permission, purchase, or external handoff surface.
+- `runtime_visual`: Mini runtime click plus screenshot/visual evidence proves the visible action is live.
+- `full_runtime_completion`: Mini runtime completes the customer workflow end to end in an isolated account or fixture.
+- `manual_verification`: explicitly reviewed human verification for flows automation cannot safely complete.
+
+Do not use screenshots as placeholders. The contract rejects missing files, non-image artifacts, and tiny images below the minimum evidence size. If a sweep only proves source strings or test names, mark it honestly with a low proof level and expect release preflight to block any action whose manifest demands runtime proof.
+
+Do not test empty shells and call that end-to-end. Before testing SaneSales,
+seed representative sales/products/orders. Before testing SaneSync, connect or
+simulate the real AI backend, type customer prompts into the input field, and
+verify generated outputs and state changes. The same rule applies to every app:
+customer-visible actions only count when the app is in the functional state that
+customers need for the promised workflow.
+
+Historical issue review is part of the release gate. Before adding or updating an app contract, review the app's GitHub issue history and map every customer action to at least one known failure class:
+
+- `activation_noop`: visible control, row, menu item, context item, or button does nothing.
+- `context_menu_extension_missing`: Finder/right-click/system extension action is absent or only appears in some locations.
+- `data_loss_or_unexpected_mutation`: sync, import, reset, update, or edit flow loses data or mutates more than the customer requested.
+- `docs_promise_drift`: README, website, App Store, privacy, or in-app copy promises behavior the app does not actually ship.
+- `duplicate_or_stale_menu_item`: menu command appears twice, shows stale text/hotkey, or points at the wrong owner.
+- `external_integration_stub`: public UI exposes a third-party upload, auth, payment, or service path that is placeholder-only.
+- `hardware_or_tcc_runtime`: camera, microphone, screen recording, accessibility, automation, Finder Sync, or file-access behavior is unverified on the Mini.
+- `install_update_packaging`: Sparkle, Homebrew, Gatekeeper, notarization, hosted download, checksum, or version drift breaks installation/update.
+- `layout_visual_regression`: tint, text, window chrome, row layout, icon visibility, clipping, or overlap is wrong only when rendered.
+- `menu_entry_missing`: advertised app/status/Dock/context menu entry is missing or disabled.
+- `permission_recovery_dead_end`: permission prompt, onboarding step, or recovery button leaves the customer stuck.
+- `persistence_or_relaunch_reset`: settings, layout, enabled state, license, profile, or preference does not survive relaunch/update/reboot.
+- `pro_basic_gate_drift`: Basic/Pro gating hides promised Basic behavior or pretends to enable locked Pro behavior.
+- `shortcut_focus_or_dispatch`: keyboard shortcut fires in the wrong focus state, is swallowed, opens the wrong surface, or does not fire.
+- `state_count_drift`: displayed counts, enabled totals, row switches, filters, or selection state disagree with actual app state.
+
+If a class appears in GitHub history for any SaneApps product, do not scope it narrowly to that product. Treat it as a suite-wide release-test pattern and decide whether the current app has the same kind of customer surface.
 
 Useful commands:
 
 ```bash
+./scripts/SaneMaster.rb customer_ui_sweep --dry-run
+./scripts/SaneMaster.rb customer_ui_sweep --json
 ./scripts/SaneMaster.rb customer_ui_contract --no-exit
 ./scripts/SaneMaster.rb customer_ui_contract --json --no-exit
 ./scripts/SaneMaster.rb release_preflight
@@ -572,6 +645,19 @@ Useful commands:
 Start new contracts from `~/SaneApps/infra/SaneProcess/templates/customer_ui_actions.yml`. Do not mark a release cleared until the shipped binary has been driven through its customer-facing actions and the visible state, persisted state, and cross-surface state agree.
 
 ## Mini Visual Verification SOP
+
+### Permission Prompt Monitoring
+
+`SaneMaster verify` starts the Mini permission monitor by default and keeps it
+alive for the configured verify timeout plus a buffer. Use
+`--no-grant-permissions` only for a deliberate diagnostic run where permissions
+must not be touched.
+
+If the monitor detects that System Settings/System Preferences opened for a
+manual grant, `verify` must fail instead of being treated as green. Clear the
+prompt on the Mini and rerun the verification. Do not leave a Mini test running
+unwatched when a customer-facing app path can trigger Camera, Microphone, Screen
+Recording, Accessibility, Automation, Finder Sync, or file-access prompts.
 
 For SaneApps desktop UI, use this verification ladder on the Mini:
 
@@ -594,6 +680,10 @@ Run this from the controlling machine with Codex installed. The capture itself s
 ```
 
 - This runs inside the Mini's logged-in GUI Terminal session through `mini-gui-run.sh`.
+- App-targeted captures first run `scripts/mini/mini-visual-workspace-guard.sh --cleanup --app <App>`.
+  If stale SaneApps windows, helper apps, Terminal windows, SaneClick extension
+  helpers, or SaneSync inference servers remain, the capture is blocked instead
+  of producing contaminated evidence.
 - First use may trigger a one-time Screen Recording permission request for Terminal on the Mini.
 - Do **not** trust plain `ssh ... screencapture` as the primary path for live app windows.
 
@@ -623,6 +713,10 @@ When the issue is iPhone/iPad-only, use the app's simulator screenshot script or
 
 Hard rule:
 - For any release-critical UI claim, keep at least one saved visual artifact: live Mini screenshot when available, otherwise a deterministic render PNG.
+- Customer-surface sweeps are one-app-at-a-time. `test_mode` now closes other
+  SaneApps and stale helpers before launch, and the visual guard blocks evidence
+  if the Mini is still polluted. A screenshot taken with other app windows
+  visible is invalid and must not be attached to a release receipt.
 5. `ruby scripts/validation_report.rb` reads the newest available status snapshot and blocks false `READY TO SHIP` results.
 
 Validation-report nuance:

@@ -5,6 +5,7 @@ require 'json'
 require 'open3'
 require 'optparse'
 require 'tempfile'
+require 'tmpdir'
 
 class SetappUpload
   CommandStatus = Struct.new(:exitstatus) do
@@ -82,11 +83,46 @@ class SetappUpload
     abort "ZIP not found: #{@options[:zip]}" unless File.file?(@options[:zip])
     abort 'Missing --release-notes or --release-notes-file' if @options[:release_notes].to_s.strip.empty?
     abort 'Setapp status must be draft or review' unless %w[draft review].include?(@options[:status])
+    validate_archive_icon! unless @options[:dry_run]
 
     return unless @options[:portal_fallback]
 
     abort 'Portal fallback requires --app-id' if @options[:app_id].to_s.empty?
     abort 'Portal fallback requires --version-id' if @options[:version_id].to_s.empty?
+  end
+
+  def validate_archive_icon!
+    Dir.mktmpdir('setapp-upload-archive') do |tmpdir|
+      _stdout, stderr, status = capture3_with_timeout(
+        120,
+        '/usr/bin/unzip',
+        '-q',
+        File.expand_path(@options[:zip]),
+        '-d',
+        tmpdir
+      )
+      abort "Setapp archive could not be expanded: #{stderr.strip}" unless status.success?
+
+      icon_path = Dir.glob(File.join(tmpdir, '*.app', 'Contents', 'Resources', 'AppIcon.icns')).first
+      abort 'Setapp archive is missing Contents/Resources/AppIcon.icns' unless icon_path
+
+      output, icon_stderr, icon_status = capture3_with_timeout(
+        30,
+        '/usr/bin/sips',
+        '-g',
+        'pixelWidth',
+        '-g',
+        'pixelHeight',
+        icon_path
+      )
+      abort "Setapp archive AppIcon.icns could not be inspected: #{icon_stderr.strip}" unless icon_status.success?
+
+      width = output[/pixelWidth:\s*(\d+)/, 1].to_i
+      height = output[/pixelHeight:\s*(\d+)/, 1].to_i
+      return if width >= 512 && height >= 512
+
+      abort "Setapp archive AppIcon.icns is #{width}x#{height}; Setapp requires at least 512x512"
+    end
   end
 
   def dry_run

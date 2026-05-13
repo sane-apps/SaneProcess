@@ -28,6 +28,7 @@ require 'shellwords'
 require 'socket'
 require 'fileutils'
 require 'digest'
+require 'English'
 
 # Load all modules
 require_relative 'sanemaster/base'
@@ -100,7 +101,7 @@ class SaneMaster
     build: {
       desc: 'Build, test, and validate code',
       commands: {
-        'verify' => { args: '[--ui] [--clean] [--grant-permissions] [--timeout seconds]', desc: 'Build and run tests (unit by default, --ui for UI)' },
+        'verify' => { args: '[--ui] [--clean] [--no-grant-permissions] [--timeout seconds]', desc: 'Build and run tests (unit by default, --ui for UI)' },
         'clean' => { args: '[--nuclear]', desc: 'Wipe build cache and test states' },
         'lint' => { args: '', desc: 'Run SwiftLint and auto-fix issues' },
         'release' => { args: '[--full|--deploy|--no-deploy|--skip-notarize|--version X.Y.Z|--notes "..."]', desc: 'Build, sign, notarize, package, and optionally deploy' },
@@ -145,6 +146,7 @@ class SaneMaster
         'diagnose' => { args: '[path]', desc: 'Analyze .xcresult bundle' },
         'runtime_evidence' => { args: '[--executable PATH|--pid PID] [--break File.swift:LINE] [--expr EXPR]', desc: 'Capture LLDB runtime evidence without launching apps' },
         'visual_smoke' => { args: '[--app NAME] [--require-peekaboo] [--json] [--dry-run]', desc: 'Capture Peekaboo visual/AX evidence receipt' },
+        'customer_ui_sweep' => { args: '[--json] [--dry-run] [--no-exit]', desc: 'Run the app customer workflow runner, then validate the release UI contract' },
         'customer_ui_contract' => { args: '[--json] [--no-exit]', desc: 'Validate release-required customer UI action QA manifest and fresh receipt' },
         'menu_scan' => { args: '[--json] [--owners bundle1,bundle2]', desc: 'Menu bar diagnostics (detected/normalized/excluded)' },
         'mode' => { args: '[<AppName>] <pro|basic|free|status|owner-check|owner-install|owner-pro|owner-verify|list> [--launch] [--host local|mini]', desc: 'Set/query test mode or owner-mode install/license state' }
@@ -306,6 +308,8 @@ class SaneMaster
                                   lldb_snapshot
                                   visual_smoke
                                   visual-smoke
+                                  customer_ui_sweep
+                                  customer-ui-sweep
                                   crash_report
                                   crashes
                                   menu_scan
@@ -1342,6 +1346,7 @@ PY
       run_sync_mini(args)
     when 'setapp_upload', 'setapp-upload'
       system('ruby', File.join(__dir__, 'setapp_upload.rb'), *args)
+      exit($CHILD_STATUS.exitstatus || 1) unless $CHILD_STATUS&.success?
     when 'tool_discovery', 'tool_receipt', 'tool-receipt'
       tool_discovery(args)
     when 'health', 'h'
@@ -1384,6 +1389,8 @@ PY
       audit_unified
     when 'customer_ui_contract'
       customer_ui_contract(args)
+    when 'customer_ui_sweep', 'customer-ui-sweep'
+      customer_ui_sweep(args)
     when 'release'
       release(args)
     when 'release_preflight'
@@ -1763,18 +1770,19 @@ PY
   # rubocop:disable Lint/UselessConstantScoping
   COMMAND_DETAILS = {
     'verify' => {
-      usage: 'verify [--ui] [--clean] [--grant-permissions] [--timeout seconds]',
+      usage: 'verify [--ui] [--clean] [--no-grant-permissions] [--timeout seconds]',
       description: 'Build the project and run tests',
       flags: {
         '--ui' => 'Run UI tests instead of unit tests',
         '--clean' => 'Clean build before testing',
+        '--no-grant-permissions' => 'Disable the Mini permission monitor for this run',
         '--timeout seconds' => 'Override the verify timeout in seconds'
       },
       examples: [
         'verify                     # Run unit tests',
         'verify --ui                # Run UI tests',
         'verify --clean             # Clean build first',
-        'verify --grant-permissions # Reset/grant TCC permissions before tests',
+        'verify --no-grant-permissions # Disable the permission monitor for diagnostics',
         'verify --timeout 900       # Allow longer-running suites to finish'
       ]
     },
@@ -2065,6 +2073,19 @@ PY
         'visual_smoke --app SaneClick --no-menu --json'
       ]
     },
+    'customer_ui_sweep' => {
+      usage: 'customer_ui_sweep [--json] [--dry-run] [--no-exit]',
+      description: 'Run the project customer workflow runner on the Mini, clean the visual workspace first, and then validate the customer UI action contract.',
+      flags: {
+        '--json' => 'Print machine-readable result JSON',
+        '--dry-run' => 'Validate that a project workflow runner exists without launching or clicking the app',
+        '--no-exit' => 'Return the report without exiting non-zero'
+      },
+      examples: [
+        'customer_ui_sweep --dry-run',
+        'customer_ui_sweep --json'
+      ]
+    },
     'mc' => {
       usage: 'mc',
       description: 'Show current Memory MCP context',
@@ -2245,7 +2266,8 @@ PY
       'check-inbox' => 'check_inbox', 'inbox' => 'check_inbox', 'sync-mini' => 'sync_mini',
       'runtime_snapshot' => 'runtime_evidence', 'runtime-evidence' => 'runtime_evidence',
       'lldb_snapshot' => 'runtime_evidence',
-      'visual-smoke' => 'visual_smoke'
+      'visual-smoke' => 'visual_smoke',
+      'customer-ui-sweep' => 'customer_ui_sweep'
     }
     command = aliases[command] if aliases.key?(command)
 

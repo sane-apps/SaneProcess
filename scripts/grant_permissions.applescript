@@ -10,8 +10,17 @@ on run argv
     
     log "🛡️ Starting enhanced permission monitor for: " & appName
     
-    -- Extended monitoring: 5 minutes (300 seconds) for longer test runs
+    -- Default monitoring: 5 minutes. SaneMaster passes a longer duration for
+    -- unattended Mini verification so late prompts do not stall the run.
     set monitorDuration to 300
+    if (count of argv) > 1 then
+        try
+            set requestedDuration to (item 2 of argv) as integer
+            if requestedDuration > 0 then
+                set monitorDuration to requestedDuration
+            end if
+        end try
+    end if
     set checkInterval to 0.5 -- Check every 0.5 seconds for faster response
     
     repeat (monitorDuration / checkInterval) times

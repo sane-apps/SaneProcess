@@ -6,6 +6,8 @@ module SaneMasterModules
     require 'fileutils'
     require 'tmpdir'
 
+    SANEAPPS_TEST_MODE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo].freeze
+
     # Detect project name from current directory (context-specific)
     def project_name
       @project_name ||= File.basename(Dir.pwd)
@@ -82,6 +84,7 @@ module SaneMasterModules
       env_vars = launch_env_vars(allow_keychain: allow_keychain, force_free_mode: force_free_mode)
       launch_args = launch_binary_args(allow_keychain: allow_keychain)
       ensure_single_instance
+      kill_other_saneapps_processes
 
       executable_path = File.join(launch_path, 'Contents', 'MacOS', project_name)
 
@@ -168,6 +171,7 @@ module SaneMasterModules
       crash_dir = File.expand_path('~/Library/Logs/DiagnosticReports')
 
       kill_existing_processes
+      kill_other_saneapps_processes
       cleanup_stale_log_streams
       show_screenshots(screenshots_dir)
       show_diagnostic_reports(crash_dir)
@@ -230,7 +234,22 @@ module SaneMasterModules
     def kill_existing_processes
       puts "1️⃣  Killing existing #{project_name} processes..."
       system('killall', '-9', project_name, err: File::NULL)
+      system('killall', '-9', 'SaneClickExtension', err: File::NULL)
       puts '   ✅ Done'
+      puts ''
+    end
+
+    def kill_other_saneapps_processes
+      other_apps = SANEAPPS_TEST_MODE_APPS.reject { |app| app == project_name }
+      return if other_apps.empty?
+
+      puts "🧹 Closing other SaneApps before testing #{project_name}..."
+      other_apps.each do |app_name|
+        system('osascript', '-e', "tell application \"#{app_name}\" to quit", out: File::NULL, err: File::NULL)
+        system('killall', '-9', app_name, out: File::NULL, err: File::NULL)
+      end
+      system('pkill', '-f', '/SaneSync/scripts/inference_server.py', out: File::NULL, err: File::NULL) unless project_name == 'SaneSync'
+      puts '   ✅ Other app surfaces closed'
       puts ''
     end
 

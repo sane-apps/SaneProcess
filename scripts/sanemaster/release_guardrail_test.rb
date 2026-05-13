@@ -21,6 +21,10 @@ ensure
   $stdout = original_stdout
 end
 
+def write_test_png(path, width: 160, height: 120)
+  File.binwrite(path, "\x89PNG\r\n\x1A\n".b + ("\0" * 8) + [width, height].pack('NN') + ("\0" * 16))
+end
+
 class ReleaseGuardrailHarness
   include SaneMasterModules::CustomerUIContract
   include SaneMasterModules::GateReview
@@ -32,9 +36,11 @@ class ReleaseGuardrailHarness
     @stubbed_jxa_result = nil
     @last_jxa_script = nil
     @saneprocess_repo_root = File.expand_path('../..', __dir__)
+    @customer_ui_commands = []
   end
 
   attr_writer :saneprocess_repo_root
+  attr_reader :customer_ui_commands
 
   def saneprocess_repo_root
     @saneprocess_repo_root
@@ -77,6 +83,16 @@ class ReleaseGuardrailHarness
     output, success = @stubbed_jxa_result || ['', true]
     status = Struct.new(:success?).new(success)
     [output, status]
+  end
+
+  def customer_ui_mini_host?
+    true
+  end
+
+  def customer_ui_run_command(*command)
+    @customer_ui_commands << command
+    status = Struct.new(:success?).new(true)
+    ['{"ok":true}', status]
   end
 
   attr_reader :last_jxa_script
@@ -123,11 +139,19 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
                 steps: [Click primary toggle]
                 assertions: [Visible state changes]
                 evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [mini_click, screenshot]
+                historical_failure_classes: [activation_noop]
+                functional_state:
+                  description: Default seeded test window with the primary toggle visible
+                  setup_steps: [Launch the Mini test fixture before clicking]
           YAML
         )
 
         report = nil
         Dir.chdir(dir) do
+          write_test_png(File.join(dir, 'outputs', 'saneexample-main.png'))
+          File.write(File.join(dir, 'outputs', 'saneexample-main-clicks.json'), '{"clicked":true}')
           report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
           File.write(
             File.join(dir, 'outputs', 'customer_ui_action_receipt.json'),
@@ -142,21 +166,192 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
               action_results: {
                 'primary-toggle' => {
                   status: 'passed',
+                  proof_level: 'runtime_visual',
+                  functional_state: {
+                    status: 'established',
+                    detail: 'Default Mini test fixture loaded before clicking'
+                  },
                   evidence: [
                     {
                       type: 'mini_click',
-                      detail: 'Clicked primary toggle on the Mini and observed state change'
+                      detail: 'Clicked primary toggle on the Mini and observed state change',
+                      path: 'outputs/saneexample-main-clicks.json'
+                    },
+                    {
+                      type: 'screenshot',
+                      detail: 'Captured Mini screenshot after the toggle changed visible state',
+                      path: 'outputs/saneexample-main.png'
                     }
-                  ]
+                  ],
+                  workflow: {
+                    runner: 'scripts/customer_ui_action_sweep.rb primary-toggle',
+                    steps_completed: ['Click primary toggle'],
+                    outcome: 'Visible state changed after the Mini click',
+                    artifacts: ['outputs/saneexample-main-clicks.json', 'outputs/saneexample-main.png']
+                  }
                 }
               },
-              screenshots: ['/tmp/saneexample-main.png']
+              screenshots: ['outputs/saneexample-main.png']
             )
           )
           report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
         end
 
         assert(report[:ok], "expected matching customer UI receipt to pass: #{report[:issues].inspect}")
+      end
+      true
+    end
+
+    test('requires actions to map back to historical failure classes') do
+      Dir.mktmpdir('customer-ui-history-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: primary-toggle
+                title: Primary toggle works
+                surfaces: [Main window]
+                steps: [Click primary toggle]
+                assertions: [Visible state changes]
+                evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [mini_click, screenshot]
+              - id: invalid-history-class
+                title: Invalid history class is blocked
+                surfaces: [Main window]
+                steps: [Click another toggle]
+                assertions: [Visible state changes]
+                evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [mini_click, screenshot]
+                historical_failure_classes: [made_up_failure]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        issues = report[:issues].join("\n")
+        assert(!report[:ok], 'expected missing/invalid historical failure classes to block')
+        assert_includes(issues, 'primary-toggle: missing historical_failure_classes')
+        assert_includes(issues, 'invalid-history-class: historical_failure_classes must use known values')
+      end
+      true
+    end
+
+    test('requires functional seeded state and output expectations for completion workflows') do
+      Dir.mktmpdir('customer-ui-functional-state-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: ai-command
+                title: AI command returns a result
+                surfaces: [Main window]
+                steps: [Type prompt, click Run]
+                assertions: [Result appears]
+                evidence: [model response]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_click, model_response]
+                historical_failure_classes: [external_integration_stub]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        issues = report[:issues].join("\n")
+        assert(!report[:ok], 'expected unseeded completion workflow to block')
+        assert_includes(issues, 'ai-command: missing functional_state')
+        assert_includes(issues, 'ai-command: full/fixture completion actions must declare user_inputs or fixture_paths')
+        assert_includes(issues, 'ai-command: full/fixture completion actions must declare expected_outputs')
+      end
+      true
+    end
+
+    test('requires receipts to prove functional state and completion output') do
+      Dir.mktmpdir('customer-ui-output-proof-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: ai-command
+                title: AI command returns a result
+                surfaces: [Main window]
+                steps: [Type prompt, click Run]
+                assertions: [Result appears]
+                evidence: [model response]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_click, model_response]
+                historical_failure_classes: [external_integration_stub]
+                functional_state:
+                  description: AI backend connected with a seeded command prompt field
+                  setup_steps: [Start local model service, launch app with demo account]
+                user_inputs: [Summarize the seeded project]
+                expected_outputs: [Non-empty generated answer appears in the output panel]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          write_test_png(File.join(dir, 'outputs', 'saneexample-ai.png'))
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          File.write(
+            File.join(dir, 'outputs', 'customer_ui_action_receipt.json'),
+            JSON.pretty_generate(
+              app: 'SaneExample',
+              status: 'passed',
+              host: 'mini',
+              generated_at: Time.now.utc.iso8601,
+              manifest_sha256: report[:manifest_sha256],
+              source_fingerprint: report[:source_fingerprint],
+              tested_action_ids: ['ai-command'],
+              action_results: {
+                'ai-command' => {
+                  status: 'passed',
+                  proof_level: 'full_runtime_completion',
+                  evidence: [
+                    {
+                      type: 'mini_click',
+                      detail: 'Clicked Run on the Mini'
+                    },
+                    {
+                      type: 'model_response',
+                      detail: 'Model response captured from output panel'
+                    }
+                  ]
+                }
+              },
+              screenshots: ['outputs/saneexample-ai.png']
+            )
+          )
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        issues = report[:issues].join("\n")
+        assert(!report[:ok], 'expected missing functional/output receipt proof to block')
+        assert_includes(issues, 'ai-command: missing functional_state proof')
+        assert_includes(issues, 'ai-command: missing exercised user inputs from receipt')
+        assert_includes(issues, 'ai-command: missing output_assertions proving expected outcomes')
       end
       true
     end
@@ -181,11 +376,19 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
                 steps: [Click primary toggle]
                 assertions: [Visible state changes]
                 evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [mini_click, screenshot]
+                historical_failure_classes: [activation_noop]
+                functional_state:
+                  description: Default seeded test window with the primary toggle visible
+                  setup_steps: [Launch the Mini test fixture before clicking]
           YAML
         )
 
         report = nil
         Dir.chdir(dir) do
+          write_test_png(File.join(dir, 'outputs', 'saneexample-main.png'))
+          File.write(File.join(dir, 'outputs', 'saneexample-main-clicks.json'), '{"clicked":true}')
           report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
           File.write(
             File.join(dir, 'outputs', 'customer_ui_action_receipt.json'),
@@ -200,15 +403,32 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
               action_results: {
                 'primary-toggle' => {
                   status: 'passed',
+                  proof_level: 'runtime_visual',
+                  functional_state: {
+                    status: 'established',
+                    detail: 'Default Mini test fixture loaded before clicking'
+                  },
                   evidence: [
                     {
                       type: 'mini_click',
-                      detail: 'Clicked primary toggle on the Mini and observed state change'
+                      detail: 'Clicked primary toggle on the Mini and observed state change',
+                      path: 'outputs/saneexample-main-clicks.json'
+                    },
+                    {
+                      type: 'screenshot',
+                      detail: 'Captured Mini screenshot after the toggle changed visible state',
+                      path: 'outputs/saneexample-main.png'
                     }
-                  ]
+                  ],
+                  workflow: {
+                    runner: 'scripts/customer_ui_action_sweep.rb primary-toggle',
+                    steps_completed: ['Click primary toggle'],
+                    outcome: 'Visible state changed after the Mini click',
+                    artifacts: ['outputs/saneexample-main-clicks.json', 'outputs/saneexample-main.png']
+                  }
                 }
               },
-              screenshots: ['/tmp/saneexample-main.png']
+              screenshots: ['outputs/saneexample-main.png']
             )
           )
           File.write(source_path, 'struct ContentView { let changed = true }')
@@ -240,11 +460,19 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
                 steps: [Click primary toggle]
                 assertions: [Visible state changes]
                 evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [mini_click, screenshot]
+                historical_failure_classes: [activation_noop]
+                functional_state:
+                  description: Default seeded test window with the primary toggle visible
+                  setup_steps: [Launch the Mini test fixture before clicking]
           YAML
         )
 
         report = nil
         Dir.chdir(dir) do
+          write_test_png(File.join(dir, '.sane', 'saneexample-main.png'))
+          File.write(File.join(dir, '.sane', 'saneexample-main-clicks.json'), '{"clicked":true}')
           report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
           File.write(
             File.join(dir, '.sane', 'customer_ui_action_receipt.json'),
@@ -259,15 +487,32 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
               action_results: {
                 'primary-toggle' => {
                   status: 'passed',
+                  proof_level: 'runtime_visual',
+                  functional_state: {
+                    status: 'established',
+                    detail: 'Default Mini test fixture loaded before clicking'
+                  },
                   evidence: [
                     {
                       type: 'mini_click',
-                      detail: 'Clicked primary toggle on the Mini and observed state change'
+                      detail: 'Clicked primary toggle on the Mini and observed state change',
+                      path: '.sane/saneexample-main-clicks.json'
+                    },
+                    {
+                      type: 'screenshot',
+                      detail: 'Captured Mini screenshot after the toggle changed visible state',
+                      path: '.sane/saneexample-main.png'
                     }
-                  ]
+                  ],
+                  workflow: {
+                    runner: 'scripts/customer_ui_action_sweep.rb primary-toggle',
+                    steps_completed: ['Click primary toggle'],
+                    outcome: 'Visible state changed after the Mini click',
+                    artifacts: ['.sane/saneexample-main-clicks.json', '.sane/saneexample-main.png']
+                  }
                 }
               },
-              screenshots: ['/tmp/saneexample-main.png']
+              screenshots: ['.sane/saneexample-main.png']
             )
           )
           report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
@@ -297,11 +542,19 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
                 steps: [Click primary toggle]
                 assertions: [Visible state changes]
                 evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [mini_click, screenshot]
+                historical_failure_classes: [activation_noop]
+                functional_state:
+                  description: Default seeded test window with the primary toggle visible
+                  setup_steps: [Launch the Mini test fixture before clicking]
           YAML
         )
 
         report = nil
         Dir.chdir(dir) do
+          write_test_png(File.join(dir, 'outputs', 'saneexample-main.png'))
+          File.write(File.join(dir, 'outputs', 'saneexample-main-clicks.json'), '{"clicked":true}')
           report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
           File.write(
             File.join(dir, 'outputs', 'customer_ui_action_receipt.json'),
@@ -316,15 +569,32 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
               action_results: {
                 'primary-toggle' => {
                   status: 'passed',
+                  proof_level: 'runtime_visual',
+                  functional_state: {
+                    status: 'established',
+                    detail: 'Default Mini test fixture loaded before clicking'
+                  },
                   evidence: [
                     {
                       type: 'mini_click',
-                      detail: 'Clicked primary toggle on the Mini and observed state change'
+                      detail: 'Clicked primary toggle on the Mini and observed state change',
+                      path: 'outputs/saneexample-main-clicks.json'
+                    },
+                    {
+                      type: 'screenshot',
+                      detail: 'Captured Mini screenshot after the toggle changed visible state',
+                      path: 'outputs/saneexample-main.png'
                     }
-                  ]
+                  ],
+                  workflow: {
+                    runner: 'scripts/customer_ui_action_sweep.rb primary-toggle',
+                    steps_completed: ['Click primary toggle'],
+                    outcome: 'Visible state changed after the Mini click',
+                    artifacts: ['outputs/saneexample-main-clicks.json', 'outputs/saneexample-main.png']
+                  }
                 }
               },
-              screenshots: ['/tmp/saneexample-main.png']
+              screenshots: ['outputs/saneexample-main.png']
             )
           )
           FileUtils.mkdir_p(File.join(dir, '.sanemaster'))
@@ -356,11 +626,18 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
                 steps: [Click primary toggle]
                 assertions: [Visible state changes]
                 evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [mini_click, screenshot]
+                historical_failure_classes: [activation_noop]
+                functional_state:
+                  description: Default seeded test window with the primary toggle visible
+                  setup_steps: [Launch the Mini test fixture before clicking]
           YAML
         )
 
         report = nil
         Dir.chdir(dir) do
+          write_test_png(File.join(dir, 'outputs', 'saneexample-main.png'))
           report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
           File.write(
             File.join(dir, 'outputs', 'customer_ui_action_receipt.json'),
@@ -372,7 +649,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
               manifest_sha256: report[:manifest_sha256],
               source_fingerprint: report[:source_fingerprint],
               tested_action_ids: ['primary-toggle'],
-              screenshots: ['/tmp/saneexample-main.png']
+              screenshots: ['outputs/saneexample-main.png']
             )
           )
           report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
@@ -382,6 +659,274 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         assert_includes(report[:issues].join("\n"), 'missing per-action results')
       end
       true
+    end
+
+    test('requires runtime receipts to include structured workflow proof') do
+      Dir.mktmpdir('customer-ui-workflow-proof-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: primary-toggle
+                title: Primary toggle works
+                surfaces: [Main window]
+                steps: [Click primary toggle]
+                assertions: [Visible state changes]
+                evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [mini_click, screenshot]
+                historical_failure_classes: [activation_noop]
+                functional_state:
+                  description: Default seeded test window with the primary toggle visible
+                  setup_steps: [Launch the Mini test fixture before clicking]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          write_test_png(File.join(dir, 'outputs', 'saneexample-main.png'))
+          File.write(File.join(dir, 'outputs', 'saneexample-main-clicks.json'), '{"clicked":true}')
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          File.write(
+            File.join(dir, 'outputs', 'customer_ui_action_receipt.json'),
+            JSON.pretty_generate(
+              app: 'SaneExample',
+              status: 'passed',
+              host: 'mini',
+              generated_at: Time.now.utc.iso8601,
+              manifest_sha256: report[:manifest_sha256],
+              source_fingerprint: report[:source_fingerprint],
+              tested_action_ids: ['primary-toggle'],
+              action_results: {
+                'primary-toggle' => {
+                  status: 'passed',
+                  proof_level: 'runtime_visual',
+                  functional_state: {
+                    status: 'established',
+                    detail: 'Default Mini test fixture loaded before clicking'
+                  },
+                  evidence: [
+                    { type: 'mini_click', detail: 'Clicked primary toggle', path: 'outputs/saneexample-main-clicks.json' },
+                    { type: 'screenshot', detail: 'Captured result', path: 'outputs/saneexample-main.png' }
+                  ]
+                }
+              },
+              screenshots: ['outputs/saneexample-main.png']
+            )
+          )
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected runtime receipt without workflow proof to block')
+        assert_includes(report[:issues].join("\n"), 'primary-toggle: missing structured workflow proof')
+      end
+      true
+    end
+
+    test('requires action-scoped evidence artifacts for customer workflow receipts') do
+      Dir.mktmpdir('customer-ui-evidence-artifacts-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: primary-toggle
+                title: Primary toggle works
+                surfaces: [Main window]
+                steps: [Click primary toggle]
+                assertions: [Visible state changes]
+                evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [mini_click, screenshot]
+                historical_failure_classes: [activation_noop]
+                functional_state:
+                  description: Default seeded test window with the primary toggle visible
+                  setup_steps: [Launch the Mini test fixture before clicking]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          write_test_png(File.join(dir, 'outputs', 'saneexample-main.png'))
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          File.write(
+            File.join(dir, 'outputs', 'customer_ui_action_receipt.json'),
+            JSON.pretty_generate(
+              app: 'SaneExample',
+              status: 'passed',
+              host: 'mini',
+              generated_at: Time.now.utc.iso8601,
+              manifest_sha256: report[:manifest_sha256],
+              source_fingerprint: report[:source_fingerprint],
+              tested_action_ids: ['primary-toggle'],
+              action_results: {
+                'primary-toggle' => {
+                  status: 'passed',
+                  proof_level: 'runtime_visual',
+                  functional_state: {
+                    status: 'established',
+                    detail: 'Default Mini test fixture loaded before clicking'
+                  },
+                  evidence: [
+                    { type: 'mini_click', detail: 'Clicked primary toggle' },
+                    { type: 'screenshot', detail: 'Captured result', path: 'outputs/saneexample-main.png' }
+                  ],
+                  workflow: {
+                    runner: 'scripts/customer_ui_action_sweep.rb primary-toggle',
+                    steps_completed: ['Click primary toggle'],
+                    outcome: 'Visible state changed after the Mini click',
+                    artifacts: ['outputs/saneexample-main.png']
+                  }
+                }
+              },
+              screenshots: ['outputs/saneexample-main.png']
+            )
+          )
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected missing action evidence artifact path to block')
+        assert_includes(report[:issues].join("\n"), 'primary-toggle: evidence #1 mini_click missing artifact path')
+      end
+      true
+    end
+
+    test('standard customer UI sweep dry-run finds the app workflow runner') do
+      Dir.mktmpdir('customer-ui-sweep-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'scripts'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'scripts', 'customer_ui_action_sweep.rb'), "#!/usr/bin/env ruby\n")
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.customer_ui_sweep_report(dry_run: true)
+        end
+
+        assert(report[:ok], "expected dry-run sweep to pass: #{report[:issues].inspect}")
+        assert_eq(report[:script_path], 'scripts/customer_ui_action_sweep.rb')
+      end
+      true
+    end
+
+    test('customer UI sweep blocks runtime visual work when Mini screenshot precheck is dirty') do
+      Dir.mktmpdir('customer-ui-visual-precheck-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'scripts'))
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'scripts', 'customer_ui_action_sweep.rb'), "#!/usr/bin/env ruby\n")
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: capture-flow
+                title: Capture Flow
+                surfaces: ["Main menu"]
+                steps: ["Click Capture"]
+                assertions: ["Picker appears"]
+                evidence: ["Mini screenshot"]
+                release_required: true
+                required_proof_level: runtime_visual
+                required_evidence_types: [visual_smoke]
+                historical_failure_classes: [permission_recovery_dead_end]
+                functional_state:
+                  description: Ready to capture
+                  not_required_reason: No state needed
+          YAML
+        )
+
+        subject.define_singleton_method(:customer_ui_mini_host?) { true }
+        subject.define_singleton_method(:customer_ui_cleanup_before_sweep) { |_app| [] }
+        subject.define_singleton_method(:customer_ui_run_command) do |*cmd|
+          if cmd.include?('visual_smoke')
+            [
+              '{"ok":false,"reason":"Mini visual workspace is dirty: Terminal has 1 open window(s)","cleanliness":{"issues":["Terminal has 1 open window(s)"]},"artifacts":[]}',
+              Struct.new(:success?).new(false)
+            ]
+          else
+            raise "sweep runner must not run after failed visual precheck: #{cmd.inspect}"
+          end
+        end
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.customer_ui_sweep_report(dry_run: false)
+        end
+
+        assert(!report[:ok], 'expected dirty visual precheck to block the customer UI sweep')
+        assert_includes(report[:issues].join("\n"), 'Mini visual precheck failed before customer UI sweep')
+        assert_includes(report[:issues].join("\n"), 'Terminal has 1 open window')
+      end
+      true
+    ensure
+      subject.singleton_class.remove_method(:customer_ui_mini_host?) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_cleanup_before_sweep) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_run_command) rescue nil
+    end
+
+    test('customer UI visual precheck allows supplemental menu bar image when full screenshot is usable') do
+      Dir.mktmpdir('customer-ui-visual-precheck-menu-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        screen = File.join(dir, 'screen.png')
+        menu = File.join(dir, 'menu.png')
+        write_test_png(screen, width: 1920, height: 1080)
+        write_test_png(menu, width: 1920, height: 30)
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: capture-flow
+                title: Capture Flow
+                surfaces: ["Main menu"]
+                steps: ["Click Capture"]
+                assertions: ["Picker appears"]
+                evidence: ["Mini screenshot"]
+                release_required: true
+                required_proof_level: runtime_visual
+                required_evidence_types: [visual_smoke]
+                functional_state:
+                  description: Ready to capture
+                  not_required_reason: No state needed
+          YAML
+        )
+
+        subject.define_singleton_method(:customer_ui_run_command) do |*cmd|
+          if cmd.include?('visual_smoke')
+            [
+              JSON.generate({ ok: true, artifacts: [screen, menu] }),
+              Struct.new(:success?).new(true)
+            ]
+          else
+            raise "unexpected command: #{cmd.inspect}"
+          end
+        end
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.send(:customer_ui_visual_precheck, 'SaneExample')
+        end
+
+        assert(report[:ok], "expected full screenshot to satisfy visual precheck, got #{report.inspect}")
+      end
+      true
+    ensure
+      subject.singleton_class.remove_method(:customer_ui_run_command) rescue nil
     end
   end
 

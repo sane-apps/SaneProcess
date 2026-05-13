@@ -125,6 +125,13 @@ Canonical runner-backed paths in this repo:
 
 **`./scripts/SaneMaster.rb`** — unified automation CLI for ALL SaneApps projects. Use this for stateful build/test/release workflows.
 
+### Mac Mini Admin Automation
+
+- The Mini admin password is stored on the Mini only in `~/.config/nv/env` as `SANE_MINI_ADMIN_PASSWORD` and `MINI_ADMIN_PASSWORD`.
+- Do not ask the user for the Mini password during normal SaneApps testing. Source that env file and use the stored variable for required Mini admin actions.
+- Never print the value. For sudo, use `printf "%s\n" "$SANE_MINI_ADMIN_PASSWORD" | sudo -S ...`.
+- Do not pass the password through AppleScript error-prone text that can echo secrets into logs. Prefer shell/sudo paths or UI typing with suppressed stderr when a macOS admin sheet is unavoidable.
+
 Read-only shell commands and focused diagnostics are allowed. Prefer wrappers for
 workflows that can bypass safety/tracking: app launch, release/deploy, build/test,
 customer email, and sales/support analytics. If you bypass a wrapper, state why.
