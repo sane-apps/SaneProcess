@@ -156,7 +156,8 @@ CATEGORY_ID_MAP = {
   'public.app-category.utilities' => 'UTILITIES',
   'public.app-category.productivity' => 'PRODUCTIVITY',
   'public.app-category.finance' => 'FINANCE',
-  'public.app-category.business' => 'BUSINESS'
+  'public.app-category.business' => 'BUSINESS',
+  'public.app-category.video' => 'PHOTO_AND_VIDEO'
 }.freeze
 
 ACCESSIBILITY_DEVICE_FAMILY_MAP = {
