@@ -503,6 +503,20 @@ def metadata_review_readiness_report(config:, asc_platform:, app_name:, project_
 end
 
 def metadata_fetch_url_status(url, method: :head)
+  if system('command', '-v', 'curl', out: File::NULL, err: File::NULL)
+    args = ['curl', '-4', '-sS', '-o', '/dev/null', '-w', "%{http_code}\n%{redirect_url}", '--connect-timeout', '10', '--max-time', '20']
+    args << '-I' unless method == :get
+    stdout, stderr, status = Open3.capture3(*args, url)
+    if status.success?
+      code, location = stdout.split("\n", 2)
+      return {
+        code: code.to_i,
+        location: location.to_s.strip,
+        error: nil
+      }
+    end
+  end
+
   uri = URI(url)
   http = Net::HTTP.new(uri.host, uri.port)
   http.use_ssl = uri.scheme == 'https'
