@@ -190,10 +190,13 @@ The command now has a hard cleanliness gate: it refuses to capture when another
 `visual_smoke` run is active, when Terminal windows are already open, when any
 other SaneApps app/helper is visible or still running from a prior test, when
 Preview/Safari/helper windows can contaminate the frame, or when a SaneApps
-permission prompt is unresolved. It also rejects known desktop test artifacts
-from prior runs, because a visually polluted Desktop is not release evidence.
-Clean up the Mini first, handle the prompt, then re-run the visual check. Dirty
-screenshots are not release evidence.
+permission/security prompt is unresolved. Prompt detection checks the target
+app plus macOS prompt hosts such as SecurityAgent/CoreServicesUIAgent so prompts
+hidden behind the app, above the app, or outside an app-window crop still block
+the evidence path. It also rejects known desktop test artifacts from prior runs,
+because a visually polluted Desktop is not release evidence. Clean up the Mini
+first, handle the actual prompt button required by the flow, then re-run the
+visual check. Dirty screenshots are not release evidence.
 When Peekaboo is absent it records a skipped receipt instead of blocking normal
 release work. Use `--require-peekaboo` only for lanes where the Mini has been
 explicitly configured with:

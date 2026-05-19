@@ -68,6 +68,19 @@ exit(run_tests('Mini GUI Runner Tests') do
       assert_includes(visual_guard_source, 'Visible helper app can contaminate screenshot')
       true
     end
+
+    test('visual workspace guard checks full-desktop macOS prompts before trusting app captures') do
+      assert_includes(visual_guard_source, 'system_prompt_blockers()')
+      assert_includes(visual_guard_source, 'SecurityAgent')
+      assert_includes(visual_guard_source, 'CoreServicesUIAgent')
+      assert_includes(visual_guard_source, 'UserNotificationCenter')
+      assert_includes(visual_guard_source, 'isSystemPromptHost')
+      assert_includes(visual_guard_source, 'windowSubrole contains "AXSystemDialog"')
+      assert_includes(visual_guard_source, 'has an unresolved macOS permission/security prompt')
+      assert_includes(visual_guard_source, 'App-window-only screenshots are insufficient')
+      assert_includes(visual_guard_source, 'Do not press Escape when a real permission/security prompt is pending')
+      true
+    end
   end
 
   test_category('Launch focus') do

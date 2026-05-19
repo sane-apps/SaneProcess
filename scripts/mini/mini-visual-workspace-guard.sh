@@ -12,6 +12,8 @@ Usage:
 
 Blocks contaminated Mini visual evidence by rejecting or cleaning visible helper
 windows and stale SaneApps processes before screenshots are taken.
+Also blocks unresolved macOS permission/security prompts, including prompts that
+are outside an app-window crop or hidden behind the target app window.
 EOF
   exit 2
 }
@@ -73,12 +75,76 @@ APPLESCRIPT
 }
 
 dismiss_system_popovers() {
+  # Do not press Escape when a real permission/security prompt is pending.
+  # Escape can dismiss the prompt and turn a required customer-flow click into
+  # false evidence.
+  if [ -n "$(system_prompt_blockers)" ]; then
+    return 0
+  fi
+
   /usr/bin/osascript <<'APPLESCRIPT' >/dev/null 2>&1 || true
 tell application "System Events"
   key code 53
   delay 0.1
   key code 53
 end tell
+APPLESCRIPT
+}
+
+system_prompt_blockers() {
+  # App-window-only screenshots are insufficient: permission/security prompts
+  # can sit above, outside, or behind the target window.
+  /usr/bin/osascript <<APPLESCRIPT 2>/dev/null || true
+set hits to {}
+set targetAppName to "${TARGET_APP}"
+set promptProcessNames to {"SecurityAgent", "CoreServicesUIAgent", "UserNotificationCenter", "NotificationCenter", "System Settings", "System Preferences", "loginwindow", targetAppName}
+
+tell application "System Events"
+  repeat with procName in promptProcessNames
+    set procNameText to procName as text
+    if procNameText is not "" and exists process procNameText then
+      tell process procNameText
+        repeat with candidateWindow in windows
+          set windowName to ""
+          set windowRole to ""
+          set windowSubrole to ""
+          set windowDescription to ""
+          try
+            set windowName to name of candidateWindow as text
+          end try
+          try
+            set windowRole to role of candidateWindow as text
+          end try
+          try
+            set windowSubrole to subrole of candidateWindow as text
+          end try
+          try
+            set windowDescription to description of candidateWindow as text
+          end try
+
+          set isSystemPromptHost to procNameText is "SecurityAgent" or procNameText is "CoreServicesUIAgent" or procNameText is "UserNotificationCenter" or procNameText is "NotificationCenter" or procNameText is "loginwindow"
+          if isSystemPromptHost and (windowSubrole contains "AXSystemDialog" or windowRole contains "AXDialog" or windowDescription contains "alert") then
+            set end of hits to (procNameText & " has an unresolved macOS permission/security prompt")
+          else
+            set buttonNames to {}
+            set staticTextValues to {}
+            try
+              set buttonNames to name of buttons of candidateWindow
+            end try
+            try
+              set staticTextValues to value of static texts of candidateWindow
+            end try
+            set combinedText to (windowName & " " & windowDescription & " " & (buttonNames as text) & " " & (staticTextValues as text))
+            if (combinedText contains "Allow" or combinedText contains "Don’t Allow" or combinedText contains "Don't Allow" or combinedText contains "Always Allow" or combinedText contains "Deny") and (combinedText contains "would like to access" or combinedText contains "wants to use" or combinedText contains "confidential information" or combinedText contains "login keychain" or combinedText contains "Screen Recording" or combinedText contains "Camera" or combinedText contains "Microphone" or combinedText contains "Documents folder" or combinedText contains "permission") then
+              set end of hits to (procNameText & " has an unresolved macOS permission/security prompt")
+            end if
+          end if
+        end repeat
+      end tell
+    end if
+  end repeat
+end tell
+return hits
 APPLESCRIPT
 }
 
@@ -168,6 +234,12 @@ for raw in "${visible_names[@]}"; do
       ;;
   esac
 done
+
+while IFS= read -r prompt_issue; do
+  prompt_issue="$(printf '%s' "$prompt_issue" | sed 's/^ *//;s/ *$//')"
+  [ -n "$prompt_issue" ] || continue
+  issues+=("$prompt_issue")
+done < <(system_prompt_blockers | tr ',' '\n')
 
 while IFS= read -r line; do
   [ -n "$line" ] || continue

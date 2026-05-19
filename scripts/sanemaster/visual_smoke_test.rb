@@ -267,6 +267,28 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
       ].each { |method| subject.singleton_class.remove_method(method) rescue nil }
     end
 
+    test('cleanliness check blocks unresolved macOS prompts before visual proof') do
+      subject.define_singleton_method(:visual_smoke_terminal_window_count) { 0 }
+      subject.define_singleton_method(:visual_smoke_permission_prompt_hits) do |_app|
+        ['SaneVideo has an unresolved macOS permission/security prompt']
+      end
+      subject.define_singleton_method(:visual_smoke_visible_process_names) { ['Finder', 'SaneVideo'] }
+      subject.define_singleton_method(:visual_smoke_running_sane_process_lines) { [] }
+
+      options = subject.parse_visual_smoke_args(%w[--app SaneVideo])
+      issues = subject.visual_smoke_cleanliness_issues(options)
+
+      assert_includes(issues, 'SaneVideo has an unresolved macOS permission/security prompt')
+      true
+    ensure
+      %i[
+        visual_smoke_terminal_window_count
+        visual_smoke_permission_prompt_hits
+        visual_smoke_visible_process_names
+        visual_smoke_running_sane_process_lines
+      ].each { |method| subject.singleton_class.remove_method(method) rescue nil }
+    end
+
     test('cleanliness check rejects known desktop test artifacts') do
       subject.define_singleton_method(:visual_smoke_terminal_window_count) { 0 }
       subject.define_singleton_method(:visual_smoke_permission_prompt_hits) { |_app| [] }

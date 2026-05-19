@@ -118,8 +118,10 @@ Green tests are not enough for customer-facing UI claims.
 - For UI/runtime/customer-facing verification, capture one clean saved Mini screenshot per app-owned view or state touched, changed, or claimed verified.
 - Inspect every saved screenshot for balance, clarity, confusing copy, clipping, overlap, contrast, dark-mode quality, and obvious functional state.
 - Obstructed, clipped, partial, or helper-window-contaminated screenshots are invalid evidence.
+- If a UI/runtime flow is stuck, loading, contradictory, or surprising, assume a hidden macOS prompt/sheet may be blocking it. Capture/check the full desktop and AX tree for permission, SecurityAgent, TCC, file-access, or system dialogs before retrying, changing code, or judging the app.
+- App-window-only screenshots are not enough blocker evidence because prompts can appear outside the crop or behind the target window. Click the actual prompt action required by the customer flow, then re-capture the app’s final state.
 - Record the screenshot paths and verdict in `SESSION_HANDOFF.md` or an `outputs/visual-audit*/` receipt before saying the surface works.
-- Current hook coverage: `saneprompt` marks visual verification required from UI/screenshot prompts, `sanetrack` records UI edits and screenshot/audit evidence, and `sanestop` plus `task_completed_gate` block completion when required visual proof is missing.
+- Current hook coverage: `saneprompt` marks visual verification required from UI/screenshot prompts, `sanetrack` records UI edits and screenshot/audit evidence, `mini-visual-workspace-guard.sh` blocks unresolved macOS permission/security prompts before Mini captures, and `sanestop` plus `task_completed_gate` block completion when required visual proof is missing.
 
 ## SaneUI Source Of Truth
 

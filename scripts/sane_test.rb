@@ -1128,6 +1128,7 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
       'rsync',
       '-az',
       '--delete',
+      '--include', '*/project.xcworkspace/contents.xcworkspacedata',
       '--filter', ':- .gitignore',
       '--exclude', '.git',
       '--exclude', '.worktrees',

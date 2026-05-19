@@ -416,16 +416,18 @@ module SaneMasterModules
 
       issues = []
       if visual_smoke_mini_host?
-        visual_smoke_dismiss_system_popovers
         visual_smoke_close_terminal_host
         sleep 0.5
+      end
+      prompt_hits = visual_smoke_permission_prompt_hits(options.app_name)
+      if visual_smoke_mini_host? && prompt_hits.empty?
+        visual_smoke_dismiss_system_popovers
       end
       terminal_windows = visual_smoke_terminal_window_count
       if terminal_windows.positive?
         issues << "Terminal has #{terminal_windows} open window(s); close them before visual capture"
       end
 
-      prompt_hits = visual_smoke_permission_prompt_hits(options.app_name)
       issues.concat(prompt_hits)
       issues.concat(visual_smoke_visible_process_issues(options.app_name))
       issues.concat(visual_smoke_running_sane_process_issues(options.app_name))
@@ -453,21 +455,57 @@ module SaneMasterModules
     end
 
     def visual_smoke_permission_prompt_hits(app_name)
-      app_names = (VISUAL_SMOKE_SANE_APPS + [app_name]).compact.uniq
+      app_names = ([
+        'SecurityAgent',
+        'CoreServicesUIAgent',
+        'UserNotificationCenter',
+        'NotificationCenter',
+        'System Settings',
+        'System Preferences',
+        'loginwindow'
+      ] + VISUAL_SMOKE_SANE_APPS + [app_name]).compact.uniq
       quoted_names = app_names.map { |name| %("#{name.gsub('"', '\"')}") }.join(', ')
       script = <<~APPLESCRIPT
         set hits to {}
         tell application "System Events"
           repeat with procName in {#{quoted_names}}
-            if exists process procName then
-              tell process procName
+            set processNameText to procName as text
+            if exists process processNameText then
+              tell process processNameText
                 repeat with candidateWindow in windows
-                  set buttonNames to {}
+                  set windowName to ""
+                  set windowRole to ""
+                  set windowSubrole to ""
+                  set windowDescription to ""
                   try
-                    set buttonNames to name of buttons of candidateWindow
+                    set windowName to name of candidateWindow as text
                   end try
-                  if buttonNames contains "Allow" or buttonNames contains "Don’t Allow" or buttonNames contains "Don't Allow" then
-                    set end of hits to ((procName as text) & " has an unresolved permission prompt")
+                  try
+                    set windowRole to role of candidateWindow as text
+                  end try
+                  try
+                    set windowSubrole to subrole of candidateWindow as text
+                  end try
+                  try
+                    set windowDescription to description of candidateWindow as text
+                  end try
+                  set isSystemPromptHost to processNameText is "SecurityAgent" or processNameText is "CoreServicesUIAgent" or processNameText is "UserNotificationCenter" or processNameText is "NotificationCenter" or processNameText is "loginwindow"
+
+                  if isSystemPromptHost and (windowSubrole contains "AXSystemDialog" or windowRole contains "AXDialog" or windowDescription contains "alert") then
+                    set end of hits to (processNameText & " has an unresolved macOS permission/security prompt")
+                  else
+                    set buttonNames to {}
+                    set staticTextValues to {}
+                    try
+                      set buttonNames to name of buttons of candidateWindow
+                    end try
+                    try
+                      set staticTextValues to value of static texts of candidateWindow
+                    end try
+                    set combinedText to (windowName & " " & windowDescription & " " & (buttonNames as text) & " " & (staticTextValues as text))
+                    if (combinedText contains "Allow" or combinedText contains "Don’t Allow" or combinedText contains "Don't Allow" or combinedText contains "Always Allow" or combinedText contains "Deny") and (combinedText contains "would like to access" or combinedText contains "wants to use" or combinedText contains "confidential information" or combinedText contains "login keychain" or combinedText contains "Screen Recording" or combinedText contains "Camera" or combinedText contains "Microphone" or combinedText contains "Documents folder" or combinedText contains "permission") then
+                      set end of hits to (processNameText & " has an unresolved macOS permission/security prompt")
+                    end if
                   end if
                 end repeat
               end tell

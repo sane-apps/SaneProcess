@@ -78,4 +78,18 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
       true
     end
   end
+
+  test_category('Mini sync preserves tracked Xcode metadata') do
+    test('sane_test keeps tracked project workspace metadata even when app .gitignore ignores it') do
+      source = File.read(SANE_TEST_PATH)
+
+      assert_includes(source, "'--include', '*/project.xcworkspace/contents.xcworkspacedata'")
+      assert(
+        source.index("'--include', '*/project.xcworkspace/contents.xcworkspacedata'") <
+          source.index("'--filter', ':- .gitignore'"),
+        'tracked Xcode workspace metadata must be included before .gitignore filters can exclude it'
+      )
+      true
+    end
+  end
 end)
