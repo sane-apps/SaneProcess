@@ -145,6 +145,71 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
       subject.singleton_class.remove_method(:visual_smoke_cleanliness_issues) rescue nil
     end
 
+    test('windowless menu-bar apps skip app capture without failing visual smoke') do
+      Dir.mktmpdir do |dir|
+        fake_peekaboo = File.join(dir, 'peekaboo')
+        log_path = File.join(dir, 'peekaboo.log')
+        File.write(
+          fake_peekaboo,
+          <<~SH
+            #!/bin/sh
+            echo "$@" >> #{log_path}
+            if [ "$1" = "permissions" ]; then
+              echo '{"data":{"screen_recording":true,"accessibility":true}}'
+              exit 0
+            fi
+            if [ "$1" = "list" ] && [ "$2" = "apps" ]; then
+              echo '{"data":{"apps":[{"name":"VisualSmokeTest"}]}}'
+              exit 0
+            fi
+            if [ "$1" = "list" ] && [ "$2" = "windows" ]; then
+              echo '{"data":{"windows":[]},"summary":{"counts":{"windows":0}}}'
+              exit 0
+            fi
+            if [ "$1" = "list" ] && [ "$2" = "menubar" ]; then
+              echo '{"data":{"items":[]}}'
+              exit 0
+            fi
+            if [ "$1" = "image" ]; then
+              while [ "$#" -gt 0 ]; do
+                if [ "$1" = "--path" ]; then
+                  shift
+                  : > "$1"
+                  echo '{"data":{"path":"'"$1"'"}}'
+                  exit 0
+                fi
+                shift
+              done
+            fi
+            if [ "$1" = "see" ]; then
+              exit 12
+            fi
+            exit 1
+          SH
+        )
+        File.chmod(0o700, fake_peekaboo)
+
+        subject.define_singleton_method(:visual_smoke_cleanliness_issues) { |_options| [] }
+
+        options = subject.parse_visual_smoke_args(['--output', dir, '--peekaboo', fake_peekaboo, '--direct'])
+        result = subject.build_visual_smoke(options)
+        app_see = result[:commands].find { |command| command[:name] == 'app-see' }
+        app_see_receipt = JSON.parse(File.read(app_see[:output]))
+        invocation_log = File.read(log_path)
+
+        assert(result[:ok], 'windowless menu-bar app should not fail visual smoke')
+        assert_eq(result[:status], 'passed')
+        assert_eq(app_see[:success], true)
+        assert_eq(app_see[:skipped], true)
+        assert_includes(app_see[:reason], 'target app has no windows')
+        assert_eq(app_see_receipt['skipped'], true)
+        assert(!invocation_log.include?('see --app'), 'app-see command should not run for a windowless app')
+      end
+      true
+    ensure
+      subject.singleton_class.remove_method(:visual_smoke_cleanliness_issues) rescue nil
+    end
+
     test('cleanliness check rejects visible stale apps and helper apps') do
       subject.define_singleton_method(:visual_smoke_terminal_window_count) { 0 }
       subject.define_singleton_method(:visual_smoke_permission_prompt_hits) { |_app| [] }

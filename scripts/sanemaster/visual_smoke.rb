@@ -181,6 +181,14 @@ module SaneMasterModules
 
           commands.each do |command|
             command[:argv][0] = peekaboo_path
+            if command[:name] == 'app-see' && visual_smoke_windowless_app?(commands)
+              command[:success] = true
+              command[:skipped] = true
+              command[:reason] = 'target app has no windows; app capture skipped'
+              File.write(command[:output], JSON.pretty_generate(skipped: true, reason: command[:reason])) if command[:output]
+              next
+            end
+
             command_result = run_visual_smoke_command(command, timeout: options.timeout, terminal_host: options.terminal_host)
             command.merge!(command_result)
             result[:artifacts] << command[:output] if command[:output] && File.exist?(command[:output])
@@ -238,6 +246,23 @@ module SaneMasterModules
         )
       end
       commands
+    end
+
+    def visual_smoke_windowless_app?(commands)
+      windows_command = commands.find { |command| command[:name] == 'windows' }
+      return false unless windows_command && windows_command[:success] && windows_command[:output]
+      return false unless File.exist?(windows_command[:output])
+
+      payload = JSON.parse(File.read(windows_command[:output]))
+      windows = payload.dig('data', 'windows')
+      return windows.empty? if windows.is_a?(Array)
+
+      count = payload.dig('summary', 'counts', 'windows')
+      return count.to_i.zero? unless count.nil?
+
+      false
+    rescue JSON::ParserError
+      false
     end
 
     def visual_smoke_json_command(name, smoke_dir, argv, artifacts: [])
@@ -626,7 +651,7 @@ module SaneMasterModules
       lines << '## Commands'
       result[:commands].each do |command|
         status = if command.key?(:success)
-                   command[:success] ? 'pass' : 'fail'
+                   command[:skipped] ? 'skipped' : (command[:success] ? 'pass' : 'fail')
                  else
                    'planned'
                  end
