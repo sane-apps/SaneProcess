@@ -10,13 +10,14 @@
 [ ] .claude/.gitignore
 [ ] .claude/settings.json
 [ ] .claude/rules/ (copy from SaneProcess)
-[ ] .agents/skills/ (mirror shared repo skills for Codex)
+[ ] .codex/research.md (active research cache)
+[ ] .agents/skills/ (optional compatibility mirror for shared skills)
 [ ] .mcp.json (project root)
 [ ] AGENTS.md (project root)
-[ ] CLAUDE.md (project root)
+[ ] CLAUDE.md (project root, only for Claude-specific overlay)
 [ ] README.md (project root)
 [ ] DEVELOPMENT.md (project root)
-[ ] ARCHITECTURE.md (project root — use ~/.claude/templates/ARCHITECTURE.md)
+[ ] ARCHITECTURE.md (project root — start from SaneProcess templates)
 [ ] SESSION_HANDOFF.md (project root)
 [ ] .saneprocess (project root — release config)
 [ ] Resources/DMGIcon.icns (for DMG file icon)
@@ -24,7 +25,9 @@
 [ ] Verify all files
 ```
 
-> **Doc standard:** Every project gets exactly 5 docs. See `~/.claude/templates/DOC_STANDARD.md`.
+> **Doc standard:** Core docs are `AGENTS.md`, `README.md`, `DEVELOPMENT.md`,
+> `ARCHITECTURE.md`, and `SESSION_HANDOFF.md`. Add `CLAUDE.md` only as a
+> compatibility overlay, not as a second source of truth.
 
 ---
 
@@ -235,11 +238,11 @@ Before the Claude overlay, add a shared `AGENTS.md` at the project root so Codex
 Use plain English. Keep it short and direct.
 
 ## Read First
-1. README.md
-2. DEVELOPMENT.md
-3. ARCHITECTURE.md
-4. SESSION_HANDOFF.md if it exists
-5. CLAUDE.md for Claude-specific overlays
+1. AGENTS.md
+2. README.md
+3. DEVELOPMENT.md
+4. ARCHITECTURE.md
+5. SESSION_HANDOFF.md if it exists
 
 ## Rules
 1. Verify tools and APIs before using them.
@@ -338,7 +341,6 @@ commands:
 
 docs:
   - AGENTS.md
-  - CLAUDE.md
   - README.md
   - DEVELOPMENT.md
   - ARCHITECTURE.md
@@ -358,7 +360,7 @@ mcps:
 ## Step 6: Add Alias to `~/.zshrc`
 
 ```bash
-# Claude Code (2-letter code)
+# Claude Code compatibility alias (2-letter code)
 alias XX='cd /path/to/ProjectName && claude --dangerously-skip-permissions'
 
 # Gemini (g + 2-letter code)

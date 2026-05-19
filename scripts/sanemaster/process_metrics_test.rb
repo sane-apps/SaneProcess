@@ -83,6 +83,10 @@ exit(run_tests('SaneMaster Process Metrics Tests') do
         assert_eq(metric['tool'], 'Read')
         assert_eq(metric['rule'], 'Rule #1')
         assert_includes(metric['reason'], 'BLOCKED PATH')
+        trajectory = rows.find { |row| row['type'] == 'trajectory_event' }
+        assert(trajectory, 'expected trajectory_event metric')
+        assert_eq(trajectory['source'], 'PreToolUse')
+        assert_eq(trajectory['blocked'], true)
       end
       true
     end
@@ -93,19 +97,49 @@ exit(run_tests('SaneMaster Process Metrics Tests') do
         rows = [
           { timestamp: '2026-05-04T10:00:00Z', project: 'SaneBar', type: 'verify', success: false, tests_run: 0 },
           { timestamp: '2026-05-04T10:05:00Z', project: 'SaneBar', type: 'verify', success: true, tests_run: 10 },
+          { timestamp: '2026-05-04T10:05:30Z', project: 'SaneClip', type: 'verify', success: true, tests_run: 0 },
           { timestamp: '2026-05-04T10:06:00Z', project: 'SaneProcess', type: 'session_end', success: true, sop_score: 8, edits: 2, verify_failures: 1 },
-          { timestamp: '2026-05-04T10:07:00Z', project: 'SaneProcess', type: 'hook_block', rule: 'Rule #4' }
+          { timestamp: '2026-05-04T10:07:00Z', project: 'SaneProcess', type: 'hook_block', rule: 'Rule #4' },
+          { timestamp: '2026-05-04T10:08:00Z', project: 'SaneProcess', type: 'process_eval', success: true }
         ]
         File.write(path, rows.map { |row| JSON.generate(row) }.join("\n") + "\n")
 
         subject = ProcessMetricsHarness.new(path)
         summary = subject.send(:process_metrics_summary, subject.send(:read_process_metric_events))
 
-        assert_eq(summary[:verify][:attempts], 2)
-        assert_eq(summary[:verify][:pass_rate], 50.0)
+        assert_eq(summary[:verify][:attempts], 3)
+        assert_eq(summary[:verify][:pass_rate], 66.7)
         assert_eq(summary[:verify][:zero_test_failures], 1)
+        assert_eq(summary[:verify][:zero_test_successes], 1)
         assert_eq(summary[:sessions][:recovered_green], 1)
         assert_eq(summary[:hook_blocks][:by_rule]['Rule #4'], 1)
+        assert_eq(summary[:workflow_events][:by_type]['process_eval'], 1)
+      end
+      true
+    end
+
+    test('exports JSON and HTML review artifacts from metrics summary') do
+      Dir.mktmpdir('process-metrics-export-') do |dir|
+        path = File.join(dir, 'metrics.jsonl')
+        json_out = File.join(dir, 'metrics.json')
+        html_out = File.join(dir, 'metrics.html')
+        rows = [
+          { timestamp: '2026-05-04T10:00:00Z', project: 'SaneBar', type: 'verify', success: true, tests_run: 10 }
+        ]
+        File.write(path, rows.map { |row| JSON.generate(row) }.join("\n") + "\n")
+
+        subject = ProcessMetricsHarness.new(path)
+        subject.process_metrics_dashboard(['--export-json', json_out, '--export-html', html_out])
+
+        exported = JSON.parse(File.read(json_out))
+        html = File.read(html_out)
+        assert_eq(exported['verify']['attempts'], 1)
+        assert_includes(html, '<!doctype html>')
+        assert_includes(html, 'SaneProcess Metrics')
+        assert_includes(html, 'SaneBar')
+        assert_includes(html, 'Session Quality')
+        assert_includes(html, 'Hook Blocks')
+        assert_includes(html, 'Workflow Events')
       end
       true
     end

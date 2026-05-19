@@ -24,6 +24,7 @@ module SaneStopTest
     StateManager.reset(:research)
     StateManager.reset(:circuit_breaker)
     StateManager.reset(:handoff_tracking)
+    StateManager.reset(:visual_verification)
 
     passed = 0
     failed = 0
@@ -100,6 +101,7 @@ module SaneStopTest
     end
     StateManager.reset(:verification)
     StateManager.reset(:handoff_tracking)
+    StateManager.reset(:visual_verification)
 
     original_stderr = $stderr.clone
     $stderr.reopen('/dev/null', 'w')
@@ -214,6 +216,18 @@ module SaneStopTest
       else
         failed += 1
         warn '  FAIL: Unrecovered verify failure should cap SOP score at 6'
+      end
+
+      File.write(
+        metrics_path,
+        JSON.generate({ timestamp: (Time.now - 5).utc.iso8601, type: 'verify', success: true, tests_run: 0, evidence_strength: 'build_only' }) + "\n"
+      )
+      if calculate_sop_score_proc.call({}) == 8
+        passed += 1
+        warn '  PASS: Green zero-test verify caps SOP score at 8'
+      else
+        failed += 1
+        warn '  FAIL: Green zero-test verify should cap SOP score at 8'
       end
     ensure
       ENV['SANEMASTER_PROCESS_METRICS_PATH'] = old_metrics_path
@@ -519,6 +533,52 @@ module SaneStopTest
     # Cleanup
     StateManager.reset(:handoff_tracking)
     StateManager.reset(:skill)
+
+    # === VISUAL VERIFICATION ENFORCEMENT TESTS ===
+    warn ''
+    warn 'Testing visual verification enforcement:'
+
+    StateManager.reset(:edits)
+    StateManager.reset(:verification)
+    StateManager.reset(:handoff_tracking)
+    StateManager.reset(:visual_verification)
+    StateManager.update(:visual_verification) do |v|
+      v[:required] = true
+      v[:reason] = 'prompt_requested_visual_verification'
+      v[:required_files] = ['ContentView.swift']
+      v
+    end
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: Missing visual screenshot audit blocks stop'
+    else
+      failed += 1
+      warn "  FAIL: Missing visual screenshot audit should block, got #{exit_code}"
+    end
+
+    StateManager.update(:visual_verification) do |v|
+      v[:required] = true
+      v[:evidence_commands] = ['xcrun simctl io DEVICE screenshot outputs/visual-audit/01.png']
+      v[:audit_recorded] = true
+      v[:audit_files] = ['SESSION_HANDOFF.md']
+      v
+    end
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Visual screenshot audit receipt allows stop'
+    else
+      failed += 1
+      warn "  FAIL: Visual screenshot audit receipt should allow stop, got #{exit_code}"
+    end
+    StateManager.reset(:visual_verification)
 
     # === Q4 VALIDATION: SESSION TRACKING TESTS ===
     warn ''

@@ -63,6 +63,7 @@ exit(run_tests('Mini GUI Runner Tests') do
     test('visual workspace guard blocks stale SaneApps and helper windows') do
       assert_includes(visual_guard_source, 'Visible stale SaneApps window')
       assert_includes(visual_guard_source, 'Stale SaneClickExtension helper is still running')
+      assert_includes(visual_guard_source, '/SaneClickExtension\\\\.appex/')
       assert_includes(visual_guard_source, 'Stale SaneSync inference server is still running')
       assert_includes(visual_guard_source, 'Visible helper app can contaminate screenshot')
       true

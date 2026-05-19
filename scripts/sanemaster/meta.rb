@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'shellwords'
+
 module SaneMasterModules
   # Meta-audit of SaneMaster tooling itself
   # Philosophy: Stability over bleeding edge. Prevent spiraling, not chase latest.
@@ -89,8 +91,48 @@ module SaneMasterModules
         puts "   ✅ DerivedData: #{dd_size}"
       end
 
+      artifact_budget = generated_artifact_budget_snapshot
+      if artifact_budget[:total_gb] > 15
+        puts "   ⚠️  Generated artifacts: #{artifact_budget[:total_gb]}G (run: machine_cleanup --host mini --server --apply)"
+        issues << :large_generated_artifacts
+      else
+        puts "   ✅ Generated artifacts: #{artifact_budget[:total_gb]}G"
+      end
+
       puts ''
       { issues: issues, status: issues.empty? ? :ok : :warning }
+    end
+
+    def generated_artifact_budget_snapshot
+      roots = [
+        '~/SaneApps/apps',
+        '~/SaneApps/infra',
+        '~/SaneApps-automation/apps',
+        '~/SaneApps-automation/infra'
+      ].map { |path| File.expand_path(path) }
+      names = %w[.build .swiftpm .venv .venv-local .worktrees .wrangler build node_modules outputs releases xcuserdata]
+      paths = roots.flat_map do |root|
+        next [] unless Dir.exist?(root)
+
+        Dir.children(root).flat_map do |repo_name|
+          repo_root = File.join(root, repo_name)
+          next [] unless File.directory?(repo_root)
+
+          patterns = names.map { |name| File.join(repo_root, name) }
+          patterns.concat(names.map { |name| File.join(repo_root, '*', name) })
+          patterns.flat_map { |pattern| Dir.glob(pattern) }.select { |path| File.directory?(path) }
+        end
+      end.uniq
+
+      total = paths.sum { |path| path_size_gb_for_meta(path) }.round(2)
+      { total_gb: total, paths: paths }
+    end
+
+    def path_size_gb_for_meta(path)
+      output = `du -sk #{Shellwords.escape(path)} 2>/dev/null`
+      output.to_s.split(/\s+/).first.to_f / 1024 / 1024
+    rescue StandardError
+      0.0
     end
 
     def find_stuck_processes
@@ -724,10 +766,12 @@ module SaneMasterModules
       issues = []
       {
         curl: 'sane_curl_guard.sh',
+        open: 'sane_open_guard.sh',
         rsync: 'sane_rsync_guard.sh'
       }.each do |command, guard_file|
         wrapper = File.expand_path("~/.local/bin/#{command}")
         expected = File.expand_path("~/SaneApps/infra/SaneProcess/scripts/hooks/#{guard_file}")
+        active_path = `zsh -lc 'command -v #{command} 2>/dev/null'`.strip
 
         if File.symlink?(wrapper)
           target = File.expand_path(File.readlink(wrapper), File.dirname(wrapper))
@@ -743,6 +787,13 @@ module SaneMasterModules
         else
           puts "   ❌ ~/.local/bin/#{command} wrapper missing"
           issues << :"#{command}_wrapper_missing"
+        end
+
+        if active_path == wrapper
+          puts "   ✅ #{command} resolves to guard wrapper in login shells"
+        else
+          puts "   ❌ #{command} resolves to #{active_path.empty? ? 'nothing' : active_path}; expected #{wrapper}"
+          issues << :"#{command}_wrapper_not_first_on_path"
         end
       end
 

@@ -11,12 +11,16 @@
 require 'json'
 require 'fileutils'
 require 'time'
+require 'date'
+require 'digest'
 require 'rbconfig'
 require_relative 'core/mandatory_workflows'
 require_relative 'core/process_metrics'
 require_relative 'core/state_manager'
+require_relative 'core/sop_score'
 LOG_FILE = File.expand_path('../../.claude/sanestop.log', __dir__)
 SOP_CSV = File.expand_path('../../outputs/sop_ratings.csv', __dir__)
+SOP_JSONL = File.expand_path('../../outputs/sop_ratings.jsonl', __dir__)
 SESSION_LEARNINGS_FILE = File.expand_path('~/.claude/session_learnings.jsonl')
 SESSION_LEARNINGS_ARCHIVE = File.expand_path('~/.claude/session_learnings_archive.jsonl')
 SESSION_LEARNINGS_MAX_LINES = 200
@@ -54,32 +58,45 @@ def count_session_violations
 end
 
 def calculate_sop_score(violations)
-  # Q3 redesign: Measure blocks-before-compliance (friction), not violations.
-  # Hooks prevent violations (so violations ~= 0 always = rubber-stamp 10/10).
-  # Instead: more blocks in session = AI needed more pushback = lower score.
+  build_sop_receipt(violations)[:sop_score]
+end
+
+def session_blocks
   enforcement = StateManager.get(:enforcement)
   blocks = enforcement[:blocks] || []
   session_start = session_start_time
 
-  session_block_count = blocks.count do |b|
+  blocks.select do |block|
     begin
-      Time.parse(b[:timestamp] || b['timestamp']) >= session_start
+      Time.parse(block[:timestamp] || block['timestamp']) >= session_start
     rescue ArgumentError
       false
     end
   end
+end
 
-  base_score = case session_block_count
-  when 0 then 10      # Perfect — no blocks needed
-  when 1..2 then 9    # Minor friction
-  when 3..4 then 8    # Moderate friction
-  when 5..7 then 7    # Significant friction
-  when 8..10 then 6   # Heavy friction
-  else 5              # Excessive friction — process fought the AI hard
-  end
-
-  cap = verification_score_cap
-  cap ? [base_score, cap].min : base_score
+def build_sop_receipt(violations)
+  verify_status = session_verify_status
+  block_count = session_blocks.length
+  score = SaneSOPScore.score(block_count: block_count, verify_status: verify_status)
+  {
+    session_id: session_id,
+    client: session_client,
+    sop_score: score[:score],
+    base_score: score[:base_score],
+    block_count: block_count,
+    cap_score: score[:cap_score],
+    cap_reason: score[:cap_reason],
+    violations: violations,
+    verify_attempts: verify_status[:attempts],
+    verify_failures: verify_status[:failures],
+    verify_zero_test_failures: verify_status[:zero_test_failures],
+    verify_zero_test_successes: verify_status[:zero_test_successes],
+    final_verify_success: verify_status[:last_success],
+    final_verify_tests_run: verify_status[:last_tests_run],
+    final_verify_evidence_strength: verify_status[:last_evidence_strength],
+    final_verify_timestamp: verify_status[:last_timestamp]
+  }
 end
 
 def session_verify_events
@@ -104,24 +121,23 @@ def session_verify_status
   events = session_verify_events
   failures = events.count { |event| event['success'] != true }
   zero_test_failures = events.count { |event| event['success'] != true && event['tests_run'].to_i.zero? }
+  zero_test_successes = events.count { |event| event['success'] == true && event.key?('tests_run') && event['tests_run'].to_i.zero? }
   last = events.last
   {
     attempts: events.length,
     failures: failures,
     zero_test_failures: zero_test_failures,
+    zero_test_successes: zero_test_successes,
     last_success: last ? last['success'] == true : nil,
+    last_tests_run: last && last['tests_run'],
+    last_evidence_strength: last && last['evidence_strength'],
     last_timestamp: last && last['timestamp']
   }
 end
 
 def verification_score_cap
-  status = session_verify_status
-  return nil if status[:attempts].zero?
-
-  return 6 unless status[:last_success]
-  return 8 if status[:failures].positive?
-
-  nil
+  cap = SaneSOPScore.verification_cap(session_verify_status)
+  cap && cap[:score]
 end
 
 # === SOP SCORE VARIANCE DETECTION ===
@@ -322,7 +338,7 @@ def check_tool_discovery_required
   required_skill = skill_state[:required].to_s
   requirements = SKILL_REQUIREMENTS[required_skill]
   return nil unless requirements && requirements[:requires_runner]
-  return nil if skill_state[:runner_used]
+  return nil if skill_state[:runner_proved] || skill_state[:runner_used]
 
   runner_block_message(required_skill, skill_state)
 rescue StandardError => e
@@ -337,7 +353,8 @@ def validate_skill_execution
   required_skill = skill_state[:required]
   invoked = skill_state[:invoked]
   subagents_spawned = skill_state[:subagents_spawned] || 0
-  runner_used = skill_state[:runner_used] || false
+  runner_started = skill_state[:runner_started] || false
+  runner_used = skill_state[:runner_proved] || skill_state[:runner_used] || false
 
   requirements = SKILL_REQUIREMENTS[required_skill] || {}
   min_subagents = requirements[:min_subagents] || 0
@@ -358,7 +375,11 @@ def validate_skill_execution
   end
 
   if requires_runner && !runner_used
-    issues << "Skill '#{required_skill}' requires the approved runner/proof command and none was detected"
+    if runner_started
+      issues << "Skill '#{required_skill}' runner command was attempted but no successful proof/receipt was recorded"
+    else
+      issues << "Skill '#{required_skill}' requires the approved runner/proof command and none was detected"
+    end
     issues << "  Run #{MandatoryWorkflows.runner_command_for(required_skill)}" if MandatoryWorkflows.runner_command_for(required_skill)
   end
 
@@ -419,6 +440,73 @@ def check_verification_required
 rescue StandardError => e
   warn "⚠️  Verification check error: #{e.message}" if ENV['DEBUG']
   nil  # Don't block on errors in the check itself
+end
+
+# === VISUAL VERIFICATION ENFORCEMENT ===
+# Customer-facing UI work requires screenshot-backed inspection, not just green
+# functional tests.
+
+def project_visual_artifacts
+  roots = %w[outputs screenshots Screenshots]
+  extensions = %w[png jpg jpeg md json]
+  started = session_start_time
+
+  roots.flat_map do |root|
+    next [] unless Dir.exist?(File.join(Dir.pwd, root))
+
+    extensions.flat_map do |ext|
+      Dir.glob(File.join(Dir.pwd, root, '**', "*.#{ext}"))
+    end
+  end.flatten.uniq.select do |path|
+    File.basename(path).match?(/visual|screenshot|audit/i) ||
+      path.match?(%r{/visual[-_]audit}i)
+  end.select do |path|
+    File.mtime(path) >= started
+  rescue StandardError
+    false
+  end
+rescue StandardError
+  []
+end
+
+def visual_artifact_summary
+  files = project_visual_artifacts
+  {
+    images: files.select { |path| path.match?(/\.(png|jpe?g)$/i) },
+    receipts: files.select { |path| path.match?(/\.(md|json)$/i) }
+  }
+end
+
+def check_visual_verification_required
+  visual = StateManager.get(:visual_verification)
+  return nil unless visual[:required]
+
+  artifact_summary = visual_artifact_summary
+  evidence_commands = visual[:evidence_commands] || []
+  screenshot_paths = visual[:screenshot_paths] || []
+  audit_files = visual[:audit_files] || []
+  has_screenshot_evidence = evidence_commands.any? || screenshot_paths.any? || artifact_summary[:images].any?
+  has_audit_receipt = visual[:audit_recorded] || audit_files.any? || artifact_summary[:receipts].any?
+
+  return nil if has_screenshot_evidence && has_audit_receipt
+
+  missing = []
+  missing << 'saved screenshot evidence' unless has_screenshot_evidence
+  missing << 'written visual audit receipt' unless has_audit_receipt
+
+  files = (visual[:required_files] || []).first(10)
+  reason = visual[:reason] || 'visual verification required'
+
+  "   Visual verification is required (#{reason}).\n" \
+  "   Missing: #{missing.join(' AND ')}.\n" \
+  "#{files.empty? ? '' : "   UI files/states touched: #{files.join(', ')}\n"}" \
+  "   Required proof:\n" \
+  "   • Capture clean Mini screenshots for every customer-facing view/state touched.\n" \
+  "   • Inspect the saved images for balance, clarity, confusing copy, clipping, overlap, contrast, and dark-mode quality.\n" \
+  "   • Record the screenshot paths and audit verdict in SESSION_HANDOFF.md or an outputs/visual-audit*/ receipt."
+rescue StandardError => e
+  warn "⚠️  Visual verification check error: #{e.message}" if ENV['DEBUG']
+  nil
 end
 
 # === VALIDATION METRICS (Q1, Q2-missed, Q4) ===
@@ -606,12 +694,15 @@ def save_session_learnings
 
   # Calculate violations and SOP score
   violations = count_session_violations
-  sop_score = calculate_sop_score(violations)
+  sop_receipt = build_sop_receipt(violations)
+  sop_score = sop_receipt[:sop_score]
 
   # Calculate session stats
   verify_status = session_verify_status
   stats = {
     timestamp: Time.now.iso8601,
+    session_id: sop_receipt[:session_id],
+    client: sop_receipt[:client],
     edits: edits[:count] || 0,
     unique_files: edits[:unique_files]&.length || 0,
     research_done: research.compact.keys.length,
@@ -620,21 +711,40 @@ def save_session_learnings
     halted: enf[:halted] || false,
     violations: violations,
     sop_score: sop_score,
+    base_score: sop_receipt[:base_score],
+    block_count: sop_receipt[:block_count],
+    cap_score: sop_receipt[:cap_score],
+    cap_reason: sop_receipt[:cap_reason],
     verify_attempts: verify_status[:attempts],
     verify_failures: verify_status[:failures],
     verify_zero_test_failures: verify_status[:zero_test_failures],
-    final_verify_success: verify_status[:last_success]
+    verify_zero_test_successes: verify_status[:zero_test_successes],
+    final_verify_success: verify_status[:last_success],
+    final_verify_tests_run: verify_status[:last_tests_run],
+    final_verify_evidence_strength: verify_status[:last_evidence_strength],
+    final_verify_timestamp: verify_status[:last_timestamp]
   }
 
   SaneProcessMetrics.record(
     'session_end',
+    session_id: stats[:session_id],
+    client: stats[:client],
     success: verify_status[:last_success],
     sop_score: sop_score,
+    base_score: stats[:base_score],
+    block_count: stats[:block_count],
+    cap_score: stats[:cap_score],
+    cap_reason: stats[:cap_reason],
     edits: stats[:edits],
     unique_files: stats[:unique_files],
     verify_attempts: verify_status[:attempts],
     verify_failures: verify_status[:failures],
-    verify_zero_test_failures: verify_status[:zero_test_failures]
+    verify_zero_test_failures: verify_status[:zero_test_failures],
+    verify_zero_test_successes: verify_status[:zero_test_successes],
+    final_verify_success: verify_status[:last_success],
+    final_verify_tests_run: verify_status[:last_tests_run],
+    final_verify_evidence_strength: verify_status[:last_evidence_strength],
+    final_verify_timestamp: verify_status[:last_timestamp]
   )
 
   # Update patterns for future sessions
@@ -720,27 +830,66 @@ def log_session(stats)
   File.open(LOG_FILE, 'a') { |f| f.puts(stats.to_json) }
 
   # Append SOP score to CSV for validation_report.rb trend tracking
-  append_sop_csv(stats[:sop_score], stats[:violations])
+  append_sop_receipts(stats)
 rescue StandardError
   # Don't fail on logging errors
 end
 
-def append_sop_csv(score, violations)
-  return unless score
+def append_sop_receipts(stats)
+  return unless stats[:sop_score]
 
   csv_dir = File.dirname(SOP_CSV)
   FileUtils.mkdir_p(csv_dir)
 
   # Create header if file doesn't exist or is empty
   unless File.exist?(SOP_CSV) && File.size(SOP_CSV) > 0
-    File.write(SOP_CSV, "date,sop_score,notes\n")
+    File.write(SOP_CSV, "date,sop_score,session_id,client,block_count,cap_reason,verify_attempts,verify_failures,final_verify_success,edits,unique_files,notes_json\n")
   end
 
-  violation_count = violations.is_a?(Hash) ? violations.values.sum : violations.to_i
-  notes = violation_count > 0 ? "#{violation_count} violations" : 'clean session'
-  File.open(SOP_CSV, 'a') { |f| f.puts("#{Date.today},#{score},#{notes}") }
+  notes = JSON.generate(
+    violations: stats[:violations],
+    base_score: stats[:base_score],
+    cap_score: stats[:cap_score],
+    cap_reason: stats[:cap_reason],
+    verify_zero_test_failures: stats[:verify_zero_test_failures],
+    verify_zero_test_successes: stats[:verify_zero_test_successes],
+    final_verify_tests_run: stats[:final_verify_tests_run],
+    final_verify_evidence_strength: stats[:final_verify_evidence_strength],
+    final_verify_timestamp: stats[:final_verify_timestamp]
+  )
+  row = [
+    Date.today,
+    stats[:sop_score],
+    stats[:session_id],
+    stats[:client],
+    stats[:block_count],
+    stats[:cap_reason],
+    stats[:verify_attempts],
+    stats[:verify_failures],
+    stats[:final_verify_success],
+    stats[:edits],
+    stats[:unique_files],
+    notes
+  ].map { |value| csv_escape(value) }.join(',')
+  File.open(SOP_CSV, 'a') { |f| f.puts(row) }
+  File.open(SOP_JSONL, 'a') { |f| f.puts(JSON.generate(stats)) }
 rescue StandardError
   # Don't fail on CSV errors
+end
+
+def csv_escape(value)
+  text = value.nil? ? '' : value.to_s
+  return text unless text.match?(/[",\n]/)
+
+  %("#{text.gsub('"', '""')}")
+end
+
+def session_id
+  Digest::SHA256.hexdigest("#{Dir.pwd}|#{session_start_time.utc.iso8601}")[0, 12]
+end
+
+def session_client
+  ENV['SANE_AGENT_CLIENT'] || ENV['SANE_CLIENT'] || 'claude-hook'
 end
 
 def run_mcp_watchdog_cleanup
@@ -851,6 +1000,21 @@ def process_stop(stop_hook_active, transcript_path = nil)
     return 2  # BLOCK — Claude must address this
   end
 
+  # === VISUAL VERIFICATION ENFORCEMENT: UI work requires screenshot audit ===
+  visual_block = check_visual_verification_required
+  if visual_block
+    warn ''
+    warn '=' * 50
+    warn '🔴 VISUAL VERIFICATION BLOCK: Screenshots/audit missing'
+    warn ''
+    warn visual_block
+    warn ''
+    warn '   Do not claim customer-facing UI work is done from functional tests alone.'
+    warn '=' * 50
+    warn ''
+    return 2
+  end
+
   # Check if summary needed (non-blocking reminder)
   check_summary_needed
 
@@ -912,14 +1076,26 @@ if ARGV.include?('--self-test')
   require_relative 'self_test_environment'
   exit SelfTestEnvironment.run_isolated(__FILE__)
 elsif ARGV.include?('--self-test-internal')
-  require_relative 'sanestop_test'
-  exit SaneStopTest.run(
-    method(:process_stop),
-    method(:check_score_variance),
-    method(:check_weasel_words),
-    method(:calculate_sop_score),
-    LOG_FILE
-  )
+  run_internal_self_test = lambda do
+    require_relative 'sanestop_test'
+    SaneStopTest.run(
+      method(:process_stop),
+      method(:check_score_variance),
+      method(:check_weasel_words),
+      method(:calculate_sop_score),
+      LOG_FILE
+    )
+  end
+
+  if ENV['SANEMASTER_PROCESS_METRICS_PATH'].to_s.strip.empty?
+    require 'tmpdir'
+    Dir.mktmpdir('sanestop-self-test-metrics-') do |dir|
+      ENV['SANEMASTER_PROCESS_METRICS_PATH'] = File.join(dir, 'process_metrics.jsonl')
+      exit run_internal_self_test.call
+    end
+  end
+
+  exit run_internal_self_test.call
 else
   begin
     input = JSON.parse($stdin.read)

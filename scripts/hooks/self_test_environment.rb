@@ -25,6 +25,7 @@ module SelfTestEnvironment
             'CLAUDE_PROJECT_DIR' => project_dir,
             'HOME' => project_dir,
             'CLAUDE_HOOK_SECRET' => TEST_HOOK_SECRET,
+            'SANEMASTER_PROCESS_METRICS_PATH' => File.join(project_dir, '.sanemaster', 'process_metrics.jsonl'),
             'SANE_ENV_CACHE_WRITE' => '0'
           },
           'ruby', hook_file, internal_flag

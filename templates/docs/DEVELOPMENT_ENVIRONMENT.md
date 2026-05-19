@@ -462,4 +462,4 @@ alias build-release="xcodebuild -configuration Release build"
 1. **Apple APIs**: Use `mcp__apple-docs__search_apple_docs`
 2. **Library docs**: Use `mcp__context7__query-docs`
 3. **Past learnings**: Use Serena memories or Official Memory MCP
-4. **This documentation**: `/Users/sj/Projects/SaneProcess/docs/`
+4. **This documentation**: `~/SaneApps/infra/SaneProcess/templates/docs/`

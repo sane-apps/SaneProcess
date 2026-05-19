@@ -26,6 +26,7 @@ require 'open3'
 require 'uri'
 require 'shellwords'
 require 'tmpdir'
+require 'digest'
 
 class ValidationReport
   SANE_APPS_ROOT = File.expand_path('~/SaneApps')
@@ -43,11 +44,66 @@ class ValidationReport
   HANDOFF_MAX_LINES = 800
   WORKFLOW_EXCEPTIONS_CONFIG_PATH = File.join(File.dirname(__FILE__), '..', 'config', 'github_workflow_exceptions.yml')
   RED_NOISE_BUDGET_DAYS = 7
+  CUSTOMER_UI_MANIFEST_PATHS = [
+    'Tests/CustomerUIActions.yml',
+    'tests/customer_ui_actions.yml',
+    'config/customer_ui_actions.yml',
+    '.sane/customer_ui_actions.yml'
+  ].freeze
+  CODEX_SKILL_HEALTH_IGNORED_DIRS = %w[
+    codex-primary-runtime
+  ].freeze
+  PROJECT_QA_SOURCE_EXTENSIONS = %w[
+    .c .cc .cpp .entitlements .h .json .metal .m .mm .plist .rb .sh .storyboard
+    .swift .xcconfig .xcstrings .xib .yaml .yml
+  ].freeze
+  PROJECT_QA_SOURCE_EXCLUDED_PREFIXES = %w[
+    .build/ .claude/ .codex/ .git/ .sanemaster/ build/ DerivedData/ docs/
+    node_modules/ outputs/ vendor/bundle/ website/
+  ].freeze
+  PROJECT_QA_SOURCE_EXCLUDED_FILES = %w[
+    AGENTS.md ARCHITECTURE.md CLAUDE.md DEVELOPMENT.md README.md SESSION_HANDOFF.md
+  ].freeze
+  DISK_BUDGET_MIN_FREE_GB = 20
+  DISK_BUDGET_CRITICAL_FREE_GB = 10
+  DISK_BUDGET_ROOTS = [
+    ['~/SaneApps/outputs', 8],
+    ['~/SaneApps/release-work', 2],
+    ['~/SaneApps/release-publish', 2],
+    ['~/SaneApps/release-worktrees', 2],
+    ['~/SaneApps-automation', 20],
+    ['~/.sanemaster/routed-workspaces', 5],
+    ['~/.codex/sessions', 3],
+    ['~/.codex-sync-backups', 3],
+    ['~/Library/Developer/Xcode/DerivedData', 12],
+    ['~/Library/Developer/CoreSimulator', 10]
+  ].freeze
+  DISK_BUDGET_REPO_GENERATED_MAX_GB = 15
+  DISK_BUDGET_REPO_ROOTS = [
+    '~/SaneApps/apps',
+    '~/SaneApps/infra',
+    '~/SaneApps-automation/apps',
+    '~/SaneApps-automation/infra'
+  ].freeze
+  DISK_BUDGET_REPO_GENERATED_NAMES = %w[
+    .build
+    .swiftpm
+    .venv
+    .venv-local
+    .worktrees
+    .wrangler
+    build
+    node_modules
+    outputs
+    releases
+    xcuserdata
+  ].freeze
 
   PROJECTS = %w[
     apps/SaneBar
     apps/SaneVideo
     apps/SaneSync
+    apps/SaneScan
     apps/SaneClip
     apps/SaneHosts
     apps/SaneClick
@@ -59,6 +115,7 @@ class ValidationReport
     apps/SaneBar
     apps/SaneVideo
     apps/SaneSync
+    apps/SaneScan
     apps/SaneClip
     apps/SaneHosts
     apps/SaneClick
@@ -120,6 +177,8 @@ class ValidationReport
     q9_support_infrastructure # Email, API keys, keychain
     q10_documentation_currency # Version consistency, changelog, README
     q11_cross_channel_version_consistency # Appcast vs website vs webhook vs Homebrew
+    q13_customer_reality_contracts # Release-required customer actions prove real workflows
+    q14_disk_budget
     q12_red_noise_budget
     calculate_final_verdict
   end
@@ -148,11 +207,13 @@ class ValidationReport
     case text
     when /^Q[0-5]\b/, /^Q[0-5]\s/, /^Q[0-5]:/, /^Q[0-5] FAIL:/, /^Q0 CONFIG:/
       :system_health
-    when /^Q6 RELEASE:/, /^Q7 WEBSITE:/, /^Q8 SIGNING:/, /^Q11 DRIFT:/, /^Q11 HOSTED FILE ACTION:/
+    when /^Q6 RELEASE:/, /^Q7 WEBSITE:/, /^Q8 SIGNING:/, /^Q11 DRIFT:/, /^Q11 HOSTED FILE ACTION:/, /^Q13 CUSTOMER REALITY:/
       :release_readiness
     when /^Q10 DOCS:/
       :app_readiness
     when /^Q9 SUPPORT:/
+      :system_health
+    when /^Q14 DISK:/
       :system_health
     else
       :advisory
@@ -188,6 +249,10 @@ class ValidationReport
       'Run release_preflight for the app and repair the missing live distribution artifact before considering that app release-ready.'
     when /Lemon Squeezy hosted file/
       'Use the hosted-file dashboard action export and update the Lemon Squeezy hosted file to the canonical release artifact.'
+    when /Customer UI contract/
+      'Run the app customer UI sweep on the Mini, fix the reported workflow proof gap, and rerun release_preflight before release.'
+    when /Q14 DISK:/
+      'Run `ruby scripts/SaneMaster.rb machine_cleanup --host mini --server --apply`, then rerun validation on the Mini.'
     else
       'Open the matching Q-section in validation_report.rb, fix the named source of truth, and rerun `ruby scripts/validation_report.rb` on the Mini.'
     end
@@ -564,8 +629,8 @@ class ValidationReport
   end
 
   def check_codex_skill_health(issues_found)
-    skill_root = File.expand_path('~/.codex/skills')
-    registry_path = File.expand_path('~/.codex/SKILLS_REGISTRY.md')
+    skill_root = codex_skill_root
+    registry_path = codex_skills_registry_path
     return unless Dir.exist?(skill_root) || File.exist?(registry_path)
 
     local_skill_names = []
@@ -573,6 +638,7 @@ class ValidationReport
     if Dir.exist?(skill_root)
       Dir.children(skill_root).sort.each do |entry|
         next if entry.start_with?('.')
+        next if CODEX_SKILL_HEALTH_IGNORED_DIRS.include?(entry)
 
         skill_dir = File.join(skill_root, entry)
         next unless File.directory?(skill_dir)
@@ -614,6 +680,14 @@ class ValidationReport
     if registry_only.any?
       @warnings << "Q0: [codex] SKILLS_REGISTRY.md entries missing local skill dirs: #{registry_only.join(', ')}"
     end
+  end
+
+  def codex_skill_root
+    File.expand_path('~/.codex/skills')
+  end
+
+  def codex_skills_registry_path
+    File.expand_path('~/.codex/SKILLS_REGISTRY.md')
   end
 
   def check_github_workflow_policy(issues_found)
@@ -1528,18 +1602,24 @@ class ValidationReport
       end
 
       # Check CHANGELOG has latest version
-      changelog_paths = [
-        File.join(project_path, 'CHANGELOG.md'),
-        File.join(project_path, 'docs', 'CHANGELOG.md')
-      ]
-      changelog = changelog_paths.find { |p| File.exist?(p) }
-      if changelog && appcast_version
-        changelog_content = File.read(changelog)
-        unless changelog_content.include?(appcast_version)
-          issues_found << "[#{app_name}] CHANGELOG missing version #{appcast_version}"
+      if app_store_product?(product)
+        if product[:appstore_release_notes].to_s.empty?
+          warnings_found << "[#{app_name}] App Store release notes missing from .saneprocess"
         end
-      elsif !changelog
-        warnings_found << "[#{app_name}] No CHANGELOG.md found"
+      else
+        changelog_paths = [
+          File.join(project_path, 'CHANGELOG.md'),
+          File.join(project_path, 'docs', 'CHANGELOG.md')
+        ]
+        changelog = changelog_paths.find { |p| File.exist?(p) }
+        if changelog && appcast_version
+          changelog_content = File.read(changelog)
+          unless changelog_content.include?(appcast_version)
+            issues_found << "[#{app_name}] CHANGELOG missing version #{appcast_version}"
+          end
+        elsif !changelog
+          warnings_found << "[#{app_name}] No CHANGELOG.md found"
+        end
       end
 
       # Check SESSION_HANDOFF.md isn't stale (> 7 days old)
@@ -1746,8 +1826,167 @@ class ValidationReport
     }
 
     issues_found.each { |i| @issues << "Q11 DRIFT: #{i}" }
-    hosted_file_actions.each { |i| @warnings << "Q11 HOSTED FILE ACTION: #{i}" }
+    hosted_file_actions.each { |i| @issues << "Q11 HOSTED FILE ACTION: #{i}" }
     warnings_found.each { |w| @warnings << "Q11 DRIFT: #{w}" }
+  end
+
+  # Q13: CUSTOMER REALITY CONTRACTS
+  # Every released app must prove customer-facing actions with fresh, path-backed Mini evidence.
+  def q13_customer_reality_contracts
+    issues_found = []
+    warnings_found = []
+    raw_issue_count = 0
+    checked = 0
+
+    released_product_definitions.each do |product|
+      next unless product[:project_exists]
+
+      app_name = product[:name]
+      project_path = product[:project_path] || File.join(SANE_APPS_ROOT, 'apps', app_name)
+      manifest_path = CUSTOMER_UI_MANIFEST_PATHS
+        .map { |path| File.join(project_path, path) }
+        .find { |path| File.exist?(path) }
+
+      unless manifest_path
+        issues_found << "[#{app_name}] Customer UI contract missing; every released app needs a release-required customer action manifest"
+        next
+      end
+
+      checked += 1
+      snapshot = customer_ui_contract_snapshot(project_path)
+      if snapshot[:ok]
+        next
+      end
+
+      snapshot_issues = Array(snapshot[:issues]).map(&:to_s)
+      raw_issue_count += snapshot_issues.length
+
+      snapshot_issues.first(12).each do |issue|
+        issues_found << "[#{app_name}] Customer UI contract: #{issue}"
+      end
+      omitted = snapshot_issues.length - 12
+      issues_found << "[#{app_name}] Customer UI contract: #{omitted} more issue(s) omitted from validation summary" if omitted.positive?
+    end
+
+    @metrics[:customer_reality_contracts] = {
+      checked: checked,
+      issues: raw_issue_count,
+      surfaced_issues: issues_found.size,
+      warnings: warnings_found.size,
+      details: issues_found + warnings_found
+    }
+
+    issues_found.each { |i| @issues << "Q13 CUSTOMER REALITY: #{i}" }
+    warnings_found.each { |w| @warnings << "Q13 CUSTOMER REALITY: #{w}" }
+  end
+
+  # Q14: DISK BUDGET
+  # The Mini is a build/test server. Generated artifacts must have budgets or they silently fill both machines.
+  def q14_disk_budget
+    issues_found = []
+    warnings_found = []
+    disk = disk_budget_snapshot
+
+    if disk[:available_gb]
+      if disk[:available_gb] < DISK_BUDGET_CRITICAL_FREE_GB
+        issues_found << "free disk is #{disk[:available_gb]}G; Mini/server work needs at least #{DISK_BUDGET_MIN_FREE_GB}G free"
+      elsif disk[:available_gb] < DISK_BUDGET_MIN_FREE_GB
+        warnings_found << "free disk is #{disk[:available_gb]}G; run server cleanup before build/test/release work"
+      end
+    end
+
+    oversized_roots = DISK_BUDGET_ROOTS.each_with_object([]) do |(raw_path, max_gb), list|
+      path = File.expand_path(raw_path)
+      next unless File.exist?(path)
+
+      size_gb = disk_budget_path_size_gb(path)
+      next unless size_gb > max_gb
+
+      list << { path: path, size_gb: size_gb, max_gb: max_gb }
+    end
+
+    oversized_roots.each do |entry|
+      warnings_found << "#{entry[:path]} is #{entry[:size_gb]}G over #{entry[:max_gb]}G budget"
+    end
+
+    repo_generated = disk_budget_repo_generated_total_gb
+    if repo_generated > DISK_BUDGET_REPO_GENERATED_MAX_GB
+      warnings_found << "generated repo artifacts total #{repo_generated}G over #{DISK_BUDGET_REPO_GENERATED_MAX_GB}G budget"
+    end
+
+    @metrics[:disk_budget] = {
+      free_gb: disk[:available_gb],
+      oversized_roots: oversized_roots,
+      repo_generated_gb: repo_generated,
+      issues: issues_found.length,
+      warnings: warnings_found.length
+    }
+    issues_found.each { |i| @issues << "Q14 DISK: #{i}" }
+    warnings_found.each { |w| @warnings << "Q14 DISK: #{w}" }
+  end
+
+  def disk_budget_snapshot
+    output, status = Open3.capture2e('df', '-g', File.expand_path('~'))
+    return {} unless status.success?
+
+    fields = output.lines.last.to_s.split(/\s+/)
+    { available_gb: fields[3].to_i, capacity: fields[4].to_s, mount: fields[8] || fields[5] }
+  end
+
+  def disk_budget_path_size_gb(path)
+    output, status = Open3.capture2e('du', '-sk', path)
+    return 0 unless status.success?
+
+    (output.split(/\s+/).first.to_f / 1024 / 1024).round(2)
+  end
+
+  def disk_budget_repo_generated_total_gb
+    paths = DISK_BUDGET_REPO_ROOTS.flat_map do |raw_root|
+      root = File.expand_path(raw_root)
+      next [] unless Dir.exist?(root)
+
+      Dir.children(root).flat_map do |repo_name|
+        repo_root = File.join(root, repo_name)
+        next [] unless File.directory?(repo_root)
+
+        patterns = DISK_BUDGET_REPO_GENERATED_NAMES.map { |name| File.join(repo_root, name) }
+        patterns.concat(DISK_BUDGET_REPO_GENERATED_NAMES.map { |name| File.join(repo_root, '*', name) })
+        patterns.flat_map { |pattern| Dir.glob(pattern) }.select { |path| File.directory?(path) }
+      end
+    end.uniq
+
+    paths.sum { |path| disk_budget_path_size_gb(path) }.round(2)
+  end
+
+  def customer_ui_contract_snapshot(project_path)
+    sane_master = File.join(project_path, 'scripts', 'SaneMaster.rb')
+    sane_master = File.join(project_path, 'Scripts', 'SaneMaster.rb') unless File.exist?(sane_master)
+    sane_master = File.join(SANE_APPS_ROOT, 'infra', 'SaneProcess', 'scripts', 'SaneMaster.rb') unless File.exist?(sane_master)
+
+    command = if sane_master.start_with?(project_path)
+                [sane_master, 'customer_ui_contract', '--json', '--no-exit']
+              else
+                ['ruby', sane_master, 'customer_ui_contract', '--json', '--no-exit']
+              end
+    output, status = Open3.capture2e(*command, chdir: project_path)
+    parsed = JSON.parse(extract_json_object(output))
+    {
+      ok: status.success? && parsed['ok'] == true,
+      issues: Array(parsed['issues']).map(&:to_s)
+    }
+  rescue JSON::ParserError => e
+    { ok: false, issues: ["customer_ui_contract returned invalid JSON: #{e.message}"] }
+  rescue StandardError => e
+    { ok: false, issues: ["customer_ui_contract failed to run: #{e.class}: #{e.message}"] }
+  end
+
+  def extract_json_object(output)
+    text = output.to_s
+    start_index = text.index('{')
+    end_index = text.rindex('}')
+    return text if start_index.nil? || end_index.nil? || end_index < start_index
+
+    text[start_index..end_index]
   end
 
   def fetch_url_text(url, headers: {})
@@ -2044,17 +2283,19 @@ class ValidationReport
     website_issues = (@metrics[:website_distribution] || {})[:issues].to_i
     # Q8 SIGNING issues are CRITICAL - app won't run!
     signing_issues = (@metrics[:code_signing] || {})[:issues].to_i
-    # Q11 canonical drift is CRITICAL. Hosted-file drift is real, but it is a dashboard action,
-    # not the same class of failure as a broken website, webhook, or appcast.
+    # Q11 drift is CRITICAL when it can serve the wrong build to customers.
     canonical_drift_issues = (@metrics[:cross_channel_consistency] || {})[:canonical_issues].to_i
     hosted_file_actions = (@metrics[:cross_channel_consistency] || {})[:hosted_file_actions].to_i
+    # Q13 customer UI contract issues mean the release surface is not proven for customers.
+    customer_ui_contract_issues = (@metrics[:customer_reality_contracts] || {})[:issues].to_i
 
-    customer_facing_critical = release_issues + website_issues + signing_issues + canonical_drift_issues
+    customer_facing_critical = release_issues + website_issues + signing_issues + canonical_drift_issues + hosted_file_actions + customer_ui_contract_issues
 
     @metrics[:final] = {
       critical_failures: critical_fails,
       customer_facing_critical: customer_facing_critical,
       hosted_file_actions: hosted_file_actions,
+      customer_ui_contract_issues: customer_ui_contract_issues,
       data_gaps: data_gaps,
       projects_with_data: @data.size,
       finding_summary: finding_summary
@@ -2066,8 +2307,6 @@ class ValidationReport
     overall = if customer_facing_critical > 0
       # ANY customer-facing issue is a showstopper
       { status: 'BROKEN RELEASE PIPELINE', detail: "#{customer_facing_critical} customer-facing issues - CUSTOMERS AFFECTED", color: :red }
-    elsif hosted_file_actions > 0
-      { status: 'NEEDS DASHBOARD SYNC', detail: "#{hosted_file_actions} Lemon Squeezy hosted file updates pending", color: :yellow }
     elsif !has_data
       { status: 'INSUFFICIENT DATA', detail: 'Need data from 3+ projects', color: :yellow }
     elsif system_critical.positive?
@@ -2118,7 +2357,7 @@ class ValidationReport
     puts "  Is this thing actually working, or is it BS?"
     puts "═" * 70
     puts "  Generated: #{Time.now}"
-    puts "  Projects: #{@data.keys.join(', ')}"
+    puts "  Projects: #{validation_projects.join(', ')}"
     puts "═" * 70
     puts
 
@@ -2301,10 +2540,20 @@ class ValidationReport
       puts "   ✅ All channels consistent"
     else
       puts "   ❌ #{canonical_issues} canonical drift issues detected" if canonical_issues > 0
-      puts "   ⚠️  #{hosted_file_actions} Lemon Squeezy hosted file updates pending" if hosted_file_actions > 0
+      puts "   ❌ #{hosted_file_actions} Lemon Squeezy hosted file updates pending" if hosted_file_actions > 0
       (m[:canonical_details] || []).each { |d| puts "      - #{d}" }
       (m[:hosted_file_details] || []).each { |d| puts "      - #{d}" }
       @warnings.grep(/^Q11 DRIFT:/).each { |d| puts "      - #{d.sub(/^Q11 DRIFT: /, '')}" }
+    end
+
+    puts
+    puts "Q13: CUSTOMER REALITY CONTRACTS"
+    m = @metrics[:customer_reality_contracts] || {}
+    if m[:issues].to_i == 0 && m[:warnings].to_i == 0
+      puts "   ✅ #{m[:checked].to_i} released app customer UI contract(s) green"
+    else
+      puts "   ❌ #{m[:issues].to_i} issues, #{m[:warnings].to_i} warnings"
+      Array(m[:details]).each { |d| puts "      - #{d}" }
     end
 
     puts
@@ -2371,11 +2620,12 @@ class ValidationReport
     checklist = []
     app_name = product[:name]
     project_path = product[:project_path]
+    app_store_product = app_store_product?(product)
     site_host = product[:domain].to_s.empty? ? website_domain_for_project(project_path, app_name) : product[:domain]
     website_url = "https://#{site_host}"
-    live_appcast = fetch_live_appcast_snapshot(site_host)
+    live_appcast = app_store_product ? nil : fetch_live_appcast_snapshot(site_host)
     live_release_url = live_appcast && live_appcast[:enclosure_url].to_s
-    live_artifact = inspect_live_release_artifact(live_release_url)
+    live_artifact = app_store_product ? { artifact_name: nil, signed: false, notarized: false, available: false } : inspect_live_release_artifact(live_release_url)
     page_content = fetch_url_text(website_url)
     page_links = extract_page_links(page_content, base_url: website_url)
 
@@ -2385,14 +2635,16 @@ class ValidationReport
 
     # 1. GitHub repo exists
     github_repo = product[:github_repo].to_s.empty? ? "sane-apps/#{app_name}" : product[:github_repo]
-    repo_exists = system("gh repo view #{Shellwords.shellescape(github_repo)} > /dev/null 2>&1")
+    repo_exists = github_repo_exists?(github_repo)
     checklist << { name: "GitHub repo (#{github_repo})", status: repo_exists ? :done : :todo }
 
     # 2. GitHub release policy (license-gated apps allow all channels; ungated = R2 only)
     license_gated = product[:license_gated]
 
-    if repo_exists
-      releases = `gh release list --repo sane-apps/#{app_name} --limit 1 2>/dev/null`.strip
+    if app_store_product
+      checklist << { name: "GitHub releases not used for App Store distribution", status: :done }
+    elsif repo_exists
+      releases = `gh release list --repo #{Shellwords.shellescape(github_repo)} --limit 1 2>/dev/null`.strip
       has_release = !releases.empty? && !releases.include?('no releases')
       if license_gated
         checklist << { name: "GitHub releases (allowed — license gated)", status: :done }
@@ -2403,27 +2655,31 @@ class ValidationReport
       checklist << { name: "GitHub release policy", status: :done }
     end
 
-    # 3. Hardened runtime enabled (check xcconfig or project)
-    xcconfig_paths = [
-      File.join(project_path, 'Config', 'Release.xcconfig'),
-      File.join(project_path, 'Config', 'Shared.xcconfig')
-    ]
-    hardened_runtime = xcconfig_paths.any? do |p|
-      File.exist?(p) && File.read(p).include?('ENABLE_HARDENED_RUNTIME = YES')
-    end
-    # Also check project.pbxproj
-    pbxproj = Dir.glob(File.join(project_path, '**/*.pbxproj')).first
-    if pbxproj && !hardened_runtime
-      hardened_runtime = File.read(pbxproj).include?('ENABLE_HARDENED_RUNTIME = YES')
-    end
-    checklist << { name: "Hardened runtime enabled", status: hardened_runtime ? :done : :todo }
+    if app_store_product
+      checklist << { name: "App Store lane configured", status: product[:appstore_id].to_s.empty? ? :todo : :done }
+    else
+      # 3. Hardened runtime enabled (check xcconfig or project)
+      xcconfig_paths = [
+        File.join(project_path, 'Config', 'Release.xcconfig'),
+        File.join(project_path, 'Config', 'Shared.xcconfig')
+      ]
+      hardened_runtime = xcconfig_paths.any? do |p|
+        File.exist?(p) && File.read(p).include?('ENABLE_HARDENED_RUNTIME = YES')
+      end
+      # Also check project.pbxproj
+      pbxproj = Dir.glob(File.join(project_path, '**/*.pbxproj')).first
+      if pbxproj && !hardened_runtime
+        hardened_runtime = File.read(pbxproj).include?('ENABLE_HARDENED_RUNTIME = YES')
+      end
+      checklist << { name: "Hardened runtime enabled", status: hardened_runtime ? :done : :todo }
 
-    # 4. Entitlements file exists
-    entitlements = Dir.glob(File.join(project_path, '**/*.entitlements')).first
-    checklist << { name: "Entitlements file exists", status: entitlements ? :done : :todo }
+      # 4. Entitlements file exists
+      entitlements = Dir.glob(File.join(project_path, '**/*.entitlements')).first
+      checklist << { name: "Entitlements file exists", status: entitlements ? :done : :todo }
+    end
 
     # 5. App category set (check Info.plist or xcconfig)
-    has_category = project_declares_app_category?(project_path)
+    has_category = !product[:appstore_category].to_s.empty? || project_declares_app_category?(project_path)
     checklist << { name: "App category set (LSApplicationCategoryType)", status: has_category ? :done : :todo }
 
     qa_status = latest_project_qa_status(project_path)
@@ -2449,71 +2705,85 @@ class ValidationReport
     # SIGNING & NOTARIZATION
     # ===========================================
 
-    # 6. Live release artifact exists
-    artifact_name = live_artifact[:artifact_name]
-    checklist << {
-      name: artifact_name ? "Live release archive (#{artifact_name})" : 'Live release archive',
-      status: live_artifact[:available] ? :done : :todo
-    }
-
-    # 7. Artifact signing check
-    # 8. Artifact notarization check
-    if live_artifact[:available]
-      if artifact_name.to_s.end_with?('.dmg')
-        checklist << { name: 'Live DMG signed with Developer ID', status: live_artifact[:signed] ? :done : :todo }
-        checklist << { name: 'Live DMG notarized & stapled', status: live_artifact[:notarized] ? :done : :todo }
-      else
-        checklist << { name: 'Live ZIP contains Developer ID signed app', status: live_artifact[:signed] ? :done : :todo }
-        checklist << { name: 'Live ZIP app notarization check', status: live_artifact[:notarized] ? :done : :todo }
-      end
+    if app_store_product
+      checklist << { name: "App Store Connect app ID configured", status: product[:appstore_id].to_s.empty? ? :todo : :done }
     else
-      checklist << { name: 'Live ZIP contains Developer ID signed app', status: :todo }
-      checklist << { name: 'Live ZIP app notarization check', status: :todo }
+      # 6. Live release artifact exists
+      artifact_name = live_artifact[:artifact_name]
+      checklist << {
+        name: artifact_name ? "Live release archive (#{artifact_name})" : 'Live release archive',
+        status: live_artifact[:available] ? :done : :todo
+      }
+
+      # 7. Artifact signing check
+      # 8. Artifact notarization check
+      if live_artifact[:available]
+        if artifact_name.to_s.end_with?('.dmg')
+          checklist << { name: 'Live DMG signed with Developer ID', status: live_artifact[:signed] ? :done : :todo }
+          checklist << { name: 'Live DMG notarized & stapled', status: live_artifact[:notarized] ? :done : :todo }
+        else
+          checklist << { name: 'Live ZIP contains Developer ID signed app', status: live_artifact[:signed] ? :done : :todo }
+          checklist << { name: 'Live ZIP app notarization check', status: live_artifact[:notarized] ? :done : :todo }
+        end
+      else
+        checklist << { name: 'Live ZIP contains Developer ID signed app', status: :todo }
+        checklist << { name: 'Live ZIP app notarization check', status: :todo }
+      end
     end
 
     # ===========================================
     # SPARKLE AUTO-UPDATE
     # ===========================================
 
-    # 9. Live appcast exists and has active entries
-    if live_appcast
-      has_entries = !live_appcast[:version].to_s.empty? && !live_release_url.to_s.empty?
-      has_signature = live_appcast[:has_signature]
-      checklist << { name: "Live appcast.xml with active entry", status: has_entries ? :done : :todo }
-      checklist << { name: "Live Sparkle EdDSA signature", status: has_signature ? :done : :todo }
-    else
-      checklist << { name: "Live appcast.xml with active entry", status: :todo }
-      checklist << { name: "Live Sparkle EdDSA signature", status: :todo }
-    end
+    unless app_store_product
+      # 9. Live appcast exists and has active entries
+      if live_appcast
+        has_entries = !live_appcast[:version].to_s.empty? && !live_release_url.to_s.empty?
+        has_signature = live_appcast[:has_signature]
+        checklist << { name: "Live appcast.xml with active entry", status: has_entries ? :done : :todo }
+        checklist << { name: "Live Sparkle EdDSA signature", status: has_signature ? :done : :todo }
+      else
+        checklist << { name: "Live appcast.xml with active entry", status: :todo }
+        checklist << { name: "Live Sparkle EdDSA signature", status: :todo }
+      end
 
-    # 10. Release URL accessible
-    if live_release_url && !live_release_url.empty?
-      status = check_url_status(live_release_url, follow_redirects: true)
-      url_works = %w[200 301 302].include?(status)
-      checklist << { name: "Live release URL accessible (#{status})", status: url_works ? :done : :todo }
-    else
-      checklist << { name: "Live release URL accessible", status: :todo }
+      # 10. Release URL accessible
+      if live_release_url && !live_release_url.empty?
+        status = check_url_status(live_release_url, follow_redirects: true)
+        url_works = %w[200 301 302].include?(status)
+        checklist << { name: "Live release URL accessible (#{status})", status: url_works ? :done : :todo }
+      else
+        checklist << { name: "Live release URL accessible", status: :todo }
+      end
     end
 
     # ===========================================
     # DOCUMENTATION
     # ===========================================
 
-    # 11. CHANGELOG.md exists
-    changelog_paths = [
-      File.join(project_path, 'CHANGELOG.md'),
-      File.join(project_path, 'docs', 'CHANGELOG.md')
-    ]
-    has_changelog = changelog_paths.any? { |p| File.exist?(p) }
-    checklist << { name: "CHANGELOG.md", status: has_changelog ? :done : :todo }
+    if app_store_product
+      checklist << { name: "App Store release notes configured", status: product[:appstore_release_notes].to_s.empty? ? :todo : :done }
+    else
+      # 11. CHANGELOG.md exists
+      changelog_paths = [
+        File.join(project_path, 'CHANGELOG.md'),
+        File.join(project_path, 'docs', 'CHANGELOG.md')
+      ]
+      has_changelog = changelog_paths.any? { |p| File.exist?(p) }
+      checklist << { name: "CHANGELOG.md", status: has_changelog ? :done : :todo }
+    end
 
     # 12. README.md exists
     has_readme = File.exist?(File.join(project_path, 'README.md'))
     checklist << { name: "README.md", status: has_readme ? :done : :todo }
 
-    # 13. PRIVACY.md exists
-    has_privacy = File.exist?(File.join(project_path, 'PRIVACY.md'))
-    checklist << { name: "PRIVACY.md", status: has_privacy ? :done : :todo }
+    if app_store_product
+      checklist << { name: "Public privacy policy URL configured", status: product[:privacy_policy_url].to_s.empty? ? :todo : :done }
+    else
+      # 13. PRIVACY.md exists
+      has_privacy = File.exist?(File.join(project_path, 'PRIVACY.md'))
+      checklist << { name: "PRIVACY.md", status: has_privacy ? :done : :todo }
+    end
 
     # ===========================================
     # WEBSITE & DISTRIBUTION
@@ -2534,12 +2804,17 @@ class ValidationReport
       checklist << { name: "Cloudflare DNS/CDN", status: :todo }
     end
 
-    # 16. Website has download link (must not depend on GitHub releases)
+    # 16. Website has distribution CTA (must not depend on GitHub releases)
     if website_works
-      has_download = page_has_live_download_link?(page_links, live_release_url)
-      checklist << { name: "Website has download link", status: has_download ? :done : :todo }
+      if app_store_product
+        has_app_store_cta = page_has_app_store_or_contact_cta?(page_links, product, page_content)
+        checklist << { name: "Website has App Store/contact CTA", status: has_app_store_cta ? :done : :todo }
+      else
+        has_download = page_has_live_download_link?(page_links, live_release_url)
+        checklist << { name: "Website has download link", status: has_download ? :done : :todo }
+      end
     else
-      checklist << { name: "Website has download link", status: :todo }
+      checklist << { name: app_store_product ? "Website has App Store/contact CTA" : "Website has download link", status: :todo }
     end
 
     # 17. Privacy policy on website
@@ -2554,8 +2829,10 @@ class ValidationReport
     # PAYMENT & LICENSING
     # ===========================================
 
-    # 18. Lemon Squeezy product configured (check website or products.yml for checkout config)
-    if website_works
+    # 18. Payment product configured
+    if app_store_product
+      checklist << { name: "StoreKit product configured", status: product[:storekit_product_id].to_s.empty? ? :todo : :done }
+    elsif website_works
       has_lemonsqueezy = page_has_checkout_link?(page_links, product)
       checklist << { name: "Lemon Squeezy store configured", status: has_lemonsqueezy ? :done : :todo }
     else
@@ -2600,15 +2877,71 @@ class ValidationReport
     end
     head_epoch = `git -C #{Shellwords.shellescape(project_path)} log -1 --format=%ct 2>/dev/null`.to_s.strip.to_i
     dirty = !`git -C #{Shellwords.shellescape(project_path)} status --porcelain 2>/dev/null`.to_s.strip.empty?
+    receipt_fingerprint = status['sourceFingerprint'].to_s.empty? ? status['source_fingerprint'].to_s : status['sourceFingerprint'].to_s
+    current_fingerprint = project_qa_source_fingerprint(project_path)
     stale_reasons = []
-    stale_reasons << 'snapshot predates current HEAD commit' if head_epoch.positive? && snapshot_time.to_i < head_epoch
-    stale_reasons << 'repository has uncommitted changes' if dirty
+    if !receipt_fingerprint.empty?
+      if current_fingerprint.to_s.empty?
+        stale_reasons << 'could not compute current source fingerprint'
+      elsif current_fingerprint != receipt_fingerprint
+        stale_reasons << 'source fingerprint changed since QA receipt'
+      end
+      status['currentSourceFingerprint'] = current_fingerprint if current_fingerprint
+    else
+      stale_reasons << 'snapshot predates current HEAD commit' if head_epoch.positive? && snapshot_time.to_i < head_epoch
+      stale_reasons << 'repository has uncommitted changes' if dirty
+    end
     status['staleReasons'] = stale_reasons
     status
   rescue JSON::ParserError
     nil
   rescue StandardError
     nil
+  end
+
+  def project_qa_source_fingerprint(project_path)
+    files = project_qa_source_files(project_path)
+    return nil if files.empty?
+
+    digest = Digest::SHA256.new
+    files.each do |relative_path|
+      absolute_path = File.join(project_path, relative_path)
+      next unless File.file?(absolute_path)
+
+      digest.update(relative_path)
+      digest.update("\0")
+      digest.update(Digest::SHA256.file(absolute_path).hexdigest)
+      digest.update("\0")
+    end
+    digest.hexdigest
+  rescue StandardError
+    nil
+  end
+
+  def project_qa_source_files(project_path)
+    tracked, tracked_status = Open3.capture2e('git', '-C', project_path, 'ls-files', '-z')
+    others, others_status = Open3.capture2e('git', '-C', project_path, 'ls-files', '--others', '--exclude-standard', '-z')
+    files = []
+    files.concat(tracked.split("\0")) if tracked_status.success?
+    files.concat(others.split("\0")) if others_status.success?
+    files.select { |path| project_qa_source_file?(project_path, path) }.uniq.sort
+  rescue StandardError
+    []
+  end
+
+  def project_qa_source_file?(project_path, relative_path)
+    return false if relative_path.to_s.empty?
+    return false if PROJECT_QA_SOURCE_EXCLUDED_FILES.include?(relative_path)
+    return false if PROJECT_QA_SOURCE_EXCLUDED_PREFIXES.any? { |prefix| relative_path.start_with?(prefix) }
+
+    app_folder = File.basename(project_path)
+    return true if relative_path == '.saneprocess'
+    return true if %w[Package.resolved Package.swift project.yml].include?(relative_path)
+    return true if relative_path.end_with?('.xcodeproj/project.pbxproj')
+    return true if relative_path.start_with?("#{app_folder}/")
+    return true if relative_path.start_with?('Config/', 'Scripts/', 'Shared/', 'Sources/', 'Tests/', 'scripts/')
+
+    PROJECT_QA_SOURCE_EXTENSIONS.include?(File.extname(relative_path))
   end
 
   def project_declares_app_category?(project_path)
@@ -2651,13 +2984,24 @@ class ValidationReport
         next if app_name.empty?
 
         project_path = File.join(SANE_APPS_ROOT, 'apps', app_name)
+        manifest = project_manifest(project_path)
+        appstore = manifest['appstore'].is_a?(Hash) ? manifest['appstore'] : {}
+        appstore_metadata = appstore['metadata'].is_a?(Hash) ? appstore['metadata'] : {}
+        ios_metadata = appstore_metadata['ios'].is_a?(Hash) ? appstore_metadata['ios'] : {}
+        appstore_iap = appstore['iap'].is_a?(Hash) ? appstore['iap'] : {}
         {
           slug: slug.to_s,
           name: app_name,
+          type: prod['type'].to_s.strip.empty? ? manifest['type'].to_s.strip : prod['type'].to_s.strip,
           domain: prod['domain'].to_s.strip,
           dist_domain: prod['dist_domain'].to_s.strip,
           github_repo: prod['github_repo'].to_s.strip,
           checkout_uuid: prod['checkout_uuid'].to_s.strip,
+          appstore_id: prod['appstore_id'].to_s.strip.empty? ? appstore['app_id'].to_s.strip : prod['appstore_id'].to_s.strip,
+          storekit_product_id: prod['storekit_product_id'].to_s.strip.empty? ? (appstore['product_id'].to_s.strip.empty? ? appstore_iap['product_id'].to_s.strip : appstore['product_id'].to_s.strip) : prod['storekit_product_id'].to_s.strip,
+          appstore_category: appstore['category'].to_s.strip,
+          privacy_policy_url: appstore['privacy_policy_url'].to_s.strip,
+          appstore_release_notes: ios_metadata['whats_new'].to_s.strip,
           license_gated: !!prod['license_gated'],
           project_path: project_path,
           project_exists: File.directory?(project_path)
@@ -2668,6 +3012,25 @@ class ValidationReport
 
   def released_product_definitions
     product_definitions.select { |product| !product[:checkout_uuid].to_s.empty? }
+  end
+
+  def project_manifest(project_path)
+    @project_manifests ||= {}
+    return @project_manifests[project_path] if @project_manifests.key?(project_path)
+
+    manifest_path = File.join(project_path, '.saneprocess')
+    @project_manifests[project_path] =
+      if File.exist?(manifest_path)
+        YAML.safe_load(File.read(manifest_path), permitted_classes: []) || {}
+      else
+        {}
+      end
+  rescue StandardError
+    @project_manifests[project_path] = {}
+  end
+
+  def app_store_product?(product)
+    product[:type].to_s == 'ios_app'
   end
 
   def extract_page_links(html, base_url:)
@@ -2776,6 +3139,18 @@ class ValidationReport
     candidate ? link_status_ok?(candidate) : false
   end
 
+  def page_has_app_store_or_contact_cta?(links, product, html = '')
+    appstore_id = product[:appstore_id].to_s.strip
+    return true if html.to_s.include?('data-appstore-ios-link')
+
+    links.any? do |link|
+      lower_link = link.to_s.downcase
+      lower_link.include?('testflight.apple.com') ||
+        (lower_link.include?('apps.apple.com') && (appstore_id.empty? || lower_link.include?(appstore_id.downcase))) ||
+        lower_link.start_with?('mailto:')
+    end
+  end
+
   def page_has_privacy_link?(links, website_url)
     candidates = links.select { |link| link.downcase.include?('/privacy') || link.downcase.include?('privacy.html') }
     candidates.concat([
@@ -2794,6 +3169,10 @@ class ValidationReport
         link == "#{issue_prefix}/new" ||
         link_status_ok?(link) && link.include?('/support')
     end
+  end
+
+  def github_repo_exists?(github_repo)
+    system("gh repo view #{Shellwords.shellescape(github_repo)} > /dev/null 2>&1")
   end
 
   def github_repo_has_issues?(github_repo)

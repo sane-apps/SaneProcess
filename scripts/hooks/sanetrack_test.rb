@@ -5,6 +5,9 @@
 # ==============================================================================
 
 require 'open3'
+require 'fileutils'
+require 'json'
+require 'tmpdir'
 require_relative 'core/state_manager'
 
 module SaneTrackTest
@@ -460,47 +463,73 @@ module SaneTrackTest
       warn "  FAIL: gpt_audit.py should not satisfy docs_audit, got #{skill.inspect}"
     end
 
-    StateManager.reset(:skill)
-    StateManager.update(:skill) do |s|
-      s[:required] = 'evolve'
-      s[:required_prompt] = 'missing screenshot diff tool'
-      s[:runner_used] = false
-      s[:runner_commands] = []
-      s
-    end
-    process_result_proc.call('Bash', { 'command' => 'ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"' }, { 'output' => 'ok' })
-    skill = StateManager.get(:skill)
-    if skill[:runner_used] == true && skill[:runner_commands].any? { |cmd| cmd.include?('tool_discovery') }
-      passed += 1
-      warn '  PASS: SaneMaster tool_discovery command satisfies evolve receipt'
-    else
-      failed += 1
-      warn "  FAIL: tool_discovery command should satisfy evolve receipt, got #{skill.inspect}"
+    Dir.mktmpdir('sanetrack-tool-discovery') do |tmpdir|
+      Dir.chdir(tmpdir) do
+        StateManager.reset(:skill)
+        StateManager.update(:skill) do |s|
+          s[:required] = 'evolve'
+          s[:required_prompt] = 'missing screenshot diff tool'
+          s[:runner_used] = false
+          s[:runner_commands] = []
+          s
+        end
+        process_result_proc.call('Bash', { 'command' => 'ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"' }, { 'output' => 'ok' })
+        skill = StateManager.get(:skill)
+        if skill[:runner_started] == true && skill[:runner_used] != true
+          passed += 1
+          warn '  PASS: tool_discovery command without receipt records attempt only'
+        else
+          failed += 1
+          warn "  FAIL: tool_discovery command without receipt should not prove workflow, got #{skill.inspect}"
+        end
+
+        FileUtils.mkdir_p(File.join(Dir.pwd, 'outputs', 'tool-discovery'))
+        File.write(File.join(Dir.pwd, 'outputs', 'tool-discovery', 'sanetrack-test.json'), JSON.generate({ ok: true }))
+        process_result_proc.call('Bash', { 'command' => 'ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"' }, { 'output' => 'ok' })
+        skill = StateManager.get(:skill)
+        if skill[:runner_used] == true && skill[:runner_commands].any? { |cmd| cmd.include?('tool_discovery') }
+          passed += 1
+          warn '  PASS: SaneMaster tool_discovery command satisfies evolve receipt'
+        else
+          failed += 1
+          warn "  FAIL: tool_discovery command should satisfy evolve receipt, got #{skill.inspect}"
+        end
+      end
     end
 
-    {
-      'status' => 'ruby scripts/SaneMaster.rb status',
-      'verify' => 'ruby scripts/SaneMaster.rb verify',
-      'ship' => 'ruby scripts/SaneMaster.rb release_preflight',
-      'check_inbox' => 'ruby scripts/SaneMaster.rb check_inbox'
-    }.each do |workflow, runner_command|
-      StateManager.reset(:skill)
-      StateManager.update(:skill) do |s|
-        s[:required] = workflow
-        s[:runner_used] = false
-        s[:runner_commands] = []
-        s
-      end
+    Dir.mktmpdir('sanetrack-runner-proof') do |tmpdir|
+      old_metrics_path = ENV['SANEMASTER_PROCESS_METRICS_PATH']
+      ENV['SANEMASTER_PROCESS_METRICS_PATH'] = File.join(tmpdir, 'process_metrics.jsonl')
+      Dir.chdir(tmpdir) do
+        {
+          'status' => 'ruby scripts/SaneMaster.rb status',
+          'verify' => 'ruby scripts/SaneMaster.rb verify',
+          'ship' => 'ruby scripts/SaneMaster.rb release_preflight',
+          'check_inbox' => 'ruby scripts/SaneMaster.rb check_inbox'
+        }.each do |workflow, runner_command|
+          StateManager.reset(:skill)
+          StateManager.update(:skill) do |s|
+            s[:required] = workflow
+            s[:runner_used] = false
+            s[:runner_started] = false
+            s[:runner_proved] = false
+            s[:runner_commands] = []
+            s
+          end
 
-      process_result_proc.call('Bash', { 'command' => runner_command }, { 'output' => 'ok' })
-      skill = StateManager.get(:skill)
-      if skill[:runner_used] == true && skill[:runner_commands].include?(runner_command)
-        passed += 1
-        warn "  PASS: #{workflow} runner command satisfies workflow proof"
-      else
-        failed += 1
-        warn "  FAIL: #{workflow} runner command should satisfy workflow proof, got #{skill.inspect}"
+          write_runner_proof_fixture(workflow, ENV['SANEMASTER_PROCESS_METRICS_PATH'])
+          process_result_proc.call('Bash', { 'command' => runner_command }, { 'output' => 'ok' })
+          skill = StateManager.get(:skill)
+          if skill[:runner_used] == true && skill[:runner_commands].include?(runner_command)
+            passed += 1
+            warn "  PASS: #{workflow} runner command satisfies workflow proof"
+          else
+            failed += 1
+            warn "  FAIL: #{workflow} runner command should satisfy workflow proof, got #{skill.inspect}"
+          end
+        end
       end
+      ENV['SANEMASTER_PROCESS_METRICS_PATH'] = old_metrics_path
     end
 
     # === CLEANUP: Reset circuit breaker only (don't reset research - breaks normal ops) ===
@@ -518,6 +547,30 @@ module SaneTrackTest
       warn ''
       warn "#{failed} TESTS FAILED"
       1
+    end
+  end
+end
+
+module SaneTrackTest
+  def self.write_runner_proof_fixture(workflow, metrics_path)
+    timestamp = Time.now.utc.iso8601
+    case workflow
+    when 'verify'
+      FileUtils.mkdir_p(File.dirname(metrics_path))
+      File.open(metrics_path, 'a') do |file|
+        file.puts(JSON.generate('timestamp' => timestamp, 'type' => 'verify', 'cwd' => Dir.pwd, 'success' => true, 'tests_run' => 12))
+      end
+    when 'status', 'check_inbox'
+      FileUtils.mkdir_p(File.dirname(metrics_path))
+      File.open(metrics_path, 'a') do |file|
+        file.puts(JSON.generate('timestamp' => timestamp, 'type' => 'workflow_receipt', 'cwd' => Dir.pwd, 'workflow' => workflow, 'success' => true))
+      end
+    when 'ship'
+      FileUtils.mkdir_p(File.join(Dir.pwd, 'outputs'))
+      File.write(
+        File.join(Dir.pwd, 'outputs', 'release_preflight_status.json'),
+        JSON.pretty_generate('generatedAt' => timestamp, 'status' => 'passed')
+      )
     end
   end
 end

@@ -437,7 +437,38 @@ echo "---" >> "$REPORT"
 echo "" >> "$REPORT"
 
 # =============================================================================
-# Section 7: Disk & System Health
+# Section 7: Machine Cleanup
+# =============================================================================
+echo "## Machine Cleanup" >> "$REPORT"
+echo "" >> "$REPORT"
+
+MACHINE_CLEANUP_SCRIPT="$CANONICAL_SOURCE_ROOT/infra/SaneProcess/scripts/SaneMaster.rb"
+machine_cleanup_exit=0
+machine_cleanup_output=""
+
+if [ ! -f "$MACHINE_CLEANUP_SCRIPT" ]; then
+  echo "**Skipped** - missing SaneMaster machine cleanup command" >> "$REPORT"
+else
+  machine_cleanup_output=$(ruby "$MACHINE_CLEANUP_SCRIPT" machine_cleanup --host local --server --apply --quiet --min-free-gb 30 --cache-threshold-gb 5 --deriveddata-age-days 2 --preserve-apps SaneVideo,SaneScan 2>&1) || machine_cleanup_exit=$?
+  if [ "$machine_cleanup_exit" -eq 0 ]; then
+    echo "**PASS** - server-mode cleanup checked disposable caches, full Trash, simulators, DerivedData, routed workspaces, release staging, and generated repo artifacts" >> "$REPORT"
+  else
+    echo "**FAIL** (exit $machine_cleanup_exit) - machine cleanup reported problems" >> "$REPORT"
+  fi
+
+  if [ -n "$machine_cleanup_output" ]; then
+    echo '```' >> "$REPORT"
+    echo "$machine_cleanup_output" | tail -60 >> "$REPORT"
+    echo '```' >> "$REPORT"
+  fi
+fi
+
+echo "" >> "$REPORT"
+echo "---" >> "$REPORT"
+echo "" >> "$REPORT"
+
+# =============================================================================
+# Section 8: Disk & System Health
 # =============================================================================
 echo "## System Health" >> "$REPORT"
 echo "" >> "$REPORT"

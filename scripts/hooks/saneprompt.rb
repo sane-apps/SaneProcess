@@ -160,6 +160,18 @@ end
 FRESH_START_TRIGGERS = %w[saneloop commit test_mode].freeze
 ADDITIVE_TRIGGERS = %w[research plan explain verify].freeze
 
+VISUAL_VERIFICATION_PROMPT_PATTERN = Regexp.union(
+  /\bvisual\s+(?:audit|verification|check|review)\b/i,
+  /\bscreenshots?\b/i,
+  /\bcustomer[- ]facing\s+(?:surface|view|ui|screen)s?\b/i,
+  /\bstrict\s+visual\s+filters?\b/i,
+  /\bbalanced,\s*clear,\s*not\s+confusing\b/i,
+  /\bbeautiful\b/i,
+  /\bdark\s+mode\b/i,
+  /\b(?:e2e|end[- ]to[- ]end)\b.*\b(?:ui|app|surface|view|screen)\b/i,
+  /\b(?:run|test|verify)\b.*\bapp\b.*\b(?:ui|visual|screen|view|surface)\b/i
+).freeze
+
 RULES_BY_TASK = {
   bug_fix: ['#3 Two Strikes', '#7 No Test No Rest', '#8 Bug Found Write Down'],
   new_feature: ['#0 Name Rule First', '#2 Verify API', '#9 Gen Pile'],
@@ -377,8 +389,12 @@ def set_skill_requirement(skill_info, prompt = nil)
     s[:invoked] = false
     s[:invoked_at] = nil
     s[:subagents_spawned] = 0
+    s[:runner_started] = false
+    s[:runner_proved] = false
     s[:runner_used] = false
+    s[:runner_attempts] = []
     s[:runner_commands] = []
+    s[:runner_proof] = nil
     s[:files_read] = []
     s[:satisfied] = false
     s[:satisfaction_reason] = nil
@@ -405,6 +421,27 @@ def set_skill_requirement(skill_info, prompt = nil)
   warn ''
 rescue StandardError => e
   debug_log("set_skill_requirement error: #{e.message}")
+end
+
+def set_visual_verification_requirement(prompt)
+  return unless prompt.match?(VISUAL_VERIFICATION_PROMPT_PATTERN)
+
+  StateManager.update(:visual_verification) do |visual|
+    visual[:required] = true
+    visual[:reason] = 'prompt_requested_visual_verification'
+    visual
+  end
+
+  warn ''
+  warn '=' * 50
+  warn 'VISUAL VERIFICATION REQUIRED'
+  warn '  Capture clean Mini screenshots for every customer-facing view/state.'
+  warn '  Inspect each saved image for balance, clarity, copy, contrast, confusion, clipping, overlap, and dark-mode quality.'
+  warn '  Record a visual audit receipt before claiming done.'
+  warn '=' * 50
+  warn ''
+rescue StandardError => e
+  debug_log("set_visual_verification_requirement error: #{e.message}")
 end
 
 # === INTELLIGENCE: Requirement Extraction ===
@@ -683,6 +720,9 @@ def process_prompt(prompt)
   # 6. Detect skill triggers (docs-audit, evolve, status, verify, ship, check_inbox, outreach)
   skill_trigger = early_skill_trigger || detect_skill_trigger(prompt)
   set_skill_requirement(skill_trigger, prompt) if skill_trigger
+
+  # 6b. Visual verification is a first-class acceptance criterion for UI work.
+  set_visual_verification_requirement(prompt)
 
   # 7. Get learned patterns from previous sessions
   learned_patterns = get_learned_patterns

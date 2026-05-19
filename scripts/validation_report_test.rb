@@ -103,6 +103,45 @@ class DownloadRedirectValidationHarness < ValidationReport
   end
 end
 
+class AppChecklistHarness < ValidationReport
+  def initialize(page_html:)
+    super()
+    @page_html = page_html
+  end
+
+  def fetch_live_appcast_snapshot(_site_host)
+    raise 'App Store products must not fetch Sparkle appcasts'
+  end
+
+  def inspect_live_release_artifact(_url)
+    raise 'App Store products must not inspect direct-download release artifacts'
+  end
+
+  def fetch_url_text(_url, headers: {})
+    @page_html
+  end
+
+  def check_url_status(_url, follow_redirects: false)
+    '200'
+  end
+
+  def link_status_ok?(_url)
+    true
+  end
+
+  def github_repo_exists?(_github_repo)
+    true
+  end
+
+  def github_repo_has_issues?(_github_repo)
+    true
+  end
+
+  def latest_project_qa_status(_project_path)
+    { 'generatedAt' => '2026-05-18T10:00:00Z', 'status' => 'passed', 'staleReasons' => [] }
+  end
+end
+
 class SisterAppsHarness < ValidationReport
   attr_reader :metrics
 
@@ -157,15 +196,69 @@ class ProcessMetricsValidationHarness < ValidationReport
   end
 end
 
+class CustomerRealityHarness < ValidationReport
+  attr_reader :issues, :warnings, :metrics, :verdict
+
+  def initialize(products:, snapshots:)
+    super()
+    @products = products
+    @snapshots = snapshots
+  end
+
+  def released_product_definitions
+    @products
+  end
+
+  def customer_ui_contract_snapshot(project_path)
+    @snapshots.fetch(project_path)
+  end
+end
+
+class CodexSkillHealthHarness < ValidationReport
+  attr_reader :warnings
+
+  def initialize(skill_root:, registry_path:)
+    super()
+    @skill_root = skill_root
+    @registry_path = registry_path
+  end
+
+  def codex_skill_root
+    @skill_root
+  end
+
+  def codex_skills_registry_path
+    @registry_path
+  end
+end
+
 include TestFramework
 
 def product_definition(name, slug:, domain:)
   { name: name, slug: slug, domain: domain, project_exists: true }
 end
 
+def init_git_fixture(path)
+  system('git', '-C', path, 'init', out: File::NULL, err: File::NULL)
+  system('git', '-C', path, 'config', 'user.email', 'test@saneapps.local', out: File::NULL, err: File::NULL)
+  system('git', '-C', path, 'config', 'user.name', 'SaneApps Test', out: File::NULL, err: File::NULL)
+  system('git', '-C', path, 'add', '.', out: File::NULL, err: File::NULL)
+  system('git', '-C', path, 'commit', '-m', 'initial fixture', out: File::NULL, err: File::NULL)
+end
+
+def write_qa_status(path, source_fingerprint: nil)
+  FileUtils.mkdir_p(File.join(path, 'outputs'))
+  payload = {
+    'generatedAt' => Time.now.utc.iso8601,
+    'status' => 'passed'
+  }
+  payload['sourceFingerprint'] = source_fingerprint if source_fingerprint
+  File.write(File.join(path, 'outputs', 'qa_status.json'), JSON.pretty_generate(payload))
+end
+
 exit(run_tests('Validation report tests') do
   test_category('Q11 cross-channel drift classification') do
-    test('treats hosted-file drift as dashboard action instead of critical pipeline break') do
+    test('treats hosted-file drift as customer-facing release break') do
       products = [product_definition('SaneBar', slug: 'sanebar', domain: 'sanebar.com')]
       subject = ValidationReportHarness.new(
         products: products,
@@ -189,9 +282,9 @@ exit(run_tests('Validation report tests') do
 
       assert_eq(subject.metrics[:cross_channel_consistency][:canonical_issues], 0)
       assert_eq(subject.metrics[:cross_channel_consistency][:hosted_file_actions], 1)
-      assert_eq(subject.verdict[:status], 'NEEDS DASHBOARD SYNC')
-      assert(subject.issues.grep(/Q11 DRIFT:/).empty?, 'hosted-file drift should not be recorded as a critical issue')
-      assert(subject.warnings.any? { |warning| warning.include?('Q11 HOSTED FILE ACTION: [SaneBar]') })
+      assert_eq(subject.verdict[:status], 'BROKEN RELEASE PIPELINE')
+      assert(subject.issues.any? { |issue| issue.include?('Q11 HOSTED FILE ACTION: [SaneBar]') })
+      assert(subject.warnings.grep(/Q11 HOSTED FILE ACTION:/).empty?, 'hosted-file drift should not be downgraded to a warning')
       true
     end
 
@@ -262,6 +355,90 @@ exit(run_tests('Validation report tests') do
       assert_eq(snapshot['SaneBar']['product_id'], '123')
       assert_eq(snapshot['SaneBar']['product_slug'], 'sanebar')
       assert_eq(snapshot['SaneBar']['variant_id'], '456')
+      true
+    end
+  end
+
+  test_category('Q13 customer reality contracts') do
+    test('records red release-readiness issue when customer UI contract is not green') do
+      Dir.mktmpdir('customer-reality-') do |dir|
+        project_path = File.join(dir, 'SaneBar')
+        FileUtils.mkdir_p(File.join(project_path, 'Tests'))
+        File.write(File.join(project_path, 'Tests', 'CustomerUIActions.yml'), "version: 1\napp: SaneBar\n")
+        product = product_definition('SaneBar', slug: 'sanebar', domain: 'sanebar.com').merge(project_path: project_path)
+        subject = CustomerRealityHarness.new(
+          products: [product],
+          snapshots: {
+            project_path => { ok: false, issues: ['Receipt source fingerprint is stale'] }
+          }
+        )
+
+        subject.send(:q13_customer_reality_contracts)
+        subject.instance_variable_set(:@data, { 'infra/SaneProcess' => {}, 'apps/SaneBar' => {}, 'apps/SaneClip' => {} })
+        subject.instance_variable_set(:@metrics, subject.metrics.merge(
+          release_integrity: { issues: 0 },
+          website_distribution: { issues: 0 },
+          code_signing: { issues: 0 },
+          cross_channel_consistency: { canonical_issues: 0, hosted_file_actions: 0 }
+        ))
+        subject.send(:calculate_final_verdict)
+
+        assert_eq(subject.metrics[:customer_reality_contracts][:issues], 1)
+        assert_eq(subject.metrics[:final][:customer_ui_contract_issues], 1)
+        assert_eq(subject.verdict[:status], 'BROKEN RELEASE PIPELINE')
+        assert(subject.issues.any? { |issue| issue.include?('Q13 CUSTOMER REALITY: [SaneBar] Customer UI contract') })
+        assert_eq(subject.send(:finding_area, subject.issues.first), :release_readiness)
+      end
+      true
+    end
+
+    test('counts raw Q13 blockers while capping surfaced summary lines') do
+      Dir.mktmpdir('customer-reality-many-') do |dir|
+        project_path = File.join(dir, 'SaneBar')
+        FileUtils.mkdir_p(File.join(project_path, 'Tests'))
+        File.write(File.join(project_path, 'Tests', 'CustomerUIActions.yml'), "version: 1\napp: SaneBar\n")
+        product = product_definition('SaneBar', slug: 'sanebar', domain: 'sanebar.com').merge(project_path: project_path)
+        issues = 20.times.map { |i| "workflow blocker #{i + 1}" }
+        subject = CustomerRealityHarness.new(
+          products: [product],
+          snapshots: {
+            project_path => { ok: false, issues: issues }
+          }
+        )
+
+        subject.send(:q13_customer_reality_contracts)
+
+        assert_eq(subject.metrics[:customer_reality_contracts][:issues], 20)
+        assert_eq(subject.metrics[:customer_reality_contracts][:surfaced_issues], 13)
+        assert(subject.metrics[:customer_reality_contracts][:details].last.include?('8 more issue(s) omitted'))
+      end
+      true
+    end
+
+    test('ignores Codex runtime placeholder skill directory') do
+      Dir.mktmpdir('codex-skill-health') do |tmpdir|
+        skill_root = File.join(tmpdir, 'skills')
+        FileUtils.mkdir_p(File.join(skill_root, 'codex-primary-runtime'))
+        FileUtils.mkdir_p(File.join(skill_root, 'verify'))
+        File.write(
+          File.join(skill_root, 'verify', 'SKILL.md'),
+          <<~MD
+            ---
+            name: verify
+            description: Verify the project.
+            ---
+          MD
+        )
+        registry_path = File.join(tmpdir, 'SKILLS_REGISTRY.md')
+        File.write(registry_path, "| `verify` | verify | #{File.join(skill_root, 'verify', 'SKILL.md')} |\n")
+
+        subject = CodexSkillHealthHarness.new(skill_root: skill_root, registry_path: registry_path)
+        issues = []
+        subject.send(:check_codex_skill_health, issues)
+
+        assert_eq(issues, [])
+        assert(subject.warnings.none? { |warning| warning.include?('codex-primary-runtime') })
+      end
       true
     end
   end
@@ -652,6 +829,106 @@ exit(run_tests('Validation report tests') do
         ),
         'expected /download landing page to satisfy website download check'
       )
+      true
+    end
+
+    test('accepts dirty project QA receipts when the source fingerprint still matches') do
+      Dir.mktmpdir('qa-fingerprint-clean-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'SaneScan'))
+        File.write(File.join(dir, 'SaneScan', 'App.swift'), "import SwiftUI\n")
+        init_git_fixture(dir)
+
+        subject = ValidationReport.new
+        fingerprint = subject.send(:project_qa_source_fingerprint, dir)
+        write_qa_status(dir, source_fingerprint: fingerprint)
+        File.write(File.join(dir, 'SESSION_HANDOFF.md'), "dirty operational handoff\n")
+
+        status = subject.send(:latest_project_qa_status, dir)
+
+        assert_eq([], status['staleReasons'])
+        assert_eq(fingerprint, status['currentSourceFingerprint'])
+      end
+      true
+    end
+
+    test('marks project QA receipts stale when the source fingerprint changes') do
+      Dir.mktmpdir('qa-fingerprint-stale-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'SaneScan'))
+        source_path = File.join(dir, 'SaneScan', 'App.swift')
+        File.write(source_path, "import SwiftUI\n")
+        init_git_fixture(dir)
+
+        subject = ValidationReport.new
+        write_qa_status(dir, source_fingerprint: subject.send(:project_qa_source_fingerprint, dir))
+        File.write(source_path, "import SwiftUI\nstruct Changed {}\n")
+
+        status = subject.send(:latest_project_qa_status, dir)
+
+        assert(status['staleReasons'].include?('source fingerprint changed since QA receipt'))
+      end
+      true
+    end
+
+    test('preserves dirty tree fallback for project QA receipts without fingerprints') do
+      Dir.mktmpdir('qa-fingerprint-legacy-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'SaneScan'))
+        File.write(File.join(dir, 'SaneScan', 'App.swift'), "import SwiftUI\n")
+        init_git_fixture(dir)
+        write_qa_status(dir)
+        File.write(File.join(dir, 'SESSION_HANDOFF.md'), "dirty operational handoff\n")
+
+        status = ValidationReport.new.send(:latest_project_qa_status, dir)
+
+        assert(status['staleReasons'].include?('repository has uncommitted changes'))
+      end
+      true
+    end
+
+    test('uses App Store readiness checks for iOS products') do
+      Dir.mktmpdir('sanescan-checklist') do |dir|
+        File.write(File.join(dir, 'README.md'), "# SaneScan\n")
+        product = {
+          name: 'SaneScan',
+          slug: 'sanescan',
+          type: 'ios_app',
+          domain: 'sanescan.saneapps.com',
+          github_repo: 'sane-apps/SaneScan',
+          checkout_uuid: '',
+          appstore_id: '6770391054',
+          storekit_product_id: 'com.sanescan.app.pro.annual',
+          appstore_category: 'public.app-category.productivity',
+          privacy_policy_url: 'https://sanescan.saneapps.com/privacy/',
+          appstore_release_notes: 'Initial release.',
+          project_path: dir,
+          project_exists: true
+        }
+        subject = AppChecklistHarness.new(
+          page_html: '<a data-appstore-ios-link href="mailto:hi@saneapps.com">Contact</a><a href="/privacy/">Privacy</a>'
+        )
+
+        names = subject.send(:generate_app_checklist, product).map { |item| item[:name] }
+
+        assert(names.include?('App Store lane configured'))
+        assert(names.include?('App Store Connect app ID configured'))
+        assert(names.include?('StoreKit product configured'))
+        assert(names.include?('App Store release notes configured'))
+        assert(names.include?('Public privacy policy URL configured'))
+        assert(names.include?('Website has App Store/contact CTA'))
+        [
+          'Hardened runtime enabled',
+          'Entitlements file exists',
+          'Live release archive',
+          'Live appcast.xml with active entry',
+          'Live Sparkle EdDSA signature',
+          'Live release URL accessible',
+          'CHANGELOG.md',
+          'PRIVACY.md',
+          'Website has download link',
+          'Lemon Squeezy store configured'
+        ].each do |unexpected|
+          assert(!names.include?(unexpected), "did not expect iOS checklist to include #{unexpected}")
+        end
+      end
       true
     end
 

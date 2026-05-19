@@ -8,12 +8,17 @@ usage() {
 Usage:
   mini-safari.sh list-tabs
   mini-safari.sh open <url> [delay_seconds]
+  mini-safari.sh open-current <url> [delay_seconds]
   mini-safari.sh read [tab_index] [char_limit]
   mini-safari.sh js [tab_index] <javascript>
   mini-safari.sh open-read <url> [delay_seconds] [char_limit]
+  mini-safari.sh open-read-current <url> [delay_seconds] [char_limit]
 
 Notes:
   - Drives Safari on the Mac Mini via AppleScript.
+  - App Store Connect and Apple Developer portal work must reuse the current tab
+    with open-current/open-read-current. Opening fresh portal tabs can invalidate
+    login state and lock Passwords/2FA flows.
   - `tab_index` is 1-based and defaults to the current tab.
   - `read` returns final URL, title, and a body-text snippet.
 EOF
@@ -35,6 +40,24 @@ APPLESCRIPT
 EOF
 }
 
+requires_single_portal_tab() {
+  local url="$1"
+  [[ "$url" =~ ^https://([^/]+\.)?(appstoreconnect\.apple\.com|developer\.apple\.com|idmsa\.apple\.com)(/|$) ]]
+}
+
+guard_new_portal_tab() {
+  local url="$1"
+  if requires_single_portal_tab "$url" && [[ "${MINI_SAFARI_ALLOW_NEW_PORTAL_TAB:-}" != "1" ]]; then
+    cat >&2 <<'EOF'
+Refusing to open a new Safari tab/window for an Apple portal URL.
+Use `mini-safari.sh open-current` or `mini-safari.sh open-read-current` so
+App Store Connect / Apple Developer login state stays in one Mini Safari tab.
+Set MINI_SAFARI_ALLOW_NEW_PORTAL_TAB=1 only for deliberate manual recovery.
+EOF
+    exit 2
+  fi
+}
+
 cmd="${1:-}"
 case "$cmd" in
   list-tabs)
@@ -53,6 +76,7 @@ end tell
   open)
     [[ $# -ge 2 ]] || { usage; exit 1; }
     url="$2"
+    guard_new_portal_tab "$url"
     delay_s="${3:-4}"
     url_lit="$(json_escape "$url")"
     run_remote_applescript "
@@ -62,6 +86,27 @@ tell application \"Safari\"
   tell front window
     set current tab to (make new tab with properties {URL:targetURL})
   end tell
+end tell
+delay $delay_s
+tell application \"Safari\"
+  return URL of current tab of front window
+end tell
+"
+    ;;
+  open-current)
+    [[ $# -ge 2 ]] || { usage; exit 1; }
+    url="$2"
+    delay_s="${3:-4}"
+    url_lit="$(json_escape "$url")"
+    run_remote_applescript "
+set targetURL to $url_lit
+tell application \"Safari\"
+  activate
+  if (count of windows) is 0 then
+    make new document with properties {URL:targetURL}
+  else
+    set URL of current tab of front window to targetURL
+  end if
 end tell
 delay $delay_s
 tell application \"Safari\"
@@ -101,6 +146,7 @@ end tell
   open-read)
     [[ $# -ge 2 ]] || { usage; exit 1; }
     url="$2"
+    guard_new_portal_tab "$url"
     delay_s="${3:-5}"
     char_limit="${4:-1600}"
     url_lit="$(json_escape "$url")"
@@ -111,6 +157,30 @@ tell application \"Safari\"
   tell front window
     set current tab to (make new tab with properties {URL:targetURL})
   end tell
+end tell
+delay $delay_s
+tell application \"Safari\"
+  set t to current tab of front window
+  set out to (URL of t) & \"\\nTITLE:\" & (do JavaScript \"document.title\" in t) & \"\\nBODY:\\n\" & (do JavaScript \"document.body.innerText.slice(0,$char_limit)\" in t)
+  return out
+end tell
+"
+    ;;
+  open-read-current)
+    [[ $# -ge 2 ]] || { usage; exit 1; }
+    url="$2"
+    delay_s="${3:-5}"
+    char_limit="${4:-1600}"
+    url_lit="$(json_escape "$url")"
+    run_remote_applescript "
+set targetURL to $url_lit
+tell application \"Safari\"
+  activate
+  if (count of windows) is 0 then
+    make new document with properties {URL:targetURL}
+  else
+    set URL of current tab of front window to targetURL
+  end if
 end tell
 delay $delay_s
 tell application \"Safari\"

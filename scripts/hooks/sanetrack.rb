@@ -22,6 +22,7 @@ require 'fileutils'
 require 'time'
 require_relative 'core/mandatory_workflows'
 require_relative 'core/state_manager'
+require_relative 'core/process_metrics'
 require_relative 'core/context_compact'
 require_relative 'sanetrack_research'
 require_relative 'sanetrack_state_updates'
@@ -107,6 +108,42 @@ TEST_COMMAND_PATTERNS = [
   /sqlite3.*SELECT.*count|sqlite3.*SELECT.*FROM/i,
   /wrangler\s+(deploy|publish)/i,
   /gh\s+pr\s+checks/i
+].freeze
+
+UI_FILE_PATTERNS = [
+  %r{/Views?/.*\.(swift|tsx|jsx|ts|js|html|css)$}i,
+  %r{/Screens?/.*\.(swift|tsx|jsx|ts|js|html|css)$}i,
+  %r{/Components?/.*\.(swift|tsx|jsx|ts|js|html|css)$}i,
+  %r{/website/.*\.(html|css|js|tsx|jsx)$}i,
+  %r{/Assets?\.xcassets/}i,
+  %r{/Preview Content/}i,
+  /ContentView\.swift$/i,
+  /App\.swift$/i,
+  /index\.html$/i,
+  /privacy\.html$/i
+].freeze
+
+VISUAL_EVIDENCE_COMMAND_PATTERNS = [
+  /SaneMaster\.rb\s+visual[_-]smoke/i,
+  /SaneMaster\.rb\s+customer[_-]ui[_-](?:sweep|contract)/i,
+  /capture-mini-screenshot\.sh/i,
+  /xcrun\s+simctl\s+io\s+\S+\s+screenshot/i,
+  /\bscreencapture\b/i,
+  /take_screenshot\.(?:py|ps1)/i,
+  /\bXCUIScreen\.main\.screenshot\b/i,
+  /SANESCAN_SCREENSHOT_DIR/i,
+  /visual-audit/i
+].freeze
+
+VISUAL_AUDIT_NOTE_PATTERNS = [
+  /visual\s+audit/i,
+  /screenshot\s+audit/i,
+  /balanced/i,
+  /clear/i,
+  /not\s+confusing/i,
+  /beautiful/i,
+  /dark[- ]mode/i,
+  /customer[- ]facing/i
 ].freeze
 
 # === TAUTOLOGY DETECTION (Rule #7) ===
@@ -241,7 +278,7 @@ rescue StandardError => e
   warn "⚠️  Subagent tracking error: #{e.message}" if ENV['DEBUG']
 end
 
-def track_skill_runner(tool_name, tool_input)
+def track_skill_runner(tool_name, tool_input, tool_response)
   return unless tool_name == 'Bash'
 
   skill_state = StateManager.get(:skill)
@@ -254,16 +291,126 @@ def track_skill_runner(tool_name, tool_input)
   patterns = SKILL_RUNNER_PATTERNS[required_skill] || []
   return unless patterns.any? { |pattern| command.match?(pattern) }
 
+  proof = runner_proof_for(required_skill, command, tool_response)
   StateManager.update(:skill) do |s|
-    s[:runner_used] = true
+    s[:runner_started] = true
+    s[:runner_attempts] ||= []
+    s[:runner_attempts] << {
+      command: command.strip,
+      at: Time.now.iso8601,
+      success: bash_response_successful?(tool_response)
+    }
+    s[:runner_attempts] = s[:runner_attempts].last(10)
     s[:runner_commands] ||= []
     trimmed = command.strip
     s[:runner_commands] << trimmed unless s[:runner_commands].include?(trimmed)
     s[:runner_commands] = s[:runner_commands].last(10)
+    if proof
+      s[:runner_proved] = true
+      s[:runner_used] = true
+      s[:runner_proof] = proof
+    else
+      s[:runner_proved] = false unless s[:runner_proved]
+      s[:runner_used] = false unless s[:runner_used]
+    end
     s
   end
 rescue StandardError => e
   warn "⚠️  Skill runner tracking error: #{e.message}" if ENV['DEBUG']
+end
+
+def bash_response_successful?(tool_response)
+  error = tool_response['error'] || tool_response[:error]
+  return false unless error.to_s.strip.empty?
+
+  exit_code = tool_response['exit_code'] || tool_response[:exit_code]
+  return exit_code.to_i.zero? unless exit_code.nil?
+
+  output = tool_response['output'] || tool_response[:output] || tool_response['stdout'] || tool_response[:stdout]
+  output.to_s.strip.match?(/\b(ok|pass(?:ed)?|success(?:ful)?|complete(?:d)?)\b/i)
+end
+
+def runner_proof_for(required_skill, command, tool_response)
+  return nil unless bash_response_successful?(tool_response)
+
+  case required_skill.to_s
+  when 'evolve'
+    latest_recent_file('outputs/tool-discovery/*.json') do |path|
+      { type: 'tool_discovery_receipt', path: path }
+    end
+  when 'verify'
+    latest_recent_process_metric('verify') do |event|
+      event['success'] == true
+    end&.then { |event| { type: 'process_metric', metric: 'verify', timestamp: event['timestamp'], tests_run: event['tests_run'] } }
+  when 'ship'
+    release_preflight_proof
+  when 'status'
+    latest_recent_process_metric('workflow_receipt') do |event|
+      event['workflow'].to_s == 'status' && event['success'] == true
+    end&.then { |event| { type: 'process_metric', metric: 'workflow_receipt', workflow: 'status', timestamp: event['timestamp'] } }
+  when 'check_inbox'
+    latest_recent_process_metric('workflow_receipt') do |event|
+      event['workflow'].to_s == 'check_inbox' && event['success'] == true
+    end&.then { |event| { type: 'process_metric', metric: 'workflow_receipt', workflow: 'check_inbox', timestamp: event['timestamp'] } }
+  else
+    { type: 'command_success', command: command.strip }
+  end
+end
+
+def latest_recent_file(glob)
+  path = Dir.glob(File.join(Dir.pwd, glob)).select { |candidate| File.file?(candidate) }
+            .max_by { |candidate| File.mtime(candidate) rescue Time.at(0) }
+  return nil unless path && recent_time?(File.mtime(path))
+
+  yield(path)
+end
+
+def release_preflight_proof
+  path = File.join(Dir.pwd, 'outputs', 'release_preflight_status.json')
+  return nil unless File.file?(path) && recent_time?(File.mtime(path))
+
+  data = JSON.parse(File.read(path))
+  return nil unless data['status'].to_s == 'passed'
+
+  { type: 'release_preflight_status', path: path, generated_at: data['generatedAt'], status: data['status'] }
+rescue JSON::ParserError
+  nil
+end
+
+def latest_recent_process_metric(type)
+  events = recent_process_metric_events(type)
+  events.reverse.find { |event| yield(event) }
+end
+
+def recent_process_metric_events(type)
+  path = SaneProcessMetrics.metrics_path
+  return [] unless File.file?(path)
+
+  current_cwd = File.expand_path(Dir.pwd)
+  File.readlines(path, chomp: true).map do |line|
+    next if line.strip.empty?
+
+    event = JSON.parse(line)
+    next unless event['type'].to_s == type.to_s
+    next unless recent_time?(parse_time(event['timestamp']))
+
+    event_cwd = event['cwd'].to_s.empty? ? current_cwd : File.expand_path(event['cwd'].to_s)
+    next unless event_cwd == current_cwd
+
+    event
+  rescue JSON::ParserError
+    nil
+  end.compact
+end
+
+def parse_time(value)
+  Time.parse(value.to_s)
+rescue StandardError
+  Time.at(0)
+end
+
+def recent_time?(time, max_age_seconds = 15 * 60)
+  time && (Time.now - time).abs <= max_age_seconds
 end
 
 # === RESEARCH OUTPUT VALIDATION ===
@@ -362,8 +509,47 @@ def track_edit(tool_name, tool_input, tool_response)
     v[:edits_before_test] = (v[:edits_before_test] || 0) + 1
     v
   end
+
+  track_visual_requirement_from_edit(file_path)
+  track_visual_audit_note(tool_name, tool_input, file_path)
 rescue StandardError
   # Don't fail on verification tracking
+end
+
+def track_visual_requirement_from_edit(file_path)
+  return unless UI_FILE_PATTERNS.any? { |pattern| file_path.match?(pattern) }
+
+  StateManager.update(:visual_verification) do |visual|
+    visual[:required] = true
+    visual[:reason] ||= 'customer_facing_ui_file_edited'
+    visual[:required_files] ||= []
+    basename = File.basename(file_path)
+    visual[:required_files] << basename unless visual[:required_files].include?(basename)
+    visual[:required_files] = visual[:required_files].last(20)
+    visual
+  end
+rescue StandardError
+  # Don't fail on visual tracking
+end
+
+def track_visual_audit_note(tool_name, tool_input, file_path)
+  return unless EDIT_TOOLS.include?(tool_name)
+
+  content = tool_input['new_string'] || tool_input[:new_string] ||
+            tool_input['content'] || tool_input[:content] || ''
+  return if content.to_s.empty?
+  return unless VISUAL_AUDIT_NOTE_PATTERNS.any? { |pattern| content.match?(pattern) }
+
+  StateManager.update(:visual_verification) do |visual|
+    visual[:audit_recorded] = true
+    visual[:last_audit_at] = Time.now.iso8601
+    visual[:audit_files] ||= []
+    visual[:audit_files] << file_path unless visual[:audit_files].include?(file_path)
+    visual[:audit_files] = visual[:audit_files].last(10)
+    visual
+  end
+rescue StandardError
+  # Don't fail on visual tracking
 end
 
 # === VERIFICATION TRACKING (Rule #4) ===
@@ -393,6 +579,31 @@ def track_verification(tool_name, tool_input)
   end
 rescue StandardError
   # Don't fail on verification tracking
+end
+
+def track_visual_evidence(tool_name, tool_input)
+  return unless tool_name == 'Bash'
+
+  command = tool_input['command'] || tool_input[:command] || ''
+  return if command.empty?
+  return unless VISUAL_EVIDENCE_COMMAND_PATTERNS.any? { |pattern| command.match?(pattern) }
+
+  StateManager.update(:visual_verification) do |visual|
+    visual[:evidence_commands] ||= []
+    summary = command.gsub(/\s+/, ' ').strip[0..180]
+    visual[:evidence_commands] << summary unless visual[:evidence_commands].include?(summary)
+    visual[:evidence_commands] = visual[:evidence_commands].last(10)
+    visual[:last_evidence_at] = Time.now.iso8601
+
+    visual[:screenshot_paths] ||= []
+    command.scan(%r{(?:^|\s)([/~.\w-][^\s'"]*\.(?:png|jpg|jpeg))}i).flatten.each do |path|
+      visual[:screenshot_paths] << path unless visual[:screenshot_paths].include?(path)
+    end
+    visual[:screenshot_paths] = visual[:screenshot_paths].last(20)
+    visual
+  end
+rescue StandardError
+  # Don't fail on visual tracking
 end
 
 # === MCP VERIFICATION TRACKING ===
@@ -671,7 +882,7 @@ def process_result(tool_name, tool_input, tool_response)
   # === SKILL TRACKING (before error detection) ===
   track_skill_invocation(tool_name, tool_input)
   track_subagent_spawn(tool_name, tool_input)
-  track_skill_runner(tool_name, tool_input)
+  track_skill_runner(tool_name, tool_input, tool_response)
 
   # === RESEARCH PROTOCOL: Validate research agent writes ===
   SaneTrackResearch.validate_research_write(tool_name)
@@ -717,6 +928,9 @@ def process_result(tool_name, tool_input, tool_response)
 
     # === RULE #4: Track test/verification commands ===
     track_verification(tool_name, tool_input)
+
+    # === VISUAL VERIFICATION: Track screenshot/audit evidence commands ===
+    track_visual_evidence(tool_name, tool_input)
 
     # === MCP VERIFICATION: Track successes for MCP tools ===
     track_mcp_verification(tool_name, true)

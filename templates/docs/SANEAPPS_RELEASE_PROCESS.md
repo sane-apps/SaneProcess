@@ -5,18 +5,15 @@
 ## Quick Start: New App Checklist
 
 ```bash
-# 1. Copy templates
-cp -r /Users/sj/Projects/SaneProcess/templates/* /path/to/NewApp/
+# 1. Run the canonical scaffold from SaneProcess
+ruby ~/SaneApps/infra/SaneProcess/scripts/scaffold.rb NewAppName --type macos
 
-# 2. Run setup script
-/Users/sj/Projects/SaneProcess/scripts/setup_new_app.sh NewAppName com.newapp.app
-
-# 3. Customize templates (search for TODO markers)
+# 2. Customize templates (search for TODO markers)
 grep -r "TODO:" /path/to/NewApp/*.md
 
-# 4. Set up GitHub repo with standard settings
-# 5. Buy domain and configure DNS
-# 6. Create first release
+# 3. Set up GitHub repo with standard settings
+# 4. Buy domain and configure DNS
+# 5. Create first release
 ```
 
 ---
@@ -50,7 +47,7 @@ AppName/
 ├── README.md
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
-├── LICENSE                      # MIT
+├── LICENSE                      # Exact project license
 ├── PRIVACY.md
 ├── SECURITY.md
 ├── ROADMAP.md
@@ -70,7 +67,7 @@ AppName/
 | `README.md` | User-facing overview | `templates/README.md` |
 | `CHANGELOG.md` | Version history | `templates/CHANGELOG.md` |
 | `CONTRIBUTING.md` | Developer guide | `templates/CONTRIBUTING.md` |
-| `LICENSE` | MIT License | `templates/LICENSE` |
+| `LICENSE` | Project license | `templates/LICENSE` |
 | `PRIVACY.md` | Privacy policy | `templates/PRIVACY.md` |
 | `SECURITY.md` | Security policy | `templates/SECURITY.md` |
 | `CODE_OF_CONDUCT.md` | Community standards | `templates/CODE_OF_CONDUCT.md` |
@@ -135,16 +132,16 @@ xcrun notarytool store-credentials "notarytool" \
 
 ## 5. Distribution Channels
 
-### Website (Paid DMG - $5)
+### Website (Direct Download)
 
-DMGs are sold through the website via Lemon Squeezy:
+Signed, notarized app downloads are sold through the website via Lemon Squeezy:
 - Users purchase on `appname.com`
 - Receive immediate download link
 - No subscriptions - one-time purchase
 
-### GitHub (Free Source)
+### GitHub (Transparent Source)
 
-- Source code available for free
+- Source code available under the repo's actual license
 - Users can clone and build themselves
 - Tag format: `v1.2.0` (for version tracking)
 - No DMG assets in GitHub Releases
@@ -173,7 +170,7 @@ DMGs are sold through the website via Lemon Squeezy:
 
 1. Buy/transfer domain to Cloudflare Registrar
 2. Create Cloudflare Pages project: `appname-site`
-3. Deploy website: `npx wrangler pages deploy ./docs --project-name=appname-site`
+3. Deploy website: `bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project "$(pwd)" --website-only`
 4. Add custom domain via Cloudflare API or dashboard
 5. Add DNS records:
    ```
@@ -184,10 +181,8 @@ DMGs are sold through the website via Lemon Squeezy:
 ### Cloudflare Pages Deployment
 
 ```bash
-# Deploy website + appcast
-CLOUDFLARE_ACCOUNT_ID=2c267ab06352ba2522114c3081a8c5fa \
-  npx wrangler pages deploy ./docs --project-name=appname-site \
-  --commit-dirty=true --commit-message="Release vX.Y.Z"
+bash ~/SaneApps/infra/SaneProcess/scripts/release.sh \
+  --project "$(pwd)" --website-only
 ```
 
 **DO NOT use GitHub Pages.** All SaneApps websites are hosted on Cloudflare Pages.
@@ -312,31 +307,13 @@ pre-commit:
 ### Release
 
 ```bash
-# 1. Build and notarize
-./scripts/SaneMaster.rb release --version X.Y.Z
-
-# 2. Upload DMG to Cloudflare R2
-npx wrangler r2 object put sanebar-downloads/AppName-X.Y.Z.dmg \
-  --file=releases/AppName-X.Y.Z.dmg --content-type="application/octet-stream" --remote
-
-# 3. Update appcast.xml
-# - Add new <item> with version, signature, URL (dist.appname.com/updates/...)
-# - Generate EdDSA signature: sign_update releases/AppName-X.Y.Z.dmg
-
-# 4. Deploy website + appcast to Cloudflare Pages
-CLOUDFLARE_ACCOUNT_ID=2c267ab06352ba2522114c3081a8c5fa \
-  npx wrangler pages deploy ./docs --project-name=appname-site \
-  --commit-dirty=true --commit-message="Release vX.Y.Z"
-
-# 5. Commit and push
-git add docs/appcast.xml
-git commit -m "release: vX.Y.Z"
-git push
+bash ~/SaneApps/infra/SaneProcess/scripts/release.sh \
+  --project "$(pwd)" --full --version X.Y.Z --notes "Customer-facing release notes" --deploy
 ```
 
 ### Post-Release
 
-- [ ] Verify DMG downloads correctly from website
+- [ ] Verify signed direct download works correctly from website
 - [ ] Verify payment flow works
 - [ ] Verify auto-update from previous version
 - [ ] Announce on social media (optional)

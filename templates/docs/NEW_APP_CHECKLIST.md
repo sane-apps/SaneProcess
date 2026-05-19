@@ -5,7 +5,7 @@
 ## Phase 1: Setup (Day 1)
 
 ### Repository Setup
-- [ ] Run setup script: `./scripts/setup_new_app.sh AppName com.appname.app`
+- [ ] Run scaffold: `ruby ~/SaneApps/infra/SaneProcess/scripts/scaffold.rb AppName --type macos`
 - [ ] Create GitHub repo: `gh repo create sane-apps/AppName --public`
 - [ ] Push initial commit
 - [ ] Keep GitHub workflows manual-only by default (`workflow_dispatch` only)
@@ -42,7 +42,7 @@
 - [ ] README.md - Description, features, installation
 - [ ] CHANGELOG.md - Initial release notes
 - [ ] CONTRIBUTING.md - Review dev setup instructions
-- [ ] LICENSE - Verify MIT license
+- [ ] LICENSE - Verify the repo's actual license
 - [ ] PRIVACY.md - Document permissions and data storage
 - [ ] SECURITY.md - Document security model
 - [ ] CODE_OF_CONDUCT.md - Usually no changes needed
@@ -56,7 +56,7 @@
 - [ ] Test mobile responsiveness
 - [ ] Verify Open Graph tags work (use ogp.me debugger)
 - [ ] Add robots.txt and sitemap.xml for SEO
-- [ ] Deploy to Cloudflare Pages: `npx wrangler pages deploy ./docs --project-name=appname-site`
+- [ ] Deploy to Cloudflare Pages: `bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project "$(pwd)" --website-only`
 
 ### Brand Consistency (Required)
 - [ ] Footer includes: "Part of the Sane Apps family" with link to saneapps.com
@@ -66,10 +66,10 @@
 - [ ] Contact email in footer or about page
 
 ### Distribution Model
-- [ ] $5 one-time purchase on website for signed/notarized DMG
-- [ ] Free source on GitHub (MIT license)
+- [ ] $5 one-time purchase on website for signed/notarized direct download
+- [ ] Transparent source on GitHub under the repo's actual license
 - [ ] NO Homebrew cask (users build from source or pay)
-- [ ] Download button links to purchase flow OR GitHub Releases
+- [ ] Download button links to purchase flow or approved source-build path, never GitHub Releases for packaged downloads
 - [ ] Appcast URL points to appname.com/appcast.xml
 
 ## Phase 3: Development (Days 2-7)
@@ -112,8 +112,8 @@
 ## Phase 5: Launch (Day 8)
 
 ### Release
-- [ ] Upload DMG to Cloudflare R2: `npx wrangler r2 object put sanebar-downloads/AppName-1.0.0.dmg --file=releases/AppName-1.0.0.dmg --remote`
-- [ ] Deploy website + appcast to Cloudflare Pages
+- [ ] Publish release assets through `bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project "$(pwd)" --full --version 1.0.0 --notes "..." --deploy`
+- [ ] Deploy website + appcast through `release.sh --website-only` when website-only changes ship
 - [ ] Tag: `git tag v1.0.0 && git push origin v1.0.0`
 
 ### Announcement (optional)

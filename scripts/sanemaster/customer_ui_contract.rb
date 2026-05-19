@@ -63,9 +63,16 @@ module SaneMasterModules
       file_state
       fixture
       log
+      mini_automation
+      mini_ax
       mini_click
+      mini_runtime
+      mini_screenshots
+      mini_url_route
       mini_screenshot
       model_response
+      state_receipt
+      support_report
       screenshot
       visual_screenshot
       visual_smoke
@@ -78,6 +85,40 @@ module SaneMasterModules
       safe_first_surface
       runtime_visual
       full_runtime_completion
+    ].freeze
+    CUSTOMER_UI_STANDARD_RUNTIME_STATES = %w[
+      upgrade_update
+      cold_launch_relaunch
+      wake_unlock
+      display_topology
+      fullscreen_maximize_transition
+      basic_pro_mode
+      support_report_media
+    ].freeze
+    CUSTOMER_UI_FULL_RUNTIME_ARTIFACT_TYPES = %w[
+      actual_output
+      api_response
+      automation_transcript
+      file_state
+      log
+      mini_automation
+      mini_ax
+      mini_click
+      mini_runtime
+      mini_screenshot
+      mini_url_route
+      model_response
+      screenshot
+      state_receipt
+      support_report
+      visual_screenshot
+      visual_smoke
+    ].freeze
+    CUSTOMER_UI_SCREENSHOT_EVIDENCE_TYPES = %w[
+      mini_screenshot
+      screenshot
+      visual_screenshot
+      visual_smoke
     ].freeze
     CUSTOMER_UI_SOURCE_EXTENSIONS = %w[
       .swift .rb .sh .yml .yaml .json .plist .xcconfig .entitlements .xcstrings
@@ -411,7 +452,74 @@ module SaneMasterModules
       ids.reject(&:empty?).each { |id| id_counts[id] += 1 }
       duplicate_ids = id_counts.select { |_id, count| count > 1 }.keys
       issues << "Duplicate customer UI action ids: #{duplicate_ids.join(', ')}" unless duplicate_ids.empty?
+      issues.concat(customer_ui_runtime_state_matrix_issues(manifest, required_actions))
       issues << "#{manifest_path}: version must be 1" unless manifest['version'].to_i == 1
+      issues
+    end
+
+    def customer_ui_runtime_state_matrix_issues(manifest, required_actions)
+      issues = []
+      matrix = manifest['runtime_state_matrix']
+      required = manifest['require_standard_runtime_state_matrix'] == true
+      if matrix.nil?
+        issues << "Missing runtime_state_matrix; released apps with customer runtime workflows must map lifecycle states to action ids" if required
+        return issues
+      end
+
+      rows = case matrix
+             when Hash
+               matrix.map do |id, row|
+                 row = {} unless row.is_a?(Hash)
+                 row.merge('id' => row['id'] || id.to_s)
+               end
+             when Array
+               matrix
+             else
+               issues << 'runtime_state_matrix must be a mapping or list'
+               return issues
+             end
+
+      action_ids = required_actions.map { |action| action['id'].to_s }.reject(&:empty?)
+      row_ids = []
+      rows.each_with_index do |row, index|
+        unless row.is_a?(Hash)
+          issues << "runtime_state_matrix row ##{index + 1} must be an object"
+          next
+        end
+
+        id = row['id'].to_s.strip
+        prefix = id.empty? ? "runtime_state_matrix row ##{index + 1}" : "runtime_state_matrix #{id}"
+        row_ids << id unless id.empty?
+        issues << "#{prefix}: missing id" if id.empty?
+
+        linked_action_ids = Array(row['action_ids']).map(&:to_s).map(&:strip).reject(&:empty?)
+        issues << "#{prefix}: missing action_ids" if linked_action_ids.empty?
+        unknown_ids = linked_action_ids - action_ids
+        issues << "#{prefix}: unknown action_id(s): #{unknown_ids.join(', ')}" unless unknown_ids.empty?
+
+        proof_level = row['required_proof_level'].to_s.strip
+        if proof_level.empty?
+          issues << "#{prefix}: missing required_proof_level"
+        elsif !CUSTOMER_UI_WORKFLOW_PROOF_LEVELS.include?(proof_level)
+          issues << "#{prefix}: required_proof_level must be runtime_visual or full_runtime_completion"
+        end
+
+        evidence_types = Array(row['required_evidence_types']).map(&:to_s).map(&:strip).reject(&:empty?)
+        issues << "#{prefix}: missing required_evidence_types" if evidence_types.empty?
+
+        runner = row['runner'].to_s.strip
+        proof_command = row['proof_command'].to_s.strip
+        issues << "#{prefix}: missing runner or proof_command" if runner.empty? && proof_command.empty?
+
+        why = row['why'].to_s.strip
+        issues << "#{prefix}: missing why/customer risk" if why.empty?
+      end
+
+      if required
+        missing_states = CUSTOMER_UI_STANDARD_RUNTIME_STATES - row_ids
+        issues << "runtime_state_matrix missing standard state(s): #{missing_states.join(', ')}" unless missing_states.empty?
+      end
+
       issues
     end
 
@@ -458,6 +566,7 @@ module SaneMasterModules
       missing_ids = required_ids - tested_ids
       issues << "Receipt does not cover release-required action(s): #{missing_ids.join(', ')}" unless missing_ids.empty?
       issues.concat(customer_ui_action_result_issues(required_actions, receipt))
+      issues.concat(customer_ui_screenshot_reuse_issues(required_actions, receipt))
 
       begin
         generated_at = Time.parse(receipt['generated_at'].to_s)
@@ -520,9 +629,10 @@ module SaneMasterModules
           issues << "#{id}: missing required evidence type #{required_type.inspect}"
         end
         if customer_ui_action_requires_visual?(action, result) &&
-           evidence_types.none? { |type| %w[screenshot visual_screenshot mini_screenshot visual_smoke].include?(type) }
+           evidence_types.none? { |type| CUSTOMER_UI_SCREENSHOT_EVIDENCE_TYPES.include?(type) }
           issues << "#{id}: visual proof required but no screenshot/visual evidence is attached to the action result"
         end
+        issues.concat(customer_ui_full_runtime_completion_issues(id, action, result))
         issues.concat(customer_ui_functional_state_receipt_issues(id, action, result))
         issues.concat(customer_ui_workflow_receipt_issues(id, action, result))
       end
@@ -531,6 +641,19 @@ module SaneMasterModules
       extra_ids = results.keys.map(&:to_s) - required_ids
       issues << "Receipt has per-action result(s) not in manifest: #{extra_ids.join(', ')}" unless extra_ids.empty?
       issues
+    end
+
+    def customer_ui_full_runtime_completion_issues(id, action, result)
+      return [] unless action['required_proof_level'].to_s == 'full_runtime_completion'
+
+      evidence = Array(result['evidence']).select { |item| item.is_a?(Hash) }
+      runtime_items = evidence.select do |item|
+        CUSTOMER_UI_FULL_RUNTIME_ARTIFACT_TYPES.include?(item['type'].to_s.strip)
+      end
+      artifact_backed = runtime_items.any? { |item| customer_ui_evidence_paths(item).any? }
+      return [] if artifact_backed
+
+      ["#{id}: full_runtime_completion requires path-backed runtime/output evidence; source, unit, fixture, or prose-only notes are not enough"]
     end
 
     def customer_ui_functional_state_receipt_issues(id, action, result)
@@ -568,6 +691,55 @@ module SaneMasterModules
         unless evidence_types.any? { |type| %w[fixture actual_output log file_state api_response model_response].include?(type) }
           issues << "#{id}: completion proof requires fixture, actual output, log, file state, API response, or model response evidence"
         end
+      end
+
+      issues
+    end
+
+    def customer_ui_screenshot_reuse_issues(required_actions, receipt)
+      results = receipt['action_results']
+      return [] unless results.is_a?(Hash)
+
+      required_ids = required_actions.map { |action| action['id'].to_s }.reject(&:empty?)
+      paths_by_action = {}
+      required_ids.each do |id|
+        result = results[id]
+        next unless result.is_a?(Hash)
+
+        paths = Array(result['evidence']).flat_map do |item|
+          next [] unless item.is_a?(Hash)
+          next [] unless CUSTOMER_UI_SCREENSHOT_EVIDENCE_TYPES.include?(item['type'].to_s.strip)
+
+          customer_ui_evidence_paths(item)
+        end
+        paths_by_action[id] = paths.map { |path| customer_ui_normalized_artifact_path(path) }.reject(&:empty?).uniq
+      end
+
+      issues = []
+      path_owners = Hash.new { |hash, key| hash[key] = [] }
+      paths_by_action.each do |id, paths|
+        paths.each { |path| path_owners[path] << id }
+      end
+      path_owners.each do |path, owners|
+        next unless owners.length > 1
+
+        issues << "Screenshot artifact reused across release actions (#{owners.join(', ')}): #{path}"
+      end
+
+      hash_owners = Hash.new { |hash, key| hash[key] = [] }
+      path_owners.each_key do |path|
+        absolute = File.absolute_path(path, Dir.pwd)
+        next unless File.file?(absolute)
+
+        hash_owners[Digest::SHA256.file(absolute).hexdigest] << path
+      rescue StandardError
+        next
+      end
+      hash_owners.each_value do |paths|
+        owner_ids = paths.flat_map { |path| path_owners[path] }.uniq
+        next unless paths.length > 1 && owner_ids.length > 1
+
+        issues << "Identical screenshot bytes reused across release actions (#{owner_ids.join(', ')}): #{paths.join(', ')}"
       end
 
       issues
@@ -615,7 +787,7 @@ module SaneMasterModules
       label = "#{id}: evidence ##{index + 1} #{evidence_type}"
       return ["#{label} missing artifact path"] if paths.empty?
 
-      image_required = %w[screenshot visual_screenshot mini_screenshot visual_smoke].include?(evidence_type)
+      image_required = CUSTOMER_UI_SCREENSHOT_EVIDENCE_TYPES.include?(evidence_type)
       paths.flat_map.with_index do |path, path_index|
         customer_ui_generic_artifact_issues(
           path,
@@ -633,6 +805,12 @@ module SaneMasterModules
       end
       paths.concat(Array(item['artifacts'])) unless item['artifacts'].nil?
       paths.map(&:to_s).map(&:strip).reject(&:empty?)
+    end
+
+    def customer_ui_normalized_artifact_path(path)
+      File.absolute_path(path.to_s.strip, Dir.pwd)
+    rescue StandardError
+      path.to_s.strip
     end
 
     def customer_ui_generic_artifact_issues(path, label:, image_required:)

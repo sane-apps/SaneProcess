@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "work_email_requires_inbox",
+      "prompt": "Check email and draft a reply for the customer.",
+      "expect": {
+        "commands": ["check_inbox"],
+        "skills": ["check-inbox"],
+        "approval": true
+      }
+    },
+    {
+      "id": "missing_tool_requires_discovery",
+      "prompt": "Find a better tool for this workflow before we add another workaround.",
+      "expect": {
+        "commands": ["tool_discovery"],
+        "skills": ["evolve"]
+      }
+    },
+    {
+      "id": "release_requires_preflight",
+      "prompt": "Prepare this app for release and clear it for shipping.",
+      "expect": {
+        "commands": ["release_preflight"],
+        "skills": ["ship"]
+      }
+    },
+    {
+      "id": "docs_audit_requires_audit_subagent",
+      "prompt": "Run a full documentation audit.",
+      "expect": {
+        "commands": ["audit"],
+        "skills": ["audit"],
+        "subagent": true
+      }
+    },
+    {
+      "id": "customer_ui_workflow_requires_sweep",
+      "prompt": "Prove the customer UI workflow works with visual evidence.",
+      "expect": {
+        "commands": ["visual_smoke", "customer_ui_sweep"]
+      }
+    },
+    {
+      "id": "sales_requires_funnel_context",
+      "prompt": "How are sales and revenue looking?",
+      "expect": {
+        "commands": ["sales", "events"],
+        "forbid_commands": ["check_inbox"]
+      }
+    },
+    {
+      "id": "customer_email_reply_requires_work_inbox_and_approval",
+      "prompt": "Reply to the customer email in the support inbox.",
+      "expect": {
+        "commands": ["check_inbox"],
+        "skills": ["check-inbox"],
+        "approval": true,
+        "forbid_skills": ["gmail"]
+      }
+    },
+    {
+      "id": "personal_gmail_does_not_use_work_inbox",
+      "prompt": "Check my personal Gmail for that receipt.",
+      "expect": {
+        "skills": ["gmail"],
+        "forbid_commands": ["check_inbox"]
+      }
+    },
+    {
+      "id": "build_runtime_workflows_are_mini_first",
+      "prompt": "Build and test SaneBar, then launch it for runtime verification.",
+      "expect": {
+        "commands": ["verify", "test_mode"],
+        "skills": ["verify"],
+        "notes_include": ["Mini-first"]
+      }
+    },
+    {
+      "id": "code_review_uses_subagent_hook_compliance",
+      "prompt": "Review this code with a subagent and use normal SaneApps workflow.",
+      "expect": {
+        "skills": ["critic"],
+        "subagent": true,
+        "forbid_commands": ["nv"],
+        "notes_include": ["hook compliance"]
+      }
+    },
+    {
+      "id": "outside_model_sweeps_are_not_default",
+      "prompt": "Run a normal SaneApps audit and use whatever outside models you think are best.",
+      "expect": {
+        "commands": ["audit"],
+        "skills": ["audit"],
+        "subagent": true,
+        "forbid_commands": ["nv"],
+        "notes_include": ["exception-only"]
+      }
+    }
+  ]
+}

@@ -333,7 +333,7 @@ class ToolDiscoveryReceipt
   end
 
   def run_doctor_check
-    return { skipped: true } unless @options[:run_doctor]
+    return { skipped: true, status: 'skipped' } unless @options[:run_doctor]
 
     script = File.join(@options[:project_root], 'scripts', 'SaneMaster.rb')
     command = [RbConfig.ruby, script, 'doctor']
@@ -351,7 +351,7 @@ class ToolDiscoveryReceipt
   end
 
   def run_validation_check
-    return { skipped: true } unless @options[:run_validation]
+    return { skipped: true, status: 'skipped' } unless @options[:run_validation]
 
     script = File.join(@options[:project_root], 'scripts', 'validation_report.rb')
     command = [RbConfig.ruby, script, '--json']
@@ -360,7 +360,7 @@ class ToolDiscoveryReceipt
     payload = parse_json(result[:stdout])
     {
       command: command.join(' '),
-      status: result[:timed_out] ? 'timed_out' : (result[:success] ? 'ok' : 'failed'),
+      status: validation_health_status(result, payload),
       exit_code: result[:exit_code],
       timed_out: result[:timed_out],
       verdict: payload && payload['verdict'],
@@ -370,6 +370,14 @@ class ToolDiscoveryReceipt
       warning_count: payload && payload['warnings']&.length,
       parse_error: payload.nil? ? 'validation report did not return JSON' : nil
     }
+  end
+
+  def validation_health_status(result, payload)
+    return 'timed_out' if result[:timed_out]
+    return 'failed' unless result[:success]
+    return 'parse_failed' unless payload
+
+    payload.dig('verdict', 'status').to_s == 'WORKING' ? 'ok' : 'blocked'
   end
 
   def build_summary(receipt)
@@ -391,11 +399,17 @@ class ToolDiscoveryReceipt
     {
       existing_path_found: existing_path_found,
       recommendation: recommendation,
-      doctor_ok: doctor[:status] == 'ok',
-      validation_ok: validation[:status] == 'ok',
+      doctor_status: doctor[:status] || 'skipped',
+      validation_status: validation[:status] || 'skipped',
+      doctor_ok: skipped_check?(doctor) ? nil : doctor[:status] == 'ok',
+      validation_ok: skipped_check?(validation) ? nil : validation[:status] == 'ok',
       canonical_commands: receipt.dig(:checks, :canonical_paths).to_a.map { |entry| entry[:command] },
       top_existing_paths: top_paths(receipt)
     }
+  end
+
+  def skipped_check?(check)
+    check[:skipped] || check[:status].to_s == 'skipped'
   end
 
   def top_paths(receipt)

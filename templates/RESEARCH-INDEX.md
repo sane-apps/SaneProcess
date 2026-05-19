@@ -1,9 +1,12 @@
 # SaneApps Research Index
 
-> **One place to find ALL research across all apps.**
-> Last updated: 2026-01-19
+> **Legacy cross-app research index.**
+> Last updated: 2026-05-18
 >
-> **Rule:** Every feature research MUST be linked here. No orphaned docs.
+> **Rule:** Keep active research in the project research cache first
+> (`.codex/research.md` by default). Promote durable decisions into the core docs,
+> Serena, or the knowledge graph. Use this index only for cross-app references
+> that remain useful after promotion.
 
 ---
 
@@ -111,10 +114,12 @@ DistributedNotificationCenter.default().addObserver(
 
 ## How to Add Research
 
-1. Use the [RESEARCH-TEMPLATE.md](./RESEARCH-TEMPLATE.md) for new research
-2. Save in the app's `.claude/archive/research/` directory
-3. **ADD IT TO THIS INDEX** - don't orphan docs
-4. Cross-reference in the app's FEATURE_PLAN.md or ROADMAP.md
+1. Use the [RESEARCH-TEMPLATE.md](./RESEARCH-TEMPLATE.md) for structured research.
+2. Save active findings in the app's `.codex/research.md` unless the project
+   documents a different active cache.
+3. Promote durable decisions into `ARCHITECTURE.md`, `DEVELOPMENT.md`,
+   `AGENTS.md`, `SESSION_HANDOFF.md`, Serena, or the knowledge graph.
+4. Add a link here only when the research should be discoverable across apps.
 
 ---
 
@@ -125,19 +130,23 @@ If you can't find research:
 1. **Check Serena memories:** Use `read_memory` or Official Memory MCP
 2. **Grep all projects:** `grep -r "topic" ~/SaneApps/`
 3. **Check session handoffs:** Each app has `SESSION_HANDOFF.md`
-4. **Ask Claude:** "What research exists for [topic]?"
+4. **Ask the active agent:** "What research exists for [topic]?"
 
 ---
 
 ## Avoiding Fragmentation
 
-**As of 2026-02:** SaneApps follows a 5-document standard per project. Research belongs in `ARCHITECTURE.md` §4. See `~/.claude/templates/DOC_STANDARD.md` for the full spec.
+**As of 2026-05:** SaneApps follows a core-doc standard per project:
+`AGENTS.md`, `README.md`, `DEVELOPMENT.md`, `ARCHITECTURE.md`, and
+`SESSION_HANDOFF.md`. `CLAUDE.md` is only a compatibility overlay. Active
+research cache entries should be promoted into those docs or memory when they
+become durable.
 
 **DO:**
-- Put new research in the project's `ARCHITECTURE.md` §4 (Research section)
-- Link app-specific research in this index for cross-app visibility
-- Use consistent file naming for app research: `topic-name.md`
-- Cross-reference between docs
+- Keep short-lived research in the active project research cache.
+- Promote durable decisions into the core docs or memory.
+- Link cross-app research in this index only after promotion.
+- Cross-reference between docs when the reference prevents rediscovery.
 
 **DON'T:**
 - Create standalone `RESEARCH_REPORT.md` files (merge into ARCHITECTURE.md)

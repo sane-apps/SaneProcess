@@ -2,9 +2,9 @@
 
 > TODO:One-line description of what this app does
 
-[![Download](https://img.shields.io/badge/Download-Latest-blue)](https://github.com/sane-apps/TODO:AppName/releases/latest)
+[![Download](https://img.shields.io/badge/Download-Latest-blue)](https://TODO:appname.com)
 [![macOS](https://img.shields.io/badge/macOS-14.0+-black)](https://www.apple.com/macos/)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![License](https://img.shields.io/badge/License-See%20LICENSE-blue)](LICENSE)
 
 TODO:AppName is a TODO:category app for macOS that TODO:key benefit.
 
@@ -67,7 +67,7 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+See [LICENSE](LICENSE) for details.
 
 ---
 

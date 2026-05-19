@@ -10,7 +10,7 @@ How the enforcement system works, why decisions were made, and where it's headed
 
 SaneProcess is agent workflow enforcement built around the scientific method. It has one portable SOP and several adapter layers: a Claude-native hook runtime, a Codex-oriented instruction/config/skill path, and a generic `AGENTS.md` baseline for any repo-aware coding agent. The Claude side uses four Ruby hooks plus one session bootstrap hook to enforce research-before-edit discipline through a 4-category research gate (docs, web, github, local) and to prevent doom loops via a circuit breaker. Shared state lives in a single HMAC-signed JSON file for the Claude hook runtime.
 
-Codex note: the stable Codex contract is `AGENTS.md`, `.agents/skills`, Codex config, MCP, and shared runtime guardrails such as `check-inbox.sh` send approval plus `sane_curl_guard.sh`. Codex now documents hook support, but SaneProcess treats hooks as an adapter layer rather than the portable enforcement base.
+Codex note: the stable Codex contract is `AGENTS.md`, canonical skills in `~/.codex/skills`, optional `.agents/skills` mirrors for compatible clients, Codex config, MCP, and shared runtime guardrails such as `check-inbox.sh` send approval plus `sane_curl_guard.sh`. Codex now documents hook support, but SaneProcess treats hooks as an adapter layer rather than the portable enforcement base.
 
 ### Component Diagram
 
@@ -20,7 +20,7 @@ graph TD
     CC -->|PreToolUse| ST[sanetools.rb]
     CC -->|PostToolUse| SK[sanetrack.rb]
     CC -->|Stop| SS[sanestop.rb]
-    CX[Codex] -->|AGENTS.md + .agents/skills + MCP| SH[Shared SOP]
+    CX[Codex] -->|AGENTS.md + ~/.codex skills + MCP| SH[Shared SOP]
     GA[Generic agents] -->|AGENTS.md + repo scripts| SH
     CX -->|Shared shell/script guards| GUARD[sane_curl_guard.sh + check-inbox.sh]
 
@@ -209,7 +209,7 @@ flowchart TD
 
     REC_SIGN --> READY{Signed?}
     REC_STAPLE --> READY
-    READY -->|yes| UPLOAD[wrangler r2 object put]
+    READY -->|yes| UPLOAD[release.sh deploy path]
     READY -->|no| BLOCK_UPLOAD[BLOCK: missing signature/staple]
 
     APPCAST[Edit appcast.xml] --> CHECK_SIG{edSignature valid?}
@@ -530,12 +530,53 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
 
 **Context:** Validation was reporting process-health gaps from tiny samples, while repeated incidents showed that the most useful evidence lives in local actions: verify runs, prevention gate reviews, hook blocks, release preflights, App Store preflights, and support-send delivery outcomes.
 
-**Decision:** SaneProcess writes append-only JSONL process metrics to `~/.sanemaster/process_metrics.jsonl` by default, with `SANEMASTER_PROCESS_METRICS_PATH` for tests. Metrics are local-only and record operational evidence, not cloud telemetry. Support-send metrics deliberately omit recipient addresses and subjects.
+**Decision:** SaneProcess writes append-only JSONL process metrics to `~/.sanemaster/process_metrics.jsonl` by default, with `SANEMASTER_PROCESS_METRICS_PATH` for tests. Metrics are local-only and record operational evidence, not cloud telemetry. Support-send metrics deliberately omit recipient addresses and subjects. Hook trajectory metrics are redacted metadata only: source, tool, result/block status, rule, and PID.
 
 **Consequences:**
 - Validation can graduate from "no data" to measured process health as real sessions accumulate.
 - Release and support operations leave auditable local breadcrumbs without adding a service dependency.
 - Tests can redirect metrics into temp files and assert real records without touching user data.
+
+---
+
+### ADR-008: Agent workflow reliability uses evals, not more prompt rules (2026-05-13)
+
+**Context:** The May 2026 Claude/Codex workflow refresh found that SaneProcess already follows the main external guidance: source-of-truth `AGENTS.md`, scoped wrappers, Mini-first runtime evidence, skills, subagents, memory, and context compaction. The remaining gap is measuring whether prompts route to the right workflow, skill, command, or approval gate.
+
+**Decision:** Add deterministic agent workflow fixtures through `SaneMaster.rb agent_eval`. Add receipt-level workflow fixtures through `SaneMaster.rb process_eval` / `trace_eval`, plus `sop_review` for score-history and cap analysis. Add `agent_env_review` for recurring setup drift and `skill_lint` for skill routing quality. Keep these in SaneMaster instead of creating a separate agent-eval framework. The shared SOP score rubric lives in `scripts/hooks/core/sop_score.rb`; score-producing paths must call it instead of duplicating the rubric.
+
+**Consequences:**
+- Trigger maps and AGENTS changes can be regression-tested before they ship.
+- Support, release, UI runtime, tool discovery, subagent hygiene, session lifecycle, and SOP score-cap workflows can be tested as multi-step receipts instead of more prompt prose.
+- Multi-agent delegation remains useful, but workflow complexity should be driven by eval failures and task shape, not by default escalation.
+- Skill descriptions and duplicate-name drift become tested routing surfaces rather than informal prose.
+
+### ADR-009: HTML is a generated review artifact, not the source of truth (2026-05-13)
+
+**Context:** A current Claude Code discussion argues that HTML can be more effective than Markdown for agent-generated reports because it supports richer layout, color, SVG, and interaction. That is useful for human review, but HTML is noisy to diff and easy to overuse as durable documentation.
+
+**Decision:** SaneProcess keeps Markdown, JSON, and JSONL as source-of-truth formats. HTML is allowed for generated human-consumption artifacts, starting with `process_metrics --export-html`.
+
+**Consequences:**
+- Dense dashboards and review reports can be easier to read without weakening docs-as-code discipline.
+- Durable docs remain easy to diff, grep, review, and feed back into agents.
+- HTML artifacts should be regenerated, not hand-maintained.
+
+---
+
+### ADR-010: Near-miss mining turns process telemetry into test proposals (2026-05-14)
+
+**Context:** SaneProcess now records enough local evidence to see repeated process hazards: hook blocks, zero-test verify failures, recovered green sessions, weak SOP receipts, support-send delivery state, and workflow eval churn. The next improvement is not another prompt rule; it is mining those near misses into candidate evals and guardrails before the same pattern becomes urgent customer-facing work.
+
+**Decision:** Add `SaneMaster.rb near_miss_review` as a report-only telemetry miner. It reads process metrics, filters known test-harness noise by default, and emits ranked candidates with evidence examples, why the pattern matters, a proposed action, and a proposed backtest. It does not automatically promote rules or write generated fixtures. Reviewed patterns can be promoted into `agent_eval`, `process_eval`, `gate_review`, or a hook change with normal tests.
+
+The first promoted drilldown is `SaneMaster.rb verify_failure_review`, because the live backtest found repeated verify runs that failed before any tests were counted. Verify metrics now record `evidence_strength`, `failure_bucket`, `failure_hint`, and host metadata. The shared SOP scorer caps green zero-test runs at weak evidence, and `sanestop` writes final verify count/strength fields into session receipts so `process_eval` can catch inflated self-assessments.
+
+**Consequences:**
+- Process improvement can start from real repeated friction instead of anecdote.
+- Useful failures become candidate tests without making every near miss a blocking rule.
+- Backtests can target a specific metrics file with `--metrics PATH`, including Mini logs, while remaining local-only.
+- The report itself stays read-only so it does not pollute the metric stream it analyzes.
 
 ---
 

@@ -19,55 +19,17 @@ If it doesn't pass the smell test, reply with standard support: "Can you send a 
 ### 1. Verify there's no order
 
 ```bash
-LS_KEY=$(security find-generic-password -s lemonsqueezy -a api_key -w)
-
-# Search by email
-curl -s --globoff "https://api.lemonsqueezy.com/v1/orders?filter[user_email]=CUSTOMER_EMAIL" \
-  -H "Authorization: Bearer $LS_KEY" -H "Accept: application/vnd.api+json"
-
-# Search customers
-curl -s --globoff "https://api.lemonsqueezy.com/v1/customers?filter[email]=CUSTOMER_EMAIL" \
-  -H "Authorization: Bearer $LS_KEY" -H "Accept: application/vnd.api+json"
+ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb sales \
+  --find-customer-orders --email CUSTOMER_EMAIL --json
 ```
 
 If an order EXISTS — this is a license delivery issue, not a payment failure. Different SOP.
 
 ### 2. Create a 100% discount code
 
-```bash
-# Product IDs:
-#   SaneBar=778575 (variant 1227172)
-#   SaneClick=800495
-#   SaneClip=779223
-#   SaneHosts=794910
-#   SaneSales=822714
-
-# Code naming: FIRSTNAME + APPNAME + MMDD (e.g., ALEXSANEBAR0226)
-
-curl -s -X POST "https://api.lemonsqueezy.com/v1/discounts" \
-  -H "Authorization: Bearer $LS_KEY" \
-  -H "Accept: application/vnd.api+json" \
-  -H "Content-Type: application/vnd.api+json" \
-  -d '{
-    "data": {
-      "type": "discounts",
-      "attributes": {
-        "name": "FIRSTNAME LASTNAME - Payment Issue",
-        "code": "CODE_HERE",
-        "amount": 100,
-        "amount_type": "percent",
-        "is_limited_to_products": true,
-        "is_limited_redemptions": true,
-        "max_redemptions": 1,
-        "duration": "once"
-      },
-      "relationships": {
-        "store": { "data": { "type": "stores", "id": "270691" } },
-        "variants": { "data": [{ "type": "variants", "id": "VARIANT_ID" }] }
-      }
-    }
-  }'
-```
+Create the discount in the Lemon Squeezy dashboard, or add a guarded SaneMaster
+command before using an API path repeatedly. Do not paste raw vendor API curl
+commands into a support session.
 
 ### 3. Build the checkout link with discount pre-filled
 
@@ -85,7 +47,8 @@ https://saneapps.lemonsqueezy.com/checkout/buy/[CHECKOUT_ID]?discount_code=[CODE
 | SaneHosts | `83977cc9-900f-407f-a098-959141d474f2` | https://go.saneapps.com/buy/sanehosts |
 | SaneSales | `5f7903d4-d6c8-4da4-b3e3-4586ef86bb51` | https://go.saneapps.com/buy/sanesales |
 
-To verify a checkout ID: `curl -s -o /dev/null -w "%{redirect_url}" "https://go.saneapps.com/buy/APPNAME"` — the ID is in the redirect URL path.
+To verify checkout routing, use the app website and `SaneMaster.rb events` /
+`SaneMaster.rb downloads` receipts rather than ad hoc raw curls.
 
 ### 4. Send the email
 

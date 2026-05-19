@@ -387,24 +387,162 @@ PY
   rm -f "$notifications_path" "$items_path"
 }
 
+outreach_launch_status() {
+  ruby <<'RUBY'
+require 'date'
+require 'yaml'
+
+paths = Dir[
+  File.expand_path('~/SaneApps/apps/*/.outreach.yml'),
+  File.expand_path('~/SaneApps/SaneAI/.outreach.yml')
+].uniq.sort
+
+if paths.empty?
+  puts 'No .outreach.yml files found.'
+  exit 0
+end
+
+def compact_text(value, max = 180)
+  text = value.to_s.gsub(/\s+/, ' ').strip
+  text.length > max ? "#{text[0, max - 3]}..." : text
+end
+
+def status_counts(hash)
+  hash.each_value.each_with_object(Hash.new(0)) do |entry, counts|
+    next unless entry.is_a?(Hash)
+
+    counts[entry['status'] || 'unknown'] += 1
+  end
+end
+
+today = Date.today
+puts "Tracked apps: #{paths.length}"
+
+paths.each do |path|
+  data = YAML.load_file(path) || {}
+  product = data['product'] || data['app'] || File.basename(File.dirname(path))
+  calendar = data['launch_calendar'] || {}
+  package = data['launch_package'] || {}
+  classification = calendar['classification'] || package['status'] || 'unknown'
+  package_status = package['status']
+  last_readiness = calendar['last_launch_readiness'] || package['last_launch_readiness']
+
+  puts "- #{product}: #{classification}"
+  puts "  package: #{package_status}" if package_status && package_status != classification
+
+  launches = Array(data['launches']).select { |entry| entry.is_a?(Hash) }
+  unless launches.empty?
+    summary = launches.first(3).map do |entry|
+      label = entry['name'] || entry['channel'] || 'Launch'
+      status = entry['status'] || 'unknown'
+      "#{label}=#{status}"
+    end.join('; ')
+    puts "  launches: #{summary}"
+  end
+
+  channel_plan = package['channel_plan']
+  if channel_plan.is_a?(Hash) && !channel_plan.empty?
+    summary = channel_plan.first(5).map { |channel, status| "#{channel}=#{status}" }.join('; ')
+    puts "  channels: #{summary}"
+  end
+
+  directory_submissions = data['directory_submissions']
+  if directory_submissions.is_a?(Hash) && !directory_submissions.empty?
+    counts = status_counts(directory_submissions)
+    count_summary = counts.map { |status, count| "#{status}=#{count}" }.join(', ')
+    puts "  directories/listings: #{count_summary}" unless count_summary.empty?
+  end
+
+  product_hunt = data.dig('directory_submissions', 'product_hunt') ||
+                 data.dig('video_distribution', 'product_hunt') ||
+                 data['product_hunt']
+  if product_hunt.is_a?(Hash)
+    ph_bits = []
+    ph_bits << "status=#{product_hunt['status']}" if product_hunt['status']
+    ph_bits << "votes=#{product_hunt['observed_votes']}" if product_hunt['observed_votes']
+    ph_bits << "rank=#{product_hunt['observed_daily_rank']}" if product_hunt['observed_daily_rank']
+    ph_bits << "url=#{product_hunt['product_url'] || product_hunt['url']}" if product_hunt['product_url'] || product_hunt['url']
+    puts "  Product Hunt: #{ph_bits.join('; ')}" unless ph_bits.empty?
+  end
+
+  video = data.dig('video_distribution', 'youtube_upload_candidate') || data.dig('video_distribution', 'youtube')
+  if video.is_a?(Hash)
+    video_bits = []
+    video_bits << "status=#{video['status']}" if video['status']
+    video_bits << "url=#{video['youtube_url'] || video['url']}" if video['youtube_url'] || video['url']
+    puts "  video: #{video_bits.join('; ')}" unless video_bits.empty?
+  end
+
+  x_posts = Array(data['x_tweet_history']).select { |entry| entry.is_a?(Hash) }
+  posted = x_posts.select { |entry| entry['status'] == 'posted' }
+  deleted = x_posts.select { |entry| entry['status'] == 'deleted' }
+  if posted.any? || deleted.any?
+    latest = posted.max_by { |entry| entry['date'].to_s }
+    x_line = "posted=#{posted.length}"
+    x_line += ", deleted=#{deleted.length}" if deleted.any?
+    x_line += ", latest=#{latest['url']}" if latest && latest['url']
+    puts "  X: #{x_line}"
+  end
+
+  scheduled = Array(calendar['scheduled']).select { |entry| entry.is_a?(Hash) }
+  actionable = scheduled.select do |entry|
+    next true unless entry['date']
+
+    begin
+      Date.parse(entry['date'].to_s) >= today
+    rescue ArgumentError
+      true
+    end
+  end
+  actionable = scheduled if actionable.empty?
+  next_item = actionable.first
+  if next_item
+    pieces = [
+      next_item['date'],
+      next_item['time'],
+      next_item['channel'],
+      "[#{next_item['status'] || 'unknown'}]"
+    ].compact
+    puts "  next: #{pieces.join(' ')}"
+    puts "  next action: #{compact_text(next_item['action'])}" if next_item['action']
+  end
+
+  if last_readiness.is_a?(Hash)
+    readiness = [
+      last_readiness['date'],
+      last_readiness['status'],
+      ("exit=#{last_readiness['launch_readiness_exit']}" if last_readiness.key?('launch_readiness_exit'))
+    ].compact.join(' ')
+    puts "  launch readiness: #{readiness}" unless readiness.empty?
+  end
+
+  blockers = Array(calendar['blockers']) +
+             Array(package['channel_blockers']) +
+             Array(last_readiness && last_readiness['blocker_summary'])
+  blockers = blockers.compact.map { |item| compact_text(item, 140) }.uniq
+  puts "  blockers: #{blockers.first(3).join(' | ')}" unless blockers.empty?
+end
+RUBY
+}
+
 printf '\nSane status cross-reference (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S')"
 printf '%s\n' "----------------------------------------"
 
-printf '\n[1/8] Sales (last 30 days)\n'
+printf '\n[1/9] Sales (last 30 days)\n'
 if [[ -x "$SANE_MASTER" ]]; then
   ruby "$SANE_MASTER" sales --days 30
 else
   echo "SaneMaster sales not executable"
 fi
 
-printf '\n[2/8] Inbox status\n'
+printf '\n[2/9] Inbox status\n'
 if [[ -x "$CHECK_INBOX" ]]; then
   "$CHECK_INBOX"
 else
   echo "check-inbox.sh not found at $CHECK_INBOX"
 fi
 
-printf '\n[3/8] Listing actions\n'
+printf '\n[3/9] Listing actions\n'
 if [[ -x "$SANE_MASTER" ]]; then
   ruby "$SANE_MASTER" listing_actions --json-out "$LISTING_JSON_PATH" >/dev/null
   python3 - "$LISTING_JSON_PATH" <<'PY'
@@ -434,7 +572,7 @@ else
   echo "SaneMaster listing_actions not executable"
 fi
 
-printf '\n[4/8] Hosted-file dashboard actions\n'
+printf '\n[4/9] Hosted-file dashboard actions\n'
 if [[ -x "$SANE_MASTER" ]]; then
   if ruby "$SANE_MASTER" hosted_file_actions --json > "$HOSTED_JSON_PATH"; then
     python3 - "$HOSTED_JSON_PATH" <<'PY'
@@ -464,24 +602,27 @@ else
   echo "SaneMaster hosted_file_actions not executable"
 fi
 
-printf '\n[5/8] GitHub notifications\n'
+printf '\n[5/9] Outreach / launch operations\n'
+outreach_launch_status || true
+
+printf '\n[6/9] GitHub notifications\n'
 github_notifications || true
 
-printf '\n[6/8] Open GitHub issues (sane-apps org)\n'
+printf '\n[7/9] Open GitHub issues (sane-apps org)\n'
 if [[ -x "$GITHUB_QUEUE" ]]; then
   "$GITHUB_QUEUE" issues --scope org-wide --limit "${STATUS_GITHUB_LIMIT:-200}"
 else
   echo "github-queue.sh not found at $GITHUB_QUEUE"
 fi
 
-printf '\n[7/8] Open GitHub PRs (sane-apps org)\n'
+printf '\n[8/9] Open GitHub PRs (sane-apps org)\n'
 if [[ -x "$GITHUB_QUEUE" ]]; then
   "$GITHUB_QUEUE" prs --scope org-wide --limit "${STATUS_GITHUB_LIMIT:-200}"
 else
   echo "github-queue.sh not found at $GITHUB_QUEUE"
 fi
 
-printf '\n[8/8] GitHub comment/review activity on open issues, PRs, and external notifications\n'
+printf '\n[9/9] GitHub comment/review activity on open issues, PRs, and external notifications\n'
 github_comment_activity || true
 github_external_notification_activity || true
 

@@ -44,9 +44,13 @@ ps aux | grep -E 'claude|node.*mcp' | grep -v grep
 pkill -f 'claude.*dangerously-skip-permissions'
 ```
 
-### 0.3 RESEARCH.md Requirement
+### 0.3 Research Cache Requirement
 
-**Every project MUST have a RESEARCH.md** as the single source of truth for:
+Every project must keep active research in the existing project research cache
+(`.codex/research.md` by default, or a documented client-specific equivalent)
+and promote durable decisions into `ARCHITECTURE.md`, `DEVELOPMENT.md`,
+`AGENTS.md`, memory, or the knowledge graph. Do not create orphan root-level
+research documents.
 
 1. **API Research** - External APIs, SDKs, dependencies with verified documentation
 2. **Architecture Decisions** - Why certain patterns were chosen
@@ -58,7 +62,8 @@ pkill -f 'claude.*dangerously-skip-permissions'
 
 ### 0.4 State Machine Documentation
 
-Every RESEARCH.md must include state machine diagrams using the 13-section audit format:
+Every durable research promotion must include state machine diagrams when the
+workflow has meaningful states:
 
 1. State diagrams (Mermaid)
 2. State details table
@@ -112,10 +117,10 @@ For bootstrap tasks, use subagents with verification:
 
 | Channel | What Users Get | Cost |
 |---------|----------------|------|
-| **Website** | Built DMG, ready to install | $5 |
-| **GitHub** | Source code (clone & build yourself) | Free |
+| **Website** | Signed, notarized direct download | $5 |
+| **GitHub** | Transparent source (clone and build yourself) | Free |
 
-**No Homebrew distribution.** No free DMGs on GitHub releases.
+**No Homebrew distribution.** No packaged downloads on GitHub releases.
 
 ---
 
@@ -129,7 +134,7 @@ ProjectName/
 │   ├── .gitignore
 │   ├── settings.json
 │   └── rules/                  # Copy from SaneProcess
-├── RESEARCH.md                 # Single source of truth (state machines, APIs, decisions)
+├── .codex/research.md          # Active research cache when Codex owns the workflow
 ├── .github/
 │   ├── FUNDING.yml
 │   ├── workflows/
@@ -475,9 +480,8 @@ try! png.write(to: URL(fileURLWithPath: "scripts/dmg-resources/dmg-background.pn
 
 ### 5.1 Deploy Command
 ```bash
-CLOUDFLARE_ACCOUNT_ID=$CLOUDFLARE_ACCOUNT_ID \
-  npx wrangler pages deploy ./docs --project-name=projectname-site \
-  --commit-dirty=true --commit-message="Deploy website"
+bash ~/SaneApps/infra/SaneProcess/scripts/release.sh \
+  --project "$(pwd)" --website-only
 ```
 
 **DO NOT use GitHub Pages.** All SaneApps websites use Cloudflare Pages.
@@ -678,7 +682,8 @@ alias gpn='cd ~/Projects/ProjectName && gemini'
 
 - Create `AGENTS.md` in the project root for the shared, client-neutral workflow.
 - Keep `CLAUDE.md` only for Claude-specific overlays.
-- For Codex, commit shared team skills under `.agents/skills/`.
+- Keep canonical shared skills in `~/.codex/skills`; commit `.agents/skills/`
+  only when the repo needs a checked-in compatibility mirror.
 
 ---
 
@@ -724,11 +729,11 @@ struct MyTests {
 [ ] Notarized
 [ ] Stapled
 [ ] appcast.xml updated (for Sparkle auto-updates)
-[ ] Upload DMG to payment provider (Lemon Squeezy)
+[ ] Sync hosted download file in Lemon Squeezy dashboard if product config requires it
 [ ] Announce on social media
 ```
 
-**Note:** No GitHub releases with DMGs. No Homebrew. Paid users get DMG from website.
+**Note:** No GitHub releases with packaged downloads. No Homebrew. Paid users get the signed download from the website.
 
 ---
 
@@ -736,7 +741,7 @@ struct MyTests {
 
 | Project | Location | Notes |
 |---------|----------|-------|
-| **SaneBar** | `~/SaneApps/apps/SaneBar` | Full mature setup, menu bar app, weekly GitHub Actions release |
+| **SaneBar** | `~/SaneApps/apps/SaneBar` | Full mature setup, menu bar app, canonical SaneProcess release lane |
 | **SaneClip** | `~/SaneApps/apps/SaneClip` | Clipboard manager, $5 paid |
 | **SaneSync** | `~/SaneApps/apps/SaneSync` | Cloud sync (WIP) |
 | **SaneHosts** | `~/SaneApps/apps/SaneHosts` | Hosts file manager |
@@ -761,7 +766,7 @@ ps aux | grep claude | grep -v grep  # Check for stale processes
 ```
 
 ### Phase 1: Research & Planning
-1. Create RESEARCH.md with:
+1. Update the project research cache with:
    - API research (use apple-docs, context7, github MCPs)
    - State machine diagrams (Mermaid)
    - Architecture decisions
@@ -774,23 +779,23 @@ ps aux | grep claude | grep -v grep  # Check for stale processes
 6. Copy `fastlane/` folder, update bundle ID
 
 ### Phase 3: Build & Test
-7. Write code following RESEARCH.md design
+7. Write code following the verified research/cache decisions
 8. Tests must pass (Swift Testing, not XCTest)
 9. Build must succeed
 
 ### Phase 4: Distribution Setup
 10. Set up `docs/` with index.html skeleton
-11. Create Cloudflare Pages project and deploy website
+11. Create Cloudflare Pages project and deploy website through `release.sh --website-only`
 12. Generate Sparkle keys, add to Info.plist
-13. Set up Lemon Squeezy store for $5 DMG sales
+13. Set up Lemon Squeezy store for $5 direct-download sales
 14. Add alias to `~/.zshrc`
 
 ### Phase 5: Release
-14. First release: `./scripts/SaneMaster.rb release`
-15. Upload DMG to Lemon Squeezy
+14. First release: `bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project "$(pwd)" --full --version 1.0.0 --notes "..." --deploy`
+15. Sync hosted file in Lemon Squeezy dashboard if direct-download product config requires it
 16. Kill caffeinate when done
 
 **Key differences:**
 - Research comes FIRST, not during coding
-- No Homebrew, no free DMGs on GitHub
-- Source free on GitHub, built DMG costs $5 on website
+- No Homebrew, no packaged downloads on GitHub
+- Transparent source on GitHub, signed direct download costs $5 on website

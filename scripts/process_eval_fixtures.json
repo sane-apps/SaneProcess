@@ -1,0 +1,235 @@
+{
+  "version": 1,
+  "traces": [
+    {
+      "id": "support_reply_receipt",
+      "description": "Support replies prove work inbox review, draft approval, hash gate, send, and delivery verification.",
+      "events": [
+        { "type": "command", "name": "check_inbox check" },
+        { "type": "command", "name": "check_inbox review 123" },
+        { "type": "artifact", "name": "exact_draft_shown" },
+        { "type": "approval", "name": "user_approved_reply_hash" },
+        { "type": "command", "name": "check_inbox reply 123" },
+        { "type": "command", "name": "check_inbox check-reply 123" }
+      ],
+      "expect": {
+        "required_events": [
+          "check_inbox review",
+          "exact_draft_shown",
+          "user_approved_reply_hash",
+          "check_inbox reply",
+          "check_inbox check-reply"
+        ],
+        "ordered_events": [
+          "check_inbox review",
+          "exact_draft_shown",
+          "user_approved_reply_hash",
+          "check_inbox reply",
+          "check_inbox check-reply"
+        ],
+        "forbidden_events": ["gmail", "manual curl"]
+      }
+    },
+    {
+      "id": "release_receipt",
+      "description": "Release work proves versioning, preflight, privacy metadata, notes audit, customer UI receipt, and deploy path.",
+      "events": [
+        { "type": "artifact", "name": "version_bumped" },
+        { "type": "command", "name": "release_preflight" },
+        { "type": "command", "name": "appstore_preflight" },
+        { "type": "artifact", "name": "privacy_url_ok" },
+        { "type": "artifact", "name": "release_notes_audited" },
+        { "type": "command", "name": "customer_ui_contract" },
+        { "type": "command", "name": "release --full --deploy" }
+      ],
+      "expect": {
+        "required_events": [
+          "version_bumped",
+          "release_preflight",
+          "appstore_preflight",
+          "privacy_url_ok",
+          "release_notes_audited",
+          "customer_ui_contract",
+          "release --full"
+        ],
+        "ordered_events": ["version_bumped", "release_preflight", "release --full"],
+        "forbidden_events": ["same_version_release", "manual dmg", "github pages"]
+      }
+    },
+    {
+      "id": "support_promise_release_notes_receipt",
+      "description": "Customer-facing promises prove review, structured promise logging, shipped fix evidence, release-note audit, and follow-up check.",
+      "events": [
+        { "type": "command", "name": "check_inbox review 123" },
+        { "type": "artifact", "name": "support_promise_logged issue=SaneBar-drag-recovery" },
+        { "type": "artifact", "name": "fix_shipped issue=SaneBar-drag-recovery" },
+        { "type": "artifact", "name": "release_notes_audited includes=SaneBar-drag-recovery" },
+        { "type": "command", "name": "check_inbox check-reply 123" }
+      ],
+      "expect": {
+        "required_events": [
+          "check_inbox review",
+          "support_promise_logged",
+          "fix_shipped",
+          "release_notes_audited",
+          "check_inbox check-reply"
+        ],
+        "ordered_events": [
+          "support_promise_logged",
+          "fix_shipped",
+          "release_notes_audited"
+        ],
+        "forbidden_events": ["release without support promise audit"]
+      }
+    },
+    {
+      "id": "ui_runtime_receipt",
+      "description": "Customer-visible UI verification proves Mini host, fresh build, source fingerprint, clean images, and action-level artifacts.",
+      "events": [
+        { "type": "host", "name": "mini" },
+        { "type": "command", "name": "test_mode" },
+        { "type": "artifact", "name": "source_fingerprint_current" },
+        { "type": "command", "name": "visual_smoke" },
+        { "type": "artifact", "name": "clean_screenshot_artifact" },
+        { "type": "command", "name": "customer_ui_sweep" }
+      ],
+      "expect": {
+        "required_events": [
+          "mini",
+          "test_mode",
+          "source_fingerprint_current",
+          "visual_smoke",
+          "clean_screenshot_artifact",
+          "customer_ui_sweep"
+        ],
+        "forbidden_events": ["local launch", "stale binary", "obstructed screenshot", "empty_state_only"]
+      }
+    },
+    {
+      "id": "tool_discovery_receipt",
+      "description": "Tooling gaps prove registry, discovery receipt, scripts/hooks/skills/docs search, and justification before new workarounds.",
+      "events": [
+        { "type": "artifact", "name": "skill_registry_read" },
+        { "type": "command", "name": "tool_discovery --query workflow receipt" },
+        { "type": "search", "name": "scripts searched" },
+        { "type": "search", "name": "hooks searched" },
+        { "type": "search", "name": "skills searched" },
+        { "type": "artifact", "name": "tool_gap_justified" }
+      ],
+      "expect": {
+        "required_events": [
+          "skill_registry_read",
+          "tool_discovery --query",
+          "scripts searched",
+          "hooks searched",
+          "skills searched",
+          "tool_gap_justified"
+        ],
+        "ordered_events": ["skill_registry_read", "tool_discovery --query", "tool_gap_justified"],
+        "forbidden_events": ["unresearched workaround", "new tool without receipt"]
+      }
+    },
+    {
+      "id": "subagent_hygiene_receipt",
+      "description": "Subagent delegation proves stale cleanup, mandatory prompt fragments, stop-on-hook-block, Mini-first, and close-after-result.",
+      "events": [
+        { "type": "command", "name": "stale_subagent_cleanup" },
+        { "type": "subagent_prompt", "name": "read hooks and active config" },
+        { "type": "subagent_prompt", "name": "stop on hook block" },
+        { "type": "subagent_prompt", "name": "never build or launch locally" },
+        { "type": "subagent_prompt", "name": "use ssh mini" },
+        { "type": "metric", "name": "subagent_spawned" },
+        { "type": "metric", "name": "subagent_closed" }
+      ],
+      "expect": {
+        "required_events": [
+          "stale_subagent_cleanup",
+          "read hooks",
+          "stop on hook block",
+          "never build or launch locally",
+          "ssh mini",
+          "subagent_spawned",
+          "subagent_closed"
+        ],
+        "forbidden_events": ["ignored hook block", "local build", "local launch"]
+      }
+    },
+    {
+      "id": "session_start_end_receipt",
+      "description": "Meaningful sessions prove startup context and ending evidence instead of relying on a naked SOP number.",
+      "events": [
+        { "type": "artifact", "name": "session_handoff_read" },
+        { "type": "artifact", "name": "serena_memory_checked" },
+        { "type": "artifact", "name": "knowledge_graph_checked" },
+        { "type": "artifact", "name": "skill_registry_read" },
+        { "type": "command", "name": "validation_report" },
+        { "type": "command", "name": "verify" },
+        { "type": "artifact", "name": "session_handoff_updated" },
+        { "type": "artifact", "name": "memory_updated" },
+        { "type": "artifact", "name": "knowledge_graph_updated" },
+        { "type": "artifact", "name": "research_topics_captured" },
+        { "type": "metric", "name": "session_end" },
+        { "type": "metric", "name": "sop_score_with_cap_reason" }
+      ],
+      "expect": {
+        "required_events": [
+          "session_handoff_read",
+          "serena_memory_checked",
+          "knowledge_graph_checked",
+          "skill_registry_read",
+          "validation_report",
+          "verify",
+          "session_handoff_updated",
+          "memory_updated",
+          "knowledge_graph_updated",
+          "research_topics_captured",
+          "session_end",
+          "sop_score_with_cap_reason"
+        ],
+        "ordered_events": ["session_handoff_read", "validation_report", "verify", "session_end"],
+        "forbidden_events": ["sop_score_without_evidence"]
+      }
+    },
+    {
+      "id": "sop_score_cap_receipt",
+      "description": "SOP self-assessment proves objective cap reasons when verification or evidence is missing.",
+      "events": [
+        { "type": "metric", "name": "verify failed tests_run=0" },
+        { "type": "metric", "name": "verify recovered" },
+        { "type": "metric", "name": "session_end sop_score=8" },
+        { "type": "artifact", "name": "score_cap_reason=recovered_verify_failure" },
+        { "type": "artifact", "name": "required_evidence_missing=false" }
+      ],
+      "expect": {
+        "required_events": [
+          "verify failed",
+          "verify recovered",
+          "session_end sop_score=8",
+          "score_cap_reason=recovered_verify_failure",
+          "required_evidence_missing=false"
+        ],
+        "forbidden_events": ["sop_score=10", "cap_reason=none"]
+      }
+    },
+    {
+      "id": "skill_lifecycle_receipt",
+      "description": "Skill maintenance proves route quality, duplicate-name drift review, and explicit consolidation/archive decisions.",
+      "events": [
+        { "type": "command", "name": "skill_lint" },
+        { "type": "artifact", "name": "duplicate_skill_drift_reviewed" },
+        { "type": "artifact", "name": "stale_skill_action_decided" },
+        { "type": "artifact", "name": "client_specific_skill_drift_documented" }
+      ],
+      "expect": {
+        "required_events": [
+          "skill_lint",
+          "duplicate_skill_drift_reviewed",
+          "stale_skill_action_decided",
+          "client_specific_skill_drift_documented"
+        ],
+        "ordered_events": ["skill_lint", "duplicate_skill_drift_reviewed", "stale_skill_action_decided"],
+        "forbidden_events": ["silent duplicate skill", "undocumented skill drift"]
+      }
+    }
+  ]
+}

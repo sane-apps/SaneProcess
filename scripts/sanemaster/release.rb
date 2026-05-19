@@ -16,6 +16,20 @@ module SaneMasterModules
   # Unified release entrypoint (delegates to SaneProcess release.sh)
   module Release
     ENV_CACHE_FILE = File.expand_path(ENV.fetch('SANE_ENV_CACHE_FILE', '~/.config/nv/env'))
+    DEFAULT_LAUNCH_READY_MAX_PREFLIGHT_AGE_DAYS = 7
+    REQUIRED_LAUNCH_PACKAGE_FIELDS = %w[
+      status
+      audience
+      problem
+      solution
+      primary_story
+      pricing_proof
+      privacy_proof
+      proof_assets
+      channel_plan
+      go_no_go
+    ].freeze
+    REQUIRED_LAUNCH_PROOF_ASSET_FIELDS = %w[type status].freeze
 
     def appcast_drift_failure_only?(verify_output)
       xcresult_path = verify_output[/Analyzing result:\s+(.+\.xcresult)/, 1]
@@ -1387,6 +1401,42 @@ module SaneMasterModules
       status
     end
 
+    def appstore_iap_auto_renewable_subscription?(appstore_config)
+      type = appstore_config.dig('iap', 'type').to_s.strip
+      type == 'auto_renewable_subscription' || type == 'subscription' || type.include?('auto_renewable')
+    end
+
+    def asc_subscription_status(app_id:, product_id:)
+      return nil if app_id.to_s.strip.empty? || product_id.to_s.strip.empty?
+
+      token = appstore_connect_token
+      return nil if token.nil?
+
+      response = asc_get_json("/apps/#{app_id}/subscriptionGroups?include=subscriptions&limit=200", token: token)
+      return nil unless response.is_a?(Hash)
+
+      subscriptions = Array(response['included']).select { |entry| entry['type'] == 'subscriptions' }
+      if subscriptions.empty?
+        Array(response['data']).each do |group|
+          group_id = group['id'].to_s.strip
+          next if group_id.empty?
+
+          group_response = asc_get_json("/subscriptionGroups/#{group_id}/subscriptions?limit=200", token: token)
+          subscriptions.concat(Array(group_response&.dig('data'))) if group_response.is_a?(Hash)
+        end
+      end
+
+      row = subscriptions.find do |entry|
+        entry.dig('attributes', 'productId').to_s.strip == product_id.to_s.strip
+      end
+      return { exists: false, state: nil } unless row
+
+      {
+        exists: true,
+        state: row.dig('attributes', 'state').to_s.strip
+      }
+    end
+
     APP_STORE_EDITABLE_STATES = %w[
       PREPARE_FOR_SUBMISSION
       REJECTED
@@ -1645,6 +1695,249 @@ module SaneMasterModules
       nil
     end
 
+    def launch_readiness(args)
+      json_mode = args.delete('--json')
+      max_age_days = parse_launch_readiness_max_age_days(args)
+      report = launch_readiness_report(config: saneprocess_config, max_preflight_age_days: max_age_days)
+
+      if json_mode
+        puts JSON.pretty_generate(report)
+      else
+        puts '📣 --- [ LAUNCH READINESS ] ---'
+        puts "Project: #{Dir.pwd}"
+        puts "App: #{report[:app]}"
+        puts "Classification: #{report[:classification]}" unless report[:classification].to_s.empty?
+        puts "Rule: #{report[:rule]}" unless report[:rule].to_s.empty?
+        puts "Latest release preflight: #{report[:release_preflight_status]}#{report[:release_preflight_age_days] ? " (#{report[:release_preflight_age_days]} day(s) old)" : ''}"
+        puts ''
+
+        if report[:issues].empty? && report[:warnings].empty?
+          puts '✅ Launch-ready'
+        else
+          report[:issues].each { |issue| puts "🔴 #{issue}" }
+          report[:warnings].each { |warning| puts "🟡 #{warning}" }
+        end
+      end
+
+      exit 1 unless report[:ok]
+
+      report
+    rescue ArgumentError => e
+      warn "Error: #{e.message}"
+      exit 1
+    end
+
+    def parse_launch_readiness_max_age_days(args)
+      raw_value = extract_flag_value(args, '--max-age-days')
+      return DEFAULT_LAUNCH_READY_MAX_PREFLIGHT_AGE_DAYS if raw_value.nil?
+
+      value = Integer(raw_value)
+      raise ArgumentError, '--max-age-days must be greater than 0' if value <= 0
+
+      value
+    rescue ArgumentError
+      raise ArgumentError, '--max-age-days must be a positive integer'
+    end
+
+    def launch_readiness_report(config:, max_preflight_age_days: DEFAULT_LAUNCH_READY_MAX_PREFLIGHT_AGE_DAYS)
+      app_name = metadata_value(config, 'name') || File.basename(Dir.pwd)
+      report = {
+        ok: true,
+        app: app_name,
+        issues: [],
+        warnings: [],
+        classification: '',
+        rule: '',
+        outreach_path: File.join(Dir.pwd, '.outreach.yml'),
+        release_preflight_path: File.join(Dir.pwd, 'outputs', 'release_preflight_status.json'),
+        release_preflight_status: 'missing',
+        release_preflight_age_days: nil
+      }
+
+      unless File.exist?(report[:outreach_path])
+        report[:issues] << 'Missing .outreach.yml launch source of truth'
+        report[:ok] = false
+        return report
+      end
+
+      outreach = YAML.safe_load(safe_read(report[:outreach_path])) || {}
+      launch_calendar = metadata_node(outreach, 'launch_calendar')
+      unless launch_calendar.is_a?(Hash)
+        report[:issues] << 'Missing launch_calendar in .outreach.yml'
+        report[:ok] = false
+        return report
+      end
+
+      report[:classification] = metadata_value(launch_calendar, 'classification').to_s.strip
+      report[:rule] = metadata_value(launch_calendar, 'rule').to_s.strip
+
+      report[:issues] << 'launch_calendar.classification is required' if report[:classification].empty?
+      report[:issues] << 'launch_calendar.rule is required' if report[:rule].empty?
+      validate_launch_offer_window!(launch_calendar, report)
+
+      Array(metadata_node(launch_calendar, 'blockers')).map { |item| item.to_s.strip }.reject(&:empty?).each do |blocker|
+        report[:issues] << "Outstanding launch blocker: #{blocker}"
+      end
+
+      Array(metadata_node(launch_calendar, 'required_before_meaningful_launch')).map { |item| item.to_s.strip }.reject(&:empty?).each do |requirement|
+        report[:issues] << "Missing meaningful-launch requirement completion: #{requirement}"
+      end
+
+      Array(metadata_node(launch_calendar, 'scheduled')).each_with_index do |entry, index|
+        unless entry.is_a?(Hash)
+          report[:issues] << "launch_calendar.scheduled[#{index}] must be a mapping"
+          next
+        end
+
+        missing_fields = []
+        has_timing = (!metadata_value(entry, 'date').to_s.strip.empty? && !metadata_value(entry, 'time').to_s.strip.empty?) ||
+                     !metadata_value(entry, 'cadence').to_s.strip.empty?
+        missing_fields << 'date/time or cadence' unless has_timing
+
+        %w[channel action gate success_metric].each do |field|
+          missing_fields << field if metadata_value(entry, field).to_s.strip.empty?
+        end
+        next if missing_fields.empty?
+
+        report[:issues] << "launch_calendar.scheduled[#{index}] missing #{missing_fields.join(', ')}"
+      end
+
+      public_posting_policy = metadata_node(outreach, 'public_posting_policy')
+      if public_posting_policy.is_a?(Hash)
+        report[:warnings] << 'public_posting_policy.approval_required should be true before automation posts publicly' unless public_posting_policy['approval_required'] == true
+        if public_posting_policy['disclosure_required'].to_s.strip.empty?
+          report[:warnings] << 'public_posting_policy.disclosure_required should explain the builder disclosure rule'
+        elsif !public_posting_policy['disclosure_required'].to_s.include?('I built')
+          report[:warnings] << "public_posting_policy.disclosure_required should include the exact 'I built ...' disclosure"
+        end
+      else
+        report[:warnings] << 'Missing public_posting_policy in .outreach.yml'
+      end
+
+      validate_launch_package!(outreach, report)
+
+      unless File.exist?(report[:release_preflight_path])
+        report[:issues] << 'Missing outputs/release_preflight_status.json; run ./scripts/SaneMaster.rb release_preflight first'
+        report[:ok] = false
+        return report
+      end
+
+      preflight_status = JSON.parse(File.read(report[:release_preflight_path])) rescue nil
+      unless preflight_status.is_a?(Hash)
+        report[:issues] << 'release_preflight_status.json is unreadable'
+        report[:ok] = false
+        return report
+      end
+
+      report[:release_preflight_status] = preflight_status['status'].to_s
+      generated_at = begin
+        Time.parse(preflight_status['generatedAt'].to_s)
+      rescue StandardError
+        nil
+      end
+      if generated_at
+        age_days = ((Time.now - generated_at) / 86_400.0).round(2)
+        report[:release_preflight_age_days] = age_days
+        if age_days > max_preflight_age_days
+          report[:issues] << "Latest release_preflight proof is stale (#{age_days} days old; max #{max_preflight_age_days})"
+        end
+      else
+        report[:issues] << 'release_preflight_status.json is missing a valid generatedAt timestamp'
+      end
+
+      if report[:release_preflight_status] != 'passed'
+        issue_count = preflight_status['issueCount']
+        suffix = issue_count ? " (#{issue_count} issue(s))" : ''
+        report[:issues] << "Latest release_preflight is not green: #{report[:release_preflight_status]}#{suffix}"
+      end
+
+      warning_count = preflight_status['warningCount'].to_i
+      if warning_count.positive?
+        report[:warnings] << "Latest release_preflight still has #{warning_count} warning(s)"
+      end
+
+      report[:ok] = report[:issues].empty?
+      report
+    end
+
+    def validate_launch_offer_window!(launch_calendar, report)
+      offer_window = metadata_node(launch_calendar, 'offer_window')
+      return unless offer_window.is_a?(Hash)
+
+      message = metadata_value(offer_window, 'message').to_s.strip
+      ends = metadata_value(offer_window, 'ends').to_s.strip
+      report[:warnings] << 'launch_calendar.offer_window.message is required for date-bound launch offer copy' if message.empty?
+      if ends.empty?
+        report[:warnings] << 'launch_calendar.offer_window.ends is required for date-bound launch offer copy'
+        return
+      end
+
+      end_date = Date.parse(ends)
+      if end_date < Date.today
+        report[:issues] << "launch_calendar.offer_window ended on #{end_date}; remove or replace stale offer copy before launch work"
+      end
+    rescue ArgumentError
+      report[:issues] << "launch_calendar.offer_window.ends is not a valid date: #{ends.inspect}"
+    end
+
+    def validate_launch_package!(outreach, report)
+      launch_package = metadata_node(outreach, 'launch_package')
+      unless launch_package.is_a?(Hash)
+        report[:issues] << 'Missing launch_package in .outreach.yml'
+        return
+      end
+
+      REQUIRED_LAUNCH_PACKAGE_FIELDS.each do |field|
+        report[:issues] << "launch_package.#{field} is required" if launch_value_blank?(metadata_value(launch_package, field))
+      end
+      report[:issues] << 'launch_package.weak_launch_blockers is required' unless launch_package.key?('weak_launch_blockers')
+
+      proof_assets = metadata_node(launch_package, 'proof_assets')
+      if proof_assets.is_a?(Array) && !proof_assets.empty?
+        proof_assets.each_with_index do |asset, index|
+          unless asset.is_a?(Hash)
+            report[:issues] << "launch_package.proof_assets[#{index}] must be a mapping"
+            next
+          end
+
+          REQUIRED_LAUNCH_PROOF_ASSET_FIELDS.each do |field|
+            report[:issues] << "launch_package.proof_assets[#{index}].#{field} is required" if launch_value_blank?(metadata_value(asset, field))
+          end
+          if launch_value_blank?(metadata_value(asset, 'path')) && launch_value_blank?(metadata_value(asset, 'url'))
+            report[:issues] << "launch_package.proof_assets[#{index}] needs path or url"
+          end
+        end
+      else
+        report[:issues] << 'launch_package.proof_assets must contain at least one visual/video asset'
+      end
+
+      channel_plan = metadata_node(launch_package, 'channel_plan')
+      unless channel_plan.is_a?(Hash) || channel_plan.is_a?(Array)
+        report[:issues] << 'launch_package.channel_plan must be a mapping or list'
+      end
+
+      blockers = Array(metadata_node(launch_package, 'weak_launch_blockers')).map { |item| item.to_s.strip }.reject(&:empty?)
+      blockers.each do |blocker|
+        report[:issues] << "Outstanding weak-launch blocker: #{blocker}"
+      end
+    end
+
+    def launch_value_blank?(value)
+      value.nil? || (value.respond_to?(:empty?) && value.empty?) || value.to_s.strip.empty?
+    end
+
+    def metadata_node(hash, *keys)
+      return nil unless hash.is_a?(Hash)
+
+      keys.each do |key|
+        key_str = key.to_s
+        key_sym = key_str.to_sym
+        return hash[key_str] if hash.key?(key_str)
+        return hash[key_sym] if hash.key?(key_sym)
+      end
+      nil
+    end
+
     def appstore_metadata_for_platform(appstore_config, platform)
       metadata_cfg = appstore_config['metadata'].is_a?(Hash) ? appstore_config['metadata'] : {}
       default_cfg = metadata_cfg['default'].is_a?(Hash) ? metadata_cfg['default'] : {}
@@ -1684,6 +1977,33 @@ module SaneMasterModules
       }
 
       [metadata, platform_cfg]
+    end
+
+    def appstore_platforms(appstore_config)
+      Array(appstore_config['platforms'] || ['macos'])
+        .map { |platform| platform.to_s.downcase }
+        .reject(&:empty?)
+    end
+
+    def ios_only_appstore_submission?(platforms)
+      normalized = Array(platforms).map { |platform| platform.to_s.downcase }
+      normalized.include?('ios') && !normalized.include?('macos')
+    end
+
+    def appstore_deployment_target_summary(config:, appstore_config:, project_yml_content:)
+      explicit = config.dig('release', 'min_system_version') || appstore_config['min_system_version']
+      platforms = appstore_platforms(appstore_config)
+      return "macOS #{explicit}" if !explicit.to_s.empty? && platforms.include?('macos')
+      return "iOS #{explicit}" if !explicit.to_s.empty? && ios_only_appstore_submission?(platforms)
+      return explicit.to_s unless explicit.to_s.empty?
+
+      if platforms.include?('ios')
+        ios_target = project_yml_content[/deploymentTarget:\s*\n\s*iOS:\s*["']?([0-9.]+)/, 1] ||
+                     project_yml_content[/IPHONEOS_DEPLOYMENT_TARGET:\s*["']?([0-9.]+)/, 1]
+        return "iOS #{ios_target}" unless ios_target.to_s.empty?
+      end
+
+      nil
     end
 
     def appstore_listing_copy_audit(appstore_config:, platforms:, app_name:)
@@ -2664,8 +2984,8 @@ module SaneMasterModules
         elsif cask_version == project_version
           puts "✅ (v#{cask_version})"
         else
-          puts "⚠️  cask has v#{cask_version}, project is v#{project_version}"
-          warnings << "Homebrew cask version mismatch: cask=#{cask_version} project=#{project_version}"
+          puts "❌ cask has v#{cask_version}, project is v#{project_version}"
+          issues << "Homebrew cask version mismatch: cask=#{cask_version} project=#{project_version}"
         end
       else
         puts "⚠️  returned #{tap_status}"
@@ -2689,6 +3009,24 @@ module SaneMasterModules
       if !website_domain.empty?
         live_appcast_body = fetch_text("https://#{website_domain}/appcast.xml")
         live_appcast_item = parse_latest_appcast_item(live_appcast_body) unless live_appcast_body.empty?
+      end
+
+      # 10a. Website download link version drift
+      print '  Website download link version... '
+      if website_domain.empty? || live_appcast_item[:version].to_s.empty?
+        puts '⏭️  no website/appcast version'
+      else
+        website_body = fetch_text("https://#{website_domain}")
+        website_version = website_body[/#{Regexp.escape(preflight_app_name)}-(\d+\.\d+(?:\.\d+)?)\.(?:zip|dmg)/, 1].to_s.strip
+        if website_version.empty?
+          puts '⚠️  no direct versioned archive link found'
+          warnings << "#{preflight_app_name} website has no direct versioned archive link to compare against appcast"
+        elsif website_version == live_appcast_item[:version]
+          puts "✅ #{preflight_app_name} v#{website_version}"
+        else
+          puts "❌ DRIFT: website=#{website_version}, appcast=#{live_appcast_item[:version]}"
+          issues << "Website download link serves #{preflight_app_name}-#{website_version} but live appcast is at #{live_appcast_item[:version]}"
+        end
       end
 
       webhook_snapshot = fetch_live_email_worker_snapshot(
@@ -2819,6 +3157,7 @@ module SaneMasterModules
 
       app_name = config['name'] || File.basename(Dir.pwd)
       appstore_config = config['appstore'] || {}
+      platforms = appstore_platforms(appstore_config)
 
       unless appstore_config['enabled'] == true
         puts '  ⏭️  App Store lane disabled in .saneprocess; skipping App Store preflight.'
@@ -2916,6 +3255,8 @@ module SaneMasterModules
           puts '  │   ⚠️  No App Sandbox entitlement (required for MAS)'
           warnings << "No com.apple.security.app-sandbox in entitlements — required for Mac App Store"
         end
+      elsif ios_only_appstore_submission?(platforms)
+        puts '✅ not required for iOS-only lane'
       else
         puts '❌ no .entitlements file found'
         issues << 'No entitlements file found'
@@ -2933,9 +3274,13 @@ module SaneMasterModules
 
       # 2d. Deployment target
       print '  │ Deployment target... '
-      min_ver = config.dig('release', 'min_system_version')
-      if min_ver
-        puts "✅ macOS #{min_ver}"
+      deployment_target = appstore_deployment_target_summary(
+        config: config,
+        appstore_config: appstore_config,
+        project_yml_content: project_yml_content
+      )
+      if deployment_target
+        puts "✅ #{deployment_target}"
       else
         puts '⚠️  not specified in .saneprocess'
         warnings << 'No min_system_version in .saneprocess — verify deployment target'
@@ -2948,7 +3293,6 @@ module SaneMasterModules
       # ═══════════════════════════════════════════
       puts '  ├── App Store Assets ──'
       screenshots_config = appstore_config['screenshots'] || {}
-      platforms = appstore_config['platforms'] || ['macos']
 
       # 3a. App icon (1024x1024)
       print '  │ App icon (1024x1024)... '
@@ -3362,16 +3706,22 @@ module SaneMasterModules
         puts '⚠️  skipped (no ASC app_id)'
         warnings << 'Cannot verify IAP in App Store Connect without appstore.app_id'
       else
-        iap_status = asc_iap_status(app_id: asc_app_id, product_id: configured_product_id)
+        subscription_product = appstore_iap_auto_renewable_subscription?(appstore_config)
+        iap_status = if subscription_product
+                       asc_subscription_status(app_id: asc_app_id, product_id: configured_product_id)
+                     else
+                       asc_iap_status(app_id: asc_app_id, product_id: configured_product_id)
+                     end
+        record_label = subscription_product ? 'subscription' : 'IAP'
         case iap_status
         when Hash
           if !iap_status[:exists]
             puts "❌ #{configured_product_id} not found"
-            issues << "App Store Connect has no in-app purchase with product_id #{configured_product_id}"
+            issues << "App Store Connect has no #{record_label} with product_id #{configured_product_id}"
           elsif iap_status[:rejected_localization]
             puts "❌ #{configured_product_id} (#{iap_status[:state]})"
             issues << "App Store Connect IAP #{configured_product_id} has a REJECTED localization — Apple requires a new product_id for a replacement IAP."
-          elsif %w[WAITING_FOR_REVIEW IN_REVIEW APPROVED READY_FOR_SALE].include?(iap_status[:state])
+          elsif %w[WAITING_FOR_REVIEW IN_REVIEW PENDING_BINARY_APPROVAL APPROVED READY_FOR_SALE].include?(iap_status[:state])
             puts "✅ #{configured_product_id} (#{iap_status[:state]})"
           elsif iap_status[:state] == 'READY_TO_SUBMIT'
             attachable_lane_states = (APP_STORE_EDITABLE_STATES + APP_STORE_ACTIVE_SUBMISSION_STATES).uniq
@@ -3389,21 +3739,21 @@ module SaneMasterModules
 
             if ui_attached
               puts "⚠️  #{configured_product_id} (READY_TO_SUBMIT, attached on version page)"
-              warnings << "App Store Connect still reports IAP #{configured_product_id} as READY_TO_SUBMIT, but Safari verified it is attached under Included Assets for #{ready_lane_platform} #{version_str}"
+              warnings << "App Store Connect still reports #{record_label} #{configured_product_id} as READY_TO_SUBMIT, but Safari verified it is attached under Included Assets for #{ready_lane_platform} #{version_str}"
             else
               puts "❌ #{configured_product_id} (READY_TO_SUBMIT)"
-              issues << "App Store Connect IAP #{configured_product_id} is still READY_TO_SUBMIT — Apple requires it to be added to the app version's In-App Purchases and Subscriptions section before submission."
+              issues << "App Store Connect #{record_label} #{configured_product_id} is still READY_TO_SUBMIT — Apple requires it to be added to the app version's In-App Purchases and Subscriptions section before submission."
             end
           else
             puts "❌ #{configured_product_id} (#{iap_status[:state]})"
-            issues << "App Store Connect IAP #{configured_product_id} exists but is not review-ready (state=#{iap_status[:state]})"
+            issues << "App Store Connect #{record_label} #{configured_product_id} exists but is not review-ready (state=#{iap_status[:state]})"
           end
         when nil
           puts '⚠️  lookup failed'
-          warnings << "Could not verify App Store Connect IAP record for #{configured_product_id}"
+          warnings << "Could not verify App Store Connect #{record_label} record for #{configured_product_id}"
         else
           puts "❌ #{configured_product_id} not found"
-          issues << "App Store Connect has no in-app purchase with product_id #{configured_product_id}"
+          issues << "App Store Connect has no #{record_label} with product_id #{configured_product_id}"
         end
       end
 
@@ -3614,7 +3964,6 @@ module SaneMasterModules
 
       # 5h. Build App Store config and audit resulting artifact for runtime blockers
       print '  │ Compiled App Store artifact audit... '
-      platforms = Array(appstore_config['platforms'] || ['macos']).map(&:to_s)
       if platforms.include?('macos')
         compiled_artifact_verified_clean = false
         begin

@@ -251,6 +251,15 @@ def log_action(tool_name, blocked, reason = nil)
     pid: Process.pid
   }
   File.open(LOG_FILE, 'a') { |f| f.puts(entry.to_json) }
+  SaneProcessMetrics.record(
+    'trajectory_event',
+    source: 'PreToolUse',
+    tool: tool_name,
+    blocked: blocked,
+    rule: reason ? detect_rule_from_reason(reason) : nil,
+    reason: reason&.lines&.first&.strip,
+    pid: Process.pid
+  )
 
   # Track violations in StateManager for SOP scoring
   track_violation(tool_name, reason) if blocked && reason
@@ -291,6 +300,7 @@ def detect_rule_from_reason(reason)
   when /READ REQUIRED DOCS/i then 'session_docs'
   when /STARTUP GATE/i then 'startup_gate'
   when /DEPLOYMENT SAFETY/i then 'deployment_safety'
+  when /MINI-FIRST|LOCAL UI/i then 'mini_first'
   else 'unknown'
   end
 end
@@ -333,6 +343,14 @@ def process_tool(tool_name, tool_input)
 
   # Always check blocked paths first (pass tool_name to allow reads of state files)
   if (reason = SaneToolsChecks.check_blocked_path(tool_input, tool_name, EDIT_TOOLS))
+    log_action(tool_name, true, reason)
+    output_block(reason, tool_name)
+    return 2
+  end
+
+  # Mini-first guard must run before bootstrap allowances. Local UI tools bypass
+  # shell launch checks, so block them at the generic PreToolUse boundary.
+  if (reason = SaneToolsChecks.check_local_ui_tool_guard(tool_name, tool_input))
     log_action(tool_name, true, reason)
     output_block(reason, tool_name)
     return 2

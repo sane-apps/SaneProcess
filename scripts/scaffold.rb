@@ -15,7 +15,7 @@
 #   ~/SaneApps/apps/SaneNotes/
 #   ├── .claude/rules/          (synced from SaneProcess)
 #   ├── .claude/settings.json   (synced from SaneProcess)
-#   ├── .claude/research.md     (empty stub)
+#   ├── .codex/research.md      (active research cache)
 #   ├── .github/
 #   │   ├── FUNDING.yml
 #   │   └── ISSUE_TEMPLATE/bug_report.md
@@ -29,6 +29,7 @@
 #   ├── .saneprocess            (generated)
 #   ├── lefthook.yml            (from template)
 #   ├── Gemfile                 (standard)
+#   ├── AGENTS.md               (shared agent source of truth)
 #   ├── CLAUDE.md               (stub)
 #   ├── README.md               (stub)
 #   ├── DEVELOPMENT.md          (stub)
@@ -75,6 +76,7 @@ def main
 
   # Create directory structure
   dirs = %w[
+    .codex
     .claude/rules
     .github/ISSUE_TEMPLATE
     scripts
@@ -149,7 +151,7 @@ def main
       'launch' => './scripts/SaneMaster.rb launch',
       'logs' => './scripts/SaneMaster.rb logs'
     },
-    'docs' => %w[CLAUDE.md README.md DEVELOPMENT.md ARCHITECTURE.md SESSION_HANDOFF.md],
+    'docs' => %w[AGENTS.md README.md DEVELOPMENT.md ARCHITECTURE.md SESSION_HANDOFF.md],
     'mcps' => %w[apple-docs context7 github xcode],
     'website' => false
   }
@@ -172,8 +174,9 @@ def main
     File.write(File.join(project_dir, 'docs', 'appcast.xml'), appcast)
   end
 
-  # Generate .claude/research.md
-  File.write(File.join(project_dir, '.claude', 'research.md'), <<~MD)
+  # Generate Codex-first research cache. Other clients should read this unless a
+  # project deliberately establishes a different active cache.
+  File.write(File.join(project_dir, '.codex', 'research.md'), <<~MD)
     # Research Cache
 
     Persistent research findings for this project. Limit: 200 lines.
@@ -230,10 +233,30 @@ def main
 
   # Generate 5-doc standard stubs
   today = Date.today.strftime('%Y-%m-%d')
-  generate_stub(project_dir, 'CLAUDE.md', <<~MD)
-    # #{app_name} - Claude Code Instructions
+  generate_stub(project_dir, 'AGENTS.md', <<~MD)
+    # #{app_name} Agent Instructions
 
-    > **Project Docs:** [CLAUDE.md](CLAUDE.md) | [README](README.md) | [DEVELOPMENT](DEVELOPMENT.md) | [ARCHITECTURE](ARCHITECTURE.md) | [SESSION_HANDOFF](SESSION_HANDOFF.md)
+    This file is the shared source of truth for Codex, Claude, Gemini, and other
+    compatible coding agents working in this repo.
+
+    ## Defaults
+
+    - Codex is the primary/default toolset.
+    - Read this file before changing behavior.
+    - Keep active research in `.codex/research.md`.
+    - Promote durable decisions into `ARCHITECTURE.md`, `DEVELOPMENT.md`,
+      `SESSION_HANDOFF.md`, memory, or the knowledge graph.
+    - Use `./scripts/SaneMaster.rb` for build, test, release, analytics, and
+      other stateful SaneApps workflows.
+  MD
+
+  generate_stub(project_dir, 'CLAUDE.md', <<~MD)
+    # #{app_name} Claude Compatibility Overlay
+
+    Read [AGENTS.md](AGENTS.md) first. It is the shared source of truth for
+    Codex, Claude, Gemini, and other compatible coding agents.
+
+    > **Project Docs:** [AGENTS](AGENTS.md) | [README](README.md) | [DEVELOPMENT](DEVELOPMENT.md) | [ARCHITECTURE](ARCHITECTURE.md) | [SESSION_HANDOFF](SESSION_HANDOFF.md)
 
     ## Quick Start
 
@@ -306,8 +329,8 @@ def main
     ## Release Process
 
     ```bash
-    # From SaneProcess:
-    ruby scripts/release.sh --app #{app_name} --full
+    bash ~/SaneApps/infra/SaneProcess/scripts/release.sh \
+      --project "$(pwd)" --full --version X.Y.Z --notes "Customer-facing release notes" --deploy
     ```
   MD
 

@@ -17,6 +17,7 @@ PROJECT_DIR = SelfTestEnvironment.create_project('tier-tests')
 TEST_HOOK_SECRET = ENV['CLAUDE_HOOK_SECRET'] || 'tier-tests-secret'
 ENV['CLAUDE_PROJECT_DIR'] = PROJECT_DIR
 ENV['CLAUDE_HOOK_SECRET'] = TEST_HOOK_SECRET
+ENV['SANEMASTER_PROCESS_METRICS_PATH'] = File.join(PROJECT_DIR, '.sanemaster', 'process_metrics.jsonl')
 
 require_relative '../core/state_manager'
 
@@ -297,6 +298,13 @@ def test_saneprompt
   t.test(:hard, "frustration: 'no, I meant fix it differently'", expected_exit: 0,
          expected_output: 'Frustration detected') do
     t.run_hook({ 'prompt' => 'no, I meant fix it differently' })
+  end
+
+  t.test(:hard, 'visual verification prompt sets screenshot audit requirement', expected_exit: 0,
+         expected_output: 'VISUAL VERIFICATION REQUIRED',
+         state_check: -> { StateManager.get(:visual_verification)[:required] == true }) do
+    StateManager.reset(:visual_verification)
+    t.run_hook({ 'prompt' => 'verify the app visually with screenshots of every customer-facing view' })
   end
 
   t.test(:hard, "frustration: 'I already said fix the login'", expected_exit: 0,
@@ -604,6 +612,22 @@ def test_sanetools
     })
   ensure
     clear_mcp_config
+  end
+
+  t.test(:hard, 'BLOCK: computer-use on MacBook Air', expected_exit: 2,
+         expected_output: 'MINI-FIRST LOCAL UI BLOCKED') do
+    t.run_hook({
+      'tool_name' => 'mcp__computer_use__get_app_state',
+      'tool_input' => { 'app' => 'Safari' }
+    }, 'SANE_FORCE_MACBOOK_AIR_FOR_TEST' => '1')
+  end
+
+  t.test(:hard, 'ALLOW: computer-use when running on Mac Mini', expected_exit: 0,
+         expected_not_output: 'MINI-FIRST LOCAL UI BLOCKED') do
+    t.run_hook({
+      'tool_name' => 'mcp__computer_use__get_app_state',
+      'tool_input' => { 'app' => 'Safari' }
+    }, 'SANE_FORCE_MAC_MINI_FOR_TEST' => '1')
   end
 
   t.test(:hard, 'BLOCK: configured GitHub MCP adds github research requirement', expected_exit: 2,
@@ -995,6 +1019,28 @@ def test_sanetrack
     })
   end
 
+  t.test(:easy, 'tracks UI edit as visual verification required', expected_exit: 0,
+         state_check: -> { StateManager.get(:visual_verification)[:required] == true }) do
+    StateManager.reset(:visual_verification)
+    t.run_hook({
+      'tool_name' => 'Edit',
+      'tool_input' => { 'file_path' => File.join(PROJECT_DIR, 'iOS/Views/ContentView.swift') },
+      'tool_response' => {}
+    })
+  end
+
+  t.test(:easy, 'tracks simulator screenshot command as visual evidence', expected_exit: 0,
+         state_check: -> { StateManager.get(:visual_verification)[:evidence_commands].any? }) do
+    StateManager.reset(:visual_verification)
+    t.run_hook({
+      'tool_name' => 'Bash',
+      'tool_input' => {
+        'command' => 'xcrun simctl io DEVICE screenshot outputs/visual-audit/01-empty-library.png'
+      },
+      'tool_response' => {}
+    })
+  end
+
   t.test(:easy, "detects Read success", expected_exit: 0,
          expected_not_output: '/rewind') do
     t.run_hook({
@@ -1323,6 +1369,7 @@ def test_sanestop
          expected_not_output: 'BLOCKED') do
     require_relative '../core/state_manager'
     StateManager.reset(:handoff_tracking)
+    StateManager.reset(:visual_verification)
     t.run_hook({ 'some_random_key' => 'value' })
   end
 
@@ -1345,7 +1392,39 @@ def test_sanestop
          expected_not_output: 'error') do
     require_relative '../core/state_manager'
     StateManager.reset(:handoff_tracking)
+    StateManager.reset(:visual_verification)
     t.run_hook({})
+  end
+
+  t.test(:hard, 'visual verification requirement blocks stop without screenshots', expected_exit: 2,
+         expected_output: 'VISUAL VERIFICATION BLOCK') do
+    require_relative '../core/state_manager'
+    StateManager.reset(:handoff_tracking)
+    StateManager.update(:visual_verification) do |v|
+      v[:required] = true
+      v[:reason] = 'prompt_requested_visual_verification'
+      v[:required_files] = ['ContentView.swift']
+      v
+    end
+    result = t.run_hook({ 'stop_hook_active' => false })
+    StateManager.reset(:visual_verification)
+    result
+  end
+
+  t.test(:hard, 'visual verification receipt allows stop', expected_exit: 0,
+         expected_not_output: 'VISUAL VERIFICATION BLOCK') do
+    require_relative '../core/state_manager'
+    StateManager.reset(:handoff_tracking)
+    StateManager.update(:visual_verification) do |v|
+      v[:required] = true
+      v[:evidence_commands] = ['xcrun simctl io DEVICE screenshot outputs/visual-audit/01.png']
+      v[:audit_recorded] = true
+      v[:audit_files] = ['SESSION_HANDOFF.md']
+      v
+    end
+    result = t.run_hook({ 'stop_hook_active' => false })
+    StateManager.reset(:visual_verification)
+    result
   end
 
   t.summary

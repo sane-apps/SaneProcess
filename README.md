@@ -7,8 +7,8 @@
 **Workflow guardrails for coding agents and LLM-assisted development.**
 
 SaneProcess gives coding agents a shared operating system for development work: clear instructions, stop conditions, research gates, verification commands, and release checks that keep them from looping, skipping tests, or mutating the wrong files.
-Claude Code gets the strongest native hook enforcement today. Codex and other repo-aware agents can use the same SOP through `AGENTS.md`, reusable skills, MCP, `SaneMaster.rb`, and project scripts.
-The source of truth is client-neutral, so one LLM tool never owns the workflow.
+Codex is the primary SaneApps toolset. Claude Code gets the strongest native hook enforcement today, and other repo-aware agents can use the same SOP through `AGENTS.md`, reusable skills, MCP, `SaneMaster.rb`, and project scripts.
+The source of truth stays client-neutral so switching tools does not create a second workflow.
 
 MIT licensed. Ruby. macOS + Linux. Used across 7 SaneApps repos.
 
@@ -193,6 +193,16 @@ Client adapter state is stored locally in the relevant runtime directory; shared
 | [scripts/codex-bin/README.md](scripts/codex-bin/README.md) | Codex helper source mirrored to `~/.codex/bin/` |
 
 The rule is deliberate: update an existing source-of-truth doc before adding another markdown file.
+
+## Operator Docs Map
+
+| Need | Source |
+|------|--------|
+| Daily agent/operator rules | [AGENTS.md](AGENTS.md) |
+| Command map and verification workflow | [DEVELOPMENT.md](DEVELOPMENT.md) |
+| Architecture, durable decisions, and tradeoffs | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| Hook-layer behavior and tests | [scripts/hooks/README.md](scripts/hooks/README.md) |
+| Codex helper install/runtime notes | [scripts/codex-bin/README.md](scripts/codex-bin/README.md) |
 
 ## Included Skills
 

@@ -66,7 +66,8 @@ Before drafting or approving release notes, do a customer-facing audit instead o
    - recent email replies where I said `next build`, `next release`, or similar
    - recent GitHub issue comments with the same promise
 2. Check recent research and memory:
-   - `.claude/research.md`
+   - `.codex/research.md` first, or the existing project research cache if a
+     different active cache is already documented
    - Serena memory / knowledge graph notes for the app
 3. Check the actual user-facing fixes since the last tag:
    - commits between tags
@@ -137,11 +138,12 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
 5. If App Store Connect or Apple Developer portal state must be inspected or repaired, drive Safari on the Mini directly before looking for new browser tools.
 
 - App Store Connect login and `developer.apple.com` login are separate. Verify both on the Mini.
+- Use one Safari window and one active portal tab for App Store Connect / Apple Developer / Apple ID login work. Do not open a new ASC/developer/idmsa tab for each action; repeated tabs can invalidate the session and lock Passwords/2FA flows.
 - Preferred control path is Mini Safari + AppleScript/JavaScript:
   - `tell application "Safari" to return URL of front document`
   - `tell application "Safari" to do JavaScript "document.body.innerText"` in front document
   - `/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh list-tabs`
-  - `/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh open-read "<url>"`
+  - `/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh open-read-current "<url>"` for ASC/developer/idmsa pages
   - `/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh read <tab_index>`
   - `/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh js <tab_index> "<javascript>"`
   - use `document.querySelector(...)` / `.click()` only after confirming the tab URL is the exact target review/profile page
@@ -355,47 +357,35 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
   --preflight-version-state
 ```
 
-### 2. Upload to Cloudflare R2
+### 2. Publish Through The Release Wrapper
 
-**Use wrangler for R2 uploads (single shared bucket):**
-
-```bash
-npx wrangler r2 object put sanebar-downloads/{App}-{version}.dmg \
-  --file="releases/{App}-{version}.dmg" --content-type="application/octet-stream" --remote
-```
-
-### 3. Update Appcast
-
-Edit `docs/appcast.xml`:
-
-```xml
-<enclosure
-  url="https://dist.{app}.com/updates/{App}-{version}.dmg"
-  sparkle:edSignature="{signature from step 1}"
-  length="{file size in bytes}"
-  type="application/octet-stream" />
-```
-
-### 4. Deploy Website + Appcast to Cloudflare Pages
+The release wrapper owns R2 upload, appcast update, website/appcast deployment,
+postflight checks, and receipt creation. Do not run raw `wrangler` for a normal
+release.
 
 ```bash
-# Option A: Use release.sh --website-only (preferred)
 bash ~/SaneApps/infra/SaneProcess/scripts/release.sh \
-  --project $(pwd) --website-only
-
-# Option B: Manual deploy
-# Copy appcast into website directory
-cp docs/appcast.xml website/appcast.xml
-
-# Deploy to Cloudflare Pages
-CLOUDFLARE_ACCOUNT_ID=$CLOUDFLARE_ACCOUNT_ID \
-  npx wrangler pages deploy ./website --project-name={app}-site \
-  --commit-dirty=true --commit-message="Release v{version}"
-
-# Verify:
-curl -s "https://{app}.com/appcast.xml" | grep 'url="https://dist'
-curl -sI "https://dist.{app}.com/updates/{App}-{version}.dmg" | grep HTTP
+  --project "$(pwd)" --full --version X.Y.Z --notes "Customer-facing release notes" --deploy
 ```
+
+### 3. Website-Only Deploy
+
+Use this for website copy/media/appcast-only changes:
+
+```bash
+bash ~/SaneApps/infra/SaneProcess/scripts/release.sh \
+  --project "$(pwd)" --website-only
+```
+
+### 4. Verify Live Surfaces
+
+```bash
+./scripts/SaneMaster.rb release_postflight --version X.Y.Z --build BUILD
+```
+
+Manual `wrangler` commands are fallback-only. Use them only after the wrapper
+fails, the failure is understood, and the user approves the fallback. Record the
+reason in `SESSION_HANDOFF.md`.
 
 ### 5. Commit & Push
 
@@ -413,21 +403,9 @@ git push
 
 ### Adding New App Route
 
-```bash
-CF_TOKEN=$(security find-generic-password -s cloudflare -a api_token -w)
-
-# Add worker route
-curl -X POST "https://api.cloudflare.com/client/v4/zones/{zone_id}/workers/routes" \
-  -H "Authorization: Bearer $CF_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"pattern": "dist.{app}.com/*", "script": "your-dist-worker"}'
-
-# Add DNS CNAME
-curl -X POST "https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records" \
-  -H "Authorization: Bearer $CF_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"type": "CNAME", "name": "dist", "content": "your-worker.workers.dev", "proxied": true}'
-```
+Use the Cloudflare dashboard or add a guarded SaneMaster automation before making
+repeatable DNS/route changes. Do not paste raw Cloudflare API curls into a normal
+release session.
 
 ## R2 Bucket
 
@@ -441,7 +419,7 @@ curl -X POST "https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records" 
 2. **NEVER use GitHub Pages** for websites — use Cloudflare Pages
 3. **ALWAYS sign DMGs** with Sparkle EdDSA
 4. **ALWAYS verify** downloads work before announcing release
-5. **Use `wrangler`** for Pages deploy and R2 uploads
+5. **Use `release.sh`** for Pages deploy and R2 uploads; raw `wrangler` is fallback-only
 6. **ONE Sparkle key per org** — store in keychain, never generate per-project keys
 7. **Verify SUPublicEDKey in built Info.plist** matches your shared key before shipping
 8. **Homebrew tap sync uses SSH** — `owner/repo` tap names resolve to `git@github.com:owner/repo.git` for headless push

@@ -2,6 +2,7 @@
 
 require 'json'
 require 'open3'
+require 'socket'
 require 'time'
 require 'tmpdir'
 
@@ -72,30 +73,47 @@ module SaneMasterModules
         result = run_tests_with_progress(timeout_seconds: timeout, include_ui: include_ui, signed_tests: signed_tests)
 
         if result[:success]
+          evidence_strength = verify_evidence_strength(result[:tests_run])
           enforce_no_unresolved_permission_prompt!(permission_monitor)
           verify_repo_cleanliness!(before_snapshot: repo_status_before)
           record_process_metric(
             'verify',
             success: true,
             tests_run: result[:tests_run],
+            evidence_strength: evidence_strength,
+            host: verify_metric_host,
             duration_seconds: result[:duration],
             include_ui: include_ui,
             signed_tests: signed_tests
           ) if respond_to?(:record_process_metric)
           record_verify_attempt(success: true, message: 'verify') unless running_from_preflight
+          if result[:tests_run].to_i.zero?
+            puts "\n⚠️  Verify succeeded but counted 0 tests."
+            puts '   Treat this as build/syntax evidence only, not tested evidence.'
+          end
           puts "\n✅ Tests passed! (#{result[:tests_run]} tests, #{result[:duration]}s)"
           # Suggest recording patterns after successful test run
           suggest_memory_record if respond_to?(:suggest_memory_record)
         else
           failure_message = result[:timeout] ? 'verify timeout' : 'verify failure'
+          failure = classify_verify_result(
+            success: false,
+            timeout: result[:timeout],
+            tests_run: result[:tests_run],
+            log_text: File.exist?('test_output.txt') ? File.read('test_output.txt') : ''
+          )
           record_process_metric(
             'verify',
             success: false,
             tests_run: result[:tests_run],
+            evidence_strength: 'failed',
+            host: verify_metric_host,
             duration_seconds: result[:duration],
             include_ui: include_ui,
             signed_tests: signed_tests,
-            reason: failure_message
+            reason: failure_message,
+            failure_bucket: failure[:bucket],
+            failure_hint: failure[:hint]
           ) if respond_to?(:record_process_metric)
           state = if running_from_preflight
                     { consecutive_failures: load_verify_state[:consecutive_failures].to_i }
@@ -577,7 +595,14 @@ module SaneMasterModules
     def grant_test_permissions(timeout_seconds:)
       print '🔐 Granting test permissions... '
       # Use dynamic bundle_id instead of hardcoded value
-      %w[Camera Microphone ScreenRecording].each do |service|
+      %w[
+        Camera
+        Microphone
+        ScreenRecording
+        SystemPolicyDocumentsFolder
+        SystemPolicyDesktopFolder
+        SystemPolicyDownloadsFolder
+      ].each do |service|
         system('tccutil', 'reset', service, @bundle_id, err: File::NULL)
       end
 
@@ -608,12 +633,17 @@ module SaneMasterModules
       return unless log_path && File.exist?(log_path)
 
       log = File.read(log_path)
-      return unless log.include?('manual grant may be needed')
+      return unless permission_monitor_blocked?(log)
 
       puts "\n❌ Permission prompt/manual grant detected during verify."
       puts "   Permission monitor log: #{log_path}"
       puts '   Resolve the Mini prompt, then rerun verify. Do not treat this run as release evidence.'
       exit 1
+    end
+
+    def permission_monitor_blocked?(log)
+      log.include?('manual grant may be needed') ||
+        log.include?('PROTECTED_FOLDER_PROMPT')
     end
 
     def terminate_running_app_instance
@@ -700,6 +730,40 @@ module SaneMasterModules
       return true if body.match?(/Executed \d+ tests?, with 0 failures/)
 
       false
+    end
+
+    def verify_evidence_strength(tests_run)
+      tests_run.to_i.positive? ? 'tested' : 'build_only'
+    end
+
+    def verify_metric_host
+      Socket.gethostname
+    rescue StandardError
+      nil
+    end
+
+    def classify_verify_result(success:, timeout:, tests_run:, log_text:)
+      text = log_text.to_s.downcase
+      return { bucket: 'weak_zero_test_success', hint: 'verify succeeded but counted zero tests' } if success && tests_run.to_i.zero?
+      return { bucket: 'timeout', hint: 'verify command exceeded timeout before a complete result' } if timeout || text.include?('timeout')
+      return { bucket: 'runner_no_output', hint: 'test_output.txt was empty; runner likely failed before tests started' } if text.strip.empty?
+      if text.match?(/manual grant|permission prompt|system settings|system preferences|tcc|accessibility|screen recording/)
+        return { bucket: 'permission_prompt', hint: 'permission or TCC prompt interrupted verification' }
+      end
+      if tests_run.to_i.positive? && verify_log_indicates_failure?(log_text)
+        return { bucket: 'test_failure', hint: 'tests ran and emitted explicit failure markers' }
+      end
+      if text.match?(/\*\* build failed \*\*|swiftcompile|compileerror|linker command failed|ld:|error:/)
+        return { bucket: 'build_failure', hint: 'build or compile failure prevented useful test evidence' }
+      end
+      if text.match?(/no tests found|0 tests|test discovery|no test bundles|missing test target/)
+        return { bucket: 'test_discovery_or_counting', hint: 'test discovery or parser counting failed before useful coverage ran' }
+      end
+      if verify_log_indicates_failure?(log_text)
+        return { bucket: 'test_failure', hint: 'tests ran and emitted explicit failure markers' }
+      end
+
+      tests_run.to_i.zero? ? { bucket: 'unknown_zero_test_failure', hint: 'zero tests were counted but no known signature matched' } : { bucket: 'unknown_failure', hint: 'failure did not match a known verify bucket' }
     end
 
     def build_test_commands(include_ui, signed_tests = false)
@@ -820,7 +884,7 @@ module SaneMasterModules
       end
       args = ['xcodebuild', 'test']
       args.concat(xcodebuild_container_args)
-      args.concat(['-scheme', project_scheme, '-destination', 'platform=macOS,arch=arm64'])
+      args.concat(['-scheme', project_scheme, '-destination', resolved_xcodebuild_destination(project_unit_destination)])
       args.concat(['-parallel-testing-enabled', 'NO'])
       args.concat(['-parallel-testing-worker-count', '1'])
       if use_test_plan?
@@ -866,7 +930,7 @@ module SaneMasterModules
     def build_ui_test_command(signed_tests = false)
       args = ['xcodebuild', 'test']
       args.concat(xcodebuild_container_args_for_scheme(project_ui_scheme))
-      args.concat(['-scheme', project_ui_scheme, '-destination', project_ui_destination])
+      args.concat(['-scheme', project_ui_scheme, '-destination', resolved_xcodebuild_destination(project_ui_destination)])
       args.concat(['-parallel-testing-enabled', 'NO'])
       args.concat(['-parallel-testing-worker-count', '1'])
       args << "-only-testing:#{project_ui_test_target}"
@@ -981,9 +1045,9 @@ module SaneMasterModules
 
     def handle_progress_update(line, state)
       case line
-      # XCTest pattern: Test Case '-[TestClass testMethod]' started/passed
+      # XCTest pattern: only completed test case lines count; "started" lines are progress, not evidence.
       # Swift Testing pattern can be prefixed by ✓/✔ or private-use glyphs in Xcode logs.
-      when /Test Case.*'(.+)'/, /(?:[✔✓]\s+)?Test "(.+)" passed/
+      when /Test Case.*'(.+)'\s+(?:passed|failed)/, /(?:[✔✓]\s+)?Test "(.+)" passed/
         state[:current_test] = ::Regexp.last_match(1)
         state[:tests_run] += 1
         elapsed = (Time.now - state[:start_time]).to_i

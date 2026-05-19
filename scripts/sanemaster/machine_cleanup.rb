@@ -1,0 +1,699 @@
+# frozen_string_literal: true
+
+require 'json'
+require 'open3'
+require 'shellwords'
+require 'socket'
+require 'time'
+
+module SaneMasterModules
+  module MachineCleanup
+    DEFAULT_MIN_FREE_GB = 30
+    DEFAULT_CACHE_THRESHOLD_GB = 5
+    DEFAULT_DERIVEDDATA_AGE_DAYS = 2
+    DEFAULT_TRASH_THRESHOLD_GB = 1
+    SERVER_CLEANUP_BLOCKING_ACTIVE_FLAGS = %i[xcodebuild_active simulator_active training_active].freeze
+
+    DISPOSABLE_CACHE_PATHS = [
+      '~/.cache/huggingface',
+      '~/.cache/codex-runtimes',
+      '~/Library/Caches/com.openai.codex',
+      '~/Library/Caches/ms-playwright',
+      '~/Library/Caches/org.swift.swiftpm',
+      '~/Library/Caches/Homebrew',
+      '~/Library/Caches/pip',
+      '~/Library/Caches/pnpm',
+      '~/Library/Caches/node-gyp'
+    ].freeze
+
+    CLEANUP_SAFE_ROOTS = [
+      '~/.Trash',
+      '~/.cache',
+      '~/Library/Caches',
+      '~/Library/Developer/Xcode/DerivedData'
+    ].freeze
+    SERVER_GENERATED_DIR_NAMES = %w[
+      .build
+      .swiftpm
+      .venv
+      .venv-local
+      .worktrees
+      .wrangler
+      build
+      node_modules
+      releases
+      xcuserdata
+    ].freeze
+    SERVER_GENERATED_RELATIVE_PATHS = (SERVER_GENERATED_DIR_NAMES + ['vendor/bundle']).freeze
+    SERVER_CHILD_CLEANUP_PATHS = [
+      '~/Downloads'
+    ].freeze
+    SERVER_REPO_ROOTS = [
+      '~/SaneApps/apps',
+      '~/SaneApps/infra',
+      '~/SaneApps-automation/apps',
+      '~/SaneApps-automation/infra'
+    ].freeze
+    SERVER_EXACT_CLEANUP_PATHS = [
+      '~/Movies/SaneVideo',
+      '~/Documents/huggingface',
+      '~/Dev/TZPaintStudio',
+      '~/SaneApps-setapp-verify',
+      '~/SaneApps/release-work',
+      '~/SaneApps/release-publish',
+      '~/SaneApps/release-worktrees',
+      '~/SaneApps/tmp',
+      '~/SaneApps/scratch',
+      '~/SaneApps/outputs/setapp_review',
+      '~/SaneApps/outputs/automation-smoke',
+      '~/SaneApps/apps/SaneVideo/outputs',
+      '~/SaneApps-automation/release-work',
+      '~/SaneApps-automation/release-publish',
+      '~/SaneApps-automation/release-worktrees',
+      '~/.codex/sessions',
+      '~/.codex/worktrees',
+      '~/.codex/runs',
+      '~/.codex/tmp',
+      '~/.codex/.tmp',
+      '~/.codex-sync-backups',
+      '~/.sanemaster/routed-workspaces',
+      '~/Library/Application Support/SaneVideo',
+      '~/Library/Containers/com.sanevideo.app'
+    ].freeze
+    SANE_APP_NAME_REGEX = /\b(SaneBar|SaneClip|SaneClick|SaneHosts|SaneSales|SaneSync|SaneVideo|SaneScan|SaneAI)\b/
+
+    def machine_cleanup(args)
+      options = parse_machine_cleanup_args(args)
+
+      if options[:host] == 'mini' && !running_on_mini_host?
+        return run_machine_cleanup_on_mini(args)
+      end
+
+      if options[:server] && options[:host] == 'local' && !running_on_mini_host?
+        warn 'machine_cleanup --server is Mini-only. Use `machine_cleanup --host mini --server --apply` from the Air.'
+        return false
+      end
+
+      plan = build_machine_cleanup_plan(options)
+
+      if options[:json]
+        puts JSON.pretty_generate(plan)
+      else
+        print_machine_cleanup_plan(plan)
+      end
+
+      return true unless options[:apply]
+
+      result = apply_machine_cleanup_plan(plan, options)
+      puts JSON.pretty_generate(result) if options[:json]
+      result[:success]
+    end
+
+    private
+
+    def parse_machine_cleanup_args(args)
+      options = {
+        apply: false,
+        json: false,
+        quiet: false,
+        host: 'local',
+        min_free_gb: DEFAULT_MIN_FREE_GB,
+        cache_threshold_gb: DEFAULT_CACHE_THRESHOLD_GB,
+        deriveddata_age_days: DEFAULT_DERIVEDDATA_AGE_DAYS,
+        trash_threshold_gb: DEFAULT_TRASH_THRESHOLD_GB,
+        preserve_apps: [],
+        server: false
+      }
+
+      until args.empty?
+        arg = args.shift
+        case arg
+        when '--apply'
+          options[:apply] = true
+        when '--dry-run'
+          options[:apply] = false
+        when '--json'
+          options[:json] = true
+        when '--quiet'
+          options[:quiet] = true
+        when '--host'
+          options[:host] = args.shift.to_s
+        when '--mini'
+          options[:host] = 'mini'
+        when '--local'
+          options[:host] = 'local'
+        when '--min-free-gb'
+          options[:min_free_gb] = args.shift.to_f
+        when '--cache-threshold-gb'
+          options[:cache_threshold_gb] = args.shift.to_f
+        when '--deriveddata-age-days'
+          options[:deriveddata_age_days] = args.shift.to_i
+        when '--trash-threshold-gb'
+          options[:trash_threshold_gb] = args.shift.to_f
+        when '--preserve-apps'
+          options[:preserve_apps] = args.shift.to_s.split(',').map(&:strip).reject(&:empty?)
+        when '--server', '--server-reset'
+          options[:server] = true
+        else
+          raise ArgumentError, "Unknown machine_cleanup option: #{arg}"
+        end
+      end
+
+      unless %w[local mini].include?(options[:host])
+        raise ArgumentError, "machine_cleanup --host must be local or mini, got #{options[:host].inspect}"
+      end
+
+      options
+    end
+
+    def run_machine_cleanup_on_mini(args)
+      remote_script = '~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb'
+      forwarded = machine_cleanup_forwarded_args_for_mini(args)
+      remote_args = ['machine_cleanup', '--host', 'local'] + forwarded
+      remote_cmd = "cd ~/SaneApps/infra/SaneProcess && ruby #{remote_script} #{remote_args.map { |part| Shellwords.escape(part) }.join(' ')}"
+      system('ssh', 'mini', remote_cmd)
+    end
+
+    def machine_cleanup_forwarded_args_for_mini(args)
+      forwarded = []
+      skip_next = false
+
+      args.each do |arg|
+        if skip_next
+          skip_next = false
+          next
+        end
+
+        case arg
+        when '--host'
+          skip_next = true
+        when '--mini', 'mini'
+          next
+        else
+          forwarded << arg
+        end
+      end
+
+      forwarded
+    end
+
+    def build_machine_cleanup_plan(options)
+      active = machine_cleanup_active_inventory
+      disk = machine_cleanup_disk_snapshot
+      cache_targets = machine_cleanup_cache_targets(options)
+      deriveddata_targets = machine_cleanup_deriveddata_targets(active, options)
+      trash_target = machine_cleanup_trash_target(options)
+      simulator_plan = machine_cleanup_simulator_plan(active, options)
+      simulator_targets = simulator_plan.is_a?(Array) ? simulator_plan.compact : [simulator_plan].compact
+      server_targets = machine_cleanup_server_targets(active, options)
+
+      actions = []
+      actions << trash_target if trash_target
+      actions.concat(cache_targets)
+      actions.concat(deriveddata_targets)
+      actions.concat(simulator_targets)
+      actions.concat(server_targets)
+      actions = machine_cleanup_unique_actions(actions)
+
+      {
+        command: 'machine_cleanup',
+        dry_run: !options[:apply],
+        server: options[:server],
+        host: Socket.gethostname,
+        thresholds: {
+          min_free_gb: options[:min_free_gb],
+          cache_threshold_gb: options[:cache_threshold_gb],
+          deriveddata_age_days: options[:deriveddata_age_days],
+          trash_threshold_gb: options[:trash_threshold_gb]
+        },
+        disk: disk,
+        active: active,
+        actions: actions,
+        summary: machine_cleanup_summary(disk, active, actions)
+      }
+    end
+
+    def machine_cleanup_active_inventory
+      rows = machine_cleanup_ps_rows
+      active = {
+        apps: {},
+        simulator_active: false,
+        xcodebuild_active: false,
+        training_active: false,
+        mcp_processes: []
+      }
+
+      rows.each do |row|
+        command = row[:command]
+        command.scan(SANE_APP_NAME_REGEX).flatten.uniq.each do |app|
+          active[:apps][app] ||= []
+          active[:apps][app] << row
+        end
+        active[:simulator_active] ||= command.match?(/\b(simctl|launchd_sim)\b/) || command.include?('Simulator.app')
+        active[:xcodebuild_active] ||= command.match?(/\bxcodebuild\b/)
+        active[:training_active] ||= command.match?(/\b(mlx|train|training|finetune|inference)\b/i)
+        active[:mcp_processes] << row if command.match?(/\b(mcp|xcodebuildmcp)\b/i)
+      end
+
+      active[:apps] = active[:apps].transform_values { |list| list.first(5) }
+      active[:mcp_processes] = active[:mcp_processes].first(10)
+      active
+    end
+
+    def machine_cleanup_ps_rows
+      output, status = Open3.capture2e('ps', '-axo', 'pid,ppid,pgid,stat,etime,command')
+      return [] unless status.success?
+
+      output.lines.drop(1).each_with_object([]) do |line, rows|
+        parts = line.strip.split(/\s+/, 6)
+        next if parts.length < 6
+
+        rows << {
+          pid: parts[0].to_i,
+          ppid: parts[1].to_i,
+          pgid: parts[2].to_i,
+          stat: parts[3],
+          etime: parts[4],
+          command: parts[5].to_s
+        }
+      end
+    end
+
+    def machine_cleanup_disk_snapshot
+      output, status = Open3.capture2e('df', '-k', File.expand_path('~'))
+      return { ok: false, error: output.strip } unless status.success?
+
+      fields = output.lines.last.to_s.split(/\s+/)
+      size_kb = fields[1].to_i
+      used_kb = fields[2].to_i
+      avail_kb = fields[3].to_i
+      capacity = fields[4].to_s
+      {
+        ok: true,
+        size_gb: kb_to_gb(size_kb),
+        used_gb: kb_to_gb(used_kb),
+        available_gb: kb_to_gb(avail_kb),
+        capacity: capacity,
+        mount: fields[8] || fields[5]
+      }
+    end
+
+    def machine_cleanup_cache_targets(options)
+      targets = DISPOSABLE_CACHE_PATHS.each_with_object([]) do |raw_path, list|
+        path = File.expand_path(raw_path)
+        next unless File.exist?(path)
+
+        size_gb = path_size_gb(path)
+        next if size_gb <= 0
+        next if size_gb < 0.25 && total_disposable_cache_gb < options[:cache_threshold_gb]
+
+        list << {
+          type: 'trash_path',
+          category: 'disposable_cache',
+          path: path,
+          size_gb: size_gb,
+          reason: 'Disposable developer cache; safe to regenerate.'
+        }
+      end
+
+      total = targets.sum { |target| target[:size_gb].to_f }
+      return [] if total < options[:cache_threshold_gb]
+
+      targets
+    end
+
+    def total_disposable_cache_gb
+      @total_disposable_cache_gb ||= DISPOSABLE_CACHE_PATHS.sum do |raw_path|
+        path = File.expand_path(raw_path)
+        File.exist?(path) ? path_size_gb(path) : 0.0
+      end
+    end
+
+    def machine_cleanup_deriveddata_targets(active, options)
+      root = File.expand_path('~/Library/Developer/Xcode/DerivedData')
+      return [] unless Dir.exist?(root)
+      return [] if options[:server] && machine_cleanup_server_blocking_flags(active).any?
+
+      active_apps = active.fetch(:apps, {}).keys + options[:preserve_apps]
+      cutoff = Time.now - (options[:deriveddata_age_days].to_i * 86_400)
+
+      Dir.children(root).each_with_object([]) do |entry, list|
+        path = File.join(root, entry)
+        next unless File.directory?(path)
+
+        app = entry.split('-').first
+        if active_apps.include?(app) && !options[:server]
+          next
+        end
+
+        mtime = File.mtime(path) rescue Time.now
+        next if mtime > cutoff && !options[:server]
+
+        size_gb = path_size_gb(path)
+        next if size_gb <= 0.01
+
+        list << {
+          type: 'trash_path',
+          category: options[:server] ? 'server_deriveddata' : 'inactive_deriveddata',
+          path: path,
+          size_gb: size_gb,
+          reason: if options[:server]
+                    'Server-mode cleanup: DerivedData is disposable on the Mini and must not accumulate between test runs.'
+                  else
+                    "DerivedData older than #{options[:deriveddata_age_days]} days and not tied to active app work."
+                  end
+        }
+      end
+    end
+
+    def machine_cleanup_trash_target(options)
+      trash = File.expand_path('~/.Trash')
+      return nil unless Dir.exist?(trash)
+
+      size_gb = path_size_gb(trash)
+      return nil if size_gb < options[:trash_threshold_gb]
+
+      {
+        type: 'empty_trash',
+        category: 'trash',
+        path: trash,
+        size_gb: size_gb,
+        reason: 'Trash exceeds threshold; do not let cleanup merely move GB elsewhere.'
+      }
+    end
+
+    def machine_cleanup_simulator_plan(active, options)
+      if options[:server]
+        blocking_flags = machine_cleanup_server_blocking_flags(active)
+        unless blocking_flags.empty?
+          return {
+            type: 'skip',
+            category: 'server_simulator',
+            reason: "Server-mode simulator reset skipped because active work is visible: #{blocking_flags.join(', ')}"
+          }
+        end
+
+        return [
+          {
+            type: 'command',
+            category: 'server_simulator_shutdown',
+            argv: %w[xcrun simctl shutdown all],
+            reason: 'Server-mode cleanup: stop disposable simulator devices before deleting them.'
+          },
+          {
+            type: 'command',
+            category: 'server_simulator_delete',
+            argv: %w[xcrun simctl delete all],
+            reason: 'Server-mode cleanup: all simulator devices are disposable on the Mini and can be regenerated.'
+          },
+          {
+            type: 'command',
+            category: 'server_simulator_unavailable',
+            argv: %w[xcrun simctl delete unavailable],
+            reason: 'Server-mode cleanup: remove unavailable simulator records after deleting devices.'
+          }
+        ]
+      end
+
+      {
+        type: 'command',
+        category: 'simulator',
+        argv: %w[xcrun simctl delete unavailable],
+        reason: 'Prune unavailable simulator devices only; does not shut down or delete active simulator work.'
+      }
+    end
+
+    def machine_cleanup_server_targets(active, options)
+      return [] unless options[:server]
+
+      blocking_flags = machine_cleanup_server_blocking_flags(active)
+      unless blocking_flags.empty?
+        return [{
+          type: 'skip',
+          category: 'server_generated_artifacts',
+          reason: "Server-mode cleanup skipped generated artifact pruning because active work is visible: #{blocking_flags.join(', ')}"
+        }]
+      end
+
+      targets = []
+      server_child_cleanup_paths.each do |path|
+        next unless Dir.exist?(path)
+
+        size_gb = path_size_gb(path)
+        next if size_gb <= 0.01
+
+        targets << {
+          type: 'trash_children',
+          category: 'server_generated_artifacts',
+          path: path,
+          size_gb: size_gb,
+          reason: 'Server-mode cleanup: clear contents of protected user folder without moving the folder itself.'
+        }
+      end
+
+      server_exact_cleanup_paths.each do |path|
+        next unless File.exist?(path)
+
+        size_gb = path_size_gb(path)
+        next if size_gb <= 0.01
+
+        targets << {
+          type: 'trash_path',
+          category: 'server_generated_artifacts',
+          path: path,
+          size_gb: size_gb,
+          reason: 'Server-mode cleanup: disposable Mini artifact/cache/output path.'
+        }
+      end
+
+      server_repo_generated_paths.each do |path|
+        next unless File.exist?(path)
+
+        size_gb = path_size_gb(path)
+        next if size_gb <= 0.01
+
+        targets << {
+          type: 'trash_path',
+          category: 'server_repo_generated_artifacts',
+          path: path,
+          size_gb: size_gb,
+          reason: 'Server-mode cleanup: generated repo artifact; source files stay intact.'
+        }
+      end
+
+      targets
+    end
+
+    def machine_cleanup_server_blocking_flags(active)
+      SERVER_CLEANUP_BLOCKING_ACTIVE_FLAGS.select { |flag| active[flag] }
+    end
+
+    def machine_cleanup_summary(disk, active, actions)
+      {
+        available_gb: disk[:available_gb],
+        active_apps: active.fetch(:apps, {}).keys.sort,
+        action_count: actions.count { |action| action[:type] != 'skip' },
+        skipped: actions.count { |action| action[:type] == 'skip' },
+        reclaimable_gb: actions.select { |action| %w[trash_path trash_children empty_trash].include?(action[:type].to_s) }.sum { |action| action[:size_gb].to_f }.round(2)
+      }
+    end
+
+    def machine_cleanup_unique_actions(actions)
+      seen = {}
+      actions.each_with_object([]) do |action, list|
+        key = [action[:type], action[:category], action[:path], Array(action[:argv]).join("\0")]
+        next if seen[key]
+
+        seen[key] = true
+        list << action
+      end
+    end
+
+    def apply_machine_cleanup_plan(plan, options)
+      applied = []
+      failed = []
+
+      plan.fetch(:actions, []).each do |action|
+        case action[:type]
+        when 'trash_path'
+          if machine_cleanup_safe_path?(action[:path])
+            if trash_path(action[:path])
+              applied << action
+            else
+              failed << action.merge(error: 'trash command failed')
+            end
+          else
+            failed << action.merge(error: 'path outside cleanup-safe roots')
+          end
+        when 'empty_trash'
+          if empty_user_trash
+            applied << action
+          else
+            failed << action.merge(error: 'empty trash failed')
+          end
+        when 'trash_children'
+          if machine_cleanup_safe_path?(action[:path]) && trash_children(action[:path])
+            applied << action
+          else
+            failed << action.merge(error: 'trash children failed')
+          end
+        when 'command'
+          success = system(*action[:argv], out: options[:quiet] ? File::NULL : $stdout, err: options[:quiet] ? File::NULL : $stderr)
+          success ? applied << action : failed << action.merge(error: 'command failed')
+        end
+      end
+
+      empty_user_trash if applied.any? { |action| %w[trash_path trash_children].include?(action[:type].to_s) }
+
+      {
+        success: failed.empty?,
+        applied_count: applied.length,
+        failed_count: failed.length,
+        failed: failed
+      }
+    end
+
+    def machine_cleanup_safe_path?(path)
+      expanded = File.expand_path(path)
+      safe_root = CLEANUP_SAFE_ROOTS.any? do |raw_root|
+        root = File.expand_path(raw_root)
+        expanded == root || expanded.start_with?("#{root}/")
+      end
+      return true if safe_root
+
+      return true if server_exact_cleanup_paths.any? { |allowed| expanded == allowed }
+      return true if server_child_cleanup_paths.any? { |allowed| expanded == allowed }
+
+      server_repo_generated_path?(expanded)
+    end
+
+    def server_child_cleanup_paths
+      SERVER_CHILD_CLEANUP_PATHS.map { |path| File.expand_path(path) }
+    end
+
+    def server_exact_cleanup_paths
+      SERVER_EXACT_CLEANUP_PATHS.map { |path| File.expand_path(path) }
+    end
+
+    def server_repo_generated_paths
+      SERVER_REPO_ROOTS.flat_map do |raw_root|
+        root = File.expand_path(raw_root)
+        next [] unless Dir.exist?(root)
+
+        Dir.children(root).flat_map do |repo_name|
+          repo_root = File.join(root, repo_name)
+          next [] unless File.directory?(repo_root)
+
+          patterns = SERVER_GENERATED_RELATIVE_PATHS.map { |relative| File.join(repo_root, relative) }
+          patterns.concat(SERVER_GENERATED_DIR_NAMES.map { |name| File.join(repo_root, '*', name) })
+          patterns.flat_map { |pattern| Dir.glob(pattern) }.select { |path| File.directory?(path) }
+        end
+      end.uniq
+    end
+
+    def server_repo_generated_path?(path)
+      expanded = File.expand_path(path)
+      SERVER_REPO_ROOTS.any? do |raw_root|
+        root = File.expand_path(raw_root)
+        next false unless expanded.start_with?("#{root}/")
+
+        relative = expanded.delete_prefix("#{root}/")
+        parts = relative.split(File::SEPARATOR)
+        next false if parts.length < 2
+
+        repo_relative = parts[1..].join(File::SEPARATOR)
+        SERVER_GENERATED_RELATIVE_PATHS.include?(repo_relative) ||
+          (parts.length == 3 && SERVER_GENERATED_DIR_NAMES.include?(parts[2])) ||
+          (parts.length == 4 && parts[2] == 'vendor' && parts[3] == 'bundle')
+      end
+    end
+
+    def trash_path(path)
+      return true unless File.exist?(path)
+
+      if File.executable?('/usr/bin/trash')
+        system('/usr/bin/trash', path)
+      elsif system('command', '-v', 'trash', out: File::NULL, err: File::NULL)
+        system('trash', path)
+      else
+        warn "trash command is unavailable; refusing to delete #{path}"
+        false
+      end
+    end
+
+    def trash_children(path)
+      return true unless Dir.exist?(path)
+
+      Dir.children(path).all? do |entry|
+        trash_path(File.join(path, entry))
+      end
+    end
+
+    def empty_user_trash
+      return true if system('command', '-v', 'trash-empty', out: File::NULL, err: File::NULL) &&
+                     machine_cleanup_system_with_timeout(['trash-empty'], seconds: 60)
+      return true if ENV['SSH_CONNECTION'].to_s != '' && purge_trash_contents_safely
+      return true if machine_cleanup_system_with_timeout(
+        ['osascript', '-e', 'tell application "Finder" to empty the trash'],
+        seconds: 45
+      )
+      return true if purge_trash_contents_safely
+
+      false
+    end
+
+    def purge_trash_contents_safely
+      trash = File.expand_path('~/.Trash')
+      return true unless Dir.exist?(trash)
+      return false unless trash == File.join(Dir.home, '.Trash')
+
+      Dir.children(trash).all? do |entry|
+        system('/bin/rm', '-rf', '--', File.join(trash, entry), out: File::NULL, err: File::NULL)
+      end
+    end
+
+    def machine_cleanup_system_with_timeout(argv, seconds:)
+      pid = Process.spawn(*argv, out: File::NULL, err: File::NULL)
+      wait_thr = Process.detach(pid)
+      return wait_thr.value.success? if wait_thr.join(seconds)
+
+      Process.kill('TERM', pid)
+      sleep 1
+      Process.kill('KILL', pid) if wait_thr.alive?
+      false
+    rescue Errno::ESRCH, Errno::ECHILD
+      false
+    end
+
+    def print_machine_cleanup_plan(plan)
+      puts "Machine cleanup #{plan[:dry_run] ? 'dry-run' : 'apply'} on #{plan[:host]}"
+      puts "Mode: #{plan[:server] ? 'server reset' : 'safe hygiene'}"
+      puts "Disk: #{plan.dig(:disk, :available_gb)}G free (#{plan.dig(:disk, :capacity)} used)"
+      puts "Active apps preserved: #{plan.dig(:summary, :active_apps).join(', ').empty? ? 'none' : plan.dig(:summary, :active_apps).join(', ')}"
+      puts "Reclaimable: #{plan.dig(:summary, :reclaimable_gb)}G across #{plan.dig(:summary, :action_count)} action(s)"
+      puts
+
+      plan.fetch(:actions, []).each do |action|
+        label = action[:type] == 'skip' ? 'SKIP' : 'PLAN'
+        size = action[:size_gb] ? " (#{action[:size_gb]}G)" : ''
+        target = action[:path] || Array(action[:argv]).join(' ')
+        puts "- #{label} #{action[:category]}#{size}: #{target}"
+        puts "  #{action[:reason]}"
+      end
+
+      puts
+      puts 'Dry-run only. Re-run with `--apply` to move planned paths to Trash and empty Trash.' if plan[:dry_run]
+    end
+
+    def path_size_gb(path)
+      output, status = Open3.capture2e('du', '-sk', path)
+      return 0.0 unless status.success?
+
+      kb_to_gb(output.split(/\s+/).first.to_i)
+    end
+
+    def kb_to_gb(kb)
+      (kb.to_f / 1024 / 1024).round(2)
+    end
+  end
+end

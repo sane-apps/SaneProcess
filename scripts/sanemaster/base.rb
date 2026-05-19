@@ -175,6 +175,13 @@ module SaneMasterModules
       @project_test_target ||= config_value(%w[tests unit_target], 'SANEMASTER_TEST_TARGET', project_tests_dir)
     end
 
+    def project_unit_destination
+      @project_unit_destination ||= ENV['SANEMASTER_UNIT_DESTINATION'] ||
+                                    ENV['SANEMASTER_TEST_DESTINATION'] ||
+                                    saneprocess_value('tests', 'unit_destination') ||
+                                    default_project_test_destination
+    end
+
     def project_ui_test_target
       @project_ui_test_target ||= config_value(%w[tests ui_target], 'SANEMASTER_UI_TEST_TARGET', project_ui_tests_dir)
     end
@@ -185,6 +192,68 @@ module SaneMasterModules
 
     def project_ui_destination
       @project_ui_destination ||= config_value(%w[tests ui_destination], 'SANEMASTER_UI_DESTINATION', 'platform=iOS Simulator,name=iPhone 17 Pro')
+    end
+
+    def resolved_xcodebuild_destination(destination)
+      destination = destination.to_s
+      return destination if destination.empty?
+      return destination unless destination.include?('platform=iOS Simulator')
+      return destination if destination.match?(/(?:\A|,)id=/)
+
+      simulator_name = destination[/name=([^,]+)/, 1].to_s.strip
+      return destination if simulator_name.empty?
+
+      candidates = ios_simulator_destinations.select { |simulator| simulator[:name] == simulator_name }
+      requested_os = destination[/OS=([^,]+)/, 1].to_s.strip
+      if !requested_os.empty? && requested_os.downcase != 'latest'
+        os_matches = candidates.select { |simulator| simulator[:os] == requested_os }
+        candidates = os_matches unless os_matches.empty?
+      end
+      chosen = candidates.find { |simulator| simulator[:state] == 'Booted' } ||
+               candidates.max_by { |simulator| simulator_os_sort_key(simulator[:os]) }
+      chosen ? "id=#{chosen[:udid]}" : destination
+    end
+
+    def ios_simulator_destinations
+      @ios_simulator_destinations ||= begin
+        output, status = Open3.capture2e('xcrun', 'simctl', 'list', 'devices', 'available', '--json')
+        if status.success?
+          data = JSON.parse(output)
+          devices = data['devices'].is_a?(Hash) ? data['devices'] : {}
+          devices.flat_map do |runtime, runtime_devices|
+            next [] unless runtime.to_s.include?('iOS')
+
+            os = runtime[/iOS[- ](\d+(?:[-.]\d+)*)/, 1].to_s.tr('-', '.')
+            Array(runtime_devices).each_with_object([]) do |device, result|
+              next unless device.is_a?(Hash)
+
+              udid = device['udid'].to_s
+              name = device['name'].to_s
+              next if udid.empty? || name.empty?
+
+              result << { name: name, udid: udid, os: os, state: device['state'].to_s }
+            end
+          end
+        else
+          []
+        end
+      end
+    rescue StandardError
+      []
+    end
+
+    def simulator_os_sort_key(os)
+      os.to_s.scan(/\d+/).map(&:to_i)
+    end
+
+    def default_project_test_destination
+      ios_only_project? ? 'platform=iOS Simulator,name=iPhone 17 Pro' : 'platform=macOS,arch=arm64'
+    end
+
+    def ios_only_project?
+      type = saneprocess_value('type').to_s.downcase
+      platforms = Array(saneprocess_value('appstore', 'platforms')).map { |platform| platform.to_s.downcase }
+      type == 'ios_app' || (platforms.include?('ios') && !platforms.include?('macos'))
     end
 
     def saneprocess_config

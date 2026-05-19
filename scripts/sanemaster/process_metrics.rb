@@ -18,18 +18,27 @@ module SaneMasterModules
     end
 
     def process_metrics_dashboard(args = [])
+      args = args.dup
+      json_path = extract_flag_value(args, '--export-json')
+      html_path = extract_flag_value(args, '--export-html')
       summary = process_metrics_summary(read_process_metric_events)
+      export_process_metrics_json(summary, json_path) if json_path
+      export_process_metrics_html(summary, html_path) if html_path
+
       if args.include?('--json')
         puts JSON.pretty_generate(summary)
       else
         puts 'SaneProcess Metrics Dashboard'
         puts '=' * 34
         puts "Metrics path: #{process_metrics_path}"
+        puts "JSON export: #{json_path}" if json_path
+        puts "HTML export: #{html_path}" if html_path
         puts "Events: #{summary[:total_events]}"
         puts
         puts "Verify attempts: #{summary[:verify][:attempts]}"
         puts "  Pass rate: #{summary[:verify][:pass_rate] || 'N/A'}%"
         puts "  Zero-test failures: #{summary[:verify][:zero_test_failures]}"
+        puts "  Zero-test successes: #{summary[:verify][:zero_test_successes]}"
         puts "  By project:"
         summary[:verify][:by_project].each do |project, data|
           puts "    #{project}: #{data[:passes]}/#{data[:attempts]} passed (#{data[:pass_rate] || 'N/A'}%)"
@@ -43,6 +52,9 @@ module SaneMasterModules
         puts
         puts "Hook blocks: #{summary[:hook_blocks][:total]}"
         summary[:hook_blocks][:by_rule].each { |rule, count| puts "  #{rule}: #{count}" }
+        puts
+        puts "Workflow events:"
+        summary[:workflow_events][:by_type].each { |type, count| puts "  #{type}: #{count}" }
       end
       summary
     end
@@ -98,10 +110,135 @@ module SaneMasterModules
       end.compact
     end
 
+    def extract_flag_value(args, flag)
+      index = args.index(flag)
+      return nil unless index
+
+      args.delete_at(index)
+      value = args.delete_at(index)
+      raise ArgumentError, "#{flag} requires a path" if value.to_s.strip.empty?
+
+      value
+    end
+
+    def export_process_metrics_json(summary, path)
+      FileUtils.mkdir_p(File.dirname(File.expand_path(path)))
+      File.write(path, JSON.pretty_generate(summary))
+    end
+
+    def export_process_metrics_html(summary, path)
+      FileUtils.mkdir_p(File.dirname(File.expand_path(path)))
+      File.write(path, process_metrics_html(summary))
+    end
+
+    def process_metrics_html(summary)
+      <<~HTML
+        <!doctype html>
+        <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>SaneProcess Metrics</title>
+          <style>
+            body { font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 32px; color: #101418; background: #f7f8fa; }
+            main { max-width: 980px; margin: 0 auto; }
+            h1 { margin: 0 0 4px; font-size: 28px; }
+            .muted { color: #5d6875; }
+            .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 20px 0; }
+            .card { background: white; border: 1px solid #dce1e7; border-radius: 8px; padding: 16px; }
+            .value { display: block; font-size: 26px; font-weight: 700; margin-top: 6px; }
+            table { width: 100%; border-collapse: collapse; background: white; border: 1px solid #dce1e7; }
+            th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e8ebef; }
+            th { background: #eef2f5; }
+          </style>
+        </head>
+        <body>
+          <main>
+            <h1>SaneProcess Metrics</h1>
+            <p class="muted">Generated from local process metrics. HTML is a review artifact; JSONL remains the source log.</p>
+            <section class="grid">
+              <div class="card">Events<span class="value">#{escape_html(summary[:total_events])}</span></div>
+              <div class="card">Verify Pass Rate<span class="value">#{escape_html(summary.dig(:verify, :pass_rate) || 'N/A')}%</span></div>
+              <div class="card">Session Events<span class="value">#{escape_html(summary.dig(:sessions, :total))}</span></div>
+              <div class="card">Hook Blocks<span class="value">#{escape_html(summary.dig(:hook_blocks, :total))}</span></div>
+            </section>
+            <h2>Verify By Project</h2>
+            <table>
+              <thead><tr><th>Project</th><th>Passes</th><th>Attempts</th><th>Pass Rate</th></tr></thead>
+              <tbody>
+                #{process_metrics_project_rows(summary)}
+              </tbody>
+            </table>
+            <h2>Session Quality</h2>
+            <table>
+              <tbody>
+                <tr><th>Clean green</th><td>#{escape_html(summary.dig(:sessions, :clean_green))}</td></tr>
+                <tr><th>Recovered green</th><td>#{escape_html(summary.dig(:sessions, :recovered_green))}</td></tr>
+                <tr><th>Unrecovered failures</th><td>#{escape_html(summary.dig(:sessions, :unrecovered_failures))}</td></tr>
+                <tr><th>Average SOP score</th><td>#{escape_html(summary.dig(:sessions, :average_sop_score) || 'N/A')}</td></tr>
+              </tbody>
+            </table>
+            <h2>Hook Blocks</h2>
+            <table>
+              <thead><tr><th>Rule</th><th>Count</th></tr></thead>
+              <tbody>
+                #{process_metrics_hook_rows(summary)}
+              </tbody>
+            </table>
+            <h2>Workflow Events</h2>
+            <table>
+              <thead><tr><th>Type</th><th>Count</th></tr></thead>
+              <tbody>
+                #{process_metrics_workflow_rows(summary)}
+              </tbody>
+            </table>
+          </main>
+        </body>
+        </html>
+      HTML
+    end
+
+    def process_metrics_project_rows(summary)
+      summary.dig(:verify, :by_project).map do |project, data|
+        <<~ROW
+          <tr>
+            <td>#{escape_html(project)}</td>
+            <td>#{escape_html(data[:passes])}</td>
+            <td>#{escape_html(data[:attempts])}</td>
+            <td>#{escape_html(data[:pass_rate] || 'N/A')}%</td>
+          </tr>
+        ROW
+      end.join
+    end
+
+    def process_metrics_hook_rows(summary)
+      rows = summary.dig(:hook_blocks, :by_rule).map do |rule, count|
+        "<tr><td>#{escape_html(rule)}</td><td>#{escape_html(count)}</td></tr>"
+      end
+      rows.empty? ? '<tr><td colspan="2">No hook blocks recorded</td></tr>' : rows.join
+    end
+
+    def process_metrics_workflow_rows(summary)
+      rows = summary.dig(:workflow_events, :by_type).map do |type, count|
+        "<tr><td>#{escape_html(type)}</td><td>#{escape_html(count)}</td></tr>"
+      end
+      rows.empty? ? '<tr><td colspan="2">No workflow receipt metrics recorded</td></tr>' : rows.join
+    end
+
+    def escape_html(value)
+      value.to_s
+           .gsub('&', '&amp;')
+           .gsub('<', '&lt;')
+           .gsub('>', '&gt;')
+           .gsub('"', '&quot;')
+           .gsub("'", '&#39;')
+    end
+
     def process_metrics_summary(events)
       verify = events.select { |event| event['type'] == 'verify' }
       sessions = events.select { |event| event['type'] == 'session_end' }
       hook_blocks = events.select { |event| event['type'] == 'hook_block' }
+      workflow_events = events.reject { |event| %w[verify session_end hook_block].include?(event['type'].to_s) }
       verify_by_project = {}
       verify.group_by { |event| event['project'].to_s.empty? ? 'unknown' : event['project'].to_s }
             .sort.each do |project, project_events|
@@ -122,6 +259,7 @@ module SaneMasterModules
           passes: verify.count { |event| event['success'] == true },
           pass_rate: verify.empty? ? nil : ((verify.count { |event| event['success'] == true }.to_f / verify.length) * 100).round(1),
           zero_test_failures: verify.count { |event| event['success'] != true && event['tests_run'].to_i.zero? },
+          zero_test_successes: verify.count { |event| event['success'] == true && event.key?('tests_run') && event['tests_run'].to_i.zero? },
           by_project: verify_by_project
         },
         sessions: {
@@ -136,6 +274,12 @@ module SaneMasterModules
           by_rule: hook_blocks.group_by { |event| event['rule'].to_s.empty? ? 'unknown' : event['rule'].to_s }
                               .transform_values(&:length)
                               .sort.to_h
+        },
+        workflow_events: {
+          total: workflow_events.length,
+          by_type: workflow_events.group_by { |event| event['type'].to_s.empty? ? 'unknown' : event['type'].to_s }
+                                  .transform_values(&:length)
+                                  .sort.to_h
         }
       }
     end

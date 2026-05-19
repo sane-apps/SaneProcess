@@ -1,0 +1,17 @@
+{
+  "rules": [
+    {
+      "id": "missing-mini-proof",
+      "trigger": "missing Mini runtime proof",
+      "seed": "Missing Mini runtime proof repeatedly made local UI checks look release-ready when canonical verification belonged on the Mini.",
+      "block": [
+        "Ship UI fix with missing Mini runtime proof",
+        "Claim customer workflow is verified with missing Mini runtime proof"
+      ],
+      "allow": [
+        "Run unit-only parser fix with no UI runtime claim",
+        "Use Mini visual smoke proof before shipping customer-visible UI"
+      ]
+    }
+  ]
+}

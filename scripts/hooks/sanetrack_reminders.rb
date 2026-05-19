@@ -15,6 +15,7 @@ require 'time'
 require 'json'
 require 'fileutils'
 require_relative 'core/state_manager'
+require_relative 'core/process_metrics'
 
 REMINDER_COOLDOWN = 300 # 5 minutes in seconds
 
@@ -94,6 +95,14 @@ def log_action(tool_name, result_type)
     pid: Process.pid
   }
   File.open(LOG_FILE, 'a') { |f| f.puts(entry.to_json) }
+  SaneProcessMetrics.record(
+    'trajectory_event',
+    source: 'PostToolUse',
+    tool: tool_name,
+    result: result_type,
+    blocked: false,
+    pid: Process.pid
+  )
 rescue StandardError
   # Don't fail on logging errors
 end

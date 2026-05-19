@@ -19,6 +19,7 @@
 
 require 'json'
 require 'fileutils'
+require_relative '../hooks/core/sop_score'
 
 module SaneMasterModules
   module SOPLoop
@@ -405,14 +406,7 @@ module SaneMasterModules
 
     # Calculate SOP Compliance score from violation count
     def calculate_sop_score(violations)
-      case violations
-      when 0 then 10
-      when 1 then 9
-      when 2 then 8
-      when 3..4 then 7
-      when 5..6 then 6
-      else 5
-      end
+      SaneSOPScore.score(block_count: violations.to_i)[:score]
     end
 
     # ===========================================================================

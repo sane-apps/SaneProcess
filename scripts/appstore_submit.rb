@@ -86,6 +86,7 @@ end
 def hydrate_headless_env
   files = [
     ENV['SANEPROCESS_SECRETS_FILE'],
+    File.expand_path('~/.config/nv/env'),
     File.expand_path('~/.config/saneprocess/secrets.env'),
     File.expand_path('~/.saneprocess/secrets.env')
   ].compact
@@ -2955,6 +2956,31 @@ def list_app_iaps(app_id:, token:)
   resp['data']
 end
 
+def auto_renewable_subscription_config?(config)
+  type = config.dig('appstore', 'iap', 'type').to_s.strip
+  type == 'auto_renewable_subscription' || type == 'subscription' || type.include?('auto_renewable')
+end
+
+def list_app_subscriptions(app_id:, token:)
+  resp = asc_get("/apps/#{app_id}/subscriptionGroups?include=subscriptions&limit=200", token: token)
+  included = Array(resp&.dig('included')).select { |entry| entry['type'] == 'subscriptions' }
+  return included unless included.empty?
+
+  Array(resp&.dig('data')).flat_map do |group|
+    group_id = group['id'].to_s
+    next [] if group_id.empty?
+
+    group_resp = asc_get("/subscriptionGroups/#{group_id}/subscriptions?limit=200", token: token)
+    Array(group_resp&.dig('data'))
+  end
+end
+
+def find_subscription_by_product_id(app_id:, product_id:, token:)
+  list_app_subscriptions(app_id: app_id, token: token).find do |entry|
+    entry.dig('attributes', 'productId').to_s.strip == product_id.to_s.strip
+  end
+end
+
 def extra_active_iaps(app_id:, product_id:, token:)
   active_states = %w[
     READY_TO_SUBMIT
@@ -3026,6 +3052,27 @@ def create_iap(app_id:, product_id:, project_root:, config:, token:)
     log_error "Failed to create IAP #{product_id} (HTTP #{code}): #{detail}"
     nil
   end
+end
+
+def ensure_subscription_readiness(app_id:, product_id:, token:)
+  subscription = find_subscription_by_product_id(app_id: app_id, product_id: product_id, token: token)
+  unless subscription
+    log_error "No App Store Connect subscription found with product_id #{product_id}."
+    return false
+  end
+
+  state = subscription.dig('attributes', 'state').to_s.strip
+  log_info "Subscription state for #{product_id}: #{state}"
+  return true if %w[WAITING_FOR_REVIEW IN_REVIEW PENDING_BINARY_APPROVAL APPROVED READY_FOR_SALE].include?(state)
+
+  if state == 'READY_TO_SUBMIT'
+    log_warn "Subscription #{product_id} is READY_TO_SUBMIT."
+    log_warn "For a first subscription, Apple requires adding it to the app version's In-App Purchases and Subscriptions section before review submission."
+    return true
+  end
+
+  log_error "Subscription #{product_id} is not review-ready (state=#{state.empty? ? 'unknown' : state})."
+  false
 end
 
 def iap_associated_error_codes(submit_resp)
@@ -4255,16 +4302,20 @@ if options[:iap_only]
   price_usd = IAP_DEFAULT_USD_PRICE if price_usd.empty?
 
   token = generate_jwt
-  ok = ensure_iap_readiness(
-    app_id: app_id,
-    product_id: product_id,
-    project_root: project_root,
-    config: config,
-    token: token,
-    price_usd: price_usd,
-    platform: options[:platform],
-    version_string: options[:version]
-  )
+  ok = if auto_renewable_subscription_config?(config)
+         ensure_subscription_readiness(app_id: app_id, product_id: product_id, token: token)
+       else
+         ensure_iap_readiness(
+           app_id: app_id,
+           product_id: product_id,
+           project_root: project_root,
+           config: config,
+           token: token,
+           price_usd: price_usd,
+           platform: options[:platform],
+           version_string: options[:version]
+         )
+       end
   exit(ok == true ? 0 : 1)
 end
 
@@ -4417,16 +4468,20 @@ unless configured_product_id.empty?
   iap_price_usd = options[:iap_price_usd].to_s.strip
   iap_price_usd = IAP_DEFAULT_USD_PRICE if iap_price_usd.empty?
   token = generate_jwt
-  iap_ok = ensure_iap_readiness(
-    app_id: app_id,
-    product_id: configured_product_id,
-    project_root: project_root,
-    config: config,
-    token: token,
-    price_usd: iap_price_usd,
-    platform: platform,
-    version_string: version
-  )
+  iap_ok = if auto_renewable_subscription_config?(config)
+             ensure_subscription_readiness(app_id: app_id, product_id: configured_product_id, token: token)
+           else
+             ensure_iap_readiness(
+               app_id: app_id,
+               product_id: configured_product_id,
+               project_root: project_root,
+               config: config,
+               token: token,
+               price_usd: iap_price_usd,
+               platform: platform,
+               version_string: version
+             )
+           end
   unless iap_ok == true
     log_error 'IAP readiness failed. Resolve IAP metadata/state before app review submission.'
     exit 1

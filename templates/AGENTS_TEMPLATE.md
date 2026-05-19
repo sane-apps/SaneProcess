@@ -45,5 +45,6 @@ Keep these rules concrete and replaceable so the repo is not tied to one AI clie
 ## Client Notes
 
 - Claude: native lifecycle hooks live in `.claude/settings.json`.
-- Codex: shared repo skills live in `.agents/skills/`.
+- Codex: canonical shared skills live in `~/.codex/skills`; `.agents/skills/`
+  is a compatibility mirror when a repo needs checked-in shared skills.
 - Everyone: shared safety and SOP checks should be enforced through repo scripts, MCP, git hooks, and shell guards.

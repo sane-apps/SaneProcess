@@ -92,6 +92,7 @@ cleanup_workspace() {
 
   if [ "$TARGET_APP" != "SaneClick" ]; then
     /usr/bin/pkill -x "SaneClickExtension" >/dev/null 2>&1 || true
+    /usr/bin/pkill -f "/SaneClickExtension\\.appex/" >/dev/null 2>&1 || true
   fi
   if [ "$TARGET_APP" != "SaneSync" ]; then
     /usr/bin/pkill -f "/SaneSync/scripts/inference_server.py" >/dev/null 2>&1 || true

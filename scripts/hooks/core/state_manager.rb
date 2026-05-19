@@ -155,6 +155,21 @@ module StateManager
       test_commands: [],       # What was run (for audit trail)
       edits_before_test: 0     # Edits made since last test (resets on test run)
     },
+    # === VISUAL VERIFICATION TRACKING ===
+    # Tracks customer-facing UI work that needs screenshot-backed inspection.
+    # sanestop.rb blocks session end if visual verification is required but
+    # screenshot evidence and a written audit receipt are missing.
+    visual_verification: {
+      required: false,
+      reason: nil,
+      required_files: [],
+      evidence_commands: [],
+      screenshot_paths: [],
+      audit_recorded: false,
+      audit_files: [],
+      last_evidence_at: nil,
+      last_audit_at: nil
+    },
     # === PLANNING ENFORCEMENT ===
     # Forces plan-before-code workflow for task prompts
     planning: {
@@ -209,8 +224,12 @@ module StateManager
       invoked: false,          # Whether Skill tool was actually called
       invoked_at: nil,         # Timestamp of invocation
       subagents_spawned: 0,    # Count of Task tool calls (subagents)
-      runner_used: false,      # Whether a runner-backed workflow proof was seen for the active skill
+      runner_started: false,   # Whether a matching runner-backed workflow command was attempted
+      runner_proved: false,    # Whether successful workflow proof/receipt was seen for the active skill
+      runner_used: false,      # Back-compat alias for runner_proved
+      runner_attempts: [],     # Matching runner command attempts and result status
       runner_commands: [],     # Matching runner/proof commands seen this session
+      runner_proof: nil,       # Workflow-specific proof metadata
       files_read: [],          # Files read during skill execution
       satisfied: false,        # Whether skill requirements were met
       satisfaction_reason: nil # Why satisfied/unsatisfied

@@ -14,6 +14,12 @@
       "cmd": ["ruby", "scripts/hooks/sane_rsync_guard_test.rb"]
     },
     {
+      "path": "scripts/hooks/sane_open_guard_test.rb",
+      "label": "SaneProcess open guard tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/hooks/sane_open_guard_test.rb"]
+    },
+    {
       "path": "scripts/app_test_mode_test.rb",
       "label": "SaneProcess app test mode tests",
       "status": "required",
@@ -56,6 +62,12 @@
       "cmd": ["python3", "-B", "scripts/automation/check_inbox_metrics_test.py"]
     },
     {
+      "path": "scripts/automation/github_reporting_guard_test.py",
+      "label": "SaneApps GitHub reporting regression tests",
+      "status": "required",
+      "cmd": ["python3", "-B", "scripts/automation/github_reporting_guard_test.py"]
+    },
+    {
       "path": "scripts/automation/hosted_file_actions_test.py",
       "label": "SaneProcess hosted file action tests",
       "status": "required",
@@ -90,6 +102,12 @@
       "label": "SaneProcess session document enforcement tests",
       "status": "required",
       "cmd": ["ruby", "scripts/hooks/session_docs_test.rb"]
+    },
+    {
+      "path": "scripts/hooks/core/sop_score_test.rb",
+      "label": "SaneProcess shared SOP scoring tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/hooks/core/sop_score_test.rb"]
     },
     {
       "path": "scripts/mini/mini_gui_run_test.rb",
@@ -146,6 +164,36 @@
       "cmd": ["ruby", "scripts/sanemaster/process_metrics_test.rb"]
     },
     {
+      "path": "scripts/sanemaster/machine_cleanup_test.rb",
+      "label": "SaneProcess machine cleanup tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/machine_cleanup_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/near_miss_review_test.rb",
+      "label": "SaneProcess near-miss review tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/near_miss_review_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/verify_failure_review_test.rb",
+      "label": "SaneProcess verify failure review tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/verify_failure_review_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/process_eval_test.rb",
+      "label": "SaneProcess workflow receipt eval tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/process_eval_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/agent_workflow_test.rb",
+      "label": "SaneProcess agent workflow eval tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/agent_workflow_test.rb"]
+    },
+    {
       "path": "scripts/sanemaster/release_guardrail_test.rb",
       "label": "SaneProcess release guardrail tests",
       "status": "required",
@@ -198,6 +246,12 @@
       "label": "SaneProcess validation report tests",
       "status": "required",
       "cmd": ["ruby", "scripts/validation_report_test.rb"]
+    },
+    {
+      "path": "scripts/automation/tool_discovery_receipt_test.rb",
+      "label": "SaneProcess tool discovery receipt tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/automation/tool_discovery_receipt_test.rb"]
     },
     {
       "path": "scripts/hooks/saneprompt_test.rb",

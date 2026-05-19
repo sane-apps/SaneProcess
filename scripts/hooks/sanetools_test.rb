@@ -40,6 +40,54 @@ module SaneToolsTest
     passed = 0
     failed = 0
 
+    # === MINI-FIRST LOCAL UI GUARD TEST ===
+    warn ''
+    warn 'Testing Mini-first local UI guard:'
+
+    old_force_air = ENV['SANE_FORCE_MACBOOK_AIR_FOR_TEST']
+    old_force_mini = ENV['SANE_FORCE_MAC_MINI_FOR_TEST']
+    old_local_approval = ENV['SANE_APPROVE_LOCAL_UI_ON_AIR']
+    old_mini_unavailable = ENV['SANE_MINI_UNAVAILABLE']
+
+    ENV['SANE_FORCE_MACBOOK_AIR_FOR_TEST'] = '1'
+    ENV.delete('SANE_FORCE_MAC_MINI_FOR_TEST')
+    ENV.delete('SANE_APPROVE_LOCAL_UI_ON_AIR')
+    ENV.delete('SANE_MINI_UNAVAILABLE')
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('mcp__computer_use__get_app_state', { 'app' => 'Safari' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: computer-use blocks on MacBook Air'
+    else
+      failed += 1
+      warn "  FAIL: computer-use should block on MacBook Air, got exit #{exit_code}"
+    end
+
+    ENV.delete('SANE_FORCE_MACBOOK_AIR_FOR_TEST')
+    ENV['SANE_FORCE_MAC_MINI_FOR_TEST'] = '1'
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('mcp__computer_use__get_app_state', { 'app' => 'Safari' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: computer-use allowed when running on Mini'
+    else
+      failed += 1
+      warn "  FAIL: computer-use should be allowed on Mini, got exit #{exit_code}"
+    end
+
+    ENV['SANE_FORCE_MACBOOK_AIR_FOR_TEST'] = old_force_air
+    ENV['SANE_FORCE_MAC_MINI_FOR_TEST'] = old_force_mini
+    ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] = old_local_approval
+    ENV['SANE_MINI_UNAVAILABLE'] = old_mini_unavailable
+
     # === CIRCUIT BREAKER TEST ===
     warn ''
     warn 'Testing circuit breaker:'

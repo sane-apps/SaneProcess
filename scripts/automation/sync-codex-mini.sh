@@ -112,6 +112,7 @@ LOCAL_PM="$LOCAL_CODEX_DIR/automations/saneops-pm-run/automation.toml"
 LOCAL_DB="$LOCAL_CODEX_DIR/sqlite/codex-dev.db"
 LOCAL_SKILLS_REGISTRY="$LOCAL_CODEX_DIR/SKILLS_REGISTRY.md"
 LOCAL_SKILLS_DIR="$LOCAL_CODEX_DIR/skills"
+LOCAL_AGENTS_SKILLS_DIR="$HOME/.agents/skills"
 LOCAL_KNOWLEDGE_GRAPH="$HOME/.claude/memory/knowledge-graph.jsonl"
 CODEX_BIN_FILES=(
   "check-mcps"
@@ -234,6 +235,12 @@ ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.codex/skills\""
 scp -q "$TMP_CONFIG" "$MINI_HOST:$REMOTE_HOME/.codex/config.toml"
 scp -q "$LOCAL_SKILLS_REGISTRY" "$MINI_HOST:$REMOTE_HOME/.codex/SKILLS_REGISTRY.md"
 rsync -a --delete "$LOCAL_SKILLS_DIR/" "$MINI_HOST:$REMOTE_HOME/.codex/skills/"
+
+if [[ -d "$LOCAL_AGENTS_SKILLS_DIR" ]]; then
+  log "Syncing shared agent skills to $MINI_HOST..."
+  ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.agents/skills\""
+  rsync -a --delete "$LOCAL_AGENTS_SKILLS_DIR/" "$MINI_HOST:$REMOTE_HOME/.agents/skills/"
+fi
 
 log "Syncing Codex control-plane helpers to $MINI_HOST..."
 ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.codex/bin\""
@@ -406,6 +413,14 @@ skills_dry_run=$(rsync -a --delete --checksum --dry-run "$LOCAL_SKILLS_DIR/" "$M
 if [[ -n "${skills_dry_run//[[:space:]]/}" ]]; then
   echo "$skills_dry_run" >&2
   die "Codex skills parity check failed"
+fi
+
+if [[ -d "$LOCAL_AGENTS_SKILLS_DIR" ]]; then
+  agents_skills_dry_run=$(rsync -a --delete --checksum --dry-run "$LOCAL_AGENTS_SKILLS_DIR/" "$MINI_HOST:$REMOTE_HOME/.agents/skills/" 2>/dev/null || true)
+  if [[ -n "${agents_skills_dry_run//[[:space:]]/}" ]]; then
+    echo "$agents_skills_dry_run" >&2
+    die "Shared agent skills parity check failed"
+  fi
 fi
 
 if [[ "$RESTART_CODEX" -eq 1 ]]; then

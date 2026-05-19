@@ -97,6 +97,51 @@ class StatusCrossrefScriptTests(unittest.TestCase):
                 inbox_dir / "check-inbox.sh",
                 "#!/usr/bin/env bash\nprintf 'stub inbox ok\\n'\n",
             )
+            outreach_dir = fake_home / "SaneApps" / "apps" / "SaneSales"
+            outreach_dir.mkdir(parents=True)
+            (outreach_dir / ".outreach.yml").write_text(
+                textwrap.dedent(
+                    """\
+                    product: SaneSales
+                    launch_calendar:
+                      classification: active_launch_window
+                      last_launch_readiness:
+                        date: "2026-05-15"
+                        status: go_for_support_surfaces_only
+                        launch_readiness_exit: 0
+                        blocker_summary:
+                          - Product Hunt relaunch requires moderation approval.
+                      scheduled:
+                        - date: "2026-05-16"
+                          time: "10:00"
+                          channel: X opportunity scan
+                          status: scheduled
+                          action: Draft only high-fit replies.
+                    launch_package:
+                      status: ready_to_schedule_except_product_hunt_relaunch_approval
+                      channel_plan:
+                        product_hunt: blocked_until_relaunch_review_approval
+                        directories: scheduled_support_surfaces
+                    directory_submissions:
+                      product_hunt:
+                        status: live_unfeatured_relaunch_review_requested
+                        product_url: https://www.producthunt.com/products/sanesales
+                        observed_votes: 1
+                        observed_daily_rank: 565
+                      macupdate:
+                        status: ready_to_submit_approval_required
+                    video_distribution:
+                      youtube_upload_candidate:
+                        status: uploaded
+                        youtube_url: https://youtu.be/example
+                    x_tweet_history:
+                      - date: "2026-05-14"
+                        status: posted
+                        url: https://x.com/i/web/status/1
+                    """
+                ),
+                encoding="utf-8",
+            )
 
             bin_dir = root / "bin"
             bin_dir.mkdir()
@@ -244,29 +289,34 @@ class StatusCrossrefScriptTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, msg=result.stderr)
-            self.assertIn("[3/8] Listing actions", result.stdout)
+            self.assertIn("[3/9] Listing actions", result.stdout)
             self.assertIn("Current actions: 1", result.stdout)
             self.assertIn(
                 "- SaaSworthy: Complete vendor portal profile (email #531)",
                 result.stdout,
             )
-            self.assertIn("[4/8] Hosted-file dashboard actions", result.stdout)
+            self.assertIn("[4/9] Hosted-file dashboard actions", result.stdout)
             self.assertIn("Needs dashboard sync: 1", result.stdout)
             self.assertIn(
                 "- SaneBar: hosted 2.1.41 -> expected 2.1.45 (variant 1227172)",
                 result.stdout,
             )
-            self.assertIn("[5/8] GitHub notifications", result.stdout)
+            self.assertIn("[5/9] Outreach / launch operations", result.stdout)
+            self.assertIn("Tracked apps: 1", result.stdout)
+            self.assertIn("- SaneSales: active_launch_window", result.stdout)
+            self.assertIn("Product Hunt: status=live_unfeatured_relaunch_review_requested", result.stdout)
+            self.assertIn("X: posted=1", result.stdout)
+            self.assertIn("[6/9] GitHub notifications", result.stdout)
             self.assertIn("Notifications: 2", result.stdout)
             self.assertIn("New SaneBar evidence", result.stdout)
-            self.assertIn("[6/8] Open GitHub issues", result.stdout)
+            self.assertIn("[7/9] Open GitHub issues", result.stdout)
             self.assertIn("Scope: org-wide", result.stdout)
             self.assertIn("## sane-apps/SaneProcess", result.stdout)
             self.assertIn("#8\tOPEN\tStub process issue", result.stdout)
-            self.assertIn("[7/8] Open GitHub PRs", result.stdout)
+            self.assertIn("[8/9] Open GitHub PRs", result.stdout)
             self.assertIn("## sane-apps/Sane-AppleDocs", result.stdout)
             self.assertIn("#13\tOPEN\tStub docs dependency pr", result.stdout)
-            self.assertIn("[8/8] GitHub comment/review activity", result.stdout)
+            self.assertIn("[9/9] GitHub comment/review activity", result.stdout)
             self.assertIn("Comments read: 1", result.stdout)
             self.assertIn("Latest comment explains the remaining blocker.", result.stdout)
             self.assertIn("Reviews read: 1", result.stdout)

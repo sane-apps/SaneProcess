@@ -9,6 +9,7 @@
 # ==============================================================================
 
 require 'json'
+require 'socket'
 require_relative 'core/mandatory_workflows'
 require_relative 'core/state_manager'
 require_relative 'sanetools_gaming'
@@ -35,6 +36,16 @@ module SaneToolsChecks
   ).freeze
 
   STATE_FILE_PATTERN = %r{\.claude/[^/]+\.json$}.freeze
+
+  LOCAL_UI_TOOL_PATTERN = Regexp.union(
+    /^mcp__computer_use__/,
+    /^computer-use\./,
+    /^mcp__browser__/,
+    /^browser\./
+  ).freeze
+
+  LOCAL_UI_APPROVAL = 'MR. SANE APPROVES LOCAL UI ON AIR'
+  MINI_UNAVAILABLE_APPROVAL = 'MR. SANE CONFIRMS MINI UNAVAILABLE'
 
   FILE_SIZE_SOFT_LIMIT = 500
   FILE_SIZE_HARD_LIMIT = 800
@@ -104,6 +115,37 @@ module SaneToolsChecks
 
   class << self
     include SaneToolsGitHubGuard
+
+    def check_local_ui_tool_guard(tool_name, tool_input)
+      return nil unless tool_name.to_s.match?(LOCAL_UI_TOOL_PATTERN)
+      return nil unless running_on_macbook_air?
+      return nil if ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] == LOCAL_UI_APPROVAL
+      return nil if ENV['SANE_MINI_UNAVAILABLE'] == MINI_UNAVAILABLE_APPROVAL
+
+      app = tool_input['app'] || tool_input[:app] ||
+            tool_input['application'] || tool_input[:application] ||
+            tool_input['url'] || tool_input[:url] ||
+            'local UI'
+
+      "MINI-FIRST LOCAL UI BLOCKED\n" \
+      "Tool: #{tool_name}\n" \
+      "Target: #{app}\n" \
+      "This would control the MacBook Air instead of the Mac Mini.\n" \
+      "DO THIS: run SaneApps browser/UI/release work on the Mini via ssh mini, SaneMaster, sane_test.rb, or Mini-side automation.\n" \
+      "ONLY FALLBACK: set SANE_MINI_UNAVAILABLE='#{MINI_UNAVAILABLE_APPROVAL}' or SANE_APPROVE_LOCAL_UI_ON_AIR='#{LOCAL_UI_APPROVAL}' after explicit user approval."
+    end
+
+    def running_on_macbook_air?
+      return true if ENV['SANE_FORCE_MACBOOK_AIR_FOR_TEST'] == '1'
+      return false if ENV['SANE_FORCE_MAC_MINI_FOR_TEST'] == '1'
+
+      host = Socket.gethostname.to_s.downcase
+      return false if host.include?('mini')
+
+      true
+    rescue StandardError
+      true
+    end
 
     def check_blocked_path(tool_input, tool_name = nil, edit_tools = [])
       path = tool_input['file_path'] || tool_input['path'] || tool_input[:file_path] || tool_input[:path]
@@ -551,7 +593,7 @@ module SaneToolsChecks
     required_skill = skill[:required].to_s
     requirements = MandatoryWorkflows.skill_requirements[required_skill.to_sym]
     return nil unless requirements && requirements[:requires_runner]
-    return nil if skill[:runner_used]
+    return nil if skill[:runner_proved] || skill[:runner_used]
 
     if tool_name == 'Bash'
       command = tool_input['command'] || tool_input[:command] || ''

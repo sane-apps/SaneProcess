@@ -42,6 +42,11 @@ require_relative 'sanemaster/customer_ui_contract'
 require_relative 'sanemaster/bootstrap'
 require_relative 'sanemaster/test_mode'
 require_relative 'sanemaster/process_metrics'
+require_relative 'sanemaster/near_miss_review'
+require_relative 'sanemaster/verify_failure_review'
+require_relative 'sanemaster/process_eval'
+require_relative 'sanemaster/agent_workflow'
+require_relative 'sanemaster/machine_cleanup'
 require_relative 'sanemaster/verify'
 require_relative 'sanemaster/quality'
 require_relative 'sanemaster/sop_loop'
@@ -75,6 +80,11 @@ class SaneMaster
   include SaneMasterModules::Bootstrap
   include SaneMasterModules::TestMode
   include SaneMasterModules::ProcessMetrics
+  include SaneMasterModules::NearMissReview
+  include SaneMasterModules::VerifyFailureReview
+  include SaneMasterModules::ProcessEval
+  include SaneMasterModules::AgentWorkflow
+  include SaneMasterModules::MachineCleanup
   include SaneMasterModules::Verify
   include SaneMasterModules::Quality
   include SaneMasterModules::SOPLoop
@@ -129,7 +139,15 @@ class SaneMaster
         'check_docs' => { args: '', desc: 'Check docs are in sync with code' },
         'check_binary' => { args: '', desc: 'Audit binary for security issues' },
         'test_scan' => { args: '[-v]', desc: 'Scan tests for tautologies and hardcoded values' },
-        'process_metrics' => { args: '[--json]', desc: 'Summarize verify churn, session quality, and hook blocks' },
+        'launch_readiness' => { args: '[--json] [--max-age-days N]', desc: 'Validate launch calendar gates plus fresh release_preflight proof before any public launch' },
+        'process_metrics' => { args: '[--json] [--export-json PATH] [--export-html PATH]', desc: 'Summarize verify churn, session quality, and hook blocks' },
+        'near_miss_review' => { args: '[--json] [--metrics PATH] [--limit N|--all] [--min-count N] [--include-test-events]', desc: 'Mine process telemetry for useful near-miss guard/eval candidates' },
+        'verify_failure_review' => { args: '[--json] [--metrics PATH] [--limit N|--all] [--min-count N]', desc: 'Cluster zero-test verify failures by likely root cause' },
+        'process_eval' => { args: '[--fixture PATH] [--json]', desc: 'Evaluate workflow receipt traces and SOP self-assessment health' },
+        'trace_eval' => { args: '[--fixture PATH] [--json]', desc: 'Evaluate multi-step workflow receipt trace fixtures' },
+        'sop_review' => { args: '[--json]', desc: 'Review SOP score history, caps, and inflation signals' },
+        'agent_eval' => { args: '[--fixture PATH] [--json]', desc: 'Evaluate prompt-to-workflow routing fixtures' },
+        'skill_lint' => { args: '[--path PATH] [--json]', desc: 'Lint skill descriptions for reliable routing' },
         'refresh_qa_snapshots' => { args: '[--dry-run|--run] [--json]', desc: 'List or refresh stale app QA snapshots' },
         'gate_review' => { args: '<fixture.json> [--json]', desc: 'Review candidate prevention gates against seed/block/allow fixtures' },
         'structural' => { args: '[path]', desc: 'Structural compliance check (sc)' },
@@ -157,6 +175,7 @@ class SaneMaster
       commands: {
         'doctor' => { args: '', desc: 'Check environment health' },
         'tool_discovery' => { args: '--query "TEXT"', desc: 'Generate a proof receipt before workarounds or new tools' },
+        'agent_env_review' => { args: '[--json]', desc: 'Review agent environment drift from metrics, skills, and research cache' },
         'health' => { args: '', desc: 'Quick health check (< 100ms)' },
         'bootstrap' => { args: '[--check-only]', desc: 'Full environment setup' },
         'setup' => { args: '', desc: 'Install gems and dependencies' },
@@ -165,6 +184,7 @@ class SaneMaster
         'restore' => { args: '', desc: 'Fix Xcode/Launch Services issues' },
         'install_provisioning_profiles' => { args: '[--delete-source] [glob ...]', desc: 'Install downloaded provisioning profiles deterministically by UUID' },
         'dedupe_apps' => { args: '[--host local|mini] [--apps App1,App2] [--dry-run] [--json]', desc: 'Keep one canonical app bundle per Sane app' },
+        'machine_cleanup' => { args: '[--host local|mini] [--server] [--apply] [--json] [--preserve-apps A,B]', desc: 'Prune disposable caches and generated build/test artifacts without touching active app work' },
         'mcp_watchdog' => { args: '[status|doctor|clean|install|uninstall] [--max N] [--interval SEC] [--json] [--quiet]', desc: 'Detect and clean duplicate MCP daemons' },
         'universal_control_reset' => { args: '[--status] [--dry-run] [--local-only|--mini-only] [--cleanup-mini] [--reboot-mini]', desc: 'Recover Air↔Mini Universal Control / pointer handoff' },
         'work_session_on' => { args: '', desc: 'Start keep-awake + no-lock work session guard' },
@@ -310,11 +330,27 @@ class SaneMaster
                                   visual-smoke
                                   customer_ui_sweep
                                   customer-ui-sweep
+                                  launch_readiness
+                                  launch-readiness
                                   crash_report
                                   crashes
                                   menu_scan
                                   process_metrics
                                   sop_metrics
+                                  near_miss_review
+                                  near-miss-review
+                                  nmr
+                                  verify_failure_review
+                                  verify-failure-review
+                                  vfr
+                                  process_eval
+                                  process-eval
+                                  trace_eval
+                                  trace-eval
+                                  sop_review
+                                  sop-review
+                                  agent_env_review
+                                  agent-env-review
                                   refresh_qa_snapshots
                                   qa_refresh
                                 ]).freeze
@@ -531,6 +567,7 @@ class SaneMaster
       remote_ok = ssh_system('mini', "cd #{Shellwords.escape(execution_repo)} && #{remote_cmd}")
       remote_status = $?.respond_to?(:exitstatus) ? $?.exitstatus : (remote_ok ? 0 : 1)
       sync_outputs_from_mini!(Dir.pwd, execution_repo)
+      cleanup_bulk_outputs_on_mini!(execution_repo)
       sync_release_artifacts_from_mini!(Dir.pwd, execution_repo, warn_only: true) if release_routed
       sync_release_support_repos_from_origin! if release_routed && remote_status.zero? &&
                                                 routed_command_requires_support_repo_sync?(command)
@@ -684,6 +721,7 @@ PY
 
     puts "🔄 Syncing local workspace snapshot to mini (#{scratch_repo})"
     sync_local_dir_to_mini!(local_repo, scratch_repo, label: nil)
+    apply_git_deleted_paths_to_mini!(local_repo, scratch_repo)
     scratch_repo
   end
 
@@ -741,6 +779,51 @@ PY
       ok = system('rsync', '-az', tmp.path, "mini:#{remote_bundle_path}")
       abort '❌ Failed to sync the routed release git bundle to the mini.' unless ok
     end
+  end
+
+  def apply_git_deleted_paths_to_mini!(local_repo, remote_repo)
+    deleted_paths = git_deleted_paths_for_routed_workspace(local_repo)
+    return if deleted_paths.empty?
+
+    payload = JSON.generate(deleted_paths)
+    remote_cmd = <<~SH
+      set -e
+      cd #{Shellwords.escape(remote_repo)}
+      SANEMASTER_DELETED_PATHS=#{Shellwords.escape(payload)} python3 - <<'PY'
+import json
+import os
+import subprocess
+
+root = os.getcwd()
+deleted_paths = json.loads(os.environ.get("SANEMASTER_DELETED_PATHS", "[]"))
+safe_paths = []
+for rel_path in deleted_paths:
+    normalized = os.path.normpath(rel_path)
+    if normalized in ("", ".") or normalized.startswith("../") or os.path.isabs(normalized):
+        raise SystemExit(f"unsafe routed deletion path: {rel_path}")
+    safe_paths.append(normalized)
+if safe_paths:
+    subprocess.run(["git", "rm", "--cached", "-q", "--ignore-unmatch", "--", *safe_paths], check=True)
+PY
+    SH
+    ok = ssh_system('mini', remote_cmd)
+    abort '❌ Failed to apply staged deletions to the routed release workspace on the mini.' unless ok
+  end
+
+  def git_deleted_paths_for_routed_workspace(local_repo)
+    paths = []
+    [
+      %w[diff --name-only --diff-filter=D],
+      %w[diff --cached --name-only --diff-filter=D]
+    ].each do |args|
+      output, status = Open3.capture2e('git', '-C', local_repo, *args)
+      next unless status.success?
+
+      paths.concat(output.lines.map(&:strip).reject(&:empty?))
+    end
+    paths.uniq.sort
+  rescue StandardError
+    []
   end
 
   def mini_release_workspace_root(local_repo)
@@ -831,15 +914,26 @@ PY
     exit($CHILD_STATUS&.exitstatus || (success ? 0 : 1))
   end
 
+  def run_external_command_with_workflow_receipt(workflow, *command)
+    success = system(*command)
+    record_process_metric(
+      'workflow_receipt',
+      workflow: workflow,
+      success: success,
+      command: command.join(' ')
+    ) if respond_to?(:record_process_metric)
+    exit($CHILD_STATUS&.exitstatus || (success ? 0 : 1))
+  end
+
   def run_status(_args = [])
     script = File.join(saneprocess_repo_root, 'scripts', 'automation', 'sane-status-crossref.sh')
-    run_external_command('bash', script)
+    run_external_command_with_workflow_receipt('status', 'bash', script)
   end
 
   def run_check_inbox(args = [])
     script = File.join(infra_scripts_root, 'check-inbox.sh')
     forwarded_args = args.empty? ? ['check'] : args
-    run_external_command(script, *forwarded_args)
+    run_external_command_with_workflow_receipt('check_inbox', script, *forwarded_args)
   end
 
   def run_sync_mini(args = [])
@@ -1040,7 +1134,15 @@ PY
       '--exclude', '.worktrees',
       '--exclude', '.build',
       '--exclude', 'build',
-      '--exclude', 'outputs',
+      '--include', 'outputs/',
+      '--include', 'outputs/qa_status.json',
+      '--include', 'outputs/release_preflight_status.json',
+      '--include', 'outputs/customer_ui_action_receipt.json',
+      '--include', 'outputs/validation/',
+      '--include', 'outputs/validation/qa_status.json',
+      '--include', 'outputs/customer-ui/',
+      '--include', 'outputs/customer-ui/***',
+      '--exclude', 'outputs/***',
       '--exclude', 'DerivedData',
       '--exclude', 'node_modules',
       '--exclude', 'vendor/bundle',
@@ -1240,8 +1342,47 @@ PY
 
     local_outputs_dir = File.join(File.expand_path(local_repo), 'outputs')
     FileUtils.mkdir_p(local_outputs_dir)
-    ok = system('rsync', '-az', "mini:#{remote_outputs_dir}/", "#{local_outputs_dir}/")
+    ok = system(
+      'rsync',
+      '-az',
+      *mini_output_receipt_rsync_filters,
+      "mini:#{remote_outputs_dir}/",
+      "#{local_outputs_dir}/"
+    )
     warn '⚠️  Failed to sync Mini outputs back to the local workspace.' unless ok
+  end
+
+  def mini_output_receipt_rsync_filters
+    [
+      '--include', 'qa_status.json',
+      '--include', 'release_preflight_status.json',
+      '--include', 'customer_ui_action_receipt.json',
+      '--include', 'validation/',
+      '--include', 'validation/qa_status.json',
+      '--include', 'customer-ui/',
+      '--include', 'customer-ui/***',
+      '--exclude', '*'
+    ]
+  end
+
+  def cleanup_bulk_outputs_on_mini!(remote_repo)
+    remote_outputs_dir = File.join(remote_repo, 'outputs')
+    return unless mini_path_exists_fast?(remote_outputs_dir)
+
+    remote_cmd = <<~SH
+      set -e
+      out=#{Shellwords.escape(remote_outputs_dir)}
+      [ -d "$out" ] || exit 0
+      find "$out" -mindepth 1 -maxdepth 1 -print | while IFS= read -r path; do
+        base=$(basename "$path")
+        case "$base" in
+          qa_status.json|release_preflight_status.json|customer_ui_action_receipt.json|validation|customer-ui) continue ;;
+        esac
+        /usr/bin/trash "$path" 2>/dev/null || trash "$path" 2>/dev/null || true
+      done
+    SH
+    ok = ssh_system('mini', remote_cmd, out: File::NULL, err: File::NULL)
+    warn '⚠️  Failed to prune bulk Mini outputs after routed run.' unless ok
   end
 
   def sync_release_artifacts_to_mini!(local_repo, remote_repo)
@@ -1332,6 +1473,24 @@ PY
       menu_scan(args)
     when 'process_metrics', 'sop_metrics'
       process_metrics_dashboard(args)
+    when 'near_miss_review', 'near-miss-review', 'nmr'
+      near_miss_review(args)
+    when 'verify_failure_review', 'verify-failure-review', 'vfr'
+      verify_failure_review(args)
+    when 'process_eval', 'process-eval'
+      success = process_eval(args)
+      exit(success ? 0 : 1)
+    when 'trace_eval', 'trace-eval'
+      success = trace_eval(args)
+      exit(success ? 0 : 1)
+    when 'sop_review', 'sop-review'
+      sop_review(args)
+    when 'agent_eval', 'agent-eval'
+      success = agent_eval(args)
+      exit(success ? 0 : 1)
+    when 'skill_lint', 'skill-lint'
+      success = skill_lint(args)
+      exit(success ? 0 : 1)
     when 'refresh_qa_snapshots', 'qa_refresh'
       refresh_qa_snapshots(args)
 
@@ -1349,6 +1508,8 @@ PY
       exit($CHILD_STATUS.exitstatus || 1) unless $CHILD_STATUS&.success?
     when 'tool_discovery', 'tool_receipt', 'tool-receipt'
       tool_discovery(args)
+    when 'agent_env_review', 'agent-env-review'
+      agent_env_review(args)
     when 'health', 'h'
       run_health(args)
     when 'meta', 'tooling', 'audit-self'
@@ -1363,6 +1524,9 @@ PY
       install_provisioning_profiles_command(args)
     when 'dedupe_apps', 'dedupe-apps'
       system('ruby', File.join(__dir__, 'dedupe_sane_apps.rb'), *args)
+    when 'machine_cleanup', 'machine-cleanup', 'cleanup_machine', 'cleanup-machine'
+      success = machine_cleanup(args)
+      exit(success ? 0 : 1)
     when 'mcp_watchdog', 'mcpw', 'mcp'
       mcp_watchdog(args)
     when 'universal_control_reset', 'uc_reset', 'ucr'
@@ -1391,6 +1555,8 @@ PY
       customer_ui_contract(args)
     when 'customer_ui_sweep', 'customer-ui-sweep'
       customer_ui_sweep(args)
+    when 'launch_readiness', 'launch-readiness'
+      launch_readiness(args)
     when 'release'
       release(args)
     when 'release_preflight'
@@ -1834,6 +2000,26 @@ PY
         'dedupe_apps --apps SaneBar,SaneHosts'
       ]
     },
+    'machine_cleanup' => {
+      usage: 'machine_cleanup [--host local|mini] [--server] [--apply] [--json] [--preserve-apps A,B]',
+      description: 'Prune disposable caches, full Trash, simulators, stale DerivedData, and optional Mini server generated artifacts.',
+      flags: {
+        '--host local|mini' => 'Inspect this machine or route the cleanup command to the Mini',
+        '--server' => 'Mini-only aggressive server reset: prune generated repo artifacts, routed workspaces, release staging, bulk outputs, and disposable app containers',
+        '--apply' => 'Perform the planned safe cleanup; default is dry-run',
+        '--preserve-apps A,B' => 'Additional app names to preserve even if no process is currently visible',
+        '--min-free-gb N' => 'Disk pressure threshold used in the report',
+        '--cache-threshold-gb N' => 'Minimum disposable-cache total before cache pruning is planned',
+        '--deriveddata-age-days N' => 'Only prune inactive DerivedData older than this many days',
+        '--json' => 'Emit machine-readable output'
+      },
+      examples: [
+        'machine_cleanup --host mini --json',
+        'machine_cleanup --host mini --server --apply',
+        'machine_cleanup --host mini --apply --preserve-apps SaneVideo,SaneScan',
+        'machine_cleanup --local --apply'
+      ]
+    },
     'doctor' => {
       usage: 'doctor',
       description: 'Check environment health and tool versions',
@@ -2084,6 +2270,19 @@ PY
       examples: [
         'customer_ui_sweep --dry-run',
         'customer_ui_sweep --json'
+      ]
+    },
+    'launch_readiness' => {
+      usage: 'launch_readiness [--json] [--max-age-days N]',
+      description: 'Validate .outreach.yml launch gates, launch_package proof/assets, public-posting policy, and a fresh passing release_preflight receipt before any public launch.',
+      flags: {
+        '--json' => 'Print the full launch-readiness report as JSON',
+        '--max-age-days N' => 'Maximum age for the passing release_preflight proof (default: 7)'
+      },
+      examples: [
+        'launch_readiness',
+        'launch_readiness --json',
+        'launch_readiness --max-age-days 3'
       ]
     },
     'mc' => {

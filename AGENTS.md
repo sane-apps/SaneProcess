@@ -24,7 +24,8 @@ automation, policy, or multi-file investigation work.
 
 1. Save learnings via Serena `write_memory`
 2. Update `SESSION_HANDOFF.md` — include: open GitHub issues (`gh issue list`), research.md topics, feature requests
-3. Append SOP rating to `outputs/sop_ratings.csv`
+3. Run `ruby scripts/SaneMaster.rb sop_review --json` when the session changed code, tools, policy, docs, support, release, or UI/runtime behavior
+4. Append SOP rating to `outputs/sop_ratings.csv` with evidence and any cap reason; do not rate above the objective cap from `sop_review`
 
 ## Live Memory Rule
 
@@ -110,6 +111,16 @@ Canonical runner-backed paths in this repo:
 - `ship` → `ruby scripts/SaneMaster.rb release_preflight`
 - `check-inbox` → `ruby scripts/SaneMaster.rb check_inbox`
 
+## Visual Verification Gate
+
+Green tests are not enough for customer-facing UI claims.
+
+- For UI/runtime/customer-facing verification, capture one clean saved Mini screenshot per app-owned view or state touched, changed, or claimed verified.
+- Inspect every saved screenshot for balance, clarity, confusing copy, clipping, overlap, contrast, dark-mode quality, and obvious functional state.
+- Obstructed, clipped, partial, or helper-window-contaminated screenshots are invalid evidence.
+- Record the screenshot paths and verdict in `SESSION_HANDOFF.md` or an `outputs/visual-audit*/` receipt before saying the surface works.
+- Current hook coverage: `saneprompt` marks visual verification required from UI/screenshot prompts, `sanetrack` records UI edits and screenshot/audit evidence, and `sanestop` plus `task_completed_gate` block completion when required visual proof is missing.
+
 ## SaneUI Source Of Truth
 
 - For any SaneApps settings, About, license, updater, button-style, or typography work, inspect `~/SaneApps/infra/SaneUI/Sources/SaneUICatalog/SaneUICatalogApp.swift` first.
@@ -145,13 +156,13 @@ Run with no args for full help. Run `help <category>` for category details.
 | **sales** | `downloads` (dl), `downloads --app NAME`, `downloads --days N`, `downloads --json` | Download analytics from sane-dist Worker (D1-backed) |
 | **sales** | `events`, `events --days N`, `events --app NAME`, `events --json` | User-type events: new_free_user, early_adopter_grant, license_activated |
 | **sales** | `leads --query "TEXT"`, `leads --domain DOMAIN`, `leads --json` | Prospect discovery with Exa + Firecrawl site dossiers |
-| **check** | `verify_api`, `dead_code`, `deprecations`, `swift6`, `saneui_guard`, `test_scan`, `structural`, `compliance`, `check_docs`, `check_binary`, `menu_scan` | Static analysis, API verification, code quality |
+| **check** | `verify_api`, `dead_code`, `deprecations`, `swift6`, `saneui_guard`, `test_scan`, `process_metrics`, `near_miss_review`, `verify_failure_review`, `process_eval`, `agent_eval`, `structural`, `compliance`, `check_docs`, `check_binary`, `menu_scan` | Static analysis, process telemetry, API verification, code quality |
 | **debug** | `test_mode` (tm), `logs --follow`, `launch`, `crashes`, `diagnose` | Interactive debugging, crash analysis |
 | **ci** | `enable_ci_tests`, `restore_ci_tests`, `fix_mocks`, `monitor_tests`, `image_info` | CI/CD test helpers |
 | **gen** | `gen_test`, `gen_mock`, `gen_assets`, `template` | Code generation, mocks, assets |
 | **memory** | `msync`, `session_end`, `reset_breaker` | Cross-session memory sync, circuit breaker |
 | **breaker** | `breaker_status` (bs), `breaker_errors` (be), `reset_breaker` (rb) | Circuit breaker inspection and reset |
-| **env** | `doctor`, `tool_discovery --query "..."`, `health`, `bootstrap`, `setup`, `versions`, `reset`, `restore` | Environment setup, health checks |
+| **env** | `doctor`, `tool_discovery --query "..."`, `machine_cleanup --host mini --apply`, `health`, `bootstrap`, `setup`, `versions`, `reset`, `restore` | Environment setup, health checks, machine cleanup |
 | **saneloop** | `saneloop` (sl), `saneloop start`, `saneloop status`, `saneloop check`, `saneloop complete` | Structured iteration loops for big tasks |
 | **meta** | `meta`, `audit`, `system_check` | Tooling self-audit, system verification |
 | **export** | `export`, `md_export`, `deps`, `quality` | PDF export, dependency graphs |
@@ -162,9 +173,18 @@ Run with no args for full help. Run `help <category>` for category details.
 - Conversion funnel → `SaneMaster.rb events` (new users, upgrades, activations)
 - Lead research → `SaneMaster.rb leads --query "..."` (NOT ad-hoc vendor API curl chains)
 - Build/test → `SaneMaster.rb verify` (NOT raw `xcodebuild`)
+- Process improvement / recurring workflow misses → `SaneMaster.rb near_miss_review` (report-only before adding new rules)
+- Repeated zero-test verify failures → `SaneMaster.rb verify_failure_review --all` before changing timeouts or test parsing
 - App launch → `sane_test.rb` (NOT `open SaneBar.app`)
 - Release → `release.sh` + `SaneMaster.rb release_preflight` (NOT manual DMG creation)
 - CI test setup → `SaneMaster.rb enable_ci_tests` (NOT editing project.yml manually)
+
+### Support Issue Synchronization
+
+- Before closing, resolving, or summarizing a customer-reported GitHub issue, cross-check the work-email history for the same app, reporter identity, and issue keywords with `check-inbox.sh` (`whois`, `context`, `read`, and `check-reply` as needed).
+- If email confirms the issue is fixed, report it as "email confirmation received; issue resolved" and close/update GitHub accordingly. If email says it is still broken, keep or reopen the GitHub issue.
+- Never describe a GitHub issue as "no follow-up" until the related email trail has also been checked.
+- In user-facing summaries, anonymize email senders. Do not include names, personal email addresses, or other identifying details from customer email unless the user explicitly asks or a legal/compliance context requires identity.
 
 ### Sales & Conversion Funnel
 
@@ -410,8 +430,10 @@ ssh mini 'tail -20 ~/SaneApps/outputs/nightly_report.md'
 
 - Codex has no native PreToolUse hook API — critical gates are enforced in shared scripts
 - Email writes are guarded via `~/.local/bin/curl` → `sane_curl_guard.sh` plus `check-inbox.sh` approval checks
+- Local MacBook Air GUI opens for SaneApps release/dashboard work are guarded via `~/.local/bin/open` → `sane_open_guard.sh`. Use Mini Safari/Finder instead for Lemon Squeezy, App Store Connect, release upload files, and SaneApps app launches.
 - Don't invent new docs — use the core docs + `AGENTS.md` standard
 - Use `trash` not `rm -rf`
+- Cleanup SOP: use `ruby scripts/SaneMaster.rb machine_cleanup --host mini --apply --preserve-apps App1,App2` for Mini cleanup and `--local` for the MacBook Air. The command is dry-run by default, preserves active apps, and empties Trash after moving disposable paths so cleanup does not just store GB elsewhere. Before any manual cleanup, list active `Sane*`, `xcodebuild`, simulator, training, and MCP processes with parent/PGID context. Preserve any app the user says is active, even if it looks noisy. Do safe disk cleanup first: full Trash, disposable caches, inactive DerivedData, and unavailable simulator data. Never kill broad process classes; kill only a confirmed unrelated parent process group, and only after tracing respawns back to their launcher.
 
 ---
 

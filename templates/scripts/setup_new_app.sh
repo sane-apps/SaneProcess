@@ -3,10 +3,14 @@
 # SaneApps New App Setup Script
 # Creates a new app with all standard templates
 #
-# Usage: ./setup_new_app.sh AppName com.appname.app [target_dir]
+# Deprecated. Use:
+#   ruby ~/SaneApps/infra/SaneProcess/scripts/scaffold.rb <AppName> --type macos
 #
 
 set -e
+
+echo "Deprecated: use ruby ~/SaneApps/infra/SaneProcess/scripts/scaffold.rb <AppName> --type macos" >&2
+exit 1
 
 # Colors
 RED='\033[0;31m'

@@ -1,0 +1,17 @@
+{
+  "rules": [
+    {
+      "id": "weak-test-evidence",
+      "trigger": "weak test evidence",
+      "seed": "Weak test evidence caused a session to claim done after a green command counted zero tests.",
+      "block": [
+        "Claim done with weak test evidence after verify success reported zero tests",
+        "Ship customer-facing work with weak test evidence only"
+      ],
+      "allow": [
+        "Document zero-test verify as inconclusive and rerun the real suite",
+        "Run syntax-only validation for a comments-only change"
+      ]
+    }
+  ]
+}

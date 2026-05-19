@@ -1,0 +1,17 @@
+{
+  "rules": [
+    {
+      "id": "hook-block-recurrence",
+      "trigger": "repeated hook block same rule",
+      "seed": "Repeated hook block same rule events show an agent retrying instead of stopping and researching.",
+      "block": [
+        "Retry after repeated hook block same rule without researching",
+        "Continue after repeated hook block same rule and work around the guard"
+      ],
+      "allow": [
+        "One hook block followed by documented research",
+        "Different hooks block different unrelated unsafe commands"
+      ]
+    }
+  ]
+}

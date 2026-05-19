@@ -46,6 +46,14 @@ products:
     github_repo: sane-apps/SaneHosts
     appcast: https://sanehosts.com/appcast.xml
 
+  sanescan:
+    name: SaneScan
+    type: ios_app
+    domain: sanescan.saneapps.com
+    github_repo: sane-apps/SaneScan
+    appstore_id: "6770391054"
+    storekit_product_id: com.sanescan.app.pro.annual
+
   sanesync:
     name: SaneSync
     # Unreleased: no checkout UUID yet
@@ -89,6 +97,7 @@ all_domains:
   - saneclick.com
   - sanehosts.com
   - sanesales.com
+  - sanescan.saneapps.com
   - saneapps.com
   - sanesync.com
   - sanevideo.com

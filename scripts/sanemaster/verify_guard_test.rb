@@ -111,6 +111,8 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
       assert_eq(commands.first[:cmd].first, 'ruby')
       assert_includes(commands.map { |entry| entry[:cmd].join(' ') }, 'ruby scripts/sanemaster/gate_review_test.rb')
       assert_includes(commands.map { |entry| entry[:cmd].join(' ') }, 'ruby scripts/sanemaster/process_metrics_test.rb')
+      assert_includes(commands.map { |entry| entry[:cmd].join(' ') }, 'ruby scripts/sanemaster/near_miss_review_test.rb')
+      assert_includes(commands.map { |entry| entry[:cmd].join(' ') }, 'ruby scripts/sanemaster/verify_failure_review_test.rb')
       assert_includes(commands.map { |entry| entry[:cmd].join(' ') }, 'ruby scripts/sanemaster/universal_control_test.rb')
       assert_includes(commands.map { |entry| entry[:cmd].join(' ') }, 'ruby scripts/mini/mini_gui_run_test.rb')
       assert_includes(commands.map { |entry| entry[:cmd].join(' ') }, 'python3 -B scripts/automation/status_crossref_test.py')
@@ -126,6 +128,64 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
       registered_paths = subject.send(:script_only_test_entries).map { |entry| entry.fetch('path') }
       assert_includes(registered_paths, 'scripts/hooks/test/hook_test.rb')
       assert_includes(registered_paths, 'scripts/sane_test.rb')
+      true
+    end
+  end
+
+  test_category('Project test destinations') do
+    test('uses the configured iOS simulator destination for iOS-only unit tests') do
+      Dir.mktmpdir('verify-ios-destination-') do |dir|
+        File.write(
+          File.join(dir, '.saneprocess'),
+          <<~YAML
+            name: SaneScan
+            type: ios_app
+            scheme: SaneScan
+            project: SaneScan.xcodeproj
+            tests:
+              unit_target: SaneScanTests
+              unit_destination: "platform=iOS Simulator,name=iPhone 17 Pro"
+          YAML
+        )
+        Dir.chdir(dir) do
+          fresh_subject = VerifyHarness.new
+          fresh_subject.define_singleton_method(:ios_simulator_destinations) do
+            [
+              { name: 'iPhone 17 Pro', udid: 'shutdown-sim', os: '26.5', state: 'Shutdown' },
+              { name: 'iPhone 17 Pro', udid: 'booted-sim', os: '26.5', state: 'Booted' }
+            ]
+          end
+          command = fresh_subject.send(:build_test_command, false)
+
+          destination_index = command.index('-destination')
+          assert(destination_index, 'expected xcodebuild command to include a destination')
+          assert_eq(command[destination_index + 1], 'id=booted-sim')
+          assert(!command.include?('platform=macOS,arch=arm64'), 'iOS-only projects must not be routed to macOS tests')
+        end
+      end
+      true
+    end
+
+    test('keeps macOS as the default unit test destination for desktop projects') do
+      Dir.mktmpdir('verify-macos-destination-') do |dir|
+        File.write(
+          File.join(dir, '.saneprocess'),
+          <<~YAML
+            name: SaneBar
+            scheme: SaneBar
+            project: SaneBar.xcodeproj
+            tests:
+              unit_target: SaneBarTests
+          YAML
+        )
+        Dir.chdir(dir) do
+          fresh_subject = VerifyHarness.new
+          command = fresh_subject.send(:build_test_command, false)
+
+          destination_index = command.index('-destination')
+          assert_eq(command[destination_index + 1], 'platform=macOS,arch=arm64')
+        end
+      end
       true
     end
   end
@@ -210,6 +270,18 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
       true
     end
 
+    test('does not treat failure in a passing test name as a failure marker') do
+      body = <<~LOG
+        Test "Initial refresh failure only blocks setup completion when no usable content was loaded" passed after 0.001 seconds.
+        Swift Testing: 75 tests in 12 suites passed
+        Test Suite 'All tests' passed at 2026-05-14 12:55:22.561.
+      LOG
+
+      assert_eq(subject.send(:verify_log_indicates_failure?, body), false)
+      assert_eq(subject.send(:verify_log_indicates_success?, body), true)
+      true
+    end
+
     test('counts script test summaries instead of reporting zero tests') do
       state = {
         start_time: Time.now,
@@ -228,6 +300,61 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
       end
 
       assert_eq(state[:tests_run], 9)
+      true
+    end
+
+    test('counts each XCTest case once from completion lines only') do
+      state = {
+        start_time: Time.now,
+        tests_run: 0,
+        swift_testing_total: 0,
+        current_test: nil,
+        last_update: Time.now,
+        spinner_chars: ['-'],
+        spinner_idx: 0
+      }
+
+      capture_stdout do
+        subject.send(:handle_progress_update, "Test Case '-[ExampleTests testThing]' started.", state)
+        subject.send(:handle_progress_update, "Test Case '-[ExampleTests testThing]' passed (0.001 seconds).", state)
+      end
+
+      assert_eq(state[:tests_run], 1)
+      true
+    end
+
+    test('classifies zero-test verify failures into useful buckets') do
+      assert_eq(subject.send(:classify_verify_result, success: false, timeout: true, tests_run: 0, log_text: '')[:bucket], 'timeout')
+      assert_eq(subject.send(:classify_verify_result, success: false, timeout: false, tests_run: 0, log_text: '')[:bucket], 'runner_no_output')
+      assert_eq(subject.send(:classify_verify_result, success: false, timeout: false, tests_run: 0, log_text: 'System Settings permission prompt')[:bucket], 'permission_prompt')
+      assert_eq(subject.send(:classify_verify_result, success: false, timeout: false, tests_run: 0, log_text: '** BUILD FAILED ** error:')[:bucket], 'build_failure')
+      assert_eq(subject.send(:classify_verify_result, success: true, timeout: false, tests_run: 0, log_text: 'BUILD SUCCEEDED')[:bucket], 'weak_zero_test_success')
+      true
+    end
+
+    test('classifies counted failures as test failures before generic error matching') do
+      body = "/tmp/Tests.swift:42: error: -[ExampleTests testThing] : XCTAssertTrue failed\n** TEST FAILED **"
+      result = subject.send(:classify_verify_result, success: false, timeout: false, tests_run: 1, log_text: body)
+
+      assert_eq(result[:bucket], 'test_failure')
+      true
+    end
+  end
+
+  test_category('Permission monitor guard') do
+    test('treats protected folder prompts as verify blockers') do
+      log = '🚫 PROTECTED_FOLDER_PROMPT detected on CoreServicesUIAgent: SaneVideo would like to access files in your Documents folder'
+
+      assert_eq(subject.send(:permission_monitor_blocked?, log), true)
+      true
+    end
+
+    test('resets protected folder TCC services before verify') do
+      content = File.read(File.join(__dir__, 'verify.rb'))
+
+      assert_includes(content, 'SystemPolicyDocumentsFolder')
+      assert_includes(content, 'SystemPolicyDesktopFolder')
+      assert_includes(content, 'SystemPolicyDownloadsFolder')
       true
     end
   end

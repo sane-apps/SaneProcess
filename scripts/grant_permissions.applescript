@@ -1,6 +1,14 @@
 use framework "Foundation"
 use scripting additions
 
+on isProtectedFolderPrompt(dialogText)
+    set protectedFolderMarkers to {"Documents folder", "Desktop folder", "Downloads folder", "files in your Documents", "files in your Desktop", "files in your Downloads"}
+    repeat with marker in protectedFolderMarkers
+        if dialogText contains (marker as text) then return true
+    end repeat
+    return false
+end isProtectedFolderPrompt
+
 on run argv
     -- Auto-detect project name from git root, or pass as argument
     set appName to do shell script "basename \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\""
@@ -31,7 +39,27 @@ on run argv
                     repeat with w in windows
                         try
                             set winName to name of w
-                            if winName contains appName or winName contains "access" or winName contains "permission" then
+                            set winText to winName
+                            try
+                                set staticValues to value of static texts of w
+                                set oldDelimiters to AppleScript's text item delimiters
+                                set AppleScript's text item delimiters to " "
+                                set winText to winText & " " & (staticValues as text)
+                                set AppleScript's text item delimiters to oldDelimiters
+                            end try
+
+                            if my isProtectedFolderPrompt(winText) then
+                                log "🚫 PROTECTED_FOLDER_PROMPT detected on UserNotificationCenter: " & winText
+                                repeat with btnLabel in {"Don’t Allow", "Don't Allow", "Deny", "Cancel"}
+                                    try
+                                        if exists button btnLabel of w then
+                                            click button btnLabel of w
+                                            log "🚫 Clicked " & btnLabel & " on protected folder prompt"
+                                            delay 0.5
+                                        end if
+                                    end try
+                                end repeat
+                            else if winName contains appName or winName contains "access" or winName contains "permission" then
                                 -- Look for Allow button (try multiple possible labels)
                                 repeat with btnLabel in {"Allow", "OK", "Grant", "Enable"}
                                     try
@@ -57,8 +85,26 @@ on run argv
                             try
                                 set winText to value of static text 1 of w
                             end try
+                            try
+                                set staticValues to value of static texts of w
+                                set oldDelimiters to AppleScript's text item delimiters
+                                set AppleScript's text item delimiters to " "
+                                set winText to winText & " " & (staticValues as text)
+                                set AppleScript's text item delimiters to oldDelimiters
+                            end try
                             
-                            if winText contains appName or winText contains "access" or winText contains "permission" then
+                            if my isProtectedFolderPrompt(winText) then
+                                log "🚫 PROTECTED_FOLDER_PROMPT detected on CoreServicesUIAgent: " & winText
+                                repeat with btnLabel in {"Don’t Allow", "Don't Allow", "Deny", "Cancel"}
+                                    try
+                                        if exists button btnLabel of w then
+                                            click button btnLabel of w
+                                            log "🚫 Clicked " & btnLabel & " on protected folder prompt"
+                                            delay 0.5
+                                        end if
+                                    end try
+                                end repeat
+                            else if winText contains appName or winText contains "access" or winText contains "permission" then
                                 repeat with btnLabel in {"Allow", "OK", "Grant", "Enable", "Open System Preferences"}
                                     try
                                         if exists button btnLabel of w then

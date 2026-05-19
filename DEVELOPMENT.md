@@ -120,7 +120,15 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
 | `visual_smoke` | Optional Peekaboo-backed screenshot/AX evidence bundle for release-critical UI claims |
 | `doctor` | Environment health check |
 | `tool_discovery --query "..."` | Generate a proof receipt before using a workaround or adding a tool |
-| `process_metrics [--json]` | Dashboard for verify churn, session quality, SOP score caps, and hook blocks |
+| `process_metrics [--json] [--export-json PATH] [--export-html PATH]` | Dashboard/export for verify churn, session quality, SOP score caps, hook blocks, and workflow receipt metrics |
+| `near_miss_review [--json] [--metrics PATH] [--limit N\|--all] [--min-count N]` | Mine process telemetry for recurring near-miss patterns and propose the next guard/eval backtests |
+| `verify_failure_review [--json] [--metrics PATH] [--limit N\|--all] [--min-count N]` | Drill into zero-test verify failures and weak green runs by likely root-cause bucket |
+| `process_eval [--fixture PATH] [--json]` | Evaluate workflow receipt traces plus SOP self-assessment health |
+| `trace_eval [--fixture PATH] [--json]` | Regression-test multi-step process receipts for support, release, UI runtime, tool discovery, subagents, and session lifecycle |
+| `sop_review [--json]` | Review SOP score history, verification caps, and score-inflation signals |
+| `agent_eval [--fixture PATH] [--json]` | Regression-test prompt-to-workflow routing before changing triggers, skills, or AGENTS rules |
+| `agent_env_review [--json]` | Review agent environment drift from metrics, research cache, skill health, and tool-discovery receipts |
+| `skill_lint [--path PATH] [--json]` | Lint skill descriptions for reliable routing and missing `SKILL.md` files |
 | `refresh_qa_snapshots [--dry-run|--run]` | List stale app QA snapshots, then explicitly refresh selected stale snapshots |
 | `gate_review <fixture.json> [--json]` | Deterministically review candidate prevention gates before promoting them into enforcement |
 | `saneui_guard [path]` | Scan SaneApps settings/About/license/update surfaces for shared SaneUI drift |
@@ -246,6 +254,35 @@ rsync -av ./ mini:/Users/stephansmac/SaneApps/apps/SaneClip/
 
 Only set `SANE_RSYNC_ALLOW_FLATTEN=1` for an intentional one-off override with
 a stated reason.
+
+`~/.local/bin` must resolve before `/usr/bin` in login shells. `SaneMaster.rb meta`
+checks both the symlink target and `command -v rsync`; if `command -v rsync`
+returns `/usr/bin/rsync`, the guard is installed but inactive and Mini sync work
+is not release-safe.
+
+### SaneApps open Guard
+
+Codex shells install `~/.local/bin/open` as a wrapper around
+`scripts/hooks/sane_open_guard.sh`. The guard blocks local MacBook Air GUI
+opens for SaneApps release/dashboard surfaces that must happen on the Mini,
+including:
+
+```bash
+open https://app.lemonsqueezy.com/products/778575
+open -R ~/Desktop/LemonSqueezy-Uploads/SaneBar-2.1.56.zip
+open /Applications/SaneBar.app
+```
+
+Use Mini-side automation instead:
+
+```bash
+~/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh open-current https://app.lemonsqueezy.com/products/778575
+ssh mini 'open -R ~/Desktop/LemonSqueezy-Uploads/SaneBar-2.1.56.zip'
+ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb SaneBar
+```
+
+Only set `SANE_MINI_UNAVAILABLE` or `SANE_APPROVE_LOCAL_UI_ON_AIR` after
+explicit user approval.
 | `universal_control_reset [--status|--reboot-mini|--cleanup-mini]` | Recover Air↔Mini Universal Control / pointer handoff |
 | `export` | Export code/docs (PDF/MD) |
 | `listing_actions` | Export the current listing/setup action tracker from inbox history |
@@ -260,6 +297,8 @@ a stated reason.
 License support rule: real customer license keys come only from LemonSqueezy-backed orders and license-key records. Use `check-inbox.sh review` + `whois` + the LemonSqueezy recovery/backfill flow for missing-key support. Do not generate local fallback keys.
 
 Email delivery rule: do not treat Worker acceptance as success. Normal inbox operations must only count an outbound as sent when Resend shows delivery evidence (`delivered`, `opened`, `clicked`, or `complained`). A `bounced` or still-unconfirmed outbound remains actionable and must be surfaced in `check`, `context`, `audit`, and `check-reply` until it is fixed and resent.
+
+GitHub/support reporting rule: `check-inbox.sh check` must use the actionable `check-inbox.sh issues` classifier, not the lightweight raw queue, so edited issue bodies and reporter updates after the last maintainer reply stay visible. Email review must treat shared media links such as Drive, Dropbox, iCloud, Loom, OneDrive, WeTransfer, and Smash as media-review blockers instead of silently ignoring them. Active unresolved support threads must be classified before praise/testimonial extraction so positive wording cannot hide a needed reply.
 
 Support-send metrics rule: reply/compose outcomes append local-only `support_send` events to `~/.sanemaster/process_metrics.jsonl` when they reach a terminal delivery, bounce, unconfirmed, or API-failure state. These metrics must not record recipient address or subject; use email ids, delivery ids, lane, and status evidence instead.
 
@@ -322,7 +361,7 @@ Outputs:
 - dated workbook: `outputs/hosted_file_actions/saneapps_hosted_file_actions_<date>.xlsx`
 - latest stable path: `outputs/hosted_file_actions/latest.xlsx`
 
-This is a dashboard-action tracker, not an uploader. Lemon Squeezy currently exposes read APIs for files, but not a public file-replacement API. Use the workbook to open the exact product dashboard page, replace the published file with the appcast-matching ZIP, and delete or unpublish every old hosted ZIP so customers see only the current release.
+This is a dashboard-action tracker, not an uploader. Lemon Squeezy currently exposes read APIs for files, but not a public file-replacement API. Use the workbook to open the exact product dashboard page, replace the published file with the appcast-matching ZIP, and delete or unpublish every old hosted ZIP so customers see only the current release. Any current hosted-file drift for a released direct-download app is a red release-pipeline failure because a paying customer can receive the wrong build.
 
 Upload-folder rule: `~/Desktop/LemonSqueezy-Uploads` is a latest-only staging folder. Before any Lemon Squeezy dashboard upload, move older app ZIPs to Trash so the file picker cannot select the wrong release. The hosted-file tracker audits this folder and reports stale, missing-latest, and unexpected ZIPs alongside the dashboard action list.
 
@@ -358,6 +397,26 @@ Treat that as a real release gate, not optional polish:
 Use `ruby scripts/SaneMaster.rb gate_review <fixture.json>` before adding a new blocking hook or SOP rule. A fixture must include the incident seed, examples that must block, and examples that must remain allowed. The command is local and deterministic: no external package, cloud call, telemetry path, or automatic rule promotion.
 
 Release preflight also loads app-specific fixtures from `test/fixtures/gates/<normalized-app-name>_*.json`. A malformed or failing fixture blocks release until the prevention evidence is fixed or deliberately removed.
+
+### Agent Workflow Evals
+
+Use `ruby scripts/SaneMaster.rb agent_eval` before changing trigger maps, mandatory workflows, skill routing, or AGENTS rules. The default fixture lives at `scripts/agent_eval_fixtures.json` and checks high-risk prompt classes such as work email, Gmail-vs-work-email routing, missing-tool research, release prep, docs audits, customer UI proof, sales/funnel questions, Mini-first runtime work, subagent hook compliance, and NVIDIA-agent avoidance.
+
+Use `ruby scripts/SaneMaster.rb process_eval` before changing support, release, UI verification, tool-discovery, delegation, session-start, session-end, or SOP scoring policy. The default fixture lives at `scripts/process_eval_fixtures.json` and tests receipt-level workflows rather than prompt classification. `trace_eval` runs only the fixture layer; `sop_review` runs only the score-history and cap review.
+
+SOP scoring source of truth is `scripts/hooks/core/sop_score.rb`. `sanestop`, `saneloop`, and process review code must use that shared scorer instead of reimplementing their own rubrics. `sanestop` writes enriched SOP receipts to process metrics plus `outputs/sop_ratings.csv` / `outputs/sop_ratings.jsonl`; new rows include session id, client, block count, cap reason, verification status, edit counts, and notes JSON.
+
+Use `ruby scripts/SaneMaster.rb near_miss_review` when you want the process to turn its own history into useful next actions. It is report-only by default and does not append a metric row while analyzing metrics. It mines hook-block recurrence, zero-test verification failures, weak green test evidence, non-Mini proof, edited sessions without verification, support delivery failures, promise-ledger gaps, and workflow churn. Use `--metrics PATH` to backtest a specific controller or Mini JSONL file, `--all` for the full file, and `--include-test-events` only when intentionally auditing hook/test fixtures.
+
+When `near_miss_review` points at repeated zero-test verification failures, run `ruby scripts/SaneMaster.rb verify_failure_review --all`. New verify metrics include `evidence_strength`, `failure_bucket`, `failure_hint`, and host metadata so this drilldown can separate timeouts, permission prompts, runner startup failures, build failures, discovery/counting bugs, and legacy unknown failures. A green verify with zero counted tests is capped as weak evidence by the shared SOP scorer until a counted test run replaces it.
+
+Use `ruby scripts/SaneMaster.rb agent_env_review` as the maintenance loop for agent setup drift. It routes Mini-first, reads process metrics, skill health, Codex/Claude research-cache size, and tool-discovery receipts, then returns concrete follow-up actions.
+
+Use `ruby scripts/SaneMaster.rb skill_lint` when adding or updating skills. Skill descriptions must be specific enough for routing and include trigger/when-to-use guidance. Missing `SKILL.md` files, unresolved placeholder TODOs, and legacy NVIDIA/nv default guidance are treated as failures. The linter also reports duplicate skill-name drift outside the known Codex/agent client-mirror pair, so accidental skill fragmentation is visible before it becomes policy drift. Default coverage includes global Codex/agent skill roots plus project `.codex/skills` and `.agents/skills`; pass `--path` for plugin skill roots or one-off checks.
+
+Pre-tool and post-tool hooks append redacted `trajectory_event` metrics with source, tool, result/block status, rule, and PID. These events are intentionally metadata-only so future trace replay has an event stream without storing prompt text or tool payloads.
+
+`process_metrics --export-html PATH` is for human review dashboards. Keep Markdown and JSON/JSONL as durable source-of-truth formats; HTML is a generated artifact for dense reports, visual summaries, and review surfaces where layout helps.
 
 ```json
 {
@@ -593,6 +652,10 @@ The contract must list every release-required customer-visible control path: pri
 
 The receipt must cover every required action id, report `status: passed`, use `host: mini`, match the manifest SHA-256, match the current source fingerprint, include per-action `proof_level`, prove the declared `functional_state` was established or not required, and include real image artifacts when visual proof is claimed or required. Runtime receipts must include structured workflow proof for each action: the runner used, the declared manifest steps completed, the observed outcome, and artifact paths. Action evidence such as click transcripts, screenshots, logs, fixtures, file-state receipts, API responses, or model responses must point at real files, not prose-only notes. For `fixture_completion` and `full_runtime_completion`, the manifest must declare `user_inputs` or fixture paths plus `expected_outputs`, and the receipt must include the exercised inputs, output assertions, and real output evidence such as a fixture result, file-state receipt, log, API response, or model response. Any source change after the click sweep makes the receipt stale and blocks `release_preflight`.
 
+Customer-runtime state must be first-class in the manifest, not scattered through handoff notes. Apps that set `require_standard_runtime_state_matrix: true` must define these `runtime_state_matrix` rows and map each row to release-required action ids with runtime proof: `upgrade_update`, `cold_launch_relaunch`, `wake_unlock`, `display_topology`, `fullscreen_maximize_transition`, `basic_pro_mode`, and `support_report_media`. This matrix is the release source of truth for customer lifecycle coverage.
+
+`ruby scripts/validation_report.rb` runs the same customer UI contract for every released app that has a public checkout path. A missing contract, stale receipt, fixture-only proof where runtime completion is required, or prose-only evidence is a `Q13 CUSTOMER REALITY` release-readiness failure. Do not rely on a green global status report unless Q13 is green.
+
 Valid proof levels, from weakest to strongest for release gating:
 
 - `source_guard`: code path exists only. This is not enough for a live customer-facing control unless the manifest explicitly scopes the action to source inventory.
@@ -704,6 +767,215 @@ ls -1 /tmp/app-renders
 
 When the issue is iPhone/iPad-only, use the app's simulator screenshot script or the iOS screenshot lane instead of desktop capture.
 
+4.25 **Marketing video production**
+
+Marketing videos are customer-facing release assets, not decorative exports. A
+video is not done until it passes the same evidence standard as screenshots.
+
+Use this workflow for every SaneApps product video:
+
+1. **Write the storyboard before rendering**
+   - Name the product, audience, offer, and primary proof.
+   - List the beats in order. Each device gets its own reason to appear.
+   - Use sales logic, not asset order. If the opener raises privacy/data-mining,
+     trust, price, or subscription pain, the next beat must answer that objection
+     before the video moves into feature walkthroughs.
+   - Identify the official product logo/icon asset before rendering. Generated
+     videos and website edits must use the real product logo from the app/website
+     source, never a hand-drawn placeholder, generic symbol, or improvised
+     wordmark.
+   - Do not put Mac, iPhone, iPad, and Watch on every frame. Show each format
+     when it proves something specific.
+   - Save the storyboard/generator path in the product handoff before
+     publishing. A marketing video must be reproducible from committed scripts
+     plus current approved screenshots; one-off terminal snippets are not
+     acceptable for launch assets.
+   - Identify the real music source before rendering. Store publishable music
+     in the product repo or a documented shared asset location; do not build
+     launch videos from a transient Downloads file or an unnamed synthetic bed.
+   - Classify every buyer-facing line as `Problem`, `Benefit`, `Proof`, or
+     `CTA` before rendering. Cut implementation detail that a buyer does not
+     care about, including license-check mechanics, provider-key storage
+     mechanics, backend/server labels, internal workflow labels, and defensive
+     engineering copy.
+   - Avoid contradictory shorthand. `Private tracking` sounds like the bad thing
+     being sold back to the customer; use benefit-first wording like `Track sales
+     privately.` and put separate claims on separate lines.
+
+2. **Capture Pro/paid state only**
+   - Use the app's canonical screenshot/video scripts on the Mini.
+   - Pass the product's Pro override/test entitlement where available.
+   - A locked screen, `Basic` badge, `Unlock Pro` CTA, stale price bubble,
+     permission dialog, onboarding gate, or popup is a blocker.
+   - If a platform lacks a true Pro capture path, fix the capture path first or
+     label the asset honestly as a demo. Do not fake it in the video.
+
+3. **Use believable product data**
+   - Charts must show meaningful variation across the chosen period. Flat bars
+     are a blocker unless the point of the frame is explicitly "steady revenue."
+   - For sales/revenue apps, verify the selected range has at least three
+     distinct daily revenue values and an obvious high/low pattern.
+   - If the demo fixture is too smooth, fix the fixture and add a regression
+     test. Do not hide bad data with motion graphics.
+
+4. **Build the asset from real screenshots**
+   - Prefer live Mini captures or deterministic renders already used by the
+     website/App Store lanes.
+   - Reuse the product website's device frames and visual language when they
+     are already approved, but do not reuse stale or locked screenshots.
+   - Make the capture-to-compositor contract explicit. If capture writes
+     `Screenshots/` but the compositor reads `docs/images/`, the sync/import
+     step must be scripted and logged. Manual copying is not an acceptable
+     production path.
+   - Treat permission-sensitive surfaces as curated inputs until their capture
+     path is proven. Settings, permissions, account/license panels, and recent
+     activity lists can expose popups, stale prices, or unrelated demo names.
+   - Use concise copy. The screenshot is the proof; text explains the moment.
+
+5. **Render with inspection artifacts**
+   - Use a product script or shared generator. The script must build the final
+     MP4, poster, source contact sheet, sampled video contact sheet, and website
+     copy path in one command.
+   - Generate a source contact sheet for every slide/scene.
+   - Generate a sampled video contact sheet from the final MP4.
+   - Contact sheets must not contain empty placeholder rows/columns. If the
+     video has 8 scenes, use a 4x2 sheet; if it has 6 scenes, use 3x2 or 2x3.
+     A contact sheet with a large black unused area is a QA failure, not polish.
+   - Keep the final MP4, poster image, contact sheets, source screenshots, and
+     generation command in the product repo or handoff.
+   - If music is part of the brief, the generator must loop/trim to exact video
+     duration, normalize loudness, and fade in/out so the track feels intentional
+     instead of abruptly starting or cutting off.
+   - Avoid crossfades that composite adjacent text-heavy slides. Use cuts or
+     per-slide fade-in/fade-out so transition frames cannot render two headings
+     on top of each other.
+
+6. **Run hard QA gates**
+   - OCR scan the slides/video frames for banned terms: `Unlock Pro`, `Basic`,
+     `Demo data`, stale public price, permission-dialog copy, popup copy, other
+     SaneApps product names in the wrong context, and obvious internal/debug
+     text.
+   - Visually inspect every sampled frame for clipped headings, overlapped
+     devices, unreadable small text, flat charts, stale device time/state, and
+     mismatched brand colors.
+   - Inspect the actual full-resolution frames, not just the contact sheet.
+     Contact sheets can hide text collisions, tiny flat charts, bad crops, and
+     unreadable device UI.
+   - Full-frame inspect every rendered scene and representative transition-boundary
+     frames before claiming visual approval. "I checked the contact sheet" is not
+     enough evidence for a customer-facing video.
+   - Review from a customer-marketing perspective: spacing, energy, visibility,
+     readability, brand prominence, and whether the frame makes the product
+     look desirable. If the answer is "it technically shows the app" but it
+     looks lazy, sparse, low contrast, or confusing, it fails.
+   - Ask of every visible copy line: is this a feature, benefit, proof point,
+     problem statement, or CTA? If it is none of those, remove it before
+     publishing.
+   - Inspect line breaks as copy, not renderer trivia. Short statements should
+     sit on their own lines; do not allow automatic wrapping to split a sentence
+     in a way that makes the frame look accidental or harder to scan.
+   - Verify the logo/brand mark in the rendered frame against the official
+     source asset. Any fake icon, old logo, wrong product logo, or placeholder
+     mark is a blocker.
+   - Inspect the rendered logo crop at full size. If the official asset has a
+     baked-in square background, either use a transparent source or key/mask it
+     so the final video has no hard rectangular edge around the mark.
+   - Keep slide rhythm consistent. Product lockup, headline, body, CTA, and
+     proof area should use a stable grid so the viewer knows where to look after
+     each transition.
+   - Do not use rounded filled pills for non-clickable video highlights. They
+     look like buttons. Prefer SaneUI/SaneApps accent text, subtle rules, or
+     non-interactive labels, and keep highlight colors aligned with the product
+     palette and shared color semantics.
+   - For chart-bearing frames, prove variation with either an automated chart
+     check or a written full-frame inspection note. If demo data is flat, fix
+     the demo fixture and add a regression test; do not ship a flat chart.
+   - For multi-device videos, do not shrink every device into unreadability.
+     Feature Mac, iPhone, iPad, and Watch at the moments where each format is
+     strongest, with enough size for the useful UI to read.
+   - Verify media metadata with `ffprobe`: 1080p or intended target size,
+     expected duration, video stream present, audio stream present when music is
+     part of the brief, and reasonable file size.
+   - Verify music fit with duration and loudness evidence. The audio stream
+     should closely match the video duration, avoid clipping, and not feel
+     ominous, sleepy, or off-brand for a launch offer.
+   - Deploy only after the live URL returns the expected `content-type` and the
+     page renders the video/poster without autoplay, popups, or layout jumps.
+   - Save or list the exact frame timestamps inspected for hero/problem,
+     privacy/solution, each device proof, CTA, and transition boundaries. The
+     contact sheet is a map, not a substitute for checking large frames.
+   - Run a critic pass over the rendered website/video artifacts before deploy.
+     The critic prompt must explicitly ask for odd phrasing, weak sales copy,
+     low energy, spacing, visibility, readability, popup/permission leakage,
+     stale prices, and flat or underwhelming charts.
+
+7. **Record the result**
+   - Update the product `SESSION_HANDOFF.md` with: source command, final MP4
+     path, live URL, QA artifacts, failures found, and the exact verification
+     commands that passed.
+   - If a failure was caused by a reusable tooling gap, update SaneProcess or
+     the app's capture script in the same session.
+
+No-go examples:
+- A sales video showing a revenue chart with identical bars.
+- A Watch frame that says `Demo data` when the claim is Pro.
+- Any frame containing a permission dialog, system prompt, or purchase popup.
+- A hero slide where the product name/brand is secondary to generic stock-like
+  animation.
+- A device screenshot whose useful content is mostly below the fold/crop, making
+  the app look empty.
+- A final MP4 whose music comes from an undocumented local file, clips, ends
+  early, cuts off abruptly, or has the wrong emotional tone.
+- A final MP4 without a contact sheet and OCR/banned-term check.
+
+4.3 **Website marketing edit QA**
+
+Customer-facing website edits use the same visual bar as release screenshots:
+
+1. **Start from brand and product truth**
+   - Read the product's current brand/positioning source before rewriting the
+     hero, pricing, privacy, or first viewport.
+   - Keep the product name, headline pattern, offer, and main differentiator
+     prominent above the fold. Do not invent a new family brand or layout when
+     sibling product sites already establish the pattern.
+   - Use the official product logo/icon asset from the repo. Do not recreate it
+     in CSS, SVG, canvas, PIL, or a generator unless the official source itself
+     is that file.
+   - Check live/source-of-truth pricing before hardcoding public prices,
+     discounts, coupon text, or deadline copy.
+
+2. **Render before claiming it works**
+   - Capture desktop and mobile screenshots of the rendered page with Playwright
+     or the approved browser tool.
+   - Keep Playwright installed on the Mini for canonical website smoke checks:
+     `npm install -g playwright@1.60.0 && npx playwright install chromium`.
+     Run Node smoke scripts with `NODE_PATH=$(npm root -g)` when using the
+     global package from `ssh mini`.
+   - Inspect first viewport, video section, device grid, pricing card, and any
+     section touched by the change.
+   - Verify no popup, permission dialog, capture toolbar, helper window, or
+     stale system prompt is visible in any marketing screenshot.
+
+3. **Marketing review checklist**
+   - Spacing: no collisions, cramped text, accidental `Sanityto`-style word
+     joins, clipped buttons, or device overlap.
+   - Energy: the page should feel alive and sales-oriented, not like a dark
+     technical dump. Use the product's approved SaneUI/SaneApps palette.
+   - Visibility/readability: all important copy and device UI must be readable
+     at the rendered size, especially on mobile.
+   - Product proof: charts must show variation, lists must look populated, and
+     screenshots must show the strongest paid/product state available.
+   - Copy: remove weird phrasing, internal wording, defensive claims, duplicate
+     lines, stale offer language, and anything that sounds machine-written.
+   - Privacy: preserve strong SaneApps privacy positioning while keeping the
+     supporting details accurate for the product.
+
+4. **Deploy and live-check**
+   - Use `release.sh --website-only` for Cloudflare Pages.
+   - After deploy, verify live HTML has the expected cache tag/copy, media URLs
+     return the correct content type, and live desktop/mobile screenshots match
+     the reviewed local render.
+
 4.5 **Codex second-pass visual audit**
 
 - After saving a Mini screenshot or deterministic render, inspect it with Codex visual tools and, when the GUI is available to Codex, `computer-use` accessibility inspection.
@@ -721,7 +993,8 @@ Hard rule:
 
 Validation-report nuance:
 - Broken website/appcast/webhook/Homebrew drift still counts as a real broken release pipeline.
-- Lemon Squeezy hosted-file drift is reported separately as `NEEDS DASHBOARD SYNC` with product/variant references, because it still affects customer downloads but requires dashboard follow-up rather than code or deploy repair.
+- Lemon Squeezy hosted-file drift is a broken release pipeline result with product/variant references. It may require dashboard follow-up rather than code, but it is still red because customers can receive the wrong version.
+- Customer UI contract drift is also red in the global validation report. If Q13 catches nothing across released apps, inspect the manifests and receipts for missing lifecycle rows or weak proof rather than treating the absence of findings as proof.
 
 Canonical runtime cleanup is now a first-class step:
 
@@ -1065,9 +1338,11 @@ Additional lessons now enforced in the shared flow:
 - `scripts/appstore_submit.rb --fetch-review-package` is the canonical evidence collector. It saves the reviewer message, page text, and any downloaded App Review attachments into an evidence folder instead of relying on manual browser memory.
 - Safari evidence helpers must prove they are on the exact target ASC page before trusting DOM text. If the tab never lands on the requested version/review URL, treat the probe as invalid instead of reusing stale page content from another platform.
 - Before hunting for new browser automation tools, use Mini Safari itself as the control surface. AppleScript plus Safari `do JavaScript` is the default path for inspecting reviewer evidence, download links, and Apple Developer profile pages. Always prove the exact front-tab URL first.
+- App Store Connect, Apple Developer, and Apple ID login work must stay in one Mini Safari window/tab. Use `open-current` / `open-read-current` for those portal URLs; do not create a fresh tab for every action because it can invalidate login state and lock Passwords/2FA flows.
 - For repeat Mini Safari work, use `scripts/mini/mini-safari.sh` instead of rebuilding AppleScript by hand. Minimum useful subcommands:
   - `list-tabs`
-  - `open-read "<url>"`
+  - `open-read-current "<url>"` for ASC/developer/idmsa pages
+  - `open-read "<url>"` for non-portal pages where a new tab is intentional
   - `read <tab_index>`
   - `js <tab_index> "<javascript>"`
 - Use `mini-safari.sh` for directory/listing activation links too, not just App Store pages. Capture the final URL, title, and body snippet so status can distinguish `live`, `needs activation`, `queued`, and `upsell only`.

@@ -156,6 +156,92 @@ class EmailDeliveryTests(unittest.TestCase):
 
         self.assertEqual(evidence, {101: 1, 104: 1})
 
+    def test_newer_customer_followup_keeps_thread_actionable(self):
+        rows = [
+            {
+                "id": 720,
+                "status": "needs_human",
+                "category": "bug",
+                "from_email": "customer@example.com",
+                "subject": "Refund",
+                "created_at": "2026-05-15 12:17:17+00",
+            },
+            {
+                "id": 721,
+                "status": "needs_human",
+                "category": "support",
+                "from_email": "customer@example.com",
+                "subject": "Re: Refund",
+                "created_at": "2026-05-15 18:07:39+00",
+            },
+            {
+                "id": 722,
+                "status": "needs_human",
+                "category": "bug",
+                "from_email": "customer@example.com",
+                "subject": "FW: Refund",
+                "created_at": "2026-05-15 18:11:59+00",
+            },
+        ]
+        payload = {
+            "data": [
+                {
+                    "id": "delivered-before-followup",
+                    "to": ["customer@example.com"],
+                    "subject": "Re: Refund",
+                    "created_at": "2026-05-15 17:49:30+00",
+                    "last_event": "delivered",
+                }
+            ]
+        }
+
+        evidence = EMAIL_DELIVERY.open_thread_delivery_evidence(
+            rows,
+            payload,
+            EMAIL_DELIVERY.build_recipient_index(payload),
+        )
+
+        self.assertEqual(evidence, {720: 0, 721: 0, 722: 0})
+
+    def test_reply_after_latest_customer_followup_answers_thread(self):
+        rows = [
+            {
+                "id": 721,
+                "status": "needs_human",
+                "category": "support",
+                "from_email": "customer@example.com",
+                "subject": "Re: Refund",
+                "created_at": "2026-05-15 18:07:39+00",
+            },
+            {
+                "id": 722,
+                "status": "needs_human",
+                "category": "bug",
+                "from_email": "customer@example.com",
+                "subject": "FW: Refund",
+                "created_at": "2026-05-15 18:11:59+00",
+            },
+        ]
+        payload = {
+            "data": [
+                {
+                    "id": "delivered-after-followup",
+                    "to": ["customer@example.com"],
+                    "subject": "Re: Refund",
+                    "created_at": "2026-05-15 18:20:00+00",
+                    "last_event": "delivered",
+                }
+            ]
+        }
+
+        evidence = EMAIL_DELIVERY.open_thread_delivery_evidence(
+            rows,
+            payload,
+            EMAIL_DELIVERY.build_recipient_index(payload),
+        )
+
+        self.assertEqual(evidence, {721: 1, 722: 1})
+
 
 if __name__ == "__main__":
     unittest.main()

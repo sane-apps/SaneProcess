@@ -27,7 +27,7 @@
 | 1.2 | Create Terms of Service | All | [ ] | User agreements, liability limits |
 | 1.3 | Add Privacy Policy link to app Settings | All | [ ] | Required by Apple |
 | 1.4 | Add refund policy to SaneClip checkout | SaneClip | [ ] | Lemon Squeezy settings |
-| 1.5 | Review MIT license for paid app | SaneClip | [ ] | MIT = anyone can copy. Is that OK? |
+| 1.5 | Review exact repo license for paid app | SaneClip | [ ] | Confirm the license matches the intended paid/source-available model |
 | 1.6 | Consider trademark search | All | [ ] | Are "SaneBar" etc. available? |
 | 1.7 | Add GDPR notice if serving EU | All | [ ] | Cookie consent, data rights |
 

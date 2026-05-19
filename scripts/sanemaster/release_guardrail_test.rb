@@ -281,6 +281,52 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('requires the standard runtime state matrix when mandated') do
+      Dir.mktmpdir('customer-ui-runtime-matrix-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            require_standard_runtime_state_matrix: true
+            runtime_state_matrix:
+              cold_launch_relaunch:
+                why: Customers start here.
+                action_ids: [startup]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime]
+                runner: scripts/customer_ui_action_sweep.rb
+            actions:
+              - id: startup
+                title: Startup works
+                surfaces: [Menu bar]
+                steps: [Launch app]
+                assertions: [Status item appears]
+                evidence: [runtime proof]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime]
+                historical_failure_classes: [install_update_packaging]
+                functional_state:
+                  description: Clean launch fixture
+                  setup_steps: [Reset app state]
+                user_inputs: [Launch app]
+                expected_outputs: [Status item appears]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected incomplete standard runtime state matrix to block')
+        assert_includes(report[:issues].join("\n"), 'runtime_state_matrix missing standard state(s)')
+      end
+      true
+    end
+
     test('requires receipts to prove functional state and completion output') do
       Dir.mktmpdir('customer-ui-output-proof-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'Tests'))
@@ -804,6 +850,104 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('rejects reused screenshot evidence across different release actions') do
+      Dir.mktmpdir('customer-ui-reused-screenshots-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: first-action
+                title: First action works
+                surfaces: [Main window]
+                steps: [Click first]
+                assertions: [First state changes]
+                evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [mini_click, screenshot]
+                historical_failure_classes: [activation_noop]
+                functional_state:
+                  description: Default fixture
+                  setup_steps: [Launch fixture]
+              - id: second-action
+                title: Second action works
+                surfaces: [Main window]
+                steps: [Click second]
+                assertions: [Second state changes]
+                evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [mini_click, screenshot]
+                historical_failure_classes: [activation_noop]
+                functional_state:
+                  description: Default fixture
+                  setup_steps: [Launch fixture]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          write_test_png(File.join(dir, 'outputs', 'shared.png'))
+          File.write(File.join(dir, 'outputs', 'first-click.json'), '{"clicked":"first"}')
+          File.write(File.join(dir, 'outputs', 'second-click.json'), '{"clicked":"second"}')
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          base = {
+            app: 'SaneExample',
+            status: 'passed',
+            host: 'mini',
+            generated_at: Time.now.utc.iso8601,
+            manifest_sha256: report[:manifest_sha256],
+            source_fingerprint: report[:source_fingerprint],
+            tested_action_ids: %w[first-action second-action],
+            screenshots: ['outputs/shared.png']
+          }
+          base[:action_results] = {
+            'first-action' => {
+              status: 'passed',
+              proof_level: 'runtime_visual',
+              functional_state: { status: 'established', detail: 'Default fixture' },
+              evidence: [
+                { type: 'mini_click', detail: 'Clicked first', path: 'outputs/first-click.json' },
+                { type: 'screenshot', detail: 'Captured first', path: 'outputs/shared.png' }
+              ],
+              workflow: {
+                runner: 'scripts/customer_ui_action_sweep.rb first-action',
+                steps_completed: ['Click first'],
+                outcome: 'First state changed',
+                artifacts: ['outputs/first-click.json', 'outputs/shared.png']
+              }
+            },
+            'second-action' => {
+              status: 'passed',
+              proof_level: 'runtime_visual',
+              functional_state: { status: 'established', detail: 'Default fixture' },
+              evidence: [
+                { type: 'mini_click', detail: 'Clicked second', path: 'outputs/second-click.json' },
+                { type: 'screenshot', detail: 'Captured second', path: 'outputs/shared.png' }
+              ],
+              workflow: {
+                runner: 'scripts/customer_ui_action_sweep.rb second-action',
+                steps_completed: ['Click second'],
+                outcome: 'Second state changed',
+                artifacts: ['outputs/second-click.json', 'outputs/shared.png']
+              }
+            }
+          }
+          File.write(File.join(dir, 'outputs', 'customer_ui_action_receipt.json'), JSON.pretty_generate(base))
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected reused screenshot to block release proof')
+        assert_includes(report[:issues].join("\n"), 'Screenshot artifact reused across release actions')
+      end
+      true
+    end
+
     test('standard customer UI sweep dry-run finds the app workflow runner') do
       Dir.mktmpdir('customer-ui-sweep-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'scripts'))
@@ -930,6 +1074,391 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
     end
   end
 
+  test_category('Launch readiness') do
+    test('passes for an already-launched app with fresh green preflight proof') do
+      Dir.mktmpdir('launch-readiness-pass-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(
+          File.join(dir, '.outreach.yml'),
+          <<~YAML
+            launch_calendar:
+              classification: meaningfully_launched
+              rule: Keep monitoring opportunities; do not burn another major launch without a new product story.
+              scheduled:
+                - cadence: weekly
+                  channel: Opportunity monitoring
+                  action: Scan high-fit opportunities and only reply with builder disclosure.
+                  gate: No duplicate launch post.
+                  success_metric: 0-2 high-fit replies or a recorded no-go.
+            public_posting_policy:
+              approval_required: true
+              disclosure_required: Always say "I built SaneExample".
+            launch_package:
+              status: ready_to_schedule
+              audience: Mac users
+              problem: Crowded workflows
+              solution: Native utility
+              primary_story: Clear product story
+              pricing_proof: Website and checkout verified
+              privacy_proof: Privacy page verified
+              proof_assets:
+                - type: screenshot
+                  status: current
+                  path: docs/images/hero.png
+              channel_plan:
+                product_hunt: scheduled
+                hacker_news: fallback
+              go_no_go:
+                rule: Fresh proof required.
+              weak_launch_blockers: []
+          YAML
+        )
+        File.write(
+          File.join(dir, 'outputs', 'release_preflight_status.json'),
+          JSON.pretty_generate(
+            generatedAt: Time.now.utc.iso8601,
+            projectName: 'SaneExample',
+            status: 'passed',
+            issueCount: 0,
+            warningCount: 0,
+            issues: [],
+            warnings: []
+          )
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.launch_readiness_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(report[:ok], "expected launch readiness to pass: #{report.inspect}")
+      end
+      true
+    end
+
+    test('blocks unresolved weak-launch package blockers') do
+      Dir.mktmpdir('launch-readiness-package-blockers-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(
+          File.join(dir, '.outreach.yml'),
+          <<~YAML
+            launch_calendar:
+              classification: launch_candidate
+              rule: No weak launch.
+              scheduled:
+                - date: "2026-05-20"
+                  time: "10:00"
+                  channel: Product Hunt
+                  action: Launch only if ready.
+                  gate: Exact user approval required.
+                  success_metric: URL recorded.
+            public_posting_policy:
+              approval_required: true
+              disclosure_required: Always say "I built SaneExample".
+            launch_package:
+              status: package_defined_assets_needed
+              audience: Mac users
+              problem: Problem
+              solution: Solution
+              primary_story: Story
+              pricing_proof: Checked
+              privacy_proof: Checked
+              proof_assets:
+                - type: video
+                  status: needed
+                  path: Videos/demo.mp4
+              channel_plan:
+                product_hunt: prepare_after_video
+                hacker_news: fallback
+              go_no_go:
+                rule: No public launch until assets are ready.
+              weak_launch_blockers:
+                - No hosted video yet.
+          YAML
+        )
+        File.write(
+          File.join(dir, 'outputs', 'release_preflight_status.json'),
+          JSON.pretty_generate(
+            generatedAt: Time.now.utc.iso8601,
+            projectName: 'SaneExample',
+            status: 'passed',
+            issueCount: 0,
+            warningCount: 0,
+            issues: [],
+            warnings: []
+          )
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.launch_readiness_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected weak-launch package blocker to block')
+        assert_includes(report[:issues].join("\n"), 'Outstanding weak-launch blocker: No hosted video yet.')
+      end
+      true
+    end
+
+    test('blocks expired date-bound launch offer copy') do
+      Dir.mktmpdir('launch-readiness-expired-offer-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(
+          File.join(dir, '.outreach.yml'),
+          <<~YAML
+            launch_calendar:
+              classification: active_launch_window
+              rule: Keep offer copy current before public launch work.
+              offer_window:
+                starts: "1999-12-01"
+                ends: "2000-01-01"
+                message: "$9.99 with code OLD until January 1, 2000."
+              scheduled:
+                - date: "2026-05-20"
+                  time: "10:00"
+                  channel: Product Hunt
+                  action: Launch only if ready.
+                  gate: Exact user approval required.
+                  success_metric: URL recorded.
+            public_posting_policy:
+              approval_required: true
+              disclosure_required: Always say "I built SaneExample".
+            launch_package:
+              status: ready_to_schedule
+              audience: Mac users
+              problem: Problem
+              solution: Solution
+              primary_story: Story
+              pricing_proof: Checked
+              privacy_proof: Checked
+              proof_assets:
+                - type: video
+                  status: current
+                  path: Videos/demo.mp4
+              channel_plan:
+                product_hunt: scheduled
+              go_no_go:
+                rule: No stale offer copy.
+              weak_launch_blockers: []
+          YAML
+        )
+        File.write(
+          File.join(dir, 'outputs', 'release_preflight_status.json'),
+          JSON.pretty_generate(
+            generatedAt: Time.now.utc.iso8601,
+            projectName: 'SaneExample',
+            status: 'passed',
+            issueCount: 0,
+            warningCount: 0,
+            issues: [],
+            warnings: []
+          )
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.launch_readiness_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected expired offer copy to block launch readiness')
+        assert_includes(report[:issues].join("\n"), 'launch_calendar.offer_window ended on 2000-01-01')
+      end
+      true
+    end
+
+    test('blocks when meaningful-launch requirements are still listed') do
+      Dir.mktmpdir('launch-readiness-requirements-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(
+          File.join(dir, '.outreach.yml'),
+          <<~YAML
+            launch_calendar:
+              classification: released_but_no_meaningful_public_launch_yet
+              rule: Do not launch until the package is complete.
+              required_before_meaningful_launch:
+                - 30-second demo asset
+                - Fresh Mini verify/customer UI proof
+            public_posting_policy:
+              approval_required: true
+              disclosure_required: Always say "I built SaneExample".
+            launch_package:
+              status: package_in_progress
+              audience: Finder power users
+              problem: Finder actions are clumsy
+              solution: Right-click automation
+              primary_story: Focused Finder workflow demo
+              pricing_proof: Website shows Basic free and Pro once pricing.
+              privacy_proof: Privacy page states files stay local.
+              proof_assets:
+                - type: screenshot
+                  status: ready
+                  path: outputs/demo.png
+              channel_plan:
+                product_hunt: prepare
+              go_no_go:
+                owner: Mr. Sane
+              weak_launch_blockers: []
+          YAML
+        )
+        File.write(
+          File.join(dir, 'outputs', 'release_preflight_status.json'),
+          JSON.pretty_generate(
+            generatedAt: Time.now.utc.iso8601,
+            projectName: 'SaneExample',
+            status: 'passed',
+            issueCount: 0,
+            warningCount: 0,
+            issues: [],
+            warnings: []
+          )
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.launch_readiness_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected launch readiness to block on unresolved requirements')
+        issues = report[:issues].join("\n")
+        assert_includes(issues, 'Missing meaningful-launch requirement completion: 30-second demo asset')
+        assert_includes(issues, 'Missing meaningful-launch requirement completion: Fresh Mini verify/customer UI proof')
+      end
+      true
+    end
+
+    test('blocks when launch blockers remain open') do
+      Dir.mktmpdir('launch-readiness-blockers-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(
+          File.join(dir, '.outreach.yml'),
+          <<~YAML
+            launch_calendar:
+              classification: released_but_launch_blocked_until_risk_cleanup
+              rule: No public launch until current blockers are clean.
+              blockers:
+                - Piracy page still marked needs_dmca.
+                - Open patched-pending issues still need maintainer replies.
+            public_posting_policy:
+              approval_required: true
+              disclosure_required: Always say "I built SaneExample".
+            launch_package:
+              status: blocked
+              audience: Clipboard privacy users
+              problem: Clipboard managers leak trust
+              solution: Private native clipboard manager
+              primary_story: OCR plus encrypted history
+              pricing_proof: Website shows Basic free and Pro once pricing.
+              privacy_proof: Privacy page states clipboard data stays local.
+              proof_assets:
+                - type: screenshot
+                  status: ready
+                  path: outputs/demo.png
+              channel_plan:
+                product_hunt: hold
+              go_no_go:
+                owner: Mr. Sane
+              weak_launch_blockers: []
+          YAML
+        )
+        File.write(
+          File.join(dir, 'outputs', 'release_preflight_status.json'),
+          JSON.pretty_generate(
+            generatedAt: Time.now.utc.iso8601,
+            projectName: 'SaneExample',
+            status: 'passed',
+            issueCount: 0,
+            warningCount: 0,
+            issues: [],
+            warnings: []
+          )
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.launch_readiness_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected launch readiness to block on blockers')
+        issues = report[:issues].join("\n")
+        assert_includes(issues, 'Outstanding launch blocker: Piracy page still marked needs_dmca.')
+        assert_includes(issues, 'Outstanding launch blocker: Open patched-pending issues still need maintainer replies.')
+      end
+      true
+    end
+
+    test('blocks stale or failed release preflight proof') do
+      Dir.mktmpdir('launch-readiness-stale-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(
+          File.join(dir, '.outreach.yml'),
+          <<~YAML
+            launch_calendar:
+              classification: launch_candidate
+              rule: Every launch needs current runtime proof first.
+              scheduled:
+                - date: "2026-05-20"
+                  time: "10:00"
+                  channel: Product Hunt
+                  action: Launch the public package.
+                  gate: Fresh proof required.
+                  success_metric: Public launch is either scheduled or marked no-go.
+            public_posting_policy:
+              approval_required: true
+              disclosure_required: Always say "I built SaneExample".
+            launch_package:
+              status: ready_to_schedule
+              audience: Indie developers
+              problem: Daily dashboard fatigue
+              solution: Native sales tracker
+              primary_story: Private direct provider sync
+              pricing_proof: Website shows the live launch offer and regular price.
+              privacy_proof: Privacy page states provider data never goes through SaneApps servers.
+              proof_assets:
+                - type: video
+                  status: ready
+                  url: https://example.com/demo.mp4
+              channel_plan:
+                product_hunt: schedule
+              go_no_go:
+                owner: Mr. Sane
+              weak_launch_blockers: []
+          YAML
+        )
+        File.write(
+          File.join(dir, 'outputs', 'release_preflight_status.json'),
+          JSON.pretty_generate(
+            generatedAt: (Time.now.utc - (9 * 86_400)).iso8601,
+            projectName: 'SaneExample',
+            status: 'failed',
+            issueCount: 2,
+            warningCount: 1,
+            issues: ['Tests failing'],
+            warnings: ['Pending customer emails']
+          )
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.launch_readiness_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected stale/failed preflight proof to block')
+        issues = report[:issues].join("\n")
+        assert_includes(issues, 'Latest release_preflight is not green: failed (2 issue(s))')
+        assert_includes(issues, 'Latest release_preflight proof is stale')
+        warnings = report[:warnings].join("\n")
+        assert_includes(warnings, 'Latest release_preflight still has 1 warning(s)')
+      end
+      true
+    end
+  end
+
   test_category('App Store lane gating') do
     test('appstore preflight skips projects whose App Store lane is disabled') do
       Dir.mktmpdir('disabled-appstore-lane-') do |dir|
@@ -953,6 +1482,28 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         assert_includes(output, 'App Store lane disabled in .saneprocess')
         assert_includes(output, 'Use release_preflight for direct-download release readiness')
       end
+      true
+    end
+
+    test('treats entitlements as optional for iOS-only App Store lanes') do
+      assert(subject.send(:ios_only_appstore_submission?, %w[ios]))
+      assert(!subject.send(:ios_only_appstore_submission?, %w[ios macos]))
+      true
+    end
+
+    test('reads iOS deployment target from project.yml for iOS App Store lanes') do
+      summary = subject.send(
+        :appstore_deployment_target_summary,
+        config: {},
+        appstore_config: { 'platforms' => ['ios'] },
+        project_yml_content: <<~YAML
+          options:
+            deploymentTarget:
+              iOS: 17.0
+        YAML
+      )
+
+      assert_eq(summary, 'iOS 17.0')
       true
     end
   end

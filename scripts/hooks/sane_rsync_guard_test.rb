@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require 'open3'
+require 'fileutils'
 require 'tmpdir'
 
 require_relative 'test/test_framework'
@@ -80,6 +81,79 @@ exit(run_tests('Sane rsync guard') do
       true
     end
 
+    test('blocks path-preserving mistake with relative nested sources into an app repo root') do
+      Dir.mktmpdir do |dir|
+        Dir.mkdir(File.join(dir, 'SaneVideo'))
+        Dir.mkdir(File.join(dir, 'SaneVideo', 'Services'))
+        Dir.mkdir(File.join(dir, 'SaneVideoTests'))
+        File.write(File.join(dir, 'SaneVideo', 'Services', 'SyncManager.swift'), 'sync')
+        File.write(File.join(dir, 'SaneVideoTests', 'APIDeprecationTests.swift'), 'tests')
+
+        old_pwd = Dir.pwd
+        Dir.chdir(dir)
+        begin
+          code, stderr = guard_status(
+            '-av',
+            'SaneVideo/Services/SyncManager.swift',
+            'SaneVideoTests/APIDeprecationTests.swift',
+            'mini:/Users/stephansmac/SaneApps/apps/SaneVideo/'
+          )
+
+          assert_eq(code, 2)
+          assert_includes(stderr, 'risky rsync into a SaneApps app repo root')
+        ensure
+          Dir.chdir(old_pwd)
+        end
+      end
+      true
+    end
+
+    test('allows relative path-preserving sync into an app repo root') do
+      Dir.mktmpdir do |dir|
+        Dir.mkdir(File.join(dir, 'SaneVideo'))
+        Dir.mkdir(File.join(dir, 'SaneVideo', 'Services'))
+        Dir.mkdir(File.join(dir, 'SaneVideoTests'))
+        File.write(File.join(dir, 'SaneVideo', 'Services', 'SyncManager.swift'), 'sync')
+        File.write(File.join(dir, 'SaneVideoTests', 'APIDeprecationTests.swift'), 'tests')
+
+        old_pwd = Dir.pwd
+        Dir.chdir(dir)
+        begin
+          code, stderr = guard_status(
+            '-avR',
+            'SaneVideo/Services/SyncManager.swift',
+            'SaneVideoTests/APIDeprecationTests.swift',
+            'mini:/Users/stephansmac/SaneApps/apps/SaneVideo/'
+          )
+
+          assert_eq(code, 0)
+          assert_eq(stderr, '')
+        ensure
+          Dir.chdir(old_pwd)
+        end
+      end
+      true
+    end
+
+    test('blocks absolute relative sync without an anchor into an app repo root') do
+      Dir.mktmpdir do |dir|
+        nested_dir = File.join(dir, 'SaneVideo', 'Services')
+        FileUtils.mkdir_p(nested_dir)
+        nested = File.join(nested_dir, 'SyncManager.swift')
+        File.write(nested, 'sync')
+
+        code, stderr = guard_status(
+          '-avR',
+          nested,
+          'mini:/Users/stephansmac/SaneApps/apps/SaneVideo/'
+        )
+
+        assert_eq(code, 2)
+        assert_includes(stderr, 'risky rsync --relative')
+      end
+      true
+    end
+
     test('blocks nested file source into a tilde-based app repo root') do
       Dir.mktmpdir do |dir|
         nested_dir = File.join(dir, 'Tests')
@@ -94,7 +168,7 @@ exit(run_tests('Sane rsync guard') do
         )
 
         assert_eq(code, 2)
-        assert_includes(stderr, 'docs/index.html become ./index.html')
+        assert_includes(stderr, 'risky rsync into a SaneApps app repo root')
       end
       true
     end

@@ -32,6 +32,7 @@ Packages/**/.swiftpm/
 # Build
 build/
 .build/
+.build-logs
 .build-logs/
 .build-minimal/
 *.backup*
@@ -52,9 +53,11 @@ releases/
 # Nested CLAUDE.md files are auto-generated context — only root CLAUDE.md is real
 **/CLAUDE.md
 !/CLAUDE.md
+SESSION_HANDOFF.md
 
 # Agent artifacts
 .agent/
+.claude/
 .claude-mem/
 
 # ═══════════════════════════════════════════════════════════════
@@ -62,6 +65,7 @@ releases/
 # ═══════════════════════════════════════════════════════════════
 
 # Gemini/Agentic
+.gemini
 .gemini/
 .mcp.json
 
@@ -114,11 +118,13 @@ releases/
 # Node/Wrangler
 node_modules/
 .wrangler/
+.playwright-cli/
 __pycache__/
 *.pyc
 
 # Serena
 .serena/
+.sane/
 
 # ═══════════════════════════════════════════════════════════════
 # Media (keep app assets, ignore test/marketing/root)
@@ -159,6 +165,12 @@ fastlane/keys/
 fastlane/report.xml
 fastlane/test_output/
 fastlane/gym_output/
+
+# Local agent/research artifacts
+.claude/research.md
+.claude/.gitignore
+.codex/research.md
+DOCS_AUDIT_FINDINGS.md
 
 # Code coverage
 *.gcda

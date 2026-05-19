@@ -65,5 +65,13 @@ tests << lambda do
          'auto-stash refusal should explain why it stopped')
 end
 
+tests << lambda do
+  sync_source = File.read(SYNC)
+  assert(sync_source.include?('LOCAL_AGENTS_SKILLS_DIR="$HOME/.agents/skills"'),
+         'Mini control-plane sync should include shared .agents skills')
+  assert(sync_source.include?('Shared agent skills parity check failed'),
+         'Mini control-plane sync should verify shared .agents skill parity')
+end
+
 tests.each(&:call)
 puts "PASS #{tests.length}/#{tests.length}"

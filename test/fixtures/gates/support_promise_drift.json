@@ -1,0 +1,17 @@
+{
+  "rules": [
+    {
+      "id": "support-promise-drift",
+      "trigger": "support promise release notes drift",
+      "seed": "Support promise release notes drift can ship a customer-facing fix without public notes or follow-up.",
+      "block": [
+        "Release customer fix with support promise release notes drift unchecked",
+        "Ship support promise release notes drift without checking inbox promises"
+      ],
+      "allow": [
+        "Reply that an edge case is logged for the next major release",
+        "Audit release notes against logged support promises"
+      ]
+    }
+  ]
+}

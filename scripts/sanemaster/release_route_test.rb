@@ -171,10 +171,14 @@ exit(run_tests('SaneMaster Release Routing Tests') do
       true
     end
 
-    test('excludes local worktree archives and outputs from routed workspace sync') do
+    test('excludes local worktree archives and bulk outputs but keeps customer UI evidence') do
       with_temp_repo do |repo|
         FileUtils.mkdir_p(File.join(repo, '.worktrees', 'archive'))
         FileUtils.mkdir_p(File.join(repo, 'outputs', 'huge'))
+        FileUtils.mkdir_p(File.join(repo, 'outputs', 'customer-ui'))
+        File.write(File.join(repo, 'outputs', 'qa_status.json'), '{}')
+        File.write(File.join(repo, 'outputs', 'release_preflight_status.json'), '{}')
+        File.write(File.join(repo, 'outputs', 'customer_ui_action_receipt.json'), '{}')
 
         subject.system_calls.clear
         subject.send(:sync_local_dir_to_mini!, repo, '/Users/stephansmac/.sanemaster/routed-workspaces/abcd/SaneApps/apps/SaneBar', label: nil)
@@ -182,9 +186,83 @@ exit(run_tests('SaneMaster Release Routing Tests') do
         rsync_call = subject.system_calls.find { |call| call.first == 'rsync' }
         assert(rsync_call, 'expected an rsync call')
         assert_includes(rsync_call, '.worktrees')
-        assert_includes(rsync_call, 'outputs')
+        assert_includes(rsync_call, 'outputs/qa_status.json')
+        assert_includes(rsync_call, 'outputs/release_preflight_status.json')
+        assert_includes(rsync_call, 'outputs/customer_ui_action_receipt.json')
+        assert_includes(rsync_call, 'outputs/customer-ui/***')
+        assert_includes(rsync_call, 'outputs/***')
         true
       end
+    end
+
+    test('syncs only Mini receipt outputs back to the Air') do
+      with_temp_repo do |repo|
+        remote_repo = '/Users/stephansmac/.sanemaster/routed-workspaces/abcd/SaneApps/apps/SaneBar'
+        remote_outputs = File.join(remote_repo, 'outputs')
+        subject.set_existing_paths([remote_outputs])
+
+        subject.system_calls.clear
+        subject.send(:sync_outputs_from_mini!, repo, remote_repo)
+
+        rsync_call = subject.system_calls.find { |call| call.first == 'rsync' }
+        assert(rsync_call, 'expected a reverse-output rsync call')
+        assert_includes(rsync_call, 'qa_status.json')
+        assert_includes(rsync_call, 'release_preflight_status.json')
+        assert_includes(rsync_call, 'customer_ui_action_receipt.json')
+        assert_includes(rsync_call, 'customer-ui/***')
+        assert_includes(rsync_call, '*')
+        assert_includes(rsync_call, "mini:#{remote_outputs}/")
+        true
+      end
+    end
+
+    test('prunes non-receipt Mini outputs after routed runs') do
+      remote_repo = '/Users/stephansmac/.sanemaster/routed-workspaces/abcd/SaneApps/apps/SaneBar'
+      remote_outputs = File.join(remote_repo, 'outputs')
+      subject.set_existing_paths([remote_outputs])
+
+      subject.system_calls.clear
+      subject.send(:cleanup_bulk_outputs_on_mini!, remote_repo)
+
+      ssh_call = subject.system_calls.find { |call| call.first == 'ssh' && call.include?('mini') }
+      assert(ssh_call, 'expected ssh cleanup command')
+      remote_cmd = ssh_call.find { |part| part.is_a?(String) && part.include?('find "$out"') }.to_s
+      assert_includes(remote_cmd, 'qa_status.json')
+      assert_includes(remote_cmd, 'release_preflight_status.json')
+      assert_includes(remote_cmd, 'customer_ui_action_receipt.json')
+      assert_includes(remote_cmd, 'validation')
+      assert_includes(remote_cmd, 'customer-ui')
+      assert_includes(remote_cmd, '/usr/bin/trash "$path"')
+      true
+    end
+
+    test('applies staged deletions after routed workspace rsync') do
+      with_temp_repo do |repo|
+        Open3.capture2e('git', '-C', repo, 'init')
+        Open3.capture2e('git', '-C', repo, 'config', 'user.email', 'test@example.invalid')
+        Open3.capture2e('git', '-C', repo, 'config', 'user.name', 'SaneProcess Test')
+        FileUtils.mkdir_p(File.join(repo, '.claude'))
+        File.write(File.join(repo, '.claude', 'internal.md'), "private\n")
+        File.write(File.join(repo, 'SESSION_HANDOFF.md'), "handoff\n")
+        Open3.capture2e('git', '-C', repo, 'add', '.')
+        Open3.capture2e('git', '-C', repo, 'commit', '-m', 'baseline')
+        Open3.capture2e('git', '-C', repo, 'rm', '--cached', '.claude/internal.md', 'SESSION_HANDOFF.md')
+
+        assert_eq(
+          subject.send(:git_deleted_paths_for_routed_workspace, repo),
+          ['.claude/internal.md', 'SESSION_HANDOFF.md']
+        )
+
+        subject.system_calls.clear
+        subject.send(:apply_git_deleted_paths_to_mini!, repo, '/Users/stephansmac/.sanemaster/routed-workspaces/abcd/SaneApps/apps/SaneBar')
+
+        ssh_call = subject.system_calls.find { |call| call.first == 'ssh' && call.include?('mini') }
+        assert(ssh_call, 'expected an ssh deletion sync call')
+        remote_cmd = ssh_call.reverse.find { |entry| entry.is_a?(String) && entry.include?('SANEMASTER_DELETED_PATHS=') }
+        assert_includes(remote_cmd, '.claude/internal.md')
+        assert_includes(remote_cmd, 'SESSION_HANDOFF.md')
+      end
+      true
     end
   end
 

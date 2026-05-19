@@ -57,6 +57,8 @@ class HookTests
       test("allows research tools") { test_coordinator_allows_research }
       test("blocks dangerous paths on research") { test_coordinator_blocks_dangerous }
       test("bootstrap commands allowed") { test_coordinator_allows_bootstrap }
+      test("blocks local computer-use on MacBook Air") { test_coordinator_blocks_local_computer_use }
+      test("allows computer-use on Mac Mini") { test_coordinator_allows_mini_computer_use }
     end
 
     # Test Entry Points
@@ -193,6 +195,24 @@ class HookTests
     run_hook('Bash', './scripts/SaneMaster.rb saneloop start "test"', command: true) == 0
   end
 
+  def test_coordinator_blocks_local_computer_use
+    run_hook(
+      'mcp__computer_use__get_app_state',
+      'Safari',
+      app: true,
+      extra_env: { 'SANE_FORCE_MACBOOK_AIR_FOR_TEST' => '1' }
+    ) == 2
+  end
+
+  def test_coordinator_allows_mini_computer_use
+    run_hook(
+      'mcp__computer_use__get_app_state',
+      'Safari',
+      app: true,
+      extra_env: { 'SANE_FORCE_MAC_MINI_FOR_TEST' => '1' }
+    ) == 0
+  end
+
   # Entry point syntax tests
   def test_entry_syntax(file)
     path = File.join(__dir__, 'hooks', file)
@@ -239,9 +259,11 @@ class HookTests
   end
 
   # Helper to run hook with input
-  def run_hook(tool, path, command: false)
+  def run_hook(tool, path, command: false, app: false, extra_env: {})
     input = if command
               { 'tool_name' => tool, 'tool_input' => { 'command' => path } }
+            elsif app
+              { 'tool_name' => tool, 'tool_input' => { 'app' => path } }
             else
               { 'tool_name' => tool, 'tool_input' => { 'file_path' => path } }
             end
@@ -249,7 +271,7 @@ class HookTests
     hook_path = File.join(__dir__, 'hooks', 'pre_tool_use.rb')
 
     stdout, stderr, status = Open3.capture3(
-      { 'CLAUDE_PROJECT_DIR' => PROJECT_DIR },
+      { 'CLAUDE_PROJECT_DIR' => PROJECT_DIR }.merge(extra_env),
       'ruby', hook_path,
       stdin_data: JSON.generate(input)
     )
