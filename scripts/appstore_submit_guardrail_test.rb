@@ -202,10 +202,11 @@ exit(run_tests('App Store Submit Guardrail Tests') do
         FileUtils.mkdir_p(File.join(dir, 'scripts'))
         File.write(
           File.join(dir, 'scripts', 'SaneMaster.rb'),
-          <<~RUBY
-            #!/usr/bin/env ruby
-            abort "strict visual contract failed"
-          RUBY
+          <<~BASH
+            #!/bin/bash
+            echo "strict visual contract failed" >&2
+            exit 1
+          BASH
         )
 
         assert(!ensure_strict_customer_ui_contract!(dir), 'expected failed strict UI contract to block upload')

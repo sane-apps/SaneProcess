@@ -253,10 +253,10 @@ def ensure_strict_customer_ui_contract!(project_root)
     return false
   end
 
+  command = sanemaster_invocation(sanemaster)
   output, status = Open3.capture2e(
     { 'SANEPROCESS_APPSTORE_SUBMIT_GUARD' => '1' },
-    'ruby',
-    sanemaster,
+    *command,
     'customer_ui_contract',
     '--strict-visual',
     chdir: project_root
@@ -271,6 +271,16 @@ def ensure_strict_customer_ui_contract!(project_root)
     log_error "  #{line}"
   end
   false
+end
+
+def sanemaster_invocation(path)
+  first_line = File.open(path, &:readline).to_s
+  return ['ruby', path] if first_line.include?('ruby')
+  return ['bash', path] if first_line.include?('bash') || first_line.include?('sh')
+
+  File.executable?(path) ? [path] : ['ruby', path]
+rescue StandardError
+  ['ruby', path]
 end
 
 def present_value(value)
