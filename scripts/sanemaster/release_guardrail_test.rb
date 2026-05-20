@@ -2527,6 +2527,79 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       )
       true
     end
+
+    test('fails when ASC Game Center is enabled but the iOS build has no entitlement') do
+      subject.stub_asc_json(
+        '/apps/game-center-app/appStoreVersions?filter[platform]=IOS&limit=200',
+        {
+          'data' => [
+            { 'id' => 'ios-version-1', 'attributes' => { 'versionString' => '1.0', 'appStoreState' => 'PREPARE_FOR_SUBMISSION' } }
+          ]
+        }
+      )
+      subject.stub_asc_json(
+        '/appStoreVersions/ios-version-1/gameCenterAppVersion',
+        {
+          'data' => {
+            'id' => 'gc-version-1',
+            'type' => 'gameCenterAppVersions',
+            'attributes' => { 'enabled' => true }
+          }
+        }
+      )
+
+      report = subject.send(
+        :asc_game_center_guardrail_report,
+        app_id: 'game-center-app',
+        platform: 'ios',
+        version_string: '1.0',
+        entitlement_paths: [],
+        project_yml_content: ''
+      )
+
+      assert(report[:applicable], 'expected Game Center report to apply')
+      assert_eq(report[:summary], 'enabled in ASC')
+      assert_includes(
+        report[:issues],
+        'App Store Connect Game Center is enabled for this iOS version, but the build has no com.apple.developer.game-center entitlement.'
+      )
+      true
+    end
+
+    test('passes when ASC Game Center is disabled for a non-game iOS app') do
+      subject.stub_asc_json(
+        '/apps/non-game-app/appStoreVersions?filter[platform]=IOS&limit=200',
+        {
+          'data' => [
+            { 'id' => 'ios-version-2', 'attributes' => { 'versionString' => '1.0', 'appStoreState' => 'PREPARE_FOR_SUBMISSION' } }
+          ]
+        }
+      )
+      subject.stub_asc_json(
+        '/appStoreVersions/ios-version-2/gameCenterAppVersion',
+        {
+          'data' => {
+            'id' => 'gc-version-2',
+            'type' => 'gameCenterAppVersions',
+            'attributes' => { 'enabled' => false }
+          }
+        }
+      )
+
+      report = subject.send(
+        :asc_game_center_guardrail_report,
+        app_id: 'non-game-app',
+        platform: 'ios',
+        version_string: '1.0',
+        entitlement_paths: [],
+        project_yml_content: ''
+      )
+
+      assert(report[:applicable], 'expected Game Center report to apply')
+      assert_eq(report[:summary], 'disabled in ASC')
+      assert_eq(report[:issues], [])
+      true
+    end
   end
 
   test_category('macOS App Store signing audit') do

@@ -1746,6 +1746,49 @@ module SaneMasterModules
       report
     end
 
+    def entitlement_sources_include_game_center?(entitlement_paths:, project_yml_content:)
+      blobs = Array(entitlement_paths).map { |path| File.read(path) rescue '' }
+      blobs << project_yml_content.to_s
+      blobs.any? { |blob| blob.include?('com.apple.developer.game-center') }
+    end
+
+    def asc_game_center_guardrail_report(app_id:, platform:, version_string:, entitlement_paths:, project_yml_content:)
+      report = { applicable: false, issues: [], warnings: [], summary: 'not configured' }
+      return report unless platform.to_s.downcase == 'ios'
+      return report if app_id.to_s.strip.empty? || version_string.to_s.strip.empty?
+
+      token = appstore_connect_token
+      return report if token.nil?
+
+      response = asc_get_json('/apps/%s/appStoreVersions?filter[platform]=IOS&limit=200' % app_id, token: token)
+      return report unless response.is_a?(Hash)
+
+      version_row = Array(response['data']).find do |entry|
+        entry.dig('attributes', 'versionString').to_s.strip == version_string.to_s.strip
+      end
+      return report unless version_row
+
+      version_id = version_row['id'].to_s.strip
+      game_center = asc_get_json("/appStoreVersions/#{version_id}/gameCenterAppVersion", token: token)
+      return report unless game_center.is_a?(Hash) && game_center['data'].is_a?(Hash)
+
+      enabled = game_center.dig('data', 'attributes', 'enabled') == true
+      has_entitlement = entitlement_sources_include_game_center?(
+        entitlement_paths: entitlement_paths,
+        project_yml_content: project_yml_content
+      )
+      report[:applicable] = true
+      report[:summary] = enabled ? 'enabled in ASC' : 'disabled in ASC'
+
+      if enabled && !has_entitlement
+        report[:issues] << 'App Store Connect Game Center is enabled for this iOS version, but the build has no com.apple.developer.game-center entitlement.'
+      elsif has_entitlement && !enabled
+        report[:warnings] << 'Build declares Game Center entitlement, but App Store Connect Game Center is disabled for this iOS version.'
+      end
+
+      report
+    end
+
     def appstore_version_ui_includes_iap?(app_id:, platform:, product_id:)
       return nil if app_id.to_s.strip.empty? || product_id.to_s.strip.empty?
 
@@ -3954,6 +3997,39 @@ module SaneMasterModules
             first_platform, first_report = applicable_reports.find { |_platform, report| Array(report[:issues]).any? }
             puts "❌ #{first_platform}: #{first_report[:summary]}"
             lane_issues.each { |message| issues << message }
+          end
+        end
+      end
+
+      # 5c0b. Game Center must match the submitted binary entitlements.
+      if platforms.include?('ios')
+        print '  │ ASC Game Center... '
+        if asc_app_id.to_s.strip.empty? || version_str.to_s.strip.empty?
+          puts '⚠️  skipped'
+          warnings << 'Cannot verify App Store Connect Game Center state without appstore.app_id and MARKETING_VERSION'
+        else
+          game_center_reports = Array(platforms).select { |platform| platform.to_s == 'ios' }.map do |platform|
+            [platform, asc_game_center_guardrail_report(
+              app_id: asc_app_id,
+              platform: platform,
+              version_string: version_str,
+              entitlement_paths: entitlements,
+              project_yml_content: project_yml_content
+            )]
+          end
+          applicable_gc_reports = game_center_reports.select { |_platform, report| report[:applicable] }
+          if applicable_gc_reports.empty?
+            puts '✅ not enabled'
+          else
+            gc_issues = applicable_gc_reports.flat_map { |_platform, report| Array(report[:issues]) }
+            gc_warnings = applicable_gc_reports.flat_map { |_platform, report| Array(report[:warnings]) }
+            if gc_issues.empty?
+              puts "✅ #{applicable_gc_reports.map { |_platform, report| report[:summary] }.join(' | ')}"
+            else
+              puts "❌ #{applicable_gc_reports.map { |_platform, report| report[:summary] }.join(' | ')}"
+              gc_issues.each { |message| issues << "Game Center: #{message}" }
+            end
+            gc_warnings.each { |message| warnings << "Game Center: #{message}" }
           end
         end
       end
