@@ -1504,6 +1504,92 @@ module SaneMasterModules
       report
     end
 
+    def appstore_metadata_completeness_report(appstore_config:, platforms:)
+      issues = []
+      warnings = []
+      required = {
+        'category' => 'primary App Store category',
+        'age_rating' => 'age rating',
+        'privacy_policy_url' => 'privacy policy URL',
+        'support_url' => 'support URL',
+        'copyright' => 'copyright',
+        'content_rights_declaration' => 'content rights declaration'
+      }
+      required.each do |key, label|
+        issues << "Missing appstore.#{key} (#{label})" if appstore_config[key].to_s.strip.empty?
+      end
+
+      export = appstore_config['export_compliance']
+      if export.is_a?(Hash)
+        if !export.key?('uses_non_exempt_encryption') && !export.key?(:uses_non_exempt_encryption)
+          issues << 'Missing appstore.export_compliance.uses_non_exempt_encryption'
+        end
+        if export['exemption_reason'].to_s.strip.empty? && export[:exemption_reason].to_s.strip.empty?
+          warnings << 'appstore.export_compliance.exemption_reason is empty'
+        end
+      else
+        issues << 'Missing appstore.export_compliance — do not let submission tooling assume export compliance answers'
+      end
+
+      accessibility = appstore_config['accessibility_declarations']
+      if Array(platforms).map(&:to_s).include?('ios')
+        if !accessibility.is_a?(Hash) || !accessibility['families'].is_a?(Hash)
+          issues << 'Missing appstore.accessibility_declarations.families for iOS Accessibility Nutrition Labels'
+        else
+          %w[iphone ipad].each do |family|
+            next unless accessibility['families'].key?(family)
+
+            flags = accessibility.dig('families', family)
+            unless flags.is_a?(Hash) && flags.keys.any? { |key| key.to_s.start_with?('supports_') }
+              issues << "Accessibility declaration #{family} lacks supports_* flags"
+            end
+          end
+        end
+      end
+
+      {
+        issues: issues,
+        warnings: warnings,
+        summary: issues.empty? ? 'required metadata declared' : "#{issues.count} missing"
+      }
+    end
+
+    def privacy_manifest_guardrail_report(manifest_paths:, project_yml_content:)
+      issues = []
+      warnings = []
+      if manifest_paths.empty?
+        return {
+          issues: ['No PrivacyInfo.xcprivacy found — required since Spring 2024 for all new submissions'],
+          warnings: [],
+          summary: 'missing'
+        }
+      end
+
+      manifest_paths.each do |path|
+        lint_out, lint_status = Open3.capture2e('plutil', '-lint', path)
+        issues << "#{path} is not valid plist: #{lint_out.strip}" unless lint_status.success?
+
+        parsed_out, parsed_status = Open3.capture2e('plutil', '-p', path)
+        if parsed_status.success?
+          issues << "#{path} is missing NSPrivacyTracking" unless parsed_out.include?('NSPrivacyTracking')
+          issues << "#{path} is missing NSPrivacyCollectedDataTypes" unless parsed_out.include?('NSPrivacyCollectedDataTypes')
+          issues << "#{path} is missing NSPrivacyAccessedAPITypes" unless parsed_out.include?('NSPrivacyAccessedAPITypes')
+        end
+      end
+
+      if project_yml_content.match?(/excludes:\s*(?:.|\n){0,500}PrivacyInfo\.xcprivacy/)
+        issues << 'project.yml excludes PrivacyInfo.xcprivacy from the app target — the privacy manifest may not be bundled'
+      elsif manifest_paths.none? { |path| project_yml_content.include?(File.basename(path)) || project_yml_content.include?("path: #{File.dirname(path)}") }
+        warnings << 'PrivacyInfo.xcprivacy is not mentioned in project.yml; verify it is bundled in the archived app'
+      end
+
+      {
+        issues: issues.uniq,
+        warnings: warnings.uniq,
+        summary: manifest_paths.join(', ')
+      }
+    end
+
     def asc_subscription_status(app_id:, product_id:)
       return nil if app_id.to_s.strip.empty? || product_id.to_s.strip.empty?
 
@@ -1529,10 +1615,56 @@ module SaneMasterModules
       end
       return { exists: false, state: nil } unless row
 
-      {
+      status = {
         exists: true,
         state: row.dig('attributes', 'state').to_s.strip
       }
+      subscription_id = row['id'].to_s.strip
+      unless subscription_id.empty?
+        detail = asc_get_json(
+          "/subscriptions/#{subscription_id}?include=subscriptionLocalizations,appStoreReviewScreenshot,prices,subscriptionAvailability",
+          token: token
+        )
+        if detail.is_a?(Hash)
+          included = Array(detail['included'])
+          localizations = included.select { |entry| entry['type'] == 'subscriptionLocalizations' }
+          status[:localization_states] = localizations.map { |entry| entry.dig('attributes', 'state').to_s.strip }.reject(&:empty?).uniq
+          status[:rejected_localization] = status[:localization_states].include?('REJECTED')
+          status[:has_localization] = localizations.any?
+
+          screenshots = included.select { |entry| entry['type'] == 'subscriptionAppStoreReviewScreenshots' }
+          screenshot_states = screenshots.map do |entry|
+            attrs = entry['attributes'] || {}
+            attrs.dig('assetDeliveryState', 'state') || attrs['fileStatus']
+          end.compact
+          status[:has_review_screenshot] = screenshots.any?
+          status[:review_screenshot_states] = screenshot_states
+
+          status[:has_price] = included.any? { |entry| entry['type'] == 'subscriptionPrices' }
+          status[:has_availability] = included.any? { |entry| entry['type'] == 'subscriptionAvailabilities' }
+        end
+      end
+      status
+    end
+
+    def appstore_iap_attachment_receipt_valid?(app_id:, platform:, version:, product_id:)
+      path = [
+        File.join(Dir.pwd, '.sane', 'appstore_iap_attachment_receipt.json'),
+        File.join(Dir.pwd, 'outputs', 'appstore_iap_attachment_receipt.json')
+      ].find { |candidate| File.file?(candidate) }
+      return false unless path
+
+      receipt = JSON.parse(File.read(path))
+      generated_at = Time.parse(receipt['generatedAt'].to_s) rescue nil
+      return false unless generated_at && generated_at > Time.now - (4 * 60 * 60)
+
+      receipt['appId'].to_s == app_id.to_s &&
+        receipt['platform'].to_s.downcase == platform.to_s.downcase &&
+        receipt['version'].to_s == version.to_s &&
+        receipt['productId'].to_s == product_id.to_s &&
+        receipt['checked'] == true
+    rescue StandardError
+      false
     end
 
     APP_STORE_EDITABLE_STATES = %w[
@@ -1647,6 +1779,41 @@ module SaneMasterModules
               if (onTargetPage && pageText.indexOf('In-App Purchases and Subscriptions') !== -1) break;
             }
             var found = pageUrl.indexOf(#{target_url.to_json}) !== -1 && pageText.indexOf(#{product_id.to_json}) !== -1;
+            if (!found && pageUrl.indexOf(#{target_url.to_json}) !== -1 && pageText.indexOf('Select In-App Purchases or Subscriptions') !== -1) {
+              var modalProbe = run(`(function() {
+                function text(el) { return (el.innerText || el.textContent || '').trim(); }
+                var buttons = Array.from(document.querySelectorAll('button'));
+                var selector = buttons.find(function(button) {
+                  return text(button) === 'Select In-App Purchases or Subscriptions';
+                });
+                if (selector) selector.click();
+                return 'opened';
+              })()`);
+              for (var j = 0; j < 10; j++) {
+                delay(1);
+                var state = run(`(function() {
+                  var productId = #{product_id.to_json};
+                  var body = document.body ? document.body.innerText : '';
+                  if (body.indexOf(productId) === -1) return 'MISSING';
+                  var checkboxes = Array.from(document.querySelectorAll('input[type="checkbox"]'));
+                  if (checkboxes.some(function(input) { return input.checked; })) return 'FOUND';
+                  return 'UNCHECKED';
+                })()`);
+                if (state === 'FOUND') {
+                  found = true;
+                  break;
+                }
+                if (state === 'UNCHECKED') break;
+              }
+              try {
+                run(`(function() {
+                  var done = Array.from(document.querySelectorAll('button')).find(function(button) {
+                    return (button.innerText || '').trim() === 'Done';
+                  });
+                  if (done) done.click();
+                })()`);
+              } catch (closeError) {}
+            }
             console.log(found ? 'FOUND' : 'MISSING');
           } catch (error) {
             console.log('ERROR:' + error.toString());
@@ -3383,11 +3550,17 @@ module SaneMasterModules
       # 2c. Privacy manifest (PrivacyInfo.xcprivacy)
       print '  │ Privacy manifest... '
       privacy_manifests = Dir.glob('**/PrivacyInfo.xcprivacy').reject { |p| p.include?('DerivedData') || p.include?('build/') }
-      if privacy_manifests.any?
-        puts "✅ #{privacy_manifests.first}"
+      privacy_manifest_report = privacy_manifest_guardrail_report(
+        manifest_paths: privacy_manifests,
+        project_yml_content: project_yml_content
+      )
+      if privacy_manifest_report[:issues].empty?
+        puts "✅ #{privacy_manifest_report[:summary]}"
+        privacy_manifest_report[:warnings].each { |msg| warnings << "Privacy manifest: #{msg}" }
       else
-        puts '❌ missing'
-        issues << 'No PrivacyInfo.xcprivacy found — required since Spring 2024 for all new submissions'
+        puts "❌ #{privacy_manifest_report[:issues].first}"
+        privacy_manifest_report[:issues].each { |msg| issues << "Privacy manifest: #{msg}" }
+        privacy_manifest_report[:warnings].each { |msg| warnings << "Privacy manifest: #{msg}" }
       end
 
       # 2d. Deployment target
@@ -3472,6 +3645,9 @@ module SaneMasterModules
             files = Dir.glob(File.join(Dir.pwd, glob_pattern))
             if files.any?
               screenshot_summary << "#{platform}: #{files.count}"
+              if files.count > 10
+                screenshot_issues << "#{platform} has #{files.count} screenshots configured; Apple allows up to 10 per display/localization"
+              end
               if platform == 'macos' && files.count < 3
                 warnings << "Only #{files.count} macOS screenshot(s) configured — Apple allows one, but 3-5 screenshots is a safer review baseline"
               end
@@ -3497,6 +3673,9 @@ module SaneMasterModules
                     screenshot_issues << "No iPad screenshots found matching configured globs: #{ipad_globs.join(', ')}"
                   else
                     screenshot_summary << "ipad: #{ipad_files.count}"
+                    if ipad_files.count > 10
+                      screenshot_issues << "ipad has #{ipad_files.count} screenshots configured; Apple allows up to 10 per display/localization"
+                    end
                     ipad_files.each do |f|
                       dims, = Open3.capture2('sips', '-g', 'pixelWidth', '-g', 'pixelHeight', f)
                       width = dims[/pixelWidth:\s*(\d+)/, 1].to_i
@@ -3540,6 +3719,20 @@ module SaneMasterModules
         puts "❌ missing: #{missing.join(', ')}"
         issues << "Review contact info incomplete — add to .saneprocess appstore.contact"
       end
+
+      # 3d. Required App Store metadata declarations
+      print '  │ Required metadata declarations... '
+      metadata_completeness = appstore_metadata_completeness_report(
+        appstore_config: appstore_config,
+        platforms: platforms
+      )
+      if metadata_completeness[:issues].empty?
+        puts "✅ #{metadata_completeness[:summary]}"
+      else
+        puts "❌ #{metadata_completeness[:issues].first}"
+        metadata_completeness[:issues].each { |msg| issues << "App Store metadata: #{msg}" }
+      end
+      metadata_completeness[:warnings].each { |msg| warnings << "App Store metadata: #{msg}" }
 
       puts '  │'
 
@@ -3839,6 +4032,18 @@ module SaneMasterModules
           elsif iap_status[:rejected_localization]
             puts "❌ #{configured_product_id} (#{iap_status[:state]})"
             issues << "App Store Connect IAP #{configured_product_id} has a REJECTED localization — Apple requires a new product_id for a replacement IAP."
+          elsif subscription_product && !iap_status[:has_localization]
+            puts "❌ #{configured_product_id} (missing localization)"
+            issues << "App Store Connect subscription #{configured_product_id} is missing localization metadata."
+          elsif subscription_product && !iap_status[:has_price]
+            puts "❌ #{configured_product_id} (missing price)"
+            issues << "App Store Connect subscription #{configured_product_id} is missing subscription price metadata."
+          elsif subscription_product && !iap_status[:has_availability]
+            puts "❌ #{configured_product_id} (missing availability)"
+            issues << "App Store Connect subscription #{configured_product_id} is missing territory availability."
+          elsif subscription_product && !iap_status[:has_review_screenshot]
+            puts "❌ #{configured_product_id} (missing review screenshot)"
+            issues << "App Store Connect subscription #{configured_product_id} is missing its App Review screenshot."
           elsif %w[WAITING_FOR_REVIEW IN_REVIEW PENDING_BINARY_APPROVAL APPROVED READY_FOR_SALE].include?(iap_status[:state])
             puts "✅ #{configured_product_id} (#{iap_status[:state]})"
           elsif iap_status[:state] == 'READY_TO_SUBMIT'
@@ -3858,6 +4063,14 @@ module SaneMasterModules
             if ui_attached
               puts "⚠️  #{configured_product_id} (READY_TO_SUBMIT, attached on version page)"
               warnings << "App Store Connect still reports #{record_label} #{configured_product_id} as READY_TO_SUBMIT, but Safari verified it is attached under Included Assets for #{ready_lane_platform} #{version_str}"
+            elsif ready_lane_platform && appstore_iap_attachment_receipt_valid?(
+              app_id: asc_app_id,
+              platform: ready_lane_platform,
+              version: version_str,
+              product_id: configured_product_id
+            )
+              puts "⚠️  #{configured_product_id} (READY_TO_SUBMIT, attachment receipt verified)"
+              warnings << "App Store Connect still reports #{record_label} #{configured_product_id} as READY_TO_SUBMIT, but a fresh ASC attachment receipt verifies it is selected for #{ready_lane_platform} #{version_str}"
             else
               puts "❌ #{configured_product_id} (READY_TO_SUBMIT)"
               issues << "App Store Connect #{record_label} #{configured_product_id} is still READY_TO_SUBMIT — Apple requires it to be added to the app version's In-App Purchases and Subscriptions section before submission."
@@ -4380,8 +4593,8 @@ module SaneMasterModules
       if category
         puts "✅ #{category}"
       else
-        puts '⚠️  not specified'
-        warnings << 'No appstore.category in .saneprocess — must set in ASC'
+        puts '❌ not specified'
+        issues << 'No appstore.category in .saneprocess — Apple requires a primary App Store category before submission'
       end
 
       # 6c. Age rating
@@ -4390,8 +4603,8 @@ module SaneMasterModules
       if age_rating
         puts "✅ #{age_rating}"
       else
-        puts '⚠️  not specified'
-        warnings << 'No appstore.age_rating in .saneprocess — defaults to 4+ in ASC'
+        puts '❌ not specified'
+        issues << 'No appstore.age_rating in .saneprocess — Apple requires an age rating before submission'
       end
 
       # 6d. Listing copy quality (metadata accuracy + conversion readiness)

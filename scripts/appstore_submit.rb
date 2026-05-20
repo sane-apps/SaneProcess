@@ -2273,21 +2273,33 @@ def ensure_age_rating_declaration(version_id, token)
   asc_patch("/ageRatingDeclarations/#{age_id}", body: body, token: token)
 end
 
-def ensure_build_export_compliance(build_id, token)
+def ensure_build_export_compliance(build_id, token, config:)
   return if build_id.to_s.empty?
+
+  export_cfg = config.dig('appstore', 'export_compliance')
+  unless export_cfg.is_a?(Hash) && (export_cfg.key?('uses_non_exempt_encryption') || export_cfg.key?(:uses_non_exempt_encryption))
+    log_error 'Missing appstore.export_compliance.uses_non_exempt_encryption; refusing to assume Apple export compliance answers.'
+    return false
+  end
+  declared_value = export_cfg.key?('uses_non_exempt_encryption') ? export_cfg['uses_non_exempt_encryption'] : export_cfg[:uses_non_exempt_encryption]
+  declared_bool = parse_boolish(declared_value)
+  if declared_bool.nil?
+    log_error 'appstore.export_compliance.uses_non_exempt_encryption must be true or false.'
+    return false
+  end
 
   build_resp = asc_get("/builds/#{build_id}", token: token)
   uses_non_exempt = build_resp&.dig('data', 'attributes', 'usesNonExemptEncryption')
-  return if uses_non_exempt == false
+  return true if uses_non_exempt == declared_bool
 
   body = {
     data: {
       type: 'builds',
       id: build_id,
-      attributes: { usesNonExemptEncryption: false }
+      attributes: { usesNonExemptEncryption: declared_bool }
     }
   }
-  asc_patch("/builds/#{build_id}", body: body, token: token)
+  !!asc_patch("/builds/#{build_id}", body: body, token: token)
 end
 
 def ensure_minimum_review_metadata(app_id:, version_id:, build_id:, config:, token:, asc_platform:, project_root:)
@@ -2332,7 +2344,7 @@ def ensure_minimum_review_metadata(app_id:, version_id:, build_id:, config:, tok
   default_copyright = "#{Time.now.year} SaneApps"
   ensure_version_copyright(version_id, appstore_cfg['copyright'].to_s.strip.empty? ? default_copyright : appstore_cfg['copyright'], token)
   ensure_age_rating_declaration(version_id, token)
-  ensure_build_export_compliance(build_id, token)
+  return false unless ensure_build_export_compliance(build_id, token, config: config)
   true
 end
 
@@ -2928,6 +2940,128 @@ ensure
   File.delete(prepared_path) if prepared_path && prepared_path.start_with?('/tmp/screenshot_canvas_') && File.exist?(prepared_path)
 end
 
+def subscription_review_screenshot_rows(subscription_id:, token:)
+  code, resp = asc_get_with_status(
+    "/subscriptions/#{subscription_id}?include=appStoreReviewScreenshot",
+    token: token
+  )
+  return [] unless code == 200
+
+  Array(resp['included']).select { |entry| entry['type'] == 'subscriptionAppStoreReviewScreenshots' }
+end
+
+def review_screenshot_asset_state(row)
+  attrs = row['attributes'] || {}
+  attrs.dig('assetDeliveryState', 'state') ||
+    attrs['fileStatus'] ||
+    attrs.dig('assetDeliveryState', 'errors', 0, 'code')
+end
+
+def reserve_subscription_review_screenshot_upload(subscription_id:, screenshot_path:, token:)
+  reservation_body = {
+    data: {
+      type: 'subscriptionAppStoreReviewScreenshots',
+      attributes: {
+        fileName: File.basename(screenshot_path),
+        fileSize: File.size(screenshot_path)
+      },
+      relationships: {
+        subscription: {
+          data: { type: 'subscriptions', id: subscription_id }
+        }
+      }
+    }
+  }
+
+  asc_post_with_status('/subscriptionAppStoreReviewScreenshots', body: reservation_body, token: token)
+end
+
+def ensure_subscription_review_screenshot(subscription_id:, screenshot_path:, screenshot_target:, token:)
+  rows = subscription_review_screenshot_rows(subscription_id: subscription_id, token: token)
+  ready_row = rows.find { |row| iap_review_screenshot_ready?(review_screenshot_asset_state(row)) }
+  return true if ready_row
+
+  rows.each do |row|
+    screenshot_id = row['id'].to_s
+    next if screenshot_id.empty?
+
+    delete_code, delete_resp = asc_delete_with_status(
+      "/subscriptionAppStoreReviewScreenshots/#{screenshot_id}",
+      token: token
+    )
+    unless [200, 202, 204, 404].include?(delete_code)
+      detail = delete_resp.dig('errors', 0, 'detail') || delete_resp.dig('errors', 0, 'title') || 'unknown error'
+      log_error "Failed to replace existing subscription review screenshot (HTTP #{delete_code}): #{detail}"
+      return false
+    end
+  end
+
+  unless screenshot_path && File.file?(screenshot_path)
+    log_error 'Subscription review screenshot is missing and no screenshot file was found from appstore.screenshots.'
+    return false
+  end
+
+  prepared_path = prepare_iap_review_screenshot(
+    screenshot_path,
+    target_w: screenshot_target.fetch(:width),
+    target_h: screenshot_target.fetch(:height)
+  )
+  unless prepared_path && File.file?(prepared_path)
+    log_error "Failed to prepare a valid #{screenshot_target[:width]}x#{screenshot_target[:height]} subscription review screenshot."
+    return false
+  end
+
+  reserve_code, reserve_resp = reserve_subscription_review_screenshot_upload(
+    subscription_id: subscription_id,
+    screenshot_path: prepared_path,
+    token: token
+  )
+  unless reserve_code == 201
+    detail = reserve_resp.dig('errors', 0, 'detail') || reserve_resp.dig('errors', 0, 'title') || 'unknown error'
+    log_error "Failed to reserve subscription review screenshot upload (HTTP #{reserve_code}): #{detail}"
+    return false
+  end
+
+  screenshot_id = reserve_resp.dig('data', 'id')
+  upload_ops = reserve_resp.dig('data', 'attributes', 'uploadOperations') || []
+
+  upload_ops.each_with_index do |op, idx|
+    chunk = File.binread(prepared_path, op['length'], op['offset'])
+    upload_code = upload_presigned_chunk(op['url'], op['requestHeaders'] || [], chunk)
+    unless upload_code.between?(200, 299)
+      log_error "Subscription review screenshot chunk #{idx} upload failed (HTTP #{upload_code})."
+      return false
+    end
+  end
+
+  commit_body = {
+    data: {
+      type: 'subscriptionAppStoreReviewScreenshots',
+      id: screenshot_id,
+      attributes: {
+        uploaded: true,
+        sourceFileChecksum: Digest::MD5.hexdigest(File.binread(prepared_path))
+      }
+    }
+  }
+
+  commit_code, commit_resp = asc_patch_with_status(
+    "/subscriptionAppStoreReviewScreenshots/#{screenshot_id}",
+    body: commit_body,
+    token: token
+  )
+  if [200, 201].include?(commit_code)
+    log_info "Uploaded subscription review screenshot (#{File.basename(prepared_path)})."
+    true
+  else
+    detail = commit_resp.dig('errors', 0, 'detail') || commit_resp.dig('errors', 0, 'title') || 'unknown error'
+    log_error "Failed to commit subscription review screenshot (HTTP #{commit_code}): #{detail}"
+    false
+  end
+ensure
+  File.delete(prepared_path) if prepared_path && prepared_path.start_with?('/tmp/screenshot_canvas_') && File.exist?(prepared_path)
+end
+
 def ensure_iap_availability(iap_id:, token:)
   code, availability_resp = asc_get_v2("/inAppPurchases/#{iap_id}/inAppPurchaseAvailability", token: token)
   return true if code == 200 && !availability_resp['data'].nil?
@@ -3091,13 +3225,26 @@ def create_iap(app_id:, product_id:, project_root:, config:, token:)
   end
 end
 
-def ensure_subscription_readiness(app_id:, product_id:, token:)
+def ensure_subscription_readiness(app_id:, product_id:, project_root:, config:, token:)
   subscription = find_subscription_by_product_id(app_id: app_id, product_id: product_id, token: token)
   unless subscription
     log_error "No App Store Connect subscription found with product_id #{product_id}."
     return false
   end
 
+  subscription_id = subscription['id'].to_s
+  screenshot_path, screenshot_target = resolve_iap_review_screenshot(project_root, config)
+  unless ensure_subscription_review_screenshot(
+    subscription_id: subscription_id,
+    screenshot_path: screenshot_path,
+    screenshot_target: screenshot_target,
+    token: token
+  )
+    return false
+  end
+
+  state = subscription.dig('attributes', 'state').to_s.strip
+  subscription = find_subscription_by_product_id(app_id: app_id, product_id: product_id, token: token)
   state = subscription.dig('attributes', 'state').to_s.strip
   log_info "Subscription state for #{product_id}: #{state}"
   return true if %w[WAITING_FOR_REVIEW IN_REVIEW PENDING_BINARY_APPROVAL APPROVED READY_FOR_SALE].include?(state)
@@ -4396,7 +4543,13 @@ if options[:iap_only]
 
   token = generate_jwt
   ok = if auto_renewable_subscription_config?(config)
-         ensure_subscription_readiness(app_id: app_id, product_id: product_id, token: token)
+         ensure_subscription_readiness(
+           app_id: app_id,
+           product_id: product_id,
+           project_root: project_root,
+           config: config,
+           token: token
+         )
        else
          ensure_iap_readiness(
            app_id: app_id,
@@ -4579,7 +4732,13 @@ unless configured_product_id.empty?
   iap_price_usd = IAP_DEFAULT_USD_PRICE if iap_price_usd.empty?
   token = generate_jwt
   iap_ok = if auto_renewable_subscription_config?(config)
-             ensure_subscription_readiness(app_id: app_id, product_id: configured_product_id, token: token)
+             ensure_subscription_readiness(
+               app_id: app_id,
+               product_id: configured_product_id,
+               project_root: project_root,
+               config: config,
+               token: token
+             )
            else
              ensure_iap_readiness(
                app_id: app_id,

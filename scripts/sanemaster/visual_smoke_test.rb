@@ -333,6 +333,18 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
     end
   end
 
+  test_category('macOS automation safety') do
+    test('osascript helper times out instead of hanging visual gates') do
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      _stdout, status = subject.send(:visual_smoke_capture_osascript, 'delay 10', timeout: 1)
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+      assert(status.nil?, 'timed-out osascript should not return a successful status')
+      assert(elapsed < 4, "osascript timeout took too long: #{elapsed.round(2)}s")
+      true
+    end
+  end
+
   test_category('Mini-first contract') do
     test('SaneMaster routes visual_smoke through Mini-first') do
       source = File.read(File.expand_path('../SaneMaster.rb', __dir__))

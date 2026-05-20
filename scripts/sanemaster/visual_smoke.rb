@@ -371,13 +371,38 @@ module SaneMasterModules
       visual_smoke_close_terminal_host
     end
 
+    def visual_smoke_capture_osascript(script, timeout: 5)
+      output = +''
+      status = nil
+      timed_out = false
+
+      Open3.popen2e('/usr/bin/osascript', '-e', script) do |stdin, stdout_err, wait_thr|
+        stdin.close
+        reader = Thread.new { stdout_err.read.to_s }
+
+        unless wait_thr.join(timeout)
+          timed_out = true
+          Process.kill('TERM', wait_thr.pid) rescue nil
+          sleep 0.2
+          Process.kill('KILL', wait_thr.pid) rescue nil
+        end
+
+        output = reader.value rescue ''
+        status = wait_thr.value unless timed_out
+      end
+
+      [output, status]
+    rescue StandardError
+      ['', nil]
+    end
+
     def visual_smoke_hide_terminal
       apple_script = <<~APPLESCRIPT
         tell application "System Events"
           if exists process "Terminal" then set visible of process "Terminal" to false
         end tell
       APPLESCRIPT
-      Open3.capture2e('/usr/bin/osascript', '-e', apple_script)
+      visual_smoke_capture_osascript(apple_script, timeout: 3)
     rescue StandardError
       nil
     end
@@ -391,7 +416,7 @@ module SaneMasterModules
         end tell
         tell application "Finder" to activate
       APPLESCRIPT
-      Open3.capture2e('/usr/bin/osascript', '-e', apple_script)
+      visual_smoke_capture_osascript(apple_script, timeout: 3)
     rescue StandardError
       nil
     end
@@ -446,7 +471,7 @@ module SaneMasterModules
         end tell
         return 0
       APPLESCRIPT
-      stdout, status = Open3.capture2('/usr/bin/osascript', '-e', script)
+      stdout, status = visual_smoke_capture_osascript(script, timeout: 5)
       return 0 unless status.success?
 
       stdout.to_i
@@ -514,7 +539,7 @@ module SaneMasterModules
         end tell
         return hits
       APPLESCRIPT
-      stdout, status = Open3.capture2('/usr/bin/osascript', '-e', script)
+      stdout, status = visual_smoke_capture_osascript(script, timeout: 5)
       return [] unless status.success?
 
       stdout.split(',').map(&:strip).reject(&:empty?)
@@ -551,7 +576,7 @@ module SaneMasterModules
         end tell
         return output
       APPLESCRIPT
-      stdout, status = Open3.capture2('/usr/bin/osascript', '-e', script)
+      stdout, status = visual_smoke_capture_osascript(script, timeout: 5)
       return [] unless status.success?
 
       stdout.split(',').map(&:strip).reject(&:empty?)
