@@ -965,6 +965,77 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('App Store strict visual mode requires screenshot evidence for every release action') do
+      Dir.mktmpdir('customer-ui-strict-visual-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        manifest_path = File.join(dir, 'Tests', 'CustomerUIActions.yml')
+        File.write(
+          manifest_path,
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: widget-lock-state
+                title: Widget lock state works
+                surfaces: [Widget]
+                steps: [Render locked widget]
+                assertions: [Upgrade route is visible]
+                evidence: [fixture]
+                required_proof_level: fixture_completion
+                required_evidence_types: [fixture]
+                historical_failure_classes: [pro_basic_gate_drift]
+                functional_state:
+                  description: Basic fixture
+                  fixture_paths: [Tests/Fixtures/widget.json]
+                user_inputs: [Render locked widget]
+                expected_outputs: [Upgrade route is visible]
+          YAML
+        )
+        File.write(File.join(dir, 'outputs', 'widget.json'), '{"locked":true}')
+
+        strict_report = nil
+        relaxed_report = nil
+        Dir.chdir(dir) do
+          first_report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          receipt = {
+            app: 'SaneExample',
+            status: 'passed',
+            host: 'mini',
+            generated_at: Time.now.utc.iso8601,
+            manifest_sha256: first_report[:manifest_sha256],
+            source_fingerprint: first_report[:source_fingerprint],
+            tested_action_ids: ['widget-lock-state'],
+            screenshots: ['outputs/widget.png'],
+            action_results: {
+              'widget-lock-state' => {
+                status: 'passed',
+                proof_level: 'fixture_completion',
+                functional_state: { status: 'established', detail: 'Basic fixture' },
+                inputs: ['Render locked widget'],
+                output_assertions: ['Upgrade route is visible'],
+                evidence: [
+                  { type: 'fixture', detail: 'Rendered locked widget fixture', path: 'outputs/widget.json' }
+                ]
+              }
+            }
+          }
+          write_test_png(File.join(dir, 'outputs', 'widget.png'))
+          File.write(File.join(dir, 'outputs', 'customer_ui_action_receipt.json'), JSON.pretty_generate(receipt))
+          relaxed_report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          strict_report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' }, strict_visual: true)
+        end
+
+        assert(relaxed_report[:ok], "expected non-strict contract to pass: #{relaxed_report[:issues].inspect}")
+        assert(!strict_report[:ok], 'expected strict App Store visual contract to block missing action screenshot')
+        assert_includes(strict_report[:issues].join("\n"), 'App Store strict visual gate requires screenshot/visual evidence')
+      end
+      true
+    end
+
     test('customer UI sweep blocks runtime visual work when Mini screenshot precheck is dirty') do
       Dir.mktmpdir('customer-ui-visual-precheck-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'scripts'))
@@ -1504,6 +1575,81 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       )
 
       assert_eq(summary, 'iOS 17.0')
+      true
+    end
+  end
+
+  test_category('Subscription purchase-flow guardrails') do
+    test('blocks auto-renewable subscriptions without in-app legal links and renewal terms') do
+      report = subject.send(
+        :subscription_purchase_flow_guardrail_report,
+        source_blob: <<~SWIFT,
+          import StoreKit
+          struct PaywallView {
+            let title = "SaneScan Pro"
+            let copy = "Unlimited scans"
+            func purchasePro(_ product: Product) async {
+              print(product.displayName)
+              print(product.displayPrice)
+            }
+            func restorePurchases() async {}
+          }
+        SWIFT
+        appstore_config: {
+          'privacy_policy_url' => 'https://example.com/privacy/',
+          'iap' => {
+            'type' => 'auto_renewable_subscription',
+            'display_name' => 'SaneScan Pro Yearly'
+          }
+        },
+        config: {}
+      )
+
+      assert(report[:applicable], 'expected subscription guardrail to apply')
+      issues = report[:issues].join("\n")
+      assert_includes(issues, 'functional Terms of Use/EULA link inside the app')
+      assert_includes(issues, 'functional Privacy Policy link inside the app')
+      assert_includes(issues, 'renewal duration/term copy')
+      assert_includes(issues, 'cancellation/manage-subscription copy')
+      true
+    end
+
+    test('accepts complete auto-renewable subscription purchase disclosure') do
+      report = subject.send(
+        :subscription_purchase_flow_guardrail_report,
+        source_blob: <<~SWIFT,
+          import StoreKit
+          import SwiftUI
+
+          struct PaywallView: View {
+            let product: Product
+            var body: some View {
+              VStack {
+                Text("SaneScan Pro Yearly")
+                Text("Unlimited scans and batch import are provided during each yearly subscription period.")
+                Text("Billed once per year. Cancel anytime in subscription settings.")
+                Button { Task { await purchasePro(product) } } label: {
+                  Text(product.displayName)
+                  Text(product.displayPrice)
+                }
+                Link("Terms of Use", destination: URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!)
+                Link("Privacy Policy", destination: URL(string: "https://example.com/privacy/")!)
+                Button("Restore Purchases") { Task { await restorePurchases() } }
+              }
+            }
+          }
+        SWIFT
+        appstore_config: {
+          'privacy_policy_url' => 'https://example.com/privacy/',
+          'iap' => {
+            'type' => 'auto_renewable_subscription',
+            'display_name' => 'SaneScan Pro Yearly'
+          }
+        },
+        config: {}
+      )
+
+      assert(report[:issues].empty?, "expected complete disclosure to pass: #{report[:issues].inspect}")
       true
     end
   end

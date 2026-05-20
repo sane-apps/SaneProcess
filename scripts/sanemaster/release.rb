@@ -1406,6 +1406,104 @@ module SaneMasterModules
       type == 'auto_renewable_subscription' || type == 'subscription' || type.include?('auto_renewable')
     end
 
+    def appstore_worktree_fingerprint(root: Dir.pwd)
+      git_dir, git_status = Open3.capture2e('git', '-C', root, 'rev-parse', '--git-dir')
+      unless git_status.success? && !git_dir.to_s.strip.empty?
+        files = Dir.glob(File.join(root, '**/*')).select { |path| File.file?(path) }
+        files.reject! { |path| path.end_with?('/outputs/appstore_preflight_status.json') }
+        material = files.sort.map { |path| "#{path.sub("#{root}/", '')}:#{File.size(path)}:#{File.mtime(path).to_i}" }.join("\n")
+        return OpenSSL::Digest::SHA256.hexdigest(material)
+      end
+
+      parts = []
+      %w[rev-parse\ HEAD status\ --porcelain=v1 diff\ --binary diff\ --cached\ --binary].each do |command|
+        out, = Open3.capture2e('git', '-C', root, *command.split(' '))
+        parts << out
+      end
+      OpenSSL::Digest::SHA256.hexdigest(parts.join("\n---\n"))
+    rescue StandardError
+      'unknown'
+    end
+
+    def write_appstore_preflight_status_snapshot(path:, status:, issues:, warnings:, app_name:, app_id:, version:, build:, platforms:)
+      FileUtils.mkdir_p(File.dirname(path))
+      payload = {
+        generatedAt: Time.now.iso8601,
+        projectName: app_name,
+        appId: app_id.to_s,
+        version: version.to_s,
+        build: build.to_s,
+        platforms: Array(platforms).map(&:to_s),
+        worktreeFingerprint: appstore_worktree_fingerprint(root: Dir.pwd),
+        status: status,
+        issueCount: issues.count,
+        warningCount: warnings.count,
+        issues: issues,
+        warnings: warnings
+      }
+      File.write(path, JSON.pretty_generate(payload))
+    rescue StandardError
+      nil
+    end
+
+    def subscription_purchase_flow_guardrail_report(source_blob:, appstore_config:, config:)
+      report = { applicable: false, issues: [], warnings: [], summary: '' }
+      return report unless appstore_iap_auto_renewable_subscription?(appstore_config)
+
+      report[:applicable] = true
+      source = source_blob.to_s
+      iap_config = appstore_config['iap'].is_a?(Hash) ? appstore_config['iap'] : {}
+      product_name = metadata_value(iap_config, 'display_name', 'name').to_s
+      privacy_url = metadata_value(appstore_config, 'privacy_policy_url').to_s
+      privacy_url = "https://#{config['website_domain']}/privacy" if privacy_url.empty? && config['website_domain']
+
+      has_storekit_subscription_view = source.include?('SubscriptionStoreView')
+      has_link_api = source.match?(/\bLink\s*\(|openURL|SFSafariViewController|UIApplication\.shared\.open/)
+      has_terms_label = source.match?(/Terms of Use|EULA|License Agreement/i)
+      has_terms_url = source.match?(%r{apple\.com/legal/internet-services/itunes/dev/stdeula|/terms/?["')]?}i)
+      has_privacy_label = source.match?(/Privacy Policy|Privacy/i)
+      has_privacy_url = !privacy_url.empty? && source.include?(privacy_url)
+      has_product_title = has_storekit_subscription_view ||
+                          (!product_name.empty? && source.include?(product_name)) ||
+                          source.match?(/displayName|Sane\w*\s+Pro/i)
+      has_duration = has_storekit_subscription_view ||
+                     source.match?(/year|annual|month|week|subscriptionPeriod|renewal term|once per/i)
+      has_price = has_storekit_subscription_view || source.match?(/displayPrice|price|Product\.SubscriptionInfo/i)
+      has_value = source.match?(/Unlimited|unlock|included|provided|batch import|scan/i)
+      has_cancel = has_storekit_subscription_view || source.match?(/cancel/i)
+      has_restore = source.match?(/Restore Purchases|restorePurchases\s*\(|AppStore\.sync\s*\(/)
+
+      report[:issues] << 'Auto-renewable subscription purchase flow lacks a visible subscription title/product name' unless has_product_title
+      report[:issues] << 'Auto-renewable subscription purchase flow lacks renewal duration/term copy' unless has_duration
+      report[:issues] << 'Auto-renewable subscription purchase flow lacks price/displayPrice in the purchase option' unless has_price
+      report[:issues] << 'Auto-renewable subscription purchase flow lacks what the subscriber gets during each period' unless has_value
+      report[:issues] << 'Auto-renewable subscription purchase flow lacks cancellation/manage-subscription copy' unless has_cancel
+      report[:issues] << 'Auto-renewable subscription purchase flow lacks a restore purchases path' unless has_restore
+      unless has_link_api && has_terms_label && has_terms_url
+        report[:issues] << 'Auto-renewable subscription purchase flow lacks a functional Terms of Use/EULA link inside the app'
+      end
+      unless has_link_api && has_privacy_label && (has_privacy_url || source.match?(%r{/privacy/?["')]?}i))
+        report[:issues] << 'Auto-renewable subscription purchase flow lacks a functional Privacy Policy link inside the app'
+      end
+
+      if iap_config.key?('introductory_offer') || iap_config.key?('trial') || iap_config.key?('free_trial')
+        report[:issues] << 'Introductory offer/trial configured but purchase flow lacks trial and post-trial billing copy' unless source.match?(/trial|introductory|after.*trial|then/i)
+      end
+
+      checks = {
+        title: has_product_title,
+        duration: has_duration,
+        price: has_price,
+        value: has_value,
+        cancel: has_cancel,
+        restore: has_restore,
+        terms: has_link_api && has_terms_label && has_terms_url,
+        privacy: has_link_api && has_privacy_label && (has_privacy_url || source.match?(%r{/privacy/?["')]?}i))
+      }
+      report[:summary] = checks.map { |name, ok| "#{name}=#{ok ? 'yes' : 'no'}" }.join(', ')
+      report
+    end
+
     def asc_subscription_status(app_id:, product_id:)
       return nil if app_id.to_s.strip.empty? || product_id.to_s.strip.empty?
 
@@ -3212,6 +3310,26 @@ module SaneMasterModules
 
       puts '  │'
 
+      # 1e. Strict customer-facing UI/action visual proof.
+      print '  │ Customer UI strict visual contract... '
+      if respond_to?(:customer_ui_contract_report)
+        ui_contract_report = customer_ui_contract_report(config: config, strict_visual: true)
+        if ui_contract_report[:ok]
+          puts "✅ #{ui_contract_report[:action_count]} action(s)"
+        else
+          puts '❌ FAIL'
+          Array(ui_contract_report[:issues]).each do |issue|
+            puts "    ↳ #{issue}"
+            issues << "Customer UI strict visual contract: #{issue}"
+          end
+        end
+      else
+        puts '❌ FAIL'
+        issues << 'Customer UI strict visual contract checker is not loaded'
+      end
+
+      puts '  │'
+
       # ═══════════════════════════════════════════
       # SECTION 2: Build Preparation
       # ═══════════════════════════════════════════
@@ -3778,6 +3896,25 @@ module SaneMasterModules
         puts '⏭️  skipped (no license/pro model detected)'
       end
 
+      # 5e1. Auto-renewable subscription purchase-flow disclosures
+      print '  │ Subscription purchase flow... '
+      subscription_flow_report = subscription_purchase_flow_guardrail_report(
+        source_blob: all_source,
+        appstore_config: appstore_config,
+        config: config
+      )
+      if subscription_flow_report[:applicable]
+        if subscription_flow_report[:issues].empty?
+          puts "✅ #{subscription_flow_report[:summary]}"
+        else
+          puts "❌ #{subscription_flow_report[:issues].first}"
+          subscription_flow_report[:issues].each { |msg| issues << "Subscription purchase flow: #{msg}" }
+        end
+        subscription_flow_report[:warnings].each { |msg| warnings << "Subscription purchase flow: #{msg}" }
+      else
+        puts '⏭️  skipped (no auto-renewable subscription configured)'
+      end
+
       # 5f. iOS/watch signing and provisioning profile entitlement audit
       print '  │ iOS signing & profiles... '
       mobile_signing_targets = appstore_mobile_signing_targets(project_yml)
@@ -4298,6 +4435,18 @@ module SaneMasterModules
         puts '  🔴 FIX ISSUES ABOVE before submitting'
       end
       puts '═' * 55
+
+      write_appstore_preflight_status_snapshot(
+        path: File.join(Dir.pwd, 'outputs', 'appstore_preflight_status.json'),
+        status: issues.empty? ? 'passed' : 'failed',
+        issues: issues,
+        warnings: warnings,
+        app_name: app_name,
+        app_id: asc_app_id,
+        version: version_str,
+        build: build_num,
+        platforms: platforms
+      )
 
       record_process_metric(
         'appstore_preflight',

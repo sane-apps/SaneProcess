@@ -246,6 +246,33 @@ def log_error(msg)
   warn "\033[0;31m[ASC]\033[0m #{msg}"
 end
 
+def ensure_strict_customer_ui_contract!(project_root)
+  sanemaster = File.join(project_root, 'scripts', 'SaneMaster.rb')
+  unless File.file?(sanemaster)
+    log_error "Missing SaneMaster wrapper at #{sanemaster}; cannot verify strict customer UI contract."
+    return false
+  end
+
+  output, status = Open3.capture2e(
+    { 'SANEPROCESS_APPSTORE_SUBMIT_GUARD' => '1' },
+    'ruby',
+    sanemaster,
+    'customer_ui_contract',
+    '--strict-visual',
+    chdir: project_root
+  )
+  if status.success?
+    log_info 'Strict customer UI visual contract passed.'
+    return true
+  end
+
+  log_error 'Strict customer UI visual contract failed. App Store upload/submission is blocked.'
+  output.to_s.lines.last(20).map(&:strip).reject(&:empty?).each do |line|
+    log_error "  #{line}"
+  end
+  false
+end
+
 def present_value(value)
   trimmed = value.to_s.strip
   trimmed.empty? ? nil : trimmed
@@ -3764,6 +3791,62 @@ def wait_for_version_state_transition(app_id:, asc_platform:, version_string:, t
   last_state
 end
 
+def appstore_worktree_fingerprint(project_root)
+  git_dir, git_status = Open3.capture2e('git', '-C', project_root, 'rev-parse', '--git-dir')
+  unless git_status.success? && !git_dir.to_s.strip.empty?
+    files = Dir.glob(File.join(project_root, '**/*')).select { |path| File.file?(path) }
+    files.reject! { |path| path.end_with?('/outputs/appstore_preflight_status.json') }
+    material = files.sort.map { |path| "#{path.sub("#{project_root}/", '')}:#{File.size(path)}:#{File.mtime(path).to_i}" }.join("\n")
+    return Digest::SHA256.hexdigest(material)
+  end
+
+  parts = []
+  %w[rev-parse\ HEAD status\ --porcelain=v1 diff\ --binary diff\ --cached\ --binary].each do |command|
+    out, = Open3.capture2e('git', '-C', project_root, *command.split(' '))
+    parts << out
+  end
+  Digest::SHA256.hexdigest(parts.join("\n---\n"))
+rescue StandardError
+  'unknown'
+end
+
+def fresh_appstore_preflight_receipt?(project_root:, app_id:, version:, platform:, max_age_seconds: 14_400)
+  path = File.join(project_root, 'outputs', 'appstore_preflight_status.json')
+  return [false, "missing #{path}; run ./scripts/SaneMaster.rb appstore_preflight"] unless File.exist?(path)
+
+  receipt = JSON.parse(File.read(path))
+  return [false, "latest appstore_preflight is #{receipt['status'].inspect}, expected \"passed\""] unless receipt['status'].to_s == 'passed'
+
+  receipt_app_id = receipt['appId'].to_s
+  if !receipt_app_id.empty? && !app_id.to_s.empty? && receipt_app_id != app_id.to_s
+    return [false, "appstore_preflight appId mismatch: receipt=#{receipt_app_id}, submit=#{app_id}"]
+  end
+
+  receipt_version = receipt['version'].to_s
+  if !receipt_version.empty? && receipt_version != version.to_s
+    return [false, "appstore_preflight version mismatch: receipt=#{receipt_version}, submit=#{version}"]
+  end
+
+  receipt_platforms = Array(receipt['platforms']).map { |p| p.to_s.downcase }
+  if receipt_platforms.any? && !receipt_platforms.include?(platform.to_s.downcase)
+    return [false, "appstore_preflight platform mismatch: receipt=#{receipt_platforms.join(',')}, submit=#{platform}"]
+  end
+
+  generated_at = Time.parse(receipt['generatedAt'].to_s)
+  age = Time.now - generated_at
+  return [false, "appstore_preflight receipt is stale (#{(age / 60).round} minutes old)"] if age > max_age_seconds
+
+  expected_fingerprint = receipt['worktreeFingerprint'].to_s
+  current_fingerprint = appstore_worktree_fingerprint(project_root)
+  if !expected_fingerprint.empty? && expected_fingerprint != 'unknown' && expected_fingerprint != current_fingerprint
+    return [false, 'appstore_preflight receipt does not match current worktree; rerun preflight after code/metadata changes']
+  end
+
+  [true, path]
+rescue StandardError => e
+  [false, "could not read appstore_preflight receipt: #{e.message}"]
+end
+
 # ─── Main ───
 
 if __FILE__ == $PROGRAM_NAME
@@ -4346,6 +4429,10 @@ if !options[:skip_upload] && !File.exist?(pkg_path)
   exit 1
 end
 
+unless ensure_strict_customer_ui_contract!(project_root)
+  exit 1
+end
+
 # Load config for contact info and screenshots
 config_path = File.join(project_root, '.saneprocess')
 config = if File.exist?(config_path)
@@ -4369,6 +4456,19 @@ end
 artifact_label = options[:skip_upload] ? 'existing ASC build' : File.basename(pkg_path)
 log_info "App Store submission: #{artifact_label} v#{version} (#{platform})"
 log_info "App ID: #{app_id}"
+
+preflight_ok, preflight_detail = fresh_appstore_preflight_receipt?(
+  project_root: project_root,
+  app_id: app_id,
+  version: version,
+  platform: platform
+)
+unless preflight_ok
+  log_error "App Store submission blocked: #{preflight_detail}"
+  log_error 'Run ./scripts/SaneMaster.rb appstore_preflight and fix every blocking issue before submitting.'
+  exit 1
+end
+log_info "Fresh App Store preflight receipt: #{preflight_detail}"
 
 token = generate_jwt
 

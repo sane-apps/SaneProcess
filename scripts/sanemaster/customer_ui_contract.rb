@@ -125,7 +125,8 @@ module SaneMasterModules
     ].freeze
 
     def customer_ui_contract(args = [])
-      report = customer_ui_contract_report(config: current_saneprocess_config)
+      strict_visual = args.include?('--strict-visual')
+      report = customer_ui_contract_report(config: current_saneprocess_config, strict_visual: strict_visual)
       if args.include?('--json')
         puts JSON.pretty_generate(report)
       else
@@ -200,7 +201,7 @@ module SaneMasterModules
       }
     end
 
-    def customer_ui_contract_report(config:)
+    def customer_ui_contract_report(config:, strict_visual: false)
       app_name = metadata_value(config, 'name') || File.basename(Dir.pwd)
       manifest_path = CUSTOMER_UI_MANIFEST_PATHS.find { |path| File.exist?(path) }
       receipt_path = CUSTOMER_UI_RECEIPT_PATHS.find { |path| File.exist?(path) }
@@ -249,7 +250,8 @@ module SaneMasterModules
         manifest_sha: manifest_sha,
         source_fingerprint: source_fingerprint,
         required_actions: required_actions,
-        receipt: receipt
+        receipt: receipt,
+        strict_visual: strict_visual
       ))
 
       {
@@ -262,7 +264,8 @@ module SaneMasterModules
         action_count: required_actions.length,
         receipt_generated_at: receipt['generated_at'],
         issues: issues,
-        warnings: warnings
+        warnings: warnings,
+        strict_visual: strict_visual
       }
     rescue Psych::SyntaxError, JSON::ParserError => e
       {
@@ -271,7 +274,8 @@ module SaneMasterModules
         manifest_path: manifest_path,
         receipt_path: receipt_path,
         issues: ["Customer UI QA contract parse failure: #{e.message}"],
-        warnings: warnings
+        warnings: warnings,
+        strict_visual: strict_visual
       }
     end
 
@@ -284,6 +288,7 @@ module SaneMasterModules
         lines << "   Manifest: #{report[:manifest_path]}"
         lines << "   Receipt: #{report[:receipt_path]}"
         lines << "   Generated: #{report[:receipt_generated_at]}"
+        lines << '   Strict visual: enabled' if report[:strict_visual]
       else
         lines << '❌ FAIL'
         Array(report[:issues]).each { |issue| lines << "   - #{issue}" }
@@ -551,7 +556,7 @@ module SaneMasterModules
       issues
     end
 
-    def customer_ui_receipt_issues(app_name:, manifest_sha:, source_fingerprint:, required_actions:, receipt:)
+    def customer_ui_receipt_issues(app_name:, manifest_sha:, source_fingerprint:, required_actions:, receipt:, strict_visual: false)
       issues = []
       issues << "Receipt app #{receipt['app']} does not match #{app_name}" if receipt['app'].to_s != app_name.to_s
       issues << "Receipt status is #{receipt['status'].inspect}, expected \"passed\"" unless receipt['status'].to_s == 'passed'
@@ -565,7 +570,7 @@ module SaneMasterModules
       required_ids = required_actions.map { |action| action['id'].to_s }.reject(&:empty?)
       missing_ids = required_ids - tested_ids
       issues << "Receipt does not cover release-required action(s): #{missing_ids.join(', ')}" unless missing_ids.empty?
-      issues.concat(customer_ui_action_result_issues(required_actions, receipt))
+      issues.concat(customer_ui_action_result_issues(required_actions, receipt, strict_visual: strict_visual))
       issues.concat(customer_ui_screenshot_reuse_issues(required_actions, receipt))
 
       begin
@@ -578,7 +583,7 @@ module SaneMasterModules
       issues
     end
 
-    def customer_ui_action_result_issues(required_actions, receipt)
+    def customer_ui_action_result_issues(required_actions, receipt, strict_visual: false)
       issues = []
       results = receipt['action_results']
       unless results.is_a?(Hash)
@@ -631,6 +636,9 @@ module SaneMasterModules
         if customer_ui_action_requires_visual?(action, result) &&
            evidence_types.none? { |type| CUSTOMER_UI_SCREENSHOT_EVIDENCE_TYPES.include?(type) }
           issues << "#{id}: visual proof required but no screenshot/visual evidence is attached to the action result"
+        end
+        if strict_visual && evidence_types.none? { |type| CUSTOMER_UI_SCREENSHOT_EVIDENCE_TYPES.include?(type) }
+          issues << "#{id}: App Store strict visual gate requires screenshot/visual evidence for every release-required action"
         end
         issues.concat(customer_ui_full_runtime_completion_issues(id, action, result))
         issues.concat(customer_ui_functional_state_receipt_issues(id, action, result))

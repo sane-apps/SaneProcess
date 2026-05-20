@@ -148,6 +148,72 @@ include TestFramework
 exit(run_tests('App Store Submit Guardrail Tests') do
   subject = AppStoreSubmitGuardrailHarness.new
 
+  test_category('Mandatory preflight receipt') do
+    test('blocks submission when App Store preflight receipt is missing') do
+      Dir.mktmpdir('missing-appstore-preflight-') do |dir|
+        ok, detail = fresh_appstore_preflight_receipt?(
+          project_root: dir,
+          app_id: '123',
+          version: '1.0',
+          platform: 'ios'
+        )
+
+        assert(!ok, 'expected missing preflight receipt to block submission')
+        assert_includes(detail, 'appstore_preflight_status.json')
+      end
+      true
+    end
+
+    test('accepts a fresh passing receipt for the current worktree') do
+      Dir.mktmpdir('fresh-appstore-preflight-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: Example\n")
+        fingerprint = appstore_worktree_fingerprint(dir)
+        File.write(
+          File.join(dir, 'outputs', 'appstore_preflight_status.json'),
+          JSON.pretty_generate(
+            generatedAt: Time.now.iso8601,
+            status: 'passed',
+            appId: '123',
+            version: '1.0',
+            platforms: ['ios'],
+            worktreeFingerprint: fingerprint,
+            issueCount: 0,
+            warningCount: 0,
+            issues: [],
+            warnings: []
+          )
+        )
+
+        ok, detail = fresh_appstore_preflight_receipt?(
+          project_root: dir,
+          app_id: '123',
+          version: '1.0',
+          platform: 'ios'
+        )
+
+        assert(ok, "expected fresh preflight receipt to pass: #{detail}")
+      end
+      true
+    end
+
+    test('blocks App Store upload when strict customer UI contract fails') do
+      Dir.mktmpdir('appstore-strict-ui-contract-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'scripts'))
+        File.write(
+          File.join(dir, 'scripts', 'SaneMaster.rb'),
+          <<~RUBY
+            #!/usr/bin/env ruby
+            abort "strict visual contract failed"
+          RUBY
+        )
+
+        assert(!ensure_strict_customer_ui_contract!(dir), 'expected failed strict UI contract to block upload')
+      end
+      true
+    end
+  end
+
   test_category('Metadata URL health') do
     test('follows redirects to a healthy final URL') do
       subject.stub_url_status('https://example.com/support', code: 301, location: '/help')
