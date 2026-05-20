@@ -35,6 +35,7 @@ exit(run_tests('Mini Memory Guard Tests') do
 
     test('runs the new cleanup passes from main') do
       assert_includes(guard_source, 'cleanup_routed_workspaces')
+      assert_includes(guard_source, 'cleanup_orphaned_compiler_services')
       assert_includes(guard_source, 'cleanup_sanevideo_outputs')
       assert_includes(guard_source, 'cleanup_codex_sync_backups')
       assert_includes(guard_source, 'cleanup_stale_automation_git_locks')
@@ -42,6 +43,26 @@ exit(run_tests('Mini Memory Guard Tests') do
       assert_includes(guard_source, 'cleanup_tmp_workspaces')
       assert_includes(guard_source, 'cleanup_trash')
       assert_includes(guard_source, 'cleanup_coresimulator_devices')
+      true
+    end
+
+    test('reaps orphaned Apple compiler services only when idle') do
+      assert_includes(guard_source, 'cleanup_orphaned_compiler_services()')
+      assert_includes(guard_source, 'Compiler service cleanup skipped because build/training is active.')
+      assert_includes(guard_source, 'ANECompilerService')
+      assert_includes(guard_source, 'MTLCompilerService')
+      assert_includes(guard_source, '[ "$ppid" = "1" ] || continue')
+      assert_includes(guard_source, '.compiler_service_reboot_required')
+      assert_includes(guard_source, 'root-owned compiler service cleanup requires restart')
+      assert_includes(guard_source, 'COMPILER_SERVICE_REBOOT_RSS_KB')
+      assert_includes(guard_source, 'Leaving normal-sized $service_name')
+      true
+    end
+
+    test('supports focused compiler-service cleanup without full hygiene pass') do
+      assert_includes(guard_source, '--compiler-services-only')
+      assert_includes(guard_source, 'COMPILER_SERVICES_ONLY=1')
+      assert_includes(guard_source, 'Health after compiler-service cleanup')
       true
     end
 

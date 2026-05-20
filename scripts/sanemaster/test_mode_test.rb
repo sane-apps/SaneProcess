@@ -61,25 +61,26 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
   end
 
   test_category('Launch mode preservation') do
-    test('direct launch is required when launch state depends on env vars or args') do
+    test('no-keychain launch state is passed through LaunchServices open') do
       result = subject.send(
-        :should_direct_launch?,
-        env_vars: { 'SANEAPPS_DISABLE_KEYCHAIN' => '1' },
-        launch_args: ['--sane-no-keychain']
+        :open_launch_env_pairs,
+        allow_keychain: false,
+        force_free_mode: false
       )
 
-      assert(result, 'expected no-keychain launches to bypass LaunchServices open so args/env survive')
+      assert_includes(result, '--env')
+      assert_includes(result, 'SANEAPPS_DISABLE_KEYCHAIN=1')
       true
     end
 
-    test('plain keychain-enabled launches can still use LaunchServices open') do
+    test('plain keychain-enabled launch has no extra open env') do
       result = subject.send(
-        :should_direct_launch?,
-        env_vars: {},
-        launch_args: []
+        :open_launch_env_pairs,
+        allow_keychain: true,
+        force_free_mode: false
       )
 
-      assert(!result, 'expected default launches without special env/args to keep using open')
+      assert_eq(result, [])
       true
     end
   end

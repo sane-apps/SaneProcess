@@ -93,16 +93,13 @@ module SaneMasterModules
         pid = spawn(env_vars, executable_path, *launch_args)
         Process.wait(pid)
       else
-        if should_direct_launch?(env_vars: env_vars, launch_args: launch_args)
-          pid = spawn(env_vars, executable_path, *launch_args, out: File::NULL, err: File::NULL, pgroup: true)
-          Process.detach(pid)
-        else
-          open_cmd = ['open', launch_path]
-          opened = system(*open_cmd)
-          unless opened
-            puts '❌ Failed to launch app via open. Verify staged app bundle/executable exists.'
-            return false
-          end
+        open_cmd = ['open', '--fresh', launch_path]
+        open_cmd += open_launch_env_pairs(allow_keychain: allow_keychain, force_free_mode: force_free_mode)
+        open_cmd += ['--args', *launch_args] unless launch_args.empty?
+        opened = system(*open_cmd)
+        unless opened
+          puts '❌ Failed to launch app via open. Verify staged app bundle/executable exists.'
+          return false
         end
         unless launched_process_matches?(launch_path)
           puts "❌ Launch resolved to a different #{project_name}.app copy."
@@ -1002,10 +999,6 @@ module SaneMasterModules
       return [] if allow_keychain
 
       ['--sane-no-keychain']
-    end
-
-    def should_direct_launch?(env_vars:, launch_args:)
-      !env_vars.empty? || !launch_args.empty?
     end
 
     def unsigned_fallback_active?

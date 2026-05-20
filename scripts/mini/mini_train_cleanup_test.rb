@@ -27,4 +27,19 @@ exit(run_tests('Mini Train Cleanup Tests') do
       true
     end
   end
+
+  test_category('Compiler service cleanup') do
+    test('reaps orphaned Apple compiler services after training cleanup') do
+      assert_includes(train_source, 'reap_orphaned_compiler_services()')
+      assert_includes(train_source, 'ANECompilerService')
+      assert_includes(train_source, 'MTLCompilerService')
+      assert_includes(train_source, 'ppid=$(ps -o ppid= -p "$pid"')
+      assert_includes(train_source, '[ "$ppid" = "1" ] || continue')
+      assert_includes(train_source, 'reap_orphaned_compiler_services || true')
+      assert_includes(train_source, '.compiler_service_reboot_required')
+      assert_includes(train_source, 'COMPILER_SERVICE_REBOOT_RSS_KB')
+      assert_includes(train_source, 'Leaving normal-sized $service_name')
+      true
+    end
+  end
 end)

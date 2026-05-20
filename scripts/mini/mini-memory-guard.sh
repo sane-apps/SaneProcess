@@ -13,13 +13,15 @@ set -euo pipefail
 
 DRY_RUN=0
 FORCE_REBOOT=0
+COMPILER_SERVICES_ONLY=0
 
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --force-reboot) FORCE_REBOOT=1 ;;
+    --compiler-services-only) COMPILER_SERVICES_ONLY=1 ;;
     *)
-      echo "Usage: $0 [--dry-run] [--force-reboot]" >&2
+      echo "Usage: $0 [--dry-run] [--force-reboot] [--compiler-services-only]" >&2
       exit 2
       ;;
   esac
@@ -226,6 +228,80 @@ cleanup_training_artifacts() {
   done
 }
 
+cleanup_orphaned_compiler_services() {
+  local service_name pids pid ppid rss_kb killed_count failed_count found_count large_count reboot_marker threshold_kb
+
+  if is_training_running || is_nightly_running; then
+    log "Compiler service cleanup skipped because build/training is active."
+    return 0
+  fi
+
+  reboot_marker="$OUTPUT_DIR/.compiler_service_reboot_required"
+  threshold_kb="${COMPILER_SERVICE_REBOOT_RSS_KB:-262144}"
+  killed_count=0
+  failed_count=0
+  found_count=0
+  large_count=0
+  for service_name in ANECompilerService MTLCompilerService; do
+    pids=$(pgrep -x "$service_name" 2>/dev/null || true)
+    for pid in $pids; do
+      ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+      [ "$ppid" = "1" ] || continue
+
+      found_count=$((found_count + 1))
+      rss_kb=$(ps -o rss= -p "$pid" 2>/dev/null | awk '{print $1}')
+      case "$rss_kb" in
+        ''|*[!0-9]*)
+          rss_kb=0
+          ;;
+      esac
+      if [ "$rss_kb" -lt "$threshold_kb" ]; then
+        log "Leaving normal-sized $service_name pid=$pid rss_kb=$rss_kb below threshold_kb=$threshold_kb"
+        continue
+      fi
+      large_count=$((large_count + 1))
+      if [ "$DRY_RUN" -eq 1 ]; then
+        log "DRY RUN: would reap orphaned $service_name pid=$pid rss_kb=${rss_kb:-unknown}"
+      else
+        log "Reaping orphaned $service_name pid=$pid rss_kb=${rss_kb:-unknown}"
+        if kill -TERM "$pid" 2>/dev/null; then
+          killed_count=$((killed_count + 1))
+        else
+          log "Unable to reap root-owned $service_name pid=$pid; marking Mini restart required."
+          failed_count=$((failed_count + 1))
+        fi
+      fi
+    done
+  done
+
+  if [ "$found_count" -eq 0 ] || [ "$large_count" -eq 0 ]; then
+    rm -f "$reboot_marker" 2>/dev/null || true
+    return 0
+  fi
+  if [ "$failed_count" -gt 0 ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') compiler services require Mini restart" > "$reboot_marker" 2>/dev/null || true
+  fi
+
+  [ "$killed_count" -gt 0 ] || return 0
+  [ "$DRY_RUN" -eq 1 ] && return 0
+  sleep 1
+
+  for service_name in ANECompilerService MTLCompilerService; do
+    pids=$(pgrep -x "$service_name" 2>/dev/null || true)
+    for pid in $pids; do
+      ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+      [ "$ppid" = "1" ] || continue
+      if ! kill -KILL "$pid" 2>/dev/null; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') compiler services require Mini restart" > "$reboot_marker" 2>/dev/null || true
+      fi
+    done
+  done
+
+  if command -v purge > /dev/null 2>&1; then
+    purge 2>/dev/null || true
+  fi
+}
+
 cleanup_routed_workspaces() {
   prune_old_dirs_by_mtime "$HOME/.sanemaster/routed-workspaces" "*" "${ROUTED_WORKSPACE_KEEP_DAYS:-2}" "routed workspace" "${ROUTED_WORKSPACE_MIN_KEEP:-1}"
 }
@@ -414,6 +490,10 @@ should_reboot() {
     if [ -n "$reasons" ]; then reasons="$reasons, "; fi
     reasons="${reasons}high load (${load1})"
   fi
+  if [ -f "$OUTPUT_DIR/.compiler_service_reboot_required" ]; then
+    if [ -n "$reasons" ]; then reasons="$reasons, "; fi
+    reasons="${reasons}root-owned compiler service cleanup requires restart"
+  fi
 
   if [ "$FORCE_REBOOT" -eq 1 ]; then
     reasons="forced by operator"
@@ -474,6 +554,17 @@ main() {
   log "mini-memory-guard start (dry_run=$DRY_RUN force_reboot=$FORCE_REBOOT)"
   log "Health before: load1=$load1 swap_used_mb=$swap_mb free_pct=${free_pct:-unknown} uptime_days=$uptime_days disk_free_gb=${disk_free_gb:-unknown}"
 
+  if [ "$COMPILER_SERVICES_ONLY" -eq 1 ]; then
+    cleanup_orphaned_compiler_services
+    load1="$(get_load1)"
+    swap_mb="$(get_swap_used_mb)"
+    free_pct="$(get_free_pct)"
+    disk_free_gb="$(get_data_disk_free_gb)"
+    log "Health after compiler-service cleanup: load1=$load1 swap_used_mb=$swap_mb free_pct=${free_pct:-unknown} disk_free_gb=${disk_free_gb:-unknown}"
+    log "mini-memory-guard complete"
+    return 0
+  fi
+
   rotate_if_large "$OUTPUT_DIR/training.stdout.log" 31457280 8388608
   rotate_if_large "$OUTPUT_DIR/training.stderr.log" 10485760 2097152
   rotate_if_large "$OUTPUT_DIR/training-challengers.stdout.log" 20971520 4194304
@@ -488,6 +579,7 @@ main() {
   rotate_if_large "$OUTPUT_DIR/alerts/training/history.log" 5242880 524288
 
   cleanup_training_artifacts
+  cleanup_orphaned_compiler_services
   cleanup_routed_workspaces
   cleanup_sanevideo_outputs
   cleanup_codex_sync_backups

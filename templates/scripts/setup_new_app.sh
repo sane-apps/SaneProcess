@@ -287,10 +287,37 @@ log_step "Creating SaneMaster wrapper..."
 cat > "$TARGET_DIR/scripts/SaneMaster.rb" << 'EOF'
 #!/bin/bash
 set -e
-ROOT_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+find_saneprocess_infra() {
+  local dir="${PROJECT_ROOT}"
+  while [ "${dir}" != "/" ]; do
+    if [ -f "${dir}/infra/SaneProcess/scripts/SaneMaster.rb" ]; then
+      printf '%s\n' "${dir}/infra/SaneProcess/scripts/SaneMaster.rb"
+      return 0
+    fi
+    dir="$(dirname "${dir}")"
+  done
+
+  if [ -f "${HOME}/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb" ]; then
+    printf '%s\n' "${HOME}/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb"
+    return 0
+  fi
+
+  return 1
+}
+
+INFRA="$(find_saneprocess_infra || true)"
+
 cd "${PROJECT_ROOT}"
-exec "${ROOT_DIR}/infra/SaneProcess/scripts/SaneMaster.rb" "$@"
+if [ -f "${INFRA}" ]; then
+  exec "${INFRA}" "$@"
+fi
+
+echo "SaneMaster: No SaneProcess infra found." >&2
+echo "  Looked from ${PROJECT_ROOT} upward and at ~/SaneApps/infra/SaneProcess." >&2
+exit 1
 EOF
 chmod +x "$TARGET_DIR/scripts/SaneMaster.rb"
 

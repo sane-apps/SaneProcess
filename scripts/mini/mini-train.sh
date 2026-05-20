@@ -495,6 +495,7 @@ cleanup() {
   fi
 
   exit_training_mode_if_needed
+  reap_orphaned_compiler_services || true
   prune_old_sweeps "" || true
   rm -rf "$LOCKFILE"
   rm -f "${RESULTS_FILE:-}"
@@ -880,6 +881,67 @@ EOF
   fi
 
   return 0
+}
+
+reap_orphaned_compiler_services() {
+  local service_name pids pid ppid rss_kb killed_count failed_count reboot_marker threshold_kb
+
+  if [ -n "$(list_lingering_training_processes)" ]; then
+    echo "Skipping compiler service cleanup because MLX training/eval is still active." >&2
+    return 0
+  fi
+
+  reboot_marker="$OUTPUT_DIR/.compiler_service_reboot_required"
+  threshold_kb="${COMPILER_SERVICE_REBOOT_RSS_KB:-262144}"
+  killed_count=0
+  failed_count=0
+  for service_name in ANECompilerService MTLCompilerService; do
+    pids=$(pgrep -x "$service_name" 2>/dev/null || true)
+    for pid in $pids; do
+      ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+      [ "$ppid" = "1" ] || continue
+
+      rss_kb=$(ps -o rss= -p "$pid" 2>/dev/null | awk '{print $1}')
+      case "$rss_kb" in
+        ''|*[!0-9]*)
+          rss_kb=0
+          ;;
+      esac
+      if [ "$rss_kb" -lt "$threshold_kb" ]; then
+        echo "Leaving normal-sized $service_name pid=$pid rss_kb=$rss_kb below threshold_kb=$threshold_kb" >&2
+        continue
+      fi
+      echo "Reaping orphaned $service_name pid=$pid rss_kb=${rss_kb:-unknown}" >&2
+      if kill -TERM "$pid" 2>/dev/null; then
+        killed_count=$((killed_count + 1))
+      else
+        echo "Unable to reap root-owned $service_name pid=$pid; marking Mini restart required." >&2
+        failed_count=$((failed_count + 1))
+      fi
+    done
+  done
+
+  if [ "$failed_count" -gt 0 ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') compiler services require Mini restart" > "$reboot_marker" 2>/dev/null || true
+  fi
+
+  [ "$killed_count" -gt 0 ] || return 0
+  sleep 1
+
+  for service_name in ANECompilerService MTLCompilerService; do
+    pids=$(pgrep -x "$service_name" 2>/dev/null || true)
+    for pid in $pids; do
+      ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+      [ "$ppid" = "1" ] || continue
+      if ! kill -KILL "$pid" 2>/dev/null; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') compiler services require Mini restart" > "$reboot_marker" 2>/dev/null || true
+      fi
+    done
+  done
+
+  if command -v purge > /dev/null 2>&1; then
+    purge 2>/dev/null || true
+  fi
 }
 
 load_training_alert_state() {

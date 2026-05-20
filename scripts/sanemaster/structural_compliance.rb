@@ -526,13 +526,32 @@ module SaneMasterModules
         end
 
         target = File.symlink?(actual_path) ? File.readlink(actual_path) : File.read(actual_path)
-        if target.to_s.include?('infra/SaneProcess/scripts/SaneMaster.rb')
+        target_text = target.to_s
+        if target_text.include?('infra/SaneProcess/scripts/SaneMaster.rb')
           @results[:config] << Result.new(pass: true, label: 'SaneMaster unified')
         else
           @results[:config] << Result.new(
             pass: false, label: 'SaneMaster unified',
             detail: 'not pointing to infra/SaneProcess',
             fix: 'Replace with wrapper to infra/SaneProcess/scripts/SaneMaster.rb'
+          )
+        end
+
+        worktree_safe =
+          target_text.include?('find_saneprocess_infra') ||
+          target_text.include?("home_candidate = File.expand_path('~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb')")
+        brittle_relative_root =
+          target_text.include?('PROJECT_ROOT}/../..') ||
+          target_text.include?('dirname "$0")/../../..') ||
+          target_text.include?("File.expand_path('../../..', __dir__)")
+
+        if worktree_safe && !brittle_relative_root
+          @results[:config] << Result.new(pass: true, label: 'SaneMaster worktree-safe')
+        else
+          @results[:config] << Result.new(
+            pass: false, label: 'SaneMaster worktree-safe',
+            detail: 'wrapper can miss infra from SaneApps/worktrees and fall back to standalone mode',
+            fix: 'Search upward from the project root and fall back to ~/SaneApps/infra/SaneProcess before standalone mode'
           )
         end
       end
