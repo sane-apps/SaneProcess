@@ -326,6 +326,38 @@ exit(run_tests('Validation report tests') do
       assert(subject.issues.any? { |issue| issue.include?('Website download link') })
       true
     end
+
+    test('flags stale Lemon Squeezy files even when latest hosted file is present') do
+      products = [product_definition('SaneSales', slug: 'sanesales', domain: 'sanesales.com')]
+      subject = ValidationReportHarness.new(
+        products: products,
+        appcast_versions: { 'sanesales.com' => '1.3.8' },
+        website_versions: { 'sanesales.com' => '1.3.8' },
+        webhook_versions: { 'SaneSales' => '1.3.8' },
+        cask_versions: { 'sanesales' => '1.3.8' },
+        lemonsqueezy_snapshot: {
+          'SaneSales' => {
+            'filename' => 'SaneSales-1.3.8.zip',
+            'version' => '1.3.8',
+            'published_file_count' => 2,
+            'published_filenames' => ['SaneSales-1.3.8.zip', 'SaneSales-1.3.7.zip'],
+            'product_id' => '822714',
+            'product_slug' => 'sanesales',
+            'variant_id' => '1296644'
+          }
+        }
+      )
+
+      subject.send(:q11_cross_channel_version_consistency)
+      subject.send(:calculate_final_verdict)
+
+      assert_eq(subject.metrics[:cross_channel_consistency][:canonical_issues], 0)
+      assert_eq(subject.metrics[:cross_channel_consistency][:hosted_file_actions], 1)
+      assert_eq(subject.verdict[:status], 'BROKEN RELEASE PIPELINE')
+      assert(subject.issues.any? { |issue| issue.include?('stale published file') })
+      assert(subject.issues.any? { |issue| issue.include?('SaneSales-1.3.7.zip') })
+      true
+    end
   end
 
   test_category('Lemon Squeezy hosted snapshot enrichment') do
@@ -365,6 +397,8 @@ exit(run_tests('Validation report tests') do
 
       assert_eq(snapshot['SaneBar']['filename'], 'SaneBar-2.1.36.zip')
       assert_eq(snapshot['SaneBar']['version'], '2.1.36')
+      assert_eq(snapshot['SaneBar']['published_file_count'], 1)
+      assert_eq(snapshot['SaneBar']['published_filenames'], ['SaneBar-2.1.36.zip'])
       assert_eq(snapshot['SaneBar']['product_id'], '123')
       assert_eq(snapshot['SaneBar']['product_slug'], 'sanebar')
       assert_eq(snapshot['SaneBar']['variant_id'], '456')

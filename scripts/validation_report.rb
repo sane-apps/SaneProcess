@@ -1873,7 +1873,16 @@ class ValidationReport
       lemonsqueezy_ver = nil
       if lemonsqueezy_snapshot.is_a?(Hash)
         hosted_file = lemonsqueezy_snapshot[app_name]
-        lemonsqueezy_ver = hosted_file['version'] if hosted_file.is_a?(Hash)
+        if hosted_file.is_a?(Hash)
+          published_versions = Array(hosted_file['published_filenames'])
+                               .map { |name| extract_release_version_from_filename(name) }
+                               .compact
+          lemonsqueezy_ver = if appcast_ver && published_versions.include?(appcast_ver)
+                               appcast_ver
+                             else
+                               hosted_file['version']
+                             end
+        end
       end
       versions[:lemonsqueezy] = lemonsqueezy_ver || '—'
 
@@ -1897,6 +1906,12 @@ class ValidationReport
               cask: 'Homebrew cask'
             }[channel]
             issues_found << "[#{app_name}] VERSION DRIFT: #{label} has v#{chan_ver} but appcast is v#{appcast_ver}"
+          end
+        elsif channel == :lemonsqueezy && lemonsqueezy_snapshot.is_a?(Hash)
+          hosted_file = lemonsqueezy_snapshot[app_name]
+          stale_filenames = lemonsqueezy_stale_published_filenames(hosted_file, appcast_ver)
+          unless stale_filenames.empty?
+            hosted_file_actions << build_lemonsqueezy_hosted_file_cleanup_action(app_name, appcast_ver, hosted_file, stale_filenames)
           end
         end
       end
@@ -2165,9 +2180,15 @@ class ValidationReport
       version = extract_release_version_from_filename(filename)
       next if filename.empty? && version.nil?
 
+      published_filenames = files.select { |record| record.dig('attributes', 'status').to_s == 'published' }
+                                 .map { |record| record.dig('attributes', 'name').to_s.strip }
+                                 .reject(&:empty?)
+
       snapshot[product[:name]] = {
         'filename' => filename,
         'version' => version,
+        'published_file_count' => published_filenames.size,
+        'published_filenames' => published_filenames,
         'product_id' => product_record['id'].to_s,
         'product_slug' => product_record.dig('attributes', 'slug').to_s,
         'variant_id' => variant_record['id'].to_s
@@ -2192,6 +2213,36 @@ class ValidationReport
     filename_text = filename.empty? ? '' : " file #{filename}"
 
     "[#{app_name}] Lemon Squeezy hosted#{filename_text} has v#{current_version} but appcast is v#{expected_version}; replace the published hosted file#{refs_text}"
+  end
+
+  def build_lemonsqueezy_hosted_file_cleanup_action(app_name, expected_version, hosted_file, stale_filenames)
+    hosted_file ||= {}
+    filename = hosted_file['filename'].to_s.strip
+    product_id = hosted_file['product_id'].to_s.strip
+    product_slug = hosted_file['product_slug'].to_s.strip
+    variant_id = hosted_file['variant_id'].to_s.strip
+
+    refs = []
+    refs << "product_id=#{product_id}" unless product_id.empty?
+    refs << "product_slug=#{product_slug}" unless product_slug.empty?
+    refs << "variant_id=#{variant_id}" unless variant_id.empty?
+    refs << "stale_files=#{stale_filenames.join(', ')}"
+    refs_text = refs.empty? ? '' : " (#{refs.join(', ')})"
+    filename_text = filename.empty? ? '' : " file #{filename}"
+
+    "[#{app_name}] Lemon Squeezy hosted#{filename_text} matches v#{expected_version}, but stale published file(s) remain; delete or unpublish old hosted files#{refs_text}"
+  end
+
+  def lemonsqueezy_stale_published_filenames(hosted_file, expected_version)
+    return [] unless hosted_file.is_a?(Hash)
+
+    Array(hosted_file['published_filenames']).filter_map do |filename|
+      name = filename.to_s.strip
+      next if name.empty?
+
+      version = extract_release_version_from_filename(name)
+      name if version != expected_version
+    end
   end
 
   def fetch_lemonsqueezy_collection(path, api_key)
