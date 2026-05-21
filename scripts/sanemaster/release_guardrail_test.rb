@@ -2073,6 +2073,17 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('release preflight treats older public channels as prepublish drift only while appcast is also older') do
+      assert(subject.send(:prepublish_channel_version_drift?, channel_version: '2.1.58', project_version: '2.1.59'))
+      assert(!subject.send(:prepublish_channel_version_drift?, channel_version: '2.1.59', project_version: '2.1.59'))
+      assert(!subject.send(:prepublish_channel_version_drift?, channel_version: '2.1.60', project_version: '2.1.59'))
+
+      release_source = File.read(File.join(__dir__, 'release.rb'))
+      assert_includes(release_source, 'Homebrew cask version #{cask_version} is older than project MARKETING_VERSION #{project_version} (expected before publish)')
+      assert_includes(release_source, 'channel_version: local_latest_appcast_version')
+      true
+    end
+
     test('release preflight treats auto-reconcile source stashes as release blockers') do
       files = [
         'SaneClick/SaneClickApp.swift',

@@ -834,6 +834,17 @@ module SaneMasterModules
       end
     end
 
+    def local_latest_appcast_version
+      appcast_path = local_appcast_paths.first
+      return '' unless appcast_path
+
+      parse_latest_appcast_item(safe_read(appcast_path))[:version].to_s
+    end
+
+    def prepublish_channel_version_drift?(channel_version:, project_version:)
+      compare_semver(channel_version, project_version) == -1
+    end
+
     def archive_bundle_versions(zip_url:, app_name:)
       return nil if zip_url.to_s.strip.empty?
 
@@ -3378,6 +3389,15 @@ module SaneMasterModules
           puts "✅ reachable (v#{cask_version}, project version unknown)"
         elsif cask_version == project_version
           puts "✅ (v#{cask_version})"
+        elsif prepublish_channel_version_drift?(
+          channel_version: cask_version,
+          project_version: project_version
+        ) && prepublish_channel_version_drift?(
+          channel_version: local_latest_appcast_version,
+          project_version: project_version
+        )
+          puts "⚠️  cask has v#{cask_version}, project is v#{project_version} (expected before publish)"
+          warnings << "Homebrew cask version #{cask_version} is older than project MARKETING_VERSION #{project_version} (expected before publish)"
         else
           puts "❌ cask has v#{cask_version}, project is v#{project_version}"
           issues << "Homebrew cask version mismatch: cask=#{cask_version} project=#{project_version}"
