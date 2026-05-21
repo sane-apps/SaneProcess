@@ -1500,6 +1500,32 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('release status snapshots include source fingerprint for freshness checks') do
+      Dir.mktmpdir('release-status-source-fingerprint-') do |dir|
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'project.yml'), "name: SaneExample\n")
+        system('git', '-C', dir, 'init', '-q')
+        system('git', '-C', dir, 'add', '.')
+        system('git', '-C', dir, 'commit', '-q', '-m', 'initial')
+
+        status_path = File.join(dir, 'outputs', 'release_preflight_status.json')
+        Dir.chdir(dir) do
+          subject.write_release_status_snapshot(
+            path: status_path,
+            status: 'passed',
+            issues: [],
+            warnings: []
+          )
+        end
+
+        payload = JSON.parse(File.read(status_path))
+        fingerprint = payload['sourceFingerprint'].to_s
+        assert_eq(fingerprint.length, 64)
+        assert_match(fingerprint, /\A[0-9a-f]{64}\z/)
+      end
+      true
+    end
+
     test('blocks unresolved weak-launch package blockers') do
       Dir.mktmpdir('launch-readiness-package-blockers-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'outputs'))

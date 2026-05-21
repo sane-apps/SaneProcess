@@ -11,6 +11,7 @@ require 'json'
 require 'open3'
 require 'openssl'
 require 'base64'
+require 'digest'
 
 module SaneMasterModules
   # Unified release entrypoint (delegates to SaneProcess release.sh)
@@ -2011,6 +2012,7 @@ module SaneMasterModules
       payload = {
         generatedAt: Time.now.iso8601,
         projectName: File.basename(Dir.pwd),
+        sourceFingerprint: release_status_source_fingerprint,
         status: status,
         issueCount: issues.count,
         warningCount: warnings.count,
@@ -2020,6 +2022,72 @@ module SaneMasterModules
       File.write(path, JSON.pretty_generate(payload))
     rescue StandardError
       nil
+    end
+
+    def release_status_source_fingerprint(project_path = Dir.pwd)
+      files = release_status_source_files(project_path)
+      return nil if files.empty?
+
+      digest = Digest::SHA256.new
+      files.each do |relative_path|
+        absolute_path = File.join(project_path, relative_path)
+        next unless File.file?(absolute_path)
+
+        digest.update(relative_path)
+        digest.update("\0")
+        digest.update(Digest::SHA256.file(absolute_path).hexdigest)
+        digest.update("\0")
+      end
+      digest.hexdigest
+    rescue StandardError
+      nil
+    end
+
+    def release_status_source_files(project_path)
+      tracked, tracked_status = Open3.capture2e('git', '-C', project_path, 'ls-files', '-z')
+      others, others_status = Open3.capture2e('git', '-C', project_path, 'ls-files', '--others', '--exclude-standard', '-z')
+      files = []
+      files.concat(tracked.split("\0")) if tracked_status.success?
+      files.concat(others.split("\0")) if others_status.success?
+      files.select { |path| release_status_source_file?(project_path, path) }.uniq.sort
+    rescue StandardError
+      []
+    end
+
+    def release_status_source_file?(project_path, relative_path)
+      return false if relative_path.to_s.empty?
+      return false if %w[
+        AGENTS.md ARCHITECTURE.md CLAUDE.md DEVELOPMENT.md README.md SESSION_HANDOFF.md
+      ].include?(relative_path)
+      return false if relative_path.start_with?(
+        '.build/',
+        '.claude/',
+        '.codex/',
+        '.git/',
+        '.sanemaster/',
+        '.serena/',
+        'DerivedData/',
+        'build/',
+        'docs/',
+        'fastlane/test_output/',
+        'node_modules/',
+        'outputs/',
+        'releases/',
+        'vendor/bundle/',
+        'website/'
+      )
+
+      app_folder = File.basename(project_path)
+      return true if relative_path == '.saneprocess'
+      return true if %w[Package.resolved Package.swift project.yml].include?(relative_path)
+      return true if relative_path.end_with?('.xcodeproj/project.pbxproj')
+      return true if relative_path.start_with?("#{app_folder}/")
+      return true if relative_path.start_with?('Config/', 'Scripts/', 'Shared/', 'Sources/', 'Tests/', 'scripts/')
+
+      %w[
+        .c .cc .cpp .entitlements .h .json .metal .m .mm .plist .rb .sh .storyboard
+        .swift .xcconfig .xcprivacy .xcstrings .xib .yaml .yml
+      ].include?(File.extname(relative_path))
     end
 
     def launch_readiness(args)

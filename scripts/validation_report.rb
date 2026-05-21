@@ -83,7 +83,7 @@ class ValidationReport
   ].freeze
   PROJECT_QA_SOURCE_EXTENSIONS = %w[
     .c .cc .cpp .entitlements .h .json .metal .m .mm .plist .rb .sh .storyboard
-    .swift .xcconfig .xcstrings .xib .yaml .yml
+    .swift .xcconfig .xcprivacy .xcstrings .xib .yaml .yml
   ].freeze
   PROJECT_QA_SOURCE_EXCLUDED_PREFIXES = %w[
     .build/ .claude/ .codex/ .git/ .sanemaster/ build/ DerivedData/ docs/
