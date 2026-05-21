@@ -2241,6 +2241,18 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('release.sh repairs stale editable ASC lanes before version-state preflight') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+
+      repair_index = release_script.index('--repair-version-state')
+      preflight_index = release_script.index('--preflight-version-state')
+
+      assert(!repair_index.nil?, 'expected release.sh to request ASC lane repair before preflight')
+      assert(!preflight_index.nil?, 'expected release.sh to run ASC version-state preflight')
+      assert(repair_index < preflight_index, 'expected ASC repair flag before preflight flag')
+      true
+    end
+
     test('release.sh commits website metadata pages alongside appcast updates') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
 

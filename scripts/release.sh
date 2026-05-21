@@ -3969,6 +3969,7 @@ check_appstore_connect_version_state_gate() {
             macos|ios)
                 checked=$((checked + 1))
                 if ! ruby "${appstore_script}" \
+                    --repair-version-state \
                     --preflight-version-state \
                     --app-id "${APPSTORE_APP_ID}" \
                     --version "${VERSION}" \
