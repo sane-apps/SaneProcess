@@ -143,6 +143,32 @@ exit(run_tests('SaneMaster Release Routing Tests') do
   end
 
   test_category('Workspace sync to mini') do
+    test('routed workspace cleanup retries and moves aside stale scratch roots') do
+      with_temp_repo do |repo|
+        Open3.capture2e('git', '-C', repo, 'init')
+        Open3.capture2e('git', '-C', repo, 'remote', 'add', 'origin', 'git@example.invalid:sane-apps/SaneBar.git')
+
+        subject.system_calls.clear
+        subject.set_branch(repo, 'main')
+        subject.set_head(repo, 'abc123')
+        subject.set_remote_sync(repo, 'matches')
+
+        subject.send(:prepare_release_workspace_on_mini!, repo, '/Users/stephansmac/SaneApps/apps/SaneBar')
+
+        ssh_call = subject.system_calls.find do |call|
+          call.first == 'ssh' &&
+            call.include?('mini') &&
+            call.any? { |entry| entry.is_a?(String) && entry.include?('git clone --no-checkout') }
+        end
+        assert(ssh_call, 'expected an ssh call that prepares the clean routed workspace')
+        remote_cmd = ssh_call.reverse.find { |entry| entry.is_a?(String) && entry.include?('git clone --no-checkout') }
+        assert_includes(remote_cmd, 'for attempt in range(3):')
+        assert_includes(remote_cmd, 'os.replace(scratch_root, stale_root)')
+        assert_includes(remote_cmd, '[ ! -e "$scratch_root" ]')
+        true
+      end
+    end
+
     test('route context carries local auto-reconcile stash blockers into the Mini preflight') do
       with_temp_repo do |repo|
         Open3.capture2e('git', '-C', repo, 'init')

@@ -703,10 +703,26 @@ class SaneMaster
       python3 - <<'PY'
 import os
 import shutil
+import time
 
 scratch_root = #{scratch_root.dump}
-if os.path.exists(scratch_root):
-    shutil.rmtree(scratch_root, ignore_errors=False)
+if not os.path.exists(scratch_root):
+    raise SystemExit(0)
+
+for attempt in range(3):
+    try:
+        shutil.rmtree(scratch_root, ignore_errors=False)
+        raise SystemExit(0)
+    except FileNotFoundError:
+        raise SystemExit(0)
+    except OSError:
+        if attempt == 2:
+            break
+        time.sleep(0.5)
+
+stale_root = f"{scratch_root}.stale.{os.getpid()}.{int(time.time())}"
+os.replace(scratch_root, stale_root)
+shutil.rmtree(stale_root, ignore_errors=True)
 PY
       [ ! -e "$scratch_root" ]
       mkdir -p #{Shellwords.escape(File.dirname(scratch_repo))}
