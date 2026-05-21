@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'shellwords'
+require 'open3'
 
 module SaneMasterModules
   # Meta-audit of SaneMaster tooling itself
@@ -321,12 +322,14 @@ module SaneMasterModules
       test_files.each do |file|
         content = File.read(file)
         lines = content.lines
+        scannable_lines = test_quality_scannable_lines(lines)
         relative_path = file.sub(%r{^#{Regexp.escape(project_tests_dir)}/}, '')
 
         # Check tautology patterns with line numbers
         tautology_patterns.each do |pat|
-          lines.each_with_index do |line, idx|
-            next unless line.match?(pat[:pattern])
+          scannable_lines.each_with_index do |line, idx|
+            next unless line
+            next unless test_quality_pattern_match?(line, pat[:pattern])
 
             issues[:tautologies] << {
               file: relative_path,
@@ -339,8 +342,9 @@ module SaneMasterModules
 
         # Check hardcoded patterns with line numbers
         hardcoded_patterns.each do |pat|
-          lines.each_with_index do |line, idx|
-            next unless line.match?(pat[:pattern])
+          scannable_lines.each_with_index do |line, idx|
+            next unless line
+            next unless test_quality_pattern_match?(line, pat[:pattern])
 
             issues[:hardcoded] << {
               file: relative_path,
@@ -457,6 +461,65 @@ module SaneMasterModules
         blocking_count: blocking_issues,
         advisory_count: advisory_issues
       }
+    end
+
+    def test_quality_scannable_lines(lines)
+      heredoc_terminator = nil
+
+      lines.map do |line|
+        if heredoc_terminator
+          if line.strip == heredoc_terminator
+            heredoc_terminator = nil
+          end
+          next nil
+        end
+
+        heredoc_match = line.match(/<<[-~]?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/)
+        heredoc_terminator = heredoc_match[1] if heredoc_match
+        line
+      end
+    end
+
+    def test_quality_pattern_match?(line, pattern)
+      stripped = line.strip
+      return false if stripped.empty?
+      return false if stripped.start_with?('//', '/*', '*')
+      return false if stripped.start_with?('#') && !stripped.match?(/\A#(?:expect|require)\b/)
+
+      offset = 0
+      while (match = line.match(pattern, offset))
+        return true unless offset_inside_string_literal?(line, match.begin(0))
+
+        offset = [match.end(0), match.begin(0) + 1].max
+      end
+      false
+    end
+
+    def offset_inside_string_literal?(line, target_offset)
+      quote = nil
+      escaped = false
+
+      line.each_char.with_index do |char, idx|
+        return !quote.nil? if idx == target_offset
+
+        if quote
+          if escaped
+            escaped = false
+          elsif char == '\\'
+            escaped = true
+          elsif char == quote
+            quote = nil
+          end
+        elsif char == '"' || char == "'"
+          quote = char
+        elsif char == '/' && line[idx + 1] == '/'
+          return true if idx <= target_offset
+        elsif char == '#'
+          return true if idx <= target_offset
+        end
+      end
+
+      !quote.nil? && target_offset >= line.length
     end
 
     def scan_test_structure(content, relative_path, issues)
@@ -825,41 +888,69 @@ module SaneMasterModules
     def check_mcp_health
       puts '🔌 MCP Servers:'
 
+      probe = mcp_live_probe_snapshot
+      if probe[:available]
+        probe[:results].each do |result|
+          marker = case result[:status]
+                   when 'PASS' then '✅'
+                   when 'WARN' then '⚠️ '
+                   else '❌'
+                   end
+          puts "   #{marker} #{result[:name]}: #{result[:detail]}"
+        end
+        puts ''
+        return {
+          status: probe[:results].any? { |result| result[:status] == 'FAIL' } ? :error : :ok,
+          configured: probe[:results].map { |result| result[:name] },
+          source: probe[:command],
+          issues: probe[:results].select { |result| result[:status] == 'FAIL' }
+        }
+      end
+
       mcp_file = File.join(Dir.pwd, '.mcp.json')
       unless File.exist?(mcp_file)
-        puts '   ❌ No .mcp.json'
+        puts '   ℹ️  No .mcp.json and no live check-mcps probe available'
         puts ''
-        return { status: :missing }
+        return { status: :missing, source: 'none' }
       end
 
       begin
         mcp = JSON.parse(File.read(mcp_file))
         servers = mcp['mcpServers'] || {}
 
-        # NOTE: xcode MCP is configured globally (xcrun mcpbridge)
-        # NOTE: Official Memory MCP (@modelcontextprotocol/server-memory) is global
-        required = %w[apple-docs github context7 xcode]
-
-        required.each do |name|
-          if servers[name]
-            puts "   ✅ #{name}"
-          else
-            puts "   ❌ #{name}: missing"
+        if servers.empty?
+          puts '   ℹ️  .mcp.json contains no project-local servers'
+        else
+          servers.keys.sort.each do |name|
+            puts "   ✅ #{name}: project configured"
           end
         end
 
-        extra = servers.keys - required
-        extra.each do |name|
-          puts "   ➕ #{name}: extra"
-        end
-
         puts ''
-        { status: :ok, configured: servers.keys }
+        { status: :ok, configured: servers.keys, source: mcp_file }
       rescue JSON::ParserError
         puts '   ❌ .mcp.json parse error'
         puts ''
         { status: :error }
       end
+    end
+
+    def mcp_live_probe_snapshot
+      checker = File.expand_path('~/.codex/bin/check-mcps')
+      return { available: false, results: [] } unless File.executable?(checker)
+
+      output, status = Open3.capture2e(checker)
+      results = output.lines.map do |line|
+        match = line.match(/^\[(PASS|WARN|FAIL)\]\s+([^\s]+)\s+-\s+(.*)$/)
+        next unless match
+
+        { status: match[1], name: match[2], detail: match[3].strip }
+      end.compact
+      results << { status: 'FAIL', name: 'check-mcps', detail: 'no parseable status lines returned' } if results.empty?
+      results << { status: 'FAIL', name: 'check-mcps', detail: "exited #{status.exitstatus}" } unless status.success?
+      { available: true, command: checker, results: results }
+    rescue StandardError => e
+      { available: true, command: checker, results: [{ status: 'FAIL', name: 'check-mcps', detail: e.message }] }
     end
 
     def check_command_coverage

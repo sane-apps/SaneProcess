@@ -189,7 +189,7 @@ echo ""
 
 ERRORS=0
 
-MAIN_HOOKS="session_start.rb saneprompt.rb sanetools.rb sanetrack.rb sanestop.rb"
+MAIN_HOOKS="session_start.rb saneprompt.rb sanetools.rb sanetrack.rb task_completed_gate.rb sanestop.rb"
 SUPPORT_MODULES="saneprompt_intelligence.rb saneprompt_commands.rb sanetools_checks.rb sanetools_startup.rb sanetools_gaming.rb sanetools_deploy.rb sanetools_github_guard.rb sanetrack_research.rb sanetrack_state_updates.rb sanetrack_gate.rb sanetrack_reminders.rb session_briefing.rb session_start_cleanup.rb self_test_environment.rb state_signer.rb rule_tracker.rb"
 CORE_MODULES="core/config.rb core/state_manager.rb core/context_compact.rb"
 SELF_TEST_MODULES="saneprompt_test.rb sanetools_test.rb sanetools_test_scenarios.rb sanetrack_test.rb sanestop_test.rb"
@@ -285,6 +285,17 @@ if [ "$INSTALL_CLAUDE" -eq 1 ]; then
           {
             "type": "command",
             "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/sanetrack.rb",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/task_completed_gate.rb",
             "timeout": 5000
           }
         ]
@@ -460,10 +471,10 @@ show_install_commands() {
     fi
 }
 
-show_install_commands "context7" "npx -y @upstash/context7-mcp@latest" ""
-show_install_commands "github" "npx -y @modelcontextprotocol/server-github" "Requires: GITHUB_PERSONAL_ACCESS_TOKEN"
+show_install_commands "context7" "npx -y @upstash/context7-mcp@2.2.5" ""
+show_install_commands "github" "npx -y @modelcontextprotocol/server-github@2025.4.8" "Requires: GITHUB_PERSONAL_ACCESS_TOKEN"
 if [ "$PLATFORM" = "macOS" ]; then
-    show_install_commands "apple-docs" "npx -y @mweinbach/apple-docs-mcp@latest" ""
+    show_install_commands "apple-docs" "npx -y @mweinbach/apple-docs-mcp@1.3.1" ""
 fi
 echo ""
 

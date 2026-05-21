@@ -139,7 +139,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: $BUNDLE_ID
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
-        DEVELOPMENT_TEAM: M78L6FXD48
+        DEVELOPMENT_TEAM: YOUR_TEAM_ID
         CODE_SIGN_STYLE: Manual
       configs:
         Debug:

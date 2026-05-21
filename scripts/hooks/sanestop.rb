@@ -13,11 +13,14 @@ require 'fileutils'
 require 'time'
 require 'date'
 require 'digest'
+require 'open3'
 require 'rbconfig'
+require 'socket'
 require_relative 'core/mandatory_workflows'
 require_relative 'core/process_metrics'
 require_relative 'core/state_manager'
 require_relative 'core/sop_score'
+require_relative 'core/visual_receipt'
 LOG_FILE = File.expand_path('../../.claude/sanestop.log', __dir__)
 SOP_CSV = File.expand_path('../../outputs/sop_ratings.csv', __dir__)
 SOP_JSONL = File.expand_path('../../outputs/sop_ratings.jsonl', __dir__)
@@ -131,8 +134,59 @@ def session_verify_status
     last_success: last ? last['success'] == true : nil,
     last_tests_run: last && last['tests_run'],
     last_evidence_strength: last && last['evidence_strength'],
-    last_timestamp: last && last['timestamp']
+    last_timestamp: last && last['timestamp'],
+    last_source_fingerprint: last && last['source_fingerprint']
   }
+end
+
+def current_source_fingerprint(cwd = Dir.pwd)
+  root_out, root_status = Open3.capture2e('git', '-C', cwd, 'rev-parse', '--show-toplevel')
+  return 'unknown' unless root_status.success?
+
+  root = root_out.strip
+  parts = []
+  [
+    %w[rev-parse HEAD],
+    %w[status --porcelain=v1 --untracked-files=all],
+    %w[diff --binary],
+    %w[diff --cached --binary]
+  ].each do |command|
+    out, = Open3.capture2e('git', '-C', root, *command)
+    parts << out
+  end
+  Digest::SHA256.hexdigest(parts.join("\n---\n"))
+rescue StandardError
+  'unknown'
+end
+
+def last_edit_time
+  edits = StateManager.get(:edits)
+  raw = edits[:last_edit_at] || edits['last_edit_at']
+  raw ? Time.parse(raw.to_s) : nil
+rescue ArgumentError
+  nil
+end
+
+def strong_session_verify_success?
+  after_edit = last_edit_time
+  fingerprint = current_source_fingerprint
+
+  session_verify_events.reverse_each do |event|
+    next unless event['success'] == true
+    next unless event['tests_run'].to_i.positive?
+    next if event['evidence_strength'].to_s == 'build_only'
+
+    timestamp = Time.parse(event['timestamp'].to_s) rescue nil
+    next if after_edit && timestamp && timestamp < after_edit
+
+    receipt_fingerprint = event['source_fingerprint'].to_s
+    next if receipt_fingerprint.empty? || receipt_fingerprint == 'unknown'
+    next if fingerprint == 'unknown'
+
+    return true if receipt_fingerprint == fingerprint
+  end
+
+  false
 end
 
 def verification_score_cap
@@ -413,7 +467,6 @@ DOC_ONLY_EXTENSIONS = %w[.md .txt .mdx .rst .adoc].freeze
 
 def check_verification_required
   edits = StateManager.get(:edits)
-  verification = StateManager.get(:verification)
 
   edit_count = edits[:count] || 0
   unique_files = edits[:unique_files] || []
@@ -421,22 +474,21 @@ def check_verification_required
   # No edits = nothing to verify
   return nil if edit_count.zero?
 
-  # If tests/verification succeeded, we're good.
-  return nil if verification[:tests_passed] || verification[:verification_succeeded]
+  # A boolean hook flag is not enough. Require a counted verify metric that
+  # matches the current source fingerprint and occurred after the latest edit.
+  return nil if strong_session_verify_success?
 
   # Check if ALL edits were doc-only (markdown, txt) — don't require tests for pure docs
   non_doc_edits = unique_files.reject { |f| DOC_ONLY_EXTENSIONS.include?(File.extname(f).downcase) }
   return nil if non_doc_edits.empty?
 
-  # Edits to non-doc files with no verification = BLOCK
-  "   #{edit_count} edit(s) across #{non_doc_edits.length} file(s), 0 test/verification commands.\n" \
+  # Edits to non-doc files with no structured verification = BLOCK
+  "   #{edit_count} edit(s) across #{non_doc_edits.length} file(s), no fresh structured verify metric.\n" \
   "   Files changed: #{non_doc_edits.map { |f| File.basename(f) }.join(', ')}\n" \
   "   \n" \
   "   Acceptable verification:\n" \
-  "   • Run project tests (xcodebuild test, swift test, ruby test, etc.)\n" \
-  "   • Run validation (ruby scripts/validation_report.rb, --self-test)\n" \
-  "   • Health check (curl localhost:PORT/health)\n" \
-  "   • Any command that proves the change works"
+  "   • Run ./scripts/SaneMaster.rb verify so a counted verify metric is recorded\n" \
+  "   • The metric must have tests_run > 0, tested evidence, and matching source fingerprint"
 rescue StandardError => e
   warn "⚠️  Verification check error: #{e.message}" if ENV['DEBUG']
   nil  # Don't block on errors in the check itself
@@ -446,64 +498,28 @@ end
 # Customer-facing UI work requires screenshot-backed inspection, not just green
 # functional tests.
 
-def project_visual_artifacts
-  roots = %w[outputs screenshots Screenshots]
-  extensions = %w[png jpg jpeg md json]
-  started = session_start_time
-
-  roots.flat_map do |root|
-    next [] unless Dir.exist?(File.join(Dir.pwd, root))
-
-    extensions.flat_map do |ext|
-      Dir.glob(File.join(Dir.pwd, root, '**', "*.#{ext}"))
-    end
-  end.flatten.uniq.select do |path|
-    File.basename(path).match?(/visual|screenshot|audit/i) ||
-      path.match?(%r{/visual[-_]audit}i)
-  end.select do |path|
-    File.mtime(path) >= started
-  rescue StandardError
-    false
-  end
-rescue StandardError
-  []
-end
-
-def visual_artifact_summary
-  files = project_visual_artifacts
-  {
-    images: files.select { |path| path.match?(/\.(png|jpe?g)$/i) },
-    receipts: files.select { |path| path.match?(/\.(md|json)$/i) }
-  }
-end
-
 def check_visual_verification_required
   visual = StateManager.get(:visual_verification)
   return nil unless visual[:required]
 
-  artifact_summary = visual_artifact_summary
-  evidence_commands = visual[:evidence_commands] || []
-  screenshot_paths = visual[:screenshot_paths] || []
-  audit_files = visual[:audit_files] || []
-  has_screenshot_evidence = evidence_commands.any? || screenshot_paths.any? || artifact_summary[:images].any?
-  has_audit_receipt = visual[:audit_recorded] || audit_files.any? || artifact_summary[:receipts].any?
+  receipt_paths = SaneVisualReceipt.valid_receipt_paths(
+    cwd: Dir.pwd,
+    candidate_paths: visual[:audit_files] || [],
+    started_at: session_start_time
+  )
 
-  return nil if has_screenshot_evidence && has_audit_receipt
-
-  missing = []
-  missing << 'saved screenshot evidence' unless has_screenshot_evidence
-  missing << 'written visual audit receipt' unless has_audit_receipt
+  return nil if receipt_paths.any?
 
   files = (visual[:required_files] || []).first(10)
   reason = visual[:reason] || 'visual verification required'
 
   "   Visual verification is required (#{reason}).\n" \
-  "   Missing: #{missing.join(' AND ')}.\n" \
+  "   Missing: structured Mini visual receipt.\n" \
   "#{files.empty? ? '' : "   UI files/states touched: #{files.join(', ')}\n"}" \
   "   Required proof:\n" \
   "   • Capture clean Mini screenshots for every customer-facing view/state touched.\n" \
-  "   • Inspect the saved images for balance, clarity, confusing copy, clipping, overlap, contrast, and dark-mode quality.\n" \
-  "   • Record the screenshot paths and audit verdict in SESSION_HANDOFF.md or an outputs/visual-audit*/ receipt."
+  "   • Store a JSON receipt at outputs/customer_ui_action_receipt.json or outputs/visual-audit*/.\n" \
+  "   • Receipt must show Mini host, passed status, inspected=true, and existing PNG/JPEG screenshots."
 rescue StandardError => e
   warn "⚠️  Visual verification check error: #{e.message}" if ENV['DEBUG']
   nil
@@ -573,16 +589,14 @@ end
 
 # Update all validation metrics at session end
 def update_validation_metrics
-  verification = StateManager.get(:verification)
   cb = StateManager.get(:circuit_breaker)
   block_stats = count_session_blocks_and_resets
   missed_loops = count_missed_doom_loops
-  verify_status = session_verify_status
 
   StateManager.update(:validation) do |v|
     # Q4: Session tracking
     v[:sessions_total] = (v[:sessions_total] || 0) + 1
-    if verify_status[:last_success] || verification[:tests_passed] || verification[:verification_succeeded]
+    if strong_session_verify_success?
       v[:sessions_with_tests_passing] = (v[:sessions_with_tests_passing] || 0) + 1
     end
     if cb[:tripped]
@@ -746,6 +760,7 @@ def save_session_learnings
     final_verify_evidence_strength: verify_status[:last_evidence_strength],
     final_verify_timestamp: verify_status[:last_timestamp]
   )
+  SaneProcessMetrics.record('session_receipt', build_client_neutral_session_receipt(stats, violations, verify_status))
 
   # Update patterns for future sessions
   update_session_patterns(violations, sop_score)
@@ -762,6 +777,108 @@ def save_session_learnings
   log_session(stats)
   capture_session_learnings
   stats
+end
+
+def build_client_neutral_session_receipt(stats, violations, verify_status)
+  started_at = session_start_time
+  completed_at = Time.now.utc
+  git_root = current_git_value('rev-parse', '--show-toplevel')
+  client = stats[:client].to_s
+  {
+    schema_version: 2,
+    receipt_id: Digest::SHA256.hexdigest("#{stats[:session_id]}|#{completed_at.iso8601}")[0, 16],
+    session_id: stats[:session_id],
+    client: client,
+    client_name: client,
+    client_kind: client_kind(client),
+    host: Socket.gethostname,
+    git_root: git_root,
+    git_head: current_git_value('rev-parse', 'HEAD'),
+    git_branch: current_git_value('rev-parse', '--abbrev-ref', 'HEAD'),
+    source_fingerprint: current_source_fingerprint,
+    started_at: started_at.utc.iso8601,
+    completed_at: completed_at.iso8601,
+    duration_ms: ((completed_at - started_at) * 1000).round,
+    success: verify_status[:last_success],
+    edits: stats[:edits],
+    unique_files: stats[:unique_files],
+    changed_file_count: stats[:unique_files],
+    block_count: stats[:block_count],
+    violations: violations,
+    verify_attempts: verify_status[:attempts],
+    verify_failures: verify_status[:failures],
+    verify_zero_test_failures: verify_status[:zero_test_failures],
+    verify_zero_test_successes: verify_status[:zero_test_successes],
+    final_verify_success: verify_status[:last_success],
+    final_verify_tests_run: verify_status[:last_tests_run],
+    final_verify_evidence_strength: verify_status[:last_evidence_strength],
+    final_verify_timestamp: verify_status[:last_timestamp],
+    final_verify_source_fingerprint: verify_status[:last_source_fingerprint],
+    workflow_receipt_ids: recent_workflow_receipt_ids,
+    visual_receipt_paths: current_visual_receipt_paths,
+    handoff_updated: handoff_updated_since?(started_at),
+    memory_updated: false,
+    research_topics_captured: 0,
+    sop_score: stats[:sop_score],
+    base_score: stats[:base_score],
+    cap_score: stats[:cap_score],
+    cap_reason: stats[:cap_reason],
+    scorer_version: 'sane_sop_score_v1'
+  }
+end
+
+def current_git_value(*args)
+  output, status = Open3.capture2e('git', *args)
+  status.success? ? output.strip : nil
+rescue StandardError
+  nil
+end
+
+def client_kind(client)
+  value = client.to_s.downcase
+  return 'codex' if value.include?('codex')
+  return 'claude' if value.include?('claude')
+
+  value.empty? ? 'unknown' : value
+end
+
+def recent_workflow_receipt_ids
+  path = SaneProcessMetrics.metrics_path
+  return [] unless File.exist?(path)
+
+  started = session_start_time
+  File.readlines(path).map do |line|
+    event = JSON.parse(line)
+    next unless event['type'] == 'workflow_receipt'
+
+    timestamp = Time.parse(event['timestamp'].to_s)
+    next if timestamp < started
+
+    event['receipt_id'] || event['command_sha256']
+  rescue JSON::ParserError, ArgumentError
+    nil
+  end.compact.uniq
+rescue StandardError
+  []
+end
+
+def current_visual_receipt_paths
+  visual = StateManager.get(:visual_verification)
+  SaneVisualReceipt.valid_receipt_paths(
+    cwd: Dir.pwd,
+    candidate_paths: visual[:audit_files] || [],
+    started_at: session_start_time
+  )
+rescue StandardError
+  []
+end
+
+def handoff_updated_since?(started_at)
+  ['SESSION_HANDOFF.md', '.claude/SESSION_HANDOFF.md'].any? do |path|
+    File.exist?(path) && File.mtime(path) >= started_at
+  end
+rescue StandardError
+  false
 end
 
 # === SESSION LEARNINGS CAPTURE ===
@@ -1087,15 +1204,11 @@ elsif ARGV.include?('--self-test-internal')
     )
   end
 
-  if ENV['SANEMASTER_PROCESS_METRICS_PATH'].to_s.strip.empty?
-    require 'tmpdir'
-    Dir.mktmpdir('sanestop-self-test-metrics-') do |dir|
-      ENV['SANEMASTER_PROCESS_METRICS_PATH'] = File.join(dir, 'process_metrics.jsonl')
-      exit run_internal_self_test.call
-    end
+  require 'tmpdir'
+  Dir.mktmpdir('sanestop-self-test-metrics-') do |dir|
+    ENV['SANEMASTER_PROCESS_METRICS_PATH'] = File.join(dir, 'process_metrics.jsonl')
+    exit run_internal_self_test.call
   end
-
-  exit run_internal_self_test.call
 else
   begin
     input = JSON.parse($stdin.read)

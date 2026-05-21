@@ -227,6 +227,7 @@ exit(run_tests('SaneMaster Release Routing Tests') do
       ssh_call = subject.system_calls.find { |call| call.first == 'ssh' && call.include?('mini') }
       assert(ssh_call, 'expected ssh cleanup command')
       remote_cmd = ssh_call.find { |part| part.is_a?(String) && part.include?('find "$out"') }.to_s
+      assert_includes(remote_cmd, 'base=${path##*/}')
       assert_includes(remote_cmd, 'qa_status.json')
       assert_includes(remote_cmd, 'release_preflight_status.json')
       assert_includes(remote_cmd, 'customer_ui_action_receipt.json')

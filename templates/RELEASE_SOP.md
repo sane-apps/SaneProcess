@@ -142,10 +142,10 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
 - Preferred control path is Mini Safari + AppleScript/JavaScript:
   - `tell application "Safari" to return URL of front document`
   - `tell application "Safari" to do JavaScript "document.body.innerText"` in front document
-  - `/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh list-tabs`
-  - `/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh open-read-current "<url>"` for ASC/developer/idmsa pages
-  - `/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh read <tab_index>`
-  - `/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh js <tab_index> "<javascript>"`
+  - `~/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh list-tabs`
+  - `~/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh open-read-current "<url>"` for ASC/developer/idmsa pages
+  - `~/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh read <tab_index>`
+  - `~/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh js <tab_index> "<javascript>"`
   - use `document.querySelector(...)` / `.click()` only after confirming the tab URL is the exact target review/profile page
 - Use this path to inspect reviewer screenshots/download links, App Review page text, and Apple Developer profile detail/edit pages.
 - Use the same path for listing/directory activation links when distribution status matters.
@@ -229,10 +229,10 @@ Preferred order:
 Run this wrapper from the controlling machine with Codex installed. It copies the helper to the Mini and executes the capture inside the Mini's logged-in GUI Terminal session.
 
 ```bash
-/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh \
+~/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh \
   --list-windows --app "SaneClip"
 
-/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh \
+~/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh \
   --app "SaneClip" --window-name "Settings" --mode temp
 ```
 

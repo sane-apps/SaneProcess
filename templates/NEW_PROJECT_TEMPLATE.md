@@ -133,7 +133,7 @@ saneloop-archive/
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb || true",
+            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb; else exit 0; fi",
             "timeout": 5
           }
         ]
@@ -144,7 +144,7 @@ saneloop-archive/
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/saneprompt.rb ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/saneprompt.rb || true",
+            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/saneprompt.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/saneprompt.rb; else exit 0; fi",
             "timeout": 5
           }
         ]
@@ -155,7 +155,7 @@ saneloop-archive/
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetools.rb ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetools.rb || true",
+            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetools.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetools.rb; else exit 0; fi",
             "timeout": 5
           }
         ]
@@ -166,7 +166,18 @@ saneloop-archive/
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetrack.rb ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetrack.rb || true",
+            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetrack.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetrack.rb; else exit 0; fi",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/task_completed_gate.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/task_completed_gate.rb; else exit 0; fi",
             "timeout": 5
           }
         ]
@@ -177,7 +188,7 @@ saneloop-archive/
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/sanestop.rb ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanestop.rb || true",
+            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/sanestop.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanestop.rb; else exit 0; fi",
             "timeout": 5
           }
         ]
@@ -201,18 +212,18 @@ saneloop-archive/
   "mcpServers": {
     "apple-docs": {
       "command": "npx",
-      "args": ["-y", "@mweinbach/apple-docs-mcp@latest"]
+      "args": ["-y", "@mweinbach/apple-docs-mcp@1.3.1"]
     },
     "github": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "args": ["-y", "@modelcontextprotocol/server-github@2025.4.8"],
       "env": {
         "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
       }
     },
     "context7": {
       "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp@latest"]
+      "args": ["-y", "@upstash/context7-mcp@2.2.5"]
     }
   }
 }
@@ -222,7 +233,7 @@ saneloop-archive/
 ```json
     "macos-automator": {
       "command": "npx",
-      "args": ["-y", "@steipete/macos-automator-mcp@latest"]
+      "args": ["-y", "@steipete/macos-automator-mcp@0.4.1"]
     }
 ```
 

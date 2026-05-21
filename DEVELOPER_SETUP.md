@@ -1,6 +1,8 @@
-# SaneApps Developer Setup
+# SaneApps Internal Operator Setup
 
-Guide for new developers to get all APIs and services working.
+This file documents the private SaneApps production operator environment. It is
+not required for public SaneProcess contributors. Public adopters should start
+with `README.md`, `DEVELOPMENT.md`, and their own project credentials.
 
 ---
 
@@ -63,11 +65,11 @@ security add-generic-password -s cloudflare -a api_token -w "YOUR_TOKEN"
 
 | Credential | Value |
 |-----------|-------|
-| Team ID | `M78L6FXD48` |
-| Signing Identity | `Developer ID Application` (Team: M78L6FXD48) |
-| Primary API Key ID | `S34998ZCRT` (SaneApps — Admin access) |
-| Issuer ID | `c98b1e0a-8d10-4fce-a417-536b31c09bfb` |
-| .p8 Location | `~/.private_keys/AuthKey_S34998ZCRT.p8` |
+| Team ID | `YOUR_TEAM_ID` |
+| Signing Identity | `Developer ID Application` (Team: YOUR_TEAM_ID) |
+| Primary API Key ID | `YOUR_API_KEY_ID` |
+| Issuer ID | `YOUR_ISSUER_ID` |
+| .p8 Location | `~/.private_keys/AuthKey_YOUR_API_KEY_ID.p8` |
 
 **Setup:**
 1. Get invited to the Apple Developer team
@@ -75,17 +77,17 @@ security add-generic-password -s cloudflare -a api_token -w "YOUR_TOKEN"
 3. Store notarization profile:
 ```bash
 xcrun notarytool store-credentials "notarytool" \
-  --key ~/.private_keys/AuthKey_S34998ZCRT.p8 \
-  --key-id S34998ZCRT \
-  --issuer c98b1e0a-8d10-4fce-a417-536b31c09bfb
+  --key ~/.private_keys/AuthKey_YOUR_API_KEY_ID.p8 \
+  --key-id YOUR_API_KEY_ID \
+  --issuer YOUR_ISSUER_ID
 ```
-4. Copy `.p8` file from owner to `~/.private_keys/AuthKey_S34998ZCRT.p8` (chmod 600)
+4. Copy `.p8` file from the account owner to `~/.private_keys/AuthKey_YOUR_API_KEY_ID.p8` (chmod 600)
 
 **Headless mini release requirements (SSH/non-interactive):**
 ```bash
-export NOTARY_API_KEY_PATH="$HOME/.private_keys/AuthKey_S34998ZCRT.p8"
-export NOTARY_API_KEY_ID="S34998ZCRT"
-export NOTARY_API_ISSUER_ID="c98b1e0a-8d10-4fce-a417-536b31c09bfb"
+export NOTARY_API_KEY_PATH="$HOME/.private_keys/AuthKey_YOUR_API_KEY_ID.p8"
+export NOTARY_API_KEY_ID="YOUR_API_KEY_ID"
+export NOTARY_API_ISSUER_ID="YOUR_ISSUER_ID"
 export SANEBAR_KEYCHAIN_PASSWORD="<your-login-keychain-password>"
 
 # Validate all release gates before building/publishing:

@@ -108,19 +108,9 @@ service_for_env_key() {
 }
 
 default_for_service() {
-    local default_key_path="${HOME}/.private_keys/AuthKey_S34998ZCRT.p8"
     case "$1" in
         saneprocess.keychain.password)
             echo "${SANEBAR_KEYCHAIN_PASSWORD:-${KEYCHAIN_PASSWORD:-${KEYCHAIN_PASS:-}}}"
-            ;;
-        saneprocess.asc.key_id|saneprocess.notary.key_id)
-            echo "S34998ZCRT"
-            ;;
-        saneprocess.asc.issuer_id|saneprocess.notary.issuer_id)
-            echo "c98b1e0a-8d10-4fce-a417-536b31c09bfb"
-            ;;
-        saneprocess.asc.key_path|saneprocess.notary.key_path)
-            echo "${default_key_path}"
             ;;
         saneprocess.sparkle.private_key)
             echo "${SPARKLE_PRIVATE_KEY:-}"
@@ -481,7 +471,7 @@ check_asc_jwt() {
 
     asc_path="${ASC_AUTH_KEY_PATH/#\~/${HOME}}"
     if [ ! -f "${asc_path}" ]; then
-        fail "asc:key-file" "security add-generic-password -U -a saneprocess -s saneprocess.asc.key_path -w '${HOME}/.private_keys/AuthKey_S34998ZCRT.p8'"
+        fail "asc:key-file" "security add-generic-password -U -a saneprocess -s saneprocess.asc.key_path -w '<path-to-AuthKey.p8>'"
         return
     fi
 

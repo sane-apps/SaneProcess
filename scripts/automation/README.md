@@ -129,89 +129,13 @@ python3 scripts/automation/hosted-file-actions.py --xlsx /tmp/hosted_file_action
 
 **Canonical path:** prefer `ruby ../SaneMaster.rb hosted_file_actions` from the repo root.
 
-### nv-audit.sh
+### Legacy `nv-*` helpers
 
-Legacy bulk review helper. Do not use this for normal SaneApps work, `/audit`, or
-release-clearance docs audits unless the user explicitly asks for an `nv`/NVIDIA run.
-
-Multi-app codebase audit using LLM review.
-
-**Usage:**
-```bash
-# Audit all apps
-nv-audit.sh
-
-# Audit specific app
-nv-audit.sh SaneBar
-
-# Audit with different model
-nv-audit.sh -m MODEL
-
-# Auto-detect current project
-cd ~/SaneApps/apps/SaneBar && nv-audit.sh
-```
-
-**What it does:**
-1. Scans all .swift files in the app's source directory
-2. Uses `nv --sweep` to review for bugs, security issues, deprecated APIs, memory leaks, and concurrency issues
-3. Generates severity-tagged findings (HIGH/MED/LOW)
-4. Saves results to `outputs/audit/{app}-{timestamp}.md`
-5. Prints summary with counts per severity
-
-**Output location:** `~/SaneApps/infra/SaneProcess/outputs/audit/`
-
-### nv-relnotes.sh
-
-Legacy release-note helper using the old `nv` council path. Prefer release notes from
-the verified release workflow and current support/GitHub/research evidence unless the
-user explicitly asks for an `nv`/NVIDIA run.
-
-**Usage:**
-```bash
-# Generate for current directory
-cd ~/SaneApps/apps/SaneBar && nv-relnotes.sh
-
-# Generate for specific repo
-nv-relnotes.sh ~/SaneApps/apps/SaneClip
-```
-
-**What it does:**
-1. Finds the two most recent git tags (or last tag + HEAD)
-2. Extracts commit log and diff stats between tags
-3. Queries 3 LLMs via `nv --council` for user-facing release notes
-4. Shows all 3 responses for comparison
-5. Saves full output to `outputs/relnotes/{repo}-{tag}.md`
-
-**Output location:** `~/SaneApps/infra/SaneProcess/outputs/relnotes/`
-
-### nv-buildlog.sh
-
-Legacy build-log helper using the old `nv` path. Prefer `SaneMaster.rb verify`,
-`sane_test.rb`, and the standard build logs unless the user explicitly asks for an
-`nv`/NVIDIA run.
-
-**Usage:**
-```bash
-# Analyze most recent build log
-nv-buildlog.sh
-
-# Analyze specific log file
-nv-buildlog.sh /path/to/build.log
-```
-
-### nv-tests.sh
-
-Legacy test-log helper using the old `nv` path. Prefer `SaneMaster.rb verify` and the
-project test suite unless the user explicitly asks for an `nv`/NVIDIA run.
-
-**Usage:**
-```bash
-# Analyze most recent test results
-nv-tests.sh
-
-# Analyze specific test log
-nv-tests.sh /path/to/test-results.xcresult
-```
+`nv-audit.sh`, `nv-relnotes.sh`, `nv-buildlog.sh`, and `nv-tests.sh` are retained
+only for explicit maintenance of the old external-model workflow. They are not
+part of the normal SaneProcess path. Prefer `SaneMaster.rb verify`, `/audit`,
+release receipts, and current support/GitHub/research evidence unless the user
+explicitly asks for an `nv`/NVIDIA run.
 
 ### morning-report.sh
 

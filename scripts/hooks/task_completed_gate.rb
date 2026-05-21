@@ -1,12 +1,16 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# TaskCompleted hook: warns if tests haven't been verified before marking a task done
-# Currently WARNS only (exit 0) — change to exit 2 to enforce blocking
+# TaskCompleted hook: blocks task completion when required verification is missing
 # Checks for recent test/build results from local or mini builds
 
 require 'json'
 require 'time'
+require 'yaml'
+require 'digest'
+require 'open3'
+require_relative 'core/process_metrics'
+require_relative 'core/visual_receipt'
 
 begin
   input = JSON.parse($stdin.read)
@@ -14,36 +18,25 @@ rescue JSON::ParserError, Errno::ENOENT
   exit 0
 end
 
-# Only check for SaneApps projects
 cwd = Dir.pwd
-exit 0 unless cwd.include?('SaneApps/apps/')
-
-app_name = cwd.match(%r{SaneApps/apps/(\w+)})&.[](1)
-exit 0 unless app_name
-
 task_subject = input['task_subject'] || 'unknown task'
+DOC_ONLY_EXTENSIONS = %w[.md .txt .mdx .rst .adoc].freeze
 
-def recent_visual_artifacts(cwd)
-  roots = %w[outputs screenshots Screenshots]
-  extensions = %w[png jpg jpeg md json]
-  cutoff = Time.now - 3600
+def saneprocess_project_name(cwd)
+  app_name = cwd.match(%r{SaneApps/apps/(\w+)})&.[](1)
+  return app_name if app_name
 
-  roots.flat_map do |root|
-    root_path = File.join(cwd, root)
-    next [] unless Dir.exist?(root_path)
+  manifest_path = File.join(cwd, '.saneprocess')
+  return nil unless File.exist?(manifest_path)
 
-    extensions.flat_map { |ext| Dir.glob(File.join(root_path, '**', "*.#{ext}")) }
-  end.flatten.uniq.select do |path|
-    next false unless File.mtime(path) >= cutoff
-
-    File.basename(path).match?(/visual|screenshot|audit/i) ||
-      path.match?(%r{/visual[-_]audit}i)
-  rescue StandardError
-    false
-  end
+  manifest = YAML.safe_load(File.read(manifest_path)) || {}
+  manifest['name'] || File.basename(cwd)
 rescue StandardError
-  []
+  File.exist?(File.join(cwd, '.saneprocess')) ? File.basename(cwd) : nil
 end
+
+project_name = saneprocess_project_name(cwd)
+exit 0 unless project_name
 
 def visual_state(cwd)
   state_file = File.join(cwd, '.claude', 'state.json')
@@ -54,53 +47,115 @@ rescue JSON::ParserError, Errno::ENOENT
   {}
 end
 
+def hook_state_section(cwd, section)
+  state_file = File.join(cwd, '.claude', 'state.json')
+  return {} unless File.exist?(state_file)
+
+  state = JSON.parse(File.read(state_file))
+  state[section.to_s] || {}
+rescue JSON::ParserError, Errno::ENOENT
+  {}
+end
+
+def non_doc_edits(cwd)
+  edits = hook_state_section(cwd, :edits)
+  edit_count = edits['count'].to_i
+  files = Array(edits['unique_files'])
+  return [] if edit_count.zero?
+
+  files.reject { |path| DOC_ONLY_EXTENSIONS.include?(File.extname(path.to_s).downcase) }
+end
+
+def current_source_fingerprint(cwd)
+  root_out, root_status = Open3.capture2e('git', '-C', cwd, 'rev-parse', '--show-toplevel')
+  return 'unknown' unless root_status.success?
+
+  root = root_out.strip
+  parts = []
+  [
+    %w[rev-parse HEAD],
+    %w[status --porcelain=v1 --untracked-files=all],
+    %w[diff --binary],
+    %w[diff --cached --binary]
+  ].each do |command|
+    out, = Open3.capture2e('git', '-C', root, *command)
+    parts << out
+  end
+  Digest::SHA256.hexdigest(parts.join("\n---\n"))
+rescue StandardError
+  'unknown'
+end
+
+def last_edit_time(cwd)
+  edits = hook_state_section(cwd, :edits)
+  raw = edits['last_edit_at'] || hook_state_section(cwd, :verification)['last_test_at']
+  raw ? Time.parse(raw.to_s) : nil
+rescue ArgumentError
+  nil
+end
+
+def recent_verified_metric?(cwd, project_name, max_age_seconds: 1_800)
+  path = SaneProcessMetrics.metrics_path
+  return false unless File.exist?(path)
+
+  cutoff = Time.now - max_age_seconds
+  after_edit = last_edit_time(cwd)
+  current_fingerprint = current_source_fingerprint(cwd)
+  project_root = File.expand_path(cwd)
+
+  File.readlines(path, chomp: true).map do |line|
+    JSON.parse(line)
+  rescue JSON::ParserError
+    nil
+  end.compact
+     .select { |event| event['type'] == 'verify' }
+     .select { |event| event['success'] == true }
+     .select { |event| event['tests_run'].to_i.positive? }
+     .select { |event| event['evidence_strength'].to_s != 'build_only' }
+     .select { |event| event['project'].to_s == project_name.to_s || File.expand_path(event['cwd'].to_s) == project_root }
+     .any? do |event|
+       timestamp = Time.parse(event['timestamp'].to_s)
+       next false if timestamp < cutoff
+       next false if after_edit && timestamp < after_edit
+
+       receipt_fingerprint = event['source_fingerprint'].to_s
+       next false if receipt_fingerprint.empty? || receipt_fingerprint == 'unknown'
+       next false if current_fingerprint == 'unknown'
+
+       receipt_fingerprint == current_fingerprint
+     rescue ArgumentError
+       false
+     end
+rescue StandardError
+  false
+end
+
 visual = visual_state(cwd)
 if visual['required']
-  has_evidence = Array(visual['evidence_commands']).any? ||
-                 Array(visual['screenshot_paths']).any? ||
-                 recent_visual_artifacts(cwd).any?
-  has_audit = visual['audit_recorded'] == true ||
-              Array(visual['audit_files']).any? ||
-              recent_visual_artifacts(cwd).any? { |path| path.match?(/\.(md|json)$/i) }
+  receipt_paths = SaneVisualReceipt.valid_receipt_paths(
+    cwd: cwd,
+    candidate_paths: Array(visual['audit_files']),
+    started_at: Time.now - 3600
+  )
 
-  unless has_evidence && has_audit
+  if receipt_paths.empty?
     warn "🔴 Task \"#{task_subject}\" completed without required visual screenshot audit"
-    warn '   Visual UI work must include clean saved screenshots for every customer-facing view/state.'
-    warn '   Also record a written audit receipt with screenshot paths and visual verdicts.'
-    warn '   Run Mini visual proof, then update SESSION_HANDOFF.md or outputs/visual-audit*/.'
+    warn '   Visual UI work requires a structured JSON receipt, not loose screenshot paths or filename matches.'
+    warn '   Accepted receipts: outputs/customer_ui_action_receipt.json or outputs/visual-audit*/ with Mini host, passed status, inspected=true, and existing screenshots.'
     exit 2
   end
 end
 
-# Check 1: Recent mini build result (within last 10 minutes)
-mini_result_file = "/tmp/mini-build-#{app_name}.result"
-mini_ok = false
-if File.exist?(mini_result_file)
-  lines = File.readlines(mini_result_file).map(&:strip)
-  if lines[0] == 'PASS' && lines[1]
-    result_time = Time.parse(lines[1]) rescue nil
-    mini_ok = result_time && (Time.now - result_time) < 600 # 10 minutes
-  end
-end
+non_doc_files = non_doc_edits(cwd)
+exit 0 if non_doc_files.empty?
 
-# Check 2: Recent local test result (SaneMaster verify writes this)
-local_result_file = "/tmp/sanemaster-#{app_name}-verify.result"
-local_ok = false
-if File.exist?(local_result_file)
-  lines = File.readlines(local_result_file).map(&:strip)
-  if lines[0] == 'PASS' && lines[1]
-    result_time = Time.parse(lines[1]) rescue nil
-    local_ok = result_time && (Time.now - result_time) < 600
-  end
-end
-
-if mini_ok || local_ok
-  source = mini_ok ? 'mini' : 'local'
-  warn "✅ Task \"#{task_subject}\" completed — verified by #{source} build"
+if recent_verified_metric?(cwd, project_name)
+  warn "✅ Task \"#{task_subject}\" completed — verified by structured SaneMaster metric"
   exit 0
 else
-  warn "⚠️  Task \"#{task_subject}\" completed without recent test verification"
-  warn "   Run: ./scripts/SaneMaster.rb verify  OR  mini-build.sh #{app_name}"
-  warn "   (This is a warning — not blocking. Set exit 2 in task_completed_gate.rb to enforce.)"
-  exit 0 # Change to `exit 2` to block task completion without tests
+  warn "🔴 Task \"#{task_subject}\" completed without recent test verification"
+  warn "   Non-doc edits: #{non_doc_files.map { |path| File.basename(path) }.uniq.first(6).join(', ')}"
+  warn '   Required proof: a fresh SaneMaster verify metric with counted tests, matching source fingerprint, and current project.'
+  warn '   Run: ./scripts/SaneMaster.rb verify'
+  exit 2
 end

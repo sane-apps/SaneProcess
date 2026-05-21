@@ -1,6 +1,8 @@
 # [AppName] Claude Overlay
 
 > Claude-specific settings that extend the shared repo AGENTS.md and the global ~/CLAUDE.md
+> SaneApps internal template. Replace SaneApps paths, brand references, shared
+> app names, and private tool locations before reusing this outside SaneApps.
 
 ---
 
@@ -47,7 +49,7 @@
 | Build/test commands | `./scripts/SaneMaster.rb --help` |
 | Project structure | `project.yml` (XcodeGen config) |
 | Shared repo rules | `AGENTS.md` |
-| Past bugs/learnings | `.claude/memory.json` or MCP memory |
+| Past bugs/learnings | MCP memory, Serena memory, or the active research cache |
 | Code patterns | `.claude/rules/` directory |
 | Swift services | `Core/Services/` directory |
 | UI components | `UI/` directory |

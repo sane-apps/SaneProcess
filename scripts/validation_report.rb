@@ -41,7 +41,35 @@ class ValidationReport
   AGENTS_HARD_BYTES = 32 * 1024
   AGENTS_WARNING_LINES = 450
   RESEARCH_CACHE_MAX_LINES = 200
-  HANDOFF_MAX_LINES = 800
+  HANDOFF_MAX_LINES = 300
+  DEVELOPMENT_WARNING_LINES = 500
+  DEVELOPMENT_HARD_LINES = 800
+  SOP_PROSE_ONLY_EXCEPTION_MARKER = 'SANEPROCESS_PROSE_ONLY_POLICY:'
+  SOP_POLICY_DOC_PATHS = %w[
+    AGENTS.md
+    CLAUDE.md
+    README.md
+    DEVELOPMENT.md
+    ARCHITECTURE.md
+    scripts/hooks/README.md
+    templates/CLAUDE_TEMPLATE.md
+    templates/DEVELOPMENT_TEMPLATE.md
+    templates/docs/DEVELOPMENT_ENVIRONMENT.md
+    templates/FULL_PROJECT_BOOTSTRAP.md
+    templates/NEW_PROJECT_TEMPLATE.md
+    templates/RELEASE_SOP.md
+  ].freeze
+  SOP_POLICY_KEYWORD_PATTERN = /\b(SOP|rules?|required|requires|must|never|always|do not|don't|blocked?|enforce(?:d|ment|able)?|mandatory)\b/i.freeze
+  SOP_ENFORCEMENT_SURFACE_PATTERNS = [
+    %r{^scripts/hooks/},
+    %r{^scripts/sanemaster/},
+    %r{^scripts/automation/tool_discovery_receipt},
+    %r{^scripts/(?:agent|process)_eval_fixtures\.json$},
+    %r{^scripts/validation_report(?:_test)?\.rb$},
+    %r{^scripts/test_registry\.json$},
+    %r{^scripts/.*(?:test|guard|scan|contract).*\.rb$},
+    %r{^scripts/SaneMaster\.rb$}
+  ].freeze
   WORKFLOW_EXCEPTIONS_CONFIG_PATH = File.join(File.dirname(__FILE__), '..', 'config', 'github_workflow_exceptions.yml')
   RED_NOISE_BUDGET_DAYS = 7
   CUSTOMER_UI_MANIFEST_PATHS = [
@@ -235,6 +263,10 @@ class ValidationReport
       'Classify build-start/environment failures separately from test-suite failures and fix the top repeat setup blocker.'
     when /AGENTS\.md/
       'Move durable detail into DEVELOPMENT.md or ARCHITECTURE.md and keep AGENTS.md to active operating rules.'
+    when /DEVELOPMENT\.md/
+      'Keep DEVELOPMENT.md to startup-critical build/test guidance; move deep walkthroughs into ARCHITECTURE.md, templates, or command help.'
+    when /SOP policy wording changed without enforcement/
+      'Pair policy wording with a hook, SaneMaster guard, eval fixture, validation check, or test. Use SANEPROCESS_PROSE_ONLY_POLICY only with a concrete reason.'
     when /\.claude\/research\.md/
       'Promote stale verified research into ARCHITECTURE.md, DEVELOPMENT.md, Serena, memory, or issues, then compact the active cache.'
     when /SESSION_HANDOFF\.md/
@@ -341,7 +373,7 @@ class ValidationReport
     # Check global .mcp.json
     global_mcp = File.expand_path('~/.mcp.json')
     if File.exist?(global_mcp)
-      check_mcp_file(global_mcp, local_mcps, 'global', issues_found)
+      check_mcp_file(global_mcp, local_mcps, 'global', issues_found, project_local: false)
     end
 
     # Check project .mcp.json files
@@ -349,7 +381,7 @@ class ValidationReport
       mcp_file = File.join(SANE_APPS_ROOT, project, '.mcp.json')
       next unless File.exist?(mcp_file)
 
-      check_mcp_file(mcp_file, local_mcps, project, issues_found)
+      check_mcp_file(mcp_file, local_mcps, project, issues_found, project_local: true)
     end
 
     # === HOOK FILES CHECK ===
@@ -412,12 +444,8 @@ class ValidationReport
       end
     end
 
-    # === MEMORY.JSON EXISTENCE CHECK ===
-    # Every .mcp.json referencing memory should have existing memory.json
-    check_memory_json_files(issues_found)
-
     # === GLOBAL MCP PATH CHECK ===
-    # Verify global .mcp.json paths are valid
+    # Verify legacy global .mcp.json paths are valid when present.
     check_global_mcp_paths(issues_found)
 
     # === ENVIRONMENT VARIABLE LOCATION CHECK ===
@@ -447,7 +475,7 @@ class ValidationReport
     end
   end
 
-  def check_mcp_file(path, local_mcps, label, issues_found)
+  def check_mcp_file(path, local_mcps, label, issues_found, project_local: false)
     begin
       config = JSON.parse(File.read(path))
       servers = config['mcpServers'] || {}
@@ -460,7 +488,11 @@ class ValidationReport
 
         # Check if using npx (npm) instead of local
         if command == 'npx' || args.any? { |a| a.include?('@') || a.include?('latest') }
-          issues_found << "[#{label}] #{name} using npm instead of local (#{local_path})"
+          if project_local
+            @warnings << "Q0: [#{label}] #{name} project fallback uses npm; user-level local MCP config remains preferred (#{local_path})"
+          else
+            issues_found << "[#{label}] #{name} using npm instead of local (#{local_path})"
+          end
         end
 
         # Check if local path exists (don't hardcode username/home path)
@@ -513,37 +545,7 @@ class ValidationReport
     # Best-effort load only; validation continues with existing ENV.
   end
 
-  # Check that every .mcp.json memory path points to existing file
-  def check_memory_json_files(issues_found)
-    # Check global
-    global_mcp = File.expand_path('~/.mcp.json')
-    if File.exist?(global_mcp)
-      check_memory_path(global_mcp, 'global', issues_found)
-    end
-
-    # Check project .mcp.json files
-    PROJECTS.each do |project|
-      mcp_file = File.join(SANE_APPS_ROOT, project, '.mcp.json')
-      next unless File.exist?(mcp_file)
-      check_memory_path(mcp_file, project, issues_found)
-    end
-  end
-
-  def check_memory_path(mcp_file, label, issues_found)
-    begin
-      config = JSON.parse(File.read(mcp_file))
-      memory_args = config.dig('mcpServers', 'memory', 'args') || []
-      # Memory path is typically the last argument
-      memory_path = memory_args.find { |a| a.include?('memory.json') }
-      if memory_path && !File.exist?(memory_path)
-        issues_found << "[#{label}] memory.json missing: #{memory_path}"
-      end
-    rescue JSON::ParserError
-      # Already caught elsewhere
-    end
-  end
-
-  # Check global .mcp.json paths are valid (not pointing to old locations)
+  # Check legacy global .mcp.json paths are valid (not pointing to old locations).
   def check_global_mcp_paths(issues_found)
     global_mcp = File.expand_path('~/.mcp.json')
     return unless File.exist?(global_mcp)
@@ -1675,6 +1677,7 @@ class ValidationReport
 
       check_context_file_sizes(expanded_path, File.basename(expanded_path), issues_found, warnings_found)
     end
+    check_sop_policy_changes_need_enforcement(issues_found, warnings_found)
 
     @metrics[:documentation_currency] = {
       issues: issues_found.size,
@@ -1713,10 +1716,95 @@ class ValidationReport
         issues_found << "[#{app_name}] SESSION_HANDOFF.md is #{lines} lines (active handoff cap: #{HANDOFF_MAX_LINES}); compact older sessions into durable docs or memory"
       end
     end
+
+    development_path = File.join(project_path, 'DEVELOPMENT.md')
+    if File.exist?(development_path)
+      lines = line_count(development_path)
+      if lines > DEVELOPMENT_HARD_LINES
+        issues_found << "[#{app_name}] DEVELOPMENT.md is #{lines} lines (required startup doc cap: #{DEVELOPMENT_HARD_LINES}); move deep walkthroughs into templates, ARCHITECTURE.md, or command help"
+      elsif lines > DEVELOPMENT_WARNING_LINES
+        warnings_found << "[#{app_name}] DEVELOPMENT.md is #{lines} lines; nearing required startup doc cap"
+      end
+    end
   end
 
   def line_count(path)
     File.foreach(path).count
+  end
+
+  def saneprocess_repo_root
+    File.expand_path('..', __dir__)
+  end
+
+  def check_sop_policy_changes_need_enforcement(issues_found, _warnings_found)
+    repo_root = saneprocess_repo_root
+    return unless Dir.exist?(File.join(repo_root, '.git'))
+
+    changed_files = git_changed_files(repo_root)
+    return if changed_files.empty?
+    return if changed_files.any? { |path| enforcement_surface_path?(path) }
+
+    policy_docs = changed_files.select { |path| sop_policy_doc_path?(path) }
+    return if policy_docs.empty?
+
+    policy_lines = policy_docs.flat_map do |path|
+      lines = changed_policy_lines(repo_root, path)
+      next [] if lines.any? { |line| line.include?(SOP_PROSE_ONLY_EXCEPTION_MARKER) }
+
+      lines
+    end
+    policy_lines.select! { |line| line.match?(SOP_POLICY_KEYWORD_PATTERN) }
+    return if policy_lines.empty?
+
+    sample = policy_lines.first.strip.gsub(/\s+/, ' ')[0, 120]
+    issues_found << "SOP policy wording changed without enforcement surface; changed docs: #{policy_docs.join(', ')}; sample: #{sample.inspect}. Pair SOP/policy changes with hooks, SaneMaster guards, eval fixtures, validation checks, or tests, or add #{SOP_PROSE_ONLY_EXCEPTION_MARKER} <reason> for prose-only guidance."
+  rescue StandardError => e
+    @warnings << "Q10 DOCS: SOP enforcement-diff check skipped: #{e.message}"
+  end
+
+  def git_changed_files(repo_root)
+    changed = []
+    [%w[diff --name-only --], %w[diff --cached --name-only --]].each do |args|
+      stdout, _stderr, status = Open3.capture3('git', '-C', repo_root, *args)
+      next unless status.success?
+
+      changed.concat(stdout.lines.map(&:strip).reject(&:empty?))
+    end
+
+    stdout, _stderr, status = Open3.capture3('git', '-C', repo_root, 'ls-files', '--others', '--exclude-standard')
+    changed.concat(stdout.lines.map(&:strip).reject(&:empty?)) if status.success?
+    changed.uniq
+  end
+
+  def changed_policy_lines(repo_root, relative_path)
+    full_path = File.join(repo_root, relative_path)
+    return [] unless File.exist?(full_path)
+
+    if git_tracked_file?(repo_root, relative_path)
+      lines = []
+      [%w[diff --unified=0 --], %w[diff --cached --unified=0 --]].each do |args|
+        stdout, _stderr, status = Open3.capture3('git', '-C', repo_root, *args, relative_path)
+        next unless status.success?
+
+        lines.concat(stdout.lines.grep(/^\+(?!\+\+)/).map { |line| line.sub(/^\+/, '') })
+      end
+      return lines
+    end
+
+    File.readlines(full_path, chomp: true)
+  end
+
+  def git_tracked_file?(repo_root, relative_path)
+    _stdout, _stderr, status = Open3.capture3('git', '-C', repo_root, 'ls-files', '--error-unmatch', relative_path)
+    status.success?
+  end
+
+  def sop_policy_doc_path?(relative_path)
+    SOP_POLICY_DOC_PATHS.include?(relative_path)
+  end
+
+  def enforcement_surface_path?(relative_path)
+    SOP_ENFORCEMENT_SURFACE_PATTERNS.any? { |pattern| relative_path.match?(pattern) }
   end
 
   # Q11: CROSS-CHANNEL VERSION CONSISTENCY

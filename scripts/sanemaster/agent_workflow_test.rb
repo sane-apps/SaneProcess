@@ -31,7 +31,7 @@ exit(run_tests('SaneMaster Agent Workflow Tests') do
       result = subject.run_agent_eval_fixture(File.expand_path('../agent_eval_fixtures.json', __dir__))
 
       assert(result[:passed], result[:cases].reject { |entry| entry[:passed] }.inspect)
-      assert_eq(result[:case_count], 11)
+      assert_eq(result[:case_count], 17)
       true
     end
 
@@ -41,6 +41,25 @@ exit(run_tests('SaneMaster Agent Workflow Tests') do
 
       assert_includes(actual[:commands], 'tool_discovery')
       assert_includes(actual[:skills], 'evolve')
+      true
+    end
+
+    test('classification routes iOS simulator UI proof to XcodeBuildMCP') do
+      subject = AgentWorkflowHarness.new('/tmp/saneprocess-agent-workflow-test.jsonl')
+      actual = subject.classify_agent_prompt('Build and run SaneScan on an iPhone simulator, tap through onboarding, capture screenshots, and inspect accessibility hierarchy.')
+
+      assert_includes(actual[:commands], 'xcodebuildmcp')
+      assert(actual[:notes].any? { |note| note.include?('XcodeBuildMCP') }, actual.inspect)
+      assert(actual[:notes].any? { |note| note.include?('official Xcode MCP') }, actual.inspect)
+      true
+    end
+
+    test('classification keeps official Xcode MCP for IDE-native lookups') do
+      subject = AgentWorkflowHarness.new('/tmp/saneprocess-agent-workflow-test.jsonl')
+      actual = subject.classify_agent_prompt('Use the official Xcode MCP to inspect issue navigator and preview state.')
+
+      assert_includes(actual[:commands], 'xcode_mcpbridge')
+      assert(!actual[:commands].include?('xcodebuildmcp'), actual.inspect)
       true
     end
   end

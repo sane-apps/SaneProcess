@@ -109,7 +109,7 @@ For bootstrap tasks, use subagents with verification:
 | **Signing Identity** | `Developer ID Application: Your Name (YOUR_TEAM_ID)` |
 | **Keychain Profile** | `notarytool` |
 | **API Key ID** | `YOUR_API_KEY_ID` |
-| **API Key Issuer** | `c98b1e0a-8d10-4fce-a417-536b31c09bfb` |
+| **API Key Issuer** | `YOUR_ISSUER_ID` |
 | **GitHub Org** | `sane-apps` |
 | **Apple ID** | `your-apple-id@example.com` |
 
@@ -232,7 +232,7 @@ Set in repo Settings → Secrets → Actions only when needed:
 | `APPLE_TEAM_ID` | `YOUR_TEAM_ID` |
 | `NOTARY_API_KEY` | Contents of AuthKey_YOUR_API_KEY_ID.p8 |
 | `NOTARY_API_KEY_ID` | `YOUR_API_KEY_ID` |
-| `NOTARY_API_ISSUER_ID` | `c98b1e0a-8d10-4fce-a417-536b31c09bfb` |
+| `NOTARY_API_ISSUER_ID` | `YOUR_ISSUER_ID` |
 
 ---
 
@@ -626,7 +626,7 @@ team_id("YOUR_TEAM_ID")
 default_platform(:mac)
 
 API_KEY_ID = "YOUR_API_KEY_ID"
-API_KEY_ISSUER_ID = "c98b1e0a-8d10-4fce-a417-536b31c09bfb"
+API_KEY_ISSUER_ID = "YOUR_ISSUER_ID"
 API_KEY_PATH = "keys/AuthKey_YOUR_API_KEY_ID.p8"
 
 platform :mac do
@@ -653,18 +653,18 @@ end
   "mcpServers": {
     "apple-docs": {
       "command": "npx",
-      "args": ["-y", "@mweinbach/apple-docs-mcp@latest"]
+      "args": ["-y", "@mweinbach/apple-docs-mcp@1.3.1"]
     },
     "github": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "args": ["-y", "@modelcontextprotocol/server-github@2025.4.8"],
       "env": {
         "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
       }
     },
     "context7": {
       "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp@latest"]
+      "args": ["-y", "@upstash/context7-mcp@2.2.5"]
     }
   }
 }

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import importlib.util
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("ls-sales.py")
@@ -45,6 +47,46 @@ def make_order(
 
 
 class LsSalesTests(unittest.TestCase):
+    def test_fetch_orders_follows_lemon_links_next(self):
+        calls = []
+
+        def fake_run(cmd, capture_output, text):
+            url = cmd[5]
+            calls.append(url)
+            page_one = {
+                "data": [make_order(order_id="1")],
+                "links": {"next": "https://api.lemonsqueezy.com/v1/orders?page%5Bnumber%5D=2&page%5Bsize%5D=100"},
+            }
+            page_two = {
+                "data": [make_order(order_id="2")],
+                "links": {"next": None},
+            }
+            stdout = json.dumps(page_one if len(calls) == 1 else page_two)
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+        with mock.patch.object(LS_SALES.subprocess, "run", side_effect=fake_run):
+            orders = LS_SALES.fetch_orders("api-key")
+
+        self.assertEqual([order["id"] for order in orders], ["1", "2"])
+        self.assertIn("page%5Bsize%5D=100", calls[0])
+        self.assertEqual(calls[1], "https://api.lemonsqueezy.com/v1/orders?page%5Bnumber%5D=2&page%5Bsize%5D=100")
+
+    def test_fetch_orders_retries_transient_non_json_response(self):
+        calls = []
+
+        def fake_run(_cmd, capture_output, text):
+            calls.append(1)
+            if len(calls) == 1:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout=json.dumps({"data": [], "links": {}}), stderr="")
+
+        with mock.patch.object(LS_SALES.subprocess, "run", side_effect=fake_run), \
+             mock.patch("time.sleep"):
+            orders = LS_SALES.fetch_orders("api-key")
+
+        self.assertEqual(orders, [])
+        self.assertEqual(len(calls), 2)
+
     def test_filter_orders_excludes_refunded_by_default(self):
         args = SimpleNamespace(month=False, days=None, json=False, include_refunded=False)
         orders = [

@@ -5,6 +5,7 @@ require 'fileutils'
 require 'json'
 require 'stringio'
 require 'tmpdir'
+require 'zlib'
 
 require_relative '../hooks/test/test_framework'
 require_relative 'customer_ui_contract'
@@ -21,8 +22,39 @@ ensure
   $stdout = original_stdout
 end
 
+def with_env(overrides)
+  previous = {}
+  overrides.each_key { |key| previous[key] = ENV.key?(key) ? ENV[key] : :__missing__ }
+  overrides.each do |key, value|
+    value.nil? ? ENV.delete(key) : ENV[key] = value
+  end
+  yield
+ensure
+  previous.each do |key, value|
+    value == :__missing__ ? ENV.delete(key) : ENV[key] = value
+  end
+end
+
 def write_test_png(path, width: 160, height: 120)
   File.binwrite(path, "\x89PNG\r\n\x1A\n".b + ("\0" * 8) + [width, height].pack('NN') + ("\0" * 16))
+end
+
+def write_test_png_with_text(path, text:, source: 'outputs/shared-source.png', width: 160, height: 120)
+  chunk = lambda do |type, payload|
+    [payload.bytesize].pack('N') + type + payload + [Zlib.crc32(type + payload)].pack('N')
+  end
+  row = "\0".b + ("\xFF\x55\x00".b * width)
+  raw = row * height
+  ihdr = [width, height, 8, 2, 0, 0, 0].pack('NNC5')
+  File.binwrite(
+    path,
+    "\x89PNG\r\n\x1A\n".b +
+      chunk.call('IHDR', ihdr) +
+      chunk.call('tEXt', "SaneSource\0#{source}") +
+      chunk.call('tEXt', "SaneAction\0#{text}") +
+      chunk.call('IDAT', Zlib::Deflate.deflate(raw)) +
+      chunk.call('IEND', ''.b)
+  )
 end
 
 class ReleaseGuardrailHarness
@@ -653,6 +685,87 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('ignores client-local MCP, agent, and dependency cache config when validating a customer UI receipt') do
+      Dir.mktmpdir('customer-ui-client-config-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: primary-toggle
+                title: Primary toggle works
+                surfaces: [Main window]
+                steps: [Click primary toggle]
+                assertions: [Visible state changes]
+                evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [mini_click, screenshot]
+                historical_failure_classes: [activation_noop]
+                functional_state:
+                  description: Default seeded test window with the primary toggle visible
+                  setup_steps: [Launch the Mini test fixture before clicking]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          write_test_png(File.join(dir, 'outputs', 'saneexample-main.png'))
+          File.write(File.join(dir, 'outputs', 'saneexample-main-clicks.json'), '{"clicked":true}')
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          File.write(
+            File.join(dir, 'outputs', 'customer_ui_action_receipt.json'),
+            JSON.pretty_generate(
+              app: 'SaneExample',
+              status: 'passed',
+              host: 'mini',
+              generated_at: Time.now.utc.iso8601,
+              manifest_sha256: report[:manifest_sha256],
+              source_fingerprint: report[:source_fingerprint],
+              tested_action_ids: ['primary-toggle'],
+              action_results: {
+                'primary-toggle' => {
+                  status: 'passed',
+                  proof_level: 'runtime_visual',
+                  functional_state: {
+                    status: 'established',
+                    detail: 'Default Mini test fixture loaded before clicking'
+                  },
+                  evidence: [
+                    { type: 'mini_click', detail: 'Clicked primary toggle on the Mini', path: 'outputs/saneexample-main-clicks.json' },
+                    { type: 'screenshot', detail: 'Captured Mini screenshot after the toggle changed visible state', path: 'outputs/saneexample-main.png' }
+                  ],
+                  workflow: {
+                    runner: 'scripts/customer_ui_action_sweep.rb primary-toggle',
+                    steps_completed: ['Click primary toggle'],
+                    outcome: 'Visible state changed after the Mini click',
+                    artifacts: ['outputs/saneexample-main-clicks.json', 'outputs/saneexample-main.png']
+                  }
+                }
+              },
+              screenshots: ['outputs/saneexample-main.png']
+            )
+          )
+          FileUtils.mkdir_p(File.join(dir, '.claude'))
+          FileUtils.mkdir_p(File.join(dir, '.codex'))
+          FileUtils.mkdir_p(File.join(dir, 'node_modules', '.cache', 'wrangler'))
+          File.write(File.join(dir, '.mcp.json'), '{"mcpServers":{}}')
+          File.write(File.join(dir, '.claude', 'settings.local.json'), '{"local":true}')
+          File.write(File.join(dir, '.codex', 'session.json'), '{"local":true}')
+          File.write(File.join(dir, 'node_modules', '.cache', 'wrangler', 'pages.json'), '{"account":"local"}')
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(report[:ok], "expected client-local config not to stale customer UI receipt: #{report[:issues].inspect}")
+      end
+      true
+    end
+
     test('blocks coarse customer UI receipts that only list covered ids') do
       Dir.mktmpdir('coarse-customer-ui-contract-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'Tests'))
@@ -944,6 +1057,185 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
 
         assert(!report[:ok], 'expected reused screenshot to block release proof')
         assert_includes(report[:issues].join("\n"), 'Screenshot artifact reused across release actions')
+      end
+      true
+    end
+
+    test('rejects screenshot reuse when only PNG metadata differs') do
+      Dir.mktmpdir('customer-ui-reused-pixels-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: appearance-customization-actions
+                title: First action works
+                surfaces: [Main window]
+                steps: [Click first]
+                assertions: [First state changes]
+                evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [mini_click, screenshot]
+                historical_failure_classes: [activation_noop]
+                functional_state:
+                  description: Default fixture
+                  setup_steps: [Launch fixture]
+              - id: startup-wake-appearance-recovery
+                title: Second action works
+                surfaces: [Main window]
+                steps: [Click second]
+                assertions: [Second state changes]
+                evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [mini_click, screenshot]
+                historical_failure_classes: [activation_noop]
+                functional_state:
+                  description: Default fixture
+                  setup_steps: [Launch fixture]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          write_test_png_with_text(File.join(dir, 'outputs', 'first.png'), text: 'appearance-customization-actions')
+          write_test_png_with_text(File.join(dir, 'outputs', 'second.png'), text: 'startup-wake-appearance-recovery')
+          File.write(File.join(dir, 'outputs', 'first-click.json'), '{"clicked":"first"}')
+          File.write(File.join(dir, 'outputs', 'second-click.json'), '{"clicked":"second"}')
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          receipt = {
+            app: 'SaneExample',
+            status: 'passed',
+            host: 'mini',
+            generated_at: Time.now.utc.iso8601,
+            manifest_sha256: report[:manifest_sha256],
+            source_fingerprint: report[:source_fingerprint],
+            tested_action_ids: %w[appearance-customization-actions startup-wake-appearance-recovery],
+            screenshots: ['outputs/first.png', 'outputs/second.png'],
+            action_results: {
+              'appearance-customization-actions' => {
+                status: 'passed',
+                proof_level: 'runtime_visual',
+                functional_state: { status: 'established', detail: 'Default fixture' },
+                evidence: [
+                  { type: 'mini_click', detail: 'Clicked first', path: 'outputs/first-click.json' },
+                  { type: 'screenshot', detail: 'Captured first', path: 'outputs/first.png' }
+                ],
+                workflow: {
+                  runner: 'scripts/customer_ui_action_sweep.rb appearance-customization-actions',
+                  steps_completed: ['Click first'],
+                  outcome: 'First state changed',
+                  artifacts: ['outputs/first-click.json', 'outputs/first.png']
+                }
+              },
+              'startup-wake-appearance-recovery' => {
+                status: 'passed',
+                proof_level: 'runtime_visual',
+                functional_state: { status: 'established', detail: 'Default fixture' },
+                evidence: [
+                  { type: 'mini_click', detail: 'Clicked second', path: 'outputs/second-click.json' },
+                  { type: 'screenshot', detail: 'Captured second', path: 'outputs/second.png' }
+                ],
+                workflow: {
+                  runner: 'scripts/customer_ui_action_sweep.rb startup-wake-appearance-recovery',
+                  steps_completed: ['Click second'],
+                  outcome: 'Second state changed',
+                  artifacts: ['outputs/second-click.json', 'outputs/second.png']
+                }
+              }
+            }
+          }
+          File.write(File.join(dir, 'outputs', 'customer_ui_action_receipt.json'), JSON.pretty_generate(receipt))
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected reused screenshot pixels to block release proof')
+        assert_includes(report[:issues].join("\n"), 'Identical screenshot pixels reused across release actions')
+      end
+      true
+    end
+
+    test('customer UI contract fails failed runtime state rows') do
+      Dir.mktmpdir('customer-ui-runtime-state-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            runtime_state_matrix:
+              fullscreen_transition:
+                why: Fullscreen transitions can regress menu-bar visuals.
+                action_ids: [appearance-action]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime, screenshot]
+                runner: scripts/customer_ui_action_sweep.rb
+            actions:
+              - id: appearance-action
+                title: Appearance action works
+                surfaces: [Menu bar]
+                steps: [Toggle appearance]
+                assertions: [Tint remains visible]
+                evidence: [screenshot]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime, screenshot]
+                historical_failure_classes: [layout_visual_regression]
+                functional_state:
+                  description: Default fixture
+                  setup_steps: [Launch fixture]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          write_test_png(File.join(dir, 'outputs', 'appearance.png'))
+          File.write(File.join(dir, 'outputs', 'runtime.log'), 'Appearance tint pixels ok')
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          receipt = {
+            app: 'SaneExample',
+            status: 'passed',
+            host: 'mini',
+            generated_at: Time.now.utc.iso8601,
+            manifest_sha256: report[:manifest_sha256],
+            source_fingerprint: report[:source_fingerprint],
+            tested_action_ids: ['appearance-action'],
+            runtime_state_results: [
+              { id: 'fullscreen_transition', status: 'failed', evidence_paths: [] }
+            ],
+            screenshots: ['outputs/appearance.png'],
+            action_results: {
+              'appearance-action' => {
+                status: 'passed',
+                proof_level: 'full_runtime_completion',
+                functional_state: { status: 'established', detail: 'Default fixture' },
+                evidence: [
+                  { type: 'mini_runtime', detail: '/tmp/sanebar_runtime.log: Appearance tint pixels ok', path: 'outputs/runtime.log' },
+                  { type: 'screenshot', detail: 'Captured appearance', path: 'outputs/appearance.png' }
+                ],
+                workflow: {
+                  runner: 'scripts/customer_ui_action_sweep.rb appearance-action',
+                  steps_completed: ['Toggle appearance'],
+                  outcome: 'Tint remained visible',
+                  artifacts: ['outputs/runtime.log', 'outputs/appearance.png']
+                }
+              }
+            }
+          }
+          File.write(File.join(dir, 'outputs', 'customer_ui_action_receipt.json'), JSON.pretty_generate(receipt))
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected failed runtime state row to block release proof')
+        assert_includes(report[:issues].join("\n"), 'runtime_state_results fullscreen_transition: status is "failed"')
       end
       true
     end
@@ -1531,6 +1823,46 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
   end
 
   test_category('App Store lane gating') do
+    test('resolves ASC credentials from env without SaneApps fallback') do
+      Dir.mktmpdir('asc-credentials-') do |dir|
+        key_path = File.join(dir, 'AuthKey_TEST.p8')
+        File.write(key_path, 'not-a-real-key')
+        with_env(
+          'SANE_NO_KEYCHAIN' => '1',
+          'ASC_AUTH_KEY_ID' => 'TESTKEY123',
+          'ASC_AUTH_ISSUER_ID' => '00000000-0000-0000-0000-000000000000',
+          'ASC_AUTH_KEY_PATH' => key_path,
+          'ASC_KEY_ID' => nil,
+          'ASC_ISSUER_ID' => nil,
+          'ASC_KEY_PATH' => nil
+        ) do
+          credentials = subject.send(:resolved_asc_credentials)
+          assert_eq(credentials[:key_id], 'TESTKEY123')
+          assert_eq(credentials[:issuer_id], '00000000-0000-0000-0000-000000000000')
+          assert_eq(credentials[:key_path], key_path)
+        end
+      end
+      true
+    end
+
+    test('missing ASC credentials do not synthesize SaneApps defaults') do
+      with_env(
+        'SANE_NO_KEYCHAIN' => '1',
+        'ASC_AUTH_KEY_ID' => '',
+        'ASC_AUTH_ISSUER_ID' => '',
+        'ASC_AUTH_KEY_PATH' => '',
+        'ASC_KEY_ID' => '',
+        'ASC_ISSUER_ID' => '',
+        'ASC_KEY_PATH' => ''
+      ) do
+        credentials = subject.send(:resolved_asc_credentials)
+        assert_eq(credentials[:key_id], '')
+        assert_eq(credentials[:issuer_id], '')
+        assert_eq(credentials[:key_path], '')
+      end
+      true
+    end
+
     test('appstore preflight skips projects whose App Store lane is disabled') do
       Dir.mktmpdir('disabled-appstore-lane-') do |dir|
         File.write(
@@ -1858,6 +2190,17 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert(!verify_index.nil?, 'expected release.sh to invoke SaneMaster verify first')
       assert(!xcodebuild_index.nil?, 'expected raw xcodebuild fallback to remain available')
       assert(verify_index < xcodebuild_index, 'expected SaneMaster verify path before raw xcodebuild fallback')
+      true
+    end
+
+    test('release.sh does not hardcode SaneApps ASC credentials') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+
+      assert(!release_script.include?('AuthKey_S34998ZCRT.p8'), 'release.sh should not hardcode the SaneApps key path')
+      assert(!release_script.include?('ASC_AUTH_KEY_ID:-S34998ZCRT'), 'release.sh should not default to the SaneApps key id')
+      assert(!release_script.include?('ASC_AUTH_ISSUER_ID:-c98b1e0a'), 'release.sh should not default to the SaneApps issuer id')
+      assert_includes(release_script, 'App Store releases require ASC API credentials.')
+      assert_includes(release_script, 'Set ASC_AUTH_KEY_PATH, ASC_AUTH_KEY_ID, ASC_AUTH_ISSUER_ID')
       true
     end
 

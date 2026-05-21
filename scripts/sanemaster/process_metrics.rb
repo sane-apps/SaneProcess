@@ -2,6 +2,7 @@
 
 require 'json'
 require 'time'
+require 'digest'
 require_relative '../hooks/core/process_metrics'
 
 module SaneMasterModules
@@ -21,9 +22,11 @@ module SaneMasterModules
       args = args.dup
       json_path = extract_flag_value(args, '--export-json')
       html_path = extract_flag_value(args, '--export-html')
+      otel_path = extract_flag_value(args, '--export-otel')
       summary = process_metrics_summary(read_process_metric_events)
       export_process_metrics_json(summary, json_path) if json_path
       export_process_metrics_html(summary, html_path) if html_path
+      export_process_metrics_otel(read_process_metric_events, otel_path) if otel_path
 
       if args.include?('--json')
         puts JSON.pretty_generate(summary)
@@ -33,6 +36,7 @@ module SaneMasterModules
         puts "Metrics path: #{process_metrics_path}"
         puts "JSON export: #{json_path}" if json_path
         puts "HTML export: #{html_path}" if html_path
+        puts "OpenTelemetry export: #{otel_path}" if otel_path
         puts "Events: #{summary[:total_events]}"
         puts
         puts "Verify attempts: #{summary[:verify][:attempts]}"
@@ -129,6 +133,104 @@ module SaneMasterModules
     def export_process_metrics_html(summary, path)
       FileUtils.mkdir_p(File.dirname(File.expand_path(path)))
       File.write(path, process_metrics_html(summary))
+    end
+
+    def export_process_metrics_otel(events, path)
+      FileUtils.mkdir_p(File.dirname(File.expand_path(path)))
+      File.write(path, JSON.pretty_generate(process_metrics_otel_payload(events)))
+    end
+
+    def process_metrics_otel_payload(events)
+      {
+        resourceSpans: [
+          {
+            resource: {
+              attributes: otel_attributes(
+                'service.name' => 'SaneProcess',
+                'service.namespace' => 'SaneApps',
+                'telemetry.sdk.name' => 'saneprocess',
+                'telemetry.sdk.language' => 'ruby'
+              )
+            },
+            scopeSpans: [
+              {
+                scope: {
+                  name: 'saneprocess.process_metrics',
+                  version: '1'
+                },
+                spans: events.map { |event| process_metric_otel_span(event) }.compact
+              }
+            ]
+          }
+        ]
+      }
+    end
+
+    def process_metric_otel_span(event)
+      timestamp = event['started_at'] || event['timestamp']
+      return nil if timestamp.to_s.strip.empty?
+
+      started = Time.parse(timestamp)
+      completed = event['completed_at'] ? Time.parse(event['completed_at'].to_s) : started
+      completed = started if completed < started
+      type = event['type'].to_s.empty? ? 'process_metric' : event['type'].to_s
+      workflow = event['workflow'].to_s
+      name = workflow.empty? ? type : "#{type} #{workflow}"
+      status_code = event.key?('success') ? (event['success'] == true ? 'STATUS_CODE_OK' : 'STATUS_CODE_ERROR') : 'STATUS_CODE_UNSET'
+
+      {
+        traceId: otel_hex_id(event, 32),
+        spanId: otel_hex_id(event.merge('span' => name), 16),
+        name: name,
+        kind: 'SPAN_KIND_INTERNAL',
+        startTimeUnixNano: (started.to_r * 1_000_000_000).to_i.to_s,
+        endTimeUnixNano: (completed.to_r * 1_000_000_000).to_i.to_s,
+        status: { code: status_code },
+        attributes: otel_attributes(otel_event_attributes(event))
+      }
+    rescue ArgumentError
+      nil
+    end
+
+    def otel_event_attributes(event)
+      {
+        'saneprocess.event_type' => event['type'],
+        'saneprocess.project' => event['project'],
+        'saneprocess.cwd' => event['cwd'],
+        'saneprocess.workflow' => event['workflow'],
+        'saneprocess.command_sha256' => event['command_sha256'],
+        'saneprocess.exit_status' => event['exit_status'],
+        'saneprocess.duration_ms' => event['duration_ms'],
+        'host.name' => event['host']
+      }.compact
+    end
+
+    def otel_hex_id(event, length)
+      stable = event.each_with_object({}) { |(key, value), memo| memo[key.to_s] = value }
+                    .sort.to_h
+      Digest::SHA256.hexdigest(JSON.generate(stable))[0, length]
+    end
+
+    def otel_attributes(hash)
+      hash.map do |key, value|
+        {
+          key: key.to_s,
+          value: otel_attribute_value(value)
+        }
+      end
+    end
+
+    def otel_attribute_value(value)
+      case value
+      when true, false
+        { boolValue: value }
+      when Integer
+        { intValue: value.to_s }
+      when Float
+        { doubleValue: value }
+      else
+        { stringValue: value.to_s }
+      end
     end
 
     def process_metrics_html(summary)
@@ -238,12 +340,13 @@ module SaneMasterModules
       verify = events.select { |event| event['type'] == 'verify' }
       sessions = events.select { |event| event['type'] == 'session_end' }
       hook_blocks = events.select { |event| event['type'] == 'hook_block' }
+      visual_smoke = events.select { |event| event['type'] == 'visual_smoke' && event['dry_run'] != true && event['status'].to_s != 'planned' }
       workflow_events = events.reject { |event| %w[verify session_end hook_block].include?(event['type'].to_s) }
       verify_by_project = {}
       verify.group_by { |event| event['project'].to_s.empty? ? 'unknown' : event['project'].to_s }
             .sort.each do |project, project_events|
         attempts = project_events.length
-        passes = project_events.count { |event| event['success'] == true }
+        passes = project_events.count { |event| event['success'] == true && event['tests_run'].to_i.positive? }
         verify_by_project[project] = {
           attempts: attempts,
           passes: passes,
@@ -256,8 +359,9 @@ module SaneMasterModules
         total_events: events.length,
         verify: {
           attempts: verify.length,
-          passes: verify.count { |event| event['success'] == true },
-          pass_rate: verify.empty? ? nil : ((verify.count { |event| event['success'] == true }.to_f / verify.length) * 100).round(1),
+          passes: verify.count { |event| event['success'] == true && event['tests_run'].to_i.positive? },
+          build_only_successes: verify.count { |event| event['success'] == true && event.key?('tests_run') && event['tests_run'].to_i.zero? },
+          pass_rate: verify.empty? ? nil : ((verify.count { |event| event['success'] == true && event['tests_run'].to_i.positive? }.to_f / verify.length) * 100).round(1),
           zero_test_failures: verify.count { |event| event['success'] != true && event['tests_run'].to_i.zero? },
           zero_test_successes: verify.count { |event| event['success'] == true && event.key?('tests_run') && event['tests_run'].to_i.zero? },
           by_project: verify_by_project
@@ -274,6 +378,12 @@ module SaneMasterModules
           by_rule: hook_blocks.group_by { |event| event['rule'].to_s.empty? ? 'unknown' : event['rule'].to_s }
                               .transform_values(&:length)
                               .sort.to_h
+        },
+        visual_smoke: {
+          attempts: visual_smoke.length,
+          passes: visual_smoke.count { |event| event['success'] == true },
+          failures: visual_smoke.count { |event| event['success'] != true },
+          mini_passes: visual_smoke.count { |event| event['success'] == true && event['host'].to_s.downcase.include?('mini') }
         },
         workflow_events: {
           total: workflow_events.length,

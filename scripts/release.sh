@@ -3695,11 +3695,20 @@ prepare_xcode_provisioning_auth() {
     local issuer_id="${ASC_AUTH_ISSUER_ID}"
 
     if [ -z "${key_path}" ] || [ -z "${key_id}" ] || [ -z "${issuer_id}" ]; then
+        if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" != true ]; then
+            log_error "App Store releases require ASC API credentials."
+            log_error "Set ASC_AUTH_KEY_PATH, ASC_AUTH_KEY_ID, ASC_AUTH_ISSUER_ID or keychain services saneprocess.asc.key_path, saneprocess.asc.key_id, saneprocess.asc.issuer_id."
+            return 1
+        fi
         log_warn "ASC auth key values incomplete; xcodebuild will use interactive account auth."
         return 0
     fi
 
     if [ ! -f "${key_path}" ]; then
+        if [ "${APPSTORE_ENABLED}" = "true" ] && [ "${SKIP_APPSTORE}" != true ]; then
+            log_error "ASC_AUTH_KEY_PATH does not exist: ${key_path}"
+            return 1
+        fi
         log_warn "ASC auth key not found at ${key_path}; xcodebuild will use interactive account auth."
         return 0
     fi
@@ -4320,9 +4329,9 @@ NOTARY_API_KEY_PATH="${NOTARY_API_KEY_PATH:-}"
 NOTARY_API_KEY_ID="${NOTARY_API_KEY_ID:-}"
 NOTARY_API_ISSUER_ID="${NOTARY_API_ISSUER_ID:-}"
 NOTARY_AUTH_MODE=""
-ASC_AUTH_KEY_PATH="${ASC_AUTH_KEY_PATH:-${HOME}/.private_keys/AuthKey_S34998ZCRT.p8}"
-ASC_AUTH_KEY_ID="${ASC_AUTH_KEY_ID:-S34998ZCRT}"
-ASC_AUTH_ISSUER_ID="${ASC_AUTH_ISSUER_ID:-c98b1e0a-8d10-4fce-a417-536b31c09bfb}"
+ASC_AUTH_KEY_PATH="${ASC_AUTH_KEY_PATH:-}"
+ASC_AUTH_KEY_ID="${ASC_AUTH_KEY_ID:-}"
+ASC_AUTH_ISSUER_ID="${ASC_AUTH_ISSUER_ID:-}"
 GITHUB_REPO="${GITHUB_REPO:-sane-apps/${APP_NAME}}"
 HOMEBREW_TAP_REPO="${HOMEBREW_TAP_REPO:-sane-apps/homebrew-tap}"
 # Public-channel apps must be actively sold and have verified Basic/Pro gating.

@@ -13,7 +13,7 @@ commands:
 
 # Required documentation (compliance checker validates presence)
 docs:
-  - CLAUDE.md
+  - AGENTS.md
   - README.md
   - DEVELOPMENT.md
   - ARCHITECTURE.md

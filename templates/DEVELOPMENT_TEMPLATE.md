@@ -2,6 +2,9 @@
 
 **Version 1.0** | Last updated: YYYY-MM-DD
 
+> SaneApps internal template. Replace SaneApps paths, brand references,
+> support addresses, and release hosts before reusing this outside SaneApps.
+
 > **SINGLE SOURCE OF TRUTH** for all Developers and AI Agents.
 
 ---
@@ -52,7 +55,7 @@ Real failures from past sessions. Don't repeat them.
 **New to this project? Start here:**
 
 1. **Read Rule #0 first** (Section "The Rules") - It's about HOW to use all other rules
-2. **All files stay in project** - NEVER write files outside `/Users/sj/[AppName]/` unless user explicitly requests it
+2. **All files stay in project** - NEVER write files outside `~/SaneApps/apps/[AppName]/` unless user explicitly requests it
 3. **Use SaneMaster.rb for everything** - `./scripts/SaneMaster.rb verify` for build+test, never raw `xcodebuild`
 4. **Self-rate after every task** - Rate yourself 1-10 on SOP adherence (see Self-Rating section)
 
@@ -82,7 +85,7 @@ Bootstrap runs automatically via SessionStart hook. If it fails, run `./scripts/
 
 ### #1: STAY IN YOUR LANE
 
-✅ DO: Save all files inside `/Users/sj/[AppName]/`
+✅ DO: Save all files inside `~/SaneApps/apps/[AppName]/`
 ❌ DON'T: Create files outside project without asking
 
 ### #2: VERIFY BEFORE YOU TRY

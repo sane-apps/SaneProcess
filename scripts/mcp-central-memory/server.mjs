@@ -399,6 +399,14 @@ const TOOLS = [
         external_id: { type: 'string' }
       },
       required: ['content']
+    },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        ok: { type: 'boolean' },
+        memory: { type: 'object' }
+      },
+      required: ['ok', 'memory']
     }
   },
   {
@@ -414,6 +422,15 @@ const TOOLS = [
         min_similarity: { type: 'number' }
       },
       required: ['query']
+    },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        ok: { type: 'boolean' },
+        count: { type: 'number' },
+        memories: { type: 'array', items: { type: 'object' } }
+      },
+      required: ['ok', 'count', 'memories']
     }
   },
   {
@@ -424,6 +441,15 @@ const TOOLS = [
       properties: {
         limit: { type: 'number' }
       }
+    },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        ok: { type: 'boolean' },
+        count: { type: 'number' },
+        memories: { type: 'array', items: { type: 'object' } }
+      },
+      required: ['ok', 'count', 'memories']
     }
   },
   {
@@ -432,6 +458,14 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {}
+    },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        ok: { type: 'boolean' },
+        stats: { type: 'object' }
+      },
+      required: ['ok', 'stats']
     }
   },
   {
@@ -443,6 +477,15 @@ const TOOLS = [
         external_id: { type: 'string' }
       },
       required: ['external_id']
+    },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        ok: { type: 'boolean' },
+        external_id: { type: 'string' },
+        deleted: { type: 'number' }
+      },
+      required: ['ok']
     }
   },
   {
@@ -455,12 +498,24 @@ const TOOLS = [
         limit: { type: 'number' },
         source: { type: 'string' }
       }
+    },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        ok: { type: 'boolean' },
+        file: { type: 'string' },
+        imported: { type: 'number' },
+        skipped: { type: 'number' },
+        errors: { type: 'array', items: { type: 'string' } }
+      },
+      required: ['ok', 'imported', 'skipped', 'errors']
     }
   }
 ];
 
 function contentResponse(payload) {
   return {
+    structuredContent: payload,
     content: [
       {
         type: 'text',

@@ -109,11 +109,6 @@ hydrate_headless_env
 
 # ─── Configuration ───
 
-ISSUER_ID = ENV['ASC_AUTH_ISSUER_ID'] || ENV['ASC_ISSUER_ID'] || 'c98b1e0a-8d10-4fce-a417-536b31c09bfb'
-KEY_ID = ENV['ASC_AUTH_KEY_ID'] || ENV['ASC_KEY_ID'] || 'S34998ZCRT'
-P8_PATH = File.expand_path(
-  ENV['ASC_AUTH_KEY_PATH'] || ENV['ASC_KEY_PATH'] || '~/.private_keys/AuthKey_S34998ZCRT.p8'
-)
 ASC_BASE = 'https://api.appstoreconnect.apple.com/v1'
 ASC_V2_BASE = 'https://api.appstoreconnect.apple.com/v2'
 
@@ -286,6 +281,31 @@ end
 def present_value(value)
   trimmed = value.to_s.strip
   trimmed.empty? ? nil : trimmed
+end
+
+def resolved_asc_credentials
+  key_path = present_value(ENV['ASC_AUTH_KEY_PATH']) || present_value(ENV['ASC_KEY_PATH'])
+  {
+    issuer_id: present_value(ENV['ASC_AUTH_ISSUER_ID']) || present_value(ENV['ASC_ISSUER_ID']),
+    key_id: present_value(ENV['ASC_AUTH_KEY_ID']) || present_value(ENV['ASC_KEY_ID']),
+    key_path: key_path ? File.expand_path(key_path) : nil
+  }
+end
+
+def require_asc_credentials!
+  credentials = resolved_asc_credentials
+  missing = []
+  missing << 'ASC_AUTH_KEY_ID' if credentials[:key_id].nil?
+  missing << 'ASC_AUTH_ISSUER_ID' if credentials[:issuer_id].nil?
+  missing << 'ASC_AUTH_KEY_PATH' if credentials[:key_path].nil?
+
+  unless missing.empty?
+    log_error "Missing App Store Connect API credentials: #{missing.join(', ')}"
+    log_error 'Set env vars or keychain services saneprocess.asc.key_id, saneprocess.asc.issuer_id, and saneprocess.asc.key_path.'
+    exit 1
+  end
+
+  credentials
 end
 
 def config_value(hash, *keys)
@@ -684,23 +704,24 @@ end
 # ─── JWT Token Generation ───
 
 def generate_jwt
-  unless File.exist?(P8_PATH)
-    log_error "API key not found: #{P8_PATH}"
+  credentials = require_asc_credentials!
+  unless File.exist?(credentials[:key_path])
+    log_error "API key not found: #{credentials[:key_path]}"
     exit 1
   end
 
-  private_key = OpenSSL::PKey::EC.new(File.read(P8_PATH))
+  private_key = OpenSSL::PKey::EC.new(File.read(credentials[:key_path]))
   now = Time.now.to_i
 
   payload = {
-    iss: ISSUER_ID,
+    iss: credentials[:issuer_id],
     iat: now,
     exp: now + 1200, # 20 minutes
     aud: 'appstoreconnect-v1'
   }
 
   header = {
-    kid: KEY_ID,
+    kid: credentials[:key_id],
     typ: 'JWT'
   }
 
@@ -929,6 +950,7 @@ end
 def upload_build(pkg_path, app_id:, version:)
   log_info "Uploading #{File.basename(pkg_path)} via altool..."
 
+  credentials = require_asc_credentials!
   package_info = extract_app_info_from_package(pkg_path)
   cmd =
     if package_info
@@ -940,15 +962,15 @@ def upload_build(pkg_path, app_id:, version:)
         '--bundle-version', package_info[:build_number],
         '--bundle-short-version-string', package_info[:short_version],
         '--wait',
-        '--apiKey', KEY_ID,
-        '--apiIssuer', ISSUER_ID
+        '--apiKey', credentials[:key_id],
+        '--apiIssuer', credentials[:issuer_id]
       ]
     else
       [
         'xcrun', 'altool', '--upload-app',
         '-f', pkg_path,
-        '--apiKey', KEY_ID,
-        '--apiIssuer', ISSUER_ID,
+        '--apiKey', credentials[:key_id],
+        '--apiIssuer', credentials[:issuer_id],
         '-t', pkg_path.end_with?('.ipa') ? 'ios' : 'macos'
       ]
     end

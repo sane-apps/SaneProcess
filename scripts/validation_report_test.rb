@@ -232,6 +232,19 @@ class CodexSkillHealthHarness < ValidationReport
   end
 end
 
+class SopPolicyDiffHarness < ValidationReport
+  attr_reader :warnings
+
+  def initialize(repo_root:)
+    super()
+    @repo_root = repo_root
+  end
+
+  def saneprocess_repo_root
+    @repo_root
+  end
+end
+
 include TestFramework
 
 def product_definition(name, slug:, domain:)
@@ -686,6 +699,7 @@ exit(run_tests('Validation report tests') do
       Dir.mktmpdir('validation-report-context-size') do |tmpdir|
         File.write(File.join(tmpdir, 'AGENTS.md'), ("short instruction\n" * 451))
         File.write(File.join(tmpdir, 'SESSION_HANDOFF.md'), ("old session\n" * 801))
+        File.write(File.join(tmpdir, 'DEVELOPMENT.md'), ("deep walkthrough\n" * 801))
         FileUtils.mkdir_p(File.join(tmpdir, '.claude'))
         File.write(File.join(tmpdir, '.claude', 'research.md'), ("verified finding\n" * 201))
 
@@ -697,6 +711,7 @@ exit(run_tests('Validation report tests') do
         assert(warnings.any? { |warning| warning.include?('AGENTS.md') && warning.include?('nearing Codex') })
         assert(issues.any? { |issue| issue.include?('.claude/research.md is 201 lines') })
         assert(issues.any? { |issue| issue.include?('SESSION_HANDOFF.md is 801 lines') })
+        assert(issues.any? { |issue| issue.include?('DEVELOPMENT.md is 801 lines') })
       end
 
       true
@@ -714,6 +729,63 @@ exit(run_tests('Validation report tests') do
         assert(subject.metrics[:documentation_currency][:details].any? do |detail|
           detail.include?('[SaneProcess] SESSION_HANDOFF.md is 801 lines')
         end)
+      end
+
+      true
+    end
+
+    test('flags SOP policy wording changes without an enforcement surface') do
+      Dir.mktmpdir('validation-report-sop-policy') do |tmpdir|
+        File.write(File.join(tmpdir, 'AGENTS.md'), "# Rules\n\nExisting guidance.\n")
+        init_git_fixture(tmpdir)
+        File.write(File.join(tmpdir, 'AGENTS.md'), "# Rules\n\nAgents must update the SOP after mistakes.\n")
+
+        subject = SopPolicyDiffHarness.new(repo_root: tmpdir)
+        issues = []
+        warnings = []
+        subject.send(:check_sop_policy_changes_need_enforcement, issues, warnings)
+
+        assert(issues.any? { |issue| issue.include?('SOP policy wording changed without enforcement surface') })
+      end
+
+      true
+    end
+
+    test('allows SOP policy wording changes paired with enforcement changes') do
+      Dir.mktmpdir('validation-report-sop-enforced') do |tmpdir|
+        FileUtils.mkdir_p(File.join(tmpdir, 'scripts'))
+        File.write(File.join(tmpdir, 'AGENTS.md'), "# Rules\n\nExisting guidance.\n")
+        File.write(File.join(tmpdir, 'scripts', 'agent_eval_fixtures.json'), '{"version":1,"cases":[]}')
+        init_git_fixture(tmpdir)
+        File.write(File.join(tmpdir, 'AGENTS.md'), "# Rules\n\nAgents must update hooks or evals after process mistakes.\n")
+        File.write(File.join(tmpdir, 'scripts', 'agent_eval_fixtures.json'), '{"version":1,"cases":[{"id":"sop"}]}')
+
+        subject = SopPolicyDiffHarness.new(repo_root: tmpdir)
+        issues = []
+        warnings = []
+        subject.send(:check_sop_policy_changes_need_enforcement, issues, warnings)
+
+        assert_eq(issues, [])
+      end
+
+      true
+    end
+
+    test('allows explicit prose-only SOP policy exceptions with a reason marker') do
+      Dir.mktmpdir('validation-report-sop-prose-only') do |tmpdir|
+        File.write(File.join(tmpdir, 'DEVELOPMENT.md'), "# Development\n\nExisting guidance.\n")
+        init_git_fixture(tmpdir)
+        File.write(
+          File.join(tmpdir, 'DEVELOPMENT.md'),
+          "# Development\n\nSANEPROCESS_PROSE_ONLY_POLICY: public glossary note, no workflow behavior changed.\nAgents must know the term means documentation only here.\n"
+        )
+
+        subject = SopPolicyDiffHarness.new(repo_root: tmpdir)
+        issues = []
+        warnings = []
+        subject.send(:check_sop_policy_changes_need_enforcement, issues, warnings)
+
+        assert_eq(issues, [])
       end
 
       true

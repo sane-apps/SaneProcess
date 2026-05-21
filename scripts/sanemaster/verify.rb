@@ -82,6 +82,7 @@ module SaneMasterModules
             tests_run: result[:tests_run],
             evidence_strength: evidence_strength,
             host: verify_metric_host,
+            source_fingerprint: verify_source_fingerprint,
             duration_seconds: result[:duration],
             include_ui: include_ui,
             signed_tests: signed_tests
@@ -108,6 +109,7 @@ module SaneMasterModules
             tests_run: result[:tests_run],
             evidence_strength: 'failed',
             host: verify_metric_host,
+            source_fingerprint: verify_source_fingerprint,
             duration_seconds: result[:duration],
             include_ui: include_ui,
             signed_tests: signed_tests,
@@ -539,6 +541,26 @@ module SaneMasterModules
         .map(&:chomp)
         .reject(&:empty?)
         .sort
+    end
+
+    def verify_source_fingerprint(repo_path = Dir.pwd)
+      root_out, root_status = Open3.capture2e('git', '-C', repo_path, 'rev-parse', '--show-toplevel')
+      return 'unknown' unless root_status.success?
+
+      root = root_out.strip
+      parts = []
+      [
+        %w[rev-parse HEAD],
+        %w[status --porcelain=v1 --untracked-files=all],
+        %w[diff --binary],
+        %w[diff --cached --binary]
+      ].each do |command|
+        out, = Open3.capture2e('git', '-C', root, *command)
+        parts << out
+      end
+      Digest::SHA256.hexdigest(parts.join("\n---\n"))
+    rescue StandardError
+      'unknown'
     end
 
     def verify_repo_dirt_report(before_snapshot:, repo_path: Dir.pwd)

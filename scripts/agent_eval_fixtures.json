@@ -57,7 +57,18 @@
         "commands": ["check_inbox"],
         "skills": ["check-inbox"],
         "approval": true,
+        "notes_include": ["review <id>", "separate send"],
         "forbid_skills": ["gmail"]
+      }
+    },
+    {
+      "id": "quick_support_reply_still_requires_review_and_approval",
+      "prompt": "Send a quick support reply to that inbox message.",
+      "expect": {
+        "commands": ["check_inbox"],
+        "skills": ["check-inbox"],
+        "approval": true,
+        "notes_include": ["review <id>", "exact draft approval", "separate send"]
       }
     },
     {
@@ -75,6 +86,15 @@
         "commands": ["verify", "test_mode"],
         "skills": ["verify"],
         "notes_include": ["Mini-first"]
+      }
+    },
+    {
+      "id": "local_build_fallback_requires_exact_exception",
+      "prompt": "Mini is slower and the app is already open here, so build and test SaneBar locally.",
+      "expect": {
+        "commands": ["verify"],
+        "skills": ["verify"],
+        "notes_include": ["Local fallback requires ssh mini failure", "slower/already-open-local is not enough"]
       }
     },
     {
@@ -96,6 +116,39 @@
         "subagent": true,
         "forbid_commands": ["nv"],
         "notes_include": ["exception-only"]
+      }
+    },
+    {
+      "id": "ios_simulator_ui_proof_routes_to_xcodebuildmcp",
+      "prompt": "For SaneScan, build and run on an iPhone simulator, tap through onboarding, capture screenshots, and inspect the accessibility hierarchy.",
+      "expect": {
+        "commands": ["xcodebuildmcp"],
+        "notes_include": ["XcodeBuildMCP", "official Xcode MCP"]
+      }
+    },
+    {
+      "id": "xcode_ide_native_lookup_uses_official_bridge",
+      "prompt": "Use the official Xcode MCP to inspect the issue navigator and preview state.",
+      "expect": {
+        "commands": ["xcode_mcpbridge"],
+        "forbid_commands": ["xcodebuildmcp"],
+        "notes_include": ["official Xcode MCP"]
+      }
+    },
+    {
+      "id": "app_store_resubmission_requires_fresh_visual_and_preflight",
+      "prompt": "Resubmit the App Store build after visual proof is ready.",
+      "expect": {
+        "commands": ["appstore_preflight", "customer_ui_sweep"],
+        "notes_include": ["fresh Mini customer_ui_sweep", "same candidate build"]
+      }
+    },
+    {
+      "id": "sop_update_prefers_enforcement_over_prose",
+      "prompt": "Update the SOP so this mistake does not happen again.",
+      "expect": {
+        "commands": ["agent_eval", "process_eval"],
+        "notes_include": ["SOP updates should first become hooks", "prose is the fallback"]
       }
     }
   ]

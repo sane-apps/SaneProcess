@@ -127,7 +127,10 @@ module SaneMasterModules
       elsif text.match?(/\b(check|read|triage|reply|send|resolve|draft).*\b(email|inbox)\b|\binbox\b/)
         commands << 'check_inbox'
         skills << 'check-inbox'
-        approval = true if text.match?(/\b(reply|send|resolve|draft)\b/)
+        if text.match?(/\b(reply|send|resolve|draft)\b/)
+          approval = true
+          notes << 'Support replies require review <id>, exact draft approval, and a separate send command.'
+        end
       end
 
       if text.match?(/\b(sales|revenue)\b/)
@@ -144,7 +147,13 @@ module SaneMasterModules
         skills << 'evolve'
       end
 
-      if text.match?(/\b(verify|does it build|run verification|test suite|build and test|build.*test)\b/)
+      if text.match?(/\b(update|fix|change|add|write).*\b(sop|rule|process)\b|\bso this does(?:n'?t| not) happen again\b|\bmake (?:it|this) enforceable\b/)
+        commands << 'agent_eval'
+        commands << 'process_eval'
+        notes << 'SOP updates should first become hooks, SaneMaster guards, eval fixtures, validation checks, or tests; prose is the fallback.'
+      end
+
+      if text.match?(/\b(verify|does it build|run verification|test suite|build and test|build.*test|\bbuild\b)\b/)
         commands << 'verify'
         skills << 'verify'
         notes << 'Build/test/runtime workflows are Mini-first.'
@@ -158,6 +167,12 @@ module SaneMasterModules
       if text.match?(/\b(ship it|prepare.*release|clear.*shipping|clear for release|release readiness)\b/)
         commands << 'release_preflight'
         skills << 'ship'
+      end
+
+      if text.match?(/\bapp store\b/) && text.match?(/\b(submit|submission|resubmit|resubmission|preflight)\b/)
+        commands << 'appstore_preflight'
+        commands << 'customer_ui_sweep'
+        notes << 'App Store submission needs fresh Mini customer_ui_sweep evidence plus appstore_preflight for the same candidate build.'
       end
 
       if text.match?(/\b(full audit|audit the app|audit docs|documentation audit|docs audit|saneapps audit)\b/)
@@ -174,6 +189,22 @@ module SaneMasterModules
       if text.match?(/\b(ui|visual|screenshot|customer workflow|prove.*works)\b/)
         commands << 'visual_smoke'
         commands << 'customer_ui_sweep' if text.include?('workflow') || text.include?('customer')
+      end
+
+      if text.match?(/\b(local|locally|macbook air|this mac)\b/) && text.match?(/\b(build|test|launch|runtime|verify)\b/)
+        notes << 'Local fallback requires ssh mini failure or explicit per-task approval; slower/already-open-local is not enough.'
+      end
+
+      if text.match?(/\b(ios|iphone|ipad|tvos|watchos|visionos|simulator|device)\b/) &&
+         text.match?(/\b(screenshot|video|tap|swipe|type|gesture|accessibility|hierarchy|lldb|debug|breakpoint|coverage|build.?run|build and run|install|launch|session defaults?)\b/)
+        commands << 'xcodebuildmcp'
+        notes << 'Use XcodeBuildMCP for simulator UI automation, LLDB/device workflows, coverage, or session-default-driven iOS proof when available.'
+        notes << 'Keep Apple xcrun mcpbridge as the official Xcode MCP path for IDE-native tools.'
+      end
+
+      if text.match?(/\b(xcode ide|issue navigator|preview|previews|documentation search|xcrun mcpbridge|official xcode mcp)\b/)
+        commands << 'xcode_mcpbridge'
+        notes << 'Apple xcrun mcpbridge is the official Xcode MCP path.'
       end
 
       if text.match?(/\b(memory|handoff|context|research cache|agent workflow)\b/)

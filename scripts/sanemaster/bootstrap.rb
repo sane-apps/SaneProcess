@@ -346,8 +346,9 @@ module SaneMasterModules
         puts "   ✅ #{source[:label]}: #{servers.keys.count} servers configured"
         servers.keys.sort.each { |server| puts "      - #{server}" }
 
-        # Only project .mcp.json has reliable local memory.json path args.
-        check_memory_json_exists(servers) if source[:label] == '.mcp.json'
+        # Legacy project .mcp.json files may still point at `.claude/memory.json`.
+        # Current SaneProcess memory uses MCP graph/semantic stores instead.
+        check_legacy_memory_json_exists(servers) if source[:label] == '.mcp.json'
       end
 
       if total_servers.zero?
@@ -416,7 +417,7 @@ module SaneMasterModules
       {}
     end
 
-    def check_memory_json_exists(servers)
+    def check_legacy_memory_json_exists(servers)
       return unless servers['memory']
 
       memory_args = servers['memory']['args'] || []

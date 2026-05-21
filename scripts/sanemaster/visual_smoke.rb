@@ -40,6 +40,7 @@ module SaneMasterModules
     def visual_smoke(args)
       options = parse_visual_smoke_args(args)
       result = build_visual_smoke(options)
+      record_visual_smoke_metric(result, options)
       print_visual_smoke_result(result, json: options.json)
       result[:ok]
     rescue ArgumentError => e
@@ -208,6 +209,25 @@ module SaneMasterModules
 
       write_visual_smoke_receipt(result)
       result
+    end
+
+    def record_visual_smoke_metric(result, options)
+      return unless respond_to?(:record_process_metric)
+
+      record_process_metric(
+        'visual_smoke',
+        success: result[:ok] == true && result[:status] == 'passed' && !options.dry_run,
+        status: result[:status],
+        app: result[:app],
+        host: Socket.gethostname,
+        runner: result[:runner],
+        artifacts_count: Array(result[:artifacts]).length,
+        cleanliness_issue_count: Array(result.dig(:cleanliness, :issues)).length,
+        dry_run: options.dry_run == true,
+        reason: result[:reason]
+      )
+    rescue StandardError => e
+      warn "⚠️  visual_smoke metric skipped: #{e.message}" if ENV['DEBUG']
     end
 
     def visual_smoke_commands(options, smoke_dir)

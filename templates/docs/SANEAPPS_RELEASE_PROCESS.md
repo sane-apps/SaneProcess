@@ -112,14 +112,14 @@ MAJOR.MINOR.PATCH
 # Keychain profile for notarization (one-time setup)
 xcrun notarytool store-credentials "notarytool" \
   --apple-id "your@email.com" \
-  --team-id "M78L6FXD48" \
+  --team-id "YOUR_TEAM_ID" \
   --password "app-specific-password"
 ```
 
 ### Signing Identity
 
 - **Development**: `Apple Development`
-- **Release**: `Developer ID Application` (Team: M78L6FXD48)
+- **Release**: `Developer ID Application` (Team: YOUR_TEAM_ID)
 
 ### Release Build
 
@@ -253,7 +253,7 @@ APPLE_CERTIFICATE_PASSWORD  # Cert password
 KEYCHAIN_PASSWORD           # Temp keychain password
 NOTARY_APPLE_ID             # Apple ID email
 NOTARY_PASSWORD             # App-specific password
-NOTARY_TEAM_ID              # M78L6FXD48
+NOTARY_TEAM_ID              # YOUR_TEAM_ID
 SPARKLE_PRIVATE_KEY         # EdDSA signing key
 ```
 

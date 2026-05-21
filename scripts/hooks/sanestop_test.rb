@@ -12,9 +12,40 @@ require 'stringio'
 require 'tmpdir'
 require 'json'
 require 'time'
+require 'digest'
+require 'open3'
 require_relative 'core/state_manager'
 
 module SaneStopTest
+  def self.source_fingerprint
+    root_out, root_status = Open3.capture2e('git', '-C', Dir.pwd, 'rev-parse', '--show-toplevel')
+    return 'unknown' unless root_status.success?
+
+    root = root_out.strip
+    parts = []
+    [
+      %w[rev-parse HEAD],
+      %w[status --porcelain=v1 --untracked-files=all],
+      %w[diff --binary],
+      %w[diff --cached --binary]
+    ].each do |command|
+      out, = Open3.capture2e('git', '-C', root, *command)
+      parts << out
+    end
+    Digest::SHA256.hexdigest(parts.join("\n---\n"))
+  end
+
+  def self.write_verify_metric(path, success: true, tests_run: 12, timestamp: Time.now.utc.iso8601)
+    File.write(path, JSON.generate(
+      timestamp: timestamp,
+      type: 'verify',
+      success: success,
+      tests_run: tests_run,
+      evidence_strength: tests_run.to_i.positive? ? 'tested' : 'build_only',
+      source_fingerprint: source_fingerprint
+    ) + "\n")
+  end
+
   def self.run(process_stop_proc, check_score_variance_proc, check_weasel_words_proc, calculate_sop_score_proc, log_file)
     warn 'SaneStop Self-Test'
     warn '=' * 40
@@ -70,7 +101,7 @@ module SaneStopTest
       warn "  FAIL: Should block unverified edits, got exit #{exit_code}"
     end
 
-    # Test 2b: With edits + verification = allow stop
+    # Test 2b: With edits + structured verification metric = allow stop
     StateManager.update(:verification) do |v|
       v[:tests_run] = true
       v[:last_test_at] = Time.now.iso8601
@@ -80,14 +111,21 @@ module SaneStopTest
       v
     end
 
-    original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
-    exit_code = process_stop_proc.call(false)
-    $stderr.reopen(original_stderr)
+    Dir.mktmpdir('sanestop-strong-verify') do |tmpdir|
+      old_metrics_path = ENV['SANEMASTER_PROCESS_METRICS_PATH']
+      ENV['SANEMASTER_PROCESS_METRICS_PATH'] = File.join(tmpdir, 'process_metrics.jsonl')
+      write_verify_metric(ENV['SANEMASTER_PROCESS_METRICS_PATH'])
+      original_stderr = $stderr.clone
+      $stderr.reopen('/dev/null', 'w')
+      exit_code = process_stop_proc.call(false)
+      $stderr.reopen(original_stderr)
+    ensure
+      ENV['SANEMASTER_PROCESS_METRICS_PATH'] = old_metrics_path
+    end
 
     if exit_code == 0
       passed += 1
-      warn '  PASS: Edits with verification -> allow stop'
+      warn '  PASS: Edits with structured verification -> allow stop'
     else
       failed += 1
       warn "  FAIL: Verified edits should allow stop, got exit #{exit_code}"
@@ -571,13 +609,47 @@ module SaneStopTest
     $stderr.reopen('/dev/null', 'w')
     exit_code = process_stop_proc.call(false)
     $stderr.reopen(original_stderr)
-    if exit_code == 0
+    if exit_code == 2
       passed += 1
-      warn '  PASS: Visual screenshot audit receipt allows stop'
+      warn '  PASS: Loose visual state without structured receipt blocks stop'
     else
       failed += 1
-      warn "  FAIL: Visual screenshot audit receipt should allow stop, got #{exit_code}"
+      warn "  FAIL: Loose visual state without structured receipt should block stop, got #{exit_code}"
     end
+
+    visual_dir = File.join(Dir.pwd, 'outputs', 'visual-audit-sanestop-test')
+    FileUtils.mkdir_p(visual_dir)
+    screenshot_path = File.join(visual_dir, 'screen.png')
+    receipt_path = File.join(visual_dir, 'receipt.json')
+    File.write(screenshot_path, "png fixture\n")
+    File.write(
+      receipt_path,
+      JSON.pretty_generate(
+        type: 'visual_audit',
+        status: 'passed',
+        host: 'mini',
+        inspected: true,
+        generated_at: Time.now.utc.iso8601,
+        screenshots: [screenshot_path]
+      )
+    )
+    StateManager.update(:visual_verification) do |v|
+      v[:required] = true
+      v[:audit_files] = [receipt_path]
+      v
+    end
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Structured visual receipt allows stop'
+    else
+      failed += 1
+      warn "  FAIL: Structured visual receipt should allow stop, got #{exit_code}"
+    end
+    FileUtils.rm_rf(visual_dir)
     StateManager.reset(:visual_verification)
 
     # === Q4 VALIDATION: SESSION TRACKING TESTS ===
@@ -591,12 +663,21 @@ module SaneStopTest
     StateManager.reset(:circuit_breaker)
     StateManager.reset(:handoff_tracking)
     StateManager.update(:enforcement) { |e| e[:blocks] = []; e }
+    ENV['SANEMASTER_PROCESS_METRICS_PATH'] ||= File.join(Dir.tmpdir, "sanestop-validation-#{$$}.jsonl")
+    File.write(ENV['SANEMASTER_PROCESS_METRICS_PATH'], '')
 
     # Test: Session end increments sessions_total
+    previous_client = ENV['SANE_AGENT_CLIENT']
+    ENV['SANE_AGENT_CLIENT'] = 'codex'
     original_stderr = $stderr.clone
     $stderr.reopen('/dev/null', 'w')
     process_stop_proc.call(false)
     $stderr.reopen(original_stderr)
+    if previous_client
+      ENV['SANE_AGENT_CLIENT'] = previous_client
+    else
+      ENV.delete('SANE_AGENT_CLIENT')
+    end
     validation = StateManager.get(:validation)
     if validation[:sessions_total] == 1
       passed += 1
@@ -605,8 +686,25 @@ module SaneStopTest
       failed += 1
       warn "  FAIL: Expected sessions_total=1, got #{validation[:sessions_total]}"
     end
+    rows = File.readlines(ENV['SANEMASTER_PROCESS_METRICS_PATH'], chomp: true).map { |line| JSON.parse(line) }
+    session_receipt = rows.find { |row| row['type'] == 'session_receipt' }
+    if session_receipt &&
+       session_receipt['schema_version'] == 2 &&
+       !session_receipt['session_id'].to_s.empty? &&
+       session_receipt['client_kind'] == 'codex' &&
+       !session_receipt['receipt_id'].to_s.empty? &&
+       !session_receipt['host'].to_s.empty? &&
+       !session_receipt['source_fingerprint'].to_s.empty? &&
+       session_receipt.key?('duration_ms') &&
+       session_receipt.key?('final_verify_success')
+      passed += 1
+      warn '  PASS: client-neutral session receipt recorded'
+    else
+      failed += 1
+      warn '  FAIL: Expected client-neutral session_receipt metric with required fields'
+    end
 
-    # Test: Session with tests marks sessions_with_tests_passing
+    # Test: Session with strong verify metric marks sessions_with_tests_passing
     StateManager.update(:verification) do |v|
       v[:tests_run] = true
       v[:tests_passed] = true
@@ -614,6 +712,7 @@ module SaneStopTest
       v[:last_test_at] = Time.now.iso8601
       v
     end
+    write_verify_metric(ENV['SANEMASTER_PROCESS_METRICS_PATH'])
     $stderr.reopen('/dev/null', 'w')
     process_stop_proc.call(false)
     $stderr.reopen(original_stderr)

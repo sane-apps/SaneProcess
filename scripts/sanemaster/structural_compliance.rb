@@ -13,13 +13,14 @@ require_relative 'saneui_guard'
 
 module SaneMasterModules
   module StructuralCompliance
-    STANDARD_DOCS = %w[CLAUDE.md README.md DEVELOPMENT.md ARCHITECTURE.md SESSION_HANDOFF.md].freeze
+    STANDARD_DOCS = %w[AGENTS.md README.md DEVELOPMENT.md ARCHITECTURE.md SESSION_HANDOFF.md].freeze
 
     EXPECTED_HOOKS = {
       'SessionStart' => 'session_start.rb',
       'UserPromptSubmit' => 'saneprompt.rb',
       'PreToolUse' => 'sanetools.rb',
       'PostToolUse' => 'sanetrack.rb',
+      'TaskCompleted' => 'task_completed_gate.rb',
       'Stop' => 'sanestop.rb'
     }.freeze
 
@@ -29,6 +30,25 @@ module SaneMasterModules
       File.expand_path('~/.claude/plugins/cache/thedotmack'),
       File.expand_path('~/.claude/plugins/marketplaces/thedotmack'),
       File.expand_path('~/.claude-mem')
+    ].freeze
+    PUBLIC_DOCS = [
+      'README.md',
+      'DEVELOPMENT.md',
+      'templates/AGENTS_TEMPLATE.md',
+      'templates/boilerplate/README.md',
+      'templates/boilerplate/SECURITY.md'
+    ].freeze
+    PRIVATE_DOC_TOKENS = [
+      '~/SaneApps',
+      'ssh mini',
+      'Mac Mini',
+      'hi@saneapps.com',
+      'sanebar-downloads',
+      'sane-dist.saneapps.workers.dev',
+      'saneapps.lemonsqueezy.com',
+      'SANEAPPS_GITHUB_HOSTED_EXCEPTION',
+      'S34998ZCRT',
+      'M78L6FXD48'
     ].freeze
 
     Result = Struct.new(:pass, :label, :detail, :fix, keyword_init: true)
@@ -79,6 +99,7 @@ module SaneMasterModules
         check_mcp_consistency
         check_website_config
         check_saneui_source_of_truth
+        check_public_docs_separation
       end
 
       def errors?
@@ -206,6 +227,43 @@ module SaneMasterModules
         end
       end
 
+      def check_public_docs_separation
+        violations = []
+        PUBLIC_DOCS.each do |relative|
+          path = File.join(@path, relative)
+          next unless File.exist?(path)
+
+          private_token_lines(path).each do |entry|
+            violations << "#{relative}:#{entry[:line]} #{entry[:token]}"
+          end
+        end
+
+        if violations.empty?
+          @results[:practice] << Result.new(pass: true, label: 'Public docs separation')
+        else
+          @results[:practice] << Result.new(
+            pass: false,
+            label: 'Public docs separation',
+            detail: violations.first(5).join(', '),
+            fix: 'Move private SaneApps operations under a SaneApps Operator Overlay/Internal heading, or replace with portable placeholders.'
+          )
+        end
+      end
+
+      def private_token_lines(path)
+        internal_section = false
+        File.readlines(path, chomp: true).each_with_index.flat_map do |line, index|
+          internal_section = true if line.match?(/\b(?:SaneApps Operator Overlay|Internal Operator|SaneApps internal template)\b/i)
+          next [] if internal_section
+
+          PRIVATE_DOC_TOKENS.select { |token| line.include?(token) }.map do |token|
+            { line: index + 1, token: token }
+          end
+        end
+      rescue StandardError
+        []
+      end
+
       def check_hook_registration
         unless File.exist?(GLOBAL_SETTINGS)
           @results[:critical] << Result.new(
@@ -230,6 +288,7 @@ module SaneMasterModules
         hooks_section = settings['hooks'] || {}
         missing = []
         no_guard = []
+        masked = []
 
         EXPECTED_HOOKS.each do |hook_type, hook_file|
           entries = hooks_section[hook_type] || []
@@ -242,6 +301,7 @@ module SaneMasterModules
               if cmd.include?(hook_file)
                 found = true
                 guarded = true if cmd.include?('.saneprocess')
+                masked << hook_file if cmd.match?(/\|\|\s*true\b/)
               end
             end
           end
@@ -250,7 +310,7 @@ module SaneMasterModules
           no_guard << hook_file if found && !guarded
         end
 
-        if missing.empty? && no_guard.empty?
+        if missing.empty? && no_guard.empty? && masked.empty?
           @results[:critical] << Result.new(
             pass: true, label: 'Hooks registered',
             detail: "global, #{EXPECTED_HOOKS.count}/#{EXPECTED_HOOKS.count}"
@@ -260,6 +320,12 @@ module SaneMasterModules
             pass: false, label: 'Hooks registered',
             detail: "missing: #{missing.join(', ')}",
             fix: 'Register hooks in ~/.claude/settings.json with .saneprocess guard'
+          )
+        elsif masked.any?
+          @results[:critical] << Result.new(
+            pass: false, label: 'Hooks registered',
+            detail: "masked exits: #{masked.join(', ')}",
+            fix: 'Remove trailing `|| true` from blocking hook commands; use an explicit if/then guard that exits 0 only when the hook should not run.'
           )
         else
           @results[:critical] << Result.new(
@@ -297,6 +363,11 @@ module SaneMasterModules
         project_settings = File.join(@path, '.claude', 'settings.json')
         unless File.exist?(project_settings)
           @results[:config] << Result.new(pass: true, label: 'Project settings clean', detail: 'no project settings.json')
+          return
+        end
+
+        if File.exist?(GLOBAL_SETTINGS) && File.realpath(project_settings) == File.realpath(GLOBAL_SETTINGS)
+          @results[:config] << Result.new(pass: true, label: 'Project settings clean', detail: 'global symlink target')
           return
         end
 

@@ -140,7 +140,7 @@ class SaneMaster
         'check_binary' => { args: '', desc: 'Audit binary for security issues' },
         'test_scan' => { args: '[-v]', desc: 'Scan tests for tautologies and hardcoded values' },
         'launch_readiness' => { args: '[--json] [--max-age-days N]', desc: 'Validate launch calendar gates plus fresh release_preflight proof before any public launch' },
-        'process_metrics' => { args: '[--json] [--export-json PATH] [--export-html PATH]', desc: 'Summarize verify churn, session quality, and hook blocks' },
+        'process_metrics' => { args: '[--json] [--export-json PATH] [--export-html PATH] [--export-otel PATH]', desc: 'Summarize verify churn, session quality, hook blocks, and export audit traces' },
         'near_miss_review' => { args: '[--json] [--metrics PATH] [--limit N|--all] [--min-count N] [--include-test-events]', desc: 'Mine process telemetry for useful near-miss guard/eval candidates' },
         'verify_failure_review' => { args: '[--json] [--metrics PATH] [--limit N|--all] [--min-count N]', desc: 'Cluster zero-test verify failures by likely root cause' },
         'process_eval' => { args: '[--fixture PATH] [--json]', desc: 'Evaluate workflow receipt traces and SOP self-assessment health' },
@@ -413,7 +413,11 @@ class SaneMaster
   end
 
   def run(args)
-    if args.empty?
+    started_at = Time.now.utc
+    command = nil
+    workflow_args = args.dup
+    exit_status = 0
+    if args.empty? || ['--help', '-h'].include?(args.first)
       print_help
       return
     end
@@ -439,7 +443,14 @@ class SaneMaster
     maybe_route_to_mini!(command, args)
 
     dispatch_command(command, args)
+  rescue SystemExit => e
+    exit_status = e.status.is_a?(Integer) ? e.status : (e.success? ? 0 : 1)
+    raise
+  rescue StandardError
+    exit_status = 1
+    raise
   ensure
+    record_sanemaster_workflow_receipt(command, workflow_args, started_at, exit_status) if command
     auto_dedupe_runtime_apps!(command)
   end
 
@@ -915,14 +926,45 @@ PY
   end
 
   def run_external_command_with_workflow_receipt(workflow, *command)
+    started_at = Time.now.utc
     success = system(*command)
+    completed_at = Time.now.utc
+    exit_status = $CHILD_STATUS&.exitstatus || (success ? 0 : 1)
     record_process_metric(
       'workflow_receipt',
+      schema_version: 2,
       workflow: workflow,
       success: success,
-      command: command.join(' ')
+      command: command.join(' '),
+      command_sha256: Digest::SHA256.hexdigest(command.join("\0")),
+      started_at: started_at.iso8601,
+      completed_at: completed_at.iso8601,
+      duration_ms: ((completed_at - started_at) * 1000).round,
+      exit_status: exit_status,
+      host: Socket.gethostname
     ) if respond_to?(:record_process_metric)
-    exit($CHILD_STATUS&.exitstatus || (success ? 0 : 1))
+    exit(exit_status)
+  end
+
+  def record_sanemaster_workflow_receipt(command, args, started_at, exit_status)
+    completed_at = Time.now.utc
+    command_parts = ['ruby', File.join(saneprocess_repo_root, 'scripts', 'SaneMaster.rb'), *Array(args)]
+    record_process_metric(
+      'workflow_receipt',
+      schema_version: 2,
+      workflow: "sanemaster:#{command}",
+      success: exit_status.to_i.zero?,
+      command: command_parts.join(' '),
+      command_sha256: Digest::SHA256.hexdigest(command_parts.join("\0")),
+      started_at: started_at.iso8601,
+      completed_at: completed_at.iso8601,
+      duration_ms: ((completed_at - started_at) * 1000).round,
+      exit_status: exit_status.to_i,
+      host: Socket.gethostname,
+      client: ENV['CLAUDECODE'] || ENV['CLAUDE_CODE'] ? 'claude' : (ENV['CODEX_HOME'] ? 'codex' : 'unknown')
+    )
+  rescue StandardError => e
+    warn "⚠️  Could not record workflow receipt: #{e.message}" if ENV['DEBUG']
   end
 
   def run_status(_args = [])
@@ -1374,7 +1416,7 @@ PY
       out=#{Shellwords.escape(remote_outputs_dir)}
       [ -d "$out" ] || exit 0
       find "$out" -mindepth 1 -maxdepth 1 -print | while IFS= read -r path; do
-        base=$(basename "$path")
+        base=${path##*/}
         case "$base" in
           qa_status.json|release_preflight_status.json|customer_ui_action_receipt.json|validation|customer-ui) continue ;;
         esac

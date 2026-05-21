@@ -7,6 +7,17 @@ require 'time'
 module SaneMasterModules
   module ProcessEval
     DEFAULT_PROCESS_EVAL_FIXTURE = File.expand_path('../process_eval_fixtures.json', __dir__)
+    LIVE_TELEMETRY_TYPES = %w[
+      workflow_receipt verify agent_eval skill_lint process_eval trace_eval
+      gate_review hook_block trajectory_event session_end session_receipt visual_smoke
+    ].freeze
+    REQUIRED_SESSION_RECEIPT_FIELDS = %w[
+      schema_version receipt_id session_id client_name client_kind host git_root
+      git_head source_fingerprint started_at completed_at duration_ms edits
+      unique_files changed_file_count block_count verify_attempts verify_failures
+      final_verify_success final_verify_tests_run final_verify_evidence_strength
+      final_verify_timestamp sop_score base_score scorer_version success
+    ].freeze
 
     def process_eval(args = [])
       options = parse_process_eval_options(args)
@@ -58,13 +69,16 @@ module SaneMasterModules
 
     def build_process_eval(options = {})
       trace_result = run_trace_eval_fixture(options.fetch(:fixture, DEFAULT_PROCESS_EVAL_FIXTURE))
-      sop_result = build_sop_review(read_process_metric_events)
+      events = read_process_metric_events
+      sop_result = build_sop_review(events)
+      live_result = build_live_telemetry_review(events)
       {
         generated_at: Time.now.utc.iso8601,
         fixture: trace_result[:fixture],
-        passed: trace_result[:passed] && sop_result[:blockers].empty?,
+        passed: trace_result[:passed] && sop_result[:blockers].empty? && live_result[:blockers].empty?,
         trace_eval: trace_result,
-        sop_review: sop_result
+        sop_review: sop_result,
+        live_telemetry: live_result
       }
     end
 
@@ -122,7 +136,8 @@ module SaneMasterModules
     end
 
     def build_sop_review(events)
-      sessions = events.select { |event| event['type'] == 'session_end' }
+      session_receipts = events.select { |event| event['type'] == 'session_receipt' }
+      sessions = session_receipts.any? ? session_receipts : events.select { |event| event['type'] == 'session_end' }
       verify = events.select { |event| event['type'] == 'verify' }
       csv_scores = read_sop_rating_csv
       scores = sessions.map { |event| event['sop_score'].to_f }.reject(&:zero?)
@@ -157,15 +172,20 @@ module SaneMasterModules
           event['verify_attempts'].to_i.positive? &&
           event['sop_score'].to_f > 8.0
       end
-      receipt_fields = %w[
+      receipt_fields = session_receipts.any? ? REQUIRED_SESSION_RECEIPT_FIELDS : %w[
         session_id client base_score block_count verify_attempts verify_failures
         verify_zero_test_failures final_verify_success final_verify_tests_run
         final_verify_evidence_strength final_verify_timestamp
       ]
-      recent_receipt_samples = sessions.last(10)
+      recent_receipt_samples = session_receipts.any? ? session_receipts.last(10) : sessions.last(10)
       missing_receipt_fields = receipt_fields.each_with_object({}) do |field, memo|
         missing = recent_receipt_samples.count { |event| event[field].nil? }
         memo[field] = missing if missing.positive?
+      end
+      high_score_missing_receipts = recent_receipt_samples.select do |event|
+        (event['type'] == 'session_receipt' || event['schema_version'].to_i >= 2) &&
+          event['sop_score'].to_f >= 9.0 &&
+          receipt_fields.any? { |field| event[field].nil? }
       end
 
       score_average = scores.empty? ? nil : (scores.sum / scores.length).round(2)
@@ -192,6 +212,11 @@ module SaneMasterModules
       if recent_receipt_samples.any? && missing_receipt_fields.any?
         warnings << "recent session_end metrics are missing receipt fields: #{missing_receipt_fields.map { |field, count| "#{field}=#{count}" }.join(', ')}"
         actions << 'let new sanestop session_end metrics accumulate, then retire old thin SOP rows from active review windows'
+      end
+
+      if high_score_missing_receipts.any?
+        blockers << "#{high_score_missing_receipts.length} high-score session receipt(s) are missing required proof fields"
+        actions << 'do not rate SOP 9+ without complete client-neutral session_receipt fields'
       end
 
       if unrecovered_failures.positive?
@@ -227,6 +252,96 @@ module SaneMasterModules
           rows: csv_scores.length,
           last_score: csv_scores.last && csv_scores.last[:score],
           last_note: csv_scores.last && csv_scores.last[:note]
+        },
+        blockers: blockers.uniq,
+        warnings: warnings.uniq,
+        recommended_actions: actions.uniq
+      }
+    end
+
+    def build_live_telemetry_review(events)
+      relevant = events.select { |event| LIVE_TELEMETRY_TYPES.include?(event['type'].to_s) }
+      recent = relevant.last(100)
+      blockers = []
+      warnings = []
+      actions = []
+
+      blockers << 'no live process telemetry found; process_eval is relying only on fixture traces' if recent.empty?
+
+      runner_backed = recent.reject { |event| %w[session_end session_receipt hook_block trajectory_event].include?(event['type'].to_s) }
+      blockers << 'no recent runner-backed telemetry found for process_eval; session summaries alone are not proof' if recent.any? && runner_backed.empty?
+
+      recent.select { |event| event['type'] == 'workflow_receipt' }.each do |event|
+        label = event['workflow'] || event['command'] || event['timestamp'] || 'unknown workflow_receipt'
+        blockers << "workflow_receipt missing workflow: #{label}" if event['workflow'].to_s.strip.empty?
+        blockers << "workflow_receipt missing command: #{label}" if event['command'].to_s.strip.empty?
+        blockers << "workflow_receipt missing success boolean: #{label}" unless event.key?('success') && [true, false].include?(event['success'])
+        if event['schema_version'].to_i >= 2
+          %w[started_at completed_at duration_ms exit_status host command_sha256].each do |field|
+            blockers << "workflow_receipt v2 missing #{field}: #{label}" if event[field].nil? || event[field].to_s.strip.empty?
+          end
+        end
+      end
+      recent.select { |event| event['type'] == 'session_receipt' }.each do |event|
+        label = event['receipt_id'] || event['session_id'] || event['timestamp'] || 'session_receipt'
+        blockers << "session_receipt missing schema_version: #{label}" if event['schema_version'].to_i < 2
+        REQUIRED_SESSION_RECEIPT_FIELDS.each do |field|
+          blockers << "session_receipt v2 missing #{field}: #{label}" if event[field].nil? || event[field].to_s.strip.empty?
+        end
+      end
+
+      recent.select { |event| event['type'] == 'process_eval' }.each do |event|
+        label = event['timestamp'] || 'process_eval'
+        blockers << "process_eval metric missing trace count: #{label}" unless event.key?('traces')
+        blockers << "process_eval metric missing failed count: #{label}" unless event.key?('failed')
+      end
+
+      recent.select { |event| event['type'] == 'agent_eval' }.each do |event|
+        label = event['timestamp'] || 'agent_eval'
+        blockers << "agent_eval metric missing case count: #{label}" unless event.key?('cases')
+        blockers << "agent_eval metric missing failed count: #{label}" unless event.key?('failed')
+      end
+
+      workflow_receipts = recent.select { |event| event['type'] == 'workflow_receipt' }
+      successful_receipts = workflow_receipts.select { |event| event['success'] == true }
+      enriched_receipts = workflow_receipts.select { |event| event['schema_version'].to_i >= 2 }
+      thin_receipts = workflow_receipts - enriched_receipts
+      warnings << 'no successful live workflow_receipt events found in recent telemetry' if workflow_receipts.any? && successful_receipts.empty?
+      warnings << "#{thin_receipts.length} legacy workflow_receipt event(s) lack v2 audit fields" if thin_receipts.any?
+      warnings << 'no enriched workflow_receipt v2 events found in recent telemetry' if workflow_receipts.any? && enriched_receipts.empty?
+
+      visual_smoke = recent.select { |event| event['type'] == 'visual_smoke' && event['dry_run'] != true && event['status'].to_s != 'planned' }
+      successful_visual_smoke = visual_smoke.select { |event| event['success'] == true }
+      mini_visual_smoke = successful_visual_smoke.select { |event| event['host'].to_s.downcase.include?('mini') }
+      failed_visual_smoke = visual_smoke.reject { |event| event['success'] == true }
+      if visual_smoke.empty?
+        warnings << 'no recent live visual_smoke metrics; UI runtime receipt remains fixture-only'
+      elsif successful_visual_smoke.any? && mini_visual_smoke.empty?
+        warnings << 'recent visual_smoke success is not Mini-host proof; do not treat it as canonical SaneApps UI evidence'
+      end
+      if failed_visual_smoke.any?
+        sample = failed_visual_smoke.last
+        warnings << "recent visual_smoke failure exists for #{sample['app'] || 'unknown app'}: #{sample['status'] || 'failed'} #{sample['reason']}".strip
+      end
+
+      actions << 'run runner-backed workflows through SaneMaster so workflow_receipt metrics capture success, command, and workflow'
+      actions << 'keep fixture traces for expectations, but inspect live_telemetry before treating process_eval as runtime proof'
+
+      {
+        metrics_path: respond_to?(:process_metrics_path) ? process_metrics_path : nil,
+        event_count: recent.length,
+        by_type: recent.group_by { |event| event['type'].to_s }.transform_values(&:length).sort.to_h,
+        workflow_receipts: {
+          total: workflow_receipts.length,
+          successful: successful_receipts.length,
+          enriched: enriched_receipts.length,
+          thin: thin_receipts.length
+        },
+        visual_smoke: {
+          total: visual_smoke.length,
+          successful: successful_visual_smoke.length,
+          mini_successful: mini_visual_smoke.length,
+          failed: failed_visual_smoke.length
         },
         blockers: blockers.uniq,
         warnings: warnings.uniq,
@@ -317,6 +432,8 @@ module SaneMasterModules
       puts
       print_sop_review(result[:sop_review])
       puts
+      print_live_telemetry_review(result[:live_telemetry])
+      puts
       puts result[:passed] ? 'process_eval passed' : 'process_eval found issues'
     end
 
@@ -339,6 +456,18 @@ module SaneMasterModules
       puts "Score stddev: #{result.dig(:sessions, :score_stddev) || 'N/A'}"
       puts "Cap mismatches: #{result.dig(:sessions, :cap_mismatches)}"
       puts "Verify pass rate: #{result.dig(:verify, :pass_rate) || 'N/A'}%"
+      result[:blockers].each { |item| puts "  BLOCKER #{item}" }
+      result[:warnings].each { |item| puts "  WARNING #{item}" }
+      puts 'Recommended actions:'
+      result[:recommended_actions].each { |item| puts "  - #{item}" }
+    end
+
+    def print_live_telemetry_review(result)
+      puts 'Live Telemetry Review'
+      puts '=' * 20
+      puts "Metrics path: #{result[:metrics_path]}" if result[:metrics_path]
+      puts "Recent process events: #{result[:event_count]}"
+      puts "By type: #{result[:by_type].map { |type, count| "#{type}=#{count}" }.join(', ')}"
       result[:blockers].each { |item| puts "  BLOCKER #{item}" }
       result[:warnings].each { |item| puts "  WARNING #{item}" }
       puts 'Recommended actions:'

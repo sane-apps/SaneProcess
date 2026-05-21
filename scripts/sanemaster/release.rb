@@ -1036,6 +1036,30 @@ module SaneMasterModules
       ''
     end
 
+    def resolved_asc_credentials
+      key_id = resolve_secret(
+        service: 'saneprocess.asc.key_id',
+        account: 'asc_key_id',
+        env_names: %w[ASC_AUTH_KEY_ID ASC_KEY_ID]
+      )
+      issuer_id = resolve_secret(
+        service: 'saneprocess.asc.issuer_id',
+        account: 'asc_issuer_id',
+        env_names: %w[ASC_AUTH_ISSUER_ID ASC_ISSUER_ID]
+      )
+      key_path = resolve_secret(
+        service: 'saneprocess.asc.key_path',
+        account: 'asc_key_path',
+        env_names: %w[ASC_AUTH_KEY_PATH ASC_KEY_PATH]
+      ).to_s.strip
+
+      {
+        key_id: key_id.to_s.strip,
+        issuer_id: issuer_id.to_s.strip,
+        key_path: key_path.empty? ? '' : File.expand_path(key_path)
+      }
+    end
+
     def fetch_text(url, headers: {})
       uri = URI(url)
       request = Net::HTTP::Get.new(uri)
@@ -1319,17 +1343,12 @@ module SaneMasterModules
       require 'jwt'
       require 'openssl'
 
-      load_default_env_files
+      credentials = resolved_asc_credentials
+      issuer_id = credentials[:issuer_id]
+      key_id = credentials[:key_id]
+      p8_path = credentials[:key_path]
 
-      issuer_id = ENV['ASC_AUTH_ISSUER_ID'] || ENV['ASC_ISSUER_ID'] || 'c98b1e0a-8d10-4fce-a417-536b31c09bfb'
-      key_id = ENV['ASC_AUTH_KEY_ID'] || ENV['ASC_KEY_ID'] || 'S34998ZCRT'
-      p8_path = File.expand_path(
-        ENV['ASC_AUTH_KEY_PATH'] ||
-        ENV['ASC_KEY_PATH'] ||
-        '~/.private_keys/AuthKey_S34998ZCRT.p8'
-      )
-
-      return nil unless File.exist?(p8_path)
+      return nil if issuer_id.empty? || key_id.empty? || p8_path.empty? || !File.exist?(p8_path)
 
       private_key = OpenSSL::PKey::EC.new(File.read(p8_path))
       now = Time.now.to_i
@@ -3500,12 +3519,20 @@ module SaneMasterModules
 
       # 1c. ASC API key exists
       print '  │ ASC API key (.p8)... '
-      p8_path = File.expand_path('~/.private_keys/AuthKey_S34998ZCRT.p8')
-      if File.exist?(p8_path)
+      credentials = resolved_asc_credentials
+      p8_path = credentials[:key_path]
+      missing_credential_fields = []
+      missing_credential_fields << 'ASC_AUTH_KEY_ID' if credentials[:key_id].empty?
+      missing_credential_fields << 'ASC_AUTH_ISSUER_ID' if credentials[:issuer_id].empty?
+      missing_credential_fields << 'ASC_AUTH_KEY_PATH' if p8_path.empty?
+      if missing_credential_fields.empty? && File.exist?(p8_path)
         puts '✅'
+      elsif !missing_credential_fields.empty?
+        puts '❌ not configured'
+        issues << "ASC API credentials missing: #{missing_credential_fields.join(', ')}. Set env vars or keychain services saneprocess.asc.key_id, saneprocess.asc.issuer_id, and saneprocess.asc.key_path."
       else
         puts '❌ not found'
-        issues << "API key not found at #{p8_path}"
+        issues << "ASC_AUTH_KEY_PATH does not exist: #{p8_path}"
       end
 
       # 1d. jwt gem available

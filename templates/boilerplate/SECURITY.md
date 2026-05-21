@@ -1,3 +1,5 @@
+> Template file — replace all `TODO:` markers before publishing.
+
 # Security Policy
 
 ## Reporting a Vulnerability

@@ -53,7 +53,7 @@ ruby scripts/hooks/saneprompt.rb --self-test
 | Layer | What it does |
 |-------|--------------|
 | Agent rules | One `AGENTS.md` source of truth for compatible coding agents |
-| Native hook adapters | Prompt classification, research gates, path blocking, circuit breaker, session summaries where the client supports lifecycle hooks |
+| Native hook adapters | Prompt classification, research gates, path blocking, completion gates, circuit breaker, and session summaries where the client supports lifecycle hooks |
 | Codex path | `AGENTS.md`, `.agents/skills`, MCP, client config, and shared project scripts |
 | `SaneMaster.rb` | One CLI for verify, release, status, tool discovery, metrics, and quality checks |
 | Shared guards | Shell/script guardrails for risky paths where a client has no native pre-tool hook |
@@ -67,7 +67,7 @@ SaneProcess is intentionally layered instead of pretending every coding agent ha
 | Client | Install mode | What is enforced today |
 |--------|--------------|------------------------|
 | Claude Code | `--client claude` | Native lifecycle hooks plus `AGENTS.md`, MCP, skills, and shared scripts |
-| Codex | `--client codex` | `AGENTS.md`, `.agents/skills`, MCP, client config, approvals/sandboxing, and shared scripts |
+| Codex | `--client codex` | `AGENTS.md`, `.agents/skills`, MCP, client config, approvals/sandboxing, and shared scripts/wrappers |
 | Other agents | `--client generic` | `AGENTS.md`, repo scripts, git/pre-commit checks, MCP if supported, and whatever runtime guards the client can honor |
 
 Codex now documents hook support, but SaneProcess still treats Codex hooks as an adapter layer rather than the universal enforcement base. The portable contract remains `AGENTS.md` plus project-owned scripts.
@@ -105,7 +105,7 @@ Mutation is blocked until the required research categories are satisfied. Read-o
 | github | GitHub issue/PR/repo context when configured |
 | local | file reads, search, existing project docs |
 
-Native hook adapters enforce this at tool time where the client exposes lifecycle hooks. Codex and compatible clients use `AGENTS.md`, skills, MCP, `SaneMaster.rb`, and shell/script guards.
+Native hook adapters enforce this at tool time where the client exposes lifecycle hooks. Codex and compatible clients use `AGENTS.md`, skills, MCP, `SaneMaster.rb`, and shell/script guards; for those clients, the repo wrapper is the hard boundary.
 
 ## SaneMaster
 
@@ -120,8 +120,9 @@ ruby scripts/SaneMaster.rb release_preflight
 ruby scripts/SaneMaster.rb appstore_preflight  # only when .saneprocess appstore.enabled: true
 ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"
 ruby scripts/SaneMaster.rb runtime_evidence --dry-run --break Sources/App.swift:42
-ruby scripts/SaneMaster.rb visual_smoke --app SaneBar --dry-run
+ruby scripts/SaneMaster.rb visual_smoke --app ExampleApp --dry-run
 ruby scripts/SaneMaster.rb process_metrics --json
+ruby scripts/SaneMaster.rb process_metrics --export-otel outputs/process-traces.json
 ruby scripts/SaneMaster.rb gate_review test/fixtures/gates/example.json
 ruby scripts/SaneMaster.rb saneui_guard /path/to/app
 ```
@@ -172,13 +173,18 @@ User prompt
 
 Native hook adapter mapping:
 
+These hooks are strongest in clients with native lifecycle hooks. In other
+clients, treat the same behavior as a wrapper/script contract and verify it
+through `SaneMaster.rb`.
+
 | Hook | Event | Purpose |
 |------|-------|---------|
 | `session_start.rb` | SessionStart | Cleanup, state bootstrap, session briefing |
 | `saneprompt.rb` | UserPromptSubmit | Intent classification and workflow reminders |
 | `sanetools.rb` | PreToolUse | Research gate, path blocks, circuit breaker blocks |
 | `sanetrack.rb` | PostToolUse | Failure tracking, research evidence, edit/test state |
-| `sanestop.rb` | Stop | Session summary and verification reminders |
+| `task_completed_gate.rb` | TaskCompleted | Blocks completion claims without required verification evidence in opted-in SaneProcess repos |
+| `sanestop.rb` | Stop | Session summary and verification/handoff reminders |
 
 Client adapter state is stored locally in the relevant runtime directory; shared scripts and guards are used by any compatible client.
 
@@ -265,14 +271,10 @@ MIT License. See [LICENSE](LICENSE).
 Built by [SaneApps](https://saneapps.com).
 
 <!-- SANEAPPS_AI_CONTRIB_START -->
-### Become a Contributor (Even if You Don't Code)
+### LLM-Assisted Contributions
 
-Are you tired of waiting on the dev to get around to fixing your problem?  
-Do you have a great idea that could help everyone in the community, but think you can't do anything about it because you're not a coder?
-
-Good news: you actually can.
-
-Copy and paste this into your preferred coding agent, then describe your bug or idea:
+If you use a coding agent, keep contributions focused and reviewable. This
+minimal prompt is enough for a first pass:
 
 ```text
 I want to contribute to this repo, but I'm not a coder.
@@ -298,9 +300,5 @@ Important:
 - Do not make unrelated changes.
 ```
 
-If needed, you can also just email the pull request link to hi@saneapps.com.
-
-I review and test every pull request before merge.
-
-If your PR is merged, I will publicly give you credit, and you'll have the satisfaction of knowing you helped ship a fix for everyone.
+Pull requests are reviewed and tested before merge.
 <!-- SANEAPPS_AI_CONTRIB_END -->

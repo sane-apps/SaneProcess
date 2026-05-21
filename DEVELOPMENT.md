@@ -2,1432 +2,251 @@
 
 > [README](README.md) · [DEVELOPMENT](DEVELOPMENT.md) · [ARCHITECTURE](ARCHITECTURE.md)
 
-How to build, test, and contribute to SaneProcess.
-
----
+Concise build, test, and contribution guide. Detailed release playbooks live in
+`templates/RELEASE_SOP.md`, implementation details live in `ARCHITECTURE.md`,
+and command help lives in `./scripts/SaneMaster.rb help <category>`.
 
 ## Quick Start
 
 ```bash
-ruby scripts/qa.rb                    # Full QA check
-ruby scripts/hooks/test/tier_tests.rb # Run hook tests
-ruby scripts/sync_check.rb ~/SaneBar  # Cross-project sync
+ruby scripts/SaneMaster.rb verify                 # canonical full verification
+ruby scripts/hooks/test/tier_tests.rb             # hook enforcement suite
+ruby scripts/SaneMaster.rb tool_discovery --query "..." # tool/MCP proof receipt
+ruby scripts/SaneMaster.rb process_metrics --export-otel outputs/process-traces.json
+cd /tmp/repo && /path/to/SaneProcess/scripts/init.sh --client generic
 ```
 
-## Documentation Normalization SOP
+## SaneApps Operator Overlay
 
-Use the same anti-fragmentation rule across every SaneApps repo:
+The following defaults describe the private SaneApps production runner. Public
+adopters should treat this as an example and substitute their own canonical
+runner, host, and release evidence path.
 
-- In app repos, update `README.md`, `ARCHITECTURE.md`, `DEVELOPMENT.md`, `PRIVACY.md`, or `SECURITY.md` before creating a new root doc.
-- If you must add an extra doc, link it from the README and from the canonical doc that owns that topic.
-- Keep public site content in one obvious folder per repo and say where it lives in the README.
-- When docs drift, fix the root canonical file first, then sync the website or supporting docs.
+Mini-first is mandatory for SaneApps repo inspection, build, test, screenshots,
+runtime verification, release proof, and customer-facing evidence. Local MacBook
+Air fallback is allowed only when `ssh mini` fails, the Mini route is otherwise
+unavailable for that task, or the user explicitly approves a local exception for
+that exact task. `Inconvenient`, `slower`, or `already open locally` are not
+fallback reasons.
+
+Public adopters do not need a Mac Mini. Replace Mini-first with your own
+canonical runner or local verification command, then route it through
+`SaneMaster.rb` so agents have one safe path to call.
+
+Non-doc edits are not complete just because a hook saw a command that looked like
+a test. Completion gates require a fresh counted `SaneMaster.rb verify` metric
+with tested evidence and a source fingerprint matching the current repo.
+
+## Documentation Standard
+
+- Keep durable public docs in the core set: `README.md`, `DEVELOPMENT.md`,
+  `ARCHITECTURE.md`, `AGENTS.md`, and `SESSION_HANDOFF.md`.
+- `SESSION_HANDOFF.md` is active state only, not a history archive.
+- Put release mechanics in `templates/RELEASE_SOP.md`.
+- Put private/operator setup details in `DEVELOPER_SETUP.md`.
+- Do not create orphan docs; improve the nearest existing owner first.
 
 ## Client Compatibility
 
-SaneProcess has one SOP and multiple client-specific enforcement surfaces. The installer is adapter-selectable so public users do not get client-specific files they do not use.
+SaneProcess has one SOP with multiple client adapters.
 
-| Client | Install mode | What is stable today |
-|--------|--------------|----------------------|
-| **Claude Code** | `scripts/init.sh --client claude` | `AGENTS.md`, native lifecycle hooks in `.claude/settings.json`, `.claude/skills`, MCP, shared scripts |
-| **Codex** | `scripts/init.sh --client codex` | `AGENTS.md`, `.agents/skills`, Codex config, MCP, shared script/shell guards |
-| **Other LLM agents** | `scripts/init.sh --client generic` | `AGENTS.md`, repo scripts, git hooks, MCP if supported, and whatever local runtime guards the client can honor |
-| **SaneApps/internal full setup** | `scripts/init.sh --client all` | Claude hooks plus `.agents/skills`; this is also the no-flag default for backward compatibility |
+| Client | Install mode | Stable surface |
+|--------|--------------|----------------|
+| Claude Code | `scripts/init.sh --client claude` | `AGENTS.md`, `.claude/settings.json`, hooks, skills, MCP, shared scripts |
+| Codex | `scripts/init.sh --client codex` | `AGENTS.md`, `.agents/skills`, Codex config, MCP, shell/script guards |
+| Other agents | `scripts/init.sh --client generic` | `AGENTS.md`, repo scripts, git hooks, optional MCP |
+| SaneApps full setup | `scripts/init.sh --client all` | Claude + Codex-compatible surfaces for internal use |
 
-Codex now documents hook support, but SaneProcess treats it as a client adapter layer. Do not make Codex hooks the only enforcement path for a rule that should remain portable.
+Codex and other clients may support hooks differently. Rules that matter for
+public portability must remain enforceable through repo scripts and shared
+guards, not only through one client runtime.
 
-Codex extras that are stable enough to use in SOPs today:
-- `tool_search` for deferred app/MCP capability discovery before claiming a tool is missing
-- `computer-use` for live accessibility-tree inspection on the machine hosting the GUI
-- `macos-automator` for reusable AppleScript/JXA discovery before writing raw scripts
-- `automation_update` for user-approved recurring checks or follow-ups
+## Core Rules
 
-Stable cross-client guardrails already enforced in shared runtime paths:
+SaneProcess enforces the scientific method for coding agents:
 
-- `~/SaneApps/infra/scripts/check-inbox.sh` (`present-draft` / `approve --user-approval` / `require_email_send_approval`)
-- `scripts/hooks/sane_curl_guard.sh` via `~/.local/bin/curl` wrapper
+| Rule | Meaning |
+|------|---------|
+| Verify before trying | Read local code and check uncertain APIs/tools before editing |
+| Two failures means stop | Read the error and research the real API before continuing |
+| Green means done | Do not claim completion with failing tests |
+| No test, no rest | Fixes need meaningful tests; tautologies do not count |
+| Use house tools | Use SaneMaster and shared wrappers for stateful workflows |
+| Write it down | Bugs, process misses, and durable tool changes go to memory + handoff |
 
-Run `ruby scripts/SaneMaster.rb system_check` to verify SaneApps' full Claude/Codex/shared guard wiring. Public adopters can verify the selected install mode with `scripts/init.sh --client <mode>` in a temporary directory.
-
-## The Rules: Scientific Method for AI
-
-These rules enforce the scientific method. Not optional guidelines - **the hooks block you until you comply.**
-
-### Core Principles (Scientific Method)
-
-| # | Rule | Scientific Method | What Hooks Do |
-|---|------|-------------------|---------------|
-| #2 | **VERIFY, THEN TRY** | Observe before hypothesizing | Blocks edits until 4 research categories done |
-| #3 | **TWO STRIKES? STOP AND CHECK** | Reject failed hypothesis | Circuit breaker trips at 3 failures |
-| #4 | **TESTS MUST PASS** | Experimental validation | Tracks test results, blocks on red |
-
-**This is the core.** Guessing is not science. Verify → Hypothesize → Test → Learn.
-
-### Supporting Rules (Code Quality)
-
-| # | Rule | Purpose |
-|---|------|---------|
-| #0 | **NAME IT BEFORE YOU TAME IT** | State which rule applies before acting |
-| #1 | **STAY IN LANE, NO PAIN** | No edits outside project scope |
-| #5 | **HOUSE RULES, USE TOOLS** | Use project conventions, not preferences |
-| #7 | **NO TEST? NO REST** | No tautologies (`#expect(true)`) |
-| #8 | **BUG FOUND? WRITE IT DOWN** | Document bugs in memory |
-| #9 | **NEW FILE? GEN THE PILE** | Use project scaffolding tools |
-| #10 | **FILE SIZE LIMIT** | Max 500 lines (800 hard limit) |
-
-### Research Categories (Required Before Edits)
-
-The hooks require ALL 4 categories before any edit is allowed:
-
-| Category | Tool | What You Learn |
-|----------|------|----------------|
-| **docs** | `mcp__apple-docs__*`, `mcp__context7__*` | API verification |
-| **web** | `WebSearch` | Current best practices |
-| **github** | `mcp__github__search_*` | External examples |
-| **local** | `Read`, `Grep`, `Glob` | Existing code patterns |
-
-**Why all 4?** Each category catches different blind spots. Skip one → miss something → fail → waste time.
+Full behavioral policy lives in `AGENTS.md`; hooks and shared scripts enforce
+the parts that can be automated.
 
 ## Project Structure
 
-```
+```text
 scripts/
-├── hooks/                 # Enforcement hooks (synced to all projects)
-│   ├── session_start.rb   # SessionStart - bootstrap
-│   ├── saneprompt.rb      # UserPromptSubmit - classify task
-│   ├── sanetools.rb       # PreToolUse - block until research done
-│   ├── sanetrack.rb       # PostToolUse - track failures
-│   ├── sanestop.rb        # Stop - capture learnings
-│   ├── core/              # Shared infrastructure
-│   └── test/              # Hook tests
-├── SaneMaster.rb          # CLI entry (different from Swift projects)
-└── qa.rb                  # Quality assurance
+  SaneMaster.rb              # primary CLI
+  hooks/                     # Claude/native hook runtime + shared guards
+  sanemaster/                # SaneMaster command modules
+  mini/                      # Mac Mini build/test/training helpers
+  automation/                # vendor/API automation helpers
+templates/                   # release, bootstrap, and project templates
 ```
 
-## SaneMaster CLI (Infra)
-
-Use SaneMaster for automation in this repo (preferred over raw commands).
-
-### Core commands
-
-| Command | Purpose |
-|---------|---------|
-| `verify [--ui]` | Build + run tests with the Mini permission monitor active by default |
-| `status` | Live cross-reference across git, inbox, issues, release lanes, and current signals |
-| `check_inbox [check|review <id>|read <id>|reply ...]` | Canonical support inbox workflow wrapper |
-| `test_mode` | Kill → Build → Launch → Logs |
-| `runtime_evidence` | LLDB-backed runtime evidence bundle for reproducible Swift/macOS bugs |
-| `visual_smoke` | Optional Peekaboo-backed screenshot/AX evidence bundle for release-critical UI claims |
-| `doctor` | Environment health check |
-| `tool_discovery --query "..."` | Generate a proof receipt before using a workaround or adding a tool |
-| `process_metrics [--json] [--export-json PATH] [--export-html PATH]` | Dashboard/export for verify churn, session quality, SOP score caps, hook blocks, and workflow receipt metrics |
-| `near_miss_review [--json] [--metrics PATH] [--limit N\|--all] [--min-count N]` | Mine process telemetry for recurring near-miss patterns and propose the next guard/eval backtests |
-| `verify_failure_review [--json] [--metrics PATH] [--limit N\|--all] [--min-count N]` | Drill into zero-test verify failures and weak green runs by likely root-cause bucket |
-| `process_eval [--fixture PATH] [--json]` | Evaluate workflow receipt traces plus SOP self-assessment health |
-| `trace_eval [--fixture PATH] [--json]` | Regression-test multi-step process receipts for support, release, UI runtime, tool discovery, subagents, and session lifecycle |
-| `sop_review [--json]` | Review SOP score history, verification caps, and score-inflation signals |
-| `agent_eval [--fixture PATH] [--json]` | Regression-test prompt-to-workflow routing before changing triggers, skills, or AGENTS rules |
-| `agent_env_review [--json]` | Review agent environment drift from metrics, research cache, skill health, and tool-discovery receipts |
-| `skill_lint [--path PATH] [--json]` | Lint skill descriptions for reliable routing and missing `SKILL.md` files |
-| `refresh_qa_snapshots [--dry-run|--run]` | List stale app QA snapshots, then explicitly refresh selected stale snapshots |
-| `gate_review <fixture.json> [--json]` | Deterministically review candidate prevention gates before promoting them into enforcement |
-| `saneui_guard [path]` | Scan SaneApps settings/About/license/update surfaces for shared SaneUI drift |
-
-### SaneUI Guard
-
-Run this before shipping any settings, About, license, updater, button-style, or shared typography change:
-
-```bash
-ruby scripts/SaneMaster.rb saneui_guard /path/to/app
-```
-
-The guard checks current high-risk drift:
-
-- app-local settings chrome instead of shared `SaneSettingsContainer`
-- local `SaneSparkleRow` definitions or app-local updater rows
-- `mailto:` support paths in settings/About/license/update UI
-- `Manage Access` copy
-- `.buttonStyle(.bordered)` in shared settings surfaces
-
-The guard does not yet fully automate visual review for bright-white text, `13pt` minimum text, opacity-based gray text, or broader layout polish. For those, inspect `~/SaneApps/infra/SaneUI/Sources/SaneUICatalog/SaneUICatalogApp.swift` and review the actual UI before release.
-
-### Runtime Evidence
-
-Use `runtime_evidence` when a Swift/macOS bug is reproducible and stack frames,
-locals, or side-effect-free expression results would prevent guessing:
-
-```bash
-ruby scripts/SaneMaster.rb runtime_evidence --dry-run --break Sources/App.swift:42
-ruby scripts/SaneMaster.rb runtime_evidence --executable /tmp/Repro --break /tmp/Repro.swift:8 --expr value
-ruby scripts/SaneMaster.rb runtime_evidence --pid 12345 --expr "state.description"
-```
-
-This command writes a timestamped bundle under `outputs/debug/` with metadata,
-source context, recent logs, LLDB commands, and LLDB output. It does not build or
-launch apps. For SaneApps app bugs, launch through the canonical Mini-first
-`test_mode` path first, then attach to the already-running process by PID.
-Treat `--expr` like code execution in the debuggee; use side-effect-free
-expressions only.
-
-### Visual Smoke Evidence
-
-Use `visual_smoke` after launching an app through the canonical Mini-first
-`test_mode` path when a release claim depends on visible UI state, menu-bar
-state, or accessibility structure:
-
-```bash
-ruby scripts/SaneMaster.rb test_mode --release --no-logs
-ruby scripts/SaneMaster.rb visual_smoke --app SaneBar
-```
-
-When Peekaboo is installed on the Mini, the command captures a full-screen
-screenshot, menu-bar screenshot, annotated app `see` snapshot,
-window/app/menubar lists, permissions, and a JSON/Markdown receipt under
-`outputs/visual_smoke/`. The default runner launches Peekaboo through
-Terminal.app on the Mini because Terminal already holds the macOS Screen
-Recording grant needed for captures from SSH-routed automation.
-The command now has a hard cleanliness gate: it refuses to capture when another
-`visual_smoke` run is active, when Terminal windows are already open, when any
-other SaneApps app/helper is visible or still running from a prior test, when
-Preview/Safari/helper windows can contaminate the frame, or when a SaneApps
-permission/security prompt is unresolved. Prompt detection checks the target
-app plus macOS prompt hosts such as SecurityAgent/CoreServicesUIAgent so prompts
-hidden behind the app, above the app, or outside an app-window crop still block
-the evidence path. It also rejects known desktop test artifacts from prior runs,
-because a visually polluted Desktop is not release evidence. Clean up the Mini
-first, handle the actual prompt button required by the flow, then re-run the
-visual check. Dirty screenshots are not release evidence.
-When Peekaboo is absent it records a skipped receipt instead of blocking normal
-release work. Use `--require-peekaboo` only for lanes where the Mini has been
-explicitly configured with:
-
-```bash
-brew install steipete/tap/peekaboo
-```
-
-Peekaboo requires macOS Screen Recording and Accessibility permissions. Do not
-run direct `ssh mini peekaboo image ...` for release evidence; that bypasses
-the Terminal-host grant path and can trigger fresh Screen Recording prompts.
-Use `SaneMaster.rb visual_smoke` or `capture-mini-screenshot.sh`, which route
-through the configured Mini GUI session. Do not replace `verify`, `test_mode`,
-or app-specific smoke tests with this command; use it as the visual proof layer
-for claims such as settings-menu access, fullscreen overlay behavior, onboarding
-visibility, license/update surfaces, and menu-bar item presence.
-
-### App Hardware Verification
-
-Use the shared app launcher for runtime checks instead of manual `open` or direct binary execution:
-
-```bash
-ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb SaneVideo --hardware --no-logs
-```
-
-`--hardware` is intentionally explicit. Normal automation suppresses hardware and permission prompts with `SANEAPPS_PERMISSIONLESS_AUTOMATION=1`; hardware verification sets `SANEAPPS_PERMISSIONLESS_AUTOMATION=0` and `SANEVIDEO_ENABLE_HARDWARE_TESTS=1` so SaneVideo can exercise real camera/TCC flows on the Mini.
-
-### Validation Hardening
-
-`scripts/validation_report.rb` separates findings into system health, release readiness, app readiness, and advisory buckets. Keep legacy `issues` and `warnings` JSON keys for compatibility, but use `findings` and `verdict.sections` for new tooling.
-
-GitHub-hosted workflow exceptions can be documented inline with `SANEAPPS_GITHUB_HOSTED_EXCEPTION: <reason>` or centrally in `config/github_workflow_exceptions.yml`. Central exceptions are for repos outside the current edit scope; inline comments are preferred when editing that repo directly.
-
-Red-noise budget: a validation finding older than seven days must be fixed, explicitly accepted, or downgraded. Do not leave permanent unexplained red output in the daily report.
-
-QA snapshot refresh is intentionally explicit. Run `ruby scripts/SaneMaster.rb refresh_qa_snapshots --dry-run` first, review the app commands it would run, then rerun with `--run` only for deliberate app-readiness work.
-| `sync_mini [mini] [--quiet] [--no-restart] [--activate-mini-runs]` | Sync the active Codex control-plane profile to the Mini; default keeps Mini AM/PM runs paused unless activation is explicit |
-
-### SaneApps rsync Guard
-
-Codex shells install `~/.local/bin/rsync` as a wrapper around
-`scripts/hooks/sane_rsync_guard.sh`. The guard blocks basename-flattening syncs
-into SaneApps app repo roots, such as:
-
-```bash
-rsync -av docs/index.html mini:/Users/stephansmac/SaneApps/apps/SaneClip
-rsync -av CHANGELOG.md README.md mini:/Users/stephansmac/SaneApps/apps/SaneClip
-```
-
-Those commands copy files into the remote repo root by basename and have caused
-stale or nested files to appear as root-level files. Use exact remote file paths
-or full directory syncs instead:
-
-```bash
-rsync -av docs/index.html mini:/Users/stephansmac/SaneApps/apps/SaneClip/docs/index.html
-rsync -av ./ mini:/Users/stephansmac/SaneApps/apps/SaneClip/
-```
-
-Only set `SANE_RSYNC_ALLOW_FLATTEN=1` for an intentional one-off override with
-a stated reason.
-
-`~/.local/bin` must resolve before `/usr/bin` in login shells. `SaneMaster.rb meta`
-checks both the symlink target and `command -v rsync`; if `command -v rsync`
-returns `/usr/bin/rsync`, the guard is installed but inactive and Mini sync work
-is not release-safe.
-
-### SaneApps open Guard
-
-Codex shells install `~/.local/bin/open` as a wrapper around
-`scripts/hooks/sane_open_guard.sh`. The guard blocks local MacBook Air GUI
-opens for SaneApps release/dashboard surfaces that must happen on the Mini,
-including:
-
-```bash
-open https://app.lemonsqueezy.com/products/778575
-open -R ~/Desktop/LemonSqueezy-Uploads/SaneBar-2.1.56.zip
-open /Applications/SaneBar.app
-```
-
-Use Mini-side automation instead:
-
-```bash
-~/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh open-current https://app.lemonsqueezy.com/products/778575
-ssh mini 'open -R ~/Desktop/LemonSqueezy-Uploads/SaneBar-2.1.56.zip'
-ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb SaneBar
-```
-
-Only set `SANE_MINI_UNAVAILABLE` or `SANE_APPROVE_LOCAL_UI_ON_AIR` after
-explicit user approval.
-| `universal_control_reset [--status|--reboot-mini|--cleanup-mini]` | Recover Air↔Mini Universal Control / pointer handoff |
-| `export` | Export code/docs (PDF/MD) |
-| `listing_actions` | Export the current listing/setup action tracker from inbox history |
-| `hosted_file_actions` | Export the current Lemon Squeezy hosted-file dashboard action tracker |
-| `install_provisioning_profiles [--delete-source] [glob ...]` | Deterministically install downloaded provisioning profiles |
-| `dedupe_apps [--host local|mini] [--apps App1,App2] [--dry-run] [--json]` | Keep one canonical app bundle per Sane app |
-| `debug` | Debugging helpers (logs, crashes, diagnose) |
-| `env` | Environment and setup helpers |
-| `meta` | Tooling self-audit helpers (`meta`, `audit`, `system_check`) |
-| `sales` | LemonSqueezy revenue reporting helpers |
-
-License support rule: real customer license keys come only from LemonSqueezy-backed orders and license-key records. Use `check-inbox.sh review` + `whois` + the LemonSqueezy recovery/backfill flow for missing-key support. Do not generate local fallback keys.
-
-Email delivery rule: do not treat Worker acceptance as success. Normal inbox operations must only count an outbound as sent when Resend shows delivery evidence (`delivered`, `opened`, `clicked`, or `complained`). A `bounced` or still-unconfirmed outbound remains actionable and must be surfaced in `check`, `context`, `audit`, and `check-reply` until it is fixed and resent.
-
-GitHub/support reporting rule: `check-inbox.sh check` must use the actionable `check-inbox.sh issues` classifier, not the lightweight raw queue, so edited issue bodies and reporter updates after the last maintainer reply stay visible. Email review must treat shared media links such as Drive, Dropbox, iCloud, Loom, OneDrive, WeTransfer, and Smash as media-review blockers instead of silently ignoring them. Active unresolved support threads must be classified before praise/testimonial extraction so positive wording cannot hide a needed reply.
-
-Support-send metrics rule: reply/compose outcomes append local-only `support_send` events to `~/.sanemaster/process_metrics.jsonl` when they reach a terminal delivery, bounce, unconfirmed, or API-failure state. These metrics must not record recipient address or subject; use email ids, delivery ids, lane, and status evidence instead.
-
-Duplicate-purchase refund rule: when you can prove the same customer paid twice for the same product, you may auto-refund the duplicate order without waiting on the normal “documented unresolved bug >24h” threshold, as long as the action still has an audit note and proof file. Standard investigation path:
-
-```bash
-# 1. Find likely matching orders even if the support email differs from the purchase email.
-ruby scripts/SaneMaster.rb sales --find-customer-orders --email reed@reed-a.ca --name Reed --product SaneBar
-
-# 2. Check the exact keys the customer sent.
-ruby scripts/SaneMaster.rb sales --license-status 766800DD-3877-4EAA-938F-D60D42FFA0D7
-ruby scripts/SaneMaster.rb sales --license-status D1918A18-BCC3-4DA2-AC6B-C67CC912CA5C
-
-# 3. Refund the duplicate order and disable the refunded key in one audited step.
-SANE_REFUND_APPROVED=1 ruby scripts/SaneMaster.rb sales \
-  --refund-duplicate-license-key D1918A18-BCC3-4DA2-AC6B-C67CC912CA5C \
-  --keep-license-key 766800DD-3877-4EAA-938F-D60D42FFA0D7 \
-  --refund-order-number 270691528 \
-  --customer-thread "email #542" \
-  --approval-source "owner approval note" \
-  --proof-file /tmp/reed_duplicate_refund.txt \
-  --approval-note /tmp/reed_duplicate_refund_approval.txt
-```
-
-Refund audit rule: every refund action now writes a durable audit record under `~/.sanemaster/refunds`, even if the proof file was created in `/tmp`. Approval notes must include explicit owner/user approval. Discretionary refunds must also document the unresolved qualifying issue; duplicate-purchase refunds must document the duplicate/transactional reason. A customer saying “I want a refund” is not enough.
-
-Customer-reply rule for duplicate-license refunds: say explicitly which order was refunded, say the refunded key is disabled and will not work, and say which remaining key is the live working key.
-
-### Manual and Specialized Scripts
-
-These scripts are real, but they are not the default daily path. Keep their role explicit so they do not turn into shadow systems.
-
-| Script | Status | Use it for |
-|--------|--------|------------|
-| `ruby scripts/contamination_check.rb [path\|--all]` | Manual audit utility | Cross-project contamination scans when you suspect one repo leaked another repo's names, paths, or configs |
-| `ruby scripts/link_monitor.rb` | Manual or LaunchAgent utility | Critical checkout/download/site URL monitoring backed by `config/products.yml` |
-| `ruby scripts/scaffold.rb <AppName> [--type macos\|ios]` | One-time bootstrap utility | New Sane* repo skeleton generation before project-specific cleanup and Codex/AGENTS refresh |
-| `bash scripts/automation/website-consistency-check.sh` | Manual website audit | Static consistency checks across product sites and guide hubs after website/release copy changes |
-| `bash scripts/mini/mini-license-test.sh` | Manual deep Mini probe | Full SaneBar license lifecycle testing on the Mini when license activation/deactivation/offline caching changes |
-| `bash scripts/mini/sync-claude-config.sh` | Deprecated wrapper only | Prints or routes to the canonical `ruby scripts/SaneMaster.rb sync_mini --no-restart` path |
-| `bash scripts/app_test_mode.sh ...` | Manual runtime lane control | Force app mode, owner-license state, or live-launch verification on local host or Mini without ad hoc defaults writes |
-
-Listing/directory follow-up rule: do not maintain separate manual spreadsheets by hand. Regenerate the tracker from inbox history with the canonical command below. New recognized listing/setup emails are folded into the workbook the next time the command runs.
-
-```bash
-ruby scripts/SaneMaster.rb listing_actions
-```
-
-Outputs:
-- dated workbook: `outputs/listing_actions/sanebar_listing_actions_<date>.xlsx`
-- latest stable path: `outputs/listing_actions/latest.xlsx`
-
-Hosted-file dashboard sync rule: do not leave Lemon Squeezy hosted-file drift as tribal knowledge or a one-line validation warning. Regenerate the current workbook from live appcast + Lemon Squeezy API data:
-
-```bash
-ruby scripts/SaneMaster.rb hosted_file_actions
-```
-
-Outputs:
-- dated workbook: `outputs/hosted_file_actions/saneapps_hosted_file_actions_<date>.xlsx`
-- latest stable path: `outputs/hosted_file_actions/latest.xlsx`
-
-This is a dashboard-action tracker, not an uploader. Lemon Squeezy currently exposes read APIs for files, but not a public file-replacement API. Use the workbook to open the exact product dashboard page, replace the published file with the appcast-matching ZIP, and delete or unpublish every old hosted ZIP so customers see only the current release. Any current hosted-file drift for a released direct-download app is a red release-pipeline failure because a paying customer can receive the wrong build.
-
-Upload-folder rule: `~/Desktop/LemonSqueezy-Uploads` is a latest-only staging folder. Before any Lemon Squeezy dashboard upload, move older app ZIPs to Trash so the file picker cannot select the wrong release. The hosted-file tracker audits this folder and reports stale, missing-latest, and unexpected ZIPs alongside the dashboard action list.
-
-Operational SOP:
-- `scripts/automation/morning-report.sh` now regenerates the workbook automatically, so new listing/setup emails show up in the nightly report without a manual spreadsheet pass.
-- `scripts/automation/sane-status-crossref.sh` now shows the live listing-action counts and current `Needs action` rows.
-- `scripts/automation/sane-status-crossref.sh` also shows hosted-file dashboard sync actions, so `ruby scripts/SaneMaster.rb status` surfaces Lemon Squeezy file drift alongside inbox, sales, listing actions, and org-wide GitHub issues/PRs.
-- Known recurring vendors should get explicit rules in `scripts/automation/listing_actions_rules.py`.
-- New unknown listing/setup senders are still surfaced via the generic heuristic path, with a note saying they should be promoted to a dedicated rule if they recur.
-- If the open queue includes `StartupSubmit — Decide whether vendor must redo manual setups`, then downstream setup rows like Gartner, SaaSworthy, and SourceForge are vendor-owned remediation, not direct operator work. Keep them visible as evidence/monitoring, but do not manually complete those setups unless the user explicitly overrides that rule.
-
-Tracker columns are designed for owner action, not inbox triage:
-- `action_status`: `Needs action`, `Optional`, or `Monitor`
-- `primary_link` / `secondary_link`: the exact vendor links from the emails
-- `instructions`: the concrete setup step to do next
-- `source_email_ids`: inbox evidence backing that row
-
-### Canonical Tool Paths
-
-Do not hunt around for ad hoc tools.
-Use the documented standard path first, then use `tool_discovery` if you still think something is missing.
-
-### Release README Gate
-
-`scripts/release.sh` now runs `scripts/automation/nv-readme-check.sh` as part of the release flow.
-Treat that as a real release gate, not optional polish:
-
-- if it says the README is stale, fix the README before release
-- do not bypass it by calling shipped user-facing changes “internal”
-
-### Candidate Gate Review
-
-Use `ruby scripts/SaneMaster.rb gate_review <fixture.json>` before adding a new blocking hook or SOP rule. A fixture must include the incident seed, examples that must block, and examples that must remain allowed. The command is local and deterministic: no external package, cloud call, telemetry path, or automatic rule promotion.
-
-Release preflight also loads app-specific fixtures from `test/fixtures/gates/<normalized-app-name>_*.json`. A malformed or failing fixture blocks release until the prevention evidence is fixed or deliberately removed.
-
-### Agent Workflow Evals
-
-Use `ruby scripts/SaneMaster.rb agent_eval` before changing trigger maps, mandatory workflows, skill routing, or AGENTS rules. The default fixture lives at `scripts/agent_eval_fixtures.json` and checks high-risk prompt classes such as work email, Gmail-vs-work-email routing, missing-tool research, release prep, docs audits, customer UI proof, sales/funnel questions, Mini-first runtime work, subagent hook compliance, and NVIDIA-agent avoidance.
-
-Use `ruby scripts/SaneMaster.rb process_eval` before changing support, release, UI verification, tool-discovery, delegation, session-start, session-end, or SOP scoring policy. The default fixture lives at `scripts/process_eval_fixtures.json` and tests receipt-level workflows rather than prompt classification. `trace_eval` runs only the fixture layer; `sop_review` runs only the score-history and cap review.
-
-SOP scoring source of truth is `scripts/hooks/core/sop_score.rb`. `sanestop`, `saneloop`, and process review code must use that shared scorer instead of reimplementing their own rubrics. `sanestop` writes enriched SOP receipts to process metrics plus `outputs/sop_ratings.csv` / `outputs/sop_ratings.jsonl`; new rows include session id, client, block count, cap reason, verification status, edit counts, and notes JSON.
-
-Use `ruby scripts/SaneMaster.rb near_miss_review` when you want the process to turn its own history into useful next actions. It is report-only by default and does not append a metric row while analyzing metrics. It mines hook-block recurrence, zero-test verification failures, weak green test evidence, non-Mini proof, edited sessions without verification, support delivery failures, promise-ledger gaps, and workflow churn. Use `--metrics PATH` to backtest a specific controller or Mini JSONL file, `--all` for the full file, and `--include-test-events` only when intentionally auditing hook/test fixtures.
-
-When `near_miss_review` points at repeated zero-test verification failures, run `ruby scripts/SaneMaster.rb verify_failure_review --all`. New verify metrics include `evidence_strength`, `failure_bucket`, `failure_hint`, and host metadata so this drilldown can separate timeouts, permission prompts, runner startup failures, build failures, discovery/counting bugs, and legacy unknown failures. A green verify with zero counted tests is capped as weak evidence by the shared SOP scorer until a counted test run replaces it.
-
-Use `ruby scripts/SaneMaster.rb agent_env_review` as the maintenance loop for agent setup drift. It routes Mini-first, reads process metrics, skill health, Codex/Claude research-cache size, and tool-discovery receipts, then returns concrete follow-up actions.
-
-Use `ruby scripts/SaneMaster.rb skill_lint` when adding or updating skills. Skill descriptions must be specific enough for routing and include trigger/when-to-use guidance. Missing `SKILL.md` files, unresolved placeholder TODOs, and legacy NVIDIA/nv default guidance are treated as failures. The linter also reports duplicate skill-name drift outside the known Codex/agent client-mirror pair, so accidental skill fragmentation is visible before it becomes policy drift. Default coverage includes global Codex/agent skill roots plus project `.codex/skills` and `.agents/skills`; pass `--path` for plugin skill roots or one-off checks.
-
-Pre-tool and post-tool hooks append redacted `trajectory_event` metrics with source, tool, result/block status, rule, and PID. These events are intentionally metadata-only so future trace replay has an event stream without storing prompt text or tool payloads.
-
-`process_metrics --export-html PATH` is for human review dashboards. Keep Markdown and JSON/JSONL as durable source-of-truth formats; HTML is a generated artifact for dense reports, visual summaries, and review surfaces where layout helps.
-
-```json
-{
-  "rules": [
-    {
-      "id": "no-force-push-main",
-      "trigger": "force push main",
-      "seed": "A release was damaged by force push main",
-      "block": ["git push --force origin main"],
-      "allow": ["git push origin feature-branch", "git status --short"]
-    }
-  ]
-}
-```
-
-### GitHub Actions Policy
-
-SaneApps is Mini/local first.
-
-- Default verification, release prep, and smoke testing should run on the Mini or locally through `SaneMaster.rb`.
-- GitHub workflows should be manual fallbacks, not automatic `push`, `pull_request`, or `schedule` spend by default.
-- Dependabot should stay off by default too. Do dependency sweeps locally unless a repo documents a real hosted exception.
-- If a repo needs GitHub-hosted automation again, document the reason first. Convenience alone is not enough.
-- GitHub is only justified when you specifically need a GitHub-hosted lane to produce an externally visible status check or artifact.
-- Validation treats any non-manual workflow trigger or repo-level `dependabot.yml` as drift unless the file includes `SANEAPPS_GITHUB_HOSTED_EXCEPTION: <reason>`.
-
-| Need | Standard path | Not this |
-|------|---------------|----------|
-| Find the right tool first | `ruby scripts/SaneMaster.rb tool_discovery --query "..."` | Random searches, guessing, or inventing a new script first |
-| Check live project status | `ruby scripts/SaneMaster.rb status` | Piecing status together manually from git, inbox, sales, and issues |
-| Build and test app code | `ruby scripts/SaneMaster.rb verify [--ui]` | Raw `xcodebuild` unless the tool itself is what you are fixing |
-| Promote a new prevention gate | `ruby scripts/SaneMaster.rb gate_review <fixture.json>` | Adding hook blocks from one anecdote or untested pattern matching |
-| Launch and smoke-test an app | `ruby scripts/SaneMaster.rb test_mode --release --no-logs` | Manual local launches and stale DerivedData builds |
-| API compatibility before release | `ruby scripts/SaneMaster.rb release_preflight` | Shipping symbols from newer SDKs than `release.min_system_version` supports |
-| Mini live window screenshots | `scripts/mini/capture-mini-screenshot.sh --app "<App>" --window-name "<Window>" --mode temp` | Plain `ssh` + `screencapture` guessing from a non-GUI shell |
-| Mini Safari tab control | `scripts/mini/mini-safari.sh open-read "<url>"` | One-off raw `ssh mini osascript` snippets for Safari evidence, listing links, or portal checks |
-| Sync Codex control-plane to the Mini | `ruby scripts/SaneMaster.rb sync_mini [mini] [--quiet] [--no-restart] [--activate-mini-runs]` | Manual sync script hunting or recreating a second Mini config lane |
-| Air↔Mini pointer handoff recovery | `ruby scripts/SaneMaster.rb universal_control_reset` | Random killall / reboot guessing when Universal Control breaks |
-| App Store review readiness | `ruby scripts/SaneMaster.rb appstore_preflight` only when `.saneprocess appstore.enabled: true` | Clicking around ASC first, guessing what Apple meant, or running ASC gates for direct-only apps |
-| Headless Mini signing bootstrap | `bash scripts/mini/bootstrap-build-server.sh` | Trying App Store archive/export first and debugging signing after the failure |
-| App Review evidence collection | `ruby scripts/appstore_submit.rb --app-id <id> --platform macos|ios --version X.Y.Z --project-root <repo> --fetch-review-package` | Reading only the rejection text and ignoring Apple’s screenshot/video/PDF evidence |
-| Direct release readiness | `ruby scripts/SaneMaster.rb release_preflight` | Manual release spot checks |
-| Customer support triage | `ruby scripts/SaneMaster.rb check_inbox review <id>` | Manual API calls, ad hoc email drafts, or skipping review |
-| Sales / downloads / funnel | `ruby scripts/SaneMaster.rb sales`, `downloads`, `events` | Manual vendor curls or spreadsheet guesses |
-| Listing/setup tracker | `ruby scripts/SaneMaster.rb listing_actions` | Manual inbox sweeps and hand-built spreadsheets |
-| Hosted-file dashboard tracker | `ruby scripts/SaneMaster.rb hosted_file_actions` | Grepping validation output and manually hunting Lemon Squeezy product/variant pages |
-| MCP and tool health | `ruby scripts/SaneMaster.rb mcp_watchdog doctor` and `~/.codex/bin/check-mcps` | Killing random daemons first and hoping |
-  `mcp_watchdog doctor` is the background-machine truth. `check-mcps` is the live active-session tool-call probe and expects the current machine to have active MCP bridges.
-
-### Verification helpers
-
-| Command | Purpose |
-|---------|---------|
-| `verify_api <API> [Framework]` | Verify SDK API exists |
-| `fix_mocks` | Check and fix mock sync status |
-| `verify_mocks` | Verify generated mocks are synchronized |
-
-**Examples** and **Aliases** are listed in `./scripts/SaneMaster.rb help` — keep them current with the CLI.
-
-## Central Memory MCP (Postgres + pgvector)
-
-SaneProcess includes a semantic memory MCP server for cross-session retrieval.
-
-- Server code: `scripts/mcp-central-memory/server.mjs`
-- Bootstrap: `scripts/mcp-central-memory/bootstrap-local.sh`
-- Default DB: `postgresql://<local-user>@localhost:5432/central_memory`
-- MCP key: `central-memory` in `/Users/sj/.codex/config.toml` and `.mcp.json`
-- Codex control-plane helper source lives in `scripts/codex-bin/`; `ruby scripts/SaneMaster.rb sync_mini` installs that source into local `~/.codex/bin/` and mirrors it to Mini. Safe default keeps Mini AM/PM runs paused so manual Air sessions do not silently reactivate unattended Mini work. Use `--activate-mini-runs` only when you intentionally want the Mini scheduler active again.
-
-Setup:
-
-```bash
-cd ~/SaneApps/infra/SaneProcess/scripts/mcp-central-memory
-./bootstrap-local.sh
-```
-
-Verify:
-
-```bash
-~/.codex/bin/check-mcps
-codex mcp list | rg central-memory
-```
-
-Requirements:
-
-- `OPENAI_API_KEY` available to the Codex app process (for embeddings)
-- Homebrew `postgresql@17` and `pgvector` (installed by bootstrap script)
-
-## Knowledge Graph Memory MCP (JSONL)
-
-Codex also uses a separate graph-style memory MCP for entity/relation storage.
-
-- Server code: `scripts/mcp-memory-enhanced/server.mjs`
-- Backing store: `/Users/sj/.claude/memory/knowledge-graph.jsonl`
-- MCP key: `memory` in `/Users/sj/.codex/config.toml`
-
-Notes:
-
-- This is the graph tool behind `create_entities`, `create_relations`, `open_nodes`, and `search_nodes`.
-- Search is tokenized and relation-aware. It is intentionally separate from `central-memory`, which is semantic/vector recall.
-- Keep SaneBar issue/email maps in this graph when you want exact cross-reference, not embedding recall.
-
-## Installed Link Check Tools (2026-02-28)
-
-These are installed globally on this machine and available for website verification:
-
-- `lychee` (`brew install lychee`) — version `0.23.0`
-- `linkinator` (`npm install -g linkinator`) — version `7.6.1`
-- `broken-link-checker` / `blc` (`npm install -g broken-link-checker`) — version `0.7.8`
-
-Quick verify:
-
-```bash
-lychee --version
-linkinator --version
-
-## Universal Control Recovery
-
-When the Air pointer stops crossing to the Mini, use the shared recovery command instead of ad hoc shell snippets:
-
-```bash
-ruby scripts/SaneMaster.rb universal_control_reset
-```
-
-What it does:
-
-- forces Handoff advertise/receive on
-- clears the saved `com.apple.UniversalControl` state
-- restarts `UniversalControl`, `sharingd`, `useractivityd`, `bluetoothd`, and `ControlCenter`
-- bounces Wi-Fi on the affected host(s)
-
-Useful flags:
-
-- `--status` prints local + Mini discovery state without changing anything
-- `--cleanup-mini` hides Mini Terminal/Codex and closes Preview/Safari
-- `--reboot-mini` runs the reset and then restarts the Mini
-- `--local-only` or `--mini-only` limits which host gets touched
-- `--dry-run` prints the exact commands before executing them
-
-Escalation order:
-
-1. `ruby scripts/SaneMaster.rb universal_control_reset`
-2. If the pointer still does not cross, rerun with `--reboot-mini`
-3. Reboot the Air only after the Mini reboot path still fails
-blc --version
-```
+## SaneMaster Commands
+
+Prefer SaneMaster over raw commands for workflows with state, safety, or
+receipts. Run `ruby scripts/SaneMaster.rb` or `help <category>` for full help.
+
+| Need | Command |
+|------|---------|
+| Full build/test | `ruby scripts/SaneMaster.rb verify` |
+| UI-inclusive verify | `ruby scripts/SaneMaster.rb verify --ui` |
+| Tool/MCP discovery | `ruby scripts/SaneMaster.rb tool_discovery --query "..."` |
+| Test quality scan | `ruby scripts/SaneMaster.rb test_scan -v` |
+| Process eval | `ruby scripts/SaneMaster.rb process_eval --json` |
+| Prompt routing eval | `ruby scripts/SaneMaster.rb agent_eval --json` |
+| Skill routing lint | `ruby scripts/SaneMaster.rb skill_lint --json` |
+| App release preflight | `ruby scripts/SaneMaster.rb release_preflight` |
+| Active App Store lane | `ruby scripts/SaneMaster.rb appstore_preflight` |
+| Runtime launch/proof | `ruby scripts/SaneMaster.rb test_mode` plus app-specific `customer_ui_sweep`, or `visual_smoke` only when no app sweep exists |
+| Support inbox | `ruby scripts/SaneMaster.rb check_inbox` |
+| Sales/download/funnel | `sales`, `downloads`, `events` |
+| Machine cleanup | `ruby scripts/SaneMaster.rb machine_cleanup --host mini --apply` |
 
 ## Testing
 
-```bash
-ruby scripts/hooks/test/tier_tests.rb           # All tests
-ruby scripts/hooks/test/tier_tests.rb --tier easy    # Easy tier
-ruby scripts/hooks/test/tier_tests.rb --tier hard    # Hard tier
-ruby scripts/hooks/test/tier_tests.rb --tier villain # Villain tier
-ruby scripts/SaneMaster.rb verify --timeout 900      # Full registry-backed SaneProcess verify
-```
-
-### Script Test Registry
-
-SaneProcess is script-only: full `verify` uses `scripts/test_registry.json`, not Xcode. Every `scripts/**/*_test.rb`, `scripts/**/*_test.py`, plus required scenario tests such as `scripts/hooks/test/tier_tests.rb`, must be registered as one of:
-
-- `required`: runs in full `ruby scripts/SaneMaster.rb verify`
-- `manual`: kept for targeted/legacy/operator runs
-- `support`: helper loaded by another test, not a standalone executable test
-
-If a new test-like file appears without a registry entry, full verify fails. This is intentional; do not bypass it by adding hardcoded commands back into `verify.rb`.
-
-The Mini currently runs the registry with system Ruby 2.6, so required Ruby tests must avoid Ruby 2.7+ only APIs such as `filter_map` unless they guard them.
-
-## Cross-Project Sync
-
-If you use SaneProcess across multiple projects, keep hooks in sync:
+Use the registry-backed verify path before calling work done:
 
 ```bash
-# Check sync status against another project
-ruby scripts/sync_check.rb /path/to/other-project
-
-# Sync hooks to another project
-rsync -av scripts/hooks/ /path/to/other-project/scripts/hooks/
+ruby scripts/SaneMaster.rb verify --timeout 900
 ```
 
-## Release Pipeline
-
-SaneProcess provides a **unified release script** for all SaneApps macOS products. Every app uses the same pipeline — no local release scripts.
-
-### How It Works
-
-```
-.saneprocess (per-app YAML config)
-       ↓
-saneprocess_env.rb (YAML → env vars)
-       ↓
-release.sh (build → sign → notarize → DMG → Sparkle signature)
-       ↓
-set_dmg_icon.swift (applies Finder file icon)
-```
-
-### Running a Release
-
-From any app directory with a `.saneprocess` config:
+Useful focused tests:
 
 ```bash
-# Standard release (build + sign + notarize + DMG)
-./scripts/SaneMaster.rb release
-
-# Full release (also bumps version, runs tests, creates GitHub release)
-./scripts/SaneMaster.rb release --full --version X.Y.Z --notes "Release notes"
+ruby scripts/validation_report_test.rb
+ruby scripts/sanemaster/agent_workflow_test.rb
+ruby scripts/sanemaster/meta_test.rb
+ruby scripts/sanemaster/release_guardrail_test.rb
+ruby scripts/appstore_submit_guardrail_test.rb
+ruby scripts/mini/bootstrap_build_server_test.rb
 ```
 
-### Release truth path
+Test registry policy:
 
-For Mini-first apps, the release signal now has one canonical path:
+- Every script test-like file needs an explicit entry in `scripts/test_registry.json`.
+- `required` entries run in full `verify`.
+- `manual` entries must explain why they are not part of default verify.
+- Zero-test green runs are weak evidence and should not be treated as done.
 
-1. `./scripts/SaneMaster.rb release_preflight` runs on Mini when the command is Mini-routed.
-2. Project QA writes `outputs/qa_status.json` when available.
-3. Shared preflight also writes `outputs/release_preflight_status.json`.
-4. `SaneMaster.rb` syncs `outputs/` back from Mini to the local workspace.
+## Release And App Store
 
-Release preflight also fails when the repo has an `auto-reconcile-*` stash containing release-relevant files. Resolve those stashes by applying or explicitly discarding the work before publishing, because a clean `main` branch is not enough evidence if real source changes are parked in the stash stack.
-
-### Customer UI Action Contract
-
-Every customer-facing app release must have a current customer UI action contract. Passing unit tests, signing, notarization, and upload checks is not enough release evidence.
-
-Required per app:
-
-- `Tests/CustomerUIActions.yml` or one of the supported equivalents listed by `SaneMaster.rb customer_ui_contract`
-- `outputs/customer_ui_action_receipt.json` generated from the Mini after the signed/release-like app is click-tested
-- screenshot evidence from the Mini or deterministic SwiftUI renders
-- an app runner at `scripts/customer_ui_action_sweep.rb` or another supported sweep path, invoked through `./scripts/SaneMaster.rb customer_ui_sweep`
-
-The contract must list every release-required customer-visible control path: primary buttons, toggles, menus, settings tabs, license/update/about/support actions, onboarding, import/export, destructive actions, and app-specific promised workflows. Every action must declare a `required_proof_level`, any `required_evidence_types` needed for that promise, the `historical_failure_classes` it is meant to catch, and the `functional_state` needed for the app to behave like a real customer session. Empty-state-only testing is not enough unless the manifest explicitly says that state is intentional and explains why no seeded fixture is required.
-
-The receipt must cover every required action id, report `status: passed`, use `host: mini`, match the manifest SHA-256, match the current source fingerprint, include per-action `proof_level`, prove the declared `functional_state` was established or not required, and include real image artifacts when visual proof is claimed or required. Runtime receipts must include structured workflow proof for each action: the runner used, the declared manifest steps completed, the observed outcome, and artifact paths. Action evidence such as click transcripts, screenshots, logs, fixtures, file-state receipts, API responses, or model responses must point at real files, not prose-only notes. For `fixture_completion` and `full_runtime_completion`, the manifest must declare `user_inputs` or fixture paths plus `expected_outputs`, and the receipt must include the exercised inputs, output assertions, and real output evidence such as a fixture result, file-state receipt, log, API response, or model response. Any source change after the click sweep makes the receipt stale and blocks `release_preflight`.
-
-Customer-runtime state must be first-class in the manifest, not scattered through handoff notes. Apps that set `require_standard_runtime_state_matrix: true` must define these `runtime_state_matrix` rows and map each row to release-required action ids with runtime proof: `upgrade_update`, `cold_launch_relaunch`, `wake_unlock`, `display_topology`, `fullscreen_maximize_transition`, `basic_pro_mode`, and `support_report_media`. This matrix is the release source of truth for customer lifecycle coverage.
-
-`ruby scripts/validation_report.rb` runs the same customer UI contract for every released app that has a public checkout path. A missing contract, stale receipt, fixture-only proof where runtime completion is required, or prose-only evidence is a `Q13 CUSTOMER REALITY` release-readiness failure. Do not rely on a green global status report unless Q13 is green.
-
-Valid proof levels, from weakest to strongest for release gating:
-
-- `source_guard`: code path exists only. This is not enough for a live customer-facing control unless the manifest explicitly scopes the action to source inventory.
-- `unit_guard`: source plus unit-level behavior proof.
-- `fixture_completion`: isolated fixture proves completion without touching customer data or external services.
-- `safe_first_surface`: real UI/UX reaches the first safe confirmation, permission, purchase, or external handoff surface.
-- `runtime_visual`: Mini runtime click plus screenshot/visual evidence proves the visible action is live.
-- `full_runtime_completion`: Mini runtime completes the customer workflow end to end in an isolated account or fixture.
-- `manual_verification`: explicitly reviewed human verification for flows automation cannot safely complete.
-
-Do not use screenshots as placeholders. The contract rejects missing files, non-image artifacts, and tiny images below the minimum evidence size. If a sweep only proves source strings or test names, mark it honestly with a low proof level and expect release preflight to block any action whose manifest demands runtime proof.
-
-Do not test empty shells and call that end-to-end. Before testing SaneSales,
-seed representative sales/products/orders. Before testing SaneSync, connect or
-simulate the real AI backend, type customer prompts into the input field, and
-verify generated outputs and state changes. The same rule applies to every app:
-customer-visible actions only count when the app is in the functional state that
-customers need for the promised workflow.
-
-Historical issue review is part of the release gate. Before adding or updating an app contract, review the app's GitHub issue history and map every customer action to at least one known failure class:
-
-- `activation_noop`: visible control, row, menu item, context item, or button does nothing.
-- `context_menu_extension_missing`: Finder/right-click/system extension action is absent or only appears in some locations.
-- `data_loss_or_unexpected_mutation`: sync, import, reset, update, or edit flow loses data or mutates more than the customer requested.
-- `docs_promise_drift`: README, website, App Store, privacy, or in-app copy promises behavior the app does not actually ship.
-- `duplicate_or_stale_menu_item`: menu command appears twice, shows stale text/hotkey, or points at the wrong owner.
-- `external_integration_stub`: public UI exposes a third-party upload, auth, payment, or service path that is placeholder-only.
-- `hardware_or_tcc_runtime`: camera, microphone, screen recording, accessibility, automation, Finder Sync, or file-access behavior is unverified on the Mini.
-- `install_update_packaging`: Sparkle, Homebrew, Gatekeeper, notarization, hosted download, checksum, or version drift breaks installation/update.
-- `layout_visual_regression`: tint, text, window chrome, row layout, icon visibility, clipping, or overlap is wrong only when rendered.
-- `menu_entry_missing`: advertised app/status/Dock/context menu entry is missing or disabled.
-- `permission_recovery_dead_end`: permission prompt, onboarding step, or recovery button leaves the customer stuck.
-- `persistence_or_relaunch_reset`: settings, layout, enabled state, license, profile, or preference does not survive relaunch/update/reboot.
-- `pro_basic_gate_drift`: Basic/Pro gating hides promised Basic behavior or pretends to enable locked Pro behavior.
-- `shortcut_focus_or_dispatch`: keyboard shortcut fires in the wrong focus state, is swallowed, opens the wrong surface, or does not fire.
-- `state_count_drift`: displayed counts, enabled totals, row switches, filters, or selection state disagree with actual app state.
-
-If a class appears in GitHub history for any SaneApps product, do not scope it narrowly to that product. Treat it as a suite-wide release-test pattern and decide whether the current app has the same kind of customer surface.
-
-Useful commands:
+Direct release path:
 
 ```bash
-./scripts/SaneMaster.rb customer_ui_sweep --dry-run
-./scripts/SaneMaster.rb customer_ui_sweep --json
-./scripts/SaneMaster.rb customer_ui_contract --no-exit
-./scripts/SaneMaster.rb customer_ui_contract --json --no-exit
-./scripts/SaneMaster.rb release_preflight
+ruby scripts/SaneMaster.rb release_preflight
+bash ~/SaneApps/infra/SaneProcess/scripts/release.sh \
+  --project "$(pwd)" --full --version X.Y.Z --notes "..." --deploy
 ```
 
-Start new contracts from `~/SaneApps/infra/SaneProcess/templates/customer_ui_actions.yml`. Do not mark a release cleared until the shipped binary has been driven through its customer-facing actions and the visible state, persisted state, and cross-surface state agree.
-
-## Mini Visual Verification SOP
-
-### Permission Prompt Monitoring
-
-`SaneMaster verify` starts the Mini permission monitor by default and keeps it
-alive for the configured verify timeout plus a buffer. Use
-`--no-grant-permissions` only for a deliberate diagnostic run where permissions
-must not be touched.
-
-If the monitor detects that System Settings/System Preferences opened for a
-manual grant, `verify` must fail instead of being treated as green. Clear the
-prompt on the Mini and rerun the verification. Do not leave a Mini test running
-unwatched when a customer-facing app path can trigger Camera, Microphone, Screen
-Recording, Accessibility, Automation, Finder Sync, or file-access prompts.
-
-For SaneApps desktop UI, use this verification ladder on the Mini:
-
-1. **Launch the signed/release-like app on the Mini**
+App Store lanes are active only when `.saneprocess` enables them:
 
 ```bash
-./scripts/SaneMaster.rb test_mode --release --no-logs
+bash ~/SaneApps/infra/SaneProcess/scripts/mini/bootstrap-build-server.sh
+ruby scripts/SaneMaster.rb appstore_preflight
 ```
 
-2. **Live screenshot path (preferred when Screen Recording is granted)**
+Release rules:
 
-Run this from the controlling machine with Codex installed. The capture itself still happens on the Mini GUI session.
+- Bump version before release; Sparkle ignores same-version updates.
+- Direct-only apps do not run App Store lanes unless deliberately re-enabled.
+- Customer-facing UI or runtime claims need Mini proof and clean saved evidence.
+- For App Store submission/resubmission, first run the Mini `customer_ui_sweep`
+  on the candidate build in the current session or on the same calendar day, and
+  capture per-action screenshots for every reviewer/customer-facing state
+  required by the lane.
+- Record screenshot paths plus a written verdict in `SESSION_HANDOFF.md` or
+  `outputs/visual-audit*/`, then run `ruby scripts/SaneMaster.rb appstore_preflight`.
+- Submit only if both fresh visual proof and `appstore_preflight` are green for
+  the same candidate build. Do not reuse stale direct-release screenshots as App
+  Store proof.
+- Private signing, ASC, notary, and R2 setup details live in `DEVELOPER_SETUP.md`.
+
+## Runtime And Visual Evidence
+
+- Use `sane_test.rb` or `SaneMaster.rb test_mode`; do not manually open app
+  bundles for SaneApps proof.
+- Use the app-specific `customer_ui_sweep` when it exists. Use `visual_smoke`
+  only when no app-specific sweep exists.
+- Obstructed, clipped, partial, or helper-window-contaminated screenshots are
+  invalid.
+- Hidden macOS prompts can invalidate app-window-only screenshots; check full
+  desktop/AX state when a GUI flow is stuck or contradictory.
+
+## MCP And Tooling
+
+Portable path first: scripts, docs, local receipts, and SaneMaster. Optional
+MCPs do not become required proof paths unless repo config or a test explicitly
+requires them.
+
+Optional accelerators:
+
+- Apple `xcrun mcpbridge` / `xcode`: IDE-native Xcode context.
+- XcodeBuildMCP: iOS simulator build-run proof, UI automation, LLDB/device, and
+  coverage workflows.
+- `central-memory`: semantic recall when configured.
+- Cloudflare API MCP/plugin: read-only Pages/R2/Worker drift checks.
+
+Health checks:
 
 ```bash
-/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh \
-  --list-windows --app "SaneClip"
-
-/Users/sj/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh \
-  --app "SaneClip" --window-name "Settings" --mode temp
+ruby scripts/SaneMaster.rb mcp_watchdog doctor
+~/.codex/bin/check-mcps
 ```
 
-- This runs inside the Mini's logged-in GUI Terminal session through `mini-gui-run.sh`.
-- App-targeted captures first run `scripts/mini/mini-visual-workspace-guard.sh --cleanup --app <App>`.
-  If stale SaneApps windows, helper apps, Terminal windows, SaneClick extension
-  helpers, or SaneSync inference servers remain, the capture is blocked instead
-  of producing contaminated evidence.
-- First use may trigger a one-time Screen Recording permission request for Terminal on the Mini.
-- Do **not** trust plain `ssh ... screencapture` as the primary path for live app windows.
-
-3. **Deterministic render fallback for SwiftUI settings/surfaces**
-
-Use this when live capture is blocked by permissions or when you need a stable artifact for review.
-
-```bash
-echo /tmp/app-renders > /tmp/saneclip_screenshot_dir.txt
-./scripts/SaneMaster.rb verify
-ls -1 /tmp/app-renders
-```
-
-- SaneClip already writes `settings-*.png` renders from tests when the hint file is present.
-- Use these renders to verify layout, copy, spacing, and destructive-action affordances.
-
-4. **iOS simulator screenshots**
-
-When the issue is iPhone/iPad-only, use the app's simulator screenshot script or the iOS screenshot lane instead of desktop capture.
-
-4.25 **Marketing video production**
-
-Marketing videos are customer-facing release assets, not decorative exports. A
-video is not done until it passes the same evidence standard as screenshots.
-
-Use this workflow for every SaneApps product video:
-
-1. **Write the storyboard before rendering**
-   - Name the product, audience, offer, and primary proof.
-   - List the beats in order. Each device gets its own reason to appear.
-   - Use sales logic, not asset order. If the opener raises privacy/data-mining,
-     trust, price, or subscription pain, the next beat must answer that objection
-     before the video moves into feature walkthroughs.
-   - Identify the official product logo/icon asset before rendering. Generated
-     videos and website edits must use the real product logo from the app/website
-     source, never a hand-drawn placeholder, generic symbol, or improvised
-     wordmark.
-   - Do not put Mac, iPhone, iPad, and Watch on every frame. Show each format
-     when it proves something specific.
-   - Save the storyboard/generator path in the product handoff before
-     publishing. A marketing video must be reproducible from committed scripts
-     plus current approved screenshots; one-off terminal snippets are not
-     acceptable for launch assets.
-   - Identify the real music source before rendering. Store publishable music
-     in the product repo or a documented shared asset location; do not build
-     launch videos from a transient Downloads file or an unnamed synthetic bed.
-   - Classify every buyer-facing line as `Problem`, `Benefit`, `Proof`, or
-     `CTA` before rendering. Cut implementation detail that a buyer does not
-     care about, including license-check mechanics, provider-key storage
-     mechanics, backend/server labels, internal workflow labels, and defensive
-     engineering copy.
-   - Avoid contradictory shorthand. `Private tracking` sounds like the bad thing
-     being sold back to the customer; use benefit-first wording like `Track sales
-     privately.` and put separate claims on separate lines.
-
-2. **Capture Pro/paid state only**
-   - Use the app's canonical screenshot/video scripts on the Mini.
-   - Pass the product's Pro override/test entitlement where available.
-   - A locked screen, `Basic` badge, `Unlock Pro` CTA, stale price bubble,
-     permission dialog, onboarding gate, or popup is a blocker.
-   - If a platform lacks a true Pro capture path, fix the capture path first or
-     label the asset honestly as a demo. Do not fake it in the video.
-
-3. **Use believable product data**
-   - Charts must show meaningful variation across the chosen period. Flat bars
-     are a blocker unless the point of the frame is explicitly "steady revenue."
-   - For sales/revenue apps, verify the selected range has at least three
-     distinct daily revenue values and an obvious high/low pattern.
-   - If the demo fixture is too smooth, fix the fixture and add a regression
-     test. Do not hide bad data with motion graphics.
-
-4. **Build the asset from real screenshots**
-   - Prefer live Mini captures or deterministic renders already used by the
-     website/App Store lanes.
-   - Reuse the product website's device frames and visual language when they
-     are already approved, but do not reuse stale or locked screenshots.
-   - Make the capture-to-compositor contract explicit. If capture writes
-     `Screenshots/` but the compositor reads `docs/images/`, the sync/import
-     step must be scripted and logged. Manual copying is not an acceptable
-     production path.
-   - Treat permission-sensitive surfaces as curated inputs until their capture
-     path is proven. Settings, permissions, account/license panels, and recent
-     activity lists can expose popups, stale prices, or unrelated demo names.
-   - Use concise copy. The screenshot is the proof; text explains the moment.
-
-5. **Render with inspection artifacts**
-   - Use a product script or shared generator. The script must build the final
-     MP4, poster, source contact sheet, sampled video contact sheet, and website
-     copy path in one command.
-   - Generate a source contact sheet for every slide/scene.
-   - Generate a sampled video contact sheet from the final MP4.
-   - Contact sheets must not contain empty placeholder rows/columns. If the
-     video has 8 scenes, use a 4x2 sheet; if it has 6 scenes, use 3x2 or 2x3.
-     A contact sheet with a large black unused area is a QA failure, not polish.
-   - Keep the final MP4, poster image, contact sheets, source screenshots, and
-     generation command in the product repo or handoff.
-   - If music is part of the brief, the generator must loop/trim to exact video
-     duration, normalize loudness, and fade in/out so the track feels intentional
-     instead of abruptly starting or cutting off.
-   - Avoid crossfades that composite adjacent text-heavy slides. Use cuts or
-     per-slide fade-in/fade-out so transition frames cannot render two headings
-     on top of each other.
-
-6. **Run hard QA gates**
-   - OCR scan the slides/video frames for banned terms: `Unlock Pro`, `Basic`,
-     `Demo data`, stale public price, permission-dialog copy, popup copy, other
-     SaneApps product names in the wrong context, and obvious internal/debug
-     text.
-   - Visually inspect every sampled frame for clipped headings, overlapped
-     devices, unreadable small text, flat charts, stale device time/state, and
-     mismatched brand colors.
-   - Inspect the actual full-resolution frames, not just the contact sheet.
-     Contact sheets can hide text collisions, tiny flat charts, bad crops, and
-     unreadable device UI.
-   - Full-frame inspect every rendered scene and representative transition-boundary
-     frames before claiming visual approval. "I checked the contact sheet" is not
-     enough evidence for a customer-facing video.
-   - Review from a customer-marketing perspective: spacing, energy, visibility,
-     readability, brand prominence, and whether the frame makes the product
-     look desirable. If the answer is "it technically shows the app" but it
-     looks lazy, sparse, low contrast, or confusing, it fails.
-   - Ask of every visible copy line: is this a feature, benefit, proof point,
-     problem statement, or CTA? If it is none of those, remove it before
-     publishing.
-   - Inspect line breaks as copy, not renderer trivia. Short statements should
-     sit on their own lines; do not allow automatic wrapping to split a sentence
-     in a way that makes the frame look accidental or harder to scan.
-   - Verify the logo/brand mark in the rendered frame against the official
-     source asset. Any fake icon, old logo, wrong product logo, or placeholder
-     mark is a blocker.
-   - Inspect the rendered logo crop at full size. If the official asset has a
-     baked-in square background, either use a transparent source or key/mask it
-     so the final video has no hard rectangular edge around the mark.
-   - Keep slide rhythm consistent. Product lockup, headline, body, CTA, and
-     proof area should use a stable grid so the viewer knows where to look after
-     each transition.
-   - Do not use rounded filled pills for non-clickable video highlights. They
-     look like buttons. Prefer SaneUI/SaneApps accent text, subtle rules, or
-     non-interactive labels, and keep highlight colors aligned with the product
-     palette and shared color semantics.
-   - For chart-bearing frames, prove variation with either an automated chart
-     check or a written full-frame inspection note. If demo data is flat, fix
-     the demo fixture and add a regression test; do not ship a flat chart.
-   - For multi-device videos, do not shrink every device into unreadability.
-     Feature Mac, iPhone, iPad, and Watch at the moments where each format is
-     strongest, with enough size for the useful UI to read.
-   - Verify media metadata with `ffprobe`: 1080p or intended target size,
-     expected duration, video stream present, audio stream present when music is
-     part of the brief, and reasonable file size.
-   - Verify music fit with duration and loudness evidence. The audio stream
-     should closely match the video duration, avoid clipping, and not feel
-     ominous, sleepy, or off-brand for a launch offer.
-   - Deploy only after the live URL returns the expected `content-type` and the
-     page renders the video/poster without autoplay, popups, or layout jumps.
-   - Save or list the exact frame timestamps inspected for hero/problem,
-     privacy/solution, each device proof, CTA, and transition boundaries. The
-     contact sheet is a map, not a substitute for checking large frames.
-   - Run a critic pass over the rendered website/video artifacts before deploy.
-     The critic prompt must explicitly ask for odd phrasing, weak sales copy,
-     low energy, spacing, visibility, readability, popup/permission leakage,
-     stale prices, and flat or underwhelming charts.
-
-7. **Record the result**
-   - Update the product `SESSION_HANDOFF.md` with: source command, final MP4
-     path, live URL, QA artifacts, failures found, and the exact verification
-     commands that passed.
-   - If a failure was caused by a reusable tooling gap, update SaneProcess or
-     the app's capture script in the same session.
-
-No-go examples:
-- A sales video showing a revenue chart with identical bars.
-- A Watch frame that says `Demo data` when the claim is Pro.
-- Any frame containing a permission dialog, system prompt, or purchase popup.
-- A hero slide where the product name/brand is secondary to generic stock-like
-  animation.
-- A device screenshot whose useful content is mostly below the fold/crop, making
-  the app look empty.
-- A final MP4 whose music comes from an undocumented local file, clips, ends
-  early, cuts off abruptly, or has the wrong emotional tone.
-- A final MP4 without a contact sheet and OCR/banned-term check.
-
-4.3 **Website marketing edit QA**
-
-Customer-facing website edits use the same visual bar as release screenshots:
-
-1. **Start from brand and product truth**
-   - Read the product's current brand/positioning source before rewriting the
-     hero, pricing, privacy, or first viewport.
-   - Keep the product name, headline pattern, offer, and main differentiator
-     prominent above the fold. Do not invent a new family brand or layout when
-     sibling product sites already establish the pattern.
-   - Use the official product logo/icon asset from the repo. Do not recreate it
-     in CSS, SVG, canvas, PIL, or a generator unless the official source itself
-     is that file.
-   - Check live/source-of-truth pricing before hardcoding public prices,
-     discounts, coupon text, or deadline copy.
-
-2. **Render before claiming it works**
-   - Capture desktop and mobile screenshots of the rendered page with Playwright
-     or the approved browser tool.
-   - Keep Playwright installed on the Mini for canonical website smoke checks:
-     `npm install -g playwright@1.60.0 && npx playwright install chromium`.
-     Run Node smoke scripts with `NODE_PATH=$(npm root -g)` when using the
-     global package from `ssh mini`.
-   - Inspect first viewport, video section, device grid, pricing card, and any
-     section touched by the change.
-   - Verify no popup, permission dialog, capture toolbar, helper window, or
-     stale system prompt is visible in any marketing screenshot.
-
-3. **Marketing review checklist**
-   - Spacing: no collisions, cramped text, accidental `Sanityto`-style word
-     joins, clipped buttons, or device overlap.
-   - Energy: the page should feel alive and sales-oriented, not like a dark
-     technical dump. Use the product's approved SaneUI/SaneApps palette.
-   - Visibility/readability: all important copy and device UI must be readable
-     at the rendered size, especially on mobile.
-   - Product proof: charts must show variation, lists must look populated, and
-     screenshots must show the strongest paid/product state available.
-   - Copy: remove weird phrasing, internal wording, defensive claims, duplicate
-     lines, stale offer language, and anything that sounds machine-written.
-   - Privacy: preserve strong SaneApps privacy positioning while keeping the
-     supporting details accurate for the product.
-
-4. **Deploy and live-check**
-   - Use `release.sh --website-only` for Cloudflare Pages.
-   - After deploy, verify live HTML has the expected cache tag/copy, media URLs
-     return the correct content type, and live desktop/mobile screenshots match
-     the reviewed local render.
-
-4.5 **Codex second-pass visual audit**
-
-- After saving a Mini screenshot or deterministic render, inspect it with Codex visual tools and, when the GUI is available to Codex, `computer-use` accessibility inspection.
-- Use it to check for clipped controls, overlap, wrong selected state, unreadable copy, and obvious contrast drift.
-- Do not use NVIDIA vision helpers for normal SaneApps verification. They are legacy/exception-only and require an explicit user request for that specific run.
-- These are supplements. The canonical proof is still the clean Mini screenshot or deterministic render artifact.
-
-Hard rule:
-- For any release-critical UI claim, keep at least one saved visual artifact: live Mini screenshot when available, otherwise a deterministic render PNG.
-- Customer-surface sweeps are one-app-at-a-time. `test_mode` now closes other
-  SaneApps and stale helpers before launch, and the visual guard blocks evidence
-  if the Mini is still polluted. A screenshot taken with other app windows
-  visible is invalid and must not be attached to a release receipt.
-5. `ruby scripts/validation_report.rb` reads the newest available status snapshot and blocks false `READY TO SHIP` results.
-
-Validation-report nuance:
-- Broken website/appcast/webhook/Homebrew drift still counts as a real broken release pipeline.
-- Lemon Squeezy hosted-file drift is a broken release pipeline result with product/variant references. It may require dashboard follow-up rather than code, but it is still red because customers can receive the wrong version.
-- Customer UI contract drift is also red in the global validation report. If Q13 catches nothing across released apps, inspect the manifests and receipts for missing lifecycle rows or weak proof rather than treating the absence of findings as proof.
-
-Canonical runtime cleanup is now a first-class step:
-
-- `./scripts/SaneMaster.rb dedupe_apps --host mini --apps SaneBar`
-- `./scripts/SaneMaster.rb dedupe_apps --apps SaneBar,SaneHosts`
-
-`dedupe_apps` keeps one canonical installed bundle per app at `/Applications/App.app` and trashes stale build/runtime copies that can confuse Launch Services, Spotlight, TCC, and Launch Services.
-
-Hard rule:
-- SaneApps runtime installs on both the Air and Mini must resolve to exactly one canonical `/Applications/App.app` per app.
-- Do not leave fallback runtime bundles in `~/Applications`.
-- Do not leave Spotlight-visible duplicate bundles in `build/`, `outputs/`, `release/`, `release-publish/`, `release-worktrees/`, `~/SaneApps/tmp`, or `DerivedData`.
-- Unsigned or Apple Development fallback launches must stage to a transient non-indexed path under `/tmp/saneapps-staging.noindex`, never to another installed Applications location.
-- Standard verify/launch/test flows should auto-run `dedupe_apps` afterward. If you bypass the standard flow, run dedupe manually before claiming the machine is clean.
-
-### Work Session Guard
-
-SaneMaster now has a shared work-session guard for unattended local and Mini-routed work.
-
-What it does:
-- starts `caffeinate -dimsu`
-- disables idle screensaver start with `defaults -currentHost write com.apple.screensaver idleTime -int 0`
-- disables screensaver password prompt with `defaults write com.apple.screensaver askForPassword -int 0`
-- saves the previous values to `~/.sanemaster/work_session_state.json` so they can be restored later
-
-It auto-runs for active work commands such as:
-- `verify`
-- `launch`
-- `test_mode`
-- release/debug flows
-
-Manual commands:
-
-```bash
-./scripts/SaneMaster.rb work_session_on
-./scripts/SaneMaster.rb work_session_status
-./scripts/SaneMaster.rb work_session_off
-```
-
-Important:
-- `caffeinate` prevents sleep, not macOS screen lock.
-- If `sysadminctl -screenLock status` still reports `immediate`, true unattended no-lock still requires a one-time manual host change:
-
-```bash
-sysadminctl -screenLock off -password -
-```
-
-Unsigned fallback rules:
-
-- headless `test_mode --release` may build `Debug` when the Mini cannot unlock signing
-- that fallback stages to `/tmp/saneapps-staging.noindex/App.app`
-- the shared launcher preserves any signed `/Applications/App.app` install during that fallback
-- release-style smoke should target the signed `/Applications` install when it exists, not the transient unsigned fallback copy
-
-Non-interactive auth/tooling gaps should render as structured skips, not raw stderr noise:
-
-- missing `gh` auth/keychain access → `skipped (gh auth unavailable)`
-- missing `CLOUDFLARE_API_TOKEN` for Wrangler → `skipped (Cloudflare token unavailable)`
-
-### DMG Icon Configuration
-
-Each app's `.saneprocess` must define both icon types:
-
-```yaml
-release:
-  dmg:
-    volume_icon: Resources/DMGIcon.icns   # Mounted volume icon (Finder sidebar)
-    file_icon: Resources/DMGIcon.icns     # File icon (Desktop/Finder)
-```
-
-If `file_icon` is missing, the DMG gets a generic Finder icon. The `DMGIcon.icns` file should be a full-square opaque icon (no squircle, no shadow — macOS applies its own mask).
-
-### Release Flags
-
-| Flag | Purpose |
-|------|---------|
-| `--full` | Version bump + tests + GitHub release + deploy |
-| `--website-only` | Deploy website to Cloudflare Pages only (no app build) |
-| `--skip-build` | Skip Xcode build (use existing binary) |
-| `--skip-appstore` | Skip App Store submission in full release |
-| `--allow-republish` | Allow re-release of same version |
-| `--allow-unsynced-peer` | Allow release even if peer projects are out of sync |
-
-### Full SOP
-
-See [templates/RELEASE_SOP.md](templates/RELEASE_SOP.md) for the complete release checklist including R2 upload, appcast update, and Cloudflare Pages deployment.
-
-### Multi-Channel Distribution Rules
-
-Setapp is a third macOS channel. It is **not** a replacement for direct distribution, and it is **not** an App Store variant.
-
-| Channel | Licensing / Commerce | Updates | UI rules | Ops rules |
-|---------|----------------------|---------|----------|-----------|
-| Direct | Lemon Squeezy | Sparkle + appcast | Direct checkout/key entry allowed. Donate/support links allowed. | Website, dist ZIP, appcast, GitHub release, Homebrew, email helper stay aligned. |
-| App Store | StoreKit | App Store | No external purchase path. No donation/support links that can trigger review issues. | ASC metadata, screenshots, IAP, and review notes must stay aligned. |
-| Setapp | Setapp Framework + Setapp commerce | Setapp agent / framework path | No Sparkle. No Lemon Squeezy activation UI. No donate/buy prompts. | Separate bundle ID, Setapp public key, Setapp update policy, Setapp verification lane. |
-
-Non-negotiable rule:
-- Do **not** switch the direct website/business lane from Lemon Squeezy to Stripe just because Setapp uses Stripe.
-- Direct-release worker sync must stay isolated too: if `sane-email-automation` is dirty or behind `origin/main`, `release.sh` should use a fresh temporary clone for the worker deploy step instead of mixing unrelated worker changes into the app release.
-
-### Setapp Implementation Checklist
-
-Do these in order:
-
-1. Add an explicit distribution-channel abstraction in shared code.
-   - Do not keep inferring everything from `AppStoreProductID` and `SUFeedURL`.
-   - Expected end state: channel-aware code paths for `direct`, `appStore`, and `setapp`.
-2. Add Setapp-specific build configs.
-   - Expected names: `Debug-Setapp`, `Release-Setapp` or the nearest equivalent that keeps the lane obvious.
-3. Register separate Setapp bundle IDs.
-   - Setapp docs treat bundle ID choice as effectively permanent.
-   - Use the `-setapp` suffix convention.
-4. Add Setapp resources and entitlements.
-   - `setappPublicKey.pem`
-   - current convention: keep it at `Setapp/setappPublicKey.pem` inside the app repo and let the Setapp build script copy it into the bundle resources
-   - `NSUpdateSecurityPolicy` for `com.setapp.DesktopClient.SetappAgent` on macOS 13+
-   - `com.setapp.ProvisioningService` mach-lookup exception if the build is sandboxed
-   - `MPSupportedArchitectures` if the Setapp lane needs explicit architecture declaration
-5. Remove direct/App Store monetization surfaces from the Setapp build.
-   - no Sparkle row
-   - no Lemon Squeezy key entry
-   - no direct checkout button
-   - no Donate / GitHub Sponsors section
-6. Implement Setapp-specific runtime hooks.
-   - release notes / What's New path
-   - menu bar usage reporting for menu bar apps
-7. Add channel-aware verification.
-   - direct, App Store, and Setapp all need their own smoke checks
-   - Setapp must not be "verified" by direct/App Store tests
-
-### Interim Setapp Bundle Sanitizer
-
-Current Xcode target build order is not enough to make a same-target Setapp config truthful on its own.
-
-- Sparkle can still be re-embedded and `SU*` keys can still reappear after an app target shell phase runs.
-- For now, the authoritative final-bundle cleanup step is:
-
-```bash
-./scripts/sanitize_distribution_bundle.rb \
-  --channel setapp \
-  /path/to/App.app
-```
-
-- That sanitizer:
-  - removes embedded `Sparkle.framework`
-  - strips direct-update keys from the built `Info.plist`
-  - weakens Sparkle load commands across every Mach-O under `Contents/MacOS`
-- Important:
-  - sanitizing a built bundle mutates the code signature
-  - local verification therefore needs an ad hoc re-sign after sanitation
-  - real release/sign/notarize flow must sanitize before final signing, or re-sign immediately afterward
-
-### Setapp Update Strategy
-
-Think about updates as three separate truths:
-
-- Direct:
-  - Sparkle remains the updater
-  - appcast remains the source of truth
-  - Homebrew/email helper/site links remain part of the direct release checklist
-- App Store:
-  - App Store Connect remains the updater and billing path
-- Setapp:
-  - Setapp handles install/update
-  - Sparkle must be absent
-  - the app should surface Setapp release notes through the Setapp framework path, not through the direct updater UI
-
-Version policy:
-- Keep marketing versions aligned across channels whenever feature parity is the same.
-- If a Setapp-only or App-Store-only constraint forces different behavior, the version number can still match; the release notes should explain only the channel-specific differences.
-- Avoid channel-only hidden fixes that never get documented. This is how support drift starts.
-
-### Setapp Verification Matrix
-
-Minimum sign-off before any Setapp ship:
-
-1. Build and launch the Setapp config on the mini.
-2. Verify the built app is on the expected Setapp bundle ID.
-3. Verify `setappPublicKey.pem` is embedded.
-4. Verify Sparkle is absent from the build product and absent from visible settings/about UI.
-5. Verify no Lemon Squeezy purchase/key-entry path is visible.
-6. Verify no Donate / GitHub Sponsors UI is visible.
-7. Verify Setapp-specific usage reporting is wired where required.
-8. Verify macOS 13+ update policy is present in the built Info.plist.
-9. If sandboxed, verify the Setapp Mach service entitlement is present.
-10. Verify direct and App Store builds still behave correctly after the Setapp code lands.
-11. If the Setapp lane still shares a target with the direct lane, run `sanitize_distribution_bundle.rb` and then re-sign the bundle before launch verification.
-
-### Setapp Upload / Replacement Standard
-
-Use the shared upload lane instead of hand-clicking portal forms:
-
-```bash
-./scripts/SaneMaster.rb setapp_upload \
-  --zip /path/to/App-Setapp-X.Y.Z.zip \
-  --release-notes-file /path/to/setapp-notes.txt
-```
-
-Preferred path:
-- Use `SETAPP_AUTOMATION_TOKEN` with Setapp's documented `POST /v1/ci/version` endpoint.
-- Include `--allow-overwrite true` when replacing a build that is waiting for review.
-
-Portal fallback path:
-- Use only when the web portal is logged in but the visible `Reupload .ZIP` button is inert or read-only.
-- Run on the Mini with Safari logged into `developer.setapp.com`.
-- Pass the existing Setapp app id and version id:
-
-```bash
-./scripts/SaneMaster.rb setapp_upload \
-  --portal-fallback \
-  --app-id 1848 \
-  --version-id 46885 \
-  --zip /path/to/SaneBar-Setapp-2.1.47-iconfix.zip \
-  --release-notes-file /path/to/setapp-notes.txt
-```
-
-What the fallback does:
-1. Uploads the archive through the portal-backed `/v1/versions/upload_archive` endpoint.
-2. Verifies Setapp extracted the bundle id, build version, display version, and icon.
-3. Patches the existing version record with the temporary archive reference and release notes.
-4. Recheck the Setapp Apps page and API record; do not trust the stale page label alone.
-
-Do not print, paste, or save Setapp `access_token` / `refresh_token` values. The script reads the Safari token only in-process and uses temp curl config files with `0600` permissions.
-
-### Hidden Gotchas To Plan For Up Front
-
-- Setapp docs still publicly describe a narrower rollout than the email offer. Trust the live business thread for eligibility, but still code to the published technical requirements.
-- Universal build support is the largest likely technical blocker for current arm64-only projects.
-- SaneBar is a menu bar app, so Setapp usage reporting is not optional polish.
-- SaneClip has more bundle surfaces than SaneBar (widgets / extensions), so Setapp bundle-family drift needs an explicit review even if the first Setapp lane ships with fewer surfaces.
-- Xcode same-target Setapp configs can look clean in source while still re-embedding Sparkle after target shell phases. Do not trust the raw built bundle without the final sanitizer check.
-- A sanitized bundle that launches locally after ad hoc re-sign is good verification signal, but it is not a substitute for the real signed Setapp release path.
-- Current mini verification state as of 2026-03-18:
-  - SaneBar and SaneClip clean mini worktrees build as Setapp bundles with the right `-setapp` bundle IDs.
-  - Their built Info.plists now include `NSUpdateSecurityPolicy` and `MPSupportedArchitectures = [arm64]`.
-  - SaneClip's Setapp-specific entitlement file includes `com.setapp.ProvisioningService`.
-  - Both sanitized bundles launch on the mini after ad hoc re-sign.
-  - `setappPublicKey.pem` is still absent, so runtime entitlement validation is still incomplete.
-  - A real signed SaneClip Setapp build is still blocked by provisioning/iCloud profile setup, not by code logic.
-- Current local persistence is mixed:
-  - app-support data paths are app-name based (`Application Support/SaneBar`, `Application Support/SaneClip`)
-  - keychain service defaults are bundle-ID based
-  - result: direct and Setapp builds are likely to share settings/data but not share license state unless we deliberately unify or separate that behavior
-- SaneBar App Store is intentionally dead. Setapp does not reopen that lane.
-- Website copy must stay channel-specific:
-  - `sanebar.com` / `saneclip.com` still describe the direct build unless there is an intentional Setapp landing page
-  - do not silently mix Setapp onboarding language into the direct site
-- Setapp handles first-line billing/licensing support in the published model, so support tooling needs to know the customer channel before troubleshooting licensing or updates.
-
-### App Store IAP Readiness
-
-`scripts/appstore_submit.rb` now includes an IAP readiness pass for any App Store submission when `appstore.product_id` is set in `.saneprocess` (macOS or iOS).
-
-What it auto-checks/fixes:
-- Missing IAP localization (`en-US`)
-- Missing IAP price schedule (defaults to `6.99` USD unless overridden)
-- Missing IAP review screenshot (uses first matching screenshot from `.saneprocess appstore.screenshots`)
-- Missing IAP availability
-- Missing IAP review note
-
-Useful commands:
-
-```bash
-# IAP readiness only (no build upload, no app submission)
-ruby scripts/appstore_submit.rb --iap-only --app-id <APP_ID> --project-root .
-
-# Override default IAP USD price during readiness pass
-ruby scripts/appstore_submit.rb --iap-only --app-id <APP_ID> --project-root . --iap-price-usd 4.99
-```
-
-Important Apple constraint:
-- If ASC returns `STATE_ERROR.FIRST_IAP_MUST_BE_SUBMITTED_ON_VERSION`, the IAP is ready but must be reviewed together with an app version submission.
-- If you rotate away from a rejected IAP, rotate both `appstore.product_id` and `appstore.iap.display_name`. ASC keeps the old rejected IAP record, and duplicate display names will block creation of the replacement product.
-- If the replacement IAP stays `READY_TO_SUBMIT`, attach it on the platform version page under `Included Assets > In-App Purchases and Subscriptions` before resubmitting. Do not assume product creation alone is enough.
-
-### App Store Accessibility Declarations (API 4.0+)
-
-`scripts/appstore_submit.rb` can now sync accessibility declarations from `.saneprocess` using App Store Connect API endpoints:
-- `GET /v1/apps/{id}/accessibilityDeclarations`
-- `POST /v1/accessibilityDeclarations`
-- `PATCH /v1/accessibilityDeclarations/{id}`
-
-Config shape:
-
-```yaml
-appstore:
-  accessibility_declarations:
-    publish: true
-    iphone:
-      supports_dark_interface: true
-      supports_voiceover: true
-    ipad:
-      supports_dark_interface: true
-```
-
-Notes:
-- `publish: true` maps to ASC update attribute `publish: true` (not `state: "PUBLISHED"`).
-- Family keys accept friendly forms (`iphone`, `ipad`, `mac`, `watch`, `tv`, `vision`) and normalize to ASC enums.
-- Attribute keys accept snake_case or camelCase and normalize to ASC names.
-- If this block is absent, accessibility declaration sync is skipped.
-
-### App Store Listing Metadata Safety
-
-`appstore_submit.rb` no longer uses `appstore.review_notes` as fallback public listing description.
-
-Why:
-- `review_notes` are for App Review only and can contain internal test instructions.
-- Public description now only comes from:
-  1. `appstore.description` (preferred)
-  2. a generic safe fallback string if description is missing.
-
-Recommended:
-- Set both `appstore.description` and `appstore.keywords` explicitly in each app’s `.saneprocess`.
-
-`appstore_submit.rb` now hard-fails submission if the target platform is missing:
-- a platform-specific metadata block (`appstore.metadata.macos` or `appstore.metadata.ios`)
-- description
-- subtitle
-- keywords
-- support URL
-- privacy policy URL
-- review notes
-
-It also blocks generic fallback descriptions/keywords and flags iOS listing copy that still talks about macOS-only behavior.
-
-### App Store Policy Guardrails
-
-`SaneMaster.rb appstore_preflight` now hard-fails known App Review rejection classes before submission:
-- Accessibility or synthetic input used for clipboard/paste automation (`2.4.5`)
-- Accessibility or CGEvent-driven third-party UI manipulation in an App Store build (`2.4.5`)
-- App Store artifacts that still expose direct-purchase markers like website checkout URLs or key-entry CTAs (`3.1.1`)
-- IAP products that merely exist in ASC but are not actually review-ready
-
-This is deliberate. The goal is to stop wasting review cycles on builds Apple is likely to reject.
-
-This command is an App Store lane gate, not a normal direct-download release step. If `.saneprocess` has `appstore.enabled: false`, it prints a skip message and exits successfully. SaneBar and SaneClick are direct-download-only unless the lane is deliberately re-enabled after explicit approval and fresh review of policy, pricing, and metadata.
-
-Additional lessons now enforced in the shared flow:
-- When a lane is rejected, the first step is evidence collection, not diagnosis. Read the full reviewer message, record the exact platform/version/build/submission ID, download every App Review attachment, and open all screenshot/video/PDF evidence before changing code or drafting a reply.
-- `scripts/appstore_submit.rb --fetch-review-package` is the canonical evidence collector. It saves the reviewer message, page text, and any downloaded App Review attachments into an evidence folder instead of relying on manual browser memory.
-- Safari evidence helpers must prove they are on the exact target ASC page before trusting DOM text. If the tab never lands on the requested version/review URL, treat the probe as invalid instead of reusing stale page content from another platform.
-- Before hunting for new browser automation tools, use Mini Safari itself as the control surface. AppleScript plus Safari `do JavaScript` is the default path for inspecting reviewer evidence, download links, and Apple Developer profile pages. Always prove the exact front-tab URL first.
-- App Store Connect, Apple Developer, and Apple ID login work must stay in one Mini Safari window/tab. Use `open-current` / `open-read-current` for those portal URLs; do not create a fresh tab for every action because it can invalidate login state and lock Passwords/2FA flows.
-- For repeat Mini Safari work, use `scripts/mini/mini-safari.sh` instead of rebuilding AppleScript by hand. Minimum useful subcommands:
-  - `list-tabs`
-  - `open-read-current "<url>"` for ASC/developer/idmsa pages
-  - `open-read "<url>"` for non-portal pages where a new tab is intentional
-  - `read <tab_index>`
-  - `js <tab_index> "<javascript>"`
-- Use `mini-safari.sh` for directory/listing activation links too, not just App Store pages. Capture the final URL, title, and body snippet so status can distinguish `live`, `needs activation`, `queued`, and `upsell only`.
-- App Store Connect and `developer.apple.com` can have separate login state. Check both before concluding a profile or review page is inaccessible.
-- When a macOS App Store profile needs repair, inspect the certificate shown on the Apple Developer profile edit page and confirm it is tied to `Apple Distribution`, not a stale `3rd Party Mac Developer Application` or `Mac App Distribution` cert.
-- `appstore_submit.rb --skip-upload` fails fast if the requested existing build is not actually visible in ASC for that platform. It now prints the visible build candidates instead of polling for 45 minutes on a bad build number.
-- `release.sh` runs `SaneMaster.rb appstore_preflight` before any active App Store submission step, so full releases cannot skip the compiled-artifact policy gate by accident. Direct-download-only apps skip this step by config.
-- For macOS App Store exports, `xcodebuild -exportArchive` must run with ASC API-key auth on the Mini. If export reaches `productbuild` and then fails with `errSecInteractionNotAllowed`, the fix is installer-key keychain access, not another upload attempt.
-- `appstore_submit.rb` now validates that support and privacy URLs actually resolve successfully, not just that metadata strings exist.
-- Reviewer access is treated as a first-class requirement. If the app needs outside credentials, review notes must explain the exact demo/review path and must state when no account, API key, or payment is required.
-- “App Store-safe” means the compiled artifact, not just the source tree. Preflight must verify that the App Store binary no longer exposes website checkout URLs, license-key CTAs, or automation permission declarations that contradict the review notes.
-- Apps whose core App Store build still depends on Accessibility/CGEvent control of third-party UI should be treated as high-risk or ineligible for Mac App Store review until that functionality is removed or isolated from the App Store build.
-
-### Release API Compatibility Guardrails
-
-`SaneMaster.rb release_preflight` checks app source against `release.min_system_version` for known SDK symbols that can hard-crash before launch on older supported macOS versions. The first guarded class is the ScreenCaptureKit macOS 26 screenshot API family (`SCScreenshotConfiguration`, `SCScreenshotOutput`, and `captureScreenshot(...)`), which must not appear in direct macOS 15 builds. If a future release intentionally raises the minimum OS, update `.saneprocess` first so the compatibility gate and public requirements agree.
-
-### App Store Website Link Auto-Sync (iOS)
-
-`release.sh` now auto-syncs a live App Store URL into website HTML before deployment when all are true:
-- `appstore.enabled: true`
-- `appstore.platforms` includes `ios`
-- `appstore.app_id` is configured
-
-How it works:
-- Looks up live URL via Apple lookup API (`itunes.apple.com/lookup?id=<APPSTORE_APP_ID>`).
-- If live, patches any `<a ... data-appstore-ios-link ...>` marker in `docs/index.html` and/or `website/index.html`.
-- Removes `style="display: none;"` from that marker so the CTA appears only once the URL is live.
-
-Marker example:
-
-```html
-<a href="#" data-appstore-ios-link data-appstore-ios-url="" style="display: none;">Download on App Store</a>
-```
-
-If no marker exists, deploy still proceeds and logs a warning.
+Tool discovery and MCP health answer different questions:
+
+- `ruby scripts/SaneMaster.rb tool_discovery --query "..."` answers whether a
+  canonical tool path already exists.
+- `ruby scripts/SaneMaster.rb mcp_watchdog doctor` and
+  `~/.codex/bin/check-mcps` answer whether optional MCP helpers are healthy.
+- A green MCP check does not clear repo validation. A red repo validation run
+  does not prove a tool is missing.
+- Run the tool-discovery receipt before proposing a new tool, wrapper, or
+  repeated workaround.
+
+## Support And Business Signals
+
+- Work email means `hi@saneapps.com` through `check-inbox.sh`; do not use Gmail
+  unless explicitly requested.
+- Always run `check-inbox.sh review <id>` before reply or resolve.
+- Every outbound support reply requires the exact approval flow: show the exact
+  draft, run `present-draft` or `present-batch`, wait for explicit approval, run
+  `approve ... --user-approval "<quote>"`, then send in a separate command.
+- Do not combine approval and send. Do not replace this flow with manual API calls.
+- For sales, downloads, and funnel questions use `SaneMaster.rb sales`,
+  `downloads`, and `events`; do not hand-roll vendor API curls.
 
 ## Before Pushing
 
-1. `ruby scripts/qa.rb` - QA passes
-2. `ruby scripts/hooks/test/tier_tests.rb` - All tests pass
-3. Sync to other projects if hooks changed
+```bash
+git diff --check
+ruby scripts/SaneMaster.rb test_scan -v
+ruby scripts/SaneMaster.rb agent_eval --json
+ruby scripts/SaneMaster.rb process_eval --json
+ruby scripts/SaneMaster.rb skill_lint --json
+ruby scripts/SaneMaster.rb verify --timeout 900
+```
 
----
+Do not commit or push unless the user asks, the task explicitly includes
+release/PR/publish, or a project workflow requires it.
 
 ## Fresh Install Testing
 
-Run on a fresh machine or directory without SaneProcess installed.
-
-### Prerequisites
-
-- macOS with Ruby installed
-- Optional: Claude Code or Codex CLI if you are testing those adapters
-
-### Test Steps
+Use a temporary directory, not an existing app repo:
 
 ```bash
-for client in generic codex claude all; do
-  mkdir "/tmp/saneprocess-$client"
-  cd "/tmp/saneprocess-$client"
-  /path/to/SaneProcess/scripts/init.sh --client "$client"
-done
+tmp="$(mktemp -d)"
+mkdir -p "$tmp/generic"
+ruby scripts/init.sh --client generic "$tmp/generic"
 ```
 
-### Verification Checklist
-
-- [ ] `--client generic` creates `AGENTS.md` and does not create `.claude/` or `.agents/`
-- [ ] `--client codex` creates `AGENTS.md` and `.agents/skills/`, but not `.claude/settings.json`
-- [ ] `--client claude` creates `AGENTS.md`, `.claude/settings.json`, `.claude/skills/`, and `scripts/hooks/`
-- [ ] `--client all` creates both Claude hook wiring and `.agents/skills/`
-- [ ] Claude hook syntax validation passes: `for f in scripts/hooks/*.rb; do ruby -c "$f"; done`
-
-### Regression Tests
-
-```bash
-ruby scripts/hooks/test/tier_tests.rb  # Authoritative test suite (178 tests)
-```
-
-### Full QA
-
-```bash
-./scripts/qa.rb   # All checks passed
-```
-
----
+For public portability, generic installs should avoid SaneApps-private hosts,
+accounts, keys, and release assumptions.

@@ -46,6 +46,7 @@ FLAT_FEE_EFFECTIVE_UTC_RAW = os.environ.get(
     "2026-03-03T05:47:45Z",
 )
 REFUND_AUDIT_DIR = Path(os.environ.get("SANE_REFUND_AUDIT_DIR", "~/.sanemaster/refunds")).expanduser()
+API_BASE = "https://api.lemonsqueezy.com"
 
 OWNER_APPROVAL_RE = re.compile(
     r"\b("
@@ -155,29 +156,72 @@ def get_api_key():
     return key
 
 
+def fetch_json_api(api_key, url, context):
+    last_error = None
+    for attempt in range(1, 4):
+        result = subprocess.run(
+            [
+                "curl",
+                "-sS",
+                "-g",
+                "--max-time",
+                "30",
+                url,
+                "-H",
+                f"Authorization: Bearer {api_key}",
+                "-H",
+                "Accept: application/vnd.api+json",
+                "-H",
+                "Content-Type: application/vnd.api+json",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            last_error = (result.stderr or result.stdout or f"curl exited {result.returncode}").strip()
+        else:
+            try:
+                data = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                body = (result.stdout or "").lower()
+                if "just a moment" in body:
+                    last_error = "LemonSqueezy API returned a Cloudflare challenge"
+                else:
+                    last_error = "LemonSqueezy API returned non-JSON response"
+            else:
+                if isinstance(data, dict) and data.get("errors"):
+                    last_error = json.dumps(data.get("errors"))[:500]
+                else:
+                    return data
+        if attempt < 3:
+            # Lemon's list endpoints occasionally return transient empty/non-JSON
+            # bodies under load. Retry before failing the operator workflow.
+            import time
+
+            time.sleep(attempt * 2)
+    raise RuntimeError(f"{context}: {last_error or 'unknown API failure'}")
+
+
 def fetch_orders(api_key):
     all_orders = []
-    page = 1
+    params = urllib.parse.urlencode({"page[size]": 100})
+    next_url = f"{API_BASE}/v1/orders?{params}"
+    seen_urls = set()
+    page = 0
     while True:
-        result = subprocess.run(
-            ["curl", "-s", "-g", "--max-time", "15",
-             f"https://api.lemonsqueezy.com/v1/orders?page[size]=50&page[number]={page}",
-             "-H", f"Authorization: Bearer {api_key}",
-             "-H", "Accept: application/vnd.api+json"],
-            capture_output=True, text=True,
-        )
-        try:
-            data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            body = (result.stdout or "").lower()
-            if "just a moment" in body:
-                raise RuntimeError("LemonSqueezy API is returning a Cloudflare challenge. Order lookup is temporarily unavailable.")
-            raise RuntimeError(f"Bad API response on page {page}")
+        if not next_url:
+            break
+        if next_url in seen_urls:
+            raise RuntimeError(f"LemonSqueezy pagination loop detected at {next_url}")
+        seen_urls.add(next_url)
+        page += 1
+        data = fetch_json_api(api_key, next_url, f"Bad API response on orders page {page}")
         orders = data.get("data", [])
         all_orders.extend(orders)
-        if len(orders) < 50:
+        links = data.get("links") or {}
+        next_url = links.get("next")
+        if not next_url:
             break
-        page += 1
     return all_orders
 
 

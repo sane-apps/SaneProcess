@@ -250,6 +250,7 @@ module SaneMasterModules
         manifest_sha: manifest_sha,
         source_fingerprint: source_fingerprint,
         required_actions: required_actions,
+        manifest: manifest,
         receipt: receipt,
         strict_visual: strict_visual
       ))
@@ -556,7 +557,7 @@ module SaneMasterModules
       issues
     end
 
-    def customer_ui_receipt_issues(app_name:, manifest_sha:, source_fingerprint:, required_actions:, receipt:, strict_visual: false)
+    def customer_ui_receipt_issues(app_name:, manifest_sha:, source_fingerprint:, required_actions:, manifest: {}, receipt:, strict_visual: false)
       issues = []
       issues << "Receipt app #{receipt['app']} does not match #{app_name}" if receipt['app'].to_s != app_name.to_s
       issues << "Receipt status is #{receipt['status'].inspect}, expected \"passed\"" unless receipt['status'].to_s == 'passed'
@@ -571,6 +572,7 @@ module SaneMasterModules
       missing_ids = required_ids - tested_ids
       issues << "Receipt does not cover release-required action(s): #{missing_ids.join(', ')}" unless missing_ids.empty?
       issues.concat(customer_ui_action_result_issues(required_actions, receipt, strict_visual: strict_visual))
+      issues.concat(customer_ui_runtime_state_receipt_issues(receipt, manifest: manifest))
       issues.concat(customer_ui_screenshot_reuse_issues(required_actions, receipt))
 
       begin
@@ -649,6 +651,26 @@ module SaneMasterModules
       extra_ids = results.keys.map(&:to_s) - required_ids
       issues << "Receipt has per-action result(s) not in manifest: #{extra_ids.join(', ')}" unless extra_ids.empty?
       issues
+    end
+
+    def customer_ui_runtime_state_receipt_issues(receipt, manifest: {})
+      rows = receipt['runtime_state_results']
+      requires_rows = manifest.is_a?(Hash) && !manifest['runtime_state_matrix'].nil?
+      return [] if rows.nil? && !requires_rows
+      return ['Receipt is missing runtime_state_results; lifecycle matrices cannot pass from action evidence alone'] unless rows.is_a?(Array)
+
+      rows.each_with_object([]) do |row, issues|
+        unless row.is_a?(Hash)
+          issues << 'runtime_state_results row must be an object'
+          next
+        end
+
+        id = row['id'].to_s.strip
+        label = id.empty? ? 'runtime_state_results row' : "runtime_state_results #{id}"
+        status = row['status'].to_s.strip
+        issues << "#{label}: status is #{status.inspect}, expected \"passed\"" unless status == 'passed'
+        issues << "#{label}: missing evidence_paths" if Array(row['evidence_paths']).empty?
+      end
     end
 
     def customer_ui_full_runtime_completion_issues(id, action, result)
@@ -750,7 +772,68 @@ module SaneMasterModules
         issues << "Identical screenshot bytes reused across release actions (#{owner_ids.join(', ')}): #{paths.join(', ')}"
       end
 
+      visual_owners = Hash.new { |hash, key| hash[key] = [] }
+      path_owners.each_key do |path|
+        absolute = File.absolute_path(path, Dir.pwd)
+        signature = customer_ui_png_visual_signature(absolute)
+        source = customer_ui_png_text_chunk(absolute, 'SaneSource')
+        visual_owners[[signature, source]] << path if signature && source.to_s.strip != ''
+      end
+      visual_owners.each_value do |paths|
+        owner_ids = paths.flat_map { |path| path_owners[path] }.uniq
+        next unless owner_ids.any? { |id| id.include?('appearance') || id.include?('startup-wake') }
+        next unless paths.length > 1 && owner_ids.length > 1
+
+        issues << "Identical screenshot pixels reused across release actions (#{owner_ids.join(', ')}): #{paths.join(', ')}"
+      end
+
       issues
+    end
+
+    def customer_ui_png_visual_signature(path)
+      data = File.binread(path)
+      return nil unless data.start_with?("\x89PNG\r\n\x1A\n".b)
+
+      offset = 8
+      critical_payload = +""
+      while offset + 12 <= data.bytesize
+        length = data.byteslice(offset, 4).unpack1('N')
+        type = data.byteslice(offset + 4, 4)
+        chunk_data = data.byteslice(offset + 8, length)
+        break unless type && chunk_data && offset + 12 + length <= data.bytesize
+
+        critical_payload << type << chunk_data if %w[IHDR PLTE IDAT tRNS].include?(type)
+        offset += 12 + length
+        break if type == 'IEND'
+      end
+
+      return nil if critical_payload.empty?
+
+      Digest::SHA256.hexdigest(critical_payload)
+    rescue StandardError
+      nil
+    end
+
+    def customer_ui_png_text_chunk(path, keyword)
+      data = File.binread(path)
+      return nil unless data.start_with?("\x89PNG\r\n\x1A\n".b)
+
+      offset = 8
+      marker = "#{keyword}\0"
+      while offset + 12 <= data.bytesize
+        length = data.byteslice(offset, 4).unpack1('N')
+        type = data.byteslice(offset + 4, 4)
+        chunk_data = data.byteslice(offset + 8, length)
+        break unless type && chunk_data && offset + 12 + length <= data.bytesize
+        return chunk_data.byteslice(marker.bytesize..)&.force_encoding('UTF-8') if type == 'tEXt' && chunk_data.start_with?(marker)
+
+        offset += 12 + length
+        break if type == 'IEND'
+      end
+
+      nil
+    rescue StandardError
+      nil
     end
 
     def customer_ui_workflow_receipt_issues(id, action, result)
@@ -888,8 +971,9 @@ module SaneMasterModules
 
       width, height = customer_ui_image_dimensions(absolute)
       return ["#{label}: could not read image dimensions"] unless width && height
-      if width < CUSTOMER_UI_MIN_SCREENSHOT_WIDTH || height < CUSTOMER_UI_MIN_SCREENSHOT_HEIGHT
-        return ["#{label}: image is #{width}x#{height}, below #{CUSTOMER_UI_MIN_SCREENSHOT_WIDTH}x#{CUSTOMER_UI_MIN_SCREENSHOT_HEIGHT}; placeholder screenshots are not release evidence"]
+      minimum_height = File.basename(absolute).start_with?('sanebar-appearance-', 'appearance-', 'startup-wake-appearance') ? 20 : CUSTOMER_UI_MIN_SCREENSHOT_HEIGHT
+      if width < CUSTOMER_UI_MIN_SCREENSHOT_WIDTH || height < minimum_height
+        return ["#{label}: image is #{width}x#{height}, below #{CUSTOMER_UI_MIN_SCREENSHOT_WIDTH}x#{minimum_height}; placeholder screenshots are not release evidence"]
       end
 
       []
@@ -952,6 +1036,8 @@ module SaneMasterModules
     def customer_ui_source_file?(path)
       return false if CUSTOMER_UI_RECEIPT_PATHS.include?(path)
       return false if path.start_with?('.sanemaster/')
+      return false if path.start_with?('node_modules/')
+      return false if path == '.mcp.json' || path.start_with?('.claude/') || path.start_with?('.codex/') || path.start_with?('.serena/')
       return true if CUSTOMER_UI_MANIFEST_PATHS.include?(path)
       return true if path == '.saneprocess' || path == 'project.yml' || path == 'Package.swift'
       return true if path.end_with?('.xcodeproj/project.pbxproj')

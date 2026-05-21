@@ -96,6 +96,13 @@ class ToolDiscoveryReceipt
       why: 'Canonical preflight before any direct-release publish path.'
     },
     {
+      name: 'Cloudflare release surface checks',
+      keywords: %w[cloudflare pages r2 worker workers appcast drift deploy deployment release dist dns cdn],
+      command: 'ruby scripts/SaneMaster.rb release_preflight; use the Cloudflare MCP/plugin only as an optional read-only cross-check when installed',
+      source: 'scripts/SaneMaster.rb release_preflight, release.sh, Cloudflare MCP/plugin',
+      why: 'Release preflight stays the portable source of truth; Cloudflare MCP is a high-value optional probe for Pages/R2/Worker drift.'
+    },
+    {
       name: 'Customer support triage and replies',
       keywords: %w[email inbox support license github issue customer reply resolve],
       command: 'ruby scripts/SaneMaster.rb check_inbox [check|review <id>|read <id>|reply ...]',
@@ -136,6 +143,20 @@ class ToolDiscoveryReceipt
       command: 'ruby scripts/SaneMaster.rb mcp_watchdog doctor && ~/.codex/bin/check-mcps',
       source: 'scripts/SaneMaster.rb mcp_watchdog',
       why: 'Watchdog is the background-machine truth; check-mcps is the live active-session tool-call probe.'
+    },
+    {
+      name: 'Semantic cross-session recall',
+      keywords: %w[central-memory central memory semantic recall remember vector pgvector postgresql learnings research],
+      command: '~/.codex/bin/check-mcps; use central-memory recall/remember when the MCP is installed',
+      source: 'scripts/mcp-central-memory/server.mjs',
+      why: 'Central memory is optional for public SaneProcess users, but when present it should be the first semantic recall layer above graph/Serena memory.'
+    },
+    {
+      name: 'iOS simulator proof with XcodeBuildMCP',
+      keywords: %w[xcodebuildmcp xcode mcp simulator ios iphone ipad screenshot video tap swipe gesture accessibility hierarchy lldb breakpoint coverage device build_run_sim session_show_defaults],
+      command: 'Use XcodeBuildMCP session_show_defaults before simulator build/run/test when the tool is available; fall back to SaneMaster verify/test_mode',
+      source: '~/.codex/bin/xcode-mcpbridge-wrapper.sh, XcodeBuildMCP',
+      why: 'XcodeBuildMCP adds simulator UI automation, LLDB/device workflows, coverage, and session defaults without replacing Mini-first SaneMaster verification or Apple xcrun mcpbridge.'
     }
   ].freeze
 
@@ -336,18 +357,82 @@ class ToolDiscoveryReceipt
     return { skipped: true, status: 'skipped' } unless @options[:run_doctor]
 
     script = File.join(@options[:project_root], 'scripts', 'SaneMaster.rb')
-    command = [RbConfig.ruby, script, 'doctor']
-    result = capture_command(command, chdir: @options[:project_root], timeout_seconds: @options[:timeout_seconds])
-    lines = combined_output_lines(result).first(20)
+    watchdog_command = [RbConfig.ruby, script, 'mcp_watchdog', 'doctor', '--quiet', '--json']
+    live_probe = File.expand_path('~/.codex/bin/check-mcps')
+    probe_command = [live_probe]
+
+    watchdog = capture_command(watchdog_command, chdir: @options[:project_root], timeout_seconds: @options[:timeout_seconds])
+    probe = if File.executable?(live_probe)
+              capture_command(probe_command, chdir: @options[:project_root], timeout_seconds: @options[:timeout_seconds])
+            else
+              {
+                command: probe_command,
+                stdout: '',
+                stderr: "#{live_probe} is not executable",
+                exit_code: 127,
+                timed_out: false,
+                success: false
+              }
+            end
+
+    watchdog_payload = parse_json(watchdog[:stdout])
+    watchdog_issues = watchdog_health_issues(watchdog, watchdog_payload)
+    probe_lines = combined_output_lines(probe)
+    probe_failures = probe_lines.select { |line| line.start_with?('[FAIL]') }
+    probe_warnings = probe_lines.select { |line| line.start_with?('[WARN]') }
+    status = if watchdog[:timed_out] || probe[:timed_out]
+               'timed_out'
+             elsif watchdog_issues.any? || !probe[:success] || probe_failures.any?
+               'failed'
+             elsif probe_warnings.any?
+               'warning'
+             else
+               'ok'
+             end
 
     {
-      command: command.join(' '),
-      status: result[:timed_out] ? 'timed_out' : (result[:success] ? 'ok' : 'failed'),
-      exit_code: result[:exit_code],
-      timed_out: result[:timed_out],
-      warning_lines: lines.select { |line| line.match?(/[⚠️❌]/) },
-      summary_lines: lines
+      command: "#{watchdog_command.join(' ')} && #{probe_command.join(' ')}",
+      status: status,
+      watchdog: {
+        command: watchdog_command.join(' '),
+        exit_code: watchdog[:exit_code],
+        timed_out: watchdog[:timed_out],
+        issues: watchdog_issues,
+        configured_servers: watchdog_payload&.dig('doctor', 'configured_servers'),
+        running_servers: watchdog_payload&.dig('doctor', 'running_servers')
+      },
+      live_probe: {
+        command: probe_command.join(' '),
+        exit_code: probe[:exit_code],
+        timed_out: probe[:timed_out],
+        pass_count: probe_lines.count { |line| line.start_with?('[PASS]') },
+        warnings: probe_warnings,
+        failures: probe_failures,
+        summary_lines: probe_lines.first(20)
+      },
+      exit_code: watchdog[:exit_code].to_i.zero? ? probe[:exit_code] : watchdog[:exit_code],
+      timed_out: watchdog[:timed_out] || probe[:timed_out],
+      warning_lines: probe_warnings + watchdog_issues,
+      summary_lines: (probe_lines + watchdog_issues).first(20)
     }
+  end
+
+  def watchdog_health_issues(result, payload)
+    issues = []
+    issues << 'mcp_watchdog doctor command failed' unless result[:success]
+    issues << 'mcp_watchdog doctor JSON parse failed' if payload.nil?
+    doctor = payload && payload['doctor']
+    return issues unless doctor
+
+    issues << "missing runtime MCPs: #{doctor['missing_runtime'].join(', ')}" if doctor['missing_runtime'].to_a.any?
+    issues << "duplicate MCP servers: #{doctor['duplicate_servers'].join(', ')}" if doctor['duplicate_servers'].to_a.any?
+    issues << "duplicate Codex MCP groups: #{doctor['duplicate_codex_servers'].join(', ')}" if doctor['duplicate_codex_servers'].to_a.any?
+    issues << "orphan MCP process count: #{doctor['orphan_count']}" if doctor['orphan_count'].to_i.positive?
+    issues << "stale Codex sidecars: #{doctor['stale_sidecars'].length}" if doctor['stale_sidecars'].to_a.any?
+    issues << "recent watchdog errors: #{doctor['recent_errors'].length}" if doctor['recent_errors'].to_a.any?
+    transport_errors = doctor.dig('session_transport', 'total').to_i
+    issues << "recent MCP transport errors: #{transport_errors}" if transport_errors.positive?
+    issues
   end
 
   def run_validation_check
@@ -403,6 +488,7 @@ class ToolDiscoveryReceipt
       validation_status: validation[:status] || 'skipped',
       doctor_ok: skipped_check?(doctor) ? nil : doctor[:status] == 'ok',
       validation_ok: skipped_check?(validation) ? nil : validation[:status] == 'ok',
+      validation_blocks_tool_use: validation[:status].to_s == 'failed' || validation[:status].to_s == 'timed_out' || validation[:status].to_s == 'parse_failed',
       canonical_commands: receipt.dig(:checks, :canonical_paths).to_a.map { |entry| entry[:command] },
       top_existing_paths: top_paths(receipt)
     }
@@ -478,8 +564,8 @@ class ToolDiscoveryReceipt
     doctor = receipt[:checks][:doctor] || {}
     validation = receipt[:checks][:validation_report] || {}
     lines << "## Health Checks"
-    lines << "- Doctor: #{doctor[:status] || 'skipped'}"
-    lines << "- Validation report: #{validation[:status] || 'skipped'}"
+    lines << "- MCP health: #{doctor[:status] || 'skipped'}"
+    lines << "- Project validation report: #{validation[:status] || 'skipped'}"
     verdict_line = validation[:verdict_status] || 'n/a'
     verdict_line = "#{verdict_line} — #{validation[:verdict_detail]}" if validation[:verdict_detail]
     lines << "- Validation verdict: #{verdict_line}"
@@ -492,8 +578,8 @@ class ToolDiscoveryReceipt
     puts "Query: #{receipt[:query]}"
     puts "Existing path found: #{receipt.dig(:summary, :existing_path_found) ? 'yes' : 'no'}"
     puts "Recommendation: #{receipt.dig(:summary, :recommendation)}"
-    puts "Doctor: #{receipt.dig(:checks, :doctor, :status) || 'skipped'}"
-    puts "Validation: #{receipt.dig(:checks, :validation_report, :status) || 'skipped'}"
+    puts "MCP health: #{receipt.dig(:checks, :doctor, :status) || 'skipped'}"
+    puts "Project validation: #{receipt.dig(:checks, :validation_report, :status) || 'skipped'}"
     puts "JSON: #{json_path}"
     puts "Markdown: #{markdown_path}"
     receipt.dig(:checks, :canonical_paths).to_a.first(5).each do |entry|

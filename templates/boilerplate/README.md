@@ -1,3 +1,5 @@
+> Template file — replace all `TODO:` markers before publishing.
+
 # TODO:AppName
 
 > TODO:One-line description of what this app does

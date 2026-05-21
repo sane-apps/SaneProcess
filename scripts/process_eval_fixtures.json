@@ -230,6 +230,77 @@
         "ordered_events": ["skill_lint", "duplicate_skill_drift_reviewed", "stale_skill_action_decided"],
         "forbidden_events": ["silent duplicate skill", "undocumented skill drift"]
       }
+    },
+    {
+      "id": "mcp_health_not_validation_clearance",
+      "description": "MCP health and repo validation are separate states; green MCP checks do not clear red project validation.",
+      "events": [
+        { "type": "command", "name": "mcp_watchdog doctor passed" },
+        { "type": "command", "name": "check-mcps passed" },
+        { "type": "command", "name": "validation_report red" },
+        { "type": "artifact", "name": "validation_blocker_recorded" },
+        { "type": "artifact", "name": "mcp_health_recorded_as_optional_helpers" }
+      ],
+      "expect": {
+        "required_events": [
+          "mcp_watchdog doctor",
+          "check-mcps",
+          "validation_report red",
+          "validation_blocker_recorded",
+          "mcp_health_recorded_as_optional_helpers"
+        ],
+        "forbidden_events": ["tooling is fine proceed", "mcp health cleared validation"]
+      }
+    },
+    {
+      "id": "durable_docs_change_updates_memory_and_handoff",
+      "description": "Docs, hook, tooling, and policy edits update active handoff plus durable memory before completion.",
+      "events": [
+        { "type": "artifact", "name": "durable_docs_changed" },
+        { "type": "artifact", "name": "session_handoff_updated" },
+        { "type": "artifact", "name": "memory_updated" },
+        { "type": "artifact", "name": "knowledge_graph_updated" },
+        { "type": "command", "name": "process_eval" }
+      ],
+      "expect": {
+        "required_events": [
+          "durable_docs_changed",
+          "session_handoff_updated",
+          "memory_updated",
+          "knowledge_graph_updated",
+          "process_eval"
+        ],
+        "ordered_events": ["durable_docs_changed", "session_handoff_updated", "process_eval"],
+        "forbidden_events": ["docs changed without handoff", "docs changed without memory"]
+      }
+    },
+    {
+      "id": "sop_update_prefers_enforcement_receipt",
+      "description": "When a user asks to update SOP after a process miss, the durable change is an enforceable guard/eval/tool before prose.",
+      "events": [
+        { "type": "artifact", "name": "user_requested_sop_update_after_miss" },
+        { "type": "artifact", "name": "process_miss_classified" },
+        { "type": "artifact", "name": "enforcement_surface_changed" },
+        { "type": "artifact", "name": "regression_eval_or_guard_test_added" },
+        { "type": "command", "name": "validation_report_test" },
+        { "type": "command", "name": "agent_eval" }
+      ],
+      "expect": {
+        "required_events": [
+          "user_requested_sop_update_after_miss",
+          "process_miss_classified",
+          "enforcement_surface_changed",
+          "regression_eval_or_guard_test_added",
+          "validation_report_test",
+          "agent_eval"
+        ],
+        "ordered_events": [
+          "process_miss_classified",
+          "enforcement_surface_changed",
+          "regression_eval_or_guard_test_added"
+        ],
+        "forbidden_events": ["prose only sop update", "rule added without eval"]
+      }
     }
   ]
 }

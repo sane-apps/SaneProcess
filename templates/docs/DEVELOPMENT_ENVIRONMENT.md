@@ -46,16 +46,22 @@ npm install -g @openai/codex
 
 ### MCP Servers
 
-SaneApps development uses these MCP servers:
+SaneApps development can use these MCP servers. Keep optional accelerators
+optional so cloned SaneProcess checkouts still work with local scripts only.
 
 | Server | Purpose | Install |
 |--------|---------|---------|
-| `apple-docs` | Apple API documentation | Built-in |
-| `context7` | Library documentation | Built-in |
+| `apple-docs` | Apple API documentation | Client-provided when installed |
+| `context7` | Library documentation | Client-provided when installed |
 | `memory` | Persistent learnings | Official Memory MCP |
-| `github` | GitHub operations | Built-in |
-| `macos-automator` | macOS automation/testing | Built-in |
-| `xcode` | Xcode build/test/preview | `xcrun mcpbridge` |
+| `central-memory` | Optional semantic recall | Local Postgres + pgvector |
+| `github` | GitHub operations | Client-provided when installed |
+| `macos-automator` | macOS automation/testing | Client-provided when installed |
+| `xcode` / XcodeBuildMCP | Optional Xcode build/test/preview and iOS simulator proof | `xcrun mcpbridge` or configured XcodeBuildMCP |
+| Cloudflare API MCP/plugin | Optional Pages/R2/Worker read-only drift checks | Local/user config only |
+
+Do not make Google Drive, Docs, Sheets, or Slides a standard release-evidence
+dependency. Store receipts and audit ledgers as local repo artifacts.
 
 ### Global Settings
 
@@ -86,7 +92,7 @@ Copy to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb || true",
+            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb; else exit 0; fi",
             "timeout": 5
           }
         ]
@@ -97,7 +103,7 @@ Copy to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/saneprompt.rb ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/saneprompt.rb || true",
+            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/saneprompt.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/saneprompt.rb; else exit 0; fi",
             "timeout": 5
           }
         ]
@@ -108,7 +114,7 @@ Copy to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetools.rb ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetools.rb || true",
+            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetools.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetools.rb; else exit 0; fi",
             "timeout": 5
           }
         ]
@@ -119,7 +125,18 @@ Copy to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetrack.rb ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetrack.rb || true",
+            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetrack.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetrack.rb; else exit 0; fi",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/task_completed_gate.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/task_completed_gate.rb; else exit 0; fi",
             "timeout": 5
           }
         ]
@@ -130,7 +147,7 @@ Copy to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$CLAUDE_CODE\" ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/sanestop.rb ] && ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanestop.rb || true",
+            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/sanestop.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanestop.rb; else exit 0; fi",
             "timeout": 5
           }
         ]
@@ -208,7 +225,7 @@ Every SaneApp should have a project-level `.claude/CLAUDE.md` or root `CLAUDE.md
    # Then store in keychain:
    xcrun notarytool store-credentials "notarytool" \
      --apple-id "your@email.com" \
-     --team-id "M78L6FXD48" \
+     --team-id "YOUR_TEAM_ID" \
      --password "app-specific-password"
    ```
 
@@ -228,7 +245,7 @@ Every SaneApp should have a project-level `.claude/CLAUDE.md` or root `CLAUDE.md
 security find-identity -v -p codesigning
 
 # Should show:
-# "Developer ID Application" (Team: M78L6FXD48)
+# "Developer ID Application" (Team: YOUR_TEAM_ID)
 ```
 
 ---
@@ -293,12 +310,13 @@ open AppName.xcodeproj
 ### Local Development
 
 ```bash
-# Prefer Xcode Tools MCP (official via xcrun mcpbridge):
+# Prefer Xcode Tools MCP/XcodeBuildMCP when available:
 # mcp__xcode__XcodeListWindows
 # mcp__xcode__BuildProject
 # mcp__xcode__RunAllTests
+# For XcodeBuildMCP simulator flows, call session_show_defaults first.
 
-# CLI/script fallback:
+# Portable CLI/script fallback:
 # xcodebuild -project AppName.xcodeproj -scheme AppName -configuration Debug build
 # xcodebuild -project AppName.xcodeproj -scheme AppName test
 ```

@@ -6,6 +6,19 @@ require 'tmpdir'
 require_relative 'hooks/test/test_framework'
 require_relative 'appstore_submit'
 
+def with_env(overrides)
+  previous = {}
+  overrides.each_key { |key| previous[key] = ENV.key?(key) ? ENV[key] : :__missing__ }
+  overrides.each do |key, value|
+    value.nil? ? ENV.delete(key) : ENV[key] = value
+  end
+  yield
+ensure
+  previous.each do |key, value|
+    value == :__missing__ ? ENV.delete(key) : ENV[key] = value
+  end
+end
+
 class AppStoreSubmitGuardrailHarness
   def initialize
     @stubbed_url_statuses = {}
@@ -147,6 +160,50 @@ include TestFramework
 
 exit(run_tests('App Store Submit Guardrail Tests') do
   subject = AppStoreSubmitGuardrailHarness.new
+
+  test_category('ASC credential resolution') do
+    test('uses env-provided ASC credentials without SaneApps defaults') do
+      Dir.mktmpdir('asc-submit-credentials-') do |dir|
+        key_path = File.join(dir, 'AuthKey_TEST.p8')
+        File.write(key_path, 'not-a-real-key')
+        with_env(
+          'ASC_AUTH_KEY_ID' => 'TESTKEY123',
+          'ASC_AUTH_ISSUER_ID' => '00000000-0000-0000-0000-000000000000',
+          'ASC_AUTH_KEY_PATH' => key_path,
+          'ASC_KEY_ID' => nil,
+          'ASC_ISSUER_ID' => nil,
+          'ASC_KEY_PATH' => nil
+        ) do
+          credentials = resolved_asc_credentials
+          assert_eq(credentials[:key_id], 'TESTKEY123')
+          assert_eq(credentials[:issuer_id], '00000000-0000-0000-0000-000000000000')
+          assert_eq(credentials[:key_path], key_path)
+        end
+      end
+      true
+    end
+
+    test('missing ASC credentials fail with generic diagnostics') do
+      status = nil
+      with_env(
+        'ASC_AUTH_KEY_ID' => nil,
+        'ASC_AUTH_ISSUER_ID' => nil,
+        'ASC_AUTH_KEY_PATH' => nil,
+        'ASC_KEY_ID' => nil,
+        'ASC_ISSUER_ID' => nil,
+        'ASC_KEY_PATH' => nil
+      ) do
+        begin
+          require_asc_credentials!
+        rescue SystemExit => e
+          status = e.status
+        end
+      end
+
+      assert_eq(status, 1)
+      true
+    end
+  end
 
   test_category('Mandatory preflight receipt') do
     test('blocks submission when App Store preflight receipt is missing') do

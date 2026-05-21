@@ -1,37 +1,35 @@
 {
   "mcpServers": {
     "apple-docs": {
-      "command": "node",
+      "command": "npx",
       "args": [
-        "/Users/sj/Dev/apple-docs-mcp-local/dist/index.js"
+        "-y",
+        "@mweinbach/apple-docs-mcp@1.3.1"
+      ]
+    },
+    "context7": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp@2.2.5"
       ]
     },
     "github": {
-      "command": "node",
+      "command": "npx",
       "args": [
-        "/Users/sj/.codex/bin/github-mcp-bridge.mjs"
-      ]
-    },
-    "macos-automator": {
-      "command": "node",
-      "args": [
-        "/Users/sj/.npm-global/lib/node_modules/@steipete/macos-automator-mcp/dist/server.js"
-      ]
-    },
-    "serena": {
-      "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/oraios/serena",
-        "serena",
-        "start-mcp-server",
-        "--context",
-        "claude-code",
-        "--project-from-cwd"
+        "-y",
+        "@modelcontextprotocol/server-github@2025.4.8"
       ],
       "env": {
-        "ENABLE_TOOL_SEARCH": "true"
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
       }
+    },
+    "macos-automator": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@steipete/macos-automator-mcp@0.4.1"
+      ]
     },
     "openaiDeveloperDocs": {
       "type": "http",
@@ -41,21 +39,6 @@
       "command": "xcrun",
       "args": [
         "mcpbridge"
-      ]
-    },
-    "memory": {
-      "command": "node",
-      "args": [
-        "/Users/sj/.npm-global/lib/node_modules/@modelcontextprotocol/server-memory/dist/index.js"
-      ],
-      "env": {
-        "MEMORY_FILE_PATH": "/Users/sj/.claude/memory/knowledge-graph.jsonl"
-      }
-    },
-    "nvidia-build": {
-      "command": "/Users/sj/.local/share/nvidia-mcp-venv/bin/python3",
-      "args": [
-        "/Users/sj/.local/share/nvidia-mcp-venv/nvidia_mcp_server.py"
       ]
     }
   }

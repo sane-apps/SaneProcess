@@ -21,7 +21,7 @@ module SaneMasterModules
     VERSION_CACHE_FILE = File.expand_path('~/.sanemaster/versions_cache.json')
     VERSION_CACHE_MAX_AGE = 7 * 24 * 60 * 60 # 7 days in seconds
     TEMPLATE_DIR = File.expand_path('~/.sanemaster/templates')
-    MEMORY_FILE = File.join(Dir.pwd, '.claude', 'memory.json')
+    LEGACY_MEMORY_FILE = File.join(Dir.pwd, '.claude', 'memory.json')
     WORK_SESSION_STATE_FILE = File.expand_path('~/.sanemaster/work_session_state.json')
     WORK_SESSION_CAFFEINATE_PID_FILE = File.expand_path('~/.sanemaster/work_session_caffeinate.pid')
     WORK_SESSION_CAFFEINATE_LOG = File.expand_path('~/.sanemaster/work_session_caffeinate.log')
@@ -525,11 +525,11 @@ module SaneMasterModules
         rescue JSON::ParserError
           nil
         end
-      elsif File.exist?(MEMORY_FILE)
-        JSON.parse(File.read(MEMORY_FILE))
+      elsif File.exist?(LEGACY_MEMORY_FILE)
+        JSON.parse(File.read(LEGACY_MEMORY_FILE))
       else
         warn ''
-        warn '⚠️  No local memory cache found at .claude/memory.json'
+        warn '⚠️  No legacy local memory cache found at .claude/memory.json'
         warn ''
         warn 'To use memory commands, pipe from MCP:'
         warn '  1. Ask Claude to run: mcp__memory__read_graph'
@@ -545,8 +545,8 @@ module SaneMasterModules
     end
 
     def save_memory(memory)
-      FileUtils.mkdir_p(File.dirname(MEMORY_FILE))
-      File.write(MEMORY_FILE, JSON.pretty_generate(memory))
+      FileUtils.mkdir_p(File.dirname(LEGACY_MEMORY_FILE))
+      File.write(LEGACY_MEMORY_FILE, JSON.pretty_generate(memory))
     end
 
     # Sync memory from STDIN (requires piping from mcp__memory__read_graph)

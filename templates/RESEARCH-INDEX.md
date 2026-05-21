@@ -27,10 +27,10 @@
 
 | Topic | File | Status | Date |
 |-------|------|--------|------|
-| **Rules Engine & Focus Mode** | [rules-engine-focus-mode.md](/Users/sj/SaneApps/apps/SaneBar/.claude/archive/research/rules-engine-focus-mode.md) | ✅ Complete | 2026-01-19 |
-| WiFi Network Triggers | [p0-wifinetwork-trigger.md](/Users/sj/SaneApps/apps/SaneBar/.claude/archive/research/p0-wifinetwork-trigger.md) | ✅ Complete | 2026-01-04 |
-| Feature Plan (all features) | [FEATURE_PLAN.md](/Users/sj/SaneApps/apps/SaneBar/FEATURE_PLAN.md) | 📋 Living doc | - |
-| Roadmap | [ROADMAP.md](/Users/sj/SaneApps/apps/SaneBar/ROADMAP.md) | 📋 Living doc | - |
+| Rules Engine & Focus Mode | `<app-repo>/.claude/archive/research/rules-engine-focus-mode.md` | Complete | 2026-01-19 |
+| WiFi Network Triggers | `<app-repo>/.claude/archive/research/p0-wifinetwork-trigger.md` | Complete | 2026-01-04 |
+| Feature Plan | `<app-repo>/FEATURE_PLAN.md` | Living doc | - |
+| Roadmap | `<app-repo>/ROADMAP.md` | Living doc | - |
 
 ### SaneClip
 

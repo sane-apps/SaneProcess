@@ -1,17 +1,20 @@
 # SaneApps AGENTS
 
+> SaneApps operator overlay. This file shows the full internal production
+> workflow used by SaneApps. Public adopters can use it as a reference, but
+> should start with `README.md`, `DEVELOPMENT.md`, and their own project
+> `AGENTS.md` rather than copying SaneApps-specific hosts, accounts, or release
+> assumptions verbatim.
+
 Speak in plain English. Keep it short and direct. Use `I`/`me`/`my` — never `we`/`us`/`our`.
 
 ---
 
 ## Session Start
 
-Use a right-sized startup.
-
-Small read-only answers and single local command requests need only the nearest
-`AGENTS.md` plus the directly relevant file or command surface. Full startup is
-required for mutation, build/test, release, support, UI/runtime, payment, App Store,
-automation, policy, or multi-file investigation work.
+Skip full startup only when the task does not edit files, does not run
+build/test/release/support/account workflows, and can be answered from one local
+file or one local command. Otherwise run Session Start steps 1-5.
 
 1. Read `SESSION_HANDOFF.md` if it exists — recent work, pending tasks, gotchas
 2. Check Serena memories (`read_memory`) for project-specific learnings
@@ -22,7 +25,7 @@ automation, policy, or multi-file investigation work.
 
 ## Session End
 
-1. Save learnings via Serena `write_memory`
+1. Save learnings via Serena `write_memory` and update the knowledge graph for any bug, process, policy, tooling, or release-status fact that changed this session
 2. Update `SESSION_HANDOFF.md` — include: open GitHub issues (`gh issue list`), research.md topics, feature requests
 3. Run `ruby scripts/SaneMaster.rb sop_review --json` when the session changed code, tools, policy, docs, support, release, or UI/runtime behavior
 4. Append SOP rating to `outputs/sop_ratings.csv` with evidence and any cap reason; do not rate above the objective cap from `sop_review`
@@ -54,12 +57,12 @@ Do not wait until session end.
 | # | Rule | What It Means |
 |---|------|---------------|
 | 0 | NAME IT BEFORE YOU TAME IT | State which rule applies before acting |
-| 1 | STAY IN LANE, NO PAIN | No edits outside project without asking |
+| 1 | STAY IN LANE, NO PAIN | No edits outside project without asking. Explicit cleanup/admin approval applies only to the named path, host, and task |
 | 2 | VERIFY, THEN TRY | Check uncertain APIs/tools before using. Write durable findings to the project research cache with TTL |
 | 3 | TWO STRIKES? STOP AND CHECK | Failed twice → STOP, read the error, research |
 | 4 | GREEN MEANS GO | Tests must pass before "done" |
 | 5 | HOUSE RULES, USE TOOLS | Use canonical wrappers for stateful build/test/release/launch/email workflows |
-| 6 | BUILD, KILL, LAUNCH, LOG | Full cycle after every code change |
+| 6 | BUILD, KILL, LAUNCH, LOG | Full build/kill/launch/log cycle after runtime code changes; docs/tooling changes get matching tests/evals |
 | 7 | NO TEST? NO REST | Every fix gets a test. No tautologies (`#expect(true)` is useless) |
 | 8 | BUG FOUND? WRITE IT DOWN | Update Serena memory + knowledge graph when bugs are found, reclassified, fixed, or closed |
 | 9 | NEW FILE? GEN THE PILE | Use scaffolding tools and templates |
@@ -77,9 +80,19 @@ Do not commit or push unless the user asks, the task explicitly includes release
 
 **Circuit Breaker:** After 3 consecutive failures: STOP. Read error messages. Research the actual API.
 
-**Research gate:** Local inspection is always required before editing. Docs, web, and GitHub are conditional: use them when APIs are uncertain, external facts may have changed, third-party behavior matters, or the decision is durable/high-stakes. Do not run broad research just because the task contains discussion words.
+**Research gate:** Local inspection is always required before editing. If the
+active client/runtime enforces stricter research gates, obey the stricter gate.
+Otherwise use docs, web, and GitHub when APIs are uncertain, external facts may
+have changed, third-party behavior matters, or the decision is durable/high-stakes.
+Do not run broad research just because the task contains discussion words.
 
 **Subagent hygiene:** Before spawning Codex subagents, close stale/completed agents that are no longer needed. After a subagent returns, capture the useful result and close it unless it is actively needed for a follow-up. If spawning fails because the agent limit is reached, cleanup is the required first step.
+
+**Subagent prompt contract:** Every Codex subagent prompt must include:
+1. Read relevant repo hooks in `scripts/hooks/` and active client config when present before doing work.
+2. If a hook blocks, stop immediately and report the block to the parent; do not retry or work around it.
+3. Never build or launch SaneApps locally on the MacBook Air. Use `ssh mini` for build/test/runtime work unless the parent documents an approved local exception for that exact task.
+4. Follow the same wrapper, approval, and evidence rules as the parent session.
 
 ## Tool Discovery Before Workarounds
 
@@ -97,7 +110,10 @@ If I cannot name which of those checks I ran, I have not checked enough.
 
 ## Mandatory Skill Workflows
 
-If the prompt matches a registered skill trigger, that skill workflow is mandatory.
+If the user explicitly names a skill or directly matches a trigger phrase in the
+active registry, that skill workflow is mandatory. If multiple skills match, use
+the most specific match; if specificity is tied, state the chosen priority before
+proceeding.
 
 - Do not freehand the job.
 - Do not replace it with a nearby manual bash chain.
@@ -121,7 +137,9 @@ Green tests are not enough for customer-facing UI claims.
 - If a UI/runtime flow is stuck, loading, contradictory, or surprising, assume a hidden macOS prompt/sheet may be blocking it. Capture/check the full desktop and AX tree for permission, SecurityAgent, TCC, file-access, or system dialogs before retrying, changing code, or judging the app.
 - App-window-only screenshots are not enough blocker evidence because prompts can appear outside the crop or behind the target window. Click the actual prompt action required by the customer flow, then re-capture the app’s final state.
 - Record the screenshot paths and verdict in `SESSION_HANDOFF.md` or an `outputs/visual-audit*/` receipt before saying the surface works.
-- Current hook coverage: `saneprompt` marks visual verification required from UI/screenshot prompts, `sanetrack` records UI edits and screenshot/audit evidence, `mini-visual-workspace-guard.sh` blocks unresolved macOS permission/security prompts before Mini captures, and `sanestop` plus `task_completed_gate` block completion when required visual proof is missing.
+- Current hook coverage: `saneprompt` marks visual verification requirements,
+  `sanetrack` records UI edits and screenshot/audit evidence, and `sanestop`
+  plus `task_completed_gate` block completion when required proof is missing.
 
 ## SaneUI Source Of Truth
 
@@ -134,52 +152,37 @@ Green tests are not enough for customer-facing UI claims.
 
 ---
 
-## SaneMaster Quick Reference
+## SaneApps Operator Overlay
 
-**`./scripts/SaneMaster.rb`** — unified automation CLI for ALL SaneApps projects. Use this for stateful build/test/release workflows.
+The following sections describe the private SaneApps operator environment. They
+are useful as an example of how SaneProcess is used in production, but public
+adopters do not need the Mac Mini, SaneApps accounts, or SaneApps release keys.
+
+## SaneMaster Routing
 
 ### Mac Mini Admin Automation
 
 - The Mini admin password is stored on the Mini only in `~/.config/nv/env` as `SANE_MINI_ADMIN_PASSWORD` and `MINI_ADMIN_PASSWORD`.
 - Do not ask the user for the Mini password during normal SaneApps testing. Source that env file and use the stored variable for required Mini admin actions.
+- Do not assume the Mini password applies to the local Mac. If local sudo is needed, the user types it into the terminal prompt; do not ask them to paste it into chat.
 - Never print the value. For sudo, use `printf "%s\n" "$SANE_MINI_ADMIN_PASSWORD" | sudo -S ...`.
 - Do not pass the password through AppleScript error-prone text that can echo secrets into logs. Prefer shell/sudo paths or UI typing with suppressed stderr when a macOS admin sheet is unavoidable.
 
-Read-only shell commands and focused diagnostics are allowed. Prefer wrappers for
-workflows that can bypass safety/tracking: app launch, release/deploy, build/test,
-customer email, and sales/support analytics. If you bypass a wrapper, state why.
+Use `./scripts/SaneMaster.rb` for stateful SaneApps workflows: build/test,
+release/deploy, app launch, support/email, sales/download/conversion analytics,
+lead research, process metrics, cleanup, and release readiness. Read-only shell
+diagnostics are fine. If you bypass a wrapper, state why. Run
+`./scripts/SaneMaster.rb help <category>` for command details.
 
-Run with no args for full help. Run `help <category>` for category details.
-
-| Category | Key Commands | What It Does |
-|----------|-------------|--------------|
-| **build** | `verify`, `clean`, `lint`, `release`, `release_preflight`, `appstore_preflight` | Build, test, release pipeline, active App Store lane compliance |
-| **sales** | `sales`, `sales --products`, `sales --month`, `sales --daily`, `sales --fees` | LemonSqueezy revenue (today/yesterday/week/all-time) |
-| **sales** | `downloads` (dl), `downloads --app NAME`, `downloads --days N`, `downloads --json` | Download analytics from sane-dist Worker (D1-backed) |
-| **sales** | `events`, `events --days N`, `events --app NAME`, `events --json` | User-type events: new_free_user, early_adopter_grant, license_activated |
-| **sales** | `leads --query "TEXT"`, `leads --domain DOMAIN`, `leads --json` | Prospect discovery with Exa + Firecrawl site dossiers |
-| **check** | `verify_api`, `dead_code`, `deprecations`, `swift6`, `saneui_guard`, `test_scan`, `process_metrics`, `near_miss_review`, `verify_failure_review`, `process_eval`, `agent_eval`, `structural`, `compliance`, `check_docs`, `check_binary`, `menu_scan` | Static analysis, process telemetry, API verification, code quality |
-| **debug** | `test_mode` (tm), `logs --follow`, `launch`, `crashes`, `diagnose` | Interactive debugging, crash analysis |
-| **ci** | `enable_ci_tests`, `restore_ci_tests`, `fix_mocks`, `monitor_tests`, `image_info` | CI/CD test helpers |
-| **gen** | `gen_test`, `gen_mock`, `gen_assets`, `template` | Code generation, mocks, assets |
-| **memory** | `msync`, `session_end`, `reset_breaker` | Cross-session memory sync, circuit breaker |
-| **breaker** | `breaker_status` (bs), `breaker_errors` (be), `reset_breaker` (rb) | Circuit breaker inspection and reset |
-| **env** | `doctor`, `tool_discovery --query "..."`, `machine_cleanup --host mini --apply`, `health`, `bootstrap`, `setup`, `versions`, `reset`, `restore` | Environment setup, health checks, machine cleanup |
-| **saneloop** | `saneloop` (sl), `saneloop start`, `saneloop status`, `saneloop check`, `saneloop complete` | Structured iteration loops for big tasks |
-| **meta** | `meta`, `audit`, `system_check` | Tooling self-audit, system verification |
-| **export** | `export`, `md_export`, `deps`, `quality` | PDF export, dependency graphs |
-
-**When to use SaneMaster vs other tools:**
-- Sales/revenue → `SaneMaster.rb sales` (NOT manual curl to LemonSqueezy)
-- Download stats → `SaneMaster.rb downloads` (NOT manual curl to dist Worker)
-- Conversion funnel → `SaneMaster.rb events` (new users, upgrades, activations)
-- Lead research → `SaneMaster.rb leads --query "..."` (NOT ad-hoc vendor API curl chains)
-- Build/test → `SaneMaster.rb verify` (NOT raw `xcodebuild`)
-- Process improvement / recurring workflow misses → `SaneMaster.rb near_miss_review` (report-only before adding new rules)
-- Repeated zero-test verify failures → `SaneMaster.rb verify_failure_review --all` before changing timeouts or test parsing
-- App launch → `sane_test.rb` (NOT `open SaneBar.app`)
-- Release → `release.sh` + `SaneMaster.rb release_preflight` (NOT manual DMG creation)
-- CI test setup → `SaneMaster.rb enable_ci_tests` (NOT editing project.yml manually)
+Critical routes:
+- Build/test → `SaneMaster.rb verify`
+- App launch/runtime → `sane_test.rb` or `SaneMaster.rb test_mode`
+- Release → `SaneMaster.rb release_preflight`, then `release.sh`
+- App Store lane → `SaneMaster.rb appstore_preflight` only when enabled
+- Sales/downloads/funnel → `sales`, `downloads`, `events`
+- Email/support → `check-inbox.sh` / `SaneMaster.rb check_inbox`
+- Tool/process misses → `tool_discovery`, `near_miss_review`, `verify_failure_review`
+- Cleanup → `machine_cleanup` before manual process/disk cleanup
 
 ### Support Issue Synchronization
 
@@ -187,43 +190,6 @@ Run with no args for full help. Run `help <category>` for category details.
 - If email confirms the issue is fixed, report it as "email confirmation received; issue resolved" and close/update GitHub accordingly. If email says it is still broken, keep or reopen the GitHub issue.
 - Never describe a GitHub issue as "no follow-up" until the related email trail has also been checked.
 - In user-facing summaries, anonymize email senders. Do not include names, personal email addresses, or other identifying details from customer email unless the user explicitly asks or a legal/compliance context requires identity.
-
-### Sales & Conversion Funnel
-
-When user asks about sales, revenue, conversions, upgrades, new users, or funnel — run all three:
-
-```bash
-./scripts/SaneMaster.rb sales           # Revenue from LemonSqueezy
-./scripts/SaneMaster.rb events          # Freemium funnel: new_free_user, early_adopter_grant, license_activated
-./scripts/SaneMaster.rb downloads       # Download counts by source (website, sparkle, homebrew)
-```
-
-The `events` command shows:
-- `new_free_user` — first launch, no license (brand new free-tier user)
-- `early_adopter_grant` — existing user from before freemium, auto-granted Pro
-- `license_activated` — someone entered a license key and it validated
-
-Cross-reference events with sales to understand conversion rates.
-
-### Lead Research
-
-When I need new prospect lists or cleaner website reads, use:
-
-```bash
-./scripts/SaneMaster.rb leads --query "mac app review sites"
-./scripts/SaneMaster.rb leads --query "developer newsletters for privacy tools" --site-limit 8
-./scripts/SaneMaster.rb leads --domain setapp.com --domain macstories.net
-```
-
-Secrets:
-- `EXA_API_KEY` env var or keychain service `exa` / account `api_key`
-- `FIRECRAWL_API_KEY` env var or keychain service `firecrawl` / account `api_key`
-
-Outputs:
-- `outputs/leads/*.json`
-- `outputs/leads/*.md`
-
----
 
 ## Trigger Map
 
@@ -260,19 +226,11 @@ bash ~/SaneApps/infra/SaneProcess/scripts/release.sh \
   --project $(pwd) --full --version X.Y.Z --notes "..." --deploy
 ```
 
-If `.saneprocess` includes iOS App Store release:
-
-```bash
-bash ~/SaneApps/infra/SaneProcess/scripts/mini/bootstrap-build-server.sh
-```
-
-Do not treat the mini as ready unless the bootstrap passes. The release path must prove headless keychain unlock, partition-list access, and ASC auth before a dual-platform App Store release counts as complete.
-
 **Critical rules:**
 - **Bump version BEFORE release** — Sparkle ignores same-version updates
 - **Direct-only apps do not run App Store lanes** — SaneBar and SaneClick are direct-download-only unless `.saneprocess appstore.enabled` is deliberately re-enabled after explicit approval and fresh policy review.
-- **ONE Sparkle key** for all apps: `7Pl/8cwfb2vm4Dm65AByslkMCScLJ9tbGlwGGx81qYU=`
-- **ONE shared R2 bucket** (`sanebar-downloads`) for ALL apps
+- App Store release machines must pass `scripts/mini/bootstrap-build-server.sh`; release proof must include headless keychain, partition-list, and ASC auth.
+- Sparkle/R2/App Store private setup details live in `DEVELOPER_SETUP.md`.
 - **Morning releases preferred** — full day to monitor
 - Full details: `SaneProcess/templates/RELEASE_SOP.md`
 
@@ -291,9 +249,13 @@ bash ~/SaneApps/infra/SaneProcess/scripts/release.sh \
 
 ---
 
-## Test App Launch
+## Runtime Testing
 
-**ALWAYS test on the Mac Mini, not the MacBook Air.** Only use `--local` if Mini is unreachable.
+**ALWAYS test on the Mac Mini, not the MacBook Air.** Local fallback is allowed
+only when `ssh mini` fails, the Mini route is otherwise unavailable for that task,
+or the user explicitly approves a local exception for that exact task.
+`Inconvenient`, `slower`, or `already open locally` are not fallback reasons.
+When using a local exception, say why Mini was unavailable or approved first.
 
 ```bash
 ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb SaneBar          # Auto-detects mini
@@ -301,16 +263,6 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb SaneClip --local # ONLY i
 ```
 
 Script handles: kill → clean → TCC reset → build → deploy → launch → logs.
-
-| App | Dev Bundle ID | Prod Bundle ID |
-|-----|--------------|----------------|
-| SaneBar | `com.sanebar.dev` | `com.sanebar.app` |
-| SaneClick | `com.saneclick.SaneClick` | `com.saneclick.SaneClick` |
-| SaneClip | `com.saneclip.dev` | `com.saneclip.app` |
-| SaneHosts | `com.mrsane.SaneHosts` | `com.mrsane.SaneHosts` |
-| SaneSales | `com.sanesales.dev` | `com.sanesales.app` |
-| SaneSync | `com.sanesync.SaneSync` | `com.sanesync.SaneSync` |
-| SaneVideo | `com.sanevideo.app` | `com.sanevideo.app` |
 
 ---
 
@@ -322,24 +274,18 @@ Script handles: kill → clean → TCC reset → build → deploy → launch →
 
 **Style:** Direct, warm, human. No corporate hedge language. Action-oriented ("here's what I'm going to do"). Light humor welcome. Short, no fluff. Humility — use "should" not "will" for fixes.
 
-**How to check/send email:**
-```bash
-~/SaneApps/infra/scripts/check-inbox.sh check              # Full inbox
-~/SaneApps/infra/scripts/check-inbox.sh review <id>        # MANDATORY before reply/resolve
-~/SaneApps/infra/scripts/check-inbox.sh read <id>          # Body + attachments + reply status
-~/SaneApps/infra/scripts/check-inbox.sh reply <id> <file>  # Send reply
-~/SaneApps/infra/scripts/check-inbox.sh resolve <id>       # Mark resolved
-```
-
 **Rules:**
+- Use `~/SaneApps/infra/scripts/check-inbox.sh` or `SaneMaster.rb check_inbox`; never manual email API curl.
 - ALWAYS run `review <id>` before any `reply` or `resolve`
 - ALWAYS show the user the exact email draft and get approval before sending
 - Email send workflow is mandatory: `present-draft` or `present-batch` after showing the draft, then wait for explicit user approval, then `approve ... --user-approval "<quote>"`, then send in a separate command
 - If customer attaches media describing a problem: save to `~/Desktop/Screenshots/`, alert user, wait for approval
-- Auto-handle: simple questions, download/install issues, basic support
+- Auto-handle after review only: simple download/install/basic-support questions
+  with no refund, complaint, legal issue, feature request, attached problem media,
+  customer identity uncertainty, or promise about an unfixed bug. Every outbound
+  reply still requires the exact draft approval flow.
 - Refund/complaint policy: if the customer is unhappy or asks for a refund, apologize briefly, ask what is broken, and ask for an in-app bug report first. Refunds require explicit user approval plus a documented bug we cannot fix within 24 hours.
 - Escalate: refunds, complaints, feature requests, legal, media showing a problem
-- NEVER craft manual curl commands for email — use check-inbox.sh
 
 ---
 
@@ -351,8 +297,9 @@ Script handles: kill → clean → TCC reset → build → deploy → launch →
 - Keep hot-path keys in `~/.config/nv/env` (`chmod 600`); use Keychain as fallback.
 - Codex shells are guarded by `~/.local/bin/security -> sane_security_guard.sh`.
 - Mac Mini keys live in `~/.config/nv/env` because Keychain prompts do not work over SSH.
-- Apple release identity: primary key `S34998ZCRT`, Team `M78L6FXD48`, Issuer `c98b1e0a-8d10-4fce-a417-536b31c09bfb`, profile `notarytool`.
-- Full secret/account map and notarization commands live in `DEVELOPMENT.md`.
+- Apple release identity: use the private SaneApps operator credential set and
+  keychain profile `notarytool`.
+- Full private setup and notarization commands live in `DEVELOPER_SETUP.md`.
 
 ---
 
@@ -361,16 +308,6 @@ Script handles: kill → clean → TCC reset → build → deploy → launch →
 M1 Mac mini (8GB). Access: `ssh mini`.
 
 **Source of truth:** `SaneProcess/scripts/mini/` — edit there, deploy via `bash scripts/mini/deploy.sh`
-
-| Script | Schedule | Purpose |
-|--------|----------|---------|
-| `mini-prepare-automation-root.sh` | On demand | Creates/updates clean automation clones under `~/SaneApps-automation` |
-| `mini-install-nightly-agent.sh` | On demand | Installs/updates nightly LaunchAgent |
-| `mini-install-training-agents.sh` | On demand | Installs/updates weekly + challenger training LaunchAgents |
-| `mini-nightly.sh` | 8:45 AM daily | Nightly builds for all repos |
-| `mini-train.sh` | Manual / wrapper | MLX LoRA fine-tuning |
-| `mini-train-challengers.sh` | 1 AM daily | Daily alternating challenger training for SaneSync (skips Sundays, hard stop 8:30 AM) |
-| `mini-train-all.sh` | 1 AM Sunday | Weekly production training for SaneAI with archived metrics history and SaneSync readiness tracking |
 
 **Bash 3.2 warning:** Mini runs macOS default bash. No `+=()` array append, no `<<<` herestrings.
 
@@ -414,9 +351,31 @@ ssh mini 'tail -20 ~/SaneApps/outputs/nightly_report.md'
 | **central-memory** | Shared semantic memory (Postgres + pgvector) | Use `remember` / `recall`; verify with `~/.codex/bin/check-mcps` |
 | **Serena** | Past bugs, patterns, project knowledge | `read_memory`/`write_memory` |
 
+Optional MCP accelerators must stay optional. Local scripts, repo docs, and
+Mini-first SaneMaster receipts are the portable SaneProcess path; do not make
+release correctness depend on an optional MCP unless repo config explicitly
+requires it. Use Cloudflare API MCP/plugin for read-only Pages/R2/Worker drift
+checks when it is installed, XcodeBuildMCP for iOS simulator proof/debug when it
+is available, and central-memory for semantic recall when configured. Do not make
+Google Drive/Docs/Sheets/Slides a standard release-evidence dependency.
+
+XcodeBuildMCP decision rule:
+- Use Apple `xcrun mcpbridge`/`xcode` first for IDE-native Xcode tools such as
+  project context, previews, issue navigator, and documentation search.
+- In Codex, the Build iOS Apps plugin provides XcodeBuildMCP via
+  `npx -y xcodebuildmcp@latest mcp`; treat stale local forks as reference code
+  unless MCP config explicitly points at them.
+- Use XcodeBuildMCP when the task needs iOS simulator build-run proof,
+  screenshots/video, taps/swipes/typing, accessibility hierarchy inspection,
+  LLDB debugging, physical-device install/launch, code coverage, or persistent
+  session defaults.
+- Do not use XcodeBuildMCP for plain SaneApps release gates or macOS app
+  verification unless the requested evidence specifically needs its extra
+  automation. Release proof still ends in SaneMaster/Mini receipts.
+
 ### Central Memory MCP (Codex)
 
-- Server: `central-memory` in `/Users/sj/.codex/config.toml`
+- Server: optional `central-memory` in local Codex MCP config
 - Runtime: PostgreSQL 17 + `pgvector` on `postgresql://<local-user>@localhost:5432/central_memory`
 - Bootstrap: `cd ~/SaneApps/infra/SaneProcess/scripts/mcp-central-memory && ./bootstrap-local.sh`
 - Health: `~/.codex/bin/check-mcps` (must show `central-memory` PASS)
@@ -435,7 +394,10 @@ ssh mini 'tail -20 ~/SaneApps/outputs/nightly_report.md'
 - Local MacBook Air GUI opens for SaneApps release/dashboard work are guarded via `~/.local/bin/open` → `sane_open_guard.sh`. Use Mini Safari/Finder instead for Lemon Squeezy, App Store Connect, release upload files, and SaneApps app launches.
 - Don't invent new docs — use the core docs + `AGENTS.md` standard
 - Use `trash` not `rm -rf`
-- Cleanup SOP: use `ruby scripts/SaneMaster.rb machine_cleanup --host mini --apply --preserve-apps App1,App2` for Mini cleanup and `--local` for the MacBook Air. The command is dry-run by default, preserves active apps, and empties Trash after moving disposable paths so cleanup does not just store GB elsewhere. Before any manual cleanup, list active `Sane*`, `xcodebuild`, simulator, training, and MCP processes with parent/PGID context. Preserve any app the user says is active, even if it looks noisy. Do safe disk cleanup first: full Trash, disposable caches, inactive DerivedData, and unavailable simulator data. Never kill broad process classes; kill only a confirmed unrelated parent process group, and only after tracing respawns back to their launcher.
+- Cleanup SOP: use `ruby scripts/SaneMaster.rb machine_cleanup --host mini --apply --preserve-apps App1,App2` for Mini cleanup and `--local` for the MacBook Air. The command is dry-run by default.
+- Before any manual cleanup, list active `Sane*`, `xcodebuild`, simulator, training, and MCP processes with parent/PGID context.
+- Preserve any app the user says is active, even if it looks noisy. Do safe disk cleanup first: full Trash, disposable caches, inactive DerivedData, and unavailable simulator data.
+- Never kill broad process classes; kill only a confirmed unrelated parent process group, and only after tracing respawns back to their launcher.
 
 ---
 

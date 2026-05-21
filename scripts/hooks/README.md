@@ -6,17 +6,18 @@ For Codex and other clients, treat these as one layer of the system, not the who
 
 ## Architecture
 
-5 hooks, shared helpers, self-test helpers, and 1 state file:
+6 hooks, shared helpers, self-test helpers, and 1 state file:
 
 | Hook | Type | Purpose | Current self-test count |
 |------|------|---------|-------|
 | `saneprompt.rb` | UserPromptSubmit | Classifies prompts, handles commands (rb-, s+, etc.) | 62 |
 | `sanetools.rb` | PreToolUse | Gates edits on research, blocks paths, circuit breaker | 66 |
 | `sanetrack.rb` | PostToolUse | Tracks edits, failures, per-signature errors | 37 |
-| `sanestop.rb` | Stop | Session stats, summary reminder | 5 |
+| `task_completed_gate.rb` | TaskCompleted | Blocks completion claims unless non-doc edits have a fresh counted verify metric with matching source fingerprint | registry-backed |
+| `sanestop.rb` | Stop | Session stats, summary reminder, structured verification gate | 40 |
 | `session_start.rb` | SessionStart | Bootstraps session, resets state | bootstrap only |
 
-**Tier suite:** 178 hook-layer tests (including integration).
+**Tier suite:** 185 hook-layer tests (including integration).
 
 These are hook-layer counts only. Full repo verification is registry-backed and also runs Ruby/Python/SaneMaster/Mini-support tests through `ruby scripts/SaneMaster.rb verify`.
 

@@ -501,6 +501,7 @@ def track_edit(tool_name, tool_input, tool_response)
     e[:unique_files] ||= []
     e[:unique_files] << file_path unless e[:unique_files].include?(file_path)
     e[:last_file] = file_path
+    e[:last_edit_at] = Time.now.iso8601
     e
   end
 
@@ -568,13 +569,14 @@ def track_verification(tool_name, tool_input)
   StateManager.update(:verification) do |v|
     v[:tests_run] = true
     v[:verification_run] = true
-    v[:tests_passed] = true
-    v[:verification_succeeded] = true
+    v[:tests_passed] = false
+    v[:verification_succeeded] = false
     v[:last_test_at] = Time.now.iso8601
     v[:test_commands] ||= []
     v[:test_commands] << cmd_summary unless v[:test_commands].include?(cmd_summary)
     v[:test_commands] = v[:test_commands].last(10) # Keep last 10
-    v[:edits_before_test] = 0 # Reset — tests cover prior edits
+    v[:edits_before_test] = 0
+    v[:requires_structured_verify_metric] = true
     v
   end
 rescue StandardError

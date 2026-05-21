@@ -110,10 +110,22 @@
       "cmd": ["ruby", "scripts/hooks/core/sop_score_test.rb"]
     },
     {
+      "path": "scripts/hooks/task_completed_gate_test.rb",
+      "label": "SaneProcess task completion gate tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/hooks/task_completed_gate_test.rb"]
+    },
+    {
       "path": "scripts/mini/mini_gui_run_test.rb",
       "label": "SaneProcess Mini GUI runner tests",
       "status": "required",
       "cmd": ["ruby", "scripts/mini/mini_gui_run_test.rb"]
+    },
+    {
+      "path": "scripts/mini/bootstrap_build_server_test.rb",
+      "label": "SaneProcess Mini bootstrap credential tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/mini/bootstrap_build_server_test.rb"]
     },
     {
       "path": "scripts/mini/mini_memory_guard_test.rb",
@@ -170,6 +182,18 @@
       "cmd": ["ruby", "scripts/sanemaster/machine_cleanup_test.rb"]
     },
     {
+      "path": "scripts/sanemaster/meta_test.rb",
+      "label": "SaneProcess meta health tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/meta_test.rb"]
+    },
+    {
+      "path": "scripts/mcp_contract_test.rb",
+      "label": "SaneProcess MCP contract tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/mcp_contract_test.rb"]
+    },
+    {
       "path": "scripts/sanemaster/near_miss_review_test.rb",
       "label": "SaneProcess near-miss review tests",
       "status": "required",
@@ -222,6 +246,12 @@
       "label": "SaneProcess SaneUI guard tests",
       "status": "required",
       "cmd": ["ruby", "scripts/sanemaster/saneui_guard_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/structural_compliance_test.rb",
+      "label": "SaneProcess structural compliance tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/structural_compliance_test.rb"]
     },
     {
       "path": "scripts/sanemaster/test_mode_test.rb",

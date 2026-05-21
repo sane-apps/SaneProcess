@@ -154,5 +154,5 @@
 | KEYCHAIN_PASSWORD | Any secure password for CI keychain |
 | NOTARY_APPLE_ID | Apple ID email |
 | NOTARY_PASSWORD | App-specific password from appleid.apple.com |
-| NOTARY_TEAM_ID | M78L6FXD48 |
+| NOTARY_TEAM_ID | YOUR_TEAM_ID |
 | SPARKLE_PRIVATE_KEY | From `./Sparkle/bin/generate_keys` |

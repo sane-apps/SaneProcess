@@ -53,6 +53,7 @@ graph TD
 | UserPromptSubmit | saneprompt.rb | User sends message | 0=allow |
 | PreToolUse | sanetools.rb | Before tool executes | 0=allow, 2=block |
 | PostToolUse | sanetrack.rb | After tool completes | 0=always |
+| TaskCompleted | task_completed_gate.rb | Before a task is marked complete | 0=allow, 2=block |
 | Stop | sanestop.rb | Session ends | 0=allow |
 
 ### Core Modules
@@ -530,12 +531,13 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
 
 **Context:** Validation was reporting process-health gaps from tiny samples, while repeated incidents showed that the most useful evidence lives in local actions: verify runs, prevention gate reviews, hook blocks, release preflights, App Store preflights, and support-send delivery outcomes.
 
-**Decision:** SaneProcess writes append-only JSONL process metrics to `~/.sanemaster/process_metrics.jsonl` by default, with `SANEMASTER_PROCESS_METRICS_PATH` for tests. Metrics are local-only and record operational evidence, not cloud telemetry. Support-send metrics deliberately omit recipient addresses and subjects. Hook trajectory metrics are redacted metadata only: source, tool, result/block status, rule, and PID.
+**Decision:** SaneProcess writes append-only JSONL process metrics to `~/.sanemaster/process_metrics.jsonl` by default, with `SANEMASTER_PROCESS_METRICS_PATH` for tests. Metrics are local-only and record operational evidence, not cloud telemetry. Support-send metrics deliberately omit recipient addresses and subjects. Hook trajectory metrics are redacted metadata only: source, tool, result/block status, rule, and PID. `process_metrics --export-otel` can export those local rows into OpenTelemetry-shaped spans for external review without changing the JSONL source of truth.
 
 **Consequences:**
 - Validation can graduate from "no data" to measured process health as real sessions accumulate.
 - Release and support operations leave auditable local breadcrumbs without adding a service dependency.
 - Tests can redirect metrics into temp files and assert real records without touching user data.
+- Completion gates treat hook booleans and legacy `/tmp/PASS` files as weak hints only; non-doc edits require a fresh counted `verify` metric with tested evidence and a matching source fingerprint.
 
 ---
 
@@ -614,7 +616,8 @@ The first promoted drilldown is `SaneMaster.rb verify_failure_review`, because t
 | State file corrupted/missing | state.json | Medium | Reset to defaults, log warning |
 | HMAC signature mismatch | state.json | High | Reset state, log tamper attempt |
 | File lock timeout | state.json.lock | Medium | Fail safe: exit 0 |
-| Hook script syntax error | Any hook | High | Fail safe: `|| true` in settings.json |
+| Hook script syntax error | Blocking hook | High | Structural compliance flags masked exits; registration must preserve hook exit status |
+| Hook script syntax error | Non-blocking helper hook | Medium | Optional helper hooks may fail open only when documented as non-blocking |
 | Circuit breaker false positive | sanetrack | Medium | Manual reset via `rb-` command |
 
 ### Security Model
@@ -631,7 +634,7 @@ The first promoted drilldown is `SaneMaster.rb verify_failure_review`, because t
 **Known gaps:**
 - MCP tools can bypass enforcement (no wildcard matcher support — see ADR-003)
 - State file can be deleted (hook fails safe, re-creates with defaults)
-- `|| true` in settings.json means broken hooks silently pass
+- Optional helper hooks can still fail open, but blocking hook registration is checked for masked exits so `|| true` cannot silently disable enforcement.
 
 ### Exit Codes
 

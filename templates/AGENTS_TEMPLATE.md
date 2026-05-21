@@ -22,7 +22,7 @@ This file is the durable, client-neutral instruction surface for the repo.
 3. Use the repo’s canonical scripts instead of ad hoc command chains.
 4. Do not claim work is done without running the relevant checks or getting explicit approval.
 5. Prefer updating existing docs/scripts over creating parallel ones.
-6. Default to local or self-hosted verification. GitHub Actions should stay manual fallback, and Dependabot should stay off, unless the repo documents `SANEAPPS_GITHUB_HOSTED_EXCEPTION: <reason>`.
+6. Default to local or self-hosted verification. GitHub Actions should stay manual fallback, and Dependabot should stay off, unless the repo documents `HOSTED_AUTOMATION_EXCEPTION: <reason>`.
 
 ## Definition Of Done
 

@@ -133,26 +133,20 @@ module SaneMasterModules
       puts ''
 
       sop_mcps = {
-        'apple-docs' => { package: '@mweinbach/apple-docs-mcp@latest', required: true },
-        'github' => { package: '@modelcontextprotocol/server-github', required: true },
-        'context7' => { package: '@upstash/context7-mcp@latest', required: true },
+        'apple-docs' => { package: '@mweinbach/apple-docs-mcp@1.3.1', required: true },
+        'github' => { package: '@modelcontextprotocol/server-github@2025.4.8', required: true },
+        'context7' => { package: '@upstash/context7-mcp@2.2.5', required: true },
         'xcode' => { package: 'mcpbridge', required: true },
-        'macos-automator' => { package: '@steipete/macos-automator-mcp', required: true }
+        'macos-automator' => { package: '@steipete/macos-automator-mcp@0.4.1', required: true }
       }
 
-      config_paths = ['.mcp.json', '.cursor/mcp.json']
+      config_paths = ['.mcp.json']
       all_valid = true
 
       config_paths.each do |config_path|
         next unless File.exist?(config_path)
 
         all_valid = check_mcp_config_file(config_path, sop_mcps, all_valid)
-      end
-
-      unless File.exist?('.cursor/mcp.json')
-        puts '⚠️  .cursor/mcp.json not found (Cursor may use this location)'
-        puts '   Run: cp .mcp.json .cursor/mcp.json'
-        all_valid = false
       end
 
       print_mcp_verification_summary(all_valid)
@@ -1262,16 +1256,12 @@ module SaneMasterModules
       if all_valid
         puts '✅ All required MCPs are configured'
         puts ''
-        puts '💡 To verify MCPs are working in Cursor:'
-        puts '   1. Restart Cursor'
-        puts '   2. Check Settings > MCP Tools'
+        puts '💡 To verify MCPs are working, use the active client MCP UI or `~/.codex/bin/check-mcps` when installed.'
       else
         puts '❌ Some required MCPs are missing or misconfigured'
         puts ''
         puts '💡 Fix by:'
-        puts '   1. Add missing MCPs to .mcp.json'
-        puts '   2. Copy to .cursor/mcp.json: cp .mcp.json .cursor/mcp.json'
-        puts '   3. Restart Cursor'
+        puts '   Add missing MCPs to the active client config or to project .mcp.json, then rerun MCP verification.'
       end
     end
   end

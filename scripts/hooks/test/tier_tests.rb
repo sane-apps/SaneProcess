@@ -1348,18 +1348,11 @@ def test_sanestop
          expected_output: 'Session Stats') do
     # First ensure there are edits in state so stats show
     require_relative '../core/state_manager'
-    StateManager.update(:edits) { |e| e[:count] = 1; e[:unique_files] = ['test.rb']; e }
-    StateManager.update(:verification) do |v|
-      v[:tests_run] = true
-      v[:tests_passed] = true
-      v[:verification_succeeded] = true
-      v
-    end
+    StateManager.update(:edits) { |e| e[:count] = 1; e[:unique_files] = ['README.md']; e }
     StateManager.reset(:handoff_tracking)
     result = t.run_hook({ 'stop_hook_active' => false })
     # Clean up
     StateManager.reset(:edits)
-    StateManager.reset(:verification)
     StateManager.reset(:handoff_tracking)
     result
   end
@@ -1415,11 +1408,23 @@ def test_sanestop
          expected_not_output: 'VISUAL VERIFICATION BLOCK') do
     require_relative '../core/state_manager'
     StateManager.reset(:handoff_tracking)
+    receipt_dir = File.join(PROJECT_DIR, 'outputs', 'visual-audit-tier-test')
+    FileUtils.mkdir_p(receipt_dir)
+    screenshot_path = File.join(receipt_dir, '01.png')
+    receipt_path = File.join(receipt_dir, 'receipt.json')
+    File.binwrite(screenshot_path, "\x89PNG\r\n\x1A\n".b)
+    File.write(receipt_path, JSON.pretty_generate(
+      type: 'visual_audit',
+      status: 'passed',
+      host: 'mini',
+      generated_at: Time.now.utc.iso8601,
+      inspected: true,
+      screenshots: ['01.png']
+    ))
     StateManager.update(:visual_verification) do |v|
       v[:required] = true
-      v[:evidence_commands] = ['xcrun simctl io DEVICE screenshot outputs/visual-audit/01.png']
       v[:audit_recorded] = true
-      v[:audit_files] = ['SESSION_HANDOFF.md']
+      v[:audit_files] = [receipt_path]
       v
     end
     result = t.run_hook({ 'stop_hook_active' => false })
