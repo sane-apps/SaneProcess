@@ -183,7 +183,7 @@ module SaneMasterModules
       max_per_server = 6
       per_codex_server_cap = DEFAULT_PER_CODEX_SERVER_CAP
       duplicate_grace_seconds = 900
-      interval_seconds = 15
+      interval_seconds = 300
 
       i = 0
       while i < args.length

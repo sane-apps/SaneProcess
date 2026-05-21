@@ -17,6 +17,7 @@
 # ==============================================================================
 
 require 'json'
+require 'csv'
 require 'yaml'
 require 'date'
 require 'time'
@@ -797,13 +798,36 @@ class ValidationReport
   # Q1: Are blocks CORRECT?
   # If user constantly overrides/bypasses, blocks are wrong = product is broken
   def q1_block_accuracy
-    correct = 0
-    wrong = 0
+    state_correct = 0
+    state_wrong = 0
 
     @data.each do |_, info|
       v = info[:state]['validation'] || {}
-      correct += v['blocks_that_were_correct'].to_i
-      wrong += v['blocks_that_were_wrong'].to_i
+      state_correct += v['blocks_that_were_correct'].to_i
+      state_wrong += v['blocks_that_were_wrong'].to_i
+    end
+
+    process_blocks = process_metric_events(type: 'hook_block')
+    reset_events = reset_audit_events
+    process_wrong = process_blocks.count do |block|
+      block_time = Time.parse(block['timestamp'].to_s)
+      reset_events.any? do |reset|
+        reset_time = reset[:timestamp]
+        reset_time && reset_time >= block_time && reset_time <= block_time + 900
+      end
+    rescue ArgumentError
+      false
+    end
+    process_correct = [process_blocks.length - process_wrong, 0].max
+
+    if process_blocks.length > state_correct + state_wrong
+      correct = process_correct
+      wrong = process_wrong
+      source = 'process_metrics_hook_block'
+    else
+      correct = state_correct
+      wrong = state_wrong
+      source = 'state_validation'
     end
 
     total = correct + wrong
@@ -812,13 +836,33 @@ class ValidationReport
       wrong: wrong,
       total: total,
       accuracy: total > 0 ? ((correct.to_f / total) * 100).round(1) : nil,
-      sample_size: total
+      sample_size: total,
+      source: source,
+      hook_block_events: process_blocks.length,
+      reset_events: reset_events.length
     }
 
     if total < MIN_SAMPLES_FOR_SIGNIFICANCE
       @warnings << "Q1: Only #{total} block samples. Need #{MIN_SAMPLES_FOR_SIGNIFICANCE}+ for significance."
     elsif @metrics[:block_accuracy][:accuracy] && @metrics[:block_accuracy][:accuracy] < 80
       @issues << "Q1 FAIL: Block accuracy #{@metrics[:block_accuracy][:accuracy]}% - users override too often. Blocks are wrong."
+    end
+  end
+
+  def reset_audit_events
+    @reset_audit_events ||= begin
+      paths = Dir.glob(File.join(sane_apps_root, '**', '.claude', 'reset_audit.log'))
+      paths.flat_map do |path|
+        File.readlines(path, chomp: true).each_with_object([]) do |line, events|
+          begin
+            entry = JSON.parse(line)
+            timestamp = Time.parse(entry['timestamp'].to_s)
+            events << { timestamp: timestamp, reset_type: entry['reset_type'], reason: entry['reason'], path: path }
+          rescue JSON::ParserError, ArgumentError
+            next
+          end
+        end
+      end
     end
   end
 
@@ -864,30 +908,47 @@ class ValidationReport
   # Q3: Is self-rating HONEST or rubber-stamping?
   # 90%+ scores at 8+ with low variance = lying to ourselves
   def q3_score_integrity
-    all_scores = []
+    state_scores = []
     @data.each do |_, info|
       scores = info[:state].dig('patterns', 'session_scores') || []
-      all_scores.concat(scores)
+      state_scores.concat(scores)
     end
 
-    # Also read from sop_ratings.csv (written by sanestop.rb) as canonical source
-    # CSV is the durable record; state.json session_scores rotate (last 10 per project)
-    csv_path = File.join(File.dirname(__FILE__), '..', 'outputs', 'sop_ratings.csv')
-    if File.exist?(csv_path)
-      csv_scores = []
-      File.readlines(csv_path).drop(1).each do |line|
-        # CSV format: date,sop_score,notes (notes may contain commas)
-        parts = line.strip.split(',', 3)
-        score = parts[1]&.to_i
-        csv_scores << score if score && score > 0
+    all_jsonl_sessions = sop_jsonl_session_events
+    jsonl_sessions = all_jsonl_sessions.select { |event| trustworthy_score_event?(event) }
+    receipt_sessions = trustworthy_session_score_events
+    csv_rows = sop_csv_score_rows
+    trusted_csv_rows = csv_rows.select { |row| row[:trusted] }
+    legacy_csv_rows = csv_rows.reject { |row| row[:trusted] }
+
+    score_source =
+      if receipt_sessions.any?
+        :session_receipts
+      elsif jsonl_sessions.any?
+        :sop_jsonl
+      elsif trusted_csv_rows.any?
+        :structured_csv
+      elsif state_scores.any?
+        :state_window
+      else
+        :none
       end
-      # Prefer CSV when it has data (it's the persistent record)
-      # State.json session_scores are per-project rolling windows
-      all_scores = csv_scores if csv_scores.size > all_scores.size
-    end
+
+    all_scores =
+      case score_source
+      when :session_receipts then receipt_sessions.map { |event| event['sop_score'].to_f }
+      when :sop_jsonl then jsonl_sessions.map { |event| event['sop_score'].to_f }
+      when :structured_csv then trusted_csv_rows.map { |row| row[:score] }
+      when :state_window then state_scores
+      else []
+      end.reject(&:zero?)
 
     if all_scores.empty?
-      @metrics[:score_integrity] = { status: 'NO DATA' }
+      @metrics[:score_integrity] = {
+        status: 'NO DATA',
+        score_source: score_source,
+        legacy_csv_rows_ignored: legacy_csv_rows.length
+      }
       return
     end
 
@@ -903,8 +964,18 @@ class ValidationReport
       average: avg,
       std_dev: std,
       pct_8_or_higher: high_pct,
+      score_source: score_source,
+      structured_session_receipts: receipt_sessions.length,
+      sop_jsonl_rows: jsonl_sessions.length,
+      sop_jsonl_rows_ignored: all_jsonl_sessions.length - jsonl_sessions.length,
+      trusted_csv_rows: trusted_csv_rows.length,
+      legacy_csv_rows_ignored: legacy_csv_rows.length,
       statistically_significant: all_scores.size >= MIN_SAMPLES_FOR_SIGNIFICANCE
     }
+
+    if legacy_csv_rows.any?
+      @warnings << "Q3: Ignored #{legacy_csv_rows.length} legacy SOP score row(s) without receipt proof; score history now uses #{score_source}."
+    end
 
     if all_scores.size < MIN_SAMPLES_FOR_SIGNIFICANCE
       @warnings << "Q3: Only #{all_scores.size} scores. Need #{MIN_SAMPLES_FOR_SIGNIFICANCE}+ for significance."
@@ -983,6 +1054,10 @@ class ValidationReport
         @warnings << "Q4: Only #{session_quality[:clean_green_rate]}% session_end metrics were clean green. Recovered sessions are allowed but should not look like flawless SOP."
       end
 
+      if session_quality[:unverified_with_edits].positive?
+        @warnings << "Q4: #{session_quality[:unverified_with_edits]} edited session metric(s) lack final verify evidence; do not count them as clean green."
+      end
+
       if session_quality[:unrecovered_failures].positive?
         @issues << "Q4 FAIL: #{session_quality[:unrecovered_failures]} session_end metrics finished without successful verification."
       end
@@ -1023,21 +1098,31 @@ class ValidationReport
   end
 
   def session_quality_metrics
-    session_events = process_metric_events(type: 'session_end').select do |event|
+    process_sessions = process_metric_events(type: 'session_receipt')
+    process_sessions = process_metric_events(type: 'session_end') if process_sessions.empty?
+    candidate_sessions = process_sessions
+    if candidate_sessions.empty? || candidate_sessions.none? { |event| session_quality_evidence?(event) }
+      candidate_sessions += sop_jsonl_session_events
+    end
+
+    session_events = candidate_sessions.select do |event|
       # Legacy session_end rows were sometimes emitted as empty placeholders
       # during hook probes. They contain no success value and no edits, so
       # counting them as failed sessions makes clean-green rates meaningless.
-      !event['success'].nil? || event['edits'].to_i.positive?
+      session_quality_evidence?(event)
     end.sort_by { |event| event['timestamp'].to_s }
     total = session_events.length
     clean_green = session_events.count do |event|
-      event['success'] == true && event['verify_failures'].to_i.zero?
+      session_success?(event) && event['verify_failures'].to_i.zero?
     end
     recovered_green = session_events.count do |event|
-      event['success'] == true && event['verify_failures'].to_i.positive?
+      session_success?(event) && event['verify_failures'].to_i.positive?
     end
     unrecovered = session_events.count do |event|
-      event['success'] != true && event['edits'].to_i.positive?
+      session_failure?(event) && event['edits'].to_i.positive?
+    end
+    unverified_with_edits = session_events.count do |event|
+      !session_success?(event) && !session_failure?(event) && event['edits'].to_i.positive?
     end
     with_edits = session_events.count { |event| event['edits'].to_i.positive? }
     avg_score = if total.positive?
@@ -1051,10 +1136,89 @@ class ValidationReport
       clean_green: clean_green,
       recovered_green: recovered_green,
       unrecovered_failures: unrecovered,
+      unverified_with_edits: unverified_with_edits,
       clean_green_rate: total.positive? ? ((clean_green.to_f / total) * 100).round(1) : nil,
       recovered_green_rate: total.positive? ? ((recovered_green.to_f / total) * 100).round(1) : nil,
       average_sop_score: avg_score
     }
+  end
+
+  def session_quality_evidence?(event)
+    !event['success'].nil? ||
+      !event['final_verify_success'].nil? ||
+      event['edits'].to_i.positive? ||
+      event['verify_attempts'].to_i.positive?
+  end
+
+  def session_success?(event)
+    event['success'] == true || event['final_verify_success'] == true
+  end
+
+  def session_failure?(event)
+    event['success'] == false || event['final_verify_success'] == false
+  end
+
+  def trustworthy_session_score_events
+    receipts = process_metric_events(type: 'session_receipt')
+    receipts = process_metric_events(type: 'session_end') if receipts.empty?
+    receipts.select do |event|
+      trustworthy_score_event?(event)
+    end
+  end
+
+  def trustworthy_score_event?(event)
+    event['sop_score'].to_f.positive? &&
+      (event['verify_attempts'].to_i.positive? ||
+        !event['final_verify_success'].nil? ||
+        event['edits'].to_i.positive? ||
+        event['schema_version'].to_i >= 2)
+  end
+
+  def sop_jsonl_session_events
+    @sop_jsonl_session_events ||= begin
+      path = File.join(File.dirname(__FILE__), '..', 'outputs', 'sop_ratings.jsonl')
+      if File.exist?(path)
+        grouped = {}
+        File.readlines(path, chomp: true).each do |line|
+          next if line.strip.empty?
+
+          event = JSON.parse(line)
+          next unless event['sop_score'].to_f.positive?
+
+          session_id = event['session_id'].to_s
+          key = session_id.empty? ? "timestamp:#{event['timestamp']}" : "session:#{session_id}"
+          grouped[key] = event
+        rescue JSON::ParserError
+          next
+        end
+        grouped.values
+      else
+        []
+      end
+    end
+  end
+
+  def sop_csv_score_rows
+    @sop_csv_score_rows ||= begin
+      path = File.join(File.dirname(__FILE__), '..', 'outputs', 'sop_ratings.csv')
+      if File.exist?(path)
+        CSV.read(path, headers: true).each_with_object([]) do |row, rows|
+          score = row['sop_score'].to_f
+          next unless score.positive?
+
+          note = row['notes_json'] || row['notes']
+          trusted = !row['session_id'].to_s.empty? && !row['notes_json'].to_s.empty?
+          rows << {
+            date: row['date'],
+            score: score,
+            note: note,
+            trusted: trusted
+          }
+        end
+      else
+        []
+      end
+    end
   end
 
   # Q5: Is the TREND improving?
@@ -2594,7 +2758,7 @@ class ValidationReport
       puts "   Pass rate: #{m[:pass_rate]}% (#{m[:sessions_tests_passing]}/#{m[:total_sessions]})"
       if m[:session_quality] && m[:session_quality][:sample_size].positive?
         q = m[:session_quality]
-        puts "   Session quality: #{q[:clean_green]} clean green, #{q[:recovered_green]} recovered, #{q[:unrecovered_failures]} unrecovered"
+        puts "   Session quality: #{q[:clean_green]} clean green, #{q[:recovered_green]} recovered, #{q[:unrecovered_failures]} unrecovered, #{q[:unverified_with_edits]} unverified edits"
         puts "   Clean green rate: #{q[:clean_green_rate]}%, Avg SOP score: #{q[:average_sop_score] || 'N/A'}"
       end
     else

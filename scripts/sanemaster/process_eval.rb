@@ -140,14 +140,20 @@ module SaneMasterModules
       sessions = session_receipts.any? ? session_receipts : events.select { |event| event['type'] == 'session_end' }
       verify = events.select { |event| event['type'] == 'verify' }
       csv_scores = read_sop_rating_csv
+      trusted_csv_scores = csv_scores.select { |row| row[:trusted] }
+      legacy_csv_scores = csv_scores.reject { |row| row[:trusted] }
       scores = sessions.map { |event| event['sop_score'].to_f }.reject(&:zero?)
-      scores = csv_scores.map { |row| row[:score].to_f }.reject(&:zero?) if scores.empty?
+      scores = trusted_csv_scores.map { |row| row[:score].to_f }.reject(&:zero?) if scores.empty?
       warnings = []
       blockers = []
       actions = []
 
       warnings << 'no session_end metrics found; SOP history cannot explain recent self-assessments' if sessions.empty?
       warnings << 'outputs/sop_ratings.csv is missing or empty; sanestop score history is thin' if csv_scores.empty?
+      if legacy_csv_scores.any?
+        warnings << "ignored #{legacy_csv_scores.length} legacy SOP CSV row(s) without receipt proof; active SOP review requires structured receipts"
+        actions << 'retire legacy clean-session SOP CSV rows from active review windows after structured receipts accumulate'
+      end
       warnings << 'fewer than 30 session_end metrics; SOP trend confidence is weak' if sessions.length.positive? && sessions.length < 30
 
       verify_attempts = verify.length
@@ -250,8 +256,10 @@ module SaneMasterModules
         },
         sop_csv: {
           rows: csv_scores.length,
-          last_score: csv_scores.last && csv_scores.last[:score],
-          last_note: csv_scores.last && csv_scores.last[:note]
+          trusted_rows: trusted_csv_scores.length,
+          legacy_rows_ignored: legacy_csv_scores.length,
+          last_score: trusted_csv_scores.last && trusted_csv_scores.last[:score],
+          last_note: trusted_csv_scores.last && trusted_csv_scores.last[:note]
         },
         blockers: blockers.uniq,
         warnings: warnings.uniq,
@@ -408,7 +416,8 @@ module SaneMasterModules
           score: score.to_f,
           note: row['notes_json'] || row['notes'],
           session_id: row['session_id'],
-          cap_reason: row['cap_reason']
+          cap_reason: row['cap_reason'],
+          trusted: !row['session_id'].to_s.empty? && !row['notes_json'].to_s.empty?
         }
       end.compact
     end

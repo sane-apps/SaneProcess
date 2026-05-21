@@ -15,7 +15,7 @@ LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 OUTPUT_DIR="${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}"
 DRY_RUN="${TRAINING_MODE_DRY_RUN:-false}"
 REOPEN_APPS="${TRAINING_MODE_REOPEN_APPS:-false}"
-TRAINING_MODE_AGENT_SUSPEND_LIST="${TRAINING_MODE_AGENT_SUSPEND_LIST-com.saneapps.always-awake,com.saneapps.codex-keepalive,com.saneapps.evening,com.saneapps.git-sync-safe,com.saneapps.mcp-watchdog,com.saneapps.memory-guard,com.saneapps.morning,com.saneapps.nightly,com.saneapps.nv-benchmark,com.saneapps.training-daily-check,com.google.GoogleUpdater.wake,com.google.keystone.agent,com.google.keystone.xpcservice,com.grammarly.ProjectLlama.Shepherd,com.grammarly.ProjectLlama.cleanup,com.logos.LogosIndexer,com.logos.desktop.logosindexer}"
+TRAINING_MODE_AGENT_SUSPEND_LIST="${TRAINING_MODE_AGENT_SUSPEND_LIST-com.saneapps.always-awake,com.saneapps.repo-reconcile,com.saneapps.mcp-watchdog,com.saneapps.memory-guard,com.saneapps.nightly,com.google.GoogleUpdater.wake,com.google.keystone.agent,com.google.keystone.xpcservice,com.grammarly.ProjectLlama.Shepherd,com.grammarly.ProjectLlama.cleanup,com.logos.LogosIndexer,com.logos.desktop.logosindexer}"
 TRAINING_MODE_APP_QUIT_LIST="${TRAINING_MODE_APP_QUIT_LIST-Codex,Xcode,SaneBar,SaneClip,SaneHosts,Shottr,MenuMeters,gfxCardStatus,Safari}"
 TRAINING_MODE_PROCESS_KILL_PATTERNS="${TRAINING_MODE_PROCESS_KILL_PATTERNS-xcodebuildmcp,validation_report.rb}"
 

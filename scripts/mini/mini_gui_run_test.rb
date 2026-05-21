@@ -69,6 +69,13 @@ exit(run_tests('Mini GUI Runner Tests') do
       true
     end
 
+    test('visual workspace guard time-bounds helper app quit attempts') do
+      assert_includes(visual_guard_source, 'run_with_timeout()')
+      assert_includes(visual_guard_source, 'run_with_timeout 3 /usr/bin/osascript -e "tell application \\"$1\\" to quit"')
+      assert_includes(visual_guard_source, '/usr/bin/pkill -x "$1"')
+      true
+    end
+
     test('visual workspace guard checks full-desktop macOS prompts before trusting app captures') do
       assert_includes(visual_guard_source, 'system_prompt_blockers()')
       assert_includes(visual_guard_source, 'SecurityAgent')

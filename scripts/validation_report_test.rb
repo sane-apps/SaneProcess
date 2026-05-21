@@ -884,6 +884,24 @@ exit(run_tests('Validation report tests') do
       assert_eq(quality[:clean_green_rate], 100.0)
       true
     end
+
+    test('classifies edited sessions without final verify as unverified, not failed') do
+      subject = ProcessMetricsValidationHarness.new(
+        [
+          { 'type' => 'session_end', 'success' => nil, 'sop_score' => 10, 'edits' => 2, 'verify_failures' => 0, 'final_verify_success' => nil, 'timestamp' => '2026-05-04T10:00:00Z' },
+          { 'type' => 'session_end', 'success' => nil, 'sop_score' => 9, 'edits' => 1, 'verify_failures' => 0, 'final_verify_success' => true, 'timestamp' => '2026-05-04T11:00:00Z' },
+          { 'type' => 'session_end', 'success' => nil, 'sop_score' => 6, 'edits' => 1, 'verify_failures' => 1, 'final_verify_success' => false, 'timestamp' => '2026-05-04T12:00:00Z' }
+        ]
+      )
+
+      quality = subject.send(:session_quality_metrics)
+
+      assert_eq(quality[:sample_size], 3)
+      assert_eq(quality[:clean_green], 1)
+      assert_eq(quality[:unverified_with_edits], 1)
+      assert_eq(quality[:unrecovered_failures], 1)
+      true
+    end
   end
 
   test_category('Finding classification') do
@@ -1065,6 +1083,109 @@ exit(run_tests('Validation report tests') do
       assert_eq(process_area, :system_health)
       assert_eq(release_area, :release_readiness)
       assert(action.include?('refresh_qa_snapshots'))
+      true
+    end
+
+    test('score integrity ignores legacy clean-session CSV rows when structured receipts exist') do
+      subject = ValidationReport.new
+      subject.instance_variable_set(:@data, {})
+      subject.instance_variable_set(:@warnings, [])
+      subject.instance_variable_set(:@issues, [])
+      subject.instance_variable_set(:@metrics, {})
+      subject.define_singleton_method(:trustworthy_session_score_events) { [] }
+      subject.define_singleton_method(:sop_jsonl_session_events) do
+        [
+          { 'timestamp' => '2026-05-20T10:00:00Z', 'session_id' => 'a', 'sop_score' => 7, 'verify_attempts' => 1 },
+          { 'timestamp' => '2026-05-20T11:00:00Z', 'session_id' => 'b', 'sop_score' => 8, 'verify_attempts' => 1 }
+        ]
+      end
+      subject.define_singleton_method(:sop_csv_score_rows) do
+        [
+          { score: 10.0, note: 'clean session', trusted: false },
+          { score: 10.0, note: 'clean session', trusted: false }
+        ]
+      end
+
+      subject.send(:q3_score_integrity)
+      metrics = subject.instance_variable_get(:@metrics)[:score_integrity]
+      warnings = subject.instance_variable_get(:@warnings)
+
+      assert_eq(metrics[:score_source], :sop_jsonl)
+      assert_eq(metrics[:average], 7.5)
+      assert_eq(metrics[:legacy_csv_rows_ignored], 2)
+      assert(warnings.any? { |item| item.include?('Ignored 2 legacy SOP score row') })
+      true
+    end
+
+    test('score integrity ignores SOP jsonl score rows without behavioral evidence') do
+      subject = ValidationReport.new
+      subject.instance_variable_set(:@data, {})
+      subject.instance_variable_set(:@warnings, [])
+      subject.instance_variable_set(:@issues, [])
+      subject.instance_variable_set(:@metrics, {})
+      subject.define_singleton_method(:trustworthy_session_score_events) { [] }
+      subject.define_singleton_method(:sop_jsonl_session_events) do
+        [
+          { 'timestamp' => '2026-05-20T10:00:00Z', 'session_id' => 'a', 'sop_score' => 10, 'verify_attempts' => 0, 'edits' => 0 },
+          { 'timestamp' => '2026-05-20T11:00:00Z', 'session_id' => 'b', 'sop_score' => 8, 'verify_attempts' => 1, 'edits' => 0 },
+          { 'timestamp' => '2026-05-20T12:00:00Z', 'session_id' => 'c', 'sop_score' => 6, 'verify_attempts' => 0, 'edits' => 2 }
+        ]
+      end
+      subject.define_singleton_method(:sop_csv_score_rows) { [] }
+
+      subject.send(:q3_score_integrity)
+      metrics = subject.instance_variable_get(:@metrics)[:score_integrity]
+
+      assert_eq(metrics[:score_source], :sop_jsonl)
+      assert_eq(metrics[:sample_size], 2)
+      assert_eq(metrics[:average], 7.0)
+      assert_eq(metrics[:sop_jsonl_rows_ignored], 1)
+      true
+    end
+
+    test('block accuracy uses hook-block telemetry when state counters are empty') do
+      subject = ValidationReport.new
+      subject.instance_variable_set(:@data, {})
+      subject.instance_variable_set(:@warnings, [])
+      subject.instance_variable_set(:@issues, [])
+      subject.instance_variable_set(:@metrics, {})
+      subject.define_singleton_method(:process_metric_events) do |type: nil|
+        next [] unless type.to_s == 'hook_block'
+
+        [
+          { 'timestamp' => '2026-05-20T10:00:00Z', 'type' => 'hook_block', 'rule' => 'session_docs' },
+          { 'timestamp' => '2026-05-20T10:10:00Z', 'type' => 'hook_block', 'rule' => 'visual_proof' }
+        ]
+      end
+      subject.define_singleton_method(:reset_audit_events) { [] }
+
+      subject.send(:q1_block_accuracy)
+      metrics = subject.instance_variable_get(:@metrics)[:block_accuracy]
+
+      assert_eq(metrics[:source], 'process_metrics_hook_block')
+      assert_eq(metrics[:total], 2)
+      assert_eq(metrics[:correct], 2)
+      assert_eq(metrics[:wrong], 0)
+      true
+    end
+
+    test('session quality can use structured SOP jsonl when process session receipts are absent') do
+      subject = ValidationReport.new
+      subject.define_singleton_method(:process_metric_events) { |type: nil| [] }
+      subject.define_singleton_method(:sop_jsonl_session_events) do
+        [
+          { 'timestamp' => '2026-05-20T10:00:00Z', 'success' => true, 'verify_failures' => 0, 'edits' => 2, 'sop_score' => 8 },
+          { 'timestamp' => '2026-05-20T11:00:00Z', 'success' => true, 'verify_failures' => 1, 'edits' => 3, 'sop_score' => 7 }
+        ]
+      end
+
+      metrics = subject.send(:session_quality_metrics)
+
+      assert_eq(metrics[:sample_size], 2)
+      assert_eq(metrics[:clean_green], 1)
+      assert_eq(metrics[:recovered_green], 1)
+      assert_eq(metrics[:unverified_with_edits], 0)
+      assert_eq(metrics[:average_sop_score], 7.5)
       true
     end
 

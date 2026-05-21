@@ -234,4 +234,12 @@ exit(run_tests('SaneMaster MCP Watchdog Tests') do
       true
     end
   end
+
+  test_category('LaunchAgent defaults') do
+    test('mcp watchdog install defaults to a five minute interval') do
+      source = File.read(File.expand_path('dependencies.rb', __dir__))
+      assert_includes(source, 'interval_seconds = 300')
+      true
+    end
+  end
 end)

@@ -230,6 +230,35 @@ exit(run_tests('SaneMaster Process Eval Tests') do
       true
     end
 
+    test('sop review ignores legacy clean-session CSV rows as score evidence') do
+      Dir.mktmpdir('sop-legacy-csv-') do |dir|
+        metrics_path = File.join(dir, 'metrics.jsonl')
+        File.write(metrics_path, '')
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, 'outputs', 'sop_ratings.csv'), [
+          'date,sop_score,notes',
+          '2026-05-14,10,clean session',
+          '2026-05-14,10,clean session'
+        ].join("\n") + "\n")
+
+        old_pwd = Dir.pwd
+        Dir.chdir(dir)
+        begin
+          subject = ProcessEvalHarness.new(metrics_path)
+          result = subject.build_sop_review(subject.send(:read_process_metric_events))
+
+          assert_eq(result.dig(:sop_csv, :rows), 2)
+          assert_eq(result.dig(:sop_csv, :trusted_rows), 0)
+          assert_eq(result.dig(:sop_csv, :legacy_rows_ignored), 2)
+          assert(result[:warnings].any? { |item| item.include?('ignored 2 legacy SOP CSV row') })
+          assert(result.dig(:sessions, :average_sop_score).nil?)
+        ensure
+          Dir.chdir(old_pwd)
+        end
+      end
+      true
+    end
+
     test('sop review blocks high-score thin session receipts') do
       Dir.mktmpdir('sop-thin-session-receipt-') do |dir|
         metrics_path = File.join(dir, 'metrics.jsonl')

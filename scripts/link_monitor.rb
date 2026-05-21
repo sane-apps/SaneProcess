@@ -20,6 +20,9 @@ SANEAPPS_ROOT = File.expand_path("../../..", __dir__)
 CONFIG_FILE = File.join(SANEAPPS_ROOT, "infra/SaneProcess/config/products.yml")
 LOG_FILE = File.join(SANEAPPS_ROOT, "infra/SaneProcess/outputs/link_monitor.log")
 STATE_FILE = File.join(SANEAPPS_ROOT, "infra/SaneProcess/outputs/link_monitor_state.json")
+LAUNCHD_STDOUT_LOG = File.join(SANEAPPS_ROOT, "infra/SaneProcess/outputs/link_monitor_stdout.log")
+LAUNCHD_STDERR_LOG = File.join(SANEAPPS_ROOT, "infra/SaneProcess/outputs/link_monitor_stderr.log")
+MAX_LAUNCHD_LOG_BYTES = 1_000_000
 ENV_CACHE_FILE = File.expand_path(ENV.fetch("SANE_ENV_CACHE_FILE", "~/.config/nv/env"))
 KEYCHAIN_FALLBACK_ENABLED = ENV.fetch("SANE_KEYCHAIN_FALLBACK", "1") == "1" && ENV["SANE_NO_KEYCHAIN"] != "1"
 
@@ -350,8 +353,19 @@ end
 def log(message)
   timestamp = Time.now.strftime("%Y-%m-%d %H:%M:%S")
   line = "[#{timestamp}] #{message}"
-  warn line
+  puts line
   File.open(LOG_FILE, "a") { |f| f.puts(line) }
+end
+
+def truncate_large_launchd_logs
+  [LAUNCHD_STDOUT_LOG, LAUNCHD_STDERR_LOG].each do |path|
+    next unless File.exist?(path)
+    next unless File.size(path) > MAX_LAUNCHD_LOG_BYTES
+
+    File.truncate(path, 0)
+  rescue StandardError
+    nil
+  end
 end
 
 def load_state
@@ -368,6 +382,7 @@ end
 # --- Main ---
 
 FileUtils.mkdir_p(File.dirname(LOG_FILE))
+truncate_large_launchd_logs
 
 failures = []
 successes = []
@@ -447,6 +462,7 @@ DOMAINS_TO_MONITOR.each do |domain|
       log "OK   Domain #{domain} managed via Cloudflare"
     end
   elsif result[:status] == :error
+    domain_warnings << { domain: domain, message: result[:message], severity: :unknown }
     log "WARN Could not check expiry for #{domain}: #{result[:message]}"
   end
 end
@@ -477,7 +493,11 @@ domain_warnings.select { |w| w[:severity] == :critical }.each do |w|
 end
 
 if failures.empty?
-  log "All #{successes.size} checks passed"
+  if domain_warnings.empty?
+    log "All #{successes.size} checks passed"
+  else
+    log "All #{successes.size} critical link checks passed; #{domain_warnings.size} domain expiry warning(s)"
+  end
   state["last_success"] = now
   state["consecutive_failures"] = 0
   state.delete("last_failure")
@@ -513,8 +533,9 @@ unless domain_warnings.empty?
   warn ""
   warn "DOMAIN EXPIRY STATUS:"
   domain_warnings.each do |w|
-    symbol = w[:severity] == :critical ? "🔴" : "⚠️ "
-    warn "  #{symbol} #{w[:domain]}: #{w[:days]} days until expiry"
+    symbol = w[:severity] == :critical ? "CRITICAL" : "WARN"
+    detail = w[:days] ? "#{w[:days]} days until expiry" : w[:message]
+    warn "  #{symbol} #{w[:domain]}: #{detail}"
   end
 end
 

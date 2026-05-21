@@ -1,5 +1,5 @@
 #!/bin/bash
-# install-training-daily-check-agent.sh - Install/update local training daily check LaunchAgent
+# install-training-daily-check-agent.sh - Install/update controller-side training daily check LaunchAgent
 # Usage:
 #   bash scripts/mini/install-training-daily-check-agent.sh
 
@@ -15,6 +15,12 @@ TRAIN_DAILY_CHECK_HOST="${TRAIN_DAILY_CHECK_HOST:-${MINI_HOST:-mini}}"
 TRAIN_DAILY_CHECK_SSH_OPTS="${TRAIN_DAILY_CHECK_SSH_OPTS:-${MINI_SSH_OPTS:-}}"
 TRAIN_DAILY_CHECK_HOUR="${TRAIN_DAILY_CHECK_HOUR:-9}"
 TRAIN_DAILY_CHECK_MINUTE="${TRAIN_DAILY_CHECK_MINUTE:-15}"
+TRAIN_DAILY_CHECK_ALLOW_MINI_INSTALL="${TRAIN_DAILY_CHECK_ALLOW_MINI_INSTALL:-false}"
+
+if [ "$TRAIN_DAILY_CHECK_ALLOW_MINI_INSTALL" != "true" ] && [ "$HOME" != "/Users/sj" ]; then
+  echo "ERROR: training daily check is controller-side by default; run from the controller or set TRAIN_DAILY_CHECK_ALLOW_MINI_INSTALL=true." >&2
+  exit 2
+fi
 
 mkdir -p "$HOME/Library/LaunchAgents" "$OUTPUT_DIR"
 

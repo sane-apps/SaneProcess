@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 from datetime import datetime, timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 MODULE_PATH = Path(__file__).with_name("training-daily-check.py")
@@ -92,8 +93,40 @@ def test_missing_readiness_report_is_not_current():
     assert "missing_target_production_baseline" not in message
 
 
+def test_active_alert_overrides_green_gate():
+    snapshot = snapshot_with_current_missing_baseline()
+    snapshot["latest_readiness"]["status"] = "ready"
+    snapshot["latest_saneai_report"]["workflow_gate"] = "PASS (mac_operator 8/10, 80%, threshold 50%)"
+    snapshot["latest_saneai_report"]["result"] = "PASS"
+    snapshot["current_alerts"] = [{"path": "/tmp/alert.md", "preview": "adapter regression"}]
+
+    title, message = training_daily_check.build_summary(snapshot)
+    action = training_daily_check.build_action(snapshot)
+
+    assert_equal(title, "SaneAI training alert", "active alert should win over green score")
+    assert "1 active alert" in message
+    assert "active training alerts first" in action
+
+
+def test_write_report_records_current_readiness_and_alerts():
+    snapshot = snapshot_with_current_missing_baseline()
+    snapshot["current_alerts"] = [{"path": "/tmp/alert.md", "preview": "adapter regression"}]
+
+    with TemporaryDirectory() as tmpdir:
+        report_path = Path(tmpdir) / "training_daily_check.md"
+        training_daily_check.write_report(report_path, snapshot, "summary text", "action text")
+        report = report_path.read_text(encoding="utf-8")
+
+    assert "summary text" in report
+    assert "action text" in report
+    assert "- Applies to latest SaneAI run: True" in report
+    assert "/tmp/alert.md: adapter regression" in report
+
+
 if __name__ == "__main__":
     test_stale_readiness_does_not_trigger_baseline_alert()
     test_current_readiness_can_trigger_baseline_alert()
     test_missing_readiness_report_is_not_current()
+    test_active_alert_overrides_green_gate()
+    test_write_report_records_current_readiness_and_alerts()
     print("training_daily_check_test.py: PASS")

@@ -62,8 +62,29 @@ json_escape() {
   printf '%s' "$1" | ruby -rjson -e 'print JSON.generate(STDIN.read)[1...-1]'
 }
 
+run_with_timeout() {
+  local seconds="$1"
+  shift
+  "$@" >/dev/null 2>&1 &
+  local pid=$!
+  local elapsed=0
+  while kill -0 "$pid" >/dev/null 2>&1; do
+    if [ "$elapsed" -ge "$seconds" ]; then
+      kill "$pid" >/dev/null 2>&1 || true
+      sleep 0.2
+      kill -9 "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
+      return 124
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  wait "$pid" >/dev/null 2>&1
+}
+
 quit_app() {
-  /usr/bin/osascript -e "tell application \"$1\" to quit" >/dev/null 2>&1 || true
+  run_with_timeout 3 /usr/bin/osascript -e "tell application \"$1\" to quit" || true
+  /usr/bin/pkill -x "$1" >/dev/null 2>&1 || true
 }
 
 hide_terminal() {

@@ -779,7 +779,7 @@ Automated daily business report covering revenue, downloads, traffic, GitHub, cu
 
 ### Mini Training Daily Check
 
-Mini training already emits per-run reports, history TSVs, and current alert files under `~/SaneApps/outputs`, but those artifacts were too easy to ignore after overnight runs. A separate local LaunchAgent now pulls that state every morning and turns it into a short local report plus a macOS notification.
+Mini training already emits per-run reports, history TSVs, and current alert files under `~/SaneApps/outputs`, but those artifacts were too easy to ignore after overnight runs. A separate controller-side LaunchAgent now pulls that state every morning and turns it into a short local report plus a macOS notification.
 
 **LaunchAgent:** `~/Library/LaunchAgents/com.saneapps.training-daily-check.plist`
 - Label: `com.saneapps.training-daily-check`
@@ -787,6 +787,7 @@ Mini training already emits per-run reports, history TSVs, and current alert fil
 - Script: `scripts/mini/training-daily-check.py`
 - Installer: `scripts/mini/install-training-daily-check-agent.sh`
 - Output: `outputs/training_daily_check.md`
+- Install location: controller machine by default. Do not install the duplicate check on the Mini; the Mini owns training, while the controller owns alerting/report review.
 
 **What it checks:**
 1. Latest `SaneAI` metrics row
@@ -798,6 +799,32 @@ Mini training already emits per-run reports, history TSVs, and current alert fil
 - The nightly training lane can fail or go stale without anyone reading the raw Mini reports.
 - The earlier failure mode was a silent dataset regression, not a hard crash.
 - Daily visibility matters more than raw automation volume; if nobody notices the report, the run was not useful.
+
+### Automation Consolidation Map
+
+Current background automation is intentionally split by responsibility:
+
+| Layer | Automation | Schedule | Owner | Purpose |
+|---|---|---:|---|---|
+| Mini LaunchAgent | `com.saneapps.training-challengers` | 1:00 AM daily except the weekly window | Mini | Run one rotated SaneAI challenger lane after refreshing the automation root. |
+| Mini LaunchAgent | `com.saneapps.training-weekly` | Sunday 1:00 AM | Mini | Run the longer weekly training lane. |
+| Mini LaunchAgent | `com.saneapps.memory-guard` | 5:40 AM daily | Mini | Clean safe Mini training/build/cache pressure before daytime work. |
+| Mini LaunchAgent | `com.saneapps.nightly` | 8:45 AM daily | Mini | Build/test/report all apps after training windows finish. |
+| Controller LaunchAgent | `com.saneapps.training-daily-check` | 9:15 AM daily | Air/controller | Read Mini training state and notify with the next action. |
+| Controller LaunchAgent | `com.saneapps.link-monitor` | every 30 min | Air/controller | Check live websites, downloads, appcasts, workers, and checkout redirects. |
+| Controller LaunchAgent | `com.saneapps.mcp-watchdog` | every 5 min | Air/controller | Trim stale/duplicate MCP sidecars without constant 15s churn. |
+| Controller LaunchAgent | `com.saneapps.repo-reconcile` | 5:55 AM, 9:55 PM | Air/controller | Sync control-plane files and report dirty/behind repo state. |
+| Codex automation | `saneapps-launch-ops` | 9:30 AM daily | Codex | Check launch calendars and run only gated launch actions. |
+| Codex automation | `setapp-status-monitor` | Mon/Wed/Fri 10:30 AM | Codex | Check Setapp review/listing status without upload/send actions. |
+| Codex automation | `sanescan-app-store-go-live-watch` | every 6 hours | Codex | Watch SaneScan App Store status and update website when live. |
+
+Disabled or paused consolidations:
+- Expired SaneSales one-shot launch automations are paused; `saneapps-launch-ops` owns future gated launch-calendar checks.
+- Duplicate Mini `com.saneapps.training-daily-check` is disabled; controller-side check owns notifications.
+- Legacy NVIDIA background jobs (`com.saneapps.nv-benchmark`, `com.saneapps.mcp-singleton.nvidia-build`) are disabled. NVIDIA remains exception-only and must be explicitly requested for a specific run.
+- Broken `com.saneapps.outreach-checker` is disabled because it pointed at a deleted Claude skill path. Launch/outreach checks now route through Codex skills and `saneapps-launch-ops`.
+- Dead Mini `com.saneapps.codex-keepalive` is disabled; there was no current proof that it kept anything alive, and normal Codex app/server state should not be resurrected by a blind background opener.
+- Standalone `com.saneapps.git-sync-safe` LaunchAgents are disabled on both machines. `git-sync-safe.sh` remains the manual/reconcile implementation, but scheduled sync now runs through controller-owned `repo-reconcile` so there is one nightly repo-state owner instead of three overlapping sync jobs.
 
 ---
 

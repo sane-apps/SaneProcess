@@ -220,6 +220,7 @@ exit(run_tests('Mini Train Process Tests') do
       assert_includes(train_source, 'enter_training_mode_if_needed()')
       assert_includes(train_source, 'exit_training_mode_if_needed')
       assert_includes(training_mode_source, 'TRAINING_MODE_AGENT_SUSPEND_LIST')
+      assert_includes(training_mode_source, 'com.saneapps.repo-reconcile')
       assert_includes(training_mode_source, 'TRAINING_MODE_APP_QUIT_LIST')
       assert_includes(training_mode_source, 'TRAINING_MODE_PROCESS_KILL_PATTERNS')
       assert_includes(training_mode_source, 'kill_matching_patterns()')
