@@ -867,6 +867,23 @@ exit(run_tests('Validation report tests') do
       assert_eq(quality[:average_sop_score], 8.0)
       true
     end
+
+    test('ignores legacy empty session_end placeholders') do
+      subject = ProcessMetricsValidationHarness.new(
+        [
+          { 'type' => 'session_end', 'success' => nil, 'edits' => 0, 'timestamp' => '2026-05-04T09:00:00Z' },
+          { 'type' => 'session_end', 'success' => nil, 'edits' => 0, 'timestamp' => '2026-05-04T09:00:01Z' },
+          { 'type' => 'session_end', 'success' => true, 'sop_score' => 9, 'edits' => 2, 'verify_failures' => 0, 'timestamp' => '2026-05-04T10:00:00Z' }
+        ]
+      )
+
+      quality = subject.send(:session_quality_metrics)
+
+      assert_eq(quality[:sample_size], 1)
+      assert_eq(quality[:clean_green], 1)
+      assert_eq(quality[:clean_green_rate], 100.0)
+      true
+    end
   end
 
   test_category('Finding classification') do

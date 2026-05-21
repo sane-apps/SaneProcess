@@ -83,10 +83,11 @@ module SaneMasterModules
     SANE_APP_NAME_REGEX = /\b(SaneBar|SaneClip|SaneClick|SaneHosts|SaneSales|SaneSync|SaneVideo|SaneScan|SaneAI)\b/
 
     def machine_cleanup(args)
+      original_args = args.dup
       options = parse_machine_cleanup_args(args)
 
       if options[:host] == 'mini' && !running_on_mini_host?
-        return run_machine_cleanup_on_mini(args)
+        return run_machine_cleanup_on_mini(original_args)
       end
 
       if options[:server] && options[:host] == 'local' && !running_on_mini_host?

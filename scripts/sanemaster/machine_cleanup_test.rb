@@ -10,7 +10,7 @@ require_relative 'machine_cleanup'
 class MachineCleanupHarness
   include SaneMasterModules::MachineCleanup
 
-  attr_reader :trashed, :emptied
+  attr_reader :trashed, :emptied, :routed_args
 
   def initialize(ps_rows: [], disk: {}, sizes: {})
     @ps_rows = ps_rows
@@ -43,6 +43,11 @@ class MachineCleanupHarness
 
   def empty_user_trash
     @emptied += 1
+    true
+  end
+
+  def run_machine_cleanup_on_mini(args)
+    @routed_args = args.dup
     true
   end
 end
@@ -125,6 +130,13 @@ exit(run_tests('SaneMaster Machine Cleanup Tests') do
       ])
 
       assert_eq(forwarded, ['--server', '--apply', '--preserve-apps', 'SaneBar,SaneClick'])
+    end
+
+    test('routes original cleanup args after parsing host mini') do
+      subject = MachineCleanupHarness.new
+
+      assert_eq(subject.machine_cleanup(['--host', 'mini', '--server', '--apply']), true)
+      assert_eq(subject.routed_args, ['--host', 'mini', '--server', '--apply'])
     end
 
     test('plans cache cleanup only through safe roots and empties trash on apply') do

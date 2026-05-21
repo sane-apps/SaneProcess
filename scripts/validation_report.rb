@@ -1023,7 +1023,12 @@ class ValidationReport
   end
 
   def session_quality_metrics
-    session_events = process_metric_events(type: 'session_end').sort_by { |event| event['timestamp'].to_s }
+    session_events = process_metric_events(type: 'session_end').select do |event|
+      # Legacy session_end rows were sometimes emitted as empty placeholders
+      # during hook probes. They contain no success value and no edits, so
+      # counting them as failed sessions makes clean-green rates meaningless.
+      !event['success'].nil? || event['edits'].to_i.positive?
+    end.sort_by { |event| event['timestamp'].to_s }
     total = session_events.length
     clean_green = session_events.count do |event|
       event['success'] == true && event['verify_failures'].to_i.zero?
