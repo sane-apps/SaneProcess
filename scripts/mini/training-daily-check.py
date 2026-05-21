@@ -148,7 +148,7 @@ def readiness_matches_latest_run(latest_ai: dict, latest_readiness: dict) -> boo
     return ai_report == readiness_report
 
 
-def write_report(report_path: Path, snapshot: dict, summary: str) -> None:
+def write_report(report_path: Path, snapshot: dict, summary: str, action: str) -> None:
     latest_ai = snapshot.get("latest_saneai") or {}
     latest_sync = snapshot.get("latest_sanesync") or {}
     latest_readiness = snapshot.get("latest_readiness") or {}
@@ -164,6 +164,10 @@ def write_report(report_path: Path, snapshot: dict, summary: str) -> None:
         "## Summary",
         "",
         summary,
+        "",
+        "## Action",
+        "",
+        action,
         "",
         "## SaneAI",
         "",
@@ -241,6 +245,31 @@ def build_summary(snapshot: dict) -> tuple[str, str]:
     return title, message
 
 
+def build_action(snapshot: dict) -> str:
+    latest_ai = snapshot.get("latest_saneai") or {}
+    latest_readiness = snapshot.get("latest_readiness") or {}
+    ai_report = snapshot.get("latest_saneai_report") or {}
+    alerts = snapshot.get("current_alerts") or []
+
+    ai_timestamp = latest_ai.get("timestamp")
+    ai_age = age_hours(ai_timestamp)
+    readiness_status = latest_readiness.get("status", "missing")
+    readiness_current = readiness_matches_latest_run(latest_ai, latest_readiness)
+    workflow_gate = ai_report.get("workflow_gate", "missing")
+
+    if alerts:
+        return "Inspect the active training alerts first; they are blocking the daily training state."
+    if not latest_ai:
+        return "Run the SaneAI training lane on the Mini; no metrics exist to evaluate."
+    if ai_age is not None and ai_age > 36:
+        return "Run the Mini training lane or inspect why launchd did not produce a fresh metric."
+    if readiness_current and readiness_status in {"missing_target_baseline", "missing_target_production_baseline"}:
+        return "Record the missing target baseline before treating SaneAI as replacement-ready."
+    if "FAIL" in workflow_gate or ai_report.get("result") == "NEEDS WORK":
+        return "Do not promote this adapter. Treat the run as signal, then improve data/model config and rerun the challenger lane."
+    return "No intervention required unless the score regresses or readiness becomes stale."
+
+
 def notify(title: str, message: str) -> None:
     safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
     safe_message = message.replace("\\", "\\\\").replace('"', '\\"')
@@ -279,7 +308,8 @@ def main() -> int:
         return 1
 
     title, message = build_summary(snapshot)
-    write_report(report_path, snapshot, message)
+    action = build_action(snapshot)
+    write_report(report_path, snapshot, message, action)
 
     if not args.no_notify:
         notify(title, message)

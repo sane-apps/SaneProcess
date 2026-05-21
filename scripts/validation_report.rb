@@ -2241,13 +2241,13 @@ class ValidationReport
   def lemonsqueezy_stale_published_filenames(hosted_file, expected_version)
     return [] unless hosted_file.is_a?(Hash)
 
-    Array(hosted_file['published_filenames']).filter_map do |filename|
+    Array(hosted_file['published_filenames']).map do |filename|
       name = filename.to_s.strip
       next if name.empty?
 
       version = extract_release_version_from_filename(name)
       name if version != expected_version
-    end
+    end.compact
   end
 
   def fetch_lemonsqueezy_collection(path, api_key)

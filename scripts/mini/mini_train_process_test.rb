@@ -31,6 +31,15 @@ exit(run_tests('Mini Train Process Tests') do
       true
     end
 
+    test('same-day skipped sweeps do not overwrite latest completed training metrics') do
+      assert_includes(train_source, 'NO_NEW_SWEEPS=true')
+      assert_includes(train_source, 'RUN_STATUS="skipped_existing"')
+      assert_includes(train_source, 'if [ "$NO_NEW_SWEEPS" != true ]; then')
+      assert_includes(train_source, 'Metrics row: skipped because no new sweep ran')
+      assert_includes(train_source, 'already trained today; reused previous completed adapter')
+      true
+    end
+
     test('challenger sweep dirs include config fingerprint') do
       assert_includes(train_source, 'config_fingerprint()')
       assert_includes(train_source, 'shasum -a 256')
@@ -49,6 +58,18 @@ exit(run_tests('Mini Train Process Tests') do
       assert_includes(train_source, 'TRAIN_DISABLE_INLINE_VALIDATION="${TRAIN_DISABLE_INLINE_VALIDATION:-true}"')
       assert_includes(train_source, 'prepare_training_data_dir()')
       assert_includes(train_source, 'Inline validation: disabled on Mini training run')
+      true
+    end
+
+    test('dataset guard accepts an intentional dataset policy reset after the old baseline') do
+      assert_includes(train_source, 'dataset_policy_changed_after_baseline()')
+      assert_includes(train_source, 'latest_dataset_policy_epoch()')
+      assert_includes(train_source, 'training_data/merge_training_data.py')
+      assert_includes(train_source, 'dataset_policy_reset_sources_present()')
+      assert_includes(train_source, 'dataset_policy_reset_floor_allows()')
+      assert_includes(train_source, 'Dataset policy reset refused: missing source data')
+      assert_includes(train_source, 'Dataset policy reset refused: current train/valid')
+      assert_includes(train_source, 'source data and reset floor passed')
       true
     end
 
@@ -95,6 +116,22 @@ exit(run_tests('Mini Train Process Tests') do
       apps_index = prepare_source.index('"$SOURCE_ROOT/apps/$app_name/training_data"')
       top_level_index = prepare_source.index('"$SOURCE_ROOT/$app_name/training_data"')
       assert(apps_index < top_level_index, 'Expected apps/ training data to be preferred over top-level fallback')
+      true
+    end
+
+    test('SaneAI supplemental jsonl shards are managed overlays, not dirty checkout blockers') do
+      prepare_source = File.read(File.expand_path('mini-prepare-automation-root.sh', __dir__))
+      assert_includes(prepare_source, 'apps/SaneAI:training_data/supplemental_*.jsonl')
+      assert_includes(prepare_source, 'hydrate_training_support_files "SaneAI" supplemental_*.jsonl')
+      true
+    end
+
+    test('training support hydration stops at the preferred source root per pattern') do
+      prepare_source = File.read(File.expand_path('mini-prepare-automation-root.sh', __dir__))
+      assert_includes(prepare_source, 'root_matched=0')
+      assert_includes(prepare_source, 'root_matched=1')
+      assert_includes(prepare_source, 'if [ "$root_matched" -eq 1 ]; then')
+      assert_includes(prepare_source, 'break')
       true
     end
 

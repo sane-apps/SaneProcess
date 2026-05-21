@@ -108,6 +108,7 @@ managed_overlay_path_allowed() {
     apps/SaneAI:training_data/system_prompt.txt|\
     apps/SaneAI:training_data/lora_config_mini.yaml|\
     apps/SaneAI:training_data/eval_*.jsonl|\
+    apps/SaneAI:training_data/supplemental_*.jsonl|\
     apps/SaneAI:training_data/*.yaml|\
     apps/SaneAI:training_data/*.yml|\
     apps/SaneAI:training_data/challenger_configs/*|\
@@ -452,7 +453,7 @@ hydrate_training_support_files() {
   local copied=0
   local unchanged=0
   local missing=0
-  local pattern source_file rel_file target_file matched
+  local pattern source_file rel_file target_file matched root_matched
 
   [ -d "$AUTOMATION_ROOT/apps/$app_name" ] || return 0
   source_dir=$(source_training_dir_for_app "$app_name")
@@ -462,11 +463,13 @@ hydrate_training_support_files() {
     matched=0
     while IFS= read -r source_dir; do
       [ -d "$source_dir" ] || continue
+      root_matched=0
       for source_file in "$source_dir"/$pattern; do
         if [ ! -f "$source_file" ]; then
           continue
         fi
         matched=1
+        root_matched=1
         rel_file="${source_file#$source_dir/}"
         target_file="$target_dir/$rel_file"
 
@@ -483,6 +486,9 @@ hydrate_training_support_files() {
           unchanged=$((unchanged + 1))
         fi
       done
+      if [ "$root_matched" -eq 1 ]; then
+        break
+      fi
     done < <(source_training_root_candidates "$app_name")
 
     if [ "$matched" -eq 0 ]; then
@@ -581,6 +587,7 @@ hydrate_training_dataset "SaneClip" train.jsonl valid.jsonl test.jsonl
 hydrate_training_dataset "SaneAI" train.jsonl valid.jsonl
 hydrate_training_dataset "SaneVideo" train.jsonl valid.jsonl
 hydrate_training_support_files "SaneAI" merge_training_data.py system_prompt.txt lora_config_mini.yaml eval_*.jsonl
+hydrate_training_support_files "SaneAI" supplemental_*.jsonl
 hydrate_training_support_files "SaneVideo" system_prompt.txt lora_config_mini.yaml eval_*.jsonl
 hydrate_training_subdir "SaneAI" challenger_configs
 hydrate_training_subdir "SaneSync" challenger_configs

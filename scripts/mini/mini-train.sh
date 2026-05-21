@@ -1179,6 +1179,97 @@ dataset_guard_failed() {
   exit 1
 }
 
+timestamp_to_epoch() {
+  local value="$1"
+
+  date -j -f "%Y-%m-%d %H:%M:%S" "$value" "+%s" 2>/dev/null || printf '0'
+}
+
+latest_dataset_policy_epoch() {
+  local epoch
+
+  [ -d "$APP_DIR/.git" ] || {
+    printf '0'
+    return
+  }
+
+  epoch=$(
+    git -C "$APP_DIR" log -1 --format=%ct -- \
+      training_data/merge_training_data.py \
+      training_data/supplemental_*.jsonl 2>/dev/null || true
+  )
+  case "$epoch" in
+    ''|*[!0-9]*)
+      printf '0'
+      ;;
+    *)
+      printf '%s' "$epoch"
+      ;;
+  esac
+}
+
+dataset_policy_changed_after_baseline() {
+  local baseline_timestamp="$1"
+  local baseline_epoch policy_epoch
+
+  baseline_epoch=$(timestamp_to_epoch "$baseline_timestamp")
+  policy_epoch=$(latest_dataset_policy_epoch)
+
+  [ "$baseline_epoch" -gt 0 ] || return 1
+  [ "$policy_epoch" -gt 0 ] || return 1
+  [ "$policy_epoch" -gt "$baseline_epoch" ]
+}
+
+dataset_policy_reset_sources_present() {
+  local product source_dir
+
+  if [ "$APP_NAME" != "SaneAI" ]; then
+    return 0
+  fi
+
+  for product in SaneClip SaneSync SaneVideo; do
+    source_dir="$SANE_ROOT/apps/$product/training_data"
+    if [ ! -s "$source_dir/train.jsonl" ] || [ ! -s "$source_dir/valid.jsonl" ]; then
+      DATASET_POLICY_RESET_REASON="Dataset policy reset refused: missing source data for $product under $source_dir."
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+dataset_policy_reset_floor_allows() {
+  local min_train min_valid
+
+  min_train="${DATASET_POLICY_RESET_MIN_TRAIN:-}"
+  min_valid="${DATASET_POLICY_RESET_MIN_VALID:-}"
+
+  if [ "$APP_NAME" = "SaneAI" ]; then
+    min_train="${min_train:-1200}"
+    min_valid="${min_valid:-150}"
+  fi
+
+  if [ -z "$min_train" ] || [ -z "$min_valid" ]; then
+    DATASET_POLICY_RESET_REASON="Dataset policy reset refused: no explicit reset floor configured for $APP_NAME."
+    return 1
+  fi
+
+  case "$min_train:$min_valid" in
+    *[!0-9:]*|:*|*:)
+      DATASET_POLICY_RESET_REASON="Dataset policy reset refused: invalid reset floor train=$min_train valid=$min_valid."
+      return 1
+      ;;
+  esac
+
+  if [ "$TRAIN_EXAMPLES" -lt "$min_train" ] || [ "$VALID_EXAMPLES" -lt "$min_valid" ]; then
+    DATASET_POLICY_RESET_REASON="Dataset policy reset refused: current train/valid ${TRAIN_EXAMPLES}/${VALID_EXAMPLES} is below reset floor ${min_train}/${min_valid}."
+    return 1
+  fi
+
+  echo "- Dataset reset floor train/valid: ${min_train} / ${min_valid}" >> "$REPORT"
+  return 0
+}
+
 build_eval_command() {
   local model_name="$1"
   local adapter_path="${2:-}"
@@ -1555,12 +1646,22 @@ if [ -n "$DATASET_BASELINE_LINE" ]; then
   echo "- Baseline train/valid: ${BASELINE_TRAIN_EXAMPLES} / ${BASELINE_VALID_EXAMPLES}" >> "$REPORT"
   echo "- Minimum allowed train/valid: ${MIN_ALLOWED_TRAIN} / ${MIN_ALLOWED_VALID}" >> "$REPORT"
 
-  if [ "$TRAIN_EXAMPLES" -lt "$MIN_ALLOWED_TRAIN" ]; then
-    dataset_guard_failed "Dataset guard failed: train examples dropped to ${TRAIN_EXAMPLES} from ${BASELINE_TRAIN_EXAMPLES} (allowed minimum ${MIN_ALLOWED_TRAIN})."
-  fi
+  if dataset_policy_changed_after_baseline "$BASELINE_TIMESTAMP"; then
+    if ! dataset_policy_reset_sources_present; then
+      dataset_guard_failed "$DATASET_POLICY_RESET_REASON"
+    fi
+    if ! dataset_policy_reset_floor_allows; then
+      dataset_guard_failed "$DATASET_POLICY_RESET_REASON"
+    fi
+    echo "- Dataset policy changed after the baseline; source data and reset floor passed, so this run can become the new comparison baseline if it completes." >> "$REPORT"
+  else
+    if [ "$TRAIN_EXAMPLES" -lt "$MIN_ALLOWED_TRAIN" ]; then
+      dataset_guard_failed "Dataset guard failed: train examples dropped to ${TRAIN_EXAMPLES} from ${BASELINE_TRAIN_EXAMPLES} (allowed minimum ${MIN_ALLOWED_TRAIN})."
+    fi
 
-  if [ "$VALID_EXAMPLES" -lt "$MIN_ALLOWED_VALID" ]; then
-    dataset_guard_failed "Dataset guard failed: validation examples dropped to ${VALID_EXAMPLES} from ${BASELINE_VALID_EXAMPLES} (allowed minimum ${MIN_ALLOWED_VALID})."
+    if [ "$VALID_EXAMPLES" -lt "$MIN_ALLOWED_VALID" ]; then
+      dataset_guard_failed "Dataset guard failed: validation examples dropped to ${VALID_EXAMPLES} from ${BASELINE_VALID_EXAMPLES} (allowed minimum ${MIN_ALLOWED_VALID})."
+    fi
   fi
 else
   echo "- No prior successful $MODE_LABEL metrics found. Skipping drop guard." >> "$REPORT"
@@ -1600,6 +1701,7 @@ LAST_SWEEP_LOG=""
 LAST_FAILURE_SUMMARY=""
 SKIPPED_EXISTING_SWEEPS=0
 REQUESTED_SWEEPS=0
+NO_NEW_SWEEPS=false
 
 if [ ! -f "$BASE_CONFIG" ]; then
   echo "**FAILED** — config not found: $BASE_CONFIG" >> "$REPORT"
@@ -2060,6 +2162,18 @@ if [ -n "$BEST_ITERS" ]; then
 else
   if [ "$REQUESTED_SWEEPS" -gt 0 ] && [ "$SKIPPED_EXISTING_SWEEPS" -eq "$REQUESTED_SWEEPS" ]; then
     echo "**No new sweeps ran.** All requested adapters already existed for today." >> "$REPORT"
+    REUSED_SUCCESS_LINE=$(find_previous_successful_metric 2>/dev/null || true)
+    if [ -n "$REUSED_SUCCESS_LINE" ]; then
+      REUSED_ACCURACY=$(printf '%s\n' "$REUSED_SUCCESS_LINE" | awk -F '\t' '{print $8}')
+      REUSED_REPORT=$(printf '%s\n' "$REUSED_SUCCESS_LINE" | awk -F '\t' '{print $13}')
+      echo "Reused previous completed result: ${REUSED_ACCURACY}%." >> "$REPORT"
+      echo "Previous report: $REUSED_REPORT" >> "$REPORT"
+      if [ "$CHALLENGER_MODE" = true ]; then
+        echo "" >> "$REPORT"
+        echo "**CHALLENGER RESULT: ${REUSED_ACCURACY}% — already trained today; reused previous completed adapter.**" >> "$REPORT"
+      fi
+    fi
+    NO_NEW_SWEEPS=true
     SCRIPT_EXIT=0
   else
     echo "**No successful training runs.**" >> "$REPORT"
@@ -2071,6 +2185,8 @@ echo "" >> "$REPORT"
 
 PREVIOUS_SUCCESS_LINE=""
 if [ -n "$BEST_ITERS" ]; then
+  PREVIOUS_SUCCESS_LINE=$(find_previous_successful_metric 2>/dev/null || true)
+elif [ "$NO_NEW_SWEEPS" = true ]; then
   PREVIOUS_SUCCESS_LINE=$(find_previous_successful_metric 2>/dev/null || true)
 fi
 READINESS_STATUS=""
@@ -2092,14 +2208,23 @@ if [ -n "$PREVIOUS_SUCCESS_LINE" ]; then
   PREV_BEST_ACCURACY=$(printf '%s\n' "$PREVIOUS_SUCCESS_LINE" | awk -F '\t' '{print $8}')
   PREV_BEST_TIME_MIN=$(printf '%s\n' "$PREVIOUS_SUCCESS_LINE" | awk -F '\t' '{print $9}')
   PREV_SUCCESSFUL_SWEEPS=$(printf '%s\n' "$PREVIOUS_SUCCESS_LINE" | awk -F '\t' '{print $10}')
-  ACC_DELTA=$((BEST_ACCURACY - PREV_BEST_ACCURACY))
+  if [ -n "$BEST_ITERS" ]; then
+    ACC_DELTA=$((BEST_ACCURACY - PREV_BEST_ACCURACY))
+  else
+    ACC_DELTA=0
+  fi
 
   echo "## Progress vs Previous Successful Run" >> "$REPORT"
   echo "" >> "$REPORT"
   echo "- Previous success: $PREV_TIMESTAMP" >> "$REPORT"
   echo "- Previous workflow-first best: ${PREV_BEST_ACCURACY}% at ${PREV_BEST_ITERS} iterations (${PREV_BEST_TIME_MIN} min)" >> "$REPORT"
-  echo "- Workflow-first delta: ${ACC_DELTA}% points" >> "$REPORT"
-  echo "- Successful sweeps delta: $((SUCCESSFUL_SWEEPS - PREV_SUCCESSFUL_SWEEPS))" >> "$REPORT"
+  if [ -n "$BEST_ITERS" ]; then
+    echo "- Workflow-first delta: ${ACC_DELTA}% points" >> "$REPORT"
+    echo "- Successful sweeps delta: $((SUCCESSFUL_SWEEPS - PREV_SUCCESSFUL_SWEEPS))" >> "$REPORT"
+  else
+    echo "- Workflow-first delta: not applicable; no new sweep ran" >> "$REPORT"
+    echo "- Successful sweeps delta: not applicable; reused existing adapter" >> "$REPORT"
+  fi
   echo "" >> "$REPORT"
 else
   echo "## Progress vs Previous Successful Run" >> "$REPORT"
@@ -2183,24 +2308,30 @@ EOF
 cp "$REPORT" "$REPORT_ARCHIVE"
 
 RUN_STATUS="failure"
-if [ "$SCRIPT_EXIT" -eq 0 ]; then
+if [ "$NO_NEW_SWEEPS" = true ]; then
+  RUN_STATUS="skipped_existing"
+elif [ "$SCRIPT_EXIT" -eq 0 ]; then
   RUN_STATUS="success"
 fi
 
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-  "$APP_NAME" \
-  "$MODE_LABEL" \
-  "$BASE_MODEL" \
-  "$TIMESTAMP" \
-  "$TRAIN_EXAMPLES" \
-  "$VALID_EXAMPLES" \
-  "${BEST_ITERS:-}" \
-  "${BEST_ACCURACY:-0}" \
-  "${BEST_TIME_MIN:-}" \
-  "$SUCCESSFUL_SWEEPS" \
-  "$SCRIPT_EXIT" \
-  "$RUN_STATUS" \
-  "$REPORT_ARCHIVE" >> "$METRICS_FILE"
+if [ "$NO_NEW_SWEEPS" != true ]; then
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$APP_NAME" \
+    "$MODE_LABEL" \
+    "$BASE_MODEL" \
+    "$TIMESTAMP" \
+    "$TRAIN_EXAMPLES" \
+    "$VALID_EXAMPLES" \
+    "${BEST_ITERS:-}" \
+    "${BEST_ACCURACY:-0}" \
+    "${BEST_TIME_MIN:-}" \
+    "$SUCCESSFUL_SWEEPS" \
+    "$SCRIPT_EXIT" \
+    "$RUN_STATUS" \
+    "$REPORT_ARCHIVE" >> "$METRICS_FILE"
+else
+  echo "- Metrics row: skipped because no new sweep ran; latest completed metric remains the source of truth." >> "$REPORT"
+fi
 
 if [ -n "$READINESS_TARGET_APP" ]; then
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -2217,7 +2348,9 @@ if [ -n "$READINESS_TARGET_APP" ]; then
     "$READINESS_TARGET_REPORT" >> "$READINESS_FILE"
 fi
 
-if [ "$SCRIPT_EXIT" -eq 0 ]; then
+if [ "$NO_NEW_SWEEPS" = true ]; then
+  :
+elif [ "$SCRIPT_EXIT" -eq 0 ]; then
   if [ -n "$BEST_ITERS" ]; then
     emit_training_recovery_alert "best adapter sweep_${BEST_ITERS}_${DATE} reached ${BEST_ACCURACY}% workflow-first"
   else
