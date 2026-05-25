@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require 'open3'
+require 'tmpdir'
 require_relative '../hooks/test/test_framework'
 
 include TestFramework
@@ -176,7 +177,7 @@ exit(run_tests('Mini Train Process Tests') do
 
     test('training agents preserve Codex live presence on the Mini') do
       installer_source = File.read(TRAIN_INSTALLER_PATH)
-      assert_includes(installer_source, 'TRAINING_MODE_APP_QUIT_LIST="${TRAINING_MODE_APP_QUIT_LIST:-Xcode,SaneBar,SaneClip,SaneHosts,Shottr,MenuMeters,gfxCardStatus,Safari}"')
+      assert_includes(installer_source, 'TRAINING_MODE_APP_QUIT_LIST="${TRAINING_MODE_APP_QUIT_LIST:-Xcode,SaneBar,SaneClick,SaneClip,SaneHosts,SaneSales,SaneSync,SaneVideo,Shottr,MenuMeters,gfxCardStatus,Safari}"')
       assert(!installer_source.include?('TRAINING_MODE_APP_QUIT_LIST="${TRAINING_MODE_APP_QUIT_LIST:-Codex,'), 'Codex should not be in the default training app quit list')
       true
     end
@@ -236,9 +237,39 @@ exit(run_tests('Mini Train Process Tests') do
       assert_includes(training_mode_source, 'TRAINING_MODE_AGENT_SUSPEND_LIST')
       assert_includes(training_mode_source, 'com.saneapps.repo-reconcile')
       assert_includes(training_mode_source, 'TRAINING_MODE_APP_QUIT_LIST')
+      assert_includes(training_mode_source, 'SANE_TRAINING_APP_QUIT_LIST="SaneBar,SaneClick,SaneClip,SaneHosts,SaneSales,SaneSync,SaneVideo"')
       assert_includes(training_mode_source, 'TRAINING_MODE_PROCESS_KILL_PATTERNS')
+      assert_includes(training_mode_source, 'TRAINING_MODE_BLOCKER_PATTERNS')
+      assert_includes(training_mode_source, 'xcodebuild')
+      assert_includes(training_mode_source, 'training blockers still active after isolation')
       assert_includes(training_mode_source, 'kill_matching_patterns()')
       assert_includes(training_mode_source, 'launchctl bootout')
+      true
+    end
+
+    test('reboot-stranded MLX locks self-heal before the next training run') do
+      assert_includes(train_source, 'other_training_processes_active()')
+      assert_includes(train_source, 'Removing stale training lock: no active MLX training/eval process found.')
+      assert_includes(train_source, 'remove_training_lock_dir "$LOCKFILE"')
+      assert_includes(train_source, 'sysctl -n kern.boottime')
+      true
+    end
+
+    test('training mode fail-closed blocker detection is executable, not only documented') do
+      Dir.mktmpdir do |state_root|
+        stdout, _stderr, status = Open3.capture3(
+          {
+            'TRAINING_MODE_DRY_RUN' => 'true',
+            'TRAINING_MODE_STATE_ROOT' => state_root,
+            'TRAINING_MODE_BLOCKER_PATTERNS' => 'ruby.*mini_train_process_test'
+          },
+          'bash',
+          File.expand_path('mini-training-mode.sh', __dir__),
+          'enter'
+        )
+        assert_eq(status.exitstatus, 1)
+        assert_includes(stdout, 'training blockers still active after isolation')
+      end
       true
     end
 

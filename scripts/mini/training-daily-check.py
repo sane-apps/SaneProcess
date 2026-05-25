@@ -19,6 +19,7 @@ REMOTE_SNAPSHOT_SCRIPT = r"""
 import csv
 import json
 import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -86,6 +87,64 @@ def read_current_alerts():
     return alerts
 
 
+def training_process_active():
+    result = subprocess.run(
+        ["ps", "-axo", "command="],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+    patterns = ("mlx_lm lora", "evaluate_model.py", "mini-train.sh")
+    return any(pattern in line for line in result.stdout.splitlines() for pattern in patterns)
+
+
+def read_training_lock_state():
+    lock_path = BASE / ".training_mlx.lock"
+    if not lock_path.exists():
+        return {"exists": False, "path": str(lock_path), "stale": False}
+    active = training_process_active()
+    return {
+        "exists": True,
+        "path": str(lock_path),
+        "stale": not active,
+        "mtime": datetime.fromtimestamp(lock_path.stat().st_mtime).isoformat(timespec="seconds"),
+        "active_training_process": active,
+    }
+
+
+def read_recent_system_reset():
+    contents_panic = Path("/Library/Logs/DiagnosticReports/.contents.panic")
+    reset_files = sorted(Path("/Library/Logs/DiagnosticReports").glob("ResetCounter-*.diag"), key=lambda p: p.stat().st_mtime, reverse=True)
+    latest_reset = reset_files[0] if reset_files else None
+
+    result = {
+        "panic_contents_path": str(contents_panic) if contents_panic.exists() else "",
+        "latest_reset_path": str(latest_reset) if latest_reset else "",
+        "watchdog_reset": False,
+        "panic_string": "",
+    }
+
+    if contents_panic.exists():
+        try:
+            payload = json.loads(contents_panic.read_text(encoding="utf-8", errors="ignore"))
+            panic_string = payload.get("panic_string", "")
+            result["panic_string"] = panic_string.splitlines()[0] if panic_string else ""
+            result["watchdog_reset"] = "watchdog" in panic_string.lower()
+            result["panic_log_path"] = payload.get("log_path", "")
+        except Exception:
+            text = contents_panic.read_text(encoding="utf-8", errors="ignore")
+            result["panic_string"] = text.splitlines()[0] if text else ""
+            result["watchdog_reset"] = "watchdog" in text.lower()
+
+    if latest_reset:
+        text = latest_reset.read_text(encoding="utf-8", errors="ignore")
+        result["watchdog_reset"] = result["watchdog_reset"] or "wdog" in text.lower() or "watchdog" in text.lower()
+
+    return result
+
+
 latest_ai = read_last_metrics("SaneAI")
 latest_sync = read_last_metrics("SaneSync")
 latest_readiness = read_last_tsv(BASE / "history" / "SaneAI" / "readiness_vs_SaneSync_workflow_v1.tsv")
@@ -98,6 +157,8 @@ payload = {
     "latest_saneai_report": parse_report(latest_ai.get("report_archive") if latest_ai else ""),
     "latest_sanesync_report": parse_report(latest_sync.get("report_archive") if latest_sync else ""),
     "current_alerts": read_current_alerts(),
+    "training_lock": read_training_lock_state(),
+    "recent_system_reset": read_recent_system_reset(),
 }
 
 print(json.dumps(payload))
@@ -155,6 +216,8 @@ def write_report(report_path: Path, snapshot: dict, summary: str, action: str) -
     ai_report = snapshot.get("latest_saneai_report") or {}
     sync_report = snapshot.get("latest_sanesync_report") or {}
     alerts = snapshot.get("current_alerts") or []
+    training_lock = snapshot.get("training_lock") or {}
+    recent_reset = snapshot.get("recent_system_reset") or {}
 
     lines = [
         "# Training Daily Check",
@@ -196,6 +259,17 @@ def write_report(report_path: Path, snapshot: dict, summary: str, action: str) -
         f"- Source report: {latest_readiness.get('source_report', 'missing')}",
         f"- Target report: {latest_readiness.get('target_report', 'missing') or 'missing'}",
         "",
+        "## Mini System",
+        "",
+        f"- Training lock: {training_lock.get('path', 'missing')}",
+        f"- Training lock exists: {training_lock.get('exists', False)}",
+        f"- Training lock stale: {training_lock.get('stale', False)}",
+        f"- Active training process: {training_lock.get('active_training_process', False)}",
+        f"- Watchdog reset detected: {recent_reset.get('watchdog_reset', False)}",
+        f"- Panic: {recent_reset.get('panic_string', 'missing') or 'missing'}",
+        f"- Panic log: {recent_reset.get('panic_log_path', 'missing') or 'missing'}",
+        f"- Reset log: {recent_reset.get('latest_reset_path', 'missing') or 'missing'}",
+        "",
         "## Active Alerts",
         "",
     ]
@@ -214,6 +288,8 @@ def build_summary(snapshot: dict) -> tuple[str, str]:
     latest_readiness = snapshot.get("latest_readiness") or {}
     ai_report = snapshot.get("latest_saneai_report") or {}
     alerts = snapshot.get("current_alerts") or []
+    training_lock = snapshot.get("training_lock") or {}
+    recent_reset = snapshot.get("recent_system_reset") or {}
 
     ai_score = latest_ai.get("best_accuracy", "?")
     ai_timestamp = latest_ai.get("timestamp")
@@ -223,7 +299,15 @@ def build_summary(snapshot: dict) -> tuple[str, str]:
     displayed_readiness_status = readiness_status if readiness_current else "not_assessed_for_latest_run"
     workflow_gate = ai_report.get("workflow_gate", "missing")
 
-    if alerts:
+    if training_lock.get("stale") or recent_reset.get("watchdog_reset"):
+        title = "SaneAI training interrupted"
+        if training_lock.get("stale") and recent_reset.get("watchdog_reset"):
+            message = "Mini watchdog reset interrupted training and left a stale MLX lock."
+        elif training_lock.get("stale"):
+            message = "Mini training lock is stale and no MLX training process is active."
+        else:
+            message = "Mini watchdog reset occurred during the training window."
+    elif alerts:
         title = "SaneAI training alert"
         message = f"{len(alerts)} active alert(s). Latest SaneAI score {ai_score}%."
     elif not latest_ai:
@@ -250,6 +334,8 @@ def build_action(snapshot: dict) -> str:
     latest_readiness = snapshot.get("latest_readiness") or {}
     ai_report = snapshot.get("latest_saneai_report") or {}
     alerts = snapshot.get("current_alerts") or []
+    training_lock = snapshot.get("training_lock") or {}
+    recent_reset = snapshot.get("recent_system_reset") or {}
 
     ai_timestamp = latest_ai.get("timestamp")
     ai_age = age_hours(ai_timestamp)
@@ -257,6 +343,8 @@ def build_action(snapshot: dict) -> str:
     readiness_current = readiness_matches_latest_run(latest_ai, latest_readiness)
     workflow_gate = ai_report.get("workflow_gate", "missing")
 
+    if training_lock.get("stale") or recent_reset.get("watchdog_reset"):
+        return "Clear stale training state, verify the Mini is isolated, and rerun a lower-pressure staged SaneAI lane before any 3B long run."
     if alerts:
         return "Inspect the active training alerts first; they are blocking the daily training state."
     if not latest_ai:

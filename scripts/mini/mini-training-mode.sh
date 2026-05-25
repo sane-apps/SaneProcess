@@ -15,9 +15,11 @@ LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 OUTPUT_DIR="${SANE_OUTPUT_DIR:-$HOME/SaneApps/outputs}"
 DRY_RUN="${TRAINING_MODE_DRY_RUN:-false}"
 REOPEN_APPS="${TRAINING_MODE_REOPEN_APPS:-false}"
+SANE_TRAINING_APP_QUIT_LIST="SaneBar,SaneClick,SaneClip,SaneHosts,SaneSales,SaneSync,SaneVideo"
 TRAINING_MODE_AGENT_SUSPEND_LIST="${TRAINING_MODE_AGENT_SUSPEND_LIST-com.saneapps.always-awake,com.saneapps.repo-reconcile,com.saneapps.mcp-watchdog,com.saneapps.memory-guard,com.saneapps.nightly,com.google.GoogleUpdater.wake,com.google.keystone.agent,com.google.keystone.xpcservice,com.grammarly.ProjectLlama.Shepherd,com.grammarly.ProjectLlama.cleanup,com.logos.LogosIndexer,com.logos.desktop.logosindexer}"
-TRAINING_MODE_APP_QUIT_LIST="${TRAINING_MODE_APP_QUIT_LIST-Codex,Xcode,SaneBar,SaneClip,SaneHosts,Shottr,MenuMeters,gfxCardStatus,Safari}"
-TRAINING_MODE_PROCESS_KILL_PATTERNS="${TRAINING_MODE_PROCESS_KILL_PATTERNS-xcodebuildmcp,validation_report.rb}"
+TRAINING_MODE_APP_QUIT_LIST="${TRAINING_MODE_APP_QUIT_LIST-Xcode,${SANE_TRAINING_APP_QUIT_LIST},Shottr,MenuMeters,gfxCardStatus,Safari}"
+TRAINING_MODE_PROCESS_KILL_PATTERNS="${TRAINING_MODE_PROCESS_KILL_PATTERNS-xcodebuild,xcodebuildmcp,validation_report.rb}"
+TRAINING_MODE_BLOCKER_PATTERNS="${TRAINING_MODE_BLOCKER_PATTERNS-xcodebuild|/DerivedData/.*Sane[A-Za-z]+\\.app/Contents/MacOS/Sane[A-Za-z]+|mlx_lm lora --train}"
 
 trim() {
   printf '%s' "$1" | sed 's/^ *//; s/ *$//'
@@ -83,6 +85,24 @@ app_is_running() {
 
 capture_top_processes() {
   ps axo rss,%mem,comm,args | sort -nr | awk 'NR <= 12 { print }'
+}
+
+training_blockers() {
+  ps -axo pid=,ppid=,command= | awk -v self_pid="$$" -v pattern="$TRAINING_MODE_BLOCKER_PATTERNS" '
+    {
+      pid=$1
+      ppid=$2
+      cmd=$0
+      if (pid == self_pid || ppid == self_pid) {
+        next
+      }
+      if (cmd ~ /TRAINING_MODE_BLOCKER_PATTERNS=/ || cmd ~ /mini-training-mode\.sh/) {
+        next
+      }
+    }
+    $0 ~ pattern {
+      print
+    }'
 }
 
 kill_matching_processes() {
@@ -189,6 +209,13 @@ enter_training_mode() {
   capture_top_processes > "$after_file"
   printf 'top processes after isolation:\n' | tee -a "$log_file"
   cat "$after_file" | tee -a "$log_file"
+
+  blockers=$(training_blockers)
+  if [ -n "$blockers" ]; then
+    printf 'training blockers still active after isolation:\n' | tee -a "$log_file"
+    printf '%s\n' "$blockers" | tee -a "$log_file"
+    return 1
+  fi
 }
 
 exit_training_mode() {

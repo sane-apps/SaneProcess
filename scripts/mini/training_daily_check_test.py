@@ -69,6 +69,26 @@ def snapshot_with_current_missing_baseline():
     }
 
 
+def snapshot_with_watchdog_reset_and_stale_lock():
+    snapshot = snapshot_with_current_missing_baseline()
+    snapshot["latest_readiness"]["status"] = "ready"
+    snapshot["latest_saneai_report"]["workflow_gate"] = "PASS (mac_operator 8/10, 80%, threshold 50%)"
+    snapshot["latest_saneai_report"]["result"] = "PASS"
+    snapshot["training_lock"] = {
+        "exists": True,
+        "path": "/tmp/.training_mlx.lock",
+        "stale": True,
+        "active_training_process": False,
+    }
+    snapshot["recent_system_reset"] = {
+        "watchdog_reset": True,
+        "panic_string": "panic(cpu 1 caller ...): watchdog timeout",
+        "panic_log_path": "/Library/Logs/DiagnosticReports/panic-full-test.panic",
+        "latest_reset_path": "/Library/Logs/DiagnosticReports/ResetCounter-test.diag",
+    }
+    return snapshot
+
+
 def test_stale_readiness_does_not_trigger_baseline_alert():
     title, message = training_daily_check.build_summary(snapshot_with_stale_readiness())
     assert_equal(title, "SaneAI needs work", "stale readiness should fall through to current gate state")
@@ -108,6 +128,15 @@ def test_active_alert_overrides_green_gate():
     assert "active training alerts first" in action
 
 
+def test_watchdog_reset_and_stale_lock_override_green_gate():
+    title, message = training_daily_check.build_summary(snapshot_with_watchdog_reset_and_stale_lock())
+    action = training_daily_check.build_action(snapshot_with_watchdog_reset_and_stale_lock())
+
+    assert_equal(title, "SaneAI training interrupted", "watchdog reset should override a green score")
+    assert "watchdog reset" in message.lower()
+    assert "lower-pressure staged SaneAI lane" in action
+
+
 def test_write_report_records_current_readiness_and_alerts():
     snapshot = snapshot_with_current_missing_baseline()
     snapshot["current_alerts"] = [{"path": "/tmp/alert.md", "preview": "adapter regression"}]
@@ -120,6 +149,7 @@ def test_write_report_records_current_readiness_and_alerts():
     assert "summary text" in report
     assert "action text" in report
     assert "- Applies to latest SaneAI run: True" in report
+    assert "## Mini System" in report
     assert "/tmp/alert.md: adapter regression" in report
 
 
@@ -128,5 +158,6 @@ if __name__ == "__main__":
     test_current_readiness_can_trigger_baseline_alert()
     test_missing_readiness_report_is_not_current()
     test_active_alert_overrides_green_gate()
+    test_watchdog_reset_and_stale_lock_override_green_gate()
     test_write_report_records_current_readiness_and_alerts()
     print("training_daily_check_test.py: PASS")

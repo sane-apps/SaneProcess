@@ -411,20 +411,56 @@ ALERT_STATE_FILE="$ALERTS_DIR/${APP_NAME}_${MODE_LABEL}.state"
 ALERT_HISTORY_LOG="$ALERTS_DIR/history.log"
 mkdir -p "$CURRENT_ALERTS_DIR"
 
+other_training_processes_active() {
+  ps -axo pid=,ppid=,command= | awk -v self_pid="$$" '
+    {
+      pid=$1
+      ppid=$2
+      $1=""
+      $2=""
+      sub(/^  */, "", $0)
+      cmd=$0
+
+      if (pid == self_pid || ppid == self_pid) {
+        next
+      }
+
+      if (cmd ~ /mlx_lm lora/ || cmd ~ /evaluate_model\.py/ || cmd ~ /mini-train\.sh/) {
+        found=1
+      }
+    }
+    END { exit found ? 0 : 1 }'
+}
+
+remove_training_lock_dir() {
+  local lock_dir="$1"
+
+  rm -f "$lock_dir/pid" "$lock_dir/started_at" "$lock_dir/boot_time" 2>/dev/null || true
+  rmdir "$lock_dir" 2>/dev/null
+}
+
 # Lock file (with stale lock detection)
 # The 8 GB Mini can only support one MLX train/eval workload at a time.
 LOCKFILE="$OUTPUT_DIR/.training_mlx.lock"
 if ! mkdir "$LOCKFILE" 2>/dev/null; then
-  # Check if lock is stale (older than 8 hours — sweeps can take 5+ hours)
-  if [ -d "$LOCKFILE" ] && [ "$(find "$LOCKFILE" -maxdepth 0 -mmin +480 2>/dev/null)" ]; then
+  # Reboots can strand the lock before the EXIT trap runs. If no peer MLX
+  # training/eval process exists, clear it immediately instead of waiting hours.
+  if [ -d "$LOCKFILE" ] && ! other_training_processes_active; then
+    echo "Removing stale training lock: no active MLX training/eval process found." >&2
+    remove_training_lock_dir "$LOCKFILE" || { echo "Cannot remove stale lock" >&2; exit 1; }
+    mkdir "$LOCKFILE" 2>/dev/null || { echo "Cannot acquire lock" >&2; exit 1; }
+  elif [ -d "$LOCKFILE" ] && [ "$(find "$LOCKFILE" -maxdepth 0 -mmin +480 2>/dev/null)" ]; then
     echo "Removing stale lock (>8 hours old)" >&2
-    rm -rf "$LOCKFILE"
+    remove_training_lock_dir "$LOCKFILE" || { echo "Cannot remove stale lock" >&2; exit 1; }
     mkdir "$LOCKFILE" 2>/dev/null || { echo "Cannot acquire lock" >&2; exit 1; }
   else
     echo "Another training instance is running" >&2
     exit 1
   fi
 fi
+printf '%s\n' "$$" > "$LOCKFILE/pid" 2>/dev/null || true
+date '+%Y-%m-%d %H:%M:%S' > "$LOCKFILE/started_at" 2>/dev/null || true
+sysctl -n kern.boottime 2>/dev/null > "$LOCKFILE/boot_time" || true
 prune_old_sweeps() {
   local report_file="${1:-}"
   local keep_days="${SWEEP_KEEP_DAYS:-3}"
@@ -497,7 +533,7 @@ cleanup() {
   exit_training_mode_if_needed
   reap_orphaned_compiler_services || true
   prune_old_sweeps "" || true
-  rm -rf "$LOCKFILE"
+  remove_training_lock_dir "$LOCKFILE" || true
   rm -f "${RESULTS_FILE:-}"
 }
 trap cleanup EXIT INT TERM

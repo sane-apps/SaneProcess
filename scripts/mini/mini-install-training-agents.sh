@@ -33,7 +33,7 @@ TRAIN_EXAMPLE_DROP_MAX_PCT="${TRAIN_EXAMPLE_DROP_MAX_PCT:-20}"
 VALID_EXAMPLE_DROP_MAX_PCT="${VALID_EXAMPLE_DROP_MAX_PCT:-20}"
 TRAINING_MODE_ENABLED="${TRAINING_MODE_ENABLED:-true}"
 TRAINING_MODE_AGENT_SUSPEND_LIST="${TRAINING_MODE_AGENT_SUSPEND_LIST:-com.saneapps.always-awake,com.saneapps.repo-reconcile,com.saneapps.mcp-watchdog,com.saneapps.memory-guard,com.saneapps.nightly,com.google.GoogleUpdater.wake,com.google.keystone.agent,com.google.keystone.xpcservice,com.grammarly.ProjectLlama.Shepherd,com.grammarly.ProjectLlama.cleanup,com.logos.LogosIndexer,com.logos.desktop.logosindexer}"
-TRAINING_MODE_APP_QUIT_LIST="${TRAINING_MODE_APP_QUIT_LIST:-Xcode,SaneBar,SaneClip,SaneHosts,Shottr,MenuMeters,gfxCardStatus,Safari}"
+TRAINING_MODE_APP_QUIT_LIST="${TRAINING_MODE_APP_QUIT_LIST:-Xcode,SaneBar,SaneClick,SaneClip,SaneHosts,SaneSales,SaneSync,SaneVideo,Shottr,MenuMeters,gfxCardStatus,Safari}"
 
 if ! [[ "$CHALLENGER_ROTATION_ORDER" =~ ^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$ ]]; then
   echo "Invalid CHALLENGER_ROTATION_ORDER: $CHALLENGER_ROTATION_ORDER" >&2
