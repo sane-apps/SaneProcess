@@ -175,6 +175,21 @@ exit(run_tests('Mini Train Process Tests') do
       true
     end
 
+    test('SaneAI training window starts at 11 PM and hard-stops at 9 AM') do
+      installer_source = File.read(TRAIN_INSTALLER_PATH)
+      deploy_source = File.read(File.expand_path('deploy.sh', __dir__))
+      train_all_source = File.read(TRAIN_ALL_PATH)
+
+      assert_includes(installer_source, 'TRAIN_HARD_STOP_TIME="${TRAIN_HARD_STOP_TIME:-09:00}"')
+      assert_includes(installer_source, 'CHALLENGER_HOUR="${CHALLENGER_HOUR:-23}"')
+      assert_includes(installer_source, 'WEEKLY_TRAIN_HOUR="${WEEKLY_TRAIN_HOUR:-23}"')
+      assert_includes(deploy_source, 'TRAIN_HARD_STOP_TIME=09:00')
+      assert_includes(deploy_source, 'CHALLENGER_HOUR=23')
+      assert_includes(deploy_source, 'WEEKLY_TRAIN_HOUR=23')
+      assert_includes(train_all_source, 'TRAIN_HARD_STOP_TIME="${TRAIN_HARD_STOP_TIME:-09:00}"')
+      true
+    end
+
     test('training agents preserve Codex live presence on the Mini') do
       installer_source = File.read(TRAIN_INSTALLER_PATH)
       assert_includes(installer_source, 'TRAINING_MODE_APP_QUIT_LIST="${TRAINING_MODE_APP_QUIT_LIST:-Xcode,SaneBar,SaneClick,SaneClip,SaneHosts,SaneSales,SaneSync,SaneVideo,Shottr,MenuMeters,gfxCardStatus,Safari}"')

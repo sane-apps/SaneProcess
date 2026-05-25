@@ -146,7 +146,7 @@ prepare_automation_root_if_needed() {
 # Inherit time budget from environment (set by mini-train-all.sh)
 # Default daily lane stays on the last stable 8 GB candidate unless explicitly widened.
 CHALLENGER_BUDGET_MIN="${CHALLENGER_BUDGET_MIN:-0}"
-TRAIN_HARD_STOP_TIME="${TRAIN_HARD_STOP_TIME:-08:30}"
+TRAIN_HARD_STOP_TIME="${TRAIN_HARD_STOP_TIME:-09:00}"
 CHALLENGER_SELECTION_MODE="${CHALLENGER_SELECTION_MODE:-alternate}"
 CHALLENGER_ROTATION_ANCHOR_DATE="${CHALLENGER_ROTATION_ANCHOR_DATE:-2026-03-07}"
 CHALLENGER_ROTATION_ORDER="${CHALLENGER_ROTATION_ORDER:-smollm3-3b}"
@@ -188,7 +188,7 @@ Generated at $(date +"%Y-%m-%d %H:%M:%S")
 
 - Skipped: weekday $(date +%w)
 - Reason: Sunday window reserved for weekly SaneAI training
-- Next scheduled lane: Daily challenger agent at 1:00 AM on non-Sundays
+- Next scheduled lane: Daily challenger agent at 11:00 PM on non-Sundays
 EOF
   echo "Skipping challenger lane on weekday $(date +%w); weekly SaneAI owns this window." >&2
   exit 0
@@ -231,7 +231,7 @@ compute_hard_stop_epoch() {
   hard_stop_hour=$(printf '%s' "$TRAIN_HARD_STOP_TIME" | cut -d: -f1)
   hard_stop_minute=$(printf '%s' "$TRAIN_HARD_STOP_TIME" | cut -d: -f2)
   if ! [[ "$hard_stop_hour" =~ ^[0-9]{1,2}$ ]] || ! [[ "$hard_stop_minute" =~ ^[0-9]{2}$ ]]; then
-    TRAIN_HARD_STOP_TIME="08:30"
+    TRAIN_HARD_STOP_TIME="09:00"
   fi
 
   TRAIN_HARD_STOP_EPOCH=$(ruby -e '
@@ -505,7 +505,7 @@ cat >> "$COMPARISON_REPORT" <<EOF
 
 **Challengers run:** $CHALLENGERS_RUN of $TOTAL_CHALLENGERS
 **Report:** $COMPARISON_REPORT
-**Next scheduled lane:** Daily challenger agent at 1:00 AM, nightly builds at 8:45 AM
+**Next scheduled lane:** Daily challenger agent at 11:00 PM, hard stop at 9:00 AM, nightly builds at 8:45 AM
 
 > Challengers NEVER auto-promote. If a model beats Llama, review the report and manually promote.
 EOF

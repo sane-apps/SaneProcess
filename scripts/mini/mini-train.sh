@@ -393,12 +393,12 @@ compute_hard_stop_epoch() {
 compute_hard_stop_epoch
 
 if [ "$CHALLENGER_MODE" = true ]; then
-  NEXT_RUN_HINT="Daily challenger agent at 1:00 AM, except Sunday when SaneAI owns the window."
+  NEXT_RUN_HINT="Daily challenger agent at 11:00 PM, except Sunday when the weekly SaneAI lane owns the window. Hard stop is 9:00 AM."
 else
   if [ "$APP_NAME" = "SaneVideo" ]; then
     NEXT_RUN_HINT="Run the standalone SaneVideo lane manually or wire it to stronger hardware once the workflow-only gate is green."
   else
-    NEXT_RUN_HINT="Weekly SaneAI agent on Sunday at 1:00 AM."
+    NEXT_RUN_HINT="Weekly SaneAI agent on Sunday at 11:00 PM. Hard stop is 9:00 AM."
   fi
 fi
 

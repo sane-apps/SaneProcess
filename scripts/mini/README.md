@@ -176,13 +176,13 @@ LaunchAgent (5:40 AM)
 
 - **Bash 3.2** — mini runs macOS default bash. No `+=()` arrays, no `<<<` herestrings. Use file-based alternatives.
 - **8GB RAM** — training uses ~3.7GB peak. One sweep at a time.
-- **Lock files** — Mini training now uses one shared `mkdir`-based MLX lock with 8-hour stale detection so production and challenger lanes cannot overlap on the 8 GB GPU.
+- **Lock files** — Mini training now uses one shared `mkdir`-based MLX lock with stale-process detection, so reboot-stranded locks clear when no MLX training/eval process is active and production/challenger lanes cannot overlap on the 8 GB GPU.
 - **Logs** — LaunchAgent stderr appends (never truncates). `mini-train-all.sh` rotates at 1MB.
 - **Isolation enabled** — deploy refreshes `~/SaneApps-automation`, launch agents point `SANE_ROOT` there, and each scheduled training lane now re-runs `mini-prepare-automation-root.sh` before training so stale dirty clones fail fast instead of silently training on drifted state.
 - **Managed overlays only** — automation-root prep is allowed to reset hydrated training overlays (`train.jsonl`, eval packs, challenger configs, generated fixtures) before syncing. Any other dirt still fails the prep step.
 - **Training data hydration** — `mini-prepare-automation-root.sh` copies local-only `train.jsonl` / `valid.jsonl` datasets for SaneSync, SaneClip, SaneAI, and SaneVideo into the clean clones before training.
 - **Dataset regression guard** — `mini-train.sh` now fails before spending GPU time if the current train/valid counts shrink too far versus the latest successful run for that lane.
-- **Current bakeoff mode** — the daily challenger agent rotates through explicitly configured `SaneAI` challenger models in focused training mode, runs until `08:30`, and skips Sundays so the weekly `SaneAI` run gets the full window.
+- **Current bakeoff mode** — the daily challenger agent rotates through explicitly configured `SaneAI` challenger models in focused training mode, starts at `23:00`, hard-stops at `09:00`, and skips Sundays so the weekly `SaneAI` run gets the same overnight window.
 - **Production Mini baseline** — `lora_config_mini.yaml` now points at `smollm3-3b` as the scheduled production model on the 8 GB Mini; `llama32-3b` remains in the challenger rotation so it can be measured under the same focused training conditions.
 - **Clean-start training** — `mini-train.sh` now drains stale `mlx_lm` / `evaluate_model.py` processes before each run and purges inactive memory so one crashed/manual lane does not poison the next scheduled lane.
 - **Progress tracking** — every training run now archives a timestamped report under `outputs/history/<App>/` and appends a TSV metrics row so week-over-week comparisons survive report overwrites.
@@ -195,7 +195,7 @@ LaunchAgent (5:40 AM)
 - **Checkpoint cadence** — the Mini configs save every `25` steps, with current default sweep targets of `50` iterations for the nightly SmolLM challenger lane and `100` iterations for the weekly SmolLM production lane.
 - **8 GB eval baseline** — keep `EVAL_MAX_TOKENS=128` on the Mini and clear the MLX Metal cache between eval cases. The strict workflow JSON eval cases now request `max_tokens: 256` individually, but the Mini still caps them via `EVAL_MAX_TOKENS_CAP` so long JSON is less likely to be truncated without globally widening every suite.
 - **SaneVideo fixtures** — `mini-prepare-automation-root.sh` hydrates ignored `Tests/Assets` media in the clean clone when `ffmpeg` is available on the Mini.
-- **Bad training is a hard failure** — `mini-train.sh` now fails the sweep if the train log shows `nan` loss or `Trained Tokens 0`, and emits a training alert instead of treating that as success.
+- **Bad training is a hard failure** — `mini-train.sh` now fails the sweep if the train log shows `nan` loss or `Trained Tokens 0`, skips evaluation for that unusable adapter, and emits a training alert instead of treating it as success.
 - **Cleanup hygiene** — `mini-memory-guard.sh` now prunes training artifacts under both `~/SaneApps` and `~/SaneApps-automation`, rotates challenger/weekly/guard logs, and trims the training alert history log.
 
 ## Standard Process
