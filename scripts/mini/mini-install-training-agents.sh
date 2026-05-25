@@ -20,7 +20,7 @@ TRAIN_HARD_STOP_TIME="${TRAIN_HARD_STOP_TIME:-08:30}"
 READINESS_TARGET_APP="${READINESS_TARGET_APP:-}"
 CHALLENGER_SELECTION_MODE="${CHALLENGER_SELECTION_MODE:-alternate}"
 CHALLENGER_ROTATION_ANCHOR_DATE="${CHALLENGER_ROTATION_ANCHOR_DATE:-2026-05-02}"
-CHALLENGER_ROTATION_ORDER="${CHALLENGER_ROTATION_ORDER:-ministral3-3b-instruct,fusechat-llama32-3b,llama32-1b,llama32-3b,granite33-2b-instruct}"
+CHALLENGER_ROTATION_ORDER="${CHALLENGER_ROTATION_ORDER:-llama32-3b}"
 CHALLENGER_BUDGET_MIN="${CHALLENGER_BUDGET_MIN:-0}"
 CHALLENGER_SKIP_WEEKDAY="${CHALLENGER_SKIP_WEEKDAY:-0}"
 RUN_CHALLENGERS_AFTER_WEEKLY="${RUN_CHALLENGERS_AFTER_WEEKLY:-false}"
@@ -33,7 +33,7 @@ TRAIN_EXAMPLE_DROP_MAX_PCT="${TRAIN_EXAMPLE_DROP_MAX_PCT:-20}"
 VALID_EXAMPLE_DROP_MAX_PCT="${VALID_EXAMPLE_DROP_MAX_PCT:-20}"
 TRAINING_MODE_ENABLED="${TRAINING_MODE_ENABLED:-true}"
 TRAINING_MODE_AGENT_SUSPEND_LIST="${TRAINING_MODE_AGENT_SUSPEND_LIST:-com.saneapps.always-awake,com.saneapps.repo-reconcile,com.saneapps.mcp-watchdog,com.saneapps.memory-guard,com.saneapps.nightly,com.google.GoogleUpdater.wake,com.google.keystone.agent,com.google.keystone.xpcservice,com.grammarly.ProjectLlama.Shepherd,com.grammarly.ProjectLlama.cleanup,com.logos.LogosIndexer,com.logos.desktop.logosindexer}"
-TRAINING_MODE_APP_QUIT_LIST="${TRAINING_MODE_APP_QUIT_LIST:-Codex,Xcode,SaneBar,SaneClip,SaneHosts,Shottr,MenuMeters,gfxCardStatus,Safari}"
+TRAINING_MODE_APP_QUIT_LIST="${TRAINING_MODE_APP_QUIT_LIST:-Xcode,SaneBar,SaneClip,SaneHosts,Shottr,MenuMeters,gfxCardStatus,Safari}"
 
 if ! [[ "$CHALLENGER_ROTATION_ORDER" =~ ^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$ ]]; then
   echo "Invalid CHALLENGER_ROTATION_ORDER: $CHALLENGER_ROTATION_ORDER" >&2

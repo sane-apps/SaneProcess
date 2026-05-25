@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-if pgrep -f 'codex app-server' >/dev/null 2>&1; then
+if pgrep -x 'Codex' >/dev/null 2>&1 && pgrep -f 'codex app-server' >/dev/null 2>&1; then
   exit 0
 fi
 

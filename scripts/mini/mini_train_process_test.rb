@@ -155,6 +155,7 @@ exit(run_tests('Mini Train Process Tests') do
 
     test('training agent installer validates challenger rotation order') do
       installer_source = File.read(TRAIN_INSTALLER_PATH)
+      assert_includes(installer_source, 'CHALLENGER_ROTATION_ORDER="${CHALLENGER_ROTATION_ORDER:-llama32-3b}"')
       assert_includes(installer_source, 'Invalid CHALLENGER_ROTATION_ORDER')
       assert_includes(installer_source, '^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$')
       _stdout, stderr, status = Open3.capture3(
@@ -164,6 +165,19 @@ exit(run_tests('Mini Train Process Tests') do
       )
       assert_eq(status.exitstatus, 2)
       assert_includes(stderr, 'Invalid CHALLENGER_ROTATION_ORDER')
+      true
+    end
+
+    test('deploy keeps nightly SaneAI training on the focused correction lane') do
+      deploy_source = File.read(File.expand_path('deploy.sh', __dir__))
+      assert_includes(deploy_source, 'CHALLENGER_ROTATION_ORDER=llama32-3b')
+      true
+    end
+
+    test('training agents preserve Codex live presence on the Mini') do
+      installer_source = File.read(TRAIN_INSTALLER_PATH)
+      assert_includes(installer_source, 'TRAINING_MODE_APP_QUIT_LIST="${TRAINING_MODE_APP_QUIT_LIST:-Xcode,SaneBar,SaneClip,SaneHosts,Shottr,MenuMeters,gfxCardStatus,Safari}"')
+      assert(!installer_source.include?('TRAINING_MODE_APP_QUIT_LIST="${TRAINING_MODE_APP_QUIT_LIST:-Codex,'), 'Codex should not be in the default training app quit list')
       true
     end
   end
