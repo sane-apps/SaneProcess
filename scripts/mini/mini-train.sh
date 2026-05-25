@@ -1918,7 +1918,10 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
       echo '```' >> "$REPORT"
     fi
 
-    if [ "$PARTIAL_CHECKPOINT_EVAL" = "true" ] && [ -f "$ADAPTER_DIR/adapters.safetensors" ]; then
+    if [ "$TRAIN_EXIT" -eq 126 ]; then
+      echo "" >> "$REPORT"
+      echo "**Interrupted checkpoint evaluation skipped:** training metrics were invalid, so evaluating the adapter would waste Mini time and produce unusable signal." >> "$REPORT"
+    elif [ "$PARTIAL_CHECKPOINT_EVAL" = "true" ] && [ -f "$ADAPTER_DIR/adapters.safetensors" ]; then
       CHECKPOINT_STEP=$(latest_saved_checkpoint_step "$ADAPTER_DIR")
       if [ "$CHECKPOINT_STEP" -gt 0 ]; then
         RESULT_DISPLAY_LABEL="checkpoint ${CHECKPOINT_STEP}/${ITERS}"

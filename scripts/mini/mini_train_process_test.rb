@@ -255,6 +255,13 @@ exit(run_tests('Mini Train Process Tests') do
       true
     end
 
+    test('invalid metric sweeps do not waste Mini time on adapter evaluation') do
+      assert_includes(train_source, 'training produced invalid metrics')
+      assert_includes(train_source, 'if [ "$TRAIN_EXIT" -eq 126 ]; then')
+      assert_includes(train_source, 'Interrupted checkpoint evaluation skipped')
+      true
+    end
+
     test('training mode fail-closed blocker detection is executable, not only documented') do
       Dir.mktmpdir do |state_root|
         stdout, _stderr, status = Open3.capture3(
