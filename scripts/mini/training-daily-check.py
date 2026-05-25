@@ -20,7 +20,7 @@ import csv
 import json
 import re
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 BASE = Path.home() / "SaneApps" / "outputs"
@@ -118,6 +118,7 @@ def read_recent_system_reset():
     contents_panic = Path("/Library/Logs/DiagnosticReports/.contents.panic")
     reset_files = sorted(Path("/Library/Logs/DiagnosticReports").glob("ResetCounter-*.diag"), key=lambda p: p.stat().st_mtime, reverse=True)
     latest_reset = reset_files[0] if reset_files else None
+    cutoff = datetime.now() - timedelta(hours=36)
 
     result = {
         "panic_contents_path": str(contents_panic) if contents_panic.exists() else "",
@@ -126,7 +127,7 @@ def read_recent_system_reset():
         "panic_string": "",
     }
 
-    if contents_panic.exists():
+    if contents_panic.exists() and datetime.fromtimestamp(contents_panic.stat().st_mtime) >= cutoff:
         try:
             payload = json.loads(contents_panic.read_text(encoding="utf-8", errors="ignore"))
             panic_string = payload.get("panic_string", "")
@@ -138,7 +139,7 @@ def read_recent_system_reset():
             result["panic_string"] = text.splitlines()[0] if text else ""
             result["watchdog_reset"] = "watchdog" in text.lower()
 
-    if latest_reset:
+    if latest_reset and datetime.fromtimestamp(latest_reset.stat().st_mtime) >= cutoff:
         text = latest_reset.read_text(encoding="utf-8", errors="ignore")
         result["watchdog_reset"] = result["watchdog_reset"] or "wdog" in text.lower() or "watchdog" in text.lower()
 
