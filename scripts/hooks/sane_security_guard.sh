@@ -15,7 +15,7 @@ BURST_WINDOW_SECONDS="${SANE_SECURITY_BURST_WINDOW_SECONDS:-60}"
 BURST_MAX_LOOKUPS="${SANE_SECURITY_BURST_MAX_LOOKUPS:-12}"
 
 is_ai_session() {
-  [[ -n "${CODEX_SHELL:-}" || -n "${CLAUDE_CODE:-}" || -n "${CLAUDE_WORKTREES:-}" ]]
+  [[ -n "${CODEX_SHELL:-}" || -n "${CLAUDE_CODE:-}" || -n "${CLAUDE_WORKTREES:-}" || -n "${GROK_HOOK_EVENT:-}" || -n "${GROK_SESSION_ID:-}" ]]
 }
 
 is_secret_read() {

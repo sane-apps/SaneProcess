@@ -10,7 +10,7 @@ LOCAL_UI_APPROVAL="MR. SANE APPROVES LOCAL UI ON AIR"
 MINI_UNAVAILABLE_APPROVAL="MR. SANE CONFIRMS MINI UNAVAILABLE"
 
 is_ai_session() {
-  [[ -n "${CODEX_SHELL:-}" || -n "${CLAUDE_CODE:-}" || -n "${CLAUDE_WORKTREES:-}" || -n "${SANE_OPEN_GUARD_TEST:-}" ]]
+  [[ -n "${CODEX_SHELL:-}" || -n "${CLAUDE_CODE:-}" || -n "${CLAUDE_WORKTREES:-}" || -n "${SANE_OPEN_GUARD_TEST:-}" || -n "${GROK_HOOK_EVENT:-}" || -n "${GROK_SESSION_ID:-}" ]]
 }
 
 running_on_macbook_air() {

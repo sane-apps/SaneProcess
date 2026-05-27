@@ -9,7 +9,7 @@ set -euo pipefail
 REAL_CURL="/usr/bin/curl"
 
 is_ai_session() {
-  [[ -n "${CODEX_SHELL:-}" || -n "${CLAUDE_CODE:-}" || -n "${CLAUDE_WORKTREES:-}" ]]
+  [[ -n "${CODEX_SHELL:-}" || -n "${CLAUDE_CODE:-}" || -n "${CLAUDE_WORKTREES:-}" || -n "${GROK_HOOK_EVENT:-}" || -n "${GROK_SESSION_ID:-}" ]]
 }
 
 is_write_request() {
