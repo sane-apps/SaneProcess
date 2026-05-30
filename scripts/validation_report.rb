@@ -136,6 +136,7 @@ class ValidationReport
     apps/SaneClip
     apps/SaneHosts
     apps/SaneClick
+    apps/SaneSales
     infra/SaneProcess
   ].freeze
 
@@ -148,6 +149,7 @@ class ValidationReport
     apps/SaneClip
     apps/SaneHosts
     apps/SaneClick
+    apps/SaneSales
   ].freeze
 
   def initialize
@@ -665,6 +667,8 @@ class ValidationReport
         header = File.read(skill_file, 512)
         issues_found << "[codex] missing `name:` in #{skill_file}" unless header.match?(/^\s*name:\s*.+$/)
         issues_found << "[codex] missing `description:` in #{skill_file}" unless header.match?(/^\s*description:\s*.+$/)
+
+        check_sane_audit_historical_lane(skill_dir, skill_file, issues_found) if entry == 'sane-audit'
       end
     end
 
@@ -682,6 +686,63 @@ class ValidationReport
 
     if registry_only.any?
       @warnings << "Q0: [codex] SKILLS_REGISTRY.md entries missing local skill dirs: #{registry_only.join(', ')}"
+    end
+  end
+
+  def check_sane_audit_historical_lane(skill_dir, skill_file, issues_found)
+    required_prompt_files = %w[
+      q0-config.md
+      q6-release.md
+      q7-website.md
+      q8-signing.md
+      q9-support.md
+      q10-docs.md
+      q11-tooling.md
+      q12-runtime-resources.md
+      q13-historical-regression.md
+    ]
+    prompt_dir = File.join(skill_dir, 'prompts')
+    missing_prompt_files = required_prompt_files.reject { |file| File.exist?(File.join(prompt_dir, file)) }
+    if missing_prompt_files.any?
+      issues_found << "[codex] sane-audit missing required prompt files: #{missing_prompt_files.join(', ')}"
+    end
+
+    prompt_path = File.join(skill_dir, 'prompts', 'q13-historical-regression.md')
+    unless File.exist?(prompt_path)
+      issues_found << "[codex] sane-audit missing historical regression prompt: #{prompt_path}"
+      return
+    end
+
+    skill_content = File.read(skill_file)
+    prompt_content = File.read(prompt_path)
+    required_skill_terms = ['historical', 'root-cause', 'GitHub', 'support']
+    missing_skill_terms = required_skill_terms.reject { |term| skill_content.include?(term) }
+    if missing_skill_terms.any?
+      issues_found << "[codex] sane-audit SKILL.md does not require historical regression coverage (missing: #{missing_skill_terms.join(', ')})"
+    end
+
+    required_prompt_terms = [
+      'GitHub',
+      'support',
+      'root cause',
+      'Root-Cause Matrix',
+      'Per-Perspective Scores',
+      'Current Coverage',
+      'Would Catch Today?',
+      'Checked Evidence',
+      'No issue cluster can be called fixed without named current coverage'
+    ]
+    missing_prompt_terms = required_prompt_terms.reject { |term| prompt_content.include?(term) }
+    if missing_prompt_terms.any?
+      issues_found << "[codex] sane-audit historical regression prompt is incomplete (missing: #{missing_prompt_terms.join(', ')})"
+    end
+
+    workflow_path = File.join(File.dirname(__FILE__), 'hooks', 'core', 'mandatory_workflows.rb')
+    workflow_content = File.exist?(workflow_path) ? File.read(workflow_path) : ''
+    min_match = workflow_content.match(/sane_audit:\s*\{.*?min_subagents:\s*(\d+)/m)
+    min_subagents = min_match ? min_match[1].to_i : 0
+    if min_subagents < required_prompt_files.length
+      issues_found << "[codex] sane-audit hook requires #{min_subagents} subagents but has #{required_prompt_files.length} prompt lanes"
     end
   end
 
@@ -1577,6 +1638,17 @@ class ValidationReport
     issues_found = []
     warnings_found = []
 
+    unless credential_prompting_enabled?
+      warnings_found << 'Code-signing keychain/notary checks skipped in no-prompt validation mode'
+      @metrics[:code_signing] = {
+        issues: issues_found.size,
+        warnings: warnings_found.size,
+        details: issues_found + warnings_found
+      }
+      warnings_found.each { |w| @warnings << "Q8 SIGNING: #{w}" }
+      return
+    end
+
     # Check Developer ID signing identity exists
     identities = `security find-identity -v -p codesigning 2>/dev/null`
     unless identities.include?('Developer ID Application')
@@ -1653,7 +1725,7 @@ class ValidationReport
   def q9_support_infrastructure
     issues_found = []
     warnings_found = []
-    keychain_fallback_enabled = ENV.fetch('SANE_KEYCHAIN_FALLBACK', '1') == '1'
+    keychain_fallback_enabled = ENV.fetch('SANE_KEYCHAIN_FALLBACK', '0') == '1'
     keychain_fallback_enabled = false if ENV['SANE_NO_KEYCHAIN'] == '1'
     secret_for = lambda do |service, account, *env_names|
       env_names.each do |env_name|
@@ -2285,11 +2357,17 @@ class ValidationReport
       return value unless value.empty?
     end
 
-    keychain_fallback_enabled = ENV.fetch('SANE_KEYCHAIN_FALLBACK', '1') == '1'
+    keychain_fallback_enabled = ENV.fetch('SANE_KEYCHAIN_FALLBACK', '0') == '1'
     keychain_fallback_enabled = false if ENV['SANE_NO_KEYCHAIN'] == '1'
     return '' unless keychain_fallback_enabled
 
     `security find-generic-password -s "#{service}" -a "#{account}" -w 2>/dev/null`.strip
+  end
+
+  def credential_prompting_enabled?
+    ENV['SANE_ALLOW_KEYCHAIN_PROMPTS'] == '1' &&
+      ENV['SANE_NO_KEYCHAIN'] != '1' &&
+      ENV.fetch('SANE_KEYCHAIN_FALLBACK', '0') == '1'
   end
 
   def fetch_live_email_worker_snapshot

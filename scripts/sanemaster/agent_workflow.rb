@@ -175,7 +175,11 @@ module SaneMasterModules
         notes << 'App Store submission needs fresh Mini customer_ui_sweep evidence plus appstore_preflight for the same candidate build.'
       end
 
-      if text.match?(/\b(full audit|audit the app|audit docs|documentation audit|docs audit|saneapps audit)\b/)
+      if text.match?(/\b(saneapps audit|audit the app|audit.*(?:past|historical).*(?:issues?|github|support)|historical issue audit|root[- ]cause.*recurring|recurring issues?.*audit)\b/)
+        commands << 'status'
+        skills << 'sane-audit'
+        subagent = true
+      elsif text.match?(/\b(full audit|audit docs|documentation audit|docs audit)\b/)
         commands << 'audit'
         skills << 'audit'
         subagent = true

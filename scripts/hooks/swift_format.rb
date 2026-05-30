@@ -1,6 +1,13 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Fast no-op under Grok (Claude compatibility hooks are merged and can produce
+# visible Pre/PostToolUse annotations on every tool even when guarded).
+# Grok users rely on AGENTS.md + explicit SaneMaster calls; native hooks are Claude-only.
+if ENV["GROK_HOOK_EVENT"].to_s != ""
+  exit 0
+end
+
 # PostToolUse hook: auto-format Swift files after Write/Edit
 # Inspired by Boris Cherny's bun format hook - fixes the last 10% that causes CI failures
 

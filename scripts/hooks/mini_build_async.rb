@@ -1,6 +1,13 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Fast no-op under Grok (Claude compatibility hooks are merged and can produce
+# visible Pre/PostToolUse annotations on every tool even when guarded).
+# Grok users rely on AGENTS.md + explicit SaneMaster calls; native hooks are Claude-only.
+if ENV["GROK_HOOK_EVENT"].to_s != ""
+  exit 0
+end
+
 # Async PostToolUse hook: triggers Mac Mini build after Swift file edits
 # Runs in background (async: true) — does not block Claude
 # Debounces: skips if build triggered in last 60 seconds

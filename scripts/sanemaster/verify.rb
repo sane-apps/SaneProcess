@@ -741,10 +741,8 @@ module SaneMasterModules
       false
     end
 
-    def verify_log_indicates_success?(text)
+    def verify_log_success_summary_present?(text)
       body = text.to_s
-      return false if verify_log_indicates_failure?(body)
-
       return true if body.include?('✅ Tests passed!')
       return true if body.match?(/Swift Testing:\s+\d+ tests .* passed/)
       return true if body.match?(/Test run with \d+ tests? in \d+ suites? passed/)
@@ -752,6 +750,27 @@ module SaneMasterModules
       return true if body.match?(/Executed \d+ tests?, with 0 failures/)
 
       false
+    end
+
+    def verify_log_only_has_benign_app_intents_failure?(text)
+      body = text.to_s
+      return false unless body.include?('com.apple.linkd.autoShortcut')
+
+      sanitized = body.lines.reject do |line|
+        line.include?('com.apple.linkd.autoShortcut') ||
+          line.include?('Error registering app with intents framework') ||
+          line.include?('Unable to get synchronousRemoteObjectProxy') ||
+          line.include?('Unable to re-register with Process Instance Registry')
+      end.join
+      sanitized = sanitized.gsub(/^\*\* TEST FAILED \*\*\s*$/i, '')
+      verify_log_success_summary_present?(sanitized) && !verify_log_indicates_failure?(sanitized)
+    end
+
+    def verify_log_indicates_success?(text)
+      body = text.to_s
+      return false if verify_log_indicates_failure?(body)
+
+      verify_log_success_summary_present?(body)
     end
 
     def verify_evidence_strength(tests_run)
@@ -772,7 +791,7 @@ module SaneMasterModules
       if text.match?(/manual grant|permission prompt|system settings|system preferences|tcc|accessibility|screen recording/)
         return { bucket: 'permission_prompt', hint: 'permission or TCC prompt interrupted verification' }
       end
-      if tests_run.to_i.positive? && verify_log_indicates_failure?(log_text)
+      if tests_run.to_i.positive? && verify_log_indicates_failure?(log_text) && !verify_log_only_has_benign_app_intents_failure?(log_text)
         return { bucket: 'test_failure', hint: 'tests ran and emitted explicit failure markers' }
       end
       if text.match?(/\*\* build failed \*\*|swiftcompile|compileerror|linker command failed|ld:|error:/)
@@ -781,7 +800,7 @@ module SaneMasterModules
       if text.match?(/no tests found|0 tests|test discovery|no test bundles|missing test target/)
         return { bucket: 'test_discovery_or_counting', hint: 'test discovery or parser counting failed before useful coverage ran' }
       end
-      if verify_log_indicates_failure?(log_text)
+      if verify_log_indicates_failure?(log_text) && !verify_log_only_has_benign_app_intents_failure?(log_text)
         return { bucket: 'test_failure', hint: 'tests ran and emitted explicit failure markers' }
       end
 
@@ -1043,7 +1062,10 @@ module SaneMasterModules
 
       if !success && !timed_out && File.exist?('test_output.txt')
         log_output = File.read('test_output.txt') rescue ''
-        if verify_log_indicates_failure?(log_output)
+        if verify_log_only_has_benign_app_intents_failure?(log_output)
+          puts '   ℹ️  Test log only contains known App Intents autoShortcut diagnostics after a clean pass; treating verify as successful.'
+          success = true
+        elsif verify_log_indicates_failure?(log_output)
           puts '   ℹ️  Test log contains explicit failure markers; preserving the non-zero verify result.'
         elsif verify_log_indicates_success?(log_output)
           puts '   ℹ️  Test log shows a clean pass despite a non-zero runner exit; treating verify as successful.'

@@ -605,6 +605,7 @@ class SaneTest
       app_path = stage_to_canonical_local_app_path(source_app_path)
     end
     reconcile_accessibility_trust_local(app_path)
+    ensure_gatekeeper_safe_launch!(app_path)
 
     open_args = launch_env_pairs
     if @allow_keychain
@@ -626,6 +627,26 @@ class SaneTest
 
   def repair_accessibility?
     @repair_accessibility || @fresh || @reset_tcc
+  end
+
+  def ensure_gatekeeper_safe_launch!(app_path)
+    return if ENV['SANETEST_ALLOW_ADHOC_GATEKEEPER_DIALOG'] == '1'
+    return unless ad_hoc_signed?(app_path)
+
+    abort "   ❌ Refusing to launch ad-hoc signed #{@app_name}; macOS can show an unidentified-developer dialog. Re-run with --release for a signed runtime build."
+  end
+
+  def ad_hoc_signed?(app_path)
+    output = `codesign -dv --verbose=4 "#{app_path}" 2>&1`
+    output.include?('Signature=adhoc')
+  end
+
+  def clear_gatekeeper_staging_attributes(app_path)
+    return unless app_path && File.exist?(app_path)
+
+    system('xattr', '-cr', app_path, out: File::NULL, err: File::NULL)
+    system('xattr', '-dr', 'com.apple.quarantine', app_path, out: File::NULL, err: File::NULL)
+    system('xattr', '-dr', 'com.apple.provenance', app_path, out: File::NULL, err: File::NULL)
   end
 
   def canonical_local_app_path
@@ -725,7 +746,7 @@ class SaneTest
       temp_app_path = "#{target_app_path}.staging-#{Process.pid}-#{Time.now.to_i}"
       begin
         FileUtils.rm_rf(temp_app_path) if File.exist?(temp_app_path)
-        ok = system('ditto', source_app_path, temp_app_path)
+        ok = system('ditto', '--noextattr', '--noacl', source_app_path, temp_app_path)
         abort "   ❌ Failed to stage app to canonical path: #{target_app_path}" unless ok && File.exist?(temp_app_path)
 
         if File.exist?(target_app_path)
@@ -734,6 +755,7 @@ class SaneTest
           FileUtils.rm_rf(target_app_path)
         end
         FileUtils.mv(temp_app_path, target_app_path)
+        clear_gatekeeper_staging_attributes(target_app_path)
         staged_ok = File.exist?(target_app_path)
       ensure
         FileUtils.rm_rf(temp_app_path) if File.exist?(temp_app_path)

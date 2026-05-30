@@ -11,6 +11,7 @@
 require_relative 'core/state_manager'
 require_relative 'core/mandatory_workflows'
 require_relative 'sanetools_test_scenarios'
+require 'fileutils'
 
 module SaneToolsTest
   def self.run(process_tool_proc, research_categories)
@@ -781,7 +782,26 @@ module SaneToolsTest
     warn ''
     warn 'Testing MCP verification graceful degradation:'
 
-    deg_project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
+    deg_project_dir = File.join(Dir.pwd, '.sanetools-test')
+    FileUtils.rm_rf(deg_project_dir) if Dir.exist?(deg_project_dir)
+    FileUtils.mkdir_p(deg_project_dir)
+    codex_config_dir = File.join(deg_project_dir, '.codex')
+    claude_config_dir = File.join(deg_project_dir, '.claude')
+    codex_config = File.join(codex_config_dir, 'config.toml')
+    claude_settings = File.join(claude_config_dir, 'settings.json')
+
+    FileUtils.mkdir_p(codex_config_dir)
+    FileUtils.mkdir_p(claude_config_dir)
+    File.write(codex_config, "[mcp_servers.context7]\ncommand = \"context7\"\n")
+    File.write(claude_settings, '{"permissions":{"allow":["mcp__apple-docs__*"]}}')
+    configured_keys = SaneToolsChecks.configured_mcp_keys(deg_project_dir)
+    if configured_keys.include?(:apple_docs) && configured_keys.include?(:context7)
+      passed += 1
+      warn '  PASS: MCP discovery reads active Claude and Codex client configs'
+    else
+      failed += 1
+      warn "  FAIL: MCP discovery missed client configs, got #{configured_keys.inspect}"
+    end
     deg_mcp_config = File.join(deg_project_dir, '.mcp.json')
     File.write(deg_mcp_config, '{"mcpServers":{"github":{},"apple-docs":{}}}')
     StateManager.update(:mcp_health) do |h|
@@ -805,7 +825,7 @@ module SaneToolsTest
       warn "  FAIL: Expected [block, block, allow], got #{deg_results.map { |r| r.nil? ? 'allow' : 'block' }.inspect}"
     end
 
-    File.delete(deg_mcp_config) if File.exist?(deg_mcp_config)
+    FileUtils.rm_rf(deg_project_dir) if Dir.exist?(deg_project_dir)
     StateManager.update(:mcp_health) do |h|
       h[:verified_this_session] = true
       h[:degraded] = false

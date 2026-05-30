@@ -29,6 +29,8 @@ class AppStoreSubmitGuardrailHarness
     @stubbed_patch_result = nil
     @stubbed_iap_record = nil
     @stubbed_iap_records = nil
+    @stubbed_subscription_record = nil
+    @stubbed_version_page_includes_iap = :__unset
   end
 
   def stub_url_status(url, code:, location: '', error: nil)
@@ -109,6 +111,28 @@ class AppStoreSubmitGuardrailHarness
 
   def list_app_iaps(*_args, **_kwargs)
     @stubbed_iap_records || []
+  end
+
+  def stub_subscription_record(record)
+    @stubbed_subscription_record = record
+  end
+
+  def find_subscription_by_product_id(*_args, **_kwargs)
+    @stubbed_subscription_record
+  end
+
+  def ensure_subscription_review_screenshot(**_kwargs)
+    true
+  end
+
+  def stub_version_page_includes_iap(value)
+    @stubbed_version_page_includes_iap = value
+  end
+
+  def version_page_includes_iap?(*_args, **_kwargs)
+    return @stubbed_version_page_includes_iap unless @stubbed_version_page_includes_iap == :__unset
+
+    super
   end
 
   def ensure_iap_localization(**_kwargs)
@@ -463,6 +487,131 @@ exit(run_tests('App Store Submit Guardrail Tests') do
       true
     end
 
+    test('blocks first subscription that is ready but not attached to the app version') do
+      subject.stub_subscription_record(
+        {
+          'id' => 'sub-1',
+          'attributes' => {
+            'state' => 'READY_TO_SUBMIT',
+            'productId' => 'com.example.pro.yearly'
+          }
+        }
+      )
+      subject.stub_version_page_includes_iap(false)
+
+      ok = subject.send(
+        :ensure_subscription_readiness,
+        app_id: 'app-1',
+        product_id: 'com.example.pro.yearly',
+        project_root: '/tmp',
+        config: { 'appstore' => { 'iap' => { 'type' => 'auto_renewable_subscription' } } },
+        token: 'stub-token',
+        platform: 'ios',
+        version_string: '1.0'
+      )
+
+      assert_eq(ok, :needs_version_attachment)
+      true
+    end
+
+    test('allows first subscription only when Safari proves it is attached to the app version') do
+      subject.stub_subscription_record(
+        {
+          'id' => 'sub-1',
+          'attributes' => {
+            'state' => 'READY_TO_SUBMIT',
+            'productId' => 'com.example.pro.yearly'
+          }
+        }
+      )
+      subject.stub_version_page_includes_iap(true)
+
+      ok = subject.send(
+        :ensure_subscription_readiness,
+        app_id: 'app-1',
+        product_id: 'com.example.pro.yearly',
+        project_root: '/tmp',
+        config: { 'appstore' => { 'iap' => { 'type' => 'auto_renewable_subscription' } } },
+        token: 'stub-token',
+        platform: 'ios',
+        version_string: '1.0'
+      )
+
+      assert_eq(ok, true)
+      true
+    end
+
+    test('first subscription reports unknown when Safari attachment proof is unavailable') do
+      subject.stub_subscription_record(
+        {
+          'id' => 'sub-1',
+          'attributes' => {
+            'state' => 'READY_TO_SUBMIT',
+            'productId' => 'com.example.pro.yearly'
+          }
+        }
+      )
+      subject.stub_version_page_includes_iap(nil)
+
+      ok = subject.send(
+        :ensure_subscription_readiness,
+        app_id: 'app-1',
+        product_id: 'com.example.pro.yearly',
+        project_root: '/tmp',
+        config: { 'appstore' => { 'iap' => { 'type' => 'auto_renewable_subscription' } } },
+        token: 'stub-token',
+        platform: 'ios',
+        version_string: '1.0'
+      )
+
+      assert_eq(ok, :version_attachment_unknown)
+      true
+    end
+
+    test('version page IAP proof waits through partial Included Assets loads') do
+      subject.stub_version_page_includes_iap(:__unset)
+      subject.stub_safari_snapshots([
+        { 'body' => 'Included Assets\nIn-App Purchases and Subscriptions\nLoading...' },
+        { 'body' => 'Included Assets\nIn-App Purchases and Subscriptions\ncom.example.pro.yearly' }
+      ])
+
+      ok = subject.send(
+        :version_page_includes_iap?,
+        app_id: 'app-1',
+        platform: 'ios',
+        product_id: 'com.example.pro.yearly'
+      )
+
+      assert_eq(ok, true)
+      assert_eq(subject.safari_snapshot_calls.length, 2)
+      true
+    end
+
+    test('extracts review submission conflicts from associated ASC errors') do
+      id = subject.send(
+        :extract_conflict_submission_id,
+        {
+          'errors' => [
+            {
+              'detail' => 'This resource cannot be reviewed, please check associated errors to see why.',
+              'meta' => {
+                'associatedErrors' => {
+                  '/appStoreVersions/123' => [
+                    {
+                      'detail' => 'appStoreVersions with id 123 was already added to another reviewSubmission with id e975c41c-37aa-434f-8e6b-4d220831c51a'
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      )
+
+      assert_eq(id, 'e975c41c-37aa-434f-8e6b-4d220831c51a')
+      true
+    end
+
     test('fails when extra active IAP records exist for the app') do
       subject.stub_iap_record(
         {
@@ -620,6 +769,14 @@ exit(run_tests('App Store Submit Guardrail Tests') do
       assert_eq(subject.safari_snapshot_calls[0][:navigate], true)
       assert_eq(subject.safari_snapshot_calls[1][:navigate], false)
       assert_eq(subject.safari_snapshot_calls[2][:navigate], false)
+      true
+    end
+
+    test('submit recovery requires explicit approval before deleting draft submissions') do
+      source = File.read(File.expand_path('appstore_submit.rb', __dir__))
+
+      assert_includes(source, "SANEPROCESS_APPROVE_ASC_DRAFT_CLEANUP")
+      assert_includes(source, 'Automatic Draft Submission cleanup is disabled')
       true
     end
   end

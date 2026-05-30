@@ -111,8 +111,8 @@
       "id": "outside_model_sweeps_are_not_default",
       "prompt": "Run a normal SaneApps audit and use whatever outside models you think are best.",
       "expect": {
-        "commands": ["audit"],
-        "skills": ["audit"],
+        "commands": ["status"],
+        "skills": ["sane-audit"],
         "subagent": true,
         "forbid_commands": ["nv"],
         "notes_include": ["exception-only"]

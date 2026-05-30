@@ -15,6 +15,7 @@ require_relative 'core/state_manager'
 require_relative 'sanetools_gaming'
 require_relative 'sanetools_deploy'
 require_relative 'sanetools_github_guard'
+require_relative 'sanetools_research'
 
 module SaneToolsChecks
   # Constants needed by checks
@@ -419,105 +420,6 @@ module SaneToolsChecks
       nil
     end
 
-    # Categories that require specific MCPs — auto-satisfy if those MCPs aren't available.
-    # :web and :local use built-in tools (WebSearch, Read/Grep/Glob) so always required.
-    MCP_DEPENDENT_CATEGORIES = {
-      docs: [:apple_docs, :context7],
-      github: [:github]
-    }.freeze
-
-    MCP_SERVER_NAME_MAP = {
-      apple_docs: 'apple-docs',
-      context7: 'context7',
-      github: 'github'
-    }.freeze
-
-    def configured_mcp_keys(project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
-      server_names = [File.expand_path('~/.mcp.json'), File.join(project_dir, '.mcp.json')].uniq.each_with_object([]) do |path, names|
-        next unless File.exist?(path)
-
-        begin
-          config = JSON.parse(File.read(path))
-          names.concat((config['mcpServers'] || {}).keys)
-        rescue JSON::ParserError
-          next
-        end
-      end.uniq
-
-      MCP_SERVER_NAME_MAP.each_with_object([]) do |(key, server_name), configured|
-        configured << key if server_names.include?(server_name)
-      end
-    end
-
-    def configured_mcp_verification_info(project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
-      configured = configured_mcp_keys(project_dir)
-      MCP_VERIFICATION_INFO.select { |key, _info| configured.include?(key) }
-    end
-
-    # Returns only the research categories that should be enforced,
-    # skipping MCP-dependent ones if those MCPs aren't configured.
-    def effective_research_categories(research_categories)
-      research = StateManager.get(:research)
-      configured = configured_mcp_keys
-
-      research_categories.keys.select do |cat|
-        if MCP_DEPENDENT_CATEGORIES.key?(cat) && !research[cat]
-          (MCP_DEPENDENT_CATEGORIES[cat] & configured).any?
-        else
-          true
-        end
-      end
-    end
-
-    def check_research_before_edit(tool_name, edit_tools, research_categories)
-      return nil unless edit_tools.include?(tool_name)
-
-      research = StateManager.get(:research)
-      effective_categories = effective_research_categories(research_categories)
-
-      total = effective_categories.length
-      done = effective_categories.count { |cat| research[cat] }
-      complete = done == total
-
-      return nil if complete
-
-      missing = effective_categories.reject { |cat| research[cat] }
-
-      # Build specific instructions for each missing category
-      missing_instructions = missing.map do |cat|
-        case cat
-        when :docs then "  1. DOCS: mcp__apple-docs, mcp__context7, or WebSearch for docs (verify APIs exist)"
-        when :web then "  2. WEB: WebSearch (current best practices)"
-        when :github then "  3. GITHUB: mcp__github__search_* or WebSearch for examples (real-world code)"
-        when :local then "  4. LOCAL: Read/Grep/Glob (understand existing code)"
-        else "  #{cat}: Complete this research category"
-        end
-      end.join("\n")
-
-      "RESEARCH INCOMPLETE [#{done}/#{total} complete: missing #{missing.join(', ')}]\n" \
-      "Cannot edit until ALL #{total} research categories are done.\n" \
-      "MISSING (do these NOW):\n" \
-      "#{missing_instructions}\n" \
-      "Rule #2: VERIFY, THEN TRY. Research once, succeed once.\n" \
-      "Reset: rr- (clear research to start over)"
-    end
-
-    def check_external_mutations(tool_name, external_mutation_pattern, research_categories)
-      return nil unless tool_name.match?(external_mutation_pattern)
-
-      research = StateManager.get(:research)
-      effective = effective_research_categories(research_categories)
-      complete = effective.all? { |cat| research[cat] }
-
-      return nil if complete
-
-      missing = effective.reject { |cat| research[cat] }
-      "EXTERNAL MUTATION BLOCKED\n" \
-      "Tool '#{tool_name}' affects external systems. Research first.\n" \
-      "Missing: #{missing.join(', ')}. Use read-only tools to understand state first.\n" \
-      "Reset: rr- (clear research to start over)"
-    end
-
     def check_circuit_breaker
       cb = StateManager.get(:circuit_breaker)
       return nil unless cb[:tripped]
@@ -759,112 +661,7 @@ module SaneToolsChecks
     # === DEPLOYMENT SAFETY ===
     # Extracted to sanetools_deploy.rb per Rule #10
     include SaneToolsDeploy
-
-    # === PREFLIGHT: MCP Verification System ===
-    # Block edits until ALL MCPs have been verified this session
-    # User insight: "how can you make sure all systems are go before work begins?"
-
-    CLAUDE_DIR = File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.claude')
-    MEMORY_STAGING_FILE = File.join(CLAUDE_DIR, 'memory_staging.json')
-
-    # MCP verification tools (read-only operations to prove connectivity)
-    # NOTE: Official Memory MCP (@modelcontextprotocol/server-memory) is global, not project-verified
-    MCP_VERIFICATION_INFO = {
-      apple_docs: { name: 'Apple Docs', tool: 'mcp__apple-docs__search_apple_docs' },
-      context7: { name: 'Context7', tool: 'mcp__context7__resolve-library-id' },
-      github: { name: 'GitHub', tool: 'mcp__github__search_repositories' }
-    }.freeze
-
-    # Graceful-degradation threshold: how many times the MCP-verification gate
-    # may block before treating still-unverified MCPs as unreachable this
-    # session. The research gate auto-completes when an MCP is absent; this
-    # mirrors that so a down/mis-scoped MCP cannot brick every edit.
-    MCP_GATE_MAX_BLOCKS = 2
-
-    def check_pending_mcp_actions(tool_name, edit_tools)
-      return nil unless edit_tools.include?(tool_name)
-
-      # Only enforce MCP verification for projects with .saneprocess manifest
-      project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
-      return nil unless File.exist?(File.join(project_dir, '.saneprocess'))
-
-      configured_mcps = configured_mcp_verification_info(project_dir)
-      return nil if configured_mcps.empty?
-
-      # Get MCP health state
-      health = StateManager.get(:mcp_health)
-
-      # If all verified, allow edits
-      return nil if health[:verified_this_session]
-
-      # Check which MCPs are still unverified
-      mcps = health[:mcps] || {}
-      unverified = configured_mcps.select do |key, _info|
-        mcp_data = mcps[key]
-        !mcp_data || !mcp_data[:verified]
-      end
-
-      # If all verified (but flag not set), allow and fix state
-      if unverified.empty?
-        StateManager.update(:mcp_health) { |h| h[:verified_this_session] = true; h }
-        return nil
-      end
-
-      # Graceful degradation: a configured MCP that never connects this session
-      # (down, mis-scoped, or removed) must not brick every edit. Count gate
-      # blocks; once past the threshold, treat the still-unverified MCPs as
-      # unreachable, allow edits, and warn once so the user can reconnect them.
-      block_attempts = (health[:gate_block_attempts] || 0) + 1
-      StateManager.update(:mcp_health) { |h| h[:gate_block_attempts] = block_attempts; h }
-      if block_attempts > MCP_GATE_MAX_BLOCKS
-        names = unverified.map { |_key, info| info[:name] }.join(', ')
-        warn "⚠️  MCP verification degraded: #{names} unreachable after " \
-             "#{MCP_GATE_MAX_BLOCKS} attempt(s) — allowing edits. " \
-             "Reconnect with 'claude mcp list' to restore full verification."
-        StateManager.update(:mcp_health) do |h|
-          h[:verified_this_session] = true
-          h[:degraded] = true
-          h
-        end
-        return nil
-      end
-
-      # Also check for memory staging (pending MCP action)
-      pending_actions = []
-      if File.exist?(MEMORY_STAGING_FILE)
-        begin
-          staging = JSON.parse(File.read(MEMORY_STAGING_FILE))
-          if staging['needs_memory_update']
-            entity_name = staging.dig('suggested_entity', 'name') || 'learnings'
-            pending_actions << "Memory staging needs saving: #{entity_name}"
-          end
-        rescue StandardError
-          pending_actions << 'Memory staging file needs review'
-        end
-      end
-
-      # Build comprehensive error message
-      total_mcps = configured_mcps.length
-      verified_count = total_mcps - unverified.length
-      unverified_list = unverified.map do |key, info|
-        "  ⬜ #{info[:name]}: #{info[:tool]}"
-      end.join("\n")
-
-      msg = "MCP VERIFICATION INCOMPLETE [#{verified_count}/#{total_mcps} verified]\n" \
-            "Cannot edit until all #{total_mcps} configured MCPs are verified this session.\n" \
-            "\n" \
-            "Unverified MCPs (run each tool once to verify):\n" \
-            "#{unverified_list}\n"
-
-      if pending_actions.any?
-        msg += "\n" \
-               "Pending MCP actions:\n" \
-               "#{pending_actions.map { |a| "  ⚠️  #{a}" }.join("\n")}\n"
-      end
-
-      msg += "\nCall each unverified MCP tool once to proceed."
-      msg
-    end
+    include SaneToolsResearch
 
     # === EDIT ATTEMPT LIMIT ===
     # Prevents "no big deal" syndrome: 3 edit attempts without research = STOP

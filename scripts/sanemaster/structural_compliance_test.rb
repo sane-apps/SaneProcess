@@ -194,4 +194,72 @@ exit(run_tests('SaneMaster Structural Compliance Tests') do
       true
     end
   end
+
+  test_category('Component owner size') do
+    test('counts Swift extensions against the same component owner') do
+      Dir.mktmpdir('structural-component-size-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Core'))
+        File.write(File.join(dir, 'Core', 'LargeManager.swift'), (["final class LargeManager {}\n"] * 300).join)
+        File.write(File.join(dir, 'Core', 'LargeManager+Moves.swift'), (["extension LargeManager {}\n"] * 300).join)
+        File.write(File.join(dir, 'Core', 'LargeManager+Recovery.swift'), (["extension LargeManager {}\n"] * 250).join)
+
+        checker = SaneMasterModules::StructuralCompliance::ComplianceChecker.new(dir)
+        checker.send(:check_component_owner_size)
+        result = checker.results[:practice].last
+
+        assert_eq(result.pass, false)
+        assert_includes(result.detail, 'LargeManager=850 lines/3 files')
+        assert_includes(result.fix, 'extensions to hide a component')
+      end
+      true
+    end
+
+    test('does not count generated build directories as component owners') do
+      Dir.mktmpdir('structural-component-build-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, '.build', 'checkouts'))
+        File.write(File.join(dir, '.build', 'checkouts', 'Generated.swift'), (["struct Generated {}\n"] * 900).join)
+        File.write(File.join(dir, 'SmallView.swift'), "struct SmallView {}\n")
+
+        checker = SaneMasterModules::StructuralCompliance::ComplianceChecker.new(dir)
+        checker.send(:check_component_owner_size)
+        result = checker.results[:practice].last
+
+        assert_eq(result.pass, true)
+      end
+      true
+    end
+
+    test('flags oversized release scripts as audit liabilities') do
+      Dir.mktmpdir('structural-release-script-size-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Scripts'))
+        File.write(File.join(dir, 'Scripts', 'huge_release_tool.rb'), (["puts 'ship'\n"] * 850).join)
+
+        checker = SaneMasterModules::StructuralCompliance::ComplianceChecker.new(dir)
+        checker.send(:check_release_script_size)
+        result = checker.results[:practice].last
+
+        assert_eq(result.pass, false)
+        assert_includes(result.detail, 'Scripts/huge_release_tool.rb=850 lines')
+        assert_eq(result.detail.scan('huge_release_tool.rb').count, 1)
+        assert_includes(result.fix, 'Rule #10 applies to release tooling')
+      end
+      true
+    end
+
+    test('does not count generated build scripts as release tooling') do
+      Dir.mktmpdir('structural-release-build-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'build', 'Scripts'))
+        FileUtils.mkdir_p(File.join(dir, 'Scripts'))
+        File.write(File.join(dir, 'build', 'Scripts', 'Generated.rb'), (["puts 'generated'\n"] * 900).join)
+        File.write(File.join(dir, 'Scripts', 'small_release_tool.rb'), "puts 'ok'\n")
+
+        checker = SaneMasterModules::StructuralCompliance::ComplianceChecker.new(dir)
+        checker.send(:check_release_script_size)
+        result = checker.results[:practice].last
+
+        assert_eq(result.pass, true)
+      end
+      true
+    end
+  end
 end)

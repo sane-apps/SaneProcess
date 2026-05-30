@@ -64,7 +64,8 @@ products:
 
   sanevideo:
     name: SaneVideo
-    # Unreleased: no checkout UUID yet
+    checkout_uuid: 478d2602-9808-4591-b01b-d555cccd0185
+    license_gated: true    # Basic/Pro gating active — all release channels allowed
     domain: sanevideo.com
     dist_domain: dist.sanevideo.com
     github_repo: sane-apps/SaneVideo

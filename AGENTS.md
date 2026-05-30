@@ -18,7 +18,7 @@ file or one local command. Otherwise run Session Start steps 1-5.
 
 1. Read `SESSION_HANDOFF.md` if it exists — recent work, pending tasks, gotchas
 2. Check Serena memories (`read_memory`) for project-specific learnings
-3. Read the active client skill registry — Codex: `~/.codex/SKILLS_REGISTRY.md`, Claude: `~/.claude/SKILLS_REGISTRY.md`
+3. Read the active client skill registry (Codex: `~/.codex/SKILLS_REGISTRY.md`, Claude: `~/.claude/SKILLS_REGISTRY.md`; Grok and others: their client skill/config surface plus `.agents/skills/` when installed)
 4. Run `ruby ~/SaneApps/infra/SaneProcess/scripts/validation_report.rb`
 5. Launch Xcode only for explicit local IDE work. For SaneApps app inspection,
    build, test, screenshots, and runtime verification, use the Mac Mini first.
@@ -66,7 +66,7 @@ Do not wait until session end.
 | 7 | NO TEST? NO REST | Every fix gets a test. No tautologies (`#expect(true)` is useless) |
 | 8 | BUG FOUND? WRITE IT DOWN | Update Serena memory + knowledge graph when bugs are found, reclassified, fixed, or closed |
 | 9 | NEW FILE? GEN THE PILE | Use scaffolding tools and templates |
-| 10 | FIVE HUNDRED'S FINE, EIGHT'S THE LINE | Max 500 lines, must split at 800 |
+| 10 | FIVE HUNDRED'S FINE, EIGHT'S THE LINE | Max 500 lines per file and per component owner, must split at 800. Extensions count toward the same owner; do not hide a god class by growing it sideways |
 | 11 | TOOL BROKE? FIX THE YOKE | Fix broken tools, don't work around them |
 | 12 | TALK WHILE I WALK | Subagents for heavy work, stay responsive, and close completed/stale agents promptly |
 | 13 | CONTEXT OR CHAOS | Maintain AGENTS.md, plus CLAUDE.md only when Claude-specific overlay guidance is needed |
@@ -86,9 +86,9 @@ Otherwise use docs, web, and GitHub when APIs are uncertain, external facts may
 have changed, third-party behavior matters, or the decision is durable/high-stakes.
 Do not run broad research just because the task contains discussion words.
 
-**Subagent hygiene:** Before spawning Codex subagents, close stale/completed agents that are no longer needed. After a subagent returns, capture the useful result and close it unless it is actively needed for a follow-up. If spawning fails because the agent limit is reached, cleanup is the required first step.
+**Subagent hygiene:** Before spawning subagents (or using equivalent delegation features in your client), close stale/completed agents that are no longer needed. After a subagent returns, capture the useful result and close it unless it is actively needed for a follow-up. If spawning fails because the agent limit is reached, cleanup is the required first step.
 
-**Subagent prompt contract:** Every Codex subagent prompt must include:
+**Subagent prompt contract:** Every subagent prompt (regardless of client) must include:
 1. Read relevant repo hooks in `scripts/hooks/` and active client config when present before doing work.
 2. If a hook blocks, stop immediately and report the block to the parent; do not retry or work around it.
 3. Never build or launch SaneApps locally on the MacBook Air. Use `ssh mini` for build/test/runtime work unless the parent documents an approved local exception for that exact task.
@@ -97,7 +97,7 @@ Do not run broad research just because the task contains discussion words.
 ## Tool Discovery Before Workarounds
 
 Before I say a tool is missing, choose a new canonical tool path, install/upgrade tooling, or switch to a repeated workaround, I must:
-1. Check the active client skill registry — Codex: `~/.codex/SKILLS_REGISTRY.md`, Claude: `~/.claude/SKILLS_REGISTRY.md`
+1. Check the active client skill registry (Codex: `~/.codex/SKILLS_REGISTRY.md`, Claude: `~/.claude/SKILLS_REGISTRY.md`, Grok and others: client-specific skill/config paths + `.agents/skills/` when present)
 2. Run `ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb tool_discovery --query "..."` so the receipt captures registry, doctor, validation, and local-path checks
 3. Search `scripts/`, hooks, skills, and the core docs + `AGENTS.md` standard for an existing path
 4. If the capability is still missing and the workflow repeats, add it to SaneProcess, document it, and make it the standard path
@@ -159,6 +159,31 @@ are useful as an example of how SaneProcess is used in production, but public
 adopters do not need the Mac Mini, SaneApps accounts, or SaneApps release keys.
 
 ## SaneMaster Routing
+
+### Canonical Action Paths
+
+Do not improvise alternate shell paths for repeated SaneApps actions. If a
+canonical route exists, use it and fix that route when it fails.
+
+- Status/support overview: `ruby scripts/SaneMaster.rb status`
+- Build/test verification: `ruby scripts/SaneMaster.rb verify`
+- Release clearance: `ruby scripts/SaneMaster.rb release_preflight`
+- Runtime launch/testing: `ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb AppName` or `ruby scripts/SaneMaster.rb test_mode`
+- Work email/support: `ruby scripts/SaneMaster.rb check_inbox` or `~/SaneApps/infra/scripts/check-inbox.sh`
+- Sales/downloads/funnel: `ruby scripts/SaneMaster.rb sales`, `downloads`, or `events`
+- Mini screenshots: `~/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh desktop` for full-screen proof, or the same wrapper with `--app AppName --mode temp` for app/window proof
+- Mini cleanup: `ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb machine_cleanup --host mini --apply --preserve-apps AppName`
+- Missing/repeated tool path: `ruby scripts/SaneMaster.rb tool_discovery --query "..."`
+
+For Mini screenshots, never use raw `ssh mini 'screencapture ...'`. It can run
+outside the logged-in GUI session and falsely report that the Mini screen is
+unavailable. The screenshot wrapper runs through `mini-gui-run.sh` and applies
+the visual workspace guard for app-targeted captures. Full-screen Mini captures
+must use `capture-mini-screenshot.sh desktop`, which runs the desktop hygiene
+path first: close helper windows, block visible permission/security prompts,
+and remove temporary email review media from the Mini Desktop/Screenshots area.
+If this path fails, fix the wrapper or Mini host resolution. Do not invent an
+alternate screenshot path.
 
 ### Mac Mini Admin Automation
 
@@ -398,6 +423,19 @@ XcodeBuildMCP decision rule:
 - Before any manual cleanup, list active `Sane*`, `xcodebuild`, simulator, training, and MCP processes with parent/PGID context.
 - Preserve any app the user says is active, even if it looks noisy. Do safe disk cleanup first: full Trash, disposable caches, inactive DerivedData, and unavailable simulator data.
 - Never kill broad process classes; kill only a confirmed unrelated parent process group, and only after tracing respawns back to their launcher.
+
+---
+
+## Cowork / Claude Desktop Notes
+
+Cowork is the Claude desktop app, not Claude Code. It runs the same Golden Rules, but the runtime is different. These notes are additive; nothing here changes Codex, Grok, or Claude Code behavior.
+
+- **Native hooks do not fire.** Every hook in `.claude/settings.json` is gated on `${CLAUDECODE}${CLAUDE_CODE}`, which Cowork does not set, so `session_start.rb`, `saneprompt.rb`, `sanetools.rb`, `sanetrack.rb`, and `sanestop.rb` are all silent. There is no PreToolUse guardrail, no completion gate, and no auto session briefing. Treat every Golden Rule as self-enforced and assume no guardrail ran unless I ran it myself.
+- **Run the gates by hand.** Session start: read `SESSION_HANDOFF.md`, then `ruby ~/SaneApps/infra/SaneProcess/scripts/validation_report.rb`. Before "done": `ruby scripts/SaneMaster.rb verify`. Before release: `release_preflight`. Session end: `sop_review` plus the handoff/memory updates. Nothing prompts me to do these.
+- **MCPs are not pre-wired.** Cowork has no native apple-docs/context7/github/Serena servers. Use the connector registry for equivalents, the sandbox shell to run `SaneMaster.rb` and repo scripts, and `WebSearch`/`web_fetch` for API verification. Write durable learnings to `SESSION_HANDOFF.md` (and Serena via shell when available) rather than relying on auto-memory.
+- **Mini-first still applies.** `ssh mini` and the `SaneMaster.rb` / `sane_test.rb` wrappers work from the Cowork shell. Use them; do not build or launch on the Air.
+- **Canonical routes still apply.** Use the SaneMaster wrappers through the shell instead of improvising raw `xcodebuild`/`security`/email paths. `trash`, not `rm -rf`.
+- **Keychain guard interaction.** Cowork shells may inherit the `~/.local/bin/security` shim. The guard only throttles repeated *reads* (`find-generic-password`); sequential distinct lookups pass through. Do not loop `security`. (Note: the guard activates on `$CLAUDE_CODE`; if a client sets that variable, the guard can also intercept the client's own Keychain auth reads — see Login Loop note in `CLAUDE.md`.)
 
 ---
 

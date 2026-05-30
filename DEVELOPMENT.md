@@ -54,12 +54,53 @@ SaneProcess has one SOP with multiple client adapters.
 |--------|--------------|----------------|
 | Claude Code | `scripts/init.sh --client claude` | `AGENTS.md`, `.claude/settings.json`, hooks, skills, MCP, shared scripts |
 | Codex | `scripts/init.sh --client codex` | `AGENTS.md`, `.agents/skills`, Codex config, MCP, shell/script guards |
+| Grok | `scripts/init.sh --client grok` | `AGENTS.md`, `.agents/skills`, shell/script guards; operator sync can mirror existing `~/.grok/config.toml` |
 | Other agents | `scripts/init.sh --client generic` | `AGENTS.md`, repo scripts, git hooks, optional MCP |
 | SaneApps full setup | `scripts/init.sh --client all` | Claude + Codex-compatible surfaces for internal use |
 
-Codex and other clients may support hooks differently. Rules that matter for
-public portability must remain enforceable through repo scripts and shared
-guards, not only through one client runtime.
+Codex, Grok, and other clients may support hooks and MCP discovery differently.
+Grok can load MCP servers from compatibility config while `grok mcp list` only
+reports native Grok config, so use the live `/mcps` or Ctrl+L view for session
+truth. Rules that matter for public portability must remain enforceable through
+repo scripts and shared guards, not only through one client runtime.
+
+### For Grok users (practical steps)
+
+After `scripts/init.sh --client grok` in a repo:
+
+1. Confirm the portable surface is present:
+   ```bash
+   test -f AGENTS.md && test -d .agents/skills
+   ```
+
+2. In the Grok TUI, read the rules (Grok surfaces AGENTS.md from the repo root or via skills):
+   - Start every substantial task by reading the nearest AGENTS.md.
+   - Use `ruby scripts/SaneMaster.rb tool_discovery --query "..."` before claiming any tool/MCP is missing (this produces a dated receipt in outputs/tool-discovery/).
+
+3. Live MCP truth (important) + 2026-05-29 fix:
+   - `/mcps` or Ctrl+L inside the Grok session — this is the source of truth.
+   - The helper `scripts/grok-bin/check-mcps` (after a `sync_grok`) prints the same advice plus runs the canonical receipt.
+   - On SaneApps operator machines, core Sane servers may be registered natively in `~/.grok/config.toml` with 15-30s startup timeouts. Fresh `init.sh --client grok` does not write user-level Grok config; use your client's MCP setup path, then `sync_grok` can mirror an existing config to the Mini.
+   - If any still show connecting after TUI restart: the uvx/git+ ones can be slow on first handshake; the native timeouts give them headroom. Use the /mcps modal to toggle or inspect logs.
+   - Native `grok mcp list` shows only the toml entries; the full active set (including compatibility) is in the TUI modal.
+
+4. PreToolUse / PostToolUse warnings or annotations (if you see them):
+   - Grok merges hooks from ~/.claude/settings.json (and project .claude/ if trusted) for Claude Code compatibility.
+   - SaneProcess populates that surface with saneprompt, sanetools + sane_* guards (PreToolUse), sanetrack + task_completed_gate + sanestop (PostToolUse), etc.
+   - Even guarded entries can produce visible annotations/notifications in the Grok scrollback on every tool call (search_replace, read_file, run_terminal_cmd, todo_write, etc.) because Grok records hook execution.
+   - This is expected when the same machine runs both Claude Code and Grok heavily on Sane repos. It does not block tools (fail-open).
+   - Inspect/disable at runtime: /hooks or Ctrl+L \u2192 Hooks tab.
+   - The SaneProcess contract for Grok is unchanged: AGENTS.md + explicit SaneMaster.rb + shell guards. Native Pre/Post hooks remain a Claude Code adapter.
+
+5. Common SaneProcess commands from Grok:
+   - `ruby scripts/SaneMaster.rb verify`
+   - `ruby scripts/SaneMaster.rb status`
+   - `ruby scripts/SaneMaster.rb release_preflight`
+   - `ruby scripts/SaneMaster.rb sync_grok` (operator only — keeps your Grok profile in sync with the Mini)
+
+6. Shared skills (critic, docs-audit) land in `.agents/skills/`. Load them via your client's skill mechanism or invoke the SKILL.md prompts directly when needed.
+
+The enforcement contract for Grok (and Codex, generic agents) is **AGENTS.md + explicit calls to SaneMaster + shell guards**, not native PreToolUse / PostToolUse hooks. When you see hook annotations they are the Claude compatibility layer firing; they are safe to ignore or disable per-session for pure Grok workflows.
 
 ## Core Rules
 

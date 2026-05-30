@@ -497,6 +497,12 @@ extract_http_effective_url() {
     curl -A "${user_agent}" -sSL -o /dev/null -w '%{url_effective}' "${url}" 2>/dev/null || true
 }
 
+extract_http_status_effective_url_and_type() {
+    local url="$1"
+    local user_agent="${2:-Mozilla/5.0}"
+    curl --connect-timeout 10 --max-time 30 -A "${user_agent}" -sSL -o /dev/null -w '%{http_code}\n%{url_effective}\n%{content_type}' "${url}" 2>/dev/null || printf '000\n\n'
+}
+
 extract_redirect_location() {
     local url="$1"
     local user_agent="${2:-Mozilla/5.0}"
@@ -918,7 +924,9 @@ PY
 
 appcast_enclosure_url_for_version() {
     local appcast_content="$1"
-    APPCAST_CONTENT="${appcast_content}" python3 - "${VERSION}" "${BUILD_NUMBER}" <<'PY'
+    local version="${2:-${VERSION}}"
+    local build="${3:-${BUILD_NUMBER}}"
+    APPCAST_CONTENT="${appcast_content}" python3 - "${version}" "${build}" <<'PY'
 import os
 import re
 import sys
@@ -970,6 +978,143 @@ for match in re.finditer(r"<item>.*?</item>", xml, flags=re.S):
 
 print("")
 PY
+}
+
+appcast_link_for_version() {
+    local appcast_content="$1"
+    local version="${2:-${VERSION}}"
+    local build="${3:-${BUILD_NUMBER}}"
+    APPCAST_CONTENT="${appcast_content}" python3 - "${version}" "${build}" <<'PY'
+import os
+import re
+import sys
+
+xml = os.environ.get("APPCAST_CONTENT", "")
+version = sys.argv[1]
+build = sys.argv[2]
+
+def version_match(item: str) -> bool:
+    if not version:
+        return True
+    if f'sparkle:shortVersionString="{version}"' in item:
+        return True
+    if re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
+        return True
+    return False
+
+def build_match(item: str) -> bool:
+    if not build:
+        return True
+    if f'sparkle:version="{build}"' in item:
+        return True
+    if re.search(rf"<sparkle:version>\s*{re.escape(build)}\s*</sparkle:version>", item):
+        return True
+    return False
+
+for match in re.finditer(r"<item>.*?</item>", xml, flags=re.S):
+    item = match.group(0)
+    if not version_match(item) or not build_match(item):
+        continue
+
+    link_match = re.search(r"<link>\s*([^<]+?)\s*</link>", item, flags=re.S)
+    if link_match:
+        print(link_match.group(1).strip())
+        sys.exit(0)
+
+print("")
+PY
+}
+
+verify_local_appcast_link_route() {
+    local deploy_dir="$1"
+    local appcast_link="$2"
+
+    if [ -z "${appcast_link}" ]; then
+        log_error "Appcast entry missing manual download link."
+        return 1
+    fi
+
+    case "${appcast_link}" in
+        "https://${SITE_HOST}/"*) ;;
+        *)
+            return 0
+            ;;
+    esac
+
+    local route="/${appcast_link#https://${SITE_HOST}/}"
+    route="${route%%\?*}"
+    route="${route%%#*}"
+    if [ -z "${route}" ] || [ "${route}" = "/" ]; then
+        return 0
+    fi
+
+    local route_no_slash="${route%/}"
+    local rel_path="${route#/}"
+    local rel_no_slash="${route_no_slash#/}"
+    if [ -f "${deploy_dir}/${rel_path}" ] || \
+       [ -f "${deploy_dir}/${rel_path}.html" ] || \
+       [ -f "${deploy_dir}/${rel_no_slash}.html" ] || \
+       [ -f "${deploy_dir}/${rel_no_slash}/index.html" ]; then
+        log_info "Local appcast link route verified in deploy directory: ${route}"
+        return 0
+    fi
+
+    if [ -f "${deploy_dir}/_redirects" ]; then
+        if awk -v route="${route}" -v alt="${route_no_slash}/" 'NF >= 2 && ($1 == route || $1 == alt) { found = 1 } END { exit(found ? 0 : 1) }' "${deploy_dir}/_redirects"; then
+            log_info "Local appcast link route verified in _redirects: ${route}"
+            return 0
+        fi
+    fi
+
+    log_error "Website-only deploy blocked: appcast link ${appcast_link} has no local route in ${deploy_dir}."
+    log_error "Add ${route_no_slash}.html, ${route_no_slash}/index.html, or a matching _redirects rule before deploying."
+    return 1
+}
+
+verify_live_appcast_link_route() {
+    local appcast_link="$1"
+    local expected_dist_url="$2"
+    local label="${3:-Appcast link}"
+    local response_meta status effective_url content_type linked_body found_download_ver
+
+    if [ -z "${appcast_link}" ]; then
+        log_error "${label} missing for v${VERSION}"
+        return 1
+    fi
+
+    response_meta=$(extract_http_status_effective_url_and_type "${appcast_link}" "Mozilla/5.0")
+    status=$(printf '%s\n' "${response_meta}" | sed -n '1p')
+    effective_url=$(printf '%s\n' "${response_meta}" | sed -n '2p')
+    content_type=$(printf '%s\n' "${response_meta}" | sed -n '3p')
+
+    if [ "${status}" != "200" ] && [ "${status}" != "206" ]; then
+        log_error "${label} failed: ${appcast_link} returned HTTP ${status}"
+        return 1
+    fi
+
+    if [ "${effective_url}" = "${expected_dist_url}" ] || [ "${appcast_link}" = "${expected_dist_url}" ]; then
+        log_info "${label} verified: ${appcast_link} -> ${expected_dist_url}"
+        return 0
+    fi
+
+    found_download_ver=$(printf '%s' "${effective_url}" | grep -oE "https://${DIST_HOST}/updates/${APP_NAME}-[0-9]+\.[0-9]+\.[0-9]+\.zip" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+    if [ -n "${found_download_ver}" ]; then
+        log_error "${label} points to v${found_download_ver}, expected ${expected_dist_url}: ${appcast_link}"
+        return 1
+    fi
+
+    linked_body=$(curl --connect-timeout 10 --max-time 30 -A "Mozilla/5.0" -fsSL "${appcast_link}" 2>/dev/null || true)
+    if [ -n "${linked_body}" ] && grep -Fq "${expected_dist_url}" <<< "${linked_body}"; then
+        log_info "${label} verified via page content: ${appcast_link}"
+        return 0
+    fi
+
+    log_error "${label} is reachable but does not route to the current download:"
+    log_error "  link: ${appcast_link}"
+    log_error "  final URL: ${effective_url}"
+    log_error "  content type: ${content_type}"
+    log_error "  expected download: ${expected_dist_url}"
+    return 1
 }
 
 prune_existing_appcast_entries() {
@@ -1509,6 +1654,12 @@ PY
             log_error "Appcast enclosure URL mismatch for v${VERSION}:"
             log_error "  appcast: ${appcast_enclosure_url}"
             log_error "  expected: ${dist_url}"
+            return 1
+        fi
+
+        local appcast_link_url
+        appcast_link_url=$(appcast_link_for_version "${appcast_content}")
+        if ! verify_live_appcast_link_route "${appcast_link_url}" "${dist_url}" "Appcast manual download link"; then
             return 1
         fi
 
@@ -3520,12 +3671,21 @@ grant_keychain_partition_access() {
     local keychain="$1"
     local keychain_password="$2"
     local identities identity
+    local stamp_root stamp_key stamp_file
 
     [ -n "${keychain_password}" ] || return 0
     [ -f "${keychain}" ] || return 0
 
     identities="$(list_codesign_identities "${keychain}")"
     [ -n "${identities}" ] || return 0
+
+    stamp_root="${HOME}/.cache/saneprocess/keychain-partitions"
+    stamp_key="$(printf '%s\n%s\n%s\n' "${keychain}" "$(stat -f %m "${keychain}" 2>/dev/null || stat -c %Y "${keychain}" 2>/dev/null || echo unknown)" "${identities}" | shasum -a 256 | awk '{print $1}')"
+    stamp_file="${stamp_root}/${stamp_key}.stamp"
+    if [ -f "${stamp_file}" ] && [ "${SANEPROCESS_FORCE_KEYCHAIN_PARTITION:-0}" != "1" ]; then
+        return 0
+    fi
+    mkdir -p "${stamp_root}" 2>/dev/null || true
 
     while IFS= read -r identity; do
         [ -n "${identity}" ] || continue
@@ -3537,6 +3697,8 @@ grant_keychain_partition_access() {
             -t private \
             "${keychain}" >/dev/null 2>&1 || true
     done <<< "${identities}"
+
+    touch "${stamp_file}" 2>/dev/null || true
 }
 
 probe_codesign_identity() {
@@ -3584,9 +3746,11 @@ prepare_signing_session() {
     local keychain_password="${SANEBAR_KEYCHAIN_PASSWORD:-${KEYCHAIN_PASSWORD:-${KEYCHAIN_PASS:-}}}"
     local ios_probe_identity=""
 
-    security default-keychain -d user -s "${login_keychain}" >/dev/null 2>&1 || true
-    security list-keychains -d user -s "${login_keychain}" /Library/Keychains/System.keychain >/dev/null 2>&1 || true
-    security set-keychain-settings -lut 21600 "${login_keychain}" >/dev/null 2>&1 || true
+    if [ "${SANEPROCESS_MUTATE_LOGIN_KEYCHAIN_STATE:-0}" = "1" ]; then
+        security default-keychain -d user -s "${login_keychain}" >/dev/null 2>&1 || true
+        security list-keychains -d user -s "${login_keychain}" /Library/Keychains/System.keychain >/dev/null 2>&1 || true
+        security set-keychain-settings -lut 21600 "${login_keychain}" >/dev/null 2>&1 || true
+    fi
 
     if [ -f "${login_keychain}" ] && [[ "${OTHER_CODE_SIGN_FLAGS:-}" != *"--keychain ${login_keychain}"* ]]; then
         export OTHER_CODE_SIGN_FLAGS="--keychain ${login_keychain}${OTHER_CODE_SIGN_FLAGS:+ ${OTHER_CODE_SIGN_FLAGS}}"
@@ -4516,6 +4680,11 @@ if [ "${WEBSITE_ONLY}" = true ]; then
                 exit 1
             fi
             log_info "Dist archive metadata check passed for website-only deploy: ${dist_archive_url}"
+
+            appcast_link_url=$(appcast_link_for_version "$(cat "${DEPLOY_DIR}/appcast.xml")" "${appcast_ver}" "")
+            if ! verify_local_appcast_link_route "${DEPLOY_DIR}" "${appcast_link_url}"; then
+                exit 1
+            fi
         fi
 
         # Live webhook version drift check.
@@ -4567,6 +4736,13 @@ if [ "${WEBSITE_ONLY}" = true ]; then
         if command -v xmllint >/dev/null 2>&1; then
             if ! xmllint --noout - <<< "${APPCAST_CONTENT}" >/dev/null 2>&1; then
                 log_error "Appcast XML invalid after website-only deploy: ${APPCAST_URL}"
+                exit 1
+            fi
+        fi
+        if [ -n "${appcast_ver}" ]; then
+            APPCAST_LINK_URL=$(appcast_link_for_version "${APPCAST_CONTENT}" "${appcast_ver}" "")
+            DIST_ARCHIVE_URL="https://${DIST_HOST}/updates/${APP_NAME}-${appcast_ver}.zip"
+            if ! verify_live_appcast_link_route "${APPCAST_LINK_URL}" "${DIST_ARCHIVE_URL}" "Live appcast manual download link"; then
                 exit 1
             fi
         fi

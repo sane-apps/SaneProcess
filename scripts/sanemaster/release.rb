@@ -188,6 +188,28 @@ module SaneMasterModules
       {}
     end
 
+    def project_info_plist_paths
+      ignored_segments = %w[
+        .build
+        .swiftpm
+        Build
+        build
+        DerivedData
+        Pods
+        SourcePackages
+        vendor
+      ]
+      ignored_nested = [
+        %w[Carthage Checkouts]
+      ]
+
+      Dir.glob('**/Info.plist').reject do |path|
+        segments = path.split(File::SEPARATOR)
+        ignored_segments.any? { |segment| segments.include?(segment) } ||
+          ignored_nested.any? { |nested| segments.each_cons(nested.length).any? { |candidate| candidate == nested } }
+      end
+    end
+
     def decode_mobileprovision(path)
       return nil unless path && File.exist?(path)
 
@@ -1608,6 +1630,17 @@ module SaneMasterModules
         end
       end
 
+      manifest_content = manifest_paths.map { |path| safe_read(path) }.join("\n")
+      privacy_manifest_required_reason_categories.each do |category, reason|
+        unless manifest_content.include?(category)
+          issues << "PrivacyInfo.xcprivacy missing required reason API category #{category}"
+          next
+        end
+        next if reason.nil? || manifest_content.include?(reason)
+
+        issues << "PrivacyInfo.xcprivacy category #{category} is missing reason #{reason}"
+      end
+
       if project_yml_content.match?(/excludes:\s*(?:.|\n){0,500}PrivacyInfo\.xcprivacy/)
         issues << 'project.yml excludes PrivacyInfo.xcprivacy from the app target — the privacy manifest may not be bundled'
       elsif manifest_paths.none? { |path| project_yml_content.include?(File.basename(path)) || project_yml_content.include?("path: #{File.dirname(path)}") }
@@ -1619,6 +1652,20 @@ module SaneMasterModules
         warnings: warnings.uniq,
         summary: manifest_paths.join(', ')
       }
+    end
+
+    def privacy_manifest_required_reason_categories
+      source = Dir.glob(File.join(Dir.pwd, '{Core,UI,Sources,SaneBar}', '**', '*.swift')).map { |path| safe_read(path) }.join("\n")
+      required = {}
+      required['NSPrivacyAccessedAPICategoryUserDefaults'] = 'CA92.1' if source.match?(/\bUserDefaults\b/)
+      if source.match?(/\.creationDate\b|\.modificationDate\b|contentModificationDateKey|creationDateKey|fileModificationDate|\b(?:stat|lstat|fstat|fstatat|getattrlist|getattrlistbulk|fgetattrlist|getattrlistat)\s*\(/)
+        required['NSPrivacyAccessedAPICategoryFileTimestamp'] = nil
+      end
+      if source.match?(/volumeAvailableCapacity|volumeTotalCapacity|volumeAvailableCapacityForImportantUsageKey|volumeAvailableCapacityForOpportunisticUsageKey|\b(?:statfs|fstatfs)\s*\(/)
+        required['NSPrivacyAccessedAPICategoryDiskSpace'] = nil
+      end
+      required['NSPrivacyAccessedAPICategorySystemBootTime'] = nil if source.match?(/\bsystemUptime\b|\bmach_absolute_time\s*\(/)
+      required
     end
 
     def asc_subscription_status(app_id:, product_id:)
@@ -3146,7 +3193,7 @@ module SaneMasterModules
 
       # 4. Sparkle key in project config
       print '  Sparkle public key... '
-      plist_paths = Dir.glob('**/Info.plist').reject { |p| p.include?('DerivedData') || p.include?('build/') }
+      plist_paths = project_info_plist_paths
       expected_key = '7Pl/8cwfb2vm4Dm65AByslkMCScLJ9tbGlwGGx81qYU='
       checked_key = false
       plist_paths.each do |plist|
@@ -3916,7 +3963,7 @@ module SaneMasterModules
       required_keys['NSScreenCaptureUsageDescription'] = 'ScreenCapture' if all_source.match?(/SCShareableContent|SCContentSharingPicker|CGWindowListCreateImage/)
 
       # Check Info.plist for these keys
-      plist_paths = Dir.glob('**/Info.plist').reject { |p| p.include?('DerivedData') || p.include?('build/') }
+      plist_paths = project_info_plist_paths
       plist_content = plist_paths.map { |f| File.read(f) rescue '' }.join("\n")
 
       # Also check project.yml for plist values

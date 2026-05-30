@@ -14,6 +14,20 @@ require_relative 'saneui_guard'
 module SaneMasterModules
   module StructuralCompliance
     STANDARD_DOCS = %w[AGENTS.md README.md DEVELOPMENT.md ARCHITECTURE.md SESSION_HANDOFF.md].freeze
+    COMPONENT_SOFT_LIMIT = 500
+    COMPONENT_HARD_LIMIT = 800
+    COMPONENT_SCAN_EXTENSIONS = %w[.swift].freeze
+    RELEASE_SCRIPT_SCAN_EXTENSIONS = %w[.rb .sh].freeze
+    RELEASE_SCRIPT_SCAN_DIRS = %w[Scripts scripts].freeze
+    COMPONENT_SCAN_EXCLUDED_SEGMENTS = %w[
+      .build
+      .git
+      .sanemaster
+      build
+      DerivedData
+      releases
+      vendor
+    ].freeze
 
     EXPECTED_HOOKS = {
       'SessionStart' => 'session_start.rb',
@@ -100,6 +114,8 @@ module SaneMasterModules
         check_website_config
         check_saneui_source_of_truth
         check_public_docs_separation
+        check_component_owner_size
+        check_release_script_size
       end
 
       def errors?
@@ -334,6 +350,133 @@ module SaneMasterModules
             fix: 'Add [ -f .saneprocess ] guard to hook commands'
           )
         end
+      end
+
+      def check_component_owner_size
+        groups = swift_component_groups
+        oversized = groups.values
+          .select { |entry| entry[:lines] > COMPONENT_HARD_LIMIT }
+          .sort_by { |entry| -entry[:lines] }
+
+        if oversized.empty?
+          warning_count = groups.values.count { |entry| entry[:lines] > COMPONENT_SOFT_LIMIT }
+          detail = warning_count.positive? ? "#{warning_count} owner(s) above #{COMPONENT_SOFT_LIMIT} soft limit" : nil
+          @results[:practice] << Result.new(pass: true, label: 'Component owner size', detail: detail)
+          return
+        end
+
+        top = oversized.first(20).map do |entry|
+          "#{entry[:owner]}=#{entry[:lines]} lines/#{entry[:files].count} files"
+        end
+        top << "+#{oversized.count - 20} more" if oversized.count > 20
+        @results[:practice] << Result.new(
+          pass: false,
+          label: 'Component owner size',
+          detail: top.join(', '),
+          fix: "Split ownership. Rule #10 counts Type.swift plus Type+Feature.swift together; do not use extensions to hide a component over #{COMPONENT_HARD_LIMIT} lines."
+        )
+      end
+
+      def check_release_script_size
+        scripts = release_script_entries
+        oversized = scripts
+          .select { |entry| entry[:lines] > COMPONENT_HARD_LIMIT }
+          .sort_by { |entry| -entry[:lines] }
+
+        if oversized.empty?
+          warning_count = scripts.count { |entry| entry[:lines] > COMPONENT_SOFT_LIMIT }
+          detail = warning_count.positive? ? "#{warning_count} script(s) above #{COMPONENT_SOFT_LIMIT} soft limit" : nil
+          @results[:practice] << Result.new(pass: true, label: 'Release script size', detail: detail)
+          return
+        end
+
+        top = oversized.first(20).map { |entry| "#{entry[:path]}=#{entry[:lines]} lines" }
+        top << "+#{oversized.count - 20} more" if oversized.count > 20
+        @results[:practice] << Result.new(
+          pass: false,
+          label: 'Release script size',
+          detail: top.join(', '),
+          fix: "Split release scripts into focused libraries. Rule #10 applies to release tooling too; scripts over #{COMPONENT_HARD_LIMIT} lines are hard to audit and easy to regress."
+        )
+      end
+
+      def release_script_entries
+        seen_roots = {}
+        seen_files = {}
+        RELEASE_SCRIPT_SCAN_DIRS.flat_map do |dir_name|
+          root = File.join(@path, dir_name)
+          next [] unless Dir.exist?(root)
+
+          root_key = File.realpath(root)
+          next [] if seen_roots[root_key]
+
+          seen_roots[root_key] = true
+          Dir.glob(File.join(root, '**', '*')).each_with_object([]) do |path, entries|
+            next entries unless File.file?(path)
+            next entries unless RELEASE_SCRIPT_SCAN_EXTENSIONS.include?(File.extname(path))
+            next entries if excluded_component_scan_path?(path)
+
+            file_key = File.realpath(path)
+            next entries if seen_files[file_key]
+
+            seen_files[file_key] = true
+            relative = path.sub(%r{\A#{Regexp.escape(@path)}/?}, '')
+            entries << { path: relative, lines: File.readlines(path).count }
+          end
+        end
+      end
+
+      def swift_component_groups
+        groups = {}
+        Dir.glob(File.join(@path, '**', '*')).each do |path|
+          next unless File.file?(path)
+          next unless COMPONENT_SCAN_EXTENSIONS.include?(File.extname(path))
+          next if excluded_component_scan_path?(path)
+
+          owner = component_owner_for(path)
+          relative = path.sub(%r{\A#{Regexp.escape(@path)}/?}, '')
+          lines = File.readlines(path).count
+          groups[owner] ||= { owner: owner, lines: 0, files: [] }
+          groups[owner][:lines] += lines
+          groups[owner][:files] << { path: relative, lines: lines }
+        end
+        groups
+      end
+
+      def component_owner_for(path)
+        basename = File.basename(path, File.extname(path))
+        return basename.split('+', 2).first if basename.include?('+')
+
+        source = File.read(path)
+        declared_types = []
+        extension_types = []
+        source.each_line do |line|
+          stripped = line.strip
+          next if stripped.empty? || stripped.start_with?('//')
+
+          declaration = stripped.sub(/\A(?:@\w+(?:\([^)]*\))?\s+)*/, '')
+
+          if declaration.match?(/\A(?:public|private|fileprivate|internal|open)?\s*(?:final\s+)?(?:class|struct|enum|actor|protocol)\s+[A-Za-z_]\w*/)
+            declared_types << declaration[/\b(?:class|struct|enum|actor|protocol)\s+([A-Za-z_]\w*)/, 1]
+          end
+
+          if declaration.match?(/\A(?:public|private|fileprivate|internal|open)?\s*extension\s+[A-Za-z_]\w*/)
+            extension_types << declaration[/\bextension\s+([A-Za-z_]\w*)/, 1]
+          end
+        end
+
+        return basename if declared_types.include?(basename)
+        return extension_types.first if declared_types.empty? && extension_types.any?
+
+        basename
+      rescue StandardError
+        basename.split('+', 2).first
+      end
+
+      def excluded_component_scan_path?(path)
+        relative = path.sub(%r{\A#{Regexp.escape(@path)}/?}, '')
+        segments = relative.split(File::SEPARATOR)
+        (segments & COMPONENT_SCAN_EXCLUDED_SEGMENTS).any?
       end
 
       def check_no_local_hooks
