@@ -1,6 +1,13 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Fast no-op under Grok (Claude compatibility hooks are merged and can produce
+# visible Pre/PostToolUse annotations on every tool even when guarded).
+# Grok users rely on AGENTS.md + explicit SaneMaster calls; native hooks are Claude-only.
+if ENV["GROK_HOOK_EVENT"] || ENV["GROK_SESSION_ID"]
+  exit 0
+end
+
 # ==============================================================================
 # SaneTools - PreToolUse Hook
 # ==============================================================================
@@ -172,6 +179,24 @@ def track_research(tool_name, tool_input)
     RESEARCH_CATEGORIES.each do |category, config|
       if config[:task_patterns].any? { |p| prompt.match?(p) }
         mark_research_done(category, 'Task', true)
+        research_done = true
+      end
+    end
+  end
+
+  # WebSearch/WebFetch satisfy any category whose task_patterns match the query,
+  # not just :web. This honors the gate's own help text ("WebSearch for examples"
+  # satisfies github) and keeps the github category satisfiable even when the
+  # github MCP is unreachable — otherwise a down github MCP blocks all edits.
+  if %w[WebSearch WebFetch].include?(tool_name)
+    query = tool_input['query'] || tool_input[:query] ||
+            tool_input['url'] || tool_input[:url] ||
+            tool_input['prompt'] || tool_input[:prompt] || ''
+    RESEARCH_CATEGORIES.each do |category, config|
+      next if category == :web # already marked via the tools list above
+
+      if config[:task_patterns].any? { |p| query.match?(p) }
+        mark_research_done(category, tool_name, false)
         research_done = true
       end
     end
@@ -351,6 +376,12 @@ def process_tool(tool_name, tool_input)
   # Mini-first guard must run before bootstrap allowances. Local UI tools bypass
   # shell launch checks, so block them at the generic PreToolUse boundary.
   if (reason = SaneToolsChecks.check_local_ui_tool_guard(tool_name, tool_input))
+    log_action(tool_name, true, reason)
+    output_block(reason, tool_name)
+    return 2
+  end
+
+  if (reason = SaneToolsChecks.check_canonical_action_path(tool_name, tool_input))
     log_action(tool_name, true, reason)
     output_block(reason, tool_name)
     return 2

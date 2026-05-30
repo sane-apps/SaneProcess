@@ -464,6 +464,8 @@ module SaneTrackTest
     end
 
     Dir.mktmpdir('sanetrack-tool-discovery') do |tmpdir|
+      old_sp_root = ENV['SANEPROCESS_ROOT']
+      ENV['SANEPROCESS_ROOT'] = tmpdir # isolate canonical-root search to this clean dir
       Dir.chdir(tmpdir) do
         StateManager.reset(:skill)
         StateManager.update(:skill) do |s|
@@ -493,6 +495,38 @@ module SaneTrackTest
         else
           failed += 1
           warn "  FAIL: tool_discovery command should satisfy evolve receipt, got #{skill.inspect}"
+        end
+      end
+      ENV['SANEPROCESS_ROOT'] = old_sp_root
+    end
+
+    # Cross-cwd: SaneMaster writes the receipt under the canonical SaneProcess root,
+    # but the session cwd is an app repo (e.g. SaneBar). The proof must still be found.
+    Dir.mktmpdir('sanetrack-sp-root') do |sp_root|
+      Dir.mktmpdir('sanetrack-app-cwd') do |app_cwd|
+        old_sp_root2 = ENV['SANEPROCESS_ROOT']
+        ENV['SANEPROCESS_ROOT'] = sp_root
+        FileUtils.mkdir_p(File.join(sp_root, 'outputs', 'tool-discovery'))
+        File.write(File.join(sp_root, 'outputs', 'tool-discovery', 'receipt.json'), JSON.generate({ ok: true }))
+        StateManager.reset(:skill)
+        StateManager.update(:skill) do |s|
+          s[:required] = 'evolve'
+          s[:runner_used] = false
+          s[:runner_proved] = false
+          s[:runner_commands] = []
+          s
+        end
+        Dir.chdir(app_cwd) do
+          process_result_proc.call('Bash', { 'command' => 'ruby scripts/SaneMaster.rb tool_discovery --query "x"' }, { 'output' => 'ok' })
+        end
+        skill = StateManager.get(:skill)
+        ENV['SANEPROCESS_ROOT'] = old_sp_root2
+        if skill[:runner_used] == true && skill[:runner_proved] == true
+          passed += 1
+          warn '  PASS: evolve receipt in canonical SaneProcess root proves runner from any cwd'
+        else
+          failed += 1
+          warn "  FAIL: evolve receipt in SaneProcess root should prove runner cross-cwd, got #{skill.inspect}"
         end
       end
     end

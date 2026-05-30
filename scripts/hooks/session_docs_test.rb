@@ -394,7 +394,37 @@ stdout, _, _ = Open3.capture3(
 parsed = begin; JSON.parse(stdout); rescue; nil; end
 t('CLI --get session_docs returns valid JSON', parsed != nil)
 
+# === Test 17: startup-gate message names the ACTUAL unread docs ===
+# Regression: a hardcoded "(SESSION_HANDOFF.md, DEVELOPMENT.md)" label left the
+# agent blocked on unnamed required docs (CONTRIBUTING.md / SKILLS_REGISTRY.md).
+warn ''
+warn '--- Test 17: startup-gate names actual pending docs ---'
+full_reset
+StateManager.update(:session_docs) do |sd|
+  sd[:required] = %w[SESSION_HANDOFF.md DEVELOPMENT.md CONTRIBUTING.md SKILLS_REGISTRY.md]
+  sd[:read] = %w[SESSION_HANDOFF.md DEVELOPMENT.md]
+  sd[:enforced] = true
+  sd
+end
+StateManager.update(:startup_gate) do |g|
+  g[:open] = false
+  g[:opened_at] = nil
+  g[:steps] = {
+    session_docs: false, skills_registry: true,
+    validation_report: true, orphan_cleanup: true, system_clean: true
+  }
+  g
+end
+_, gate_stderr, gate_status = run_hook('sanetools.rb', {
+  tool_name: 'Edit',
+  tool_input: { file_path: '/test/gate.swift', old_string: 'a', new_string: 'b' }
+})
+t('Gate blocks gated tool while session docs pending', gate_status.exitstatus == 2)
+t('Gate message names unread CONTRIBUTING.md', gate_stderr.include?('CONTRIBUTING.md'))
+t('Gate message names unread SKILLS_REGISTRY.md', gate_stderr.include?('SKILLS_REGISTRY.md'))
+
 # === CLEANUP ===
+StateManager.reset(:startup_gate)
 StateManager.reset(:session_docs)
 StateManager.reset(:refusal_tracking)
 StateManager.reset(:circuit_breaker)

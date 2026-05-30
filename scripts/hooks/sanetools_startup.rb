@@ -94,13 +94,24 @@ module SaneToolsStartup
 
     def format_step(step)
       case step
-      when :session_docs    then 'Read session docs (SESSION_HANDOFF.md, DEVELOPMENT.md)'
+      when :session_docs    then session_docs_step_label
       when :skills_registry then "Read #{skills_registry_label}"
       when :validation_report then 'Run: ruby scripts/validation_report.rb'
       when :orphan_cleanup  then 'Kill orphaned Claude processes'
       when :system_clean    then 'Run: ./scripts/SaneMaster.rb clean_system'
       else step.to_s.tr('_', ' ')
       end
+    end
+
+    # List the docs that still need reading, not a hardcoded subset. The required
+    # set (SESSION_HANDOFF.md, DEVELOPMENT.md, CONTRIBUTING.md, SKILLS_REGISTRY.md,
+    # ...) is discovered at session start, so a fixed label silently hides which
+    # file is actually blocking the gate and sends the agent hunting through state.
+    def session_docs_step_label
+      sd = StateManager.get(:session_docs)
+      pending = (sd[:required] || []) - (sd[:read] || [])
+      list = pending.empty? ? 'SESSION_HANDOFF.md, DEVELOPMENT.md' : pending.join(', ')
+      "Read session docs (#{list})"
     end
 
     def skills_registry_label

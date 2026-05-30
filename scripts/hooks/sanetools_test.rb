@@ -88,6 +88,39 @@ module SaneToolsTest
     ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] = old_local_approval
     ENV['SANE_MINI_UNAVAILABLE'] = old_mini_unavailable
 
+    # === CANONICAL ACTION PATH TEST ===
+    warn ''
+    warn 'Testing canonical action path guard:'
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Bash', { 'command' => "ssh mini 'screencapture -x /tmp/sanebar.png'" })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: raw Mini screencapture is blocked'
+    else
+      failed += 1
+      warn "  FAIL: raw Mini screencapture should be blocked, got exit #{exit_code}"
+    end
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call(
+      'Bash',
+      { 'command' => '~/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh --app "SaneBar" --mode temp' }
+    )
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: canonical Mini screenshot wrapper is allowed'
+    else
+      failed += 1
+      warn "  FAIL: canonical Mini screenshot wrapper should be allowed, got exit #{exit_code}"
+    end
+
     # === CIRCUIT BREAKER TEST ===
     warn ''
     warn 'Testing circuit breaker:'
@@ -717,6 +750,68 @@ module SaneToolsTest
     scenario_passed, scenario_failed = SaneToolsTestScenarios.run_json_integration_tests
     passed += scenario_passed
     failed += scenario_failed
+
+    # === WEB SEARCH RESEARCH CATEGORY MAPPING ===
+    warn ''
+    warn 'Testing WebSearch research category mapping:'
+
+    StateManager.reset(:research)
+    process_tool_proc.call('WebSearch', { 'query' => 'github mcp server real-world code examples' })
+    ws_research = StateManager.get(:research)
+    if ws_research[:github] && ws_research[:web]
+      passed += 1
+      warn '  PASS: github-focused WebSearch satisfies github (and web) research'
+    else
+      failed += 1
+      warn "  FAIL: github WebSearch should satisfy github research, got web=#{!ws_research[:web].nil?} github=#{!ws_research[:github].nil?}"
+    end
+
+    StateManager.reset(:research)
+    process_tool_proc.call('WebSearch', { 'query' => 'swift concurrency best practices' })
+    ws_research = StateManager.get(:research)
+    if ws_research[:web] && ws_research[:github].nil?
+      passed += 1
+      warn '  PASS: generic WebSearch satisfies only web, not github'
+    else
+      failed += 1
+      warn "  FAIL: generic WebSearch should not satisfy github, got web=#{!ws_research[:web].nil?} github=#{!ws_research[:github].nil?}"
+    end
+
+    # === MCP VERIFICATION GRACEFUL DEGRADATION ===
+    warn ''
+    warn 'Testing MCP verification graceful degradation:'
+
+    deg_project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
+    deg_mcp_config = File.join(deg_project_dir, '.mcp.json')
+    File.write(deg_mcp_config, '{"mcpServers":{"github":{},"apple-docs":{}}}')
+    StateManager.update(:mcp_health) do |h|
+      h[:verified_this_session] = false
+      h[:degraded] = false
+      h[:gate_block_attempts] = 0
+      h[:mcps] = { apple_docs: { verified: true }, github: { verified: false } }
+      h
+    end
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    deg_results = Array.new(3) { SaneToolsChecks.check_pending_mcp_actions('Edit', %w[Edit Write]) }
+    $stderr.reopen(original_stderr)
+
+    if !deg_results[0].nil? && !deg_results[1].nil? && deg_results[2].nil?
+      passed += 1
+      warn '  PASS: Unreachable MCP blocks twice then degrades (allows edits)'
+    else
+      failed += 1
+      warn "  FAIL: Expected [block, block, allow], got #{deg_results.map { |r| r.nil? ? 'allow' : 'block' }.inspect}"
+    end
+
+    File.delete(deg_mcp_config) if File.exist?(deg_mcp_config)
+    StateManager.update(:mcp_health) do |h|
+      h[:verified_this_session] = true
+      h[:degraded] = false
+      h[:gate_block_attempts] = 0
+      h
+    end
 
     # === CLEANUP ===
     StateManager.reset(:circuit_breaker)

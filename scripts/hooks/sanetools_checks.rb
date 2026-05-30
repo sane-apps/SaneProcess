@@ -46,6 +46,7 @@ module SaneToolsChecks
 
   LOCAL_UI_APPROVAL = 'MR. SANE APPROVES LOCAL UI ON AIR'
   MINI_UNAVAILABLE_APPROVAL = 'MR. SANE CONFIRMS MINI UNAVAILABLE'
+  MINI_SCREENSHOT_WRAPPER = '~/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh'
 
   FILE_SIZE_SOFT_LIMIT = 500
   FILE_SIZE_HARD_LIMIT = 800
@@ -77,7 +78,7 @@ module SaneToolsChecks
     %r{^build/}
   ).freeze
 
-  def workflow_runner_block_message(skill_name, skill_state)
+  def self.workflow_runner_block_message(skill_name, skill_state)
     runner_command = MandatoryWorkflows.runner_command_for(skill_name)
     description = MandatoryWorkflows.skill_requirements.dig(skill_name.to_sym, :description).to_s
     header = if skill_name.to_s == 'evolve'
@@ -133,6 +134,20 @@ module SaneToolsChecks
       "This would control the MacBook Air instead of the Mac Mini.\n" \
       "DO THIS: run SaneApps browser/UI/release work on the Mini via ssh mini, SaneMaster, sane_test.rb, or Mini-side automation.\n" \
       "ONLY FALLBACK: set SANE_MINI_UNAVAILABLE='#{MINI_UNAVAILABLE_APPROVAL}' or SANE_APPROVE_LOCAL_UI_ON_AIR='#{LOCAL_UI_APPROVAL}' after explicit user approval."
+    end
+
+    def check_canonical_action_path(tool_name, tool_input)
+      return nil unless tool_name == 'Bash'
+
+      command = tool_input['command'] || tool_input[:command] || ''
+      return nil unless command.match?(/\bssh\s+(?:[^'"]*\s+)?mini\b/i)
+      return nil unless command.match?(/\bscreencapture\b/i)
+
+      "CANONICAL ACTION PATH BLOCKED\n" \
+      "Mini screenshots must not use raw ssh + screencapture.\n" \
+      "That path can fail outside the Mini's logged-in GUI session and produce false blockers.\n" \
+      "DO THIS: run #{MINI_SCREENSHOT_WRAPPER} with the needed --app/--window-name/--path arguments.\n" \
+      "For app-owned SaneApps captures, this wrapper also runs the visual workspace guard."
     end
 
     def running_on_macbook_air?
@@ -259,7 +274,7 @@ module SaneToolsChecks
         if projected_count > hard_limit
           return "FILE SIZE BLOCKED (Rule #10)\n" \
                  "#{path}: #{projected_count} lines > #{hard_limit} limit\n" \
-                 "Split file first. Use extensions like Manager+Feature.swift"
+                 "Split ownership first. Extensions count toward the same component owner."
         elsif projected_count > FILE_SIZE_SOFT_LIMIT && !is_markdown
           warn "FILE SIZE WARNING: #{path} at #{projected_count} lines (limit: #{hard_limit})"
         end
@@ -278,7 +293,7 @@ module SaneToolsChecks
       if projected_count > hard_limit
         return "FILE SIZE BLOCKED (Rule #10)\n" \
                "#{path}: #{projected_count} lines > #{hard_limit} limit\n" \
-               "Split file first. Use extensions like Manager+Feature.swift"
+               "Split ownership first. Extensions count toward the same component owner."
       elsif projected_count > FILE_SIZE_SOFT_LIMIT && !is_markdown
         warn "FILE SIZE WARNING: #{path} at #{projected_count} lines (limit: #{hard_limit})"
       end
@@ -760,6 +775,12 @@ module SaneToolsChecks
       github: { name: 'GitHub', tool: 'mcp__github__search_repositories' }
     }.freeze
 
+    # Graceful-degradation threshold: how many times the MCP-verification gate
+    # may block before treating still-unverified MCPs as unreachable this
+    # session. The research gate auto-completes when an MCP is absent; this
+    # mirrors that so a down/mis-scoped MCP cannot brick every edit.
+    MCP_GATE_MAX_BLOCKS = 2
+
     def check_pending_mcp_actions(tool_name, edit_tools)
       return nil unless edit_tools.include?(tool_name)
 
@@ -786,6 +807,25 @@ module SaneToolsChecks
       # If all verified (but flag not set), allow and fix state
       if unverified.empty?
         StateManager.update(:mcp_health) { |h| h[:verified_this_session] = true; h }
+        return nil
+      end
+
+      # Graceful degradation: a configured MCP that never connects this session
+      # (down, mis-scoped, or removed) must not brick every edit. Count gate
+      # blocks; once past the threshold, treat the still-unverified MCPs as
+      # unreachable, allow edits, and warn once so the user can reconnect them.
+      block_attempts = (health[:gate_block_attempts] || 0) + 1
+      StateManager.update(:mcp_health) { |h| h[:gate_block_attempts] = block_attempts; h }
+      if block_attempts > MCP_GATE_MAX_BLOCKS
+        names = unverified.map { |_key, info| info[:name] }.join(', ')
+        warn "⚠️  MCP verification degraded: #{names} unreachable after " \
+             "#{MCP_GATE_MAX_BLOCKS} attempt(s) — allowing edits. " \
+             "Reconnect with 'claude mcp list' to restore full verification."
+        StateManager.update(:mcp_health) do |h|
+          h[:verified_this_session] = true
+          h[:degraded] = true
+          h
+        end
         return nil
       end
 

@@ -1,5 +1,13 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
+
+# Fast no-op under Grok (Claude compatibility hooks are merged and can produce
+# visible Pre/PostToolUse annotations on every tool even when guarded).
+# Grok users rely on AGENTS.md + explicit SaneMaster calls; native hooks are Claude-only.
+if ENV["GROK_HOOK_EVENT"] || ENV["GROK_SESSION_ID"]
+  exit 0
+end
+
 # ==============================================================================
 # SaneStop - Stop Hook
 # ==============================================================================
@@ -416,8 +424,12 @@ def validate_skill_execution
 
   issues = []
 
-  # Check if skill was invoked at all
-  unless invoked
+  # Check if skill was invoked at all. For runner-backed workflows (status, evolve,
+  # verify, ship, check_inbox) the canonical proof is the runner receipt, not the
+  # Skill tool — and the startup gate frequently BLOCKS the Skill call itself, so
+  # `invoked` stays false even when the workflow ran correctly. A valid runner
+  # receipt therefore counts as invocation.
+  unless invoked || (requires_runner && runner_used)
     issues << "Skill '#{required_skill}' was required but NOT invoked"
     issues << "  You should have used the Skill tool to invoke it"
   end
@@ -442,6 +454,8 @@ def validate_skill_execution
     issues << "  Spawn GPT subagents for the audit swarm instead of using gpt_audit.py"
   end
 
+  issues.concat(validate_sane_audit_artifact) if required_skill == 'sane_audit'
+
   return nil if issues.empty?
 
   # Update skill state with validation result
@@ -456,6 +470,69 @@ def validate_skill_execution
 rescue StandardError => e
   warn "⚠️  Skill validation error: #{e.message}" if ENV['DEBUG']
   nil
+end
+
+def validate_sane_audit_artifact
+  required_files = %w[
+    q0-config.md
+    q6-release.md
+    q7-website.md
+    q8-signing.md
+    q9-support.md
+    q10-docs.md
+    q11-tooling.md
+    q12-runtime-resources.md
+    q13-historical-regression.md
+  ]
+  output_dir = '/tmp/sane_audit_outputs'
+  summary_path = '/tmp/sane_audit_outputs/summary.md'
+  issues = []
+
+  missing_files = required_files.reject { |file| File.exist?(File.join(output_dir, file)) }
+  if missing_files.any?
+    issues << "Skill 'sane_audit' is missing required perspective reports: #{missing_files.join(', ')}"
+  end
+
+  present_files = required_files - missing_files
+  incomplete_reports = present_files.select do |file|
+    report_content = File.read(File.join(output_dir, file))
+    !sane_audit_report_content_complete?(report_content)
+  rescue StandardError
+    true
+  end
+  if incomplete_reports.any?
+    issues << "Skill 'sane_audit' reports are missing required audit sections: #{incomplete_reports.join(', ')}"
+  end
+
+  unless File.exist?(summary_path)
+    issues << "Skill 'sane_audit' requires consolidated summary artifact: #{summary_path}"
+    return issues
+  end
+
+  content = File.read(summary_path)
+  required_sections = [
+    'Per-Perspective Scores',
+    'Root-Cause Matrix',
+    'Current Coverage',
+    'Would Catch Today?',
+    'Checked Evidence'
+  ]
+  missing = required_sections.reject { |section| content.include?(section) }
+  issues << "Skill 'sane_audit' summary is missing required proof sections: #{missing.join(', ')}" if missing.any?
+
+  missing_mentions = required_files.reject { |file| content.include?(file) }
+  if missing_mentions.any?
+    issues << "Skill 'sane_audit' summary does not mention all perspective reports: #{missing_mentions.join(', ')}"
+  end
+
+  issues
+rescue StandardError => e
+  ["Skill 'sane_audit' summary could not be validated: #{e.message}"]
+end
+
+def sane_audit_report_content_complete?(content)
+  required_terms = ['Score', 'Critical', 'Warning', 'Passed', 'Checked Evidence']
+  required_terms.all? { |term| content.include?(term) } && content.lines.length >= 20
 end
 
 # === RULE #4 ENFORCEMENT ===
@@ -1037,13 +1114,14 @@ def process_stop(stop_hook_active, transcript_path = nil)
     required_skill = StateManager.get(:skill)[:required]
     warn ''
     warn '=' * 50
-    warn required_skill == 'docs_audit' ? '🔴 SKILL EXECUTION BLOCK' : 'SKILL EXECUTION WARNING'
+    blocking_skill = %w[docs_audit sane_audit].include?(required_skill)
+    warn blocking_skill ? '🔴 SKILL EXECUTION BLOCK' : 'SKILL EXECUTION WARNING'
     warn ''
     skill_issues.each { |issue| warn "  #{issue}" }
     warn ''
-    if required_skill == 'docs_audit'
-      warn 'This is blocking because docs_audit is required for this session.'
-      warn 'Re-run the audit with the required GPT subagent swarm, then try again.'
+    if blocking_skill
+      warn "This is blocking because #{required_skill} is required for this session."
+      warn 'Re-run the audit with the required GPT subagent swarm and summary artifact, then try again.'
       warn '=' * 50
       warn ''
       return 2

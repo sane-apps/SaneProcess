@@ -1,6 +1,13 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Fast no-op under Grok (Claude compatibility hooks are merged and can produce
+# visible Pre/PostToolUse annotations on every tool even when guarded).
+# Grok users rely on AGENTS.md + explicit SaneMaster calls; native hooks are Claude-only.
+if ENV["GROK_HOOK_EVENT"] || ENV["GROK_SESSION_ID"]
+  exit 0
+end
+
 # ==============================================================================
 # SaneTrack - PostToolUse Hook
 # ==============================================================================
@@ -264,7 +271,7 @@ rescue StandardError => e
 end
 
 def track_subagent_spawn(tool_name, tool_input)
-  return unless tool_name == 'Task'
+  return unless ['Task', 'spawn_agent', 'multi_agent_v1.spawn_agent'].include?(tool_name)
 
   # Only count if a skill is required
   skill_state = StateManager.get(:skill)
@@ -357,9 +364,20 @@ def runner_proof_for(required_skill, command, tool_response)
   end
 end
 
+# Canonical SaneProcess repo root. SaneMaster.rb tool_discovery always writes its
+# receipt under <SaneProcess>/outputs/, regardless of the project cwd, so the
+# evolve runner-proof check must look there too — otherwise the gate can never be
+# satisfied from an app repo (Dir.pwd would be e.g. SaneBar, where no receipt lands).
+# Overridable via SANEPROCESS_ROOT so self-tests can isolate the receipt search.
+def saneprocess_root
+  ENV['SANEPROCESS_ROOT'] || File.expand_path('../..', __dir__)
+end
+
 def latest_recent_file(glob)
-  path = Dir.glob(File.join(Dir.pwd, glob)).select { |candidate| File.file?(candidate) }
-            .max_by { |candidate| File.mtime(candidate) rescue Time.at(0) }
+  roots = [Dir.pwd, saneprocess_root].uniq
+  path = roots.flat_map { |root| Dir.glob(File.join(root, glob)) }
+              .select { |candidate| File.file?(candidate) }
+              .max_by { |candidate| File.mtime(candidate) rescue Time.at(0) }
   return nil unless path && recent_time?(File.mtime(path))
 
   yield(path)
