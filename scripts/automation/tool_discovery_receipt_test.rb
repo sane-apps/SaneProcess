@@ -3,6 +3,8 @@
 
 require_relative '../hooks/test/test_framework'
 require_relative 'tool_discovery_receipt'
+require 'fileutils'
+require 'tmpdir'
 
 include TestFramework
 
@@ -229,6 +231,25 @@ exit(run_tests('Tool discovery receipt tests') do
       assert_includes(helper, 'SANEPROCESS_ROOT="${SANEPROCESS_ROOT:-}"')
       assert_includes(helper, '$HOME/SaneApps/infra/SaneProcess')
       assert_includes(helper, 'Could not locate SaneProcess or ruby')
+      true
+    end
+
+    test('searches neutral .agents skills for Grok and generic clients') do
+      Dir.mktmpdir('tool-discovery-agents-skills') do |dir|
+        skill_dir = File.join(dir, '.agents', 'skills', 'sample')
+        FileUtils.mkdir_p(skill_dir)
+        File.write(File.join(skill_dir, 'SKILL.md'), "# sample\n\nUse this for widgetizer MCP checks.\n")
+        receipt = ToolDiscoveryReceipt.new([
+          '--query', 'widgetizer',
+          '--project-root', dir,
+          '--skip-doctor',
+          '--skip-validation'
+        ])
+
+        result = receipt.send(:search_global_skills)
+        assert(result[:source].include?(File.join(dir, '.agents', 'skills')), 'expected project .agents skills root')
+        assert(result[:matches].any? { |match| match[:file].end_with?('SKILL.md') }, 'expected .agents skill match')
+      end
       true
     end
   end

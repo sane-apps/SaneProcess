@@ -359,4 +359,3 @@ def summarize_input(input)
   input['command']&.to_s&.slice(0, 50) || input[:command]&.to_s&.slice(0, 50) ||
     input['prompt']&.to_s&.slice(0, 50) || input[:prompt]&.to_s&.slice(0, 50)
 end
-

@@ -485,8 +485,8 @@ def validate_sane_audit_artifact
     q12-runtime-resources.md
     q13-historical-regression.md
   ]
-  output_dir = '/tmp/sane_audit_outputs'
-  summary_path = '/tmp/sane_audit_outputs/summary.md'
+  output_dir = ENV.fetch('SANE_AUDIT_OUTPUT_DIR', '/tmp/sane_audit_outputs')
+  summary_path = File.join(output_dir, 'summary.md')
   issues = []
 
   missing_files = required_files.reject { |file| File.exist?(File.join(output_dir, file)) }
@@ -722,6 +722,7 @@ elsif ARGV.include?('--self-test-internal')
   require 'tmpdir'
   Dir.mktmpdir('sanestop-self-test-metrics-') do |dir|
     ENV['SANEMASTER_PROCESS_METRICS_PATH'] = File.join(dir, 'process_metrics.jsonl')
+    ENV['SANE_SKIP_MCP_WATCHDOG_CLEANUP'] = '1'
     exit run_internal_self_test.call
   end
 else

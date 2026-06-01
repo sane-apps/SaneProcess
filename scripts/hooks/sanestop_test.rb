@@ -511,11 +511,10 @@ module SaneStopTest
       warn "  FAIL: runner-backed status warned not-invoked (exit=#{runner_exit}, warned=#{captured.string.include?('NOT invoked')})"
     end
 
-    audit_output_dir = '/tmp/sane_audit_outputs'
-    audit_backup_parent = Dir.mktmpdir('sane_audit_outputs_backup')
-    audit_backup_dir = File.join(audit_backup_parent, 'sane_audit_outputs')
-    FileUtils.cp_r(audit_output_dir, audit_backup_dir) if Dir.exist?(audit_output_dir)
-    FileUtils.rm_rf(audit_output_dir)
+    previous_audit_output_dir = ENV['SANE_AUDIT_OUTPUT_DIR']
+    audit_root = Dir.mktmpdir('sane_audit_outputs_test')
+    audit_output_dir = File.join(audit_root, 'sane_audit_outputs')
+    ENV['SANE_AUDIT_OUTPUT_DIR'] = audit_output_dir
     FileUtils.mkdir_p(audit_output_dir)
     StateManager.update(:skill) do |s|
       s[:required] = 'sane_audit'
@@ -614,9 +613,8 @@ module SaneStopTest
       failed += 1
       warn "  FAIL: sane_audit summary proof should allow stop, got #{exit_code}"
     end
-    FileUtils.rm_rf(audit_output_dir)
-    FileUtils.cp_r(audit_backup_dir, audit_output_dir) if Dir.exist?(audit_backup_dir)
-    FileUtils.rm_rf(audit_backup_parent)
+    ENV['SANE_AUDIT_OUTPUT_DIR'] = previous_audit_output_dir
+    FileUtils.rm_rf(audit_root)
 
     StateManager.reset(:skill)
     StateManager.update(:skill) do |s|

@@ -53,7 +53,7 @@ SaneProcess has one SOP with multiple client adapters.
 | Client | Install mode | Stable surface |
 |--------|--------------|----------------|
 | Claude Code | `scripts/init.sh --client claude` | `AGENTS.md`, `.claude/settings.json`, hooks, skills, MCP, shared scripts |
-| Codex | `scripts/init.sh --client codex` | `AGENTS.md`, `.agents/skills`, Codex config, MCP, shell/script guards |
+| Codex | `scripts/init.sh --client codex` | `AGENTS.md`, `.agents/skills`, shell/script guards; Codex config/MCP/approval policy stays client-managed |
 | Grok | `scripts/init.sh --client grok` | `AGENTS.md`, `.agents/skills`, shell/script guards; operator sync can mirror existing `~/.grok/config.toml` |
 | Other agents | `scripts/init.sh --client generic` | `AGENTS.md`, repo scripts, git hooks, optional MCP |
 | SaneApps full setup | `scripts/init.sh --client all` | Claude + Codex-compatible surfaces for internal use |
@@ -88,9 +88,9 @@ After `scripts/init.sh --client grok` in a repo:
    - Grok merges hooks from ~/.claude/settings.json (and project .claude/ if trusted) for Claude Code compatibility.
    - SaneProcess populates that surface with saneprompt, sanetools + sane_* guards (PreToolUse), sanetrack + task_completed_gate + sanestop (PostToolUse), etc.
    - Even guarded entries can produce visible annotations/notifications in the Grok scrollback on every tool call (search_replace, read_file, run_terminal_cmd, todo_write, etc.) because Grok records hook execution.
-   - This is expected when the same machine runs both Claude Code and Grok heavily on Sane repos. It does not block tools (fail-open).
+   - This is expected when the same machine runs both Claude Code and Grok heavily on Sane repos. Passive tracking/session hooks no-op under Grok; high-risk launch, release, ship, and email guards still block if Grok invokes them.
    - Inspect/disable at runtime: /hooks or Ctrl+L \u2192 Hooks tab.
-   - The SaneProcess contract for Grok is unchanged: AGENTS.md + explicit SaneMaster.rb + shell guards. Native Pre/Post hooks remain a Claude Code adapter.
+   - The portable SaneProcess contract for Grok is unchanged: AGENTS.md + explicit SaneMaster.rb + shell guards. Native Pre/Post hooks are an adapter layer, not the only enforcement surface.
 
 5. Common SaneProcess commands from Grok:
    - `ruby scripts/SaneMaster.rb verify`
@@ -100,7 +100,7 @@ After `scripts/init.sh --client grok` in a repo:
 
 6. Shared skills (critic, docs-audit) land in `.agents/skills/`. Load them via your client's skill mechanism or invoke the SKILL.md prompts directly when needed.
 
-The enforcement contract for Grok (and Codex, generic agents) is **AGENTS.md + explicit calls to SaneMaster + shell guards**, not native PreToolUse / PostToolUse hooks. When you see hook annotations they are the Claude compatibility layer firing; they are safe to ignore or disable per-session for pure Grok workflows.
+The portable enforcement contract for Grok (and Codex, generic agents) is **AGENTS.md + explicit calls to SaneMaster + shell guards**. High-risk native hook entries may still block dangerous commands when Grok invokes them; passive tracking annotations are safe to ignore or disable per-session for pure Grok workflows.
 
 ## Core Rules
 

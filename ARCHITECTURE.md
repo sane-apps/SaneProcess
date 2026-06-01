@@ -830,15 +830,12 @@ Disabled or paused consolidations:
 
 ## 7. Test Coverage Map
 
-| Component | Self-Test | Tier Tests | Total |
-|-----------|----------|------------|-------|
-| saneprompt.rb | 176 | 62 | 238 |
-| sanetools.rb | 44 | 69 | 113 |
-| sanetrack.rb | 30 | 37 | 67 |
-| sanestop.rb | 24 | 5 | 29 |
-| config.rb | 5 | — | 5 |
-| Integration | — | 5 | 5 |
-| **Total** | **279** | **178** | **457** |
+The durable source of truth for exact test counts is `ruby scripts/SaneMaster.rb
+verify`; hook-layer slice counts change as guardrails are extracted. Current
+focused hook receipts include `saneprompt` 62, `sanetools` 38, `sanetrack` 38,
+`sanestop` 45, `session_docs` startup/state coverage, `grok_and_security_guard`,
+and the 185-test tier suite. Keep the detailed hook slice list in
+`scripts/hooks/README.md` rather than duplicating every count here.
 
 ### Running Tests
 

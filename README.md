@@ -68,7 +68,7 @@ SaneProcess is intentionally layered instead of pretending every coding agent ha
 | Client | Install mode | What is enforced today |
 |--------|--------------|------------------------|
 | Claude Code | `--client claude` | Native lifecycle hooks plus `AGENTS.md`, MCP, skills, and shared scripts |
-| Codex | `--client codex` | `AGENTS.md`, `.agents/skills`, MCP, client config, approvals/sandboxing, and shared scripts/wrappers |
+| Codex | `--client codex` | `AGENTS.md`, `.agents/skills`, and shared scripts/wrappers; Codex MCP/config/approval policy stays client-managed |
 | Grok | `--client grok` | `AGENTS.md`, `.agents/skills`, client-managed MCP config, approvals/sandboxing, and shared scripts/wrappers |
 | Other agents | `--client generic` | `AGENTS.md`, repo scripts, git/pre-commit checks, MCP if supported, and whatever runtime guards the client can honor |
 

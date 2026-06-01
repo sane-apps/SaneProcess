@@ -284,7 +284,9 @@ class ToolDiscoveryReceipt
   def search_global_skills
     skill_roots = [
       File.expand_path('~/.codex/skills'),
-      File.expand_path('~/.claude/skills')
+      File.expand_path('~/.claude/skills'),
+      File.expand_path('~/.agents/skills'),
+      File.join(@options[:project_root], '.agents', 'skills')
     ].uniq.select { |path| Dir.exist?(path) }
 
     files = skill_roots.flat_map do |skill_root|

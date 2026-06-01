@@ -242,6 +242,8 @@ def reset_mcp_verification
   # Reset verification flag for new session (MCPs must re-verify)
   StateManager.update(:mcp_health) do |health|
     health[:verified_this_session] = false
+    health[:gate_block_attempts] = 0
+    health[:degraded] = false
     # Keep historical data but reset per-session verification
     health[:mcps].each do |_mcp, data|
       data[:verified] = false if data.is_a?(Hash)

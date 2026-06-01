@@ -12,12 +12,12 @@ For Codex and other clients, treat these as one layer of the system, not the who
 |------|------|---------|-------|
 | `saneprompt.rb` | UserPromptSubmit | Classifies prompts, handles commands (rb-, s+, etc.) | 62 |
 | `sanetools.rb` | PreToolUse | Gates edits on research, blocks paths, circuit breaker | 66 |
-| `sanetrack.rb` | PostToolUse | Tracks edits, failures, per-signature errors | 37 |
+| `sanetrack.rb` | PostToolUse | Tracks edits, failures, per-signature errors | 38 |
 | `task_completed_gate.rb` | TaskCompleted | Blocks completion claims unless non-doc edits have a fresh counted verify metric with matching source fingerprint | registry-backed |
-| `sanestop.rb` | Stop | Session stats, summary reminder, structured verification gate | 40 |
-| `session_start.rb` | SessionStart | Bootstraps session, resets state | bootstrap only |
+| `sanestop.rb` | Stop | Session stats, summary reminder, structured verification gate | 45 |
+| `session_start.rb` | SessionStart | Bootstraps session, resets state | covered by session docs/integration tests |
 
-**Tier suite:** 185 hook-layer tests (including integration).
+**Tier suite:** 185 hook-layer tests (including integration). Additional focused hook tests cover `sanetools`, session docs/startup, Grok guard behavior, and shell-level security guards.
 
 These are hook-layer counts only. Full repo verification is registry-backed and also runs Ruby/Python/SaneMaster/Mini-support tests through `ruby scripts/SaneMaster.rb verify`.
 
@@ -26,12 +26,15 @@ These are hook-layer counts only. Full repo verification is registry-backed and 
 ```bash
 # Run all tests
 ruby scripts/hooks/saneprompt.rb --self-test
+ruby scripts/hooks/sanetools_test.rb
 ruby scripts/hooks/sanetrack.rb --self-test
 ruby scripts/hooks/sanestop.rb --self-test
+ruby scripts/hooks/session_docs_test.rb
+ruby scripts/hooks/grok_and_security_guard_test.rb
 ruby scripts/hooks/test/tier_tests.rb
 ```
 
-`sanetools` coverage is included in the tier/full verification paths. Do not advertise its standalone self-test until the tool-discovery self-test path is repaired.
+Full verification remains `ruby scripts/SaneMaster.rb verify`; the focused commands above are the hook-layer slices.
 
 ## User Commands
 
@@ -57,7 +60,9 @@ ruby scripts/hooks/test/tier_tests.rb
 | `saneprompt_commands.rb` | Safemode, breaker, planning user commands |
 | `sanetrack_research.rb` | Research write/size validation |
 | `sanetrack_state_updates.rb` | State mutation helpers for PostToolUse |
+| `sanetrack_tracking.rb` | Per-tool result tracking extracted from `sanetrack.rb` |
 | `sanetrack_gate.rb` | Post-edit enforcement helpers |
+| `sanestop_finalize.rb` | Session-end verification, receipts, and learnings extracted from `sanestop.rb` |
 | `sanetrack_reminders.rb` | Feature reminders and logging |
 | `session_briefing.rb` | Session-start briefing output |
 | `session_start_cleanup.rb` | Session-start cleanup helpers |

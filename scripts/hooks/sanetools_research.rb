@@ -56,9 +56,12 @@ module SaneToolsResearch
       File.expand_path('~/.mcp.json'),
       File.join(project_dir, '.mcp.json'),
       File.expand_path('~/.claude/settings.json'),
+      File.expand_path('~/.config/claude/mcp-config.json'),
       File.join(project_dir, '.claude', 'settings.json'),
       File.expand_path('~/.codex/config.toml'),
       File.join(project_dir, '.codex', 'config.toml'),
+      File.expand_path('~/.gemini/settings.json'),
+      File.join(project_dir, '.gemini', 'settings.json'),
       File.expand_path('~/.grok/config.toml'),
       File.join(project_dir, '.grok', 'config.toml')
     ].uniq
@@ -78,7 +81,9 @@ module SaneToolsResearch
   end
 
   def mcp_names_from_toml_config(contents)
-    contents.scan(/^\s*\[mcp_servers\.([^\]]+)\]/).flatten.map do |name|
+    contents.scan(/^\s*\[mcp_servers\.([^\]]+)\]/).flatten.reject do |name|
+      name.include?('.')
+    end.map do |name|
       name.delete_prefix('"').delete_suffix('"').delete_prefix("'").delete_suffix("'")
     end
   end
@@ -213,7 +218,7 @@ module SaneToolsResearch
       names = unverified.map { |_key, info| info[:name] }.join(', ')
       warn "⚠️  MCP verification degraded: #{names} unreachable after " \
            "#{MCP_GATE_MAX_BLOCKS} attempt(s) — allowing edits. " \
-           "Reconnect with 'claude mcp list' to restore full verification."
+           "Reconnect/check MCPs in the active client, then rerun the session start."
       StateManager.update(:mcp_health) do |h|
         h[:verified_this_session] = true
         h[:degraded] = true

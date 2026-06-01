@@ -580,6 +580,8 @@ def session_client
 end
 
 def run_mcp_watchdog_cleanup
+  return if ENV['SANE_SKIP_MCP_WATCHDOG_CLEANUP'] == '1'
+
   sane_master = File.expand_path('../SaneMaster.rb', __dir__)
   return unless File.exist?(sane_master)
 
@@ -591,4 +593,3 @@ def run_mcp_watchdog_cleanup
 rescue StandardError
   # Never block stop hook on cleanup.
 end
-

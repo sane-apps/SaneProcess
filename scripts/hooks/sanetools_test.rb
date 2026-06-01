@@ -787,20 +787,30 @@ module SaneToolsTest
     FileUtils.mkdir_p(deg_project_dir)
     codex_config_dir = File.join(deg_project_dir, '.codex')
     claude_config_dir = File.join(deg_project_dir, '.claude')
+    gemini_config_dir = File.join(deg_project_dir, '.gemini')
+    grok_config_dir = File.join(deg_project_dir, '.grok')
     codex_config = File.join(codex_config_dir, 'config.toml')
     claude_settings = File.join(claude_config_dir, 'settings.json')
+    gemini_settings = File.join(gemini_config_dir, 'settings.json')
+    grok_config = File.join(grok_config_dir, 'config.toml')
 
     FileUtils.mkdir_p(codex_config_dir)
     FileUtils.mkdir_p(claude_config_dir)
+    FileUtils.mkdir_p(gemini_config_dir)
+    FileUtils.mkdir_p(grok_config_dir)
     File.write(codex_config, "[mcp_servers.context7]\ncommand = \"context7\"\n")
     File.write(claude_settings, '{"permissions":{"allow":["mcp__apple-docs__*"]}}')
+    File.write(gemini_settings, '{"mcpServers":{"github":{}}}')
+    File.write(grok_config, "[mcp_servers.github]\ncommand = \"github\"\n[mcp_servers.github.env]\nTOKEN = \"redacted\"\n")
     configured_keys = SaneToolsChecks.configured_mcp_keys(deg_project_dir)
-    if configured_keys.include?(:apple_docs) && configured_keys.include?(:context7)
+    configured_names = SaneToolsChecks.configured_mcp_server_names(deg_project_dir)
+    if configured_keys.include?(:apple_docs) && configured_keys.include?(:context7) &&
+       configured_keys.include?(:github) && !configured_names.include?('github.env')
       passed += 1
-      warn '  PASS: MCP discovery reads active Claude and Codex client configs'
+      warn '  PASS: MCP discovery reads active Claude, Codex, Gemini, and Grok client configs'
     else
       failed += 1
-      warn "  FAIL: MCP discovery missed client configs, got #{configured_keys.inspect}"
+      warn "  FAIL: MCP discovery missed client configs, got keys=#{configured_keys.inspect} names=#{configured_names.inspect}"
     end
     deg_mcp_config = File.join(deg_project_dir, '.mcp.json')
     File.write(deg_mcp_config, '{"mcpServers":{"github":{},"apple-docs":{}}}')
