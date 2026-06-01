@@ -26,6 +26,7 @@ end
 
 require 'json'
 require 'fileutils'
+require 'shellwords'
 require 'time'
 require_relative 'core/mandatory_workflows'
 require_relative 'core/state_manager'
@@ -424,12 +425,63 @@ def ship_clearance_proof(project_dir = Dir.pwd)
     return nil if expires && Time.now.utc > expires
   end
 
-  current_sha = `git -C #{project_dir} rev-parse HEAD 2>/dev/null`.strip
-  return nil if data['git_sha'] && !current_sha.empty? && data['git_sha'] != current_sha
+  current_sha = `git -C #{project_dir.shellescape} rev-parse HEAD 2>/dev/null`.strip
+  return nil if data['git_sha'] && release_relevant_clearance_commits_changed?(project_dir, data['git_sha'], current_sha)
 
   { path: clearance_path, app: app_name }
 rescue StandardError
   nil
+end
+
+def release_relevant_clearance_path?(project_dir, relative_path)
+  path = relative_path.to_s
+  return false if path.empty?
+  return true if path == '.saneprocess'
+  return true if %w[Package.resolved Package.swift project.yml].include?(path)
+  return true if path.end_with?('.xcodeproj/project.pbxproj')
+
+  app_folder = File.basename(File.expand_path(project_dir))
+  return true if path.start_with?("#{app_folder}/")
+  return true if path.start_with?('Config/', 'Scripts/', 'Shared/', 'Sources/', 'Tests/', 'scripts/')
+
+  return false if %w[
+    AGENTS.md ARCHITECTURE.md CLAUDE.md DEVELOPMENT.md README.md SESSION_HANDOFF.md
+  ].include?(path)
+  return false if path.start_with?(
+    '.build/',
+    '.claude/',
+    '.codex/',
+    '.git/',
+    '.sane/',
+    '.sanemaster/',
+    '.serena/',
+    'DerivedData/',
+    'build/',
+    'docs/',
+    'fastlane/test_output/',
+    'node_modules/',
+    'outputs/',
+    'releases/',
+    'vendor/bundle/',
+    'website/'
+  )
+
+  %w[
+    .c .cc .cpp .entitlements .h .json .metal .m .mm .plist .rb .sh .storyboard
+    .swift .xcconfig .xcprivacy .xcstrings .xib .yaml .yml
+  ].include?(File.extname(path))
+end
+
+def release_relevant_clearance_commits_changed?(project_dir, old_sha, current_sha)
+  return true if old_sha.to_s.empty? || current_sha.to_s.empty?
+  return false if old_sha == current_sha
+
+  out = `git -C #{project_dir.shellescape} diff --name-only #{old_sha.shellescape}..#{current_sha.shellescape} 2>/dev/null`
+  return true if out.to_s.empty? && !$?.success?
+
+  out.each_line.map(&:strip).reject(&:empty?).any? do |path|
+    release_relevant_clearance_path?(project_dir, path)
+  end
 end
 
 def latest_recent_process_metric(type)

@@ -6,6 +6,7 @@ require 'open3'
 require 'tmpdir'
 require 'fileutils'
 require 'digest'
+require 'time'
 
 HOOK_DIR = File.expand_path(__dir__)
 SANEPROCESS_DIR = File.expand_path('../..', __dir__)
@@ -84,6 +85,82 @@ Dir.mktmpdir('ship-guard-test-') do |project_dir|
   )
   t('Ship guard blocks release chain even when SaneMaster appears', ship_chain_status.exitstatus == 2)
   t('Ship chain block requires /ship clearance', ship_chain_err.include?('/ship clearance'))
+end
+
+Dir.mktmpdir('ship-guard-clearance-') do |home_dir|
+  Dir.mktmpdir('ship-guard-project-') do |project_dir|
+    system('git', '-C', project_dir, 'init', '-q')
+    system('git', '-C', project_dir, 'config', 'user.email', 'test@example.com')
+    system('git', '-C', project_dir, 'config', 'user.name', 'Test')
+    File.write(File.join(project_dir, '.saneprocess'), "name: SaneBar\n")
+    system('git', '-C', project_dir, 'add', '.saneprocess')
+    system('git', '-C', project_dir, 'commit', '-q', '-m', 'baseline')
+    baseline_sha = `git -C #{project_dir} rev-parse HEAD`.strip
+
+    require_relative 'state_signer'
+    clearance_dir = File.join(home_dir, '.claude', 'ship_clearance')
+    FileUtils.mkdir_p(clearance_dir)
+    StateSigner.write_signed(
+      File.join(clearance_dir, 'SaneBar.json'),
+      {
+        'app' => 'SaneBar',
+        'project_dir' => project_dir,
+        'git_sha' => baseline_sha,
+        'cleared_at' => Time.now.utc.iso8601,
+        'expires_at' => (Time.now.utc + 3600).iso8601
+      }
+    )
+
+    FileUtils.mkdir_p(File.join(project_dir, 'outputs'))
+    File.write(File.join(project_dir, 'outputs', 'release_preflight_status.json'), "{}\n")
+    system('git', '-C', project_dir, 'add', 'outputs/release_preflight_status.json')
+    system('git', '-C', project_dir, 'commit', '-q', '-m', 'refresh receipt')
+    _, receipt_err, receipt_status = run_ruby_hook(
+      'sane_ship_guard.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => "bash scripts/release.sh --project #{project_dir} --full --deploy"
+        }
+      },
+      { 'HOME' => home_dir }
+    )
+    t('Ship clearance survives receipt-only commits', receipt_status.exitstatus == 0)
+    t('Receipt-only clearance does not warn about code drift', !receipt_err.include?('Release-relevant code changed'))
+
+    File.write(File.join(project_dir, 'README.md'), "docs only\n")
+    system('git', '-C', project_dir, 'add', 'README.md')
+    system('git', '-C', project_dir, 'commit', '-q', '-m', 'update docs')
+    _, docs_err, docs_status = run_ruby_hook(
+      'sane_ship_guard.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => "bash scripts/release.sh --project #{project_dir} --full --deploy"
+        }
+      },
+      { 'HOME' => home_dir }
+    )
+    t('Ship clearance survives docs-only commits', docs_status.exitstatus == 0)
+    t('Docs-only clearance does not warn about code drift', !docs_err.include?('Release-relevant code changed'))
+
+    FileUtils.mkdir_p(File.join(project_dir, 'Scripts'))
+    File.write(File.join(project_dir, 'Scripts', 'probe.rb'), "puts 'changed'\n")
+    system('git', '-C', project_dir, 'add', 'Scripts/probe.rb')
+    system('git', '-C', project_dir, 'commit', '-q', '-m', 'change release script')
+    _, source_err, source_status = run_ruby_hook(
+      'sane_ship_guard.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => "bash scripts/release.sh --project #{project_dir} --full --deploy"
+        }
+      },
+      { 'HOME' => home_dir }
+    )
+    t('Ship clearance blocks release-relevant commits', source_status.exitstatus == 2)
+    t('Release-relevant block explains scoped invalidation', source_err.include?('Release-relevant code changed'))
+  end
 end
 
 _, launch_chain_err, launch_chain_status = run_ruby_hook(
