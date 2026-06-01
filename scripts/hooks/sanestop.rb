@@ -450,6 +450,15 @@ def validate_skill_execution
     issues << "  Run #{MandatoryWorkflows.runner_command_for(required_skill)}" if MandatoryWorkflows.runner_command_for(required_skill)
   end
 
+  if required_skill.to_s == 'ship' && runner_used
+    proof = skill_state[:runner_proof] || skill_state['runner_proof'] || {}
+    clearance_path = proof[:clearance_path] || proof['clearance_path']
+    unless clearance_path && File.file?(File.expand_path(clearance_path))
+      issues << "Skill 'ship' requires signed /ship clearance, not just release_preflight"
+      issues << '  Complete the /ship final verdict and write ~/.claude/ship_clearance/<AppName>.json'
+    end
+  end
+
   if required_skill == 'docs_audit' && runner_used && subagents_spawned < min_subagents
     issues << "Skill '#{required_skill}' no longer accepts runner-only execution"
     issues << "  Spawn GPT subagents for the audit swarm instead of using gpt_audit.py"

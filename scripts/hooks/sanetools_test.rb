@@ -12,6 +12,7 @@ require_relative 'core/state_manager'
 require_relative 'core/mandatory_workflows'
 require_relative 'sanetools_test_scenarios'
 require 'fileutils'
+require 'json'
 
 module SaneToolsTest
   def self.run(process_tool_proc, research_categories)
@@ -311,7 +312,7 @@ module SaneToolsTest
       warn "  FAIL: Plan approval should unblock edits, got exit #{exit_code}"
     end
 
-    # Test: Edit limit triggers re-planning
+    # Test: Successful edits do not trigger re-planning loops
     StateManager.reset(:planning)
     StateManager.reset(:edit_attempts)
     StateManager.reset(:research)
@@ -331,12 +332,12 @@ module SaneToolsTest
     $stderr.reopen(original_stderr)
 
     planning_after = StateManager.get(:planning)
-    if exit_code == 2 && planning_after[:plan_approved] == false && planning_after[:replan_count] == 1
+    if exit_code == 0 && planning_after[:plan_approved] == true && planning_after[:replan_count].to_i.zero?
       passed += 1
-      warn '  PASS: Edit limit triggers re-planning'
+      warn '  PASS: Successful edit history does not trigger re-planning'
     else
       failed += 1
-      warn "  FAIL: Edit limit replan - exit=#{exit_code}, approved=#{planning_after[:plan_approved]}, replan=#{planning_after[:replan_count]}"
+      warn "  FAIL: Successful edit history should not replan - exit=#{exit_code}, approved=#{planning_after[:plan_approved]}, replan=#{planning_after[:replan_count]}"
     end
 
     # Cleanup planning tests
@@ -649,7 +650,7 @@ module SaneToolsTest
     warn ''
     warn 'Testing GitHub post guard:'
 
-    approval_flag = '/tmp/.gh_post_approved'
+    approval_flag = '/tmp/.gh_post_approved.json'
     File.delete(approval_flag) if File.exist?(approval_flag)
 
     # Setup: all non-GitHub guards satisfied
@@ -682,8 +683,8 @@ module SaneToolsTest
       warn "  FAIL: GitHub post without approval should block, got exit #{exit_code}"
     end
 
-    # Test 2: Allow post with fresh approval flag
-    FileUtils.touch(approval_flag)
+    # Test 2: Allow post with fresh structured approval
+    File.write(approval_flag, JSON.generate('created_at' => Time.now.to_i, 'user_approval' => 'post it'))
     original_stderr = $stderr.clone
     $stderr.reopen('/dev/null', 'w')
     exit_code = process_tool_proc.call('mcp__github__add_issue_comment', {
@@ -696,14 +697,14 @@ module SaneToolsTest
 
     if exit_code == 0
       passed += 1
-      warn '  PASS: GitHub post with approval flag allowed'
+      warn '  PASS: GitHub post with approval allowed'
     else
       failed += 1
-      warn "  FAIL: GitHub post with approval flag should pass, got exit #{exit_code}"
+      warn "  FAIL: GitHub post with approval should pass, got exit #{exit_code}"
     end
 
-    # Test 3: Block corporate "we" language even with approval flag
-    FileUtils.touch(approval_flag)
+    # Test 3: Block corporate "we" language even with approval
+    File.write(approval_flag, JSON.generate('created_at' => Time.now.to_i, 'user_approval' => 'post it'))
     original_stderr = $stderr.clone
     $stderr.reopen('/dev/null', 'w')
     exit_code = process_tool_proc.call('mcp__github__add_issue_comment', {
@@ -814,6 +815,7 @@ module SaneToolsTest
     end
     deg_mcp_config = File.join(deg_project_dir, '.mcp.json')
     File.write(deg_mcp_config, '{"mcpServers":{"github":{},"apple-docs":{}}}')
+    File.write(File.join(deg_project_dir, '.saneprocess'), "name: SaneToolsTest\n")
     StateManager.update(:mcp_health) do |h|
       h[:verified_this_session] = false
       h[:degraded] = false
@@ -822,10 +824,13 @@ module SaneToolsTest
       h
     end
 
+    old_project_dir = ENV['CLAUDE_PROJECT_DIR']
+    ENV['CLAUDE_PROJECT_DIR'] = deg_project_dir
     original_stderr = $stderr.clone
     $stderr.reopen('/dev/null', 'w')
     deg_results = Array.new(3) { SaneToolsChecks.check_pending_mcp_actions('Edit', %w[Edit Write]) }
     $stderr.reopen(original_stderr)
+    ENV['CLAUDE_PROJECT_DIR'] = old_project_dir
 
     if !deg_results[0].nil? && !deg_results[1].nil? && deg_results[2].nil?
       passed += 1

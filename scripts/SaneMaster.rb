@@ -220,6 +220,7 @@ class SaneMaster
         'msync' => { args: '(pipe JSON)', desc: 'Sync MCP memory to local cache' },
         'mcompact' => { args: '[--dry-run] [--aggressive]', desc: 'Compact memory (trim verbose, dedupe)' },
         'mcleanup' => { args: '(pipe JSON)', desc: 'Analyze MCP memory, generate cleanup commands' },
+        'github_post_approval' => { args: '--user-approval "QUOTE"', desc: 'Record explicit user approval before public GitHub posting' },
         'session_end' => { args: '[--skip-prompts]', desc: 'End session with insight extraction' },
         'reset_breaker' => { args: '', desc: 'Reset circuit breaker (unblock tools)' },
         'breaker_status' => { args: '', desc: 'Show circuit breaker status' },
@@ -1754,6 +1755,8 @@ PY
       memory_compact(args)
     when 'memory_cleanup', 'mcleanup'
       memory_cleanup(args)
+    when 'github_post_approval', 'github-post-approval', 'gh_post_approval', 'gh-post-approval'
+      github_post_approval(args)
     when 'session_end', 'se'
       session_end(args)
     when 'reset_breaker', 'rb'
@@ -1827,6 +1830,33 @@ PY
       puts "   #{status[:message]}"
     end
     puts ''
+  end
+
+  def github_post_approval(args)
+    quote = nil
+    i = 0
+    while i < args.length
+      case args[i]
+      when '--user-approval', '--approval', '--quote'
+        quote = args[i + 1]
+        i += 1
+      else
+        quote ||= args[i]
+      end
+      i += 1
+    end
+
+    quote = quote.to_s.strip
+    abort '❌ Missing explicit user approval quote. Use --user-approval "post it".' if quote.empty?
+
+    path = '/tmp/.gh_post_approved.json'
+    payload = {
+      'created_at' => Time.now.to_i,
+      'user_approval' => quote
+    }
+    File.write(path, JSON.pretty_generate(payload))
+    File.chmod(0o600, path)
+    puts '✅ GitHub public-post approval recorded for 5 minutes.'
   end
 
   def show_breaker_errors

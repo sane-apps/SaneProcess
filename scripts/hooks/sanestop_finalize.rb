@@ -387,7 +387,7 @@ def build_client_neutral_session_receipt(stats, violations, verify_status)
     workflow_receipt_ids: recent_workflow_receipt_ids,
     visual_receipt_paths: current_visual_receipt_paths,
     handoff_updated: handoff_updated_since?(started_at),
-    memory_updated: false,
+    memory_updated: StateManager.get(:handoff_tracking)[:memory_updated] == true,
     research_topics_captured: 0,
     sop_score: stats[:sop_score],
     base_score: stats[:base_score],

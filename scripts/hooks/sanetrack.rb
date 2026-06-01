@@ -389,9 +389,46 @@ def release_preflight_proof
 
   data = JSON.parse(File.read(path))
   return nil unless data['status'].to_s == 'passed'
+  clearance = ship_clearance_proof
+  return nil unless clearance
 
-  { type: 'release_preflight_status', path: path, generated_at: data['generatedAt'], status: data['status'] }
+  {
+    type: 'release_preflight_status',
+    path: path,
+    generated_at: data['generatedAt'],
+    status: data['status'],
+    clearance_path: clearance[:path],
+    app: clearance[:app]
+  }
 rescue JSON::ParserError
+  nil
+end
+
+def ship_clearance_proof(project_dir = Dir.pwd)
+  saneprocess_path = File.join(project_dir, '.saneprocess')
+  return nil unless File.file?(saneprocess_path)
+
+  app_name = File.readlines(saneprocess_path).filter_map { |line| line[/\Aname:\s*(\S+)/, 1] }.first
+  return nil if app_name.to_s.empty?
+
+  clearance_path = File.expand_path("~/.claude/ship_clearance/#{app_name}.json")
+  return nil unless File.file?(clearance_path)
+
+  require_relative 'state_signer'
+  data = StateSigner.read_verified(clearance_path)
+  return nil unless data && data['app'] == app_name
+  return nil if data['project_dir'] && File.expand_path(data['project_dir']) != File.expand_path(project_dir)
+
+  if data['expires_at']
+    expires = Time.parse(data['expires_at']) rescue nil
+    return nil if expires && Time.now.utc > expires
+  end
+
+  current_sha = `git -C #{project_dir} rev-parse HEAD 2>/dev/null`.strip
+  return nil if data['git_sha'] && !current_sha.empty? && data['git_sha'] != current_sha
+
+  { path: clearance_path, app: app_name }
+rescue StandardError
   nil
 end
 

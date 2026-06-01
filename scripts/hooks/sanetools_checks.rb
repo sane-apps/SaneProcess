@@ -664,45 +664,17 @@ module SaneToolsChecks
     include SaneToolsResearch
 
     # === EDIT ATTEMPT LIMIT ===
-    # Prevents "no big deal" syndrome: 3 edit attempts without research = STOP
-    # User insight: "genius with impulse control of a two year old"
-    # This enforces the pause-and-think pattern
+    # Legacy no-op kept for compatibility with tests and callers. The original
+    # implementation counted every successful Edit tool call as a failed attempt,
+    # so normal multi-file work could revoke plan approval after three good
+    # edits and trap Claude in a replan loop. Real repeated-failure handling now
+    # lives in circuit_breaker/refusal_tracking, which are keyed off actual
+    # failures and blocks instead of successful edits.
 
     MAX_EDIT_ATTEMPTS_BEFORE_RESEARCH = 3
 
     def check_edit_attempt_limit(tool_name, edit_tools)
-      return nil unless edit_tools.include?(tool_name)
-
-      attempts = StateManager.get(:edit_attempts) || {}
-      count = attempts[:count] || 0
-
-      # If under limit, increment and allow
-      if count < MAX_EDIT_ATTEMPTS_BEFORE_RESEARCH
-        StateManager.update(:edit_attempts) do |a|
-          a ||= {}
-          a[:count] = (a[:count] || 0) + 1
-          a[:last_attempt] = Time.now.iso8601
-          a
-        end
-        return nil
-      end
-
-      # At or over limit - revoke plan approval and require targeted re-research.
-      # Do not wipe existing research; refresh only stale or missing evidence.
-      StateManager.update(:planning) do |p|
-        p[:plan_approved] = false
-        p[:plan_shown] = false
-        p[:replan_count] = (p[:replan_count] || 0) + 1
-        p
-      end
-
-      "EDIT ATTEMPT LIMIT + REPLAN REQUIRED\n" \
-      "#{count} edit attempts failed. Your approach is wrong.\n" \
-      "Plan approval REVOKED. You MUST:\n" \
-      "  1. Refresh stale or missing evidence only (local always; docs/web/GitHub when relevant)\n" \
-      "  2. Show a NEW plan and get user approval\n" \
-      "This is the process that ALWAYS works when followed.\n" \
-      "Use pa+ only after the new plan is actually approved."
+      nil
     end
 
     def reset_edit_attempts

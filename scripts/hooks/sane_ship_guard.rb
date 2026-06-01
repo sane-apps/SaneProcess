@@ -45,9 +45,6 @@ is_release = unquoted.match?(/(?:bash\s+|sh\s+)?(?:\S+\/)?(?:full_)?release\.sh\
 has_gate_flag = unquoted.match?(/--(?:full|deploy)\b/)
 exit 0 unless is_release && has_gate_flag
 
-# Always allow SaneMaster.rb (preflight checks etc.)
-exit 0 if command.match?(/\bSaneMaster\.rb\b/)
-
 # Determine project directory from --project flag or current directory
 project_dir = if command =~ /--project\s+(\S+)/
                 $1.gsub(/["']/, '')

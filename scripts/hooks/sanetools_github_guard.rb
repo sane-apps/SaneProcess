@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require 'json'
+
 module SaneToolsGitHubGuard
   GITHUB_PUBLIC_POST_TOOLS = %w[
     mcp__github__add_issue_comment
@@ -10,7 +12,7 @@ module SaneToolsGitHubGuard
     mcp__github__create_pull_request
   ].freeze
 
-  GITHUB_APPROVAL_FLAG = '/tmp/.gh_post_approved'
+  GITHUB_APPROVAL_FLAG = '/tmp/.gh_post_approved.json'
   GITHUB_APPROVAL_TTL_SECONDS = 300
   SANE_OWNER_PATTERN = /\A(?:sane-apps|mrsaneapps)\z/i
   CORPORATE_WE_PATTERN = /\b(?:we|we['’]re|we['’]ll|we['’]ve|our|us)\b/i
@@ -32,7 +34,7 @@ module SaneToolsGitHubGuard
     "GITHUB POST BLOCKED\n" \
     "This action posts publicly and requires explicit user approval first.\n" \
     "Show the final draft, get approval, then run:\n" \
-    "  touch #{GITHUB_APPROVAL_FLAG}"
+    '  ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb github_post_approval --user-approval "<quote>"'
   end
 
   def sane_owner?(tool_input)
@@ -63,9 +65,12 @@ module SaneToolsGitHubGuard
   def consume_github_approval_flag
     return :missing unless File.exist?(GITHUB_APPROVAL_FLAG)
 
-    age = Time.now - File.mtime(GITHUB_APPROVAL_FLAG)
+    payload = JSON.parse(File.read(GITHUB_APPROVAL_FLAG))
     File.delete(GITHUB_APPROVAL_FLAG)
-    return :valid if age < GITHUB_APPROVAL_TTL_SECONDS
+    created_at = payload['created_at'].to_i
+    approval = payload['user_approval'].to_s.strip
+    age = Time.now.to_i - created_at
+    return :valid if created_at.positive? && age >= 0 && age < GITHUB_APPROVAL_TTL_SECONDS && !approval.empty?
 
     :stale
   rescue StandardError

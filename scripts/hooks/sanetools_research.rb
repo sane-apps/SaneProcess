@@ -165,6 +165,10 @@ module SaneToolsResearch
   CLAUDE_DIR = File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.claude')
   MEMORY_STAGING_FILE = File.join(CLAUDE_DIR, 'memory_staging.json')
 
+  def memory_staging_file(project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
+    File.join(project_dir, '.claude', 'memory_staging.json')
+  end
+
   # MCP verification tools (read-only operations to prove connectivity)
   # NOTE: Official Memory MCP (@modelcontextprotocol/server-memory) is global, not project-verified
   MCP_VERIFICATION_INFO = {
@@ -187,6 +191,30 @@ module SaneToolsResearch
     return nil unless File.exist?(File.join(project_dir, '.saneprocess'))
 
     configured_mcps = configured_mcp_verification_info(project_dir)
+
+    # Also check for memory staging (pending MCP action)
+    pending_actions = []
+    staging_file = memory_staging_file(project_dir)
+    if File.exist?(staging_file)
+      begin
+        staging = JSON.parse(File.read(staging_file))
+        if staging['needs_memory_update']
+          entity_name = staging.dig('suggested_entity', 'name') || 'learnings'
+          pending_actions << "Memory staging needs saving: #{entity_name}"
+        end
+      rescue StandardError
+        pending_actions << 'Memory staging file needs review'
+      end
+    end
+
+    if pending_actions.any?
+      return "MCP ACTIONS PENDING\n" \
+             "Cannot edit until pending MCP/memory actions are handled.\n" \
+             "#{pending_actions.map { |a| "  ⚠️  #{a}" }.join("\n")}\n" \
+             "\n" \
+             "Use the memory MCP to save the staged learning, then remove #{staging_file}."
+    end
+
     return nil if configured_mcps.empty?
 
     # Get MCP health state
@@ -227,20 +255,6 @@ module SaneToolsResearch
       return nil
     end
 
-    # Also check for memory staging (pending MCP action)
-    pending_actions = []
-    if File.exist?(MEMORY_STAGING_FILE)
-      begin
-        staging = JSON.parse(File.read(MEMORY_STAGING_FILE))
-        if staging['needs_memory_update']
-          entity_name = staging.dig('suggested_entity', 'name') || 'learnings'
-          pending_actions << "Memory staging needs saving: #{entity_name}"
-        end
-      rescue StandardError
-        pending_actions << 'Memory staging file needs review'
-      end
-    end
-
     # Build comprehensive error message
     total_mcps = configured_mcps.length
     verified_count = total_mcps - unverified.length
@@ -253,12 +267,6 @@ module SaneToolsResearch
           "\n" \
           "Unverified MCPs (run each tool once to verify):\n" \
           "#{unverified_list}\n"
-
-    if pending_actions.any?
-      msg += "\n" \
-             "Pending MCP actions:\n" \
-             "#{pending_actions.map { |a| "  ⚠️  #{a}" }.join("\n")}\n"
-    end
 
     msg += "\nCall each unverified MCP tool once to proceed."
     msg

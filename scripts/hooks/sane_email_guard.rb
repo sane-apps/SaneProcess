@@ -28,7 +28,7 @@ require 'json'
 require 'shellwords'
 require 'digest'
 
-EMAIL_APPROVAL_FLAG = '/tmp/.email_post_approved'
+EMAIL_APPROVAL_FLAG = '/tmp/.email_post_approved.json'
 EMAIL_BATCH_APPROVAL_FLAG = '/tmp/.email_batch_post_approved.json'
 EMAIL_FORMAT_OVERRIDE = '/tmp/.email_format_override'
 EMAIL_APPROVAL_TTL_SECONDS = 300
@@ -55,27 +55,45 @@ def email_format_valid?(body)
   opens_with_appreciation && closes_with_appreciation && has_signoff
 end
 
-# Verify the approval flag exists, matches the body hash, and is old enough
-# that it couldn't have been created in the same command chain as the send.
+# Verify the canonical check-inbox approval JSON exists, matches the body hash,
+# records the user's approval quote, and is old enough that it couldn't have
+# been created in the same command chain as the send.
 def verify_approval(body)
   return [false, 'No approval flag found'] unless File.exist?(EMAIL_APPROVAL_FLAG)
 
-  age = Time.now - File.mtime(EMAIL_APPROVAL_FLAG)
+  begin
+    payload = JSON.parse(File.read(EMAIL_APPROVAL_FLAG))
+  rescue JSON::ParserError
+    cleanup_flag(EMAIL_APPROVAL_FLAG)
+    return [false, 'Approval flag is invalid. Re-approve the draft.']
+  end
+
+  created_at = payload['created_at'].to_i
+  if created_at <= 0
+    cleanup_flag(EMAIL_APPROVAL_FLAG)
+    return [false, 'Approval flag is malformed. Re-approve the draft.']
+  end
+
+  age = Time.now.to_i - created_at
   if age > EMAIL_APPROVAL_TTL_SECONDS
     cleanup_flag(EMAIL_APPROVAL_FLAG)
     return [false, 'Approval flag expired (>5 min old)']
   end
 
   if age < EMAIL_APPROVAL_MIN_AGE_SECONDS
-    return [false, "Approval flag too fresh (#{age.round(1)}s old, need #{EMAIL_APPROVAL_MIN_AGE_SECONDS}s). Cannot approve and send in the same step."]
+    return [false, "Approval flag too fresh (#{age}s old, need #{EMAIL_APPROVAL_MIN_AGE_SECONDS}s). Cannot approve and send in the same step."]
   end
 
-  stored_hash = File.read(EMAIL_APPROVAL_FLAG).strip
   body_hash = Digest::SHA256.hexdigest(body.strip)
 
-  if stored_hash != body_hash
+  if payload['body_hash'].to_s != body_hash
     cleanup_flag(EMAIL_APPROVAL_FLAG)
     return [false, 'Draft was modified after approval. Must re-approve.']
+  end
+
+  if payload['user_approval'].to_s.strip.empty?
+    cleanup_flag(EMAIL_APPROVAL_FLAG)
+    return [false, 'Approval flag is missing the recorded user approval quote.']
   end
 
   # Valid — do NOT consume here; let check-inbox.sh handle cleanup.
@@ -141,6 +159,33 @@ if command.include?('.email_post_approved') && command.include?('check-inbox.sh'
   warn '   Step 2: User says "send"'
   warn '   Step 3: Set approval flag (separate command)'
   warn '   Step 4: Send the email (separate command)'
+  exit 2
+end
+
+# Direct API writes are never allowed, even when chained after a legitimate
+# check-inbox.sh command. check-inbox internals set their own worker allowance;
+# a visible shell command that contains curl to these endpoints is a bypass.
+if command.match?(/curl\s.*email-api\.saneapps\.com/) && command.match?(/-X\s*(POST|PUT|DELETE)|--data|-d\s/)
+  warn '🔴 BLOCKED: Direct write to email API'
+  warn '   Sending/modifying via curl directly bypasses check-inbox.sh tracking.'
+  warn ''
+  warn '   ✅ Use instead:'
+  warn '      ~/SaneApps/infra/scripts/check-inbox.sh reply <id> <body_file>'
+  warn '      ~/SaneApps/infra/scripts/check-inbox.sh compose <to> <subject> <body_file>'
+  warn '      ~/SaneApps/infra/scripts/check-inbox.sh resolve <id>'
+  warn ''
+  warn '   Read operations (GET) are allowed — this only blocks writes.'
+  exit 2
+end
+
+if command.match?(/curl\s.*api\.resend\.com\/emails/) && command.match?(/-X\s*POST|--data|-d\s/)
+  warn '🔴 BLOCKED: Direct email send via Resend API'
+  warn '   Sending via Resend directly bypasses the Worker tracking system.'
+  warn '   Replies won\'t be recorded in D1 and the email will show as unresolved.'
+  warn ''
+  warn '   ✅ Use instead:'
+  warn '      ~/SaneApps/infra/scripts/check-inbox.sh reply <id> <body_file>'
+  warn '   This sends via the Worker API which tracks the reply in D1.'
   exit 2
 end
 
@@ -264,8 +309,8 @@ if command.include?('check-inbox.sh')
         warn '   1. Write the draft to a file'
         warn '   2. Show the EXACT final text to the user'
         warn '   3. User says "send"'
-        warn '   4. Set approval: echo "<sha256 of body>" > /tmp/.email_post_approved'
-        warn '   5. Send (separate command)'
+        warn '   4. Run: check-inbox.sh approve <body_file> --user-approval "<quote>"'
+        warn '   5. Send in a separate command'
         exit 2
       end
     end

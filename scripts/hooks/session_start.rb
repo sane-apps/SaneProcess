@@ -586,7 +586,7 @@ def initialize_startup_gate
       when :session_docs    then warn "   [ ] Read session docs (#{session_docs_required_label})"
       when :skills_registry then warn "   [ ] Read #{SKILLS_REGISTRY_LABEL}"
       when :validation_report then warn '   [ ] Run: ruby scripts/validation_report.rb'
-      when :system_clean    then warn '   [ ] Run: ./scripts/SaneMaster.rb clean_system (only when explicitly required)'
+      when :system_clean    then warn '   [ ] Run: ./scripts/SaneMaster.rb machine_cleanup --host mini --apply (only when explicitly required)'
       end
     end
     warn ''

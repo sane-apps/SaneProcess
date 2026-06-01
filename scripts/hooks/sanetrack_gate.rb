@@ -61,7 +61,7 @@ def track_startup_gate_step(tool_name, tool_input)
       changed = true
     end
 
-    if command.match?(/SaneMaster\.rb\s+clean_system/) && !steps[:system_clean]
+    if command.match?(/SaneMaster\.rb\s+machine_cleanup\b/) && !steps[:system_clean]
       steps[:system_clean] = true
       gate[:step_timestamps][:system_clean] = Time.now.iso8601
       changed = true

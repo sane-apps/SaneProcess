@@ -13,6 +13,7 @@ TEST_ROOT = File.join(File.expand_path('../..', __dir__), '.session_docs_test')
 FileUtils.rm_rf(TEST_ROOT)
 PROJECT_DIR = File.join(TEST_ROOT, 'SaneBar')
 FileUtils.mkdir_p(File.join(PROJECT_DIR, '.claude'))
+File.write(File.join(PROJECT_DIR, '.saneprocess'), "name: SaneBar\n")
 File.write(File.join(PROJECT_DIR, 'SESSION_HANDOFF.md'), "handoff\n")
 File.write(File.join(PROJECT_DIR, 'DEVELOPMENT.md'), "development\n")
 
@@ -423,9 +424,87 @@ t('Gate blocks gated tool while session docs pending', gate_status.exitstatus ==
 t('Gate message names unread CONTRIBUTING.md', gate_stderr.include?('CONTRIBUTING.md'))
 t('Gate message names unread SKILLS_REGISTRY.md', gate_stderr.include?('SKILLS_REGISTRY.md'))
 
-# === Test 18: Session start clears stale per-session state ===
+# === Test 18: startup-gate system cleanup uses existing command ===
 warn ''
-warn '--- Test 18: session_start clears stale state ---'
+warn '--- Test 18: startup-gate system cleanup command is fulfillable ---'
+full_reset
+StateManager.update(:session_docs) do |sd|
+  sd[:required] = []
+  sd[:read] = []
+  sd[:enforced] = true
+  sd
+end
+StateManager.update(:startup_gate) do |g|
+  g[:open] = false
+  g[:opened_at] = nil
+  g[:steps] = {
+    session_docs: true, skills_registry: true,
+    validation_report: true, orphan_cleanup: true, system_clean: false
+  }
+  g[:step_timestamps] = {}
+  g
+end
+_, cleanup_block_stderr, cleanup_block_status = run_hook('sanetools.rb', {
+  tool_name: 'Edit',
+  tool_input: { file_path: '/test/gate.swift', old_string: 'a', new_string: 'b' }
+})
+t('Gate blocks edit while explicit system cleanup pending', cleanup_block_status.exitstatus == 2)
+t('Gate names existing machine_cleanup command', cleanup_block_stderr.include?('machine_cleanup --host mini --apply'))
+_, cleanup_pre_stderr, cleanup_pre_status = run_hook('sanetools.rb', {
+  tool_name: 'Bash',
+  tool_input: { command: './scripts/SaneMaster.rb machine_cleanup --host mini --apply' }
+})
+t('PreToolUse allows machine_cleanup while gate is closed', cleanup_pre_status.exitstatus == 0)
+run_hook('sanetrack.rb', {
+  tool_name: 'Bash',
+  tool_input: { command: './scripts/SaneMaster.rb machine_cleanup --host mini --apply' },
+  tool_result: 'cleanup ok'
+})
+gate_after_cleanup = StateManager.get(:startup_gate)
+t('PostToolUse marks system cleanup step done', gate_after_cleanup[:steps][:system_clean] == true)
+
+# === Test 19: startup gate blocks MCP mutations but allows MCP reads ===
+warn ''
+warn '--- Test 19: startup-gate blocks MCP mutations only ---'
+full_reset
+StateManager.update(:startup_gate) do |g|
+  g[:open] = false
+  g[:opened_at] = nil
+  g[:steps] = {
+    session_docs: true, skills_registry: true,
+    validation_report: false, orphan_cleanup: true, system_clean: true
+  }
+  g
+end
+_, mcp_read_stderr, mcp_read_status = run_hook('sanetools.rb', {
+  tool_name: 'mcp__github__get_issue',
+  tool_input: { owner: 'sane-apps', repo: 'SaneProcess', issue_number: 1 }
+})
+t('Startup gate allows MCP read tools', mcp_read_status.exitstatus == 0)
+_, mcp_mut_stderr, mcp_mut_status = run_hook('sanetools.rb', {
+  tool_name: 'mcp__github__create_issue',
+  tool_input: { owner: 'sane-apps', repo: 'SaneProcess', title: 'x' }
+})
+t('Startup gate blocks MCP mutation tools', mcp_mut_status.exitstatus == 2)
+t('MCP mutation block shows startup gate', mcp_mut_stderr.include?('STARTUP GATE'))
+
+# === Test 20: pending memory staging blocks even when MCPs are verified ===
+warn ''
+warn '--- Test 20: pending memory staging is enforced ---'
+full_reset
+staging_path = File.join(PROJECT_DIR, '.claude', 'memory_staging.json')
+File.write(staging_path, JSON.pretty_generate('needs_memory_update' => true, 'suggested_entity' => { 'name' => 'HookLoop' }))
+_, staging_stderr, staging_status = run_hook('sanetools.rb', {
+  tool_name: 'Edit',
+  tool_input: { file_path: '/test/gate.swift', old_string: 'a', new_string: 'b' }
+})
+t('Pending memory staging blocks edits', staging_status.exitstatus == 2)
+t('Pending memory block names staged entity', staging_stderr.include?('HookLoop'))
+FileUtils.rm_f(staging_path)
+
+# === Test 21: Session start clears stale per-session state ===
+warn ''
+warn '--- Test 21: session_start clears stale state ---'
 full_reset
 StateManager.update(:edits) { |e| e[:count] = 3; e[:unique_files] = ['Old.swift']; e }
 StateManager.update(:requirements) { |r| r[:requested] = ['stale']; r[:is_big_task] = true; r }

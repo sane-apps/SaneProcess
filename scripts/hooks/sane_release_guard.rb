@@ -38,6 +38,14 @@ SANE_PAGES_PATTERN = Regexp.new(SANE_APPS.map { |a| "#{a.downcase}-site" }.join(
 # dist.*.com domains
 SANE_DIST_PATTERN = Regexp.new(SANE_APPS.map { |a| "dist\\.#{a.downcase}\\.com" }.join('|'))
 CORPORATE_WE_PATTERN = /\b(?:we|we['’]re|we['’]ll|we['’]ve|our|us)\b/i
+COMMAND_CHAIN_PATTERN = /(?:;|&&|\|\||\n)/
+
+def single_canonical_command?(command, pattern)
+  stripped = command.strip
+  return false if stripped.match?(COMMAND_CHAIN_PATTERN)
+
+  stripped.match?(pattern)
+end
 
 begin
   input = JSON.parse($stdin.read)
@@ -51,12 +59,8 @@ exit 0 unless tool_name == 'Bash'
 command = (input['tool_input'] || {})['command'].to_s
 exit 0 if command.empty?
 
-# Always allow commands that are primarily release.sh, full_release.sh, or SaneMaster.rb.
-# Match: the command starts with (optionally bash/sh/ruby) the script name.
-# This prevents bypass via "echo release.sh && codesign --sign ..."
-exit 0 if command.match?(/\A\s*(?:bash\s+|sh\s+)?(?:\S+\/)?(?:full_)?release\.sh\b/)
-exit 0 if command.match?(/\A\s*(?:ruby\s+)?(?:\S+\/)?SaneMaster\.rb\b/)
-exit 0 if command.match?(/\A\s*(?:ruby\s+)?(?:\S+\/)?SaneMaster_standalone\.rb\b/)
+canonical_release_command = single_canonical_command?(command, /\A\s*(?:bash\s+|sh\s+)?(?:\S+\/)?(?:full_)?release\.sh\b/)
+canonical_sanemaster_command = single_canonical_command?(command, /\A\s*(?:ruby\s+)?(?:\S+\/)?SaneMaster(?:_standalone)?\.rb\b/)
 
 # Block 1: Direct create-dmg (bypasses background, icon fix, signing chain)
 if command.match?(/\bcreate-dmg\b/) && command.match?(SANE_APP_PATTERN)
@@ -230,6 +234,8 @@ if command.match?(/\bgh\s+(?:issue|pr)\s+(?:comment|close|review|create)\b/)
   end
 end
 
+exit 0 if canonical_release_command || canonical_sanemaster_command
+
 # Block 14: Public GitHub interactions (comments, close, review) require user approval
 # gh issue comment, gh issue close --comment, gh pr comment, gh pr review — all post publicly
 # as MrSaneApps. NEVER post without showing the user a draft first.
@@ -238,11 +244,17 @@ end
 # Approval flow:
 #   1. Claude shows draft text to user in conversation
 #   2. User approves (edits or says "post it")
-#   3. Claude writes /tmp/.gh_post_approved (touch file)
-#   4. Claude runs gh command — hook sees flag, allows it, deletes flag
-#   5. If no flag → block and remind Claude to show draft first
-APPROVAL_FLAG = '/tmp/.gh_post_approved'
+#   3. Claude records that approval with SaneMaster github_post_approval
+#   4. Claude runs gh command — hook sees the structured approval, allows it, deletes it
+#   5. If no approval → block and remind Claude to show draft first
+APPROVAL_FLAG = '/tmp/.gh_post_approved.json'
 if command.match?(/\bgh\s+(?:issue|pr)\s+(?:comment|close|review|create)\b/)
+  if command.include?('github_post_approval') || command.include?(APPROVAL_FLAG)
+    warn '🔴 BLOCKED: Cannot approve and post publicly in the same command'
+    warn '   Approval capture and the public GitHub post must be separate steps.'
+    exit 2
+  end
+
   if command.match?(CORPORATE_WE_PATTERN)
     warn '🔴 BLOCKED: "we/us/our" language in public GitHub post'
     warn '   SaneApps is one person. Use: I/me/my.'
@@ -252,21 +264,27 @@ if command.match?(/\bgh\s+(?:issue|pr)\s+(?:comment|close|review|create)\b/)
   end
 
   if File.exist?(APPROVAL_FLAG)
-    # Check flag is recent (within 5 minutes) to prevent stale approvals
-    age = Time.now - File.mtime(APPROVAL_FLAG)
-    if age < 300
+    begin
+      payload = JSON.parse(File.read(APPROVAL_FLAG))
+      age = Time.now.to_i - payload['created_at'].to_i
+      approved = payload['created_at'].to_i.positive? &&
+                 age >= 0 &&
+                 age < 300 &&
+                 !payload['user_approval'].to_s.strip.empty?
       File.delete(APPROVAL_FLAG)
-      exit 0  # Approved — allow the post
-    else
-      File.delete(APPROVAL_FLAG)
-      # Fall through to block — stale approval
+      if approved
+        exit 0  # Approved — allow the post
+      end
+    rescue JSON::ParserError, SystemCallError
+      File.delete(APPROVAL_FLAG) if File.exist?(APPROVAL_FLAG)
+      # Fall through to block — malformed approval
     end
   end
   warn '🔴 BLOCKED: Public GitHub interaction without user approval'
   warn '   This posts publicly as MrSaneApps. Show the user a draft first.'
   warn ''
   warn '   ✅ Show the draft text to the user, get explicit approval, then post.'
-  warn '   Then touch /tmp/.gh_post_approved before running the command.'
+  warn '   Then run: ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb github_post_approval --user-approval "<quote>"'
   exit 2
 end
 

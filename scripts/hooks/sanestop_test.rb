@@ -691,6 +691,11 @@ module SaneStopTest
         s[:invoked] = true
         s[:runner_used] = true
         s[:runner_commands] = [runner_command]
+        if workflow == 'ship'
+          clearance_path = File.join(Dir.mktmpdir('ship-clearance-proof'), 'TestApp.json')
+          File.write(clearance_path, '{}')
+          s[:runner_proof] = { clearance_path: clearance_path }
+        end
         s
       end
       original_stderr = $stderr.clone
