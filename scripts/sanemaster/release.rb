@@ -2068,7 +2068,8 @@ module SaneMasterModules
     def release_status_source_file?(project_path, relative_path)
       return false if relative_path.to_s.empty?
       return false if %w[
-        AGENTS.md ARCHITECTURE.md CLAUDE.md DEVELOPMENT.md README.md SESSION_HANDOFF.md
+        .sane/customer_ui_action_receipt.json AGENTS.md ARCHITECTURE.md CLAUDE.md
+        DEVELOPMENT.md README.md SESSION_HANDOFF.md
       ].include?(relative_path)
       return false if relative_path.start_with?(
         '.build/',
