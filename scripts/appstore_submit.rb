@@ -26,6 +26,7 @@ require 'optparse'
 require 'securerandom'
 require 'shellwords'
 require 'digest'
+require 'date'
 require 'fileutils'
 require 'time'
 require 'uri'
@@ -1234,12 +1235,20 @@ def version_page_includes_iap?(app_id:, platform:, product_id:)
     return true if body.include?(product_id.to_s) &&
                    body.include?('Included Assets') &&
                    body.include?('In-App Purchases and Subscriptions')
-    return false if body.include?('Included Assets') || body.include?('In-App Purchases and Subscriptions')
+    next if body.include?('Included Assets') || body.include?('In-App Purchases and Subscriptions')
   end
 
   false
 rescue StandardError
   nil
+end
+
+def iap_version_attachment_status(app_id:, platform:, product_id:)
+  attached = version_page_includes_iap?(app_id: app_id, platform: platform, product_id: product_id)
+  return :attached if attached == true
+  return :not_attached if attached == false
+
+  :unknown
 end
 
 def normalize_review_page_text(text)
@@ -2746,15 +2755,53 @@ end
 
 def ensure_iap_price_schedule(iap_id:, target_price_usd:, token:)
   code, schedule = asc_get_v2("/inAppPurchases/#{iap_id}/iapPriceSchedule", token: token)
-  return true if code == 200 && !schedule['data'].nil?
+  if code == 200 && !schedule['data'].nil?
+    schedule_id = schedule.dig('data', 'id')
+    manual_code, manual_prices = asc_get_with_status(
+      "/inAppPurchasePriceSchedules/#{schedule_id}/manualPrices?include=inAppPurchasePricePoint,territory&filter%5Bterritory%5D=USA&fields%5BinAppPurchasePricePoints%5D=customerPrice&limit=50",
+      token: token
+    )
 
-  pp_code, points = asc_get_v2("/inAppPurchases/#{iap_id}/pricePoints?filter%5Bterritory%5D=USA&limit=200", token: token)
+    unless manual_code == 200
+      log_error "Could not verify existing IAP price schedule (HTTP #{manual_code})."
+      return false
+    end
+
+    price_points = manual_prices.fetch('included', [])
+                                .select { |entry| entry['type'] == 'inAppPurchasePricePoints' }
+                                .each_with_object({}) do |entry, acc|
+                                  acc[entry['id']] = entry.dig('attributes', 'customerPrice').to_s
+                                end
+    now_date = Date.today
+    matching_price = manual_prices.fetch('data', []).find do |price|
+      attrs = price['attributes'] || {}
+      start_date = attrs['startDate'].to_s
+      end_date = attrs['endDate'].to_s
+      starts_now = start_date.empty? || Date.parse(start_date) <= now_date
+      ends_later = end_date.empty? || Date.parse(end_date) >= now_date
+      price_point_id = price.dig('relationships', 'inAppPurchasePricePoint', 'data', 'id')
+
+      starts_now && ends_later && price_points[price_point_id] == target_price_usd.to_s
+    rescue ArgumentError
+      false
+    end
+
+    if matching_price
+      log_info "Existing IAP price schedule verified (USA #{target_price_usd})."
+      return true
+    end
+
+    observed_prices = price_points.values.uniq.reject(&:empty?).join(', ')
+    observed_prices = 'none' if observed_prices.empty?
+    log_warn "Existing IAP price schedule does not match USA #{target_price_usd} (observed: #{observed_prices}); creating requested schedule."
+  end
+
+  pp_code, point = find_iap_price_point(iap_id: iap_id, target_price_usd: target_price_usd, token: token)
   unless pp_code == 200
     log_error "Could not read IAP price points (HTTP #{pp_code})."
     return false
   end
 
-  point = points.fetch('data', []).find { |entry| entry.dig('attributes', 'customerPrice').to_s == target_price_usd.to_s }
   unless point
     log_error "No USA price point found for #{target_price_usd}."
     return false
@@ -2792,6 +2839,39 @@ def ensure_iap_price_schedule(iap_id:, target_price_usd:, token:)
     log_error "Failed to create IAP price schedule (HTTP #{create_code}): #{detail}"
     false
   end
+end
+
+def resolve_iap_price_usd(config, options)
+  explicit = options[:iap_price_usd].to_s.strip
+  return explicit unless explicit.empty?
+
+  configured = config.dig('appstore', 'iap_price_usd').to_s.strip
+  return configured unless configured.empty?
+
+  IAP_DEFAULT_USD_PRICE
+end
+
+def find_iap_price_point(iap_id:, target_price_usd:, token:)
+  path = "/inAppPurchases/#{iap_id}/pricePoints?filter%5Bterritory%5D=USA&limit=200"
+
+  loop do
+    code, points = asc_get_v2(path, token: token)
+    return [code, nil] unless code == 200
+
+    entries = points.fetch('data', [])
+    point = entries.find { |entry| entry.dig('attributes', 'customerPrice').to_s == target_price_usd.to_s }
+    return [200, point] if point
+
+    next_url = points.dig('links', 'next').to_s
+    break if entries.empty?
+    break if next_url.empty?
+
+    uri = URI(next_url)
+    path = uri.path.sub(%r{\A/v2}, '')
+    path = "#{path}?#{uri.query}" if uri.query
+  end
+
+  [200, nil]
 end
 
 def iap_review_screenshot_state(screenshot_resp)
@@ -3247,7 +3327,7 @@ def create_iap(app_id:, product_id:, project_root:, config:, token:)
   end
 end
 
-def ensure_subscription_readiness(app_id:, product_id:, project_root:, config:, token:)
+def ensure_subscription_readiness(app_id:, product_id:, project_root:, config:, token:, platform: nil, version_string: nil)
   subscription = find_subscription_by_product_id(app_id: app_id, product_id: product_id, token: token)
   unless subscription
     log_error "No App Store Connect subscription found with product_id #{product_id}."
@@ -3273,8 +3353,28 @@ def ensure_subscription_readiness(app_id:, product_id:, project_root:, config:, 
 
   if state == 'READY_TO_SUBMIT'
     log_warn "Subscription #{product_id} is READY_TO_SUBMIT."
-    log_warn "For a first subscription, Apple requires adding it to the app version's In-App Purchases and Subscriptions section before review submission."
-    return true
+    attachment_status = if platform
+                          iap_version_attachment_status(app_id: app_id, platform: platform, product_id: product_id)
+                        else
+                          :unknown
+                        end
+    if attachment_status == :attached
+      lane = [platform, version_string].compact.reject(&:empty?).join(' ')
+      label = lane.empty? ? product_id : "#{product_id} (attached on #{lane} version page)"
+      log_warn "Subscription #{label} is selected under Included Assets; continuing so the app binary submission carries the first subscription."
+      return true
+    elsif attachment_status == :unknown
+      log_error "Could not verify whether #{product_id} is attached to the app version in Safari."
+      log_error 'Open App Store Connect and inspect Included Assets before retrying.'
+      return :version_attachment_unknown
+    end
+
+    log_first_iap_submission_blocker(
+      product_id: product_id,
+      platform: platform,
+      version_string: version_string
+    )
+    return :needs_version_attachment
   end
 
   log_error "Subscription #{product_id} is not review-ready (state=#{state.empty? ? 'unknown' : state})."
@@ -3394,12 +3494,16 @@ def ensure_iap_readiness(app_id:, product_id:, project_root:, config:, token:, p
   if submit_code == 409
     codes = iap_associated_error_codes(submit_resp)
     if codes.all? { |code| code == 'STATE_ERROR.FIRST_IAP_MUST_BE_SUBMITTED_ON_VERSION' }
-      ui_attached = version_page_includes_iap?(app_id: app_id, platform: platform, product_id: product_id)
-      if ui_attached
+      attachment_status = iap_version_attachment_status(app_id: app_id, platform: platform, product_id: product_id)
+      if attachment_status == :attached
         lane = [platform, version_string].compact.reject(&:empty?).join(' ')
         label = lane.empty? ? product_id : "#{product_id} (attached on #{lane} version page)"
         log_warn "IAP #{label} is already attached under Included Assets; continuing with app submission."
         return true
+      elsif attachment_status == :unknown
+        log_error "Could not verify whether #{product_id} is attached to the app version in Safari."
+        log_error 'Open App Store Connect and inspect Included Assets before retrying.'
+        return false
       end
       log_first_iap_submission_blocker(
         product_id: product_id,
@@ -3419,7 +3523,7 @@ end
 
 # ─── Submit for Review ───
 
-def submit_for_review(app_id, asc_platform, version_id, token)
+def submit_for_review(app_id, asc_platform, version_id, token, draft_repair_attempted: false)
   log_info 'Submitting for App Review...'
 
   linked_submission = find_linked_review_submission(app_id, asc_platform, version_id, token)
@@ -3615,6 +3719,15 @@ def submit_for_review(app_id, asc_platform, version_id, token)
 
   submission_state = review_submission_state(submission_id, token)
   if submission_state != 'READY_FOR_REVIEW'
+    if !draft_repair_attempted && %w[COMPLETE UNRESOLVED_ISSUES].include?(submission_state.to_s)
+      log_warn "Review submission #{submission_id} is #{submission_state}; stale Draft Submissions may be blocking review."
+      if ENV['SANEPROCESS_APPROVE_ASC_DRAFT_CLEANUP'] == '1' && clear_draft_submissions_ui_for_submit(app_id)
+        token = generate_jwt
+        return submit_for_review(app_id, asc_platform, version_id, token, draft_repair_attempted: true)
+      end
+      log_warn 'Automatic Draft Submission cleanup is disabled. Set SANEPROCESS_APPROVE_ASC_DRAFT_CLEANUP=1 only after confirming visible drafts are empty/stale.'
+    end
+
     log_error "Review submission #{submission_id} is #{submission_state || 'unknown'}; expected READY_FOR_REVIEW."
     log_error 'App Store Connect API cannot auto-submit this submission state with the current key.'
     log_error "Open App Store Connect for app #{app_id}, delete stale Draft Submissions, then submit version #{version_id} manually."
@@ -3660,6 +3773,20 @@ def mark_review_submission_submitted(submission_id, token)
   end
 
   log_error "Review submission submit failed: #{last_detail || 'no accepted submission attribute'}"
+  false
+end
+
+def clear_draft_submissions_ui_for_submit(app_id)
+  result = delete_empty_draft_submissions_from_safari(app_id: app_id)
+  if result[:remaining_count].positive?
+    log_warn "Deleted #{result[:deleted_count]} draft submission(s), but #{result[:remaining_count]} still remain."
+    return false
+  end
+
+  log_warn "Deleted #{result[:deleted_count]} stale draft submission(s)."
+  true
+rescue StandardError => e
+  log_warn "Could not clear stale Draft Submissions via Safari: #{e.message}"
   false
 end
 
@@ -3829,11 +3956,25 @@ def extract_conflict_submission_id(item_resp)
   return nil unless errors.is_a?(Array)
 
   errors.each do |err|
-    detail = err['detail'].to_s
-    next if detail.empty?
+    texts = [err['detail'].to_s]
+    associated = err.dig('meta', 'associatedErrors')
+    if associated.is_a?(Hash)
+      associated.each_value do |entries|
+        Array(entries).each do |entry|
+          next unless entry.is_a?(Hash)
 
-    match = detail.match(/reviewSubmission with id ([0-9a-f-]+)/i)
-    return match[1] if match
+          texts << entry['detail'].to_s
+          texts << entry['title'].to_s
+        end
+      end
+    end
+
+    texts.each do |detail|
+      next if detail.empty?
+
+      match = detail.match(/reviewSubmission with id ([0-9a-f-]+)/i)
+      return match[1] if match
+    end
   end
 
   nil
@@ -4560,8 +4701,7 @@ if options[:iap_only]
     exit 1
   end
 
-  price_usd = options[:iap_price_usd].to_s.strip
-  price_usd = IAP_DEFAULT_USD_PRICE if price_usd.empty?
+  price_usd = resolve_iap_price_usd(config, options)
 
   token = generate_jwt
   ok = if auto_renewable_subscription_config?(config)
@@ -4570,7 +4710,9 @@ if options[:iap_only]
            product_id: product_id,
            project_root: project_root,
            config: config,
-           token: token
+           token: token,
+           platform: options[:platform],
+           version_string: options[:version]
          )
        else
          ensure_iap_readiness(
@@ -4750,8 +4892,7 @@ end
 # Step 7b: Ensure App Store IAP metadata/submission readiness (if configured)
 configured_product_id = config.dig('appstore', 'product_id').to_s.strip
 unless configured_product_id.empty?
-  iap_price_usd = options[:iap_price_usd].to_s.strip
-  iap_price_usd = IAP_DEFAULT_USD_PRICE if iap_price_usd.empty?
+  iap_price_usd = resolve_iap_price_usd(config, options)
   token = generate_jwt
   iap_ok = if auto_renewable_subscription_config?(config)
              ensure_subscription_readiness(
@@ -4759,7 +4900,9 @@ unless configured_product_id.empty?
                product_id: configured_product_id,
                project_root: project_root,
                config: config,
-               token: token
+               token: token,
+               platform: platform,
+               version_string: version
              )
            else
              ensure_iap_readiness(
