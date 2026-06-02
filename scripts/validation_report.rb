@@ -91,7 +91,8 @@ class ValidationReport
     node_modules/ outputs/ vendor/bundle/ website/
   ].freeze
   PROJECT_QA_SOURCE_EXCLUDED_FILES = %w[
-    AGENTS.md ARCHITECTURE.md CLAUDE.md DEVELOPMENT.md README.md SESSION_HANDOFF.md
+    .sane/customer_ui_action_receipt.json AGENTS.md ARCHITECTURE.md CLAUDE.md
+    DEVELOPMENT.md README.md SESSION_HANDOFF.md
   ].freeze
   DISK_BUDGET_MIN_FREE_GB = 20
   DISK_BUDGET_CRITICAL_FREE_GB = 10
