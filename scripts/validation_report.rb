@@ -87,8 +87,8 @@ class ValidationReport
     .swift .xcconfig .xcprivacy .xcstrings .xib .yaml .yml
   ].freeze
   PROJECT_QA_SOURCE_EXCLUDED_PREFIXES = %w[
-    .build/ .claude/ .codex/ .git/ .sanemaster/ build/ DerivedData/ docs/
-    node_modules/ outputs/ vendor/bundle/ website/
+    .build/ .claude/ .codex/ .git/ .sanemaster/ .serena/ build/ DerivedData/
+    docs/ fastlane/test_output/ node_modules/ outputs/ releases/ vendor/bundle/ website/
   ].freeze
   PROJECT_QA_SOURCE_EXCLUDED_FILES = %w[
     .sane/customer_ui_action_receipt.json AGENTS.md ARCHITECTURE.md CLAUDE.md

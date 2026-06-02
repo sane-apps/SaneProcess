@@ -992,6 +992,31 @@ exit(run_tests('Validation report tests') do
       true
     end
 
+    test('ignores release-preflight excluded operational folders in project QA fingerprints') do
+      Dir.mktmpdir('qa-fingerprint-operational-folders-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'SaneVideo'))
+        File.write(File.join(dir, 'SaneVideo', 'App.swift'), "import SwiftUI\n")
+        init_git_fixture(dir)
+
+        subject = ValidationReport.new
+        fingerprint = subject.send(:project_qa_source_fingerprint, dir)
+        write_qa_status(dir, source_fingerprint: fingerprint)
+
+        FileUtils.mkdir_p(File.join(dir, '.serena', 'memories'))
+        File.write(File.join(dir, '.serena', 'memories', 'release.md'), "operational memory\n")
+        FileUtils.mkdir_p(File.join(dir, 'releases'))
+        File.write(File.join(dir, 'releases', 'release.log'), "release output\n")
+        FileUtils.mkdir_p(File.join(dir, 'fastlane', 'test_output'))
+        File.write(File.join(dir, 'fastlane', 'test_output', 'report.xml'), "<testsuite />\n")
+
+        status = subject.send(:latest_project_qa_status, dir)
+
+        assert_eq([], status['staleReasons'])
+        assert_eq(fingerprint, status['currentSourceFingerprint'])
+      end
+      true
+    end
+
     test('marks project QA receipts stale when the source fingerprint changes') do
       Dir.mktmpdir('qa-fingerprint-stale-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'SaneScan'))

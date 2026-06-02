@@ -164,6 +164,48 @@ class HostedFileActionTests(unittest.TestCase):
         self.assertIn("before changing Lemon Squeezy hosted files", actions[0]["instructions"])
         self.assertEqual(snapshot[0]["status"], "Needs appcast evidence")
 
+    def test_build_snapshot_rows_matches_lemon_product_aliases(self):
+        config = {
+            "products": {
+                "sanevideo": {
+                    "name": "SaneVideo",
+                    "appcast": "https://sanevideo.com/appcast.xml",
+                }
+            }
+        }
+        products = [
+            {
+                "id": "1087460",
+                "attributes": {"name": "SaneVideo Pro", "slug": "sanevideo-pro"},
+            }
+        ]
+        variants = [
+            {
+                "id": "1703963",
+                "attributes": {"product_id": 1087460},
+            }
+        ]
+        files = []
+
+        def fake_fetch_collection(path, _api_key):
+            if "products" in path:
+                return products
+            if "variants?page" in path:
+                return variants
+            return files
+
+        with mock.patch.object(HOSTED_FILE_ACTIONS, "fetch_collection", side_effect=fake_fetch_collection), \
+            mock.patch.object(HOSTED_FILE_ACTIONS, "fetch_appcast_release", return_value=("1.0.1", "https://dist.sanevideo.com/updates/SaneVideo-1.0.1.zip")):
+            actions, snapshot = HOSTED_FILE_ACTIONS.build_snapshot_rows(config, "test-key")
+
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["app"], "SaneVideo")
+        self.assertEqual(actions[0]["product_id"], "1087460")
+        self.assertEqual(actions[0]["product_slug"], "sanevideo-pro")
+        self.assertEqual(actions[0]["action_status"], "Needs dashboard sync")
+        self.assertEqual(actions[0]["variant_id"], "1703963")
+        self.assertEqual(snapshot[0]["filename"], "—")
+
     def test_main_writes_json_out_and_xlsx(self):
         sample_actions = [
             {
