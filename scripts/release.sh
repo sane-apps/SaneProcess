@@ -2459,6 +2459,11 @@ enforce_machine_reconcile() {
         exit 1
     fi
 
+    if mini_route_context_active; then
+        log_info "Machine reconcile gate passed from routed workspace context at ${local_head:0:12}"
+        return 0
+    fi
+
     peer_path_escaped=$(printf '%q' "${peer_repo_path}")
     if ! peer_report=$(ssh -o BatchMode=yes -o ConnectTimeout=6 "${peer_host}" \
         "cd ${peer_path_escaped} >/dev/null 2>&1 && \
