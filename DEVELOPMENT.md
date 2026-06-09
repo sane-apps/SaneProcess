@@ -29,6 +29,65 @@ unavailable for that task, or the user explicitly approves a local exception for
 that exact task. `Inconvenient`, `slower`, or `already open locally` are not
 fallback reasons.
 
+`ssh mini` is the canonical Mini route and must not depend on same-Wi-Fi Bonjour
+resolution. On SaneApps controller machines it is installed by:
+
+```bash
+bash ~/SaneApps/infra/SaneProcess/scripts/mini/install-mini-ssh-config.sh
+ssh mini 'hostname; whoami'
+```
+
+The installer writes `~/.ssh/config.d/saneapps-mini.conf`, where `mini` and
+`mini-remote` use Cloudflare Access via the TXT record
+`mini-ssh-host.saneapps.com`; `mini-lan` keeps the direct
+`stephans-mac-mini.local` route for LAN diagnostics only. Verify the bridge with:
+
+```bash
+dig +short TXT mini-ssh-host.saneapps.com
+cloudflared --version
+ssh -G mini | grep -E '^(hostname|proxycommand|identityfile) '
+ssh mini 'hostname; whoami; pwd'
+```
+
+The Mini publishes that TXT record from a launchd-managed quick tunnel. Reinstall
+or repair it from a working Mini shell with:
+
+```bash
+cd ~/SaneApps/infra/SaneProcess
+bash scripts/mini/mini-install-remote-ssh-tunnel.sh
+launchctl print gui/$(id -u)/com.saneapps.mini-remote-ssh-tunnel
+tail -50 ~/Library/Logs/SaneApps/mini-remote-ssh-tunnel.log
+```
+
+If `ssh mini` is down but `ssh mini-lan` works, the problem is the Cloudflare
+tunnel/TXT bridge, not Mini availability. Do not fall back to local app testing
+until that route has been diagnosed or the user approves the exact exception.
+
+Codex Mini remote-control health:
+
+```bash
+ssh mini 'codex app-server daemon version'
+ssh mini 'codex app-server daemon restart; codex app-server daemon enable-remote-control'
+ssh mini 'launchctl print gui/$(id -u)/com.saneapps.codex-keepalive'
+```
+
+The keepalive LaunchAgent must include
+`SANEPROCESS_ENABLE_MINI_CODEX_KEEPALIVE=1`. The keepalive refreshes the
+headless Codex remote-control daemon without opening GUI windows; it opens the
+Codex app only when no SaneApps app is running and no app server is present.
+
+Tailscale setup state:
+
+```bash
+ssh mini 'tailscale status'
+ssh mini 'launchctl print system/homebrew.mxcl.tailscale'
+```
+
+The Mini formula daemon can run as a root LaunchDaemon, but it is not a permanent
+route until the Mini is enrolled in a tailnet. The controller formula is
+installed but not running as root; local enrollment requires the user's local
+sudo/GUI approval or a reusable/preauthorized Tailscale auth key.
+
 Public adopters do not need a Mac Mini. Replace Mini-first with your own
 canonical runner or local verification command, then route it through
 `SaneMaster.rb` so agents have one safe path to call.
@@ -101,6 +160,41 @@ After `scripts/init.sh --client grok` in a repo:
 6. Shared skills (critic, docs-audit) land in `.agents/skills/`. Load them via your client's skill mechanism or invoke the SKILL.md prompts directly when needed.
 
 The portable enforcement contract for Grok (and Codex, generic agents) is **AGENTS.md + explicit calls to SaneMaster + shell guards**. High-risk native hook entries may still block dangerous commands when Grok invokes them; passive tracking annotations are safe to ignore or disable per-session for pure Grok workflows.
+
+### For Codex users (practical steps)
+
+SANEPROCESS_PROSE_ONLY_POLICY: Codex plugin routing documents how to choose optional client capabilities over existing SaneMaster, tool_discovery, agent_eval, and skill_lint enforcement; no new mandatory gate is intended.
+
+Codex can expose marketplace plugins, app connectors, MCP tools, and local skills
+that are not installed by `scripts/init.sh --client codex`. Treat those as
+session-local accelerators. The stable SaneApps contract is still `AGENTS.md`,
+the active skill registry, and SaneMaster wrappers.
+
+Before using or declaring a Codex plugin missing:
+
+1. Check the live tool surface in the current session.
+2. Read the matching skill instructions when a plugin skill applies.
+3. Run `ruby scripts/SaneMaster.rb tool_discovery --query "..."` before adding a new wrapper, claiming a gap, or choosing a repeated workaround.
+4. Finish stateful SaneApps work with the canonical proof command: `verify`,
+   `release_preflight`, `appstore_preflight`, `sane_test.rb`, `check-inbox.sh`,
+   `sales`, `downloads`, `events`, or the app-specific visual proof path.
+
+Use this routing table for Codex plugin skills:
+
+| Work | Useful Codex plugin family | SaneApps close-out |
+|------|----------------------------|--------------------|
+| macOS app UI, AppKit interop, signing, packaging, telemetry, test triage | Build macOS Apps | Mini-first `SaneMaster.rb verify`; use `sane_test.rb` for runtime proof |
+| iOS companion apps, simulator proof, App Intents, leaks, performance | Build iOS Apps | Project verify plus fresh simulator/runtime evidence |
+| Websites and local frontend debugging | Build Web Apps, Browser | `release_preflight` for shipped web surfaces and Cloudflare Pages release path |
+| New product UI direction, redesign, prototype, image-to-code, visual QA | Product Design, Figma | Start with a brief/visual target; get approval before code; verify plus clean screenshots after implementation |
+| Marketing positioning, ad concepts, mood boards, editable decks, social resizes | Creative Production, Canva | Check live product facts and brand/copy rules; run `launch_readiness` before public launch use |
+| Repo/path security scan, diff security review, threat model, fix validation | Codex Security | Use for security-specific work; fixes still require `verify` and relevant release checks |
+| OpenAI API, Agents SDK, ChatGPT App, OpenAI key or MCP work | OpenAI Developers | Use official-doc-backed skill flow; keep secrets in the approved Keychain/env path |
+| Cloudflare Pages/R2/Workers/Durable Objects/Tunnels | Cloudflare | Prefer SaneProcess release wrappers for deploy/release proof; use plugin docs for platform details |
+| GitHub PRs/issues/CI metadata | GitHub | Cross-check support email before closing customer-reported issues |
+| Personal Gmail, Drive, Docs, Sheets, Slides, Calendar deliverables | Google plugins | Generic "email" still means `hi@saneapps.com` through `check-inbox.sh` |
+| KPI reports, metric diagnostics, dashboards | Data Analytics | Use `SaneMaster.rb sales`, `downloads`, `events`, or `/outreach` first for canonical SaneApps signals |
+| Presenter videos, generated media, stock assets, programmatic videos | HeyGen, HyperFrames, Picsart, Fal, Shutterstock, Remotion | Treat as marketing assets, not runtime verification evidence |
 
 ## Core Rules
 
@@ -232,6 +326,9 @@ Optional accelerators:
 - Apple `xcrun mcpbridge` / `xcode`: IDE-native Xcode context.
 - XcodeBuildMCP: iOS simulator build-run proof, UI automation, LLDB/device, and
   coverage workflows.
+- Codex marketplace plugins and connectors: use the matching skill instructions
+  for domain work, then close SaneApps workflows with SaneMaster or the relevant
+  shared wrapper.
 - `central-memory`: semantic recall when configured.
 - Cloudflare API MCP/plugin: read-only Pages/R2/Worker drift checks.
 
@@ -252,6 +349,49 @@ Tool discovery and MCP health answer different questions:
   does not prove a tool is missing.
 - Run the tool-discovery receipt before proposing a new tool, wrapper, or
   repeated workaround.
+
+## Golden Rule Hook Coverage
+
+The Golden Rules in `AGENTS.md` must map to concrete enforcement. Current
+coverage is:
+
+- Rule 0, name the rule: `saneprompt.rb` injects task/rule reminders.
+- Rule 1, stay in lane: `sanetools_checks.rb` blocks sensitive/system paths
+  while allowing the active project root, including isolated self-test roots.
+- Rule 2, verify first: `sanetools_research.rb`, `sanetrack_research.rb`, and
+  `SaneMaster.rb tool_discovery` gate edits and repeated workarounds.
+- Rule 3, two strikes: `sanetrack_tracking.rb` trips after 2 failures or 2
+  matching signatures; `sanetools_checks.rb` blocks mutation while allowing
+  research tools.
+- Rule 4, green means go: `task_completed_gate.rb`, `sanestop.rb`, and
+  `SaneMaster.rb verify` block or cap completion without fresh proof.
+- Rule 5, use tools: `sane_launch_guard.rb`, `sane_release_guard.rb`,
+  `sane_email_guard.rb`, and mandatory workflow tracking enforce canonical
+  wrappers.
+- Rule 6, build/kill/launch/log: `sane_test.rb`, `SaneMaster.rb test_mode`, and
+  launch guards own runtime cycles.
+- Rule 7, no test no rest: `sanetrack.rb` detects tautology/mock-passthrough
+  tests; stop/completion gates require verification.
+- Rule 8, write bugs down: `sanetrack_state_updates.rb` and `sanestop.rb` track
+  memory and handoff updates after bugs, hooks, tools, and durable docs change.
+- Rule 9, gen the pile: `sanetools_checks.rb` blocks orphan markdown creation;
+  code scaffolding remains enforced by generator commands and review.
+- Rule 10, size limits: `sanetools_checks.rb` enforces file limits and Swift
+  component-owner aggregate limits across `Type.swift` plus `Type+*.swift`.
+- Rule 11, fix tools: `tool_discovery`, `near_miss_review`,
+  `verify_failure_review`, and `gate_review` are the canonical promotion path.
+- Rule 12, talk while walking: skill prompts and mandatory workflows require
+  subagent use for covered heavy workflows; client-native spawn enforcement is
+  tool-surface dependent.
+- Rule 13, context or chaos: `session_start.rb` and `sanetools_startup.rb` gate
+  required startup context.
+- Rule 14, prompt like pro: `saneprompt.rb` and skill workflows enforce
+  structured prompts for covered tasks; broad prompt-quality remains review-led.
+- Rule 15, review before ship: `sane_ship_guard.rb`, release preflight, appstore
+  preflight, and release guards enforce release review.
+- Rule 16, integrate: `sanetools_checks.rb` blocks orphan docs;
+  `sanetrack_state_updates.rb` and `sanestop.rb` require memory/handoff updates
+  for tools, hooks, and durable docs.
 
 ## Support And Business Signals
 

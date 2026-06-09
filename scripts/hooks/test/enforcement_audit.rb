@@ -186,7 +186,7 @@ class EnforcementAudit
   end
 
   def test_circuit_breaker
-    print 'Circuit breaker after 3 failures... '
+    print 'Circuit breaker after 2 failures... '
 
     # Trip the circuit breaker
     trip_circuit_breaker
@@ -198,7 +198,7 @@ class EnforcementAudit
 
     if result[:exit_code] == 1
       puts '✅ BLOCKED'
-      @results[:enforced] << 'Circuit Breaker: Blocks after 3 consecutive failures'
+      @results[:enforced] << 'Circuit Breaker: Blocks after 2 consecutive failures'
     else
       puts '❌ NOT BLOCKED'
       @results[:suggested_only] << 'Circuit Breaker: Not blocking when tripped'

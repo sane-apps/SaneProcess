@@ -240,8 +240,8 @@ def track_failure(tool_name, tool_response)
     cb[:failures] = (cb[:failures] || 0) + 1
     cb[:last_error] = response_str[0..200]
 
-    # Trip breaker at 3 failures
-    if cb[:failures] >= 3 && !cb[:tripped]
+    # Rule #3: two strikes means stop and research before trying again.
+    if cb[:failures] >= 2 && !cb[:tripped]
       cb[:tripped] = true
       cb[:tripped_at] = Time.now.iso8601
       doom_loop_caught = true
@@ -296,8 +296,8 @@ def track_error_signature(signature, tool_name, response_str)
     cb[:error_signatures] ||= {}
     cb[:error_signatures][sig_key] = (cb[:error_signatures][sig_key] || 0) + 1
 
-    # Trip if same signature 3x (even with other successes between)
-    if cb[:error_signatures][sig_key] >= 3 && !cb[:tripped]
+    # Rule #3: repeated same-root-cause failures require research after two strikes.
+    if cb[:error_signatures][sig_key] >= 2 && !cb[:tripped]
       cb[:tripped] = true
       cb[:tripped_at] = Time.now.iso8601
       cb[:last_error] = "#{signature} x#{cb[:error_signatures][sig_key]}: #{response_str[0..100]}"

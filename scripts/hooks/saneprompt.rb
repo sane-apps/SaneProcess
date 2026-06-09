@@ -550,7 +550,7 @@ def output_context(prompt_type, rules, triggers, prompt, frustrations = [], dete
   lines << 'GUARDRAILS ACTIVE (all code tasks):'
   lines << '  - Max 3 edit attempts before mandatory research pause (ENFORCED)'
   lines << '  - If stuck after 2 tries: STOP and investigate, do not guess'
-  lines << '  - Circuit breaker trips at 3 consecutive failures'
+  lines << '  - Circuit breaker trips at 2 consecutive failures'
   lines << '  - Tooling/docs work is persistent work, not optional cleanup'
   if prompt.match?(SANEUI_SOURCE_OF_TRUTH_PATTERN)
     lines << '  - Settings/About/license/update UI work MUST start from SaneUI Catalog and shared components, not app-local clones'

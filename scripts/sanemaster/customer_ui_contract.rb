@@ -170,12 +170,12 @@ module SaneMasterModules
         }
       end
 
-      unless customer_ui_mini_host? || dry_run
+      unless customer_ui_allowed_host? || dry_run
         return {
           ok: false,
           app: app_name,
           script_path: script_path,
-          issues: ["customer_ui_sweep must run on the Mini; current host=#{Socket.gethostname.inspect} user=#{ENV.fetch('USER', '')}"]
+          issues: ["customer_ui_sweep must run on the Mini unless explicit Air fallback is approved; current host=#{Socket.gethostname.inspect} user=#{ENV.fetch('USER', '')}"]
         }
       end
 
@@ -327,8 +327,27 @@ module SaneMasterModules
 
     private
 
+    def customer_ui_allowed_host?
+      customer_ui_mini_host? || customer_ui_air_fallback_approved?
+    end
+
     def customer_ui_mini_host?
       Socket.gethostname.downcase.include?('mini') || ENV.fetch('USER', '').downcase == 'stephansmac'
+    end
+
+    def customer_ui_air_fallback_approved?
+      ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] == 'MR. SANE APPROVES LOCAL UI ON AIR'
+    end
+
+    def customer_ui_receipt_host_allowed?(host)
+      normalized = host.to_s.downcase
+      return true if normalized == 'mini'
+      return false unless customer_ui_air_fallback_approved?
+
+      normalized == Socket.gethostname.to_s.downcase ||
+        normalized == 'macbook-air' ||
+        normalized == 'air' ||
+        normalized.include?('macbook')
     end
 
     def customer_ui_run_command(*command)
@@ -377,7 +396,7 @@ module SaneMasterModules
         }
       end
 
-      report = JSON.parse(out)
+      report = customer_ui_parse_json_object(out)
       image_artifacts = Array(report['artifacts']).select do |path|
         CUSTOMER_UI_IMAGE_EXTENSIONS.include?(File.extname(path.to_s).downcase)
       end
@@ -398,6 +417,17 @@ module SaneMasterModules
       end
     rescue JSON::ParserError => e
       { ok: false, issues: ["Mini visual precheck returned invalid JSON: #{e.message}"] }
+    end
+
+    def customer_ui_parse_json_object(output)
+      JSON.parse(output)
+    rescue JSON::ParserError
+      text = output.to_s
+      start_index = text.index('{')
+      end_index = text.rindex('}')
+      raise unless start_index && end_index && end_index >= start_index
+
+      JSON.parse(text[start_index..end_index])
     end
 
     def customer_ui_visual_precheck_required?
@@ -587,7 +617,9 @@ module SaneMasterModules
       issues = []
       issues << "Receipt app #{receipt['app']} does not match #{app_name}" if receipt['app'].to_s != app_name.to_s
       issues << "Receipt status is #{receipt['status'].inspect}, expected \"passed\"" unless receipt['status'].to_s == 'passed'
-      issues << 'Receipt was not generated on the Mini' unless receipt['host'].to_s.downcase == 'mini'
+      unless customer_ui_receipt_host_allowed?(receipt['host'])
+        issues << 'Receipt was not generated on the Mini or an explicitly approved local Air fallback'
+      end
       issues << 'Receipt manifest hash is stale' unless receipt['manifest_sha256'].to_s == manifest_sha
       issues << 'Receipt source fingerprint is stale; rerun customer UI QA after the latest code change' unless receipt['source_fingerprint'].to_s == source_fingerprint
       issues << 'Receipt is missing screenshot evidence' if Array(receipt['screenshots']).empty?

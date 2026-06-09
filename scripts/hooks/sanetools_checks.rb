@@ -52,6 +52,13 @@ module SaneToolsChecks
   FILE_SIZE_SOFT_LIMIT = 500
   FILE_SIZE_HARD_LIMIT = 800
   FILE_SIZE_HARD_LIMIT_MD = 1500
+  CORE_DOC_BASENAMES = %w[
+    AGENTS.md
+    README.md
+    DEVELOPMENT.md
+    ARCHITECTURE.md
+    SESSION_HANDOFF.md
+  ].freeze
 
   # === SENSITIVE FILE PATTERNS ===
   # Files with elevated blast radius — edits affect CI/CD, signing, deployment, or security.
@@ -183,6 +190,7 @@ module SaneToolsChecks
 
       expanded_path = File.expand_path(sanitized_path) rescue sanitized_path
       expanded_decoded = File.expand_path(decoded_path) rescue decoded_path
+      project_dir = File.expand_path(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd) rescue nil
 
       # Traversal detection: if input uses ".." to reach sensitive path segments, block it.
       # The raw path may not resolve to /etc from this CWD, but from a different CWD it would.
@@ -199,7 +207,10 @@ module SaneToolsChecks
       end
 
       [sanitized_path, decoded_path, expanded_path, expanded_decoded].each do |p|
+        in_project = project_dir && p.start_with?("#{project_dir}/")
         if p.match?(BLOCKED_PATH_PATTERN)
+          next if in_project
+
           return "BLOCKED PATH: #{path}\n" \
                  "This path is outside your project scope.\n" \
                  "DO THIS: Work only within the project directory.\n" \
@@ -300,6 +311,91 @@ module SaneToolsChecks
       end
 
       nil
+    end
+
+    def check_new_file_policy(tool_name, tool_input)
+      return nil unless tool_name == 'Write'
+
+      path = tool_input['file_path'] || tool_input[:file_path]
+      return nil if path.to_s.empty?
+      return nil if File.exist?(path)
+
+      expanded_path = File.expand_path(path)
+      project_dir = File.expand_path(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
+      return nil unless expanded_path.start_with?("#{project_dir}/")
+
+      return nil unless expanded_path.end_with?('.md')
+      return nil if allowed_markdown_path?(expanded_path, project_dir)
+
+      "NEW DOCUMENT BLOCKED (Rules #9 and #16)\n" \
+      "File: #{path}\n" \
+      "Do not create orphan markdown files. Integrate durable content into the 5-doc standard:\n" \
+      "  AGENTS.md, README.md, DEVELOPMENT.md, ARCHITECTURE.md, SESSION_HANDOFF.md\n" \
+      "Use .claude/research.md or .codex/research.md only for dated research-cache entries.\n" \
+      "Generated receipts belong under outputs/."
+    end
+
+    def allowed_markdown_path?(expanded_path, project_dir)
+      relative = expanded_path.delete_prefix("#{project_dir}/")
+      return true if CORE_DOC_BASENAMES.include?(relative)
+      return true if relative.match?(%r{\A\.(claude|codex)/research\.md\z})
+      return true if relative.start_with?('outputs/')
+
+      false
+    end
+
+    def check_component_owner_size(tool_name, tool_input, edit_tools)
+      return nil unless edit_tools.include?(tool_name)
+
+      path = tool_input['file_path'] || tool_input[:file_path]
+      return nil unless path.to_s.end_with?('.swift')
+
+      owner_files = swift_owner_files(path)
+      return nil if owner_files.empty?
+
+      current_total = owner_files.sum { |file| File.exist?(file) ? (File.readlines(file).count rescue 0) : 0 }
+      projected_total = current_total + projected_line_delta(tool_name, tool_input, path)
+      return nil if projected_total <= current_total
+
+      if projected_total > FILE_SIZE_HARD_LIMIT
+        return "COMPONENT OWNER SIZE BLOCKED (Rule #10)\n" \
+               "#{swift_owner_name(path)} owner: #{projected_total} lines > #{FILE_SIZE_HARD_LIMIT} limit\n" \
+               "Files counted:\n" \
+               "#{owner_files.map { |file| "  - #{file}" }.join("\n")}\n" \
+               "Split ownership before adding more code. Extensions count toward the same component owner."
+      elsif projected_total > FILE_SIZE_SOFT_LIMIT
+        warn "COMPONENT OWNER SIZE WARNING: #{swift_owner_name(path)} owner at #{projected_total} lines (soft limit: #{FILE_SIZE_SOFT_LIMIT})"
+      end
+
+      nil
+    end
+
+    def swift_owner_files(path)
+      expanded_path = File.expand_path(path)
+      dir = File.dirname(expanded_path)
+      owner = swift_owner_name(expanded_path)
+      files = Dir.glob([
+        File.join(dir, "#{owner}.swift"),
+        File.join(dir, "#{owner}+*.swift")
+      ])
+      files << expanded_path unless files.include?(expanded_path)
+      files.uniq
+    end
+
+    def swift_owner_name(path)
+      File.basename(path, '.swift').split('+', 2).first
+    end
+
+    def projected_line_delta(tool_name, tool_input, path)
+      content = tool_input['content'] || tool_input[:content]
+      if tool_name == 'Write' && content
+        existing = File.exist?(path) ? (File.readlines(path).count rescue 0) : 0
+        return content.lines.count - existing
+      end
+
+      old_string = tool_input['old_string'] || tool_input[:old_string] || ''
+      new_string = tool_input['new_string'] || tool_input[:new_string] || ''
+      new_string.lines.count - old_string.lines.count
     end
 
     def check_table_ban(tool_name, tool_input, edit_tools)
@@ -427,7 +523,8 @@ module SaneToolsChecks
       "CIRCUIT BREAKER TRIPPED\n" \
       "#{cb[:failures]} consecutive failures detected.\n" \
       "Last error: #{cb[:last_error]}\n" \
-      "Reset: rb- (clear circuit breaker to retry)"
+      "Rule #3: stop, read the error, and research before retrying.\n" \
+      "Reset only after documenting the root cause: rb-"
     end
 
     # === SESSION DOC ENFORCEMENT ===

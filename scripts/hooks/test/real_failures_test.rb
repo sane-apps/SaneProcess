@@ -249,9 +249,9 @@ begin
 
   reset_state!
 
-  # Simulate 3 consecutive failures to trip breaker
+  # Simulate 2 consecutive failures to trip breaker
   update_state do |s|
-    s['circuit_breaker'] = { 'tripped' => true, 'consecutive_failures' => 3 }
+    s['circuit_breaker'] = { 'tripped' => true, 'consecutive_failures' => 2 }
   end
 
   test("Edit blocked when circuit breaker tripped", true, SANETOOLS,

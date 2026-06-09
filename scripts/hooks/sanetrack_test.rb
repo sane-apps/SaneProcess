@@ -68,18 +68,26 @@ module SaneTrackTest
       warn '  FAIL: Failure reset on success'
     end
 
-    # Test 5: Circuit breaker trips at 3 failures
+    # Test 5: Circuit breaker trips at 2 failures
     StateManager.reset(:circuit_breaker)
     process_result_proc.call('Bash', {}, { 'error' => 'fail 1' })
+    one_failure_cb = StateManager.get(:circuit_breaker)
+    if !one_failure_cb[:tripped]
+      passed += 1
+      warn '  PASS: Circuit breaker does not trip at 1 failure'
+    else
+      failed += 1
+      warn '  FAIL: Circuit breaker should not trip at 1 failure'
+    end
+
     process_result_proc.call('Bash', {}, { 'error' => 'fail 2' })
-    process_result_proc.call('Bash', {}, { 'error' => 'fail 3' })
     cb = StateManager.get(:circuit_breaker)
     if cb[:tripped]
       passed += 1
-      warn '  PASS: Circuit breaker trips at 3 failures'
+      warn '  PASS: Circuit breaker trips at 2 failures'
     else
       failed += 1
-      warn '  FAIL: Circuit breaker should trip at 3 failures'
+      warn '  FAIL: Circuit breaker should trip at 2 failures'
     end
 
     # === INTELLIGENCE TESTS ===
@@ -96,17 +104,15 @@ module SaneTrackTest
       warn "  FAIL: Expected COMMAND_NOT_FOUND, got #{sig1}, #{sig2}"
     end
 
-    # Test 7: Per-signature trip (3x same with successes between)
+    # Test 7: Per-signature trip (2x same with successes between)
     StateManager.reset(:circuit_breaker)
     process_result_proc.call('Bash', {}, { 'error' => 'command not found: ruby' })
     process_result_proc.call('Bash', {}, { 'output' => 'success' })  # Success resets legacy, not signature
     process_result_proc.call('Bash', {}, { 'error' => 'command not found: npm' })
-    process_result_proc.call('Bash', {}, { 'output' => 'success' })  # Success again
-    process_result_proc.call('Bash', {}, { 'error' => 'command not found: python' })
     cb = StateManager.get(:circuit_breaker)
-    if cb[:tripped] && cb[:error_signatures] && cb[:error_signatures][:COMMAND_NOT_FOUND] == 3
+    if cb[:tripped] && cb[:error_signatures] && cb[:error_signatures][:COMMAND_NOT_FOUND] == 2
       passed += 1
-      warn '  PASS: Per-signature trip at 3x same (with successes between)'
+      warn '  PASS: Per-signature trip at 2x same (with successes between)'
     else
       failed += 1
       warn "  FAIL: Per-signature trip - tripped=#{cb[:tripped]}, signatures=#{cb[:error_signatures]}"
@@ -142,27 +148,24 @@ module SaneTrackTest
     process_result_proc.call('Bash', {}, { 'error' => 'permission denied on /etc/hosts' })
     process_result_proc.call('Bash', {}, { 'output' => 'ok' })
     process_result_proc.call('Bash', {}, { 'error' => 'access denied to file' })
-    process_result_proc.call('Bash', {}, { 'output' => 'ok' })
-    process_result_proc.call('Bash', {}, { 'error' => 'not permitted to write' })
     validation = StateManager.get(:validation)
     if validation[:doom_loops_caught] == 1
       passed += 1
-      warn '  PASS: Doom loop caught on 3x same signature'
+      warn '  PASS: Doom loop caught on 2x same signature'
     else
       failed += 1
       warn "  FAIL: Expected doom_loops_caught=1, got #{validation[:doom_loops_caught]}"
     end
 
-    # Test: Breaker trip on 3 consecutive failures also counts
+    # Test: Breaker trip on 2 consecutive failures also counts
     StateManager.reset(:circuit_breaker)
     StateManager.reset(:validation)
     process_result_proc.call('Bash', {}, { 'error' => 'fail 1' })
     process_result_proc.call('Bash', {}, { 'error' => 'fail 2' })
-    process_result_proc.call('Bash', {}, { 'error' => 'fail 3' })
     validation = StateManager.get(:validation)
     if validation[:doom_loops_caught] >= 1
       passed += 1
-      warn '  PASS: Doom loop caught on 3 consecutive failures'
+      warn '  PASS: Doom loop caught on 2 consecutive failures'
     else
       failed += 1
       warn "  FAIL: Expected doom_loops_caught>=1, got #{validation[:doom_loops_caught]}"

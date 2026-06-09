@@ -676,7 +676,7 @@ def process_result(tool_name, tool_input, tool_response)
     # === MCP VERIFICATION: Track failures for MCP tools ===
     track_mcp_verification(tool_name, false)
 
-    # === INTELLIGENCE: Track by signature (3x same = trip, even with successes) ===
+    # === INTELLIGENCE: Track by signature (2x same = trip, even with successes) ===
     response_str = tool_response.to_s[0..200]
     track_error_signature(error_sig, tool_name, response_str)
 

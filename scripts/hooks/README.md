@@ -122,8 +122,8 @@ Before edits allowed, complete the always-required categories plus any MCP-backe
 ## Circuit Breaker
 
 Trips at:
-- 3 consecutive failures, OR
-- 3x same error signature (even with successes between)
+- 2 consecutive failures, OR
+- 2x same error signature (even with successes between)
 
 Reset with `rb-` command.
 

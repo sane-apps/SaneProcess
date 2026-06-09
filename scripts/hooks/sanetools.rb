@@ -523,6 +523,20 @@ def process_tool(tool_name, tool_input)
     return 2
   end
 
+  # Check new file / orphan doc policy (Rules #9 and #16)
+  if (reason = SaneToolsChecks.check_new_file_policy(tool_name, tool_input))
+    log_action(tool_name, true, reason)
+    output_block(reason, tool_name)
+    return 2
+  end
+
+  # Check component owner aggregate size (Rule #10)
+  if (reason = SaneToolsChecks.check_component_owner_size(tool_name, tool_input, EDIT_TOOLS))
+    log_action(tool_name, true, reason)
+    output_block(reason, tool_name)
+    return 2
+  end
+
   # Check table ban
   if (reason = SaneToolsChecks.check_table_ban(tool_name, tool_input, EDIT_TOOLS))
     log_action(tool_name, true, reason)

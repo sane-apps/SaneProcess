@@ -78,7 +78,7 @@ Do not wait until session end.
 
 Do not commit or push unless the user asks, the task explicitly includes release/PR/publish, or a project workflow requires it. For completed implementation work, propose the verified diff for commit when intent is unclear. Keep unrelated dirty files out of any commit.
 
-**Circuit Breaker:** After 3 consecutive failures: STOP. Read error messages. Research the actual API.
+**Circuit Breaker:** After 2 consecutive failures or 2 matching error signatures: STOP. Read error messages. Research the actual API before trying again.
 
 **Research gate:** Local inspection is always required before editing. If the
 active client/runtime enforces stricter research gates, obey the stricter gate.
@@ -330,7 +330,13 @@ Script handles: kill → clean → TCC reset → build → deploy → launch →
 
 ## Mac Mini Build Server
 
-M1 Mac mini (8GB). Access: `ssh mini`.
+M1 Mac mini (8GB). Canonical access: `ssh mini`.
+SANEPROCESS_PROSE_ONLY_POLICY: Mini SSH routing details are operator guidance backed by existing Mini scripts and SaneMaster wrappers; no new enforcement gate is intended here.
+
+`ssh mini` must work on and off the local network through the configured
+Cloudflare Access route. Use `mini-lan` only for LAN diagnostics. Setup,
+repair, Codex remote-control keepalive, Tailscale status, and tunnel details
+live in `DEVELOPMENT.md` and `scripts/mini/README.md`.
 
 **Source of truth:** `SaneProcess/scripts/mini/` — edit there, deploy via `bash scripts/mini/deploy.sh`
 

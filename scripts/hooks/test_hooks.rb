@@ -11,9 +11,14 @@
 require 'json'
 require 'open3'
 require 'fileutils'
+require_relative 'self_test_environment'
 
-PROJECT_DIR = File.expand_path('../..', __dir__)
+PROJECT_DIR = SelfTestEnvironment.create_project('hook-system-tests')
 ENV['CLAUDE_PROJECT_DIR'] = PROJECT_DIR
+ENV['CLAUDE_HOOK_SECRET'] ||= 'hook-system-tests-secret'
+ENV['SANEMASTER_PROCESS_METRICS_PATH'] = File.join(PROJECT_DIR, '.sanemaster', 'process_metrics.jsonl')
+
+at_exit { FileUtils.rm_rf(PROJECT_DIR) if File.exist?(PROJECT_DIR) }
 
 class HookTests
   attr_reader :passed, :failed, :results
@@ -56,22 +61,22 @@ class HookTests
     test_group("Coordinator") do
       test("allows research tools") { test_coordinator_allows_research }
       test("blocks dangerous paths on research") { test_coordinator_blocks_dangerous }
-      test("bootstrap commands allowed") { test_coordinator_allows_bootstrap }
+      test("startup Bash allowed") { test_coordinator_allows_bootstrap }
       test("blocks local computer-use on MacBook Air") { test_coordinator_blocks_local_computer_use }
       test("allows computer-use on Mac Mini") { test_coordinator_allows_mini_computer_use }
     end
 
     # Test Entry Points
     test_group("Entry Points") do
-      test("pre_tool_use.rb syntax valid") { test_entry_syntax('pre_tool_use.rb') }
-      test("post_tool_use.rb syntax valid") { test_entry_syntax('post_tool_use.rb') }
+      test("sanetools.rb syntax valid") { test_entry_syntax('sanetools.rb') }
+      test("sanetrack.rb syntax valid") { test_entry_syntax('sanetrack.rb') }
       test("session_start.rb syntax valid") { test_entry_syntax('session_start.rb') }
     end
 
     # Test Circuit Breaker
     test_group("Circuit Breaker") do
       test("tracks blocks") { test_circuit_breaker_tracks }
-      test("halts after 5x same") { test_circuit_breaker_halts }
+      test("halts after 2x same") { test_circuit_breaker_halts }
     end
 
     # Summary
@@ -147,15 +152,36 @@ class HookTests
   # HookRegistry tests
   def test_registry_auto_register
     require_relative 'core/hook_registry'
-    require_relative 'detectors/base_detector'
-    require_relative 'detectors/path_detector'
+    HookRegistry::Registry.reset!
+    detector = Class.new(HookRegistry::Detector) do
+      register_as :pre_tool_use, priority: 30
+      def check(_context)
+        allow
+      end
+    end
+    Object.const_set(:TestRegistryAutoDetector, detector) unless Object.const_defined?(:TestRegistryAutoDetector)
 
     hooks = HookRegistry.for(:pre_tool_use)
-    hooks.any? { |h| h.name == 'PathDetector' }
+    hooks.any? { |h| h.name == 'TestRegistryAutoDetector' }
   end
 
   def test_registry_priority
     require_relative 'core/hook_registry'
+    HookRegistry::Registry.reset!
+    low = Class.new(HookRegistry::Detector) do
+      register_as :pre_tool_use, priority: 10
+      def check(_context)
+        allow
+      end
+    end
+    high = Class.new(HookRegistry::Detector) do
+      register_as :pre_tool_use, priority: 90
+      def check(_context)
+        allow
+      end
+    end
+    Object.const_set(:TestRegistryLowPriorityDetector, low) unless Object.const_defined?(:TestRegistryLowPriorityDetector)
+    Object.const_set(:TestRegistryHighPriorityDetector, high) unless Object.const_defined?(:TestRegistryHighPriorityDetector)
 
     hooks = HookRegistry.for(:pre_tool_use)
     return false if hooks.empty?
@@ -192,7 +218,7 @@ class HookTests
   end
 
   def test_coordinator_allows_bootstrap
-    run_hook('Bash', './scripts/SaneMaster.rb saneloop start "test"', command: true) == 0
+    run_hook('Bash', 'ruby scripts/validation_report.rb', command: true) == 0
   end
 
   def test_coordinator_blocks_local_computer_use
@@ -215,7 +241,7 @@ class HookTests
 
   # Entry point syntax tests
   def test_entry_syntax(file)
-    path = File.join(__dir__, 'hooks', file)
+    path = File.join(__dir__, file)
     _, status = Open3.capture2e("ruby -c #{path}")
     status.success?
   end
@@ -240,15 +266,15 @@ class HookTests
     require_relative 'core/state_manager'
     StateManager.reset(:enforcement)
 
-    # Add 5 identical blocks
-    5.times do
+    # Add 2 identical blocks
+    2.times do
       StateManager.update(:enforcement) do |e|
         e[:blocks] ||= []
         e[:blocks] << { 'signature' => 'same:Detector', 'at' => Time.now.iso8601 }
 
         # Check for halt condition
-        recent = e[:blocks].last(5)
-        if recent.length >= 5 && recent.all? { |b| b['signature'] == 'same:Detector' }
+        recent = e[:blocks].last(2)
+        if recent.length >= 2 && recent.all? { |b| (b['signature'] || b[:signature]) == 'same:Detector' }
           e[:halted] = true
         end
         e
@@ -268,7 +294,7 @@ class HookTests
               { 'tool_name' => tool, 'tool_input' => { 'file_path' => path } }
             end
 
-    hook_path = File.join(__dir__, 'hooks', 'pre_tool_use.rb')
+    hook_path = File.join(__dir__, 'sanetools.rb')
 
     stdout, stderr, status = Open3.capture3(
       { 'CLAUDE_PROJECT_DIR' => PROJECT_DIR }.merge(extra_env),

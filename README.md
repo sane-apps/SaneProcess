@@ -74,6 +74,8 @@ SaneProcess is intentionally layered instead of pretending every coding agent ha
 
 Codex and Grok can expose MCP servers through compatibility config that does not always match the native CLI list. Use the live client MCP view for session truth (`/mcps` or Ctrl+L in Grok) and `SaneMaster.rb tool_discovery` receipts before declaring a tool missing. SaneProcess treats client hooks as adapter layers rather than the universal enforcement base. The portable contract remains `AGENTS.md` plus project-owned scripts.
 
+Codex marketplace plugins and app connectors are optional accelerators; `AGENTS.md`, repo/global skills, and SaneMaster remain the stable SaneProcess contract.
+
 ## Core Guardrails
 
 ### Orphan cleanup
@@ -92,7 +94,7 @@ After repeated failures, SaneProcess stops edit attempts until the root cause is
 
 ```text
 CIRCUIT BREAKER TRIPPED
-3 consecutive failures with the same error signature.
+2 strikes with the same failure family.
 Reset only after fixing the root cause.
 ```
 
@@ -215,6 +217,8 @@ The rule is deliberate: update an existing source-of-truth doc before adding ano
 ## Included Skills
 
 SaneProcess ships reusable skills that can be mirrored into `.agents/skills/` or another client-specific skill directory.
+
+These repo-shipped skills are separate from client-managed marketplace plugins such as Canva, Codex Security, OpenAI Developers, Product Design, and similar connectors.
 
 | Skill | Purpose |
 |-------|---------|

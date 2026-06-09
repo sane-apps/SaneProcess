@@ -9,6 +9,65 @@ require_relative 'core/state_manager'
 module SaneToolsTestScenarios
   module_function
 
+  def run_structure_guard_tests(process_tool_proc)
+    passed = 0
+    failed = 0
+
+    warn ''
+    warn 'Testing new-file and component-owner guards:'
+
+    project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
+    orphan_doc = File.join(project_dir, 'TESTING.md')
+    readme_doc = File.join(project_dir, 'README.md')
+    FileUtils.rm_f(orphan_doc)
+    FileUtils.rm_f(readme_doc)
+
+    exit_code = with_quiet_stderr do
+      process_tool_proc.call('Write', { 'file_path' => orphan_doc, 'content' => "# Testing\n" })
+    end
+    passed, failed = record_result(
+      exit_code == 2,
+      '  PASS: Orphan markdown document creation blocked',
+      "  FAIL: Orphan markdown document should block, got exit #{exit_code}",
+      passed,
+      failed
+    )
+
+    exit_code = with_quiet_stderr do
+      process_tool_proc.call('Write', { 'file_path' => readme_doc, 'content' => "# Readme\n" })
+    end
+    passed, failed = record_result(
+      exit_code == 0,
+      '  PASS: Core 5-doc markdown creation allowed',
+      "  FAIL: Core markdown document should be allowed, got exit #{exit_code}",
+      passed,
+      failed
+    )
+
+    owner_dir = File.join(project_dir, 'OwnerGuard')
+    FileUtils.mkdir_p(owner_dir)
+    owner_file = File.join(owner_dir, 'HugeOwner.swift')
+    owner_extension = File.join(owner_dir, 'HugeOwner+Feature.swift')
+    File.write(owner_file, Array.new(790, '// base').join("\n") + "\n")
+    File.write(owner_extension, Array.new(9, '// extension').join("\n") + "\n")
+    exit_code = with_quiet_stderr do
+      process_tool_proc.call('Edit', {
+        'file_path' => owner_extension,
+        'old_string' => '// extension',
+        'new_string' => "// extension\n// added\n// added"
+      })
+    end
+    passed, failed = record_result(
+      exit_code == 2,
+      '  PASS: Component-owner aggregate over 800 lines blocked',
+      "  FAIL: Component-owner aggregate should block over 800 lines, got exit #{exit_code}",
+      passed,
+      failed
+    )
+
+    [passed, failed]
+  end
+
   def run_deployment_safety_tests(process_tool_proc, research_categories)
     passed = 0
     failed = 0
@@ -139,7 +198,7 @@ module SaneToolsTestScenarios
 
     exit_code = with_quiet_stderr do
       process_tool_proc.call('Edit', {
-        'file_path' => '/Users/sj/SaneApps/apps/SaneBar/docs/appcast.xml',
+        'file_path' => File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, 'website', 'appcast.xml'),
         'old_string' => 'old content',
         'new_string' => '<enclosure url="https://dist.sanebar.com/SaneBar-9.9.9-test.dmg" edSignature="validSig123==" length="12345" />'
       })

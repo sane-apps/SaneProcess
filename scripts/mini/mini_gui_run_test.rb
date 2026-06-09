@@ -99,6 +99,17 @@ exit(run_tests('Mini GUI Runner Tests') do
       true
     end
 
+    test('visual workspace guard allows Codex only for explicit local Air fallback') do
+      assert_includes(visual_guard_source, 'local_air_fallback_approved()')
+      assert_includes(visual_guard_source, 'SANE_APPROVE_LOCAL_UI_ON_AIR')
+      assert_includes(visual_guard_source, 'MR. SANE APPROVES LOCAL UI ON AIR')
+      assert_includes(visual_guard_source, 'Codex)')
+      assert_includes(visual_guard_source, 'if ! local_air_fallback_approved; then')
+      assert(!visual_guard_source.include?('CLUTTER_APPS="Preview Safari TextEdit QuickTime Player Notes Codex"'),
+             'Codex must not be in the quit-app clutter list; approved Air fallback should minimize/ignore it, not quit it')
+      true
+    end
+
     test('visual workspace guard time-bounds helper app quit attempts') do
       assert_includes(visual_guard_source, 'run_with_timeout()')
       assert_includes(visual_guard_source, 'run_with_timeout 3 /usr/bin/osascript -e "tell application \\"$1\\" to quit"')

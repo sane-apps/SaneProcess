@@ -170,11 +170,11 @@ RESEARCH TRACKING EDGE CASES:
 - WebSearch fails → does NOT count
 
 CIRCUIT BREAKER EDGE CASES:
-- 2 failures → NOT tripped
-- 3 failures → TRIPPED
+- 1 failure → NOT tripped
+- 2 failures → TRIPPED
 - Reset command → failures = 0
-- 3 different error types → still TRIPPED (total count)
-- 2 same + 1 different → TRIPPED (3 total)
+- 2 different error types → still TRIPPED (total count)
+- 2 same error signatures → TRIPPED
 
 PATH EDGE CASES:
 - "/etc" (no trailing content) → BLOCK
@@ -258,7 +258,7 @@ FALSE POSITIVE AVOIDANCE:
 CIRCUIT BREAKER LOGIC:
 - Success between failures → still counts failures
 - Different signatures → all count toward total
-- 3x same signature → trip even if mixed
+- 2x same signature → trip even if mixed
 - Reset only clears failures, not signatures log
 ```
 

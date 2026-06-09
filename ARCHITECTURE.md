@@ -111,7 +111,7 @@ stateDiagram-v2
     TrackResult --> EditAllowed : success (reset failures)
     TrackResult --> FailureTracked : error detected
     FailureTracked --> EditAllowed : failures < threshold
-    FailureTracked --> BreakerTripped : 3+ consecutive or 3x same signature
+    FailureTracked --> BreakerTripped : 2+ consecutive or 2x same signature
 
     BreakerTripped --> EditAllowed : manual reset (rb- command)
 ```
@@ -167,8 +167,8 @@ flowchart TD
     NORM --> INC[Increment failures + per-signature count]
 
     INC --> CHECK{Thresholds}
-    CHECK -->|3 consecutive| TRIP[TRIP BREAKER]
-    CHECK -->|3x same signature| TRIP
+    CHECK -->|2 consecutive| TRIP[TRIP BREAKER]
+    CHECK -->|2x same signature| TRIP
     CHECK -->|Below threshold| CONTINUE[Continue]
 
     TRIP --> BLOCK_EDITS[Block all edits]
@@ -552,6 +552,7 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
 - Support, release, UI runtime, tool discovery, subagent hygiene, session lifecycle, and SOP score-cap workflows can be tested as multi-step receipts instead of more prompt prose.
 - Multi-agent delegation remains useful, but workflow complexity should be driven by eval failures and task shape, not by default escalation.
 - Skill descriptions and duplicate-name drift become tested routing surfaces rather than informal prose.
+- Client-managed Codex plugins are runtime adapter surfaces. SaneProcess records category routing in `DEVELOPMENT.md`, but release/support/security proof stays with repo-owned wrappers and eval coverage instead of an exhaustive plugin inventory.
 
 ### ADR-009: HTML is a generated review artifact, not the source of truth (2026-05-13)
 
@@ -629,7 +630,7 @@ The first promoted drilldown is `SaneMaster.rb verify_failure_review`, because t
 - **Path traversal:** Blocked system paths (`.ssh`, `.aws`, `/etc`)
 - **Edit without research:** PreToolUse blocks mutations until gate satisfied
 - **Inline script detection:** `python -c`, `ruby -e`, `node -e`, `perl -e` blocked as bash mutations
-- **Doom loops:** Circuit breaker trips after 3 consecutive failures
+- **Doom loops:** Circuit breaker trips after 2 consecutive failures or 2 matching error signatures
 
 **Known gaps:**
 - MCP tools can bypass enforcement (no wildcard matcher support — see ADR-003)

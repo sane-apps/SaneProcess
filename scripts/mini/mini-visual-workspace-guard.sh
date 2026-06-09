@@ -66,7 +66,7 @@ fi
 
 SANE_APPS="SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo"
 WINDOWLESS_TARGET_APPS="SaneBar"
-CLUTTER_APPS="Preview Safari TextEdit QuickTime Player Notes Codex"
+CLUTTER_APPS="Preview Safari TextEdit QuickTime Player Notes"
 DESKTOP_ARTIFACT_PATTERNS=$(cat <<'EOF'
 SaneProcess-rsync-misfire-*
 SaneUI-test-output-*.txt
@@ -84,6 +84,10 @@ EOF
 
 json_escape() {
   printf '%s' "$1" | ruby -rjson -e 'print JSON.generate(STDIN.read)[1...-1]'
+}
+
+local_air_fallback_approved() {
+  [ "${SANE_APPROVE_LOCAL_UI_ON_AIR:-}" = "MR. SANE APPROVES LOCAL UI ON AIR" ]
 }
 
 run_with_timeout() {
@@ -540,8 +544,13 @@ for raw in "${visible_names[@]}"; do
     Preview|Safari|TextEdit|QuickTime\ Player)
       issues+=("Visible helper app can contaminate screenshot: $name")
       ;;
-    Notes|Codex)
+    Notes)
       issues+=("Visible helper app can contaminate screenshot: $name")
+      ;;
+    Codex)
+      if ! local_air_fallback_approved; then
+        issues+=("Visible helper app can contaminate screenshot: $name")
+      fi
       ;;
     SecurityAgent|CoreServicesUIAgent|UserNotificationCenter|NotificationCenter|System\ Settings|System\ Preferences|loginwindow)
       issues+=("Visible macOS permission/security prompt host can contaminate screenshot: $name")

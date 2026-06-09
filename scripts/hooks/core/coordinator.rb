@@ -203,12 +203,12 @@ class Coordinator
       # Keep only last 10
       e[:blocks] = e[:blocks].last(10)
 
-      # Check for 5x same signature (use string keys after JSON round-trip)
-      recent = e[:blocks].last(5)
-      if recent.length >= 5 && recent.all? { |b| b['signature'] == signature }
+      # Rule #3: two identical hook blocks means stop and research, not retry.
+      recent = e[:blocks].last(2)
+      if recent.length >= 2 && recent.all? { |b| (b['signature'] || b[:signature]) == signature }
         e[:halted] = true
         e[:halted_at] = Time.now.iso8601
-        e[:halted_reason] = "5x consecutive: #{signature}"
+        e[:halted_reason] = "2x consecutive: #{signature}"
       end
 
       e

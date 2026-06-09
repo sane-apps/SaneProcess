@@ -130,7 +130,7 @@ module SaneToolsTest
     # Trip the circuit breaker
     StateManager.update(:circuit_breaker) do |cb|
       cb[:tripped] = true
-      cb[:failures] = 5
+      cb[:failures] = 2
       cb[:last_error] = 'Test error'
       cb
     end
@@ -146,6 +146,21 @@ module SaneToolsTest
     else
       failed += 1
       warn '  FAIL: Circuit breaker should block when tripped'
+    end
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    read_exit = process_tool_proc.call('Read', { 'file_path' => '/Users/sj/SaneApps/infra/SaneProcess/README.md' })
+    grep_exit = process_tool_proc.call('Grep', { 'pattern' => 'Circuit breaker' })
+    web_exit = process_tool_proc.call('WebSearch', { 'query' => 'ruby circuit breaker pattern' })
+    $stderr.reopen(original_stderr)
+
+    if [read_exit, grep_exit, web_exit].all?(&:zero?)
+      passed += 1
+      warn '  PASS: Circuit breaker still allows research tools'
+    else
+      failed += 1
+      warn "  FAIL: Circuit breaker should allow research tools, got Read=#{read_exit} Grep=#{grep_exit} WebSearch=#{web_exit}"
     end
 
     # Reset circuit breaker for remaining tests
@@ -518,6 +533,10 @@ module SaneToolsTest
       failed += 1
       warn "  FAIL: Normal .swift file should not be blocked, got exit #{exit_code}"
     end
+
+    scenario_passed, scenario_failed = SaneToolsTestScenarios.run_structure_guard_tests(process_tool_proc)
+    passed += scenario_passed
+    failed += scenario_failed
 
     # Cleanup
     StateManager.reset(:sensitive_approvals)

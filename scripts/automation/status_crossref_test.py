@@ -23,6 +23,9 @@ class StatusCrossrefScriptTests(unittest.TestCase):
             root = Path(tmp)
             fake_home = root / "home"
             fake_home.mkdir(parents=True)
+            token_path = fake_home / ".codex" / "secrets" / "github_token"
+            token_path.parent.mkdir(parents=True)
+            token_path.write_text("fake-status-token\n", encoding="utf-8")
 
             repo_root = root / "scripts"
             automation_dir = repo_root / "automation"
@@ -151,6 +154,11 @@ class StatusCrossrefScriptTests(unittest.TestCase):
                 textwrap.dedent(
                     """\
                     #!/usr/bin/env bash
+                    if [[ -n "${GH_TOKEN:-}" && -n "${GITHUB_TOKEN:-}" ]]; then
+                      printf 'token:present\\n' >> "$GH_LOG"
+                    else
+                      printf 'token:missing\\n' >> "$GH_LOG"
+                    fi
                     printf '%s\\n' "$*" >> "$GH_LOG"
                     has_jq=0
                     for arg in "$@"; do
@@ -279,6 +287,8 @@ class StatusCrossrefScriptTests(unittest.TestCase):
             env["HOME"] = str(fake_home)
             env["PATH"] = f"{bin_dir}:{env['PATH']}"
             env["GH_LOG"] = str(gh_log)
+            env.pop("GH_TOKEN", None)
+            env.pop("GITHUB_TOKEN", None)
 
             result = subprocess.run(
                 ["bash", str(script_copy)],
@@ -329,6 +339,7 @@ class StatusCrossrefScriptTests(unittest.TestCase):
             self.assertIn("Notification: mention", result.stdout)
             self.assertIn("Done.", result.stdout)
             gh_calls = gh_log.read_text(encoding="utf-8")
+            self.assertIn("token:present", gh_calls)
             self.assertIn("api notifications --paginate", gh_calls)
             self.assertIn("search issues --owner sane-apps --state open", gh_calls)
             self.assertIn("search prs --owner sane-apps --state open", gh_calls)

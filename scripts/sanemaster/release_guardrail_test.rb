@@ -622,6 +622,95 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('accepts local Air customer UI receipts only with explicit approval') do
+      Dir.mktmpdir('air-customer-ui-receipt-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: primary-toggle
+                title: Primary Toggle
+                surfaces: [Main window]
+                steps: [Click primary toggle]
+                assertions: [Visible state changes]
+                evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [mini_click, screenshot]
+                historical_failure_classes: [activation_noop]
+                functional_state:
+                  description: Local Air fallback test fixture
+                  setup_steps: [Launch the approved local test fixture before clicking]
+          YAML
+        )
+
+        local_host = Socket.gethostname.to_s.downcase
+        report = nil
+        Dir.chdir(dir) do
+          write_test_png(File.join(dir, 'outputs', 'saneexample-main.png'))
+          File.write(File.join(dir, 'outputs', 'saneexample-main-clicks.json'), '{"clicked":true}')
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          File.write(
+            File.join(dir, 'outputs', 'customer_ui_action_receipt.json'),
+            JSON.pretty_generate(
+              app: 'SaneExample',
+              status: 'passed',
+              host: local_host,
+              generated_at: Time.now.utc.iso8601,
+              manifest_sha256: report[:manifest_sha256],
+              source_fingerprint: report[:source_fingerprint],
+              tested_action_ids: ['primary-toggle'],
+              action_results: {
+                'primary-toggle' => {
+                  status: 'passed',
+                  proof_level: 'runtime_visual',
+                  functional_state: {
+                    status: 'established',
+                    detail: 'Approved Air fixture loaded'
+                  },
+                  evidence: [
+                    {
+                      type: 'mini_click',
+                      detail: 'applescript=toggle ok',
+                      path: 'outputs/saneexample-main-clicks.json'
+                    },
+                    {
+                      type: 'screenshot',
+                      detail: 'Captured local Air screenshot after click',
+                      path: 'outputs/saneexample-main.png'
+                    }
+                  ],
+                  workflow: {
+                    runner: 'scripts/customer_ui_action_sweep.rb primary-toggle',
+                    steps_completed: ['Click primary toggle'],
+                    outcome: 'Visible state changed after the approved Air click',
+                    artifacts: ['outputs/saneexample-main.png']
+                  }
+                }
+              },
+              screenshots: ['outputs/saneexample-main.png']
+            )
+          )
+
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          assert(!report[:ok], 'expected local receipt to fail without explicit Air approval')
+          assert(report[:issues].any? { |issue| issue.include?('explicitly approved local Air fallback') },
+                 "expected Air approval issue, got #{report[:issues].inspect}")
+
+          with_env('SANE_APPROVE_LOCAL_UI_ON_AIR' => 'MR. SANE APPROVES LOCAL UI ON AIR') do
+            report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          end
+        end
+
+        assert(report[:ok], "expected approved Air receipt to pass: #{report[:issues].inspect}")
+      end
+      true
+    end
+
     test('ignores SaneMaster scratch files when validating a customer UI receipt') do
       Dir.mktmpdir('customer-ui-scratch-files-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'Tests'))
@@ -1733,6 +1822,17 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       subject.singleton_class.remove_method(:customer_ui_mini_host?) rescue nil
       subject.singleton_class.remove_method(:customer_ui_cleanup_before_sweep) rescue nil
       subject.singleton_class.remove_method(:customer_ui_run_command) rescue nil
+    end
+
+    test('customer UI visual precheck parses JSON after local routing warnings') do
+      parsed = subject.send(
+        :customer_ui_parse_json_object,
+        "⚠️  Mini-first bypass active (--local or SANEMASTER_FORCE_LOCAL=1); running locally.\n{\"ok\":true,\"artifacts\":[\"outputs/visual.png\"]}\n"
+      )
+
+      assert_eq(parsed['ok'], true)
+      assert_eq(parsed['artifacts'], ['outputs/visual.png'])
+      true
     end
 
     test('customer UI sweep blocks app-owned install prompts before running the workflow') do

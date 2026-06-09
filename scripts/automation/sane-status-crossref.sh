@@ -19,6 +19,30 @@ STATUS_GITHUB_ACTIVITY_LIMIT="${STATUS_GITHUB_ACTIVITY_LIMIT:-50}"
 STATUS_GITHUB_COMMENT_LIMIT="${STATUS_GITHUB_COMMENT_LIMIT:-3}"
 STATUS_GITHUB_NOTIFICATION_ACTIVITY_LIMIT="${STATUS_GITHUB_NOTIFICATION_ACTIVITY_LIMIT:-10}"
 
+load_github_token() {
+  if [[ -n "${GH_TOKEN:-}" || -n "${GITHUB_TOKEN:-}" ]]; then
+    if [[ -z "${GH_TOKEN:-}" && -n "${GITHUB_TOKEN:-}" ]]; then
+      export GH_TOKEN="$GITHUB_TOKEN"
+    fi
+    if [[ -z "${GITHUB_TOKEN:-}" && -n "${GH_TOKEN:-}" ]]; then
+      export GITHUB_TOKEN="$GH_TOKEN"
+    fi
+    return 0
+  fi
+
+  local token_path token
+  token_path="${STATUS_GITHUB_TOKEN_FILE:-${HOME}/.codex/secrets/github_token}"
+  if [[ -r "$token_path" ]]; then
+    token="$(tr -d '\r\n' < "$token_path" 2>/dev/null || true)"
+    if [[ -n "$token" ]]; then
+      export GITHUB_TOKEN="$token"
+      export GH_TOKEN="$token"
+    fi
+  fi
+}
+
+load_github_token
+
 if [[ -z "$LISTING_JSON_PATH" ]]; then
   LISTING_JSON_PATH="$(mktemp "${TMPDIR:-/tmp}/sane-status-listing.XXXXXX")"
   LISTING_JSON_CLEANUP=1

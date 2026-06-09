@@ -10,7 +10,7 @@
 # Usage in hooks:
 #   require_relative 'rule_tracker'
 #   RuleTracker.log_enforcement(rule: 0, hook: 'sop_mapper', action: 'warn')
-#   RuleTracker.log_violation(rule: 3, hook: 'circuit_breaker', reason: '3 failures')
+#   RuleTracker.log_violation(rule: 3, hook: 'circuit_breaker', reason: '2 failures')
 # ==============================================================================
 
 require 'json'

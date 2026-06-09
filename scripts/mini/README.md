@@ -10,10 +10,115 @@ ruby scripts/SaneMaster.rb sync_mini
 
 `scripts/automation/sync-codex-mini.sh` is the implementation helper behind that workflow, not the primary operator entrypoint.
 
+## Air To Mini SSH
+
+Canonical Mini access is always:
+
+```bash
+ssh mini 'hostname; whoami'
+```
+
+The `mini` and `mini-remote` aliases route through Cloudflare Access so they
+work off-Wi-Fi. The old Bonjour route is preserved as `mini-lan` for same-network
+diagnostics only.
+
+Install or repair the controller-machine SSH config:
+
+```bash
+bash scripts/mini/install-mini-ssh-config.sh
+```
+
+What it installs:
+
+- `~/.ssh/config` includes `~/.ssh/config.d/*.conf`.
+- `~/.ssh/config.d/saneapps-mini.conf` defines `mini`, `mini-remote`, and
+  `mini-lan`.
+- `mini` resolves `mini-ssh-host.saneapps.com` TXT and passes that host to
+  `cloudflared access ssh`.
+
+Verify from the controller:
+
+```bash
+dig +short TXT mini-ssh-host.saneapps.com
+cloudflared --version
+ssh -G mini | grep -E '^(hostname|proxycommand|identityfile) '
+ssh mini 'hostname; whoami; pwd'
+```
+
+Install or repair the Mini-side quick tunnel from a working Mini shell:
+
+```bash
+cd ~/SaneApps/infra/SaneProcess
+bash scripts/mini/mini-install-remote-ssh-tunnel.sh
+launchctl print gui/$(id -u)/com.saneapps.mini-remote-ssh-tunnel
+tail -50 ~/Library/Logs/SaneApps/mini-remote-ssh-tunnel.log
+```
+
+The Mini-side LaunchAgent runs
+`~/SaneApps/infra/scripts/mini-remote-ssh-tunnel.sh`, keeps
+`cloudflared tunnel --url ssh://localhost:22` alive, and publishes the current
+`*.trycloudflare.com` hostname to `mini-ssh-host.saneapps.com` as a TXT record.
+
+Troubleshooting:
+
+- Empty TXT record: the Mini tunnel or DNS publish step is down; check the
+  LaunchAgent and log on the Mini.
+- `cloudflared` missing locally: rerun `install-mini-ssh-config.sh`.
+- `ssh mini` fails but `ssh mini-lan` works: repair the Cloudflare bridge; do
+  not treat this as permission to test locally.
+- `ssh mini-lan` fails off-Wi-Fi: expected; use `ssh mini`.
+- Long-term target: replace the quick tunnel bridge with a named Cloudflare Zero
+  Trust tunnel or Tailscale once the account token has the needed permissions.
+
+## Mini Codex Remote Control
+
+The iPhone/remote-control path is the managed Codex app-server daemon:
+
+```bash
+ssh mini 'codex app-server daemon version'
+ssh mini 'codex app-server daemon restart; codex app-server daemon enable-remote-control'
+```
+
+Keepalive is handled by:
+
+```text
+~/Library/LaunchAgents/com.saneapps.codex-keepalive.plist
+```
+
+That plist should set `SANEPROCESS_ENABLE_MINI_CODEX_KEEPALIVE=1`. The script
+starts/enables the headless daemon every pass, then opens the Codex GUI only if
+no SaneApps app is running and no app server exists.
+
+If iPhone Codex disconnects:
+
+1. Run the daemon restart/enable commands above.
+2. Clear stale desktop websocket helpers only if logs show socket reuse:
+   `pkill -f 'desktop-ssh-websocket-v0.sock'`.
+3. Verify `~/.codex/app-server-control/app-server-control.sock` is owned by the
+   managed daemon via `lsof -U | grep app-server-control`.
+
+## Tailscale
+
+Tailscale formula is installed on the controller and Mini. The Mini can run the
+root daemon:
+
+```bash
+ssh mini 'tailscale status'
+ssh mini 'launchctl print system/homebrew.mxcl.tailscale'
+```
+
+Current expected state before enrollment is `Logged out`. Activation still needs
+a Tailscale auth key or interactive login. If the tailnet policy requires
+hardware attestation, verify that policy first; the Homebrew `tailscaled` build
+may report that hardware attestation is unsupported on macOS.
+
 ## Scripts
 
 | Script | Schedule | Purpose |
 |--------|----------|---------|
+| `install-mini-ssh-config.sh` | On demand (local Mac) | Installs controller SSH aliases so `ssh mini` works off-LAN through Cloudflare Access |
+| `mini-install-remote-ssh-tunnel.sh` | On demand (Mini) | Installs the Mini LaunchAgent that keeps the SSH quick tunnel alive |
+| `mini-remote-ssh-tunnel.sh` | LaunchAgent | Publishes the current quick-tunnel hostname to DNS TXT and proxies Mini SSH |
 | `mini-prepare-automation-root.sh` | On demand | Creates/updates clean automation clones under `~/SaneApps-automation` |
 | `mini-install-nightly-agent.sh` | On demand | Installs/updates the nightly LaunchAgent |
 | `mini-install-training-agents.sh` | On demand | Installs/updates weekly + challenger training LaunchAgents |
