@@ -37,7 +37,11 @@ module SaneMasterModules
       } unless applicable
 
       files = swift_source_files(root)
-      contents = files.to_h { |file| [file, File.read(file)] }
+      contents = files.to_h do |file|
+        content = File.read(file, encoding: 'UTF-8')
+        content = content.scrub('?') unless content.valid_encoding?
+        [file, content]
+      end
       settings_files = files.select { |file| settings_ui_file?(file) }
 
       errors = []

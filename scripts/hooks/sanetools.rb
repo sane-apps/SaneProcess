@@ -105,8 +105,8 @@ BASH_FILE_WRITE_PATTERN = Regexp.union(
   /\bdd\b.*\bof=/,
   # Heredoc
   /<<[A-Z_]+/,
-  # Cat redirect
-  /\bcat\b.*>/,
+  # Cat redirect (ignore fd duplication like 2>&1)
+  /\bcat\b.*(?<![0-9])>(?!&)/,
   # File copy (M8 addition)
   /\bcp\s+/,
   # Download to file (M8 addition)
