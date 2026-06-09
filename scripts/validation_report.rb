@@ -87,12 +87,11 @@ class ValidationReport
     .swift .xcconfig .xcprivacy .xcstrings .xib .yaml .yml
   ].freeze
   PROJECT_QA_SOURCE_EXCLUDED_PREFIXES = %w[
-    .build/ .claude/ .codex/ .git/ .sanemaster/ .serena/ build/ DerivedData/
-    docs/ fastlane/test_output/ node_modules/ outputs/ releases/ vendor/bundle/ website/
+    .build/ .claude/ .codex/ .git/ .sanemaster/ build/ DerivedData/ docs/
+    node_modules/ outputs/ vendor/bundle/ website/
   ].freeze
   PROJECT_QA_SOURCE_EXCLUDED_FILES = %w[
-    .sane/customer_ui_action_receipt.json AGENTS.md ARCHITECTURE.md CLAUDE.md
-    DEVELOPMENT.md README.md SESSION_HANDOFF.md
+    AGENTS.md ARCHITECTURE.md CLAUDE.md DEVELOPMENT.md README.md SESSION_HANDOFF.md
   ].freeze
   DISK_BUDGET_MIN_FREE_GB = 20
   DISK_BUDGET_CRITICAL_FREE_GB = 10
@@ -137,6 +136,7 @@ class ValidationReport
     apps/SaneClip
     apps/SaneHosts
     apps/SaneClick
+    apps/SaneSales
     infra/SaneProcess
   ].freeze
 
@@ -149,6 +149,7 @@ class ValidationReport
     apps/SaneClip
     apps/SaneHosts
     apps/SaneClick
+    apps/SaneSales
   ].freeze
 
   def initialize
@@ -666,6 +667,8 @@ class ValidationReport
         header = File.read(skill_file, 512)
         issues_found << "[codex] missing `name:` in #{skill_file}" unless header.match?(/^\s*name:\s*.+$/)
         issues_found << "[codex] missing `description:` in #{skill_file}" unless header.match?(/^\s*description:\s*.+$/)
+
+        check_sane_audit_historical_lane(skill_dir, skill_file, issues_found) if entry == 'sane-audit'
       end
     end
 
@@ -683,6 +686,63 @@ class ValidationReport
 
     if registry_only.any?
       @warnings << "Q0: [codex] SKILLS_REGISTRY.md entries missing local skill dirs: #{registry_only.join(', ')}"
+    end
+  end
+
+  def check_sane_audit_historical_lane(skill_dir, skill_file, issues_found)
+    required_prompt_files = %w[
+      q0-config.md
+      q6-release.md
+      q7-website.md
+      q8-signing.md
+      q9-support.md
+      q10-docs.md
+      q11-tooling.md
+      q12-runtime-resources.md
+      q13-historical-regression.md
+    ]
+    prompt_dir = File.join(skill_dir, 'prompts')
+    missing_prompt_files = required_prompt_files.reject { |file| File.exist?(File.join(prompt_dir, file)) }
+    if missing_prompt_files.any?
+      issues_found << "[codex] sane-audit missing required prompt files: #{missing_prompt_files.join(', ')}"
+    end
+
+    prompt_path = File.join(skill_dir, 'prompts', 'q13-historical-regression.md')
+    unless File.exist?(prompt_path)
+      issues_found << "[codex] sane-audit missing historical regression prompt: #{prompt_path}"
+      return
+    end
+
+    skill_content = File.read(skill_file)
+    prompt_content = File.read(prompt_path)
+    required_skill_terms = ['historical', 'root-cause', 'GitHub', 'support']
+    missing_skill_terms = required_skill_terms.reject { |term| skill_content.include?(term) }
+    if missing_skill_terms.any?
+      issues_found << "[codex] sane-audit SKILL.md does not require historical regression coverage (missing: #{missing_skill_terms.join(', ')})"
+    end
+
+    required_prompt_terms = [
+      'GitHub',
+      'support',
+      'root cause',
+      'Root-Cause Matrix',
+      'Per-Perspective Scores',
+      'Current Coverage',
+      'Would Catch Today?',
+      'Checked Evidence',
+      'No issue cluster can be called fixed without named current coverage'
+    ]
+    missing_prompt_terms = required_prompt_terms.reject { |term| prompt_content.include?(term) }
+    if missing_prompt_terms.any?
+      issues_found << "[codex] sane-audit historical regression prompt is incomplete (missing: #{missing_prompt_terms.join(', ')})"
+    end
+
+    workflow_path = File.join(File.dirname(__FILE__), 'hooks', 'core', 'mandatory_workflows.rb')
+    workflow_content = File.exist?(workflow_path) ? File.read(workflow_path) : ''
+    min_match = workflow_content.match(/sane_audit:\s*\{.*?min_subagents:\s*(\d+)/m)
+    min_subagents = min_match ? min_match[1].to_i : 0
+    if min_subagents < required_prompt_files.length
+      issues_found << "[codex] sane-audit hook requires #{min_subagents} subagents but has #{required_prompt_files.length} prompt lanes"
     end
   end
 
@@ -1440,7 +1500,7 @@ class ValidationReport
 
     # Check SSL certificates (via curl)
     domains.each do |domain|
-      ssl_check = `curl -sI --connect-timeout 5 "#{domain[:url]}" 2>&1`
+      ssl_check = curl_capture(domain[:url], '-sI', '--connect-timeout', '5')
       if ssl_check.include?('SSL certificate problem')
         issues_found << "#{domain[:name]} SSL certificate error"
       end
@@ -1495,7 +1555,7 @@ class ValidationReport
       case status
       when '200', '301', '302'
         # OK - also verify it's valid XML
-        xml_content = `curl -s --connect-timeout 5 #{Shellwords.shellescape(appcast[:url])} 2>&1`
+        xml_content = curl_capture(appcast[:url], '-s', '--connect-timeout', '5')
         unless xml_content.include?('<rss') || xml_content.include?('<feed')
           warnings_found << "#{appcast[:name]} doesn't appear to be valid XML"
         end
@@ -1531,27 +1591,20 @@ class ValidationReport
   end
 
   def check_url_status(url, follow_redirects: false)
-    escaped_url = Shellwords.shellescape(url)
-    head_cmd = if follow_redirects
-                 "curl -sI -L -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 #{escaped_url} 2>&1"
-               else
-                 "curl -sI -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 #{escaped_url} 2>&1"
-               end
-    get_cmd = if follow_redirects
-                "curl -sL -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 #{escaped_url} 2>&1"
-              else
-                "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 #{escaped_url} 2>&1"
-              end
+    head_args = ['-sI', '-o', '/dev/null', '-w', '%{http_code}', '--connect-timeout', '5', '--max-time', '15']
+    head_args << '-L' if follow_redirects
+    get_args = ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--connect-timeout', '5', '--max-time', '15']
+    get_args << '-L' if follow_redirects
 
     statuses = []
     errors = []
 
     2.times do
-      head_result = `#{head_cmd}`.strip
+      head_result = curl_capture(url, *head_args).strip
       statuses << head_result
       if head_result.start_with?('5') || head_result == '000'
         # Some providers intermittently fail HEAD but succeed GET.
-        get_result = `#{get_cmd}`.strip
+        get_result = curl_capture(url, *get_args).strip
         statuses << get_result
       end
     end
@@ -1572,11 +1625,42 @@ class ValidationReport
     http_codes.first
   end
 
+  def curl_capture(url, *args)
+    output, status = Open3.capture2e('curl', *args, url)
+    return output if status.success?
+
+    uri = URI(url)
+    return output unless uri.scheme == 'https' && uri.host
+
+    ip = `dig +short #{Shellwords.shellescape(uri.host)} A 2>/dev/null`
+         .lines
+         .map(&:strip)
+         .find { |line| line.match?(/\A\d+(\.\d+){3}\z/) }
+    return output if ip.to_s.empty?
+
+    port = uri.port || 443
+    fallback_output, = Open3.capture2e('curl', '--resolve', "#{uri.host}:#{port}:#{ip}", *args, url)
+    fallback_output
+  rescue StandardError => e
+    "curl: #{e.message}"
+  end
+
   # Q8: CODE SIGNING STATUS
   # Are our signing identities and notarization working?
   def q8_code_signing
     issues_found = []
     warnings_found = []
+
+    unless credential_prompting_enabled?
+      warnings_found << 'Code-signing keychain/notary checks skipped in no-prompt validation mode'
+      @metrics[:code_signing] = {
+        issues: issues_found.size,
+        warnings: warnings_found.size,
+        details: issues_found + warnings_found
+      }
+      warnings_found.each { |w| @warnings << "Q8 SIGNING: #{w}" }
+      return
+    end
 
     # Check Developer ID signing identity exists
     identities = `security find-identity -v -p codesigning 2>/dev/null`
@@ -1654,7 +1738,7 @@ class ValidationReport
   def q9_support_infrastructure
     issues_found = []
     warnings_found = []
-    keychain_fallback_enabled = ENV.fetch('SANE_KEYCHAIN_FALLBACK', '1') == '1'
+    keychain_fallback_enabled = ENV.fetch('SANE_KEYCHAIN_FALLBACK', '0') == '1'
     keychain_fallback_enabled = false if ENV['SANE_NO_KEYCHAIN'] == '1'
     secret_for = lambda do |service, account, *env_names|
       env_names.each do |env_name|
@@ -2286,11 +2370,17 @@ class ValidationReport
       return value unless value.empty?
     end
 
-    keychain_fallback_enabled = ENV.fetch('SANE_KEYCHAIN_FALLBACK', '1') == '1'
+    keychain_fallback_enabled = ENV.fetch('SANE_KEYCHAIN_FALLBACK', '0') == '1'
     keychain_fallback_enabled = false if ENV['SANE_NO_KEYCHAIN'] == '1'
     return '' unless keychain_fallback_enabled
 
     `security find-generic-password -s "#{service}" -a "#{account}" -w 2>/dev/null`.strip
+  end
+
+  def credential_prompting_enabled?
+    ENV['SANE_ALLOW_KEYCHAIN_PROMPTS'] == '1' &&
+      ENV['SANE_NO_KEYCHAIN'] != '1' &&
+      ENV.fetch('SANE_KEYCHAIN_FALLBACK', '0') == '1'
   end
 
   def fetch_live_email_worker_snapshot

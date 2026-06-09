@@ -1,8 +1,8 @@
 #!/bin/bash
 #
 # SaneProcess Installation Script
-# Sets up SaneProcess for Claude Code, Codex, or generic coding agents.
-# Usage: /path/to/SaneProcess/scripts/init.sh [--client all|claude|codex|generic] [--force]
+# Sets up SaneProcess for Claude Code, Codex, Grok, or generic coding agents.
+# Usage: /path/to/SaneProcess/scripts/init.sh [--client all|claude|codex|grok|generic] [--force]
 
 set -e
 
@@ -28,8 +28,9 @@ Options:
   --client all       Install AGENTS.md, Claude hooks, and shared .agents skills (default)
   --client claude    Install AGENTS.md plus Claude Code native hooks
   --client codex     Install AGENTS.md plus shared .agents skills for Codex-style clients
+  --client grok      Install AGENTS.md plus shared .agents skills for Grok-style clients
   --client generic   Install only the portable AGENTS.md baseline
-  --all | --claude | --codex | --generic
+  --all | --claude | --codex | --grok | --generic
   --interactive      Ask which client adapter to install
   --force            Overwrite files previously installed by SaneProcess
   -h, --help         Show this help
@@ -44,7 +45,7 @@ while [ "$#" -gt 0 ]; do
         --client)
             shift
             if [ "$#" -eq 0 ]; then
-                echo -e "${RED}Error: --client requires all, claude, codex, or generic${NC}" >&2
+                echo -e "${RED}Error: --client requires all, claude, codex, grok, or generic${NC}" >&2
                 exit 1
             fi
             CLIENT="$1"
@@ -52,6 +53,7 @@ while [ "$#" -gt 0 ]; do
         --all) CLIENT="all" ;;
         --claude) CLIENT="claude" ;;
         --codex) CLIENT="codex" ;;
+        --grok) CLIENT="grok" ;;
         --generic) CLIENT="generic" ;;
         --interactive) INTERACTIVE=1 ;;
         --force) FORCE=1 ;;
@@ -79,14 +81,16 @@ if [ "$INTERACTIVE" -eq 1 ]; then
     echo "  1) all     - AGENTS.md, Claude hooks, and .agents skills"
     echo "  2) claude  - AGENTS.md and Claude Code native hooks"
     echo "  3) codex   - AGENTS.md and .agents skills"
-    echo "  4) generic - AGENTS.md only"
+    echo "  4) grok    - AGENTS.md and .agents skills"
+    echo "  5) generic - AGENTS.md only"
     printf "Selection [1]: "
     read answer
     case "${answer:-1}" in
         1|all) CLIENT="all" ;;
         2|claude) CLIENT="claude" ;;
         3|codex) CLIENT="codex" ;;
-        4|generic) CLIENT="generic" ;;
+        4|grok) CLIENT="grok" ;;
+        5|generic) CLIENT="generic" ;;
         *)
             echo -e "${RED}Error: invalid selection${NC}" >&2
             exit 1
@@ -95,7 +99,7 @@ if [ "$INTERACTIVE" -eq 1 ]; then
 fi
 
 case "$CLIENT" in
-    all|claude|codex|generic) ;;
+    all|claude|codex|grok|generic) ;;
     *)
         echo -e "${RED}Error: unsupported client '$CLIENT'${NC}" >&2
         usage >&2
@@ -110,7 +114,7 @@ CLAUDE_SETTINGS_ACTIVE=0
 case "$CLIENT" in
     all) INSTALL_CLAUDE=1; INSTALL_AGENTS_SKILLS=1 ;;
     claude) INSTALL_CLAUDE=1 ;;
-    codex) INSTALL_AGENTS_SKILLS=1 ;;
+    codex|grok) INSTALL_AGENTS_SKILLS=1 ;;
     generic) ;;
 esac
 
@@ -190,7 +194,7 @@ echo ""
 ERRORS=0
 
 MAIN_HOOKS="session_start.rb saneprompt.rb sanetools.rb sanetrack.rb task_completed_gate.rb sanestop.rb"
-SUPPORT_MODULES="saneprompt_intelligence.rb saneprompt_commands.rb sanetools_checks.rb sanetools_startup.rb sanetools_gaming.rb sanetools_deploy.rb sanetools_github_guard.rb sanetrack_research.rb sanetrack_state_updates.rb sanetrack_gate.rb sanetrack_reminders.rb session_briefing.rb session_start_cleanup.rb self_test_environment.rb state_signer.rb rule_tracker.rb"
+SUPPORT_MODULES="saneprompt_intelligence.rb saneprompt_commands.rb sanetools_checks.rb sanetools_research.rb sanetools_startup.rb sanetools_gaming.rb sanetools_deploy.rb sanetools_github_guard.rb sanetrack_research.rb sanetrack_state_updates.rb sanetrack_gate.rb sanetrack_reminders.rb session_briefing.rb session_start_cleanup.rb self_test_environment.rb state_signer.rb rule_tracker.rb"
 CORE_MODULES="core/config.rb core/state_manager.rb core/context_compact.rb"
 SELF_TEST_MODULES="saneprompt_test.rb sanetools_test.rb sanetools_test_scenarios.rb sanetrack_test.rb sanestop_test.rb"
 
@@ -444,6 +448,9 @@ fi
 if [ "$INSTALL_AGENTS_SKILLS" -eq 1 ]; then
     echo "  Shared skills: .agents/skills"
 fi
+if [ "$CLIENT" = "grok" ]; then
+    echo "  Grok: AGENTS.md + .agents/skills; use /mcps or Ctrl+L for live MCP status"
+fi
 if [ "$CLIENT" = "generic" ]; then
     echo "  Generic agent path: AGENTS.md plus your project's own scripts and checks"
 fi
@@ -462,6 +469,9 @@ show_install_commands() {
     fi
     if [ "$CLIENT" = "all" ] || [ "$CLIENT" = "codex" ]; then
         echo "    Codex:  codex mcp add ${server_name} -- ${stdio_cmd}"
+    fi
+    if [ "$CLIENT" = "grok" ]; then
+        echo "    Grok:   add ${server_name} in Grok MCP settings if not provided by compatibility config: ${stdio_cmd}"
     fi
     if [ "$CLIENT" = "generic" ]; then
         echo "    Generic: add ${server_name} to your client's MCP configuration using: ${stdio_cmd}"
@@ -488,6 +498,11 @@ case "$CLIENT" in
     codex)
         echo "  Confirm your client sees AGENTS.md"
         echo "  Confirm reusable skills exist under .agents/skills"
+        ;;
+    grok)
+        echo "  Confirm Grok sees AGENTS.md"
+        echo "  Confirm reusable skills exist under .agents/skills"
+        echo "  Check live MCP state in Grok with /mcps or Ctrl+L; native grok mcp list may not include compatibility-loaded servers"
         ;;
     generic)
         echo "  Confirm your agent reads AGENTS.md"

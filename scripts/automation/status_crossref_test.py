@@ -289,34 +289,39 @@ class StatusCrossrefScriptTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, msg=result.stderr)
-            self.assertIn("[3/9] Listing actions", result.stdout)
+            self.assertIn("[3/10] Listing actions", result.stdout)
             self.assertIn("Current actions: 1", result.stdout)
             self.assertIn(
                 "- SaaSworthy: Complete vendor portal profile (email #531)",
                 result.stdout,
             )
-            self.assertIn("[4/9] Hosted-file dashboard actions", result.stdout)
+            self.assertIn("[4/10] Hosted-file dashboard actions", result.stdout)
             self.assertIn("Needs dashboard sync: 1", result.stdout)
             self.assertIn(
                 "- SaneBar: hosted 2.1.41 -> expected 2.1.45 (variant 1227172)",
                 result.stdout,
             )
-            self.assertIn("[5/9] Outreach / launch operations", result.stdout)
+            self.assertIn("[5/10] Outreach / launch operations", result.stdout)
             self.assertIn("Tracked apps: 1", result.stdout)
             self.assertIn("- SaneSales: active_launch_window", result.stdout)
             self.assertIn("Product Hunt: status=live_unfeatured_relaunch_review_requested", result.stdout)
             self.assertIn("X: posted=1", result.stdout)
-            self.assertIn("[6/9] GitHub notifications", result.stdout)
+            self.assertIn("[6/10] App Store release gates", result.stdout)
+            self.assertIn(
+                "appstore_submit.rb not found",
+                result.stdout,
+            )
+            self.assertIn("[7/10] GitHub notifications", result.stdout)
             self.assertIn("Notifications: 2", result.stdout)
             self.assertIn("New SaneBar evidence", result.stdout)
-            self.assertIn("[7/9] Open GitHub issues", result.stdout)
+            self.assertIn("[8/10] Open GitHub issues", result.stdout)
             self.assertIn("Scope: org-wide", result.stdout)
             self.assertIn("## sane-apps/SaneProcess", result.stdout)
             self.assertIn("#8\tOPEN\tStub process issue", result.stdout)
-            self.assertIn("[8/9] Open GitHub PRs", result.stdout)
+            self.assertIn("[9/10] Open GitHub PRs", result.stdout)
             self.assertIn("## sane-apps/Sane-AppleDocs", result.stdout)
             self.assertIn("#13\tOPEN\tStub docs dependency pr", result.stdout)
-            self.assertIn("[9/9] GitHub comment/review activity", result.stdout)
+            self.assertIn("[10/10] GitHub comment/review activity", result.stdout)
             self.assertIn("Comments read: 1", result.stdout)
             self.assertIn("Latest comment explains the remaining blocker.", result.stdout)
             self.assertIn("Reviews read: 1", result.stdout)

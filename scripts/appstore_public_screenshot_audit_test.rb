@@ -116,6 +116,36 @@ exit(run_tests('Public App Store Screenshot Audit Tests') do
   end
 
   test_category('Mismatch detection') do
+    test('falls back to .saneprocess screenshot globs when no storyboard exists') do
+      Dir.mktmpdir('appstore-public-audit-saneprocess-fallback') do |tmpdir|
+        FileUtils.mkdir_p(File.join(tmpdir, 'docs', 'images'))
+        File.write(
+          File.join(tmpdir, '.saneprocess'),
+          {
+            'name' => 'SaneTest',
+            'appstore' => {
+              'app_id' => '1234567890',
+              'screenshots' => {
+                'ios' => 'docs/images/screenshot-ios-*-dark.png',
+                'ipad' => 'docs/images/screenshot-ipad-*-dark.png'
+              }
+            }
+          }.to_yaml
+        )
+        File.write(File.join(tmpdir, 'docs', 'images', 'screenshot-ios-01-dark.png'), 'ios')
+        File.write(File.join(tmpdir, 'docs', 'images', 'screenshot-ipad-01-dark.png'), 'ipad')
+
+        subject = AppStorePublicScreenshotAudit.new(project_root: tmpdir)
+        storyboard = subject.storyboard_entries_by_platform
+
+        assert_eq(storyboard.keys.sort, %w[ios ipad])
+        assert_eq(File.basename(storyboard['ios'].first[:file]), 'screenshot-ios-01-dark.png')
+        assert_includes(storyboard['ios'].first[:purpose], '.saneprocess appstore.screenshots')
+      end
+
+      true
+    end
+
     test('flags live count and slot mismatches against the storyboard') do
       Dir.mktmpdir('appstore-public-audit-mismatch') do |tmpdir|
         write_manifest(tmpdir)

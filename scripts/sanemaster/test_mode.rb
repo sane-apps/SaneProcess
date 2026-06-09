@@ -8,9 +8,12 @@ module SaneMasterModules
 
     SANEAPPS_TEST_MODE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo].freeze
 
-    # Detect project name from current directory (context-specific)
     def project_name
-      @project_name ||= File.basename(Dir.pwd)
+      @project_name ||= if respond_to?(:config_value, true)
+                          config_value(%w[name], 'SANEMASTER_PROJECT', File.basename(Dir.pwd))
+                        else
+                          File.basename(Dir.pwd)
+                        end
     end
 
     def launch_app(args)
@@ -22,6 +25,11 @@ module SaneMasterModules
       puts "🔧 Build configuration: #{build_config}"
       app_candidates = built_app_candidates(build_config)
       app_path = app_candidates.find { |candidate| app_bundle_executable?(candidate) } || app_candidates.first
+      canonical_existing_app = File.join('/Applications', "#{project_name}.app")
+      if (!app_path || !File.exist?(app_path)) && app_bundle_executable?(canonical_existing_app)
+        puts "📦 Using existing canonical app: #{canonical_existing_app}"
+        app_path = canonical_existing_app
+      end
 
       unless app_path && File.exist?(app_path)
         puts "❌ App binary not found for configuration '#{build_config}'. Run build first."
@@ -75,6 +83,10 @@ module SaneMasterModules
       launch_path = stage_to_canonical_local_app_path(app_path)
       trashed_copies = trash_noncanonical_local_app_copies(preserve_paths: protected_local_app_paths(launch_path))
       puts "🧹 Trashed #{trashed_copies} stale app bundle(s) before launch" if trashed_copies.positive?
+      clear_gatekeeper_staging_attributes(launch_path)
+      direct_launch = direct_binary_launch_required?(launch_path)
+      return false unless launch_path_gatekeeper_ready?(launch_path, direct_launch: direct_launch)
+
       reconcile_accessibility_trust_local(launch_path)
 
       puts "📱 Launching: #{launch_path}"
@@ -92,6 +104,19 @@ module SaneMasterModules
         puts '📝 Capturing logs to stdout...'
         pid = spawn(env_vars, executable_path, *launch_args)
         Process.wait(pid)
+      elsif direct_launch
+        puts '🚀 Launching directly by executable path to avoid LaunchServices Gatekeeper dialogs...'
+        pid = spawn(env_vars, executable_path, *launch_args, out: File::NULL, err: File::NULL)
+        Process.detach(pid)
+        sleep 1
+        unless launched_process_matches?(launch_path)
+          puts "❌ Direct launch resolved to a different #{project_name}.app copy."
+          puts "   Expected: #{launch_path}"
+          show_other_running_app_copies(expected_path: launch_path)
+          return false
+        end
+        mode_label = allow_keychain ? 'keychain-enabled' : 'no-keychain'
+        puts "✅ App launched (fresh build verified, #{mode_label}, direct executable)"
       else
         open_cmd = ['open', '--fresh', launch_path]
         open_cmd += open_launch_env_pairs(allow_keychain: allow_keychain, force_free_mode: force_free_mode)
@@ -307,9 +332,18 @@ module SaneMasterModules
       if should_stage_apple_development_to_transient_path?(source_app_path: source_app_path, target_app_path: target_app_path)
         redirected_target = transient_local_app_path
         puts "⚠️  Staging Apple Development build to transient non-indexed path for #{project_name}."
-        puts "   Skipping /Applications write to avoid permission identity drift and duplicate installed app identities."
+        puts "   Skipping /Applications write to avoid permission identity drift, Gatekeeper prompts, and duplicate installed app identities."
         puts "   Target: #{redirected_target}"
         puts "   Set SANEMASTER_ALLOW_STAGE_APPLE_DEVELOPMENT_TO_SYSTEM=1 to override."
+        target_app_path = redirected_target
+      end
+
+      if should_stage_ad_hoc_debug_to_transient_path?(source_app_path: source_app_path, target_app_path: target_app_path)
+        redirected_target = transient_local_app_path
+        puts "⚠️  Staging ad-hoc Debug build to transient non-indexed path for #{project_name}."
+        puts "   Skipping /Applications because Gatekeeper can show an unidentified-developer dialog for ad-hoc local builds."
+        puts "   Target: #{redirected_target}"
+        puts "   Set SANEMASTER_ALLOW_STAGE_ADHOC_DEBUG_TO_SYSTEM=1 to override."
         target_app_path = redirected_target
       end
 
@@ -331,7 +365,7 @@ module SaneMasterModules
         temp_app_path = "#{target_app_path}.staging-#{Process.pid}-#{Time.now.to_i}"
         begin
           FileUtils.rm_rf(temp_app_path) if File.exist?(temp_app_path)
-          copied = system('ditto', source_app_path, temp_app_path)
+          copied = system('ditto', '--noextattr', '--noacl', source_app_path, temp_app_path)
           unless copied && File.exist?(temp_app_path)
             puts "❌ Failed to stage app at canonical path: #{target_app_path}"
             return source_app_path
@@ -344,9 +378,11 @@ module SaneMasterModules
           end
 
           FileUtils.mv(temp_app_path, target_app_path)
+          clear_gatekeeper_staging_attributes(target_app_path)
 
           staged_ok = File.exist?(target_app_path)
           staged_ok &&= ad_hoc_sign_app_bundle(target_app_path) if staged_ok && unsigned_fallback_active?
+          clear_gatekeeper_staging_attributes(target_app_path) if staged_ok
         ensure
           FileUtils.rm_rf(temp_app_path) if File.exist?(temp_app_path)
           lock_file.flock(File::LOCK_UN)
@@ -378,6 +414,15 @@ module SaneMasterModules
       return false unless source_app_path && File.exist?(source_app_path)
 
       apple_development_signed?(source_app_path)
+    end
+
+    def should_stage_ad_hoc_debug_to_transient_path?(source_app_path:, target_app_path:)
+      return false unless target_app_path.start_with?('/Applications/')
+      return false if ENV['SANEMASTER_ALLOW_STAGE_ADHOC_DEBUG_TO_SYSTEM'] == '1'
+      return false unless source_app_path && File.exist?(source_app_path)
+      return false unless launch_build_config([]) == 'Debug'
+
+      ad_hoc_signed?(source_app_path)
     end
 
     def should_block_local_signing_tcc_drift?(source_app_path:, target_app_path:)
@@ -495,7 +540,7 @@ module SaneMasterModules
     end
 
     def local_app_processes(app_path)
-      expected_binary = File.join(File.expand_path(app_path), 'Contents', 'MacOS', project_name)
+      expected_binary = canonical_runtime_path(File.join(File.expand_path(app_path), 'Contents', 'MacOS', project_name))
       `ps ax -o pid=,command=`
         .lines
         .map(&:strip)
@@ -505,8 +550,14 @@ module SaneMasterModules
           next false unless command
 
           binary = command.split(/\s+/, 2).first.to_s
-          File.expand_path(binary) == expected_binary
+          canonical_runtime_path(binary) == expected_binary
         end
+    end
+
+    def canonical_runtime_path(path)
+      File.realpath(path)
+    rescue StandardError
+      File.expand_path(path)
     end
 
     def any_project_processes
@@ -533,7 +584,10 @@ module SaneMasterModules
     end
 
     def show_other_running_app_copies(expected_path:)
-      others = any_project_processes.reject { |line| line.include?(File.expand_path(expected_path)) }
+      expected = canonical_runtime_path(expected_path)
+      others = any_project_processes.reject do |line|
+        line.include?(File.expand_path(expected_path)) || line.include?(expected)
+      end
       if others.empty?
         puts '   No alternate running copy was detected.'
         return
@@ -556,6 +610,31 @@ module SaneMasterModules
 
     def apple_development_signed?(app_path)
       codesign_authority_lines(app_path).any? { |line| line.start_with?('Authority=Apple Development:') }
+    end
+
+    def ad_hoc_signed?(app_path)
+      output = `codesign -dv --verbose=4 "#{app_path}" 2>&1`
+      output.include?('Signature=adhoc')
+    end
+
+    def clear_gatekeeper_staging_attributes(app_path)
+      return unless app_path && File.exist?(app_path)
+
+      system('xattr', '-cr', app_path, out: File::NULL, err: File::NULL)
+      system('xattr', '-dr', 'com.apple.quarantine', app_path, out: File::NULL, err: File::NULL)
+      system('xattr', '-dr', 'com.apple.provenance', app_path, out: File::NULL, err: File::NULL)
+    end
+
+    def launch_path_gatekeeper_ready?(app_path, direct_launch: false)
+      return true if ENV['SANEMASTER_ALLOW_REJECTED_APP_OPEN'] == '1'
+      return true unless ad_hoc_signed?(app_path)
+      return true if direct_launch
+
+      puts "❌ Refusing to launch ad-hoc signed #{project_name}."
+      puts '   macOS can show an unidentified-developer dialog for this build identity.'
+      puts "   Use a signed runtime build: ./scripts/SaneMaster.rb test_mode --release"
+      puts '   Override only when intentional: SANEMASTER_ALLOW_REJECTED_APP_OPEN=1'
+      false
     end
 
     def reconcile_accessibility_trust_local(app_path)
@@ -818,10 +897,12 @@ module SaneMasterModules
       keychain_password = ENV['SANEBAR_KEYCHAIN_PASSWORD'] || ENV['KEYCHAIN_PASSWORD'] || ENV['KEYCHAIN_PASS']
       return if keychain_password.to_s.strip.empty?
 
-      system('security', 'default-keychain', '-d', 'user', '-s', login_keychain, out: File::NULL, err: File::NULL)
-      system('security', 'list-keychains', '-d', 'user', '-s', login_keychain, '/Library/Keychains/System.keychain',
-             out: File::NULL, err: File::NULL)
-      system('security', 'set-keychain-settings', '-lut', '21600', login_keychain, out: File::NULL, err: File::NULL)
+      if ENV['SANEMASTER_MUTATE_LOGIN_KEYCHAIN_STATE'] == '1'
+        system('security', 'default-keychain', '-d', 'user', '-s', login_keychain, out: File::NULL, err: File::NULL)
+        system('security', 'list-keychains', '-d', 'user', '-s', login_keychain, '/Library/Keychains/System.keychain',
+               out: File::NULL, err: File::NULL)
+        system('security', 'set-keychain-settings', '-lut', '21600', login_keychain, out: File::NULL, err: File::NULL)
+      end
 
       unless system('security', 'unlock-keychain', '-p', keychain_password, login_keychain,
                     out: File::NULL, err: File::NULL)
@@ -835,20 +916,22 @@ module SaneMasterModules
         ENV['OTHER_CODE_SIGN_FLAGS'] = existing.empty? ? prefix : "#{prefix} #{existing}"
       end
 
-      identities = `security find-identity -v -p codesigning "#{login_keychain}" 2>/dev/null`
-      identities.each_line do |line|
-        identity = line[/^\s*\d+\)\s+[0-9A-F]{40}\s+"([^"]+)"/, 1]
-        next if identity.nil? || identity.empty?
+      if ENV['SANEMASTER_GRANT_KEYCHAIN_PARTITION_ACCESS'] == '1'
+        identities = `security find-identity -v -p codesigning "#{login_keychain}" 2>/dev/null`
+        identities.each_line do |line|
+          identity = line[/^\s*\d+\)\s+[0-9A-F]{40}\s+"([^"]+)"/, 1]
+          next if identity.nil? || identity.empty?
 
-        system('security', 'set-key-partition-list',
-               '-S', 'apple-tool:,apple:,codesign:',
-               '-s',
-               '-k', keychain_password,
-               '-D', identity,
-               '-t', 'private',
-               login_keychain,
-               out: File::NULL,
-               err: File::NULL)
+          system('security', 'set-key-partition-list',
+                 '-S', 'apple-tool:,apple:,codesign:',
+                 '-s',
+                 '-k', keychain_password,
+                 '-D', identity,
+                 '-t', 'private',
+                 login_keychain,
+                 out: File::NULL,
+                 err: File::NULL)
+        end
       end
     end
 
@@ -958,6 +1041,7 @@ module SaneMasterModules
       passthrough_launch_env_vars.each do |key, value|
         env_vars[key] = value
       end
+      env_vars['SANEAPPS_SKIP_MOVE_TO_APPLICATIONS'] = '1'
       env_vars['SANEAPPS_DISABLE_KEYCHAIN'] = '1' unless allow_keychain
       return env_vars unless force_free_mode
 
@@ -971,6 +1055,7 @@ module SaneMasterModules
       passthrough_launch_env_vars.each do |key, value|
         pairs += ['--env', "#{key}=#{value}"]
       end
+      pairs += ['--env', 'SANEAPPS_SKIP_MOVE_TO_APPLICATIONS=1']
       pairs += ['--env', 'SANEAPPS_DISABLE_KEYCHAIN=1'] unless allow_keychain
       return pairs unless force_free_mode
 
@@ -981,8 +1066,16 @@ module SaneMasterModules
 
     def passthrough_launch_env_vars
       allowed_exact = %w[
+        AUTOMATION_BUILD_COMMENTARY_REEL
+        AUTOMATION_EXPORT_PATH
+        AUTOMATION_QUIT_AFTER_EXPORT
+        AUTOMATION_REFINE_CAPTIONS
+        AUTOMATION_TRANSCRIPT_PATH
         OPEN_PROJECT_PATH
+        PROJECT_DIR
         SANEAPPS_PERMISSIONLESS_AUTOMATION
+        SANEAPPS_FORCE_LICENSE_CHECK
+        TEST_ASSET_NAME
         TEST_PROJECT_PATH
         VERIFY_PIP
       ].freeze
@@ -996,9 +1089,17 @@ module SaneMasterModules
     end
 
     def launch_binary_args(allow_keychain:)
-      return [] if allow_keychain
+      args = ['--sane-skip-app-move']
+      return args if allow_keychain
 
-      ['--sane-no-keychain']
+      args + ['--sane-no-keychain']
+    end
+
+    def direct_binary_launch_required?(app_path)
+      return false unless app_path
+      return true if File.expand_path(app_path).start_with?('/tmp/saneapps-staging.noindex/')
+
+      ad_hoc_signed?(app_path)
     end
 
     def unsigned_fallback_active?

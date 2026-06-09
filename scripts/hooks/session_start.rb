@@ -1,6 +1,13 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Fast no-op under Grok (Claude compatibility hooks are merged and can produce
+# visible Pre/PostToolUse annotations on every tool even when guarded).
+# Grok users rely on AGENTS.md + explicit SaneMaster calls; native hooks are Claude-only.
+if ENV["GROK_HOOK_EVENT"].to_s != ""
+  exit 0
+end
+
 # Session Start Hook - Bootstraps the .claude/ directory for a new session
 #
 # Actions:
@@ -107,6 +114,22 @@ def clear_stale_satisfaction
   StateManager.reset(:verification)
   StateManager.reset(:planning)
   StateManager.reset(:deployment)
+
+  # Per-session work/requirement counters must NOT bleed across sessions, or a
+  # new session inherits stale state and fires false gates:
+  #   - :edits        → Stop-hook Rule #4 blocks a read-only session for edits
+  #                     made (and possibly already verified/committed) yesterday.
+  #   - :requirements → a prior prompt's requirement (e.g. "commit") blocks every
+  #                     edit in an unrelated session, with no reset command to clear it.
+  #   - :handoff_tracking → stale significant-edit counts trigger handoff blocks.
+  #   - :skill        → a prior session's required/invoked skill leaks into the
+  #                     Stop-hook skill validation.
+  # saneprompt re-populates :requirements and :skill on the first prompt of the
+  # session, so resetting here is safe.
+  StateManager.reset(:edits)
+  StateManager.reset(:requirements)
+  StateManager.reset(:handoff_tracking)
+  StateManager.reset(:skill)
 
   # Record session start time (used by sanestop.rb for session boundary)
   StateManager.update(:enforcement) do |e|
@@ -219,6 +242,8 @@ def reset_mcp_verification
   # Reset verification flag for new session (MCPs must re-verify)
   StateManager.update(:mcp_health) do |health|
     health[:verified_this_session] = false
+    health[:gate_block_attempts] = 0
+    health[:degraded] = false
     # Keep historical data but reset per-session verification
     health[:mcps].each do |_mcp, data|
       data[:verified] = false if data.is_a?(Hash)
@@ -484,6 +509,18 @@ SKILLS_REGISTRY_LABEL = SKILLS_REGISTRY.sub(File.expand_path('~'), '~')
 VALIDATION_SCRIPT = File.join(PROJECT_DIR, 'scripts', 'validation_report.rb')
 SANEMASTER_SCRIPT = File.join(PROJECT_DIR, 'scripts', 'SaneMaster.rb')
 
+# Name every required session doc in the checklist, not a hardcoded subset.
+# populate_session_docs discovers the real set (which includes CONTRIBUTING.md and
+# SKILLS_REGISTRY.md when present), so a fixed 2-doc label leaves the agent blocked
+# on an unnamed file.
+def session_docs_required_label
+  require_relative 'core/state_manager'
+  required = StateManager.get(:session_docs)[:required] || []
+  required.empty? ? 'SESSION_HANDOFF.md, DEVELOPMENT.md' : required.join(', ')
+rescue StandardError
+  'SESSION_HANDOFF.md, DEVELOPMENT.md'
+end
+
 def initialize_startup_gate
   require_relative 'core/state_manager'
 
@@ -546,10 +583,10 @@ def initialize_startup_gate
     warn '🚦 STARTUP GATE: Complete these steps before working:'
     pending.each_key do |step|
       case step
-      when :session_docs    then warn '   [ ] Read session docs (SESSION_HANDOFF.md, DEVELOPMENT.md)'
+      when :session_docs    then warn "   [ ] Read session docs (#{session_docs_required_label})"
       when :skills_registry then warn "   [ ] Read #{SKILLS_REGISTRY_LABEL}"
       when :validation_report then warn '   [ ] Run: ruby scripts/validation_report.rb'
-      when :system_clean    then warn '   [ ] Run: ./scripts/SaneMaster.rb clean_system (only when explicitly required)'
+      when :system_clean    then warn '   [ ] Run: ./scripts/SaneMaster.rb machine_cleanup --host mini --apply (only when explicitly required)'
       end
     end
     warn ''

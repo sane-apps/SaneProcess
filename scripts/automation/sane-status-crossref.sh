@@ -3,10 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SANEAPPS_ROOT="${SANEAPPS_ROOT:-${HOME}/SaneApps}"
 
 CHECK_INBOX="${HOME}/SaneApps/infra/scripts/check-inbox.sh"
 SANE_MASTER="${REPO_ROOT}/SaneMaster.rb"
 GITHUB_QUEUE="${SCRIPT_DIR}/github-queue.sh"
+APPSTORE_SUBMIT="${SANEAPPS_ROOT}/infra/SaneProcess/scripts/appstore_submit.rb"
 LISTING_JSON_PATH="${STATUS_LISTING_JSON_PATH:-}"
 LISTING_JSON_CLEANUP=0
 HOSTED_JSON_PATH="${STATUS_HOSTED_JSON_PATH:-}"
@@ -387,6 +389,102 @@ PY
   rm -f "$notifications_path" "$items_path"
 }
 
+appstore_release_gates() {
+  if [[ ! -f "$APPSTORE_SUBMIT" ]]; then
+    echo "appstore_submit.rb not found at $APPSTORE_SUBMIT"
+    return 1
+  fi
+
+  if [[ -f "${HOME}/.config/nv/env" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${HOME}/.config/nv/env"
+    set +a
+  fi
+
+  if [[ -z "${ASC_AUTH_KEY_ID:-}" || -z "${ASC_AUTH_ISSUER_ID:-}" || -z "${ASC_AUTH_KEY_PATH:-}" ]]; then
+    echo "ASC credentials unavailable; cannot inspect App Store release gates."
+    return 1
+  fi
+
+  local lanes_path
+  lanes_path="$(mktemp "${TMPDIR:-/tmp}/sane-status-appstore-lanes.XXXXXX")"
+  ruby -ryaml -e '
+    Dir.glob(File.join(ARGV.fetch(0), "apps/*/.saneprocess")).sort.each do |path|
+      config = YAML.safe_load(File.read(path)) || {}
+      appstore = config["appstore"] || {}
+      next unless appstore["enabled"] == true
+      app_id = appstore["app_id"].to_s.strip
+      next if app_id.empty?
+      name = config["name"].to_s.strip
+      name = File.basename(File.dirname(path)) if name.empty?
+      Array(appstore["platforms"]).each do |platform|
+        puts [name, File.dirname(path), app_id, platform].join("\t")
+      end
+    end
+  ' "$SANEAPPS_ROOT" > "$lanes_path"
+
+  if [[ ! -s "$lanes_path" ]]; then
+    echo "No active App Store lanes configured."
+    rm -f "$lanes_path"
+    return 0
+  fi
+
+  run_capture_with_timeout() {
+    local timeout_seconds="$1"
+    local output_path="$2"
+    shift 2
+
+    "$@" > "$output_path" 2>&1 &
+    local pid="$!"
+    local elapsed=0
+    while kill -0 "$pid" 2>/dev/null; do
+      if [[ "$elapsed" -ge "$timeout_seconds" ]]; then
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        echo "Timed out after ${timeout_seconds}s." >> "$output_path"
+        return 124
+      fi
+      sleep 1
+      elapsed=$((elapsed + 1))
+    done
+
+    wait "$pid"
+  }
+
+  local pending_count=0
+  local timed_out_count=0
+  local name project_root app_id platform output_path status
+  while IFS=$'\t' read -r name project_root app_id platform; do
+    [[ -n "$name" ]] || continue
+    echo "- ${name} ${platform}:"
+    output_path="$(mktemp "${TMPDIR:-/tmp}/sane-status-appstore-output.XXXXXX")"
+    run_capture_with_timeout "${STATUS_APPSTORE_TIMEOUT_SECONDS:-20}" "$output_path" \
+      ruby "$APPSTORE_SUBMIT" --app-id "$app_id" --platform "$platform" --project-root "$project_root" --list-versions --fail-on-pending-release
+    status=$?
+    sed 's/^/  /' "$output_path"
+    rm -f "$output_path"
+    if [[ "$status" -eq 2 ]]; then
+      pending_count=$((pending_count + 1))
+    elif [[ "$status" -eq 124 ]]; then
+      timed_out_count=$((timed_out_count + 1))
+    fi
+  done < "$lanes_path"
+  rm -f "$lanes_path"
+
+  if [[ "$pending_count" -gt 0 ]]; then
+    echo "App Store blocker: ${pending_count} lane(s) have approved versions waiting for manual release."
+    return 2
+  fi
+
+  if [[ "$timed_out_count" -gt 0 ]]; then
+    echo "App Store warning: ${timed_out_count} lane(s) timed out while checking release gates."
+    return 1
+  fi
+
+  echo "No approved App Store versions are waiting for manual release."
+}
+
 outreach_launch_status() {
   ruby <<'RUBY'
 require 'date'
@@ -528,21 +626,21 @@ RUBY
 printf '\nSane status cross-reference (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S')"
 printf '%s\n' "----------------------------------------"
 
-printf '\n[1/9] Sales (last 30 days)\n'
+printf '\n[1/10] Sales (last 30 days)\n'
 if [[ -x "$SANE_MASTER" ]]; then
   ruby "$SANE_MASTER" sales --days 30
 else
   echo "SaneMaster sales not executable"
 fi
 
-printf '\n[2/9] Inbox status\n'
+printf '\n[2/10] Inbox status\n'
 if [[ -x "$CHECK_INBOX" ]]; then
   "$CHECK_INBOX"
 else
   echo "check-inbox.sh not found at $CHECK_INBOX"
 fi
 
-printf '\n[3/9] Listing actions\n'
+printf '\n[3/10] Listing actions\n'
 if [[ -x "$SANE_MASTER" ]]; then
   ruby "$SANE_MASTER" listing_actions --json-out "$LISTING_JSON_PATH" >/dev/null
   python3 - "$LISTING_JSON_PATH" <<'PY'
@@ -572,7 +670,7 @@ else
   echo "SaneMaster listing_actions not executable"
 fi
 
-printf '\n[4/9] Hosted-file dashboard actions\n'
+printf '\n[4/10] Hosted-file dashboard actions\n'
 if [[ -x "$SANE_MASTER" ]]; then
   if ruby "$SANE_MASTER" hosted_file_actions --json > "$HOSTED_JSON_PATH"; then
     python3 - "$HOSTED_JSON_PATH" <<'PY'
@@ -602,27 +700,30 @@ else
   echo "SaneMaster hosted_file_actions not executable"
 fi
 
-printf '\n[5/9] Outreach / launch operations\n'
+printf '\n[5/10] Outreach / launch operations\n'
 outreach_launch_status || true
 
-printf '\n[6/9] GitHub notifications\n'
+printf '\n[6/10] App Store release gates\n'
+appstore_release_gates || true
+
+printf '\n[7/10] GitHub notifications\n'
 github_notifications || true
 
-printf '\n[7/9] Open GitHub issues (sane-apps org)\n'
+printf '\n[8/10] Open GitHub issues (sane-apps org)\n'
 if [[ -x "$GITHUB_QUEUE" ]]; then
   "$GITHUB_QUEUE" issues --scope org-wide --limit "${STATUS_GITHUB_LIMIT:-200}"
 else
   echo "github-queue.sh not found at $GITHUB_QUEUE"
 fi
 
-printf '\n[8/9] Open GitHub PRs (sane-apps org)\n'
+printf '\n[9/10] Open GitHub PRs (sane-apps org)\n'
 if [[ -x "$GITHUB_QUEUE" ]]; then
   "$GITHUB_QUEUE" prs --scope org-wide --limit "${STATUS_GITHUB_LIMIT:-200}"
 else
   echo "github-queue.sh not found at $GITHUB_QUEUE"
 fi
 
-printf '\n[9/9] GitHub comment/review activity on open issues, PRs, and external notifications\n'
+printf '\n[10/10] GitHub comment/review activity on open issues, PRs, and external notifications\n'
 github_comment_activity || true
 github_external_notification_activity || true
 

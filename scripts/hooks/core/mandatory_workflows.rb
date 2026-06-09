@@ -2,6 +2,19 @@
 
 module MandatoryWorkflows
   WORKFLOWS = {
+    sane_audit: {
+      patterns: [
+        /\bsaneapps\s+audit\b/i,
+        /\bfull\s+saneapps\s+audit\b/i,
+        /\baudit\s+the\s+app\b/i,
+        /\baudit\b.*\b(?:past|historical)\b.*\b(?:issues?|github|support)\b/i,
+        /\broot[- ]cause\b.*\brecurring\s+issues?\b/i,
+        /\brecurring\s+issues?\b.*\baudit\b/i
+      ],
+      requires_subagents: true,
+      min_subagents: 9,
+      description: 'SaneApps root-cause, release, support, runtime, and historical regression audit'
+    },
     docs_audit: {
       patterns: [
         /\b(docs[- ]?audit|\/docs-audit)\b/i,

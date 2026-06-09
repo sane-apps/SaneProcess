@@ -11,6 +11,8 @@
 require_relative 'core/state_manager'
 require_relative 'core/mandatory_workflows'
 require_relative 'sanetools_test_scenarios'
+require 'fileutils'
+require 'json'
 
 module SaneToolsTest
   def self.run(process_tool_proc, research_categories)
@@ -87,6 +89,39 @@ module SaneToolsTest
     ENV['SANE_FORCE_MAC_MINI_FOR_TEST'] = old_force_mini
     ENV['SANE_APPROVE_LOCAL_UI_ON_AIR'] = old_local_approval
     ENV['SANE_MINI_UNAVAILABLE'] = old_mini_unavailable
+
+    # === CANONICAL ACTION PATH TEST ===
+    warn ''
+    warn 'Testing canonical action path guard:'
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call('Bash', { 'command' => "ssh mini 'screencapture -x /tmp/sanebar.png'" })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: raw Mini screencapture is blocked'
+    else
+      failed += 1
+      warn "  FAIL: raw Mini screencapture should be blocked, got exit #{exit_code}"
+    end
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_tool_proc.call(
+      'Bash',
+      { 'command' => '~/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh --app "SaneBar" --mode temp' }
+    )
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: canonical Mini screenshot wrapper is allowed'
+    else
+      failed += 1
+      warn "  FAIL: canonical Mini screenshot wrapper should be allowed, got exit #{exit_code}"
+    end
 
     # === CIRCUIT BREAKER TEST ===
     warn ''
@@ -277,7 +312,7 @@ module SaneToolsTest
       warn "  FAIL: Plan approval should unblock edits, got exit #{exit_code}"
     end
 
-    # Test: Edit limit triggers re-planning
+    # Test: Successful edits do not trigger re-planning loops
     StateManager.reset(:planning)
     StateManager.reset(:edit_attempts)
     StateManager.reset(:research)
@@ -297,12 +332,12 @@ module SaneToolsTest
     $stderr.reopen(original_stderr)
 
     planning_after = StateManager.get(:planning)
-    if exit_code == 2 && planning_after[:plan_approved] == false && planning_after[:replan_count] == 1
+    if exit_code == 0 && planning_after[:plan_approved] == true && planning_after[:replan_count].to_i.zero?
       passed += 1
-      warn '  PASS: Edit limit triggers re-planning'
+      warn '  PASS: Successful edit history does not trigger re-planning'
     else
       failed += 1
-      warn "  FAIL: Edit limit replan - exit=#{exit_code}, approved=#{planning_after[:plan_approved]}, replan=#{planning_after[:replan_count]}"
+      warn "  FAIL: Successful edit history should not replan - exit=#{exit_code}, approved=#{planning_after[:plan_approved]}, replan=#{planning_after[:replan_count]}"
     end
 
     # Cleanup planning tests
@@ -615,7 +650,7 @@ module SaneToolsTest
     warn ''
     warn 'Testing GitHub post guard:'
 
-    approval_flag = '/tmp/.gh_post_approved'
+    approval_flag = '/tmp/.gh_post_approved.json'
     File.delete(approval_flag) if File.exist?(approval_flag)
 
     # Setup: all non-GitHub guards satisfied
@@ -648,8 +683,8 @@ module SaneToolsTest
       warn "  FAIL: GitHub post without approval should block, got exit #{exit_code}"
     end
 
-    # Test 2: Allow post with fresh approval flag
-    FileUtils.touch(approval_flag)
+    # Test 2: Allow post with fresh structured approval
+    File.write(approval_flag, JSON.generate('created_at' => Time.now.to_i, 'user_approval' => 'post it'))
     original_stderr = $stderr.clone
     $stderr.reopen('/dev/null', 'w')
     exit_code = process_tool_proc.call('mcp__github__add_issue_comment', {
@@ -662,14 +697,14 @@ module SaneToolsTest
 
     if exit_code == 0
       passed += 1
-      warn '  PASS: GitHub post with approval flag allowed'
+      warn '  PASS: GitHub post with approval allowed'
     else
       failed += 1
-      warn "  FAIL: GitHub post with approval flag should pass, got exit #{exit_code}"
+      warn "  FAIL: GitHub post with approval should pass, got exit #{exit_code}"
     end
 
-    # Test 3: Block corporate "we" language even with approval flag
-    FileUtils.touch(approval_flag)
+    # Test 3: Block corporate "we" language even with approval
+    File.write(approval_flag, JSON.generate('created_at' => Time.now.to_i, 'user_approval' => 'post it'))
     original_stderr = $stderr.clone
     $stderr.reopen('/dev/null', 'w')
     exit_code = process_tool_proc.call('mcp__github__add_issue_comment', {
@@ -717,6 +752,101 @@ module SaneToolsTest
     scenario_passed, scenario_failed = SaneToolsTestScenarios.run_json_integration_tests
     passed += scenario_passed
     failed += scenario_failed
+
+    # === WEB SEARCH RESEARCH CATEGORY MAPPING ===
+    warn ''
+    warn 'Testing WebSearch research category mapping:'
+
+    StateManager.reset(:research)
+    process_tool_proc.call('WebSearch', { 'query' => 'github mcp server real-world code examples' })
+    ws_research = StateManager.get(:research)
+    if ws_research[:github] && ws_research[:web]
+      passed += 1
+      warn '  PASS: github-focused WebSearch satisfies github (and web) research'
+    else
+      failed += 1
+      warn "  FAIL: github WebSearch should satisfy github research, got web=#{!ws_research[:web].nil?} github=#{!ws_research[:github].nil?}"
+    end
+
+    StateManager.reset(:research)
+    process_tool_proc.call('WebSearch', { 'query' => 'swift concurrency best practices' })
+    ws_research = StateManager.get(:research)
+    if ws_research[:web] && ws_research[:github].nil?
+      passed += 1
+      warn '  PASS: generic WebSearch satisfies only web, not github'
+    else
+      failed += 1
+      warn "  FAIL: generic WebSearch should not satisfy github, got web=#{!ws_research[:web].nil?} github=#{!ws_research[:github].nil?}"
+    end
+
+    # === MCP VERIFICATION GRACEFUL DEGRADATION ===
+    warn ''
+    warn 'Testing MCP verification graceful degradation:'
+
+    deg_project_dir = File.join(Dir.pwd, '.sanetools-test')
+    FileUtils.rm_rf(deg_project_dir) if Dir.exist?(deg_project_dir)
+    FileUtils.mkdir_p(deg_project_dir)
+    codex_config_dir = File.join(deg_project_dir, '.codex')
+    claude_config_dir = File.join(deg_project_dir, '.claude')
+    gemini_config_dir = File.join(deg_project_dir, '.gemini')
+    grok_config_dir = File.join(deg_project_dir, '.grok')
+    codex_config = File.join(codex_config_dir, 'config.toml')
+    claude_settings = File.join(claude_config_dir, 'settings.json')
+    gemini_settings = File.join(gemini_config_dir, 'settings.json')
+    grok_config = File.join(grok_config_dir, 'config.toml')
+
+    FileUtils.mkdir_p(codex_config_dir)
+    FileUtils.mkdir_p(claude_config_dir)
+    FileUtils.mkdir_p(gemini_config_dir)
+    FileUtils.mkdir_p(grok_config_dir)
+    File.write(codex_config, "[mcp_servers.context7]\ncommand = \"context7\"\n")
+    File.write(claude_settings, '{"permissions":{"allow":["mcp__apple-docs__*"]}}')
+    File.write(gemini_settings, '{"mcpServers":{"github":{}}}')
+    File.write(grok_config, "[mcp_servers.github]\ncommand = \"github\"\n[mcp_servers.github.env]\nTOKEN = \"redacted\"\n")
+    configured_keys = SaneToolsChecks.configured_mcp_keys(deg_project_dir)
+    configured_names = SaneToolsChecks.configured_mcp_server_names(deg_project_dir)
+    if configured_keys.include?(:apple_docs) && configured_keys.include?(:context7) &&
+       configured_keys.include?(:github) && !configured_names.include?('github.env')
+      passed += 1
+      warn '  PASS: MCP discovery reads active Claude, Codex, Gemini, and Grok client configs'
+    else
+      failed += 1
+      warn "  FAIL: MCP discovery missed client configs, got keys=#{configured_keys.inspect} names=#{configured_names.inspect}"
+    end
+    deg_mcp_config = File.join(deg_project_dir, '.mcp.json')
+    File.write(deg_mcp_config, '{"mcpServers":{"github":{},"apple-docs":{}}}')
+    File.write(File.join(deg_project_dir, '.saneprocess'), "name: SaneToolsTest\n")
+    StateManager.update(:mcp_health) do |h|
+      h[:verified_this_session] = false
+      h[:degraded] = false
+      h[:gate_block_attempts] = 0
+      h[:mcps] = { apple_docs: { verified: true }, github: { verified: false } }
+      h
+    end
+
+    old_project_dir = ENV['CLAUDE_PROJECT_DIR']
+    ENV['CLAUDE_PROJECT_DIR'] = deg_project_dir
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    deg_results = Array.new(3) { SaneToolsChecks.check_pending_mcp_actions('Edit', %w[Edit Write]) }
+    $stderr.reopen(original_stderr)
+    ENV['CLAUDE_PROJECT_DIR'] = old_project_dir
+
+    if !deg_results[0].nil? && !deg_results[1].nil? && deg_results[2].nil?
+      passed += 1
+      warn '  PASS: Unreachable MCP blocks twice then degrades (allows edits)'
+    else
+      failed += 1
+      warn "  FAIL: Expected [block, block, allow], got #{deg_results.map { |r| r.nil? ? 'allow' : 'block' }.inspect}"
+    end
+
+    FileUtils.rm_rf(deg_project_dir) if Dir.exist?(deg_project_dir)
+    StateManager.update(:mcp_health) do |h|
+      h[:verified_this_session] = true
+      h[:degraded] = false
+      h[:gate_block_attempts] = 0
+      h
+    end
 
     # === CLEANUP ===
     StateManager.reset(:circuit_breaker)

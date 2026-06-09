@@ -235,6 +235,37 @@ exit(run_tests('SaneMaster MCP Watchdog Tests') do
     end
   end
 
+  test_category('Configured MCP discovery') do
+    test('unions project and active-client MCP config surfaces') do
+      Dir.mktmpdir('mcp-config-surfaces-') do |dir|
+        File.write(File.join(dir, '.mcp.json'), '{"mcpServers":{"apple-docs":{}}}')
+        File.write(File.join(dir, 'claude-settings.json'), '{"permissions":{"allow":["mcp__github__search_repositories"]}}')
+        File.write(File.join(dir, 'codex.toml'), "[mcp_servers.context7]\ncommand = \"context7\"\n")
+        File.write(File.join(dir, 'grok.toml'), "[mcp_servers.memory]\ncommand = \"memory\"\n[mcp_servers.memory.env]\nTOKEN = \"redacted\"\n")
+        File.write(File.join(dir, 'gemini.json'), '{"mcpServers":{"openaiDeveloperDocs":{}}}')
+
+        subject.define_singleton_method(:mcp_config_paths) do
+          [
+            File.join(dir, '.mcp.json'),
+            File.join(dir, 'claude-settings.json'),
+            File.join(dir, 'codex.toml'),
+            File.join(dir, 'grok.toml'),
+            File.join(dir, 'gemini.json')
+          ]
+        end
+
+        servers = subject.send(:configured_mcp_servers)
+        assert_includes(servers, 'apple-docs')
+        assert_includes(servers, 'github')
+        assert_includes(servers, 'context7')
+        assert_includes(servers, 'memory')
+        assert_includes(servers, 'openaiDeveloperDocs')
+        assert(!servers.include?('memory.env'), 'TOML env subsections must not become MCP servers')
+      end
+      true
+    end
+  end
+
   test_category('LaunchAgent defaults') do
     test('mcp watchdog install defaults to a five minute interval') do
       source = File.read(File.expand_path('dependencies.rb', __dir__))

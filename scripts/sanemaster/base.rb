@@ -42,6 +42,8 @@ module SaneMasterModules
                                       tm
                                       visual_smoke
                                       visual-smoke
+                                      resource_soak
+                                      resource-soak
                                       diagnose
                                       crash_report
                                       crashes
@@ -211,7 +213,12 @@ module SaneMasterModules
       end
       chosen = candidates.find { |simulator| simulator[:state] == 'Booted' } ||
                candidates.max_by { |simulator| simulator_os_sort_key(simulator[:os]) }
-      chosen ? "id=#{chosen[:udid]}" : destination
+      return "id=#{chosen[:udid]}" if chosen
+
+      created_udid = create_ios_simulator_destination(simulator_name, requested_os)
+      return "id=#{created_udid}" if created_udid
+
+      destination
     end
 
     def ios_simulator_destinations
@@ -237,6 +244,85 @@ module SaneMasterModules
         else
           []
         end
+      end
+    rescue StandardError
+      []
+    end
+
+    def create_ios_simulator_destination(simulator_name, requested_os = nil)
+      return nil if ENV['SANEMASTER_AUTO_CREATE_IOS_SIMULATOR'] == '0'
+
+      device_type = ios_simulator_device_types.find { |candidate| candidate[:name] == simulator_name }
+      return nil unless device_type
+
+      runtime = ios_simulator_runtimes_for(device_type[:identifier], requested_os).max_by do |candidate|
+        simulator_os_sort_key(candidate[:version])
+      end
+      return nil unless runtime
+
+      output, status = Open3.capture2e(
+        'xcrun',
+        'simctl',
+        'create',
+        simulator_name,
+        device_type[:identifier],
+        runtime[:identifier]
+      )
+      return nil unless status.success?
+
+      @ios_simulator_destinations = nil
+      output.to_s.lines.map(&:strip).find { |line| line.match?(/\A[0-9A-F-]{36}\z/i) }
+    rescue StandardError
+      nil
+    end
+
+    def ios_simulator_device_types
+      @ios_simulator_device_types ||= begin
+        output, status = Open3.capture2e('xcrun', 'simctl', 'list', 'devicetypes', '--json')
+        if status.success?
+          data = JSON.parse(output)
+          Array(data['devicetypes']).each_with_object([]) do |device_type, device_types|
+            next device_types unless device_type.is_a?(Hash)
+
+            name = device_type['name'].to_s
+            identifier = device_type['identifier'].to_s
+            next device_types if name.empty? || identifier.empty?
+
+            device_types << { name: name, identifier: identifier }
+          end
+        else
+          []
+        end
+      end
+    rescue StandardError
+      []
+    end
+
+    def ios_simulator_runtimes_for(device_type_identifier, requested_os = nil)
+      output, status = Open3.capture2e('xcrun', 'simctl', 'list', 'runtimes', 'available', '--json')
+      return [] unless status.success?
+
+      data = JSON.parse(output)
+      Array(data['runtimes']).each_with_object([]) do |runtime, runtimes|
+        next runtimes unless runtime.is_a?(Hash)
+        next runtimes unless runtime['isAvailable'] != false
+
+        identifier = runtime['identifier'].to_s
+        version = runtime['version'].to_s
+        next runtimes unless identifier.include?('iOS') || runtime['name'].to_s.include?('iOS')
+        next runtimes if identifier.empty? || version.empty?
+
+        supported = Array(runtime['supportedDeviceTypes']).any? do |device_type|
+          device_type.is_a?(Hash) && device_type['identifier'].to_s == device_type_identifier
+        end
+        next runtimes unless supported
+        if requested_os.to_s.strip != '' &&
+           requested_os.to_s.downcase != 'latest' &&
+           version != requested_os.to_s
+          next runtimes
+        end
+
+        runtimes << { identifier: identifier, version: version }
       end
     rescue StandardError
       []

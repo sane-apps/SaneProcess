@@ -248,6 +248,45 @@ exit(run_tests('SaneMaster Machine Cleanup Tests') do
       end
     end
 
+    test('server mode clears email review media from Desktop without touching SaneVideo evidence') do
+      with_home do |home|
+        email_media = mkdir_home_path(home, 'Desktop/Screenshots/email-review-media')
+        mkdir_home_path(home, 'Desktop/Screenshots/email-review-media/email785')
+        linked_media = mkdir_home_path(home, 'Desktop/email785-linked-media')
+        email_png = File.join(home, 'Desktop/Screenshots/email785.png')
+        FileUtils.mkdir_p(File.dirname(email_png))
+        File.write(email_png, 'png')
+        sanevideo_media = mkdir_home_path(home, 'Desktop/Screenshots/SaneVideo')
+        sizes = {
+          File.expand_path(email_media) => 0.02,
+          File.expand_path(linked_media) => 0.03,
+          File.expand_path(email_png) => 0.01,
+          File.expand_path(sanevideo_media) => 5.0
+        }
+        subject = MachineCleanupHarness.new(sizes: sizes)
+
+        plan = subject.send(:build_machine_cleanup_plan, {
+          apply: false,
+          host: 'local',
+          server: true,
+          min_free_gb: 30,
+          cache_threshold_gb: 99,
+          deriveddata_age_days: 999,
+          trash_threshold_gb: 99,
+          preserve_apps: ['SaneVideo']
+        })
+
+        paths = plan[:actions].select { |action| action[:category] == 'server_desktop_email_media' }.map { |action| action[:path] }
+        assert_includes(paths, email_media)
+        assert_includes(paths, linked_media)
+        assert_includes(paths, email_png)
+        assert(!paths.include?(sanevideo_media), 'expected active SaneVideo screenshot evidence to stay untouched')
+        assert_eq(subject.send(:machine_cleanup_safe_path?, email_media), true)
+        assert_eq(subject.send(:machine_cleanup_safe_path?, email_png), true)
+        assert_eq(subject.send(:machine_cleanup_safe_path?, sanevideo_media), false)
+      end
+    end
+
     test('trash_children clears protected folder contents without trashing folder root') do
       with_home do |home|
         downloads = mkdir_home_path(home, 'Downloads')

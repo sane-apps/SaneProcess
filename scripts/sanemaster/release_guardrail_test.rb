@@ -57,6 +57,35 @@ def write_test_png_with_text(path, text:, source: 'outputs/shared-source.png', w
   )
 end
 
+def product_quality_manifest_items_yaml(count: 30)
+  categories = %w[
+    product_fit first_run core_workflow visual_evidence marketing_parity
+    monetization accessibility privacy_trust error_recovery performance
+    app_store funnel
+  ]
+  (1..count).map do |index|
+    category = categories[(index - 1) % categories.length]
+    <<~YAML
+      - id: product-quality-#{index}
+        category: #{category}
+        question: Does professional product-quality question #{index} pass with evidence?
+        surfaces: [Main window]
+        required_evidence_types: [screenshot]
+    YAML
+  end.join
+end
+
+def product_quality_review_items(count: 30, status: 'passed')
+  (1..count).map do |index|
+    {
+      id: "product-quality-#{index}",
+      status: status,
+      evidence: ["Evidence for product-quality-#{index}"],
+      evidence_paths: ['outputs/saneexample-main.png']
+    }
+  end
+end
+
 class ReleaseGuardrailHarness
   include SaneMasterModules::CustomerUIContract
   include SaneMasterModules::GateReview
@@ -134,6 +163,27 @@ include TestFramework
 
 exit(run_tests('SaneMaster App Store Guardrail Tests') do
   subject = ReleaseGuardrailHarness.new
+
+  test_category('Release preflight plist discovery') do
+    test('ignores dependency Info.plist fixtures when checking app release metadata') do
+      Dir.mktmpdir('project-plist-paths-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'SourcePackages', 'checkouts', 'Sparkle', 'Tests', 'Resources', 'Fixture.bundle', 'Contents'))
+        FileUtils.mkdir_p(File.join(dir, 'Carthage', 'Checkouts', 'Sparkle', 'Fixture.bundle', 'Contents'))
+        File.write(File.join(dir, 'SaneExample', 'Info.plist'), '<plist/>')
+        File.write(File.join(dir, 'SourcePackages', 'checkouts', 'Sparkle', 'Tests', 'Resources', 'Fixture.bundle', 'Contents', 'Info.plist'), '<plist/>')
+        File.write(File.join(dir, 'Carthage', 'Checkouts', 'Sparkle', 'Fixture.bundle', 'Contents', 'Info.plist'), '<plist/>')
+
+        paths = nil
+        Dir.chdir(dir) do
+          paths = subject.project_info_plist_paths
+        end
+
+        assert(paths.sort == ['SaneExample/Info.plist'], "expected only app Info.plist, got #{paths.inspect}")
+      end
+      true
+    end
+  end
 
   test_category('Customer UI action release contract') do
     test('blocks release when customer UI contract is missing') do
@@ -963,6 +1013,78 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('rejects customer UI receipts that contain blocking status text') do
+      Dir.mktmpdir('customer-ui-blocking-status-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: health-action
+                title: Health status is clean
+                surfaces: [Health tab]
+                steps: [Open Health]
+                assertions: [Status rows are clean]
+                evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [mini_click, screenshot]
+                historical_failure_classes: [layout_visual_regression]
+                functional_state:
+                  description: Default fixture
+                  setup_steps: [Launch fixture]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          write_test_png(File.join(dir, 'outputs', 'health.png'))
+          File.write(File.join(dir, 'outputs', 'health-click.json'), '{"clicked":true}')
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          File.write(
+            File.join(dir, 'outputs', 'customer_ui_action_receipt.json'),
+            JSON.pretty_generate(
+              app: 'SaneExample',
+              status: 'passed',
+              host: 'mini',
+              generated_at: Time.now.utc.iso8601,
+              manifest_sha256: report[:manifest_sha256],
+              source_fingerprint: report[:source_fingerprint],
+              tested_action_ids: ['health-action'],
+              screenshots: ['outputs/health.png'],
+              action_results: {
+                'health-action' => {
+                  status: 'passed',
+                  proof_level: 'runtime_visual',
+                  functional_state: { status: 'established', detail: 'Default fixture' },
+                  evidence: [
+                    { type: 'mini_click', detail: 'settings_ax_tab_index=5 text=Health :: Menu Bar GeometryNeeds CheckSaneBar ItemsDetached', path: 'outputs/health-click.json' },
+                    { type: 'screenshot', detail: 'Captured Health tab', path: 'outputs/health.png' }
+                  ],
+                  workflow: {
+                    runner: 'scripts/customer_ui_action_sweep.rb health-action',
+                    steps_completed: ['Open Health'],
+                    outcome: 'Health tab captured',
+                    artifacts: ['outputs/health-click.json', 'outputs/health.png']
+                  }
+                }
+              }
+            )
+          )
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected warning status text to block customer UI contract')
+        assert_includes(report[:issues].join("\n"), 'health-action: customer UI evidence contains blocking status text: Needs Check, Detached')
+      end
+      true
+    end
+
     test('rejects reused screenshot evidence across different release actions') do
       Dir.mktmpdir('customer-ui-reused-screenshots-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'Tests'))
@@ -1240,6 +1362,194 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('customer UI contract requires receipts for every runtime matrix row') do
+      Dir.mktmpdir('customer-ui-runtime-row-coverage-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            runtime_state_matrix:
+              fullscreen_transition:
+                why: Fullscreen transitions can regress menu-bar visuals.
+                action_ids: [appearance-action]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime, screenshot]
+                runner: scripts/customer_ui_action_sweep.rb
+              wake_visible_zone_persistence:
+                why: Wake can move visible icons into hidden zones.
+                action_ids: [appearance-action]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime, screenshot]
+                runner: scripts/wake_layout_probe.rb
+            actions:
+              - id: appearance-action
+                title: Appearance action works
+                surfaces: [Menu bar]
+                steps: [Toggle appearance]
+                assertions: [Tint remains correct]
+                evidence: [screenshot]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime, screenshot]
+                historical_failure_classes: [layout_visual_regression]
+                functional_state:
+                  description: Default fixture
+                  fixture_paths: [outputs/runtime.log]
+                user_inputs: [Toggle appearance]
+                expected_outputs: [Tint remains correct]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          write_test_png(File.join(dir, 'outputs', 'appearance.png'))
+          File.write(File.join(dir, 'outputs', 'runtime.log'), 'Appearance tint pixels ok')
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          receipt = {
+            app: 'SaneExample',
+            status: 'passed',
+            host: 'mini',
+            generated_at: Time.now.utc.iso8601,
+            manifest_sha256: report[:manifest_sha256],
+            source_fingerprint: report[:source_fingerprint],
+            tested_action_ids: ['appearance-action'],
+            runtime_state_results: [
+              {
+                id: 'fullscreen_transition',
+                status: 'passed',
+                evidence_types: %w[mini_runtime screenshot],
+                evidence_paths: ['outputs/runtime.log', 'outputs/appearance.png']
+              }
+            ],
+            screenshots: ['outputs/appearance.png'],
+            action_results: {
+              'appearance-action' => {
+                status: 'passed',
+                proof_level: 'full_runtime_completion',
+                functional_state: { status: 'established', detail: 'Default fixture' },
+                inputs: ['Toggle appearance'],
+                output_assertions: ['Tint remains correct'],
+                evidence: [
+                  { type: 'mini_runtime', detail: 'Appearance runtime log', path: 'outputs/runtime.log' },
+                  { type: 'screenshot', detail: 'Captured appearance', path: 'outputs/appearance.png' }
+                ],
+                workflow: {
+                  runner: 'scripts/customer_ui_action_sweep.rb appearance-action',
+                  steps_completed: ['Toggle appearance'],
+                  outcome: 'Tint remained correct',
+                  artifacts: ['outputs/runtime.log', 'outputs/appearance.png']
+                }
+              }
+            }
+          }
+          File.write(File.join(dir, 'outputs', 'customer_ui_action_receipt.json'), JSON.pretty_generate(receipt))
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected missing runtime matrix receipt row to block release proof')
+        assert_includes(report[:issues].join("\n"), 'Receipt runtime_state_results missing manifest state(s): wake_visible_zone_persistence')
+      end
+      true
+    end
+
+    test('customer UI contract requires runtime rows to prove manifest scenarios') do
+      Dir.mktmpdir('customer-ui-runtime-scenarios-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            runtime_state_matrix:
+              fullscreen_transition:
+                why: Fullscreen transitions can regress menu-bar visuals.
+                action_ids: [appearance-action]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime, screenshot, log]
+                runner: scripts/customer_ui_action_sweep.rb
+                required_scenarios:
+                  - native fullscreen enter and exit
+                  - Reduce Transparency enabled
+            actions:
+              - id: appearance-action
+                title: Appearance action works
+                surfaces: [Menu bar]
+                steps: [Toggle appearance]
+                assertions: [Tint remains correct]
+                evidence: [screenshot]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime, screenshot]
+                historical_failure_classes: [layout_visual_regression]
+                functional_state:
+                  description: Default fixture
+                  fixture_paths: [outputs/runtime.log]
+                user_inputs: [Toggle appearance]
+                expected_outputs: [Tint remains correct]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          write_test_png(File.join(dir, 'outputs', 'appearance.png'))
+          File.write(File.join(dir, 'outputs', 'runtime.log'), 'Appearance tint pixels ok')
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          receipt = {
+            app: 'SaneExample',
+            status: 'passed',
+            host: 'mini',
+            generated_at: Time.now.utc.iso8601,
+            manifest_sha256: report[:manifest_sha256],
+            source_fingerprint: report[:source_fingerprint],
+            tested_action_ids: ['appearance-action'],
+            runtime_state_results: [
+              {
+                id: 'fullscreen_transition',
+                status: 'passed',
+                evidence_types: %w[mini_runtime screenshot log],
+                evidence_paths: ['outputs/runtime.log', 'outputs/appearance.png'],
+                completed_scenarios: ['native fullscreen enter and exit']
+              }
+            ],
+            screenshots: ['outputs/appearance.png'],
+            action_results: {
+              'appearance-action' => {
+                status: 'passed',
+                proof_level: 'full_runtime_completion',
+                functional_state: { status: 'established', detail: 'Default fixture' },
+                inputs: ['Toggle appearance'],
+                output_assertions: ['Tint remains correct'],
+                evidence: [
+                  { type: 'mini_runtime', detail: 'Appearance runtime log', path: 'outputs/runtime.log' },
+                  { type: 'screenshot', detail: 'Captured appearance', path: 'outputs/appearance.png' }
+                ],
+                workflow: {
+                  runner: 'scripts/customer_ui_action_sweep.rb appearance-action',
+                  steps_completed: ['Toggle appearance'],
+                  outcome: 'Tint remained correct',
+                  artifacts: ['outputs/runtime.log', 'outputs/appearance.png']
+                }
+              }
+            }
+          }
+          File.write(File.join(dir, 'outputs', 'customer_ui_action_receipt.json'), JSON.pretty_generate(receipt))
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected missing runtime scenario proof to block release proof')
+        assert_includes(report[:issues].join("\n"), 'runtime_state_results fullscreen_transition: missing required scenario proof(s): Reduce Transparency enabled')
+      end
+      true
+    end
+
     test('standard customer UI sweep dry-run finds the app workflow runner') do
       Dir.mktmpdir('customer-ui-sweep-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'scripts'))
@@ -1255,6 +1565,73 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         assert_eq(report[:script_path], 'scripts/customer_ui_action_sweep.rb')
       end
       true
+    end
+
+    test('customer UI sweep launches visible target after cleanup and visual precheck') do
+      Dir.mktmpdir('customer-ui-launch-target-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'scripts'))
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'scripts', 'customer_ui_action_sweep.rb'), "#!/usr/bin/env ruby\n")
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: visible-flow
+                title: Visible Flow
+                surfaces: ["Main window"]
+                steps: ["Open window"]
+                assertions: ["Window is visible"]
+                evidence: ["Mini screenshot"]
+                release_required: true
+                required_proof_level: runtime_visual
+                required_evidence_types: [visual_smoke]
+                historical_failure_classes: [window_not_launched]
+                functional_state:
+                  description: Ready
+                  not_required_reason: No state needed
+          YAML
+        )
+
+        calls = []
+        subject.define_singleton_method(:customer_ui_mini_host?) { true }
+        subject.define_singleton_method(:customer_ui_cleanup_before_sweep) do |app|
+          calls << [:cleanup, app]
+          []
+        end
+        subject.define_singleton_method(:customer_ui_visual_precheck) do |app|
+          calls << [:visual_precheck, app]
+          { ok: true, issues: [] }
+        end
+        subject.define_singleton_method(:customer_ui_contract_report) do |config: nil, strict_visual: false|
+          calls << [:contract, config && config['name'], strict_visual]
+          { ok: true, issues: [] }
+        end
+        subject.define_singleton_method(:customer_ui_run_command) do |*cmd|
+          calls << cmd
+          [cmd.join(' '), Struct.new(:success?).new(true)]
+        end
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.customer_ui_sweep_report(dry_run: false)
+        end
+
+        assert(report[:ok], "expected customer UI sweep to pass: #{report.inspect}")
+        assert_eq(calls[0], [:cleanup, 'SaneExample'])
+        assert_eq(calls[1], [:visual_precheck, 'SaneExample'])
+        assert_eq(calls[2], ['./scripts/SaneMaster.rb', 'launch', '--release'])
+        assert_eq(calls[3], ['ruby', 'scripts/customer_ui_action_sweep.rb'])
+      end
+      true
+    ensure
+      subject.singleton_class.remove_method(:customer_ui_mini_host?) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_cleanup_before_sweep) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_visual_precheck) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_contract_report) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_run_command) rescue nil
     end
 
     test('App Store strict visual mode requires screenshot evidence for every release action') do
@@ -1328,6 +1705,225 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('product quality checklist requires receipt review when manifest opts in') do
+      Dir.mktmpdir('customer-ui-product-quality-missing-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            require_product_quality_checklist: true
+            product_quality_checklist:
+          #{product_quality_manifest_items_yaml.lines.map { |line| "  #{line}" }.join}
+            actions:
+              - id: main-action
+                title: Main action works
+                surfaces: [Main window]
+                steps: [Tap main action]
+                assertions: [Result appears]
+                evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [screenshot]
+                historical_failure_classes: [activation_noop]
+                functional_state:
+                  description: Main window fixture
+                  setup_steps: [Launch fixture]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          first_report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          write_test_png(File.join(dir, 'outputs', 'saneexample-main.png'))
+          File.write(
+            File.join(dir, 'outputs', 'customer_ui_action_receipt.json'),
+            JSON.pretty_generate(
+              app: 'SaneExample',
+              status: 'passed',
+              host: 'mini',
+              generated_at: Time.now.utc.iso8601,
+              manifest_sha256: first_report[:manifest_sha256],
+              source_fingerprint: first_report[:source_fingerprint],
+              tested_action_ids: ['main-action'],
+              screenshots: ['outputs/saneexample-main.png'],
+              action_results: {
+                'main-action' => {
+                  status: 'passed',
+                  proof_level: 'runtime_visual',
+                  functional_state: { status: 'established', detail: 'Main window fixture' },
+                  evidence: [{ type: 'screenshot', detail: 'Main screenshot', path: 'outputs/saneexample-main.png' }],
+                  workflow: {
+                    runner: 'scripts/customer_ui_action_sweep.rb',
+                    steps_completed: ['Tap main action'],
+                    outcome: 'Result appears',
+                    artifacts: ['outputs/saneexample-main.png']
+                  }
+                }
+              }
+            )
+          )
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected missing product quality review to block')
+        assert_includes(report[:issues].join("\n"), 'missing product_quality_review')
+      end
+      true
+    end
+
+    test('product quality checklist blocks failed and unknown question results') do
+      Dir.mktmpdir('customer-ui-product-quality-failed-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            require_product_quality_checklist: true
+            product_quality_checklist:
+          #{product_quality_manifest_items_yaml.lines.map { |line| "  #{line}" }.join}
+            actions:
+              - id: main-action
+                title: Main action works
+                surfaces: [Main window]
+                steps: [Tap main action]
+                assertions: [Result appears]
+                evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [screenshot]
+                historical_failure_classes: [activation_noop]
+                functional_state:
+                  description: Main window fixture
+                  setup_steps: [Launch fixture]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          first_report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          write_test_png(File.join(dir, 'outputs', 'saneexample-main.png'))
+          items = product_quality_review_items
+          items[2][:status] = 'unknown'
+          File.write(
+            File.join(dir, 'outputs', 'customer_ui_action_receipt.json'),
+            JSON.pretty_generate(
+              app: 'SaneExample',
+              status: 'passed',
+              host: 'mini',
+              generated_at: Time.now.utc.iso8601,
+              manifest_sha256: first_report[:manifest_sha256],
+              source_fingerprint: first_report[:source_fingerprint],
+              tested_action_ids: ['main-action'],
+              screenshots: ['outputs/saneexample-main.png'],
+              product_quality_review: {
+                status: 'needs_review',
+                reviewer: 'test',
+                items: items
+              },
+              action_results: {
+                'main-action' => {
+                  status: 'passed',
+                  proof_level: 'runtime_visual',
+                  functional_state: { status: 'established', detail: 'Main window fixture' },
+                  evidence: [{ type: 'screenshot', detail: 'Main screenshot', path: 'outputs/saneexample-main.png' }],
+                  workflow: {
+                    runner: 'scripts/customer_ui_action_sweep.rb',
+                    steps_completed: ['Tap main action'],
+                    outcome: 'Result appears',
+                    artifacts: ['outputs/saneexample-main.png']
+                  }
+                }
+              }
+            )
+          )
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected unknown product quality item to block')
+        assert_includes(report[:issues].join("\n"), 'product_quality_review status is "needs_review"')
+        assert_includes(report[:issues].join("\n"), 'product_quality_review product-quality-3: status "unknown" blocks release')
+      end
+      true
+    end
+
+    test('product quality checklist passes when all thirty questions have passing evidence') do
+      Dir.mktmpdir('customer-ui-product-quality-passed-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            require_product_quality_checklist: true
+            product_quality_checklist:
+          #{product_quality_manifest_items_yaml.lines.map { |line| "  #{line}" }.join}
+            actions:
+              - id: main-action
+                title: Main action works
+                surfaces: [Main window]
+                steps: [Tap main action]
+                assertions: [Result appears]
+                evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [screenshot]
+                historical_failure_classes: [activation_noop]
+                functional_state:
+                  description: Main window fixture
+                  setup_steps: [Launch fixture]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          first_report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          write_test_png(File.join(dir, 'outputs', 'saneexample-main.png'))
+          File.write(
+            File.join(dir, 'outputs', 'customer_ui_action_receipt.json'),
+            JSON.pretty_generate(
+              app: 'SaneExample',
+              status: 'passed',
+              host: 'mini',
+              generated_at: Time.now.utc.iso8601,
+              manifest_sha256: first_report[:manifest_sha256],
+              source_fingerprint: first_report[:source_fingerprint],
+              tested_action_ids: ['main-action'],
+              screenshots: ['outputs/saneexample-main.png'],
+              product_quality_review: {
+                status: 'passed',
+                reviewer: 'test',
+                items: product_quality_review_items
+              },
+              action_results: {
+                'main-action' => {
+                  status: 'passed',
+                  proof_level: 'runtime_visual',
+                  functional_state: { status: 'established', detail: 'Main window fixture' },
+                  evidence: [{ type: 'screenshot', detail: 'Main screenshot', path: 'outputs/saneexample-main.png' }],
+                  workflow: {
+                    runner: 'scripts/customer_ui_action_sweep.rb',
+                    steps_completed: ['Tap main action'],
+                    outcome: 'Result appears',
+                    artifacts: ['outputs/saneexample-main.png']
+                  }
+                }
+              }
+            )
+          )
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(report[:ok], "expected passing product quality review to satisfy contract: #{report[:issues].inspect}")
+      end
+      true
+    end
+
     test('customer UI sweep blocks runtime visual work when Mini screenshot precheck is dirty') do
       Dir.mktmpdir('customer-ui-visual-precheck-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'scripts'))
@@ -1359,7 +1955,9 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         subject.define_singleton_method(:customer_ui_mini_host?) { true }
         subject.define_singleton_method(:customer_ui_cleanup_before_sweep) { |_app| [] }
         subject.define_singleton_method(:customer_ui_run_command) do |*cmd|
-          if cmd.include?('visual_smoke')
+          if cmd == ['./scripts/SaneMaster.rb', 'launch']
+            ['launched', Struct.new(:success?).new(true)]
+          elsif cmd.include?('visual_smoke')
             [
               '{"ok":false,"reason":"Mini visual workspace is dirty: Terminal has 1 open window(s)","cleanliness":{"issues":["Terminal has 1 open window(s)"]},"artifacts":[]}',
               Struct.new(:success?).new(false)
@@ -1382,6 +1980,72 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
     ensure
       subject.singleton_class.remove_method(:customer_ui_mini_host?) rescue nil
       subject.singleton_class.remove_method(:customer_ui_cleanup_before_sweep) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_run_command) rescue nil
+    end
+
+    test('customer UI sweep blocks app-owned install prompts before running the workflow') do
+      Dir.mktmpdir('customer-ui-move-prompt-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'scripts'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'scripts', 'customer_ui_action_sweep.rb'), "#!/usr/bin/env ruby\n")
+
+        subject.define_singleton_method(:customer_ui_mini_host?) { true }
+        subject.define_singleton_method(:customer_ui_cleanup_before_sweep) do |_app|
+          ['Mini visual workspace cleanup failed before customer UI sweep: SaneExample has an unresolved app install/move prompt']
+        end
+        subject.define_singleton_method(:customer_ui_run_command) do |*cmd|
+          raise "sweep runner must not run while install prompt is visible: #{cmd.inspect}"
+        end
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.customer_ui_sweep_report(dry_run: false)
+        end
+
+        assert(!report[:ok], 'expected app install/move prompt to block the customer UI sweep')
+        assert_includes(report[:issues].join("\n"), 'unresolved app install/move prompt')
+      end
+      true
+    ensure
+      subject.singleton_class.remove_method(:customer_ui_mini_host?) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_cleanup_before_sweep) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_run_command) rescue nil
+    end
+
+    test('Mini visual workspace guard allows explicit windowless precheck while preserving prompt blockers') do
+      guard = File.expand_path('../mini/mini-visual-workspace-guard.sh', __dir__)
+      source = File.read(guard)
+
+      assert_includes(source, 'WINDOWLESS_TARGET_APPS="SaneBar"')
+      assert_includes(source, '--allow-windowless-target')
+      assert_includes(source, 'ALLOW_WINDOWLESS_TARGET=true')
+      assert_includes(source, 'windowless_target=false')
+      assert_includes(source, 'if $ALLOW_WINDOWLESS_TARGET; then')
+      assert_includes(source, 'if ! $windowless_target; then')
+      assert_includes(source, 'if ! $windowless_target || [ "$target_windows" != "0" ]; then')
+      assert_includes(source, 'target_app_prompt_blockers_timeout 3')
+      assert_includes(source, 'has an unresolved app install/move prompt')
+      true
+    end
+
+    test('customer UI cleanup uses windowless target mode while still running the visual guard') do
+      calls = []
+      subject.define_singleton_method(:customer_ui_run_command) do |*cmd|
+        calls << cmd
+        ['{"ok":true}', Struct.new(:success?).new(true)]
+      end
+
+      issues = subject.send(:customer_ui_cleanup_before_sweep, 'SaneClip')
+
+      assert(issues.empty?, "expected cleanup to pass, got #{issues.inspect}")
+      command = calls.fetch(0)
+      assert_includes(command, '--cleanup')
+      assert_includes(command, '--app')
+      assert_includes(command, 'SaneClip')
+      assert_includes(command, '--allow-windowless-target')
+      assert_includes(command, '--json')
+      true
+    ensure
       subject.singleton_class.remove_method(:customer_ui_run_command) rescue nil
     end
 
@@ -1914,6 +2578,42 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('privacy manifest guard blocks missing required reason API declarations') do
+      Dir.mktmpdir('privacy-manifest-required-reasons-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Core'))
+        File.write(File.join(dir, 'Core', 'Settings.swift'), 'let enabled = UserDefaults.standard.bool(forKey: "enabled")')
+        manifest = File.join(dir, 'PrivacyInfo.xcprivacy')
+        File.write(
+          manifest,
+          <<~XML
+            <?xml version="1.0" encoding="UTF-8"?>
+            <plist version="1.0">
+            <dict>
+              <key>NSPrivacyTracking</key>
+              <false/>
+              <key>NSPrivacyCollectedDataTypes</key>
+              <array/>
+              <key>NSPrivacyAccessedAPITypes</key>
+              <array/>
+            </dict>
+            </plist>
+          XML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.send(
+            :privacy_manifest_guardrail_report,
+            manifest_paths: [manifest],
+            project_yml_content: 'sources: [PrivacyInfo.xcprivacy]'
+          )
+        end
+
+        assert_includes(report[:issues], 'PrivacyInfo.xcprivacy missing required reason API category NSPrivacyAccessedAPICategoryUserDefaults')
+      end
+      true
+    end
+
     test('treats entitlements as optional for iOS-only App Store lanes') do
       assert(subject.send(:ios_only_appstore_submission?, %w[ios]))
       assert(!subject.send(:ios_only_appstore_submission?, %w[ios macos]))
@@ -2241,6 +2941,14 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('release.sh does not mutate login keychain state by default') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+
+      assert_includes(release_script, 'SANEPROCESS_MUTATE_LOGIN_KEYCHAIN_STATE:-0')
+      assert_includes(release_script, 'SANEPROCESS_FORCE_KEYCHAIN_PARTITION:-0')
+      true
+    end
+
     test('release.sh repairs stale editable ASC lanes before version-state preflight') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
 
@@ -2271,6 +2979,18 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_includes(release_script, 'local homepage_download_ver=""')
       assert_includes(release_script, 'Website download link points to v${homepage_download_ver}, expected v${VERSION}: ${site_url}')
       assert_includes(release_script, 'Website download flow verified via ${download_page_url}: ${expected_download_url}')
+      true
+    end
+
+    test('release.sh verifies appcast manual download links during website deploys') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+
+      assert_includes(release_script, 'appcast_link_for_version()')
+      assert_includes(release_script, 'verify_local_appcast_link_route()')
+      assert_includes(release_script, 'verify_live_appcast_link_route()')
+      assert_includes(release_script, 'Website-only deploy blocked: appcast link ${appcast_link} has no local route')
+      assert_includes(release_script, 'Live appcast manual download link')
+      assert_includes(release_script, 'Appcast manual download link')
       true
     end
 
@@ -2954,6 +3674,44 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_includes(
         report[:issues],
         'App Store Connect Game Center is enabled for this iOS version, but the build has no com.apple.developer.game-center entitlement.'
+      )
+      true
+    end
+
+    test('fails when ASC Game Center is enabled but the macOS build has no entitlement') do
+      subject.stub_asc_json(
+        '/apps/game-center-mac/appStoreVersions?filter[platform]=MAC_OS&limit=200',
+        {
+          'data' => [
+            { 'id' => 'macos-version-1', 'attributes' => { 'versionString' => '1.0', 'appStoreState' => 'PREPARE_FOR_SUBMISSION' } }
+          ]
+        }
+      )
+      subject.stub_asc_json(
+        '/appStoreVersions/macos-version-1/gameCenterAppVersion',
+        {
+          'data' => {
+            'id' => 'gc-version-mac-1',
+            'type' => 'gameCenterAppVersions',
+            'attributes' => { 'enabled' => true }
+          }
+        }
+      )
+
+      report = subject.send(
+        :asc_game_center_guardrail_report,
+        app_id: 'game-center-mac',
+        platform: 'macos',
+        version_string: '1.0',
+        entitlement_paths: [],
+        project_yml_content: ''
+      )
+
+      assert(report[:applicable], 'expected Game Center report to apply')
+      assert_eq(report[:summary], 'enabled in ASC')
+      assert_includes(
+        report[:issues],
+        'App Store Connect Game Center is enabled for this macOS version, but the build has no com.apple.developer.game-center entitlement.'
       )
       true
     end

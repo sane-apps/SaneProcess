@@ -29,6 +29,7 @@ module SaneMasterModules
     )
 
     VISUAL_SMOKE_SANE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo].freeze
+    VISUAL_SMOKE_WINDOWLESS_APPS = %w[SaneBar].freeze
     VISUAL_SMOKE_ALLOWED_VISIBLE_PROCESSES = %w[Finder SystemUIServer ControlCenter Dock NotificationCenter].freeze
     VISUAL_SMOKE_HELPER_APPS = ['Preview', 'Safari', 'TextEdit', 'QuickTime Player'].freeze
     VISUAL_SMOKE_DESKTOP_ARTIFACT_PATTERNS = [
@@ -192,6 +193,7 @@ module SaneMasterModules
 
             command_result = run_visual_smoke_command(command, timeout: options.timeout, terminal_host: options.terminal_host)
             command.merge!(command_result)
+            normalize_visual_smoke_app_see_result(command, commands)
             result[:artifacts] << command[:output] if command[:output] && File.exist?(command[:output])
             command.fetch(:artifacts, []).each do |artifact|
               result[:artifacts] << artifact if File.exist?(artifact)
@@ -231,12 +233,13 @@ module SaneMasterModules
     end
 
     def visual_smoke_commands(options, smoke_dir)
+      capture_app = options.capture_app && !visual_smoke_known_windowless_app?(options.app_name)
       commands = [
-        visual_smoke_json_command('permissions', smoke_dir, [options.peekaboo_bin, 'permissions', 'status', '--json']),
-        visual_smoke_json_command('apps', smoke_dir, [options.peekaboo_bin, 'list', 'apps', '--json']),
-        visual_smoke_json_command('menubar-list', smoke_dir, [options.peekaboo_bin, 'list', 'menubar', '--json'])
+        visual_smoke_json_command('permissions', smoke_dir, [options.peekaboo_bin, 'permissions', 'status', '--json'])
       ]
-      if options.capture_app
+      commands << visual_smoke_json_command('apps', smoke_dir, [options.peekaboo_bin, 'list', 'apps', '--json']) if capture_app
+      commands << visual_smoke_json_command('menubar-list', smoke_dir, [options.peekaboo_bin, 'list', 'menubar', '--json'])
+      if capture_app
         commands.insert(
           2,
           visual_smoke_json_command('windows', smoke_dir, [options.peekaboo_bin, 'list', 'windows', '--app', options.app_name, '--json'])
@@ -256,7 +259,7 @@ module SaneMasterModules
           [options.peekaboo_bin, 'image', '--app', 'menubar', '--retina', '--path', File.join(smoke_dir, 'menu.png'), '--json']
         )
       end
-      if options.capture_app
+      if capture_app
         app_image = File.join(smoke_dir, 'app-see.png')
         commands << visual_smoke_json_command(
           'app-see',
@@ -268,21 +271,41 @@ module SaneMasterModules
       commands
     end
 
+    def normalize_visual_smoke_app_see_result(command, commands)
+      return unless command[:name] == 'app-see'
+      return if command[:success]
+      return unless command.fetch(:artifacts, []).any? { |artifact| File.exist?(artifact) && File.size?(artifact).to_i.positive? }
+      return unless visual_smoke_window_count(commands).positive?
+
+      command[:success] = true
+      command[:fallback_success] = true
+      command[:reason] = 'app screenshot artifact was captured after a valid window listing; ignoring post-capture Peekaboo element-detection failure'
+    end
+
+    def visual_smoke_known_windowless_app?(app_name)
+      VISUAL_SMOKE_WINDOWLESS_APPS.include?(app_name.to_s)
+    end
+
+    def visual_smoke_window_count(commands)
+      windows_command = commands.find { |command| command[:name] == 'windows' }
+      return 0 unless windows_command && windows_command[:success] && windows_command[:output]
+      return 0 unless File.exist?(windows_command[:output])
+
+      payload = JSON.parse(File.read(windows_command[:output]))
+      windows = payload.dig('data', 'windows')
+      return windows.length if windows.is_a?(Array)
+
+      payload.dig('summary', 'counts', 'windows').to_i
+    rescue JSON::ParserError
+      0
+    end
+
     def visual_smoke_windowless_app?(commands)
       windows_command = commands.find { |command| command[:name] == 'windows' }
       return false unless windows_command && windows_command[:success] && windows_command[:output]
       return false unless File.exist?(windows_command[:output])
 
-      payload = JSON.parse(File.read(windows_command[:output]))
-      windows = payload.dig('data', 'windows')
-      return windows.empty? if windows.is_a?(Array)
-
-      count = payload.dig('summary', 'counts', 'windows')
-      return count.to_i.zero? unless count.nil?
-
-      false
-    rescue JSON::ParserError
-      false
+      visual_smoke_window_count(commands).zero?
     end
 
     def visual_smoke_json_command(name, smoke_dir, argv, artifacts: [])
@@ -548,7 +571,9 @@ module SaneMasterModules
                       set staticTextValues to value of static texts of candidateWindow
                     end try
                     set combinedText to (windowName & " " & windowDescription & " " & (buttonNames as text) & " " & (staticTextValues as text))
-                    if (combinedText contains "Allow" or combinedText contains "Don’t Allow" or combinedText contains "Don't Allow" or combinedText contains "Always Allow" or combinedText contains "Deny") and (combinedText contains "would like to access" or combinedText contains "wants to use" or combinedText contains "confidential information" or combinedText contains "login keychain" or combinedText contains "Screen Recording" or combinedText contains "Camera" or combinedText contains "Microphone" or combinedText contains "Documents folder" or combinedText contains "permission") then
+                    if processNameText is "#{app_name}" and (combinedText contains "Move to Applications" or combinedText contains "Could Not Move" or combinedText contains "Applications folder" or combinedText contains "works best from your Applications folder" or combinedText contains "move it there manually" or combinedText contains "You may be asked for your password" or combinedText contains "Not Now") then
+                      set end of hits to (processNameText & " has an unresolved app install/move prompt")
+                    else if (combinedText contains "Allow" or combinedText contains "Don’t Allow" or combinedText contains "Don't Allow" or combinedText contains "Always Allow" or combinedText contains "Deny") and (combinedText contains "would like to access" or combinedText contains "wants to use" or combinedText contains "confidential information" or combinedText contains "login keychain" or combinedText contains "Screen Recording" or combinedText contains "Camera" or combinedText contains "Microphone" or combinedText contains "Documents folder" or combinedText contains "permission") then
                       set end of hits to (processNameText & " has an unresolved macOS permission/security prompt")
                     end if
                   end if
@@ -654,6 +679,9 @@ module SaneMasterModules
     def visual_smoke_process_allowed_for_app?(line, app_name)
       return true if line.include?("/Applications/#{app_name}.app/")
       return true if line.match?(/\A\d+\s+.*\/#{Regexp.escape(app_name)}(\s|\z)/)
+      return true if line.include?('/org.sparkle-project.Sparkle/Launcher/') &&
+                     line.include?('/Updater.app/') &&
+                     line.include?("/Applications/#{app_name}.app")
       return true if app_name == 'SaneClick' && line.include?('SaneClickExtension')
       return true if app_name == 'SaneSync' && line.include?('/SaneSync/scripts/inference_server.py')
 

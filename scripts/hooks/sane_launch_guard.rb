@@ -15,7 +15,7 @@
 require 'json'
 require 'socket'
 
-SANE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo].freeze
+SANE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneScan SaneSync SaneVideo].freeze
 SANE_APP_PATTERN = Regexp.new(SANE_APPS.join('|'))
 LOCAL_UI_TOOL_PATTERN = Regexp.union(
   /^mcp__computer_use__/,
@@ -30,6 +30,14 @@ LOCAL_DASHBOARD_OPEN_PATTERN = Regexp.union(
   %r{\bopen\b.*https?://(?:appstoreconnect|developer|idmsa)\.apple\.com}i,
   %r{\bopen\b.*LemonSqueezy-Uploads}i
 ).freeze
+COMMAND_CHAIN_PATTERN = /(?:;|&&|\|\||\n)/
+
+def single_sane_test_command?(command)
+  stripped = command.strip
+  return false if stripped.match?(COMMAND_CHAIN_PATTERN)
+
+  stripped.match?(/\A\s*(?:ruby\s+)?(?:\S+\/)?sane_test\.rb\b/)
+end
 
 def running_on_macbook_air?
   return true if ENV['SANE_FORCE_MACBOOK_AIR_FOR_TEST'] == '1'
@@ -86,15 +94,16 @@ if command.match?(LOCAL_DASHBOARD_OPEN_PATTERN) &&
   exit 2
 end
 
-# Always allow sane_test.rb invocations
-exit 0 if command.include?('sane_test.rb')
+# Always allow a single sane_test.rb invocation. Do not allow command chains
+# that merely mention sane_test.rb before a manual app launch.
+exit 0 if single_sane_test_command?(command)
 
 # Block 1: Direct binary execution (breaks TCC)
 if command.match?(%r{Contents/MacOS/(#{SANE_APP_PATTERN})})
   warn '🔴 BLOCKED: Direct binary execution of SaneApp'
   warn '   Running the binary directly breaks TCC permission grants.'
   warn ''
-  warn '   ✅ Use instead: ruby scripts/sane_test.rb <AppName>'
+  warn '   ✅ Use instead: ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb <AppName>'
   warn '   This resets TCC, builds fresh, deploys to mini, and launches via `open`.'
   exit 2
 end
@@ -105,7 +114,7 @@ if command.match?(/open\s+.*\b(#{SANE_APP_PATTERN})\.app\b/)
   warn '🔴 BLOCKED: Manual launch of SaneApp'
   warn '   Launching without TCC reset causes stale permissions.'
   warn ''
-  warn '   ✅ Use instead: ruby scripts/sane_test.rb <AppName>'
+  warn '   ✅ Use instead: ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb <AppName>'
   warn '   Handles: kill → clean → TCC reset → build → deploy → launch → logs'
   exit 2
 end

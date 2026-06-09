@@ -79,6 +79,22 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
 
         assert(!names.include?('windows'), 'precheck should not fail because the target app is not already running')
         assert(!names.include?('app-see'), 'precheck should not capture a target app image')
+        assert(!names.include?('apps'), 'precheck should not require app-list APIs when app capture is disabled')
+        assert_includes(names, 'screen-image')
+        assert_includes(names, 'menu-image')
+      end
+      true
+    end
+
+    test('known menu-bar-only apps use screen and menu evidence without app windows') do
+      Dir.mktmpdir do |dir|
+        options = subject.parse_visual_smoke_args(['--output', dir, '--dry-run', '--app', 'SaneBar'])
+        result = subject.build_visual_smoke(options)
+        names = result[:commands].map { |command| command[:name] }
+
+        assert(!names.include?('windows'), 'SaneBar visual smoke should not require normal app windows')
+        assert(!names.include?('app-see'), 'SaneBar visual smoke should not run app-see against a windowless menu-bar app')
+        assert(!names.include?('apps'), 'SaneBar visual smoke should not require app-list APIs for menu-bar-only evidence')
         assert_includes(names, 'screen-image')
         assert_includes(names, 'menu-image')
       end
@@ -210,6 +226,125 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
       subject.singleton_class.remove_method(:visual_smoke_cleanliness_issues) rescue nil
     end
 
+    test('no-app visual precheck passes when app-list API fails') do
+      Dir.mktmpdir do |dir|
+        fake_peekaboo = File.join(dir, 'peekaboo')
+        log_path = File.join(dir, 'peekaboo.log')
+        File.write(
+          fake_peekaboo,
+          <<~SH
+            #!/bin/sh
+            echo "$@" >> #{log_path}
+            if [ "$1" = "permissions" ]; then
+              echo '{"data":{"screen_recording":true,"accessibility":true}}'
+              exit 0
+            fi
+            if [ "$1" = "list" ] && [ "$2" = "apps" ]; then
+              echo '{"error":{"code":"PERMISSION_ERROR_SCREEN_RECORDING"}}'
+              exit 4
+            fi
+            if [ "$1" = "list" ] && [ "$2" = "menubar" ]; then
+              echo '{"data":{"items":[]}}'
+              exit 0
+            fi
+            if [ "$1" = "image" ]; then
+              while [ "$#" -gt 0 ]; do
+                if [ "$1" = "--path" ]; then
+                  shift
+                  : > "$1"
+                  echo '{"data":{"path":"'"$1"'"}}'
+                  exit 0
+                fi
+                shift
+              done
+            fi
+            exit 1
+          SH
+        )
+        File.chmod(0o700, fake_peekaboo)
+
+        subject.define_singleton_method(:visual_smoke_cleanliness_issues) { |_options| [] }
+
+        options = subject.parse_visual_smoke_args(['--output', dir, '--peekaboo', fake_peekaboo, '--direct', '--no-app'])
+        result = subject.build_visual_smoke(options)
+        invocation_log = File.read(log_path)
+
+        assert(result[:ok], 'no-app visual precheck should not fail on an unused app-list API')
+        assert_eq(result[:status], 'passed')
+        assert(!invocation_log.include?('list apps'), 'no-app precheck should not call app-list')
+      end
+      true
+    ensure
+      subject.singleton_class.remove_method(:visual_smoke_cleanliness_issues) rescue nil
+    end
+
+    test('app-see post-capture element detection failure is accepted when screenshot and window list exist') do
+      Dir.mktmpdir do |dir|
+        fake_peekaboo = File.join(dir, 'peekaboo')
+        File.write(
+          fake_peekaboo,
+          <<~SH
+            #!/bin/sh
+            if [ "$1" = "permissions" ]; then
+              echo '{"data":{"screen_recording":true,"accessibility":true}}'
+              exit 0
+            fi
+            if [ "$1" = "list" ] && [ "$2" = "apps" ]; then
+              echo '{"data":{"apps":[{"name":"VisualSmokeTest"}]}}'
+              exit 0
+            fi
+            if [ "$1" = "list" ] && [ "$2" = "windows" ]; then
+              echo '{"data":{"windows":[{"title":"VisualSmokeTest","bounds":[[0,0],[320,240]]}]},"summary":{"counts":{"windows":1}}}'
+              exit 0
+            fi
+            if [ "$1" = "list" ] && [ "$2" = "menubar" ]; then
+              echo '{"data":{"items":[]}}'
+              exit 0
+            fi
+            if [ "$1" = "image" ]; then
+              while [ "$#" -gt 0 ]; do
+                if [ "$1" = "--path" ]; then
+                  shift
+                  printf 'png' > "$1"
+                  echo '{"data":{"path":"'"$1"'"}}'
+                  exit 0
+                fi
+                shift
+              done
+            fi
+            if [ "$1" = "see" ]; then
+              while [ "$#" -gt 0 ]; do
+                if [ "$1" = "--path" ]; then
+                  shift
+                  printf 'png' > "$1"
+                  echo '{"success":false,"error":{"code":"WINDOW_NOT_FOUND","message":"post-capture failure"}}'
+                  exit 1
+                fi
+                shift
+              done
+            fi
+            exit 1
+          SH
+        )
+        File.chmod(0o700, fake_peekaboo)
+
+        subject.define_singleton_method(:visual_smoke_cleanliness_issues) { |_options| [] }
+
+        options = subject.parse_visual_smoke_args(['--output', dir, '--peekaboo', fake_peekaboo, '--direct'])
+        result = subject.build_visual_smoke(options)
+        app_see = result[:commands].find { |command| command[:name] == 'app-see' }
+
+        assert(result[:ok], 'captured app screenshot with valid window list should satisfy visual smoke')
+        assert_eq(result[:status], 'passed')
+        assert_eq(app_see[:success], true)
+        assert_eq(app_see[:fallback_success], true)
+        assert_includes(app_see[:reason], 'screenshot artifact was captured')
+      end
+      true
+    ensure
+      subject.singleton_class.remove_method(:visual_smoke_cleanliness_issues) rescue nil
+    end
+
     test('cleanliness check rejects visible stale apps and helper apps') do
       subject.define_singleton_method(:visual_smoke_terminal_window_count) { 0 }
       subject.define_singleton_method(:visual_smoke_permission_prompt_hits) { |_app| [] }
@@ -267,6 +402,31 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
       ].each { |method| subject.singleton_class.remove_method(method) rescue nil }
     end
 
+    test('cleanliness check allows target app Sparkle updater helper without prompt') do
+      subject.define_singleton_method(:visual_smoke_terminal_window_count) { 0 }
+      subject.define_singleton_method(:visual_smoke_permission_prompt_hits) { |_app| [] }
+      subject.define_singleton_method(:visual_smoke_visible_process_names) { ['Finder', 'SaneClick'] }
+      subject.define_singleton_method(:visual_smoke_running_sane_process_lines) do
+        [
+          '21300 /Users/stephansmac/Library/Caches/com.saneclick.SaneClick/org.sparkle-project.Sparkle/Launcher/6OztUMoie/Updater.app/Contents/MacOS/Updater /Applications/SaneClick.app 0'
+        ]
+      end
+
+      options = subject.parse_visual_smoke_args(%w[--app SaneClick])
+      issues = subject.visual_smoke_cleanliness_issues(options)
+
+      assert(!issues.any? { |issue| issue.include?('Stale SaneApps process') },
+             "target app Sparkle updater helper should not block when no prompt is visible: #{issues.inspect}")
+      true
+    ensure
+      %i[
+        visual_smoke_terminal_window_count
+        visual_smoke_permission_prompt_hits
+        visual_smoke_visible_process_names
+        visual_smoke_running_sane_process_lines
+      ].each { |method| subject.singleton_class.remove_method(method) rescue nil }
+    end
+
     test('cleanliness check blocks unresolved macOS prompts before visual proof') do
       subject.define_singleton_method(:visual_smoke_terminal_window_count) { 0 }
       subject.define_singleton_method(:visual_smoke_permission_prompt_hits) do |_app|
@@ -287,6 +447,18 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
         visual_smoke_visible_process_names
         visual_smoke_running_sane_process_lines
       ].each { |method| subject.singleton_class.remove_method(method) rescue nil }
+    end
+
+    test('prompt scan treats app-owned Move to Applications dialogs as visual blockers') do
+      source = File.read(File.expand_path('visual_smoke.rb', __dir__))
+
+      assert_includes(source, 'Move to Applications')
+      assert_includes(source, 'Could Not Move')
+      assert_includes(source, 'works best from your Applications folder')
+      assert_includes(source, 'move it there manually')
+      assert_includes(source, 'You may be asked for your password')
+      assert_includes(source, 'has an unresolved app install/move prompt')
+      true
     end
 
     test('cleanliness check rejects known desktop test artifacts') do
@@ -356,12 +528,13 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
       true
     end
 
-    test('SaneMaster forwards Peekaboo override to the Mini') do
+    test('SaneMaster forwards visual runtime overrides to the Mini') do
       source = File.read(File.expand_path('../SaneMaster.rb', __dir__))
       env_block = source[/forwarded_env_keys = %w\[(.*?)\]/m, 1]
 
       assert(env_block, 'expected forwarded_env_keys block')
       assert_includes(env_block, 'PEEKABOO_BIN')
+      assert_includes(env_block, 'SANEAPPS_FORCE_LICENSE_CHECK')
       true
     end
 

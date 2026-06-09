@@ -236,6 +236,7 @@ exit(run_tests('SaneMaster Release Routing Tests') do
         assert_includes(rsync_call, 'release_preflight_status.json')
         assert_includes(rsync_call, 'customer_ui_action_receipt.json')
         assert_includes(rsync_call, 'customer-ui/***')
+        assert_includes(rsync_call, 'visual_smoke/***')
         assert_includes(rsync_call, '*')
         assert_includes(rsync_call, "mini:#{remote_outputs}/")
         true
@@ -259,6 +260,7 @@ exit(run_tests('SaneMaster Release Routing Tests') do
       assert_includes(remote_cmd, 'customer_ui_action_receipt.json')
       assert_includes(remote_cmd, 'validation')
       assert_includes(remote_cmd, 'customer-ui')
+      assert_includes(remote_cmd, 'visual_smoke')
       assert_includes(remote_cmd, '/usr/bin/trash "$path"')
       true
     end

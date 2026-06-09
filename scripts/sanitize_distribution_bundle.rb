@@ -12,6 +12,7 @@ CHANNEL_RULES = {
       SUPublicEDKey
       SUEnableAutomaticChecks
       SUEnableSystemProfiling
+      SUEnableInstallerLauncherService
       AppStoreProductID
     ]
   },
@@ -21,6 +22,7 @@ CHANNEL_RULES = {
       SUPublicEDKey
       SUEnableAutomaticChecks
       SUEnableSystemProfiling
+      SUEnableInstallerLauncherService
       AppStoreProductID
       NSServices
       NSAppleEventsUsageDescription

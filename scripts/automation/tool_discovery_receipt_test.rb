@@ -3,6 +3,8 @@
 
 require_relative '../hooks/test/test_framework'
 require_relative 'tool_discovery_receipt'
+require 'fileutils'
+require 'tmpdir'
 
 include TestFramework
 
@@ -11,7 +13,7 @@ exit(run_tests('Tool discovery receipt tests') do
     test('mcp health check uses watchdog plus live active-session probe') do
       receipt = ToolDiscoveryReceipt.new(['--query', 'mcp health', '--skip-validation'])
       commands = []
-      receipt.define_singleton_method(:capture_command) do |command, chdir:, timeout_seconds:|
+      receipt.define_singleton_method(:capture_command) do |command, chdir:, timeout_seconds:, env: {}|
         commands << command
         if command.include?('mcp_watchdog')
           {
@@ -55,7 +57,7 @@ exit(run_tests('Tool discovery receipt tests') do
 
     test('mcp health check fails on live probe failures') do
       receipt = ToolDiscoveryReceipt.new(['--query', 'mcp health', '--skip-validation'])
-      receipt.define_singleton_method(:capture_command) do |command, chdir:, timeout_seconds:|
+      receipt.define_singleton_method(:capture_command) do |command, chdir:, timeout_seconds:, env: {}|
         if command.include?('mcp_watchdog')
           {
             stdout: JSON.generate({
@@ -163,6 +165,91 @@ exit(run_tests('Tool discovery receipt tests') do
       assert_includes(cloudflare.send(:canonical_path_matches).map { |entry| entry[:name] }, 'Cloudflare release surface checks')
       assert_includes(central.send(:canonical_path_matches).map { |entry| entry[:name] }, 'Semantic cross-session recall')
       assert_includes(xcode.send(:canonical_path_matches).map { |entry| entry[:name] }, 'iOS simulator proof with XcodeBuildMCP')
+      true
+    end
+
+    test('recommends Mini screenshot wrapper instead of raw screencapture') do
+      receipt = ToolDiscoveryReceipt.new(['--query', 'mini screenshot screencapture prompt', '--skip-doctor', '--skip-validation'])
+
+      match = receipt.send(:canonical_path_matches).find { |entry| entry[:name] == 'Mini screenshot capture' }
+
+      assert(match, 'expected Mini screenshot capture canonical path')
+      assert_includes(match[:command], 'capture-mini-screenshot.sh')
+      assert_includes(match[:why], 'Do not use raw ssh mini screencapture')
+      true
+    end
+
+    test('validation check disables keychain fallback and prompts') do
+      receipt = ToolDiscoveryReceipt.new(['--query', 'missing tool', '--skip-doctor'])
+      seen_env = nil
+      receipt.define_singleton_method(:capture_command) do |_command, chdir:, timeout_seconds:, env: {}|
+        seen_env = env
+        {
+          stdout: JSON.generate({ verdict: { status: 'WORKING', detail: 'ok' }, issues: [], warnings: [] }),
+          stderr: '',
+          exit_code: 0,
+          timed_out: false,
+          success: true
+        }
+      end
+
+      result = receipt.send(:run_validation_check)
+
+      assert_eq(result[:status], 'ok')
+      assert_eq(seen_env['SANE_NO_KEYCHAIN'], '1')
+      assert_eq(seen_env['SANE_KEYCHAIN_FALLBACK'], '0')
+      assert_eq(seen_env['SANE_ALLOW_KEYCHAIN_PROMPTS'], '0')
+      true
+    end
+
+    test('validation check is partial when signing checks are skipped') do
+      receipt = ToolDiscoveryReceipt.new(['--query', 'missing tool', '--skip-doctor'])
+      receipt.define_singleton_method(:capture_command) do |_command, chdir:, timeout_seconds:, env: {}|
+        {
+          stdout: JSON.generate({
+            verdict: { status: 'WORKING', detail: 'ok' },
+            issues: [],
+            warnings: ['Q8 SIGNING: Code-signing keychain/notary checks skipped in no-prompt validation mode']
+          }),
+          stderr: '',
+          exit_code: 0,
+          timed_out: false,
+          success: true
+        }
+      end
+
+      result = receipt.send(:run_validation_check)
+
+      assert_eq(result[:status], 'partial')
+      assert_includes(result[:status_detail], 'signing/notary checks skipped')
+      true
+    end
+
+    test('Grok helper resolves SaneProcess after installation into home bin') do
+      helper = File.read(File.expand_path('../grok-bin/check-mcps', __dir__))
+
+      assert_includes(helper, 'SANEPROCESS_ROOT="${SANEPROCESS_ROOT:-}"')
+      assert_includes(helper, '$HOME/SaneApps/infra/SaneProcess')
+      assert_includes(helper, 'Could not locate SaneProcess or ruby')
+      true
+    end
+
+    test('searches neutral .agents skills for Grok and generic clients') do
+      Dir.mktmpdir('tool-discovery-agents-skills') do |dir|
+        skill_dir = File.join(dir, '.agents', 'skills', 'sample')
+        FileUtils.mkdir_p(skill_dir)
+        File.write(File.join(skill_dir, 'SKILL.md'), "# sample\n\nUse this for widgetizer MCP checks.\n")
+        receipt = ToolDiscoveryReceipt.new([
+          '--query', 'widgetizer',
+          '--project-root', dir,
+          '--skip-doctor',
+          '--skip-validation'
+        ])
+
+        result = receipt.send(:search_global_skills)
+        assert(result[:source].include?(File.join(dir, '.agents', 'skills')), 'expected project .agents skills root')
+        assert(result[:matches].any? { |match| match[:file].end_with?('SKILL.md') }, 'expected .agents skill match')
+      end
       true
     end
   end

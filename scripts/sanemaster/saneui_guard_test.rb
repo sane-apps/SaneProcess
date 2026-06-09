@@ -46,6 +46,10 @@ exit(run_tests('SaneUI Guard Tests') do
                     }
                 }
             }
+
+            private struct SettingsResizeGrip: NSViewRepresentable {
+                var body: some View { EmptyView() }
+            }
           SWIFT
           'DirectDistributionSupport.swift' => <<~SWIFT
             import SwiftUI
@@ -64,6 +68,7 @@ exit(run_tests('SaneUI Guard Tests') do
         assert_includes(labels, 'Email support link in settings UI')
         assert_includes(labels, 'Default bordered button in settings UI')
         assert_includes(labels, 'Legacy Manage Access copy')
+        assert_includes(labels, 'Local settings resize grip clone')
         true
       end
     end

@@ -20,6 +20,21 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
   subject = TestModeHarness.new
 
   test_category('Unsigned fallback detection') do
+    test('project name comes from manifest in suffixed worktree directories') do
+      Dir.mktmpdir('SaneBar-2.1.62-audit-') do |dir|
+        File.write(File.join(dir, '.saneprocess'), "name: SaneBar\nscheme: SaneBar\n")
+
+        Dir.chdir(dir) do
+          harness = TestModeHarness.new
+
+          assert_eq(harness.send(:project_name), 'SaneBar')
+          assert_eq(harness.send(:project_scheme), 'SaneBar')
+        end
+      end
+
+      true
+    end
+
     test('retries unsigned debug after provisioning-profile iCloud failure') do
       ENV['SANEMASTER_HEADLESS'] = '1'
       ENV.delete('SANEMASTER_UNSIGNED_FALLBACK_ACTIVE')
@@ -61,6 +76,14 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
   end
 
   test_category('Launch mode preservation') do
+    test('launch can reuse existing canonical app when DerivedData product was cleaned') do
+      source = File.read(TEST_MODE_PATH)
+
+      assert_includes(source, "canonical_existing_app = File.join('/Applications', \"\#{project_name}.app\")")
+      assert_includes(source, 'Using existing canonical app')
+      true
+    end
+
     test('no-keychain launch state is passed through LaunchServices open') do
       result = subject.send(
         :open_launch_env_pairs,
@@ -69,18 +92,108 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
       )
 
       assert_includes(result, '--env')
+      assert_includes(result, 'SANEAPPS_SKIP_MOVE_TO_APPLICATIONS=1')
       assert_includes(result, 'SANEAPPS_DISABLE_KEYCHAIN=1')
       true
     end
 
-    test('plain keychain-enabled launch has no extra open env') do
+    test('plain keychain-enabled launch still skips move-to-Applications prompt') do
       result = subject.send(
         :open_launch_env_pairs,
         allow_keychain: true,
         force_free_mode: false
       )
 
-      assert_eq(result, [])
+      assert_eq(result, ['--env', 'SANEAPPS_SKIP_MOVE_TO_APPLICATIONS=1'])
+      true
+    end
+
+    test('license-check override passes through LaunchServices open') do
+      ENV['SANEAPPS_FORCE_LICENSE_CHECK'] = '1'
+
+      result = subject.send(
+        :open_launch_env_pairs,
+        allow_keychain: false,
+        force_free_mode: false
+      )
+
+      assert_includes(result, 'SANEAPPS_FORCE_LICENSE_CHECK=1')
+      assert_includes(result, 'SANEAPPS_SKIP_MOVE_TO_APPLICATIONS=1')
+      assert_includes(result, 'SANEAPPS_DISABLE_KEYCHAIN=1')
+      true
+    ensure
+      ENV.delete('SANEAPPS_FORCE_LICENSE_CHECK')
+    end
+
+    test('sample asset automation vars pass through LaunchServices open') do
+      ENV['TEST_ASSET_NAME'] = 'test_video.mp4'
+      ENV['PROJECT_DIR'] = '/tmp/SaneVideo'
+      ENV['AUTOMATION_TRANSCRIPT_PATH'] = '/tmp/captions.srt'
+
+      result = subject.send(
+        :open_launch_env_pairs,
+        allow_keychain: false,
+        force_free_mode: false
+      )
+
+      assert_includes(result, '--env')
+      assert_includes(result, 'TEST_ASSET_NAME=test_video.mp4')
+      assert_includes(result, 'PROJECT_DIR=/tmp/SaneVideo')
+      assert_includes(result, 'AUTOMATION_TRANSCRIPT_PATH=/tmp/captions.srt')
+      true
+    ensure
+      ENV.delete('TEST_ASSET_NAME')
+      ENV.delete('PROJECT_DIR')
+      ENV.delete('AUTOMATION_TRANSCRIPT_PATH')
+    end
+
+    test('test mode launch args suppress app mover dialogs') do
+      no_keychain_args = subject.send(:launch_binary_args, allow_keychain: false)
+      keychain_args = subject.send(:launch_binary_args, allow_keychain: true)
+
+      assert_includes(no_keychain_args, '--sane-skip-app-move')
+      assert_includes(no_keychain_args, '--sane-no-keychain')
+      assert_eq(keychain_args, ['--sane-skip-app-move'])
+      true
+    end
+
+    test('release test mode does not mutate login keychain state by default') do
+      source = File.read(TEST_MODE_PATH)
+
+      assert_includes(source, "ENV['SANEMASTER_MUTATE_LOGIN_KEYCHAIN_STATE'] == '1'")
+      assert_includes(source, "ENV['SANEMASTER_GRANT_KEYCHAIN_PARTITION_ACCESS'] == '1'")
+      true
+    end
+
+    test('transient debug apps bypass LaunchServices open') do
+      assert(subject.send(:direct_binary_launch_required?, '/tmp/saneapps-staging.noindex/SaneVideo.app'),
+             'transient debug apps should launch by executable path to avoid Gatekeeper dialogs')
+      true
+    end
+
+    test('Gatekeeper guard allows direct-launch transient apps') do
+      subject.define_singleton_method(:ad_hoc_signed?) { |_path| true }
+
+      assert(subject.send(:launch_path_gatekeeper_ready?, '/tmp/saneapps-staging.noindex/SaneVideo.app', direct_launch: true),
+             'direct-launch transient apps should not be rejected before executable launch')
+      true
+    ensure
+      subject.singleton_class.remove_method(:ad_hoc_signed?) rescue nil
+    end
+
+    test('runtime staging strips extended attributes') do
+      source = File.read(TEST_MODE_PATH)
+
+      assert_includes(source, "'ditto', '--noextattr', '--noacl'")
+      assert_includes(source, "'xattr', '-cr'")
+      true
+    end
+
+    test('ad-hoc signed runtime apps are blocked by default') do
+      source = File.read(TEST_MODE_PATH)
+
+      assert_includes(source, 'Refusing to launch ad-hoc signed')
+      assert_includes(source, 'test_mode --release')
       true
     end
   end
@@ -142,6 +255,18 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
       assert_includes(source, "File.expand_path(File.join('/tmp/saneapps-staging.noindex', \"\#{project_name}.app\"))")
       assert(!source.include?("File.expand_path(File.join('~/Applications', \"\#{project_name}.app\"))"),
              'unsigned fallback should not use ~/Applications for runtime staging')
+      true
+    end
+
+    test('runtime path comparison resolves symlinks before matching launched app') do
+      Dir.mktmpdir('sanemaster-test-mode-realpath') do |dir|
+        real_dir = File.join(dir, 'real')
+        link_dir = File.join(dir, 'link')
+        FileUtils.mkdir_p(real_dir)
+        File.symlink(real_dir, link_dir)
+
+        assert_eq(subject.send(:canonical_runtime_path, link_dir), File.realpath(real_dir))
+      end
       true
     end
   end

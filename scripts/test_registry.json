@@ -290,6 +290,12 @@
       "reason": "Loaded by hook tier tests; it is not a standalone executable test."
     },
     {
+      "path": "scripts/hooks/grok_and_security_guard_test.rb",
+      "label": "Grok hook and security guard regression tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/hooks/grok_and_security_guard_test.rb"]
+    },
+    {
       "path": "scripts/hooks/sanestop_test.rb",
       "label": "sanestop self-test support module",
       "status": "support",

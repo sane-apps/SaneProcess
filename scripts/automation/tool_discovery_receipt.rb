@@ -82,6 +82,13 @@ class ToolDiscoveryReceipt
       why: 'Canonical kill → build → launch path for real runtime checks.'
     },
     {
+      name: 'Mini screenshot capture',
+      keywords: %w[screenshot screenshots capture visual mini screen window app prompt screencapture],
+      command: '~/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh --app "AppName" --mode temp',
+      source: 'scripts/mini/capture-mini-screenshot.sh',
+      why: 'Canonical Mini GUI-session capture path. Do not use raw ssh mini screencapture.'
+    },
+    {
       name: 'App Store submission and review readiness',
       keywords: %w[appstore review submission submit asc metadata iap rejected approve approved],
       command: 'ruby scripts/SaneMaster.rb appstore_preflight',
@@ -277,7 +284,9 @@ class ToolDiscoveryReceipt
   def search_global_skills
     skill_roots = [
       File.expand_path('~/.codex/skills'),
-      File.expand_path('~/.claude/skills')
+      File.expand_path('~/.claude/skills'),
+      File.expand_path('~/.agents/skills'),
+      File.join(@options[:project_root], '.agents', 'skills')
     ].uniq.select { |path| Dir.exist?(path) }
 
     files = skill_roots.flat_map do |skill_root|
@@ -440,12 +449,18 @@ class ToolDiscoveryReceipt
 
     script = File.join(@options[:project_root], 'scripts', 'validation_report.rb')
     command = [RbConfig.ruby, script, '--json']
-    result = capture_command(command, chdir: @options[:project_root], timeout_seconds: @options[:timeout_seconds])
+    env = {
+      'SANE_NO_KEYCHAIN' => '1',
+      'SANE_KEYCHAIN_FALLBACK' => '0',
+      'SANE_ALLOW_KEYCHAIN_PROMPTS' => '0'
+    }
+    result = capture_command(command, chdir: @options[:project_root], timeout_seconds: @options[:timeout_seconds], env: env)
 
     payload = parse_json(result[:stdout])
     {
       command: command.join(' '),
       status: validation_health_status(result, payload),
+      status_detail: validation_status_detail(result, payload),
       exit_code: result[:exit_code],
       timed_out: result[:timed_out],
       verdict: payload && payload['verdict'],
@@ -461,8 +476,22 @@ class ToolDiscoveryReceipt
     return 'timed_out' if result[:timed_out]
     return 'failed' unless result[:success]
     return 'parse_failed' unless payload
+    return 'partial' if validation_signing_skipped?(payload)
 
     payload.dig('verdict', 'status').to_s == 'WORKING' ? 'ok' : 'blocked'
+  end
+
+  def validation_status_detail(result, payload)
+    return nil unless result[:success] && payload
+    return 'signing/notary checks skipped in no-prompt mode' if validation_signing_skipped?(payload)
+
+    payload.dig('verdict', 'detail')
+  end
+
+  def validation_signing_skipped?(payload)
+    Array(payload && payload['warnings']).any? do |warning|
+      warning.to_s.include?('Code-signing keychain/notary checks skipped in no-prompt validation mode')
+    end
   end
 
   def build_summary(receipt)
@@ -565,7 +594,9 @@ class ToolDiscoveryReceipt
     validation = receipt[:checks][:validation_report] || {}
     lines << "## Health Checks"
     lines << "- MCP health: #{doctor[:status] || 'skipped'}"
-    lines << "- Project validation report: #{validation[:status] || 'skipped'}"
+    validation_line = validation[:status] || 'skipped'
+    validation_line = "#{validation_line} (#{validation[:status_detail]})" if validation[:status_detail]
+    lines << "- Project validation report: #{validation_line}"
     verdict_line = validation[:verdict_status] || 'n/a'
     verdict_line = "#{verdict_line} — #{validation[:verdict_detail]}" if validation[:verdict_detail]
     lines << "- Validation verdict: #{verdict_line}"
@@ -579,7 +610,10 @@ class ToolDiscoveryReceipt
     puts "Existing path found: #{receipt.dig(:summary, :existing_path_found) ? 'yes' : 'no'}"
     puts "Recommendation: #{receipt.dig(:summary, :recommendation)}"
     puts "MCP health: #{receipt.dig(:checks, :doctor, :status) || 'skipped'}"
-    puts "Project validation: #{receipt.dig(:checks, :validation_report, :status) || 'skipped'}"
+    validation = receipt.dig(:checks, :validation_report) || {}
+    validation_line = validation[:status] || 'skipped'
+    validation_line = "#{validation_line} (#{validation[:status_detail]})" if validation[:status_detail]
+    puts "Project validation: #{validation_line}"
     puts "JSON: #{json_path}"
     puts "Markdown: #{markdown_path}"
     receipt.dig(:checks, :canonical_paths).to_a.first(5).each do |entry|
@@ -598,13 +632,13 @@ class ToolDiscoveryReceipt
     nil
   end
 
-  def capture_command(command, chdir:, timeout_seconds:)
+  def capture_command(command, chdir:, timeout_seconds:, env: {})
     stdout = +''
     stderr = +''
     exit_code = nil
     timed_out = false
 
-    Open3.popen3(*command, chdir: chdir) do |stdin, out, err, wait_thr|
+    Open3.popen3(env, *command, chdir: chdir) do |stdin, out, err, wait_thr|
       stdin.close
       stdout_thread = Thread.new { stdout << out.read.to_s }
       stderr_thread = Thread.new { stderr << err.read.to_s }

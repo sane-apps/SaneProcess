@@ -156,7 +156,7 @@ module SaneMasterModules
 
       # Build xcodebuild command
       cmd = ['xcodebuild', 'test', '-scheme', scheme, '-destination', 'platform=macOS,arch=arm64']
-      cmd += ['-only-testing', test_name] if test_name
+      cmd << "-only-testing:#{test_name}" if test_name
 
       # Start test in background
       pid = Process.spawn(*cmd, out: log_file, err: log_file)
@@ -209,6 +209,7 @@ module SaneMasterModules
         code = status&.exitstatus || 1
         puts "❌ Tests failed (exit code: #{code})"
         results = `grep -E "(Test Case|FAILED|error:)" #{log_file} 2>/dev/null`.strip
+        results = `tail -80 #{log_file} 2>/dev/null`.strip if results.empty?
         results.lines.last(30).each { |l| puts "   #{l}" } unless results.empty?
         exit code
       end

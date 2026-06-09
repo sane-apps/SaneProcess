@@ -69,7 +69,8 @@ module SaneTrackStateUpdates
   end
 
   def track_handoff_status(tool_name, tool_input)
-    if tool_name == 'mcp__serena__write_memory'
+    if tool_name == 'mcp__serena__write_memory' ||
+       tool_name.match?(/\Amcp__(?:memory|central-memory)__(?:add|create|delete|update|write)_/i)
       StateManager.update(:handoff_tracking) do |handoff|
         handoff[:memory_updated] = true
         handoff

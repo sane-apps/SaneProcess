@@ -2,6 +2,7 @@
 set -euo pipefail
 
 MINI_HOST="${MINI_HOST:-mini}"
+MINI_HOST_FALLBACKS="${MINI_HOST_FALLBACKS:-stephansmac@Stephans-Mac-mini.local stephansmac@stephans-mac-mini.local}"
 
 usage() {
   cat <<'EOF'
@@ -13,6 +14,8 @@ Usage:
   mini-safari.sh js [tab_index] <javascript>
   mini-safari.sh open-read <url> [delay_seconds] [char_limit]
   mini-safari.sh open-read-current <url> [delay_seconds] [char_limit]
+  mini-safari.sh asc-login <apple_id_email> [url] [2fa_code]
+  mini-safari.sh asc-login <apple_id_email> <2fa_code>
 
 Notes:
   - Drives Safari on the Mac Mini via AppleScript.
@@ -21,6 +24,9 @@ Notes:
     login state and lock Passwords/2FA flows.
   - `tab_index` is 1-based and defaults to the current tab.
   - `read` returns final URL, title, and a body-text snippet.
+  - `asc-login` closes Finder/Preview clutter, captures a full-screen receipt,
+    reuses the current Safari tab, and drives the saved-password login path.
+    Pass a current 2FA code as the third/fourth argument or ASC_2FA_CODE when prompted.
 EOF
 }
 
@@ -33,11 +39,55 @@ PY
 
 run_remote_applescript() {
   local script="$1"
-  ssh "$MINI_HOST" <<EOF
+  ssh "$(resolve_mini_host)" <<EOF
 osascript <<'APPLESCRIPT'
 $script
 APPLESCRIPT
 EOF
+}
+
+resolve_mini_host() {
+  local host="$MINI_HOST"
+  local resolved_host=""
+  local candidate=""
+  local candidates=""
+
+  if ssh -o BatchMode=yes -o ConnectTimeout=2 "$host" true >/dev/null 2>&1; then
+    printf '%s' "$host"
+    return 0
+  fi
+
+  candidates="${candidates}${host}
+"
+  resolved_host="$(ssh -G "$host" 2>/dev/null | awk '/^hostname /{print $2; exit}')"
+  if [ -n "$resolved_host" ]; then
+    candidates="${candidates}${resolved_host}
+"
+    case "$resolved_host" in
+      *@*) ;;
+      *) candidates="${candidates}stephansmac@${resolved_host}
+" ;;
+    esac
+  fi
+
+  for candidate in $MINI_HOST_FALLBACKS; do
+    candidates="${candidates}${candidate}
+"
+  done
+
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    if ssh -o BatchMode=yes -o ConnectTimeout=3 "$candidate" true >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done <<EOF
+$candidates
+EOF
+
+  echo "Could not reach the canonical Mini host." >&2
+  echo "Set MINI_HOST=user@host and retry." >&2
+  return 1
 }
 
 requires_single_portal_tab() {
@@ -56,6 +106,79 @@ Set MINI_SAFARI_ALLOW_NEW_PORTAL_TAB=1 only for deliberate manual recovery.
 EOF
     exit 2
   fi
+}
+
+mini_screenshot() {
+  "${BASH_SOURCE%/*}/capture-mini-screenshot.sh" "$@" | tail -1
+}
+
+apple_portal_loaded() {
+  grep -Eq "Users and Access|My Apps|Agreements|Certificates|Identifiers|Profiles|Distribution|TestFlight|Xcode Cloud|App Review|Apps menu" <<<"$1"
+}
+
+close_portal_clutter() {
+  run_remote_applescript '
+tell application "Finder"
+  close every window
+end tell
+tell application "Preview"
+  if running then close every window
+end tell
+tell application "Safari"
+  activate
+end tell
+'
+}
+
+ensure_safari_window_visible() {
+  local url="${1:-}"
+  local url_lit
+  url_lit="$(json_escape "$url")"
+  run_remote_applescript "
+set targetURL to $url_lit
+tell application \"System Events\"
+  if exists process \"Safari\" then set visible of process \"Safari\" to true
+end tell
+tell application \"Safari\"
+  activate
+  if (count of windows) is 0 then
+    if targetURL is \"\" then
+      make new document
+    else
+      make new document with properties {URL:targetURL}
+    end if
+  else
+    set visible of front window to true
+    set bounds of front window to {160, 80, 1760, 980}
+    if targetURL is not \"\" then set URL of current tab of front window to targetURL
+  end if
+end tell
+delay 1
+"
+}
+
+safari_window_geometry() {
+  local windows
+  ensure_safari_window_visible >/dev/null || true
+  windows="$("${BASH_SOURCE%/*}/capture-mini-screenshot.sh" --skip-cleanup --list-windows --app "Safari")"
+  awk '$2 == "Safari" { print $4; found=1; exit } END { if (!found) print "1920x1080+0+0" }' <<<"$windows"
+}
+
+coordinate_for() {
+  local geom="$1"
+  local x_ratio="$2"
+  local y_ratio="$3"
+  python3 - "$geom" "$x_ratio" "$y_ratio" <<'PY'
+import re
+import sys
+
+geom, xr, yr = sys.argv[1:4]
+match = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", geom)
+if not match:
+    raise SystemExit(f"invalid Safari geometry: {geom}")
+w, h, x, y = map(int, match.groups())
+print(f"{round(x + w * float(xr))},{round(y + h * float(yr))}")
+PY
 }
 
 cmd="${1:-}"
@@ -98,6 +221,7 @@ end tell
     url="$2"
     delay_s="${3:-4}"
     url_lit="$(json_escape "$url")"
+    ensure_safari_window_visible "$url" >/dev/null
     run_remote_applescript "
 set targetURL to $url_lit
 tell application \"Safari\"
@@ -189,6 +313,116 @@ tell application \"Safari\"
   return out
 end tell
 "
+    ;;
+  asc-login)
+    [[ $# -ge 2 ]] || { usage; exit 1; }
+    email="$2"
+    if [[ "${3:-}" =~ ^[0-9]{6}$ ]]; then
+      url="https://appstoreconnect.apple.com/"
+      two_factor_code="$3"
+    else
+      url="${3:-https://appstoreconnect.apple.com/}"
+      two_factor_code="${4:-${ASC_2FA_CODE:-}}"
+    fi
+    requires_single_portal_tab "$url" || {
+      echo "asc-login only accepts Apple portal URLs." >&2
+      exit 2
+    }
+
+    close_portal_clutter >/dev/null
+    ensure_safari_window_visible "$url" >/dev/null
+    run_remote_applescript '
+tell application "System Events"
+  try
+    if exists (window "Privacy Report" of process "Safari") then
+      click button 1 of window "Privacy Report" of process "Safari"
+    end if
+  end try
+  repeat 3 times
+    try
+      if exists (button "Cancel" of window "Keychain Not Found" of process "Safari") then
+        click button "Cancel" of window "Keychain Not Found" of process "Safari"
+      end if
+    end try
+    delay 0.2
+  end repeat
+end tell
+' >/dev/null || true
+    before_shot="$(mini_screenshot --skip-cleanup --mode temp)"
+    echo "Full-screen pre-login receipt: $before_shot"
+
+    "$0" open-current "$url" 5 >/dev/null
+    body="$("$0" read "" 2000 || true)"
+    if ! grep -q "Email or Phone Number\\|Continue with Password\\|Sign in with Passkey" <<<"$body"; then
+      if apple_portal_loaded "$body"; then
+        echo "Safari appears to already be on an Apple portal page; no login click was needed."
+        echo "$body" | sed -n '1,12p'
+        exit 0
+      fi
+      echo "Apple auth text was sparse; continuing with the coordinate-based saved-password login path." >&2
+      echo "$body" | sed -n '1,8p'
+    fi
+
+    geom="$(safari_window_geometry)"
+    [[ -n "$geom" ]] || {
+      echo "Could not locate Safari window geometry for login clicks." >&2
+      exit 1
+    }
+    email_xy="$(coordinate_for "$geom" 0.50 0.50)"
+    arrow_xy="$(coordinate_for "$geom" 0.65 0.50)"
+    password_xy="$(coordinate_for "$geom" 0.405 0.56)"
+    two_factor_xy="$(coordinate_for "$geom" 0.50 0.46)"
+    trust_xy="$(coordinate_for "$geom" 0.58 0.73)"
+    continue_xy="$(coordinate_for "$geom" 0.50 0.62)"
+
+    run_remote_applescript "
+tell application \"Safari\" to activate
+set the clipboard to \"$(printf '%s' "$email" | sed 's/\\/\\\\/g; s/"/\\"/g')\"
+"
+    ssh "$(resolve_mini_host)" "/opt/homebrew/bin/cliclick c:$email_xy; sleep 0.2; /opt/homebrew/bin/cliclick kd:cmd t:a ku:cmd; sleep 0.1; /opt/homebrew/bin/cliclick kd:cmd t:v ku:cmd; sleep 0.2; /opt/homebrew/bin/cliclick c:$arrow_xy; sleep 3; /opt/homebrew/bin/cliclick c:$password_xy; sleep 0.4"
+
+    run_remote_applescript '
+tell application "Safari" to activate
+tell application "System Events"
+  keystroke "\\" using command down
+  delay 0.6
+  key code 125
+  delay 0.1
+  key code 36
+  delay 0.8
+  key code 36
+end tell
+' >/dev/null || true
+
+    sleep 4
+    login_body="$("$0" read "" 4000 || true)"
+    if grep -Eiq "two-factor|verification code|Enter Verification Code|Trust This Browser" <<<"$login_body"; then
+      if [[ -n "$two_factor_code" ]]; then
+        run_remote_applescript "
+tell application \"Safari\" to activate
+set the clipboard to \"$(printf '%s' "$two_factor_code" | sed 's/\\/\\\\/g; s/"/\\"/g')\"
+"
+        ssh "$(resolve_mini_host)" "/opt/homebrew/bin/cliclick c:$two_factor_xy; sleep 0.2; /opt/homebrew/bin/cliclick kd:cmd t:v ku:cmd; sleep 3"
+      else
+        echo "Apple is asking for a two-factor verification code. Rerun with ASC_2FA_CODE=123456 or pass it as the third argument." >&2
+      fi
+    fi
+
+    run_remote_applescript '
+tell application "System Events"
+  repeat 4 times
+    try
+      click button "Trust" of process "Safari"
+    end try
+    delay 0.5
+  end repeat
+end tell
+' >/dev/null || true
+    ssh "$(resolve_mini_host)" "/opt/homebrew/bin/cliclick c:$trust_xy; sleep 0.8; /opt/homebrew/bin/cliclick c:$continue_xy; sleep 2" >/dev/null || true
+
+    after_shot="$(mini_screenshot --skip-cleanup --mode temp)"
+    echo "Full-screen post-login-click receipt: $after_shot"
+    "$0" read "" 2000 || true
     ;;
   *)
     usage

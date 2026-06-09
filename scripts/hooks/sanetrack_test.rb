@@ -406,6 +406,20 @@ module SaneTrackTest
       warn "  FAIL: Serena write_memory should set memory_updated, got #{handoff.inspect}"
     end
 
+    # Test: Memory MCP mutations mark memory_updated
+    %w[mcp__memory__add_observations mcp__memory__create_entities mcp__memory__create_relations].each do |memory_tool|
+      StateManager.reset(:handoff_tracking)
+      process_result_proc.call(memory_tool, {}, { 'success' => true })
+      handoff = StateManager.get(:handoff_tracking)
+      if handoff[:memory_updated] == true
+        passed += 1
+        warn "  PASS: #{memory_tool} marks memory_updated"
+      else
+        failed += 1
+        warn "  FAIL: #{memory_tool} should mark memory_updated, got #{handoff.inspect}"
+      end
+    end
+
     # Test: Hook file edit marks always-persist work
     StateManager.reset(:handoff_tracking)
     process_result_proc.call('Edit', { 'file_path' => '/tmp/project/scripts/hooks/sanestop.rb' }, { 'success' => true })
@@ -464,6 +478,8 @@ module SaneTrackTest
     end
 
     Dir.mktmpdir('sanetrack-tool-discovery') do |tmpdir|
+      old_sp_root = ENV['SANEPROCESS_ROOT']
+      ENV['SANEPROCESS_ROOT'] = tmpdir # isolate canonical-root search to this clean dir
       Dir.chdir(tmpdir) do
         StateManager.reset(:skill)
         StateManager.update(:skill) do |s|
@@ -493,6 +509,38 @@ module SaneTrackTest
         else
           failed += 1
           warn "  FAIL: tool_discovery command should satisfy evolve receipt, got #{skill.inspect}"
+        end
+      end
+      ENV['SANEPROCESS_ROOT'] = old_sp_root
+    end
+
+    # Cross-cwd: SaneMaster writes the receipt under the canonical SaneProcess root,
+    # but the session cwd is an app repo (e.g. SaneBar). The proof must still be found.
+    Dir.mktmpdir('sanetrack-sp-root') do |sp_root|
+      Dir.mktmpdir('sanetrack-app-cwd') do |app_cwd|
+        old_sp_root2 = ENV['SANEPROCESS_ROOT']
+        ENV['SANEPROCESS_ROOT'] = sp_root
+        FileUtils.mkdir_p(File.join(sp_root, 'outputs', 'tool-discovery'))
+        File.write(File.join(sp_root, 'outputs', 'tool-discovery', 'receipt.json'), JSON.generate({ ok: true }))
+        StateManager.reset(:skill)
+        StateManager.update(:skill) do |s|
+          s[:required] = 'evolve'
+          s[:runner_used] = false
+          s[:runner_proved] = false
+          s[:runner_commands] = []
+          s
+        end
+        Dir.chdir(app_cwd) do
+          process_result_proc.call('Bash', { 'command' => 'ruby scripts/SaneMaster.rb tool_discovery --query "x"' }, { 'output' => 'ok' })
+        end
+        skill = StateManager.get(:skill)
+        ENV['SANEPROCESS_ROOT'] = old_sp_root2
+        if skill[:runner_used] == true && skill[:runner_proved] == true
+          passed += 1
+          warn '  PASS: evolve receipt in canonical SaneProcess root proves runner from any cwd'
+        else
+          failed += 1
+          warn "  FAIL: evolve receipt in SaneProcess root should prove runner cross-cwd, got #{skill.inspect}"
         end
       end
     end
@@ -566,10 +614,21 @@ module SaneTrackTest
         file.puts(JSON.generate('timestamp' => timestamp, 'type' => 'workflow_receipt', 'cwd' => Dir.pwd, 'workflow' => workflow, 'success' => true))
       end
     when 'ship'
+      File.write(File.join(Dir.pwd, '.saneprocess'), "name: TestApp\n")
       FileUtils.mkdir_p(File.join(Dir.pwd, 'outputs'))
       File.write(
         File.join(Dir.pwd, 'outputs', 'release_preflight_status.json'),
         JSON.pretty_generate('generatedAt' => timestamp, 'status' => 'passed')
+      )
+      require_relative 'state_signer'
+      StateSigner.write_signed(
+        File.expand_path('~/.claude/ship_clearance/TestApp.json'),
+        {
+          'app' => 'TestApp',
+          'project_dir' => Dir.pwd,
+          'cleared_at' => timestamp,
+          'expires_at' => (Time.now.utc + 3600).iso8601
+        }
       )
     end
   end

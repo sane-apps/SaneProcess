@@ -188,6 +188,28 @@ module SaneMasterModules
       {}
     end
 
+    def project_info_plist_paths
+      ignored_segments = %w[
+        .build
+        .swiftpm
+        Build
+        build
+        DerivedData
+        Pods
+        SourcePackages
+        vendor
+      ]
+      ignored_nested = [
+        %w[Carthage Checkouts]
+      ]
+
+      Dir.glob('**/Info.plist').reject do |path|
+        segments = path.split(File::SEPARATOR)
+        ignored_segments.any? { |segment| segments.include?(segment) } ||
+          ignored_nested.any? { |nested| segments.each_cons(nested.length).any? { |candidate| candidate == nested } }
+      end
+    end
+
     def decode_mobileprovision(path)
       return nil unless path && File.exist?(path)
 
@@ -1608,6 +1630,17 @@ module SaneMasterModules
         end
       end
 
+      manifest_content = manifest_paths.map { |path| safe_read(path) }.join("\n")
+      privacy_manifest_required_reason_categories.each do |category, reason|
+        unless manifest_content.include?(category)
+          issues << "PrivacyInfo.xcprivacy missing required reason API category #{category}"
+          next
+        end
+        next if reason.nil? || manifest_content.include?(reason)
+
+        issues << "PrivacyInfo.xcprivacy category #{category} is missing reason #{reason}"
+      end
+
       if project_yml_content.match?(/excludes:\s*(?:.|\n){0,500}PrivacyInfo\.xcprivacy/)
         issues << 'project.yml excludes PrivacyInfo.xcprivacy from the app target — the privacy manifest may not be bundled'
       elsif manifest_paths.none? { |path| project_yml_content.include?(File.basename(path)) || project_yml_content.include?("path: #{File.dirname(path)}") }
@@ -1619,6 +1652,20 @@ module SaneMasterModules
         warnings: warnings.uniq,
         summary: manifest_paths.join(', ')
       }
+    end
+
+    def privacy_manifest_required_reason_categories
+      source = Dir.glob(File.join(Dir.pwd, '{Core,UI,Sources,SaneBar}', '**', '*.swift')).map { |path| safe_read(path) }.join("\n")
+      required = {}
+      required['NSPrivacyAccessedAPICategoryUserDefaults'] = 'CA92.1' if source.match?(/\bUserDefaults\b/)
+      if source.match?(/\.creationDate\b|\.modificationDate\b|contentModificationDateKey|creationDateKey|fileModificationDate|\b(?:stat|lstat|fstat|fstatat|getattrlist|getattrlistbulk|fgetattrlist|getattrlistat)\s*\(/)
+        required['NSPrivacyAccessedAPICategoryFileTimestamp'] = nil
+      end
+      if source.match?(/volumeAvailableCapacity|volumeTotalCapacity|volumeAvailableCapacityForImportantUsageKey|volumeAvailableCapacityForOpportunisticUsageKey|\b(?:statfs|fstatfs)\s*\(/)
+        required['NSPrivacyAccessedAPICategoryDiskSpace'] = nil
+      end
+      required['NSPrivacyAccessedAPICategorySystemBootTime'] = nil if source.match?(/\bsystemUptime\b|\bmach_absolute_time\s*\(/)
+      required
     end
 
     def asc_subscription_status(app_id:, product_id:)
@@ -1785,13 +1832,16 @@ module SaneMasterModules
 
     def asc_game_center_guardrail_report(app_id:, platform:, version_string:, entitlement_paths:, project_yml_content:)
       report = { applicable: false, issues: [], warnings: [], summary: 'not configured' }
-      return report unless platform.to_s.downcase == 'ios'
+      platform_key = platform.to_s.downcase
+      asc_platform = { 'ios' => 'IOS', 'macos' => 'MAC_OS' }[platform_key]
+      platform_label = { 'ios' => 'iOS', 'macos' => 'macOS' }.fetch(platform_key, platform_key)
+      return report unless asc_platform
       return report if app_id.to_s.strip.empty? || version_string.to_s.strip.empty?
 
       token = appstore_connect_token
       return report if token.nil?
 
-      response = asc_get_json('/apps/%s/appStoreVersions?filter[platform]=IOS&limit=200' % app_id, token: token)
+      response = asc_get_json("/apps/#{app_id}/appStoreVersions?filter[platform]=#{asc_platform}&limit=200", token: token)
       return report unless response.is_a?(Hash)
 
       version_row = Array(response['data']).find do |entry|
@@ -1812,9 +1862,9 @@ module SaneMasterModules
       report[:summary] = enabled ? 'enabled in ASC' : 'disabled in ASC'
 
       if enabled && !has_entitlement
-        report[:issues] << 'App Store Connect Game Center is enabled for this iOS version, but the build has no com.apple.developer.game-center entitlement.'
+        report[:issues] << "App Store Connect Game Center is enabled for this #{platform_label} version, but the build has no com.apple.developer.game-center entitlement."
       elsif has_entitlement && !enabled
-        report[:warnings] << 'Build declares Game Center entitlement, but App Store Connect Game Center is disabled for this iOS version.'
+        report[:warnings] << "Build declares Game Center entitlement, but App Store Connect Game Center is disabled for this #{platform_label} version."
       end
 
       report
@@ -2068,8 +2118,7 @@ module SaneMasterModules
     def release_status_source_file?(project_path, relative_path)
       return false if relative_path.to_s.empty?
       return false if %w[
-        .sane/customer_ui_action_receipt.json AGENTS.md ARCHITECTURE.md CLAUDE.md
-        DEVELOPMENT.md README.md SESSION_HANDOFF.md
+        AGENTS.md ARCHITECTURE.md CLAUDE.md DEVELOPMENT.md README.md SESSION_HANDOFF.md
       ].include?(relative_path)
       return false if relative_path.start_with?(
         '.build/',
@@ -2404,7 +2453,7 @@ module SaneMasterModules
       return "iOS #{explicit}" if !explicit.to_s.empty? && ios_only_appstore_submission?(platforms)
       return explicit.to_s unless explicit.to_s.empty?
 
-      if platforms.include?('ios')
+      if (platforms & %w[ios macos]).any?
         ios_target = project_yml_content[/deploymentTarget:\s*\n\s*iOS:\s*["']?([0-9.]+)/, 1] ||
                      project_yml_content[/IPHONEOS_DEPLOYMENT_TARGET:\s*["']?([0-9.]+)/, 1]
         return "iOS #{ios_target}" unless ios_target.to_s.empty?
@@ -3147,7 +3196,7 @@ module SaneMasterModules
 
       # 4. Sparkle key in project config
       print '  Sparkle public key... '
-      plist_paths = Dir.glob('**/Info.plist').reject { |p| p.include?('DerivedData') || p.include?('build/') }
+      plist_paths = project_info_plist_paths
       expected_key = '7Pl/8cwfb2vm4Dm65AByslkMCScLJ9tbGlwGGx81qYU='
       checked_key = false
       plist_paths.each do |plist|
@@ -3917,7 +3966,7 @@ module SaneMasterModules
       required_keys['NSScreenCaptureUsageDescription'] = 'ScreenCapture' if all_source.match?(/SCShareableContent|SCContentSharingPicker|CGWindowListCreateImage/)
 
       # Check Info.plist for these keys
-      plist_paths = Dir.glob('**/Info.plist').reject { |p| p.include?('DerivedData') || p.include?('build/') }
+      plist_paths = project_info_plist_paths
       plist_content = plist_paths.map { |f| File.read(f) rescue '' }.join("\n")
 
       # Also check project.yml for plist values
@@ -4124,7 +4173,7 @@ module SaneMasterModules
           puts '⚠️  skipped'
           warnings << 'Cannot verify App Store Connect Game Center state without appstore.app_id and MARKETING_VERSION'
         else
-          game_center_reports = Array(platforms).select { |platform| platform.to_s == 'ios' }.map do |platform|
+          game_center_reports = Array(platforms).select { |platform| %w[ios macos].include?(platform.to_s) }.map do |platform|
             [platform, asc_game_center_guardrail_report(
               app_id: asc_app_id,
               platform: platform,

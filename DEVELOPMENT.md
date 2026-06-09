@@ -29,6 +29,65 @@ unavailable for that task, or the user explicitly approves a local exception for
 that exact task. `Inconvenient`, `slower`, or `already open locally` are not
 fallback reasons.
 
+`ssh mini` is the canonical Mini route and must not depend on same-Wi-Fi Bonjour
+resolution. On SaneApps controller machines it is installed by:
+
+```bash
+bash ~/SaneApps/infra/SaneProcess/scripts/mini/install-mini-ssh-config.sh
+ssh mini 'hostname; whoami'
+```
+
+The installer writes `~/.ssh/config.d/saneapps-mini.conf`, where `mini` and
+`mini-remote` use Cloudflare Access via the TXT record
+`mini-ssh-host.saneapps.com`; `mini-lan` keeps the direct
+`stephans-mac-mini.local` route for LAN diagnostics only. Verify the bridge with:
+
+```bash
+dig +short TXT mini-ssh-host.saneapps.com
+cloudflared --version
+ssh -G mini | grep -E '^(hostname|proxycommand|identityfile) '
+ssh mini 'hostname; whoami; pwd'
+```
+
+The Mini publishes that TXT record from a launchd-managed quick tunnel. Reinstall
+or repair it from a working Mini shell with:
+
+```bash
+cd ~/SaneApps/infra/SaneProcess
+bash scripts/mini/mini-install-remote-ssh-tunnel.sh
+launchctl print gui/$(id -u)/com.saneapps.mini-remote-ssh-tunnel
+tail -50 ~/Library/Logs/SaneApps/mini-remote-ssh-tunnel.log
+```
+
+If `ssh mini` is down but `ssh mini-lan` works, the problem is the Cloudflare
+tunnel/TXT bridge, not Mini availability. Do not fall back to local app testing
+until that route has been diagnosed or the user approves the exact exception.
+
+Codex Mini remote-control health:
+
+```bash
+ssh mini 'codex app-server daemon version'
+ssh mini 'codex app-server daemon restart; codex app-server daemon enable-remote-control'
+ssh mini 'launchctl print gui/$(id -u)/com.saneapps.codex-keepalive'
+```
+
+The keepalive LaunchAgent must include
+`SANEPROCESS_ENABLE_MINI_CODEX_KEEPALIVE=1`. The keepalive refreshes the
+headless Codex remote-control daemon without opening GUI windows; it opens the
+Codex app only when no SaneApps app is running and no app server is present.
+
+Tailscale setup state:
+
+```bash
+ssh mini 'tailscale status'
+ssh mini 'launchctl print system/homebrew.mxcl.tailscale'
+```
+
+The Mini formula daemon can run as a root LaunchDaemon, but it is not a permanent
+route until the Mini is enrolled in a tailnet. The controller formula is
+installed but not running as root; local enrollment requires the user's local
+sudo/GUI approval or a reusable/preauthorized Tailscale auth key.
+
 Public adopters do not need a Mac Mini. Replace Mini-first with your own
 canonical runner or local verification command, then route it through
 `SaneMaster.rb` so agents have one safe path to call.
@@ -53,13 +112,89 @@ SaneProcess has one SOP with multiple client adapters.
 | Client | Install mode | Stable surface |
 |--------|--------------|----------------|
 | Claude Code | `scripts/init.sh --client claude` | `AGENTS.md`, `.claude/settings.json`, hooks, skills, MCP, shared scripts |
-| Codex | `scripts/init.sh --client codex` | `AGENTS.md`, `.agents/skills`, Codex config, MCP, shell/script guards |
+| Codex | `scripts/init.sh --client codex` | `AGENTS.md`, `.agents/skills`, shell/script guards; Codex config/MCP/approval policy stays client-managed |
+| Grok | `scripts/init.sh --client grok` | `AGENTS.md`, `.agents/skills`, shell/script guards; operator sync can mirror existing `~/.grok/config.toml` |
 | Other agents | `scripts/init.sh --client generic` | `AGENTS.md`, repo scripts, git hooks, optional MCP |
 | SaneApps full setup | `scripts/init.sh --client all` | Claude + Codex-compatible surfaces for internal use |
 
-Codex and other clients may support hooks differently. Rules that matter for
-public portability must remain enforceable through repo scripts and shared
-guards, not only through one client runtime.
+Codex, Grok, and other clients may support hooks and MCP discovery differently.
+Grok can load MCP servers from compatibility config while `grok mcp list` only
+reports native Grok config, so use the live `/mcps` or Ctrl+L view for session
+truth. Rules that matter for public portability must remain enforceable through
+repo scripts and shared guards, not only through one client runtime.
+
+### For Grok users (practical steps)
+
+After `scripts/init.sh --client grok` in a repo:
+
+1. Confirm the portable surface is present:
+   ```bash
+   test -f AGENTS.md && test -d .agents/skills
+   ```
+
+2. In the Grok TUI, read the rules (Grok surfaces AGENTS.md from the repo root or via skills):
+   - Start every substantial task by reading the nearest AGENTS.md.
+   - Use `ruby scripts/SaneMaster.rb tool_discovery --query "..."` before claiming any tool/MCP is missing (this produces a dated receipt in outputs/tool-discovery/).
+
+3. Live MCP truth (important) + 2026-05-29 fix:
+   - `/mcps` or Ctrl+L inside the Grok session — this is the source of truth.
+   - The helper `scripts/grok-bin/check-mcps` (after a `sync_grok`) prints the same advice plus runs the canonical receipt.
+   - On SaneApps operator machines, core Sane servers may be registered natively in `~/.grok/config.toml` with 15-30s startup timeouts. Fresh `init.sh --client grok` does not write user-level Grok config; use your client's MCP setup path, then `sync_grok` can mirror an existing config to the Mini.
+   - If any still show connecting after TUI restart: the uvx/git+ ones can be slow on first handshake; the native timeouts give them headroom. Use the /mcps modal to toggle or inspect logs.
+   - Native `grok mcp list` shows only the toml entries; the full active set (including compatibility) is in the TUI modal.
+
+4. PreToolUse / PostToolUse warnings or annotations (if you see them):
+   - Grok merges hooks from ~/.claude/settings.json (and project .claude/ if trusted) for Claude Code compatibility.
+   - SaneProcess populates that surface with saneprompt, sanetools + sane_* guards (PreToolUse), sanetrack + task_completed_gate + sanestop (PostToolUse), etc.
+   - Even guarded entries can produce visible annotations/notifications in the Grok scrollback on every tool call (search_replace, read_file, run_terminal_cmd, todo_write, etc.) because Grok records hook execution.
+   - This is expected when the same machine runs both Claude Code and Grok heavily on Sane repos. Passive tracking/session hooks no-op under Grok; high-risk launch, release, ship, and email guards still block if Grok invokes them.
+   - Inspect/disable at runtime: /hooks or Ctrl+L \u2192 Hooks tab.
+   - The portable SaneProcess contract for Grok is unchanged: AGENTS.md + explicit SaneMaster.rb + shell guards. Native Pre/Post hooks are an adapter layer, not the only enforcement surface.
+
+5. Common SaneProcess commands from Grok:
+   - `ruby scripts/SaneMaster.rb verify`
+   - `ruby scripts/SaneMaster.rb status`
+   - `ruby scripts/SaneMaster.rb release_preflight`
+   - `ruby scripts/SaneMaster.rb sync_grok` (operator only — keeps your Grok profile in sync with the Mini)
+
+6. Shared skills (critic, docs-audit) land in `.agents/skills/`. Load them via your client's skill mechanism or invoke the SKILL.md prompts directly when needed.
+
+The portable enforcement contract for Grok (and Codex, generic agents) is **AGENTS.md + explicit calls to SaneMaster + shell guards**. High-risk native hook entries may still block dangerous commands when Grok invokes them; passive tracking annotations are safe to ignore or disable per-session for pure Grok workflows.
+
+### For Codex users (practical steps)
+
+SANEPROCESS_PROSE_ONLY_POLICY: Codex plugin routing documents how to choose optional client capabilities over existing SaneMaster, tool_discovery, agent_eval, and skill_lint enforcement; no new mandatory gate is intended.
+
+Codex can expose marketplace plugins, app connectors, MCP tools, and local skills
+that are not installed by `scripts/init.sh --client codex`. Treat those as
+session-local accelerators. The stable SaneApps contract is still `AGENTS.md`,
+the active skill registry, and SaneMaster wrappers.
+
+Before using or declaring a Codex plugin missing:
+
+1. Check the live tool surface in the current session.
+2. Read the matching skill instructions when a plugin skill applies.
+3. Run `ruby scripts/SaneMaster.rb tool_discovery --query "..."` before adding a new wrapper, claiming a gap, or choosing a repeated workaround.
+4. Finish stateful SaneApps work with the canonical proof command: `verify`,
+   `release_preflight`, `appstore_preflight`, `sane_test.rb`, `check-inbox.sh`,
+   `sales`, `downloads`, `events`, or the app-specific visual proof path.
+
+Use this routing table for Codex plugin skills:
+
+| Work | Useful Codex plugin family | SaneApps close-out |
+|------|----------------------------|--------------------|
+| macOS app UI, AppKit interop, signing, packaging, telemetry, test triage | Build macOS Apps | Mini-first `SaneMaster.rb verify`; use `sane_test.rb` for runtime proof |
+| iOS companion apps, simulator proof, App Intents, leaks, performance | Build iOS Apps | Project verify plus fresh simulator/runtime evidence |
+| Websites and local frontend debugging | Build Web Apps, Browser | `release_preflight` for shipped web surfaces and Cloudflare Pages release path |
+| New product UI direction, redesign, prototype, image-to-code, visual QA | Product Design, Figma | Start with a brief/visual target; get approval before code; verify plus clean screenshots after implementation |
+| Marketing positioning, ad concepts, mood boards, editable decks, social resizes | Creative Production, Canva | Check live product facts and brand/copy rules; run `launch_readiness` before public launch use |
+| Repo/path security scan, diff security review, threat model, fix validation | Codex Security | Use for security-specific work; fixes still require `verify` and relevant release checks |
+| OpenAI API, Agents SDK, ChatGPT App, OpenAI key or MCP work | OpenAI Developers | Use official-doc-backed skill flow; keep secrets in the approved Keychain/env path |
+| Cloudflare Pages/R2/Workers/Durable Objects/Tunnels | Cloudflare | Prefer SaneProcess release wrappers for deploy/release proof; use plugin docs for platform details |
+| GitHub PRs/issues/CI metadata | GitHub | Cross-check support email before closing customer-reported issues |
+| Personal Gmail, Drive, Docs, Sheets, Slides, Calendar deliverables | Google plugins | Generic "email" still means `hi@saneapps.com` through `check-inbox.sh` |
+| KPI reports, metric diagnostics, dashboards | Data Analytics | Use `SaneMaster.rb sales`, `downloads`, `events`, or `/outreach` first for canonical SaneApps signals |
+| Presenter videos, generated media, stock assets, programmatic videos | HeyGen, HyperFrames, Picsart, Fal, Shutterstock, Remotion | Treat as marketing assets, not runtime verification evidence |
 
 ## Core Rules
 
@@ -167,6 +302,13 @@ Release rules:
 - Submit only if both fresh visual proof and `appstore_preflight` are green for
   the same candidate build. Do not reuse stale direct-release screenshots as App
   Store proof.
+- Apps can opt into a professional product-quality gate by setting
+  `require_product_quality_checklist: true` and adding at least 30
+  `product_quality_checklist` questions in `Tests/CustomerUIActions.yml`.
+  The app-specific `customer_ui_sweep` must then write
+  `product_quality_review` into the customer UI receipt. Any `failed` or
+  `unknown` item blocks `customer_ui_contract`, which in turn blocks release and
+  App Store submission.
 - Private signing, ASC, notary, and R2 setup details live in `DEVELOPER_SETUP.md`.
 
 ## Runtime And Visual Evidence
@@ -177,6 +319,11 @@ Release rules:
   only when no app-specific sweep exists.
 - Obstructed, clipped, partial, or helper-window-contaminated screenshots are
   invalid.
+- Product-quality screenshot proof must answer whether each image shows the real
+  app working, whether the state is blank/artificial/misleading, whether the
+  crop hides important controls, whether captions/alt text match the visible
+  state, and whether the first App Store screenshot communicates the main
+  job-to-be-done.
 - Hidden macOS prompts can invalidate app-window-only screenshots; check full
   desktop/AX state when a GUI flow is stuck or contradictory.
 
@@ -191,6 +338,9 @@ Optional accelerators:
 - Apple `xcrun mcpbridge` / `xcode`: IDE-native Xcode context.
 - XcodeBuildMCP: iOS simulator build-run proof, UI automation, LLDB/device, and
   coverage workflows.
+- Codex marketplace plugins and connectors: use the matching skill instructions
+  for domain work, then close SaneApps workflows with SaneMaster or the relevant
+  shared wrapper.
 - `central-memory`: semantic recall when configured.
 - Cloudflare API MCP/plugin: read-only Pages/R2/Worker drift checks.
 
@@ -221,6 +371,17 @@ Tool discovery and MCP health answer different questions:
   draft, run `present-draft` or `present-batch`, wait for explicit approval, run
   `approve ... --user-approval "<quote>"`, then send in a separate command.
 - Do not combine approval and send. Do not replace this flow with manual API calls.
+- For refund recovery after a real reported bug: if the customer reported the
+  bug, I tried to fix it, and the issue remains unresolved after the promised or
+  24-hour window, the reply should confirm the approved refund and include a
+  one-time free copy code as a thank-you. Keep the wording simple:
+  "Thanks for the reports, and I'm sorry I didn't get this sorted out on the
+  first shot. I've issued the refund. As a thank you for taking the time to help
+  me improve [App], here's a free copy. Please check in over the next few weeks
+  as improvements ship; your feedback is appreciated." Verify refund proof and
+  the 100% checkout/discount evidence before sending. `check-inbox.sh` enforces
+  these recovery-message components when `SANE_REFUND_RESOLUTION_APPROVED=1` is
+  used for completed refund-resolution replies.
 - For sales, downloads, and funnel questions use `SaneMaster.rb sales`,
   `downloads`, and `events`; do not hand-roll vendor API curls.
 

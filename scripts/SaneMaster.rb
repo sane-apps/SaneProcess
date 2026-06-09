@@ -38,6 +38,7 @@ require_relative 'sanemaster/generation'
 require_relative 'sanemaster/diagnostics'
 require_relative 'sanemaster/runtime_snapshot'
 require_relative 'sanemaster/visual_smoke'
+require_relative 'sanemaster/resource_soak'
 require_relative 'sanemaster/customer_ui_contract'
 require_relative 'sanemaster/bootstrap'
 require_relative 'sanemaster/test_mode'
@@ -76,6 +77,7 @@ class SaneMaster
   include SaneMasterModules::Diagnostics
   include SaneMasterModules::RuntimeSnapshot
   include SaneMasterModules::VisualSmoke
+  include SaneMasterModules::ResourceSoak
   include SaneMasterModules::CustomerUIContract
   include SaneMasterModules::Bootstrap
   include SaneMasterModules::TestMode
@@ -164,6 +166,7 @@ class SaneMaster
         'diagnose' => { args: '[path]', desc: 'Analyze .xcresult bundle' },
         'runtime_evidence' => { args: '[--executable PATH|--pid PID] [--break File.swift:LINE] [--expr EXPR]', desc: 'Capture LLDB runtime evidence without launching apps' },
         'visual_smoke' => { args: '[--app NAME] [--require-peekaboo] [--json] [--dry-run]', desc: 'Capture Peekaboo visual/AX evidence receipt' },
+        'resource_soak' => { args: '[--duration seconds] [--interval seconds] [--app-path PATH] [--json]', desc: 'Run release-candidate CPU/RSS/physical-footprint soak and write customer UI receipt evidence' },
         'customer_ui_sweep' => { args: '[--json] [--dry-run] [--no-exit]', desc: 'Run the app customer workflow runner, then validate the release UI contract' },
         'customer_ui_contract' => { args: '[--json] [--no-exit] [--strict-visual]', desc: 'Validate release-required customer UI action QA manifest and fresh receipt' },
         'menu_scan' => { args: '[--json] [--owners bundle1,bundle2]', desc: 'Menu bar diagnostics (detected/normalized/excluded)' },
@@ -205,7 +208,8 @@ class SaneMaster
       commands: {
         'status' => { args: '', desc: 'Run the live cross-reference status report' },
         'check_inbox' => { args: '[check|review <id>|read <id>|reply ...]', desc: 'Forward to the canonical support inbox workflow' },
-        'sync_mini' => { args: '[mini] [--quiet] [--no-restart]', desc: 'Sync the Codex control-plane profile to the Mini' },
+        'sync_mini' => { args: '[mini] [--quiet] [--no-restart]', desc: 'Sync the Codex control-plane profile to the Mini (see also: sync_grok)' },
+        'sync_grok' => { args: '[mini] [--quiet]', desc: 'Sync the Grok control-plane profile (grok-bin, config, .agents/skills) to the Mini' },
         'setapp_upload' => { args: '--zip ZIP --release-notes TEXT [--portal-fallback --app-id ID --version-id ID]', desc: 'Upload or replace a Setapp review build using the standard Setapp lane' }
       }
     },
@@ -219,6 +223,7 @@ class SaneMaster
         'msync' => { args: '(pipe JSON)', desc: 'Sync MCP memory to local cache' },
         'mcompact' => { args: '[--dry-run] [--aggressive]', desc: 'Compact memory (trim verbose, dedupe)' },
         'mcleanup' => { args: '(pipe JSON)', desc: 'Analyze MCP memory, generate cleanup commands' },
+        'github_post_approval' => { args: '--user-approval "QUOTE"', desc: 'Record explicit user approval before public GitHub posting' },
         'session_end' => { args: '[--skip-prompts]', desc: 'End session with insight extraction' },
         'reset_breaker' => { args: '', desc: 'Reset circuit breaker (unblock tools)' },
         'breaker_status' => { args: '', desc: 'Show circuit breaker status' },
@@ -235,6 +240,7 @@ class SaneMaster
         'sales' => { args: '[--daily|--month|--products|--fees|--find-customer-orders --email E --name N --product P|--license-status KEY|--disable-license-key KEY|--refund-order ID|--refund-order-number N|--refund-duplicate-license-key KEY --keep-license-key KEY --approval-note PATH|--include-refunded|--json]', desc: 'LemonSqueezy sales report and guarded order refunds (default: daily breakdown)' },
         'downloads' => { args: '[--daily|--days N|--app NAME|--json]', desc: 'Download analytics from dist Worker (default: daily breakdown)' },
         'events' => { args: '[--days N|--app NAME|--json]', desc: 'User-type event analytics (new_free, early_adopter, activated)' },
+        'appstore_funnel' => { args: '[--days N|--json]', desc: 'App Store-channel sellable signals and StoreKit outcome telemetry gaps' },
         'leads' => { args: '--query "TEXT" [--site-limit N] [--page-limit N] [--domain example.com]', desc: 'Lead discovery with Exa + Firecrawl site dossiers' }
       }
     },
@@ -451,7 +457,7 @@ class SaneMaster
     raise
   ensure
     record_sanemaster_workflow_receipt(command, workflow_args, started_at, exit_status) if command
-    auto_dedupe_runtime_apps!(command)
+    auto_dedupe_runtime_apps!(command) if exit_status.to_i.zero?
   end
 
   private
@@ -547,6 +553,7 @@ class SaneMaster
         SANEMASTER_ALLOW_REPLACE_DEVELOPER_ID
         SANEMASTER_ALLOW_STAGE_APPLE_DEVELOPMENT_TO_SYSTEM
         SANEMASTER_ALLOW_TCC_IDENTITY_DRIFT
+        SANEAPPS_FORCE_LICENSE_CHECK
         SANEBAR_BUILD_CONFIG
         SANEMASTER_CANONICAL_APP_PATH
         SANEPROCESS_APPROVE_FAST_RELEASE
@@ -557,6 +564,16 @@ class SaneMaster
         SANEBAR_APPROVE_UNCONFIRMED_REGRESSION_CLOSE
         SANEBAR_RELEASE_SMOKE_SCREENSHOTS
         PEEKABOO_BIN
+        AUTOMATION_BUILD_COMMENTARY_REEL
+        AUTOMATION_EXPORT_PATH
+        AUTOMATION_QUIT_AFTER_EXPORT
+        AUTOMATION_REFINE_CAPTIONS
+        AUTOMATION_TRANSCRIPT_PATH
+        OPEN_PROJECT_PATH
+        PROJECT_DIR
+        TEST_ASSET_NAME
+        TEST_PROJECT_PATH
+        VERIFY_PIP
       ]
       routed_release_env = release_routed ? routed_release_env_context(Dir.pwd) : {}
       forwarded_env = forwarded_env_keys.map do |key|
@@ -1004,6 +1021,16 @@ PY
     run_external_command('bash', script, *forwarded_args)
   end
 
+  def run_sync_grok(args = [])
+    script = File.join(saneprocess_repo_root, 'scripts', 'automation', 'sync-grok-mini.sh')
+    forwarded_args = if args.empty? || args.first.start_with?('-')
+                       ['mini', *args]
+                     else
+                       args
+                     end
+    run_external_command('bash', script, *forwarded_args)
+  end
+
   def sync_release_support_repos_to_mini!(release_routed: false, command: nil)
     webhook_repo = sane_email_automation_repo_root
     return unless Dir.exist?(webhook_repo)
@@ -1419,6 +1446,8 @@ PY
       '--include', 'validation/qa_status.json',
       '--include', 'customer-ui/',
       '--include', 'customer-ui/***',
+      '--include', 'visual_smoke/',
+      '--include', 'visual_smoke/***',
       '--exclude', '*'
     ]
   end
@@ -1434,7 +1463,7 @@ PY
       find "$out" -mindepth 1 -maxdepth 1 -print | while IFS= read -r path; do
         base=${path##*/}
         case "$base" in
-          qa_status.json|release_preflight_status.json|customer_ui_action_receipt.json|validation|customer-ui) continue ;;
+          qa_status.json|release_preflight_status.json|customer_ui_action_receipt.json|validation|customer-ui|visual_smoke) continue ;;
         esac
         /usr/bin/trash "$path" 2>/dev/null || trash "$path" 2>/dev/null || true
       done
@@ -1525,6 +1554,9 @@ PY
     when 'visual_smoke', 'visual-smoke'
       success = visual_smoke(args)
       exit(success ? 0 : 1)
+    when 'resource_soak', 'resource-soak'
+      success = resource_soak(args)
+      exit(success ? 0 : 1)
     when 'crash_report', 'crashes'
       analyze_crashes(args)
     when 'menu_scan'
@@ -1561,6 +1593,8 @@ PY
       run_check_inbox(args)
     when 'sync_mini', 'sync-mini'
       run_sync_mini(args)
+    when 'sync_grok', 'sync-grok'
+      run_sync_grok(args)
     when 'setapp_upload', 'setapp-upload'
       system('ruby', File.join(__dir__, 'setapp_upload.rb'), *args)
       exit($CHILD_STATUS.exitstatus || 1) unless $CHILD_STATUS&.success?
@@ -1629,6 +1663,8 @@ PY
       downloads(args)
     when 'events'
       events(args)
+    when 'appstore_funnel', 'appstore-funnel', 'asf'
+      appstore_funnel(args)
     when 'leads', 'prospects'
       leads(args)
 
@@ -1728,6 +1764,8 @@ PY
       memory_compact(args)
     when 'memory_cleanup', 'mcleanup'
       memory_cleanup(args)
+    when 'github_post_approval', 'github-post-approval', 'gh_post_approval', 'gh-post-approval'
+      github_post_approval(args)
     when 'session_end', 'se'
       session_end(args)
     when 'reset_breaker', 'rb'
@@ -1801,6 +1839,33 @@ PY
       puts "   #{status[:message]}"
     end
     puts ''
+  end
+
+  def github_post_approval(args)
+    quote = nil
+    i = 0
+    while i < args.length
+      case args[i]
+      when '--user-approval', '--approval', '--quote'
+        quote = args[i + 1]
+        i += 1
+      else
+        quote ||= args[i]
+      end
+      i += 1
+    end
+
+    quote = quote.to_s.strip
+    abort '❌ Missing explicit user approval quote. Use --user-approval "post it".' if quote.empty?
+
+    path = '/tmp/.gh_post_approved.json'
+    payload = {
+      'created_at' => Time.now.to_i,
+      'user_approval' => quote
+    }
+    File.write(path, JSON.pretty_generate(payload))
+    File.chmod(0o600, path)
+    puts '✅ GitHub public-post approval recorded for 5 minutes.'
   end
 
   def show_breaker_errors
@@ -2130,6 +2195,17 @@ PY
         'sync_mini mini --quiet --no-restart'
       ]
     },
+    'sync_grok' => {
+      usage: 'sync_grok [mini] [--quiet]',
+      description: 'Sync the Grok control-plane profile (grok-bin helpers, ~/.grok/config.toml when present, and .agents/skills) to the Mini without hunting for the automation script path.',
+      flags: {
+        '--quiet' => 'Reduce sync logging'
+      },
+      examples: [
+        'sync_grok',
+        'sync_grok mini --quiet'
+      ]
+    },
     'setapp_upload' => {
       usage: 'setapp_upload --zip ZIP --release-notes TEXT [--portal-fallback --app-id ID --version-id ID]',
       description: 'Upload a Setapp build. Uses the official CI endpoint when SETAPP_AUTOMATION_TOKEN is present; use --portal-fallback only for a logged-in portal replacement when the in-review Reupload button is inert.',
@@ -2315,6 +2391,22 @@ PY
         'visual_smoke --dry-run',
         'visual_smoke --app SaneBar --require-peekaboo',
         'visual_smoke --app SaneClick --no-menu --json'
+      ]
+    },
+    'resource_soak' => {
+      usage: 'resource_soak [--duration seconds] [--interval seconds] [--app-path PATH] [--json]',
+      description: 'Sample a release-candidate app on the Mini for CPU, RSS, and physical-footprint growth, then write the customer UI contract artifact.',
+      flags: {
+        '--duration seconds' => 'Soak duration; default and release minimum is 1200 seconds',
+        '--interval seconds' => 'Sampling interval; default 15 seconds',
+        '--app-path PATH' => 'App bundle to sample (default: /Applications/<project>.app)',
+        '--allow-short' => 'Allow a sub-20-minute run for command validation only',
+        '--json' => 'Print machine-readable result JSON'
+      },
+      examples: [
+        'resource_soak',
+        'resource_soak --duration 1200 --interval 15',
+        'resource_soak --duration 10 --allow-short --json'
       ]
     },
     'customer_ui_sweep' => {
@@ -2520,10 +2612,11 @@ PY
     aliases = {
       'tm' => 'test_mode', 'crashes' => 'crash_report', 'versions' => 'version_check',
       'deprecations' => 'check_deprecations', 'pdf' => 'export',
-      'check-inbox' => 'check_inbox', 'inbox' => 'check_inbox', 'sync-mini' => 'sync_mini',
+      'check-inbox' => 'check_inbox', 'inbox' => 'check_inbox', 'sync-mini' => 'sync_mini', 'sync-grok' => 'sync_grok',
       'runtime_snapshot' => 'runtime_evidence', 'runtime-evidence' => 'runtime_evidence',
       'lldb_snapshot' => 'runtime_evidence',
       'visual-smoke' => 'visual_smoke',
+      'resource-soak' => 'resource_soak',
       'customer-ui-sweep' => 'customer_ui_sweep'
     }
     command = aliases[command] if aliases.key?(command)

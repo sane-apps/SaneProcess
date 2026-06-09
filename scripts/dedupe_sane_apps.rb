@@ -132,6 +132,7 @@ class DedupeSaneApps
 
   def choose_promotion_source(paths, canonical)
     candidates = paths.reject { |path| same_path?(path, canonical) }
+    candidates = candidates.reject { |path| unsafe_promotion_source?(path) }
     return nil if candidates.empty?
 
     ranked = candidates.sort_by do |path|
@@ -151,7 +152,7 @@ class DedupeSaneApps
 
   def path_priority(path)
     return 0 if path.start_with?('/Applications/')
-    return 1 if path.start_with?(TRANSIENT_STAGE_ROOT)
+    return 8 if path.start_with?(TRANSIENT_STAGE_ROOT)
     return 2 if path.start_with?(File.expand_path('~/Applications/'))
     return 3 if path.include?('/build/Export/')
     return 4 if path.include?('/build/') && path.include?('.xcarchive/')
@@ -160,6 +161,15 @@ class DedupeSaneApps
     return 7 if path.include?('/DerivedData/')
 
     8
+  end
+
+  def unsafe_promotion_source?(path)
+    ad_hoc_signed?(path)
+  end
+
+  def ad_hoc_signed?(app_path)
+    output = `codesign -dv --verbose=4 #{Shellwords.escape(app_path)} 2>&1`
+    output.include?('Signature=adhoc')
   end
 
   def artifact_mtime(app_bundle_path)

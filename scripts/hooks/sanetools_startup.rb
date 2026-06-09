@@ -20,13 +20,16 @@ module SaneToolsStartup
     AskUserQuestion ToolSearch ListMcpResourcesTool ReadMcpResourceTool
   ].freeze
 
-  # MCP tools are read-only during startup — allow all MCP reads
+  # MCP tools are allowed during startup only when read-only. Mutations can
+  # affect GitHub, memory, or external state and must wait until startup context
+  # is loaded.
   MCP_READ_PATTERN = /^mcp__/.freeze
+  MCP_MUTATION_PATTERN = /^mcp__.*__(?:add|create|delete|fork|merge|push|update|write)_/i.freeze
 
   # Bash commands that are part of startup itself
   STARTUP_BASH_PATTERNS = [
     /validation_report\.rb/,
-    /SaneMaster\.rb\s+clean_system/,
+    /SaneMaster\.rb\s+machine_cleanup\b/,
     /pgrep|pkill|ps\s+/,                # Orphan cleanup
     /kill\s+/,                           # Orphan cleanup
     # Read-only commands always safe
@@ -48,7 +51,9 @@ module SaneToolsStartup
 
       # Always allow startup-safe tools
       return nil if STARTUP_ALLOWED_TOOLS.include?(tool_name)
-      return nil if tool_name.match?(MCP_READ_PATTERN)
+      return nil if tool_name.match?(MCP_READ_PATTERN) && !tool_name.match?(MCP_MUTATION_PATTERN)
+
+      return build_block_message(gate) if tool_name.match?(MCP_MUTATION_PATTERN)
 
       # Not a gated tool? Allow it
       return nil unless GATED_TOOLS.include?(tool_name)
@@ -94,13 +99,24 @@ module SaneToolsStartup
 
     def format_step(step)
       case step
-      when :session_docs    then 'Read session docs (SESSION_HANDOFF.md, DEVELOPMENT.md)'
+      when :session_docs    then session_docs_step_label
       when :skills_registry then "Read #{skills_registry_label}"
       when :validation_report then 'Run: ruby scripts/validation_report.rb'
       when :orphan_cleanup  then 'Kill orphaned Claude processes'
-      when :system_clean    then 'Run: ./scripts/SaneMaster.rb clean_system'
+      when :system_clean    then 'Run: ./scripts/SaneMaster.rb machine_cleanup --host mini --apply'
       else step.to_s.tr('_', ' ')
       end
+    end
+
+    # List the docs that still need reading, not a hardcoded subset. The required
+    # set (SESSION_HANDOFF.md, DEVELOPMENT.md, CONTRIBUTING.md, SKILLS_REGISTRY.md,
+    # ...) is discovered at session start, so a fixed label silently hides which
+    # file is actually blocking the gate and sends the agent hunting through state.
+    def session_docs_step_label
+      sd = StateManager.get(:session_docs)
+      pending = (sd[:required] || []) - (sd[:read] || [])
+      list = pending.empty? ? 'SESSION_HANDOFF.md, DEVELOPMENT.md' : pending.join(', ')
+      "Read session docs (#{list})"
     end
 
     def skills_registry_label

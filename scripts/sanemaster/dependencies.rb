@@ -810,15 +810,50 @@ module SaneMasterModules
     end
 
     def configured_mcp_servers
-      config_path = File.join(Dir.pwd, '.mcp.json')
-      return [] unless File.exist?(config_path)
+      mcp_config_paths.each_with_object([]) do |path, servers|
+        next unless File.exist?(path)
 
-      raw = File.read(config_path)
-      json = JSON.parse(raw)
-      servers = json['mcpServers']
-      return [] unless servers.is_a?(Hash)
+        contents = File.read(path)
+        servers.concat(path.end_with?('.toml') ? mcp_servers_from_toml(contents) : mcp_servers_from_json(contents))
+      rescue StandardError
+        next
+      end.map { |name| normalize_server_name(name) }.uniq.sort
+    end
 
-      servers.keys.sort
+    def mcp_config_paths
+      [
+        File.expand_path('~/.mcp.json'),
+        File.join(Dir.pwd, '.mcp.json'),
+        File.expand_path('~/.claude/settings.json'),
+        File.expand_path('~/.config/claude/mcp-config.json'),
+        File.join(Dir.pwd, '.claude', 'settings.json'),
+        File.expand_path('~/.codex/config.toml'),
+        File.join(Dir.pwd, '.codex', 'config.toml'),
+        File.expand_path('~/.gemini/settings.json'),
+        File.join(Dir.pwd, '.gemini', 'settings.json'),
+        File.expand_path('~/.grok/config.toml'),
+        File.join(Dir.pwd, '.grok', 'config.toml')
+      ].uniq
+    end
+
+    def mcp_servers_from_json(contents)
+      json = JSON.parse(contents)
+      servers = []
+      servers.concat(json['mcpServers'].keys) if json['mcpServers'].is_a?(Hash)
+      permissions = Array(json.dig('permissions', 'allow')) + Array(json.dig('permissions', 'ask'))
+      permissions.each do |permission|
+        name = permission.to_s[/\Amcp__(.+?)__/, 1]
+        servers << name if name
+      end
+      servers
+    end
+
+    def mcp_servers_from_toml(contents)
+      contents.scan(/^\s*\[mcp_servers\.([^\]]+)\]/).flatten.reject do |name|
+        name.include?('.')
+      end.map do |name|
+        name.delete_prefix('"').delete_suffix('"').delete_prefix("'").delete_suffix("'")
+      end
     rescue StandardError
       []
     end

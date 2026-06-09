@@ -552,6 +552,7 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
 - Support, release, UI runtime, tool discovery, subagent hygiene, session lifecycle, and SOP score-cap workflows can be tested as multi-step receipts instead of more prompt prose.
 - Multi-agent delegation remains useful, but workflow complexity should be driven by eval failures and task shape, not by default escalation.
 - Skill descriptions and duplicate-name drift become tested routing surfaces rather than informal prose.
+- Client-managed Codex plugins are runtime adapter surfaces. SaneProcess records category routing in `DEVELOPMENT.md`, but release/support/security proof stays with repo-owned wrappers and eval coverage instead of an exhaustive plugin inventory.
 
 ### ADR-009: HTML is a generated review artifact, not the source of truth (2026-05-13)
 
@@ -830,15 +831,12 @@ Disabled or paused consolidations:
 
 ## 7. Test Coverage Map
 
-| Component | Self-Test | Tier Tests | Total |
-|-----------|----------|------------|-------|
-| saneprompt.rb | 176 | 62 | 238 |
-| sanetools.rb | 44 | 69 | 113 |
-| sanetrack.rb | 30 | 37 | 67 |
-| sanestop.rb | 24 | 5 | 29 |
-| config.rb | 5 | — | 5 |
-| Integration | — | 5 | 5 |
-| **Total** | **279** | **178** | **457** |
+The durable source of truth for exact test counts is `ruby scripts/SaneMaster.rb
+verify`; hook-layer slice counts change as guardrails are extracted. Current
+focused hook receipts include `saneprompt` 62, `sanetools` 38, `sanetrack` 38,
+`sanestop` 45, `session_docs` startup/state coverage, `grok_and_security_guard`,
+and the 185-test tier suite. Keep the detailed hook slice list in
+`scripts/hooks/README.md` rather than duplicating every count here.
 
 ### Running Tests
 

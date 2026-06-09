@@ -30,6 +30,7 @@ Choose the adapter you actually use:
 |-------|---------|----------|
 | Generic agent | `scripts/init.sh --client generic` | `AGENTS.md` only |
 | Codex-style | `scripts/init.sh --client codex` | `AGENTS.md` + `.agents/skills` |
+| Grok-style | `scripts/init.sh --client grok` | `AGENTS.md` + `.agents/skills` |
 | Claude Code | `scripts/init.sh --client claude` | `AGENTS.md` + `.claude/settings.json` + native hooks |
 | Full SaneApps-style setup | `scripts/init.sh --client all` | Claude hooks + `.agents/skills` |
 
@@ -41,7 +42,7 @@ Verify the install path you chose:
 # Every install mode
 test -f AGENTS.md
 
-# Codex or all
+# Codex, Grok, or all
 test -d .agents/skills
 
 # Claude or all
@@ -54,7 +55,7 @@ ruby scripts/hooks/saneprompt.rb --self-test
 |-------|--------------|
 | Agent rules | One `AGENTS.md` source of truth for compatible coding agents |
 | Native hook adapters | Prompt classification, research gates, path blocking, completion gates, circuit breaker, and session summaries where the client supports lifecycle hooks |
-| Codex path | `AGENTS.md`, `.agents/skills`, MCP, client config, and shared project scripts |
+| Codex/Grok path | `AGENTS.md`, `.agents/skills`, MCP when configured in the client, and shared project scripts |
 | `SaneMaster.rb` | One CLI for verify, release, status, tool discovery, metrics, and quality checks |
 | Shared guards | Shell/script guardrails for risky paths where a client has no native pre-tool hook |
 | Optional runner adapters | Use local checks by default, or plug in your own remote runner/build host if your team has one |
@@ -67,10 +68,13 @@ SaneProcess is intentionally layered instead of pretending every coding agent ha
 | Client | Install mode | What is enforced today |
 |--------|--------------|------------------------|
 | Claude Code | `--client claude` | Native lifecycle hooks plus `AGENTS.md`, MCP, skills, and shared scripts |
-| Codex | `--client codex` | `AGENTS.md`, `.agents/skills`, MCP, client config, approvals/sandboxing, and shared scripts/wrappers |
+| Codex | `--client codex` | `AGENTS.md`, `.agents/skills`, and shared scripts/wrappers; Codex MCP/config/approval policy stays client-managed |
+| Grok | `--client grok` | `AGENTS.md`, `.agents/skills`, client-managed MCP config, approvals/sandboxing, and shared scripts/wrappers |
 | Other agents | `--client generic` | `AGENTS.md`, repo scripts, git/pre-commit checks, MCP if supported, and whatever runtime guards the client can honor |
 
-Codex now documents hook support, but SaneProcess still treats Codex hooks as an adapter layer rather than the universal enforcement base. The portable contract remains `AGENTS.md` plus project-owned scripts.
+Codex and Grok can expose MCP servers through compatibility config that does not always match the native CLI list. Use the live client MCP view for session truth (`/mcps` or Ctrl+L in Grok) and `SaneMaster.rb tool_discovery` receipts before declaring a tool missing. SaneProcess treats client hooks as adapter layers rather than the universal enforcement base. The portable contract remains `AGENTS.md` plus project-owned scripts.
+
+Codex marketplace plugins and app connectors are optional accelerators; `AGENTS.md`, repo/global skills, and SaneMaster remain the stable SaneProcess contract.
 
 ## Core Guardrails
 
@@ -214,6 +218,8 @@ The rule is deliberate: update an existing source-of-truth doc before adding ano
 
 SaneProcess ships reusable skills that can be mirrored into `.agents/skills/` or another client-specific skill directory.
 
+These repo-shipped skills are separate from client-managed marketplace plugins such as Canva, Codex Security, OpenAI Developers, Product Design, and similar connectors.
+
 | Skill | Purpose |
 |-------|---------|
 | `critic` | Multi-perspective code review: bugs, data flow, integration, edge cases, UX, security |
@@ -227,6 +233,7 @@ scripts/
   sanemaster/     SaneMaster command modules
   automation/     Scripted automation helpers
   codex-bin/      Codex control-plane helper source
+  grok-bin/       Grok control-plane helper source (parallel, lighter footprint)
 skills/           Reusable repo skills
 templates/        Project, docs, release, and UI templates
 AGENTS.md         Shared agent instructions

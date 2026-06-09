@@ -120,6 +120,41 @@ module SaneMasterModules
       visual_screenshot
       visual_smoke
     ].freeze
+    CUSTOMER_UI_PRODUCT_QUALITY_MIN_ITEMS = 30
+    CUSTOMER_UI_PRODUCT_QUALITY_STATUSES = %w[
+      passed
+      failed
+      unknown
+      waived
+      not_applicable
+    ].freeze
+    CUSTOMER_UI_PRODUCT_QUALITY_PASS_STATUSES = %w[
+      passed
+      waived
+      not_applicable
+    ].freeze
+    CUSTOMER_UI_PRODUCT_QUALITY_CATEGORIES = %w[
+      product_fit
+      first_run
+      core_workflow
+      visual_evidence
+      marketing_parity
+      monetization
+      accessibility
+      privacy_trust
+      error_recovery
+      performance
+      app_store
+      funnel
+    ].freeze
+    CUSTOMER_UI_BLOCKING_STATUS_TEXT = [
+      'Needs Action',
+      'Needs Check',
+      'Needs Repair',
+      'Missing Items',
+      'Hidden by macOS',
+      'Detached'
+    ].freeze
     CUSTOMER_UI_SOURCE_EXTENSIONS = %w[
       .swift .rb .sh .yml .yaml .json .plist .xcconfig .entitlements .xcstrings
     ].freeze
@@ -186,6 +221,9 @@ module SaneMasterModules
 
       visual_precheck = customer_ui_visual_precheck(app_name)
       return { ok: false, app: app_name, script_path: script_path, issues: visual_precheck[:issues] } unless visual_precheck[:ok]
+
+      prepare_issues = customer_ui_prepare_target_before_sweep(app_name)
+      return { ok: false, app: app_name, script_path: script_path, issues: prepare_issues } unless prepare_issues.empty?
 
       output, status = customer_ui_run_command('ruby', script_path)
       return { ok: false, app: app_name, script_path: script_path, issues: ["Customer UI workflow runner failed: #{output}"] } unless status.success?
@@ -324,11 +362,26 @@ module SaneMasterModules
       Open3.capture2e(*command)
     end
 
+    def customer_ui_prepare_target_before_sweep(app_name)
+      return [] unless customer_ui_visual_precheck_required?
+      return [] if app_name == 'SaneBar'
+
+      output, status = customer_ui_run_command('./scripts/SaneMaster.rb', 'launch', '--release')
+      status.success? ? [] : ["Mini target launch failed before customer UI sweep: #{output}"]
+    end
+
     def customer_ui_cleanup_before_sweep(app_name)
       guard = File.expand_path('~/SaneApps/infra/SaneProcess/scripts/mini/mini-visual-workspace-guard.sh')
       return [] unless File.file?(guard)
 
-      output, status = customer_ui_run_command(guard, '--cleanup', '--app', app_name, '--json')
+      output, status = customer_ui_run_command(
+        guard,
+        '--cleanup',
+        '--app',
+        app_name,
+        '--allow-windowless-target',
+        '--json'
+      )
       status.success? ? [] : ["Mini visual workspace cleanup failed before customer UI sweep: #{output}"]
     end
 
@@ -459,6 +512,7 @@ module SaneMasterModules
       duplicate_ids = id_counts.select { |_id, count| count > 1 }.keys
       issues << "Duplicate customer UI action ids: #{duplicate_ids.join(', ')}" unless duplicate_ids.empty?
       issues.concat(customer_ui_runtime_state_matrix_issues(manifest, required_actions))
+      issues.concat(customer_ui_product_quality_manifest_issues(manifest))
       issues << "#{manifest_path}: version must be 1" unless manifest['version'].to_i == 1
       issues
     end
@@ -574,6 +628,7 @@ module SaneMasterModules
       issues.concat(customer_ui_action_result_issues(required_actions, receipt, strict_visual: strict_visual))
       issues.concat(customer_ui_runtime_state_receipt_issues(receipt, manifest: manifest))
       issues.concat(customer_ui_screenshot_reuse_issues(required_actions, receipt))
+      issues.concat(customer_ui_product_quality_receipt_issues(manifest, receipt))
 
       begin
         generated_at = Time.parse(receipt['generated_at'].to_s)
@@ -642,6 +697,7 @@ module SaneMasterModules
         if strict_visual && evidence_types.none? { |type| CUSTOMER_UI_SCREENSHOT_EVIDENCE_TYPES.include?(type) }
           issues << "#{id}: App Store strict visual gate requires screenshot/visual evidence for every release-required action"
         end
+        issues.concat(customer_ui_blocking_status_text_issues(id, result))
         issues.concat(customer_ui_full_runtime_completion_issues(id, action, result))
         issues.concat(customer_ui_functional_state_receipt_issues(id, action, result))
         issues.concat(customer_ui_workflow_receipt_issues(id, action, result))
@@ -653,13 +709,154 @@ module SaneMasterModules
       issues
     end
 
+    def customer_ui_product_quality_required?(manifest)
+      manifest['require_product_quality_checklist'] == true ||
+        Array(manifest['product_quality_checklist']).any?
+    end
+
+    def customer_ui_product_quality_manifest_issues(manifest)
+      return [] unless customer_ui_product_quality_required?(manifest)
+
+      issues = []
+      items = Array(manifest['product_quality_checklist'])
+      if items.length < CUSTOMER_UI_PRODUCT_QUALITY_MIN_ITEMS
+        issues << "product_quality_checklist must include at least #{CUSTOMER_UI_PRODUCT_QUALITY_MIN_ITEMS} professional review questions"
+      end
+
+      ids = []
+      items.each_with_index do |item, index|
+        unless item.is_a?(Hash)
+          issues << "product_quality_checklist item ##{index + 1} must be an object"
+          next
+        end
+
+        id = item['id'].to_s.strip
+        ids << id unless id.empty?
+        prefix = id.empty? ? "product_quality_checklist item ##{index + 1}" : "product_quality_checklist #{id}"
+        issues << "#{prefix}: missing id" if id.empty?
+        issues << "#{prefix}: missing question" if item['question'].to_s.strip.empty?
+
+        category = item['category'].to_s.strip
+        if category.empty?
+          issues << "#{prefix}: missing category"
+        elsif !CUSTOMER_UI_PRODUCT_QUALITY_CATEGORIES.include?(category)
+          issues << "#{prefix}: invalid category #{category.inspect}; expected one of #{CUSTOMER_UI_PRODUCT_QUALITY_CATEGORIES.join(', ')}"
+        end
+
+        surfaces = Array(item['surfaces']).map(&:to_s).map(&:strip).reject(&:empty?)
+        issues << "#{prefix}: missing surfaces" if surfaces.empty?
+
+        required_evidence = Array(item['required_evidence_types']).map(&:to_s).map(&:strip).reject(&:empty?)
+        issues << "#{prefix}: missing required_evidence_types" if required_evidence.empty?
+      end
+
+      id_counts = Hash.new(0)
+      ids.each { |id| id_counts[id] += 1 }
+      duplicates = id_counts.select { |_id, count| count > 1 }.keys
+      issues << "Duplicate product_quality_checklist ids: #{duplicates.join(', ')}" unless duplicates.empty?
+      issues
+    end
+
+    def customer_ui_product_quality_receipt_issues(manifest, receipt)
+      return [] unless customer_ui_product_quality_required?(manifest)
+
+      manifest_items = Array(manifest['product_quality_checklist']).select { |item| item.is_a?(Hash) }
+      manifest_ids = manifest_items.map { |item| item['id'].to_s.strip }.reject(&:empty?)
+      review = receipt['product_quality_review']
+      return ['Receipt is missing product_quality_review; professional UI/UX, marketing, and proof-quality checklist must be answered'] unless review.is_a?(Hash)
+
+      issues = []
+      status = review['status'].to_s.strip
+      issues << "product_quality_review status is #{status.inspect}, expected \"passed\"" unless status == 'passed'
+
+      reviewer = review['reviewer'].to_s.strip
+      issues << 'product_quality_review missing reviewer' if reviewer.empty?
+
+      items = Array(review['items'])
+      issues << 'product_quality_review has no item results' if items.empty?
+      items_by_id = {}
+      items.each_with_index do |item, index|
+        unless item.is_a?(Hash)
+          issues << "product_quality_review item ##{index + 1} must be an object"
+          next
+        end
+
+        id = item['id'].to_s.strip
+        prefix = id.empty? ? "product_quality_review item ##{index + 1}" : "product_quality_review #{id}"
+        issues << "#{prefix}: missing id" if id.empty?
+        items_by_id[id] = item unless id.empty?
+
+        item_status = item['status'].to_s.strip
+        if item_status.empty?
+          issues << "#{prefix}: missing status"
+        elsif !CUSTOMER_UI_PRODUCT_QUALITY_STATUSES.include?(item_status)
+          issues << "#{prefix}: invalid status #{item_status.inspect}"
+        elsif !CUSTOMER_UI_PRODUCT_QUALITY_PASS_STATUSES.include?(item_status)
+          issues << "#{prefix}: status #{item_status.inspect} blocks release"
+        end
+
+        evidence = Array(item['evidence']).map(&:to_s).map(&:strip).reject(&:empty?)
+        issues << "#{prefix}: missing evidence" if evidence.empty?
+
+        if %w[waived not_applicable].include?(item_status) && item['reason'].to_s.strip.empty?
+          issues << "#{prefix}: #{item_status} status requires reason"
+        end
+
+        Array(item['evidence_paths']).each_with_index do |path, path_index|
+          issues.concat(customer_ui_generic_artifact_issues(
+            path.to_s,
+            label: "#{prefix}: evidence_path ##{path_index + 1}",
+            image_required: false
+          ))
+        end
+      end
+
+      missing_ids = manifest_ids - items_by_id.keys
+      issues << "product_quality_review missing checklist item(s): #{missing_ids.join(', ')}" unless missing_ids.empty?
+      extra_ids = items_by_id.keys - manifest_ids
+      issues << "product_quality_review has item(s) not in manifest: #{extra_ids.join(', ')}" unless extra_ids.empty?
+      issues
+    end
+
+    def customer_ui_blocking_status_text_issues(id, result)
+      text = [
+        result['functional_state'],
+        result['inputs'],
+        result['output_assertions'],
+        result['workflow'],
+        result['evidence']
+      ].map { |value| value.is_a?(String) ? value : JSON.generate(value) }.join("\n")
+      blocking = CUSTOMER_UI_BLOCKING_STATUS_TEXT.select { |label| text.include?(label) }
+      return [] if blocking.empty?
+
+      ["#{id}: customer UI evidence contains blocking status text: #{blocking.uniq.join(', ')}"]
+    end
+
     def customer_ui_runtime_state_receipt_issues(receipt, manifest: {})
       rows = receipt['runtime_state_results']
-      requires_rows = manifest.is_a?(Hash) && !manifest['runtime_state_matrix'].nil?
+      matrix_rows = customer_ui_runtime_matrix_rows(manifest)
+      requires_rows = !matrix_rows.empty?
       return [] if rows.nil? && !requires_rows
       return ['Receipt is missing runtime_state_results; lifecycle matrices cannot pass from action evidence alone'] unless rows.is_a?(Array)
 
-      rows.each_with_object([]) do |row, issues|
+      issues = []
+      rows_by_id = {}
+      rows.each do |row|
+        rows_by_id[row['id'].to_s.strip] = row if row.is_a?(Hash)
+      end
+      matrix_ids = matrix_rows.map { |row| row['id'].to_s.strip }.reject(&:empty?)
+      missing_ids = matrix_ids - rows_by_id.keys
+      issues << "Receipt runtime_state_results missing manifest state(s): #{missing_ids.join(', ')}" unless missing_ids.empty?
+
+      matrix_rows.each do |matrix_row|
+        id = matrix_row['id'].to_s.strip
+        row = rows_by_id[id]
+        next unless row.is_a?(Hash)
+
+        issues.concat(customer_ui_runtime_state_row_receipt_issues(id, matrix_row, row))
+      end
+
+      rows.each do |row|
         unless row.is_a?(Hash)
           issues << 'runtime_state_results row must be an object'
           next
@@ -671,6 +868,82 @@ module SaneMasterModules
         issues << "#{label}: status is #{status.inspect}, expected \"passed\"" unless status == 'passed'
         issues << "#{label}: missing evidence_paths" if Array(row['evidence_paths']).empty?
       end
+      issues
+    end
+
+    def customer_ui_runtime_matrix_rows(manifest)
+      return [] unless manifest.is_a?(Hash)
+
+      matrix = manifest['runtime_state_matrix']
+      case matrix
+      when Hash
+        matrix.map do |id, row|
+          row = {} unless row.is_a?(Hash)
+          row.merge('id' => row['id'] || id.to_s)
+        end
+      when Array
+        matrix.select { |row| row.is_a?(Hash) }
+      else
+        []
+      end
+    end
+
+    def customer_ui_runtime_state_row_receipt_issues(id, matrix_row, receipt_row)
+      label = id.empty? ? 'runtime_state_results row' : "runtime_state_results #{id}"
+      issues = []
+
+      required_types = Array(matrix_row['required_evidence_types']).map(&:to_s).map(&:strip).reject(&:empty?)
+      evidence_types = Array(receipt_row['evidence_types']).map(&:to_s).map(&:strip).reject(&:empty?)
+      missing_types = required_types - evidence_types
+      unless missing_types.empty?
+        issues << "#{label}: missing required evidence type(s): #{missing_types.join(', ')}"
+      end
+
+      required_scenarios = Array(matrix_row['required_scenarios']).map(&:to_s).map(&:strip).reject(&:empty?)
+      return issues if required_scenarios.empty?
+
+      completed_scenarios = customer_ui_runtime_completed_scenarios(receipt_row)
+      missing_scenarios = required_scenarios - completed_scenarios
+      unless missing_scenarios.empty?
+        issues << "#{label}: missing required scenario proof(s): #{missing_scenarios.join(', ')}"
+      end
+      issues
+    end
+
+    def customer_ui_runtime_completed_scenarios(receipt_row)
+      direct = Array(receipt_row['completed_scenarios']).map(&:to_s)
+      scenarios = Array(receipt_row['scenarios']).map do |scenario|
+        if scenario.is_a?(Hash)
+          status = scenario['status'].to_s.strip
+          next nil unless status.empty? || status == 'passed'
+
+          scenario['id'] || scenario['name'] || scenario['scenario']
+        else
+          scenario
+        end
+      end
+      scenario_results = receipt_row['scenario_results']
+      result_names =
+        case scenario_results
+        when Hash
+          scenario_results.each_with_object([]) do |(name, result), names|
+            status = result.is_a?(Hash) ? result['status'].to_s.strip : result.to_s.strip
+            names << name if status == 'passed' || status == 'true'
+          end
+        when Array
+          scenario_results.each_with_object([]) do |result, names|
+            next names unless result.is_a?(Hash)
+
+            status = result['status'].to_s.strip
+            next names unless status == 'passed' || status.empty?
+
+            names << (result['id'] || result['name'] || result['scenario'])
+          end
+        else
+          []
+        end
+
+      (direct + scenarios + result_names).map(&:to_s).map(&:strip).reject(&:empty?).uniq
     end
 
     def customer_ui_full_runtime_completion_issues(id, action, result)

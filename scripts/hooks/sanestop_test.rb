@@ -14,6 +14,7 @@ require 'json'
 require 'time'
 require 'digest'
 require 'open3'
+require 'fileutils'
 require_relative 'core/state_manager'
 
 module SaneStopTest
@@ -478,6 +479,143 @@ module SaneStopTest
       warn "  FAIL: docs_audit subagent swarm should allow stop, got #{exit_code}"
     end
 
+    # Regression: a valid runner receipt satisfies a runner-backed skill (status)
+    # even when the Skill tool was never invoked — the startup gate routinely blocks
+    # the Skill call, so `invoked` stays false. Without the fix this emits a false
+    # "status ... was required but NOT invoked" warning.
+    require 'stringio'
+    StateManager.reset(:verification)
+    StateManager.reset(:edits)
+    StateManager.reset(:handoff_tracking)
+    StateManager.reset(:visual_verification)
+    StateManager.reset(:skill)
+    StateManager.update(:skill) do |s|
+      s[:required] = 'status'
+      s[:invoked] = false
+      s[:runner_used] = true
+      s[:runner_proved] = true
+      s[:subagents_spawned] = 0
+      s[:runner_commands] = ['ruby scripts/SaneMaster.rb status']
+      s
+    end
+    captured = StringIO.new
+    real_stderr = $stderr
+    $stderr = captured
+    runner_exit = process_stop_proc.call(false)
+    $stderr = real_stderr
+    if runner_exit == 0 && !captured.string.include?('NOT invoked')
+      passed += 1
+      warn '  PASS: runner receipt satisfies status skill (no false not-invoked warning)'
+    else
+      failed += 1
+      warn "  FAIL: runner-backed status warned not-invoked (exit=#{runner_exit}, warned=#{captured.string.include?('NOT invoked')})"
+    end
+
+    previous_audit_output_dir = ENV['SANE_AUDIT_OUTPUT_DIR']
+    audit_root = Dir.mktmpdir('sane_audit_outputs_test')
+    audit_output_dir = File.join(audit_root, 'sane_audit_outputs')
+    ENV['SANE_AUDIT_OUTPUT_DIR'] = audit_output_dir
+    FileUtils.mkdir_p(audit_output_dir)
+    StateManager.update(:skill) do |s|
+      s[:required] = 'sane_audit'
+      s[:invoked] = true
+      s[:subagents_spawned] = 9
+      s[:runner_used] = false
+      s[:runner_commands] = []
+      s
+    end
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: sane_audit missing summary blocks stop'
+    else
+      failed += 1
+      warn "  FAIL: sane_audit missing summary should block, got #{exit_code}"
+    end
+
+    %w[
+      q0-config.md
+      q6-release.md
+      q7-website.md
+      q8-signing.md
+      q9-support.md
+      q10-docs.md
+      q11-tooling.md
+      q12-runtime-resources.md
+      q13-historical-regression.md
+    ].each do |file|
+      File.write(
+        "#{audit_output_dir}/#{file}",
+        <<~MD
+          # #{file}
+
+          ## Score
+          10/10
+
+          ## Critical Issues
+          None.
+
+          ## Warnings
+          None.
+
+          ## Passed Checks
+          - Check passed.
+
+          ## Checked Evidence
+          - Evidence checked.
+
+          ## Summary
+          This fixture is intentionally complete enough to satisfy the sane_audit
+          structural gate. It proves the stop hook rejects placeholders while
+          allowing a real report shape with the required audit sections.
+
+          ## Residual Risk
+          None for this test fixture.
+        MD
+      )
+    end
+    File.write(
+      "#{audit_output_dir}/summary.md",
+      <<~MD
+        # Summary
+
+        ## Per-Perspective Scores
+        - q0-config.md: 10/10
+        - q6-release.md: 10/10
+        - q7-website.md: 10/10
+        - q8-signing.md: 10/10
+        - q9-support.md: 10/10
+        - q10-docs.md: 10/10
+        - q11-tooling.md: 10/10
+        - q12-runtime-resources.md: 10/10
+        - q13-historical-regression.md: 10/10
+
+        ## Root-Cause Matrix
+        | Issues | Root Cause | Current Coverage | Would Catch Today? |
+        |--------|------------|------------------|--------------------|
+        | #1 | Example | Named test | Yes |
+
+        ## Checked Evidence
+        - all sources checked
+      MD
+    )
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: sane_audit summary proof allows stop'
+    else
+      failed += 1
+      warn "  FAIL: sane_audit summary proof should allow stop, got #{exit_code}"
+    end
+    ENV['SANE_AUDIT_OUTPUT_DIR'] = previous_audit_output_dir
+    FileUtils.rm_rf(audit_root)
+
     StateManager.reset(:skill)
     StateManager.update(:skill) do |s|
       s[:required] = 'evolve'
@@ -553,6 +691,11 @@ module SaneStopTest
         s[:invoked] = true
         s[:runner_used] = true
         s[:runner_commands] = [runner_command]
+        if workflow == 'ship'
+          clearance_path = File.join(Dir.mktmpdir('ship-clearance-proof'), 'TestApp.json')
+          File.write(clearance_path, '{}')
+          s[:runner_proof] = { clearance_path: clearance_path }
+        end
         s
       end
       original_stderr = $stderr.clone

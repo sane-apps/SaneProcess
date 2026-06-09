@@ -79,6 +79,17 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
     end
   end
 
+  test_category('Gatekeeper launch guard') do
+    test('sane_test blocks ad-hoc launches that can show unidentified-developer dialogs') do
+      source = File.read(SANE_TEST_PATH)
+
+      assert_includes(source, 'Refusing to launch ad-hoc signed')
+      assert_includes(source, 'SANETEST_ALLOW_ADHOC_GATEKEEPER_DIALOG')
+      assert_includes(source, "'ditto', '--noextattr', '--noacl'")
+      true
+    end
+  end
+
   test_category('Mini sync preserves tracked Xcode metadata') do
     test('sane_test keeps tracked project workspace metadata even when app .gitignore ignores it') do
       source = File.read(SANE_TEST_PATH)

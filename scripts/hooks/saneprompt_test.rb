@@ -207,6 +207,17 @@ module SanePromptTest
         warn "  FAIL: docs_audit trigger config incorrect: #{audit_skill.inspect}"
       end
 
+      sane_audit_skill = detect_skill_trigger_proc.call('audit past GitHub issues and root cause recurring issues')
+      if sane_audit_skill && sane_audit_skill[:name] == :sane_audit &&
+         sane_audit_skill[:requires_subagents] == true &&
+         sane_audit_skill[:min_subagents] == 9
+        passed += 1
+        warn '  PASS: sane_audit trigger requires GPT subagent swarm'
+      else
+        failed += 1
+        warn "  FAIL: sane_audit trigger config incorrect: #{sane_audit_skill.inspect}"
+      end
+
       evolve_skill = detect_skill_trigger_proc.call('you should not be hunting around for tools, they should be well documented and part of our SOP and enforced')
       if evolve_skill && evolve_skill[:name] == :evolve
         passed += 1

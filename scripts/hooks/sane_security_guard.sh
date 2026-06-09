@@ -28,6 +28,48 @@ is_secret_read() {
   return 1
 }
 
+is_claude_auth() {
+  # Never throttle Claude Code's own Keychain auth reads. Blocking these makes
+  # Claude Code read its OAuth token as "missing" and triggers a login loop.
+  [[ "${1:-}" == "find-generic-password" ]] || return 1
+  caller_is_claude_code || return 1
+  security_lookup_targets_claude_auth "$@"
+}
+
+caller_is_claude_code() {
+  local pid="${PPID:-}"
+  local depth=0
+  local args=""
+  while [[ -n "$pid" && "$pid" != "0" && "$depth" -lt 8 ]]; do
+    args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+    case "$args" in
+      *"Claude Code"*|*claude-code*|*"/Claude.app/"*|*"Claude.app/Contents"*) return 0 ;;
+    esac
+    pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    depth=$((depth + 1))
+  done
+  return 1
+}
+
+security_lookup_targets_claude_auth() {
+  local previous=""
+  local service=""
+  local server=""
+  for arg in "$@"; do
+    case "$previous" in
+      -s)
+        service="$arg"
+        ;;
+      -r)
+        server="$arg"
+        ;;
+    esac
+    previous="$arg"
+  done
+
+  [[ "$service" == "Claude Code" || "$server" == "claude.ai" ]]
+}
+
 ensure_guard_dir() {
   mkdir -p "$GUARD_DIR"
 }
@@ -91,7 +133,7 @@ recent_lookup_count() {
 
 guarded=0
 
-if is_ai_session && is_secret_read "${1:-}"; then
+if is_ai_session && is_secret_read "${1:-}" && ! is_claude_auth "$@"; then
   guarded=1
   ensure_guard_dir
   acquire_lock

@@ -3,7 +3,7 @@
 Use plain English. Keep it short and direct.
 
 This file is the durable, client-neutral instruction surface for the repo.
-- Codex reads `AGENTS.md` first.
+- All agents (Claude, Codex, Grok, etc.) read `AGENTS.md` first.
 - Claude can use this alongside `CLAUDE.md` and native hooks.
 - Other coding agents should follow this file plus the repo scripts and docs.
 
@@ -45,6 +45,5 @@ Keep these rules concrete and replaceable so the repo is not tied to one AI clie
 ## Client Notes
 
 - Claude: native lifecycle hooks live in `.claude/settings.json`.
-- Codex: canonical shared skills live in `~/.codex/skills`; `.agents/skills/`
-  is a compatibility mirror when a repo needs checked-in shared skills.
-- Everyone: shared safety and SOP checks should be enforced through repo scripts, MCP, git hooks, and shell guards.
+- Codex / Grok / others: canonical shared skills live under `.agents/skills/` (installed via `SaneProcess/scripts/init.sh --client codex|grok`); each client also has its own native skill/config surface.
+- Everyone: shared safety and SOP checks should be enforced through repo scripts, MCP, git hooks, and shell guards rather than client-specific magic. AGENTS.md is the portable contract.

@@ -141,6 +141,20 @@ module SanePromptCommands
       warn '  This is NOT a bypass - you must actually do the research.'
       warn ''
       true
+    elsif cmd.start_with?('reset reqs') || cmd == 'rq-'
+      StateManager.update(:requirements) do |r|
+        r[:requested] = []
+        r[:satisfied] = []
+        r
+      end
+      log_reset('requirements', 'User reset prompt requirements')
+      warn ''
+      warn 'REQUIREMENTS RESET'
+      warn '  Cleared requested/satisfied prompt requirements.'
+      warn '  Use when a stale requirement (e.g. "commit") from an earlier prompt'
+      warn '  is blocking edits. This is NOT a bypass - other hooks still enforce.'
+      warn ''
+      true
     elsif cmd == 'pa+' || cmd == 'plan approved'
       StateManager.update(:planning) do |p|
         p[:plan_approved] = true
@@ -169,6 +183,7 @@ module SanePromptCommands
       warn '  rb-  / reset breaker   → Clear circuit breaker (after 3+ failures)'
       warn '  reset blocks / unblock → Clear block counters (after repeated blocks)'
       warn '  rr- / reset research   → Clear research (forces redo all 4 categories)'
+      warn '  rq- / reset reqs       → Clear stale prompt requirements (e.g. "commit")'
       warn '  pa+ / plan approved    → Approve plan (unlock edits)'
       warn '  pa? / plan status      → Show planning state'
       warn ''

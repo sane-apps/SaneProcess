@@ -27,6 +27,10 @@ class AppStoreSubmitGuardrailHarness
     @safari_snapshot_calls = []
     @stubbed_safari_javascript = nil
     @stubbed_patch_result = nil
+    @stubbed_post_result = nil
+    @stubbed_asc_gets = {}
+    @stubbed_asc_delete_result = [204, {}]
+    @stubbed_asc_post_response = {}
     @stubbed_iap_record = nil
     @stubbed_iap_records = nil
     @stubbed_subscription_record = nil
@@ -95,6 +99,44 @@ class AppStoreSubmitGuardrailHarness
     return @stubbed_patch_result if @stubbed_patch_result
 
     raise 'missing patch stub'
+  end
+
+  def stub_post_result(code, resp)
+    @stubbed_post_result = [code, resp]
+  end
+
+  def asc_post_with_status(*_args, **_kwargs)
+    return @stubbed_post_result if @stubbed_post_result
+
+    raise 'missing post stub'
+  end
+
+  def stub_asc_get(path, response)
+    @stubbed_asc_gets[path] = response
+  end
+
+  def asc_get(path, **_kwargs)
+    @stubbed_asc_gets.fetch(path) { { 'data' => [] } }
+  end
+
+  def stub_asc_delete_result(code, response)
+    @stubbed_asc_delete_result = [code, response]
+  end
+
+  def asc_delete_with_status(*_args, **_kwargs)
+    @stubbed_asc_delete_result
+  end
+
+  def stub_asc_post_response(response)
+    @stubbed_asc_post_response = response
+  end
+
+  def asc_post(*_args, **_kwargs)
+    @stubbed_asc_post_response
+  end
+
+  def resize_screenshot(src, _target_w, _target_h)
+    src
   end
 
   def stub_iap_record(record)
@@ -659,6 +701,128 @@ exit(run_tests('App Store Submit Guardrail Tests') do
       assert_eq(ok, false)
       true
     end
+
+    test('recognizes first non-consumable must be attached to the app version') do
+      subject.stub_iap_record(
+        {
+          'id' => 'iap-1',
+          'attributes' => {
+            'state' => 'READY_TO_SUBMIT',
+            'name' => 'Example Pro',
+            'productId' => 'com.example.pro'
+          }
+        }
+      )
+      subject.stub_iap_records(
+        [
+          {
+            'id' => 'iap-1',
+            'attributes' => {
+              'state' => 'READY_TO_SUBMIT',
+              'name' => 'Example Pro',
+              'productId' => 'com.example.pro'
+            }
+          }
+        ]
+      )
+      subject.stub_post_result(
+        409,
+        {
+          'errors' => [
+            {
+              'meta' => {
+                'associatedErrors' => {
+                  '/inAppPurchases/iap-1' => [
+                    { 'code' => 'STATE_ERROR.FIRST_NON_CONSUMABLE_MUST_BE_SUBMITTED_ON_VERSION' }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      )
+      subject.stub_version_page_includes_iap(false)
+
+      ok = subject.send(
+        :ensure_iap_readiness,
+        app_id: 'app-1',
+        product_id: 'com.example.pro',
+        project_root: '/tmp',
+        config: { 'appstore' => { 'iap' => { 'display_name' => 'Example Pro' } } },
+        token: 'stub-token',
+        price_usd: '6.99',
+        platform: 'macos',
+        version_string: '1.0.0'
+      )
+
+      assert_eq(ok, :needs_version_attachment)
+      true
+    end
+  end
+
+  test_category('App Store release gates') do
+    test('detects approved versions waiting for manual developer release') do
+      pending = pending_developer_release_versions(
+        [
+          { state: 'READY_FOR_SALE', version: '1.0' },
+          { state: 'PENDING_DEVELOPER_RELEASE', version: '1.1', id: 'version-1' }
+        ]
+      )
+
+      assert_eq(pending.map { |row| row[:id] }, ['version-1'])
+      true
+    end
+
+    test('creates a release request for an approved pending version') do
+      subject.stub_post_result(
+        201,
+        {
+          'data' => {
+            'type' => 'appStoreVersionReleaseRequests',
+            'id' => 'version-1'
+          }
+        }
+      )
+
+      ok = subject.send(:release_app_store_version, 'version-1', 'stub-token')
+
+      assert_eq(ok, true)
+      true
+    end
+
+    test('submission helper forces automatic release after approval for new versions') do
+      source = File.read(File.expand_path('appstore_submit.rb', __dir__))
+
+      assert_includes(source, "AUTOMATIC_RELEASE_TYPE = 'AFTER_APPROVAL'")
+      assert_includes(source, 'releaseType: AUTOMATIC_RELEASE_TYPE')
+      assert_includes(source, '--fail-on-pending-release')
+      assert_includes(source, '--release-pending')
+      true
+    end
+
+    test('ASC review submission path retries transient server errors') do
+      source = File.read(File.expand_path('appstore_submit.rb', __dir__))
+
+      assert_includes(source, 'ASC_TRANSIENT_RETRY_DELAYS')
+      assert_includes(source, 'def asc_transient_status?')
+      assert_includes(source, 'def asc_request_with_status')
+      assert_includes(source, "asc_post_with_status('/reviewSubmissions'")
+      assert(!source.include?('URI("https://api.appstoreconnect.apple.com/v1/reviewSubmissions")'), 'expected review submission POST to use retrying helper')
+      true
+    end
+
+    test('uses configured IAP price before falling back to the generic default') do
+      price = configured_iap_price_usd(
+        'appstore' => {
+          'iap' => {
+            'price_usd' => 3.49
+          }
+        }
+      )
+
+      assert_eq(price, '3.49')
+      true
+    end
   end
 
   test_category('Review package capture') do
@@ -777,6 +941,41 @@ exit(run_tests('App Store Submit Guardrail Tests') do
 
       assert_includes(source, "SANEPROCESS_APPROVE_ASC_DRAFT_CLEANUP")
       assert_includes(source, 'Automatic Draft Submission cleanup is disabled')
+      true
+    end
+  end
+
+  test_category('Screenshot upload') do
+    test('returns failures when screenshot upload reservation is rejected') do
+      Dir.mktmpdir('screenshot-upload-failure-') do |dir|
+        screenshot = File.join(dir, 'screenshot.png')
+        File.write(screenshot, 'fake image bytes')
+
+        subject.stub_asc_get(
+          '/appStoreVersionLocalizations/loc-1/appScreenshotSets',
+          {
+            'data' => [
+              {
+                'id' => 'set-1',
+                'attributes' => { 'screenshotDisplayType' => 'APP_IPHONE_67' }
+              }
+            ]
+          }
+        )
+        subject.stub_asc_get('/appScreenshotSets/set-1/appScreenshots', { 'data' => [] })
+        subject.stub_asc_post_response(nil)
+
+        failures = subject.send(
+          :upload_screenshot_set,
+          'loc-1',
+          [screenshot],
+          { display_type: 'APP_IPHONE_67', width: 1242, height: 2688 },
+          'token'
+        )
+
+        assert_eq(failures.length, 1)
+        assert_includes(failures.first, 'reserve screenshot.png')
+      end
       true
     end
   end

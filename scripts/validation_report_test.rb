@@ -488,6 +488,78 @@ exit(run_tests('Validation report tests') do
       end
       true
     end
+
+    test('flags sane-audit without historical regression lane') do
+      Dir.mktmpdir('codex-skill-health') do |tmpdir|
+        skill_root = File.join(tmpdir, 'skills')
+        sane_audit_dir = File.join(skill_root, 'sane-audit')
+        FileUtils.mkdir_p(sane_audit_dir)
+        File.write(
+          File.join(sane_audit_dir, 'SKILL.md'),
+          <<~MD
+            ---
+            name: sane-audit
+            description: Audit SaneApps.
+            ---
+
+            Run release and docs checks.
+          MD
+        )
+        registry_path = File.join(tmpdir, 'SKILLS_REGISTRY.md')
+        File.write(registry_path, "| `sane-audit` | audit | #{File.join(sane_audit_dir, 'SKILL.md')} |\n")
+
+        subject = CodexSkillHealthHarness.new(skill_root: skill_root, registry_path: registry_path)
+        issues = []
+        subject.send(:check_codex_skill_health, issues)
+
+        assert(issues.any? { |issue| issue.include?('sane-audit missing historical regression prompt') })
+      end
+      true
+    end
+
+    test('accepts sane-audit with historical regression lane') do
+      Dir.mktmpdir('codex-skill-health') do |tmpdir|
+        skill_root = File.join(tmpdir, 'skills')
+        prompt_dir = File.join(skill_root, 'sane-audit', 'prompts')
+        FileUtils.mkdir_p(prompt_dir)
+        File.write(
+          File.join(skill_root, 'sane-audit', 'SKILL.md'),
+          <<~MD
+            ---
+            name: sane-audit
+            description: Audit SaneApps.
+            ---
+
+            Require historical root-cause GitHub and support coverage.
+          MD
+        )
+        %w[
+          q0-config.md
+          q6-release.md
+          q7-website.md
+          q8-signing.md
+          q9-support.md
+          q10-docs.md
+          q11-tooling.md
+          q12-runtime-resources.md
+        ].each do |prompt_file|
+          File.write(File.join(prompt_dir, prompt_file), "#{prompt_file}\n")
+        end
+        File.write(
+          File.join(prompt_dir, 'q13-historical-regression.md'),
+          "GitHub support root cause Root-Cause Matrix Per-Perspective Scores Current Coverage Would Catch Today? Checked Evidence No issue cluster can be called fixed without named current coverage\n"
+        )
+        registry_path = File.join(tmpdir, 'SKILLS_REGISTRY.md')
+        File.write(registry_path, "| `sane-audit` | audit | #{File.join(skill_root, 'sane-audit', 'SKILL.md')} |\n")
+
+        subject = CodexSkillHealthHarness.new(skill_root: skill_root, registry_path: registry_path)
+        issues = []
+        subject.send(:check_codex_skill_health, issues)
+
+        assert_eq(issues, [])
+      end
+      true
+    end
   end
 
   test_category('Q0 sister app list checks') do
@@ -729,6 +801,14 @@ exit(run_tests('Validation report tests') do
   end
 
   test_category('Q10 context size checks') do
+    test('Claude install support modules include extracted sanetools research gate') do
+      init_source = File.read(File.expand_path('init.sh', __dir__))
+
+      support_modules = init_source[/SUPPORT_MODULES="([^"]+)"/, 1].to_s.split
+      assert_includes(support_modules, 'sanetools_research.rb')
+      true
+    end
+
     test('flags bloated active context files before instructions silently degrade') do
       Dir.mktmpdir('validation-report-context-size') do |tmpdir|
         File.write(File.join(tmpdir, 'AGENTS.md'), ("short instruction\n" * 451))
@@ -992,31 +1072,6 @@ exit(run_tests('Validation report tests') do
       true
     end
 
-    test('ignores release-preflight excluded operational folders in project QA fingerprints') do
-      Dir.mktmpdir('qa-fingerprint-operational-folders-') do |dir|
-        FileUtils.mkdir_p(File.join(dir, 'SaneVideo'))
-        File.write(File.join(dir, 'SaneVideo', 'App.swift'), "import SwiftUI\n")
-        init_git_fixture(dir)
-
-        subject = ValidationReport.new
-        fingerprint = subject.send(:project_qa_source_fingerprint, dir)
-        write_qa_status(dir, source_fingerprint: fingerprint)
-
-        FileUtils.mkdir_p(File.join(dir, '.serena', 'memories'))
-        File.write(File.join(dir, '.serena', 'memories', 'release.md'), "operational memory\n")
-        FileUtils.mkdir_p(File.join(dir, 'releases'))
-        File.write(File.join(dir, 'releases', 'release.log'), "release output\n")
-        FileUtils.mkdir_p(File.join(dir, 'fastlane', 'test_output'))
-        File.write(File.join(dir, 'fastlane', 'test_output', 'report.xml'), "<testsuite />\n")
-
-        status = subject.send(:latest_project_qa_status, dir)
-
-        assert_eq([], status['staleReasons'])
-        assert_eq(fingerprint, status['currentSourceFingerprint'])
-      end
-      true
-    end
-
     test('marks project QA receipts stale when the source fingerprint changes') do
       Dir.mktmpdir('qa-fingerprint-stale-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'SaneScan'))
@@ -1233,6 +1288,35 @@ exit(run_tests('Validation report tests') do
       assert_eq(verdict[:sections][:system_health][:status], 'WARN')
       assert_eq(verdict[:sections][:app_readiness][:status], 'BLOCKED')
       true
+    end
+
+    test('validation report defaults to no keychain fallback') do
+      source = File.read(__dir__ + '/validation_report.rb')
+
+      assert_includes(source, "ENV.fetch('SANE_KEYCHAIN_FALLBACK', '0')")
+      assert_includes(source, "ENV['SANE_ALLOW_KEYCHAIN_PROMPTS'] == '1'")
+      true
+    end
+
+    test('code-signing validation skips keychain and notary checks without explicit prompt opt-in') do
+      old_allow = ENV.delete('SANE_ALLOW_KEYCHAIN_PROMPTS')
+      old_no_keychain = ENV.delete('SANE_NO_KEYCHAIN')
+      old_fallback = ENV.delete('SANE_KEYCHAIN_FALLBACK')
+
+      subject = ValidationReport.new
+      subject.instance_variable_set(:@issues, [])
+      subject.instance_variable_set(:@warnings, [])
+      subject.instance_variable_set(:@metrics, {})
+
+      subject.send(:q8_code_signing)
+      warnings = subject.instance_variable_get(:@warnings).join("\n")
+
+      assert_includes(warnings, 'Code-signing keychain/notary checks skipped in no-prompt validation mode')
+      true
+    ensure
+      ENV['SANE_ALLOW_KEYCHAIN_PROMPTS'] = old_allow if old_allow
+      ENV['SANE_NO_KEYCHAIN'] = old_no_keychain if old_no_keychain
+      ENV['SANE_KEYCHAIN_FALLBACK'] = old_fallback if old_fallback
     end
   end
 end)

@@ -1,0 +1,71 @@
+#!/bin/bash
+# Grok MCP + Hooks status helper (control-plane shim)
+# Prints actionable Grok-specific MCP and Pre/PostToolUse hook guidance.
+# Runs the canonical SaneProcess tool_discovery receipt.
+
+set -euo pipefail
+
+echo "Grok TUI status (MCP + Hooks compatibility notes)"
+echo "=================================================="
+echo ""
+echo "MCP servers (the 9/10 'connecting' banner):"
+echo "  - Grok loads from NATIVE ~/.grok/config.toml (precedence) + compatibility merges"
+echo "    (~/.mcp.json, ~/.config/claude/mcp-config.json, ~/.claude/settings.json etc.)."
+echo "  - On SaneApps operator machines, core servers may be registered NATIVELY in ~/.grok/config.toml"
+echo "    (serena@30s timeout, macos-automator@15s, apple-docs@15s, xcode, memory) via"
+echo "    the grok mcp add surface or direct toml. Fresh public init does not write that file."
+echo "  - Remaining standard servers (context7, openaiDeveloperDocs, github) come from"
+echo "    compatibility sources. The full standard Sane MCP surface is intentional."
+echo "  - Legacy NVIDIA/nv servers are exception-only and are not required for normal Grok use."
+echo "  - Live truth: /mcps or Ctrl+L (Hooks & MCPs). 'grok mcp list' shows only native."
+echo "  - If still seeing connecting after restart: increase timeouts further or pin local installs"
+echo "    of the uvx/git+ servers instead of on-the-fly."
+echo ""
+echo "PreToolUse / PostToolUse warnings or annotations:"
+echo "  - Grok has native PreToolUse (blocking) and PostToolUse hooks (see docs 10-hooks.md)."
+echo "  - It ALWAYS merges hooks from ~/.claude/settings.json (Claude Code compatibility)."
+echo "  - SaneProcess populates that file with saneprompt (UserPromptSubmit), sanetools"
+echo "    + sane_*_guards (PreToolUse), sanetrack + task_completed_gate + sanestop (PostToolUse),"
+echo "    plus launch/release/ship/email guards."
+echo "  - Passive tracking/session hooks short-circuit under Grok, but Grok can still"
+echo "    record hook annotations/notifications in scrollback for the Pre/Post entries on"
+echo "    every tool (search_replace=Edit, read_file=Read, run_terminal_cmd=Bash, todo_write, etc.)."
+echo "  - High-risk launch/release/ship/email guards still block dangerous commands if Grok invokes them."
+echo "  - Passive hook annotations are expected noise in heavy tool sessions on a machine that also uses Claude Code."
+echo "  - The SaneProcess contract for Grok remains: AGENTS.md + explicit SaneMaster.rb calls"
+echo "    + shell guards. Native hooks are an adapter layer, not the only enforcement surface."
+echo "  - Inspect: /hooks or Ctrl+L \u2192 Hooks tab. You can disable individual entries at runtime"
+echo "    (disabling high-risk guards removes that native-hook safety net for the session)."
+echo ""
+echo "Use the live TUI views (/mcps, /hooks, Ctrl+L) for session truth."
+echo ""
+
+echo "Running canonical SaneProcess tool discovery receipt..."
+echo ""
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SANEPROCESS_ROOT="${SANEPROCESS_ROOT:-}"
+if [[ -z "$SANEPROCESS_ROOT" || ! -f "$SANEPROCESS_ROOT/scripts/SaneMaster.rb" ]]; then
+  if [[ -f "$SCRIPT_DIR/../../scripts/SaneMaster.rb" ]]; then
+    SANEPROCESS_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+  elif [[ -f "$HOME/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb" ]]; then
+    SANEPROCESS_ROOT="$HOME/SaneApps/infra/SaneProcess"
+  else
+    SANEPROCESS_ROOT=""
+  fi
+fi
+
+if [[ -n "$SANEPROCESS_ROOT" ]] && command -v ruby >/dev/null 2>&1; then
+  ruby "$SANEPROCESS_ROOT/scripts/SaneMaster.rb" tool_discovery --query "grok mcp hooks" || true
+else
+  echo "Could not locate SaneProcess or ruby; run the receipt manually from the SaneProcess repo:"
+  echo "  ruby scripts/SaneMaster.rb tool_discovery --query 'grok mcp hooks'"
+fi
+
+echo ""
+echo "Tip: after changing MCP or hook config, restart the Grok TUI session and re-check /mcps + /hooks."
+echo "For clean runtime proof when the TUI shows persistent banners/warnings you cannot drag-drop,"
+echo "use the explicit route: scripts/mini/capture-mini-screenshot.sh desktop (from the controller)."
+echo ""
+echo "If this machine has native [mcp_servers] in ~/.grok/config.toml, run 'grok mcp list' + restart TUI."
+echo "Hook noise (if any) is Claude-merge artifact; disable per /hooks."

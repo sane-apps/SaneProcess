@@ -55,6 +55,15 @@ module SaneMasterModules
           )
         end
 
+        if settings_ui_file?(file) && content.match?(/^\s*(?:private\s+)?(?:struct|final\s+class|class)\s+SettingsResizeGrip\b/m)
+          errors << Finding.new(
+            severity: :error,
+            label: 'Local settings resize grip clone',
+            detail: relative,
+            fix: 'Use shared SaneUI.SaneSettingsResizeGrip instead of app-local settings resize chrome.'
+          )
+        end
+
         next unless settings_ui_file?(file)
 
         content.each_line.with_index(1) do |line, line_number|

@@ -15,6 +15,7 @@ require_relative 'core/state_manager'
 require_relative 'sanetools_gaming'
 require_relative 'sanetools_deploy'
 require_relative 'sanetools_github_guard'
+require_relative 'sanetools_research'
 
 module SaneToolsChecks
   # Constants needed by checks
@@ -46,6 +47,7 @@ module SaneToolsChecks
 
   LOCAL_UI_APPROVAL = 'MR. SANE APPROVES LOCAL UI ON AIR'
   MINI_UNAVAILABLE_APPROVAL = 'MR. SANE CONFIRMS MINI UNAVAILABLE'
+  MINI_SCREENSHOT_WRAPPER = '~/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh'
 
   FILE_SIZE_SOFT_LIMIT = 500
   FILE_SIZE_HARD_LIMIT = 800
@@ -77,7 +79,7 @@ module SaneToolsChecks
     %r{^build/}
   ).freeze
 
-  def workflow_runner_block_message(skill_name, skill_state)
+  def self.workflow_runner_block_message(skill_name, skill_state)
     runner_command = MandatoryWorkflows.runner_command_for(skill_name)
     description = MandatoryWorkflows.skill_requirements.dig(skill_name.to_sym, :description).to_s
     header = if skill_name.to_s == 'evolve'
@@ -133,6 +135,20 @@ module SaneToolsChecks
       "This would control the MacBook Air instead of the Mac Mini.\n" \
       "DO THIS: run SaneApps browser/UI/release work on the Mini via ssh mini, SaneMaster, sane_test.rb, or Mini-side automation.\n" \
       "ONLY FALLBACK: set SANE_MINI_UNAVAILABLE='#{MINI_UNAVAILABLE_APPROVAL}' or SANE_APPROVE_LOCAL_UI_ON_AIR='#{LOCAL_UI_APPROVAL}' after explicit user approval."
+    end
+
+    def check_canonical_action_path(tool_name, tool_input)
+      return nil unless tool_name == 'Bash'
+
+      command = tool_input['command'] || tool_input[:command] || ''
+      return nil unless command.match?(/\bssh\s+(?:[^'"]*\s+)?mini\b/i)
+      return nil unless command.match?(/\bscreencapture\b/i)
+
+      "CANONICAL ACTION PATH BLOCKED\n" \
+      "Mini screenshots must not use raw ssh + screencapture.\n" \
+      "That path can fail outside the Mini's logged-in GUI session and produce false blockers.\n" \
+      "DO THIS: run #{MINI_SCREENSHOT_WRAPPER} with the needed --app/--window-name/--path arguments.\n" \
+      "For app-owned SaneApps captures, this wrapper also runs the visual workspace guard."
     end
 
     def running_on_macbook_air?
@@ -259,7 +275,7 @@ module SaneToolsChecks
         if projected_count > hard_limit
           return "FILE SIZE BLOCKED (Rule #10)\n" \
                  "#{path}: #{projected_count} lines > #{hard_limit} limit\n" \
-                 "Split file first. Use extensions like Manager+Feature.swift"
+                 "Split ownership first. Extensions count toward the same component owner."
         elsif projected_count > FILE_SIZE_SOFT_LIMIT && !is_markdown
           warn "FILE SIZE WARNING: #{path} at #{projected_count} lines (limit: #{hard_limit})"
         end
@@ -278,7 +294,7 @@ module SaneToolsChecks
       if projected_count > hard_limit
         return "FILE SIZE BLOCKED (Rule #10)\n" \
                "#{path}: #{projected_count} lines > #{hard_limit} limit\n" \
-               "Split file first. Use extensions like Manager+Feature.swift"
+               "Split ownership first. Extensions count toward the same component owner."
       elsif projected_count > FILE_SIZE_SOFT_LIMIT && !is_markdown
         warn "FILE SIZE WARNING: #{path} at #{projected_count} lines (limit: #{hard_limit})"
       end
@@ -402,105 +418,6 @@ module SaneToolsChecks
       end
 
       nil
-    end
-
-    # Categories that require specific MCPs — auto-satisfy if those MCPs aren't available.
-    # :web and :local use built-in tools (WebSearch, Read/Grep/Glob) so always required.
-    MCP_DEPENDENT_CATEGORIES = {
-      docs: [:apple_docs, :context7],
-      github: [:github]
-    }.freeze
-
-    MCP_SERVER_NAME_MAP = {
-      apple_docs: 'apple-docs',
-      context7: 'context7',
-      github: 'github'
-    }.freeze
-
-    def configured_mcp_keys(project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
-      server_names = [File.expand_path('~/.mcp.json'), File.join(project_dir, '.mcp.json')].uniq.each_with_object([]) do |path, names|
-        next unless File.exist?(path)
-
-        begin
-          config = JSON.parse(File.read(path))
-          names.concat((config['mcpServers'] || {}).keys)
-        rescue JSON::ParserError
-          next
-        end
-      end.uniq
-
-      MCP_SERVER_NAME_MAP.each_with_object([]) do |(key, server_name), configured|
-        configured << key if server_names.include?(server_name)
-      end
-    end
-
-    def configured_mcp_verification_info(project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
-      configured = configured_mcp_keys(project_dir)
-      MCP_VERIFICATION_INFO.select { |key, _info| configured.include?(key) }
-    end
-
-    # Returns only the research categories that should be enforced,
-    # skipping MCP-dependent ones if those MCPs aren't configured.
-    def effective_research_categories(research_categories)
-      research = StateManager.get(:research)
-      configured = configured_mcp_keys
-
-      research_categories.keys.select do |cat|
-        if MCP_DEPENDENT_CATEGORIES.key?(cat) && !research[cat]
-          (MCP_DEPENDENT_CATEGORIES[cat] & configured).any?
-        else
-          true
-        end
-      end
-    end
-
-    def check_research_before_edit(tool_name, edit_tools, research_categories)
-      return nil unless edit_tools.include?(tool_name)
-
-      research = StateManager.get(:research)
-      effective_categories = effective_research_categories(research_categories)
-
-      total = effective_categories.length
-      done = effective_categories.count { |cat| research[cat] }
-      complete = done == total
-
-      return nil if complete
-
-      missing = effective_categories.reject { |cat| research[cat] }
-
-      # Build specific instructions for each missing category
-      missing_instructions = missing.map do |cat|
-        case cat
-        when :docs then "  1. DOCS: mcp__apple-docs, mcp__context7, or WebSearch for docs (verify APIs exist)"
-        when :web then "  2. WEB: WebSearch (current best practices)"
-        when :github then "  3. GITHUB: mcp__github__search_* or WebSearch for examples (real-world code)"
-        when :local then "  4. LOCAL: Read/Grep/Glob (understand existing code)"
-        else "  #{cat}: Complete this research category"
-        end
-      end.join("\n")
-
-      "RESEARCH INCOMPLETE [#{done}/#{total} complete: missing #{missing.join(', ')}]\n" \
-      "Cannot edit until ALL #{total} research categories are done.\n" \
-      "MISSING (do these NOW):\n" \
-      "#{missing_instructions}\n" \
-      "Rule #2: VERIFY, THEN TRY. Research once, succeed once.\n" \
-      "Reset: rr- (clear research to start over)"
-    end
-
-    def check_external_mutations(tool_name, external_mutation_pattern, research_categories)
-      return nil unless tool_name.match?(external_mutation_pattern)
-
-      research = StateManager.get(:research)
-      effective = effective_research_categories(research_categories)
-      complete = effective.all? { |cat| research[cat] }
-
-      return nil if complete
-
-      missing = effective.reject { |cat| research[cat] }
-      "EXTERNAL MUTATION BLOCKED\n" \
-      "Tool '#{tool_name}' affects external systems. Research first.\n" \
-      "Missing: #{missing.join(', ')}. Use read-only tools to understand state first.\n" \
-      "Reset: rr- (clear research to start over)"
     end
 
     def check_circuit_breaker
@@ -744,128 +661,20 @@ module SaneToolsChecks
     # === DEPLOYMENT SAFETY ===
     # Extracted to sanetools_deploy.rb per Rule #10
     include SaneToolsDeploy
-
-    # === PREFLIGHT: MCP Verification System ===
-    # Block edits until ALL MCPs have been verified this session
-    # User insight: "how can you make sure all systems are go before work begins?"
-
-    CLAUDE_DIR = File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.claude')
-    MEMORY_STAGING_FILE = File.join(CLAUDE_DIR, 'memory_staging.json')
-
-    # MCP verification tools (read-only operations to prove connectivity)
-    # NOTE: Official Memory MCP (@modelcontextprotocol/server-memory) is global, not project-verified
-    MCP_VERIFICATION_INFO = {
-      apple_docs: { name: 'Apple Docs', tool: 'mcp__apple-docs__search_apple_docs' },
-      context7: { name: 'Context7', tool: 'mcp__context7__resolve-library-id' },
-      github: { name: 'GitHub', tool: 'mcp__github__search_repositories' }
-    }.freeze
-
-    def check_pending_mcp_actions(tool_name, edit_tools)
-      return nil unless edit_tools.include?(tool_name)
-
-      # Only enforce MCP verification for projects with .saneprocess manifest
-      project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
-      return nil unless File.exist?(File.join(project_dir, '.saneprocess'))
-
-      configured_mcps = configured_mcp_verification_info(project_dir)
-      return nil if configured_mcps.empty?
-
-      # Get MCP health state
-      health = StateManager.get(:mcp_health)
-
-      # If all verified, allow edits
-      return nil if health[:verified_this_session]
-
-      # Check which MCPs are still unverified
-      mcps = health[:mcps] || {}
-      unverified = configured_mcps.select do |key, _info|
-        mcp_data = mcps[key]
-        !mcp_data || !mcp_data[:verified]
-      end
-
-      # If all verified (but flag not set), allow and fix state
-      if unverified.empty?
-        StateManager.update(:mcp_health) { |h| h[:verified_this_session] = true; h }
-        return nil
-      end
-
-      # Also check for memory staging (pending MCP action)
-      pending_actions = []
-      if File.exist?(MEMORY_STAGING_FILE)
-        begin
-          staging = JSON.parse(File.read(MEMORY_STAGING_FILE))
-          if staging['needs_memory_update']
-            entity_name = staging.dig('suggested_entity', 'name') || 'learnings'
-            pending_actions << "Memory staging needs saving: #{entity_name}"
-          end
-        rescue StandardError
-          pending_actions << 'Memory staging file needs review'
-        end
-      end
-
-      # Build comprehensive error message
-      total_mcps = configured_mcps.length
-      verified_count = total_mcps - unverified.length
-      unverified_list = unverified.map do |key, info|
-        "  ⬜ #{info[:name]}: #{info[:tool]}"
-      end.join("\n")
-
-      msg = "MCP VERIFICATION INCOMPLETE [#{verified_count}/#{total_mcps} verified]\n" \
-            "Cannot edit until all #{total_mcps} configured MCPs are verified this session.\n" \
-            "\n" \
-            "Unverified MCPs (run each tool once to verify):\n" \
-            "#{unverified_list}\n"
-
-      if pending_actions.any?
-        msg += "\n" \
-               "Pending MCP actions:\n" \
-               "#{pending_actions.map { |a| "  ⚠️  #{a}" }.join("\n")}\n"
-      end
-
-      msg += "\nCall each unverified MCP tool once to proceed."
-      msg
-    end
+    include SaneToolsResearch
 
     # === EDIT ATTEMPT LIMIT ===
-    # Prevents "no big deal" syndrome: 3 edit attempts without research = STOP
-    # User insight: "genius with impulse control of a two year old"
-    # This enforces the pause-and-think pattern
+    # Legacy no-op kept for compatibility with tests and callers. The original
+    # implementation counted every successful Edit tool call as a failed attempt,
+    # so normal multi-file work could revoke plan approval after three good
+    # edits and trap Claude in a replan loop. Real repeated-failure handling now
+    # lives in circuit_breaker/refusal_tracking, which are keyed off actual
+    # failures and blocks instead of successful edits.
 
     MAX_EDIT_ATTEMPTS_BEFORE_RESEARCH = 3
 
     def check_edit_attempt_limit(tool_name, edit_tools)
-      return nil unless edit_tools.include?(tool_name)
-
-      attempts = StateManager.get(:edit_attempts) || {}
-      count = attempts[:count] || 0
-
-      # If under limit, increment and allow
-      if count < MAX_EDIT_ATTEMPTS_BEFORE_RESEARCH
-        StateManager.update(:edit_attempts) do |a|
-          a ||= {}
-          a[:count] = (a[:count] || 0) + 1
-          a[:last_attempt] = Time.now.iso8601
-          a
-        end
-        return nil
-      end
-
-      # At or over limit - revoke plan approval and require targeted re-research.
-      # Do not wipe existing research; refresh only stale or missing evidence.
-      StateManager.update(:planning) do |p|
-        p[:plan_approved] = false
-        p[:plan_shown] = false
-        p[:replan_count] = (p[:replan_count] || 0) + 1
-        p
-      end
-
-      "EDIT ATTEMPT LIMIT + REPLAN REQUIRED\n" \
-      "#{count} edit attempts failed. Your approach is wrong.\n" \
-      "Plan approval REVOKED. You MUST:\n" \
-      "  1. Refresh stale or missing evidence only (local always; docs/web/GitHub when relevant)\n" \
-      "  2. Show a NEW plan and get user approval\n" \
-      "This is the process that ALWAYS works when followed.\n" \
-      "Use pa+ only after the new plan is actually approved."
+      nil
     end
 
     def reset_edit_attempts

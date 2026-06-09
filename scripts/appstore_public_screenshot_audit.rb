@@ -94,15 +94,30 @@ class AppStorePublicScreenshotAudit
   end
 
   def storyboard_entries_by_platform
-    data = load_yaml(storyboard_path)
-    platforms = data['platforms'] || {}
-    platforms.each_with_object({}) do |(platform, entries), acc|
-      acc[platform.to_s] = Array(entries).map do |entry|
+    if File.exist?(storyboard_path)
+      data = load_yaml(storyboard_path)
+      platforms = data['platforms'] || {}
+      return platforms.each_with_object({}) do |(platform, entries), acc|
+        acc[platform.to_s] = Array(entries).map do |entry|
+          {
+            file: File.expand_path(entry.fetch('file'), project_root),
+            title: entry.fetch('title'),
+            purpose: entry.fetch('purpose'),
+            must_show: Array(entry['must_show']).map(&:to_s)
+          }
+        end
+      end
+    end
+
+    screenshot_patterns = manifest.dig('appstore', 'screenshots') || {}
+    screenshot_patterns.each_with_object({}) do |(platform, pattern), acc|
+      files = Dir.glob(File.join(project_root, pattern.to_s)).sort
+      acc[platform.to_s] = files.map.with_index do |file, index|
         {
-          file: File.expand_path(entry.fetch('file'), project_root),
-          title: entry.fetch('title'),
-          purpose: entry.fetch('purpose'),
-          must_show: Array(entry['must_show']).map(&:to_s)
+          file: File.expand_path(file),
+          title: "Configured screenshot #{index + 1}",
+          purpose: 'Fallback from .saneprocess appstore.screenshots. Add docs/appstore_screenshot_storyboard.yml for richer per-slot intent.',
+          must_show: []
         }
       end
     end

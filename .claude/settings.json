@@ -34,10 +34,12 @@
       "mcp__gemini__*",
       "mcp__macos-automator__*",
       "mcp__xcode__*",
+      "mcp__XcodeBuildMCP__*",
       "mcp__nvidia-build__*",
       "mcp__memory__*"
     ]
   },
+  "model": "opus",
   "hooks": {
     "SessionStart": [
       {
@@ -177,6 +179,6 @@
     "serena@claude-plugins-official": true,
     "hookify@claude-plugins-official": true
   },
-  "skipDangerousModePermissionPrompt": true,
-  "effortLevel": "high"
+  "effortLevel": "high",
+  "skipDangerousModePermissionPrompt": true
 }

@@ -80,6 +80,13 @@ module SaneMasterModules
       '~/Library/Application Support/SaneVideo',
       '~/Library/Containers/com.sanevideo.app'
     ].freeze
+    SERVER_DESKTOP_EMAIL_MEDIA_GLOBS = [
+      '~/Desktop/email-review-media*',
+      '~/Desktop/email*-linked-media*',
+      '~/Desktop/Screenshots/email-review-media*',
+      '~/Desktop/Screenshots/email*-linked-media*',
+      '~/Desktop/Screenshots/email[0-9]*'
+    ].freeze
     SANE_APP_NAME_REGEX = /\b(SaneBar|SaneClip|SaneClick|SaneHosts|SaneSales|SaneSync|SaneVideo|SaneScan|SaneAI)\b/
 
     def machine_cleanup(args)
@@ -467,6 +474,21 @@ module SaneMasterModules
         }
       end
 
+      server_desktop_email_media_paths.each do |path|
+        next unless File.exist?(path)
+
+        size_gb = path_size_gb(path)
+        next if size_gb <= 0.0
+
+        targets << {
+          type: 'trash_path',
+          category: 'server_desktop_email_media',
+          path: path,
+          size_gb: size_gb,
+          reason: 'Server-mode cleanup: downloaded email review media/signature assets must not stay on the Mini Desktop.'
+        }
+      end
+
       server_repo_generated_paths.each do |path|
         next unless File.exist?(path)
 
@@ -564,6 +586,7 @@ module SaneMasterModules
 
       return true if server_exact_cleanup_paths.any? { |allowed| expanded == allowed }
       return true if server_child_cleanup_paths.any? { |allowed| expanded == allowed }
+      return true if server_desktop_email_media_path?(expanded)
 
       server_repo_generated_path?(expanded)
     end
@@ -574,6 +597,24 @@ module SaneMasterModules
 
     def server_exact_cleanup_paths
       SERVER_EXACT_CLEANUP_PATHS.map { |path| File.expand_path(path) }
+    end
+
+    def server_desktop_email_media_paths
+      SERVER_DESKTOP_EMAIL_MEDIA_GLOBS.flat_map do |raw_glob|
+        Dir.glob(File.expand_path(raw_glob))
+      end.uniq
+    end
+
+    def server_desktop_email_media_path?(path)
+      expanded = File.expand_path(path)
+      desktop = File.expand_path('~/Desktop')
+      screenshots = File.expand_path('~/Desktop/Screenshots')
+      return false unless expanded.start_with?("#{desktop}/") || expanded.start_with?("#{screenshots}/")
+
+      basename = File.basename(expanded)
+      basename.match?(/\Aemail-review-media/) ||
+        basename.match?(/\Aemail.*-linked-media/) ||
+        basename.match?(/\Aemail[0-9]+(?:\..+)?\z/)
     end
 
     def server_repo_generated_paths

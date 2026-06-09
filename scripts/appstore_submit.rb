@@ -149,6 +149,9 @@ SUBMITTED_APP_STORE_STATES = %w[
   PROCESSING_FOR_DISTRIBUTION
 ].freeze
 
+PENDING_DEVELOPER_RELEASE_STATE = 'PENDING_DEVELOPER_RELEASE'
+AUTOMATIC_RELEASE_TYPE = 'AFTER_APPROVAL'
+
 CATEGORY_ID_MAP = {
   'public.app-category.utilities' => 'UTILITIES',
   'public.app-category.productivity' => 'PRODUCTIVITY',
@@ -731,32 +734,62 @@ end
 
 # ─── HTTP Helpers ───
 
-def asc_request(method, path, body: nil, token: nil, retry_on_unauthorized: true)
+ASC_TRANSIENT_RETRY_DELAYS = [3, 8].freeze
+
+def asc_transient_status?(code)
+  code.to_i >= 500 && code.to_i < 600
+end
+
+def asc_request_with_status(method, path, body: nil, token: nil, base: ASC_BASE)
   token ||= generate_jwt
-  uri = URI("#{ASC_BASE}#{path}")
+  attempts = ASC_TRANSIENT_RETRY_DELAYS.length + 1
+  last_code = 0
+  last_parsed = { 'error' => 'request not attempted' }
 
-  http = Net::HTTP.new(uri.host, uri.port)
-  http.use_ssl = true
-  http.open_timeout = 15
-  http.read_timeout = 60
+  attempts.times do |attempt|
+    uri = URI("#{base}#{path}")
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.use_ssl = true
+    http.open_timeout = 15
+    http.read_timeout = 60
 
-  request = case method
-            when :get    then Net::HTTP::Get.new(uri)
-            when :post   then Net::HTTP::Post.new(uri)
-            when :patch  then Net::HTTP::Patch.new(uri)
-            when :delete then Net::HTTP::Delete.new(uri)
-            end
+    request = case method
+              when :get    then Net::HTTP::Get.new(uri)
+              when :post   then Net::HTTP::Post.new(uri)
+              when :patch  then Net::HTTP::Patch.new(uri)
+              when :delete then Net::HTTP::Delete.new(uri)
+              else raise ArgumentError, "unsupported ASC method: #{method}"
+              end
 
-  request['Authorization'] = "Bearer #{token}"
-  request['Content-Type'] = 'application/json'
+    request['Authorization'] = "Bearer #{token}"
+    request['Content-Type'] = 'application/json'
+    request.body = body.is_a?(String) ? body : JSON.generate(body) if body
 
-  if body
-    request.body = body.is_a?(String) ? body : JSON.generate(body)
+    response = http.request(request)
+    last_code = response.code.to_i
+    last_parsed = begin
+      JSON.parse(response.body.to_s)
+    rescue StandardError
+      { 'raw' => response.body.to_s }
+    end
+
+    return [last_code, last_parsed] unless asc_transient_status?(last_code) && attempt < attempts - 1
+
+    log_warn "ASC API #{method.upcase} #{path} returned #{last_code}; retrying in #{ASC_TRANSIENT_RETRY_DELAYS[attempt]}s..."
+    sleep ASC_TRANSIENT_RETRY_DELAYS[attempt]
+    token = generate_jwt
   end
 
-  response = http.request(request)
+  [last_code, last_parsed]
+rescue StandardError => e
+  log_error "ASC API raw #{method.upcase} error: #{e.message}"
+  [0, { 'error' => e.message }]
+end
 
-  if response.code == '401' && retry_on_unauthorized
+def asc_request(method, path, body: nil, token: nil, retry_on_unauthorized: true)
+  code, parsed = asc_request_with_status(method, path, body: body, token: token)
+
+  if code == 401 && retry_on_unauthorized
     log_warn "ASC API #{method.upcase} #{path} returned 401; refreshing token and retrying once..."
     return asc_request(
       method,
@@ -767,18 +800,14 @@ def asc_request(method, path, body: nil, token: nil, retry_on_unauthorized: true
     )
   end
 
-  unless response.is_a?(Net::HTTPSuccess) || response.is_a?(Net::HTTPCreated)
-    log_error "ASC API #{method.upcase} #{path} → #{response.code}"
-    log_error response.body[0..500] if response.body
+  unless [200, 201, 202, 204].include?(code)
+    log_error "ASC API #{method.upcase} #{path} → #{code}"
+    raw = parsed['raw'] || parsed['error'] || JSON.generate(parsed)
+    log_error raw.to_s[0..500] unless raw.to_s.empty?
     return nil
   end
 
-  return {} if response.body.nil? || response.body.empty?
-
-  JSON.parse(response.body)
-rescue StandardError => e
-  log_error "ASC API error: #{e.message}"
-  nil
+  parsed || {}
 end
 
 def asc_get(path, token: nil)
@@ -786,29 +815,7 @@ def asc_get(path, token: nil)
 end
 
 def asc_get_with_status(path, token: nil, base: ASC_BASE)
-  token ||= generate_jwt
-  uri = URI("#{base}#{path}")
-
-  http = Net::HTTP.new(uri.host, uri.port)
-  http.use_ssl = true
-  http.open_timeout = 15
-  http.read_timeout = 60
-
-  request = Net::HTTP::Get.new(uri)
-  request['Authorization'] = "Bearer #{token}"
-  request['Content-Type'] = 'application/json'
-
-  response = http.request(request)
-  parsed = begin
-    JSON.parse(response.body.to_s)
-  rescue StandardError
-    { 'raw' => response.body.to_s }
-  end
-
-  [response.code.to_i, parsed]
-rescue StandardError => e
-  log_error "ASC API raw GET error: #{e.message}"
-  [0, { 'error' => e.message }]
+  asc_request_with_status(:get, path, token: token, base: base)
 end
 
 def asc_get_v2(path, token: nil)
@@ -828,80 +835,15 @@ def asc_delete(path, token: nil)
 end
 
 def asc_post_with_status(path, body:, token: nil, base: ASC_BASE)
-  token ||= generate_jwt
-  uri = URI("#{base}#{path}")
-
-  http = Net::HTTP.new(uri.host, uri.port)
-  http.use_ssl = true
-  http.open_timeout = 15
-  http.read_timeout = 60
-
-  request = Net::HTTP::Post.new(uri)
-  request['Authorization'] = "Bearer #{token}"
-  request['Content-Type'] = 'application/json'
-  request.body = body.is_a?(String) ? body : JSON.generate(body)
-
-  response = http.request(request)
-  parsed = begin
-    JSON.parse(response.body.to_s)
-  rescue StandardError
-    { 'raw' => response.body.to_s }
-  end
-  [response.code.to_i, parsed]
-rescue StandardError => e
-  log_error "ASC API raw POST error: #{e.message}"
-  [0, { 'error' => e.message }]
+  asc_request_with_status(:post, path, body: body, token: token, base: base)
 end
 
 def asc_patch_with_status(path, body:, token: nil, base: ASC_BASE)
-  token ||= generate_jwt
-  uri = URI("#{base}#{path}")
-
-  http = Net::HTTP.new(uri.host, uri.port)
-  http.use_ssl = true
-  http.open_timeout = 15
-  http.read_timeout = 60
-
-  request = Net::HTTP::Patch.new(uri)
-  request['Authorization'] = "Bearer #{token}"
-  request['Content-Type'] = 'application/json'
-  request.body = body.is_a?(String) ? body : JSON.generate(body)
-
-  response = http.request(request)
-  parsed = begin
-    JSON.parse(response.body.to_s)
-  rescue StandardError
-    { 'raw' => response.body.to_s }
-  end
-  [response.code.to_i, parsed]
-rescue StandardError => e
-  log_error "ASC API raw PATCH error: #{e.message}"
-  [0, { 'error' => e.message }]
+  asc_request_with_status(:patch, path, body: body, token: token, base: base)
 end
 
 def asc_delete_with_status(path, token: nil, base: ASC_BASE)
-  token ||= generate_jwt
-  uri = URI("#{base}#{path}")
-
-  http = Net::HTTP.new(uri.host, uri.port)
-  http.use_ssl = true
-  http.open_timeout = 15
-  http.read_timeout = 60
-
-  request = Net::HTTP::Delete.new(uri)
-  request['Authorization'] = "Bearer #{token}"
-  request['Content-Type'] = 'application/json'
-
-  response = http.request(request)
-  parsed = begin
-    JSON.parse(response.body.to_s)
-  rescue StandardError
-    { 'raw' => response.body.to_s }
-  end
-  [response.code.to_i, parsed]
-rescue StandardError => e
-  log_error "ASC API raw DELETE error: #{e.message}"
-  [0, { 'error' => e.message }]
+  asc_request_with_status(:delete, path, token: token, base: base)
 end
 
 # ─── Package Metadata ───
@@ -1157,6 +1099,7 @@ def list_versions(app_id, asc_platform, token)
       version: attrs['versionString'],
       platform: attrs['platform'],
       state: attrs['appStoreState'],
+      release_type: attrs['releaseType'],
       created: attrs['createdDate'],
       submission_state: linked_submission&.dig(:state),
       submission_id: linked_submission&.dig(:id)
@@ -1171,6 +1114,10 @@ def list_versions(app_id, asc_platform, token)
   rescue ArgumentError
     [row[:platform].to_s, row[:version].to_s]
   end.reverse
+end
+
+def pending_developer_release_versions(rows)
+  Array(rows).select { |row| row[:state] == PENDING_DEVELOPER_RELEASE_STATE }
 end
 
 def applescript_quote(text)
@@ -1243,9 +1190,40 @@ rescue StandardError
   nil
 end
 
-def iap_version_attachment_status(app_id:, platform:, product_id:)
+def appstore_iap_attachment_receipt_valid?(app_id:, platform:, version_string:, product_id:, project_root: nil)
+  roots = [project_root, Dir.pwd].compact.uniq
+  paths = roots.flat_map do |root|
+    [
+      File.join(root, '.sane', 'appstore_iap_attachment_receipt.json'),
+      File.join(root, 'outputs', 'appstore_iap_attachment_receipt.json')
+    ]
+  end
+  path = paths.find { |candidate| File.file?(candidate) }
+  return false unless path
+
+  receipt = JSON.parse(File.read(path))
+  generated_at = Time.parse(receipt['generatedAt'].to_s) rescue nil
+  return false unless generated_at && generated_at > Time.now - (4 * 60 * 60)
+
+  receipt['appId'].to_s == app_id.to_s &&
+    receipt['platform'].to_s.downcase == platform.to_s.downcase &&
+    receipt['version'].to_s == version_string.to_s &&
+    receipt['productId'].to_s == product_id.to_s &&
+    receipt['checked'] == true
+rescue StandardError
+  false
+end
+
+def iap_version_attachment_status(app_id:, platform:, product_id:, version_string: nil, project_root: nil)
   attached = version_page_includes_iap?(app_id: app_id, platform: platform, product_id: product_id)
   return :attached if attached == true
+  return :attached if appstore_iap_attachment_receipt_valid?(
+    app_id: app_id,
+    platform: platform,
+    version_string: version_string,
+    product_id: product_id,
+    project_root: project_root
+  )
   return :not_attached if attached == false
 
   :unknown
@@ -1754,7 +1732,8 @@ def find_or_create_version(app_id, asc_platform, version_string, token)
       type: 'appStoreVersions',
       attributes: {
         platform: asc_platform,
-        versionString: version_string
+        versionString: version_string,
+        releaseType: AUTOMATIC_RELEASE_TYPE
       },
       relationships: {
         app: {
@@ -2427,6 +2406,8 @@ def wait_for_app_screenshot_removal(screenshot_id:, token:, timeout_seconds: 20)
 end
 
 def upload_screenshot_set(localization_id, files, spec, token)
+  failures = []
+
   # Fetch all sets, then match by display type locally.
   # ASC filtering here has been inconsistent and can return mixed sets.
   sets_path = "/appStoreVersionLocalizations/#{localization_id}/appScreenshotSets"
@@ -2451,10 +2432,13 @@ def upload_screenshot_set(localization_id, files, spec, token)
         unless [200, 202, 204, 404].include?(delete_code)
           detail = delete_resp.dig('errors', 0, 'detail') || delete_resp.dig('errors', 0, 'title') || 'unknown error'
           log_warn "Failed to remove existing screenshot #{screenshot_id} (#{state || 'unknown'}): #{detail}"
+          failures << "remove #{screenshot_id}: #{detail}"
           next
         end
 
-        wait_for_app_screenshot_removal(screenshot_id: screenshot_id, token: token, timeout_seconds: 20)
+        unless wait_for_app_screenshot_removal(screenshot_id: screenshot_id, token: token, timeout_seconds: 20)
+          failures << "remove #{screenshot_id}: timed out waiting for deletion"
+        end
       end
     end
   else
@@ -2503,6 +2487,7 @@ def upload_screenshot_set(localization_id, files, spec, token)
     reservation = asc_post('/appScreenshots', body: body, token: token)
     unless reservation && reservation.dig('data', 'id')
       log_warn "Failed to reserve upload slot for #{file_name}"
+      failures << "reserve #{file_name}: upload slot was not created"
       File.delete(resized) if File.exist?(resized)
       next
     end
@@ -2545,31 +2530,40 @@ def upload_screenshot_set(localization_id, files, spec, token)
 
     File.delete(resized) if File.exist?(resized)
   end
+
+  failures
 end
 
 def upload_screenshots(version_id, platform, project_root, config, token)
   jobs = screenshot_jobs_for(platform, config)
-  return if jobs.empty?
+  return [] if jobs.empty?
 
   # Get the version's localizations to find where to attach screenshots
   path = "/appStoreVersions/#{version_id}/appStoreVersionLocalizations"
   resp = asc_get(path, token: token)
-  return unless resp && resp['data'] && !resp['data'].empty?
+  return ['No App Store version localizations found for screenshot upload'] unless resp && resp['data'] && !resp['data'].empty?
 
   localization_id = resp['data'].first['id']
+  failures = []
 
   jobs.each do |job|
     pattern = File.join(project_root, job[:glob])
     files = Dir.glob(pattern).sort
     if files.empty?
       log_warn "No screenshots found matching: #{pattern}"
+      failures << "missing screenshots: #{pattern}"
       next
     end
     log_info "Found #{files.length} screenshot(s) for #{job[:display_type]}"
-    upload_screenshot_set(localization_id, files, job, token)
+    failures.concat(upload_screenshot_set(localization_id, files, job, token))
   end
 
-  log_info "Screenshot upload complete for #{platform}"
+  if failures.empty?
+    log_info "Screenshot upload complete for #{platform}"
+  else
+    log_warn "Screenshot upload finished with #{failures.length} failure(s) for #{platform}"
+  end
+  failures
 end
 
 # ─── IAP Readiness ───
@@ -2796,12 +2790,13 @@ def ensure_iap_price_schedule(iap_id:, target_price_usd:, token:)
     log_warn "Existing IAP price schedule does not match USA #{target_price_usd} (observed: #{observed_prices}); creating requested schedule."
   end
 
-  pp_code, point = find_iap_price_point(iap_id: iap_id, target_price_usd: target_price_usd, token: token)
+  pp_code, points = asc_get_v2("/inAppPurchases/#{iap_id}/pricePoints?filter%5Bterritory%5D=USA&limit=200", token: token)
   unless pp_code == 200
     log_error "Could not read IAP price points (HTTP #{pp_code})."
     return false
   end
 
+  point = points.fetch('data', []).find { |entry| entry.dig('attributes', 'customerPrice').to_s == target_price_usd.to_s }
   unless point
     log_error "No USA price point found for #{target_price_usd}."
     return false
@@ -2839,39 +2834,6 @@ def ensure_iap_price_schedule(iap_id:, target_price_usd:, token:)
     log_error "Failed to create IAP price schedule (HTTP #{create_code}): #{detail}"
     false
   end
-end
-
-def resolve_iap_price_usd(config, options)
-  explicit = options[:iap_price_usd].to_s.strip
-  return explicit unless explicit.empty?
-
-  configured = config.dig('appstore', 'iap_price_usd').to_s.strip
-  return configured unless configured.empty?
-
-  IAP_DEFAULT_USD_PRICE
-end
-
-def find_iap_price_point(iap_id:, target_price_usd:, token:)
-  path = "/inAppPurchases/#{iap_id}/pricePoints?filter%5Bterritory%5D=USA&limit=200"
-
-  loop do
-    code, points = asc_get_v2(path, token: token)
-    return [code, nil] unless code == 200
-
-    entries = points.fetch('data', [])
-    point = entries.find { |entry| entry.dig('attributes', 'customerPrice').to_s == target_price_usd.to_s }
-    return [200, point] if point
-
-    next_url = points.dig('links', 'next').to_s
-    break if entries.empty?
-    break if next_url.empty?
-
-    uri = URI(next_url)
-    path = uri.path.sub(%r{\A/v2}, '')
-    path = "#{path}?#{uri.query}" if uri.query
-  end
-
-  [200, nil]
 end
 
 def iap_review_screenshot_state(screenshot_resp)
@@ -3354,7 +3316,13 @@ def ensure_subscription_readiness(app_id:, product_id:, project_root:, config:, 
   if state == 'READY_TO_SUBMIT'
     log_warn "Subscription #{product_id} is READY_TO_SUBMIT."
     attachment_status = if platform
-                          iap_version_attachment_status(app_id: app_id, platform: platform, product_id: product_id)
+                          iap_version_attachment_status(
+                            app_id: app_id,
+                            platform: platform,
+                            product_id: product_id,
+                            version_string: version_string,
+                            project_root: project_root
+                          )
                         else
                           :unknown
                         end
@@ -3493,8 +3461,18 @@ def ensure_iap_readiness(app_id:, product_id:, project_root:, config:, token:, p
 
   if submit_code == 409
     codes = iap_associated_error_codes(submit_resp)
-    if codes.all? { |code| code == 'STATE_ERROR.FIRST_IAP_MUST_BE_SUBMITTED_ON_VERSION' }
-      attachment_status = iap_version_attachment_status(app_id: app_id, platform: platform, product_id: product_id)
+    first_iap_version_codes = %w[
+      STATE_ERROR.FIRST_IAP_MUST_BE_SUBMITTED_ON_VERSION
+      STATE_ERROR.FIRST_NON_CONSUMABLE_MUST_BE_SUBMITTED_ON_VERSION
+    ]
+    if codes.all? { |code| first_iap_version_codes.include?(code) }
+      attachment_status = iap_version_attachment_status(
+        app_id: app_id,
+        platform: platform,
+        product_id: product_id,
+        version_string: version_string,
+        project_root: project_root
+      )
       if attachment_status == :attached
         lane = [platform, version_string].compact.reject(&:empty?).join(' ')
         label = lane.empty? ? product_id : "#{product_id} (attached on #{lane} version page)"
@@ -3604,31 +3582,21 @@ def submit_for_review(app_id, asc_platform, version_id, token, draft_repair_atte
     }
   }
 
-  uri = URI("https://api.appstoreconnect.apple.com/v1/reviewSubmissions")
-  http = Net::HTTP.new(uri.host, uri.port)
-  http.use_ssl = true
-
-  req = Net::HTTP::Post.new(uri)
-  req['Authorization'] = "Bearer #{token}"
-  req['Content-Type'] = 'application/json'
-  req.body = JSON.generate(submission_body)
-
-  response = http.request(req)
   submission_id = nil
 
-  if response.is_a?(Net::HTTPSuccess) || response.is_a?(Net::HTTPCreated)
-    parsed = JSON.parse(response.body) rescue {}
+  submission_code, parsed = asc_post_with_status('/reviewSubmissions', body: submission_body, token: token)
+  if [200, 201, 202].include?(submission_code)
     submission_id = parsed.dig('data', 'id')
-  elsif response.code == '409'
-    parsed = JSON.parse(response.body) rescue {}
+  elsif submission_code == 409
     associated = parsed.dig('errors', 0, 'meta', 'associatedErrors')
     summarize_associated_errors(associated) if associated.is_a?(Hash)
     submission_id = find_best_review_submission(app_id, asc_platform, version_id, token)
   end
 
   unless submission_id
-    log_error "Submit for review failed: #{response.code}"
-    log_error response.body[0..500] if response.body
+    log_error "Submit for review failed: #{submission_code}"
+    detail = parsed['raw'] || parsed['error'] || JSON.generate(parsed)
+    log_error detail.to_s[0..500] unless detail.to_s.empty?
     return false
   end
 
@@ -4036,9 +4004,78 @@ def verify_submitted_state(version_id, token)
   false
 end
 
+def release_app_store_version(version_id, token)
+  body = {
+    data: {
+      type: 'appStoreVersionReleaseRequests',
+      relationships: {
+        appStoreVersion: {
+          data: { type: 'appStoreVersions', id: version_id }
+        }
+      }
+    }
+  }
+
+  code, resp = asc_post_with_status('/appStoreVersionReleaseRequests', body: body, token: token)
+  if [200, 201, 202].include?(code)
+    log_info "Release request created for App Store version #{version_id}."
+    return true
+  end
+
+  detail = resp&.dig('errors', 0, 'detail') || resp&.dig('errors', 0, 'title') || 'Unknown ASC response'
+  log_error "Could not release App Store version #{version_id} (HTTP #{code}): #{detail}"
+  false
+end
+
+def release_pending_developer_versions(app_id, asc_platform, token)
+  rows = list_versions(app_id, asc_platform, token)
+  unless rows
+    log_error 'Failed to list app versions from ASC.'
+    return false
+  end
+
+  pending = pending_developer_release_versions(rows)
+  if pending.empty?
+    log_info "No #{PENDING_DEVELOPER_RELEASE_STATE} versions found for app #{app_id}#{asc_platform ? " on #{asc_platform}" : ''}."
+    return true
+  end
+
+  pending.map do |row|
+    log_warn "Releasing approved version #{row[:version]} (#{row[:platform]}) from #{PENDING_DEVELOPER_RELEASE_STATE}."
+    release_app_store_version(row[:id], token)
+  end.all?
+end
+
+def ensure_automatic_release_type(version_id, token)
+  body = {
+    data: {
+      type: 'appStoreVersions',
+      id: version_id,
+      attributes: {
+        releaseType: AUTOMATIC_RELEASE_TYPE
+      }
+    }
+  }
+
+  code, resp = asc_patch_with_status("/appStoreVersions/#{version_id}", body: body, token: token)
+  return true if [200, 201, 202].include?(code)
+
+  detail = resp&.dig('errors', 0, 'detail') || resp&.dig('errors', 0, 'title') || 'Unknown ASC response'
+  log_warn "Could not set releaseType=#{AUTOMATIC_RELEASE_TYPE} for App Store version #{version_id} (HTTP #{code}): #{detail}"
+  false
+end
+
 def default_build_number(version)
   normalized = version.tr('.', '').sub(/^0+/, '')
   normalized.empty? ? '1' : normalized
+end
+
+def configured_iap_price_usd(config)
+  candidates = [
+    config.dig('appstore', 'iap', 'price_usd'),
+    config.dig('appstore', 'iap_price_usd')
+  ]
+  candidates.map { |value| value.to_s.strip }.find { |value| !value.empty? } || IAP_DEFAULT_USD_PRICE
 end
 
 def detect_project_build_number(project_root)
@@ -4190,6 +4227,8 @@ OptionParser.new do |opts|
   opts.on('--withdraw-version VERSION', 'Withdraw an existing ASC app version lane (clears submission + linked review submission)') { |v| options[:withdraw_version] = v }
   opts.on('--list-builds', 'List ASC builds for app/platform (diagnostic)') { options[:list_builds] = true }
   opts.on('--list-versions', 'List ASC app versions and review states (diagnostic)') { options[:list_versions] = true }
+  opts.on('--fail-on-pending-release', 'Exit nonzero if a version is waiting for manual developer release') { options[:fail_on_pending_release] = true }
+  opts.on('--release-pending', 'Release all App Store versions currently pending developer release') { options[:release_pending] = true }
   opts.on('--fetch-review-message', 'Open linked App Review detail in Safari and print the visible reviewer message text') { options[:fetch_review_message] = true }
   opts.on('--fetch-review-package', 'Open linked App Review detail in Safari, click visible Download actions, and save reviewer evidence locally') { options[:fetch_review_package] = true }
   opts.on('--review-package-dir PATH', 'Output directory for --fetch-review-package (default: PROJECT_ROOT/outputs/appreview-...)') { |v| options[:review_package_dir] = v }
@@ -4406,12 +4445,40 @@ if options[:list_versions]
 
   rows.each do |row|
     suffix = []
+    suffix << "release_type=#{row[:release_type]}" if row[:release_type]
     suffix << "submission=#{row[:submission_state]}" if row[:submission_state]
     suffix << "submission_id=#{row[:submission_id]}" if row[:submission_id]
     detail = suffix.empty? ? '' : " (#{suffix.join(', ')})"
     log_info "platform=#{row[:platform]} version=#{row[:version]} state=#{row[:state]} created=#{row[:created]} id=#{row[:id]}#{detail}"
   end
+
+  pending = pending_developer_release_versions(rows)
+  if options[:fail_on_pending_release] && !pending.empty?
+    pending.each do |row|
+      log_error "Approved App Store version is waiting for manual release: platform=#{row[:platform]} version=#{row[:version]} id=#{row[:id]}"
+    end
+    exit 2
+  end
   exit 0
+end
+
+if options[:release_pending]
+  unless options[:app_id]
+    log_error 'Missing required option: --app-id'
+    exit 1
+  end
+
+  asc_platform = nil
+  if options[:platform]
+    asc_platform = PLATFORM_MAP[options[:platform]]
+    unless asc_platform
+      log_error "Unknown platform: #{options[:platform]} (use macos or ios)"
+      exit 1
+    end
+  end
+
+  token = generate_jwt
+  exit(release_pending_developer_versions(options[:app_id], asc_platform, token) ? 0 : 1)
 end
 
 if options[:fetch_review_message]
@@ -4610,7 +4677,11 @@ if options[:screenshots_only]
   if options[:skip_screenshots]
     log_info 'Skipping screenshot upload (--skip-screenshots).'
   else
-    upload_screenshots(version_id, asc_platform, project_root, config, token)
+    screenshot_failures = upload_screenshots(version_id, asc_platform, project_root, config, token)
+    unless screenshot_failures.empty?
+      log_error "Screenshot-only operation failed: #{screenshot_failures.first}"
+      exit 1
+    end
   end
 
   log_info 'Screenshot-only operation complete.'
@@ -4652,6 +4723,7 @@ if options[:sync_metadata_only]
   version_id = version_record['id']
   build_id = version_build_id(version_id, token)
   log_info "Syncing metadata for app=#{app_id} version=#{version} platform=#{options[:platform]} (state=#{version_record.dig('attributes', 'appStoreState')})"
+  ensure_automatic_release_type(version_id, token)
 
   token = generate_jwt
   metadata_ok = ensure_minimum_review_metadata(
@@ -4701,7 +4773,8 @@ if options[:iap_only]
     exit 1
   end
 
-  price_usd = resolve_iap_price_usd(config, options)
+  price_usd = options[:iap_price_usd].to_s.strip
+  price_usd = configured_iap_price_usd(config) if price_usd.empty?
 
   token = generate_jwt
   ok = if auto_renewable_subscription_config?(config)
@@ -4853,6 +4926,8 @@ unless version_id
   exit 1
 end
 
+ensure_automatic_release_type(version_id, token)
+
 # Step 4: Attach build
 # Refresh token (may have expired during polling)
 token = generate_jwt
@@ -4892,7 +4967,8 @@ end
 # Step 7b: Ensure App Store IAP metadata/submission readiness (if configured)
 configured_product_id = config.dig('appstore', 'product_id').to_s.strip
 unless configured_product_id.empty?
-  iap_price_usd = resolve_iap_price_usd(config, options)
+  iap_price_usd = options[:iap_price_usd].to_s.strip
+  iap_price_usd = configured_iap_price_usd(config) if iap_price_usd.empty?
   token = generate_jwt
   iap_ok = if auto_renewable_subscription_config?(config)
              ensure_subscription_readiness(

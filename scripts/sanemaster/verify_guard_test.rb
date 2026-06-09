@@ -166,6 +166,38 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
       true
     end
 
+    test('creates the configured iOS simulator when the Mini has no matching device') do
+      Dir.mktmpdir('verify-ios-create-destination-') do |dir|
+        File.write(
+          File.join(dir, '.saneprocess'),
+          <<~YAML
+            name: SaneScan
+            type: ios_app
+            scheme: SaneScan
+            project: SaneScan.xcodeproj
+            tests:
+              unit_target: SaneScanTests
+              unit_destination: "platform=iOS Simulator,name=iPhone 17 Pro"
+          YAML
+        )
+        Dir.chdir(dir) do
+          fresh_subject = VerifyHarness.new
+          fresh_subject.define_singleton_method(:ios_simulator_destinations) { [] }
+          fresh_subject.define_singleton_method(:create_ios_simulator_destination) do |name, requested_os|
+            @created_destination = [name, requested_os]
+            'created-sim'
+          end
+          command = fresh_subject.send(:build_test_command, false)
+
+          destination_index = command.index('-destination')
+          assert(destination_index, 'expected xcodebuild command to include a destination')
+          assert_eq(command[destination_index + 1], 'id=created-sim')
+          assert_eq(fresh_subject.instance_variable_get(:@created_destination), ['iPhone 17 Pro', ''])
+        end
+      end
+      true
+    end
+
     test('keeps macOS as the default unit test destination for desktop projects') do
       Dir.mktmpdir('verify-macos-destination-') do |dir|
         File.write(
@@ -279,6 +311,34 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
 
       assert_eq(subject.send(:verify_log_indicates_failure?, body), false)
       assert_eq(subject.send(:verify_log_indicates_success?, body), true)
+      true
+    end
+
+    test('treats App Intents autoShortcut diagnostics as benign after clean pass') do
+      body = <<~LOG
+        2026-05-25 SaneSales[44908] [Connection] Unable to get synchronousRemoteObjectProxy, error: Error Domain=NSCocoaErrorDomain Code=4097 "connection to service named com.apple.linkd.autoShortcut"
+        2026-05-25 SaneSales[44908] [Application] Error registering app with intents framework: Error Domain=NSCocoaErrorDomain Code=4097 "connection to service named com.apple.linkd.autoShortcut"
+        Test Suite 'All tests' passed at 2026-05-25 22:07:17.663.
+        Executed 87 tests, with 0 failures (0 unexpected) in 7.471 seconds
+        ** TEST FAILED **
+      LOG
+
+      assert_eq(subject.send(:verify_log_indicates_failure?, body), true)
+      assert_eq(subject.send(:verify_log_only_has_benign_app_intents_failure?, body), true)
+      result = subject.send(:classify_verify_result, success: false, timeout: false, tests_run: 87, log_text: body)
+      assert(result[:bucket] != 'test_failure', 'benign App Intents diagnostics should not be bucketed as a real test failure')
+      true
+    end
+
+    test('does not hide real failures behind App Intents diagnostics') do
+      body = <<~LOG
+        2026-05-25 SaneSales[44908] [Connection] Unable to get synchronousRemoteObjectProxy, error: Error Domain=NSCocoaErrorDomain Code=4097 "connection to service named com.apple.linkd.autoShortcut"
+        /tmp/SaneSalesTests.swift:42: error: -[SaneSalesTests.ExampleTests testExample] : XCTAssertTrue failed
+        ** TEST FAILED **
+      LOG
+
+      assert_eq(subject.send(:verify_log_only_has_benign_app_intents_failure?, body), false)
+      assert_eq(subject.send(:classify_verify_result, success: false, timeout: false, tests_run: 1, log_text: body)[:bucket], 'test_failure')
       true
     end
 
