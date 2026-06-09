@@ -169,6 +169,7 @@
       }
     ]
   },
+  "enableWorkflows": true,
   "enabledPlugins": {
     "swift-lsp@claude-plugins-official": true,
     "code-review@claude-plugins-official": true,
@@ -181,5 +182,5 @@
   },
   "effortLevel": "high",
   "skipDangerousModePermissionPrompt": true,
-  "enableWorkflows": true
+  "agentPushNotifEnabled": true
 }
