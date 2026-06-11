@@ -219,7 +219,11 @@ module SaneToolsChecks
 
         # Path traversal detection: check for sensitive dirs anywhere in path
         # Catches: ./test/../.ssh/key, /foo/bar/.ssh/id_rsa
-        if p.match?(%r{/\.ssh/}) || p.match?(%r{/\.aws/}) || p.match?(%r{/\.gnupg/})
+        # SSH trust files (authorized_keys, known_hosts) are not secrets and are
+        # legitimately managed by tooling (loopback SSH gives release scripts a
+        # stable Full Disk Access identity); private keys and config stay blocked.
+        sensitive_ssh = p.match?(%r{/\.ssh/}) && !p.match?(%r{/\.ssh/(?:authorized_keys|known_hosts)\z})
+        if sensitive_ssh || p.match?(%r{/\.aws/}) || p.match?(%r{/\.gnupg/})
           return "BLOCKED PATH (traversal detected): #{path}\n" \
                  "Path traversal to sensitive directory detected.\n" \
                  "DO THIS: Use direct paths within the project.\n" \
