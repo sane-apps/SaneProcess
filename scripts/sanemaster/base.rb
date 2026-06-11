@@ -114,6 +114,50 @@ module SaneMasterModules
       Open3.capture2e(bundle_tool_env.merge(extra_env), *command)
     end
 
+    def project_bundle_managed?(project_root = Dir.pwd)
+      File.file?(File.join(project_root, 'Gemfile'))
+    end
+
+    def git_hooks_dir(project_root = Dir.pwd)
+      output, status = Open3.capture2e('git', '-C', project_root, 'rev-parse', '--git-path', 'hooks')
+      if status.success? && !output.to_s.strip.empty?
+        hooks_path = output.strip
+        return File.expand_path(hooks_path.start_with?('/') ? hooks_path : File.join(project_root, hooks_path))
+      end
+
+      File.join(project_root, '.git', 'hooks')
+    end
+
+    def saneapps_lefthook_wrapper_path(project_root = Dir.pwd)
+      File.join(git_hooks_dir(project_root), 'saneapps-lefthook')
+    end
+
+    def preferred_lefthook_command(project_root = Dir.pwd)
+      wrapper = saneapps_lefthook_wrapper_path(project_root)
+      return [wrapper] if File.executable?(wrapper)
+      return [preferred_bundle_bin, 'exec', 'lefthook'] if project_bundle_managed?(project_root)
+
+      ['lefthook']
+    end
+
+    def lefthook_tool_env(project_root = Dir.pwd, base_env = ENV.to_h)
+      env = project_bundle_managed?(project_root) ? bundle_tool_env(base_env) : ruby_tool_env(base_env)
+      wrapper = saneapps_lefthook_wrapper_path(project_root)
+      env['LEFTHOOK_BIN'] = wrapper if File.executable?(wrapper)
+      env
+    end
+
+    def system_with_lefthook_env(*command, project_root: Dir.pwd, extra_env: {}, out: nil, err: nil)
+      options = {}
+      options[:out] = out unless out.nil?
+      options[:err] = err unless err.nil?
+      system(lefthook_tool_env(project_root).merge(extra_env), *command, **options)
+    end
+
+    def capture2e_with_lefthook_env(*command, project_root: Dir.pwd, extra_env: {})
+      Open3.capture2e(lefthook_tool_env(project_root).merge(extra_env), *command)
+    end
+
     # --- Project Resolution ---
 
     def project_name

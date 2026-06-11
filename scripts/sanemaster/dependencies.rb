@@ -94,7 +94,7 @@ module SaneMasterModules
       when 'mockolo'
         `mockolo --version 2>/dev/null`.strip || 'not installed'
       when 'lefthook'
-        output = `lefthook --version 2>/dev/null`
+        output, _status = capture2e_with_lefthook_env(*preferred_lefthook_command, '--version')
         output.match(/lefthook version ([\d.]+)/)&.[](1) || 'not installed'
       when 'fastlane'
         output, _status = capture2e_with_bundle_env(preferred_bundle_bin, 'exec', 'fastlane', '--version')

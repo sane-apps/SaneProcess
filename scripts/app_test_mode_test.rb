@@ -79,6 +79,19 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
     end
   end
 
+  test_category('Locale-safe output') do
+    test('sane_test normalizes command output before matching build text') do
+      source = File.read(SANE_TEST_PATH)
+
+      assert_includes(source, 'Encoding.default_external = Encoding::UTF_8')
+      assert_includes(source, 'def self.normalize_command_output(output)')
+      assert_includes(source, 'text.valid_encoding? ? text : text.scrub')
+      assert_includes(source, 'SaneTest.normalize_command_output(`xcodebuild -list')
+      assert_includes(source, 'stdout = SaneTest.normalize_command_output(stdout)')
+      true
+    end
+  end
+
   test_category('Gatekeeper launch guard') do
     test('sane_test blocks ad-hoc launches that can show unidentified-developer dialogs') do
       source = File.read(SANE_TEST_PATH)

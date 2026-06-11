@@ -221,32 +221,128 @@ module SaneMasterModules
     def check_bundle(check_only)
       puts "\n📦 Checking bundle dependencies..."
 
+      unless project_bundle_managed?
+        puts '   ℹ️  No Gemfile; skipping bundle dependency install'
+        return :ok
+      end
+
       unless File.exist?(HOMEBREW_BUNDLE)
         puts '   ❌ Homebrew bundle not found'
         return :missing
       end
 
-      bundle_check = `#{HOMEBREW_BUNDLE} check 2>&1`
+      bundle_check, = capture2e_with_bundle_env(preferred_bundle_bin, 'check')
       if bundle_check.include?('dependencies are satisfied')
         puts '   ✅ Bundle dependencies satisfied'
         sop_log('Bundle: dependencies satisfied')
-        return :ok if check_only
+        install_lefthook_hooks unless check_only
+        return :ok
       end
 
       return :ok if check_only
 
-      puts '   🔄 Running bundle update...'
-      if system("#{HOMEBREW_BUNDLE} update 2>&1")
-        puts '   ✅ Bundle updated'
-        sop_log('Bundle: updated successfully')
-        system('lefthook install -f 2>/dev/null')
+      puts '   🔄 Running bundle install...'
+      if system_with_bundle_env(preferred_bundle_bin, 'install')
+        puts '   ✅ Bundle installed'
+        sop_log('Bundle: installed successfully')
+        install_lefthook_hooks
       else
-        puts '   ❌ Bundle update failed'
-        sop_log('Bundle: update failed')
+        puts '   ❌ Bundle install failed'
+        sop_log('Bundle: install failed')
         return :failed
       end
 
       :ok
+    end
+
+    def install_lefthook_hooks(project_root = Dir.pwd)
+      return :ok unless File.file?(File.join(project_root, 'lefthook.yml')) ||
+                        File.file?(File.join(project_root, 'lefthook.yaml'))
+
+      write_saneapps_lefthook_wrapper(project_root) if project_bundle_managed?(project_root)
+      command = preferred_lefthook_command(project_root)
+      if system_with_lefthook_env(*command, 'install', '-f', project_root: project_root, out: File::NULL, err: File::NULL)
+        harden_lefthook_hooks(project_root)
+        sop_log('Lefthook: installed with SaneApps wrapper')
+        :ok
+      else
+        sop_log('Lefthook: install failed')
+        :failed
+      end
+    end
+
+    def write_saneapps_lefthook_wrapper(project_root = Dir.pwd)
+      wrapper_path = saneapps_lefthook_wrapper_path(project_root)
+      FileUtils.mkdir_p(File.dirname(wrapper_path))
+      File.write(wrapper_path, <<~'SH')
+        #!/bin/sh
+        dir="$(git rev-parse --show-toplevel 2>/dev/null)"
+        [ -n "$dir" ] && cd "$dir" || exit 1
+        os_arch="$(uname | tr '[:upper:]' '[:lower:]')"
+        cpu_arch="$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')"
+        native_lefthook="$(find "$dir/vendor/bundle/ruby" -path "*/gems/lefthook-*/libexec/lefthook-${os_arch}-${cpu_arch}/lefthook" -type f 2>/dev/null | sort | tail -1)"
+        if [ -x "$native_lefthook" ]; then
+          unset BUNDLE_GEMFILE BUNDLE_BIN_PATH BUNDLE_PATH GEM_HOME GEM_PATH RUBYOPT
+          exec "$native_lefthook" "$@"
+        fi
+        if [ -x "/opt/homebrew/opt/ruby/bin/ruby" ]; then
+          PATH="/opt/homebrew/opt/ruby/bin:$PATH"
+          export PATH
+        fi
+        BUNDLE_PATH="${BUNDLE_PATH:-vendor/bundle}"
+        export BUNDLE_PATH
+        exec bundle exec lefthook "$@"
+      SH
+      File.chmod(0o755, wrapper_path)
+      wrapper_path
+    end
+
+    def harden_lefthook_hooks(project_root = Dir.pwd)
+      hooks_dir = git_hooks_dir(project_root)
+      hook_paths = %w[pre-commit pre-push commit-msg prepare-commit-msg post-checkout post-merge post-rewrite]
+                   .map { |name| File.join(hooks_dir, name) }
+      hook_paths.each do |path|
+        next unless File.file?(path)
+
+        content = File.read(path)
+        next unless content.include?('call_lefthook')
+        next if content.include?('SaneApps: Git hooks run under a sparse PATH')
+
+        prelude = <<~'SH'
+          # SaneApps: Git hooks run under a sparse PATH, so prefer the Ruby/Bundler
+          # pair that matches Gemfile.lock before Lefthook resolves `bundle exec`.
+          dir="$(git rev-parse --show-toplevel 2>/dev/null)"
+          if [ -n "$dir" ]; then
+            if [ -x "/opt/homebrew/opt/ruby/bin/ruby" ]; then
+              PATH="/opt/homebrew/opt/ruby/bin:$PATH"
+              export PATH
+            fi
+            if [ -f "$dir/Gemfile.lock" ]; then
+              BUNDLE_PATH="${BUNDLE_PATH:-vendor/bundle}"
+              export BUNDLE_PATH
+              hooks_dir="$(git -C "$dir" rev-parse --git-path hooks 2>/dev/null)"
+              case "$hooks_dir" in
+                /*) ;;
+                *) hooks_dir="$dir/$hooks_dir" ;;
+              esac
+              bundle_hook="$hooks_dir/saneapps-lefthook"
+              if [ -x "$bundle_hook" ]; then
+                LEFTHOOK_BIN="$bundle_hook"
+                export LEFTHOOK_BIN
+              fi
+            fi
+          fi
+        SH
+
+        marker = "if [ \"$LEFTHOOK\" = \"0\" ]; then\n  exit 0\nfi\n"
+        updated = if content.include?(marker)
+                    content.sub(marker, "#{marker}\n#{prelude}\n")
+                  else
+                    "#{prelude}\n#{content}"
+                  end
+        File.write(path, updated)
+        File.chmod(0o755, path)
+      end
     end
 
     def check_homebrew_tools(check_only)

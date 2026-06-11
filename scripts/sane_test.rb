@@ -1,6 +1,11 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Hook, launchd, and SSH shells can run with a C locale. Force UTF-8 before any
+# xcodebuild/tool output is matched or parsed.
+Encoding.default_external = Encoding::UTF_8
+Encoding.default_internal = Encoding::UTF_8
+
 # sane_test.rb — Unified test launch for all SaneApps
 #
 # Usage:
@@ -978,6 +983,11 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
 
   # ── Shared ──────────────────────────────────────────────────
 
+  def self.normalize_command_output(output)
+    text = output.to_s.dup.force_encoding(Encoding::UTF_8)
+    text.valid_encoding? ? text : text.scrub('?')
+  end
+
   def build_debug
     Dir.chdir(@app_dir) do
       if File.exist?('project.yml') && Dir.glob('*.xcodeproj').empty?
@@ -1004,7 +1014,7 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
       if @release_build
         config_name = 'Release'
       else
-        has_prod_debug = `xcodebuild -list 2>/dev/null`.include?('ProdDebug')
+        has_prod_debug = SaneTest.normalize_command_output(`xcodebuild -list 2>/dev/null`).include?('ProdDebug')
         config_name = (has_signing_cert && has_prod_debug) ? 'ProdDebug' : 'Debug'
       end
       @last_build_config = config_name
@@ -1050,6 +1060,7 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
       build_args << 'build'
 
       stdout, status = Open3.capture2e(*build_args)
+      stdout = SaneTest.normalize_command_output(stdout)
 
       unless status.success?
         if @target == :local
@@ -1125,7 +1136,7 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
 
   def ssh_capture(cmd)
     stdout, _status = Open3.capture2('ssh', '-o', 'ConnectTimeout=5', MINI_HOST, cmd, err: File::NULL)
-    stdout
+    SaneTest.normalize_command_output(stdout)
   end
 
   def map_local_path_to_mini(local_path)

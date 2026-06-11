@@ -1,6 +1,11 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Hook, launchd, and SSH shells can run with a C locale. Force UTF-8 before any
+# module reads tool output that may contain non-ASCII bytes.
+Encoding.default_external = Encoding::UTF_8
+Encoding.default_internal = Encoding::UTF_8
+
 # ==============================================================================
 # SaneMaster: Professional Automation Suite for SaneApps
 # ==============================================================================

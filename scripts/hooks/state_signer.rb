@@ -15,9 +15,12 @@
 #
 # Secret key sources (in order of preference):
 #   1. CLAUDE_HOOK_SECRET environment variable
-#   2. macOS Keychain (service: claude_hook, account: hmac_secret) — macOS only
-#   3. File-based (~/.claude_hook_secret, mode 600) — Linux/fallback
-#   4. Auto-generated on first use
+#   2. Existing macOS Keychain item (service: claude_hook, account: hmac_secret)
+#   3. File-based (~/.claude_hook_secret, mode 600)
+#   4. Auto-generated file fallback
+#
+# Keychain writes are opt-in via SANE_HOOK_KEYCHAIN_WRITE=1. Hook/test runs must
+# not trigger GUI "store password" prompts while trying to self-heal state.
 # ==============================================================================
 
 require 'json'
@@ -25,6 +28,7 @@ require 'openssl'
 require 'fileutils'
 require 'securerandom'
 require 'shellwords'
+require 'open3'
 
 module StateSigner
   SECRET_ENV_VAR = 'CLAUDE_HOOK_SECRET'
@@ -69,7 +73,7 @@ module StateSigner
     def read_verified(path, symbolize: false)
       return nil unless File.exist?(path)
 
-      raw = File.read(path)
+      raw = File.read(path, encoding: Encoding::UTF_8)
       data = JSON.parse(raw)  # String keys for signature verification
 
       signature = data.delete(SIGNATURE_KEY)
@@ -87,7 +91,7 @@ module StateSigner
     def read_unverified(path)
       return nil unless File.exist?(path)
 
-      JSON.parse(File.read(path))
+      JSON.parse(File.read(path, encoding: Encoding::UTF_8))
     rescue JSON::ParserError, StandardError
       nil
     end
@@ -101,7 +105,7 @@ module StateSigner
     def migrate_to_signed(path)
       return false unless File.exist?(path)
 
-      data = JSON.parse(File.read(path))
+      data = JSON.parse(File.read(path, encoding: Encoding::UTF_8))
       data.delete(SIGNATURE_KEY) # Remove any existing signature
       write_signed(path, data)
       true
@@ -138,7 +142,7 @@ module StateSigner
 
     def persist_secret_to_env_cache(secret)
       return if secret.nil? || secret.empty?
-      return if ENV.fetch('SANE_ENV_CACHE_WRITE', '1') == '0'
+      return if ENV.fetch('SANE_ENV_CACHE_WRITE', '0') == '0'
 
       env_dir = File.dirname(ENV_CACHE_FILE)
       FileUtils.mkdir_p(env_dir)
@@ -171,8 +175,7 @@ module StateSigner
       if File.exist?(SECRET_FILE)
         file_secret = File.read(SECRET_FILE).strip
         if file_secret && !file_secret.empty?
-          # On macOS, migrate to Keychain for extra security
-          if macos?
+          if macos? && keychain_write_enabled?
             write_keychain(file_secret)
             File.delete(SECRET_FILE) rescue nil
           end
@@ -182,7 +185,7 @@ module StateSigner
 
       # Priority 4: Generate new secret
       new_secret = SecureRandom.hex(32)
-      if macos?
+      if macos? && keychain_write_enabled?
         write_keychain(new_secret)
       else
         write_secret_file(new_secret)
@@ -191,7 +194,16 @@ module StateSigner
     end
 
     def read_keychain
-      result = `security find-generic-password -s #{KEYCHAIN_SERVICE} -a #{KEYCHAIN_ACCOUNT} -w 2>/dev/null`.strip
+      return nil if ENV['SANE_NO_KEYCHAIN'] == '1'
+
+      result, = Open3.capture2(
+        'security', 'find-generic-password',
+        '-s', KEYCHAIN_SERVICE,
+        '-a', KEYCHAIN_ACCOUNT,
+        '-w',
+        err: File::NULL
+      )
+      result = result.to_s.strip
       persist_secret_to_env_cache(result) unless result.empty?
       result.empty? ? nil : result
     rescue StandardError
@@ -199,14 +211,33 @@ module StateSigner
     end
 
     def write_keychain(secret)
+      return write_secret_file(secret) unless keychain_write_enabled?
+
       # Delete existing entry if present (security add fails on duplicate)
-      system("security delete-generic-password -s #{KEYCHAIN_SERVICE} -a #{KEYCHAIN_ACCOUNT} 2>/dev/null")
-      success = system("security add-generic-password -s #{KEYCHAIN_SERVICE} -a #{KEYCHAIN_ACCOUNT} -w #{secret} 2>/dev/null")
+      system(
+        'security', 'delete-generic-password',
+        '-s', KEYCHAIN_SERVICE,
+        '-a', KEYCHAIN_ACCOUNT,
+        out: File::NULL,
+        err: File::NULL
+      )
+      success = system(
+        'security', 'add-generic-password',
+        '-s', KEYCHAIN_SERVICE,
+        '-a', KEYCHAIN_ACCOUNT,
+        '-w', secret,
+        out: File::NULL,
+        err: File::NULL
+      )
       persist_secret_to_env_cache(secret) if success
       # Fall back to file if Keychain write fails
       write_secret_file(secret) unless success
     rescue StandardError
       write_secret_file(secret)
+    end
+
+    def keychain_write_enabled?
+      ENV['SANE_HOOK_KEYCHAIN_WRITE'] == '1'
     end
 
     def write_secret_file(secret)

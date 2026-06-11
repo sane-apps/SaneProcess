@@ -1,6 +1,11 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Hook, launchd, and SSH shells can run with a C locale. Force UTF-8 before any
+# file or tool output is parsed.
+Encoding.default_external = Encoding::UTF_8
+Encoding.default_internal = Encoding::UTF_8
+
 # ==============================================================================
 # SaneProcess Validation Report - SCIENTIFIC EDITION
 # ==============================================================================

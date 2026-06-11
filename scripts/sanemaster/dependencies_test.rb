@@ -233,6 +233,54 @@ exit(run_tests('SaneMaster MCP Watchdog Tests') do
       end
       true
     end
+
+    test('uses repo Lefthook wrapper when present') do
+      Dir.mktmpdir('lefthook-wrapper-') do |dir|
+        hooks_dir = File.join(dir, '.git', 'hooks')
+        FileUtils.mkdir_p(hooks_dir)
+        wrapper = File.join(hooks_dir, 'saneapps-lefthook')
+        File.write(wrapper, "#!/bin/sh\nprintf 'lefthook version 2.1.1'\n")
+        FileUtils.chmod(0o755, wrapper)
+
+        assert_eq(subject.send(:preferred_lefthook_command, dir), [wrapper])
+      end
+      true
+    end
+
+    test('uses bundle exec Lefthook for Gemfile projects before wrapper exists') do
+      Dir.mktmpdir('lefthook-bundle-') do |dir|
+        bundle_bin = File.join(dir, 'bundle')
+        File.write(bundle_bin, "#!/bin/sh\nexit 0\n")
+        FileUtils.chmod(0o755, bundle_bin)
+        File.write(File.join(dir, 'Gemfile'), "source 'https://rubygems.org'\ngem 'lefthook'\n")
+
+        subject.define_singleton_method(:homebrew_bundle_path) { bundle_bin }
+
+        assert_eq(subject.send(:preferred_lefthook_command, dir), [bundle_bin, 'exec', 'lefthook'])
+      end
+      true
+    end
+
+    test('captures Lefthook output through the repo wrapper') do
+      Dir.mktmpdir('lefthook-capture-') do |dir|
+        hooks_dir = File.join(dir, '.git', 'hooks')
+        FileUtils.mkdir_p(hooks_dir)
+        wrapper = File.join(hooks_dir, 'saneapps-lefthook')
+        File.write(wrapper, "#!/bin/sh\nprintf 'lefthook version 2.1.1'\n")
+        FileUtils.chmod(0o755, wrapper)
+
+        output, status = subject.send(
+          :capture2e_with_lefthook_env,
+          *subject.send(:preferred_lefthook_command, dir),
+          '--version',
+          project_root: dir
+        )
+
+        assert(status.success?, 'expected Lefthook wrapper command to succeed')
+        assert_eq(output, 'lefthook version 2.1.1')
+      end
+      true
+    end
   end
 
   test_category('Configured MCP discovery') do
