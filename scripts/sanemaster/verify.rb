@@ -53,6 +53,7 @@ module SaneMasterModules
       run_verify_preflight
       enforce_saneui_source_of_truth!
       clean([]) if clean_first
+      ensure_sanevideo_test_assets!
       repo_status_before = git_status_snapshot
 
       puts '🔨 --- [ SANEMASTER VERIFY ] ---'
@@ -149,6 +150,31 @@ module SaneMasterModules
 
       preflight_test_environment
       @verify_preflight_ran = true
+    end
+
+    def ensure_sanevideo_test_assets!
+      return unless project_name == 'SaneVideo'
+      return unless respond_to?(:generate_test_assets)
+
+      required_assets = %w[
+        test_video.mp4
+        test_silence.mp4
+        test.mov
+        file.mov
+        IMG_7668.MOV
+        German.MOV
+        IMG_0422.MOV
+        IMG_6091.MOV
+        stress_test_clip.mp4
+        website-demo-video-call.mp4
+      ]
+      missing_assets = required_assets.reject do |filename|
+        File.exist?(File.join('Tests', 'Assets', filename))
+      end
+      return if missing_assets.empty?
+
+      puts "📦 Generating missing SaneVideo test assets: #{missing_assets.join(', ')}"
+      generate_test_assets
     end
 
     def enforce_saneui_source_of_truth!
