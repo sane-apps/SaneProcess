@@ -205,7 +205,7 @@ module SanePromptIntelligence
   def check_memory_staging
     return nil unless File.exist?(MEMORY_STAGING_FILE)
 
-    staging = JSON.parse(File.read(MEMORY_STAGING_FILE)) rescue nil
+    staging = JSON.parse(File.read(MEMORY_STAGING_FILE, encoding: Encoding::UTF_8)) rescue nil
     return nil unless staging && staging['needs_memory_update']
 
     staging
@@ -237,7 +237,7 @@ module SanePromptIntelligence
     return unless File.exist?(MEMORY_STAGING_FILE)
 
     # Mark as processed (don't delete - Claude will delete after saving)
-    staging = JSON.parse(File.read(MEMORY_STAGING_FILE)) rescue nil
+    staging = JSON.parse(File.read(MEMORY_STAGING_FILE, encoding: Encoding::UTF_8)) rescue nil
     return unless staging
 
     staging['needs_memory_update'] = false

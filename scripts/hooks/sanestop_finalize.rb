@@ -117,7 +117,7 @@ def count_session_blocks_and_resets
 
   session_resets = 0
   if File.exist?(RESET_AUDIT_LOG)
-    File.readlines(RESET_AUDIT_LOG).each do |line|
+    File.readlines(RESET_AUDIT_LOG, encoding: Encoding::UTF_8).each do |line|
       entry = JSON.parse(line) rescue next
       begin
         reset_time = Time.parse(entry['timestamp'])
@@ -417,7 +417,7 @@ def recent_workflow_receipt_ids
   return [] unless File.exist?(path)
 
   started = session_start_time
-  File.readlines(path).map do |line|
+  File.readlines(path, encoding: Encoding::UTF_8).map do |line|
     event = JSON.parse(line)
     next unless event['type'] == 'workflow_receipt'
 

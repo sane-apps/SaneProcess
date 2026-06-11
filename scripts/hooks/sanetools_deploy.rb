@@ -214,7 +214,7 @@ module SaneToolsDeploy
     reasons = []
 
     begin
-      appcast_content = File.read(appcast_path)
+      appcast_content = File.read(appcast_path, encoding: Encoding::UTF_8)
 
       if appcast_content.match?(EMPTY_SIGNATURE_PATTERN) || appcast_content.match?(PLACEHOLDER_SIGNATURE_PATTERN)
         reasons << "APPCAST HAS EMPTY/PLACEHOLDER SIGNATURE\n" \

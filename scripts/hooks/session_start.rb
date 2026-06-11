@@ -151,7 +151,7 @@ end
 def handle_stale_saneloop
   return unless File.exist?(SANELOOP_STATE_FILE)
 
-  state = JSON.parse(File.read(SANELOOP_STATE_FILE), symbolize_names: true)
+  state = JSON.parse(File.read(SANELOOP_STATE_FILE, encoding: Encoding::UTF_8), symbolize_names: true)
   return unless state[:active]
 
   started_at = Time.parse(state[:started_at]) rescue nil
@@ -198,7 +198,7 @@ def check_pending_mcp_actions
   # Check memory staging (uses official @modelcontextprotocol/server-memory)
   if File.exist?(MEMORY_STAGING_FILE)
     begin
-      staging = JSON.parse(File.read(MEMORY_STAGING_FILE))
+      staging = JSON.parse(File.read(MEMORY_STAGING_FILE, encoding: Encoding::UTF_8))
       if staging['needs_memory_update']
         pending << {
           type: 'memory_staging',
@@ -372,7 +372,7 @@ end
 def load_xcode_automation_state
   return {} unless File.exist?(XCODE_AUTOMATION_STATE_FILE)
 
-  JSON.parse(File.read(XCODE_AUTOMATION_STATE_FILE))
+  JSON.parse(File.read(XCODE_AUTOMATION_STATE_FILE, encoding: Encoding::UTF_8))
 rescue StandardError
   {}
 end
@@ -425,7 +425,7 @@ LINK_MONITOR_STATE = File.expand_path('~/SaneApps/infra/SaneProcess/outputs/link
 def check_sales_infrastructure
   return unless File.exist?(LINK_MONITOR_STATE)
 
-  state = JSON.parse(File.read(LINK_MONITOR_STATE))
+  state = JSON.parse(File.read(LINK_MONITOR_STATE, encoding: Encoding::UTF_8))
   consec_failures = state['consecutive_failures'] || 0
   last_failure_details = state['last_failure_details'] || []
 

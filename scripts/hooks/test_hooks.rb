@@ -43,6 +43,14 @@ class HookTests
       test("preserves sections on reset_except") { test_state_reset_except }
     end
 
+    # UTF-8 pinned File.read sites (2026-06-11 encoding audit). These fail
+    # SILENTLY without the encoding pin: rescue blocks swallow the parse error
+    # and return empty data instead of crashing.
+    test_group("UTF-8 Pinned Reads") do
+      test("non-ASCII visual receipt survives locale-less read") { test_visual_receipt_non_ascii_locale }
+      test("non-ASCII learnings survive locale-less read") { test_learnings_non_ascii_locale }
+    end
+
     # Test HookRegistry
     test_group("HookRegistry") do
       test("auto-registers detectors") { test_registry_auto_register }
@@ -147,6 +155,60 @@ class HookTests
     req = StateManager.get(:requirements, :requested)
     halted = StateManager.get(:enforcement, :halted)
     (req.nil? || req.empty?) && halted == true
+  end
+
+  # A receipt whose JSON contains non-ASCII must still validate when the
+  # reading process has no UTF-8 locale. Without the encoding pin in
+  # core/visual_receipt.rb, JSON.parse raises and the rescue silently
+  # reports the receipt as invalid.
+  def test_visual_receipt_non_ascii_locale
+    require 'tmpdir'
+    require 'time'
+    Dir.mktmpdir('receipt-utf8-') do |dir|
+      shot = File.join(dir, 'shot.png')
+      File.write(shot, 'png')
+      receipt_path = File.join(dir, 'outputs', 'customer_ui_action_receipt.json')
+      FileUtils.mkdir_p(File.dirname(receipt_path))
+      receipt = {
+        'status' => 'passed',
+        'host' => 'Mac Mini',
+        'note' => 'verified — Settings → General',
+        'generated_at' => Time.now.iso8601,
+        'screenshots' => [shot]
+      }
+      File.write(receipt_path, JSON.generate(receipt), encoding: Encoding::UTF_8)
+
+      script = 'require File.join(ENV["HOOKS_DIR"], "core/visual_receipt"); ' \
+               'ok = SaneVisualReceipt.valid_receipt?(cwd: ENV["RECEIPT_CWD"], path: ENV["RECEIPT_PATH"], started_at: Time.at(0)); ' \
+               'exit(ok ? 0 : 1)'
+      _out, _err, status = Open3.capture3(
+        { 'HOOKS_DIR' => __dir__, 'RECEIPT_CWD' => dir, 'RECEIPT_PATH' => receipt_path,
+          'LANG' => 'C', 'LC_ALL' => 'C' },
+        'ruby', '-E', 'US-ASCII', '-e', script
+      )
+      status.success?
+    end
+  end
+
+  # Session learnings routinely contain em dashes and arrows. Without the
+  # encoding pin in session_briefing.rb, every line fails JSON.parse under a
+  # US-ASCII default and the rescue silently returns zero learnings.
+  def test_learnings_non_ascii_locale
+    require 'tmpdir'
+    Dir.mktmpdir('learnings-utf8-') do |home|
+      FileUtils.mkdir_p(File.join(home, '.claude'))
+      learning = { 'insight' => 'breaker tripped — root cause was «encoding»', 'score' => 9 }
+      File.write(File.join(home, '.claude', 'session_learnings.jsonl'),
+                 JSON.generate(learning) + "\n", encoding: Encoding::UTF_8)
+
+      script = 'require File.join(ENV["HOOKS_DIR"], "session_briefing"); ' \
+               'exit(load_recent_learnings.length == 1 ? 0 : 1)'
+      _out, _err, status = Open3.capture3(
+        { 'HOOKS_DIR' => __dir__, 'HOME' => home, 'LANG' => 'C', 'LC_ALL' => 'C' },
+        'ruby', '-E', 'US-ASCII', '-e', script
+      )
+      status.success?
+    end
   end
 
   # HookRegistry tests

@@ -265,7 +265,7 @@ if command.match?(/\bgh\s+(?:issue|pr)\s+(?:comment|close|review|create)\b/)
 
   if File.exist?(APPROVAL_FLAG)
     begin
-      payload = JSON.parse(File.read(APPROVAL_FLAG))
+      payload = JSON.parse(File.read(APPROVAL_FLAG, encoding: Encoding::UTF_8))
       age = Time.now.to_i - payload['created_at'].to_i
       approved = payload['created_at'].to_i.positive? &&
                  age >= 0 &&

@@ -40,7 +40,7 @@ module SaneToolsResearch
     configured_mcp_config_paths(project_dir).each_with_object([]) do |path, names|
       next unless File.exist?(path)
 
-      contents = File.read(path)
+      contents = File.read(path, encoding: Encoding::UTF_8)
       if path.end_with?('.json')
         names.concat(mcp_names_from_json_config(contents))
       elsif path.end_with?('.toml')
@@ -197,7 +197,7 @@ module SaneToolsResearch
     staging_file = memory_staging_file(project_dir)
     if File.exist?(staging_file)
       begin
-        staging = JSON.parse(File.read(staging_file))
+        staging = JSON.parse(File.read(staging_file, encoding: Encoding::UTF_8))
         if staging['needs_memory_update']
           entity_name = staging.dig('suggested_entity', 'name') || 'learnings'
           pending_actions << "Memory staging needs saving: #{entity_name}"

@@ -36,7 +36,7 @@ def saneprocess_project_name(cwd)
   manifest_path = File.join(cwd, '.saneprocess')
   return nil unless File.exist?(manifest_path)
 
-  manifest = YAML.safe_load(File.read(manifest_path)) || {}
+  manifest = YAML.safe_load(File.read(manifest_path, encoding: Encoding::UTF_8)) || {}
   manifest['name'] || File.basename(cwd)
 rescue StandardError
   File.exist?(File.join(cwd, '.saneprocess')) ? File.basename(cwd) : nil
@@ -49,7 +49,7 @@ def visual_state(cwd)
   state_file = File.join(cwd, '.claude', 'state.json')
   return {} unless File.exist?(state_file)
 
-  JSON.parse(File.read(state_file))['visual_verification'] || {}
+  JSON.parse(File.read(state_file, encoding: Encoding::UTF_8))['visual_verification'] || {}
 rescue JSON::ParserError, Errno::ENOENT
   {}
 end
@@ -58,7 +58,7 @@ def hook_state_section(cwd, section)
   state_file = File.join(cwd, '.claude', 'state.json')
   return {} unless File.exist?(state_file)
 
-  state = JSON.parse(File.read(state_file))
+  state = JSON.parse(File.read(state_file, encoding: Encoding::UTF_8))
   state[section.to_s] || {}
 rescue JSON::ParserError, Errno::ENOENT
   {}
@@ -110,7 +110,7 @@ def recent_verified_metric?(cwd, project_name, max_age_seconds: 1_800)
   current_fingerprint = current_source_fingerprint(cwd)
   project_root = File.expand_path(cwd)
 
-  File.readlines(path, chomp: true).map do |line|
+  File.readlines(path, chomp: true, encoding: Encoding::UTF_8).map do |line|
     JSON.parse(line)
   rescue JSON::ParserError
     nil

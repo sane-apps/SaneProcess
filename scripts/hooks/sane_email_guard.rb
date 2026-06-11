@@ -62,7 +62,7 @@ def verify_approval(body)
   return [false, 'No approval flag found'] unless File.exist?(EMAIL_APPROVAL_FLAG)
 
   begin
-    payload = JSON.parse(File.read(EMAIL_APPROVAL_FLAG))
+    payload = JSON.parse(File.read(EMAIL_APPROVAL_FLAG, encoding: Encoding::UTF_8))
   rescue JSON::ParserError
     cleanup_flag(EMAIL_APPROVAL_FLAG)
     return [false, 'Approval flag is invalid. Re-approve the draft.']
@@ -105,7 +105,7 @@ def verify_batch_approval(body, to_addr, subject)
   return [false, 'No batch approval flag found'] unless File.exist?(EMAIL_BATCH_APPROVAL_FLAG)
 
   begin
-    payload = JSON.parse(File.read(EMAIL_BATCH_APPROVAL_FLAG))
+    payload = JSON.parse(File.read(EMAIL_BATCH_APPROVAL_FLAG, encoding: Encoding::UTF_8))
   rescue JSON::ParserError
     return [false, 'Batch approval file is invalid']
   end
@@ -217,7 +217,7 @@ if command.include?('check-inbox.sh')
       exit 2
     end
 
-    body = File.read(body_file)
+    body = File.read(body_file, encoding: Encoding::UTF_8)
 
     # === CHECK 1: No corporate "we" language ===
     if body.match?(CORPORATE_WE_PATTERN)
@@ -241,7 +241,7 @@ if command.include?('check-inbox.sh')
         settings_files = Dir.glob(File.join(root, '**/*Settings*.swift')) +
                          Dir.glob(File.join(root, '**/SettingsView.swift'))
         settings_files.uniq.each do |f|
-          content = File.read(f) rescue next
+          content = File.read(f, encoding: Encoding::UTF_8) rescue next
           # Match: case xxx = "Label" (enum raw values — these are what users see)
           content.scan(/case\s+\w+\s*=\s*"([^"]+)"/).flatten.each { |label| all_tab_labels << label }
           # Match: .navigationTitle("Label")

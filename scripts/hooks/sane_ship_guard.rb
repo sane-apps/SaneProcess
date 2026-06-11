@@ -113,7 +113,7 @@ end
 
 # Extract app name from .saneprocess (YAML-like: "name: AppName")
 app_name = nil
-File.readlines(saneprocess_path).each do |line|
+File.readlines(saneprocess_path, encoding: Encoding::UTF_8).each do |line|
   if line =~ /\Aname:\s*(\S+)/
     app_name = $1
     break

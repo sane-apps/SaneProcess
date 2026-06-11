@@ -65,7 +65,7 @@ module SaneToolsGitHubGuard
   def consume_github_approval_flag
     return :missing unless File.exist?(GITHUB_APPROVAL_FLAG)
 
-    payload = JSON.parse(File.read(GITHUB_APPROVAL_FLAG))
+    payload = JSON.parse(File.read(GITHUB_APPROVAL_FLAG, encoding: Encoding::UTF_8))
     File.delete(GITHUB_APPROVAL_FLAG)
     created_at = payload['created_at'].to_i
     approval = payload['user_approval'].to_s.strip

@@ -91,7 +91,7 @@ def load_recent_learnings(count = 5)
   learnings_file = File.expand_path('~/.claude/session_learnings.jsonl')
   return [] unless File.exist?(learnings_file)
 
-  lines = File.readlines(learnings_file).last(count)
+  lines = File.readlines(learnings_file, encoding: Encoding::UTF_8).last(count)
   lines.map { |l| JSON.parse(l) rescue nil }.compact
 rescue StandardError
   []

@@ -16,7 +16,7 @@ module SaneVisualReceipt
     absolute = expand_path(cwd, path)
     return false unless absolute && File.file?(absolute)
 
-    receipt = JSON.parse(File.read(absolute))
+    receipt = JSON.parse(File.read(absolute, encoding: Encoding::UTF_8))
     generated_at = parse_time(receipt['generated_at'] || receipt['generatedAt'] || receipt['timestamp'])
     return false if generated_at && generated_at < started_at
 

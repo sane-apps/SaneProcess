@@ -116,7 +116,7 @@ def session_verify_events
   return [] unless File.exist?(path)
 
   started = session_start_time
-  File.readlines(path).map do |line|
+  File.readlines(path, encoding: Encoding::UTF_8).map do |line|
     event = JSON.parse(line)
     next unless event['type'] == 'verify'
 
@@ -335,7 +335,7 @@ def check_incomplete_todos(transcript_path)
     if TRANSCRIPT_CACHE[:path] == transcript_path && TRANSCRIPT_CACHE[:mtime] == mtime
       todos = TRANSCRIPT_CACHE[:todos]
     else
-      content = File.read(transcript_path)
+      content = File.read(transcript_path, encoding: Encoding::UTF_8)
       # Find all TodoWrite tool uses and get the last one
       todos_json = content.scan(/\{"type":\s*"tool_use".*?"name":\s*"TodoWrite".*?"input":\s*(\{[^}]+\})/m).flatten.last
 
@@ -505,7 +505,7 @@ def validate_sane_audit_artifact
 
   present_files = required_files - missing_files
   incomplete_reports = present_files.select do |file|
-    report_content = File.read(File.join(output_dir, file))
+    report_content = File.read(File.join(output_dir, file), encoding: Encoding::UTF_8)
     !sane_audit_report_content_complete?(report_content)
   rescue StandardError
     true
@@ -519,7 +519,7 @@ def validate_sane_audit_artifact
     return issues
   end
 
-  content = File.read(summary_path)
+  content = File.read(summary_path, encoding: Encoding::UTF_8)
   required_sections = [
     'Per-Perspective Scores',
     'Root-Cause Matrix',

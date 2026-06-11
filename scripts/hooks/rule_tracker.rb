@@ -107,7 +107,7 @@ module RuleTracker
   def self.report(sessions: 5)
     return { error: 'No tracking data' } unless File.exist?(TRACKING_FILE)
 
-    entries = File.readlines(TRACKING_FILE).map { |l| JSON.parse(l, symbolize_names: true) }
+    entries = File.readlines(TRACKING_FILE, encoding: Encoding::UTF_8).map { |l| JSON.parse(l, symbolize_names: true) }
 
     # Get unique session IDs and take last N
     session_ids = entries.map { |e| e[:session_id] }.uniq.last(sessions)
