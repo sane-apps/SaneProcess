@@ -447,14 +447,20 @@ module SaneToolsChecks
         end
       end
 
-      if command.match?(bash_file_write_pattern)
-        target_match = command.match(/(?:>|>>|tee\s+)\s*([^\s|&;]+)/)
+      # Redirect operators always sit outside quotes, so blanking quoted
+      # strings removes literal '>' false positives ('<item>', "a > b")
+      # without hiding real redirects.
+      scan = command.gsub(/'[^']*'/, "''").gsub(/"[^"]*"/, '""')
+
+      if scan.match?(bash_file_write_pattern)
+        target_match = scan.match(/(?:>|>>|tee\s+)\s*([^\s|&;]+)/)
         target = target_match ? target_match[1] : nil
+        target ||= scan[/\bcurl\b[^|;&]*\s-o\s+([^\s|&;]+)/, 1]
 
         return nil if target && target.match?(SAFE_REDIRECT_TARGETS)
 
-        if command.match?(/^\s*\S+.*2>&1\s*$/) || command.match?(/2>\/dev\/null/)
-          unless command.match?(/[^2]>\s*[^&]/) || command.match?(/>>/)
+        if scan.match?(/^\s*\S+.*2>&1\s*$/) || scan.match?(/2>\/dev\/null/)
+          unless scan.match?(/[^2]>\s*[^&]/) || scan.match?(/>>/)
             return nil
           end
         end

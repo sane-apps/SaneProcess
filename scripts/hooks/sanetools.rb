@@ -109,9 +109,10 @@ BASH_FILE_WRITE_PATTERN = Regexp.union(
   /\bcat\b.*(?<![0-9])>(?!&)/,
   # File copy (M8 addition)
   /\bcp\s+/,
-  # Download to file (M8 addition)
-  /\bcurl\b.*-[oO]/,
-  /\bwget\b.*-O/,
+  # Download to file (M8 addition); scoped to curl's own segment so a
+  # downstream `| grep -o` does not read as a curl output flag
+  /\bcurl\b[^|;&]*\s-[oO]\b/,
+  /\bwget\b[^|;&]*\s-O\b/,
   # Patch application (M8 addition)
   /\bgit\s+apply\b/,
   # Bulk file operations (M8 addition)
