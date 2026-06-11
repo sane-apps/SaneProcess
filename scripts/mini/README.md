@@ -18,9 +18,31 @@ Canonical Mini access is always:
 ssh mini 'hostname; whoami'
 ```
 
-The `mini` and `mini-remote` aliases route through Cloudflare Access so they
-work off-Wi-Fi. The old Bonjour route is preserved as `mini-lan` for same-network
-diagnostics only.
+The `mini` and `mini-remote` aliases walk a connection ladder via
+`~/.local/bin/saneapps-mini-proxy` (canonical source:
+`scripts/mini/saneapps-mini-proxy.sh`), first reachable wins:
+
+1. Direct LAN (Bonjour, `stephans-mac-mini.local`) — same network only.
+2. Tailscale (`stephans-mac-mini` on the MrSaneApps tailnet) — the durable
+   anywhere path. The Mini runs the Homebrew tailscaled LaunchDaemon; the
+   controller runs either a system tailscaled or the no-sudo userspace
+   LaunchAgent `com.saneapps.tailscaled-userspace` that the installer sets up.
+   Phones join the same tailnet via the Tailscale app, then any SSH client
+   reaches `stephans-mac-mini`.
+3. Cloudflare quick-tunnel bridge (`mini-ssh-host.saneapps.com` TXT →
+   `cloudflared access ssh`) — legacy last resort only.
+
+The old Bonjour route is preserved as `mini-lan` for same-network diagnostics
+only.
+
+Durability notes:
+
+- In the Tailscale admin console, disable key expiry for `stephans-mac-mini`
+  and each controller device (Machines → ⋯ → Disable key expiry); otherwise
+  the device key silently expires after ~180 days and the ladder falls back
+  to the fragile Cloudflare bridge.
+- Both tailscaled daemons are RunAtLoad + KeepAlive, so the path survives
+  reboots on both ends with no action.
 
 Install or repair the controller-machine SSH config:
 
@@ -33,16 +55,17 @@ What it installs:
 - `~/.ssh/config` includes `~/.ssh/config.d/*.conf`.
 - `~/.ssh/config.d/saneapps-mini.conf` defines `mini`, `mini-remote`, and
   `mini-lan`.
-- `mini` resolves `mini-ssh-host.saneapps.com` TXT and passes that host to
-  `cloudflared access ssh`.
+- `~/.local/bin/saneapps-mini-proxy` (the ladder above).
+- The userspace tailscaled LaunchAgent when no tailscaled is running (prints
+  the one-time `tailscale up` auth step if the device is logged out).
 
 Verify from the controller:
 
 ```bash
-dig +short TXT mini-ssh-host.saneapps.com
-cloudflared --version
+tailscale --socket="$HOME/Library/Application Support/tailscaled-userspace/tailscaled.sock" status
 ssh -G mini | grep -E '^(hostname|proxycommand|identityfile) '
 ssh mini 'hostname; whoami; pwd'
+dig +short TXT mini-ssh-host.saneapps.com   # last-resort bridge only
 ```
 
 Install or repair the Mini-side quick tunnel from a working Mini shell:
