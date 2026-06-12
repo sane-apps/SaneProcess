@@ -20,6 +20,12 @@
       "cmd": ["ruby", "scripts/hooks/sane_open_guard_test.rb"]
     },
     {
+      "path": "scripts/hooks/sane_build_tool_guard_test.rb",
+      "label": "SaneProcess build tool shell guard tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/hooks/sane_build_tool_guard_test.rb"]
+    },
+    {
       "path": "scripts/app_test_mode_test.rb",
       "label": "SaneProcess app test mode tests",
       "status": "required",
@@ -224,6 +230,12 @@
       "cmd": ["ruby", "scripts/sanemaster/release_guardrail_test.rb"]
     },
     {
+      "path": "scripts/sanemaster/bootstrap_secret_redaction_test.rb",
+      "label": "SaneProcess bootstrap secret redaction tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/bootstrap_secret_redaction_test.rb"]
+    },
+    {
       "path": "scripts/sanemaster/release_route_test.rb",
       "label": "SaneProcess release route tests",
       "status": "required",
@@ -252,6 +264,12 @@
       "label": "SaneProcess structural compliance tests",
       "status": "required",
       "cmd": ["ruby", "scripts/sanemaster/structural_compliance_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/secret_scan_test.rb",
+      "label": "SaneProcess secret scan wrapper tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/secret_scan_test.rb"]
     },
     {
       "path": "scripts/sanemaster/test_mode_test.rb",
@@ -342,6 +360,12 @@
       "label": "SaneApps app test launcher",
       "status": "manual",
       "reason": "Operational app launcher, not a SaneProcess unit test."
+    },
+    {
+      "path": "scripts/sane_test_locale_test.rb",
+      "label": "SaneProcess C-locale survival tests for launch/build entry points",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sane_test_locale_test.rb"]
     }
   ]
 }

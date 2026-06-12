@@ -234,6 +234,7 @@ receipts. Run `ruby scripts/SaneMaster.rb` or `help <category>` for full help.
 | Full build/test | `ruby scripts/SaneMaster.rb verify` |
 | UI-inclusive verify | `ruby scripts/SaneMaster.rb verify --ui` |
 | Tool/MCP discovery | `ruby scripts/SaneMaster.rb tool_discovery --query "..."` |
+| Secret scan hygiene | `ruby scripts/SaneMaster.rb secret_scan --path /Users/sj` |
 | Test quality scan | `ruby scripts/SaneMaster.rb test_scan -v` |
 | Process eval | `ruby scripts/SaneMaster.rb process_eval --json` |
 | Prompt routing eval | `ruby scripts/SaneMaster.rb agent_eval --json` |
@@ -244,6 +245,44 @@ receipts. Run `ruby scripts/SaneMaster.rb` or `help <category>` for full help.
 | Support inbox | `ruby scripts/SaneMaster.rb check_inbox` |
 | Sales/download/funnel | `sales`, `downloads`, `events` |
 | Machine cleanup | `ruby scripts/SaneMaster.rb machine_cleanup --host mini --apply` |
+
+`process_eval` is the gate for real workflow improvement, not synthetic
+busywork. Trace fixtures define required event shapes, but slimming/expanding
+SaneProcess should be justified by live telemetry and structured A/B receipts
+under `outputs/process-abtest/`. A valid A/B receipt must name a real task,
+both arms, endpoint verification, blind judge outcome, costs, validation
+counter deltas, decisive mechanisms, and pending production follow-ups.
+
+Process refinement uses a scientific bar, not vibes:
+
+- **Keep** a rule/tool when it has positive causal evidence, or a high-severity
+  incident lineage plus measured accuracy.
+- **Slim or merge** when the mechanism is useful but broader than the evidence,
+  duplicative, or costly for low-risk task classes.
+- **Retire** only after root-cause review shows no unique protection, no
+  positive evidence, and enough samples or replay coverage to catch regressions.
+- Broad guardrail removals need multiple task families or 100+ samples; narrow
+  hook/routing changes need at least 30 relevant samples where available.
+- Rare high-severity protections such as release, customer email, local-runtime
+  proof, and sensitive data gates may stay on incident lineage plus targeted
+  replay tests even when sample counts are low.
+- Never optimize raw block count, workflow receipt count, or SOP score alone.
+  Score outcome truth: correct world state, fewer repeated failures, less
+  rework, and verified customer-facing behavior.
+
+Current evidence split:
+
+- Direct outcome proof: startup context loading, Mini-first canonical
+  verification, and SaneBar geometry restraint from the 2026-06-11 A/B receipt.
+- Strong incident-lineage protections: structured visual proof, two-strike
+  escalation, canonical release path, verify repo-drift guard, and email hash
+  approval.
+- Contract lint, not outcome proof by itself: `agent_eval`, trace fixtures,
+  route fixtures, and SOP score history.
+- First slimming targets are measurement and scope, not safety removal:
+  demote legacy/noisy score surfaces, exclude daemon bookkeeping from task
+  telemetry, unify UI-proof metrics, and test whether startup cleanup steps can
+  be warning-only while keeping startup context hard.
 
 ## Testing
 
@@ -343,8 +382,11 @@ Tool discovery and MCP health answer different questions:
 
 - `ruby scripts/SaneMaster.rb tool_discovery --query "..."` answers whether a
   canonical tool path already exists.
-- `ruby scripts/SaneMaster.rb mcp_watchdog doctor` and
-  `~/.codex/bin/check-mcps` answer whether optional MCP helpers are healthy.
+- `ruby scripts/SaneMaster.rb mcp_watchdog doctor` answers whether optional MCP
+  helpers are healthy by combining process topology with the live active-client
+  probe when available.
+- `~/.codex/bin/check-mcps` is the direct Codex MCP endpoint proof. Process
+  presence alone is not evidence that Codex can call the tools.
 - A green MCP check does not clear repo validation. A red repo validation run
   does not prove a tool is missing.
 - Run the tool-discovery receipt before proposing a new tool, wrapper, or

@@ -57,7 +57,7 @@ module SaneToolsTest
     ENV.delete('SANE_MINI_UNAVAILABLE')
 
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('mcp__computer_use__get_app_state', { 'app' => 'Safari' })
     $stderr.reopen(original_stderr)
 
@@ -73,7 +73,7 @@ module SaneToolsTest
     ENV['SANE_FORCE_MAC_MINI_FOR_TEST'] = '1'
 
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('mcp__computer_use__get_app_state', { 'app' => 'Safari' })
     $stderr.reopen(original_stderr)
 
@@ -95,7 +95,7 @@ module SaneToolsTest
     warn 'Testing canonical action path guard:'
 
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('Bash', { 'command' => "ssh mini 'screencapture -x /tmp/sanebar.png'" })
     $stderr.reopen(original_stderr)
 
@@ -108,7 +108,7 @@ module SaneToolsTest
     end
 
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call(
       'Bash',
       { 'command' => '~/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh --app "SaneBar" --mode temp' }
@@ -121,6 +121,27 @@ module SaneToolsTest
     else
       failed += 1
       warn "  FAIL: canonical Mini screenshot wrapper should be allowed, got exit #{exit_code}"
+    end
+
+    # === SECRET STARTUP AUTOLOAD GUARD TEST ===
+    warn ''
+    warn 'Testing secret startup autoload guard:'
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
+    exit_code = process_tool_proc.call('Edit', {
+      'file_path' => File.expand_path('~/.zshenv'),
+      'old_string' => '# empty',
+      'new_string' => 'export CLOUDFLARE_API_TOKEN="$(security find-generic-password -s cloudflare -a api_token -w 2>/dev/null)"'
+    })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: shell startup secret autoload is blocked'
+    else
+      failed += 1
+      warn "  FAIL: shell startup secret autoload should block, got exit #{exit_code}"
     end
 
     # === CIRCUIT BREAKER TEST ===
@@ -136,7 +157,7 @@ module SaneToolsTest
     end
 
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })
     $stderr.reopen(original_stderr)
 
@@ -149,7 +170,7 @@ module SaneToolsTest
     end
 
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     read_exit = process_tool_proc.call('Read', { 'file_path' => '/Users/sj/SaneApps/infra/SaneProcess/README.md' })
     grep_exit = process_tool_proc.call('Grep', { 'pattern' => 'Circuit breaker' })
     web_exit = process_tool_proc.call('WebSearch', { 'query' => 'ruby circuit breaker pattern' })
@@ -174,7 +195,7 @@ module SaneToolsTest
     StateManager.reset(:research)
 
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     # Use source file path (not /tmp/ which is in safe list)
     exit_code = process_tool_proc.call('Bash', { 'command' => 'echo "test" > ~/SaneProcess/src/file.swift' })
     $stderr.reopen(original_stderr)
@@ -213,7 +234,7 @@ module SaneToolsTest
     tests.each do |test|
       # Suppress output
       original_stderr = $stderr.clone
-      $stderr.reopen('/dev/null', 'w')
+      $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
 
       exit_code = process_tool_proc.call(test[:tool], test[:input])
 
@@ -250,7 +271,7 @@ module SaneToolsTest
 
     if tracked_count == 4
       original_stderr = $stderr.clone
-      $stderr.reopen('/dev/null', 'w')
+      $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
       exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })
       $stderr.reopen(original_stderr)
 
@@ -285,7 +306,7 @@ module SaneToolsTest
     end
 
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })
     $stderr.reopen(original_stderr)
 
@@ -299,7 +320,7 @@ module SaneToolsTest
 
     # Test: Planning required allows research tools
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('Read', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })
     $stderr.reopen(original_stderr)
 
@@ -315,7 +336,7 @@ module SaneToolsTest
     StateManager.update(:planning) { |p| p[:plan_approved] = true; p }
 
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })
     $stderr.reopen(original_stderr)
 
@@ -342,7 +363,7 @@ module SaneToolsTest
     end
 
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })
     $stderr.reopen(original_stderr)
 
@@ -378,7 +399,7 @@ module SaneToolsTest
     end
 
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })
     $stderr.reopen(original_stderr)
 
@@ -391,7 +412,7 @@ module SaneToolsTest
     end
 
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('Bash', { 'command' => 'ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"' })
     $stderr.reopen(original_stderr)
 
@@ -419,7 +440,7 @@ module SaneToolsTest
       end
 
       original_stderr = $stderr.clone
-      $stderr.reopen('/dev/null', 'w')
+      $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
       exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })
       $stderr.reopen(original_stderr)
 
@@ -432,7 +453,7 @@ module SaneToolsTest
       end
 
       original_stderr = $stderr.clone
-      $stderr.reopen('/dev/null', 'w')
+      $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
       exit_code = process_tool_proc.call('Bash', { 'command' => runner_command })
       $stderr.reopen(original_stderr)
 
@@ -465,7 +486,7 @@ module SaneToolsTest
 
     # Test: First edit to .github/workflows blocks
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/.github/workflows/ci.yml' })
     $stderr.reopen(original_stderr)
 
@@ -479,7 +500,7 @@ module SaneToolsTest
 
     # Test: Retry same file passes (auto-approved)
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/.github/workflows/ci.yml' })
     $stderr.reopen(original_stderr)
 
@@ -493,7 +514,7 @@ module SaneToolsTest
 
     # Test: Dockerfile blocks on first attempt
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('Write', { 'file_path' => '/Users/sj/SaneProcess/Dockerfile', 'content' => 'FROM ruby:3.2' })
     $stderr.reopen(original_stderr)
 
@@ -507,7 +528,7 @@ module SaneToolsTest
 
     # Test: .entitlements blocks on first attempt
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/App.entitlements' })
     $stderr.reopen(original_stderr)
 
@@ -522,7 +543,7 @@ module SaneToolsTest
     # Test: Normal Swift file NOT blocked
     StateManager.reset(:sensitive_approvals)
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/Sources/App.swift' })
     $stderr.reopen(original_stderr)
 
@@ -569,7 +590,7 @@ module SaneToolsTest
 
     # Test: Task blocked before gate opens
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('Task', { 'prompt' => 'Search for something', 'subagent_type' => 'Explore' })
     $stderr.reopen(original_stderr)
 
@@ -583,7 +604,7 @@ module SaneToolsTest
 
     # Test: Read allowed before gate opens
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('Read', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })
     $stderr.reopen(original_stderr)
 
@@ -597,7 +618,7 @@ module SaneToolsTest
 
     # Test: Startup Bash (validation_report.rb) allowed before gate opens
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('Bash', { 'command' => 'ruby scripts/validation_report.rb' })
     $stderr.reopen(original_stderr)
 
@@ -611,7 +632,7 @@ module SaneToolsTest
 
     # Test: Non-startup Bash blocked before gate opens
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('Bash', { 'command' => 'npm install express' })
     $stderr.reopen(original_stderr)
 
@@ -639,7 +660,7 @@ module SaneToolsTest
     end
 
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/test.swift' })
     $stderr.reopen(original_stderr)
 
@@ -685,7 +706,7 @@ module SaneToolsTest
 
     # Test 1: Block public GitHub post without approval
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('mcp__github__add_issue_comment', {
       'owner' => 'sane-apps',
       'repo' => 'SaneBar',
@@ -702,15 +723,23 @@ module SaneToolsTest
       warn "  FAIL: GitHub post without approval should block, got exit #{exit_code}"
     end
 
-    # Test 2: Allow post with fresh structured approval
-    File.write(approval_flag, JSON.generate('created_at' => Time.now.to_i, 'user_approval' => 'post it'))
+    # Test 2: Allow post with fresh structured approval for exact body
+    approved_body = 'I fixed this in v2.1.6.'
+    File.write(
+      approval_flag,
+      JSON.generate(
+        'created_at' => Time.now.to_i,
+        'user_approval' => 'post it',
+        'body_hash' => Digest::SHA256.hexdigest(approved_body)
+      )
+    )
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('mcp__github__add_issue_comment', {
       'owner' => 'sane-apps',
       'repo' => 'SaneBar',
       'issue_number' => 1,
-      'body' => 'I fixed this in v2.1.6.'
+      'body' => approved_body
     })
     $stderr.reopen(original_stderr)
 
@@ -722,10 +751,45 @@ module SaneToolsTest
       warn "  FAIL: GitHub post with approval should pass, got exit #{exit_code}"
     end
 
-    # Test 3: Block corporate "we" language even with approval
-    File.write(approval_flag, JSON.generate('created_at' => Time.now.to_i, 'user_approval' => 'post it'))
+    # Test 2b: Block if approval body does not match final text
+    File.write(
+      approval_flag,
+      JSON.generate(
+        'created_at' => Time.now.to_i,
+        'user_approval' => 'post it',
+        'body_hash' => Digest::SHA256.hexdigest('I fixed this in v2.1.6.')
+      )
+    )
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
+    exit_code = process_tool_proc.call('mcp__github__add_issue_comment', {
+      'owner' => 'sane-apps',
+      'repo' => 'SaneBar',
+      'issue_number' => 1,
+      'body' => 'Different final text.'
+    })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: GitHub post with mismatched approval body blocked'
+    else
+      failed += 1
+      warn "  FAIL: GitHub mismatched approval should block, got exit #{exit_code}"
+    end
+
+    # Test 3: Block corporate "we" language even with approval
+    corporate_body = 'We fixed this and our team verified it.'
+    File.write(
+      approval_flag,
+      JSON.generate(
+        'created_at' => Time.now.to_i,
+        'user_approval' => 'post it',
+        'body_hash' => Digest::SHA256.hexdigest(corporate_body)
+      )
+    )
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('mcp__github__add_issue_comment', {
       'owner' => 'sane-apps',
       'repo' => 'SaneBar',
@@ -745,7 +809,7 @@ module SaneToolsTest
     # Test 4: Non-SaneApps owner is not gated by this rule
     File.delete(approval_flag) if File.exist?(approval_flag)
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     exit_code = process_tool_proc.call('mcp__github__add_issue_comment', {
       'owner' => 'octocat',
       'repo' => 'Hello-World',
@@ -846,7 +910,7 @@ module SaneToolsTest
     old_project_dir = ENV['CLAUDE_PROJECT_DIR']
     ENV['CLAUDE_PROJECT_DIR'] = deg_project_dir
     original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
     deg_results = Array.new(3) { SaneToolsChecks.check_pending_mcp_actions('Edit', %w[Edit Write]) }
     $stderr.reopen(original_stderr)
     ENV['CLAUDE_PROJECT_DIR'] = old_project_dir

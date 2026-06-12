@@ -116,12 +116,16 @@ module SaneMasterModules
 
     def near_miss_hook_candidates(events, min_count)
       hook_blocks = events.select { |event| event['type'] == 'hook_block' }
-      hook_blocks.group_by { |event| [near_miss_value(event['rule']), near_miss_value(event['tool']), near_miss_value(event['reason'])] }.map do |(rule, tool, reason), group|
+      hook_blocks.group_by { |event| near_miss_hook_family(event) }.map do |family, group|
         next if group.length < min_count
 
+        rule = family[:rule]
+        reason = family[:reason]
+        tools = group.map { |event| near_miss_value(event['tool']) }.uniq.sort
+        tool = tools.length == 1 ? tools.first : "#{tools.length} tools: #{tools.join(', ')}"
         severe = [rule, reason].join(' ').match?(/deploy|release|email|appcast|pages|keychain|blocked path/i)
         near_miss_candidate(
-          id: "hook_block_recurrence:#{near_miss_slug(rule)}:#{near_miss_slug(tool)}:#{near_miss_slug(reason)}",
+          id: "hook_block_recurrence:#{near_miss_slug(rule)}:#{near_miss_slug(reason)}",
           category: 'hook_block_recurrence',
           severity: severe ? 'high' : 'medium',
           confidence: 'high',
@@ -132,6 +136,19 @@ module SaneMasterModules
           test: "Add a fixture that blocks #{near_miss_clip(reason, 48)} while allowing the safe canonical command."
         )
       end.compact
+    end
+
+    def near_miss_hook_family(event)
+      {
+        rule: near_miss_value(event['rule']),
+        reason: near_miss_normalized_hook_reason(event['reason'])
+      }
+    end
+
+    def near_miss_normalized_hook_reason(reason)
+      near_miss_value(reason)
+        .gsub(/\s+\[\d+\/\d+\s+read\]\z/i, '')
+        .strip
     end
 
     def near_miss_verify_candidates(events, min_count)

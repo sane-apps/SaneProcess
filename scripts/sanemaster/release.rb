@@ -1030,7 +1030,7 @@ module SaneMasterModules
 
     def persist_secret_to_env_cache(value, *env_names)
       return if value.to_s.strip.empty?
-      return if ENV.fetch('SANE_ENV_CACHE_WRITE', '1') == '0'
+      return if ENV.fetch('SANE_ENV_CACHE_WRITE', '0') == '0'
 
       names = env_names.flatten.compact.map(&:to_s).map(&:strip).reject(&:empty?).uniq
       return if names.empty?

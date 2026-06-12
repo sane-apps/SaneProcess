@@ -184,6 +184,7 @@ def strong_session_verify_success?
     next unless event['success'] == true
     next unless event['tests_run'].to_i.positive?
     next if event['evidence_strength'].to_s == 'build_only'
+    next unless mini_or_structured_fallback_verify?(event)
 
     timestamp = Time.parse(event['timestamp'].to_s) rescue nil
     next if after_edit && timestamp && timestamp < after_edit
@@ -196,6 +197,19 @@ def strong_session_verify_success?
   end
 
   false
+end
+
+def mini_or_structured_fallback_verify?(event)
+  host = event['host'].to_s.downcase
+  return true if host.include?('mini')
+
+  fallback = event['local_fallback'] || event['fallback_approval'] || event['mini_fallback']
+  return false unless fallback.is_a?(Hash)
+
+  fallback['approved'] == true &&
+    !fallback['approved_by'].to_s.strip.empty? &&
+    !fallback['reason'].to_s.strip.empty? &&
+    !fallback['user_quote'].to_s.strip.empty?
 end
 
 def verification_score_cap
@@ -736,7 +750,7 @@ elsif ARGV.include?('--self-test-internal')
   end
 else
   begin
-    input = JSON.parse($stdin.read)
+    input = JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
     stop_hook_active = input['stop_hook_active'] || false
     transcript_path = input['transcript_path']  # Path to session transcript
     exit process_stop(stop_hook_active, transcript_path)

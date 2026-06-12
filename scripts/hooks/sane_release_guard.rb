@@ -27,7 +27,9 @@
 #   - hdiutil for info/attach/detach (non-creation operations)
 #   - Non-SaneApp commands
 
+require 'digest'
 require 'json'
+require 'shellwords'
 
 SANE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneScan SaneSync SaneVideo].freeze
 SANE_APP_PATTERN = Regexp.new(SANE_APPS.join('|'), Regexp::IGNORECASE)
@@ -39,6 +41,8 @@ SANE_PAGES_PATTERN = Regexp.new(SANE_APPS.map { |a| "#{a.downcase}-site" }.join(
 SANE_DIST_PATTERN = Regexp.new(SANE_APPS.map { |a| "dist\\.#{a.downcase}\\.com" }.join('|'))
 CORPORATE_WE_PATTERN = /\b(?:we|we['’]re|we['’]ll|we['’]ve|our|us)\b/i
 COMMAND_CHAIN_PATTERN = /(?:;|&&|\|\||\n)/
+APPROVAL_FLAG = '/tmp/.gh_post_approved.json'
+GITHUB_APPROVAL_TTL_SECONDS = 300
 
 def single_canonical_command?(command, pattern)
   stripped = command.strip
@@ -47,8 +51,100 @@ def single_canonical_command?(command, pattern)
   stripped.match?(pattern)
 end
 
+def shell_unquote(value)
+  text = value.to_s.strip
+  if (text.start_with?('"') && text.end_with?('"')) ||
+     (text.start_with?("'") && text.end_with?("'"))
+    text[1..-2]
+  else
+    text
+  end
+end
+
+def command_project_dir(command)
+  if command =~ /\bcd\s+((?:"[^"]+"|'[^']+'|\S+))\s*(?:&&|;|\n)/
+    return File.expand_path(shell_unquote(Regexp.last_match(1)))
+  end
+
+  if command =~ /--project\s+((?:"[^"]+"|'[^']+'|\S+))/
+    return File.expand_path(shell_unquote(Regexp.last_match(1)))
+  end
+
+  Dir.pwd
+end
+
+def saneprocess_command_context?(command)
+  File.exist?(File.join(command_project_dir(command), '.saneprocess'))
+end
+
+def shell_tokens(command)
+  Shellwords.split(command)
+rescue ArgumentError
+  command.to_s.split(/\s+/)
+end
+
+def token_value(tokens, *flags)
+  flags.each do |flag|
+    index = tokens.index(flag)
+    return tokens[index + 1] if index && tokens[index + 1]
+
+    prefix = "#{flag}="
+    match = tokens.find { |token| token.start_with?(prefix) }
+    return match[prefix.length..] if match
+  end
+  nil
+end
+
+def gh_public_command?(command)
+  command.match?(/\bgh\s+(?:issue|pr)\s+(?:comment|close|review|create|edit)\b/) ||
+    command.match?(/\bgh\s+api\b.*(?:^|[\s\/])repos\/(?:sane-apps|mrsaneapps)\//i)
+end
+
+def extract_gh_public_text(command)
+  tokens = shell_tokens(command)
+  pieces = []
+  %w[--body --comment --title].each do |flag|
+    value = token_value(tokens, flag)
+    pieces << value.to_s unless value.to_s.empty?
+  end
+  body_file = token_value(tokens, '--body-file', '--comment-file')
+  if body_file && File.file?(body_file)
+    pieces << File.read(body_file, encoding: Encoding::UTF_8)
+  end
+
+  tokens.each do |token|
+    pieces << Regexp.last_match(1) if token =~ /\A(?:body|title|comment)=(.*)\z/
+  end
+
+  pieces.join("\n").strip
+rescue StandardError
+  ''
+end
+
+def consume_github_approval(public_text)
+  return :missing unless File.exist?(APPROVAL_FLAG)
+
+  payload = JSON.parse(File.read(APPROVAL_FLAG, encoding: Encoding::UTF_8))
+  File.delete(APPROVAL_FLAG)
+  age = Time.now.to_i - payload['created_at'].to_i
+  approval_present = payload['created_at'].to_i.positive? &&
+                     age >= 0 &&
+                     age < GITHUB_APPROVAL_TTL_SECONDS &&
+                     !payload['user_approval'].to_s.strip.empty?
+  return :stale unless approval_present
+
+  expected = payload['body_hash'].to_s
+  actual = Digest::SHA256.hexdigest(public_text.to_s.strip)
+  return :body_mismatch if expected.empty? || public_text.to_s.strip.empty? || expected != actual
+
+  :valid
+rescue JSON::ParserError, SystemCallError
+  File.delete(APPROVAL_FLAG) if File.exist?(APPROVAL_FLAG)
+  :missing
+end
+
 begin
-  input = JSON.parse($stdin.read)
+  input = JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
 rescue JSON::ParserError, Errno::ENOENT
   exit 0
 end
@@ -101,7 +197,7 @@ if command.match?(/\bhdiutil\s+convert\b/) && command.match?(SANE_APP_PATTERN)
 end
 
 # Block 5: Direct notarytool submit on SaneApp DMGs
-if command.match?(/\bnotarytool\s+submit\b/) && command.match?(SANE_APP_PATTERN)
+if command.match?(/\bnotarytool\s+submit\b/) && (command.match?(SANE_APP_PATTERN) || saneprocess_command_context?(command))
   warn '🔴 BLOCKED: Manual notarization of SaneApp DMG'
   warn '   Notarization should go through the release pipeline.'
   warn ''
@@ -126,7 +222,7 @@ end
 
 # Block 6b: Wrangler pages deploy for SaneApp sites
 if command.match?(/\bwrangler\s+pages\s+deploy\b/)
-  if command.match?(SANE_APP_PATTERN) || command.match?(SANE_PAGES_PATTERN) || command.match?(SANE_DIST_PATTERN)
+  if command.match?(SANE_APP_PATTERN) || command.match?(SANE_PAGES_PATTERN) || command.match?(SANE_DIST_PATTERN) || saneprocess_command_context?(command)
     warn '🔴 BLOCKED: Manual website deploy for SaneApp'
     warn '   Website deploys should go through release.sh --deploy.'
     warn ''
@@ -187,7 +283,7 @@ if is_dist_command && !is_readonly
 end
 
 # Block 12: Manual altool uploads for SaneApps (must go through release.sh)
-if command.match?(/\baltool\s+--upload-app/) && command.match?(SANE_APP_PATTERN)
+if command.match?(/\baltool\s+--upload-app/) && (command.match?(SANE_APP_PATTERN) || saneprocess_command_context?(command))
   warn '🔴 BLOCKED: Manual App Store upload for SaneApp'
   warn '   App Store uploads should go through the release pipeline.'
   warn ''
@@ -247,15 +343,15 @@ exit 0 if canonical_release_command || canonical_sanemaster_command
 #   3. Claude records that approval with SaneMaster github_post_approval
 #   4. Claude runs gh command — hook sees the structured approval, allows it, deletes it
 #   5. If no approval → block and remind Claude to show draft first
-APPROVAL_FLAG = '/tmp/.gh_post_approved.json'
-if command.match?(/\bgh\s+(?:issue|pr)\s+(?:comment|close|review|create)\b/)
+if gh_public_command?(command)
   if command.include?('github_post_approval') || command.include?(APPROVAL_FLAG)
     warn '🔴 BLOCKED: Cannot approve and post publicly in the same command'
     warn '   Approval capture and the public GitHub post must be separate steps.'
     exit 2
   end
 
-  if command.match?(CORPORATE_WE_PATTERN)
+  public_text = extract_gh_public_text(command)
+  if public_text.match?(CORPORATE_WE_PATTERN)
     warn '🔴 BLOCKED: "we/us/our" language in public GitHub post'
     warn '   SaneApps is one person. Use: I/me/my.'
     warn ''
@@ -263,28 +359,16 @@ if command.match?(/\bgh\s+(?:issue|pr)\s+(?:comment|close|review|create)\b/)
     exit 2
   end
 
-  if File.exist?(APPROVAL_FLAG)
-    begin
-      payload = JSON.parse(File.read(APPROVAL_FLAG, encoding: Encoding::UTF_8))
-      age = Time.now.to_i - payload['created_at'].to_i
-      approved = payload['created_at'].to_i.positive? &&
-                 age >= 0 &&
-                 age < 300 &&
-                 !payload['user_approval'].to_s.strip.empty?
-      File.delete(APPROVAL_FLAG)
-      if approved
-        exit 0  # Approved — allow the post
-      end
-    rescue JSON::ParserError, SystemCallError
-      File.delete(APPROVAL_FLAG) if File.exist?(APPROVAL_FLAG)
-      # Fall through to block — malformed approval
-    end
+  approval_status = consume_github_approval(public_text)
+  if approval_status == :valid
+    exit 0  # Approved — allow the post
   end
   warn '🔴 BLOCKED: Public GitHub interaction without user approval'
+  warn '   Approval must match the exact final public text.' if approval_status == :body_mismatch
   warn '   This posts publicly as MrSaneApps. Show the user a draft first.'
   warn ''
   warn '   ✅ Show the draft text to the user, get explicit approval, then post.'
-  warn '   Then run: ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb github_post_approval --user-approval "<quote>"'
+  warn '   Then run: ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb github_post_approval --body-file <draft_file> --user-approval "<quote>"'
   exit 2
 end
 

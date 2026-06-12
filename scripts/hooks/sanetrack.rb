@@ -45,11 +45,13 @@ EDIT_TOOLS = %w[Edit Write NotebookEdit].freeze
 FAILURE_TOOLS = %w[Bash Edit Write].freeze  # Tools that can fail and trigger circuit breaker
 
 # === MCP VERIFICATION TOOLS ===
-# Map MCP names to their read-only verification tools
+# Map MCP names to their read-only verification tools. Each pattern matches
+# both the bare prefix (mcp__<server>__) and the plugin-loaded form
+# (mcp__plugin_<plugin>_<server>__) — see SaneToolsResearch#mcp_tool_pattern.
 MCP_VERIFICATION_PATTERNS = {
-  apple_docs: /^mcp__apple-docs__/,
-  context7: /^mcp__context7__/,
-  github: /^mcp__github__(search_|get_|list_)/
+  apple_docs: SaneToolsChecks.mcp_tool_pattern('apple-docs'),
+  context7: SaneToolsChecks.mcp_tool_pattern('context7'),
+  github: SaneToolsChecks.mcp_tool_pattern('github', /(?:search_|get_|list_)/)
 }.freeze
 
 # === RESEARCH TRACKING ===
@@ -344,9 +346,7 @@ def runner_proof_for(required_skill, command, tool_response)
 
   case required_skill.to_s
   when 'evolve'
-    latest_recent_file('outputs/tool-discovery/*.json') do |path|
-      { type: 'tool_discovery_receipt', path: path }
-    end
+    latest_authoritative_tool_discovery_receipt(command)
   when 'verify'
     latest_recent_process_metric('verify') do |event|
       event['success'] == true
@@ -382,15 +382,14 @@ EMPTY_RESEARCH_PATTERNS = [
   /did not find/i
 ].freeze
 
-# Map tool names to their research category
+# Map tool names to their research category. MCP entries are patterns that
+# also match the plugin-loaded prefix (mcp__plugin_<plugin>_<server>__).
 TOOL_TO_RESEARCH_CATEGORY = {
-  'mcp__apple-docs__' => :docs,
-  'mcp__context7__' => :docs,
+  SaneToolsChecks.mcp_tool_pattern('apple-docs') => :docs,
+  SaneToolsChecks.mcp_tool_pattern('context7') => :docs,
   'WebSearch' => :web,
   'WebFetch' => :web,
-  'mcp__github__search_' => :github,
-  'mcp__github__get_' => :github,
-  'mcp__github__list_' => :github,
+  SaneToolsChecks.mcp_tool_pattern('github', /(?:search_|get_|list_)/) => :github,
   'Read' => :local,
   'Grep' => :local,
   'Glob' => :local
@@ -400,7 +399,8 @@ def invalidate_empty_research(tool_name, tool_response)
   # Find which research category this tool belongs to
   category = nil
   TOOL_TO_RESEARCH_CATEGORY.each do |prefix, cat|
-    if tool_name == prefix || tool_name.start_with?(prefix)
+    matched = prefix.is_a?(Regexp) ? tool_name.match?(prefix) : (tool_name == prefix || tool_name.start_with?(prefix))
+    if matched
       category = cat
       break
     end
@@ -539,6 +539,7 @@ def process_result(tool_name, tool_input, tool_response)
   else
     reset_failure_count(tool_name)
     track_edit(tool_name, tool_input, tool_response)
+    track_bash_mutation(tool_name, tool_input, tool_response)
 
     # === RESEARCH PROTOCOL: Check research.md size cap ===
     SaneTrackResearch.check_research_size(tool_name, tool_input)
@@ -659,7 +660,7 @@ if __FILE__ == $PROGRAM_NAME
     show_status
   else
     begin
-      input = JSON.parse($stdin.read)
+      input = JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
       tool_name = input['tool_name'] || 'unknown'
       tool_input = input['tool_input'] || {}
       tool_response = input['tool_response'] || {}

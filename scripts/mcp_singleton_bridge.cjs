@@ -9,6 +9,7 @@ const { randomUUID } = require('crypto');
 
 const SCRIPT_PATH = fs.realpathSync(__filename);
 const HOME = os.homedir();
+const NODE_EXECUTABLE = process.execPath;
 const LOG_DIR = path.join(HOME, 'Library', 'Logs', 'SaneApps', 'mcp-singleton');
 const PLIST_DIR = path.join(HOME, 'Library', 'LaunchAgents');
 const PLIST_LABEL_PREFIX = 'com.saneapps.mcp-singleton';
@@ -16,17 +17,17 @@ const PLIST_LABEL_PREFIX = 'com.saneapps.mcp-singleton';
 const SERVER_SPECS = {
   'apple-docs': {
     port: 37911,
-    command: '/usr/local/bin/node',
+    command: NODE_EXECUTABLE,
     args: ['/Users/sj/Dev/apple-docs-mcp-local/dist/index.js'],
   },
   'macos-automator': {
     port: 37913,
-    command: '/usr/local/bin/node',
+    command: NODE_EXECUTABLE,
     args: ['/Users/sj/.npm-global/lib/node_modules/@steipete/macos-automator-mcp/dist/server.js'],
   },
   memory: {
     port: 37914,
-    command: '/usr/local/bin/node',
+    command: NODE_EXECUTABLE,
     args: ['/Users/sj/SaneApps/infra/SaneProcess/scripts/mcp-memory-enhanced/server.mjs'],
     env: {
       MEMORY_FILE_PATH: '/Users/sj/.claude/memory/knowledge-graph.jsonl',
@@ -62,6 +63,23 @@ const SDK_BASE_CANDIDATES = [
   '/Users/sj/.npm-global/lib/node_modules/@steipete/macos-automator-mcp/node_modules/@modelcontextprotocol/sdk/dist/cjs',
 ];
 
+let Client;
+let StdioClientTransport;
+let Server;
+let StreamableHTTPServerTransport;
+let CallToolRequestSchema;
+let CompleteRequestSchema;
+let ErrorCode;
+let GetPromptRequestSchema;
+let ListPromptsRequestSchema;
+let ListResourcesRequestSchema;
+let ListResourceTemplatesRequestSchema;
+let ListToolsRequestSchema;
+let McpError;
+let ReadResourceRequestSchema;
+let SubscribeRequestSchema;
+let UnsubscribeRequestSchema;
+
 function resolveSdkBase() {
   for (const candidate of SDK_BASE_CANDIDATES) {
     if (fs.existsSync(path.join(candidate, 'client', 'index.js'))) {
@@ -71,25 +89,31 @@ function resolveSdkBase() {
   throw new Error('Unable to locate @modelcontextprotocol/sdk runtime');
 }
 
-const SDK_BASE = resolveSdkBase();
-const { Client } = require(path.join(SDK_BASE, 'client', 'index.js'));
-const { StdioClientTransport } = require(path.join(SDK_BASE, 'client', 'stdio.js'));
-const { Server } = require(path.join(SDK_BASE, 'server', 'index.js'));
-const { StreamableHTTPServerTransport } = require(path.join(SDK_BASE, 'server', 'streamableHttp.js'));
-const {
-  CallToolRequestSchema,
-  CompleteRequestSchema,
-  ErrorCode,
-  GetPromptRequestSchema,
-  ListPromptsRequestSchema,
-  ListResourcesRequestSchema,
-  ListResourceTemplatesRequestSchema,
-  ListToolsRequestSchema,
-  McpError,
-  ReadResourceRequestSchema,
-  SubscribeRequestSchema,
-  UnsubscribeRequestSchema,
-} = require(path.join(SDK_BASE, 'types.js'));
+function loadSdkRuntime() {
+  if (Client) {
+    return;
+  }
+
+  const sdkBase = resolveSdkBase();
+  ({ Client } = require(path.join(sdkBase, 'client', 'index.js')));
+  ({ StdioClientTransport } = require(path.join(sdkBase, 'client', 'stdio.js')));
+  ({ Server } = require(path.join(sdkBase, 'server', 'index.js')));
+  ({ StreamableHTTPServerTransport } = require(path.join(sdkBase, 'server', 'streamableHttp.js')));
+  ({
+    CallToolRequestSchema,
+    CompleteRequestSchema,
+    ErrorCode,
+    GetPromptRequestSchema,
+    ListPromptsRequestSchema,
+    ListResourcesRequestSchema,
+    ListResourceTemplatesRequestSchema,
+    ListToolsRequestSchema,
+    McpError,
+    ReadResourceRequestSchema,
+    SubscribeRequestSchema,
+    UnsubscribeRequestSchema,
+  } = require(path.join(sdkBase, 'types.js')));
+}
 
 function specFor(name) {
   const spec = SERVER_SPECS[name];
@@ -346,6 +370,7 @@ async function connectBackend(spec) {
 }
 
 async function serve(spec) {
+  loadSdkRuntime();
   const backend = await connectBackend(spec);
   const sessions = new Map();
 

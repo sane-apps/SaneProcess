@@ -51,11 +51,9 @@ BOOTSTRAP_TOOL_PATTERN = Regexp.union(
   /^Glob$/,
   /^WebSearch$/,
   /^WebFetch$/,
-  /^mcp__apple-docs__/,
-  /^mcp__context7__/,
-  /^mcp__github__search_/,
-  /^mcp__github__get_/,
-  /^mcp__github__list_/,
+  SaneToolsChecks.mcp_tool_pattern('apple-docs'),
+  SaneToolsChecks.mcp_tool_pattern('context7'),
+  SaneToolsChecks.mcp_tool_pattern('github', /(?:search_|get_|list_)/),
   /^Task$/
 ).freeze
 
@@ -64,12 +62,7 @@ BOOTSTRAP_TOOL_PATTERN = Regexp.union(
 GLOBAL_MUTATION_PATTERN = /(?!)/.freeze  # Matches nothing
 
 EXTERNAL_MUTATION_PATTERN = Regexp.union(
-  /^mcp__github__create_/,
-  /^mcp__github__push_/,
-  /^mcp__github__update_/,
-  /^mcp__github__merge_/,
-  /^mcp__github__fork_/,
-  /^mcp__github__add_/
+  SaneToolsChecks.mcp_tool_pattern('github', /(?:create_|push_|update_|merge_|fork_|add_)/)
 ).freeze
 
 # === INTELLIGENCE: Requirement Satisfaction ===
@@ -169,7 +162,7 @@ def track_research(tool_name, tool_input)
   research_done = false
 
   RESEARCH_CATEGORIES.each do |category, config|
-    if config[:tools].any? { |t| tool_name.start_with?(t.sub('*', '')) }
+    if config[:tools].any? { |t| SaneToolsChecks.research_tool_match?(tool_name, t) }
       mark_research_done(category, tool_name, false)
       research_done = true
     end
@@ -390,6 +383,12 @@ def process_tool(tool_name, tool_input)
 
   # Startup gate: block substantive work until startup steps complete
   if (reason = SaneToolsStartup.check_startup_gate(tool_name, tool_input))
+    log_action(tool_name, true, reason)
+    output_block(reason, tool_name)
+    return 2
+  end
+
+  if (reason = SaneToolsChecks.check_secret_startup_autoload(tool_name, tool_input, EDIT_TOOLS))
     log_action(tool_name, true, reason)
     output_block(reason, tool_name)
     return 2
@@ -657,7 +656,7 @@ elsif ARGV.include?('--reset')
   reset_state
 else
   begin
-    input = JSON.parse($stdin.read)
+    input = JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
     tool_name = input['tool_name'] || 'unknown'
     tool_input = input['tool_input'] || {}
     exit process_tool(tool_name, tool_input)

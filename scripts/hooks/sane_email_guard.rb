@@ -30,6 +30,7 @@ require 'digest'
 
 EMAIL_APPROVAL_FLAG = '/tmp/.email_post_approved.json'
 EMAIL_BATCH_APPROVAL_FLAG = '/tmp/.email_batch_post_approved.json'
+EMAIL_FORCE_APPROVAL_FLAG = '/tmp/.email_force_approved.json'
 EMAIL_FORMAT_OVERRIDE = '/tmp/.email_format_override'
 EMAIL_APPROVAL_TTL_SECONDS = 300
 EMAIL_BATCH_APPROVAL_TTL_SECONDS = 43_200
@@ -138,8 +139,27 @@ rescue Errno::ENOENT
   # already gone
 end
 
+def verify_force_approval(action, id)
+  return [false, 'Missing scoped force approval.'] unless File.exist?(EMAIL_FORCE_APPROVAL_FLAG)
+
+  payload = JSON.parse(File.read(EMAIL_FORCE_APPROVAL_FLAG, encoding: Encoding::UTF_8))
+  cleanup_flag(EMAIL_FORCE_APPROVAL_FLAG)
+  created_at = payload['created_at'].to_i
+  age = Time.now.to_i - created_at
+  return [false, 'Force approval expired.'] unless created_at.positive? && age >= 0 && age < EMAIL_APPROVAL_TTL_SECONDS
+  return [false, 'Force approval action mismatch.'] unless payload['action'].to_s == action.to_s
+  return [false, 'Force approval id mismatch.'] unless payload['id'].to_s == id.to_s
+  return [false, 'Force approval missing reason.'] if payload['reason'].to_s.strip.empty?
+  return [false, 'Force approval missing user quote.'] if payload['user_approval'].to_s.strip.empty?
+
+  [true, 'approved']
+rescue JSON::ParserError, SystemCallError
+  cleanup_flag(EMAIL_FORCE_APPROVAL_FLAG)
+  [false, 'Force approval flag is malformed.']
+end
+
 begin
-  input = JSON.parse($stdin.read)
+  input = JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
 rescue JSON::ParserError, Errno::ENOENT
   exit 0
 end
@@ -194,6 +214,22 @@ if command.include?('check-inbox.sh')
   tokens = Shellwords.split(command)
   script_idx = tokens.index { |t| t.end_with?('check-inbox.sh') }
   subcommand = script_idx ? tokens[script_idx + 1] : nil
+
+  if tokens.include?('--force')
+    force_id = tokens[script_idx + 2].to_s
+    approved, reason = verify_force_approval(subcommand, force_id)
+    unless approved
+      warn '🔴 BLOCKED: check-inbox.sh --force without scoped user approval'
+      warn "   #{reason}"
+      warn ''
+      warn '   Required workflow:'
+      warn '   1. Explain exactly which support gate is being overridden and why'
+      warn '   2. Get explicit user approval'
+      warn '   3. Run: ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb email_force_approval --action <action> --id <id> --reason "<why>" --user-approval "<quote>"'
+      warn '   4. Retry the forced check-inbox action in a separate command'
+      exit 2
+    end
+  end
 
   if %w[reply compose].include?(subcommand)
     body_file_idx = subcommand == 'reply' ? script_idx + 3 : script_idx + 4
@@ -317,32 +353,6 @@ if command.include?('check-inbox.sh')
   end
 
   exit 0
-end
-
-# Block 1: Direct curl WRITE operations to email Worker API
-if command.match?(/curl\s.*email-api\.saneapps\.com/) && command.match?(/-X\s*(POST|PUT|DELETE)|--data|-d\s/)
-  warn '🔴 BLOCKED: Direct write to email API'
-  warn '   Sending/modifying via curl directly bypasses check-inbox.sh tracking.'
-  warn ''
-  warn '   ✅ Use instead:'
-  warn '      ~/SaneApps/infra/scripts/check-inbox.sh reply <id> <body_file>'
-  warn '      ~/SaneApps/infra/scripts/check-inbox.sh compose <to> <subject> <body_file>'
-  warn '      ~/SaneApps/infra/scripts/check-inbox.sh resolve <id>'
-  warn ''
-  warn '   Read operations (GET) are allowed — this only blocks writes.'
-  exit 2
-end
-
-# Block 2: Direct curl to Resend API for sending emails
-if command.match?(/curl\s.*api\.resend\.com\/emails/) && command.match?(/-X\s*POST|--data|-d\s/)
-  warn '🔴 BLOCKED: Direct email send via Resend API'
-  warn '   Sending via Resend directly bypasses the Worker tracking system.'
-  warn '   Replies won\'t be recorded in D1 and the email will show as unresolved.'
-  warn ''
-  warn '   ✅ Use instead:'
-  warn '      ~/SaneApps/infra/scripts/check-inbox.sh reply <id> <body_file>'
-  warn '   This sends via the Worker API which tracks the reply in D1.'
-  exit 2
 end
 
 exit 0

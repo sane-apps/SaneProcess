@@ -43,6 +43,7 @@ module SaneStopTest
       success: success,
       tests_run: tests_run,
       evidence_strength: tests_run.to_i.positive? ? 'tested' : 'build_only',
+      host: 'mini',
       source_fingerprint: source_fingerprint
     ) + "\n")
   end

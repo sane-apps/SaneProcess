@@ -37,6 +37,10 @@ is_claude_auth() {
 }
 
 caller_is_claude_code() {
+  # Test override: the ancestry walk finds Claude Code whenever the test suite
+  # itself runs inside a Claude session, so tests of the no-Claude-caller path
+  # need a way to disable the exemption. Fails closed (more throttling, never less).
+  [[ "${SANE_SECURITY_IGNORE_CLAUDE_CALLER:-0}" == "1" ]] && return 1
   local pid="${PPID:-}"
   local depth=0
   local args=""

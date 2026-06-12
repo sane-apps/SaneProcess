@@ -4,6 +4,7 @@
 require_relative '../hooks/test/test_framework'
 require_relative 'base'
 require_relative 'dependencies'
+require 'open3'
 
 class DependenciesHarness
   include SaneMasterModules::Base
@@ -262,6 +263,47 @@ exit(run_tests('SaneMaster MCP Watchdog Tests') do
         assert_includes(servers, 'openaiDeveloperDocs')
         assert(!servers.include?('memory.env'), 'TOML env subsections must not become MCP servers')
       end
+      true
+    end
+  end
+
+  test_category('MCP singleton bridge') do
+    test('generates LaunchAgent plists with the current Node executable') do
+      bridge = File.expand_path('../mcp_singleton_bridge.cjs', __dir__)
+      node = ENV['NODE'] || '/opt/homebrew/bin/node'
+      assert(File.executable?(node), "expected Node executable at #{node}")
+      node_realpath = File.realpath(node)
+
+      output, status = Open3.capture2e(node, bridge, 'plist', 'apple-docs')
+      assert(status.success?, output)
+      assert_includes(output, node_realpath)
+      assert(!output.include?('/usr/local/bin/node'), 'singleton plists must not pin the removed Intel Homebrew Node path')
+      true
+    end
+
+    test('doctor reports live Codex probe failures even when MCP processes exist') do
+      rows = [
+        process_row(pid: 100, ppid: 1, etimes: 600, command: '/opt/homebrew/bin/node /Users/sj/SaneApps/infra/SaneProcess/scripts/mcp_singleton_bridge.cjs serve serena'),
+        process_row(pid: 101, ppid: 100, etimes: 590, command: '/Users/sj/.local/bin/uv tool uvx --from git+https://github.com/oraios/serena serena start-mcp-server --context claude-code --project-from-cwd')
+      ]
+
+      subject.define_singleton_method(:configured_mcp_servers) { ['serena'] }
+      subject.define_singleton_method(:mcp_live_probe_snapshot) do
+        {
+          available: true,
+          command: '/Users/sj/.codex/bin/check-mcps',
+          results: [
+            { status: 'FAIL', name: 'serena', detail: 'fetch failed' }
+          ]
+        }
+      end
+
+      analysis = build_analysis(subject, rows)
+      doctor = subject.send(:mcp_watchdog_doctor, analysis, 6)
+
+      assert_includes(doctor[:running_servers], 'serena')
+      assert_eq(doctor[:live_probe_failures].length, 1)
+      assert_eq(doctor[:live_probe_failures].first[:name], 'serena')
       true
     end
   end

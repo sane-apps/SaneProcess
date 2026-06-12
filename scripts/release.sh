@@ -2208,7 +2208,7 @@ persist_secret_to_env_cache() {
     shift
 
     [ -n "${value}" ] || return 0
-    [ "${SANE_ENV_CACHE_WRITE:-1}" != "0" ] || return 0
+    [ "${SANE_ENV_CACHE_WRITE:-0}" != "0" ] || return 0
     [ ${#} -gt 0 ] || return 0
 
     local env_file="${SECRETS_ENV_CACHE_FILE}"

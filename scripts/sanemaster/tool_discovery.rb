@@ -5,7 +5,7 @@ module SaneMasterModules
     def tool_discovery(args = [])
       script = File.expand_path('../automation/tool_discovery_receipt.rb', __dir__)
       command = [RbConfig.ruby, script, '--project-root', Dir.pwd, *args]
-      success = system(*command)
+      success = system({ 'SANEMASTER_TOOL_DISCOVERY' => '1' }, *command)
       return if success
 
       exit($CHILD_STATUS&.exitstatus || 1)

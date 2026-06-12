@@ -1,6 +1,13 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Hook/launchd/ssh shells often run with a C locale, which makes Ruby default
+# to US-ASCII and raise "invalid byte sequence" when xcodebuild/tool output
+# containing UTF-8 hits a regex (see sanemaster/quality.rb build captures).
+# Force UTF-8 before any module reads command output.
+Encoding.default_external = Encoding::UTF_8
+Encoding.default_internal = Encoding::UTF_8
+
 # ==============================================================================
 # SaneMaster: Professional Automation Suite for SaneApps
 # ==============================================================================
@@ -26,6 +33,7 @@ require 'time'
 require 'tempfile'
 require 'shellwords'
 require 'socket'
+require 'digest'
 require 'fileutils'
 require 'digest'
 require 'English'
@@ -49,6 +57,7 @@ require_relative 'sanemaster/agent_workflow'
 require_relative 'sanemaster/machine_cleanup'
 require_relative 'sanemaster/verify'
 require_relative 'sanemaster/quality'
+require_relative 'sanemaster/secret_scan'
 require_relative 'sanemaster/sop_loop'
 require_relative 'sanemaster/export'
 require_relative 'sanemaster/md_export'
@@ -87,6 +96,7 @@ class SaneMaster
   include SaneMasterModules::MachineCleanup
   include SaneMasterModules::Verify
   include SaneMasterModules::Quality
+  include SaneMasterModules::SecretScan
   include SaneMasterModules::SOPLoop
   include SaneMasterModules::Export
   include SaneMasterModules::MdExport
@@ -136,14 +146,16 @@ class SaneMaster
         'deprecations' => { args: '', desc: 'Scan for deprecated API usage' },
         'swift6' => { args: '', desc: 'Verify Swift 6 concurrency compliance' },
         'saneui_guard' => { args: '[path]', desc: 'Scan app settings UI for shared SaneUI drift' },
+        'secret_scan' => { args: '[--path PATH] [--scanner PATH] [--json] [--strict]', desc: 'Run redacted Automic Vault secret scan with SaneProcess policy' },
         'check_docs' => { args: '', desc: 'Check docs are in sync with code' },
         'check_binary' => { args: '', desc: 'Audit binary for security issues' },
         'test_scan' => { args: '[-v]', desc: 'Scan tests for tautologies and hardcoded values' },
+        'validation_report' => { args: '[args...]', desc: 'Run SaneProcess validation report with workflow receipt' },
         'launch_readiness' => { args: '[--json] [--max-age-days N]', desc: 'Validate launch calendar gates plus fresh release_preflight proof before any public launch' },
         'process_metrics' => { args: '[--json] [--export-json PATH] [--export-html PATH] [--export-otel PATH]', desc: 'Summarize verify churn, session quality, hook blocks, and export audit traces' },
         'near_miss_review' => { args: '[--json] [--metrics PATH] [--limit N|--all] [--min-count N] [--include-test-events]', desc: 'Mine process telemetry for useful near-miss guard/eval candidates' },
         'verify_failure_review' => { args: '[--json] [--metrics PATH] [--limit N|--all] [--min-count N]', desc: 'Cluster zero-test verify failures by likely root cause' },
-        'process_eval' => { args: '[--fixture PATH] [--json]', desc: 'Evaluate workflow receipt traces and SOP self-assessment health' },
+        'process_eval' => { args: '[--fixture PATH] [--abtest-dir PATH] [--json] [--require-ui-proof]', desc: 'Evaluate workflow receipt traces, real A/B evidence, and SOP self-assessment health' },
         'trace_eval' => { args: '[--fixture PATH] [--json]', desc: 'Evaluate multi-step workflow receipt trace fixtures' },
         'sop_review' => { args: '[--json]', desc: 'Review SOP score history, caps, and inflation signals' },
         'agent_eval' => { args: '[--fixture PATH] [--json]', desc: 'Evaluate prompt-to-workflow routing fixtures' },
@@ -220,7 +232,8 @@ class SaneMaster
         'msync' => { args: '(pipe JSON)', desc: 'Sync MCP memory to local cache' },
         'mcompact' => { args: '[--dry-run] [--aggressive]', desc: 'Compact memory (trim verbose, dedupe)' },
         'mcleanup' => { args: '(pipe JSON)', desc: 'Analyze MCP memory, generate cleanup commands' },
-        'github_post_approval' => { args: '--user-approval "QUOTE"', desc: 'Record explicit user approval before public GitHub posting' },
+        'github_post_approval' => { args: '--body|--body-file <TEXT|PATH> --user-approval "QUOTE"', desc: 'Record exact-text approval before public GitHub posting' },
+        'email_force_approval' => { args: '--action ACTION --id ID --reason TEXT --user-approval "QUOTE"', desc: 'Record scoped approval for check-inbox --force' },
         'session_end' => { args: '[--skip-prompts]', desc: 'End session with insight extraction' },
         'reset_breaker' => { args: '', desc: 'Reset circuit breaker (unblock tools)' },
         'breaker_status' => { args: '', desc: 'Show circuit breaker status' },
@@ -337,6 +350,8 @@ class SaneMaster
                                   crash_report
                                   crashes
                                   menu_scan
+                                  validation_report
+                                  validation-report
                                   process_metrics
                                   sop_metrics
                                   near_miss_review
@@ -1223,6 +1238,8 @@ PY
       '--include', 'outputs/validation/qa_status.json',
       '--include', 'outputs/customer-ui/',
       '--include', 'outputs/customer-ui/***',
+      '--include', 'outputs/process-abtest/',
+      '--include', 'outputs/process-abtest/***',
       '--exclude', 'outputs/***',
       '--exclude', 'DerivedData',
       '--exclude', 'node_modules',
@@ -1444,6 +1461,8 @@ PY
       '--include', 'customer-ui/***',
       '--include', 'visual_smoke/',
       '--include', 'visual_smoke/***',
+      '--include', 'process-abtest/',
+      '--include', 'process-abtest/***',
       '--exclude', '*'
     ]
   end
@@ -1459,7 +1478,7 @@ PY
       find "$out" -mindepth 1 -maxdepth 1 -print | while IFS= read -r path; do
         base=${path##*/}
         case "$base" in
-          qa_status.json|release_preflight_status.json|customer_ui_action_receipt.json|validation|customer-ui|visual_smoke) continue ;;
+          qa_status.json|release_preflight_status.json|customer_ui_action_receipt.json|validation|customer-ui|visual_smoke|process-abtest) continue ;;
         esac
         /usr/bin/trash "$path" 2>/dev/null || trash "$path" 2>/dev/null || true
       done
@@ -1554,6 +1573,13 @@ PY
       analyze_crashes(args)
     when 'menu_scan'
       menu_scan(args)
+    when 'validation_report', 'validation-report'
+      run_external_command_with_workflow_receipt(
+        'validation_report',
+        'ruby',
+        File.join(saneprocess_repo_root, 'scripts', 'validation_report.rb'),
+        *args
+      )
     when 'process_metrics', 'sop_metrics'
       process_metrics_dashboard(args)
     when 'near_miss_review', 'near-miss-review', 'nmr'
@@ -1712,6 +1738,8 @@ PY
       target = args.first || Dir.pwd
       success = SaneMasterModules::SaneUIGuard.run_cli(target)
       exit(success ? 0 : 1)
+    when 'secret_scan', 'secret-scan', 'secrets'
+      secret_scan(args)
     when 'test_suite', 'suite'
       run_test_suite(args)
     when 'test_scan', 'scan_tests', 'test_quality'
@@ -1757,6 +1785,8 @@ PY
       memory_cleanup(args)
     when 'github_post_approval', 'github-post-approval', 'gh_post_approval', 'gh-post-approval'
       github_post_approval(args)
+    when 'email_force_approval', 'email-force-approval', 'email_force_approve', 'email-force-approve'
+      email_force_approval(args)
     when 'session_end', 'se'
       session_end(args)
     when 'reset_breaker', 'rb'
@@ -1834,11 +1864,21 @@ PY
 
   def github_post_approval(args)
     quote = nil
+    body = nil
     i = 0
     while i < args.length
       case args[i]
       when '--user-approval', '--approval', '--quote'
         quote = args[i + 1]
+        i += 1
+      when '--body'
+        body = args[i + 1]
+        i += 1
+      when '--body-file'
+        file = args[i + 1]
+        abort "❌ GitHub approval body file not found: #{file}" unless file && File.file?(file)
+
+        body = File.read(file, encoding: Encoding::UTF_8)
         i += 1
       else
         quote ||= args[i]
@@ -1848,15 +1888,64 @@ PY
 
     quote = quote.to_s.strip
     abort '❌ Missing explicit user approval quote. Use --user-approval "post it".' if quote.empty?
+    body = body.to_s.strip
+    abort '❌ Missing exact public post body. Use --body "final text" or --body-file <path>.' if body.empty?
 
     path = '/tmp/.gh_post_approved.json'
     payload = {
       'created_at' => Time.now.to_i,
-      'user_approval' => quote
+      'user_approval' => quote,
+      'body_hash' => Digest::SHA256.hexdigest(body)
     }
     File.write(path, JSON.pretty_generate(payload))
     File.chmod(0o600, path)
     puts '✅ GitHub public-post approval recorded for 5 minutes.'
+  end
+
+  def email_force_approval(args)
+    action = nil
+    id = nil
+    reason = nil
+    quote = nil
+    i = 0
+    while i < args.length
+      case args[i]
+      when '--action'
+        action = args[i + 1]
+        i += 1
+      when '--id', '--email-id'
+        id = args[i + 1]
+        i += 1
+      when '--reason'
+        reason = args[i + 1]
+        i += 1
+      when '--user-approval', '--approval', '--quote'
+        quote = args[i + 1]
+        i += 1
+      end
+      i += 1
+    end
+
+    action = action.to_s.strip
+    id = id.to_s.strip
+    reason = reason.to_s.strip
+    quote = quote.to_s.strip
+    abort '❌ Missing --action for email force approval.' if action.empty?
+    abort '❌ Missing --id for email force approval.' if id.empty?
+    abort '❌ Missing --reason for email force approval.' if reason.empty?
+    abort '❌ Missing --user-approval quote for email force approval.' if quote.empty?
+
+    path = '/tmp/.email_force_approved.json'
+    payload = {
+      'created_at' => Time.now.to_i,
+      'action' => action,
+      'id' => id,
+      'reason' => reason,
+      'user_approval' => quote
+    }
+    File.write(path, JSON.pretty_generate(payload))
+    File.chmod(0o600, path)
+    puts '✅ Email force approval recorded for 5 minutes.'
   end
 
   def show_breaker_errors

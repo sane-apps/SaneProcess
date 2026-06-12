@@ -123,6 +123,7 @@ ruby scripts/SaneMaster.rb status
 ruby scripts/SaneMaster.rb release_preflight
 ruby scripts/SaneMaster.rb appstore_preflight  # only when .saneprocess appstore.enabled: true
 ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"
+ruby scripts/SaneMaster.rb secret_scan --path /Users/sj
 ruby scripts/SaneMaster.rb runtime_evidence --dry-run --break Sources/App.swift:42
 ruby scripts/SaneMaster.rb visual_smoke --app ExampleApp --dry-run
 ruby scripts/SaneMaster.rb process_metrics --json
@@ -130,6 +131,12 @@ ruby scripts/SaneMaster.rb process_metrics --export-otel outputs/process-traces.
 ruby scripts/SaneMaster.rb gate_review test/fixtures/gates/example.json
 ruby scripts/SaneMaster.rb saneui_guard /path/to/app
 ```
+
+`secret_scan` uses Automic Vault when available, writes redacted receipts under
+`outputs/secret-scan/`, and fails on actionable plaintext secrets while
+classifying active auth stores and common third-party package test vectors
+separately. Install Automic Vault or set `SANEMASTER_AUTOMIC_VAULT_CLI` to the
+`av` binary.
 
 Project-specific installs can add their own release, support, analytics, or remote-runner commands behind the same wrapper pattern. See [DEVELOPMENT.md](DEVELOPMENT.md) for the full command map.
 
@@ -255,11 +262,12 @@ The full verification path is registry-backed so new script tests cannot silentl
 ruby scripts/SaneMaster.rb verify
 ruby scripts/hooks/test/tier_tests.rb
 ruby scripts/hooks/saneprompt.rb --self-test
+ruby scripts/hooks/sanetools.rb --self-test
 ruby scripts/hooks/sanetrack.rb --self-test
 ruby scripts/hooks/sanestop.rb --self-test
 ```
 
-Hook-layer docs list hook-specific counts. Full repo counts change as registry-backed Ruby, Python, shell, and hook tests are added; use `SaneMaster.rb verify` as the source of truth. `sanetools` coverage is included in the tier and full verification paths; its standalone self-test is not advertised until the tool-discovery self-test path is repaired.
+Hook-layer docs list hook-specific counts. Full repo counts change as registry-backed Ruby, Python, shell, and hook tests are added; use `SaneMaster.rb verify` as the source of truth. Set `SANE_TEST_DEBUG=1` to see the block messages that hook self-tests normally suppress.
 
 ## Security
 

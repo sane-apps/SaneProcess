@@ -434,10 +434,11 @@ end
 
 def current_visual_receipt_paths
   visual = StateManager.get(:visual_verification)
+  started_at = last_edit_time || session_start_time
   SaneVisualReceipt.valid_receipt_paths(
     cwd: Dir.pwd,
     candidate_paths: visual[:audit_files] || [],
-    started_at: session_start_time
+    started_at: started_at
   )
 rescue StandardError
   []

@@ -20,7 +20,7 @@ require_relative 'core/process_metrics'
 require_relative 'core/visual_receipt'
 
 begin
-  input = JSON.parse($stdin.read)
+  input = JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
 rescue JSON::ParserError, Errno::ENOENT
   exit 0
 end
@@ -101,6 +101,10 @@ rescue ArgumentError
   nil
 end
 
+def mini_or_structured_fallback?(event)
+  SaneProcessMetrics.mini_or_structured_fallback?(event)
+end
+
 def recent_verified_metric?(cwd, project_name, max_age_seconds: 1_800)
   path = SaneProcessMetrics.metrics_path
   return false unless File.exist?(path)
@@ -116,9 +120,7 @@ def recent_verified_metric?(cwd, project_name, max_age_seconds: 1_800)
     nil
   end.compact
      .select { |event| event['type'] == 'verify' }
-     .select { |event| event['success'] == true }
-     .select { |event| event['tests_run'].to_i.positive? }
-     .select { |event| event['evidence_strength'].to_s != 'build_only' }
+     .select { |event| SaneProcessMetrics.authoritative_verify_event?(event, require_source_fingerprint: true) }
      .select { |event| event['project'].to_s == project_name.to_s || File.expand_path(event['cwd'].to_s) == project_root }
      .any? do |event|
        timestamp = Time.parse(event['timestamp'].to_s)
@@ -139,10 +141,11 @@ end
 
 visual = visual_state(cwd)
 if visual['required']
+  visual_started_at = last_edit_time(cwd) || Time.now - 3600
   receipt_paths = SaneVisualReceipt.valid_receipt_paths(
     cwd: cwd,
     candidate_paths: Array(visual['audit_files']),
-    started_at: Time.now - 3600
+    started_at: visual_started_at
   )
 
   if receipt_paths.empty?

@@ -410,7 +410,11 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
     end
 
     test('resets protected folder TCC services before verify') do
-      content = File.read(File.join(__dir__, 'verify.rb'))
+      # The TCC reset lives in the verify family; verify.rb was split per
+      # Rule #10, so check the combined source rather than one file.
+      content = %w[verify.rb verify_support.rb].map do |file|
+        File.read(File.join(__dir__, file), encoding: Encoding::UTF_8)
+      end.join("\n")
 
       assert_includes(content, 'SystemPolicyDocumentsFolder')
       assert_includes(content, 'SystemPolicyDesktopFolder')

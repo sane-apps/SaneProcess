@@ -32,6 +32,13 @@ matches_sane_app_bundle() {
   [[ "$value" =~ (SaneBar|SaneClick|SaneClip|SaneHosts|SaneSales|SaneScan|SaneSync|SaneVideo)\.app($|/|[[:space:]]) ]]
 }
 
+matches_sane_app_name_or_bundle_id() {
+  local value="$1"
+  [[ "$value" =~ ^(SaneBar|SaneClick|SaneClip|SaneHosts|SaneSales|SaneScan|SaneSync|SaneVideo)$ ]] && return 0
+  [[ "$value" =~ ^com\.(sanebar|saneclick|saneclip|mrsane\.SaneHosts|sanesales|sanesync|sanevideo)\. ]] && return 0
+  return 1
+}
+
 block_reason_for_arg() {
   local arg="$1"
 
@@ -52,6 +59,11 @@ block_reason_for_arg() {
 
   if matches_sane_app_bundle "$arg"; then
     printf 'SaneApps app bundle launch/reveal: %s' "$arg"
+    return 0
+  fi
+
+  if matches_sane_app_name_or_bundle_id "$arg"; then
+    printf 'SaneApps app launch by name/bundle id: %s' "$arg"
     return 0
   fi
 

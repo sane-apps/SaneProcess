@@ -1,6 +1,12 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Hook/launchd/ssh shells often run with a C locale, which makes Ruby default
+# to US-ASCII and raise "invalid byte sequence" when UTF-8 file or tool
+# content hits a regex or parser. Force UTF-8 before anything reads content.
+Encoding.default_external = Encoding::UTF_8
+Encoding.default_internal = Encoding::UTF_8
+
 # =============================================================================
 # SaneApps Link Monitor
 # Checks critical URLs (checkout, download, website) and alerts on failures.
@@ -86,7 +92,7 @@ end
 
 def persist_secret_to_env_cache(value, *env_names)
   return if value.nil? || value.empty?
-  return if ENV.fetch("SANE_ENV_CACHE_WRITE", "1") == "0"
+  return if ENV.fetch("SANE_ENV_CACHE_WRITE", "0") == "0"
 
   names = env_names.compact.reject(&:empty?)
   return if names.empty?

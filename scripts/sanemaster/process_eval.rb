@@ -7,9 +7,32 @@ require 'time'
 module SaneMasterModules
   module ProcessEval
     DEFAULT_PROCESS_EVAL_FIXTURE = File.expand_path('../process_eval_fixtures.json', __dir__)
+    DEFAULT_ABTEST_RECEIPT_DIR = File.expand_path('../../outputs/process-abtest', __dir__)
     LIVE_TELEMETRY_TYPES = %w[
       workflow_receipt verify agent_eval skill_lint process_eval trace_eval
       gate_review hook_block trajectory_event session_end session_receipt visual_smoke
+    ].freeze
+    BOOKKEEPING_WORKFLOW_PATTERNS = [
+      /mcp_watchdog/i
+    ].freeze
+    META_TELEMETRY_TYPES = %w[
+      agent_eval agent_env_review gate_review process_eval skill_lint trace_eval
+    ].freeze
+    META_WORKFLOW_PATTERNS = [
+      /agent[_-]env[_-]review/i,
+      /agent[_-]eval/i,
+      /gate[_-]review/i,
+      /process[_-]eval/i,
+      /skill[_-]lint/i,
+      /trace[_-]eval/i
+    ].freeze
+    UI_PROOF_WORKFLOW_PATTERNS = [
+      /customer[_-]ui[_-](sweep|contract)/i,
+      /visual[_-]smoke/i
+    ].freeze
+    REQUIRED_ABTEST_RECEIPT_FIELDS = %w[
+      schema_version id completed_at task source protocol_path scoring_path
+      arms judge scores costs validation_delta decisive_mechanisms pending_actions
     ].freeze
     REQUIRED_SESSION_RECEIPT_FIELDS = %w[
       schema_version receipt_id session_id client_name client_kind host git_root
@@ -27,6 +50,8 @@ module SaneMasterModules
         success: result[:passed],
         traces: result.dig(:trace_eval, :trace_count),
         failed: result.dig(:trace_eval, :failed_count),
+        abtests: result.dig(:abtest_review, :receipt_count),
+        abtest_blockers: result.dig(:abtest_review, :blockers)&.length.to_i,
         sop_warnings: result.dig(:sop_review, :warnings)&.length.to_i
       ) if respond_to?(:record_process_metric)
 
@@ -71,14 +96,16 @@ module SaneMasterModules
       trace_result = run_trace_eval_fixture(options.fetch(:fixture, DEFAULT_PROCESS_EVAL_FIXTURE))
       events = read_process_metric_events
       sop_result = build_sop_review(events)
-      live_result = build_live_telemetry_review(events)
+      live_result = build_live_telemetry_review(events, require_ui_proof: options[:require_ui_proof])
+      abtest_result = build_abtest_review(options.fetch(:abtest_dir, DEFAULT_ABTEST_RECEIPT_DIR))
       {
         generated_at: Time.now.utc.iso8601,
         fixture: trace_result[:fixture],
-        passed: trace_result[:passed] && sop_result[:blockers].empty? && live_result[:blockers].empty?,
+        passed: trace_result[:passed] && sop_result[:blockers].empty? && live_result[:blockers].empty? && abtest_result[:blockers].empty?,
         trace_eval: trace_result,
         sop_review: sop_result,
-        live_telemetry: live_result
+        live_telemetry: live_result,
+        abtest_review: abtest_result
       }
     end
 
@@ -94,6 +121,59 @@ module SaneMasterModules
         failed_count: failed.length,
         passed: failed.empty?,
         traces: results
+      }
+    end
+
+    def build_abtest_review(receipt_dir = DEFAULT_ABTEST_RECEIPT_DIR)
+      receipts = read_abtest_receipts(receipt_dir)
+      blockers = []
+      warnings = []
+      actions = []
+      total_correct = 0
+      total_wrong = 0
+
+      if receipts.empty?
+        warnings << 'no process A/B receipts found; slimming decisions should wait for real comparative runs'
+        actions << 'record real A/B runs as outputs/process-abtest/*.json before changing the process surface'
+      end
+
+      receipt_results = receipts.map do |entry|
+        issues = validate_abtest_receipt(entry[:receipt])
+        delta = entry[:receipt]['validation_delta'] || {}
+        correct = delta['blocks_that_were_correct'].to_i
+        wrong = delta['blocks_that_were_wrong'].to_i
+        total_correct += correct
+        total_wrong += wrong
+
+        blockers.concat(issues.map { |issue| "#{entry[:path]}: #{issue}" })
+        {
+          path: entry[:path],
+          id: entry[:receipt]['id'],
+          task: entry[:receipt].dig('task', 'name') || entry[:receipt]['task'],
+          passed: issues.empty?,
+          issues: issues,
+          validation_delta: {
+            blocks_that_were_correct: correct,
+            blocks_that_were_wrong: wrong
+          }
+        }
+      end
+
+      actions << 'protect mechanisms with positive A/B validation deltas; cut or rewrite gates with repeated wrong/theater tags'
+
+      {
+        receipt_dir: receipt_dir,
+        receipt_count: receipts.length,
+        passed_count: receipt_results.count { |entry| entry[:passed] },
+        failed_count: receipt_results.count { |entry| !entry[:passed] },
+        validation_delta: {
+          blocks_that_were_correct: total_correct,
+          blocks_that_were_wrong: total_wrong
+        },
+        receipts: receipt_results,
+        blockers: blockers.uniq,
+        warnings: warnings.uniq,
+        recommended_actions: actions.uniq
       }
     end
 
@@ -142,17 +222,26 @@ module SaneMasterModules
       csv_scores = read_sop_rating_csv
       trusted_csv_scores = csv_scores.select { |row| row[:trusted] }
       legacy_csv_scores = csv_scores.reject { |row| row[:trusted] }
-      scores = sessions.map { |event| event['sop_score'].to_f }.reject(&:zero?)
-      scores = trusted_csv_scores.map { |row| row[:score].to_f }.reject(&:zero?) if scores.empty?
+      no_work_sessions = sessions.select { |event| no_work_session_metric?(event) }
+      score_sessions = sessions - no_work_sessions
+      trusted_work_csv_scores = trusted_csv_scores.reject { |row| row[:no_work] }
+      scores = score_sessions.map { |event| event['sop_score'].to_f }.reject(&:zero?)
+      scores = trusted_work_csv_scores.map { |row| row[:score].to_f }.reject(&:zero?) if scores.empty?
       warnings = []
       blockers = []
       actions = []
 
       warnings << 'no session_end metrics found; SOP history cannot explain recent self-assessments' if sessions.empty?
-      warnings << 'outputs/sop_ratings.csv is missing or empty; sanestop score history is thin' if csv_scores.empty?
+      if csv_scores.empty? && sessions.empty?
+        warnings << 'outputs/sop_ratings.csv is missing or empty; sanestop score history is thin'
+      end
       if legacy_csv_scores.any?
         warnings << "ignored #{legacy_csv_scores.length} legacy SOP CSV row(s) without receipt proof; active SOP review requires structured receipts"
         actions << 'retire legacy clean-session SOP CSV rows from active review windows after structured receipts accumulate'
+      end
+      if no_work_sessions.any?
+        warnings << "excluded #{no_work_sessions.length} no-work session metric(s) from SOP score trends"
+        actions << 'keep no-work sessions visible, but score process quality from edited, verified, or blocked work'
       end
       warnings << 'fewer than 30 session_end metrics; SOP trend confidence is weak' if sessions.length.positive? && sessions.length < 30
 
@@ -230,7 +319,9 @@ module SaneMasterModules
         actions << 'keep GREEN MEANS GO as a hard gate before final status'
       end
 
-      actions << 'expand SOP receipts with session_id, block counts, cap_reason, verification status, and client'
+      if sessions.empty? || missing_receipt_fields.any? || high_score_missing_receipts.any?
+        actions << 'expand SOP receipts with session_id, block counts, cap_reason, verification status, and client'
+      end
       actions << 'run process_eval after changing hooks, SaneMaster routing, support, release, UI verification, or session-end policy'
 
       {
@@ -238,6 +329,8 @@ module SaneMasterModules
         sop_csv_path: sop_rating_csv_path,
         sessions: {
           total: sessions.length,
+          scored_total: score_sessions.length,
+          no_work_excluded: no_work_sessions.length,
           recovered_green: recovered_green,
           unrecovered_failures: unrecovered_failures,
           average_sop_score: score_average,
@@ -257,6 +350,7 @@ module SaneMasterModules
         sop_csv: {
           rows: csv_scores.length,
           trusted_rows: trusted_csv_scores.length,
+          trusted_work_rows: trusted_work_csv_scores.length,
           legacy_rows_ignored: legacy_csv_scores.length,
           last_score: trusted_csv_scores.last && trusted_csv_scores.last[:score],
           last_note: trusted_csv_scores.last && trusted_csv_scores.last[:note]
@@ -267,19 +361,22 @@ module SaneMasterModules
       }
     end
 
-    def build_live_telemetry_review(events)
+    def build_live_telemetry_review(events, options = {})
+      require_ui_proof = options[:require_ui_proof] == true
       relevant = events.select { |event| LIVE_TELEMETRY_TYPES.include?(event['type'].to_s) }
+      task_relevant = relevant.reject { |event| bookkeeping_workflow_event?(event) }
       recent = relevant.last(100)
+      recent_task = task_relevant.last(100)
       blockers = []
       warnings = []
       actions = []
 
-      blockers << 'no live process telemetry found; process_eval is relying only on fixture traces' if recent.empty?
+      blockers << 'no live process telemetry found; process_eval is relying only on fixture traces' if recent_task.empty?
 
-      runner_backed = recent.reject { |event| %w[session_end session_receipt hook_block trajectory_event].include?(event['type'].to_s) }
-      blockers << 'no recent runner-backed telemetry found for process_eval; session summaries alone are not proof' if recent.any? && runner_backed.empty?
+      runner_backed = recent_task.select { |event| outcome_telemetry_event?(event) }
+      blockers << 'no recent runner-backed telemetry found for process_eval; session summaries alone are not proof' if recent_task.any? && runner_backed.empty?
 
-      recent.select { |event| event['type'] == 'workflow_receipt' }.each do |event|
+      recent_task.select { |event| event['type'] == 'workflow_receipt' }.each do |event|
         label = event['workflow'] || event['command'] || event['timestamp'] || 'unknown workflow_receipt'
         blockers << "workflow_receipt missing workflow: #{label}" if event['workflow'].to_s.strip.empty?
         blockers << "workflow_receipt missing command: #{label}" if event['command'].to_s.strip.empty?
@@ -290,7 +387,7 @@ module SaneMasterModules
           end
         end
       end
-      recent.select { |event| event['type'] == 'session_receipt' }.each do |event|
+      recent_task.select { |event| event['type'] == 'session_receipt' }.each do |event|
         label = event['receipt_id'] || event['session_id'] || event['timestamp'] || 'session_receipt'
         blockers << "session_receipt missing schema_version: #{label}" if event['schema_version'].to_i < 2
         REQUIRED_SESSION_RECEIPT_FIELDS.each do |field|
@@ -298,19 +395,19 @@ module SaneMasterModules
         end
       end
 
-      recent.select { |event| event['type'] == 'process_eval' }.each do |event|
+      recent_task.select { |event| event['type'] == 'process_eval' }.each do |event|
         label = event['timestamp'] || 'process_eval'
         blockers << "process_eval metric missing trace count: #{label}" unless event.key?('traces')
         blockers << "process_eval metric missing failed count: #{label}" unless event.key?('failed')
       end
 
-      recent.select { |event| event['type'] == 'agent_eval' }.each do |event|
+      recent_task.select { |event| event['type'] == 'agent_eval' }.each do |event|
         label = event['timestamp'] || 'agent_eval'
         blockers << "agent_eval metric missing case count: #{label}" unless event.key?('cases')
         blockers << "agent_eval metric missing failed count: #{label}" unless event.key?('failed')
       end
 
-      workflow_receipts = recent.select { |event| event['type'] == 'workflow_receipt' }
+      workflow_receipts = recent_task.select { |event| event['type'] == 'workflow_receipt' }
       successful_receipts = workflow_receipts.select { |event| event['success'] == true }
       enriched_receipts = workflow_receipts.select { |event| event['schema_version'].to_i >= 2 }
       thin_receipts = workflow_receipts - enriched_receipts
@@ -322,14 +419,26 @@ module SaneMasterModules
       successful_visual_smoke = visual_smoke.select { |event| event['success'] == true }
       mini_visual_smoke = successful_visual_smoke.select { |event| event['host'].to_s.downcase.include?('mini') }
       failed_visual_smoke = visual_smoke.reject { |event| event['success'] == true }
-      if visual_smoke.empty?
-        warnings << 'no recent live visual_smoke metrics; UI runtime receipt remains fixture-only'
-      elsif successful_visual_smoke.any? && mini_visual_smoke.empty?
-        warnings << 'recent visual_smoke success is not Mini-host proof; do not treat it as canonical SaneApps UI evidence'
+      ui_proof = recent_task.select { |event| ui_proof_event?(event) }
+      successful_ui_proof = ui_proof.select { |event| event['success'] == true }
+      mini_ui_proof = successful_ui_proof.select { |event| event['host'].to_s.downcase.include?('mini') }
+      failed_ui_proof = ui_proof.reject { |event| event['success'] == true }
+      if ui_proof.empty?
+        message = 'no recent live UI-proof metrics; UI runtime receipt remains fixture-only'
+        require_ui_proof ? blockers << message : warnings << message
+      elsif successful_ui_proof.any? && mini_ui_proof.empty?
+        message = 'recent UI-proof success is not Mini-host proof; do not treat it as canonical SaneApps UI evidence'
+        require_ui_proof ? blockers << message : warnings << message
+      elsif require_ui_proof && mini_ui_proof.empty?
+        blockers << 'required UI-proof metrics have no successful Mini-host receipt'
       end
       if failed_visual_smoke.any?
         sample = failed_visual_smoke.last
         warnings << "recent visual_smoke failure exists for #{sample['app'] || 'unknown app'}: #{sample['status'] || 'failed'} #{sample['reason']}".strip
+      end
+      if failed_ui_proof.any? && failed_visual_smoke.empty?
+        sample = failed_ui_proof.last
+        warnings << "recent UI-proof failure exists for #{sample['workflow'] || sample['app'] || 'unknown app'}: #{sample['status'] || sample['exit_status'] || 'failed'}".strip
       end
 
       actions << 'run runner-backed workflows through SaneMaster so workflow_receipt metrics capture success, command, and workflow'
@@ -337,8 +446,9 @@ module SaneMasterModules
 
       {
         metrics_path: respond_to?(:process_metrics_path) ? process_metrics_path : nil,
-        event_count: recent.length,
-        by_type: recent.group_by { |event| event['type'].to_s }.transform_values(&:length).sort.to_h,
+        event_count: recent_task.length,
+        ignored_bookkeeping_events: relevant.length - task_relevant.length,
+        by_type: recent_task.group_by { |event| event['type'].to_s }.transform_values(&:length).sort.to_h,
         workflow_receipts: {
           total: workflow_receipts.length,
           successful: successful_receipts.length,
@@ -351,30 +461,150 @@ module SaneMasterModules
           mini_successful: mini_visual_smoke.length,
           failed: failed_visual_smoke.length
         },
+        ui_proof: {
+          total: ui_proof.length,
+          successful: successful_ui_proof.length,
+          mini_successful: mini_ui_proof.length,
+          failed: failed_ui_proof.length,
+          required: require_ui_proof
+        },
         blockers: blockers.uniq,
         warnings: warnings.uniq,
         recommended_actions: actions.uniq
       }
     end
 
+    def bookkeeping_workflow_event?(event)
+      return false unless event['type'].to_s == 'workflow_receipt'
+
+      label = [event['workflow'], event['command']].compact.join(' ')
+      BOOKKEEPING_WORKFLOW_PATTERNS.any? { |pattern| label.match?(pattern) }
+    end
+
+    def outcome_telemetry_event?(event)
+      type = event['type'].to_s
+      return SaneProcessMetrics.authoritative_verify_event?(event) if type == 'verify'
+      return true if type == 'visual_smoke' && event['dry_run'] != true && event['status'].to_s != 'planned'
+      return false if META_TELEMETRY_TYPES.include?(type)
+      return false if %w[session_end session_receipt hook_block trajectory_event].include?(type)
+      return outcome_workflow_receipt?(event) if type == 'workflow_receipt'
+
+      true
+    end
+
+    def outcome_workflow_receipt?(event)
+      label = [event['workflow'], event['command']].compact.join(' ')
+      return false if label.empty?
+
+      !META_WORKFLOW_PATTERNS.any? { |pattern| label.match?(pattern) }
+    end
+
+    def ui_proof_event?(event)
+      return true if event['type'].to_s == 'visual_smoke' && event['dry_run'] != true && event['status'].to_s != 'planned'
+      return false unless event['type'].to_s == 'workflow_receipt'
+
+      label = [event['workflow'], event['command']].compact.join(' ')
+      UI_PROOF_WORKFLOW_PATTERNS.any? { |pattern| label.match?(pattern) }
+    end
+
     private
 
     def parse_process_eval_options(args)
-      options = { json: false }
+      options = { json: false, require_ui_proof: false }
       rest = args.dup
       until rest.empty?
         token = rest.shift
         case token
         when '--json'
           options[:json] = true
+        when '--require-ui-proof'
+          options[:require_ui_proof] = true
         when '--fixture'
           value = rest.shift
           raise ArgumentError, '--fixture requires a path' if value.to_s.empty?
 
           options[:fixture] = File.expand_path(value)
+        when '--abtest-dir'
+          value = rest.shift
+          raise ArgumentError, '--abtest-dir requires a path' if value.to_s.empty?
+
+          options[:abtest_dir] = File.expand_path(value)
         end
       end
       options
+    end
+
+    def read_abtest_receipts(receipt_dir)
+      return [] unless Dir.exist?(receipt_dir)
+
+      Dir.glob(File.join(receipt_dir, '*.json')).sort.map do |path|
+        JSON.parse(File.read(path)).then { |receipt| { path: path, receipt: receipt } }
+      rescue JSON::ParserError => e
+        { path: path, receipt: { 'id' => File.basename(path), '_parse_error' => e.message } }
+      end.compact
+    end
+
+    def validate_abtest_receipt(receipt)
+      issues = []
+      if receipt['_parse_error']
+        return ["invalid JSON: #{receipt['_parse_error']}"]
+      end
+
+      REQUIRED_ABTEST_RECEIPT_FIELDS.each do |field|
+        value = receipt[field]
+        issues << "missing #{field}" if value.nil? || (value.respond_to?(:empty?) && value.empty?)
+      end
+
+      issues << 'schema_version must be 1' unless receipt['schema_version'].to_i == 1
+      task = receipt['task'].is_a?(Hash) ? receipt['task'] : {}
+      issues << 'task must name a real repo or app' if task['repo'].to_s.strip.empty? && task['app'].to_s.strip.empty?
+      issues << 'task must describe a real customer/tooling failure' if task['failure'].to_s.strip.empty?
+
+      arms = receipt['arms'].is_a?(Hash) ? receipt['arms'] : {}
+      %w[vanilla harness].each do |arm|
+        arm_data = arms[arm].is_a?(Hash) ? arms[arm] : {}
+        issues << "arm #{arm} missing checkout" if arm_data['checkout'].to_s.strip.empty?
+        issues << "arm #{arm} missing outcome" if arm_data['outcome'].to_s.strip.empty?
+        verification = arm_data['verification'].is_a?(Hash) ? arm_data['verification'] : {}
+        issues << "arm #{arm} missing endpoint verification command" if verification['command'].to_s.strip.empty?
+        issues << "arm #{arm} missing verification host" if verification['host'].to_s.strip.empty?
+        issues << "arm #{arm} missing verification result" if verification['result'].to_s.strip.empty?
+      end
+
+      judge = receipt['judge'].is_a?(Hash) ? receipt['judge'] : {}
+      issues << 'judge must be blind' unless judge['blind'] == true
+      issues << 'judge must name a winner' if judge['winner'].to_s.strip.empty?
+
+      scores = receipt['scores'].is_a?(Hash) ? receipt['scores'] : {}
+      %w[vanilla harness].each do |arm|
+        issues << "scores missing #{arm}" unless scores[arm].is_a?(Numeric)
+      end
+
+      costs = receipt['costs'].is_a?(Hash) ? receipt['costs'] : {}
+      %w[vanilla harness].each do |arm|
+        arm_cost = costs[arm].is_a?(Hash) ? costs[arm] : {}
+        issues << "costs missing #{arm} tokens" unless arm_cost['tokens'].to_i.positive?
+        issues << "costs missing #{arm} duration_minutes" unless arm_cost['duration_minutes'].to_f.positive?
+      end
+
+      delta = receipt['validation_delta'].is_a?(Hash) ? receipt['validation_delta'] : {}
+      if delta['blocks_that_were_correct'].to_i.zero? && delta['blocks_that_were_wrong'].to_i.zero?
+        issues << 'validation_delta must record at least one block classification'
+      end
+
+      mechanisms = Array(receipt['decisive_mechanisms'])
+      issues << 'decisive_mechanisms must name concrete workflow mechanisms' if mechanisms.empty?
+      mechanisms.each do |mechanism|
+        if mechanism.is_a?(Hash)
+          issues << 'decisive mechanism missing name' if mechanism['name'].to_s.strip.empty?
+          issues << 'decisive mechanism missing evidence' if mechanism['evidence'].to_s.strip.empty?
+        else
+          issues << 'decisive_mechanisms entries must be objects with name/evidence'
+        end
+      end
+
+      issues << 'pending_actions must include concrete follow-up work' if Array(receipt['pending_actions']).empty?
+      issues
     end
 
     def trace_event_index(events, pattern)
@@ -411,15 +641,63 @@ module SaneMasterModules
         score = row['sop_score']
         next if score.to_s.empty?
 
+        notes = row['notes_json'] || row['notes']
         {
           date: row['date'],
           score: score.to_f,
-          note: row['notes_json'] || row['notes'],
+          note: notes,
           session_id: row['session_id'],
           cap_reason: row['cap_reason'],
-          trusted: !row['session_id'].to_s.empty? && !row['notes_json'].to_s.empty?
+          trusted: !row['session_id'].to_s.empty? && !row['notes_json'].to_s.empty?,
+          no_work: sop_csv_no_work?(row, notes)
         }
       end.compact
+    end
+
+    def no_work_session_metric?(event)
+      return false unless explicit_metric_value?(event, 'edits') &&
+        explicit_metric_value?(event, 'verify_attempts') &&
+        explicit_metric_value?(event, 'block_count')
+
+      event['edits'].to_i.zero? &&
+        event['verify_attempts'].to_i.zero? &&
+        event['block_count'].to_i.zero? &&
+        metric_changed_file_count(event).zero?
+    end
+
+    def metric_changed_file_count(event)
+      return event['changed_file_count'].to_i if explicit_metric_value?(event, 'changed_file_count')
+      return Array(event['unique_files']).length if event.key?('unique_files') && event['unique_files'].is_a?(Array)
+
+      0
+    end
+
+    def explicit_metric_value?(event, key)
+      event.key?(key) && !event[key].nil?
+    end
+
+    def sop_csv_no_work?(row, notes)
+      edits = row['edits']
+      verify_attempts = row['verify_attempts']
+      block_count = row['block_count']
+      unique_files = row['unique_files']
+      notes_json = parse_sop_notes_json(notes)
+      return false if [edits, verify_attempts, block_count].any? { |value| value.nil? || value.to_s.empty? }
+
+      edits.to_i.zero? &&
+        verify_attempts.to_i.zero? &&
+        block_count.to_i.zero? &&
+        unique_files.to_i.zero? &&
+        !notes_json.fetch('violations', []).any?
+    end
+
+    def parse_sop_notes_json(notes)
+      return {} if notes.to_s.strip.empty?
+
+      parsed = JSON.parse(notes)
+      parsed.is_a?(Hash) ? parsed : {}
+    rescue JSON::ParserError
+      {}
     end
 
     def sop_rating_csv_path
@@ -443,6 +721,8 @@ module SaneMasterModules
       puts
       print_live_telemetry_review(result[:live_telemetry])
       puts
+      print_abtest_review(result[:abtest_review])
+      puts
       puts result[:passed] ? 'process_eval passed' : 'process_eval found issues'
     end
 
@@ -465,6 +745,18 @@ module SaneMasterModules
       puts "Score stddev: #{result.dig(:sessions, :score_stddev) || 'N/A'}"
       puts "Cap mismatches: #{result.dig(:sessions, :cap_mismatches)}"
       puts "Verify pass rate: #{result.dig(:verify, :pass_rate) || 'N/A'}%"
+      result[:blockers].each { |item| puts "  BLOCKER #{item}" }
+      result[:warnings].each { |item| puts "  WARNING #{item}" }
+      puts 'Recommended actions:'
+      result[:recommended_actions].each { |item| puts "  - #{item}" }
+    end
+
+    def print_abtest_review(result)
+      puts 'A/B Evidence'
+      puts '=' * 12
+      puts "Receipt dir: #{result[:receipt_dir]}"
+      puts "Receipts: #{result[:passed_count]}/#{result[:receipt_count]} valid"
+      puts "Validation delta: +#{result.dig(:validation_delta, :blocks_that_were_correct)} correct, +#{result.dig(:validation_delta, :blocks_that_were_wrong)} wrong"
       result[:blockers].each { |item| puts "  BLOCKER #{item}" }
       result[:warnings].each { |item| puts "  WARNING #{item}" }
       puts 'Recommended actions:'

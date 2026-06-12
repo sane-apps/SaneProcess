@@ -719,6 +719,7 @@ module SaneMasterModules
       duplicate_servers = analysis[:duplicate_servers].map { |d| d[:server] }.sort
       duplicate_codex_servers = Array(analysis[:duplicate_codex_groups]).map { |d| d[:server] }.sort.uniq
       stale_sidecars = Array(analysis[:codex_sidecars]).select { |sidecar| sidecar[:cleanup_eligible] }
+      live_probe = mcp_live_probe_snapshot
 
       {
         configured_servers: configured_servers,
@@ -732,7 +733,9 @@ module SaneMasterModules
         max_per_server: max_per_server,
         launch_agent: mcp_watchdog_launch_agent_status,
         recent_errors: mcp_watchdog_recent_errors,
-        session_transport: mcp_watchdog_session_transport_errors
+        session_transport: mcp_watchdog_session_transport_errors,
+        live_probe: live_probe,
+        live_probe_failures: live_probe[:results].select { |result| result[:status].to_s == 'FAIL' }
       }
     end
 
@@ -789,6 +792,23 @@ module SaneMasterModules
         puts '   ✅ No recent watchdog errors.'
       end
 
+      live_probe = doctor[:live_probe] || { available: false, results: [] }
+      puts ''
+      if live_probe[:available]
+        failures = Array(doctor[:live_probe_failures])
+        if failures.empty?
+          puts "   ✅ Live Codex MCP probe passed: #{live_probe[:command]}"
+        else
+          puts "   ❌ Live Codex MCP probe failed: #{live_probe[:command]}"
+          failures.each do |failure|
+            puts "   - #{failure[:name]}: #{failure[:detail]}"
+          end
+          puts '   Process presence is not enough; fix the configured endpoint or bridge before relying on MCPs.'
+        end
+      else
+        puts '   ℹ️  Live Codex MCP probe unavailable (~/.codex/bin/check-mcps not executable).'
+      end
+
       session_transport = doctor[:session_transport] || {}
       if session_transport[:total].to_i.positive?
         puts ''
@@ -807,6 +827,24 @@ module SaneMasterModules
       end
 
       puts ''
+    end
+
+    def mcp_live_probe_snapshot
+      checker = File.expand_path('~/.codex/bin/check-mcps')
+      return { available: false, command: checker, results: [] } unless File.executable?(checker)
+
+      output, status = Open3.capture2e(checker)
+      results = output.lines.map do |line|
+        match = line.match(/^\[(PASS|WARN|FAIL)\]\s+([^\s]+)\s+-\s+(.*)$/)
+        next unless match
+
+        { status: match[1], name: match[2], detail: match[3].strip }
+      end.compact
+      results << { status: 'FAIL', name: 'check-mcps', detail: 'no parseable status lines returned' } if results.empty?
+      results << { status: 'FAIL', name: 'check-mcps', detail: "exited #{status.exitstatus}" } unless status.success?
+      { available: true, command: checker, results: results }
+    rescue StandardError => e
+      { available: true, command: checker, results: [{ status: 'FAIL', name: 'check-mcps', detail: e.message }] }
     end
 
     def configured_mcp_servers

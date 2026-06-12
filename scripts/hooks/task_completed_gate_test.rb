@@ -91,17 +91,19 @@ def verified_metrics(project, timestamp: Time.now.utc.iso8601)
         success: true,
         tests_run: 12,
         evidence_strength: 'tested',
+        host: 'mini',
         source_fingerprint: source_fingerprint(dir)
       }
     ]
   end
 end
 
-def edit_state(files, verified: false)
+def edit_state(files, verified: false, last_edit_at: nil)
   {
     'edits' => {
       'count' => files.length,
-      'unique_files' => files
+      'unique_files' => files,
+      'last_edit_at' => last_edit_at
     },
     'verification' => {
       'tests_passed' => verified,
@@ -111,7 +113,7 @@ def edit_state(files, verified: false)
   }
 end
 
-def write_visual_receipt(dir)
+def write_visual_receipt(dir, generated_at: Time.now.utc.iso8601)
   output_dir = File.join(dir, 'outputs', 'visual-audit-test')
   FileUtils.mkdir_p(output_dir)
   screenshot = File.join(output_dir, 'screen.png')
@@ -124,7 +126,7 @@ def write_visual_receipt(dir)
       status: 'passed',
       host: 'mini',
       inspected: true,
-      generated_at: Time.now.utc.iso8601,
+      generated_at: generated_at,
       screenshots: [screenshot]
     )
   )
@@ -156,6 +158,65 @@ exit(run_tests('TaskCompleted Gate Tests') do
 
       assert_eq(status.exitstatus, 0, stderr)
       assert_includes(stderr, 'verified by structured SaneMaster metric')
+      true
+    end
+
+    test('blocks local verify metric without structured fallback approval') do
+      app_name = 'TaskGateLocalMetric'
+      rows = lambda do |dir|
+        [{
+          timestamp: Time.now.utc.iso8601,
+          type: 'verify',
+          project: app_name,
+          cwd: dir,
+          success: true,
+          tests_run: 12,
+          evidence_strength: 'tested',
+          host: 'MacBook-Air',
+          source_fingerprint: source_fingerprint(dir)
+        }]
+      end
+
+      _stdout, stderr, status = run_task_completed_gate(
+        app_name: app_name,
+        state: edit_state(['Sources/App.swift']),
+        metrics_rows: rows
+      )
+
+      assert_eq(status.exitstatus, 2)
+      assert_includes(stderr, 'without recent test verification')
+      true
+    end
+
+    test('allows local verify metric only with structured fallback approval') do
+      app_name = 'TaskGateFallbackMetric'
+      rows = lambda do |dir|
+        [{
+          timestamp: Time.now.utc.iso8601,
+          type: 'verify',
+          project: app_name,
+          cwd: dir,
+          success: true,
+          tests_run: 12,
+          evidence_strength: 'tested',
+          host: 'MacBook-Air',
+          source_fingerprint: source_fingerprint(dir),
+          local_fallback: {
+            approved: true,
+            approved_by: 'user',
+            reason: 'mini unreachable',
+            user_quote: 'use local for this run'
+          }
+        }]
+      end
+
+      _stdout, stderr, status = run_task_completed_gate(
+        app_name: app_name,
+        state: edit_state(['Sources/App.swift']),
+        metrics_rows: rows
+      )
+
+      assert_eq(status.exitstatus, 0, stderr)
       true
     end
 
@@ -238,6 +299,31 @@ exit(run_tests('TaskCompleted Gate Tests') do
       )
 
       assert_eq(status.exitstatus, 0)
+      true
+    end
+
+    test('blocks visual receipt generated before later UI edit') do
+      app_name = 'TaskGateStaleVisual'
+      state = {
+        'edits' => {
+          'count' => 1,
+          'unique_files' => ['Sources/ContentView.swift'],
+          'last_edit_at' => Time.now.utc.iso8601
+        },
+        'visual_verification' => {
+          'required' => true,
+          'audit_files' => ['outputs/visual-audit-test/receipt.json']
+        }
+      }
+
+      _stdout, stderr, status = run_task_completed_gate(
+        app_name: app_name,
+        state: state,
+        mutate_after_metrics: ->(dir) { write_visual_receipt(dir, generated_at: (Time.now.utc - 3600).iso8601) }
+      )
+
+      assert_eq(status.exitstatus, 2)
+      assert_includes(stderr, 'required visual screenshot audit')
       true
     end
 

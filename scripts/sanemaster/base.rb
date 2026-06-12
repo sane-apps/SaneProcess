@@ -32,6 +32,7 @@ module SaneMasterModules
                                       audit
                                       tool_discovery
                                       tool_receipt
+                                      secret_scan
                                       system_check
                                       doctor
                                       qa

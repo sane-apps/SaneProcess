@@ -290,7 +290,7 @@ class Coordinator
     end
 
     def parse_stdin
-      JSON.parse($stdin.read)
+      JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
     rescue JSON::ParserError, Errno::ENOENT, StandardError
       nil
     end

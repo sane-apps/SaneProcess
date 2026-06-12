@@ -334,7 +334,13 @@ module StateManager
 
       # Use stdlib symbolize_names: true via StateSigner
       data = StateSigner.read_verified(STATE_FILE, symbolize: true)
-      return initialize_state unless data
+      unless data
+        # File exists but failed verification/parse. Resetting is the safe
+        # fallback, but it must never be silent: a quiet wipe erases breaker
+        # counts, research progress, and gate state mid-session.
+        warn "⚠️  state.json failed signature verification — resetting enforcement state (#{STATE_FILE})"
+        return initialize_state
+      end
 
       # Merge with schema defaults for any missing keys
       merge_with_defaults(data)

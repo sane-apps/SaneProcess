@@ -28,6 +28,26 @@ module SaneToolsResearch
     github: 'github'
   }.freeze
 
+  # Claude Code plugin-loaded MCP servers expose tools as
+  # mcp__plugin_<plugin>_<server>__<tool> instead of mcp__<server>__<tool>
+  # (plugin and server names may contain hyphens). Both prefixes must count
+  # as the same server for verification and research tracking.
+  def mcp_tool_pattern(server, tool_prefix = //)
+    /\Amcp__(?:plugin_[\w-]+_)?#{Regexp.escape(server)}__#{tool_prefix}/
+  end
+
+  # Match a RESEARCH_CATEGORIES tool glob (e.g. "mcp__context7__*") against a
+  # tool name, accepting the plugin-loaded prefix for MCP globs.
+  def research_tool_match?(tool_name, tool_glob)
+    prefix = tool_glob.sub('*', '')
+    return true if tool_name.start_with?(prefix)
+
+    server = prefix[/\Amcp__([\w-]+)__\z/, 1]
+    return false unless server
+
+    tool_name.match?(mcp_tool_pattern(server))
+  end
+
   def configured_mcp_keys(project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
     server_names = configured_mcp_server_names(project_dir)
 
@@ -268,6 +288,8 @@ module SaneToolsResearch
           "Unverified MCPs (run each tool once to verify):\n" \
           "#{unverified_list}\n"
 
+    msg += "\nPlugin-loaded servers expose the same tools as " \
+           "mcp__plugin_<plugin>_<server>__...; either prefix counts."
     msg += "\nCall each unverified MCP tool once to proceed."
     msg
   end

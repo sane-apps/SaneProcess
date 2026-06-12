@@ -1,0 +1,11 @@
+#!/bin/bash
+script="$0"
+while [ -L "$script" ]; do
+  target="$(readlink "$script")"
+  case "$target" in
+    /*) script="$target" ;;
+    *) script="$(cd "$(dirname "$script")" && pwd)/$target" ;;
+  esac
+done
+script_dir="$(cd "$(dirname "$script")" && pwd)"
+SANE_BUILD_TOOL_NAME=xcodebuild exec "$script_dir/sane_build_tool_guard.sh" "$@"

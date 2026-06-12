@@ -1,6 +1,12 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Hook/launchd/ssh shells often run with a C locale, which makes Ruby default
+# to US-ASCII and raise "invalid byte sequence" when UTF-8 file or tool
+# content hits a regex or parser. Force UTF-8 before anything reads content.
+Encoding.default_external = Encoding::UTF_8
+Encoding.default_internal = Encoding::UTF_8
+
 #
 # SaneProcess QA Script
 # Automated product verification before release

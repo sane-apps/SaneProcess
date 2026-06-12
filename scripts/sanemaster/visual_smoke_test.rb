@@ -107,8 +107,8 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
       Dir.mktmpdir do |dir|
         options = subject.parse_visual_smoke_args(['--output', dir, '--dry-run'])
         result = subject.build_visual_smoke(options)
-        receipt = JSON.parse(File.read(result[:receipt]))
-        summary = File.read(result[:summary])
+        receipt = JSON.parse(File.read(result[:receipt], encoding: Encoding::UTF_8))
+        summary = File.read(result[:summary], encoding: Encoding::UTF_8)
 
         assert(result[:ok], 'dry-run should be successful')
         assert_eq(result[:status], 'planned')
@@ -210,8 +210,8 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
         options = subject.parse_visual_smoke_args(['--output', dir, '--peekaboo', fake_peekaboo, '--direct'])
         result = subject.build_visual_smoke(options)
         app_see = result[:commands].find { |command| command[:name] == 'app-see' }
-        app_see_receipt = JSON.parse(File.read(app_see[:output]))
-        invocation_log = File.read(log_path)
+        app_see_receipt = JSON.parse(File.read(app_see[:output], encoding: Encoding::UTF_8))
+        invocation_log = File.read(log_path, encoding: Encoding::UTF_8)
 
         assert(result[:ok], 'windowless menu-bar app should not fail visual smoke')
         assert_eq(result[:status], 'passed')
@@ -267,7 +267,7 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
 
         options = subject.parse_visual_smoke_args(['--output', dir, '--peekaboo', fake_peekaboo, '--direct', '--no-app'])
         result = subject.build_visual_smoke(options)
-        invocation_log = File.read(log_path)
+        invocation_log = File.read(log_path, encoding: Encoding::UTF_8)
 
         assert(result[:ok], 'no-app visual precheck should not fail on an unused app-list API')
         assert_eq(result[:status], 'passed')
@@ -450,7 +450,7 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
     end
 
     test('prompt scan treats app-owned Move to Applications dialogs as visual blockers') do
-      source = File.read(File.expand_path('visual_smoke.rb', __dir__))
+      source = File.read(File.expand_path('visual_smoke.rb', __dir__), encoding: Encoding::UTF_8)
 
       assert_includes(source, 'Move to Applications')
       assert_includes(source, 'Could Not Move')
@@ -519,7 +519,7 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
 
   test_category('Mini-first contract') do
     test('SaneMaster routes visual_smoke through Mini-first') do
-      source = File.read(File.expand_path('../SaneMaster.rb', __dir__))
+      source = File.read(File.expand_path('../SaneMaster.rb', __dir__), encoding: Encoding::UTF_8)
       mini_first_block = source[/MINI_FIRST_COMMANDS = Set\.new\(%w\[(.*?)\]\)\.freeze/m, 1]
 
       assert(mini_first_block, 'expected MINI_FIRST_COMMANDS block')
@@ -529,7 +529,7 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
     end
 
     test('SaneMaster forwards visual runtime overrides to the Mini') do
-      source = File.read(File.expand_path('../SaneMaster.rb', __dir__))
+      source = File.read(File.expand_path('../SaneMaster.rb', __dir__), encoding: Encoding::UTF_8)
       env_block = source[/forwarded_env_keys = %w\[(.*?)\]/m, 1]
 
       assert(env_block, 'expected forwarded_env_keys block')
@@ -539,7 +539,7 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
     end
 
     test('dash alias resolves to detailed help') do
-      source = File.read(File.expand_path('../SaneMaster.rb', __dir__))
+      source = File.read(File.expand_path('../SaneMaster.rb', __dir__), encoding: Encoding::UTF_8)
       alias_block = source[/aliases = \{(.*?)\n    \}/m, 1]
 
       assert(alias_block, 'expected help alias block')

@@ -284,6 +284,8 @@ module SaneToolsTestScenarios
   end
 
   def with_quiet_stderr
+    return yield if ENV['SANE_TEST_DEBUG']
+
     original_stderr = $stderr.clone
     $stderr.reopen('/dev/null', 'w')
     yield

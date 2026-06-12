@@ -68,6 +68,37 @@ module SaneTrackTest
       warn '  FAIL: Failure reset on success'
     end
 
+    Dir.mktmpdir('sanetrack-bash-mutation-') do |dir|
+      old_dir = Dir.pwd
+      Dir.chdir(dir)
+      system('git', 'init', '-q')
+      system('git', 'config', 'user.email', 'test@example.com')
+      system('git', 'config', 'user.name', 'Test')
+      File.write('README.md', "fixture\n")
+      system('git', 'add', 'README.md')
+      system('git', 'commit', '-q', '-m', 'init')
+      StateManager.reset(:edits)
+      FileUtils.mkdir_p('Sources')
+      File.write('Sources/Generated.swift', "changed\n")
+      process_result_proc.call(
+        'Bash',
+        { 'command' => "ruby -e 'File.write(\"Sources/Generated.swift\", \"changed\\n\")'" },
+        { 'exit_code' => 0, 'stdout' => 'ok' }
+      )
+      edits = StateManager.get(:edits)
+      changed_path = File.realpath(File.expand_path('Sources/Generated.swift', dir))
+      tracked_paths = Array(edits[:unique_files]).map { |path| File.realpath(path) rescue path }
+      if edits[:count].to_i.positive? && tracked_paths.include?(changed_path)
+        passed += 1
+        warn '  PASS: Bash mutation tracking records git-changed files'
+      else
+        failed += 1
+        warn "  FAIL: Bash mutation tracking missed changed file, got #{edits.inspect}"
+      end
+    ensure
+      Dir.chdir(old_dir) if old_dir
+    end
+
     # Test 5: Circuit breaker trips at 2 failures
     StateManager.reset(:circuit_breaker)
     process_result_proc.call('Bash', {}, { 'error' => 'fail 1' })
@@ -503,7 +534,34 @@ module SaneTrackTest
         end
 
         FileUtils.mkdir_p(File.join(Dir.pwd, 'outputs', 'tool-discovery'))
-        File.write(File.join(Dir.pwd, 'outputs', 'tool-discovery', 'sanetrack-test.json'), JSON.generate({ ok: true }))
+        File.write(
+          File.join(Dir.pwd, 'outputs', 'tool-discovery', 'skipped.json'),
+          JSON.generate(
+            authoritative: false,
+            route: 'tool_discovery_receipt.rb',
+            query: 'missing screenshot diff tool',
+            summary: { doctor_status: 'skipped', validation_status: 'skipped' }
+          )
+        )
+        process_result_proc.call('Bash', { 'command' => 'ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"' }, { 'output' => 'ok' })
+        skill = StateManager.get(:skill)
+        if skill[:runner_used] != true
+          passed += 1
+          warn '  PASS: non-authoritative tool_discovery receipt does not satisfy evolve'
+        else
+          failed += 1
+          warn "  FAIL: non-authoritative receipt should not prove evolve, got #{skill.inspect}"
+        end
+
+        File.write(
+          File.join(Dir.pwd, 'outputs', 'tool-discovery', 'sanetrack-test.json'),
+          JSON.generate(
+            authoritative: true,
+            route: 'SaneMaster.rb tool_discovery',
+            query: 'missing screenshot diff tool',
+            summary: { doctor_status: 'ok', validation_status: 'blocked' }
+          )
+        )
         process_result_proc.call('Bash', { 'command' => 'ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"' }, { 'output' => 'ok' })
         skill = StateManager.get(:skill)
         if skill[:runner_used] == true && skill[:runner_commands].any? { |cmd| cmd.include?('tool_discovery') }
@@ -524,7 +582,15 @@ module SaneTrackTest
         old_sp_root2 = ENV['SANEPROCESS_ROOT']
         ENV['SANEPROCESS_ROOT'] = sp_root
         FileUtils.mkdir_p(File.join(sp_root, 'outputs', 'tool-discovery'))
-        File.write(File.join(sp_root, 'outputs', 'tool-discovery', 'receipt.json'), JSON.generate({ ok: true }))
+        File.write(
+          File.join(sp_root, 'outputs', 'tool-discovery', 'receipt.json'),
+          JSON.generate(
+            authoritative: true,
+            route: 'SaneMaster.rb tool_discovery',
+            query: 'missing screenshot diff tool',
+            summary: { doctor_status: 'ok', validation_status: 'blocked' }
+          )
+        )
         StateManager.reset(:skill)
         StateManager.update(:skill) do |s|
           s[:required] = 'evolve'
@@ -534,7 +600,7 @@ module SaneTrackTest
           s
         end
         Dir.chdir(app_cwd) do
-          process_result_proc.call('Bash', { 'command' => 'ruby scripts/SaneMaster.rb tool_discovery --query "x"' }, { 'output' => 'ok' })
+          process_result_proc.call('Bash', { 'command' => 'ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"' }, { 'output' => 'ok' })
         end
         skill = StateManager.get(:skill)
         ENV['SANEPROCESS_ROOT'] = old_sp_root2
@@ -582,6 +648,77 @@ module SaneTrackTest
       end
       ENV['SANEMASTER_PROCESS_METRICS_PATH'] = old_metrics_path
     end
+
+    # === MCP VERIFICATION TRACKING TESTS ===
+    # Plugin-loaded MCP servers expose tools as mcp__plugin_<plugin>_<server>__*
+    # instead of mcp__<server>__*; both prefixes must count as the same server.
+    warn ''
+    warn 'Testing MCP verification tracking (bare + plugin-loaded prefixes):'
+
+    StateManager.reset(:mcp_health)
+    process_result_proc.call('mcp__context7__resolve-library-id', {}, { 'content' => 'Library ID: /vercel/next.js' })
+    health = StateManager.get(:mcp_health)
+    if health[:mcps] && health[:mcps][:context7] && health[:mcps][:context7][:verified]
+      passed += 1
+      warn '  PASS: bare context7 tool marks context7 verified'
+    else
+      failed += 1
+      warn "  FAIL: bare context7 tool should verify context7, got #{health.inspect[0..150]}"
+    end
+
+    StateManager.reset(:mcp_health)
+    process_result_proc.call('mcp__plugin_context7_context7__resolve-library-id', {}, { 'content' => 'Library ID: /vercel/next.js' })
+    health = StateManager.get(:mcp_health)
+    if health[:mcps] && health[:mcps][:context7] && health[:mcps][:context7][:verified]
+      passed += 1
+      warn '  PASS: plugin-loaded context7 tool marks context7 verified'
+    else
+      failed += 1
+      warn "  FAIL: plugin-loaded context7 tool should verify context7, got #{health.inspect[0..150]}"
+    end
+
+    StateManager.reset(:mcp_health)
+    process_result_proc.call('mcp__plugin_apple-docs_apple-docs__search_apple_docs', {}, { 'content' => 'FileManager documentation found' })
+    process_result_proc.call('mcp__plugin_gh-tools_github__search_repositories', {}, { 'content' => 'Found 3 repositories' })
+    health = StateManager.get(:mcp_health)
+    apple_ok = health[:mcps] && health[:mcps][:apple_docs] && health[:mcps][:apple_docs][:verified]
+    github_ok = health[:mcps] && health[:mcps][:github] && health[:mcps][:github][:verified]
+    if apple_ok && github_ok
+      passed += 1
+      warn '  PASS: plugin-loaded apple-docs/github tools mark their MCPs verified'
+    else
+      failed += 1
+      warn "  FAIL: plugin-loaded apple-docs/github should verify, got apple=#{apple_ok.inspect} github=#{github_ok.inspect}"
+    end
+
+    StateManager.reset(:mcp_health)
+    process_result_proc.call('mcp__plugin_serena_serena__read_memory', {}, { 'content' => 'memory body with details' })
+    health = StateManager.get(:mcp_health)
+    verified_any = (health[:mcps] || {}).any? { |_mcp, data| data[:verified] }
+    if !verified_any
+      passed += 1
+      warn '  PASS: unrelated plugin MCP tool verifies nothing'
+    else
+      failed += 1
+      warn "  FAIL: unrelated plugin tool should verify nothing, got #{health.inspect[0..150]}"
+    end
+
+    # Plugin-prefixed research tools must still be revoked on empty output
+    StateManager.update(:research) do |r|
+      r[:github] = { completed_at: Time.now.iso8601, tool: 'mcp__plugin_gh-tools_github__search_repositories', via_task: false }
+      r
+    end
+    invalidate_empty_research_proc.call('mcp__plugin_gh-tools_github__search_repositories', { 'content' => '0 matches' })
+    research_after = StateManager.get(:research)
+    if research_after[:github].nil?
+      passed += 1
+      warn '  PASS: plugin-loaded github empty result invalidates research'
+    else
+      failed += 1
+      warn "  FAIL: plugin-loaded github empty result should invalidate research, got #{research_after[:github].inspect}"
+    end
+
+    StateManager.reset(:mcp_health)
 
     # === CLEANUP: Reset circuit breaker only (don't reset research - breaks normal ops) ===
     StateManager.reset(:circuit_breaker)

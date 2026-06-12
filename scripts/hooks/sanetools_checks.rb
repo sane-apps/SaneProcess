@@ -55,6 +55,14 @@ module SaneToolsChecks
     ARCHITECTURE.md
     SESSION_HANDOFF.md
   ].freeze
+  SECRET_STARTUP_BASENAMES = %w[
+    .zshenv
+    .zprofile
+    .zshrc
+    .bash_profile
+    .bashrc
+    .profile
+  ].freeze
 
   # === SENSITIVE FILE PATTERNS ===
   # Files with elevated blast radius — edits affect CI/CD, signing, deployment, or security.
@@ -152,6 +160,30 @@ module SaneToolsChecks
       "That path can fail outside the Mini's logged-in GUI session and produce false blockers.\n" \
       "DO THIS: run #{MINI_SCREENSHOT_WRAPPER} with the needed --app/--window-name/--path arguments.\n" \
       "For app-owned SaneApps captures, this wrapper also runs the visual workspace guard."
+    end
+
+    def check_secret_startup_autoload(tool_name, tool_input, edit_tools)
+      return nil unless edit_tools.include?(tool_name)
+
+      path = tool_input['file_path'] || tool_input['path'] || tool_input[:file_path] || tool_input[:path]
+      return nil unless path && SECRET_STARTUP_BASENAMES.include?(File.basename(path.to_s))
+
+      content = [
+        tool_input['content'],
+        tool_input[:content],
+        tool_input['new_string'],
+        tool_input[:new_string]
+      ].compact.join("\n")
+      return nil if content.empty?
+
+      return nil unless content.match?(/security\s+find-generic-password/) ||
+                        content.match?(%r{(?:source|\.)\s+["']?\$?HOME/?\.config/nv/env}) ||
+                        content.match?(/export\s+[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PRIVATE_KEY)=/)
+
+      "SECRET STARTUP AUTOLOAD BLOCKED\n" \
+      "Do not load credentials from shell startup files. Agent shells can snapshot their environment.\n" \
+      "DO THIS: keep startup files secret-free and use sane_load_secrets or a tool-specific wrapper for explicit credential access.\n" \
+      "RECREATE TEST: a clean login shell must show API/token variables unset until sane_load_secrets is called."
     end
 
     def running_on_macbook_air?

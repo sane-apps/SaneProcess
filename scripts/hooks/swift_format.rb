@@ -14,7 +14,7 @@ end
 require 'json'
 
 begin
-  input = JSON.parse($stdin.read)
+  input = JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
   tool_input = input['tool_input'] || {}
   file_path = tool_input['file_path']
 

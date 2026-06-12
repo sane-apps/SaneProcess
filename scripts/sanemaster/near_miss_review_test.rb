@@ -110,6 +110,29 @@ exit(run_tests('SaneMaster Near-Miss Review Tests') do
       true
     end
 
+    test('consolidates one hook failure family across tools and progress counters') do
+      Dir.mktmpdir('near-miss-hook-family-') do |dir|
+        metrics_path = File.join(dir, 'metrics.jsonl')
+        rows = [
+          { timestamp: '2026-06-11T10:00:00Z', type: 'hook_block', project: 'SaneBar', rule: 'session_docs', tool: 'Edit', reason: 'READ REQUIRED DOCS FIRST [0/1 read]' },
+          { timestamp: '2026-06-11T10:01:00Z', type: 'hook_block', project: 'SaneBar', rule: 'session_docs', tool: 'Write', reason: 'READ REQUIRED DOCS FIRST [1/2 read]' },
+          { timestamp: '2026-06-11T10:02:00Z', type: 'hook_block', project: 'SaneBar', rule: 'session_docs', tool: 'NotebookEdit', reason: 'READ REQUIRED DOCS FIRST [0/2 read]' }
+        ]
+        write_metrics(metrics_path, rows)
+
+        subject = NearMissReviewHarness.new(metrics_path)
+        result = subject.build_near_miss_review(subject.send(:read_near_miss_events_from_path, metrics_path), options: { min_count: 2 })
+        candidates = result[:candidates].select { |candidate| candidate[:category] == 'hook_block_recurrence' }
+
+        assert_eq(candidates.length, 1)
+        assert_eq(candidates.first[:evidence_count], 3)
+        assert_includes(candidates.first[:title], 'session_docs / 3 tools:')
+        assert_includes(candidates.first[:title], 'READ REQUIRED DOCS FIRST')
+        assert(!candidates.first[:title].include?('[0/1 read]'), 'progress counters should not fragment the candidate')
+      end
+      true
+    end
+
     test('report command is read-only and tolerates malformed JSONL rows') do
       Dir.mktmpdir('near-miss-json-') do |dir|
         metrics_path = File.join(dir, 'metrics.jsonl')

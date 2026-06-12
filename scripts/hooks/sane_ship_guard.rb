@@ -29,6 +29,8 @@ def release_relevant_clearance_path?(project_dir, relative_path)
   return true if path == '.saneprocess'
   return true if %w[Package.resolved Package.swift project.yml].include?(path)
   return true if path.end_with?('.xcodeproj/project.pbxproj')
+  return true if path.start_with?('website/')
+  return true if path == 'docs/appcast.xml' || path.end_with?('/appcast.xml')
 
   app_folder = File.basename(File.expand_path(project_dir))
   return true if path.start_with?("#{app_folder}/")
@@ -47,13 +49,11 @@ def release_relevant_clearance_path?(project_dir, relative_path)
     '.serena/',
     'DerivedData/',
     'build/',
-    'docs/',
     'fastlane/test_output/',
     'node_modules/',
     'outputs/',
     'releases/',
     'vendor/bundle/',
-    'website/'
   )
 
   %w[
@@ -75,7 +75,7 @@ def release_relevant_commits_changed?(project_dir, old_sha, current_sha)
 end
 
 begin
-  input = JSON.parse($stdin.read)
+  input = JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
 rescue JSON::ParserError, Errno::ENOENT
   exit 0
 end
@@ -86,23 +86,42 @@ exit 0 unless tool_name == 'Bash'
 command = (input['tool_input'] || {})['command'].to_s
 exit 0 if command.empty?
 
-# Only gate release.sh with --full or --deploy
-# Match: release.sh (with optional path prefix) AND --full or --deploy flag
+def shell_unquote(value)
+  text = value.to_s.strip
+  if (text.start_with?('"') && text.end_with?('"')) ||
+     (text.start_with?("'") && text.end_with?("'"))
+    text[1..-2]
+  else
+    text
+  end
+end
+
+def command_project_dir(command)
+  if command =~ /\bcd\s+((?:"[^"]+"|'[^']+'|\S+))\s*(?:&&|;|\n)/
+    return File.expand_path(shell_unquote(Regexp.last_match(1)))
+  end
+
+  if command =~ /--project\s+((?:"[^"]+"|'[^']+'|\S+))/
+    return File.expand_path(shell_unquote(Regexp.last_match(1)))
+  end
+
+  Dir.pwd
+end
+
+# Only gate release.sh/SaneMaster release with --full, --deploy, or --website-only.
+# Match: release.sh (with optional path prefix) or SaneMaster release.
 # Strip quoted strings first so commit messages like
 #   git commit -m "fix release.sh --full flow" don't false-positive
 unquoted = command.gsub(/"(?:[^"\\]|\\.)*"/m, '').gsub(/'[^']*'/m, '')
 # Also strip heredoc bodies (<<'EOF' ... EOF or <<EOF ... EOF)
 unquoted = unquoted.sub(/<<-?'?\w+'?.*/m, '')
 is_release = unquoted.match?(/(?:bash\s+|sh\s+)?(?:\S+\/)?(?:full_)?release\.sh\b/)
-has_gate_flag = unquoted.match?(/--(?:full|deploy)\b/)
-exit 0 unless is_release && has_gate_flag
+is_sanemaster_release = unquoted.match?(/(?:ruby\s+)?(?:\S+\/)?SaneMaster(?:_standalone)?\.rb\s+release\b/)
+has_gate_flag = unquoted.match?(/--(?:full|deploy|website-only)\b/)
+exit 0 unless (is_release || is_sanemaster_release) && has_gate_flag
 
 # Determine project directory from --project flag or current directory
-project_dir = if command =~ /--project\s+(\S+)/
-                $1.gsub(/["']/, '')
-              else
-                Dir.pwd
-              end
+project_dir = command_project_dir(command)
 
 # Read .saneprocess to get app name
 saneprocess_path = File.join(project_dir, '.saneprocess')

@@ -18,6 +18,7 @@
 require 'json'
 require 'time'
 require 'fileutils'
+require 'open3'
 require_relative 'core/mandatory_workflows'
 require_relative 'core/state_manager'
 require_relative 'core/process_metrics'
@@ -49,6 +50,71 @@ def track_edit(tool_name, tool_input, tool_response)
   track_visual_audit_note(tool_name, tool_input, file_path)
 rescue StandardError
   # Don't fail on verification tracking
+end
+
+def track_bash_mutation(tool_name, tool_input, tool_response)
+  return unless tool_name == 'Bash'
+  return if detect_actual_failure(tool_name, tool_response)
+
+  command = (tool_input['command'] || tool_input[:command]).to_s
+  return unless bash_mutation_command?(command)
+
+  changed_files = git_changed_files_after_bash
+  return if changed_files.empty?
+
+  StateManager.update(:edits) do |e|
+    e[:count] = (e[:count] || 0) + changed_files.length
+    e[:unique_files] ||= []
+    changed_files.each { |path| e[:unique_files] << path unless e[:unique_files].include?(path) }
+    e[:last_file] = changed_files.last
+    e[:last_edit_at] = Time.now.iso8601
+    e
+  end
+
+  StateManager.update(:verification) do |v|
+    v[:edits_before_test] = (v[:edits_before_test] || 0) + changed_files.length
+    v
+  end
+
+  changed_files.each do |path|
+    track_visual_requirement_from_edit(path)
+    track_visual_audit_note('Bash', { 'content' => command }, path)
+  end
+rescue StandardError => e
+  warn "⚠️  Bash mutation tracking error: #{e.message}" if ENV['DEBUG']
+end
+
+def bash_mutation_command?(command)
+  command.match?(
+    Regexp.union(
+      />\s*[^&]/,
+      />>/,
+      /\bsed\s+-i\b/,
+      /\btee\b/,
+      /\bcp\s+/,
+      /\bmv\s+/,
+      /\bgit\s+apply\b/,
+      /\b(?:python3?|ruby|node|perl)\s+-e\b/,
+      /\bSaneMaster(?:_standalone)?\.rb\s+(?:gen_|template|enable_ci_tests|restore_ci_tests|fix_mocks|bootstrap|setup)\b/
+    )
+  )
+end
+
+def git_changed_files_after_bash
+  root_out, root_status = Open3.capture2e('git', 'rev-parse', '--show-toplevel')
+  return [] unless root_status.success?
+
+  root = root_out.strip
+  status_out, status = Open3.capture2e('git', '-C', root, 'status', '--porcelain=v1', '--untracked-files=all')
+  return [] unless status.success?
+
+  status_out.each_line.filter_map do |line|
+    path = line[3..]&.strip
+    next if path.to_s.empty?
+
+    path = path.split(' -> ', 2).last if path.include?(' -> ')
+    File.expand_path(path, root)
+  end.uniq
 end
 
 def track_visual_requirement_from_edit(file_path)

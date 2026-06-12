@@ -677,7 +677,7 @@ elsif ARGV.include?('--check-heartbeat')
   check_heartbeat
 else
   begin
-    raw = $stdin.read
+    raw = $stdin.read.force_encoding(Encoding::UTF_8)
     debug_log("RAW INPUT: #{raw[0..200]}")
     input = JSON.parse(raw)
     debug_log("PARSED KEYS: #{input.keys.inspect}")

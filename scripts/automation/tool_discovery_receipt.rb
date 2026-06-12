@@ -1,6 +1,12 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Hook/launchd/ssh shells often run with a C locale, which makes Ruby default
+# to US-ASCII and raise "invalid byte sequence" when UTF-8 file or tool
+# content hits a regex or parser. Force UTF-8 before anything reads content.
+Encoding.default_external = Encoding::UTF_8
+Encoding.default_internal = Encoding::UTF_8
+
 require 'json'
 require 'fileutils'
 require 'open3'
@@ -189,6 +195,8 @@ class ToolDiscoveryReceipt
 
     receipt = {
       generated_at: Time.now.iso8601,
+      route: tool_discovery_route,
+      authoritative: authoritative_receipt?,
       query: query,
       query_terms: query_terms,
       project_root: @options[:project_root],
@@ -232,6 +240,16 @@ class ToolDiscoveryReceipt
 
   def query
     @options[:query].to_s.strip
+  end
+
+  def tool_discovery_route
+    ENV['SANEMASTER_TOOL_DISCOVERY'] == '1' ? 'SaneMaster.rb tool_discovery' : 'tool_discovery_receipt.rb'
+  end
+
+  def authoritative_receipt?
+    ENV['SANEMASTER_TOOL_DISCOVERY'] == '1' &&
+      @options[:run_doctor] &&
+      @options[:run_validation]
   end
 
   def query_terms

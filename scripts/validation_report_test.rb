@@ -295,13 +295,13 @@ exit(run_tests('Validation report tests') do
 
       assert_eq(subject.metrics[:cross_channel_consistency][:canonical_issues], 0)
       assert_eq(subject.metrics[:cross_channel_consistency][:hosted_file_actions], 1)
-      assert_eq(subject.verdict[:status], 'BROKEN RELEASE PIPELINE')
+      assert_eq(subject.verdict[:status], 'NOT READY FOR RELEASE')
       assert(subject.issues.any? { |issue| issue.include?('Q11 HOSTED FILE ACTION: [SaneBar]') })
       assert(subject.warnings.grep(/Q11 HOSTED FILE ACTION:/).empty?, 'hosted-file drift should not be downgraded to a warning')
       true
     end
 
-    test('keeps website drift as a broken release pipeline issue') do
+    test('keeps website drift as a release-readiness blocker') do
       products = [product_definition('SaneBar', slug: 'sanebar', domain: 'sanebar.com')]
       subject = ValidationReportHarness.new(
         products: products,
@@ -322,7 +322,7 @@ exit(run_tests('Validation report tests') do
 
       assert_eq(subject.metrics[:cross_channel_consistency][:canonical_issues], 1)
       assert_eq(subject.metrics[:cross_channel_consistency][:hosted_file_actions], 0)
-      assert_eq(subject.verdict[:status], 'BROKEN RELEASE PIPELINE')
+      assert_eq(subject.verdict[:status], 'NOT READY FOR RELEASE')
       assert(subject.issues.any? { |issue| issue.include?('Website download link') })
       true
     end
@@ -353,7 +353,7 @@ exit(run_tests('Validation report tests') do
 
       assert_eq(subject.metrics[:cross_channel_consistency][:canonical_issues], 0)
       assert_eq(subject.metrics[:cross_channel_consistency][:hosted_file_actions], 1)
-      assert_eq(subject.verdict[:status], 'BROKEN RELEASE PIPELINE')
+      assert_eq(subject.verdict[:status], 'NOT READY FOR RELEASE')
       assert(subject.issues.any? { |issue| issue.include?('stale published file') })
       assert(subject.issues.any? { |issue| issue.include?('SaneSales-1.3.7.zip') })
       true
@@ -432,7 +432,7 @@ exit(run_tests('Validation report tests') do
 
         assert_eq(subject.metrics[:customer_reality_contracts][:issues], 1)
         assert_eq(subject.metrics[:final][:customer_ui_contract_issues], 1)
-        assert_eq(subject.verdict[:status], 'BROKEN RELEASE PIPELINE')
+        assert_eq(subject.verdict[:status], 'NOT READY FOR RELEASE')
         assert(subject.issues.any? { |issue| issue.include?('Q13 CUSTOMER REALITY: [SaneBar] Customer UI contract') })
         assert_eq(subject.send(:finding_area, subject.issues.first), :release_readiness)
       end
@@ -823,8 +823,8 @@ exit(run_tests('Validation report tests') do
         subject.send(:check_context_file_sizes, tmpdir, 'SaneProcess', issues, warnings)
 
         assert(warnings.any? { |warning| warning.include?('AGENTS.md') && warning.include?('nearing Codex') })
-        assert(issues.any? { |issue| issue.include?('.claude/research.md is 201 lines') })
-        assert(issues.any? { |issue| issue.include?('SESSION_HANDOFF.md is 801 lines') })
+        assert(warnings.any? { |warning| warning.include?('.claude/research.md is 201 lines') })
+        assert(warnings.any? { |warning| warning.include?('SESSION_HANDOFF.md is 801 lines') })
         assert(issues.any? { |issue| issue.include?('DEVELOPMENT.md is 801 lines') })
       end
 
@@ -845,6 +845,27 @@ exit(run_tests('Validation report tests') do
         end)
       end
 
+      true
+    end
+
+    test('SaneProcess AGENTS keeps non-hook client anchors while staying compact') do
+      path = File.expand_path('../AGENTS.md', __dir__)
+      content = File.read(path)
+      lines = content.lines.length
+      bytes = content.bytesize
+
+      assert(lines < 350, "expected AGENTS.md under 350 lines, got #{lines}")
+      assert(bytes < 24 * 1024, "expected AGENTS.md under 24 KiB, got #{bytes}")
+      [
+        'Session Start',
+        'Subagents',
+        'Tool Discovery',
+        'Mini-First Rule',
+        'Visual/UI Proof',
+        'Canonical Routes'
+      ].each do |anchor|
+        assert_includes(content, anchor)
+      end
       true
     end
 
@@ -911,7 +932,7 @@ exit(run_tests('Validation report tests') do
       subject = ProcessMetricsValidationHarness.new(
         [
           { 'type' => 'verify', 'success' => false, 'tests_run' => 0, 'timestamp' => '2026-05-04T10:00:00Z', 'project' => 'SaneBar' },
-          { 'type' => 'verify', 'success' => true, 'tests_run' => 10, 'timestamp' => '2026-05-04T10:05:00Z', 'project' => 'SaneBar' },
+          { 'type' => 'verify', 'success' => true, 'tests_run' => 10, 'evidence_strength' => 'tested', 'host' => 'mini', 'timestamp' => '2026-05-04T10:05:00Z', 'project' => 'SaneBar' },
           { 'type' => 'verify', 'success' => false, 'tests_run' => 9, 'timestamp' => '2026-05-04T10:10:00Z', 'project' => 'SaneClip' },
           { 'type' => 'gate_review', 'success' => true, 'timestamp' => '2026-05-04T10:11:00Z', 'project' => 'SaneClip' }
         ]
@@ -925,6 +946,27 @@ exit(run_tests('Validation report tests') do
       assert_eq(subject.metrics[:test_outcomes][:verify_zero_test_failures], 1)
       assert_eq(subject.metrics[:test_outcomes][:day_project_final_verify_groups], 2)
       assert_eq(subject.metrics[:test_outcomes][:day_project_final_verify_pass_rate], 50.0)
+      true
+    end
+
+    test('verify success without authoritative Mini proof is excluded from pass rate') do
+      subject = ProcessMetricsValidationHarness.new(
+        [
+          { 'type' => 'verify', 'success' => true, 'tests_run' => 12, 'evidence_strength' => 'tested', 'host' => 'local', 'timestamp' => '2026-05-04T10:00:00Z', 'project' => 'SaneBar' },
+          { 'type' => 'verify', 'success' => true, 'tests_run' => 12, 'evidence_strength' => 'build_only', 'host' => 'mini', 'timestamp' => '2026-05-04T11:00:00Z', 'project' => 'SaneClip' },
+          { 'type' => 'verify', 'success' => true, 'tests_run' => 12, 'evidence_strength' => 'tested', 'host' => 'mini', 'timestamp' => '2026-05-04T12:00:00Z', 'project' => 'SaneProcess' }
+        ]
+      )
+
+      subject.send(:q4_test_outcomes)
+
+      outcomes = subject.metrics[:test_outcomes]
+      warnings = subject.warnings.join("\n")
+      assert_eq(outcomes[:process_metric_verify_attempts], 3)
+      assert_eq(outcomes[:process_metric_verify_passes], 1)
+      assert_eq(outcomes[:verify_attempt_pass_rate], 33.3)
+      assert_eq(outcomes[:verify_weak_successes], 2)
+      assert_includes(warnings, '2 verify success metric(s) lacked authoritative Mini/fallback tested proof')
       true
     end
 
@@ -980,6 +1022,35 @@ exit(run_tests('Validation report tests') do
       assert_eq(quality[:clean_green], 1)
       assert_eq(quality[:unverified_with_edits], 1)
       assert_eq(quality[:unrecovered_failures], 1)
+      true
+    end
+
+    test('validation honors SANEMASTER_PROCESS_METRICS_PATH for process metrics') do
+      Dir.mktmpdir('validation-process-metrics-path-') do |dir|
+        metrics_path = File.join(dir, 'process_metrics.jsonl')
+        File.write(metrics_path, JSON.generate(
+          'type' => 'verify',
+          'success' => true,
+          'tests_run' => 12,
+          'timestamp' => '2026-06-11T10:00:00Z',
+          'project' => 'SaneProcess'
+        ) + "\n")
+        old_path = ENV['SANEMASTER_PROCESS_METRICS_PATH']
+        ENV['SANEMASTER_PROCESS_METRICS_PATH'] = metrics_path
+
+        subject = ValidationReport.new
+        events = subject.send(:process_metric_events, type: 'verify')
+
+        assert_eq(subject.send(:process_metrics_path), metrics_path)
+        assert_eq(events.length, 1)
+        assert_eq(events.first['tests_run'], 12)
+      ensure
+        if old_path
+          ENV['SANEMASTER_PROCESS_METRICS_PATH'] = old_path
+        else
+          ENV.delete('SANEMASTER_PROCESS_METRICS_PATH')
+        end
+      end
       true
     end
   end
@@ -1263,6 +1334,7 @@ exit(run_tests('Validation report tests') do
         ]
       end
       subject.define_singleton_method(:reset_audit_events) { [] }
+      subject.define_singleton_method(:process_abtest_receipts) { [] }
 
       subject.send(:q1_block_accuracy)
       metrics = subject.instance_variable_get(:@metrics)[:block_accuracy]
@@ -1271,6 +1343,36 @@ exit(run_tests('Validation report tests') do
       assert_eq(metrics[:total], 2)
       assert_eq(metrics[:correct], 2)
       assert_eq(metrics[:wrong], 0)
+      true
+    end
+
+    test('block accuracy includes audited A/B validation receipts') do
+      subject = ValidationReport.new
+      subject.instance_variable_set(:@data, {})
+      subject.instance_variable_set(:@warnings, [])
+      subject.instance_variable_set(:@issues, [])
+      subject.instance_variable_set(:@metrics, {})
+      subject.define_singleton_method(:process_metric_events) { |type: nil| [] }
+      subject.define_singleton_method(:reset_audit_events) { [] }
+      subject.define_singleton_method(:process_abtest_receipts) do
+        [
+          {
+            'validation_delta' => {
+              'blocks_that_were_correct' => 3,
+              'blocks_that_were_wrong' => 0
+            }
+          }
+        ]
+      end
+
+      subject.send(:q1_block_accuracy)
+      metrics = subject.instance_variable_get(:@metrics)[:block_accuracy]
+
+      assert_eq(metrics[:source], 'state_validation+abtest_receipts')
+      assert_eq(metrics[:total], 3)
+      assert_eq(metrics[:correct], 3)
+      assert_eq(metrics[:wrong], 0)
+      assert_eq(metrics[:abtest_receipts], 1)
       true
     end
 
@@ -1315,6 +1417,54 @@ exit(run_tests('Validation report tests') do
       true
     end
 
+    test('secret scan receipt passes when latest receipt has no actionable findings') do
+      Dir.mktmpdir('validation-secret-scan-') do |dir|
+        File.write(File.join(dir, 'clean.json'), JSON.pretty_generate(
+          'generated_at' => Time.now.utc.iso8601,
+          'status' => 'pass',
+          'actionable_count' => 0,
+          'preserved_count' => 2,
+          'ignored_count' => 3
+        ))
+        subject = ValidationReport.new
+        subject.define_singleton_method(:secret_scan_receipt_dir) { dir }
+        subject.instance_variable_set(:@issues, [])
+        subject.instance_variable_set(:@warnings, [])
+        subject.instance_variable_set(:@metrics, {})
+
+        subject.send(:q15_secret_scan_receipt)
+
+        assert_eq(subject.instance_variable_get(:@issues), [])
+        assert_eq(subject.instance_variable_get(:@warnings), [])
+        assert_eq(subject.instance_variable_get(:@metrics)[:secret_scan][:status], 'pass')
+      end
+      true
+    end
+
+    test('secret scan receipt blocks validation when actionable findings remain') do
+      Dir.mktmpdir('validation-secret-scan-') do |dir|
+        File.write(File.join(dir, 'fail.json'), JSON.pretty_generate(
+          'generated_at' => Time.now.utc.iso8601,
+          'status' => 'fail',
+          'actionable_count' => 1,
+          'preserved_count' => 0,
+          'ignored_count' => 0
+        ))
+        subject = ValidationReport.new
+        subject.define_singleton_method(:secret_scan_receipt_dir) { dir }
+        subject.instance_variable_set(:@issues, [])
+        subject.instance_variable_set(:@warnings, [])
+        subject.instance_variable_set(:@metrics, {})
+
+        subject.send(:q15_secret_scan_receipt)
+
+        issues = subject.instance_variable_get(:@issues).join("\n")
+        assert_includes(issues, 'Q15 SECRET SCAN')
+        assert_includes(issues, '1 actionable')
+      end
+      true
+    end
+
     test('validation report defaults to no keychain fallback') do
       source = File.read(__dir__ + '/validation_report.rb')
 
@@ -1342,6 +1492,38 @@ exit(run_tests('Validation report tests') do
       ENV['SANE_ALLOW_KEYCHAIN_PROMPTS'] = old_allow if old_allow
       ENV['SANE_NO_KEYCHAIN'] = old_no_keychain if old_no_keychain
       ENV['SANE_KEYCHAIN_FALLBACK'] = old_fallback if old_fallback
+    end
+
+    test('support validation reports skipped live credential checks in no-prompt mode') do
+      old_allow = ENV.delete('SANE_ALLOW_KEYCHAIN_PROMPTS')
+      old_no_keychain = ENV.delete('SANE_NO_KEYCHAIN')
+      old_fallback = ENV.delete('SANE_KEYCHAIN_FALLBACK')
+      old_cf = ENV.delete('CLOUDFLARE_API_TOKEN')
+      old_resend = ENV.delete('RESEND_API_KEY')
+      old_ls = ENV.delete('LEMONSQUEEZY_API_KEY')
+
+      subject = ValidationReport.new
+      subject.instance_variable_set(:@issues, [])
+      subject.instance_variable_set(:@warnings, [])
+      subject.instance_variable_set(:@metrics, {})
+      subject.define_singleton_method(:resolve_secret_value) { |_service, _account, *_env_names| '' }
+
+      subject.send(:q9_support_infrastructure)
+      issues = subject.instance_variable_get(:@issues).join("\n")
+      warnings = subject.instance_variable_get(:@warnings).join("\n")
+
+      assert(!issues.include?('key missing'), issues)
+      assert_includes(warnings, 'Q9 SUPPORT: Cloudflare API live credential check skipped in no-prompt validation mode')
+      assert_includes(warnings, 'Q9 SUPPORT: Resend Email API live credential check skipped in no-prompt validation mode')
+      assert_includes(warnings, 'Q9 SUPPORT: Lemon Squeezy API live credential check skipped in no-prompt validation mode')
+      true
+    ensure
+      ENV['SANE_ALLOW_KEYCHAIN_PROMPTS'] = old_allow if old_allow
+      ENV['SANE_NO_KEYCHAIN'] = old_no_keychain if old_no_keychain
+      ENV['SANE_KEYCHAIN_FALLBACK'] = old_fallback if old_fallback
+      ENV['CLOUDFLARE_API_TOKEN'] = old_cf if old_cf
+      ENV['RESEND_API_KEY'] = old_resend if old_resend
+      ENV['LEMONSQUEEZY_API_KEY'] = old_ls if old_ls
     end
   end
 end)

@@ -30,6 +30,44 @@ include TestFramework
 
 exit(run_tests('SaneMaster Process Metrics Tests') do
   test_category('JSONL recording') do
+    test('authoritative verify proof requires tested Mini or approved fallback evidence') do
+      strong = {
+        'type' => 'verify',
+        'success' => true,
+        'tests_run' => 12,
+        'evidence_strength' => 'tested',
+        'host' => 'mini',
+        'source_fingerprint' => 'a' * 64
+      }
+      local = strong.merge('host' => 'local')
+      build_only = strong.merge('evidence_strength' => 'build_only')
+      fallback = local.merge(
+        'fallback_approval' => {
+          'approved' => true,
+          'approved_by' => 'user',
+          'reason' => 'Mini unavailable',
+          'user_quote' => 'use local for this run'
+        }
+      )
+
+      assert(SaneProcessMetrics.authoritative_verify_event?(strong))
+      assert(!SaneProcessMetrics.authoritative_verify_event?(local))
+      assert(!SaneProcessMetrics.authoritative_verify_event?(build_only))
+      assert(SaneProcessMetrics.authoritative_verify_event?(fallback))
+      assert(SaneProcessMetrics.authoritative_verify_event?(strong, require_source_fingerprint: true))
+      assert(!SaneProcessMetrics.authoritative_verify_event?(strong.merge('source_fingerprint' => 'unknown'), require_source_fingerprint: true))
+      true
+    end
+
+    test('SaneMaster exposes validation_report as a receipt-backed command') do
+      source = File.read(File.expand_path('../SaneMaster.rb', __dir__))
+
+      assert_includes(source, "'validation_report' =>")
+      assert_includes(source, "when 'validation_report', 'validation-report'")
+      assert_includes(source, "run_external_command_with_workflow_receipt(\n        'validation_report'")
+      true
+    end
+
     test('records structured verify evidence without external services') do
       Dir.mktmpdir('process-metrics-') do |dir|
         path = File.join(dir, 'metrics.jsonl')

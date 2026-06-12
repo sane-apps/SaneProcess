@@ -17,7 +17,7 @@ require 'json'
 require 'fileutils'
 
 begin
-  input = JSON.parse($stdin.read)
+  input = JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
 rescue JSON::ParserError, Errno::ENOENT
   exit 0
 end

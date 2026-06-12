@@ -57,6 +57,75 @@ def complete_session_receipt(overrides = {})
   }.merge(overrides)
 end
 
+def complete_abtest_receipt(overrides = {})
+  {
+    'schema_version' => 1,
+    'id' => 'abtest-real-work',
+    'completed_at' => '2026-06-11T14:13:00-04:00',
+    'source' => 'test fixture',
+    'protocol_path' => '/tmp/PROTOCOL.md',
+    'scoring_path' => '/tmp/SCORING.md',
+    'task' => {
+      'app' => 'SaneBar',
+      'repo' => '/tmp/SaneBar',
+      'name' => 'Real failing smoke lane',
+      'failure' => 'A real runtime lane failed on a shipped workflow.',
+      'real_work' => true
+    },
+    'arms' => {
+      'vanilla' => {
+        'checkout' => '/tmp/vanilla',
+        'outcome' => 'patched',
+        'verification' => {
+          'command' => 'ruby scripts/qa.rb',
+          'host' => 'local',
+          'result' => 'fail'
+        }
+      },
+      'harness' => {
+        'checkout' => '/tmp/harness',
+        'outcome' => 'found stale checkout',
+        'verification' => {
+          'command' => 'ruby scripts/qa.rb',
+          'host' => 'mini',
+          'result' => 'pass'
+        }
+      }
+    },
+    'judge' => {
+      'blind' => true,
+      'winner' => 'harness'
+    },
+    'scores' => {
+      'vanilla' => 27,
+      'harness' => 34
+    },
+    'costs' => {
+      'vanilla' => {
+        'tokens' => 326745,
+        'duration_minutes' => 55
+      },
+      'harness' => {
+        'tokens' => 248399,
+        'duration_minutes' => 36
+      }
+    },
+    'validation_delta' => {
+      'blocks_that_were_correct' => 3,
+      'blocks_that_were_wrong' => 0
+    },
+    'decisive_mechanisms' => [
+      {
+        'name' => 'Mini-first verification',
+        'evidence' => 'Canonical host result changed the conclusion.'
+      }
+    ],
+    'pending_actions' => [
+      'Merge the useful fix after canonical proof.'
+    ]
+  }.merge(overrides)
+end
+
 exit(run_tests('SaneMaster Process Eval Tests') do
   test_category('trace eval') do
     test('default fixture covers general workflow receipts') do
@@ -178,9 +247,9 @@ exit(run_tests('SaneMaster Process Eval Tests') do
         )) + "\n" + JSON.generate(
           type: 'workflow_receipt',
           schema_version: 2,
-          workflow: 'process_eval',
+          workflow: 'sanemaster:verify',
           success: true,
-          command: 'ruby scripts/SaneMaster.rb process_eval',
+          command: 'ruby scripts/SaneMaster.rb verify',
           command_sha256: 'c' * 64,
           started_at: '2026-05-14T10:00:00Z',
           completed_at: '2026-05-14T10:00:02Z',
@@ -195,15 +264,103 @@ exit(run_tests('SaneMaster Process Eval Tests') do
         Dir.chdir(dir)
         begin
           subject = ProcessEvalHarness.new(metrics_path)
-          result = subject.build_process_eval(fixture: File.expand_path('../process_eval_fixtures.json', __dir__))
+          result = subject.build_process_eval(
+            fixture: File.expand_path('../process_eval_fixtures.json', __dir__),
+            abtest_dir: File.join(dir, 'no-abtests')
+          )
 
           assert(result[:passed], result.inspect)
           assert_eq(result.dig(:trace_eval, :trace_count), 12)
           assert_eq(result.dig(:sop_review, :sessions, :total), 1)
           assert_eq(result.dig(:live_telemetry, :event_count), 2)
+          assert_eq(result.dig(:abtest_review, :receipt_count), 0)
         ensure
           Dir.chdir(old_pwd)
         end
+      end
+      true
+    end
+
+    test('sop review does not recommend receipt expansion when v2 receipts are complete') do
+      Dir.mktmpdir('sop-review-complete-receipts-') do |dir|
+        metrics_path = File.join(dir, 'metrics.jsonl')
+        rows = [
+          complete_session_receipt(sop_score: 8),
+          complete_session_receipt(
+            timestamp: '2026-05-14T10:05:00Z',
+            receipt_id: 'receipt456',
+            session_id: 'session456',
+            sop_score: 8
+          )
+        ]
+        File.write(metrics_path, rows.map { |row| JSON.generate(row) }.join("\n") + "\n")
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, 'outputs', 'sop_ratings.csv'), "date,sop_score,notes_json\n")
+
+        old_pwd = Dir.pwd
+        Dir.chdir(dir)
+        begin
+          subject = ProcessEvalHarness.new(metrics_path)
+          result = subject.build_sop_review(subject.send(:read_process_metric_events))
+          actions = result[:recommended_actions].join("\n")
+          warnings = result[:warnings].join("\n")
+
+          assert(!warnings.include?('sop_ratings.csv is missing or empty'), 'structured receipts should supersede empty CSV warning')
+          assert(!actions.include?('expand SOP receipts'), 'complete v2 receipts should not get generic expansion advice')
+          assert_eq(result.dig(:sessions, :receipt_field_gaps), {})
+        ensure
+          Dir.chdir(old_pwd)
+        end
+      end
+      true
+    end
+
+    test('abtest review accepts real comparative workflow evidence') do
+      Dir.mktmpdir('abtest-review-') do |dir|
+        receipt_dir = File.join(dir, 'abtests')
+        FileUtils.mkdir_p(receipt_dir)
+        File.write(File.join(receipt_dir, 'real.json'), JSON.pretty_generate(complete_abtest_receipt))
+
+        subject = ProcessEvalHarness.new(File.join(dir, 'metrics.jsonl'))
+        result = subject.build_abtest_review(receipt_dir)
+
+        assert_eq(result[:receipt_count], 1)
+        assert_eq(result[:passed_count], 1)
+        assert_eq(result.dig(:validation_delta, :blocks_that_were_correct), 3)
+        assert(result[:blockers].empty?, result[:blockers].inspect)
+      end
+      true
+    end
+
+    test('abtest review rejects busywork without verification, judge, costs, or validation delta') do
+      Dir.mktmpdir('abtest-review-busywork-') do |dir|
+        receipt_dir = File.join(dir, 'abtests')
+        FileUtils.mkdir_p(receipt_dir)
+        fake = complete_abtest_receipt(
+          'task' => { 'name' => 'Synthetic prompt classification' },
+          'arms' => {
+            'vanilla' => { 'checkout' => '/tmp/a', 'outcome' => 'ok' },
+            'harness' => { 'checkout' => '/tmp/b', 'outcome' => 'ok' }
+          },
+          'judge' => { 'blind' => false },
+          'costs' => { 'vanilla' => {}, 'harness' => {} },
+          'validation_delta' => { 'blocks_that_were_correct' => 0, 'blocks_that_were_wrong' => 0 },
+          'decisive_mechanisms' => ['more rules'],
+          'pending_actions' => []
+        )
+        File.write(File.join(receipt_dir, 'fake.json'), JSON.pretty_generate(fake))
+
+        subject = ProcessEvalHarness.new(File.join(dir, 'metrics.jsonl'))
+        result = subject.build_abtest_review(receipt_dir)
+
+        assert_eq(result[:receipt_count], 1)
+        assert_eq(result[:failed_count], 1)
+        blockers = result[:blockers].join(' ')
+        assert_includes(blockers, 'task must name a real repo or app')
+        assert_includes(blockers, 'missing endpoint verification command')
+        assert_includes(blockers, 'judge must be blind')
+        assert_includes(blockers, 'validation_delta must record at least one block classification')
+        assert_includes(blockers, 'decisive_mechanisms entries must be objects')
       end
       true
     end
@@ -252,6 +409,71 @@ exit(run_tests('SaneMaster Process Eval Tests') do
           assert_eq(result.dig(:sop_csv, :legacy_rows_ignored), 2)
           assert(result[:warnings].any? { |item| item.include?('ignored 2 legacy SOP CSV row') })
           assert(result.dig(:sessions, :average_sop_score).nil?)
+        ensure
+          Dir.chdir(old_pwd)
+        end
+      end
+      true
+    end
+
+    test('sop review excludes explicit no-work sessions from score trends') do
+      Dir.mktmpdir('sop-no-work-sessions-') do |dir|
+        metrics_path = File.join(dir, 'metrics.jsonl')
+        rows = [
+          {
+            type: 'session_end',
+            success: true,
+            sop_score: 10,
+            edits: 0,
+            verify_attempts: 0,
+            block_count: 0,
+            changed_file_count: 0
+          },
+          {
+            type: 'session_end',
+            success: true,
+            sop_score: 7,
+            edits: 1,
+            verify_attempts: 1,
+            verify_failures: 0,
+            block_count: 0,
+            changed_file_count: 1
+          }
+        ]
+        File.write(metrics_path, rows.map { |row| JSON.generate(row) }.join("\n") + "\n")
+
+        subject = ProcessEvalHarness.new(metrics_path)
+        result = subject.build_sop_review(subject.send(:read_process_metric_events))
+
+        assert_eq(result.dig(:sessions, :total), 2)
+        assert_eq(result.dig(:sessions, :scored_total), 1)
+        assert_eq(result.dig(:sessions, :no_work_excluded), 1)
+        assert_eq(result.dig(:sessions, :average_sop_score), 7.0)
+        assert(result[:warnings].any? { |item| item.include?('excluded 1 no-work session') })
+      end
+      true
+    end
+
+    test('sop review excludes trusted no-work CSV rows from fallback scores') do
+      Dir.mktmpdir('sop-no-work-csv-') do |dir|
+        metrics_path = File.join(dir, 'metrics.jsonl')
+        File.write(metrics_path, '')
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, 'outputs', 'sop_ratings.csv'), [
+          'date,sop_score,session_id,client,block_count,cap_reason,verify_attempts,verify_failures,final_verify_success,edits,unique_files,notes_json',
+          '2026-05-14,10,empty123,codex,0,,0,0,true,0,0,"{""violations"":[]}"',
+          '2026-05-14,8,work123,codex,1,,0,0,true,0,0,"{""violations"":[""blocked unsafe path""]}"'
+        ].join("\n") + "\n")
+
+        old_pwd = Dir.pwd
+        Dir.chdir(dir)
+        begin
+          subject = ProcessEvalHarness.new(metrics_path)
+          result = subject.build_sop_review(subject.send(:read_process_metric_events))
+
+          assert_eq(result.dig(:sop_csv, :trusted_rows), 2)
+          assert_eq(result.dig(:sop_csv, :trusted_work_rows), 1)
+          assert_eq(result.dig(:sessions, :average_sop_score), 8.0)
         ensure
           Dir.chdir(old_pwd)
         end
@@ -351,6 +573,30 @@ exit(run_tests('SaneMaster Process Eval Tests') do
       true
     end
 
+    test('live telemetry review rejects weak verify success as outcome proof') do
+      Dir.mktmpdir('live-telemetry-weak-verify-') do |dir|
+        metrics_path = File.join(dir, 'metrics.jsonl')
+        rows = [
+          {
+            type: 'verify',
+            success: true,
+            tests_run: 12,
+            evidence_strength: 'tested',
+            host: 'local',
+            timestamp: '2026-05-04T10:00:00Z',
+            project: 'SaneBar'
+          }
+        ]
+        File.write(metrics_path, rows.map { |row| JSON.generate(row) }.join("\n") + "\n")
+
+        subject = ProcessEvalHarness.new(metrics_path)
+        result = subject.build_live_telemetry_review(subject.send(:read_process_metric_events))
+
+        assert(result[:blockers].any? { |item| item.include?('runner-backed telemetry') }, result[:blockers].inspect)
+      end
+      true
+    end
+
     test('live telemetry review blocks malformed v2 workflow receipts') do
       Dir.mktmpdir('live-telemetry-v2-') do |dir|
         metrics_path = File.join(dir, 'metrics.jsonl')
@@ -429,6 +675,104 @@ exit(run_tests('SaneMaster Process Eval Tests') do
         assert_eq(result.dig(:workflow_receipts, :thin), 0)
         assert(!result[:warnings].any? { |item| item.include?('fixture-only') })
         assert_eq(result.dig(:visual_smoke, :mini_successful), 1)
+        assert_eq(result.dig(:ui_proof, :mini_successful), 1)
+      end
+      true
+    end
+
+    test('live telemetry review ignores watchdog bookkeeping receipts as outcome proof') do
+      Dir.mktmpdir('live-telemetry-watchdog-') do |dir|
+        metrics_path = File.join(dir, 'metrics.jsonl')
+        rows = Array.new(120) do |index|
+          {
+            type: 'workflow_receipt',
+            schema_version: 2,
+            workflow: 'sanemaster:mcp_watchdog',
+            success: true,
+            command: 'ruby scripts/SaneMaster.rb mcp_watchdog doctor',
+            command_sha256: 'd' * 64,
+            started_at: "2026-05-04T10:#{format('%02d', index % 60)}:00Z",
+            completed_at: "2026-05-04T10:#{format('%02d', index % 60)}:01Z",
+            duration_ms: 1000,
+            exit_status: 0,
+            host: 'mini'
+          }
+        end
+        rows << {
+          type: 'process_eval',
+          success: true,
+          traces: 12,
+          failed: 0
+        }
+        File.write(metrics_path, rows.map { |row| JSON.generate(row) }.join("\n") + "\n")
+
+        subject = ProcessEvalHarness.new(metrics_path)
+        result = subject.build_live_telemetry_review(subject.send(:read_process_metric_events))
+
+        assert_eq(result[:event_count], 1)
+        assert_eq(result[:ignored_bookkeeping_events], 120)
+        assert_eq(result.dig(:workflow_receipts, :total), 0)
+        assert(result[:blockers].any? { |item| item.include?('runner-backed telemetry') }, result[:blockers].inspect)
+      end
+      true
+    end
+
+    test('live telemetry review does not accept meta eval receipts as outcome proof') do
+      Dir.mktmpdir('live-telemetry-meta-only-') do |dir|
+        metrics_path = File.join(dir, 'metrics.jsonl')
+        rows = [
+          {
+            type: 'workflow_receipt',
+            schema_version: 2,
+            workflow: 'sanemaster:process_eval',
+            success: true,
+            command: 'ruby scripts/SaneMaster.rb process_eval --json',
+            command_sha256: 'f' * 64,
+            started_at: '2026-05-04T10:00:00Z',
+            completed_at: '2026-05-04T10:00:01Z',
+            duration_ms: 1000,
+            exit_status: 0,
+            host: 'mini'
+          },
+          { type: 'agent_eval', success: true, cases: 12, failed: 0 }
+        ]
+        File.write(metrics_path, rows.map { |row| JSON.generate(row) }.join("\n") + "\n")
+
+        subject = ProcessEvalHarness.new(metrics_path)
+        result = subject.build_live_telemetry_review(subject.send(:read_process_metric_events))
+
+        assert_eq(result.dig(:workflow_receipts, :total), 1)
+        assert(result[:blockers].any? { |item| item.include?('runner-backed telemetry') }, result[:blockers].inspect)
+      end
+      true
+    end
+
+    test('live telemetry review treats Mini customer UI sweep receipts as UI proof') do
+      Dir.mktmpdir('live-telemetry-customer-ui-') do |dir|
+        metrics_path = File.join(dir, 'metrics.jsonl')
+        rows = [
+          {
+            type: 'workflow_receipt',
+            schema_version: 2,
+            workflow: 'sanemaster:customer_ui_sweep',
+            success: true,
+            command: 'ruby scripts/SaneMaster.rb customer_ui_sweep --json',
+            command_sha256: 'e' * 64,
+            started_at: '2026-05-04T10:00:00Z',
+            completed_at: '2026-05-04T10:00:10Z',
+            duration_ms: 10_000,
+            exit_status: 0,
+            host: 'mini'
+          }
+        ]
+        File.write(metrics_path, rows.map { |row| JSON.generate(row) }.join("\n") + "\n")
+
+        subject = ProcessEvalHarness.new(metrics_path)
+        result = subject.build_live_telemetry_review(subject.send(:read_process_metric_events))
+
+        assert(!result[:warnings].any? { |item| item.include?('fixture-only') }, result[:warnings].inspect)
+        assert_eq(result.dig(:ui_proof, :total), 1)
+        assert_eq(result.dig(:ui_proof, :mini_successful), 1)
       end
       true
     end
@@ -445,6 +789,59 @@ exit(run_tests('SaneMaster Process Eval Tests') do
         result = subject.build_live_telemetry_review(subject.send(:read_process_metric_events))
 
         assert(result[:warnings].any? { |item| item.include?('not Mini-host proof') })
+        assert_eq(result.dig(:ui_proof, :mini_successful), 0)
+      end
+      true
+    end
+
+    test('live telemetry review blocks missing UI proof when required') do
+      Dir.mktmpdir('live-telemetry-require-ui-') do |dir|
+        metrics_path = File.join(dir, 'metrics.jsonl')
+        rows = [
+          {
+            type: 'workflow_receipt',
+            schema_version: 2,
+            workflow: 'sanemaster:verify',
+            success: true,
+            command: 'ruby scripts/SaneMaster.rb verify',
+            command_sha256: 'a' * 64,
+            started_at: '2026-05-04T10:00:00Z',
+            completed_at: '2026-05-04T10:00:01Z',
+            duration_ms: 1000,
+            exit_status: 0,
+            host: 'mini'
+          }
+        ]
+        File.write(metrics_path, rows.map { |row| JSON.generate(row) }.join("\n") + "\n")
+
+        subject = ProcessEvalHarness.new(metrics_path)
+        result = subject.build_live_telemetry_review(
+          subject.send(:read_process_metric_events),
+          require_ui_proof: true
+        )
+
+        assert(result[:blockers].any? { |item| item.include?('no recent live UI-proof metrics') }, result[:blockers].inspect)
+        assert_eq(result.dig(:ui_proof, :required), true)
+      end
+      true
+    end
+
+    test('live telemetry review blocks local-only UI proof when required') do
+      Dir.mktmpdir('live-telemetry-require-mini-ui-') do |dir|
+        metrics_path = File.join(dir, 'metrics.jsonl')
+        rows = [
+          { type: 'visual_smoke', success: true, status: 'passed', host: 'local', app: 'SaneBar' }
+        ]
+        File.write(metrics_path, rows.map { |row| JSON.generate(row) }.join("\n") + "\n")
+
+        subject = ProcessEvalHarness.new(metrics_path)
+        result = subject.build_live_telemetry_review(
+          subject.send(:read_process_metric_events),
+          require_ui_proof: true
+        )
+
+        assert(result[:blockers].any? { |item| item.include?('not Mini-host proof') }, result[:blockers].inspect)
+        assert_eq(result.dig(:ui_proof, :mini_successful), 0)
       end
       true
     end

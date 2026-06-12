@@ -121,8 +121,61 @@ module SaneMasterModules
 
         dest_dir = File.join(snapshot_dir, File.dirname(file))
         FileUtils.mkdir_p(dest_dir)
-        FileUtils.cp(src, File.join(snapshot_dir, file))
+        dest = File.join(snapshot_dir, file)
+        if file == '.mcp.json'
+          write_redacted_config_snapshot(src, dest)
+        else
+          FileUtils.cp(src, dest)
+        end
       end
+    end
+
+    def write_redacted_config_snapshot(src, dest)
+      content = File.read(src)
+      redacted = begin
+        JSON.pretty_generate(redact_snapshot_secrets(JSON.parse(content))) + "\n"
+      rescue JSON::ParserError
+        redact_snapshot_secret_text(content)
+      end
+      File.write(dest, redacted)
+      File.chmod(0o600, dest) rescue nil
+    end
+
+    def redact_snapshot_secrets(value, key = nil)
+      case value
+      when Hash
+        value.each_with_object({}) do |(child_key, child_value), out|
+          next if snapshot_secret_key?(child_key)
+
+          out[child_key] = redact_snapshot_secrets(child_value, child_key)
+        end
+      when Array
+        value.map { |child_value| redact_snapshot_secrets(child_value, key) }
+      when String
+        if snapshot_secret_key?(key) || snapshot_secret_value?(value)
+          'REDACTED_BY_SANEMASTER_SNAPSHOT'
+        else
+          value
+        end
+      else
+        value
+      end
+    end
+
+    def snapshot_secret_key?(key)
+      key.to_s.match?(/(?:token|api[_-]?key|secret|password|credential|private[_-]?key)/i)
+    end
+
+    def snapshot_secret_value?(value)
+      value.match?(/(?:BEGIN [A-Z ]*PRIVATE KEY|ghp_|github_pat_|sk-[A-Za-z0-9]|xox[baprs]-|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{20,})/)
+    end
+
+    def redact_snapshot_secret_text(content)
+      content
+        .gsub(/-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----/m,
+              'REDACTED_BY_SANEMASTER_SNAPSHOT')
+        .gsub(/(?:GITHUB_PERSONAL_ACCESS_TOKEN|GITHUB_TOKEN|[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PRIVATE_KEY))["\s:=,]+[^"\s,}]+/,
+              'REDACTED_BY_SANEMASTER_SNAPSHOT')
     end
 
     def snapshot_tool_versions(snapshot_dir)

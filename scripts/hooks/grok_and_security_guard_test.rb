@@ -72,19 +72,26 @@ _, chain_r2_err, chain_r2_status = run_ruby_hook(
 t('Release guard blocks forbidden R2 operation after release.sh chain', chain_r2_status.exitstatus == 2)
 t('R2 chain block names manual R2 operation', chain_r2_err.include?('Manual R2 operation'))
 
-Dir.mktmpdir('ship-guard-test-') do |project_dir|
-  File.write(File.join(project_dir, '.saneprocess'), "name: SaneBar\n")
-  _, ship_chain_err, ship_chain_status = run_ruby_hook(
-    'sane_ship_guard.rb',
-    {
-      'tool_name' => 'Bash',
-      'tool_input' => {
-        'command' => "bash scripts/release.sh --project #{project_dir} --full --deploy; ruby scripts/SaneMaster.rb verify"
+Dir.mktmpdir('ship-guard-test-home-') do |home_dir|
+  Dir.mktmpdir('ship-guard-test-') do |project_dir|
+    File.write(File.join(project_dir, '.saneprocess'), "name: SaneBar\n")
+    _, ship_chain_err, ship_chain_status = run_ruby_hook(
+      'sane_ship_guard.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => "bash scripts/release.sh --project #{project_dir} --full --deploy; ruby scripts/SaneMaster.rb verify"
+        }
+      },
+      {
+        'HOME' => home_dir,
+        'SANE_NO_KEYCHAIN' => '1',
+        'SANE_ENV_CACHE_WRITE' => '0'
       }
-    }
-  )
-  t('Ship guard blocks release chain even when SaneMaster appears', ship_chain_status.exitstatus == 2)
-  t('Ship chain block requires /ship clearance', ship_chain_err.include?('/ship clearance'))
+    )
+    t('Ship guard blocks release chain even when SaneMaster appears', ship_chain_status.exitstatus == 2)
+    t('Ship chain block requires /ship clearance', ship_chain_err.include?('/ship clearance'))
+  end
 end
 
 Dir.mktmpdir('ship-guard-clearance-') do |home_dir|
@@ -98,18 +105,39 @@ Dir.mktmpdir('ship-guard-clearance-') do |home_dir|
     baseline_sha = `git -C #{project_dir} rev-parse HEAD`.strip
 
     require_relative 'state_signer'
+    test_hook_secret = 'ship-clearance-test-hook-secret'
+    ship_guard_env = {
+      'HOME' => home_dir,
+      'CLAUDE_HOOK_SECRET' => test_hook_secret,
+      'SANE_NO_KEYCHAIN' => '1',
+      'SANE_ENV_CACHE_WRITE' => '0'
+    }
     clearance_dir = File.join(home_dir, '.claude', 'ship_clearance')
     FileUtils.mkdir_p(clearance_dir)
-    StateSigner.write_signed(
-      File.join(clearance_dir, 'SaneBar.json'),
-      {
-        'app' => 'SaneBar',
-        'project_dir' => project_dir,
-        'git_sha' => baseline_sha,
-        'cleared_at' => Time.now.utc.iso8601,
-        'expires_at' => (Time.now.utc + 3600).iso8601
-      }
-    )
+    old_hook_secret = ENV['CLAUDE_HOOK_SECRET']
+    old_no_keychain = ENV['SANE_NO_KEYCHAIN']
+    old_env_cache_write = ENV['SANE_ENV_CACHE_WRITE']
+    begin
+      ENV['CLAUDE_HOOK_SECRET'] = test_hook_secret
+      ENV['SANE_NO_KEYCHAIN'] = '1'
+      ENV['SANE_ENV_CACHE_WRITE'] = '0'
+      StateSigner.instance_variable_set(:@secret, nil)
+      StateSigner.write_signed(
+        File.join(clearance_dir, 'SaneBar.json'),
+        {
+          'app' => 'SaneBar',
+          'project_dir' => project_dir,
+          'git_sha' => baseline_sha,
+          'cleared_at' => Time.now.utc.iso8601,
+          'expires_at' => (Time.now.utc + 3600).iso8601
+        }
+      )
+    ensure
+      old_hook_secret.nil? ? ENV.delete('CLAUDE_HOOK_SECRET') : ENV['CLAUDE_HOOK_SECRET'] = old_hook_secret
+      old_no_keychain.nil? ? ENV.delete('SANE_NO_KEYCHAIN') : ENV['SANE_NO_KEYCHAIN'] = old_no_keychain
+      old_env_cache_write.nil? ? ENV.delete('SANE_ENV_CACHE_WRITE') : ENV['SANE_ENV_CACHE_WRITE'] = old_env_cache_write
+      StateSigner.instance_variable_set(:@secret, nil)
+    end
 
     FileUtils.mkdir_p(File.join(project_dir, 'outputs'))
     File.write(File.join(project_dir, 'outputs', 'release_preflight_status.json'), "{}\n")
@@ -123,7 +151,7 @@ Dir.mktmpdir('ship-guard-clearance-') do |home_dir|
           'command' => "bash scripts/release.sh --project #{project_dir} --full --deploy"
         }
       },
-      { 'HOME' => home_dir }
+      ship_guard_env
     )
     t('Ship clearance survives receipt-only commits', receipt_status.exitstatus == 0)
     t('Receipt-only clearance does not warn about code drift', !receipt_err.include?('Release-relevant code changed'))
@@ -139,10 +167,27 @@ Dir.mktmpdir('ship-guard-clearance-') do |home_dir|
           'command' => "bash scripts/release.sh --project #{project_dir} --full --deploy"
         }
       },
-      { 'HOME' => home_dir }
+      ship_guard_env
     )
     t('Ship clearance survives docs-only commits', docs_status.exitstatus == 0)
     t('Docs-only clearance does not warn about code drift', !docs_err.include?('Release-relevant code changed'))
+
+    FileUtils.mkdir_p(File.join(project_dir, 'website'))
+    File.write(File.join(project_dir, 'website', 'index.html'), "<p>changed</p>\n")
+    system('git', '-C', project_dir, 'add', 'website/index.html')
+    system('git', '-C', project_dir, 'commit', '-q', '-m', 'update website')
+    _, website_err, website_status = run_ruby_hook(
+      'sane_ship_guard.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => "bash scripts/release.sh --project #{project_dir} --full --deploy"
+        }
+      },
+      ship_guard_env
+    )
+    t('Ship clearance blocks public website commits', website_status.exitstatus == 2)
+    t('Website clearance block explains scoped invalidation', website_err.include?('Release-relevant code changed'))
 
     FileUtils.mkdir_p(File.join(project_dir, 'Scripts'))
     File.write(File.join(project_dir, 'Scripts', 'probe.rb'), "puts 'changed'\n")
@@ -156,11 +201,93 @@ Dir.mktmpdir('ship-guard-clearance-') do |home_dir|
           'command' => "bash scripts/release.sh --project #{project_dir} --full --deploy"
         }
       },
-      { 'HOME' => home_dir }
+      ship_guard_env
     )
     t('Ship clearance blocks release-relevant commits', source_status.exitstatus == 2)
     t('Release-relevant block explains scoped invalidation', source_err.include?('Release-relevant code changed'))
   end
+end
+
+Dir.mktmpdir('ship-guard-sanemaster-') do |home_dir|
+  Dir.mktmpdir('ship-guard-app-') do |project_dir|
+    File.write(File.join(project_dir, '.saneprocess'), "name: SaneBar\n")
+    _, sanemaster_release_err, sanemaster_release_status = run_ruby_hook(
+      'sane_ship_guard.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => "cd #{project_dir} && ruby scripts/SaneMaster.rb release --full --deploy --version 9.9.9"
+        }
+      },
+      {
+        'HOME' => home_dir,
+        'SANE_NO_KEYCHAIN' => '1',
+        'SANE_ENV_CACHE_WRITE' => '0'
+      }
+    )
+    t('Ship guard blocks SaneMaster release without /ship clearance', sanemaster_release_status.exitstatus == 2)
+    t('SaneMaster release block requires /ship clearance', sanemaster_release_err.include?('/ship clearance'))
+  end
+end
+
+Dir.mktmpdir('env-cache-default-') do |dir|
+  cache_path = File.join(dir, 'env')
+  script = <<~'RUBY'
+    ENV['SANE_ENV_CACHE_FILE'] = ARGV.fetch(0)
+    ENV.delete('SANE_ENV_CACHE_WRITE')
+    require File.expand_path('state_signer', Dir.pwd)
+    StateSigner.send(:persist_secret_to_env_cache, 'fake-regression-secret')
+    if File.exist?(ARGV.fetch(0)) && File.read(ARGV.fetch(0)).include?('CLAUDE_HOOK_SECRET')
+      warn 'hook secret was written to env cache'
+      exit 1
+    end
+  RUBY
+  _, env_cache_err, env_cache_status = Open3.capture3(
+    'ruby', '-e', script, cache_path,
+    chdir: HOOK_DIR
+  )
+  t('StateSigner does not persist hook secret to env cache by default', env_cache_status.success?)
+  t('StateSigner env-cache regression test stays secret-free', env_cache_err.empty?)
+end
+
+Dir.mktmpdir('state-signer-keychain-write-') do |dir|
+  bin_dir = File.join(dir, 'bin')
+  home_dir = File.join(dir, 'home')
+  log_path = File.join(dir, 'security.log')
+  FileUtils.mkdir_p(bin_dir)
+  FileUtils.mkdir_p(home_dir)
+  fake_security = File.join(bin_dir, 'security')
+  File.write(fake_security, <<~'SH')
+    #!/bin/sh
+    printf '%s\n' "$*" >> "$SECURITY_LOG"
+    case "$1" in
+      find-generic-password) exit 44 ;;
+      add-generic-password) exit 42 ;;
+      delete-generic-password) exit 0 ;;
+      *) exit 0 ;;
+    esac
+  SH
+  File.chmod(0o755, fake_security)
+  script = <<~'RUBY'
+    require File.expand_path('state_signer', Dir.pwd)
+    StateSigner.instance_variable_set(:@secret, nil)
+    StateSigner.secret
+    raise 'file fallback missing' unless File.exist?(File.expand_path('~/.claude_hook_secret'))
+  RUBY
+  env = {
+    'HOME' => home_dir,
+    'PATH' => "#{bin_dir}:#{ENV.fetch('PATH')}",
+    'SECURITY_LOG' => log_path,
+    'SANE_ENV_CACHE_FILE' => File.join(dir, 'env'),
+    'SANE_ENV_CACHE_WRITE' => '0',
+    'CLAUDE_HOOK_SECRET' => nil,
+    'SANE_HOOK_KEYCHAIN_WRITE' => nil
+  }
+  _keychain_out, keychain_err, keychain_status = Open3.capture3(env, 'ruby', '-e', script, chdir: HOOK_DIR)
+  security_log = File.exist?(log_path) ? File.read(log_path) : ''
+  t('StateSigner falls back to file when hook keychain item is missing', keychain_status.success?)
+  t('StateSigner does not create hook keychain item by default', !security_log.include?('add-generic-password'))
+  t('StateSigner keychain fallback test stays quiet', keychain_err.empty?)
 end
 
 _, launch_chain_err, launch_chain_status = run_ruby_hook(
@@ -180,6 +307,122 @@ _, scan_launch_err, scan_launch_status = run_ruby_hook(
 t('Launch guard blocks SaneScan app launch', scan_launch_status.exitstatus == 2)
 t('SaneScan launch block points to shared sane_test path', scan_launch_err.include?('~/SaneApps/infra/SaneProcess/scripts/sane_test.rb'))
 
+Dir.mktmpdir('canonical-path-app-') do |project_dir|
+  File.write(File.join(project_dir, '.saneprocess'), "name: SaneBar\n")
+  FileUtils.mkdir_p(File.join(project_dir, 'SaneBar.xcodeproj'))
+
+  _, raw_xcode_err, raw_xcode_status = run_ruby_hook(
+    'sane_launch_guard.rb',
+    {
+      'tool_name' => 'Bash',
+      'tool_input' => {
+        'command' => "cd #{project_dir} && xcodebuild -scheme SaneBar test"
+      }
+    }
+  )
+  t('Launch guard blocks raw xcodebuild test in SaneApps repo', raw_xcode_status.exitstatus == 2)
+  t('Raw xcodebuild block points to SaneMaster verify', raw_xcode_err.include?('SaneMaster.rb verify'))
+
+  _, raw_swift_err, raw_swift_status = run_ruby_hook(
+    'sane_launch_guard.rb',
+    {
+      'tool_name' => 'Bash',
+      'tool_input' => {
+        'command' => "cd #{project_dir} && swift test"
+      }
+    }
+  )
+  t('Launch guard blocks raw swift test in SaneApps repo', raw_swift_status.exitstatus == 2)
+  t('Raw swift test block explains stale proof risk', raw_swift_err.include?('stale checkouts'))
+
+  _, list_err, list_status = run_ruby_hook(
+    'sane_launch_guard.rb',
+    {
+      'tool_name' => 'Bash',
+      'tool_input' => {
+        'command' => "xcodebuild -list -project #{File.join(project_dir, 'SaneBar.xcodeproj')}"
+      }
+    }
+  )
+  t('Launch guard allows read-only xcodebuild list', list_status.exitstatus == 0)
+  t('Read-only xcodebuild list stays quiet', list_err.empty?)
+
+  _, cleanup_err, cleanup_status = run_ruby_hook(
+    'sane_launch_guard.rb',
+    {
+      'tool_name' => 'Bash',
+      'tool_input' => {
+        'command' => 'rm -rf ~/Library/Developer/Xcode/DerivedData/*'
+      }
+    }
+  )
+  t('Launch guard blocks raw destructive DerivedData cleanup', cleanup_status.exitstatus == 2)
+  t('Cleanup block points to machine_cleanup', cleanup_err.include?('machine_cleanup'))
+
+  _, killall_err, killall_status = run_ruby_hook(
+    'sane_launch_guard.rb',
+    {
+      'tool_name' => 'Bash',
+      'tool_input' => {
+        'command' => 'killall SaneBar xcodebuild'
+      }
+    }
+  )
+  t('Launch guard blocks broad SaneApps killall cleanup', killall_status.exitstatus == 2)
+  t('Killall block explains cleanup route', killall_err.include?('Non-canonical destructive cleanup'))
+
+  _, canonical_cleanup_err, canonical_cleanup_status = run_ruby_hook(
+    'sane_launch_guard.rb',
+    {
+      'tool_name' => 'Bash',
+      'tool_input' => {
+        'command' => 'ruby scripts/SaneMaster.rb machine_cleanup --host mini --apply'
+      }
+    }
+  )
+  t('Launch guard allows canonical machine_cleanup route', canonical_cleanup_status.exitstatus == 0)
+  t('Canonical cleanup route stays quiet', canonical_cleanup_err.empty?)
+end
+
+Dir.mktmpdir('release-guard-app-') do |project_dir|
+  File.write(File.join(project_dir, '.saneprocess'), "name: SaneBar\n")
+  _, pages_generic_err, pages_generic_status = run_ruby_hook(
+    'sane_release_guard.rb',
+    {
+      'tool_name' => 'Bash',
+      'tool_input' => {
+        'command' => "cd #{project_dir} && npx wrangler pages deploy ./website"
+      }
+    }
+  )
+  t('Release guard blocks generic Pages deploy in SaneApps repo', pages_generic_status.exitstatus == 2)
+  t('Generic Pages block names manual website deploy', pages_generic_err.include?('Manual website deploy'))
+
+  _, notary_generic_err, notary_generic_status = run_ruby_hook(
+    'sane_release_guard.rb',
+    {
+      'tool_name' => 'Bash',
+      'tool_input' => {
+        'command' => "cd #{project_dir} && xcrun notarytool submit outputs/release.zip --keychain-profile notarytool"
+      }
+    }
+  )
+  t('Release guard blocks generic notarytool submit in SaneApps repo', notary_generic_status.exitstatus == 2)
+  t('Generic notary block names manual notarization', notary_generic_err.include?('Manual notarization'))
+
+  _, altool_generic_err, altool_generic_status = run_ruby_hook(
+    'sane_release_guard.rb',
+    {
+      'tool_name' => 'Bash',
+      'tool_input' => {
+        'command' => "cd #{project_dir} && xcrun altool --upload-app -f outputs/release.ipa --apiKey KEY --apiIssuer ISSUER"
+      }
+    }
+  )
+  t('Release guard blocks generic altool upload in SaneApps repo', altool_generic_status.exitstatus == 2)
+  t('Generic altool block names manual App Store upload', altool_generic_err.include?('Manual App Store upload'))
+end
+
 _, email_chain_err, email_chain_status = run_ruby_hook(
   'sane_email_guard.rb',
   {
@@ -189,6 +432,26 @@ _, email_chain_err, email_chain_status = run_ruby_hook(
 )
 t('Email guard blocks direct API write after check-inbox chain', email_chain_status.exitstatus == 2)
 t('Email chain block names direct write', email_chain_err.include?('Direct write to email API'))
+
+_, email_direct_err, email_direct_status = run_ruby_hook(
+  'sane_email_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'curl -X POST https://email-api.saneapps.com/api/reply -d "{}"' }
+  }
+)
+t('Email guard blocks standalone direct Worker API write', email_direct_status.exitstatus == 2)
+t('Standalone Worker API block names direct write', email_direct_err.include?('Direct write to email API'))
+
+_, resend_direct_err, resend_direct_status = run_ruby_hook(
+  'sane_email_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'curl -X POST https://api.resend.com/emails -d "{}"' }
+  }
+)
+t('Email guard blocks standalone Resend API send', resend_direct_status.exitstatus == 2)
+t('Standalone Resend block names tracking bypass', resend_direct_err.include?('bypasses the Worker tracking system'))
 
 gh_approval_path = '/tmp/.gh_post_approved.json'
 FileUtils.rm_f(gh_approval_path)
@@ -215,10 +478,12 @@ t('GitHub chain block names separate steps', gh_chain_err.include?('separate ste
 
 Open3.capture3(
   'ruby', File.join(SANEPROCESS_DIR, 'scripts/SaneMaster.rb'),
-  'github_post_approval', '--user-approval', 'post it',
+  'github_post_approval', '--body', 'I fixed this.', '--user-approval', 'post it',
   chdir: SANEPROCESS_DIR
 )
-t('SaneMaster github_post_approval writes structured JSON approval', JSON.parse(File.read(gh_approval_path))['user_approval'] == 'post it')
+gh_approval_payload = JSON.parse(File.read(gh_approval_path))
+t('SaneMaster github_post_approval writes structured JSON approval', gh_approval_payload['user_approval'] == 'post it')
+t('SaneMaster github_post_approval stores exact body hash', gh_approval_payload['body_hash'] == Digest::SHA256.hexdigest('I fixed this.'))
 _, gh_approved_err, gh_approved_status = run_ruby_hook(
   'sane_release_guard.rb',
   {
@@ -228,6 +493,31 @@ _, gh_approved_err, gh_approved_status = run_ruby_hook(
 )
 t('GitHub guard accepts structured approval', gh_approved_status.exitstatus == 0)
 t('Approved GitHub guard stays quiet', gh_approved_err.empty?)
+
+Open3.capture3(
+  'ruby', File.join(SANEPROCESS_DIR, 'scripts/SaneMaster.rb'),
+  'github_post_approval', '--body', 'I fixed this.', '--user-approval', 'post it',
+  chdir: SANEPROCESS_DIR
+)
+_, gh_mismatch_err, gh_mismatch_status = run_ruby_hook(
+  'sane_release_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'gh issue comment 123 --repo sane-apps/SaneBar --body "Different text."' }
+  }
+)
+t('GitHub guard blocks approved token when final body differs', gh_mismatch_status.exitstatus == 2)
+t('GitHub body mismatch block names exact final text', gh_mismatch_err.include?('exact final public text'))
+
+_, gh_api_err, gh_api_status = run_ruby_hook(
+  'sane_release_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'gh api repos/sane-apps/SaneBar/issues/123/comments -f body="I fixed this."' }
+  }
+)
+t('GitHub guard blocks gh api public comment without approval', gh_api_status.exitstatus == 2)
+t('GitHub gh api block names user approval', gh_api_err.include?('Public GitHub interaction'))
 FileUtils.rm_f(gh_approval_path)
 
 Dir.mktmpdir('email-guard-test-') do |dir|
@@ -263,6 +553,49 @@ Dir.mktmpdir('email-guard-test-') do |dir|
   FileUtils.rm_f(approval_path)
 end
 
+email_force_path = '/tmp/.email_force_approved.json'
+FileUtils.rm_f(email_force_path)
+_, force_email_err, force_email_status = run_ruby_hook(
+  'sane_email_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'check-inbox.sh resolve 123 --force' }
+  }
+)
+t('Email guard blocks check-inbox --force without scoped approval', force_email_status.exitstatus == 2)
+t('Email force block names SaneMaster approval command', force_email_err.include?('email_force_approval'))
+
+Open3.capture3(
+  'ruby', File.join(SANEPROCESS_DIR, 'scripts/SaneMaster.rb'),
+  'email_force_approval', '--action', 'resolve', '--id', '123', '--reason', 'test override', '--user-approval', 'force it',
+  chdir: SANEPROCESS_DIR
+)
+_, force_email_ok_err, force_email_ok_status = run_ruby_hook(
+  'sane_email_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'check-inbox.sh resolve 123 --force' }
+  }
+)
+t('Email guard allows check-inbox --force with matching scoped approval', force_email_ok_status.exitstatus == 0)
+t('Approved check-inbox force route stays quiet', force_email_ok_err.empty?)
+
+Open3.capture3(
+  'ruby', File.join(SANEPROCESS_DIR, 'scripts/SaneMaster.rb'),
+  'email_force_approval', '--action', 'resolve', '--id', '123', '--reason', 'test override', '--user-approval', 'force it',
+  chdir: SANEPROCESS_DIR
+)
+_, force_email_mismatch_err, force_email_mismatch_status = run_ruby_hook(
+  'sane_email_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'check-inbox.sh resolve 456 --force' }
+  }
+)
+t('Email guard blocks check-inbox --force when approval id differs', force_email_mismatch_status.exitstatus == 2)
+t('Email force mismatch explains id mismatch', force_email_mismatch_err.include?('id mismatch'))
+FileUtils.rm_f(email_force_path)
+
 _, noisy_err, noisy_status = run_ruby_hook(
   'sanetrack.rb',
   { 'tool_name' => 'Read', 'tool_input' => { 'file_path' => 'README.md' }, 'tool_response' => {} },
@@ -275,7 +608,10 @@ Dir.mktmpdir('sane-security-guard-test-') do |dir|
     'CLAUDE_CODE' => '1',
     'TMPDIR' => dir,
     'SANE_REAL_SECURITY' => '/usr/bin/true',
-    'SANE_SECURITY_REPEAT_COOLDOWN_SECONDS' => '300'
+    'SANE_SECURITY_REPEAT_COOLDOWN_SECONDS' => '300',
+    # When this suite runs inside a Claude session, the guard's process-ancestry
+    # walk finds the real Claude app and would exempt the spoofed lookup.
+    'SANE_SECURITY_IGNORE_CLAUDE_CALLER' => '1'
   }
   args = ['find-generic-password', '-s', 'Claude Code', '-w']
 

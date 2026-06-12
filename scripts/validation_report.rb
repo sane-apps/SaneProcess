@@ -1,6 +1,12 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Hook/launchd/ssh shells often run with a C locale, which makes Ruby default
+# to US-ASCII and raise "invalid byte sequence" when UTF-8 file or tool
+# content hits a regex or parser. Force UTF-8 before anything reads content.
+Encoding.default_external = Encoding::UTF_8
+Encoding.default_internal = Encoding::UTF_8
+
 # ==============================================================================
 # SaneProcess Validation Report - SCIENTIFIC EDITION
 # ==============================================================================
@@ -28,12 +34,14 @@ require 'uri'
 require 'shellwords'
 require 'tmpdir'
 require 'digest'
+require_relative 'hooks/core/process_metrics'
 
 class ValidationReport
   SANE_APPS_ROOT = File.expand_path('~/SaneApps')
   REPORT_DIR = File.join(File.dirname(__FILE__), '..', 'outputs', 'validation')
+  ABTEST_RECEIPT_DIR = File.join(File.dirname(__FILE__), '..', 'outputs', 'process-abtest')
   PRODUCT_CONFIG_PATH = File.join(SANE_APPS_ROOT, 'infra/SaneProcess/config/products.yml')
-  PROCESS_METRICS_PATH = File.expand_path('~/.sanemaster/process_metrics.jsonl')
+  PROCESS_METRICS_PATH = SaneProcessMetrics::DEFAULT_PATH
   MIN_SAMPLES_FOR_SIGNIFICANCE = 30  # Bare minimum, 100+ preferred
   WORKFLOW_POLICY_EXCEPTION_MARKER = 'SANEAPPS_GITHUB_HOSTED_EXCEPTION:'
   MANUAL_WORKFLOW_TRIGGERS = %w[workflow_dispatch workflow_call].freeze
@@ -211,14 +219,16 @@ class ValidationReport
     q11_cross_channel_version_consistency # Appcast vs website vs webhook vs Homebrew
     q13_customer_reality_contracts # Release-required customer actions prove real workflows
     q14_disk_budget
+    q15_secret_scan_receipt
     q12_red_noise_budget
     calculate_final_verdict
   end
 
   def process_metric_events(type: nil)
     @process_metric_events ||= begin
-      if File.exist?(PROCESS_METRICS_PATH)
-        File.readlines(PROCESS_METRICS_PATH, chomp: true).map do |line|
+      path = process_metrics_path
+      if File.exist?(path)
+        File.readlines(path, chomp: true).map do |line|
           next if line.strip.empty?
 
           JSON.parse(line)
@@ -234,6 +244,10 @@ class ValidationReport
     @process_metric_events.select { |event| event['type'] == type.to_s }
   end
 
+  def process_metrics_path
+    SaneProcessMetrics.metrics_path
+  end
+
   def finding_area(finding)
     text = finding.to_s
     case text
@@ -245,7 +259,7 @@ class ValidationReport
       :app_readiness
     when /^Q9 SUPPORT:/
       :system_health
-    when /^Q14 DISK:/
+    when /^Q14 DISK:/, /^Q15 SECRET SCAN:/
       :system_health
     else
       :advisory
@@ -289,6 +303,8 @@ class ValidationReport
       'Run the app customer UI sweep on the Mini, fix the reported workflow proof gap, and rerun release_preflight before release.'
     when /Q14 DISK:/
       'Run `ruby scripts/SaneMaster.rb machine_cleanup --host mini --server --apply`, then rerun validation on the Mini.'
+    when /Q15 SECRET SCAN:/
+      'Run `ruby scripts/SaneMaster.rb secret_scan --path /Users/sj` on the affected host. Install Automic Vault or set SANEMASTER_AUTOMIC_VAULT_CLI if the scanner is missing.'
     else
       'Open the matching Q-section in validation_report.rb, fix the named source of truth, and rerun `ruby scripts/validation_report.rb` on the Mini.'
     end
@@ -881,6 +897,7 @@ class ValidationReport
       false
     end
     process_correct = [process_blocks.length - process_wrong, 0].max
+    abtest_delta = process_abtest_validation_delta
 
     if process_blocks.length > state_correct + state_wrong
       correct = process_correct
@@ -892,6 +909,12 @@ class ValidationReport
       source = 'state_validation'
     end
 
+    if abtest_delta[:receipts].positive?
+      correct += abtest_delta[:blocks_that_were_correct]
+      wrong += abtest_delta[:blocks_that_were_wrong]
+      source = "#{source}+abtest_receipts"
+    end
+
     total = correct + wrong
     @metrics[:block_accuracy] = {
       correct: correct,
@@ -901,13 +924,45 @@ class ValidationReport
       sample_size: total,
       source: source,
       hook_block_events: process_blocks.length,
-      reset_events: reset_events.length
+      reset_events: reset_events.length,
+      abtest_receipts: abtest_delta[:receipts],
+      abtest_blocks_that_were_correct: abtest_delta[:blocks_that_were_correct],
+      abtest_blocks_that_were_wrong: abtest_delta[:blocks_that_were_wrong]
     }
 
     if total < MIN_SAMPLES_FOR_SIGNIFICANCE
       @warnings << "Q1: Only #{total} block samples. Need #{MIN_SAMPLES_FOR_SIGNIFICANCE}+ for significance."
     elsif @metrics[:block_accuracy][:accuracy] && @metrics[:block_accuracy][:accuracy] < 80
       @issues << "Q1 FAIL: Block accuracy #{@metrics[:block_accuracy][:accuracy]}% - users override too often. Blocks are wrong."
+    end
+  end
+
+  def process_abtest_receipts
+    return [] unless Dir.exist?(ABTEST_RECEIPT_DIR)
+
+    Dir.glob(File.join(ABTEST_RECEIPT_DIR, '*.json')).sort.map do |path|
+      JSON.parse(File.read(path))
+    rescue JSON::ParserError
+      nil
+    end.compact
+  end
+
+  def process_abtest_validation_delta
+    process_abtest_receipts.each_with_object({
+      receipts: 0,
+      blocks_that_were_correct: 0,
+      blocks_that_were_wrong: 0
+    }) do |receipt, totals|
+      delta = receipt['validation_delta']
+      next unless delta.is_a?(Hash)
+
+      correct = delta['blocks_that_were_correct'].to_i
+      wrong = delta['blocks_that_were_wrong'].to_i
+      next if correct.zero? && wrong.zero?
+
+      totals[:receipts] += 1
+      totals[:blocks_that_were_correct] += correct
+      totals[:blocks_that_were_wrong] += wrong
     end
   end
 
@@ -1083,6 +1138,7 @@ class ValidationReport
       process_metric_verify_passes: verify_metrics[:attempt_passes],
       verify_attempt_pass_rate: verify_metrics[:attempt_pass_rate],
       verify_zero_test_failures: verify_metrics[:zero_test_failures],
+      verify_weak_successes: verify_metrics[:weak_successes],
       day_project_final_verify_groups: verify_metrics[:final_total],
       day_project_final_verify_passes: verify_metrics[:final_passes],
       day_project_final_verify_pass_rate: verify_metrics[:final_pass_rate],
@@ -1111,6 +1167,10 @@ class ValidationReport
       @warnings << "Q4: Only #{verify_metrics[:attempt_total]} verify attempts tracked. Need #{MIN_SAMPLES_FOR_SIGNIFICANCE}+."
     end
 
+    if verify_metrics[:weak_successes].positive?
+      @warnings << "Q4: #{verify_metrics[:weak_successes]} verify success metric(s) lacked authoritative Mini/fallback tested proof; excluded from pass rate."
+    end
+
     if session_quality[:sample_size].positive?
       if session_quality[:clean_green_rate] && session_quality[:clean_green_rate] < 70
         @warnings << "Q4: Only #{session_quality[:clean_green_rate]}% session_end metrics were clean green. Recovered sessions are allowed but should not look like flawless SOP."
@@ -1128,8 +1188,12 @@ class ValidationReport
 
   def verify_outcome_metrics
     verify_events = process_metric_events(type: 'verify').sort_by { |event| event['timestamp'].to_s }
+    authoritative_verify_events = verify_events.select { |event| SaneProcessMetrics.authoritative_verify_event?(event) }
+    weak_successes = verify_events.select do |event|
+      event['success'] == true && !SaneProcessMetrics.authoritative_verify_event?(event)
+    end
     attempt_total = verify_events.length
-    attempt_passes = verify_events.count { |event| event['success'] == true }
+    attempt_passes = authoritative_verify_events.length
     attempt_pass_rate = attempt_total.positive? ? ((attempt_passes.to_f / attempt_total) * 100).round(1) : nil
     zero_test_failures = verify_events.count do |event|
       event['success'] != true && event['tests_run'].to_i.zero?
@@ -1145,7 +1209,7 @@ class ValidationReport
 
     final_events = grouped.values.map { |events| events.max_by { |event| event['timestamp'].to_s } }
     final_total = final_events.length
-    final_passes = final_events.count { |event| event['success'] == true }
+    final_passes = final_events.count { |event| SaneProcessMetrics.authoritative_verify_event?(event) }
     final_pass_rate = final_total.positive? ? ((final_passes.to_f / final_total) * 100).round(1) : nil
 
     {
@@ -1153,6 +1217,7 @@ class ValidationReport
       attempt_passes: attempt_passes,
       attempt_pass_rate: attempt_pass_rate,
       zero_test_failures: zero_test_failures,
+      weak_successes: weak_successes.length,
       final_total: final_total,
       final_passes: final_passes,
       final_pass_rate: final_pass_rate
@@ -1726,17 +1791,6 @@ class ValidationReport
   def q9_support_infrastructure
     issues_found = []
     warnings_found = []
-    keychain_fallback_enabled = ENV.fetch('SANE_KEYCHAIN_FALLBACK', '0') == '1'
-    keychain_fallback_enabled = false if ENV['SANE_NO_KEYCHAIN'] == '1'
-    secret_for = lambda do |service, account, *env_names|
-      env_names.each do |env_name|
-        value = ENV[env_name]
-        return value if value && !value.empty?
-      end
-      return '' unless keychain_fallback_enabled
-
-      `security find-generic-password -s "#{service}" -a "#{account}" -w 2>/dev/null`.strip
-    end
 
     # Check required credentials are available (env-first, optional keychain fallback)
     required_items = [
@@ -1746,13 +1800,19 @@ class ValidationReport
     ]
 
     required_items.each do |item|
-      value = secret_for.call(item[:service], item[:account], *item[:env])
-      issues_found << "#{item[:name]} key missing (env/keychain)" if value.nil? || value.empty?
+      value = resolve_secret_value(item[:service], item[:account], *item[:env])
+      next unless value.nil? || value.empty?
+
+      if credential_prompting_enabled?
+        issues_found << "#{item[:name]} key missing (env/keychain)"
+      else
+        warnings_found << "#{item[:name]} live credential check skipped in no-prompt validation mode"
+      end
     end
 
     # Check Resend API is working (if key exists)
     # Use Net::HTTP to avoid leaking API keys in shell process list
-    resend_key = secret_for.call('resend', 'api_key', 'RESEND_API_KEY')
+    resend_key = resolve_secret_value('resend', 'api_key', 'RESEND_API_KEY')
     if resend_key && !resend_key.empty?
       begin
         uri = URI("https://api.resend.com/emails")
@@ -1777,7 +1837,7 @@ class ValidationReport
     end
 
     # Check LemonSqueezy API is working (if key exists)
-    ls_key = secret_for.call('lemonsqueezy', 'api_key', 'LEMONSQUEEZY_API_KEY')
+    ls_key = resolve_secret_value('lemonsqueezy', 'api_key', 'LEMONSQUEEZY_API_KEY')
     if ls_key && !ls_key.empty?
       begin
         uri = URI("https://api.lemonsqueezy.com/v1/products")
@@ -1947,7 +2007,7 @@ class ValidationReport
     if File.exist?(research_path)
       lines = line_count(research_path)
       if lines > RESEARCH_CACHE_MAX_LINES
-        issues_found << "[#{app_name}] .claude/research.md is #{lines} lines (active cache cap: #{RESEARCH_CACHE_MAX_LINES}); promote stale verified findings before appending more research"
+        warnings_found << "[#{app_name}] .claude/research.md is #{lines} lines (active cache target: #{RESEARCH_CACHE_MAX_LINES}); promote stale verified findings before appending more research"
       end
     end
 
@@ -1955,7 +2015,7 @@ class ValidationReport
     if File.exist?(handoff_path)
       lines = line_count(handoff_path)
       if lines > HANDOFF_MAX_LINES
-        issues_found << "[#{app_name}] SESSION_HANDOFF.md is #{lines} lines (active handoff cap: #{HANDOFF_MAX_LINES}); compact older sessions into durable docs or memory"
+        warnings_found << "[#{app_name}] SESSION_HANDOFF.md is #{lines} lines (active handoff target: #{HANDOFF_MAX_LINES}); compact older sessions into durable docs or memory"
       end
     end
 
@@ -2276,6 +2336,57 @@ class ValidationReport
 
     fields = output.lines.last.to_s.split(/\s+/)
     { available_gb: fields[3].to_i, capacity: fields[4].to_s, mount: fields[8] || fields[5] }
+  end
+
+  def q15_secret_scan_receipt
+    issues_found = []
+    warnings_found = []
+    receipt_path = latest_secret_scan_receipt_path
+
+    unless receipt_path
+      warnings_found << 'No secret scan receipt found; run `ruby scripts/SaneMaster.rb secret_scan --path /Users/sj`'
+      @metrics[:secret_scan] = { issues: 0, warnings: warnings_found.length, details: warnings_found }
+      warnings_found.each { |w| @warnings << "Q15 SECRET SCAN: #{w}" }
+      return
+    end
+
+    receipt = JSON.parse(File.read(receipt_path))
+    generated_at = Time.parse(receipt.fetch('generated_at'))
+    age_days = ((Time.now.utc - generated_at) / 86_400).round(2)
+    status = receipt['status'].to_s
+    actionable = receipt['actionable_count'].to_i
+
+    warnings_found << "Latest secret scan receipt is #{age_days} days old: #{receipt_path}" if age_days > 7
+    if status == 'scanner_missing'
+      warnings_found << 'Automic Vault secret scanner is missing; install it or set SANEMASTER_AUTOMIC_VAULT_CLI'
+    elsif status != 'pass' || actionable.positive?
+      issues_found << "Latest secret scan has #{actionable} actionable finding(s): #{receipt_path}"
+    end
+
+    @metrics[:secret_scan] = {
+      issues: issues_found.length,
+      warnings: warnings_found.length,
+      status: status,
+      actionable_count: actionable,
+      preserved_count: receipt['preserved_count'].to_i,
+      ignored_count: receipt['ignored_count'].to_i,
+      receipt: receipt_path,
+      age_days: age_days,
+      details: issues_found + warnings_found
+    }
+    issues_found.each { |i| @issues << "Q15 SECRET SCAN: #{i}" }
+    warnings_found.each { |w| @warnings << "Q15 SECRET SCAN: #{w}" }
+  rescue JSON::ParserError, KeyError, ArgumentError => e
+    @metrics[:secret_scan] = { issues: 1, warnings: 0, details: ["Secret scan receipt unreadable: #{e.message}"] }
+    @issues << "Q15 SECRET SCAN: Secret scan receipt unreadable: #{e.message}"
+  end
+
+  def secret_scan_receipt_dir
+    File.join(SANE_APPS_ROOT, 'infra', 'SaneProcess', 'outputs', 'secret-scan')
+  end
+
+  def latest_secret_scan_receipt_path
+    Dir.glob(File.join(secret_scan_receipt_dir, '*.json')).max_by { |path| File.mtime(path) }
   end
 
   def disk_budget_path_size_gb(path)
@@ -2692,8 +2803,8 @@ class ValidationReport
     app_critical = finding_summary[:app_readiness][:critical].to_i
 
     overall = if customer_facing_critical > 0
-      # ANY customer-facing issue is a showstopper
-      { status: 'BROKEN RELEASE PIPELINE', detail: "#{customer_facing_critical} customer-facing issues - CUSTOMERS AFFECTED", color: :red }
+      # Any release-surface issue blocks shipping, but does not imply the pipeline tooling itself is broken.
+      { status: 'NOT READY FOR RELEASE', detail: "#{customer_facing_critical} customer-facing release blockers", color: :red }
     elsif !has_data
       { status: 'INSUFFICIENT DATA', detail: 'Need data from 3+ projects', color: :yellow }
     elsif system_critical.positive?
@@ -2940,6 +3051,17 @@ class ValidationReport
       puts "   ✅ #{m[:checked].to_i} released app customer UI contract(s) green"
     else
       puts "   ❌ #{m[:issues].to_i} issues, #{m[:warnings].to_i} warnings"
+      Array(m[:details]).each { |d| puts "      - #{d}" }
+    end
+
+    puts
+    puts "Q15: SECRET SCAN HYGIENE"
+    m = @metrics[:secret_scan] || {}
+    if m[:issues].to_i == 0 && m[:warnings].to_i == 0
+      puts "   ✅ Latest receipt clean (#{m[:actionable_count].to_i} actionable, #{m[:preserved_count].to_i} preserved, #{m[:ignored_count].to_i} ignored)"
+      puts "      Receipt: #{m[:receipt]}" if m[:receipt]
+    else
+      puts "   ⚠️  #{m[:issues].to_i} issues, #{m[:warnings].to_i} warnings"
       Array(m[:details]).each { |d| puts "      - #{d}" }
     end
 

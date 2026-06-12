@@ -124,7 +124,7 @@ def load_env_cache() -> None:
 
 
 def persist_secret_to_env_cache(value: str, *env_names: str) -> None:
-    if not value or os.environ.get("SANE_ENV_CACHE_WRITE", "1") == "0":
+    if not value or os.environ.get("SANE_ENV_CACHE_WRITE", "0") == "0":
         return
     names = [name for name in env_names if name]
     if not names:

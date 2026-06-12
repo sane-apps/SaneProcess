@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require 'digest'
 require 'json'
 
 module SaneToolsGitHubGuard
@@ -28,13 +29,13 @@ module SaneToolsGitHubGuard
              "\nReplace: we/us/our -> I/me/my."
     end
 
-    status = consume_github_approval_flag
+    status = consume_github_approval_flag(public_text)
     return nil if status == :valid
 
     "GITHUB POST BLOCKED\n" \
-    "This action posts publicly and requires explicit user approval first.\n" \
+    "This action posts publicly and requires explicit user approval for the exact final text first.\n" \
     "Show the final draft, get approval, then run:\n" \
-    '  ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb github_post_approval --user-approval "<quote>"'
+    '  ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb github_post_approval --body-file <draft_file> --user-approval "<quote>"'
   end
 
   def sane_owner?(tool_input)
@@ -62,7 +63,7 @@ module SaneToolsGitHubGuard
     pieces.join("\n")
   end
 
-  def consume_github_approval_flag
+  def consume_github_approval_flag(public_text)
     return :missing unless File.exist?(GITHUB_APPROVAL_FLAG)
 
     payload = JSON.parse(File.read(GITHUB_APPROVAL_FLAG, encoding: Encoding::UTF_8))
@@ -70,7 +71,11 @@ module SaneToolsGitHubGuard
     created_at = payload['created_at'].to_i
     approval = payload['user_approval'].to_s.strip
     age = Time.now.to_i - created_at
-    return :valid if created_at.positive? && age >= 0 && age < GITHUB_APPROVAL_TTL_SECONDS && !approval.empty?
+    if created_at.positive? && age >= 0 && age < GITHUB_APPROVAL_TTL_SECONDS && !approval.empty?
+      expected = payload['body_hash'].to_s
+      actual = Digest::SHA256.hexdigest(public_text.to_s.strip)
+      return :valid if !expected.empty? && !public_text.to_s.strip.empty? && expected == actual
+    end
 
     :stale
   rescue StandardError

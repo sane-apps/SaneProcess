@@ -41,6 +41,7 @@ class HookTests
       test("update with block") { test_state_update }
       test("reset section") { test_state_reset }
       test("preserves sections on reset_except") { test_state_reset_except }
+      test("non-ASCII state survives locale-less read") { test_state_non_ascii_locale }
     end
 
     # UTF-8 pinned File.read sites (2026-06-11 encoding audit). These fail
@@ -155,6 +156,31 @@ class HookTests
     req = StateManager.get(:requirements, :requested)
     halted = StateManager.get(:enforcement, :halted)
     (req.nil? || req.empty?) && halted == true
+  end
+
+  # Regression: a block reason containing non-ASCII (e.g. an em-dash) used to
+  # fail signature verification when the reading process had no UTF-8 locale,
+  # silently resetting ALL enforcement state (breaker counts, gate, research).
+  def test_state_non_ascii_locale
+    require_relative 'core/state_manager'
+    StateManager.reset_all
+    StateManager.set(:startup_gate, :open, true)
+    StateManager.update(:enforcement) do |e|
+      e[:blocks] = [{ tool: 'Edit', rule: 'sensitive_file',
+                      reason: 'SENSITIVE FILE — CONFIRM INTENT', timestamp: Time.now.iso8601 }]
+      e
+    end
+
+    # Re-read the state in a subprocess forced to a US-ASCII default external
+    # encoding, mimicking a hook invocation without LANG/LC_ALL set.
+    script = 'require File.join(ENV["HOOKS_DIR"], "core/state_manager"); ' \
+             'exit(StateManager.get(:startup_gate, :open) == true ? 0 : 1)'
+    _out, _err, status = Open3.capture3(
+      { 'HOOKS_DIR' => __dir__, 'CLAUDE_PROJECT_DIR' => ENV['CLAUDE_PROJECT_DIR'],
+        'CLAUDE_HOOK_SECRET' => ENV['CLAUDE_HOOK_SECRET'], 'LANG' => 'C', 'LC_ALL' => 'C' },
+      'ruby', '-E', 'US-ASCII', '-e', script
+    )
+    status.success?
   end
 
   # A receipt whose JSON contains non-ASCII must still validate when the

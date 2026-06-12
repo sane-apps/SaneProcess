@@ -31,6 +31,49 @@ def latest_recent_file(glob)
   yield(path)
 end
 
+def latest_authoritative_tool_discovery_receipt(command)
+  expected_query = command_query_value(command)
+  latest_recent_file('outputs/tool-discovery/*.json') do |path|
+    receipt = JSON.parse(File.read(path, encoding: Encoding::UTF_8))
+    next nil unless authoritative_tool_discovery_receipt?(receipt, expected_query)
+
+    {
+      type: 'tool_discovery_receipt',
+      path: path,
+      query: receipt['query'],
+      route: receipt['route']
+    }
+  end
+rescue JSON::ParserError, SystemCallError
+  nil
+end
+
+def command_query_value(command)
+  tokens = Shellwords.split(command.to_s)
+  index = tokens.index('--query')
+  return tokens[index + 1].to_s.strip if index && tokens[index + 1]
+
+  prefix = '--query='
+  match = tokens.find { |token| token.start_with?(prefix) }
+  match ? match[prefix.length..].to_s.strip : ''
+rescue ArgumentError
+  ''
+end
+
+def authoritative_tool_discovery_receipt?(receipt, expected_query)
+  return false unless receipt['authoritative'] == true
+  return false unless receipt['route'].to_s == 'SaneMaster.rb tool_discovery'
+  return false if expected_query.to_s.strip.empty?
+  return false unless receipt['query'].to_s.strip == expected_query.to_s.strip
+
+  doctor_status = receipt.dig('summary', 'doctor_status') || receipt.dig('checks', 'doctor', 'status')
+  validation_status = receipt.dig('summary', 'validation_status') || receipt.dig('checks', 'validation_report', 'status')
+  return false if doctor_status.to_s.empty? || doctor_status.to_s == 'skipped'
+  return false if validation_status.to_s.empty? || validation_status.to_s == 'skipped'
+
+  true
+end
+
 def release_preflight_proof
   path = File.join(Dir.pwd, 'outputs', 'release_preflight_status.json')
   return nil unless File.file?(path) && recent_time?(File.mtime(path))

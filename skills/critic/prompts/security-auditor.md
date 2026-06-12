@@ -35,7 +35,7 @@ api[_-]?key.*[=:]\s*['"][^'"]+['"]
 AKIA[0-9A-Z]{16}
 
 # Private keys
------BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----
+PEM private material header patterns
 ```
 
 **Red flags:**

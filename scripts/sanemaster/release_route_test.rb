@@ -202,6 +202,7 @@ exit(run_tests('SaneMaster Release Routing Tests') do
         FileUtils.mkdir_p(File.join(repo, '.worktrees', 'archive'))
         FileUtils.mkdir_p(File.join(repo, 'outputs', 'huge'))
         FileUtils.mkdir_p(File.join(repo, 'outputs', 'customer-ui'))
+        FileUtils.mkdir_p(File.join(repo, 'outputs', 'process-abtest'))
         File.write(File.join(repo, 'outputs', 'qa_status.json'), '{}')
         File.write(File.join(repo, 'outputs', 'release_preflight_status.json'), '{}')
         File.write(File.join(repo, 'outputs', 'customer_ui_action_receipt.json'), '{}')
@@ -216,6 +217,7 @@ exit(run_tests('SaneMaster Release Routing Tests') do
         assert_includes(rsync_call, 'outputs/release_preflight_status.json')
         assert_includes(rsync_call, 'outputs/customer_ui_action_receipt.json')
         assert_includes(rsync_call, 'outputs/customer-ui/***')
+        assert_includes(rsync_call, 'outputs/process-abtest/***')
         assert_includes(rsync_call, 'outputs/***')
         true
       end
@@ -237,6 +239,7 @@ exit(run_tests('SaneMaster Release Routing Tests') do
         assert_includes(rsync_call, 'customer_ui_action_receipt.json')
         assert_includes(rsync_call, 'customer-ui/***')
         assert_includes(rsync_call, 'visual_smoke/***')
+        assert_includes(rsync_call, 'process-abtest/***')
         assert_includes(rsync_call, '*')
         assert_includes(rsync_call, "mini:#{remote_outputs}/")
         true
@@ -261,6 +264,7 @@ exit(run_tests('SaneMaster Release Routing Tests') do
       assert_includes(remote_cmd, 'validation')
       assert_includes(remote_cmd, 'customer-ui')
       assert_includes(remote_cmd, 'visual_smoke')
+      assert_includes(remote_cmd, 'process-abtest')
       assert_includes(remote_cmd, '/usr/bin/trash "$path"')
       true
     end
