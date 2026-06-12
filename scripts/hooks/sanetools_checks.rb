@@ -1,12 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# ==============================================================================
-# SaneTools Checks Module
-# ==============================================================================
-# Extracted from sanetools.rb per Rule #10 (file size limit)
-# Contains all check_* functions for PreToolUse enforcement
-# ==============================================================================
+# SaneTools Checks Module: all check_* functions for PreToolUse enforcement
+# (extracted from sanetools.rb per Rule #10).
 
 require 'json'
 require 'socket'
@@ -305,6 +301,10 @@ module SaneToolsChecks
       new_string = tool_input['new_string'] || tool_input[:new_string] || ''
       lines_added = new_string.lines.count - old_string.lines.count
       projected_count = line_count + lines_added
+
+      # Shrinking/neutral edits always pass: an oversized file can only be
+      # split or reduced by editing it (merge-conflict resolution included).
+      return nil if lines_added <= 0
 
       if projected_count > hard_limit
         return "FILE SIZE BLOCKED (Rule #10)\n" \
