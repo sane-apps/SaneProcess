@@ -2796,13 +2796,12 @@ def ensure_iap_price_schedule(iap_id:, target_price_usd:, token:)
     log_warn "Existing IAP price schedule does not match USA #{target_price_usd} (observed: #{observed_prices}); creating requested schedule."
   end
 
-  pp_code, points = asc_get_v2("/inAppPurchases/#{iap_id}/pricePoints?filter%5Bterritory%5D=USA&limit=200", token: token)
+  pp_code, point = find_iap_price_point(iap_id: iap_id, target_price_usd: target_price_usd, token: token)
   unless pp_code == 200
     log_error "Could not read IAP price points (HTTP #{pp_code})."
     return false
   end
 
-  point = points.fetch('data', []).find { |entry| entry.dig('attributes', 'customerPrice').to_s == target_price_usd.to_s }
   unless point
     log_error "No USA price point found for #{target_price_usd}."
     return false
@@ -2840,6 +2839,39 @@ def ensure_iap_price_schedule(iap_id:, target_price_usd:, token:)
     log_error "Failed to create IAP price schedule (HTTP #{create_code}): #{detail}"
     false
   end
+end
+
+def resolve_iap_price_usd(config, options)
+  explicit = options[:iap_price_usd].to_s.strip
+  return explicit unless explicit.empty?
+
+  configured = config.dig('appstore', 'iap_price_usd').to_s.strip
+  return configured unless configured.empty?
+
+  IAP_DEFAULT_USD_PRICE
+end
+
+def find_iap_price_point(iap_id:, target_price_usd:, token:)
+  path = "/inAppPurchases/#{iap_id}/pricePoints?filter%5Bterritory%5D=USA&limit=200"
+
+  loop do
+    code, points = asc_get_v2(path, token: token)
+    return [code, nil] unless code == 200
+
+    entries = points.fetch('data', [])
+    point = entries.find { |entry| entry.dig('attributes', 'customerPrice').to_s == target_price_usd.to_s }
+    return [200, point] if point
+
+    next_url = points.dig('links', 'next').to_s
+    break if entries.empty?
+    break if next_url.empty?
+
+    uri = URI(next_url)
+    path = uri.path.sub(%r{\A/v2}, '')
+    path = "#{path}?#{uri.query}" if uri.query
+  end
+
+  [200, nil]
 end
 
 def iap_review_screenshot_state(screenshot_resp)
@@ -4669,8 +4701,7 @@ if options[:iap_only]
     exit 1
   end
 
-  price_usd = options[:iap_price_usd].to_s.strip
-  price_usd = IAP_DEFAULT_USD_PRICE if price_usd.empty?
+  price_usd = resolve_iap_price_usd(config, options)
 
   token = generate_jwt
   ok = if auto_renewable_subscription_config?(config)
@@ -4861,8 +4892,7 @@ end
 # Step 7b: Ensure App Store IAP metadata/submission readiness (if configured)
 configured_product_id = config.dig('appstore', 'product_id').to_s.strip
 unless configured_product_id.empty?
-  iap_price_usd = options[:iap_price_usd].to_s.strip
-  iap_price_usd = IAP_DEFAULT_USD_PRICE if iap_price_usd.empty?
+  iap_price_usd = resolve_iap_price_usd(config, options)
   token = generate_jwt
   iap_ok = if auto_renewable_subscription_config?(config)
              ensure_subscription_readiness(

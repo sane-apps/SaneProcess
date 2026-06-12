@@ -87,11 +87,12 @@ class ValidationReport
     .swift .xcconfig .xcprivacy .xcstrings .xib .yaml .yml
   ].freeze
   PROJECT_QA_SOURCE_EXCLUDED_PREFIXES = %w[
-    .build/ .claude/ .codex/ .git/ .sanemaster/ build/ DerivedData/ docs/
-    node_modules/ outputs/ vendor/bundle/ website/
+    .build/ .claude/ .codex/ .git/ .sanemaster/ .serena/ build/ DerivedData/
+    docs/ fastlane/test_output/ node_modules/ outputs/ releases/ vendor/bundle/ website/
   ].freeze
   PROJECT_QA_SOURCE_EXCLUDED_FILES = %w[
-    AGENTS.md ARCHITECTURE.md CLAUDE.md DEVELOPMENT.md README.md SESSION_HANDOFF.md
+    .sane/customer_ui_action_receipt.json AGENTS.md ARCHITECTURE.md CLAUDE.md
+    DEVELOPMENT.md README.md SESSION_HANDOFF.md
   ].freeze
   DISK_BUDGET_MIN_FREE_GB = 20
   DISK_BUDGET_CRITICAL_FREE_GB = 10

@@ -41,6 +41,9 @@ PRODUCTS_YML = Path(__file__).resolve().parents[2] / "config" / "products.yml"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "outputs" / "hosted_file_actions"
 DEFAULT_UPLOADS_DIR = Path("~/Desktop/LemonSqueezy-Uploads").expanduser()
 API_BASE = "https://api.lemonsqueezy.com"
+PRODUCT_NAME_ALIASES = {
+    "SaneVideo": ["SaneVideo Pro"],
+}
 
 CURRENT_COLUMNS = [
     "app",
@@ -295,9 +298,10 @@ def file_api_url_for(variant_id: str) -> str:
 
 
 def find_product_record(app_name: str, products: list[dict[str, Any]]) -> dict[str, Any] | None:
+    accepted_names = {app_name, *PRODUCT_NAME_ALIASES.get(app_name, [])}
     for record in products:
         name = str(record.get("attributes", {}).get("name", "")).strip()
-        if name == app_name or name.startswith(f"{app_name}:"):
+        if name in accepted_names or name.startswith(f"{app_name}:"):
             return record
     return None
 
