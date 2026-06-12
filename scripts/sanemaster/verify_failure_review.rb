@@ -34,6 +34,7 @@ module SaneMasterModules
       projects = failure_events.group_by { |event| verify_failure_value(event['project']) }
                                .map { |project, group| verify_failure_project_summary(project, group) }
                                .sort_by { |entry| [-entry[:zero_test_failures], entry[:project]] }
+      hotspots = verify_failure_hotspots(failure_events)
       actionable = buckets.select { |bucket| bucket[:count] >= min_count.to_i }
 
       {
@@ -45,7 +46,8 @@ module SaneMasterModules
         weak_green_successes: weak_green_events.length,
         buckets: buckets,
         projects: projects,
-        recommended_actions: verify_failure_recommended_actions(actionable, weak_green_events)
+        hotspots: hotspots,
+        recommended_actions: verify_failure_recommended_actions(actionable, weak_green_events, hotspots)
       }
     end
 
@@ -150,7 +152,22 @@ module SaneMasterModules
       }
     end
 
-    def verify_failure_recommended_actions(buckets, weak_green_events)
+    def verify_failure_hotspots(events)
+      events.group_by { |event| [verify_failure_value(event['project']), verify_failure_bucket_for_event(event)] }
+            .map do |(project, bucket), group|
+              {
+                project: project,
+                bucket: bucket,
+                count: group.length,
+                latest_timestamp: group.map { |event| event['timestamp'].to_s }.reject(&:empty?).max,
+                next_step: verify_failure_bucket_next_step(bucket),
+                examples: group.last(3).map { |event| verify_failure_example(event) }
+              }
+            end
+            .sort_by { |entry| [-entry[:count], entry[:project], entry[:bucket]] }
+    end
+
+    def verify_failure_recommended_actions(buckets, weak_green_events, hotspots = [])
       actions = []
       if buckets.empty?
         actions << 'No repeated zero-test failure bucket met the threshold in this window.'
@@ -158,6 +175,10 @@ module SaneMasterModules
         top = buckets.first
         actions << "Fix the top zero-test bucket first: #{top[:bucket]} (#{top[:count]} event(s))."
         actions << top[:next_step]
+      end
+      if hotspots.any?
+        top_hotspot = hotspots.first
+        actions << "Start with the top project hotspot: #{top_hotspot[:project]} / #{top_hotspot[:bucket]} (#{top_hotspot[:count]} event(s))."
       end
       if weak_green_events.any?
         actions << "#{weak_green_events.length} green verify run(s) counted zero tests; treat these as build/syntax evidence, not tested evidence."
@@ -210,6 +231,13 @@ module SaneMasterModules
         puts "#{bucket[:bucket]}: #{bucket[:count]}"
         puts "  Projects: #{bucket[:projects].map { |project, count| "#{project}=#{count}" }.join(', ')}"
         puts "  Next: #{bucket[:next_step]}"
+      end
+      if result[:hotspots].any?
+        puts
+        puts 'Top hotspots:'
+        result[:hotspots].first(5).each do |hotspot|
+          puts "  - #{hotspot[:project]} / #{hotspot[:bucket]}: #{hotspot[:count]}"
+        end
       end
       puts
       puts 'Recommended actions:'

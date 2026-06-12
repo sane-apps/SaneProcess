@@ -25,6 +25,22 @@ module SaneMasterModules
       result[:passed]
     end
 
+    def proof_plan(args = [])
+      options = parse_proof_plan_options(args)
+      task = options[:task]
+      raise ArgumentError, 'proof_plan requires --task TEXT' if task.to_s.strip.empty?
+
+      result = classify_agent_prompt(task)
+
+      if options[:json]
+        puts JSON.pretty_generate(result)
+      else
+        print_proof_plan_result(task, result)
+      end
+
+      result
+    end
+
     def skill_lint(args = [])
       options = parse_agent_workflow_options(args)
       paths = options[:paths]
@@ -93,6 +109,10 @@ module SaneMasterModules
         issues << "approval expected #{expected['approval']} got #{actual[:approval]}"
       end
 
+      if expected.key?('proof_scope') && actual[:proof_scope] != expected['proof_scope']
+        issues << "proof_scope expected #{expected['proof_scope']} got #{actual[:proof_scope]}"
+      end
+
       Array(expected['forbid_commands']).each do |command|
         issues << "forbidden command #{command}" if actual[:commands].include?(command)
       end
@@ -121,6 +141,20 @@ module SaneMasterModules
       notes = []
       subagent = false
       approval = false
+      proof_scope = nil
+
+      if scoped_verification_prompt?(text)
+        commands << 'proof_plan'
+        commands << 'focused_tests'
+        commands << 'test_mode'
+        proof_scope = 'focused_mini'
+        notes << 'Scoped proof uses focused tests plus exact Mini runtime proof; record known unrelated red gates instead of waiting on full verify.'
+        notes << 'Long Mini commands need a bounded poll loop, timeout, receipt, and same-turn conclusion.'
+      elsif full_canonical_verification_prompt?(text)
+        commands << 'proof_plan'
+        proof_scope = 'full_canonical'
+        notes << 'Use full canonical verify for release, shared infra, broad refactors, and high-risk final claims.'
+      end
 
       if text.match?(/\b(gmail|personal email|personal inbox)\b/)
         skills << 'gmail'
@@ -154,9 +188,14 @@ module SaneMasterModules
       end
 
       if text.match?(/\b(verify|does it build|run verification|test suite|build and test|build.*test|\bbuild\b)\b/)
-        commands << 'verify'
-        skills << 'verify'
-        notes << 'Build/test/runtime workflows are Mini-first.'
+        if proof_scope == 'focused_mini'
+          notes << 'Focused proof supports the narrow claim only; run full verify before broad release or shared-infra claims.'
+        else
+          commands << 'verify'
+          skills << 'verify'
+          proof_scope ||= 'full_canonical'
+          notes << 'Build/test/runtime workflows are Mini-first.'
+        end
       end
 
       if text.match?(/\b(launch|runtime|run the app|test mode)\b/)
@@ -223,8 +262,22 @@ module SaneMasterModules
         skills: skills.uniq,
         subagent: subagent,
         approval: approval,
+        proof_scope: proof_scope,
         notes: notes.uniq
       }
+    end
+
+    def scoped_verification_prompt?(text)
+      scoped_words = text.match?(/\b(scoped|focused|narrow|single|specific|only|exact)\b/)
+      app_behavior = text.match?(/\b(runtime|behavior|state|states|left[- ]rail|rail|smoke|workflow|fixture|bug|regression)\b/)
+      known_unrelated_red = text.match?(/\b(known|unrelated).{0,24}\bred\b|\bred.{0,24}\b(unrelated|known)\b|known[- ]red|unrelated[- ]red/)
+      scoped_words && app_behavior || known_unrelated_red
+    end
+
+    def full_canonical_verification_prompt?(text)
+      return false if scoped_verification_prompt?(text)
+
+      text.match?(/\b(release|ship|shipping|app store|public launch|shared infra|shared tool|saneprocess|broad refactor|large refactor|cross[- ]app|all apps|final claim)\b/)
     end
 
     def lint_skill_paths(paths)
@@ -438,6 +491,25 @@ module SaneMasterModules
       options
     end
 
+    def parse_proof_plan_options(args)
+      options = { json: false, task: nil }
+      rest = args.dup
+      task_parts = []
+      until rest.empty?
+        token = rest.shift
+        case token
+        when '--json'
+          options[:json] = true
+        when '--task'
+          options[:task] = rest.shift
+        else
+          task_parts << token if token
+        end
+      end
+      options[:task] ||= task_parts.join(' ')
+      options
+    end
+
     def skill_files_under(path)
       return [] unless File.exist?(path)
       return [path] if File.file?(path) && File.basename(path) == 'SKILL.md'
@@ -464,6 +536,16 @@ module SaneMasterModules
         puts "  ❌ #{entry[:id]}: #{entry[:issues].join('; ')}"
       end
       puts result[:passed] ? '✅ agent_eval passed' : '❌ agent_eval failed'
+    end
+
+    def print_proof_plan_result(task, result)
+      puts 'Proof Plan'
+      puts '=' * 10
+      puts "Task: #{task}"
+      puts "Scope: #{result[:proof_scope] || 'unspecified'}"
+      puts "Commands: #{result[:commands].join(', ')}"
+      puts 'Notes:'
+      result[:notes].each { |note| puts "  - #{note}" }
     end
 
     def print_skill_lint_result(result)

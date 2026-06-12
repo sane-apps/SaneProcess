@@ -32,7 +32,8 @@ module SaneMasterModules
     ].freeze
     REQUIRED_ABTEST_RECEIPT_FIELDS = %w[
       schema_version id completed_at task source protocol_path scoring_path
-      arms judge scores costs validation_delta decisive_mechanisms pending_actions
+      arms judge scores costs completion verification_strategy validation_delta
+      decisive_mechanisms pending_actions
     ].freeze
     REQUIRED_SESSION_RECEIPT_FIELDS = %w[
       schema_version receipt_id session_id client_name client_kind host git_root
@@ -131,6 +132,10 @@ module SaneMasterModules
       actions = []
       total_correct = 0
       total_wrong = 0
+      total_sessions = 0
+      total_wait_stalls = 0
+      total_orchestrator_nudges = 0
+      total_known_unrelated_red_gates = 0
 
       if receipts.empty?
         warnings << 'no process A/B receipts found; slimming decisions should wait for real comparative runs'
@@ -144,6 +149,11 @@ module SaneMasterModules
         wrong = delta['blocks_that_were_wrong'].to_i
         total_correct += correct
         total_wrong += wrong
+        completion = abtest_completion_summary(entry[:receipt])
+        total_sessions += completion[:sessions_to_complete]
+        total_wait_stalls += completion[:wait_state_stalls]
+        total_orchestrator_nudges += completion[:orchestrator_nudges]
+        total_known_unrelated_red_gates += completion[:known_unrelated_red_gates]
 
         blockers.concat(issues.map { |issue| "#{entry[:path]}: #{issue}" })
         {
@@ -155,11 +165,13 @@ module SaneMasterModules
           validation_delta: {
             blocks_that_were_correct: correct,
             blocks_that_were_wrong: wrong
-          }
+          },
+          completion: completion
         }
       end
 
       actions << 'protect mechanisms with positive A/B validation deltas; cut or rewrite gates with repeated wrong/theater tags'
+      actions << 'compare sessions-to-complete and wait-state stalls before expanding heavyweight verification flows'
 
       {
         receipt_dir: receipt_dir,
@@ -169,6 +181,12 @@ module SaneMasterModules
         validation_delta: {
           blocks_that_were_correct: total_correct,
           blocks_that_were_wrong: total_wrong
+        },
+        completion: {
+          sessions_to_complete: total_sessions,
+          wait_state_stalls: total_wait_stalls,
+          orchestrator_nudges: total_orchestrator_nudges,
+          known_unrelated_red_gates: total_known_unrelated_red_gates
         },
         receipts: receipt_results,
         blockers: blockers.uniq,
@@ -555,7 +573,7 @@ module SaneMasterModules
         issues << "missing #{field}" if value.nil? || (value.respond_to?(:empty?) && value.empty?)
       end
 
-      issues << 'schema_version must be 1' unless receipt['schema_version'].to_i == 1
+      issues << 'schema_version must be 1 or 2' unless [1, 2].include?(receipt['schema_version'].to_i)
       task = receipt['task'].is_a?(Hash) ? receipt['task'] : {}
       issues << 'task must name a real repo or app' if task['repo'].to_s.strip.empty? && task['app'].to_s.strip.empty?
       issues << 'task must describe a real customer/tooling failure' if task['failure'].to_s.strip.empty?
@@ -584,7 +602,26 @@ module SaneMasterModules
       %w[vanilla harness].each do |arm|
         arm_cost = costs[arm].is_a?(Hash) ? costs[arm] : {}
         issues << "costs missing #{arm} tokens" unless arm_cost['tokens'].to_i.positive?
-        issues << "costs missing #{arm} duration_minutes" unless arm_cost['duration_minutes'].to_f.positive?
+        unless arm_cost['duration_minutes'].to_f.positive? || !arm_cost['duration_note'].to_s.strip.empty?
+          issues << "costs missing #{arm} duration_minutes or duration_note"
+        end
+      end
+
+      completion = receipt['completion'].is_a?(Hash) ? receipt['completion'] : {}
+      %w[vanilla harness].each do |arm|
+        arm_completion = completion[arm].is_a?(Hash) ? completion[arm] : {}
+        issues << "completion missing #{arm} sessions_to_complete" unless arm_completion['sessions_to_complete'].to_i.positive?
+        %w[wait_state_stalls orchestrator_nudges].each do |field|
+          value = arm_completion[field]
+          issues << "completion missing #{arm} #{field}" unless nonnegative_number_value?(value)
+        end
+      end
+
+      strategy = receipt['verification_strategy'].is_a?(Hash) ? receipt['verification_strategy'] : {}
+      %w[vanilla harness].each do |arm|
+        arm_strategy = strategy[arm].is_a?(Hash) ? strategy[arm] : {}
+        issues << "verification_strategy missing #{arm} proof_scope_selected" if arm_strategy['proof_scope_selected'].to_s.strip.empty?
+        issues << "verification_strategy missing #{arm} proof_result" if arm_strategy['proof_result'].to_s.strip.empty?
       end
 
       delta = receipt['validation_delta'].is_a?(Hash) ? receipt['validation_delta'] : {}
@@ -605,6 +642,31 @@ module SaneMasterModules
 
       issues << 'pending_actions must include concrete follow-up work' if Array(receipt['pending_actions']).empty?
       issues
+    end
+
+    def abtest_completion_summary(receipt)
+      completion = receipt['completion'].is_a?(Hash) ? receipt['completion'] : {}
+      strategy = receipt['verification_strategy'].is_a?(Hash) ? receipt['verification_strategy'] : {}
+      arms = %w[vanilla harness]
+      {
+        sessions_to_complete: arms.sum { |arm| completion.dig(arm, 'sessions_to_complete').to_i },
+        wait_state_stalls: arms.sum { |arm| completion.dig(arm, 'wait_state_stalls').to_i },
+        orchestrator_nudges: arms.sum { |arm| completion.dig(arm, 'orchestrator_nudges').to_i },
+        known_unrelated_red_gates: arms.sum { |arm| abtest_known_unrelated_red_count(strategy.dig(arm, 'known_unrelated_red_gates')) }
+      }
+    end
+
+    def abtest_known_unrelated_red_count(value)
+      return value.length if value.is_a?(Array)
+      return value.to_i if value.is_a?(Numeric) || value.to_s.match?(/\A\d+\z/)
+
+      value.to_s.strip.empty? ? 0 : 1
+    end
+
+    def nonnegative_number_value?(value)
+      return true if value.is_a?(Numeric) && value >= 0
+
+      value.to_s.match?(/\A\d+(?:\.\d+)?\z/)
     end
 
     def trace_event_index(events, pattern)
@@ -757,6 +819,7 @@ module SaneMasterModules
       puts "Receipt dir: #{result[:receipt_dir]}"
       puts "Receipts: #{result[:passed_count]}/#{result[:receipt_count]} valid"
       puts "Validation delta: +#{result.dig(:validation_delta, :blocks_that_were_correct)} correct, +#{result.dig(:validation_delta, :blocks_that_were_wrong)} wrong"
+      puts "Completion friction: #{result.dig(:completion, :sessions_to_complete)} sessions, #{result.dig(:completion, :wait_state_stalls)} wait-state stalls, #{result.dig(:completion, :known_unrelated_red_gates)} known-unrelated red gate(s)"
       result[:blockers].each { |item| puts "  BLOCKER #{item}" }
       result[:warnings].each { |item| puts "  WARNING #{item}" }
       puts 'Recommended actions:'

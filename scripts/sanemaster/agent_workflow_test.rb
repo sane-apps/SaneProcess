@@ -31,7 +31,20 @@ exit(run_tests('SaneMaster Agent Workflow Tests') do
       result = subject.run_agent_eval_fixture(File.expand_path('../agent_eval_fixtures.json', __dir__))
 
       assert(result[:passed], result[:cases].reject { |entry| entry[:passed] }.inspect)
-      assert_eq(result[:case_count], 17)
+      assert_eq(result[:case_count], 18)
+      true
+    end
+
+    test('classification scopes narrow runtime work to focused Mini proof') do
+      subject = AgentWorkflowHarness.new('/tmp/saneprocess-agent-workflow-test.jsonl')
+      actual = subject.classify_agent_prompt('Focused SaneVideo left-rail state bug: prove each runtime state on the Mini while release preflight is known red for unrelated issues.')
+
+      assert_eq(actual[:proof_scope], 'focused_mini')
+      assert_includes(actual[:commands], 'proof_plan')
+      assert_includes(actual[:commands], 'focused_tests')
+      assert_includes(actual[:commands], 'test_mode')
+      assert(!actual[:commands].include?('verify'), actual.inspect)
+      assert(actual[:notes].any? { |note| note.include?('bounded poll loop') }, actual.inspect)
       true
     end
 

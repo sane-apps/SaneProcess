@@ -13,6 +13,7 @@ ruby scripts/SaneMaster.rb verify                 # canonical full verification
 ruby scripts/hooks/test/tier_tests.rb             # hook enforcement suite
 ruby scripts/SaneMaster.rb tool_discovery --query "..." # tool/MCP proof receipt
 ruby scripts/SaneMaster.rb process_metrics --export-otel outputs/process-traces.json
+ruby scripts/SaneMaster.rb route_cost_review --json # rank expensive proof-route risks
 cd /tmp/repo && /path/to/SaneProcess/scripts/init.sh --client generic
 ```
 
@@ -242,6 +243,7 @@ receipts. Run `ruby scripts/SaneMaster.rb` or `help <category>` for full help.
 | App release preflight | `ruby scripts/SaneMaster.rb release_preflight` |
 | Active App Store lane | `ruby scripts/SaneMaster.rb appstore_preflight` |
 | Runtime launch/proof | `ruby scripts/SaneMaster.rb test_mode` plus app-specific `customer_ui_sweep`, or `visual_smoke` only when no app sweep exists |
+| Verification scope plan | `ruby scripts/SaneMaster.rb proof_plan --task "..."` |
 | Support inbox | `ruby scripts/SaneMaster.rb check_inbox` |
 | Sales/download/funnel | `sales`, `downloads`, `events` |
 | Machine cleanup | `ruby scripts/SaneMaster.rb machine_cleanup --host mini --apply` |
@@ -283,6 +285,11 @@ Current evidence split:
   demote legacy/noisy score surfaces, exclude daemon bookkeeping from task
   telemetry, unify UI-proof metrics, and test whether startup cleanup steps can
   be warning-only while keeping startup context hard.
+- Scoped app behavior work should use `proof_plan` before verification when a
+  known-unrelated red gate could swamp the task. Focused scope means focused
+  tests plus exact Mini runtime proof for the narrow claim; release,
+  shared-infra, broad refactor, and high-risk final claims still require full
+  canonical verify.
 
 ## Testing
 
@@ -421,7 +428,8 @@ coverage is:
 - Rule 10, size limits: `sanetools_checks.rb` enforces file limits and Swift
   component-owner aggregate limits across `Type.swift` plus `Type+*.swift`.
 - Rule 11, fix tools: `tool_discovery`, `near_miss_review`,
-  `verify_failure_review`, and `gate_review` are the canonical promotion path.
+  `route_cost_review`, `verify_failure_review`, and `gate_review` are the
+  canonical promotion path.
 - Rule 12, talk while walking: skill prompts and mandatory workflows require
   subagent use for covered heavy workflows; client-native spawn enforcement is
   tool-surface dependent.

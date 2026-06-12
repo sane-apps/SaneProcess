@@ -61,7 +61,11 @@ exit(run_tests('SaneMaster Verify Failure Review Tests') do
       assert_eq(buckets['permission_prompt'][:count], 1)
       assert_eq(buckets['build_failure'][:count], 1)
       assert_eq(buckets['timeout'][:projects]['SaneBar'], 2)
+      assert_eq(result[:hotspots].first[:project], 'SaneBar')
+      assert_eq(result[:hotspots].first[:bucket], 'timeout')
+      assert_eq(result[:hotspots].first[:count], 2)
       assert_includes(result[:recommended_actions].join(' '), 'Fix the top zero-test bucket first: timeout')
+      assert_includes(result[:recommended_actions].join(' '), 'SaneBar / timeout')
       true
     end
 

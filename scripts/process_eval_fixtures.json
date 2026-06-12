@@ -275,6 +275,52 @@
       }
     },
     {
+      "id": "scoped_verification_receipt",
+      "description": "Scoped behavior work proves focused tests plus exact Mini runtime evidence without being swallowed by unrelated release-grade red gates.",
+      "events": [
+        { "type": "command", "name": "proof_plan scope=focused_mini" },
+        { "type": "command", "name": "focused_tests" },
+        { "type": "command", "name": "test_mode mini" },
+        { "type": "artifact", "name": "exact_runtime_states_proven" },
+        { "type": "artifact", "name": "known_unrelated_red_gate_recorded" },
+        { "type": "artifact", "name": "final_report_same_turn" }
+      ],
+      "expect": {
+        "required_events": [
+          "proof_plan scope=focused_mini",
+          "focused_tests",
+          "test_mode mini",
+          "exact_runtime_states_proven",
+          "known_unrelated_red_gate_recorded",
+          "final_report_same_turn"
+        ],
+        "ordered_events": ["proof_plan scope=focused_mini", "focused_tests", "test_mode mini", "final_report_same_turn"],
+        "forbidden_events": ["standing by", "waiting on build", "release_preflight known unrelated red blocked scoped proof"]
+      }
+    },
+    {
+      "id": "bounded_mini_wait_receipt",
+      "description": "Long Mini work uses bounded polling, timeout, and a same-turn conclusion instead of ending with passive watcher language.",
+      "events": [
+        { "type": "command", "name": "mini_command_started" },
+        { "type": "artifact", "name": "bounded_poll_loop_configured" },
+        { "type": "artifact", "name": "timeout_seconds_recorded" },
+        { "type": "artifact", "name": "mini_command_receipt_captured" },
+        { "type": "artifact", "name": "final_report_same_turn" }
+      ],
+      "expect": {
+        "required_events": [
+          "mini_command_started",
+          "bounded_poll_loop_configured",
+          "timeout_seconds_recorded",
+          "mini_command_receipt_captured",
+          "final_report_same_turn"
+        ],
+        "ordered_events": ["mini_command_started", "bounded_poll_loop_configured", "mini_command_receipt_captured", "final_report_same_turn"],
+        "forbidden_events": ["standing by", "watchers armed", "waiting for mini build"]
+      }
+    },
+    {
       "id": "sop_update_prefers_enforcement_receipt",
       "description": "When a user asks to update SOP after a process miss, the durable change is an enforceable guard/eval/tool before prose.",
       "events": [

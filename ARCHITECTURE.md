@@ -553,6 +553,12 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
 - Multi-agent delegation remains useful, but workflow complexity should be driven by eval failures and task shape, not by default escalation.
 - Skill descriptions and duplicate-name drift become tested routing surfaces rather than informal prose.
 - Client-managed Codex plugins are runtime adapter surfaces. SaneProcess records category routing in `DEVELOPMENT.md`, but release/support/security proof stays with repo-owned wrappers and eval coverage instead of an exhaustive plugin inventory.
+- Verification scope is a tested workflow surface. `proof_plan` classifies
+  narrow runtime behavior work into focused Mini proof while preserving full
+  canonical verify for release, shared-infra, broad refactor, and high-risk
+  final claims. A/B receipts record sessions-to-complete, wait-state stalls,
+  orchestrator nudges, proof scope, and known-unrelated red gates so quality
+  wins cannot hide verification tax.
 
 ### ADR-009: HTML is a generated review artifact, not the source of truth (2026-05-13)
 
@@ -573,7 +579,9 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
 
 **Decision:** Add `SaneMaster.rb near_miss_review` as a report-only telemetry miner. It reads process metrics, filters known test-harness noise by default, and emits ranked candidates with evidence examples, why the pattern matters, a proposed action, and a proposed backtest. It does not automatically promote rules or write generated fixtures. Reviewed patterns can be promoted into `agent_eval`, `process_eval`, `gate_review`, or a hook change with normal tests.
 
-The first promoted drilldown is `SaneMaster.rb verify_failure_review`, because the live backtest found repeated verify runs that failed before any tests were counted. Verify metrics now record `evidence_strength`, `failure_bucket`, `failure_hint`, and host metadata. The shared SOP scorer caps green zero-test runs at weak evidence, and `sanestop` writes final verify count/strength fields into session receipts so `process_eval` can catch inflated self-assessments.
+The first promoted drilldown is `SaneMaster.rb verify_failure_review`, because the live backtest found repeated verify runs that failed before any tests were counted. Verify metrics now record `evidence_strength`, `failure_bucket`, `failure_hint`, and host metadata. The shared SOP scorer caps green zero-test runs at weak evidence, and `sanestop` writes final verify count/strength fields into session receipts so `process_eval` can catch inflated self-assessments. The review also reports project/bucket hotspots so repeated zero-test failures point at a specific app and root-cause class before anyone increases timeouts.
+
+`SaneMaster.rb route_cost_review` is the companion cost drilldown. It ranks `workflow_receipt` durations, failure rates, and route guards while ignoring cheap bookkeeping receipts such as `mcp_watchdog` by default. Release-only workflows such as `release_preflight` and `appstore_preflight` remain mandatory for ship-readiness claims, but scoped behavior work should run `proof_plan` first and use focused tests plus exact Mini runtime proof when unrelated release-grade gates would swamp the task.
 
 **Consequences:**
 - Process improvement can start from real repeated friction instead of anecdote.

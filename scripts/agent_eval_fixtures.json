@@ -85,7 +85,18 @@
       "expect": {
         "commands": ["verify", "test_mode"],
         "skills": ["verify"],
+        "proof_scope": "full_canonical",
         "notes_include": ["Mini-first"]
+      }
+    },
+    {
+      "id": "scoped_runtime_task_uses_focused_mini_proof",
+      "prompt": "For this focused SaneVideo left-rail state bug, prove the four runtime states on the Mini; release preflight is known red for unrelated issues.",
+      "expect": {
+        "commands": ["proof_plan", "focused_tests", "test_mode"],
+        "forbid_commands": ["verify"],
+        "proof_scope": "focused_mini",
+        "notes_include": ["focused tests plus exact Mini runtime proof", "known unrelated red gates", "bounded poll loop"]
       }
     },
     {

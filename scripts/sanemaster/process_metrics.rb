@@ -63,6 +63,21 @@ module SaneMasterModules
       summary
     end
 
+    def route_cost_review(args = [])
+      options = parse_route_cost_review_options(args)
+      events = options[:metrics_path] ? read_route_cost_events_from_path(options[:metrics_path]) : read_process_metric_events
+      window = options[:limit] ? events.last(options[:limit]) : events
+      result = build_route_cost_review(window, options: options.merge(total_events: events.length))
+
+      if options[:json]
+        puts JSON.pretty_generate(result)
+      else
+        print_route_cost_review(result)
+      end
+
+      result
+    end
+
     def refresh_qa_snapshots(args = [])
       run = args.include?('--run')
       json = args.include?('--json')
@@ -112,6 +127,236 @@ module SaneMasterModules
       rescue JSON::ParserError
         nil
       end.compact
+    end
+
+    def read_route_cost_events_from_path(path)
+      return [] unless File.exist?(path)
+
+      File.readlines(path, chomp: true).map do |line|
+        next if line.strip.empty?
+
+        JSON.parse(line)
+      rescue JSON::ParserError
+        nil
+      end.compact
+    end
+
+    def parse_route_cost_review_options(args)
+      options = { json: false, limit: nil, min_count: 2, include_bookkeeping: false }
+      rest = args.dup
+      until rest.empty?
+        token = rest.shift
+        case token
+        when '--json'
+          options[:json] = true
+        when '--limit'
+          value = rest.shift
+          raise ArgumentError, '--limit requires a positive integer' unless value.to_s.match?(/\A\d+\z/)
+
+          options[:limit] = value.to_i
+        when '--all'
+          options[:limit] = nil
+        when '--min-count'
+          value = rest.shift
+          raise ArgumentError, '--min-count requires a positive integer' unless value.to_s.match?(/\A\d+\z/)
+
+          options[:min_count] = value.to_i
+        when '--metrics'
+          value = rest.shift
+          raise ArgumentError, '--metrics requires a path' if value.to_s.empty?
+
+          options[:metrics_path] = File.expand_path(value)
+        when '--include-bookkeeping'
+          options[:include_bookkeeping] = true
+        else
+          raise ArgumentError, "unknown route_cost_review option: #{token}"
+        end
+      end
+      options
+    end
+
+    def build_route_cost_review(events, options: {})
+      receipts = events.select { |event| event['type'] == 'workflow_receipt' }
+      bookkeeping = receipts.select { |event| route_cost_bookkeeping_workflow?(event['workflow']) }
+      review_receipts = options[:include_bookkeeping] ? receipts : receipts - bookkeeping
+      min_count = [options.fetch(:min_count, 2).to_i, 1].max
+
+      workflows = review_receipts
+                  .group_by { |event| route_cost_canonical_workflow(event['workflow'] || event['command']) }
+                  .map { |workflow, group| route_cost_workflow_summary(workflow, group) }
+                  .select { |entry| entry[:count] >= min_count }
+                  .sort_by { |entry| [route_cost_rank(entry), -entry[:p95_ms].to_i, -entry[:failures].to_i, entry[:workflow]] }
+
+      {
+        generated_at: Time.now.utc.iso8601,
+        metrics_path: options[:metrics_path] || (respond_to?(:process_metrics_path) ? process_metrics_path : nil),
+        total_events: options[:total_events] || events.length,
+        lookback_events: events.length,
+        workflow_receipts: receipts.length,
+        ignored_bookkeeping_receipts: options[:include_bookkeeping] ? 0 : bookkeeping.length,
+        min_count: min_count,
+        summary: {
+          workflow_count: workflows.length,
+          high_cost_count: workflows.count { |entry| entry[:cost_class] == 'high' },
+          proof_scope_sensitive_count: workflows.count { |entry| entry[:route_guard] == 'proof_scope_sensitive' },
+          release_only_count: workflows.count { |entry| entry[:route_guard] == 'release_only' }
+        },
+        workflows: workflows,
+        recommended_actions: route_cost_recommended_actions(workflows, bookkeeping.length, options[:include_bookkeeping])
+      }
+    end
+
+    def route_cost_workflow_summary(workflow, group)
+      durations = group.map { |event| event['duration_ms'].to_f }.select { |value| value.positive? }.sort
+      failures = group.count { |event| event['success'] == false || (event.key?('exit_status') && event['exit_status'].to_i != 0) }
+      avg_ms = durations.empty? ? nil : (durations.sum / durations.length).round
+      p95_ms = route_cost_percentile(durations, 0.95)
+      failure_rate = group.empty? ? 0.0 : ((failures.to_f / group.length) * 100).round(1)
+
+      {
+        workflow: workflow,
+        raw_workflows: group.map { |event| route_cost_value(event['workflow'] || event['command']) }.uniq.sort,
+        count: group.length,
+        failures: failures,
+        failure_rate: failure_rate,
+        avg_ms: avg_ms,
+        p95_ms: p95_ms,
+        cost_class: route_cost_class(avg_ms, p95_ms),
+        failure_risk: route_cost_failure_risk(failure_rate, group.length),
+        route_guard: route_cost_guard(workflow),
+        proof_guidance: route_cost_guidance(workflow),
+        projects: group.map { |event| route_cost_value(event['project']) }.uniq.sort.first(10),
+        examples: group.last(3).map { |event| route_cost_example(event) }
+      }
+    end
+
+    def route_cost_percentile(values, percentile)
+      return nil if values.empty?
+
+      index = (values.length * percentile).floor
+      index = values.length - 1 if index >= values.length
+      values[index].round
+    end
+
+    def route_cost_class(avg_ms, p95_ms)
+      avg = avg_ms.to_i
+      p95 = p95_ms.to_i
+      return 'high' if p95 >= 300_000 || avg >= 120_000
+      return 'medium' if p95 >= 60_000 || avg >= 30_000
+
+      'low'
+    end
+
+    def route_cost_failure_risk(failure_rate, count)
+      return 'high' if failure_rate >= 40.0 && count >= 5
+      return 'medium' if failure_rate >= 20.0 && count >= 3
+
+      'low'
+    end
+
+    def route_cost_guard(workflow)
+      case workflow.to_s
+      when /release_preflight|appstore_preflight|launch_readiness|resource_soak|setapp_upload/
+        'release_only'
+      when /verify|test_mode|customer_ui_sweep|visual_smoke|monitor_tests|validation_report/
+        'proof_scope_sensitive'
+      when /mcp_watchdog/
+        'bookkeeping'
+      else
+        'normal'
+      end
+    end
+
+    def route_cost_guidance(workflow)
+      case route_cost_guard(workflow)
+      when 'release_only'
+        'Use only for release, App Store, public launch, or ship-readiness proof; scoped behavior bugs should run proof_plan first.'
+      when 'proof_scope_sensitive'
+        'Run after proof_plan selects the right scope; focused behavior work should prefer focused tests plus exact Mini runtime proof.'
+      when 'bookkeeping'
+        'Treat as compressed bookkeeping, not customer-facing proof evidence.'
+      else
+        'Normal workflow cost; still record receipt and avoid passive wait states.'
+      end
+    end
+
+    def route_cost_bookkeeping_workflow?(workflow)
+      workflow.to_s.match?(/mcp_watchdog/)
+    end
+
+    def route_cost_rank(entry)
+      cost_rank = { 'high' => 0, 'medium' => 1, 'low' => 2 }.fetch(entry[:cost_class], 3)
+      failure_rank = { 'high' => 0, 'medium' => 1, 'low' => 2 }.fetch(entry[:failure_risk], 3)
+      guard_rank = { 'release_only' => 0, 'proof_scope_sensitive' => 1, 'normal' => 2, 'bookkeeping' => 3 }.fetch(entry[:route_guard], 4)
+      [cost_rank, failure_rank, guard_rank]
+    end
+
+    def route_cost_recommended_actions(workflows, ignored_bookkeeping_count, include_bookkeeping)
+      actions = []
+      release_only = workflows.select { |entry| entry[:route_guard] == 'release_only' && entry[:cost_class] != 'low' }
+      if release_only.any?
+        names = release_only.first(3).map { |entry| entry[:workflow] }.join(', ')
+        actions << "Require proof_plan or explicit release/public-launch intent before running expensive release-only workflow(s): #{names}."
+      end
+
+      scoped = workflows.select { |entry| entry[:route_guard] == 'proof_scope_sensitive' && entry[:cost_class] != 'low' }
+      if scoped.any?
+        names = scoped.first(3).map { |entry| entry[:workflow] }.join(', ')
+        actions << "For scoped behavior work, choose focused tests/runtime proof before broad workflow(s): #{names}."
+      end
+
+      unstable = workflows.select { |entry| entry[:failure_rate].to_f >= 30.0 && entry[:count].to_i >= 5 }
+      if unstable.any?
+        names = unstable.first(3).map { |entry| "#{entry[:workflow]} #{entry[:failure_rate]}%" }.join(', ')
+        actions << "Review high-failure workflow defaults before increasing timeouts: #{names}."
+      end
+
+      actions << "Ignored #{ignored_bookkeeping_count} bookkeeping receipt(s); rerun with --include-bookkeeping only when auditing daemon health." if ignored_bookkeeping_count.positive? && !include_bookkeeping
+      actions << 'No repeated expensive workflow met the threshold in this window.' if actions.empty?
+      actions
+    end
+
+    def route_cost_example(event)
+      {
+        timestamp: event['timestamp'],
+        workflow: event['workflow'],
+        project: event['project'],
+        success: event['success'],
+        exit_status: event['exit_status'],
+        duration_ms: event['duration_ms'],
+        host: event['host']
+      }.compact
+    end
+
+    def route_cost_value(value)
+      value.to_s.empty? ? 'unknown' : value.to_s
+    end
+
+    def route_cost_canonical_workflow(value)
+      workflow = route_cost_value(value)
+      case workflow
+      when 'validation_report', 'status', 'release_preflight', 'appstore_preflight', 'launch_readiness'
+        "sanemaster:#{workflow}"
+      else
+        workflow
+      end
+    end
+
+    def print_route_cost_review(result)
+      puts 'Route Cost Review'
+      puts '=' * 17
+      puts "Metrics path: #{result[:metrics_path]}" if result[:metrics_path]
+      puts "Workflow receipts: #{result[:workflow_receipts]}"
+      puts "Ignored bookkeeping receipts: #{result[:ignored_bookkeeping_receipts]}"
+      puts
+      result[:workflows].each do |workflow|
+        puts "#{workflow[:workflow]}: #{workflow[:cost_class]} cost, #{workflow[:failure_risk]} failure risk, #{workflow[:route_guard]}"
+        puts "  Count: #{workflow[:count]} | Failures: #{workflow[:failures]} (#{workflow[:failure_rate]}%) | avg #{workflow[:avg_ms] || 'n/a'}ms | p95 #{workflow[:p95_ms] || 'n/a'}ms"
+        puts "  Guidance: #{workflow[:proof_guidance]}"
+      end
+      puts
+      puts 'Recommended actions:'
+      result[:recommended_actions].each { |action| puts "  - #{action}" }
     end
 
     def extract_flag_value(args, flag)

@@ -59,7 +59,7 @@ end
 
 def complete_abtest_receipt(overrides = {})
   {
-    'schema_version' => 1,
+    'schema_version' => 2,
     'id' => 'abtest-real-work',
     'completed_at' => '2026-06-11T14:13:00-04:00',
     'source' => 'test fixture',
@@ -110,6 +110,29 @@ def complete_abtest_receipt(overrides = {})
         'duration_minutes' => 36
       }
     },
+    'completion' => {
+      'vanilla' => {
+        'sessions_to_complete' => 1,
+        'wait_state_stalls' => 0,
+        'orchestrator_nudges' => 0
+      },
+      'harness' => {
+        'sessions_to_complete' => 1,
+        'wait_state_stalls' => 0,
+        'orchestrator_nudges' => 0
+      }
+    },
+    'verification_strategy' => {
+      'vanilla' => {
+        'proof_scope_selected' => 'local_runtime_smoke',
+        'proof_result' => 'off-canonical local evidence'
+      },
+      'harness' => {
+        'proof_scope_selected' => 'canonical_mini_runtime_smoke',
+        'proof_result' => 'strict Mini endpoint proof',
+        'known_unrelated_red_gates' => []
+      }
+    },
     'validation_delta' => {
       'blocks_that_were_correct' => 3,
       'blocks_that_were_wrong' => 0
@@ -133,7 +156,7 @@ exit(run_tests('SaneMaster Process Eval Tests') do
       result = subject.run_trace_eval_fixture(File.expand_path('../process_eval_fixtures.json', __dir__))
 
       assert(result[:passed], result[:traces].reject { |entry| entry[:passed] }.inspect)
-      assert_eq(result[:trace_count], 12)
+      assert_eq(result[:trace_count], 14)
       true
     end
 
@@ -270,7 +293,7 @@ exit(run_tests('SaneMaster Process Eval Tests') do
           )
 
           assert(result[:passed], result.inspect)
-          assert_eq(result.dig(:trace_eval, :trace_count), 12)
+          assert_eq(result.dig(:trace_eval, :trace_count), 14)
           assert_eq(result.dig(:sop_review, :sessions, :total), 1)
           assert_eq(result.dig(:live_telemetry, :event_count), 2)
           assert_eq(result.dig(:abtest_review, :receipt_count), 0)
@@ -327,6 +350,8 @@ exit(run_tests('SaneMaster Process Eval Tests') do
         assert_eq(result[:receipt_count], 1)
         assert_eq(result[:passed_count], 1)
         assert_eq(result.dig(:validation_delta, :blocks_that_were_correct), 3)
+        assert_eq(result.dig(:completion, :sessions_to_complete), 2)
+        assert_eq(result.dig(:completion, :wait_state_stalls), 0)
         assert(result[:blockers].empty?, result[:blockers].inspect)
       end
       true
@@ -344,6 +369,8 @@ exit(run_tests('SaneMaster Process Eval Tests') do
           },
           'judge' => { 'blind' => false },
           'costs' => { 'vanilla' => {}, 'harness' => {} },
+          'completion' => { 'vanilla' => {}, 'harness' => {} },
+          'verification_strategy' => { 'vanilla' => {}, 'harness' => {} },
           'validation_delta' => { 'blocks_that_were_correct' => 0, 'blocks_that_were_wrong' => 0 },
           'decisive_mechanisms' => ['more rules'],
           'pending_actions' => []
@@ -359,8 +386,59 @@ exit(run_tests('SaneMaster Process Eval Tests') do
         assert_includes(blockers, 'task must name a real repo or app')
         assert_includes(blockers, 'missing endpoint verification command')
         assert_includes(blockers, 'judge must be blind')
+        assert_includes(blockers, 'completion missing vanilla sessions_to_complete')
+        assert_includes(blockers, 'verification_strategy missing harness proof_scope_selected')
         assert_includes(blockers, 'validation_delta must record at least one block classification')
         assert_includes(blockers, 'decisive_mechanisms entries must be objects')
+      end
+      true
+    end
+
+    test('abtest review records sessions, stalls, nudges, and known unrelated red gates') do
+      Dir.mktmpdir('abtest-review-friction-') do |dir|
+        receipt_dir = File.join(dir, 'abtests')
+        FileUtils.mkdir_p(receipt_dir)
+        receipt = complete_abtest_receipt(
+          'costs' => {
+            'vanilla' => { 'tokens' => 209000, 'duration_minutes' => 25 },
+            'harness' => { 'tokens' => 424000, 'duration_note' => 'Exact duration not captured; three sessions were recorded.' }
+          },
+          'completion' => {
+            'vanilla' => {
+              'sessions_to_complete' => 1,
+              'wait_state_stalls' => 0,
+              'orchestrator_nudges' => 0
+            },
+            'harness' => {
+              'sessions_to_complete' => 3,
+              'wait_state_stalls' => 2,
+              'orchestrator_nudges' => 2
+            }
+          },
+          'verification_strategy' => {
+            'vanilla' => {
+              'proof_scope_selected' => 'focused_mini_tests',
+              'proof_result' => 'completed in one session',
+              'known_unrelated_red_gates' => []
+            },
+            'harness' => {
+              'proof_scope_selected' => 'full_verify_then_focused_recovery',
+              'proof_result' => 'focused proof eventually passed after broad verify overreach',
+              'known_unrelated_red_gates' => ['release_preflight known red']
+            }
+          }
+        )
+        File.write(File.join(receipt_dir, 'friction.json'), JSON.pretty_generate(receipt))
+
+        subject = ProcessEvalHarness.new(File.join(dir, 'metrics.jsonl'))
+        result = subject.build_abtest_review(receipt_dir)
+
+        assert_eq(result[:failed_count], 0)
+        assert_eq(result.dig(:completion, :sessions_to_complete), 4)
+        assert_eq(result.dig(:completion, :wait_state_stalls), 2)
+        assert_eq(result.dig(:completion, :orchestrator_nudges), 2)
+        assert_eq(result.dig(:completion, :known_unrelated_red_gates), 1)
+        assert(result[:recommended_actions].any? { |item| item.include?('sessions-to-complete') })
       end
       true
     end
@@ -629,7 +707,7 @@ exit(run_tests('SaneMaster Process Eval Tests') do
         metrics_path = File.join(dir, 'metrics.jsonl')
         rows = [
           complete_session_receipt(receipt_id: nil, final_verify_tests_run: nil),
-          { type: 'process_eval', success: true, traces: 12, failed: 0 }
+          { type: 'process_eval', success: true, traces: 14, failed: 0 }
         ]
         File.write(metrics_path, rows.map { |row| JSON.generate(row) }.join("\n") + "\n")
 
@@ -661,7 +739,7 @@ exit(run_tests('SaneMaster Process Eval Tests') do
           },
           complete_session_receipt,
           { type: 'agent_eval', success: true, cases: 17, failed: 0 },
-          { type: 'process_eval', success: true, traces: 12, failed: 0 },
+          { type: 'process_eval', success: true, traces: 14, failed: 0 },
           { type: 'visual_smoke', success: true, status: 'passed', host: 'mini', app: 'SaneBar' }
         ]
         File.write(metrics_path, rows.map { |row| JSON.generate(row) }.join("\n") + "\n")
@@ -701,7 +779,7 @@ exit(run_tests('SaneMaster Process Eval Tests') do
         rows << {
           type: 'process_eval',
           success: true,
-          traces: 12,
+          traces: 14,
           failed: 0
         }
         File.write(metrics_path, rows.map { |row| JSON.generate(row) }.join("\n") + "\n")

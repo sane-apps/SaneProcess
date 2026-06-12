@@ -153,11 +153,13 @@ class SaneMaster
         'validation_report' => { args: '[args...]', desc: 'Run SaneProcess validation report with workflow receipt' },
         'launch_readiness' => { args: '[--json] [--max-age-days N]', desc: 'Validate launch calendar gates plus fresh release_preflight proof before any public launch' },
         'process_metrics' => { args: '[--json] [--export-json PATH] [--export-html PATH] [--export-otel PATH]', desc: 'Summarize verify churn, session quality, hook blocks, and export audit traces' },
+        'route_cost_review' => { args: '[--json] [--metrics PATH] [--limit N|--all] [--min-count N] [--include-bookkeeping]', desc: 'Rank expensive workflow receipts and proof-scope misroute risks' },
         'near_miss_review' => { args: '[--json] [--metrics PATH] [--limit N|--all] [--min-count N] [--include-test-events]', desc: 'Mine process telemetry for useful near-miss guard/eval candidates' },
         'verify_failure_review' => { args: '[--json] [--metrics PATH] [--limit N|--all] [--min-count N]', desc: 'Cluster zero-test verify failures by likely root cause' },
         'process_eval' => { args: '[--fixture PATH] [--abtest-dir PATH] [--json] [--require-ui-proof]', desc: 'Evaluate workflow receipt traces, real A/B evidence, and SOP self-assessment health' },
         'trace_eval' => { args: '[--fixture PATH] [--json]', desc: 'Evaluate multi-step workflow receipt trace fixtures' },
         'sop_review' => { args: '[--json]', desc: 'Review SOP score history, caps, and inflation signals' },
+        'proof_plan' => { args: '--task "TEXT" [--json]', desc: 'Choose focused Mini proof vs full canonical verify for a task' },
         'agent_eval' => { args: '[--fixture PATH] [--json]', desc: 'Evaluate prompt-to-workflow routing fixtures' },
         'skill_lint' => { args: '[--path PATH] [--json]', desc: 'Lint skill descriptions for reliable routing' },
         'refresh_qa_snapshots' => { args: '[--dry-run|--run] [--json]', desc: 'List or refresh stale app QA snapshots' },
@@ -354,6 +356,9 @@ class SaneMaster
                                   validation-report
                                   process_metrics
                                   sop_metrics
+                                  route_cost_review
+                                  route-cost-review
+                                  rcr
                                   near_miss_review
                                   near-miss-review
                                   nmr
@@ -1582,6 +1587,8 @@ PY
       )
     when 'process_metrics', 'sop_metrics'
       process_metrics_dashboard(args)
+    when 'route_cost_review', 'route-cost-review', 'rcr'
+      route_cost_review(args)
     when 'near_miss_review', 'near-miss-review', 'nmr'
       near_miss_review(args)
     when 'verify_failure_review', 'verify-failure-review', 'vfr'
@@ -1594,6 +1601,8 @@ PY
       exit(success ? 0 : 1)
     when 'sop_review', 'sop-review'
       sop_review(args)
+    when 'proof_plan', 'proof-plan'
+      proof_plan(args)
     when 'agent_eval', 'agent-eval'
       success = agent_eval(args)
       exit(success ? 0 : 1)

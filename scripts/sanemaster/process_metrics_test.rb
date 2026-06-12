@@ -68,6 +68,19 @@ exit(run_tests('SaneMaster Process Metrics Tests') do
       true
     end
 
+    test('SaneMaster exposes route_cost_review as Mini-first process telemetry') do
+      source = File.read(File.expand_path('../SaneMaster.rb', __dir__))
+      mini_first_block = source[/MINI_FIRST_COMMANDS = Set\.new\(%w\[(.*?)\]\)\.freeze/m, 1]
+
+      assert_includes(source, "'route_cost_review' =>")
+      assert_includes(source, "when 'route_cost_review', 'route-cost-review', 'rcr'")
+      assert(mini_first_block, 'expected MINI_FIRST_COMMANDS block')
+      assert_includes(mini_first_block, 'route_cost_review')
+      assert_includes(mini_first_block, 'route-cost-review')
+      assert_includes(mini_first_block, 'rcr')
+      true
+    end
+
     test('records structured verify evidence without external services') do
       Dir.mktmpdir('process-metrics-') do |dir|
         path = File.join(dir, 'metrics.jsonl')
@@ -237,6 +250,97 @@ exit(run_tests('SaneMaster Process Metrics Tests') do
         assert_eq(summary[:visual_smoke][:passes], 1)
         assert_eq(summary[:visual_smoke][:failures], 1)
         assert_eq(summary[:visual_smoke][:mini_passes], 1)
+      end
+      true
+    end
+
+    test('route cost review ranks expensive proof paths and ignores bookkeeping by default') do
+      Dir.mktmpdir('route-cost-review-') do |dir|
+        path = File.join(dir, 'metrics.jsonl')
+        rows = [
+          {
+            timestamp: '2026-06-12T10:00:00Z',
+            project: 'SaneVideo',
+            type: 'workflow_receipt',
+            workflow: 'sanemaster:release_preflight',
+            success: false,
+            exit_status: 1,
+            duration_ms: 900_000
+          },
+          {
+            timestamp: '2026-06-12T10:20:00Z',
+            project: 'SaneVideo',
+            type: 'workflow_receipt',
+            workflow: 'sanemaster:release_preflight',
+            success: true,
+            exit_status: 0,
+            duration_ms: 420_000
+          },
+          {
+            timestamp: '2026-06-12T10:30:00Z',
+            project: 'SaneVideo',
+            type: 'workflow_receipt',
+            workflow: 'sanemaster:verify',
+            success: false,
+            exit_status: 1,
+            duration_ms: 300_000
+          },
+          {
+            timestamp: '2026-06-12T10:35:00Z',
+            project: 'SaneVideo',
+            type: 'workflow_receipt',
+            workflow: 'sanemaster:verify',
+            success: true,
+            exit_status: 0,
+            duration_ms: 45_000
+          },
+          {
+            timestamp: '2026-06-12T10:40:00Z',
+            project: '/',
+            type: 'workflow_receipt',
+            workflow: 'sanemaster:mcp_watchdog',
+            success: true,
+            exit_status: 0,
+            duration_ms: 30
+          },
+          {
+            timestamp: '2026-06-12T10:45:00Z',
+            project: 'SaneProcess',
+            type: 'workflow_receipt',
+            workflow: 'validation_report',
+            success: true,
+            exit_status: 0,
+            duration_ms: 200_000
+          },
+          {
+            timestamp: '2026-06-12T10:50:00Z',
+            project: 'SaneProcess',
+            type: 'workflow_receipt',
+            workflow: 'sanemaster:validation_report',
+            success: true,
+            exit_status: 0,
+            duration_ms: 210_000
+          }
+        ]
+        File.write(path, rows.map { |row| JSON.generate(row) }.join("\n") + "\n")
+
+        subject = ProcessMetricsHarness.new(path)
+        result = subject.send(:build_route_cost_review, subject.send(:read_route_cost_events_from_path, path), options: { metrics_path: path, min_count: 1 })
+        release = result[:workflows].find { |entry| entry[:workflow] == 'sanemaster:release_preflight' }
+        verify = result[:workflows].find { |entry| entry[:workflow] == 'sanemaster:verify' }
+        validation = result[:workflows].find { |entry| entry[:workflow] == 'sanemaster:validation_report' }
+
+        assert_eq(result[:workflow_receipts], 7)
+        assert_eq(result[:ignored_bookkeeping_receipts], 1)
+        assert(!result[:workflows].any? { |entry| entry[:workflow] == 'sanemaster:mcp_watchdog' })
+        assert_eq(release[:cost_class], 'high')
+        assert_eq(release[:route_guard], 'release_only')
+        assert_includes(release[:proof_guidance], 'proof_plan')
+        assert_eq(verify[:route_guard], 'proof_scope_sensitive')
+        assert_eq(validation[:count], 2)
+        assert_includes(validation[:raw_workflows], 'validation_report')
+        assert_includes(validation[:raw_workflows], 'sanemaster:validation_report')
+        assert_includes(result[:recommended_actions].join(' '), 'release-only workflow')
       end
       true
     end
