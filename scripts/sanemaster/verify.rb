@@ -120,6 +120,8 @@ module SaneMasterModules
             include_ui: include_ui,
             signed_tests: signed_tests,
             reason: failure_message,
+            timeout_actual: result[:timeout],
+            timeout_seconds: timeout,
             failure_bucket: failure[:bucket],
             failure_hint: failure[:hint]
           ) if respond_to?(:record_process_metric)

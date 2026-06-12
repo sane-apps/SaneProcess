@@ -43,6 +43,8 @@ module SaneMasterModules
                                       tm
                                       visual_smoke
                                       visual-smoke
+                                      resource_soak
+                                      resource-soak
                                       diagnose
                                       crash_report
                                       crashes

@@ -31,6 +31,19 @@ module SaneMasterModules
       raise ArgumentError, 'proof_plan requires --task TEXT' if task.to_s.strip.empty?
 
       result = classify_agent_prompt(task)
+      record_process_metric(
+        'proof_plan',
+        schema_version: 1,
+        task: task,
+        commands: result[:commands],
+        skills: result[:skills],
+        task_family: proof_plan_task_family(result),
+        claim_scope: proof_plan_claim_scope(result),
+        proof_scope_planned: result[:proof_scope],
+        route_reason: result[:notes].first,
+        subagent: result[:subagent],
+        approval: result[:approval]
+      ) if respond_to?(:record_process_metric)
 
       if options[:json]
         puts JSON.pretty_generate(result)
@@ -132,6 +145,32 @@ module SaneMasterModules
         issues: issues,
         actual: actual
       }
+    end
+
+    def proof_plan_task_family(result)
+      commands = Array(result[:commands]).map(&:to_s)
+      return 'release' if (commands & %w[release_preflight appstore_preflight]).any?
+      return 'runtime_ui' if (commands & %w[test_mode visual_smoke customer_ui_sweep]).any?
+      return 'support' if commands.include?('check_inbox')
+      return 'process_health' if (commands & %w[process_eval agent_eval trace_eval near_miss_review route_cost_review]).any?
+      return 'verification' if commands.include?('verify')
+
+      'general'
+    end
+
+    def proof_plan_claim_scope(result)
+      case proof_plan_task_family(result)
+      when 'release'
+        'release'
+      when 'runtime_ui'
+        'customer_visible'
+      when 'support'
+        'customer_support'
+      when 'process_health'
+        'diagnostic'
+      else
+        'code'
+      end
     end
 
     def classify_agent_prompt(prompt)

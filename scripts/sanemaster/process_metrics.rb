@@ -199,7 +199,8 @@ module SaneMasterModules
           workflow_count: workflows.length,
           high_cost_count: workflows.count { |entry| entry[:cost_class] == 'high' },
           proof_scope_sensitive_count: workflows.count { |entry| entry[:route_guard] == 'proof_scope_sensitive' },
-          release_only_count: workflows.count { |entry| entry[:route_guard] == 'release_only' }
+          release_only_count: workflows.count { |entry| entry[:route_guard] == 'release_only' },
+          planned_focused_ran_broad_count: route_cost_planned_focused_ran_broad_count(review_receipts)
         },
         workflows: workflows,
         recommended_actions: route_cost_recommended_actions(workflows, bookkeeping.length, options[:include_bookkeeping])
@@ -208,7 +209,8 @@ module SaneMasterModules
 
     def route_cost_workflow_summary(workflow, group)
       durations = group.map { |event| event['duration_ms'].to_f }.select { |value| value.positive? }.sort
-      failures = group.count { |event| event['success'] == false || (event.key?('exit_status') && event['exit_status'].to_i != 0) }
+      failures = group.count { |event| route_cost_failed_event?(event) }
+      failure_states = route_cost_failure_states(group)
       avg_ms = durations.empty? ? nil : (durations.sum / durations.length).round
       p95_ms = route_cost_percentile(durations, 0.95)
       failure_rate = group.empty? ? 0.0 : ((failures.to_f / group.length) * 100).round(1)
@@ -219,11 +221,14 @@ module SaneMasterModules
         count: group.length,
         failures: failures,
         failure_rate: failure_rate,
+        failure_states: failure_states,
+        expected_red_failures: route_cost_expected_red_failure_count(failure_states),
         avg_ms: avg_ms,
         p95_ms: p95_ms,
         cost_class: route_cost_class(avg_ms, p95_ms),
         failure_risk: route_cost_failure_risk(failure_rate, group.length),
         route_guard: route_cost_guard(workflow),
+        planned_focused_ran_broad_count: route_cost_planned_focused_ran_broad_count(group),
         proof_guidance: route_cost_guidance(workflow),
         projects: group.map { |event| route_cost_value(event['project']) }.uniq.sort.first(10),
         examples: group.last(3).map { |event| route_cost_example(event) }
@@ -245,6 +250,162 @@ module SaneMasterModules
       return 'medium' if p95 >= 60_000 || avg >= 30_000
 
       'low'
+    end
+
+    def workflow_receipt_route_metadata(workflow, success: nil)
+      canonical = route_cost_canonical_workflow(workflow)
+      plan = latest_proof_plan_context
+      actual = workflow_proof_scope_actual(canonical)
+      planned = ENV['SANEMASTER_PROOF_SCOPE_PLANNED'].to_s.strip
+      planned = plan['proof_scope_planned'].to_s if planned.empty? && plan
+
+      {
+        event_version: 3,
+        task_family: workflow_task_family(canonical),
+        claim_scope: workflow_claim_scope(canonical),
+        proof_scope_planned: planned.empty? ? nil : planned,
+        proof_scope_actual: actual,
+        route_reason: workflow_route_reason(canonical, plan),
+        outcome_strength: workflow_outcome_strength(canonical, success),
+        failure_state: workflow_expected_failure_state(canonical, success: success)
+      }.compact
+    end
+
+    def latest_proof_plan_context(max_age_seconds: 14_400)
+      events = read_process_metric_events
+      cutoff = Time.now.utc - max_age_seconds
+      current_project = safe_metric_project_name.to_s
+      current_cwd = File.expand_path(Dir.pwd)
+      events.reverse.find do |event|
+        next false unless event['type'].to_s == 'proof_plan'
+
+        timestamp = Time.parse(event['timestamp'].to_s)
+        next false if timestamp < cutoff
+
+        event['project'].to_s == current_project ||
+          File.expand_path(event['cwd'].to_s) == current_cwd
+      rescue ArgumentError, TypeError
+        false
+      end
+    rescue StandardError
+      nil
+    end
+
+    def workflow_task_family(workflow)
+      case workflow.to_s
+      when /release_preflight|appstore_preflight|launch_readiness|resource_soak|setapp_upload/
+        'release'
+      when /customer_ui|visual_smoke|test_mode|monitor_tests/
+        'runtime_ui'
+      when /validation_report|process_eval|trace_eval|agent_eval|near_miss|route_cost|verify_failure|sop_review|skill_lint|gate_review|process_metrics/
+        'process_health'
+      when /verify/
+        'verification'
+      when /check_inbox|email/
+        'support'
+      when /sales|downloads|events/
+        'business'
+      else
+        'general'
+      end
+    end
+
+    def workflow_claim_scope(workflow)
+      case workflow_task_family(workflow)
+      when 'release'
+        'release'
+      when 'runtime_ui'
+        'customer_visible'
+      when 'support'
+        'customer_support'
+      when 'process_health'
+        'diagnostic'
+      else
+        'code'
+      end
+    end
+
+    def workflow_proof_scope_actual(workflow)
+      case workflow.to_s
+      when /release_preflight|appstore_preflight|launch_readiness|verify/
+        'full_canonical'
+      when /customer_ui_sweep|customer_ui_contract|visual_smoke|test_mode|monitor_tests|resource_soak/
+        'focused_mini'
+      when /mcp_watchdog/
+        'bookkeeping'
+      else
+        'diagnostic'
+      end
+    end
+
+    def workflow_route_reason(workflow, plan)
+      return plan['route_reason'].to_s unless plan.nil? || plan['route_reason'].to_s.empty?
+
+      route_cost_guidance(workflow)
+    end
+
+    def workflow_outcome_strength(workflow, _success = nil)
+      case workflow.to_s
+      when /verify|release_preflight|appstore_preflight|customer_ui_sweep/
+        'authoritative'
+      when /customer_ui_contract|visual_smoke|test_mode|monitor_tests|resource_soak/
+        'scoped'
+      when /mcp_watchdog/
+        'bookkeeping'
+      else
+        'diagnostic'
+      end
+    end
+
+    def workflow_expected_failure_state(workflow, success:)
+      return nil unless success == false
+
+      case workflow.to_s
+      when /launch_readiness/
+        'launch_precondition_blocked'
+      when /setapp_upload/
+        'distribution_precondition_blocked'
+      when /release_preflight|appstore_preflight/
+        'release_precondition_blocked'
+      when /customer_ui_sweep|customer_ui_contract|visual_smoke|test_mode|monitor_tests|resource_soak/
+        'runtime_proof_failed'
+      when /verify/
+        'verification_failed'
+      when /validation_report|process_eval|trace_eval|agent_eval|near_miss|route_cost|verify_failure|sop_review|skill_lint|gate_review|process_metrics/
+        'process_health_failed'
+      else
+        'unexpected_failure'
+      end
+    end
+
+    def route_cost_failed_event?(event)
+      event['success'] == false || (event.key?('exit_status') && event['exit_status'].to_i != 0)
+    end
+
+    def route_cost_failure_states(group)
+      group.each_with_object(Hash.new(0)) do |event, counts|
+        next unless route_cost_failed_event?(event)
+
+        state = event['failure_state'].to_s
+        state = workflow_expected_failure_state(
+          route_cost_canonical_workflow(event['workflow'] || event['command']),
+          success: false
+        ) if state.empty?
+        counts[state] += 1
+      end.sort.to_h
+    end
+
+    def route_cost_expected_red_failure_count(failure_states)
+      failure_states.sum do |state, count|
+        state.to_s.include?('precondition_blocked') ? count.to_i : 0
+      end
+    end
+
+    def route_cost_planned_focused_ran_broad_count(receipts)
+      receipts.count do |event|
+        event['proof_scope_planned'].to_s == 'focused_mini' &&
+          event['proof_scope_actual'].to_s == 'full_canonical'
+      end
     end
 
     def route_cost_failure_risk(failure_rate, count)
@@ -305,6 +466,18 @@ module SaneMasterModules
         actions << "For scoped behavior work, choose focused tests/runtime proof before broad workflow(s): #{names}."
       end
 
+      broad_after_focused = workflows.select { |entry| entry[:planned_focused_ran_broad_count].to_i.positive? }
+      if broad_after_focused.any?
+        names = broad_after_focused.first(3).map { |entry| entry[:workflow] }.join(', ')
+        actions << "Review scoped tasks that ran broad proof before focused proof: #{names}."
+      end
+
+      expected_red = workflows.select { |entry| entry[:expected_red_failures].to_i.positive? }
+      if expected_red.any?
+        names = expected_red.first(3).map { |entry| "#{entry[:workflow]} #{entry[:expected_red_failures]}" }.join(', ')
+        actions << "Separate expected precondition blockers from runtime failures before tuning default proof paths: #{names}."
+      end
+
       unstable = workflows.select { |entry| entry[:failure_rate].to_f >= 30.0 && entry[:count].to_i >= 5 }
       if unstable.any?
         names = unstable.first(3).map { |entry| "#{entry[:workflow]} #{entry[:failure_rate]}%" }.join(', ')
@@ -324,7 +497,11 @@ module SaneMasterModules
         success: event['success'],
         exit_status: event['exit_status'],
         duration_ms: event['duration_ms'],
-        host: event['host']
+        host: event['host'],
+        proof_scope_planned: event['proof_scope_planned'],
+        proof_scope_actual: event['proof_scope_actual'],
+        outcome_strength: event['outcome_strength'],
+        failure_state: event['failure_state']
       }.compact
     end
 
@@ -443,6 +620,7 @@ module SaneMasterModules
         'saneprocess.project' => event['project'],
         'saneprocess.cwd' => event['cwd'],
         'saneprocess.workflow' => event['workflow'],
+        'saneprocess.failure_state' => event['failure_state'],
         'saneprocess.command_sha256' => event['command_sha256'],
         'saneprocess.exit_status' => event['exit_status'],
         'saneprocess.duration_ms' => event['duration_ms'],

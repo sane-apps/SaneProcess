@@ -518,9 +518,6 @@ def process_result(tool_name, tool_input, tool_response)
     # Track failure (legacy count)
     track_failure(tool_name, tool_response)
 
-    # === STARTUP GATE: Track even on failure (running the command counts) ===
-    track_startup_gate_step(tool_name, tool_input)
-
     # === MCP VERIFICATION: Track failures for MCP tools ===
     track_mcp_verification(tool_name, false)
 

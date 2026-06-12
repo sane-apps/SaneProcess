@@ -648,7 +648,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
           YAML
         )
 
-        local_host = Socket.gethostname.to_s.downcase
+        local_host = 'sj-macbook-air.local'
         report = nil
         Dir.chdir(dir) do
           write_test_png(File.join(dir, 'outputs', 'saneexample-main.png'))
@@ -1624,6 +1624,64 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         assert(report[:ok], "expected dry-run sweep to pass: #{report[:issues].inspect}")
         assert_eq(report[:script_path], 'scripts/customer_ui_action_sweep.rb')
       end
+      true
+    end
+
+    test('customer UI receipt host accepts full Mini hostname') do
+      with_env('SANE_APPROVE_LOCAL_UI_ON_AIR' => nil) do
+        assert(subject.send(:customer_ui_receipt_host_allowed?, 'mini'))
+        assert(subject.send(:customer_ui_receipt_host_allowed?, 'stephans-mac-mini.local'))
+        assert(subject.send(:customer_ui_receipt_host_allowed?, 'Stephans-Mac-Mini'))
+        assert(!subject.send(:customer_ui_receipt_host_allowed?, 'macbook-air'))
+      end
+      true
+    end
+
+    test('resource soak writes contract-compatible Mini runtime artifact') do
+      artifact_path = '/tmp/sanebar_runtime_resource_soak.json'
+      log_path = '/tmp/sanebar_runtime_resource_soak.log'
+      FileUtils.rm_f([artifact_path, log_path])
+
+      subject.define_singleton_method(:resource_soak_running_app_candidate) do |app_name|
+        {
+          pid: 12_345,
+          app_path: "/Applications/#{app_name}.app",
+          app_version: '1.2.3',
+          app_build: '123',
+          process_path: "/Applications/#{app_name}.app/Contents/MacOS/#{app_name}"
+        }
+      end
+      subject.define_singleton_method(:resource_soak_sample) do |_pid|
+        { cpu: 0.2, rss_mb: 80.0, physical_footprint_mb: 60.0 }
+      end
+
+      report = nil
+      with_env('SANEMASTER_RESOURCE_SOAK_MIN_SECONDS' => '0') do
+        report = subject.resource_soak_report(['--app', 'SaneExample', '--duration-seconds', '0', '--no-exit'])
+      end
+
+      assert(report[:ok], "expected resource soak to pass: #{report[:issues].inspect}")
+      payload = JSON.parse(File.read(artifact_path))
+      assert_eq(payload['status'], 'pass')
+      assert_eq(payload['candidate']['app_version'], '1.2.3')
+      assert_includes(payload['evidence_types'], 'mini_runtime')
+      assert_includes(payload['evidence_paths'], log_path)
+      assert_includes(payload['completed_scenarios'], 'at least 20m Mini soak sampled on the release candidate')
+      true
+    ensure
+      subject.singleton_class.remove_method(:resource_soak_running_app_candidate) rescue nil
+      subject.singleton_class.remove_method(:resource_soak_sample) rescue nil
+      FileUtils.rm_f(['/tmp/sanebar_runtime_resource_soak.json', '/tmp/sanebar_runtime_resource_soak.log'])
+    end
+
+    test('resource soak parses spaced macOS physical footprint units') do
+      footprint_output = <<~TEXT
+        Auxiliary data:
+            phys_footprint: 79 MB
+            phys_footprint_peak: 84 MB
+      TEXT
+
+      assert_eq(subject.send(:resource_soak_parse_footprint_mb, footprint_output), 79.0)
       true
     end
 

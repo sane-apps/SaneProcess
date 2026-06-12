@@ -16,6 +16,7 @@
 
 require 'time'
 require_relative 'core/state_manager'
+require_relative 'core/session_docs'
 
 SKILLS_REGISTRY_BASENAME = 'SKILLS_REGISTRY.md'
 
@@ -44,7 +45,8 @@ def track_startup_gate_step(tool_name, tool_input)
       required = session_docs[:required] || []
       already_read = session_docs[:read] || []
       # Include current file being read (sanetrack runs after tool executes)
-      all_read = already_read | [basename]
+      matching_doc = required.find { |doc| doc == basename && SaneSessionDocs.read_matches?(file_path, doc, session_docs) }
+      all_read = matching_doc ? (already_read | [matching_doc]) : already_read
       if (required - all_read).empty?
         steps[:session_docs] = true
         gate[:step_timestamps][:session_docs] = Time.now.iso8601

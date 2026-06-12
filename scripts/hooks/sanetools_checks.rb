@@ -715,6 +715,7 @@ module SaneToolsChecks
                    when /BASH.*WRITE/i then 'bash_write'
                    when /STATE.*BYPASS|STATE.*PROTECTED/i then 'state_bypass'
                    when /MCP.*VERIFICATION/i then 'mcp_verification'
+                   when /MCP ACTIONS PENDING/i then 'mcp_actions_pending'
                    when /SANELOOP REQUIRED/i then 'saneloop_required'
                    when /READ REQUIRED DOCS/i then 'session_docs'
                    else 'other'

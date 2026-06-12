@@ -10,7 +10,7 @@ module SaneMasterModules
     DEFAULT_ABTEST_RECEIPT_DIR = File.expand_path('../../outputs/process-abtest', __dir__)
     LIVE_TELEMETRY_TYPES = %w[
       workflow_receipt verify agent_eval skill_lint process_eval trace_eval
-      gate_review hook_block trajectory_event session_end session_receipt visual_smoke
+      gate_review hook_block trajectory_event proof_plan session_end session_receipt visual_smoke
     ].freeze
     BOOKKEEPING_WORKFLOW_PATTERNS = [
       /mcp_watchdog/i
@@ -53,7 +53,8 @@ module SaneMasterModules
         failed: result.dig(:trace_eval, :failed_count),
         abtests: result.dig(:abtest_review, :receipt_count),
         abtest_blockers: result.dig(:abtest_review, :blockers)&.length.to_i,
-        sop_warnings: result.dig(:sop_review, :warnings)&.length.to_i
+        sop_warnings: result.dig(:sop_review, :warnings)&.length.to_i,
+        trajectory_warnings: result.dig(:trajectory_efficiency, :warnings)&.length.to_i
       ) if respond_to?(:record_process_metric)
 
       if options[:json]
@@ -99,14 +100,16 @@ module SaneMasterModules
       sop_result = build_sop_review(events)
       live_result = build_live_telemetry_review(events, require_ui_proof: options[:require_ui_proof])
       abtest_result = build_abtest_review(options.fetch(:abtest_dir, DEFAULT_ABTEST_RECEIPT_DIR))
+      trajectory_result = build_trajectory_efficiency_review(events)
       {
         generated_at: Time.now.utc.iso8601,
         fixture: trace_result[:fixture],
-        passed: trace_result[:passed] && sop_result[:blockers].empty? && live_result[:blockers].empty? && abtest_result[:blockers].empty?,
+        passed: trace_result[:passed] && sop_result[:blockers].empty? && live_result[:blockers].empty? && abtest_result[:blockers].empty? && trajectory_result[:blockers].empty?,
         trace_eval: trace_result,
         sop_review: sop_result,
         live_telemetry: live_result,
-        abtest_review: abtest_result
+        abtest_review: abtest_result,
+        trajectory_efficiency: trajectory_result
       }
     end
 
@@ -492,6 +495,88 @@ module SaneMasterModules
       }
     end
 
+    def build_trajectory_efficiency_review(events)
+      relevant = events.select { |event| LIVE_TELEMETRY_TYPES.include?(event['type'].to_s) }.last(250)
+      workflow_receipts = relevant.select { |event| event['type'].to_s == 'workflow_receipt' }
+      proof_plans = relevant.select { |event| event['type'].to_s == 'proof_plan' }
+      block_events = relevant.select do |event|
+        event['type'].to_s == 'hook_block' ||
+          (event['type'].to_s == 'trajectory_event' && event['blocked'] == true)
+      end
+      warnings = []
+      blockers = []
+      actions = []
+
+      repeated_blocks = repeated_trajectory_blocks(block_events)
+      repeated_blocks.each do |entry|
+        warnings << "same block repeated #{entry[:count]}x: #{entry[:rule]} / #{entry[:reason]}"
+      end
+
+      broad_after_focused = workflow_receipts.select do |event|
+        event['proof_scope_planned'].to_s == 'focused_mini' &&
+          event['proof_scope_actual'].to_s == 'full_canonical'
+      end
+      if broad_after_focused.any?
+        warnings << "#{broad_after_focused.length} scoped task receipt(s) ran full canonical proof before/with focused proof"
+        actions << 'inspect proof_plan timing and prefer focused Mini proof before broad verify for scoped behavior work'
+      end
+
+      if proof_plans.any? && workflow_receipts.any?
+        first_plan_time = metric_time(proof_plans.first)
+        first_workflow_time = metric_time(workflow_receipts.first)
+        if first_plan_time && first_workflow_time && first_plan_time > first_workflow_time
+          warnings << 'proof_plan occurred after workflow execution in the recent trajectory'
+          actions << 'run proof_plan before expensive or proof-sensitive workflows'
+        end
+      end
+
+      diagnostic_successes = workflow_receipts.select do |event|
+        event['success'] == true && event['outcome_strength'].to_s == 'diagnostic'
+      end
+      authoritative_or_scoped = workflow_receipts.select do |event|
+        event['success'] == true && %w[authoritative scoped].include?(event['outcome_strength'].to_s)
+      end
+      if diagnostic_successes.any? && authoritative_or_scoped.empty?
+        warnings << "#{diagnostic_successes.length} diagnostic-only workflow success(es) with no authoritative/scoped outcome in the recent trajectory"
+        actions << 'do not treat diagnostic-only success as customer-facing or release proof'
+      end
+
+      if repeated_blocks.any?
+        actions << 'turn repeated hook-block families into preflight guidance, auto-satisfy paths, or eval fixtures'
+      end
+
+      {
+        event_count: relevant.length,
+        proof_plan_count: proof_plans.length,
+        workflow_receipt_count: workflow_receipts.length,
+        repeated_block_count: repeated_blocks.length,
+        planned_focused_ran_broad_count: broad_after_focused.length,
+        diagnostic_only_success_count: diagnostic_successes.length,
+        blockers: blockers.uniq,
+        warnings: warnings.uniq,
+        recommended_actions: actions.uniq
+      }
+    end
+
+    def repeated_trajectory_blocks(block_events)
+      block_events.group_by { |event| [event['rule'].to_s.empty? ? 'unknown' : event['rule'].to_s, normalized_block_reason(event['reason'])] }
+                  .map do |(rule, reason), group|
+        next if group.length < 3
+
+        { rule: rule, reason: reason, count: group.length }
+      end.compact
+    end
+
+    def normalized_block_reason(reason)
+      reason.to_s.gsub(/\s+\[\d+\/\d+\s+read\]\z/i, '').strip
+    end
+
+    def metric_time(event)
+      Time.parse(event['timestamp'].to_s)
+    rescue ArgumentError, TypeError
+      nil
+    end
+
     def bookkeeping_workflow_event?(event)
       return false unless event['type'].to_s == 'workflow_receipt'
 
@@ -785,6 +870,8 @@ module SaneMasterModules
       puts
       print_abtest_review(result[:abtest_review])
       puts
+      print_trajectory_efficiency_review(result[:trajectory_efficiency])
+      puts
       puts result[:passed] ? 'process_eval passed' : 'process_eval found issues'
     end
 
@@ -832,6 +919,21 @@ module SaneMasterModules
       puts "Metrics path: #{result[:metrics_path]}" if result[:metrics_path]
       puts "Recent process events: #{result[:event_count]}"
       puts "By type: #{result[:by_type].map { |type, count| "#{type}=#{count}" }.join(', ')}"
+      result[:blockers].each { |item| puts "  BLOCKER #{item}" }
+      result[:warnings].each { |item| puts "  WARNING #{item}" }
+      puts 'Recommended actions:'
+      result[:recommended_actions].each { |item| puts "  - #{item}" }
+    end
+
+    def print_trajectory_efficiency_review(result)
+      puts 'Trajectory Efficiency'
+      puts '=' * 21
+      puts "Recent process events: #{result[:event_count]}"
+      puts "Proof plans: #{result[:proof_plan_count]}"
+      puts "Workflow receipts: #{result[:workflow_receipt_count]}"
+      puts "Repeated block families: #{result[:repeated_block_count]}"
+      puts "Focused plans that ran broad proof: #{result[:planned_focused_ran_broad_count]}"
+      puts "Diagnostic-only successes: #{result[:diagnostic_only_success_count]}"
       result[:blockers].each { |item| puts "  BLOCKER #{item}" }
       result[:warnings].each { |item| puts "  WARNING #{item}" }
       puts 'Recommended actions:'

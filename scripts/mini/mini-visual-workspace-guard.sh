@@ -520,6 +520,7 @@ issue_count() {
 }
 
 visible_raw="$(visible_processes)"
+visible_names=()
 IFS=',' read -r -a visible_names <<< "$visible_raw"
 target_visible=false
 target_visible_via_process=false

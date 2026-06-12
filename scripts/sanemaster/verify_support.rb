@@ -271,6 +271,37 @@ module SaneMasterModules
       tests_run.to_i.positive? ? 'tested' : 'build_only'
     end
 
+    def verify_log_permission_prompt_signal?(text)
+      text.to_s.downcase.match?(/manual grant|permission prompt|system settings|system preferences|tcc|accessibility|screen recording/)
+    end
+
+    def verify_log_timeout_signal?(text)
+      text.to_s.downcase.match?(/\b(time(?:d)?\s*out|timeout)\b/)
+    end
+
+    def verify_log_build_failure_signal?(text, tests_run)
+      body = text.to_s.downcase
+      return true if body.match?(/\*\* build failed \*\*|swiftcompile|compileerror|linker command failed|ld:|command compileswift failed/)
+
+      tests_run.to_i.zero? && body.match?(/error:/)
+    end
+
+    def verify_process_timeout_bucket(tests_run)
+      if tests_run.to_i.zero?
+        { bucket: 'pre_test_process_timeout', hint: 'verify process exceeded the configured timeout before tests were counted' }
+      else
+        { bucket: 'counted_test_process_timeout', hint: 'verify process exceeded the configured timeout after tests had started' }
+      end
+    end
+
+    def verify_timeout_signal_bucket(tests_run)
+      if tests_run.to_i.zero?
+        { bucket: 'pre_test_timeout_signal', hint: 'runner emitted timeout-like text before tests were counted; sample logs before changing limits' }
+      else
+        { bucket: 'counted_test_timeout_signal', hint: 'tests ran and emitted timeout-like text; inspect the named test/resource before changing limits' }
+      end
+    end
+
     def verify_metric_host
       Socket.gethostname
     rescue StandardError
@@ -279,26 +310,24 @@ module SaneMasterModules
 
     def classify_verify_result(success:, timeout:, tests_run:, log_text:)
       text = log_text.to_s.downcase
+      count = tests_run.to_i
       return { bucket: 'weak_zero_test_success', hint: 'verify succeeded but counted zero tests' } if success && tests_run.to_i.zero?
-      return { bucket: 'timeout', hint: 'verify command exceeded timeout before a complete result' } if timeout || text.include?('timeout')
+
+      return verify_process_timeout_bucket(count) if text.strip.empty? && timeout
       return { bucket: 'runner_no_output', hint: 'test_output.txt was empty; runner likely failed before tests started' } if text.strip.empty?
-      if text.match?(/manual grant|permission prompt|system settings|system preferences|tcc|accessibility|screen recording/)
-        return { bucket: 'permission_prompt', hint: 'permission or TCC prompt interrupted verification' }
-      end
-      if tests_run.to_i.positive? && verify_log_indicates_failure?(log_text) && !verify_log_only_has_benign_app_intents_failure?(log_text)
+      return { bucket: 'permission_prompt', hint: 'permission or TCC prompt interrupted verification' } if verify_log_permission_prompt_signal?(text)
+      return verify_process_timeout_bucket(count) if timeout
+      return { bucket: 'build_failure', hint: 'build or compile failure prevented useful test evidence' } if verify_log_build_failure_signal?(text, count)
+      return { bucket: 'test_discovery_or_counting', hint: 'test discovery or parser counting failed before useful coverage ran' } if text.match?(/no tests found|0 tests|test discovery|no test bundles|missing test target/)
+      return verify_timeout_signal_bucket(count) if verify_log_timeout_signal?(text)
+      if count.positive? && verify_log_indicates_failure?(log_text) && !verify_log_only_has_benign_app_intents_failure?(log_text)
         return { bucket: 'test_failure', hint: 'tests ran and emitted explicit failure markers' }
-      end
-      if text.match?(/\*\* build failed \*\*|swiftcompile|compileerror|linker command failed|ld:|error:/)
-        return { bucket: 'build_failure', hint: 'build or compile failure prevented useful test evidence' }
-      end
-      if text.match?(/no tests found|0 tests|test discovery|no test bundles|missing test target/)
-        return { bucket: 'test_discovery_or_counting', hint: 'test discovery or parser counting failed before useful coverage ran' }
       end
       if verify_log_indicates_failure?(log_text) && !verify_log_only_has_benign_app_intents_failure?(log_text)
         return { bucket: 'test_failure', hint: 'tests ran and emitted explicit failure markers' }
       end
 
-      tests_run.to_i.zero? ? { bucket: 'unknown_zero_test_failure', hint: 'zero tests were counted but no known signature matched' } : { bucket: 'unknown_failure', hint: 'failure did not match a known verify bucket' }
+      count.zero? ? { bucket: 'unknown_zero_test_failure', hint: 'zero tests were counted but no known signature matched' } : { bucket: 'unknown_failure', hint: 'failure did not match a known verify bucket' }
     end
 
     def build_test_commands(include_ui, signed_tests = false)

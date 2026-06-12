@@ -940,5 +940,73 @@ exit(run_tests('SaneMaster Process Eval Tests') do
       end
       true
     end
+
+    test('trajectory efficiency review flags repeated blocks, broad proof drift, and late proof plans') do
+      subject = ProcessEvalHarness.new('/tmp/saneprocess-trajectory-test.jsonl')
+      rows = [
+        {
+          'type' => 'hook_block',
+          'timestamp' => '2026-05-04T10:00:00Z',
+          'rule' => 'startup_gate',
+          'reason' => 'STARTUP GATE: Complete startup steps before working [1/3 read]'
+        },
+        {
+          'type' => 'hook_block',
+          'timestamp' => '2026-05-04T10:00:01Z',
+          'rule' => 'startup_gate',
+          'reason' => 'STARTUP GATE: Complete startup steps before working [2/3 read]'
+        },
+        {
+          'type' => 'hook_block',
+          'timestamp' => '2026-05-04T10:00:02Z',
+          'rule' => 'startup_gate',
+          'reason' => 'STARTUP GATE: Complete startup steps before working [3/3 read]'
+        },
+        {
+          'type' => 'workflow_receipt',
+          'timestamp' => '2026-05-04T10:00:03Z',
+          'schema_version' => 3,
+          'workflow' => 'sanemaster:verify',
+          'success' => true,
+          'proof_scope_planned' => 'focused_mini',
+          'proof_scope_actual' => 'full_canonical',
+          'outcome_strength' => 'authoritative'
+        },
+        {
+          'type' => 'proof_plan',
+          'timestamp' => '2026-05-04T10:00:04Z',
+          'proof_scope_planned' => 'focused_mini'
+        }
+      ]
+
+      result = subject.build_trajectory_efficiency_review(rows)
+
+      assert_eq(result[:repeated_block_count], 1)
+      assert_eq(result[:planned_focused_ran_broad_count], 1)
+      assert(result[:warnings].any? { |item| item.include?('same block repeated') }, result[:warnings].inspect)
+      assert(result[:warnings].any? { |item| item.include?('ran full canonical proof') }, result[:warnings].inspect)
+      assert(result[:warnings].any? { |item| item.include?('proof_plan occurred after workflow') }, result[:warnings].inspect)
+    end
+
+    test('trajectory efficiency review warns when only diagnostic successes are present') do
+      subject = ProcessEvalHarness.new('/tmp/saneprocess-trajectory-diagnostic-test.jsonl')
+      rows = [
+        {
+          'type' => 'workflow_receipt',
+          'timestamp' => '2026-05-04T10:00:00Z',
+          'schema_version' => 3,
+          'workflow' => 'sanemaster:process_eval',
+          'success' => true,
+          'proof_scope_actual' => 'none',
+          'outcome_strength' => 'diagnostic'
+        }
+      ]
+
+      result = subject.build_trajectory_efficiency_review(rows)
+
+      assert_eq(result[:diagnostic_only_success_count], 1)
+      assert(result[:warnings].any? { |item| item.include?('diagnostic-only workflow success') }, result[:warnings].inspect)
+      assert(result[:recommended_actions].any? { |item| item.include?('diagnostic-only success') }, result[:recommended_actions].inspect)
+    end
   end
 end)

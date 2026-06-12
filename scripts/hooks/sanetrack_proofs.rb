@@ -99,7 +99,7 @@ def ship_clearance_proof(project_dir = Dir.pwd)
   saneprocess_path = File.join(project_dir, '.saneprocess')
   return nil unless File.file?(saneprocess_path)
 
-  app_name = File.readlines(saneprocess_path, encoding: Encoding::UTF_8).filter_map { |line| line[/\Aname:\s*(\S+)/, 1] }.first
+  app_name = File.readlines(saneprocess_path, encoding: Encoding::UTF_8).map { |line| line[/\Aname:\s*(\S+)/, 1] }.compact.first
   return nil if app_name.to_s.empty?
 
   clearance_path = File.expand_path("~/.claude/ship_clearance/#{app_name}.json")

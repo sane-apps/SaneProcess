@@ -44,28 +44,32 @@ exit(run_tests('SaneMaster Verify Failure Review Tests') do
       events = [
         { 'type' => 'verify', 'project' => 'SaneBar', 'success' => false, 'tests_run' => 0, 'failure_bucket' => 'timeout', 'reason' => 'verify timeout' },
         { 'type' => 'verify', 'project' => 'SaneBar', 'success' => false, 'tests_run' => 0, 'reason' => 'verify timeout after 300s' },
-        { 'type' => 'verify', 'project' => 'SaneClip', 'success' => false, 'tests_run' => 0, 'failure_hint' => 'permission prompt blocked Accessibility' },
-        { 'type' => 'verify', 'project' => 'SaneClip', 'success' => false, 'tests_run' => 0, 'reason' => '** BUILD FAILED ** error:' },
+        { 'type' => 'verify', 'project' => 'SaneBar', 'success' => false, 'tests_run' => 0, 'message' => 'timed out waiting for simulator boot' },
+        { 'type' => 'verify', 'project' => 'SaneClip', 'success' => false, 'tests_run' => 0, 'failure_hint' => 'permission prompt timed out blocked Accessibility' },
+        { 'type' => 'verify', 'project' => 'SaneClip', 'success' => false, 'tests_run' => 0, 'reason' => '** BUILD FAILED ** timeout error:' },
         { 'type' => 'verify', 'project' => 'SaneClip', 'success' => true, 'tests_run' => 0, 'evidence_strength' => 'build_only' },
-        { 'type' => 'verify', 'project' => 'SaneClick', 'success' => false, 'tests_run' => 3, 'failure_bucket' => 'test_failure' }
+        { 'type' => 'verify', 'project' => 'SaneClick', 'success' => false, 'tests_run' => 3, 'failure_bucket' => 'test_failure' },
+        { 'type' => 'verify', 'project' => 'SaneVideo', 'success' => false, 'tests_run' => 0, 'timeout_actual' => true, 'reason' => 'verify timeout' }
       ]
 
       subject = VerifyFailureReviewHarness.new('/tmp/verify-failure-review-test.jsonl')
       result = subject.send(:build_verify_failure_review, events, min_count: 1)
       buckets = result[:buckets].each_with_object({}) { |bucket, memo| memo[bucket[:bucket]] = bucket }
 
-      assert_eq(result[:verify_attempts], 6)
-      assert_eq(result[:zero_test_failures], 4)
+      assert_eq(result[:verify_attempts], 8)
+      assert_eq(result[:zero_test_failures], 6)
       assert_eq(result[:weak_green_successes], 1)
-      assert_eq(buckets['timeout'][:count], 2)
+      assert_eq(buckets['pre_test_timeout_signal'][:count], 2)
+      assert_eq(buckets['timeout'][:count], 1)
       assert_eq(buckets['permission_prompt'][:count], 1)
       assert_eq(buckets['build_failure'][:count], 1)
-      assert_eq(buckets['timeout'][:projects]['SaneBar'], 2)
+      assert_eq(buckets['pre_test_process_timeout'][:count], 1)
+      assert_eq(buckets['pre_test_timeout_signal'][:projects]['SaneBar'], 2)
       assert_eq(result[:hotspots].first[:project], 'SaneBar')
-      assert_eq(result[:hotspots].first[:bucket], 'timeout')
+      assert_eq(result[:hotspots].first[:bucket], 'pre_test_timeout_signal')
       assert_eq(result[:hotspots].first[:count], 2)
-      assert_includes(result[:recommended_actions].join(' '), 'Fix the top zero-test bucket first: timeout')
-      assert_includes(result[:recommended_actions].join(' '), 'SaneBar / timeout')
+      assert_includes(result[:recommended_actions].join(' '), 'Fix the top zero-test bucket first: pre_test_timeout_signal')
+      assert_includes(result[:recommended_actions].join(' '), 'SaneBar / pre_test_timeout_signal')
       true
     end
 

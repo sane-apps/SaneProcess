@@ -923,6 +923,26 @@ module SaneToolsTest
       warn "  FAIL: Expected [block, block, allow], got #{deg_results.map { |r| r.nil? ? 'allow' : 'block' }.inspect}"
     end
 
+    mcp_pending_reason = "MCP ACTIONS PENDING\nCannot edit until pending MCP/memory actions are handled."
+    if detect_rule_from_reason(mcp_pending_reason) == 'mcp_actions_pending'
+      passed += 1
+      warn '  PASS: MCP actions pending block records a specific rule'
+    else
+      failed += 1
+      warn "  FAIL: MCP actions pending block should not be recorded as unknown, got #{detect_rule_from_reason(mcp_pending_reason).inspect}"
+    end
+
+    StateManager.reset(:refusal_tracking)
+    SaneToolsChecks.check_refusal_to_read('Edit', mcp_pending_reason)
+    tracking = StateManager.get(:refusal_tracking)
+    if tracking.key?(:mcp_actions_pending) || tracking.key?('mcp_actions_pending')
+      passed += 1
+      warn '  PASS: MCP actions pending refusal tracking uses a specific bucket'
+    else
+      failed += 1
+      warn "  FAIL: MCP actions pending refusal tracking should not use other, got #{tracking.keys.inspect}"
+    end
+
     FileUtils.rm_rf(deg_project_dir) if Dir.exist?(deg_project_dir)
     StateManager.update(:mcp_health) do |h|
       h[:verified_this_session] = true

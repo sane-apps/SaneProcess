@@ -54,6 +54,7 @@ require_relative 'sanemaster/near_miss_review'
 require_relative 'sanemaster/verify_failure_review'
 require_relative 'sanemaster/process_eval'
 require_relative 'sanemaster/agent_workflow'
+require_relative 'sanemaster/command_registry'
 require_relative 'sanemaster/machine_cleanup'
 require_relative 'sanemaster/verify'
 require_relative 'sanemaster/quality'
@@ -93,6 +94,7 @@ class SaneMaster
   include SaneMasterModules::VerifyFailureReview
   include SaneMasterModules::ProcessEval
   include SaneMasterModules::AgentWorkflow
+  include SaneMasterModules::CommandRegistry
   include SaneMasterModules::MachineCleanup
   include SaneMasterModules::Verify
   include SaneMasterModules::Quality
@@ -162,6 +164,7 @@ class SaneMaster
         'proof_plan' => { args: '--task "TEXT" [--json]', desc: 'Choose focused Mini proof vs full canonical verify for a task' },
         'agent_eval' => { args: '[--fixture PATH] [--json]', desc: 'Evaluate prompt-to-workflow routing fixtures' },
         'skill_lint' => { args: '[--path PATH] [--json]', desc: 'Lint skill descriptions for reliable routing' },
+        'registry_review' => { args: '[--json]', desc: 'Review command and gate registry metadata for drift' },
         'refresh_qa_snapshots' => { args: '[--dry-run|--run] [--json]', desc: 'List or refresh stale app QA snapshots' },
         'gate_review' => { args: '<fixture.json> [--json]', desc: 'Review candidate prevention gates against seed/block/allow fixtures' },
         'structural' => { args: '[path]', desc: 'Structural compliance check (sc)' },
@@ -178,6 +181,7 @@ class SaneMaster
         'diagnose' => { args: '[path]', desc: 'Analyze .xcresult bundle' },
         'runtime_evidence' => { args: '[--executable PATH|--pid PID] [--break File.swift:LINE] [--expr EXPR]', desc: 'Capture LLDB runtime evidence without launching apps' },
         'visual_smoke' => { args: '[--app NAME] [--require-peekaboo] [--json] [--dry-run]', desc: 'Capture Peekaboo visual/AX evidence receipt' },
+        'resource_soak' => { args: '[--duration-seconds N] [--interval-seconds N] [--json]', desc: 'Run the Mini release-candidate resource soak proof' },
         'customer_ui_sweep' => { args: '[--json] [--dry-run] [--no-exit]', desc: 'Run the app customer workflow runner, then validate the release UI contract' },
         'customer_ui_contract' => { args: '[--json] [--no-exit] [--strict-visual]', desc: 'Validate release-required customer UI action QA manifest and fresh receipt' },
         'menu_scan' => { args: '[--json] [--owners bundle1,bundle2]', desc: 'Menu bar diagnostics (detected/normalized/excluded)' },
@@ -343,6 +347,8 @@ class SaneMaster
                                   runtime_evidence
                                   runtime-evidence
                                   lldb_snapshot
+                                  resource_soak
+                                  resource-soak
                                   visual_smoke
                                   visual-smoke
                                   customer_ui_sweep
@@ -979,18 +985,21 @@ PY
     success = system(*command)
     completed_at = Time.now.utc
     exit_status = $CHILD_STATUS&.exitstatus || (success ? 0 : 1)
+    route_metadata = respond_to?(:workflow_receipt_route_metadata, true) ? workflow_receipt_route_metadata(workflow, success: success) : {}
     record_process_metric(
       'workflow_receipt',
-      schema_version: 2,
-      workflow: workflow,
-      success: success,
-      command: command.join(' '),
-      command_sha256: Digest::SHA256.hexdigest(command.join("\0")),
-      started_at: started_at.iso8601,
-      completed_at: completed_at.iso8601,
-      duration_ms: ((completed_at - started_at) * 1000).round,
-      exit_status: exit_status,
-      host: Socket.gethostname
+      {
+        schema_version: 3,
+        workflow: workflow,
+        success: success,
+        command: command.join(' '),
+        command_sha256: Digest::SHA256.hexdigest(command.join("\0")),
+        started_at: started_at.iso8601,
+        completed_at: completed_at.iso8601,
+        duration_ms: ((completed_at - started_at) * 1000).round,
+        exit_status: exit_status,
+        host: Socket.gethostname
+      }.merge(route_metadata)
     ) if respond_to?(:record_process_metric)
     exit(exit_status)
   end
@@ -998,19 +1007,23 @@ PY
   def record_sanemaster_workflow_receipt(command, args, started_at, exit_status)
     completed_at = Time.now.utc
     command_parts = ['ruby', File.join(saneprocess_repo_root, 'scripts', 'SaneMaster.rb'), *Array(args)]
+    workflow = "sanemaster:#{command}"
+    route_metadata = respond_to?(:workflow_receipt_route_metadata, true) ? workflow_receipt_route_metadata(workflow, success: exit_status.to_i.zero?) : {}
     record_process_metric(
       'workflow_receipt',
-      schema_version: 2,
-      workflow: "sanemaster:#{command}",
-      success: exit_status.to_i.zero?,
-      command: command_parts.join(' '),
-      command_sha256: Digest::SHA256.hexdigest(command_parts.join("\0")),
-      started_at: started_at.iso8601,
-      completed_at: completed_at.iso8601,
-      duration_ms: ((completed_at - started_at) * 1000).round,
-      exit_status: exit_status.to_i,
-      host: Socket.gethostname,
-      client: ENV['CLAUDECODE'] || ENV['CLAUDE_CODE'] ? 'claude' : (ENV['CODEX_HOME'] ? 'codex' : 'unknown')
+      {
+        schema_version: 3,
+        workflow: workflow,
+        success: exit_status.to_i.zero?,
+        command: command_parts.join(' '),
+        command_sha256: Digest::SHA256.hexdigest(command_parts.join("\0")),
+        started_at: started_at.iso8601,
+        completed_at: completed_at.iso8601,
+        duration_ms: ((completed_at - started_at) * 1000).round,
+        exit_status: exit_status.to_i,
+        host: Socket.gethostname,
+        client: ENV['CLAUDECODE'] || ENV['CLAUDE_CODE'] ? 'claude' : (ENV['CODEX_HOME'] ? 'codex' : 'unknown')
+      }.merge(route_metadata)
     )
   rescue StandardError => e
     warn "⚠️  Could not record workflow receipt: #{e.message}" if ENV['DEBUG']
@@ -1574,6 +1587,8 @@ PY
     when 'visual_smoke', 'visual-smoke'
       success = visual_smoke(args)
       exit(success ? 0 : 1)
+    when 'resource_soak', 'resource-soak'
+      resource_soak(args)
     when 'crash_report', 'crashes'
       analyze_crashes(args)
     when 'menu_scan'
@@ -1609,6 +1624,8 @@ PY
     when 'skill_lint', 'skill-lint'
       success = skill_lint(args)
       exit(success ? 0 : 1)
+    when 'registry_review', 'registry-review'
+      registry_review(args)
     when 'refresh_qa_snapshots', 'qa_refresh'
       refresh_qa_snapshots(args)
 
@@ -2312,6 +2329,17 @@ PY
         'setapp_upload --portal-fallback --app-id 1848 --version-id 46885 --zip outputs/SaneBar-Setapp.zip --release-notes-file /tmp/setapp-notes.txt'
       ]
     },
+    'registry_review' => {
+      usage: 'registry_review [--json]',
+      description: 'Review command and gate registry metadata so route, help, alias, and gate drift is visible before it turns into process friction.',
+      flags: {
+        '--json' => 'Print the registry review as JSON'
+      },
+      examples: [
+        'registry_review',
+        'registry_review --json'
+      ]
+    },
     'universal_control_reset' => {
       usage: 'universal_control_reset [--status] [--dry-run] [--local-only|--mini-only] [--cleanup-mini] [--reboot-mini]',
       description: 'Reset Universal Control / Continuity state between this Mac and the Mini, then optionally reboot or clean the Mini.',
@@ -2480,6 +2508,21 @@ PY
         'visual_smoke --dry-run',
         'visual_smoke --app SaneBar --require-peekaboo',
         'visual_smoke --app SaneClick --no-menu --json'
+      ]
+    },
+    'resource_soak' => {
+      usage: 'resource_soak [--duration-seconds N] [--interval-seconds N] [--json]',
+      description: 'Sample the already launched /Applications release candidate on the Mini and write /tmp/sanebar_runtime_resource_soak.json for the customer UI release contract.',
+      flags: {
+        '--duration-seconds N' => 'Soak duration in seconds (default: 1200)',
+        '--interval-seconds N' => 'Seconds between process samples (default: 10)',
+        '--dry-run' => 'Print the planned artifact path without sampling',
+        '--no-exit' => 'Return the report without exiting non-zero',
+        '--json' => 'Print machine-readable result JSON'
+      },
+      examples: [
+        'resource_soak --dry-run',
+        'resource_soak --json'
       ]
     },
     'customer_ui_sweep' => {
@@ -2681,17 +2724,7 @@ PY
       break if cmd_info
     end
 
-    # Check for alias mappings
-    aliases = {
-      'tm' => 'test_mode', 'crashes' => 'crash_report', 'versions' => 'version_check',
-      'deprecations' => 'check_deprecations', 'pdf' => 'export',
-      'check-inbox' => 'check_inbox', 'inbox' => 'check_inbox', 'sync-mini' => 'sync_mini', 'sync-grok' => 'sync_grok',
-      'runtime_snapshot' => 'runtime_evidence', 'runtime-evidence' => 'runtime_evidence',
-      'lldb_snapshot' => 'runtime_evidence',
-      'visual-smoke' => 'visual_smoke',
-      'customer-ui-sweep' => 'customer_ui_sweep'
-    }
-    command = aliases[command] if aliases.key?(command)
+    command = canonical_command_name(command) if respond_to?(:canonical_command_name, true)
 
     details = COMMAND_DETAILS[command]
 

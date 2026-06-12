@@ -336,6 +336,7 @@ def detect_rule_from_reason(reason)
   when /SANELOOP REQUIRED/i then 'saneloop_required'
   when /READ REQUIRED DOCS/i then 'session_docs'
   when /STARTUP GATE/i then 'startup_gate'
+  when /MCP ACTIONS PENDING/i then 'mcp_actions_pending'
   when /DEPLOYMENT SAFETY/i then 'deployment_safety'
   when /MINI-FIRST|LOCAL UI/i then 'mini_first'
   else 'unknown'

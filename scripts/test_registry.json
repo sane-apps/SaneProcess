@@ -182,6 +182,12 @@
       "cmd": ["ruby", "scripts/sanemaster/process_metrics_test.rb"]
     },
     {
+      "path": "scripts/sanemaster/command_registry_test.rb",
+      "label": "SaneProcess command registry tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/command_registry_test.rb"]
+    },
+    {
       "path": "scripts/sanemaster/machine_cleanup_test.rb",
       "label": "SaneProcess machine cleanup tests",
       "status": "required",

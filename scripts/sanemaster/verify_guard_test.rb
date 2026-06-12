@@ -384,11 +384,22 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
     end
 
     test('classifies zero-test verify failures into useful buckets') do
-      assert_eq(subject.send(:classify_verify_result, success: false, timeout: true, tests_run: 0, log_text: '')[:bucket], 'timeout')
+      assert_eq(subject.send(:classify_verify_result, success: false, timeout: true, tests_run: 0, log_text: '')[:bucket], 'pre_test_process_timeout')
+      assert_eq(subject.send(:classify_verify_result, success: false, timeout: true, tests_run: 87, log_text: 'Test Case passed')[:bucket], 'counted_test_process_timeout')
       assert_eq(subject.send(:classify_verify_result, success: false, timeout: false, tests_run: 0, log_text: '')[:bucket], 'runner_no_output')
-      assert_eq(subject.send(:classify_verify_result, success: false, timeout: false, tests_run: 0, log_text: 'System Settings permission prompt')[:bucket], 'permission_prompt')
-      assert_eq(subject.send(:classify_verify_result, success: false, timeout: false, tests_run: 0, log_text: '** BUILD FAILED ** error:')[:bucket], 'build_failure')
+      assert_eq(subject.send(:classify_verify_result, success: false, timeout: false, tests_run: 0, log_text: 'System Settings permission prompt timed out')[:bucket], 'permission_prompt')
+      assert_eq(subject.send(:classify_verify_result, success: false, timeout: false, tests_run: 0, log_text: '** BUILD FAILED ** timeout error:')[:bucket], 'build_failure')
+      assert_eq(subject.send(:classify_verify_result, success: false, timeout: false, tests_run: 0, log_text: 'timed out waiting for simulator boot')[:bucket], 'pre_test_timeout_signal')
+      assert_eq(subject.send(:classify_verify_result, success: false, timeout: false, tests_run: 1, log_text: 'Test timed out waiting for fixture')[:bucket], 'counted_test_timeout_signal')
       assert_eq(subject.send(:classify_verify_result, success: true, timeout: false, tests_run: 0, log_text: 'BUILD SUCCEEDED')[:bucket], 'weak_zero_test_success')
+      true
+    end
+
+    test('classifies counted timeout failures separately from generic test failures') do
+      body = "/tmp/Tests.swift:42: error: -[ExampleTests testThing] : timed out waiting for fixture\n** TEST FAILED **"
+      result = subject.send(:classify_verify_result, success: false, timeout: false, tests_run: 1, log_text: body)
+
+      assert_eq(result[:bucket], 'counted_test_timeout_signal')
       true
     end
 

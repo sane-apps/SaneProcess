@@ -233,9 +233,9 @@ _, stderr, status = run_hook('sanetools.rb', {
 })
 t('NotebookEdit blocked (exit=2)', status.exitstatus == 2)
 
-# === Test 8: Basename matching from any path ===
+# === Test 8: Same basename from unrelated path is ignored ===
 warn ''
-warn '--- Test 8: Basename matching from any path ---'
+warn '--- Test 8: Same basename from unrelated path ignored ---'
 full_reset
 StateManager.update(:session_docs) do |sd|
   sd[:required] = ['DEVELOPMENT.md']
@@ -250,7 +250,7 @@ _, _, _ = run_hook('sanetrack.rb', {
   tool_response: { content: 'x' }
 })
 sd = StateManager.get(:session_docs)
-t('Basename match from different path', sd[:read].include?('DEVELOPMENT.md'))
+t('Unrelated same-basename doc not added to read list', !sd[:read].include?('DEVELOPMENT.md'))
 
 # === Test 9: Non-required doc read is ignored ===
 warn ''
@@ -502,9 +502,32 @@ t('Pending memory staging blocks edits', staging_status.exitstatus == 2)
 t('Pending memory block names staged entity', staging_stderr.include?('HookLoop'))
 FileUtils.rm_f(staging_path)
 
-# === Test 21: Session start clears stale per-session state ===
+# === Test 21: failed validation report does not open startup gate ===
 warn ''
-warn '--- Test 21: session_start clears stale state ---'
+warn '--- Test 21: failed validation report does not satisfy startup gate ---'
+full_reset
+StateManager.update(:startup_gate) do |g|
+  g[:open] = false
+  g[:opened_at] = nil
+  g[:steps] = {
+    session_docs: true, skills_registry: true,
+    validation_report: false, orphan_cleanup: true, system_clean: true
+  }
+  g[:step_timestamps] = {}
+  g
+end
+run_hook('sanetrack.rb', {
+  tool_name: 'Bash',
+  tool_input: { command: 'ruby scripts/validation_report.rb' },
+  tool_response: { 'stderr' => 'validation failed', 'exit_code' => 1 }
+})
+gate_after_failed_validation = StateManager.get(:startup_gate)
+t('Failed validation_report leaves validation step pending', gate_after_failed_validation[:steps][:validation_report] == false)
+t('Failed validation_report leaves startup gate closed', gate_after_failed_validation[:open] == false)
+
+# === Test 22: Session start clears stale per-session state ===
+warn ''
+warn '--- Test 22: session_start clears stale state ---'
 full_reset
 StateManager.update(:edits) { |e| e[:count] = 3; e[:unique_files] = ['Old.swift']; e }
 StateManager.update(:requirements) { |r| r[:requested] = ['stale']; r[:is_big_task] = true; r }

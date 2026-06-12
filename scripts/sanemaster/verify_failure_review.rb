@@ -112,6 +112,9 @@ module SaneMasterModules
       explicit = event['failure_bucket'].to_s
       return explicit unless explicit.empty?
 
+      tests_run = event['tests_run'].to_i
+      return verify_failure_process_timeout_bucket(tests_run) if event['timeout_actual'] == true
+
       text = [
         event['reason'],
         event['failure_hint'],
@@ -119,13 +122,25 @@ module SaneMasterModules
         event['message']
       ].compact.join(' ').downcase
 
-      return 'timeout' if text.include?('timeout')
       return 'permission_prompt' if text.match?(/permission|tcc|system settings|manual grant/)
       return 'runner_no_output' if text.match?(/no output|empty/)
       return 'build_failure' if text.match?(/build failed|compile|swiftcompile|linker|error:/)
       return 'test_discovery_or_counting' if text.match?(/no tests|0 tests|test discovery|count/)
+      return verify_failure_timeout_signal_bucket(tests_run) if verify_failure_timeout_signal?(text)
 
       'legacy_unknown_zero_test_failure'
+    end
+
+    def verify_failure_timeout_signal?(text)
+      text.to_s.downcase.match?(/\b(time(?:d)?\s*out|timeout)\b/)
+    end
+
+    def verify_failure_process_timeout_bucket(tests_run)
+      tests_run.to_i.zero? ? 'pre_test_process_timeout' : 'counted_test_process_timeout'
+    end
+
+    def verify_failure_timeout_signal_bucket(tests_run)
+      tests_run.to_i.zero? ? 'pre_test_timeout_signal' : 'counted_test_timeout_signal'
     end
 
     def verify_failure_bucket_summary(bucket, group)
@@ -183,14 +198,22 @@ module SaneMasterModules
       if weak_green_events.any?
         actions << "#{weak_green_events.length} green verify run(s) counted zero tests; treat these as build/syntax evidence, not tested evidence."
       end
-      actions << 'Keep running this review after verify changes until legacy_unknown_zero_test_failure stops being the top bucket.'
+      actions << 'Keep running this review after verify changes until legacy timeout/unknown buckets stop being the top buckets.'
       actions.uniq
     end
 
     def verify_failure_bucket_next_step(bucket)
       case bucket
       when 'timeout'
-        'Inspect timeout logs for permission prompts, hung test hosts, and long-running suites; add a focused timeout fixture before changing limits.'
+        'Legacy timeout bucket is ambiguous; sample the raw log or rerun with enriched metrics before changing limits.'
+      when 'pre_test_process_timeout'
+        'Inspect runner startup, simulator boot, permissions, and build start: the verify process exceeded its timeout before tests were counted.'
+      when 'counted_test_process_timeout'
+        'Inspect the active test host or suite hang: tests started, then the verify process exceeded its timeout.'
+      when 'pre_test_timeout_signal'
+        'Sample the runner log around the timeout text; a tool emitted timeout-like output before any test evidence was counted.'
+      when 'counted_test_timeout_signal'
+        'Inspect the named test/resource that emitted timeout-like text; tests had started, so do not treat this as a preflight failure.'
       when 'permission_prompt'
         'Fix Mini permission automation or preflight prompts; do not count runs blocked by TCC/manual grants as test evidence.'
       when 'runner_no_output'
@@ -211,6 +234,7 @@ module SaneMasterModules
         reason: event['reason'],
         failure_bucket: event['failure_bucket'],
         failure_hint: event['failure_hint'],
+        timeout_actual: event['timeout_actual'],
         tests_run: event['tests_run']
       }.compact
     end

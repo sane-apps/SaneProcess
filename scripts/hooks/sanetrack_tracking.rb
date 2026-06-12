@@ -20,6 +20,7 @@ require 'time'
 require 'fileutils'
 require 'open3'
 require_relative 'core/mandatory_workflows'
+require_relative 'core/session_docs'
 require_relative 'core/state_manager'
 require_relative 'core/process_metrics'
 
@@ -108,13 +109,13 @@ def git_changed_files_after_bash
   status_out, status = Open3.capture2e('git', '-C', root, 'status', '--porcelain=v1', '--untracked-files=all')
   return [] unless status.success?
 
-  status_out.each_line.filter_map do |line|
+  status_out.each_line.map do |line|
     path = line[3..]&.strip
     next if path.to_s.empty?
 
     path = path.split(' -> ', 2).last if path.include?(' -> ')
     File.expand_path(path, root)
-  end.uniq
+  end.compact.uniq
 end
 
 def track_visual_requirement_from_edit(file_path)
@@ -269,6 +270,7 @@ def track_session_doc_read(tool_name, tool_input)
   already_read = session_docs[:read] || []
 
   return unless required.include?(basename)
+  return unless SaneSessionDocs.read_matches?(file_path, basename, session_docs)
   return if already_read.include?(basename)
 
   StateManager.update(:session_docs) do |sd|

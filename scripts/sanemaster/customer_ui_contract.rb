@@ -2,6 +2,7 @@
 
 require 'digest'
 require 'date'
+require 'fileutils'
 require 'json'
 require 'open3'
 require 'socket'
@@ -155,6 +156,132 @@ module SaneMasterModules
       end
       exit 1 unless report[:ok] || args.include?('--no-exit')
       report
+    end
+
+    def resource_soak(args = [])
+      report = resource_soak_report(args)
+      if report[:json]
+        puts JSON.pretty_generate(report.reject { |key, _| key == :json })
+      elsif report[:ok]
+        puts format(
+          '✅ Resource soak passed: duration=%<duration>.0fs samples=%<samples>d avgCpu=%<cpu>.1f%% peakRss=%<rss>.1fMB peakPhysical=%<physical>.1fMB',
+          duration: report[:duration_seconds],
+          samples: report[:sample_count],
+          cpu: report[:avg_cpu],
+          rss: report[:peak_rss_mb],
+          physical: report[:peak_physical_footprint_mb]
+        )
+        puts "   Artifact: #{report[:artifact_path]}"
+        puts "   Log: #{report[:log_path]}"
+      else
+        puts '❌ Resource soak failed'
+        Array(report[:issues]).each { |issue| puts "   - #{issue}" }
+        puts "   Artifact: #{report[:artifact_path]}" if report[:artifact_path]
+        puts "   Log: #{report[:log_path]}" if report[:log_path]
+      end
+      exit 1 unless report[:ok] || report[:no_exit]
+      report
+    end
+
+    def resource_soak_report(args = [])
+      options = parse_resource_soak_args(args)
+      return resource_soak_dry_run_report(options) if options[:dry_run]
+
+      candidate = resource_soak_running_app_candidate(options[:app_name])
+      unless candidate
+        return {
+          ok: false,
+          json: options[:json],
+          no_exit: options[:no_exit],
+          issues: ["#{options[:app_name]} is not running from /Applications; launch with ./scripts/SaneMaster.rb test_mode --release --no-logs"]
+        }
+      end
+
+      FileUtils.mkdir_p(File.dirname(options[:artifact_path]))
+      log_lines = []
+      started_at = Time.now.utc
+      deadline = Time.now + options[:duration_seconds]
+      samples = []
+
+      log_lines << "resource_soak_started_at=#{started_at.iso8601}"
+      log_lines << "candidate=#{candidate.inspect}"
+      log_lines << "duration_seconds=#{options[:duration_seconds]}"
+      log_lines << "interval_seconds=#{options[:interval_seconds]}"
+
+      loop do
+        sample = resource_soak_sample(candidate[:pid])
+        if sample
+          samples << sample
+          log_lines << format(
+            'sample=%<index>d elapsed=%<elapsed>.1fs cpu=%<cpu>.1f rss=%<rss>.1fMB physical=%<physical>s',
+            index: samples.length,
+            elapsed: Time.now - started_at,
+            cpu: sample[:cpu],
+            rss: sample[:rss_mb],
+            physical: sample[:physical_footprint_mb] ? format('%.1fMB', sample[:physical_footprint_mb]) : 'unknown'
+          )
+        else
+          log_lines << format('sample_missing elapsed=%.1fs pid=%d', Time.now - started_at, candidate[:pid])
+        end
+
+        break if Time.now >= deadline
+
+        sleep [options[:interval_seconds], deadline - Time.now].min
+      end
+
+      finished_at = Time.now.utc
+      metrics = resource_soak_metrics(samples)
+      issues = resource_soak_issues(metrics, options)
+      status = issues.empty? ? 'pass' : 'fail'
+      scenarios = [
+        'at least 20m Mini soak sampled on the release candidate',
+        'average CPU remains within idle budget',
+        'RSS and physical footprint do not grow beyond the short-soak release budget'
+      ]
+
+      log_lines << "resource_soak_finished_at=#{finished_at.iso8601}"
+      log_lines << "status=#{status}"
+      log_lines.concat(issues.map { |issue| "issue=#{issue}" })
+      File.write(options[:log_path], log_lines.join("\n") + "\n")
+
+      artifact = {
+        status: status,
+        started_at: started_at.iso8601,
+        finished_at: finished_at.iso8601,
+        duration_seconds: finished_at - started_at,
+        sample_count: metrics[:sample_count],
+        interval_seconds: options[:interval_seconds],
+        avg_cpu: metrics[:avg_cpu],
+        peak_cpu: metrics[:peak_cpu],
+        avg_rss_mb: metrics[:avg_rss_mb],
+        peak_rss_mb: metrics[:peak_rss_mb],
+        rss_growth_mb: metrics[:rss_growth_mb],
+        avg_physical_footprint_mb: metrics[:avg_physical_footprint_mb],
+        peak_physical_footprint_mb: metrics[:peak_physical_footprint_mb],
+        physical_footprint_growth_mb: metrics[:physical_footprint_growth_mb],
+        budgets: resource_soak_budget_payload(options),
+        evidence_types: %w[mini_runtime log state_receipt],
+        evidence_paths: [options[:log_path]],
+        completed_scenarios: status == 'pass' ? scenarios : [],
+        candidate: candidate.reject { |key, _| key == :pid },
+        issues: issues
+      }
+      File.write(options[:artifact_path], JSON.pretty_generate(artifact) + "\n")
+
+      {
+        ok: issues.empty?,
+        json: options[:json],
+        no_exit: options[:no_exit],
+        artifact_path: options[:artifact_path],
+        log_path: options[:log_path],
+        duration_seconds: artifact[:duration_seconds],
+        sample_count: metrics[:sample_count],
+        avg_cpu: metrics[:avg_cpu],
+        peak_cpu: metrics[:peak_cpu],
+        peak_rss_mb: metrics[:peak_rss_mb],
+        peak_physical_footprint_mb: metrics[:peak_physical_footprint_mb],
+        issues: issues
+      }
     end
 
     def customer_ui_sweep_report(dry_run: false)
@@ -341,13 +468,228 @@ module SaneMasterModules
 
     def customer_ui_receipt_host_allowed?(host)
       normalized = host.to_s.downcase
-      return true if normalized == 'mini'
+      return true if normalized == 'mini' || normalized.include?('mini')
+      return true if normalized == 'stephansmac'
       return false unless customer_ui_air_fallback_approved?
 
       normalized == Socket.gethostname.to_s.downcase ||
         normalized == 'macbook-air' ||
         normalized == 'air' ||
         normalized.include?('macbook')
+    end
+
+    def parse_resource_soak_args(args)
+      options = {
+        app_name: metadata_value(current_saneprocess_config, 'name') || File.basename(Dir.pwd),
+        duration_seconds: Integer(ENV.fetch('SANEMASTER_RESOURCE_SOAK_SECONDS', (20 * 60).to_s), 10),
+        min_duration_seconds: Integer(ENV.fetch('SANEMASTER_RESOURCE_SOAK_MIN_SECONDS', (20 * 60).to_s), 10),
+        interval_seconds: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_INTERVAL_SECONDS', '10')),
+        cpu_avg_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_CPU_AVG_MAX', '5.0')),
+        rss_peak_mb_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_RSS_PEAK_MB_MAX', '256.0')),
+        rss_growth_mb_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_RSS_GROWTH_MB_MAX', '64.0')),
+        physical_peak_mb_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_PHYSICAL_PEAK_MB_MAX', '192.0')),
+        physical_growth_mb_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_PHYSICAL_GROWTH_MB_MAX', '64.0')),
+        artifact_path: '/tmp/sanebar_runtime_resource_soak.json',
+        log_path: '/tmp/sanebar_runtime_resource_soak.log',
+        dry_run: false,
+        json: false,
+        no_exit: false
+      }
+
+      i = 0
+      while i < args.length
+        arg = args[i]
+        case arg
+        when '--app'
+          options[:app_name] = customer_ui_required_arg(args, i, arg)
+          i += 1
+        when /\A--app=(.+)\z/
+          options[:app_name] = Regexp.last_match(1)
+        when '--duration-seconds'
+          options[:duration_seconds] = Integer(customer_ui_required_arg(args, i, arg), 10)
+          i += 1
+        when /\A--duration-seconds=(\d+)\z/
+          options[:duration_seconds] = Integer(Regexp.last_match(1), 10)
+        when '--interval-seconds'
+          options[:interval_seconds] = Float(customer_ui_required_arg(args, i, arg))
+          i += 1
+        when /\A--interval-seconds=(\d+(?:\.\d+)?)\z/
+          options[:interval_seconds] = Float(Regexp.last_match(1))
+        when '--json'
+          options[:json] = true
+        when '--dry-run'
+          options[:dry_run] = true
+        when '--no-exit'
+          options[:no_exit] = true
+        when '--local'
+          # Consumed by SaneMaster Mini routing.
+        else
+          raise ArgumentError, "unknown option: #{arg}"
+        end
+        i += 1
+      end
+
+      options[:duration_seconds] = 0 if options[:duration_seconds].negative?
+      options[:interval_seconds] = 1.0 if options[:interval_seconds] < 1.0
+      options
+    end
+
+    def resource_soak_dry_run_report(options)
+      {
+        ok: true,
+        json: options[:json],
+        no_exit: options[:no_exit],
+        dry_run: true,
+        app: options[:app_name],
+        duration_seconds: options[:duration_seconds],
+        interval_seconds: options[:interval_seconds],
+        artifact_path: options[:artifact_path],
+        log_path: options[:log_path],
+        issues: []
+      }
+    end
+
+    def resource_soak_running_app_candidate(app_name)
+      app_path = "/Applications/#{app_name}.app"
+      executable = File.join(app_path, 'Contents', 'MacOS', app_name)
+      return nil unless File.executable?(executable)
+
+      pids_output, = Open3.capture2('pgrep', '-x', app_name)
+      pids_output.lines.map(&:strip).reject(&:empty?).each do |pid_text|
+        pid = pid_text.to_i
+        command_line, = Open3.capture2('ps', '-o', 'command=', '-p', pid.to_s)
+        process_path = command_line.strip.split(/\s+/, 2).first
+        next unless File.expand_path(process_path.to_s) == executable
+
+        return {
+          pid: pid,
+          app_path: app_path,
+          app_version: resource_soak_plist_value(app_path, 'CFBundleShortVersionString'),
+          app_build: resource_soak_plist_value(app_path, 'CFBundleVersion'),
+          process_path: executable
+        }
+      end
+      nil
+    end
+
+    def resource_soak_plist_value(app_path, key)
+      value, status = Open3.capture2('/usr/libexec/PlistBuddy', '-c', "Print :#{key}", File.join(app_path, 'Contents', 'Info.plist'))
+      status.success? ? value.strip : nil
+    end
+
+    def resource_soak_sample(pid)
+      output, status = Open3.capture2('ps', '-o', '%cpu=,rss=', '-p', pid.to_s)
+      return nil unless status.success?
+
+      cpu_text, rss_text = output.strip.split(/\s+/, 2)
+      return nil unless cpu_text && rss_text
+
+      {
+        sampled_at: Time.now.utc.iso8601,
+        cpu: cpu_text.to_f,
+        rss_mb: rss_text.to_f / 1024.0,
+        physical_footprint_mb: resource_soak_physical_footprint_mb(pid)
+      }
+    end
+
+    def resource_soak_physical_footprint_mb(pid)
+      output, status = Open3.capture2e('footprint', '-pid', pid.to_s, '-summary')
+      return nil unless status.success?
+
+      resource_soak_parse_footprint_mb(output)
+    end
+
+    def resource_soak_parse_footprint_mb(output)
+      line = output.to_s.lines.find { |candidate| candidate.include?('phys_footprint:') }
+      return nil unless line
+
+      match = line.match(/phys_footprint:\s*([0-9.]+)\s*([KMG])B?\b/i)
+      return nil unless match
+
+      value = match[1].to_f
+      unit = match[2].upcase
+      case unit
+      when 'K' then value / 1024.0
+      when 'G' then value * 1024.0
+      else value
+      end
+    end
+
+    def resource_soak_metrics(samples)
+      return resource_soak_empty_metrics if samples.empty?
+
+      rss_values = samples.map { |sample| sample[:rss_mb].to_f }
+      cpu_values = samples.map { |sample| sample[:cpu].to_f }
+      physical_values = samples.map { |sample| sample[:physical_footprint_mb] }.compact.map(&:to_f)
+      {
+        sample_count: samples.length,
+        avg_cpu: resource_soak_round(cpu_values.sum / cpu_values.length),
+        peak_cpu: resource_soak_round(cpu_values.max),
+        avg_rss_mb: resource_soak_round(rss_values.sum / rss_values.length),
+        peak_rss_mb: resource_soak_round(rss_values.max),
+        rss_growth_mb: resource_soak_round(rss_values.last - rss_values.first),
+        avg_physical_footprint_mb: physical_values.empty? ? nil : resource_soak_round(physical_values.sum / physical_values.length),
+        peak_physical_footprint_mb: physical_values.empty? ? nil : resource_soak_round(physical_values.max),
+        physical_footprint_growth_mb: physical_values.empty? ? nil : resource_soak_round(physical_values.last - physical_values.first)
+      }
+    end
+
+    def resource_soak_empty_metrics
+      {
+        sample_count: 0,
+        avg_cpu: 0.0,
+        peak_cpu: 0.0,
+        avg_rss_mb: 0.0,
+        peak_rss_mb: 0.0,
+        rss_growth_mb: 0.0,
+        avg_physical_footprint_mb: nil,
+        peak_physical_footprint_mb: nil,
+        physical_footprint_growth_mb: nil
+      }
+    end
+
+    def resource_soak_issues(metrics, options)
+      issues = []
+      if options[:duration_seconds] < options[:min_duration_seconds]
+        issues << "duration #{options[:duration_seconds]}s is shorter than required #{options[:min_duration_seconds]}s"
+      end
+      issues << 'no process samples collected' if metrics[:sample_count].to_i <= 0
+      issues << format('avgCpu %.1f%% > %.1f%%', metrics[:avg_cpu], options[:cpu_avg_max]) if metrics[:avg_cpu].to_f > options[:cpu_avg_max]
+      issues << format('peakRss %.1fMB > %.1fMB', metrics[:peak_rss_mb], options[:rss_peak_mb_max]) if metrics[:peak_rss_mb].to_f > options[:rss_peak_mb_max]
+      issues << format('rssGrowth %.1fMB > %.1fMB', metrics[:rss_growth_mb], options[:rss_growth_mb_max]) if metrics[:rss_growth_mb].to_f > options[:rss_growth_mb_max]
+      if metrics[:peak_physical_footprint_mb].nil?
+        issues << 'physical footprint samples missing'
+      else
+        if metrics[:peak_physical_footprint_mb].to_f > options[:physical_peak_mb_max]
+          issues << format('peakPhysical %.1fMB > %.1fMB', metrics[:peak_physical_footprint_mb], options[:physical_peak_mb_max])
+        end
+        if metrics[:physical_footprint_growth_mb].to_f > options[:physical_growth_mb_max]
+          issues << format('physicalGrowth %.1fMB > %.1fMB', metrics[:physical_footprint_growth_mb], options[:physical_growth_mb_max])
+        end
+      end
+      issues
+    end
+
+    def resource_soak_budget_payload(options)
+      {
+        min_duration_seconds: options[:min_duration_seconds],
+        cpu_avg_max: options[:cpu_avg_max],
+        rss_peak_mb_max: options[:rss_peak_mb_max],
+        rss_growth_mb_max: options[:rss_growth_mb_max],
+        physical_peak_mb_max: options[:physical_peak_mb_max],
+        physical_growth_mb_max: options[:physical_growth_mb_max]
+      }
+    end
+
+    def resource_soak_round(value)
+      value.nil? ? nil : value.round(3)
+    end
+
+    def customer_ui_required_arg(args, index, flag)
+      value = args[index + 1]
+      raise ArgumentError, "missing value for #{flag}" if value.nil? || value.start_with?('--')
+
+      value
     end
 
     def customer_ui_run_command(*command)

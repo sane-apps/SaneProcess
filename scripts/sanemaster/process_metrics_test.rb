@@ -109,7 +109,7 @@ exit(run_tests('SaneMaster Process Metrics Tests') do
       true
     end
 
-    test('records audit-grade v2 workflow receipts for wrapped commands') do
+    test('records audit-grade v3 workflow receipts for wrapped commands') do
       Dir.mktmpdir('workflow-receipt-v2-') do |dir|
         path = File.join(dir, 'metrics.jsonl')
         previous_metrics_path = ENV['SANEMASTER_PROCESS_METRICS_PATH']
@@ -135,7 +135,7 @@ exit(run_tests('SaneMaster Process Metrics Tests') do
         rows = File.readlines(path, chomp: true).map { |line| JSON.parse(line) }
         receipt = rows.find { |row| row['type'] == 'workflow_receipt' }
         assert(receipt, 'expected workflow_receipt metric')
-        assert_eq(receipt['schema_version'], 2)
+        assert_eq(receipt['schema_version'], 3)
         assert_eq(receipt['workflow'], 'unit_test')
         assert_eq(receipt['success'], true)
         assert_eq(receipt['exit_status'], 0)
@@ -144,11 +144,16 @@ exit(run_tests('SaneMaster Process Metrics Tests') do
         assert(receipt['started_at'].match?(/\A\d{4}-\d{2}-\d{2}T/), 'expected started_at timestamp')
         assert(receipt['completed_at'].match?(/\A\d{4}-\d{2}-\d{2}T/), 'expected completed_at timestamp')
         assert(!receipt['host'].to_s.empty?, 'expected host')
+        assert_eq(receipt['event_version'], 3)
+        assert_eq(receipt['task_family'], 'general')
+        assert_eq(receipt['claim_scope'], 'code')
+        assert_eq(receipt['proof_scope_actual'], 'diagnostic')
+        assert_eq(receipt['outcome_strength'], 'diagnostic')
       end
       true
     end
 
-    test('records v2 workflow receipts for SaneMaster commands by default') do
+    test('records v3 workflow receipts for SaneMaster commands by default') do
       Dir.mktmpdir('sanemaster-command-receipt-') do |dir|
         path = File.join(dir, 'metrics.jsonl')
         previous_metrics_path = ENV['SANEMASTER_PROCESS_METRICS_PATH']
@@ -174,13 +179,65 @@ exit(run_tests('SaneMaster Process Metrics Tests') do
         rows = File.readlines(path, chomp: true).map { |line| JSON.parse(line) }
         receipt = rows.find { |row| row['type'] == 'workflow_receipt' && row['workflow'] == 'sanemaster:process_metrics' }
         assert(receipt, 'expected default SaneMaster workflow_receipt metric')
-        assert_eq(receipt['schema_version'], 2)
+        assert_eq(receipt['schema_version'], 3)
         assert_eq(receipt['success'], true)
         assert_eq(receipt['exit_status'], 0)
         assert(receipt['duration_ms'].is_a?(Integer), 'expected duration_ms integer')
         assert(receipt['command_sha256'].match?(/\A[0-9a-f]{64}\z/), 'expected command hash')
         assert(!receipt['host'].to_s.empty?, 'expected host')
+        assert_eq(receipt['task_family'], 'process_health')
+        assert_eq(receipt['claim_scope'], 'diagnostic')
+        assert_eq(receipt['proof_scope_actual'], 'diagnostic')
       end
+      true
+    end
+
+    test('workflow receipt route metadata carries latest proof plan scope') do
+      Dir.mktmpdir('workflow-route-metadata-') do |dir|
+        path = File.join(dir, 'metrics.jsonl')
+        previous_metrics_path = ENV['SANEMASTER_PROCESS_METRICS_PATH']
+        ENV['SANEMASTER_PROCESS_METRICS_PATH'] = path
+        subject = ProcessMetricsHarness.new(path)
+
+        begin
+          subject.record_process_metric(
+            'proof_plan',
+            proof_scope_planned: 'focused_mini',
+            route_reason: 'Scoped proof uses focused tests plus exact Mini runtime proof'
+          )
+          metadata = subject.send(:workflow_receipt_route_metadata, 'sanemaster:verify', success: true)
+
+          assert_eq(metadata[:schema_version], nil)
+          assert_eq(metadata[:event_version], 3)
+          assert_eq(metadata[:task_family], 'verification')
+          assert_eq(metadata[:claim_scope], 'code')
+          assert_eq(metadata[:proof_scope_planned], 'focused_mini')
+          assert_eq(metadata[:proof_scope_actual], 'full_canonical')
+          assert_eq(metadata[:outcome_strength], 'authoritative')
+          assert_includes(metadata[:route_reason], 'Scoped proof')
+        ensure
+          if previous_metrics_path
+            ENV['SANEMASTER_PROCESS_METRICS_PATH'] = previous_metrics_path
+          else
+            ENV.delete('SANEMASTER_PROCESS_METRICS_PATH')
+          end
+        end
+      end
+      true
+    end
+
+    test('failed workflow receipt route metadata classifies expected red state') do
+      subject = ProcessMetricsHarness.new('/tmp/saneprocess-route-failure-state-test.jsonl')
+
+      launch = subject.send(:workflow_receipt_route_metadata, 'sanemaster:launch_readiness', success: false)
+      ui = subject.send(:workflow_receipt_route_metadata, 'sanemaster:customer_ui_sweep', success: false)
+      verify = subject.send(:workflow_receipt_route_metadata, 'sanemaster:verify', success: false)
+      green = subject.send(:workflow_receipt_route_metadata, 'sanemaster:verify', success: true)
+
+      assert_eq(launch[:failure_state], 'launch_precondition_blocked')
+      assert_eq(ui[:failure_state], 'runtime_proof_failed')
+      assert_eq(verify[:failure_state], 'verification_failed')
+      assert_eq(green[:failure_state], nil)
       true
     end
 
@@ -283,7 +340,10 @@ exit(run_tests('SaneMaster Process Metrics Tests') do
             workflow: 'sanemaster:verify',
             success: false,
             exit_status: 1,
-            duration_ms: 300_000
+            duration_ms: 300_000,
+            proof_scope_planned: 'focused_mini',
+            proof_scope_actual: 'full_canonical',
+            outcome_strength: 'authoritative'
           },
           {
             timestamp: '2026-06-12T10:35:00Z',
@@ -332,15 +392,73 @@ exit(run_tests('SaneMaster Process Metrics Tests') do
 
         assert_eq(result[:workflow_receipts], 7)
         assert_eq(result[:ignored_bookkeeping_receipts], 1)
+        assert_eq(result.dig(:summary, :planned_focused_ran_broad_count), 1)
         assert(!result[:workflows].any? { |entry| entry[:workflow] == 'sanemaster:mcp_watchdog' })
         assert_eq(release[:cost_class], 'high')
         assert_eq(release[:route_guard], 'release_only')
+        assert_eq(release[:failure_states]['release_precondition_blocked'], 1)
+        assert_eq(release[:expected_red_failures], 1)
         assert_includes(release[:proof_guidance], 'proof_plan')
         assert_eq(verify[:route_guard], 'proof_scope_sensitive')
+        assert_eq(verify[:planned_focused_ran_broad_count], 1)
+        assert_eq(verify[:failure_states]['verification_failed'], 1)
+        assert_eq(verify[:expected_red_failures], 0)
         assert_eq(validation[:count], 2)
         assert_includes(validation[:raw_workflows], 'validation_report')
         assert_includes(validation[:raw_workflows], 'sanemaster:validation_report')
         assert_includes(result[:recommended_actions].join(' '), 'release-only workflow')
+        assert_includes(result[:recommended_actions].join(' '), 'broad proof before focused proof')
+        assert_includes(result[:recommended_actions].join(' '), 'expected precondition blockers')
+      end
+      true
+    end
+
+    test('route cost review separates expected precondition red from runtime proof failure') do
+      Dir.mktmpdir('route-cost-failure-states-') do |dir|
+        path = File.join(dir, 'metrics.jsonl')
+        rows = [
+          {
+            timestamp: '2026-06-12T10:00:00Z',
+            project: 'SaneBar',
+            type: 'workflow_receipt',
+            workflow: 'sanemaster:launch_readiness',
+            success: false,
+            exit_status: 1,
+            duration_ms: 1_000
+          },
+          {
+            timestamp: '2026-06-12T10:01:00Z',
+            project: 'SaneBar',
+            type: 'workflow_receipt',
+            workflow: 'sanemaster:setapp_upload',
+            success: false,
+            exit_status: 1,
+            duration_ms: 1_000
+          },
+          {
+            timestamp: '2026-06-12T10:02:00Z',
+            project: 'SaneBar',
+            type: 'workflow_receipt',
+            workflow: 'sanemaster:customer_ui_sweep',
+            success: false,
+            exit_status: 1,
+            duration_ms: 1_000
+          }
+        ]
+        File.write(path, rows.map { |row| JSON.generate(row) }.join("\n") + "\n")
+
+        subject = ProcessMetricsHarness.new(path)
+        result = subject.send(:build_route_cost_review, subject.send(:read_route_cost_events_from_path, path), options: { metrics_path: path, min_count: 1 })
+        launch = result[:workflows].find { |entry| entry[:workflow] == 'sanemaster:launch_readiness' }
+        setapp = result[:workflows].find { |entry| entry[:workflow] == 'sanemaster:setapp_upload' }
+        ui = result[:workflows].find { |entry| entry[:workflow] == 'sanemaster:customer_ui_sweep' }
+
+        assert_eq(launch[:failure_states], { 'launch_precondition_blocked' => 1 })
+        assert_eq(setapp[:failure_states], { 'distribution_precondition_blocked' => 1 })
+        assert_eq(ui[:failure_states], { 'runtime_proof_failed' => 1 })
+        assert_eq(launch[:expected_red_failures], 1)
+        assert_eq(setapp[:expected_red_failures], 1)
+        assert_eq(ui[:expected_red_failures], 0)
       end
       true
     end

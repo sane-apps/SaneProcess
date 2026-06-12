@@ -262,9 +262,11 @@ def populate_session_docs
   require_relative 'core/state_manager'
 
   found = SESSION_DOC_CANDIDATES.select { |f| File.exist?(File.join(PROJECT_DIR, f)) }
+  required_paths = found.each_with_object({}) { |file, memo| memo[file] = File.join(PROJECT_DIR, file) }
 
   StateManager.update(:session_docs) do |sd|
     sd[:required] = found
+    sd[:required_paths] = required_paths
     sd[:read] = []
     sd[:enforced] = true
     sd
@@ -560,7 +562,9 @@ def initialize_startup_gate
   if File.exist?(SKILLS_REGISTRY)
     StateManager.update(:session_docs) do |sd|
       sd[:required] ||= []
+      sd[:required_paths] ||= {}
       sd[:required] << 'SKILLS_REGISTRY.md' unless sd[:required].include?('SKILLS_REGISTRY.md')
+      sd[:required_paths]['SKILLS_REGISTRY.md'] = SKILLS_REGISTRY
       sd
     end
   end

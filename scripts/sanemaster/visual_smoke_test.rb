@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require 'tmpdir'
+require 'open3'
 
 require_relative '../hooks/test/test_framework'
 require_relative 'visual_smoke'
@@ -539,11 +540,19 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
     end
 
     test('dash alias resolves to detailed help') do
-      source = File.read(File.expand_path('../SaneMaster.rb', __dir__), encoding: Encoding::UTF_8)
-      alias_block = source[/aliases = \{(.*?)\n    \}/m, 1]
+      registry_source = File.read(File.expand_path('command_registry.rb', __dir__), encoding: Encoding::UTF_8)
+      stdout, stderr, status = Open3.capture3(
+        'ruby',
+        File.expand_path('../SaneMaster.rb', __dir__),
+        'help',
+        'visual-smoke'
+      )
 
-      assert(alias_block, 'expected help alias block')
-      assert_includes(alias_block, "'visual-smoke' => 'visual_smoke'")
+      assert_includes(registry_source, "'visual-smoke' => 'visual_smoke'")
+      assert_eq(status.exitstatus, 0)
+      assert_eq(stderr, '')
+      assert_includes(stdout, 'VISUAL_SMOKE')
+      assert_includes(stdout, '--require-peekaboo')
       true
     end
   end
