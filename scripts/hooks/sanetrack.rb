@@ -512,6 +512,11 @@ def process_result(tool_name, tool_input, tool_response)
 
   # === INTELLIGENCE: Detect actual failures, not text matching ===
   error_sig = detect_actual_failure(tool_name, tool_response)
+  # Sibling-hook enforcement feedback is the process talking, not the work
+  # failing. Exclude it BEFORE both counters (consecutive AND signature) —
+  # the 2026-06-12 re-trip came through the signature path, which the
+  # original track_failure-only exclusion missed.
+  error_sig = nil if error_sig && tool_response.to_s.match?(/hook feedback|SANETOOLS BLOCKED|TaskCompleted hook|completed without recent test verification/i)
   is_error = !error_sig.nil?
 
   if is_error
