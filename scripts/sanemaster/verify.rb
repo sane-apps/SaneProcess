@@ -594,7 +594,7 @@ module SaneMasterModules
 
       # Core modules
       puts "\n  Core Modules:"
-      core_modules = %w[state_manager.rb coordinator.rb hook_registry.rb]
+      core_modules = %w[state_manager.rb local_ui_guard.rb]
       core_modules.each do |mod|
         path = File.join(saneprocess_hooks, 'core', mod)
         if File.exist?(path) && system("ruby -c #{path} > /dev/null 2>&1")

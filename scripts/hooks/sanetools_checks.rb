@@ -6,6 +6,7 @@
 
 require 'json'
 require 'socket'
+require_relative 'core/local_ui_guard'
 require_relative 'core/mandatory_workflows'
 require_relative 'core/state_manager'
 require_relative 'sanetools_gaming'
@@ -34,16 +35,11 @@ module SaneToolsChecks
 
   STATE_FILE_PATTERN = %r{\.claude/[^/]+\.json$}.freeze
 
-  LOCAL_UI_TOOL_PATTERN = Regexp.union(
-    /^mcp__computer_use__/,
-    /^computer-use\./,
-    /^mcp__browser__/,
-    /^browser\./
-  ).freeze
-
-  LOCAL_UI_APPROVAL = 'MR. SANE APPROVES LOCAL UI ON AIR'
-  MINI_UNAVAILABLE_APPROVAL = 'MR. SANE CONFIRMS MINI UNAVAILABLE'
-  MINI_SCREENSHOT_WRAPPER = '~/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh'
+  # Shared with sane_launch_guard.rb via core/local_ui_guard.rb
+  LOCAL_UI_TOOL_PATTERN = SaneLocalUIGuard::LOCAL_UI_TOOL_PATTERN
+  LOCAL_UI_APPROVAL = SaneLocalUIGuard::LOCAL_UI_APPROVAL
+  MINI_UNAVAILABLE_APPROVAL = SaneLocalUIGuard::MINI_UNAVAILABLE_APPROVAL
+  MINI_SCREENSHOT_WRAPPER = SaneLocalUIGuard::MINI_SCREENSHOT_WRAPPER
 
   FILE_SIZE_SOFT_LIMIT = 500
   FILE_SIZE_HARD_LIMIT = 800
@@ -187,15 +183,7 @@ module SaneToolsChecks
     end
 
     def running_on_macbook_air?
-      return true if ENV['SANE_FORCE_MACBOOK_AIR_FOR_TEST'] == '1'
-      return false if ENV['SANE_FORCE_MAC_MINI_FOR_TEST'] == '1'
-
-      host = Socket.gethostname.to_s.downcase
-      return false if host.include?('mini')
-
-      true
-    rescue StandardError
-      true
+      SaneLocalUIGuard.running_on_macbook_air?
     end
 
     def check_blocked_path(tool_input, tool_name = nil, edit_tools = [])

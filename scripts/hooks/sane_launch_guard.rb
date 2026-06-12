@@ -16,17 +16,14 @@
 
 require 'json'
 require 'socket'
+require_relative 'core/local_ui_guard'
 
 SANE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneScan SaneSync SaneVideo].freeze
 SANE_APP_PATTERN = Regexp.new(SANE_APPS.join('|'))
-LOCAL_UI_TOOL_PATTERN = Regexp.union(
-  /^mcp__computer_use__/,
-  /^computer-use\./,
-  /^mcp__browser__/,
-  /^browser\./
-).freeze
-LOCAL_UI_APPROVAL = 'MR. SANE APPROVES LOCAL UI ON AIR'
-MINI_UNAVAILABLE_APPROVAL = 'MR. SANE CONFIRMS MINI UNAVAILABLE'
+# Shared with sanetools_checks.rb via core/local_ui_guard.rb
+LOCAL_UI_TOOL_PATTERN = SaneLocalUIGuard::LOCAL_UI_TOOL_PATTERN
+LOCAL_UI_APPROVAL = SaneLocalUIGuard::LOCAL_UI_APPROVAL
+MINI_UNAVAILABLE_APPROVAL = SaneLocalUIGuard::MINI_UNAVAILABLE_APPROVAL
 LOCAL_DASHBOARD_OPEN_PATTERN = Regexp.union(
   %r{\bopen\b.*https?://(?:app|auth)\.lemonsqueezy\.com}i,
   %r{\bopen\b.*https?://(?:appstoreconnect|developer|idmsa)\.apple\.com}i,
@@ -84,8 +81,11 @@ def saneapps_project?(project_dir)
 end
 
 def raw_app_build_test_command?(command)
-  return false unless command.match?(RAW_APP_BUILD_TEST_PATTERN)
-  return false if command.match?(READ_ONLY_XCODEBUILD_PATTERN)
+  # Match against the unquoted command so tool names inside string arguments
+  # (grep patterns, commit messages) cannot trigger the block.
+  bare = SaneLocalUIGuard.strip_quoted(command)
+  return false unless bare.match?(RAW_APP_BUILD_TEST_PATTERN)
+  return false if bare.match?(READ_ONLY_XCODEBUILD_PATTERN)
 
   saneapps_project?(command_project_dir(command))
 end
@@ -101,16 +101,11 @@ end
 def destructive_cleanup_command?(command)
   return false if canonical_cleanup_command?(command)
 
-  command.match?(DESTRUCTIVE_CLEANUP_PATTERN)
+  SaneLocalUIGuard.strip_quoted(command).match?(DESTRUCTIVE_CLEANUP_PATTERN)
 end
 
 def running_on_macbook_air?
-  return true if ENV['SANE_FORCE_MACBOOK_AIR_FOR_TEST'] == '1'
-  return false if ENV['SANE_FORCE_MAC_MINI_FOR_TEST'] == '1'
-
-  !Socket.gethostname.to_s.downcase.include?('mini')
-rescue StandardError
-  true
+  SaneLocalUIGuard.running_on_macbook_air?
 end
 
 begin

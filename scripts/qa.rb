@@ -45,32 +45,7 @@ class SaneProcessQA
     sanetrack.rb
     sanestop.rb
     session_start.rb
-  ].freeze
-
-  # Shared runtime modules that hooks require (not registered, but must exist)
-  SHARED_MODULES = %w[
-    rule_tracker.rb
-    state_signer.rb
-    sanetools_checks.rb
-    sanetools_gaming.rb
-    sanetools_deploy.rb
-    sanetools_startup.rb
-    sanetools_github_guard.rb
-    saneprompt_intelligence.rb
-    saneprompt_commands.rb
-    sanetrack_research.rb
-    sanetrack_state_updates.rb
-    sanetrack_gate.rb
-    sanetrack_reminders.rb
-    session_briefing.rb
-    session_start_cleanup.rb
-    self_test_environment.rb
-  ].freeze
-
-  CORE_MODULES = %w[
-    core/config.rb
-    core/state_manager.rb
-    core/context_compact.rb
+    task_completed_gate.rb
   ].freeze
 
   SELF_TEST_MODULES = %w[
@@ -81,8 +56,37 @@ class SaneProcessQA
     sanestop_test.rb
   ].freeze
 
+  HOOKS_DIR = File.join(__dir__, 'hooks')
+
+  # Runtime modules are derived from the entry hooks' actual require_relative
+  # graph, so this set can never drift from reality. Hand-maintained lists
+  # went 8 files stale and shipped LoadError installs (2026-06-11 audit).
+  def self.required_hook_modules
+    seen = {}
+    queue = EXPECTED_HOOKS.dup
+    hooks_root = File.expand_path(HOOKS_DIR)
+    until queue.empty?
+      rel = queue.shift
+      next if seen.key?(rel)
+
+      path = File.join(hooks_root, rel)
+      next unless File.exist?(path)
+
+      seen[rel] = true
+      File.read(path, encoding: Encoding::UTF_8)
+          .scan(/require_relative\s+['"]([^'"]+)['"]/).flatten.each do |target|
+        target += '.rb' unless target.end_with?('.rb')
+        full = File.expand_path(File.join(File.dirname(path), target))
+        next unless full.start_with?("#{hooks_root}/")
+
+        queue << full.delete_prefix("#{hooks_root}/")
+      end
+    end
+    seen.keys.sort
+  end
+
   # All files required for the advertised runtime + per-hook self-tests
-  ALL_HOOK_FILES = (EXPECTED_HOOKS + SHARED_MODULES + CORE_MODULES + SELF_TEST_MODULES).freeze
+  ALL_HOOK_FILES = (required_hook_modules + SELF_TEST_MODULES).uniq.freeze
 
   EXPECTED_RULE_COUNT = 17
 
@@ -337,34 +341,19 @@ end
       return
     end
 
-    content = File.read(INIT_SCRIPT)
+    content = File.read(INIT_SCRIPT, encoding: Encoding::UTF_8)
 
-    init_hooks = []
-    %w[MAIN_HOOKS SUPPORT_MODULES CORE_MODULES SELF_TEST_MODULES].each do |array_name|
-      match = content.match(/#{array_name}=\(\s*([\s\S]*?)\s*\)/)
-      next unless match
+    # init.sh installs hooks by wholesale glob copy (scripts/hooks/*.rb +
+    # core/*.rb), so per-file drift is impossible. Assert the glob copy is
+    # still present rather than parsing hand-maintained lists.
+    has_flat_glob = content.include?('"$SRC"/*.rb')
+    has_core_glob = content.include?('"$SRC"/core/*.rb')
 
-      init_hooks.concat(match[1].scan(/"([^"]+)"/).flatten)
-    end
-
-    if init_hooks.empty?
-      @errors << "init.sh: Cannot find hook install arrays"
-      puts "❌ Install arrays not found"
-      return
-    end
-
-    missing = ALL_HOOK_FILES - init_hooks
-    extra = init_hooks - ALL_HOOK_FILES
-
-    if missing.empty?
-      if extra.empty?
-        puts "✅ init.sh lists all #{ALL_HOOK_FILES.count} required runtime/test files"
-      else
-        puts "✅ init.sh lists all #{ALL_HOOK_FILES.count} required runtime/test files (+#{extra.count} optional modules)"
-      end
+    if has_flat_glob && has_core_glob
+      puts "✅ init.sh wholesale-copies the hook tree (#{ALL_HOOK_FILES.count} required files derive from the require graph)"
     else
-      @errors << "init.sh missing: #{missing.join(', ')}" unless missing.empty?
-      puts "❌ Mismatch (missing: #{missing.count}, extra: #{extra.count})"
+      @errors << 'init.sh: wholesale hook copy globs missing — installs will drift from the require graph'
+      puts '❌ init.sh hook copy globs not found'
     end
   end
 

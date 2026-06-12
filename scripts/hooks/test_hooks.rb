@@ -52,26 +52,21 @@ class HookTests
       test("non-ASCII learnings survive locale-less read") { test_learnings_non_ascii_locale }
     end
 
-    # Test HookRegistry
-    test_group("HookRegistry") do
-      test("auto-registers detectors") { test_registry_auto_register }
-      test("priority ordering") { test_registry_priority }
-    end
-
-    # Test Detectors
-    test_group("Detectors") do
+    # Blocked-path enforcement through the real sanetools entry point
+    test_group("Blocked Paths (entry point)") do
       test("PathDetector blocks ~/.ssh") { test_path_blocks_ssh }
       test("PathDetector blocks /etc") { test_path_blocks_etc }
       test("PathDetector allows project paths") { test_path_allows_project }
       test("PathDetector allows /tmp") { test_path_allows_tmp }
     end
 
-    # Test Coordinator
-    test_group("Coordinator") do
+    # Research/bootstrap allowances + Mini-first local-UI blocks (entry point)
+    test_group("Entry-Point Enforcement") do
       test("allows research tools") { test_coordinator_allows_research }
       test("blocks dangerous paths on research") { test_coordinator_blocks_dangerous }
       test("startup Bash allowed") { test_coordinator_allows_bootstrap }
       test("blocks local computer-use on MacBook Air") { test_coordinator_blocks_local_computer_use }
+      test("blocks hyphen-named computer-use MCP on Air") { test_blocks_hyphen_computer_use }
       test("allows computer-use on Mac Mini") { test_coordinator_allows_mini_computer_use }
     end
 
@@ -237,49 +232,7 @@ class HookTests
     end
   end
 
-  # HookRegistry tests
-  def test_registry_auto_register
-    require_relative 'core/hook_registry'
-    HookRegistry::Registry.reset!
-    detector = Class.new(HookRegistry::Detector) do
-      register_as :pre_tool_use, priority: 30
-      def check(_context)
-        allow
-      end
-    end
-    Object.const_set(:TestRegistryAutoDetector, detector) unless Object.const_defined?(:TestRegistryAutoDetector)
-
-    hooks = HookRegistry.for(:pre_tool_use)
-    hooks.any? { |h| h.name == 'TestRegistryAutoDetector' }
-  end
-
-  def test_registry_priority
-    require_relative 'core/hook_registry'
-    HookRegistry::Registry.reset!
-    low = Class.new(HookRegistry::Detector) do
-      register_as :pre_tool_use, priority: 10
-      def check(_context)
-        allow
-      end
-    end
-    high = Class.new(HookRegistry::Detector) do
-      register_as :pre_tool_use, priority: 90
-      def check(_context)
-        allow
-      end
-    end
-    Object.const_set(:TestRegistryLowPriorityDetector, low) unless Object.const_defined?(:TestRegistryLowPriorityDetector)
-    Object.const_set(:TestRegistryHighPriorityDetector, high) unless Object.const_defined?(:TestRegistryHighPriorityDetector)
-
-    hooks = HookRegistry.for(:pre_tool_use)
-    return false if hooks.empty?
-
-    # Verify sorted by priority (lower first)
-    priorities = hooks.map(&:priority)
-    priorities == priorities.sort
-  end
-
-  # Detector tests (using entry point)
+  # Blocked-path tests (using entry point)
   def test_path_blocks_ssh
     run_hook('Read', '~/.ssh/id_rsa') == 2
   end
@@ -312,6 +265,17 @@ class HookTests
   def test_coordinator_blocks_local_computer_use
     run_hook(
       'mcp__computer_use__get_app_state',
+      'Safari',
+      app: true,
+      extra_env: { 'SANE_FORCE_MACBOOK_AIR_FOR_TEST' => '1' }
+    ) == 2
+  end
+
+  # Live computer-use MCP tools are hyphen-named (mcp__computer-use__*); the
+  # guard pattern must match both spellings or the Mini-first block never fires.
+  def test_blocks_hyphen_computer_use
+    run_hook(
+      'mcp__computer-use__screenshot',
       'Safari',
       app: true,
       extra_env: { 'SANE_FORCE_MACBOOK_AIR_FOR_TEST' => '1' }

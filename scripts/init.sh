@@ -193,10 +193,10 @@ echo ""
 
 ERRORS=0
 
+# Entry-point hooks get +x; everything else installs by wholesale glob copy
+# below. The previous per-file module lists went 8 files stale and shipped
+# installs that crashed with LoadError (2026-06-11 audit).
 MAIN_HOOKS="session_start.rb saneprompt.rb sanetools.rb sanetrack.rb task_completed_gate.rb sanestop.rb"
-SUPPORT_MODULES="saneprompt_intelligence.rb saneprompt_commands.rb sanetools_checks.rb sanetools_research.rb sanetools_startup.rb sanetools_gaming.rb sanetools_deploy.rb sanetools_github_guard.rb sanetrack_research.rb sanetrack_state_updates.rb sanetrack_gate.rb sanetrack_reminders.rb session_briefing.rb session_start_cleanup.rb self_test_environment.rb state_signer.rb rule_tracker.rb"
-CORE_MODULES="core/config.rb core/state_manager.rb core/context_compact.rb"
-SELF_TEST_MODULES="saneprompt_test.rb sanetools_test.rb sanetools_test_scenarios.rb sanetrack_test.rb sanestop_test.rb"
 
 echo "Installing portable instructions..."
 if [ -f "AGENTS.md" ] && [ "$FORCE" -ne 1 ]; then
@@ -214,18 +214,17 @@ if [ "$INSTALL_CLAUDE" -eq 1 ]; then
     for hook in $MAIN_HOOKS; do
         copy_file "$SRC/$hook" "scripts/hooks/$hook" "$hook" "+x"
     done
-    for module in $SUPPORT_MODULES; do
-        if [ -f "$SRC/$module" ]; then
-            copy_file "$SRC/$module" "scripts/hooks/$module" "$module" ""
-        else
-            echo -e "   ${YELLOW}!${NC} $module optional module missing"
-        fi
+    # Wholesale copy of the rest of the hook tree: support modules, core
+    # modules, guards, and self-tests ride along so the install can never
+    # drift from the entry hooks' require graph.
+    for f in "$SRC"/*.rb; do
+        base="$(basename "$f")"
+        case " $MAIN_HOOKS " in *" $base "*) continue ;; esac
+        copy_file "$f" "scripts/hooks/$base" "$base" ""
     done
-    for core in $CORE_MODULES; do
-        copy_file "$SRC/$core" "scripts/hooks/$core" "$core" ""
-    done
-    for module in $SELF_TEST_MODULES; do
-        copy_file "$SRC/$module" "scripts/hooks/$module" "$module" ""
+    for f in "$SRC"/core/*.rb; do
+        base="core/$(basename "$f")"
+        copy_file "$f" "scripts/hooks/$base" "$base" ""
     done
 
     RULES_SRC="$SANEPROCESS_DIR/.claude/rules"
