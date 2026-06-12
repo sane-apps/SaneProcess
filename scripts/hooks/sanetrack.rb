@@ -538,6 +538,7 @@ def process_result(tool_name, tool_input, tool_response)
     emit_rewind_reminder(cb[:failures] || 0) if cb[:failures] && cb[:failures] >= 1
   else
     reset_failure_count(tool_name)
+    untrip_breaker_on_green_verify(tool_name, tool_input)
     track_edit(tool_name, tool_input, tool_response)
     track_bash_mutation(tool_name, tool_input, tool_response)
 

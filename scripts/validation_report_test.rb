@@ -801,11 +801,14 @@ exit(run_tests('Validation report tests') do
   end
 
   test_category('Q10 context size checks') do
-    test('Claude install support modules include extracted sanetools research gate') do
-      init_source = File.read(File.expand_path('init.sh', __dir__))
+    test('Claude install copies the whole hook tree so modules cannot drift') do
+      # init.sh switched from hand-maintained module lists (went 8 files
+      # stale, shipped LoadError installs) to wholesale glob copy; the
+      # research gate rides along with every other require_relative target.
+      init_source = File.read(File.expand_path('init.sh', __dir__), encoding: Encoding::UTF_8)
 
-      support_modules = init_source[/SUPPORT_MODULES="([^"]+)"/, 1].to_s.split
-      assert_includes(support_modules, 'sanetools_research.rb')
+      assert_includes(init_source, '"$SRC"/*.rb')
+      assert_includes(init_source, '"$SRC"/core/*.rb')
       true
     end
 

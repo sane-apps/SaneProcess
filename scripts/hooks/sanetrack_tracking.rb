@@ -299,6 +299,11 @@ def track_failure(tool_name, tool_response)
   is_failure = response_str.match?(ERROR_PATTERN)
 
   return unless is_failure
+  # Sibling-hook enforcement feedback is the process talking, not the work
+  # failing. Counting it as failures tripped the breaker on task-completion
+  # paperwork (2026-06-11 deadlock: breaker then blocked the very verify
+  # command the completion gate demanded).
+  return if response_str.match?(/hook feedback|SANETOOLS BLOCKED|TaskCompleted hook|completed without recent test verification/i)
 
   doom_loop_caught = false
 
@@ -318,6 +323,28 @@ def track_failure(tool_name, tool_response)
 
   # Q2 validation: track doom loop catch (separate update avoids nested lock)
   track_validation_doom_loop if doom_loop_caught
+end
+
+# A successful canonical verify is proof the root cause is fixed — clear the
+# trip on evidence instead of requiring a human rb- (2026-06-12: trips from
+# transient tool errors deadlocked sessions a green verify should have freed).
+def untrip_breaker_on_green_verify(tool_name, tool_input)
+  return unless tool_name == 'Bash'
+
+  command = (tool_input['command'] || tool_input[:command]).to_s
+  return unless command.match?(/SaneMaster(?:_standalone)?\.rb\s+verify\b/)
+
+  cb = StateManager.get(:circuit_breaker)
+  return unless cb[:tripped]
+
+  StateManager.update(:circuit_breaker) do |c|
+    c[:tripped] = false
+    c[:tripped_at] = nil
+    c[:error_signatures] = {}
+    c[:last_error] = nil
+    c
+  end
+  warn '✅ Circuit breaker cleared by green canonical verify.'
 end
 
 def reset_failure_count(tool_name)
