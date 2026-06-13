@@ -109,6 +109,61 @@ exit(run_tests('SaneMaster Process Metrics Tests') do
       true
     end
 
+    test('rotates process_metrics.jsonl when it exceeds the configured size cap') do
+      Dir.mktmpdir('process-metrics-rotate-') do |dir|
+        path = File.join(dir, 'metrics.jsonl')
+        previous_metrics_path = ENV['SANEMASTER_PROCESS_METRICS_PATH']
+        previous_max = ENV['SANEMASTER_PROCESS_METRICS_MAX_BYTES']
+        previous_keep = ENV['SANEMASTER_PROCESS_METRICS_ROTATE_KEEP']
+        ENV['SANEMASTER_PROCESS_METRICS_PATH'] = path
+        ENV['SANEMASTER_PROCESS_METRICS_MAX_BYTES'] = '32'
+        ENV['SANEMASTER_PROCESS_METRICS_ROTATE_KEEP'] = '2'
+        File.write(path, "#{'x' * 64}\n")
+
+        begin
+          assert(SaneProcessMetrics.record('unit_event', ok: true))
+        ensure
+          if previous_metrics_path
+            ENV['SANEMASTER_PROCESS_METRICS_PATH'] = previous_metrics_path
+          else
+            ENV.delete('SANEMASTER_PROCESS_METRICS_PATH')
+          end
+          previous_max ? ENV['SANEMASTER_PROCESS_METRICS_MAX_BYTES'] = previous_max : ENV.delete('SANEMASTER_PROCESS_METRICS_MAX_BYTES')
+          previous_keep ? ENV['SANEMASTER_PROCESS_METRICS_ROTATE_KEEP'] = previous_keep : ENV.delete('SANEMASTER_PROCESS_METRICS_ROTATE_KEEP')
+        end
+
+        rows = File.readlines(path, chomp: true).map { |line| JSON.parse(line) }
+        assert(File.exist?("#{path}.1"), 'expected previous ledger to rotate to .1')
+        assert_eq(rows.length, 1)
+        assert_eq(rows.first['type'], 'unit_event')
+      end
+      true
+    end
+
+    test('workflow receipt suppression skips internal watchdog cleanup telemetry') do
+      Dir.mktmpdir('workflow-receipt-suppress-') do |dir|
+        path = File.join(dir, 'metrics.jsonl')
+        previous_metrics_path = ENV['SANEMASTER_PROCESS_METRICS_PATH']
+        previous_suppression = ENV['SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT']
+        ENV['SANEMASTER_PROCESS_METRICS_PATH'] = path
+        ENV['SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT'] = '1'
+
+        begin
+          SaneMaster.new.send(:record_sanemaster_workflow_receipt, 'mcp_watchdog', %w[mcp_watchdog clean], Time.now.utc, 0)
+        ensure
+          if previous_metrics_path
+            ENV['SANEMASTER_PROCESS_METRICS_PATH'] = previous_metrics_path
+          else
+            ENV.delete('SANEMASTER_PROCESS_METRICS_PATH')
+          end
+          previous_suppression ? ENV['SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT'] = previous_suppression : ENV.delete('SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT')
+        end
+
+        assert(!File.exist?(path) || File.zero?(path), 'expected suppression to avoid writing workflow_receipt')
+      end
+      true
+    end
+
     test('records audit-grade v3 workflow receipts for wrapped commands') do
       Dir.mktmpdir('workflow-receipt-v2-') do |dir|
         path = File.join(dir, 'metrics.jsonl')

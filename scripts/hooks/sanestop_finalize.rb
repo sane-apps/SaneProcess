@@ -28,6 +28,15 @@ require_relative 'core/process_metrics'
 require_relative 'core/state_manager'
 require_relative 'core/visual_receipt'
 
+TRANSCRIPT_TOKEN_KEYS = %w[
+  input_tokens output_tokens total_tokens cached_tokens cache_read_input_tokens
+  cache_creation_input_tokens reasoning_tokens
+].freeze unless defined?(TRANSCRIPT_TOKEN_KEYS)
+TRANSCRIPT_TOKEN_TOTAL_COMPONENTS = %w[
+  input_tokens output_tokens cached_tokens cache_read_input_tokens
+  cache_creation_input_tokens
+].freeze unless defined?(TRANSCRIPT_TOKEN_TOTAL_COMPONENTS)
+
 # === RULE #4 ENFORCEMENT ===
 # Block session end if edits were made but no tests/verification ran.
 # This closes the gap where config changes, code changes, etc. go untested.
@@ -270,7 +279,69 @@ def check_summary_needed
   nil  # Don't block, just remind
 end
 
-def save_session_learnings
+def transcript_token_summary(transcript_path)
+  counts = Hash.new(0)
+  return empty_transcript_token_summary if transcript_path.to_s.strip.empty?
+  return empty_transcript_token_summary unless File.file?(transcript_path)
+
+  File.foreach(transcript_path, encoding: Encoding::UTF_8) do |line|
+    next if line.strip.empty?
+
+    collect_transcript_tokens(JSON.parse(line), counts)
+  rescue JSON::ParserError
+    next
+  end
+
+  total = counts['total_tokens']
+  total = TRANSCRIPT_TOKEN_TOTAL_COMPONENTS.sum { |key| counts[key].to_i } if total.to_i.zero?
+  {
+    transcript_total_tokens: total.to_i,
+    transcript_input_tokens: counts['input_tokens'].to_i,
+    transcript_output_tokens: counts['output_tokens'].to_i,
+    transcript_cached_tokens: counts['cached_tokens'].to_i,
+    transcript_cache_read_tokens: counts['cache_read_input_tokens'].to_i,
+    transcript_cache_creation_tokens: counts['cache_creation_input_tokens'].to_i,
+    transcript_reasoning_tokens: counts['reasoning_tokens'].to_i
+  }
+rescue StandardError
+  empty_transcript_token_summary
+end
+
+def empty_transcript_token_summary
+  {
+    transcript_total_tokens: 0,
+    transcript_input_tokens: 0,
+    transcript_output_tokens: 0,
+    transcript_cached_tokens: 0,
+    transcript_cache_read_tokens: 0,
+    transcript_cache_creation_tokens: 0,
+    transcript_reasoning_tokens: 0
+  }
+end
+
+def collect_transcript_tokens(value, counts)
+  case value
+  when Hash
+    value.each do |key, child|
+      key = key.to_s
+      token_value = transcript_token_value(child)
+      counts[key] += token_value if token_value && TRANSCRIPT_TOKEN_KEYS.include?(key)
+      collect_transcript_tokens(child, counts) if child.is_a?(Hash) || child.is_a?(Array)
+    end
+  when Array
+    value.each { |child| collect_transcript_tokens(child, counts) }
+  end
+end
+
+def transcript_token_value(value)
+  return value if value.is_a?(Integer)
+  return value.to_i if value.is_a?(Float)
+  return value.to_i if value.is_a?(String) && value.match?(/\A\d+\z/)
+
+  nil
+end
+
+def build_session_stats(transcript_path: nil, outcome: 'completed', block_family: nil, block_reason: nil)
   edits = StateManager.get(:edits)
   research = StateManager.get(:research)
   cb = StateManager.get(:circuit_breaker)
@@ -281,12 +352,15 @@ def save_session_learnings
   sop_receipt = build_sop_receipt(violations)
   sop_score = sop_receipt[:sop_score]
 
-  # Calculate session stats
   verify_status = session_verify_status
-  stats = {
+  {
     timestamp: Time.now.iso8601,
     session_id: sop_receipt[:session_id],
     client: sop_receipt[:client],
+    outcome: outcome,
+    stop_blocked: outcome.to_s == 'blocked',
+    block_family: block_family,
+    block_reason: block_reason,
     edits: edits[:count] || 0,
     unique_files: edits[:unique_files]&.length || 0,
     research_done: research.compact.keys.length,
@@ -306,50 +380,117 @@ def save_session_learnings
     final_verify_success: verify_status[:last_success],
     final_verify_tests_run: verify_status[:last_tests_run],
     final_verify_evidence_strength: verify_status[:last_evidence_strength],
-    final_verify_timestamp: verify_status[:last_timestamp]
-  }
+    final_verify_timestamp: verify_status[:last_timestamp],
+    final_verify_source_fingerprint: verify_status[:last_source_fingerprint]
+  }.merge(transcript_token_summary(transcript_path))
+end
 
+def record_session_accounting(transcript_path: nil, outcome: 'completed', block_family: nil, block_reason: nil, update_validation: true)
+  stats = build_session_stats(
+    transcript_path: transcript_path,
+    outcome: outcome,
+    block_family: block_family,
+    block_reason: block_reason
+  )
   SaneProcessMetrics.record(
     'session_end',
     session_id: stats[:session_id],
     client: stats[:client],
-    success: verify_status[:last_success],
-    sop_score: sop_score,
+    outcome: stats[:outcome],
+    stop_blocked: stats[:stop_blocked],
+    block_family: stats[:block_family],
+    block_reason: stats[:block_reason],
+    success: stats[:final_verify_success],
+    sop_score: stats[:sop_score],
     base_score: stats[:base_score],
     block_count: stats[:block_count],
     cap_score: stats[:cap_score],
     cap_reason: stats[:cap_reason],
     edits: stats[:edits],
     unique_files: stats[:unique_files],
-    verify_attempts: verify_status[:attempts],
-    verify_failures: verify_status[:failures],
-    verify_zero_test_failures: verify_status[:zero_test_failures],
-    verify_zero_test_successes: verify_status[:zero_test_successes],
-    final_verify_success: verify_status[:last_success],
-    final_verify_tests_run: verify_status[:last_tests_run],
-    final_verify_evidence_strength: verify_status[:last_evidence_strength],
-    final_verify_timestamp: verify_status[:last_timestamp]
+    verify_attempts: stats[:verify_attempts],
+    verify_failures: stats[:verify_failures],
+    verify_zero_test_failures: stats[:verify_zero_test_failures],
+    verify_zero_test_successes: stats[:verify_zero_test_successes],
+    final_verify_success: stats[:final_verify_success],
+    final_verify_tests_run: stats[:final_verify_tests_run],
+    final_verify_evidence_strength: stats[:final_verify_evidence_strength],
+    final_verify_timestamp: stats[:final_verify_timestamp],
+    final_verify_source_fingerprint: stats[:final_verify_source_fingerprint],
+    transcript_total_tokens: stats[:transcript_total_tokens],
+    transcript_input_tokens: stats[:transcript_input_tokens],
+    transcript_output_tokens: stats[:transcript_output_tokens],
+    transcript_cached_tokens: stats[:transcript_cached_tokens],
+    transcript_cache_read_tokens: stats[:transcript_cache_read_tokens],
+    transcript_cache_creation_tokens: stats[:transcript_cache_creation_tokens],
+    transcript_reasoning_tokens: stats[:transcript_reasoning_tokens]
   )
-  SaneProcessMetrics.record('session_receipt', build_client_neutral_session_receipt(stats, violations, verify_status))
+  SaneProcessMetrics.record('session_receipt', build_client_neutral_session_receipt(stats))
+  record_block_outcomes(stats)
+
+  update_validation_metrics if update_validation
+  stats
+end
+
+def record_blocked_stop_accounting(transcript_path, block_family, block_reason)
+  record_session_accounting(
+    transcript_path: transcript_path,
+    outcome: 'blocked',
+    block_family: block_family,
+    block_reason: block_reason,
+    update_validation: false
+  )
+end
+
+def record_block_outcomes(stats)
+  rows = stats[:violations].each_with_object({}) do |(rule, count), memo|
+    memo[rule.to_s] = count.to_i
+  end
+  rows[stats[:block_family].to_s] ||= 1 if stats[:stop_blocked] && stats[:block_family]
+  rows.each do |rule, count|
+    SaneProcessMetrics.record(
+      'block_outcome',
+      session_id: stats[:session_id],
+      outcome: stats[:outcome],
+      stop_blocked: stats[:stop_blocked],
+      rule_family: rule,
+      count: count,
+      block_family: stats[:block_family],
+      block_reason: stats[:block_reason]
+    )
+  end
+end
+
+def save_session_learnings(transcript_path = nil)
+  stats = record_session_accounting(transcript_path: transcript_path, outcome: 'completed')
 
   # Update patterns for future sessions
-  update_session_patterns(violations, sop_score)
+  update_session_patterns(stats[:violations], stats[:sop_score])
 
   # Check score variance (warns if suspiciously consistent)
-  check_score_variance(sop_score)
+  check_score_variance(stats[:sop_score])
 
   # Check weasel words in recent edits
   check_weasel_words
-
-  # Update validation metrics (Q1 block accuracy, Q2 missed doom loops, Q4 session counts)
-  update_validation_metrics
 
   log_session(stats)
   capture_session_learnings
   stats
 end
 
-def build_client_neutral_session_receipt(stats, violations, verify_status)
+def build_client_neutral_session_receipt(stats, violations = nil, verify_status = nil)
+  violations ||= stats[:violations] || {}
+  verify_status ||= {
+    attempts: stats[:verify_attempts],
+    failures: stats[:verify_failures],
+    zero_test_failures: stats[:verify_zero_test_failures],
+    zero_test_successes: stats[:verify_zero_test_successes],
+    last_success: stats[:final_verify_success],
+    last_tests_run: stats[:final_verify_tests_run],
+    last_evidence_strength: stats[:final_verify_evidence_strength],
+    last_timestamp: stats[:final_verify_timestamp],
+    last_source_fingerprint: stats[:final_verify_source_fingerprint]
+  }
   started_at = session_start_time
   completed_at = Time.now.utc
   git_root = current_git_value('rev-parse', '--show-toplevel')
@@ -361,6 +502,10 @@ def build_client_neutral_session_receipt(stats, violations, verify_status)
     client: client,
     client_name: client,
     client_kind: client_kind(client),
+    outcome: stats[:outcome],
+    stop_blocked: stats[:stop_blocked],
+    block_family: stats[:block_family],
+    block_reason: stats[:block_reason],
     host: Socket.gethostname,
     git_root: git_root,
     git_head: current_git_value('rev-parse', 'HEAD'),
@@ -384,6 +529,13 @@ def build_client_neutral_session_receipt(stats, violations, verify_status)
     final_verify_evidence_strength: verify_status[:last_evidence_strength],
     final_verify_timestamp: verify_status[:last_timestamp],
     final_verify_source_fingerprint: verify_status[:last_source_fingerprint],
+    transcript_total_tokens: stats[:transcript_total_tokens],
+    transcript_input_tokens: stats[:transcript_input_tokens],
+    transcript_output_tokens: stats[:transcript_output_tokens],
+    transcript_cached_tokens: stats[:transcript_cached_tokens],
+    transcript_cache_read_tokens: stats[:transcript_cache_read_tokens],
+    transcript_cache_creation_tokens: stats[:transcript_cache_creation_tokens],
+    transcript_reasoning_tokens: stats[:transcript_reasoning_tokens],
     workflow_receipt_ids: recent_workflow_receipt_ids,
     visual_receipt_paths: current_visual_receipt_paths,
     handoff_updated: handoff_updated_since?(started_at),
@@ -526,12 +678,14 @@ end
 def append_sop_receipts(stats)
   return unless stats[:sop_score]
 
-  csv_dir = File.dirname(SOP_CSV)
+  csv_path = sop_csv_path
+  jsonl_path = sop_jsonl_path
+  csv_dir = File.dirname(csv_path)
   FileUtils.mkdir_p(csv_dir)
 
   # Create header if file doesn't exist or is empty
-  unless File.exist?(SOP_CSV) && File.size(SOP_CSV) > 0
-    File.write(SOP_CSV, "date,sop_score,session_id,client,block_count,cap_reason,verify_attempts,verify_failures,final_verify_success,edits,unique_files,notes_json\n")
+  unless File.exist?(csv_path) && File.size(csv_path) > 0
+    File.write(csv_path, "date,sop_score,session_id,client,block_count,cap_reason,verify_attempts,verify_failures,final_verify_success,edits,unique_files,notes_json\n")
   end
 
   notes = JSON.generate(
@@ -559,10 +713,18 @@ def append_sop_receipts(stats)
     stats[:unique_files],
     notes
   ].map { |value| csv_escape(value) }.join(',')
-  File.open(SOP_CSV, 'a') { |f| f.puts(row) }
-  File.open(SOP_JSONL, 'a') { |f| f.puts(JSON.generate(stats)) }
+  File.open(csv_path, 'a') { |f| f.puts(row) }
+  File.open(jsonl_path, 'a') { |f| f.puts(JSON.generate(stats)) }
 rescue StandardError
   # Don't fail on CSV errors
+end
+
+def sop_csv_path
+  ENV['SANE_SOP_CSV_PATH'] || ENV['SOP_CSV'] || SOP_CSV
+end
+
+def sop_jsonl_path
+  ENV['SANE_SOP_JSONL_PATH'] || ENV['SOP_JSONL'] || SOP_JSONL
 end
 
 def csv_escape(value)
@@ -587,6 +749,7 @@ def run_mcp_watchdog_cleanup
   return unless File.exist?(sane_master)
 
   system(
+    { 'SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT' => '1' },
     RbConfig.ruby, sane_master, 'mcp_watchdog', 'clean',
     '--quiet', '--max', '4', '--grace', '0',
     out: File::NULL, err: File::NULL

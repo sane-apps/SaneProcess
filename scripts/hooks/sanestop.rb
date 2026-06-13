@@ -584,6 +584,7 @@ def process_stop(stop_hook_active, transcript_path = nil)
       warn 'Re-run the audit with the required GPT subagent swarm and summary artifact, then try again.'
       warn '=' * 50
       warn ''
+      record_blocked_stop_accounting(transcript_path, 'skill_execution', skill_issues.join("\n"))
       return 2
     end
     warn 'This is logged but NOT blocking.'
@@ -620,6 +621,7 @@ def process_stop(stop_hook_active, transcript_path = nil)
     warn '   No workaround claim without a receipt.'
     warn '=' * 50
     warn ''
+    record_blocked_stop_accounting(transcript_path, 'tool_discovery', tool_discovery_block)
     return 2
   end
 
@@ -636,6 +638,7 @@ def process_stop(stop_hook_active, transcript_path = nil)
     warn '   Update SESSION_HANDOFF.md and/or memory, then try again.'
     warn '=' * 50
     warn ''
+    record_blocked_stop_accounting(transcript_path, 'handoff', handoff_block)
     return 2  # BLOCK — Claude must address this
   end
 
@@ -652,6 +655,7 @@ def process_stop(stop_hook_active, transcript_path = nil)
     warn '   Run tests, a health check, or verification before finishing.'
     warn '=' * 50
     warn ''
+    record_blocked_stop_accounting(transcript_path, 'verification', verification_block)
     return 2  # BLOCK — Claude must address this
   end
 
@@ -667,6 +671,7 @@ def process_stop(stop_hook_active, transcript_path = nil)
     warn '   Do not claim customer-facing UI work is done from functional tests alone.'
     warn '=' * 50
     warn ''
+    record_blocked_stop_accounting(transcript_path, 'visual_verification', visual_block)
     return 2
   end
 
@@ -674,7 +679,7 @@ def process_stop(stop_hook_active, transcript_path = nil)
   check_summary_needed
 
   # Save learnings
-  stats = save_session_learnings
+  stats = save_session_learnings(transcript_path)
 
   # Report to user
   if stats[:edits] > 0 || stats[:violations].any?
@@ -745,6 +750,8 @@ elsif ARGV.include?('--self-test-internal')
   require 'tmpdir'
   Dir.mktmpdir('sanestop-self-test-metrics-') do |dir|
     ENV['SANEMASTER_PROCESS_METRICS_PATH'] = File.join(dir, 'process_metrics.jsonl')
+    ENV['SANE_SOP_CSV_PATH'] = File.join(dir, 'sop_ratings.csv')
+    ENV['SANE_SOP_JSONL_PATH'] = File.join(dir, 'sop_ratings.jsonl')
     ENV['SANE_SKIP_MCP_WATCHDOG_CLEANUP'] = '1'
     exit run_internal_self_test.call
   end

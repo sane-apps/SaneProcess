@@ -229,6 +229,7 @@ module SessionStartCleanup
     return unless File.exist?(sane_master)
 
     ok = system(
+      { 'SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT' => '1' },
       RbConfig.ruby, sane_master, 'mcp_watchdog', 'clean',
       '--quiet', '--max', '4', '--grace', '0',
       out: File::NULL, err: File::NULL
@@ -244,6 +245,7 @@ module SessionStartCleanup
     return unless delay_seconds.to_i.positive?
 
     pid = Process.spawn(
+      { 'SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT' => '1' },
       RbConfig.ruby,
       '-e',
       <<~RUBY,

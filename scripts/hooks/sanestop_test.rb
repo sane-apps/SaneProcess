@@ -145,6 +145,61 @@ module SaneStopTest
       warn "  FAIL: Verified edits should allow stop, got exit #{exit_code}"
     end
 
+    # Test 2b-2: Blocked stops still write session_end accounting, tokens, and block outcomes
+    Dir.mktmpdir('sanestop-blocked-accounting') do |tmpdir|
+      old_metrics_path = ENV['SANEMASTER_PROCESS_METRICS_PATH']
+      metrics_path = File.join(tmpdir, 'process_metrics.jsonl')
+      transcript_path = File.join(tmpdir, 'transcript.jsonl')
+      ENV['SANEMASTER_PROCESS_METRICS_PATH'] = metrics_path
+      File.write(transcript_path, JSON.generate('message' => { 'usage' => { 'input_tokens' => 10, 'output_tokens' => 5, 'cache_read_input_tokens' => 4 } }) + "\n")
+
+      StateManager.update(:edits) do |e|
+        e[:count] = 1
+        e[:unique_files] = ['/tmp/example.rb']
+        e[:last_edit_at] = Time.now.iso8601
+        e
+      end
+      StateManager.reset(:verification)
+      StateManager.update(:handoff_tracking) do |h|
+        h[:handoff_updated] = true
+        h[:memory_updated] = true
+        h
+      end
+      StateManager.update(:enforcement) do |e|
+        e[:session_started_at] = (Time.now - 60).iso8601
+        e[:blocks] = [{ timestamp: Time.now.iso8601, rule: 'Rule #4' }]
+        e
+      end
+
+      original_stderr = $stderr.clone
+      $stderr.reopen('/dev/null', 'w')
+      exit_code = process_stop_proc.call(false, transcript_path)
+      $stderr.reopen(original_stderr)
+
+      rows = File.readlines(metrics_path, chomp: true).map { |line| JSON.parse(line) }
+      session_end = rows.find { |row| row['type'] == 'session_end' }
+      receipt = rows.find { |row| row['type'] == 'session_receipt' }
+      outcomes = rows.select { |row| row['type'] == 'block_outcome' }
+      if exit_code == 2 &&
+         session_end &&
+         session_end['outcome'] == 'blocked' &&
+         session_end['stop_blocked'] == true &&
+         session_end['block_family'] == 'verification' &&
+         session_end['transcript_total_tokens'] == 19 &&
+         receipt &&
+         receipt['outcome'] == 'blocked' &&
+         outcomes.any? { |row| row['rule_family'] == 'Rule #4' } &&
+         outcomes.any? { |row| row['rule_family'] == 'verification' }
+        passed += 1
+        warn '  PASS: Blocked stop records session_end, transcript tokens, and block_outcome rows'
+      else
+        failed += 1
+        warn '  FAIL: Blocked stop should record session_end, transcript tokens, and block_outcome rows'
+      end
+    ensure
+      ENV['SANEMASTER_PROCESS_METRICS_PATH'] = old_metrics_path
+    end
+
     # Test 2c: Doc-only edits = allow stop without verification
     StateManager.update(:edits) do |e|
       e[:count] = 2
@@ -192,6 +247,42 @@ module SaneStopTest
     else
       failed += 1
       warn '  FAIL: Log file not created'
+    end
+
+    Dir.mktmpdir('sanestop-sop-override') do |tmpdir|
+      old_csv_path = ENV['SANE_SOP_CSV_PATH']
+      old_jsonl_path = ENV['SANE_SOP_JSONL_PATH']
+      ENV['SANE_SOP_CSV_PATH'] = File.join(tmpdir, 'sop_ratings.csv')
+      ENV['SANE_SOP_JSONL_PATH'] = File.join(tmpdir, 'sop_ratings.jsonl')
+      StateManager.reset(:edits)
+      StateManager.reset(:verification)
+      StateManager.reset(:circuit_breaker)
+      StateManager.reset(:handoff_tracking)
+      StateManager.update(:enforcement) { |e| e[:blocks] = []; e }
+
+      original_stderr = $stderr.clone
+      $stderr.reopen('/dev/null', 'w')
+      exit_code = process_stop_proc.call(false)
+      $stderr.reopen(original_stderr)
+
+      if exit_code == 0 && File.exist?(ENV['SANE_SOP_CSV_PATH']) && File.exist?(ENV['SANE_SOP_JSONL_PATH'])
+        passed += 1
+        warn '  PASS: SOP receipt paths honor environment override'
+      else
+        failed += 1
+        warn '  FAIL: SOP receipt paths should honor environment override'
+      end
+    ensure
+      if old_csv_path
+        ENV['SANE_SOP_CSV_PATH'] = old_csv_path
+      else
+        ENV.delete('SANE_SOP_CSV_PATH')
+      end
+      if old_jsonl_path
+        ENV['SANE_SOP_JSONL_PATH'] = old_jsonl_path
+      else
+        ENV.delete('SANE_SOP_JSONL_PATH')
+      end
     end
 
     # === SCORE VARIANCE DETECTION TESTS ===

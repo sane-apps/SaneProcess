@@ -6,6 +6,8 @@ require 'time'
 
 module SaneProcessMetrics
   DEFAULT_PATH = File.expand_path('~/.sanemaster/process_metrics.jsonl')
+  DEFAULT_MAX_BYTES = 6 * 1024 * 1024
+  DEFAULT_ROTATE_KEEP = 3
 
   module_function
 
@@ -19,6 +21,7 @@ module SaneProcessMetrics
 
     path = metrics_path
     FileUtils.mkdir_p(File.dirname(path))
+    rotate_if_needed(path)
     File.open(path, 'a') { |file| file.puts(JSON.generate(event)) }
     true
   rescue StandardError => e
@@ -28,6 +31,32 @@ module SaneProcessMetrics
 
   def metrics_path
     ENV['SANEMASTER_PROCESS_METRICS_PATH'] || DEFAULT_PATH
+  end
+
+  def rotate_if_needed(path)
+    return if ENV['SANEMASTER_PROCESS_METRICS_ROTATE_DISABLE'] == '1'
+
+    max_bytes = positive_integer_env('SANEMASTER_PROCESS_METRICS_MAX_BYTES', DEFAULT_MAX_BYTES)
+    return if max_bytes <= 0
+    return unless File.exist?(path) && File.size(path) >= max_bytes
+
+    keep = positive_integer_env('SANEMASTER_PROCESS_METRICS_ROTATE_KEEP', DEFAULT_ROTATE_KEEP)
+    keep = 1 if keep < 1
+
+    keep.downto(1) do |index|
+      source = index == 1 ? path : "#{path}.#{index - 1}"
+      target = "#{path}.#{index}"
+      next unless File.exist?(source)
+
+      FileUtils.rm_f(target)
+      FileUtils.mv(source, target)
+    end
+  end
+
+  def positive_integer_env(name, fallback)
+    Integer(ENV.fetch(name, fallback.to_s))
+  rescue ArgumentError
+    fallback
   end
 
   def mini_or_structured_fallback?(event)

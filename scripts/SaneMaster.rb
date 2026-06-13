@@ -986,25 +986,29 @@ PY
     completed_at = Time.now.utc
     exit_status = $CHILD_STATUS&.exitstatus || (success ? 0 : 1)
     route_metadata = respond_to?(:workflow_receipt_route_metadata, true) ? workflow_receipt_route_metadata(workflow, success: success) : {}
-    record_process_metric(
-      'workflow_receipt',
-      {
-        schema_version: 3,
-        workflow: workflow,
-        success: success,
-        command: command.join(' '),
-        command_sha256: Digest::SHA256.hexdigest(command.join("\0")),
-        started_at: started_at.iso8601,
-        completed_at: completed_at.iso8601,
-        duration_ms: ((completed_at - started_at) * 1000).round,
-        exit_status: exit_status,
-        host: Socket.gethostname
-      }.merge(route_metadata)
-    ) if respond_to?(:record_process_metric)
+    unless ENV['SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT'] == '1'
+      record_process_metric(
+        'workflow_receipt',
+        {
+          schema_version: 3,
+          workflow: workflow,
+          success: success,
+          command: command.join(' '),
+          command_sha256: Digest::SHA256.hexdigest(command.join("\0")),
+          started_at: started_at.iso8601,
+          completed_at: completed_at.iso8601,
+          duration_ms: ((completed_at - started_at) * 1000).round,
+          exit_status: exit_status,
+          host: Socket.gethostname
+        }.merge(route_metadata)
+      ) if respond_to?(:record_process_metric)
+    end
     exit(exit_status)
   end
 
   def record_sanemaster_workflow_receipt(command, args, started_at, exit_status)
+    return if ENV['SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT'] == '1'
+
     completed_at = Time.now.utc
     command_parts = ['ruby', File.join(saneprocess_repo_root, 'scripts', 'SaneMaster.rb'), *Array(args)]
     workflow = "sanemaster:#{command}"
