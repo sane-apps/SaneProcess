@@ -21,7 +21,6 @@ module SaneMasterModules
     VERSION_CACHE_FILE = File.expand_path('~/.sanemaster/versions_cache.json')
     VERSION_CACHE_MAX_AGE = 7 * 24 * 60 * 60 # 7 days in seconds
     TEMPLATE_DIR = File.expand_path('~/.sanemaster/templates')
-    LEGACY_MEMORY_FILE = File.join(Dir.pwd, '.claude', 'memory.json')
     WORK_SESSION_STATE_FILE = File.expand_path('~/.sanemaster/work_session_state.json')
     WORK_SESSION_CAFFEINATE_PID_FILE = File.expand_path('~/.sanemaster/work_session_caffeinate.pid')
     WORK_SESSION_CAFFEINATE_LOG = File.expand_path('~/.sanemaster/work_session_caffeinate.log')
@@ -592,67 +591,5 @@ module SaneMasterModules
       end
     end
 
-    # --- Memory Helpers ---
-
-    # Load memory from STDIN (piped from mcp__memory__read_graph) or local cache
-    def load_memory(from_stdin: false)
-      if from_stdin
-        input = begin
-          $stdin.read.strip
-        rescue StandardError
-          ''
-        end
-        return nil if input.empty?
-
-        begin
-          memory = JSON.parse(input)
-          # Cache locally for future use
-          save_memory(memory)
-          memory
-        rescue JSON::ParserError
-          nil
-        end
-      elsif File.exist?(LEGACY_MEMORY_FILE)
-        JSON.parse(File.read(LEGACY_MEMORY_FILE))
-      else
-        warn ''
-        warn '⚠️  No legacy local memory cache found at .claude/memory.json'
-        warn ''
-        warn 'To use memory commands, pipe from MCP:'
-        warn '  1. Ask Claude to run: mcp__memory__read_graph'
-        warn '  2. Copy the JSON output'
-        warn '  3. Run: echo \'<json>\' | ./scripts/SaneMaster.rb <command>'
-        warn ''
-        warn 'Or use: ./scripts/SaneMaster.rb msync to create a cache.'
-        warn ''
-        nil
-      end
-    rescue JSON::ParserError
-      nil
-    end
-
-    def save_memory(memory)
-      FileUtils.mkdir_p(File.dirname(LEGACY_MEMORY_FILE))
-      File.write(LEGACY_MEMORY_FILE, JSON.pretty_generate(memory))
-    end
-
-    # Sync memory from STDIN (requires piping from mcp__memory__read_graph)
-    def memory_sync(_args)
-      puts '🔄 --- [ MEMORY SYNC ] ---'
-      puts ''
-      puts 'Paste the output from mcp__memory__read_graph below,'
-      puts 'then press Ctrl+D (or Ctrl+Z on Windows) when done:'
-      puts ''
-
-      memory = load_memory(from_stdin: true)
-      if memory
-        count = (memory['entities'] || []).count
-        puts ''
-        puts "✅ Synced #{count} entities to .claude/memory.json"
-      else
-        puts ''
-        puts '❌ No valid JSON received'
-      end
-    end
   end
 end

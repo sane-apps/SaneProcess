@@ -178,18 +178,6 @@ module SaneMasterModules
       puts '=' * 60
       puts ''
 
-      # Show memory stats
-      memory = load_memory
-      if memory && memory['entities']
-        entities = memory['entities']
-        entity_count = entities.count
-        estimated_tokens = (memory.to_json.length / 4.0).round
-
-        puts "📊 Memory: #{entity_count} entities (~#{estimated_tokens} tokens)"
-        puts "   ⚠️  Entity count HIGH (#{entity_count}/60)" if entity_count > 60
-        puts "   ⚠️  Token count HIGH (~#{estimated_tokens}/8000)" if estimated_tokens > 8000
-      end
-
       # Show compliance report if audit log exists
       audit_log = File.join(Dir.pwd, '.claude', 'audit_log.jsonl')
       return unless File.exist?(audit_log) && File.size(audit_log).positive?

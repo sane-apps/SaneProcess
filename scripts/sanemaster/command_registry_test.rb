@@ -42,6 +42,66 @@ exit(run_tests('SaneMaster Command Registry Tests') do
       true
     end
 
+    test('dead memory commands are not advertised') do
+      result = SaneMaster.new.send(:build_registry_review)
+      dead_commands = %w[mc mr mp mh msync mcompact mcleanup]
+      live_session_commands = %w[
+        github_post_approval email_force_approval session_end reset_breaker
+        breaker_status breaker_errors research_status research_lock
+        research_unlock saneloop
+      ]
+
+      assert(!SaneMaster::COMMANDS.key?(:memory), 'memory category should not be advertised')
+      assert(SaneMaster::COMMANDS.key?(:session), 'session category should own live state commands')
+      dead_commands.each do |command|
+        assert(!result[:commands].key?(command), "dead memory command still advertised: #{command}")
+        assert(!SaneMaster::COMMAND_DETAILS.key?(command), "dead memory command has detailed help: #{command}")
+      end
+      live_session_commands.each do |command|
+        assert_eq(result.dig(:commands, command, :category), 'session', "#{command} should be in session category")
+      end
+      true
+    end
+
+    test('help shows session commands without legacy memory sync') do
+      stdout, stderr, status = Open3.capture3(
+        { 'SANEMASTER_DISABLE_MINI_ROUTING' => '1' },
+        'ruby',
+        File.expand_path('../SaneMaster.rb', __dir__),
+        'help',
+        'session'
+      )
+
+      assert_eq(status.exitstatus, 0)
+      assert_eq(stderr, '')
+      assert_includes(stdout, 'session_end')
+      assert_includes(stdout, 'saneloop')
+      assert(!stdout.include?('msync'), 'session help should not advertise legacy memory sync')
+      assert(!stdout.include?('mcompact'), 'session help should not advertise legacy memory compact')
+
+      unknown_stdout, unknown_stderr, unknown_status = Open3.capture3(
+        { 'SANEMASTER_DISABLE_MINI_ROUTING' => '1' },
+        'ruby',
+        File.expand_path('../SaneMaster.rb', __dir__),
+        'help',
+        'memory'
+      )
+      assert_eq(unknown_status.exitstatus, 0)
+      assert_eq(unknown_stderr, '')
+      assert_includes(unknown_stdout, "No detailed help available for 'memory'")
+      assert(!unknown_stdout.include?('msync'), 'memory detail fallback should not advertise legacy memory sync')
+
+      msync_stdout, msync_stderr, msync_status = Open3.capture3(
+        { 'SANEMASTER_DISABLE_MINI_ROUTING' => '1' },
+        'ruby',
+        File.expand_path('../SaneMaster.rb', __dir__),
+        'msync'
+      )
+      assert_eq(msync_status.exitstatus, 0)
+      assert_includes("#{msync_stdout}\n#{msync_stderr}", 'Unknown command: msync')
+      true
+    end
+
     test('registry_review command prints JSON without expensive workflow execution') do
       stdout, stderr, status = Open3.capture3(
         { 'SANEMASTER_DISABLE_MINI_ROUTING' => '1' },

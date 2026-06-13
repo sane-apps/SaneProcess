@@ -228,16 +228,9 @@ class SaneMaster
         'setapp_upload' => { args: '--zip ZIP --release-notes TEXT [--portal-fallback --app-id ID --version-id ID]', desc: 'Upload or replace a Setapp review build using the standard Setapp lane' }
       }
     },
-    memory: {
-      desc: 'Cross-session memory (MCP)',
+    session: {
+      desc: 'Session state, approvals, and loop controls',
       commands: {
-        'mc' => { args: '', desc: 'Show memory context' },
-        'mr' => { args: '<type> <name>', desc: 'Record new entity' },
-        'mp' => { args: '[--dry-run]', desc: 'Prune stale entities' },
-        'mh' => { args: '', desc: 'Memory health check (entity/token counts)' },
-        'msync' => { args: '(pipe JSON)', desc: 'Sync MCP memory to local cache' },
-        'mcompact' => { args: '[--dry-run] [--aggressive]', desc: 'Compact memory (trim verbose, dedupe)' },
-        'mcleanup' => { args: '(pipe JSON)', desc: 'Analyze MCP memory, generate cleanup commands' },
         'github_post_approval' => { args: '--body|--body-file <TEXT|PATH> --user-approval "QUOTE"', desc: 'Record exact-text approval before public GitHub posting' },
         'email_force_approval' => { args: '--action ACTION --id ID --reason TEXT --user-approval "QUOTE"', desc: 'Record scoped approval for check-inbox --force' },
         'session_end' => { args: '[--skip-prompts]', desc: 'End session with insight extraction' },
@@ -1798,21 +1791,7 @@ PY
     when 'mode', 'test_mode_switch', 'license_mode'
       app_test_mode(args)
 
-    # Memory MCP
-    when 'memory_context', 'mc'
-      show_memory_context(args)
-    when 'memory_record', 'mr'
-      record_memory_entity(args)
-    when 'memory_prune', 'mp'
-      prune_memory_entities(args)
-    when 'memory_health', 'mh'
-      memory_health(args)
-    when 'memory_sync', 'msync'
-      memory_sync(args)
-    when 'memory_compact', 'mcompact'
-      memory_compact(args)
-    when 'memory_cleanup', 'mcleanup'
-      memory_cleanup(args)
+    # Session state, approvals, and loop controls
     when 'github_post_approval', 'github-post-approval', 'gh_post_approval', 'gh-post-approval'
       github_post_approval(args)
     when 'email_force_approval', 'email-force-approval', 'email_force_approve', 'email-force-approve'
@@ -2554,18 +2533,6 @@ PY
         'launch_readiness --json',
         'launch_readiness --max-age-days 3'
       ]
-    },
-    'mc' => {
-      usage: 'mc',
-      description: 'Show current Memory MCP context',
-      flags: {},
-      examples: ['mc']
-    },
-    'mr' => {
-      usage: 'mr <type> <name>',
-      description: 'Record new entity to Memory MCP',
-      flags: {},
-      examples: ['mr bug CrashOnExport', 'mr fix AudioSyncIssue']
     },
     'deps' => {
       usage: 'deps [--dot]',

@@ -53,10 +53,17 @@ _sanemaster() {
         'reset:Reset TCC permissions'
         'restore:Fix Xcode/Launch Services issues'
 
-        # Memory MCP
-        'mc:Show memory context'
-        'mr:Record new entity'
-        'mp:Prune stale entities'
+        # Session state
+        'github_post_approval:Record exact-text approval before public GitHub posting'
+        'email_force_approval:Record scoped approval for check-inbox --force'
+        'session_end:End session with insight extraction'
+        'reset_breaker:Reset circuit breaker'
+        'breaker_status:Show circuit breaker status'
+        'breaker_errors:Show recent failure messages'
+        'research_status:Show active research gates and locks'
+        'research_lock:Require fresh research before more work'
+        'research_unlock:Clear a manual research lock'
+        'saneloop:Native structured task loop'
 
         # Export
         'export:Export code to PDF'
@@ -151,7 +158,7 @@ _sanemaster() {
                         'check:Static analysis and validation'
                         'debug:Debugging and crash analysis'
                         'env:Environment and setup'
-                        'memory:Cross-session memory (MCP)'
+                        'session:Session state, approvals, and loop controls'
                         'export:Export and documentation'
                     )
                     _describe -t categories 'help category' categories
@@ -165,11 +172,6 @@ _sanemaster() {
                     _arguments \
                         '--dump[Dump full contents]' \
                         '--path[Path to xcresult]:file:_files -g "*.xcresult"' \
-                        '--help[Show command help]'
-                    ;;
-                mp|memory_prune)
-                    _arguments \
-                        '--dry-run[Show what would be pruned]' \
                         '--help[Show command help]'
                     ;;
                 *)
