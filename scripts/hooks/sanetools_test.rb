@@ -587,6 +587,50 @@ module SaneToolsTest
     passed += scenario_passed
     failed += scenario_failed
 
+    # === TABLE BAN TESTS ===
+    warn ''
+    warn 'Testing table ban markdown exemption:'
+
+    table_markdown = "| Name | Value |\n| --- | --- |\n| Sane | Process |\n"
+    [
+      ['/Users/sj/SaneProcess/README.md', 'Markdown .md table allowed'],
+      ['/Users/sj/SaneProcess/docs/release-notes.markdown', 'Markdown .markdown table allowed']
+    ].each do |path, label|
+      original_stderr = $stderr.clone
+      $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
+      exit_code = process_tool_proc.call('Edit', {
+                                           'file_path' => path,
+                                           'old_string' => '',
+                                           'new_string' => table_markdown
+                                         })
+      $stderr.reopen(original_stderr)
+
+      if exit_code == 0
+        passed += 1
+        warn "  PASS: #{label}"
+      else
+        failed += 1
+        warn "  FAIL: #{label}, got exit #{exit_code}"
+      end
+    end
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
+    exit_code = process_tool_proc.call('Edit', {
+                                         'file_path' => '/Users/sj/SaneProcess/website/index.html',
+                                         'old_string' => '',
+                                         'new_string' => table_markdown
+                                       })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: Non-markdown table edit remains blocked'
+    else
+      failed += 1
+      warn "  FAIL: Non-markdown table edit should block, got exit #{exit_code}"
+    end
+
     # Cleanup
     StateManager.reset(:sensitive_approvals)
     StateManager.reset(:edit_attempts)

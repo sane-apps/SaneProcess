@@ -76,6 +76,7 @@ class HookTests
       test("sanetools.rb syntax valid") { test_entry_syntax('sanetools.rb') }
       test("sanetrack.rb syntax valid") { test_entry_syntax('sanetrack.rb') }
       test("session_start.rb syntax valid") { test_entry_syntax('session_start.rb') }
+      test("sanetools_refusal.rb syntax valid") { test_entry_syntax('sanetools_refusal.rb') }
       test("run_hook.sh syntax valid") { test_shell_entry_syntax('run_hook.sh') }
       test("settings use compact hook wrapper") { test_settings_use_hook_wrapper }
     end
