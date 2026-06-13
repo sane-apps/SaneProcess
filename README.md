@@ -111,6 +111,33 @@ Mutation is blocked until the required research categories are satisfied. Read-o
 
 Native hook adapters enforce this at tool time where the client exposes lifecycle hooks. Codex and compatible clients use `AGENTS.md`, skills, MCP, `SaneMaster.rb`, and shell/script guards; for those clients, the repo wrapper is the hard boundary.
 
+## Measured Results (two blind A/B case studies)
+
+We ran two A/B tests on real tasks: identical prompts, one arm with SaneProcess
+fully enabled, one vanilla agent in a bare worktree, both scored blind by a
+separate adversarial judge agent against the actual code and runtime evidence.
+
+- **Round 1 — menu-bar app bug triage.** Quality (judge): **34 vs 27 /40**.
+  Tokens: 246k vs 327k (~25% cheaper, ~3x faster). Why: the harness found the
+  bug was already fixed upstream and proved it on the canonical host; the
+  vanilla agent re-diagnosed it and wrote an unproven root cause into durable
+  docs.
+- **Round 2 — video app automation feature.** Quality (judge): **32 vs 29 /40**.
+  Tokens: 424k vs 209k (~2x cost, 3 sessions). Why: the harness's work survived
+  the canonical launcher's env filtering; the vanilla agent's flag silently
+  no-op'd and its tests violated repo rules.
+
+The mechanisms that did the work: session-start context loading (handoff and
+release receipts), canonical-host verification, and written restraint policies
+for fragile subsystems. Round 2's higher cost came from routing a scoped task
+into broad release-grade verification — since fixed: `proof_plan` /
+`proof_scope` now route focused work to focused proof.
+
+Honest caveats: n=2, one operator, one codebase family, and the judge — while
+blind and adversarial — was itself an LLM. Treat these as case studies, not
+benchmarks. Expect the gates to cost tokens up front and pay for themselves
+when a task touches state your agent would otherwise guess about.
+
 ## SaneMaster
 
 `./scripts/SaneMaster.rb` is the canonical workflow wrapper. It prevents each repo from inventing a separate build, release, status, support, or verification path.
