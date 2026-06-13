@@ -76,6 +76,8 @@ class HookTests
       test("sanetools.rb syntax valid") { test_entry_syntax('sanetools.rb') }
       test("sanetrack.rb syntax valid") { test_entry_syntax('sanetrack.rb') }
       test("session_start.rb syntax valid") { test_entry_syntax('session_start.rb') }
+      test("run_hook.sh syntax valid") { test_shell_entry_syntax('run_hook.sh') }
+      test("settings use compact hook wrapper") { test_settings_use_hook_wrapper }
     end
 
     # Test Circuit Breaker
@@ -297,6 +299,25 @@ class HookTests
     path = File.join(__dir__, file)
     _, status = Open3.capture2e("ruby -c #{path}")
     status.success?
+  end
+
+  def test_shell_entry_syntax(file)
+    path = File.join(__dir__, file)
+    _, status = Open3.capture2e('bash', '-n', path)
+    status.success?
+  end
+
+  def test_settings_use_hook_wrapper
+    settings_path = File.expand_path('../../.claude/settings.json', __dir__)
+    settings = JSON.parse(File.read(settings_path))
+    commands = settings.fetch('hooks').values.flat_map do |groups|
+      groups.flat_map { |group| group.fetch('hooks', []).map { |hook| hook['command'].to_s } }
+    end
+    wrapped = commands.select { |command| command.include?('run_hook.sh') }
+
+    wrapped.length == 6 &&
+      wrapped.all? { |command| command.length < 90 } &&
+      commands.none? { |command| command.include?('if [ -n "${CLAUDECODE}${CLAUDE_CODE}" ]') }
   end
 
   # Circuit breaker tests

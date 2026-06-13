@@ -159,7 +159,7 @@ BREAKER_RECOVERY_PATTERN = Regexp.union(
 def breaker_recovery_call?(tool_name, tool_input)
   return false unless tool_name == 'Bash'
 
-  command = (tool_input['command'] || tool_input[:command]).to_s
+  command = SaneLocalUIGuard.strip_quoted((tool_input['command'] || tool_input[:command]).to_s)
   command.match?(BREAKER_RECOVERY_PATTERN)
 end
 
@@ -345,13 +345,15 @@ def detect_rule_from_reason(reason)
 end
 
 def output_block(reason, tool_name = nil)
+  # Check for refusal to read (repeated same block) before printing the full
+  # block. Repeats get compact output so the same wall of text is not echoed.
+  escalation = tool_name ? SaneToolsChecks.check_refusal_to_read(tool_name, reason) : nil
+
   warn '---'
   warn 'SANETOOLS BLOCKED'
   warn ''
-  warn reason
+  warn(escalation || reason)
 
-  # Check for refusal to read (repeated same block)
-  escalation = tool_name ? SaneToolsChecks.check_refusal_to_read(tool_name, reason) : nil
   SaneProcessMetrics.record(
     'hook_block',
     tool: tool_name,
@@ -359,10 +361,6 @@ def output_block(reason, tool_name = nil)
     reason: reason.lines.first&.strip,
     escalated: !escalation.nil?
   )
-  if escalation
-    warn ''
-    warn escalation
-  end
 
   warn '---'
 end

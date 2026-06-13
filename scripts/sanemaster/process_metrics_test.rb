@@ -81,6 +81,17 @@ exit(run_tests('SaneMaster Process Metrics Tests') do
       true
     end
 
+    test('SaneMaster help short-circuits before Mini routing') do
+      source = File.read(File.expand_path('../SaneMaster.rb', __dir__))
+      help_index = source.index("if args.empty? || ['--help', '-h'].include?(args.first)")
+      route_index = source.index('maybe_route_to_mini!(command, args)')
+
+      assert(help_index, 'expected top-level help check')
+      assert(route_index, 'expected Mini routing call')
+      assert(help_index < route_index, 'top-level --help must return before Mini routing')
+      true
+    end
+
     test('records structured verify evidence without external services') do
       Dir.mktmpdir('process-metrics-') do |dir|
         path = File.join(dir, 'metrics.jsonl')

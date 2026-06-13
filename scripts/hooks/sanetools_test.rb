@@ -184,6 +184,34 @@ module SaneToolsTest
       warn "  FAIL: Circuit breaker should allow research tools, got Read=#{read_exit} Grep=#{grep_exit} WebSearch=#{web_exit}"
     end
 
+    StateManager.update(:circuit_breaker) do |cb|
+      cb[:tripped] = true
+      cb[:failures] = 0
+      cb[:error_signatures] = { COMMAND_NOT_FOUND: 2 }
+      cb[:last_error] = 'COMMAND_NOT_FOUND x2'
+      cb
+    end
+    message = SaneToolsChecks.check_circuit_breaker
+    if message.include?('same signature 2x') && !message.include?('0 consecutive failures')
+      passed += 1
+      warn '  PASS: Signature-trip breaker message avoids 0 consecutive failures copy'
+    else
+      failed += 1
+      warn "  FAIL: Signature-trip breaker message should name same signature, got #{message.inspect}"
+    end
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
+    quoted_pipe_exit = process_tool_proc.call('Bash', { 'command' => "grep -R 'foo|bar' scripts/hooks" })
+    $stderr.reopen(original_stderr)
+    if quoted_pipe_exit == 0
+      passed += 1
+      warn '  PASS: Breaker recovery allows quoted grep pipe patterns'
+    else
+      failed += 1
+      warn "  FAIL: Quoted grep pipe should not block breaker recovery, got exit #{quoted_pipe_exit}"
+    end
+
     # Reset circuit breaker for remaining tests
     StateManager.reset(:circuit_breaker)
 
@@ -944,6 +972,17 @@ module SaneToolsTest
     else
       failed += 1
       warn "  FAIL: MCP actions pending refusal tracking should not use other, got #{tracking.keys.inspect}"
+    end
+
+    repeat_message = SaneToolsChecks.check_refusal_to_read('Edit', mcp_pending_reason)
+    if repeat_message.to_s.include?('SAME BLOCK TWICE: mcp_actions_pending') &&
+       repeat_message.to_s.include?('Resolve the pending MCP/memory action') &&
+       !repeat_message.to_s.include?('Each block message told you')
+      passed += 1
+      warn '  PASS: Repeated blocks use compact remedial message'
+    else
+      failed += 1
+      warn "  FAIL: Repeated block message should be compact, got #{repeat_message.inspect}"
     end
 
     FileUtils.rm_rf(deg_project_dir) if Dir.exist?(deg_project_dir)

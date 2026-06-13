@@ -551,10 +551,21 @@ module SaneToolsChecks
       return nil unless cb[:tripped]
 
       "CIRCUIT BREAKER TRIPPED\n" \
-      "#{cb[:failures]} consecutive failures detected.\n" \
+      "#{circuit_breaker_trip_summary(cb)}\n" \
       "Last error: #{cb[:last_error]}\n" \
       "Rule #3: stop, read the error, and research before retrying.\n" \
       "Reset only after documenting the root cause: rb-"
+    end
+
+    def circuit_breaker_trip_summary(cb)
+      failures = cb[:failures].to_i
+      return "#{failures} consecutive failures detected." if failures.positive?
+
+      signatures = cb[:error_signatures] || {}
+      signature, count = signatures.find { |_key, value| value.to_i >= 2 }
+      return "same signature #{count.to_i}x detected (#{signature})." if signature
+
+      'breaker is tripped.'
     end
 
     # === SESSION DOC ENFORCEMENT ===
@@ -723,7 +734,8 @@ module SaneToolsChecks
 
       # Track consecutive blocks of same type
       blocks = StateManager.get(:refusal_tracking) || {}
-      current = blocks[block_type] || { count: 0, last_tool: nil }
+      block_key = block_type.to_sym
+      current = blocks[block_key] || blocks[block_type] || { count: 0, last_tool: nil }
 
       # Increment if same block type
       current[:count] += 1
@@ -731,7 +743,8 @@ module SaneToolsChecks
       current[:last_at] = Time.now.iso8601
 
       StateManager.update(:refusal_tracking) do |b|
-        b[block_type] = current
+        b.delete(block_type)
+        b[block_key] = current
         b
       end
 
@@ -740,30 +753,39 @@ module SaneToolsChecks
       when 1
         nil # First block - normal message
       when 2
-        # Second block - add READ THE MESSAGE reminder
-        "\n" \
-        "⚠️  SAME BLOCK TWICE - READ THE MESSAGE ABOVE\n" \
-        "You were just blocked for this. The FIX is in the message.\n" \
-        "DO NOT try again. READ the block message. FOLLOW the instructions."
+        "⚠️  SAME BLOCK TWICE: #{block_type}\n" \
+        "#{refusal_remedy(block_type)}"
       else
-        # 3+ blocks - halt and require acknowledgment
-        "REFUSAL TO READ DETECTED - SESSION HALTED\n" \
+        "REFUSAL TO READ DETECTED: #{block_type}\n" \
         "You've been blocked #{current[:count]}x for: #{block_type}\n" \
-        "\n" \
-        "Each block message told you EXACTLY what to do.\n" \
-        "You ignored it and kept trying different approaches.\n" \
-        "\n" \
-        "THIS IS THE PROBLEM THE HOOKS EXIST TO SOLVE.\n" \
-        "\n" \
-        "USER: Type 'reset blocks' or 'unblock' to allow retry.\n" \
-        "      Type 'reset?' to see all reset commands.\n" \
-        "      Resets are LOGGED and do NOT disable enforcement."
+        "#{refusal_remedy(block_type)}"
+      end
+    end
+
+    def refusal_remedy(block_type)
+      case block_type.to_s
+      when 'research_incomplete'
+        'Run the missing research named in the first block, or use rr- only if restarting research.'
+      when 'mcp_actions_pending'
+        'Resolve the pending MCP/memory action named in the first block, then retry.'
+      when 'session_docs'
+        'Read the required docs named in the first block, then retry.'
+      when 'startup_gate'
+        'Complete the startup gate command named in the first block, then retry.'
+      when 'saneloop_required'
+        'Start or continue the required SaneLoop command named in the first block.'
+      else
+        'Follow the first block remedy. Use reset? only when a logged reset is intentional.'
       end
     end
 
     def reset_refusal_tracking(block_type = nil)
       if block_type
-        StateManager.update(:refusal_tracking) { |b| b.delete(block_type); b }
+        StateManager.update(:refusal_tracking) do |b|
+          b.delete(block_type)
+          b.delete(block_type.to_sym)
+          b
+        end
       else
         StateManager.reset(:refusal_tracking)
       end
