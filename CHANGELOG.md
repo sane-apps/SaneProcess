@@ -1,31 +1,15 @@
 # Changelog
 
-All notable changes to SaneProcess are documented here.
+SaneProcess changes are tracked in git history and the session ledger instead of
+duplicating stale release counts here.
 
----
+Use these sources:
 
-## [2.4] - January 2026
+- Recent implementation history: `git log --oneline`
+- Active session status and verification receipts: `SESSION_HANDOFF.md`
+- Current research decisions and TTLs: `.claude/research.md`
+- Release/operator process details: `DEVELOPMENT.md` and
+  `templates/RELEASE_SOP.md`
 
-### Added
-- 17 Golden Rules for AI-assisted development
-- Consolidated enforcement hooks (saneprompt, sanetools, sanetrack, sanestop)
-- Circuit breaker pattern (trips at 3 consecutive failures)
-- Cross-session memory for bug patterns
-- SaneMaster CLI tool with 19 subcommands
-- 259 hook tests
-- Skills system for domain-specific knowledge
-- Cross-project sync capability
-
-### Technical
-- Ruby 3.0+ required
-- Integration with Claude Code MCP servers
-- File-based state management with signatures
-
----
-
-## Version Numbering
-
-SaneProcess follows [Semantic Versioning](https://semver.org/):
-- MAJOR: Breaking changes to rules or hooks
-- MINOR: New rules, hooks, or features
-- PATCH: Bug fixes and documentation
+Do not add long-form release notes here unless SaneProcess starts publishing
+versioned public releases from this repository.

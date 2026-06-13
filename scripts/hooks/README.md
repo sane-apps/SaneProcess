@@ -6,29 +6,31 @@ For Codex and other clients, treat these as one layer of the system, not the who
 
 ## Architecture
 
-6 hooks, shared helpers, self-test helpers, and 1 state file:
+Native hook entry points, shared helpers, self-test helpers, and one signed state
+file:
 
-| Hook | Type | Purpose | Current self-test count |
-|------|------|---------|-------|
-| `saneprompt.rb` | UserPromptSubmit | Classifies prompts, handles commands (rb-, s+, etc.) | 62 |
-| `sanetools.rb` | PreToolUse | Gates edits on research, blocks paths, circuit breaker | 66 |
-| `sanetrack.rb` | PostToolUse | Tracks edits, failures, per-signature errors | 38 |
-| `task_completed_gate.rb` | TaskCompleted | Blocks completion claims unless non-doc edits have a fresh counted verify metric with matching source fingerprint | registry-backed |
-| `sanestop.rb` | Stop | Session stats, summary reminder, structured verification gate | 45 |
-| `session_start.rb` | SessionStart | Bootstraps session, resets state | covered by session docs/integration tests |
+| Hook | Type | Purpose |
+|------|------|---------|
+| `session_start.rb` | SessionStart | Bootstraps session, resets stale state, prints briefing |
+| `saneprompt.rb` | UserPromptSubmit | Classifies prompts and handles commands (`rb-`, `s+`, etc.) |
+| `sanetools.rb` | PreToolUse | Gates edits on research, blocks risky paths/routes, trips circuit breaker |
+| `sanetrack.rb` | PostToolUse | Tracks research evidence, edits, failures, and proof state |
+| `task_completed_gate.rb` | TaskCompleted | Blocks completion claims without required verification evidence |
+| `sanestop.rb` | Stop | Session summary, verification gate, handoff/memory reminders |
 
-**Tier suite:** 185 hook-layer tests (including integration). Additional focused hook tests cover `sanetools`, session docs/startup, Grok guard behavior, and shell-level security guards.
-
-These are hook-layer counts only. Full repo verification is registry-backed and also runs Ruby/Python/SaneMaster/Mini-support tests through `ruby scripts/SaneMaster.rb verify`.
+Hook-layer counts move as guardrails are extracted. Use the commands below for
+focused hook proof; full repo verification remains
+`ruby scripts/SaneMaster.rb verify`.
 
 ## Quick Start
 
 ```bash
 # Run all tests
 ruby scripts/hooks/saneprompt.rb --self-test
-ruby scripts/hooks/sanetools_test.rb
+ruby scripts/hooks/sanetools.rb --self-test
 ruby scripts/hooks/sanetrack.rb --self-test
 ruby scripts/hooks/sanestop.rb --self-test
+ruby scripts/hooks/test_hooks.rb
 ruby scripts/hooks/session_docs_test.rb
 ruby scripts/hooks/grok_and_security_guard_test.rb
 ruby scripts/hooks/test/tier_tests.rb
@@ -56,27 +58,36 @@ Full verification remains `ruby scripts/SaneMaster.rb verify`; the focused comma
 | `sanetools_gaming.rb` | Gaming detection (research cheating) |
 | `sanetools_deploy.rb` | Deployment safety checks |
 | `sanetools_github_guard.rb` | GitHub posting approval guard |
+| `sanetools_refusal.rb` | Repeat-block/refusal tracking |
+| `sanetools_research.rb` | MCP-aware research and MCP verification helpers |
 | `saneprompt_intelligence.rb` | Prompt classification |
 | `saneprompt_commands.rb` | Safemode, breaker, planning user commands |
+| `saneprompt_output.rb` | Prompt hook output formatting |
 | `sanetrack_research.rb` | Research write/size validation |
 | `sanetrack_state_updates.rb` | State mutation helpers for PostToolUse |
 | `sanetrack_tracking.rb` | Per-tool result tracking extracted from `sanetrack.rb` |
 | `sanetrack_gate.rb` | Post-edit enforcement helpers |
+| `sanetrack_proofs.rb` | Proof receipt and runner tracking |
 | `sanestop_finalize.rb` | Session-end verification, receipts, and learnings extracted from `sanestop.rb` |
 | `sanetrack_reminders.rb` | Feature reminders and logging |
 | `session_briefing.rb` | Session-start briefing output |
 | `session_start_cleanup.rb` | Session-start cleanup helpers |
 | `self_test_environment.rb` | Isolated temp project for `--self-test` |
-| `rule_tracker.rb` | Rule tracking shared module |
 | `state_signer.rb` | State file signing/verification |
 
 ## Core Modules
 
 | File | Purpose |
 |------|---------|
-| `core/config.rb` | Shared project/config lookup |
 | `core/state_manager.rb` | Locked, signed state store |
+| `core/project_root.rb` | Canonical project-root resolver for hook state |
+| `core/process_metrics.rb` | Process metrics writer |
+| `core/mandatory_workflows.rb` | Required workflow routing map |
+| `core/local_ui_guard.rb` | Mini-first local UI guard helpers |
+| `core/visual_receipt.rb` | Visual evidence receipt helpers |
+| `core/session_docs.rb` | Session document gate helpers |
 | `core/context_compact.rb` | Context compaction helpers |
+| `core/sop_score.rb` | Shared SOP score rubric |
 
 ## Self-Test Modules
 
@@ -90,16 +101,10 @@ Full verification remains `ruby scripts/SaneMaster.rb verify`; the focused comma
 
 ## State File
 
-All state in `.claude/state.json`:
-
-```json
-{
-  "circuit_breaker": { "failures": 0, "tripped": false },
-  "research": { "memory": null, "docs": null, "web": null, "github": null, "local": null },
-  "edits": { "count": 0, "unique_files": [] },
-  "enforcement": { "blocks": [], "halted": false }
-}
-```
+All hook runtime state lives in `.claude/state.json`, with defaults defined in
+`StateManager::SCHEMA` inside `core/state_manager.rb`. Do not duplicate the
+schema here; update the code first and document only durable design rationale in
+`ARCHITECTURE.md`.
 
 ## Exit Codes
 
@@ -140,5 +145,6 @@ Reset with `rb-` command.
 
 Run the full test suite:
 ```bash
-ruby scripts/hooks/test/tier_tests.rb  # 178 tests
+ruby scripts/hooks/test/tier_tests.rb
+ruby scripts/SaneMaster.rb verify
 ```

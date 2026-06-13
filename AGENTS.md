@@ -119,7 +119,9 @@ the wrapper.
 | Sales/download/funnel | `sales`, `downloads`, `events` |
 | Tool discovery | `ruby scripts/SaneMaster.rb tool_discovery --query "..."` |
 | Cleanup | `ruby scripts/SaneMaster.rb machine_cleanup --host mini --apply --preserve-apps AppName` |
+| Verification scope plan | `ruby scripts/SaneMaster.rb proof_plan --task "..."` |
 | Process health | `process_eval`, `sop_review`, `near_miss_review`, `verify_failure_review` |
+| Route cost review | `ruby scripts/SaneMaster.rb route_cost_review --json` |
 | Mini screenshot | `scripts/mini/capture-mini-screenshot.sh desktop` or app mode wrapper |
 
 If a canonical route fails, fix the route or explain why it is insufficient.

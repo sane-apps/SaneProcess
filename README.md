@@ -228,25 +228,16 @@ Client adapter state is stored locally in the relevant runtime directory; shared
 
 ## Documentation Map
 
-| File | Owns |
-|------|------|
-| [AGENTS.md](AGENTS.md) | Client-neutral operating rules, trigger map, required workflows |
-| [DEVELOPMENT.md](DEVELOPMENT.md) | Canonical commands, verification paths, daily SOP |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | System design, decisions, research notes, tradeoffs |
-| [scripts/hooks/README.md](scripts/hooks/README.md) | Native hook layer |
-| [scripts/codex-bin/README.md](scripts/codex-bin/README.md) | Codex helper source mirrored to `~/.codex/bin/` |
+| Need | Source | Owns |
+|------|--------|------|
+| Daily agent/operator rules | [AGENTS.md](AGENTS.md) | Client-neutral operating rules, trigger map, required workflows |
+| Command map and verification workflow | [DEVELOPMENT.md](DEVELOPMENT.md) | Canonical commands, verification paths, daily SOP |
+| Architecture, durable decisions, and tradeoffs | [ARCHITECTURE.md](ARCHITECTURE.md) | System design, decisions, research notes, tradeoffs |
+| Hook-layer behavior and tests | [scripts/hooks/README.md](scripts/hooks/README.md) | Native hook adapter details |
+| Codex helper install/runtime notes | [scripts/codex-bin/README.md](scripts/codex-bin/README.md) | Helper source mirrored to `~/.codex/bin/` |
 
-The rule is deliberate: update an existing source-of-truth doc before adding another markdown file.
-
-## Operator Docs Map
-
-| Need | Source |
-|------|--------|
-| Daily agent/operator rules | [AGENTS.md](AGENTS.md) |
-| Command map and verification workflow | [DEVELOPMENT.md](DEVELOPMENT.md) |
-| Architecture, durable decisions, and tradeoffs | [ARCHITECTURE.md](ARCHITECTURE.md) |
-| Hook-layer behavior and tests | [scripts/hooks/README.md](scripts/hooks/README.md) |
-| Codex helper install/runtime notes | [scripts/codex-bin/README.md](scripts/codex-bin/README.md) |
+The rule is deliberate: update an existing source-of-truth doc before adding
+another markdown file.
 
 ## Included Skills
 

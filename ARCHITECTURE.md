@@ -33,15 +33,16 @@ graph TD
     ST -->|exit 2| BLOCK[Tool Blocked]
 
     subgraph "Core Infrastructure"
-        CFG[config.rb] --> STATE
         SM[state_manager.rb] --> STATE
+        PR[project_root.rb] --> STATE
+        PM[process_metrics.rb] --> STATE
     end
 
-    SP --> CFG
-    ST --> CFG
-    SK --> CFG
-    SS --> CFG
-    SH --> CFG
+    SP --> SM
+    ST --> SM
+    SK --> SM
+    SS --> SM
+    SH --> SM
     GUARD --> SH
 ```
 
@@ -60,12 +61,26 @@ graph TD
 
 ```
 scripts/hooks/core/
-├── config.rb         # Paths, thresholds, settings
-└── state_manager.rb  # Read/write state.json (HMAC-signed, file-locked)
+├── state_manager.rb  # State schema and locked/signed state access
+├── project_root.rb   # Canonical project-root resolver for hook state
+├── process_metrics.rb # Process telemetry writer
+├── mandatory_workflows.rb
+├── local_ui_guard.rb
+├── visual_receipt.rb
+├── session_docs.rb
+├── context_compact.rb
+└── sop_score.rb
 ```
 
-- **config.rb** — Single source for all configuration: project paths, state file location, bypass detection, circuit breaker threshold (3), file size limits (500 warn / 800 block), blocked system paths.
-- **state_manager.rb** — All state in one signed JSON file. API: `get(:section, :key)`, `set(:section, :key, value)`, `update(:section) { |s| s }`, `reset(:section)`. File locking for concurrent access. HMAC signing for tamper detection.
+- **state_manager.rb** — All hook runtime state in one signed JSON file. API:
+  `get(:section, :key)`, `set(:section, :key, value)`,
+  `update(:section) { |s| s }`, `reset(:section)`. File locking prevents
+  concurrent writes; HMAC signing detects tampering.
+- **project_root.rb** — Resolves the repo whose hook actually fired so state
+  does not drift to an umbrella directory when client env vars disagree with
+  cwd.
+- Other core helpers own focused policy primitives. Do not recreate the deleted
+  shared config module; constants now live beside their owning behavior.
 
 ### File Locations
 
@@ -228,143 +243,19 @@ flowchart TD
 
 ### State Schema
 
-```json
-{
-  "circuit_breaker": {
-    "failures": 0,
-    "tripped": false,
-    "tripped_at": null,
-    "last_error": null,
-    "error_signatures": {}
-  },
-  "requirements": {
-    "requested": [],
-    "satisfied": [],
-    "is_task": false,
-    "is_big_task": false,
-    "is_research_only": false
-  },
-  "research": {
-    "docs": null,
-    "web": null,
-    "github": null,
-    "local": null
-  },
-  "edits": {
-    "count": 0,
-    "unique_files": [],
-    "last_file": null
-  },
-  "saneloop": {
-    "active": false,
-    "task": null,
-    "iteration": 0,
-    "max_iterations": 20,
-    "acceptance_criteria": [],
-    "started_at": null
-  },
-  "enforcement": {
-    "blocks": [],
-    "halted": false,
-    "halted_at": null,
-    "halted_reason": null,
-    "session_started_at": null
-  },
-  "edit_attempts": {
-    "count": 0,
-    "last_attempt": null,
-    "reset_at": null
-  },
-  "sensitive_approvals": {},
-  "startup_gate": {
-    "open": false,
-    "opened_at": null,
-    "steps": {
-      "session_docs": false,
-      "skills_registry": false,
-      "validation_report": false,
-      "orphan_cleanup": false,
-      "system_clean": false
-    },
-    "step_timestamps": {}
-  },
-  "deployment": {
-    "sparkle_signed_dmgs": [],
-    "staple_verified_dmgs": []
-  },
-  "handoff_tracking": {
-    "significant_edits": 0,
-    "significant_files": [],
-    "handoff_updated": false,
-    "memory_updated": false
-  },
-  "action_log": [],
-  "reminders": {},
-  "learnings": [],
-  "patterns": {
-    "weak_spots": {},
-    "triggers": {},
-    "strengths": [],
-    "session_scores": []
-  },
-  "validation": {
-    "sessions_total": 0,
-    "sessions_with_tests_passing": 0,
-    "sessions_with_breaker_trip": 0,
-    "blocks_that_were_correct": 0,
-    "blocks_that_were_wrong": 0,
-    "doom_loops_caught": 0,
-    "doom_loops_missed": 0,
-    "time_saved_estimates": [],
-    "first_tracked": null,
-    "last_updated": null
-  },
-  "mcp_health": {
-    "verified_this_session": false,
-    "last_verified": null,
-    "mcps": {
-      "apple_docs": { "verified": false, "last_success": null, "failure_count": 0 },
-      "context7": { "verified": false, "last_success": null, "failure_count": 0 },
-      "github": { "verified": false, "last_success": null, "failure_count": 0 }
-    }
-  },
-  "refusal_tracking": {},
-  "task_context": {
-    "task_type": null,
-    "task_keywords": [],
-    "task_hash": null,
-    "researched_at": null
-  },
-  "session_docs": {
-    "required": [],
-    "read": [],
-    "enforced": true
-  },
-  "verification": {
-    "tests_run": false,
-    "verification_run": false,
-    "last_test_at": null,
-    "test_commands": [],
-    "edits_before_test": 0
-  },
-  "planning": {
-    "required": false,
-    "plan_shown": false,
-    "plan_approved": false,
-    "replan_count": 0,
-    "forced_at": null
-  },
-  "skill": {
-    "required": null,
-    "invoked": false,
-    "invoked_at": null,
-    "subagents_spawned": 0,
-    "files_read": [],
-    "satisfied": false,
-    "satisfaction_reason": null
-  }
-}
-```
+The live schema is `StateManager::SCHEMA` in
+`scripts/hooks/core/state_manager.rb`. Keep the schema there, not duplicated in
+docs. Durable schema notes belong here only when they explain why a state family
+exists:
+
+- `circuit_breaker`: trips after 2 consecutive failures or 2 matching error
+  signatures.
+- `research`, `session_docs`, `startup_gate`, `requirements`, and `skill`: gate
+  edit readiness.
+- `edits`, `verification`, `handoff_tracking`, and `visual_verification`: back
+  completion and stop-hook claims with evidence.
+- `mcp_health`, `mcp_actions`, and `refusal_tracking`: prevent repeated blocked
+  attempts from becoming silent loops.
 
 ### Concurrency Model
 
@@ -657,185 +548,29 @@ Hook-block telemetry must also preserve the actual block family. `MCP ACTIONS PE
 
 ---
 
-## 6. Dependencies & External APIs
+## 6. Dependencies & External Operations
 
-| Dependency | Version | Purpose | Risk |
-|------------|---------|---------|------|
-| Ruby 3.x | Homebrew / system | Hook execution | `brew install ruby` on macOS |
-| Claude Code | Latest | Host platform | Breaking changes to hook API |
-| JSON (stdlib) | Ruby stdlib | State parsing | None |
-| OpenSSL (stdlib) | Ruby stdlib | HMAC signing | None |
-| MCP servers | Various | Research tools | Network dependency |
+This architecture file records ownership and design boundaries. Operational
+details live with the workflows that run them:
 
-### MCP Servers (Optional)
+| Topic | Source of Truth |
+|-------|-----------------|
+| Build/test/release commands | `DEVELOPMENT.md` |
+| Private credentials, keys, ASC, R2, D1, and LaunchAgent setup | `DEVELOPER_SETUP.md` |
+| Release, notarization, App Store, appcast, and website deployment SOP | `templates/RELEASE_SOP.md` |
+| Hook-layer behavior and focused hook tests | `scripts/hooks/README.md` |
+| Current validation receipts and active blockers | `SESSION_HANDOFF.md`, `.claude/research.md`, and `outputs/` receipts |
 
-The research gate works best with MCP servers that provide documentation and code search. None are required — if an MCP isn't available, its research category auto-completes.
+Durable architecture rules:
 
-Recommended:
-- **context7** — Library documentation lookup
-- **github** — External code search
-- **apple-docs** — Apple SDK verification (Swift projects)
-
-### App Store Connect API Surface (Authoritative Source)
-
-Source of truth is Apple’s published OpenAPI spec ZIP:
-- `https://developer.apple.com/sample-code/app-store-connect/app-store-connect-openapi-specification.zip`
-
-Current verified snapshot:
-- OpenAPI: `3.0.1`
-- API version: `4.2`
-- Path count: `925`
-
-Refresh command:
-
-```bash
-tmpdir=$(mktemp -d)
-cd "$tmpdir"
-curl -fsSL -o asc-openapi.zip \
-  https://developer.apple.com/sample-code/app-store-connect/app-store-connect-openapi-specification.zip
-unzip -q asc-openapi.zip
-python3 - <<'PY'
-import json
-doc = json.load(open("openapi.oas.json"))
-print("openapi", doc.get("openapi"))
-print("api_version", doc.get("info", {}).get("version"))
-print("path_count", len(doc.get("paths", {})))
-PY
-```
-
-Accessibility declarations (v4.0+) are modeled as:
-- `GET /v1/apps/{id}/accessibilityDeclarations`
-- `POST /v1/accessibilityDeclarations`
-- `PATCH /v1/accessibilityDeclarations/{id}`
-- `DELETE /v1/accessibilityDeclarations/{id}`
-
-Important behavior:
-- Publish action is done with update attribute `publish: true`.
-- Sending `state: "PUBLISHED"` in PATCH is rejected.
-- Create requires `deviceFamily` (`IPHONE`, `IPAD`, `APPLE_TV`, `APPLE_WATCH`, `MAC`, `VISION`).
-
-Metadata lock behavior to plan around:
-- On live-ready lanes, ASC can return `409` for description/subtitle/support URL edits.
-- Treat this as lane-state lock, not payload format error.
-- Safe process: create/edit a new version lane, then patch localizations there.
-
-Submission hardening rules now enforced in shared tooling:
-- `appstore_submit.rb` blocks submission when platform metadata falls back to generic copy or required review fields are missing.
-- `release.rb` / `appstore_preflight` treat known App Review policy failures as first-class gates, not warnings:
-  - non-IAP App Store unlock paths
-  - reviewer access/demo path gaps
-  - Accessibility/synthetic-input automation for clipboard or third-party UI tasks
-  - App Store artifacts that still surface direct-purchase/key-entry strings
-- IAP validation now checks review-readiness state (`READY_TO_SUBMIT`, `WAITING_FOR_REVIEW`, `APPROVED`, `READY_FOR_SALE`), not just existence.
-
-Why this exists:
-- Prior submissions lost multiple weeks to predictable App Review failures because the pipeline proved “builds/upload” but not “App Store compliant”.
-- The shared release layer is now responsible for rejecting likely-bad submissions before Apple has to.
-
-### Download Analytics (sane-dist Worker)
-
-The `sane-dist` Cloudflare Worker serves app downloads (DMG/ZIP) from a shared R2 bucket across all `dist.{app}.com` domains. Download analytics use a D1 database (`sane-dist-analytics`) for privacy-first, daily-aggregate counting.
-
-**How it works:**
-1. Every successful file download triggers `logDownload()` via `ctx.waitUntil()` (non-blocking)
-2. D1 UPSERT increments daily count per unique `(app, version, mode, source, date)` tuple
-3. Source detection from User-Agent: `Sparkle/*` → sparkle, `Homebrew/*` → homebrew, other → website, empty → unknown
-4. No personal data stored (no IPs, no cookies, no fingerprints)
-5. Analytics failures are silently swallowed — D1 outage never breaks downloads
-
-**Endpoints:**
-- `GET /api/stats?days=30&app=sanebar` — Requires `Authorization: Bearer <ANALYTICS_API_KEY>`. Returns JSON with totals, by_source, by_app, and raw rows.
-
-**CLI access:**
-- `SaneMaster.rb downloads` (alias: `dl`) — calls `scripts/automation/dl-report.py`
-- Flags: `--daily`, `--days N`, `--app NAME`, `--json`
-
-**D1 database:** `sane-dist-analytics` (ID: `c1a9df59-650b-4ffe-9f80-83439d8e9e13`, region: ENAM)
-**API key:** Stored as Wrangler secret `ANALYTICS_API_KEY` and in macOS keychain as `dist-analytics`/`api_key`.
-
-### Daily Report (`morning-report.sh`)
-
-Automated daily business report covering revenue, downloads, traffic, GitHub, customer intel, and system health. Runs once daily at 7pm EST via LaunchAgent.
-
-**LaunchAgent:** `~/Library/LaunchAgents/com.saneapps.daily-report.plist`
-- Label: `com.saneapps.daily-report`
-- Schedule: `StartCalendarInterval` Hour=19 (7pm local time)
-- Logs: `outputs/daily_report_cron.log`
-
-**Script:** `scripts/automation/morning-report.sh`
-
-**Report sections (in order):**
-1. **Executive Summary** — optional legacy AI overview only when the explicit `nv` helper remains enabled; tracked for migration to a deterministic or Codex-compatible summary path
-2. **Revenue** — LemonSqueezy sales (today/yesterday/week/all-time) + GitHub Sponsors
-3. **Downloads** — From `dl-report.py` calling the sane-dist `/api/stats` endpoint (7-day window, by-app and by-version breakdowns)
-4. **Website Traffic** — Cloudflare analytics per domain (7-day views/uniques)
-5. **GitHub** — Stars, forks, clones, views per repo; open issues; referrer sources
-6. **Customer Intel** — Pending emails (count + top 5) and high-priority bugs (top 5)
-7. **Health** — API connectivity checks (LemonSqueezy, Cloudflare, GitHub, dist workers, checkout). One line when all OK.
-8. **Git Status** — Last commit date and clean/dirty status per app repo
-
-**Environment & API keys:**
-- Runtime keys are loaded from `~/.config/nv/env` because keychain is inaccessible in headless LaunchAgent context. The filename is historical; it is the shared env cache, not approval to use `nv` for normal SaneApps work.
-- Required keys: `GITHUB_TOKEN`, `LEMONSQUEEZY_API_KEY`, `CLOUDFLARE_API_TOKEN`, `RESEND_API_KEY`, `DIST_ANALYTICS_KEY`
-- File permissions: 600
-
-**Reliability features:**
-- `safe_curl` wrapper enforces timeouts on all HTTP calls (10s connect, 30s max)
-- Any legacy `nv` CLI summary call must stay timeout-bound and non-fatal while it exists; migrate it out of the normal daily-report path rather than expanding it.
-- Lock file with 30-minute stale detection prevents overlapping runs
-- All analytics/AI failures are non-fatal — report always generates
-- Archive copy saved to `outputs/reports/YYYY-MM-DD.md` before overwriting
-
-**Output:** `outputs/morning_report.md` (latest) + `outputs/reports/` (archive)
-
-### Mini Training Daily Check
-
-Mini training already emits per-run reports, history TSVs, and current alert files under `~/SaneApps/outputs`, but those artifacts were too easy to ignore after overnight runs. A separate controller-side LaunchAgent now pulls that state every morning and turns it into a short local report plus a macOS notification.
-
-**LaunchAgent:** `~/Library/LaunchAgents/com.saneapps.training-daily-check.plist`
-- Label: `com.saneapps.training-daily-check`
-- Schedule: `StartCalendarInterval` Hour=9 Minute=15 (local time)
-- Script: `scripts/mini/training-daily-check.py`
-- Installer: `scripts/mini/install-training-daily-check-agent.sh`
-- Output: `outputs/training_daily_check.md`
-- Install location: controller machine by default. Do not install the duplicate check on the Mini; the Mini owns training, while the controller owns alerting/report review.
-
-**What it checks:**
-1. Latest `SaneAI` metrics row
-2. Latest `SaneSync` metrics row
-3. Latest readiness row for `SaneAI → SaneSync`
-4. Current active training alert markdown files on the Mini
-
-**Why it exists:**
-- The nightly training lane can fail or go stale without anyone reading the raw Mini reports.
-- The earlier failure mode was a silent dataset regression, not a hard crash.
-- Daily visibility matters more than raw automation volume; if nobody notices the report, the run was not useful.
-
-### Automation Consolidation Map
-
-Current background automation is intentionally split by responsibility:
-
-| Layer | Automation | Schedule | Owner | Purpose |
-|---|---|---:|---|---|
-| Mini LaunchAgent | `com.saneapps.training-challengers` | 1:00 AM daily except the weekly window | Mini | Run one rotated SaneAI challenger lane after refreshing the automation root. |
-| Mini LaunchAgent | `com.saneapps.training-weekly` | Sunday 1:00 AM | Mini | Run the longer weekly training lane. |
-| Mini LaunchAgent | `com.saneapps.memory-guard` | 5:40 AM daily | Mini | Clean safe Mini training/build/cache pressure before daytime work. |
-| Mini LaunchAgent | `com.saneapps.nightly` | 8:45 AM daily | Mini | Build/test/report all apps after training windows finish. |
-| Controller LaunchAgent | `com.saneapps.training-daily-check` | 9:15 AM daily | Air/controller | Read Mini training state and notify with the next action. |
-| Controller LaunchAgent | `com.saneapps.link-monitor` | every 30 min | Air/controller | Check live websites, downloads, appcasts, workers, and checkout redirects. |
-| Controller LaunchAgent | `com.saneapps.mcp-watchdog` | every 5 min | Air/controller | Trim stale/duplicate MCP sidecars without constant 15s churn. |
-| Controller LaunchAgent | `com.saneapps.repo-reconcile` | 5:55 AM, 9:55 PM | Air/controller | Sync control-plane files and report dirty/behind repo state. |
-| Codex automation | `saneapps-launch-ops` | 9:30 AM daily | Codex | Check launch calendars and run only gated launch actions. |
-| Codex automation | `setapp-status-monitor` | Mon/Wed/Fri 10:30 AM | Codex | Check Setapp review/listing status without upload/send actions. |
-| Codex automation | `sanescan-app-store-go-live-watch` | every 6 hours | Codex | Watch SaneScan App Store status and update website when live. |
-
-Disabled or paused consolidations:
-- Expired SaneSales one-shot launch automations are paused; `saneapps-launch-ops` owns future gated launch-calendar checks.
-- Duplicate Mini `com.saneapps.training-daily-check` is disabled; controller-side check owns notifications.
-- Legacy NVIDIA background jobs (`com.saneapps.nv-benchmark`, `com.saneapps.mcp-singleton.nvidia-build`) are disabled. NVIDIA remains exception-only and must be explicitly requested for a specific run.
-- Broken `com.saneapps.outreach-checker` is disabled because it pointed at a deleted Claude skill path. Launch/outreach checks now route through Codex skills and `saneapps-launch-ops`.
-- Dead Mini `com.saneapps.codex-keepalive` is disabled; there was no current proof that it kept anything alive, and normal Codex app/server state should not be resurrected by a blind background opener.
-- Standalone `com.saneapps.git-sync-safe` LaunchAgents are disabled on both machines. `git-sync-safe.sh` remains the manual/reconcile implementation, but scheduled sync now runs through controller-owned `repo-reconcile` so there is one nightly repo-state owner instead of three overlapping sync jobs.
+- External API calls must route through `SaneMaster.rb`, release scripts, or
+  dedicated automation wrappers so they produce receipts and obey guardrails.
+- Secrets live in Keychain or the approved env cache; docs must not become
+  credential ledgers.
+- App Store Connect and vendor API quirks belong in release/preflight code plus
+  `templates/RELEASE_SOP.md`, not duplicated here.
+- Background automation ownership belongs in `DEVELOPMENT.md`; this file should
+  explain why a lane exists only when it changes the process architecture.
 
 ---
 
@@ -843,10 +578,10 @@ Disabled or paused consolidations:
 
 The durable source of truth for exact test counts is `ruby scripts/SaneMaster.rb
 verify`; hook-layer slice counts change as guardrails are extracted. Current
-focused hook receipts include `saneprompt` 62, `sanetools` 38, `sanetrack` 38,
-`sanestop` 45, `session_docs` startup/state coverage, `grok_and_security_guard`,
-and the 185-test tier suite. Keep the detailed hook slice list in
-`scripts/hooks/README.md` rather than duplicating every count here.
+focused hook receipts include the hook self-tests, session docs/startup state
+coverage, `grok_and_security_guard`, hook integration tests, and the tier suite.
+Keep detailed slice lists in `scripts/hooks/README.md`; this file should not
+carry per-test counts that drift every time a guard is extracted.
 
 ### Running Tests
 
@@ -856,7 +591,8 @@ ruby scripts/hooks/saneprompt.rb --self-test
 ruby scripts/hooks/sanetools.rb --self-test
 ruby scripts/hooks/sanetrack.rb --self-test
 ruby scripts/hooks/sanestop.rb --self-test
-ruby scripts/hooks/core/config.rb --self-test
+ruby scripts/hooks/core/project_root.rb --self-test
+ruby scripts/hooks/test_hooks.rb
 
 # Tier tests (all enforcement scenarios)
 ruby scripts/hooks/test/tier_tests.rb
