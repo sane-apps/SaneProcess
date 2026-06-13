@@ -10,7 +10,7 @@ SaneProcess gives coding agents a shared operating system for development work: 
 Codex is the primary SaneApps toolset. Claude Code gets the strongest native hook enforcement today, and other repo-aware agents can use the same SOP through `AGENTS.md`, reusable skills, MCP, `SaneMaster.rb`, and project scripts.
 The source of truth stays client-neutral so switching tools does not create a second workflow.
 
-MIT licensed. Ruby. macOS + Linux. Used across 7 SaneApps repos.
+MIT licensed. Ruby. macOS + Linux. Used across the SaneApps portfolio.
 
 ---
 
@@ -155,7 +155,7 @@ ruby scripts/SaneMaster.rb runtime_evidence --dry-run --break Sources/App.swift:
 ruby scripts/SaneMaster.rb visual_smoke --app ExampleApp --dry-run
 ruby scripts/SaneMaster.rb process_metrics --json
 ruby scripts/SaneMaster.rb process_metrics --export-otel outputs/process-traces.json
-ruby scripts/SaneMaster.rb gate_review test/fixtures/gates/example.json
+ruby scripts/SaneMaster.rb gate_review test/fixtures/gates/weak_test_evidence.json
 ruby scripts/SaneMaster.rb saneui_guard /path/to/app
 ```
 
