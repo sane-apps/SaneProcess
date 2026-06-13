@@ -78,38 +78,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sane_launch_guard.rb",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sane_release_guard.rb",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sane_ship_guard.rb",
+            "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sane_bash_guards.rb",
             "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sane_email_guard.rb",
-            "timeout": 3
           }
         ]
       }
