@@ -2266,7 +2266,10 @@ load_secrets_env_file() {
     while IFS= read -r line || [ -n "${line}" ]; do
         [ -z "${line}" ] && continue
         [[ "${line}" =~ ^[[:space:]]*# ]] && continue
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
         line="${line#export }"
+        [[ "${line}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
         [[ "${line}" == *=* ]] || continue
         local key="${line%%=*}"
         local value="${line#*=}"
@@ -2277,6 +2280,87 @@ load_secrets_env_file() {
     done < "${env_file}"
 
     return 0
+}
+
+fresh_release_preflight_receipt_summary() {
+    local receipt="${PROJECT_ROOT}/outputs/release_preflight_status.json"
+    local max_age_seconds="${SANEPROCESS_RELEASE_PREFLIGHT_MAX_AGE_SECONDS:-14400}"
+    [ -f "${receipt}" ] || return 1
+
+    ruby -rjson -rtime -rdigest -ropen3 - "${PROJECT_ROOT}" "${receipt}" "${max_age_seconds}" <<'RUBY'
+project_path = File.expand_path(ARGV[0])
+receipt_path = ARGV[1]
+max_age_seconds = ARGV[2].to_i
+
+payload = JSON.parse(File.read(receipt_path, encoding: Encoding::UTF_8))
+raise 'release_preflight status is not passed' unless payload['status'].to_s == 'passed'
+raise 'release_preflight has issues' unless payload['issues'].to_a.empty?
+
+generated_at = Time.parse(payload.fetch('generatedAt'))
+raise 'release_preflight receipt is stale' if max_age_seconds.positive? && (Time.now - generated_at) > max_age_seconds
+
+tracked, tracked_status = Open3.capture2e('git', '-C', project_path, 'ls-files', '-z')
+others, others_status = Open3.capture2e('git', '-C', project_path, 'ls-files', '--others', '--exclude-standard', '-z')
+files = []
+files.concat(tracked.split("\0")) if tracked_status.success?
+files.concat(others.split("\0")) if others_status.success?
+app_folder = File.basename(project_path)
+
+source_file = lambda do |relative_path|
+  path = relative_path.to_s
+  return false if path.empty?
+  return false if %w[
+    .sane/customer_ui_action_receipt.json AGENTS.md ARCHITECTURE.md CLAUDE.md
+    DEVELOPMENT.md README.md SESSION_HANDOFF.md
+  ].include?(path)
+  return false if path.start_with?(
+    '.build/',
+    '.claude/',
+    '.codex/',
+    '.git/',
+    '.sanemaster/',
+    '.serena/',
+    'DerivedData/',
+    'build/',
+    'docs/',
+    'fastlane/test_output/',
+    'node_modules/',
+    'outputs/',
+    'releases/',
+    'vendor/bundle/',
+    'website/'
+  )
+
+  return true if path == '.saneprocess'
+  return true if %w[Package.resolved Package.swift project.yml].include?(path)
+  return true if path.end_with?('.xcodeproj/project.pbxproj')
+  return true if path.start_with?("#{app_folder}/")
+  return true if path.start_with?('Config/', 'Scripts/', 'Shared/', 'Sources/', 'Tests/', 'scripts/')
+
+  %w[
+    .c .cc .cpp .entitlements .h .json .metal .m .mm .plist .rb .sh .storyboard
+    .swift .xcconfig .xcprivacy .xcstrings .xib .yaml .yml
+  ].include?(File.extname(path))
+end
+
+digest = Digest::SHA256.new
+files.select { |path| source_file.call(path) }.uniq.sort.each do |relative_path|
+  absolute_path = File.join(project_path, relative_path)
+  next unless File.file?(absolute_path)
+
+  digest.update(relative_path)
+  digest.update("\0")
+  digest.update(Digest::SHA256.file(absolute_path).hexdigest)
+  digest.update("\0")
+end
+
+actual_fingerprint = digest.hexdigest
+expected_fingerprint = payload['sourceFingerprint'].to_s
+raise 'release_preflight source fingerprint mismatch' if expected_fingerprint.empty? || expected_fingerprint != actual_fingerprint
+
+age_minutes = ((Time.now - generated_at) / 60.0).round(1)
+puts "generatedAt=#{payload['generatedAt']}, age=#{age_minutes}m, warnings=#{payload['warningCount'].to_i}"
+RUBY
 }
 
 keychain_secret() {
@@ -2311,6 +2395,12 @@ resolve_cloudflare_api_token() {
     fi
 
     token=$(keychain_secret "saneprocess.cloudflare.api_token" "" "CLOUDFLARE_API_TOKEN")
+    if [ -n "${token}" ]; then
+        printf '%s' "${token}"
+        return 0
+    fi
+
+    token=$(keychain_secret "sane-env" "CLOUDFLARE_API_TOKEN" "CLOUDFLARE_API_TOKEN")
     if [ -n "${token}" ]; then
         printf '%s' "${token}"
         return 0
@@ -2855,6 +2945,11 @@ update_changelog() {
     date_str=$(date +%Y-%m-%d)
     local tmp_changelog="${changelog}.tmp"
     local entry_file="${changelog}.entry"
+
+    if grep -Eq "^## \\[${VERSION//./\\.}\\]([[:space:]]|-)" "${changelog}"; then
+        log_info "CHANGELOG.md already has v${VERSION} entry; leaving it unchanged."
+        return 0
+    fi
 
     # Write entry to temp file (avoids awk -v backslash escaping issues)
     cat > "${entry_file}" <<CLEOF
@@ -4050,6 +4145,12 @@ check_project_qa_guardrails() {
         return 0
     fi
 
+    local preflight_receipt_summary=""
+    if preflight_receipt_summary="$(fresh_release_preflight_receipt_summary 2>/dev/null)"; then
+        log_info "Project QA guardrails covered by fresh SaneMaster release_preflight receipt (${preflight_receipt_summary})."
+        return 0
+    fi
+
     local qa_script=""
     if [ -f "${PROJECT_ROOT}/Scripts/qa.rb" ]; then
         qa_script="${PROJECT_ROOT}/Scripts/qa.rb"
@@ -4868,16 +4969,6 @@ if [ "${FULL_RELEASE}" = true ]; then
         log_warn "LemonSqueezy API returned ${LICENSE_STATUS} — may be experiencing issues."
     fi
 
-    # README sync check — warn if features aren't documented
-    README_CHECK="${SCRIPT_DIR}/automation/nv-readme-check.sh"
-    if [ -f "${README_CHECK}" ] && [ -x "${README_CHECK}" ]; then
-        log_info "Checking README sync with shipped features..."
-        if ! "${README_CHECK}" "${PROJECT_ROOT}" 2>/dev/null; then
-            log_warn "README may be out of date with shipped features (see above)."
-            log_warn "Consider updating README.md before release. Continuing..."
-        fi
-    fi
-
     run_tests
 
     log_info "Bumping version to ${VERSION}..."
@@ -5518,8 +5609,17 @@ if [ "${RUN_DEPLOY}" = true ]; then
     # Dist worker maps /updates/<file> URLs to bare R2 object keys.
     # Keep the public URL path for clients, but store object without prefix.
     R2_OBJECT_KEY="${APP_NAME}-${VERSION}.zip"
-    npx wrangler r2 object put "${R2_BUCKET}/${R2_OBJECT_KEY}" \
-        --file="${FINAL_ZIP}" --remote
+    upload_token="${CLOUDFLARE_API_TOKEN:-$(resolve_cloudflare_api_token || true)}"
+    if [ -z "${upload_token}" ]; then
+        log_error "R2 upload failed: CLOUDFLARE_API_TOKEN is unavailable."
+        exit 1
+    fi
+    if ! CLOUDFLARE_API_TOKEN="${upload_token}" npx wrangler r2 object put "${R2_BUCKET}/${R2_OBJECT_KEY}" \
+        --file="${FINAL_ZIP}" --remote; then
+        log_error "R2 upload failed."
+        exit 1
+    fi
+    export CLOUDFLARE_API_TOKEN="${upload_token}"
     log_info "R2 upload complete."
     track_gate_result "Upload ZIP to R2" "pass" "ok"
     CURRENT_GATE=""

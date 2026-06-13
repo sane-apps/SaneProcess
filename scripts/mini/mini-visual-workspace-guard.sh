@@ -521,43 +521,47 @@ issue_count() {
 
 visible_raw="$(visible_processes)"
 visible_names=()
-IFS=',' read -r -a visible_names <<< "$visible_raw"
+if [ -n "$visible_raw" ]; then
+  IFS=',' read -r -a visible_names <<< "$visible_raw"
+fi
 target_visible=false
 target_visible_via_process=false
-for raw in "${visible_names[@]}"; do
-  name="$(printf '%s' "$raw" | sed 's/^ *//;s/ *$//')"
-  [ -n "$name" ] || continue
-  if [ "$name" = "$TARGET_APP" ]; then
-    target_visible=true
-    target_visible_via_process=true
-  fi
-  case "$name" in
-    Finder|SystemUIServer|ControlCenter|Dock|NotificationCenter)
-      ;;
-    "$TARGET_APP")
-      ;;
-    Terminal)
-      issues+=("Terminal is visible; hide or close automation windows before capture")
-      ;;
-    SaneBar|SaneClick|SaneClip|SaneHosts|SaneSales|SaneSync|SaneVideo)
-      $DESKTOP_MODE || issues+=("Visible stale SaneApps window: $name while testing $TARGET_APP")
-      ;;
-    Preview|Safari|TextEdit|QuickTime\ Player)
-      issues+=("Visible helper app can contaminate screenshot: $name")
-      ;;
-    Notes)
-      issues+=("Visible helper app can contaminate screenshot: $name")
-      ;;
-    Codex)
-      if ! local_air_fallback_approved; then
+if [ -n "$visible_raw" ]; then
+  for raw in "${visible_names[@]}"; do
+    name="$(printf '%s' "$raw" | sed 's/^ *//;s/ *$//')"
+    [ -n "$name" ] || continue
+    if [ "$name" = "$TARGET_APP" ]; then
+      target_visible=true
+      target_visible_via_process=true
+    fi
+    case "$name" in
+      Finder|SystemUIServer|ControlCenter|Dock|NotificationCenter)
+        ;;
+      "$TARGET_APP")
+        ;;
+      Terminal)
+        issues+=("Terminal is visible; hide or close automation windows before capture")
+        ;;
+      SaneBar|SaneClick|SaneClip|SaneHosts|SaneSales|SaneSync|SaneVideo)
+        $DESKTOP_MODE || issues+=("Visible stale SaneApps window: $name while testing $TARGET_APP")
+        ;;
+      Preview|Safari|TextEdit|QuickTime\ Player)
         issues+=("Visible helper app can contaminate screenshot: $name")
-      fi
-      ;;
-    SecurityAgent|CoreServicesUIAgent|UserNotificationCenter|NotificationCenter|System\ Settings|System\ Preferences|loginwindow)
-      issues+=("Visible macOS permission/security prompt host can contaminate screenshot: $name")
-      ;;
-  esac
-done
+        ;;
+      Notes)
+        issues+=("Visible helper app can contaminate screenshot: $name")
+        ;;
+      Codex)
+        if ! local_air_fallback_approved; then
+          issues+=("Visible helper app can contaminate screenshot: $name")
+        fi
+        ;;
+      SecurityAgent|CoreServicesUIAgent|UserNotificationCenter|NotificationCenter|System\ Settings|System\ Preferences|loginwindow)
+        issues+=("Visible macOS permission/security prompt host can contaminate screenshot: $name")
+        ;;
+    esac
+  done
+fi
 
 frontmost_name="$(frontmost_process | sed 's/^ *//;s/ *$//')"
 if $DESKTOP_MODE; then

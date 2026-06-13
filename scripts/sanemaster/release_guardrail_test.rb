@@ -2840,6 +2840,44 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('release.sh trusts fresh SaneMaster release_preflight proof before raw project QA') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+
+      receipt_index = release_script.index('fresh_release_preflight_receipt_summary')
+      qa_index = release_script.index('ruby "${qa_script}"')
+
+      assert(!receipt_index.nil?, 'expected release.sh to validate fresh release_preflight receipt')
+      assert(!qa_index.nil?, 'expected raw project QA fallback to remain available')
+      assert(receipt_index < qa_index, 'expected release_preflight receipt path before raw project QA fallback')
+      assert_includes(release_script, 'sourceFingerprint')
+      assert_includes(release_script, 'Project QA guardrails covered by fresh SaneMaster release_preflight receipt')
+      true
+    end
+
+    test('release.sh dotenv parser ignores shell functions and conditionals') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+
+      assert_includes(release_script, '[[ "${line}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue')
+      assert_includes(release_script, 'line="${line#export }"')
+      true
+    end
+
+    test('release.sh does not run legacy nv README checks during publish') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+
+      assert(!release_script.include?('automation/nv-readme-check.sh'), 'release.sh should not call legacy nv README checks')
+      assert(!release_script.include?('Checking README sync with shipped features'), 'release.sh should not spend release time on model README sync')
+      true
+    end
+
+    test('release.sh does not duplicate changelog entries on retry') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+
+      assert_includes(release_script, 'CHANGELOG.md already has v${VERSION} entry; leaving it unchanged.')
+      assert_includes(release_script, 'grep -Eq "^## \\\\[${VERSION//./\\\\.}\\\\]([[:space:]]|-)"')
+      true
+    end
+
     test('release.sh does not hardcode SaneApps ASC credentials') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
 
