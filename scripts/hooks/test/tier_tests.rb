@@ -19,6 +19,7 @@ ENV['CLAUDE_PROJECT_DIR'] = PROJECT_DIR
 ENV['CLAUDE_HOOK_SECRET'] = TEST_HOOK_SECRET
 ENV['SANEMASTER_PROCESS_METRICS_PATH'] = File.join(PROJECT_DIR, '.sanemaster', 'process_metrics.jsonl')
 
+Dir.chdir(PROJECT_DIR)
 require_relative '../core/state_manager'
 
 at_exit { FileUtils.rm_rf(PROJECT_DIR) if File.exist?(PROJECT_DIR) }
@@ -57,6 +58,7 @@ class TierTest
     stdout, stderr, status = Open3.capture3(
       env_with_defaults,
       'ruby', hook_path,
+      chdir: PROJECT_DIR,
       stdin_data: stdin_data.to_json
     )
 

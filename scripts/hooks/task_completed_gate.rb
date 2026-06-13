@@ -17,6 +17,7 @@ require 'yaml'
 require 'digest'
 require 'open3'
 require_relative 'core/process_metrics'
+require_relative 'core/project_root'
 require_relative 'core/visual_receipt'
 
 begin
@@ -25,7 +26,7 @@ rescue JSON::ParserError, Errno::ENOENT
   exit 0
 end
 
-cwd = Dir.pwd
+cwd = SaneProjectRoot.resolve
 task_subject = input['task_subject'] || 'unknown task'
 DOC_ONLY_EXTENSIONS = %w[.md .txt .mdx .rst .adoc].freeze
 
@@ -64,13 +65,42 @@ rescue JSON::ParserError, Errno::ENOENT
   {}
 end
 
+def git_changed_path?(cwd, expanded_path)
+  root_out, root_status = Open3.capture2e('git', '-C', cwd, 'rev-parse', '--show-toplevel')
+  return false unless root_status.success?
+
+  root = File.expand_path(root_out.strip)
+  path = File.expand_path(expanded_path)
+  return false unless path == root || path.start_with?("#{root}/")
+
+  rel = path == root ? '.' : path.delete_prefix("#{root}/")
+  out, status = Open3.capture2e('git', '-C', root, 'status', '--porcelain=v1', '--', rel)
+  status.success? && !out.strip.empty?
+rescue StandardError
+  false
+end
+
 def non_doc_edits(cwd)
   edits = hook_state_section(cwd, :edits)
   edit_count = edits['count'].to_i
   files = Array(edits['unique_files'])
   return [] if edit_count.zero?
 
-  files.reject { |path| DOC_ONLY_EXTENSIONS.include?(File.extname(path.to_s).downcase) }
+  project_root = File.expand_path(cwd)
+  files.each_with_object([]) do |path, kept|
+    raw_path = path.to_s
+    next if raw_path.empty?
+    next if DOC_ONLY_EXTENSIONS.include?(File.extname(raw_path).downcase)
+
+    expanded_path = File.expand_path(raw_path.start_with?('/') ? raw_path : File.join(project_root, raw_path))
+    next unless expanded_path == project_root || expanded_path.start_with?("#{project_root}/")
+
+    # Stale state can carry edit entries from an older project/session. Ignore
+    # paths that are neither present nor a current git deletion/change.
+    next unless File.exist?(expanded_path) || git_changed_path?(project_root, expanded_path)
+
+    kept << raw_path
+  end
 end
 
 def current_source_fingerprint(cwd)

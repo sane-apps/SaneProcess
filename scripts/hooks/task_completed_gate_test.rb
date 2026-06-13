@@ -14,7 +14,7 @@ include TestFramework
 
 SCRIPT = File.expand_path('task_completed_gate.rb', __dir__)
 
-def run_task_completed_gate(app_name: nil, repo_name: nil, state: nil, metrics_rows: nil, mutate_after_metrics: nil)
+def run_task_completed_gate(app_name: nil, repo_name: nil, state: nil, metrics_rows: nil, mutate_after_metrics: nil, create_edit_files: true, extra_env: {})
   Dir.mktmpdir('task-completed-gate-') do |dir|
     app_dir = if app_name
                 File.join(dir, 'SaneApps', 'apps', app_name)
@@ -30,6 +30,7 @@ def run_task_completed_gate(app_name: nil, repo_name: nil, state: nil, metrics_r
     end
 
     Array(state&.dig('edits', 'unique_files')).each do |relative|
+      next unless create_edit_files
       next if relative.to_s.start_with?('/')
 
       path = File.join(app_dir, relative)
@@ -48,7 +49,7 @@ def run_task_completed_gate(app_name: nil, repo_name: nil, state: nil, metrics_r
       {
         'PATH' => ENV.fetch('PATH', ''),
         'SANEMASTER_PROCESS_METRICS_PATH' => metrics_path
-      },
+      }.merge(extra_env),
       'ruby',
       SCRIPT,
       stdin_data: JSON.generate('task_subject' => 'fixture task'),
@@ -357,6 +358,68 @@ exit(run_tests('TaskCompleted Gate Tests') do
       )
 
       assert_eq(status.exitstatus, 0)
+      true
+    end
+
+    test('ignores stale non-doc edit paths that are absent and not git changes') do
+      _stdout, _stderr, status = run_task_completed_gate(
+        repo_name: 'SaneProcess',
+        state: edit_state(['scripts/hooks/stale_from_old_session.rb']),
+        create_edit_files: false
+      )
+
+      assert_eq(status.exitstatus, 0)
+      true
+    end
+
+    test('blocks real git deletions even when the edited file is absent') do
+      _stdout, stderr, status = run_task_completed_gate(
+        repo_name: 'SaneProcess',
+        state: edit_state(['scripts/hooks/deleted_current_session.rb']),
+        mutate_after_metrics: lambda do |dir|
+          FileUtils.rm_f(File.join(dir, 'scripts', 'hooks', 'deleted_current_session.rb'))
+        end
+      )
+
+      assert_eq(status.exitstatus, 2)
+      assert_includes(stderr, 'without recent test verification')
+      assert_includes(stderr, 'deleted_current_session.rb')
+      true
+    end
+
+    test('uses cwd project state over a different marked CLAUDE_PROJECT_DIR') do
+      Dir.mktmpdir('task-completed-cross-repo-') do |dir|
+        repo_a = File.join(dir, 'SaneApps', 'infra', 'RepoA')
+        repo_b = File.join(dir, 'SaneApps', 'infra', 'RepoB')
+        [repo_a, repo_b].each do |repo|
+          FileUtils.mkdir_p(File.join(repo, '.claude'))
+          File.write(File.join(repo, '.saneprocess'), "name: #{File.basename(repo)}\ntype: infrastructure\n")
+        end
+        File.write(File.join(repo_a, '.claude', 'state.json'), JSON.pretty_generate(edit_state(['README.md'])))
+        File.write(File.join(repo_b, '.claude', 'state.json'), JSON.pretty_generate(edit_state(['scripts/hooks/live_repo.rb'])))
+        FileUtils.mkdir_p(File.join(repo_b, 'scripts', 'hooks'))
+        File.write(File.join(repo_b, 'scripts', 'hooks', 'live_repo.rb'), "fixture\n")
+        init_git_repo(repo_a)
+        init_git_repo(repo_b)
+
+        metrics_path = File.join(dir, 'metrics.jsonl')
+        File.write(metrics_path, '')
+        _stdout, stderr, status = Open3.capture3(
+          {
+            'PATH' => ENV.fetch('PATH', ''),
+            'SANEMASTER_PROCESS_METRICS_PATH' => metrics_path,
+            'CLAUDE_PROJECT_DIR' => repo_a
+          },
+          'ruby',
+          SCRIPT,
+          stdin_data: JSON.generate('task_subject' => 'fixture task'),
+          chdir: repo_b
+        )
+
+        assert_eq(status.exitstatus, 2)
+        assert_includes(stderr, 'without recent test verification')
+        assert_includes(stderr, 'live_repo.rb')
+      end
       true
     end
   end

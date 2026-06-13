@@ -12,6 +12,7 @@
 # ==============================================================================
 
 require_relative 'core/state_manager'
+require_relative 'core/project_root'
 
 module SaneToolsStartup
   # Tools that are always allowed during startup (needed to complete startup steps)
@@ -43,7 +44,7 @@ module SaneToolsStartup
     # Returns nil if allowed, or a block message string if blocked.
     def check_startup_gate(tool_name, tool_input)
       # Only enforce in SaneProcess projects
-      project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
+      project_dir = SaneProjectRoot.resolve
       return nil unless File.exist?(File.join(project_dir, '.saneprocess'))
 
       gate = StateManager.get(:startup_gate)

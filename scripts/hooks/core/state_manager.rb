@@ -34,9 +34,10 @@ require 'json'
 require 'fileutils'
 require 'tempfile'
 require_relative '../state_signer'
+require_relative 'project_root'
 
 module StateManager
-  PROJECT_DIR = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
+  PROJECT_DIR = SaneProjectRoot.resolve
   STATE_FILE = File.join(PROJECT_DIR, '.claude', 'state.json')
   LOCK_FILE = "#{STATE_FILE}.lock"
 

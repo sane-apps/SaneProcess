@@ -911,7 +911,10 @@ module SaneToolsTest
     ENV['CLAUDE_PROJECT_DIR'] = deg_project_dir
     original_stderr = $stderr.clone
     $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
-    deg_results = Array.new(3) { SaneToolsChecks.check_pending_mcp_actions('Edit', %w[Edit Write]) }
+    deg_results = nil
+    Dir.chdir(deg_project_dir) do
+      deg_results = Array.new(3) { SaneToolsChecks.check_pending_mcp_actions('Edit', %w[Edit Write]) }
+    end
     $stderr.reopen(original_stderr)
     ENV['CLAUDE_PROJECT_DIR'] = old_project_dir
 

@@ -30,9 +30,10 @@ require_relative 'core/state_manager'
 require_relative 'core/process_metrics'
 require_relative 'sanetools_checks'
 require_relative 'sanetools_startup'
+require_relative 'core/project_root'
 
 # === SAFEMODE BYPASS ===
-BYPASS_FILE = File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.claude', 'bypass_active.json')
+BYPASS_FILE = File.join(SaneProjectRoot.resolve, '.claude', 'bypass_active.json')
 BYPASS_ACTIVE = File.exist?(BYPASS_FILE)
 
 LOG_FILE = File.expand_path('../../.claude/sanetools.log', __dir__)
@@ -499,7 +500,7 @@ def process_tool(tool_name, tool_input)
   end
 
   # === DEPLOYMENT SAFETY (SaneApps-specific — only enforce for .saneprocess projects) ===
-  if File.exist?(File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.saneprocess'))
+  if File.exist?(File.join(SaneProjectRoot.resolve, '.saneprocess'))
     if (reason = SaneToolsChecks.check_r2_upload(tool_name, tool_input))
       log_action(tool_name, true, reason)
       output_block(reason, tool_name)
@@ -618,7 +619,7 @@ def store_research_mtime_if_needed(tool_name, tool_input)
   prompt = tool_input['prompt'] || tool_input[:prompt] || ''
   return unless prompt.match?(/research\.md/i)
 
-  project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
+  project_dir = SaneProjectRoot.resolve
   research_md = File.join(project_dir, '.claude', 'research.md')
   mtime = File.exist?(research_md) ? File.mtime(research_md).iso8601 : nil
 

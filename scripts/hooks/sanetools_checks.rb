@@ -206,7 +206,7 @@ module SaneToolsChecks
 
       expanded_path = File.expand_path(sanitized_path) rescue sanitized_path
       expanded_decoded = File.expand_path(decoded_path) rescue decoded_path
-      project_dir = File.expand_path(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd) rescue nil
+      project_dir = File.expand_path(SaneProjectRoot.resolve) rescue nil
 
       # Traversal detection: if input uses ".." to reach sensitive path segments, block it.
       # The raw path may not resolve to /etc from this CWD, but from a different CWD it would.
@@ -345,7 +345,7 @@ module SaneToolsChecks
       return nil if File.exist?(path)
 
       expanded_path = File.expand_path(path)
-      project_dir = File.expand_path(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
+      project_dir = File.expand_path(SaneProjectRoot.resolve)
       return nil unless expanded_path.start_with?("#{project_dir}/")
 
       return nil unless expanded_path.end_with?('.md')

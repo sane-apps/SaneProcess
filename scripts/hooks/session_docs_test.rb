@@ -21,6 +21,7 @@ ENV['CLAUDE_PROJECT_DIR'] = PROJECT_DIR
 ENV['CLAUDE_HOOK_SECRET'] = 'session-docs-test-secret'
 at_exit { FileUtils.rm_rf(TEST_ROOT) }
 
+Dir.chdir(PROJECT_DIR)
 require_relative 'core/state_manager'
 
 $passed = 0
@@ -49,7 +50,7 @@ def run_hook(hook, json_hash)
     CHILD_ENV,
     'ruby', File.join(HOOK_DIR, hook),
     stdin_data: json,
-    chdir: SANEPROCESS_DIR
+    chdir: PROJECT_DIR
   )
 end
 
@@ -390,7 +391,7 @@ warn '--- Test 16: State CLI inspection ---'
 stdout, _, _ = Open3.capture3(
   CHILD_ENV,
   'ruby', File.join(HOOK_DIR, 'core/state_manager.rb'), '--get', 'session_docs',
-  chdir: SANEPROCESS_DIR
+  chdir: PROJECT_DIR
 )
 parsed = begin; JSON.parse(stdout); rescue; nil; end
 t('CLI --get session_docs returns valid JSON', parsed != nil)

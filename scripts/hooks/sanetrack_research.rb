@@ -13,6 +13,7 @@
 # ==============================================================================
 
 require_relative 'core/state_manager'
+require_relative 'core/project_root'
 
 module SaneTrackResearch
   RESEARCH_SOFT_CAP = 160
@@ -34,7 +35,7 @@ module SaneTrackResearch
       r
     end
 
-    project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
+    project_dir = SaneProjectRoot.resolve
     research_md = File.join(project_dir, '.claude', 'research.md')
 
     pre_mtime = pending[:pre_mtime]

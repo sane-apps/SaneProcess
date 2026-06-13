@@ -56,6 +56,17 @@ def track_startup_gate_step(tool_name, tool_input)
 
   when 'Bash'
     command = tool_input['command'] || tool_input[:command] || ''
+    orphan_cleanup_ran =
+      command.match?(/pgrep\s+-f\s+['"]Codex\.\*--resume['"]/) &&
+      command.match?(/ps\s+-o\s+ppid=/) &&
+      command.match?(/grep\s+-q\s+Codex/) &&
+      command.match?(/kill\s+\$?pid\b/)
+
+    if orphan_cleanup_ran && !steps[:orphan_cleanup]
+      steps[:orphan_cleanup] = true
+      gate[:step_timestamps][:orphan_cleanup] = Time.now.iso8601
+      changed = true
+    end
 
     if command.match?(/validation_report\.rb/) && !steps[:validation_report]
       steps[:validation_report] = true

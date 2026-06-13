@@ -19,6 +19,7 @@
 
 require 'time'
 require_relative 'core/state_manager'
+require_relative 'core/project_root'
 
 module SaneToolsDeploy
   # All SaneApps share ONE R2 bucket via the dist Worker
@@ -168,7 +169,7 @@ module SaneToolsDeploy
       dmg_filename = url_match[1]
 
       # Try to find local DMG and compare size
-      project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
+      project_dir = SaneProjectRoot.resolve
       possible_paths = Dir.glob("#{project_dir}/**/#{dmg_filename}") +
                        Dir.glob("#{File.expand_path('~')}/Desktop/#{dmg_filename}")
 

@@ -11,6 +11,7 @@
 require 'json'
 require 'open3'
 require 'fileutils'
+require 'time'
 require_relative 'self_test_environment'
 
 PROJECT_DIR = SelfTestEnvironment.create_project('hook-system-tests')
@@ -242,7 +243,7 @@ class HookTests
   end
 
   def test_path_allows_project
-    run_hook('Read', "#{PROJECT_DIR}/README.md") == 0
+    run_hook('Read', File.join(File.realpath(PROJECT_DIR), 'README.md')) == 0
   end
 
   def test_path_allows_tmp
@@ -351,6 +352,7 @@ class HookTests
     stdout, stderr, status = Open3.capture3(
       { 'CLAUDE_PROJECT_DIR' => PROJECT_DIR }.merge(extra_env),
       'ruby', hook_path,
+      chdir: PROJECT_DIR,
       stdin_data: JSON.generate(input)
     )
 
@@ -361,6 +363,9 @@ end
 # Run tests
 if __FILE__ == $PROGRAM_NAME
   tests = HookTests.new
-  success = tests.run_all
+  success = nil
+  Dir.chdir(PROJECT_DIR) do
+    success = tests.run_all
+  end
   exit(success ? 0 : 1)
 end

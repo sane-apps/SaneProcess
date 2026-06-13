@@ -29,6 +29,7 @@ require 'fileutils'
 require 'securerandom'
 require 'shellwords'
 require 'open3'
+require 'time'
 
 module StateSigner
   SECRET_ENV_VAR = 'CLAUDE_HOOK_SECRET'

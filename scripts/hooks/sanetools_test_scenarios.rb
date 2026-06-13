@@ -5,6 +5,7 @@ require 'fileutils'
 require 'open3'
 require 'tmpdir'
 require_relative 'core/state_manager'
+require_relative 'core/project_root'
 
 module SaneToolsTestScenarios
   module_function
@@ -16,9 +17,11 @@ module SaneToolsTestScenarios
     warn ''
     warn 'Testing new-file and component-owner guards:'
 
-    project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
+    project_dir = SaneProjectRoot.resolve
     orphan_doc = File.join(project_dir, 'TESTING.md')
     readme_doc = File.join(project_dir, 'README.md')
+    readme_existed = File.exist?(readme_doc)
+    readme_contents = File.binread(readme_doc) if readme_existed
     FileUtils.rm_f(orphan_doc)
     FileUtils.rm_f(readme_doc)
 
@@ -66,6 +69,16 @@ module SaneToolsTestScenarios
     )
 
     [passed, failed]
+  ensure
+    FileUtils.rm_f(orphan_doc) if orphan_doc
+    FileUtils.rm_rf(owner_dir) if owner_dir && File.directory?(owner_dir)
+    if readme_doc
+      if readme_existed
+        File.binwrite(readme_doc, readme_contents)
+      else
+        FileUtils.rm_f(readme_doc)
+      end
+    end
   end
 
   def run_deployment_safety_tests(process_tool_proc, research_categories)
@@ -198,7 +211,7 @@ module SaneToolsTestScenarios
 
     exit_code = with_quiet_stderr do
       process_tool_proc.call('Edit', {
-        'file_path' => File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, 'website', 'appcast.xml'),
+        'file_path' => File.join(SaneProjectRoot.resolve, 'website', 'appcast.xml'),
         'old_string' => 'old content',
         'new_string' => '<enclosure url="https://dist.sanebar.com/SaneBar-9.9.9-test.dmg" edSignature="validSig123==" length="12345" />'
       })

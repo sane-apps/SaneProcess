@@ -27,8 +27,9 @@ require 'open3'
 require 'rbconfig'
 require_relative 'state_signer'
 require_relative 'session_start_cleanup'
+require_relative 'core/project_root'
 
-PROJECT_DIR = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
+PROJECT_DIR = SaneProjectRoot.resolve
 CLAUDE_DIR = File.join(PROJECT_DIR, '.claude')
 BREAKER_FILE = File.join(CLAUDE_DIR, 'circuit_breaker.json')
 FAILURE_FILE = File.join(CLAUDE_DIR, 'failure_state.json')
@@ -92,6 +93,16 @@ def reset_session_state
   # Only reset failure tracking if breaker is NOT tripped
   if File.exist?(FAILURE_FILE)
     File.delete(FAILURE_FILE)
+  end
+
+  require_relative 'core/state_manager'
+  StateManager.update(:circuit_breaker) do |cb|
+    next cb if cb[:tripped]
+
+    cb[:failures] = 0
+    cb[:last_error] = nil
+    cb[:error_signatures] = {}
+    cb
   end
 end
 

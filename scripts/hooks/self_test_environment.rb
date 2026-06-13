@@ -18,6 +18,7 @@ module SelfTestEnvironment
 
   class << self
     def run_isolated(hook_file, internal_flag: '--self-test-internal')
+      hook_path = File.expand_path(hook_file)
       Dir.mktmpdir("saneprocess-self-test-#{File.basename(hook_file, '.rb')}-") do |project_dir|
         setup_project(project_dir)
         stdout, stderr, status = Open3.capture3(
@@ -28,7 +29,8 @@ module SelfTestEnvironment
             'SANEMASTER_PROCESS_METRICS_PATH' => File.join(project_dir, '.sanemaster', 'process_metrics.jsonl'),
             'SANE_ENV_CACHE_WRITE' => '0'
           },
-          'ruby', hook_file, internal_flag
+          'ruby', hook_path, internal_flag,
+          chdir: project_dir
         )
         $stdout.write(stdout)
         $stderr.write(stderr)

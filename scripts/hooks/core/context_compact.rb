@@ -12,6 +12,7 @@
 # ==============================================================================
 
 require_relative 'state_manager'
+require_relative 'project_root'
 
 module ContextCompact
   CLAUDE_DIR = File.expand_path('../../../.claude', __dir__)
@@ -23,7 +24,7 @@ module ContextCompact
   def self.find_transcript
     return @cached_transcript_path if @cached_transcript_path
 
-    project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
+    project_dir = SaneProjectRoot.resolve
     sanitized = project_dir.gsub('/', '-')
     session_dir = File.expand_path("~/.claude/projects/#{sanitized}")
     return nil unless Dir.exist?(session_dir)

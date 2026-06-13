@@ -18,6 +18,17 @@ require 'fileutils'
 require_relative 'core/state_manager'
 
 module SaneStopTest
+  def self.ensure_git_repo!
+    _out, status = Open3.capture2e('git', '-C', Dir.pwd, 'rev-parse', '--show-toplevel')
+    return if status.success?
+
+    system('git', 'init', '-q', chdir: Dir.pwd)
+    system('git', 'config', 'user.email', 'test@example.com', chdir: Dir.pwd)
+    system('git', 'config', 'user.name', 'Test', chdir: Dir.pwd)
+    system('git', 'add', '.', chdir: Dir.pwd)
+    system('git', 'commit', '-q', '-m', 'init', chdir: Dir.pwd)
+  end
+
   def self.source_fingerprint
     root_out, root_status = Open3.capture2e('git', '-C', Dir.pwd, 'rev-parse', '--show-toplevel')
     return 'unknown' unless root_status.success?
@@ -51,6 +62,7 @@ module SaneStopTest
   def self.run(process_stop_proc, check_score_variance_proc, check_weasel_words_proc, calculate_sop_score_proc, log_file)
     warn 'SaneStop Self-Test'
     warn '=' * 40
+    ensure_git_repo!
 
     # Reset state
     StateManager.reset(:edits)

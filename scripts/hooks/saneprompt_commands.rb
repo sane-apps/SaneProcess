@@ -15,9 +15,10 @@
 require 'json'
 require 'fileutils'
 require_relative 'core/state_manager'
+require_relative 'core/project_root'
 
 module SanePromptCommands
-  CLAUDE_DIR = File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.claude')
+  CLAUDE_DIR = File.join(SaneProjectRoot.resolve, '.claude')
   BYPASS_FILE = File.join(CLAUDE_DIR, 'bypass_active.json')
   SANEMASTER_PATH = File.expand_path('../../scripts/SaneMaster.rb', __dir__)
 

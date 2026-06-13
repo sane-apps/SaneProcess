@@ -17,8 +17,9 @@
 
 require 'json'
 require 'yaml'
+require_relative 'core/project_root'
 
-SANEPROCESS_PATH = File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.saneprocess')
+SANEPROCESS_PATH = File.join(SaneProjectRoot.resolve, '.saneprocess')
 
 # Build a compact briefing from the .saneprocess manifest.
 # Returns a string to inject into session context, or nil if no manifest.

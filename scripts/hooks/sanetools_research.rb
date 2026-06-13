@@ -13,6 +13,7 @@
 
 require 'json'
 require_relative 'core/state_manager'
+require_relative 'core/project_root'
 
 module SaneToolsResearch
   # Categories that require specific MCPs — auto-satisfy if those MCPs aren't available.
@@ -48,7 +49,7 @@ module SaneToolsResearch
     tool_name.match?(mcp_tool_pattern(server))
   end
 
-  def configured_mcp_keys(project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
+  def configured_mcp_keys(project_dir = SaneProjectRoot.resolve)
     server_names = configured_mcp_server_names(project_dir)
 
     MCP_SERVER_NAME_MAP.each_with_object([]) do |(key, server_name), configured|
@@ -56,7 +57,7 @@ module SaneToolsResearch
     end
   end
 
-  def configured_mcp_server_names(project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
+  def configured_mcp_server_names(project_dir = SaneProjectRoot.resolve)
     configured_mcp_config_paths(project_dir).each_with_object([]) do |path, names|
       next unless File.exist?(path)
 
@@ -108,7 +109,7 @@ module SaneToolsResearch
     end
   end
 
-  def configured_mcp_verification_info(project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
+  def configured_mcp_verification_info(project_dir = SaneProjectRoot.resolve)
     configured = configured_mcp_keys(project_dir)
     MCP_VERIFICATION_INFO.select { |key, _info| configured.include?(key) }
   end
@@ -182,10 +183,10 @@ module SaneToolsResearch
   # Block edits until ALL MCPs have been verified this session
   # User insight: "how can you make sure all systems are go before work begins?"
 
-  CLAUDE_DIR = File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.claude')
+  CLAUDE_DIR = File.join(SaneProjectRoot.resolve, '.claude')
   MEMORY_STAGING_FILE = File.join(CLAUDE_DIR, 'memory_staging.json')
 
-  def memory_staging_file(project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
+  def memory_staging_file(project_dir = SaneProjectRoot.resolve)
     File.join(project_dir, '.claude', 'memory_staging.json')
   end
 
@@ -207,7 +208,7 @@ module SaneToolsResearch
     return nil unless edit_tools.include?(tool_name)
 
     # Only enforce MCP verification for projects with .saneprocess manifest
-    project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
+    project_dir = SaneProjectRoot.resolve
     return nil unless File.exist?(File.join(project_dir, '.saneprocess'))
 
     configured_mcps = configured_mcp_verification_info(project_dir)

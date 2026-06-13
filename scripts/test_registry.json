@@ -122,6 +122,12 @@
       "cmd": ["ruby", "scripts/hooks/task_completed_gate_test.rb"]
     },
     {
+      "path": "scripts/hooks/test/split_brain_test.rb",
+      "label": "SaneProcess project root split-brain regression tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/hooks/test/split_brain_test.rb"]
+    },
+    {
       "path": "scripts/mini/mini_gui_run_test.rb",
       "label": "SaneProcess Mini GUI runner tests",
       "status": "required",
