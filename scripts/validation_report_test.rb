@@ -103,6 +103,54 @@ class DownloadRedirectValidationHarness < ValidationReport
   end
 end
 
+class WebsiteDistributionHarness < ValidationReport
+  attr_reader :issues, :warnings, :metrics
+
+  def initialize(products:, statuses: {}, bodies: {}, resolved: {}, ok_links: [], redirect_base: '', checkout_base: '')
+    super()
+    @products = products
+    @statuses = statuses
+    @bodies = bodies
+    @resolved = resolved
+    @ok_links = ok_links
+    @redirect_base = redirect_base
+    @checkout_base = checkout_base
+    @metrics[:website_distribution] = { issues: 0 }
+  end
+
+  def product_definitions
+    @products
+  end
+
+  def released_product_definitions
+    @products.select { |product| !product[:checkout_uuid].to_s.empty? }
+  end
+
+  def load_product_config
+    { products: {}, store_base: '', checkout_base: @checkout_base, redirect_base: @redirect_base, all_domains: [] }
+  end
+
+  def check_url_status(url, follow_redirects: false)
+    @statuses.fetch(url, '200')
+  end
+
+  def fetch_url_text(url, headers: {})
+    @bodies.fetch(url, '')
+  end
+
+  def ssl_certificate_error?(_url)
+    false
+  end
+
+  def link_resolves_to_live_release?(link, expected_name)
+    @resolved[link] == expected_name
+  end
+
+  def link_status_ok?(link)
+    @ok_links.include?(link) || @statuses.fetch(link, nil).to_s.start_with?('2', '3')
+  end
+end
+
 class AppChecklistHarness < ValidationReport
   def initialize(page_html:)
     super()
@@ -139,6 +187,12 @@ class AppChecklistHarness < ValidationReport
 
   def latest_project_qa_status(_project_path)
     { 'generatedAt' => '2026-05-18T10:00:00Z', 'status' => 'passed', 'staleReasons' => [] }
+  end
+end
+
+class ReleaseIntegrityHarness < ValidationReport
+  def check_url_status(_url, follow_redirects: false)
+    '200'
   end
 end
 
@@ -248,7 +302,15 @@ end
 include TestFramework
 
 def product_definition(name, slug:, domain:)
-  { name: name, slug: slug, domain: domain, project_exists: true }
+  {
+    name: name,
+    slug: slug,
+    domain: domain,
+    dist_domain: '',
+    checkout_uuid: '',
+    project_path: Dir.tmpdir,
+    project_exists: true
+  }
 end
 
 def init_git_fixture(path)
@@ -270,6 +332,53 @@ def write_qa_status(path, source_fingerprint: nil)
 end
 
 exit(run_tests('Validation report tests') do
+  test_category('Q6 release minimum OS warnings') do
+    test('warns when a released app accidentally raises the macOS floor above Sonoma') do
+      subject = ReleaseIntegrityHarness.new
+      issues = []
+      warnings = []
+      product = product_definition('SaneBar', slug: 'sanebar', domain: 'sanebar.com')
+      snapshot = {
+        body: '<rss><channel><item></item></channel></rss>',
+        latest_item: '<item></item>',
+        enclosure_url: 'https://dist.sanebar.com/updates/SaneBar-2.1.68.zip',
+        has_signature: true,
+        minimum_system_version: '15.0'
+      }
+
+      subject.send(:check_live_appcast_snapshot, snapshot, product, issues, warnings)
+
+      assert_eq(issues, [])
+      assert(warnings.any? { |warning| warning.include?('SaneBar') && warning.include?('macOS 15.0') })
+      true
+    end
+
+    test('accepts a documented product-specific macOS floor exception') do
+      subject = ReleaseIntegrityHarness.new
+      issues = []
+      warnings = []
+      product = product_definition('SaneVideo', slug: 'sanevideo', domain: 'sanevideo.com').merge(
+        minimum_macos_exception: {
+          version: '15.0',
+          reason: 'Intentional v1 floor documented in README and CHANGELOG.'
+        }
+      )
+      snapshot = {
+        body: '<rss><channel><item></item></channel></rss>',
+        latest_item: '<item></item>',
+        enclosure_url: 'https://dist.sanevideo.com/updates/SaneVideo-1.0.1.zip',
+        has_signature: true,
+        minimum_system_version: '15.0'
+      }
+
+      subject.send(:check_live_appcast_snapshot, snapshot, product, issues, warnings)
+
+      assert_eq(issues, [])
+      assert_eq(warnings, [])
+      true
+    end
+  end
+
   test_category('Q11 cross-channel drift classification') do
     test('treats hosted-file drift as customer-facing release break') do
       products = [product_definition('SaneBar', slug: 'sanebar', domain: 'sanebar.com')]
@@ -358,9 +467,149 @@ exit(run_tests('Validation report tests') do
       assert(subject.issues.any? { |issue| issue.include?('SaneSales-1.3.7.zip') })
       true
     end
+
+    test('flags configured Lemon Squeezy variants with no published hosted file') do
+      products = [product_definition('SaneVideo', slug: 'sanevideo', domain: 'sanevideo.com')]
+      subject = ValidationReportHarness.new(
+        products: products,
+        appcast_versions: { 'sanevideo.com' => '1.0.1' },
+        website_versions: { 'sanevideo.com' => '1.0.1' },
+        webhook_versions: { 'SaneVideo' => '1.0.1' },
+        cask_versions: { 'sanevideo' => nil },
+        lemonsqueezy_snapshot: {
+          'SaneVideo' => {
+            'filename' => nil,
+            'version' => nil,
+            'published_file_count' => 0,
+            'published_filenames' => [],
+            'product_id' => '1087460',
+            'product_slug' => 'sanevideo-pro',
+            'variant_id' => '1703963'
+          }
+        }
+      )
+
+      subject.send(:q11_cross_channel_version_consistency)
+      subject.send(:calculate_final_verdict)
+
+      assert_eq(subject.metrics[:cross_channel_consistency][:canonical_issues], 0)
+      assert_eq(subject.metrics[:cross_channel_consistency][:hosted_file_actions], 1)
+      assert_eq(subject.verdict[:status], 'NOT READY FOR RELEASE')
+      assert(subject.issues.any? { |issue| issue.include?('[SaneVideo] Lemon Squeezy hosted has v— but appcast is v1.0.1') })
+      assert(subject.issues.any? { |issue| issue.include?('variant_id=1703963') })
+      true
+    end
+  end
+
+  test_category('Q7 website distribution semantics') do
+    test('flags 200 appcasts with no active release item') do
+      product = product_definition('SaneSync', slug: 'sanesync', domain: 'sanesync.com').merge(
+        checkout_uuid: 'sync-checkout'
+      )
+      subject = WebsiteDistributionHarness.new(
+        products: [product],
+        bodies: {
+          'https://sanesync.com' => '<a href="/download">Download</a>',
+          'https://sanesync.com/appcast.xml' => '<?xml version="1.0"?><rss><channel></channel></rss>',
+          'https://sanesync.com/robots.txt' => "User-agent: *\nAllow: /\n",
+          'https://sanesync.com/sitemap.xml' => '<urlset></urlset>'
+        }
+      )
+
+      subject.send(:q7_website_distribution)
+
+      assert(subject.issues.any? { |issue| issue.include?('SaneSync appcast') && issue.include?('no active release item') })
+      assert_eq(1, subject.metrics[:website_distribution][:issues])
+      true
+    end
+
+    test('flags placeholder download pages that do not resolve to latest appcast archive') do
+      product = product_definition('SaneVideo', slug: 'sanevideo', domain: 'sanevideo.com').merge(
+        checkout_uuid: 'video-checkout'
+      )
+      subject = WebsiteDistributionHarness.new(
+        products: [product],
+        bodies: {
+          'https://sanevideo.com' => '<a href="/download">Download</a>',
+          'https://sanevideo.com/download' => '<html><body>Coming soon</body></html>',
+          'https://sanevideo.com/appcast.xml' => <<~XML,
+            <?xml version="1.0"?>
+            <rss><channel><item sparkle:shortVersionString="1.0.1" sparkle:version="101">
+              <enclosure url="https://dist.sanevideo.com/updates/SaneVideo-1.0.1.zip" sparkle:edSignature="abc" />
+            </item></channel></rss>
+          XML
+          'https://sanevideo.com/robots.txt' => "User-agent: *\nAllow: /\n",
+          'https://sanevideo.com/sitemap.xml' => '<urlset></urlset>'
+        }
+      )
+
+      subject.send(:q7_website_distribution)
+
+      assert(subject.issues.any? { |issue| issue.include?('SaneVideo website download') && issue.include?('SaneVideo-1.0.1.zip') })
+      assert_eq(1, subject.metrics[:website_distribution][:issues])
+      true
+    end
+
+    test('warns when crawler assets serve the website HTML fallback') do
+      product = product_definition('SaneSync', slug: 'sanesync', domain: 'sanesync.com')
+      subject = WebsiteDistributionHarness.new(
+        products: [product],
+        bodies: {
+          'https://sanesync.com' => '<html><body>Coming soon</body></html>',
+          'https://sanesync.com/robots.txt' => '<html><body>Coming soon</body></html>',
+          'https://sanesync.com/sitemap.xml' => '<html><body>Coming soon</body></html>'
+        }
+      )
+
+      subject.send(:q7_website_distribution)
+
+      assert(subject.warnings.any? { |warning| warning.include?('[SaneSync] robots.txt') })
+      assert(subject.warnings.any? { |warning| warning.include?('[SaneSync] sitemap.xml') })
+      assert_eq(0, subject.metrics[:website_distribution][:issues])
+      assert_eq(2, subject.metrics[:website_distribution][:warnings])
+      true
+    end
+
+    test('accepts checkout links on linked download landing pages') do
+      product = product_definition('SaneVideo', slug: 'sanevideo', domain: 'sanevideo.com').merge(
+        checkout_uuid: 'video-checkout'
+      )
+      checkout_url = 'https://go.saneapps.com/buy/sanevideo?ref=download-page'
+      subject = WebsiteDistributionHarness.new(
+        products: [product],
+        bodies: {
+          'https://sanevideo.com/download' => %(<a href="#{checkout_url}">Support early Pro</a>)
+        },
+        ok_links: [checkout_url],
+        redirect_base: 'https://go.saneapps.com/buy'
+      )
+      links = subject.send(:extract_page_links, '<a href="/download">Download</a>', base_url: 'https://sanevideo.com')
+
+      assert(subject.send(:page_has_checkout_link?, links, product, base_url: 'https://sanevideo.com'))
+      true
+    end
   end
 
   test_category('Lemon Squeezy hosted snapshot enrichment') do
+    test('matches Lemon Squeezy products with Pro suffix names and slugs') do
+      subject = HostedVersionSnapshotHarness.new(
+        products: [],
+        products_response: [],
+        variants_response: [],
+        files_response: {}
+      )
+      product = product_definition('SaneVideo', slug: 'sanevideo', domain: 'sanevideo.com')
+      record = {
+        'attributes' => {
+          'name' => 'SaneVideo Pro',
+          'slug' => 'sanevideo-pro'
+        }
+      }
+
+      assert(subject.send(:lemonsqueezy_product_matches?, record, product))
+      true
+    end
+
     test('captures product and variant references for hosted-file action follow-up') do
       subject = HostedVersionSnapshotHarness.new(
         products: [product_definition('SaneBar', slug: 'sanebar', domain: 'sanebar.com')],
@@ -402,6 +651,43 @@ exit(run_tests('Validation report tests') do
       assert_eq(snapshot['SaneBar']['product_id'], '123')
       assert_eq(snapshot['SaneBar']['product_slug'], 'sanebar')
       assert_eq(snapshot['SaneBar']['variant_id'], '456')
+      true
+    end
+
+    test('keeps configured variants when no hosted files are published') do
+      subject = HostedVersionSnapshotHarness.new(
+        products: [product_definition('SaneVideo', slug: 'sanevideo', domain: 'sanevideo.com')],
+        products_response: [
+          {
+            'id' => '1087460',
+            'attributes' => {
+              'name' => 'SaneVideo',
+              'slug' => 'sanevideo-pro'
+            }
+          }
+        ],
+        variants_response: [
+          {
+            'id' => '1703963',
+            'attributes' => {
+              'product_id' => 1_087_460
+            }
+          }
+        ],
+        files_response: {
+          '/v1/variants/1703963/files?page[size]=100' => []
+        }
+      )
+
+      snapshot = subject.send(:fetch_live_lemonsqueezy_hosted_versions)
+
+      assert_eq(snapshot['SaneVideo']['filename'], '')
+      assert_eq(snapshot['SaneVideo']['version'], nil)
+      assert_eq(snapshot['SaneVideo']['published_file_count'], 0)
+      assert_eq(snapshot['SaneVideo']['published_filenames'], [])
+      assert_eq(snapshot['SaneVideo']['product_id'], '1087460')
+      assert_eq(snapshot['SaneVideo']['product_slug'], 'sanevideo-pro')
+      assert_eq(snapshot['SaneVideo']['variant_id'], '1703963')
       true
     end
   end
@@ -1258,10 +1544,12 @@ exit(run_tests('Validation report tests') do
       process_area = subject.send(:finding_area, 'Q4 FAIL: Only 66.1% verify attempts pass.')
       release_area = subject.send(:finding_area, 'Q6 RELEASE: [SaneBar] Live release archive missing')
       action = subject.send(:finding_action, 'Q6 RELEASE: [SaneBar] Latest project QA gate is current (snapshot stale)')
+      hosted_action = subject.send(:finding_action, 'Q11 HOSTED FILE ACTION: [SaneVideo] Lemon Squeezy hosted has v— but appcast is v1.0.1')
 
       assert_eq(process_area, :system_health)
       assert_eq(release_area, :release_readiness)
       assert(action.include?('refresh_qa_snapshots'))
+      assert(hosted_action.include?('hosted-file dashboard action export'))
       true
     end
 

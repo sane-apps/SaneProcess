@@ -2878,6 +2878,31 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('release.sh fails when Cloudflare Pages deploy fails') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+
+      assert_includes(release_script, 'if ! npx wrangler pages deploy "${DEPLOY_DIR}" \\')
+      assert_includes(release_script, 'log_error "Website deploy failed."')
+      assert_includes(release_script, 'log_error "Pages deploy failed."')
+      true
+    end
+
+    test('release.sh blocks post-release completion when Lemon hosted file is stale') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+
+      helper_index = release_script.index('verify_lemonsqueezy_hosted_file_sync()')
+      call_index = release_script.index('if ! verify_lemonsqueezy_hosted_file_sync; then')
+      success_index = release_script.index('RELEASE v${VERSION} DEPLOYED SUCCESSFULLY')
+
+      assert(!helper_index.nil?, 'expected Lemon hosted-file verification helper')
+      assert(!call_index.nil?, 'expected post-release checks to call Lemon hosted-file verification')
+      assert(!success_index.nil?, 'expected release success banner')
+      assert(call_index < success_index, 'expected Lemon hosted-file verification before release success')
+      assert_includes(release_script, 'ruby "${sanemaster_script}" hosted_file_actions --json')
+      assert_includes(release_script, 'Lemon Squeezy hosted file still needs dashboard sync')
+      true
+    end
+
     test('release.sh does not hardcode SaneApps ASC credentials') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
 

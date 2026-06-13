@@ -126,6 +126,63 @@ exit(run_tests('SaneMaster Secret Scan Tests') do
       true
     end
 
+    test('preserves known active CLI credential stores') do
+      Dir.mktmpdir('secret-scan-active-cli-') do |dir|
+        scanner = File.join(dir, 'av')
+        write_fake_av(scanner)
+        home = Dir.home
+        findings = [
+          File.join(home, '.config', 'nv', 'env'),
+          File.join(home, '.config', 'gh', 'hosts.yml'),
+          File.join(home, '.config', 'saneprocess', 'secrets.env'),
+          File.join(home, '.codex', 'secrets', 'github_token'),
+          File.join(home, '.peekaboo', 'credentials')
+        ].map do |path|
+          {
+            'severity' => 'high',
+            'kind' => 'secret-assignment',
+            'path' => path,
+            'message' => 'Active credential store'
+          }
+        end
+
+        _stdout, stderr, status, receipt = run_secret_scan(dir, scanner, findings)
+
+        assert_eq(status.exitstatus, 0, stderr)
+        assert_eq(receipt['status'], 'pass')
+        assert_eq(receipt['actionable_count'], 0)
+        assert_eq(receipt['preserved_count'], 5)
+      end
+      true
+    end
+
+    test('ignores known scanner prompt and test fixture examples') do
+      Dir.mktmpdir('secret-scan-fixtures-') do |dir|
+        scanner = File.join(dir, 'av')
+        write_fake_av(scanner)
+        findings = [
+          File.join(dir, 'skills', 'critic', 'prompts', 'security-auditor.md'),
+          File.join(dir, 'apps', 'SaneClip', 'Tests', 'SaneClipTests.swift'),
+          File.join(dir, '.nvm', '.github', 'workflows', 'windows-npm.yml')
+        ].map do |path|
+          {
+            'severity' => 'critical',
+            'kind' => 'private-key',
+            'path' => path,
+            'message' => 'Fixture private-key pattern'
+          }
+        end
+
+        _stdout, stderr, status, receipt = run_secret_scan(dir, scanner, findings)
+
+        assert_eq(status.exitstatus, 0, stderr)
+        assert_eq(receipt['status'], 'pass')
+        assert_eq(receipt['actionable_count'], 0)
+        assert_eq(receipt['ignored_count'], 3)
+      end
+      true
+    end
+
     test('reports missing scanner with install guidance') do
       Dir.mktmpdir('secret-scan-missing-') do |dir|
         missing = File.join(dir, 'missing-av')

@@ -43,18 +43,27 @@ module SaneMasterModules
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.sanevideo-signing/keys/[^/]+\.key\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.local/share/containers/podman/machine/machine\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.codex/auth\.json\z},
+      %r{\A#{Regexp.escape(File.expand_path('~'))}/\.codex/secrets/[^/]+\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.gemini/oauth_creds\.json\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.factory/auth\.json\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.grok/user-settings\.json\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.hivello/myst/config-mainnet\.toml\z},
-      %r{\A#{Regexp.escape(File.expand_path('~'))}/\.config/cktool\z}
+      %r{\A#{Regexp.escape(File.expand_path('~'))}/\.config/cktool\z},
+      %r{\A#{Regexp.escape(File.expand_path('~'))}/\.config/gh/hosts\.yml\z},
+      %r{\A#{Regexp.escape(File.expand_path('~'))}/\.config/nv/env\z},
+      %r{\A#{Regexp.escape(File.expand_path('~'))}/\.config/saneprocess/secrets\.env\z},
+      %r{\A#{Regexp.escape(File.expand_path('~'))}/\.peekaboo/credentials\z}
     ].freeze
 
     THIRD_PARTY_FALSE_POSITIVE_ALLOWLIST = [
       %r{/(?:\.venv(?:-[^/]+)?|site-packages|node_modules|\.build|DerivedData|vendor/bundle)/},
+      %r{/\.nvm/},
       %r{/(?:transformers|sklearn|numba|PyJWT|pyjwt)-[^/]*/},
       %r{/\.claude/plugins/marketplaces/[^/]+/src/supervisor/env-sanitizer\.ts\z},
-      %r{/\.grok/marketplace-cache/[^/]+/src/supervisor/env-sanitizer\.ts\z}
+      %r{/\.grok/marketplace-cache/[^/]+/src/supervisor/env-sanitizer\.ts\z},
+      %r{/skills/critic/prompts/security-auditor\.md\z},
+      %r{/SaneClip/Tests/SaneClipTests\.swift\z},
+      %r{/SaneClip-clean/Tests/SaneClipTests\.swift\z}
     ].freeze
 
     def secret_scan(args)

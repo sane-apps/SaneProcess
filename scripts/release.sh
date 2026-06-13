@@ -1563,6 +1563,97 @@ extract_email_webhook_version() {
     echo "${webhook_entry}" | grep -oE "${app_name}-[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?'
 }
 
+verify_lemonsqueezy_hosted_file_sync() {
+    local sanemaster_script="${SCRIPT_DIR}/SaneMaster.rb"
+    local output_dir="${SCRIPT_DIR}/../outputs/hosted_file_actions"
+    local receipt_path="${output_dir}/post-release-${LOWER_APP_NAME}-${VERSION}-${RELEASE_RUN_ID}.json"
+    local hosted_json
+    local hosted_status
+    local action_summary
+    local action_status
+
+    if [ ! -f "${sanemaster_script}" ]; then
+        log_error "SaneMaster.rb not found for Lemon Squeezy hosted-file post-release verification: ${sanemaster_script}"
+        return 1
+    fi
+
+    mkdir -p "${output_dir}"
+
+    set +e
+    hosted_json=$(ruby "${sanemaster_script}" hosted_file_actions --json 2>&1)
+    hosted_status=$?
+    set -e
+
+    if [ "${hosted_status}" -ne 0 ]; then
+        log_error "Lemon Squeezy hosted-file verification failed."
+        log_error "${hosted_json}"
+        return 1
+    fi
+
+    printf '%s\n' "${hosted_json}" > "${receipt_path}"
+
+    set +e
+    action_summary=$(HOSTED_FILE_ACTIONS_JSON="${hosted_json}" APP_NAME="${APP_NAME}" EXPECTED_VERSION="${VERSION}" python3 - <<'PY'
+import json
+import os
+import sys
+
+try:
+    payload = json.loads(os.environ.get("HOSTED_FILE_ACTIONS_JSON", "{}"))
+except json.JSONDecodeError as exc:
+    print(f"Could not parse hosted-file action JSON: {exc}")
+    sys.exit(1)
+
+app_name = os.environ.get("APP_NAME", "")
+expected_version = os.environ.get("EXPECTED_VERSION", "")
+actions = [
+    action for action in payload.get("current_actions", [])
+    if action.get("app") == app_name and str(action.get("expected_version", "")) == expected_version
+]
+
+if not actions:
+    sys.exit(0)
+
+for action in actions:
+    print(
+        "{app}: hosted={hosted} expected={expected} variant={variant} dashboard={dashboard} dist={dist}".format(
+            app=action.get("app", app_name),
+            hosted=action.get("hosted_version", "unknown"),
+            expected=action.get("expected_version", expected_version),
+            variant=action.get("variant_id", "unknown"),
+            dashboard=action.get("dashboard_url", "unknown"),
+            dist=action.get("dist_url", "unknown"),
+        )
+    )
+    instructions = action.get("instructions", "")
+    if instructions:
+        print(f"  {instructions}")
+sys.exit(2)
+PY
+)
+    action_status=$?
+    set -e
+
+    if [ "${action_status}" -eq 0 ]; then
+        log_info "Lemon Squeezy hosted file verified for ${APP_NAME} v${VERSION}."
+        log_info "Hosted-file receipt: ${receipt_path}"
+        return 0
+    fi
+
+    if [ "${action_status}" -eq 2 ]; then
+        log_error "Lemon Squeezy hosted file still needs dashboard sync for ${APP_NAME} v${VERSION}."
+        while IFS= read -r line; do
+            [ -n "${line}" ] && log_error "  ${line}"
+        done <<< "${action_summary}"
+        log_error "Hosted-file receipt: ${receipt_path}"
+        return 1
+    fi
+
+    log_error "Lemon Squeezy hosted-file action parser failed."
+    [ -n "${action_summary}" ] && log_error "${action_summary}"
+    return 1
+}
+
 run_post_release_checks() {
     local dist_url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
     local appcast_url="https://${SITE_HOST}/appcast.xml"
@@ -1772,6 +1863,10 @@ PY
                 return 1
             fi
         fi
+    fi
+
+    if ! verify_lemonsqueezy_hosted_file_sync; then
+        return 1
     fi
 
     if [ -n "${HOMEBREW_TAP_REPO}" ]; then
@@ -4820,11 +4915,14 @@ if [ "${WEBSITE_ONLY}" = true ]; then
     update_website_app_store_links_if_live
 
     log_info "Deploying website to Cloudflare Pages (${PAGES_PROJECT}) from ${DEPLOY_DIR}..."
-    npx wrangler pages deploy "${DEPLOY_DIR}" \
+    if ! npx wrangler pages deploy "${DEPLOY_DIR}" \
         --project-name="${PAGES_PROJECT}" \
         --branch="${PAGES_BRANCH}" \
         --commit-dirty=true \
-        --commit-message="Website update $(date +%Y-%m-%d)"
+        --commit-message="Website update $(date +%Y-%m-%d)"; then
+        log_error "Website deploy failed."
+        exit 1
+    fi
     log_info "Website deploy complete."
     # Verify
     if [ -f "${DEPLOY_DIR}/appcast.xml" ]; then
@@ -5883,11 +5981,16 @@ PY
         log_info "Deploying website + appcast to Cloudflare Pages (${PAGES_PROJECT}) from ${DEPLOY_DIR}..."
         CURRENT_GATE="Deploy website to Cloudflare Pages"
         RELEASE_ERR_GATE_RECORDED=""
-        npx wrangler pages deploy "${DEPLOY_DIR}" \
+        if ! npx wrangler pages deploy "${DEPLOY_DIR}" \
             --project-name="${PAGES_PROJECT}" \
             --branch="${PAGES_BRANCH}" \
             --commit-dirty=true \
-            --commit-message="Release v${VERSION}"
+            --commit-message="Release v${VERSION}"; then
+            log_error "Pages deploy failed."
+            track_gate_result "Deploy website to Cloudflare Pages" "fail" "wrangler pages deploy failed"
+            CURRENT_GATE=""
+            exit 1
+        fi
         log_info "Pages deploy complete."
         track_gate_result "Deploy website to Cloudflare Pages" "pass" "ok"
         CURRENT_GATE=""

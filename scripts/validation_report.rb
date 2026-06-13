@@ -297,7 +297,7 @@ class ValidationReport
       'Update the website download href or product release config so validation can find the canonical download path.'
     when /Live release archive|Live ZIP|Live appcast|Sparkle|release URL/
       'Run release_preflight for the app and repair the missing live distribution artifact before considering that app release-ready.'
-    when /Lemon Squeezy hosted file/
+    when /Lemon Squeezy hosted/
       'Use the hosted-file dashboard action export and update the Lemon Squeezy hosted file to the canonical release artifact.'
     when /Customer UI contract/
       'Run the app customer UI sweep on the Mini, fix the reported workflow proof gap, and rerun release_preflight before release.'
@@ -1448,7 +1448,7 @@ class ValidationReport
       site_host = product[:domain]
       live_appcast = fetch_live_appcast_snapshot(site_host)
       if live_appcast
-        check_live_appcast_snapshot(live_appcast, app_name, issues_found, warnings_found)
+        check_live_appcast_snapshot(live_appcast, product, issues_found, warnings_found)
       else
         warnings_found << "[#{app_name}] No live appcast found at https://#{site_host}/appcast.xml"
       end
@@ -1467,7 +1467,8 @@ class ValidationReport
     warnings_found.each { |w| @warnings << "Q6 RELEASE: #{w}" }
   end
 
-  def check_live_appcast_snapshot(snapshot, app_name, issues, warnings)
+  def check_live_appcast_snapshot(snapshot, product, issues, warnings)
+    app_name = product.is_a?(Hash) ? product[:name].to_s : product.to_s
     content = snapshot[:body].to_s
 
     # Verify it's valid XML first
@@ -1507,10 +1508,31 @@ class ValidationReport
     latest_min_version = snapshot[:minimum_system_version].to_s
     unless latest_min_version.empty?
       major = latest_min_version.to_f.floor
-      if major > 14  # macOS 14 is Sonoma (2023)
+      if major > 14 && !accepted_modern_macos_minimum?(product, latest_min_version) # macOS 14 is Sonoma (2023)
         warnings << "[#{app_name}] Latest release requires macOS #{latest_min_version} (excludes Sonoma users)"
       end
     end
+  end
+
+  def accepted_modern_macos_minimum?(product, latest_min_version)
+    return false unless product.is_a?(Hash)
+
+    exception = product[:minimum_macos_exception]
+    return false unless exception.is_a?(Hash)
+
+    version = exception[:version].to_s.strip
+    reason = exception[:reason].to_s.strip
+    return false if version.empty? || reason.empty?
+
+    normalized_version_prefix(version) == normalized_version_prefix(latest_min_version)
+  end
+
+  def normalized_version_prefix(version)
+    parts = version.to_s.scan(/\d+/).first(2).map(&:to_i)
+    return [] if parts.empty?
+
+    parts << 0 while parts.length < 2
+    parts
   end
 
   def check_github_releases(product, issues, warnings)
@@ -1566,10 +1588,7 @@ class ValidationReport
 
     # Check SSL certificates (via curl)
     domains.each do |domain|
-      ssl_check = `curl -sI --connect-timeout 5 "#{domain[:url]}" 2>&1`
-      if ssl_check.include?('SSL certificate problem')
-        issues_found << "#{domain[:name]} SSL certificate error"
-      end
+      issues_found << "#{domain[:name]} SSL certificate error" if ssl_certificate_error?(domain[:url])
     end
 
     # Check REVENUE-CRITICAL checkout links (from products.yml config)
@@ -1610,23 +1629,23 @@ class ValidationReport
       end
     end
 
+    # Catch shallow 200 OK site fallbacks that would otherwise make a broken or
+    # placeholder website look healthy.
+    product_definitions.each do |product|
+      validate_q7_crawler_assets(product, warnings_found)
+    end
+
     # Check Sparkle appcast feeds (CRITICAL - no updates if broken)
-    appcast_urls = released_product_definitions.map do |product|
+    released_product_definitions.each do |product|
       next if product[:domain].to_s.empty?
 
-      { url: "https://#{product[:domain]}/appcast.xml", name: "#{product[:name]} appcast" }
-    end.compact
-    appcast_urls.each do |appcast|
-      status = check_url_status(appcast[:url])
+      appcast_url = "https://#{product[:domain]}/appcast.xml"
+      status = check_url_status(appcast_url)
       case status
       when '200', '301', '302'
-        # OK - also verify it's valid XML
-        xml_content = `curl -s --connect-timeout 5 #{Shellwords.shellescape(appcast[:url])} 2>&1`
-        unless xml_content.include?('<rss') || xml_content.include?('<feed')
-          warnings_found << "#{appcast[:name]} doesn't appear to be valid XML"
-        end
+        validate_q7_live_appcast(product, appcast_url, issues_found, warnings_found)
       else
-        issues_found << "UPDATE CRITICAL: #{appcast[:name]} (#{appcast[:url]}) returns #{status} - users cannot get updates!"
+        issues_found << "UPDATE CRITICAL: #{product[:name]} appcast (#{appcast_url}) returns #{status} - users cannot get updates!"
       end
     end
 
@@ -1654,6 +1673,75 @@ class ValidationReport
 
     issues_found.each { |i| @issues << "Q7 WEBSITE: #{i}" }
     warnings_found.each { |w| @warnings << "Q7 WEBSITE: #{w}" }
+  end
+
+  def validate_q7_live_appcast(product, appcast_url, issues, warnings)
+    snapshot = fetch_live_appcast_snapshot(product[:domain])
+    unless snapshot
+      issues << "UPDATE CRITICAL: #{product[:name]} appcast (#{appcast_url}) is empty or unreadable - users cannot get updates!"
+      return
+    end
+
+    body = snapshot[:body].to_s
+    unless body.include?('<rss') || body.include?('<feed')
+      issues << "UPDATE CRITICAL: #{product[:name]} appcast (#{appcast_url}) is not XML - users cannot get updates!"
+      return
+    end
+
+    if snapshot[:version].to_s.empty? || snapshot[:enclosure_url].to_s.empty?
+      issues << "UPDATE CRITICAL: #{product[:name]} appcast (#{appcast_url}) has no active release item - users cannot get updates!"
+      return
+    end
+
+    warnings << "#{product[:name]} appcast missing Sparkle signatures" unless snapshot[:has_signature]
+    validate_q7_website_download(product, snapshot[:enclosure_url], issues)
+  end
+
+  def validate_q7_website_download(product, live_release_url, issues)
+    site_host = product[:domain].to_s.strip
+    return if site_host.empty? || live_release_url.to_s.strip.empty?
+
+    website_url = "https://#{site_host}"
+    page_links = extract_page_links(fetch_url_text(website_url), base_url: website_url)
+    return if page_has_live_download_link?(page_links, live_release_url)
+
+    expected_name = File.basename(URI(live_release_url).path.to_s)
+    issues << "DOWNLOAD CRITICAL: #{product[:name]} website download does not resolve to latest appcast archive #{expected_name}"
+  rescue StandardError
+    issues << "DOWNLOAD CRITICAL: #{product[:name]} website download could not be validated against the latest appcast archive"
+  end
+
+  def validate_q7_crawler_assets(product, warnings)
+    site_host = product[:domain].to_s.strip
+    return if site_host.empty?
+
+    {
+      'robots.txt' => ->(body) { body.match?(/User-agent:/i) },
+      'sitemap.xml' => ->(body) { body.include?('<urlset') || body.include?('<sitemapindex') }
+    }.each do |asset, valid|
+      url = "https://#{site_host}/#{asset}"
+      status = check_url_status(url, follow_redirects: true)
+      next if status == '404'
+
+      unless %w[200 301 302].include?(status)
+        warnings << "[#{product[:name]}] #{asset} returns #{status}"
+        next
+      end
+
+      body = fetch_url_text(url)
+      if html_response?(body) || !valid.call(body)
+        warnings << "[#{product[:name]}] #{asset} appears to serve a website fallback instead of #{asset}"
+      end
+    end
+  end
+
+  def html_response?(body)
+    sample = body.to_s[0, 1000].downcase
+    sample.include?('<!doctype html') || sample.include?('<html')
+  end
+
+  def ssl_certificate_error?(url)
+    `curl -sI --connect-timeout 5 "#{url}" 2>&1`.include?('SSL certificate problem')
   end
 
   def check_url_status(url, follow_redirects: false)
@@ -2173,12 +2261,15 @@ class ValidationReport
 
       # 5. Lemon Squeezy hosted file version
       lemonsqueezy_ver = nil
+      lemonsqueezy_hosted_file_missing = false
       if lemonsqueezy_snapshot.is_a?(Hash)
         hosted_file = lemonsqueezy_snapshot[app_name]
         if hosted_file.is_a?(Hash)
           published_versions = Array(hosted_file['published_filenames'])
                                .map { |name| extract_release_version_from_filename(name) }
                                .compact
+          lemonsqueezy_hosted_file_missing = published_versions.empty? &&
+                                             hosted_file['version'].to_s.strip.empty?
           lemonsqueezy_ver = if appcast_ver && published_versions.include?(appcast_ver)
                                appcast_ver
                              else
@@ -2192,6 +2283,11 @@ class ValidationReport
 
       # Compare all present versions against appcast (source of truth)
       next unless appcast_ver
+
+      if lemonsqueezy_hosted_file_missing
+        hosted_file = lemonsqueezy_snapshot[app_name]
+        hosted_file_actions << build_lemonsqueezy_hosted_file_action(app_name, '—', appcast_ver, hosted_file)
+      end
 
       %i[website webhook cask lemonsqueezy].each do |channel|
         chan_ver = versions[channel]
@@ -2519,8 +2615,7 @@ class ValidationReport
 
     released_product_definitions.each_with_object({}) do |product, snapshot|
       product_record = products.find do |record|
-        name = record.dig('attributes', 'name').to_s.strip
-        name == product[:name] || name.start_with?("#{product[:name]}:")
+        lemonsqueezy_product_matches?(record, product)
       end
       next unless product_record
 
@@ -2532,16 +2627,13 @@ class ValidationReport
       files = fetch_lemonsqueezy_collection("/v1/variants/#{variant_record['id']}/files?page[size]=100", api_key)
       next unless files.is_a?(Array)
 
-      published_file = files.find { |record| record.dig('attributes', 'status').to_s == 'published' } || files.first
-      next unless published_file
-
-      filename = published_file.dig('attributes', 'name').to_s.strip
-      version = extract_release_version_from_filename(filename)
-      next if filename.empty? && version.nil?
-
       published_filenames = files.select { |record| record.dig('attributes', 'status').to_s == 'published' }
                                  .map { |record| record.dig('attributes', 'name').to_s.strip }
                                  .reject(&:empty?)
+      published_file = files.find { |record| record.dig('attributes', 'status').to_s == 'published' } || files.first
+
+      filename = published_file&.dig('attributes', 'name').to_s.strip
+      version = extract_release_version_from_filename(filename)
 
       snapshot[product[:name]] = {
         'filename' => filename,
@@ -2555,6 +2647,18 @@ class ValidationReport
     end
   rescue StandardError
     nil
+  end
+
+  def lemonsqueezy_product_matches?(record, product)
+    product_name = product[:name].to_s.strip
+    product_slug = product[:slug].to_s.strip
+    name = record.dig('attributes', 'name').to_s.strip
+    slug = record.dig('attributes', 'slug').to_s.strip
+
+    name == product_name ||
+      name.start_with?("#{product_name}:") ||
+      name.start_with?("#{product_name} ") ||
+      (!product_slug.empty? && (slug == product_slug || slug.start_with?("#{product_slug}-")))
   end
 
   def build_lemonsqueezy_hosted_file_action(app_name, current_version, expected_version, hosted_file)
@@ -3342,7 +3446,7 @@ class ValidationReport
     if app_store_product
       checklist << { name: "StoreKit product configured", status: product[:storekit_product_id].to_s.empty? ? :todo : :done }
     elsif website_works
-      has_lemonsqueezy = page_has_checkout_link?(page_links, product)
+      has_lemonsqueezy = page_has_checkout_link?(page_links, product, base_url: website_url)
       checklist << { name: "Lemon Squeezy store configured", status: has_lemonsqueezy ? :done : :todo }
     else
       checklist << { name: "Lemon Squeezy store configured", status: :todo }
@@ -3512,11 +3616,21 @@ class ValidationReport
           privacy_policy_url: appstore['privacy_policy_url'].to_s.strip,
           appstore_release_notes: ios_metadata['whats_new'].to_s.strip,
           license_gated: !!prod['license_gated'],
+          minimum_macos_exception: normalize_minimum_macos_exception(prod['minimum_macos_exception']),
           project_path: project_path,
           project_exists: File.directory?(project_path)
         }
       end.compact
     end
+  end
+
+  def normalize_minimum_macos_exception(raw_exception)
+    return {} unless raw_exception.is_a?(Hash)
+
+    {
+      version: raw_exception['version'].to_s.strip,
+      reason: raw_exception['reason'].to_s.strip
+    }
   end
 
   def released_product_definitions
@@ -3633,7 +3747,7 @@ class ValidationReport
     false
   end
 
-  def page_has_checkout_link?(links, product)
+  def page_has_checkout_link?(links, product, base_url: nil)
     config = load_product_config
     expected_prefixes = []
     unless config[:redirect_base].empty?
@@ -3642,10 +3756,31 @@ class ValidationReport
     unless config[:checkout_base].empty? || product[:checkout_uuid].to_s.empty?
       expected_prefixes << "#{config[:checkout_base]}/#{product[:checkout_uuid]}"
     end
-    candidate = links.find do |link|
-      expected_prefixes.any? { |prefix| link.start_with?(prefix) }
+    return false if expected_prefixes.empty?
+    return true if checkout_link_present?(links, expected_prefixes)
+
+    checkout_landing_links(links, base_url).any? do |landing_link|
+      landing_html = fetch_url_text(landing_link)
+      landing_links = extract_page_links(landing_html, base_url: landing_link)
+      checkout_link_present?(landing_links, expected_prefixes)
     end
+  end
+
+  def checkout_link_present?(links, expected_prefixes)
+    candidate = links.find { |link| expected_prefixes.any? { |prefix| link.start_with?(prefix) } }
     candidate ? link_status_ok?(candidate) : false
+  end
+
+  def checkout_landing_links(links, base_url)
+    return [] if base_url.to_s.strip.empty?
+
+    base_host = URI(base_url).host
+    links.select do |link|
+      uri = URI(link)
+      uri.host == base_host && uri.path.match?(%r{/(download|buy|purchase|pricing)(/|\z)})
+    rescue URI::InvalidURIError
+      false
+    end.uniq.first(5)
   end
 
   def page_has_app_store_or_contact_cta?(links, product, html = '')

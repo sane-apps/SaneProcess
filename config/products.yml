@@ -66,6 +66,9 @@ products:
     name: SaneVideo
     checkout_uuid: 478d2602-9808-4591-b01b-d555cccd0185
     license_gated: true    # Basic/Pro gating active — all release channels allowed
+    minimum_macos_exception:
+      version: "15.0"
+      reason: "Intentional v1 floor: SaneVideo relies on macOS 15 ScreenCaptureKit/audio capture and WhisperKit-era workflows; README and CHANGELOG disclose Sequoia+."
     domain: sanevideo.com
     dist_domain: dist.sanevideo.com
     github_repo: sane-apps/SaneVideo
