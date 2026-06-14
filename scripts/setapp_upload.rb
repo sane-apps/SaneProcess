@@ -17,6 +17,10 @@ class SetappUpload
   API_BASE = 'https://developer-api.setapp.com/v1'
   CI_ENDPOINT = "#{API_BASE}/ci/version"
   PORTAL_UPLOAD_ENDPOINT = "#{API_BASE}/versions/upload_archive"
+  STATUS_LABELS = {
+    2 => 'Needs Revision',
+    5 => 'In Review'
+  }.freeze
 
   def initialize(argv)
     @options = {
@@ -26,6 +30,7 @@ class SetappUpload
       allow_overwrite: true,
       portal_fallback: false,
       safari_token: true,
+      allow_needs_revision: false,
       json: false,
       dry_run: false
     }
@@ -65,6 +70,9 @@ class SetappUpload
       end
       opts.on('--portal-fallback', 'Use logged-in portal upload + patch path') { @options[:portal_fallback] = true }
       opts.on('--no-safari-token', 'Do not read the portal token from Safari cookies') { @options[:safari_token] = false }
+      opts.on('--allow-needs-revision', 'Attach archive without failing when the portal still needs Submit for review') do
+        @options[:allow_needs_revision] = true
+      end
       opts.on('--json', 'Print machine-readable response') { @options[:json] = true }
       opts.on('--dry-run', 'Validate inputs and print the planned upload path') { @options[:dry_run] = true }
       opts.on('-h', '--help', 'Show help') do
@@ -135,7 +143,8 @@ class SetappUpload
       status: @options[:status],
       beta: @options[:beta],
       release_on_approval: @options[:release_on_approval],
-      allow_overwrite: @options[:allow_overwrite]
+      allow_overwrite: @options[:allow_overwrite],
+      allow_needs_revision: @options[:allow_needs_revision]
     }
 
     return puts(JSON.pretty_generate(payload)) if @options[:json]
@@ -196,7 +205,11 @@ class SetappUpload
       patch_payload
     )
     fail_unless_success!(patch_response, expected: [200])
-    print_result('Setapp portal fallback attached archive', patch_response[:json])
+
+    status_response = curl_get("#{API_BASE}/versions/#{@options[:version_id]}", "Token #{token}")
+    fail_unless_success!(status_response, expected: [200])
+    print_portal_result(patch_response[:json], status_response[:json])
+    enforce_portal_review_state!(status_response[:json])
   end
 
   def portal_token
@@ -238,6 +251,10 @@ class SetappUpload
       payload_file.flush
       with_curl_config(url, authorization, method: 'PATCH', json: true, extra_args: ['--data-binary', "@#{payload_file.path}"])
     end
+  end
+
+  def curl_get(url, authorization)
+    with_curl_config(url, authorization, method: 'GET')
   end
 
   def with_curl_config(url, authorization, method: 'POST', json: false, extra_args: [])
@@ -374,6 +391,35 @@ class SetappUpload
     puts "  display version: #{data['ui_version']}" if data['ui_version']
     puts "  status: #{data['status']}" if data['status']
     puts "  archive: #{data['archive_url']}" if data['archive_url']
+  end
+
+  def print_portal_result(patch_payload, status_payload)
+    if @options[:json]
+      return puts(JSON.pretty_generate({ upload: patch_payload || {}, version_status: status_payload || {} }))
+    end
+
+    print_result('Setapp portal fallback attached archive', patch_payload)
+    data = status_payload.is_a?(Hash) ? status_payload['data'] : nil
+    return unless data.is_a?(Hash)
+
+    code = data['status'].to_i
+    puts "  post-attach review status: #{status_label(code)} (#{code})"
+    return unless code == 2
+
+    puts '  action required: click Submit for review in developer.setapp.com, then rerun setapp_status.'
+  end
+
+  def enforce_portal_review_state!(payload)
+    data = payload.is_a?(Hash) ? payload['data'] : nil
+    status_code = data.is_a?(Hash) ? data['status'].to_i : 0
+    return unless status_code == 2
+    return if @options[:allow_needs_revision]
+
+    abort 'Setapp archive was attached, but the version is still Needs Revision. The build is NOT submitted for review; click Submit for review in the portal and rerun setapp_status.'
+  end
+
+  def status_label(code)
+    STATUS_LABELS.fetch(code, "Status #{code}")
   end
 
   def parse_bool(value)

@@ -225,6 +225,7 @@ class SaneMaster
         'check_inbox' => { args: '[check|review <id>|read <id>|reply ...]', desc: 'Forward to the canonical support inbox workflow' },
         'sync_mini' => { args: '[mini] [--quiet] [--no-restart]', desc: 'Sync the Codex control-plane profile to the Mini (see also: sync_grok)' },
         'sync_grok' => { args: '[mini] [--quiet]', desc: 'Sync the Grok control-plane profile (grok-bin, config, .agents/skills) to the Mini' },
+        'setapp_status' => { args: '[--json] [--soft]', desc: 'Check Setapp review status for submitted SaneApps builds' },
         'setapp_upload' => { args: '--zip ZIP --release-notes TEXT [--portal-fallback --app-id ID --version-id ID]', desc: 'Upload or replace a Setapp review build using the standard Setapp lane' }
       }
     },
@@ -308,6 +309,8 @@ class SaneMaster
                                   release_preflight
                                   appstore_preflight
                                   asp
+                                  setapp_status
+                                  setapp-status
                                   setapp_upload
                                   setapp-upload
                                   launch
@@ -1637,6 +1640,9 @@ PY
       run_sync_mini(args)
     when 'sync_grok', 'sync-grok'
       run_sync_grok(args)
+    when 'setapp_status', 'setapp-status'
+      system('ruby', File.join(__dir__, 'setapp_status.rb'), *args)
+      exit($CHILD_STATUS.exitstatus || 1) unless $CHILD_STATUS&.success?
     when 'setapp_upload', 'setapp-upload'
       system('ruby', File.join(__dir__, 'setapp_upload.rb'), *args)
       exit($CHILD_STATUS.exitstatus || 1) unless $CHILD_STATUS&.success?
@@ -2256,7 +2262,7 @@ PY
     },
     'status' => {
       usage: 'status',
-      description: 'Run the live status cross-reference across git, inbox, issues, releases, and current signals.',
+      description: 'Run the live status cross-reference across git, inbox, Setapp, issues, releases, and current signals.',
       flags: {},
       examples: [
         'status'
@@ -2295,9 +2301,23 @@ PY
         'sync_grok mini --quiet'
       ]
     },
+    'setapp_status' => {
+      usage: 'setapp_status [--json] [--soft]',
+      description: 'Check Setapp review status for submitted SaneApps builds. Needs Revision means Setapp is waiting on us.',
+      flags: {
+        '--json' => 'Print machine-readable status',
+        '--soft' => 'Always exit 0 for broad status reports',
+        '--app NAME:APP_ID:VERSION_ID' => 'Check an additional or replacement Setapp app/version pair'
+      },
+      examples: [
+        'setapp_status',
+        'setapp_status --json',
+        'setapp_status --soft'
+      ]
+    },
     'setapp_upload' => {
       usage: 'setapp_upload --zip ZIP --release-notes TEXT [--portal-fallback --app-id ID --version-id ID]',
-      description: 'Upload a Setapp build. Uses the official CI endpoint when SETAPP_AUTOMATION_TOKEN is present; use --portal-fallback only for a logged-in portal replacement when the in-review Reupload button is inert.',
+      description: 'Upload a Setapp build. Uses the official CI endpoint when SETAPP_AUTOMATION_TOKEN is present; portal fallback now fails if the version remains Needs Revision after attach.',
       flags: {
         '--zip PATH' => 'Setapp ZIP archive to upload',
         '--release-notes TEXT' => 'Release notes text',
@@ -2305,6 +2325,7 @@ PY
         '--portal-fallback' => 'Use developer portal upload_archive + version PATCH path',
         '--app-id ID' => 'Setapp application id for portal fallback',
         '--version-id ID' => 'Existing Setapp version id for portal fallback',
+        '--allow-needs-revision' => 'Attach archive without failing when a manual Submit for review is still required',
         '--dry-run' => 'Validate and print the planned path without uploading'
       },
       examples: [

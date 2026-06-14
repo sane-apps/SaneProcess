@@ -26,6 +26,11 @@ exit(run_tests('Setapp Upload Tests') do
       assert_includes(source, '"Token #{token}"')
       assert_includes(source, "data['host'].to_s == 'developer.setapp.com'")
       assert_includes(source, "token.empty?")
+      assert_includes(source, 'post-attach review status')
+      assert_includes(source, 'Needs Revision')
+      assert_includes(source, '--allow-needs-revision')
+      assert_includes(source, 'enforce_portal_review_state!')
+      assert_includes(source, 'setapp_status')
       assert_includes(source, 'capture3_with_timeout')
       assert_includes(source, 'Process.spawn')
       assert_includes(source, 'Process.waitpid2')
@@ -120,9 +125,13 @@ exit(run_tests('Setapp Upload Tests') do
       base_source = File.read(SANEMASTER_BASE_PATH)
 
       assert_includes(source, "'setapp_upload'")
+      assert_includes(source, "'setapp_status'")
       assert_includes(source, "when 'setapp_upload', 'setapp-upload'")
+      assert_includes(source, "when 'setapp_status', 'setapp-status'")
       assert_includes(source, 'setapp_upload')
+      assert_includes(source, 'setapp_status')
       assert_includes(base_source, 'setapp_upload')
+      assert_includes(base_source, 'setapp_status')
       true
     end
 

@@ -552,21 +552,21 @@ RUBY
 printf '\nSane status cross-reference (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S')"
 printf '%s\n' "----------------------------------------"
 
-printf '\n[1/9] Sales (last 30 days)\n'
+printf '\n[1/10] Sales (last 30 days)\n'
 if [[ -x "$SANE_MASTER" ]]; then
   ruby "$SANE_MASTER" sales --days 30
 else
   echo "SaneMaster sales not executable"
 fi
 
-printf '\n[2/9] Inbox status\n'
+printf '\n[2/10] Inbox status\n'
 if [[ -x "$CHECK_INBOX" ]]; then
   "$CHECK_INBOX"
 else
   echo "check-inbox.sh not found at $CHECK_INBOX"
 fi
 
-printf '\n[3/9] Listing actions\n'
+printf '\n[3/10] Listing actions\n'
 if [[ -x "$SANE_MASTER" ]]; then
   ruby "$SANE_MASTER" listing_actions --json-out "$LISTING_JSON_PATH" >/dev/null
   python3 - "$LISTING_JSON_PATH" <<'PY'
@@ -596,7 +596,7 @@ else
   echo "SaneMaster listing_actions not executable"
 fi
 
-printf '\n[4/9] Hosted-file dashboard actions\n'
+printf '\n[4/10] Hosted-file dashboard actions\n'
 if [[ -x "$SANE_MASTER" ]]; then
   if ruby "$SANE_MASTER" hosted_file_actions --json > "$HOSTED_JSON_PATH"; then
     python3 - "$HOSTED_JSON_PATH" <<'PY'
@@ -626,27 +626,34 @@ else
   echo "SaneMaster hosted_file_actions not executable"
 fi
 
-printf '\n[5/9] Outreach / launch operations\n'
+printf '\n[5/10] Setapp distribution channel\n'
+if [[ -x "$SANE_MASTER" ]]; then
+  ruby "$SANE_MASTER" setapp_status --soft || true
+else
+  echo "SaneMaster setapp_status not executable"
+fi
+
+printf '\n[6/10] Outreach / launch operations\n'
 outreach_launch_status || true
 
-printf '\n[6/9] GitHub notifications\n'
+printf '\n[7/10] GitHub notifications\n'
 github_notifications || true
 
-printf '\n[7/9] Open GitHub issues (sane-apps org)\n'
+printf '\n[8/10] Open GitHub issues (sane-apps org)\n'
 if [[ -x "$GITHUB_QUEUE" ]]; then
   "$GITHUB_QUEUE" issues --scope org-wide --limit "${STATUS_GITHUB_LIMIT:-200}"
 else
   echo "github-queue.sh not found at $GITHUB_QUEUE"
 fi
 
-printf '\n[8/9] Open GitHub PRs (sane-apps org)\n'
+printf '\n[9/10] Open GitHub PRs (sane-apps org)\n'
 if [[ -x "$GITHUB_QUEUE" ]]; then
   "$GITHUB_QUEUE" prs --scope org-wide --limit "${STATUS_GITHUB_LIMIT:-200}"
 else
   echo "github-queue.sh not found at $GITHUB_QUEUE"
 fi
 
-printf '\n[9/9] GitHub comment/review activity on open issues, PRs, and external notifications\n'
+printf '\n[10/10] GitHub comment/review activity on open issues, PRs, and external notifications\n'
 github_comment_activity || true
 github_external_notification_activity || true
 

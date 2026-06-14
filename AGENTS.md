@@ -113,6 +113,8 @@ the wrapper.
 | App runtime test | `ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb AppName` or `ruby scripts/SaneMaster.rb test_mode` |
 | Release clearance | `ruby scripts/SaneMaster.rb release_preflight` |
 | App Store clearance | `ruby scripts/SaneMaster.rb appstore_preflight` only for enabled App Store lanes |
+| Setapp status | `ruby scripts/SaneMaster.rb setapp_status`; `Needs Revision` means waiting on us |
+| Setapp upload | `ruby scripts/SaneMaster.rb setapp_upload`; portal fallback must be followed by `setapp_status` / `In Review` proof |
 | Full release | `bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project $(pwd) --full ...` |
 | Website deploy | `release.sh --website-only` |
 | Work email | `ruby scripts/SaneMaster.rb check_inbox` or `~/SaneApps/infra/scripts/check-inbox.sh` |

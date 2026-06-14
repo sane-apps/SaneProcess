@@ -50,6 +50,8 @@ module SaneMasterModules
                                       release
                                       release_preflight
                                       appstore_preflight
+                                      setapp_status
+                                      setapp-status
                                       setapp_upload
                                       setapp-upload
                                       asp
