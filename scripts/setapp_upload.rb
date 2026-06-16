@@ -4,6 +4,7 @@
 require 'json'
 require 'open3'
 require 'optparse'
+require 'rexml/document'
 require 'tempfile'
 require 'tmpdir'
 
@@ -21,6 +22,12 @@ class SetappUpload
     2 => 'Needs Revision',
     5 => 'In Review'
   }.freeze
+  PROFILE_REQUIRED_ENTITLEMENTS = [
+    'com.apple.developer.icloud-container-identifiers',
+    'com.apple.developer.icloud-services',
+    'com.apple.security.application-groups',
+    'keychain-access-groups'
+  ].freeze
 
   def initialize(argv)
     @options = {
@@ -31,6 +38,7 @@ class SetappUpload
       portal_fallback: false,
       safari_token: true,
       allow_needs_revision: false,
+      validate_only: false,
       json: false,
       dry_run: false
     }
@@ -39,6 +47,7 @@ class SetappUpload
 
   def run
     validate!
+    return validate_only if @options[:validate_only]
     return dry_run if @options[:dry_run]
 
     if @options[:portal_fallback]
@@ -73,6 +82,7 @@ class SetappUpload
       opts.on('--allow-needs-revision', 'Attach archive without failing when the portal still needs Submit for review') do
         @options[:allow_needs_revision] = true
       end
+      opts.on('--validate-only', 'Validate the archive and exit without uploading') { @options[:validate_only] = true }
       opts.on('--json', 'Print machine-readable response') { @options[:json] = true }
       opts.on('--dry-run', 'Validate inputs and print the planned upload path') { @options[:dry_run] = true }
       opts.on('-h', '--help', 'Show help') do
@@ -91,7 +101,7 @@ class SetappUpload
     abort "ZIP not found: #{@options[:zip]}" unless File.file?(@options[:zip])
     abort 'Missing --release-notes or --release-notes-file' if @options[:release_notes].to_s.strip.empty?
     abort 'Setapp status must be draft or review' unless %w[draft review].include?(@options[:status])
-    validate_archive_icon! unless @options[:dry_run]
+    validate_archive! unless @options[:dry_run]
 
     return unless @options[:portal_fallback]
 
@@ -99,7 +109,7 @@ class SetappUpload
     abort 'Portal fallback requires --version-id' if @options[:version_id].to_s.empty?
   end
 
-  def validate_archive_icon!
+  def validate_archive!
     Dir.mktmpdir('setapp-upload-archive') do |tmpdir|
       _stdout, stderr, status = capture3_with_timeout(
         120,
@@ -111,25 +121,246 @@ class SetappUpload
       )
       abort "Setapp archive could not be expanded: #{stderr.strip}" unless status.success?
 
-      icon_path = Dir.glob(File.join(tmpdir, '*.app', 'Contents', 'Resources', 'AppIcon.icns')).first
-      abort 'Setapp archive is missing Contents/Resources/AppIcon.icns' unless icon_path
+      app_path = Dir.glob(File.join(tmpdir, '*.app')).first
+      abort 'Setapp archive is missing a top-level .app bundle' unless app_path
 
-      output, icon_stderr, icon_status = capture3_with_timeout(
-        30,
-        '/usr/bin/sips',
-        '-g',
-        'pixelWidth',
-        '-g',
-        'pixelHeight',
-        icon_path
+      icon_path = File.join(app_path, 'Contents', 'Resources', 'AppIcon.icns')
+      abort 'Setapp archive is missing Contents/Resources/AppIcon.icns' unless File.file?(icon_path)
+      validate_archive_icon!(icon_path)
+
+      validate_supported_architectures!(
+        File.join(app_path, 'Contents', 'Info.plist'),
+        'Setapp archive MPSupportedArchitectures'
       )
-      abort "Setapp archive AppIcon.icns could not be inspected: #{icon_stderr.strip}" unless icon_status.success?
+      validate_executable_architectures!(bundle_executable_path(app_path), 'Setapp archive executable')
+      validate_signature!(app_path, 'Setapp archive app')
+      validate_embedded_profile!(app_path, 'Setapp archive app')
 
-      width = output[/pixelWidth:\s*(\d+)/, 1].to_i
-      height = output[/pixelHeight:\s*(\d+)/, 1].to_i
-      return if width >= 512 && height >= 512
+      Dir.glob(File.join(app_path, 'Contents', 'PlugIns', '*.appex')).each do |appex_path|
+        validate_executable_architectures!(
+          bundle_executable_path(appex_path),
+          "Setapp archive extension #{File.basename(appex_path)}"
+        )
+        validate_signature!(appex_path, "Setapp archive extension #{File.basename(appex_path)}")
+        validate_embedded_profile!(appex_path, "Setapp archive extension #{File.basename(appex_path)}")
+      end
+    end
+  end
 
-      abort "Setapp archive AppIcon.icns is #{width}x#{height}; Setapp requires at least 512x512"
+  def validate_archive_icon!(icon_path)
+    output, icon_stderr, icon_status = capture3_with_timeout(
+      30,
+      '/usr/bin/sips',
+      '-g',
+      'pixelWidth',
+      '-g',
+      'pixelHeight',
+      icon_path
+    )
+    abort "Setapp archive AppIcon.icns could not be inspected: #{icon_stderr.strip}" unless icon_status.success?
+
+    width = output[/pixelWidth:\s*(\d+)/, 1].to_i
+    height = output[/pixelHeight:\s*(\d+)/, 1].to_i
+    return if width >= 512 && height >= 512
+
+    abort "Setapp archive AppIcon.icns is #{width}x#{height}; Setapp requires at least 512x512"
+  end
+
+  def bundle_executable_path(bundle_path)
+    plist_path = File.join(bundle_path, 'Contents', 'Info.plist')
+    output, stderr, status = capture3_with_timeout(
+      10,
+      '/usr/libexec/PlistBuddy',
+      '-c',
+      'Print :CFBundleExecutable',
+      plist_path
+    )
+    abort "Setapp archive missing CFBundleExecutable in #{File.basename(bundle_path)}: #{stderr.strip}" unless status.success?
+
+    executable_path = File.join(bundle_path, 'Contents', 'MacOS', output.strip)
+    abort "Setapp archive missing executable: #{executable_path}" unless File.file?(executable_path)
+
+    executable_path
+  end
+
+  def validate_executable_architectures!(executable_path, label)
+    output, stderr, status = capture3_with_timeout(10, '/usr/bin/lipo', '-archs', executable_path)
+    abort "#{label} architectures could not be inspected: #{stderr.strip}" unless status.success?
+
+    archs = output.split
+    missing = []
+    missing << 'arm64' unless archs.any? { |arch| arch.start_with?('arm64') }
+    missing << 'x86_64' unless archs.include?('x86_64')
+    return if missing.empty?
+
+    abort "#{label} must include arm64 and x86_64 for Setapp review; missing #{missing.join(', ')} (found: #{archs.join(', ')})"
+  end
+
+  def validate_supported_architectures!(plist_path, label)
+    output, _stderr, status = capture3_with_timeout(
+      10,
+      '/usr/libexec/PlistBuddy',
+      '-c',
+      'Print :MPSupportedArchitectures',
+      plist_path
+    )
+    abort "#{label} is missing from Info.plist" unless status.success?
+
+    archs = output.scan(/\b(?:arm64|x86_64)\b/)
+    missing = %w[arm64 x86_64] - archs
+    return if missing.empty?
+
+    abort "#{label} must include arm64 and x86_64; missing #{missing.join(', ')}"
+  end
+
+  def validate_signature!(bundle_path, label)
+    _output, stderr, status = capture3_with_timeout(
+      30,
+      '/usr/bin/codesign',
+      '--verify',
+      '--deep',
+      '--strict',
+      '--verbose=2',
+      bundle_path
+    )
+    abort "#{label} signature verification failed: #{stderr.strip}" unless status.success?
+  end
+
+  def validate_embedded_profile!(bundle_path, label)
+    entitlements = signed_entitlements(bundle_path, label)
+    return unless profile_required?(entitlements)
+
+    profile_path = File.join(bundle_path, 'Contents', 'embedded.provisionprofile')
+    abort "#{label} signs restricted entitlements but is missing Contents/embedded.provisionprofile" unless File.file?(profile_path)
+
+    profile = decode_profile(profile_path, label)
+    profile_entitlements = profile.fetch('Entitlements', {})
+    bundle_id = plist_value(File.join(bundle_path, 'Contents', 'Info.plist'), 'CFBundleIdentifier', label)
+
+    abort "#{label} embedded provisioning profile does not match #{bundle_id}" unless profile_bundle_id_matches?(profile_entitlements, bundle_id)
+    abort "#{label} embedded provisioning profile does not cover signed iCloud containers" unless profile_covers_icloud?(profile_entitlements, entitlements)
+  end
+
+  def signed_entitlements(bundle_path, label)
+    output, stderr, status = capture3_with_timeout(
+      20,
+      '/usr/bin/codesign',
+      '-d',
+      '--entitlements',
+      ':-',
+      bundle_path
+    )
+    abort "#{label} entitlements could not be inspected: #{stderr.strip}" unless status.success?
+
+    return {} if output.strip.empty?
+
+    parse_plist_string(output)
+  end
+
+  def profile_required?(entitlements)
+    PROFILE_REQUIRED_ENTITLEMENTS.any? { |key| entitlement_present?(entitlements[key]) }
+  end
+
+  def entitlement_present?(value)
+    case value
+    when Array then !value.empty?
+    when Hash then !value.empty?
+    when String then !value.empty?
+    else !value.nil? && value != false
+    end
+  end
+
+  def decode_profile(profile_path, label)
+    output, stderr, status = capture3_with_timeout(20, '/usr/bin/security', 'cms', '-D', '-i', profile_path)
+    abort "#{label} embedded provisioning profile could not be decoded: #{stderr.strip}" unless status.success?
+
+    parse_plist_string(output)
+  end
+
+  def profile_bundle_id_matches?(profile_entitlements, bundle_id)
+    identifier = profile_entitlements['com.apple.application-identifier'].to_s
+    team_id, profile_bundle_id = identifier.split('.', 2)
+    return false if team_id.to_s.empty? || profile_bundle_id.to_s.empty? || bundle_id.to_s.empty?
+
+    profile_team_id = profile_entitlements['com.apple.developer.team-identifier'].to_s
+    return false unless profile_team_id.empty? || profile_team_id == team_id
+
+    if profile_bundle_id.end_with?('.*')
+      wildcard_prefix = profile_bundle_id.delete_suffix('.*')
+      return bundle_id == wildcard_prefix || bundle_id.start_with?("#{wildcard_prefix}.")
+    end
+
+    profile_bundle_id == bundle_id
+  end
+
+  def profile_covers_icloud?(profile_entitlements, signed_entitlements)
+    required = Array(signed_entitlements['com.apple.developer.icloud-container-identifiers']).reject(&:empty?)
+    return true if required.empty?
+
+    available = Array(profile_entitlements['com.apple.developer.icloud-container-identifiers'])
+    (required - available).empty?
+  end
+
+  def plist_value(plist_path, key, label)
+    output, stderr, status = capture3_with_timeout(
+      10,
+      '/usr/libexec/PlistBuddy',
+      '-c',
+      "Print :#{key}",
+      plist_path
+    )
+    abort "#{label} missing #{key}: #{stderr.strip}" unless status.success?
+
+    output.strip
+  end
+
+  def parse_plist_string(source)
+    Tempfile.create(['setapp-plist', '.plist']) do |file|
+      file.write(source)
+      file.flush
+      output, stderr, status = capture3_with_timeout(10, '/usr/bin/plutil', '-convert', 'xml1', '-o', '-', file.path)
+      abort "Setapp archive plist data could not be parsed: #{stderr.strip}" unless status.success?
+
+      parse_plist_xml(output)
+    end
+  end
+
+  def parse_plist_xml(source)
+    doc = REXML::Document.new(source)
+    root = doc.elements['plist']
+    abort 'Setapp archive plist data could not be parsed: missing plist root' unless root
+
+    first_element = root.elements.to_a.first
+    abort 'Setapp archive plist data could not be parsed: empty plist' unless first_element
+
+    parse_plist_node(first_element)
+  end
+
+  def parse_plist_node(node)
+    case node.name
+    when 'dict'
+      values = {}
+      children = node.elements.to_a
+      children.each_slice(2) do |key_node, value_node|
+        next unless key_node&.name == 'key' && value_node
+
+        values[key_node.text.to_s] = parse_plist_node(value_node)
+      end
+      values
+    when 'array'
+      node.elements.to_a.map { |child| parse_plist_node(child) }
+    when 'string', 'date', 'data'
+      node.text.to_s.strip
+    when 'integer'
+      node.text.to_i
+    when 'real'
+      node.text.to_f
+    when 'true'
+      true
+    when 'false'
+      false
+    else
+      node.text.to_s
     end
   end
 
@@ -151,6 +382,26 @@ class SetappUpload
 
     puts 'Setapp upload dry run'
     payload.each { |key, value| puts "  #{key}: #{value}" unless value.nil? || value.to_s.empty? }
+  end
+
+  def validate_only
+    payload = {
+      ok: true,
+      zip: File.expand_path(@options[:zip]),
+      checks: [
+        'top-level .app bundle',
+        'AppIcon.icns 512px or larger',
+        'MPSupportedArchitectures includes arm64 and x86_64',
+        'main executable includes arm64 and x86_64',
+        'extension executables include arm64 and x86_64',
+        'app and extensions have valid signatures',
+        'restricted-entitlement bundles embed matching provisioning profiles'
+      ]
+    }
+
+    return puts(JSON.pretty_generate(payload)) if @options[:json]
+
+    puts "Setapp archive validation passed: #{File.expand_path(@options[:zip])}"
   end
 
   def run_ci_upload

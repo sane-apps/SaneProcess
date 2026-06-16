@@ -518,6 +518,23 @@ lookup_checkout_uuid_for_slug() {
     ' "${SCRIPT_DIR}/../config/products.yml" "${slug}" 2>/dev/null || true
 }
 
+lookup_checkout_url_for_slug() {
+    local slug="$1"
+    ruby -ryaml -e '
+      cfg = YAML.load_file(ARGV[0]) || {}
+      product = cfg.fetch("products", {}).fetch(ARGV[1], {})
+      explicit_url = product.fetch("checkout_url", "").to_s
+      if !explicit_url.empty?
+        puts explicit_url
+      else
+        checkout_uuid = product.fetch("checkout_uuid", "").to_s
+        store = cfg.fetch("store", {})
+        checkout_base = store.fetch("checkout_base", "").to_s
+        puts(checkout_uuid.empty? || checkout_base.empty? ? "" : "#{checkout_base}/#{checkout_uuid}")
+      end
+    ' "${SCRIPT_DIR}/../config/products.yml" "${slug}" 2>/dev/null || true
+}
+
 extract_content_length() {
     local url="$1"
     curl --connect-timeout 10 --max-time 20 -sI "${url}" 2>/dev/null | awk 'tolower($1)=="content-length:" {gsub("\r","",$2); print $2}' | tail -1
@@ -1819,14 +1836,12 @@ PY
 
     # Follow redirects and verify the checkout lands on the expected Lemon Squeezy flow.
     if [ "${checkout_status}" = "301" ] || [ "${checkout_status}" = "302" ]; then
-        local expected_checkout_uuid
         local expected_checkout_prefix=""
         local checkout_first_hop
         local checkout_first_hop_ok=false
         local checkout_final_status
         local checkout_final_url
-        expected_checkout_uuid=$(lookup_checkout_uuid_for_slug "${LOWER_APP_NAME}")
-        [ -n "${expected_checkout_uuid}" ] && expected_checkout_prefix="https://saneapps.lemonsqueezy.com/checkout/buy/${expected_checkout_uuid}"
+        expected_checkout_prefix=$(lookup_checkout_url_for_slug "${LOWER_APP_NAME}")
         checkout_first_hop=$(extract_redirect_location "${checkout_url}" "Mozilla/5.0")
         if [ -n "${expected_checkout_prefix}" ] && [[ "${checkout_first_hop}" == "${expected_checkout_prefix}"* ]]; then
             checkout_first_hop_ok=true
@@ -1841,23 +1856,23 @@ PY
         checkout_final_url=$(extract_http_effective_url "${checkout_url}" "Mozilla/5.0")
         if [ -z "${checkout_final_url}" ]; then
             if [ "${checkout_first_hop_ok}" = true ]; then
-                log_warn "Checkout final destination was blank after provider redirects, but first-hop UUID matched ${expected_checkout_uuid}. Treating first hop as authoritative."
+                log_warn "Checkout final destination was blank after provider redirects, but first hop matched configured checkout. Treating first hop as authoritative."
             else
                 log_error "Checkout URL redirect chain did not resolve a final destination: ${checkout_url}"
                 return 1
             fi
         fi
 
-        if [ -n "${checkout_final_url}" ] && ! [[ "${checkout_final_url}" =~ ^https://([A-Za-z0-9-]+\.)?lemonsqueezy\.com/checkout/buy/ ]]; then
+        if [ -n "${checkout_final_url}" ] && ! [[ "${checkout_final_url}" =~ ^https://([A-Za-z0-9-]+\.)?lemonsqueezy\.com/checkout/(buy|custom)/ ]]; then
             if [ "${checkout_first_hop_ok}" = true ] && [[ "${checkout_final_url}" =~ ^https://([A-Za-z0-9-]+\.)?lemonsqueezy\.com/checkout/?$ ]]; then
-                log_warn "Checkout final URL resolved to a provider anti-bot landing page (${checkout_final_url}); first-hop UUID matched ${expected_checkout_uuid}, so checkout is treated as healthy."
+                log_warn "Checkout final URL resolved to a provider anti-bot landing page (${checkout_final_url}); first hop matched configured checkout, so checkout is treated as healthy."
             else
                 log_error "Checkout URL redirect chain landed on unexpected destination: ${checkout_final_url}"
                 return 1
             fi
         fi
 
-        if [ -n "${checkout_final_url}" ] && [[ "${checkout_final_url}" =~ ^https://([A-Za-z0-9-]+\.)?lemonsqueezy\.com/checkout/buy/ ]]; then
+        if [ -n "${checkout_final_url}" ] && [[ "${checkout_final_url}" =~ ^https://([A-Za-z0-9-]+\.)?lemonsqueezy\.com/checkout/(buy|custom)/ ]]; then
             if [ "${checkout_final_status}" != "200" ] && [ "${checkout_final_status}" != "403" ]; then
                 log_error "Checkout URL redirect chain ended with unexpected HTTP ${checkout_final_status}: ${checkout_final_url}"
                 return 1
@@ -4675,10 +4690,16 @@ if [ "${EXPLICIT_APPSTORE_PLATFORMS_SET}" -eq 1 ]; then
     export APPSTORE_PLATFORMS
 fi
 
-APP_NAME="${APP_NAME:-$(basename "${PROJECT_ROOT}")}" 
+APP_NAME="${APP_NAME:-$(basename "${PROJECT_ROOT}")}"
+if [ "${APP_NAME}" = "saneapps.com" ]; then
+    APP_NAME="SaneApps"
+fi
 SCHEME="${SCHEME:-${APP_NAME}}"
 LOWER_APP_NAME="$(echo "${APP_NAME}" | tr '[:upper:]' '[:lower:]')"
 BUNDLE_ID="${BUNDLE_ID:-com.${LOWER_APP_NAME}.app}"
+if [ "${WEBSITE_ONLY}" = true ] && [ -z "${TEAM_ID:-}" ]; then
+    TEAM_ID="M78L6FXD48"
+fi
 TEAM_ID="${TEAM_ID:?Set TEAM_ID env var or pass --team-id}"
 SIGNING_IDENTITY="${SIGNING_IDENTITY:-Developer ID Application}"
 BUILD_DIR="${BUILD_DIR:-${PROJECT_ROOT}/build}"
@@ -4821,6 +4842,55 @@ if [ -z "${SET_DMG_ICON_SCRIPT}" ]; then
 fi
 SET_DMG_ICON_SCRIPT="$(resolve_path "${SET_DMG_ICON_SCRIPT}")"
 
+site_social_image_path_for_deploy_dir() {
+    local deploy_dir="$1"
+    if [ -f "${deploy_dir}/assets/social-card.png" ]; then
+        echo "/assets/social-card.png"
+    elif [ -f "${deploy_dir}/og-image.png" ]; then
+        echo "/og-image.png"
+    else
+        echo "/images/og-image.png"
+    fi
+}
+
+run_website_metadata_audits() {
+    local deploy_dir="$1"
+    local site_name="$2"
+    local site_host="$3"
+    local image_path
+    local audit_script
+    local page_image_args=()
+
+    if [ -z "${deploy_dir}" ] || [ ! -d "${deploy_dir}" ]; then
+        return 0
+    fi
+    if [ ! -f "${deploy_dir}/index.html" ]; then
+        log_warn "Website metadata audits skipped: no index.html in ${deploy_dir}"
+        return 0
+    fi
+
+    image_path="$(site_social_image_path_for_deploy_dir "${deploy_dir}")"
+    if [ -f "${deploy_dir}/bundle.html" ] && [ -f "${deploy_dir}/bundle-og-image.png" ]; then
+        page_image_args=(--page-image "bundle.html=/bundle-og-image.png")
+    fi
+
+    for audit_script in \
+        "${SANEPROCESS_SCRIPTS_DIR}/automation/social_card_audit.py" \
+        "${SANEPROCESS_SCRIPTS_DIR}/automation/seo_site_audit.py"; do
+        if [ ! -f "${audit_script}" ]; then
+            log_error "Website metadata audit script missing: ${audit_script}"
+            return 1
+        fi
+        log_info "Running $(basename "${audit_script}") for ${site_host} from ${deploy_dir}..."
+        if ! python3 -B "${audit_script}" \
+            --site "${site_name}" "${deploy_dir}" "https://${site_host}" "${image_path}" \
+            "${page_image_args[@]}"; then
+            log_error "Website metadata audit failed for ${site_host}"
+            return 1
+        fi
+    done
+}
+
 # Pre-flight validation: check that configured resources exist BEFORE building
 if [ -n "${DMG_FILE_ICON}" ] && [ ! -f "${DMG_FILE_ICON}" ]; then
     log_error "DMG file icon not found: ${DMG_FILE_ICON}"
@@ -4849,6 +4919,8 @@ if [ "${WEBSITE_ONLY}" = true ]; then
         sync_docs_appcast_to_website
     elif [ -d "${PROJECT_ROOT}/docs" ]; then
         DEPLOY_DIR="${PROJECT_ROOT}/docs"
+    elif [ -f "${PROJECT_ROOT}/index.html" ]; then
+        DEPLOY_DIR="${PROJECT_ROOT}"
     else
         log_error "No website/ or docs/ directory found"
         exit 1
@@ -4913,6 +4985,9 @@ if [ "${WEBSITE_ONLY}" = true ]; then
 
     # Auto-wire live iOS App Store URL into website markers (if configured and available).
     update_website_app_store_links_if_live
+    if ! run_website_metadata_audits "${DEPLOY_DIR}" "${APP_NAME}" "${SITE_HOST}"; then
+        exit 1
+    fi
 
     log_info "Deploying website to Cloudflare Pages (${PAGES_PROJECT}) from ${DEPLOY_DIR}..."
     if ! npx wrangler pages deploy "${DEPLOY_DIR}" \
@@ -5648,7 +5723,28 @@ METAEOF
     log_info "Saved release metadata to ${BUILD_DIR}/${APP_NAME}-${VERSION}.meta"
 fi
 
+run_pre_public_website_metadata_audits() {
+    local deploy_dir=""
+
+    if [ -d "${PROJECT_ROOT}/website" ]; then
+        deploy_dir="${PROJECT_ROOT}/website"
+    elif [ -d "${PROJECT_ROOT}/docs" ]; then
+        deploy_dir="${PROJECT_ROOT}/docs"
+    else
+        return 0
+    fi
+
+    log_info "Running website metadata audits before public release sync..."
+    if ! run_website_metadata_audits "${deploy_dir}" "${APP_NAME}" "${SITE_HOST}"; then
+        log_error "Website metadata must pass before GitHub/R2 release assets are published."
+        exit 1
+    fi
+}
+
 if [ "${RUN_GH_RELEASE}" = true ]; then
+    if [ "${RUN_DEPLOY}" = true ]; then
+        run_pre_public_website_metadata_audits
+    fi
     log_info ""
     log_info "Creating/updating GitHub release..."
     if ! create_github_release; then
@@ -5962,6 +6058,41 @@ PY
                 log_info "Updated softwareVersion in $(basename "${SITE_DIR}")/${PAGE_NAME} → ${VERSION}"
             fi
         done
+
+        REDIRECTS_FILE="${SITE_DIR}/_redirects"
+        if [ -f "${REDIRECTS_FILE}" ]; then
+            REDIRECT_UPDATE_COUNT=$(APP_NAME="${APP_NAME}" VERSION="${VERSION}" REDIRECTS_FILE="${REDIRECTS_FILE}" python3 <<'PY'
+import os
+import pathlib
+import re
+import tempfile
+
+path = pathlib.Path(os.environ["REDIRECTS_FILE"])
+app_name = re.escape(os.environ["APP_NAME"])
+version = os.environ["VERSION"]
+text = path.read_text(encoding="utf-8")
+
+download_pattern = re.compile(rf"{app_name}-[0-9]+\.[0-9]+(?:\.[0-9]+)?\.(?:zip|dmg)")
+new_text, download_count = download_pattern.subn(f'{os.environ["APP_NAME"]}-{version}.zip', text)
+
+if new_text != text:
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as tmp:
+            tmp.write(new_text)
+            tmp_path = pathlib.Path(tmp.name)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink()
+
+print(download_count)
+PY
+)
+            if [ "${REDIRECT_UPDATE_COUNT}" -gt 0 ]; then
+                log_info "Updated ${REDIRECT_UPDATE_COUNT} download redirect(s) in $(basename "${SITE_DIR}")/_redirects → ${APP_NAME}-${VERSION}.zip"
+            fi
+        fi
     done
 
     # Auto-wire live iOS App Store URL into website markers (if configured and available).
@@ -5978,6 +6109,9 @@ PY
     fi
 
     if [ -n "${DEPLOY_DIR}" ]; then
+        if ! run_website_metadata_audits "${DEPLOY_DIR}" "${APP_NAME}" "${SITE_HOST}"; then
+            exit 1
+        fi
         log_info "Deploying website + appcast to Cloudflare Pages (${PAGES_PROJECT}) from ${DEPLOY_DIR}..."
         CURRENT_GATE="Deploy website to Cloudflare Pages"
         RELEASE_ERR_GATE_RECORDED=""

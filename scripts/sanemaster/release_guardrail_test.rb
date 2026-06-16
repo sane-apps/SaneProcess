@@ -65,6 +65,7 @@ class ReleaseGuardrailHarness
   def initialize
     @stubbed_url_statuses = {}
     @stubbed_asc_paths = {}
+    @stubbed_asc_status_paths = {}
     @stubbed_jxa_result = nil
     @last_jxa_script = nil
     @saneprocess_repo_root = File.expand_path('../..', __dir__)
@@ -92,6 +93,10 @@ class ReleaseGuardrailHarness
     @stubbed_asc_paths[path] = payload
   end
 
+  def stub_asc_json_with_status(path, code, payload, base: 'https://api.appstoreconnect.apple.com/v1')
+    @stubbed_asc_status_paths[[base, path]] = [code, payload]
+  end
+
   def appstore_connect_token
     'stub-token'
   end
@@ -104,6 +109,14 @@ class ReleaseGuardrailHarness
     _ = token
     _ = base
     @stubbed_asc_paths[path]
+  end
+
+  def asc_get_json_with_status(path, token:, base: 'https://api.appstoreconnect.apple.com/v1')
+    _ = token
+    @stubbed_asc_status_paths.fetch([base, path]) do
+      payload = @stubbed_asc_paths[path]
+      payload ? [200, payload] : [0, nil]
+    end
   end
 
   def stub_osascript_jxa(output, success:)
@@ -1752,6 +1765,72 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       subject.singleton_class.remove_method(:customer_ui_run_command) rescue nil
     end
 
+    test('SaneBar customer UI sweep auto-launches the release app when preflight cleanup stopped it') do
+      Dir.mktmpdir('customer-ui-sanebar-autolaunch-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'scripts'))
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneBar\n")
+        File.write(File.join(dir, 'scripts', 'customer_ui_action_sweep.rb'), "#!/usr/bin/env ruby\n")
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            actions:
+              - id: appearance-action
+                title: Appearance action
+                release_required: true
+                required_proof_level: runtime_visual
+                evidence:
+                  - type: screenshot
+                    path: outputs/appearance.png
+                functional_state:
+                  description: Ready to capture
+                  not_required_reason: No state needed
+          YAML
+        )
+
+        launched = false
+        calls = []
+        subject.define_singleton_method(:customer_ui_mini_host?) { true }
+        subject.define_singleton_method(:resource_soak_running_app_candidate) do |_app|
+          launched ? { pid: 123, app_path: '/Applications/SaneBar.app' } : nil
+        end
+        subject.define_singleton_method(:customer_ui_cleanup_before_sweep) do |app|
+          calls << [:cleanup, app]
+          []
+        end
+        subject.define_singleton_method(:customer_ui_visual_precheck) do |app|
+          calls << [:visual_precheck, app]
+          { ok: true, issues: [] }
+        end
+        subject.define_singleton_method(:customer_ui_contract_report) do |config: nil, strict_visual: false|
+          calls << [:contract, config && config['name'], strict_visual]
+          { ok: true, issues: [] }
+        end
+        subject.define_singleton_method(:customer_ui_run_command) do |*cmd|
+          calls << cmd
+          launched = true if cmd == ['./scripts/SaneMaster.rb', 'test_mode', '--release', '--no-logs']
+          [cmd.join(' '), Struct.new(:success?).new(true)]
+        end
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.customer_ui_sweep_report(dry_run: false)
+        end
+
+        assert(report[:ok], "expected customer UI sweep to pass after auto-launch: #{report.inspect}")
+        assert_includes(calls, ['./scripts/SaneMaster.rb', 'test_mode', '--release', '--no-logs'])
+        assert_includes(calls, ['ruby', 'scripts/customer_ui_action_sweep.rb'])
+      end
+      true
+    ensure
+      subject.singleton_class.remove_method(:customer_ui_mini_host?) rescue nil
+      subject.singleton_class.remove_method(:resource_soak_running_app_candidate) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_cleanup_before_sweep) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_visual_precheck) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_contract_report) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_run_command) rescue nil
+    end
+
     test('App Store strict visual mode requires screenshot evidence for every release action') do
       Dir.mktmpdir('customer-ui-strict-visual-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'Tests'))
@@ -2488,6 +2567,69 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('detects missing app-level App Store availability') do
+      subject.stub_asc_json_with_status(
+        '/apps/123/appAvailabilityV2',
+        404,
+        {
+          'errors' => [
+            { 'detail' => "There is no resource of type 'appAvailabilities' with id '123'" }
+          ]
+        }
+      )
+
+      status = subject.send(:asc_app_availability_status, app_id: '123')
+
+      assert_eq(status[:exists], false)
+      assert_eq(status[:http_code], 404)
+      true
+    end
+
+    test('accepts app-level availability only when all territory rows are available') do
+      subject.stub_asc_json_with_status(
+        '/apps/123/appAvailabilityV2',
+        200,
+        {
+          'data' => {
+            'id' => '123',
+            'type' => 'appAvailabilities',
+            'attributes' => { 'availableInNewTerritories' => true }
+          }
+        }
+      )
+      subject.stub_asc_json_with_status(
+        '/appAvailabilities/123/relationships/territoryAvailabilities?limit=200',
+        200,
+        {
+          'data' => [
+            { 'type' => 'territoryAvailabilities', 'id' => 'usa' },
+            { 'type' => 'territoryAvailabilities', 'id' => 'can' }
+          ],
+          'meta' => { 'paging' => { 'total' => 2 } }
+        },
+        base: 'https://api.appstoreconnect.apple.com/v2'
+      )
+      subject.stub_asc_json_with_status(
+        '/appAvailabilities/123/territoryAvailabilities?limit=200',
+        200,
+        {
+          'data' => [
+            { 'attributes' => { 'contentStatuses' => ['AVAILABLE'] } },
+            { 'attributes' => { 'contentStatuses' => ['AVAILABLE'] } }
+          ]
+        },
+        base: 'https://api.appstoreconnect.apple.com/v2'
+      )
+
+      status = subject.send(:asc_app_availability_status, app_id: '123')
+
+      assert_eq(status[:exists], true)
+      assert_eq(status[:territory_total], 2)
+      assert_eq(status[:available_count], 2)
+      assert_eq(status[:all_territories_available], true)
+      true
+    end
+
     test('privacy manifest guard blocks missing required reason API declarations') do
       Dir.mktmpdir('privacy-manifest-required-reasons-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'Core'))
@@ -2941,6 +3083,8 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_includes(release_script, '"docs/download.html"')
       assert_includes(release_script, '"website/index.html"')
       assert_includes(release_script, '"website/download.html"')
+      assert_includes(release_script, 'REDIRECTS_FILE="${SITE_DIR}/_redirects"')
+      assert_includes(release_script, 'download redirect(s) in $(basename "${SITE_DIR}")/_redirects')
       assert_includes(release_script, 'sync release metadata for v${VERSION}')
       true
     end

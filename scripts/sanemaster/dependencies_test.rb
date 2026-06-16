@@ -146,6 +146,14 @@ exit(run_tests('SaneMaster MCP Watchdog Tests') do
   end
 
   test_category('Ruby subprocess env') do
+    test('compares Ruby versions semantically for toolchain gates') do
+      assert(subject.send(:ruby_version_at_least?, '4.0.5', '4.0.0'), '4.0.5 should satisfy 4.0.0')
+      assert(subject.send(:ruby_version_at_least?, '4.1.0', '4.0.5'), '4.1.0 should satisfy 4.0.5')
+      assert(!subject.send(:ruby_version_at_least?, '3.4.7', '4.0.0'), '3.4.7 should not satisfy 4.0.0')
+      assert(!subject.send(:ruby_version_at_least?, '4.0.0', '4.0.1'), '4.0.0 should not satisfy 4.0.1')
+      true
+    end
+
     test('prepends the Homebrew Ruby bin to subprocess PATH once') do
       Dir.mktmpdir('ruby-env-') do |dir|
         ruby_bin = File.join(dir, 'ruby')
@@ -163,6 +171,32 @@ exit(run_tests('SaneMaster MCP Watchdog Tests') do
 
         assert_eq(entries.first, dir)
         assert_eq(entries.count(dir), 1)
+      end
+      true
+    end
+
+    test('prepends the Homebrew Ruby gem bin when gem-installed tools are present') do
+      Dir.mktmpdir('ruby-env-gems-') do |dir|
+        gem_bin = File.join(dir, 'gems', 'bin')
+        FileUtils.mkdir_p(gem_bin)
+        ruby_bin = File.join(dir, 'ruby')
+        bundle_bin = File.join(dir, 'bundle')
+        File.write(ruby_bin, "#!/bin/sh\nexit 0\n")
+        File.write(bundle_bin, "#!/bin/sh\nexit 0\n")
+        FileUtils.chmod(0o755, ruby_bin)
+        FileUtils.chmod(0o755, bundle_bin)
+
+        subject.define_singleton_method(:homebrew_ruby_path) { ruby_bin }
+        subject.define_singleton_method(:homebrew_bundle_path) { bundle_bin }
+        subject.define_singleton_method(:homebrew_ruby_gem_bin) { gem_bin }
+
+        env = subject.send(:ruby_tool_env, { 'PATH' => '/usr/bin:/bin' })
+        entries = env.fetch('PATH').split(File::PATH_SEPARATOR)
+
+        assert_eq(entries[0], dir)
+        assert_eq(entries[1], gem_bin)
+        assert_eq(entries.count(dir), 1)
+        assert_eq(entries.count(gem_bin), 1)
       end
       true
     end
@@ -232,6 +266,30 @@ exit(run_tests('SaneMaster MCP Watchdog Tests') do
         assert(status.success?, 'expected bundle env probe command to succeed')
         assert_eq(output, 'vendor/bundle')
       end
+      true
+    end
+
+    test('SaneMaster re-execs through Homebrew Ruby before loading modules') do
+      source = File.read(File.expand_path('../SaneMaster.rb', __dir__), encoding: Encoding::UTF_8)
+      require_index = source.index("require_relative 'sanemaster/base'")
+      reexec_index = source.index('exec(SANEMASTER_HOMEBREW_RUBY, $PROGRAM_NAME, *ARGV)')
+
+      assert(reexec_index, 'expected SaneMaster to re-exec through Homebrew Ruby')
+      assert(require_index && reexec_index < require_index, 'Ruby re-exec must happen before module loading')
+      assert_includes(source, "SANEMASTER_REQUIRED_RUBY_VERSION = ENV.fetch('SANEPROCESS_REQUIRED_RUBY_VERSION', '4.0.0')")
+      assert_includes(source, "ENV['SANEMASTER_SKIP_RUBY_REEXEC'] != '1'")
+      true
+    end
+
+    test('installer prompts for Ruby and bundle dependency repairs') do
+      source = File.read(File.expand_path('../init.sh', __dir__), encoding: Encoding::UTF_8)
+
+      assert_includes(source, 'REQUIRED_RUBY_VERSION="${SANEPROCESS_REQUIRED_RUBY_VERSION:-4.0.0}"')
+      assert_includes(source, 'REQUIRED_RUBY_GEMS="${SANEPROCESS_REQUIRED_RUBY_GEMS:-jwt}"')
+      assert_includes(source, 'prompt_dependency_update "Homebrew Ruby $ruby_version is older than required ${REQUIRED_RUBY_VERSION}+." "brew update && brew upgrade ruby"')
+      assert_includes(source, 'prompt_dependency_update "Ruby gem \'$gem_name\' is required for SaneProcess automation." "$RUBY_CMD -S gem install $gem_name --no-document"')
+      assert_includes(source, 'prompt_dependency_update "Ruby gems are missing or stale for this project." "$BUNDLE_CMD install"')
+      assert_includes(source, '"$RUBY_CMD" -c "scripts/hooks/$hook"')
       true
     end
   end

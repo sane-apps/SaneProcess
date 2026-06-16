@@ -31,6 +31,9 @@ class AppStoreSubmitGuardrailHarness
     @stubbed_iap_records = nil
     @stubbed_subscription_record = nil
     @stubbed_version_page_includes_iap = :__unset
+    @stubbed_get_statuses = {}
+    @stubbed_post_result = nil
+    @last_post_args = nil
   end
 
   def stub_url_status(url, code:, location: '', error: nil)
@@ -95,6 +98,29 @@ class AppStoreSubmitGuardrailHarness
     return @stubbed_patch_result if @stubbed_patch_result
 
     raise 'missing patch stub'
+  end
+
+  def stub_get_status(path, code, resp)
+    @stubbed_get_statuses[path] = [code, resp]
+  end
+
+  def asc_get_with_status(path, **_kwargs)
+    @stubbed_get_statuses.fetch(path) do
+      raise "missing get stub for #{path}"
+    end
+  end
+
+  def stub_post_result(code, resp)
+    @stubbed_post_result = [code, resp]
+  end
+
+  attr_reader :last_post_args
+
+  def asc_post_with_status(*args, **kwargs)
+    @last_post_args = { args: args, kwargs: kwargs }
+    return @stubbed_post_result if @stubbed_post_result
+
+    raise 'missing post stub'
   end
 
   def stub_iap_record(record)
@@ -407,6 +433,58 @@ exit(run_tests('App Store Submit Guardrail Tests') do
   end
 
   test_category('IAP submission guardrails') do
+    test('creates missing app availability with JSON API local IDs') do
+      subject.stub_get_status(
+        '/apps/app-1/appAvailabilityV2',
+        404,
+        {
+          'errors' => [
+            { 'detail' => "There is no resource of type 'appAvailabilities' with id 'app-1'" }
+          ]
+        }
+      )
+      subject.stub_get_status(
+        '/territories?limit=200',
+        200,
+        {
+          'data' => [
+            { 'id' => 'USA' },
+            { 'id' => 'CAN' }
+          ]
+        }
+      )
+      subject.stub_post_result(
+        201,
+        {
+          'data' => {
+            'id' => 'app-1',
+            'type' => 'appAvailabilities'
+          }
+        }
+      )
+
+      ok = subject.send(:ensure_app_availability, app_id: 'app-1', token: 'stub-token')
+
+      assert_eq(ok, true)
+      body = subject.last_post_args[:kwargs][:body]
+      assert_eq(body.dig(:data, :type), 'appAvailabilities')
+      assert_eq(body.dig(:data, :relationships, :app, :data, :id), 'app-1')
+      assert_eq(body.dig(:data, :relationships, :territoryAvailabilities, :data).map { |row| row[:lid] }, ['territory-0', 'territory-1'])
+      assert(!body.dig(:data, :relationships, :territoryAvailabilities, :data).any? { |row| row.key?(:id) }, 'new related territoryAvailability resources must use lid, not fake id')
+      assert_eq(body[:included].map { |row| row[:lid] }, ['territory-0', 'territory-1'])
+      assert(!body[:included].any? { |row| row.key?(:id) }, 'inline territoryAvailability resources must use lid, not fake id')
+      assert_eq(body[:included].map { |row| row.dig(:attributes, :available) }, [true, true])
+      assert_eq(body[:included].map { |row| row.dig(:attributes, :preOrderEnabled) }, [false, false])
+      assert(!body[:included].any? { |row| row[:attributes].key?(:releaseDate) }, 'releaseDate must be omitted unless preorder is enabled')
+      true
+    end
+
+    test('uses JSON API local IDs for inline app territory availability creation') do
+      assert_eq(subject.send(:app_availability_local_id, 0), 'territory-0')
+      assert_eq(subject.send(:app_availability_local_id, 12), 'territory-12')
+      true
+    end
+
     test('detects an attached IAP from the live version page snapshot') do
       subject.stub_safari_snapshot(
         'url' => 'https://appstoreconnect.apple.com/apps/123/distribution/macos/version/inflight',

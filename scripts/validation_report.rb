@@ -1595,9 +1595,20 @@ class ValidationReport
     config = load_product_config
     store_base = config[:checkout_base]
     checkout_links = config[:products].map do |_slug, prod|
-      next unless prod['checkout_uuid']
-      { url: "#{store_base}/#{prod['checkout_uuid']}", name: "#{prod['name']} checkout" }
+      checkout_url = product_checkout_url(prod, store_base)
+      next if checkout_url.empty?
+      { url: checkout_url, name: "#{prod['name']} checkout" }
     end.compact
+    config[:bundles].each do |_slug, bundle|
+      next unless bundle.is_a?(Hash)
+
+      checkout_url = bundle['checkout_url'].to_s.strip
+      route_url = bundle['route'].to_s.strip
+      name = bundle['name'].to_s.strip
+      name = 'SaneApps bundle' if name.empty?
+      checkout_links << { url: checkout_url, name: "#{name} checkout" } unless checkout_url.empty?
+      checkout_links << { url: route_url, name: "#{name} redirect" } unless route_url.empty?
+    end
     checkout_links << { url: config[:store_base], name: 'LemonSqueezy store' } unless config[:store_base].to_s.empty?
     checkout_links.each do |link|
       status = check_url_status(link[:url], follow_redirects: true)
@@ -1616,8 +1627,10 @@ class ValidationReport
         File.join(product[:project_path], 'website')
       ]
     end.uniq
+    website_dirs << File.join(SANE_APPS_ROOT, 'web', 'saneapps.com')
     website_dirs.each do |full_dir|
       next unless Dir.exist?(full_dir)
+
       Dir.glob(File.join(full_dir, '**/*.html')).each do |html_file|
         content = File.read(html_file)
         content.scan(%r{https?://([a-z]+)\.lemonsqueezy\.com/checkout/}).each do |match|
@@ -1628,11 +1641,12 @@ class ValidationReport
         end
       end
     end
+    validate_q7_source_checkout_routes(website_dirs, config, issues_found)
 
     # Catch shallow 200 OK site fallbacks that would otherwise make a broken or
     # placeholder website look healthy.
-    product_definitions.each do |product|
-      validate_q7_crawler_assets(product, warnings_found)
+    ([{ name: 'Main site', domain: 'saneapps.com' }] + product_definitions).each do |product|
+      validate_q7_crawler_assets(product, issues_found, warnings_found)
     end
 
     # Check Sparkle appcast feeds (CRITICAL - no updates if broken)
@@ -1697,6 +1711,34 @@ class ValidationReport
     validate_q7_website_download(product, snapshot[:enclosure_url], issues)
   end
 
+  def validate_q7_source_checkout_routes(website_dirs, config, issues)
+    allowed_routes = []
+    redirect_base = config[:redirect_base].to_s.sub(%r{/*\z}, '')
+    config[:products].each do |slug, prod|
+      next unless prod.is_a?(Hash)
+      next if product_checkout_url(prod, config[:checkout_base]).to_s.empty?
+
+      allowed_routes << slug.to_s
+    end
+    config[:bundles].each_key { |slug| allowed_routes << slug.to_s }
+    allowed_routes.uniq!
+    return if redirect_base.empty? || allowed_routes.empty?
+
+    website_dirs.each do |full_dir|
+      next unless Dir.exist?(full_dir)
+
+      Dir.glob(File.join(full_dir, '**/*.html')).each do |html_file|
+        content = File.read(html_file)
+        content.scan(%r{#{Regexp.escape(redirect_base)}/([^"'?\s#<>]+)}).flatten.each do |route|
+          next if allowed_routes.include?(route)
+
+          rel = html_file.sub("#{SANE_APPS_ROOT}/", '')
+          issues << "REVENUE CRITICAL: Unknown checkout redirect route '#{route}' in #{rel}"
+        end
+      end
+    end
+  end
+
   def validate_q7_website_download(product, live_release_url, issues)
     site_host = product[:domain].to_s.strip
     return if site_host.empty? || live_release_url.to_s.strip.empty?
@@ -1711,7 +1753,7 @@ class ValidationReport
     issues << "DOWNLOAD CRITICAL: #{product[:name]} website download could not be validated against the latest appcast archive"
   end
 
-  def validate_q7_crawler_assets(product, warnings)
+  def validate_q7_crawler_assets(product, issues, warnings)
     site_host = product[:domain].to_s.strip
     return if site_host.empty?
 
@@ -1721,16 +1763,19 @@ class ValidationReport
     }.each do |asset, valid|
       url = "https://#{site_host}/#{asset}"
       status = check_url_status(url, follow_redirects: true)
-      next if status == '404'
+      if status == '404'
+        issues << "[#{product[:name]}] #{asset} is missing at #{url}"
+        next
+      end
 
       unless %w[200 301 302].include?(status)
-        warnings << "[#{product[:name]}] #{asset} returns #{status}"
+        issues << "[#{product[:name]}] #{asset} returns #{status}"
         next
       end
 
       body = fetch_url_text(url)
       if html_response?(body) || !valid.call(body)
-        warnings << "[#{product[:name]}] #{asset} appears to serve a website fallback instead of #{asset}"
+        issues << "[#{product[:name]}] #{asset} appears to serve a website fallback instead of #{asset}"
       end
     end
   end
@@ -3573,18 +3618,20 @@ class ValidationReport
     @load_product_config ||= begin
       raw = YAML.safe_load(File.read(PRODUCT_CONFIG_PATH), permitted_classes: []) || {}
       products = raw['products'].is_a?(Hash) ? raw['products'] : {}
+      bundles = raw['bundles'].is_a?(Hash) ? raw['bundles'] : {}
       store = raw['store'].is_a?(Hash) ? raw['store'] : {}
       redirect = raw['redirect'].is_a?(Hash) ? raw['redirect'] : {}
 
       {
         products: products,
+        bundles: bundles,
         store_base: store['base_url'].to_s.strip,
         checkout_base: store['checkout_base'].to_s.strip,
         redirect_base: redirect['base_url'].to_s.strip,
         all_domains: Array(raw['all_domains']).map(&:to_s).map(&:strip).reject(&:empty?)
       }
     rescue StandardError
-      { products: {}, store_base: '', checkout_base: '', redirect_base: '', all_domains: [] }
+      { products: {}, bundles: {}, store_base: '', checkout_base: '', redirect_base: '', all_domains: [] }
     end
   end
 
@@ -3610,6 +3657,7 @@ class ValidationReport
           dist_domain: prod['dist_domain'].to_s.strip,
           github_repo: prod['github_repo'].to_s.strip,
           checkout_uuid: prod['checkout_uuid'].to_s.strip,
+          checkout_url: prod['checkout_url'].to_s.strip,
           appstore_id: prod['appstore_id'].to_s.strip.empty? ? appstore['app_id'].to_s.strip : prod['appstore_id'].to_s.strip,
           storekit_product_id: prod['storekit_product_id'].to_s.strip.empty? ? (appstore['product_id'].to_s.strip.empty? ? appstore_iap['product_id'].to_s.strip : appstore['product_id'].to_s.strip) : prod['storekit_product_id'].to_s.strip,
           appstore_category: appstore['category'].to_s.strip,
@@ -3634,7 +3682,22 @@ class ValidationReport
   end
 
   def released_product_definitions
-    product_definitions.select { |product| !product[:checkout_uuid].to_s.empty? }
+    product_definitions.select { |product| product_released?(product) }
+  end
+
+  def product_checkout_url(product, checkout_base = load_product_config[:checkout_base])
+    explicit_url = (product[:checkout_url] || product['checkout_url']).to_s.strip
+    return explicit_url unless explicit_url.empty?
+
+    uuid = (product[:checkout_uuid] || product['checkout_uuid']).to_s.strip
+    return '' if uuid.empty? || checkout_base.to_s.strip.empty?
+
+    "#{checkout_base}/#{uuid}"
+  end
+
+  def product_released?(product)
+    !((product[:checkout_url] || product['checkout_url']).to_s.strip.empty? &&
+      (product[:checkout_uuid] || product['checkout_uuid']).to_s.strip.empty?)
   end
 
   def project_manifest(project_path)
@@ -3752,6 +3815,9 @@ class ValidationReport
     expected_prefixes = []
     unless config[:redirect_base].empty?
       expected_prefixes << "#{config[:redirect_base]}/#{product[:slug]}"
+    end
+    unless product[:checkout_url].to_s.empty?
+      expected_prefixes << product[:checkout_url]
     end
     unless config[:checkout_base].empty? || product[:checkout_uuid].to_s.empty?
       expected_prefixes << "#{config[:checkout_base]}/#{product[:checkout_uuid]}"

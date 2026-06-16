@@ -110,6 +110,30 @@
       "cmd": ["python3", "-B", "scripts/automation/status_crossref_test.py"]
     },
     {
+      "path": "scripts/automation/social_card_audit_test.py",
+      "label": "SaneApps social card audit tests",
+      "status": "required",
+      "cmd": ["python3", "-B", "scripts/automation/social_card_audit_test.py"]
+    },
+    {
+      "path": "scripts/automation/seo_site_audit_test.py",
+      "label": "SaneApps SEO site audit tests",
+      "status": "required",
+      "cmd": ["python3", "-B", "scripts/automation/seo_site_audit_test.py"]
+    },
+    {
+      "path": "scripts/automation/x_opportunity_scout_test.py",
+      "label": "SaneProcess X opportunity scout tests",
+      "status": "required",
+      "cmd": ["python3", "-B", "scripts/automation/x_opportunity_scout_test.py"]
+    },
+    {
+      "path": "scripts/automation/x_impact_report_test.py",
+      "label": "SaneProcess X impact report tests",
+      "status": "required",
+      "cmd": ["python3", "-B", "scripts/automation/x_impact_report_test.py"]
+    },
+    {
       "path": "scripts/dedupe_sane_apps_test.rb",
       "label": "SaneProcess dedupe tests",
       "status": "required",

@@ -14,6 +14,13 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SANEPROCESS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REQUIRED_RUBY_VERSION="${SANEPROCESS_REQUIRED_RUBY_VERSION:-4.0.0}"
+HOMEBREW_RUBY="${SANEPROCESS_HOMEBREW_RUBY:-/opt/homebrew/opt/ruby/bin/ruby}"
+HOMEBREW_RUBY_BIN_DIR="$(dirname "$HOMEBREW_RUBY")"
+HOMEBREW_RUBY_GEM_BIN="${SANEPROCESS_HOMEBREW_RUBY_GEM_BIN:-/opt/homebrew/lib/ruby/gems/4.0.0/bin}"
+REQUIRED_RUBY_GEMS="${SANEPROCESS_REQUIRED_RUBY_GEMS:-jwt}"
+RUBY_CMD="ruby"
+BUNDLE_CMD="bundle"
 
 CLIENT="all"
 FORCE=0
@@ -143,6 +150,125 @@ copy_file() {
     echo -e "   ${GREEN}+${NC} $label"
 }
 
+version_at_least() {
+    current="$1"
+    required="$2"
+
+    old_ifs="$IFS"
+    IFS=.
+    set -- $current
+    current_major="${1:-0}"
+    current_minor="${2:-0}"
+    current_patch="${3:-0}"
+    set -- $required
+    required_major="${1:-0}"
+    required_minor="${2:-0}"
+    required_patch="${3:-0}"
+    IFS="$old_ifs"
+
+    [ "$current_major" -gt "$required_major" ] && return 0
+    [ "$current_major" -lt "$required_major" ] && return 1
+    [ "$current_minor" -gt "$required_minor" ] && return 0
+    [ "$current_minor" -lt "$required_minor" ] && return 1
+    [ "$current_patch" -ge "$required_patch" ]
+}
+
+prompt_dependency_update() {
+    label="$1"
+    command="$2"
+
+    echo -e "   ${YELLOW}!${NC} $label"
+    if [ -t 0 ]; then
+        printf "   Run now? [y/N] "
+        read answer
+        case "$answer" in
+            y|Y|yes|YES)
+                if eval "$command"; then
+                    echo -e "   ${GREEN}+${NC} dependency updated"
+                    return 0
+                fi
+                echo -e "   ${RED}x${NC} dependency update failed"
+                ERRORS=$((ERRORS + 1))
+                return 1
+                ;;
+            *)
+                echo "   Run later: $command"
+                ERRORS=$((ERRORS + 1))
+                return 1
+                ;;
+        esac
+    fi
+
+    echo "   Run: $command"
+    ERRORS=$((ERRORS + 1))
+    return 1
+}
+
+check_ruby_dependency() {
+    if [ "$PLATFORM" = "macOS" ]; then
+        if [ ! -x "$HOMEBREW_RUBY" ]; then
+            if command -v brew >/dev/null 2>&1; then
+                prompt_dependency_update "Homebrew Ruby ${REQUIRED_RUBY_VERSION}+ is required for SaneProcess automation." "brew install ruby"
+            else
+                echo -e "${RED}Error: Homebrew not found${NC}" >&2
+                echo "   Install Homebrew first: https://brew.sh" >&2
+                ERRORS=$((ERRORS + 1))
+            fi
+            return
+        fi
+
+        ruby_version="$("$HOMEBREW_RUBY" -e 'print RUBY_VERSION' 2>/dev/null || true)"
+        if ! version_at_least "$ruby_version" "$REQUIRED_RUBY_VERSION"; then
+            prompt_dependency_update "Homebrew Ruby $ruby_version is older than required ${REQUIRED_RUBY_VERSION}+." "brew update && brew upgrade ruby"
+        fi
+
+        export PATH="$HOMEBREW_RUBY_BIN_DIR:$HOMEBREW_RUBY_GEM_BIN:$PATH"
+        RUBY_CMD="$HOMEBREW_RUBY"
+        BUNDLE_CMD="$HOMEBREW_RUBY_BIN_DIR/bundle"
+        echo -e "   ${GREEN}+${NC} Homebrew Ruby $("$RUBY_CMD" -v | cut -d' ' -f2)"
+        return
+    fi
+
+    if ! command -v ruby >/dev/null 2>&1; then
+        echo -e "${RED}Error: Ruby not found${NC}" >&2
+        echo "   Install via: sudo apt install ruby or sudo dnf install ruby" >&2
+        exit 1
+    fi
+
+    ruby_version="$(ruby -e 'print RUBY_VERSION' 2>/dev/null || true)"
+    if ! version_at_least "$ruby_version" "$REQUIRED_RUBY_VERSION"; then
+        echo -e "   ${YELLOW}!${NC} Ruby $ruby_version is older than preferred ${REQUIRED_RUBY_VERSION}+"
+    fi
+    echo -e "   ${GREEN}+${NC} ruby $(ruby -v | head -c 20)"
+}
+
+check_bundle_dependency() {
+    if [ ! -f "Gemfile" ]; then
+        return
+    fi
+
+    if ! command -v "$BUNDLE_CMD" >/dev/null 2>&1; then
+        prompt_dependency_update "Bundler is required to install project gems." "$RUBY_CMD -S gem install bundler"
+        return
+    fi
+
+    if "$BUNDLE_CMD" check >/dev/null 2>&1; then
+        echo -e "   ${GREEN}+${NC} bundle dependencies satisfied"
+    else
+        prompt_dependency_update "Ruby gems are missing or stale for this project." "$BUNDLE_CMD install"
+    fi
+}
+
+check_ruby_gem_dependencies() {
+    for gem_name in $REQUIRED_RUBY_GEMS; do
+        if "$RUBY_CMD" -e "require '$gem_name'" >/dev/null 2>&1; then
+            echo -e "   ${GREEN}+${NC} Ruby gem: $gem_name"
+        else
+            prompt_dependency_update "Ruby gem '$gem_name' is required for SaneProcess automation." "$RUBY_CMD -S gem install $gem_name --no-document"
+        fi
+    done
+}
+
 echo ""
 echo -e "${BLUE}SaneProcess Installation${NC}"
 echo ""
@@ -165,16 +291,9 @@ fi
 echo ""
 
 echo "Checking dependencies..."
-if ! command -v ruby >/dev/null 2>&1; then
-    echo -e "${RED}Error: Ruby not found${NC}" >&2
-    if [ "$PLATFORM" = "macOS" ]; then
-        echo "   macOS ships with Ruby. If removed, install via: brew install ruby" >&2
-    else
-        echo "   Install via: sudo apt install ruby or sudo dnf install ruby" >&2
-    fi
-    exit 1
-fi
-echo -e "   ${GREEN}+${NC} ruby $(ruby -v | head -c 20)"
+check_ruby_dependency
+check_ruby_gem_dependencies
+check_bundle_dependency
 
 HAS_CLAUDE=0
 HAS_CODEX=0
@@ -397,13 +516,13 @@ if [ "$INSTALL_CLAUDE" -eq 1 ]; then
         if [ ! -f "scripts/hooks/$hook" ]; then
             echo -e "   ${RED}x${NC} scripts/hooks/$hook missing"
             ERRORS=$((ERRORS + 1))
-        elif ! ruby -c "scripts/hooks/$hook" >/dev/null 2>&1; then
+        elif ! "$RUBY_CMD" -c "scripts/hooks/$hook" >/dev/null 2>&1; then
             echo -e "   ${RED}x${NC} scripts/hooks/$hook has syntax errors"
             ERRORS=$((ERRORS + 1))
         fi
     done
     if [ -f ".claude/settings.json" ]; then
-        ruby -rjson -e 'JSON.parse(File.read(".claude/settings.json"))' >/dev/null 2>&1 || {
+        "$RUBY_CMD" -rjson -e 'JSON.parse(File.read(".claude/settings.json"))' >/dev/null 2>&1 || {
             echo -e "   ${RED}x${NC} .claude/settings.json is not valid JSON"
             ERRORS=$((ERRORS + 1))
         }

@@ -770,6 +770,104 @@ section_health() {
   echo "" >> "$REPORT_FILE"
 }
 
+# =============================================================================
+# Section 8: SEO & Social Preview
+# =============================================================================
+section_seo_social() {
+  echo "## SEO & Social Preview" >> "$REPORT_FILE"
+  echo "" >> "$REPORT_FILE"
+
+  local all_ok=true
+  local repo_root="$HOME/SaneApps/infra/SaneProcess"
+  local social_log="$CACHE_DIR/social_card_audit.log"
+  local seo_json="$CACHE_DIR/seo_site_audit.json"
+  local seo_log="$CACHE_DIR/seo_site_audit.log"
+  local validation_json="$CACHE_DIR/validation_report.json"
+  local validation_log="$CACHE_DIR/validation_report.log"
+
+  if (cd "$repo_root" && python3 -B scripts/automation/social_card_audit.py > "$social_log" 2>&1); then
+    echo "- Source social cards: ✅ $(tr '\n' ' ' < "$social_log" | sed 's/[[:space:]]*$//')" >> "$REPORT_FILE"
+  else
+    echo "- Source social cards: ❌" >> "$REPORT_FILE"
+    sed 's/^/  - /' "$social_log" | head -12 >> "$REPORT_FILE"
+    all_ok=false
+  fi
+
+  if (cd "$repo_root" && python3 -B scripts/automation/seo_site_audit.py --json > "$seo_json" 2> "$seo_log"); then
+    python3 - "$seo_json" >> "$REPORT_FILE" <<'PY'
+import json
+import sys
+
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+issues = payload.get("issues") or []
+checked = payload.get("checked", 0)
+if issues:
+    print(f"- Source technical SEO: ❌ {len(issues)} issue(s) across {checked} page(s)")
+    for issue in issues[:12]:
+        print(f"  - {issue}")
+else:
+    print(f"- Source technical SEO: ✅ {checked} page(s), no issues")
+PY
+    if python3 - "$seo_json" <<'PY'
+import json
+import sys
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+raise SystemExit(1 if payload.get("issues") else 0)
+PY
+    then
+      :
+    else
+      all_ok=false
+    fi
+  else
+    echo "- Source technical SEO: ❌ audit command failed" >> "$REPORT_FILE"
+    sed 's/^/  - /' "$seo_log" | head -12 >> "$REPORT_FILE"
+    all_ok=false
+  fi
+
+  if (cd "$repo_root" && ruby scripts/validation_report.rb --json > "$validation_json" 2> "$validation_log"); then
+    python3 - "$validation_json" >> "$REPORT_FILE" <<'PY'
+import json
+import sys
+
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+issues = [x for x in payload.get("issues", []) if str(x).startswith("Q7 WEBSITE")]
+warnings = [x for x in payload.get("warnings", []) if str(x).startswith("Q7 WEBSITE")]
+if issues:
+    print(f"- Live website/distribution Q7: ❌ {len(issues)} issue(s)")
+    for issue in issues[:12]:
+        print(f"  - {issue}")
+else:
+    suffix = f", {len(warnings)} warning(s)" if warnings else ""
+    print(f"- Live website/distribution Q7: ✅ no issues{suffix}")
+PY
+    if python3 - "$validation_json" <<'PY'
+import json
+import sys
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+issues = [x for x in payload.get("issues", []) if str(x).startswith("Q7 WEBSITE")]
+raise SystemExit(1 if issues else 0)
+PY
+    then
+      :
+    else
+      all_ok=false
+    fi
+  else
+    echo "- Live website/distribution Q7: ❌ validation report failed" >> "$REPORT_FILE"
+    sed 's/^/  - /' "$validation_log" | head -12 >> "$REPORT_FILE"
+    all_ok=false
+  fi
+
+  if [[ "$all_ok" == "false" ]]; then
+    osascript -e "display notification \"SEO or social preview checks failed — check daily report\" with title \"SaneApps SEO ALERT\" sound name \"Sosumi\"" 2>/dev/null
+  fi
+
+  echo "" >> "$REPORT_FILE"
+  echo "---" >> "$REPORT_FILE"
+  echo "" >> "$REPORT_FILE"
+}
+
 fetch_live_email_worker_snapshot() {
   [[ -n "$EMAIL_API_KEY" ]] || return 0
 
@@ -997,6 +1095,7 @@ safe_section "GitHub" section_github_traction
 safe_section "Customer Intel" section_customer_intel
 safe_section "Listing Actions" section_listing_actions
 safe_section "Health" section_health
+safe_section "SEO & Social Preview" section_seo_social
 safe_section "Version Drift" section_version_drift
 safe_section "Git Status" section_git_status
 

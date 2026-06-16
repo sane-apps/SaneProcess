@@ -95,6 +95,19 @@ def test_check_inbox_flags_share_links_without_metadata_update_false_positives()
         )
 
 
+def test_check_inbox_flags_stale_patched_pending_issues() -> None:
+    text = read(CHECK_INBOX)
+    for needle in [
+        'PATCHED_PENDING_LABEL = "release:patched-pending"',
+        "STALE_PATCHED_BUSINESS_DAYS = 5",
+        "business_days_elapsed",
+        "PATCHED PENDING",
+        "ASSUME FIXED",
+        "Close by stale-confirmation policy",
+    ]:
+        assert needle in text, f"missing stale patched-pending policy: {needle}"
+
+
 def run() -> None:
     tests = [
         test_all_bug_templates_warn_public_and_large_media,
@@ -104,6 +117,7 @@ def run() -> None:
         test_check_inbox_uses_actionable_github_classifier_in_status,
         test_check_inbox_does_not_hide_active_threads_as_positive_feedback,
         test_check_inbox_flags_share_links_without_metadata_update_false_positives,
+        test_check_inbox_flags_stale_patched_pending_issues,
     ]
     for test in tests:
         test()

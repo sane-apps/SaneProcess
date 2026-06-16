@@ -3190,6 +3190,101 @@ def ensure_iap_availability(iap_id:, token:)
   end
 end
 
+def app_availability_local_id(index)
+  "territory-#{index}"
+end
+
+def list_app_store_territory_ids(token:)
+  territory_ids = []
+  path = '/territories?limit=200'
+
+  loop do
+    code, resp = asc_get_with_status(path, token: token)
+    unless code == 200 && resp.is_a?(Hash)
+      detail = resp.dig('errors', 0, 'detail') || resp.dig('errors', 0, 'title') || 'unknown error'
+      log_error "Failed to list App Store territories (HTTP #{code}): #{detail}"
+      return []
+    end
+
+    territory_ids.concat(Array(resp['data']).map { |row| row['id'].to_s.strip }.reject(&:empty?))
+    next_url = resp.dig('links', 'next').to_s
+    break if next_url.empty?
+
+    uri = URI(next_url)
+    path = uri.query.to_s.empty? ? uri.path : "#{uri.path}?#{uri.query}"
+  end
+
+  territory_ids.uniq.sort
+end
+
+def ensure_app_availability(app_id:, token:)
+  code, availability_resp = asc_get_with_status("/apps/#{app_id}/appAvailabilityV2", token: token)
+  if code == 200 && availability_resp['data']
+    log_info 'App availability exists.'
+    return true
+  end
+
+  unless code == 404
+    detail = availability_resp.dig('errors', 0, 'detail') ||
+             availability_resp.dig('errors', 0, 'title') ||
+             availability_resp['error'] ||
+             'unknown error'
+    log_error "Failed to read app availability (HTTP #{code}): #{detail}"
+    return false
+  end
+
+  territory_ids = list_app_store_territory_ids(token: token)
+  if territory_ids.empty?
+    log_error 'No App Store territories returned; refusing to create empty app availability.'
+    return false
+  end
+
+  linkages = []
+  included = []
+  territory_ids.each_with_index do |territory_id, index|
+    local_id = app_availability_local_id(index)
+    linkages << { type: 'territoryAvailabilities', lid: local_id }
+    included << {
+      type: 'territoryAvailabilities',
+      lid: local_id,
+      attributes: {
+        available: true,
+        preOrderEnabled: false
+      },
+      relationships: {
+        territory: { data: { type: 'territories', id: territory_id } }
+      }
+    }
+  end
+
+  body = {
+    data: {
+      type: 'appAvailabilities',
+      attributes: { availableInNewTerritories: true },
+      relationships: {
+        app: { data: { type: 'apps', id: app_id } },
+        territoryAvailabilities: { data: linkages }
+      }
+    },
+    included: included
+  }
+
+  create_code, create_resp = asc_post_with_status(
+    '/appAvailabilities',
+    body: body,
+    token: token,
+    base: ASC_V2_BASE
+  )
+  if [200, 201].include?(create_code)
+    log_info "Created app availability for #{territory_ids.length} territories."
+    return true
+  end
+
+  detail = create_resp.dig('errors', 0, 'detail') || create_resp.dig('errors', 0, 'title') || 'unknown error'
+  log_error "Failed to create app availability (HTTP #{create_code}): #{detail}"
+  false
+end
+
 def ensure_iap_review_note(iap_id:, review_note:, token:)
   body = {
     data: {
@@ -4889,7 +4984,14 @@ unless metadata_ok
   exit 1
 end
 
-# Step 7b: Ensure App Store IAP metadata/submission readiness (if configured)
+# Step 7b: Ensure app-level territory availability before submission.
+token = generate_jwt
+unless ensure_app_availability(app_id: app_id, token: token)
+  log_error 'App availability readiness failed. Resolve App Store territory availability before submission.'
+  exit 1
+end
+
+# Step 7c: Ensure App Store IAP metadata/submission readiness (if configured)
 configured_product_id = config.dig('appstore', 'product_id').to_s.strip
 unless configured_product_id.empty?
   iap_price_usd = resolve_iap_price_usd(config, options)

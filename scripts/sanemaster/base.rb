@@ -16,8 +16,13 @@ module SaneMasterModules
     # --- Paths ---
     SOP_SNAPSHOT_DIR = File.expand_path('~/.sanemaster/snapshots')
     SOP_LOG_DIR = File.expand_path('~/.sanemaster/logs')
+    REQUIRED_RUBY_VERSION = ENV.fetch('SANEPROCESS_REQUIRED_RUBY_VERSION', '4.0.0')
     HOMEBREW_RUBY = '/opt/homebrew/opt/ruby/bin/ruby'
     HOMEBREW_BUNDLE = '/opt/homebrew/opt/ruby/bin/bundle'
+    HOMEBREW_RUBY_GEM_BIN = '/opt/homebrew/lib/ruby/gems/4.0.0/bin'
+    REQUIRED_RUBY_GEMS = {
+      'jwt' => 'App Store Connect submission helpers'
+    }.freeze
     VERSION_CACHE_FILE = File.expand_path('~/.sanemaster/versions_cache.json')
     VERSION_CACHE_MAX_AGE = 7 * 24 * 60 * 60 # 7 days in seconds
     TEMPLATE_DIR = File.expand_path('~/.sanemaster/templates')
@@ -52,6 +57,8 @@ module SaneMasterModules
                                       appstore_preflight
                                       setapp_status
                                       setapp-status
+                                      setapp_package
+                                      setapp-package
                                       setapp_upload
                                       setapp-upload
                                       asp
@@ -63,6 +70,29 @@ module SaneMasterModules
 
     def homebrew_bundle_path
       HOMEBREW_BUNDLE
+    end
+
+    def required_ruby_version
+      REQUIRED_RUBY_VERSION
+    end
+
+    def homebrew_ruby_gem_bin
+      HOMEBREW_RUBY_GEM_BIN
+    end
+
+    def ruby_version_at_least?(current, required = required_ruby_version)
+      current_parts = current.to_s.split('.').map(&:to_i)
+      required_parts = required.to_s.split('.').map(&:to_i)
+      max = [current_parts.length, required_parts.length].max
+
+      (0...max).each do |index|
+        current_part = current_parts[index] || 0
+        required_part = required_parts[index] || 0
+        return true if current_part > required_part
+        return false if current_part < required_part
+      end
+
+      true
     end
 
     def preferred_ruby_bin
@@ -83,7 +113,9 @@ module SaneMasterModules
       ruby_bin_dir = File.dirname(homebrew_ruby_path)
       current_path = base_env.fetch('PATH', ENV.fetch('PATH', ''))
       path_entries = current_path.split(File::PATH_SEPARATOR).reject(&:empty?)
-      path_entries = [ruby_bin_dir] + path_entries.reject { |entry| entry == ruby_bin_dir }
+      preferred_entries = [ruby_bin_dir]
+      preferred_entries << homebrew_ruby_gem_bin if File.directory?(homebrew_ruby_gem_bin)
+      path_entries = preferred_entries + path_entries.reject { |entry| preferred_entries.include?(entry) }
 
       { 'PATH' => path_entries.join(File::PATH_SEPARATOR) }
     end

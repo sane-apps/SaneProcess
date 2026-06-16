@@ -698,7 +698,14 @@ module SaneMasterModules
 
     def customer_ui_prepare_target_before_sweep(app_name)
       return [] unless customer_ui_visual_precheck_required?
-      return [] if app_name == 'SaneBar'
+      if app_name == 'SaneBar'
+        return [] if resource_soak_running_app_candidate(app_name)
+
+        output, status = customer_ui_run_command('./scripts/SaneMaster.rb', 'test_mode', '--release', '--no-logs')
+        return [] if status.success? && resource_soak_running_app_candidate(app_name)
+
+        return ["Mini release target launch failed before customer UI sweep: #{output}"]
+      end
 
       output, status = customer_ui_run_command('./scripts/SaneMaster.rb', 'launch')
       status.success? ? [] : ["Mini target launch failed before customer UI sweep: #{output}"]

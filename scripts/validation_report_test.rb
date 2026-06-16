@@ -106,7 +106,7 @@ end
 class WebsiteDistributionHarness < ValidationReport
   attr_reader :issues, :warnings, :metrics
 
-  def initialize(products:, statuses: {}, bodies: {}, resolved: {}, ok_links: [], redirect_base: '', checkout_base: '')
+  def initialize(products:, statuses: {}, bodies: {}, resolved: {}, ok_links: [], redirect_base: '', checkout_base: '', bundles: {}, store_base: '')
     super()
     @products = products
     @statuses = statuses
@@ -115,6 +115,8 @@ class WebsiteDistributionHarness < ValidationReport
     @ok_links = ok_links
     @redirect_base = redirect_base
     @checkout_base = checkout_base
+    @bundles = bundles
+    @store_base = store_base
     @metrics[:website_distribution] = { issues: 0 }
   end
 
@@ -123,11 +125,26 @@ class WebsiteDistributionHarness < ValidationReport
   end
 
   def released_product_definitions
-    @products.select { |product| !product[:checkout_uuid].to_s.empty? }
+    @products.select { |product| product_released?(product) }
   end
 
   def load_product_config
-    { products: {}, store_base: '', checkout_base: @checkout_base, redirect_base: @redirect_base, all_domains: [] }
+    { products: {}, bundles: @bundles, store_base: @store_base, checkout_base: @checkout_base, redirect_base: @redirect_base, all_domains: [] }
+  end
+
+  def product_checkout_url(product, checkout_base = @checkout_base)
+    explicit_url = (product[:checkout_url] || product['checkout_url']).to_s
+    return explicit_url unless explicit_url.empty?
+
+    uuid = (product[:checkout_uuid] || product['checkout_uuid']).to_s
+    return '' if uuid.empty? || checkout_base.to_s.empty?
+
+    "#{checkout_base}/#{uuid}"
+  end
+
+  def product_released?(product)
+    !((product[:checkout_url] || product['checkout_url']).to_s.empty? &&
+      (product[:checkout_uuid] || product['checkout_uuid']).to_s.empty?)
   end
 
   def check_url_status(url, follow_redirects: false)
@@ -135,7 +152,11 @@ class WebsiteDistributionHarness < ValidationReport
   end
 
   def fetch_url_text(url, headers: {})
-    @bodies.fetch(url, '')
+    return @bodies[url] if @bodies.key?(url)
+    return "User-agent: *\nAllow: /\n" if url.end_with?('/robots.txt')
+    return '<urlset></urlset>' if url.end_with?('/sitemap.xml')
+
+    ''
   end
 
   def ssl_certificate_error?(_url)
@@ -308,6 +329,7 @@ def product_definition(name, slug:, domain:)
     domain: domain,
     dist_domain: '',
     checkout_uuid: '',
+    checkout_url: '',
     project_path: Dir.tmpdir,
     project_exists: true
   }
@@ -550,7 +572,7 @@ exit(run_tests('Validation report tests') do
       true
     end
 
-    test('warns when crawler assets serve the website HTML fallback') do
+    test('flags crawler assets that serve the website HTML fallback') do
       product = product_definition('SaneSync', slug: 'sanesync', domain: 'sanesync.com')
       subject = WebsiteDistributionHarness.new(
         products: [product],
@@ -563,10 +585,10 @@ exit(run_tests('Validation report tests') do
 
       subject.send(:q7_website_distribution)
 
-      assert(subject.warnings.any? { |warning| warning.include?('[SaneSync] robots.txt') })
-      assert(subject.warnings.any? { |warning| warning.include?('[SaneSync] sitemap.xml') })
-      assert_eq(0, subject.metrics[:website_distribution][:issues])
-      assert_eq(2, subject.metrics[:website_distribution][:warnings])
+      assert(subject.issues.any? { |issue| issue.include?('[SaneSync] robots.txt') })
+      assert(subject.issues.any? { |issue| issue.include?('[SaneSync] sitemap.xml') })
+      assert_eq(2, subject.metrics[:website_distribution][:issues])
+      assert_eq(0, subject.metrics[:website_distribution][:warnings])
       true
     end
 
@@ -586,6 +608,75 @@ exit(run_tests('Validation report tests') do
       links = subject.send(:extract_page_links, '<a href="/download">Download</a>', base_url: 'https://sanevideo.com')
 
       assert(subject.send(:page_has_checkout_link?, links, product, base_url: 'https://sanevideo.com'))
+      true
+    end
+
+    test('accepts explicit Lemon Squeezy custom checkout URLs') do
+      custom_checkout_url = 'https://saneapps.lemonsqueezy.com/checkout/custom/custom-id?signature=abc'
+      product = product_definition('SaneVideo', slug: 'sanevideo', domain: 'sanevideo.com').merge(
+        checkout_url: custom_checkout_url
+      )
+      landing_checkout_url = "#{custom_checkout_url}&ref=download-page"
+      subject = WebsiteDistributionHarness.new(
+        products: [product],
+        bodies: {
+          'https://sanevideo.com/download' => %(<a href="#{landing_checkout_url}">Support Pro</a>)
+        },
+        ok_links: [landing_checkout_url]
+      )
+      links = subject.send(:extract_page_links, '<a href="/download">Download</a>', base_url: 'https://sanevideo.com')
+
+      assert(subject.send(:page_has_checkout_link?, links, product, base_url: 'https://sanevideo.com'))
+      assert_eq([product], subject.released_product_definitions)
+      true
+    end
+
+    test('checks configured bundle checkout and redirect routes as revenue-critical') do
+      bundle_checkout_url = 'https://saneapps.lemonsqueezy.com/checkout/custom/bundle-id?signature=abc'
+      bundle_route = 'https://go.saneapps.com/buy/bundle'
+      subject = WebsiteDistributionHarness.new(
+        products: [],
+        statuses: {
+          'https://saneapps.com' => '200',
+          bundle_checkout_url => '200',
+          bundle_route => '404'
+        },
+        bundles: {
+          'bundle' => {
+            'name' => 'SaneApps Everything Bundle',
+            'checkout_url' => bundle_checkout_url,
+            'route' => bundle_route
+          }
+        }
+      )
+
+      subject.send(:q7_website_distribution)
+
+      assert(subject.issues.any? { |issue| issue.include?('SaneApps Everything Bundle redirect') && issue.include?('returns 404') })
+      assert_eq(1, subject.metrics[:website_distribution][:issues])
+      true
+    end
+
+    test('flags unknown source checkout redirect routes') do
+      subject = WebsiteDistributionHarness.new(products: [], redirect_base: 'https://go.saneapps.com/buy')
+      Dir.mktmpdir do |dir|
+        File.write(File.join(dir, 'index.html'), '<a href="https://go.saneapps.com/buy/old-bundle?ref=test">Buy</a>')
+        issues = []
+        config = {
+          products: {
+            'sanebar' => { 'checkout_uuid' => 'bar-checkout' }
+          },
+          bundles: {
+            'bundle' => { 'name' => 'SaneApps Everything Bundle' }
+          },
+          checkout_base: 'https://saneapps.lemonsqueezy.com/checkout/buy',
+          redirect_base: 'https://go.saneapps.com/buy'
+        }
+
+        subject.send(:validate_q7_source_checkout_routes, [dir], config, issues)
+
+        assert(issues.any? { |issue| issue.include?("Unknown checkout redirect route 'old-bundle'") })
+      end
       true
     end
   end

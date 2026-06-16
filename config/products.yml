@@ -65,6 +65,7 @@ products:
   sanevideo:
     name: SaneVideo
     checkout_uuid: 478d2602-9808-4591-b01b-d555cccd0185
+    checkout_url: "https://saneapps.lemonsqueezy.com/checkout/custom/dc3fd28c-8e5c-4a97-8825-9a8d8d02d0d7?signature=10ffef9988f4239a31fcfcd5a7dd8ef81735dcfa6b5b9d33c5effbd0e7a99848"
     license_gated: true    # Basic/Pro gating active — all release channels allowed
     minimum_macos_exception:
       version: "15.0"
@@ -93,6 +94,21 @@ store:
 # Redirect Worker
 redirect:
   base_url: https://go.saneapps.com/buy
+
+bundles:
+  bundle:
+    name: SaneApps Everything Bundle
+    checkout_url: "https://saneapps.lemonsqueezy.com/checkout/custom/b2566137-793d-4d72-8860-3f85cdf44bbb?signature=2bc90f207f17dbda0cfe88bbecdd6c6770f599d5e7c3f5f7eda4be876fb62f7b"
+    route: https://go.saneapps.com/buy/bundle
+    price: "$49.99"
+    includes:
+      - sanebar
+      - saneclip
+      - saneclick
+      - sanehosts
+      - sanesales
+      - sanevideo
+    note: "One Lemon license key for current direct Mac Pro apps. App Store purchases are handled separately by Apple."
 
 # Domains to monitor for expiry (includes unreleased products)
 all_domains:

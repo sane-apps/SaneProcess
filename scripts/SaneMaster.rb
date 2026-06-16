@@ -8,6 +8,35 @@
 Encoding.default_external = Encoding::UTF_8
 Encoding.default_internal = Encoding::UTF_8
 
+require 'rbconfig'
+
+SANEMASTER_REQUIRED_RUBY_VERSION = ENV.fetch('SANEPROCESS_REQUIRED_RUBY_VERSION', '4.0.0')
+SANEMASTER_HOMEBREW_RUBY = ENV.fetch('SANEPROCESS_HOMEBREW_RUBY', '/opt/homebrew/opt/ruby/bin/ruby')
+
+def sanemaster_version_at_least?(current, required)
+  current_parts = current.to_s.split('.').map(&:to_i)
+  required_parts = required.to_s.split('.').map(&:to_i)
+  max = [current_parts.length, required_parts.length].max
+
+  (0...max).each do |index|
+    current_part = current_parts[index] || 0
+    required_part = required_parts[index] || 0
+    return true if current_part > required_part
+    return false if current_part < required_part
+  end
+
+  true
+end
+
+if RUBY_PLATFORM.include?('darwin') &&
+   ENV['SANEMASTER_SKIP_RUBY_REEXEC'] != '1' &&
+   File.executable?(SANEMASTER_HOMEBREW_RUBY) &&
+   !sanemaster_version_at_least?(RUBY_VERSION, SANEMASTER_REQUIRED_RUBY_VERSION)
+  warn "SaneMaster needs Ruby #{SANEMASTER_REQUIRED_RUBY_VERSION}+; re-running with #{SANEMASTER_HOMEBREW_RUBY}."
+  ENV['SANEMASTER_SKIP_RUBY_REEXEC'] = '1'
+  exec(SANEMASTER_HOMEBREW_RUBY, $PROGRAM_NAME, *ARGV)
+end
+
 # ==============================================================================
 # SaneMaster: Professional Automation Suite for SaneApps
 # ==============================================================================
@@ -226,6 +255,7 @@ class SaneMaster
         'sync_mini' => { args: '[mini] [--quiet] [--no-restart]', desc: 'Sync the Codex control-plane profile to the Mini (see also: sync_grok)' },
         'sync_grok' => { args: '[mini] [--quiet]', desc: 'Sync the Grok control-plane profile (grok-bin, config, .agents/skills) to the Mini' },
         'setapp_status' => { args: '[--json] [--soft]', desc: 'Check Setapp review status for submitted SaneApps builds' },
+        'setapp_package' => { args: '[--project PATH] [--app-name NAME] [--scheme NAME] [--version X.Y.Z]', desc: 'Build, sign, notarize, zip, and validate a Setapp review package' },
         'setapp_upload' => { args: '--zip ZIP --release-notes TEXT [--portal-fallback --app-id ID --version-id ID]', desc: 'Upload or replace a Setapp review build using the standard Setapp lane' }
       }
     },
@@ -1643,6 +1673,9 @@ PY
     when 'setapp_status', 'setapp-status'
       system('ruby', File.join(__dir__, 'setapp_status.rb'), *args)
       exit($CHILD_STATUS.exitstatus || 1) unless $CHILD_STATUS&.success?
+    when 'setapp_package', 'setapp-package'
+      system('ruby', File.join(__dir__, 'setapp_package.rb'), *args)
+      exit($CHILD_STATUS.exitstatus || 1) unless $CHILD_STATUS&.success?
     when 'setapp_upload', 'setapp-upload'
       system('ruby', File.join(__dir__, 'setapp_upload.rb'), *args)
       exit($CHILD_STATUS.exitstatus || 1) unless $CHILD_STATUS&.success?
@@ -1711,6 +1744,10 @@ PY
       downloads(args)
     when 'events'
       events(args)
+    when 'x_impact', 'x-impact', 'ximpact'
+      script = File.join(__dir__, 'automation', 'x-impact-report.py')
+      system('python3', script, *args)
+      exit($CHILD_STATUS.exitstatus || 1) unless $CHILD_STATUS&.success?
     when 'leads', 'prospects'
       leads(args)
 
@@ -2325,12 +2362,30 @@ PY
         '--portal-fallback' => 'Use developer portal upload_archive + version PATCH path',
         '--app-id ID' => 'Setapp application id for portal fallback',
         '--version-id ID' => 'Existing Setapp version id for portal fallback',
+        '--validate-only' => 'Validate the archive without uploading',
         '--allow-needs-revision' => 'Attach archive without failing when a manual Submit for review is still required',
         '--dry-run' => 'Validate and print the planned path without uploading'
       },
       examples: [
         'setapp_upload --zip outputs/SaneBar-Setapp.zip --release-notes "SaneBar 2.1.47..."',
         'setapp_upload --portal-fallback --app-id 1848 --version-id 46885 --zip outputs/SaneBar-Setapp.zip --release-notes-file /tmp/setapp-notes.txt'
+      ]
+    },
+    'setapp_package' => {
+      usage: 'setapp_package [--project PATH] [--app-name NAME] [--scheme NAME] [--version X.Y.Z]',
+      description: 'Build a Setapp review package, sign it with Developer ID, notarize, staple, zip, and run the Setapp archive validation gate.',
+      flags: {
+        '--project PATH' => 'Project root; defaults to the current directory',
+        '--app-name NAME' => 'App name; defaults to the .xcodeproj basename',
+        '--scheme NAME' => 'Setapp archive scheme; defaults to APPSetapp',
+        '--configuration NAME' => 'Archive configuration; defaults to Release-Setapp',
+        '--version X.Y.Z' => 'Output version string; defaults to MARKETING_VERSION from project.yml',
+        '--output-root PATH' => 'Receipt and package output root',
+        '--signing-identity NAME' => 'Developer ID signing identity',
+        '--notary-profile NAME' => 'notarytool keychain profile'
+      },
+      examples: [
+        'setapp_package --project ~/SaneApps/apps/SaneClip --app-name SaneClip --scheme SaneClipSetapp'
       ]
     },
     'registry_review' => {
@@ -2644,6 +2699,22 @@ PY
         'events                   # Event breakdown by period',
         'events --days 7          # Last 7 days of events',
         'events --app sanebar     # SaneBar events only'
+      ]
+    },
+    'x_impact' => {
+      usage: 'x_impact [--collect] [--fetch-x] [--days N] [--json]',
+      description: 'Backtest SaneApps X posts against engagement, Lemon sales, downloads, and funnel events.',
+      flags: {
+        '--collect' => 'Collect fresh sales/downloads/events JSON before reporting',
+        '--fetch-x' => 'Fetch a fresh authenticated X own-posts snapshot before reporting',
+        '--days N' => 'Lookback window for posts/downloads/events (default: 30)',
+        '--baseline-days N' => 'Daily baseline window before each post (default: 7)',
+        '--json' => 'Print the machine-readable report JSON'
+      },
+      examples: [
+        'x_impact --collect',
+        'x_impact --collect --fetch-x --days 30',
+        'x_impact --json'
       ]
     },
     'leads' => {

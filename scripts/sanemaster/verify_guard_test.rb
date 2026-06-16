@@ -130,6 +130,35 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
       assert_includes(registered_paths, 'scripts/sane_test.rb')
       true
     end
+
+    test('infra script-only verify does not reset protected folder permissions') do
+      fresh_subject = VerifyHarness.new
+      fresh_subject.define_singleton_method(:saneprocess_config) { { 'type' => 'infra' } }
+      fresh_subject.define_singleton_method(:project_xcodeproj) { nil }
+      fresh_subject.define_singleton_method(:project_workspace) { nil }
+
+      services = fresh_subject.send(:verify_permission_services)
+
+      assert_includes(services, 'Camera')
+      assert(!services.include?('SystemPolicyDownloadsFolder'), 'infra verify should not reset Downloads access for the Ruby interpreter')
+      assert(!services.include?('SystemPolicyDesktopFolder'), 'infra verify should not reset Desktop access for the Ruby interpreter')
+      assert(!services.include?('SystemPolicyDocumentsFolder'), 'infra verify should not reset Documents access for the Ruby interpreter')
+      true
+    end
+
+    test('app verify still resets protected folder permissions') do
+      fresh_subject = VerifyHarness.new
+      fresh_subject.define_singleton_method(:saneprocess_config) { { 'type' => 'app' } }
+      fresh_subject.define_singleton_method(:project_xcodeproj) { 'Example.xcodeproj' }
+      fresh_subject.define_singleton_method(:project_workspace) { nil }
+
+      services = fresh_subject.send(:verify_permission_services)
+
+      assert_includes(services, 'SystemPolicyDownloadsFolder')
+      assert_includes(services, 'SystemPolicyDesktopFolder')
+      assert_includes(services, 'SystemPolicyDocumentsFolder')
+      true
+    end
   end
 
   test_category('Project test destinations') do

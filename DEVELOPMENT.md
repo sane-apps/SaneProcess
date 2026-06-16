@@ -110,6 +110,24 @@ with tested evidence and a source fingerprint matching the current repo.
 
 SaneProcess has one SOP with multiple client adapters.
 
+## Ruby Toolchain
+
+- SaneProcess automation targets Homebrew Ruby `4.0.0+`; operator machines
+  should run the latest installed Homebrew Ruby for SaneApps workflows.
+- macOS `/usr/bin/ruby` `2.6` is fallback/bootstrap compatibility only. Do not
+  make it the normal toolchain.
+- `scripts/SaneMaster.rb` re-runs itself through
+  `/opt/homebrew/opt/ruby/bin/ruby` on macOS when started under an older Ruby.
+- `scripts/init.sh` checks Homebrew Ruby, required standalone Ruby gems such as
+  `jwt`, Bundler, and project bundle state. In an interactive shell it prompts
+  to run the needed update/install command; in non-interactive shells it prints
+  the exact command and fails the install.
+- `SaneMaster.rb bootstrap` updates stale `.ruby-version` pins in fix mode and
+  only warns in `--check-only` mode. It also installs missing required Ruby gems
+  in fix mode, even when a repo intentionally has no `Gemfile`.
+- Keep low-level bootstrap/package validators Ruby 2.6-parseable until the
+  Homebrew Ruby check has had a chance to run.
+
 | Client | Install mode | Stable surface |
 |--------|--------------|----------------|
 | Claude Code | `scripts/init.sh --client claude` | `AGENTS.md`, `.claude/settings.json`, hooks, skills, MCP, shared scripts |

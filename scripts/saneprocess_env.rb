@@ -49,7 +49,7 @@ emit('XCODEPROJ', fetch_config(config, 'build', 'xcodeproj') || fetch_config(con
 
 # Release settings
 emit('DIST_HOST', fetch_config(config, 'release', 'dist_host'))
-emit('SITE_HOST', fetch_config(config, 'release', 'site_host'))
+emit('SITE_HOST', fetch_config(config, 'release', 'site_host') || fetch_config(config, 'website_domain'))
 emit('R2_BUCKET', fetch_config(config, 'release', 'r2_bucket'))
 emit('USE_SPARKLE', fetch_config(config, 'release', 'use_sparkle'))
 emit('MIN_SYSTEM_VERSION', fetch_config(config, 'release', 'min_system_version'))

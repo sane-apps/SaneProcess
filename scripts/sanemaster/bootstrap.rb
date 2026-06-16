@@ -77,6 +77,7 @@ module SaneMasterModules
       {
         ruby: check_ruby_environment(check_only),
         bundle: check_bundle(check_only),
+        ruby_gems: check_required_ruby_gems(check_only),
         homebrew_tools: check_homebrew_tools(check_only),
         claude_plugins: check_claude_plugins,
         mcp_servers: check_mcp_config,
@@ -228,14 +229,25 @@ module SaneMasterModules
     def check_ruby_environment(check_only)
       puts '💎 Checking Ruby environment...'
 
-      unless File.exist?(HOMEBREW_RUBY)
-        puts '   ❌ Homebrew Ruby not found. Install: brew install ruby'
+      unless File.executable?(HOMEBREW_RUBY)
+        puts '   ❌ Homebrew Ruby not found.'
+        puts '      Install: brew install ruby'
         sop_log('Ruby: Homebrew Ruby not installed')
         return :missing
       end
 
       version = `#{HOMEBREW_RUBY} --version 2>/dev/null`.strip
       puts "   Ruby: #{version}"
+      ruby_version = version[/ruby ([\d.]+)/, 1] || '0.0.0'
+
+      unless ruby_version_at_least?(ruby_version)
+        puts "   ❌ Ruby #{ruby_version} is older than required #{required_ruby_version}+."
+        puts '      Update: brew update && brew upgrade ruby'
+        sop_log("Ruby: outdated #{ruby_version}, requires #{required_ruby_version}+")
+        return :outdated if check_only
+
+        return :failed unless update_homebrew_ruby
+      end
 
       check_ruby_version_file(check_only, version)
       check_rubygems_version
@@ -246,14 +258,28 @@ module SaneMasterModules
 
     def check_ruby_version_file(check_only, version)
       ruby_version_file = File.join(Dir.pwd, '.ruby-version')
+      ruby_ver = begin
+        version.match(/ruby ([\d.]+)/)[1]
+      rescue StandardError
+        required_ruby_version
+      end
+
       if File.exist?(ruby_version_file)
-        puts '   ✅ .ruby-version exists'
-      elsif !check_only
-        ruby_ver = begin
-          version.match(/ruby ([\d.]+)/)[1]
-        rescue StandardError
-          '3.4'
+        configured = File.read(ruby_version_file).strip
+        if ruby_version_at_least?(configured)
+          puts "   ✅ .ruby-version exists (#{configured})"
+          return
         end
+
+        if check_only
+          puts "   ⚠️  .ruby-version #{configured} is older than required #{required_ruby_version}+"
+          return
+        end
+
+        File.write(ruby_version_file, "#{ruby_ver}\n")
+        puts "   ✅ Updated .ruby-version (#{configured} -> #{ruby_ver})"
+        sop_log("Updated .ruby-version: #{configured} -> #{ruby_ver}")
+      elsif !check_only
         File.write(ruby_version_file, "#{ruby_ver}\n")
         puts "   ✅ Created .ruby-version (#{ruby_ver})"
         sop_log("Created .ruby-version: #{ruby_ver}")
@@ -274,8 +300,15 @@ module SaneMasterModules
     def check_bundle(check_only)
       puts "\n📦 Checking bundle dependencies..."
 
-      unless File.exist?(HOMEBREW_BUNDLE)
-        puts '   ❌ Homebrew bundle not found'
+      unless File.exist?('Gemfile')
+        puts '   ✅ No Gemfile in this directory; bundle check skipped'
+        sop_log('Bundle: no Gemfile, skipped')
+        return :ok
+      end
+
+      unless File.executable?(HOMEBREW_BUNDLE)
+        puts '   ❌ Homebrew bundle not found.'
+        puts '      Install: gem install bundler'
         return :missing
       end
 
@@ -302,25 +335,88 @@ module SaneMasterModules
       :ok
     end
 
+    def update_homebrew_ruby
+      puts '   🔄 Updating Homebrew Ruby...'
+      if system('brew update && brew upgrade ruby')
+        puts '   ✅ Homebrew Ruby updated'
+        sop_log('Ruby: Homebrew Ruby updated')
+        true
+      else
+        puts '   ❌ Homebrew Ruby update failed'
+        sop_log('Ruby: Homebrew Ruby update failed')
+        false
+      end
+    end
+
+    def check_required_ruby_gems(check_only)
+      puts "\n💎 Checking required Ruby gems..."
+
+      missing = []
+      REQUIRED_RUBY_GEMS.each do |gem_name, purpose|
+        output, status = Open3.capture2e(
+          homebrew_ruby_path,
+          '-e',
+          "require #{gem_name.inspect}; spec = Gem.loaded_specs[#{gem_name.inspect}]; print(spec&.version || 'installed')"
+        )
+        if status.success?
+          puts "   #{gem_name}: #{output.strip} ✅"
+        else
+          missing << [gem_name, purpose]
+          puts "   #{gem_name}: missing ❌ (#{purpose})"
+        end
+      end
+
+      if missing.empty?
+        sop_log('Ruby gems: all required gems installed')
+        return :ok
+      end
+
+      missing.each do |gem_name, _purpose|
+        puts "      Install: #{homebrew_ruby_path} -S gem install #{gem_name} --no-document"
+      end
+      sop_log("Ruby gems missing: #{missing.map(&:first).join(', ')}")
+      return :missing if check_only
+
+      missing.each do |gem_name, _purpose|
+        print "      Installing #{gem_name}... "
+        if system(homebrew_ruby_path, '-S', 'gem', 'install', gem_name, '--no-document')
+          puts '✅'
+          sop_log("Installed Ruby gem: #{gem_name}")
+        else
+          puts '❌'
+          sop_log("Failed to install Ruby gem: #{gem_name}")
+          return :failed
+        end
+      end
+
+      :ok
+    end
+
     def check_homebrew_tools(check_only)
       puts "\n🍺 Checking Homebrew tools..."
 
       outdated = []
+      missing = []
       TOOL_VERSIONS.each do |tool, config|
         version_output = `#{config[:cmd]} 2>/dev/null`.strip
         current = extract_version(version_output, config)
 
         status = determine_tool_status(current, config[:min])
         outdated << tool if status == :outdated
+        missing << tool if status == :missing
 
         status_icon = { ok: '✅', outdated: '⚠️  outdated', missing: '❌ not installed' }[status] || '✅'
         puts "   #{tool}: #{current.empty? ? 'missing' : current} #{status_icon}"
       end
 
-      update_outdated_tools(outdated) if outdated.any? && !check_only
+      repair_tools = (missing + outdated).uniq
+      update_outdated_tools(repair_tools) if repair_tools.any? && !check_only
 
-      sop_log("Homebrew tools check: #{outdated.empty? ? 'all current' : "outdated: #{outdated.join(', ')}"}")
-      outdated.empty? ? :ok : :updated
+      status_summary = []
+      status_summary << "missing: #{missing.join(', ')}" if missing.any?
+      status_summary << "outdated: #{outdated.join(', ')}" if outdated.any?
+      sop_log("Homebrew tools check: #{status_summary.empty? ? 'all current' : status_summary.join('; ')}")
+      repair_tools.empty? ? :ok : (check_only ? :missing : :updated)
     end
 
     def extract_version(version_output, config)

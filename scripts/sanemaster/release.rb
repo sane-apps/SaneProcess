@@ -1401,7 +1401,7 @@ module SaneMasterModules
       nil
     end
 
-    def asc_get_json(path, token:, base: 'https://api.appstoreconnect.apple.com/v1')
+    def asc_get_json_with_status(path, token:, base: 'https://api.appstoreconnect.apple.com/v1')
       require 'net/http'
       require 'json'
 
@@ -1409,11 +1409,69 @@ module SaneMasterModules
       request = Net::HTTP::Get.new(uri)
       request['Authorization'] = "Bearer #{token}"
       response = Net::HTTP.start(uri.host, uri.port, use_ssl: true) { |http| http.request(request) }
-      return nil unless response.code.to_i.between?(200, 299)
-
-      JSON.parse(response.body)
+      parsed = begin
+        JSON.parse(response.body.to_s)
+      rescue StandardError
+        { 'raw' => response.body.to_s }
+      end
+      [response.code.to_i, parsed]
     rescue StandardError
-      nil
+      [0, nil]
+    end
+
+    def asc_get_json(path, token:, base: 'https://api.appstoreconnect.apple.com/v1')
+      code, parsed = asc_get_json_with_status(path, token: token, base: base)
+      return nil unless code.between?(200, 299)
+
+      parsed
+    end
+
+    def asc_app_availability_status(app_id:)
+      return nil if app_id.to_s.strip.empty?
+
+      token = appstore_connect_token
+      return nil if token.nil?
+
+      code, response = asc_get_json_with_status("/apps/#{app_id}/appAvailabilityV2", token: token)
+      return { exists: false, http_code: code } if code == 404
+      return nil unless code.between?(200, 299) && response.is_a?(Hash)
+
+      availability_id = response.dig('data', 'id').to_s.strip
+      availability_id = app_id.to_s.strip if availability_id.empty?
+      availability = {
+        exists: true,
+        available_in_new_territories: response.dig('data', 'attributes', 'availableInNewTerritories')
+      }
+
+      rel_code, rel_response = asc_get_json_with_status(
+        "/appAvailabilities/#{availability_id}/relationships/territoryAvailabilities?limit=200",
+        token: token,
+        base: 'https://api.appstoreconnect.apple.com/v2'
+      )
+      if rel_code.between?(200, 299) && rel_response.is_a?(Hash)
+        availability[:territory_total] = rel_response.dig('meta', 'paging', 'total') || Array(rel_response['data']).length
+      end
+
+      detail_code, detail_response = asc_get_json_with_status(
+        "/appAvailabilities/#{availability_id}/territoryAvailabilities?limit=200",
+        token: token,
+        base: 'https://api.appstoreconnect.apple.com/v2'
+      )
+      if detail_code.between?(200, 299) && detail_response.is_a?(Hash)
+        status_counts = Hash.new(0)
+        territory_rows = Array(detail_response['data'])
+        territory_rows.each do |entry|
+          statuses = Array(entry.dig('attributes', 'contentStatuses')).map(&:to_s).reject(&:empty?)
+          key = statuses.empty? ? 'UNKNOWN' : statuses.join('+')
+          status_counts[key] += 1
+        end
+        availability[:content_status_counts] = status_counts
+        availability[:available_count] = status_counts['AVAILABLE']
+        availability[:all_territories_available] = availability[:available_count].to_i.positive? &&
+                                                   availability[:available_count].to_i == territory_rows.length
+      end
+
+      availability
     end
 
     def asc_iap_status(app_id:, product_id:)
@@ -3681,9 +3739,38 @@ module SaneMasterModules
         issues << 'Ruby jwt gem not installed — run: gem install jwt'
       end
 
+      # 1e. App-level territory availability
+      print '  │ ASC app availability... '
+      if asc_app_id.to_s.strip.empty?
+        puts '⚠️  skipped (no ASC app_id)'
+        warnings << 'Cannot verify app-level App Store availability without appstore.app_id'
+      else
+        app_availability = asc_app_availability_status(app_id: asc_app_id)
+        case app_availability
+        when Hash
+          if !app_availability[:exists]
+            puts '❌ missing'
+            issues << 'App Store Connect app availability is missing — the app can be READY_FOR_SALE but invisible publicly. Run appstore_submit repair or create app availability before release.'
+          elsif app_availability[:territory_total].to_i <= 0
+            puts '❌ no territories'
+            issues << 'App Store Connect app availability has no territory rows.'
+          elsif app_availability[:all_territories_available]
+            puts "✅ #{app_availability[:available_count]} territory(ies)"
+          else
+            counts = app_availability[:content_status_counts] || {}
+            summary = counts.map { |status, count| "#{status}=#{count}" }.join(', ')
+            puts "❌ #{summary.empty? ? 'not available' : summary}"
+            issues << "App Store Connect app availability is not public-ready (#{summary.empty? ? 'unknown status' : summary})."
+          end
+        else
+          puts '⚠️  lookup failed'
+          warnings << 'Could not verify App Store Connect app availability.'
+        end
+      end
+
       puts '  │'
 
-      # 1e. Strict customer-facing UI/action visual proof.
+      # 1f. Strict customer-facing UI/action visual proof.
       print '  │ Customer UI strict visual contract... '
       if respond_to?(:customer_ui_contract_report)
         ui_contract_report = customer_ui_contract_report(config: config, strict_visual: true)

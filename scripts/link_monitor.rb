@@ -35,24 +35,45 @@ KEYCHAIN_FALLBACK_ENABLED = ENV.fetch("SANE_KEYCHAIN_FALLBACK", "1") == "1" && E
 # Load product config — single source of truth for UUIDs, domains, etc.
 CONFIG = YAML.safe_load(File.read(CONFIG_FILE), permitted_classes: [])
 PRODUCTS = CONFIG.fetch("products")
+BUNDLES = CONFIG.fetch("bundles", {})
 STORE = CONFIG.fetch("store")
 REDIRECT = CONFIG.fetch("redirect")
+
+def product_checkout_url(product)
+  explicit_url = product["checkout_url"].to_s.strip
+  return explicit_url unless explicit_url.empty?
+
+  checkout_uuid = product["checkout_uuid"].to_s.strip
+  return "" if checkout_uuid.empty?
+
+  "#{STORE['checkout_base']}/#{checkout_uuid}"
+end
 
 # Build critical URLs dynamically from config
 CRITICAL_URLS = {}.tap do |urls|
   PRODUCTS.each do |slug, product|
     # Only monitor release links for products that are actually live.
-    # Products without checkout_uuid are not public yet.
-    checkout_uuid = product["checkout_uuid"].to_s.strip
+    # Products without checkout_uuid or checkout_url are not public yet.
+    checkout_url = product_checkout_url(product)
     monitor_links = product.fetch("monitor_links", true)
-    next if checkout_uuid.empty? || monitor_links == false
+    next if checkout_url.empty? || monitor_links == false
 
-    urls["#{product['name']} checkout"] = "#{STORE['checkout_base']}/#{checkout_uuid}"
+    urls["#{product['name']} checkout"] = checkout_url
     urls[product["domain"]] = "https://#{product['domain']}"
     urls["#{product['name']} redirect"] = "#{REDIRECT['base_url']}/#{slug}"
     urls["#{product['name']} download"] = "https://go.saneapps.com/download/#{slug}"
     urls["#{product['name']} appcast"] = product["appcast"]
     urls["#{product['name']} dist worker"] = "https://#{product['dist_domain']}/"
+  end
+  BUNDLES.each do |slug, bundle|
+    checkout_url = bundle["checkout_url"].to_s.strip
+    route_url = bundle["route"].to_s.strip
+    next if checkout_url.empty? && route_url.empty?
+
+    name = bundle["name"].to_s.strip
+    name = slug if name.empty?
+    urls["#{name} checkout"] = checkout_url unless checkout_url.empty?
+    urls["#{name} redirect"] = route_url unless route_url.empty?
   end
   urls["saneapps.com"] = "https://saneapps.com"
   urls["LemonSqueezy store"] = STORE["base_url"]
@@ -177,11 +198,10 @@ def check_url(url, max_redirects: MAX_REDIRECTS, attempts: 3)
 end
 
 def check_redirect_mapping(slug, product)
-  checkout_uuid = product["checkout_uuid"].to_s.strip
-  return { status: :error, message: "Missing checkout UUID for #{slug}" } if checkout_uuid.empty?
+  expected_prefix = product_checkout_url(product)
+  return { status: :error, message: "Missing checkout URL for #{slug}" } if expected_prefix.empty?
 
   redirect_url = "#{REDIRECT['base_url']}/#{slug}"
-  expected_prefix = "#{STORE['checkout_base']}/#{checkout_uuid}"
 
   uri = URI.parse(redirect_url)
   http = Net::HTTP.new(uri.host, uri.port)
@@ -432,9 +452,9 @@ end
 
 # 2b. Verify go.saneapps.com redirect maps to exact configured checkout UUID
 PRODUCTS.each do |slug, product|
-  checkout_uuid = product["checkout_uuid"].to_s.strip
+  checkout_url = product_checkout_url(product)
   monitor_links = product.fetch("monitor_links", true)
-  next if checkout_uuid.empty? || monitor_links == false
+  next if checkout_url.empty? || monitor_links == false
 
   result = check_redirect_mapping(slug, product)
   name = "#{product['name']} redirect mapping"

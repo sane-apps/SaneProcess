@@ -379,8 +379,16 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
   - no Lemon Squeezy purchase path in visible UI
   - no Donate/GitHub Sponsors affordance
   - Setapp update/auth resources are present
+  - any restricted entitlement profile is embedded and matches the signed bundle
+    ID plus iCloud containers
+  - the final ZIP opens through LaunchServices after quarantine, not only
+    `codesign`, notarization, and `spctl` static checks
 - Menu bar apps need explicit Setapp `.userInteraction` reporting.
-- Universal build support becomes a real release concern for the Setapp lane.
+- Universal build support and provisioning-profile embedding are real release
+  concerns for the Setapp lane. A Setapp ZIP can be signed, notarized, and
+  Gatekeeper-accepted while still failing review with launchd/RBS error 163 if
+  the app signs iCloud/app-group entitlements without
+  `Contents/embedded.provisionprofile`.
 
 ### ADR-005: Candidate prevention gates require local fixture review (2026-04-24)
 

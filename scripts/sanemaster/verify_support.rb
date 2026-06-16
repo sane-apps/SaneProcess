@@ -100,15 +100,7 @@ module SaneMasterModules
 
     def grant_test_permissions(timeout_seconds:)
       print '🔐 Granting test permissions... '
-      # Use dynamic bundle_id instead of hardcoded value
-      %w[
-        Camera
-        Microphone
-        ScreenRecording
-        SystemPolicyDocumentsFolder
-        SystemPolicyDesktopFolder
-        SystemPolicyDownloadsFolder
-      ].each do |service|
+      verify_permission_services.each do |service|
         system('tccutil', 'reset', service, @bundle_id, err: File::NULL)
       end
 
@@ -150,6 +142,28 @@ module SaneMasterModules
     def permission_monitor_blocked?(log)
       log.include?('manual grant may be needed') ||
         log.include?('PROTECTED_FOLDER_PROMPT')
+    end
+
+    def verify_permission_services
+      services = %w[Camera Microphone ScreenRecording]
+      services += protected_folder_permission_services if reset_protected_folder_permissions_for_verify?
+      services
+    end
+
+    def protected_folder_permission_services
+      %w[
+        SystemPolicyDocumentsFolder
+        SystemPolicyDesktopFolder
+        SystemPolicyDownloadsFolder
+      ]
+    end
+
+    def reset_protected_folder_permissions_for_verify?
+      return false if saneprocess_config['type'].to_s == 'infra'
+
+      has_xcode_project = project_xcodeproj && !project_xcodeproj.to_s.empty?
+      has_workspace = project_workspace && !project_workspace.to_s.empty?
+      has_xcode_project || has_workspace
     end
 
     def terminate_running_app_instance
