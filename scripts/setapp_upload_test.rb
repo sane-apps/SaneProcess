@@ -62,6 +62,18 @@ def create_setapp_fixture(dir, app_name: 'SaneClip', bundle_id: 'com.saneclip.ap
 end
 
 def zip_app(app_root, zip_path)
+  Dir.mktmpdir('setapp-upload-zip-stage') do |stage_dir|
+    staged_app = File.join(stage_dir, File.basename(app_root))
+    output, status = Open3.capture2e('ditto', '--norsrc', app_root, staged_app)
+    raise "stage app failed: #{output}" unless status.success?
+
+    create_root_icon_png(File.join(stage_dir, "#{File.basename(app_root, '.app')}.png"))
+    output, status = Open3.capture2e('ditto', '--norsrc', '-c', '-k', stage_dir, zip_path)
+    raise "zip failed: #{output}" unless status.success?
+  end
+end
+
+def zip_app_without_root_icon(app_root, zip_path)
   output, status = Open3.capture2e(
     'ditto',
     '--norsrc',
@@ -72,6 +84,22 @@ def zip_app(app_root, zip_path)
     zip_path
   )
   raise "zip failed: #{output}" unless status.success?
+end
+
+def create_root_icon_png(path, size: 1024)
+  output, status = Open3.capture2e(
+    'sips',
+    '-s',
+    'format',
+    'png',
+    '/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/AlertNoteIcon.icns',
+    '--resampleHeightWidth',
+    size.to_s,
+    size.to_s,
+    '--out',
+    path
+  )
+  raise "root icon failed: #{output}" unless status.success?
 end
 
 exit(run_tests('Setapp Upload Tests') do
@@ -101,6 +129,7 @@ exit(run_tests('Setapp Upload Tests') do
       assert_includes(source, 'REXML::Document')
       assert_includes(source, "'xml1'")
       assert_includes(source, 'setapp_status')
+      assert_includes(source, 'validate_root_icon_png!')
       assert_includes(source, 'capture3_with_timeout')
       assert_includes(source, 'Process.spawn')
       assert_includes(source, 'Process.waitpid2')
@@ -157,16 +186,7 @@ exit(run_tests('Setapp Upload Tests') do
         assert(status.success?, output)
 
         zip_path = File.join(dir, 'SaneBar-Setapp.zip')
-        output, status = Open3.capture2e(
-          'ditto',
-          '--norsrc',
-          '-c',
-          '-k',
-          '--keepParent',
-          File.join(dir, 'SaneBar.app'),
-          zip_path
-        )
-        assert(status.success?, output)
+        zip_app(File.join(dir, 'SaneBar.app'), zip_path)
 
         output, status = Open3.capture2e(
           'ruby',
@@ -233,16 +253,7 @@ exit(run_tests('Setapp Upload Tests') do
         FileUtils.chmod('+x', thin_executable)
 
         zip_path = File.join(dir, 'SaneClip-Setapp.zip')
-        output, status = Open3.capture2e(
-          'ditto',
-          '--norsrc',
-          '-c',
-          '-k',
-          '--keepParent',
-          app_root,
-          zip_path
-        )
-        assert(status.success?, output)
+        zip_app(app_root, zip_path)
 
         output, status = Open3.capture2e(
           'ruby',
@@ -261,6 +272,59 @@ exit(run_tests('Setapp Upload Tests') do
 
         assert(!status.success?, output)
         assert_includes(output, 'Setapp archive executable must include arm64 and x86_64')
+      end
+      true
+    end
+
+    test('rejects Setapp archives missing the sibling root app icon PNG') do
+      Dir.mktmpdir('setapp-upload-test') do |dir|
+        app_root = create_setapp_fixture(dir)
+        zip_path = File.join(dir, 'SaneClip-Setapp.zip')
+        zip_app_without_root_icon(app_root, zip_path)
+
+        output, status = Open3.capture2e(
+          'ruby',
+          SCRIPT_PATH,
+          '--validate-only',
+          '--zip',
+          zip_path,
+          '--release-notes',
+          'test notes'
+        )
+
+        assert(!status.success?, output)
+        assert_includes(output, 'missing sibling app icon PNG')
+        assert_includes(output, 'SaneClip.png')
+      end
+      true
+    end
+
+    test('rejects Setapp archives whose sibling root app icon PNG is not 1024px') do
+      Dir.mktmpdir('setapp-upload-test') do |dir|
+        app_root = create_setapp_fixture(dir)
+        zip_path = File.join(dir, 'SaneClip-Setapp.zip')
+        Dir.mktmpdir('setapp-upload-zip-stage') do |stage_dir|
+          staged_app = File.join(stage_dir, File.basename(app_root))
+          output, status = Open3.capture2e('ditto', '--norsrc', app_root, staged_app)
+          assert(status.success?, output)
+          create_root_icon_png(File.join(stage_dir, 'SaneClip.png'), size: 512)
+          output, status = Open3.capture2e('ditto', '--norsrc', '-c', '-k', stage_dir, zip_path)
+          assert(status.success?, output)
+        end
+
+        output, status = Open3.capture2e(
+          'ruby',
+          SCRIPT_PATH,
+          '--validate-only',
+          '--zip',
+          zip_path,
+          '--release-notes',
+          'test notes'
+        )
+
+        assert(!status.success?, output)
+        assert_includes(output, 'sibling app icon PNG is 512x512')
+        assert_includes(output, 'Setapp requires 1024x1024')
       end
       true
     end
@@ -372,6 +436,8 @@ exit(run_tests('Setapp Upload Tests') do
       assert_includes(package_source, '--validate-only')
       assert_includes(package_source, 'notarytool')
       assert_includes(package_source, 'embed_provisioning_profiles')
+      assert_includes(package_source, 'write_root_icon_png')
+      assert_includes(package_source, 'root_icon_png_path')
       assert_includes(package_source, 'verify_quarantined_launch')
       assert_includes(package_source, 'REXML::Document')
       assert_includes(package_source, "'xml1'")
@@ -388,10 +454,15 @@ exit(run_tests('Setapp Upload Tests') do
       assert_includes(package_source, 'AppIcon.appiconset')
       assert_includes(package_source, 'AppIcon.iconset')
       assert_includes(package_source, 'iconutil')
+      assert_includes(package_source, 'Setapp requires 1024x1024')
       assert_includes(package_source, 'embedded.provisionprofile')
       assert(
         package_source.index('normalize_app_icon') < package_source.index('prepare_signing_session'),
         'AppIcon must be rebuilt before signing so the signature covers the final icon'
+      )
+      assert(
+        package_source.index('write_root_icon_png') < package_source.index('package_final_zip'),
+        'Setapp root PNG must exist before the final ZIP is created'
       )
       assert(
         package_source.index('embed_provisioning_profiles') < package_source.index('sign_nested_extensions'),

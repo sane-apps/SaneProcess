@@ -124,6 +124,10 @@ class SetappUpload
       app_path = Dir.glob(File.join(tmpdir, '*.app')).first
       abort 'Setapp archive is missing a top-level .app bundle' unless app_path
 
+      root_icon_path = File.join(File.dirname(app_path), "#{File.basename(app_path, '.app')}.png")
+      abort "Setapp archive is missing sibling app icon PNG: #{File.basename(root_icon_path)}" unless File.file?(root_icon_path)
+      validate_root_icon_png!(root_icon_path)
+
       icon_path = File.join(app_path, 'Contents', 'Resources', 'AppIcon.icns')
       abort 'Setapp archive is missing Contents/Resources/AppIcon.icns' unless File.file?(icon_path)
       validate_archive_icon!(icon_path)
@@ -145,6 +149,25 @@ class SetappUpload
         validate_embedded_profile!(appex_path, "Setapp archive extension #{File.basename(appex_path)}")
       end
     end
+  end
+
+  def validate_root_icon_png!(icon_path)
+    output, icon_stderr, icon_status = capture3_with_timeout(
+      30,
+      '/usr/bin/sips',
+      '-g',
+      'pixelWidth',
+      '-g',
+      'pixelHeight',
+      icon_path
+    )
+    abort "Setapp archive sibling app icon PNG could not be inspected: #{icon_stderr.strip}" unless icon_status.success?
+
+    width = output[/pixelWidth:\s*(\d+)/, 1].to_i
+    height = output[/pixelHeight:\s*(\d+)/, 1].to_i
+    return if width == 1024 && height == 1024
+
+    abort "Setapp archive sibling app icon PNG is #{width}x#{height}; Setapp requires 1024x1024"
   end
 
   def validate_archive_icon!(icon_path)

@@ -47,6 +47,7 @@ class SetappPackage
     archive_unsigned
     sanitize
     normalize_app_icon
+    write_root_icon_png
     prepare_signing_session
     embed_provisioning_profiles
     sign_nested_extensions
@@ -155,6 +156,51 @@ class SetappPackage
 
       run_logged('appicon-normalize.log', 'iconutil', '-c', 'icns', iconset_dir, '-o', target_icon)
     end
+  end
+
+  def write_root_icon_png
+    source = largest_app_icon_png
+    abort 'No 1024x1024 source AppIcon PNG found for Setapp root icon' unless source
+
+    FileUtils.cp(source, root_icon_png_path)
+    width, height = png_dimensions(root_icon_png_path)
+    return if width == 1024 && height == 1024
+
+    abort "Setapp root icon #{root_icon_png_path} is #{width}x#{height}; Setapp requires 1024x1024"
+  end
+
+  def largest_app_icon_png
+    source_iconset = app_iconset_path
+    return nil unless source_iconset
+
+    candidates = Dir.glob(File.join(source_iconset, '*.png')).map do |path|
+      dimensions = png_dimensions(path)
+      next unless dimensions
+
+      [dimensions.first * dimensions.last, path]
+    end.compact
+    candidates.max_by(&:first)&.last
+  end
+
+  def png_dimensions(path)
+    output, _stderr, status = Open3.capture3(
+      '/usr/bin/sips',
+      '-g',
+      'pixelWidth',
+      '-g',
+      'pixelHeight',
+      path
+    )
+    return nil unless status.success?
+
+    [
+      output[/pixelWidth:\s*(\d+)/, 1].to_i,
+      output[/pixelHeight:\s*(\d+)/, 1].to_i
+    ]
+  end
+
+  def root_icon_png_path
+    @root_icon_png_path ||= File.join(@output_dir, "#{@app_name}.png")
   end
 
   def app_iconset_path
@@ -491,7 +537,17 @@ class SetappPackage
   end
 
   def package_final_zip
-    run_logged('final-zip.log', 'ditto', '--norsrc', '-c', '-k', '--keepParent', @app_path, @final_zip)
+    Dir.mktmpdir('setapp-final-zip') do |stage_dir|
+      run_logged(
+        'final-zip-stage-app.log',
+        'ditto',
+        '--norsrc',
+        @app_path,
+        File.join(stage_dir, "#{@app_name}.app")
+      )
+      FileUtils.cp(root_icon_png_path, File.join(stage_dir, "#{@app_name}.png"))
+      run_logged('final-zip.log', 'ditto', '--norsrc', '-c', '-k', stage_dir, @final_zip)
+    end
     capture_to('sha256.txt', 'shasum', '-a', '256', @final_zip)
   end
 
