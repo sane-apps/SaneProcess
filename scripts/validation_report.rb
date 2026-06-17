@@ -3538,6 +3538,7 @@ class ValidationReport
     receipt_fingerprint = status['sourceFingerprint'].to_s.empty? ? status['source_fingerprint'].to_s : status['sourceFingerprint'].to_s
     current_fingerprint = project_qa_source_fingerprint(project_path)
     stale_reasons = []
+    stale_reasons << 'latest QA receipt is policy-only' if status['policyOnlyMode'] == true
     if !receipt_fingerprint.empty?
       if current_fingerprint.to_s.empty?
         stale_reasons << 'could not compute current source fingerprint'

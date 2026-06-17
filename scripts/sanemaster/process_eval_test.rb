@@ -8,6 +8,7 @@ require 'tmpdir'
 require_relative '../hooks/test/test_framework'
 require_relative 'process_metrics'
 require_relative 'process_eval'
+require_relative 'agent_context'
 
 class ProcessEvalHarness
   include SaneMasterModules::ProcessMetrics
@@ -20,6 +21,10 @@ class ProcessEvalHarness
   def process_metrics_path
     @metrics_path
   end
+end
+
+class ProcessEvalContextHarness < ProcessEvalHarness
+  include SaneMasterModules::AgentContext
 end
 
 include TestFramework
@@ -156,7 +161,7 @@ exit(run_tests('SaneMaster Process Eval Tests') do
       result = subject.run_trace_eval_fixture(File.expand_path('../process_eval_fixtures.json', __dir__))
 
       assert(result[:passed], result[:traces].reject { |entry| entry[:passed] }.inspect)
-      assert_eq(result[:trace_count], 14)
+      assert_eq(result[:trace_count], 17)
       true
     end
 
@@ -293,10 +298,55 @@ exit(run_tests('SaneMaster Process Eval Tests') do
           )
 
           assert(result[:passed], result.inspect)
-          assert_eq(result.dig(:trace_eval, :trace_count), 14)
+          assert_eq(result.dig(:trace_eval, :trace_count), 17)
           assert_eq(result.dig(:sop_review, :sessions, :total), 1)
           assert_eq(result.dig(:live_telemetry, :event_count), 2)
           assert_eq(result.dig(:abtest_review, :receipt_count), 0)
+        ensure
+          Dir.chdir(old_pwd)
+        end
+      end
+      true
+    end
+
+    test('process eval validates real context bundle contract when the module is available') do
+      Dir.mktmpdir('process-eval-context-contract-') do |dir|
+        metrics_path = File.join(dir, 'metrics.jsonl')
+        File.write(metrics_path, JSON.generate(complete_session_receipt) + "\n" + JSON.generate(
+          type: 'workflow_receipt',
+          schema_version: 2,
+          workflow: 'sanemaster:verify',
+          success: true,
+          command: 'ruby scripts/SaneMaster.rb verify',
+          command_sha256: 'd' * 64,
+          started_at: '2026-05-14T10:00:00Z',
+          completed_at: '2026-05-14T10:00:02Z',
+          duration_ms: 2000,
+          exit_status: 0,
+          host: 'mini'
+        ) + "\n")
+        File.write(File.join(dir, 'AGENTS.md'), "# Agents\n")
+        File.write(File.join(dir, 'SESSION_HANDOFF.md'), "# Handoff\n")
+        FileUtils.mkdir_p(File.join(dir, '.claude'))
+        File.write(File.join(dir, '.claude', 'research.md'), "## Tooling | Updated: 2026-06-17 | Status: verified | TTL: 30d\n- Finding.\n")
+        FileUtils.mkdir_p(File.join(dir, '.serena', 'memories'))
+        File.write(File.join(dir, '.serena', 'memories', 'tooling.md'), "# Tooling Memory\n\nUpdated: 2026-06-17 | Status: verified | TTL: 30d\n")
+
+        old_pwd = Dir.pwd
+        Dir.chdir(dir)
+        begin
+          subject = ProcessEvalContextHarness.new(metrics_path)
+          result = subject.build_process_eval(
+            fixture: File.expand_path('../process_eval_fixtures.json', __dir__),
+            abtest_dir: File.join(dir, 'no-abtests')
+          )
+          contract = result[:context_bundle_contract]
+
+          assert(contract[:applicable], contract.inspect)
+          assert(contract[:blockers].empty?, contract.inspect)
+          assert_eq(contract[:source_count], 3)
+          assert_eq(contract[:research_cards], 1)
+          assert_eq(contract[:serena_memories], 1)
         ensure
           Dir.chdir(old_pwd)
         end

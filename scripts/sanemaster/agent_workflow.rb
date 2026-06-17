@@ -220,6 +220,22 @@ module SaneMasterModules
         skills << 'evolve'
       end
 
+      if text.match?(/\b(context bundle|context pack|review packet|subagent bundle|critic brief)\b/)
+        commands << 'context_bundle'
+        notes << 'Build a compact local context bundle before broad subagent reviews or critique.'
+      end
+
+      if text.match?(/\b(okf|open knowledge format|organize.*(?:memory|memories|research|proof)|structured.*(?:research|proof|memory|memories))\b/)
+        commands << 'context_bundle'
+        commands << 'agent_env_review'
+        notes << 'Organize existing Markdown, receipts, and Serena memory files; mirror durable facts to the memory graph separately and do not add a new database by default.'
+      end
+
+      if text.match?(/\b(validate|lint|audit|review).*\bskills?\b|\bskills?.*\b(validate|lint|audit|review)\b/)
+        commands << 'skill_lint'
+        notes << 'Skill changes need skill_lint coverage for routing metadata and referenced assets.'
+      end
+
       if text.match?(/\b(update|fix|change|add|write).*\b(sop|rule|process)\b|\bso this does(?:n'?t| not) happen again\b|\bmake (?:it|this) enforceable\b/)
         commands << 'agent_eval'
         commands << 'process_eval'
@@ -263,9 +279,10 @@ module SaneMasterModules
         subagent = true
       end
 
-      if text.match?(/\b(review this code|code review|critic)\b/)
+      if text.match?(/\b(review this code|code review|critic|find bugs|look for regressions|review before shipping|find the root cause|root[- ]cause|recurring bug|persistent issue|regression cluster|stress test this change)\b/)
         skills << 'critic'
         subagent = true
+        commands << 'context_bundle'
       end
 
       if text.match?(/\b(ui|visual|screenshot|customer workflow|prove.*works)\b/)
@@ -338,6 +355,7 @@ module SaneMasterModules
         skill_count: results.length,
         passed_count: results.length - failed.length,
         failed_count: failed.length,
+        warning_count: results.sum { |entry| Array(entry[:warnings]).length },
         duplicate_drift: duplicate_drift,
         passed: failed.empty?,
         skills: results
@@ -351,18 +369,25 @@ module SaneMasterModules
       description = skill_frontmatter_description(frontmatter)
       skill_name = skill_frontmatter_name(frontmatter)
       body = content.sub(/\A---\n.*?\n---\n/m, '')
+      warnings = []
 
+      parse_error = skill_frontmatter_parse_error(frontmatter)
+      warnings << "frontmatter YAML is invalid but fallback parsing succeeded: #{parse_error}" if parse_error
       issues << 'missing frontmatter description' if description.empty?
       issues << 'description is too short to route reliably' if !description.empty? && description.length < 60
       issues << 'missing "when to use" or trigger guidance' unless body.match?(/when to use|when this skill|trigger|use when/i) || description.match?(/use when|trigger/i)
       issues << 'contains unresolved TODO placeholder' if unresolved_todo_placeholder?(content)
       issues << 'contains legacy NVIDIA/nv default guidance' if legacy_nvidia_default_guidance?(content)
+      missing_skill_references(content, file).each do |reference|
+        issues << "referenced skill path missing: #{reference}"
+      end
 
       {
         file: file,
         name: skill_name.empty? ? File.basename(File.dirname(file)) : skill_name,
         content_sha: Digest::SHA256.hexdigest(content),
         passed: issues.empty?,
+        warnings: warnings,
         issues: issues
       }
     end
@@ -422,6 +447,23 @@ module SaneMasterModules
         actions << 'consolidate duplicate skill names or document intentional client-specific drift'
       end
 
+      if skill_lint_result[:warning_count].to_i.positive?
+        warnings << "skill_lint reported #{skill_lint_result[:warning_count]} non-blocking warning(s)"
+        skill_lint_warning_samples(skill_lint_result).each do |sample|
+          warnings << "skill_lint warning: #{sample[:name]}: #{sample[:warning]}"
+        end
+        actions << 'review skill_lint warnings before broad reviews; tolerated YAML drift should be cleaned up when the skill is next touched'
+      end
+
+      if respond_to?(:research_knowledge_cards, true)
+        cards = research_knowledge_cards(max_cards: 50)
+        stale_cards = cards.count { |entry| entry[:state] == 'stale' }
+        unstructured_cards = cards.count { |entry| entry[:status] == 'unstructured' }
+        warnings << "#{stale_cards} OKF research card(s) are stale" if stale_cards.positive?
+        warnings << "#{unstructured_cards} research heading(s) lack Updated/Status/TTL metadata" if unstructured_cards.positive?
+        actions << 'run context_bundle --task "organize current work" before broad reviews or memory cleanup'
+      end
+
       actions << 'run agent_eval before changing trigger maps, mandatory workflows, or AGENTS.md skill routing'
       actions << 'run process_eval before changing support, release, UI verification, delegation, or session-end policy'
       actions << 'use process_metrics --export-html for human review artifacts; keep Markdown as durable source of truth'
@@ -437,6 +479,7 @@ module SaneMasterModules
         skill_lint: {
           skill_count: skill_lint_result[:skill_count],
           failed_count: skill_lint_result[:failed_count],
+          warning_count: skill_lint_result[:warning_count],
           duplicate_drift_count: skill_lint_result[:duplicate_drift].length
         },
         sop_review: sop_review_result,
@@ -454,6 +497,40 @@ module SaneMasterModules
 
     def legacy_nvidia_default_guidance?(content)
       content.match?(/FREE MODELS VIA DIRECT BASH|No subagents|NVIDIA reviews|free NVIDIA models|Fire \d+ .*nv Calls|Fire \d+ parallel nv calls/i)
+    end
+
+    def skill_frontmatter_parse_error(frontmatter)
+      YAML.safe_load(frontmatter, permitted_classes: [], aliases: false)
+      nil
+    rescue Psych::SyntaxError => e
+      e.message.lines.first.to_s.strip
+    end
+
+    def missing_skill_references(content, file)
+      skill_dir = File.dirname(file)
+      referenced_skill_paths(skill_reference_scan_content(content)).reject do |relative_path|
+        File.exist?(File.join(skill_dir, relative_path)) ||
+          File.exist?(File.join(Dir.pwd, relative_path))
+      end
+    end
+
+    def skill_reference_scan_content(content)
+      inside_fence = false
+      content.each_line.reject do |line|
+        if line.strip.start_with?('```')
+          inside_fence = !inside_fence
+          true
+        else
+          inside_fence
+        end
+      end.join
+    end
+
+    def referenced_skill_paths(content)
+      content.scan(%r{(?:^|[`'"\s(])((?:scripts|prompts|references|assets)/[A-Za-z0-9._/\-]+)}).flatten
+             .map { |path| path.sub(/[),.:;]+$/, '') }
+             .reject { |path| path.include?('..') }
+             .uniq
     end
 
     def skill_frontmatter_description(frontmatter)
@@ -481,6 +558,14 @@ module SaneMasterModules
                  variants: entries.map { |entry| entry[:content_sha] }.uniq.length
                }
              end
+    end
+
+    def skill_lint_warning_samples(result, limit = 5)
+      result[:skills].flat_map do |entry|
+        Array(entry[:warnings]).map do |warning|
+          { name: entry[:name], file: entry[:file], warning: warning }
+        end
+      end.first(limit)
     end
 
     def known_cross_client_skill_pair?(files)
@@ -591,6 +676,7 @@ module SaneMasterModules
       puts 'Skill Lint'
       puts '=' * 10
       puts "Passed: #{result[:passed_count]}/#{result[:skill_count]}"
+      puts "Warnings: #{result[:warning_count]}" if result[:warning_count].to_i.positive?
       result[:skills].reject { |entry| entry[:passed] }.each do |entry|
         puts "  ❌ #{entry[:file]}: #{entry[:issues].join('; ')}"
       end

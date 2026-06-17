@@ -343,12 +343,12 @@ def init_git_fixture(path)
   system('git', '-C', path, 'commit', '-m', 'initial fixture', out: File::NULL, err: File::NULL)
 end
 
-def write_qa_status(path, source_fingerprint: nil)
+def write_qa_status(path, source_fingerprint: nil, extra: {})
   FileUtils.mkdir_p(File.join(path, 'outputs'))
   payload = {
     'generatedAt' => Time.now.utc.iso8601,
     'status' => 'passed'
-  }
+  }.merge(extra)
   payload['sourceFingerprint'] = source_fingerprint if source_fingerprint
   File.write(File.join(path, 'outputs', 'qa_status.json'), JSON.pretty_generate(payload))
 end
@@ -1562,6 +1562,26 @@ exit(run_tests('Validation report tests') do
         status = subject.send(:latest_project_qa_status, dir)
 
         assert(status['staleReasons'].include?('source fingerprint changed since QA receipt'))
+      end
+      true
+    end
+
+    test('marks policy-only project QA receipts stale for release readiness') do
+      Dir.mktmpdir('qa-policy-only-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'SaneScan'))
+        File.write(File.join(dir, 'SaneScan', 'App.swift'), "import SwiftUI\n")
+        init_git_fixture(dir)
+
+        subject = ValidationReport.new
+        write_qa_status(
+          dir,
+          source_fingerprint: subject.send(:project_qa_source_fingerprint, dir),
+          extra: { 'policyOnlyMode' => true }
+        )
+
+        status = subject.send(:latest_project_qa_status, dir)
+
+        assert(status['staleReasons'].include?('latest QA receipt is policy-only'))
       end
       true
     end

@@ -161,6 +161,40 @@
         "commands": ["agent_eval", "process_eval"],
         "notes_include": ["SOP updates should first become hooks", "prose is the fallback"]
       }
+    },
+    {
+      "id": "context_bundle_before_subagent_review",
+      "prompt": "Make a context bundle for a subagent review of this SaneMaster workflow.",
+      "expect": {
+        "commands": ["context_bundle"],
+        "notes_include": ["compact local context bundle"]
+      }
+    },
+    {
+      "id": "okf_organization_reuses_existing_memory_sources",
+      "prompt": "Organize the past memories, research, and proof notes OKF-style without adding a new database.",
+      "expect": {
+        "commands": ["context_bundle", "agent_env_review"],
+        "notes_include": ["do not add a new database"]
+      }
+    },
+    {
+      "id": "skill_validation_routes_to_skill_lint",
+      "prompt": "Validate the skills and check their referenced scripts and assets.",
+      "expect": {
+        "commands": ["skill_lint"],
+        "notes_include": ["referenced assets"]
+      }
+    },
+    {
+      "id": "broad_bug_review_routes_to_critic_context",
+      "prompt": "Find bugs and look for regressions before shipping this SaneMaster change.",
+      "expect": {
+        "commands": ["context_bundle"],
+        "skills": ["critic"],
+        "subagent": true,
+        "notes_include": ["Subagent prompts must include hook compliance"]
+      }
     }
   ]
 }

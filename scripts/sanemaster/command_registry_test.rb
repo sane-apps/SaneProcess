@@ -20,7 +20,10 @@ exit(run_tests('SaneMaster Command Registry Tests') do
       assert(result[:commands].key?('verify'), 'expected verify command')
       assert_eq(result.dig(:commands, 'verify', :route_guard), 'proof_scope_sensitive')
       assert_eq(result.dig(:commands, 'release_preflight', :route_guard), 'release_only')
+      assert(result[:commands].key?('release_readiness'), 'expected release_readiness command')
+      assert(result[:commands].key?('context_bundle'), 'expected context_bundle command')
       assert_eq(result.dig(:commands, 'registry_review', :aliases), ['registry-review'])
+      assert_eq(result.dig(:commands, 'context_bundle', :aliases), ['context-bundle'])
       assert(result[:gates].key?(:startup_gate), 'expected startup_gate registry')
       assert(result[:gates].key?(:visual_proof), 'expected visual_proof registry')
       assert(result.dig(:summary, :large_owner_count) >= 3, 'expected large owner registry entries')
@@ -36,7 +39,9 @@ exit(run_tests('SaneMaster Command Registry Tests') do
       master = SaneMaster.new
 
       assert_eq(master.send(:canonical_command_name, 'registry-review'), 'registry_review')
+      assert_eq(master.send(:canonical_command_name, 'context-bundle'), 'context_bundle')
       assert_eq(master.send(:canonical_command_name, 'crash_report'), 'crashes')
+      assert_eq(master.send(:canonical_command_name, 'release-readiness'), 'release_readiness')
       assert_eq(master.send(:canonical_command_name, 'tool-receipt'), 'tool_discovery')
       assert_eq(master.send(:canonical_command_name, 'verify'), 'verify')
       true

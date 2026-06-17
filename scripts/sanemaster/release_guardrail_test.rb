@@ -2836,6 +2836,39 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('release preflight runs cheap policy QA before expensive verify and full QA') do
+      release_source = File.read(File.join(__dir__, 'release.rb'))
+      preflight_body = release_source[/def release_preflight\(_args\).*?^\s+def release_gate_fixture_reports/m]
+
+      policy_index = preflight_body.index('Project QA policy guardrails')
+      verify_index = preflight_body.index("Open3.capture2e(verify_env, './scripts/SaneMaster.rb', 'verify', '--quiet')")
+      full_qa_index = preflight_body.rindex("Project QA guardrails... '")
+      summary_index = preflight_body.index('# Summary')
+
+      assert(policy_index && verify_index && policy_index < verify_index,
+             'expected policy-only QA before expensive verify')
+      assert(verify_index && summary_index && verify_index < summary_index,
+             'expected expensive verify near the end before summary')
+      assert(full_qa_index && verify_index && verify_index < full_qa_index,
+             'expected full project QA after verify')
+      assert_includes preflight_body, 'policy_only: true'
+      assert_includes preflight_body, 'skipped (fix cheap release blocker(s) first)'
+      true
+    end
+
+    test('policy-only project QA env omits runtime smoke flags') do
+      policy_env = subject.send(:release_project_qa_env, app_name: 'SaneBar', policy_only: true)
+      full_env = subject.send(:release_project_qa_env, app_name: 'SaneBar', policy_only: false)
+
+      assert_eq(policy_env['SANEPROCESS_RELEASE_POLICY_ONLY'], '1')
+      assert_eq(policy_env['SANEBAR_RELEASE_POLICY_ONLY'], '1')
+      assert(!policy_env.key?('SANEPROCESS_RUN_RUNTIME_SMOKE'), 'policy-only QA must not request runtime smoke')
+      assert(!policy_env.key?('SANEBAR_RUN_RUNTIME_SMOKE'), 'policy-only QA must not request app runtime smoke')
+      assert_eq(full_env['SANEPROCESS_RUN_RUNTIME_SMOKE'], '1')
+      assert_eq(full_env['SANEBAR_RUN_RUNTIME_SMOKE'], '1')
+      true
+    end
+
     test('release preflight treats auto-reconcile source stashes as release blockers') do
       files = [
         'SaneClick/SaneClickApp.swift',

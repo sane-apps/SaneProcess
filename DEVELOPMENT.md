@@ -14,6 +14,7 @@ ruby scripts/hooks/test/tier_tests.rb             # hook enforcement suite
 ruby scripts/SaneMaster.rb tool_discovery --query "..." # tool/MCP proof receipt
 ruby scripts/SaneMaster.rb process_metrics --export-otel outputs/process-traces.json
 ruby scripts/SaneMaster.rb route_cost_review --json # rank expensive proof-route risks
+ruby scripts/SaneMaster.rb context_bundle --task "review this workflow"
 cd /tmp/repo && /path/to/SaneProcess/scripts/init.sh --client generic
 ```
 
@@ -257,6 +258,7 @@ receipts. Run `ruby scripts/SaneMaster.rb` or `help <category>` for full help.
 | Test quality scan | `ruby scripts/SaneMaster.rb test_scan -v` |
 | Process eval | `ruby scripts/SaneMaster.rb process_eval --json` |
 | Prompt routing eval | `ruby scripts/SaneMaster.rb agent_eval --json` |
+| Agent/review context bundle | `ruby scripts/SaneMaster.rb context_bundle --task "..."` |
 | Skill routing lint | `ruby scripts/SaneMaster.rb skill_lint --json` |
 | App release preflight | `ruby scripts/SaneMaster.rb release_preflight` |
 | Active App Store lane | `ruby scripts/SaneMaster.rb appstore_preflight` |

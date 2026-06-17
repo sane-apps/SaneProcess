@@ -31,7 +31,7 @@ exit(run_tests('SaneMaster Agent Workflow Tests') do
       result = subject.run_agent_eval_fixture(File.expand_path('../agent_eval_fixtures.json', __dir__))
 
       assert(result[:passed], result[:cases].reject { |entry| entry[:passed] }.inspect)
-      assert_eq(result[:case_count], 18)
+      assert_eq(result[:case_count], 22)
       true
     end
 
@@ -54,6 +54,35 @@ exit(run_tests('SaneMaster Agent Workflow Tests') do
 
       assert_includes(actual[:commands], 'tool_discovery')
       assert_includes(actual[:skills], 'evolve')
+      true
+    end
+
+    test('classification routes context and memory organization to bundle without new database') do
+      subject = AgentWorkflowHarness.new('/tmp/saneprocess-agent-workflow-test.jsonl')
+      actual = subject.classify_agent_prompt('Organize past memories and proof notes OKF-style without adding a new database.')
+
+      assert_includes(actual[:commands], 'context_bundle')
+      assert_includes(actual[:commands], 'agent_env_review')
+      assert(actual[:notes].any? { |note| note.include?('do not add a new database') }, actual.inspect)
+      true
+    end
+
+    test('classification routes skill validation to skill lint') do
+      subject = AgentWorkflowHarness.new('/tmp/saneprocess-agent-workflow-test.jsonl')
+      actual = subject.classify_agent_prompt('Validate all skills and check referenced scripts.')
+
+      assert_includes(actual[:commands], 'skill_lint')
+      assert(actual[:notes].any? { |note| note.include?('referenced assets') }, actual.inspect)
+      true
+    end
+
+    test('classification routes broad bug review prompts through critic and context bundle') do
+      subject = AgentWorkflowHarness.new('/tmp/saneprocess-agent-workflow-test.jsonl')
+      actual = subject.classify_agent_prompt('Find bugs and look for regressions before shipping this SaneMaster change.')
+
+      assert_includes(actual[:commands], 'context_bundle')
+      assert_includes(actual[:skills], 'critic')
+      assert_eq(actual[:subagent], true)
       true
     end
 
@@ -170,6 +199,89 @@ exit(run_tests('SaneMaster Agent Workflow Tests') do
       true
     end
 
+    test('skill linter warns on invalid frontmatter yaml when fallback parsing works') do
+      Dir.mktmpdir('skill-lint-invalid-yaml-') do |dir|
+        skill_dir = File.join(dir, 'invalid-yaml')
+        FileUtils.mkdir_p(skill_dir)
+        File.write(File.join(skill_dir, 'SKILL.md'), <<~MD)
+          ---
+          name: invalid-yaml
+          description: Use when a user asks to test invalid YAML frontmatter that fallback parsing can still read. Trigger on: invalid frontmatter
+          ---
+
+          # Invalid YAML
+
+          ## When to use
+
+          Trigger when testing invalid frontmatter.
+        MD
+
+        subject = AgentWorkflowHarness.new(File.join(dir, 'metrics.jsonl'))
+        result = subject.lint_skill_paths([skill_dir])
+
+        assert(result[:passed], result.inspect)
+        assert(result[:skills].first[:warnings].any? { |warning| warning.include?('frontmatter YAML is invalid') }, result.inspect)
+      end
+      true
+    end
+
+    test('skill linter flags broken relative script references') do
+      Dir.mktmpdir('skill-lint-reference-') do |dir|
+        skill_dir = File.join(dir, 'reference')
+        FileUtils.mkdir_p(skill_dir)
+        File.write(File.join(skill_dir, 'SKILL.md'), <<~MD)
+          ---
+          name: reference
+          description: Use when a user asks to test referenced skill scripts and verify missing paths are caught.
+          ---
+
+          # Reference Skill
+
+          ## When to use
+
+          Trigger when testing referenced assets.
+
+          Run `scripts/missing.rb` for the detailed helper.
+        MD
+
+        subject = AgentWorkflowHarness.new(File.join(dir, 'metrics.jsonl'))
+        result = subject.lint_skill_paths([skill_dir])
+
+        assert(!result[:passed], 'expected missing script reference to fail skill_lint')
+        assert_includes(result[:skills].first[:issues], 'referenced skill path missing: scripts/missing.rb')
+      end
+      true
+    end
+
+    test('skill linter ignores fenced example paths when checking references') do
+      Dir.mktmpdir('skill-lint-fenced-reference-') do |dir|
+        skill_dir = File.join(dir, 'reference')
+        FileUtils.mkdir_p(skill_dir)
+        File.write(File.join(skill_dir, 'SKILL.md'), <<~MD)
+          ---
+          name: fenced-reference
+          description: Use when a user asks to test referenced skill scripts while ignoring illustrative fenced examples.
+          ---
+
+          # Fenced Reference Skill
+
+          ## When to use
+
+          Trigger when testing referenced assets.
+
+          ```bash
+          ruby scripts/example-only.rb --demo
+          ```
+        MD
+
+        subject = AgentWorkflowHarness.new(File.join(dir, 'metrics.jsonl'))
+        result = subject.lint_skill_paths([skill_dir])
+
+        assert(result[:passed], result.inspect)
+      end
+      true
+    end
+
     test('skill linter flags legacy NVIDIA default guidance') do
       Dir.mktmpdir('skill-lint-nvidia-') do |dir|
         skill_dir = File.join(dir, 'legacy')
@@ -257,7 +369,7 @@ exit(run_tests('SaneMaster Agent Workflow Tests') do
           File.write(File.join(dir, 'skills', 'example', 'SKILL.md'), <<~MD)
             ---
             name: example
-            description: Use when a user asks to review agent setup drift and return a concise environment summary.
+            description: Use when a user asks to review agent setup drift and return a concise environment summary. Trigger on: setup drift
             ---
 
             # Example
@@ -273,6 +385,9 @@ exit(run_tests('SaneMaster Agent Workflow Tests') do
           assert(result[:recommended_actions].any? { |action| action.include?('agent_eval') })
           assert(result[:recommended_actions].any? { |action| action.include?('process_eval') })
           assert_eq(result[:skill_lint][:failed_count], 0)
+          assert_eq(result[:skill_lint][:warning_count], 1)
+          assert(result[:warnings].any? { |warning| warning.include?('skill_lint reported 1') }, result[:warnings].inspect)
+          assert(result[:warnings].any? { |warning| warning.include?('frontmatter YAML is invalid') }, result[:warnings].inspect)
         ensure
           Dir.chdir(old_pwd)
         end

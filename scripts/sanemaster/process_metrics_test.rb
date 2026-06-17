@@ -292,6 +292,42 @@ exit(run_tests('SaneMaster Process Metrics Tests') do
       true
     end
 
+    test('proof plan context does not bleed across same-project different cwd metrics') do
+      Dir.mktmpdir('workflow-route-cwd-a-') do |first_dir|
+        Dir.mktmpdir('workflow-route-cwd-b-') do |second_dir|
+          path = File.join(first_dir, 'metrics.jsonl')
+          File.write(path, JSON.generate(
+            timestamp: Time.now.utc.iso8601,
+            type: 'proof_plan',
+            project: 'SaneProcess',
+            cwd: first_dir,
+            proof_scope_planned: 'focused_mini',
+            route_reason: 'from another checkout'
+          ) + "\n")
+          previous_metrics_path = ENV['SANEMASTER_PROCESS_METRICS_PATH']
+          ENV['SANEMASTER_PROCESS_METRICS_PATH'] = path
+
+          old_pwd = Dir.pwd
+          Dir.chdir(second_dir)
+          begin
+            subject = ProcessMetricsHarness.new(path)
+            metadata = subject.send(:workflow_receipt_route_metadata, 'sanemaster:verify', success: true)
+
+            assert_eq(metadata[:proof_scope_planned], nil)
+            assert(!metadata.fetch(:route_reason, '').include?('another checkout'), metadata.inspect)
+          ensure
+            Dir.chdir(old_pwd)
+            if previous_metrics_path
+              ENV['SANEMASTER_PROCESS_METRICS_PATH'] = previous_metrics_path
+            else
+              ENV.delete('SANEMASTER_PROCESS_METRICS_PATH')
+            end
+          end
+        end
+      end
+      true
+    end
+
     test('failed workflow receipt route metadata classifies expected red state') do
       subject = ProcessMetricsHarness.new('/tmp/saneprocess-route-failure-state-test.jsonl')
 
@@ -605,6 +641,35 @@ exit(run_tests('SaneMaster Process Metrics Tests') do
         assert_eq(targets.first[:app], 'SaneBar')
         assert(targets.first[:stale])
         assert(targets.first[:stale_reasons].include?('snapshot predates current HEAD commit'))
+      end
+      true
+    end
+
+    test('treats policy-only QA snapshots as stale release proof') do
+      Dir.mktmpdir('qa-policy-only-targets-') do |dir|
+        app_dir = File.join(dir, 'SaneBar')
+        FileUtils.mkdir_p(File.join(app_dir, 'scripts'))
+        FileUtils.mkdir_p(File.join(app_dir, 'outputs'))
+        File.write(File.join(app_dir, 'scripts', 'qa.rb'), 'puts "qa"')
+        File.write(File.join(app_dir, 'outputs', 'qa_status.json'), JSON.pretty_generate(
+          'generatedAt' => Time.now.utc.iso8601,
+          'status' => 'passed',
+          'policyOnlyMode' => true
+        ))
+
+        system('git', 'init', '-q', chdir: app_dir)
+        system('git', 'config', 'user.email', 'test@example.com', chdir: app_dir)
+        system('git', 'config', 'user.name', 'Test', chdir: app_dir)
+        File.write(File.join(app_dir, 'README.md'), 'test')
+        system('git', 'add', '.', chdir: app_dir)
+        system('git', 'commit', '-q', '-m', 'init', chdir: app_dir)
+
+        subject = ProcessMetricsHarness.new(File.join(dir, 'metrics.jsonl'))
+        targets = subject.send(:qa_snapshot_targets, dir)
+
+        assert_eq(targets.length, 1)
+        assert(targets.first[:stale])
+        assert(targets.first[:stale_reasons].include?('latest QA receipt is policy-only'))
       end
       true
     end

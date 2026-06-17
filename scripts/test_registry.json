@@ -272,10 +272,22 @@
       "cmd": ["ruby", "scripts/sanemaster/agent_workflow_test.rb"]
     },
     {
+      "path": "scripts/sanemaster/context_bundle_test.rb",
+      "label": "SaneProcess context bundle tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/context_bundle_test.rb"]
+    },
+    {
       "path": "scripts/sanemaster/release_guardrail_test.rb",
       "label": "SaneProcess release guardrail tests",
       "status": "required",
       "cmd": ["ruby", "scripts/sanemaster/release_guardrail_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/release_readiness_test.rb",
+      "label": "SaneProcess release readiness tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/release_readiness_test.rb"]
     },
     {
       "path": "scripts/sanemaster/bootstrap_secret_redaction_test.rb",

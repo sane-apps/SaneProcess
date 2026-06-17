@@ -83,6 +83,7 @@ require_relative 'sanemaster/near_miss_review'
 require_relative 'sanemaster/verify_failure_review'
 require_relative 'sanemaster/process_eval'
 require_relative 'sanemaster/agent_workflow'
+require_relative 'sanemaster/agent_context'
 require_relative 'sanemaster/command_registry'
 require_relative 'sanemaster/machine_cleanup'
 require_relative 'sanemaster/verify'
@@ -101,6 +102,7 @@ require_relative 'sanemaster/circuit_breaker_state'
 require_relative 'sanemaster/structural_compliance'
 require_relative 'sanemaster/saneui_guard'
 require_relative 'sanemaster/release'
+require_relative 'sanemaster/release_readiness'
 require_relative 'sanemaster/ci_helpers'
 require_relative 'sanemaster/sales'
 require_relative 'sanemaster/downloads'
@@ -123,6 +125,7 @@ class SaneMaster
   include SaneMasterModules::VerifyFailureReview
   include SaneMasterModules::ProcessEval
   include SaneMasterModules::AgentWorkflow
+  include SaneMasterModules::AgentContext
   include SaneMasterModules::CommandRegistry
   include SaneMasterModules::MachineCleanup
   include SaneMasterModules::Verify
@@ -139,6 +142,7 @@ class SaneMaster
   include SaneMasterModules::Session
   include SaneMasterModules::StructuralCompliance
   include SaneMasterModules::Release
+  include SaneMasterModules::ReleaseReadiness
   include SaneMasterModules::CIHelpers
   include SaneMasterModules::Sales
   include SaneMasterModules::Downloads
@@ -182,6 +186,7 @@ class SaneMaster
         'check_binary' => { args: '', desc: 'Audit binary for security issues' },
         'test_scan' => { args: '[-v]', desc: 'Scan tests for tautologies and hardcoded values' },
         'validation_report' => { args: '[args...]', desc: 'Run SaneProcess validation report with workflow receipt' },
+        'release_readiness' => { args: '[--json] [--app APP] [--scope candidate|portfolio]', desc: 'Report candidate patch readiness separately from portfolio health' },
         'launch_readiness' => { args: '[--json] [--max-age-days N]', desc: 'Validate launch calendar gates plus fresh release_preflight proof before any public launch' },
         'process_metrics' => { args: '[--json] [--export-json PATH] [--export-html PATH] [--export-otel PATH]', desc: 'Summarize verify churn, session quality, hook blocks, and export audit traces' },
         'route_cost_review' => { args: '[--json] [--metrics PATH] [--limit N|--all] [--min-count N] [--include-bookkeeping]', desc: 'Rank expensive workflow receipts and proof-scope misroute risks' },
@@ -191,6 +196,7 @@ class SaneMaster
         'trace_eval' => { args: '[--fixture PATH] [--json]', desc: 'Evaluate multi-step workflow receipt trace fixtures' },
         'sop_review' => { args: '[--json]', desc: 'Review SOP score history, caps, and inflation signals' },
         'proof_plan' => { args: '--task "TEXT" [--json]', desc: 'Choose focused Mini proof vs full canonical verify for a task' },
+        'context_bundle' => { args: '--task "TEXT" [--output PATH.md] [--max-research N] [--max-memory N] [--json] [--dry-run]', desc: 'Package compact local agent/review context with research and Serena memory indexes' },
         'agent_eval' => { args: '[--fixture PATH] [--json]', desc: 'Evaluate prompt-to-workflow routing fixtures' },
         'skill_lint' => { args: '[--path PATH] [--json]', desc: 'Lint skill descriptions for reliable routing' },
         'registry_review' => { args: '[--json]', desc: 'Review command and gate registry metadata for drift' },
@@ -379,6 +385,8 @@ class SaneMaster
                                   visual-smoke
                                   customer_ui_sweep
                                   customer-ui-sweep
+                                  release_readiness
+                                  release-readiness
                                   launch_readiness
                                   launch-readiness
                                   crash_report
@@ -530,31 +538,33 @@ class SaneMaster
     return if running_on_mini_host?
     return unless MINI_FIRST_COMMANDS.include?(command)
 
+    @route_logs_to_stderr = machine_json_output_requested?(args)
+
     if ENV['SANEMASTER_UNSIGNED_FALLBACK_ACTIVE'] == '1' && %w[launch run test_mode tm].include?(command)
-      puts '⚠️  Unsigned fallback active; running locally to honor Debug fallback.'
+      route_log('⚠️  Unsigned fallback active; running locally to honor Debug fallback.')
       return
     end
 
     if args.include?('--local') || ENV['SANEMASTER_FORCE_LOCAL'] == '1'
-      puts '⚠️  Mini-first bypass active (--local or SANEMASTER_FORCE_LOCAL=1); running locally.'
+      route_log('⚠️  Mini-first bypass active (--local or SANEMASTER_FORCE_LOCAL=1); running locally.')
       return
     end
 
     unless mini_reachable?
-      puts '⚠️  Mac mini is unreachable. Falling back to local execution.'
+      route_log('⚠️  Mac mini is unreachable. Falling back to local execution.')
       return
     end
 
     remote_repo = map_local_path_to_mini(Dir.pwd)
     unless remote_repo
-      puts "⚠️  Could not map local path to mini: #{Dir.pwd}"
-      puts '   Falling back to local execution.'
+      route_log("⚠️  Could not map local path to mini: #{Dir.pwd}")
+      route_log('   Falling back to local execution.')
       return
     end
 
     unless mini_path_exists?(remote_repo)
-      puts "⚠️  Repo not found on mini: #{remote_repo}"
-      puts '   Falling back to local execution.'
+      route_log("⚠️  Repo not found on mini: #{remote_repo}")
+      route_log('   Falling back to local execution.')
       return
     end
 
@@ -638,7 +648,7 @@ class SaneMaster
       remote_env_prefix = forwarded_env.empty? ? '' : "#{forwarded_env.join(' ')} "
       remote_script = File.join(execution_saneprocess_repo, 'scripts', 'SaneMaster.rb')
       remote_cmd = "#{remote_env_prefix}ruby #{Shellwords.escape(remote_script)} #{([command] + args).map { |arg| Shellwords.escape(arg) }.join(' ')}"
-      puts "📍 Mini-first routing: #{command} -> mini (#{execution_repo})"
+      route_log("📍 Mini-first routing: #{command} -> mini (#{execution_repo})")
       $stdout.flush
       remote_ok = ssh_system('mini', "cd #{Shellwords.escape(execution_repo)} && #{remote_cmd}")
       remote_status = $?.respond_to?(:exitstatus) ? $?.exitstatus : (remote_ok ? 0 : 1)
@@ -654,6 +664,28 @@ class SaneMaster
       end
       exit remote_status
     end
+  ensure
+    @route_logs_to_stderr = false
+  end
+
+  def machine_json_output_requested?(args)
+    args.any? { |arg| arg == '--json' || arg.start_with?('--json=') }
+  end
+
+  def route_log(message)
+    if @route_logs_to_stderr
+      warn message
+    else
+      puts message
+    end
+  end
+
+  def route_system(*command)
+    options = command.last.is_a?(Hash) ? command.pop : {}
+    if @route_logs_to_stderr
+      options = options.merge(out: $stderr, err: $stderr)
+    end
+    system(*command, **options)
   end
 
   def with_mini_route_lock(remote_repo, command)
@@ -664,7 +696,7 @@ class SaneMaster
     File.open(lock_path, File::RDWR | File::CREAT, 0o644) do |lock_file|
       waited = !lock_file.flock(File::LOCK_EX | File::LOCK_NB)
       if waited
-        puts "⏳ Waiting for mini workspace lock: #{command} @ #{remote_repo}"
+        route_log("⏳ Waiting for mini workspace lock: #{command} @ #{remote_repo}")
         lock_file.flock(File::LOCK_EX)
       end
       yield
@@ -728,7 +760,7 @@ class SaneMaster
   end
 
   def sync_workspace_to_mini!(remote_repo)
-    puts "🔄 Syncing local workspace snapshot to mini (#{remote_repo})"
+    route_log("🔄 Syncing local workspace snapshot to mini (#{remote_repo})")
     sync_local_dir_to_mini!(Dir.pwd, remote_repo, label: nil)
   end
 
@@ -811,7 +843,7 @@ PY
     ok = ssh_system('mini', remote_cmd)
     abort '❌ Failed to prepare a clean routed release workspace on the mini.' unless ok
 
-    puts "🔄 Syncing local workspace snapshot to mini (#{scratch_repo})"
+    route_log("🔄 Syncing local workspace snapshot to mini (#{scratch_repo})")
     sync_local_dir_to_mini!(local_repo, scratch_repo, label: nil)
     apply_git_deleted_paths_to_mini!(local_repo, scratch_repo)
     scratch_repo
@@ -1117,7 +1149,7 @@ PY
       return prepare_release_workspace_on_mini!(local_repo, remote_repo)
     end
 
-    puts "⚠️  sane-email-automation local #{branch} is #{remote_sync['status']}; using a clean mini/origin checkout for routed release support."
+    route_log("⚠️  sane-email-automation local #{branch} is #{remote_sync['status']}; using a clean mini/origin checkout for routed release support.")
     scratch_root = mini_release_workspace_root(local_repo)
     scratch_repo = routed_release_path_for_local(local_repo)
     prune_stale_mini_release_workspaces!(local_repo, current_workspace_root: scratch_root)
@@ -1230,14 +1262,14 @@ PY
     abort '❌ Failed to prepare cktool auth parent on the mini.' unless ok
 
     if File.directory?(local_cktool_path)
-      puts "⚠️ Local cktool auth path is a directory; syncing legacy contents to mini (#{remote_cktool_path})"
+      route_log("⚠️ Local cktool auth path is a directory; syncing legacy contents to mini (#{remote_cktool_path})")
       ok = ssh_system(
         'mini',
         "if [ -f #{Shellwords.escape(remote_cktool_path)} ]; then /usr/bin/trash #{Shellwords.escape(remote_cktool_path)}; fi && mkdir -p #{Shellwords.escape(remote_cktool_path)}"
       )
       abort '❌ Failed to prepare legacy cktool auth directory on the mini.' unless ok
 
-      ok = system(
+      ok = route_system(
         'rsync',
         '-az',
         '--delete',
@@ -1254,8 +1286,8 @@ PY
     )
     abort '❌ Failed to clear stale cktool auth directory on the mini.' unless ok
 
-    puts "🔄 Syncing cktool auth to mini (#{remote_cktool_path})"
-    ok = system(
+    route_log("🔄 Syncing cktool auth to mini (#{remote_cktool_path})")
+    ok = route_system(
       'rsync',
       '-az',
       local_cktool_path,
@@ -1265,12 +1297,12 @@ PY
   end
 
   def sync_local_dir_to_mini!(local_dir, remote_dir, label: nil)
-    puts "🔄 Syncing #{label} to mini (#{remote_dir})" if label
+    route_log("🔄 Syncing #{label} to mini (#{remote_dir})") if label
     remote_parent = File.dirname(remote_dir)
     ok = ssh_system('mini', "mkdir -p #{Shellwords.escape(remote_parent)}")
     abort "❌ Failed to prepare mini destination for #{label || 'the current workspace snapshot'}." unless ok
 
-    ok = system(
+    ok = route_system(
       'rsync',
       '-az',
       '--delete',
@@ -1306,7 +1338,7 @@ PY
     return unless Dir.exist?(assets_dir)
 
     remote_assets_dir = File.join(remote_dir, 'Tests', 'Assets')
-    ok = system(
+    ok = route_system(
       'rsync',
       '-az',
       '--delete',
@@ -1488,7 +1520,7 @@ PY
 
     local_outputs_dir = File.join(File.expand_path(local_repo), 'outputs')
     FileUtils.mkdir_p(local_outputs_dir)
-    ok = system(
+    ok = route_system(
       'rsync',
       '-az',
       *mini_output_receipt_rsync_filters,
@@ -1545,11 +1577,11 @@ PY
       ok = ssh_system('mini', "mkdir -p #{Shellwords.escape(remote_parent)}")
       abort "❌ Failed to prepare mini destination for routed release artifacts (#{relative_path})." unless ok
 
-      puts "🔄 Syncing routed release artifacts to mini (#{remote_path})"
+      route_log("🔄 Syncing routed release artifacts to mini (#{remote_path})")
       if File.directory?(local_path)
-        ok = system('rsync', '-az', '--delete', "#{local_path}/", "mini:#{remote_path}/")
+        ok = route_system('rsync', '-az', '--delete', "#{local_path}/", "mini:#{remote_path}/")
       else
-        ok = system('rsync', '-az', local_path, "mini:#{remote_path}")
+        ok = route_system('rsync', '-az', local_path, "mini:#{remote_path}")
       end
       abort "❌ Failed to sync routed release artifacts for #{relative_path} to the mini." unless ok
     end
@@ -1564,9 +1596,9 @@ PY
       FileUtils.mkdir_p(File.dirname(local_path))
       ok = if mini_directory?(remote_path)
              FileUtils.mkdir_p(local_path)
-             system('rsync', '-az', '--delete', "mini:#{remote_path}/", "#{local_path}/")
+             route_system('rsync', '-az', '--delete', "mini:#{remote_path}/", "#{local_path}/")
            else
-             system('rsync', '-az', "mini:#{remote_path}", "#{local_path}")
+             route_system('rsync', '-az', "mini:#{remote_path}", "#{local_path}")
            end
       next if ok
 
@@ -1648,6 +1680,8 @@ PY
       sop_review(args)
     when 'proof_plan', 'proof-plan'
       proof_plan(args)
+    when 'context_bundle', 'context-bundle'
+      context_bundle(args)
     when 'agent_eval', 'agent-eval'
       success = agent_eval(args)
       exit(success ? 0 : 1)
@@ -1728,6 +1762,8 @@ PY
       customer_ui_contract(args)
     when 'customer_ui_sweep', 'customer-ui-sweep'
       customer_ui_sweep(args)
+    when 'release_readiness', 'release-readiness'
+      release_readiness(args)
     when 'launch_readiness', 'launch-readiness'
       launch_readiness(args)
     when 'release'
@@ -2399,6 +2435,23 @@ PY
         'registry_review --json'
       ]
     },
+    'context_bundle' => {
+      usage: 'context_bundle --task "TEXT" [--output PATH.md] [--json] [--dry-run] [--max-research N] [--max-memory N]',
+      description: 'Create a compact local Markdown context bundle for subagents, critic reviews, and resumes. The bundle indexes existing research and Serena memory files using Updated/Status/TTL metadata instead of creating another memory store. Redact before sharing outside SaneApps.',
+      flags: {
+        '--task "TEXT"' => 'Task or review question the bundle is for',
+        '--output PATH.md' => 'Write the bundle to a specific Markdown path inside the repo',
+        '--max-research N' => 'Maximum research cards to include in the index',
+        '--max-memory N' => 'Maximum Serena memory cards to include in the index',
+        '--json' => 'Print the manifest as JSON after writing the Markdown bundle',
+        '--dry-run' => 'Build and print the manifest without writing the bundle'
+      },
+      examples: [
+        'context_bundle --task "critic review SaneMaster skill routing"',
+        'context-bundle --task "subagent audit" --json',
+        'context_bundle --task "resume release proof work" --max-research 10'
+      ]
+    },
     'universal_control_reset' => {
       usage: 'universal_control_reset [--status] [--dry-run] [--local-only|--mini-only] [--cleanup-mini] [--reboot-mini]',
       description: 'Reset Universal Control / Continuity state between this Mac and the Mini, then optionally reboot or clean the Mini.',
@@ -2595,6 +2648,20 @@ PY
       examples: [
         'customer_ui_sweep --dry-run',
         'customer_ui_sweep --json'
+      ]
+    },
+    'release_readiness' => {
+      usage: 'release_readiness [--json] [--app APP] [--scope candidate|portfolio]',
+      description: 'Report patch-candidate readiness separately from portfolio health so daily maintenance can target the right app before expensive proof or release.',
+      flags: {
+        '--json' => 'Print the full release-readiness report as JSON',
+        '--app APP' => 'Inspect a specific app under ~/SaneApps/apps',
+        '--scope candidate|portfolio' => 'Inspect the current candidate app or all tracked app manifests'
+      },
+      examples: [
+        'release_readiness',
+        'release_readiness --json',
+        'release_readiness --app SaneBar --json'
       ]
     },
     'launch_readiness' => {

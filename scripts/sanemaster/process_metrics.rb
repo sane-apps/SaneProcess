@@ -282,8 +282,12 @@ module SaneMasterModules
         timestamp = Time.parse(event['timestamp'].to_s)
         next false if timestamp < cutoff
 
-        event['project'].to_s == current_project ||
-          File.expand_path(event['cwd'].to_s) == current_cwd
+        event_cwd = event['cwd'].to_s.strip
+        if event_cwd.empty?
+          event['project'].to_s == current_project
+        else
+          File.expand_path(event_cwd) == current_cwd
+        end
       rescue ArgumentError, TypeError
         false
       end
@@ -297,7 +301,7 @@ module SaneMasterModules
         'release'
       when /customer_ui|visual_smoke|test_mode|monitor_tests/
         'runtime_ui'
-      when /validation_report|process_eval|trace_eval|agent_eval|near_miss|route_cost|verify_failure|sop_review|skill_lint|gate_review|process_metrics/
+      when /validation_report|process_eval|trace_eval|agent_eval|context_bundle|agent_env_review|near_miss|route_cost|verify_failure|sop_review|skill_lint|gate_review|process_metrics/
         'process_health'
       when /verify/
         'verification'
@@ -371,7 +375,7 @@ module SaneMasterModules
         'runtime_proof_failed'
       when /verify/
         'verification_failed'
-      when /validation_report|process_eval|trace_eval|agent_eval|near_miss|route_cost|verify_failure|sop_review|skill_lint|gate_review|process_metrics/
+      when /validation_report|process_eval|trace_eval|agent_eval|context_bundle|agent_env_review|near_miss|route_cost|verify_failure|sop_review|skill_lint|gate_review|process_metrics/
         'process_health_failed'
       else
         'unexpected_failure'
@@ -846,7 +850,12 @@ module SaneMasterModules
 
       path = paths.max_by { |candidate| File.mtime(candidate) }
       data = JSON.parse(File.read(path))
-      { path: path, generated_at: data['generatedAt'], status: data['status'] }
+      {
+        path: path,
+        generated_at: data['generatedAt'],
+        status: data['status'],
+        policy_only: data['policyOnlyMode'] == true
+      }
     rescue JSON::ParserError
       { path: path, generated_at: nil, status: 'corrupt' }
     end
@@ -854,6 +863,7 @@ module SaneMasterModules
     def qa_snapshot_stale_reasons(project_path, status)
       reasons = []
       reasons << 'snapshot missing' unless status
+      reasons << 'latest QA receipt is policy-only' if status && status[:policy_only]
 
       if status && status[:generated_at]
         snapshot_time = Time.parse(status[:generated_at]).to_i rescue 0

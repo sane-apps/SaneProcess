@@ -843,6 +843,107 @@ module SaneMasterModules
       ''
     end
 
+    def release_project_qa_script
+      ['Scripts/qa.rb', 'scripts/qa.rb'].find { |path| File.exist?(path) }
+    end
+
+    def release_project_qa_policy_only_supported?(qa_script)
+      return false if qa_script.to_s.empty? || !File.exist?(qa_script)
+
+      safe_read(qa_script).include?('SANEPROCESS_RELEASE_POLICY_ONLY')
+    end
+
+    def release_project_qa_env(app_name:, policy_only: false)
+      app_prefix = app_name.to_s.upcase.gsub(/[^A-Z0-9]+/, '_')
+      env = {
+        'LANG' => (ENV['LANG'].to_s.empty? ? 'en_US.UTF-8' : ENV['LANG']),
+        'LC_ALL' => (ENV['LC_ALL'].to_s.empty? ? 'en_US.UTF-8' : ENV['LC_ALL']),
+        'PATH' => ([ENV['PATH'], '/opt/homebrew/bin', '/usr/local/bin'].compact.join(':'))
+      }
+
+      if policy_only
+        env['SANEPROCESS_RELEASE_POLICY_ONLY'] = '1'
+        env["#{app_prefix}_RELEASE_POLICY_ONLY"] = '1' unless app_prefix.empty?
+      else
+        env.merge!(
+          'SANEPROCESS_RELEASE_PREFLIGHT' => '1',
+          'SANEPROCESS_RUN_STABILITY_SUITE' => '1',
+          'SANEPROCESS_RUN_RUNTIME_SMOKE' => '1'
+        )
+        unless app_prefix.empty?
+          env.merge!(
+            "#{app_prefix}_RELEASE_PREFLIGHT" => '1',
+            "#{app_prefix}_RUN_STABILITY_SUITE" => '1',
+            "#{app_prefix}_RUN_RUNTIME_SMOKE" => '1'
+          )
+        end
+      end
+
+      env
+    end
+
+    def normalize_release_output_chunk(chunk)
+      normalized = chunk.dup
+      normalized.force_encoding(Encoding::UTF_8)
+      return normalized if normalized.valid_encoding?
+
+      chunk.encode(Encoding::UTF_8, Encoding::BINARY, invalid: :replace, undef: :replace, replace: '?')
+    rescue StandardError
+      chunk.to_s.encode(Encoding::UTF_8, Encoding::BINARY, invalid: :replace, undef: :replace, replace: '?')
+    end
+
+    def capture_release_command_output(env, *cmd, heartbeat_label:, heartbeat_seconds: 8)
+      output = +''
+      status = nil
+      started_at = Time.now
+      last_output_at = Time.now
+      last_heartbeat_at = Time.at(0)
+
+      Open3.popen2e(env, *cmd) do |_stdin, stdout_err, wait_thr|
+        loop do
+          ready = IO.select([stdout_err], nil, nil, 1)
+          if ready
+            begin
+              chunk = normalize_release_output_chunk(stdout_err.read_nonblock(4096))
+              output << chunk
+              print chunk
+              $stdout.flush
+              last_output_at = Time.now unless chunk.empty?
+            rescue IO::WaitReadable
+              nil
+            rescue EOFError
+              nil
+            end
+          end
+
+          if wait_thr.join(0)
+            status = wait_thr.value
+            break
+          end
+
+          next unless (Time.now - last_output_at) >= heartbeat_seconds
+          next unless (Time.now - last_heartbeat_at) >= heartbeat_seconds
+
+          elapsed = (Time.now - started_at).round(1)
+          puts "    … #{heartbeat_label} still running (#{elapsed}s)"
+          last_heartbeat_at = Time.now
+        end
+
+        loop do
+          chunk = normalize_release_output_chunk(stdout_err.read_nonblock(4096))
+          output << chunk
+          print chunk
+          $stdout.flush
+        rescue IO::WaitReadable
+          break
+        rescue EOFError
+          break
+        end
+      end
+
+      [output, status]
+    end
+
     def local_appcast_paths
       [
         File.join(Dir.pwd, 'docs', 'appcast.xml'),
@@ -2947,130 +3048,29 @@ module SaneMasterModules
         end
       end
 
-      # 1. Tests pass
-      print '  Tests... '
-      verify_env = { 'SANEMASTER_RELEASE_PREFLIGHT' => '1' }
-      out, status = Open3.capture2e(verify_env, './scripts/SaneMaster.rb', 'verify', '--quiet')
-      verify_cleanup = verify_output_indicates_runtime_dedupe_cleanup?(out, app_name: preflight_app_name)
-      if status.success? || verify_output_indicates_success?(out) || verify_cleanup
-        if verify_cleanup
-          puts '✅ (after runtime app dedupe cleanup)'
-        else
-          puts '✅'
-        end
-      else
-        puts '❌ FAIL'
-        hint = summarized_output_tail(out)
-        puts "    ↳ #{hint}" unless hint.empty?
-        issues << 'Tests failing'
-      end
-
-      # 1a. Project QA guardrails (if project provides qa.rb)
-      normalize_chunk = lambda do |chunk|
-        normalized = chunk.dup
-        normalized.force_encoding(Encoding::UTF_8)
-        next normalized if normalized.valid_encoding?
-
-        chunk.encode(Encoding::UTF_8, Encoding::BINARY, invalid: :replace, undef: :replace, replace: '?')
-      rescue StandardError
-        chunk.to_s.encode(Encoding::UTF_8, Encoding::BINARY, invalid: :replace, undef: :replace, replace: '?')
-      end
-
-      qa_capture = lambda do |env, *cmd, heartbeat_label:, heartbeat_seconds: 8|
-        output = +''
-        status = nil
-        started_at = Time.now
-        last_output_at = Time.now
-        last_heartbeat_at = Time.at(0)
-
-        Open3.popen2e(env, *cmd) do |_stdin, stdout_err, wait_thr|
-          loop do
-            ready = IO.select([stdout_err], nil, nil, 1)
-            if ready
-              begin
-                chunk = normalize_chunk.call(stdout_err.read_nonblock(4096))
-                output << chunk
-                print chunk
-                $stdout.flush
-                last_output_at = Time.now unless chunk.empty?
-              rescue IO::WaitReadable
-                nil
-              rescue EOFError
-                nil
-              end
-            end
-
-            if wait_thr.join(0)
-              status = wait_thr.value
-              break
-            end
-
-            next unless (Time.now - last_output_at) >= heartbeat_seconds
-            next unless (Time.now - last_heartbeat_at) >= heartbeat_seconds
-
-            elapsed = (Time.now - started_at).round(1)
-            puts "    … #{heartbeat_label} still running (#{elapsed}s)"
-            last_heartbeat_at = Time.now
-          end
-
-          loop do
-            chunk = normalize_chunk.call(stdout_err.read_nonblock(4096))
-            output << chunk
-            print chunk
-            $stdout.flush
-          rescue IO::WaitReadable
-            break
-          rescue EOFError
-            break
-          end
-        end
-
-        [output, status]
-      end
-
-      print '  Project QA guardrails... '
-      qa_script = ['Scripts/qa.rb', 'scripts/qa.rb'].find { |path| File.exist?(path) }
-      if qa_script
-        app_name_for_env = begin
-          manifest = File.join(Dir.pwd, '.saneprocess')
-          if File.exist?(manifest)
-            match = File.read(manifest).match(/^name:\s*(.+)$/)
-            match ? match[1].strip : File.basename(Dir.pwd)
-          else
-            File.basename(Dir.pwd)
-          end
-        rescue StandardError
-          File.basename(Dir.pwd)
-        end
-
-        app_prefix = app_name_for_env.upcase.gsub(/[^A-Z0-9]+/, '_')
-        qa_env = {
-          'LANG' => (ENV['LANG'].to_s.empty? ? 'en_US.UTF-8' : ENV['LANG']),
-          'LC_ALL' => (ENV['LC_ALL'].to_s.empty? ? 'en_US.UTF-8' : ENV['LC_ALL']),
-          'PATH' => ([ENV['PATH'], '/opt/homebrew/bin', '/usr/local/bin'].compact.join(':')),
-          'SANEPROCESS_RELEASE_PREFLIGHT' => '1',
-          'SANEPROCESS_RUN_STABILITY_SUITE' => '1',
-          'SANEPROCESS_RUN_RUNTIME_SMOKE' => '1',
-          "#{app_prefix}_RELEASE_PREFLIGHT" => '1',
-          "#{app_prefix}_RUN_STABILITY_SUITE" => '1',
-          "#{app_prefix}_RUN_RUNTIME_SMOKE" => '1',
-        }
+      # 1. Project policy guardrails. Apps can expose a cheap policy-only QA mode
+      # so release preflight catches cadence/regression blockers before verify.
+      qa_script = release_project_qa_script
+      qa_policy_only_supported = release_project_qa_policy_only_supported?(qa_script)
+      print '  Project QA policy guardrails... '
+      if qa_policy_only_supported
         puts
-        qa_out, qa_status = qa_capture.call(
-          qa_env,
+        qa_out, qa_status = capture_release_command_output(
+          release_project_qa_env(app_name: preflight_app_name, policy_only: true),
           'ruby',
           qa_script,
-          heartbeat_label: 'project QA guardrails'
+          heartbeat_label: 'project QA policy guardrails'
         )
         if qa_status.success?
-          puts "  Project QA guardrails... ✅ (#{qa_script})"
+          puts "  Project QA policy guardrails... ✅ (#{qa_script})"
         else
-          puts '  Project QA guardrails... ❌ FAIL'
-          warn_line = qa_out.to_s.encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: '?')
-            .lines.last(4).map(&:strip).reject(&:empty?).join(' | ')
+          puts '  Project QA policy guardrails... ❌ FAIL'
+          warn_line = summarized_output_tail(qa_out)
           puts "    ↳ #{warn_line}" unless warn_line.empty?
-          issues << "Project QA guardrails failed (#{qa_script})"
+          issues << "Project QA policy guardrails failed (#{qa_script})"
         end
+      elsif qa_script
+        puts '⏭️  skipped (qa.rb has no policy-only mode)'
       else
         puts '⏭️  skipped (no qa.rb)'
       end
@@ -3593,6 +3593,52 @@ module SaneMasterModules
       else
         puts "⚠️  unsupported file #{webhook_file}"
         warnings << "Live email worker signed download uses unsupported archive type: #{webhook_file}"
+      end
+
+      # 11. Expensive verification runs last. If cheaper release blockers already
+      # failed, do not spend build/test/runtime minutes on a release that cannot ship.
+      print '  Tests... '
+      if issues.any?
+        puts '⏭️  skipped (fix cheap release blocker(s) first)'
+      else
+        verify_env = { 'SANEMASTER_RELEASE_PREFLIGHT' => '1' }
+        out, status = Open3.capture2e(verify_env, './scripts/SaneMaster.rb', 'verify', '--quiet')
+        verify_cleanup = verify_output_indicates_runtime_dedupe_cleanup?(out, app_name: preflight_app_name)
+        if status.success? || verify_output_indicates_success?(out) || verify_cleanup
+          if verify_cleanup
+            puts '✅ (after runtime app dedupe cleanup)'
+          else
+            puts '✅'
+          end
+        else
+          puts '❌ FAIL'
+          hint = summarized_output_tail(out)
+          puts "    ↳ #{hint}" unless hint.empty?
+          issues << 'Tests failing'
+        end
+      end
+
+      print '  Project QA guardrails... '
+      if qa_script.nil?
+        puts '⏭️  skipped (no qa.rb)'
+      elsif issues.any?
+        puts '⏭️  skipped (fix earlier release blocker(s) first)'
+      else
+        puts
+        qa_out, qa_status = capture_release_command_output(
+          release_project_qa_env(app_name: preflight_app_name, policy_only: false),
+          'ruby',
+          qa_script,
+          heartbeat_label: 'project QA guardrails'
+        )
+        if qa_status.success?
+          puts "  Project QA guardrails... ✅ (#{qa_script})"
+        else
+          puts '  Project QA guardrails... ❌ FAIL'
+          warn_line = summarized_output_tail(qa_out)
+          puts "    ↳ #{warn_line}" unless warn_line.empty?
+          issues << "Project QA guardrails failed (#{qa_script})"
+        end
       end
 
       # Summary

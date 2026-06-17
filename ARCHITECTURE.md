@@ -381,6 +381,8 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
   - Setapp update/auth resources are present
   - any restricted entitlement profile is embedded and matches the signed bundle
     ID plus iCloud containers
+  - the ZIP root contains both `<AppName>.app` and a sibling 1024x1024
+    `<AppName>.png` exported from the source app icon
   - the final ZIP opens through LaunchServices after quarantine, not only
     `codesign`, notarization, and `spctl` static checks
 - Menu bar apps need explicit Setapp `.userInteraction` reporting.
@@ -444,7 +446,7 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
 
 **Context:** The May 2026 Claude/Codex workflow refresh found that SaneProcess already follows the main external guidance: source-of-truth `AGENTS.md`, scoped wrappers, Mini-first runtime evidence, skills, subagents, memory, and context compaction. The remaining gap is measuring whether prompts route to the right workflow, skill, command, or approval gate.
 
-**Decision:** Add deterministic agent workflow fixtures through `SaneMaster.rb agent_eval`. Add receipt-level workflow fixtures through `SaneMaster.rb process_eval` / `trace_eval`, plus `sop_review` for score-history and cap analysis. Add `agent_env_review` for recurring setup drift and `skill_lint` for skill routing quality. Keep these in SaneMaster instead of creating a separate agent-eval framework. The shared SOP score rubric lives in `scripts/hooks/core/sop_score.rb`; score-producing paths must call it instead of duplicating the rubric.
+**Decision:** Add deterministic agent workflow fixtures through `SaneMaster.rb agent_eval`. Add receipt-level workflow fixtures through `SaneMaster.rb process_eval` / `trace_eval`, plus `sop_review` for score-history and cap analysis. Add `agent_env_review` for recurring setup drift and `skill_lint` for skill routing quality. Add `context_bundle` for subagent, critic, and resume packets: it writes a compact local Markdown snapshot with YAML frontmatter, allowlisted source excerpts, recent receipt links, and Updated/Status/TTL cards parsed from existing research and Serena memory files. Keep these in SaneMaster instead of creating a separate agent-eval framework or another memory database. The shared SOP score rubric lives in `scripts/hooks/core/sop_score.rb`; score-producing paths must call it instead of duplicating the rubric.
 
 **Consequences:**
 - Trigger maps and AGENTS changes can be regression-tested before they ship.
@@ -458,6 +460,11 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
   final claims. A/B receipts record sessions-to-complete, wait-state stalls,
   orchestrator nudges, proof scope, and known-unrelated red gates so quality
   wins cannot hide verification tax.
+- Context quality is a tested workflow surface. Broad reviews should start from
+  `context_bundle`, not raw code snippets, so reviewers get active rules,
+  handoff state, research cards, proof receipt links, and promotion targets for
+  stale knowledge while Markdown and Serena memory files remain the bundle
+  sources. Durable facts can still be promoted to the memory graph separately.
 
 ### ADR-009: HTML is a generated review artifact, not the source of truth (2026-05-13)
 

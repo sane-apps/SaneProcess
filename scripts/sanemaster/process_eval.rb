@@ -101,15 +101,81 @@ module SaneMasterModules
       live_result = build_live_telemetry_review(events, require_ui_proof: options[:require_ui_proof])
       abtest_result = build_abtest_review(options.fetch(:abtest_dir, DEFAULT_ABTEST_RECEIPT_DIR))
       trajectory_result = build_trajectory_efficiency_review(events)
+      context_result = build_context_bundle_contract_review
       {
         generated_at: Time.now.utc.iso8601,
         fixture: trace_result[:fixture],
-        passed: trace_result[:passed] && sop_result[:blockers].empty? && live_result[:blockers].empty? && abtest_result[:blockers].empty? && trajectory_result[:blockers].empty?,
+        passed: trace_result[:passed] &&
+          sop_result[:blockers].empty? &&
+          live_result[:blockers].empty? &&
+          abtest_result[:blockers].empty? &&
+          trajectory_result[:blockers].empty? &&
+          context_result[:blockers].empty?,
         trace_eval: trace_result,
         sop_review: sop_result,
         live_telemetry: live_result,
         abtest_review: abtest_result,
-        trajectory_efficiency: trajectory_result
+        trajectory_efficiency: trajectory_result,
+        context_bundle_contract: context_result
+      }
+    end
+
+    def build_context_bundle_contract_review
+      unless respond_to?(:build_context_bundle)
+        return {
+          applicable: false,
+          blockers: [],
+          warnings: ['context_bundle module unavailable for this harness'],
+          recommended_actions: []
+        }
+      end
+
+      result = build_context_bundle(
+        task: 'process_eval context bundle contract',
+        dry_run: true,
+        max_research: 5,
+        max_memory: 5
+      )
+      markdown = respond_to?(:render_context_bundle_markdown) ? render_context_bundle_markdown(result) : ''
+      manifest = respond_to?(:context_bundle_manifest) ? context_bundle_manifest(result) : result
+      source_paths = Array(result[:sources]).map { |entry| entry[:path] }
+      blockers = []
+      warnings = []
+      actions = []
+
+      blockers << 'context_bundle schema mismatch' unless result[:schema].to_s == 'saneapps.context_bundle.v1'
+      blockers << 'context_bundle output path must be Markdown' unless result[:output_path].to_s.end_with?('.md')
+      blockers << 'context_bundle manifest path must be JSON' unless result[:manifest_path].to_s.end_with?('.json')
+      blockers << 'context_bundle recommended checks missing agent_eval' unless Array(result[:recommended_checks]).include?('agent_eval')
+      blockers << 'context_bundle recommended checks missing process_eval' unless Array(result[:recommended_checks]).include?('process_eval')
+      blockers << 'context_bundle manifest should not include raw source excerpts' if Array(manifest[:sources]).any? { |entry| entry.key?(:excerpt) }
+      if File.exist?(File.join(result[:source_root].to_s, 'AGENTS.md'))
+        blockers << 'context_bundle missing AGENTS.md source card' unless source_paths.include?('AGENTS.md')
+        blockers << 'context_bundle markdown missing AGENTS.md source card' unless markdown.include?('`AGENTS.md`')
+      end
+      if File.exist?(File.join(result[:source_root].to_s, 'SESSION_HANDOFF.md'))
+        blockers << 'context_bundle missing SESSION_HANDOFF.md source card' unless source_paths.include?('SESSION_HANDOFF.md')
+      end
+      warnings << 'context_bundle found no research cards' if result.dig(:research, :card_count).to_i.zero?
+      warnings << 'context_bundle found no Serena memory cards' if result.dig(:serena_memories, :card_count).to_i.zero?
+      actions << 'keep context_bundle contract green when changing bundle source allowlists, manifests, or prompt-review routes'
+
+      {
+        applicable: true,
+        source_root: result[:source_root],
+        source_count: source_paths.length,
+        research_cards: result.dig(:research, :card_count),
+        serena_memories: result.dig(:serena_memories, :card_count),
+        blockers: blockers.uniq,
+        warnings: warnings.uniq,
+        recommended_actions: actions.uniq
+      }
+    rescue StandardError => e
+      {
+        applicable: true,
+        blockers: ["context_bundle contract failed: #{e.class}: #{e.message}"],
+        warnings: [],
+        recommended_actions: ['fix context_bundle before relying on process_eval for agent workflow changes']
       }
     end
 
@@ -872,6 +938,8 @@ module SaneMasterModules
       puts
       print_trajectory_efficiency_review(result[:trajectory_efficiency])
       puts
+      print_context_bundle_contract_review(result[:context_bundle_contract])
+      puts
       puts result[:passed] ? 'process_eval passed' : 'process_eval found issues'
     end
 
@@ -910,6 +978,21 @@ module SaneMasterModules
       result[:blockers].each { |item| puts "  BLOCKER #{item}" }
       result[:warnings].each { |item| puts "  WARNING #{item}" }
       puts 'Recommended actions:'
+      result[:recommended_actions].each { |item| puts "  - #{item}" }
+    end
+
+    def print_context_bundle_contract_review(result)
+      return unless result
+
+      puts 'Context Bundle Contract'
+      puts '=' * 23
+      puts "Applicable: #{result[:applicable]}"
+      puts "Source root: #{result[:source_root]}" if result[:source_root]
+      puts "Sources: #{result[:source_count]}" if result.key?(:source_count)
+      puts "Research cards: #{result[:research_cards]}" if result.key?(:research_cards)
+      puts "Serena memories: #{result[:serena_memories]}" if result.key?(:serena_memories)
+      result[:blockers].each { |item| puts "  BLOCKER #{item}" }
+      result[:warnings].each { |item| puts "  WARNING #{item}" }
       result[:recommended_actions].each { |item| puts "  - #{item}" }
     end
 

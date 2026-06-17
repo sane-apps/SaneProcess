@@ -347,6 +347,73 @@
         ],
         "forbidden_events": ["prose only sop update", "rule added without eval"]
       }
+    },
+    {
+      "id": "context_bundle_before_broad_review",
+      "description": "Broad subagent and critic reviews start from a compact context bundle so reviewers get runtime context, sources, and current constraints.",
+      "events": [
+        { "type": "command", "name": "context_bundle --task critic review" },
+        { "type": "artifact", "name": "context_bundle_contains_AGENTS" },
+        { "type": "artifact", "name": "context_bundle_contains_SESSION_HANDOFF" },
+        { "type": "artifact", "name": "context_bundle_contains_research_cards" },
+        { "type": "subagent_prompt", "name": "read hooks and active config" },
+        { "type": "subagent_prompt", "name": "use ssh mini" }
+      ],
+      "expect": {
+        "required_events": [
+          "context_bundle --task",
+          "context_bundle_contains_AGENTS",
+          "context_bundle_contains_SESSION_HANDOFF",
+          "context_bundle_contains_research_cards",
+          "read hooks",
+          "ssh mini"
+        ],
+        "ordered_events": ["context_bundle --task", "read hooks"],
+        "forbidden_events": ["review without context brief", "code-only critic bundle"]
+      }
+    },
+    {
+      "id": "okf_existing_sources_receipt",
+      "description": "OKF-style organization keeps Markdown, receipts, Serena, and the memory graph as source of truth instead of adding a new database.",
+      "events": [
+        { "type": "artifact", "name": "research_cards_parsed_from_markdown" },
+        { "type": "artifact", "name": "proof_receipts_linked" },
+        { "type": "artifact", "name": "serena_memories_indexed" },
+        { "type": "artifact", "name": "promotion_targets_assigned" },
+        { "type": "artifact", "name": "no_new_memory_database" }
+      ],
+      "expect": {
+        "required_events": [
+          "research_cards_parsed_from_markdown",
+          "proof_receipts_linked",
+          "serena_memories_indexed",
+          "promotion_targets_assigned",
+          "no_new_memory_database"
+        ],
+        "forbidden_events": ["new memory database", "replace Serena", "replace research.md"]
+      }
+    },
+    {
+      "id": "agent_process_regression_receipt",
+      "description": "Agent workflow changes prove prompt routing, process traces, skill lint, and registry metadata before completion.",
+      "events": [
+        { "type": "command", "name": "agent_eval" },
+        { "type": "command", "name": "process_eval" },
+        { "type": "command", "name": "skill_lint" },
+        { "type": "command", "name": "registry_review" },
+        { "type": "artifact", "name": "context_bundle_receipt" }
+      ],
+      "expect": {
+        "required_events": [
+          "agent_eval",
+          "process_eval",
+          "skill_lint",
+          "registry_review",
+          "context_bundle_receipt"
+        ],
+        "ordered_events": ["agent_eval", "process_eval"],
+        "forbidden_events": ["prompt changed without eval", "skill changed without lint"]
+      }
     }
   ]
 }
