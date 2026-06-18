@@ -1623,6 +1623,197 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('customer UI contract rejects temp-only resource soak runtime evidence') do
+      temp_artifact = "/tmp/sanebar_runtime_resource_soak_guardrail_#{Process.pid}.json"
+      temp_log = "/tmp/sanebar_runtime_resource_soak_guardrail_#{Process.pid}.log"
+      File.write(temp_artifact, JSON.pretty_generate({ status: 'pass' }))
+      File.write(temp_log, "status=pass\n")
+
+      Dir.mktmpdir('customer-ui-resource-soak-proof-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            runtime_state_matrix:
+              resource_soak_growth:
+                why: Release candidates must prove resource growth from durable Mini soak artifacts.
+                action_ids: [startup-wake-appearance-recovery]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime, log, state_receipt]
+                runner: scripts/customer_ui_action_sweep.rb
+            actions:
+              - id: startup-wake-appearance-recovery
+                title: Startup wake recovery works
+                surfaces: [Menu bar]
+                steps: [Launch app]
+                assertions: [Runtime remains stable]
+                evidence: [runtime]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime, log, state_receipt]
+                functional_state:
+                  description: Default fixture
+                  fixture_paths: [outputs/runtime.log]
+                user_inputs: [Launch app]
+                expected_outputs: [Runtime remains stable]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          File.write(File.join(dir, 'outputs', 'runtime.log'), 'Runtime remains stable')
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          receipt = {
+            app: 'SaneExample',
+            status: 'passed',
+            host: 'mini',
+            generated_at: Time.now.utc.iso8601,
+            manifest_sha256: report[:manifest_sha256],
+            source_fingerprint: report[:source_fingerprint],
+            tested_action_ids: ['startup-wake-appearance-recovery'],
+            runtime_state_results: [
+              {
+                id: 'resource_soak_growth',
+                status: 'passed',
+                evidence_types: %w[mini_runtime log state_receipt],
+                evidence_paths: [temp_artifact, temp_log],
+                completed_scenarios: ['at least 10m Mini soak sampled on the release candidate']
+              }
+            ],
+            screenshots: [],
+            action_results: {
+              'startup-wake-appearance-recovery' => {
+                status: 'passed',
+                proof_level: 'full_runtime_completion',
+                functional_state: { status: 'established', detail: 'Default fixture' },
+                inputs: ['Launch app'],
+                output_assertions: ['Runtime remains stable'],
+                evidence: [
+                  { type: 'mini_runtime', detail: 'Runtime log', path: 'outputs/runtime.log' },
+                  { type: 'log', detail: 'Runtime log', path: 'outputs/runtime.log' },
+                  { type: 'state_receipt', detail: 'Resource soak receipt', path: 'outputs/runtime.log' }
+                ],
+                workflow: {
+                  runner: 'scripts/customer_ui_action_sweep.rb startup-wake-appearance-recovery',
+                  steps_completed: ['Launch app'],
+                  outcome: 'Runtime remained stable',
+                  artifacts: ['outputs/runtime.log']
+                }
+              }
+            }
+          }
+          File.write(File.join(dir, 'outputs', 'customer_ui_action_receipt.json'), JSON.pretty_generate(receipt))
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected temp-only resource soak evidence to block release proof')
+        issues = report[:issues].join("\n")
+        assert_includes(issues, 'runtime_state_results resource_soak_growth: resource soak evidence must be durable')
+        assert_includes(issues, 'runtime_state_results resource_soak_growth: missing durable resource-soak evidence under outputs/customer-ui')
+      end
+      true
+    ensure
+      FileUtils.rm_f([temp_artifact, temp_log].compact)
+    end
+
+    test('customer UI contract rejects missing durable resource soak paths') do
+      Dir.mktmpdir('customer-ui-resource-soak-missing-proof-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs', 'customer-ui'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            runtime_state_matrix:
+              resource_soak_growth:
+                why: Release candidates must prove resource growth from durable Mini soak artifacts.
+                action_ids: [startup-wake-appearance-recovery]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime, log, state_receipt]
+                required_scenarios:
+                  - at least 10m Mini soak sampled on the release candidate
+            actions:
+              - id: startup-wake-appearance-recovery
+                title: Startup wake recovery works
+                surfaces: [Menu bar]
+                steps: [Launch app]
+                assertions: [Runtime remains stable]
+                evidence: [runtime]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime, log, state_receipt]
+                functional_state:
+                  description: Default fixture
+                  fixture_paths: [outputs/runtime.log]
+                user_inputs: [Launch app]
+                expected_outputs: [Runtime remains stable]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          File.write(File.join(dir, 'outputs', 'runtime.log'), 'Runtime remains stable')
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          receipt = {
+            app: 'SaneExample',
+            status: 'passed',
+            host: 'mini',
+            generated_at: Time.now.utc.iso8601,
+            manifest_sha256: report[:manifest_sha256],
+            source_fingerprint: report[:source_fingerprint],
+            tested_action_ids: ['startup-wake-appearance-recovery'],
+            runtime_state_results: [
+              {
+                id: 'resource_soak_growth',
+                status: 'passed',
+                evidence_types: %w[mini_runtime log state_receipt],
+                evidence_paths: [
+                  'outputs/customer-ui/resource-soak-missing.json',
+                  'outputs/customer-ui/resource-soak-missing.log'
+                ],
+                completed_scenarios: ['at least 10m Mini soak sampled on the release candidate']
+              }
+            ],
+            screenshots: [],
+            action_results: {
+              'startup-wake-appearance-recovery' => {
+                status: 'passed',
+                proof_level: 'full_runtime_completion',
+                functional_state: { status: 'established', detail: 'Default fixture' },
+                inputs: ['Launch app'],
+                output_assertions: ['Runtime remains stable'],
+                evidence: [
+                  { type: 'mini_runtime', detail: 'Runtime log', path: 'outputs/runtime.log' },
+                  { type: 'log', detail: 'Runtime log', path: 'outputs/runtime.log' },
+                  { type: 'state_receipt', detail: 'Resource soak receipt', path: 'outputs/runtime.log' }
+                ],
+                workflow: {
+                  runner: 'scripts/customer_ui_action_sweep.rb startup-wake-appearance-recovery',
+                  steps_completed: ['Launch app'],
+                  outcome: 'Runtime remained stable',
+                  artifacts: ['outputs/runtime.log']
+                }
+              }
+            }
+          }
+          File.write(File.join(dir, 'outputs', 'customer_ui_action_receipt.json'), JSON.pretty_generate(receipt))
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected missing durable resource soak files to block release proof')
+        assert_includes(report[:issues].join("\n"), 'durable resource-soak evidence path(s) do not exist')
+      end
+      true
+    end
+
     test('standard customer UI sweep dry-run finds the app workflow runner') do
       Dir.mktmpdir('customer-ui-sweep-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'scripts'))
@@ -1655,14 +1846,14 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       log_path = '/tmp/sanebar_runtime_resource_soak.log'
       FileUtils.rm_f([artifact_path, log_path])
 
-      subject.define_singleton_method(:resource_soak_running_app_candidate) do |app_name|
-        {
+      subject.define_singleton_method(:resource_soak_running_app_candidates) do |app_name|
+        [{
           pid: 12_345,
           app_path: "/Applications/#{app_name}.app",
           app_version: '1.2.3',
           app_build: '123',
           process_path: "/Applications/#{app_name}.app/Contents/MacOS/#{app_name}"
-        }
+        }]
       end
       subject.define_singleton_method(:resource_soak_sample) do |_pid|
         { cpu: 0.2, rss_mb: 80.0, physical_footprint_mb: 60.0 }
@@ -1679,10 +1870,215 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_eq(payload['candidate']['app_version'], '1.2.3')
       assert_includes(payload['evidence_types'], 'mini_runtime')
       assert_includes(payload['evidence_paths'], log_path)
-      assert_includes(payload['completed_scenarios'], 'at least 20m Mini soak sampled on the release candidate')
+      assert_eq(payload['missing_sample_count'], 0)
+      assert_eq(payload['sample_span_seconds'], 0.0)
+      assert_eq(payload['samples'].length, 1)
+      assert_includes(payload['samples'].first.keys, 'elapsed_seconds')
+      assert_eq(report[:sample_span_seconds], 0.0)
+      assert_includes(payload['completed_scenarios'], 'at least 10m Mini soak sampled on the release candidate')
       true
     ensure
-      subject.singleton_class.remove_method(:resource_soak_running_app_candidate) rescue nil
+      subject.singleton_class.remove_method(:resource_soak_running_app_candidates) rescue nil
+      subject.singleton_class.remove_method(:resource_soak_sample) rescue nil
+      FileUtils.rm_f(['/tmp/sanebar_runtime_resource_soak.json', '/tmp/sanebar_runtime_resource_soak.log'])
+    end
+
+    test('resource soak rejects stale installed candidate version before sampling') do
+      subject.define_singleton_method(:resource_soak_running_app_candidates) do |app_name|
+        [{
+          pid: 12_345,
+          app_path: "/Applications/#{app_name}.app",
+          app_version: '2.1.70',
+          app_build: '2170',
+          process_path: "/Applications/#{app_name}.app/Contents/MacOS/#{app_name}"
+        }]
+      end
+      sampled = false
+      subject.define_singleton_method(:resource_soak_sample) do |_pid|
+        sampled = true
+        { cpu: 0.2, rss_mb: 80.0, physical_footprint_mb: 60.0 }
+      end
+
+      Dir.mktmpdir('resource-soak-version-') do |dir|
+        File.write(
+          File.join(dir, 'project.yml'),
+          <<~YAML
+            settings:
+              base:
+                MARKETING_VERSION: "2.1.71"
+                CURRENT_PROJECT_VERSION: "2171"
+          YAML
+        )
+        Dir.chdir(dir) do
+          report = subject.resource_soak_report(['--app', 'SaneBar', '--duration-seconds', '0', '--no-exit'])
+          assert(!report[:ok], 'stale installed candidate should fail resource soak')
+          assert_includes(report[:issues].join("\n"), 'Running candidate version 2.1.70 does not match project MARKETING_VERSION 2.1.71')
+          assert_includes(report[:issues].join("\n"), 'Running candidate build 2170 does not match project CURRENT_PROJECT_VERSION 2171')
+          assert(!sampled, 'resource soak should fail before sampling a stale installed candidate')
+        end
+      end
+      true
+    ensure
+      subject.singleton_class.remove_method(:resource_soak_running_app_candidates) rescue nil
+      subject.singleton_class.remove_method(:resource_soak_sample) rescue nil
+    end
+
+    test('resource soak rejects process started before Applications executable replacement') do
+      issues = subject.send(
+        :resource_soak_candidate_version_issues,
+        {
+          pid: 12_345,
+          app_version: '2.1.71',
+          app_build: '2171',
+          process_started_at: '2026-06-17T12:00:00Z',
+          app_executable_mtime: '2026-06-17T12:05:00Z'
+        }
+      )
+
+      assert_includes(issues.join("\n"), 'started before /Applications executable was last replaced')
+      true
+    end
+
+    test('resource soak rejects multiple Applications candidates before sampling') do
+      subject.define_singleton_method(:resource_soak_running_app_candidates) do |app_name|
+        [
+          {
+            pid: 11_111,
+            app_path: "/Applications/#{app_name}.app",
+            app_version: '1.2.3',
+            app_build: '123',
+            process_path: "/Applications/#{app_name}.app/Contents/MacOS/#{app_name}"
+          },
+          {
+            pid: 22_222,
+            app_path: "/Applications/#{app_name}.app",
+            app_version: '1.2.3',
+            app_build: '123',
+            process_path: "/Applications/#{app_name}.app/Contents/MacOS/#{app_name}"
+          }
+        ]
+      end
+      sampled = false
+      subject.define_singleton_method(:resource_soak_sample) do |_pid|
+        sampled = true
+        { cpu: 0.2, rss_mb: 80.0, physical_footprint_mb: 60.0 }
+      end
+
+      report = subject.resource_soak_report(['--app', 'SaneExample', '--duration-seconds', '0', '--no-exit'])
+
+      assert(!report[:ok], 'multiple running app candidates should fail resource soak')
+      assert_includes(report[:issues].join("\n"), 'Multiple SaneExample processes are running from /Applications: 11111, 22222')
+      assert(!sampled, 'resource soak should fail before sampling ambiguous candidates')
+      true
+    ensure
+      subject.singleton_class.remove_method(:resource_soak_running_app_candidates) rescue nil
+      subject.singleton_class.remove_method(:resource_soak_sample) rescue nil
+    end
+
+    test('resource soak fails when process samples disappear mid-run') do
+      artifact_path = '/tmp/sanebar_runtime_resource_soak.json'
+      log_path = '/tmp/sanebar_runtime_resource_soak.log'
+      FileUtils.rm_f([artifact_path, log_path])
+
+      subject.define_singleton_method(:resource_soak_running_app_candidates) do |app_name|
+        [{
+          pid: 12_345,
+          app_path: "/Applications/#{app_name}.app",
+          app_version: '1.2.3',
+          app_build: '123',
+          process_path: "/Applications/#{app_name}.app/Contents/MacOS/#{app_name}"
+        }]
+      end
+      sample_calls = 0
+      subject.define_singleton_method(:resource_soak_sample) do |_pid|
+        sample_calls += 1
+        if sample_calls > 1
+          nil
+        else
+          { cpu: 0.2, rss_mb: 80.0, physical_footprint_mb: 60.0 }
+        end
+      end
+
+      report = nil
+      with_env('SANEMASTER_RESOURCE_SOAK_MIN_SECONDS' => '0') do
+        report = subject.resource_soak_report(['--app', 'SaneExample', '--duration-seconds', '1', '--interval-seconds', '1', '--no-exit'])
+      end
+
+      assert(!report[:ok], 'expected missing samples to fail resource soak')
+      assert_includes(report[:issues].join("\n"), 'missing process samples: 1')
+      payload = JSON.parse(File.read(artifact_path))
+      assert_eq(payload['status'], 'fail')
+      assert_eq(payload['missing_sample_count'], 1)
+      assert_eq(payload['samples'].length, 1)
+      assert_includes(File.read(log_path), 'sample_missing')
+      true
+    ensure
+      subject.singleton_class.remove_method(:resource_soak_running_app_candidates) rescue nil
+      subject.singleton_class.remove_method(:resource_soak_sample) rescue nil
+      FileUtils.rm_f(['/tmp/sanebar_runtime_resource_soak.json', '/tmp/sanebar_runtime_resource_soak.log'])
+    end
+
+    test('resource soak fails when collected sample span is too short') do
+      issues = subject.send(
+        :resource_soak_issues,
+        {
+          sample_count: 2,
+          avg_cpu: 0.1,
+          peak_cpu: 0.2,
+          avg_rss_mb: 80.0,
+          peak_rss_mb: 81.0,
+          rss_growth_mb: 1.0,
+          peak_physical_footprint_mb: 60.0,
+          physical_footprint_growth_mb: 1.0,
+          sample_span_seconds: 20.0
+        },
+        {
+          duration_seconds: 600,
+          min_duration_seconds: 600,
+          interval_seconds: 10,
+          cpu_avg_max: 5,
+          rss_peak_mb_max: 512,
+          rss_growth_mb_max: 40,
+          physical_peak_mb_max: 512,
+          physical_growth_mb_max: 40
+        },
+        missing_sample_count: 0
+      )
+
+      assert_includes(issues.join("\n"), 'sampled span 20.0s is shorter than required 589.0s')
+      true
+    end
+
+    test('resource soak progress is suppressed for json output') do
+      artifact_path = '/tmp/sanebar_runtime_resource_soak.json'
+      log_path = '/tmp/sanebar_runtime_resource_soak.log'
+      FileUtils.rm_f([artifact_path, log_path])
+
+      subject.define_singleton_method(:resource_soak_running_app_candidates) do |app_name|
+        [{
+          pid: 12_345,
+          app_path: "/Applications/#{app_name}.app",
+          app_version: '1.2.3',
+          app_build: '123',
+          process_path: "/Applications/#{app_name}.app/Contents/MacOS/#{app_name}"
+        }]
+      end
+      subject.define_singleton_method(:resource_soak_sample) do |_pid|
+        { cpu: 0.2, rss_mb: 80.0, physical_footprint_mb: 60.0 }
+      end
+
+      output = nil
+      with_env('SANEMASTER_RESOURCE_SOAK_MIN_SECONDS' => '0') do
+        output = capture_stdout do
+          report = subject.resource_soak_report(['--app', 'SaneExample', '--duration-seconds', '0', '--json'])
+          assert(report[:ok], "expected json resource soak to pass: #{report[:issues].inspect}")
+        end
+      end
+
+      assert(!output.include?('resource soak progress'), 'json resource soak must not emit progress lines')
+      true
+    ensure
+      subject.singleton_class.remove_method(:resource_soak_running_app_candidates) rescue nil
       subject.singleton_class.remove_method(:resource_soak_sample) rescue nil
       FileUtils.rm_f(['/tmp/sanebar_runtime_resource_soak.json', '/tmp/sanebar_runtime_resource_soak.log'])
     end

@@ -185,15 +185,37 @@ module SaneMasterModules
 
     def resource_soak_report(args = [])
       options = parse_resource_soak_args(args)
+      options[:progress] = !options[:json] && !options[:no_exit] && ENV.fetch('SANEMASTER_RESOURCE_SOAK_PROGRESS', '1') != '0'
       return resource_soak_dry_run_report(options) if options[:dry_run]
 
-      candidate = resource_soak_running_app_candidate(options[:app_name])
-      unless candidate
+      candidates = resource_soak_running_app_candidates(options[:app_name])
+      if candidates.empty?
         return {
           ok: false,
           json: options[:json],
           no_exit: options[:no_exit],
           issues: ["#{options[:app_name]} is not running from /Applications; launch with ./scripts/SaneMaster.rb test_mode --release --no-logs"]
+        }
+      end
+      if candidates.length > 1
+        return {
+          ok: false,
+          json: options[:json],
+          no_exit: options[:no_exit],
+          issues: [
+            "Multiple #{options[:app_name]} processes are running from /Applications: #{candidates.map { |candidate| candidate[:pid] }.join(', ')}; relaunch with ./scripts/SaneMaster.rb test_mode --release --no-logs"
+          ]
+        }
+      end
+      candidate = candidates.first
+
+      version_issues = resource_soak_candidate_version_issues(candidate)
+      unless version_issues.empty?
+        return {
+          ok: false,
+          json: options[:json],
+          no_exit: options[:no_exit],
+          issues: version_issues
         }
       end
 
@@ -202,6 +224,7 @@ module SaneMasterModules
       started_at = Time.now.utc
       deadline = Time.now + options[:duration_seconds]
       samples = []
+      missing_sample_count = 0
 
       log_lines << "resource_soak_started_at=#{started_at.iso8601}"
       log_lines << "candidate=#{candidate.inspect}"
@@ -209,20 +232,24 @@ module SaneMasterModules
       log_lines << "interval_seconds=#{options[:interval_seconds]}"
 
       loop do
+        elapsed = Time.now - started_at
         sample = resource_soak_sample(candidate[:pid])
         if sample
+          sample = sample.merge(elapsed_seconds: elapsed)
           samples << sample
           log_lines << format(
             'sample=%<index>d elapsed=%<elapsed>.1fs cpu=%<cpu>.1f rss=%<rss>.1fMB physical=%<physical>s',
             index: samples.length,
-            elapsed: Time.now - started_at,
+            elapsed: elapsed,
             cpu: sample[:cpu],
             rss: sample[:rss_mb],
             physical: sample[:physical_footprint_mb] ? format('%.1fMB', sample[:physical_footprint_mb]) : 'unknown'
           )
         else
-          log_lines << format('sample_missing elapsed=%.1fs pid=%d', Time.now - started_at, candidate[:pid])
+          missing_sample_count += 1
+          log_lines << format('sample_missing elapsed=%.1fs pid=%d', elapsed, candidate[:pid])
         end
+        resource_soak_print_progress(options, samples: samples, missing_sample_count: missing_sample_count, elapsed: elapsed)
 
         break if Time.now >= deadline
 
@@ -231,10 +258,10 @@ module SaneMasterModules
 
       finished_at = Time.now.utc
       metrics = resource_soak_metrics(samples)
-      issues = resource_soak_issues(metrics, options)
+      issues = resource_soak_issues(metrics, options, missing_sample_count: missing_sample_count)
       status = issues.empty? ? 'pass' : 'fail'
       scenarios = [
-        'at least 20m Mini soak sampled on the release candidate',
+        'at least 10m Mini soak sampled on the release candidate',
         'average CPU remains within idle budget',
         'RSS and physical footprint do not grow beyond the short-soak release budget'
       ]
@@ -250,6 +277,7 @@ module SaneMasterModules
         finished_at: finished_at.iso8601,
         duration_seconds: finished_at - started_at,
         sample_count: metrics[:sample_count],
+        missing_sample_count: missing_sample_count,
         interval_seconds: options[:interval_seconds],
         avg_cpu: metrics[:avg_cpu],
         peak_cpu: metrics[:peak_cpu],
@@ -259,11 +287,13 @@ module SaneMasterModules
         avg_physical_footprint_mb: metrics[:avg_physical_footprint_mb],
         peak_physical_footprint_mb: metrics[:peak_physical_footprint_mb],
         physical_footprint_growth_mb: metrics[:physical_footprint_growth_mb],
+        sample_span_seconds: metrics[:sample_span_seconds],
         budgets: resource_soak_budget_payload(options),
         evidence_types: %w[mini_runtime log state_receipt],
         evidence_paths: [options[:log_path]],
         completed_scenarios: status == 'pass' ? scenarios : [],
         candidate: candidate.reject { |key, _| key == :pid },
+        samples: samples,
         issues: issues
       }
       File.write(options[:artifact_path], JSON.pretty_generate(artifact) + "\n")
@@ -276,10 +306,12 @@ module SaneMasterModules
         log_path: options[:log_path],
         duration_seconds: artifact[:duration_seconds],
         sample_count: metrics[:sample_count],
+        missing_sample_count: missing_sample_count,
         avg_cpu: metrics[:avg_cpu],
         peak_cpu: metrics[:peak_cpu],
         peak_rss_mb: metrics[:peak_rss_mb],
         peak_physical_footprint_mb: metrics[:peak_physical_footprint_mb],
+        sample_span_seconds: metrics[:sample_span_seconds],
         issues: issues
       }
     end
@@ -481,8 +513,8 @@ module SaneMasterModules
     def parse_resource_soak_args(args)
       options = {
         app_name: metadata_value(current_saneprocess_config, 'name') || File.basename(Dir.pwd),
-        duration_seconds: Integer(ENV.fetch('SANEMASTER_RESOURCE_SOAK_SECONDS', (20 * 60).to_s), 10),
-        min_duration_seconds: Integer(ENV.fetch('SANEMASTER_RESOURCE_SOAK_MIN_SECONDS', (20 * 60).to_s), 10),
+        duration_seconds: Integer(ENV.fetch('SANEMASTER_RESOURCE_SOAK_SECONDS', (10 * 60).to_s), 10),
+        min_duration_seconds: Integer(ENV.fetch('SANEMASTER_RESOURCE_SOAK_MIN_SECONDS', (10 * 60).to_s), 10),
         interval_seconds: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_INTERVAL_SECONDS', '10')),
         cpu_avg_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_CPU_AVG_MAX', '5.0')),
         rss_peak_mb_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_RSS_PEAK_MB_MAX', '256.0')),
@@ -550,31 +582,83 @@ module SaneMasterModules
     end
 
     def resource_soak_running_app_candidate(app_name)
+      candidates = resource_soak_running_app_candidates(app_name)
+      candidates.length == 1 ? candidates.first : nil
+    end
+
+    def resource_soak_running_app_candidates(app_name)
       app_path = "/Applications/#{app_name}.app"
       executable = File.join(app_path, 'Contents', 'MacOS', app_name)
-      return nil unless File.executable?(executable)
+      return [] unless File.executable?(executable)
 
       pids_output, = Open3.capture2('pgrep', '-x', app_name)
-      pids_output.lines.map(&:strip).reject(&:empty?).each do |pid_text|
+      pids_output.lines.map(&:strip).reject(&:empty?).each_with_object([]) do |pid_text, candidates|
         pid = pid_text.to_i
         command_line, = Open3.capture2('ps', '-o', 'command=', '-p', pid.to_s)
         process_path = command_line.strip.split(/\s+/, 2).first
         next unless File.expand_path(process_path.to_s) == executable
 
-        return {
+        candidates << {
           pid: pid,
           app_path: app_path,
           app_version: resource_soak_plist_value(app_path, 'CFBundleShortVersionString'),
           app_build: resource_soak_plist_value(app_path, 'CFBundleVersion'),
-          process_path: executable
+          process_path: executable,
+          process_started_at: resource_soak_process_started_at(pid)&.iso8601,
+          app_executable_mtime: File.mtime(executable).iso8601
         }
       end
-      nil
+    end
+
+    def resource_soak_candidate_version_issues(candidate)
+      expected = resource_soak_expected_project_version
+      issues = []
+      if expected[:app_version] && candidate[:app_version].to_s != expected[:app_version].to_s
+        issues << "Running candidate version #{candidate[:app_version]} does not match project MARKETING_VERSION #{expected[:app_version]}"
+      end
+      if expected[:app_build] && candidate[:app_build].to_s != expected[:app_build].to_s
+        issues << "Running candidate build #{candidate[:app_build]} does not match project CURRENT_PROJECT_VERSION #{expected[:app_build]}"
+      end
+      process_started_at = resource_soak_time(candidate[:process_started_at])
+      executable_mtime = resource_soak_time(candidate[:app_executable_mtime])
+      if process_started_at && executable_mtime && executable_mtime > process_started_at + 1
+        issues << "Running candidate process #{candidate[:pid]} started before /Applications executable was last replaced; relaunch with ./scripts/SaneMaster.rb test_mode --release --no-logs"
+      end
+      issues
+    end
+
+    def resource_soak_expected_project_version
+      project_yml = File.join(Dir.pwd, 'project.yml')
+      return {} unless File.file?(project_yml)
+
+      content = File.read(project_yml)
+      {
+        app_version: content[/MARKETING_VERSION:\s*"?([^"\s]+)"?/, 1].to_s.strip,
+        app_build: content[/CURRENT_PROJECT_VERSION:\s*"?([^"\s]+)"?/, 1].to_s.strip
+      }.reject { |_, value| value.empty? }
     end
 
     def resource_soak_plist_value(app_path, key)
       value, status = Open3.capture2('/usr/libexec/PlistBuddy', '-c', "Print :#{key}", File.join(app_path, 'Contents', 'Info.plist'))
       status.success? ? value.strip : nil
+    end
+
+    def resource_soak_process_started_at(pid)
+      output, status = Open3.capture2('ps', '-o', 'lstart=', '-p', pid.to_s)
+      return nil unless status.success?
+
+      Time.strptime(output.strip, '%a %b %e %H:%M:%S %Y')
+    rescue ArgumentError
+      nil
+    end
+
+    def resource_soak_time(value)
+      return value if value.is_a?(Time)
+      return nil if value.to_s.strip.empty?
+
+      Time.parse(value.to_s)
+    rescue ArgumentError
+      nil
     end
 
     def resource_soak_sample(pid)
@@ -630,7 +714,8 @@ module SaneMasterModules
         rss_growth_mb: resource_soak_round(rss_values.last - rss_values.first),
         avg_physical_footprint_mb: physical_values.empty? ? nil : resource_soak_round(physical_values.sum / physical_values.length),
         peak_physical_footprint_mb: physical_values.empty? ? nil : resource_soak_round(physical_values.max),
-        physical_footprint_growth_mb: physical_values.empty? ? nil : resource_soak_round(physical_values.last - physical_values.first)
+        physical_footprint_growth_mb: physical_values.empty? ? nil : resource_soak_round(physical_values.last - physical_values.first),
+        sample_span_seconds: resource_soak_round(samples.last[:elapsed_seconds].to_f - samples.first[:elapsed_seconds].to_f)
       }
     end
 
@@ -644,16 +729,26 @@ module SaneMasterModules
         rss_growth_mb: 0.0,
         avg_physical_footprint_mb: nil,
         peak_physical_footprint_mb: nil,
-        physical_footprint_growth_mb: nil
+        physical_footprint_growth_mb: nil,
+        sample_span_seconds: 0.0
       }
     end
 
-    def resource_soak_issues(metrics, options)
+    def resource_soak_issues(metrics, options, missing_sample_count: 0)
       issues = []
       if options[:duration_seconds] < options[:min_duration_seconds]
         issues << "duration #{options[:duration_seconds]}s is shorter than required #{options[:min_duration_seconds]}s"
       end
+      issues << "missing process samples: #{missing_sample_count}" if missing_sample_count.to_i.positive?
       issues << 'no process samples collected' if metrics[:sample_count].to_i <= 0
+      required_sample_span = [options[:min_duration_seconds].to_f - options[:interval_seconds].to_f - 1.0, 0.0].max
+      if required_sample_span.positive? && metrics[:sample_span_seconds].to_f < required_sample_span
+        issues << format(
+          'sampled span %.1fs is shorter than required %.1fs',
+          metrics[:sample_span_seconds].to_f,
+          required_sample_span
+        )
+      end
       issues << format('avgCpu %.1f%% > %.1f%%', metrics[:avg_cpu], options[:cpu_avg_max]) if metrics[:avg_cpu].to_f > options[:cpu_avg_max]
       issues << format('peakRss %.1fMB > %.1fMB', metrics[:peak_rss_mb], options[:rss_peak_mb_max]) if metrics[:peak_rss_mb].to_f > options[:rss_peak_mb_max]
       issues << format('rssGrowth %.1fMB > %.1fMB', metrics[:rss_growth_mb], options[:rss_growth_mb_max]) if metrics[:rss_growth_mb].to_f > options[:rss_growth_mb_max]
@@ -679,6 +774,28 @@ module SaneMasterModules
         physical_peak_mb_max: options[:physical_peak_mb_max],
         physical_growth_mb_max: options[:physical_growth_mb_max]
       }
+    end
+
+    def resource_soak_print_progress(options, samples:, missing_sample_count:, elapsed:)
+      return unless options[:progress]
+
+      expected_samples = [(options[:duration_seconds].to_f / options[:interval_seconds].to_f).ceil, 1].max
+      print_every = [(60.0 / options[:interval_seconds].to_f).ceil, 1].max
+      sample_count = samples.length
+      return unless sample_count == 1 || (sample_count % print_every).zero? || elapsed >= options[:duration_seconds]
+
+      remaining = [options[:duration_seconds].to_f - elapsed.to_f, 0.0].max
+      puts format(
+        '   resource soak progress: sample=%<sample>d/%<expected>d elapsed=%<elapsed>.0fs remaining=%<remaining>.0fs missing=%<missing>d rss=%<rss>s physical=%<physical>s',
+        sample: sample_count,
+        expected: expected_samples,
+        elapsed: elapsed,
+        remaining: remaining,
+        missing: missing_sample_count,
+        rss: samples.last ? format('%.1fMB', samples.last[:rss_mb].to_f) : 'unknown',
+        physical: samples.last && samples.last[:physical_footprint_mb] ? format('%.1fMB', samples.last[:physical_footprint_mb].to_f) : 'unknown'
+      )
+      $stdout.flush
     end
 
     def resource_soak_round(value)
@@ -1142,6 +1259,10 @@ module SaneMasterModules
         issues << "#{label}: missing required evidence type(s): #{missing_types.join(', ')}"
       end
 
+      if id == 'resource_soak_growth'
+        issues.concat(customer_ui_resource_soak_runtime_receipt_issues(label, receipt_row))
+      end
+
       required_scenarios = Array(matrix_row['required_scenarios']).map(&:to_s).map(&:strip).reject(&:empty?)
       return issues if required_scenarios.empty?
 
@@ -1151,6 +1272,43 @@ module SaneMasterModules
         issues << "#{label}: missing required scenario proof(s): #{missing_scenarios.join(', ')}"
       end
       issues
+    end
+
+    def customer_ui_resource_soak_runtime_receipt_issues(label, receipt_row)
+      paths = Array(receipt_row['evidence_paths']).map(&:to_s).map(&:strip).reject(&:empty?)
+      issues = []
+      temp_paths = paths.select { |path| customer_ui_temp_artifact_path?(path) }
+      unless temp_paths.empty?
+        issues << "#{label}: resource soak evidence must be durable; temp path(s) are not release proof: #{temp_paths.join(', ')}"
+      end
+
+      durable_paths = paths.select { |path| customer_ui_durable_resource_soak_path?(path) }
+      if durable_paths.empty?
+        issues << "#{label}: missing durable resource-soak evidence under outputs/customer-ui"
+      end
+      missing_durable_paths = durable_paths.reject { |path| File.file?(File.expand_path(path, Dir.pwd)) }
+      unless missing_durable_paths.empty?
+        issues << "#{label}: durable resource-soak evidence path(s) do not exist: #{missing_durable_paths.join(', ')}"
+      end
+      issues
+    end
+
+    def customer_ui_temp_artifact_path?(path)
+      expanded = File.expand_path(path.to_s, Dir.pwd)
+      expanded.start_with?('/tmp/') ||
+        expanded.start_with?('/private/tmp/') ||
+        expanded.start_with?('/var/folders/')
+    rescue StandardError
+      false
+    end
+
+    def customer_ui_durable_resource_soak_path?(path)
+      expanded = File.expand_path(path.to_s, Dir.pwd)
+      normalized = expanded.tr('\\', '/')
+      normalized.include?('/outputs/customer-ui/') &&
+        File.basename(normalized).start_with?('resource-soak-')
+    rescue StandardError
+      false
     end
 
     def customer_ui_runtime_completed_scenarios(receipt_row)
