@@ -8,7 +8,19 @@ MINI_HOST="${MINI_HOST:-mini}"
 REMOTE_MINI_GUI_RUN="${REMOTE_MINI_GUI_RUN:-~/SaneApps/infra/SaneProcess/scripts/mini/mini-gui-run.sh}"
 REMOTE_VISUAL_GUARD="${REMOTE_VISUAL_GUARD:-~/SaneApps/infra/SaneProcess/scripts/mini/mini-visual-workspace-guard.sh}"
 MINI_HOST_FALLBACKS="${MINI_HOST_FALLBACKS:-stephansmac@Stephans-Mac-mini.local stephansmac@stephans-mac-mini.local}"
+MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS="${MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS:-60}"
 SKIP_CLEANUP=false
+
+case "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" in
+  ''|*[!0-9]*)
+    echo "MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS must be a positive integer" >&2
+    exit 2
+    ;;
+esac
+if [ "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" -le 0 ]; then
+  echo "MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS must be a positive integer" >&2
+  exit 2
+fi
 
 usage() {
   cat <<'EOF' >&2
@@ -131,6 +143,23 @@ remote_cmd() {
   printf '%s' "$out"
 }
 
+expand_remote_home_path() {
+  local path="$1"
+  local remote_home="$2"
+
+  case "$path" in
+    "~")
+      printf '%s' "$remote_home"
+      ;;
+    "~/"*)
+      printf '%s/%s' "$remote_home" "${path#\~/}"
+      ;;
+    *)
+      printf '%s' "$path"
+      ;;
+  esac
+}
+
 resolve_mini_host() {
   local host="$1"
   local resolved_host=""
@@ -175,7 +204,55 @@ EOF
   return 1
 }
 
+run_remote_runner_with_timeout() {
+  local timeout_seconds="$1"
+  local host="$2"
+  local runner="$3"
+  local output_file=""
+  local status_file=""
+  local pid=""
+  local elapsed=0
+  local status=1
+
+  output_file="$(mktemp "/tmp/capture-mini-screenshot-output.XXXXXX")"
+  status_file="$(mktemp "/tmp/capture-mini-screenshot-status.XXXXXX")"
+
+  (
+    ssh "$host" "$runner" >"$output_file" 2>&1
+    printf '%s' "$?" >"$status_file"
+  ) &
+  pid="$!"
+
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$elapsed" -ge "$timeout_seconds" ]; then
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      cat "$output_file" 2>/dev/null || true
+      rm -f "$output_file" "$status_file"
+      echo "Mini screenshot capture timed out after ${timeout_seconds}s; inspect the Mini for a stuck GUI runner or permission prompt." >&2
+      return 124
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  wait "$pid" 2>/dev/null || true
+  cat "$output_file" 2>/dev/null || true
+  if [ -s "$status_file" ]; then
+    status="$(cat "$status_file")"
+  else
+    status=1
+  fi
+  rm -f "$output_file" "$status_file"
+  return "$status"
+}
+
 resolved_mini_host="$(resolve_mini_host "$MINI_HOST")"
+remote_home="$(ssh "$resolved_mini_host" 'printf %s "$HOME"')"
+REMOTE_MINI_GUI_RUN="$(expand_remote_home_path "$REMOTE_MINI_GUI_RUN" "$remote_home")"
+REMOTE_VISUAL_GUARD="$(expand_remote_home_path "$REMOTE_VISUAL_GUARD" "$remote_home")"
 
 rsync -az "$LOCAL_SKILL_DIR/" "${resolved_mini_host}:${REMOTE_HELPER_DIR}/"
 
@@ -193,8 +270,12 @@ fi
 cmd="${guard_cmd}CODEX_SCREENSHOT_NO_PERMISSION_PROMPT=1 bash ${REMOTE_HELPER_DIR}/ensure_macos_permissions.sh && CODEX_SCREENSHOT_NO_PERMISSION_PROMPT=1 python3 ${REMOTE_HELPER_DIR}/take_screenshot.py ${forwarded_args}"
 remote_runner="$(remote_cmd bash "$REMOTE_MINI_GUI_RUN" --title "Mini Screenshot" --reclaim-all --close-window -- "$cmd")"
 
-capture_output="$(ssh "$resolved_mini_host" "$remote_runner")"
+capture_status=0
+capture_output="$(run_remote_runner_with_timeout "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" "$resolved_mini_host" "$remote_runner")" || capture_status=$?
 printf '%s\n' "$capture_output"
+if [ "$capture_status" -ne 0 ]; then
+  exit "$capture_status"
+fi
 
 if [ -n "$local_copy_to" ]; then
   mkdir -p "$local_copy_to"

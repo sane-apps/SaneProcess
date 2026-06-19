@@ -2266,13 +2266,31 @@ module SaneMasterModules
       files = []
       files.concat(tracked.split("\0")) if tracked_status.success?
       files.concat(others.split("\0")) if others_status.success?
+      files.concat(release_status_proof_files(project_path))
       files.select { |path| release_status_source_file?(project_path, path) }.uniq.sort
+    rescue StandardError
+      []
+    end
+
+    def release_status_proof_files(project_path)
+      [
+        'outputs/customer_ui_action_receipt.json',
+        '.sane/customer_ui_action_receipt.json',
+        *Dir.glob(File.join(project_path, 'outputs', 'customer-ui', '**', 'resource-soak-*')).map do |path|
+          path.sub(%r{\A#{Regexp.escape(project_path)}/?}, '')
+        end
+      ].select { |path| File.file?(File.join(project_path, path)) }
     rescue StandardError
       []
     end
 
     def release_status_source_file?(project_path, relative_path)
       return false if relative_path.to_s.empty?
+      return true if relative_path == 'docs/_redirects' || relative_path == 'website/_redirects'
+      return true if relative_path.match?(%r{\A(?:docs|website)/.*\.(?:css|html|js|json|xml)\z})
+      return true if relative_path == 'outputs/customer_ui_action_receipt.json'
+      return true if relative_path == '.sane/customer_ui_action_receipt.json'
+      return true if relative_path.match?(%r{\Aoutputs/customer-ui/.*resource-soak-.*\.(?:json|log)\z})
       return false if %w[
         .sane/customer_ui_action_receipt.json AGENTS.md ARCHITECTURE.md CLAUDE.md
         DEVELOPMENT.md README.md SESSION_HANDOFF.md

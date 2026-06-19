@@ -106,6 +106,8 @@ command -v rsync >/dev/null 2>&1 || die "rsync not found"
 LOCAL_CODEX_DIR="$HOME/.codex"
 LOCAL_CODEX_CONFIG="$LOCAL_CODEX_DIR/config.toml"
 LOCAL_CODEX_BIN_DIR="$LOCAL_CODEX_DIR/bin"
+LOCAL_CODEX_STANDALONE_BIN="$LOCAL_CODEX_DIR/packages/standalone/current/codex"
+MIN_CODEX_CLI_VERSION="0.139.0"
 REPO_CODEX_BIN_DIR="$HOME/SaneApps/infra/SaneProcess/scripts/codex-bin"
 LOCAL_AM="$LOCAL_CODEX_DIR/automations/saneops-am-run/automation.toml"
 LOCAL_PM="$LOCAL_CODEX_DIR/automations/saneops-pm-run/automation.toml"
@@ -148,6 +150,115 @@ for bin_name in "${CODEX_BIN_FILES[@]}"; do
   [[ -f "$REPO_CODEX_BIN_DIR/$bin_name" ]] || die "Missing repo Codex bin helper: $REPO_CODEX_BIN_DIR/$bin_name"
 done
 
+version_needs_update() {
+  local version="$1"
+  python3 - "$version" "$MIN_CODEX_CLI_VERSION" <<'PY'
+import re
+import sys
+
+current = sys.argv[1]
+minimum = sys.argv[2]
+
+def parts(value):
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", value or "")
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+current_parts = parts(current)
+minimum_parts = parts(minimum)
+if current_parts is None or minimum_parts is None or current_parts < minimum_parts:
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+install_codex_standalone() {
+  local installer
+  installer=$(mktemp "${TMPDIR:-/tmp}/codex-install.XXXXXX") || die "Could not create Codex installer temp file"
+  if ! CODEX_NON_INTERACTIVE=1 curl --fail --show-error --silent --proto '=https' --tlsv1.2 --location --max-redirs 0 \
+    --output "$installer" \
+    https://chatgpt.com/codex/install.sh; then
+    rm -f "$installer"
+    return 1
+  fi
+  chmod 600 "$installer"
+  if CODEX_NON_INTERACTIVE=1 sh "$installer"; then
+    rm -f "$installer"
+    return 0
+  fi
+  local status=$?
+  rm -f "$installer"
+  return "$status"
+}
+
+ensure_local_codex_standalone() {
+  local current_version=""
+  if [[ -x "$LOCAL_CODEX_STANDALONE_BIN" ]]; then
+    current_version=$("$LOCAL_CODEX_STANDALONE_BIN" --version 2>/dev/null || true)
+  fi
+
+  if version_needs_update "$current_version"; then
+    log "Installing/updating local Codex standalone CLI for app-server daemon..."
+    install_codex_standalone
+  fi
+}
+
+ensure_remote_codex_standalone() {
+  ssh "$MINI_HOST" "MIN_CODEX_CLI_VERSION='$MIN_CODEX_CLI_VERSION' bash -s" <<'REMOTE'
+set -euo pipefail
+
+codex_bin="$HOME/.codex/packages/standalone/current/codex"
+current_version=""
+if [ -x "$codex_bin" ]; then
+  current_version=$("$codex_bin" --version 2>/dev/null || true)
+fi
+
+needs_update=$(python3 - "$current_version" "$MIN_CODEX_CLI_VERSION" <<'PY'
+import re
+import sys
+
+current = sys.argv[1]
+minimum = sys.argv[2]
+
+def parts(value):
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", value or "")
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+current_parts = parts(current)
+minimum_parts = parts(minimum)
+print("1" if current_parts is None or current_parts < minimum_parts else "0")
+PY
+)
+
+install_codex_standalone() {
+  installer=$(mktemp "${TMPDIR:-/tmp}/codex-install.XXXXXX") || return 1
+  if ! CODEX_NON_INTERACTIVE=1 curl --fail --show-error --silent --proto '=https' --tlsv1.2 --location --max-redirs 0 \
+    --output "$installer" \
+    https://chatgpt.com/codex/install.sh; then
+    rm -f "$installer"
+    return 1
+  fi
+  chmod 600 "$installer"
+  if CODEX_NON_INTERACTIVE=1 sh "$installer"; then
+    rm -f "$installer"
+    return 0
+  fi
+  status=$?
+  rm -f "$installer"
+  return "$status"
+}
+
+if [ "$needs_update" = "1" ]; then
+  install_codex_standalone
+fi
+REMOTE
+}
+
+ensure_local_codex_standalone
+
 # Keep local Codex guard wiring consistent too.
 mkdir -p "$HOME/.local/bin"
 mkdir -p "$LOCAL_CODEX_BIN_DIR"
@@ -176,6 +287,7 @@ fi
 
 REMOTE_HOME=$(ssh -o ConnectTimeout=8 "$MINI_HOST" 'printf %s "$HOME"') || die "Could not reach $MINI_HOST"
 REMOTE_NODE=$(ssh -o ConnectTimeout=8 "$MINI_HOST" 'command -v node') || die "Could not resolve node on $MINI_HOST"
+ensure_remote_codex_standalone
 
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -404,6 +516,17 @@ for bin_name in "${CODEX_BIN_FILES[@]}"; do
   remote_bin_hash=$(ssh "$MINI_HOST" "shasum -a 256 \"$REMOTE_HOME/.codex/bin/$bin_name\" | cut -d' ' -f1" 2>/dev/null || echo "")
   [[ -n "$remote_bin_hash" && "$local_bin_hash" == "$remote_bin_hash" ]] || die "Codex bin parity check failed for $bin_name"
 done
+
+local_codex_cli=$("$HOME/.local/bin/codex" --version 2>/dev/null || true)
+remote_codex_cli=$(ssh "$MINI_HOST" "\"$REMOTE_HOME/.local/bin/codex\" --version" 2>/dev/null || true)
+[[ -n "$local_codex_cli" ]] || die "Local Codex CLI entrypoint is not usable"
+[[ -n "$remote_codex_cli" ]] || die "Mini Codex CLI entrypoint is not usable"
+case "$local_codex_cli" in
+  *" 0.13"[0-8].*) die "Local Codex CLI is too old: $local_codex_cli" ;;
+esac
+case "$remote_codex_cli" in
+  *" 0.13"[0-8].*) die "Mini Codex CLI is too old: $remote_codex_cli" ;;
+esac
 
 local_config_hash=$(shasum -a 256 "$TMP_CONFIG" | cut -d' ' -f1)
 remote_config_hash=$(ssh "$MINI_HOST" "shasum -a 256 \"$REMOTE_HOME/.codex/config.toml\" | cut -d' ' -f1" 2>/dev/null || echo "")

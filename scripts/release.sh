@@ -1443,14 +1443,30 @@ sync_docs_appcast_to_website() {
     return 0
 }
 
-fetch_remote_email_webhook_js() {
-    local github_api_path="repos/sane-apps/sane-email-automation/contents/src/handlers/webhook-lemonsqueezy.js?ref=main"
-    local raw_url="https://raw.githubusercontent.com/sane-apps/sane-email-automation/main/src/handlers/webhook-lemonsqueezy.js"
+fetch_github_contents_file_body() {
+    local repo="$1"
+    local file_path="$2"
+    local ref="${3:-main}"
+    local github_api_path="repos/${repo}/contents/${file_path}?ref=${ref}"
+    local api_url="https://api.github.com/repos/${repo}/contents/${file_path}?ref=${ref}"
     local body=""
 
     if command -v gh >/dev/null 2>&1; then
         body=$(gh api "${github_api_path}" --jq '.content' 2>/dev/null | tr -d '\n' | python3 -c 'import base64,sys; data=sys.stdin.read().strip(); print(base64.b64decode(data).decode("utf-8"), end="")' 2>/dev/null || true)
     fi
+
+    if [ -z "${body}" ]; then
+        body=$(curl -fsSL -H "Accept: application/vnd.github+json" "${api_url}" 2>/dev/null | python3 -c 'import base64,json,sys; payload=json.load(sys.stdin); content=str(payload.get("content","")).replace("\n",""); print(base64.b64decode(content).decode("utf-8"), end="")' 2>/dev/null || true)
+    fi
+
+    printf '%s' "${body}"
+}
+
+fetch_remote_email_webhook_js() {
+    local raw_url="https://raw.githubusercontent.com/sane-apps/sane-email-automation/main/src/handlers/webhook-lemonsqueezy.js"
+    local body=""
+
+    body=$(fetch_github_contents_file_body "sane-apps/sane-email-automation" "src/handlers/webhook-lemonsqueezy.js" "main")
 
     if [ -z "${body}" ]; then
         body=$(curl -fsSL "${raw_url}" 2>/dev/null || true)
@@ -1671,32 +1687,126 @@ PY
     return 1
 }
 
+release_probe_error_suffix() {
+    local error_file="$1"
+    local detail=""
+    if [ -f "${error_file}" ]; then
+        detail=$(tr '\n' ' ' < "${error_file}" | sed 's/[[:space:]][[:space:]]*/ /g;s/^ //;s/ $//' | cut -c 1-220)
+    fi
+    [ -n "${detail}" ] && printf ' (%s)' "${detail}"
+}
+
+release_probe_status_text() {
+    local status="$1"
+    local error_file="$2"
+    if [ -n "${status}" ]; then
+        printf 'HTTP %s' "${status}"
+    else
+        printf 'no response%s' "$(release_probe_error_suffix "${error_file}")"
+    fi
+}
+
+write_post_release_probe_receipt() {
+    local probe_dir="$1"
+    local probe_receipt_path="$2"
+    local phase="${3:-probes_finished}"
+    local download_redirect_status="${4:-}"
+
+    [ -n "${probe_dir}" ] || return 0
+    [ -n "${probe_receipt_path}" ] || return 0
+
+    local dist_status_browser
+    local dist_status_sparkle
+    local dist_length
+    local checkout_status
+    local appcast_status
+    local site_fetch
+    dist_status_browser=$(sed -n '1p' "${probe_dir}/dist_browser.status" 2>/dev/null | tr -d '\r\n')
+    dist_status_sparkle=$(sed -n '1p' "${probe_dir}/dist_sparkle.status" 2>/dev/null | tr -d '\r\n')
+    dist_length=$(sed -n '1p' "${probe_dir}/dist_sparkle.length" 2>/dev/null | tr -d '\r\n')
+    checkout_status=$(sed -n '1p' "${probe_dir}/checkout.status" 2>/dev/null | tr -d '\r\n')
+    appcast_status=$(sed -n '1p' "${probe_dir}/appcast.status" 2>/dev/null | tr -d '\r\n')
+    if [ -s "${probe_dir}/site.body" ]; then
+        site_fetch="ok"
+    else
+        site_fetch="missing$(release_probe_error_suffix "${probe_dir}/site.err")"
+    fi
+
+    mkdir -p "$(dirname "${probe_receipt_path}")" || return 0
+    {
+        printf 'generated_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'app=%s\nversion=%s\nbuild=%s\nphase=%s\n' "${APP_NAME}" "${VERSION}" "${BUILD_NUMBER}" "${phase}"
+        printf 'dist_browser=%s\n' "$(release_probe_status_text "${dist_status_browser}" "${probe_dir}/dist_browser.err")"
+        printf 'dist_sparkle=%s\n' "$(release_probe_status_text "${dist_status_sparkle}" "${probe_dir}/dist_sparkle.err")"
+        printf 'dist_sparkle_length=%s\n' "${dist_length:-missing$(release_probe_error_suffix "${probe_dir}/dist_sparkle_length.err")}"
+        printf 'checkout=%s\n' "$(release_probe_status_text "${checkout_status}" "${probe_dir}/checkout.err")"
+        printf 'site=%s\n' "${site_fetch}"
+        [ "${USE_SPARKLE}" = true ] && printf 'appcast=%s\n' "$(release_probe_status_text "${appcast_status}" "${probe_dir}/appcast.err")"
+        [ -n "${download_redirect_status}" ] && printf 'download_redirect=%s\n' "${download_redirect_status}"
+    } > "${probe_receipt_path}" || return 0
+    log_info "Post-release probe receipt: ${probe_receipt_path}"
+}
+
 run_post_release_checks() {
     local dist_url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
     local appcast_url="https://${SITE_HOST}/appcast.xml"
     local checkout_url="https://go.saneapps.com/buy/${LOWER_APP_NAME}"
+    local site_url="https://${SITE_HOST}/"
+    local download_page_url="https://${SITE_HOST}/download"
     local strict="${STRICT_PUBLIC_CHANNEL_SYNC}"
 
     log_info "Running strict post-release checks..."
 
+    local probe_dir
+    probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/sane-post-release-probes.XXXXXX") || {
+        log_error "Could not create temporary directory for post-release probes."
+        return 1
+    }
+    register_release_temp_path "${probe_dir}"
+    local probe_receipt_dir="${PROJECT_ROOT}/outputs/release"
+    local probe_receipt_path="${probe_receipt_dir}/post-release-probes-${RELEASE_RUN_ID}.txt"
+    local probe_pids=()
+    ( extract_http_status "${dist_url}" > "${probe_dir}/dist_browser.status" 2>"${probe_dir}/dist_browser.err" || true ) &
+    probe_pids+=("$!")
+    ( extract_http_status_with_user_agent "${dist_url}" "Sparkle/2" > "${probe_dir}/dist_sparkle.status" 2>"${probe_dir}/dist_sparkle.err" || true ) &
+    probe_pids+=("$!")
+    ( extract_content_length_with_user_agent "${dist_url}" "Sparkle/2" > "${probe_dir}/dist_sparkle.length" 2>"${probe_dir}/dist_sparkle_length.err" || true ) &
+    probe_pids+=("$!")
+    ( extract_http_status "${checkout_url}" > "${probe_dir}/checkout.status" 2>"${probe_dir}/checkout.err" || true ) &
+    probe_pids+=("$!")
+    ( curl -fsSL "${site_url}" > "${probe_dir}/site.body" 2>"${probe_dir}/site.err" || true ) &
+    probe_pids+=("$!")
+    if [ "${USE_SPARKLE}" = true ]; then
+        ( extract_http_status "${appcast_url}" > "${probe_dir}/appcast.status" 2>"${probe_dir}/appcast.err" || true ) &
+        probe_pids+=("$!")
+        ( curl -fsSL "${appcast_url}" > "${probe_dir}/appcast.body" 2>"${probe_dir}/appcast_body.err" || true ) &
+        probe_pids+=("$!")
+    fi
+
+    local probe_pid=""
+    for probe_pid in "${probe_pids[@]}"; do
+        wait "${probe_pid}" || true
+    done
+    write_post_release_probe_receipt "${probe_dir}" "${probe_receipt_path}" "probes_finished"
+
     local dist_status_browser
-    dist_status_browser=$(extract_http_status "${dist_url}")
+    dist_status_browser=$(sed -n '1p' "${probe_dir}/dist_browser.status" 2>/dev/null | tr -d '\r\n')
     if [ "${dist_status_browser}" != "200" ] && [ "${dist_status_browser}" != "206" ]; then
-        log_error "Download URL failed for browser/web install flow: ${dist_url} returned HTTP ${dist_status_browser}"
+        log_error "Download URL failed for browser/web install flow: ${dist_url} returned $(release_probe_status_text "${dist_status_browser}" "${probe_dir}/dist_browser.err")"
         return 1
     fi
 
     local dist_status_sparkle
-    dist_status_sparkle=$(extract_http_status_with_user_agent "${dist_url}" "Sparkle/2")
+    dist_status_sparkle=$(sed -n '1p' "${probe_dir}/dist_sparkle.status" 2>/dev/null | tr -d '\r\n')
     if [ "${dist_status_sparkle}" != "200" ] && [ "${dist_status_sparkle}" != "206" ]; then
-        log_error "Download URL failed for Sparkle flow: ${dist_url} returned HTTP ${dist_status_sparkle}"
+        log_error "Download URL failed for Sparkle flow: ${dist_url} returned $(release_probe_status_text "${dist_status_sparkle}" "${probe_dir}/dist_sparkle.err")"
         return 1
     fi
 
     local dist_length
-    dist_length=$(extract_content_length_with_user_agent "${dist_url}" "Sparkle/2")
+    dist_length=$(sed -n '1p' "${probe_dir}/dist_sparkle.length" 2>/dev/null | tr -d '\r\n')
     if [ -z "${dist_length}" ]; then
-        log_error "Download URL missing Content-Length: ${dist_url}"
+        log_error "Download URL missing Content-Length: ${dist_url}$(release_probe_error_suffix "${probe_dir}/dist_sparkle_length.err")"
         return 1
     fi
 
@@ -1707,16 +1817,16 @@ run_post_release_checks() {
 
     if [ "${USE_SPARKLE}" = true ]; then
         local appcast_status
-        appcast_status=$(extract_http_status "${appcast_url}")
+        appcast_status=$(sed -n '1p' "${probe_dir}/appcast.status" 2>/dev/null | tr -d '\r\n')
         if [ "${appcast_status}" != "200" ]; then
-            log_error "Appcast URL failed: ${appcast_url} returned HTTP ${appcast_status}"
+            log_error "Appcast URL failed: ${appcast_url} returned $(release_probe_status_text "${appcast_status}" "${probe_dir}/appcast.err")"
             return 1
         fi
 
         local appcast_content
-        appcast_content=$(curl -fsSL "${appcast_url}" 2>/dev/null || true)
+        appcast_content=$(cat "${probe_dir}/appcast.body" 2>/dev/null || true)
         if [ -z "${appcast_content}" ]; then
-            log_error "Could not fetch appcast content from ${appcast_url}"
+            log_error "Could not fetch appcast content from ${appcast_url}$(release_probe_error_suffix "${probe_dir}/appcast_body.err")"
             return 1
         fi
 
@@ -1828,9 +1938,9 @@ PY
     fi
 
     local checkout_status
-    checkout_status=$(extract_http_status "${checkout_url}")
+    checkout_status=$(sed -n '1p' "${probe_dir}/checkout.status" 2>/dev/null | tr -d '\r\n')
     if [ "${checkout_status}" != "200" ] && [ "${checkout_status}" != "301" ] && [ "${checkout_status}" != "302" ]; then
-        log_error "Checkout URL failed: ${checkout_url} returned HTTP ${checkout_status}"
+        log_error "Checkout URL failed: ${checkout_url} returned $(release_probe_status_text "${checkout_status}" "${probe_dir}/checkout.err")"
         return 1
     fi
 
@@ -1887,16 +1997,11 @@ PY
     if [ -n "${HOMEBREW_TAP_REPO}" ]; then
         local cask_file="Casks/${LOWER_APP_NAME}.rb"
         local cask_raw_url="https://raw.githubusercontent.com/${HOMEBREW_TAP_REPO}/main/${cask_file}"
-        local cask_api_path="repos/${HOMEBREW_TAP_REPO}/contents/${cask_file}?ref=main"
         local cask_status
+        local cask_api_probe=""
         cask_status=$(extract_http_status "${cask_raw_url}")
-        if [ "${cask_status}" = "404" ]; then
-            if [ "${STRICT_PUBLIC_CHANNEL_SYNC}" = true ]; then
-                log_error "No Homebrew cask found for ${APP_NAME} (${cask_raw_url})."
-                return 1
-            fi
-            log_warn "No Homebrew cask found for ${APP_NAME} (${cask_raw_url}); skipping Homebrew verification."
-        elif [ "${cask_status}" != "200" ]; then
+        cask_api_probe=$(fetch_github_contents_file_body "${HOMEBREW_TAP_REPO}" "${cask_file}" "main")
+        if [ -z "${cask_api_probe}" ] && [ "${cask_status}" != "200" ] && [ "${cask_status}" != "404" ]; then
             log_error "Could not fetch Homebrew cask: ${cask_raw_url} (HTTP ${cask_status})"
             return 1
         else
@@ -1908,6 +2013,22 @@ PY
         local cask_verified_body=""
 
         while [ "${cask_attempt}" -le "${cask_max_attempts}" ]; do
+            local cask_api_body
+            if [ -n "${cask_api_probe}" ]; then
+                cask_api_body="${cask_api_probe}"
+                cask_api_probe=""
+            else
+                cask_api_body=$(fetch_github_contents_file_body "${HOMEBREW_TAP_REPO}" "${cask_file}" "main")
+            fi
+            if [ -n "${cask_api_body}" ] && \
+               grep -q "version \"${VERSION}\"" <<< "${cask_api_body}" && \
+               grep -q "sha256 \"${SHA256}\"" <<< "${cask_api_body}"; then
+                cask_ok=true
+                cask_verified_source="github-api"
+                cask_verified_body="${cask_api_body}"
+                break
+            fi
+
             local cask_body
             cask_body=$(curl -fsSL "${cask_raw_url}" 2>/dev/null || true)
             if [ -n "${cask_body}" ] && \
@@ -1919,20 +2040,6 @@ PY
                 break
             fi
 
-            # raw.githubusercontent can lag behind Git refs after push; verify against GitHub API as fallback.
-            if command -v gh >/dev/null 2>&1; then
-                local cask_api_body
-                cask_api_body=$(gh api "${cask_api_path}" --jq '.content' 2>/dev/null | tr -d '\n' | python3 -c 'import base64,sys; data=sys.stdin.read().strip(); print(base64.b64decode(data).decode("utf-8"), end="")' 2>/dev/null || true)
-                if [ -n "${cask_api_body}" ] && \
-                   grep -q "version \"${VERSION}\"" <<< "${cask_api_body}" && \
-                   grep -q "sha256 \"${SHA256}\"" <<< "${cask_api_body}"; then
-                    cask_ok=true
-                    cask_verified_source="github-api"
-                    cask_verified_body="${cask_api_body}"
-                    break
-                fi
-            fi
-
             if [ "${cask_attempt}" -lt "${cask_max_attempts}" ]; then
                 sleep "${cask_sleep_seconds}"
             fi
@@ -1940,21 +2047,25 @@ PY
         done
 
         if [ "${cask_ok}" != "true" ]; then
-            log_error "Homebrew cask did not converge to v${VERSION} / ${SHA256:0:12}... at ${cask_raw_url}"
-            return 1
-        fi
+            if [ "${cask_status}" = "404" ] && [ "${STRICT_PUBLIC_CHANNEL_SYNC}" != true ]; then
+                log_warn "No Homebrew cask found for ${APP_NAME} (${cask_raw_url}); skipping Homebrew verification."
+            else
+                log_error "Homebrew cask did not converge to v${VERSION} / ${SHA256:0:12}... at ${cask_raw_url}"
+                return 1
+            fi
+        else
+            # Extract and assert exact version from cask content.
+            local cask_extracted_version
+            cask_extracted_version=$(grep -oE 'version "[^"]+"' <<< "${cask_verified_body}" | head -1 | sed 's/version "//;s/"//')
+            if [ -n "${cask_extracted_version}" ] && [ "${cask_extracted_version}" != "${VERSION}" ]; then
+                log_error "Homebrew cask version mismatch: cask has v${cask_extracted_version}, expected v${VERSION}"
+                return 1
+            fi
 
-        # Extract and assert exact version from cask content
-        local cask_extracted_version
-        cask_extracted_version=$(grep -oE 'version "[^"]+"' <<< "${cask_verified_body}" | head -1 | sed 's/version "//;s/"//')
-        if [ -n "${cask_extracted_version}" ] && [ "${cask_extracted_version}" != "${VERSION}" ]; then
-            log_error "Homebrew cask version mismatch: cask has v${cask_extracted_version}, expected v${VERSION}"
-            return 1
-        fi
-
-        if [ "${cask_verified_source}" = "github-api" ]; then
-            log_warn "Homebrew verification passed via GitHub API; raw.githubusercontent is still propagating."
-            log_warn "Continuing because the tap repo already has the correct cask content and raw propagation is eventually consistent."
+            if [ "${cask_verified_source}" = "github-api" ]; then
+                log_warn "Homebrew verification passed via GitHub API; raw.githubusercontent is still propagating."
+                log_warn "Continuing because the tap repo already has the correct cask content and raw propagation is eventually consistent."
+            fi
         fi
         fi
     fi
@@ -1962,9 +2073,8 @@ PY
     # Verify website download flow matches the release version.
     # Some sites link directly to the ZIP from the homepage; others route the
     # homepage CTA to /download and keep the versioned ZIP there.
-    local site_url="https://${SITE_HOST}/"
     local site_body
-    site_body=$(curl -fsSL "${site_url}" 2>/dev/null || true)
+    site_body=$(cat "${probe_dir}/site.body" 2>/dev/null || true)
     if [ -n "${site_body}" ]; then
         local expected_download_url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
         local homepage_download_ver=""
@@ -1975,7 +2085,6 @@ PY
             log_error "Website download link points to v${homepage_download_ver}, expected v${VERSION}: ${site_url}"
             return 1
         else
-            local download_page_url="https://${SITE_HOST}/download"
             local download_page_body=""
             local found_download_ver=""
             if grep -Fq 'href="/download"' <<< "${site_body}" || grep -Fq "${download_page_url}" <<< "${site_body}"; then
@@ -1997,7 +2106,7 @@ PY
             fi
         fi
     else
-        log_error "Could not fetch website for download link check: ${site_url}"
+        log_error "Could not fetch website for download link check: ${site_url}$(release_probe_error_suffix "${probe_dir}/site.err")"
         return 1
     fi
 
@@ -2096,6 +2205,8 @@ PY
         log_error "Download redirect failed with HTTP ${download_redirect_status}: ${download_redirect_url}"
         return 1
     fi
+
+    write_post_release_probe_receipt "${probe_dir}" "${probe_receipt_path}" "passed" "${download_redirect_status}"
 
     log_info "Post-release checks passed."
     return 0
@@ -2408,17 +2519,53 @@ raise 'release_preflight has issues' unless payload['issues'].to_a.empty?
 
 generated_at = Time.parse(payload.fetch('generatedAt'))
 raise 'release_preflight receipt is stale' if max_age_seconds.positive? && (Time.now - generated_at) > max_age_seconds
+raise 'release_preflight receipt is future-dated' if generated_at > Time.now + 300
+
+customer_ui_manifest = %w[
+  Tests/CustomerUIActions.yml
+  tests/customer_ui_actions.yml
+  config/customer_ui_actions.yml
+  .sane/customer_ui_actions.yml
+].map { |path| File.join(project_path, path) }.find { |path| File.file?(path) }
+if customer_ui_manifest
+  customer_receipt = %w[
+    outputs/customer_ui_action_receipt.json
+    .sane/customer_ui_action_receipt.json
+  ].map { |path| File.join(project_path, path) }.find { |path| File.file?(path) }
+  raise 'customer UI receipt is missing for release_preflight reuse' unless customer_receipt
+
+  receipt_payload = JSON.parse(File.read(customer_receipt, encoding: Encoding::UTF_8))
+  receipt_timestamp = receipt_payload['generated_at'] || receipt_payload['generatedAt']
+  receipt_generated_at = Time.parse(receipt_timestamp.to_s)
+  receipt_max_age = ENV.fetch('SANEPROCESS_CUSTOMER_UI_RECEIPT_MAX_AGE_SECONDS', (12 * 60 * 60).to_s).to_i
+  if receipt_max_age.positive? && (Time.now - receipt_generated_at) > receipt_max_age
+    raise 'customer UI receipt is stale for release_preflight reuse'
+  end
+  raise 'customer UI receipt is future-dated for release_preflight reuse' if receipt_generated_at > Time.now + 300
+end
 
 tracked, tracked_status = Open3.capture2e('git', '-C', project_path, 'ls-files', '-z')
 others, others_status = Open3.capture2e('git', '-C', project_path, 'ls-files', '--others', '--exclude-standard', '-z')
 files = []
 files.concat(tracked.split("\0")) if tracked_status.success?
 files.concat(others.split("\0")) if others_status.success?
+files.concat([
+  'outputs/customer_ui_action_receipt.json',
+  '.sane/customer_ui_action_receipt.json',
+  *Dir.glob(File.join(project_path, 'outputs', 'customer-ui', '**', 'resource-soak-*')).map do |path|
+    path.sub(%r{\A#{Regexp.escape(project_path)}/?}, '')
+  end
+])
 app_folder = File.basename(project_path)
 
 source_file = lambda do |relative_path|
-  path = relative_path.to_s
-  return false if path.empty?
+	  path = relative_path.to_s
+	  return false if path.empty?
+	  return true if path == 'docs/_redirects' || path == 'website/_redirects'
+	  return true if path.match?(%r{\A(?:docs|website)/.*\.(?:css|html|js|json|xml)\z})
+	  return true if path == 'outputs/customer_ui_action_receipt.json'
+  return true if path == '.sane/customer_ui_action_receipt.json'
+  return true if path.match?(%r{\Aoutputs/customer-ui/.*resource-soak-.*\.(?:json|log)\z})
   return false if %w[
     .sane/customer_ui_action_receipt.json AGENTS.md ARCHITECTURE.md CLAUDE.md
     DEVELOPMENT.md README.md SESSION_HANDOFF.md
@@ -2965,6 +3112,13 @@ run_tests() {
         "PROVISIONING_PROFILE="
     )
     local sanemaster_verify="${PROJECT_ROOT}/scripts/SaneMaster.rb"
+    local preflight_receipt_summary=""
+
+    if [ "${SANEPROCESS_RELEASE_ALWAYS_RUN_TESTS:-0}" != "1" ] && preflight_receipt_summary="$(fresh_release_preflight_receipt_summary 2>/dev/null)"; then
+        log_info "Skipping duplicate SaneMaster verify; fresh release_preflight already covered candidate tests (${preflight_receipt_summary})."
+        log_info "Set SANEPROCESS_RELEASE_ALWAYS_RUN_TESTS=1 to force a new verify pass."
+        return 0
+    fi
 
     test_log_indicates_success() {
         local log_path="$1"
@@ -6306,6 +6460,8 @@ PY
     for f in \
         "docs/appcast.xml" \
         "website/appcast.xml" \
+        "docs/_redirects" \
+        "website/_redirects" \
         "docs/index.html" \
         "docs/download.html" \
         "website/index.html" \
@@ -6382,9 +6538,14 @@ PY
     # Step 9: Verify Homebrew cask is correct (post-push sanity check)
     if [ -n "${HOMEBREW_TAP_REPO}" ]; then
         CASK_RAW_URL="https://raw.githubusercontent.com/${HOMEBREW_TAP_REPO}/main/${CASK_FILE}"
-        CASK_CHECK=$(curl -s "${CASK_RAW_URL}" 2>/dev/null)
+        CASK_CHECK=$(fetch_github_contents_file_body "${HOMEBREW_TAP_REPO}" "${CASK_FILE}" "main")
+        CASK_CHECK_SOURCE="GitHub API"
+        if [ -z "${CASK_CHECK}" ]; then
+            CASK_CHECK=$(curl -s "${CASK_RAW_URL}" 2>/dev/null)
+            CASK_CHECK_SOURCE="raw.githubusercontent"
+        fi
         if echo "${CASK_CHECK}" | grep -q "version \"${VERSION}\"" && echo "${CASK_CHECK}" | grep -q "sha256 \"${SHA256}\""; then
-            log_info "Homebrew cask verified: v${VERSION} live at ${CASK_RAW_URL}"
+            log_info "Homebrew cask verified via ${CASK_CHECK_SOURCE}: v${VERSION} live at ${CASK_RAW_URL}"
         else
             log_warn "Homebrew cask may not have propagated. Check: ${CASK_RAW_URL}"
         fi

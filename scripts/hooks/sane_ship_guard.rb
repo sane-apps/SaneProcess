@@ -30,7 +30,7 @@ def release_relevant_clearance_path?(project_dir, relative_path)
   return true if %w[Package.resolved Package.swift project.yml].include?(path)
   return true if path.end_with?('.xcodeproj/project.pbxproj')
   return true if path.start_with?('website/')
-  return true if path == 'docs/appcast.xml' || path.end_with?('/appcast.xml')
+  return true if path == 'docs/appcast.xml' || path == 'docs/_redirects' || path.end_with?('/appcast.xml')
 
   app_folder = File.basename(File.expand_path(project_dir))
   return true if path.start_with?("#{app_folder}/")

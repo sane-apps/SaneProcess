@@ -38,6 +38,12 @@
       "cmd": ["ruby", "scripts/app_test_mode_test.rb"]
     },
     {
+      "path": "scripts/qa_test.rb",
+      "label": "SaneProcess QA harness tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/qa_test.rb"]
+    },
+    {
       "path": "scripts/setapp_upload_test.rb",
       "label": "SaneProcess Setapp upload tests",
       "status": "required",
@@ -48,6 +54,12 @@
       "label": "SaneProcess Setapp status tests",
       "status": "required",
       "cmd": ["ruby", "scripts/setapp_status_test.rb"]
+    },
+    {
+      "path": "scripts/setapp_media_sync_test.rb",
+      "label": "SaneProcess Setapp media sync tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/setapp_media_sync_test.rb"]
     },
     {
       "path": "scripts/appstore_public_screenshot_audit_test.rb",
@@ -78,6 +90,18 @@
       "label": "SaneProcess check-inbox process metric tests",
       "status": "required",
       "cmd": ["python3", "-B", "scripts/automation/check_inbox_metrics_test.py"]
+    },
+    {
+      "path": "scripts/automation/check_inbox_report_test.py",
+      "label": "SaneProcess check-inbox report classifier tests",
+      "status": "required",
+      "cmd": ["python3", "-B", "scripts/automation/check_inbox_report_test.py"]
+    },
+    {
+      "path": "scripts/automation/sane_support_kickoff_test.py",
+      "label": "SaneProcess support kickoff summary tests",
+      "status": "required",
+      "cmd": ["python3", "-B", "scripts/automation/sane_support_kickoff_test.py"]
     },
     {
       "path": "scripts/automation/github_reporting_guard_test.py",

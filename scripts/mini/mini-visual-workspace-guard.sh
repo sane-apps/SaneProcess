@@ -591,7 +591,7 @@ elif ! $windowless_target; then
   elif $target_visible_via_process && [ "$frontmost_name" != "$TARGET_APP" ]; then
     issues+=("$TARGET_APP is not frontmost; frontmost app is ${frontmost_name:-unknown}")
   fi
-elif $target_visible_via_process && [ "$frontmost_name" != "$TARGET_APP" ]; then
+elif $target_visible_via_process && [ "$frontmost_name" != "$TARGET_APP" ] && [ "$target_windows" != "0" ]; then
   issues+=("$TARGET_APP is not frontmost; frontmost app is ${frontmost_name:-unknown}")
 fi
 

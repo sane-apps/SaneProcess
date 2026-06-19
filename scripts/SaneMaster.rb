@@ -66,6 +66,7 @@ require 'digest'
 require 'fileutils'
 require 'digest'
 require 'English'
+require 'yaml'
 
 # Load all modules
 require_relative 'sanemaster/base'
@@ -216,7 +217,7 @@ class SaneMaster
         'diagnose' => { args: '[path]', desc: 'Analyze .xcresult bundle' },
         'runtime_evidence' => { args: '[--executable PATH|--pid PID] [--break File.swift:LINE] [--expr EXPR]', desc: 'Capture LLDB runtime evidence without launching apps' },
         'visual_smoke' => { args: '[--app NAME] [--require-peekaboo] [--json] [--dry-run]', desc: 'Capture Peekaboo visual/AX evidence receipt' },
-        'resource_soak' => { args: '[--duration-seconds N] [--interval-seconds N] [--json]', desc: 'Run the Mini release-candidate resource soak proof' },
+        'resource_soak' => { args: '[--adaptive|--fixed] [--duration-seconds N] [--interval-seconds N] [--json]', desc: 'Run the Mini release-candidate resource check proof' },
         'customer_ui_sweep' => { args: '[--json] [--dry-run] [--no-exit]', desc: 'Run the app customer workflow runner, then validate the release UI contract' },
         'customer_ui_contract' => { args: '[--json] [--no-exit] [--strict-visual]', desc: 'Validate release-required customer UI action QA manifest and fresh receipt' },
         'menu_scan' => { args: '[--json] [--owners bundle1,bundle2]', desc: 'Menu bar diagnostics (detected/normalized/excluded)' },
@@ -262,7 +263,8 @@ class SaneMaster
         'sync_grok' => { args: '[mini] [--quiet]', desc: 'Sync the Grok control-plane profile (grok-bin, config, .agents/skills) to the Mini' },
         'setapp_status' => { args: '[--json] [--soft]', desc: 'Check Setapp review status for submitted SaneApps builds' },
         'setapp_package' => { args: '[--project PATH] [--app-name NAME] [--scheme NAME] [--version X.Y.Z]', desc: 'Build, sign, notarize, zip, and validate a Setapp review package' },
-        'setapp_upload' => { args: '--zip ZIP --release-notes TEXT [--portal-fallback --app-id ID --version-id ID]', desc: 'Upload or replace a Setapp review build using the standard Setapp lane' }
+        'setapp_upload' => { args: '--zip ZIP --release-notes-file PATH --review-comments-file PATH [--portal-fallback --app-id ID --version-id ID]', desc: 'Upload or replace a Setapp review build using the standard Setapp lane' },
+        'setapp_media_sync' => { args: '[--app NAME] [--dry-run] [--json] [--public-page-proof-file PATH]', desc: 'Sync Setapp listing screenshots from .saneprocess to the developer portal and optionally attach public setapp.com proof' }
       }
     },
     session: {
@@ -347,8 +349,12 @@ class SaneMaster
                                   asp
                                   setapp_status
                                   setapp-status
+                                  setapp_package
+                                  setapp-package
                                   setapp_upload
                                   setapp-upload
+                                  setapp_media_sync
+                                  setapp-media-sync
                                   launch
                                   run
                                   logs
@@ -414,8 +420,18 @@ class SaneMaster
                                   agent_env_review
                                   agent-env-review
                                   refresh_qa_snapshots
-                                  qa_refresh
-                                ]).freeze
+	                                  qa_refresh
+	                                ]).freeze
+  SETAPP_ROUTE_COMMANDS = Set.new(%w[
+                                    setapp_status
+                                    setapp-status
+                                    setapp_package
+                                    setapp-package
+                                    setapp_upload
+                                    setapp-upload
+                                    setapp_media_sync
+                                    setapp-media-sync
+                                  ]).freeze
 
   def initialize
     @bundle_id = detect_bundle_id
@@ -594,6 +610,7 @@ class SaneMaster
         sync_local_dir_to_mini!(saneui_repo_root, remote_saneui_repo, label: 'SaneUI')
       end
       sync_local_dir_to_mini!(saneprocess_repo_root, execution_saneprocess_repo, label: 'SaneProcess')
+      sync_setapp_app_workspaces_to_mini! if setapp_route_command?(command)
       sync_release_artifacts_to_mini!(Dir.pwd, execution_repo) if preserve_release_artifacts
       if release_routed
         routed_webhook_repo = sync_release_support_repos_to_mini!(release_routed: true, command: command)
@@ -1004,8 +1021,16 @@ PY
     command == 'release'
   end
 
+  def setapp_route_command?(command)
+    SETAPP_ROUTE_COMMANDS.include?(command)
+  end
+
   def saneprocess_repo_root
     File.expand_path('..', __dir__)
+  end
+
+  def saneapps_root
+    File.expand_path('../..', saneprocess_repo_root)
   end
 
   def infra_scripts_root
@@ -1031,6 +1056,34 @@ PY
 
   def sane_email_automation_repo_root
     File.expand_path('~/SaneApps/infra/sane-email-automation')
+  end
+
+  def sync_setapp_app_workspaces_to_mini!
+    setapp_enabled_app_dirs.each do |app_dir|
+      local_repo = File.join(saneapps_root, 'apps', app_dir)
+      next unless Dir.exist?(local_repo)
+
+      remote_repo = map_local_path_to_mini(local_repo)
+      abort "❌ Could not map Setapp app #{app_dir} to mini: #{local_repo}" unless remote_repo
+
+      sync_local_dir_to_mini!(local_repo, remote_repo, label: "#{app_dir} Setapp app")
+    end
+  end
+
+  def setapp_enabled_app_dirs
+    apps_root = File.join(saneapps_root, 'apps')
+    return [] unless Dir.exist?(apps_root)
+
+    Dir.children(apps_root).sort.select do |entry|
+      app_dir = File.join(apps_root, entry)
+      manifest_path = File.join(app_dir, '.saneprocess')
+      next false unless File.directory?(app_dir) && File.file?(manifest_path)
+
+      data = YAML.safe_load(File.read(manifest_path), aliases: true) || {}
+      data.dig('setapp', 'enabled') == true
+    rescue Psych::Exception => e
+      abort "❌ Setapp manifest could not be parsed before Mini sync: #{manifest_path} (#{e.message})"
+    end
   end
 
   def run_external_command(*command)
@@ -1713,6 +1766,9 @@ PY
     when 'setapp_upload', 'setapp-upload'
       system('ruby', File.join(__dir__, 'setapp_upload.rb'), *args)
       exit($CHILD_STATUS.exitstatus || 1) unless $CHILD_STATUS&.success?
+    when 'setapp_media_sync', 'setapp-media-sync'
+      system('ruby', File.join(__dir__, 'setapp_media_sync.rb'), *args)
+      exit($CHILD_STATUS.exitstatus || 1) unless $CHILD_STATUS&.success?
     when 'tool_discovery', 'tool_receipt', 'tool-receipt'
       tool_discovery(args)
     when 'agent_env_review', 'agent-env-review'
@@ -2389,12 +2445,15 @@ PY
       ]
     },
     'setapp_upload' => {
-      usage: 'setapp_upload --zip ZIP --release-notes TEXT [--portal-fallback --app-id ID --version-id ID]',
+      usage: 'setapp_upload --zip ZIP --release-notes-file PATH --review-comments-file PATH [--portal-fallback --app-id ID --version-id ID]',
       description: 'Upload a Setapp build. Uses the official CI endpoint when SETAPP_AUTOMATION_TOKEN is present; portal fallback now fails if the version remains Needs Revision after attach.',
       flags: {
         '--zip PATH' => 'Setapp ZIP archive to upload',
-        '--release-notes TEXT' => 'Release notes text',
-        '--release-notes-file PATH' => 'Read release notes from a file',
+        '--release-notes TEXT' => 'Public Setapp user-facing release notes text',
+        '--release-notes-file PATH' => 'Read public Setapp user-facing release notes from a file',
+        '--review-comments TEXT' => 'Private Setapp reviewer comments; never put these in public release notes',
+        '--review-comments-file PATH' => 'Read private Setapp reviewer comments from a file',
+        '--no-review-comments-needed' => 'Explicitly confirm this upload needs no private reviewer comments',
         '--portal-fallback' => 'Use developer portal upload_archive + version PATCH path',
         '--app-id ID' => 'Setapp application id for portal fallback',
         '--version-id ID' => 'Existing Setapp version id for portal fallback',
@@ -2403,8 +2462,25 @@ PY
         '--dry-run' => 'Validate and print the planned path without uploading'
       },
       examples: [
-        'setapp_upload --zip outputs/SaneBar-Setapp.zip --release-notes "SaneBar 2.1.47..."',
-        'setapp_upload --portal-fallback --app-id 1848 --version-id 46885 --zip outputs/SaneBar-Setapp.zip --release-notes-file /tmp/setapp-notes.txt'
+        'setapp_upload --zip outputs/SaneBar-Setapp.zip --release-notes-file /tmp/setapp-notes.txt --review-comments-file /tmp/setapp-private-comments.txt',
+        'setapp_upload --portal-fallback --app-id 1848 --version-id 46885 --zip outputs/SaneBar-Setapp.zip --release-notes-file /tmp/setapp-notes.txt --no-review-comments-needed'
+      ]
+    },
+    'setapp_media_sync' => {
+      usage: 'setapp_media_sync [--app NAME] [--dry-run] [--json] [--public-page-proof-file PATH]',
+      description: 'Validate and sync Setapp listing screenshots from each app .saneprocess manifest to the developer portal media list. A public-page proof JSON receipt can clear the final setapp.com propagation gate.',
+      flags: {
+        '--app NAME' => 'Only sync one app, such as SaneBar or SaneClip',
+        '--dry-run' => 'Validate and print the planned screenshot order without changing Setapp',
+        '--json' => 'Print machine-readable output',
+        '--no-safari-token' => 'Do not read the developer.setapp.com Safari token',
+        '--allow-pending-public-page' => 'Exit 0 after portal sync even though public setapp.com proof is still pending',
+        '--public-page-proof-file PATH' => 'JSON receipt proving the public Setapp page shows the expected screenshots'
+      },
+      examples: [
+        'setapp_media_sync --dry-run',
+        'setapp_media_sync --app SaneBar',
+        'setapp_media_sync --app SaneBar --public-page-proof-file outputs/setapp-public-proof-sanebar.json'
       ]
     },
     'setapp_package' => {
@@ -2623,16 +2699,19 @@ PY
       ]
     },
     'resource_soak' => {
-      usage: 'resource_soak [--duration-seconds N] [--interval-seconds N] [--json]',
-      description: 'Sample the already launched /Applications release candidate on the Mini and write /tmp/sanebar_runtime_resource_soak.json for the customer UI release contract.',
+      usage: 'resource_soak [--adaptive|--fixed] [--duration-seconds N] [--interval-seconds N] [--json]',
+      description: 'Run the adaptive Mini resource check against the already launched /Applications release candidate and write /tmp/sanebar_runtime_resource_soak.json for the customer UI release contract.',
       flags: {
-        '--duration-seconds N' => 'Soak duration in seconds (default: 1200)',
-        '--interval-seconds N' => 'Seconds between process samples (default: 10)',
+        '--adaptive' => 'Allow early pass after stable 4 minute minimum (default)',
+        '--fixed' => 'Run the full duration and record fixed-duration evidence only',
+        '--duration-seconds N' => 'Adaptive cap or fixed duration in seconds (default: 600)',
+        '--interval-seconds N' => 'Steady sample interval in seconds (default: 10; adaptive starts at 5)',
         '--dry-run' => 'Print the planned artifact path without sampling',
         '--no-exit' => 'Return the report without exiting non-zero',
         '--json' => 'Print machine-readable result JSON'
       },
       examples: [
+        'resource_soak --adaptive',
         'resource_soak --dry-run',
         'resource_soak --json'
       ]

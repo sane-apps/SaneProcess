@@ -57,6 +57,75 @@ def write_test_png_with_text(path, text:, source: 'outputs/shared-source.png', w
   )
 end
 
+def write_resource_soak_pair(dir, version:, build:, include_log: true, keyword_candidate: false)
+  now = Time.now.utc
+  evidence_dir = File.join(dir, 'outputs', 'customer-ui', 'resource-soak-proof')
+  FileUtils.mkdir_p(evidence_dir)
+  artifact_path = File.join(evidence_dir, 'resource-soak-sanebar_runtime_resource_soak.json')
+  log_path = File.join(evidence_dir, 'resource-soak-sanebar_runtime_resource_soak.log')
+  if include_log
+    candidate_line = if keyword_candidate
+                       "candidate={pid: 123, app_path: \"/Applications/SaneExample.app\", app_version: \"#{version}\", app_build: \"#{build}\", process_path: \"/Applications/SaneExample.app/Contents/MacOS/SaneExample\"}"
+                     else
+                       "candidate={:app_path=>\"/Applications/SaneExample.app\", :app_version=>\"#{version}\", :app_build=>\"#{build}\", :process_path=>\"/Applications/SaneExample.app/Contents/MacOS/SaneExample\"}"
+                     end
+    File.write(
+      log_path,
+      [
+        "resource_soak_started_at=#{(now - 300).iso8601}",
+        candidate_line,
+        'sample=1 elapsed=0.0s cpu=0.2 rss=80.0MB physical=60.0MB',
+        'sample=2 elapsed=300.0s cpu=0.1 rss=82.0MB physical=61.0MB',
+        "resource_soak_finished_at=#{now.iso8601}",
+        'status=pass'
+      ].join("\n")
+    )
+  end
+  File.write(
+    artifact_path,
+    JSON.pretty_generate(
+      status: 'pass',
+      started_at: (now - 300).iso8601,
+      finished_at: now.iso8601,
+      duration_seconds: 300.0,
+      adaptive: true,
+      adaptive_status: 'early_pass',
+      sample_count: 2,
+      physical_sample_count: 2,
+      physical_missing_sample_count: 0,
+      evidence_types: %w[mini_runtime log state_receipt],
+      evidence_paths: [log_path],
+      completed_scenarios: [
+        'adaptive Mini resource check passed for this release build',
+        'average CPU remains within idle budget',
+        'RSS and physical footprint do not grow beyond the short-soak release budget'
+      ],
+      samples: [
+        {
+          sampled_at: (now - 300).iso8601,
+          elapsed_seconds: 0.0,
+          cpu: 0.2,
+          rss_mb: 80.0,
+          physical_footprint_mb: 60.0
+        },
+        {
+          sampled_at: now.iso8601,
+          elapsed_seconds: 300.0,
+          cpu: 0.1,
+          rss_mb: 82.0,
+          physical_footprint_mb: 61.0
+        }
+      ],
+      candidate: {
+        app_path: '/Applications/SaneExample.app',
+        app_version: version,
+        app_build: build
+      }
+    )
+  )
+  [artifact_path, log_path]
+end
+
 class ReleaseGuardrailHarness
   include SaneMasterModules::CustomerUIContract
   include SaneMasterModules::GateReview
@@ -1661,12 +1730,14 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
                   fixture_paths: [outputs/runtime.log]
                 user_inputs: [Launch app]
                 expected_outputs: [Runtime remains stable]
+                historical_failure_classes: [hardware_or_tcc_runtime]
           YAML
         )
 
         report = nil
         Dir.chdir(dir) do
           File.write(File.join(dir, 'outputs', 'runtime.log'), 'Runtime remains stable')
+          write_test_png(File.join(dir, 'outputs', 'runtime.png'))
           report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
           receipt = {
             app: 'SaneExample',
@@ -1682,10 +1753,10 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
                 status: 'passed',
                 evidence_types: %w[mini_runtime log state_receipt],
                 evidence_paths: [temp_artifact, temp_log],
-                completed_scenarios: ['at least 10m Mini soak sampled on the release candidate']
+                completed_scenarios: ['adaptive Mini resource check passed for this release build']
               }
             ],
-            screenshots: [],
+            screenshots: ['outputs/runtime.png'],
             action_results: {
               'startup-wake-appearance-recovery' => {
                 status: 'passed',
@@ -1721,6 +1792,116 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       FileUtils.rm_f([temp_artifact, temp_log].compact)
     end
 
+    test('customer UI contract accepts durable resource soak keyword candidate log') do
+      Dir.mktmpdir('customer-ui-resource-soak-keyword-proof-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        artifact_path, log_path = write_resource_soak_pair(
+          dir,
+          version: '2.1.72',
+          build: '2172',
+          keyword_candidate: true
+        )
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            runtime_state_matrix:
+              resource_soak_growth:
+                why: Release candidates must prove resource growth from durable Mini soak artifacts.
+                action_ids: [startup-wake-appearance-recovery]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime, log, state_receipt]
+                runner: scripts/customer_ui_action_sweep.rb
+                required_scenarios:
+                  - adaptive Mini resource check passed for this release build
+                  - average CPU remains within idle budget
+                  - RSS and physical footprint do not grow beyond the short-soak release budget
+            actions:
+              - id: startup-wake-appearance-recovery
+                title: Startup wake recovery works
+                surfaces: [Menu bar]
+                steps: [Launch app]
+                assertions: [Runtime remains stable]
+                evidence: [runtime]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime, log, state_receipt]
+                functional_state:
+                  description: Default fixture
+                  fixture_paths: [outputs/runtime.log]
+                user_inputs: [Launch app]
+                expected_outputs: [Runtime remains stable]
+                historical_failure_classes: [hardware_or_tcc_runtime]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          File.write(File.join(dir, 'outputs', 'runtime.log'), 'Runtime remains stable')
+          write_test_png(File.join(dir, 'outputs', 'runtime.png'))
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          receipt = {
+            app: 'SaneExample',
+            status: 'passed',
+            host: 'mini',
+            generated_at: Time.now.utc.iso8601,
+            manifest_sha256: report[:manifest_sha256],
+            source_fingerprint: report[:source_fingerprint],
+            tested_action_ids: ['startup-wake-appearance-recovery'],
+            runtime_state_results: [
+              {
+                id: 'resource_soak_growth',
+                status: 'passed',
+                runtime_candidate: {
+                  app_path: '/Applications/SaneExample.app',
+                  app_version: '2.1.72',
+                  app_build: '2172'
+                },
+                evidence_types: %w[mini_runtime log state_receipt],
+                evidence_paths: [artifact_path, log_path],
+                completed_scenarios: [
+                  'adaptive Mini resource check passed for this release build',
+                  'average CPU remains within idle budget',
+                  'RSS and physical footprint do not grow beyond the short-soak release budget'
+                ]
+              }
+            ],
+            screenshots: ['outputs/runtime.png'],
+            action_results: {
+              'startup-wake-appearance-recovery' => {
+                status: 'passed',
+                proof_level: 'full_runtime_completion',
+                functional_state: { status: 'established', detail: 'Default fixture' },
+                inputs: ['Launch app'],
+                output_assertions: ['Runtime remains stable'],
+                evidence: [
+                  { type: 'mini_runtime', detail: 'Resource soak', path: log_path },
+                  { type: 'screenshot', detail: 'Runtime screenshot', path: 'outputs/runtime.png' },
+                  { type: 'log', detail: 'Resource soak', path: log_path },
+                  { type: 'state_receipt', detail: 'Resource soak artifact', path: artifact_path }
+                ],
+                workflow: {
+                  runner: 'scripts/customer_ui_action_sweep.rb startup-wake-appearance-recovery',
+                  steps_completed: ['Launch app'],
+                  outcome: 'Runtime remained stable',
+                  artifacts: [artifact_path, log_path, 'outputs/runtime.png']
+                }
+              }
+            }
+          }
+          File.write(File.join(dir, 'outputs', 'customer_ui_action_receipt.json'), JSON.pretty_generate(receipt))
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(report[:ok], "expected durable keyword-format resource soak proof to pass: #{report[:issues].join("\n")}")
+      end
+      true
+    end
+
     test('customer UI contract rejects missing durable resource soak paths') do
       Dir.mktmpdir('customer-ui-resource-soak-missing-proof-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'Tests'))
@@ -1740,7 +1921,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
                 required_proof_level: full_runtime_completion
                 required_evidence_types: [mini_runtime, log, state_receipt]
                 required_scenarios:
-                  - at least 10m Mini soak sampled on the release candidate
+                  - adaptive Mini resource check passed for this release build
             actions:
               - id: startup-wake-appearance-recovery
                 title: Startup wake recovery works
@@ -1779,7 +1960,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
                   'outputs/customer-ui/resource-soak-missing.json',
                   'outputs/customer-ui/resource-soak-missing.log'
                 ],
-                completed_scenarios: ['at least 10m Mini soak sampled on the release candidate']
+                completed_scenarios: ['adaptive Mini resource check passed for this release build']
               }
             ],
             screenshots: [],
@@ -1810,6 +1991,219 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
 
         assert(!report[:ok], 'expected missing durable resource soak files to block release proof')
         assert_includes(report[:issues].join("\n"), 'durable resource-soak evidence path(s) do not exist')
+      end
+      true
+    end
+
+    test('customer UI contract rejects durable resource soak without sibling log evidence') do
+      Dir.mktmpdir('customer-ui-resource-soak-json-only-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'project.yml'), <<~YAML)
+          settings:
+            base:
+              MARKETING_VERSION: "2.1.62"
+              CURRENT_PROJECT_VERSION: "2162"
+        YAML
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            runtime_state_matrix:
+              resource_soak_growth:
+                why: Release candidates must prove resource growth from durable Mini soak artifacts.
+                action_ids: [startup-wake-appearance-recovery]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime, log, state_receipt]
+                required_scenarios:
+                  - adaptive Mini resource check passed for this release build
+            actions:
+              - id: startup-wake-appearance-recovery
+                title: Startup wake recovery works
+                surfaces: [Menu bar]
+                steps: [Launch app]
+                assertions: [Runtime remains stable]
+                evidence: [runtime]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime, log, state_receipt]
+                functional_state:
+                  description: Default fixture
+                  fixture_paths: [outputs/runtime.log]
+                user_inputs: [Launch app]
+                expected_outputs: [Runtime remains stable]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          artifact_path, = write_resource_soak_pair(dir, version: '2.1.62', build: '2162', include_log: false)
+          artifact_rel = artifact_path.sub("#{dir}/", '')
+          File.write(File.join(dir, 'outputs', 'runtime.log'), 'Runtime remains stable')
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          receipt = {
+            app: 'SaneExample',
+            status: 'passed',
+            host: 'mini',
+            generated_at: Time.now.utc.iso8601,
+            manifest_sha256: report[:manifest_sha256],
+            source_fingerprint: report[:source_fingerprint],
+            tested_action_ids: ['startup-wake-appearance-recovery'],
+            runtime_state_results: [
+              {
+                id: 'resource_soak_growth',
+                status: 'passed',
+                evidence_types: %w[mini_runtime log state_receipt],
+                evidence_paths: [artifact_rel],
+                completed_scenarios: ['adaptive Mini resource check passed for this release build'],
+                runtime_candidate: {
+                  app_path: '/Applications/SaneExample.app',
+                  app_version: '2.1.62',
+                  app_build: '2162'
+                }
+              }
+            ],
+            screenshots: [],
+            action_results: {
+              'startup-wake-appearance-recovery' => {
+                status: 'passed',
+                proof_level: 'full_runtime_completion',
+                functional_state: { status: 'established', detail: 'Default fixture' },
+                inputs: ['Launch app'],
+                output_assertions: ['Runtime remains stable'],
+                evidence: [
+                  { type: 'mini_runtime', detail: 'Runtime log', path: 'outputs/runtime.log' },
+                  { type: 'log', detail: 'Runtime log', path: 'outputs/runtime.log' },
+                  { type: 'state_receipt', detail: 'Resource soak receipt', path: artifact_rel }
+                ],
+                workflow: {
+                  runner: 'scripts/customer_ui_action_sweep.rb startup-wake-appearance-recovery',
+                  steps_completed: ['Launch app'],
+                  outcome: 'Runtime remained stable',
+                  artifacts: ['outputs/runtime.log', artifact_rel]
+                }
+              }
+            }
+          }
+          File.write(File.join(dir, 'outputs', 'customer_ui_action_receipt.json'), JSON.pretty_generate(receipt))
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected JSON-only durable resource soak evidence to block release proof')
+        issues = report[:issues].join("\n")
+        assert_includes(issues, 'durable resource-soak log sibling is missing from evidence_paths')
+        assert_includes(issues, 'durable resource-soak log sibling is missing')
+      end
+      true
+    end
+
+    test('customer UI contract rejects durable resource soak from a different candidate') do
+      Dir.mktmpdir('customer-ui-resource-soak-wrong-candidate-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'project.yml'), <<~YAML)
+          settings:
+            base:
+              MARKETING_VERSION: "2.1.62"
+              CURRENT_PROJECT_VERSION: "2162"
+        YAML
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            runtime_state_matrix:
+              resource_soak_growth:
+                why: Release candidates must prove resource growth from durable Mini soak artifacts.
+                action_ids: [startup-wake-appearance-recovery]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime, log, state_receipt]
+                required_scenarios:
+                  - adaptive Mini resource check passed for this release build
+            actions:
+              - id: startup-wake-appearance-recovery
+                title: Startup wake recovery works
+                surfaces: [Menu bar]
+                steps: [Launch app]
+                assertions: [Runtime remains stable]
+                evidence: [runtime]
+                required_proof_level: full_runtime_completion
+                required_evidence_types: [mini_runtime, log, state_receipt]
+                functional_state:
+                  description: Default fixture
+                  fixture_paths: [outputs/runtime.log]
+                user_inputs: [Launch app]
+                expected_outputs: [Runtime remains stable]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          artifact_path, log_path = write_resource_soak_pair(dir, version: '2.1.61', build: '2161')
+          artifact_rel = artifact_path.sub("#{dir}/", '')
+          log_rel = log_path.sub("#{dir}/", '')
+          File.write(File.join(dir, 'outputs', 'runtime.log'), 'Runtime remains stable')
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          receipt = {
+            app: 'SaneExample',
+            status: 'passed',
+            host: 'mini',
+            generated_at: Time.now.utc.iso8601,
+            manifest_sha256: report[:manifest_sha256],
+            source_fingerprint: report[:source_fingerprint],
+            tested_action_ids: ['startup-wake-appearance-recovery'],
+            runtime_state_results: [
+              {
+                id: 'resource_soak_growth',
+                status: 'passed',
+                evidence_types: %w[mini_runtime log state_receipt],
+                evidence_paths: [artifact_rel, log_rel],
+                completed_scenarios: ['adaptive Mini resource check passed for this release build'],
+                runtime_candidate: {
+                  app_path: '/Applications/SaneExample.app',
+                  app_version: '2.1.62',
+                  app_build: '2162'
+                }
+              }
+            ],
+            screenshots: [],
+            action_results: {
+              'startup-wake-appearance-recovery' => {
+                status: 'passed',
+                proof_level: 'full_runtime_completion',
+                functional_state: { status: 'established', detail: 'Default fixture' },
+                inputs: ['Launch app'],
+                output_assertions: ['Runtime remains stable'],
+                evidence: [
+                  { type: 'mini_runtime', detail: 'Runtime log', path: 'outputs/runtime.log' },
+                  { type: 'log', detail: 'Runtime log', path: 'outputs/runtime.log' },
+                  { type: 'state_receipt', detail: 'Resource soak receipt', path: artifact_rel }
+                ],
+                workflow: {
+                  runner: 'scripts/customer_ui_action_sweep.rb startup-wake-appearance-recovery',
+                  steps_completed: ['Launch app'],
+                  outcome: 'Runtime remained stable',
+                  artifacts: ['outputs/runtime.log', artifact_rel, log_rel]
+                }
+              }
+            }
+          }
+          File.write(File.join(dir, 'outputs', 'customer_ui_action_receipt.json'), JSON.pretty_generate(receipt))
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected wrong-candidate durable resource soak evidence to block release proof')
+        issues = report[:issues].join("\n")
+        assert_includes(issues, 'resource-soak artifact candidate version 2.1.61 does not match project MARKETING_VERSION 2.1.62')
+        assert_includes(issues, 'resource-soak artifact candidate build 2161 does not match project CURRENT_PROJECT_VERSION 2162')
+        assert_includes(issues, 'resource-soak artifact candidate app_version 2.1.61 does not match receipt runtime_candidate 2.1.62')
+        assert_includes(issues, 'resource-soak artifact candidate app_build 2161 does not match receipt runtime_candidate 2162')
       end
       true
     end
@@ -1871,16 +2265,60 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_includes(payload['evidence_types'], 'mini_runtime')
       assert_includes(payload['evidence_paths'], log_path)
       assert_eq(payload['missing_sample_count'], 0)
+      assert_eq(payload['physical_sample_count'], 1)
+      assert_eq(payload['physical_missing_sample_count'], 0)
+      assert_eq(payload['adaptive_status'], 'early_pass')
       assert_eq(payload['sample_span_seconds'], 0.0)
       assert_eq(payload['samples'].length, 1)
       assert_includes(payload['samples'].first.keys, 'elapsed_seconds')
       assert_eq(report[:sample_span_seconds], 0.0)
-      assert_includes(payload['completed_scenarios'], 'at least 10m Mini soak sampled on the release candidate')
+      assert_includes(payload['completed_scenarios'], 'adaptive Mini resource check passed for this release build')
       true
     ensure
       subject.singleton_class.remove_method(:resource_soak_running_app_candidates) rescue nil
       subject.singleton_class.remove_method(:resource_soak_sample) rescue nil
       FileUtils.rm_f(['/tmp/sanebar_runtime_resource_soak.json', '/tmp/sanebar_runtime_resource_soak.log'])
+    end
+
+    test('fixed resource soak does not satisfy adaptive release scenario') do
+      artifact_path = '/tmp/sanebar_runtime_resource_soak_fixed.json'
+      log_path = '/tmp/sanebar_runtime_resource_soak_fixed.log'
+      adaptive_artifact_path = '/tmp/sanebar_runtime_resource_soak.json'
+      FileUtils.rm_f([artifact_path, log_path, adaptive_artifact_path])
+
+      subject.define_singleton_method(:resource_soak_running_app_candidates) do |app_name|
+        [{
+          pid: 12_345,
+          app_path: "/Applications/#{app_name}.app",
+          app_version: '1.2.3',
+          app_build: '123',
+          process_path: "/Applications/#{app_name}.app/Contents/MacOS/#{app_name}"
+        }]
+      end
+      subject.define_singleton_method(:resource_soak_sample) do |_pid|
+        { cpu: 0.2, rss_mb: 80.0, physical_footprint_mb: 60.0 }
+      end
+
+      report = nil
+      report = subject.resource_soak_report(['--app', 'SaneExample', '--duration-seconds', '0', '--fixed', '--no-exit'])
+
+      assert(report[:ok], "expected fixed resource soak to pass: #{report[:issues].inspect}")
+      payload = JSON.parse(File.read(artifact_path))
+      assert_eq(payload['adaptive'], false)
+      assert_eq(payload['adaptive_status'], 'fixed')
+      assert(!payload['completed_scenarios'].include?('adaptive Mini resource check passed for this release build'), 'fixed soak must not satisfy adaptive scenario')
+      assert_includes(payload['completed_scenarios'], 'fixed-duration Mini resource check passed for this release build')
+      assert(!File.exist?(adaptive_artifact_path), 'fixed diagnostic soak must not overwrite the adaptive release artifact')
+      true
+    ensure
+      subject.singleton_class.remove_method(:resource_soak_running_app_candidates) rescue nil
+      subject.singleton_class.remove_method(:resource_soak_sample) rescue nil
+      FileUtils.rm_f([
+                       '/tmp/sanebar_runtime_resource_soak_fixed.json',
+                       '/tmp/sanebar_runtime_resource_soak_fixed.log',
+                       '/tmp/sanebar_runtime_resource_soak.json',
+                       '/tmp/sanebar_runtime_resource_soak.log'
+                     ])
     end
 
     test('resource soak rejects stale installed candidate version before sampling') do
@@ -2000,7 +2438,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       end
 
       report = nil
-      with_env('SANEMASTER_RESOURCE_SOAK_MIN_SECONDS' => '0') do
+      with_env('SANEMASTER_RESOURCE_SOAK_MIN_SECONDS' => '1') do
         report = subject.resource_soak_report(['--app', 'SaneExample', '--duration-seconds', '1', '--interval-seconds', '1', '--no-exit'])
       end
 
@@ -2046,6 +2484,119 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       )
 
       assert_includes(issues.join("\n"), 'sampled span 20.0s is shorter than required 589.0s')
+      true
+    end
+
+    test('resource soak adaptive state passes stable candidate at minimum duration') do
+      options = subject.send(:parse_resource_soak_args, ['--app', 'SaneExample', '--duration-seconds', '600', '--no-exit'])
+      samples = (0..48).map do |index|
+        {
+          sampled_at: '2026-06-18T01:00:00Z',
+          elapsed_seconds: index * 5.0,
+          cpu: index.even? ? 0.2 : 0.1,
+          rss_mb: 80.0 + (index * 0.01),
+          physical_footprint_mb: 60.0 + (index * 0.005)
+        }
+      end
+      metrics = subject.send(:resource_soak_metrics, samples)
+      state = subject.send(
+        :resource_soak_adaptive_state,
+        metrics,
+        options,
+        elapsed_seconds: 240.0,
+        missing_sample_count: 0,
+        fail_streak: 0
+      )
+
+      assert_eq(state[:status], 'early_pass')
+      assert_includes(state[:reasons].join("\n"), 'stable resource profile')
+      assert(metrics[:rss_slope_mb_per_min].to_f < 1.0, "expected low RSS slope, got #{metrics[:rss_slope_mb_per_min]}")
+      true
+    end
+
+    test('resource soak adaptive state rejects sparse physical footprint sampling') do
+      options = subject.send(:parse_resource_soak_args, ['--app', 'SaneExample', '--duration-seconds', '600', '--no-exit'])
+      samples = [
+        {
+          sampled_at: '2026-06-18T01:00:00Z',
+          elapsed_seconds: 0.0,
+          cpu: 0.2,
+          rss_mb: 80.0,
+          physical_footprint_mb: 60.0
+        },
+        {
+          sampled_at: '2026-06-18T01:00:05Z',
+          elapsed_seconds: 5.0,
+          cpu: 0.1,
+          rss_mb: 80.2,
+          physical_footprint_mb: nil
+        }
+      ]
+      metrics = subject.send(:resource_soak_metrics, samples, options)
+      state = subject.send(
+        :resource_soak_adaptive_state,
+        metrics,
+        options,
+        elapsed_seconds: 5.0,
+        missing_sample_count: 0,
+        fail_streak: 0
+      )
+
+      assert_eq(metrics[:physical_sample_count], 1)
+      assert_eq(metrics[:physical_missing_sample_count], 1)
+      assert_eq(state[:status], 'fail')
+      assert_includes(state[:issues].join("\n"), 'physical footprint missing for 1 sample(s)')
+      true
+    end
+
+    test('resource soak adaptive state fails after sustained rolling CPU threshold breach') do
+      options = subject.send(:parse_resource_soak_args, ['--app', 'SaneExample', '--duration-seconds', '600', '--no-exit'])
+      samples = (0..8).map do |index|
+        {
+          sampled_at: '2026-06-18T01:00:00Z',
+          elapsed_seconds: index * 5.0,
+          cpu: 10.0,
+          rss_mb: 80.0,
+          physical_footprint_mb: 60.0
+        }
+      end
+      metrics = subject.send(:resource_soak_metrics, samples)
+      first = subject.send(:resource_soak_adaptive_state, metrics, options, elapsed_seconds: 40.0, missing_sample_count: 0, fail_streak: 0)
+      second = subject.send(:resource_soak_adaptive_state, metrics, options, elapsed_seconds: 45.0, missing_sample_count: 0, fail_streak: first[:fail_streak])
+      third = subject.send(:resource_soak_adaptive_state, metrics, options, elapsed_seconds: 50.0, missing_sample_count: 0, fail_streak: second[:fail_streak])
+
+      assert_eq(first[:status], 'running')
+      assert_eq(second[:status], 'running')
+      assert_eq(third[:status], 'fail')
+      assert_includes(third[:issues].join("\n"), 'rollingAvgCpu60s 10.0% > 8.0%')
+      true
+    end
+
+    test('resource soak adaptive state waits for minimum duration before memory trend failure') do
+      options = subject.send(:parse_resource_soak_args, ['--app', 'SaneExample', '--duration-seconds', '600', '--no-exit'])
+      samples = (0..7).map do |index|
+        {
+          sampled_at: '2026-06-18T01:00:00Z',
+          elapsed_seconds: index * 5.0,
+          cpu: 0.0,
+          rss_mb: index < 4 ? 80.0 : 120.0,
+          physical_footprint_mb: index < 4 ? 50.0 : 75.0
+        }
+      end
+      metrics = subject.send(:resource_soak_metrics, samples, options)
+      state = subject.send(
+        :resource_soak_adaptive_state,
+        metrics,
+        options,
+        elapsed_seconds: 35.0,
+        missing_sample_count: 0,
+        fail_streak: 2
+      )
+
+      assert_eq(state[:status], 'running')
+      assert_eq(state[:fail_streak], 0)
+      assert(metrics[:rss_slope_mb_per_min].to_f > options[:adaptive_rss_slope_mb_per_min_max])
+      assert(metrics[:physical_footprint_slope_mb_per_min].to_f > options[:adaptive_physical_slope_mb_per_min_max])
       true
     end
 
@@ -2407,6 +2958,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_includes(source, 'windowless_target=false')
       assert_includes(source, 'if $ALLOW_WINDOWLESS_TARGET; then')
       assert_includes(source, 'if ! $windowless_target; then')
+      assert_includes(source, '[ "$target_windows" != "0" ]')
       assert_includes(source, 'if ! $windowless_target || [ "$target_windows" != "0" ]; then')
       assert_includes(source, 'target_app_prompt_blockers_timeout 3')
       assert_includes(source, 'has an unresolved app install/move prompt')
@@ -2571,6 +3123,27 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         fingerprint = payload['sourceFingerprint'].to_s
         assert_eq(fingerprint.length, 64)
         assert_match(fingerprint, /\A[0-9a-f]{64}\z/)
+      end
+      true
+    end
+
+    test('release status source freshness includes download redirects') do
+      Dir.mktmpdir('release-status-redirect-fingerprint-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'docs'))
+        FileUtils.mkdir_p(File.join(dir, 'website'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'project.yml'), "name: SaneExample\n")
+        File.write(File.join(dir, 'docs', '_redirects'), "/download /updates/SaneExample-1.0.0.zip 302\n")
+        File.write(File.join(dir, 'website', '_redirects'), "/download /updates/SaneExample-1.0.0.zip 302\n")
+        system('git', '-C', dir, 'init', '-q')
+        system('git', '-C', dir, 'add', '.')
+        system('git', '-C', dir, 'commit', '-q', '-m', 'initial')
+
+        files = subject.send(:release_status_source_files, dir)
+        assert_includes(files, 'docs/_redirects')
+        assert_includes(files, 'website/_redirects')
+        assert(subject.send(:release_status_source_file?, dir, 'docs/_redirects'))
+        assert(subject.send(:release_status_source_file?, dir, 'website/_redirects'))
       end
       true
     end
@@ -3421,7 +3994,67 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert(!qa_index.nil?, 'expected raw project QA fallback to remain available')
       assert(receipt_index < qa_index, 'expected release_preflight receipt path before raw project QA fallback')
       assert_includes(release_script, 'sourceFingerprint')
+      assert_includes(release_script, 'customer UI receipt is stale for release_preflight reuse')
+      assert_includes(release_script, '(?:css|html|js|json|xml)')
+      assert_includes(release_script, "path == 'docs/_redirects' || path == 'website/_redirects'")
       assert_includes(release_script, 'Project QA guardrails covered by fresh SaneMaster release_preflight receipt')
+      true
+    end
+
+    test('release.sh skips duplicate verify when fresh release_preflight proof matches candidate') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+      run_tests_body = release_script[/run_tests\(\) \{.*?^}/m]
+
+      assert(!run_tests_body.nil?, 'expected run_tests body in release.sh')
+      assert_includes(run_tests_body, 'fresh_release_preflight_receipt_summary')
+      assert_includes(run_tests_body, 'Skipping duplicate SaneMaster verify')
+      assert_includes(run_tests_body, 'SANEPROCESS_RELEASE_ALWAYS_RUN_TESTS=1')
+      true
+    end
+
+    test('release.sh fans out public post-release HTTP probes before sequential credential checks') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+      post_release_body = release_script[/run_post_release_checks\(\) \{.*?^}/m]
+
+      assert(!post_release_body.nil?, 'expected run_post_release_checks body in release.sh')
+      assert_includes(post_release_body, 'post-release-probes')
+      assert_includes(post_release_body, 'sane-post-release-probes.XXXXXX')
+      assert_includes(post_release_body, 'dist_browser.err')
+      assert_includes(post_release_body, 'release_probe_status_text')
+      assert_includes(post_release_body, 'post-release-probes-${RELEASE_RUN_ID}.txt')
+      assert_includes(post_release_body, 'probe_pids+=("$!")')
+      assert_includes(post_release_body, 'wait "${probe_pid}" || true')
+      assert_includes(post_release_body, 'write_post_release_probe_receipt "${probe_dir}" "${probe_receipt_path}" "probes_finished"')
+      assert_includes(post_release_body, 'write_post_release_probe_receipt "${probe_dir}" "${probe_receipt_path}" "passed" "${download_redirect_status}"')
+      assert(post_release_body.index('extract_http_status "${dist_url}"') < post_release_body.index('verify_dist_archive_bundle_version'), 'expected public URL probes before archive verification')
+      assert(post_release_body.index('verify_lemonsqueezy_hosted_file_sync') > post_release_body.index('wait "${probe_pid}" || true'), 'credential-backed hosted file sync should remain after public probe fan-out')
+      true
+    end
+
+    test('release.sh checks Homebrew GitHub API before raw propagation loop') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+      post_release_body = release_script[/run_post_release_checks\(\) \{.*?^}/m]
+
+      api_probe_index = post_release_body.index('cask_api_probe=$(fetch_github_contents_file_body')
+      raw_loop_index = post_release_body.index('cask_body=$(curl -fsSL "${cask_raw_url}"')
+      assert_includes(release_script, 'fetch_github_contents_file_body')
+      assert(!api_probe_index.nil?, 'expected GitHub API Homebrew probe without requiring gh')
+      assert(!raw_loop_index.nil?, 'expected raw Homebrew fallback')
+      assert(api_probe_index < raw_loop_index, 'expected GitHub API Homebrew check before raw fallback')
+      true
+    end
+
+    test('release.sh non-strict missing Homebrew cask does not skip later post-release checks') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+      post_release_body = release_script[/run_post_release_checks\(\) \{.*?^}/m]
+      missing_cask_branch = post_release_body[/No Homebrew cask found.*?Homebrew cask did not converge/m]
+
+      assert(!missing_cask_branch.nil?, 'expected explicit missing Homebrew cask branch')
+      assert(!missing_cask_branch.include?('return 0'), 'missing optional cask must not return from all post-release checks')
+      assert(
+        post_release_body.index('No Homebrew cask found') < post_release_body.index('Website download flow'),
+        'website checks must run after optional Homebrew skip'
+      )
       true
     end
 
@@ -3493,6 +4126,22 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('SaneMaster wrapper prelude caches keychain partition grants') do
+      prelude = File.read(File.expand_path('../sanemaster-wrapper-prelude.sh', __dir__))
+
+      assert_includes(prelude, 'saneprocess_run_with_timeout()')
+      assert_includes(prelude, 'stamp_root="${HOME}/.cache/saneprocess/keychain-partitions"')
+      assert_includes(prelude, 'keychain_mtime="$(stat -f %m "${keychain}"')
+      assert_includes(prelude, 'printf \'%s\\n%s\\n%s\\n\' "${keychain}" "${keychain_mtime}" "${identities}"')
+      assert_includes(prelude, 'SANEPROCESS_GRANT_KEYCHAIN_PARTITION_ACCESS:-${SANEMASTER_GRANT_KEYCHAIN_PARTITION_ACCESS:-0}')
+      assert_includes(prelude, 'SANEPROCESS_FORCE_KEYCHAIN_PARTITION:-0')
+      assert_includes(prelude, 'SANEPROCESS_KEYCHAIN_PARTITION_TIMEOUT:-8')
+      assert_includes(prelude, 'security set-key-partition-list')
+      assert(!prelude.include?('-D "${identity}"'), 'wrapper prelude should not run partition grants once per identity')
+      assert(!prelude.include?('printf \'%s\\n\' "${identities}" | while'), 'wrapper prelude should not pipe identities into a partition grant loop')
+      true
+    end
+
     test('release.sh repairs stale editable ASC lanes before version-state preflight') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
 
@@ -3512,9 +4161,13 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_includes(release_script, '"docs/download.html"')
       assert_includes(release_script, '"website/index.html"')
       assert_includes(release_script, '"website/download.html"')
+      assert_includes(release_script, '"docs/_redirects"')
+      assert_includes(release_script, '"website/_redirects"')
       assert_includes(release_script, 'REDIRECTS_FILE="${SITE_DIR}/_redirects"')
       assert_includes(release_script, 'download redirect(s) in $(basename "${SITE_DIR}")/_redirects')
       assert_includes(release_script, 'sync release metadata for v${VERSION}')
+      ship_guard = File.read(File.expand_path('../hooks/sane_ship_guard.rb', __dir__))
+      assert_includes(ship_guard, "path == 'docs/appcast.xml' || path == 'docs/_redirects' || path.end_with?('/appcast.xml')")
       true
     end
 

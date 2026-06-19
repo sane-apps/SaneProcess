@@ -162,6 +162,25 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
 
       assert_includes(source, "ENV['SANEMASTER_MUTATE_LOGIN_KEYCHAIN_STATE'] == '1'")
       assert_includes(source, "ENV['SANEMASTER_GRANT_KEYCHAIN_PARTITION_ACCESS'] == '1'")
+      assert_includes(source, 'keychain_partition_stamp_file(login_keychain, identities)')
+      assert_includes(source, 'Digest::SHA256.hexdigest("#{login_keychain}\n#{normalized_identities}")')
+      assert_includes(source, 'grant_keychain_partition_access(login_keychain, keychain_password)')
+      assert_includes(source, "ENV.fetch('SANEPROCESS_KEYCHAIN_PARTITION_TIMEOUT', '8')")
+      assert(!source.include?("'-D', identity"), 'test_mode should not run one partition grant per identity')
+      assert(!source.include?('identities.each_line do |line|'), 'test_mode should not loop over every keychain identity')
+      true
+    end
+
+    test('shared wrapper gates and caches partition grants') do
+      prelude = File.read(File.expand_path('../sanemaster-wrapper-prelude.sh', __dir__))
+
+      assert_includes(prelude, 'SANEPROCESS_GRANT_KEYCHAIN_PARTITION_ACCESS')
+      assert_includes(prelude, 'SANEMASTER_GRANT_KEYCHAIN_PARTITION_ACCESS')
+      assert_includes(prelude, 'keychain_mtime="$(stat -f %m "${keychain}"')
+      assert_includes(prelude, 'printf \'%s\\n%s\\n%s\\n\' "${keychain}" "${keychain_mtime}" "${identities}"')
+      assert_includes(prelude, 'saneprocess_run_with_timeout "${partition_timeout}"')
+      assert_includes(prelude, 'SANEPROCESS_KEYCHAIN_PARTITION_TIMEOUT:-8')
+      assert(!prelude.include?('-D "${identity}"'), 'prelude should not run one partition grant per identity')
       true
     end
 
@@ -267,6 +286,17 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
 
         assert_eq(subject.send(:canonical_runtime_path, link_dir), File.realpath(real_dir))
       end
+      true
+    end
+  end
+
+  test_category('Launch Services refresh') do
+    test('test_mode uses supported lsregister refresh flags') do
+      source = File.read(TEST_MODE_PATH)
+
+      assert_includes(source, "'-r', '-f', '-apps', 'local,user,system'")
+      assert(!source.include?("'-kill', '-r'"), 'lsregister -kill is removed on current macOS')
+      assert_includes(source, 'Launch Services refresh failed')
       true
     end
   end

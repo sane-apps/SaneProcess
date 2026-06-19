@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require 'fileutils'
 require 'stringio'
 require 'tmpdir'
 
@@ -32,6 +33,98 @@ def capture_stdout
   buffer.string
 ensure
   $stdout = original_stdout
+end
+
+def with_held_runtime_lock(lock_path)
+  pid = fork do
+    lock_file = File.open(lock_path, File::RDWR | File::CREAT, 0o600)
+    lock_file.flock(File::LOCK_EX)
+    lock_file.rewind
+    lock_file.truncate(0)
+    lock_file.write("pid=#{Process.pid} started=2026-06-18T00:00:00Z command=qa-runtime-smoke\n")
+    lock_file.flush
+    trap('TERM') { exit 0 }
+    sleep
+  ensure
+    begin
+      lock_file&.flock(File::LOCK_UN)
+    rescue StandardError
+      nil
+    end
+    begin
+      lock_file&.close unless lock_file&.closed?
+    rescue StandardError
+      nil
+    end
+  end
+
+  deadline = Time.now + 2
+  until File.exist?(lock_path) && File.read(lock_path).include?("pid=#{pid}")
+    raise 'timed out waiting for held runtime lock' if Time.now >= deadline
+
+    sleep 0.01
+  end
+  yield pid
+ensure
+  if pid
+    begin
+      Process.kill('TERM', pid)
+    rescue Errno::ESRCH
+      nil
+    end
+    begin
+      Process.wait(pid)
+    rescue Errno::ECHILD
+      nil
+    end
+  end
+end
+
+def with_published_hardlink_runtime_lock(lock_path)
+  pid = fork do
+    temp_path = File.join(File.dirname(lock_path), ".#{File.basename(lock_path)}.#{Process.pid}.tmp")
+    lock_file = File.open(temp_path, File::RDWR | File::CREAT | File::EXCL, 0o600)
+    lock_file.flock(File::LOCK_EX)
+    lock_file.write("pid=#{Process.pid} started=2026-06-18T00:00:00Z command=qa-runtime-smoke\n")
+    lock_file.flush
+    File.link(temp_path, lock_path)
+    FileUtils.rm_f(temp_path)
+    trap('TERM') { exit 0 }
+    sleep
+  ensure
+    begin
+      lock_file&.flock(File::LOCK_UN)
+    rescue StandardError
+      nil
+    end
+    begin
+      lock_file&.close unless lock_file&.closed?
+    rescue StandardError
+      nil
+    end
+  end
+
+  deadline = Time.now + 2
+  until File.exist?(lock_path) && File.read(lock_path).include?("pid=#{pid}")
+    raise 'timed out waiting for published runtime lock' if Time.now >= deadline
+
+    sleep 0.01
+  end
+  yield pid
+ensure
+  if pid
+    begin
+      Process.kill('TERM', pid)
+    rescue Errno::ESRCH
+      nil
+    end
+    begin
+      Process.wait(pid)
+    rescue Errno::ECHILD
+      nil
+    end
+  end
+  FileUtils.rm_f(lock_path)
 end
 
 exit(run_tests('SaneMaster Verify Repo Drift Tests') do
@@ -79,6 +172,119 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
         File.write(tracked, "still dirty\n")
         report = subject.send(:verify_repo_dirt_report, before_snapshot: before, repo_path: dir)
         assert_eq(report[:introduced], [])
+      end
+      true
+    end
+  end
+
+  test_category('Runtime probe lock guard') do
+    test('verify checks runtime probe lock before preflight can kill the app') do
+      source = File.read(File.expand_path('verify.rb', __dir__))
+      lock_index = source.index('assert_no_runtime_probe_lock_for_verify!')
+      preflight_index = source.index('run_verify_preflight')
+
+      assert(lock_index, 'verify should check runtime probe lock')
+      assert(preflight_index, 'verify should still run normal preflight')
+      assert(lock_index < preflight_index, 'runtime probe lock must be checked before verify preflight mutates app state')
+      true
+    end
+
+    test('live runtime probe lock blocks verify') do
+      Dir.mktmpdir('verify-runtime-lock-live-') do |dir|
+        lock_path = File.join(dir, 'sanebar_runtime_probe.lock')
+        fresh_subject = VerifyHarness.new
+        fresh_subject.define_singleton_method(:project_name) { 'SaneBar' }
+
+        previous = ENV['SANEMASTER_RUNTIME_PROBE_LOCK_PATH']
+        ENV['SANEMASTER_RUNTIME_PROBE_LOCK_PATH'] = lock_path
+        with_held_runtime_lock(lock_path) do
+          status = nil
+          output = capture_stdout do
+            begin
+              fresh_subject.send(:assert_no_runtime_probe_lock_for_verify!)
+            rescue SystemExit => e
+              status = e.status
+            end
+          end
+
+          assert_eq(status, 75)
+          assert_includes(output, 'Verify refused because SaneBar runtime QA is active')
+          assert_includes(output, lock_path)
+        end
+      ensure
+        ENV['SANEMASTER_RUNTIME_PROBE_LOCK_PATH'] = previous
+      end
+      true
+    end
+
+    test('published hard-link runtime probe lock blocks verify') do
+      Dir.mktmpdir('verify-runtime-lock-hardlink-') do |dir|
+        lock_path = File.join(dir, 'sanebar_runtime_probe.lock')
+        fresh_subject = VerifyHarness.new
+        fresh_subject.define_singleton_method(:project_name) { 'SaneBar' }
+
+        previous = ENV['SANEMASTER_RUNTIME_PROBE_LOCK_PATH']
+        ENV['SANEMASTER_RUNTIME_PROBE_LOCK_PATH'] = lock_path
+        with_published_hardlink_runtime_lock(lock_path) do
+          status = nil
+          output = capture_stdout do
+            begin
+              fresh_subject.send(:assert_no_runtime_probe_lock_for_verify!)
+            rescue SystemExit => e
+              status = e.status
+            end
+          end
+
+          assert_eq(status, 75)
+          assert_includes(output, 'Verify refused because SaneBar runtime QA is active')
+          assert(File.exist?(lock_path), 'verify must not unlink a live hard-link-published runtime lock')
+        end
+      ensure
+        ENV['SANEMASTER_RUNTIME_PROBE_LOCK_PATH'] = previous
+      end
+      true
+    end
+
+    test('default runtime probe lock path matches project QA lock') do
+      fresh_subject = VerifyHarness.new
+      fresh_subject.define_singleton_method(:project_name) { 'SaneBar' }
+
+      assert_eq(fresh_subject.send(:runtime_probe_lock_path_for_project), '/tmp/sanebar_runtime_probe.lock')
+      true
+    end
+
+    test('stale runtime probe lock is removed before verify') do
+      Dir.mktmpdir('verify-runtime-lock-stale-') do |dir|
+        lock_path = File.join(dir, 'sanebar_runtime_probe.lock')
+        File.write(lock_path, "pid=999999 started=2026-06-18T00:00:00Z command=qa-runtime-smoke\n")
+        fresh_subject = VerifyHarness.new
+        fresh_subject.define_singleton_method(:project_name) { 'SaneBar' }
+
+        previous = ENV['SANEMASTER_RUNTIME_PROBE_LOCK_PATH']
+        ENV['SANEMASTER_RUNTIME_PROBE_LOCK_PATH'] = lock_path
+        fresh_subject.send(:assert_no_runtime_probe_lock_for_verify!)
+
+        assert(!File.exist?(lock_path), 'stale runtime probe lock should not block future verify runs')
+      ensure
+        ENV['SANEMASTER_RUNTIME_PROBE_LOCK_PATH'] = previous
+      end
+      true
+    end
+
+    test('spoofed live pid without held lock is treated as stale') do
+      Dir.mktmpdir('verify-runtime-lock-spoofed-') do |dir|
+        lock_path = File.join(dir, 'sanebar_runtime_probe.lock')
+        File.write(lock_path, "pid=#{Process.pid} started=2026-06-18T00:00:00Z command=qa-runtime-smoke\n")
+        fresh_subject = VerifyHarness.new
+        fresh_subject.define_singleton_method(:project_name) { 'SaneBar' }
+
+        previous = ENV['SANEMASTER_RUNTIME_PROBE_LOCK_PATH']
+        ENV['SANEMASTER_RUNTIME_PROBE_LOCK_PATH'] = lock_path
+        fresh_subject.send(:assert_no_runtime_probe_lock_for_verify!)
+
+        assert(!File.exist?(lock_path), 'unlocked spoofed runtime probe lock should be removed')
+      ensure
+        ENV['SANEMASTER_RUNTIME_PROBE_LOCK_PATH'] = previous
       end
       true
     end

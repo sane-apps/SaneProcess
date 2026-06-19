@@ -68,8 +68,31 @@ saneprocess_keychain_password() {
   printf '%s\n' "${SANEMASTER_KEYCHAIN_PASSWORD:-${SANEBAR_KEYCHAIN_PASSWORD:-${KEYCHAIN_PASSWORD:-${KEYCHAIN_PASS:-}}}}"
 }
 
+saneprocess_run_with_timeout() {
+  local timeout_seconds pid elapsed
+  timeout_seconds="${1:-8}"
+  shift || return 1
+
+  "$@" &
+  pid="$!"
+  elapsed=0
+
+  while kill -0 "${pid}" >/dev/null 2>&1; do
+    if [ "${elapsed}" -ge "${timeout_seconds}" ]; then
+      kill "${pid}" >/dev/null 2>&1 || true
+      wait "${pid}" >/dev/null 2>&1 || true
+      return 124
+    fi
+
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  wait "${pid}"
+}
+
 saneprocess_prepare_signing_keychain() {
-  local keychain password identities identity
+  local keychain password identities keychain_mtime stamp_root stamp_key stamp_file partition_timeout
 
   keychain="$(saneprocess_login_keychain)"
   [ -f "${keychain}" ] || return 0
@@ -89,22 +112,34 @@ saneprocess_prepare_signing_keychain() {
   security set-keychain-settings -lut 21600 "${keychain}" >/dev/null 2>&1 || true
   security unlock-keychain -p "${password}" "${keychain}" >/dev/null 2>&1 || true
 
+  if [[ "${SANEPROCESS_GRANT_KEYCHAIN_PARTITION_ACCESS:-${SANEMASTER_GRANT_KEYCHAIN_PARTITION_ACCESS:-0}}" != "1" ]]; then
+    return 0
+  fi
+
   identities="$(
     security find-identity -v -p codesigning "${keychain}" 2>/dev/null |
       sed -n 's/^[[:space:]]*[0-9][0-9]*) [0-9A-F]\{40\} "\(.*\)"$/\1/p'
   )"
   [ -n "${identities}" ] || return 0
 
-  printf '%s\n' "${identities}" | while IFS= read -r identity; do
-    [ -n "${identity}" ] || continue
+  stamp_root="${HOME}/.cache/saneprocess/keychain-partitions"
+  keychain_mtime="$(stat -f %m "${keychain}" 2>/dev/null || printf 'unknown')"
+  stamp_key="$(printf '%s\n%s\n%s\n' "${keychain}" "${keychain_mtime}" "${identities}" | shasum -a 256 | awk '{print $1}')"
+  stamp_file="${stamp_root}/${stamp_key}.stamp"
+  if [ -f "${stamp_file}" ] && [ "${SANEPROCESS_FORCE_KEYCHAIN_PARTITION:-0}" != "1" ]; then
+    return 0
+  fi
+  mkdir -p "${stamp_root}" 2>/dev/null || true
+
+  partition_timeout="${SANEPROCESS_KEYCHAIN_PARTITION_TIMEOUT:-8}"
+  if saneprocess_run_with_timeout "${partition_timeout}" \
     security set-key-partition-list \
-      -S apple-tool:,apple:,codesign: \
-      -s \
-      -k "${password}" \
-      -D "${identity}" \
-      -t private \
-      "${keychain}" >/dev/null 2>&1 || true
-  done
+    -S apple-tool:,apple:,codesign: \
+    -s \
+    -k "${password}" \
+    "${keychain}" >/dev/null 2>&1; then
+    touch "${stamp_file}" 2>/dev/null || true
+  fi
 }
 
 saneprocess_resolved_build_config() {

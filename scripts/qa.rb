@@ -27,6 +27,7 @@ Encoding.default_internal = Encoding::UTF_8
 require 'net/http'
 require 'uri'
 require 'json'
+require 'open3'
 require_relative 'qa_drift_checks'
 
 class SaneProcessQA
@@ -55,8 +56,6 @@ class SaneProcessQA
     sanetrack_test.rb
     sanestop_test.rb
   ].freeze
-
-  HOOKS_DIR = File.join(__dir__, 'hooks')
 
   # Runtime modules are derived from the entry hooks' actual require_relative
   # graph, so this set can never drift from reality. Hand-maintained lists
@@ -92,6 +91,8 @@ class SaneProcessQA
 
   SANEMASTER_CLI = File.join(__dir__, 'SaneMaster.rb')
   SANEMASTER_DIR = File.join(__dir__, 'sanemaster')
+  SANEPROCESS_ROOT = File.expand_path('..', __dir__)
+  QA_CHILD_COMMAND_TIMEOUT_SECONDS = Integer(ENV.fetch('SANEPROCESS_QA_CHILD_TIMEOUT_SECONDS', '75'))
 
   EXPECTED_SANEMASTER_MODULES = %w[
     base.rb
@@ -198,8 +199,8 @@ class SaneProcessQA
       path = File.join(HOOKS_DIR, hook)
       next unless File.exist?(path)
 
-      result = `ruby -c #{path} 2>&1`
-      invalid << hook unless $?.success?
+      _result, success = capture_qa_command('ruby', '-c', path, timeout: 15)
+      invalid << hook unless success
     end
 
     if invalid.empty?
@@ -297,8 +298,8 @@ end
 
     # Check main CLI
     if File.exist?(SANEMASTER_CLI)
-      result = `ruby -c #{SANEMASTER_CLI} 2>&1`
-      invalid << 'SaneMaster.rb' unless $?.success?
+      _result, success = capture_qa_command('ruby', '-c', SANEMASTER_CLI, timeout: 15)
+      invalid << 'SaneMaster.rb' unless success
     else
       @errors << "SaneMaster.rb not found"
       puts "❌ Missing"
@@ -314,8 +315,8 @@ end
         next
       end
 
-      result = `ruby -c #{path} 2>&1`
-      invalid << mod unless $?.success?
+      _result, success = capture_qa_command('ruby', '-c', path, timeout: 15)
+      invalid << mod unless success
     end
 
     if missing_modules.any?
@@ -566,7 +567,7 @@ end
       return
     end
 
-    result = `ruby #{test_file} 2>&1`
+    result, success = capture_qa_command('ruby', test_file)
     # Extract counts from summary
     if (match = result.match(/TOTAL: (\d+)\/(\d+) passed(?:, (\d+) weak)?/))
       passed = match[1].to_i
@@ -581,7 +582,7 @@ end
         @errors << "Tier tests: #{failed} failed"
         puts "❌ #{passed}/#{total} passed, #{failed} failed"
       end
-    elsif $?.success?
+    elsif success
       puts "✅ Tests pass"
     else
       @errors << "Tier tests failed"
@@ -602,7 +603,7 @@ end
       hook_path = File.join(HOOKS_DIR, "#{hook}.rb")
       next unless File.exist?(hook_path)
 
-      result = `ruby #{hook_path} --self-test 2>&1`
+      result, success = capture_qa_command('ruby', hook_path, '--self-test')
       # Match "N/N tests passed" specifically — avoid false matches like "4/5 categories"
       if (match = result.match(/(\d+)\/(\d+) tests passed/))
         passed = match[1].to_i
@@ -610,7 +611,7 @@ end
         total_passed += passed
         total_failed += (total - passed)
         failures << "#{hook}: #{total - passed} failed" if total > passed
-      elsif $?.success?
+      elsif success
         # Can't parse count but it passed
         total_passed += 1
       else
@@ -638,7 +639,7 @@ end
       return
     end
 
-    result = `ruby #{audit_file} 2>&1`
+    result, = capture_qa_command('ruby', audit_file)
     if (match = result.match(/TOTAL: (\d+) strong, (\d+) weak/))
       strong = match[1].to_i
       weak = match[2].to_i
@@ -655,7 +656,7 @@ end
   end
 
   def top_level_hook_dependencies
-    sources = EXPECTED_HOOKS + SHARED_MODULES + SELF_TEST_MODULES
+    sources = ALL_HOOK_FILES
     sources.each_with_object([]) do |relative_path, deps|
       path = File.join(HOOKS_DIR, relative_path)
       next unless File.exist?(path)
@@ -667,6 +668,34 @@ end
         deps << dep if dep
       end
     end.uniq.sort
+  end
+
+  def capture_qa_command(*command, timeout: QA_CHILD_COMMAND_TIMEOUT_SECONDS, chdir: SANEPROCESS_ROOT)
+    stdout_reader = nil
+    stderr_reader = nil
+
+    Open3.popen3(*command, chdir: chdir) do |stdin, stdout, stderr, wait_thr|
+      stdin.close
+      stdout_reader = Thread.new { stdout.read }
+      stderr_reader = Thread.new { stderr.read }
+
+      unless wait_thr.join(timeout)
+        Process.kill('TERM', wait_thr.pid)
+        unless wait_thr.join(2)
+          Process.kill('KILL', wait_thr.pid)
+          wait_thr.join
+        end
+
+        output = [stdout_reader.value, stderr_reader.value].join
+        output << "\nTimed out after #{timeout}s: #{command.join(' ')}"
+        return [output, false]
+      end
+
+      output = [stdout_reader.value, stderr_reader.value].join
+      return [output, wait_thr.value.success?]
+    end
+  rescue StandardError => e
+    ["#{e.class}: #{e.message}", false]
   end
 
   def normalize_hook_dependency(source_relative_path, dependency)

@@ -58,6 +58,9 @@ list_windows() {
   /usr/bin/osascript <<'OSA'
 set outputLines to {}
 set tabDelimiter to ASCII character 9
+tell application "System Events"
+  if not (exists process "Terminal") then return ""
+end tell
 tell application "Terminal"
   repeat with w in windows
     set winID to ""
@@ -106,17 +109,49 @@ is_known_legacy_automation_window() {
 
 close_window_by_id() {
   local target_id="$1"
-  /usr/bin/osascript <<OSA >/dev/null
+  /usr/bin/osascript <<OSA
+set targetID to ${target_id}
+on windowStillExists(targetID)
+  tell application "Terminal"
+    repeat with candidateWindow in windows
+      try
+        if id of candidateWindow is equal to targetID then return true
+      end try
+    end repeat
+  end tell
+  return false
+end windowStillExists
+
+tell application "System Events"
+  if not (exists process "Terminal") then return "missing-terminal"
+end tell
 tell application "Terminal"
   repeat with w in windows
     try
-      if id of w is equal to ${target_id} then
+      if id of w is equal to targetID then
+        try
+          set miniaturized of w to false
+          set index of w to 1
+        end try
         close w saving no
-        exit repeat
+        repeat 20 times
+          delay 0.1
+          if my windowStillExists(targetID) is false then return "closed"
+        end repeat
+        activate
+        try
+          tell application "System Events" to keystroke "w" using command down
+        end try
+        repeat 20 times
+          delay 0.1
+          if my windowStillExists(targetID) is false then return "closed"
+        end repeat
+        return "still-open"
       end if
     end try
   end repeat
 end tell
+return "not-found"
 OSA
 }
 
@@ -155,6 +190,20 @@ quit_terminal_if_only_automation_windows_remain() {
 
   if [ "$saw_window" -eq 1 ] && [ "$non_automation_window" -eq 0 ]; then
     /usr/bin/osascript -e 'tell application "Terminal" to quit saving no' >/dev/null 2>&1 || true
+    sleep 1
+    saw_window=0
+    non_automation_window=0
+    while IFS=$'\t' read -r window_id window_name tab_title; do
+      [ -n "${window_id:-}" ] || continue
+      saw_window=1
+      if ! window_matches_reclaim_scope "$window_name" "$tab_title"; then
+        non_automation_window=1
+        break
+      fi
+    done < <(list_windows)
+    if [ "$saw_window" -eq 1 ] && [ "$non_automation_window" -eq 0 ]; then
+      /usr/bin/pkill -x Terminal >/dev/null 2>&1 || true
+    fi
   fi
 }
 
@@ -172,7 +221,14 @@ while IFS=$'\t' read -r window_id window_name tab_title; do
     if [ "$dry_run" -eq 1 ]; then
       printf 'would close %s\t%s\t%s\n' "$window_id" "$window_name" "$tab_title"
     else
-      close_window_by_id "$window_id"
+      close_result="$(close_window_by_id "$window_id" 2>/dev/null || true)"
+      case "$close_result" in
+        closed|not-found|missing-terminal)
+          ;;
+        *)
+          printf 'warning: automation window still open after close attempt: %s\t%s\t%s\t%s\n' "$window_id" "$window_name" "$tab_title" "$close_result" >&2
+          ;;
+      esac
     fi
     closed_count=$((closed_count + 1))
   fi

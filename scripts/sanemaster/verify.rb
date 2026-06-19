@@ -37,6 +37,8 @@ module SaneMasterModules
       running_from_preflight = verify_running_as_preflight?
       return unless running_from_preflight || ensure_research_gate_clear!('verify')
 
+      assert_no_runtime_probe_lock_for_verify!
+
       if test_targets_disabled?
         handle_disabled_tests(args)
         return

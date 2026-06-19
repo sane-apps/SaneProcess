@@ -57,6 +57,8 @@ module SaneMasterModules
     CUSTOMER_UI_IMAGE_EXTENSIONS = %w[.png .jpg .jpeg].freeze
     CUSTOMER_UI_MIN_SCREENSHOT_WIDTH = 80
     CUSTOMER_UI_MIN_SCREENSHOT_HEIGHT = 80
+    RESOURCE_SOAK_ADAPTIVE_SCENARIO = 'adaptive Mini resource check passed for this release build'
+    RESOURCE_SOAK_FIXED_SCENARIO = 'fixed-duration Mini resource check passed for this release build'
     CUSTOMER_UI_PATH_BACKED_EVIDENCE_TYPES = %w[
       actual_output
       api_response
@@ -164,7 +166,9 @@ module SaneMasterModules
         puts JSON.pretty_generate(report.reject { |key, _| key == :json })
       elsif report[:ok]
         puts format(
-          '✅ Resource soak passed: duration=%<duration>.0fs samples=%<samples>d avgCpu=%<cpu>.1f%% peakRss=%<rss>.1fMB peakPhysical=%<physical>.1fMB',
+          '✅ Resource check passed: mode=%<mode>s result=%<decision>s duration=%<duration>.0fs samples=%<samples>d avgCpu=%<cpu>.1f%% peakRss=%<rss>.1fMB peakPhysical=%<physical>.1fMB',
+          mode: report[:adaptive] ? 'adaptive' : 'fixed',
+          decision: resource_soak_human_status(report[:adaptive_status]),
           duration: report[:duration_seconds],
           samples: report[:sample_count],
           cpu: report[:avg_cpu],
@@ -174,8 +178,8 @@ module SaneMasterModules
         puts "   Artifact: #{report[:artifact_path]}"
         puts "   Log: #{report[:log_path]}"
       else
-        puts '❌ Resource soak failed'
-        Array(report[:issues]).each { |issue| puts "   - #{issue}" }
+        puts '❌ Resource check failed'
+        Array(report[:issues]).each { |issue| puts "   - #{resource_soak_human_issue(issue)}" }
         puts "   Artifact: #{report[:artifact_path]}" if report[:artifact_path]
         puts "   Log: #{report[:log_path]}" if report[:log_path]
       end
@@ -225,11 +229,16 @@ module SaneMasterModules
       deadline = Time.now + options[:duration_seconds]
       samples = []
       missing_sample_count = 0
+      adaptive_state = { status: 'fixed', reasons: [], fail_streak: 0 }
+      adaptive_terminal_issues = []
+      adaptive_fail_streak = 0
 
       log_lines << "resource_soak_started_at=#{started_at.iso8601}"
       log_lines << "candidate=#{candidate.inspect}"
       log_lines << "duration_seconds=#{options[:duration_seconds]}"
+      log_lines << "min_duration_seconds=#{options[:min_duration_seconds]}"
       log_lines << "interval_seconds=#{options[:interval_seconds]}"
+      log_lines << "adaptive=#{options[:adaptive]}"
 
       loop do
         elapsed = Time.now - started_at
@@ -249,19 +258,45 @@ module SaneMasterModules
           missing_sample_count += 1
           log_lines << format('sample_missing elapsed=%.1fs pid=%d', elapsed, candidate[:pid])
         end
+
+        if options[:adaptive]
+          adaptive_state = resource_soak_adaptive_state(
+            resource_soak_metrics(samples, options),
+            options,
+            elapsed_seconds: elapsed,
+            missing_sample_count: missing_sample_count,
+            fail_streak: adaptive_fail_streak
+          )
+          adaptive_fail_streak = adaptive_state[:fail_streak]
+          unless adaptive_state[:status] == 'running'
+            adaptive_terminal_issues = Array(adaptive_state[:issues])
+            log_lines << "adaptive_decision=#{adaptive_state[:status]}"
+            Array(adaptive_state[:reasons]).each { |reason| log_lines << "adaptive_reason=#{reason}" }
+            break
+          end
+        end
         resource_soak_print_progress(options, samples: samples, missing_sample_count: missing_sample_count, elapsed: elapsed)
 
         break if Time.now >= deadline
 
-        sleep [options[:interval_seconds], deadline - Time.now].min
+        interval_seconds = resource_soak_next_interval_seconds(options, elapsed)
+        sleep [interval_seconds, deadline - Time.now].min
       end
 
       finished_at = Time.now.utc
-      metrics = resource_soak_metrics(samples)
-      issues = resource_soak_issues(metrics, options, missing_sample_count: missing_sample_count)
+      metrics = resource_soak_metrics(samples, options)
+      issues = (adaptive_terminal_issues + resource_soak_issues(metrics, options, missing_sample_count: missing_sample_count)).uniq
       status = issues.empty? ? 'pass' : 'fail'
+      if options[:adaptive] && status == 'pass' && adaptive_state[:status] == 'running'
+        adaptive_state = {
+          status: 'full_duration_pass',
+          fail_streak: adaptive_fail_streak,
+          reasons: ['reached max duration within release thresholds'],
+          issues: []
+        }
+      end
       scenarios = [
-        'at least 10m Mini soak sampled on the release candidate',
+        options[:adaptive] ? RESOURCE_SOAK_ADAPTIVE_SCENARIO : RESOURCE_SOAK_FIXED_SCENARIO,
         'average CPU remains within idle budget',
         'RSS and physical footprint do not grow beyond the short-soak release budget'
       ]
@@ -276,17 +311,33 @@ module SaneMasterModules
         started_at: started_at.iso8601,
         finished_at: finished_at.iso8601,
         duration_seconds: finished_at - started_at,
+        target_duration_seconds: options[:duration_seconds],
+        min_duration_seconds: options[:min_duration_seconds],
+        adaptive: options[:adaptive],
+        adaptive_status: options[:adaptive] ? adaptive_state[:status] : 'fixed',
+        adaptive_reasons: Array(adaptive_state[:reasons]),
         sample_count: metrics[:sample_count],
         missing_sample_count: missing_sample_count,
+        physical_sample_count: metrics[:physical_sample_count],
+        physical_missing_sample_count: metrics[:physical_missing_sample_count],
         interval_seconds: options[:interval_seconds],
+        initial_interval_seconds: options[:adaptive] ? options[:adaptive_initial_interval_seconds] : options[:interval_seconds],
         avg_cpu: metrics[:avg_cpu],
         peak_cpu: metrics[:peak_cpu],
+        rolling_cpu_avg_60s: metrics[:rolling_cpu_avg_60s],
+        rolling_cpu_peak_60s: metrics[:rolling_cpu_peak_60s],
         avg_rss_mb: metrics[:avg_rss_mb],
         peak_rss_mb: metrics[:peak_rss_mb],
         rss_growth_mb: metrics[:rss_growth_mb],
+        baseline_rss_mb: metrics[:baseline_rss_mb],
+        rss_growth_from_baseline_mb: metrics[:rss_growth_from_baseline_mb],
+        rss_slope_mb_per_min: metrics[:rss_slope_mb_per_min],
         avg_physical_footprint_mb: metrics[:avg_physical_footprint_mb],
         peak_physical_footprint_mb: metrics[:peak_physical_footprint_mb],
         physical_footprint_growth_mb: metrics[:physical_footprint_growth_mb],
+        baseline_physical_footprint_mb: metrics[:baseline_physical_footprint_mb],
+        physical_footprint_growth_from_baseline_mb: metrics[:physical_footprint_growth_from_baseline_mb],
+        physical_footprint_slope_mb_per_min: metrics[:physical_footprint_slope_mb_per_min],
         sample_span_seconds: metrics[:sample_span_seconds],
         budgets: resource_soak_budget_payload(options),
         evidence_types: %w[mini_runtime log state_receipt],
@@ -307,11 +358,17 @@ module SaneMasterModules
         duration_seconds: artifact[:duration_seconds],
         sample_count: metrics[:sample_count],
         missing_sample_count: missing_sample_count,
+        physical_sample_count: metrics[:physical_sample_count],
+        physical_missing_sample_count: metrics[:physical_missing_sample_count],
         avg_cpu: metrics[:avg_cpu],
         peak_cpu: metrics[:peak_cpu],
+        rolling_cpu_avg_60s: metrics[:rolling_cpu_avg_60s],
+        rolling_cpu_peak_60s: metrics[:rolling_cpu_peak_60s],
         peak_rss_mb: metrics[:peak_rss_mb],
         peak_physical_footprint_mb: metrics[:peak_physical_footprint_mb],
         sample_span_seconds: metrics[:sample_span_seconds],
+        adaptive: options[:adaptive],
+        adaptive_status: artifact[:adaptive_status],
         issues: issues
       }
     end
@@ -511,16 +568,40 @@ module SaneMasterModules
     end
 
     def parse_resource_soak_args(args)
+      adaptive_default = ENV.fetch('SANEMASTER_RESOURCE_SOAK_ADAPTIVE', '1') != '0'
+      duration_default = Integer(ENV.fetch('SANEMASTER_RESOURCE_SOAK_SECONDS', (10 * 60).to_s), 10)
+      min_duration_overridden = ENV.key?('SANEMASTER_RESOURCE_SOAK_MIN_SECONDS')
+      min_duration_default = min_duration_overridden ? Integer(ENV.fetch('SANEMASTER_RESOURCE_SOAK_MIN_SECONDS'), 10) : nil
       options = {
         app_name: metadata_value(current_saneprocess_config, 'name') || File.basename(Dir.pwd),
-        duration_seconds: Integer(ENV.fetch('SANEMASTER_RESOURCE_SOAK_SECONDS', (10 * 60).to_s), 10),
-        min_duration_seconds: Integer(ENV.fetch('SANEMASTER_RESOURCE_SOAK_MIN_SECONDS', (10 * 60).to_s), 10),
+        adaptive: adaptive_default,
+        duration_seconds: duration_default,
+        min_duration_seconds: min_duration_default,
         interval_seconds: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_INTERVAL_SECONDS', '10')),
+        adaptive_initial_interval_seconds: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_INITIAL_INTERVAL_SECONDS', '5')),
+        adaptive_initial_duration_seconds: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_INITIAL_DURATION_SECONDS', '120')),
+        adaptive_baseline_sample_count: Integer(ENV.fetch('SANEMASTER_RESOURCE_SOAK_BASELINE_SAMPLES', '6'), 10),
+        adaptive_rolling_window_seconds: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_ROLLING_WINDOW_SECONDS', '60')),
+        adaptive_consecutive_failures: Integer(ENV.fetch('SANEMASTER_RESOURCE_SOAK_CONSECUTIVE_FAILURES', '3'), 10),
         cpu_avg_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_CPU_AVG_MAX', '5.0')),
         rss_peak_mb_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_RSS_PEAK_MB_MAX', '256.0')),
         rss_growth_mb_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_RSS_GROWTH_MB_MAX', '64.0')),
         physical_peak_mb_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_PHYSICAL_PEAK_MB_MAX', '192.0')),
         physical_growth_mb_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_PHYSICAL_GROWTH_MB_MAX', '64.0')),
+        adaptive_cpu_avg_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_ADAPTIVE_CPU_AVG_MAX', '8.0')),
+        adaptive_cpu_peak_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_ADAPTIVE_CPU_PEAK_MAX', '20.0')),
+        adaptive_rss_growth_mb_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_ADAPTIVE_RSS_GROWTH_MB_MAX', '32.0')),
+        adaptive_physical_growth_mb_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_ADAPTIVE_PHYSICAL_GROWTH_MB_MAX', '24.0')),
+        adaptive_rss_slope_mb_per_min_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_ADAPTIVE_RSS_SLOPE_MB_PER_MIN_MAX', '4.0')),
+        adaptive_physical_slope_mb_per_min_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_ADAPTIVE_PHYSICAL_SLOPE_MB_PER_MIN_MAX', '2.0')),
+        adaptive_early_cpu_avg_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_EARLY_CPU_AVG_MAX', '2.0')),
+        adaptive_early_cpu_peak_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_EARLY_CPU_PEAK_MAX', '6.0')),
+        adaptive_early_rss_growth_mb_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_EARLY_RSS_GROWTH_MB_MAX', '8.0')),
+        adaptive_early_physical_growth_mb_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_EARLY_PHYSICAL_GROWTH_MB_MAX', '4.0')),
+        adaptive_early_rss_slope_mb_per_min_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_EARLY_RSS_SLOPE_MB_PER_MIN_MAX', '1.0')),
+        adaptive_early_physical_slope_mb_per_min_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_EARLY_PHYSICAL_SLOPE_MB_PER_MIN_MAX', '0.5')),
+        adaptive_early_rss_range_mb_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_EARLY_RSS_RANGE_MB_MAX', '4.0')),
+        adaptive_early_physical_range_mb_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_EARLY_PHYSICAL_RANGE_MB_MAX', '2.0')),
         artifact_path: '/tmp/sanebar_runtime_resource_soak.json',
         log_path: '/tmp/sanebar_runtime_resource_soak.log',
         dry_run: false,
@@ -547,6 +628,10 @@ module SaneMasterModules
           i += 1
         when /\A--interval-seconds=(\d+(?:\.\d+)?)\z/
           options[:interval_seconds] = Float(Regexp.last_match(1))
+        when '--fixed'
+          options[:adaptive] = false
+        when '--adaptive'
+          options[:adaptive] = true
         when '--json'
           options[:json] = true
         when '--dry-run'
@@ -562,7 +647,18 @@ module SaneMasterModules
       end
 
       options[:duration_seconds] = 0 if options[:duration_seconds].negative?
+      unless min_duration_overridden
+        options[:min_duration_seconds] = options[:adaptive] ? 4 * 60 : options[:duration_seconds]
+      end
+      options[:min_duration_seconds] = 0 if options[:min_duration_seconds].negative?
       options[:interval_seconds] = 1.0 if options[:interval_seconds] < 1.0
+      options[:adaptive_initial_interval_seconds] = 1.0 if options[:adaptive_initial_interval_seconds] < 1.0
+      options[:adaptive_consecutive_failures] = 1 if options[:adaptive_consecutive_failures] < 1
+      options[:adaptive_baseline_sample_count] = 1 if options[:adaptive_baseline_sample_count] < 1
+      unless options[:adaptive]
+        options[:artifact_path] = '/tmp/sanebar_runtime_resource_soak_fixed.json'
+        options[:log_path] = '/tmp/sanebar_runtime_resource_soak_fixed.log'
+      end
       options
     end
 
@@ -573,8 +669,11 @@ module SaneMasterModules
         no_exit: options[:no_exit],
         dry_run: true,
         app: options[:app_name],
+        adaptive: options[:adaptive],
         duration_seconds: options[:duration_seconds],
+        min_duration_seconds: options[:min_duration_seconds],
         interval_seconds: options[:interval_seconds],
+        initial_interval_seconds: options[:adaptive] ? options[:adaptive_initial_interval_seconds] : options[:interval_seconds],
         artifact_path: options[:artifact_path],
         log_path: options[:log_path],
         issues: []
@@ -699,22 +798,44 @@ module SaneMasterModules
       end
     end
 
-    def resource_soak_metrics(samples)
+    def resource_soak_metrics(samples, options = {})
       return resource_soak_empty_metrics if samples.empty?
 
       rss_values = samples.map { |sample| sample[:rss_mb].to_f }
       cpu_values = samples.map { |sample| sample[:cpu].to_f }
       physical_values = samples.map { |sample| sample[:physical_footprint_mb] }.compact.map(&:to_f)
+      physical_sample_count = physical_values.length
+      baseline_sample_count = [options.fetch(:adaptive_baseline_sample_count, 6).to_i, 1].max
+      rolling_window_seconds = [options.fetch(:adaptive_rolling_window_seconds, 60.0).to_f, 1.0].max
+      baseline_samples = samples.first(baseline_sample_count)
+      baseline_rss = resource_soak_median(baseline_samples.map { |sample| sample[:rss_mb] }.compact.map(&:to_f))
+      baseline_physical = resource_soak_median(baseline_samples.map { |sample| sample[:physical_footprint_mb] }.compact.map(&:to_f))
+      latest_elapsed = samples.last[:elapsed_seconds].to_f
+      rolling_samples = samples.select { |sample| latest_elapsed - sample[:elapsed_seconds].to_f <= rolling_window_seconds }
+      rolling_cpu_values = rolling_samples.map { |sample| sample[:cpu].to_f }
+      recent_samples = samples.last(baseline_sample_count)
       {
         sample_count: samples.length,
+        physical_sample_count: physical_sample_count,
+        physical_missing_sample_count: samples.length - physical_sample_count,
         avg_cpu: resource_soak_round(cpu_values.sum / cpu_values.length),
         peak_cpu: resource_soak_round(cpu_values.max),
+        rolling_cpu_avg_60s: resource_soak_round(rolling_cpu_values.empty? ? 0.0 : rolling_cpu_values.sum / rolling_cpu_values.length),
+        rolling_cpu_peak_60s: resource_soak_round(rolling_cpu_values.empty? ? 0.0 : rolling_cpu_values.max),
         avg_rss_mb: resource_soak_round(rss_values.sum / rss_values.length),
         peak_rss_mb: resource_soak_round(rss_values.max),
         rss_growth_mb: resource_soak_round(rss_values.last - rss_values.first),
+        baseline_rss_mb: resource_soak_round(baseline_rss),
+        rss_growth_from_baseline_mb: resource_soak_round(baseline_rss.nil? ? nil : rss_values.last - baseline_rss),
+        rss_slope_mb_per_min: resource_soak_round(resource_soak_slope_mb_per_min(samples.last(baseline_sample_count), :rss_mb)),
+        recent_rss_range_mb: resource_soak_round(resource_soak_value_range(recent_samples, :rss_mb)),
         avg_physical_footprint_mb: physical_values.empty? ? nil : resource_soak_round(physical_values.sum / physical_values.length),
         peak_physical_footprint_mb: physical_values.empty? ? nil : resource_soak_round(physical_values.max),
         physical_footprint_growth_mb: physical_values.empty? ? nil : resource_soak_round(physical_values.last - physical_values.first),
+        baseline_physical_footprint_mb: resource_soak_round(baseline_physical),
+        physical_footprint_growth_from_baseline_mb: resource_soak_round(baseline_physical.nil? || physical_values.empty? ? nil : physical_values.last - baseline_physical),
+        physical_footprint_slope_mb_per_min: resource_soak_round(resource_soak_slope_mb_per_min(samples.last(baseline_sample_count), :physical_footprint_mb)),
+        recent_physical_footprint_range_mb: resource_soak_round(resource_soak_value_range(recent_samples, :physical_footprint_mb)),
         sample_span_seconds: resource_soak_round(samples.last[:elapsed_seconds].to_f - samples.first[:elapsed_seconds].to_f)
       }
     end
@@ -722,16 +843,192 @@ module SaneMasterModules
     def resource_soak_empty_metrics
       {
         sample_count: 0,
+        physical_sample_count: 0,
+        physical_missing_sample_count: 0,
         avg_cpu: 0.0,
         peak_cpu: 0.0,
+        rolling_cpu_avg_60s: 0.0,
+        rolling_cpu_peak_60s: 0.0,
         avg_rss_mb: 0.0,
         peak_rss_mb: 0.0,
         rss_growth_mb: 0.0,
+        baseline_rss_mb: nil,
+        rss_growth_from_baseline_mb: nil,
+        rss_slope_mb_per_min: nil,
+        recent_rss_range_mb: nil,
         avg_physical_footprint_mb: nil,
         peak_physical_footprint_mb: nil,
         physical_footprint_growth_mb: nil,
+        baseline_physical_footprint_mb: nil,
+        physical_footprint_growth_from_baseline_mb: nil,
+        physical_footprint_slope_mb_per_min: nil,
+        recent_physical_footprint_range_mb: nil,
         sample_span_seconds: 0.0
       }
+    end
+
+    def resource_soak_median(values)
+      clean = values.compact.map(&:to_f).sort
+      return nil if clean.empty?
+
+      mid = clean.length / 2
+      if clean.length.odd?
+        clean[mid]
+      else
+        (clean[mid - 1] + clean[mid]) / 2.0
+      end
+    end
+
+    def resource_soak_slope_mb_per_min(samples, key)
+      points = samples.select { |sample| !sample[key].nil? && !sample[:elapsed_seconds].nil? }
+      return nil if points.length < 2
+
+      first = points.first
+      last = points.last
+      elapsed_minutes = (last[:elapsed_seconds].to_f - first[:elapsed_seconds].to_f) / 60.0
+      return 0.0 if elapsed_minutes <= 0.0
+
+      (last[key].to_f - first[key].to_f) / elapsed_minutes
+    end
+
+    def resource_soak_value_range(samples, key)
+      values = samples.map { |sample| sample[key] }.compact.map(&:to_f)
+      return nil if values.empty?
+
+      values.max - values.min
+    end
+
+    def resource_soak_adaptive_state(metrics, options, elapsed_seconds:, missing_sample_count:, fail_streak:)
+      if missing_sample_count.to_i.positive?
+        return {
+          status: 'fail',
+          fail_streak: fail_streak,
+          reasons: ["missing process samples: #{missing_sample_count}"],
+          issues: ["missing process samples: #{missing_sample_count}"]
+        }
+      end
+      if metrics[:physical_missing_sample_count].to_i.positive?
+        return {
+          status: 'fail',
+          fail_streak: fail_streak,
+          reasons: ["physical footprint missing for #{metrics[:physical_missing_sample_count]} sample(s)"],
+          issues: ["physical footprint missing for #{metrics[:physical_missing_sample_count]} sample(s)"]
+        }
+      end
+
+      immediate_issues = resource_soak_adaptive_immediate_issues(metrics, options)
+      unless immediate_issues.empty?
+        return {
+          status: 'fail',
+          fail_streak: fail_streak,
+          reasons: immediate_issues,
+          issues: immediate_issues
+        }
+      end
+
+      fail_conditions = resource_soak_adaptive_fail_conditions(metrics, options, elapsed_seconds: elapsed_seconds)
+      next_fail_streak = fail_conditions.empty? ? 0 : fail_streak.to_i + 1
+      if next_fail_streak >= options[:adaptive_consecutive_failures].to_i
+        return {
+          status: 'fail',
+          fail_streak: next_fail_streak,
+          reasons: fail_conditions,
+          issues: fail_conditions
+        }
+      end
+
+      if elapsed_seconds.to_f >= options[:min_duration_seconds].to_f &&
+         resource_soak_adaptive_early_pass?(metrics, options)
+        return {
+          status: 'early_pass',
+          fail_streak: 0,
+          reasons: ['stable resource profile reached early-pass thresholds'],
+          issues: []
+        }
+      end
+
+      {
+        status: 'running',
+        fail_streak: next_fail_streak,
+        reasons: fail_conditions,
+        issues: []
+      }
+    end
+
+    def resource_soak_adaptive_immediate_issues(metrics, options)
+      issues = []
+      if metrics[:peak_rss_mb].to_f > options[:rss_peak_mb_max].to_f
+        issues << format('peakRss %.1fMB > %.1fMB', metrics[:peak_rss_mb], options[:rss_peak_mb_max])
+      end
+      unless metrics[:peak_physical_footprint_mb].nil?
+        if metrics[:peak_physical_footprint_mb].to_f > options[:physical_peak_mb_max].to_f
+          issues << format('peakPhysical %.1fMB > %.1fMB', metrics[:peak_physical_footprint_mb], options[:physical_peak_mb_max])
+        end
+      end
+      issues
+    end
+
+    def resource_soak_adaptive_fail_conditions(metrics, options, elapsed_seconds: nil)
+      return [] if metrics[:sample_count].to_i < options[:adaptive_baseline_sample_count].to_i
+
+      issues = []
+      if metrics[:rolling_cpu_avg_60s].to_f > options[:adaptive_cpu_avg_max].to_f
+        issues << format('rollingAvgCpu60s %.1f%% > %.1f%%', metrics[:rolling_cpu_avg_60s], options[:adaptive_cpu_avg_max])
+      end
+      if metrics[:rolling_cpu_peak_60s].to_f > options[:adaptive_cpu_peak_max].to_f
+        issues << format('rollingPeakCpu60s %.1f%% > %.1f%%', metrics[:rolling_cpu_peak_60s], options[:adaptive_cpu_peak_max])
+      end
+
+      # RSS/physical growth and slope are release-proof signals, not startup
+      # warmup signals. Do not terminally fail an adaptive soak on those before
+      # the minimum sample span; otherwise the run can fail because the sample
+      # span is too short to be valid proof.
+      if elapsed_seconds && elapsed_seconds.to_f < options[:min_duration_seconds].to_f
+        return issues
+      end
+
+      if metrics[:rss_growth_from_baseline_mb].to_f > options[:adaptive_rss_growth_mb_max].to_f
+        issues << format('rssGrowthFromBaseline %.1fMB > %.1fMB', metrics[:rss_growth_from_baseline_mb], options[:adaptive_rss_growth_mb_max])
+      end
+      if metrics[:physical_footprint_growth_from_baseline_mb].to_f > options[:adaptive_physical_growth_mb_max].to_f
+        issues << format('physicalGrowthFromBaseline %.1fMB > %.1fMB', metrics[:physical_footprint_growth_from_baseline_mb], options[:adaptive_physical_growth_mb_max])
+      end
+      if !metrics[:rss_slope_mb_per_min].nil? && metrics[:rss_slope_mb_per_min].to_f > options[:adaptive_rss_slope_mb_per_min_max].to_f
+        issues << format('rssSlope %.1fMB/min > %.1fMB/min', metrics[:rss_slope_mb_per_min], options[:adaptive_rss_slope_mb_per_min_max])
+      end
+      if !metrics[:physical_footprint_slope_mb_per_min].nil? && metrics[:physical_footprint_slope_mb_per_min].to_f > options[:adaptive_physical_slope_mb_per_min_max].to_f
+        issues << format('physicalSlope %.1fMB/min > %.1fMB/min', metrics[:physical_footprint_slope_mb_per_min], options[:adaptive_physical_slope_mb_per_min_max])
+      end
+      issues
+    end
+
+    def resource_soak_adaptive_early_pass?(metrics, options)
+      return false if metrics[:sample_count].to_i <= 0
+      if options[:min_duration_seconds].to_i.positive?
+        return false if metrics[:sample_count].to_i < options[:adaptive_baseline_sample_count].to_i
+        return false if metrics[:peak_physical_footprint_mb].nil?
+      end
+
+      return false if metrics[:rolling_cpu_avg_60s].to_f > options[:adaptive_early_cpu_avg_max].to_f
+      return false if metrics[:rolling_cpu_peak_60s].to_f > options[:adaptive_early_cpu_peak_max].to_f
+      return false if metrics[:rss_growth_from_baseline_mb].to_f > options[:adaptive_early_rss_growth_mb_max].to_f
+      return false if metrics[:physical_footprint_growth_from_baseline_mb].to_f > options[:adaptive_early_physical_growth_mb_max].to_f
+      return false if !metrics[:rss_slope_mb_per_min].nil? && metrics[:rss_slope_mb_per_min].to_f > options[:adaptive_early_rss_slope_mb_per_min_max].to_f
+      return false if !metrics[:physical_footprint_slope_mb_per_min].nil? && metrics[:physical_footprint_slope_mb_per_min].to_f > options[:adaptive_early_physical_slope_mb_per_min_max].to_f
+      return false if !metrics[:recent_rss_range_mb].nil? && metrics[:recent_rss_range_mb].to_f > options[:adaptive_early_rss_range_mb_max].to_f
+      return false if !metrics[:recent_physical_footprint_range_mb].nil? && metrics[:recent_physical_footprint_range_mb].to_f > options[:adaptive_early_physical_range_mb_max].to_f
+
+      true
+    end
+
+    def resource_soak_next_interval_seconds(options, elapsed)
+      return options[:interval_seconds] unless options[:adaptive]
+
+      if elapsed.to_f < options[:adaptive_initial_duration_seconds].to_f
+        options[:adaptive_initial_interval_seconds]
+      else
+        options[:interval_seconds]
+      end
     end
 
     def resource_soak_issues(metrics, options, missing_sample_count: 0)
@@ -741,6 +1038,9 @@ module SaneMasterModules
       end
       issues << "missing process samples: #{missing_sample_count}" if missing_sample_count.to_i.positive?
       issues << 'no process samples collected' if metrics[:sample_count].to_i <= 0
+      if metrics[:physical_missing_sample_count].to_i.positive?
+        issues << "physical footprint missing for #{metrics[:physical_missing_sample_count]} sample(s)"
+      end
       required_sample_span = [options[:min_duration_seconds].to_f - options[:interval_seconds].to_f - 1.0, 0.0].max
       if required_sample_span.positive? && metrics[:sample_span_seconds].to_f < required_sample_span
         issues << format(
@@ -767,35 +1067,111 @@ module SaneMasterModules
 
     def resource_soak_budget_payload(options)
       {
+        adaptive: options[:adaptive],
+        target_duration_seconds: options[:duration_seconds],
         min_duration_seconds: options[:min_duration_seconds],
+        adaptive_initial_interval_seconds: options[:adaptive_initial_interval_seconds],
+        adaptive_initial_duration_seconds: options[:adaptive_initial_duration_seconds],
+        adaptive_consecutive_failures: options[:adaptive_consecutive_failures],
+        adaptive_baseline_sample_count: options[:adaptive_baseline_sample_count],
+        adaptive_rolling_window_seconds: options[:adaptive_rolling_window_seconds],
         cpu_avg_max: options[:cpu_avg_max],
         rss_peak_mb_max: options[:rss_peak_mb_max],
         rss_growth_mb_max: options[:rss_growth_mb_max],
         physical_peak_mb_max: options[:physical_peak_mb_max],
-        physical_growth_mb_max: options[:physical_growth_mb_max]
+        physical_growth_mb_max: options[:physical_growth_mb_max],
+        adaptive_cpu_avg_max: options[:adaptive_cpu_avg_max],
+        adaptive_cpu_peak_max: options[:adaptive_cpu_peak_max],
+        adaptive_rss_growth_mb_max: options[:adaptive_rss_growth_mb_max],
+        adaptive_physical_growth_mb_max: options[:adaptive_physical_growth_mb_max],
+        adaptive_rss_slope_mb_per_min_max: options[:adaptive_rss_slope_mb_per_min_max],
+        adaptive_physical_slope_mb_per_min_max: options[:adaptive_physical_slope_mb_per_min_max],
+        adaptive_early_cpu_avg_max: options[:adaptive_early_cpu_avg_max],
+        adaptive_early_cpu_peak_max: options[:adaptive_early_cpu_peak_max],
+        adaptive_early_rss_growth_mb_max: options[:adaptive_early_rss_growth_mb_max],
+        adaptive_early_physical_growth_mb_max: options[:adaptive_early_physical_growth_mb_max],
+        adaptive_early_rss_slope_mb_per_min_max: options[:adaptive_early_rss_slope_mb_per_min_max],
+        adaptive_early_physical_slope_mb_per_min_max: options[:adaptive_early_physical_slope_mb_per_min_max]
       }
     end
 
     def resource_soak_print_progress(options, samples:, missing_sample_count:, elapsed:)
       return unless options[:progress]
 
-      expected_samples = [(options[:duration_seconds].to_f / options[:interval_seconds].to_f).ceil, 1].max
-      print_every = [(60.0 / options[:interval_seconds].to_f).ceil, 1].max
+      current_interval = resource_soak_next_interval_seconds(options, elapsed)
+      print_every = [(60.0 / current_interval.to_f).ceil, 1].max
       sample_count = samples.length
       return unless sample_count == 1 || (sample_count % print_every).zero? || elapsed >= options[:duration_seconds]
 
       remaining = [options[:duration_seconds].to_f - elapsed.to_f, 0.0].max
+      physical_count = samples.count { |sample| !sample[:physical_footprint_mb].nil? }
+      if options[:adaptive]
+        puts format(
+          '   resource check progress: mode=adaptive sample=%<sample>d elapsed=%<elapsed>.0fs minPassAt=%<min>.0fs cap=%<cap>.0fs cadence=%<cadence>.0fs missing=%<missing>d physicalSamples=%<physical_samples>d/%<sample>d rss=%<rss>s physical=%<physical>s',
+          sample: sample_count,
+          elapsed: elapsed,
+          min: options[:min_duration_seconds].to_f,
+          cap: options[:duration_seconds].to_f,
+          cadence: current_interval,
+          missing: missing_sample_count,
+          physical_samples: physical_count,
+          rss: samples.last ? format('%.1fMB', samples.last[:rss_mb].to_f) : 'unknown',
+          physical: samples.last && samples.last[:physical_footprint_mb] ? format('%.1fMB', samples.last[:physical_footprint_mb].to_f) : 'unknown'
+        )
+        $stdout.flush
+        return
+      end
+
+      expected_samples = [(options[:duration_seconds].to_f / options[:interval_seconds].to_f).ceil, 1].max
       puts format(
-        '   resource soak progress: sample=%<sample>d/%<expected>d elapsed=%<elapsed>.0fs remaining=%<remaining>.0fs missing=%<missing>d rss=%<rss>s physical=%<physical>s',
+        '   resource check progress: mode=fixed sample=%<sample>d/%<expected>d elapsed=%<elapsed>.0fs remaining=%<remaining>.0fs missing=%<missing>d physicalSamples=%<physical_samples>d/%<sample>d rss=%<rss>s physical=%<physical>s',
         sample: sample_count,
         expected: expected_samples,
         elapsed: elapsed,
         remaining: remaining,
         missing: missing_sample_count,
+        physical_samples: physical_count,
         rss: samples.last ? format('%.1fMB', samples.last[:rss_mb].to_f) : 'unknown',
         physical: samples.last && samples.last[:physical_footprint_mb] ? format('%.1fMB', samples.last[:physical_footprint_mb].to_f) : 'unknown'
       )
       $stdout.flush
+    end
+
+    def resource_soak_human_status(status)
+      case status.to_s
+      when 'early_pass' then 'stable after minimum check'
+      when 'full_duration_pass' then 'stable through full cap'
+      when 'fixed' then 'fixed duration completed'
+      when 'fail' then 'failed'
+      when 'running' then 'still running'
+      else status.to_s.empty? ? 'unknown' : status.to_s.tr('_', ' ')
+      end
+    end
+
+    def resource_soak_human_issue(issue)
+      text = issue.to_s
+      case text
+      when /\AavgCpu ([^ ]+) > ([^ ]+)/
+        "average CPU #{Regexp.last_match(1)} exceeded #{Regexp.last_match(2)}"
+      when /\ApeakRss ([^ ]+) > ([^ ]+)/
+        "peak memory #{Regexp.last_match(1)} exceeded #{Regexp.last_match(2)}"
+      when /\ArssGrowth(?:FromBaseline)? ([^ ]+) > ([^ ]+)/
+        "memory growth #{Regexp.last_match(1)} exceeded #{Regexp.last_match(2)}"
+      when /\ApeakPhysical ([^ ]+) > ([^ ]+)/
+        "peak physical footprint #{Regexp.last_match(1)} exceeded #{Regexp.last_match(2)}"
+      when /\AphysicalGrowth(?:FromBaseline)? ([^ ]+) > ([^ ]+)/
+        "physical footprint growth #{Regexp.last_match(1)} exceeded #{Regexp.last_match(2)}"
+      when /\ArollingAvgCpu60s ([^ ]+) > ([^ ]+)/
+        "60s average CPU #{Regexp.last_match(1)} exceeded #{Regexp.last_match(2)}"
+      when /\ArollingPeakCpu60s ([^ ]+) > ([^ ]+)/
+        "60s peak CPU #{Regexp.last_match(1)} exceeded #{Regexp.last_match(2)}"
+      when /\ArssSlope ([^ ]+) > ([^ ]+)/
+        "memory trend #{Regexp.last_match(1)} exceeded #{Regexp.last_match(2)}"
+      when /\AphysicalSlope ([^ ]+) > ([^ ]+)/
+        "physical footprint trend #{Regexp.last_match(1)} exceeded #{Regexp.last_match(2)}"
+      else
+        text
+      end
     end
 
     def resource_soak_round(value)
@@ -1286,15 +1662,28 @@ module SaneMasterModules
       if durable_paths.empty?
         issues << "#{label}: missing durable resource-soak evidence under outputs/customer-ui"
       end
-      missing_durable_paths = durable_paths.reject { |path| File.file?(File.expand_path(path, Dir.pwd)) }
+      symlink_durable_paths = durable_paths.select { |path| File.symlink?(File.expand_path(path, Dir.pwd)) }
+      unless symlink_durable_paths.empty?
+        issues << "#{label}: durable resource-soak evidence cannot be symlinks: #{symlink_durable_paths.join(', ')}"
+      end
+      missing_durable_paths = durable_paths.reject { |path| customer_ui_regular_file?(path) }
       unless missing_durable_paths.empty?
         issues << "#{label}: durable resource-soak evidence path(s) do not exist: #{missing_durable_paths.join(', ')}"
+      end
+      json_paths = durable_paths.select { |path| File.extname(path) == '.json' && customer_ui_regular_file?(path) }
+      if json_paths.empty?
+        issues << "#{label}: durable resource-soak JSON artifact is missing"
+      else
+        json_paths.each do |path|
+          issues.concat(customer_ui_resource_soak_artifact_issues(label, path, receipt_row: receipt_row, evidence_paths: paths))
+        end
       end
       issues
     end
 
     def customer_ui_temp_artifact_path?(path)
       expanded = File.expand_path(path.to_s, Dir.pwd)
+      expanded = File.realpath(expanded) if File.exist?(expanded)
       expanded.start_with?('/tmp/') ||
         expanded.start_with?('/private/tmp/') ||
         expanded.start_with?('/var/folders/')
@@ -1308,6 +1697,159 @@ module SaneMasterModules
       normalized.include?('/outputs/customer-ui/') &&
         File.basename(normalized).start_with?('resource-soak-')
     rescue StandardError
+      false
+    end
+
+    def customer_ui_regular_file?(path)
+      expanded = File.expand_path(path.to_s, Dir.pwd)
+      File.file?(expanded) && !File.symlink?(expanded)
+    end
+
+    def customer_ui_resource_soak_artifact_issues(label, path, receipt_row: {}, evidence_paths: [])
+      payload = JSON.parse(File.read(File.expand_path(path.to_s, Dir.pwd)))
+      issues = []
+      issues << "#{label}: resource-soak artifact status is #{payload['status'].inspect}, expected \"pass\"" unless payload['status'].to_s == 'pass'
+      issues << "#{label}: resource-soak artifact was not adaptive" unless payload['adaptive'] == true
+      unless %w[early_pass full_duration_pass].include?(payload['adaptive_status'].to_s)
+        issues << "#{label}: resource-soak artifact adaptive status #{payload['adaptive_status'].inspect} is not accepted"
+      end
+
+      sample_count = payload['sample_count'].to_i
+      complete_samples = Array(payload['samples']).count do |sample|
+        sample.is_a?(Hash) &&
+          sample.key?('sampled_at') &&
+          customer_ui_numeric_value?(sample['elapsed_seconds'] || sample['elapsed']) &&
+          customer_ui_numeric_value?(sample['cpu'] || sample['cpu_percent']) &&
+          customer_ui_numeric_value?(sample['rss_mb']) &&
+          customer_ui_numeric_value?(sample['physical_footprint_mb'])
+      end
+      issues << "#{label}: resource-soak artifact has fewer than 2 samples" if sample_count < 2
+      issues << "#{label}: resource-soak artifact has #{complete_samples} complete sample(s), expected #{sample_count}" unless complete_samples == sample_count
+      unless payload['physical_sample_count'].to_i == sample_count && payload['physical_missing_sample_count'].to_i == 0
+        issues << "#{label}: resource-soak artifact physical footprint coverage is incomplete"
+      end
+      issues.concat(customer_ui_resource_soak_candidate_issues(label, payload, receipt_row))
+      issues.concat(customer_ui_resource_soak_log_issues(label, path, payload, evidence_paths))
+
+      begin
+        finished_at = Time.parse((payload['finished_at'] || payload['generated_at'] || payload['started_at']).to_s)
+        now = Time.now
+        if now - finished_at > 12 * 60 * 60 || finished_at > now + 5 * 60
+          issues << "#{label}: resource-soak artifact timestamp is stale or future-dated"
+        end
+      rescue ArgumentError
+        issues << "#{label}: resource-soak artifact timestamp is missing or invalid"
+      end
+      issues
+    rescue JSON::ParserError
+      ["#{label}: resource-soak artifact JSON is unreadable"]
+    rescue StandardError => e
+      ["#{label}: resource-soak artifact could not be validated: #{e.class}: #{e.message}"]
+    end
+
+    def customer_ui_resource_soak_candidate_issues(label, payload, receipt_row)
+      candidate = payload['candidate'].is_a?(Hash) ? payload['candidate'] : {}
+      issues = []
+      if candidate['app_version'].to_s.empty? || candidate['app_build'].to_s.empty?
+        issues << "#{label}: resource-soak artifact candidate version/build is missing"
+        return issues
+      end
+
+      expected = resource_soak_expected_project_version
+      if expected[:app_version] && candidate['app_version'].to_s != expected[:app_version].to_s
+        issues << "#{label}: resource-soak artifact candidate version #{candidate['app_version']} does not match project MARKETING_VERSION #{expected[:app_version]}"
+      end
+      if expected[:app_build] && candidate['app_build'].to_s != expected[:app_build].to_s
+        issues << "#{label}: resource-soak artifact candidate build #{candidate['app_build']} does not match project CURRENT_PROJECT_VERSION #{expected[:app_build]}"
+      end
+
+      receipt_candidate = receipt_row['runtime_candidate']
+      unless receipt_candidate.is_a?(Hash)
+        issues << "#{label}: receipt is missing resource-soak runtime_candidate"
+        return issues
+      end
+
+      %w[app_version app_build app_path].each do |key|
+        next if candidate[key].to_s.empty? || receipt_candidate[key].to_s.empty?
+        next if candidate[key].to_s == receipt_candidate[key].to_s
+
+        issues << "#{label}: resource-soak artifact candidate #{key} #{candidate[key]} does not match receipt runtime_candidate #{receipt_candidate[key]}"
+      end
+      issues
+    end
+
+    def customer_ui_resource_soak_log_issues(label, json_path, payload, evidence_paths)
+      expanded_json_path = File.expand_path(json_path.to_s, Dir.pwd)
+      log_path = expanded_json_path.sub(/\.json\z/, '.log')
+      issues = []
+      expanded_evidence_paths = Array(evidence_paths).map { |path| File.expand_path(path.to_s, Dir.pwd) }
+      unless expanded_evidence_paths.include?(log_path)
+        issues << "#{label}: durable resource-soak log sibling is missing from evidence_paths: #{customer_ui_relative_path(log_path)}"
+      end
+      unless customer_ui_regular_file?(log_path)
+        issues << "#{label}: durable resource-soak log sibling is missing: #{customer_ui_relative_path(log_path)}"
+        return issues
+      end
+
+      lines = File.readlines(log_path, chomp: true)
+      body = lines.join("\n")
+      issues << "#{label}: resource-soak log has missing process or physical samples" if lines.any? { |line| line.include?('sample_missing') || line.include?('physical=unknown') }
+      issues << "#{label}: resource-soak log did not record pass status" unless body.include?('status=pass')
+
+      log_sample_count = lines.count do |line|
+        line.match?(/\bsample=\d+\b/) &&
+          line.match?(/\belapsed=\d+(?:\.\d+)?s\b/) &&
+          line.match?(/\bcpu=\d+(?:\.\d+)?\b/) &&
+          line.match?(/\brss=\d+(?:\.\d+)?MB\b/) &&
+          line.match?(/\bphysical=\d+(?:\.\d+)?MB\b/)
+      end
+      expected_sample_count = payload['sample_count'].to_i
+      unless log_sample_count == expected_sample_count
+        issues << "#{label}: resource-soak log has #{log_sample_count} complete sample line(s), expected #{expected_sample_count}"
+      end
+
+      candidate = payload['candidate'].is_a?(Hash) ? payload['candidate'] : {}
+      if candidate['app_version'].to_s != '' &&
+         !customer_ui_resource_soak_log_candidate_value?(body, 'app_version', candidate['app_version'])
+        issues << "#{label}: resource-soak log candidate version does not match JSON artifact"
+      end
+      if candidate['app_build'].to_s != '' &&
+         !customer_ui_resource_soak_log_candidate_value?(body, 'app_build', candidate['app_build'])
+        issues << "#{label}: resource-soak log candidate build does not match JSON artifact"
+      end
+
+      begin
+        finished_at_text = lines.find { |line| line.start_with?('resource_soak_finished_at=') }.to_s.sub(/\Aresource_soak_finished_at=/, '')
+        finished_at = Time.parse(finished_at_text)
+        now = Time.now
+        if now - finished_at > 12 * 60 * 60 || finished_at > now + 5 * 60
+          issues << "#{label}: resource-soak log timestamp is stale or future-dated"
+        end
+      rescue ArgumentError
+        issues << "#{label}: resource-soak log timestamp is missing or invalid"
+      end
+      issues
+    rescue StandardError => e
+      ["#{label}: resource-soak log could not be validated: #{e.class}: #{e.message}"]
+    end
+
+    def customer_ui_resource_soak_log_candidate_value?(body, key, value)
+      escaped_value = Regexp.escape(value.to_s)
+      escaped_key = Regexp.escape(key.to_s)
+      body.match?(/:?#{escaped_key}\s*=>\s*"#{escaped_value}"/) ||
+        body.match?(/#{escaped_key}:\s+"#{escaped_value}"/) ||
+        body.match?(/"#{escaped_key}"\s*=>\s*"#{escaped_value}"/)
+    end
+
+    def customer_ui_relative_path(path)
+      expanded = File.expand_path(path.to_s, Dir.pwd)
+      root = File.expand_path(Dir.pwd)
+      expanded.start_with?("#{root}/") ? expanded.sub("#{root}/", '') : expanded
+    end
+
+    def customer_ui_numeric_value?(value)
+      !value.nil? && Float(value)
+    rescue ArgumentError, TypeError
       false
     end
 

@@ -270,6 +270,25 @@ Before any Setapp submission or handoff:
 - `setappPublicKey.pem` bundled
 - macOS 13+ update policy for `com.setapp.DesktopClient.SetappAgent`
 - if sandboxed, `com.setapp.ProvisioningService` Mach exception
+- privacy policy, terms, support email/link, and listing description are current
+  in the Setapp developer account before review
+- Setapp listing copy is concise, customer-facing, and focused on the app's
+  actual Setapp build capabilities
+- Setapp listing screenshots are sourced from the owned website's real
+  app-in-use screenshots, declared in `.saneprocess` under
+  `setapp.listing.screenshots`, and exported as macOS listing assets at 16:10
+  with minimum 1280x800 dimensions. The manifest must also declare
+  `screenshot_source`, `screenshot_asset_root`, `screenshot_roles`, and
+  `setapp_url`; the first screenshots must show the actual working app, at
+  least one screenshot must cover privacy/Touch ID, and the gallery must not be
+  settings-heavy. Do not upload icon-only, abstract, stale, or portal-only
+  screenshots when owned-site product screenshots already exist.
+- Run `./scripts/SaneMaster.rb setapp_media_sync --dry-run` before upload to
+  validate the declared listing screenshots, then run
+  `./scripts/SaneMaster.rb setapp_media_sync --app AppName` after any listing
+  screenshot change. The command uploads the manifest screenshots to the Setapp
+  developer portal and re-fetches the version to verify the screenshot IDs,
+  order, and any preserved non-screenshot media.
 
 4. Confirm the app-specific gotchas:
 - menu bar apps must report Setapp usage events such as `.userInteraction`
@@ -280,6 +299,17 @@ Before any Setapp submission or handoff:
 - direct release notes still describe the direct lane
 - App Store text still describes the App Store lane
 - Setapp wording stays in the Setapp-specific surfaces only
+- Setapp **Release notes** are public customer copy. Do not put reviewer
+  comments, Setapp process details, icon geometry, build/archive/signing
+  details, direct-store licensing/update terms, or placeholder notes there.
+  Put review-team context in the portal's **Comments for review team** field or
+  in the MacPaw email thread, not in Release notes.
+- Setapp release notes must be short, user-facing update copy. For a first
+  launch or metadata-only correction, use a simple public note such as
+  `Launch.` rather than describing the internal review fix.
+- Private Setapp reviewer context must go through `--review-comments-file` or
+  be explicitly skipped with `--no-review-comments-needed`. Do not rely on a
+  memory-only browser step for reviewer comments.
 
 6. Confirm the built artifact, not just the source config:
 - run `sanitize_distribution_bundle.rb --channel setapp /path/to/App.app`
@@ -288,9 +318,15 @@ Before any Setapp submission or handoff:
   - no embedded `Sparkle.framework`
   - no `SU*` keys
   - no direct key-entry / checkout copy
+  - no Lemon Squeezy, license-key, direct-download, donation, or GitHub Sponsors
+    residue in the final uploaded archive
+  - `CFBundleName`, `CFBundleIconFile`, `NSUpdateSecurityPolicy`,
+    `MPSupportedArchitectures`, and the sibling root `AppName.png`
+  - Developer ID signing, notarization/stapling, Gatekeeper acceptance, and
+    quarantined launch proof from the final ZIP
 
 7. Upload through the standard Setapp lane:
-- Preferred: `./scripts/SaneMaster.rb setapp_upload --zip /path/to/App-Setapp.zip --release-notes-file /path/to/notes.txt` with `SETAPP_AUTOMATION_TOKEN`.
+- Preferred: `./scripts/SaneMaster.rb setapp_upload --zip /path/to/App-Setapp.zip --release-notes-file /path/to/notes.txt --review-comments-file /path/to/private-review-comments.txt` with `SETAPP_AUTOMATION_TOKEN`.
 - Fallback for the known portal defect where an in-review page shows `Reupload .ZIP` but clicking it does nothing:
 
 ```bash
@@ -299,10 +335,19 @@ Before any Setapp submission or handoff:
   --app-id <setapp_app_id> \
   --version-id <existing_version_id> \
   --zip /path/to/App-Setapp.zip \
-  --release-notes-file /path/to/notes.txt
+  --release-notes-file /path/to/notes.txt \
+  --review-comments-file /path/to/private-review-comments.txt
 ```
 
 - After fallback upload, verify both the Apps page and `GET /v1/versions/<version_id>` show the expected build/display versions.
+- After any `setapp_media_sync`, verify the public `https://setapp.com/apps/...`
+  page. A successful portal sync is necessary but not sufficient because the
+  public listing page may continue serving older cached/generated screenshot
+  URLs until Setapp's public layer refreshes.
+- Approval is not release. If the Setapp portal says the version is waiting for
+  manual release, release it in the portal, wait for the public state to update,
+  and rerun `./scripts/SaneMaster.rb setapp_status` until it shows released/live
+  with no action required.
 - Never print or store Setapp browser `access_token` / `refresh_token` values.
 
 ### 1. Build, Sign, Notarize, DMG (Single Command)

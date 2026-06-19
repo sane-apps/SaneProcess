@@ -63,6 +63,7 @@ class EmailDeliveryTests(unittest.TestCase):
         self.assertEqual(summary["bounced"], 1)
         self.assertEqual(summary["delivered"], 1)
         self.assertEqual(summary["pending"], 1)
+        self.assertEqual(summary["latest_bucket"], "delivered")
         self.assertEqual([row["id"] for row in summary["rows"]], ["bounce-1", "deliver-1", "pending-1"])
         self.assertEqual(indexed_summary, summary)
 
@@ -89,6 +90,37 @@ class EmailDeliveryTests(unittest.TestCase):
         self.assertEqual(summary["delivered"], 0)
         self.assertEqual(summary["bounced"], 1)
         self.assertEqual(summary["pending"], 0)
+        self.assertEqual(summary["latest_bucket"], "bounced")
+
+    def test_strict_related_events_reject_broad_subject_overlap(self):
+        payload = {
+            "data": [
+                {
+                    "id": "unrelated",
+                    "to": ["customer@example.com"],
+                    "subject": "Re: Question about sponsorship",
+                    "created_at": "2026-06-17 16:00:00+00",
+                    "last_event": "delivered",
+                }
+            ]
+        }
+
+        summary = EMAIL_DELIVERY.summarize_related_events(
+            "customer@example.com",
+            "Question",
+            "2026-06-17 15:00:00+00",
+            payload,
+        )
+        fuzzy_summary = EMAIL_DELIVERY.summarize_related_events(
+            "customer@example.com",
+            "Question",
+            "2026-06-17 15:00:00+00",
+            payload,
+            strict_subject=False,
+        )
+
+        self.assertEqual(summary["delivered"], 0)
+        self.assertEqual(fuzzy_summary["delivered"], 1)
 
     def test_open_thread_delivery_evidence_counts_only_open_non_spam_threads(self):
         rows = [

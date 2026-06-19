@@ -50,6 +50,10 @@ def thread_key(email: dict) -> tuple[str, str]:
     )
 
 
+def is_strictly_related(sent_subject: str, original_subject: str) -> bool:
+    return bool(clean_subject(sent_subject) and clean_subject(sent_subject) == clean_subject(original_subject))
+
+
 def is_related(sent_subject: str, original_subject: str) -> bool:
     sent_raw = (sent_subject or "").strip()
     orig_raw = (original_subject or "").strip()
@@ -94,7 +98,15 @@ def build_recipient_index(resend_payload) -> dict[str, list[dict]]:
     return index
 
 
-def related_events(target: str, original_subject: str, original_created: str, resend_payload, recipient_index=None) -> list[dict]:
+def related_events(
+    target: str,
+    original_subject: str,
+    original_created: str,
+    resend_payload,
+    recipient_index=None,
+    *,
+    strict_subject: bool = True,
+) -> list[dict]:
     target = normalize_addr(target)
     original_dt = parse_ts(original_created)
     payload = resend_payload if isinstance(resend_payload, dict) else {}
@@ -112,7 +124,12 @@ def related_events(target: str, original_subject: str, original_created: str, re
             continue
         if original_dt and sent_dt and sent_dt < original_dt:
             continue
-        if not is_related(email.get("subject", ""), original_subject):
+        subject_matches = (
+            is_strictly_related(email.get("subject", ""), original_subject)
+            if strict_subject
+            else is_related(email.get("subject", ""), original_subject)
+        )
+        if not subject_matches:
             continue
 
         event = (email.get("last_event") or email.get("status") or "").strip().lower()
@@ -131,22 +148,40 @@ def related_events(target: str, original_subject: str, original_created: str, re
     return rows
 
 
-def summarize_related_events(target: str, original_subject: str, original_created: str, resend_payload, recipient_index=None) -> dict:
-    rows = related_events(target, original_subject, original_created, resend_payload, recipient_index)
+def summarize_related_events(
+    target: str,
+    original_subject: str,
+    original_created: str,
+    resend_payload,
+    recipient_index=None,
+    *,
+    strict_subject: bool = True,
+) -> dict:
+    rows = related_events(
+        target,
+        original_subject,
+        original_created,
+        resend_payload,
+        recipient_index,
+        strict_subject=strict_subject,
+    )
     summary = {"delivered": 0, "bounced": 0, "pending": 0, "rows": rows}
     for row in rows:
         summary[row["bucket"]] += 1
+    terminal_rows = [row for row in rows if row["bucket"] in {"delivered", "bounced"}]
+    latest = terminal_rows[-1] if terminal_rows else (rows[-1] if rows else None)
+    summary["latest_bucket"] = latest["bucket"] if latest else "none"
+    summary["latest_event"] = latest.get("last_event") if latest else ""
+    summary["latest_at"] = latest.get("created_at") if latest else ""
     return summary
 
 
-def open_thread_delivery_evidence(rows, resend_payload, recipient_index=None) -> dict[int, int]:
+def thread_delivery_evidence(rows, resend_payload, recipient_index=None, include_statuses=None) -> dict[int, int]:
     thread_latest_inbound = {}
     for email in rows or []:
         status = (email.get("status") or "").strip().lower()
         category = (email.get("category") or "").strip().lower()
         if category == "spam" or status == "spam":
-            continue
-        if status not in {"pending", "needs_human", "new", "error"}:
             continue
         key = thread_key(email)
         if not key[0] or not key[1]:
@@ -163,7 +198,7 @@ def open_thread_delivery_evidence(rows, resend_payload, recipient_index=None) ->
         category = (email.get("category") or "").strip().lower()
         if category == "spam" or status == "spam":
             continue
-        if status not in {"pending", "needs_human", "new", "error"}:
+        if include_statuses is not None and status not in include_statuses:
             continue
 
         try:
@@ -190,3 +225,12 @@ def open_thread_delivery_evidence(rows, resend_payload, recipient_index=None) ->
             delivered_after_latest += 1
         evidence[email_id] = delivered_after_latest
     return evidence
+
+
+def open_thread_delivery_evidence(rows, resend_payload, recipient_index=None) -> dict[int, int]:
+    return thread_delivery_evidence(
+        rows,
+        resend_payload,
+        recipient_index,
+        include_statuses={"pending", "needs_human", "new", "error"},
+    )

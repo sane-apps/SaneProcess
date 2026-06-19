@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'fileutils'
 require 'open3'
 require 'socket'
 require 'time'
@@ -164,6 +165,60 @@ module SaneMasterModules
       has_xcode_project = project_xcodeproj && !project_xcodeproj.to_s.empty?
       has_workspace = project_workspace && !project_workspace.to_s.empty?
       has_xcode_project || has_workspace
+    end
+
+    def assert_no_runtime_probe_lock_for_verify!
+      lock_path = runtime_probe_lock_path_for_project
+      return unless File.exist?(lock_path)
+
+      lock_file = File.open(lock_path, runtime_probe_lock_open_flags)
+      unless lock_file.flock(File::LOCK_EX | File::LOCK_NB)
+        detail = runtime_probe_lock_detail(lock_file)
+        puts "\n❌ Verify refused because #{project_name} runtime QA is active."
+        puts "   Lock: #{lock_path}"
+        puts "   Owner: #{detail.empty? ? 'unknown' : detail}"
+        puts '   Wait for the runtime smoke/QA lane to finish, then rerun verify.'
+        exit 75
+      end
+
+      FileUtils.rm_f(lock_path)
+    rescue Errno::ENOENT
+      nil
+    rescue Errno::ELOOP
+      puts "\n❌ Verify refused because runtime QA lock path is a symlink: #{lock_path}"
+      exit 75
+    ensure
+      if lock_file
+        begin
+          lock_file.flock(File::LOCK_UN)
+        rescue StandardError
+          nil
+        end
+        begin
+          lock_file.close unless lock_file.closed?
+        rescue StandardError
+          nil
+        end
+      end
+    end
+
+    def runtime_probe_lock_detail(lock_file)
+      lock_file.rewind
+      lock_file.read.to_s.strip
+    rescue StandardError
+      ''
+    end
+
+    def runtime_probe_lock_open_flags
+      flags = File::RDWR
+      flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+      flags
+    end
+
+    def runtime_probe_lock_path_for_project
+      ENV['SANEMASTER_RUNTIME_PROBE_LOCK_PATH'] ||
+        ENV["#{project_name.upcase.gsub(/[^A-Z0-9]/, '_')}_RUNTIME_TARGET_LOCK_PATH"] ||
+        File.join('/tmp', "#{project_name.downcase}_runtime_probe.lock")
     end
 
     def terminate_running_app_instance

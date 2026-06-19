@@ -7,18 +7,18 @@ require 'open3'
 require 'optparse'
 require 'time'
 require 'uri'
+require_relative 'setapp_config'
 
 class SetappStatus
   API_BASE = 'https://developer-api.setapp.com/v1'
-  DEFAULT_APPS = [
-    { name: 'SaneClip', app_id: '1847', version_id: '46886' },
-    { name: 'SaneBar', app_id: '1848', version_id: '46885' }
-  ].freeze
+  DEFAULT_APPS = SetappConfig.apps.freeze
   STATUS_LABELS = {
     2 => 'Needs Revision',
-    5 => 'In Review'
+    5 => 'In Review',
+    9 => 'Manual Release Required',
+    10 => 'Released'
   }.freeze
-  ACTION_REQUIRED_STATUSES = [2].freeze
+  NON_ACTION_STATUSES = [5, 10].freeze
 
   def initialize(argv)
     @options = {
@@ -30,6 +30,7 @@ class SetappStatus
   end
 
   def run
+    enforce_mini_host! unless @options[:fixture]
     token = @options[:fixture] ? nil : portal_token
     if token.to_s.empty? && !@options[:fixture]
       return unavailable('open developer.setapp.com in Safari on the Mini or set SETAPP_PORTAL_TOKEN')
@@ -76,6 +77,19 @@ class SetappStatus
     { name: name, app_id: app_id, version_id: version_id }
   end
 
+  def enforce_mini_host!
+    return if ENV['SANEPROCESS_ALLOW_LOCAL_SETAPP_SCRIPT'] == '1'
+    return if running_on_mini_host?
+
+    abort 'Setapp status is Mini-first. Run through ./scripts/SaneMaster.rb setapp_status, or set SANEPROCESS_ALLOW_LOCAL_SETAPP_SCRIPT=1 only for a documented local test.'
+  end
+
+  def running_on_mini_host?
+    host = `hostname -s 2>/dev/null`.strip.downcase
+    user = ENV['USER'].to_s
+    host.include?('mini') || user == 'stephansmac'
+  end
+
   def row_for(app, token)
     response = @options[:fixture] ? fixture_response(app.fetch(:version_id)) : fetch_version(token, app.fetch(:version_id))
     data = response.fetch('data', {})
@@ -90,9 +104,9 @@ class SetappStatus
       archive_url: data['archive_url'],
       status_code: status_code,
       status: label,
-      action_required: ACTION_REQUIRED_STATUSES.include?(status_code),
+      action_required: action_required_status?(status_code),
       vendor_comment_present: !data['vendor_comment'].to_s.strip.empty?,
-      reviewer_comment: first_present(data, 'reviewer_comment', 'review_comment', 'decline_reason', 'rejection_reason')
+      reviewer_comment_present: !first_present(data, 'reviewer_comment', 'review_comment', 'decline_reason', 'rejection_reason').to_s.strip.empty?
     }
   rescue StandardError => e
     {
@@ -101,7 +115,7 @@ class SetappStatus
       version_id: app.fetch(:version_id),
       unavailable: true,
       error: e.message,
-      action_required: true
+      action_required: false
     }
   end
 
@@ -133,15 +147,8 @@ class SetappStatus
     script = <<~APPLESCRIPT
       tell application "Safari"
         if not running then return "{\\"error\\":\\"Safari is not running\\"}"
-        repeat with doc in documents
-          try
-            set docURL to URL of doc
-            if docURL contains "developer.setapp.com" then
-              return do JavaScript "JSON.stringify({host: location.hostname, token: decodeURIComponent((document.cookie.split('; ').find(c=>c.startsWith('access_token='))||'=').split('=')[1]||'')})" in doc
-            end if
-          end try
-        end repeat
-        return "{\\"error\\":\\"No developer.setapp.com tab open\\"}"
+        if (count of documents) is 0 then return "{\\"error\\":\\"Safari has no open document\\"}"
+        return do JavaScript "JSON.stringify({host: location.hostname, token: decodeURIComponent((document.cookie.split('; ').find(c=>c.startsWith('access_token='))||'=').split('=')[1]||'')})" in front document
       end tell
     APPLESCRIPT
     output, _stderr, status = Open3.capture3('/usr/bin/osascript', stdin_data: script)
@@ -161,9 +168,9 @@ class SetappStatus
       checked_at: Time.now.utc.iso8601,
       channel: 'setapp',
       unavailable: true,
-      action_required: true,
+      action_required: false,
       error: reason,
-      apps: @options[:apps].map { |app| app.merge(unavailable: true, action_required: true) }
+      apps: @options[:apps].map { |app| app.merge(unavailable: true, action_required: false) }
     }
     @options[:json] ? puts(JSON.pretty_generate(payload)) : print_human(payload)
     @options[:soft] ? 0 : 3
@@ -183,23 +190,37 @@ class SetappStatus
         next
       end
 
-      marker = row[:action_required] ? '❌' : '⏳'
+      marker = status_marker(row)
       version = [row[:version], row[:ui_version]].compact.join(' / ')
       puts "- #{marker} #{row[:app]}: #{row[:status]} (status #{row[:status_code]}, version #{version}, version_id #{row[:version_id]})"
       puts "  archive: #{row[:archive_url]}" if row[:archive_url]
       puts "  vendor comment: #{row[:vendor_comment_present] ? 'present' : 'missing'}"
-      puts "  reviewer note: #{compact(row[:reviewer_comment])}" if row[:reviewer_comment]
+      puts '  reviewer note: present (redacted)' if row[:reviewer_comment_present]
     end
 
+    if payload[:unavailable]
+      puts 'STATUS INCOMPLETE: at least one Setapp version could not be checked. Fix portal/API availability before deciding review action.'
+    end
     if payload[:action_required]
-      puts 'ACTION REQUIRED: at least one Setapp version is waiting on us. Uploading/replacing an archive is not enough; submit it for review and rerun setapp_status.'
-    else
+      puts 'ACTION REQUIRED: at least one Setapp version is waiting on us. Complete the portal action (submit for review, fix Needs Revision, or manually release an approved build) and rerun setapp_status.'
+    elsif !payload[:unavailable]
       puts 'No Setapp action required.'
     end
   end
 
   def status_label(code)
     STATUS_LABELS.fetch(code, "Status #{code}")
+  end
+
+  def action_required_status?(code)
+    !NON_ACTION_STATUSES.include?(code.to_i)
+  end
+
+  def status_marker(row)
+    return '❌' if row[:action_required]
+    return '✅' if row[:status_code].to_i == 10
+
+    '⏳'
   end
 
   def first_present(hash, *keys)
@@ -217,8 +238,8 @@ class SetappStatus
 
   def exit_code_for(payload)
     return 0 if @options[:soft]
-    return 2 if payload[:action_required]
     return 3 if payload[:unavailable]
+    return 2 if payload[:action_required]
 
     0
   end

@@ -29,14 +29,61 @@ exit(run_tests('Mini GUI Runner Tests') do
       true
     end
 
+    test('runner can restore the previously frontmost app for screenshot-sensitive commands') do
+      assert_includes(runner_source, '--restore-frontmost')
+      assert_includes(runner_source, '--restore-bundle-id')
+      assert_includes(runner_source, 'restore_frontmost=1')
+      assert_includes(runner_source, 'restore_bundle_id=""')
+      assert_includes(runner_source, 'focus_mode="restore-frontmost"')
+      assert_includes(runner_source, 'focus_mode="restore-bundle-id:${restore_bundle_id}"')
+      assert_includes(runner_source, '"$APPLESCRIPT_PATH" "$window_title" "$terminal_command" "$focus_mode"')
+      assert_includes(apple_script_source, 'set focusMode to "finder"')
+      assert_includes(apple_script_source, 'application processes whose frontmost is true')
+      assert_includes(apple_script_source, 'focusMode starts with "restore-bundle-id:"')
+      assert_includes(apple_script_source, 'on restoreBundleID(bundleID)')
+      assert_includes(apple_script_source, 'repeat with candidateProcess in application processes')
+      assert_includes(apple_script_source, 'set frontmost of candidateProcess to true')
+      assert_includes(apple_script_source, 'tell application id bundleID to activate')
+      assert_includes(apple_script_source, 'my restoreBundleID(explicitRestoreBundleID)')
+      assert_includes(apple_script_source, 'my restoreBundleID(priorBundleID)')
+      true
+    end
+
+    test('runner waits for Terminal-launched shell to start before trusting idle state') do
+      assert_includes(runner_source, 'window_busy_state()')
+      assert_includes(runner_source, 'return "idle"')
+      assert_includes(runner_source, 'launch_grace_seconds="${MINI_GUI_RUN_LAUNCH_GRACE_SECONDS:-8}"')
+      assert_includes(runner_source, 'inner_script_path="$tmp_dir/command.sh"')
+      assert_includes(runner_source, 'terminal_command="bash $(shell_quote "$inner_script_path")"')
+      assert_includes(runner_source, 'started_file="${status_file}.started"')
+      assert_includes(runner_source, 'printf \'%s\\n\' "\\$\\$" > $(shell_quote "$started_file")')
+      assert_includes(runner_source, '[ ! -f "$started_file" ] && [ "$elapsed_since_launch" -lt "$launch_grace_seconds" ]')
+      assert_includes(runner_source, 'idle_poll_count=$((idle_poll_count + 1))')
+      assert_includes(runner_source, '[ "$idle_poll_count" -ge 2 ] && break')
+      assert_includes(runner_source, 'mini-gui-run: command finished without a status file')
+      true
+    end
+
     test('reclaim helper closes prefixed and legacy automation windows') do
       assert_includes(reclaim_source, 'AUTOMATION_PREFIX="${MINI_GUI_RUN_WINDOW_PREFIX:-SaneApps Automation: }"')
       assert_includes(reclaim_source, 'set tabDelimiter to ASCII character 9')
+      assert_includes(reclaim_source, 'if not (exists process "Terminal") then return ""')
       assert_includes(reclaim_source, '--all --hide-terminal')
       assert_includes(reclaim_source, 'is_known_legacy_automation_window')
       assert_includes(reclaim_source, "tell application \"Terminal\" to quit saving no")
       assert_includes(reclaim_source, '" App Store "')
       assert_includes(reclaim_source, '" GUI Capture "')
+      true
+    end
+
+    test('reclaim helper verifies automation windows actually close') do
+      assert_includes(reclaim_source, 'on windowStillExists(targetID)')
+      assert_includes(reclaim_source, 'repeat 20 times')
+      assert_includes(reclaim_source, 'if my windowStillExists(targetID) is false then return "closed"')
+      assert_includes(reclaim_source, 'tell application "System Events" to keystroke "w" using command down')
+      assert_includes(reclaim_source, 'return "still-open"')
+      assert_includes(reclaim_source, 'warning: automation window still open after close attempt')
+      assert_includes(reclaim_source, '/usr/bin/pkill -x Terminal')
       true
     end
   end
@@ -49,7 +96,27 @@ exit(run_tests('Mini GUI Runner Tests') do
       assert_includes(screenshot_wrapper_source, 'resolved_mini_host="$(resolve_mini_host "$MINI_HOST")"')
       assert_includes(screenshot_wrapper_source, 'Could not reach the canonical Mini host.')
       assert_includes(screenshot_wrapper_source, 'rsync -az "$LOCAL_SKILL_DIR/" "${resolved_mini_host}:${REMOTE_HELPER_DIR}/"')
-      assert_includes(screenshot_wrapper_source, 'ssh "$resolved_mini_host" "$remote_runner"')
+      assert_includes(screenshot_wrapper_source, 'ssh "$host" "$runner"')
+      assert_includes(screenshot_wrapper_source, 'run_remote_runner_with_timeout "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" "$resolved_mini_host" "$remote_runner"')
+      true
+    end
+
+    test('capture wrapper time-bounds the remote Mini GUI runner') do
+      assert_includes(screenshot_wrapper_source, 'MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS="${MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS:-60}"')
+      assert_includes(screenshot_wrapper_source, 'run_remote_runner_with_timeout()')
+      assert_includes(screenshot_wrapper_source, 'capture_output="$(run_remote_runner_with_timeout "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" "$resolved_mini_host" "$remote_runner")"')
+      assert_includes(screenshot_wrapper_source, 'Mini screenshot capture timed out after ${timeout_seconds}s')
+      assert_includes(screenshot_wrapper_source, 'return 124')
+      true
+    end
+
+    test('capture wrapper expands Mini-side tilde paths before shell-quoting') do
+      assert_includes(screenshot_wrapper_source, 'expand_remote_home_path()')
+      assert_includes(screenshot_wrapper_source, '${path#\~/}')
+      assert_includes(screenshot_wrapper_source, 'remote_home="$(ssh "$resolved_mini_host"')
+      assert_includes(screenshot_wrapper_source, 'REMOTE_MINI_GUI_RUN="$(expand_remote_home_path "$REMOTE_MINI_GUI_RUN" "$remote_home")"')
+      assert_includes(screenshot_wrapper_source, 'REMOTE_VISUAL_GUARD="$(expand_remote_home_path "$REMOTE_VISUAL_GUARD" "$remote_home")"')
+      assert_includes(screenshot_wrapper_source, 'remote_runner="$(remote_cmd bash "$REMOTE_MINI_GUI_RUN"')
       true
     end
 
@@ -148,6 +215,7 @@ exit(run_tests('Mini GUI Runner Tests') do
       assert_includes(visual_guard_source, '--allow-windowless-target')
       assert_includes(visual_guard_source, 'ALLOW_WINDOWLESS_TARGET=true')
       assert_includes(visual_guard_source, 'if $ALLOW_WINDOWLESS_TARGET; then')
+      assert_includes(visual_guard_source, '[ "$target_windows" != "0" ]')
       true
     end
 
@@ -188,6 +256,8 @@ exit(run_tests('Mini GUI Runner Tests') do
 
   test_category('Launch focus') do
     test('AppleScript hands focus back to Finder after launching the hidden Terminal window') do
+      assert_includes(apple_script_source, 'launch')
+      assert_includes(apple_script_source, 'delay 0.5')
       assert_includes(apple_script_source, 'tell application "Finder" to activate')
       assert(!apple_script_source.include?('repeat with w in windows'),
              'mini-gui-run.applescript should not carry its own legacy window-sweep loop')

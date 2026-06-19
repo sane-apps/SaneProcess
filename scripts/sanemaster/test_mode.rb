@@ -146,7 +146,7 @@ module SaneMasterModules
       lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
       if File.exist?(lsregister)
         print '  Resetting Launch Services database... '
-      system(lsregister, '-kill', '-r', '-domain', 'local', '-domain', 'system', '-domain', 'user')
+        system(lsregister, '-r', '-f', '-apps', 'local,user,system', out: File::NULL, err: File::NULL)
         puts '✅'
       end
 
@@ -536,7 +536,9 @@ module SaneMasterModules
       lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
       return unless File.exist?(lsregister)
 
-      system(lsregister, '-kill', '-r', '-domain', 'local', '-domain', 'system', '-domain', 'user')
+      unless system(lsregister, '-r', '-f', '-apps', 'local,user,system', out: File::NULL, err: File::NULL)
+        puts '⚠️  Launch Services refresh failed; continuing with direct launch verification.'
+      end
     end
 
     def local_app_processes(app_path)
@@ -918,21 +920,65 @@ module SaneMasterModules
 
       if ENV['SANEMASTER_GRANT_KEYCHAIN_PARTITION_ACCESS'] == '1'
         identities = `security find-identity -v -p codesigning "#{login_keychain}" 2>/dev/null`
-        identities.each_line do |line|
-          identity = line[/^\s*\d+\)\s+[0-9A-F]{40}\s+"([^"]+)"/, 1]
-          next if identity.nil? || identity.empty?
+        stamp_file = keychain_partition_stamp_file(login_keychain, identities)
+        return if stamp_file && File.file?(stamp_file) && ENV['SANEPROCESS_FORCE_KEYCHAIN_PARTITION'] != '1'
 
-          system('security', 'set-key-partition-list',
-                 '-S', 'apple-tool:,apple:,codesign:',
-                 '-s',
-                 '-k', keychain_password,
-                 '-D', identity,
-                 '-t', 'private',
-                 login_keychain,
-                 out: File::NULL,
-                 err: File::NULL)
+        FileUtils.touch(stamp_file) if stamp_file && grant_keychain_partition_access(login_keychain, keychain_password)
+      end
+    end
+
+    def keychain_partition_stamp_file(login_keychain, identities)
+      normalized_identities = identities.to_s.lines.map(&:strip).reject(&:empty?).join("\n")
+      return nil if normalized_identities.empty?
+
+      require 'digest'
+      stamp_root = File.expand_path('~/.cache/saneprocess/keychain-partitions')
+      FileUtils.mkdir_p(stamp_root)
+      stamp_key = Digest::SHA256.hexdigest("#{login_keychain}\n#{normalized_identities}")
+      File.join(stamp_root, "#{stamp_key}.stamp")
+    rescue StandardError
+      nil
+    end
+
+    def grant_keychain_partition_access(login_keychain, keychain_password)
+      require 'open3'
+
+      timeout = ENV.fetch('SANEPROCESS_KEYCHAIN_PARTITION_TIMEOUT', '8').to_f
+      timeout = 8.0 if timeout <= 0
+
+      Open3.popen2e(
+        'security',
+        'set-key-partition-list',
+        '-S',
+        'apple-tool:,apple:,codesign:',
+        '-s',
+        '-k',
+        keychain_password,
+        login_keychain
+      ) do |stdin, stdout_err, wait_thr|
+        stdin.close
+        if wait_thr.join(timeout)
+          stdout_err.read.to_s
+          return wait_thr.value.success?
+        end
+
+        begin
+          Process.kill('TERM', wait_thr.pid)
+        rescue Errno::ESRCH
+          nil
+        end
+        unless wait_thr.join(1)
+          begin
+            Process.kill('KILL', wait_thr.pid)
+          rescue Errno::ESRCH
+            nil
+          end
+          wait_thr.join
         end
       end
+      false
+    rescue StandardError
+      false
     end
 
     def load_saneprocess_secrets_env

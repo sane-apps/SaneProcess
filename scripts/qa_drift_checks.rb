@@ -187,7 +187,7 @@ module QaDriftChecks
     # Get actual tier test total
     test_file = File.join(__dir__, 'hooks', 'test', 'tier_tests.rb')
     if File.exist?(test_file)
-      result = `ruby #{test_file} 2>&1`
+      result, = capture_qa_command('ruby', test_file)
       if (match = result.match(/TOTAL: (\d+)\/(\d+) passed/))
         actual_tier = match[2].to_i
         if claimed_tier && claimed_tier != actual_tier
@@ -202,7 +202,7 @@ module QaDriftChecks
       hook_path = File.join(__dir__, 'hooks', "#{hook}.rb")
       next unless File.exist?(hook_path)
 
-      result = `ruby #{hook_path} --self-test 2>&1`
+      result, = capture_qa_command('ruby', hook_path, '--self-test')
       if (match = result.match(/(\d+)\/(\d+) tests passed/))
         actual = match[2].to_i
         actual_self_total += actual

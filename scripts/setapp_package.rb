@@ -12,6 +12,19 @@ require 'tmpdir'
 require 'time'
 
 class SetappPackage
+  ICONSET_REPRESENTATIONS = [
+    ['icon_16x16.png', 16],
+    ['icon_16x16@2x.png', 32],
+    ['icon_32x32.png', 32],
+    ['icon_32x32@2x.png', 64],
+    ['icon_128x128.png', 128],
+    ['icon_128x128@2x.png', 256],
+    ['icon_256x256.png', 256],
+    ['icon_256x256@2x.png', 512],
+    ['icon_512x512.png', 512],
+    ['icon_512x512@2x.png', 1024]
+  ].freeze
+
   def initialize(argv)
     @options = {
       project: Dir.pwd,
@@ -24,6 +37,7 @@ class SetappPackage
   end
 
   def run
+    enforce_mini_host!
     load_cached_env
     @project = File.expand_path(@options[:project])
     abort "Project directory not found: #{@project}" unless File.directory?(@project)
@@ -64,6 +78,19 @@ class SetappPackage
   end
 
   private
+
+  def enforce_mini_host!
+    return if ENV['SANEPROCESS_ALLOW_LOCAL_SETAPP_SCRIPT'] == '1'
+    return if running_on_mini_host?
+
+    abort 'Setapp packaging is Mini-first. Run through ./scripts/SaneMaster.rb setapp_package, or set SANEPROCESS_ALLOW_LOCAL_SETAPP_SCRIPT=1 only for a documented local test.'
+  end
+
+  def running_on_mini_host?
+    host = `hostname -s 2>/dev/null`.strip.downcase
+    user = ENV['USER'].to_s
+    host.include?('mini') || user == 'stephansmac'
+  end
 
   def parse!(argv)
     OptionParser.new do |opts|
@@ -135,11 +162,7 @@ class SetappPackage
   end
 
   def normalize_app_icon
-    source_iconset = app_iconset_path
-    unless source_iconset
-      puts 'No source AppIcon.appiconset found; keeping archived AppIcon.icns.'
-      return
-    end
+    source = setapp_icon_source_png
 
     resource_dir = File.join(@app_path, 'Contents', 'Resources')
     target_icon = File.join(resource_dir, 'AppIcon.icns')
@@ -148,38 +171,107 @@ class SetappPackage
     Dir.mktmpdir('setapp-appicon') do |dir|
       iconset_dir = File.join(dir, 'AppIcon.iconset')
       FileUtils.mkdir_p(iconset_dir)
-      Dir.glob(File.join(source_iconset, '*.png')).each do |png|
-        FileUtils.cp(png, File.join(iconset_dir, File.basename(png)))
+      ICONSET_REPRESENTATIONS.each do |filename, size|
+        render_setapp_icon(
+          source,
+          File.join(iconset_dir, filename),
+          size,
+          "appicon-render-#{filename.tr('@', '-')}.log"
+        )
       end
-
-      abort "No PNG files found in #{source_iconset}" if Dir.glob(File.join(iconset_dir, '*.png')).empty?
 
       run_logged('appicon-normalize.log', 'iconutil', '-c', 'icns', iconset_dir, '-o', target_icon)
     end
   end
 
   def write_root_icon_png
-    source = largest_app_icon_png
-    abort 'No 1024x1024 source AppIcon PNG found for Setapp root icon' unless source
+    render_setapp_icon(setapp_icon_source_png, root_icon_png_path, 1024, 'root-icon-render.log')
+    validate_setapp_icon_geometry(root_icon_png_path, 'root-icon-validate.log')
+  end
 
-    FileUtils.cp(source, root_icon_png_path)
-    width, height = png_dimensions(root_icon_png_path)
-    return if width == 1024 && height == 1024
+  def setapp_icon_source_png
+    @setapp_icon_source_png ||= begin
+      source = largest_app_icon_png
+      abort 'No source AppIcon PNG found for Setapp icon generation' unless source
 
-    abort "Setapp root icon #{root_icon_png_path} is #{width}x#{height}; Setapp requires 1024x1024"
+      width, height = png_dimensions(source)
+      unless width >= 1024 && height >= 1024
+        abort "Setapp source AppIcon #{source} is #{width}x#{height}; Setapp packaging requires a 1024x1024 source"
+      end
+      source
+    end
+  end
+
+  def render_setapp_icon(source, output, size, log_name)
+    run_logged(
+      log_name,
+      swift_executable,
+      setapp_icon_tool_path,
+      'render',
+      '--source',
+      source,
+      '--output',
+      output,
+      '--size',
+      size.to_s
+    )
+  end
+
+  def validate_setapp_icon_geometry(path, log_name)
+    run_logged(
+      log_name,
+      swift_executable,
+      setapp_icon_tool_path,
+      'validate',
+      '--path',
+      path,
+      '--size',
+      '1024'
+    )
+  end
+
+  def setapp_icon_tool_path
+    @setapp_icon_tool_path ||= File.expand_path('setapp_icon_tool.swift', __dir__)
+  end
+
+  def swift_executable
+    return @swift_executable if @swift_executable
+
+    configured = ENV['SWIFT_BIN'].to_s
+    return @swift_executable = configured if !configured.empty? && File.executable?(configured)
+
+    stdout, _stderr, status = Open3.capture3('/usr/bin/env', 'which', 'swift')
+    abort 'swift executable not found; Setapp icon generation requires Swift/AppKit on the Mini' unless status.success?
+
+    @swift_executable = stdout.strip
   end
 
   def largest_app_icon_png
     source_iconset = app_iconset_path
     return nil unless source_iconset
 
-    candidates = Dir.glob(File.join(source_iconset, '*.png')).map do |path|
+    paths = app_icon_manifest_pngs(source_iconset)
+    paths = Dir.glob(File.join(source_iconset, '*.png')) if paths.empty?
+
+    candidates = paths.map do |path|
       dimensions = png_dimensions(path)
       next unless dimensions
 
       [dimensions.first * dimensions.last, path]
     end.compact
     candidates.max_by(&:first)&.last
+  end
+
+  def app_icon_manifest_pngs(source_iconset)
+    manifest = File.join(source_iconset, 'Contents.json')
+    return [] unless File.file?(manifest)
+
+    data = JSON.parse(File.read(manifest))
+    Array(data['images']).map { |image| image['filename'].to_s }.reject(&:empty?).map do |filename|
+      File.join(source_iconset, filename)
+    end.select { |path| File.file?(path) }
+  rescue JSON::ParserError
+    []
   end
 
   def png_dimensions(path)
@@ -284,7 +376,7 @@ class SetappPackage
   def best_provisioning_profile(bundle_id, entitlements)
     candidates = provisioning_profiles.select do |profile|
       profile_bundle_id_matches?(profile[:entitlements], bundle_id) &&
-        profile_covers_icloud?(profile[:entitlements], entitlements)
+        profile_covers_restricted_entitlements?(profile[:entitlements], entitlements)
     end
 
     candidates.max_by { |profile| [profile[:score], profile[:expiration].to_i, profile[:creation].to_i] }
@@ -350,6 +442,45 @@ class SetappPackage
 
     available = Array(profile_entitlements['com.apple.developer.icloud-container-identifiers'])
     (required - available).empty?
+  end
+
+  def profile_covers_restricted_entitlements?(profile_entitlements, signed_entitlements)
+    profile_covers_icloud?(profile_entitlements, signed_entitlements) &&
+      profile_covers_icloud_services?(profile_entitlements, signed_entitlements) &&
+      profile_covers_array_entitlement?(profile_entitlements, signed_entitlements, 'com.apple.security.application-groups') &&
+      profile_covers_array_entitlement?(profile_entitlements, signed_entitlements, 'keychain-access-groups')
+  end
+
+  def profile_covers_icloud_services?(profile_entitlements, signed_entitlements)
+    required = Array(signed_entitlements['com.apple.developer.icloud-services']).reject(&:empty?)
+    return true if required.empty?
+
+    available = Array(profile_entitlements['com.apple.developer.icloud-services']).reject(&:empty?)
+    return true if available.include?('*')
+
+    (required - available).empty?
+  end
+
+  def profile_covers_array_entitlement?(profile_entitlements, signed_entitlements, key)
+    required = Array(signed_entitlements[key]).reject(&:empty?)
+    return true if required.empty?
+
+    available = Array(profile_entitlements[key]).reject(&:empty?)
+    team_id = profile_entitlements['com.apple.developer.team-identifier'].to_s
+    required.all? do |value|
+      available.any? do |candidate|
+        candidate == value ||
+          (candidate.end_with?('*') && value.start_with?(candidate.delete_suffix('*'))) ||
+          team_wildcard_covers_app_group?(key, candidate, value, team_id)
+      end
+    end
+  end
+
+  def team_wildcard_covers_app_group?(key, candidate, value, team_id)
+    key == 'com.apple.security.application-groups' &&
+      !team_id.empty? &&
+      candidate == "#{team_id}.*" &&
+      value.start_with?('group.')
   end
 
   def parse_time(value)
@@ -424,7 +555,22 @@ class SetappPackage
 
   def run_quiet(*cmd)
     _stdout, stderr, status = Open3.capture3(*cmd)
-    abort "Command failed (#{status.exitstatus}): #{cmd.shelljoin}\n#{stderr}" unless status.success?
+    abort "Command failed (#{status.exitstatus}): #{redacted_shelljoin(cmd)}\n#{stderr}" unless status.success?
+  end
+
+  def redacted_shelljoin(cmd)
+    redact_next = false
+    cmd.map do |arg|
+      if redact_next
+        redact_next = false
+        Shellwords.escape('[REDACTED]')
+      elsif %w[-p -k].include?(arg)
+        redact_next = true
+        Shellwords.escape(arg)
+      else
+        Shellwords.escape(arg)
+      end
+    end.join(' ')
   end
 
   def main_entitlements
@@ -561,7 +707,7 @@ class SetappPackage
       '--zip',
       @final_zip,
       '--release-notes',
-      'validation'
+      'Maintenance update.'
     )
   end
 
@@ -599,6 +745,9 @@ class SetappPackage
         sleep 4
         pids = pids_for_process_name(executable) - before_pids
         log.puts("observed_pids=#{pids.join(',')}")
+        if pids.empty?
+          abort "Quarantined Setapp launch proof did not observe a new #{executable} process. See #{log_path}"
+        end
         pids.each { |pid| Process.kill('TERM', pid) rescue nil }
       end
     end
