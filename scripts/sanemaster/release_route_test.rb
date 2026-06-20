@@ -197,12 +197,15 @@ exit(run_tests('SaneMaster Release Routing Tests') do
       true
     end
 
-    test('excludes local worktree archives and bulk outputs but keeps customer UI evidence') do
+    test('excludes local worktree archives and generated outputs from Mini sync') do
       with_temp_repo do |repo|
         FileUtils.mkdir_p(File.join(repo, '.worktrees', 'archive'))
+        FileUtils.mkdir_p(File.join(repo, '.sane'))
         FileUtils.mkdir_p(File.join(repo, 'outputs', 'huge'))
         FileUtils.mkdir_p(File.join(repo, 'outputs', 'customer-ui'))
+        FileUtils.mkdir_p(File.join(repo, 'outputs', 'runtime-preflight'))
         FileUtils.mkdir_p(File.join(repo, 'outputs', 'process-abtest'))
+        File.write(File.join(repo, '.sane', 'customer_ui_action_receipt.json'), '{}')
         File.write(File.join(repo, 'outputs', 'qa_status.json'), '{}')
         File.write(File.join(repo, 'outputs', 'release_preflight_status.json'), '{}')
         File.write(File.join(repo, 'outputs', 'customer_ui_action_receipt.json'), '{}')
@@ -213,12 +216,14 @@ exit(run_tests('SaneMaster Release Routing Tests') do
         rsync_call = subject.system_calls.find { |call| call.first == 'rsync' }
         assert(rsync_call, 'expected an rsync call')
         assert_includes(rsync_call, '.worktrees')
-        assert_includes(rsync_call, 'outputs/qa_status.json')
-        assert_includes(rsync_call, 'outputs/release_preflight_status.json')
-        assert_includes(rsync_call, 'outputs/customer_ui_action_receipt.json')
-        assert_includes(rsync_call, 'outputs/customer-ui/***')
-        assert_includes(rsync_call, 'outputs/process-abtest/***')
+        assert_includes(rsync_call, '.sane/customer_ui_action_receipt.json')
         assert_includes(rsync_call, 'outputs/***')
+        assert(!rsync_call.include?('outputs/qa_status.json'))
+        assert(!rsync_call.include?('outputs/release_preflight_status.json'))
+        assert(!rsync_call.include?('outputs/customer_ui_action_receipt.json'))
+        assert(!rsync_call.include?('outputs/customer-ui/***'))
+        assert(!rsync_call.include?('outputs/runtime-preflight/***'))
+        assert(!rsync_call.include?('outputs/process-abtest/***'))
         true
       end
     end
@@ -238,10 +243,32 @@ exit(run_tests('SaneMaster Release Routing Tests') do
         assert_includes(rsync_call, 'release_preflight_status.json')
         assert_includes(rsync_call, 'customer_ui_action_receipt.json')
         assert_includes(rsync_call, 'customer-ui/***')
+        assert_includes(rsync_call, 'runtime-preflight/***')
         assert_includes(rsync_call, 'visual_smoke/***')
         assert_includes(rsync_call, 'process-abtest/***')
         assert_includes(rsync_call, '*')
+        assert_includes(rsync_call, '--no-links')
         assert_includes(rsync_call, "mini:#{remote_outputs}/")
+        true
+      end
+    end
+
+    test('syncs Mini canonical sane receipt back to the Air') do
+      with_temp_repo do |repo|
+        remote_repo = '/Users/stephansmac/.sanemaster/routed-workspaces/abcd/SaneApps/apps/SaneBar'
+        remote_outputs = File.join(remote_repo, 'outputs')
+        remote_receipt = File.join(remote_repo, '.sane', 'customer_ui_action_receipt.json')
+        subject.set_existing_paths([remote_outputs, remote_receipt])
+
+        subject.system_calls.clear
+        subject.send(:sync_outputs_from_mini!, repo, remote_repo)
+
+        receipt_call = subject.system_calls.select { |call| call.first == 'rsync' }.find do |call|
+          call.include?("mini:#{remote_receipt}")
+        end
+        assert(receipt_call, 'expected Mini .sane receipt rsync call')
+        assert_includes(receipt_call, '--no-links')
+        assert_includes(receipt_call, File.join(repo, '.sane') + '/customer_ui_action_receipt.json')
         true
       end
     end
@@ -263,6 +290,7 @@ exit(run_tests('SaneMaster Release Routing Tests') do
       assert_includes(remote_cmd, 'customer_ui_action_receipt.json')
       assert_includes(remote_cmd, 'validation')
       assert_includes(remote_cmd, 'customer-ui')
+      assert_includes(remote_cmd, 'runtime-preflight')
       assert_includes(remote_cmd, 'visual_smoke')
       assert_includes(remote_cmd, 'process-abtest')
       assert_includes(remote_cmd, '/usr/bin/trash "$path"')

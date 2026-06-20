@@ -32,6 +32,11 @@ def init_release_readiness_app(root, name, preflight:, qa: nil, dirty: false)
   system('git', '-C', app, 'config', 'user.name', 'SaneProcess Test')
   system('git', '-C', app, 'add', '.')
   system('git', '-C', app, 'commit', '-q', '-m', 'fixture')
+  if preflight['sourceFingerprint'] == '__CURRENT__'
+    harness = ReleaseReadinessHarness.new
+    preflight = preflight.merge('sourceFingerprint' => harness.send(:release_status_source_fingerprint, app))
+    File.write(File.join(app, 'outputs', 'release_preflight_status.json'), JSON.pretty_generate(preflight))
+  end
   File.write(File.join(app, 'dirty.txt'), "dirty\n") if dirty
   app
 end
@@ -85,6 +90,7 @@ exit(run_tests('SaneMaster Release Readiness Tests') do
           preflight: {
             'generatedAt' => Time.now.utc.iso8601,
             'status' => 'passed',
+            'sourceFingerprint' => '__CURRENT__',
             'issues' => [],
             'warningCount' => 0
           },
@@ -104,6 +110,147 @@ exit(run_tests('SaneMaster Release Readiness Tests') do
         assert_eq(report.dig(:summary, :portfolio_ok), true)
         assert_eq(report.dig(:apps, 0, :candidate_readiness, :status), 'ready')
         assert(report.dig(:apps, 0, :portfolio_health, :blockers).empty?)
+      end
+      true
+    end
+
+    test('blocks candidate readiness when release_preflight source fingerprint is stale') do
+      Dir.mktmpdir('release-readiness-stale-') do |root|
+        init_release_readiness_app(
+          root,
+          'SaneExample',
+          preflight: {
+            'generatedAt' => Time.now.utc.iso8601,
+            'status' => 'passed',
+            'sourceFingerprint' => '0' * 64,
+            'issues' => [],
+            'warningCount' => 0
+          }
+        )
+
+        subject = ReleaseReadinessHarness.new
+        subject.apps_root = root
+        report = subject.send(:release_readiness_report, app: 'SaneExample', scope: 'candidate')
+        blockers = report.dig(:apps, 0, :candidate_readiness, :blockers)
+
+        assert_eq(report.dig(:summary, :ready), false)
+        assert(blockers.any? { |item| item.include?('release_preflight source fingerprint is stale') })
+      end
+      true
+    end
+
+    test('stale failed release_preflight reports freshness instead of obsolete issues') do
+      Dir.mktmpdir('release-readiness-stale-failed-') do |root|
+        init_release_readiness_app(
+          root,
+          'SaneExample',
+          preflight: {
+            'generatedAt' => Time.now.utc.iso8601,
+            'status' => 'failed',
+            'sourceFingerprint' => '0' * 64,
+            'issues' => ['Project QA guardrails failed (Scripts/qa.rb)'],
+            'warningCount' => 0
+          },
+          qa: {
+            'generatedAt' => Time.now.utc.iso8601,
+            'status' => 'passed_with_warnings',
+            'policyOnlyMode' => false,
+            'warningCount' => 6
+          }
+        )
+
+        subject = ReleaseReadinessHarness.new
+        subject.apps_root = root
+        report = subject.send(:release_readiness_report, app: 'SaneExample', scope: 'candidate')
+        blockers = report.dig(:apps, 0, :candidate_readiness, :blockers)
+
+        assert(blockers.any? { |item| item.include?('release_preflight source fingerprint is stale') })
+        assert(!blockers.any? { |item| item.include?('Project QA guardrails failed') })
+      end
+      true
+    end
+
+    test('blocks candidate readiness when release_preflight receipt is too old') do
+      Dir.mktmpdir('release-readiness-old-preflight-') do |root|
+        init_release_readiness_app(
+          root,
+          'SaneExample',
+          preflight: {
+            'generatedAt' => (Time.now.utc - (7 * 60 * 60)).iso8601,
+            'status' => 'passed',
+            'sourceFingerprint' => '__CURRENT__',
+            'issues' => [],
+            'warningCount' => 0
+          }
+        )
+
+        subject = ReleaseReadinessHarness.new
+        subject.apps_root = root
+        report = subject.send(:release_readiness_report, app: 'SaneExample', scope: 'candidate')
+        blockers = report.dig(:apps, 0, :candidate_readiness, :blockers)
+
+        assert_eq(report.dig(:summary, :ready), false)
+        assert(blockers.any? { |item| item.include?('release_preflight receipt is stale') })
+      end
+      true
+    end
+
+    test('blocks candidate readiness when underlying customer UI receipt is stale') do
+      Dir.mktmpdir('release-readiness-stale-ui-', File.realpath(Dir.tmpdir)) do |root|
+        app = init_release_readiness_app(
+          root,
+          'SaneExample',
+          preflight: {
+            'generatedAt' => Time.now.utc.iso8601,
+            'status' => 'passed',
+            'sourceFingerprint' => '__CURRENT__',
+            'issues' => [],
+            'warningCount' => 0
+          }
+        )
+        FileUtils.mkdir_p(File.join(app, 'Tests'))
+        File.write(File.join(app, 'Tests', 'CustomerUIActions.yml'), "version: 1\napp: SaneExample\nactions: []\n")
+        File.write(
+          File.join(app, 'outputs', 'customer_ui_action_receipt.json'),
+          JSON.pretty_generate('generated_at' => (Time.now.utc - 13 * 60 * 60).iso8601)
+        )
+        preflight_path = File.join(app, 'outputs', 'release_preflight_status.json')
+        preflight_payload = JSON.parse(File.read(preflight_path))
+        preflight_payload['sourceFingerprint'] = ReleaseReadinessHarness.new.send(:release_status_source_fingerprint, app)
+        File.write(preflight_path, JSON.pretty_generate(preflight_payload))
+
+        subject = ReleaseReadinessHarness.new
+        subject.apps_root = root
+        report = subject.send(:release_readiness_report, app: 'SaneExample', scope: 'candidate')
+        blockers = report.dig(:apps, 0, :candidate_readiness, :blockers)
+
+        assert_eq(report.dig(:summary, :ready), false)
+        assert(blockers.any? { |item| item.include?('customer UI receipt is stale') })
+      end
+      true
+    end
+
+    test('candidate freshness fingerprint includes shared SaneProcess harness source') do
+      Dir.mktmpdir('release-readiness-harness-fingerprint-') do |root|
+        app = init_release_readiness_app(
+          root,
+          'SaneExample',
+          preflight: {
+            'generatedAt' => Time.now.utc.iso8601,
+            'status' => 'passed',
+            'sourceFingerprint' => '__CURRENT__',
+            'issues' => [],
+            'warningCount' => 0
+          }
+        )
+
+        subject = ReleaseReadinessHarness.new
+        entries = subject.send(:release_status_source_entries, app)
+        digest_paths = entries.map { |entry| entry[:digest_path] }
+
+        assert(digest_paths.any? { |path| path == 'SaneProcess/scripts/sanemaster/release.rb' })
+        assert(digest_paths.any? { |path| path == 'SaneProcess/scripts/sanemaster/release_readiness.rb' })
+        assert(digest_paths.any? { |path| path == 'SaneProcess/scripts/release.sh' })
       end
       true
     end
@@ -140,6 +287,7 @@ exit(run_tests('SaneMaster Release Readiness Tests') do
           preflight: {
             'generatedAt' => Time.now.utc.iso8601,
             'status' => 'passed',
+            'sourceFingerprint' => '__CURRENT__',
             'issues' => [],
             'warningCount' => 0
           }

@@ -4,6 +4,7 @@ module SaneMasterModules
   # Interactive debugging workflow, app launching, logs
   module TestMode
     require 'fileutils'
+    require 'open3'
     require 'tmpdir'
 
     SANEAPPS_TEST_MODE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo].freeze
@@ -842,8 +843,6 @@ module SaneMasterModules
     end
 
     def run_build_command(summary_lines: 3, build_config: launch_build_config([]))
-      require 'open3'
-
       prepare_signing_session_for_build(build_config)
 
       ENV.delete('SANEMASTER_UNSIGNED_FALLBACK_ACTIVE')
@@ -851,7 +850,7 @@ module SaneMasterModules
 
       cmd = ['xcodebuild', *xcodebuild_container_args, '-scheme', project_scheme, '-configuration', build_config,
              '-destination', 'platform=macOS', 'ENABLE_DEBUG_DYLIB=NO', *release_runtime_build_args(build_config), 'build']
-      stdout, status = Open3.capture2e(*cmd)
+      stdout, status = capture2e_without_reader_thread(*cmd, label: 'test_mode build', timeout: test_mode_build_timeout_seconds)
 
       if should_retry_unsigned_debug?(build_config: build_config, output: stdout, status: status)
         fallback_config = build_config == 'Release-AppStore' ? build_config : 'Debug'
@@ -859,7 +858,11 @@ module SaneMasterModules
         fallback_cmd = ['xcodebuild', *xcodebuild_container_args, '-scheme', project_scheme, '-configuration', fallback_config,
                         '-destination', 'platform=macOS', 'ENABLE_DEBUG_DYLIB=NO',
                         'CODE_SIGNING_ALLOWED=NO', 'CODE_SIGNING_REQUIRED=NO', 'build']
-        fallback_stdout, fallback_status = Open3.capture2e(*fallback_cmd)
+        fallback_stdout, fallback_status = capture2e_without_reader_thread(
+          *fallback_cmd,
+          label: 'test_mode unsigned fallback build',
+          timeout: test_mode_build_timeout_seconds
+        )
         stdout = fallback_stdout
         status = fallback_status
 
@@ -878,6 +881,92 @@ module SaneMasterModules
       end
 
       status.success?
+    end
+
+    def test_mode_build_timeout_seconds
+      timeout = ENV.fetch('SANEMASTER_TEST_MODE_BUILD_TIMEOUT', '900').to_f
+      timeout.positive? ? timeout : 900.0
+    end
+
+    def capture2e_without_reader_thread(*cmd, label:, timeout: nil)
+      output = +''
+      status = nil
+      started_at = Time.now
+
+      Open3.popen2e(*cmd, pgroup: true) do |stdin, stdout_err, wait_thr|
+        stdin.close
+        loop do
+          drain_command_output(stdout_err, output)
+
+          if wait_thr.join(0.2)
+            status = wait_thr.value
+            drain_command_output(stdout_err, output, max_drain_seconds: 1.0)
+            break
+          end
+
+          next unless timeout && (Time.now - started_at) >= timeout
+
+          output << "\n#{label} timeout after #{timeout}s: #{cmd.join(' ')}\n"
+          terminate_process_group(wait_thr)
+          status = command_failed_status
+          drain_command_output(stdout_err, output, max_drain_seconds: 1.0)
+          break
+        end
+      end
+
+      [output, status || command_failed_status]
+    rescue StandardError => e
+      ["#{label} failed: #{e.class}: #{e.message}", command_failed_status]
+    end
+
+    def drain_command_output(stdout_err, output, max_drain_seconds: 0.4)
+      deadline = Time.now + max_drain_seconds
+      loop do
+        ready = IO.select([stdout_err], nil, nil, 0.05)
+        break unless ready
+
+        chunk = stdout_err.read_nonblock(8192, exception: false)
+        case chunk
+        when String
+          output << chunk
+        when :wait_readable
+          break
+        when nil
+          break
+        end
+
+        break if Time.now >= deadline
+      end
+    rescue EOFError, IOError
+      nil
+    end
+
+    def terminate_process_group(wait_thr)
+      [-(wait_thr.pid), wait_thr.pid].each do |pid|
+        begin
+          Process.kill('TERM', pid)
+        rescue Errno::ESRCH, Errno::EINVAL
+          nil
+        end
+      end
+      return if wait_thr.join(1)
+
+      [-(wait_thr.pid), wait_thr.pid].each do |pid|
+        begin
+          Process.kill('KILL', pid)
+        rescue Errno::ESRCH, Errno::EINVAL
+          nil
+        end
+      end
+      wait_thr.join(1)
+    end
+
+    def command_failed_status
+      @command_failed_status ||= Struct.new(:exitstatus) do
+        def success?
+          false
+        end
+      end.new(nil)
     end
 
     def release_runtime_build_args(build_config)

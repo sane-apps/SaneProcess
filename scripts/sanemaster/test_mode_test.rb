@@ -218,6 +218,20 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
   end
 
   test_category('Release runtime signing') do
+    test('test_mode build uses single-threaded command capture with timeout') do
+      source = File.read(TEST_MODE_PATH)
+
+      assert_includes(source, 'capture2e_without_reader_thread(*cmd')
+      assert_includes(source, 'SANEMASTER_TEST_MODE_BUILD_TIMEOUT')
+      assert_includes(source, 'Open3.popen2e(*cmd, pgroup: true)')
+      assert_includes(source, 'terminate_process_group(wait_thr)')
+      assert(!source.include?('stdout, status = Open3.capture2e(*cmd)'),
+             'test_mode build should avoid Open3.capture2e reader-thread crashes')
+      assert(!source.include?('fallback_stdout, fallback_status = Open3.capture2e(*fallback_cmd)'),
+             'test_mode fallback build should avoid Open3.capture2e reader-thread crashes')
+      true
+    end
+
     test('release test_mode build uses archive signing args from .saneprocess') do
       Dir.mktmpdir('sanemaster-test-mode-signing') do |dir|
         File.write(

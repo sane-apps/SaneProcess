@@ -27,6 +27,12 @@ module SaneMasterModules
     CRASH_REPORT_WARN = 5         # Warn if unaddressed crashes pile up
     TEST_COUNT_MIN = 900          # Warn if test count drops significantly
     TEST_QUALITY_WARN = 0         # Zero tolerance for test anti-patterns
+    CODEX_GUARD_WRAPPERS = {
+      curl: 'sane_curl_guard.sh',
+      open: 'sane_open_guard.sh',
+      rsync: 'sane_rsync_guard.sh',
+      ssh: 'sane_ssh_guard.sh'
+    }.freeze
 
     def run_meta(_args = [])
       start_time = Time.now
@@ -827,11 +833,7 @@ module SaneMasterModules
       puts '🧷 Codex Guards:'
 
       issues = []
-      {
-        curl: 'sane_curl_guard.sh',
-        open: 'sane_open_guard.sh',
-        rsync: 'sane_rsync_guard.sh'
-      }.each do |command, guard_file|
+      CODEX_GUARD_WRAPPERS.each do |command, guard_file|
         wrapper = File.expand_path("~/.local/bin/#{command}")
         expected = File.expand_path("~/SaneApps/infra/SaneProcess/scripts/hooks/#{guard_file}")
         active_path = `zsh -lc 'command -v #{command} 2>/dev/null'`.strip

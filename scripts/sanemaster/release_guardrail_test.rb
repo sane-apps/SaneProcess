@@ -3,6 +3,7 @@
 
 require 'fileutils'
 require 'json'
+require 'rbconfig'
 require 'stringio'
 require 'tmpdir'
 require 'zlib'
@@ -20,6 +21,16 @@ def capture_stdout
   buffer.string
 ensure
   $stdout = original_stdout
+end
+
+def capture_stderr
+  original_stderr = $stderr
+  buffer = StringIO.new
+  $stderr = buffer
+  yield
+  buffer.string
+ensure
+  $stderr = original_stderr
 end
 
 def with_env(overrides)
@@ -333,6 +344,292 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         end
 
         assert(report[:ok], "expected matching customer UI receipt to pass: #{report[:issues].inspect}")
+      end
+      true
+    end
+
+    test('customer UI runtime fingerprint ignores test-only source changes') do
+      Dir.mktmpdir('customer-ui-test-only-fingerprint-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(File.join(dir, 'Tests', 'CustomerUIActions.yml'), "version: 1\napp: SaneExample\nactions: []\n")
+        test_path = File.join(dir, 'Tests', 'CustomerUIActionContractXCTests.swift')
+        File.write(test_path, 'final class CustomerUIActionContractXCTests {}')
+
+        before = nil
+        after_test_change = nil
+        after_source_change = nil
+        Dir.chdir(dir) do
+          before = subject.send(:customer_ui_source_fingerprint)
+          File.write(test_path, 'final class CustomerUIActionContractXCTests { let changed = true }')
+          after_test_change = subject.send(:customer_ui_source_fingerprint)
+          File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView { let changed = true }')
+          after_source_change = subject.send(:customer_ui_source_fingerprint)
+        end
+
+        assert_eq(before, after_test_change)
+        assert(before != after_source_change, 'expected shipped source change to update customer UI fingerprint')
+      end
+      true
+    end
+
+    test('customer UI receipt accepts only a known legacy test-inclusive fingerprint') do
+      Dir.mktmpdir('customer-ui-legacy-test-fingerprint-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(File.join(dir, 'Tests', 'CustomerUIActions.yml'), "version: 1\napp: SaneExample\nactions: []\n")
+        test_path = File.join(dir, 'Tests', 'CustomerUIActionContractXCTests.swift')
+        File.write(test_path, 'final class CustomerUIActionContractXCTests {}')
+
+        old_time = Time.now - 120
+        [File.join(dir, '.saneprocess'), File.join(dir, 'SaneExample', 'ContentView.swift'), File.join(dir, 'Tests', 'CustomerUIActions.yml'), test_path].each do |path|
+          File.utime(old_time, old_time, path)
+        end
+
+        legacy_fingerprint = nil
+        current_fingerprint = nil
+        receipt = nil
+        Dir.chdir(dir) do
+          legacy_fingerprint = subject.send(:customer_ui_source_fingerprint, include_tests: true)
+          current_fingerprint = subject.send(:customer_ui_source_fingerprint)
+          receipt = {
+            'source_fingerprint' => legacy_fingerprint,
+            'generated_at' => (Time.now - 60).utc.iso8601
+          }
+          assert(subject.send(:customer_ui_receipt_source_fingerprint_current?, receipt, current_fingerprint))
+          File.write(test_path, 'final class CustomerUIActionContractXCTests { let changed = true }')
+          assert(!subject.send(:customer_ui_receipt_source_fingerprint_current?, receipt, current_fingerprint))
+          File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView { let changed = true }')
+          assert(!subject.send(:customer_ui_receipt_source_fingerprint_current?, receipt, current_fingerprint))
+        end
+      end
+      true
+    end
+
+    test('customer UI receipt rejects arbitrary legacy-looking fingerprints') do
+      Dir.mktmpdir('customer-ui-arbitrary-fingerprint-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(File.join(dir, 'Tests', 'CustomerUIActions.yml'), "version: 1\napp: SaneExample\nactions: []\n")
+        test_path = File.join(dir, 'Tests', 'CustomerUIActionContractXCTests.swift')
+        File.write(test_path, 'final class CustomerUIActionContractXCTests {}')
+
+        Dir.chdir(dir) do
+          current_fingerprint = subject.send(:customer_ui_source_fingerprint)
+          bogus_receipt = {
+            'source_fingerprint' => 'a' * 64,
+            'generated_at' => (Time.now - 60).utc.iso8601
+          }
+          File.write(test_path, 'final class CustomerUIActionContractXCTests { let changed = true }')
+          assert(!subject.send(:customer_ui_receipt_source_fingerprint_current?, bogus_receipt, current_fingerprint))
+        end
+      end
+      true
+    end
+
+    test('customer UI runtime fingerprint ignores script tests but tracks release QA orchestration files') do
+      Dir.mktmpdir('customer-ui-script-test-fingerprint-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Scripts'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        test_path = File.join(dir, 'Scripts', 'qa_test.rb')
+        File.write(test_path, 'puts :old')
+
+        before = nil
+        after_test_change = nil
+        after_qa_change = nil
+        after_customer_ui_script_change = nil
+        Dir.chdir(dir) do
+          before = subject.send(:customer_ui_source_fingerprint)
+          File.write(test_path, 'puts :new')
+          after_test_change = subject.send(:customer_ui_source_fingerprint)
+          File.write(File.join(dir, 'Scripts', 'qa.rb'), 'puts :release_orchestration')
+          after_qa_change = subject.send(:customer_ui_source_fingerprint)
+          File.write(File.join(dir, 'Scripts', 'customer_ui_action_sweep.rb'), 'puts :runtime')
+          after_customer_ui_script_change = subject.send(:customer_ui_source_fingerprint)
+        end
+
+        assert_eq(before, after_test_change)
+        assert(before != after_qa_change, 'expected release QA orchestration change to update customer UI fingerprint')
+        assert(before != after_customer_ui_script_change, 'expected customer UI runtime script source change to update customer UI fingerprint')
+      end
+      true
+    end
+
+    test('customer UI runtime fingerprint includes shared SaneUI source') do
+      Dir.mktmpdir('customer-ui-shared-source-fingerprint-') do |root|
+        app = File.join(root, 'apps', 'SaneExample')
+        shared = File.join(root, 'infra', 'SaneUI', 'Sources', 'SaneUI', 'License', 'LicenseSettingsView.swift')
+        FileUtils.mkdir_p(File.join(app, 'SaneExample'))
+        FileUtils.mkdir_p(File.dirname(shared))
+        File.write(File.join(app, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(app, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(shared, 'struct LicenseSettingsView {}')
+
+        before = nil
+        after_shared_change = nil
+        Dir.chdir(app) do
+          subject.saneprocess_repo_root = File.join(root, 'infra', 'SaneProcess')
+          before = subject.send(:customer_ui_source_fingerprint)
+          File.write(shared, 'struct LicenseSettingsView { let changed = true }')
+          after_shared_change = subject.send(:customer_ui_source_fingerprint)
+        end
+
+        assert(before != after_shared_change, 'expected shared SaneUI source change to update customer UI fingerprint')
+      end
+      true
+    end
+
+    test('customer UI runtime fingerprint ignores release-only files but tracks customer UI contract') do
+      Dir.mktmpdir('customer-ui-release-source-fingerprint-') do |root|
+        app = File.join(root, 'apps', 'SaneExample')
+        process_root = File.join(root, 'infra', 'SaneProcess')
+        release_rb = File.join(process_root, 'scripts', 'sanemaster', 'release.rb')
+        release_sh = File.join(process_root, 'scripts', 'release.sh')
+        ui_contract = File.join(process_root, 'scripts', 'sanemaster', 'customer_ui_contract.rb')
+        FileUtils.mkdir_p(File.join(app, 'SaneExample'))
+        FileUtils.mkdir_p(File.dirname(release_rb))
+        File.write(File.join(app, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(app, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(release_rb, 'release orchestration old')
+        File.write(release_sh, 'release shell old')
+        File.write(ui_contract, 'customer ui contract old')
+
+        before = nil
+        after_release_change = nil
+        after_contract_change = nil
+        Dir.chdir(app) do
+          subject.saneprocess_repo_root = process_root
+          before = subject.send(:customer_ui_source_fingerprint)
+          File.write(release_rb, 'release orchestration new')
+          File.write(release_sh, 'release shell new')
+          after_release_change = subject.send(:customer_ui_source_fingerprint)
+          File.write(ui_contract, 'customer ui contract new')
+          after_contract_change = subject.send(:customer_ui_source_fingerprint)
+        end
+
+        assert_eq(before, after_release_change)
+        assert(before != after_contract_change, 'expected customer UI contract change to update customer UI fingerprint')
+      end
+      true
+    end
+
+    test('customer UI runtime fingerprint ignores outreach metadata changes') do
+      Dir.mktmpdir('customer-ui-outreach-fingerprint-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(File.join(dir, 'Tests', 'CustomerUIActions.yml'), "version: 1\napp: SaneExample\nactions: []\n")
+        File.write(File.join(dir, '.outreach.yml'), "known_facts:\n  - old copy\n")
+        FileUtils.mkdir_p(File.join(dir, 'Scripts'))
+        File.write(File.join(dir, 'Scripts', 'check_outreach_opportunities.rb'), 'old outreach script')
+
+        before = nil
+        after = nil
+        Dir.chdir(dir) do
+          before = subject.send(:customer_ui_source_fingerprint)
+          File.write('.outreach.yml', "known_facts:\n  - updated copy\n")
+          File.write(File.join('Scripts', 'check_outreach_opportunities.rb'), 'new outreach script')
+          after = subject.send(:customer_ui_source_fingerprint)
+        end
+
+        assert_eq(before, after, 'outreach metadata should not stale customer UI runtime proof')
+      end
+      true
+    end
+
+    test('customer UI runtime fingerprint ignores release signing helper changes') do
+      Dir.mktmpdir('customer-ui-signing-helper-fingerprint-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'Scripts'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(File.join(dir, 'Tests', 'CustomerUIActions.yml'), "version: 1\napp: SaneExample\nactions: []\n")
+        File.write(File.join(dir, 'Scripts', 'sign_update.swift'), 'old signing helper')
+
+        before = nil
+        after = nil
+        Dir.chdir(dir) do
+          before = subject.send(:customer_ui_source_fingerprint)
+          File.write(File.join('Scripts', 'sign_update.swift'), 'new signing helper')
+          after = subject.send(:customer_ui_source_fingerprint)
+        end
+
+        assert_eq(before, after, 'release signing helper changes should not stale customer UI runtime proof')
+      end
+      true
+    end
+
+    test('customer UI receipt accepts unchanged source fingerprint for app proof') do
+      Dir.mktmpdir('customer-ui-legacy-harness-fingerprint-') do |root|
+        app = File.join(root, 'apps', 'SaneExample')
+        process_root = File.join(root, 'infra', 'SaneProcess')
+        FileUtils.mkdir_p(File.join(app, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(app, 'Scripts'))
+        FileUtils.mkdir_p(File.join(process_root, 'scripts', 'sanemaster'))
+        File.write(File.join(app, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(app, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(File.join(app, 'Scripts', 'qa.rb'), 'puts :release_orchestration')
+        File.write(File.join(process_root, 'scripts', 'release.sh'), 'release shell')
+        File.write(File.join(process_root, 'scripts', 'SaneMaster.rb'), 'master')
+        File.write(File.join(process_root, 'scripts', 'sanemaster', 'release.rb'), 'release ruby')
+        File.write(File.join(process_root, 'scripts', 'sanemaster', 'release_readiness.rb'), 'readiness')
+        File.write(File.join(process_root, 'scripts', 'sanemaster', 'release_guardrail_test.rb'), 'release tests')
+        File.write(File.join(process_root, 'scripts', 'sanemaster', 'test_mode.rb'), 'test mode')
+        File.write(File.join(process_root, 'scripts', 'sanemaster', 'visual_smoke.rb'), 'visual smoke')
+        File.write(File.join(process_root, 'scripts', 'sanemaster', 'customer_ui_contract.rb'), 'validator')
+
+        Dir.chdir(app) do
+          subject.saneprocess_repo_root = process_root
+          current = subject.send(:customer_ui_source_fingerprint)
+          legacy = subject.send(:customer_ui_source_fingerprint, include_release_harness: true)
+          assert(current != legacy, 'release-harness-inclusive fingerprint should include release harness files')
+
+          receipt = { 'source_fingerprint' => legacy }
+          assert(subject.send(:customer_ui_receipt_source_fingerprint_current?, receipt, current))
+
+          File.write(File.join(process_root, 'scripts', 'sanemaster', 'release.rb'), 'release ruby changed')
+          changed_legacy = subject.send(:customer_ui_source_fingerprint, include_release_harness: true)
+          assert(changed_legacy != legacy, 'release harness changes should move the harness-inclusive fingerprint')
+          assert(!subject.send(:customer_ui_receipt_source_fingerprint_current?, receipt, current))
+
+          File.write(File.join(app, 'SaneExample', 'ContentView.swift'), 'struct ContentView { let changed = true }')
+          changed_current = subject.send(:customer_ui_source_fingerprint)
+          assert(!subject.send(:customer_ui_receipt_source_fingerprint_current?, receipt, changed_current))
+        end
+      end
+      true
+    end
+
+    test('release status fingerprint includes shared SaneUI source for app UI changes') do
+      Dir.mktmpdir('release-status-shared-source-fingerprint-') do |root|
+        app = File.join(root, 'apps', 'SaneExample')
+        shared = File.join(root, 'infra', 'SaneUI', 'Sources', 'SaneUI', 'License', 'LicenseSettingsView.swift')
+        FileUtils.mkdir_p(File.join(app, 'SaneExample'))
+        FileUtils.mkdir_p(File.dirname(shared))
+        File.write(File.join(app, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(app, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(shared, 'struct LicenseSettingsView {}')
+
+        before = nil
+        after_shared_change = nil
+        Dir.chdir(app) do
+          subject.saneprocess_repo_root = File.join(root, 'infra', 'SaneProcess')
+          before = subject.send(:release_status_source_fingerprint, app)
+          File.write(shared, 'struct LicenseSettingsView { let changed = true }')
+          after_shared_change = subject.send(:release_status_source_fingerprint, app)
+        end
+
+        assert(before != after_shared_change, 'expected shared SaneUI source change to update release status fingerprint')
       end
       true
     end
@@ -1692,6 +1989,38 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('customer UI runtime rows require candidate build metadata') do
+      missing = subject.send(
+        :customer_ui_runtime_candidate_receipt_issues,
+        'runtime_state_results cold_launch',
+        {}
+      )
+      assert_includes(missing.join("\n"), 'missing runtime candidate metadata')
+
+      Dir.mktmpdir('customer-ui-runtime-candidate-') do |dir|
+        File.write(
+          File.join(dir, 'project.yml'),
+          "settings:\n  base:\n    MARKETING_VERSION: \"2.1.74\"\n    CURRENT_PROJECT_VERSION: \"2174\"\n"
+        )
+        Dir.chdir(dir) do
+          mismatched = subject.send(
+            :customer_ui_runtime_candidate_receipt_issues,
+            'runtime_state_results cold_launch',
+            {
+              'runtime_candidate' => {
+                'app_path' => '/Applications/SaneBar.app',
+                'app_version' => '2.1.73',
+                'app_build' => '2173'
+              }
+            }
+          )
+          assert_includes(mismatched.join("\n"), 'runtime candidate version "2.1.73" does not match project "2.1.74"')
+          assert_includes(mismatched.join("\n"), 'runtime candidate build "2173" does not match project "2174"')
+        end
+      end
+      true
+    end
+
     test('customer UI contract rejects temp-only resource soak runtime evidence') do
       temp_artifact = "/tmp/sanebar_runtime_resource_soak_guardrail_#{Process.pid}.json"
       temp_log = "/tmp/sanebar_runtime_resource_soak_guardrail_#{Process.pid}.log"
@@ -2280,6 +2609,131 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       FileUtils.rm_f(['/tmp/sanebar_runtime_resource_soak.json', '/tmp/sanebar_runtime_resource_soak.log'])
     end
 
+    test('resource soak refuses symlinked artifact and log outputs') do
+      Dir.mktmpdir('resource-soak-symlink-') do |dir|
+        artifact_target = File.join(dir, 'artifact-target.json')
+        log_target = File.join(dir, 'log-target.log')
+        artifact_link = File.join(dir, 'resource.json')
+        log_link = File.join(dir, 'resource.log')
+        File.write(artifact_target, 'artifact-original')
+        File.write(log_target, 'log-original')
+        File.symlink(artifact_target, artifact_link)
+        File.symlink(log_target, log_link)
+
+        subject.define_singleton_method(:resource_soak_running_app_candidates) do |app_name|
+          [{
+            pid: 12_345,
+            app_path: "/Applications/#{app_name}.app",
+            app_version: '1.2.3',
+            app_build: '123',
+            process_path: "/Applications/#{app_name}.app/Contents/MacOS/#{app_name}"
+          }]
+        end
+        subject.define_singleton_method(:resource_soak_sample) do |_pid|
+          { cpu: 0.2, rss_mb: 80.0, physical_footprint_mb: 60.0 }
+        end
+
+        with_env(
+          'SANEMASTER_RESOURCE_SOAK_MIN_SECONDS' => '0',
+          'SANEMASTER_RESOURCE_SOAK_ARTIFACT_PATH' => artifact_link,
+          'SANEMASTER_RESOURCE_SOAK_LOG_PATH' => log_link
+        ) do
+          raised = false
+          begin
+            subject.resource_soak_report(['--app', 'SaneExample', '--duration-seconds', '0', '--no-exit'])
+          rescue Errno::ELOOP, RuntimeError
+            raised = true
+          end
+          assert(raised, 'expected symlinked resource soak outputs to be rejected')
+        end
+
+        assert_eq(File.read(artifact_target), 'artifact-original')
+        assert_eq(File.read(log_target), 'log-original')
+      end
+      true
+    ensure
+      subject.singleton_class.remove_method(:resource_soak_running_app_candidates) rescue nil
+      subject.singleton_class.remove_method(:resource_soak_sample) rescue nil
+    end
+
+    test('resource soak refuses symlinked parent output directories') do
+      Dir.mktmpdir('resource-soak-parent-symlink-') do |dir|
+        real_dir = File.join(dir, 'real')
+        link_dir = File.join(dir, 'link')
+        FileUtils.mkdir_p(real_dir)
+        File.symlink(real_dir, link_dir)
+
+        subject.define_singleton_method(:resource_soak_running_app_candidates) do |app_name|
+          [{
+            pid: 12_345,
+            app_path: "/Applications/#{app_name}.app",
+            app_version: '1.2.3',
+            app_build: '123',
+            process_path: "/Applications/#{app_name}.app/Contents/MacOS/#{app_name}"
+          }]
+        end
+        subject.define_singleton_method(:resource_soak_sample) do |_pid|
+          { cpu: 0.2, rss_mb: 80.0, physical_footprint_mb: 60.0 }
+        end
+
+        with_env(
+          'SANEMASTER_RESOURCE_SOAK_MIN_SECONDS' => '0',
+          'SANEMASTER_RESOURCE_SOAK_ARTIFACT_PATH' => File.join(link_dir, 'resource.json'),
+          'SANEMASTER_RESOURCE_SOAK_LOG_PATH' => File.join(link_dir, 'resource.log')
+        ) do
+          raised = false
+          begin
+            subject.resource_soak_report(['--app', 'SaneExample', '--duration-seconds', '0', '--no-exit'])
+          rescue RuntimeError
+            raised = true
+          end
+          assert(raised, 'expected symlinked parent resource soak output directories to be rejected')
+        end
+
+        assert(!File.exist?(File.join(real_dir, 'resource.json')), 'resource artifact should not be written through symlink parent')
+        assert(!File.exist?(File.join(real_dir, 'resource.log')), 'resource log should not be written through symlink parent')
+      end
+      true
+    ensure
+      subject.singleton_class.remove_method(:resource_soak_running_app_candidates) rescue nil
+      subject.singleton_class.remove_method(:resource_soak_sample) rescue nil
+    end
+
+    test('customer UI durable resource proof rejects symlinked parent directories') do
+      Dir.mktmpdir('customer-ui-resource-parent-symlink-') do |dir|
+        File.write(
+          File.join(dir, 'project.yml'),
+          "settings:\n  MARKETING_VERSION: \"2.1.74\"\n  CURRENT_PROJECT_VERSION: \"2174\"\n"
+        )
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        real_dir = File.join(dir, 'real-customer-ui')
+        FileUtils.mkdir_p(real_dir)
+        File.symlink(real_dir, File.join(dir, 'outputs', 'customer-ui'))
+        File.write(File.join(real_dir, 'resource-soak-sample.json'), JSON.pretty_generate(status: 'pass'))
+        File.write(File.join(real_dir, 'resource-soak-sample.log'), "status=pass\n")
+
+        Dir.chdir(dir) do
+          receipt_row = {
+            'evidence_paths' => [
+              'outputs/customer-ui/resource-soak-sample.json',
+              'outputs/customer-ui/resource-soak-sample.log'
+            ]
+          }
+          issues = subject.send(
+            :customer_ui_resource_soak_runtime_receipt_issues,
+            'runtime_state_results resource_soak_growth',
+            receipt_row
+          )
+
+          assert_includes(
+            issues.join("\n"),
+            'durable resource-soak evidence path(s) do not exist or are unsafe'
+          )
+        end
+      end
+      true
+    end
+
     test('fixed resource soak does not satisfy adaptive release scenario') do
       artifact_path = '/tmp/sanebar_runtime_resource_soak_fixed.json'
       log_path = '/tmp/sanebar_runtime_resource_soak_fixed.log'
@@ -2701,7 +3155,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         assert_eq(calls[0], ['./scripts/SaneMaster.rb', 'launch'])
         assert_eq(calls[1], [:cleanup, 'SaneExample'])
         assert_eq(calls[2], [:visual_precheck, 'SaneExample'])
-        assert_eq(calls[3], ['ruby', 'scripts/customer_ui_action_sweep.rb'])
+        assert_eq(calls[3], [RbConfig.ruby, 'scripts/customer_ui_action_sweep.rb'])
       end
       true
     ensure
@@ -2718,6 +3172,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         FileUtils.mkdir_p(File.join(dir, 'Tests'))
         File.write(File.join(dir, '.saneprocess'), "name: SaneBar\n")
         File.write(File.join(dir, 'scripts', 'customer_ui_action_sweep.rb'), "#!/usr/bin/env ruby\n")
+        File.write(File.join(dir, 'scripts', 'qa.rb'), "#!/usr/bin/env ruby\n")
         File.write(
           File.join(dir, 'Tests', 'CustomerUIActions.yml'),
           <<~YAML
@@ -2766,7 +3221,30 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
 
         assert(report[:ok], "expected customer UI sweep to pass after auto-launch: #{report.inspect}")
         assert_includes(calls, ['./scripts/SaneMaster.rb', 'test_mode', '--release', '--no-logs'])
-        assert_includes(calls, ['ruby', 'scripts/customer_ui_action_sweep.rb'])
+        assert(calls.any? do |call|
+          call[0].is_a?(Hash) &&
+            call[0]['SANEPROCESS_RUNTIME_SMOKE_ONLY'] == '1' &&
+            call[0]['SANEBAR_RUN_RUNTIME_SMOKE'] == '1' &&
+            call[0]['SANEBAR_STARTUP_PROBE_RESOURCE_SOAK_AFTER_155'] == '0' &&
+            !call[0].key?('SANEPROCESS_RELEASE_PREFLIGHT') &&
+            !call[0].key?('SANEBAR_RELEASE_PREFLIGHT') &&
+            call[1] == RbConfig.ruby &&
+            ['Scripts/qa.rb', 'scripts/qa.rb'].include?(call[2])
+        end, "expected SaneBar customer UI sweep to refresh runtime smoke before workflow: #{calls.inspect}")
+        resource_soak_index = calls.index do |call|
+          call[0].is_a?(Hash) &&
+            call[0]['SANEMASTER_RESOURCE_SOAK_MIN_SECONDS'] == '240' &&
+            call[1, 4] == ['./scripts/SaneMaster.rb', 'resource_soak', '--adaptive', '--duration-seconds']
+        end
+        assert(resource_soak_index, "expected SaneBar customer UI sweep to refresh resource soak before workflow: #{calls.inspect}")
+        cleanup_calls = calls.select { |call| call == [:cleanup, 'SaneBar'] }
+        assert_eq(cleanup_calls.length, 2, "expected SaneBar customer UI sweep to clean before and after runtime smoke: #{calls.inspect}")
+        last_cleanup_index = calls.rindex([:cleanup, 'SaneBar'])
+        visual_precheck_index = calls.index([:visual_precheck, 'SaneBar'])
+        assert(last_cleanup_index && visual_precheck_index && last_cleanup_index < visual_precheck_index, "expected post-runtime cleanup before visual precheck: #{calls.inspect}")
+        action_index = calls.index([RbConfig.ruby, 'scripts/customer_ui_action_sweep.rb'])
+        assert(action_index, "expected SaneBar customer UI sweep to run action workflow: #{calls.inspect}")
+        assert(resource_soak_index < action_index, "expected resource soak before action workflow: #{calls.inspect}")
       end
       true
     ensure
@@ -2916,6 +3394,117 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
 
       assert_eq(parsed['ok'], true)
       assert_eq(parsed['artifacts'], ['outputs/visual.png'])
+      true
+    end
+
+    test('customer UI sweep command runner uses bounded process capture') do
+      source = File.read(File.join(__dir__, 'customer_ui_contract.rb'))
+
+      assert_includes(source, 'CUSTOMER_UI_COMMAND_TIMEOUT_SECONDS = 1800.0')
+      assert_includes(source, 'Open3.popen2e(*command, pgroup: true)')
+      assert_includes(source, 'wait_thr.join(0.2)')
+      assert_includes(source, 'customer_ui_descendant_pids(wait_thr.pid)')
+      assert_includes(source, "Process.kill('TERM', pid)")
+      assert_includes(source, "Process.kill('KILL', pid)")
+      assert_includes(source, 'customer_ui_drain_command_output(stdout_err, output')
+      assert_includes(source, 'customer_ui_stream_command_output(chunk)')
+      assert_includes(source, 'customer_ui_should_emit_heartbeat?')
+      assert(!source.include?("def customer_ui_run_command(*command)\n      Open3.capture2e(*command)\n    end"))
+      true
+    end
+
+    test('customer UI sweep command runner streams child progress to stderr') do
+      runner = Object.new
+      runner.extend(SaneMasterModules::CustomerUIContract)
+      output = nil
+      status = nil
+      stderr = capture_stderr do
+        with_env(
+          'SANEMASTER_CUSTOMER_UI_COMMAND_TIMEOUT' => '2',
+          'SANEMASTER_CUSTOMER_UI_STREAM_PROGRESS' => '1'
+        ) do
+          output, status = runner.send(
+            :customer_ui_run_command,
+            RbConfig.ruby,
+            '-e',
+            'STDOUT.sync = true; puts "child progress line"'
+          )
+        end
+      end
+
+      assert(status.success?, 'expected child command to pass')
+      assert_includes(output, 'child progress line')
+      assert_includes(stderr, 'child progress line')
+      true
+    end
+
+    test('customer UI sweep command runner emits quiet heartbeat before timeout') do
+      runner = Object.new
+      runner.extend(SaneMasterModules::CustomerUIContract)
+      output = nil
+      status = nil
+      stderr = capture_stderr do
+        with_env(
+          'SANEMASTER_CUSTOMER_UI_COMMAND_TIMEOUT' => '2',
+          'SANEMASTER_CUSTOMER_UI_PROGRESS_HEARTBEAT_SECONDS' => '0.1',
+          'SANEMASTER_CUSTOMER_UI_STREAM_PROGRESS' => '1'
+        ) do
+          output, status = runner.send(:customer_ui_run_command, RbConfig.ruby, '-e', 'sleep 0.35')
+        end
+      end
+
+      assert(status.success?, "expected quiet child to finish successfully, output=#{output.inspect}")
+      assert_includes(stderr, 'customer UI command still running')
+      true
+    end
+
+    test('customer UI sweep command runner times out stuck children') do
+      runner = Object.new
+      runner.extend(SaneMasterModules::CustomerUIContract)
+      with_env('SANEMASTER_CUSTOMER_UI_COMMAND_TIMEOUT' => '0.3') do
+        started_at = Time.now
+        output, status = runner.send(:customer_ui_run_command, RbConfig.ruby, '-e', 'sleep 5')
+        elapsed = Time.now - started_at
+
+        assert(!status.success?, 'expected timed out customer UI child to fail')
+        assert(elapsed < 3.0, "expected timeout to return quickly, elapsed=#{elapsed}")
+        assert_includes(output, 'customer UI command timeout')
+      end
+      true
+    end
+
+    test('customer UI sweep command runner kills spawned descendants on timeout') do
+      runner = Object.new
+      runner.extend(SaneMasterModules::CustomerUIContract)
+      Dir.mktmpdir('customer-ui-timeout-descendant-') do |dir|
+        child_pid_path = File.join(dir, 'child.pid')
+        script = <<~RUBY
+          child = Process.spawn(#{RbConfig.ruby.inspect}, '-e', 'sleep 30')
+          File.write(#{child_pid_path.inspect}, child.to_s)
+          sleep 30
+        RUBY
+
+        with_env('SANEMASTER_CUSTOMER_UI_COMMAND_TIMEOUT' => '0.3') do
+          _output, status = runner.send(:customer_ui_run_command, RbConfig.ruby, '-e', script)
+          assert(!status.success?, 'expected timed out customer UI child to fail')
+        end
+
+        child_pid = File.read(child_pid_path).to_i
+        sleep 0.5
+        child_alive = begin
+          Process.kill(0, child_pid)
+          true
+        rescue Errno::ESRCH
+          false
+        end
+        assert(!child_alive, "expected timeout cleanup to kill descendant pid #{child_pid}")
+      ensure
+        begin
+          Process.kill('KILL', child_pid) if child_pid&.positive?
+        rescue Errno::ESRCH, Errno::EINVAL
+          nil
+        end
+      end
       true
     end
 
@@ -3097,6 +3686,72 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         end
 
         assert(report[:ok], "expected launch readiness to pass: #{report.inspect}")
+      end
+      true
+    end
+
+    test('already-launched apps treat weak relaunch blockers and stale release proof as warnings') do
+      Dir.mktmpdir('launch-readiness-already-launched-advisory-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(
+          File.join(dir, '.outreach.yml'),
+          <<~YAML
+            launch_calendar:
+              classification: meaningfully_launched
+              rule: Real launch already happened; only run targeted support-surface ops unless a new story exists.
+              scheduled:
+                - cadence: weekly
+                  channel: Opportunity monitoring
+                  action: Scan high-fit opportunity threads.
+                  gate: No duplicate relaunch posts.
+                  success_metric: 0-2 high-fit replies or a recorded no-go.
+            public_posting_policy:
+              approval_required: true
+              disclosure_required: Always say "I built SaneExample".
+            launch_package:
+              status: ready_to_schedule
+              audience: Mac users
+              problem: Crowded workflows
+              solution: Native utility
+              primary_story: Clear product story
+              pricing_proof: Website and checkout verified
+              privacy_proof: Privacy page verified
+              proof_assets:
+                - type: screenshot
+                  status: current
+                  path: docs/images/hero.png
+              channel_plan:
+                product_hunt: no_go_until_major_release_story
+              go_no_go:
+                rule: Major relaunch only with a real new story.
+              weak_launch_blockers:
+                - Already launched on Product Hunt/HN; do not relaunch without a new product story.
+          YAML
+        )
+        File.write(
+          File.join(dir, 'outputs', 'release_preflight_status.json'),
+          JSON.pretty_generate(
+            generatedAt: (Time.now.utc - (9 * 86_400)).iso8601,
+            projectName: 'SaneExample',
+            status: 'failed',
+            issueCount: 2,
+            warningCount: 1,
+            issues: ['Tests failing'],
+            warnings: ['Pending customer emails']
+          )
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.launch_readiness_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(report[:ok], "expected already-launched support lane to stay green: #{report.inspect}")
+        warnings = report[:warnings].join("\n")
+        assert_includes(warnings, 'Outstanding weak-launch blocker: Already launched on Product Hunt/HN; do not relaunch without a new product story. (major-launch advisory only for already-launched product)')
+        assert_includes(warnings, 'Latest release_preflight proof is stale')
+        assert_includes(warnings, 'Latest release_preflight is not green: failed (2 issue(s))')
       end
       true
     end
@@ -3398,6 +4053,72 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         issues = report[:issues].join("\n")
         assert_includes(issues, 'Outstanding launch blocker: Piracy page still marked needs_dmca.')
         assert_includes(issues, 'Outstanding launch blocker: Open patched-pending issues still need maintainer replies.')
+      end
+      true
+    end
+
+    test('live direct-download apps keep launch-package blockers hard but downgrade stale release proof') do
+      Dir.mktmpdir('launch-readiness-live-direct-download-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(
+          File.join(dir, '.outreach.yml'),
+          <<~YAML
+            launch_calendar:
+              classification: released_but_no_meaningful_public_launch_yet
+              rule: Direct-download release is live, but a major launch still needs package approval.
+              current_release_state:
+                version: "1.2.3"
+                status: live_direct_download
+                evidence: Website and appcast match.
+              required_before_meaningful_launch:
+                - 30-second demo asset
+            public_posting_policy:
+              approval_required: true
+              disclosure_required: Always say "I built SaneExample".
+            launch_package:
+              status: package_in_progress
+              audience: Finder power users
+              problem: Finder actions are clumsy
+              solution: Right-click automation
+              primary_story: Focused Finder workflow demo
+              pricing_proof: Website shows Basic free and Pro once pricing.
+              privacy_proof: Privacy page states files stay local.
+              proof_assets:
+                - type: screenshot
+                  status: ready
+                  path: outputs/demo.png
+              channel_plan:
+                product_hunt: prepare
+              go_no_go:
+                owner: Mr. Sane
+              weak_launch_blockers: []
+          YAML
+        )
+        File.write(
+          File.join(dir, 'outputs', 'release_preflight_status.json'),
+          JSON.pretty_generate(
+            generatedAt: (Time.now.utc - (9 * 86_400)).iso8601,
+            projectName: 'SaneExample',
+            status: 'failed',
+            issueCount: 2,
+            warningCount: 1,
+            issues: ['Tests failing'],
+            warnings: ['Pending customer emails']
+          )
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.launch_readiness_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(!report[:ok], 'expected unresolved launch-package blockers to stay hard red')
+        issues = report[:issues].join("\n")
+        assert_includes(issues, 'Missing meaningful-launch requirement completion: 30-second demo asset')
+        warnings = report[:warnings].join("\n")
+        assert_includes(warnings, 'Latest release_preflight proof is stale')
+        assert_includes(warnings, 'Latest release_preflight is not green: failed (2 issue(s))')
       end
       true
     end
@@ -3810,7 +4531,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       preflight_body = release_source[/def release_preflight\(_args\).*?^\s+def release_gate_fixture_reports/m]
 
       policy_index = preflight_body.index('Project QA policy guardrails')
-      verify_index = preflight_body.index("Open3.capture2e(verify_env, './scripts/SaneMaster.rb', 'verify', '--quiet')")
+      verify_index = preflight_body.index("heartbeat_label: 'SaneMaster verify'")
       full_qa_index = preflight_body.rindex("Project QA guardrails... '")
       summary_index = preflight_body.index('# Summary')
 
@@ -3822,12 +4543,16 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
              'expected full project QA after verify')
       assert_includes preflight_body, 'policy_only: true'
       assert_includes preflight_body, 'skipped (fix cheap release blocker(s) first)'
+      assert_includes preflight_body, 'timeout_seconds: release_verify_timeout_seconds'
+      assert_includes release_source, 'Open3.popen2e(env, *cmd, pgroup: true)'
+      assert_includes release_source, 'terminate_release_command_process(wait_thr.pid'
       true
     end
 
     test('policy-only project QA env omits runtime smoke flags') do
       policy_env = subject.send(:release_project_qa_env, app_name: 'SaneBar', policy_only: true)
       full_env = subject.send(:release_project_qa_env, app_name: 'SaneBar', policy_only: false)
+      reused_runtime_env = subject.send(:release_project_qa_env, app_name: 'SaneBar', policy_only: false, skip_runtime_smoke: true)
 
       assert_eq(policy_env['SANEPROCESS_RELEASE_POLICY_ONLY'], '1')
       assert_eq(policy_env['SANEBAR_RELEASE_POLICY_ONLY'], '1')
@@ -3835,6 +4560,108 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert(!policy_env.key?('SANEBAR_RUN_RUNTIME_SMOKE'), 'policy-only QA must not request app runtime smoke')
       assert_eq(full_env['SANEPROCESS_RUN_RUNTIME_SMOKE'], '1')
       assert_eq(full_env['SANEBAR_RUN_RUNTIME_SMOKE'], '1')
+      assert_eq(reused_runtime_env['SANEPROCESS_RELEASE_PREFLIGHT'], '1')
+      assert_eq(reused_runtime_env['SANEPROCESS_RUN_STABILITY_SUITE'], '1')
+      assert_eq(reused_runtime_env['SANEBAR_RELEASE_PREFLIGHT'], '1')
+      assert_eq(reused_runtime_env['SANEBAR_RUN_STABILITY_SUITE'], '1')
+      assert(!reused_runtime_env.key?('SANEPROCESS_RUN_RUNTIME_SMOKE'), 'fresh customer UI runtime proof should let full QA skip duplicate runtime smoke')
+      assert(!reused_runtime_env.key?('SANEBAR_RUN_RUNTIME_SMOKE'), 'fresh customer UI runtime proof should let app QA skip duplicate runtime smoke')
+      assert_eq(reused_runtime_env['SANEPROCESS_REUSE_CUSTOMER_UI_RUNTIME_PROOF'], '1')
+      assert_eq(reused_runtime_env['SANEBAR_REUSE_CUSTOMER_UI_RUNTIME_PROOF'], '1')
+      true
+    end
+
+    test('release preflight reuses fresh customer UI runtime proof only for same candidate') do
+      Dir.mktmpdir('release-runtime-proof-reuse-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(
+          File.join(dir, 'project.yml'),
+          "settings:\n  MARKETING_VERSION: \"2.1.74\"\n  CURRENT_PROJECT_VERSION: \"2174\"\n"
+        )
+        evidence_dir = File.join(dir, 'outputs', 'customer-ui', 'evidence')
+        runtime_preflight_dir = File.join(dir, 'outputs', 'runtime-preflight')
+        FileUtils.mkdir_p(evidence_dir)
+        FileUtils.mkdir_p(runtime_preflight_dir)
+        receipt_path = File.join(dir, 'outputs', 'customer_ui_action_receipt.json')
+        runtime_rows = %w[
+          fullscreen_maximize_transition
+          wake_visible_zone_persistence
+          dynamic_helper_wake_drift
+          shared_bundle_exact_id_moves
+          hover_auto_rehide
+          license_clipboard_paste
+          resource_soak_growth
+        ].map do |id|
+          evidence_paths = case id
+                           when 'hover_auto_rehide'
+                             ['outputs/runtime-preflight/sanebar_runtime_hover_rehide.json']
+                           when 'license_clipboard_paste'
+                             ['outputs/runtime-preflight/sanebar_runtime_license_paste.json']
+                           else
+                             ["outputs/customer-ui/evidence/#{id}.json"]
+                           end
+          {
+            'id' => id,
+            'status' => 'passed',
+            'evidence_paths' => evidence_paths,
+            'runtime_candidate' => {
+              'app_path' => '/Applications/SaneBar.app',
+              'app_version' => '2.1.74',
+              'app_build' => '2174'
+            }
+          }
+        end.tap do |rows|
+          rows.each do |row|
+            row['evidence_paths'].each do |relative_path|
+              path = File.join(dir, relative_path)
+              FileUtils.mkdir_p(File.dirname(path))
+              File.write(path, JSON.pretty_generate(status: 'passed', id: row['id']))
+            end
+          end
+        end
+        receipt = {
+          'app' => 'SaneBar',
+          'status' => 'passed',
+          'generated_at' => Time.now.utc.iso8601,
+          'evidence' => {
+            'app_version' => '2.1.74',
+            'app_build' => '2174'
+          },
+          'runtime_state_results' => runtime_rows
+        }
+        Dir.chdir(dir) do
+          fingerprint = subject.send(:customer_ui_source_fingerprint)
+          receipt['source_fingerprint'] = fingerprint
+          File.write(receipt_path, JSON.pretty_generate(receipt))
+          report = { ok: true, receipt_path: 'outputs/customer_ui_action_receipt.json', source_fingerprint: fingerprint }
+          assert(subject.send(:release_customer_ui_runtime_smoke_reusable?, report, app_name: 'SaneBar'))
+
+          receipt['source_fingerprint'] = '0' * 64
+          File.write(receipt_path, JSON.pretty_generate(receipt))
+          assert(!subject.send(:release_customer_ui_runtime_smoke_reusable?, report, app_name: 'SaneBar'))
+          receipt['source_fingerprint'] = fingerprint
+          File.write(receipt_path, JSON.pretty_generate(receipt))
+
+          receipt['runtime_state_results'].first['runtime_candidate']['app_build'] = '2173'
+          File.write(receipt_path, JSON.pretty_generate(receipt))
+          assert(!subject.send(:release_customer_ui_runtime_smoke_reusable?, report, app_name: 'SaneBar'))
+
+          receipt['runtime_state_results'].first['runtime_candidate']['app_build'] = '2174'
+          receipt['runtime_state_results'][1]['runtime_candidate']['app_path'] = '/Applications/Other.app'
+          File.write(receipt_path, JSON.pretty_generate(receipt))
+          assert(!subject.send(:release_customer_ui_runtime_smoke_reusable?, report, app_name: 'SaneBar'))
+
+          receipt['runtime_state_results'][1]['runtime_candidate']['app_path'] = '/Applications/SaneBar.app'
+          receipt['runtime_state_results'][2]['evidence_paths'] = ['outputs/customer-ui/evidence/missing.json']
+          File.write(receipt_path, JSON.pretty_generate(receipt))
+          assert(!subject.send(:release_customer_ui_runtime_smoke_reusable?, report, app_name: 'SaneBar'))
+
+          receipt['runtime_state_results'][2]['evidence_paths'] = ['outputs/customer-ui/evidence/dynamic_helper_wake_drift.json']
+          receipt['generated_at'] = (Time.now.utc + 10 * 60).iso8601
+          File.write(receipt_path, JSON.pretty_generate(receipt))
+          assert(!subject.send(:release_customer_ui_runtime_smoke_reusable?, report, app_name: 'SaneBar'))
+        end
+      end
       true
     end
 
@@ -3994,10 +4821,46 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert(!qa_index.nil?, 'expected raw project QA fallback to remain available')
       assert(receipt_index < qa_index, 'expected release_preflight receipt path before raw project QA fallback')
       assert_includes(release_script, 'sourceFingerprint')
+      assert_includes(release_script, "payload['miniRuntime'] == true")
+      assert_includes(release_script, 'release_preflight was not generated on Mini runtime')
+      assert_includes(release_script, 'process_root = File.expand_path(ARGV[3])')
+      assert_includes(release_script, 'SaneProcess/#{relative_path}')
+      assert_includes(release_script, 'SaneApps/#{relative_path}')
+      assert_includes(release_script, "File.join(process_root, 'scripts', 'sanemaster'")
+      assert_includes(release_script, "File.join(process_root, 'scripts', 'hooks'")
+      assert_includes(release_script, "File.join(saneapps_root, 'infra', 'SaneUI', 'Sources'")
       assert_includes(release_script, 'customer UI receipt is stale for release_preflight reuse')
       assert_includes(release_script, '(?:css|html|js|json|xml)')
       assert_includes(release_script, "path == 'docs/_redirects' || path == 'website/_redirects'")
       assert_includes(release_script, 'Project QA guardrails covered by fresh SaneMaster release_preflight receipt')
+      true
+    end
+
+    test('release.sh bounds GitHub API fallback and keeps bearer tokens out of curl argv') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+      release_module = File.read(File.expand_path('release.rb', __dir__))
+
+      assert_includes(release_script, 'SANEPROCESS_GH_API_TIMEOUT_SECONDS')
+      assert_includes(release_script, 'subprocess.run(')
+      assert_includes(release_script, 'timeout=timeout')
+      assert(!release_script.include?('body=$(gh api "${github_api_path}"'), 'expected gh api to run through bounded subprocess wrapper')
+      assert_includes(release_script, 'gh_open_count_with_timeout')
+      assert_includes(release_script, 'gh_pr_list_with_timeout')
+      assert(!release_script.include?('OPEN_ISSUES=$(gh issue list'), 'expected GitHub issue gate to run through bounded helper')
+      assert(!release_script.include?('OPEN_PRS=$(gh pr list'), 'expected GitHub PR gate to run through bounded helper')
+      assert_includes(release_module, 'capture_github_command_with_timeout')
+      assert_includes(release_module, 'gh command timeout after')
+      assert(!release_module.include?("Open3.capture2e({ 'PATH' => tool_path }, gh_bin, 'issue'"), 'expected Ruby issue preflight to use bounded GitHub helper')
+      assert(!release_module.include?("Open3.capture2e({ 'PATH' => tool_path }, gh_bin, 'pr'"), 'expected Ruby PR preflight to use bounded GitHub helper')
+      assert_includes(release_script, 'create_curl_bearer_header_file')
+      assert_includes(release_script, 'RELEASE_SECRET_TEMP_PATHS')
+      assert_includes(release_script, 'cleanup_secret_temp_file')
+      assert_includes(release_script, '-H "@${auth_header_file}"')
+      assert_includes(release_script, '-H "@${EMAIL_AUTH_HEADER_FILE}"')
+      assert_includes(release_script, '-H "@${CF_AUTH_HEADER_FILE}"')
+      assert(!release_script.include?('-H "Authorization: Bearer ${api_key}"'), 'email webhook token must not be passed in curl argv')
+      assert(!release_script.include?('-H "Authorization: Bearer ${EMAIL_API_KEY}"'), 'pending email token must not be passed in curl argv')
+      assert(!release_script.include?('-H "Authorization: Bearer ${CF_TOKEN}"'), 'Cloudflare token must not be passed in curl argv')
       true
     end
 
@@ -4036,7 +4899,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       post_release_body = release_script[/run_post_release_checks\(\) \{.*?^}/m]
 
       api_probe_index = post_release_body.index('cask_api_probe=$(fetch_github_contents_file_body')
-      raw_loop_index = post_release_body.index('cask_body=$(curl -fsSL "${cask_raw_url}"')
+      raw_loop_index = post_release_body.index('cask_body=$(curl --connect-timeout 10 --max-time 20 -fsSL "${cask_raw_url}"')
       assert_includes(release_script, 'fetch_github_contents_file_body')
       assert(!api_probe_index.nil?, 'expected GitHub API Homebrew probe without requiring gh')
       assert(!raw_loop_index.nil?, 'expected raw Homebrew fallback')

@@ -77,6 +77,184 @@ exit(run_tests('Sane Bash Guards Dispatcher Tests') do
     true
   end
 
+  test('blocks direct raw Mini screenshot even when ssh wrapper is bypassed') do
+    _out, err, status = run_guard(
+      'sane_bash_guards.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => '/usr/bin/ssh -o BatchMode=yes mini "bash -lc \'screencapture -x /tmp/proof.png\'"'
+        }
+      }
+    )
+
+    assert_eq(status.exitstatus, 2)
+    assert_includes(err, 'raw Mini screenshot command')
+    assert_includes(err, 'capture-mini-screenshot.sh desktop')
+    true
+  end
+
+  test('blocks shell-wrapped direct raw Mini screenshot') do
+    _out, err, status = run_guard(
+      'sane_bash_guards.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => '/bin/bash -lc "/usr/bin/ssh mini \\"screencapture -x /tmp/proof.png\\""'
+        }
+      }
+    )
+
+    assert_eq(status.exitstatus, 2)
+    assert_includes(err, 'raw Mini screenshot command')
+    assert_includes(err, 'capture-mini-screenshot.sh desktop')
+    true
+  end
+
+  test('blocks shell-wrapped raw Mini screenshot after shell option with value') do
+    _out, err, status = run_guard(
+      'sane_bash_guards.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => '/bin/bash --rcfile /tmp/sane-test-rc -lc "/usr/bin/ssh mini.local \\"screencapture -x /tmp/proof.png\\""'
+        }
+      }
+    )
+
+    assert_eq(status.exitstatus, 2)
+    assert_includes(err, 'raw Mini screenshot command')
+    true
+  end
+
+  test('blocks raw Mini screenshot mixed with canonical wrapper name') do
+    _out, err, status = run_guard(
+      'sane_bash_guards.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => 'ssh mini "~/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh desktop; screencapture -x /tmp/proof.png"'
+        }
+      }
+    )
+
+    assert_eq(status.exitstatus, 2)
+    assert_includes(err, 'raw Mini screenshot command')
+    true
+  end
+
+  test('blocks direct detached Mini QA command when ssh wrapper is bypassed') do
+    _out, err, status = run_guard(
+      'sane_bash_guards.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => '/usr/bin/ssh mini "launchctl submit -l sanebar.qa.2174 -- /bin/bash ~/SaneApps/apps/SaneBar/outputs/run_sanebar_qa_2174.sh"'
+        }
+      }
+    )
+
+    assert_eq(status.exitstatus, 2)
+    assert_includes(err, 'detached Mini SaneApps QA command')
+    assert_includes(err, 'release_preflight')
+    true
+  end
+
+  test('blocks shell-wrapped direct detached Mini QA command') do
+    _out, err, status = run_guard(
+      'sane_bash_guards.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => '/bin/zsh -lc "/usr/bin/ssh mini \\"launchctl submit -l sanebar.qa.2174 -- /bin/bash ~/SaneApps/apps/SaneBar/outputs/run_sanebar_qa_2174.sh\\""'
+        }
+      }
+    )
+
+    assert_eq(status.exitstatus, 2)
+    assert_includes(err, 'detached Mini SaneApps QA command')
+    assert_includes(err, 'foreground canonical release/runtime receipts')
+    true
+  end
+
+  test('allows read-only Mini source search for blocked detached QA text') do
+    _out, err, status = run_guard(
+      'sane_bash_guards.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => 'ssh mini "cd ~/SaneApps/infra/SaneProcess && rg \\"launchctl submit\\" scripts/hooks scripts/sanemaster"'
+        }
+      }
+    )
+
+    assert_eq(status.exitstatus, 0)
+    assert_eq(err, '')
+    true
+  end
+
+  test('allows read-only Mini source search for blocked screenshot text') do
+    _out, err, status = run_guard(
+      'sane_bash_guards.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => 'ssh mini "cd ~/SaneApps/infra/SaneProcess && rg \\"screencapture\\" scripts/mini scripts/hooks"'
+        }
+      }
+    )
+
+    assert_eq(status.exitstatus, 0)
+    assert_eq(err, '')
+    true
+  end
+
+  test('blocks shell-wrapped detached Mini QA after shell option with value') do
+    _out, err, status = run_guard(
+      'sane_bash_guards.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => '/bin/bash --init-file /tmp/sane-test-rc -lc "/usr/bin/ssh user@mini.local \\"launchctl submit -l sanebar.qa.2174 -- /bin/bash ~/SaneApps/apps/SaneBar/outputs/run_sanebar_qa_2174.sh\\""'
+        }
+      }
+    )
+
+    assert_eq(status.exitstatus, 2)
+    assert_includes(err, 'detached Mini SaneApps QA command')
+    true
+  end
+
+  test('allows canonical Mini screenshot wrapper command') do
+    _out, err, status = run_guard(
+      'sane_bash_guards.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => 'ssh mini "~/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh desktop"'
+        }
+      }
+    )
+
+    assert_eq(status.exitstatus, 0)
+    assert_eq(err, '')
+    true
+  end
+
+  test('allows ordinary Mini ssh commands') do
+    _out, err, status = run_guard(
+      'sane_bash_guards.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => { 'command' => 'ssh mini date' }
+      }
+    )
+
+    assert_eq(status.exitstatus, 0)
+    assert_eq(err, '')
+    true
+  end
+
   test('non-Bash payload passes') do
     _out, _err, status = run_guard(
       'sane_bash_guards.rb',

@@ -12,6 +12,7 @@ require 'open3'
 require 'openssl'
 require 'base64'
 require 'digest'
+require 'socket'
 
 module SaneMasterModules
   # Unified release entrypoint (delegates to SaneProcess release.sh)
@@ -853,7 +854,7 @@ module SaneMasterModules
       safe_read(qa_script).include?('SANEPROCESS_RELEASE_POLICY_ONLY')
     end
 
-    def release_project_qa_env(app_name:, policy_only: false)
+    def release_project_qa_env(app_name:, policy_only: false, skip_runtime_smoke: false)
       app_prefix = app_name.to_s.upcase.gsub(/[^A-Z0-9]+/, '_')
       env = {
         'LANG' => (ENV['LANG'].to_s.empty? ? 'en_US.UTF-8' : ENV['LANG']),
@@ -867,19 +868,196 @@ module SaneMasterModules
       else
         env.merge!(
           'SANEPROCESS_RELEASE_PREFLIGHT' => '1',
-          'SANEPROCESS_RUN_STABILITY_SUITE' => '1',
-          'SANEPROCESS_RUN_RUNTIME_SMOKE' => '1'
+          'SANEPROCESS_RUN_STABILITY_SUITE' => '1'
         )
+        env['SANEPROCESS_RUN_RUNTIME_SMOKE'] = '1' unless skip_runtime_smoke
         unless app_prefix.empty?
           env.merge!(
             "#{app_prefix}_RELEASE_PREFLIGHT" => '1',
-            "#{app_prefix}_RUN_STABILITY_SUITE" => '1',
-            "#{app_prefix}_RUN_RUNTIME_SMOKE" => '1'
+            "#{app_prefix}_RUN_STABILITY_SUITE" => '1'
           )
+          env["#{app_prefix}_RUN_RUNTIME_SMOKE"] = '1' unless skip_runtime_smoke
+        end
+        if skip_runtime_smoke
+          env['SANEPROCESS_REUSE_CUSTOMER_UI_RUNTIME_PROOF'] = '1'
+          env["#{app_prefix}_REUSE_CUSTOMER_UI_RUNTIME_PROOF"] = '1' unless app_prefix.empty?
         end
       end
 
       env
+    end
+
+    def release_customer_ui_runtime_smoke_reusable?(ui_contract_report, app_name:)
+      return false unless ui_contract_report.is_a?(Hash) && ui_contract_report[:ok]
+
+      receipt_path = ui_contract_report[:receipt_path].to_s
+      receipt_path = release_customer_ui_newest_receipt_path if receipt_path.empty?
+      return false if receipt_path.to_s.empty?
+      return false unless release_regular_file_without_symlinked_parent?(receipt_path)
+      receipt = JSON.parse(safe_read(receipt_path))
+      return false unless receipt.is_a?(Hash)
+      return false unless receipt['app'].to_s == app_name.to_s
+      return false unless receipt['status'].to_s == 'passed'
+      expected_source_fingerprint = ui_contract_report[:source_fingerprint].to_s
+      if expected_source_fingerprint.empty? && respond_to?(:customer_ui_source_fingerprint, true)
+        expected_source_fingerprint = customer_ui_source_fingerprint.to_s
+      end
+      if !expected_source_fingerprint.empty? && respond_to?(:customer_ui_receipt_source_fingerprint_current?, true)
+        return false unless customer_ui_receipt_source_fingerprint_current?(receipt, expected_source_fingerprint)
+      elsif !expected_source_fingerprint.empty?
+        return false unless receipt['source_fingerprint'].to_s == expected_source_fingerprint
+      end
+
+      generated_at = Time.parse(receipt['generated_at'].to_s)
+      return false unless release_customer_ui_receipt_time_reusable?(generated_at, max_age_seconds: 12 * 60 * 60)
+
+      expected = release_current_project_version
+      evidence = receipt['evidence'].is_a?(Hash) ? receipt['evidence'] : {}
+      return false unless release_candidate_value_matches?(evidence['app_version'], expected[:version])
+      return false unless release_candidate_value_matches?(evidence['app_build'], expected[:build])
+
+      rows = Array(receipt['runtime_state_results']).select { |row| row.is_a?(Hash) }
+      rows_by_id = rows.to_h { |row| [row['id'].to_s, row] }
+      required_rows = %w[
+        fullscreen_maximize_transition
+        wake_visible_zone_persistence
+        dynamic_helper_wake_drift
+        shared_bundle_exact_id_moves
+        hover_auto_rehide
+        license_clipboard_paste
+        resource_soak_growth
+      ]
+      return false unless (required_rows - rows_by_id.keys).empty?
+
+      required_rows.all? do |id|
+        row = rows_by_id[id]
+        candidate = row['runtime_candidate'].is_a?(Hash) ? row['runtime_candidate'] : {}
+        row['status'].to_s == 'passed' &&
+          release_runtime_candidate_app_path_matches?(candidate['app_path'], app_name) &&
+          release_customer_ui_runtime_row_has_durable_evidence?(id, row) &&
+          release_candidate_value_matches?(candidate['app_version'], expected[:version]) &&
+          release_candidate_value_matches?(candidate['app_build'], expected[:build])
+      end
+    rescue JSON::ParserError, ArgumentError, TypeError
+      false
+    end
+
+    def release_customer_ui_receipt_time_reusable?(generated_at, max_age_seconds:)
+      generated_at = generated_at.utc
+      now = Time.now.utc
+      return false if generated_at > now + 5 * 60
+
+      now - generated_at <= max_age_seconds
+    end
+
+    def release_runtime_candidate_app_path_matches?(actual_path, app_name)
+      expected_path = File.join('/Applications', "#{app_name}.app")
+      File.expand_path(actual_path.to_s) == expected_path
+    rescue StandardError
+      false
+    end
+
+    def release_customer_ui_runtime_row_has_durable_evidence?(id, row)
+      paths = Array(row['evidence_paths'])
+      return false if paths.any? { |path| release_customer_ui_temp_evidence_file?(path) }
+
+      if release_customer_ui_runtime_preflight_required_id?(id)
+        return false unless paths.any? { |path| release_customer_ui_durable_runtime_preflight_evidence_file?(id, path) }
+      end
+
+      paths.any? do |path|
+        release_customer_ui_durable_evidence_file?(path) ||
+          release_customer_ui_durable_runtime_preflight_evidence_file?(id, path)
+      end
+    end
+
+    def release_customer_ui_newest_receipt_path
+      %w[
+        .sane/customer_ui_action_receipt.json
+        outputs/customer_ui_action_receipt.json
+      ].map { |path| File.expand_path(path, Dir.pwd) }
+        .select { |path| release_regular_file_without_symlinked_parent?(path) }
+        .max_by { |path| File.mtime(path) }
+    rescue StandardError
+      nil
+    end
+
+    def release_customer_ui_durable_evidence_file?(path)
+      expanded = File.expand_path(path.to_s, Dir.pwd)
+      root = File.expand_path(File.join(Dir.pwd, 'outputs', 'customer-ui'))
+      expanded = File.realpath(expanded)
+      root = File.realpath(root) if File.exist?(root)
+      normalized = expanded.tr('\\', '/')
+      normalized.start_with?("#{root.tr('\\', '/')}/") &&
+        release_regular_file_without_symlinked_parent?(expanded)
+    rescue StandardError
+      false
+    end
+
+    def release_customer_ui_runtime_preflight_required_id?(id)
+      %w[hover_auto_rehide license_clipboard_paste].include?(id.to_s)
+    end
+
+    def release_customer_ui_durable_runtime_preflight_evidence_file?(id, path)
+      basename = case id.to_s
+                 when 'hover_auto_rehide'
+                   'sanebar_runtime_hover_rehide'
+                 when 'license_clipboard_paste'
+                   'sanebar_runtime_license_paste'
+                 else
+                   return false
+                 end
+      expanded = File.expand_path(path.to_s, Dir.pwd)
+      root = File.expand_path(File.join(Dir.pwd, 'outputs', 'runtime-preflight'))
+      normalized = expanded.tr('\\', '/')
+      normalized.start_with?("#{root.tr('\\', '/')}/") &&
+        File.basename(normalized).match?(/\A#{Regexp.escape(basename)}\.(?:json|log|png)\z/) &&
+        release_regular_file_without_symlinked_parent?(expanded)
+    rescue StandardError
+      false
+    end
+
+    def release_customer_ui_temp_evidence_file?(path)
+      expanded = File.expand_path(path.to_s, Dir.pwd)
+      expanded = File.realpath(expanded) if File.exist?(expanded)
+      expanded.start_with?('/tmp/') ||
+        expanded.start_with?('/private/tmp/') ||
+        expanded.start_with?('/var/folders/')
+    rescue StandardError
+      false
+    end
+
+    def release_regular_file_without_symlinked_parent?(path)
+      expanded = File.expand_path(path.to_s, Dir.pwd)
+      parts = expanded.split(File::SEPARATOR).reject(&:empty?)
+      current = expanded.start_with?(File::SEPARATOR) ? File::SEPARATOR : Dir.pwd
+      parts.each_with_index do |component, index|
+        current = current == File::SEPARATOR ? File.join(current, component) : File.join(current, component)
+        stat = File.lstat(current)
+        if index == parts.length - 1
+          return stat.file? && !stat.symlink?
+        end
+        return false if stat.symlink? || !stat.directory?
+      end
+      false
+    rescue StandardError
+      false
+    end
+
+    def release_candidate_value_matches?(actual, expected)
+      expected = expected.to_s.strip
+      actual = actual.to_s.strip
+      return true if expected.empty?
+
+      actual == expected
+    end
+
+    def release_current_project_version
+      content = File.exist?('project.yml') ? safe_read('project.yml') : ''
+      {
+        version: project_marketing_version(content),
+        build: project_build_number(content)
+      }
     end
 
     def normalize_release_output_chunk(chunk)
@@ -892,14 +1070,15 @@ module SaneMasterModules
       chunk.to_s.encode(Encoding::UTF_8, Encoding::BINARY, invalid: :replace, undef: :replace, replace: '?')
     end
 
-    def capture_release_command_output(env, *cmd, heartbeat_label:, heartbeat_seconds: 8)
+    def capture_release_command_output(env, *cmd, heartbeat_label:, heartbeat_seconds: 8, timeout_seconds: nil)
       output = +''
       status = nil
       started_at = Time.now
       last_output_at = Time.now
       last_heartbeat_at = Time.at(0)
+      timed_out = false
 
-      Open3.popen2e(env, *cmd) do |_stdin, stdout_err, wait_thr|
+      Open3.popen2e(env, *cmd, pgroup: true) do |_stdin, stdout_err, wait_thr|
         loop do
           ready = IO.select([stdout_err], nil, nil, 1)
           if ready
@@ -918,6 +1097,17 @@ module SaneMasterModules
 
           if wait_thr.join(0)
             status = wait_thr.value
+            break
+          end
+
+          if timeout_seconds && timeout_seconds.positive? && (Time.now - started_at) > timeout_seconds
+            timed_out = true
+            message = "release command timeout after #{timeout_seconds}s: #{cmd.join(' ')}"
+            output << "\n#{message}\n"
+            puts "\n#{message}"
+            terminate_release_command_process(wait_thr.pid, signal: 'TERM')
+            wait_thr.join(2) || terminate_release_command_process(wait_thr.pid, signal: 'KILL')
+            status = wait_thr.value if wait_thr.join(0)
             break
           end
 
@@ -941,7 +1131,49 @@ module SaneMasterModules
         end
       end
 
+      status = nil if timed_out
       [output, status]
+    end
+
+    def release_verify_timeout_seconds
+      ENV.fetch('SANEPROCESS_RELEASE_VERIFY_TIMEOUT_SECONDS', '1800').to_i
+    rescue StandardError
+      1800
+    end
+
+    def terminate_release_command_process(root_pid, signal:)
+      [-(root_pid.to_i), root_pid.to_i, *release_descendant_pids(root_pid)].uniq.each do |pid|
+        Process.kill(signal, pid)
+      rescue Errno::ESRCH, Errno::EPERM
+        nil
+      end
+    end
+
+    def release_descendant_pids(root_pid)
+      output, status = Open3.capture2('ps', '-axo', 'pid=,ppid=')
+      return [] unless status.success?
+
+      children_by_parent = Hash.new { |hash, key| hash[key] = [] }
+      output.each_line do |line|
+        pid_text, ppid_text = line.split
+        pid = pid_text.to_i
+        ppid = ppid_text.to_i
+        next unless pid.positive? && ppid.positive?
+
+        children_by_parent[ppid] << pid
+      end
+      queue = children_by_parent[root_pid.to_i].dup
+      descendants = []
+      until queue.empty?
+        pid = queue.shift
+        next if descendants.include?(pid)
+
+        descendants << pid
+        queue.concat(children_by_parent[pid])
+      end
+      descendants
+    rescue StandardError
+      []
     end
 
     def local_appcast_paths
@@ -975,7 +1207,9 @@ module SaneMasterModules
         zip_path = File.join(tmpdir, 'dist.zip')
         unpack_dir = File.join(tmpdir, 'unpacked')
 
-        _curl_out, curl_status = Open3.capture2e('curl', '-fsSL', zip_url, '-o', zip_path)
+        _curl_out, curl_status = Open3.capture2e(
+          'curl', '--connect-timeout', '10', '--max-time', '60', '-fsSL', zip_url, '-o', zip_path
+        )
         return nil unless curl_status.success? && File.exist?(zip_path)
 
         _unzip_out, unzip_status = Open3.capture2e('ditto', '-x', '-k', zip_path, unpack_dir)
@@ -1211,6 +1445,46 @@ module SaneMasterModules
       response.body.to_s
     rescue StandardError
       ''
+    end
+
+    def capture_github_command_with_timeout(env, *cmd, timeout_seconds: 20)
+      output = +''
+      status = nil
+      started_at = Time.now
+      Open3.popen2e(env, *cmd, pgroup: true) do |_stdin, stdout_err, wait_thr|
+        loop do
+          begin
+            ready = IO.select([stdout_err], nil, nil, 0.2)
+            output << stdout_err.read_nonblock(4096) if ready
+          rescue IO::WaitReadable
+            # keep waiting until the process exits or times out
+          rescue EOFError
+            nil
+          end
+
+          if wait_thr.join(0)
+            status = wait_thr.value
+            break
+          end
+
+          if timeout_seconds.positive? && (Time.now - started_at) > timeout_seconds
+            output << "\ngh command timeout after #{timeout_seconds}s: #{cmd.join(' ')}\n"
+            terminate_release_command_process(wait_thr.pid, signal: 'TERM')
+            wait_thr.join(2) || terminate_release_command_process(wait_thr.pid, signal: 'KILL')
+            status = wait_thr.value if wait_thr.join(0)
+            break
+          end
+        end
+        begin
+          output << stdout_err.read.to_s unless stdout_err.closed?
+        rescue StandardError
+          nil
+        end
+      end
+      status ||= Struct.new(:success?, :exitstatus).new(false, nil)
+      [output, status]
+    rescue StandardError => error
+      ["#{error.class}: #{error.message}", Struct.new(:success?, :exitstatus).new(false, nil)]
     end
 
     def appstore_fetch_url_status(url)
@@ -1509,7 +1783,11 @@ module SaneMasterModules
       uri = URI("#{base}#{path}")
       request = Net::HTTP::Get.new(uri)
       request['Authorization'] = "Bearer #{token}"
-      response = Net::HTTP.start(uri.host, uri.port, use_ssl: true) { |http| http.request(request) }
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = uri.scheme == 'https'
+      http.open_timeout = 10
+      http.read_timeout = 20
+      response = http.request(request)
       parsed = begin
         JSON.parse(response.body.to_s)
       rescue StandardError
@@ -2228,6 +2506,8 @@ module SaneMasterModules
       FileUtils.mkdir_p(File.dirname(path))
       payload = {
         generatedAt: Time.now.iso8601,
+        host: Socket.gethostname,
+        miniRuntime: release_status_mini_runtime?,
         projectName: File.basename(Dir.pwd),
         sourceFingerprint: release_status_source_fingerprint,
         status: status,
@@ -2242,15 +2522,15 @@ module SaneMasterModules
     end
 
     def release_status_source_fingerprint(project_path = Dir.pwd)
-      files = release_status_source_files(project_path)
-      return nil if files.empty?
+      entries = release_status_source_entries(project_path)
+      return nil if entries.empty?
 
       digest = Digest::SHA256.new
-      files.each do |relative_path|
-        absolute_path = File.join(project_path, relative_path)
+      entries.each do |entry|
+        absolute_path = entry.fetch(:absolute_path)
         next unless File.file?(absolute_path)
 
-        digest.update(relative_path)
+        digest.update(entry.fetch(:digest_path))
         digest.update("\0")
         digest.update(Digest::SHA256.file(absolute_path).hexdigest)
         digest.update("\0")
@@ -2266,16 +2546,118 @@ module SaneMasterModules
       files = []
       files.concat(tracked.split("\0")) if tracked_status.success?
       files.concat(others.split("\0")) if others_status.success?
+      files = filesystem_release_status_source_files(project_path) if files.empty?
       files.concat(release_status_proof_files(project_path))
       files.select { |path| release_status_source_file?(project_path, path) }.uniq.sort
     rescue StandardError
       []
     end
 
+    def filesystem_release_status_source_files(project_path)
+      Dir.chdir(project_path) do
+        Dir.glob('**/*', File::FNM_DOTMATCH).reject do |path|
+          path.start_with?('.git/') ||
+            path.start_with?('outputs/') ||
+            path.start_with?('.sanemaster/') ||
+            File.directory?(path)
+        end
+      end
+    rescue StandardError
+      []
+    end
+
+    def release_status_source_entries(project_path)
+      app_entries = release_status_source_files(project_path).map do |relative_path|
+        {
+          digest_path: "app/#{relative_path}",
+          absolute_path: File.join(project_path, relative_path)
+        }
+      end
+
+      process_root = File.expand_path('../..', __dir__)
+      harness_entries = release_status_harness_source_files(process_root).map do |relative_path|
+        {
+          digest_path: "SaneProcess/#{relative_path}",
+          absolute_path: File.join(process_root, relative_path)
+        }
+      end
+      shared_entries = release_status_shared_source_files(project_path).map do |entry|
+        {
+          digest_path: entry.fetch(:digest_path),
+          absolute_path: entry.fetch(:absolute_path)
+        }
+      end
+
+      app_entries + harness_entries + shared_entries
+    rescue StandardError
+      []
+    end
+
+    def release_status_shared_source_files(project_path)
+      root = if respond_to?(:saneapps_root, true)
+               saneapps_root
+             else
+               File.expand_path('../..', saneprocess_repo_root)
+             end
+      app_source = release_status_source_files(project_path)
+      receipt_paths = [
+        '.sane/customer_ui_action_receipt.json',
+        'outputs/customer_ui_action_receipt.json'
+      ]
+      needs_saneui = app_source.any? do |relative_path|
+        receipt_paths.include?(relative_path) ||
+          relative_path.start_with?('Sane', 'Shared/', 'Sources/', 'UI/', 'Core/')
+      end
+      return [] unless needs_saneui
+
+      patterns = [
+        'infra/SaneUI/Sources/**/*.{swift,xcstrings}'
+      ]
+      patterns.flat_map { |pattern| Dir.glob(File.join(root, pattern)) }
+              .select { |path| File.file?(path) }
+              .map do |path|
+                relative_path = path.sub(%r{\A#{Regexp.escape(root)}/?}, '')
+                {
+                  digest_path: "SaneApps/#{relative_path}",
+                  absolute_path: path
+                }
+              end
+              .uniq { |entry| entry[:digest_path] }
+              .sort_by { |entry| entry[:digest_path] }
+    rescue StandardError
+      []
+    end
+
+    def release_status_mini_runtime?
+      Socket.gethostname.to_s.downcase.include?('mini')
+    rescue StandardError
+      false
+    end
+
+    def release_status_harness_source_files(process_root = File.expand_path('../..', __dir__))
+      patterns = [
+        'scripts/SaneMaster.rb',
+        'scripts/release.sh',
+        'scripts/validation_report.rb',
+        'scripts/sanemaster/**/*.rb',
+        'scripts/hooks/**/*.{rb,sh}'
+      ]
+      patterns.flat_map { |pattern| Dir.glob(File.join(process_root, pattern)) }
+              .select { |path| File.file?(path) }
+              .map { |path| path.sub(%r{\A#{Regexp.escape(process_root)}/?}, '') }
+              .uniq
+              .sort
+    rescue StandardError
+      []
+    end
+
     def release_status_proof_files(project_path)
       [
-        'outputs/customer_ui_action_receipt.json',
         '.sane/customer_ui_action_receipt.json',
+        'outputs/customer_ui_action_receipt.json',
+        *Dir.glob(File.join(project_path, 'outputs', 'runtime-preflight', 'sanebar_runtime_*.{json,log}')).map do |path|
+          path.sub(%r{\A#{Regexp.escape(project_path)}/?}, '')
+        end,
         *Dir.glob(File.join(project_path, 'outputs', 'customer-ui', '**', 'resource-soak-*')).map do |path|
           path.sub(%r{\A#{Regexp.escape(project_path)}/?}, '')
         end
@@ -2290,6 +2672,7 @@ module SaneMasterModules
       return true if relative_path.match?(%r{\A(?:docs|website)/.*\.(?:css|html|js|json|xml)\z})
       return true if relative_path == 'outputs/customer_ui_action_receipt.json'
       return true if relative_path == '.sane/customer_ui_action_receipt.json'
+      return true if relative_path.match?(%r{\Aoutputs/runtime-preflight/sanebar_runtime_.*\.(?:json|log)\z})
       return true if relative_path.match?(%r{\Aoutputs/customer-ui/.*resource-soak-.*\.(?:json|log)\z})
       return false if %w[
         .sane/customer_ui_action_receipt.json AGENTS.md ARCHITECTURE.md CLAUDE.md
@@ -2401,6 +2784,8 @@ module SaneMasterModules
 
       report[:classification] = metadata_value(launch_calendar, 'classification').to_s.strip
       report[:rule] = metadata_value(launch_calendar, 'rule').to_s.strip
+      live_release_state = launch_readiness_live_release_state?(launch_calendar, report[:classification])
+      launched_support_mode = launch_readiness_launched_support_mode?(launch_calendar, report[:classification])
 
       report[:issues] << 'launch_calendar.classification is required' if report[:classification].empty?
       report[:issues] << 'launch_calendar.rule is required' if report[:rule].empty?
@@ -2445,17 +2830,25 @@ module SaneMasterModules
         report[:warnings] << 'Missing public_posting_policy in .outreach.yml'
       end
 
-      validate_launch_package!(outreach, report)
+      validate_launch_package!(outreach, report, launched_support_mode: launched_support_mode)
 
       unless File.exist?(report[:release_preflight_path])
-        report[:issues] << 'Missing outputs/release_preflight_status.json; run ./scripts/SaneMaster.rb release_preflight first'
+        launch_readiness_add_release_proof_finding!(
+          report,
+          live_release_state: live_release_state,
+          message: 'Missing outputs/release_preflight_status.json; run ./scripts/SaneMaster.rb release_preflight first'
+        )
         report[:ok] = false
         return report
       end
 
       preflight_status = JSON.parse(File.read(report[:release_preflight_path])) rescue nil
       unless preflight_status.is_a?(Hash)
-        report[:issues] << 'release_preflight_status.json is unreadable'
+        launch_readiness_add_release_proof_finding!(
+          report,
+          live_release_state: live_release_state,
+          message: 'release_preflight_status.json is unreadable'
+        )
         report[:ok] = false
         return report
       end
@@ -2470,16 +2863,28 @@ module SaneMasterModules
         age_days = ((Time.now - generated_at) / 86_400.0).round(2)
         report[:release_preflight_age_days] = age_days
         if age_days > max_preflight_age_days
-          report[:issues] << "Latest release_preflight proof is stale (#{age_days} days old; max #{max_preflight_age_days})"
+          launch_readiness_add_release_proof_finding!(
+            report,
+            live_release_state: live_release_state,
+            message: "Latest release_preflight proof is stale (#{age_days} days old; max #{max_preflight_age_days})"
+          )
         end
       else
-        report[:issues] << 'release_preflight_status.json is missing a valid generatedAt timestamp'
+        launch_readiness_add_release_proof_finding!(
+          report,
+          live_release_state: live_release_state,
+          message: 'release_preflight_status.json is missing a valid generatedAt timestamp'
+        )
       end
 
       if report[:release_preflight_status] != 'passed'
         issue_count = preflight_status['issueCount']
         suffix = issue_count ? " (#{issue_count} issue(s))" : ''
-        report[:issues] << "Latest release_preflight is not green: #{report[:release_preflight_status]}#{suffix}"
+        launch_readiness_add_release_proof_finding!(
+          report,
+          live_release_state: live_release_state,
+          message: "Latest release_preflight is not green: #{report[:release_preflight_status]}#{suffix}"
+        )
       end
 
       warning_count = preflight_status['warningCount'].to_i
@@ -2489,6 +2894,27 @@ module SaneMasterModules
 
       report[:ok] = report[:issues].empty?
       report
+    end
+
+    def launch_readiness_live_release_state?(launch_calendar, classification)
+      classification_text = classification.to_s.strip
+      return true if classification_text == 'meaningfully_launched'
+
+      current_release_state = metadata_node(launch_calendar, 'current_release_state')
+      status = metadata_value(current_release_state, 'status').to_s.strip
+      status.start_with?('live_')
+    end
+
+    def launch_readiness_launched_support_mode?(launch_calendar, classification)
+      classification.to_s.strip == 'meaningfully_launched' && launch_readiness_live_release_state?(launch_calendar, classification)
+    end
+
+    def launch_readiness_add_release_proof_finding!(report, live_release_state:, message:)
+      if live_release_state
+        report[:warnings] << "#{message} (advisory for already-live product state)"
+      else
+        report[:issues] << message
+      end
     end
 
     def validate_launch_offer_window!(launch_calendar, report)
@@ -2511,7 +2937,7 @@ module SaneMasterModules
       report[:issues] << "launch_calendar.offer_window.ends is not a valid date: #{ends.inspect}"
     end
 
-    def validate_launch_package!(outreach, report)
+    def validate_launch_package!(outreach, report, launched_support_mode: false)
       launch_package = metadata_node(outreach, 'launch_package')
       unless launch_package.is_a?(Hash)
         report[:issues] << 'Missing launch_package in .outreach.yml'
@@ -2549,7 +2975,11 @@ module SaneMasterModules
 
       blockers = Array(metadata_node(launch_package, 'weak_launch_blockers')).map { |item| item.to_s.strip }.reject(&:empty?)
       blockers.each do |blocker|
-        report[:issues] << "Outstanding weak-launch blocker: #{blocker}"
+        if launched_support_mode
+          report[:warnings] << "Outstanding weak-launch blocker: #{blocker} (major-launch advisory only for already-launched product)"
+        else
+          report[:issues] << "Outstanding weak-launch blocker: #{blocker}"
+        end
       end
     end
 
@@ -3094,6 +3524,7 @@ module SaneMasterModules
       end
 
       # 1b. Customer-facing UI/UX action contract.
+      ui_contract_report = nil
       print '  Customer UI action contract... '
       if respond_to?(:customer_ui_contract_report)
         ui_contract_report = customer_ui_contract_report(config: preflight_config)
@@ -3405,9 +3836,12 @@ module SaneMasterModules
                  '/opt/homebrew/bin/gh'
                elsif File.executable?('/usr/local/bin/gh')
                  '/usr/local/bin/gh'
-               end
+      end
       if gh_bin
-        issue_json, issue_status = Open3.capture2e({ 'PATH' => tool_path }, gh_bin, 'issue', 'list', '--repo', repo, '--state', 'open', '--json', 'number')
+        issue_json, issue_status = capture_github_command_with_timeout(
+          { 'PATH' => tool_path },
+          gh_bin, 'issue', 'list', '--repo', repo, '--state', 'open', '--json', 'number'
+        )
         if issue_status.success?
           open_count = parse_json_count(issue_json)
           if open_count.positive?
@@ -3424,7 +3858,10 @@ module SaneMasterModules
         end
 
         print '  Open GitHub PRs... '
-        pr_json, pr_status = Open3.capture2e({ 'PATH' => tool_path }, gh_bin, 'pr', 'list', '--repo', repo, '--state', 'open', '--json', 'number')
+        pr_json, pr_status = capture_github_command_with_timeout(
+          { 'PATH' => tool_path },
+          gh_bin, 'pr', 'list', '--repo', repo, '--state', 'open', '--json', 'number'
+        )
         if pr_status.success?
           open_pr_count = parse_json_count(pr_json)
           if open_pr_count.positive?
@@ -3453,9 +3890,10 @@ module SaneMasterModules
       if api_key.empty?
         puts '⏭️  skipped (no API key)'
       else
-        pending_json, = Open3.capture2('curl', '-s',
-                                       'https://email-api.saneapps.com/api/emails/pending',
-                                       '-H', "Authorization: Bearer #{api_key}")
+        pending_json = fetch_text(
+          'https://email-api.saneapps.com/api/emails/pending',
+          headers: { 'Authorization' => "Bearer #{api_key}" }
+        )
         pending_count = begin
           JSON.parse(pending_json).length
         rescue StandardError
@@ -3471,7 +3909,8 @@ module SaneMasterModules
 
       # 7. License API reachable
       print '  License API (LemonSqueezy)... '
-      ls_status, = Open3.capture2('curl', '-sI', '-o', '/dev/null', '-w', '%{http_code}',
+      ls_status, = Open3.capture2('curl', '--connect-timeout', '10', '--max-time', '20',
+                                  '-sI', '-o', '/dev/null', '-w', '%{http_code}',
                                   'https://api.lemonsqueezy.com/v1/licenses/validate')
       ls_status = ls_status.strip
       if ls_status == '000'
@@ -3490,7 +3929,9 @@ module SaneMasterModules
       cask_url_base = "https://raw.githubusercontent.com/sane-apps/homebrew-tap/main/Casks/#{cask_app}.rb"
       cask_commit = nil
       commits_api = "https://api.github.com/repos/sane-apps/homebrew-tap/commits?path=Casks/#{cask_app}.rb&per_page=1"
-      commits_json, commits_status = Open3.capture2('curl', '-fsSL', commits_api)
+      commits_json, commits_status = Open3.capture2(
+        'curl', '--connect-timeout', '10', '--max-time', '20', '-fsSL', commits_api
+      )
       if commits_status.success?
         commits = JSON.parse(commits_json) rescue []
         cask_commit = commits.first['sha'].to_s.strip if commits.is_a?(Array) && commits.first.is_a?(Hash)
@@ -3500,10 +3941,15 @@ module SaneMasterModules
                  else
                    cask_url_base
                  end
-      tap_status, = Open3.capture2('curl', '-sI', '-o', '/dev/null', '-w', '%{http_code}', cask_url)
+      tap_status, = Open3.capture2(
+        'curl', '--connect-timeout', '10', '--max-time', '20',
+        '-sI', '-o', '/dev/null', '-w', '%{http_code}', cask_url
+      )
       tap_status = tap_status.strip
       if tap_status == '200'
-        cask_body, = Open3.capture2('curl', '-fsSL', cask_url)
+        cask_body, = Open3.capture2(
+          'curl', '--connect-timeout', '10', '--max-time', '20', '-fsSL', cask_url
+        )
         cask_version = cask_body[/version\s+"([^"]+)"/, 1].to_s.strip
         project_version = project_marketing_version(project_yml_content)
         if cask_version.empty?
@@ -3620,16 +4066,25 @@ module SaneMasterModules
         puts '⏭️  skipped (fix cheap release blocker(s) first)'
       else
         verify_env = { 'SANEMASTER_RELEASE_PREFLIGHT' => '1' }
-        out, status = Open3.capture2e(verify_env, './scripts/SaneMaster.rb', 'verify', '--quiet')
+        puts
+        out, status = capture_release_command_output(
+          verify_env,
+          './scripts/SaneMaster.rb',
+          'verify',
+          '--quiet',
+          heartbeat_label: 'SaneMaster verify',
+          heartbeat_seconds: 15,
+          timeout_seconds: release_verify_timeout_seconds
+        )
         verify_cleanup = verify_output_indicates_runtime_dedupe_cleanup?(out, app_name: preflight_app_name)
-        if status.success? || verify_output_indicates_success?(out) || verify_cleanup
+        if status&.success? || verify_output_indicates_success?(out) || verify_cleanup
           if verify_cleanup
-            puts '✅ (after runtime app dedupe cleanup)'
+            puts '  Tests... ✅ (after runtime app dedupe cleanup)'
           else
-            puts '✅'
+            puts '  Tests... ✅'
           end
         else
-          puts '❌ FAIL'
+          puts '  Tests... ❌ FAIL'
           hint = summarized_output_tail(out)
           puts "    ↳ #{hint}" unless hint.empty?
           issues << 'Tests failing'
@@ -3643,8 +4098,19 @@ module SaneMasterModules
         puts '⏭️  skipped (fix earlier release blocker(s) first)'
       else
         puts
+        skip_runtime_smoke = release_customer_ui_runtime_smoke_reusable?(
+          ui_contract_report,
+          app_name: preflight_app_name
+        )
+        if skip_runtime_smoke
+          puts '    ↳ reusing fresh customer UI runtime proof; full QA will skip duplicate runtime smoke'
+        end
         qa_out, qa_status = capture_release_command_output(
-          release_project_qa_env(app_name: preflight_app_name, policy_only: false),
+          release_project_qa_env(
+            app_name: preflight_app_name,
+            policy_only: false,
+            skip_runtime_smoke: skip_runtime_smoke
+          ),
           'ruby',
           qa_script,
           heartbeat_label: 'project QA guardrails'
@@ -4206,23 +4672,32 @@ module SaneMasterModules
       # 5a. Tests pass (shared with release_preflight)
       print '  │ Tests... '
       verify_env = { 'SANEMASTER_APPSTORE_PREFLIGHT' => '1' }
-      out, status = Open3.capture2e(verify_env, './scripts/SaneMaster.rb', 'verify', '--quiet')
+      puts
+      out, status = capture_release_command_output(
+        verify_env,
+        './scripts/SaneMaster.rb',
+        'verify',
+        '--quiet',
+        heartbeat_label: 'SaneMaster verify',
+        heartbeat_seconds: 15,
+        timeout_seconds: release_verify_timeout_seconds
+      )
       verify_cleanup = verify_output_indicates_runtime_dedupe_cleanup?(out, app_name: config['name'] || File.basename(Dir.pwd))
-      if status.success? || verify_output_indicates_success?(out) || verify_cleanup
+      if status&.success? || verify_output_indicates_success?(out) || verify_cleanup
         if verify_cleanup
-          puts '✅ (after runtime app dedupe cleanup)'
+          puts '  │ Tests... ✅ (after runtime app dedupe cleanup)'
         else
-          puts '✅'
+          puts '  │ Tests... ✅'
         end
       elsif out.include?('Newest appcast entry should match MARKETING_VERSION') &&
             out.scan('Expectation failed:').length == 1
-        puts '⚠️  appcast/version drift'
+        puts '  │ Tests... ⚠️  appcast/version drift'
         warnings << 'Direct-download appcast is one version behind MARKETING_VERSION (non-blocking for App Store submission)'
       elsif appcast_drift_failure_only?(out)
-        puts '⚠️  appcast/version drift'
+        puts '  │ Tests... ⚠️  appcast/version drift'
         warnings << 'Direct-download appcast is one version behind MARKETING_VERSION (non-blocking for App Store submission)'
       else
-        puts '❌ FAIL'
+        puts '  │ Tests... ❌ FAIL'
         hint = summarized_output_tail(out)
         puts "  │   ↳ #{hint}" unless hint.empty?
         issues << 'Tests failing — fix before submission'

@@ -1,13 +1,21 @@
 import Foundation
 import CryptoKit
 
-guard CommandLine.arguments.count == 3 else {
-    print("Usage: swift sign_update.swift <file_path> <private_key_base64>")
+guard CommandLine.arguments.count == 2 else {
+    print("Usage: printf '%s' '<private_key_base64>' | swift sign_update.swift <file_path>")
     exit(1)
 }
 
 let filePath = CommandLine.arguments[1]
-let keyBase64 = CommandLine.arguments[2]
+let keyBase64 = String(
+    data: FileHandle.standardInput.readDataToEndOfFile(),
+    encoding: .utf8
+)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+guard !keyBase64.isEmpty else {
+    print("Error: Missing private key on stdin")
+    exit(1)
+}
 
 guard let data = FileManager.default.contents(atPath: filePath) else {
     print("Error: Could not read file at \(filePath)")

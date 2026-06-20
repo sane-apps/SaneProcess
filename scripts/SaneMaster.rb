@@ -188,7 +188,7 @@ class SaneMaster
         'test_scan' => { args: '[-v]', desc: 'Scan tests for tautologies and hardcoded values' },
         'validation_report' => { args: '[args...]', desc: 'Run SaneProcess validation report with workflow receipt' },
         'release_readiness' => { args: '[--json] [--app APP] [--scope candidate|portfolio]', desc: 'Report candidate patch readiness separately from portfolio health' },
-        'launch_readiness' => { args: '[--json] [--max-age-days N]', desc: 'Validate launch calendar gates plus fresh release_preflight proof before any public launch' },
+        'launch_readiness' => { args: '[--json] [--max-age-days N]', desc: 'Validate launch gates for new launch actions while treating already-live product proof drift as advisory' },
         'process_metrics' => { args: '[--json] [--export-json PATH] [--export-html PATH] [--export-otel PATH]', desc: 'Summarize verify churn, session quality, hook blocks, and export audit traces' },
         'route_cost_review' => { args: '[--json] [--metrics PATH] [--limit N|--all] [--min-count N] [--include-bookkeeping]', desc: 'Rank expensive workflow receipts and proof-scope misroute risks' },
         'near_miss_review' => { args: '[--json] [--metrics PATH] [--limit N|--all] [--min-count N] [--include-test-events]', desc: 'Mine process telemetry for useful near-miss guard/eval candidates' },
@@ -1363,16 +1363,8 @@ PY
       '--exclude', '.worktrees',
       '--exclude', '.build',
       '--exclude', 'build',
+      '--exclude', '.sane/customer_ui_action_receipt.json',
       '--include', 'outputs/',
-      '--include', 'outputs/qa_status.json',
-      '--include', 'outputs/release_preflight_status.json',
-      '--include', 'outputs/customer_ui_action_receipt.json',
-      '--include', 'outputs/validation/',
-      '--include', 'outputs/validation/qa_status.json',
-      '--include', 'outputs/customer-ui/',
-      '--include', 'outputs/customer-ui/***',
-      '--include', 'outputs/process-abtest/',
-      '--include', 'outputs/process-abtest/***',
       '--exclude', 'outputs/***',
       '--exclude', 'DerivedData',
       '--exclude', 'node_modules',
@@ -1576,11 +1568,29 @@ PY
     ok = route_system(
       'rsync',
       '-az',
+      '--no-links',
       *mini_output_receipt_rsync_filters,
       "mini:#{remote_outputs_dir}/",
       "#{local_outputs_dir}/"
     )
     warn '⚠️  Failed to sync Mini outputs back to the local workspace.' unless ok
+    sync_sane_receipts_from_mini!(local_repo, remote_repo)
+  end
+
+  def sync_sane_receipts_from_mini!(local_repo, remote_repo)
+    remote_receipt = File.join(remote_repo, '.sane', 'customer_ui_action_receipt.json')
+    return unless mini_path_exists_fast?(remote_receipt)
+
+    local_sane_dir = File.join(File.expand_path(local_repo), '.sane')
+    FileUtils.mkdir_p(local_sane_dir)
+    ok = route_system(
+      'rsync',
+      '-az',
+      '--no-links',
+      "mini:#{remote_receipt}",
+      "#{local_sane_dir}/customer_ui_action_receipt.json"
+    )
+    warn '⚠️  Failed to sync Mini .sane customer UI receipt back to the local workspace.' unless ok
   end
 
   def mini_output_receipt_rsync_filters
@@ -1592,6 +1602,8 @@ PY
       '--include', 'validation/qa_status.json',
       '--include', 'customer-ui/',
       '--include', 'customer-ui/***',
+      '--include', 'runtime-preflight/',
+      '--include', 'runtime-preflight/***',
       '--include', 'visual_smoke/',
       '--include', 'visual_smoke/***',
       '--include', 'process-abtest/',
@@ -1611,7 +1623,7 @@ PY
       find "$out" -mindepth 1 -maxdepth 1 -print | while IFS= read -r path; do
         base=${path##*/}
         case "$base" in
-          qa_status.json|release_preflight_status.json|customer_ui_action_receipt.json|validation|customer-ui|visual_smoke|process-abtest) continue ;;
+          qa_status.json|release_preflight_status.json|customer_ui_action_receipt.json|validation|customer-ui|runtime-preflight|visual_smoke|process-abtest) continue ;;
         esac
         /usr/bin/trash "$path" 2>/dev/null || trash "$path" 2>/dev/null || true
       done
@@ -2745,7 +2757,7 @@ PY
     },
     'launch_readiness' => {
       usage: 'launch_readiness [--json] [--max-age-days N]',
-      description: 'Validate .outreach.yml launch gates, launch_package proof/assets, public-posting policy, and a fresh passing release_preflight receipt before any public launch.',
+      description: 'Validate .outreach.yml launch gates, launch_package proof/assets, and public-posting policy for launch actions; for already-live products, release-proof drift is advisory unless launch-specific blockers remain.',
       flags: {
         '--json' => 'Print the full launch-readiness report as JSON',
         '--max-age-days N' => 'Maximum age for the passing release_preflight proof (default: 7)'

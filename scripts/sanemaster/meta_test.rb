@@ -80,6 +80,18 @@ exit(run_tests('SaneMaster Meta Tests') do
     end
   end
 
+  test_category('codex guards') do
+    test('requires ssh wrapper for canonical Mini screenshot enforcement') do
+      wrappers = SaneMasterModules::Meta::CODEX_GUARD_WRAPPERS
+
+      assert_eq(wrappers[:ssh], 'sane_ssh_guard.sh')
+      assert_includes(wrappers.keys, :curl)
+      assert_includes(wrappers.keys, :open)
+      assert_includes(wrappers.keys, :rsync)
+      true
+    end
+  end
+
   test_category('test quality scan') do
     test('flags executable tautologies but ignores comments and fixture strings') do
       subject = MetaHarness.new

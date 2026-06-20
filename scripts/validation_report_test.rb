@@ -4,6 +4,7 @@
 require_relative 'hooks/test/test_framework'
 require_relative 'validation_report'
 require 'tmpdir'
+require 'stringio'
 
 class ValidationReportHarness < ValidationReport
   attr_reader :issues, :warnings, :metrics, :verdict
@@ -320,7 +321,80 @@ class SopPolicyDiffHarness < ValidationReport
   end
 end
 
+class ValidationOutputHarness < ValidationReport
+  attr_reader :release_checklists_called
+
+  def collect_data
+    @data = {}
+  end
+
+  def run_hard_analysis
+    @issues = []
+    @warnings = []
+    @metrics = {
+      config_consistency: { issues: 0, details: [] },
+      block_accuracy: { total: 0 },
+      doom_loop_prevention: { caught: 0, missed: 0, catch_rate: nil, breaker_trips: 0, repeat_error_patterns: 0 },
+      score_integrity: { status: 'NO DATA' },
+      test_outcomes: { total_sessions: 0 },
+      trend: { status: 'NO DATA', snapshots: 0 },
+      release_integrity: { issues: 0, warnings: 0, details: [] },
+      website_distribution: { issues: 0, warnings: 0, details: [] },
+      code_signing: { issues: 0, warnings: 0, details: [] },
+      support_infrastructure: { issues: 0, warnings: 0, details: [] },
+      documentation_currency: { issues: 0, warnings: 0, details: [] },
+      cross_channel_consistency: { table: [], canonical_issues: 0, hosted_file_actions: 0 },
+      customer_reality_contracts: { issues: 0, warnings: 0, checked: 0, details: [] },
+      secret_scan: { issues: 0, warnings: 0, actionable_count: 0, preserved_count: 0, ignored_count: 0 },
+      red_noise_budget: { stale_count: 0, details: [] }
+    }
+    @verdict = {
+      color: :green,
+      status: 'WORKING',
+      detail: 'test harness',
+      sections: {
+        system_health: { status: 'PASS', detail: 'No open findings', label: 'System Health' },
+        release_readiness: { status: 'PASS', detail: 'No open findings', label: 'Release Readiness' },
+        app_readiness: { status: 'PASS', detail: 'No open findings', label: 'App Readiness' },
+        advisory: { status: 'PASS', detail: 'No open findings', label: 'Advisory' }
+      }
+    }
+  end
+
+  def output_release_checklists
+    @release_checklists_called = true
+    puts 'release checklists called'
+  end
+
+  def save_snapshot; end
+end
+
+class UrlStatusHarness < ValidationReport
+  attr_reader :commands
+
+  def initialize(results)
+    super()
+    @results = results.dup
+    @commands = []
+  end
+
+  def curl_status_command(command)
+    @commands << command
+    @results.shift || '200'
+  end
+end
+
 include TestFramework
+
+def capture_stdout
+  original_stdout = $stdout
+  buffer = StringIO.new
+  $stdout = buffer
+  yield
+  buffer.string
+ensure
+  $stdout = original_stdout
+end
 
 def product_definition(name, slug:, domain:)
   {
@@ -354,6 +428,81 @@ def write_qa_status(path, source_fingerprint: nil, extra: {})
 end
 
 exit(run_tests('Validation report tests') do
+  test_category('CLI routing') do
+    test('parses help without running the full report') do
+      options = ValidationReport.parse_cli_args(['--help'])
+
+      assert_eq(options[:help], true)
+      assert_includes(options[:usage], '--release-checklists')
+      true
+    end
+
+    test('skips deep release checklists by default') do
+      subject = ValidationOutputHarness.new
+      output = capture_stdout { subject.run(format: :text) }
+
+      assert_eq(subject.release_checklists_called, nil)
+      assert_includes(output, 'Release readiness checklists skipped')
+      assert_includes(output, '--release-checklists')
+      true
+    end
+
+    test('runs deep release checklists only when requested') do
+      subject = ValidationOutputHarness.new
+      output = capture_stdout { subject.run(format: :text, include_release_checklists: true) }
+
+      assert_eq(subject.release_checklists_called, true)
+      assert_includes(output, 'release checklists called')
+      true
+    end
+  end
+
+  test_category('live URL probe efficiency') do
+    test('caches successful URL status checks within a report') do
+      subject = UrlStatusHarness.new(['200'])
+
+      assert_eq(subject.send(:check_url_status, 'https://example.test'), '200')
+      assert_eq(subject.send(:check_url_status, 'https://example.test'), '200')
+      assert_eq(subject.commands.length, 1)
+      true
+    end
+
+    test('does not retry terminal non-success HTTP statuses') do
+      subject = UrlStatusHarness.new(['404'])
+
+      assert_eq(subject.send(:check_url_status, 'https://example.test/missing'), '404')
+      assert_eq(subject.commands.length, 1)
+      true
+    end
+
+    test('retries retryable failures and accepts a GET recovery') do
+      subject = UrlStatusHarness.new(['000', '200'])
+
+      assert_eq(subject.send(:check_url_status, 'https://example.test/flaky'), '200')
+      assert_eq(subject.commands.length, 2)
+      true
+    end
+
+    test('falls back to GET after transport error output from HEAD') do
+      subject = UrlStatusHarness.new(['curl: (28) Operation timed out', '200'])
+
+      assert_eq(subject.send(:check_url_status, 'https://example.test/flaky-get'), '200')
+      assert_eq(subject.commands.length, 2)
+      assert_includes(subject.commands.last, ' -s ')
+      true
+    end
+
+    test('escapes SSL probe URL before shelling out') do
+      malicious_url = "https://example.test/'; touch /tmp/sane-validation-pwn; echo '"
+      subject = UrlStatusHarness.new(['ok'])
+
+      assert_eq(subject.send(:ssl_certificate_error?, malicious_url), false)
+      assert_eq(subject.commands.length, 1)
+      assert_includes(subject.commands.first, Shellwords.shellescape(malicious_url))
+      true
+    end
+  end
+
   test_category('Q6 release minimum OS warnings') do
     test('warns when a released app accidentally raises the macOS floor above Sonoma') do
       subject = ReleaseIntegrityHarness.new

@@ -5,8 +5,10 @@ require 'date'
 require 'fileutils'
 require 'json'
 require 'open3'
+require 'rbconfig'
 require 'socket'
 require 'time'
+require 'tmpdir'
 require 'yaml'
 
 module SaneMasterModules
@@ -19,8 +21,8 @@ module SaneMasterModules
       '.sane/customer_ui_actions.yml'
     ].freeze
     CUSTOMER_UI_RECEIPT_PATHS = [
-      'outputs/customer_ui_action_receipt.json',
-      '.sane/customer_ui_action_receipt.json'
+      '.sane/customer_ui_action_receipt.json',
+      'outputs/customer_ui_action_receipt.json'
     ].freeze
     CUSTOMER_UI_SWEEP_PATHS = [
       'scripts/customer_ui_action_sweep.rb',
@@ -55,6 +57,7 @@ module SaneMasterModules
       state_count_drift
     ].freeze
     CUSTOMER_UI_IMAGE_EXTENSIONS = %w[.png .jpg .jpeg].freeze
+    CUSTOMER_UI_COMMAND_TIMEOUT_SECONDS = 1800.0
     CUSTOMER_UI_MIN_SCREENSHOT_WIDTH = 80
     CUSTOMER_UI_MIN_SCREENSHOT_HEIGHT = 80
     RESOURCE_SOAK_ADAPTIVE_SCENARIO = 'adaptive Mini resource check passed for this release build'
@@ -304,7 +307,7 @@ module SaneMasterModules
       log_lines << "resource_soak_finished_at=#{finished_at.iso8601}"
       log_lines << "status=#{status}"
       log_lines.concat(issues.map { |issue| "issue=#{issue}" })
-      File.write(options[:log_path], log_lines.join("\n") + "\n")
+      safe_resource_soak_write(options[:log_path], log_lines.join("\n") + "\n")
 
       artifact = {
         status: status,
@@ -347,7 +350,7 @@ module SaneMasterModules
         samples: samples,
         issues: issues
       }
-      File.write(options[:artifact_path], JSON.pretty_generate(artifact) + "\n")
+      safe_resource_soak_write(options[:artifact_path], JSON.pretty_generate(artifact) + "\n")
 
       {
         ok: issues.empty?,
@@ -411,10 +414,18 @@ module SaneMasterModules
       cleanup_issues = customer_ui_cleanup_before_sweep(app_name)
       return { ok: false, app: app_name, script_path: script_path, issues: cleanup_issues } unless cleanup_issues.empty?
 
+      runtime_issues = customer_ui_refresh_runtime_evidence_before_sweep(app_name)
+      return { ok: false, app: app_name, script_path: script_path, issues: runtime_issues } unless runtime_issues.empty?
+
+      if app_name == 'SaneBar'
+        post_runtime_cleanup_issues = customer_ui_cleanup_before_sweep(app_name)
+        return { ok: false, app: app_name, script_path: script_path, issues: post_runtime_cleanup_issues } unless post_runtime_cleanup_issues.empty?
+      end
+
       visual_precheck = customer_ui_visual_precheck(app_name)
       return { ok: false, app: app_name, script_path: script_path, issues: visual_precheck[:issues] } unless visual_precheck[:ok]
 
-      output, status = customer_ui_run_command('ruby', script_path)
+      output, status = customer_ui_run_command(RbConfig.ruby, script_path)
       return { ok: false, app: app_name, script_path: script_path, issues: ["Customer UI workflow runner failed: #{output}"] } unless status.success?
 
       contract = customer_ui_contract_report(config: config)
@@ -431,7 +442,7 @@ module SaneMasterModules
     def customer_ui_contract_report(config:, strict_visual: false)
       app_name = metadata_value(config, 'name') || File.basename(Dir.pwd)
       manifest_path = CUSTOMER_UI_MANIFEST_PATHS.find { |path| File.exist?(path) }
-      receipt_path = CUSTOMER_UI_RECEIPT_PATHS.find { |path| File.exist?(path) }
+      receipt_path = newest_customer_ui_receipt_path
       issues = []
       warnings = []
 
@@ -602,8 +613,8 @@ module SaneMasterModules
         adaptive_early_physical_slope_mb_per_min_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_EARLY_PHYSICAL_SLOPE_MB_PER_MIN_MAX', '0.5')),
         adaptive_early_rss_range_mb_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_EARLY_RSS_RANGE_MB_MAX', '4.0')),
         adaptive_early_physical_range_mb_max: Float(ENV.fetch('SANEMASTER_RESOURCE_SOAK_EARLY_PHYSICAL_RANGE_MB_MAX', '2.0')),
-        artifact_path: '/tmp/sanebar_runtime_resource_soak.json',
-        log_path: '/tmp/sanebar_runtime_resource_soak.log',
+        artifact_path: ENV.fetch('SANEMASTER_RESOURCE_SOAK_ARTIFACT_PATH', '/tmp/sanebar_runtime_resource_soak.json'),
+        log_path: ENV.fetch('SANEMASTER_RESOURCE_SOAK_LOG_PATH', '/tmp/sanebar_runtime_resource_soak.log'),
         dry_run: false,
         json: false,
         no_exit: false
@@ -656,10 +667,24 @@ module SaneMasterModules
       options[:adaptive_consecutive_failures] = 1 if options[:adaptive_consecutive_failures] < 1
       options[:adaptive_baseline_sample_count] = 1 if options[:adaptive_baseline_sample_count] < 1
       unless options[:adaptive]
-        options[:artifact_path] = '/tmp/sanebar_runtime_resource_soak_fixed.json'
-        options[:log_path] = '/tmp/sanebar_runtime_resource_soak_fixed.log'
+        options[:artifact_path] = ENV.fetch('SANEMASTER_RESOURCE_SOAK_FIXED_ARTIFACT_PATH', '/tmp/sanebar_runtime_resource_soak_fixed.json')
+        options[:log_path] = ENV.fetch('SANEMASTER_RESOURCE_SOAK_FIXED_LOG_PATH', '/tmp/sanebar_runtime_resource_soak_fixed.log')
       end
       options
+    end
+
+    def safe_resource_soak_write(path, content)
+      FileUtils.mkdir_p(File.dirname(path))
+      safe_customer_ui_directory_path!(File.dirname(path))
+      File.open(path, safe_resource_soak_write_flags, 0o600) do |file|
+        file.write(content)
+      end
+    end
+
+    def safe_resource_soak_write_flags
+      flags = File::WRONLY | File::CREAT | File::TRUNC
+      flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+      flags
     end
 
     def resource_soak_dry_run_report(options)
@@ -728,9 +753,9 @@ module SaneMasterModules
 
     def resource_soak_expected_project_version
       project_yml = File.join(Dir.pwd, 'project.yml')
-      return {} unless File.file?(project_yml)
+      return {} unless customer_ui_regular_file?(project_yml)
 
-      content = File.read(project_yml)
+      content = safe_customer_ui_file_read(project_yml)
       {
         app_version: content[/MARKETING_VERSION:\s*"?([^"\s]+)"?/, 1].to_s.strip,
         app_build: content[/CURRENT_PROJECT_VERSION:\s*"?([^"\s]+)"?/, 1].to_s.strip
@@ -1186,7 +1211,162 @@ module SaneMasterModules
     end
 
     def customer_ui_run_command(*command)
-      Open3.capture2e(*command)
+      output = +''
+      status = nil
+      started_at = Time.now
+      last_output_at = started_at
+      last_heartbeat_at = Time.at(0)
+      timeout = customer_ui_command_timeout_seconds
+
+      Open3.popen2e(*command, pgroup: true) do |stdin, stdout_err, wait_thr|
+        stdin.close
+        loop do
+          if customer_ui_drain_command_output(stdout_err, output) { |chunk| customer_ui_stream_command_output(chunk) }
+            last_output_at = Time.now
+          end
+
+          if wait_thr.join(0.2)
+            status = wait_thr.value
+            customer_ui_drain_command_output(stdout_err, output, max_drain_seconds: 1.0) { |chunk| customer_ui_stream_command_output(chunk) }
+            break
+          end
+
+          if customer_ui_should_emit_heartbeat?(last_output_at, last_heartbeat_at)
+            elapsed = (Time.now - started_at).round(1)
+            customer_ui_stream_command_output("   ... customer UI command still running (#{elapsed}s): #{customer_ui_command_summary(command)}\n")
+            last_heartbeat_at = Time.now
+          end
+
+          next unless timeout && (Time.now - started_at) >= timeout
+
+          output << "\ncustomer UI command timeout after #{timeout.to_i}s: #{customer_ui_command_summary(command)}\n"
+          customer_ui_stream_command_output("customer UI command timeout after #{timeout.to_i}s: #{customer_ui_command_summary(command)}\n")
+          customer_ui_terminate_process_group(wait_thr)
+          status = customer_ui_failed_status
+          customer_ui_drain_command_output(stdout_err, output, max_drain_seconds: 1.0) { |chunk| customer_ui_stream_command_output(chunk) }
+          break
+        end
+      end
+
+      [output, status || customer_ui_failed_status]
+    rescue StandardError => e
+      ["customer UI command failed: #{e.class}: #{e.message}", customer_ui_failed_status]
+    end
+
+    def customer_ui_command_timeout_seconds
+      timeout = ENV.fetch('SANEMASTER_CUSTOMER_UI_COMMAND_TIMEOUT', CUSTOMER_UI_COMMAND_TIMEOUT_SECONDS.to_s).to_f
+      timeout.positive? ? timeout : CUSTOMER_UI_COMMAND_TIMEOUT_SECONDS
+    end
+
+    def customer_ui_drain_command_output(stdout_err, output, max_drain_seconds: 0.4)
+      deadline = Time.now + max_drain_seconds
+      drained = false
+      loop do
+        ready = IO.select([stdout_err], nil, nil, 0.05)
+        break unless ready
+
+        chunk = stdout_err.read_nonblock(8192, exception: false)
+        case chunk
+        when String
+          output << chunk
+          yield chunk if block_given?
+          drained = true unless chunk.empty?
+        when :wait_readable, nil
+          break
+        end
+
+        break if Time.now >= deadline
+      end
+      drained
+    rescue EOFError, IOError
+      false
+    end
+
+    def customer_ui_should_emit_heartbeat?(last_output_at, last_heartbeat_at)
+      return false unless customer_ui_stream_progress?
+
+      quiet_seconds = customer_ui_progress_heartbeat_seconds
+      (Time.now - last_output_at) >= quiet_seconds && (Time.now - last_heartbeat_at) >= quiet_seconds
+    end
+
+    def customer_ui_progress_heartbeat_seconds
+      seconds = ENV.fetch('SANEMASTER_CUSTOMER_UI_PROGRESS_HEARTBEAT_SECONDS', '15').to_f
+      seconds.positive? ? seconds : 15.0
+    end
+
+    def customer_ui_stream_progress?
+      ENV.fetch('SANEMASTER_CUSTOMER_UI_STREAM_PROGRESS', '1') != '0'
+    end
+
+    def customer_ui_stream_command_output(chunk)
+      return if chunk.to_s.empty? || !customer_ui_stream_progress? || @customer_ui_stream_output_closed
+
+      $stderr.write(chunk)
+      $stderr.flush
+    rescue Errno::EPIPE, IOError
+      @customer_ui_stream_output_closed = true
+    end
+
+    def customer_ui_terminate_process_group(wait_thr)
+      descendants = customer_ui_descendant_pids(wait_thr.pid)
+      [-(wait_thr.pid), wait_thr.pid, *descendants].uniq.each do |pid|
+        begin
+          Process.kill('TERM', pid)
+        rescue Errno::ESRCH, Errno::EINVAL
+          nil
+        end
+      end
+      return if wait_thr.join(1)
+
+      descendants = customer_ui_descendant_pids(wait_thr.pid)
+      [-(wait_thr.pid), wait_thr.pid, *descendants].uniq.each do |pid|
+        begin
+          Process.kill('KILL', pid)
+        rescue Errno::ESRCH, Errno::EINVAL
+          nil
+        end
+      end
+      wait_thr.join(1)
+    end
+
+    def customer_ui_descendant_pids(root_pid)
+      output, status = Open3.capture2('ps', '-axo', 'pid=,ppid=')
+      return [] unless status.success?
+
+      children_by_parent = Hash.new { |hash, key| hash[key] = [] }
+      output.each_line do |line|
+        pid_text, ppid_text = line.strip.split(/\s+/, 2)
+        pid = pid_text.to_i
+        ppid = ppid_text.to_i
+        next unless pid.positive? && ppid.positive?
+
+        children_by_parent[ppid] << pid
+      end
+
+      descendants = []
+      queue = children_by_parent[root_pid.to_i].dup
+      until queue.empty?
+        pid = queue.shift
+        next if descendants.include?(pid)
+
+        descendants << pid
+        queue.concat(children_by_parent[pid])
+      end
+      descendants
+    rescue StandardError
+      []
+    end
+
+    def customer_ui_command_summary(command)
+      command.reject { |part| part.is_a?(Hash) }.map(&:to_s).join(' ')
+    end
+
+    def customer_ui_failed_status
+      @customer_ui_failed_status ||= Struct.new(:exitstatus) do
+        def success?
+          false
+        end
+      end.new(nil)
     end
 
     def customer_ui_prepare_target_before_sweep(app_name)
@@ -1217,6 +1397,64 @@ module SaneMasterModules
         '--json'
       )
       status.success? ? [] : ["Mini visual workspace cleanup failed before customer UI sweep: #{output}"]
+    end
+
+    def customer_ui_refresh_runtime_evidence_before_sweep(app_name)
+      return [] unless app_name == 'SaneBar'
+
+      qa_script = if respond_to?(:release_project_qa_script)
+                    release_project_qa_script
+                  else
+                    ['Scripts/qa.rb', 'scripts/qa.rb'].find { |path| File.exist?(path) }
+                  end
+      return ['Missing SaneBar runtime QA script before customer UI sweep'] unless qa_script
+
+      qa_env = customer_ui_runtime_smoke_env(app_name)
+      output, status = customer_ui_run_command(qa_env, RbConfig.ruby, qa_script)
+      return ["Mini runtime smoke failed before customer UI sweep: #{customer_ui_summarize_visual_precheck_failure(output)}"] unless status.success?
+
+      customer_ui_refresh_resource_soak_before_sweep(app_name)
+    end
+
+    def customer_ui_refresh_resource_soak_before_sweep(app_name)
+      return [] unless app_name == 'SaneBar'
+
+      duration = ENV.fetch('SANEMASTER_CUSTOMER_UI_RESOURCE_SOAK_SECONDS', '600')
+      min_duration = ENV.fetch('SANEMASTER_CUSTOMER_UI_RESOURCE_SOAK_MIN_SECONDS', '240')
+      soak_env = {
+        'SANEMASTER_RESOURCE_SOAK_SECONDS' => duration,
+        'SANEMASTER_RESOURCE_SOAK_MIN_SECONDS' => min_duration,
+        'SANEMASTER_RESOURCE_SOAK_PROGRESS' => '0'
+      }
+      output, status = customer_ui_run_command(
+        soak_env,
+        './scripts/SaneMaster.rb',
+        'resource_soak',
+        '--adaptive',
+        '--duration-seconds',
+        duration,
+        '--json'
+      )
+      return [] if status.success?
+
+      ["Mini resource soak failed before customer UI sweep: #{customer_ui_summarize_visual_precheck_failure(output)}"]
+    end
+
+    def customer_ui_runtime_smoke_env(app_name)
+      app_prefix = app_name.to_s.upcase.gsub(/[^A-Z0-9]+/, '_')
+      env = {
+        'LANG' => (ENV['LANG'].to_s.empty? ? 'en_US.UTF-8' : ENV['LANG']),
+        'LC_ALL' => (ENV['LC_ALL'].to_s.empty? ? 'en_US.UTF-8' : ENV['LC_ALL']),
+        'PATH' => ([ENV['PATH'], '/opt/homebrew/bin', '/usr/local/bin'].compact.join(':')),
+        'SANEPROCESS_RUNTIME_SMOKE_ONLY' => '1',
+        'SANEPROCESS_RUN_RUNTIME_SMOKE' => '1',
+        'SANEBAR_STARTUP_PROBE_RESOURCE_SOAK_AFTER_155' => '0'
+      }
+      unless app_prefix.empty?
+        env["#{app_prefix}_RUNTIME_SMOKE_ONLY"] = '1'
+        env["#{app_prefix}_RUN_RUNTIME_SMOKE"] = '1'
+      end
+      env
     end
 
     def customer_ui_visual_precheck(app_name)
@@ -1303,19 +1541,25 @@ module SaneMasterModules
 
     def current_saneprocess_config
       path = File.join(Dir.pwd, '.saneprocess')
-      return {} unless File.exist?(path)
+      return {} unless customer_ui_regular_file?(path)
 
-      YAML.safe_load(File.read(path)) || {}
+      YAML.safe_load(safe_customer_ui_file_read(path)) || {}
     rescue StandardError
       {}
     end
 
     def read_customer_ui_yaml(path)
-      YAML.safe_load(File.read(path), permitted_classes: [Time, Date], aliases: false) || {}
+      YAML.safe_load(safe_customer_ui_file_read(path), permitted_classes: [Time, Date], aliases: false) || {}
     end
 
     def read_customer_ui_json(path)
-      JSON.parse(File.read(path))
+      JSON.parse(safe_customer_ui_file_read(path))
+    end
+
+    def newest_customer_ui_receipt_path
+      CUSTOMER_UI_RECEIPT_PATHS
+        .select { |path| customer_ui_regular_file?(path) }
+        .max_by { |path| File.mtime(File.expand_path(path, Dir.pwd)) }
     end
 
     def customer_ui_manifest_issues(manifest_path, manifest, required_actions)
@@ -1463,7 +1707,9 @@ module SaneMasterModules
         issues << 'Receipt was not generated on the Mini or an explicitly approved local Air fallback'
       end
       issues << 'Receipt manifest hash is stale' unless receipt['manifest_sha256'].to_s == manifest_sha
-      issues << 'Receipt source fingerprint is stale; rerun customer UI QA after the latest code change' unless receipt['source_fingerprint'].to_s == source_fingerprint
+      unless customer_ui_receipt_source_fingerprint_current?(receipt, source_fingerprint)
+        issues << 'Receipt source fingerprint is stale; rerun customer UI QA after the latest code change'
+      end
       issues << 'Receipt is missing screenshot evidence' if Array(receipt['screenshots']).empty?
       issues.concat(customer_ui_screenshot_issues(Array(receipt['screenshots'])))
 
@@ -1472,12 +1718,17 @@ module SaneMasterModules
       missing_ids = required_ids - tested_ids
       issues << "Receipt does not cover release-required action(s): #{missing_ids.join(', ')}" unless missing_ids.empty?
       issues.concat(customer_ui_action_result_issues(required_actions, receipt, strict_visual: strict_visual))
-      issues.concat(customer_ui_runtime_state_receipt_issues(receipt, manifest: manifest))
+      issues.concat(customer_ui_runtime_state_receipt_issues(receipt, manifest: manifest, app_name: app_name))
       issues.concat(customer_ui_screenshot_reuse_issues(required_actions, receipt))
 
       begin
         generated_at = Time.parse(receipt['generated_at'].to_s)
-        issues << 'Receipt is older than 12 hours; rerun customer UI QA for this release' if Time.now - generated_at > 12 * 60 * 60
+        now = Time.now
+        if generated_at > now + 5 * 60
+          issues << 'Receipt generated_at is future-dated; rerun customer UI QA for this release'
+        elsif now - generated_at > 12 * 60 * 60
+          issues << 'Receipt is older than 12 hours; rerun customer UI QA for this release'
+        end
       rescue ArgumentError
         issues << 'Receipt generated_at is missing or invalid'
       end
@@ -1568,7 +1819,7 @@ module SaneMasterModules
       ["#{id}: customer UI evidence contains blocking status text: #{blocking.uniq.join(', ')}"]
     end
 
-    def customer_ui_runtime_state_receipt_issues(receipt, manifest: {})
+    def customer_ui_runtime_state_receipt_issues(receipt, manifest: {}, app_name: nil)
       rows = receipt['runtime_state_results']
       matrix_rows = customer_ui_runtime_matrix_rows(manifest)
       requires_rows = !matrix_rows.empty?
@@ -1589,7 +1840,7 @@ module SaneMasterModules
         row = rows_by_id[id]
         next unless row.is_a?(Hash)
 
-        issues.concat(customer_ui_runtime_state_row_receipt_issues(id, matrix_row, row))
+        issues.concat(customer_ui_runtime_state_row_receipt_issues(id, matrix_row, row, app_name: app_name))
       end
 
       rows.each do |row|
@@ -1624,7 +1875,7 @@ module SaneMasterModules
       end
     end
 
-    def customer_ui_runtime_state_row_receipt_issues(id, matrix_row, receipt_row)
+    def customer_ui_runtime_state_row_receipt_issues(id, matrix_row, receipt_row, app_name: nil)
       label = id.empty? ? 'runtime_state_results row' : "runtime_state_results #{id}"
       issues = []
 
@@ -1638,6 +1889,8 @@ module SaneMasterModules
       if id == 'resource_soak_growth'
         issues.concat(customer_ui_resource_soak_runtime_receipt_issues(label, receipt_row))
       end
+      issues.concat(customer_ui_runtime_evidence_receipt_issues(id, label, receipt_row))
+      issues.concat(customer_ui_runtime_candidate_receipt_issues(label, receipt_row, app_name: app_name))
 
       required_scenarios = Array(matrix_row['required_scenarios']).map(&:to_s).map(&:strip).reject(&:empty?)
       return issues if required_scenarios.empty?
@@ -1648,6 +1901,99 @@ module SaneMasterModules
         issues << "#{label}: missing required scenario proof(s): #{missing_scenarios.join(', ')}"
       end
       issues
+    end
+
+    def customer_ui_runtime_candidate_receipt_issues(label, receipt_row, app_name: nil)
+      candidate = receipt_row['runtime_candidate']
+      return ["#{label}: missing runtime candidate metadata"] unless candidate.is_a?(Hash)
+
+      issues = []
+      app_path = candidate['app_path'].to_s
+      app_version = candidate['app_version'].to_s
+      app_build = candidate['app_build'].to_s
+      issues << "#{label}: runtime candidate missing app_path" if app_path.empty?
+      issues << "#{label}: runtime candidate missing app_version" if app_version.empty?
+      issues << "#{label}: runtime candidate missing app_build" if app_build.empty?
+      unless app_name.to_s.empty? || app_path.empty? || File.expand_path(app_path) == File.join('/Applications', "#{app_name}.app")
+        issues << "#{label}: runtime candidate app_path #{app_path.inspect} does not match installed candidate #{File.join('/Applications', "#{app_name}.app").inspect}"
+      end
+
+      expected = resource_soak_expected_project_version
+      unless expected[:app_version].to_s.empty? || app_version == expected[:app_version].to_s
+        issues << "#{label}: runtime candidate version #{app_version.inspect} does not match project #{expected[:app_version].inspect}"
+      end
+      unless expected[:app_build].to_s.empty? || app_build == expected[:app_build].to_s
+        issues << "#{label}: runtime candidate build #{app_build.inspect} does not match project #{expected[:app_build].inspect}"
+      end
+      issues
+    end
+
+    def customer_ui_runtime_evidence_receipt_issues(id, label, receipt_row)
+      paths = Array(receipt_row['evidence_paths']).map(&:to_s).map(&:strip).reject(&:empty?)
+      return ["#{label}: missing evidence_paths"] if paths.empty?
+
+      issues = []
+      temp_paths = paths.select { |path| customer_ui_temp_artifact_path?(path) }
+      unless temp_paths.empty?
+        issues << "#{label}: runtime evidence must be durable; temp path(s) are not release proof: #{temp_paths.join(', ')}"
+      end
+
+      if customer_ui_runtime_preflight_required_id?(id)
+        runtime_preflight_paths = paths.select { |path| customer_ui_durable_runtime_preflight_path?(id, path) }
+        if runtime_preflight_paths.empty?
+          issues << "#{label}: missing durable runtime-preflight evidence under outputs/runtime-preflight"
+        end
+        missing_preflight_paths = runtime_preflight_paths.reject { |path| customer_ui_regular_file?(path) }
+        unless missing_preflight_paths.empty?
+          issues << "#{label}: durable runtime-preflight evidence path(s) do not exist or are unsafe: #{missing_preflight_paths.join(', ')}"
+        end
+      end
+
+      durable_paths = paths.select do |path|
+        customer_ui_durable_runtime_evidence_path?(path) ||
+          customer_ui_durable_runtime_preflight_path?(id, path)
+      end
+      if durable_paths.empty?
+        issues << "#{label}: missing durable runtime evidence under outputs/customer-ui or outputs/runtime-preflight"
+      end
+
+      missing_paths = durable_paths.reject { |path| customer_ui_regular_file?(path) }
+      return issues if missing_paths.empty?
+
+      issues << "#{label}: durable runtime evidence path(s) do not exist or are unsafe: #{missing_paths.join(', ')}"
+      issues
+    end
+
+    def customer_ui_durable_runtime_evidence_path?(path)
+      expanded = File.expand_path(path.to_s, Dir.pwd)
+      root = File.expand_path(File.join(Dir.pwd, 'outputs', 'customer-ui'))
+      expanded = File.realpath(expanded) if File.exist?(expanded)
+      root = File.realpath(root) if File.exist?(root)
+      expanded.tr('\\', '/').start_with?("#{root.tr('\\', '/')}/")
+    rescue StandardError
+      false
+    end
+
+    def customer_ui_runtime_preflight_required_id?(id)
+      %w[hover_auto_rehide license_clipboard_paste].include?(id.to_s)
+    end
+
+    def customer_ui_durable_runtime_preflight_path?(id, path)
+      basename = case id.to_s
+                 when 'hover_auto_rehide'
+                   'sanebar_runtime_hover_rehide'
+                 when 'license_clipboard_paste'
+                   'sanebar_runtime_license_paste'
+                 else
+                   return false
+                 end
+      expanded = File.expand_path(path.to_s, Dir.pwd)
+      normalized = expanded.tr('\\', '/')
+      root = File.expand_path(File.join(Dir.pwd, 'outputs', 'runtime-preflight')).tr('\\', '/')
+      normalized.start_with?("#{root}/") &&
+        File.basename(normalized).match?(/\A#{Regexp.escape(basename)}\.(?:json|log|png)\z/)
+    rescue StandardError
+      false
     end
 
     def customer_ui_resource_soak_runtime_receipt_issues(label, receipt_row)
@@ -1662,13 +2008,9 @@ module SaneMasterModules
       if durable_paths.empty?
         issues << "#{label}: missing durable resource-soak evidence under outputs/customer-ui"
       end
-      symlink_durable_paths = durable_paths.select { |path| File.symlink?(File.expand_path(path, Dir.pwd)) }
-      unless symlink_durable_paths.empty?
-        issues << "#{label}: durable resource-soak evidence cannot be symlinks: #{symlink_durable_paths.join(', ')}"
-      end
       missing_durable_paths = durable_paths.reject { |path| customer_ui_regular_file?(path) }
       unless missing_durable_paths.empty?
-        issues << "#{label}: durable resource-soak evidence path(s) do not exist: #{missing_durable_paths.join(', ')}"
+        issues << "#{label}: durable resource-soak evidence path(s) do not exist or are unsafe: #{missing_durable_paths.join(', ')}"
       end
       json_paths = durable_paths.select { |path| File.extname(path) == '.json' && customer_ui_regular_file?(path) }
       if json_paths.empty?
@@ -1702,11 +2044,59 @@ module SaneMasterModules
 
     def customer_ui_regular_file?(path)
       expanded = File.expand_path(path.to_s, Dir.pwd)
-      File.file?(expanded) && !File.symlink?(expanded)
+      safe_customer_ui_directory_path!(File.dirname(expanded))
+      stat = File.lstat(expanded)
+      stat.file?
+    rescue StandardError
+      false
+    end
+
+    def safe_customer_ui_file_read(path)
+      expanded = File.expand_path(path.to_s, Dir.pwd)
+      safe_customer_ui_directory_path!(File.dirname(expanded))
+      flags = File::RDONLY
+      flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+      File.open(expanded, flags) do |file|
+        file.read
+      end
+    end
+
+    def safe_customer_ui_file_lines(path)
+      safe_customer_ui_file_read(path).lines(chomp: true)
+    end
+
+    def safe_customer_ui_directory_path!(path)
+      expanded = File.expand_path(path.to_s, Dir.pwd)
+      current = expanded.start_with?(File::SEPARATOR) ? File::SEPARATOR : Dir.pwd
+      expanded.split(File::SEPARATOR).reject(&:empty?).each do |component|
+        current = current == File::SEPARATOR ? File.join(current, component) : File.join(current, component)
+        next unless File.exist?(current)
+
+        stat = File.lstat(current)
+        if stat.symlink?
+          real = File.realpath(current) rescue nil
+          next if allowed_system_temp_directory_symlink?(current, real)
+
+          raise "Unsafe symlink directory path: #{current}"
+        end
+        raise "Unsafe non-directory path: #{current}" unless stat.directory?
+      end
+      true
+    end
+
+    def allowed_system_temp_directory_symlink?(path, real)
+      expanded = File.expand_path(path)
+      canonical = File.expand_path(real.to_s)
+      return true if expanded == '/tmp' && canonical == '/private/tmp'
+      return true if expanded == '/var' && canonical == '/private/var'
+
+      expanded == File.expand_path(Dir.tmpdir) && canonical == File.realpath(Dir.tmpdir)
+    rescue StandardError
+      false
     end
 
     def customer_ui_resource_soak_artifact_issues(label, path, receipt_row: {}, evidence_paths: [])
-      payload = JSON.parse(File.read(File.expand_path(path.to_s, Dir.pwd)))
+      payload = JSON.parse(safe_customer_ui_file_read(path))
       issues = []
       issues << "#{label}: resource-soak artifact status is #{payload['status'].inspect}, expected \"pass\"" unless payload['status'].to_s == 'pass'
       issues << "#{label}: resource-soak artifact was not adaptive" unless payload['adaptive'] == true
@@ -1791,7 +2181,7 @@ module SaneMasterModules
         return issues
       end
 
-      lines = File.readlines(log_path, chomp: true)
+      lines = safe_customer_ui_file_lines(log_path)
       body = lines.join("\n")
       issues << "#{label}: resource-soak log has missing process or physical samples" if lines.any? { |line| line.include?('sample_missing') || line.include?('physical=unknown') }
       issues << "#{label}: resource-soak log did not record pass status" unless body.include?('status=pass')
@@ -2213,23 +2603,52 @@ module SaneMasterModules
       nil
     end
 
-    def customer_ui_source_fingerprint
-      digest = Digest::SHA256.new
-      customer_ui_source_files.each do |path|
-        next unless File.file?(path)
+    def customer_ui_receipt_source_fingerprint_current?(receipt, source_fingerprint)
+      receipt_fingerprint = receipt['source_fingerprint'].to_s
+      return true if receipt_fingerprint == source_fingerprint
+      return false unless receipt_fingerprint.match?(/\A[0-9a-f]{64}\z/)
 
-        digest.update(path)
+      legacy_fingerprint = customer_ui_source_fingerprint(include_tests: true)
+      return true if receipt_fingerprint == legacy_fingerprint
+      legacy_harness_fingerprint = customer_ui_source_fingerprint(include_release_harness: true)
+      return true if receipt_fingerprint == legacy_harness_fingerprint
+      false
+    end
+
+    def customer_ui_source_fingerprint(include_tests: false, include_release_harness: false)
+      digest = Digest::SHA256.new
+      customer_ui_source_entries(include_tests: include_tests, include_release_harness: include_release_harness).each do |entry|
+        absolute_path = entry.fetch(:absolute_path)
+        next unless File.file?(absolute_path)
+
+        digest.update(entry.fetch(:digest_path))
         digest.update("\0")
-        digest.update(Digest::SHA256.file(path).hexdigest)
+        digest.update(Digest::SHA256.file(absolute_path).hexdigest)
         digest.update("\0")
       end
       digest.hexdigest
     end
 
-    def customer_ui_source_files
+    def customer_ui_source_entries(include_tests: false, include_release_harness: false)
+      app_entries = customer_ui_source_files(include_tests: include_tests, include_release_harness: include_release_harness).map do |relative_path|
+        {
+          digest_path: "app/#{relative_path}",
+          absolute_path: File.join(Dir.pwd, relative_path)
+        }
+      end
+      shared_entries = customer_ui_shared_source_files(include_release_harness: include_release_harness).map do |relative_path|
+        {
+          digest_path: "SaneApps/#{relative_path}",
+          absolute_path: File.join(customer_ui_saneapps_root, relative_path)
+        }
+      end
+      app_entries + shared_entries
+    end
+
+    def customer_ui_source_files(include_tests: false, include_release_harness: false)
       files = git_list_customer_ui_files
       files = filesystem_customer_ui_files if files.empty?
-      files.select { |path| customer_ui_source_file?(path) }.uniq.sort
+      files.select { |path| customer_ui_source_file?(path, include_tests: include_tests, include_release_harness: include_release_harness) }.uniq.sort
     end
 
     def git_list_customer_ui_files
@@ -2249,16 +2668,21 @@ module SaneMasterModules
       end
     end
 
-    def customer_ui_source_file?(path)
+    def customer_ui_source_file?(path, include_tests: false, include_release_harness: false)
       return false if CUSTOMER_UI_RECEIPT_PATHS.include?(path)
       return false if path.start_with?('.sanemaster/')
       return false if path.start_with?('node_modules/')
       return false if path == '.mcp.json' || path.start_with?('.claude/') || path.start_with?('.codex/') || path.start_with?('.serena/')
+      return false if path == '.outreach.yml' || path == '.outreach.yaml'
+      return false if path == 'Scripts/check_outreach_opportunities.rb' || path == 'scripts/check_outreach_opportunities.rb'
+      return false if path == 'Scripts/sign_update.swift' || path == 'scripts/sign_update.swift'
       return true if CUSTOMER_UI_MANIFEST_PATHS.include?(path)
+      return include_tests if path.start_with?('Tests/')
+      return include_tests if path.match?(%r{\A(?:scripts|Scripts)/.*(?:_test|Test)\.(?:rb|py|sh)\z})
       return true if path == '.saneprocess' || path == 'project.yml' || path == 'Package.swift'
       return true if path.end_with?('.xcodeproj/project.pbxproj')
       return true if path.start_with?('Sane') || path.start_with?('Shared/')
-      return true if path.start_with?('Sources/') || path.start_with?('Tests/')
+      return true if path.start_with?('Sources/')
       return true if path == 'scripts/qa.rb' || path == 'Scripts/qa.rb'
       return true if path.start_with?('scripts/customer_ui_qa') || path.start_with?('Scripts/customer_ui_qa')
 
@@ -2266,6 +2690,43 @@ module SaneMasterModules
         !path.start_with?('docs/') &&
         !path.start_with?('website/') &&
         !path.start_with?('outputs/')
+    end
+
+    def customer_ui_shared_source_files(include_release_harness: false)
+      root = customer_ui_saneapps_root
+      patterns = [
+        'infra/SaneUI/Sources/**/*.{swift,xcstrings}',
+        'infra/SaneProcess/scripts/SaneMaster.rb',
+        'infra/SaneProcess/scripts/sanemaster/test_mode.rb',
+        'infra/SaneProcess/scripts/sanemaster/visual_smoke.rb',
+        'infra/SaneProcess/scripts/sanemaster/customer_ui_contract.rb',
+        'infra/SaneProcess/scripts/hooks/**/*.{rb,sh}'
+      ]
+      if include_release_harness
+        patterns.concat(
+          [
+            'infra/SaneProcess/scripts/release.sh',
+            'infra/SaneProcess/scripts/sanemaster/release.rb',
+            'infra/SaneProcess/scripts/sanemaster/release_readiness.rb',
+            'infra/SaneProcess/scripts/sanemaster/release_guardrail_test.rb'
+          ]
+        )
+      end
+      patterns.flat_map { |pattern| Dir.glob(File.join(root, pattern)) }
+              .select { |path| File.file?(path) }
+              .map { |path| path.sub(%r{\A#{Regexp.escape(root)}/?}, '') }
+              .uniq
+              .sort
+    rescue StandardError
+      []
+    end
+
+    def customer_ui_saneapps_root
+      if respond_to?(:saneapps_root, true)
+        saneapps_root
+      else
+        File.expand_path('../..', saneprocess_repo_root)
+      end
     end
   end
 end

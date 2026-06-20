@@ -43,6 +43,27 @@ load_github_token() {
 
 load_github_token
 
+run_setapp_status_with_safari_retry() {
+  local output_path mini_safari
+  output_path="$(mktemp "${TMPDIR:-/tmp}/sane-status-setapp.XXXXXX")"
+
+  ruby "$SANE_MASTER" setapp_status --soft > "$output_path" || true
+  if grep -q 'open developer.setapp.com in Safari on the Mini' "$output_path"; then
+    mini_safari="${REPO_ROOT}/mini/mini-safari.sh"
+    if [[ -x "$mini_safari" ]]; then
+      echo "Setapp status token unavailable; retrying with the current Mini Safari tab..."
+      "$mini_safari" open-read-current "https://developer.setapp.com" 5 400 >/dev/null || true
+      ruby "$SANE_MASTER" setapp_status --soft || true
+    else
+      cat "$output_path"
+    fi
+  else
+    cat "$output_path"
+  fi
+
+  rm -f "$output_path"
+}
+
 if [[ -z "$LISTING_JSON_PATH" ]]; then
   LISTING_JSON_PATH="$(mktemp "${TMPDIR:-/tmp}/sane-status-listing.XXXXXX")"
   LISTING_JSON_CLEANUP=1
@@ -628,7 +649,7 @@ fi
 
 printf '\n[5/10] Setapp distribution channel\n'
 if [[ -x "$SANE_MASTER" ]]; then
-  ruby "$SANE_MASTER" setapp_status --soft || true
+  run_setapp_status_with_safari_retry
 else
   echo "SaneMaster setapp_status not executable"
 fi

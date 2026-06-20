@@ -33,6 +33,7 @@ CURRENT_GATE=""
 RELEASE_ERRORS=()
 RELEASE_ERR_GATE_RECORDED=""
 RELEASE_TEMP_PATHS=()
+RELEASE_SECRET_TEMP_PATHS=()
 
 log_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
@@ -360,6 +361,18 @@ release_exit_trap() {
             remove_path "${temp_path}" >/dev/null 2>&1 || true
         done
     fi
+    if [ "${#RELEASE_SECRET_TEMP_PATHS[@]}" -gt 0 ]; then
+        local secret_temp_path=""
+        for secret_temp_path in "${RELEASE_SECRET_TEMP_PATHS[@]}"; do
+            [ -n "${secret_temp_path}" ] || continue
+            if declare -f cleanup_secret_temp_file >/dev/null 2>&1; then
+                cleanup_secret_temp_file "${secret_temp_path}" >/dev/null 2>&1 || true
+            else
+                : > "${secret_temp_path}" 2>/dev/null || true
+                rm -f "${secret_temp_path}" 2>/dev/null || true
+            fi
+        done
+    fi
 
     local status="success"
     local summary="release completed"
@@ -494,7 +507,7 @@ extract_http_status_with_user_agent() {
 extract_http_effective_url() {
     local url="$1"
     local user_agent="${2:-Mozilla/5.0}"
-    curl -A "${user_agent}" -sSL -o /dev/null -w '%{url_effective}' "${url}" 2>/dev/null || true
+    curl --connect-timeout 10 --max-time 30 -A "${user_agent}" -sSL -o /dev/null -w '%{url_effective}' "${url}" 2>/dev/null || true
 }
 
 extract_http_status_effective_url_and_type() {
@@ -556,7 +569,7 @@ lookup_live_app_store_url() {
 
     local lookup_url="https://itunes.apple.com/lookup?id=${app_id}&country=${country}&entity=software"
     local payload
-    payload=$(curl -fsSL "${lookup_url}" 2>/dev/null || true)
+    payload=$(curl --connect-timeout 10 --max-time 20 -fsSL "${lookup_url}" 2>/dev/null || true)
     if [ -z "${payload}" ]; then
         echo ""
         return 0
@@ -1192,7 +1205,7 @@ wait_for_live_appcast_version() {
         status=$(extract_http_status "${appcast_url}")
         if [ "${status}" = "200" ]; then
             local appcast_content
-            appcast_content=$(curl -fsSL "${appcast_url}" 2>/dev/null || true)
+            appcast_content=$(curl --connect-timeout 10 --max-time 20 -fsSL "${appcast_url}" 2>/dev/null || true)
             if [ -n "${appcast_content}" ]; then
                 local count
                 count=$(appcast_item_count_for_version "${appcast_content}")
@@ -1411,7 +1424,7 @@ verify_dist_archive_bundle_version() {
     local tmp_zip
     tmp_zip=$(mktemp "/tmp/${APP_NAME}-dist-check.XXXXXX.zip")
 
-    if ! curl -fsSL "${dist_url}" -o "${tmp_zip}"; then
+    if ! curl --connect-timeout 10 --max-time 120 -fsSL "${dist_url}" -o "${tmp_zip}"; then
         remove_path "${tmp_zip}"
         log_error "Could not download dist archive for version check: ${dist_url}"
         return 1
@@ -1452,14 +1465,124 @@ fetch_github_contents_file_body() {
     local body=""
 
     if command -v gh >/dev/null 2>&1; then
-        body=$(gh api "${github_api_path}" --jq '.content' 2>/dev/null | tr -d '\n' | python3 -c 'import base64,sys; data=sys.stdin.read().strip(); print(base64.b64decode(data).decode("utf-8"), end="")' 2>/dev/null || true)
+        body=$(GITHUB_API_PATH="${github_api_path}" \
+            SANEPROCESS_GH_API_TIMEOUT_SECONDS="${SANEPROCESS_GH_API_TIMEOUT_SECONDS:-20}" \
+            python3 - <<'PY' 2>/dev/null || true
+import base64
+import os
+import subprocess
+import sys
+
+path = os.environ.get("GITHUB_API_PATH", "")
+try:
+    timeout = int(os.environ.get("SANEPROCESS_GH_API_TIMEOUT_SECONDS", "20"))
+except ValueError:
+    timeout = 20
+
+if not path:
+    raise SystemExit(0)
+
+try:
+    result = subprocess.run(
+        ["gh", "api", path, "--jq", ".content"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+except (subprocess.TimeoutExpired, OSError):
+    raise SystemExit(0)
+
+if result.returncode != 0:
+    raise SystemExit(0)
+
+content = "".join(result.stdout.split())
+if content:
+    sys.stdout.write(base64.b64decode(content).decode("utf-8"))
+PY
+        )
     fi
 
     if [ -z "${body}" ]; then
-        body=$(curl -fsSL -H "Accept: application/vnd.github+json" "${api_url}" 2>/dev/null | python3 -c 'import base64,json,sys; payload=json.load(sys.stdin); content=str(payload.get("content","")).replace("\n",""); print(base64.b64decode(content).decode("utf-8"), end="")' 2>/dev/null || true)
+        body=$(curl --connect-timeout 10 --max-time 20 -fsSL -H "Accept: application/vnd.github+json" "${api_url}" 2>/dev/null | python3 -c 'import base64,json,sys; payload=json.load(sys.stdin); content=str(payload.get("content","")).replace("\n",""); print(base64.b64decode(content).decode("utf-8"), end="")' 2>/dev/null || true)
     fi
 
     printf '%s' "${body}"
+}
+
+gh_open_count_with_timeout() {
+    local kind="$1"
+    local repo="$2"
+    GH_KIND="${kind}" \
+    GH_REPO_NAME="${repo}" \
+    SANEPROCESS_GH_CLI_TIMEOUT_SECONDS="${SANEPROCESS_GH_CLI_TIMEOUT_SECONDS:-20}" \
+    python3 - <<'PY' 2>/dev/null || echo "0"
+import json
+import os
+import subprocess
+
+kind = os.environ.get("GH_KIND", "")
+repo = os.environ.get("GH_REPO_NAME", "")
+try:
+    timeout = int(os.environ.get("SANEPROCESS_GH_CLI_TIMEOUT_SECONDS", "20"))
+except ValueError:
+    timeout = 20
+
+if kind not in {"issue", "pr"} or not repo:
+    print("0")
+    raise SystemExit(0)
+
+try:
+    result = subprocess.run(
+        ["gh", kind, "list", "--repo", repo, "--state", "open", "--json", "number"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    if result.returncode != 0:
+        print("0")
+    else:
+        print(len(json.loads(result.stdout or "[]")))
+except Exception:
+    print("0")
+PY
+}
+
+gh_pr_list_with_timeout() {
+    local repo="$1"
+    GH_REPO_NAME="${repo}" \
+    SANEPROCESS_GH_CLI_TIMEOUT_SECONDS="${SANEPROCESS_GH_CLI_TIMEOUT_SECONDS:-20}" \
+    python3 - <<'PY' 2>/dev/null || true
+import os
+import subprocess
+
+repo = os.environ.get("GH_REPO_NAME", "")
+try:
+    timeout = int(os.environ.get("SANEPROCESS_GH_CLI_TIMEOUT_SECONDS", "20"))
+except ValueError:
+    timeout = 20
+
+if not repo:
+    raise SystemExit(0)
+
+try:
+    result = subprocess.run(
+        ["gh", "pr", "list", "--repo", repo, "--state", "open", "--limit", "20"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+except Exception:
+    raise SystemExit(0)
+
+if result.returncode == 0:
+    print(result.stdout, end="")
+PY
 }
 
 fetch_remote_email_webhook_js() {
@@ -1469,7 +1592,7 @@ fetch_remote_email_webhook_js() {
     body=$(fetch_github_contents_file_body "sane-apps/sane-email-automation" "src/handlers/webhook-lemonsqueezy.js" "main")
 
     if [ -z "${body}" ]; then
-        body=$(curl -fsSL "${raw_url}" 2>/dev/null || true)
+        body=$(curl --connect-timeout 10 --max-time 20 -fsSL "${raw_url}" 2>/dev/null || true)
     fi
 
     printf '%s' "${body}"
@@ -1497,6 +1620,35 @@ resolve_email_api_key() {
     return 1
 }
 
+create_curl_bearer_header_file() {
+    local token="$1"
+    local header_file=""
+    [ -n "${token}" ] || return 1
+    case "${token}" in
+        *$'\n'*|*$'\r'*)
+            return 1
+            ;;
+    esac
+
+    header_file=$(mktemp "${TMPDIR:-/tmp}/sane-curl-auth.XXXXXX") || return 1
+    chmod 600 "${header_file}" 2>/dev/null || true
+    if ! printf 'Authorization: Bearer %s\n' "${token}" > "${header_file}"; then
+        : > "${header_file}" 2>/dev/null || true
+        rm -f "${header_file}" 2>/dev/null || true
+        return 1
+    fi
+    RELEASE_SECRET_TEMP_PATHS+=("${header_file}")
+    printf '%s' "${header_file}"
+}
+
+cleanup_secret_temp_file() {
+    local path="$1"
+    [ -n "${path}" ] || return 0
+    [ -f "${path}" ] || return 0
+    : > "${path}" 2>/dev/null || true
+    rm -f "${path}" 2>/dev/null || true
+}
+
 fetch_live_email_webhook_snapshot() {
     local product_name="${1:-}"
     local include_signed="${2:-0}"
@@ -1517,8 +1669,11 @@ fetch_live_email_webhook_snapshot() {
         url="${url}?signed=1"
     fi
 
-    response=$(curl -fsSL "${url}" \
-        -H "Authorization: Bearer ${api_key}" 2>/dev/null || true)
+    local auth_header_file
+    auth_header_file=$(create_curl_bearer_header_file "${api_key}") || return 0
+    response=$(curl --connect-timeout 10 --max-time 20 -fsSL "${url}" \
+        -H "@${auth_header_file}" 2>/dev/null || true)
+    cleanup_secret_temp_file "${auth_header_file}"
     printf '%s' "${response}"
 }
 
@@ -1774,12 +1929,12 @@ run_post_release_checks() {
     probe_pids+=("$!")
     ( extract_http_status "${checkout_url}" > "${probe_dir}/checkout.status" 2>"${probe_dir}/checkout.err" || true ) &
     probe_pids+=("$!")
-    ( curl -fsSL "${site_url}" > "${probe_dir}/site.body" 2>"${probe_dir}/site.err" || true ) &
+    ( curl --connect-timeout 10 --max-time 30 -fsSL "${site_url}" > "${probe_dir}/site.body" 2>"${probe_dir}/site.err" || true ) &
     probe_pids+=("$!")
     if [ "${USE_SPARKLE}" = true ]; then
         ( extract_http_status "${appcast_url}" > "${probe_dir}/appcast.status" 2>"${probe_dir}/appcast.err" || true ) &
         probe_pids+=("$!")
-        ( curl -fsSL "${appcast_url}" > "${probe_dir}/appcast.body" 2>"${probe_dir}/appcast_body.err" || true ) &
+        ( curl --connect-timeout 10 --max-time 30 -fsSL "${appcast_url}" > "${probe_dir}/appcast.body" 2>"${probe_dir}/appcast_body.err" || true ) &
         probe_pids+=("$!")
     fi
 
@@ -1962,7 +2117,7 @@ PY
             return 1
         fi
 
-        checkout_final_status=$(curl -A 'Mozilla/5.0' -sSL -o /dev/null -w '%{http_code}' "${checkout_url}" 2>/dev/null || echo "000")
+        checkout_final_status=$(curl --connect-timeout 10 --max-time 30 -A 'Mozilla/5.0' -sSL -o /dev/null -w '%{http_code}' "${checkout_url}" 2>/dev/null || echo "000")
         checkout_final_url=$(extract_http_effective_url "${checkout_url}" "Mozilla/5.0")
         if [ -z "${checkout_final_url}" ]; then
             if [ "${checkout_first_hop_ok}" = true ]; then
@@ -2030,7 +2185,7 @@ PY
             fi
 
             local cask_body
-            cask_body=$(curl -fsSL "${cask_raw_url}" 2>/dev/null || true)
+            cask_body=$(curl --connect-timeout 10 --max-time 20 -fsSL "${cask_raw_url}" 2>/dev/null || true)
             if [ -n "${cask_body}" ] && \
                grep -q "version \"${VERSION}\"" <<< "${cask_body}" && \
                grep -q "sha256 \"${SHA256}\"" <<< "${cask_body}"; then
@@ -2088,7 +2243,7 @@ PY
             local download_page_body=""
             local found_download_ver=""
             if grep -Fq 'href="/download"' <<< "${site_body}" || grep -Fq "${download_page_url}" <<< "${site_body}"; then
-                download_page_body=$(curl -fsSL "${download_page_url}" 2>/dev/null || true)
+                download_page_body=$(curl --connect-timeout 10 --max-time 30 -fsSL "${download_page_url}" 2>/dev/null || true)
             fi
 
             if [ -n "${download_page_body}" ] && grep -Fq "${expected_download_url}" <<< "${download_page_body}"; then
@@ -2144,7 +2299,7 @@ PY
     fi
 
     local webhook_download_status
-    webhook_download_status=$(curl -sL -o /dev/null -w '%{http_code}' "${webhook_download_url}" 2>/dev/null || echo "000")
+    webhook_download_status=$(curl --connect-timeout 10 --max-time 30 -sL -o /dev/null -w '%{http_code}' "${webhook_download_url}" 2>/dev/null || echo "000")
     if [ "${webhook_download_status}" != "200" ] && [ "${webhook_download_status}" != "206" ]; then
         log_error "Live email webhook download URL failed: HTTP ${webhook_download_status}"
         return 1
@@ -2198,7 +2353,7 @@ PY
     # Verify download redirect (go.saneapps.com/download/{app})
     local download_redirect_url="https://go.saneapps.com/download/${LOWER_APP_NAME}"
     local download_redirect_status
-    download_redirect_status=$(curl -sI -o /dev/null -w '%{http_code}' -L "${download_redirect_url}" 2>/dev/null || echo "000")
+    download_redirect_status=$(curl --connect-timeout 10 --max-time 30 -sI -o /dev/null -w '%{http_code}' -L "${download_redirect_url}" 2>/dev/null || echo "000")
     if [ "${download_redirect_status}" = "200" ]; then
         log_info "Download redirect verified: ${download_redirect_url}"
     else
@@ -2508,14 +2663,16 @@ fresh_release_preflight_receipt_summary() {
     local max_age_seconds="${SANEPROCESS_RELEASE_PREFLIGHT_MAX_AGE_SECONDS:-14400}"
     [ -f "${receipt}" ] || return 1
 
-    ruby -rjson -rtime -rdigest -ropen3 - "${PROJECT_ROOT}" "${receipt}" "${max_age_seconds}" <<'RUBY'
+    ruby -rjson -rtime -rdigest -ropen3 - "${PROJECT_ROOT}" "${receipt}" "${max_age_seconds}" "${SCRIPT_DIR}/.." <<'RUBY'
 project_path = File.expand_path(ARGV[0])
 receipt_path = ARGV[1]
 max_age_seconds = ARGV[2].to_i
+process_root = File.expand_path(ARGV[3])
 
 payload = JSON.parse(File.read(receipt_path, encoding: Encoding::UTF_8))
 raise 'release_preflight status is not passed' unless payload['status'].to_s == 'passed'
 raise 'release_preflight has issues' unless payload['issues'].to_a.empty?
+raise 'release_preflight was not generated on Mini runtime' unless payload['miniRuntime'] == true
 
 generated_at = Time.parse(payload.fetch('generatedAt'))
 raise 'release_preflight receipt is stale' if max_age_seconds.positive? && (Time.now - generated_at) > max_age_seconds
@@ -2529,8 +2686,8 @@ customer_ui_manifest = %w[
 ].map { |path| File.join(project_path, path) }.find { |path| File.file?(path) }
 if customer_ui_manifest
   customer_receipt = %w[
-    outputs/customer_ui_action_receipt.json
     .sane/customer_ui_action_receipt.json
+    outputs/customer_ui_action_receipt.json
   ].map { |path| File.join(project_path, path) }.find { |path| File.file?(path) }
   raise 'customer UI receipt is missing for release_preflight reuse' unless customer_receipt
 
@@ -2550,8 +2707,11 @@ files = []
 files.concat(tracked.split("\0")) if tracked_status.success?
 files.concat(others.split("\0")) if others_status.success?
 files.concat([
-  'outputs/customer_ui_action_receipt.json',
   '.sane/customer_ui_action_receipt.json',
+  'outputs/customer_ui_action_receipt.json',
+  *Dir.glob(File.join(project_path, 'outputs', 'runtime-preflight', 'sanebar_runtime_*.{json,log}')).map do |path|
+    path.sub(%r{\A#{Regexp.escape(project_path)}/?}, '')
+  end,
   *Dir.glob(File.join(project_path, 'outputs', 'customer-ui', '**', 'resource-soak-*')).map do |path|
     path.sub(%r{\A#{Regexp.escape(project_path)}/?}, '')
   end
@@ -2561,10 +2721,11 @@ app_folder = File.basename(project_path)
 source_file = lambda do |relative_path|
 	  path = relative_path.to_s
 	  return false if path.empty?
-	  return true if path == 'docs/_redirects' || path == 'website/_redirects'
-	  return true if path.match?(%r{\A(?:docs|website)/.*\.(?:css|html|js|json|xml)\z})
-	  return true if path == 'outputs/customer_ui_action_receipt.json'
-  return true if path == '.sane/customer_ui_action_receipt.json'
+		  return true if path == 'docs/_redirects' || path == 'website/_redirects'
+		  return true if path.match?(%r{\A(?:docs|website)/.*\.(?:css|html|js|json|xml)\z})
+		  return true if path == 'outputs/customer_ui_action_receipt.json'
+	  return true if path == '.sane/customer_ui_action_receipt.json'
+  return true if path.match?(%r{\Aoutputs/runtime-preflight/sanebar_runtime_.*\.(?:json|log)\z})
   return true if path.match?(%r{\Aoutputs/customer-ui/.*resource-soak-.*\.(?:json|log)\z})
   return false if %w[
     .sane/customer_ui_action_receipt.json AGENTS.md ARCHITECTURE.md CLAUDE.md
@@ -2601,11 +2762,57 @@ source_file = lambda do |relative_path|
 end
 
 digest = Digest::SHA256.new
+harness_files = [
+  'scripts/SaneMaster.rb',
+  'scripts/release.sh',
+  'scripts/validation_report.rb',
+  *Dir.glob(File.join(process_root, 'scripts', 'sanemaster', '**', '*.rb')).map do |path|
+    path.sub(%r{\A#{Regexp.escape(process_root)}/?}, '')
+  end,
+  *Dir.glob(File.join(process_root, 'scripts', 'hooks', '**', '*.{rb,sh}')).map do |path|
+    path.sub(%r{\A#{Regexp.escape(process_root)}/?}, '')
+  end
+].uniq.sort
+
 files.select { |path| source_file.call(path) }.uniq.sort.each do |relative_path|
   absolute_path = File.join(project_path, relative_path)
   next unless File.file?(absolute_path)
 
-  digest.update(relative_path)
+  digest.update("app/#{relative_path}")
+  digest.update("\0")
+  digest.update(Digest::SHA256.file(absolute_path).hexdigest)
+  digest.update("\0")
+end
+
+receipt_paths = [
+  '.sane/customer_ui_action_receipt.json',
+  'outputs/customer_ui_action_receipt.json'
+]
+needs_saneui = files.any? do |relative_path|
+  path = relative_path.to_s
+  receipt_paths.include?(path) ||
+    path.start_with?('Sane', 'Shared/', 'Sources/', 'UI/', 'Core/')
+end
+if needs_saneui
+  saneapps_root = File.expand_path('../..', process_root)
+  Dir.glob(File.join(saneapps_root, 'infra', 'SaneUI', 'Sources', '**', '*.{swift,xcstrings}')).map do |path|
+    path.sub(%r{\A#{Regexp.escape(saneapps_root)}/?}, '')
+  end.uniq.sort.each do |relative_path|
+    absolute_path = File.join(saneapps_root, relative_path)
+    next unless File.file?(absolute_path)
+
+    digest.update("SaneApps/#{relative_path}")
+    digest.update("\0")
+    digest.update(Digest::SHA256.file(absolute_path).hexdigest)
+    digest.update("\0")
+  end
+end
+
+harness_files.each do |relative_path|
+  absolute_path = File.join(process_root, relative_path)
+  next unless File.file?(absolute_path)
+
+  digest.update("SaneProcess/#{relative_path}")
   digest.update("\0")
   digest.update(Digest::SHA256.file(absolute_path).hexdigest)
   digest.update("\0")
@@ -4559,7 +4766,7 @@ check_live_appcast_republish_gate() {
 
     local appcast_url="https://${SITE_HOST}/appcast.xml"
     local appcast_content
-    appcast_content=$(curl -fsSL "${appcast_url}" 2>/dev/null || true)
+    appcast_content=$(curl --connect-timeout 10 --max-time 20 -fsSL "${appcast_url}" 2>/dev/null || true)
     if [ -z "${appcast_content}" ]; then
         log_warn "Could not fetch live appcast (${appcast_url}); skipping republish guard in preflight."
         return 0
@@ -5161,7 +5368,7 @@ if [ "${WEBSITE_ONLY}" = true ]; then
             log_error "Appcast URL failed after deploy: ${APPCAST_URL} returned HTTP ${APPCAST_STATUS}"
             exit 1
         fi
-        APPCAST_CONTENT=$(curl -fsSL "${APPCAST_URL}" 2>/dev/null || true)
+        APPCAST_CONTENT=$(curl --connect-timeout 10 --max-time 20 -fsSL "${APPCAST_URL}" 2>/dev/null || true)
         if [ -z "${APPCAST_CONTENT}" ]; then
             log_error "Failed to fetch appcast content after deploy: ${APPCAST_URL}"
             exit 1
@@ -5249,28 +5456,30 @@ if [ "${FULL_RELEASE}" = true ]; then
         EMAIL_API_KEY=$(keychain_secret "sane-email-automation" "api_key" "SANE_EMAIL_API_KEY" "EMAIL_API_KEY")
     fi
     if [ -n "${EMAIL_API_KEY}" ]; then
-        PENDING_COUNT=$(curl -s "https://email-api.saneapps.com/api/emails/pending" \
-            -H "Authorization: Bearer ${EMAIL_API_KEY}" 2>/dev/null | \
+        EMAIL_AUTH_HEADER_FILE=$(create_curl_bearer_header_file "${EMAIL_API_KEY}" || true)
+        if [ -n "${EMAIL_AUTH_HEADER_FILE}" ]; then
+        PENDING_COUNT=$(curl --connect-timeout 10 --max-time 20 -s "https://email-api.saneapps.com/api/emails/pending" \
+            -H "@${EMAIL_AUTH_HEADER_FILE}" 2>/dev/null | \
             python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+        cleanup_secret_temp_file "${EMAIL_AUTH_HEADER_FILE}"
         if [ "${PENDING_COUNT}" -gt 0 ] 2>/dev/null; then
             log_warn "${PENDING_COUNT} pending customer email(s) — review before shipping."
+        fi
         fi
     fi
 
     # Gate 3: Open GitHub work queue (issues + PRs)
     if [ -n "${GITHUB_REPO}" ] && command -v gh >/dev/null 2>&1; then
-        OPEN_ISSUES=$(gh issue list --repo "${GITHUB_REPO}" --state open --json number 2>/dev/null | \
-            python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+        OPEN_ISSUES=$(gh_open_count_with_timeout "issue" "${GITHUB_REPO}")
         if [ "${OPEN_ISSUES}" -gt 0 ] 2>/dev/null; then
             log_warn "${OPEN_ISSUES} open GitHub issue(s) — review before shipping."
         fi
 
-        OPEN_PRS=$(gh pr list --repo "${GITHUB_REPO}" --state open --json number 2>/dev/null | \
-            python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+        OPEN_PRS=$(gh_open_count_with_timeout "pr" "${GITHUB_REPO}")
         if [ "${OPEN_PRS}" -gt 0 ] 2>/dev/null; then
             log_warn "${OPEN_PRS} open GitHub PR(s) — review before shipping."
             log_warn "Open PR list:"
-            gh pr list --repo "${GITHUB_REPO}" --state open --limit 20 2>/dev/null | while IFS= read -r pr; do
+            gh_pr_list_with_timeout "${GITHUB_REPO}" | while IFS= read -r pr; do
                 log_warn "  ${pr}"
             done
         fi
@@ -5285,7 +5494,7 @@ if [ "${FULL_RELEASE}" = true ]; then
 
     # Gate 5: License validation endpoint reachable
     LICENSE_API="https://api.lemonsqueezy.com/v1/licenses/validate"
-    LICENSE_STATUS=$(curl -sI -o /dev/null -w '%{http_code}' "${LICENSE_API}" 2>/dev/null || echo "000")
+    LICENSE_STATUS=$(curl --connect-timeout 10 --max-time 20 -sI -o /dev/null -w '%{http_code}' "${LICENSE_API}" 2>/dev/null || echo "000")
     if [ "${LICENSE_STATUS}" = "000" ]; then
         log_warn "LemonSqueezy license API unreachable (network error)."
         log_warn "Licensing features won't work for new activations until API is back."
@@ -5824,7 +6033,7 @@ if [ "${USE_SPARKLE}" = true ] && command -v swift >/dev/null 2>&1; then
         log_info "Sparkle Key found. Generating signature..."
 
         if [ -f "${SIGN_UPDATE_SCRIPT}" ]; then
-            SIGNATURE=$(swift "${SIGN_UPDATE_SCRIPT}" "${FINAL_ZIP}" "${SPARKLE_KEY}" 2>/dev/null || echo "")
+            SIGNATURE=$(printf '%s' "${SPARKLE_KEY}" | swift "${SIGN_UPDATE_SCRIPT}" "${FINAL_ZIP}" 2>/dev/null || echo "")
         else
             SIGNATURE=""
         fi
@@ -5924,7 +6133,7 @@ ensure_not_republishing_live_version() {
 
     local appcast_url="https://${SITE_HOST}/appcast.xml"
     local appcast_content
-    appcast_content=$(curl -fsSL "${appcast_url}" 2>/dev/null || true)
+    appcast_content=$(curl --connect-timeout 10 --max-time 20 -fsSL "${appcast_url}" 2>/dev/null || true)
     if [ -z "${appcast_content}" ]; then
         # If appcast is unavailable we cannot prove duplicate; continue and let later checks fail if needed.
         return 0
@@ -6038,11 +6247,15 @@ PY
 
             OLD_COUNT=0
             if [ -n "${OLD_KEYS}" ]; then
+                CF_AUTH_HEADER_FILE=$(create_curl_bearer_header_file "${CF_TOKEN}" || true)
+                if [ -z "${CF_AUTH_HEADER_FILE}" ]; then
+                    log_warn "  Could not create temporary Cloudflare auth header file; skipping old-version cleanup"
+                else
                 while IFS= read -r OLD_KEY; do
                     ENCODED_KEY=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "${OLD_KEY}")
-                    DEL_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+                    DEL_STATUS=$(curl --connect-timeout 10 --max-time 30 -s -o /dev/null -w "%{http_code}" -X DELETE \
                         "${R2_API_URL}/${ENCODED_KEY}" \
-                        -H "Authorization: Bearer ${CF_TOKEN}")
+                        -H "@${CF_AUTH_HEADER_FILE}")
                     if [ "${DEL_STATUS}" = "200" ]; then
                         log_info "  Deleted old version: ${OLD_KEY}"
                         OLD_COUNT=$((OLD_COUNT + 1))
@@ -6050,7 +6263,9 @@ PY
                         log_warn "  Failed to delete: ${OLD_KEY} (HTTP ${DEL_STATUS}, non-fatal)"
                     fi
                 done <<< "${OLD_KEYS}"
+                cleanup_secret_temp_file "${CF_AUTH_HEADER_FILE}"
                 log_info "Cleaned ${OLD_COUNT} old version(s) from R2."
+                fi
             else
                 log_info "No old versions to clean up."
             fi
@@ -6298,7 +6513,7 @@ PY
     # Step 4: Verify checkout/purchase link still works
     # LemonSqueezy slug change broke 26 URLs for 44 hours ($40 lost)
     CHECKOUT_URL="https://go.saneapps.com/buy/${LOWER_APP_NAME}"
-    CHECKOUT_STATUS=$(curl -sI -o /dev/null -w '%{http_code}' "${CHECKOUT_URL}" 2>/dev/null || echo "000")
+    CHECKOUT_STATUS=$(curl --connect-timeout 10 --max-time 20 -sI -o /dev/null -w '%{http_code}' "${CHECKOUT_URL}" 2>/dev/null || echo "000")
     if [ "${CHECKOUT_STATUS}" = "200" ] || [ "${CHECKOUT_STATUS}" = "301" ] || [ "${CHECKOUT_STATUS}" = "302" ]; then
         log_info "Checkout link verified: ${CHECKOUT_URL} (${CHECKOUT_STATUS})"
     elif [ "${CHECKOUT_STATUS}" = "000" ]; then
@@ -6541,7 +6756,7 @@ PY
         CASK_CHECK=$(fetch_github_contents_file_body "${HOMEBREW_TAP_REPO}" "${CASK_FILE}" "main")
         CASK_CHECK_SOURCE="GitHub API"
         if [ -z "${CASK_CHECK}" ]; then
-            CASK_CHECK=$(curl -s "${CASK_RAW_URL}" 2>/dev/null)
+            CASK_CHECK=$(curl --connect-timeout 10 --max-time 20 -s "${CASK_RAW_URL}" 2>/dev/null)
             CASK_CHECK_SOURCE="raw.githubusercontent"
         fi
         if echo "${CASK_CHECK}" | grep -q "version \"${VERSION}\"" && echo "${CASK_CHECK}" | grep -q "sha256 \"${SHA256}\""; then

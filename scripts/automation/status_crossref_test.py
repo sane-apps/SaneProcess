@@ -362,6 +362,105 @@ class StatusCrossrefScriptTests(unittest.TestCase):
             self.assertNotIn("issue list", gh_calls)
             self.assertNotIn("pr list", gh_calls)
 
+    def test_setapp_status_retries_current_mini_safari_tab_before_reporting_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_home = root / "home"
+            fake_home.mkdir(parents=True)
+            token_path = fake_home / ".codex" / "secrets" / "github_token"
+            token_path.parent.mkdir(parents=True)
+            token_path.write_text("fake-status-token\n", encoding="utf-8")
+
+            repo_root = root / "scripts"
+            automation_dir = repo_root / "automation"
+            automation_dir.mkdir(parents=True)
+            script_copy = automation_dir / "sane-status-crossref.sh"
+            script_copy.write_text(SCRIPT_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+            script_copy.chmod(SCRIPT_PATH.stat().st_mode)
+
+            github_queue_copy = automation_dir / "github-queue.sh"
+            github_queue_copy.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            github_queue_copy.chmod(github_queue_copy.stat().st_mode | stat.S_IXUSR)
+
+            safari_log = root / "mini-safari.log"
+            mini_dir = repo_root / "mini"
+            mini_dir.mkdir()
+            write_executable(
+                mini_dir / "mini-safari.sh",
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env bash
+                    printf '%s\\n' "$*" >> {str(safari_log)!r}
+                    touch "${{SETAPP_RETRY_READY}}"
+                    printf 'https://developer.setapp.com\\n'
+                    """
+                ),
+            )
+
+            state_file = root / "setapp-ready"
+            sane_master = repo_root / "SaneMaster.rb"
+            sane_master.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env ruby
+                    command = ARGV.shift
+                    case command
+                    when "sales"
+                      puts "stub sales ok"
+                    when "listing_actions"
+                      json_out = ARGV[ARGV.index("--json-out") + 1]
+                      File.write(json_out, '{"current_actions":[]}')
+                    when "hosted_file_actions"
+                      puts '{"current_actions":[]}'
+                    when "setapp_status"
+                      if File.exist?(ENV.fetch("SETAPP_RETRY_READY"))
+                        puts "Setapp review status"
+                        puts "- SaneBar: Released (status 10, version 2171 / 2.1.71, version_id 46885)"
+                        puts "No Setapp action required."
+                      else
+                        puts "Setapp review status"
+                        puts "Status unavailable: open developer.setapp.com in Safari on the Mini or set SETAPP_PORTAL_TOKEN"
+                        puts "   Treat Setapp status as incomplete until this is checked."
+                      end
+                    else
+                      exit 0
+                    end
+                    """
+                ),
+                encoding="utf-8",
+            )
+            sane_master.chmod(sane_master.stat().st_mode | stat.S_IXUSR)
+
+            inbox_dir = fake_home / "SaneApps" / "infra" / "scripts"
+            inbox_dir.mkdir(parents=True)
+            write_executable(inbox_dir / "check-inbox.sh", "#!/usr/bin/env bash\nprintf 'stub inbox ok\\n'\n")
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            write_executable(bin_dir / "gh", "#!/usr/bin/env bash\nprintf '[]\\n'\n")
+
+            env = os.environ.copy()
+            env["HOME"] = str(fake_home)
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            env["SETAPP_RETRY_READY"] = str(state_file)
+            env.pop("GH_TOKEN", None)
+            env.pop("GITHUB_TOKEN", None)
+
+            result = subprocess.run(
+                ["bash", str(script_copy)],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertIn("Setapp status token unavailable; retrying with the current Mini Safari tab", result.stdout)
+            self.assertIn("SaneBar: Released", result.stdout)
+            self.assertIn("No Setapp action required.", result.stdout)
+            self.assertNotIn("Treat Setapp status as incomplete", result.stdout)
+            self.assertIn("open-read-current https://developer.setapp.com", safari_log.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

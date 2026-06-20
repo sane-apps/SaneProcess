@@ -323,6 +323,8 @@ Useful focused tests:
 
 ```bash
 ruby scripts/validation_report_test.rb
+ruby scripts/validation_report.rb                  # cheap verdict/report
+ruby scripts/validation_report.rb --release-checklists # deep all-app artifact checklist
 ruby scripts/sanemaster/agent_workflow_test.rb
 ruby scripts/sanemaster/meta_test.rb
 ruby scripts/sanemaster/release_guardrail_test.rb

@@ -7,6 +7,9 @@ require 'yaml'
 
 module SaneMasterModules
   module ReleaseReadiness
+    RELEASE_READINESS_PREFLIGHT_MAX_AGE_SECONDS = 6 * 60 * 60
+    RELEASE_READINESS_CUSTOMER_UI_MAX_AGE_SECONDS = 12 * 60 * 60
+
     private
 
     def release_readiness(args = [])
@@ -125,7 +128,8 @@ module SaneMasterModules
       preflight = release_readiness_read_json(File.join(project_path, 'outputs', 'release_preflight_status.json'))
       qa = release_readiness_read_json(File.join(project_path, 'outputs', 'qa_status.json'))
       dirty_entries = release_readiness_git_status(project_path)
-      candidate = release_readiness_candidate_status(preflight, qa, dirty_entries)
+      current_source_fingerprint = release_status_source_fingerprint(project_path)
+      candidate = release_readiness_candidate_status(preflight, qa, dirty_entries, current_source_fingerprint, project_path)
 
       {
         app: app_name,
@@ -133,7 +137,7 @@ module SaneMasterModules
         candidate_readiness: candidate,
         portfolio_health: release_readiness_portfolio_status(project_path, preflight),
         receipts: {
-          release_preflight: release_readiness_receipt_summary(preflight),
+          release_preflight: release_readiness_receipt_summary(preflight, current_source_fingerprint: current_source_fingerprint),
           qa: release_readiness_receipt_summary(qa)
         },
         git: {
@@ -144,15 +148,38 @@ module SaneMasterModules
       }
     end
 
-    def release_readiness_candidate_status(preflight, qa, dirty_entries)
+    def release_readiness_candidate_status(preflight, qa, dirty_entries, current_source_fingerprint, project_path)
       blockers = []
       warnings = []
 
       if preflight.nil?
         blockers << 'release_preflight receipt missing'
-      elsif preflight['status'].to_s != 'passed'
-        blockers.concat(Array(preflight['issues']).map(&:to_s))
-        blockers << "release_preflight status is #{preflight['status']}" if blockers.empty?
+      else
+        if (freshness_error = release_readiness_preflight_freshness_error(preflight))
+          blockers << freshness_error
+        end
+        if (customer_ui_freshness_error = release_readiness_customer_ui_freshness_error(project_path))
+          blockers << customer_ui_freshness_error
+        end
+        if release_readiness_requires_mini_preflight?(project_path) && preflight.key?('miniRuntime') && preflight['miniRuntime'] != true
+          blockers << 'release_preflight did not run on the Mini; rerun release_preflight on the canonical Mini'
+        elsif release_readiness_requires_mini_preflight?(project_path) && !preflight.key?('miniRuntime')
+          blockers << 'release_preflight Mini runtime provenance missing; rerun release_preflight'
+        end
+        receipt_source_fingerprint = preflight['sourceFingerprint'].to_s
+        receipt_source_fingerprint = preflight['source_fingerprint'].to_s if receipt_source_fingerprint.empty?
+        if !receipt_source_fingerprint.empty? &&
+           !current_source_fingerprint.to_s.empty? &&
+           receipt_source_fingerprint != current_source_fingerprint
+          blockers << 'release_preflight source fingerprint is stale; rerun release_preflight'
+        elsif preflight['status'].to_s != 'passed'
+          blockers.concat(Array(preflight['issues']).map(&:to_s))
+          blockers << "release_preflight status is #{preflight['status']}" if blockers.empty?
+        elsif receipt_source_fingerprint.empty?
+          blockers << 'release_preflight source fingerprint missing; rerun release_preflight'
+        elsif current_source_fingerprint.to_s.empty?
+          blockers << 'release_preflight freshness cannot be verified; current source fingerprint unavailable'
+        end
       end
 
       if qa && qa['policyOnlyMode'] == true && qa['status'].to_s != 'passed'
@@ -168,6 +195,81 @@ module SaneMasterModules
       }
     end
 
+    def release_readiness_preflight_freshness_error(preflight)
+      generated_at = preflight['generatedAt'] || preflight['generated_at']
+      return 'release_preflight generatedAt missing; rerun release_preflight' if generated_at.to_s.strip.empty?
+
+      age = Time.now.utc - Time.parse(generated_at.to_s).utc
+      return 'release_preflight generatedAt is future-dated; rerun release_preflight' if age < -5 * 60
+      return nil if age <= RELEASE_READINESS_PREFLIGHT_MAX_AGE_SECONDS
+
+      hours = (age / 3600.0).round(1)
+      "release_preflight receipt is stale (#{hours}h old); rerun release_preflight"
+    rescue ArgumentError
+      'release_preflight generatedAt is invalid; rerun release_preflight'
+    end
+
+    def release_readiness_customer_ui_freshness_error(project_path)
+      return nil unless release_readiness_customer_ui_manifest?(project_path)
+
+      receipt_path = release_readiness_customer_ui_receipt_path(project_path)
+      return 'customer UI receipt missing; rerun customer UI QA before release' unless receipt_path
+
+      payload = JSON.parse(File.read(receipt_path, encoding: Encoding::UTF_8))
+      generated_at = payload['generated_at'] || payload['generatedAt']
+      return 'customer UI receipt generated_at missing; rerun customer UI QA before release' if generated_at.to_s.strip.empty?
+
+      age = Time.now.utc - Time.parse(generated_at.to_s).utc
+      return 'customer UI receipt generated_at is future-dated; rerun customer UI QA before release' if age < -5 * 60
+      return nil if age <= RELEASE_READINESS_CUSTOMER_UI_MAX_AGE_SECONDS
+
+      hours = (age / 3600.0).round(1)
+      "customer UI receipt is stale (#{hours}h old); rerun customer UI QA before release"
+    rescue JSON::ParserError
+      'customer UI receipt is invalid JSON; rerun customer UI QA before release'
+    rescue ArgumentError
+      'customer UI receipt generated_at is invalid; rerun customer UI QA before release'
+    end
+
+    def release_readiness_customer_ui_manifest?(project_path)
+      %w[
+        Tests/CustomerUIActions.yml
+        tests/customer_ui_actions.yml
+        config/customer_ui_actions.yml
+        .sane/customer_ui_actions.yml
+      ].any? { |path| File.file?(File.join(project_path, path)) }
+    end
+
+    def release_readiness_customer_ui_receipt_path(project_path)
+      %w[
+        .sane/customer_ui_action_receipt.json
+        outputs/customer_ui_action_receipt.json
+      ].map { |path| File.join(project_path, path) }
+        .select { |path| release_readiness_regular_file_without_symlinked_parent?(path) }
+        .max_by { |path| File.mtime(path) }
+    end
+
+    def release_readiness_regular_file_without_symlinked_parent?(path)
+      expanded = File.expand_path(path.to_s)
+      parts = expanded.split(File::SEPARATOR).reject(&:empty?)
+      current = expanded.start_with?(File::SEPARATOR) ? File::SEPARATOR : Dir.pwd
+      parts.each_with_index do |component, index|
+        current = current == File::SEPARATOR ? File.join(current, component) : File.join(current, component)
+        stat = File.lstat(current)
+        if index == parts.length - 1
+          return stat.file? && !stat.symlink?
+        end
+        return false if stat.symlink? || !stat.directory?
+      end
+      false
+    rescue StandardError
+      false
+    end
+
+    def release_readiness_requires_mini_preflight?(project_path)
+      File.expand_path(project_path).include?('/SaneApps/apps/')
+    end
+
     def release_readiness_portfolio_status(_project_path, preflight)
       blockers = []
       if preflight && preflight['status'].to_s != 'passed' && Array(preflight['issues']).any? { |issue| issue.to_s.match?(/Customer UI action contract/i) }
@@ -176,13 +278,16 @@ module SaneMasterModules
       { status: blockers.empty? ? 'ok' : 'blocked', blockers: blockers.uniq }
     end
 
-    def release_readiness_receipt_summary(receipt)
+    def release_readiness_receipt_summary(receipt, current_source_fingerprint: nil)
       return nil unless receipt
+      receipt_source_fingerprint = receipt['sourceFingerprint'] || receipt['source_fingerprint']
 
       {
         generated_at: receipt['generatedAt'] || receipt['generated_at'],
         status: receipt['status'],
         policy_only: receipt['policyOnlyMode'] == true,
+        source_fingerprint: receipt_source_fingerprint,
+        current_source_fingerprint: current_source_fingerprint,
         issue_count: receipt['issueCount'] || receipt['errorCount'],
         warning_count: receipt['warningCount']
       }

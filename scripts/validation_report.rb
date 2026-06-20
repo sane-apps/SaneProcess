@@ -34,6 +34,7 @@ require 'uri'
 require 'shellwords'
 require 'tmpdir'
 require 'digest'
+require 'optparse'
 require_relative 'hooks/core/process_metrics'
 
 class ValidationReport
@@ -169,9 +170,11 @@ class ValidationReport
     @metrics = {}
     @verdict = nil
     @workflow_policy_exception_count = 0
+    @include_release_checklists = false
   end
 
-  def run(format: :text)
+  def run(format: :text, include_release_checklists: false)
+    @include_release_checklists = include_release_checklists
     collect_data
     run_hard_analysis
 
@@ -181,6 +184,40 @@ class ValidationReport
     end
 
     save_snapshot
+  end
+
+  def self.parse_cli_args(argv)
+    options = {
+      format: :text,
+      include_release_checklists: false,
+      help: false
+    }
+
+    parser = OptionParser.new do |opts|
+      opts.banner = 'Usage: ruby scripts/validation_report.rb [--json] [--release-checklists]'
+      opts.separator ''
+      opts.separator 'Default text mode prints the process/release verdict without the expensive all-app artifact checklist.'
+
+      opts.on('--json', 'Emit machine-readable validation JSON') do
+        options[:format] = :json
+      end
+
+      opts.on('--release-checklists', 'Also print the deep all-app release checklist with live artifact inspection') do
+        options[:include_release_checklists] = true
+      end
+
+      opts.on('--no-release-checklists', 'Skip the deep all-app release checklist (default)') do
+        options[:include_release_checklists] = false
+      end
+
+      opts.on('-h', '--help', 'Show this help') do
+        options[:help] = true
+      end
+    end
+
+    parser.parse!(argv)
+    options[:usage] = parser.to_s
+    options
   end
 
   private
@@ -1786,33 +1823,46 @@ class ValidationReport
   end
 
   def ssl_certificate_error?(url)
-    `curl -sI --connect-timeout 5 "#{url}" 2>&1`.include?('SSL certificate problem')
+    @ssl_certificate_error_cache ||= {}
+    return @ssl_certificate_error_cache[url] if @ssl_certificate_error_cache.key?(url)
+
+    escaped_url = Shellwords.shellescape(url)
+    @ssl_certificate_error_cache[url] = curl_status_command(
+      "curl -sI --connect-timeout 3 --max-time 8 #{escaped_url} 2>&1"
+    ).include?('SSL certificate problem')
   end
 
   def check_url_status(url, follow_redirects: false)
+    @url_status_cache ||= {}
+    cache_key = [url, follow_redirects]
+    return @url_status_cache[cache_key] if @url_status_cache.key?(cache_key)
+
     escaped_url = Shellwords.shellescape(url)
     head_cmd = if follow_redirects
-                 "curl -sI -L -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 #{escaped_url} 2>&1"
+                 "curl -sI -L -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 8 #{escaped_url} 2>&1"
                else
-                 "curl -sI -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 #{escaped_url} 2>&1"
+                 "curl -sI -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 8 #{escaped_url} 2>&1"
                end
     get_cmd = if follow_redirects
-                "curl -sL -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 #{escaped_url} 2>&1"
+                "curl -sL -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 8 #{escaped_url} 2>&1"
               else
-                "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 #{escaped_url} 2>&1"
+                "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 8 #{escaped_url} 2>&1"
               end
 
     statuses = []
     errors = []
 
     2.times do
-      head_result = `#{head_cmd}`.strip
+      head_result = curl_status_command(head_cmd)
       statuses << head_result
-      if head_result.start_with?('5') || head_result == '000'
+      if head_result.start_with?('5') || head_result == '000' || retryable_url_status_result?(head_result)
         # Some providers intermittently fail HEAD but succeed GET.
-        get_result = `#{get_cmd}`.strip
+        get_result = curl_status_command(get_cmd)
         statuses << get_result
       end
+
+      break if statuses.any? { |result| %w[200 301 302].include?(result) }
+      break unless retryable_url_status_result?(statuses.last)
     end
 
     statuses.each do |result|
@@ -1820,15 +1870,36 @@ class ValidationReport
       errors << result if result.include?('curl:')
     end
 
-    return 'timeout' if errors.any? { |e| e.include?('timed out') || e.include?('Could not resolve') }
-    return 'error' if errors.any?
-
     http_codes = statuses.select { |s| s.match?(/^\d{3}$/) }
-    return 'error' if http_codes.empty?
-    return http_codes.find { |c| %w[200 301 302].include?(c) } if http_codes.any? { |c| %w[200 301 302].include?(c) }
-    return '5xx' if http_codes.any? { |c| c.start_with?('5') }
+    result = if http_codes.any? { |c| %w[200 301 302].include?(c) }
+               http_codes.find { |c| %w[200 301 302].include?(c) }
+             elsif errors.any? { |e| e.include?('timed out') || e.include?('Could not resolve') }
+               'timeout'
+             elsif errors.any?
+               'error'
+             elsif http_codes.empty?
+               'error'
+             elsif http_codes.any? { |c| c.start_with?('5') }
+               '5xx'
+             else
+               http_codes.first
+             end
 
-    http_codes.first
+    @url_status_cache[cache_key] = result
+  end
+
+  def retryable_url_status_result?(result)
+    return true if result.to_s.empty?
+    return true if result == '000'
+    return true if result.start_with?('5')
+    return true if result.include?('Connection timed out') || result.include?('Could not resolve') || result.include?('Operation timed out')
+    return true if result.include?('curl:')
+
+    false
+  end
+
+  def curl_status_command(command)
+    `#{command}`.strip
   end
 
   # Q8: CODE SIGNING STATUS
@@ -2587,6 +2658,10 @@ class ValidationReport
   end
 
   def fetch_url_text(url, headers: {})
+    @url_text_cache ||= {}
+    cache_key = [url, headers.sort_by { |key, _value| key.to_s }]
+    return @url_text_cache[cache_key] if @url_text_cache.key?(cache_key)
+
     uri = URI(url)
     request = Net::HTTP::Get.new(uri)
     headers.each { |key, value| request[key] = value }
@@ -2597,11 +2672,14 @@ class ValidationReport
     http.read_timeout = 15
 
     response = http.request(request)
-    return '' unless response.is_a?(Net::HTTPSuccess)
+    unless response.is_a?(Net::HTTPSuccess)
+      @url_text_cache[cache_key] = ''
+      return ''
+    end
 
-    response.body.to_s
+    @url_text_cache[cache_key] = response.body.to_s
   rescue StandardError
-    ''
+    @url_text_cache[cache_key] = ''
   end
 
   def resolve_secret_value(service, account, *env_names)
@@ -3230,8 +3308,13 @@ class ValidationReport
     puts "─" * 70
     puts
 
-    # RELEASE READINESS CHECKLISTS
-    output_release_checklists
+    if @include_release_checklists
+      output_release_checklists
+    else
+      puts "Release readiness checklists skipped in the default validation report."
+      puts "Run with --release-checklists for deep all-app artifact inspection."
+      puts
+    end
 
     puts "Run daily. Need 30+ samples per metric for statistical significance."
     puts "═" * 70
@@ -3960,6 +4043,22 @@ class ValidationReport
 end
 
 if __FILE__ == $PROGRAM_NAME
-  format = ARGV.include?('--json') ? :json : :text
-  ValidationReport.new.run(format: format)
+  begin
+    cli_options = ValidationReport.parse_cli_args(ARGV)
+  rescue OptionParser::ParseError => e
+    warn e.message
+    warn
+    warn ValidationReport.parse_cli_args(['--help'])[:usage]
+    exit 2
+  end
+
+  if cli_options[:help]
+    puts cli_options[:usage]
+    exit 0
+  end
+
+  ValidationReport.new.run(
+    format: cli_options[:format],
+    include_release_checklists: cli_options[:include_release_checklists]
+  )
 end

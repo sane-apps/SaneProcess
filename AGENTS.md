@@ -36,6 +36,8 @@ automation, UI/runtime, or multi-file work:
 2. Read relevant Serena memory and the active client skill registry.
 3. Run `~/.codex/bin/check-mcps` when MCP health affects the task.
 4. Run `ruby scripts/validation_report.rb` for release/audit/process work.
+   Add `--release-checklists` only when you need the deep all-app artifact
+   checklist; the default report is the cheaper process/release verdict.
 5. Use the Mac Mini for SaneApps inspection, build, test, screenshots, and
    runtime verification unless the Mini is unavailable or the user explicitly
    approves a local exception.
@@ -128,6 +130,9 @@ the wrapper.
 
 If a canonical route fails, fix the route or explain why it is insufficient.
 Do not silently work around it.
+Raw `ssh mini ... screencapture ...` is not a fallback; it is blocked by
+`scripts/hooks/sane_ssh_guard.sh` and the Bash guard dispatcher. Use the
+canonical Mini screenshot wrapper or fix that wrapper.
 
 ## Tool Discovery
 
