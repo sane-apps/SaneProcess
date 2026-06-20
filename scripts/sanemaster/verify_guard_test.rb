@@ -618,6 +618,68 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
       true
     end
 
+    test('records verify phase from package, build, and test log lines') do
+      state = { tests_run: 0, swift_testing_total: 0, phase: nil, last_log_line: nil, last_log_at: nil }
+
+      subject.send(:record_verify_progress_line, 'Resolve Package Graph', state)
+      assert_eq(state[:phase], 'package-resolution')
+      subject.send(:record_verify_progress_line, 'SwiftCompile normal arm64 Example.swift', state)
+      assert_eq(state[:phase], 'build')
+      subject.send(:record_verify_progress_line, "Test Case '-[ExampleTests testThing]' started.", state)
+      assert_eq(state[:phase], 'test')
+
+      true
+    end
+
+    test('verify heartbeat line includes phase, pid, tests, log path, and compact last line') do
+      Dir.mktmpdir do |dir|
+        log_path = File.join(dir, 'test_output.txt')
+        File.write(log_path, "Resolve Package Graph\n")
+        long_line = 'x' * 200
+        state = {
+          tests_run: 7,
+          swift_testing_total: 0,
+          phase: 'package-resolution',
+          last_log_line: long_line,
+          last_log_at: Time.now - 3
+        }
+        line = subject.send(:verify_heartbeat_line, {
+                            label: 'SaneBar unit tests',
+                            pid: 12_345,
+                            log_path: log_path,
+                            started_at: Time.now - 12,
+                            deadline: Process.clock_gettime(Process::CLOCK_MONOTONIC) + 99,
+                            state: state
+                          })
+
+        assert_includes(line, 'verify heartbeat')
+        assert_includes(line, 'label=SaneBar unit tests')
+        assert_includes(line, 'pid=12345')
+        assert_includes(line, 'phase=package-resolution')
+        assert_includes(line, 'tests=7')
+        assert_includes(line, "log=#{log_path}")
+        assert(line.include?('last="') && line.include?('...'), 'expected compact last log line')
+      end
+
+      true
+    end
+
+    test('verify heartbeat respects quiet interval and opt-out environment') do
+      previous = ENV['SANEMASTER_VERIFY_HEARTBEAT']
+      ENV.delete('SANEMASTER_VERIFY_HEARTBEAT')
+      assert_eq(subject.send(:verify_should_emit_heartbeat?, Time.now - 20, Time.now - 20), true)
+      assert_eq(subject.send(:verify_should_emit_heartbeat?, Time.now, Time.now - 20), false)
+      ENV['SANEMASTER_VERIFY_HEARTBEAT'] = '0'
+      assert_eq(subject.send(:verify_should_emit_heartbeat?, Time.now - 20, Time.now - 20), false)
+      true
+    ensure
+      if previous.nil?
+        ENV.delete('SANEMASTER_VERIFY_HEARTBEAT')
+      else
+        ENV['SANEMASTER_VERIFY_HEARTBEAT'] = previous
+      end
+    end
+
     test('classifies zero-test verify failures into useful buckets') do
       assert_eq(subject.send(:classify_verify_result, success: false, timeout: true, tests_run: 0, log_text: '')[:bucket], 'pre_test_process_timeout')
       assert_eq(subject.send(:classify_verify_result, success: false, timeout: true, tests_run: 87, log_text: 'Test Case passed')[:bucket], 'counted_test_process_timeout')

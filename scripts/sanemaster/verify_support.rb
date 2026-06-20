@@ -265,12 +265,13 @@ module SaneMasterModules
       commands = build_test_commands(include_ui, signed_tests)
       state = { start_time: Time.now, tests_run: 0, swift_testing_total: 0, current_test: nil, last_update: Time.now,
                 swift_testing_failed: false,
+                phase: nil, last_log_line: nil, last_log_at: nil,
                 spinner_chars: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'], spinner_idx: 0 }
 
       result = { success: true, timeout: false }
       commands.each_with_index do |entry, index|
         puts "▶️  #{entry[:label]}" if commands.length > 1
-        result = execute_with_logging(entry[:cmd], timeout_seconds, append: index.positive?, label: entry[:label]) do |line|
+        result = execute_with_logging(entry[:cmd], timeout_seconds, append: index.positive?, label: entry[:label], progress_state: state) do |line|
           handle_progress_update(line, state)
         end
         break unless result[:success]
@@ -613,7 +614,7 @@ module SaneMasterModules
       project_ui_scheme.to_s != project_scheme.to_s || !project_ui_destination.to_s.include?('platform=macOS')
     end
 
-    def execute_with_logging(cmd, timeout_seconds, append: false, label: nil)
+    def execute_with_logging(cmd, timeout_seconds, append: false, label: nil, progress_state: nil)
       success = false
       timed_out = false
 
@@ -623,19 +624,39 @@ module SaneMasterModules
 
         Open3.popen2e(*cmd) do |stdin, stdout_err, wait_thr|
           stdin.close
+          progress_state ||= {
+            tests_run: 0,
+            swift_testing_total: 0,
+            phase: 'starting',
+            last_log_line: nil,
+            last_log_at: nil
+          }
+          heartbeat_context = {
+            label: label,
+            log_path: 'test_output.txt',
+            started_at: Time.now,
+            last_output_at: Time.now,
+            state: progress_state
+          }
 
           reader = Thread.new do
             stdout_err.each_line do |line|
               line = line.chomp
               line = line.scrub('?') unless line.valid_encoding?
               log_file.puts(line)
-              yield(line) if block_given?
+              log_file.flush
+              heartbeat_context[:last_output_at] = Time.now
+              if block_given?
+                yield(line)
+              else
+                record_verify_progress_line(line, heartbeat_context[:state])
+              end
             end
           rescue IOError
             nil
           end
 
-          if wait_for_process_with_timeout(wait_thr, timeout_seconds)
+          if wait_for_process_with_timeout(wait_thr, timeout_seconds, heartbeat: heartbeat_context)
             success = wait_thr.value.success?
           else
             timed_out = true
@@ -669,18 +690,62 @@ module SaneMasterModules
       { success: success && !timed_out, timeout: timed_out }
     end
 
-    def wait_for_process_with_timeout(wait_thr, timeout_seconds)
+    def wait_for_process_with_timeout(wait_thr, timeout_seconds, heartbeat: nil)
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds.to_f
+      last_heartbeat_at = Time.at(0)
 
       loop do
         return true unless wait_thr.alive?
         return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
 
+        if heartbeat && verify_should_emit_heartbeat?(heartbeat[:last_output_at], last_heartbeat_at)
+          print "\r"
+          puts verify_heartbeat_line(heartbeat.merge(pid: wait_thr.pid, deadline: deadline))
+          last_heartbeat_at = Time.now
+        end
+
         sleep(0.25)
       end
     end
 
+    def verify_heartbeat_seconds
+      raw = ENV.fetch('SANEMASTER_VERIFY_HEARTBEAT_SECONDS', '15').to_i
+      raw.positive? ? raw : 15
+    rescue StandardError
+      15
+    end
+
+    def verify_should_emit_heartbeat?(last_output_at, last_heartbeat_at)
+      return false if ENV['SANEMASTER_VERIFY_HEARTBEAT'] == '0'
+
+      quiet_seconds = verify_heartbeat_seconds
+      now = Time.now
+      (now - last_output_at) >= quiet_seconds && (now - last_heartbeat_at) >= quiet_seconds
+    end
+
+    def verify_heartbeat_line(context)
+      state = context.fetch(:state)
+      log_path = context.fetch(:log_path, 'test_output.txt')
+      elapsed = (Time.now - context.fetch(:started_at)).to_i
+      remaining = [(context.fetch(:deadline) - Process.clock_gettime(Process::CLOCK_MONOTONIC)).ceil, 0].max
+      log_size = File.exist?(log_path) ? File.size(log_path) : 0
+      last_log_age = state[:last_log_at] ? "#{[(Time.now - state[:last_log_at]).to_i, 0].max}s" : 'none'
+      phase = state[:phase] || 'starting'
+      tests = [state[:swift_testing_total].to_i, state[:tests_run].to_i].max
+      last_line = verify_compact_log_line(state[:last_log_line])
+      "   … verify heartbeat: label=#{context[:label] || 'tests'} pid=#{context[:pid]} elapsed=#{elapsed}s remaining=#{remaining}s phase=#{phase} tests=#{tests} log=#{log_path} size=#{log_size}B last_log_age=#{last_log_age} last=\"#{last_line}\""
+    end
+
+    def verify_compact_log_line(line)
+      value = line.to_s.gsub(/\s+/, ' ').strip
+      return 'none' if value.empty?
+
+      value.length > 160 ? "#{value[0, 157]}..." : value
+    end
+
     def handle_progress_update(line, state)
+      record_verify_progress_line(line, state)
+
       case line
       # XCTest pattern: only completed test case lines count; "started" lines are progress, not evidence.
       # Swift Testing pattern can be prefixed by ✓/✔ or private-use glyphs in Xcode logs.
@@ -736,6 +801,26 @@ module SaneMasterModules
           state[:last_update] = Time.now
         end
       end
+    end
+
+    def record_verify_progress_line(line, state)
+      state[:last_log_line] = line
+      state[:last_log_at] = Time.now
+      state[:phase] =
+        case line
+        when /Resolve Package Graph|Fetching from|Creating working copy|Checking out|Cloning/i
+          'package-resolution'
+        when /SwiftCompile|CompileSwift|Compiling|Ld |Linking|Copy /i
+          'build'
+        when /Test Suite|Test Case|Testing started|Suite "|Running:|Test run with/i
+          'test'
+        when /BUILD FAILED|error:/i
+          'failure'
+        when /BUILD SUCCEEDED/i
+          'build-complete'
+        else
+          state[:phase] || 'runner'
+        end
     end
 
     def handle_timeout(timeout_seconds, process_pid = nil)
