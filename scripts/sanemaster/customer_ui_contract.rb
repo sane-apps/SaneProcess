@@ -408,35 +408,51 @@ module SaneMasterModules
         }
       end
 
-      prepare_issues = customer_ui_prepare_target_before_sweep(app_name)
-      return { ok: false, app: app_name, script_path: script_path, issues: prepare_issues } unless prepare_issues.empty?
+      report = customer_ui_with_live_app_logs(app_name) do
+        prepare_issues = customer_ui_prepare_target_before_sweep(app_name)
+        unless prepare_issues.empty?
+          next({ ok: false, app: app_name, script_path: script_path, issues: prepare_issues })
+        end
 
-      cleanup_issues = customer_ui_cleanup_before_sweep(app_name)
-      return { ok: false, app: app_name, script_path: script_path, issues: cleanup_issues } unless cleanup_issues.empty?
+        cleanup_issues = customer_ui_cleanup_before_sweep(app_name)
+        unless cleanup_issues.empty?
+          next({ ok: false, app: app_name, script_path: script_path, issues: cleanup_issues })
+        end
 
-      runtime_issues = customer_ui_refresh_runtime_evidence_before_sweep(app_name)
-      return { ok: false, app: app_name, script_path: script_path, issues: runtime_issues } unless runtime_issues.empty?
+        runtime_issues = customer_ui_refresh_runtime_evidence_before_sweep(app_name)
+        unless runtime_issues.empty?
+          next({ ok: false, app: app_name, script_path: script_path, issues: runtime_issues })
+        end
 
-      if app_name == 'SaneBar'
-        post_runtime_cleanup_issues = customer_ui_cleanup_before_sweep(app_name)
-        return { ok: false, app: app_name, script_path: script_path, issues: post_runtime_cleanup_issues } unless post_runtime_cleanup_issues.empty?
+        if app_name == 'SaneBar'
+          post_runtime_cleanup_issues = customer_ui_cleanup_before_sweep(app_name)
+          unless post_runtime_cleanup_issues.empty?
+            next({ ok: false, app: app_name, script_path: script_path, issues: post_runtime_cleanup_issues })
+          end
+        end
+
+        visual_precheck = customer_ui_visual_precheck(app_name)
+        unless visual_precheck[:ok]
+          next({ ok: false, app: app_name, script_path: script_path, issues: visual_precheck[:issues] })
+        end
+
+        output, status = customer_ui_run_command(RbConfig.ruby, script_path)
+        unless status.success?
+          next({ ok: false, app: app_name, script_path: script_path, issues: ["Customer UI workflow runner failed: #{output}"] })
+        end
+
+        contract = customer_ui_contract_report(config: config)
+        {
+          ok: contract[:ok],
+          app: app_name,
+          script_path: script_path,
+          contract: contract,
+          runner_output: output,
+          issues: Array(contract[:issues])
+        }
       end
-
-      visual_precheck = customer_ui_visual_precheck(app_name)
-      return { ok: false, app: app_name, script_path: script_path, issues: visual_precheck[:issues] } unless visual_precheck[:ok]
-
-      output, status = customer_ui_run_command(RbConfig.ruby, script_path)
-      return { ok: false, app: app_name, script_path: script_path, issues: ["Customer UI workflow runner failed: #{output}"] } unless status.success?
-
-      contract = customer_ui_contract_report(config: config)
-      {
-        ok: contract[:ok],
-        app: app_name,
-        script_path: script_path,
-        contract: contract,
-        runner_output: output,
-        issues: Array(contract[:issues])
-      }
+      report[:live_log_path] ||= @customer_ui_live_log_path if report.is_a?(Hash) && @customer_ui_live_log_path
+      report
     end
 
     def customer_ui_contract_report(config:, strict_visual: false)
@@ -541,6 +557,7 @@ module SaneMasterModules
       lines << '🧭 --- [ CUSTOMER UI WORKFLOW SWEEP ] ---'
       lines << "App: #{report[:app]}"
       lines << "Runner: #{report[:script_path] || 'missing'}"
+      lines << "Live logs: #{report[:live_log_path]}" if report[:live_log_path]
       if report[:dry_run]
         lines << '✅ Dry run: runner found'
       elsif report[:ok]
@@ -1210,16 +1227,126 @@ module SaneMasterModules
       value
     end
 
+    def customer_ui_with_live_app_logs(app_name)
+      live_log = customer_ui_start_live_app_logs(app_name)
+      @customer_ui_live_log_path = live_log && live_log[:path]
+      yield
+    ensure
+      customer_ui_stop_live_app_logs(live_log) if live_log
+    end
+
+    def customer_ui_start_live_app_logs(app_name)
+      return nil if ENV.fetch('SANEMASTER_CUSTOMER_UI_LIVE_APP_LOGS', '1') == '0'
+
+      FileUtils.mkdir_p('outputs/live-logs')
+      path = File.join(
+        'outputs/live-logs',
+        "customer_ui_#{app_name.downcase}_#{Time.now.utc.strftime('%Y%m%dT%H%M%SZ')}.log"
+      )
+      reader, writer = IO.pipe
+      pid = Process.spawn(
+        '/usr/bin/log',
+        'stream',
+        '--level',
+        'debug',
+        '--predicate',
+        "process == \"#{app_name}\"",
+        '--style',
+        'compact',
+        out: writer,
+        err: writer,
+        pgroup: true
+      )
+      writer.close
+      file = File.open(path, 'ab')
+      file.binmode
+      customer_ui_stream_command_output("📡 Live #{app_name} unified log stream: #{path}\n")
+      thread = Thread.new do
+        loop do
+          chunk = reader.readpartial(8192)
+          file.write(chunk)
+          file.flush
+          customer_ui_stream_live_log_chunk(chunk)
+        end
+      rescue EOFError, IOError, EncodingError
+        nil
+      ensure
+        file.close unless file.closed?
+        reader.close unless reader.closed?
+      end
+      { pid: pid, thread: thread, path: path }
+    rescue StandardError => e
+      customer_ui_stream_command_output("⚠️  Could not start live #{app_name} logs: #{e.class}: #{e.message}\n")
+      nil
+    ensure
+      writer.close if defined?(writer) && writer && !writer.closed?
+    end
+
+    def customer_ui_stream_live_log_chunk(chunk)
+      return unless customer_ui_stream_live_logs_to_stdout?
+
+      text = chunk.to_s.b.force_encoding(Encoding::UTF_8).scrub
+      @customer_ui_live_log_partial ||= +''
+      @customer_ui_live_log_partial << text
+      lines = @customer_ui_live_log_partial.lines
+      if @customer_ui_live_log_partial.end_with?("\n")
+        @customer_ui_live_log_partial = +''
+      else
+        @customer_ui_live_log_partial = lines.pop || +''
+      end
+      lines.each do |line|
+        next unless customer_ui_relevant_live_log_line?(line)
+
+        customer_ui_stream_command_output(line)
+      end
+    end
+
+    def customer_ui_relevant_live_log_line?(line)
+      return true if line.include?('[com.sanebar.app:')
+      return true if line.match?(/Always-hidden|always-hidden|Move verification|Target X|layout snapshot|status-item|wake|separator|notch/)
+
+      false
+    end
+
+    def customer_ui_stream_live_logs_to_stdout?
+      ENV.fetch('SANEMASTER_CUSTOMER_UI_LIVE_LOG_STDOUT', '0') == '1'
+    end
+
+    def customer_ui_stop_live_app_logs(live_log)
+      pid = live_log[:pid]
+      begin
+        Process.kill('TERM', -pid)
+      rescue Errno::ESRCH, Errno::EINVAL, Errno::EPERM
+        begin
+          Process.kill('TERM', pid)
+        rescue Errno::ESRCH, Errno::EINVAL, Errno::EPERM
+          nil
+        end
+      end
+      live_log[:thread]&.join(1)
+      customer_ui_stream_command_output("📡 Live app log receipt: #{live_log[:path]}\n")
+    end
+
     def customer_ui_run_command(*command)
       output = +''
       status = nil
       started_at = Time.now
       last_output_at = started_at
       last_heartbeat_at = Time.at(0)
+      last_receipt_at = Time.at(0)
       timeout = customer_ui_command_timeout_seconds
+      heartbeat_path = customer_ui_command_heartbeat_path(started_at)
 
       Open3.popen2e(*command, pgroup: true) do |stdin, stdout_err, wait_thr|
         stdin.close
+        customer_ui_write_command_heartbeat(
+          heartbeat_path,
+          status: 'running',
+          started_at: started_at,
+          command: command,
+          pid: wait_thr.pid,
+          note: 'started'
+        )
         loop do
           if customer_ui_drain_command_output(stdout_err, output) { |chunk| customer_ui_stream_command_output(chunk) }
             last_output_at = Time.now
@@ -1228,6 +1355,15 @@ module SaneMasterModules
           if wait_thr.join(0.2)
             status = wait_thr.value
             customer_ui_drain_command_output(stdout_err, output, max_drain_seconds: 1.0) { |chunk| customer_ui_stream_command_output(chunk) }
+            customer_ui_write_command_heartbeat(
+              heartbeat_path,
+              status: status.success? ? 'passed' : 'failed',
+              started_at: started_at,
+              command: command,
+              pid: wait_thr.pid,
+              exitstatus: status.exitstatus,
+              note: 'exited'
+            )
             break
           end
 
@@ -1237,10 +1373,30 @@ module SaneMasterModules
             last_heartbeat_at = Time.now
           end
 
+          if customer_ui_should_write_heartbeat?(last_receipt_at)
+            customer_ui_write_command_heartbeat(
+              heartbeat_path,
+              status: 'running',
+              started_at: started_at,
+              command: command,
+              pid: wait_thr.pid,
+              note: 'heartbeat'
+            )
+            last_receipt_at = Time.now
+          end
+
           next unless timeout && (Time.now - started_at) >= timeout
 
           output << "\ncustomer UI command timeout after #{timeout.to_i}s: #{customer_ui_command_summary(command)}\n"
           customer_ui_stream_command_output("customer UI command timeout after #{timeout.to_i}s: #{customer_ui_command_summary(command)}\n")
+          customer_ui_write_command_heartbeat(
+            heartbeat_path,
+            status: 'timeout',
+            started_at: started_at,
+            command: command,
+            pid: wait_thr.pid,
+            note: "timeout after #{timeout.to_i}s"
+          )
           customer_ui_terminate_process_group(wait_thr)
           status = customer_ui_failed_status
           customer_ui_drain_command_output(stdout_err, output, max_drain_seconds: 1.0) { |chunk| customer_ui_stream_command_output(chunk) }
@@ -1250,7 +1406,46 @@ module SaneMasterModules
 
       [output, status || customer_ui_failed_status]
     rescue StandardError => e
+      customer_ui_write_command_heartbeat(
+        heartbeat_path,
+        status: 'failed',
+        started_at: started_at,
+        command: command,
+        note: "#{e.class}: #{e.message}"
+      ) if defined?(heartbeat_path) && heartbeat_path
       ["customer UI command failed: #{e.class}: #{e.message}", customer_ui_failed_status]
+    end
+
+    def customer_ui_command_heartbeat_path(started_at)
+      FileUtils.mkdir_p('outputs/live-logs')
+      File.join(
+        'outputs/live-logs',
+        "customer_ui_command_heartbeat_#{started_at.utc.strftime('%Y%m%dT%H%M%SZ')}_#{$$}.json"
+      )
+    end
+
+    def customer_ui_write_command_heartbeat(path, status:, started_at:, command:, pid: nil, exitstatus: nil, note: nil)
+      elapsed = (Time.now - started_at).round(1)
+      payload = {
+        status: status,
+        pid: pid,
+        process_group: pid,
+        exitstatus: exitstatus,
+        elapsed_seconds: elapsed,
+        updated_at: Time.now.utc.iso8601,
+        started_at: started_at.utc.iso8601,
+        host: Socket.gethostname,
+        command: customer_ui_command_summary(command),
+        live_log_path: @customer_ui_live_log_path,
+        note: note
+      }.compact
+      tmp_path = "#{path}.tmp"
+      File.write(tmp_path, JSON.pretty_generate(payload))
+      File.rename(tmp_path, path)
+    rescue StandardError
+      nil
+    ensure
+      FileUtils.rm_f(tmp_path) if defined?(tmp_path) && tmp_path && File.exist?(tmp_path)
     end
 
     def customer_ui_command_timeout_seconds
@@ -1258,7 +1453,7 @@ module SaneMasterModules
       timeout.positive? ? timeout : CUSTOMER_UI_COMMAND_TIMEOUT_SECONDS
     end
 
-    def customer_ui_drain_command_output(stdout_err, output, max_drain_seconds: 0.4)
+    def customer_ui_drain_command_output(stdout_err, output, max_drain_seconds: 0.05)
       deadline = Time.now + max_drain_seconds
       drained = false
       loop do
@@ -1287,6 +1482,10 @@ module SaneMasterModules
 
       quiet_seconds = customer_ui_progress_heartbeat_seconds
       (Time.now - last_output_at) >= quiet_seconds && (Time.now - last_heartbeat_at) >= quiet_seconds
+    end
+
+    def customer_ui_should_write_heartbeat?(last_receipt_at)
+      (Time.now - last_receipt_at) >= customer_ui_progress_heartbeat_seconds
     end
 
     def customer_ui_progress_heartbeat_seconds

@@ -3438,6 +3438,25 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('customer UI live app logs are receipt-only by default') do
+      runner = Object.new
+      runner.extend(SaneMasterModules::CustomerUIContract)
+      stderr = capture_stderr do
+        with_env(
+          'SANEMASTER_CUSTOMER_UI_STREAM_PROGRESS' => '1',
+          'SANEMASTER_CUSTOMER_UI_LIVE_LOG_STDOUT' => nil
+        ) do
+          runner.send(
+            :customer_ui_stream_live_log_chunk,
+            "2026-06-20 I SaneBar[1:1] [com.sanebar.app:MenuBarManager] noisy live line\n"
+          )
+        end
+      end
+
+      assert_eq(stderr, '')
+      true
+    end
+
     test('customer UI sweep command runner emits quiet heartbeat before timeout') do
       runner = Object.new
       runner.extend(SaneMasterModules::CustomerUIContract)
@@ -3455,6 +3474,43 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
 
       assert(status.success?, "expected quiet child to finish successfully, output=#{output.inspect}")
       assert_includes(stderr, 'customer UI command still running')
+      true
+    end
+
+    test('customer UI sweep command runner refreshes heartbeat while child is noisy') do
+      runner_class = Class.new do
+        include SaneMasterModules::CustomerUIContract
+
+        attr_reader :heartbeats
+
+        def initialize
+          @heartbeats = []
+        end
+
+        def customer_ui_write_command_heartbeat(path, **payload)
+          @heartbeats << payload.merge(elapsed_seconds: (Time.now - payload[:started_at]).round(1))
+          super
+        end
+      end
+
+      Dir.mktmpdir('customer-ui-noisy-heartbeat-') do |dir|
+        Dir.chdir(dir) do
+          runner = runner_class.new
+          script = 'STDOUT.sync = true; deadline = Time.now + 0.4; while Time.now < deadline; puts "tick"; sleep 0.03; end'
+          with_env(
+            'SANEMASTER_CUSTOMER_UI_COMMAND_TIMEOUT' => '2',
+            'SANEMASTER_CUSTOMER_UI_PROGRESS_HEARTBEAT_SECONDS' => '0.1',
+            'SANEMASTER_CUSTOMER_UI_STREAM_PROGRESS' => '0'
+          ) do
+            _output, status = runner.send(:customer_ui_run_command, RbConfig.ruby, '-e', script)
+            assert(status.success?, 'expected noisy child to finish successfully')
+          end
+
+          running_heartbeats = runner.heartbeats.select { |payload| payload[:status] == 'running' && payload[:note] == 'heartbeat' }
+          assert(running_heartbeats.any?, "expected running heartbeat refreshes, got #{runner.heartbeats.inspect}")
+          assert(running_heartbeats.any? { |payload| payload[:elapsed_seconds].positive? }, 'expected refreshed heartbeat to carry elapsed time')
+        end
+      end
       true
     end
 

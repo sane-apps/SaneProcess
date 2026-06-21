@@ -128,6 +128,10 @@ the wrapper.
 | Route cost review | `ruby scripts/SaneMaster.rb route_cost_review --json` |
 | Mini screenshot | `scripts/mini/capture-mini-screenshot.sh desktop` or app mode wrapper |
 
+Runtime app tests must attach a live app log stream from before launch/relaunch
+through the tested workflow and save the log receipt path. A GUI/runtime result
+without live logs is invalid because the agent cannot see what is happening.
+
 If a canonical route fails, fix the route or explain why it is insufficient.
 Do not silently work around it.
 Raw `ssh mini ... screencapture ...` is not a fallback; it is blocked by
