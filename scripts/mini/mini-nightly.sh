@@ -22,6 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 EVAL_SUITE_WEIGHTS="${EVAL_SUITE_WEIGHTS:-mac_operator=4,core=2,workflow_guardrails=1,commentary_workflow=1,workflow_packs=1}"
 PRIMARY_WORKFLOW_SUITE="${PRIMARY_WORKFLOW_SUITE:-mac_operator}"
 PRIMARY_WORKFLOW_MIN_PCT="${PRIMARY_WORKFLOW_MIN_PCT:-50}"
+RUN_SANEAI_WORKFLOW_READINESS="${RUN_SANEAI_WORKFLOW_READINESS:-0}"
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -279,7 +280,11 @@ SANEAI_ADAPTER="$SANEAI_DIR/models/production_adapter"
 PYTHON="$HOME/mlx-env/bin/python3"
 SANEAI_MODEL=""
 
-if [ -f "$SANEAI_ADAPTER/adapter_config.json" ]; then
+if [ "$RUN_SANEAI_WORKFLOW_READINESS" != "1" ]; then
+  echo "**Skipped** - SaneAI training/readiness lane disabled by default; set RUN_SANEAI_WORKFLOW_READINESS=1 to re-enable." >> "$REPORT"
+fi
+
+if [ "$RUN_SANEAI_WORKFLOW_READINESS" = "1" ] && [ -f "$SANEAI_ADAPTER/adapter_config.json" ]; then
   SANEAI_MODEL=$("$PYTHON" - <<'PY' "$SANEAI_ADAPTER/adapter_config.json"
 import json
 import sys
@@ -296,7 +301,7 @@ if [ -z "$SANEAI_MODEL" ]; then
   SANEAI_MODEL="mlx-community/Llama-3.2-3B-Instruct-4bit"
 fi
 
-if [ -f "$EVAL_SCRIPT" ] && [ -d "$SANEAI_ADAPTER" ] && [ -f "$SANEAI_TRAIN_DIR/train.jsonl" ]; then
+if [ "$RUN_SANEAI_WORKFLOW_READINESS" = "1" ] && [ -f "$EVAL_SCRIPT" ] && [ -d "$SANEAI_ADAPTER" ] && [ -f "$SANEAI_TRAIN_DIR/train.jsonl" ]; then
   EVAL_CMD=(
     "$PYTHON"
     "$EVAL_SCRIPT"
@@ -373,7 +378,7 @@ EOF
     echo "$eval_output" | tail -20 >> "$REPORT"
     echo '```' >> "$REPORT"
   fi
-else
+elif [ "$RUN_SANEAI_WORKFLOW_READINESS" = "1" ]; then
   echo "**Skipped** - missing evaluator, training data, or production adapter" >> "$REPORT"
 fi
 
@@ -483,6 +488,35 @@ echo "**Memory:** $memory_pressure" >> "$REPORT"
 
 # Uptime
 echo "**Uptime:** $(uptime | sed 's/.*up /up /' | sed 's/,.*//')" >> "$REPORT"
+echo "" >> "$REPORT"
+
+# =============================================================================
+# Section 9: Operator Brief
+# =============================================================================
+echo "## Operator Brief" >> "$REPORT"
+echo "" >> "$REPORT"
+
+OPERATOR_BRIEF_OUTPUT="$OUTPUT_DIR/operator_brief.md"
+operator_brief_exit=0
+operator_brief_stdout=""
+
+if [ ! -f "$MACHINE_CLEANUP_SCRIPT" ]; then
+  echo "**Skipped** - missing SaneMaster operator_brief command" >> "$REPORT"
+else
+  operator_brief_stdout=$(ruby "$MACHINE_CLEANUP_SCRIPT" operator_brief --nightly-report "$REPORT" --morning-report "$OUTPUT_DIR/morning_report.md" --handoff "$CANONICAL_SOURCE_ROOT/infra/SaneProcess/SESSION_HANDOFF.md" --output "$OPERATOR_BRIEF_OUTPUT" 2>&1) || operator_brief_exit=$?
+  if [ "$operator_brief_exit" -eq 0 ]; then
+    echo "**PASS** - wrote $OPERATOR_BRIEF_OUTPUT" >> "$REPORT"
+  else
+    echo "**FAIL** (exit $operator_brief_exit) - operator brief generation failed" >> "$REPORT"
+  fi
+
+  if [ -n "$operator_brief_stdout" ]; then
+    echo '```' >> "$REPORT"
+    echo "$operator_brief_stdout" | tail -80 >> "$REPORT"
+    echo '```' >> "$REPORT"
+  fi
+fi
+
 echo "" >> "$REPORT"
 
 # =============================================================================

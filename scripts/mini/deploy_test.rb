@@ -15,5 +15,14 @@ exit(run_tests('Mini Deploy Tests') do
       assert(script.include?('Skipped training agent refresh'))
       true
     end
+
+    test('nightly operator brief is scheduled and SaneAI eval is opt-in') do
+      script = File.read(File.join(__dir__, 'mini-nightly.sh'))
+
+      assert(script.include?('RUN_SANEAI_WORKFLOW_READINESS="${RUN_SANEAI_WORKFLOW_READINESS:-0}"'))
+      assert(script.include?('operator_brief --nightly-report "$REPORT"'))
+      assert(script.include?('OPERATOR_BRIEF_OUTPUT="$OUTPUT_DIR/operator_brief.md"'))
+      true
+    end
   end
 end)
