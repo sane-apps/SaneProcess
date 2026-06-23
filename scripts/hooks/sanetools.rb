@@ -151,7 +151,7 @@ BREAKER_RECOVERY_PATTERN = Regexp.union(
   /SaneMaster(?:_standalone)?\.rb\s+(?:verify|status|validation_report)\b/,
   /validation_report\.rb/,
   %r{scripts/hooks/\S+\.rb\s+--(?:self-test|reset|status)\b},
-  /tier_tests\.rb|test_hooks\.rb|_test\.rb\b/,
+  /test_hooks\.rb|_test\.rb\b/,
   /\A\s*(?:ls|cat|head|tail|wc|file|stat|which|pwd|date|grep|rg)\b[^|;&]*\z/,
   /\A\s*git\s+(?:status|log|diff|branch|remote|show)\b[^|;&]*\z/
 ).freeze
@@ -215,16 +215,10 @@ def track_research(tool_name, tool_input)
     end
   end
 
-  # Reset edit attempt counter ONLY when:
-  # 1. We just did research (research_done is true), AND
-  # 2. ALL 4 categories are now complete
-  # Not just one tool - the FULL investigation (all 4 categories)
-  # This is the SaneLoop process - it ALWAYS pays off
   if research_done
     research = StateManager.get(:research)
     all_complete = SaneToolsChecks.effective_research_categories(RESEARCH_CATEGORIES).all? { |cat| research[cat] }
     if all_complete
-      SaneToolsChecks.reset_edit_attempts
       SaneToolsChecks.reward_correct_behavior(:research_done)
     end
   end
@@ -585,14 +579,6 @@ def process_tool(tool_name, tool_input)
 
   # Check requirements
   if (reason = SaneToolsChecks.check_requirements(tool_name, BOOTSTRAP_TOOL_PATTERN, EDIT_TOOLS, RESEARCH_CATEGORIES))
-    log_action(tool_name, true, reason)
-    output_block(reason, tool_name)
-    return 2
-  end
-
-  # Check edit attempt limit (prevents "no big deal" syndrome)
-  # 3 edit attempts without research = forced pause
-  if (reason = SaneToolsChecks.check_edit_attempt_limit(tool_name, EDIT_TOOLS))
     log_action(tool_name, true, reason)
     output_block(reason, tool_name)
     return 2

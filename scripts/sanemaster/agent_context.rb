@@ -96,7 +96,7 @@ module SaneMasterModules
         research: research_index(research_cards),
         serena_memories: serena_memory_index(memory_cards),
         recent_receipts: recent_context_receipts(root),
-        recommended_checks: %w[agent_eval process_eval skill_lint registry_review],
+        recommended_checks: %w[agent_eval process_eval skill_lint],
         warnings: context_bundle_warnings(research_cards, memory_cards, source_cards)
       }
     end

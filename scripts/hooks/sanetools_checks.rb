@@ -656,7 +656,7 @@ module SaneToolsChecks
     required_skill = skill[:required].to_s
     requirements = MandatoryWorkflows.skill_requirements[required_skill.to_sym]
     return nil unless requirements && requirements[:requires_runner]
-    return nil if skill[:runner_proved] || skill[:runner_used]
+    return nil if skill[:runner_proved]
 
     if tool_name == 'Bash'
       command = tool_input['command'] || tool_input[:command] || ''
@@ -732,29 +732,5 @@ module SaneToolsChecks
     include SaneToolsDeploy
     include SaneToolsResearch
 
-    # === EDIT ATTEMPT LIMIT ===
-    # Legacy no-op kept for compatibility with tests and callers. The original
-    # implementation counted every successful Edit tool call as a failed attempt,
-    # so normal multi-file work could revoke plan approval after three good
-    # edits and trap Claude in a replan loop. Real repeated-failure handling now
-    # lives in circuit_breaker/refusal_tracking, which are keyed off actual
-    # failures and blocks instead of successful edits.
-
-    MAX_EDIT_ATTEMPTS_BEFORE_RESEARCH = 3
-
-    def check_edit_attempt_limit(tool_name, edit_tools)
-      nil
-    end
-
-    def reset_edit_attempts
-      StateManager.update(:edit_attempts) do |a|
-        a ||= {}
-        a[:count] = 0
-        a[:reset_at] = Time.now.iso8601
-        a
-      end
-    rescue StandardError
-      # Don't fail on reset errors
-    end
   end
 end

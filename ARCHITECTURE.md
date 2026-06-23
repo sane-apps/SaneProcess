@@ -609,9 +609,6 @@ ruby scripts/hooks/sanestop.rb --self-test
 ruby scripts/hooks/core/project_root.rb --self-test
 ruby scripts/hooks/test_hooks.rb
 
-# Tier tests (all enforcement scenarios)
-ruby scripts/hooks/test/tier_tests.rb
-ruby scripts/hooks/test/tier_tests.rb --tier easy
-ruby scripts/hooks/test/tier_tests.rb --tier hard
-ruby scripts/hooks/test/tier_tests.rb --tier villain
+# Hook integration tests
+ruby scripts/hooks/test_hooks.rb
 ```

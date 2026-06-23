@@ -175,15 +175,11 @@ ruby scripts/SaneMaster.rb sync_mini
 # Direct helper path when debugging the wrapper itself
 bash scripts/automation/sync-codex-mini.sh mini --no-restart
 
-# Legacy compatibility wrapper (prints guidance or routes to the canonical path)
-bash scripts/mini/sync-claude-config.sh --dry-run
-
 # Or deploy a single script
 scp scripts/mini/mini-train.sh mini:~/SaneApps/infra/scripts/
 ```
 
 Legacy note:
-- `scripts/mini/sync-claude-config.sh` is a deprecation wrapper, not a separate sync system.
 - Canonical Air↔Mini control-plane and memory parity is `ruby scripts/SaneMaster.rb sync_mini`; the automation script is the implementation helper.
 - `deploy.sh` manages Mini runtime scripts only and should not be used to recreate a second config-sync lane.
 
@@ -297,6 +293,7 @@ LaunchAgent (9:15 AM daily on local Mac)
 LaunchAgent (5:40 AM)
   → mini-memory-guard.sh
     → health snapshot + stale-process cleanup
+    → SaneMaster machine_cleanup --server when idle
     → optional reboot only in safe window and only when mini is idle
 ```
 
@@ -306,6 +303,7 @@ LaunchAgent (5:40 AM)
 - **8GB RAM** — training uses ~3.7GB peak. One sweep at a time.
 - **Lock files** — Mini training now uses one shared `mkdir`-based MLX lock with stale-process detection, so reboot-stranded locks clear when no MLX training/eval process is active and production/challenger lanes cannot overlap on the 8 GB GPU.
 - **Logs** — LaunchAgent stderr appends (never truncates). `mini-train-all.sh` rotates at 1MB.
+- **Disk hygiene** — the daily guard runs `machine_cleanup --server` when idle. This prunes simulator runtime images/dyld caches, stale Codex code-sign clones, uv temp/archive cache, DerivedData, npm/npx cache, and throwaway scratch workspaces. `~/SaneApps-automation` stays because LaunchAgents use it.
 - **Isolation enabled** — deploy refreshes `~/SaneApps-automation`, launch agents point `SANE_ROOT` there, and each scheduled training lane now re-runs `mini-prepare-automation-root.sh` before training so stale dirty clones fail fast instead of silently training on drifted state.
 - **Managed overlays only** — automation-root prep is allowed to reset hydrated training overlays (`train.jsonl`, eval packs, challenger configs, generated fixtures) before syncing. Any other dirt still fails the prep step.
 - **Training data hydration** — `mini-prepare-automation-root.sh` copies local-only `train.jsonl` / `valid.jsonl` datasets for SaneSync, SaneClip, SaneAI, and SaneVideo into the clean clones before training.

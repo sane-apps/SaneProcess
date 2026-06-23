@@ -1482,179 +1482,6 @@ REMOTE
   ssh -o ConnectTimeout=5 -o BatchMode=yes mini "$remote_cmd"
 }
 
-launch_app_local() {
-  local app="$1"
-  local mode="$2"
-  local bundle binary
-
-  bundle="$(local_bundle_path "$app")"
-  if [[ ! -d "$bundle" ]]; then
-    if ! bootstrap_install_local "$app"; then
-      echo "error: app not found at $bundle and bootstrap failed" >&2
-      exit 1
-    fi
-    bundle="$(local_bundle_path "$app")"
-    if [[ ! -d "$bundle" ]]; then
-      echo "error: app bootstrap did not produce install at $bundle" >&2
-      exit 1
-    fi
-  fi
-
-  ensure_single_install_local "$app" "$bundle"
-  pkill -x "$app" >/dev/null 2>&1 || true
-  remove_login_item_local "$app"
-
-  binary="$bundle/Contents/MacOS/$app"
-  if [[ ! -x "$binary" ]]; then
-    echo "error: executable not found at $binary" >&2
-    exit 1
-  fi
-  verify_install_identity_local "$app" "$bundle"
-  cleanup_legacy_accessibility_local "$app"
-  repair_accessibility_stale_rows_local "$app" "$bundle"
-  check_stale_install_local "$app" "$bundle"
-
-  local open_cmd=(open "$bundle")
-  local launch_args=()
-  if [[ "$ALLOW_KEYCHAIN" -eq 1 ]]; then
-    if [[ "$mode" == "basic" && "$app" != "SaneBar" ]]; then
-      open_cmd+=(--env SANEAPPS_FORCE_FREE_MODE=1)
-    fi
-  else
-    open_cmd+=(--env SANEAPPS_DISABLE_KEYCHAIN=1)
-    launch_args+=(--sane-no-keychain)
-    if [[ "$mode" == "basic" && "$app" != "SaneBar" ]]; then
-      open_cmd+=(--env SANEAPPS_FORCE_FREE_MODE=1)
-    fi
-  fi
-
-  if [[ ${#launch_args[@]} -gt 0 ]]; then
-    open_cmd+=(--args "${launch_args[@]}")
-  fi
-
-  "${open_cmd[@]}"
-
-  sleep 2
-  if pgrep -x "$app" >/dev/null 2>&1; then
-    if [[ "$ALLOW_KEYCHAIN" -eq 0 ]]; then
-      if ! ps ax -o comm=,command= | awk -v app="$app" -v needle="$binary --sane-no-keychain" '
-        $1 == app && index($0, needle) > 0 { found = 1 }
-        END { exit found ? 0 : 1 }
-      ' >/dev/null 2>&1; then
-        echo "warning: Launch Services dropped --sane-no-keychain for $app; relaunching executable directly"
-        pkill -x "$app" >/dev/null 2>&1 || true
-        local -a direct_env=(env)
-        direct_env+=(SANEAPPS_DISABLE_KEYCHAIN=1)
-        if [[ "$mode" == "basic" && "$app" != "SaneBar" ]]; then
-          direct_env+=(SANEAPPS_FORCE_FREE_MODE=1)
-        fi
-        nohup "${direct_env[@]}" "$binary" --sane-no-keychain >/tmp/"$(to_lower "$app")"-app_test_mode.log 2>&1 &
-        sleep 2
-      fi
-    fi
-    echo "$app launched in $mode mode (host=$(display_host))"
-    echo "log command: log stream --predicate 'process == \"$app\"' --style compact"
-  else
-    echo "error: $app launch not confirmed after initial check (host=$(display_host))"
-    /usr/bin/log show --style compact --last 2m --predicate "process == \"$app\"" | tail -n 120 || true
-    exit 1
-  fi
-
-  if [[ "$VERIFY_LIVE" -eq 1 ]]; then
-    local elapsed=0
-    while [[ "$elapsed" -lt "$LIVE_VERIFY_SECONDS" ]]; do
-      if ! pgrep -x "$app" >/dev/null 2>&1; then
-        echo "error: $app exited during live check at t=${elapsed}s (host=$(display_host))"
-        /usr/bin/log show --style compact --last 2m --predicate "process == \"$app\"" | tail -n 120 || true
-        exit 1
-      fi
-      sleep "$LIVE_VERIFY_INTERVAL"
-      elapsed=$((elapsed + LIVE_VERIFY_INTERVAL))
-    done
-    echo "$app remained live for ${LIVE_VERIFY_SECONDS}s (host=$(display_host))"
-  fi
-}
-
-launch_app_remote() {
-  local app="$1"
-  local mode="$2"
-  local bundle binary script
-
-  bundle="$(remote_bundle_path "$app")"
-  if ! ssh -o ConnectTimeout=5 -o BatchMode=yes mini "[ -d \"$bundle\" ]" >/dev/null 2>&1; then
-    if ! bootstrap_install_remote "$app"; then
-      echo "error: app not found at $bundle on mini and bootstrap failed" >&2
-      exit 1
-    fi
-    bundle="$(remote_bundle_path "$app")"
-    if ! ssh -o ConnectTimeout=5 -o BatchMode=yes mini "[ -d \"$bundle\" ]" >/dev/null 2>&1; then
-      echo "error: app bootstrap did not produce install at $bundle on mini" >&2
-      exit 1
-    fi
-  fi
-
-  ensure_single_install_remote "$app" "$bundle"
-  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "pkill -x '$app' >/dev/null 2>&1 || true"
-  remove_login_item_remote "$app"
-
-  binary="$bundle/Contents/MacOS/$app"
-  verify_install_identity_remote "$app" "$bundle"
-  cleanup_legacy_accessibility_remote "$app"
-  repair_accessibility_stale_rows_remote "$app" "$bundle"
-
-  if [[ "$ALLOW_KEYCHAIN" -eq 1 ]]; then
-    if [[ "$mode" == "basic" && "$app" != "SaneBar" ]]; then
-      script="open '$bundle' --env SANEAPPS_FORCE_FREE_MODE=1"
-    else
-      script="open '$bundle'"
-    fi
-  else
-    if [[ "$mode" == "basic" && "$app" != "SaneBar" ]]; then
-      script="open '$bundle' --env SANEAPPS_DISABLE_KEYCHAIN=1 --env SANEAPPS_FORCE_FREE_MODE=1 --args --sane-no-keychain"
-    else
-      script="open '$bundle' --env SANEAPPS_DISABLE_KEYCHAIN=1 --args --sane-no-keychain"
-    fi
-  fi
-
-  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "$script"
-  sleep 2
-
-  if ssh -o ConnectTimeout=5 -o BatchMode=yes mini "pgrep -x '$app' >/dev/null 2>&1"; then
-    if [[ "$ALLOW_KEYCHAIN" -eq 0 ]]; then
-      if ! ssh -o ConnectTimeout=5 -o BatchMode=yes mini "ps ax -o comm=,command= | awk -v app='$app' -v needle='$binary --sane-no-keychain' '\$1 == app && index(\$0, needle) > 0 { found = 1 } END { exit found ? 0 : 1 }' >/dev/null 2>&1"; then
-        echo "warning: Launch Services dropped --sane-no-keychain for $app on mini; relaunching executable directly"
-        ssh -o ConnectTimeout=5 -o BatchMode=yes mini "pkill -x '$app' >/dev/null 2>&1 || true"
-        local direct_env="env SANEAPPS_DISABLE_KEYCHAIN=1"
-        if [[ "$mode" == "basic" && "$app" != "SaneBar" ]]; then
-          direct_env="$direct_env SANEAPPS_FORCE_FREE_MODE=1"
-        fi
-        ssh -o ConnectTimeout=5 -o BatchMode=yes mini "nohup $direct_env '$binary' --sane-no-keychain >/tmp/$(to_lower "$app")-app_test_mode.log 2>&1 &"
-        sleep 2
-      fi
-    fi
-    echo "$app launched in $mode mode (host=$(display_host))"
-    echo "log command: ssh mini \"log stream --predicate 'process == \\\"$app\\\"' --style compact\""
-  else
-    echo "error: $app launch not confirmed after initial check (host=$(display_host))"
-    ssh -o ConnectTimeout=5 -o BatchMode=yes mini "/usr/bin/log show --style compact --last 2m --predicate 'process == \"$app\"' | tail -n 120" || true
-    exit 1
-  fi
-
-  if [[ "$VERIFY_LIVE" -eq 1 ]]; then
-    local elapsed=0
-    while [[ "$elapsed" -lt "$LIVE_VERIFY_SECONDS" ]]; do
-      if ! ssh -o ConnectTimeout=5 -o BatchMode=yes mini "pgrep -x '$app' >/dev/null 2>&1"; then
-        echo "error: $app exited during live check at t=${elapsed}s (host=$(display_host))"
-        ssh -o ConnectTimeout=5 -o BatchMode=yes mini "/usr/bin/log show --style compact --last 2m --predicate 'process == \"$app\"' | tail -n 120" || true
-        exit 1
-      fi
-      sleep "$LIVE_VERIFY_INTERVAL"
-      elapsed=$((elapsed + LIVE_VERIFY_INTERVAL))
-    done
-    echo "$app remained live for ${LIVE_VERIFY_SECONDS}s (host=$(display_host))"
-  fi
-}
-
 display_host() {
   if [[ -n "${APP_TEST_MODE_ORIGIN_HOST:-}" ]]; then
     echo "$APP_TEST_MODE_ORIGIN_HOST"
@@ -1685,10 +1512,38 @@ app_status() {
 launch_app() {
   local app="$1"
   local mode="$2"
-  if [[ "$HOST" == "mini" ]]; then
-    launch_app_remote "$app" "$mode"
+  local launcher="$HOME/SaneApps/infra/SaneProcess/scripts/sane_test.rb"
+  local -a launcher_args=("$app" "--local" "--release" "--no-logs")
+
+  if [[ ! -f "$launcher" ]]; then
+    echo "error: canonical launcher missing: $launcher" >&2
+    exit 1
+  fi
+
+  if [[ "$mode" == "basic" ]]; then
+    launcher_args+=("--free-mode")
   else
-    launch_app_local "$app" "$mode"
+    launcher_args+=("--pro-mode")
+  fi
+
+  if [[ "$ALLOW_KEYCHAIN" -eq 1 ]]; then
+    launcher_args+=("--allow-keychain")
+  fi
+
+  ruby "$launcher" "${launcher_args[@]}"
+
+  if [[ "$VERIFY_LIVE" -eq 1 ]]; then
+    local elapsed=0
+    while [[ "$elapsed" -lt "$LIVE_VERIFY_SECONDS" ]]; do
+      if ! pgrep -x "$app" >/dev/null 2>&1; then
+        echo "error: $app exited during live check at t=${elapsed}s (host=$(display_host))"
+        /usr/bin/log show --style compact --last 2m --predicate "process == \"$app\"" | tail -n 120 || true
+        exit 1
+      fi
+      sleep "$LIVE_VERIFY_INTERVAL"
+      elapsed=$((elapsed + LIVE_VERIFY_INTERVAL))
+    done
+    echo "$app remained live for ${LIVE_VERIFY_SECONDS}s (host=$(display_host))"
   fi
 }
 

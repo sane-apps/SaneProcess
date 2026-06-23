@@ -487,7 +487,7 @@ module SaneTrackTest
       s[:required] = 'docs_audit'
       s[:invoked] = true
       s[:subagents_spawned] = 0
-      s[:runner_used] = false
+      s[:runner_proved] = false
       s[:runner_commands] = []
       s
     end
@@ -503,7 +503,7 @@ module SaneTrackTest
 
     process_result_proc.call('Bash', { 'command' => 'python3 scripts/automation/gpt_audit.py --title Test' }, { 'output' => 'ok' })
     skill = StateManager.get(:skill)
-    if skill[:runner_used] != true
+    if skill[:runner_proved] != true
       passed += 1
       warn '  PASS: gpt_audit.py no longer satisfies docs_audit'
     else
@@ -519,13 +519,13 @@ module SaneTrackTest
         StateManager.update(:skill) do |s|
           s[:required] = 'evolve'
           s[:required_prompt] = 'missing screenshot diff tool'
-          s[:runner_used] = false
+          s[:runner_proved] = false
           s[:runner_commands] = []
           s
         end
         process_result_proc.call('Bash', { 'command' => 'ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"' }, { 'output' => 'ok' })
         skill = StateManager.get(:skill)
-        if skill[:runner_started] == true && skill[:runner_used] != true
+        if skill[:runner_started] == true && skill[:runner_proved] != true
           passed += 1
           warn '  PASS: tool_discovery command without receipt records attempt only'
         else
@@ -545,7 +545,7 @@ module SaneTrackTest
         )
         process_result_proc.call('Bash', { 'command' => 'ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"' }, { 'output' => 'ok' })
         skill = StateManager.get(:skill)
-        if skill[:runner_used] != true
+        if skill[:runner_proved] != true
           passed += 1
           warn '  PASS: non-authoritative tool_discovery receipt does not satisfy evolve'
         else
@@ -564,7 +564,7 @@ module SaneTrackTest
         )
         process_result_proc.call('Bash', { 'command' => 'ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"' }, { 'output' => 'ok' })
         skill = StateManager.get(:skill)
-        if skill[:runner_used] == true && skill[:runner_commands].any? { |cmd| cmd.include?('tool_discovery') }
+        if skill[:runner_proved] == true && skill[:runner_commands].any? { |cmd| cmd.include?('tool_discovery') }
           passed += 1
           warn '  PASS: SaneMaster tool_discovery command satisfies evolve receipt'
         else
@@ -594,7 +594,7 @@ module SaneTrackTest
         StateManager.reset(:skill)
         StateManager.update(:skill) do |s|
           s[:required] = 'evolve'
-          s[:runner_used] = false
+          s[:runner_proved] = false
           s[:runner_proved] = false
           s[:runner_commands] = []
           s
@@ -604,7 +604,7 @@ module SaneTrackTest
         end
         skill = StateManager.get(:skill)
         ENV['SANEPROCESS_ROOT'] = old_sp_root2
-        if skill[:runner_used] == true && skill[:runner_proved] == true
+        if skill[:runner_proved] == true
           passed += 1
           warn '  PASS: evolve receipt in canonical SaneProcess root proves runner from any cwd'
         else
@@ -627,7 +627,7 @@ module SaneTrackTest
           StateManager.reset(:skill)
           StateManager.update(:skill) do |s|
             s[:required] = workflow
-            s[:runner_used] = false
+            s[:runner_proved] = false
             s[:runner_started] = false
             s[:runner_proved] = false
             s[:runner_commands] = []
@@ -637,7 +637,7 @@ module SaneTrackTest
           write_runner_proof_fixture(workflow, ENV['SANEMASTER_PROCESS_METRICS_PATH'])
           process_result_proc.call('Bash', { 'command' => runner_command }, { 'output' => 'ok' })
           skill = StateManager.get(:skill)
-          if skill[:runner_used] == true && skill[:runner_commands].include?(runner_command)
+          if skill[:runner_proved] == true && skill[:runner_commands].include?(runner_command)
             passed += 1
             warn "  PASS: #{workflow} runner command satisfies workflow proof"
           else

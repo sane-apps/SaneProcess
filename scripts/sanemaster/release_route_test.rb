@@ -197,7 +197,7 @@ exit(run_tests('SaneMaster Release Routing Tests') do
       true
     end
 
-    test('excludes local worktree archives and generated outputs from Mini sync') do
+    test('excludes local worktree archives and generated outputs but keeps canonical UI receipt') do
       with_temp_repo do |repo|
         FileUtils.mkdir_p(File.join(repo, '.worktrees', 'archive'))
         FileUtils.mkdir_p(File.join(repo, '.sane'))
@@ -209,6 +209,8 @@ exit(run_tests('SaneMaster Release Routing Tests') do
         File.write(File.join(repo, 'outputs', 'qa_status.json'), '{}')
         File.write(File.join(repo, 'outputs', 'release_preflight_status.json'), '{}')
         File.write(File.join(repo, 'outputs', 'customer_ui_action_receipt.json'), '{}')
+        File.write(File.join(repo, 'outputs', 'customer-ui', 'mini-click-transcript.json'), '{}')
+        File.write(File.join(repo, 'outputs', 'runtime-preflight', 'sanebar_runtime_hover_rehide.json'), '{}')
 
         subject.system_calls.clear
         subject.send(:sync_local_dir_to_mini!, repo, '/Users/stephansmac/.sanemaster/routed-workspaces/abcd/SaneApps/apps/SaneBar', label: nil)
@@ -216,13 +218,15 @@ exit(run_tests('SaneMaster Release Routing Tests') do
         rsync_call = subject.system_calls.find { |call| call.first == 'rsync' }
         assert(rsync_call, 'expected an rsync call')
         assert_includes(rsync_call, '.worktrees')
-        assert_includes(rsync_call, '.sane/customer_ui_action_receipt.json')
+        assert(!rsync_call.include?('.sane/customer_ui_action_receipt.json'))
         assert_includes(rsync_call, 'outputs/***')
         assert(!rsync_call.include?('outputs/qa_status.json'))
         assert(!rsync_call.include?('outputs/release_preflight_status.json'))
-        assert(!rsync_call.include?('outputs/customer_ui_action_receipt.json'))
-        assert(!rsync_call.include?('outputs/customer-ui/***'))
-        assert(!rsync_call.include?('outputs/runtime-preflight/***'))
+        assert_includes(rsync_call, 'outputs/customer_ui_action_receipt.json')
+        assert_includes(rsync_call, 'outputs/customer-ui/')
+        assert_includes(rsync_call, 'outputs/customer-ui/***')
+        assert_includes(rsync_call, 'outputs/runtime-preflight/')
+        assert_includes(rsync_call, 'outputs/runtime-preflight/***')
         assert(!rsync_call.include?('outputs/process-abtest/***'))
         true
       end

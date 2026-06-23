@@ -90,6 +90,21 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
     end
   end
 
+  test_category('Canonical launch owner') do
+    test('app_test_mode delegates Basic and Pro launches to sane_test') do
+      source = File.read(SCRIPT_PATH)
+
+      assert_includes(source, 'local launcher="$HOME/SaneApps/infra/SaneProcess/scripts/sane_test.rb"')
+      assert_includes(source, 'launcher_args=("$app" "--local" "--release" "--no-logs")')
+      assert_includes(source, 'launcher_args+=("--free-mode")')
+      assert_includes(source, 'launcher_args+=("--pro-mode")')
+      assert_includes(source, 'ruby "$launcher" "${launcher_args[@]}"')
+      assert(!source.include?('launch_app_local()'), 'mode launch should not duplicate local app launching')
+      assert(!source.include?('launch_app_remote()'), 'mode launch should not duplicate remote app launching')
+      true
+    end
+  end
+
   test_category('Mini sync preserves tracked Xcode metadata') do
     test('sane_test keeps tracked project workspace metadata even when app .gitignore ignores it') do
       source = File.read(SANE_TEST_PATH)

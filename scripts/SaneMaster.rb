@@ -85,6 +85,8 @@ require_relative 'sanemaster/verify_failure_review'
 require_relative 'sanemaster/process_eval'
 require_relative 'sanemaster/agent_workflow'
 require_relative 'sanemaster/agent_context'
+require_relative 'sanemaster/ponytail_audit'
+require_relative 'sanemaster/operator_brief'
 require_relative 'sanemaster/command_registry'
 require_relative 'sanemaster/machine_cleanup'
 require_relative 'sanemaster/verify'
@@ -97,7 +99,6 @@ require_relative 'sanemaster/meta'
 require_relative 'sanemaster/tool_discovery'
 require_relative 'sanemaster/gate_review'
 require_relative 'sanemaster/universal_control'
-require_relative 'sanemaster/hosted_file_actions'
 require_relative 'sanemaster/session'
 require_relative 'sanemaster/circuit_breaker_state'
 require_relative 'sanemaster/structural_compliance'
@@ -107,8 +108,6 @@ require_relative 'sanemaster/release_readiness'
 require_relative 'sanemaster/ci_helpers'
 require_relative 'sanemaster/sales'
 require_relative 'sanemaster/downloads'
-require_relative 'sanemaster/leads'
-require_relative 'sanemaster/listing_actions'
 
 class SaneMaster
   include SaneMasterModules::Base
@@ -127,6 +126,8 @@ class SaneMaster
   include SaneMasterModules::ProcessEval
   include SaneMasterModules::AgentWorkflow
   include SaneMasterModules::AgentContext
+  include SaneMasterModules::PonytailAudit
+  include SaneMasterModules::OperatorBrief
   include SaneMasterModules::CommandRegistry
   include SaneMasterModules::MachineCleanup
   include SaneMasterModules::Verify
@@ -139,7 +140,6 @@ class SaneMaster
   include SaneMasterModules::ToolDiscovery
   include SaneMasterModules::GateReview
   include SaneMasterModules::UniversalControl
-  include SaneMasterModules::HostedFileActions
   include SaneMasterModules::Session
   include SaneMasterModules::StructuralCompliance
   include SaneMasterModules::Release
@@ -147,8 +147,6 @@ class SaneMaster
   include SaneMasterModules::CIHelpers
   include SaneMasterModules::Sales
   include SaneMasterModules::Downloads
-  include SaneMasterModules::Leads
-  include SaneMasterModules::ListingActions
 
   # ═══════════════════════════════════════════════════════════════════════════
   # COMMAND REFERENCE - Organized by category for easy discovery
@@ -198,9 +196,9 @@ class SaneMaster
         'sop_review' => { args: '[--json]', desc: 'Review SOP score history, caps, and inflation signals' },
         'proof_plan' => { args: '--task "TEXT" [--json]', desc: 'Choose focused Mini proof vs full canonical verify for a task' },
         'context_bundle' => { args: '--task "TEXT" [--output PATH.md] [--max-research N] [--max-memory N] [--json] [--dry-run]', desc: 'Package compact local agent/review context with research and Serena memory indexes' },
+        'ponytail_audit' => { args: '[--target PATH] [--output DIR] [--diff] [--model NAME] [--timeout seconds] [--json]', desc: 'Run Ponytail over-engineering audit and write markdown/JSON receipts' },
         'agent_eval' => { args: '[--fixture PATH] [--json]', desc: 'Evaluate prompt-to-workflow routing fixtures' },
         'skill_lint' => { args: '[--path PATH] [--json]', desc: 'Lint skill descriptions for reliable routing' },
-        'registry_review' => { args: '[--json]', desc: 'Review command and gate registry metadata for drift' },
         'refresh_qa_snapshots' => { args: '[--dry-run|--run] [--json]', desc: 'List or refresh stale app QA snapshots' },
         'gate_review' => { args: '<fixture.json> [--json]', desc: 'Review candidate prevention gates against seed/block/allow fixtures' },
         'structural' => { args: '[path]', desc: 'Structural compliance check (sc)' },
@@ -258,6 +256,7 @@ class SaneMaster
       desc: 'Status, support, and Mini control-plane workflows',
       commands: {
         'status' => { args: '', desc: 'Run the live cross-reference status report' },
+        'operator_brief' => { args: '[--nightly-report PATH] [--morning-report PATH] [--handoff PATH] [--output PATH] [--json]', desc: 'Summarize current SaneApps receipts into a prioritized operator brief' },
         'check_inbox' => { args: '[check|review <id>|read <id>|reply ...]', desc: 'Forward to the canonical support inbox workflow' },
         'sync_mini' => { args: '[mini] [--quiet] [--no-restart]', desc: 'Sync the Codex control-plane profile to the Mini (see also: sync_grok)' },
         'sync_grok' => { args: '[mini] [--quiet]', desc: 'Sync the Grok control-plane profile (grok-bin, config, .agents/skills) to the Mini' },
@@ -1155,18 +1154,27 @@ PY
     run_external_command_with_workflow_receipt('check_inbox', script, *forwarded_args)
   end
 
+  def run_python_automation_script(script_name, args)
+    script = File.join(saneprocess_repo_root, 'scripts', 'automation', script_name)
+    unless File.exist?(script)
+      puts "❌ #{script_name} not found at #{script}"
+      exit 1
+    end
+
+    system('python3', script, *args)
+    exit($CHILD_STATUS.exitstatus || 1) unless $CHILD_STATUS&.success?
+  end
+
   def run_sync_mini(args = [])
-    script = File.join(saneprocess_repo_root, 'scripts', 'automation', 'sync-codex-mini.sh')
-    forwarded_args = if args.empty? || args.first.start_with?('-')
-                       ['mini', *args]
-                     else
-                       args
-                     end
-    run_external_command('bash', script, *forwarded_args)
+    run_mini_sync_script('sync-codex-mini.sh', args)
   end
 
   def run_sync_grok(args = [])
-    script = File.join(saneprocess_repo_root, 'scripts', 'automation', 'sync-grok-mini.sh')
+    run_mini_sync_script('sync-grok-mini.sh', args)
+  end
+
+  def run_mini_sync_script(script_name, args)
+    script = File.join(saneprocess_repo_root, 'scripts', 'automation', script_name)
     forwarded_args = if args.empty? || args.first.start_with?('-')
                        ['mini', *args]
                      else
@@ -1363,8 +1371,12 @@ PY
       '--exclude', '.worktrees',
       '--exclude', '.build',
       '--exclude', 'build',
-      '--exclude', '.sane/customer_ui_action_receipt.json',
       '--include', 'outputs/',
+      '--include', 'outputs/customer_ui_action_receipt.json',
+      '--include', 'outputs/customer-ui/',
+      '--include', 'outputs/customer-ui/***',
+      '--include', 'outputs/runtime-preflight/',
+      '--include', 'outputs/runtime-preflight/***',
       '--exclude', 'outputs/***',
       '--exclude', 'DerivedData',
       '--exclude', 'node_modules',
@@ -1747,14 +1759,15 @@ PY
       proof_plan(args)
     when 'context_bundle', 'context-bundle'
       context_bundle(args)
+    when 'ponytail_audit', 'ponytail-audit'
+      success = ponytail_audit(args)
+      exit(success ? 0 : 1)
     when 'agent_eval', 'agent-eval'
       success = agent_eval(args)
       exit(success ? 0 : 1)
     when 'skill_lint', 'skill-lint'
       success = skill_lint(args)
       exit(success ? 0 : 1)
-    when 'registry_review', 'registry-review'
-      registry_review(args)
     when 'refresh_qa_snapshots', 'qa_refresh'
       refresh_qa_snapshots(args)
 
@@ -1763,6 +1776,9 @@ PY
       doctor
     when 'status'
       run_status(args)
+    when 'operator_brief', 'operator-brief', 'brief'
+      success = operator_brief(args)
+      exit(success ? 0 : 1) if args.include?('--strict')
     when 'check_inbox', 'check-inbox', 'inbox'
       run_check_inbox(args)
     when 'sync_mini', 'sync-mini'
@@ -1853,7 +1869,7 @@ PY
       system('python3', script, *args)
       exit($CHILD_STATUS.exitstatus || 1) unless $CHILD_STATUS&.success?
     when 'leads', 'prospects'
-      leads(args)
+      run_python_automation_script('lead-research.py', args)
 
     # CI Helpers
     when 'enable_ci_tests'
@@ -1989,9 +2005,9 @@ PY
     when 'md_export', 'mdpdf'
       export_markdown(args)
     when 'listing_actions', 'listing-actions'
-      listing_actions(args)
+      run_python_automation_script('listing-actions.py', args)
     when 'hosted_file_actions', 'hosted-file-actions'
-      hosted_file_actions(args)
+      run_python_automation_script('hosted-file-actions.py', args)
 
     else
       puts "❌ Unknown command: #{command}"
@@ -2364,7 +2380,7 @@ PY
       description: 'Prune disposable caches, full Trash, simulators, stale DerivedData, and optional Mini server generated artifacts.',
       flags: {
         '--host local|mini' => 'Inspect this machine or route the cleanup command to the Mini',
-        '--server' => 'Mini-only aggressive server reset: prune generated repo artifacts, routed workspaces, release staging, bulk outputs, and disposable app containers',
+        '--server' => 'Mini-only aggressive server reset: prune generated repo artifacts, routed workspaces, simulator runtimes, Codex residue, bulk outputs, and disposable app containers',
         '--apply' => 'Perform the planned safe cleanup; default is dry-run',
         '--preserve-apps A,B' => 'Additional app names to preserve even if no process is currently visible',
         '--min-free-gb N' => 'Disk pressure threshold used in the report',
@@ -2407,6 +2423,23 @@ PY
       flags: {},
       examples: [
         'status'
+      ]
+    },
+    'operator_brief' => {
+      usage: 'operator_brief [--nightly-report PATH] [--morning-report PATH] [--handoff PATH] [--output PATH] [--json] [--strict]',
+      description: 'Summarize current SaneApps receipts into a prioritized operator brief for the next maintenance loop.',
+      flags: {
+        '--nightly-report PATH' => 'Nightly report to parse (default: ~/SaneApps/outputs/nightly_report.md)',
+        '--morning-report PATH' => 'Business/opportunity report to freshness-check',
+        '--handoff PATH' => 'Session handoff to scan for active blockers',
+        '--output PATH' => 'Markdown output path (default: ~/SaneApps/outputs/operator_brief.md)',
+        '--json' => 'Print machine-readable report JSON',
+        '--strict' => 'Exit non-zero when the brief finds priorities'
+      },
+      examples: [
+        'operator_brief',
+        'operator_brief --json',
+        'operator-brief --strict'
       ]
     },
     'check_inbox' => {
@@ -2510,17 +2543,6 @@ PY
       },
       examples: [
         'setapp_package --project ~/SaneApps/apps/SaneClip --app-name SaneClip --scheme SaneClipSetapp'
-      ]
-    },
-    'registry_review' => {
-      usage: 'registry_review [--json]',
-      description: 'Review command and gate registry metadata so route, help, alias, and gate drift is visible before it turns into process friction.',
-      flags: {
-        '--json' => 'Print the registry review as JSON'
-      },
-      examples: [
-        'registry_review',
-        'registry_review --json'
       ]
     },
     'context_bundle' => {

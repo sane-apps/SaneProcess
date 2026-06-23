@@ -239,17 +239,6 @@ Client adapter state is stored locally in the relevant runtime directory; shared
 The rule is deliberate: update an existing source-of-truth doc before adding
 another markdown file.
 
-## Included Skills
-
-SaneProcess ships reusable skills that can be mirrored into `.agents/skills/` or another client-specific skill directory.
-
-These repo-shipped skills are separate from client-managed marketplace plugins such as Canva, Codex Security, OpenAI Developers, Product Design, and similar connectors.
-
-| Skill | Purpose |
-|-------|---------|
-| `critic` | Multi-perspective code review: bugs, data flow, integration, edge cases, UX, security |
-| `docs-audit` | Compatibility shim for the global audit workflow; keeps audit artifacts temporary and promotes durable conclusions into source-of-truth docs |
-
 ## Project Structure
 
 ```text
@@ -278,7 +267,7 @@ The full verification path is registry-backed so new script tests cannot silentl
 
 ```bash
 ruby scripts/SaneMaster.rb verify
-ruby scripts/hooks/test/tier_tests.rb
+ruby scripts/hooks/test_hooks.rb
 ruby scripts/hooks/saneprompt.rb --self-test
 ruby scripts/hooks/sanetools.rb --self-test
 ruby scripts/hooks/sanetrack.rb --self-test

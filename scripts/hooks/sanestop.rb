@@ -415,7 +415,7 @@ def check_tool_discovery_required
   required_skill = skill_state[:required].to_s
   requirements = SKILL_REQUIREMENTS[required_skill]
   return nil unless requirements && requirements[:requires_runner]
-  return nil if skill_state[:runner_proved] || skill_state[:runner_used]
+  return nil if skill_state[:runner_proved]
 
   runner_block_message(required_skill, skill_state)
 rescue StandardError => e
@@ -431,7 +431,7 @@ def validate_skill_execution
   invoked = skill_state[:invoked]
   subagents_spawned = skill_state[:subagents_spawned] || 0
   runner_started = skill_state[:runner_started] || false
-  runner_used = skill_state[:runner_proved] || skill_state[:runner_used] || false
+  runner_proved = skill_state[:runner_proved] || false
 
   requirements = SKILL_REQUIREMENTS[required_skill] || {}
   min_subagents = requirements[:min_subagents] || 0
@@ -444,7 +444,7 @@ def validate_skill_execution
   # Skill tool — and the startup gate frequently BLOCKS the Skill call itself, so
   # `invoked` stays false even when the workflow ran correctly. A valid runner
   # receipt therefore counts as invocation.
-  unless invoked || (requires_runner && runner_used)
+  unless invoked || (requires_runner && runner_proved)
     issues << "Skill '#{required_skill}' was required but NOT invoked"
     issues << "  You should have used the Skill tool to invoke it"
   end
@@ -455,7 +455,7 @@ def validate_skill_execution
     issues << "  You should have used Task tool to spawn subagents for heavy work"
   end
 
-  if requires_runner && !runner_used
+  if requires_runner && !runner_proved
     if runner_started
       issues << "Skill '#{required_skill}' runner command was attempted but no successful proof/receipt was recorded"
     else
@@ -464,7 +464,7 @@ def validate_skill_execution
     issues << "  Run #{MandatoryWorkflows.runner_command_for(required_skill)}" if MandatoryWorkflows.runner_command_for(required_skill)
   end
 
-  if required_skill.to_s == 'ship' && runner_used
+  if required_skill.to_s == 'ship' && runner_proved
     proof = skill_state[:runner_proof] || skill_state['runner_proof'] || {}
     clearance_path = proof[:clearance_path] || proof['clearance_path']
     unless clearance_path && File.file?(File.expand_path(clearance_path))
@@ -473,7 +473,7 @@ def validate_skill_execution
     end
   end
 
-  if required_skill == 'docs_audit' && runner_used && subagents_spawned < min_subagents
+  if required_skill == 'docs_audit' && runner_proved && subagents_spawned < min_subagents
     issues << "Skill '#{required_skill}' no longer accepts runner-only execution"
     issues << "  Spawn GPT subagents for the audit swarm instead of using gpt_audit.py"
   end

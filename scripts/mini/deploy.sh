@@ -12,6 +12,7 @@ REMOTE_PRIMARY_DIR="~/SaneApps/infra/SaneProcess/scripts/mini"
 REMOTE_LEGACY_DIR="~/SaneApps/infra/scripts"
 MINI_HOST="${MINI_HOST:-mini}"
 MINI_SSH_OPTS="${MINI_SSH_OPTS:-}"
+ENABLE_MINI_TRAINING_AGENTS="${ENABLE_MINI_TRAINING_AGENTS:-0}"
 MINI_SSH_ARGS=()
 
 if [ -n "$MINI_SSH_OPTS" ]; then
@@ -113,7 +114,11 @@ fi
 echo ""
 echo "Refreshing launch agents on mini..."
 mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-nightly-agent.sh ]; then NIGHTLY_HOUR=8 NIGHTLY_MINUTE=45 SANE_ROOT=\$HOME/SaneApps-automation SANE_OUTPUT_DIR=\$HOME/SaneApps/outputs bash $REMOTE_PRIMARY_DIR/mini-install-nightly-agent.sh; fi"
-mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-training-agents.sh ]; then SANE_ROOT=\$HOME/SaneApps-automation SANE_OUTPUT_DIR=\$HOME/SaneApps/outputs ENABLE_WEEKLY_TRAINING=true TRAIN_HARD_STOP_TIME=09:00 CHALLENGER_APP=SaneAI CHALLENGER_SELECTION_MODE=alternate CHALLENGER_ROTATION_ANCHOR_DATE=2026-05-02 CHALLENGER_ROTATION_ORDER=llama32-3b CHALLENGER_BUDGET_MIN=0 CHALLENGER_SKIP_WEEKDAY=0 RUN_CHALLENGERS_AFTER_WEEKLY=false CHALLENGER_HOUR=23 CHALLENGER_MINUTE=0 WEEKLY_TRAIN_HOUR=23 WEEKLY_TRAIN_MINUTE=0 READINESS_TARGET_APP=SaneSync TRAIN_ALERT_NOTIFY=true TRAIN_EXAMPLE_DROP_MAX_PCT=20 VALID_EXAMPLE_DROP_MAX_PCT=20 TRAINING_MODE_APP_QUIT_LIST=Xcode,SaneBar,SaneClick,SaneClip,SaneHosts,SaneSales,SaneSync,SaneVideo,Shottr,MenuMeters,gfxCardStatus,Safari bash $REMOTE_PRIMARY_DIR/mini-install-training-agents.sh; fi"
+if [ "$ENABLE_MINI_TRAINING_AGENTS" = "1" ]; then
+  mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-training-agents.sh ]; then SANE_ROOT=\$HOME/SaneApps-automation SANE_OUTPUT_DIR=\$HOME/SaneApps/outputs ENABLE_WEEKLY_TRAINING=true TRAIN_HARD_STOP_TIME=09:00 CHALLENGER_APP=SaneAI CHALLENGER_SELECTION_MODE=alternate CHALLENGER_ROTATION_ANCHOR_DATE=2026-05-02 CHALLENGER_ROTATION_ORDER=llama32-3b CHALLENGER_BUDGET_MIN=0 CHALLENGER_SKIP_WEEKDAY=0 RUN_CHALLENGERS_AFTER_WEEKLY=false CHALLENGER_HOUR=23 CHALLENGER_MINUTE=0 WEEKLY_TRAIN_HOUR=23 WEEKLY_TRAIN_MINUTE=0 READINESS_TARGET_APP=SaneSync TRAIN_ALERT_NOTIFY=true TRAIN_EXAMPLE_DROP_MAX_PCT=20 VALID_EXAMPLE_DROP_MAX_PCT=20 TRAINING_MODE_APP_QUIT_LIST=Xcode,SaneBar,SaneClick,SaneClip,SaneHosts,SaneSales,SaneSync,SaneVideo,Shottr,MenuMeters,gfxCardStatus,Safari bash $REMOTE_PRIMARY_DIR/mini-install-training-agents.sh; fi"
+else
+  echo "Skipped training agent refresh (set ENABLE_MINI_TRAINING_AGENTS=1 to re-enable)."
+fi
 mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-memory-guard.sh ]; then bash $REMOTE_PRIMARY_DIR/mini-install-memory-guard.sh; fi"
 
 echo ""

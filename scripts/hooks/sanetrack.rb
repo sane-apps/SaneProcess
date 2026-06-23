@@ -110,7 +110,6 @@ TEST_COMMAND_PATTERNS = [
   /pytest|python.*-m\s+test/i,
   /npm\s+test|yarn\s+test|bun\s+test/i,
   /rspec|minitest/i,
-  /ruby\s+.*tier_tests/i,
   /ruby\s+.*qa\.rb/i,
   /ruby\s+.*validation_report/i,
   /ruby\s+.*self[_-]test/i,
@@ -318,11 +317,9 @@ def track_skill_runner(tool_name, tool_input, tool_response)
     s[:runner_commands] = s[:runner_commands].last(10)
     if proof
       s[:runner_proved] = true
-      s[:runner_used] = true
       s[:runner_proof] = proof
     else
       s[:runner_proved] = false unless s[:runner_proved]
-      s[:runner_used] = false unless s[:runner_used]
     end
     s
   end

@@ -227,7 +227,6 @@ module StateManager
       subagents_spawned: 0,    # Count of Task tool calls (subagents)
       runner_started: false,   # Whether a matching runner-backed workflow command was attempted
       runner_proved: false,    # Whether successful workflow proof/receipt was seen for the active skill
-      runner_used: false,      # Back-compat alias for runner_proved
       runner_attempts: [],     # Matching runner command attempts and result status
       runner_commands: [],     # Matching runner/proof commands seen this session
       runner_proof: nil,       # Workflow-specific proof metadata

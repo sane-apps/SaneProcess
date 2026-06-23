@@ -46,7 +46,9 @@ module SaneMasterModules
     ].freeze
     SERVER_GENERATED_RELATIVE_PATHS = (SERVER_GENERATED_DIR_NAMES + ['vendor/bundle']).freeze
     SERVER_CHILD_CLEANUP_PATHS = [
-      '~/Downloads'
+      '~/Downloads',
+      '~/tmp',
+      '~/SaneApps/infra/SaneProcess/outputs'
     ].freeze
     SERVER_REPO_ROOTS = [
       '~/SaneApps/apps',
@@ -70,15 +72,31 @@ module SaneMasterModules
       '~/SaneApps-automation/release-work',
       '~/SaneApps-automation/release-publish',
       '~/SaneApps-automation/release-worktrees',
+      '~/scratch',
+      '~/codex-runs',
+      '~/abtest-scratch',
+      '~/tmp_sanebar_release',
+      '~/tmp_sanebar_upgrade',
+      '~/.tmp_saneclip_upgrade_dd_v222',
+      '~/.tmp_saneclip_upgrade_dd_v223',
+      '~/.tmp_saneclip_upgrade_install',
       '~/.codex/sessions',
+      '~/.codex/archived_sessions',
       '~/.codex/worktrees',
       '~/.codex/runs',
       '~/.codex/tmp',
       '~/.codex/.tmp',
+      '~/.npm/_npx',
+      '~/.npm/_cacache',
       '~/.codex-sync-backups',
       '~/.sanemaster/routed-workspaces',
+      '~/Library/Developer/XcodeBuildMCP/workspaces',
       '~/Library/Application Support/SaneVideo',
       '~/Library/Containers/com.sanevideo.app'
+    ].freeze
+    SERVER_CODE_SIGN_CLONE_GLOBS = [
+      '/private/var/folders/*/*/X/com.openai.codex.code_sign_clone',
+      '/System/Volumes/Data/private/var/folders/*/*/X/com.openai.codex.code_sign_clone'
     ].freeze
     SERVER_DESKTOP_EMAIL_MEDIA_GLOBS = [
       '~/Desktop/email-review-media*',
@@ -248,6 +266,7 @@ module SaneMasterModules
         simulator_active: false,
         xcodebuild_active: false,
         training_active: false,
+        codex_gui_active: false,
         mcp_processes: []
       }
 
@@ -260,6 +279,9 @@ module SaneMasterModules
         active[:simulator_active] ||= command.match?(/\b(simctl|launchd_sim)\b/) || command.include?('Simulator.app')
         active[:xcodebuild_active] ||= command.match?(/\bxcodebuild\b/)
         active[:training_active] ||= command.match?(/\b(mlx|train|training|finetune|inference)\b/i)
+        active[:codex_gui_active] ||= command.include?('/Applications/Codex.app/Contents/MacOS/Codex') ||
+                                      command.include?('Codex (Service)') ||
+                                      command.include?('Codex (Renderer)')
         active[:mcp_processes] << row if command.match?(/\b(mcp|xcodebuildmcp)\b/i)
       end
 
@@ -323,11 +345,61 @@ module SaneMasterModules
           reason: 'Disposable developer cache; safe to regenerate.'
         }
       end
+      targets.concat(machine_cleanup_uv_cache_targets)
 
       total = targets.sum { |target| target[:size_gb].to_f }
       return [] if total < options[:cache_threshold_gb]
 
       targets
+    end
+
+    def machine_cleanup_uv_cache_targets
+      targets = []
+      uv_root = File.expand_path('~/.cache/uv')
+
+      if Dir.exist?(uv_root)
+        tmp_dirs = Dir.glob(File.join(uv_root, '.tmp*')).select { |path| File.directory?(path) }
+        tmp_size = tmp_dirs.sum { |path| path_size_gb(path) }.round(2)
+        if tmp_size > 0.01
+          targets << {
+            type: 'trash_matching_children',
+            category: 'uv_temp_cache',
+            path: uv_root,
+            pattern: '.tmp*',
+            size_gb: tmp_size,
+            reason: 'Stale uv temporary environments from interrupted Codex/MCP Python tooling.'
+          }
+        end
+      end
+
+      archive_root = File.join(uv_root, 'archive-v0')
+      if Dir.exist?(archive_root)
+        active_names = machine_cleanup_active_uv_archive_names
+        stale_dirs = Dir.children(archive_root).map { |entry| File.join(archive_root, entry) }
+                         .select { |path| File.directory?(path) && !active_names.include?(File.basename(path)) }
+        stale_size = stale_dirs.sum { |path| path_size_gb(path) }.round(2)
+        if stale_size > 0.01
+          targets << {
+            type: 'trash_matching_children',
+            category: 'uv_archive_cache',
+            path: archive_root,
+            pattern: '*',
+            except_names: active_names,
+            size_gb: stale_size,
+            reason: 'Inactive uvx archive environments; active archive paths from running processes are preserved.'
+          }
+        end
+      end
+
+      targets
+    end
+
+    def machine_cleanup_active_uv_archive_names
+      machine_cleanup_ps_rows.each_with_object([]) do |row, names|
+        row[:command].to_s.scan(%r{\.cache/uv/archive-v0/([^/\s]+)}) do |match|
+          names << match.first
+        end
+      end.uniq
     end
 
     def total_disposable_cache_gb
@@ -419,6 +491,16 @@ module SaneMasterModules
             category: 'server_simulator_unavailable',
             argv: %w[xcrun simctl delete unavailable],
             reason: 'Server-mode cleanup: remove unavailable simulator records after deleting devices.'
+          },
+          {
+            type: 'command',
+            category: 'server_simulator_runtime_delete',
+            argv: [
+              'sh',
+              '-c',
+              'xcrun simctl runtime list -v 2>/dev/null | grep -q "Total Disk Images: 0" && exit 0; xcrun simctl runtime delete all'
+            ],
+            reason: 'Server-mode cleanup: simulator runtime disk images are disposable on the Mini and can be redownloaded if needed.'
           }
         ]
       end
@@ -474,6 +556,27 @@ module SaneMasterModules
         }
       end
 
+      if active[:codex_gui_active]
+        targets << {
+          type: 'skip',
+          category: 'server_codex_residue',
+          reason: 'Codex GUI is active; skipping code-sign clone cleanup until Codex is closed.'
+        }
+      else
+        server_codex_code_sign_clone_paths.each do |path|
+          size_gb = path_size_gb(path)
+          next if size_gb <= 0.01
+
+          targets << {
+            type: 'trash_path',
+            category: 'server_codex_residue',
+            path: path,
+            size_gb: size_gb,
+            reason: 'Server-mode cleanup: stale Codex code-sign clone residue under /private/var/folders.'
+          }
+        end
+      end
+
       server_desktop_email_media_paths.each do |path|
         next unless File.exist?(path)
 
@@ -517,7 +620,7 @@ module SaneMasterModules
         active_apps: active.fetch(:apps, {}).keys.sort,
         action_count: actions.count { |action| action[:type] != 'skip' },
         skipped: actions.count { |action| action[:type] == 'skip' },
-        reclaimable_gb: actions.select { |action| %w[trash_path trash_children empty_trash].include?(action[:type].to_s) }.sum { |action| action[:size_gb].to_f }.round(2)
+        reclaimable_gb: actions.select { |action| %w[trash_path trash_children trash_matching_children empty_trash].include?(action[:type].to_s) }.sum { |action| action[:size_gb].to_f }.round(2)
       }
     end
 
@@ -560,6 +663,12 @@ module SaneMasterModules
           else
             failed << action.merge(error: 'trash children failed')
           end
+        when 'trash_matching_children'
+          if machine_cleanup_safe_path?(action[:path]) && trash_matching_children(action[:path], action[:pattern], action.fetch(:except_names, []))
+            applied << action
+          else
+            failed << action.merge(error: 'trash matching children failed')
+          end
         when 'command'
           success = system(*action[:argv], out: options[:quiet] ? File::NULL : $stdout, err: options[:quiet] ? File::NULL : $stderr)
           success ? applied << action : failed << action.merge(error: 'command failed')
@@ -567,6 +676,7 @@ module SaneMasterModules
       end
 
       empty_user_trash if applied.any? { |action| %w[trash_path trash_children].include?(action[:type].to_s) }
+      empty_user_trash if applied.any? { |action| action[:type].to_s == 'trash_matching_children' }
 
       {
         success: failed.empty?,
@@ -587,6 +697,7 @@ module SaneMasterModules
       return true if server_exact_cleanup_paths.any? { |allowed| expanded == allowed }
       return true if server_child_cleanup_paths.any? { |allowed| expanded == allowed }
       return true if server_desktop_email_media_path?(expanded)
+      return true if server_codex_code_sign_clone_path?(expanded)
 
       server_repo_generated_path?(expanded)
     end
@@ -599,9 +710,24 @@ module SaneMasterModules
       SERVER_EXACT_CLEANUP_PATHS.map { |path| File.expand_path(path) }
     end
 
+    def server_codex_code_sign_clone_paths
+      SERVER_CODE_SIGN_CLONE_GLOBS.flat_map { |glob| Dir.glob(glob) }.uniq
+    end
+
+    def server_codex_code_sign_clone_path?(path)
+      expanded = File.expand_path(path)
+      SERVER_CODE_SIGN_CLONE_GLOBS.any? do |glob|
+        prefix = glob.split('*').first
+        suffix = glob.split('*').last
+        expanded.start_with?(File.expand_path(prefix)) && expanded.end_with?(suffix)
+      end
+    end
+
     def server_desktop_email_media_paths
       SERVER_DESKTOP_EMAIL_MEDIA_GLOBS.flat_map do |raw_glob|
         Dir.glob(File.expand_path(raw_glob))
+      rescue SystemCallError
+        []
       end.uniq
     end
 
@@ -668,6 +794,16 @@ module SaneMasterModules
 
       Dir.children(path).all? do |entry|
         trash_path(File.join(path, entry))
+      end
+    end
+
+    def trash_matching_children(path, pattern, except_names = [])
+      return true unless Dir.exist?(path)
+
+      Dir.glob(File.join(path, pattern)).all? do |child|
+        next true if except_names.include?(File.basename(child))
+
+        trash_path(child)
       end
     end
 

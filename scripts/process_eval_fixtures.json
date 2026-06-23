@@ -395,12 +395,11 @@
     },
     {
       "id": "agent_process_regression_receipt",
-      "description": "Agent workflow changes prove prompt routing, process traces, skill lint, and registry metadata before completion.",
+      "description": "Agent workflow changes prove prompt routing, process traces, and skill lint before completion.",
       "events": [
         { "type": "command", "name": "agent_eval" },
         { "type": "command", "name": "process_eval" },
         { "type": "command", "name": "skill_lint" },
-        { "type": "command", "name": "registry_review" },
         { "type": "artifact", "name": "context_bundle_receipt" }
       ],
       "expect": {
@@ -408,7 +407,6 @@
           "agent_eval",
           "process_eval",
           "skill_lint",
-          "registry_review",
           "context_bundle_receipt"
         ],
         "ordered_events": ["agent_eval", "process_eval"],

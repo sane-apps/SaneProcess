@@ -492,8 +492,6 @@ module SaneMasterModules
 
     def discovered_script_test_paths
       paths = Dir.glob('scripts/**/*_test.rb') + Dir.glob('scripts/**/*_test.py')
-      tier_tests = 'scripts/hooks/test/tier_tests.rb'
-      paths << tier_tests if File.exist?(tier_tests)
       paths.sort.uniq
     end
 

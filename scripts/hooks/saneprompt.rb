@@ -399,7 +399,6 @@ def set_skill_requirement(skill_info, prompt = nil)
     s[:subagents_spawned] = 0
     s[:runner_started] = false
     s[:runner_proved] = false
-    s[:runner_used] = false
     s[:runner_attempts] = []
     s[:runner_commands] = []
     s[:runner_proof] = nil

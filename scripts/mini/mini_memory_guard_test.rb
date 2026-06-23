@@ -21,6 +21,8 @@ exit(run_tests('Mini Memory Guard Tests') do
       assert_includes(guard_source, '$HOME/SaneApps/tmp/')
       assert_includes(guard_source, '$HOME/tmp/')
       assert_includes(guard_source, '$HOME/Library/Developer/CoreSimulator/Devices/')
+      assert_includes(guard_source, 'SaneMaster.rb')
+      assert_includes(guard_source, 'machine_cleanup --host local --server')
       assert_includes(guard_source, '$HOME/SaneApps-automation/apps/')
       assert_includes(guard_source, '$HOME/SaneApps/apps/SaneVideo/outputs')
       true
@@ -41,6 +43,7 @@ exit(run_tests('Mini Memory Guard Tests') do
       assert_includes(guard_source, 'cleanup_stale_automation_git_locks')
       assert_includes(guard_source, 'cleanup_setapp_review_outputs')
       assert_includes(guard_source, 'cleanup_tmp_workspaces')
+      assert_includes(guard_source, 'run_sanemaster_server_cleanup')
       assert_includes(guard_source, 'cleanup_trash')
       assert_includes(guard_source, 'cleanup_coresimulator_devices')
       true
@@ -79,6 +82,16 @@ exit(run_tests('Mini Memory Guard Tests') do
     test('logs disk free space before and after cleanup') do
       assert_includes(guard_source, 'disk_free_gb')
       assert_includes(guard_source, 'get_data_disk_free_gb')
+      true
+    end
+
+    test('treats unreadable size probes as non-fatal') do
+      assert_includes(guard_source, 'path_size_mb()')
+      assert_includes(guard_source, 'mb="$(du -sm "$1" 2>/dev/null | awk')
+      assert_includes(guard_source, '|| mb=0')
+      assert_includes(guard_source, 'path_size_mb "$trash_root"')
+      assert_includes(guard_source, 'path_size_mb "$devices_root"')
+      assert_includes(guard_source, 'path_size_mb "$dd_root"')
       true
     end
 

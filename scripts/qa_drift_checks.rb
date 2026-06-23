@@ -159,13 +159,6 @@ module QaDriftChecks
     claimed_tier = readme_content[/Tier Tests \((\d+)\)/i, 1]&.to_i
     claimed_self = readme_content[/Self-Tests \((\d+)\)/i, 1]&.to_i
 
-    # Extract per-tier counts from table rows (Easy, Hard, Villain)
-    tier_rows = {}
-    readme_content.scan(/\|\s*(Easy|Hard|Villain)\s*\|\s*(\d+)\s*\|/i) do |tier, count|
-      tier_rows[tier.downcase] = count.to_i
-    end
-    tier_row_sum = tier_rows.values.sum if tier_rows.any?
-
     # Extract per-hook self-test counts
     self_rows = {}
     readme_content.scan(/\|\s*(saneprompt|sanetrack|sanetools|sanestop)\s*\|\s*(\d+)\s*\|/i) do |hook, count|
@@ -174,26 +167,11 @@ module QaDriftChecks
     self_row_sum = self_rows.values.sum if self_rows.any?
 
     # Internal consistency: do table rows sum to header?
-    if tier_row_sum && claimed_tier && tier_row_sum != claimed_tier
-      issues << "README tier rows sum to #{tier_row_sum}, header says #{claimed_tier}"
-    end
     if self_row_sum && claimed_self && self_row_sum != claimed_self
       issues << "README self-test rows sum to #{self_row_sum}, header says #{claimed_self}"
     end
     if claimed_total && claimed_tier && claimed_self && claimed_tier + claimed_self != claimed_total
       issues << "README total (#{claimed_total}) != tier (#{claimed_tier}) + self (#{claimed_self})"
-    end
-
-    # Get actual tier test total
-    test_file = File.join(__dir__, 'hooks', 'test', 'tier_tests.rb')
-    if File.exist?(test_file)
-      result, = capture_qa_command('ruby', test_file)
-      if (match = result.match(/TOTAL: (\d+)\/(\d+) passed/))
-        actual_tier = match[2].to_i
-        if claimed_tier && claimed_tier != actual_tier
-          issues << "README claims #{claimed_tier} tier tests, actual: #{actual_tier}"
-        end
-      end
     end
 
     # Get actual self-test totals per hook

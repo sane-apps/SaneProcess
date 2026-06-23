@@ -61,7 +61,6 @@ module SaneMasterModules
       %r{/(?:transformers|sklearn|numba|PyJWT|pyjwt)-[^/]*/},
       %r{/\.claude/plugins/marketplaces/[^/]+/src/supervisor/env-sanitizer\.ts\z},
       %r{/\.grok/marketplace-cache/[^/]+/src/supervisor/env-sanitizer\.ts\z},
-      %r{/skills/critic/prompts/security-auditor\.md\z},
       %r{/SaneClip/Tests/SaneClipTests\.swift\z},
       %r{/SaneClip-clean/Tests/SaneClipTests\.swift\z}
     ].freeze

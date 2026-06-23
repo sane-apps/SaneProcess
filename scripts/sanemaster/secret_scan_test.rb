@@ -161,7 +161,6 @@ exit(run_tests('SaneMaster Secret Scan Tests') do
         scanner = File.join(dir, 'av')
         write_fake_av(scanner)
         findings = [
-          File.join(dir, 'skills', 'critic', 'prompts', 'security-auditor.md'),
           File.join(dir, 'apps', 'SaneClip', 'Tests', 'SaneClipTests.swift'),
           File.join(dir, '.nvm', '.github', 'workflows', 'windows-npm.yml')
         ].map do |path|
@@ -178,7 +177,7 @@ exit(run_tests('SaneMaster Secret Scan Tests') do
         assert_eq(status.exitstatus, 0, stderr)
         assert_eq(receipt['status'], 'pass')
         assert_eq(receipt['actionable_count'], 0)
-        assert_eq(receipt['ignored_count'], 3)
+        assert_eq(receipt['ignored_count'], 2)
       end
       true
     end

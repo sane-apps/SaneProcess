@@ -2,10 +2,10 @@
   "version": 1,
   "tests": [
     {
-      "path": "scripts/hooks/test/tier_tests.rb",
-      "label": "SaneProcess hook enforcement tests",
+      "path": "scripts/hooks/test_hooks.rb",
+      "label": "SaneProcess hook integration tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/hooks/test/tier_tests.rb"]
+      "cmd": ["ruby", "scripts/hooks/test_hooks.rb"]
     },
     {
       "path": "scripts/hooks/sane_rsync_guard_test.rb",
@@ -200,6 +200,12 @@
       "cmd": ["ruby", "scripts/mini/mini_gui_run_test.rb"]
     },
     {
+      "path": "scripts/mini/deploy_test.rb",
+      "label": "SaneProcess Mini deploy guard tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/mini/deploy_test.rb"]
+    },
+    {
       "path": "scripts/mini/bootstrap_build_server_test.rb",
       "label": "SaneProcess Mini bootstrap credential tests",
       "status": "required",
@@ -258,6 +264,18 @@
       "label": "SaneProcess command registry tests",
       "status": "required",
       "cmd": ["ruby", "scripts/sanemaster/command_registry_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/operator_brief_test.rb",
+      "label": "SaneProcess operator brief tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/operator_brief_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/ponytail_audit_test.rb",
+      "label": "SaneProcess ponytail audit tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/ponytail_audit_test.rb"]
     },
     {
       "path": "scripts/sanemaster/machine_cleanup_test.rb",
@@ -410,22 +428,34 @@
       "reason": "Loaded by hook tier tests; it is not a standalone executable test."
     },
     {
+      "path": "scripts/hooks/sanestop_persistence_test.rb",
+      "label": "sanestop persistence self-test support module",
+      "status": "support",
+      "reason": "Loaded by sanestop_test.rb; it is not a standalone executable test."
+    },
+    {
       "path": "scripts/hooks/sanetools_test.rb",
       "label": "sanetools self-test support module",
       "status": "support",
-      "reason": "Loaded by hook tier tests; it is not a standalone executable test."
+      "reason": "Loaded by hook integration/self-test coverage; it is not a standalone executable test."
+    },
+    {
+      "path": "scripts/hooks/sanetools_gate_test.rb",
+      "label": "sanetools gate self-test support module",
+      "status": "support",
+      "reason": "Loaded by sanetools_test.rb; it is not a standalone executable test."
     },
     {
       "path": "scripts/hooks/sanetrack_test.rb",
       "label": "sanetrack self-test support module",
       "status": "support",
-      "reason": "Loaded by hook tier tests; it is not a standalone executable test."
+      "reason": "Loaded by hook integration/self-test coverage; it is not a standalone executable test."
     },
     {
       "path": "scripts/hooks/test/hook_test.rb",
       "label": "legacy hook scenario suite",
       "status": "manual",
-      "reason": "Superseded by tier_tests.rb; still registered so it cannot disappear unnoticed."
+      "reason": "Legacy scenario suite kept for targeted forensic runs, not every verify."
     },
     {
       "path": "scripts/hooks/test/real_failures_test.rb",

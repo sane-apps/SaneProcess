@@ -10,7 +10,7 @@ and command help lives in `./scripts/SaneMaster.rb help <category>`.
 
 ```bash
 ruby scripts/SaneMaster.rb verify                 # canonical full verification
-ruby scripts/hooks/test/tier_tests.rb             # hook enforcement suite
+ruby scripts/hooks/test_hooks.rb                  # hook integration suite
 ruby scripts/SaneMaster.rb tool_discovery --query "..." # tool/MCP proof receipt
 ruby scripts/SaneMaster.rb process_metrics --export-otel outputs/process-traces.json
 ruby scripts/SaneMaster.rb route_cost_review --json # rank expensive proof-route risks
@@ -177,7 +177,7 @@ After `scripts/init.sh --client grok` in a repo:
    - `ruby scripts/SaneMaster.rb release_preflight`
    - `ruby scripts/SaneMaster.rb sync_grok` (operator only — keeps your Grok profile in sync with the Mini)
 
-6. Shared skills (critic, docs-audit) land in `.agents/skills/`. Load them via your client's skill mechanism or invoke the SKILL.md prompts directly when needed.
+6. Use global client skills such as `critic` and `audit`; SaneProcess no longer carries local reviewer prompt packs.
 
 The portable enforcement contract for Grok (and Codex, generic agents) is **AGENTS.md + explicit calls to SaneMaster + shell guards**. High-risk native hook entries may still block dangerous commands when Grok invokes them; passive tracking annotations are safe to ignore or disable per-session for pure Grok workflows.
 

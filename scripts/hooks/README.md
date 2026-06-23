@@ -33,7 +33,7 @@ ruby scripts/hooks/sanestop.rb --self-test
 ruby scripts/hooks/test_hooks.rb
 ruby scripts/hooks/session_docs_test.rb
 ruby scripts/hooks/grok_and_security_guard_test.rb
-ruby scripts/hooks/test/tier_tests.rb
+ruby scripts/hooks/test_hooks.rb
 ```
 
 Full verification remains `ruby scripts/SaneMaster.rb verify`; the focused commands above are the hook-layer slices.
@@ -95,9 +95,11 @@ Full verification remains `ruby scripts/SaneMaster.rb verify`; the focused comma
 |------|---------|
 | `saneprompt_test.rb` | saneprompt self-tests |
 | `sanetools_test.rb` | sanetools self-tests |
+| `sanetools_gate_test.rb` | sanetools startup, GitHub, and MCP gate self-tests |
 | `sanetools_test_scenarios.rb` | shared sanetools self-test fixtures |
 | `sanetrack_test.rb` | sanetrack self-tests |
 | `sanestop_test.rb` | sanestop self-tests |
+| `sanestop_persistence_test.rb` | sanestop handoff, visual, validation, and JSON self-tests |
 
 ## State File
 
@@ -145,6 +147,6 @@ Reset with `rb-` command.
 
 Run the full test suite:
 ```bash
-ruby scripts/hooks/test/tier_tests.rb
+ruby scripts/hooks/test_hooks.rb
 ruby scripts/SaneMaster.rb verify
 ```

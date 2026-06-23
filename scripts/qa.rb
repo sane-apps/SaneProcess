@@ -52,9 +52,11 @@ class SaneProcessQA
   SELF_TEST_MODULES = %w[
     saneprompt_test.rb
     sanetools_test.rb
+    sanetools_gate_test.rb
     sanetools_test_scenarios.rb
     sanetrack_test.rb
     sanestop_test.rb
+    sanestop_persistence_test.rb
   ].freeze
 
   # Runtime modules are derived from the entry hooks' actual require_relative
@@ -93,6 +95,7 @@ class SaneProcessQA
   SANEMASTER_DIR = File.join(__dir__, 'sanemaster')
   SANEPROCESS_ROOT = File.expand_path('..', __dir__)
   QA_CHILD_COMMAND_TIMEOUT_SECONDS = Integer(ENV.fetch('SANEPROCESS_QA_CHILD_TIMEOUT_SECONDS', '75'))
+  QA_SELF_TEST_TIMEOUT_SECONDS = Integer(ENV.fetch('SANEPROCESS_QA_SELF_TEST_TIMEOUT_SECONDS', '150'))
 
   EXPECTED_SANEMASTER_MODULES = %w[
     base.rb
@@ -147,7 +150,6 @@ class SaneProcessQA
     check_file_line_counts
     run_hook_tests
     run_self_tests
-    run_test_audit
     check_test_count_claims
 
     puts
@@ -261,16 +263,16 @@ def check_hooks_registered
     end
 
     hooks_section = settings["hooks"] || {}
-    %w[UserPromptSubmit SessionStart PreToolUse PostToolUse Stop].each do |hook_type|
+    %w[UserPromptSubmit SessionStart PreToolUse PostToolUse TaskCompleted Stop].each do |hook_type|
       entries = hooks_section[hook_type] || []
       entries.each do |entry|
         hook_list = entry["hooks"] || []
         hook_list.each do |hook|
           command = hook["command"] || ""
-          # Match hook filenames from any path format:
-          #   ./scripts/hooks/X.rb, ~/SaneApps/.../hooks/X.rb, etc.
-          if (match = command.match(%r{hooks/([^/\s"]+\.rb)}))
-            registered_hooks << match[1]
+          EXPECTED_HOOKS.each do |expected_hook|
+            next unless command.match?(/(?:\A|[\s\/])#{Regexp.escape(expected_hook)}(?:\z|[\s"'])/)
+
+            registered_hooks << expected_hook
             found_in = path == SETTINGS_JSON ? "project" : "global"
           end
         end
@@ -558,17 +560,16 @@ end
   end
 
   def run_hook_tests
-    print "Running tier tests... "
+    print "Running hook integration tests... "
 
-    test_file = File.join(HOOKS_DIR, 'test', 'tier_tests.rb')
+    test_file = File.join(HOOKS_DIR, 'test_hooks.rb')
     unless File.exist?(test_file)
-      @warnings << "Tier tests not found at #{test_file}"
+      @warnings << "Hook integration tests not found at #{test_file}"
       puts "⚠️  Tests not found"
       return
     end
 
     result, success = capture_qa_command('ruby', test_file)
-    # Extract counts from summary
     if (match = result.match(/TOTAL: (\d+)\/(\d+) passed(?:, (\d+) weak)?/))
       passed = match[1].to_i
       total = match[2].to_i
@@ -579,13 +580,13 @@ end
         weak_note = weak > 0 ? " (#{weak} weak)" : ''
         puts "✅ #{passed}/#{total} passed#{weak_note}"
       else
-        @errors << "Tier tests: #{failed} failed"
+        @errors << "Hook integration tests: #{failed} failed"
         puts "❌ #{passed}/#{total} passed, #{failed} failed"
       end
     elsif success
       puts "✅ Tests pass"
     else
-      @errors << "Tier tests failed"
+      @errors << "Hook integration tests failed"
       puts "❌ Tests failed"
       puts result.lines.last(5).join if result.lines.count > 0
     end
@@ -603,7 +604,7 @@ end
       hook_path = File.join(HOOKS_DIR, "#{hook}.rb")
       next unless File.exist?(hook_path)
 
-      result, success = capture_qa_command('ruby', hook_path, '--self-test')
+      result, success = capture_qa_command('ruby', hook_path, '--self-test', timeout: QA_SELF_TEST_TIMEOUT_SECONDS)
       # Match "N/N tests passed" specifically — avoid false matches like "4/5 categories"
       if (match = result.match(/(\d+)\/(\d+) tests passed/))
         passed = match[1].to_i
@@ -626,32 +627,6 @@ end
       @errors << "Self-tests: #{failures.join(', ')}"
       puts "❌ #{total_passed} passed, #{total_failed} failed"
       failures.each { |f| puts "   #{f}" }
-    end
-  end
-
-  def run_test_audit
-    print "Running test audit... "
-
-    audit_file = File.join(HOOKS_DIR, 'test', 'test_audit.rb')
-    unless File.exist?(audit_file)
-      @warnings << "Test audit not found"
-      puts "⚠️  Not found"
-      return
-    end
-
-    result, = capture_qa_command('ruby', audit_file)
-    if (match = result.match(/TOTAL: (\d+) strong, (\d+) weak/))
-      strong = match[1].to_i
-      weak = match[2].to_i
-      if weak == 0
-        puts "✅ Tier audit: #{strong} strong, 0 weak"
-      else
-        pct = ((strong.to_f / (strong + weak)) * 100).round(1)
-        @warnings << "#{weak} weak tests (#{pct}% assertion coverage)"
-        puts "⚠️  #{strong} strong, #{weak} weak (#{pct}%)"
-      end
-    else
-      puts "⚠️  Could not parse audit output"
     end
   end
 

@@ -549,7 +549,7 @@ module SaneMasterModules
         Array(report[:issues]).each { |issue| lines << "   - #{issue}" }
       end
       Array(report[:warnings]).each { |warning| lines << "⚠️  #{warning}" }
-      lines.join("\n")
+      lines.map { |line| customer_ui_report_utf8(line) }.join("\n")
     end
 
     def format_customer_ui_sweep_report(report)
@@ -566,10 +566,14 @@ module SaneMasterModules
         lines << '❌ FAIL'
         Array(report[:issues]).each { |issue| lines << "   - #{issue}" }
       end
-      lines.join("\n")
+      lines.map { |line| customer_ui_report_utf8(line) }.join("\n")
     end
 
     private
+
+    def customer_ui_report_utf8(value)
+      value.to_s.encode('UTF-8', invalid: :replace, undef: :replace, replace: '�')
+    end
 
     def customer_ui_allowed_host?
       customer_ui_mini_host? || customer_ui_air_fallback_approved?

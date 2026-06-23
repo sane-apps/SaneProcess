@@ -62,6 +62,12 @@ get_data_disk_free_gb() {
   df -g /System/Volumes/Data | tail -1 | awk '{print $4}'
 }
 
+path_size_mb() {
+  local mb
+  mb="$(du -sm "$1" 2>/dev/null | awk '{print $1}')" || mb=0
+  echo "${mb:-0}"
+}
+
 is_training_running() {
   pgrep -f "mlx_lm lora --train" >/dev/null 2>&1 || \
     pgrep -f "mini-train.sh" >/dev/null 2>&1 || \
@@ -153,7 +159,7 @@ prune_old_dirs_by_mtime() {
       continue
     fi
     local dir_mb
-    dir_mb=$(du -sm "$dir" 2>/dev/null | awk '{print $1}')
+    dir_mb=$(path_size_mb "$dir")
     safe_remove_path "$dir" || continue
     removed=$((removed + 1))
     freed_mb=$((freed_mb + dir_mb))
@@ -195,7 +201,7 @@ prune_sweep_dirs() {
 
     if [[ "$sweep_date" < "$cutoff" ]]; then
       local dir_mb
-      dir_mb=$(du -sm "$sweep_dir" 2>/dev/null | awk '{print $1}')
+      dir_mb=$(path_size_mb "$sweep_dir")
       safe_remove_path "$sweep_dir" || continue
       removed=$((removed + 1))
       freed_mb=$((freed_mb + dir_mb))
@@ -221,7 +227,7 @@ cleanup_training_artifacts() {
     for tmp_dir in "$sane_root/apps/SaneSync/models"/_fuse_test_*; do
       [ -d "$tmp_dir" ] || continue
       local dir_mb
-      dir_mb=$(du -sm "$tmp_dir" 2>/dev/null | awk '{print $1}')
+      dir_mb=$(path_size_mb "$tmp_dir")
       safe_remove_path "$tmp_dir" || continue
       log "Removed temporary fusion dir $(basename "$tmp_dir") (${dir_mb}MB)"
     done
@@ -365,7 +371,7 @@ cleanup_coresimulator_devices() {
   [ -d "$devices_root" ] || return 0
 
   local devices_mb
-  devices_mb=$(du -sm "$devices_root" 2>/dev/null | awk '{print $1}')
+  devices_mb=$(path_size_mb "$devices_root")
   [ -n "$devices_mb" ] || devices_mb=0
 
   local max_mb=$((max_gb * 1024))
@@ -396,7 +402,7 @@ cleanup_trash() {
   [ -d "$trash_root" ] || return 0
 
   local trash_mb
-  trash_mb=$(du -sm "$trash_root" 2>/dev/null | awk '{print $1}')
+  trash_mb=$(path_size_mb "$trash_root")
   [ -n "$trash_mb" ] || trash_mb=0
   if [ "$trash_mb" -le "$max_mb" ]; then
     log "Trash within limit (${trash_mb}MB <= ${max_mb}MB)"
@@ -420,7 +426,7 @@ cleanup_large_deriveddata() {
   [ -d "$dd_root" ] || return 0
 
   local dd_mb
-  dd_mb=$(du -sm "$dd_root" 2>/dev/null | awk '{print $1}')
+  dd_mb=$(path_size_mb "$dd_root")
   [ -n "$dd_mb" ] || dd_mb=0
 
   local max_mb=$((max_gb * 1024))
@@ -461,6 +467,32 @@ cleanup_stale_deriveddata_apps() {
   pkill -f '/DerivedData/.*/Sane[^ ]*\.app/Contents/MacOS/Sane' || true
   sleep 1
   log "Killed stale DerivedData Sane app process(es)"
+}
+
+run_sanemaster_server_cleanup() {
+  local sanemaster="$HOME/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb"
+  [ -f "$sanemaster" ] || {
+    log "SaneMaster server cleanup skipped; missing $sanemaster"
+    return 0
+  }
+
+  if is_training_running || is_nightly_running; then
+    log "SaneMaster server cleanup skipped because build/training is active."
+    return 0
+  fi
+
+  log "Running SaneMaster machine_cleanup --server"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    ruby "$sanemaster" machine_cleanup --host local --server --json >> "$LOG_FILE" 2>&1 || {
+      log "SaneMaster server cleanup dry-run failed"
+      return 1
+    }
+  else
+    ruby "$sanemaster" machine_cleanup --host local --server --apply --quiet --json >> "$LOG_FILE" 2>&1 || {
+      log "SaneMaster server cleanup failed"
+      return 1
+    }
+  fi
 }
 
 in_reboot_window() {
@@ -586,6 +618,7 @@ main() {
   cleanup_stale_automation_git_locks
   cleanup_setapp_review_outputs
   cleanup_tmp_workspaces
+  run_sanemaster_server_cleanup
   cleanup_trash
   cleanup_coresimulator_devices
   cleanup_large_deriveddata

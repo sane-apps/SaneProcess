@@ -313,7 +313,7 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
       commands = subject.send(:script_only_verify_commands)
 
       assert(commands, 'expected scripted verify commands')
-      assert_eq(commands.first[:label], 'SaneProcess hook enforcement tests')
+      assert_eq(commands.first[:label], 'SaneProcess hook integration tests')
       assert_eq(commands.first[:cmd].first, 'ruby')
       assert_includes(commands.map { |entry| entry[:cmd].join(' ') }, 'ruby scripts/sanemaster/gate_review_test.rb')
       assert_includes(commands.map { |entry| entry[:cmd].join(' ') }, 'ruby scripts/sanemaster/process_metrics_test.rb')

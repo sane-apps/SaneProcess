@@ -39,4 +39,18 @@ class SaneProcessQATest < Minitest::Test
     refute_includes source, '`ruby #{hook_path} --self-test 2>&1`'
     refute_includes drift_source, '`ruby #{hook_path} --self-test 2>&1`'
   end
+
+  def test_hook_self_tests_have_separate_timeout
+    source = File.read(File.join(__dir__, 'qa.rb'), encoding: Encoding::UTF_8)
+
+    assert_includes source, 'QA_SELF_TEST_TIMEOUT_SECONDS'
+    assert_includes source, "capture_qa_command('ruby', hook_path, '--self-test', timeout: QA_SELF_TEST_TIMEOUT_SECONDS)"
+  end
+
+  def test_hook_registration_accepts_run_hook_wrapper
+    source = File.read(File.join(__dir__, 'qa.rb'), encoding: Encoding::UTF_8)
+
+    assert_includes source, '%w[UserPromptSubmit SessionStart PreToolUse PostToolUse TaskCompleted Stop]'
+    assert_includes source, 'Regexp.escape(expected_hook)'
+  end
 end
