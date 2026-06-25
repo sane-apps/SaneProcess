@@ -108,7 +108,11 @@ def command_project_dir(command)
   Dir.pwd
 end
 
-# Only gate release.sh/SaneMaster release with --full, --deploy, or --website-only.
+# Only gate release.sh/SaneMaster release with --full or --deploy.
+# --website-only is EXEMPT: it deploys marketing copy (docs/ + appcast) with no
+# app build, signing, or App Store submission, so it does not need app /ship
+# clearance. Wrong price/version/links on the live site are verified directly
+# after deploy instead. (Full app releases via --full/--deploy still require it.)
 # Match: release.sh (with optional path prefix) or SaneMaster release.
 # Strip quoted strings first so commit messages like
 #   git commit -m "fix release.sh --full flow" don't false-positive
@@ -117,7 +121,7 @@ unquoted = command.gsub(/"(?:[^"\\]|\\.)*"/m, '').gsub(/'[^']*'/m, '')
 unquoted = unquoted.sub(/<<-?'?\w+'?.*/m, '')
 is_release = unquoted.match?(/(?:bash\s+|sh\s+)?(?:\S+\/)?(?:full_)?release\.sh\b/)
 is_sanemaster_release = unquoted.match?(/(?:ruby\s+)?(?:\S+\/)?SaneMaster(?:_standalone)?\.rb\s+release\b/)
-has_gate_flag = unquoted.match?(/--(?:full|deploy|website-only)\b/)
+has_gate_flag = unquoted.match?(/--(?:full|deploy)\b/)
 exit 0 unless (is_release || is_sanemaster_release) && has_gate_flag
 
 # Determine project directory from --project flag or current directory

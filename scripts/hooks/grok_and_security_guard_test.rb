@@ -230,6 +230,46 @@ Dir.mktmpdir('ship-guard-sanemaster-') do |home_dir|
   end
 end
 
+Dir.mktmpdir('ship-guard-website-only-') do |home_dir|
+  Dir.mktmpdir('ship-guard-website-app-') do |project_dir|
+    # No clearance file is written for this app. --website-only deploys
+    # marketing copy only (no build/sign/submit), so the ship guard must NOT
+    # require /ship clearance for it. A full --deploy on the same uncleared app
+    # must still block, proving the exemption is scoped to --website-only.
+    File.write(File.join(project_dir, '.saneprocess'), "name: SaneVideo\n")
+    guard_env = {
+      'HOME' => home_dir,
+      'SANE_NO_KEYCHAIN' => '1',
+      'SANE_ENV_CACHE_WRITE' => '0'
+    }
+    _, website_only_err, website_only_status = run_ruby_hook(
+      'sane_ship_guard.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => "bash scripts/release.sh --project #{project_dir} --website-only"
+        }
+      },
+      guard_env
+    )
+    t('Ship guard allows --website-only without /ship clearance', website_only_status.exitstatus == 0)
+    t('--website-only is not blocked for missing clearance', !website_only_err.include?('No /ship clearance'))
+
+    _, deploy_err, deploy_status = run_ruby_hook(
+      'sane_ship_guard.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => "bash scripts/release.sh --project #{project_dir} --deploy"
+        }
+      },
+      guard_env
+    )
+    t('Ship guard still blocks --deploy without clearance (exemption is scoped)', deploy_status.exitstatus == 2)
+    t('--deploy block still requires /ship clearance', deploy_err.include?('/ship clearance'))
+  end
+end
+
 Dir.mktmpdir('env-cache-default-') do |dir|
   cache_path = File.join(dir, 'env')
   script = <<~'RUBY'
