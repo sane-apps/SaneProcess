@@ -92,6 +92,22 @@ module SaneToolsGateTest
       warn "  FAIL: Non-startup Bash should be blocked before gate opens, got exit #{exit_code}"
     end
 
+    # Test (Fix #1c): the documented unblock path — a hook --reset/--status/
+    # --self-test command — must run even while the startup gate is closed.
+    # Previously the gate blocked it, so a wedged session had no working reset.
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
+    exit_code = process_tool_proc.call('Bash', { 'command' => 'ruby scripts/hooks/sanetools.rb --reset' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Hook --reset unblock command allowed even while startup gate is closed'
+    else
+      failed += 1
+      warn "  FAIL: Hook --reset should be allowed during startup gate, got exit #{exit_code}"
+    end
+
     # Test: All tools allowed after gate opens
     StateManager.update(:startup_gate) do |g|
       g[:open] = true
@@ -413,7 +429,146 @@ module SaneToolsGateTest
       h
     end
 
+    # === REFUSAL TRACKER ISOLATION (Fix #1) ===
+    warn ''
+    warn 'Testing refusal tracker isolation:'
+
+    # #1a: a non-specific block ('other') is never tracked and never escalates,
+    # so unrelated gates can't pool into one counter that then MASKS the reason.
+    StateManager.reset(:refusal_tracking)
+    unmatched = "TABLE BLOCKED: markdown tables are not allowed here"
+    m1 = SaneToolsChecks.check_refusal_to_read('Edit', unmatched)
+    m2 = SaneToolsChecks.check_refusal_to_read('Edit', unmatched)
+    other_tracking = StateManager.get(:refusal_tracking)
+    if m1.nil? && m2.nil? && !other_tracking.key?(:other) && !other_tracking.key?('other')
+      passed += 1
+      warn '  PASS: non-specific block is never tracked or escalated as "other"'
+    else
+      failed += 1
+      warn "  FAIL: 'other' block should not track/escalate, got #{m2.inspect} / #{other_tracking.keys.inspect}"
+    end
+
+    # #1b: the repeat note never contains the old accusatory/masking language.
+    StateManager.reset(:refusal_tracking)
+    research_reason = "RESEARCH INCOMPLETE [0/4 complete: missing docs, web, github, local]"
+    SaneToolsChecks.check_refusal_to_read('Edit', research_reason)
+    repeat = SaneToolsChecks.check_refusal_to_read('Edit', research_reason).to_s
+    if repeat.include?('research_incomplete') && !repeat.include?('REFUSAL TO READ DETECTED')
+      passed += 1
+      warn '  PASS: repeat note is a compact remedy, not an accusatory "REFUSAL TO READ"'
+    else
+      failed += 1
+      warn "  FAIL: repeat note should be compact and non-accusatory, got #{repeat.inspect}"
+    end
+
+    # #1c: a stale counter (e.g. left by a finished subagent long ago) decays
+    # instead of instantly ambushing a later, unrelated block with escalation.
+    StateManager.reset(:refusal_tracking)
+    StateManager.update(:refusal_tracking) do |b|
+      b[:research_incomplete] = { count: 12, last_tool: 'Edit',
+                                  last_at: (Time.now - SaneToolsRefusal::REFUSAL_DECAY_SECONDS - 60).iso8601 }
+      b
+    end
+    decay_msg = SaneToolsChecks.check_refusal_to_read('Edit', research_reason)
+    decayed = StateManager.get(:refusal_tracking)[:research_incomplete]
+    if decay_msg.nil? && decayed[:count] == 1
+      passed += 1
+      warn '  PASS: stale repeat counter decays to a fresh count (no instant escalation)'
+    else
+      failed += 1
+      warn "  FAIL: stale counter should decay to 1 with no message, got #{decay_msg.inspect} / #{decayed.inspect}"
+    end
+
+    # === --reset CLEARS REFUSAL, PRESERVES RESEARCH (Fix #2) ===
+    warn ''
+    warn 'Testing --reset semantics:'
+    StateManager.update(:refusal_tracking) { |b| b[:research_incomplete] = { count: 5 }; b }
+    StateManager.reset(:research)
+    StateManager.update(:research) { |r| r[:local] = { tool: 'Read', via_task: false }; r }
+    # perform_reset is a top-level method defined in sanetools.rb (loaded for the
+    # self-test), available as a private method on every object including here.
+    perform_reset
+    after_refusal = StateManager.get(:refusal_tracking)
+    after_research = StateManager.get(:research)
+    if (after_refusal.nil? || after_refusal.empty?) && after_research[:local]
+      passed += 1
+      warn '  PASS: --reset clears the refusal tracker but preserves research evidence'
+    else
+      failed += 1
+      warn "  FAIL: --reset should clear refusal + keep research, got refusal=#{after_refusal.inspect} research=#{after_research.inspect}"
+    end
+
+    # === SUBAGENT POISON NO LONGER MASKS/BLOCKS THE ORCHESTRATOR (Fix #4) ===
+    # A subagent that retried the research gate used to drive the SHARED refusal
+    # counter to double digits, so the orchestrator's very next block surfaced as
+    # an escalated "REFUSAL TO READ" that replaced the real reason. Now the
+    # counter only appends a compact note and never changes the decision, so the
+    # orchestrator always sees its true block reason.
+    warn ''
+    warn 'Testing subagent refusal poison is defused:'
+    StateManager.update(:startup_gate) do |g|
+      g[:open] = true
+      g[:steps] = { session_docs: true, skills_registry: true, validation_report: true,
+                    orphan_cleanup: true, system_clean: true }
+      g
+    end
+    StateManager.update(:mcp_health) { |h| h[:verified_this_session] = true; h }
+    StateManager.update(:session_docs) { |sd| sd[:required] = []; sd[:read] = []; sd[:enforced] = false; sd }
+    StateManager.reset(:research) # orchestrator research incomplete -> real reason is RESEARCH INCOMPLETE
+    StateManager.update(:refusal_tracking) do |b|
+      b[:research_incomplete] = { count: 20, last_tool: 'Edit', last_at: Time.now.iso8601 }
+      b
+    end
+
+    require 'tempfile'
+    captured = Tempfile.new('sane-poison')
+    begin
+      original_stderr = $stderr.clone
+      $stderr.reopen(captured.path, 'w')
+      exit_code = process_tool_proc.call('Edit', { 'file_path' => '/Users/sj/SaneProcess/test.swift', 'old_string' => 'a', 'new_string' => 'b' })
+      $stderr.flush
+      $stderr.reopen(original_stderr)
+      captured.rewind
+      stderr_text = File.read(captured.path)
+    ensure
+      captured.close!
+    end
+
+    if exit_code == 2 &&
+       stderr_text.include?('RESEARCH INCOMPLETE') &&
+       !stderr_text.include?('REFUSAL TO READ DETECTED')
+      passed += 1
+      warn '  PASS: poisoned counter does not mask the real reason or change the block decision'
+    else
+      failed += 1
+      warn "  FAIL: orchestrator block should show real reason, got exit #{exit_code}, masked=#{stderr_text.include?('REFUSAL TO READ DETECTED')}"
+    end
+
+    # === STARTUP GATE DEGRADES INSTEAD OF DEADLOCKING (unsatisfiable gate) ===
+    warn ''
+    warn 'Testing startup gate degradation:'
+    StateManager.update(:startup_gate) do |g|
+      g[:open] = false
+      g[:degraded] = false
+      g[:block_attempts] = SaneToolsStartup::STARTUP_GATE_MAX_BLOCKS
+      g[:steps] = { session_docs: false, skills_registry: true, validation_report: true,
+                    orphan_cleanup: true, system_clean: true }
+      g
+    end
+    degrade_msg = SaneToolsStartup.check_startup_gate('Edit', { 'file_path' => '/tmp/x/y.swift' })
+    gate_after = StateManager.get(:startup_gate)
+    if degrade_msg.nil? && gate_after[:open] && gate_after[:degraded]
+      passed += 1
+      warn '  PASS: startup gate degrades (opens) after repeated blocks instead of deadlocking'
+    else
+      failed += 1
+      warn "  FAIL: startup gate should degrade past #{SaneToolsStartup::STARTUP_GATE_MAX_BLOCKS} blocks, got msg=#{degrade_msg.inspect} open=#{gate_after[:open]} degraded=#{gate_after[:degraded]}"
+    end
+    StateManager.update(:startup_gate) { |g| g[:block_attempts] = 0; g[:degraded] = false; g }
+
     # === CLEANUP ===
+    StateManager.reset(:research)
+    StateManager.reset(:refusal_tracking)
     StateManager.reset(:circuit_breaker)
     StateManager.reset(:sensitive_approvals)
     StateManager.update(:enforcement) do |e|

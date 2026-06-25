@@ -36,6 +36,7 @@ require_relative 'sanetrack_research'
 require_relative 'sanetrack_proofs'
 require_relative 'sanetrack_state_updates'
 require_relative 'sanetools_checks'
+require_relative 'sanetrack_blind_tests'
 
 LOG_FILE = File.expand_path('../../.claude/sanetrack.log', __dir__)
 
@@ -178,12 +179,21 @@ def check_tautologies(tool_name, tool_input)
   mock_warning = check_mock_passthrough(new_string)
   warnings << mock_warning if mock_warning
 
+  # Check source-fingerprint blindness: tests that assert code STRUCTURE
+  # (source.contains/String(contentsOf:)) instead of runtime behavior. This is
+  # its own loud red flag, returned alongside the quality warning so a single
+  # write surfaces every problem.
+  blind_warning = SaneTrackBlindTests.check(new_string)
+
+  return blind_warning if warnings.empty? && blind_warning
   return nil if warnings.empty?
 
-  "RULE #7 WARNING: Test quality issue detected\n" \
-  "   File: #{File.basename(file_path)}\n" \
-  "   #{warnings.join("\n   ")}\n" \
-  "   Fix: Tests must assert real behavior via real code paths, not mock return values"
+  message = "RULE #7 WARNING: Test quality issue detected\n" \
+            "   File: #{File.basename(file_path)}\n" \
+            "   #{warnings.join("\n   ")}\n" \
+            "   Fix: Tests must assert real behavior via real code paths, not mock return values"
+  message = "#{message}\n\n#{blind_warning}" if blind_warning
+  message
 end
 
 # Detects mock-passthrough tests: mock handler set up, then assertions only verify

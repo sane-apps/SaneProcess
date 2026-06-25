@@ -339,21 +339,27 @@ def detect_rule_from_reason(reason)
 end
 
 def output_block(reason, tool_name = nil)
-  # Check for refusal to read (repeated same block) before printing the full
-  # block. Repeats get compact output so the same wall of text is not echoed.
-  escalation = tool_name ? SaneToolsChecks.check_refusal_to_read(tool_name, reason) : nil
+  # Refusal tracking adds a compact remedy note for a repeated same-type block.
+  # It is APPENDED below the real reason — never substituted for it. Masking the
+  # true cause (showing "REFUSAL TO READ: other" instead of "STARTUP GATE") is
+  # exactly what trapped past sessions fighting the wrong gate.
+  remedy_note = tool_name ? SaneToolsChecks.check_refusal_to_read(tool_name, reason) : nil
 
   warn '---'
   warn 'SANETOOLS BLOCKED'
   warn ''
-  warn(escalation || reason)
+  warn reason
+  if remedy_note
+    warn ''
+    warn remedy_note
+  end
 
   SaneProcessMetrics.record(
     'hook_block',
     tool: tool_name,
     rule: detect_rule_from_reason(reason),
     reason: reason.lines.first&.strip,
-    escalated: !escalation.nil?
+    escalated: !remedy_note.nil?
   )
 
   warn '---'
@@ -646,15 +652,29 @@ def show_status
   exit 0
 end
 
-def reset_state
-  StateManager.reset(:research)
+# Mutating half of --reset, separated from the exit so it is unit-testable.
+# Clears the things that actually wedge a session: a tripped breaker, halted
+# enforcement, recorded blocks, and the refusal/repeat-block counter. The
+# refusal tracker was previously NOT cleared here, so the documented remedy
+# ("run --reset") left the very counter that masked the block in place.
+#
+# Does NOT reset :research. Wiping research evidence drops an already onboarded
+# session back to "no research", which re-arms the research-before-edit gate so
+# the next edit re-blocks and re-feeds the refusal counter — running the remedy
+# used to make things worse. Research is reset deliberately via the rr- token.
+def perform_reset
   StateManager.reset(:circuit_breaker)
   StateManager.update(:enforcement) do |e|
     e[:halted] = false
     e[:blocks] = []
     e
   end
-  warn 'State reset'
+  SaneToolsChecks.reset_refusal_tracking
+end
+
+def reset_state
+  perform_reset
+  warn 'State reset (breaker, enforcement, refusal tracker cleared; research evidence preserved — use rr- to reset research)'
   exit 0
 end
 

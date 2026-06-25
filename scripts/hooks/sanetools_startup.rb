@@ -11,6 +11,7 @@
 # Steps auto-complete when required files don't exist (cross-project safety).
 # ==============================================================================
 
+require 'time'
 require_relative 'core/state_manager'
 require_relative 'core/project_root'
 
@@ -31,14 +32,30 @@ module SaneToolsStartup
   STARTUP_BASH_PATTERNS = [
     /validation_report\.rb/,
     /SaneMaster\.rb\s+machine_cleanup\b/,
+    # Hook self-management / unblock path must always run, even mid-startup. The
+    # documented remedy for a wedged gate is `ruby scripts/hooks/<hook>.rb
+    # --reset|--status|--self-test`; if the startup gate blocked it, the agent
+    # had no working reset and the wedge became unrecoverable.
+    %r{scripts/hooks/\S+\.rb\s+--(?:self-test|reset|status)\b},
     /pgrep|pkill|ps\s+/,                # Orphan cleanup
     /kill\s+/,                           # Orphan cleanup
-    # Read-only commands always safe
-    /\A\s*(ls|cat|head|tail|wc|file|stat|which|type|echo|printf|git\s+(status|log|diff|branch|remote)|pwd|date|whoami|hostname|uname)\b/
+    # Read-only inspection is never gated — searching/listing the code to load
+    # context is the whole point of startup. grep/rg/find belong here next to
+    # ls/cat; gating them just blocks the agent from doing startup at all.
+    /\A\s*(ls|cat|head|tail|wc|file|stat|which|type|echo|printf|git\s+(status|log|diff|branch|remote)|pwd|date|whoami|hostname|uname|grep|rg|find|sed\s+-n|awk)\b/
   ].freeze
 
   # Tools that require the gate to be open before use
   GATED_TOOLS = %w[Task Edit Write NotebookEdit Bash Skill].freeze
+
+  # A closed startup gate degrades after this many blocks instead of walling off
+  # all work forever. A gate can become unsatisfiable from a given session — e.g.
+  # cross-project read tracking lands the required-doc reads in a DIFFERENT
+  # project's state, so the `session_docs` step never flips even though the docs
+  # were read. The MCP-verification gate already self-degrades for the same
+  # reason (MCP_GATE_MAX_BLOCKS); the startup gate must too, or it is a hard
+  # deadlock. Loading context is valuable, but an unsatisfiable wall is worse.
+  STARTUP_GATE_MAX_BLOCKS = 3
 
   class << self
     # Returns nil if allowed, or a block message string if blocked.
@@ -46,6 +63,11 @@ module SaneToolsStartup
       # Only enforce in SaneProcess projects
       project_dir = SaneProjectRoot.resolve
       return nil unless File.exist?(File.join(project_dir, '.saneprocess'))
+
+      # No startup gate when developing SaneProcess itself — you cannot require
+      # "read the session docs / run validation_report" before editing the very
+      # hooks that implement the gate.
+      return nil if SaneProjectRoot.self_development?
 
       gate = StateManager.get(:startup_gate)
       return nil if gate[:open]
@@ -65,7 +87,24 @@ module SaneToolsStartup
         return nil if startup_bash?(command)
       end
 
-      # Gate is closed and tool is gated — block
+      # Gate is closed and tool is gated — block, but never permanently. Count
+      # blocks; once past STARTUP_GATE_MAX_BLOCKS, degrade: open the gate with a
+      # warning so an unsatisfiable gate (broken cross-project read tracking,
+      # etc.) can't deadlock the whole session.
+      block_attempts = (gate[:block_attempts] || 0) + 1
+      StateManager.update(:startup_gate) { |g| g[:block_attempts] = block_attempts; g }
+
+      if block_attempts > STARTUP_GATE_MAX_BLOCKS
+        StateManager.update(:startup_gate) do |g|
+          g[:open] = true
+          g[:degraded] = true
+          g[:opened_at] = Time.now.iso8601
+          g
+        end
+        warn "⚠️  Startup gate degraded: not satisfied after #{STARTUP_GATE_MAX_BLOCKS} blocks — opening so work can proceed. Load any missing session context manually."
+        return nil
+      end
+
       build_block_message(gate)
     end
 

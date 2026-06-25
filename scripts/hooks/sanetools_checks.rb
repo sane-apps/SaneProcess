@@ -535,6 +535,8 @@ module SaneToolsChecks
 
     def check_subagent_bypass(tool_name, tool_input, edit_keywords, research_categories)
       return nil unless tool_name == 'Task'
+      # Exempt SaneProcess self-development (see SaneProjectRoot.self_development?).
+      return nil if SaneProjectRoot.self_development?
 
       prompt = tool_input['prompt'] || tool_input[:prompt] || ''
       prompt_lower = prompt.downcase

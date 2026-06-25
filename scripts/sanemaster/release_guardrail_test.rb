@@ -5026,6 +5026,29 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('release.sh exposes targeted post-release verification recovery mode') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+
+      assert_includes(release_script, '--post-release-checks-only')
+      assert_includes(release_script, 'POST_RELEASE_CHECKS_ONLY=false')
+      assert_includes(release_script, 'if [ "${POST_RELEASE_CHECKS_ONLY}" = true ]; then')
+      assert_includes(release_script, '--post-release-checks-only requires --version X.Y.Z')
+      assert_includes(release_script, 'Post-release recovery build inferred from live appcast')
+      assert_includes(release_script, 'Post-release recovery SHA256 inferred from live dist ZIP')
+      assert_includes(release_script, 'run_post_release_checks')
+      assert_includes(release_script, 'Targeted post-release verification passed')
+      true
+    end
+
+    test('release.sh tells operators not to rerun full release after post-release failure') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+
+      assert_includes(release_script, 'Do not rerun the full release for this failure.')
+      assert_includes(release_script, 'Fix the failed public-channel item, then rerun only post-release verification:')
+      assert_includes(release_script, '--project ${PROJECT_ROOT} --version ${VERSION} --post-release-checks-only')
+      true
+    end
+
     test('release.sh does not hardcode SaneApps ASC credentials') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
 

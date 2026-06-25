@@ -363,6 +363,94 @@ module SaneTrackTest
       warn "  FAIL: Real service test should be allowed, got #{result.inspect}"
     end
 
+    # === BLIND (SOURCE-FINGERPRINT) TEST DETECTION (Rule #7) ===
+    warn ''
+    warn 'Testing blind source-fingerprint test detection (Rule #7):'
+
+    # Test: Pure source.contains test file FLAGS (the SaneBar RuntimeGuard shape)
+    result = check_tautologies_proc.call('Edit', {
+      'file_path' => '/path/Tests/RuntimeGuardMoveXCTests.swift',
+      'new_string' => <<~SWIFT
+        func testCoordinatorOwnsMoveAdmission() throws {
+            let coordinatorURL = projectRootURL().appendingPathComponent("Runtime/Coordinator.swift")
+            let source = try String(contentsOf: coordinatorURL, encoding: .utf8)
+            XCTAssertTrue(source.contains("func admitMove(reason:)"), "missing admitMove")
+            XCTAssertTrue(source.contains("private func separatorBoundaryXForClassification"), "missing boundary")
+            XCTAssertTrue(source.contains("repairSeparatorPositionIfNeeded(reason: \\"classification\\")"), "missing repair")
+            XCTAssertTrue(source.contains("MenuBarManager.shared.geometryResolver.separatorOriginX()"), "missing origin")
+        }
+      SWIFT
+    })
+    if result&.include?('BLIND TEST WARNING') && result&.include?('TEST_BLINDNESS_AUDIT.md')
+      passed += 1
+      warn '  PASS: Pure source.contains test file FLAGS as blind'
+    else
+      failed += 1
+      warn "  FAIL: Should flag blind source-fingerprint test, got #{result.inspect}"
+    end
+
+    # Test: A real behavioral test does NOT flag (drives code, asserts return)
+    result = check_tautologies_proc.call('Edit', {
+      'file_path' => '/path/Tests/ClassifierTests.swift',
+      'new_string' => <<~SWIFT
+        @Test func classifiesHiddenZone() async throws {
+            let service = SearchService(config: .default)
+            let zone = await service.classifyZone(itemX: 200, itemWidth: 22, separatorX: 500)
+            #expect(zone == .hidden)
+        }
+      SWIFT
+    })
+    if result.nil?
+      passed += 1
+      warn '  PASS: Real behavioral test does NOT flag'
+    else
+      failed += 1
+      warn "  FAIL: Behavioral test should not flag, got #{result.inspect}"
+    end
+
+    # Test: Mixed file with mostly behavior does NOT flag, even though one
+    # assertion happens to mention .contains on a runtime value.
+    result = check_tautologies_proc.call('Edit', {
+      'file_path' => '/path/Tests/MixedTests.swift',
+      'new_string' => <<~SWIFT
+        @Test func drivesMoveAndObservesState() async throws {
+            let manager = MenuBarManager()
+            await manager.performMove(reason: .search)
+            let visible = await manager.visibleApps()
+            #expect(visible.count == 3)
+            #expect(visible.map(\\.id).contains("com.example.app"))
+            #expect(manager.state == .settled)
+        }
+      SWIFT
+    })
+    if result.nil?
+      passed += 1
+      warn '  PASS: Mixed mostly-behavioral test does NOT flag'
+    else
+      failed += 1
+      warn "  FAIL: Mostly-behavioral test should not flag, got #{result.inspect}"
+    end
+
+    # Test: A behavioral test that merely mentions a string literal does NOT flag
+    result = check_tautologies_proc.call('Edit', {
+      'file_path' => '/path/Tests/ParserTests.swift',
+      'new_string' => <<~SWIFT
+        @Test func parsesGreeting() throws {
+            let parser = Parser()
+            let result = try parser.parse("hello world")
+            #expect(result.tokens.count == 2)
+            #expect(result.first == "hello")
+        }
+      SWIFT
+    })
+    if result.nil?
+      passed += 1
+      warn '  PASS: Behavioral test mentioning a string literal does NOT flag'
+    else
+      failed += 1
+      warn "  FAIL: String-mention behavioral test should not flag, got #{result.inspect}"
+    end
+
     # === RESEARCH OUTPUT VALIDATION TESTS ===
     warn ''
     warn 'Testing research output validation:'

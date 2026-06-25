@@ -225,7 +225,7 @@ SaneProcess enforces the scientific method for coding agents:
 | Verify before trying | Read local code and check uncertain APIs/tools before editing |
 | Two failures means stop | Read the error and research the real API before continuing |
 | Green means done | Do not claim completion with failing tests |
-| No test, no rest | Fixes need meaningful tests; tautologies do not count |
+| No test, no rest | Fixes need meaningful tests; tautologies and blind `source.contains` guards do not count — the test must fail for the real bug at runtime |
 | Use house tools | Use SaneMaster and shared wrappers for stateful workflows |
 | Write it down | Bugs, process misses, and durable tool changes go to memory + handoff |
 
@@ -338,6 +338,9 @@ Test registry policy:
 - `required` entries run in full `verify`.
 - `manual` entries must explain why they are not part of default verify.
 - Zero-test green runs are weak evidence and should not be treated as done.
+- No blind tests: a behavioral/regression test must fail for the real bug at runtime;
+  `source.contains`/string-match guards are structure checks, not behavioral coverage
+  (Golden Rule 7). For SaneBar see `apps/SaneBar/docs/TEST_BLINDNESS_AUDIT.md`.
 
 ## Release And App Store
 
@@ -442,7 +445,11 @@ coverage is:
 - Rule 6, build/kill/launch/log: `sane_test.rb`, `SaneMaster.rb test_mode`, and
   launch guards own runtime cycles.
 - Rule 7, no test no rest: `sanetrack.rb` detects tautology/mock-passthrough
-  tests; stop/completion gates require verification.
+  tests and (via `sanetrack_blind_tests.rb`) red-flags source-fingerprint blind
+  tests — `source.contains`/`String(contentsOf:)` substring guards with no
+  behavioral assertion — that pass even when a real regression ships; see
+  `apps/SaneBar/docs/TEST_BLINDNESS_AUDIT.md`. Stop/completion gates require
+  verification.
 - Rule 8, write bugs down: `sanetrack_state_updates.rb` and `sanestop.rb` track
   memory and handoff updates after bugs, hooks, tools, and durable docs change.
 - Rule 9, gen the pile: `sanetools_checks.rb` blocks orphan markdown creation;

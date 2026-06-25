@@ -44,30 +44,73 @@ TRANSCRIPT_TOKEN_TOTAL_COMPONENTS = %w[
 # Files that don't require test verification (docs, config that's read-only, etc.)
 DOC_ONLY_EXTENSIONS = %w[.md .txt .mdx .rst .adoc].freeze
 
+# Net uncommitted source state. Returns the list of changed working-tree paths
+# (modified, staged, or untracked), or nil when the directory is not a git repo
+# or git is unavailable. RULE #4 keys off THIS, not the cumulative session edit
+# counter: work that was committed+pushed (or where the tree was reset to
+# origin) leaves a clean tree and must not re-fire the verify block on every
+# turn-end. The old counter could only be satisfied by a fresh build, so a
+# published release looped here forever.
+def uncommitted_working_tree_files(cwd = Dir.pwd)
+  out, status = Open3.capture2e('git', '-C', cwd, 'status', '--porcelain', '--untracked-files=all')
+  return nil unless status.success?
+
+  out.each_line.filter_map do |line|
+    path = line[3..]&.strip
+    next nil if path.nil? || path.empty?
+
+    # Rename entries are "old -> new"; the new path is what currently exists.
+    path.include?(' -> ') ? path.split(' -> ').last : path
+  end
+rescue StandardError
+  nil
+end
+
+def verification_block_message(count, files)
+  "   #{count} uncommitted non-doc change(s) across #{files.length} file(s), no fresh structured verify metric.\n" \
+  "   Files changed: #{files.map { |f| File.basename(f) }.join(', ')}\n" \
+  "   \n" \
+  "   Acceptable verification:\n" \
+  "   • Run ./scripts/SaneMaster.rb verify so a counted verify metric is recorded\n" \
+  "   • The metric must have tests_run > 0, tested evidence, and matching source fingerprint\n" \
+  "   (Committed + pushed work — a clean working tree — is already treated as resolved.)"
+end
+
 def check_verification_required
   edits = StateManager.get(:edits)
 
   edit_count = edits[:count] || 0
   unique_files = edits[:unique_files] || []
 
-  # No edits = nothing to verify
+  # No edits this session = nothing to verify
   return nil if edit_count.zero?
 
   # A boolean hook flag is not enough. Require a counted verify metric that
   # matches the current source fingerprint and occurred after the latest edit.
   return nil if strong_session_verify_success?
 
-  # Check if ALL edits were doc-only (markdown, txt) — don't require tests for pure docs
+  # Pure-doc sessions never need a verify metric.
   non_doc_edits = unique_files.reject { |f| DOC_ONLY_EXTENSIONS.include?(File.extname(f).downcase) }
   return nil if non_doc_edits.empty?
 
-  # Edits to non-doc files with no structured verification = BLOCK
-  "   #{edit_count} edit(s) across #{non_doc_edits.length} file(s), no fresh structured verify metric.\n" \
-  "   Files changed: #{non_doc_edits.map { |f| File.basename(f) }.join(', ')}\n" \
-  "   \n" \
-  "   Acceptable verification:\n" \
-  "   • Run ./scripts/SaneMaster.rb verify so a counted verify metric is recorded\n" \
-  "   • The metric must have tests_run > 0, tested evidence, and matching source fingerprint"
+  # Judge NET state, not the cumulative session counter: of the non-doc files
+  # this session edited, which are STILL uncommitted in the working tree? Work
+  # that was committed+pushed (or reset to origin) is clean and must not re-fire
+  # this gate every turn-end — that infinite loop, satisfiable only by a fresh
+  # build, is what trapped the 2.1.81 release session. Unrelated dirty files do
+  # not count, so this stays scoped to the session's own edits.
+  dirty = uncommitted_working_tree_files
+  unless dirty.nil?
+    dirty_basenames = dirty.map { |f| File.basename(f) }.to_set
+    still_uncommitted = non_doc_edits.select { |f| dirty_basenames.include?(File.basename(f)) }
+    return nil if still_uncommitted.empty?
+
+    return verification_block_message(still_uncommitted.length, still_uncommitted)
+  end
+
+  # Fallback when git state is unknown (not a repo / git unavailable): keep the
+  # original cumulative-counter behavior so coverage is not lost.
+  verification_block_message(edit_count, non_doc_edits)
 rescue StandardError => e
   warn "⚠️  Verification check error: #{e.message}" if ENV['DEBUG']
   nil  # Don't block on errors in the check itself

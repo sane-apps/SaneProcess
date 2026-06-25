@@ -35,7 +35,6 @@
       "mcp__macos-automator__*",
       "mcp__xcode__*",
       "mcp__XcodeBuildMCP__*",
-      "mcp__nvidia-build__*",
       "mcp__memory__*"
     ]
   },

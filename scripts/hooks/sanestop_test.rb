@@ -60,6 +60,32 @@ module SaneStopTest
     ) + "\n")
   end
 
+  # Build a throwaway git repo with a non-doc source file, then chdir into it so
+  # RULE #4's net-uncommitted-diff check sees a real working tree. STATE_FILE is
+  # resolved once at load (not cwd-dependent), so StateManager state set by the
+  # caller stays visible inside the chdir. When committed: true the source file
+  # is committed (clean tree); otherwise it is left uncommitted (dirty tree).
+  def self.with_git_repo(committed:)
+    Dir.mktmpdir('sanestop-rule4') do |tmpdir|
+      Dir.chdir(tmpdir) do
+        system('git', 'init', '-q', chdir: tmpdir)
+        system('git', 'config', 'user.email', 'test@example.com', chdir: tmpdir)
+        system('git', 'config', 'user.name', 'Test', chdir: tmpdir)
+        File.write(File.join(tmpdir, 'seed.txt'), "seed\n")
+        system('git', 'add', '.', chdir: tmpdir)
+        system('git', 'commit', '-q', '-m', 'init', chdir: tmpdir)
+
+        swift = File.join(tmpdir, 'App.swift')
+        File.write(swift, "struct App {}\n")
+        if committed
+          system('git', 'add', 'App.swift', chdir: tmpdir)
+          system('git', 'commit', '-q', '-m', 'add app', chdir: tmpdir)
+        end
+        yield swift, tmpdir
+      end
+    end
+  end
+
   def self.run(process_stop_proc, check_score_variance_proc, check_weasel_words_proc, calculate_sop_score_proc, log_file)
     warn 'SaneStop Self-Test'
     warn '=' * 40
@@ -89,31 +115,68 @@ module SaneStopTest
       warn '  FAIL: Should allow stop with no edits'
     end
 
-    # Test 2: With edits + NO verification = BLOCK (Rule #4)
-    StateManager.update(:edits) do |e|
-      e[:count] = 5
-      e[:unique_files] = ['/a.swift', '/b.swift', '/c.swift']
-      e
-    end
-    StateManager.reset(:verification)
-    # Mark handoff as updated so handoff check doesn't interfere with Rule #4 test
-    StateManager.update(:handoff_tracking) do |h|
-      h[:handoff_updated] = true
-      h[:memory_updated] = true
-      h
-    end
+    # Test 2: Uncommitted non-doc edits + NO verification = BLOCK (Rule #4).
+    # The edited source file is left dirty in a real working tree, so net-diff
+    # has something to verify.
+    exit_code = nil
+    with_git_repo(committed: false) do |swift, _tmp|
+      StateManager.update(:edits) do |e|
+        e[:count] = 5
+        e[:unique_files] = [swift]
+        e
+      end
+      StateManager.reset(:verification)
+      # Mark handoff as updated so handoff check doesn't interfere with Rule #4 test
+      StateManager.update(:handoff_tracking) do |h|
+        h[:handoff_updated] = true
+        h[:memory_updated] = true
+        h
+      end
 
-    original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w')
-    exit_code = process_stop_proc.call(false)
-    $stderr.reopen(original_stderr)
+      original_stderr = $stderr.clone
+      $stderr.reopen('/dev/null', 'w')
+      exit_code = process_stop_proc.call(false)
+      $stderr.reopen(original_stderr)
+    end
 
     if exit_code == 2
       passed += 1
-      warn '  PASS: Edits without verification -> BLOCK (exit 2)'
+      warn '  PASS: Uncommitted edits without verification -> BLOCK (exit 2)'
     else
       failed += 1
-      warn "  FAIL: Should block unverified edits, got exit #{exit_code}"
+      warn "  FAIL: Should block uncommitted unverified edits, got exit #{exit_code}"
+    end
+
+    # Test 2-net: Committed + pushed work (clean tree) -> ALLOW even with no
+    # verify metric this session. This is the RULE #4 fix: the cumulative edit
+    # counter used to fire forever after a release was committed, satisfiable
+    # only by a fresh build. A clean working tree must clear the gate.
+    exit_code = nil
+    with_git_repo(committed: true) do |swift, _tmp|
+      StateManager.update(:edits) do |e|
+        e[:count] = 233
+        e[:unique_files] = [swift]
+        e
+      end
+      StateManager.reset(:verification)
+      StateManager.update(:handoff_tracking) do |h|
+        h[:handoff_updated] = true
+        h[:memory_updated] = true
+        h
+      end
+
+      original_stderr = $stderr.clone
+      $stderr.reopen('/dev/null', 'w')
+      exit_code = process_stop_proc.call(false)
+      $stderr.reopen(original_stderr)
+    end
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Committed edits (clean tree) -> allow stop (no infinite verify loop)'
+    else
+      failed += 1
+      warn "  FAIL: Committed/clean-tree edits should allow stop, got exit #{exit_code}"
     end
 
     # Test 2b: With edits + structured verification metric = allow stop
@@ -147,7 +210,7 @@ module SaneStopTest
     end
 
     # Test 2b-2: Blocked stops still write session_end accounting, tokens, and block outcomes
-    Dir.mktmpdir('sanestop-blocked-accounting') do |tmpdir|
+    with_git_repo(committed: false) do |swift, tmpdir|
       old_metrics_path = ENV['SANEMASTER_PROCESS_METRICS_PATH']
       metrics_path = File.join(tmpdir, 'process_metrics.jsonl')
       transcript_path = File.join(tmpdir, 'transcript.jsonl')
@@ -156,7 +219,7 @@ module SaneStopTest
 
       StateManager.update(:edits) do |e|
         e[:count] = 1
-        e[:unique_files] = ['/tmp/example.rb']
+        e[:unique_files] = [swift]
         e[:last_edit_at] = Time.now.iso8601
         e
       end

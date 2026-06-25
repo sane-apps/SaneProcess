@@ -131,6 +131,9 @@ module SaneToolsResearch
 
   def check_research_before_edit(tool_name, edit_tools, research_categories)
     return nil unless edit_tools.include?(tool_name)
+    # Developing SaneProcess itself is exempt: requiring 4-category web/docs/
+    # github research before every hook edit is the deadlock, not a safeguard.
+    return nil if SaneProjectRoot.self_development?
 
     research = StateManager.get(:research)
     effective_categories = effective_research_categories(research_categories)
@@ -210,6 +213,10 @@ module SaneToolsResearch
     # Only enforce MCP verification for projects with .saneprocess manifest
     project_dir = SaneProjectRoot.resolve
     return nil unless File.exist?(File.join(project_dir, '.saneprocess'))
+
+    # Developing SaneProcess itself is exempt: verifying customer-facing MCPs
+    # (incl. ones needing interactive OAuth) is irrelevant to editing the hooks.
+    return nil if SaneProjectRoot.self_development?
 
     configured_mcps = configured_mcp_verification_info(project_dir)
 

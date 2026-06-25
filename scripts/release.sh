@@ -136,6 +136,10 @@ release_mode_label() {
         echo "preflight"
         return
     fi
+    if [ "${POST_RELEASE_CHECKS_ONLY:-false}" = true ]; then
+        echo "post-release-checks-only"
+        return
+    fi
     if [ "${WEBSITE_ONLY:-false}" = true ]; then
         echo "website-only"
         return
@@ -863,6 +867,45 @@ for match in re.finditer(r"<item>.*?</item>", xml, flags=re.S):
         count += 1
 
 print(count)
+PY
+}
+
+appcast_build_for_version() {
+    local appcast_content="$1"
+    local version="${2:-${VERSION}}"
+    APPCAST_CONTENT="${appcast_content}" python3 - "${version}" <<'PY'
+import os
+import re
+import sys
+
+xml = os.environ.get("APPCAST_CONTENT", "")
+version = sys.argv[1]
+
+def version_match(item: str) -> bool:
+    if not version:
+        return False
+    if f'sparkle:shortVersionString="{version}"' in item:
+        return True
+    if re.search(rf"<sparkle:shortVersionString>\s*{re.escape(version)}\s*</sparkle:shortVersionString>", item):
+        return True
+    return False
+
+for match in re.finditer(r"<item>.*?</item>", xml, flags=re.S):
+    item = match.group(0)
+    if not version_match(item):
+        continue
+    enclosure = re.search(r"<enclosure\b[^>]*>", item, flags=re.S)
+    if enclosure:
+        build_match = re.search(r'sparkle:version="([^"]+)"', enclosure.group(0))
+        if build_match:
+            print(build_match.group(1).strip())
+            sys.exit(0)
+    build_match = re.search(r"<sparkle:version>\s*([^<\s]+)\s*</sparkle:version>", item)
+    if build_match:
+        print(build_match.group(1).strip())
+        sys.exit(0)
+
+print("")
 PY
 }
 
@@ -2367,6 +2410,12 @@ PY
     return 0
 }
 
+print_post_release_recovery_command() {
+    log_error "Do not rerun the full release for this failure."
+    log_error "Fix the failed public-channel item, then rerun only post-release verification:"
+    log_error "  bash ${SCRIPT_DIR}/release.sh --project ${PROJECT_ROOT} --version ${VERSION} --post-release-checks-only"
+}
+
 print_help() {
     echo "Usage: $0 [options]"
     echo ""
@@ -2399,6 +2448,8 @@ print_help() {
     echo "  --skip-appstore      Skip App Store archive/export/upload (requires typed override approval)"
     echo "  --website-only       Deploy website + appcast only (no build/R2/signing)"
     echo "  --preflight-only     Run release gates only and exit (no build, no upload, no publish)"
+    echo "  --post-release-checks-only"
+    echo "                       Rerun only public post-release verification for an already-published version"
     echo "  -h, --help           Show this help"
 }
 
@@ -4888,6 +4939,7 @@ PURGE_GITHUB_BINARY_ASSETS=false
 ALLOW_UNSYNCED_PEER=false
 SKIP_APPSTORE=false
 PREFLIGHT_ONLY=false
+POST_RELEASE_CHECKS_ONLY=false
 OVERRIDE_FLAGS_USED=()
 ALLOW_REPEAT_FAILURE=false
 STRICT_PUBLIC_CHANNEL_SYNC=true
@@ -4988,6 +5040,10 @@ while [[ $# -gt 0 ]]; do
             PREFLIGHT_ONLY=true
             shift
             ;;
+        --post-release-checks-only)
+            POST_RELEASE_CHECKS_ONLY=true
+            shift
+            ;;
         -h|--help)
             print_help
             exit 0
@@ -5058,7 +5114,7 @@ fi
 SCHEME="${SCHEME:-${APP_NAME}}"
 LOWER_APP_NAME="$(echo "${APP_NAME}" | tr '[:upper:]' '[:lower:]')"
 BUNDLE_ID="${BUNDLE_ID:-com.${LOWER_APP_NAME}.app}"
-if [ "${WEBSITE_ONLY}" = true ] && [ -z "${TEAM_ID:-}" ]; then
+if { [ "${WEBSITE_ONLY}" = true ] || [ "${POST_RELEASE_CHECKS_ONLY}" = true ]; } && [ -z "${TEAM_ID:-}" ]; then
     TEAM_ID="M78L6FXD48"
 fi
 TEAM_ID="${TEAM_ID:?Set TEAM_ID env var or pass --team-id}"
@@ -5271,6 +5327,52 @@ fi
 
 cd "${PROJECT_ROOT}"
 
+if [ "${POST_RELEASE_CHECKS_ONLY}" = true ]; then
+    if [ -z "${VERSION}" ]; then
+        log_error "--post-release-checks-only requires --version X.Y.Z"
+        exit 1
+    fi
+    if [ "${FULL_RELEASE}" = true ] || [ "${RUN_DEPLOY}" = true ] || [ "${RUN_GH_RELEASE}" = true ] || [ "${WEBSITE_ONLY}" = true ] || [ "${PREFLIGHT_ONLY}" = true ]; then
+        log_error "--post-release-checks-only cannot be combined with build, deploy, website, GitHub release, or preflight modes."
+        exit 1
+    fi
+    BUILD_NUMBER="${BUILD_NUMBER:-}"
+    if [ -z "${BUILD_NUMBER}" ] && [ "${USE_SPARKLE}" = true ]; then
+        live_appcast_content=$(curl --connect-timeout 10 --max-time 30 -fsSL "https://${SITE_HOST}/appcast.xml" 2>/dev/null || true)
+        BUILD_NUMBER=$(appcast_build_for_version "${live_appcast_content}" "${VERSION}")
+        if [ -z "${BUILD_NUMBER}" ]; then
+            log_error "Could not infer build number for ${APP_NAME} v${VERSION} from https://${SITE_HOST}/appcast.xml"
+            exit 1
+        fi
+        log_info "Post-release recovery build inferred from live appcast: ${BUILD_NUMBER}"
+    fi
+    if [ -z "${SHA256:-}" ] && [ -n "${HOMEBREW_TAP_REPO}" ]; then
+        post_release_dist_zip=$(mktemp "/tmp/${APP_NAME}-post-release-check.XXXXXX.zip")
+        register_release_temp_path "${post_release_dist_zip}"
+        if ! curl --connect-timeout 10 --max-time 120 -fsSL "https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip" -o "${post_release_dist_zip}"; then
+            remove_path "${post_release_dist_zip}"
+            log_error "Could not download live dist ZIP to infer SHA256 for post-release verification."
+            exit 1
+        fi
+        SHA256=$(shasum -a 256 "${post_release_dist_zip}" | awk '{print $1}')
+        FILE_SIZE=$(stat -f%z "${post_release_dist_zip}")
+        remove_path "${post_release_dist_zip}"
+        log_info "Post-release recovery SHA256 inferred from live dist ZIP: ${SHA256:0:12}..."
+    fi
+    CURRENT_GATE="Post-release verification"
+    RELEASE_ERR_GATE_RECORDED=""
+    if run_post_release_checks; then
+        track_gate_result "Post-release verification" "pass" "ok"
+        CURRENT_GATE=""
+        log_info "Targeted post-release verification passed for ${APP_NAME} v${VERSION}."
+        exit 0
+    fi
+    track_gate_result "Post-release verification" "failure" "${RELEASE_LAST_ERROR}"
+    CURRENT_GATE=""
+    print_post_release_recovery_command
+    exit 1
+fi
+
 # Website-only deploy (no build, no R2, no signing — just push website + appcast to Pages)
 if [ "${WEBSITE_ONLY}" = true ]; then
     PAGES_PROJECT="${LOWER_APP_NAME}-site"
@@ -5420,7 +5522,7 @@ if [ "${FULL_RELEASE}" = true ] || [ "${RUN_DEPLOY}" = true ] || [ "${RUN_GH_REL
     enforce_machine_reconcile
 fi
 
-if ! check_recent_unresolved_failures_gate; then
+if [ "${POST_RELEASE_CHECKS_ONLY}" != true ] && ! check_recent_unresolved_failures_gate; then
     exit 1
 fi
 
@@ -6906,6 +7008,7 @@ PY
     if ! run_post_release_checks; then
         log_error "Post-release verification failed. Release is NOT considered complete."
         track_gate_result "Post-release verification" "failure" "${RELEASE_LAST_ERROR}"
+        print_post_release_recovery_command
         exit 1
     fi
     track_gate_result "Post-release verification" "pass" "ok"

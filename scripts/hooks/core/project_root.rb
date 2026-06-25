@@ -52,6 +52,13 @@
 module SaneProjectRoot
   MARKER = '.saneprocess'
 
+  # The SaneProcess repo that OWNS these running hooks. project_root.rb lives at
+  # <repo>/scripts/hooks/core/, so three levels up is the repo root. Used to
+  # detect "we are developing SaneProcess itself" — you cannot meaningfully gate
+  # the repo that defines the gates (the startup/research/MCP gates would just
+  # fight every edit to the hooks). Resolved once at load; never changes.
+  HOOKS_REPO_ROOT = File.expand_path('../../..', __dir__)
+
   class << self
     # Resolve the canonical project root for state-path derivation.
     #
@@ -74,6 +81,17 @@ module SaneProjectRoot
     # SaneProcess projects without re-deriving the path inline.
     def saneprocess_project?(start = nil)
       File.exist?(File.join(resolve(start), MARKER))
+    end
+
+    # True when the active session is editing the SaneProcess repo that owns
+    # these very hooks. The workflow/context gates (startup, research-before-edit,
+    # MCP verification, subagent-research) are bypassed in this case: bootstrapping
+    # gates onto the repo that DEFINES them only fights development. Safety guards
+    # (blocked paths, secrets, release/email/security, mini-first) still apply.
+    # Apps that merely carry a `.saneprocess` marker are NOT self-development —
+    # only the hooks' own repo matches.
+    def self_development?(start = nil)
+      resolve(start) == HOOKS_REPO_ROOT
     end
 
     # Test/maintenance hook: drop the per-process memo. Production code never
@@ -242,6 +260,15 @@ if __FILE__ == $PROGRAM_NAME
       check.call('marked cwd beats different marked CLAUDE_PROJECT_DIR',
                  SaneProjectRoot.resolve(repo_b) == File.expand_path(repo_b))
       ENV['CLAUDE_PROJECT_DIR'] = old if old
+
+      # 8. self_development? is true only for the hooks' own repo, false for a
+      #    different marked repo (e.g. an app that merely carries .saneprocess).
+      SaneProjectRoot.reset!
+      check.call('self_development? false for a different marked repo',
+                 SaneProjectRoot.self_development?(repo_a) == false)
+      SaneProjectRoot.reset!
+      check.call('self_development? true for the hooks own repo root',
+                 SaneProjectRoot.self_development?(SaneProjectRoot::HOOKS_REPO_ROOT) == true)
     end
 
     warn ''

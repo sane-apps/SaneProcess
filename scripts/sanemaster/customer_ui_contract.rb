@@ -1653,6 +1653,24 @@ module SaneMasterModules
         'SANEPROCESS_RUN_RUNTIME_SMOKE' => '1',
         'SANEBAR_STARTUP_PROBE_RESOURCE_SOAK_AFTER_155' => '0'
       }
+      # FM-1 + FM-2 regression gates are DEFAULT-ON and release-blocking on the
+      # normal customer_ui_sweep runtime-smoke path. They run without anyone
+      # setting an env flag:
+      #   FM-1 hidden-outbound Always-Hidden move (live_zone_smoke) — keeps the
+      #        release red while the window-invalidation no-op bug is unfixed.
+      #   FM-2 explicit divider survives wake/validation churn (wake_layout_probe).
+      # A focused unrelated run can opt out only by exporting the matching
+      # SANEBAR_SMOKE_DISABLE_HIDDEN_OUTBOUND_AH=1 /
+      # SANEBAR_WAKE_PROBE_EXPLICIT_DIVIDER_SURVIVAL=0 before invoking the sweep;
+      # that opt-out is passed through here but the default below is ON.
+      if app_name == 'SaneBar'
+        env['SANEBAR_SMOKE_REQUIRE_HIDDEN_OUTBOUND_AH'] =
+          ENV['SANEBAR_SMOKE_DISABLE_HIDDEN_OUTBOUND_AH'] == '1' ? '0' : '1'
+        env['SANEBAR_WAKE_PROBE_EXPLICIT_DIVIDER_SURVIVAL'] =
+          ENV.fetch('SANEBAR_WAKE_PROBE_EXPLICIT_DIVIDER_SURVIVAL', '1')
+        env['SANEBAR_SMOKE_DISABLE_HIDDEN_OUTBOUND_AH'] =
+          ENV.fetch('SANEBAR_SMOKE_DISABLE_HIDDEN_OUTBOUND_AH', '0')
+      end
       unless app_prefix.empty?
         env["#{app_prefix}_RUNTIME_SMOKE_ONLY"] = '1'
         env["#{app_prefix}_RUN_RUNTIME_SMOKE"] = '1'

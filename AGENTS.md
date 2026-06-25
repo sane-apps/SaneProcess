@@ -68,7 +68,7 @@ fixes. Treat memory and handoff as live operational state.
 | 4 | Green means go | Do not claim done with failing tests or missing required proof. |
 | 5 | House rules, use tools | Use canonical wrappers for build/test/release/launch/email/sales/support. |
 | 6 | Build, kill, launch, log | Runtime changes need full cycle proof; tooling/docs need matching tests/evals. |
-| 7 | No test? No rest | Every fix gets a meaningful test or explicit proof receipt. |
+| 7 | No test? No rest | Every fix gets a meaningful test or explicit proof receipt — and no BLIND test: a test must fail for the real bug at RUNTIME (drive the app, assert the customer-observable end-state); structure/string-match guards (`source.contains`) are not behavioral coverage. |
 | 8 | Bug found? Write it down | Update Serena + memory graph when bugs change status. |
 | 9 | New file? Gen the pile | Prefer templates/scaffolds and existing docs/files. |
 | 10 | 500 fine, 800 line | File and component-owner size both count; split at 800. |
