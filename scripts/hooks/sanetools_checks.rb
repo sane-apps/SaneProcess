@@ -327,12 +327,20 @@ module SaneToolsChecks
       # split or reduced by editing it (merge-conflict resolution included).
       return nil if lines_added <= 0
 
-      if projected_count > hard_limit
+      # Hard-block only when an edit pushes a file that was WITHIN the limit to
+      # OVER it. A file already over the limit (grandfathered) must stay editable
+      # for bug-fixes and for the split itself — walling it off entirely forces
+      # risky helper-extraction gymnastics for a one-line change and blocks
+      # legitimate maintenance. In that case warn loudly so the split still gets
+      # prioritized, but allow the edit.
+      already_over = line_count > hard_limit
+      if !already_over && projected_count > hard_limit
         return "FILE SIZE BLOCKED (Rule #10)\n" \
                "#{path}: #{projected_count} lines > #{hard_limit} limit\n" \
                "Split ownership first. Extensions count toward the same component owner."
       elsif projected_count > FILE_SIZE_SOFT_LIMIT && !is_markdown
-        warn "FILE SIZE WARNING: #{path} at #{projected_count} lines (limit: #{hard_limit})"
+        warn "FILE SIZE WARNING: #{path} at #{projected_count} lines " \
+             "(over #{hard_limit} hard limit — split this owner soon)"
       end
 
       nil

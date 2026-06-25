@@ -566,6 +566,33 @@ module SaneToolsGateTest
     end
     StateManager.update(:startup_gate) { |g| g[:block_attempts] = 0; g[:degraded] = false; g }
 
+    # === RULE #10 GRANDFATHERING (oversized files stay editable) ===
+    warn ''
+    warn 'Testing Rule #10 grandfathering:'
+    require 'tempfile'
+    # A file already over the 800-line hard limit must accept a small bug-fix edit
+    # (warn, not block) — you can't fix or split a big file without editing it.
+    over = Tempfile.new(['rule10-over', '.rb'])
+    over.write(("# line\n" * 1200))
+    over.flush
+    add_lines = "anchor\nnew1\nnew2\nnew3\n"
+    over_result = SaneToolsChecks.check_file_size('Edit', { 'file_path' => over.path, 'old_string' => 'anchor', 'new_string' => add_lines }, %w[Edit Write NotebookEdit])
+    # A within-limit file that an edit pushes OVER the limit must still be blocked.
+    under = Tempfile.new(['rule10-under', '.rb'])
+    under.write(("# line\n" * 790))
+    under.flush
+    crossing = "anchor\n" + ("x\n" * 30)
+    under_result = SaneToolsChecks.check_file_size('Edit', { 'file_path' => under.path, 'old_string' => 'anchor', 'new_string' => crossing }, %w[Edit Write NotebookEdit])
+    if over_result.nil? && under_result.to_s.include?('FILE SIZE BLOCKED')
+      passed += 1
+      warn '  PASS: oversized file stays editable; only a within-limit file crossing 800 is blocked'
+    else
+      failed += 1
+      warn "  FAIL: Rule #10 grandfathering wrong — over=#{over_result.inspect} under=#{under_result.inspect}"
+    end
+    over.close!
+    under.close!
+
     # === CLEANUP ===
     StateManager.reset(:research)
     StateManager.reset(:refusal_tracking)
