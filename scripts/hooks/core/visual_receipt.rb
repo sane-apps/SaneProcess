@@ -49,9 +49,24 @@ module SaneVisualReceipt
     nil
   end
 
+  # Visual receipts must come from the Mini by default (release-quality proof).
+  # EXCEPTION: notch / built-in-display verification CANNOT be done on the Mini
+  # (it has no built-in display and drives notchless externals, so the notch
+  # code path is dead there). Such tasks MUST run on the Air, so an 'air' host
+  # is accepted only when the receipt explicitly declares itself a notch /
+  # built-in-display verification. See SaneBar docs/AIR_UI_TESTING.md and the
+  # air-is-users-workstation memory.
+  def acceptable_visual_host?(receipt)
+    host = receipt['host'].to_s.downcase
+    return true if host.include?('mini')
+
+    host.include?('air') &&
+      (receipt['notch_verification'] == true || receipt['built_in_display'] == true)
+  end
+
   def customer_ui_receipt_valid?(cwd, receipt)
     return false unless receipt['status'].to_s == 'passed'
-    return false unless receipt['host'].to_s.downcase.include?('mini')
+    return false unless acceptable_visual_host?(receipt)
     return false if Array(receipt['screenshots']).empty?
 
     Array(receipt['screenshots']).all? { |path| screenshot_file?(cwd, path) }
@@ -60,7 +75,7 @@ module SaneVisualReceipt
   def visual_audit_receipt_valid?(cwd, receipt, receipt_path)
     return false unless receipt['type'].to_s == 'visual_audit' || receipt['schema'].to_s == 'saneprocess.visual_audit'
     return false unless %w[passed pass clean].include?((receipt['status'] || receipt['verdict']).to_s.downcase)
-    return false unless receipt['host'].to_s.downcase.include?('mini')
+    return false unless acceptable_visual_host?(receipt)
     return false unless receipt['inspected'] == true || receipt['audit_recorded'] == true
 
     screenshots = Array(receipt['screenshots'] || receipt['screenshot_paths'])

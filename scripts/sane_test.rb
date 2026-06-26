@@ -451,8 +451,58 @@ class SaneTest
     step("#{n += 1}. Fresh reset") { fresh_reset_local } if @fresh
     step("#{n += 1}. Reset TCC permissions") { reset_tcc_local } if @reset_tcc && !@fresh
     step("#{n += 1}. Set license mode") { set_license_mode_local } if (@free_mode || @pro_mode) && !@fresh
+    step("#{n += 1}. Re-sign with Developer ID (preserve TCC)") { ensure_developer_id_signature_local }
     step("#{n += 1}. Launch locally") { launch_local }
+    print_air_ui_test_hints_local
     stream_logs_local unless @no_logs
+  end
+
+  # A local debug build is signed with an Apple Development cert, NOT the
+  # Developer ID the machine's TCC grants (Accessibility, etc.) were issued
+  # for, so macOS does not honor the existing grant: the app shows "Grant
+  # Access" and menu-bar moves silently fail. Re-sign the staged build with
+  # the Developer ID Application identity so the pre-existing grant matches
+  # and UI verification (e.g. notch testing on the Air) just works — no manual
+  # codesign + Accessibility-toggle dance. See SaneBar docs/AIR_UI_TESTING.md.
+  def ensure_developer_id_signature_local
+    app_path = canonical_local_app_path
+    unless app_path && File.exist?(app_path)
+      warn '   Re-sign skipped: staged app not found'
+      return
+    end
+    if `codesign -dv --verbose=2 "#{app_path}" 2>&1`.include?('Developer ID Application')
+      warn '   Already Developer ID-signed; existing TCC grants should hold'
+      return
+    end
+    identity = `security find-identity -v -p codesigning 2>/dev/null`
+               .lines.map { |line| line[/"(Developer ID Application: [^"]+)"/, 1] }.compact.first
+    unless identity
+      warn '   ⚠️  No "Developer ID Application" identity found — TCC grant may not hold'
+      warn '   (menu-bar moves can silently fail; grant Accessibility manually or import the cert).'
+      return
+    end
+    if system('codesign', '--force', '--deep', '--options', 'runtime',
+              '--sign', identity, app_path, out: File::NULL, err: File::NULL)
+      warn "   Re-signed with #{identity}"
+      warn '   (preserves the existing Accessibility/TCC grant for this build)'
+    else
+      warn '   ⚠️  Re-sign failed — TCC grant may not hold; menu-bar moves can fail'
+    end
+  end
+
+  # Enforce the live-logging finding: print the exact, working capture command
+  # so UI verification always has code evidence alongside the visual. log stream
+  # MUST run from a script file (the agent shell mangles the predicate's nested
+  # quotes inline). SaneBar ships Scripts/sanebar_logwatch.sh for this.
+  def print_air_ui_test_hints_local
+    watcher = File.join(@app_dir, 'Scripts', 'sanebar_logwatch.sh')
+    return unless File.exist?(watcher)
+
+    warn ''
+    warn '   📡 Live logs (code evidence for UI tests):'
+    warn "      bash #{watcher} > /tmp/#{@app_name.downcase}_live.log 2>&1 &"
+    warn "      tail -40 /tmp/#{@app_name.downcase}_live.log | grep -iE 'moveIcon task|Move complete|notch-unsafe'"
+    warn '   📖 Air UI-test runbook: docs/AIR_UI_TESTING.md'
   end
 
   def kill_local
