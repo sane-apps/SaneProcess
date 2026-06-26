@@ -45,6 +45,12 @@ module SaneToolsChecks
   FILE_SIZE_SOFT_LIMIT = 500
   FILE_SIZE_HARD_LIMIT = 800
   FILE_SIZE_HARD_LIMIT_MD = 1500
+  # Self-degrade valve for the session-docs edit gate. Mirrors
+  # SaneToolsStartup::STARTUP_GATE_MAX_BLOCKS: a required-doc set can be
+  # unsatisfiable from a given session (cross-project read tracking, project_dir
+  # drift, or a required doc that does not exist at the expected path), so the
+  # gate must not wall off edits forever.
+  SESSION_DOCS_MAX_BLOCKS = 3
   CORE_DOC_BASENAMES = %w[
     AGENTS.md
     README.md
@@ -600,6 +606,24 @@ module SaneToolsChecks
       already_read = session_docs[:read] || []
       unread = required - already_read
       return nil if unread.empty?
+
+      # Self-degrade safety valve. If the gate stays unsatisfied after repeated
+      # blocks it is almost certainly unsatisfiable from this session (a required
+      # doc that does not exist at the expected path, project_dir drift, or
+      # cross-project read tracking). Encourage loading context, but never
+      # deadlock edits: after the cap, open with a warning instead of blocking.
+      blocks = (session_docs[:block_attempts] || 0) + 1
+      StateManager.update(:session_docs) { |sd| sd[:block_attempts] = blocks; sd }
+      if blocks > SESSION_DOCS_MAX_BLOCKS
+        StateManager.update(:session_docs) do |sd|
+          sd[:enforced] = false
+          sd[:degraded] = true
+          sd
+        end
+        warn "⚠️  Session-docs gate degraded: still unsatisfied after #{SESSION_DOCS_MAX_BLOCKS} blocks " \
+             "(unread: #{unread.join(', ')}) — opening so edits can proceed. Load any missing context manually."
+        return nil
+      end
 
       total_docs = required.length
       read_count = already_read.length
