@@ -1,6 +1,14 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Pin UTF-8 as the default encoding before any I/O. Review-comments/release-notes
+# files and HTTP response bodies legitimately contain non-ASCII (em dashes, curly
+# quotes, emoji). Under a locale-less shell (hooks, launchd, non-login ssh to the
+# Mini) Ruby defaults to US-ASCII, so File.read + a later string match raises
+# "invalid byte sequence in US-ASCII". Same fix family as sane_test.rb / e7bab2c.
+Encoding.default_external = Encoding::UTF_8
+Encoding.default_internal = Encoding::UTF_8
+
 require 'json'
 require 'digest'
 require 'find'

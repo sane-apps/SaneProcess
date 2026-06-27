@@ -18,9 +18,10 @@ require_relative 'core/project_root'
 module SaneToolsResearch
   # Categories that require specific MCPs — auto-satisfy if those MCPs aren't available.
   # :web and :local use built-in tools (WebSearch, Read/Grep/Glob) so always required.
+  # docs maps to apple_docs only: context7 is toggled off (not callable) and github
+  # moved to the gh skill, so neither gates research anymore.
   MCP_DEPENDENT_CATEGORIES = {
-    docs: [:apple_docs, :context7],
-    github: [:github]
+    docs: [:apple_docs]
   }.freeze
 
   MCP_SERVER_NAME_MAP = {
@@ -149,10 +150,9 @@ module SaneToolsResearch
     # Build specific instructions for each missing category
     missing_instructions = missing.map do |cat|
       case cat
-      when :docs then "  1. DOCS: mcp__apple-docs, mcp__context7, or WebSearch for docs (verify APIs exist)"
-      when :web then "  2. WEB: WebSearch (current best practices)"
-      when :github then "  3. GITHUB: mcp__github__search_* or WebSearch for examples (real-world code)"
-      when :local then "  4. LOCAL: Read/Grep/Glob (understand existing code)"
+      when :docs then "  1. DOCS: mcp__apple-docs (or WebSearch) — verify APIs exist"
+      when :web then "  2. WEB: WebSearch — current best practices + real-world examples (incl. GitHub)"
+      when :local then "  3. LOCAL: Read/Grep/Glob (understand existing code)"
       else "  #{cat}: Complete this research category"
       end
     end.join("\n")
@@ -195,10 +195,13 @@ module SaneToolsResearch
 
   # MCP verification tools (read-only operations to prove connectivity)
   # NOTE: Official Memory MCP (@modelcontextprotocol/server-memory) is global, not project-verified
+  # Context7 and GitHub were removed from required verification: GitHub migrated
+  # to the `gh` skill and Context7 is not connected in Claude sessions, so
+  # requiring them stalled every edit at N/3 with no way to reach 3/3.
+  # configured_mcp_verification_info still filters by what is actually
+  # configured, so re-adding an entry here is all that's needed if they return.
   MCP_VERIFICATION_INFO = {
-    apple_docs: { name: 'Apple Docs', tool: 'mcp__apple-docs__search_apple_docs' },
-    context7: { name: 'Context7', tool: 'mcp__context7__resolve-library-id' },
-    github: { name: 'GitHub', tool: 'mcp__github__search_repositories' }
+    apple_docs: { name: 'Apple Docs', tool: 'mcp__apple-docs__search_apple_docs' }
   }.freeze
 
   # Graceful-degradation threshold: how many times the MCP-verification gate

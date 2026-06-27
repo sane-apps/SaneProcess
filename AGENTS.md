@@ -249,7 +249,7 @@ local scripts, repo docs, and Mini-first receipts.
 
 Common MCPs:
 
-- `apple-docs` / `context7` for API docs.
+- `apple-docs` for Apple API docs; WebSearch for third-party library docs (the context7 plugin is currently toggled off / not callable).
 - `macos-automator` for repeatable macOS GUI automation.
 - `xcode` / XcodeBuildMCP for IDE/simulator/device proof when relevant.
 - Serena and memory graph for project and cross-session knowledge.

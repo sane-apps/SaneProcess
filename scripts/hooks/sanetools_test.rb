@@ -257,7 +257,7 @@ module SaneToolsTest
 
       # Task agents (should allow and track)
       { tool: 'Task', input: { 'prompt' => 'Search documentation for this API' }, expect_block: false, name: 'Allow Task (tracks docs)' },
-      { tool: 'Task', input: { 'prompt' => 'Search GitHub for external examples' }, expect_block: false, name: 'Allow Task (tracks github)' }
+      { tool: 'Task', input: { 'prompt' => 'Search GitHub for external examples' }, expect_block: false, name: 'Allow Task (github example research tracks web)' }
     ]
 
     tests.each do |test|

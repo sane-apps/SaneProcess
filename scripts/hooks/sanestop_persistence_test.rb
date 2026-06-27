@@ -543,7 +543,7 @@ module SaneStopPersistenceTest
       failed += 1
       warn "  FAIL: Expected sessions_total=1, got #{validation[:sessions_total]}"
     end
-    rows = File.readlines(ENV['SANEMASTER_PROCESS_METRICS_PATH'], chomp: true).map { |line| JSON.parse(line) }
+    rows = File.readlines(ENV['SANEMASTER_PROCESS_METRICS_PATH'], chomp: true, encoding: Encoding::UTF_8).map { |line| JSON.parse(line) }
     session_receipt = rows.find { |row| row['type'] == 'session_receipt' }
     if session_receipt &&
        session_receipt['schema_version'] == 2 &&

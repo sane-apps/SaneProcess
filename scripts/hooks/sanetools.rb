@@ -124,18 +124,22 @@ BASH_FILE_WRITE_PATTERN = Regexp.union(
 EDIT_KEYWORDS = %w[edit write create modify change update add remove delete fix patch].freeze
 
 # === RESEARCH CATEGORIES ===
+# High-value categories for SaneApps' actual work (native macOS Swift: Apple
+# frameworks dominate). docs = Apple Docs. Context7 is intentionally NOT listed:
+# the plugin is toggled off (context7@claude-plugins-official: false) so it is
+# not callable, and it is low value for native macOS anyway — re-add a
+# mcp__context7__* tool here only if the plugin is re-enabled. web covers current
+# best practices AND real-world code examples — WebSearch surfaces GitHub, and
+# the `gh` skill replaced the retired GitHub MCP, so there is no separate
+# mandatory `github` category (it was unsatisfiable friction).
 RESEARCH_CATEGORIES = {
   docs: {
-    tools: %w[mcp__apple-docs__* mcp__context7__*],
-    task_patterns: [/docs/i, /documentation/i, /apple-docs/i, /context7/i, /api/i]
+    tools: %w[mcp__apple-docs__*],
+    task_patterns: [/docs/i, /documentation/i, /apple-docs/i, /api/i]
   },
   web: {
-    tools: %w[WebSearch WebFetch],
-    task_patterns: [/web/i, /search online/i, /google/i, /internet/i]
-  },
-  github: {
-    tools: %w[mcp__github__*],
-    task_patterns: [/github/i, /external.*example/i, /other.*repo/i]
+    tools: %w[WebSearch WebFetch mcp__github__*],
+    task_patterns: [/web/i, /search online/i, /google/i, /internet/i, /github/i, /external.*example/i, /other.*repo/i]
   },
   local: {
     tools: %w[Read Grep Glob],

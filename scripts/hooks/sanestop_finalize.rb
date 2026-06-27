@@ -27,6 +27,7 @@ require_relative 'core/mandatory_workflows'
 require_relative 'core/process_metrics'
 require_relative 'core/state_manager'
 require_relative 'core/visual_receipt'
+require_relative 'sanestop_learnings'
 
 TRANSCRIPT_TOKEN_KEYS = %w[
   input_tokens output_tokens total_tokens cached_tokens cache_read_input_tokens
@@ -648,65 +649,8 @@ rescue StandardError
 end
 
 # === SESSION LEARNINGS CAPTURE ===
-# Writes structured session learnings to ~/.claude/session_learnings.jsonl
-# when the session had significant work. No external dependencies.
-
-def capture_session_learnings
-  edits = StateManager.get(:edits)
-  cb = StateManager.get(:circuit_breaker)
-
-  edit_count = edits[:count] || 0
-  unique_files = edits[:unique_files] || []
-  tripped = cb[:tripped] || false
-
-  # Only capture if significant work happened
-  return unless edit_count >= 3 || tripped
-
-  project = File.basename(Dir.pwd)
-
-  session_type = if tripped
-                   'recovery'
-                 elsif edit_count >= 5
-                   'feature'
-                 else
-                   'maintenance'
-                 end
-
-  file_names = unique_files.map { |f| File.basename(f) }.uniq.first(5)
-  summary = "#{edit_count} edits across #{unique_files.length} files: #{file_names.join(', ')}"
-
-  entry = {
-    date: Date.today.to_s,
-    project: project,
-    type: session_type,
-    summary: summary,
-    files: unique_files.first(10),
-    failures: cb[:failures] || 0,
-    breaker_tripped: tripped
-  }
-
-  FileUtils.mkdir_p(File.dirname(SESSION_LEARNINGS_FILE))
-  File.open(SESSION_LEARNINGS_FILE, 'a') { |f| f.puts(entry.to_json) }
-  enforce_learnings_cap
-rescue StandardError => e
-  warn "⚠️  Session learnings capture error: #{e.message}" if ENV['DEBUG']
-end
-
-def enforce_learnings_cap
-  return unless File.exist?(SESSION_LEARNINGS_FILE)
-
-  lines = File.readlines(SESSION_LEARNINGS_FILE)
-  return if lines.length <= SESSION_LEARNINGS_MAX_LINES
-
-  overflow = lines.length - SESSION_LEARNINGS_MAX_LINES
-  archived = lines.first(overflow)
-  kept = lines.last(SESSION_LEARNINGS_MAX_LINES)
-
-  File.open(SESSION_LEARNINGS_ARCHIVE, 'a') { |f| archived.each { |l| f.write(l) } }
-  File.write(SESSION_LEARNINGS_FILE, kept.join)
-rescue StandardError
-  # Don't fail on cap enforcement
-end
+# capture_session_learnings / enforce_learnings_cap live in sanestop_learnings.rb
+# (extracted per Rule #10). Required at the top of this file.
 
 def log_session(stats)
   FileUtils.mkdir_p(File.dirname(LOG_FILE))

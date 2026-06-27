@@ -239,13 +239,9 @@ def check_pending_mcp_actions
 end
 
 # === MCP VERIFICATION SYSTEM ===
-# Reset verification for new session and prompt Claude to verify MCPs
-
-MCP_VERIFICATION_TOOLS = {
-  apple_docs: 'mcp__apple-docs__search_apple_docs',
-  context7: 'mcp__context7__resolve-library-id',
-  github: 'mcp__github__search_repositories'
-}.freeze
+# Reset verification for new session and prompt Claude to verify MCPs.
+# The authoritative required-MCP list lives in
+# sanetools_research.rb MCP_VERIFICATION_INFO (currently Apple Docs only).
 
 def reset_mcp_verification
   require_relative 'core/state_manager'

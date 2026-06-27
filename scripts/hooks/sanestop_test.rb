@@ -240,7 +240,7 @@ module SaneStopTest
       exit_code = process_stop_proc.call(false, transcript_path)
       $stderr.reopen(original_stderr)
 
-      rows = File.readlines(metrics_path, chomp: true).map { |line| JSON.parse(line) }
+      rows = File.readlines(metrics_path, chomp: true, encoding: Encoding::UTF_8).map { |line| JSON.parse(line) }
       session_end = rows.find { |row| row['type'] == 'session_end' }
       receipt = rows.find { |row| row['type'] == 'session_receipt' }
       outcomes = rows.select { |row| row['type'] == 'block_outcome' }

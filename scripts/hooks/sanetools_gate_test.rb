@@ -307,12 +307,15 @@ module SaneToolsGateTest
     StateManager.reset(:research)
     process_tool_proc.call('WebSearch', { 'query' => 'github mcp server real-world code examples' })
     ws_research = StateManager.get(:research)
-    if ws_research[:github] && ws_research[:web]
+    # github folded into web: real-world/GitHub examples now satisfy the web
+    # category (WebSearch surfaces GitHub; the gh skill replaced the github MCP).
+    # There is no separate github research category to satisfy.
+    if ws_research[:web] && ws_research[:github].nil?
       passed += 1
-      warn '  PASS: github-focused WebSearch satisfies github (and web) research'
+      warn '  PASS: github-focused WebSearch satisfies web research (github folded into web)'
     else
       failed += 1
-      warn "  FAIL: github WebSearch should satisfy github research, got web=#{!ws_research[:web].nil?} github=#{!ws_research[:github].nil?}"
+      warn "  FAIL: github WebSearch should satisfy web research, got web=#{!ws_research[:web].nil?} github=#{!ws_research[:github].nil?}"
     end
 
     StateManager.reset(:research)
@@ -367,7 +370,9 @@ module SaneToolsGateTest
       h[:verified_this_session] = false
       h[:degraded] = false
       h[:gate_block_attempts] = 0
-      h[:mcps] = { apple_docs: { verified: true }, github: { verified: false } }
+      # Apple Docs is the only required-verification MCP now; leave it unverified
+      # so the degradation path (block twice, then open) is exercised.
+      h[:mcps] = { apple_docs: { verified: false } }
       h
     end
 

@@ -1,7 +1,15 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Pin UTF-8 defaults before the source-reads below. This test File.reads the
+# Ruby scripts under test (which contain emoji like ✅/❌); under a C locale the
+# default US-ASCII external encoding makes assert_includes raise "invalid byte
+# sequence in US-ASCII". Mirrors the entry-point pin in the scripts themselves.
+Encoding.default_external = Encoding::UTF_8
+Encoding.default_internal = Encoding::UTF_8
+
 require 'open3'
+require 'rbconfig'
 require 'fileutils'
 require 'stringio'
 require 'tempfile'
@@ -1102,6 +1110,56 @@ exit(run_tests('Setapp Upload Tests') do
 
       assert(!status.success?, output)
       assert_includes(output, 'ZIP not found')
+      true
+    end
+  end
+
+  # Regression: setapp_upload.rb and this test File.read Ruby sources that carry
+  # emoji (✅/❌). Under a locale-less shell the US-ASCII default external encoding
+  # makes a later string match raise "invalid byte sequence in US-ASCII". Same
+  # family as sane_test_locale_test.rb. Probes run in C-locale subprocesses.
+  test_category('C-locale survival (UTF-8 encoding pin)') do
+    c_locale_env = { 'LC_ALL' => 'C', 'LANG' => 'C', 'LC_CTYPE' => nil }.freeze
+    run_c_locale_probe = lambda do |probe|
+      Open3.capture3(c_locale_env, RbConfig.ruby, '-e', probe)
+    end
+
+    test('unpinned source read of setapp_upload.rb raises under a C locale (the bug)') do
+      probe = <<~RUBY
+        source = File.read(#{SCRIPT_PATH.dump})
+        # Regex ops (not include?) are what raise on an invalid-US-ASCII string.
+        source.match?(/codesign/)
+        print 'NO_RAISE'
+      RUBY
+      stdout, stderr, status = run_c_locale_probe.call(probe)
+      combined = "#{stdout}#{stderr}"
+      assert(!status.success?, "expected unpinned read to raise under C locale, got: #{combined}")
+      assert_includes(combined, 'invalid byte sequence in US-ASCII')
+      true
+    end
+
+    test('explicit UTF-8 source read survives a C locale (the fix)') do
+      probe = <<~RUBY
+        source = File.read(#{SCRIPT_PATH.dump}, encoding: Encoding::UTF_8)
+        abort 'match failed' unless source.match?(/codesign/)
+        print 'READ_OK'
+      RUBY
+      stdout, stderr, status = run_c_locale_probe.call(probe)
+      assert(status.success?, "probe failed: #{stderr}")
+      assert_includes(stdout, 'READ_OK')
+      true
+    end
+
+    test('setapp_upload.rb pins UTF-8 defaults when loaded under a C locale') do
+      probe = <<~RUBY
+        load #{SCRIPT_PATH.dump}
+        abort 'default_external not UTF-8' unless Encoding.default_external == Encoding::UTF_8
+        abort 'default_internal not UTF-8' unless Encoding.default_internal == Encoding::UTF_8
+        print 'ENC_OK'
+      RUBY
+      stdout, stderr, status = run_c_locale_probe.call(probe)
+      assert(status.success?, "probe failed: #{stderr}")
+      assert_includes(stdout, 'ENC_OK')
       true
     end
   end

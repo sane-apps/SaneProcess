@@ -153,7 +153,7 @@ module StateSigner
       FileUtils.mkdir_p(env_dir)
       File.chmod(0o700, env_dir) rescue nil
 
-      lines = File.exist?(ENV_CACHE_FILE) ? File.readlines(ENV_CACHE_FILE, chomp: true) : []
+      lines = File.exist?(ENV_CACHE_FILE) ? File.readlines(ENV_CACHE_FILE, chomp: true, encoding: Encoding::UTF_8) : []
       filtered = lines.reject { |line| line.strip.start_with?("export #{SECRET_ENV_VAR}=") }
       filtered << "export #{SECRET_ENV_VAR}=#{Shellwords.escape(secret)}"
       File.write(ENV_CACHE_FILE, filtered.join("\n") + "\n")

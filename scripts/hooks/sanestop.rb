@@ -30,6 +30,7 @@ require_relative 'core/state_manager'
 require_relative 'core/sop_score'
 require_relative 'core/visual_receipt'
 require_relative 'sanestop_finalize'
+require_relative 'core/project_root'
 LOG_FILE = File.expand_path('../../.claude/sanestop.log', __dir__)
 SOP_CSV = File.expand_path('../../outputs/sop_ratings.csv', __dir__)
 SOP_JSONL = File.expand_path('../../outputs/sop_ratings.jsonl', __dir__)
@@ -643,7 +644,12 @@ def process_stop(stop_hook_active, transcript_path = nil)
   end
 
   # === RULE #4 ENFORCEMENT: Edits require verification ===
-  verification_block = check_verification_required
+  # SaneProcess self-development is exempt, consistent with the edit-gate
+  # self_development bypass: hook changes are verified by the hook self-test
+  # suite (scripts/qa.rb / `<hook>.rb --self-test`), not a Swift-style
+  # `SaneMaster verify` metric — which cannot exist for Ruby hooks and so was
+  # impossible-by-design friction here.
+  verification_block = SaneProjectRoot.self_development? ? nil : check_verification_required
   if verification_block
     warn ''
     warn '=' * 50

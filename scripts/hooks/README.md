@@ -69,6 +69,7 @@ Full verification remains `ruby scripts/SaneMaster.rb verify`; the focused comma
 | `sanetrack_gate.rb` | Post-edit enforcement helpers |
 | `sanetrack_proofs.rb` | Proof receipt and runner tracking |
 | `sanestop_finalize.rb` | Session-end verification, receipts, and learnings extracted from `sanestop.rb` |
+| `sanestop_learnings.rb` | Session learnings capture + cap, extracted from `sanestop_finalize.rb` |
 | `sanetrack_reminders.rb` | Feature reminders and logging |
 | `session_briefing.rb` | Session-start briefing output |
 | `session_start_cleanup.rb` | Session-start cleanup helpers |
@@ -98,6 +99,8 @@ Full verification remains `ruby scripts/SaneMaster.rb verify`; the focused comma
 | `sanetools_gate_test.rb` | sanetools startup, GitHub, and MCP gate self-tests |
 | `sanetools_test_scenarios.rb` | shared sanetools self-test fixtures |
 | `sanetrack_test.rb` | sanetrack self-tests |
+| `sanetrack_test_tautology.rb` | sanetrack tautology-detection (Rule #7) self-tests, extracted from `sanetrack_test.rb` |
+| `sanetrack_blind_tests.rb` | sanetrack blind/adversarial tracking self-tests |
 | `sanestop_test.rb` | sanestop self-tests |
 | `sanestop_persistence_test.rb` | sanestop handoff, visual, validation, and JSON self-tests |
 
