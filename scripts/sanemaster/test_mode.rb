@@ -1140,6 +1140,16 @@ module SaneMasterModules
 
       # SaneBar local testing is only supported in signed launch modes.
       # Debug mode can trigger invisible/off-screen menu bar icon behavior.
+      #
+      # TCC HARDCODE: the trusted /Applications/SaneBar.app carries a Developer-ID
+      # (Release) signature, and macOS ties the Accessibility/TCC grant to that
+      # signing identity. Staging a locally Apple-Development-signed ProdDebug
+      # build over it breaks the grant and traps the app in a permissions loop
+      # (the should_block_local_signing_tcc_drift? guard exists only to catch that
+      # after the fact). So the DEFAULT launch config is the Developer-ID-signed
+      # Release build — launches preserve TCC out of the box, no --release needed.
+      # Opt into the local-signed build deliberately with --proddebug or
+      # SANEMASTER_BUILD_CONFIG=ProdDebug.
       if project_name == 'SaneBar'
         requested = (ENV['SANEMASTER_BUILD_CONFIG'] || ENV['SANEBAR_BUILD_CONFIG'] || '').strip
         requested = case requested.downcase
@@ -1156,7 +1166,7 @@ module SaneMasterModules
           return 'Debug'
         end
 
-        return 'ProdDebug'
+        return 'Release'
       end
 
       ENV['SANEMASTER_BUILD_CONFIG'] || 'Debug'
