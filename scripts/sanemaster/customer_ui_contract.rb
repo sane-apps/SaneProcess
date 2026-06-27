@@ -97,7 +97,6 @@ module SaneMasterModules
       cold_launch_relaunch
       wake_unlock
       display_topology
-      fullscreen_maximize_transition
       basic_pro_mode
       support_report_media
     ].freeze

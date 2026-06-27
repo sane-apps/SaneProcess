@@ -40,4 +40,9 @@ pre-push:
   parallel: false
   commands:
     verify:
-      run: ./scripts/SaneMaster.rb verify
+      # env -u BUNDLE_PATH/RUBYOPT: the lefthook shim sets BUNDLE_PATH=vendor/bundle
+      # when a Gemfile.lock exists, but these projects' gems are system-installed
+      # (header above: "No Bundler required"). A partial vendor/bundle then makes
+      # bundler/setup fail with GemNotFound and crashes every push. Strip those
+      # vars so verify resolves gems from the system home.
+      run: env -u BUNDLE_PATH -u RUBYOPT ./scripts/SaneMaster.rb verify
