@@ -268,9 +268,59 @@ def block_raw_mini_screenshot_if_needed(payload)
   exit 2
 end
 
+# Destructive `security` keychain mutations: overwrite an existing item
+# (add-*-password -U), delete an item, or rewrite its ACL/partition list. These
+# cause irrecoverable credential loss (a real license_key was clobbered this way).
+# Reads (find-*, find-identity, show-keychain-info, cms, dump) stay allowed.
+# Matches local and ssh-wrapped/quoted forms.
+DESTRUCTIVE_KEYCHAIN_SUBCOMMAND = Regexp.union(
+  /add-(?:generic|internet)-password\b[^;&|\n'"]*?\s-U\b/,
+  /delete-(?:generic|internet)-password\b/,
+  /delete-(?:certificate|identity|keychain)\b/,
+  /set-(?:generic|internet)-password-partition-list\b/,
+  /set-key-partition-list\b/
+).freeze
+
+# Only fire when `security <destructive-subcommand>` is actually INVOKED, i.e.
+# `security` sits at a command position — start of the command, after a shell
+# separator, or as the remote command of `ssh <host> '...'`. Merely MENTIONING
+# the text (a commit message, echo arg, grep pattern, comment) does not match,
+# so committing/documenting this very guard is not self-blocked.
+def destructive_keychain_command?(command)
+  return false unless command
+
+  sub = DESTRUCTIVE_KEYCHAIN_SUBCOMMAND.source
+  local  = /(?:\A|[;&|(){}\n]|&&|\|\|)\s*security\s+(?:#{sub})/
+  remote = /\bssh\s+\S+\s+["']\s*security\s+(?:#{sub})/
+  command.match?(local) || command.match?(remote)
+end
+
+def block_destructive_keychain_if_needed(payload)
+  command = bash_command_from_payload(payload)
+  return unless destructive_keychain_command?(command)
+
+  warn <<~MESSAGE
+    🔴 BLOCKED: destructive keychain mutation
+
+    This `security` command overwrites (add … -U), deletes, or re-ACLs a keychain
+    item. Keychain items hold the user's real credentials — licenses, API keys,
+    signing keys. Losing/altering one is irrecoverable data loss, and it already
+    clobbered a real license_key once.
+
+    Allowed (read-only): security find-generic-password / find-identity /
+    show-keychain-info / cms -D / dump-keychain.
+
+    If a destructive keychain change is genuinely required, the USER must run it
+    in their own terminal. Never overwrite, delete, or change the partition
+    list / ACL of a keychain item from the agent.
+  MESSAGE
+  exit 2
+end
+
 payload = $stdin.read.force_encoding(Encoding::UTF_8)
 original_stdin = $stdin
 
+block_destructive_keychain_if_needed(payload)
 block_raw_mini_screenshot_if_needed(payload)
 block_detached_mini_qa_if_needed(payload)
 
