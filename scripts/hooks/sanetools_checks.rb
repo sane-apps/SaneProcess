@@ -88,6 +88,8 @@ module SaneToolsChecks
     '/dev/null',
     %r{^/tmp/},
     %r{^/var/tmp/},
+    %r{^/private/tmp/},     # macOS-canonical form of /tmp (the agent scratchpad lives here)
+    %r{^/private/var/tmp/}, # macOS-canonical form of /var/tmp
     %r{DerivedData/},
     %r{\.build/},
     %r{^build/}
