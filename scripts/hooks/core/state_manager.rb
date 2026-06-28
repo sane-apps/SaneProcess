@@ -68,6 +68,13 @@ module StateManager
       unique_files: [],
       last_file: nil
     },
+    # Set true by sanestop_lemonsqueezy once the LemonSqueezy-Uploads folder is
+    # staged after a release this session. Kept in SCHEMA so merge_with_defaults
+    # preserves it across state reloads (else the post-release staging re-runs
+    # on every Stop).
+    lemonsqueezy_uploads: {
+      done: false
+    },
     saneloop: {
       active: false,
       task: nil,

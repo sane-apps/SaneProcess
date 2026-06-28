@@ -8,6 +8,12 @@
       "cmd": ["ruby", "scripts/hooks/test_hooks.rb"]
     },
     {
+      "path": "scripts/hooks/sanestop_lemonsqueezy_test.rb",
+      "label": "SaneProcess post-release LemonSqueezy-Uploads staging tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/hooks/sanestop_lemonsqueezy_test.rb"]
+    },
+    {
       "path": "scripts/hooks/sane_rsync_guard_test.rb",
       "label": "SaneProcess rsync guard tests",
       "status": "required",
