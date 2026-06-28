@@ -269,7 +269,7 @@ class SaneMaster
     session: {
       desc: 'Session state, approvals, and loop controls',
       commands: {
-        'github_post_approval' => { args: '--body|--body-file <TEXT|PATH> --user-approval "QUOTE"', desc: 'Record exact-text approval before public GitHub posting' },
+        'github_post_approval' => { args: '--body|--body-file <TEXT|PATH> | --metadata-command <GH_EDIT> --user-approval "QUOTE"', desc: 'Record exact-text approval before public GitHub posting' },
         'email_force_approval' => { args: '--action ACTION --id ID --reason TEXT --user-approval "QUOTE"', desc: 'Record scoped approval for check-inbox --force' },
         'session_end' => { args: '[--skip-prompts]', desc: 'End session with insight extraction' },
         'reset_breaker' => { args: '', desc: 'Reset circuit breaker (unblock tools)' },
@@ -2039,6 +2039,7 @@ PY
   def github_post_approval(args)
     quote = nil
     body = nil
+    metadata_command = nil
     i = 0
     while i < args.length
       case args[i]
@@ -2054,6 +2055,9 @@ PY
 
         body = File.read(file, encoding: Encoding::UTF_8)
         i += 1
+      when '--metadata-command', '--metadata-edit-command'
+        metadata_command = args[i + 1]
+        i += 1
       else
         quote ||= args[i]
       end
@@ -2062,18 +2066,55 @@ PY
 
     quote = quote.to_s.strip
     abort '❌ Missing explicit user approval quote. Use --user-approval "post it".' if quote.empty?
-    body = body.to_s.strip
-    abort '❌ Missing exact public post body. Use --body "final text" or --body-file <path>.' if body.empty?
+    metadata_hash = github_metadata_command_hash(metadata_command)
+    abort '❌ Use either --metadata-command or --body/--body-file, not both.' if metadata_hash && body.to_s.strip.length.positive?
 
     path = '/tmp/.gh_post_approved.json'
     payload = {
       'created_at' => Time.now.to_i,
-      'user_approval' => quote,
-      'body_hash' => Digest::SHA256.hexdigest(body)
+      'user_approval' => quote
     }
+
+    if metadata_hash
+      payload['approval_type'] = 'github_metadata'
+      payload['metadata_command_hash'] = metadata_hash
+      File.write(path, JSON.pretty_generate(payload))
+      File.chmod(0o600, path)
+      puts '✅ GitHub metadata-edit approval recorded for 5 minutes.'
+      return
+    end
+
+    body = body.to_s.strip
+    abort '❌ Missing exact public post body. Use --body "final text" or --body-file <path>.' if body.empty?
+
+    payload['body_hash'] = Digest::SHA256.hexdigest(body)
     File.write(path, JSON.pretty_generate(payload))
     File.chmod(0o600, path)
     puts '✅ GitHub public-post approval recorded for 5 minutes.'
+  end
+
+  def github_metadata_command_hash(command)
+    command = command.to_s.strip
+    return nil if command.empty?
+
+    tokens = Shellwords.split(command)
+    gh_index = tokens.index('gh')
+    abort '❌ Metadata approval must be for a gh issue/pr edit command.' unless gh_index
+
+    gh_tokens = tokens[gh_index..]
+    unless gh_tokens[1]&.match?(/\A(?:issue|pr)\z/) && gh_tokens[2] == 'edit'
+      abort '❌ Metadata approval must be for a gh issue/pr edit command.'
+    end
+    if gh_tokens.any? { |token| token.match?(/\A--(?:body|comment|title)\z|--body-file\z|--comment-file\z/) }
+      abort '❌ Metadata approval cannot include public body/title/comment text.'
+    end
+    unless gh_tokens.any? { |token| token.match?(/\A--(?:add|remove)-(?:label|assignee|project)\z|--milestone\z|--add-reviewer\z/) }
+      abort '❌ Metadata approval must include a label, assignee, project, reviewer, or milestone edit.'
+    end
+
+    Digest::SHA256.hexdigest(gh_tokens.join("\0"))
+  rescue ArgumentError
+    abort '❌ Could not parse metadata command. Pass the exact gh issue/pr edit command.'
   end
 
   def email_force_approval(args)

@@ -5,6 +5,7 @@
 # (extracted from sanetools.rb per Rule #10).
 
 require 'json'
+require 'shellwords'
 require 'socket'
 require_relative 'core/local_ui_guard'
 require_relative 'core/mandatory_workflows'
@@ -500,6 +501,19 @@ module SaneToolsChecks
         target_match = scan.match(/(?:>|>>|tee\s+)\s*([^\s|&;]+)/)
         target = target_match ? target_match[1] : nil
         target ||= scan[/\bcurl\b[^|;&]*\s-o\s+([^\s|&;]+)/, 1]
+        # cp/mv write to their LAST argument (the destination). Allow safe scratch/build
+        # destinations via the same SAFE_REDIRECT_TARGETS set used for redirects — a cp/mv
+        # to a tracked path still has an unsafe destination and stays blocked.
+        if target.nil? && scan.match?(/\b(?:cp|mv)\b/)
+          begin
+            shell_tokens = Shellwords.split(command)
+            if shell_tokens.any? { |token| %w[cp mv].include?(File.basename(token.to_s)) }
+              target = shell_tokens.reject { |t| t.empty? || t.start_with?('-') }.last
+            end
+          rescue ArgumentError
+            target = nil
+          end
+        end
 
         return nil if target && target.match?(SAFE_REDIRECT_TARGETS)
 

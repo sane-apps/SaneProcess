@@ -95,9 +95,76 @@ def token_value(tokens, *flags)
   nil
 end
 
+def scrub_quoted_literals(command)
+  command.to_s.gsub(/'[^']*'/, "''").gsub(/"[^"]*"/, '""')
+end
+
+def gh_public_command_direct?(command)
+  # Blank quoted strings first so a command that merely MENTIONS gh inside a quoted
+  # argument (e.g. `git commit -m "fix: gh issue edit ..."`) is not mistaken for an
+  # actual gh invocation. A real gh command has its verb OUTSIDE quotes, so it still matches.
+  scan = scrub_quoted_literals(command)
+  scan.match?(/\bgh\s+(?:issue|pr)\s+(?:comment|close|review|create|edit)\b/) ||
+    scan.match?(/\bgh\s+api\b.*(?:^|[\s\/])repos\/(?:sane-apps|mrsaneapps)\//i)
+end
+
+def shell_wrapper_payloads(command)
+  tokens = shell_tokens(command)
+  return [] if tokens.empty?
+
+  command_name = File.basename(tokens.first.to_s)
+  case command_name
+  when 'bash', 'sh', 'zsh'
+    command_index = nil
+    tokens[1..].to_a.each_with_index do |token, offset|
+      if token.start_with?('-')
+        if token.include?('c')
+          command_index = offset + 2
+          break
+        end
+      else
+        break
+      end
+    end
+    command_index && tokens[command_index] ? [tokens[command_index]] : []
+  when 'ssh'
+    index = 1
+    options_with_values = %w[-b -c -D -E -F -I -i -J -L -l -m -O -o -p -R -S -W].freeze
+    while index < tokens.length
+      token = tokens[index].to_s
+      if token == '--'
+        index += 1
+        break
+      elsif token.start_with?('-')
+        index += options_with_values.include?(token) ? 2 : 1
+      else
+        index += 1 # host
+        break
+      end
+    end
+    payload = tokens[index..].to_a.join(' ').strip
+    payload.empty? ? [] : [payload]
+  else
+    []
+  end
+rescue StandardError
+  []
+end
+
+def public_gh_command_for(command, depth = 0)
+  return nil if depth > 4
+  return command if gh_public_command_direct?(command)
+
+  shell_wrapper_payloads(command).each do |payload|
+    match = public_gh_command_for(payload, depth + 1)
+    return match if match
+  end
+
+  nil
+end
+
 def gh_public_command?(command)
-  command.match?(/\bgh\s+(?:issue|pr)\s+(?:comment|close|review|create|edit)\b/) ||
-    command.match?(/\bgh\s+api\b.*(?:^|[\s\/])repos\/(?:sane-apps|mrsaneapps)\//i)
+  !public_gh_command_for(command).nil?
 end
 
 def extract_gh_public_text(command)
@@ -121,7 +188,28 @@ rescue StandardError
   ''
 end
 
-def consume_github_approval(public_text)
+# A `gh issue/pr edit` that only changes metadata (labels, assignees, milestone, projects)
+# and carries NO public text flag. These post no comment text — there is nothing to draft
+# or hash-match — but they still require a recorded user approval (consent).
+def gh_metadata_only_edit?(command)
+  return false unless command.match?(/\bgh\s+(?:issue|pr)\s+edit\b/)
+  return false if command.match?(/--(?:body|comment|title)\b|--body-file\b|--comment-file\b/)
+
+  command.match?(/--(?:add|remove)-(?:label|assignee|project)\b|--milestone\b|--add-reviewer\b/)
+end
+
+def normalized_gh_metadata_command(command)
+  return nil unless gh_metadata_only_edit?(command)
+
+  tokens = shell_tokens(command)
+  gh_index = tokens.index('gh')
+  return nil unless gh_index
+
+  gh_tokens = tokens[gh_index..]
+  Digest::SHA256.hexdigest(gh_tokens.join("\0"))
+end
+
+def consume_github_approval(public_text, metadata_command_hash: nil)
   return :missing unless File.exist?(APPROVAL_FLAG)
 
   payload = JSON.parse(File.read(APPROVAL_FLAG, encoding: Encoding::UTF_8))
@@ -132,6 +220,17 @@ def consume_github_approval(public_text)
                      age < GITHUB_APPROVAL_TTL_SECONDS &&
                      !payload['user_approval'].to_s.strip.empty?
   return :stale unless approval_present
+
+  # Metadata-only edits (labels/assignees/milestone) post NO public text, so there is
+  # nothing to body-hash. Scope approval to the exact normalized gh edit command so a
+  # token for one issue/label cannot authorize another metadata mutation in the TTL.
+  if metadata_command_hash
+    expected = payload['metadata_command_hash'].to_s
+    return :valid if payload['approval_type'] == 'github_metadata' &&
+                     !expected.empty? &&
+                     expected == metadata_command_hash
+    return :body_mismatch
+  end
 
   expected = payload['body_hash'].to_s
   actual = Digest::SHA256.hexdigest(public_text.to_s.strip)
@@ -350,7 +449,8 @@ if gh_public_command?(command)
     exit 2
   end
 
-  public_text = extract_gh_public_text(command)
+  public_command = public_gh_command_for(command) || command
+  public_text = extract_gh_public_text(public_command)
   if public_text.match?(CORPORATE_WE_PATTERN)
     warn '🔴 BLOCKED: "we/us/our" language in public GitHub post'
     warn '   SaneApps is one person. Use: I/me/my.'
@@ -359,7 +459,8 @@ if gh_public_command?(command)
     exit 2
   end
 
-  approval_status = consume_github_approval(public_text)
+  metadata_command_hash = normalized_gh_metadata_command(public_command)
+  approval_status = consume_github_approval(public_text, metadata_command_hash: metadata_command_hash)
   if approval_status == :valid
     exit 0  # Approved — allow the post
   end
@@ -368,7 +469,11 @@ if gh_public_command?(command)
   warn '   This posts publicly as MrSaneApps. Show the user a draft first.'
   warn ''
   warn '   ✅ Show the draft text to the user, get explicit approval, then post.'
-  warn '   Then run: ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb github_post_approval --body-file <draft_file> --user-approval "<quote>"'
+  if metadata_command_hash
+    warn '   For metadata-only edits, run: ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb github_post_approval --metadata-command "<exact gh issue/pr edit command>" --user-approval "<quote>"'
+  else
+    warn '   Then run: ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb github_post_approval --body-file <draft_file> --user-approval "<quote>"'
+  end
   exit 2
 end
 

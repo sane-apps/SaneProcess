@@ -237,6 +237,45 @@ module SaneToolsTest
       warn '  FAIL: Bash file writes should be blocked to source files'
     end
 
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
+    exit_code = process_tool_proc.call('Bash', { 'command' => 'cp source.txt /private/tmp/proof.txt' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Bash cp to /private/tmp is allowed'
+    else
+      failed += 1
+      warn "  FAIL: Bash cp to /private/tmp should be allowed, got exit #{exit_code}"
+    end
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
+    exit_code = process_tool_proc.call('Bash', { 'command' => 'cp source.txt "/private/tmp/proof file.txt"' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Bash cp to quoted /private/tmp path is allowed'
+    else
+      failed += 1
+      warn "  FAIL: Bash cp to quoted /private/tmp path should be allowed, got exit #{exit_code}"
+    end
+
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
+    exit_code = process_tool_proc.call('Bash', { 'command' => 'cp source.txt README.md' })
+    $stderr.reopen(original_stderr)
+
+    if exit_code == 2
+      passed += 1
+      warn '  PASS: Bash cp to tracked/source path is blocked'
+    else
+      failed += 1
+      warn "  FAIL: Bash cp to tracked/source path should be blocked, got exit #{exit_code}"
+    end
+
     # === STANDARD TESTS ===
     warn ''
     warn 'Testing tool blocking:'

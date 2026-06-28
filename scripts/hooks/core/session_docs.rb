@@ -30,6 +30,8 @@ module SaneSessionDocs
     # their exact configured path.
     return false if explicitly_pinned?(doc_name, session_docs)
 
+    return false unless File.file?(actual)
+
     File.basename(actual) == File.basename(doc_name.to_s)
   rescue StandardError
     false

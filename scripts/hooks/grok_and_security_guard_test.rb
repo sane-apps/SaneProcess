@@ -557,6 +557,112 @@ _, gh_api_err, gh_api_status = run_ruby_hook(
   }
 )
 t('GitHub guard blocks gh api public comment without approval', gh_api_status.exitstatus == 2)
+
+_, _gh_wrapped_err, gh_wrapped_status = run_ruby_hook(
+  'sane_release_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => "bash -lc 'gh issue comment 123 --repo sane-apps/SaneBar --body \"wrapped post\"'" }
+  }
+)
+t('GitHub guard blocks wrapped bash gh comment without approval', gh_wrapped_status.exitstatus == 2)
+
+_, _gh_wrapped_mention_err, gh_wrapped_mention_status = run_ruby_hook(
+  'sane_release_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => "bash -lc 'git commit -m \"fix: gh issue edit was un-approvable\"'" }
+  }
+)
+t('GitHub guard ignores gh mentioned inside a wrapped quoted commit message', gh_wrapped_mention_status.exitstatus.zero?)
+
+_, _gh_wrapped_ssh_err, gh_wrapped_ssh_status = run_ruby_hook(
+  'sane_release_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => "ssh mini 'gh issue edit 160 --repo sane-apps/SaneBar --add-label release:patched-pending'" }
+  }
+)
+t('GitHub guard blocks wrapped ssh metadata edit without approval', gh_wrapped_ssh_status.exitstatus == 2)
+
+# Metadata-only edits (labels/assignees) post no public text. They still require a recorded
+# approval scoped to the exact normalized command — the old guard made them un-approvable.
+_, _gh_label_noapp_err, gh_label_noapp_status = run_ruby_hook(
+  'sane_release_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'gh issue edit 160 --repo sane-apps/SaneBar --add-label "release:patched-pending"' }
+  }
+)
+t('GitHub guard blocks label-only edit without approval', gh_label_noapp_status.exitstatus == 2)
+
+Open3.capture3(
+  'ruby', File.join(SANEPROCESS_DIR, 'scripts/SaneMaster.rb'),
+  'github_post_approval',
+  '--metadata-command', 'gh issue edit 160 --repo sane-apps/SaneBar --add-label release:patched-pending',
+  '--user-approval', 'label it',
+  chdir: SANEPROCESS_DIR
+)
+_, _gh_label_ok_err, gh_label_ok_status = run_ruby_hook(
+  'sane_release_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'gh issue edit 160 --repo sane-apps/SaneBar --add-label "release:patched-pending"' }
+  }
+)
+t('GitHub guard accepts label-only edit with a recorded approval', gh_label_ok_status.exitstatus.zero?)
+
+Open3.capture3(
+  'ruby', File.join(SANEPROCESS_DIR, 'scripts/SaneMaster.rb'),
+  'github_post_approval',
+  '--metadata-command', 'gh issue edit 160 --repo sane-apps/SaneBar --add-label release:patched-pending',
+  '--user-approval', 'label it',
+  chdir: SANEPROCESS_DIR
+)
+_, _gh_label_wrong_issue_err, gh_label_wrong_issue_status = run_ruby_hook(
+  'sane_release_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'gh issue edit 161 --repo sane-apps/SaneBar --add-label "release:patched-pending"' }
+  }
+)
+t('GitHub guard rejects metadata approval for a different issue', gh_label_wrong_issue_status.exitstatus == 2)
+
+# The carve-out is metadata-ONLY: an edit that carries --body still requires the hash match,
+# so public text can never slip through `gh issue edit` unapproved.
+Open3.capture3(
+  'ruby', File.join(SANEPROCESS_DIR, 'scripts/SaneMaster.rb'),
+  'github_post_approval', '--body', 'Label only', '--user-approval', 'label it',
+  chdir: SANEPROCESS_DIR
+)
+_, _gh_bodyedit_err, gh_bodyedit_status = run_ruby_hook(
+  'sane_release_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'gh issue edit 160 --repo sane-apps/SaneBar --body "Sneaky public text"' }
+  }
+)
+t('GitHub guard still hash-matches an edit that carries body text', gh_bodyedit_status.exitstatus == 2)
+
+# A git commit whose MESSAGE merely mentions gh commands must not be treated as a gh post.
+_, _gh_mention_err, gh_mention_status = run_ruby_hook(
+  'sane_release_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'git commit -m "fix: gh issue edit was un-approvable" -m "details"' }
+  }
+)
+t('GitHub guard ignores gh mentioned inside a quoted commit message', gh_mention_status.exitstatus.zero?)
+
+# But a real (unquoted) gh public comment is still gated.
+_, _gh_real_err, gh_real_status = run_ruby_hook(
+  'sane_release_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'gh issue comment 123 --repo sane-apps/SaneBar --body "real post"' }
+  }
+)
+t('GitHub guard still gates a real unquoted gh comment', gh_real_status.exitstatus == 2)
 t('GitHub gh api block names user approval', gh_api_err.include?('Public GitHub interaction'))
 FileUtils.rm_f(gh_approval_path)
 
