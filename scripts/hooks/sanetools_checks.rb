@@ -500,6 +500,12 @@ module SaneToolsChecks
         target_match = scan.match(/(?:>|>>|tee\s+)\s*([^\s|&;]+)/)
         target = target_match ? target_match[1] : nil
         target ||= scan[/\bcurl\b[^|;&]*\s-o\s+([^\s|&;]+)/, 1]
+        # cp/mv write to their LAST argument (the destination). Allow safe scratch/build
+        # destinations via the same SAFE_REDIRECT_TARGETS set used for redirects — a cp/mv
+        # to a tracked path still has an unsafe destination and stays blocked.
+        if target.nil? && scan.match?(/\b(?:cp|mv)\b/)
+          target = scan.split(/[\s|&;]+/).reject { |t| t.empty? || t.start_with?('-') }.last
+        end
 
         return nil if target && target.match?(SAFE_REDIRECT_TARGETS)
 
