@@ -598,6 +598,26 @@ _, _gh_bodyedit_err, gh_bodyedit_status = run_ruby_hook(
   }
 )
 t('GitHub guard still hash-matches an edit that carries body text', gh_bodyedit_status.exitstatus == 2)
+
+# A git commit whose MESSAGE merely mentions gh commands must not be treated as a gh post.
+_, _gh_mention_err, gh_mention_status = run_ruby_hook(
+  'sane_release_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'git commit -m "fix: gh issue edit was un-approvable" -m "details"' }
+  }
+)
+t('GitHub guard ignores gh mentioned inside a quoted commit message', gh_mention_status.exitstatus.zero?)
+
+# But a real (unquoted) gh public comment is still gated.
+_, _gh_real_err, gh_real_status = run_ruby_hook(
+  'sane_release_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'gh issue comment 123 --repo sane-apps/SaneBar --body "real post"' }
+  }
+)
+t('GitHub guard still gates a real unquoted gh comment', gh_real_status.exitstatus == 2)
 t('GitHub gh api block names user approval', gh_api_err.include?('Public GitHub interaction'))
 FileUtils.rm_f(gh_approval_path)
 

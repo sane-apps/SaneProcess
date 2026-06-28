@@ -96,8 +96,12 @@ def token_value(tokens, *flags)
 end
 
 def gh_public_command?(command)
-  command.match?(/\bgh\s+(?:issue|pr)\s+(?:comment|close|review|create|edit)\b/) ||
-    command.match?(/\bgh\s+api\b.*(?:^|[\s\/])repos\/(?:sane-apps|mrsaneapps)\//i)
+  # Blank quoted strings first so a command that merely MENTIONS gh inside a quoted
+  # argument (e.g. `git commit -m "fix: gh issue edit ..."`) is not mistaken for an
+  # actual gh invocation. A real gh command has its verb OUTSIDE quotes, so it still matches.
+  scan = command.gsub(/'[^']*'/, "''").gsub(/"[^"]*"/, '""')
+  scan.match?(/\bgh\s+(?:issue|pr)\s+(?:comment|close|review|create|edit)\b/) ||
+    scan.match?(/\bgh\s+api\b.*(?:^|[\s\/])repos\/(?:sane-apps|mrsaneapps)\//i)
 end
 
 def extract_gh_public_text(command)
