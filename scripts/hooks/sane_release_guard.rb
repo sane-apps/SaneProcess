@@ -121,7 +121,17 @@ rescue StandardError
   ''
 end
 
-def consume_github_approval(public_text)
+# A `gh issue/pr edit` that only changes metadata (labels, assignees, milestone, projects)
+# and carries NO public text flag. These post no comment text — there is nothing to draft
+# or hash-match — but they still require a recorded user approval (consent).
+def gh_metadata_only_edit?(command)
+  return false unless command.match?(/\bgh\s+(?:issue|pr)\s+edit\b/)
+  return false if command.match?(/--(?:body|comment|title)\b|--body-file\b|--comment-file\b/)
+
+  command.match?(/--(?:add|remove)-(?:label|assignee|project)\b|--milestone\b|--add-reviewer\b/)
+end
+
+def consume_github_approval(public_text, metadata_only: false)
   return :missing unless File.exist?(APPROVAL_FLAG)
 
   payload = JSON.parse(File.read(APPROVAL_FLAG, encoding: Encoding::UTF_8))
@@ -132,6 +142,11 @@ def consume_github_approval(public_text)
                      age < GITHUB_APPROVAL_TTL_SECONDS &&
                      !payload['user_approval'].to_s.strip.empty?
   return :stale unless approval_present
+
+  # Metadata-only edits (labels/assignees/milestone) post NO public text, so there is
+  # nothing to hash-match — a fresh, user-approved token is sufficient consent. Without
+  # this, label-only `gh issue edit` was un-approvable (empty text => permanent mismatch).
+  return :valid if metadata_only && public_text.to_s.strip.empty?
 
   expected = payload['body_hash'].to_s
   actual = Digest::SHA256.hexdigest(public_text.to_s.strip)
@@ -359,7 +374,7 @@ if gh_public_command?(command)
     exit 2
   end
 
-  approval_status = consume_github_approval(public_text)
+  approval_status = consume_github_approval(public_text, metadata_only: gh_metadata_only_edit?(command))
   if approval_status == :valid
     exit 0  # Approved — allow the post
   end

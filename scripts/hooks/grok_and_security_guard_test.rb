@@ -557,6 +557,47 @@ _, gh_api_err, gh_api_status = run_ruby_hook(
   }
 )
 t('GitHub guard blocks gh api public comment without approval', gh_api_status.exitstatus == 2)
+
+# Metadata-only edits (labels/assignees) post no public text. They still require a recorded
+# approval, but cannot hash-match (nothing to match) — the old guard made them un-approvable.
+_, _gh_label_noapp_err, gh_label_noapp_status = run_ruby_hook(
+  'sane_release_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'gh issue edit 160 --repo sane-apps/SaneBar --add-label "release:patched-pending"' }
+  }
+)
+t('GitHub guard blocks label-only edit without approval', gh_label_noapp_status.exitstatus == 2)
+
+Open3.capture3(
+  'ruby', File.join(SANEPROCESS_DIR, 'scripts/SaneMaster.rb'),
+  'github_post_approval', '--body', 'Label #160 release:patched-pending', '--user-approval', 'label it',
+  chdir: SANEPROCESS_DIR
+)
+_, _gh_label_ok_err, gh_label_ok_status = run_ruby_hook(
+  'sane_release_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'gh issue edit 160 --repo sane-apps/SaneBar --add-label "release:patched-pending"' }
+  }
+)
+t('GitHub guard accepts label-only edit with a recorded approval', gh_label_ok_status.exitstatus.zero?)
+
+# The carve-out is metadata-ONLY: an edit that carries --body still requires the hash match,
+# so public text can never slip through `gh issue edit` unapproved.
+Open3.capture3(
+  'ruby', File.join(SANEPROCESS_DIR, 'scripts/SaneMaster.rb'),
+  'github_post_approval', '--body', 'Label only', '--user-approval', 'label it',
+  chdir: SANEPROCESS_DIR
+)
+_, _gh_bodyedit_err, gh_bodyedit_status = run_ruby_hook(
+  'sane_release_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'gh issue edit 160 --repo sane-apps/SaneBar --body "Sneaky public text"' }
+  }
+)
+t('GitHub guard still hash-matches an edit that carries body text', gh_bodyedit_status.exitstatus == 2)
 t('GitHub gh api block names user approval', gh_api_err.include?('Public GitHub interaction'))
 FileUtils.rm_f(gh_approval_path)
 
