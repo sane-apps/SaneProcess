@@ -2068,6 +2068,7 @@ PY
     abort '❌ Missing explicit user approval quote. Use --user-approval "post it".' if quote.empty?
     metadata_hash = github_metadata_command_hash(metadata_command)
     abort '❌ Use either --metadata-command or --body/--body-file, not both.' if metadata_hash && body.to_s.strip.length.positive?
+    body = body.to_s.strip
 
     path = '/tmp/.gh_post_approved.json'
     payload = {
@@ -2084,7 +2085,6 @@ PY
       return
     end
 
-    body = body.to_s.strip
     abort '❌ Missing exact public post body. Use --body "final text" or --body-file <path>.' if body.empty?
 
     payload['body_hash'] = Digest::SHA256.hexdigest(body)

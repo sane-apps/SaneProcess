@@ -18,7 +18,8 @@ module SaneSessionDocs
 
   def read_matches?(file_path, doc_name, session_docs)
     actual = File.expand_path(file_path.to_s)
-    return true if expected_paths_for(doc_name, session_docs).include?(actual)
+    expected = expected_paths_for(doc_name, session_docs)
+    return true if expected.include?(actual)
 
     # Basename fallback for docs NOT explicitly pinned via :required_paths.
     # The default expected path is File.join(project_dir, doc), but project_dir
@@ -30,9 +31,13 @@ module SaneSessionDocs
     # their exact configured path.
     return false if explicitly_pinned?(doc_name, session_docs)
 
-    return false unless File.file?(actual)
+    # ...but ONLY when the standard location genuinely can't be read. If an
+    # expected path actually exists, the real doc is right there — a same-basename
+    # read from an unrelated location must not substitute for it. And a genuine
+    # read always resolves to a real file, so require the read path to exist.
+    return false if expected.any? { |path| File.exist?(path) }
 
-    File.basename(actual) == File.basename(doc_name.to_s)
+    File.basename(actual) == File.basename(doc_name.to_s) && File.exist?(actual)
   rescue StandardError
     false
   end

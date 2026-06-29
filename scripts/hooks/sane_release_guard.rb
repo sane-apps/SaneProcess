@@ -41,6 +41,8 @@ SANE_PAGES_PATTERN = Regexp.new(SANE_APPS.map { |a| "#{a.downcase}-site" }.join(
 SANE_DIST_PATTERN = Regexp.new(SANE_APPS.map { |a| "dist\\.#{a.downcase}\\.com" }.join('|'))
 CORPORATE_WE_PATTERN = /\b(?:we|we['’]re|we['’]ll|we['’]ve|our|us)\b/i
 COMMAND_CHAIN_PATTERN = /(?:;|&&|\|\||\n)/
+WRANGLER_R2_PATTERN = /(?:^|\s)["']?wrangler(?:@\d+(?:\.\d+){0,2})?["']?\s+r2\b/i.freeze
+WRANGLER_PAGES_DEPLOY_PATTERN = /(?:^|\s)["']?wrangler(?:@\d+(?:\.\d+){0,2})?["']?\s+pages\s+deploy\b/i.freeze
 APPROVAL_FLAG = '/tmp/.gh_post_approved.json'
 GITHUB_APPROVAL_TTL_SECONDS = 300
 
@@ -307,7 +309,7 @@ end
 # Block 6: ANY wrangler r2 command touching SaneApp buckets
 # Catches: wrangler r2 object put/get/delete, npx wrangler r2 ..., etc.
 # Matches by BOTH app name pattern AND bucket name pattern for maximum coverage.
-if command.match?(/\bwrangler\s+r2\b/)
+if command.match?(WRANGLER_R2_PATTERN)
   if command.match?(SANE_APP_PATTERN) || command.match?(SANE_BUCKET_PATTERN)
     warn '🔴 BLOCKED: Manual R2 operation for SaneApp'
     warn '   ALL R2 operations should go through release.sh --deploy.'
@@ -320,7 +322,7 @@ if command.match?(/\bwrangler\s+r2\b/)
 end
 
 # Block 6b: Wrangler pages deploy for SaneApp sites
-if command.match?(/\bwrangler\s+pages\s+deploy\b/)
+if command.match?(WRANGLER_PAGES_DEPLOY_PATTERN)
   if command.match?(SANE_APP_PATTERN) || command.match?(SANE_PAGES_PATTERN) || command.match?(SANE_DIST_PATTERN) || saneprocess_command_context?(command)
     warn '🔴 BLOCKED: Manual website deploy for SaneApp'
     warn '   Website deploys should go through release.sh --deploy.'

@@ -5004,7 +5004,8 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
     test('release.sh fails when Cloudflare Pages deploy fails') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
 
-      assert_includes(release_script, 'if ! npx wrangler pages deploy "${DEPLOY_DIR}" \\')
+      assert_includes(release_script, 'SANEPROCESS_WRANGLER_VERSION="${SANEPROCESS_WRANGLER_VERSION:-4.104.0}"')
+      assert_includes(release_script, 'if ! npx --yes "${WRANGLER_NPX_PACKAGE}" pages deploy "${DEPLOY_DIR}" \\')
       assert_includes(release_script, 'log_error "Website deploy failed."')
       assert_includes(release_script, 'log_error "Pages deploy failed."')
       true

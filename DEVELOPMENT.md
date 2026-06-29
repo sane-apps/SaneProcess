@@ -98,6 +98,23 @@ Non-doc edits are not complete just because a hook saw a command that looked lik
 a test. Completion gates require a fresh counted `SaneMaster.rb verify` metric
 with tested evidence and a source fingerprint matching the current repo.
 
+### Cloudflare And Browser Proof
+
+SaneApps Cloudflare mutations use pinned Wrangler by default. `npx wrangler`
+can resolve stale local versions; SaneCite queue creation failed under
+Wrangler 4.65.0 and succeeded under `wrangler@4.104.0`. Shared release paths
+set `SANEPROCESS_WRANGLER_VERSION=4.104.0` unless deliberately overridden.
+For SaneApps website/app deploys, use `release.sh --website-only` or
+`release.sh --deploy`; the release guards still block ad-hoc Pages/R2 mutations.
+Deliberately manual Cloudflare maintenance commands should use
+`npx --yes wrangler@4.104.0 ...`.
+
+Website visual verification should use real browser automation. On SaneApps
+operator Macs, use Brave with Playwright via `NODE_PATH=/opt/homebrew/lib/node_modules`
+and `executablePath: "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"`.
+Save screenshots under `outputs/playwright/` or the workflow's existing
+`outputs/<workflow>/visual/` directory.
+
 ## Documentation Standard
 
 - Keep durable public docs in the core set: `README.md`, `DEVELOPMENT.md`,

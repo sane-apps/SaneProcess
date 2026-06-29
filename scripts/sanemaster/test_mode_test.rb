@@ -98,13 +98,22 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
     end
 
     test('plain keychain-enabled launch still skips move-to-Applications prompt') do
-      result = subject.send(
-        :open_launch_env_pairs,
-        allow_keychain: true,
-        force_free_mode: false
-      )
+      # Isolate from a license-debug shell: SANEAPPS_FORCE_LICENSE_CHECK is an
+      # allowlisted passthrough var, so if the caller exports it (the owner sets
+      # it for license debugging) it legitimately lands in the args and breaks
+      # this exact-match. Control it so the assertion is deterministic anywhere.
+      saved = ENV.delete('SANEAPPS_FORCE_LICENSE_CHECK')
+      begin
+        result = subject.send(
+          :open_launch_env_pairs,
+          allow_keychain: true,
+          force_free_mode: false
+        )
 
-      assert_eq(result, ['--env', 'SANEAPPS_SKIP_MOVE_TO_APPLICATIONS=1'])
+        assert_eq(result, ['--env', 'SANEAPPS_SKIP_MOVE_TO_APPLICATIONS=1'])
+      ensure
+        ENV['SANEAPPS_FORCE_LICENSE_CHECK'] = saved unless saved.nil?
+      end
       true
     end
 

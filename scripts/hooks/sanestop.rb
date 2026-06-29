@@ -30,6 +30,7 @@ require_relative 'core/state_manager'
 require_relative 'core/sop_score'
 require_relative 'core/visual_receipt'
 require_relative 'sanestop_finalize'
+require_relative 'sanestop_lemonsqueezy'
 require_relative 'core/project_root'
 LOG_FILE = File.expand_path('../../.claude/sanestop.log', __dir__)
 SOP_CSV = File.expand_path('../../outputs/sop_ratings.csv', __dir__)
@@ -609,6 +610,13 @@ def process_stop(stop_hook_active, transcript_path = nil)
     warn '  Consider completing these tasks or marking done.'
     warn '---'
   end
+
+  # === POST-RELEASE: keep the Lemon Squeezy manual-upload folder current ===
+  # Codex drives the LS dashboard upload directly; Claude cannot, so after a
+  # release this auto-stages the Mini's ~/Desktop/LemonSqueezy-Uploads folder to
+  # ONLY the latest ZIP per app, so the owner always finds the right file. Never
+  # blocks. See stage_lemonsqueezy_uploads.rb + memory lemonsqueezy-uploads-folder-rule.
+  LemonSqueezyUploads.stage_after_release(transcript_path)
 
   # === HANDOFF ENFORCEMENT: Significant edits require handoff + memory update ===
   tool_discovery_block = check_tool_discovery_required

@@ -54,6 +54,13 @@ products:
     appstore_id: "6770391054"
     storekit_product_id: com.sanescan.app.pro.annual
 
+  sanecite:
+    name: SaneCite
+    type: web_saas
+    domain: sanecite.com
+    pages_project: sanecite-site
+    note: "Cloudflare Pages self-serve SaaS/intake site; no direct Mac appcast."
+
   sanesync:
     name: SaneSync
     # Unreleased: no checkout UUID yet
@@ -115,6 +122,7 @@ all_domains:
   - sanebar.com
   - saneclip.com
   - saneclick.com
+  - sanecite.com
   - sanehosts.com
   - sanesales.com
   - sanescan.saneapps.com

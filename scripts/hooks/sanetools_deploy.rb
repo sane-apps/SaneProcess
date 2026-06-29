@@ -11,6 +11,7 @@
 #   1. R2 upload to wrong bucket or with path prefix in key
 #   2. Appcast edits with empty/placeholder signatures or wrong URLs
 #   3. Pages deploy with bad appcast in deploy directory
+#   4. Cloudflare mutations through unpinned/stale Wrangler
 #
 # Usage:
 #   require_relative 'sanetools_deploy'
@@ -24,10 +25,22 @@ require_relative 'core/project_root'
 module SaneToolsDeploy
   # All SaneApps share ONE R2 bucket via the dist Worker
   CORRECT_R2_BUCKET = 'sanebar-downloads'
+  MIN_WRANGLER_VERSION = '4.104.0'
+  WRANGLER_PACKAGE_PATTERN = /\bwrangler@(\d+(?:\.\d+){0,2})\b/i.freeze
+  WRANGLER_COMMAND_PATTERN = /\bwrangler(?:@\d+(?:\.\d+){0,2})?\b/i.freeze
+  WRANGLER_MUTATION_PATTERN = /
+    \bwrangler(?:@\d+(?:\.\d+){0,2})?\s+
+    (?:
+      pages\s+deploy\b|
+      r2\s+|
+      queues\s+(?:create|delete|update|consumer\s+(?:add|remove))\b|
+      deploy\b
+    )
+  /ix.freeze
 
   # The dist Worker strips /updates/ from URL path before R2 lookup.
   # R2 keys must be bare filenames — no path prefixes.
-  R2_PUT_PATTERN = /wrangler\s+r2\s+object\s+put\s+(\S+)\s+/i.freeze
+  R2_PUT_PATTERN = /wrangler(?:@\d+(?:\.\d+){0,2})?\s+r2\s+object\s+put\s+(\S+)\s+/i.freeze
 
   # Sparkle signing tool output pattern
   SPARKLE_SIGN_PATTERN = /sign_update(?:\.swift)?\s+["']?([^"'\s]+\.dmg)["']?/i.freeze
@@ -50,7 +63,7 @@ module SaneToolsDeploy
     return nil unless tool_name == 'Bash'
 
     command = tool_input['command'] || tool_input[:command] || ''
-    return nil unless command.match?(/wrangler\s+r2\s+object\s+put/i)
+    return nil unless command.match?(/wrangler(?:@\d+(?:\.\d+){0,2})?\s+r2\s+object\s+put/i)
 
     reasons = []
 
@@ -118,7 +131,7 @@ module SaneToolsDeploy
       msg += "#{i + 1}. #{r}\n\n"
     end
     msg += "Correct format:\n" \
-           "  npx wrangler r2 object put #{CORRECT_R2_BUCKET}/AppName-X.Y.Z.dmg --file=\"path/to/dmg\""
+           "  npx --yes wrangler@#{MIN_WRANGLER_VERSION} r2 object put #{CORRECT_R2_BUCKET}/AppName-X.Y.Z.dmg --file=\"path/to/dmg\""
     msg
   end
 
@@ -202,10 +215,10 @@ module SaneToolsDeploy
     return nil unless tool_name == 'Bash'
 
     command = tool_input['command'] || tool_input[:command] || ''
-    return nil unless command.match?(/wrangler\s+pages\s+deploy/i)
+    return nil unless command.match?(/wrangler(?:@\d+(?:\.\d+){0,2})?\s+pages\s+deploy/i)
 
     # Extract deploy directory
-    dir_match = command.match(/wrangler\s+pages\s+deploy\s+["']?([^\s"']+)["']?/i)
+    dir_match = command.match(/wrangler(?:@\d+(?:\.\d+){0,2})?\s+pages\s+deploy\s+["']?([^\s"']+)["']?/i)
     return nil unless dir_match
 
     deploy_dir = File.expand_path(dir_match[1])
@@ -239,5 +252,41 @@ module SaneToolsDeploy
       msg += "#{i + 1}. #{r}\n\n"
     end
     msg
+  end
+
+  # === CHECK 4: Wrangler Version Pin ===
+  # SaneCite exposed that local npx can resolve stale Wrangler releases.
+  # Mutating Cloudflare commands must pin the known-good CLI version or newer.
+  def check_wrangler_version(tool_name, tool_input)
+    return nil unless tool_name == 'Bash'
+
+    command = tool_input['command'] || tool_input[:command] || ''
+    return nil unless command.match?(WRANGLER_COMMAND_PATTERN)
+    return nil unless command.match?(WRANGLER_MUTATION_PATTERN)
+
+    version = command[WRANGLER_PACKAGE_PATTERN, 1]
+    return nil if version && wrangler_version_at_least?(version, MIN_WRANGLER_VERSION)
+
+    issue = version ? "stale wrangler@#{version}" : 'unpinned Wrangler'
+    "CLOUDFLARE TOOLING BLOCKED\n\n" \
+      "#{issue} can hit old Cloudflare API behavior. SaneCite queue creation failed with Wrangler 4.65.0 (Cloudflare API code 10013) and succeeded with wrangler@#{MIN_WRANGLER_VERSION}.\n\n" \
+      "For SaneApps website/app deploys, use the canonical release wrapper. For deliberately manual Cloudflare maintenance, use the pinned package, for example:\n" \
+      "  npx --yes wrangler@#{MIN_WRANGLER_VERSION} queues create example-queue\n\n" \
+      "Shared SaneProcess release paths use SANEPROCESS_WRANGLER_VERSION=#{MIN_WRANGLER_VERSION} by default; upgrade that variable deliberately after verification."
+  end
+
+  def wrangler_version_at_least?(actual, minimum)
+    actual_parts = actual.split('.').map(&:to_i)
+    minimum_parts = minimum.split('.').map(&:to_i)
+    max_len = [actual_parts.length, minimum_parts.length].max
+
+    (0...max_len).each do |index|
+      actual_part = actual_parts[index] || 0
+      minimum_part = minimum_parts[index] || 0
+      return true if actual_part > minimum_part
+      return false if actual_part < minimum_part
+    end
+
+    true
   end
 end

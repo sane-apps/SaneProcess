@@ -503,6 +503,12 @@ def process_tool(tool_name, tool_input)
 
   # === DEPLOYMENT SAFETY (SaneApps-specific — only enforce for .saneprocess projects) ===
   if File.exist?(File.join(SaneProjectRoot.resolve, '.saneprocess'))
+    if (reason = SaneToolsChecks.check_wrangler_version(tool_name, tool_input))
+      log_action(tool_name, true, reason)
+      output_block(reason, tool_name)
+      return 2
+    end
+
     if (reason = SaneToolsChecks.check_r2_upload(tool_name, tool_input))
       log_action(tool_name, true, reason)
       output_block(reason, tool_name)

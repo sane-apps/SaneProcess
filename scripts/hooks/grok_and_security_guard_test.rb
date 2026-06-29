@@ -438,6 +438,30 @@ Dir.mktmpdir('release-guard-app-') do |project_dir|
   t('Release guard blocks generic Pages deploy in SaneApps repo', pages_generic_status.exitstatus == 2)
   t('Generic Pages block names manual website deploy', pages_generic_err.include?('Manual website deploy'))
 
+  _, pages_pinned_err, pages_pinned_status = run_ruby_hook(
+    'sane_release_guard.rb',
+    {
+      'tool_name' => 'Bash',
+      'tool_input' => {
+        'command' => "cd #{project_dir} && npx --yes wrangler@4.104.0 pages deploy ./website"
+      }
+    }
+  )
+  t('Release guard blocks pinned Wrangler Pages deploy in SaneApps repo', pages_pinned_status.exitstatus == 2)
+  t('Pinned Pages block names manual website deploy', pages_pinned_err.include?('Manual website deploy'))
+
+  _, r2_pinned_err, r2_pinned_status = run_ruby_hook(
+    'sane_release_guard.rb',
+    {
+      'tool_name' => 'Bash',
+      'tool_input' => {
+        'command' => "cd #{project_dir} && npx --yes wrangler@4.104.0 r2 object put sanebar-downloads/SaneBar-1.0.0.zip --file build/SaneBar-1.0.0.zip"
+      }
+    }
+  )
+  t('Release guard blocks pinned Wrangler R2 deploy in SaneApps repo', r2_pinned_status.exitstatus == 2)
+  t('Pinned R2 block names manual R2 operation', r2_pinned_err.include?('Manual R2 operation'))
+
   _, notary_generic_err, notary_generic_status = run_ruby_hook(
     'sane_release_guard.rb',
     {
