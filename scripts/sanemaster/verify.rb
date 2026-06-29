@@ -33,7 +33,28 @@ module SaneMasterModules
       suggest_memory_record if respond_to?(:suggest_memory_record)
     end
 
+    # Headless / cron / empty-locale shells leave Ruby's default_external at
+    # US-ASCII, so a mid-suite File.read of a non-ASCII source (e.g. release.rb)
+    # throws "invalid byte sequence in US-ASCII" and fails the suite for reasons
+    # unrelated to the code under test. Force a UTF-8 locale for this process AND
+    # the child test processes it spawns (they inherit ENV), so verify is robust
+    # regardless of the caller's environment.
+    def ensure_utf8_locale!
+      utf8 = 'en_US.UTF-8'
+      ascii = ->(value) { value.to_s.strip.empty? || value.to_s.strip.match?(/\A(?:C|POSIX)\z/i) }
+      ENV['LANG'] = utf8 if ascii.call(ENV['LANG'])
+      ENV['LC_ALL'] = utf8 if ascii.call(ENV['LC_ALL'])
+      ENV['LC_CTYPE'] = utf8 if ascii.call(ENV['LC_CTYPE'])
+      if Encoding.default_external == Encoding::US_ASCII
+        Encoding.default_external = Encoding::UTF_8
+        Encoding.default_internal = Encoding::UTF_8
+      end
+    rescue StandardError
+      nil
+    end
+
     def verify(args)
+      ensure_utf8_locale!
       running_from_preflight = verify_running_as_preflight?
       return unless running_from_preflight || ensure_research_gate_clear!('verify')
 

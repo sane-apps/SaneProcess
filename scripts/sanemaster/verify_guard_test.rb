@@ -730,4 +730,45 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
       true
     end
   end
+
+  test_category('UTF-8 locale hardening') do
+    test('forces a UTF-8 locale when the caller locale is empty or ASCII') do
+      saved = ENV.values_at('LANG', 'LC_ALL', 'LC_CTYPE')
+      saved_ext = Encoding.default_external
+      saved_int = Encoding.default_internal
+      begin
+        ENV['LANG'] = ''
+        ENV['LC_ALL'] = 'C'
+        ENV['LC_CTYPE'] = 'POSIX'
+        subject.send(:ensure_utf8_locale!)
+        assert_eq(ENV['LANG'], 'en_US.UTF-8')
+        assert_eq(ENV['LC_ALL'], 'en_US.UTF-8')
+        assert_eq(ENV['LC_CTYPE'], 'en_US.UTF-8')
+      ensure
+        ENV['LANG'], ENV['LC_ALL'], ENV['LC_CTYPE'] = saved
+        Encoding.default_external = saved_ext
+        Encoding.default_internal = saved_int
+      end
+      true
+    end
+
+    test('does not clobber an already-UTF-8 locale') do
+      saved = ENV.values_at('LANG', 'LC_ALL', 'LC_CTYPE')
+      saved_ext = Encoding.default_external
+      saved_int = Encoding.default_internal
+      begin
+        ENV['LANG'] = 'en_GB.UTF-8'
+        ENV['LC_ALL'] = ''
+        ENV['LC_CTYPE'] = ''
+        subject.send(:ensure_utf8_locale!)
+        assert_eq(ENV['LANG'], 'en_GB.UTF-8')
+        assert_eq(ENV['LC_ALL'], 'en_US.UTF-8')
+      ensure
+        ENV['LANG'], ENV['LC_ALL'], ENV['LC_CTYPE'] = saved
+        Encoding.default_external = saved_ext
+        Encoding.default_internal = saved_int
+      end
+      true
+    end
+  end
 end)
