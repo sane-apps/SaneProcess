@@ -277,6 +277,25 @@ exit(run_tests('SaneMaster Release Routing Tests') do
       end
     end
 
+    test('syncs Mini gate certifier state back to the Air') do
+      with_temp_repo do |repo|
+        remote_repo = '/Users/stephansmac/.sanemaster/routed-workspaces/abcd/SaneApps/apps/SaneBar'
+        remote_override = File.join(remote_repo, '.claude', 'gate-overrides.json')
+        subject.set_existing_paths([remote_override])
+
+        subject.system_calls.clear
+        subject.send(:sync_gate_state_from_mini!, repo, remote_repo)
+
+        gate_call = subject.system_calls.find do |call|
+          call.first == 'rsync' && call.include?("mini:#{remote_override}")
+        end
+        assert(gate_call, 'expected Mini gate override rsync call')
+        assert_includes(gate_call, '--no-links')
+        assert_includes(gate_call, File.join(repo, '.claude', 'gate-overrides.json'))
+        true
+      end
+    end
+
     test('prunes non-receipt Mini outputs after routed runs') do
       remote_repo = '/Users/stephansmac/.sanemaster/routed-workspaces/abcd/SaneApps/apps/SaneBar'
       remote_outputs = File.join(remote_repo, 'outputs')

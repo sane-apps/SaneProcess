@@ -116,10 +116,18 @@ LOCAL_SKILLS_REGISTRY="$LOCAL_CODEX_DIR/SKILLS_REGISTRY.md"
 LOCAL_SKILLS_DIR="$LOCAL_CODEX_DIR/skills"
 LOCAL_AGENTS_SKILLS_DIR="$HOME/.agents/skills"
 LOCAL_KNOWLEDGE_GRAPH="$HOME/.claude/memory/knowledge-graph.jsonl"
+LOCAL_SANEPROCESS="$HOME/SaneApps/infra/SaneProcess"
 CODEX_BIN_FILES=(
   "check-mcps"
   "github-mcp-bridge.mjs"
   "xcode-mcpbridge-wrapper.sh"
+)
+GATE_STATE_REL_FILES=(
+  ".claude/gate-overrides.json"
+  ".claude/gate-override-log.jsonl"
+  ".claude/unfair-gates.json"
+  ".claude/gate-hits.json"
+  ".claude/gate-hammer-log.jsonl"
 )
 CONTROL_PLANE_REL_FILES=(
   "SaneApps/infra/scripts/check-inbox.sh"
@@ -368,6 +376,28 @@ if [[ -f "$LOCAL_KNOWLEDGE_GRAPH" ]]; then
   scp -q "$LOCAL_KNOWLEDGE_GRAPH" "$MINI_HOST:$REMOTE_HOME/.claude/memory/knowledge-graph.jsonl"
 fi
 
+sync_gate_state_file() {
+  local rel="$1"
+  local local_path="$LOCAL_SANEPROCESS/$rel"
+  local remote_path="$REMOTE_HOME/SaneApps/infra/SaneProcess/$rel"
+  local remote_dir
+  remote_dir=$(dirname "$remote_path")
+
+  ssh "$MINI_HOST" "mkdir -p \"$remote_dir\""
+  if [[ -f "$local_path" ]]; then
+    rsync -au --no-links "$local_path" "$MINI_HOST:$remote_path"
+  fi
+  if ssh "$MINI_HOST" "[ -f \"$remote_path\" ]"; then
+    mkdir -p "$(dirname "$local_path")"
+    rsync -au --no-links "$MINI_HOST:$remote_path" "$local_path"
+  fi
+}
+
+log "Syncing gate certifier state with $MINI_HOST..."
+for rel in "${GATE_STATE_REL_FILES[@]}"; do
+  sync_gate_state_file "$rel"
+done
+
 log "Syncing control-plane files to $MINI_HOST..."
 for rel in "${CONTROL_PLANE_REL_FILES[@]}"; do
   local_path="$HOME/$rel"
@@ -509,6 +539,24 @@ for rel in "${CONTROL_PLANE_REL_FILES[@]}"; do
 done
 if [[ "$mismatches" -gt 0 ]]; then
   die "Control-plane parity check failed ($mismatches mismatch(es))"
+fi
+
+gate_mismatches=0
+for rel in "${GATE_STATE_REL_FILES[@]}"; do
+  local_path="$LOCAL_SANEPROCESS/$rel"
+  remote_path="$REMOTE_HOME/SaneApps/infra/SaneProcess/$rel"
+  if [[ ! -f "$local_path" ]] && ! ssh "$MINI_HOST" "[ -f \"$remote_path\" ]"; then
+    continue
+  fi
+  local_hash=$(shasum -a 256 "$local_path" 2>/dev/null | cut -d' ' -f1)
+  remote_hash=$(ssh "$MINI_HOST" "shasum -a 256 \"$remote_path\" | cut -d' ' -f1" 2>/dev/null || echo "")
+  if [[ -z "$local_hash" || -z "$remote_hash" || "$local_hash" != "$remote_hash" ]]; then
+    echo "MISMATCH: $rel" >&2
+    gate_mismatches=$((gate_mismatches + 1))
+  fi
+done
+if [[ "$gate_mismatches" -gt 0 ]]; then
+  die "Gate certifier state parity check failed ($gate_mismatches mismatch(es))"
 fi
 
 local_registry_hash=$(shasum -a 256 "$LOCAL_SKILLS_REGISTRY" | cut -d' ' -f1)

@@ -73,5 +73,19 @@ tests << lambda do
          'Mini control-plane sync should verify shared .agents skill parity')
 end
 
+tests << lambda do
+  sync_source = File.read(SYNC)
+  assert(sync_source.include?('GATE_STATE_REL_FILES='),
+         'Mini control-plane sync should name gate certifier state files')
+  assert(sync_source.include?('.claude/gate-overrides.json'),
+         'Mini control-plane sync should include override tokens')
+  assert(sync_source.include?('rsync -au --no-links "$local_path" "$MINI_HOST:$remote_path"'),
+         'Mini control-plane sync should copy newer local gate state to Mini')
+  assert(sync_source.include?('rsync -au --no-links "$MINI_HOST:$remote_path" "$local_path"'),
+         'Mini control-plane sync should copy newer Mini gate state back locally')
+  assert(sync_source.include?('Gate certifier state parity check failed'),
+         'Mini control-plane sync should verify gate state parity')
+end
+
 tests.each(&:call)
 puts "PASS #{tests.length}/#{tests.length}"

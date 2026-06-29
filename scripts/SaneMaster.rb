@@ -110,6 +110,14 @@ require_relative 'sanemaster/sales'
 require_relative 'sanemaster/downloads'
 
 class SaneMaster
+  GATE_STATE_RELATIVE_FILES = %w[
+    .claude/gate-overrides.json
+    .claude/gate-override-log.jsonl
+    .claude/unfair-gates.json
+    .claude/gate-hits.json
+    .claude/gate-hammer-log.jsonl
+  ].freeze
+
   include SaneMasterModules::Base
   include SaneMasterModules::Memory
   include SaneMasterModules::Dependencies
@@ -593,6 +601,7 @@ class SaneMaster
       preserve_release_artifacts = release_artifact_resume_requested?(command, args)
       routed_webhook_repo = nil
       remote_saneui_repo = nil
+      sync_gate_state_from_mini!(Dir.pwd, remote_repo)
       execution_repo = if release_routed
                          prepare_release_workspace_on_mini!(Dir.pwd, remote_repo, preserve_release_artifacts: preserve_release_artifacts)
                        else
@@ -671,6 +680,7 @@ class SaneMaster
       remote_ok = ssh_system('mini', "cd #{Shellwords.escape(execution_repo)} && #{remote_cmd}")
       remote_status = $?.respond_to?(:exitstatus) ? $?.exitstatus : (remote_ok ? 0 : 1)
       sync_outputs_from_mini!(Dir.pwd, execution_repo)
+      sync_gate_state_from_mini!(Dir.pwd, execution_repo)
       cleanup_bulk_outputs_on_mini!(execution_repo)
       sync_release_artifacts_from_mini!(Dir.pwd, execution_repo, warn_only: true) if release_routed
       sync_release_support_repos_from_origin! if release_routed && remote_status.zero? &&
@@ -1605,6 +1615,18 @@ PY
       "#{local_sane_dir}/customer_ui_action_receipt.json"
     )
     warn '⚠️  Failed to sync Mini .sane customer UI receipt back to the local workspace.' unless ok
+  end
+
+  def sync_gate_state_from_mini!(local_repo, remote_repo)
+    GATE_STATE_RELATIVE_FILES.each do |relative_path|
+      remote_path = File.join(remote_repo, relative_path)
+      next unless mini_path_exists_fast?(remote_path)
+
+      local_path = File.join(File.expand_path(local_repo), relative_path)
+      FileUtils.mkdir_p(File.dirname(local_path))
+      ok = route_system('rsync', '-azu', '--no-links', "mini:#{remote_path}", local_path)
+      warn "⚠️  Failed to sync Mini gate state back to local workspace (#{relative_path})." unless ok
+    end
   end
 
   def mini_output_receipt_rsync_filters

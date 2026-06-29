@@ -517,6 +517,7 @@ Together the three signals triangulate intent from evidence, not the agent's say
 
 **Consequences:**
 - A research.md touch no longer clears the gate; real tool-calls do. Gaming the common path is closed.
+- Gate certifier artifacts sync Air<->Mini through `sync_mini` and routed SaneMaster runs, using newer-file wins for the five known `.claude/gate-*` artifacts.
 - Hammering a gate is now visible to the operator on its own telemetry — they do not have to interrogate the agent to know whether it engaged the gate or just re-ran it.
 - Unfair blocks have a self-service, audited way out that mostly *fixes* the gap instead of bypassing it.
 - Gates that are repeatedly wrong surface themselves for a fix — the process improves itself instead of accumulating friction.
