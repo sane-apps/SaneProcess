@@ -248,6 +248,24 @@
       "cmd": ["ruby", "scripts/sanemaster/dependencies_test.rb"]
     },
     {
+      "path": "scripts/sanemaster/research_evidence_gate_test.rb",
+      "label": "Research evidence gate tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/research_evidence_gate_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/gate_override_test.rb",
+      "label": "Gate certifier override + unfair-gate tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/gate_override_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/hammer_watch_test.rb",
+      "label": "Hammer detector (no-progress gate re-hits) tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/hammer_watch_test.rb"]
+    },
+    {
       "path": "scripts/sanemaster/gate_review_test.rb",
       "label": "SaneProcess gate review tests",
       "status": "required",
