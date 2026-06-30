@@ -42,6 +42,8 @@ LOG_FILE = File.expand_path('../../.claude/sanetools.log', __dir__)
 
 EDIT_TOOLS = %w[Edit Write NotebookEdit].freeze
 RESEARCH_TOOLS = %w[Read Grep Glob WebSearch WebFetch Task].freeze
+CODEX_WEB_RESEARCH_TOOLS = %w[web.run].freeze
+CODEX_SHELL_TOOLS = %w[functions.exec_command exec_command Bash].freeze
 
 # === INTELLIGENCE: Bootstrap Whitelist ===
 # These tools ALWAYS allowed to prevent circular blocking
@@ -138,7 +140,7 @@ RESEARCH_CATEGORIES = {
     task_patterns: [/docs/i, /documentation/i, /apple-docs/i, /api/i]
   },
   web: {
-    tools: %w[WebSearch WebFetch mcp__github__*],
+    tools: %w[WebSearch WebFetch web.run mcp__github__*],
     task_patterns: [/web/i, /search online/i, /google/i, /internet/i, /github/i, /external.*example/i, /other.*repo/i]
   },
   local: {
@@ -146,6 +148,14 @@ RESEARCH_CATEGORIES = {
     task_patterns: [/codebase/i, /local/i, /existing/i, /current.*code/i, /file/i]
   }
 }.freeze
+
+READ_ONLY_SHELL_RESEARCH_PATTERN = Regexp.union(
+  /\A\s*(?:rg|grep)\b\s+.+\z/,
+  /\A\s*sed\s+-n\b\s+.+\z/,
+  /\A\s*(?:cat|head|tail|nl|stat|find)\b\s+.+\z/,
+  /\A\s*git\s+(?:diff|show|log|grep)\b\s+.+\z/
+).freeze
+SHELL_CONTROL_OPERATOR_PATTERN = /(?:&&|\|\||[;|`<>]|\$\(|\n)/.freeze
 
 # === HELPER FUNCTIONS ===
 
@@ -179,10 +189,26 @@ def research_missing(research)
   SaneToolsChecks.effective_research_categories(RESEARCH_CATEGORIES).reject { |cat| research[cat] }
 end
 
+def local_shell_research_tool?(tool_name, tool_input)
+  return false unless CODEX_SHELL_TOOLS.include?(tool_name)
+
+  command = tool_input['command'] || tool_input[:command] || tool_input['cmd'] || tool_input[:cmd] || ''
+  return false if command.to_s.strip.empty?
+  return false if command.match?(BASH_FILE_WRITE_PATTERN)
+  return false if command.match?(SHELL_CONTROL_OPERATOR_PATTERN)
+
+  command.match?(READ_ONLY_SHELL_RESEARCH_PATTERN)
+end
+
 # === RESEARCH TRACKING ===
 
 def track_research(tool_name, tool_input)
   research_done = false
+
+  if local_shell_research_tool?(tool_name, tool_input)
+    mark_research_done(:local, tool_name, false)
+    research_done = true
+  end
 
   RESEARCH_CATEGORIES.each do |category, config|
     if config[:tools].any? { |t| SaneToolsChecks.research_tool_match?(tool_name, t) }

@@ -600,7 +600,7 @@ show_install_commands() {
 }
 
 show_install_commands "context7" "npx -y @upstash/context7-mcp@2.2.5" ""
-show_install_commands "github" "npx -y @modelcontextprotocol/server-github@2025.4.8" "Requires: GITHUB_PERSONAL_ACCESS_TOKEN"
+show_install_commands "github" "node ~/.codex/bin/github-mcp-bridge.mjs" "Requires local @modelcontextprotocol/server-github@2025.4.8 install; do not use npx with a token"
 if [ "$PLATFORM" = "macOS" ]; then
     show_install_commands "apple-docs" "npx -y @mweinbach/apple-docs-mcp@1.3.1" ""
 fi

@@ -14,6 +14,7 @@ require 'json'
 require 'time'
 require 'tmpdir'
 require 'fileutils'
+require 'open3'
 
 ENV['CLAUDE_HOOK_SECRET'] ||= 'research-evidence-gate-test-secret'
 require_relative '../hooks/test/test_framework'
@@ -171,6 +172,39 @@ exit(run_tests('Research Evidence Gate') do
           probe = ResearchEvidenceGateHarness.new
           probe.define_singleton_method(:apple_docs_research_configured?) { false }
           assert_eq(probe.send(:research_evidence_missing_since, T0), [])
+        end
+      end
+      true
+    end
+
+    test('gate_cert fill records signed evidence but no override token') do
+      Dir.mktmpdir('research-evidence-cert-') do |dir|
+        script = File.expand_path('gate_cert.rb', __dir__)
+        env = {
+          'CLAUDE_HOOK_SECRET' => 'research-evidence-gate-test-secret',
+          'HOME' => dir
+        }
+        stdout, stderr, status = Open3.capture3(
+          env,
+          'ruby', script,
+          '--gate', 'research',
+          '--slug', 'weather-move',
+          '--verdict', 'fill',
+          '--note', 'web docs local completed',
+          chdir: dir
+        )
+        raise "gate_cert fill failed: #{stdout}\n#{stderr}" unless status.success?
+
+        Dir.chdir(dir) do
+          state = StateSigner.read_verified('.claude/state.json', symbolize: true)
+          raise 'state was not signed/readable' unless state
+
+          research = state[:research]
+          raise 'web evidence missing' unless research.dig(:web, :tool) == 'gate_cert:fill'
+          raise 'local evidence missing' unless research.dig(:local, :tool) == 'gate_cert:fill'
+
+          override_store = SaneMasterModules::GateOverride.load_store
+          raise 'fill minted an override token' unless override_store['overrides'].empty?
         end
       end
       true

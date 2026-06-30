@@ -4985,10 +4985,9 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
-    test('release.sh does not run legacy nv README checks during publish') do
+    test('release.sh does not run external model README checks during publish') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
 
-      assert(!release_script.include?('automation/nv-readme-check.sh'), 'release.sh should not call legacy nv README checks')
       assert(!release_script.include?('Checking README sync with shipped features'), 'release.sh should not spend release time on model README sync')
       true
     end

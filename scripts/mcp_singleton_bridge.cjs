@@ -10,37 +10,119 @@ const { randomUUID } = require('crypto');
 const SCRIPT_PATH = fs.realpathSync(__filename);
 const HOME = os.homedir();
 const NODE_EXECUTABLE = process.execPath;
+const NODE_LAUNCH_EXECUTABLE = firstExecutable([
+  '/opt/homebrew/bin/node',
+  '/usr/local/bin/node',
+  NODE_EXECUTABLE,
+]);
 const LOG_DIR = path.join(HOME, 'Library', 'Logs', 'SaneApps', 'mcp-singleton');
 const PLIST_DIR = path.join(HOME, 'Library', 'LaunchAgents');
 const PLIST_LABEL_PREFIX = 'com.saneapps.mcp-singleton';
+const BACKEND_ENV_ALLOWLIST = [
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'SSL_CERT_FILE',
+  'NODE_EXTRA_CA_CERTS',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+];
+
+function unique(values) {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function homePath(...parts) {
+  return path.join(HOME, ...parts);
+}
+
+function firstExecutable(candidates) {
+  for (const candidate of candidates) {
+    if (!candidate || !path.isAbsolute(candidate)) {
+      continue;
+    }
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {}
+  }
+  return candidates.find(Boolean);
+}
+
+const NPX_EXECUTABLE = firstExecutable([
+  path.join(path.dirname(NODE_EXECUTABLE), 'npx'),
+  '/opt/homebrew/bin/npx',
+  '/usr/local/bin/npx',
+  'npx',
+]);
+const UVX_EXECUTABLE = firstExecutable([
+  homePath('.local', 'bin', 'uvx'),
+  '/opt/homebrew/bin/uvx',
+  '/usr/local/bin/uvx',
+  'uvx',
+]);
+const BACKEND_PATH = unique([
+  path.dirname(NODE_EXECUTABLE),
+  homePath('.local', 'bin'),
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+  '/usr/bin',
+  '/bin',
+  '/usr/sbin',
+  '/sbin',
+  process.env.PATH,
+]).join(':');
+
+function baseBackendEnv() {
+  const env = {
+    HOME,
+    PATH: BACKEND_PATH,
+  };
+  for (const key of BACKEND_ENV_ALLOWLIST) {
+    if (process.env[key]) {
+      env[key] = process.env[key];
+    }
+  }
+  return env;
+}
+
+function backendEnv(spec) {
+  return {
+    ...baseBackendEnv(),
+    ...(spec.env || {}),
+  };
+}
 
 const SERVER_SPECS = {
   'apple-docs': {
     port: 37911,
-    command: NODE_EXECUTABLE,
-    args: ['/Users/sj/Dev/apple-docs-mcp-local/dist/index.js'],
+    command: NPX_EXECUTABLE,
+    args: ['-y', '@mweinbach/apple-docs-mcp@1.3.1'],
   },
   'macos-automator': {
     port: 37913,
-    command: NODE_EXECUTABLE,
-    args: ['/Users/sj/.npm-global/lib/node_modules/@steipete/macos-automator-mcp/dist/server.js'],
+    command: NPX_EXECUTABLE,
+    args: ['-y', '@steipete/macos-automator-mcp@0.4.1'],
   },
   memory: {
     port: 37914,
     command: NODE_EXECUTABLE,
-    args: ['/Users/sj/SaneApps/infra/SaneProcess/scripts/mcp-memory-enhanced/server.mjs'],
+    args: [homePath('SaneApps', 'infra', 'SaneProcess', 'scripts', 'mcp-memory-enhanced', 'server.mjs')],
     env: {
-      MEMORY_FILE_PATH: '/Users/sj/.claude/memory/knowledge-graph.jsonl',
+      MEMORY_FILE_PATH: homePath('.claude', 'memory', 'knowledge-graph.jsonl'),
     },
-  },
-  'nvidia-build': {
-    port: 37916,
-    command: '/Users/sj/.local/share/nvidia-mcp-venv/bin/python3',
-    args: ['/Users/sj/.local/share/nvidia-mcp-venv/nvidia_mcp_server.py'],
   },
   serena: {
     port: 37917,
-    command: '/Users/sj/.local/bin/uvx',
+    command: UVX_EXECUTABLE,
     args: [
       '--from',
       'git+https://github.com/oraios/serena',
@@ -50,18 +132,34 @@ const SERVER_SPECS = {
       'claude-code',
       '--project-from-cwd',
     ],
-    cwd: '/Users/sj/SaneApps',
+    cwd: homePath('SaneApps'),
     env: {
       ENABLE_TOOL_SEARCH: 'true',
     },
   },
 };
 
-const SDK_BASE_CANDIDATES = [
-  '/Users/sj/.npm-global/lib/node_modules/@modelcontextprotocol/sdk/dist/cjs',
-  '/Users/sj/.npm-global/lib/node_modules/@modelcontextprotocol/server-memory/node_modules/@modelcontextprotocol/sdk/dist/cjs',
-  '/Users/sj/.npm-global/lib/node_modules/@steipete/macos-automator-mcp/node_modules/@modelcontextprotocol/sdk/dist/cjs',
-];
+function npmRootCandidates() {
+  const roots = [
+    homePath('.npm-global', 'lib', 'node_modules'),
+    '/opt/homebrew/lib/node_modules',
+    '/usr/local/lib/node_modules',
+  ];
+  for (const npm of [path.join(path.dirname(NODE_EXECUTABLE), 'npm'), '/opt/homebrew/bin/npm', '/usr/local/bin/npm', 'npm']) {
+    const res = spawnSync(npm, ['root', '-g'], { encoding: 'utf8' });
+    if (res.status === 0) {
+      roots.push((res.stdout || '').trim());
+    }
+  }
+  return unique(roots);
+}
+
+const SDK_BASE_CANDIDATES = npmRootCandidates().flatMap((root) => [
+  path.join(root, '@modelcontextprotocol', 'sdk', 'dist', 'cjs'),
+  path.join(root, '@modelcontextprotocol', 'server-memory', 'node_modules', '@modelcontextprotocol', 'sdk', 'dist', 'cjs'),
+  path.join(root, '@steipete', 'macos-automator-mcp', 'node_modules', '@modelcontextprotocol', 'sdk', 'dist', 'cjs'),
+  path.join(root, '@mweinbach', 'apple-docs-mcp', 'node_modules', '@modelcontextprotocol', 'sdk', 'dist', 'cjs'),
+]);
 
 let Client;
 let StdioClientTransport;
@@ -153,7 +251,7 @@ function plistXml(spec) {
   <string>${plistLabel(spec.name)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${process.execPath}</string>
+    <string>${NODE_LAUNCH_EXECUTABLE}</string>
     <string>${SCRIPT_PATH}</string>
     <string>serve</string>
     <string>${spec.name}</string>
@@ -163,7 +261,7 @@ function plistXml(spec) {
   <key>KeepAlive</key>
   <true/>
   <key>WorkingDirectory</key>
-  <string>/Users/sj</string>
+  <string>${HOME}</string>
   <key>StandardOutPath</key>
   <string>${outLog}</string>
   <key>StandardErrorPath</key>
@@ -332,7 +430,7 @@ async function connectBackend(spec) {
   const transport = new StdioClientTransport({
     command: spec.command,
     args: spec.args,
-    env: spec.env,
+    env: backendEnv(spec),
     cwd: spec.cwd,
     stderr: 'pipe',
   });

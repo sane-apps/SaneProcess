@@ -260,7 +260,6 @@ module SaneMasterModules
       ['central-memory', /mcp-central-memory\/server\.mjs|central-memory-mcp/i],
       ['macos-automator', /macos-automator/i],
       ['serena', /serena start-mcp-server|github\.com\/oraios\/serena/i],
-      ['nvidia', /nvidia_mcp_server/i],
       ['chroma', /chroma-mcp/i],
       ['generic-mcp', /npx\/.*\/mcp|mcp-server\.cjs|worker-service\.cjs/i]
     ].freeze
@@ -274,13 +273,10 @@ module SaneMasterModules
       'memory' => 4,
       'central-memory' => 4,
       'macos-automator' => 4,
-      'nvidia' => 4,
       'chroma' => 4,
       'generic-mcp' => 4
     }.freeze
-    SERVER_NAME_ALIASES = {
-      'nvidia' => 'nvidia-build'
-    }.freeze
+    SERVER_NAME_ALIASES = {}.freeze
 
     def capture_mcp_process_snapshot
       process_index = {}
@@ -867,8 +863,6 @@ module SaneMasterModules
         File.join(Dir.pwd, '.claude', 'settings.json'),
         File.expand_path('~/.codex/config.toml'),
         File.join(Dir.pwd, '.codex', 'config.toml'),
-        File.expand_path('~/.gemini/settings.json'),
-        File.join(Dir.pwd, '.gemini', 'settings.json'),
         File.expand_path('~/.grok/config.toml'),
         File.join(Dir.pwd, '.grok', 'config.toml')
       ].uniq

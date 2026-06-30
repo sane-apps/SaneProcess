@@ -113,6 +113,7 @@ class SaneMaster
   GATE_STATE_RELATIVE_FILES = %w[
     .claude/gate-overrides.json
     .claude/gate-override-log.jsonl
+    .claude/state.json
     .claude/unfair-gates.json
     .claude/gate-hits.json
     .claude/gate-hammer-log.jsonl

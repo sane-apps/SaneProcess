@@ -301,15 +301,13 @@ exit(run_tests('SaneMaster MCP Watchdog Tests') do
         File.write(File.join(dir, 'claude-settings.json'), '{"permissions":{"allow":["mcp__github__search_repositories"]}}')
         File.write(File.join(dir, 'codex.toml'), "[mcp_servers.context7]\ncommand = \"context7\"\n")
         File.write(File.join(dir, 'grok.toml'), "[mcp_servers.memory]\ncommand = \"memory\"\n[mcp_servers.memory.env]\nTOKEN = \"redacted\"\n")
-        File.write(File.join(dir, 'gemini.json'), '{"mcpServers":{"openaiDeveloperDocs":{}}}')
 
         subject.define_singleton_method(:mcp_config_paths) do
           [
             File.join(dir, '.mcp.json'),
             File.join(dir, 'claude-settings.json'),
             File.join(dir, 'codex.toml'),
-            File.join(dir, 'grok.toml'),
-            File.join(dir, 'gemini.json')
+            File.join(dir, 'grok.toml')
           ]
         end
 
@@ -318,7 +316,6 @@ exit(run_tests('SaneMaster MCP Watchdog Tests') do
         assert_includes(servers, 'github')
         assert_includes(servers, 'context7')
         assert_includes(servers, 'memory')
-        assert_includes(servers, 'openaiDeveloperDocs')
         assert(!servers.include?('memory.env'), 'TOML env subsections must not become MCP servers')
       end
       true
@@ -326,15 +323,15 @@ exit(run_tests('SaneMaster MCP Watchdog Tests') do
   end
 
   test_category('MCP singleton bridge') do
-    test('generates LaunchAgent plists with the current Node executable') do
+    test('generates LaunchAgent plists with the stable Homebrew Node executable') do
       bridge = File.expand_path('../mcp_singleton_bridge.cjs', __dir__)
       node = ENV['NODE'] || '/opt/homebrew/bin/node'
       assert(File.executable?(node), "expected Node executable at #{node}")
-      node_realpath = File.realpath(node)
 
       output, status = Open3.capture2e(node, bridge, 'plist', 'apple-docs')
       assert(status.success?, output)
-      assert_includes(output, node_realpath)
+      assert_includes(output, node)
+      assert(!output.include?('/opt/homebrew/Cellar/node/'), 'singleton plists must not pin Homebrew Cellar Node paths')
       assert(!output.include?('/usr/local/bin/node'), 'singleton plists must not pin the removed Intel Homebrew Node path')
       true
     end

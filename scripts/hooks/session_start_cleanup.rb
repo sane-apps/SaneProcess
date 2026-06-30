@@ -186,7 +186,7 @@ module SessionStartCleanup
       'chroma-mcp', 'worker-service.cjs', 'mcp-server.cjs',
       'mcpbridge', 'context7-mcp', 'apple-docs-mcp',
       'mcp-server-github', 'server-memory', 'macos-automator',
-      'serena', 'nvidia_mcp_server'
+      'serena'
     ]
     mcp_regex_patterns = ['npx/.*/mcp']
 

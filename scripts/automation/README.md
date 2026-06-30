@@ -129,14 +129,6 @@ python3 scripts/automation/hosted-file-actions.py --xlsx /tmp/hosted_file_action
 
 **Canonical path:** prefer `ruby ../SaneMaster.rb hosted_file_actions` from the repo root.
 
-### Legacy `nv-*` helpers
-
-`nv-audit.sh`, `nv-relnotes.sh`, `nv-buildlog.sh`, and `nv-tests.sh` are retained
-only for explicit maintenance of the old external-model workflow. They are not
-part of the normal SaneProcess path. Prefer `SaneMaster.rb verify`, `/audit`,
-release receipts, and current support/GitHub/research evidence unless the user
-explicitly asks for an `nv`/NVIDIA run.
-
 ### morning-report.sh
 
 Daily development status report across all projects.
@@ -299,14 +291,6 @@ sane-support-kickoff.sh
 1. Runs the inbox report.
 2. Reprints `NEEDS REPLY` items for fast intake and prioritization.
 
-## Legacy Model Notes
-
-These notes apply only when maintaining or explicitly running the legacy `nv-*` helpers:
-- **nv-audit.sh**: `kimi-fast` (fast, free, decent quality)
-- **nv-relnotes.sh**: council mode (queries 3 models automatically)
-
-Override with `-m MODEL` flag where supported.
-
 ## Output Structure
 
 ```
@@ -324,5 +308,3 @@ outputs/
 ## Tips
 
 - Use `/audit` for the real GPT subagent audit path
-- Treat `nv-*` helpers as legacy/explicit-only, not the default SaneApps process
-- Use `-m MODEL` only when maintaining a legacy helper or running an explicitly requested `nv` job

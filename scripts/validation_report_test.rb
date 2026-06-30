@@ -107,8 +107,8 @@ end
 class WebsiteDistributionHarness < ValidationReport
   attr_reader :issues, :warnings, :metrics
 
-  def initialize(products:, statuses: {}, bodies: {}, resolved: {}, ok_links: [], redirect_base: '', checkout_base: '', bundles: {}, store_base: '')
-    super()
+  def initialize(products:, statuses: {}, bodies: {}, resolved: {}, ok_links: [], redirect_base: '', checkout_base: '', bundles: {}, store_base: '', config_products: {}, target_project: nil)
+    super(target_project: target_project)
     @products = products
     @statuses = statuses
     @bodies = bodies
@@ -118,6 +118,7 @@ class WebsiteDistributionHarness < ValidationReport
     @checkout_base = checkout_base
     @bundles = bundles
     @store_base = store_base
+    @config_products = config_products
     @metrics[:website_distribution] = { issues: 0 }
   end
 
@@ -130,7 +131,7 @@ class WebsiteDistributionHarness < ValidationReport
   end
 
   def load_product_config
-    { products: {}, bundles: @bundles, store_base: @store_base, checkout_base: @checkout_base, redirect_base: @redirect_base, all_domains: [] }
+    { products: @config_products, bundles: @bundles, store_base: @store_base, checkout_base: @checkout_base, redirect_base: @redirect_base, all_domains: [] }
   end
 
   def product_checkout_url(product, checkout_base = @checkout_base)
@@ -369,6 +370,27 @@ class ValidationOutputHarness < ValidationReport
   def save_snapshot; end
 end
 
+class ScopedProductHarness < ValidationReport
+  def load_product_config
+    {
+      products: {
+        'saneclick' => {
+          'name' => 'SaneClick',
+          'domain' => 'saneclick.test'
+        },
+        'sanebar' => {
+          'name' => 'SaneBar',
+          'domain' => 'sanebar.test'
+        }
+      }
+    }
+  end
+
+  def project_manifest(_project_path)
+    {}
+  end
+end
+
 class UrlStatusHarness < ValidationReport
   attr_reader :commands
 
@@ -434,6 +456,47 @@ exit(run_tests('Validation report tests') do
 
       assert_eq(options[:help], true)
       assert_includes(options[:usage], '--release-checklists')
+      true
+    end
+
+    test('parses app-specific validation scope') do
+      options = ValidationReport.parse_cli_args(['--json', '--app', 'SaneClick'])
+
+      assert_eq(options[:target_project], 'apps/SaneClick')
+      assert_eq(options[:format], :json)
+      true
+    end
+
+    test('parses explicit project scope and all-project override') do
+      scoped = ValidationReport.parse_cli_args(['--project', 'websites/sanecite-saas'])
+      all_projects = ValidationReport.parse_cli_args(['--all-projects'])
+
+      assert_eq(scoped[:target_project], 'websites/sanecite-saas')
+      assert_eq(all_projects[:target_project], nil)
+      true
+    end
+
+    test('filters release products to the selected app') do
+      subject = ScopedProductHarness.new(target_project: 'apps/SaneClick')
+
+      assert_eq(subject.send(:validation_projects), ['apps/SaneClick'])
+      assert_eq(subject.send(:product_definitions).map { |product| product[:name] }, ['SaneClick'])
+      true
+    end
+
+    test('does not attach desktop release products to website scope') do
+      subject = ScopedProductHarness.new(target_project: 'websites/sanecite-saas')
+
+      assert_eq(subject.send(:validation_projects), ['websites/sanecite-saas'])
+      assert_eq(subject.send(:product_definitions), [])
+      true
+    end
+
+    test('json output includes validation scope') do
+      subject = ValidationOutputHarness.new(target_project: 'apps/SaneClick')
+      output = capture_stdout { subject.run(format: :json) }
+
+      assert_eq(JSON.parse(output)['scope'], ['apps/SaneClick'])
       true
     end
 
@@ -803,6 +866,35 @@ exit(run_tests('Validation report tests') do
 
       assert(subject.issues.any? { |issue| issue.include?('SaneApps Everything Bundle redirect') && issue.include?('returns 404') })
       assert_eq(1, subject.metrics[:website_distribution][:issues])
+      true
+    end
+
+    test('scoped app validation ignores unrelated checkout config') do
+      product = product_definition('SaneClick', slug: 'saneclick', domain: 'saneclick.com').merge(
+        checkout_uuid: 'click-checkout'
+      )
+      checkout_base = 'https://saneapps.lemonsqueezy.com/checkout/buy'
+      subject = WebsiteDistributionHarness.new(
+        products: [product],
+        target_project: 'apps/SaneClick',
+        checkout_base: checkout_base,
+        statuses: {
+          'https://saneapps.com' => '200',
+          'https://saneclick.com' => '200',
+          "#{checkout_base}/click-checkout" => '200',
+          "#{checkout_base}/bar-checkout" => '404'
+        },
+        config_products: {
+          'sanebar' => {
+            'name' => 'SaneBar',
+            'checkout_uuid' => 'bar-checkout'
+          }
+        }
+      )
+
+      subject.send(:q7_website_distribution)
+
+      assert(!subject.issues.any? { |issue| issue.include?('SaneBar checkout') }, subject.issues.inspect)
       true
     end
 

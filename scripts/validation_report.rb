@@ -162,8 +162,9 @@ class ValidationReport
     apps/SaneSales
   ].freeze
 
-  def initialize
+  def initialize(target_project: nil)
     load_headless_env
+    @target_project = normalize_target_project(target_project)
     @data = {}
     @issues = []
     @warnings = []
@@ -190,13 +191,15 @@ class ValidationReport
     options = {
       format: :text,
       include_release_checklists: false,
+      target_project: :auto,
       help: false
     }
 
     parser = OptionParser.new do |opts|
-      opts.banner = 'Usage: ruby scripts/validation_report.rb [--json] [--release-checklists]'
+      opts.banner = 'Usage: ruby scripts/validation_report.rb [--json] [--release-checklists] [--project PATH|--app NAME|--all-projects]'
       opts.separator ''
-      opts.separator 'Default text mode prints the process/release verdict without the expensive all-app artifact checklist.'
+      opts.separator 'Default text mode prints the process/release verdict for the current app/project when detectable.'
+      opts.separator 'Use --all-projects for fleet-wide release validation.'
 
       opts.on('--json', 'Emit machine-readable validation JSON') do
         options[:format] = :json
@@ -208,6 +211,19 @@ class ValidationReport
 
       opts.on('--no-release-checklists', 'Skip the deep all-app release checklist (default)') do
         options[:include_release_checklists] = false
+      end
+
+      opts.on('--project PATH', 'Validate only one project path, e.g. apps/SaneClick or websites/sanecite-saas') do |value|
+        options[:target_project] = value.to_s
+      end
+
+      opts.on('--app NAME', 'Validate one SaneApps app by name') do |value|
+        app_name = value.to_s.strip.sub(%r{\Aapps/}, '')
+        options[:target_project] = "apps/#{app_name}"
+      end
+
+      opts.on('--all-projects', 'Validate every known SaneApps project') do
+        options[:target_project] = nil
       end
 
       opts.on('-h', '--help', 'Show this help') do
@@ -223,7 +239,7 @@ class ValidationReport
   private
 
   def collect_data
-    PROJECTS.each do |project|
+    validation_projects.each do |project|
       state_file = File.join(SANE_APPS_ROOT, project, '.claude', 'state.json')
       next unless File.exist?(state_file)
 
@@ -403,7 +419,7 @@ class ValidationReport
     end
 
     # Check project settings too
-    PROJECTS.each do |project|
+    validation_projects.each do |project|
       settings_file = File.join(SANE_APPS_ROOT, project, '.claude', 'settings.json')
       next unless File.exist?(settings_file)
 
@@ -434,7 +450,7 @@ class ValidationReport
     end
 
     # Check project .mcp.json files
-    PROJECTS.each do |project|
+    validation_projects.each do |project|
       mcp_file = File.join(SANE_APPS_ROOT, project, '.mcp.json')
       next unless File.exist?(mcp_file)
 
@@ -493,7 +509,7 @@ class ValidationReport
     # Projects opt-in to global hooks via .saneprocess manifest file.
     # Note: identical local hooks are harmless — Claude Code deduplicates them at runtime
     # (confirmed Session 15 research). Only flag DIVERGENT local hooks.
-    PROJECTS.each do |project|
+    validation_projects.each do |project|
       project_root = File.join(SANE_APPS_ROOT, project)
       manifest = File.join(project_root, '.saneprocess')
       unless File.exist?(manifest)
@@ -679,7 +695,52 @@ class ValidationReport
   end
 
   def validation_projects
-    PROJECTS
+    @validation_projects ||= if @target_project
+                               [@target_project]
+                             else
+                               PROJECTS
+                             end
+  end
+
+  def normalize_target_project(target_project)
+    return auto_detect_target_project if target_project == :auto
+    return nil if target_project.nil?
+
+    target = target_project.to_s.strip
+    return nil if target.empty?
+
+    if target.start_with?('/', '~')
+      expanded_root = File.expand_path(sane_apps_root)
+      expanded_target = File.expand_path(target)
+      if expanded_target == expanded_root || expanded_target.start_with?("#{expanded_root}/")
+        target = expanded_target.delete_prefix("#{expanded_root}/")
+      end
+    end
+    target = target.sub(%r{\A/+}, '').sub(%r{/+\z}, '')
+    target.empty? ? nil : target
+  end
+
+  def auto_detect_target_project
+    expanded_root = File.expand_path(sane_apps_root)
+    cwd = File.expand_path(Dir.pwd)
+    return nil unless cwd == expanded_root || cwd.start_with?("#{expanded_root}/")
+    return nil if cwd == expanded_root
+
+    parts = cwd.delete_prefix("#{expanded_root}/").split(File::SEPARATOR)
+    return nil if parts.length < 2
+
+    case parts[0]
+    when 'apps', 'infra', 'websites', 'web', 'mcp'
+      "#{parts[0]}/#{parts[1]}"
+    else
+      nil
+    end
+  end
+
+  def target_product_name
+    return nil unless @target_project&.start_with?('apps/')
+
+    File.basename(@target_project)
   end
 
   def private_local_claude_file?(content)
@@ -1631,22 +1692,24 @@ class ValidationReport
     # Check REVENUE-CRITICAL checkout links (from products.yml config)
     config = load_product_config
     store_base = config[:checkout_base]
-    checkout_links = config[:products].map do |_slug, prod|
+    checkout_links = product_definitions.map do |prod|
       checkout_url = product_checkout_url(prod, store_base)
       next if checkout_url.empty?
-      { url: checkout_url, name: "#{prod['name']} checkout" }
+      { url: checkout_url, name: "#{prod[:name] || prod['name']} checkout" }
     end.compact
-    config[:bundles].each do |_slug, bundle|
-      next unless bundle.is_a?(Hash)
+    unless @target_project
+      config[:bundles].each do |_slug, bundle|
+        next unless bundle.is_a?(Hash)
 
-      checkout_url = bundle['checkout_url'].to_s.strip
-      route_url = bundle['route'].to_s.strip
-      name = bundle['name'].to_s.strip
-      name = 'SaneApps bundle' if name.empty?
-      checkout_links << { url: checkout_url, name: "#{name} checkout" } unless checkout_url.empty?
-      checkout_links << { url: route_url, name: "#{name} redirect" } unless route_url.empty?
+        checkout_url = bundle['checkout_url'].to_s.strip
+        route_url = bundle['route'].to_s.strip
+        name = bundle['name'].to_s.strip
+        name = 'SaneApps bundle' if name.empty?
+        checkout_links << { url: checkout_url, name: "#{name} checkout" } unless checkout_url.empty?
+        checkout_links << { url: route_url, name: "#{name} redirect" } unless route_url.empty?
+      end
+      checkout_links << { url: config[:store_base], name: 'LemonSqueezy store' } unless config[:store_base].to_s.empty?
     end
-    checkout_links << { url: config[:store_base], name: 'LemonSqueezy store' } unless config[:store_base].to_s.empty?
     checkout_links.each do |link|
       status = check_url_status(link[:url], follow_redirects: true)
       case status
@@ -3721,7 +3784,7 @@ class ValidationReport
 
   def product_definitions
     @product_definitions ||= begin
-      load_product_config[:products].map do |slug, prod|
+      products = load_product_config[:products].map do |slug, prod|
         next unless prod.is_a?(Hash)
 
         app_name = prod['name'].to_s.strip
@@ -3753,7 +3816,16 @@ class ValidationReport
           project_exists: File.directory?(project_path)
         }
       end.compact
+      filter_product_definitions(products)
     end
+  end
+
+  def filter_product_definitions(products)
+    app_name = target_product_name
+    return products unless @target_project
+    return [] unless app_name
+
+    products.select { |product| product[:name].casecmp?(app_name) }
   end
 
   def normalize_minimum_macos_exception(raw_exception)
@@ -4002,6 +4074,7 @@ class ValidationReport
   def output_json
     puts JSON.pretty_generate({
       generated_at: Time.now.iso8601,
+      scope: validation_projects,
       verdict: @verdict,
       issues: @issues,
       warnings: @warnings,
@@ -4012,10 +4085,16 @@ class ValidationReport
 
   def save_snapshot
     FileUtils.mkdir_p(REPORT_DIR)
+    snapshot_name = if @target_project
+                      "#{Date.today}-#{@target_project.gsub(%r{[^A-Za-z0-9._-]+}, '-')}.json"
+                    else
+                      "#{Date.today}.json"
+                    end
     File.write(
-      File.join(REPORT_DIR, "#{Date.today}.json"),
+      File.join(REPORT_DIR, snapshot_name),
       JSON.pretty_generate({
         generated_at: Time.now.iso8601,
+        scope: validation_projects,
         verdict: @verdict,
         issues: @issues,
         warnings: @warnings,
@@ -4057,7 +4136,7 @@ if __FILE__ == $PROGRAM_NAME
     exit 0
   end
 
-  ValidationReport.new.run(
+  ValidationReport.new(target_project: cli_options[:target_project]).run(
     format: cli_options[:format],
     include_release_checklists: cli_options[:include_release_checklists]
   )

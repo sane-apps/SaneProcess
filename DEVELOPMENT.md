@@ -229,7 +229,7 @@ Use this routing table for Codex plugin skills:
 | OpenAI API, Agents SDK, ChatGPT App, OpenAI key or MCP work | OpenAI Developers | Use official-doc-backed skill flow; keep secrets in the approved Keychain/env path |
 | Cloudflare Pages/R2/Workers/Durable Objects/Tunnels | Cloudflare | Prefer SaneProcess release wrappers for deploy/release proof; use plugin docs for platform details |
 | GitHub PRs/issues/CI metadata | GitHub | Cross-check support email before closing customer-reported issues |
-| Personal Gmail, Drive, Docs, Sheets, Slides, Calendar deliverables | Google plugins | Generic "email" still means `hi@saneapps.com` through `check-inbox.sh` |
+| Personal email, docs, sheets, slides, or calendar deliverables | Explicit one-off connector only | Not a default SaneApps route; generic "email" still means `hi@saneapps.com` through `check-inbox.sh` |
 | KPI reports, metric diagnostics, dashboards | Data Analytics | Use `SaneMaster.rb sales`, `downloads`, `events`, or `/outreach` first for canonical SaneApps signals |
 | Presenter videos, generated media, stock assets, programmatic videos | HeyGen, HyperFrames, Picsart, Fal, Shutterstock, Remotion | Treat as marketing assets, not runtime verification evidence |
 

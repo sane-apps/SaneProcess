@@ -114,6 +114,8 @@ LOCAL_PM="$LOCAL_CODEX_DIR/automations/saneops-pm-run/automation.toml"
 LOCAL_DB="$LOCAL_CODEX_DIR/sqlite/codex-dev.db"
 LOCAL_SKILLS_REGISTRY="$LOCAL_CODEX_DIR/SKILLS_REGISTRY.md"
 LOCAL_SKILLS_DIR="$LOCAL_CODEX_DIR/skills"
+LOCAL_CLAUDE_SKILLS_REGISTRY="$HOME/.claude/SKILLS_REGISTRY.md"
+LOCAL_CLAUDE_SKILLS_DIR="$HOME/.claude/skills"
 LOCAL_AGENTS_SKILLS_DIR="$HOME/.agents/skills"
 LOCAL_KNOWLEDGE_GRAPH="$HOME/.claude/memory/knowledge-graph.jsonl"
 LOCAL_SANEPROCESS="$HOME/SaneApps/infra/SaneProcess"
@@ -125,6 +127,7 @@ CODEX_BIN_FILES=(
 GATE_STATE_REL_FILES=(
   ".claude/gate-overrides.json"
   ".claude/gate-override-log.jsonl"
+  ".claude/state.json"
   ".claude/unfair-gates.json"
   ".claude/gate-hits.json"
   ".claude/gate-hammer-log.jsonl"
@@ -138,6 +141,7 @@ CONTROL_PLANE_REL_FILES=(
   "SaneApps/infra/SaneProcess/scripts/mini/mini-reclaim-automation-windows.sh"
   "SaneApps/infra/SaneProcess/scripts/mini/mini-nightly.sh"
   "SaneApps/infra/SaneProcess/scripts/mini/mini-prepare-automation-root.sh"
+  "SaneApps/infra/SaneProcess/scripts/mcp_singleton_bridge.cjs"
   "SaneApps/infra/SaneProcess/scripts/validation_report.rb"
   "SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb"
   "SaneApps/infra/SaneProcess/scripts/sanemaster/meta.rb"
@@ -149,6 +153,8 @@ CONTROL_PLANE_REL_FILES=(
 [[ -f "$LOCAL_CODEX_CONFIG" ]] || die "Missing local Codex config: $LOCAL_CODEX_CONFIG"
 [[ -f "$LOCAL_SKILLS_REGISTRY" ]] || die "Missing local Codex skills registry: $LOCAL_SKILLS_REGISTRY"
 [[ -d "$LOCAL_SKILLS_DIR" ]] || die "Missing local Codex skills dir: $LOCAL_SKILLS_DIR"
+[[ -f "$LOCAL_CLAUDE_SKILLS_REGISTRY" ]] || die "Missing local Claude skills registry: $LOCAL_CLAUDE_SKILLS_REGISTRY"
+[[ -d "$LOCAL_CLAUDE_SKILLS_DIR" ]] || die "Missing local Claude skills dir: $LOCAL_CLAUDE_SKILLS_DIR"
 [[ -d "$REPO_CODEX_BIN_DIR" ]] || die "Missing repo Codex bin dir: $REPO_CODEX_BIN_DIR"
 
 for rel in "${CONTROL_PLANE_REL_FILES[@]}"; do
@@ -358,6 +364,11 @@ scp -q "$TMP_CONFIG" "$MINI_HOST:$REMOTE_HOME/.codex/config.toml"
 scp -q "$LOCAL_SKILLS_REGISTRY" "$MINI_HOST:$REMOTE_HOME/.codex/SKILLS_REGISTRY.md"
 rsync -a --delete "$LOCAL_SKILLS_DIR/" "$MINI_HOST:$REMOTE_HOME/.codex/skills/"
 
+log "Syncing Claude skill registry and skills to $MINI_HOST..."
+ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.claude/skills\""
+scp -q "$LOCAL_CLAUDE_SKILLS_REGISTRY" "$MINI_HOST:$REMOTE_HOME/.claude/SKILLS_REGISTRY.md"
+rsync -a --delete "$LOCAL_CLAUDE_SKILLS_DIR/" "$MINI_HOST:$REMOTE_HOME/.claude/skills/"
+
 if [[ -d "$LOCAL_AGENTS_SKILLS_DIR" ]]; then
   log "Syncing shared agent skills to $MINI_HOST..."
   ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.agents/skills\""
@@ -422,6 +433,7 @@ ssh "$MINI_HOST" "
   chmod +x \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/hooks/sane_ssh_guard.sh\"
   chmod +x \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/mini/mini-nightly.sh\"
   chmod +x \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/mini/mini-prepare-automation-root.sh\"
+  chmod +x \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/mcp_singleton_bridge.cjs\"
   chmod +x \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/validation_report.rb\"
   chmod +x \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb\"
   chmod +x \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/sanemaster/meta.rb\"
@@ -431,6 +443,9 @@ ssh "$MINI_HOST" "
   ln -sfn \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/hooks/sane_ssh_guard.sh\" \"$REMOTE_HOME/.local/bin/ssh\"
   rm -f \"$REMOTE_HOME/saneops-am-run.toml\" \"$REMOTE_HOME/saneops-pm-run.toml\"
 " || die "Remote copy failed"
+
+log "Refreshing MCP singleton LaunchAgents on $MINI_HOST..."
+ssh "$MINI_HOST" "\"$REMOTE_NODE\" \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/mcp_singleton_bridge.cjs\" install all >/dev/null" || die "MCP singleton LaunchAgent refresh failed"
 
 ssh "$MINI_HOST" python3 - "$REMOTE_HOME" <<'PY'
 import sqlite3

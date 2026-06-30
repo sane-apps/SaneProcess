@@ -102,6 +102,8 @@ Abide by every hook exactly as a human session would.
 Use GPT subagents for broad review, research, audits, planning, and bounded
 implementation. Do not use NVIDIA agents, `nv` sweeps, or `nvidia_vision`
 unless the user explicitly asks for that specific run.
+Do not use Gemini/Google provider paths as standard SaneApps tooling; use
+Apple Docs, macOS Automator, Grok, Codex, Claude, and SaneMaster routes instead.
 
 ## Canonical Routes
 

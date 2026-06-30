@@ -329,6 +329,48 @@ module SaneToolsGateTest
       warn "  FAIL: generic WebSearch should not satisfy github, got web=#{!ws_research[:web].nil?} github=#{!ws_research[:github].nil?}"
     end
 
+    if SaneToolsChecks.research_tool_match?('mcp__apple_docs.search_apple_docs', 'mcp__apple-docs__*') &&
+       SaneToolsChecks.research_tool_match?('mcp__apple_docs__search_apple_docs', 'mcp__apple-docs__*')
+      passed += 1
+      warn '  PASS: Codex apple_docs MCP aliases satisfy apple-docs research glob'
+    else
+      failed += 1
+      warn '  FAIL: Codex apple_docs MCP aliases should satisfy apple-docs research glob'
+    end
+
+    StateManager.reset(:research)
+    process_tool_proc.call('functions.exec_command', { 'cmd' => 'pwd' })
+    shell_research = StateManager.get(:research)
+    if shell_research[:local].nil?
+      passed += 1
+      warn '  PASS: superficial shell probes do not satisfy local research'
+    else
+      failed += 1
+      warn "  FAIL: pwd should not satisfy local research, got #{shell_research[:local].inspect}"
+    end
+
+    StateManager.reset(:research)
+    process_tool_proc.call('functions.exec_command', { 'cmd' => 'rg -n "WeatherMenu" Core Tests && touch /tmp/sane-fake-research' })
+    shell_research = StateManager.get(:research)
+    if shell_research[:local].nil?
+      passed += 1
+      warn '  PASS: chained shell commands do not satisfy local research'
+    else
+      failed += 1
+      warn "  FAIL: chained command should not satisfy local research, got #{shell_research[:local].inspect}"
+    end
+
+    StateManager.reset(:research)
+    process_tool_proc.call('functions.exec_command', { 'cmd' => 'rg -n "WeatherMenu" Core Tests' })
+    shell_research = StateManager.get(:research)
+    if shell_research[:local]
+      passed += 1
+      warn '  PASS: substantive read-only shell command satisfies local research'
+    else
+      failed += 1
+      warn '  FAIL: substantive rg command should satisfy local research'
+    end
+
     # === MCP VERIFICATION GRACEFUL DEGRADATION ===
     warn ''
     warn 'Testing MCP verification graceful degradation:'
@@ -338,27 +380,23 @@ module SaneToolsGateTest
     FileUtils.mkdir_p(deg_project_dir)
     codex_config_dir = File.join(deg_project_dir, '.codex')
     claude_config_dir = File.join(deg_project_dir, '.claude')
-    gemini_config_dir = File.join(deg_project_dir, '.gemini')
     grok_config_dir = File.join(deg_project_dir, '.grok')
     codex_config = File.join(codex_config_dir, 'config.toml')
     claude_settings = File.join(claude_config_dir, 'settings.json')
-    gemini_settings = File.join(gemini_config_dir, 'settings.json')
     grok_config = File.join(grok_config_dir, 'config.toml')
 
     FileUtils.mkdir_p(codex_config_dir)
     FileUtils.mkdir_p(claude_config_dir)
-    FileUtils.mkdir_p(gemini_config_dir)
     FileUtils.mkdir_p(grok_config_dir)
     File.write(codex_config, "[mcp_servers.context7]\ncommand = \"context7\"\n")
     File.write(claude_settings, '{"permissions":{"allow":["mcp__apple-docs__*"]}}')
-    File.write(gemini_settings, '{"mcpServers":{"github":{}}}')
     File.write(grok_config, "[mcp_servers.github]\ncommand = \"github\"\n[mcp_servers.github.env]\nTOKEN = \"redacted\"\n")
     configured_keys = SaneToolsChecks.configured_mcp_keys(deg_project_dir)
     configured_names = SaneToolsChecks.configured_mcp_server_names(deg_project_dir)
     if configured_keys.include?(:apple_docs) && configured_keys.include?(:context7) &&
        configured_keys.include?(:github) && !configured_names.include?('github.env')
       passed += 1
-      warn '  PASS: MCP discovery reads active Claude, Codex, Gemini, and Grok client configs'
+      warn '  PASS: MCP discovery reads active Claude, Codex, and Grok client configs'
     else
       failed += 1
       warn "  FAIL: MCP discovery missed client configs, got keys=#{configured_keys.inspect} names=#{configured_names.inspect}"

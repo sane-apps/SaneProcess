@@ -396,6 +396,7 @@ TOOL_TO_RESEARCH_CATEGORY = {
   SaneToolsChecks.mcp_tool_pattern('context7') => :docs,
   'WebSearch' => :web,
   'WebFetch' => :web,
+  'web.run' => :web,
   SaneToolsChecks.mcp_tool_pattern('github', /(?:search_|get_|list_)/) => :github,
   'Read' => :local,
   'Grep' => :local,

@@ -236,7 +236,7 @@ def main
   generate_stub(project_dir, 'AGENTS.md', <<~MD)
     # #{app_name} Agent Instructions
 
-    This file is the shared source of truth for Codex, Claude, Gemini, and other
+    This file is the shared source of truth for Codex, Claude, and other
     compatible coding agents working in this repo.
 
     ## Defaults
@@ -254,7 +254,7 @@ def main
     # #{app_name} Claude Compatibility Overlay
 
     Read [AGENTS.md](AGENTS.md) first. It is the shared source of truth for
-    Codex, Claude, Gemini, and other compatible coding agents.
+    Codex, Claude, and other compatible coding agents.
 
     > **Project Docs:** [AGENTS](AGENTS.md) | [README](README.md) | [DEVELOPMENT](DEVELOPMENT.md) | [ARCHITECTURE](ARCHITECTURE.md) | [SESSION_HANDOFF](SESSION_HANDOFF.md)
 

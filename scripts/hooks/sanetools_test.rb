@@ -292,7 +292,9 @@ module SaneToolsTest
       # Research tools (should allow and track)
       { tool: 'Read', input: { 'file_path' => '/Users/sj/SaneProcess/test.swift' }, expect_block: false, name: 'Allow Read (tracks local)' },
       { tool: 'Grep', input: { 'pattern' => 'test' }, expect_block: false, name: 'Allow Grep' },
+      { tool: 'functions.exec_command', input: { 'cmd' => 'rg -n "WeatherMenu" Core Tests' }, expect_block: false, name: 'Allow Codex read-only shell local research' },
       { tool: 'WebSearch', input: { 'query' => 'swift patterns' }, expect_block: false, name: 'Allow WebSearch (tracks web)' },
+      { tool: 'web.run', input: { 'search_query' => [{ 'q' => 'macOS status item notch drag behavior' }] }, expect_block: false, name: 'Allow Codex web.run (tracks web)' },
 
       # Task agents (should allow and track)
       { tool: 'Task', input: { 'prompt' => 'Search documentation for this API' }, expect_block: false, name: 'Allow Task (tracks docs)' },
