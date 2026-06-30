@@ -136,7 +136,13 @@ class CheckInboxReportTests(unittest.TestCase):
         self.assertIn("#886", output)
         self.assertNotIn("resolve-batch 886", output)
 
-    def test_low_risk_replied_thread_is_cleanup_candidate_but_not_batch_command(self):
+    def test_low_risk_replied_thread_is_suppressed_and_auto_resolve_candidate(self):
+        # NEW CONTRACT (deliberate owner-requested suppression): a low-risk routine
+        # thread we already replied to, with the customer silent, is no longer surfaced
+        # under "LOW-RISK DELIVERED REPLY FOUND". Instead it is SUPPRESSED under
+        # "WE RESPONDED LAST" and, once our reply is aged >= AUTO_RESOLVE_DAYS (5d) with
+        # no customer response, it appears as an AUTO-RESOLVE [DRY-RUN] candidate.
+        # Default remains dry-run: nothing is resolved here (no APPLY env set).
         output = self.run_report(
             [
                 email_row(
@@ -145,6 +151,7 @@ class CheckInboxReportTests(unittest.TestCase):
                     subject="Routine notification",
                     status="pending",
                     category="other",
+                    created_at="2026-06-17 14:11:00",
                     body_text="Routine notification acknowledged.",
                 )
             ],
@@ -161,8 +168,13 @@ class CheckInboxReportTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("LOW-RISK DELIVERED REPLY FOUND AFTER LATEST INBOUND", output)
-        self.assertIn("check-inbox.sh review 901", output)
+        # Suppressed under the quiet "we responded last" line, not the cleanup bucket.
+        self.assertIn("WE RESPONDED LAST", output)
+        self.assertNotIn("LOW-RISK DELIVERED REPLY FOUND AFTER LATEST INBOUND", output)
+        # Aged >= 5d (reply 2026-06-17) => dry-run auto-resolve candidate, not an apply.
+        self.assertIn("AUTO-RESOLVE [DRY-RUN", output)
+        self.assertIn("#901", output)
+        self.assertNotIn("AUTO-RESOLVED: #901", output)
         self.assertNotIn("resolve-batch 901", output)
 
     def test_resolved_setapp_review_blocker_is_not_silently_skipped(self):
