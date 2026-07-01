@@ -254,6 +254,7 @@ Common MCPs:
 - `apple-docs` for Apple API docs; WebSearch for third-party library docs (the context7 plugin is currently toggled off / not callable).
 - `macos-automator` for repeatable macOS GUI automation.
 - `xcode` / XcodeBuildMCP for IDE/simulator/device proof when relevant.
+- `github` (remote Copilot MCP, `https://api.githubcopilot.com/mcp/`) for issues/PRs/repo access. Must stay permanently connected via an `Authorization: Bearer <gh PAT>` header at user scope (headless, no browser OAuth). If it shows "Failed to connect", re-add with the header rather than relying on interactive auth.
 - Serena and memory graph for project and cross-session knowledge.
 - Cloudflare API MCP for read-only Pages/R2/Worker drift checks when installed.
 
