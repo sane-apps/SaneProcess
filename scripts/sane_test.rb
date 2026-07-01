@@ -174,8 +174,15 @@ class SaneTest
   end
 
   def kill_remote
+    # Quit cleanly first: a bare SIGKILL on an activated GUI/agent app leaves a
+    # ghost Dock tile that accumulates across test runs. Graceful quit lets
+    # macOS remove the tile; SIGKILL is the fallback and killall Dock sweeps any
+    # tile a force-killed app left behind.
+    ssh(%(osascript -e 'quit app "#{@app_name}"' 2>/dev/null; true))
+    sleep 1
     ssh("killall -9 #{@app_name} 2>/dev/null; true")
     sleep 1
+    ssh('killall Dock 2>/dev/null; true')
     result = ssh_capture("pgrep -x #{@app_name} 2>/dev/null").strip
     abort "   ❌ Failed to kill #{@app_name} (PID: #{result})" unless result.empty?
   end
@@ -506,8 +513,13 @@ class SaneTest
   end
 
   def kill_local
+    # Graceful quit before SIGKILL so macOS clears the Dock tile (a hard kill on
+    # an activated app leaves a ghost tile); killall Dock is the backstop.
+    system('osascript', '-e', %(quit app "#{@app_name}"), err: File::NULL, out: File::NULL)
+    sleep 1
     system('killall', '-9', @app_name, err: File::NULL)
     sleep 1
+    system('killall', 'Dock', err: File::NULL, out: File::NULL)
     abort "   ❌ Failed to kill #{@app_name}" if system('pgrep', '-x', @app_name, out: File::NULL)
   end
 

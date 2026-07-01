@@ -131,11 +131,24 @@ module SaneMasterModules
       return true unless options[:apply]
 
       result = apply_machine_cleanup_plan(plan, options)
+      sweep_ghost_dock_tiles(options)
       puts JSON.pretty_generate(result) if options[:json]
       result[:success]
     end
 
     private
+
+    # Ghost Dock tiles accumulate on the Mini when GUI/agent apps get
+    # force-killed during build/test cleanup. Relaunching the Dock drops any
+    # orphaned tiles; it's instant and non-destructive (the Dock auto-restarts).
+    # Mini-only so we never disturb the Dock on the owner's workstation.
+    def sweep_ghost_dock_tiles(options)
+      return unless options[:apply]
+      return unless running_on_mini_host?
+
+      system('killall', 'Dock', out: File::NULL, err: File::NULL)
+      warn '   🧹 Refreshed Dock to clear ghost app tiles' unless options[:json]
+    end
 
     def parse_machine_cleanup_args(args)
       options = {
