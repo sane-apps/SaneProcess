@@ -142,7 +142,13 @@ def check_visual_verification_required
   "   Required proof:\n" \
   "   • Capture clean Mini screenshots for every customer-facing view/state touched.\n" \
   "   • Store a JSON receipt at outputs/customer_ui_action_receipt.json or outputs/visual-audit*/.\n" \
-  "   • Receipt must show Mini host, passed status, inspected=true, and existing PNG/JPEG screenshots."
+  "   • Receipt must show Mini host, passed status, inspected=true, and existing PNG/JPEG screenshots.\n" \
+  "\n" \
+  "   THE TOOLS EXIST — this is never \"not possible\". See scripts/mini/SCREENSHOT_TOOLS.md.\n" \
+  "   • Website/URL: scripts/mini/capture-web-screenshot.sh <url> <outputs/visual-audit-DIR> --label NAME --app APP\n" \
+  "     (Playwright headless on the Mini: no GUI session, no window contamination), then OPEN the\n" \
+  "     PNG and set inspected=true in the receipt.\n" \
+  "   • App UI window/desktop: scripts/mini/capture-mini-screenshot.sh --app APP --window-name NAME --mode temp --copy-to DIR"
 rescue StandardError => e
   warn "⚠️  Visual verification check error: #{e.message}" if ENV['DEBUG']
   nil

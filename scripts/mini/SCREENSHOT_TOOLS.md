@@ -5,6 +5,16 @@ receipt from a host whose name contains **`mini`** (or `air`, only for notch /
 built-in-display work). Validator: `scripts/hooks/core/visual_receipt.rb` — there is
 **no local fallback** for visuals, so the capture must happen on the Mini.
 
+## One command (do this first)
+
+```bash
+scripts/mini/capture-web-screenshot.sh <url> <outputs/visual-audit-DIR> --label NAME --app APP --version VER
+```
+Captures the URL on the Mini via Playwright (headless), copies the PNG back, and writes a
+`customer_ui_action_receipt.json` scaffold with `inspected:false`. Then **open the PNG**,
+confirm the change renders, and set `inspected:true` (top-level + screenshot entry). The
+gate stays red until you inspect — intentional, do not fabricate.
+
 ## Website / URL screenshots → use Playwright on the Mini (preferred)
 
 The Mini has the `playwright` CLI (1.60.0) on PATH. Chromium is installed
