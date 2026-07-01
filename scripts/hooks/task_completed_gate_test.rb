@@ -14,7 +14,7 @@ include TestFramework
 
 SCRIPT = File.expand_path('task_completed_gate.rb', __dir__)
 
-def run_task_completed_gate(app_name: nil, repo_name: nil, state: nil, metrics_rows: nil, mutate_after_metrics: nil, create_edit_files: true, extra_env: {})
+def run_task_completed_gate(app_name: nil, repo_name: nil, state: nil, metrics_rows: nil, mutate_after_metrics: nil, create_edit_files: true, edits_committed: false, extra_env: {})
   Dir.mktmpdir('task-completed-gate-') do |dir|
     app_dir = if app_name
                 File.join(dir, 'SaneApps', 'apps', app_name)
@@ -29,15 +29,22 @@ def run_task_completed_gate(app_name: nil, repo_name: nil, state: nil, metrics_r
       File.write(File.join(state_dir, 'state.json'), JSON.pretty_generate(state))
     end
 
-    Array(state&.dig('edits', 'unique_files')).each do |relative|
-      next unless create_edit_files
-      next if relative.to_s.start_with?('/')
+    write_edit_files = lambda do
+      Array(state&.dig('edits', 'unique_files')).each do |relative|
+        next unless create_edit_files
+        next if relative.to_s.start_with?('/')
 
-      path = File.join(app_dir, relative)
-      FileUtils.mkdir_p(File.dirname(path))
-      File.write(path, "fixture #{relative}\n")
+        path = File.join(app_dir, relative)
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, "fixture #{relative}\n")
+      end
     end
+
+    # Net-diff semantics: session edit fixtures are UNCOMMITTED (written after
+    # the init commit) unless the test models already-committed work.
+    write_edit_files.call if edits_committed
     init_git_repo(app_dir)
+    write_edit_files.call unless edits_committed
     metrics_path = File.join(dir, 'metrics.jsonl')
     if metrics_rows
       rows = metrics_rows.call(app_dir)
@@ -376,6 +383,7 @@ exit(run_tests('TaskCompleted Gate Tests') do
       _stdout, stderr, status = run_task_completed_gate(
         repo_name: 'SaneProcess',
         state: edit_state(['scripts/hooks/deleted_current_session.rb']),
+        edits_committed: true,
         mutate_after_metrics: lambda do |dir|
           FileUtils.rm_f(File.join(dir, 'scripts', 'hooks', 'deleted_current_session.rb'))
         end
@@ -384,6 +392,72 @@ exit(run_tests('TaskCompleted Gate Tests') do
       assert_eq(status.exitstatus, 2)
       assert_includes(stderr, 'without recent test verification')
       assert_includes(stderr, 'deleted_current_session.rb')
+      true
+    end
+
+    test('allows task completion when session non-doc edits are all committed (clean tree)') do
+      _stdout, stderr, status = run_task_completed_gate(
+        app_name: 'TaskGateCleanTree',
+        state: edit_state(['Sources/App.swift']),
+        edits_committed: true
+      )
+
+      assert_eq(status.exitstatus, 0, stderr)
+      true
+    end
+
+    test('committed session edits stay resolved even when unrelated files are dirty') do
+      _stdout, stderr, status = run_task_completed_gate(
+        app_name: 'TaskGateUnrelatedDirty',
+        state: edit_state(['Sources/App.swift']),
+        edits_committed: true,
+        mutate_after_metrics: lambda do |dir|
+          File.write(File.join(dir, 'scratch-unrelated.txt'), "not a session edit\n")
+          File.write(File.join(dir, 'unrelated.swift'), "// dirty but never edited by this session\n")
+        end
+      )
+
+      assert_eq(status.exitstatus, 0, stderr)
+      true
+    end
+
+    test('block message names the resolved gate scope project and repo') do
+      app_name = 'TaskGateScopeMsg'
+      _stdout, stderr, status = run_task_completed_gate(
+        app_name: app_name,
+        state: edit_state(['Sources/App.swift'])
+      )
+
+      assert_eq(status.exitstatus, 2)
+      assert_includes(stderr, "Gate scope: project '#{app_name}'")
+      assert_includes(stderr, 'clean working tree')
+      true
+    end
+
+    test('fails open for an umbrella cwd without a .saneprocess manifest') do
+      Dir.mktmpdir('task-completed-umbrella-') do |dir|
+        umbrella = File.join(dir, 'SaneApps')
+        FileUtils.mkdir_p(File.join(umbrella, '.claude'))
+        File.write(File.join(umbrella, '.claude', 'state.json'), JSON.pretty_generate(edit_state(['scripts/anything.rb'])))
+        # No .saneprocess manifest, not a git repo: the gate has no project to
+        # resolve and must fail open rather than hard-block unsatisfiably.
+        metrics_path = File.join(dir, 'metrics.jsonl')
+        File.write(metrics_path, '')
+
+        _stdout, stderr, status = Open3.capture3(
+          {
+            'PATH' => ENV.fetch('PATH', ''),
+            'SANEMASTER_PROCESS_METRICS_PATH' => metrics_path,
+            'CLAUDE_PROJECT_DIR' => umbrella
+          },
+          'ruby',
+          SCRIPT,
+          stdin_data: JSON.generate('task_subject' => 'fixture task'),
+          chdir: umbrella
+        )
+
+        assert_eq(status.exitstatus, 0, stderr)
+      end
       true
     end
 
@@ -397,10 +471,11 @@ exit(run_tests('TaskCompleted Gate Tests') do
         end
         File.write(File.join(repo_a, '.claude', 'state.json'), JSON.pretty_generate(edit_state(['README.md'])))
         File.write(File.join(repo_b, '.claude', 'state.json'), JSON.pretty_generate(edit_state(['scripts/hooks/live_repo.rb'])))
-        FileUtils.mkdir_p(File.join(repo_b, 'scripts', 'hooks'))
-        File.write(File.join(repo_b, 'scripts', 'hooks', 'live_repo.rb'), "fixture\n")
         init_git_repo(repo_a)
         init_git_repo(repo_b)
+        # Written after the init commit so the session edit is genuinely uncommitted.
+        FileUtils.mkdir_p(File.join(repo_b, 'scripts', 'hooks'))
+        File.write(File.join(repo_b, 'scripts', 'hooks', 'live_repo.rb'), "fixture\n")
 
         metrics_path = File.join(dir, 'metrics.jsonl')
         File.write(metrics_path, '')
