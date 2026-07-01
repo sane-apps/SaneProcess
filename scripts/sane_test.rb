@@ -488,12 +488,24 @@ class SaneTest
       warn '   (menu-bar moves can silently fail; grant Accessibility manually or import the cert).'
       return
     end
-    if system('codesign', '--force', '--deep', '--options', 'runtime',
-              '--sign', identity, app_path, out: File::NULL, err: File::NULL)
+    sign_out = `codesign --force --deep --options runtime --sign "#{identity}" "#{app_path}" 2>&1`
+    if $?.success?
       warn "   Re-signed with #{identity}"
       warn '   (preserves the existing Accessibility/TCC grant for this build)'
+    elsif sign_out.include?('errSecInternalComponent')
+      # Deterministic, not guesswork: this specific failure means codesign can't
+      # reach the signing key from a plain ssh shell. Run the build in the Mini's
+      # GUI session, which has keychain access.
+      warn '   ⚠️  Re-sign failed: errSecInternalComponent — codesign cannot reach the'
+      warn '       signing key over plain ssh. Run the build/sign in the Mini GUI session:'
+      warn "         ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-gui-run.sh \\"
+      warn '           --title "build" --log-file /tmp/build.log -- \\'
+      warn "           \"cd #{@app_dir} && ruby #{__FILE__} #{@app_name} --release --local\"'"
+      warn '       (one-time alternative: set the login-keychain codesign partition list; see mini/README.md).'
     else
       warn '   ⚠️  Re-sign failed — TCC grant may not hold; menu-bar moves can fail'
+      first = sign_out.lines.map(&:strip).reject(&:empty?).first
+      warn "   codesign: #{first}" if first
     end
   end
 

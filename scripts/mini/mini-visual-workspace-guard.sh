@@ -67,6 +67,11 @@ fi
 SANE_APPS="SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo"
 WINDOWLESS_TARGET_APPS="SaneBar"
 CLUTTER_APPS="Preview Safari TextEdit QuickTime Player Notes"
+# Operator/agent GUI apps that must NOT be quit (they are the operator's own
+# tools) but MUST be hidden before capture so they never contaminate the shot.
+# cleanup hides these, so the post-cleanup re-check passes deterministically
+# instead of refusing forever while one of them is on screen.
+HIDE_ONLY_APPS="Codex Cursor"
 DESKTOP_ARTIFACT_PATTERNS=$(cat <<'EOF'
 SaneProcess-rsync-misfire-*
 SaneUI-test-output-*.txt
@@ -205,6 +210,18 @@ hide_terminal() {
   osascript_with_timeout 3 <<'APPLESCRIPT' >/dev/null || true
 tell application "System Events"
   if exists process "Terminal" then set visible of process "Terminal" to false
+end tell
+APPLESCRIPT
+}
+
+# Hide (do NOT quit) an operator/agent GUI app so it can't contaminate a
+# screenshot. Quitting would kill the operator's tools; hiding is reversible.
+hide_app() {
+  local app="$1"
+  [ -n "$app" ] || return 0
+  osascript_with_timeout 3 <<APPLESCRIPT >/dev/null || true
+tell application "System Events"
+  if exists process "${app}" then set visible of process "${app}" to false
 end tell
 APPLESCRIPT
 }
@@ -412,6 +429,9 @@ cleanup_workspace() {
   cleanup_desktop_artifacts
   dismiss_system_popovers
   hide_terminal
+  for app in $HIDE_ONLY_APPS; do
+    hide_app "$app"
+  done
   if ! $DESKTOP_MODE; then
     osascript_with_timeout 3 <<APPLESCRIPT >/dev/null || true
 tell application "System Events"
