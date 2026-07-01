@@ -33,6 +33,7 @@ Examples:
   capture-mini-screenshot.sh desktop
   capture-mini-screenshot.sh desktop --path /tmp/mini-proof.png
   capture-mini-screenshot.sh desktop --copy-to /tmp/mini-proof
+  capture-mini-screenshot.sh --skip-cleanup desktop --copy-to /tmp/mini-diag  # DIAGNOSTIC: raw screen
   capture-mini-screenshot.sh --list-windows --app "SaneClip"
   capture-mini-screenshot.sh --app "SaneClip" --window-name "Settings" --mode temp
   capture-mini-screenshot.sh --active-window --mode temp
@@ -41,6 +42,12 @@ Notes:
   - Runs inside the Mini's logged-in GUI Terminal session.
   - First use may require Screen Recording permission for Terminal on the Mini.
   - Arguments are forwarded directly to the screenshot helper.
+  - PROOF captures (default): the visual-workspace guard hides Codex/Terminal
+    for a clean marketing/receipt shot.
+  - DIAGNOSTIC captures (--skip-cleanup): NO guard, so the screen is captured
+    AS-IS. Use this to catch permission pop-ups, app sheets, or a stuck modal —
+    the default cleanup would hide the very window you need to see. Then Read the
+    PNG; a capture you don't open proves nothing.
 EOF
   exit 2
 }
