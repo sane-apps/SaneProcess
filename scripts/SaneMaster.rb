@@ -596,16 +596,19 @@ class SaneMaster
       execution_repo = if release_routed
                          prepare_release_workspace_on_mini!(Dir.pwd, remote_repo, preserve_release_artifacts: preserve_release_artifacts)
                        else
-                         sync_workspace_to_mini!(remote_repo)
-                         remote_repo
+                         # Non-release routes execute in a persistent scratch
+                         # workspace; the canonical Mini repo stays clean so the
+                         # release dirty-peer gate can never be tripped by our
+                         # own verify/sweep overlays again.
+                         prepare_verify_workspace_on_mini!(Dir.pwd, remote_repo)
                        end
-      execution_saneprocess_repo = release_routed ? routed_release_path_for_local(saneprocess_repo_root) : remote_saneprocess_repo
+      execution_saneprocess_repo = release_routed ? routed_release_path_for_local(saneprocess_repo_root) : routed_verify_path_for_local(saneprocess_repo_root)
       if workspace_uses_saneui?(Dir.pwd) && Dir.exist?(saneui_repo_root)
         remote_saneui_repo = map_local_path_to_mini(saneui_repo_root)
         unless remote_saneui_repo
           abort "❌ Could not map SaneUI to mini: #{saneui_repo_root}"
         end
-        remote_saneui_repo = routed_release_path_for_local(saneui_repo_root) if release_routed
+        remote_saneui_repo = release_routed ? routed_release_path_for_local(saneui_repo_root) : routed_verify_path_for_local(saneui_repo_root)
         sync_local_dir_to_mini!(saneui_repo_root, remote_saneui_repo, label: 'SaneUI')
       end
       sync_local_dir_to_mini!(saneprocess_repo_root, execution_saneprocess_repo, label: 'SaneProcess')
@@ -775,11 +778,6 @@ class SaneMaster
     false
   rescue StandardError
     false
-  end
-
-  def sync_workspace_to_mini!(remote_repo)
-    route_log("🔄 Syncing local workspace snapshot to mini (#{remote_repo})")
-    sync_local_dir_to_mini!(Dir.pwd, remote_repo, label: nil)
   end
 
   def prepare_release_workspace_on_mini!(local_repo, remote_repo, preserve_release_artifacts: false)
@@ -971,6 +969,90 @@ PY
   def mini_release_workspace_root(local_repo)
     digest = Digest::SHA256.hexdigest(File.expand_path(local_repo))[0, 12]
     File.join('/Users/stephansmac', '.sanemaster', 'routed-workspaces', digest)
+  end
+
+  # Persistent (per-repo, reused across runs for incremental build speed)
+  # scratch root for NON-release routed commands. Verify/sweep overlays used to
+  # rsync straight onto the canonical Mini repo, leaving it permanently dirty —
+  # the root cause of the recurring dirty-peer release blocks, wrong-branch
+  # commits on the Mini, and the months-old auto-reconcile stash pile.
+  def mini_verify_workspace_root(local_repo)
+    digest = Digest::SHA256.hexdigest(File.expand_path(local_repo))[0, 12]
+    File.join('/Users/stephansmac', '.sanemaster', 'verify-workspaces', digest)
+  end
+
+  def routed_verify_path_for_local(local_path, local_repo = Dir.pwd)
+    absolute_path = File.expand_path(local_path)
+    relative_path = if absolute_path.start_with?('/Users/sj/')
+                      absolute_path.delete_prefix('/Users/sj/')
+                    elsif absolute_path.start_with?('/Users/stephansmac/')
+                      absolute_path.delete_prefix('/Users/stephansmac/')
+                    else
+                      abort "❌ Could not mirror path into routed verify workspace: #{absolute_path}"
+                    end
+    File.join(mini_verify_workspace_root(local_repo), relative_path)
+  end
+
+  # Prepare the scratch workspace for a non-release routed command: align its
+  # git state to the local HEAD (so receipt source fingerprints match by
+  # construction), then let the caller overlay the working tree. The canonical
+  # Mini repo is never written. Unlike the release path this tolerates
+  # unpushed branches (verify's whole point is pre-push proof) and skips
+  # `clean -fdx` so incremental build caches survive between runs.
+  def prepare_verify_workspace_on_mini!(local_repo, remote_repo)
+    branch = current_git_branch(local_repo)
+    head = current_git_head(local_repo)
+    scratch_repo = routed_verify_path_for_local(local_repo, local_repo)
+    bundle_branch = branch
+    branch = 'sanemaster-route-verify' if branch.empty? || branch == 'HEAD'
+
+    remote_bundle_path = File.join(
+      '/tmp',
+      "sanemaster-verify-#{Digest::SHA256.hexdigest("#{File.expand_path(local_repo)}:#{head}")[0, 16]}.bundle"
+    )
+    needs_bundle = !head.empty? &&
+                   !bundle_branch.empty? && bundle_branch != 'HEAD' &&
+                   !mini_repo_has_commit?(scratch_repo, head)
+    sync_git_bundle_to_mini!(local_repo, bundle_branch, remote_bundle_path) if needs_bundle
+
+    remote_cmd = <<~SH
+      set -e
+      scratch=#{Shellwords.escape(scratch_repo)}
+      canonical=#{Shellwords.escape(remote_repo)}
+      bundle_path=#{Shellwords.escape(remote_bundle_path)}
+      cleanup() { rm -f "$bundle_path"; }
+      trap cleanup EXIT
+      if [ ! -d "$scratch/.git" ]; then
+        mkdir -p "$(dirname "$scratch")"
+        rm -rf "$scratch"
+        if [ -d "$canonical/.git" ]; then
+          git clone --no-checkout "$canonical" "$scratch" >/dev/null 2>&1
+        else
+          mkdir -p "$scratch"
+          git -C "$scratch" init -q
+        fi
+      fi
+      cd "$scratch"
+      if [ -n #{Shellwords.escape(head)} ] && ! git rev-parse --verify #{Shellwords.escape("#{head}^{commit}")} >/dev/null 2>&1; then
+        if [ -f "$bundle_path" ]; then
+          git fetch "$bundle_path" #{Shellwords.escape(branch)} >/dev/null 2>&1 || true
+        fi
+        if [ -d "$canonical/.git" ]; then
+          git fetch "$canonical" >/dev/null 2>&1 || true
+        fi
+      fi
+      if [ -n #{Shellwords.escape(head)} ] && git rev-parse --verify #{Shellwords.escape("#{head}^{commit}")} >/dev/null 2>&1; then
+        git checkout -q -B #{Shellwords.escape(branch)} #{Shellwords.escape(head)} 2>/dev/null || true
+        git reset -q --hard #{Shellwords.escape(head)} 2>/dev/null || true
+      fi
+    SH
+    ok = ssh_system('mini', remote_cmd)
+    abort '❌ Failed to prepare the routed verify workspace on the mini.' unless ok
+
+    route_log("🔄 Syncing local workspace snapshot to mini (#{scratch_repo})")
+    sync_local_dir_to_mini!(local_repo, scratch_repo, label: nil)
+    apply_git_deleted_paths_to_mini!(local_repo, scratch_repo)
+    scratch_repo
   end
 
   def routed_release_path_for_local(local_path, local_repo = Dir.pwd)
