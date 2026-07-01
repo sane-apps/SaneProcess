@@ -15,6 +15,13 @@ KEYCHAIN_FALLBACK_ENABLED="${SANE_KEYCHAIN_FALLBACK:-1}"
 # Ensure Homebrew-installed tools resolve in non-interactive shells (CI/SSH).
 export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
+# Pinned Wrangler for all Cloudflare mutations (DEVELOPMENT.md policy): bare
+# `npx wrangler` can resolve stale local versions — SaneCite queue creation
+# failed under 4.65.0 and succeeded under 4.104.0. Override deliberately via
+# SANEPROCESS_WRANGLER_VERSION when needed.
+SANEPROCESS_WRANGLER_VERSION="${SANEPROCESS_WRANGLER_VERSION:-4.104.0}"
+WRANGLER_NPX_PACKAGE="wrangler@${SANEPROCESS_WRANGLER_VERSION}"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -5453,7 +5460,7 @@ if [ "${WEBSITE_ONLY}" = true ]; then
     fi
 
     log_info "Deploying website to Cloudflare Pages (${PAGES_PROJECT}) from ${DEPLOY_DIR}..."
-    if ! npx wrangler pages deploy "${DEPLOY_DIR}" \
+    if ! npx --yes "${WRANGLER_NPX_PACKAGE}" pages deploy "${DEPLOY_DIR}" \
         --project-name="${PAGES_PROJECT}" \
         --branch="${PAGES_BRANCH}" \
         --commit-dirty=true \
@@ -6273,7 +6280,7 @@ if [ "${RUN_DEPLOY}" = true ]; then
         log_error "R2 upload failed: CLOUDFLARE_API_TOKEN is unavailable."
         exit 1
     fi
-    if ! CLOUDFLARE_API_TOKEN="${upload_token}" npx wrangler r2 object put "${R2_BUCKET}/${R2_OBJECT_KEY}" \
+    if ! CLOUDFLARE_API_TOKEN="${upload_token}" npx --yes "${WRANGLER_NPX_PACKAGE}" r2 object put "${R2_BUCKET}/${R2_OBJECT_KEY}" \
         --file="${FINAL_ZIP}" --remote; then
         log_error "R2 upload failed."
         exit 1
@@ -6586,7 +6593,7 @@ PY
         log_info "Deploying website + appcast to Cloudflare Pages (${PAGES_PROJECT}) from ${DEPLOY_DIR}..."
         CURRENT_GATE="Deploy website to Cloudflare Pages"
         RELEASE_ERR_GATE_RECORDED=""
-        if ! npx wrangler pages deploy "${DEPLOY_DIR}" \
+        if ! npx --yes "${WRANGLER_NPX_PACKAGE}" pages deploy "${DEPLOY_DIR}" \
             --project-name="${PAGES_PROJECT}" \
             --branch="${PAGES_BRANCH}" \
             --commit-dirty=true \
@@ -6940,7 +6947,7 @@ PY
                     exit 1
                 fi
 
-                WEBHOOK_DEPLOY_OUTPUT=$(npx wrangler deploy --keep-vars 2>&1)
+                WEBHOOK_DEPLOY_OUTPUT=$(npx --yes "${WRANGLER_NPX_PACKAGE}" deploy --keep-vars 2>&1)
                 WEBHOOK_DEPLOY_STATUS=$?
                 if [ "${WEBHOOK_DEPLOY_STATUS}" -ne 0 ]; then
                     log_error "Webhook deploy failed."
