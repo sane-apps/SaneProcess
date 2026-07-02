@@ -424,6 +424,50 @@ exit(run_tests('Setapp Upload Tests') do
       end
     end
 
+    test('create-version skips the pinned version id check but keeps app/bundle checks') do
+      upload = SetappUpload.allocate
+      upload.instance_variable_set(
+        :@archive_metadata,
+        { app_name: 'SaneClip', bundle_id: 'com.saneclip.app-setapp', version: '2312', ui_version: '2.3.12' }
+      )
+      # No version_id at all: allowed when creating, because a Released
+      # (status 10) version rejects PATCH and a fresh record gets a new id.
+      upload.instance_variable_set(:@options, { app_id: '1847', version_id: nil, create_version: true })
+      outcome = begin
+        upload.send(:validate_portal_target_matches_archive!)
+        :no_abort
+      rescue SystemExit
+        :aborted
+      end
+      assert_eq(outcome, :no_abort, 'create-version must not require the pinned version id')
+
+      upload.instance_variable_set(
+        :@archive_metadata,
+        { app_name: 'SaneClip', bundle_id: 'com.wrong.bundle', version: '2312', ui_version: '2.3.12' }
+      )
+      expect_abort_includes('expects bundle id com.saneclip.app-setapp') do
+        upload.send(:validate_portal_target_matches_archive!)
+      end
+    end
+
+    test('pending-submission status is action required unless explicitly allowed') do
+      upload = SetappUpload.allocate
+      upload.instance_variable_set(:@options, { allow_needs_revision: false })
+
+      expect_abort_includes('Pending Submission') do
+        upload.send(:enforce_portal_review_state!, { 'data' => { 'status' => 1 } })
+      end
+
+      upload.instance_variable_set(:@options, { allow_needs_revision: true })
+      outcome = begin
+        upload.send(:enforce_portal_review_state!, { 'data' => { 'status' => 1 } })
+        :no_abort
+      rescue SystemExit
+        :aborted
+      end
+      assert_eq(outcome, :no_abort, '--allow-needs-revision must accept Pending Submission')
+    end
+
     test('CI upload proof data must include hosted archive and matching versions') do
       upload = SetappUpload.allocate
       upload.instance_variable_set(
