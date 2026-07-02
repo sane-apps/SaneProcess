@@ -53,6 +53,12 @@ class HookTests
       test("non-ASCII learnings survive locale-less read") { test_learnings_non_ascii_locale }
     end
 
+    # Umbrella-session artifact discovery + transcript project resolution
+    test_group("Umbrella Session Fixes") do
+      test("visual receipt discovered inside apps/<App>/outputs") { test_visual_receipt_umbrella_discovery }
+      test("LS staging resolves --project \$PWD from the command's cd") { test_lemonsqueezy_project_resolution_from_transcript }
+    end
+
     # Blocked-path enforcement through the real sanetools entry point
     test_group("Blocked Paths (entry point)") do
       test("PathDetector blocks ~/.ssh") { test_path_blocks_ssh }
@@ -209,6 +215,33 @@ class HookTests
       _out, _err, status = Open3.capture3(
         { 'HOOKS_DIR' => __dir__, 'RECEIPT_CWD' => dir, 'RECEIPT_PATH' => receipt_path,
           'LANG' => 'C', 'LC_ALL' => 'C' },
+        'ruby', '-E', 'US-ASCII', '-e', script
+      )
+      status.success?
+    end
+  end
+
+  # `release.sh --project $PWD` reaches the transcript unexpanded; the LS
+  # staging step must resolve it from the command's own `cd` (ssh-mini
+  # pattern) or the entry cwd — never pass the literal `$PWD` through (that
+  # produced the unusable "could not resolve version for $PWD" nag, hit live
+  # 2026-07-02).
+  def test_lemonsqueezy_project_resolution_from_transcript
+    require 'tmpdir'
+    Dir.mktmpdir('ls-transcript-') do |dir|
+      transcript = File.join(dir, 'transcript.jsonl')
+      ssh_cmd = %q{ssh mini 'cd ~/SaneApps/apps/FakeApp && ./scripts/release.sh --project $PWD --deploy'}
+      entries = [
+        { 'cwd' => '/Users/owner/SaneApps', 'command' => ssh_cmd },
+        { 'cwd' => '/irrelevant', 'command' => 'echo release.sh mention without deploy' }
+      ]
+      File.write(transcript, entries.map { |e| JSON.generate(e) }.join("\n") + "\n", encoding: Encoding::UTF_8)
+
+      script = 'require File.join(ENV["HOOKS_DIR"], "sanestop_lemonsqueezy"); ' \
+               'project = LemonSqueezyUploads.detect_release_deploy_project(ENV["LS_TRANSCRIPT"]); ' \
+               'exit(project == "~/SaneApps/apps/FakeApp" ? 0 : 1)'
+      _out, _err, status = Open3.capture3(
+        { 'HOOKS_DIR' => __dir__, 'LS_TRANSCRIPT' => transcript, 'LANG' => 'C', 'LC_ALL' => 'C' },
         'ruby', '-E', 'US-ASCII', '-e', script
       )
       status.success?

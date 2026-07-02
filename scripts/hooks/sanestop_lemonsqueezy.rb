@@ -53,23 +53,63 @@ module LemonSqueezyUploads
 
   # Most recent `release.sh ... --deploy/--full` command's --project, or nil.
   # Extracts each Bash command string from the transcript JSON (escape-aware) so
-  # a quoted --notes value cannot truncate the match.
+  # a quoted --notes value cannot truncate the match. Processes the transcript
+  # per JSONL line so the command can be paired with its own entry's "cwd".
   def detect_release_deploy_project(transcript_path)
     return nil unless transcript_path && File.exist?(transcript_path)
 
-    content = File.read(transcript_path, encoding: Encoding::UTF_8)
     project = nil
-    content.scan(/"command"\s*:\s*"((?:[^"\\]|\\.)*)"/).each do |match|
-      cmd = match[0].gsub('\\n', "\n").gsub('\\t', "\t").gsub('\\/', '/').gsub('\\"', '"').gsub('\\\\', '\\')
+    File.foreach(transcript_path, encoding: Encoding::UTF_8) do |line|
+      next unless line.include?('release.sh')
+
+      cm = line.match(/"command"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+      next unless cm
+
+      cmd = unescape_transcript_string(cm[1])
       next unless cmd.include?('release.sh')
       next unless cmd.include?('--deploy') || cmd.include?('--full')
 
       pm = cmd.match(/--project\s+(\S+)/)
-      project = pm[1].gsub(/["']/, '') if pm # last release this session wins (strip stray quotes)
+      next unless pm
+
+      raw = pm[1].gsub(/["']/, '') # strip stray quotes
+      cwd_match = line.match(/"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+      entry_cwd = cwd_match ? unescape_transcript_string(cwd_match[1]) : nil
+      resolved = resolve_project_argument(raw, cmd, entry_cwd)
+      project = resolved if resolved # last resolvable release this session wins
     end
     project
   rescue StandardError
     nil
+  end
+
+  # `--project $PWD` (and friends) reach the transcript UNEXPANDED — the shell
+  # variable only had a value inside the (possibly remote) shell that ran the
+  # command. Passing the literal `$PWD` to the staging script produced the
+  # useless "could not resolve version for $PWD" nag at every session end (hit
+  # live 2026-07-02). Resolve it from what the command itself tells us: the
+  # last `cd <dir>` before release.sh (the `ssh mini 'cd <app> && release.sh
+  # --project $PWD'` pattern), else the transcript entry's own cwd. Unresolvable
+  # variables return nil so the nag never fires with a broken command line.
+  def resolve_project_argument(raw, cmd, entry_cwd)
+    pwd_form = raw.match?(/\A(?:\$\{?PWD\}?|\$\(pwd\)|\.)\z/)
+    return raw unless pwd_form || raw.start_with?('$') || !raw.start_with?('/', '~')
+
+    if pwd_form
+      before_release = cmd.split('release.sh', 2).first.to_s
+      cd_dir = before_release.scan(/(?<![\w-])cd\s+(\S+)/).flatten.last
+      return cd_dir.gsub(/["']/, '') if cd_dir
+      return entry_cwd if entry_cwd && !entry_cwd.empty?
+
+      return nil
+    end
+    return nil if raw.start_with?('$') # some other unexpanded variable
+
+    entry_cwd && !entry_cwd.empty? ? File.join(entry_cwd, raw) : nil
+  end
+
+  def unescape_transcript_string(value)
+    value.gsub('\\n', "\n").gsub('\\t', "\t").gsub('\\/', '/').gsub('\\"', '"').gsub('\\\\', '\\')
   end
 
   # Run the staging script where the folder lives (locally on the mini, else via
