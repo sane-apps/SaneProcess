@@ -884,6 +884,105 @@ exit(run_tests('Setapp Upload Tests') do
       true
     end
 
+    test('tolerates unreachable direct-license residue in the executable, still rejects it in resources') do
+      Dir.mktmpdir('setapp-upload-test') do |dir|
+        # Build the fixture's own executable (rather than reusing
+        # create_setapp_fixture, which signs before this test could append
+        # bytes — a post-sign append fails strict validation on re-sign) so
+        # the extra string bytes are present in the Mach-O BEFORE the one and
+        # only codesign call, mirroring how "Enter License Key"/"checkoutURL"
+        # land in the compiled binary as unreachable LicenseService residue.
+        app_root = File.join(dir, 'SaneClip.app')
+        app_contents = File.join(app_root, 'Contents')
+        app_resources = File.join(app_contents, 'Resources')
+        app_macos = File.join(app_contents, 'MacOS')
+        FileUtils.mkdir_p([app_resources, app_macos])
+        create_root_icon_png(File.join(app_resources, 'AppIcon.icns'))
+        File.write(File.join(app_contents, 'Info.plist'), <<~PLIST)
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>SaneClip</string>
+            <key>CFBundleName</key>
+            <string>SaneClip</string>
+            <key>CFBundleIconFile</key>
+            <string>AppIcon</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.saneclip.app-setapp</string>
+            <key>CFBundleShortVersionString</key>
+            <string>2.3.9</string>
+            <key>CFBundleVersion</key>
+            <string>2309</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>MPSupportedArchitectures</key>
+            <array>
+              <string>arm64</string>
+              <string>x86_64</string>
+            </array>
+            <key>NSUpdateSecurityPolicy</key>
+            <dict>
+              <key>AllowProcesses</key>
+              <dict>
+                <key>MEHY5QF425</key>
+                <array>
+                  <string>com.setapp.DesktopClient.SetappAgent</string>
+                </array>
+              </dict>
+            </dict>
+          </dict>
+          </plist>
+        PLIST
+        exe_path = File.join(app_macos, 'SaneClip')
+        # Compile a real Mach-O containing the strings as proper literals —
+        # macOS codesign's strict validation rejects any Mach-O with bytes
+        # appended past what its load commands declare (a hardening against
+        # exactly the "smuggle extra bytes into a signed binary" trick),
+        # so the string must be genuinely compiled in, not appended.
+        source_path = File.join(dir, 'residue.c')
+        File.write(source_path, <<~C)
+          const char *residue = "Enter License Key checkoutURL";
+          int main(void) { return residue[0] == 0 ? 1 : 0; }
+        C
+        compile_output, compile_status = Open3.capture2e(
+          'clang', '-arch', 'arm64', '-arch', 'x86_64', '-o', exe_path, source_path
+        )
+        assert(compile_status.success?, compile_output)
+
+        output, status = Open3.capture2e('codesign', '--force', '--sign', '-', app_root)
+        assert(status.success?, output)
+        zip_path = File.join(dir, 'SaneClip-Setapp.zip')
+        zip_app(app_root, zip_path)
+
+        output, status = Open3.capture2e('ruby', SCRIPT_PATH, '--validate-only', '--zip', zip_path)
+
+        assert(status.success?, output)
+        assert_includes(output, 'inert direct-channel residue tolerated')
+        assert_includes(output, 'direct license-key UI copy')
+      end
+      true
+    end
+
+    test('rejects direct-license residue in a resource file even though the executable tolerance exists') do
+      Dir.mktmpdir('setapp-upload-test') do |dir|
+        app_root = create_setapp_fixture(dir)
+        File.write(File.join(app_root, 'Contents', 'Resources', 'residue.txt'), 'checkoutURL lives here')
+        output, status = Open3.capture2e('codesign', '--force', '--sign', '-', app_root)
+        assert(status.success?, output)
+        zip_path = File.join(dir, 'SaneClip-Setapp.zip')
+        zip_app(app_root, zip_path)
+
+        output, status = Open3.capture2e('ruby', SCRIPT_PATH, '--validate-only', '--zip', zip_path)
+
+        assert(!status.success?, output)
+        assert_includes(output, 'forbidden direct-channel residue')
+        assert_includes(output, 'non-binary file')
+      end
+      true
+    end
+
     test('inert Sparkle strings in non-binary files remain fatal') do
       Dir.mktmpdir('setapp-upload-test') do |dir|
         app_root = create_setapp_fixture(dir)
