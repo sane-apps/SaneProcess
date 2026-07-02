@@ -21,8 +21,26 @@ module SaneMasterModules
     SOURCE_OF_TRUTH_HINT = [
       'Extend shared SaneUI instead of app-local settings chrome.',
       'Inspect ~/SaneApps/infra/SaneUI/Sources/SaneUICatalog/SaneUICatalogApp.swift first.',
-      'Use shared SaneSettingsContainer, SaneAboutView, LicenseSettingsView, and SaneSparkleRow.'
+      'Use shared SaneSettingsContainer, SaneAboutView, and LicenseSettingsView.'
     ].join(' ')
+
+    # SaneSparkleRow deliberately left the shared library (2026-07-01): the
+    # Setapp archive scanner forbids Sparkle settings-UI symbols in Setapp
+    # binaries, and a shared-library public type reaches every consumer binary
+    # regardless of app-side call-site gating. App-local copies are therefore
+    # the CORRECT pattern — but only when the ENTIRE defining file is wrapped
+    # in `#if !APP_STORE && !SETAPP` so the symbol cannot ship in gated
+    # channels. Ungated definitions stay forbidden.
+    SPARKLE_ROW_GATE_PATTERN = /#if\s+!APP_STORE\s*&&\s*!SETAPP/.freeze
+    SPARKLE_ROW_STRUCT_PATTERN = /^\s*struct\s+SaneSparkleRow\b/m.freeze
+
+    def channel_gated_sparkle_row?(content)
+      gate_index = content =~ SPARKLE_ROW_GATE_PATTERN
+      struct_index = content =~ SPARKLE_ROW_STRUCT_PATTERN
+      return false unless gate_index && struct_index
+
+      gate_index < struct_index
+    end
 
     def report_for_path(path)
       root = File.expand_path(path)
@@ -50,12 +68,12 @@ module SaneMasterModules
       contents.each do |file, content|
         relative = relative_path(root, file)
 
-        if content.match?(/^\s*struct\s+SaneSparkleRow\b/m)
+        if content.match?(SPARKLE_ROW_STRUCT_PATTERN) && !channel_gated_sparkle_row?(content)
           errors << Finding.new(
             severity: :error,
-            label: 'Local SaneSparkleRow clone',
+            label: 'Ungated SaneSparkleRow definition',
             detail: relative,
-            fix: SOURCE_OF_TRUTH_HINT
+            fix: 'SaneSparkleRow is app-local by design (Setapp scanner forbids the symbol in Setapp binaries), but the ENTIRE defining file must be wrapped in #if !APP_STORE && !SETAPP — see SaneClip UI/Settings/SaneSparkleRow.swift.'
           )
         end
 
