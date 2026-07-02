@@ -2584,8 +2584,8 @@ PY
       ]
     },
     'setapp_upload' => {
-      usage: 'setapp_upload --zip ZIP --release-notes-file PATH --review-comments-file PATH [--portal-fallback --app-id ID --version-id ID]',
-      description: 'Upload a Setapp build. Uses the official CI endpoint when SETAPP_AUTOMATION_TOKEN is present; portal fallback now fails if the version remains Needs Revision after attach.',
+      usage: 'setapp_upload --zip ZIP --release-notes-file PATH --review-comments-file PATH [--portal-fallback --app-id ID (--version-id ID | --create-version)]',
+      description: 'Upload a Setapp build. Canonical auth: `source ~/.config/nv/env` loads SETAPP_PORTAL_TOKEN from the keychain for --portal-fallback. New public release (pinned version Released) needs --create-version (PATCH is rejected); reupload during review PATCHes via --version-id. See templates/RELEASE_SOP.md "Upload through the standard Setapp lane".',
       flags: {
         '--zip PATH' => 'Setapp ZIP archive to upload',
         '--release-notes TEXT' => 'Public Setapp user-facing release notes text',
