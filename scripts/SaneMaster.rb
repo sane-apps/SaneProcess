@@ -612,7 +612,7 @@ class SaneMaster
         sync_local_dir_to_mini!(saneui_repo_root, remote_saneui_repo, label: 'SaneUI')
       end
       sync_local_dir_to_mini!(saneprocess_repo_root, execution_saneprocess_repo, label: 'SaneProcess')
-      sync_setapp_app_workspaces_to_mini! if setapp_route_command?(command)
+      sync_setapp_app_workspaces_to_mini!(release_routed: release_routed) if setapp_route_command?(command)
       sync_release_artifacts_to_mini!(Dir.pwd, execution_repo) if preserve_release_artifacts
       if release_routed
         routed_webhook_repo = sync_release_support_repos_to_mini!(release_routed: true, command: command)
@@ -1141,12 +1141,22 @@ PY
     File.expand_path('~/SaneApps/infra/sane-email-automation')
   end
 
-  def sync_setapp_app_workspaces_to_mini!
+  # Setapp app workspaces must land where the EXECUTING SaneProcess copy will
+  # look for them. Non-release routes execute SaneProcess from the scratch
+  # verify workspace, so the app repos mirror into the same scratch root
+  # (relative ../../apps/<App> lookups stay consistent); release routes keep
+  # their own routed-release mapping via the caller. Canonical Mini repos are
+  # never written either way.
+  def sync_setapp_app_workspaces_to_mini!(release_routed: false)
     setapp_enabled_app_dirs.each do |app_dir|
       local_repo = File.join(saneapps_root, 'apps', app_dir)
       next unless Dir.exist?(local_repo)
 
-      remote_repo = map_local_path_to_mini(local_repo)
+      remote_repo = if release_routed
+                      routed_release_path_for_local(local_repo)
+                    else
+                      routed_verify_path_for_local(local_repo)
+                    end
       abort "❌ Could not map Setapp app #{app_dir} to mini: #{local_repo}" unless remote_repo
 
       sync_local_dir_to_mini!(local_repo, remote_repo, label: "#{app_dir} Setapp app")

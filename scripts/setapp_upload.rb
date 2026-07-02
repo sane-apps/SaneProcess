@@ -65,16 +65,31 @@ class SetappUpload
   ].freeze
   FORBIDDEN_SETAPP_PAYLOAD_PATTERNS = [
     [/\bSaneSparkleRow\b/i, 'Sparkle settings UI'],
-    [/\bSparkle\.framework\b/i, 'Sparkle framework reference'],
     [/\bSUFeedURL\b/i, 'Sparkle feed key'],
-    [/\bAppStoreProductID\b/i, 'direct/App Store product identifier key'],
-    [/sparkle-project\.org/i, 'Sparkle project URL'],
     [/\blemon ?squeezy\b/i, 'Lemon Squeezy direct-license string'],
     [%r{api\.lemonsqueezy\.com/v1/licenses/validate}i, 'Lemon Squeezy license API string'],
     [/\b(?:Enter|Paste) License Key\b/i, 'direct license-key UI copy'],
     [/\bcheckout(?:URL|Clicked)?\b/i, 'direct checkout code/copy'],
     [%r{github\.com/sponsors}i, 'GitHub Sponsors/donation link'],
     [/\bdirect download\b/i, 'direct-download copy']
+  ].freeze
+
+  # Inert direct-channel residue: strings that unavoidably land in the main
+  # executable because the shared app TARGET weak-links the Sparkle SPM
+  # product for all configs and shared SaneUI carries direct-channel string
+  # constants. These are tolerated ONLY in Mach-O binaries and ONLY when the
+  # bundle is proven functionally Sparkle-free: no Sparkle.framework payload
+  # anywhere (separately fatal above) AND every Sparkle load command is
+  # LC_LOAD_WEAK_DYLIB (a strong link to a stripped framework would crash at
+  # launch). Setapp approved builds with exactly this weak-link shape (e.g.
+  # SaneClip 2.3.9, thread #895). The same strings anywhere else (plists,
+  # resources) remain fatal — there they are configuration, not linker
+  # fallout. Owner decision 2026-07-01: verify non-functionality instead of
+  # string hygiene until the dedicated no-Sparkle Setapp target exists.
+  INERT_WEAK_LINK_PAYLOAD_PATTERNS = [
+    [/\bSparkle\.framework\b/i, 'Sparkle framework reference'],
+    [/\bAppStoreProductID\b/i, 'direct/App Store product identifier key'],
+    [/sparkle-project\.org/i, 'Sparkle project URL']
   ].freeze
   PROFILE_REQUIRED_ENTITLEMENTS = [
     'com.apple.developer.icloud-container-identifiers',
@@ -569,13 +584,53 @@ class SetappUpload
       output, _stderr, status = capture3_with_timeout(10, '/usr/bin/strings', '-a', path)
       next unless status.success?
 
+      relative = relative_extract_path(File.dirname(app_path), path)
+
       FORBIDDEN_SETAPP_PAYLOAD_PATTERNS.each do |pattern, reason|
         next unless output.match?(pattern)
 
-        relative = relative_extract_path(File.dirname(app_path), path)
         abort "Setapp archive contains forbidden direct-channel residue (#{reason}) in #{relative}"
       end
+
+      INERT_WEAK_LINK_PAYLOAD_PATTERNS.each do |pattern, reason|
+        next unless output.match?(pattern)
+
+        unless macho_file?(path)
+          abort "Setapp archive contains forbidden direct-channel residue (#{reason}) in #{relative} (non-binary file — configuration, not linker fallout)"
+        end
+        unless sparkle_linkage_weak_only?(path)
+          abort "Setapp archive contains forbidden direct-channel residue (#{reason}) in #{relative} (Sparkle is strongly linked — a stripped framework would crash at launch)"
+        end
+
+        warn "note: inert direct-channel residue tolerated in #{relative} (#{reason}): Sparkle payload absent, load commands weak-only"
+        break # inertness proven once per file; no need to re-check per pattern
+      end
     end
+  end
+
+  # True when every Sparkle load command in the Mach-O is a weak link
+  # (LC_LOAD_WEAK_DYLIB). A binary with no Sparkle load commands also passes.
+  def sparkle_linkage_weak_only?(macho_path)
+    output, _stderr, status = capture3_with_timeout(15, '/usr/bin/otool', '-l', macho_path)
+    return false unless status.success?
+
+    self.class.sparkle_linkage_weak_only_from_otool?(output)
+  end
+
+  # Pure parser, class-level so tests can exercise it without a real binary.
+  def self.sparkle_linkage_weak_only_from_otool?(otool_output)
+    current_cmd = nil
+    otool_output.each_line do |line|
+      if (match = line.match(/^\s*cmd\s+(LC_\w+)/))
+        current_cmd = match[1]
+        next
+      end
+
+      next unless line.match?(/^\s*name\s+.*Sparkle\.framework/i)
+      return false unless current_cmd == 'LC_LOAD_WEAK_DYLIB'
+    end
+
+    true
   end
 
   def setapp_payload_scan_candidate?(path)

@@ -852,6 +852,64 @@ exit(run_tests('Setapp Upload Tests') do
       true
     end
 
+    test('weak-only Sparkle linkage parser accepts weak links and rejects strong links') do
+      require_relative 'setapp_upload' unless defined?(SetappUpload)
+
+      weak_output = <<~OTOOL
+        Load command 12
+                  cmd LC_LOAD_WEAK_DYLIB
+              cmdsize 96
+                 name @rpath/Sparkle.framework/Versions/B/Sparkle (offset 24)
+        Load command 13
+                  cmd LC_LOAD_DYLIB
+              cmdsize 56
+                 name /usr/lib/libobjc.A.dylib (offset 24)
+      OTOOL
+      strong_output = <<~OTOOL
+        Load command 12
+                  cmd LC_LOAD_DYLIB
+              cmdsize 96
+                 name @rpath/Sparkle.framework/Versions/B/Sparkle (offset 24)
+      OTOOL
+      no_sparkle_output = <<~OTOOL
+        Load command 12
+                  cmd LC_LOAD_DYLIB
+              cmdsize 56
+                 name /usr/lib/libobjc.A.dylib (offset 24)
+      OTOOL
+
+      assert(SetappUpload.sparkle_linkage_weak_only_from_otool?(weak_output), 'weak Sparkle link must pass')
+      assert(!SetappUpload.sparkle_linkage_weak_only_from_otool?(strong_output), 'strong Sparkle link must fail')
+      assert(SetappUpload.sparkle_linkage_weak_only_from_otool?(no_sparkle_output), 'no Sparkle link must pass')
+      true
+    end
+
+    test('inert Sparkle strings in non-binary files remain fatal') do
+      Dir.mktmpdir('setapp-upload-test') do |dir|
+        app_root = create_setapp_fixture(dir)
+        # A framework-reference string in a RESOURCE is configuration, not
+        # linker fallout — must stay fatal even under the weak-link tolerance.
+        File.write(File.join(app_root, 'Contents', 'Resources', 'residue.txt'), 'loads Sparkle.framework at runtime')
+        output, status = Open3.capture2e('codesign', '--force', '--sign', '-', app_root)
+        assert(status.success?, output)
+        zip_path = File.join(dir, 'SaneClip-Setapp.zip')
+        zip_app(app_root, zip_path)
+
+        output, status = Open3.capture2e(
+          'ruby',
+          SCRIPT_PATH,
+          '--validate-only',
+          '--zip',
+          zip_path
+        )
+
+        assert(!status.success?, output)
+        assert_includes(output, 'forbidden direct-channel residue')
+        assert_includes(output, 'non-binary file')
+      end
+      true
+    end
+
     test('rejects Setapp archives containing direct-license or checkout strings') do
       Dir.mktmpdir('setapp-upload-test') do |dir|
         app_root = create_setapp_fixture(dir)
