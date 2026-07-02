@@ -34,7 +34,15 @@ module SaneVisualReceipt
     default = DEFAULT_RECEIPTS.map { |path| File.join(cwd, path) }
     visual = Dir.glob(File.join(cwd, 'outputs', 'visual-audit*', '*.json')) +
              Dir.glob(File.join(cwd, 'outputs', 'visual_audit*', '*.json'))
-    (default + visual).uniq
+    # Umbrella sessions run with cwd = ~/SaneApps while the receipt lives in
+    # the app repo that was actually edited (apps/<App>/outputs/...). Without
+    # this the Stop gate can NEVER be satisfied from an umbrella session — the
+    # receipt exists and validates, but the glob never finds it (hit live
+    # 2026-07-02, SaneClip 2.3.12).
+    umbrella = Dir.glob(File.join(cwd, 'apps', '*', 'outputs', 'visual-audit*', '*.json')) +
+               Dir.glob(File.join(cwd, 'apps', '*', 'outputs', 'visual_audit*', '*.json')) +
+               Dir.glob(File.join(cwd, 'apps', '*', 'outputs', 'customer_ui_action_receipt.json'))
+    (default + visual + umbrella).uniq
   end
 
   def expand_path(cwd, path)

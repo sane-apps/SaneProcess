@@ -215,6 +215,40 @@ class HookTests
     end
   end
 
+  # Umbrella sessions (cwd = ~/SaneApps) must discover receipts inside the
+  # edited app repo (apps/<App>/outputs/visual-audit*/). Before the umbrella
+  # glob, the Stop gate was unsatisfiable from an umbrella session even with a
+  # valid receipt on disk (hit live 2026-07-02, SaneClip 2.3.12).
+  def test_visual_receipt_umbrella_discovery
+    require 'tmpdir'
+    require 'time'
+    Dir.mktmpdir('receipt-umbrella-') do |umbrella|
+      audit_dir = File.join(umbrella, 'apps', 'FakeApp', 'outputs', 'visual-audit-fake')
+      FileUtils.mkdir_p(audit_dir)
+      shot = File.join(audit_dir, 'shot.png')
+      File.write(shot, 'png')
+      receipt = {
+        'schema' => 'saneprocess.visual_audit',
+        'type' => 'visual_audit',
+        'status' => 'passed',
+        'host' => 'Mac Mini',
+        'inspected' => true,
+        'generated_at' => Time.now.iso8601,
+        'screenshots' => [shot]
+      }
+      File.write(File.join(audit_dir, 'receipt.json'), JSON.generate(receipt), encoding: Encoding::UTF_8)
+
+      script = 'require File.join(ENV["HOOKS_DIR"], "core/visual_receipt"); ' \
+               'paths = SaneVisualReceipt.valid_receipt_paths(cwd: ENV["RECEIPT_CWD"], candidate_paths: [], started_at: Time.at(0)); ' \
+               'exit(paths.length == 1 ? 0 : 1)'
+      _out, _err, status = Open3.capture3(
+        { 'HOOKS_DIR' => __dir__, 'RECEIPT_CWD' => umbrella, 'LANG' => 'C', 'LC_ALL' => 'C' },
+        'ruby', '-E', 'US-ASCII', '-e', script
+      )
+      status.success?
+    end
+  end
+
   # Session learnings routinely contain em dashes and arrows. Without the
   # encoding pin in session_briefing.rb, every line fails JSON.parse under a
   # US-ASCII default and the rescue silently returns zero learnings.
