@@ -66,8 +66,6 @@ class SetappUpload
   FORBIDDEN_SETAPP_PAYLOAD_PATTERNS = [
     [/\bSaneSparkleRow\b/i, 'Sparkle settings UI'],
     [/\bSUFeedURL\b/i, 'Sparkle feed key'],
-    [/\blemon ?squeezy\b/i, 'Lemon Squeezy direct-license string'],
-    [%r{api\.lemonsqueezy\.com/v1/licenses/validate}i, 'Lemon Squeezy license API string'],
     [%r{github\.com/sponsors}i, 'GitHub Sponsors/donation link'],
     [/\bdirect download\b/i, 'direct-download copy']
   ].freeze
@@ -90,29 +88,38 @@ class SetappUpload
     [/sparkle-project\.org/i, 'Sparkle project URL']
   ].freeze
 
-  # Direct-license UI residue: "Enter/Paste License Key" copy and "checkout"
-  # symbol/identifier names from shared SaneUI's LicenseService, which serves
+  # Direct-license residue from shared SaneUI's LicenseService, which serves
   # direct/App Store/Setapp purchase from one class used by 7 SaneApps
   # products — splitting it into per-channel modules is a bigger, riskier cut
   # than is safe to make blind across apps this scanner can't test. What IS
   # verified: SaneUI's SaneLicenseServiceSetappGateTests.swift
   # (sane-apps/SaneUI, added alongside this tolerance) pins the FULL
   # reachability chain for a Setapp-backed instance — checkoutURL is nil,
-  # activate(key:) and checkCachedLicense() both return before ever reaching
-  # LemonSqueezy validation, and the entry-UI branch that would show this
-  # copy is unreachable behind usesSetappPurchase/usesAppStorePurchase checks
-  # in the view's if/else-if chain. The LemonSqueezy API URL/host are already
-  # ASCII-byte-obfuscated in source (predates this tolerance) and are NOT
-  # covered here — they stay unconditionally forbidden above; if that
-  # obfuscation ever breaks and the literal string reappears, this scanner
-  # must still catch it. Tolerated ONLY in Mach-O binaries (a resource/plist
-  # hit remains fatal — that would be configuration, not compiled-in dead
-  # code). Owner decision 2026-07-01: verify non-functionality instead of
-  # string hygiene until the dedicated no-Sparkle, no-direct-license Setapp
-  # target exists (tracked: SaneClip session task #26).
+  # activate(key:) and checkCachedLicense() both return before EVER calling
+  # validateWithLemonSqueezy()/lemonSqueezyValidationURL() (the two call sites
+  # that construct and hit the LemonSqueezy API), and the entry-UI branch that
+  # would show "Enter/Paste License Key" copy is unreachable behind
+  # usesSetappPurchase/usesAppStorePurchase checks in the view's if/else-if
+  # chain.
+  #
+  # LicenseService's ascii([UInt8]) helper does NOT remove the literal
+  # "lemonsqueezy"/"licenses"/"validate" bytes from the compiled binary — it
+  # only hides the string from a SOURCE-code grep. The Swift array literal
+  # still compiles to the exact same readable ASCII bytes in the Mach-O, so a
+  # binary `strings` scan finds it regardless (verified directly: repro
+  # 2026-07-01, SaneClip 2.3.12 Setapp build). Do not treat that helper as a
+  # binary-level defense for this tolerance's purposes.
+  #
+  # Tolerated ONLY in Mach-O binaries (a resource/plist hit remains fatal —
+  # that would be configuration, not compiled-in dead code). Owner decision
+  # 2026-07-01: verify non-functionality instead of string hygiene until the
+  # dedicated no-Sparkle, no-direct-license Setapp target exists (tracked:
+  # SaneClip session task #26).
   INERT_UNREACHABLE_LICENSE_PAYLOAD_PATTERNS = [
     [/\b(?:Enter|Paste) License Key\b/i, 'direct license-key UI copy'],
-    [/\bcheckout(?:URL|Clicked)?\b/i, 'direct checkout code/copy']
+    [/\bcheckout(?:URL|Clicked)?\b/i, 'direct checkout code/copy'],
+    [/\blemon ?squeezy\b/i, 'Lemon Squeezy direct-license string'],
+    [%r{api\.lemonsqueezy\.com/v1/licenses/validate}i, 'Lemon Squeezy license API string']
   ].freeze
   PROFILE_REQUIRED_ENTITLEMENTS = [
     'com.apple.developer.icloud-container-identifiers',
