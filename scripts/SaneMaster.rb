@@ -269,7 +269,7 @@ class SaneMaster
     session: {
       desc: 'Session state, approvals, and loop controls',
       commands: {
-        'github_post_approval' => { args: '--body|--body-file <TEXT|PATH> --user-approval "QUOTE"', desc: 'Record exact-text approval before public GitHub posting' },
+        'github_post_approval' => { args: '--body|--body-file <TEXT|PATH>|--admin --user-approval "QUOTE"', desc: 'Record exact-text approval before public GitHub posting (--admin for no-body settings API calls)' },
         'email_force_approval' => { args: '--action ACTION --id ID --reason TEXT --user-approval "QUOTE"', desc: 'Record scoped approval for check-inbox --force' },
         'session_end' => { args: '[--skip-prompts]', desc: 'End session with insight extraction' },
         'reset_breaker' => { args: '', desc: 'Reset circuit breaker (unblock tools)' },
@@ -2131,6 +2131,7 @@ PY
   def github_post_approval(args)
     quote = nil
     body = nil
+    admin = false
     i = 0
     while i < args.length
       case args[i]
@@ -2146,6 +2147,10 @@ PY
 
         body = File.read(file, encoding: Encoding::UTF_8)
         i += 1
+      when '--admin', '--no-body'
+        # Admin API calls (repo settings, branch protection) post no public
+        # text; the user-approved token alone is the consent record.
+        admin = true
       else
         quote ||= args[i]
       end
@@ -2155,17 +2160,20 @@ PY
     quote = quote.to_s.strip
     abort '❌ Missing explicit user approval quote. Use --user-approval "post it".' if quote.empty?
     body = body.to_s.strip
-    abort '❌ Missing exact public post body. Use --body "final text" or --body-file <path>.' if body.empty?
+    if body.empty? && !admin
+      abort '❌ Missing exact public post body. Use --body "final text" or --body-file <path>, or --admin for settings-only API calls with no post body.'
+    end
 
     path = '/tmp/.gh_post_approved.json'
     payload = {
       'created_at' => Time.now.to_i,
       'user_approval' => quote,
-      'body_hash' => Digest::SHA256.hexdigest(body)
+      'body_hash' => body.empty? ? '' : Digest::SHA256.hexdigest(body),
+      'admin' => admin
     }
     File.write(path, JSON.pretty_generate(payload))
     File.chmod(0o600, path)
-    puts '✅ GitHub public-post approval recorded for 5 minutes.'
+    puts admin ? '✅ GitHub admin-call approval recorded for 5 minutes.' : '✅ GitHub public-post approval recorded for 5 minutes.'
   end
 
   def email_force_approval(args)

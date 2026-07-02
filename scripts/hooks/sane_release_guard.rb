@@ -149,10 +149,12 @@ def consume_github_approval(public_text, metadata_only: false)
                      !payload['user_approval'].to_s.strip.empty?
   return :stale unless approval_present
 
-  # Metadata-only edits (labels/assignees/milestone) post NO public text, so there is
-  # nothing to hash-match — a fresh, user-approved token is sufficient consent. Without
-  # this, label-only `gh issue edit` was un-approvable (empty text => permanent mismatch).
-  return :valid if metadata_only && public_text.to_s.strip.empty?
+  # Metadata-only edits (labels/assignees/milestone) and admin API calls (repo
+  # settings, branch protection) post NO public text, so there is nothing to
+  # hash-match — a fresh, user-approved token is sufficient consent. Admin
+  # tokens must be recorded explicitly via `github_post_approval --admin`.
+  # Without this, such calls were un-approvable (empty text => permanent mismatch).
+  return :valid if public_text.to_s.strip.empty? && (metadata_only || payload['admin'] == true)
 
   expected = payload['body_hash'].to_s
   actual = Digest::SHA256.hexdigest(public_text.to_s.strip)
@@ -390,6 +392,9 @@ if gh_public_command?(command)
   warn ''
   warn '   ✅ Show the draft text to the user, get explicit approval, then post.'
   warn '   Then run: ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb github_post_approval --body-file <draft_file> --user-approval "<quote>"'
+  warn '   For admin API calls with no post body (repo settings, branch protection):'
+  warn '   describe the action to the user, get approval, then run:'
+  warn '   ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb github_post_approval --admin --user-approval "<quote>"'
   exit 2
 end
 
