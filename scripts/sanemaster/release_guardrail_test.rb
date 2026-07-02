@@ -402,7 +402,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
           }
           assert(subject.send(:customer_ui_receipt_source_fingerprint_current?, receipt, current_fingerprint))
           File.write(test_path, 'final class CustomerUIActionContractXCTests { let changed = true }')
-          assert(!subject.send(:customer_ui_receipt_source_fingerprint_current?, receipt, current_fingerprint))
+          assert(subject.send(:customer_ui_receipt_source_fingerprint_current?, receipt, current_fingerprint))
           File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView { let changed = true }')
           assert(!subject.send(:customer_ui_receipt_source_fingerprint_current?, receipt, current_fingerprint))
         end
@@ -427,13 +427,14 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
             'generated_at' => (Time.now - 60).utc.iso8601
           }
           File.write(test_path, 'final class CustomerUIActionContractXCTests { let changed = true }')
+          File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView { let changed = true }')
           assert(!subject.send(:customer_ui_receipt_source_fingerprint_current?, bogus_receipt, current_fingerprint))
         end
       end
       true
     end
 
-    test('customer UI runtime fingerprint ignores script tests but tracks release QA orchestration files') do
+    test('customer UI runtime fingerprint ignores script and QA harness files') do
       Dir.mktmpdir('customer-ui-script-test-fingerprint-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'Scripts'))
         FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
@@ -457,8 +458,45 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         end
 
         assert_eq(before, after_test_change)
-        assert(before != after_qa_change, 'expected release QA orchestration change to update customer UI fingerprint')
-        assert(before != after_customer_ui_script_change, 'expected customer UI runtime script source change to update customer UI fingerprint')
+        assert_eq(before, after_qa_change, 'release QA orchestration changes should not stale customer UI visual proof')
+        assert_eq(before, after_customer_ui_script_change, 'customer UI runner changes should not stale customer UI visual proof')
+      end
+      true
+    end
+
+    test('customer UI runtime fingerprint ignores project metadata and version churn') do
+      Dir.mktmpdir('customer-ui-project-metadata-fingerprint-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample.xcodeproj'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(File.join(dir, 'Tests', 'CustomerUIActions.yml'), "version: 1\napp: SaneExample\nactions: []\n")
+        File.write(
+          File.join(dir, 'project.yml'),
+          "packages:\n  SaneUI:\n    revision: old\nsettings:\n  MARKETING_VERSION: \"1.0.0\"\n  CURRENT_PROJECT_VERSION: \"100\"\n"
+        )
+        File.write(
+          File.join(dir, 'SaneExample.xcodeproj', 'project.pbxproj'),
+          "MARKETING_VERSION = 1.0.0;\nCURRENT_PROJECT_VERSION = 100;\nproductRefGroup = ABC;\n"
+        )
+
+        before = nil
+        after = nil
+        Dir.chdir(dir) do
+          before = subject.send(:customer_ui_source_fingerprint)
+          File.write(
+            File.join(dir, 'project.yml'),
+            "packages:\n  SaneUI:\n    revision: new\nsettings:\n  MARKETING_VERSION: \"1.0.1\"\n  CURRENT_PROJECT_VERSION: \"101\"\n"
+          )
+          File.write(
+            File.join(dir, 'SaneExample.xcodeproj', 'project.pbxproj'),
+            "compatibilityVersion = \"Xcode 14.0\";\nMARKETING_VERSION = 1.0.1;\nCURRENT_PROJECT_VERSION = 101;\n"
+          )
+          after = subject.send(:customer_ui_source_fingerprint)
+        end
+
+        assert_eq(before, after, 'project metadata/version changes should not stale customer UI visual proof')
       end
       true
     end
@@ -487,7 +525,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
-    test('customer UI runtime fingerprint ignores release-only files but tracks customer UI contract') do
+    test('customer UI runtime fingerprint ignores release and contract harness files') do
       Dir.mktmpdir('customer-ui-release-source-fingerprint-') do |root|
         app = File.join(root, 'apps', 'SaneExample')
         process_root = File.join(root, 'infra', 'SaneProcess')
@@ -516,7 +554,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         end
 
         assert_eq(before, after_release_change)
-        assert(before != after_contract_change, 'expected customer UI contract change to update customer UI fingerprint')
+        assert_eq(before, after_contract_change, 'customer UI contract changes should not stale existing app visual proof')
       end
       true
     end
@@ -594,13 +632,20 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
           legacy = subject.send(:customer_ui_source_fingerprint, include_release_harness: true)
           assert(current != legacy, 'release-harness-inclusive fingerprint should include release harness files')
 
-          receipt = { 'source_fingerprint' => legacy }
+          generated_at = Time.now - 60
+          old_time = generated_at - 60
+          [
+            File.join(app, '.saneprocess'),
+            File.join(app, 'SaneExample', 'ContentView.swift'),
+            File.join(app, 'Scripts', 'qa.rb')
+          ].each { |path| File.utime(old_time, old_time, path) }
+          receipt = { 'source_fingerprint' => legacy, 'generated_at' => generated_at.utc.iso8601 }
           assert(subject.send(:customer_ui_receipt_source_fingerprint_current?, receipt, current))
 
           File.write(File.join(process_root, 'scripts', 'sanemaster', 'release.rb'), 'release ruby changed')
           changed_legacy = subject.send(:customer_ui_source_fingerprint, include_release_harness: true)
           assert(changed_legacy != legacy, 'release harness changes should move the harness-inclusive fingerprint')
-          assert(!subject.send(:customer_ui_receipt_source_fingerprint_current?, receipt, current))
+          assert(subject.send(:customer_ui_receipt_source_fingerprint_current?, receipt, current), 'release harness changes alone should not stale app visual proof')
 
           File.write(File.join(app, 'SaneExample', 'ContentView.swift'), 'struct ContentView { let changed = true }')
           changed_current = subject.send(:customer_ui_source_fingerprint)
@@ -2559,8 +2604,19 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         assert(subject.send(:customer_ui_receipt_host_allowed?, 'mini'))
         assert(subject.send(:customer_ui_receipt_host_allowed?, 'stephans-mac-mini.local'))
         assert(subject.send(:customer_ui_receipt_host_allowed?, 'Stephans-Mac-Mini'))
+        assert(!subject.send(:customer_ui_receipt_host_allowed?, 'stephansmac'))
         assert(!subject.send(:customer_ui_receipt_host_allowed?, 'macbook-air'))
       end
+      true
+    end
+
+    test('customer UI Mini host detection is based on host identity, not username') do
+      source = File.read(File.expand_path('customer_ui_contract.rb', __dir__), encoding: Encoding::UTF_8)
+
+      assert_includes(source, "Socket.gethostname.to_s.downcase")
+      assert_includes(source, "'/usr/sbin/scutil', '--get', 'ComputerName'")
+      assert(!source.include?("ENV.fetch('USER', '').downcase == 'stephansmac'"),
+             'customer UI proof must not accept the Air just because it uses the same account name')
       true
     end
 
@@ -4630,6 +4686,9 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
     test('release preflight reuses fresh customer UI runtime proof only for same candidate') do
       Dir.mktmpdir('release-runtime-proof-reuse-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneBar'))
+        visual_source = File.join(dir, 'SaneBar', 'ContentView.swift')
+        File.write(visual_source, 'struct ContentView {}')
         File.write(
           File.join(dir, 'project.yml'),
           "settings:\n  MARKETING_VERSION: \"2.1.74\"\n  CURRENT_PROJECT_VERSION: \"2174\"\n"
@@ -4678,7 +4737,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         receipt = {
           'app' => 'SaneBar',
           'status' => 'passed',
-          'generated_at' => Time.now.utc.iso8601,
+          'generated_at' => (Time.now.utc - 60).iso8601,
           'evidence' => {
             'app_version' => '2.1.74',
             'app_build' => '2174'
@@ -4693,6 +4752,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
           assert(subject.send(:release_customer_ui_runtime_smoke_reusable?, report, app_name: 'SaneBar'))
 
           receipt['source_fingerprint'] = '0' * 64
+          File.write(visual_source, 'struct ContentView { let changed = true }')
           File.write(receipt_path, JSON.pretty_generate(receipt))
           assert(!subject.send(:release_customer_ui_runtime_smoke_reusable?, report, app_name: 'SaneBar'))
           receipt['source_fingerprint'] = fingerprint

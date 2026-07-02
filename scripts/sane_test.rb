@@ -27,6 +27,7 @@ require 'fileutils'
 require 'tmpdir'
 require 'shellwords'
 require 'time'
+require 'socket'
 
 APPS = {
   'SaneBar' => {
@@ -78,6 +79,7 @@ MINI_HOST = 'mini'
 MINI_APPS_DIR = '/Applications'
 MINI_LEGACY_USER_APPS_DIR = '~/Applications'
 TRANSIENT_STAGE_ROOT = '/tmp/saneapps-staging.noindex'
+SIGNED_RELEASE_RUNTIME_APPS = %w[SaneClip].freeze
 
 class SaneTest
   def initialize(app_name, args)
@@ -93,7 +95,7 @@ class SaneTest
     @fresh = args.include?('--fresh')
     @allow_keychain = args.include?('--allow-keychain')
     @allow_unsigned_debug = args.include?('--allow-unsigned-debug')
-    @release_build = args.include?('--release')
+    @release_build = args.include?('--release') || signed_release_runtime_required?
     @hardware = args.include?('--hardware')
     @target = nil
     @last_build_config = nil
@@ -123,6 +125,11 @@ class SaneTest
   def determine_target
     return :local if @force_local
 
+    if running_on_mini_host?
+      puts '✅ Already running on Mac mini → using local canonical path'
+      return :local
+    end
+
     if mini_reachable?
       puts '✅ Mac mini is reachable → deploying there'
       :mini
@@ -135,6 +142,16 @@ class SaneTest
   def mini_reachable?
     system('ssh', '-o', 'ConnectTimeout=2', '-o', 'BatchMode=yes', MINI_HOST, 'true',
            out: File::NULL, err: File::NULL)
+  end
+
+  def running_on_mini_host?
+    host = Socket.gethostname.to_s.downcase
+    return true if host.include?('mini')
+
+    computer_name, status = Open3.capture2('/usr/sbin/scutil', '--get', 'ComputerName')
+    status.success? && computer_name.to_s.downcase.include?('mac mini')
+  rescue StandardError
+    false
   end
 
   def bundle_ids
@@ -174,8 +191,15 @@ class SaneTest
   end
 
   def kill_remote
+    # Quit cleanly first: a bare SIGKILL on an activated GUI/agent app leaves a
+    # ghost Dock tile that accumulates across test runs. Graceful quit lets
+    # macOS remove the tile; SIGKILL is the fallback and killall Dock sweeps any
+    # tile a force-killed app left behind.
+    ssh(%(osascript -e 'quit app "#{@app_name}"' 2>/dev/null; true))
+    sleep 1
     ssh("killall -9 #{@app_name} 2>/dev/null; true")
     sleep 1
+    ssh('killall Dock 2>/dev/null; true')
     result = ssh_capture("pgrep -x #{@app_name} 2>/dev/null").strip
     abort "   ❌ Failed to kill #{@app_name} (PID: #{result})" unless result.empty?
   end
@@ -481,12 +505,24 @@ class SaneTest
       warn '   (menu-bar moves can silently fail; grant Accessibility manually or import the cert).'
       return
     end
-    if system('codesign', '--force', '--deep', '--options', 'runtime',
-              '--sign', identity, app_path, out: File::NULL, err: File::NULL)
+    sign_out = `codesign --force --deep --options runtime --sign "#{identity}" "#{app_path}" 2>&1`
+    if $?.success?
       warn "   Re-signed with #{identity}"
       warn '   (preserves the existing Accessibility/TCC grant for this build)'
+    elsif sign_out.include?('errSecInternalComponent')
+      # Deterministic, not guesswork: this specific failure means codesign can't
+      # reach the signing key from a plain ssh shell. Run the build in the Mini's
+      # GUI session, which has keychain access.
+      warn '   ⚠️  Re-sign failed: errSecInternalComponent — codesign cannot reach the'
+      warn '       signing key over plain ssh. Run the build/sign in the Mini GUI session:'
+      warn "         ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-gui-run.sh \\"
+      warn '           --title "build" --log-file /tmp/build.log -- \\'
+      warn "           \"cd #{@app_dir} && ruby #{__FILE__} #{@app_name} --release --local\"'"
+      warn '       (one-time alternative: set the login-keychain codesign partition list; see mini/README.md).'
     else
       warn '   ⚠️  Re-sign failed — TCC grant may not hold; menu-bar moves can fail'
+      first = sign_out.lines.map(&:strip).reject(&:empty?).first
+      warn "   codesign: #{first}" if first
     end
   end
 
@@ -506,8 +542,13 @@ class SaneTest
   end
 
   def kill_local
+    # Graceful quit before SIGKILL so macOS clears the Dock tile (a hard kill on
+    # an activated app leaves a ghost tile); killall Dock is the backstop.
+    system('osascript', '-e', %(quit app "#{@app_name}"), err: File::NULL, out: File::NULL)
+    sleep 1
     system('killall', '-9', @app_name, err: File::NULL)
     sleep 1
+    system('killall', 'Dock', err: File::NULL, out: File::NULL)
     abort "   ❌ Failed to kill #{@app_name}" if system('pgrep', '-x', @app_name, out: File::NULL)
   end
 
@@ -664,11 +705,18 @@ class SaneTest
     reconcile_accessibility_trust_local(app_path)
     ensure_gatekeeper_safe_launch!(app_path)
 
-    open_args = launch_env_pairs
-    if @allow_keychain
-      system('open', *open_args, app_path)
+    if launch_services_gatekeeper_rejected?(app_path)
+      warn "   LaunchServices would show Gatekeeper for #{app_path}; launching executable directly."
+      executable = File.join(app_path, 'Contents', 'MacOS', @app_name)
+      pid = spawn(launch_env_hash, executable, *direct_launch_args, out: File::NULL, err: File::NULL)
+      Process.detach(pid)
     else
-      system('open', *open_args, app_path, '--args', '--sane-no-keychain')
+      open_args = launch_env_pairs
+      if @allow_keychain
+        system('open', *open_args, app_path)
+      else
+        system('open', *open_args, app_path, '--args', '--sane-no-keychain')
+      end
     end
     sleep 2
     processes = local_app_processes(app_path)
@@ -696,6 +744,18 @@ class SaneTest
   def ad_hoc_signed?(app_path)
     output = `codesign -dv --verbose=4 "#{app_path}" 2>&1`
     output.include?('Signature=adhoc')
+  end
+
+  def launch_services_gatekeeper_rejected?(app_path)
+    return false unless quarantined?(app_path)
+
+    _stdout, _stderr, status = Open3.capture3('spctl', '-a', '-vv', app_path)
+    !status.success?
+  end
+
+  def quarantined?(app_path)
+    _stdout, _stderr, status = Open3.capture3('xattr', '-p', 'com.apple.quarantine', app_path)
+    status.success?
   end
 
   def clear_gatekeeper_staging_attributes(app_path)
@@ -855,17 +915,18 @@ class SaneTest
   EARLY_ADOPTER_KEY = 'early-adopter'.freeze
 
   def set_license_mode_local
-    bid = @config[:dev]
+    bid = local_runtime_bundle_id
     if @free_mode
       warn '   Clearing fallback license data (free mode)...'
-      clear_license_fallback_local(bid)
+      ([bid] + bundle_ids).compact.uniq.each { |bundle_id| clear_license_fallback_local(bundle_id) }
       # Clear cached validation and grandfathered flag from settings
       clear_license_settings_local
       warn '   License cleared — app will launch as Free user'
     elsif @pro_mode
       warn '   Writing fallback license data (pro mode)...'
+      ([bid] + bundle_ids).compact.uniq.each { |bundle_id| clear_license_fallback_local(bundle_id) }
       set_pro_fallback_local(bid)
-      warn '   Pro fallback key written (no keychain access required)'
+      warn "   Pro fallback key written for #{bid} (no keychain access required)"
     end
   end
 
@@ -897,6 +958,13 @@ class SaneTest
 
   def fallback_domain(bundle_id)
     bundle_id
+  end
+
+  def local_runtime_bundle_id
+    bundle_id = bundle_id_for_app(canonical_local_app_path)
+    return bundle_id if bundle_id && bundle_id.match?(/\A[a-zA-Z0-9.\-]+\z/)
+
+    @config[:prod]
   end
 
   def legacy_fallback_domain(bundle_id)
@@ -994,6 +1062,7 @@ class SaneTest
     permissionless_automation = @hardware ? '0' : '1'
     hardware_tests = @hardware ? '1' : '0'
     env_args = [
+      '--env', 'SANEAPPS_SKIP_MOVE_TO_APPLICATIONS=1',
       '--env', "SANEAPPS_PERMISSIONLESS_AUTOMATION=#{permissionless_automation}",
       '--env', "SANEVIDEO_ENABLE_HARDWARE_TESTS=#{hardware_tests}"
     ]
@@ -1002,6 +1071,15 @@ class SaneTest
       env_args += ['--env', 'SANEAPPS_FORCE_FREE_MODE=1'] unless @app_name == 'SaneBar'
     end
     env_args
+  end
+
+  def launch_env_hash
+    launch_env_pairs.each_slice(2).each_with_object({}) do |(flag, assignment), env|
+      next unless flag == '--env' && assignment
+
+      key, value = assignment.split('=', 2)
+      env[key] = value.to_s if key && !key.empty?
+    end
   end
 
   def clear_license_settings_local
@@ -1050,7 +1128,12 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
       end
 
       # Check if signing certificates are available; fall back to ad-hoc if not
-      has_signing_cert = !`security find-identity -v -p codesigning 2>/dev/null`.strip.start_with?('0 valid')
+      identities = `security find-identity -v -p codesigning 2>/dev/null`
+      has_signing_cert = !identities.strip.start_with?('0 valid')
+      has_developer_id = identities.include?('"Developer ID Application:')
+      if signed_release_runtime_required? && !has_developer_id
+        abort "   ❌ #{@app_name} runtime testing requires Developer ID signing; refusing unsigned/dev launch."
+      end
 
       # SaneBar has a known macOS WindowServer failure mode when launched from
       # local unsigned Debug builds. Enforce signed ProdDebug for local runs.
@@ -1065,10 +1148,10 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
       # ProdDebug has proper signing + entitlements.
       # Fall back to Debug if ProdDebug config doesn't exist (e.g., xcodeproj-based projects).
       # --release: Build with Release config for production testing (e.g., license gate).
+      has_prod_debug = SaneTest.normalize_command_output(`xcodebuild -list 2>/dev/null`).include?('ProdDebug')
       if @release_build
         config_name = 'Release'
       else
-        has_prod_debug = SaneTest.normalize_command_output(`xcodebuild -list 2>/dev/null`).include?('ProdDebug')
         config_name = (has_signing_cert && has_prod_debug) ? 'ProdDebug' : 'Debug'
       end
       @last_build_config = config_name
@@ -1084,7 +1167,7 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
       if has_signing_cert
         # Keep dev bundle ID even with ProdDebug config for non-SaneBar apps.
         # SaneBar local stability depends on signed ProdDebug with default bundle.
-        if @app_name != 'SaneBar'
+        if dev_bundle_override_for_build?(config_name)
           dev_bundle_id = @config[:dev]
           if dev_bundle_id
             build_args << "PRODUCT_BUNDLE_IDENTIFIER=#{dev_bundle_id}"
@@ -1093,7 +1176,7 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
         # For apps without ProdDebug, keep Debug launches ad-hoc signed.
         # Forcing Apple Development signing here can fail on package bundles
         # during unattended Mini builds (errSecInternalComponent).
-        unless has_prod_debug
+        if unsigned_debug_overrides_for_build?(config_name, has_prod_debug)
           build_args += [
             'CODE_SIGN_IDENTITY=-',
             'CODE_SIGNING_REQUIRED=NO',
@@ -1161,6 +1244,24 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
       return result if result
     end
     nil
+  end
+
+  def signed_release_runtime_required?
+    SIGNED_RELEASE_RUNTIME_APPS.include?(@app_name)
+  end
+
+  def dev_bundle_override_for_build?(config_name)
+    @app_name != 'SaneBar' && config_name != 'Release'
+  end
+
+  def unsigned_debug_overrides_for_build?(config_name, has_prod_debug)
+    config_name != 'Release' && !has_prod_debug
+  end
+
+  def direct_launch_args
+    args = ['--sane-skip-app-move']
+    args << '--sane-no-keychain' unless @allow_keychain
+    args
   end
 
   def artifact_mtime(app_bundle_path)
@@ -1254,30 +1355,33 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
   end
 end
 
-# ── Main ──────────────────────────────────────────────────────
+if __FILE__ == $PROGRAM_NAME
+  # ── Main ──────────────────────────────────────────────────────
 
-if ARGV.empty? || ARGV[0] == '--help'
-  warn 'Usage: ruby scripts/sane_test.rb <AppName> [options]'
-  warn ''
-  warn "Available apps: #{APPS.keys.join(', ')}"
-  warn ''
-  warn 'Options:'
-  warn '  --local      Force local testing (skip mini even if reachable)'
-  warn '  --no-logs    Skip log streaming after launch'
-  warn '  --fresh      Wipe ALL state (App Support, UserDefaults, TCC, license) — true first launch'
-  warn '  --free-mode  Clear fallback license data — launch as Free user'
-  warn '  --pro-mode   Write fallback Pro marker — launch in Pro mode'
-  warn '  --reset-tcc  Reset TCC/Accessibility permissions (only for fresh installs)'
-  warn '  --repair-accessibility  Repair duplicate/stale Accessibility entries if inspection finds them'
-  warn '  --allow-keychain  Allow real keychain access during app launch (default is no-keychain)'
-  warn '  --allow-unsigned-debug  Allow local SaneBar Debug launch without signing certs (unsupported visibility path)'
-  warn '  --release    Build Release config and stage it to the canonical app path'
-  warn '  --hardware   Allow real hardware/permission prompts for SaneVideo camera verification'
-  warn ''
-  warn 'Default: deploys to Mac mini if reachable, local otherwise.'
-  warn 'TCC is preserved by default — single-copy enforcement prevents stale grants.'
-  warn 'Use --fresh to test onboarding or first-launch experience.'
-  exit 0
+  if ARGV.empty? || ARGV[0] == '--help'
+    warn 'Usage: ruby scripts/sane_test.rb <AppName> [options]'
+    warn ''
+    warn "Available apps: #{APPS.keys.join(', ')}"
+    warn ''
+    warn 'Options:'
+    warn '  --local      Force local testing (skip mini even if reachable)'
+    warn '  --no-logs    Skip log streaming after launch'
+    warn '  --fresh      Wipe ALL state (App Support, UserDefaults, TCC, license) — true first launch'
+    warn '  --free-mode  Clear fallback license data — launch as Free user'
+    warn '  --pro-mode   Write fallback Pro marker — launch in Pro mode'
+    warn '  --reset-tcc  Reset TCC/Accessibility permissions (only for fresh installs)'
+    warn '  --repair-accessibility  Repair duplicate/stale Accessibility entries if inspection finds them'
+    warn '  --allow-keychain  Allow real keychain access during app launch (default is no-keychain)'
+    warn '  --allow-unsigned-debug  Allow local SaneBar Debug launch without signing certs (unsupported visibility path)'
+    warn '  --release    Build Release config and stage it to the canonical app path'
+    warn '  --hardware   Allow real hardware/permission prompts for SaneVideo camera verification'
+    warn ''
+    warn 'Default: deploys to Mac mini if reachable, local otherwise.'
+    warn 'SaneClip always uses signed Release runtime to preserve TCC.'
+    warn 'TCC is preserved by default — single-copy enforcement prevents stale grants.'
+    warn 'Use --fresh to test onboarding or first-launch experience.'
+    exit 0
+  end
+
+  SaneTest.new(ARGV[0], ARGV[1..] || []).run
 end
-
-SaneTest.new(ARGV[0], ARGV[1..] || []).run

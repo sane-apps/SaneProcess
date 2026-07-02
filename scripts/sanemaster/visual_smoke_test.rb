@@ -453,6 +453,10 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
     test('prompt scan treats app-owned Move to Applications dialogs as visual blockers') do
       source = File.read(File.expand_path('visual_smoke.rb', __dir__), encoding: Encoding::UTF_8)
 
+      assert_includes(source, "hasn't restarted")
+      assert_includes(source, 'hasn’t restarted')
+      assert_includes(source, 'failed to quit')
+      assert_includes(source, 'has an unresolved macOS restart/shutdown prompt')
       assert_includes(source, 'Move to Applications')
       assert_includes(source, 'Could Not Move')
       assert_includes(source, 'works best from your Applications folder')
@@ -507,6 +511,29 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
   end
 
   test_category('macOS automation safety') do
+    test('terminal-host command failure falls back to direct execution') do
+      subject.define_singleton_method(:visual_smoke_terminal_host_available) { true }
+      subject.define_singleton_method(:run_visual_smoke_command_via_terminal) do |_command, timeout:|
+        { success: false, timed_out: true, runner: 'terminal-host', timeout: timeout }
+      end
+      subject.define_singleton_method(:run_visual_smoke_command_direct) do |_command, timeout:|
+        { success: true, exit_status: 0, timed_out: false, runner: 'direct', timeout: timeout }
+      end
+
+      result = subject.run_visual_smoke_command({ argv: %w[peekaboo permissions status] }, timeout: 7, terminal_host: true)
+
+      assert_eq(result[:success], true)
+      assert_eq(result[:runner], 'direct-fallback')
+      assert_eq(result[:fallback_from][:runner], 'terminal-host')
+      true
+    ensure
+      %i[
+        visual_smoke_terminal_host_available
+        run_visual_smoke_command_via_terminal
+        run_visual_smoke_command_direct
+      ].each { |method| subject.singleton_class.remove_method(method) rescue nil }
+    end
+
     test('osascript helper times out instead of hanging visual gates') do
       started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       _stdout, status = subject.send(:visual_smoke_capture_osascript, 'delay 10', timeout: 1)
@@ -526,6 +553,16 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
       assert(mini_first_block, 'expected MINI_FIRST_COMMANDS block')
       assert_includes(mini_first_block, 'visual_smoke')
       assert_includes(mini_first_block, 'visual-smoke')
+      true
+    end
+
+    test('visual smoke Mini host detection does not use the shared username') do
+      source = File.read(File.expand_path('visual_smoke.rb', __dir__), encoding: Encoding::UTF_8)
+
+      assert_includes(source, "Socket.gethostname.to_s.downcase")
+      assert_includes(source, "'/usr/sbin/scutil', '--get', 'ComputerName'")
+      assert(!source.include?("ENV.fetch('USER', '').downcase == 'stephansmac'"),
+             'visual smoke must route by host identity, not account name')
       true
     end
 

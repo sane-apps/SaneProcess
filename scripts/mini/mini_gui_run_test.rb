@@ -64,6 +64,14 @@ exit(run_tests('Mini GUI Runner Tests') do
       true
     end
 
+    test('runner time-bounds post-command window cleanup') do
+      assert_includes(runner_source, 'MINI_GUI_RUN_CLEANUP_TIMEOUT_SECONDS:-5')
+      assert_includes(runner_source, 'run_with_timeout()')
+      assert_includes(runner_source, 'run_with_timeout "$cleanup_timeout_seconds" "$RECLAIM_SCRIPT_PATH" --all --title "$title"')
+      assert_includes(runner_source, 'run_with_timeout "$cleanup_timeout_seconds" close_window_by_id "$window_id"')
+      true
+    end
+
     test('reclaim helper closes prefixed and legacy automation windows') do
       assert_includes(reclaim_source, 'AUTOMATION_PREFIX="${MINI_GUI_RUN_WINDOW_PREFIX:-SaneApps Automation: }"')
       assert_includes(reclaim_source, 'set tabDelimiter to ASCII character 9')
@@ -97,16 +105,39 @@ exit(run_tests('Mini GUI Runner Tests') do
       assert_includes(screenshot_wrapper_source, 'Could not reach the canonical Mini host.')
       assert_includes(screenshot_wrapper_source, 'rsync -az "$LOCAL_SKILL_DIR/" "${resolved_mini_host}:${REMOTE_HELPER_DIR}/"')
       assert_includes(screenshot_wrapper_source, 'ssh "$host" "$runner"')
-      assert_includes(screenshot_wrapper_source, 'run_remote_runner_with_timeout "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" "$resolved_mini_host" "$remote_runner"')
+      assert_includes(screenshot_wrapper_source, 'run_remote_runner_with_timeout "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" "$resolved_mini_host" "$runner_cmd"')
       true
     end
 
     test('capture wrapper time-bounds the remote Mini GUI runner') do
-      assert_includes(screenshot_wrapper_source, 'MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS="${MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS:-60}"')
+      assert_includes(screenshot_wrapper_source, 'MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS="${MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS:-120}"')
       assert_includes(screenshot_wrapper_source, 'run_remote_runner_with_timeout()')
-      assert_includes(screenshot_wrapper_source, 'capture_output="$(run_remote_runner_with_timeout "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" "$resolved_mini_host" "$remote_runner")"')
+      assert_includes(screenshot_wrapper_source, 'capture_output="$(run_remote_runner_with_timeout "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" "$resolved_mini_host" "$runner_cmd")"')
       assert_includes(screenshot_wrapper_source, 'Mini screenshot capture timed out after ${timeout_seconds}s')
       assert_includes(screenshot_wrapper_source, 'return 124')
+      true
+    end
+
+    test('capture wrapper avoids ssh when already running on the Mini') do
+      assert_includes(screenshot_wrapper_source, 'running_on_mini()')
+      assert_includes(screenshot_wrapper_source, 'MINI_SCREENSHOT_FORCE_SSH')
+      assert_includes(screenshot_wrapper_source, 'scutil --get ComputerName')
+      assert(!screenshot_wrapper_source.include?("ENV.fetch('USER'"),
+             'Mini screenshot wrapper must not identify the Mini by shared username')
+      assert_includes(screenshot_wrapper_source, 'use_local_runner=true')
+      assert_includes(screenshot_wrapper_source, 'running_in_ssh_session()')
+      assert_includes(screenshot_wrapper_source, 'if $use_local_runner && ! running_in_ssh_session; then')
+      assert_includes(screenshot_wrapper_source, 'runner_cmd="$cmd"')
+      assert_includes(screenshot_wrapper_source, 'run_local_runner_with_timeout "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" "$runner_cmd"')
+      true
+    end
+
+    test('capture wrapper can recover a screenshot path after GUI cleanup hangs') do
+      assert_includes(screenshot_wrapper_source, 'printed_screenshot_path()')
+      assert_includes(screenshot_wrapper_source, 'recovered_path="$(printf \'%s\\n\' "$capture_output" | printed_screenshot_path)"')
+      assert_includes(screenshot_wrapper_source, 'Recovered screenshot path printed before runner failure')
+      assert(!screenshot_wrapper_source.include?('latest_recent_screenshot_path'),
+             'recovery must not accept unrelated recent temp screenshots')
       true
     end
 
@@ -116,7 +147,7 @@ exit(run_tests('Mini GUI Runner Tests') do
       assert_includes(screenshot_wrapper_source, 'remote_home="$(ssh "$resolved_mini_host"')
       assert_includes(screenshot_wrapper_source, 'REMOTE_MINI_GUI_RUN="$(expand_remote_home_path "$REMOTE_MINI_GUI_RUN" "$remote_home")"')
       assert_includes(screenshot_wrapper_source, 'REMOTE_VISUAL_GUARD="$(expand_remote_home_path "$REMOTE_VISUAL_GUARD" "$remote_home")"')
-      assert_includes(screenshot_wrapper_source, 'remote_runner="$(remote_cmd bash "$REMOTE_MINI_GUI_RUN"')
+      assert_includes(screenshot_wrapper_source, 'runner_cmd="$(remote_cmd bash "$REMOTE_MINI_GUI_RUN"')
       true
     end
 
@@ -138,6 +169,25 @@ exit(run_tests('Mini GUI Runner Tests') do
       assert_includes(screenshot_wrapper_source, 'Unsupported Mini screenshot flag: $1')
       assert_includes(screenshot_wrapper_source, 'Use the canonical desktop path instead: capture-mini-screenshot.sh desktop')
       assert_includes(screenshot_wrapper_source, 'bash ${REMOTE_VISUAL_GUARD} --desktop --cleanup')
+      true
+    end
+
+    test('capture wrapper avoids local Codex-to-Terminal automation prompts') do
+      assert_includes(screenshot_wrapper_source, 'guard_env=""')
+      assert_includes(screenshot_wrapper_source, 'guard_env="MINI_VISUAL_AVOID_TERMINAL_AUTOMATION=1 "')
+      assert_includes(screenshot_wrapper_source, '${guard_env}bash ${REMOTE_VISUAL_GUARD} --desktop --cleanup')
+      assert_includes(screenshot_wrapper_source, '${guard_env}bash ${REMOTE_VISUAL_GUARD} --cleanup --app')
+      assert_includes(visual_guard_source, 'avoid_terminal_automation()')
+      assert_includes(visual_guard_source, 'MINI_VISUAL_AVOID_TERMINAL_AUTOMATION')
+      assert_includes(visual_guard_source, 'avoid_terminal_automation && return 0')
+      true
+    end
+
+    test('visual guard accepts Peekaboo-visible floating panels when System Events reports zero windows') do
+      assert_includes(visual_guard_source, 'target_peekaboo_window_count()')
+      assert_includes(visual_guard_source, 'peekaboo list windows --app "$TARGET_APP" --json')
+      assert_includes(visual_guard_source, 'if ! $DESKTOP_MODE && [ "$target_windows" = "0" ]')
+      assert_includes(visual_guard_source, 'target_windows="$peekaboo_target_windows"')
       true
     end
 

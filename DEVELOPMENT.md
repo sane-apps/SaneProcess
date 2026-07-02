@@ -398,6 +398,18 @@ Release rules:
   bundles for SaneApps proof.
 - Use the app-specific `customer_ui_sweep` when it exists. Use `visual_smoke`
   only when no app-specific sweep exists.
+- For customer-reported UI bugs, the proof must map each customer claim to one
+  or more screenshots that reproduce the same state or demonstrate the fixed
+  state. Generic "app is open" screenshots, permission dialogs, or unrelated
+  desktop captures are not proof.
+- `saneprocess.visual_audit` receipts must include `claims` entries with
+  screenshot paths for every verified claim. The hook layer rejects visual-audit
+  receipts that only list screenshots without claim mapping.
+- Customer UI proof freshness is scoped to visual-impact sources. Reuse a valid
+  receipt when only tests, release harnesses, screenshot wrappers, docs,
+  appcast/site metadata, or version/project metadata changed after the proof.
+  Rerun proof when app UI/runtime source, assets, localization, the action
+  manifest, or shared SaneUI source changed after the receipt.
 - Obstructed, clipped, partial, or helper-window-contaminated screenshots are
   invalid.
 - Hidden macOS prompts can invalidate app-window-only screenshots; check full

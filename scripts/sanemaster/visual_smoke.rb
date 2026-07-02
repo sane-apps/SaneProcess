@@ -329,8 +329,20 @@ module SaneMasterModules
     end
 
     def run_visual_smoke_command(command, timeout:, terminal_host:)
-      return run_visual_smoke_command_via_terminal(command, timeout: timeout) if terminal_host && visual_smoke_terminal_host_available?
+      if terminal_host && visual_smoke_terminal_host_available?
+        terminal_result = run_visual_smoke_command_via_terminal(command, timeout: timeout)
+        return terminal_result if terminal_result[:success]
 
+        direct_result = run_visual_smoke_command_direct(command, timeout: timeout)
+        return direct_result.merge(runner: 'direct-fallback', fallback_from: terminal_result) if direct_result[:success]
+
+        terminal_result.merge(fallback: direct_result)
+      else
+        run_visual_smoke_command_direct(command, timeout: timeout)
+      end
+    end
+
+    def run_visual_smoke_command_direct(command, timeout:)
       stdout_data = +''
       stderr_data = +''
       status = nil
@@ -361,7 +373,8 @@ module SaneMasterModules
       {
         success: !timed_out && status&.success?,
         exit_status: status&.exitstatus,
-        timed_out: timed_out
+        timed_out: timed_out,
+        runner: 'direct'
       }
     end
 
@@ -571,7 +584,9 @@ module SaneMasterModules
                       set staticTextValues to value of static texts of candidateWindow
                     end try
                     set combinedText to (windowName & " " & windowDescription & " " & (buttonNames as text) & " " & (staticTextValues as text))
-                    if processNameText is "#{app_name}" and (combinedText contains "Move to Applications" or combinedText contains "Could Not Move" or combinedText contains "Applications folder" or combinedText contains "works best from your Applications folder" or combinedText contains "move it there manually" or combinedText contains "You may be asked for your password" or combinedText contains "Not Now") then
+                    if (combinedText contains "hasn't restarted" or combinedText contains "hasn’t restarted" or combinedText contains "failed to quit") and (combinedText contains "Try Again" or combinedText contains "Cancel") then
+                      set end of hits to (processNameText & " has an unresolved macOS restart/shutdown prompt")
+                    else if processNameText is "#{app_name}" and (combinedText contains "Move to Applications" or combinedText contains "Could Not Move" or combinedText contains "Applications folder" or combinedText contains "works best from your Applications folder" or combinedText contains "move it there manually" or combinedText contains "You may be asked for your password" or combinedText contains "Not Now") then
                       set end of hits to (processNameText & " has an unresolved app install/move prompt")
                     else if (combinedText contains "Allow" or combinedText contains "Don’t Allow" or combinedText contains "Don't Allow" or combinedText contains "Always Allow" or combinedText contains "Deny") and (combinedText contains "would like to access" or combinedText contains "wants to use" or combinedText contains "confidential information" or combinedText contains "login keychain" or combinedText contains "Screen Recording" or combinedText contains "Camera" or combinedText contains "Microphone" or combinedText contains "Documents folder" or combinedText contains "permission") then
                       set end of hits to (processNameText & " has an unresolved macOS permission/security prompt")
@@ -708,7 +723,13 @@ module SaneMasterModules
     end
 
     def visual_smoke_mini_host?
-      Socket.gethostname.downcase.include?('mini') || ENV.fetch('USER', '').downcase == 'stephansmac'
+      host = Socket.gethostname.to_s.downcase
+      return true if host.include?('mini')
+
+      return false unless RUBY_PLATFORM.include?('darwin')
+
+      computer_name, status = Open3.capture2('/usr/sbin/scutil', '--get', 'ComputerName')
+      status.success? && computer_name.to_s.downcase.include?('mac mini')
     rescue StandardError
       false
     end

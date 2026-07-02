@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require_relative 'hooks/test/test_framework'
+require_relative 'sane_test'
 
 include TestFramework
 
@@ -86,6 +87,104 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
       assert_includes(source, 'Refusing to launch ad-hoc signed')
       assert_includes(source, 'SANETEST_ALLOW_ADHOC_GATEKEEPER_DIALOG')
       assert_includes(source, "'ditto', '--noextattr', '--noacl'")
+      true
+    end
+  end
+
+  test_category('SaneClip signed runtime path') do
+    test('sane_test treats SaneClip as a signed Release runtime app') do
+      saneclip = SaneTest.allocate
+      saneclip.instance_variable_set(:@app_name, 'SaneClip')
+      saneclick = SaneTest.allocate
+      saneclick.instance_variable_set(:@app_name, 'SaneClick')
+
+      assert(saneclip.send(:signed_release_runtime_required?))
+      assert(!saneclick.send(:signed_release_runtime_required?))
+      true
+    end
+
+    test('Release builds keep the production bundle id') do
+      saneclip = SaneTest.allocate
+      saneclip.instance_variable_set(:@app_name, 'SaneClip')
+
+      assert(!saneclip.send(:dev_bundle_override_for_build?, 'Release'))
+      assert(saneclip.send(:dev_bundle_override_for_build?, 'ProdDebug'))
+      true
+    end
+
+    test('Release builds never receive unsigned debug overrides') do
+      saneclip = SaneTest.allocate
+      saneclip.instance_variable_set(:@app_name, 'SaneClip')
+
+      assert(!saneclip.send(:unsigned_debug_overrides_for_build?, 'Release', false))
+      assert(saneclip.send(:unsigned_debug_overrides_for_build?, 'Debug', false))
+      assert(!saneclip.send(:unsigned_debug_overrides_for_build?, 'Debug', true))
+      true
+    end
+
+    test('direct executable launch keeps wrapper environment') do
+      saneclip = SaneTest.allocate
+      saneclip.instance_variable_set(:@app_name, 'SaneClip')
+      saneclip.instance_variable_set(:@hardware, false)
+      saneclip.instance_variable_set(:@free_mode, false)
+
+      env = saneclip.send(:launch_env_hash)
+      assert_eq(env['SANEAPPS_SKIP_MOVE_TO_APPLICATIONS'], '1')
+      assert_eq(env['SANEAPPS_PERMISSIONLESS_AUTOMATION'], '1')
+      assert_eq(env['SANEVIDEO_ENABLE_HARDWARE_TESTS'], '0')
+      true
+    end
+
+    test('direct executable launch suppresses app move prompts') do
+      saneclip = SaneTest.allocate
+      saneclip.instance_variable_set(:@app_name, 'SaneClip')
+      saneclip.instance_variable_set(:@allow_keychain, false)
+
+      args = saneclip.send(:direct_launch_args)
+      assert_includes(args, '--sane-skip-app-move')
+      assert_includes(args, '--sane-no-keychain')
+
+      saneclip.instance_variable_set(:@allow_keychain, true)
+      assert_eq(saneclip.send(:direct_launch_args), ['--sane-skip-app-move'])
+      true
+    end
+
+    test('sane_test direct-launches only quarantined local builds that LaunchServices would reject') do
+      source = File.read(SANE_TEST_PATH)
+
+      assert_includes(source, 'launch_services_gatekeeper_rejected?(app_path)')
+      assert_includes(source, 'return false unless quarantined?(app_path)')
+      assert_includes(source, "Open3.capture3('xattr', '-p', 'com.apple.quarantine', app_path)")
+      assert_includes(source, 'LaunchServices would show Gatekeeper')
+      assert_includes(source, "spawn(launch_env_hash, executable, *direct_launch_args")
+      true
+    end
+
+    test('sane_test does not SSH or rsync when already running on the Mini') do
+      source = File.read(SANE_TEST_PATH)
+
+      assert_includes(source, 'def running_on_mini_host?')
+      assert_includes(source, 'Already running on Mac mini')
+      assert_includes(source, "Socket.gethostname.to_s.downcase")
+      assert_includes(source, "'/usr/sbin/scutil', '--get', 'ComputerName'")
+      assert(
+        source.index('running_on_mini_host?') < source.index('mini_reachable?'),
+        'the Mini-local check must run before probing ssh mini'
+      )
+      assert(!source.include?("ENV.fetch('USER', '').downcase == 'stephansmac'"),
+             'sane_test must not decide Mini identity from the shared account name')
+      true
+    end
+
+    test('local pro-mode writes license fallback for the staged runtime bundle id') do
+      source = File.read(SANE_TEST_PATH)
+
+      assert_includes(source, 'def local_runtime_bundle_id')
+      assert_includes(source, 'bundle_id_for_app(canonical_local_app_path)')
+      assert_includes(source, 'bid = local_runtime_bundle_id')
+      assert_includes(source, 'set_pro_fallback_local(bid)')
+      assert(!source.include?('bid = @config[:dev]'),
+             'local pro-mode must not write only the dev bundle id for signed release apps')
       true
     end
   end
