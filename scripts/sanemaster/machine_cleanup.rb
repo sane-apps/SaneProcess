@@ -26,6 +26,21 @@ module SaneMasterModules
       '~/Library/Caches/node-gyp'
     ].freeze
 
+    # Regenerating these costs real time (multi-GB downloads, flaky installers) while their
+    # only benefit to cleanup is disk space — so they are cleaned ONLY under disk pressure
+    # (available < --min-free-gb), never as routine hygiene. 2026-07-02: the nightly server
+    # reset was wiping Playwright browsers, HuggingFace models, sim runtimes, and the npx
+    # cache (the Mini's wrangler) daily with 80+ GB free.
+    EXPENSIVE_RESTORE_CACHE_PATHS = [
+      '~/.cache/huggingface',
+      '~/.cache/codex-runtimes',
+      '~/Library/Caches/ms-playwright'
+    ].freeze
+    SERVER_EXPENSIVE_EXACT_PATHS = [
+      '~/.npm/_npx',
+      '~/.npm/_cacache'
+    ].freeze
+
     CLEANUP_SAFE_ROOTS = [
       '~/.Trash',
       '~/.cache',
@@ -86,8 +101,6 @@ module SaneMasterModules
       '~/.codex/runs',
       '~/.codex/tmp',
       '~/.codex/.tmp',
-      '~/.npm/_npx',
-      '~/.npm/_cacache',
       '~/.codex-sync-backups',
       '~/.sanemaster/routed-workspaces',
       '~/Library/Developer/XcodeBuildMCP/workspaces',
@@ -239,12 +252,13 @@ module SaneMasterModules
     def build_machine_cleanup_plan(options)
       active = machine_cleanup_active_inventory
       disk = machine_cleanup_disk_snapshot
-      cache_targets = machine_cleanup_cache_targets(options)
+      pressure = machine_cleanup_disk_pressure?(disk, options)
+      cache_targets = machine_cleanup_cache_targets(options, pressure)
       deriveddata_targets = machine_cleanup_deriveddata_targets(active, options)
       trash_target = machine_cleanup_trash_target(options)
-      simulator_plan = machine_cleanup_simulator_plan(active, options)
+      simulator_plan = machine_cleanup_simulator_plan(active, options, pressure)
       simulator_targets = simulator_plan.is_a?(Array) ? simulator_plan.compact : [simulator_plan].compact
-      server_targets = machine_cleanup_server_targets(active, options)
+      server_targets = machine_cleanup_server_targets(active, options, pressure)
 
       actions = []
       actions << trash_target if trash_target
@@ -259,6 +273,7 @@ module SaneMasterModules
         dry_run: !options[:apply],
         server: options[:server],
         host: Socket.gethostname,
+        disk_pressure: pressure,
         thresholds: {
           min_free_gb: options[:min_free_gb],
           cache_threshold_gb: options[:cache_threshold_gb],
@@ -341,13 +356,33 @@ module SaneMasterModules
       }
     end
 
-    def machine_cleanup_cache_targets(options)
+    # Disk pressure = free space below --min-free-gb. Only then do expensive-to-restore
+    # paths become fair game; a df failure counts as NO pressure so we never delete
+    # slow-to-rebuild caches on bad telemetry.
+    def machine_cleanup_disk_pressure?(disk, options)
+      disk[:ok] == true && disk[:available_gb].to_f < options[:min_free_gb].to_f
+    end
+
+    def machine_cleanup_cache_targets(options, pressure = true)
+      expensive = EXPENSIVE_RESTORE_CACHE_PATHS.map { |raw| File.expand_path(raw) }
+      skips = []
       targets = DISPOSABLE_CACHE_PATHS.each_with_object([]) do |raw_path, list|
         path = File.expand_path(raw_path)
         next unless File.exist?(path)
 
         size_gb = path_size_gb(path)
         next if size_gb <= 0
+
+        if !pressure && expensive.include?(path)
+          skips << {
+            type: 'skip',
+            category: 'expensive_cache_preserved',
+            path: path,
+            size_gb: size_gb,
+            reason: "Expensive-to-restore cache preserved: free space is above --min-free-gb, so the #{size_gb}G is not worth the re-download."
+          }
+          next
+        end
         next if size_gb < 0.25 && total_disposable_cache_gb < options[:cache_threshold_gb]
 
         list << {
@@ -361,9 +396,9 @@ module SaneMasterModules
       targets.concat(machine_cleanup_uv_cache_targets)
 
       total = targets.sum { |target| target[:size_gb].to_f }
-      return [] if total < options[:cache_threshold_gb]
+      return skips if total < options[:cache_threshold_gb]
 
-      targets
+      skips + targets
     end
 
     def machine_cleanup_uv_cache_targets
@@ -475,7 +510,7 @@ module SaneMasterModules
       }
     end
 
-    def machine_cleanup_simulator_plan(active, options)
+    def machine_cleanup_simulator_plan(active, options, pressure = true)
       if options[:server]
         blocking_flags = machine_cleanup_server_blocking_flags(active)
         unless blocking_flags.empty?
@@ -486,7 +521,7 @@ module SaneMasterModules
           }
         end
 
-        return [
+        actions = [
           {
             type: 'command',
             category: 'server_simulator_shutdown',
@@ -497,15 +532,19 @@ module SaneMasterModules
             type: 'command',
             category: 'server_simulator_delete',
             argv: %w[xcrun simctl delete all],
-            reason: 'Server-mode cleanup: all simulator devices are disposable on the Mini and can be regenerated.'
+            reason: 'Server-mode cleanup: all simulator devices are disposable on the Mini and can be regenerated in seconds with simctl create.'
           },
           {
             type: 'command',
             category: 'server_simulator_unavailable',
             argv: %w[xcrun simctl delete unavailable],
             reason: 'Server-mode cleanup: remove unavailable simulator records after deleting devices.'
-          },
-          {
+          }
+        ]
+        # Runtime disk images are multi-GB re-downloads (and the first capture on a fresh
+        # runtime renders black PNGs) — only reclaim them under real disk pressure.
+        if pressure
+          actions << {
             type: 'command',
             category: 'server_simulator_runtime_delete',
             argv: [
@@ -513,9 +552,16 @@ module SaneMasterModules
               '-c',
               'xcrun simctl runtime list -v 2>/dev/null | grep -q "Total Disk Images: 0" && exit 0; xcrun simctl runtime delete all'
             ],
-            reason: 'Server-mode cleanup: simulator runtime disk images are disposable on the Mini and can be redownloaded if needed.'
+            reason: 'Disk pressure: free space is below --min-free-gb, reclaiming simulator runtime disk images.'
           }
-        ]
+        else
+          actions << {
+            type: 'skip',
+            category: 'server_simulator_runtime_delete',
+            reason: 'Simulator runtime disk images preserved: free space is above --min-free-gb and runtimes are slow multi-GB re-downloads.'
+          }
+        end
+        return actions
       end
 
       {
@@ -526,7 +572,7 @@ module SaneMasterModules
       }
     end
 
-    def machine_cleanup_server_targets(active, options)
+    def machine_cleanup_server_targets(active, options, pressure = true)
       return [] unless options[:server]
 
       blocking_flags = machine_cleanup_server_blocking_flags(active)
@@ -539,6 +585,30 @@ module SaneMasterModules
       end
 
       targets = []
+      server_expensive_exact_paths.each do |path|
+        next unless File.exist?(path)
+
+        size_gb = path_size_gb(path)
+        next if size_gb <= 0.01
+
+        if pressure
+          targets << {
+            type: 'trash_path',
+            category: 'server_expensive_cache',
+            path: path,
+            size_gb: size_gb,
+            reason: 'Disk pressure: free space is below --min-free-gb, reclaiming npm/npx caches (cached CLIs like wrangler/playwright will re-download on next use).'
+          }
+        else
+          targets << {
+            type: 'skip',
+            category: 'server_expensive_cache',
+            path: path,
+            size_gb: size_gb,
+            reason: 'npm/npx caches preserved: free space is above --min-free-gb and these hold the CLIs (wrangler, playwright) the Mini needs daily.'
+          }
+        end
+      end
       server_child_cleanup_paths.each do |path|
         next unless Dir.exist?(path)
 
@@ -708,6 +778,7 @@ module SaneMasterModules
       return true if safe_root
 
       return true if server_exact_cleanup_paths.any? { |allowed| expanded == allowed }
+      return true if server_expensive_exact_paths.any? { |allowed| expanded == allowed }
       return true if server_child_cleanup_paths.any? { |allowed| expanded == allowed }
       return true if server_desktop_email_media_path?(expanded)
       return true if server_codex_code_sign_clone_path?(expanded)
@@ -721,6 +792,10 @@ module SaneMasterModules
 
     def server_exact_cleanup_paths
       SERVER_EXACT_CLEANUP_PATHS.map { |path| File.expand_path(path) }
+    end
+
+    def server_expensive_exact_paths
+      SERVER_EXPENSIVE_EXACT_PATHS.map { |path| File.expand_path(path) }
     end
 
     def server_codex_code_sign_clone_paths
@@ -859,7 +934,7 @@ module SaneMasterModules
     def print_machine_cleanup_plan(plan)
       puts "Machine cleanup #{plan[:dry_run] ? 'dry-run' : 'apply'} on #{plan[:host]}"
       puts "Mode: #{plan[:server] ? 'server reset' : 'safe hygiene'}"
-      puts "Disk: #{plan.dig(:disk, :available_gb)}G free (#{plan.dig(:disk, :capacity)} used)"
+      puts "Disk: #{plan.dig(:disk, :available_gb)}G free (#{plan.dig(:disk, :capacity)} used) — #{plan[:disk_pressure] ? "UNDER PRESSURE (<#{plan.dig(:thresholds, :min_free_gb)}G): expensive caches eligible" : "healthy (≥#{plan.dig(:thresholds, :min_free_gb)}G): expensive-to-restore caches preserved"}"
       puts "Active apps preserved: #{plan.dig(:summary, :active_apps).join(', ').empty? ? 'none' : plan.dig(:summary, :active_apps).join(', ')}"
       puts "Reclaimable: #{plan.dig(:summary, :reclaimable_gb)}G across #{plan.dig(:summary, :action_count)} action(s)"
       puts
