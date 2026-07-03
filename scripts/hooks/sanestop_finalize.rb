@@ -121,9 +121,40 @@ end
 # Customer-facing UI work requires screenshot-backed inspection, not just green
 # functional tests.
 
+# Returns the still-real customer-facing UI files that genuinely require a
+# visual receipt. A path qualifies only when BOTH hold:
+#   1. it still exists on disk, and
+#   2. it was edited by THIS session's own Edit/Write/bash-mutation tracking
+#      (i.e. it appears in edits[:unique_files] — subagent-internal edits and
+#      merely-read/referenced files never land there).
+# This drops the phantom-file false positives (e.g. scraped names for files that
+# were never edited or no longer exist) without weakening the real gate.
+def live_customer_facing_ui_files(visual)
+  candidate_paths = visual[:required_files_paths] || []
+  return [] if candidate_paths.empty?
+
+  edited_paths = (StateManager.get(:edits)[:unique_files] || [])
+
+  candidate_paths.select do |path|
+    next false unless edited_paths.include?(path)
+
+    File.exist?(File.expand_path(path.to_s, Dir.pwd))
+  end
+rescue StandardError => e
+  warn "⚠️  Visual UI file reconciliation error: #{e.message}" if ENV['DEBUG']
+  []
+end
+
 def check_visual_verification_required
   visual = StateManager.get(:visual_verification)
   return nil unless visual[:required]
+
+  # Only genuine, still-present customer-facing UI edits require a receipt.
+  # Drop phantom entries: files that no longer exist on disk (deleted, reverted,
+  # renamed, or carried over from a different checkout) and any path that was not
+  # actually edited by THIS session's own Edit/Write/bash-mutation tracking.
+  real_ui_files = live_customer_facing_ui_files(visual)
+  return nil if real_ui_files.empty?
 
   receipt_paths = SaneVisualReceipt.valid_receipt_paths(
     cwd: Dir.pwd,
@@ -133,7 +164,7 @@ def check_visual_verification_required
 
   return nil if receipt_paths.any?
 
-  files = (visual[:required_files] || []).first(10)
+  files = real_ui_files.map { |path| File.basename(path) }.uniq.first(10)
   reason = visual[:reason] || 'visual verification required'
 
   "   Visual verification is required (#{reason}).\n" \
