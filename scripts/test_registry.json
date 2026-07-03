@@ -422,6 +422,12 @@
       "cmd": ["ruby", "scripts/sanemaster/verify_guard_test.rb"]
     },
     {
+      "path": "scripts/sanemaster/verify_permissions_test.rb",
+      "label": "SaneProcess verify TCC-preservation tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/verify_permissions_test.rb"]
+    },
+    {
       "path": "scripts/validation_report_test.rb",
       "label": "SaneProcess validation report tests",
       "status": "required",
