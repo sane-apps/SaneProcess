@@ -1981,7 +1981,14 @@ module SaneMasterModules
           next
         end
 
-        issues << "#{id}: status is #{result['status'].inspect}, expected \"passed\"" unless result['status'].to_s == 'passed'
+        coverage_status = result['coverage_status'].to_s.strip
+        action_status = result['status'].to_s.strip
+        if coverage_status.empty?
+          issues << "#{id}: status is #{result['status'].inspect}, expected \"passed\"" unless action_status == 'passed'
+        else
+          issues << "#{id}: coverage_status is #{result['coverage_status'].inspect}, expected \"covered\"" unless coverage_status == 'covered'
+          issues << "#{id}: do not mix coverage_status with action status; use action status only for real completion receipts" unless action_status.empty?
+        end
         required_proof_level = action['required_proof_level'].to_s
         proof_level = result['proof_level'].to_s.strip
         if proof_level.empty?
@@ -2035,6 +2042,8 @@ module SaneMasterModules
         result['functional_state'],
         result['inputs'],
         result['output_assertions'],
+        result['declared_inputs'],
+        result['covered_assertions'],
         result['workflow'],
         result['evidence']
       ].map { |value| value.is_a?(String) ? value : JSON.generate(value) }.join("\n")
@@ -2536,12 +2545,14 @@ module SaneMasterModules
 
       if Array(action['user_inputs']).any?
         inputs = Array(result['inputs']).map(&:to_s).map(&:strip).reject(&:empty?)
+        inputs.concat(Array(result['declared_inputs']).map(&:to_s).map(&:strip).reject(&:empty?))
         issues << "#{id}: missing exercised user inputs from receipt" if inputs.empty?
       end
 
       expected_outputs = Array(action['expected_outputs']).map(&:to_s).map(&:strip).reject(&:empty?)
       if expected_outputs.any?
         output_assertions = Array(result['output_assertions']).map(&:to_s).map(&:strip).reject(&:empty?)
+        output_assertions.concat(Array(result['covered_assertions']).map(&:to_s).map(&:strip).reject(&:empty?))
         issues << "#{id}: missing output_assertions proving expected outcomes" if output_assertions.empty?
       end
 
@@ -2673,19 +2684,21 @@ module SaneMasterModules
 
       workflow = result['workflow']
       unless workflow.is_a?(Hash)
-        return ["#{id}: missing structured workflow proof; runtime evidence must name the runner, completed steps, outcome, and artifacts"]
+        return ["#{id}: missing structured workflow proof; runtime evidence must name the runner, covered steps, outcome, and artifacts"]
       end
 
       issues = []
       issues << "#{id}: workflow proof missing runner" if workflow['runner'].to_s.strip.empty?
       issues << "#{id}: workflow proof missing outcome" if workflow['outcome'].to_s.strip.empty?
 
+      covered_steps = Array(workflow['steps_covered']).map(&:to_s).map(&:strip).reject(&:empty?)
       completed_steps = Array(workflow['steps_completed']).map(&:to_s).map(&:strip).reject(&:empty?)
-      issues << "#{id}: workflow proof missing steps_completed" if completed_steps.empty?
+      proof_steps = covered_steps.empty? ? completed_steps : covered_steps
+      issues << "#{id}: workflow proof missing steps_covered" if proof_steps.empty?
       declared_steps = Array(action['steps']).map(&:to_s).map(&:strip).reject(&:empty?)
-      missing_steps = declared_steps - completed_steps
+      missing_steps = declared_steps - proof_steps
       unless missing_steps.empty?
-        issues << "#{id}: workflow proof did not complete declared step(s): #{missing_steps.join(' | ')}"
+        issues << "#{id}: workflow proof did not cover declared step(s): #{missing_steps.join(' | ')}"
       end
 
       artifacts = Array(workflow['artifacts']).map(&:to_s).map(&:strip).reject(&:empty?)

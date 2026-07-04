@@ -348,6 +348,93 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('accepts explicit customer UI coverage receipts without completion wording') do
+      Dir.mktmpdir('customer-ui-coverage-contract-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'SaneExample', 'ContentView.swift'), 'struct ContentView {}')
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            actions:
+              - id: history-row
+                title: History row coverage
+                surfaces: [History]
+                steps: [Verify row action wiring]
+                assertions: [Row action remains visible]
+                evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [mini_runtime, screenshot]
+                user_inputs: [Row action click]
+                expected_outputs: [Row action remains visible]
+                historical_failure_classes: [activation_noop]
+                functional_state:
+                  description: Seeded Mini fixture with a visible history row
+                  setup_steps: [Launch the seeded Mini fixture]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          write_test_png(File.join(dir, 'outputs', 'history-row.png'))
+          File.write(File.join(dir, 'outputs', 'runtime.log'), 'history row coverage ok')
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+          File.write(
+            File.join(dir, 'outputs', 'customer_ui_action_receipt.json'),
+            JSON.pretty_generate(
+              app: 'SaneExample',
+              status: 'passed',
+              host: 'mini',
+              generated_at: Time.now.utc.iso8601,
+              manifest_sha256: report[:manifest_sha256],
+              source_fingerprint: report[:source_fingerprint],
+              tested_action_ids: ['history-row'],
+              action_results: {
+                'history-row' => {
+                  coverage_status: 'covered',
+                  completion_scope: 'structured_coverage_only',
+                  proof_level: 'runtime_visual',
+                  functional_state: {
+                    status: 'established',
+                    detail: 'Seeded Mini fixture with a visible history row after launching the seeded Mini fixture'
+                  },
+                  declared_inputs: ['Row action click'],
+                  covered_assertions: ['Row action remains visible'],
+                  evidence: [
+                    {
+                      type: 'mini_runtime',
+                      detail: 'Mini runtime coverage metadata',
+                      path: 'outputs/runtime.log'
+                    },
+                    {
+                      type: 'screenshot',
+                      detail: 'Captured Mini screenshot after fixture render',
+                      path: 'outputs/history-row.png'
+                    }
+                  ],
+                  workflow: {
+                    runner: 'scripts/customer_ui_action_sweep.rb history-row',
+                    steps_covered: ['Verify row action wiring'],
+                    outcome: 'History row covered without claiming live click completion',
+                    artifacts: ['outputs/runtime.log', 'outputs/history-row.png']
+                  }
+                }
+              },
+              screenshots: ['outputs/history-row.png']
+            )
+          )
+          report = subject.customer_ui_contract_report(config: { 'name' => 'SaneExample' })
+        end
+
+        assert(report[:ok], "expected explicit coverage receipt to pass: #{report[:issues].inspect}")
+      end
+      true
+    end
+
     test('customer UI runtime fingerprint ignores test-only source changes') do
       Dir.mktmpdir('customer-ui-test-only-fingerprint-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'Tests'))
