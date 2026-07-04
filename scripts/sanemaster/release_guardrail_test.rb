@@ -5097,6 +5097,32 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('release.sh accepts Lemon custom checkout cart redirects after matched first hop') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+      post_release_body = release_script[/run_post_release_checks\(\) \{.*?^}/m]
+
+      assert(!post_release_body.nil?, 'expected run_post_release_checks body in release.sh')
+      assert_includes(post_release_body, 'checkout_first_hop_ok')
+      assert_includes(post_release_body, 'lemonsqueezy\\.com/checkout/?(\\?.*)?$')
+      assert_includes(post_release_body, 'lemonsqueezy\\.com/checkout/cart/')
+      assert_includes(post_release_body, '"custom=1"')
+      assert_includes(post_release_body, "Lemon's custom-checkout cart")
+      true
+    end
+
+    test('release.sh skips checkout verification when product config has no checkout') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+      post_release_body = release_script[/run_post_release_checks\(\) \{.*?^}/m]
+
+      assert(!post_release_body.nil?, 'expected run_post_release_checks body in release.sh')
+      assert_includes(post_release_body, 'configured_checkout_url=$(lookup_checkout_url_for_slug "${LOWER_APP_NAME}")')
+      assert_includes(post_release_body, 'has_configured_checkout=false')
+      assert_includes(post_release_body, "printf 'skipped: no configured checkout\\n' > \"${probe_dir}/checkout.status\"")
+      assert_includes(post_release_body, 'Skipping checkout verification: ${LOWER_APP_NAME} has no configured checkout in products.yml.')
+      assert_includes(release_script, 'Skipping checkout link verification: ${LOWER_APP_NAME} has no configured checkout in products.yml.')
+      true
+    end
+
     test('release.sh checks Homebrew GitHub API before raw propagation loop') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
       post_release_body = release_script[/run_post_release_checks\(\) \{.*?^}/m]

@@ -15,8 +15,10 @@ KEYCHAIN_FALLBACK_ENABLED="${SANE_KEYCHAIN_FALLBACK:-1}"
 # Ensure Homebrew-installed tools resolve in non-interactive shells (CI/SSH).
 export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
-# Pin Wrangler for Cloudflare release paths. A stale npx-resolved Wrangler
-# 4.65.0 broke SaneCite queue operations with Cloudflare API code 10013.
+# Pinned Wrangler for all Cloudflare mutations (DEVELOPMENT.md policy): bare
+# `npx wrangler` can resolve stale local versions — SaneCite queue creation
+# failed under 4.65.0 and succeeded under 4.104.0. Override deliberately via
+# SANEPROCESS_WRANGLER_VERSION when needed.
 SANEPROCESS_WRANGLER_VERSION="${SANEPROCESS_WRANGLER_VERSION:-4.104.0}"
 WRANGLER_NPX_PACKAGE="wrangler@${SANEPROCESS_WRANGLER_VERSION}"
 
@@ -1902,6 +1904,10 @@ release_probe_error_suffix() {
 release_probe_status_text() {
     local status="$1"
     local error_file="$2"
+    if [[ "${status}" == skipped* ]]; then
+        printf '%s' "${status}"
+        return 0
+    fi
     if [ -n "${status}" ]; then
         printf 'HTTP %s' "${status}"
     else
@@ -1954,11 +1960,17 @@ run_post_release_checks() {
     local dist_url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
     local appcast_url="https://${SITE_HOST}/appcast.xml"
     local checkout_url="https://go.saneapps.com/buy/${LOWER_APP_NAME}"
+    local configured_checkout_url=""
+    local has_configured_checkout=false
     local site_url="https://${SITE_HOST}/"
     local download_page_url="https://${SITE_HOST}/download"
     local strict="${STRICT_PUBLIC_CHANNEL_SYNC}"
 
     log_info "Running strict post-release checks..."
+    configured_checkout_url=$(lookup_checkout_url_for_slug "${LOWER_APP_NAME}")
+    if [ -n "${configured_checkout_url}" ]; then
+        has_configured_checkout=true
+    fi
 
     local probe_dir
     probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/sane-post-release-probes.XXXXXX") || {
@@ -1975,8 +1987,12 @@ run_post_release_checks() {
     probe_pids+=("$!")
     ( extract_content_length_with_user_agent "${dist_url}" "Sparkle/2" > "${probe_dir}/dist_sparkle.length" 2>"${probe_dir}/dist_sparkle_length.err" || true ) &
     probe_pids+=("$!")
-    ( extract_http_status "${checkout_url}" > "${probe_dir}/checkout.status" 2>"${probe_dir}/checkout.err" || true ) &
-    probe_pids+=("$!")
+    if [ "${has_configured_checkout}" = true ]; then
+        ( extract_http_status "${checkout_url}" > "${probe_dir}/checkout.status" 2>"${probe_dir}/checkout.err" || true ) &
+        probe_pids+=("$!")
+    else
+        printf 'skipped: no configured checkout\n' > "${probe_dir}/checkout.status"
+    fi
     ( curl --connect-timeout 10 --max-time 30 -fsSL "${site_url}" > "${probe_dir}/site.body" 2>"${probe_dir}/site.err" || true ) &
     probe_pids+=("$!")
     if [ "${USE_SPARKLE}" = true ]; then
@@ -2140,21 +2156,22 @@ PY
         fi
     fi
 
-    local checkout_status
-    checkout_status=$(sed -n '1p' "${probe_dir}/checkout.status" 2>/dev/null | tr -d '\r\n')
-    if [ "${checkout_status}" != "200" ] && [ "${checkout_status}" != "301" ] && [ "${checkout_status}" != "302" ]; then
-        log_error "Checkout URL failed: ${checkout_url} returned $(release_probe_status_text "${checkout_status}" "${probe_dir}/checkout.err")"
-        return 1
-    fi
+    if [ "${has_configured_checkout}" = true ]; then
+        local checkout_status
+        checkout_status=$(sed -n '1p' "${probe_dir}/checkout.status" 2>/dev/null | tr -d '\r\n')
+        if [ "${checkout_status}" != "200" ] && [ "${checkout_status}" != "301" ] && [ "${checkout_status}" != "302" ]; then
+            log_error "Checkout URL failed: ${checkout_url} returned $(release_probe_status_text "${checkout_status}" "${probe_dir}/checkout.err")"
+            return 1
+        fi
 
-    # Follow redirects and verify the checkout lands on the expected Lemon Squeezy flow.
-    if [ "${checkout_status}" = "301" ] || [ "${checkout_status}" = "302" ]; then
+        # Follow redirects and verify the checkout lands on the expected Lemon Squeezy flow.
+        if [ "${checkout_status}" = "301" ] || [ "${checkout_status}" = "302" ]; then
         local expected_checkout_prefix=""
         local checkout_first_hop
         local checkout_first_hop_ok=false
         local checkout_final_status
         local checkout_final_url
-        expected_checkout_prefix=$(lookup_checkout_url_for_slug "${LOWER_APP_NAME}")
+        expected_checkout_prefix="${configured_checkout_url}"
         checkout_first_hop=$(extract_redirect_location "${checkout_url}" "Mozilla/5.0")
         if [ -n "${expected_checkout_prefix}" ] && [[ "${checkout_first_hop}" == "${expected_checkout_prefix}"* ]]; then
             checkout_first_hop_ok=true
@@ -2177,8 +2194,10 @@ PY
         fi
 
         if [ -n "${checkout_final_url}" ] && ! [[ "${checkout_final_url}" =~ ^https://([A-Za-z0-9-]+\.)?lemonsqueezy\.com/checkout/(buy|custom)/ ]]; then
-            if [ "${checkout_first_hop_ok}" = true ] && [[ "${checkout_final_url}" =~ ^https://([A-Za-z0-9-]+\.)?lemonsqueezy\.com/checkout/?$ ]]; then
+            if [ "${checkout_first_hop_ok}" = true ] && [[ "${checkout_final_url}" =~ ^https://([A-Za-z0-9-]+\.)?lemonsqueezy\.com/checkout/?(\?.*)?$ ]]; then
                 log_warn "Checkout final URL resolved to a provider anti-bot landing page (${checkout_final_url}); first hop matched configured checkout, so checkout is treated as healthy."
+            elif [ "${checkout_first_hop_ok}" = true ] && [[ "${checkout_final_url}" =~ ^https://([A-Za-z0-9-]+\.)?lemonsqueezy\.com/checkout/cart/ ]] && [[ "${checkout_final_url}" == *"custom=1"* ]]; then
+                log_warn "Checkout final URL resolved to Lemon's custom-checkout cart (${checkout_final_url}); first hop matched configured checkout, so checkout is treated as healthy."
             else
                 log_error "Checkout URL redirect chain landed on unexpected destination: ${checkout_final_url}"
                 return 1
@@ -2191,6 +2210,9 @@ PY
                 return 1
             fi
         fi
+    fi
+    else
+        log_info "Skipping checkout verification: ${LOWER_APP_NAME} has no configured checkout in products.yml."
     fi
 
     if ! verify_lemonsqueezy_hosted_file_sync; then
@@ -6619,15 +6641,20 @@ PY
 
     # Step 4: Verify checkout/purchase link still works
     # LemonSqueezy slug change broke 26 URLs for 44 hours ($40 lost)
+    CONFIGURED_CHECKOUT_URL=$(lookup_checkout_url_for_slug "${LOWER_APP_NAME}")
     CHECKOUT_URL="https://go.saneapps.com/buy/${LOWER_APP_NAME}"
-    CHECKOUT_STATUS=$(curl --connect-timeout 10 --max-time 20 -sI -o /dev/null -w '%{http_code}' "${CHECKOUT_URL}" 2>/dev/null || echo "000")
-    if [ "${CHECKOUT_STATUS}" = "200" ] || [ "${CHECKOUT_STATUS}" = "301" ] || [ "${CHECKOUT_STATUS}" = "302" ]; then
-        log_info "Checkout link verified: ${CHECKOUT_URL} (${CHECKOUT_STATUS})"
-    elif [ "${CHECKOUT_STATUS}" = "000" ]; then
-        log_warn "Could not reach checkout URL: ${CHECKOUT_URL} (network error)"
+    if [ -z "${CONFIGURED_CHECKOUT_URL}" ]; then
+        log_info "Skipping checkout link verification: ${LOWER_APP_NAME} has no configured checkout in products.yml."
     else
-        log_warn "Checkout link may be broken: ${CHECKOUT_URL} returned ${CHECKOUT_STATUS}"
-        log_warn "Test the purchase flow manually before announcing this release."
+        CHECKOUT_STATUS=$(curl --connect-timeout 10 --max-time 20 -sI -o /dev/null -w '%{http_code}' "${CHECKOUT_URL}" 2>/dev/null || echo "000")
+        if [ "${CHECKOUT_STATUS}" = "200" ] || [ "${CHECKOUT_STATUS}" = "301" ] || [ "${CHECKOUT_STATUS}" = "302" ]; then
+            log_info "Checkout link verified: ${CHECKOUT_URL} (${CHECKOUT_STATUS})"
+        elif [ "${CHECKOUT_STATUS}" = "000" ]; then
+            log_warn "Could not reach checkout URL: ${CHECKOUT_URL} (network error)"
+        else
+            log_warn "Checkout link may be broken: ${CHECKOUT_URL} returned ${CHECKOUT_STATUS}"
+            log_warn "Test the purchase flow manually before announcing this release."
+        fi
     fi
 
     APPSTORE_SUBMIT_FAILED=false
