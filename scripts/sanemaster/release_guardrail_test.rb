@@ -5488,6 +5488,47 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('flags informational appcast entries that omit a Sparkle build version') do
+      xml = <<~XML
+        <rss><channel>
+          <item>
+            <title>2.2.12</title>
+            <link>https://example.com/download</link>
+            <sparkle:shortVersionString>2.2.12</sparkle:shortVersionString>
+            <sparkle:informationalUpdate>
+              <sparkle:belowVersion>2208</sparkle:belowVersion>
+            </sparkle:informationalUpdate>
+          </item>
+        </channel></rss>
+      XML
+
+      hits = subject.send(:informational_appcast_entries_missing_versions, xml)
+
+      assert_eq(hits, ['2.2.12'])
+      true
+    end
+
+    test('accepts informational appcast entries that include top-level Sparkle versions') do
+      xml = <<~XML
+        <rss><channel>
+          <item>
+            <title>2.2.12</title>
+            <link>https://example.com/download</link>
+            <sparkle:version>2212</sparkle:version>
+            <sparkle:shortVersionString>2.2.12</sparkle:shortVersionString>
+            <sparkle:informationalUpdate>
+              <sparkle:belowVersion>2208</sparkle:belowVersion>
+            </sparkle:informationalUpdate>
+          </item>
+        </channel></rss>
+      XML
+
+      hits = subject.send(:informational_appcast_entries_missing_versions, xml)
+
+      assert_eq(hits, [])
+      true
+    end
+
     test('flags informational appcast entries that compare display versions against numeric build versions') do
       xml = <<~XML
         <rss><channel>

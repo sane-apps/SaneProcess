@@ -1578,6 +1578,7 @@ class ValidationReport
     latest_item = snapshot[:latest_item].to_s
     latest_url = snapshot[:enclosure_url].to_s
     informational_entries_missing_links = Array(snapshot[:informational_entries_missing_links])
+    informational_entries_missing_versions = Array(snapshot[:informational_entries_missing_versions])
     informational_constraint_version_mismatches = Array(snapshot[:informational_constraint_version_mismatches])
 
     if latest_url.nil? || latest_url.empty?
@@ -1587,6 +1588,9 @@ class ValidationReport
 
     unless informational_entries_missing_links.empty?
       issues << "[#{app_name}] Informational appcast entries are missing item <link>: #{informational_entries_missing_links.join(', ')}"
+    end
+    unless informational_entries_missing_versions.empty?
+      issues << "[#{app_name}] Informational appcast entries are missing sparkle:version: #{informational_entries_missing_versions.join(', ')}"
     end
     unless informational_constraint_version_mismatches.empty?
       issues << "[#{app_name}] Informational appcast entries compare against display versions instead of CFBundleVersion: #{informational_constraint_version_mismatches.join(', ')}"
@@ -2956,6 +2960,18 @@ class ValidationReport
                 item[/<title>\s*([^<]+)\s*<\/title>/m, 1]
       acc << (version.to_s.strip.empty? ? '<unknown version>' : version.to_s.strip)
     end
+    informational_entries_missing_versions = body.scan(/<item\b.*?<\/item>/m).each_with_object([]) do |item, acc|
+      next unless item.include?('<sparkle:informationalUpdate')
+
+      item_build = item[/sparkle:version="([^"]+)"/, 1] ||
+                   item[/<sparkle:version>\s*([^<]+)\s*<\/sparkle:version>/m, 1]
+      next unless item_build.to_s.strip.empty?
+
+      version = item[/sparkle:shortVersionString="([^"]+)"/, 1] ||
+                item[/<sparkle:shortVersionString>\s*([^<]+)\s*<\/sparkle:shortVersionString>/m, 1] ||
+                item[/<title>\s*([^<]+)\s*<\/title>/m, 1]
+      acc << (version.to_s.strip.empty? ? '<unknown version>' : version.to_s.strip)
+    end
     informational_constraint_version_mismatches = body.scan(/<item\b.*?<\/item>/m).each_with_object([]) do |item, acc|
       next unless item.include?('<sparkle:informationalUpdate')
 
@@ -2983,6 +2999,7 @@ class ValidationReport
       minimum_system_version: minimum_system_version.to_s.strip,
       has_signature: has_signature,
       informational_entries_missing_links: informational_entries_missing_links,
+      informational_entries_missing_versions: informational_entries_missing_versions,
       informational_constraint_version_mismatches: informational_constraint_version_mismatches
     }
   rescue StandardError

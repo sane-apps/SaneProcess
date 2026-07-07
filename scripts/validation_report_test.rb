@@ -587,6 +587,59 @@ exit(run_tests('Validation report tests') do
       true
     end
 
+    test('parses informational appcast entries that omit Sparkle build versions') do
+      subject = WebsiteDistributionHarness.new(
+        products: [],
+        bodies: {
+          'https://saneclip.com/appcast.xml' => <<~XML
+            <?xml version="1.0"?>
+            <rss><channel>
+              <item>
+                <title>2.3.18</title>
+                <enclosure url="https://dist.saneclip.com/updates/SaneClip-2.3.18.zip"
+                           sparkle:version="2318"
+                           sparkle:shortVersionString="2.3.18"
+                           sparkle:edSignature="abc" />
+              </item>
+              <item>
+                <title>2.2.12</title>
+                <link>https://saneclip.com/download</link>
+                <sparkle:shortVersionString>2.2.12</sparkle:shortVersionString>
+                <sparkle:informationalUpdate>
+                  <sparkle:belowVersion>2208</sparkle:belowVersion>
+                </sparkle:informationalUpdate>
+              </item>
+            </channel></rss>
+          XML
+        }
+      )
+
+      snapshot = subject.send(:fetch_live_appcast_snapshot, 'saneclip.com')
+
+      assert_eq(snapshot[:informational_entries_missing_versions], ['2.2.12'])
+      true
+    end
+
+    test('flags informational live appcast entries missing Sparkle build versions') do
+      subject = ReleaseIntegrityHarness.new
+      issues = []
+      warnings = []
+      product = product_definition('SaneClip', slug: 'saneclip', domain: 'saneclip.com')
+      snapshot = {
+        body: '<rss><channel><item></item></channel></rss>',
+        latest_item: '<item></item>',
+        enclosure_url: 'https://dist.saneclip.com/updates/SaneClip-2.3.18.zip',
+        has_signature: true,
+        minimum_system_version: '14.0',
+        informational_entries_missing_versions: ['2.2.12']
+      }
+
+      subject.send(:check_live_appcast_snapshot, snapshot, product, issues, warnings)
+
+      assert(issues.any? { |issue| issue.include?('SaneClip') && issue.include?('missing sparkle:version') && issue.include?('2.2.12') })
+      true
+    end
+
     test('accepts a documented product-specific macOS floor exception') do
       subject = ReleaseIntegrityHarness.new
       issues = []

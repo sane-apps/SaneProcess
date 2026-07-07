@@ -777,6 +777,23 @@ module SaneMasterModules
       []
     end
 
+    def informational_appcast_entries_missing_versions(xml)
+      xml.to_s.scan(/<item\b.*?<\/item>/m).each_with_object([]) do |item, acc|
+        next unless item.include?('<sparkle:informationalUpdate')
+
+        item_build = item[/<sparkle:version>\s*([^<\s]+)\s*<\/sparkle:version>/m, 1] ||
+                     item[/sparkle:version="([^"]+)"/, 1]
+        next unless item_build.to_s.strip.empty?
+
+        version = item[/<sparkle:shortVersionString>\s*([^<\s]+)\s*<\/sparkle:shortVersionString>/m, 1] ||
+                  item[/sparkle:shortVersionString="([^"]+)"/, 1] ||
+                  item[/<title>\s*([^<]+)\s*<\/title>/m, 1]
+        acc << (version.to_s.strip.empty? ? '<unknown version>' : version.to_s.strip)
+      end
+    rescue StandardError
+      []
+    end
+
     def informational_appcast_entries_mismatched_constraint_versions(xml)
       xml.to_s.scan(/<item\b.*?<\/item>/m).each_with_object([]) do |item, acc|
         next unless item.include?('<sparkle:informationalUpdate')
@@ -3772,6 +3789,7 @@ module SaneMasterModules
         appcast_url = appcast_item[:url]
         project_version = project_marketing_version(project_yml_content)
         informational_entries_missing_links = informational_appcast_entries_missing_links(safe_read(appcast_path))
+        informational_entries_missing_versions = informational_appcast_entries_missing_versions(safe_read(appcast_path))
         informational_constraint_version_mismatches = informational_appcast_entries_mismatched_constraint_versions(safe_read(appcast_path))
 
         gate_failures = []
@@ -3785,6 +3803,9 @@ module SaneMasterModules
         end
         unless informational_entries_missing_links.empty?
           gate_failures << "Informational appcast entries missing item <link>: #{informational_entries_missing_links.join(', ')}"
+        end
+        unless informational_entries_missing_versions.empty?
+          gate_failures << "Informational appcast entries missing sparkle:version: #{informational_entries_missing_versions.join(', ')}"
         end
         unless informational_constraint_version_mismatches.empty?
           gate_failures << "Informational appcast entries compare against display versions instead of CFBundleVersion: #{informational_constraint_version_mismatches.join(', ')}"
