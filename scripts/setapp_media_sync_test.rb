@@ -13,6 +13,16 @@ include TestFramework
 SCRIPT_PATH = File.expand_path('setapp_media_sync.rb', __dir__)
 SANEMASTER_PATH = File.expand_path('SaneMaster.rb', __dir__)
 
+# The portal-payload fixtures need a real, currently-enabled Setapp app config
+# (its listing screenshots must exist on disk). This was hardcoded to SaneBar,
+# which broke every fixture when SaneBar's Setapp listing was retired
+# (setapp.enabled: false). Resolve the first enabled app at runtime and fail
+# loudly if none is enabled.
+def live_setapp_fixture_app
+  SetappConfig.apps.first ||
+    raise('setapp_media_sync tests need at least one Setapp-enabled app in apps/*/.saneprocess')
+end
+
 def expect_abort_includes(expected)
   begin
     yield
@@ -115,7 +125,11 @@ exit(run_tests('Setapp Media Sync Tests') do
       assert(status.success?, output)
       payload = JSON.parse(output)
       assert_eq(true, payload['dry_run'])
-      assert_eq(%w[SaneClip SaneBar], payload['apps'].map { |app| app['name'] })
+      # The synced set is whatever is Setapp-enabled in live manifests (was
+      # hardcoded to [SaneClip, SaneBar] and broke when SaneBar retired).
+      enabled = SetappConfig.apps.map { |app| app[:name] }
+      assert(enabled.any?, 'expected at least one Setapp-enabled app')
+      assert_eq(enabled, payload['apps'].map { |app| app['name'] })
       assert(payload['apps'].all? { |app| app['screenshots'].length == 5 }, output)
       assert(payload['apps'].all? { |app| app['setapp_url'].to_s.start_with?('https://setapp.com/apps/') }, output)
       assert(payload['apps'].all? { |app| app['public_page_verification_required'] == true }, output)
@@ -174,7 +188,7 @@ exit(run_tests('Setapp Media Sync Tests') do
 
   test_category('portal payload') do
     test('sync uploads manifest screenshots, preserves video media, and verifies order') do
-      app = SetappConfig.apps.find { |candidate| candidate[:name] == 'SaneBar' }
+      app = live_setapp_fixture_app
       sync = FakeSetappMediaSync.new(app: app)
       assert_eq(0, sync.run)
 
@@ -186,7 +200,7 @@ exit(run_tests('Setapp Media Sync Tests') do
     end
 
     test('sync returns nonzero until public setapp.com proof is acknowledged') do
-      app = SetappConfig.apps.find { |candidate| candidate[:name] == 'SaneBar' }
+      app = live_setapp_fixture_app
       sync = FakeSetappMediaSync.new(app: app, allow_pending_public_page: false)
 
       assert_eq(4, sync.run)
@@ -194,7 +208,7 @@ exit(run_tests('Setapp Media Sync Tests') do
 
     test('public setapp.com proof receipt clears the pending listing block') do
       Dir.mktmpdir('setapp-public-proof-') do |dir|
-        app = SetappConfig.apps.find { |candidate| candidate[:name] == 'SaneBar' }
+        app = live_setapp_fixture_app
         evidence = File.join(dir, 'sanebar-setapp-public-page.png')
         File.write(evidence, 'screenshot receipt')
         proof = File.join(dir, 'setapp-public-proof.json')
@@ -221,7 +235,7 @@ exit(run_tests('Setapp Media Sync Tests') do
 
     test('mismatched public setapp.com proof receipt keeps the listing block active') do
       Dir.mktmpdir('setapp-public-proof-') do |dir|
-        app = SetappConfig.apps.find { |candidate| candidate[:name] == 'SaneBar' }
+        app = live_setapp_fixture_app
         evidence = File.join(dir, 'sanebar-setapp-public-page.png')
         File.write(evidence, 'screenshot receipt')
         proof = File.join(dir, 'setapp-public-proof.json')
@@ -247,13 +261,13 @@ exit(run_tests('Setapp Media Sync Tests') do
     end
 
     test('sync fails if the portal drops preserved non-screenshot media') do
-      app = SetappConfig.apps.find { |candidate| candidate[:name] == 'SaneBar' }
+      app = live_setapp_fixture_app
       sync = FakeSetappMediaSync.new(app: app, drop_preserved: true)
       expect_abort_includes('did not preserve non-screenshot media') { sync.run }
     end
 
     test('sync fails if the portal does not keep the requested screenshot order') do
-      app = SetappConfig.apps.find { |candidate| candidate[:name] == 'SaneBar' }
+      app = live_setapp_fixture_app
       sync = FakeSetappMediaSync.new(app: app, wrong_order: true)
       expect_abort_includes('did not verify') { sync.run }
     end

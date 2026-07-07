@@ -11,6 +11,12 @@ include TestFramework
 SCRIPT_PATH = File.expand_path('setapp_status.rb', __dir__)
 SANEMASTER_PATH = File.expand_path('SaneMaster.rb', __dir__)
 
+# Pin the apps under test explicitly instead of relying on the live
+# SetappConfig defaults: those track each app's .saneprocess manifest, whose
+# version ids move with every Setapp release (SaneClip 46886 → 47647 broke
+# every fixture here) and retired apps drop out entirely (SaneBar).
+FIXTURE_APPS = ['--app', 'SaneClip:1847:46886', '--app', 'SaneBar:1848:46885'].freeze
+
 def fixture_file(payload)
   file = Tempfile.new(['setapp-status-fixture', '.json'])
   file.write(JSON.pretty_generate(payload))
@@ -41,7 +47,7 @@ exit(run_tests('Setapp Status Tests') do
           }
         }
       )
-      output, status = Open3.capture2e('ruby', SCRIPT_PATH, '--fixture', fixture.path, '--json')
+      output, status = Open3.capture2e('ruby', SCRIPT_PATH, *FIXTURE_APPS, '--fixture', fixture.path, '--json')
 
       assert(status.success?, output)
       payload = JSON.parse(output)
@@ -71,7 +77,7 @@ exit(run_tests('Setapp Status Tests') do
           }
         }
       )
-      output, status = Open3.capture2e('ruby', SCRIPT_PATH, '--fixture', fixture.path)
+      output, status = Open3.capture2e('ruby', SCRIPT_PATH, *FIXTURE_APPS, '--fixture', fixture.path)
 
       assert(status.success?, output)
       assert_includes(output, 'SaneClip: Released')
@@ -93,7 +99,7 @@ exit(run_tests('Setapp Status Tests') do
         },
         '46885' => { 'data' => { 'status' => 10, 'version' => '2171', 'ui_version' => '2.1.71' } }
       )
-      output, status = Open3.capture2e('ruby', SCRIPT_PATH, '--fixture', fixture.path)
+      output, status = Open3.capture2e('ruby', SCRIPT_PATH, *FIXTURE_APPS, '--fixture', fixture.path)
 
       assert(!status.success?, output)
       assert_includes(output, 'reviewer note: present (redacted)')
@@ -107,7 +113,7 @@ exit(run_tests('Setapp Status Tests') do
         '46886' => { 'data' => { 'status' => 5, 'version' => '2309', 'ui_version' => '2.3.9' } },
         '46885' => { 'data' => { 'status' => 2, 'version' => '2168', 'ui_version' => '2.1.68' } }
       )
-      output, status = Open3.capture2e('ruby', SCRIPT_PATH, '--fixture', fixture.path)
+      output, status = Open3.capture2e('ruby', SCRIPT_PATH, *FIXTURE_APPS, '--fixture', fixture.path)
 
       assert(!status.success?, output)
       assert_eq(2, status.exitstatus)
@@ -124,7 +130,7 @@ exit(run_tests('Setapp Status Tests') do
         '46886' => { 'data' => { 'status' => 10, 'version' => '2309', 'ui_version' => '2.3.9' } },
         '46885' => { 'data' => { 'status' => 9, 'version' => '2171', 'ui_version' => '2.1.71' } }
       )
-      output, status = Open3.capture2e('ruby', SCRIPT_PATH, '--fixture', fixture.path)
+      output, status = Open3.capture2e('ruby', SCRIPT_PATH, *FIXTURE_APPS, '--fixture', fixture.path)
 
       assert(!status.success?, output)
       assert_eq(2, status.exitstatus)
@@ -139,7 +145,7 @@ exit(run_tests('Setapp Status Tests') do
       fixture = fixture_file(
         '46886' => { 'data' => { 'status' => 10, 'version' => '2309', 'ui_version' => '2.3.9' } }
       )
-      output, status = Open3.capture2e('ruby', SCRIPT_PATH, '--fixture', fixture.path)
+      output, status = Open3.capture2e('ruby', SCRIPT_PATH, *FIXTURE_APPS, '--fixture', fixture.path)
 
       assert(!status.success?, output)
       assert_eq(3, status.exitstatus)
@@ -156,7 +162,7 @@ exit(run_tests('Setapp Status Tests') do
         '46886' => { 'data' => { 'status' => 5, 'version' => '2309', 'ui_version' => '2.3.9' } },
         '46885' => { 'data' => { 'status' => 2, 'version' => '2168', 'ui_version' => '2.1.68' } }
       )
-      output, status = Open3.capture2e('ruby', SCRIPT_PATH, '--fixture', fixture.path, '--soft')
+      output, status = Open3.capture2e('ruby', SCRIPT_PATH, *FIXTURE_APPS, '--fixture', fixture.path, '--soft')
 
       assert(status.success?, output)
       assert_includes(output, 'Needs Revision')

@@ -51,6 +51,7 @@ class HookTests
     test_group("UTF-8 Pinned Reads") do
       test("non-ASCII visual receipt survives locale-less read") { test_visual_receipt_non_ascii_locale }
       test("non-ASCII learnings survive locale-less read") { test_learnings_non_ascii_locale }
+      test("em-dash payload signs and round-trips under C locale") { test_state_signer_em_dash_c_locale }
     end
 
     # Umbrella-session artifact discovery + transcript project resolution
@@ -221,6 +222,37 @@ class HookTests
     end
   end
 
+  # Regression (hit live 2026-07-07): gate_cert.rb recorded an override note
+  # containing an em dash; under a C locale the note string reaches
+  # StateSigner mis-tagged and to_json raised
+  # (Encoding::UndefinedConversionError on ruby 2.6/json 2.1 for BINARY,
+  # JSON::GeneratorError on ruby 4/json 2.19 for US-ASCII — json 3.0 will
+  # raise for BINARY too), crashing the hook mid-write. Both taggings must
+  # sign, and the signature computed over the mis-tagged payload must verify
+  # against the UTF-8 bytes read back from disk.
+  def test_state_signer_em_dash_c_locale
+    require 'tmpdir'
+    Dir.mktmpdir('signer-utf8-') do |dir|
+      path = File.join(dir, 'signed.json')
+      script = 'require File.join(ENV["HOOKS_DIR"], "state_signer"); ' \
+               'raw = "override \xE2\x80\x94 em dash"; ' \
+               '["ASCII-8BIT", "US-ASCII"].each_with_index { |enc, i| ' \
+               'note = raw.dup.force_encoding(enc); ' \
+               'path = ENV["SIGNED_PATH"] + i.to_s; ' \
+               'StateSigner.write_signed(path, { "note" => note }); ' \
+               'data = StateSigner.read_verified(path); ' \
+               'exit(1) unless data && data["note"].unpack1("H*") == note.unpack1("H*") }; ' \
+               'exit(0)'
+      _out, _err, status = Open3.capture3(
+        { 'HOOKS_DIR' => __dir__, 'SIGNED_PATH' => path,
+          'CLAUDE_HOOK_SECRET' => ENV['CLAUDE_HOOK_SECRET'],
+          'LANG' => 'C', 'LC_ALL' => 'C' },
+        'ruby', '-E', 'US-ASCII', '-e', script
+      )
+      status.success?
+    end
+  end
+
   # `release.sh --project $PWD` reaches the transcript unexpanded; the LS
   # staging step must resolve it from the command's own `cd` (ssh-mini
   # pattern) or the entry cwd — never pass the literal `$PWD` through (that
@@ -267,7 +299,12 @@ class HookTests
         'host' => 'Mac Mini',
         'inspected' => true,
         'generated_at' => Time.now.iso8601,
-        'screenshots' => [shot]
+        'screenshots' => [shot],
+        # claim-mapped evidence is required since the claims-to-screenshot
+        # validation (visual_receipt.rb claim_mapped_visual_evidence?)
+        'claims' => [
+          { 'id' => 'fake-claim', 'status' => 'passed', 'screenshots' => [shot] }
+        ]
       }
       File.write(File.join(audit_dir, 'receipt.json'), JSON.generate(receipt), encoding: Encoding::UTF_8)
 

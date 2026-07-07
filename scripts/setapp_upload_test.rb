@@ -366,9 +366,13 @@ exit(run_tests('Setapp Upload Tests') do
         :@archive_metadata,
         { app_name: 'SaneClip', bundle_id: 'com.saneclip.app-setapp', version: '2309', ui_version: '2.3.9' }
       )
-      upload.instance_variable_set(:@options, { app_id: '1847', version_id: '46885' })
+      # The pinned version id lives in the app's .saneprocess manifest and moves
+      # with every Setapp release; resolve it at runtime so this test never goes
+      # stale (hardcoded 46886 broke when SaneClip advanced to 47647).
+      pinned = SetappConfig.portal_targets['1847'][:version_id].to_s
+      upload.instance_variable_set(:@options, { app_id: '1847', version_id: "#{pinned}0" })
 
-      expect_abort_includes('expects version id 46886') do
+      expect_abort_includes("expects version id #{pinned}") do
         upload.send(:validate_portal_target_matches_archive!)
       end
     end
@@ -551,6 +555,10 @@ exit(run_tests('Setapp Upload Tests') do
         zip_path = File.join(dir, 'SaneClip-Setapp.zip')
         zip_app(app_root, zip_path)
 
+        # Resolve the pinned version id at runtime — it moves with every
+        # Setapp release and a hardcoded id makes this test fail on staleness,
+        # not on the behavior under test (token-free dry-run validation).
+        pinned = SetappConfig.portal_targets['1847'][:version_id].to_s
         output, status = Open3.capture2e(
           'ruby',
           SCRIPT_PATH,
@@ -561,7 +569,7 @@ exit(run_tests('Setapp Upload Tests') do
           '--app-id',
           '1847',
           '--version-id',
-          '46886',
+          pinned,
           '--release-notes',
           'Launch.',
           '--no-review-comments-needed'
@@ -692,7 +700,7 @@ exit(run_tests('Setapp Upload Tests') do
           '--app-id',
           '1847',
           '--version-id',
-          '46886',
+          SetappConfig.portal_targets['1847'][:version_id].to_s,
           '--release-notes',
           'Launch.',
           '--no-review-comments-needed',

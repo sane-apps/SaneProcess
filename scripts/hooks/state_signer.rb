@@ -46,7 +46,11 @@ module StateSigner
     end
 
     def sign(data)
-      payload = data.to_json
+      # Pin UTF-8 before digesting: under a C locale, caller strings arrive
+      # tagged US-ASCII/BINARY and to_json raises
+      # Encoding::UndefinedConversionError on any non-ASCII byte (e.g. an
+      # em dash in a gate-override note, hit live 2026-07-07).
+      payload = deep_utf8(data).to_json
       OpenSSL::HMAC.hexdigest('SHA256', secret, payload)
     end
 
@@ -57,7 +61,11 @@ module StateSigner
 
     # Write data with embedded signature
     def write_signed(path, data)
-      data = data.dup
+      # deep_utf8 both deep-copies and re-tags strings so pretty_generate and
+      # File.write cannot raise under a non-UTF-8 locale. The signature is
+      # computed over the normalized payload, so read_verified (which parses
+      # the file as UTF-8) reproduces the exact same bytes.
+      data = deep_utf8(data)
       data[TIMESTAMP_KEY] = Time.now.utc.iso8601
 
       # Remove existing signature before computing new one
@@ -65,7 +73,7 @@ module StateSigner
       data[SIGNATURE_KEY] = sign(data)
 
       FileUtils.mkdir_p(File.dirname(path))
-      File.write(path, JSON.pretty_generate(data))
+      File.write(path, JSON.pretty_generate(data), encoding: Encoding::UTF_8)
       data
     end
 
@@ -119,6 +127,26 @@ module StateSigner
     end
 
     private
+
+    # Deep copy with every String re-tagged/transcoded to valid UTF-8. Hook
+    # subprocesses without a UTF-8 locale hand us US-ASCII/BINARY-tagged
+    # strings whose bytes are really UTF-8; re-tag when the bytes are valid
+    # UTF-8, transcode with replacement otherwise so signing never raises.
+    def deep_utf8(value)
+      case value
+      when String
+        utf8 = value.dup.force_encoding(Encoding::UTF_8)
+        return utf8 if utf8.valid_encoding?
+
+        value.encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: '?')
+      when Hash
+        value.each_with_object({}) { |(k, v), out| out[deep_utf8(k)] = deep_utf8(v) }
+      when Array
+        value.map { |item| deep_utf8(item) }
+      else
+        value
+      end
+    end
 
     def macos?
       RUBY_PLATFORM.include?('darwin')

@@ -708,6 +708,16 @@ module SaneMasterModules
       puts 'Do not hand-wave past it — invoke the gate certifier (ARCHITECTURE.md → ADR-011 Gate Certifier):'
       puts 'an evidence-reading examiner either DOES the missing work for you, or — only if the'
       puts 'gate is genuinely wrong — records a signed override. Repeated overrides auto-flag the gate.'
+      # State the exact ids the certifier must pass: a token minted under the
+      # wrong gate id never matches its clears? check (hit live 2026-07-07 —
+      # a verify-escalation block was overridden under gate 'research' and
+      # silently failed to clear).
+      if verify_block
+        puts "Certifier ids for THIS block: --gate #{VERIFY_ESCALATION_GATE_NAME} --slug verify"
+      end
+      unsatisfied_locks.each do |lock|
+        puts "Certifier ids for THIS block: --gate #{RESEARCH_GATE_NAME} --slug #{lock[:slug]}"
+      end
       puts ''
       exit 1
     end

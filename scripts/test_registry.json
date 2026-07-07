@@ -230,6 +230,12 @@
       "cmd": ["ruby", "scripts/mini/mini_memory_guard_test.rb"]
     },
     {
+      "path": "scripts/hooks/session_start_cleanup_test.rb",
+      "label": "SaneProcess session-start dev-server reaper classifier tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/hooks/session_start_cleanup_test.rb"]
+    },
+    {
       "path": "scripts/mini/mini_train_cleanup_test.rb",
       "label": "SaneProcess Mini train cleanup tests",
       "status": "required",
