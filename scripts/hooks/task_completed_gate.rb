@@ -129,8 +129,12 @@ def uncommitted_working_tree_paths(cwd)
   out, status = Open3.capture2e('git', '-C', root, 'status', '--porcelain', '--untracked-files=all')
   return nil unless status.success?
 
-  out.each_line.filter_map do |line|
-    path = line[3..]&.strip
+  # map+compact, not filter_map: hooks run under the system ruby (2.6), where
+  # Enumerator#filter_map does not exist — it raised NoMethodError into the
+  # rescue below, silently reverting this gate to counter behavior (the exact
+  # stale-entry deadlock the net-diff judgment exists to fix).
+  out.each_line.map do |line|
+    path = line[3..-1]&.strip
     next nil if path.nil? || path.empty?
 
     # Rename entries are "old -> new"; the new path is what currently exists.
@@ -138,7 +142,7 @@ def uncommitted_working_tree_paths(cwd)
     # git quotes paths with special characters.
     path = path[1..-2] if path.start_with?('"') && path.end_with?('"')
     normalize_tree_path(File.expand_path(path, root))
-  end
+  end.compact
 rescue StandardError
   nil
 end
