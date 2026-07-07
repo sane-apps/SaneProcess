@@ -294,8 +294,23 @@ receipts. Run `ruby scripts/SaneMaster.rb` or `help <category>` for full help.
 | Runtime launch/proof | `ruby scripts/SaneMaster.rb test_mode` plus app-specific `customer_ui_sweep`, or `visual_smoke` only when no app sweep exists |
 | Verification scope plan | `ruby scripts/SaneMaster.rb proof_plan --task "..."` |
 | Support inbox | `ruby scripts/SaneMaster.rb check_inbox` |
+| Business appointments | `ruby scripts/SaneMaster.rb business_appointment add --title TITLE --start "YYYY-MM-DD HH:MM" --attendee EMAIL` |
 | Sales/download/funnel | `sales`, `downloads`, `events` |
 | Machine cleanup | `ruby scripts/SaneMaster.rb machine_cleanup --host mini --apply` |
+
+Business appointment live writes require `SANEAPPS_BUSINESS_CALENDAR_ID` and
+`GOOGLE_CALENDAR_ACCESS_TOKEN`. Preview mode prints the required
+`confirm_send` phrase; live mode requires that exact phrase, checks for an
+existing event by dedupe key, creates a no-attendee event first, verifies Google
+reports `hi@saneapps.com` as organizer, then adds attendees with notifications.
+If organizer proof fails, no attendee invite is sent.
+
+Business appointment follow-up email uses the SaneCite/prospecting identity,
+not the support-email identity: `Stephan Joseph`, `SaneCite Founder`, and the
+approved phone number `7277589785`. SaneCite prospect emails should use the
+existing SaneCite visual email frame from the SaneCite codebase (dark header,
+warm off-white page, cyan accent, SaneCite wordmark) and must not use the
+generic support signoff.
 
 `process_eval` is the gate for real workflow improvement, not synthetic
 busywork. Trace fixtures define required event shapes, but slimming/expanding

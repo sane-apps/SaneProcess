@@ -89,7 +89,7 @@ exit(run_tests('Sane Bash Guards Dispatcher Tests') do
     )
 
     assert_eq(status.exitstatus, 2)
-    assert_includes(err, 'raw Mini screenshot command')
+    assert_includes(err, 'raw Mini screen capture')
     assert_includes(err, 'capture-mini-screenshot.sh desktop')
     true
   end
@@ -106,7 +106,7 @@ exit(run_tests('Sane Bash Guards Dispatcher Tests') do
     )
 
     assert_eq(status.exitstatus, 2)
-    assert_includes(err, 'raw Mini screenshot command')
+    assert_includes(err, 'raw Mini screen capture')
     assert_includes(err, 'capture-mini-screenshot.sh desktop')
     true
   end
@@ -123,7 +123,7 @@ exit(run_tests('Sane Bash Guards Dispatcher Tests') do
     )
 
     assert_eq(status.exitstatus, 2)
-    assert_includes(err, 'raw Mini screenshot command')
+    assert_includes(err, 'raw Mini screen capture')
     true
   end
 
@@ -139,7 +139,68 @@ exit(run_tests('Sane Bash Guards Dispatcher Tests') do
     )
 
     assert_eq(status.exitstatus, 2)
-    assert_includes(err, 'raw Mini screenshot command')
+    assert_includes(err, 'raw Mini screen capture')
+    true
+  end
+
+  test('blocks raw Mini peekaboo screen capture over ssh') do
+    _out, err, status = run_guard(
+      'sane_bash_guards.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => "ssh mini 'peekaboo image --mode screen --path /tmp/x.png'"
+        }
+      }
+    )
+
+    assert_eq(status.exitstatus, 2)
+    assert_includes(err, 'raw Mini screen capture')
+    true
+  end
+
+  test('blocks raw Mini ffmpeg avfoundation screen capture over ssh') do
+    _out, err, status = run_guard(
+      'sane_bash_guards.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => "ssh mini 'ffmpeg -f avfoundation -i 2:none -t 3 /tmp/x.mp4'"
+        }
+      }
+    )
+
+    assert_eq(status.exitstatus, 2)
+    assert_includes(err, 'raw Mini screen capture')
+    true
+  end
+
+  test('allows Mini screen capture routed through the mini-gui-run wrapper') do
+    _out, _err, status = run_guard(
+      'sane_bash_guards.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => {
+          'command' => "ssh mini 'bash ~/SaneApps/infra/SaneProcess/scripts/mini/mini-gui-run.sh --close-window -- \"peekaboo image --path /tmp/x.png\"'"
+        }
+      }
+    )
+
+    assert_eq(status.exitstatus, 0)
+    true
+  end
+
+  test('allows cliclick and ffmpeg file conversion over plain ssh') do
+    %W[
+      ssh\ mini\ 'cliclick\ p'
+      ssh\ mini\ 'ffmpeg\ -i\ in.mp4\ out.mp4'
+    ].each do |command|
+      _out, _err, status = run_guard(
+        'sane_bash_guards.rb',
+        { 'tool_name' => 'Bash', 'tool_input' => { 'command' => command } }
+      )
+      assert_eq(status.exitstatus, 0)
+    end
     true
   end
 

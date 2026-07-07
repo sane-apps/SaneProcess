@@ -38,6 +38,12 @@ Examples:
   capture-mini-screenshot.sh --list-windows --app "SaneClip"
   capture-mini-screenshot.sh --app "SaneClip" --window-name "Settings" --mode temp
   capture-mini-screenshot.sh --active-window --mode temp
+  capture-mini-screenshot.sh --video --duration 5 --out /tmp/rec.mp4 --copy-to /tmp/local  # SCREEN RECORDING
+
+Video:
+  --video [--duration SECONDS] [--out REMOTE_MP4] [--copy-to LOCAL_DIR]
+  Records the Mini screen with ffmpeg inside the granted Terminal session.
+  Override the avfoundation screen index with MINI_SCREEN_AVF_INDEX (default 2).
 
 Notes:
   - Runs inside the Mini's logged-in GUI Terminal session.
@@ -56,9 +62,37 @@ EOF
 [ $# -gt 0 ] || usage
 
 local_copy_to=""
+capture_video=false
+video_duration=5
+video_out=""
 forward_args=()
 while [ $# -gt 0 ]; do
   case "${1:-}" in
+    --video)
+      capture_video=true
+      ;;
+    --duration)
+      shift
+      [ $# -gt 0 ] || {
+        echo "Missing value for --duration" >&2
+        usage
+      }
+      video_duration="$1"
+      ;;
+    --duration=*)
+      video_duration="${1#--duration=}"
+      ;;
+    --out)
+      shift
+      [ $# -gt 0 ] || {
+        echo "Missing value for --out" >&2
+        usage
+      }
+      video_out="$1"
+      ;;
+    --out=*)
+      video_out="${1#--out=}"
+      ;;
     --copy-to)
       shift
       [ $# -gt 0 ] || {
@@ -84,7 +118,21 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-set -- "${forward_args[@]}"
+
+if $capture_video; then
+  case "$video_duration" in
+    ''|*[!0-9]*)
+      echo "--duration must be a positive integer number of seconds" >&2
+      exit 2
+      ;;
+  esac
+  [ "$video_duration" -gt 0 ] || {
+    echo "--duration must be a positive integer number of seconds" >&2
+    exit 2
+  }
+fi
+
+set -- ${forward_args[@]+"${forward_args[@]}"}
 
 if [ "${1:-}" = "desktop" ]; then
   shift
@@ -101,12 +149,14 @@ if [ "${1:-}" = "desktop" ]; then
   fi
 fi
 
-[ -d "$LOCAL_SKILL_DIR" ] || {
-  echo "Missing local screenshot helper scripts at: $LOCAL_SKILL_DIR" >&2
-  echo "Install the SaneProcess screenshot helper bundle or set LOCAL_SCREENSHOT_HELPER_DIR." >&2
-  echo "Run this wrapper from the controlling machine, not from a plain ssh shell on the Mini." >&2
-  exit 1
-}
+if ! $capture_video; then
+  [ -d "$LOCAL_SKILL_DIR" ] || {
+    echo "Missing local screenshot helper scripts at: $LOCAL_SKILL_DIR" >&2
+    echo "Install the SaneProcess screenshot helper bundle or set LOCAL_SCREENSHOT_HELPER_DIR." >&2
+    echo "Run this wrapper from the controlling machine, not from a plain ssh shell on the Mini." >&2
+    exit 1
+  }
+fi
 
 has_active_window=false
 has_explicit_target=false
@@ -337,6 +387,31 @@ else
 fi
 REMOTE_MINI_GUI_RUN="$(expand_remote_home_path "$REMOTE_MINI_GUI_RUN" "$remote_home")"
 REMOTE_VISUAL_GUARD="$(expand_remote_home_path "$REMOTE_VISUAL_GUARD" "$remote_home")"
+
+# --- Screen recording (video) ---------------------------------------------
+# ffmpeg runs inside the Mini's logged-in GUI Terminal session (via
+# mini-gui-run.sh), the same granted context the screenshot path uses — the
+# only reliable way to capture the Mini screen over ssh (a direct ssh
+# ffmpeg/screencapture is blocked by TCC responsible-process attribution).
+if $capture_video; then
+  video_out="${video_out:-/tmp/mini-record.mp4}"
+  screen_index="${MINI_SCREEN_AVF_INDEX:-2}" # avfoundation "Capture screen 0"
+  ff_out_q="$(printf '%q' "$video_out")"
+  ff_cmd="ffmpeg -y -f avfoundation -capture_cursor 1 -framerate 15 -i ${screen_index}:none -t ${video_duration} ${ff_out_q} && printf 'RECORDING %s\\n' ${ff_out_q}"
+  video_runner="$(remote_cmd bash "$REMOTE_MINI_GUI_RUN" --title "Mini Screen Recording" --close-window -- "$ff_cmd")"
+  vtimeout=$((video_duration + 30))
+  video_output="$(run_remote_runner_with_timeout "$vtimeout" "$resolved_mini_host" "$video_runner")" || {
+    echo "Mini screen recording failed. If it is a permission error, grant Screen Recording to Terminal on the Mini (this wrapper runs ffmpeg inside Terminal's session)." >&2
+    exit 1
+  }
+  printf '%s\n' "$video_output"
+  if [ -n "$local_copy_to" ]; then
+    mkdir -p "$local_copy_to"
+    rsync -az "${resolved_mini_host}:${video_out}" "$local_copy_to/"
+    echo "Copied recording to $local_copy_to/" >&2
+  fi
+  exit 0
+fi
 
 if $use_local_runner; then
   mkdir -p "$REMOTE_HELPER_DIR"

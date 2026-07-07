@@ -128,6 +128,14 @@ def track_visual_requirement_from_edit(file_path)
     basename = File.basename(file_path)
     visual[:required_files] << basename unless visual[:required_files].include?(basename)
     visual[:required_files] = visual[:required_files].last(20)
+    # Keep the FULL path too so the stop gate can drop phantom files that no
+    # longer exist on disk (deleted/reverted/renamed, or carried over from a
+    # different checkout). Only paths recorded here — from the main session's
+    # own Edit/Write and bash mutations — can ever require a visual receipt;
+    # subagent-internal edits never reach this per-tool tracking path.
+    visual[:required_files_paths] ||= []
+    visual[:required_files_paths] << file_path unless visual[:required_files_paths].include?(file_path)
+    visual[:required_files_paths] = visual[:required_files_paths].last(20)
     visual
   end
 rescue StandardError

@@ -157,6 +157,11 @@ module SaneToolsChecks
       return nil unless tool_name == 'Bash'
 
       command = tool_input['command'] || tool_input[:command] || ''
+      # A git commit that merely DESCRIBES a raw-screenshot fix in its message is
+      # not an executed screenshot command. Do not treat commit message content
+      # (which routinely mentions ssh mini + the screenshot tool) as a real
+      # raw-capture invocation.
+      return nil if git_commit_command?(command)
       return nil unless command.match?(/\bssh\s+(?:[^'"]*\s+)?mini\b/i)
       return nil unless command.match?(/\bscreencapture\b/i)
 
@@ -165,6 +170,14 @@ module SaneToolsChecks
       "That path can fail outside the Mini's logged-in GUI session and produce false blockers.\n" \
       "DO THIS: run #{MINI_SCREENSHOT_WRAPPER} with the needed --app/--window-name/--path arguments.\n" \
       "For app-owned SaneApps captures, this wrapper also runs the visual workspace guard."
+    end
+
+    # True when the command's leading verb is `git commit` (optionally after a
+    # `cd ... &&`). Used to excuse commit MESSAGE content — which routinely
+    # mentions screenshot tools, heredocs, etc. — from command-shape guards.
+    def git_commit_command?(command)
+      leading = command.to_s.sub(/\A\s*cd\s+[^\n&;|]+&&\s*/, '').lstrip
+      leading.match?(/\A(?:\S*\/)?git\s+commit\b/)
     end
 
     def check_secret_startup_autoload(tool_name, tool_input, edit_tools)
@@ -495,6 +508,13 @@ module SaneToolsChecks
       # strings removes literal '>' false positives ('<item>', "a > b")
       # without hiding real redirects.
       scan = command.gsub(/'[^']*'/, "''").gsub(/"[^"]*"/, '""')
+
+      # `git commit -F - <<'EOF' ... EOF` (and other commit-message heredocs) feed
+      # the COMMIT MESSAGE on stdin, not a file write. For git-commit commands,
+      # drop the heredoc operator from the scan so the heredoc pattern does not
+      # false-positive. A genuine redirect (>, >>, tee) in the same command is
+      # left intact and still caught below.
+      scan = scan.gsub(/<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?/, '<<') if git_commit_command?(command)
 
       if scan.match?(bash_file_write_pattern)
         target_match = scan.match(/(?:>|>>|tee\s+)\s*([^\s|&;]+)/)

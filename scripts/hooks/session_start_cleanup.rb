@@ -306,4 +306,58 @@ module SessionStartCleanup
   rescue StandardError => e
     log_debug("Subagent cleanup error: #{e.class}: #{e.message}")
   end
+
+  # Reap leaked ephemeral dev/test servers an agent spawned in a PREVIOUS session (RAM discipline — these
+  # accumulate and are a top cause of the Air OOM-killing Claude Code and losing work). POSITIVE ALLOWLIST
+  # ONLY — narrow, named test-harness signatures plus the 8800-8899 QA static-server range — so it can never
+  # match a build (wrangler/npm/next/vite/xcodebuild/Docker) or a server the user runs for their own work.
+  # Same orphan gate as the other cleanups: never touches a process in a living session's tree or one still
+  # descended from a living Claude session.
+  # `-m http.server` is unambiguously Python's stdlib dev server (robust to the binary name/case, e.g. the
+  # framework build shows as ".../MacOS/Python"); scoped to the 8800-8899 QA port range agents use.
+  DEV_SERVER_ALLOWLIST = [
+    %r{/dev/(mockserver|entserver)\.mjs\b},
+    %r{websites/[^/\s]+/dev/[^/\s]*server[^/\s]*\.mjs\b},
+    %r{-m\s+http\.server\s+88\d\d\b}
+  ].freeze
+
+  def dev_server_candidate?(cmd)
+    return false if cmd.nil? || cmd.include?('grep') || cmd.include?('reap-dev-servers')
+
+    DEV_SERVER_ALLOWLIST.any? { |re| cmd.match?(re) }
+  end
+
+  def cleanup_orphaned_dev_servers
+    all_trees = get_all_claude_trees
+    maps = build_process_maps
+    killed = 0
+
+    maps[:commands].each do |pid, cmd|
+      next unless dev_server_candidate?(cmd)
+      next if all_trees[pid] # belongs to a living session's process tree
+      # Only reap if the LAUNCHER is dead (reparented to launchd, ppid<=1). A server the USER is actively
+      # running from their own terminal has a live parent shell (ppid>1) and is spared — same orphan gate the
+      # Claude-session cleanup uses. This is what keeps the 8800-8899 http.server match safe.
+      ppid = begin
+        `ps -o ppid= -p #{pid} 2>/dev/null`.strip.to_i
+      rescue StandardError
+        0
+      end
+      next unless ppid <= 1
+
+      log_debug("dev_server_cleanup: KILL #{pid} (#{cmd[0, 70]})")
+      begin
+        Process.kill('KILL', pid)
+        killed += 1
+      rescue Errno::ESRCH, Errno::EPERM => e
+        log_debug("dev_server_cleanup: failed to kill #{pid}: #{e.message}")
+      end
+    end
+
+    if killed.positive?
+      warn "🧹 Reaped #{killed} leaked dev/test server#{killed == 1 ? '' : 's'} (RAM discipline)"
+    end
+  rescue StandardError => e
+    log_debug("dev_server cleanup error: #{e.class}: #{e.message}")
+  end
 end

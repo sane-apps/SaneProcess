@@ -237,6 +237,61 @@ module SaneToolsTest
       warn '  FAIL: Bash file writes should be blocked to source files'
     end
 
+    # === FALSE-POSITIVE REGRESSIONS (Task 2b) ===
+    warn ''
+    warn 'Testing false-positive fixes (git commit / heredoc / ruby reads):'
+
+    StateManager.reset(:research)
+
+    false_positive_cases = [
+      { name: 'git commit whose message mentions ssh mini screencapture is not blocked',
+        command: 'git commit -m "fix: raw ssh mini screencapture path replaced with wrapper"',
+        expect_block: false },
+      { name: 'git commit -F - heredoc is not blocked as a bash file write',
+        command: "git commit -F - <<EOF\nfix: replace ssh mini screencapture with wrapper\nEOF",
+        expect_block: false },
+      { name: 'git commit -F - quoted heredoc is not blocked',
+        command: "git commit -F - <<'EOF'\nfix: things\nEOF",
+        expect_block: false },
+      { name: 'ruby -e that only reads a file is not blocked',
+        command: %(ruby -e 'puts File.read("/etc/hosts")'),
+        expect_block: false },
+      { name: 'ruby running a /tmp script is not blocked',
+        command: 'ruby /tmp/foo.rb',
+        expect_block: false },
+      { name: 'ruby -e writing only to /tmp is not blocked',
+        command: %(ruby -e 'File.write("/tmp/x.txt","hi")'),
+        expect_block: false },
+      # Guard the fixes: real writes / real raw captures must STILL block.
+      { name: 'genuine ssh mini screencapture still blocked',
+        command: "ssh mini 'screencapture -x /tmp/x.png'",
+        expect_block: true },
+      { name: 'ruby script redirected to a source file still blocked',
+        command: 'ruby /tmp/gen.rb > src/config.yml',
+        expect_block: true },
+      { name: 'non-git heredoc redirected to a source file still blocked',
+        command: "cat <<EOF > src/file.txt\ndata\nEOF",
+        expect_block: true }
+    ]
+
+    false_positive_cases.each do |c|
+      StateManager.reset(:circuit_breaker)
+      original_stderr = $stderr.clone
+      $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
+      exit_code = process_tool_proc.call('Bash', { 'command' => c[:command] })
+      $stderr.reopen(original_stderr)
+
+      blocked = exit_code == 2
+      if blocked == c[:expect_block]
+        passed += 1
+        warn "  PASS: #{c[:name]}"
+      else
+        failed += 1
+        warn "  FAIL: #{c[:name]} - expected #{c[:expect_block] ? 'BLOCK' : 'ALLOW'}, got #{blocked ? 'BLOCK' : 'ALLOW'}"
+      end
+    end
+    StateManager.reset(:circuit_breaker)
+
     # === STANDARD TESTS ===
     warn ''
     warn 'Testing tool blocking:'

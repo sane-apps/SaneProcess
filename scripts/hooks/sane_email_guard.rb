@@ -35,6 +35,9 @@ EMAIL_FORMAT_OVERRIDE = '/tmp/.email_format_override'
 EMAIL_APPROVAL_TTL_SECONDS = 300
 EMAIL_BATCH_APPROVAL_TTL_SECONDS = 43_200
 EMAIL_APPROVAL_MIN_AGE_SECONDS = 3
+# Team/company "we" only — flags presenting SaneApps as a multi-person org (a room of
+# coders), NOT the natural "you and I" we ("since we last talked"). SaneApps is one person.
+CORPORATE_WE_PATTERN = /\b(?:our\s+(?:team|teams|engineers?|developers?|devs?|coders?|programmers?|staff|crew|company|companies|organi[sz]ation|org|support\s+team|engineering|qa|squad|department)|the\s+(?:whole\s+|entire\s+|rest\s+of\s+the\s+)?team|my\s+team|the\s+(?:devs?|developers?|engineers)|we(?:['’]re|\s+are)\s+(?:a|an|the)\s+(?:[a-z]+\s+)?(?:team|company|startup|business|group|studio|crew|squad)|we(?:['’]ve|\s+have)?\s+(?:built|build|developed|develop|engineered|engineer|coded|programmed|architected|designed|design|shipped|ship|released|release|created|create)\b)/i
 APPRECIATION_PATTERN = /\b(?:thank(s| you)?|appreciat(e|ion|ing)|grateful)\b/i
 HELPING_MAKE_PATTERN = /\bhelping make\b.*\bbetter\b/i
 MR_SANE_SIGNOFF_PATTERN = /\bMr\.?\s+Sane\b/
@@ -254,7 +257,14 @@ if command.include?('check-inbox.sh')
 
     body = File.read(body_file, encoding: Encoding::UTF_8)
 
-    # === CHECK 1: UI paths must be verified against actual code ===
+    # === CHECK 1: No corporate "we" language ===
+    if body.match?(CORPORATE_WE_PATTERN)
+      warn '🔴 BLOCKED: "we/us/our" language in customer email'
+      warn '   Use first-person singular only: I/me/my.'
+      exit 2
+    end
+
+    # === CHECK 1b: UI paths must be verified against actual code ===
     # If the email mentions a UI navigation path (Settings > X), the hook itself
     # greps the project's Swift code for tab/case enums to verify the label exists.
     # NO flag-based self-certification — Claude will just bullshit past flags.

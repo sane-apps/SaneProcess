@@ -717,16 +717,62 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
       true
     end
 
-    test('resets protected folder TCC services before verify') do
-      # The TCC reset lives in the verify family; verify.rb was split per
-      # Rule #10, so check the combined source rather than one file.
-      content = %w[verify.rb verify_support.rb].map do |file|
-        File.read(File.join(__dir__, file), encoding: Encoding::UTF_8)
-      end.join("\n")
+    test('still exposes protected folder TCC services for the explicit reset path') do
+      # grant_test_permissions no longer resets TCC on every verify (that wiped
+      # the installed app's real user grants). The protected-folder service list
+      # is still exposed via verify_permission_services for the guard test and
+      # the explicit reset_permissions command.
+      fresh_subject = VerifyHarness.new
+      fresh_subject.define_singleton_method(:saneprocess_config) { { 'type' => 'app' } }
+      fresh_subject.define_singleton_method(:project_xcodeproj) { 'Example.xcodeproj' }
+      fresh_subject.define_singleton_method(:project_workspace) { nil }
 
-      assert_includes(content, 'SystemPolicyDocumentsFolder')
-      assert_includes(content, 'SystemPolicyDesktopFolder')
-      assert_includes(content, 'SystemPolicyDownloadsFolder')
+      services = fresh_subject.send(:verify_permission_services)
+
+      assert_includes(services, 'SystemPolicyDocumentsFolder')
+      assert_includes(services, 'SystemPolicyDesktopFolder')
+      assert_includes(services, 'SystemPolicyDownloadsFolder')
+      true
+    end
+  end
+
+  test_category('UTF-8 locale hardening') do
+    test('forces a UTF-8 locale when the caller locale is empty or ASCII') do
+      saved = ENV.values_at('LANG', 'LC_ALL', 'LC_CTYPE')
+      saved_ext = Encoding.default_external
+      saved_int = Encoding.default_internal
+      begin
+        ENV['LANG'] = ''
+        ENV['LC_ALL'] = 'C'
+        ENV['LC_CTYPE'] = 'POSIX'
+        subject.send(:ensure_utf8_locale!)
+        assert_eq(ENV['LANG'], 'en_US.UTF-8')
+        assert_eq(ENV['LC_ALL'], 'en_US.UTF-8')
+        assert_eq(ENV['LC_CTYPE'], 'en_US.UTF-8')
+      ensure
+        ENV['LANG'], ENV['LC_ALL'], ENV['LC_CTYPE'] = saved
+        Encoding.default_external = saved_ext
+        Encoding.default_internal = saved_int
+      end
+      true
+    end
+
+    test('does not clobber an already-UTF-8 locale') do
+      saved = ENV.values_at('LANG', 'LC_ALL', 'LC_CTYPE')
+      saved_ext = Encoding.default_external
+      saved_int = Encoding.default_internal
+      begin
+        ENV['LANG'] = 'en_GB.UTF-8'
+        ENV['LC_ALL'] = ''
+        ENV['LC_CTYPE'] = ''
+        subject.send(:ensure_utf8_locale!)
+        assert_eq(ENV['LANG'], 'en_GB.UTF-8')
+        assert_eq(ENV['LC_ALL'], 'en_US.UTF-8')
+      ensure
+        ENV['LANG'], ENV['LC_ALL'], ENV['LC_CTYPE'] = saved
+        Encoding.default_external = saved_ext
+        Encoding.default_internal = saved_int
+      end
       true
     end
   end

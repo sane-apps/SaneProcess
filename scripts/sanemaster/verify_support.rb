@@ -9,8 +9,9 @@ require 'tmpdir'
 
 module SaneMasterModules
   # Verify execution/support helpers (split from verify.rb for Rule #10):
-  # git snapshots, permission monitoring, process cleanup, test command
-  # construction, runner execution, progress parsing, result classification.
+  # git snapshots, process cleanup, test command construction, runner
+  # execution, progress parsing, result classification. Permission-monitoring
+  # helpers live in verify_permissions.rb (further Rule #10 split).
   module Verify
     private
 
@@ -97,74 +98,6 @@ module SaneMasterModules
         puts '❌ Build failed'
         exit 1
       end
-    end
-
-    def grant_test_permissions(timeout_seconds:)
-      print '🔐 Granting test permissions... '
-      verify_permission_services.each do |service|
-        system('tccutil', 'reset', service, @bundle_id, err: File::NULL)
-      end
-
-      permission_pid = nil
-      log_path = nil
-      script_path = File.join(__dir__, '..', 'grant_permissions.applescript')
-      if File.exist?(script_path)
-        log_path = File.join(Dir.tmpdir, "sanemaster_permission_monitor_#{project_name}.log")
-        File.write(log_path, "Permission monitor for #{project_name} started at #{Time.now.utc.iso8601}\n")
-        monitor_duration = [timeout_seconds.to_i + 120, 300].max
-        permission_pid = Process.spawn(
-          'osascript',
-          script_path,
-          project_name,
-          monitor_duration.to_s,
-          out: log_path,
-          err: [:child, :out]
-        )
-        Process.detach(permission_pid)
-      end
-
-      puts '✅'
-      { pid: permission_pid, log_path: log_path }
-    end
-
-    def enforce_no_unresolved_permission_prompt!(permission_monitor)
-      log_path = permission_monitor.is_a?(Hash) ? permission_monitor[:log_path] : nil
-      return unless log_path && File.exist?(log_path)
-
-      log = File.read(log_path)
-      return unless permission_monitor_blocked?(log)
-
-      puts "\n❌ Permission prompt/manual grant detected during verify."
-      puts "   Permission monitor log: #{log_path}"
-      puts '   Resolve the Mini prompt, then rerun verify. Do not treat this run as release evidence.'
-      exit 1
-    end
-
-    def permission_monitor_blocked?(log)
-      log.include?('manual grant may be needed') ||
-        log.include?('PROTECTED_FOLDER_PROMPT')
-    end
-
-    def verify_permission_services
-      services = %w[Camera Microphone ScreenRecording]
-      services += protected_folder_permission_services if reset_protected_folder_permissions_for_verify?
-      services
-    end
-
-    def protected_folder_permission_services
-      %w[
-        SystemPolicyDocumentsFolder
-        SystemPolicyDesktopFolder
-        SystemPolicyDownloadsFolder
-      ]
-    end
-
-    def reset_protected_folder_permissions_for_verify?
-      return false if saneprocess_config['type'].to_s == 'infra'
-
-      has_xcode_project = project_xcodeproj && !project_xcodeproj.to_s.empty?
-      has_workspace = project_workspace && !project_workspace.to_s.empty?
-      has_xcode_project || has_workspace
     end
 
     def assert_no_runtime_probe_lock_for_verify!

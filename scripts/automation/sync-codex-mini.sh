@@ -368,6 +368,24 @@ if [[ -f "$LOCAL_KNOWLEDGE_GRAPH" ]]; then
   scp -q "$LOCAL_KNOWLEDGE_GRAPH" "$MINI_HOST:$REMOTE_HOME/.claude/memory/knowledge-graph.jsonl"
 fi
 
+# Sync the two agent memory stores that both agents rely on but that were previously Air-only: the Claude
+# file-based project memory (~/.claude/projects/<proj>/memory) and the Serena store (~/SaneApps/.serena/
+# memories). Air is canonical. Back up the Mini side first + NO --delete, so a Mini-side write is never lost.
+# Project-dir names are path-derived, so map Air's $HOME to the Mini's $REMOTE_HOME. (memory-sync SOP 2026-07-07.)
+LOCAL_PROJ_DIR="$(printf '%s' "$HOME/SaneApps" | sed 's#/#-#g')"
+REMOTE_PROJ_DIR="$(printf '%s' "$REMOTE_HOME/SaneApps" | sed 's#/#-#g')"
+LOCAL_FILE_MEM="$HOME/.claude/projects/$LOCAL_PROJ_DIR/memory"
+LOCAL_SERENA_MEM="$HOME/SaneApps/.serena/memories"
+if [[ -d "$LOCAL_FILE_MEM" || -d "$LOCAL_SERENA_MEM" ]]; then
+  log "Syncing agent memory (file-based + Serena) to $MINI_HOST (backup-first, no-delete)..."
+  MEM_TS="$(date +%Y%m%d-%H%M%S)"
+  ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.claude/backups\" \"$REMOTE_HOME/.claude/projects/$REMOTE_PROJ_DIR/memory\" \"$REMOTE_HOME/SaneApps/.serena/memories\"; \
+    cp -a \"$REMOTE_HOME/.claude/projects/$REMOTE_PROJ_DIR/memory\" \"$REMOTE_HOME/.claude/backups/memory-$MEM_TS\" 2>/dev/null; \
+    cp -a \"$REMOTE_HOME/SaneApps/.serena/memories\" \"$REMOTE_HOME/.claude/backups/serena-$MEM_TS\" 2>/dev/null; true"
+  [[ -d "$LOCAL_FILE_MEM" ]] && rsync -a "$LOCAL_FILE_MEM/" "$MINI_HOST:$REMOTE_HOME/.claude/projects/$REMOTE_PROJ_DIR/memory/"
+  [[ -d "$LOCAL_SERENA_MEM" ]] && rsync -a "$LOCAL_SERENA_MEM/" "$MINI_HOST:$REMOTE_HOME/SaneApps/.serena/memories/"
+fi
+
 # Pre-push validation gate: never sync a check-inbox.sh that fails its contract
 # suite, so the always-on Mini auto-close automation can't run a broken script.
 CHECK_INBOX_REL="SaneApps/infra/scripts/check-inbox.sh"

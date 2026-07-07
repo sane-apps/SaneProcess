@@ -171,6 +171,7 @@ module StateManager
       required: false,
       reason: nil,
       required_files: [],
+      required_files_paths: [],
       evidence_commands: [],
       screenshot_paths: [],
       audit_recorded: false,

@@ -7,12 +7,14 @@ require 'time'
 require 'tmpdir'
 
 require_relative 'verify_support'
+require_relative 'verify_permissions'
 require_relative 'verify_doctor'
 
 module SaneMasterModules
   # Build, test execution, permissions, test validation.
-  # Execution/support helpers live in verify_support.rb; doctor environment
-  # checks live in verify_doctor.rb (Rule #10 split).
+  # Execution/support helpers live in verify_support.rb; permission-monitoring
+  # helpers live in verify_permissions.rb; doctor environment checks live in
+  # verify_doctor.rb (Rule #10 split).
   module Verify
     def doctor
       puts '🏥 --- [ SANEMASTER DOCTOR ] ---'

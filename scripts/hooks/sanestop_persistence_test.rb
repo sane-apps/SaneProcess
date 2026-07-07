@@ -437,10 +437,26 @@ module SaneStopPersistenceTest
     StateManager.reset(:verification)
     StateManager.reset(:handoff_tracking)
     StateManager.reset(:visual_verification)
+    # A genuine gate requires a REAL customer-facing UI file that this session
+    # actually edited (present on disk AND in edits[:unique_files]). Phantom
+    # basenames alone must no longer block (see phantom-file false-positive fix).
+    real_ui_dir = File.join(Dir.pwd, 'outputs', 'sanestop-test-Views')
+    FileUtils.mkdir_p(real_ui_dir)
+    real_ui_file = File.join(real_ui_dir, 'ContentView.swift')
+    File.write(real_ui_file, "import SwiftUI\nstruct ContentView: View { var body: some View { Text(\"hi\") } }\n")
+    # count:0 keeps the Rule #4 verification gate (which keys on edit count) out
+    # of the way so these tests isolate the VISUAL gate; the visual filter keys
+    # on edits[:unique_files] membership, not the counter.
+    StateManager.update(:edits) do |e|
+      e[:unique_files] = [real_ui_file]
+      e[:count] = 0
+      e
+    end
     StateManager.update(:visual_verification) do |v|
       v[:required] = true
       v[:reason] = 'prompt_requested_visual_verification'
-      v[:required_files] = ['ContentView.swift']
+      v[:required_files] = [File.basename(real_ui_file)]
+      v[:required_files_paths] = [real_ui_file]
       v
     end
     original_stderr = $stderr.clone
@@ -498,8 +514,11 @@ module SaneStopPersistenceTest
         ]
       )
     )
+    StateManager.reset(:handoff_tracking)
     StateManager.update(:visual_verification) do |v|
       v[:required] = true
+      v[:required_files] = [File.basename(real_ui_file)]
+      v[:required_files_paths] = [real_ui_file]
       v[:audit_files] = [receipt_path]
       v
     end
@@ -515,7 +534,74 @@ module SaneStopPersistenceTest
       warn "  FAIL: Structured visual receipt should allow stop, got #{exit_code}"
     end
     FileUtils.rm_rf(visual_dir)
+    FileUtils.rm_rf(real_ui_dir)
     StateManager.reset(:visual_verification)
+    StateManager.reset(:edits)
+
+    # Phantom-file false positive: names of UI-looking files that either do not
+    # exist on disk or were never edited by this session's own Edit/Write must
+    # NOT block stop. (Regression: scraped basenames like ClipboardItemCell.swift
+    # for files absent from the repo were flagged as customer_facing_ui_file_edited.)
+    StateManager.reset(:edits)
+    StateManager.reset(:visual_verification)
+    StateManager.update(:visual_verification) do |v|
+      v[:required] = true
+      v[:reason] = 'customer_facing_ui_file_edited'
+      v[:required_files] = %w[ClipboardItemCell.swift HistoryTab.swift PinnedTab.swift]
+      v[:required_files_paths] = [
+        File.join(Dir.pwd, 'Sources', 'Views', 'ClipboardItemCell.swift'),
+        File.join(Dir.pwd, 'Sources', 'Views', 'HistoryTab.swift'),
+        File.join(Dir.pwd, 'Sources', 'Views', 'PinnedTab.swift')
+      ]
+      v
+    end
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Phantom UI files (nonexistent / never-edited) do not block stop'
+    else
+      failed += 1
+      warn "  FAIL: Phantom UI files should not block stop, got #{exit_code}"
+    end
+    StateManager.reset(:visual_verification)
+    StateManager.reset(:edits)
+
+    # Second phantom variant: a real, on-disk UI file that was NOT edited by this
+    # session (present in required_files_paths but absent from edits[:unique_files])
+    # must also not block — it was merely read/referenced, not edited here.
+    unedited_dir = File.join(Dir.pwd, 'outputs', 'sanestop-test-unedited-Views')
+    FileUtils.mkdir_p(unedited_dir)
+    unedited_file = File.join(unedited_dir, 'HistoryTab.swift')
+    File.write(unedited_file, "import SwiftUI\nstruct HistoryTab: View { var body: some View { EmptyView() } }\n")
+    StateManager.update(:edits) do |e|
+      e[:unique_files] = [File.join(Dir.pwd, 'scripts', 'sanemaster', 'verify.rb')]
+      e[:count] = 0
+      e
+    end
+    StateManager.update(:visual_verification) do |v|
+      v[:required] = true
+      v[:reason] = 'customer_facing_ui_file_edited'
+      v[:required_files] = [File.basename(unedited_file)]
+      v[:required_files_paths] = [unedited_file]
+      v
+    end
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Existing-but-unedited UI file does not block stop'
+    else
+      failed += 1
+      warn "  FAIL: Existing-but-unedited UI file should not block stop, got #{exit_code}"
+    end
+    FileUtils.rm_rf(unedited_dir)
+    StateManager.reset(:visual_verification)
+    StateManager.reset(:edits)
 
     # === Q4 VALIDATION: SESSION TRACKING TESTS ===
     warn ''
