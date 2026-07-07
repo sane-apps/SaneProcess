@@ -110,6 +110,12 @@
       "cmd": ["python3", "-B", "scripts/automation/check_inbox_report_test.py"]
     },
     {
+      "path": "scripts/automation/business_appointment_test.rb",
+      "label": "SaneApps business appointment guard tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/automation/business_appointment_test.rb"]
+    },
+    {
       "path": "scripts/automation/sane_support_kickoff_test.py",
       "label": "SaneProcess support kickoff summary tests",
       "status": "required",

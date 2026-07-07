@@ -35,9 +35,10 @@ automation, UI/runtime, or multi-file work:
 1. Read `SESSION_HANDOFF.md`.
 2. Read relevant Serena memory and the active client skill registry.
 3. Run `~/.codex/bin/check-mcps` when MCP health affects the task.
-4. Run `ruby scripts/validation_report.rb` for release/audit/process work.
-   Add `--release-checklists` only when you need the deep all-app artifact
-   checklist; the default report is the cheaper process/release verdict.
+4. Run `ruby scripts/validation_report.rb` only when release, audit, or
+   process health is the task surface. Add `--release-checklists` only when you
+   need the deep all-app artifact checklist; the default report is the cheaper
+   process/release verdict.
 5. Use the Mac Mini for SaneApps inspection, build, test, screenshots, and
    runtime verification unless the Mini is unavailable or the user explicitly
    approves a local exception.
@@ -102,6 +103,8 @@ Abide by every hook exactly as a human session would.
 Use GPT subagents for broad review, research, audits, planning, and bounded
 implementation. Do not use NVIDIA agents, `nv` sweeps, or `nvidia_vision`
 unless the user explicitly asks for that specific run.
+Do not use Gemini/Google provider paths as standard SaneApps tooling; use
+Apple Docs, macOS Automator, Grok, Codex, Claude, and SaneMaster routes instead.
 
 ## Canonical Routes
 
@@ -111,7 +114,7 @@ the wrapper.
 
 | Need | Canonical Route |
 |------|-----------------|
-| Build/test | `ruby scripts/SaneMaster.rb verify` |
+| Full project build/test | `ruby scripts/SaneMaster.rb verify` |
 | App runtime test | `ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb AppName` or `ruby scripts/SaneMaster.rb test_mode` |
 | Release clearance | `ruby scripts/SaneMaster.rb release_preflight` |
 | App Store clearance | `ruby scripts/SaneMaster.rb appstore_preflight` only for enabled App Store lanes |
@@ -127,6 +130,25 @@ the wrapper.
 | Process health | `process_eval`, `sop_review`, `near_miss_review`, `verify_failure_review` |
 | Route cost review | `ruby scripts/SaneMaster.rb route_cost_review --json` |
 | Mini screenshot | `scripts/mini/capture-mini-screenshot.sh desktop` or app mode wrapper |
+
+## Verification Scope
+
+Proof must match the touched surface. Use the narrowest runnable check that can
+catch the real failure mode.
+
+- For one wrapper, guard, parser, CLI route, or doc/policy change, run its
+  focused test or command preview/block check. Do not run all-app, Setapp,
+  App Store, release, or portfolio suites for unrelated work.
+- Use full `SaneMaster.rb verify` only when changing shared build/test/release
+  behavior, the verify/test registry itself, broad cross-app infrastructure, or
+  when the user explicitly asks for full proof.
+- Use `release_preflight`, `appstore_preflight`, `setapp_status`,
+  `setapp_upload`, launch readiness, and deep validation reports only when that
+  exact lane is touched or requested.
+- If a broad check reaches an unrelated failing lane, stop, report it as
+  unrelated, and do not repair that lane unless the user asks.
+- When in doubt, run `ruby scripts/SaneMaster.rb proof_plan --task "..."` before
+  testing so the receipt records the intended scope.
 
 Runtime app tests must attach a live app log stream from before launch/relaunch
 through the tested workflow and save the log receipt path. A GUI/runtime result
@@ -173,20 +195,41 @@ Green tests are not enough for customer-facing UI claims.
   `process_eval --require-ui-proof` treats missing or local-only UI proof as a
   blocker.
 
-## Customer Email
+## Email
 
 Default mailbox: SaneApps work email `hi@saneapps.com`.
 
 - Use `check-inbox.sh` / `SaneMaster.rb check_inbox`; never manual email API
   curl.
+- Prospecting, customer, vendor, support, and business appointment workflows
+  must not send from personal Gmail or create events on personal/family
+  calendars. Use `check-inbox.sh` for work email and
+  `SaneMaster.rb business_appointment` for business calendar appointments.
 - Run `review <id>` before reply or resolve.
 - Show the exact draft and wait for explicit approval before sending.
-- Use signoff exactly:
+
+Support email signoff:
 
 ```text
 Mr. Sane
 https://saneapps.com
 ```
+
+Prospecting and business-appointment email is different. For SaneCite
+prospects, use the existing SaneCite visual email frame from the SaneCite
+codebase: dark header, warm off-white page, cyan accent, and SaneCite wordmark.
+Do not send generic plain-text support-style emails for SaneCite prospects.
+Use the user's real business identity:
+
+```text
+Stephan Joseph
+SaneCite Founder
+7277589785
+```
+
+If the phone number changes or is ambiguous, ask before sending. Do not
+substitute `Mr. Sane`, `SaneApps`, or `https://saneapps.com` for SaneCite
+prospecting or business-appointment email.
 
 Escalate refunds, complaints, legal issues, feature requests, attached problem
 media, identity ambiguity, and promises about unfixed bugs.

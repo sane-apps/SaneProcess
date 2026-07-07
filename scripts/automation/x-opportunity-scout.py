@@ -31,8 +31,10 @@ KEY_ENV_MAP = {
     "access_token_secret": "X_API_ACCESS_TOKEN_SECRET",
 }
 _LAST_KEYCHAIN_READ_AT = 0.0
+# SaneBar is retired (no longer paid or supported) — do not scout or link it.
+# SaneCite is the priority product going forward.
 PRODUCT_DOMAINS = {
-    "SaneBar": ["sanebar.com"],
+    "SaneCite": ["sanecite.com"],
     "SaneClick": ["saneclick.com"],
     "SaneClip": ["saneclip.com"],
     "SaneHosts": ["sanehosts.com"],

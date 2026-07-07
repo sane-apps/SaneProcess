@@ -14,6 +14,8 @@ exit(run_tests('SaneMaster Command Alias Tests') do
       assert_eq(master.send(:canonical_command_name, 'context-bundle'), 'context_bundle')
       assert_eq(master.send(:canonical_command_name, 'crash_report'), 'crashes')
       assert_eq(master.send(:canonical_command_name, 'operator-brief'), 'operator_brief')
+      assert_eq(master.send(:canonical_command_name, 'appointment'), 'business_appointment')
+      assert_eq(master.send(:canonical_command_name, 'business-appointment'), 'business_appointment')
       assert_eq(master.send(:canonical_command_name, 'release-readiness'), 'release_readiness')
       assert_eq(master.send(:canonical_command_name, 'tool-receipt'), 'tool_discovery')
       assert_eq(master.send(:canonical_command_name, 'verify'), 'verify')

@@ -16,7 +16,7 @@ echo "    (serena@30s timeout, macos-automator@15s, apple-docs@15s, xcode, memor
 echo "    the grok mcp add surface or direct toml. Fresh public init does not write that file."
 echo "  - Remaining standard servers (context7, openaiDeveloperDocs, github) come from"
 echo "    compatibility sources. The full standard Sane MCP surface is intentional."
-echo "  - Legacy NVIDIA/nv servers are exception-only and are not required for normal Grok use."
+echo "  - Legacy NVIDIA/nv and Gemini/Google provider servers are not part of the standard SaneApps MCP surface."
 echo "  - Live truth: /mcps or Ctrl+L (Hooks & MCPs). 'grok mcp list' shows only native."
 echo "  - If still seeing connecting after restart: increase timeouts further or pin local installs"
 echo "    of the uvx/git+ servers instead of on-the-fly."

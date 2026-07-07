@@ -368,8 +368,25 @@ if [[ -f "$LOCAL_KNOWLEDGE_GRAPH" ]]; then
   scp -q "$LOCAL_KNOWLEDGE_GRAPH" "$MINI_HOST:$REMOTE_HOME/.claude/memory/knowledge-graph.jsonl"
 fi
 
+# Pre-push validation gate: never sync a check-inbox.sh that fails its contract
+# suite, so the always-on Mini auto-close automation can't run a broken script.
+CHECK_INBOX_REL="SaneApps/infra/scripts/check-inbox.sh"
+CHECK_INBOX_TEST="$HOME/SaneApps/infra/SaneProcess/scripts/automation/check_inbox_report_test.py"
+SKIP_CHECK_INBOX=0
+if [[ -f "$CHECK_INBOX_TEST" ]]; then
+  log "Validating check-inbox.sh against its contract suite before pushing..."
+  if ! python3 "$CHECK_INBOX_TEST" >/tmp/check_inbox_gate.log 2>&1; then
+    SKIP_CHECK_INBOX=1
+    printf '⚠️  check-inbox.sh FAILED its contract suite — NOT pushing it to %s (Mini keeps last-good copy). See /tmp/check_inbox_gate.log\n' "$MINI_HOST" >&2
+  fi
+fi
+
 log "Syncing control-plane files to $MINI_HOST..."
 for rel in "${CONTROL_PLANE_REL_FILES[@]}"; do
+  if [[ "$rel" == "$CHECK_INBOX_REL" && "$SKIP_CHECK_INBOX" -eq 1 ]]; then
+    log "Skipping $rel (failed pre-push validation; Mini keeps last-good copy)"
+    continue
+  fi
   local_path="$HOME/$rel"
   remote_path="$REMOTE_HOME/$rel"
   remote_dir=$(dirname "$remote_path")

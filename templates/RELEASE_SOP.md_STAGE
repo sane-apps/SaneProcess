@@ -257,7 +257,6 @@ class SaneMaster
       commands: {
         'status' => { args: '', desc: 'Run the live cross-reference status report' },
         'operator_brief' => { args: '[--nightly-report PATH] [--morning-report PATH] [--handoff PATH] [--output PATH] [--json]', desc: 'Summarize current SaneApps receipts into a prioritized operator brief' },
-        'business_appointment' => { args: 'add --title TITLE --start "YYYY-MM-DD HH:MM" --attendee EMAIL [--apply] [--json]', desc: 'Create SaneApps-owned business calendar appointments; refuses personal Gmail/calendar routes' },
         'check_inbox' => { args: '[check|review <id>|read <id>|reply ...]', desc: 'Forward to the canonical support inbox workflow' },
         'sync_mini' => { args: '[mini] [--quiet] [--no-restart]', desc: 'Sync the Codex control-plane profile to the Mini (see also: sync_grok)' },
         'sync_grok' => { args: '[mini] [--quiet]', desc: 'Sync the Grok control-plane profile (grok-bin, config, .agents/skills) to the Mini' },
@@ -270,7 +269,7 @@ class SaneMaster
     session: {
       desc: 'Session state, approvals, and loop controls',
       commands: {
-        'github_post_approval' => { args: '--body|--body-file <TEXT|PATH>|--admin --user-approval "QUOTE"', desc: 'Record exact-text approval before public GitHub posting (--admin for no-body settings API calls)' },
+        'github_post_approval' => { args: '--body|--body-file <TEXT|PATH> --user-approval "QUOTE"', desc: 'Record exact-text approval before public GitHub posting' },
         'email_force_approval' => { args: '--action ACTION --id ID --reason TEXT --user-approval "QUOTE"', desc: 'Record scoped approval for check-inbox --force' },
         'session_end' => { args: '[--skip-prompts]', desc: 'End session with insight extraction' },
         'reset_breaker' => { args: '', desc: 'Reset circuit breaker (unblock tools)' },
@@ -1249,11 +1248,6 @@ PY
     run_external_command_with_workflow_receipt('check_inbox', script, *forwarded_args)
   end
 
-  def run_business_appointment(args = [])
-    script = File.join(saneprocess_repo_root, 'scripts', 'automation', 'business_appointment.rb')
-    run_external_command_with_workflow_receipt('business_appointment', 'ruby', script, *args)
-  end
-
   def run_python_automation_script(script_name, args)
     script = File.join(saneprocess_repo_root, 'scripts', 'automation', script_name)
     unless File.exist?(script)
@@ -1879,8 +1873,6 @@ PY
     when 'operator_brief', 'operator-brief', 'brief'
       success = operator_brief(args)
       exit(success ? 0 : 1) if args.include?('--strict')
-    when 'business_appointment', 'business-appointment', 'appointment'
-      run_business_appointment(args)
     when 'check_inbox', 'check-inbox', 'inbox'
       run_check_inbox(args)
     when 'sync_mini', 'sync-mini'
@@ -2139,7 +2131,6 @@ PY
   def github_post_approval(args)
     quote = nil
     body = nil
-    admin = false
     i = 0
     while i < args.length
       case args[i]
@@ -2155,10 +2146,6 @@ PY
 
         body = File.read(file, encoding: Encoding::UTF_8)
         i += 1
-      when '--admin', '--no-body'
-        # Admin API calls (repo settings, branch protection) post no public
-        # text; the user-approved token alone is the consent record.
-        admin = true
       else
         quote ||= args[i]
       end
@@ -2168,20 +2155,17 @@ PY
     quote = quote.to_s.strip
     abort '❌ Missing explicit user approval quote. Use --user-approval "post it".' if quote.empty?
     body = body.to_s.strip
-    if body.empty? && !admin
-      abort '❌ Missing exact public post body. Use --body "final text" or --body-file <path>, or --admin for settings-only API calls with no post body.'
-    end
+    abort '❌ Missing exact public post body. Use --body "final text" or --body-file <path>.' if body.empty?
 
     path = '/tmp/.gh_post_approved.json'
     payload = {
       'created_at' => Time.now.to_i,
       'user_approval' => quote,
-      'body_hash' => body.empty? ? '' : Digest::SHA256.hexdigest(body),
-      'admin' => admin
+      'body_hash' => Digest::SHA256.hexdigest(body)
     }
     File.write(path, JSON.pretty_generate(payload))
     File.chmod(0o600, path)
-    puts admin ? '✅ GitHub admin-call approval recorded for 5 minutes.' : '✅ GitHub public-post approval recorded for 5 minutes.'
+    puts '✅ GitHub public-post approval recorded for 5 minutes.'
   end
 
   def email_force_approval(args)
@@ -2550,24 +2534,6 @@ PY
         'operator_brief',
         'operator_brief --json',
         'operator-brief --strict'
-      ]
-    },
-    'business_appointment' => {
-      usage: 'business_appointment add --title TITLE --start "YYYY-MM-DD HH:MM" --attendee EMAIL [--apply] [--json]',
-      description: 'Preview or create SaneApps-owned business calendar appointments without using personal Gmail/calendar routes.',
-      flags: {
-        '--attendee EMAIL' => 'Invitee address. Repeat for multiple attendees.',
-        '--meeting-url URL' => 'Video call or appointment URL to include on the event.',
-        '--duration-minutes N' => 'Event length in minutes. Default: 30.',
-        '--reminders-minutes N' => 'Popup reminder minutes. Default: 15.',
-        '--dedupe-key KEY' => 'Optional idempotency key. Default is derived from calendar, title, start, timezone, and attendees.',
-        '--confirm-send TEXT' => 'Required with --apply. Use the confirm_send value from preview JSON.',
-        '--apply' => 'Create the event only after business calendar credentials are configured.',
-        '--json' => 'Print machine-readable receipt JSON'
-      },
-      examples: [
-        'business_appointment add --title "SaneCite call" --start "2026-07-13 09:00" --attendee prospect@example.com --json',
-        'business-appointment add --title "Test invite" --start "2026-07-06 09:00" --attendee stephanjoseph2007@gmail.com --confirm-send "send hi@saneapps.com invite to stephanjoseph2007@gmail.com at 2026-07-06T09:00:00 America/New_York" --apply --json'
       ]
     },
     'check_inbox' => {

@@ -98,6 +98,23 @@ Non-doc edits are not complete just because a hook saw a command that looked lik
 a test. Completion gates require a fresh counted `SaneMaster.rb verify` metric
 with tested evidence and a source fingerprint matching the current repo.
 
+### Cloudflare And Browser Proof
+
+SaneApps Cloudflare mutations use pinned Wrangler by default. `npx wrangler`
+can resolve stale local versions; SaneCite queue creation failed under
+Wrangler 4.65.0 and succeeded under `wrangler@4.104.0`. Shared release paths
+set `SANEPROCESS_WRANGLER_VERSION=4.104.0` unless deliberately overridden.
+For SaneApps website/app deploys, use `release.sh --website-only` or
+`release.sh --deploy`; the release guards still block ad-hoc Pages/R2 mutations.
+Deliberately manual Cloudflare maintenance commands should use
+`npx --yes wrangler@4.104.0 ...`.
+
+Website visual verification should use real browser automation. On SaneApps
+operator Macs, use Brave with Playwright via `NODE_PATH=/opt/homebrew/lib/node_modules`
+and `executablePath: "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"`.
+Save screenshots under `outputs/playwright/` or the workflow's existing
+`outputs/<workflow>/visual/` directory.
+
 ## Documentation Standard
 
 - Keep durable public docs in the core set: `README.md`, `DEVELOPMENT.md`,
@@ -212,7 +229,7 @@ Use this routing table for Codex plugin skills:
 | OpenAI API, Agents SDK, ChatGPT App, OpenAI key or MCP work | OpenAI Developers | Use official-doc-backed skill flow; keep secrets in the approved Keychain/env path |
 | Cloudflare Pages/R2/Workers/Durable Objects/Tunnels | Cloudflare | Prefer SaneProcess release wrappers for deploy/release proof; use plugin docs for platform details |
 | GitHub PRs/issues/CI metadata | GitHub | Cross-check support email before closing customer-reported issues |
-| Personal Gmail, Drive, Docs, Sheets, Slides, Calendar deliverables | Google plugins | Generic "email" still means `hi@saneapps.com` through `check-inbox.sh` |
+| Personal email, docs, sheets, slides, or calendar deliverables | Explicit one-off connector only | Not a default SaneApps route; generic "email" still means `hi@saneapps.com` through `check-inbox.sh` |
 | KPI reports, metric diagnostics, dashboards | Data Analytics | Use `SaneMaster.rb sales`, `downloads`, `events`, or `/outreach` first for canonical SaneApps signals |
 | Presenter videos, generated media, stock assets, programmatic videos | HeyGen, HyperFrames, Picsart, Fal, Shutterstock, Remotion | Treat as marketing assets, not runtime verification evidence |
 
@@ -265,8 +282,23 @@ receipts. Run `ruby scripts/SaneMaster.rb` or `help <category>` for full help.
 | Runtime launch/proof | `ruby scripts/SaneMaster.rb test_mode` plus app-specific `customer_ui_sweep`, or `visual_smoke` only when no app sweep exists |
 | Verification scope plan | `ruby scripts/SaneMaster.rb proof_plan --task "..."` |
 | Support inbox | `ruby scripts/SaneMaster.rb check_inbox` |
+| Business appointments | `ruby scripts/SaneMaster.rb business_appointment add --title TITLE --start "YYYY-MM-DD HH:MM" --attendee EMAIL` |
 | Sales/download/funnel | `sales`, `downloads`, `events` |
 | Machine cleanup | `ruby scripts/SaneMaster.rb machine_cleanup --host mini --apply` |
+
+Business appointment live writes require `SANEAPPS_BUSINESS_CALENDAR_ID` and
+`GOOGLE_CALENDAR_ACCESS_TOKEN`. Preview mode prints the required
+`confirm_send` phrase; live mode requires that exact phrase, checks for an
+existing event by dedupe key, creates a no-attendee event first, verifies Google
+reports `hi@saneapps.com` as organizer, then adds attendees with notifications.
+If organizer proof fails, no attendee invite is sent.
+
+Business appointment follow-up email uses the SaneCite/prospecting identity,
+not the support-email identity: `Stephan Joseph`, `SaneCite Founder`, and the
+approved phone number `7277589785`. SaneCite prospect emails should use the
+existing SaneCite visual email frame from the SaneCite codebase (dark header,
+warm off-white page, cyan accent, SaneCite wordmark) and must not use the
+generic support signoff.
 
 `process_eval` is the gate for real workflow improvement, not synthetic
 busywork. Trace fixtures define required event shapes, but slimming/expanding

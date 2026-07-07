@@ -13,7 +13,7 @@ products:
   sanebar:
     name: SaneBar
     checkout_uuid: 8a6ddf02-574e-4b20-8c94-d3fa15c1cc8e
-    license_gated: true    # Basic/Pro gating active — all release channels allowed
+    license_gated: true    # RETIRED: free + open source (MIT), not sold. Kept true so the audit still permits public GitHub releases (correct for OSS); does NOT mean paid/gated. Do not advertise - see sanebar-retired memory.
     domain: sanebar.com
     dist_domain: dist.sanebar.com
     github_repo: sane-apps/SaneBar

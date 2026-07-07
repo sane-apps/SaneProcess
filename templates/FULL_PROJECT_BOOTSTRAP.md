@@ -675,7 +675,6 @@ end
 Add to `~/.zshrc`:
 ```bash
 alias pn='cd ~/Projects/ProjectName && claude --dangerously-skip-permissions'
-alias gpn='cd ~/Projects/ProjectName && gemini'
 ```
 
 ### 9.3 Shared Repo Instructions

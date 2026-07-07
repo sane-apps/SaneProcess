@@ -30,6 +30,7 @@ function npmRootCandidates() {
 }
 
 const SDK_BASE_CANDIDATES = npmRootCandidates().flatMap((root) => [
+  path.join(root, "@modelcontextprotocol", "sdk", "dist", "cjs"),
   path.join(root, "@modelcontextprotocol", "server-memory", "node_modules", "@modelcontextprotocol", "sdk", "dist", "cjs"),
   path.join(root, "@steipete", "macos-automator-mcp", "node_modules", "@modelcontextprotocol", "sdk", "dist", "cjs"),
 ]);
@@ -76,6 +77,12 @@ class StdioMcpClient {
 
     this.child.stdout.on("data", (chunk) => this._onData(chunk));
     this.child.stderr.on("data", () => {});
+    this.child.on("error", (err) => {
+      for (const [, pending] of this.pending) {
+        pending.reject(err);
+      }
+      this.pending.clear();
+    });
     this.child.on("exit", (code, signal) => {
       for (const [, pending] of this.pending) {
         pending.reject(new Error(`process exited (code=${code}, signal=${signal})`));
@@ -530,12 +537,8 @@ async function main() {
         CENTRAL_MEMORY_EMBED_MODEL: "text-embedding-3-small",
         CENTRAL_MEMORY_EMBED_DIMENSIONS: "1536",
       },
+      optional: true,
       toolCall: { name: "stats", arguments: {} },
-    },
-    "nvidia-build": {
-      command: homePath(".local", "share", "nvidia-mcp-venv", "bin", "python3"),
-      args: [homePath(".local", "share", "nvidia-mcp-venv", "nvidia_mcp_server.py")],
-      toolCall: { name: "nvidia_models", arguments: {} },
     },
     serena: {
       command: "uvx",
@@ -555,12 +558,22 @@ async function main() {
 
   const results = [];
   const known = new Set(Object.keys(defaultChecks));
+  const disabledLegacyServers = new Set(["nvidia-build", "gemini", "google", "google-gemini"]);
 
   for (const [name, defaults] of Object.entries(defaultChecks)) {
     specs.push(mergeSpec(name, defaults, configured[name]));
   }
 
   for (const [name, spec] of Object.entries(configured)) {
+    if (disabledLegacyServers.has(name)) {
+      results.push({
+        name,
+        status: "FAIL",
+        detail: "legacy provider disabled for SaneApps; remove this MCP from the active client config",
+      });
+      known.add(name);
+      continue;
+    }
     if (name === "openaiDeveloperDocs") continue;
     if (known.has(name)) continue;
     if (!spec.command && !spec.url) {

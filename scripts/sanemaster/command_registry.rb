@@ -11,6 +11,8 @@ module SaneMasterModules
       'sync-grok' => 'sync_grok',
       'operator-brief' => 'operator_brief',
       'brief' => 'operator_brief',
+      'business-appointment' => 'business_appointment',
+      'appointment' => 'business_appointment',
       'runtime_snapshot' => 'runtime_evidence',
       'runtime-evidence' => 'runtime_evidence',
       'lldb_snapshot' => 'runtime_evidence',
