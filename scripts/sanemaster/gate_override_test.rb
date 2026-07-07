@@ -92,6 +92,86 @@ in_tmp do
   t('an un-overridden gate is not flagged', !GO.unfair?(gate: 'verify-escalation'))
 end
 
+# 'resolved' needs a real repo so the note's fix-commit citation can be
+# verified against git; set one up with a known sha inside the tmp cwd.
+def in_tmp_repo
+  in_tmp do
+    system('git', 'init', '-q', '.')
+    system('git', 'config', 'user.email', 't@e.com')
+    system('git', 'config', 'user.name', 'T')
+    File.write('fix.rb', "# fix\n")
+    system('git', 'add', '.')
+    system('git', 'commit', '-q', '-m', 'the fix')
+    sha = `git rev-parse --short HEAD`.strip
+    yield sha
+  end
+end
+
+warn ''
+warn '--- resolved: clears like an override, does NOT feed the unfair counter ---'
+in_tmp_repo do |sha|
+  GO.record(gate: 'verify-escalation', slug: 'verify', verdict: 'resolved',
+            note: "both strikes were the same bug, fixed in #{sha}", now: NOW)
+  t('resolved verdict mints a clearing token',
+    GO.clears?(gate: 'verify-escalation', slug: 'verify', trigger_time: TRIGGER, now: NOW + 60))
+  t('resolved token still expires after its TTL',
+    !GO.clears?(gate: 'verify-escalation', slug: 'verify', trigger_time: TRIGGER,
+                now: NOW + GO::DEFAULT_TTL_SECONDS + 60))
+end
+
+in_tmp_repo do |sha|
+  (GO::UNFAIR_THRESHOLD + 1).times do |i|
+    GO.record(gate: 'verify-escalation', slug: "slug#{i}", verdict: 'resolved',
+              note: "post-fix clear, fixed in #{sha}", now: NOW + i)
+  end
+  t('resolved clears never flag the gate unfair (even past threshold)',
+    !GO.unfair?(gate: 'verify-escalation'))
+
+  (1...GO::UNFAIR_THRESHOLD).each do |i|
+    GO.record(gate: 'verify-escalation', slug: "ov#{i}", verdict: 'override', note: 'x', now: NOW + 100 + i)
+  end
+  t('mixed store: overrides below threshold still not flagged (resolved does not pad the count)',
+    !GO.unfair?(gate: 'verify-escalation'))
+  GO.record(gate: 'verify-escalation', slug: 'ovN', verdict: 'override', note: 'x',
+            now: NOW + 100 + GO::UNFAIR_THRESHOLD)
+  t('mixed store: the threshold-th OVERRIDE still flags the gate',
+    GO.unfair?(gate: 'verify-escalation'))
+end
+
+warn ''
+warn '--- resolved requires a verifiable fix-commit citation ---'
+in_tmp_repo do |sha|
+  rejected = begin
+    GO.record(gate: 'verify-escalation', slug: 'verify', verdict: 'resolved',
+              note: 'trust me, it is fixed', now: NOW)
+    false
+  rescue ArgumentError
+    true
+  end
+  t('resolved with NO commit citation is rejected', rejected)
+
+  rejected = begin
+    GO.record(gate: 'verify-escalation', slug: 'verify', verdict: 'resolved',
+              note: 'fixed in deadbeef1234', now: NOW)
+    false
+  rescue ArgumentError
+    true
+  end
+  t('resolved citing a sha that does not exist in the repo is rejected', rejected)
+
+  t('no clearing token was minted by the rejected attempts',
+    !GO.clears?(gate: 'verify-escalation', slug: 'verify', trigger_time: TRIGGER, now: NOW + 60))
+
+  accepted = begin
+    GO.record(gate: 'verify-escalation', slug: 'verify', verdict: 'resolved',
+              note: "root cause fixed in #{sha}, suite re-run green", now: NOW)
+    true
+  rescue ArgumentError
+    false
+  end
+  t('resolved citing the real fix commit is accepted', accepted)
+end
+
 warn ''
 warn "#{$passed}/#{$total} gate-override tests passed"
 exit($passed == $total ? 0 : 1)

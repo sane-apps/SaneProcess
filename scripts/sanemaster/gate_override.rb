@@ -28,6 +28,7 @@
 require 'json'
 require 'time'
 require 'fileutils'
+require 'open3'
 require 'securerandom'
 require_relative '../hooks/state_signer'
 
@@ -38,14 +39,27 @@ module SaneMasterModules
     UNFAIR_FILE = '.claude/unfair-gates.json'
     UNFAIR_THRESHOLD = 3          # overrides for one gate before it is flagged unfair
     DEFAULT_TTL_SECONDS = 7200    # an override clears the block for 2h, then must be re-earned
+    # Verdicts that mint a clearing token. 'override' = the gate was WRONG (feeds
+    # the unfair counter). 'resolved' = the gate armed CORRECTLY and the root
+    # cause is since fixed+verified (clears the block but does NOT feed the
+    # counter — merited post-fix clears must not pollute the self-improvement
+    # signal; live 2026-07-07 the flag hit 5x with several merited clears).
+    CLEARING_VERDICTS = %w[override resolved].freeze
 
     module_function
 
-    # Record a certifier verdict. Only verdict 'override' mints a clearing token;
-    # 'uphold' (block was fair) and 'fill' (certifier did the missing work) are
-    # logged for audit but grant nothing. Returns the recorded entry.
+    # Record a certifier verdict. 'override' and 'resolved' mint a clearing
+    # token; 'uphold' (block was fair) and 'fill' (certifier did the missing
+    # work) are logged for audit but grant nothing. Only 'override' feeds the
+    # unfair counter. 'resolved' must cite the fix commit (an existing sha) in
+    # its note or it raises ArgumentError. Returns the recorded entry.
     def record(gate:, slug:, verdict:, note:, evidence_sha: nil,
                certified_by: 'gate-certifier', now: Time.now, ttl_seconds: DEFAULT_TTL_SECONDS)
+      if verdict.to_s == 'resolved' && !resolved_note_cites_fix_commit?(note)
+        raise ArgumentError,
+              'resolved verdict requires the note to cite the fix commit (a sha that exists in this repo)'
+      end
+
       entry = {
         'id' => SecureRandom.hex(8),
         'gate' => gate.to_s,
@@ -59,26 +73,43 @@ module SaneMasterModules
       }
       append_log(entry)
 
-      if entry['verdict'] == 'override'
+      if CLEARING_VERDICTS.include?(entry['verdict'])
         store = load_store
         store['overrides'] = prune(store['overrides'], now: now)
         store['overrides'] << entry
         write_store(store)
-        refresh_unfair(gate: entry['gate'], now: now)
+        # Only 'override' is a vote that the gate is unfair; a 'resolved' clear
+        # affirms the gate was right and the underlying problem got fixed.
+        refresh_unfair(gate: entry['gate'], now: now) if entry['verdict'] == 'override'
       end
 
       entry
     end
 
-    # True when a valid, unexpired, signed override certifies this gate+slug as
-    # unfair and is fresh relative to this block's trigger. Read-only (no consume),
-    # so it is safe to call from status/display paths as well as the gate.
+    # A 'resolved' clear is a stronger claim than an override — "the gate was
+    # right, and HERE is the fix" — so it must cite at least one commit sha
+    # that actually exists in this repo. Fails closed: unverifiable citations
+    # (no sha, unknown sha, not a git repo) reject the verdict.
+    def resolved_note_cites_fix_commit?(note)
+      # map+compact-free scan; must stay Ruby 2.6-compatible.
+      note.to_s.scan(/\b[0-9a-f]{7,40}\b/i).any? do |sha|
+        _out, status = Open3.capture2e('git', 'cat-file', '-e', "#{sha}^{commit}")
+        status.success?
+      end
+    rescue StandardError
+      false
+    end
+
+    # True when a valid, unexpired, signed clearing token (override OR resolved)
+    # covers this gate+slug and is fresh relative to this block's trigger.
+    # Read-only (no consume), so it is safe to call from status/display paths
+    # as well as the gate.
     def clears?(gate:, slug:, trigger_time:, now: Time.now)
       gate = gate.to_s
       slug = slug.to_s
       load_store['overrides'].any? do |override|
         next false unless override['gate'] == gate && override['slug'] == slug
-        next false unless override['verdict'] == 'override'
+        next false unless CLEARING_VERDICTS.include?(override['verdict'])
 
         certified = parse_time(override['certified_at'])
         next false if certified.nil?
@@ -145,7 +176,10 @@ module SaneMasterModules
     end
 
     def refresh_unfair(gate:, now:)
-      overrides = load_store['overrides'].select { |override| override['gate'] == gate }
+      # Count only true 'override' votes — 'resolved' clears affirm the gate.
+      overrides = load_store['overrides'].select do |override|
+        override['gate'] == gate && override['verdict'] == 'override'
+      end
       return if overrides.length < UNFAIR_THRESHOLD
 
       timestamps = overrides.map { |override| override['certified_at'] }.compact

@@ -705,9 +705,11 @@ module SaneMasterModules
       puts 'This guard clears only when those research tool-calls have run since the block AND research.md is updated.'
       puts ''
       puts 'Believe this block is UNFAIR (you did the work, or the requirement does not apply)?'
+      puts 'Or did the gate arm CORRECTLY on a problem you have since fixed and verified?'
       puts 'Do not hand-wave past it — invoke the gate certifier (ARCHITECTURE.md → ADR-011 Gate Certifier):'
-      puts 'an evidence-reading examiner either DOES the missing work for you, or — only if the'
-      puts 'gate is genuinely wrong — records a signed override. Repeated overrides auto-flag the gate.'
+      puts 'an evidence-reading examiner either DOES the missing work for you, records a signed'
+      puts 'override (only if the gate is genuinely wrong; repeated overrides auto-flag the gate),'
+      puts 'or records a RESOLVED clear (gate was right, note cites the verified fix commit).'
       # State the exact ids the certifier must pass: a token minted under the
       # wrong gate id never matches its clears? check (hit live 2026-07-07 —
       # a verify-escalation block was overridden under gate 'research' and
