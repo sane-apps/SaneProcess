@@ -277,33 +277,6 @@ exit(run_tests('SaneMaster Release Routing Tests') do
       end
     end
 
-    test('syncs Mini gate certifier state back to the Air') do
-      with_temp_repo do |repo|
-        remote_repo = '/Users/stephansmac/.sanemaster/routed-workspaces/abcd/SaneApps/apps/SaneBar'
-        remote_override = File.join(remote_repo, '.claude', 'gate-overrides.json')
-        remote_state = File.join(remote_repo, '.claude', 'state.json')
-        subject.set_existing_paths([remote_override, remote_state])
-
-        subject.system_calls.clear
-        subject.send(:sync_gate_state_from_mini!, repo, remote_repo)
-
-        gate_call = subject.system_calls.find do |call|
-          call.first == 'rsync' && call.include?("mini:#{remote_override}")
-        end
-        assert(gate_call, 'expected Mini gate override rsync call')
-        assert_includes(gate_call, '--no-links')
-        assert_includes(gate_call, File.join(repo, '.claude', 'gate-overrides.json'))
-
-        state_call = subject.system_calls.find do |call|
-          call.first == 'rsync' && call.include?("mini:#{remote_state}")
-        end
-        assert(state_call, 'expected Mini state.json rsync call')
-        assert_includes(state_call, '--no-links')
-        assert_includes(state_call, File.join(repo, '.claude', 'state.json'))
-        true
-      end
-    end
-
     test('prunes non-receipt Mini outputs after routed runs') do
       remote_repo = '/Users/stephansmac/.sanemaster/routed-workspaces/abcd/SaneApps/apps/SaneBar'
       remote_outputs = File.join(remote_repo, 'outputs')
@@ -474,6 +447,18 @@ exit(run_tests('SaneMaster Release Routing Tests') do
   end
 
   test_category('Mini repo normalization after routed verify') do
+    test('Mini host detection never treats the shared username as machine identity') do
+      source = File.read(File.expand_path('../SaneMaster.rb', __dir__), encoding: Encoding::UTF_8)
+
+      assert_includes(source, "Socket.gethostname.to_s.downcase")
+      assert_includes(source, "'/usr/sbin/scutil', '--get', 'ComputerName'")
+      assert(!source.include?("user == 'stephansmac'"),
+             'SaneMaster must not skip Mini routing just because the Air and Mini share a username')
+      assert(!source.include?("ENV.fetch('USER', '').downcase"),
+             'SaneMaster Mini identity must come from host identity, not USER')
+      true
+    end
+
     test('resets the mini branch to origin when the local repo is clean and matched') do
       with_temp_repo do |repo|
         subject.system_calls.clear

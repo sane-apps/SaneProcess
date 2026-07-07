@@ -16,14 +16,7 @@ const GITHUB_SERVER_PATH = path.join(
   "dist",
   "index.js",
 );
-const GITHUB_SERVER_PACKAGE = "@modelcontextprotocol/server-github";
-const GITHUB_SERVER_VERSION = "2025.4.8";
-const GITHUB_SERVER_PATH_CANDIDATES = [
-  process.env.SANE_GITHUB_MCP_SERVER_PATH,
-  GITHUB_SERVER_PATH,
-  "/opt/homebrew/lib/node_modules/@modelcontextprotocol/server-github/dist/index.js",
-  "/usr/local/lib/node_modules/@modelcontextprotocol/server-github/dist/index.js",
-].filter(Boolean);
+const GITHUB_SERVER_NPX_PKG = "@modelcontextprotocol/server-github";
 
 const GH_BIN_CANDIDATES = [
   "gh",
@@ -34,17 +27,10 @@ const GH_BIN_CANDIDATES = [
 const LOCAL_TOKEN_FILE = path.join(os.homedir(), ".codex", "secrets", "github_token");
 
 function resolveServerLaunch() {
-  for (const candidate of GITHUB_SERVER_PATH_CANDIDATES) {
-    if (fs.existsSync(candidate)) {
-      return { command: process.execPath, args: [candidate] };
-    }
+  if (fs.existsSync(GITHUB_SERVER_PATH)) {
+    return { command: process.execPath, args: [GITHUB_SERVER_PATH] };
   }
-
-  console.error(
-    `GitHub MCP bridge: ${GITHUB_SERVER_PACKAGE}@${GITHUB_SERVER_VERSION} is not installed locally. ` +
-      "Install it with `npm install -g @modelcontextprotocol/server-github@2025.4.8`; refusing dynamic npx fallback while holding a GitHub token.",
-  );
-  process.exit(78);
+  return { command: "npx", args: ["-y", GITHUB_SERVER_NPX_PKG] };
 }
 
 function tokenFromGhCli() {
@@ -102,41 +88,17 @@ function resolveToken() {
   return null;
 }
 
-const launch = resolveServerLaunch();
 const token = resolveToken();
 if (!token) {
   console.error("GitHub MCP bridge: no GitHub token found. Starting without auth token.");
 }
 
-function childEnvironment(resolvedToken) {
-  const childEnv = {
-    HOME: HOME_DIR,
-    PATH: [
-      path.dirname(process.execPath),
-      path.join(HOME_DIR, ".local", "bin"),
-      "/opt/homebrew/bin",
-      "/usr/local/bin",
-      "/usr/bin",
-      "/bin",
-      "/usr/sbin",
-      "/sbin",
-    ].join(":"),
-    TMPDIR: process.env.TMPDIR || os.tmpdir(),
-    USER: process.env.USER || os.userInfo().username,
-    LOGNAME: process.env.LOGNAME || process.env.USER || os.userInfo().username,
-    LANG: process.env.LANG || "en_US.UTF-8",
-  };
-
-  if (process.env.SSL_CERT_FILE) childEnv.SSL_CERT_FILE = process.env.SSL_CERT_FILE;
-  if (process.env.NODE_EXTRA_CA_CERTS) childEnv.NODE_EXTRA_CA_CERTS = process.env.NODE_EXTRA_CA_CERTS;
-  if (resolvedToken) {
-    childEnv.GITHUB_PERSONAL_ACCESS_TOKEN = resolvedToken;
-    childEnv.GITHUB_TOKEN = resolvedToken;
-  }
-  return childEnv;
+const launch = resolveServerLaunch();
+const childEnv = { ...process.env };
+if (token) {
+  childEnv.GITHUB_PERSONAL_ACCESS_TOKEN = token;
+  childEnv.GITHUB_TOKEN = token;
 }
-
-const childEnv = childEnvironment(token);
 
 const child = spawn(launch.command, launch.args, {
   stdio: ["pipe", "pipe", "pipe"],

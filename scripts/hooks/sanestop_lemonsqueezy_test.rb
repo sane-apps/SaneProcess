@@ -80,28 +80,6 @@ check('the LAST release command this session wins') do
   LemonSqueezyUploads.detect_release_deploy_project(t) == '/a/SaneBar'
 end
 
-check('detects ssh mini release commands as remote-mini staging') do
-  t = transcript_with("ssh mini 'bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project ~/SaneApps/apps/SaneBar --full --deploy'")
-  release = LemonSqueezyUploads.detect_release_deploy(t)
-  release && release[:project] == '~/SaneApps/apps/SaneBar' && release[:remote_mini]
-end
-
-check('force_remote routes staging through ssh mini even if local folder exists') do
-  captured = nil
-  singleton = class << LemonSqueezyUploads; self; end
-  original = LemonSqueezyUploads.method(:capture)
-  singleton.define_method(:capture) do |cmd|
-    captured = cmd
-    JSON.generate('status' => 'noop', 'message' => 'stubbed')
-  end
-  begin
-    res = LemonSqueezyUploads.run_staging('/tmp/SaneBar', force_remote: true)
-    res[:ok] && captured && captured[0] == 'ssh' && captured.include?('mini')
-  ensure
-    singleton.define_method(:capture, original)
-  end
-end
-
 check('nonexistent transcript path returns nil') do
   LemonSqueezyUploads.detect_release_deploy_project('/no/such/transcript').nil?
 end
@@ -145,16 +123,6 @@ check('idempotent: a second run reports current, no churn') do
   run_stage(proj, uploads)
   res, code = run_stage(proj, uploads)
   code.zero? && res['status'] == 'current'
-end
-
-check('same-size corrupted ZIP is replaced, not treated as current') do
-  proj = fake_project('SaneBar', '2.1.84')
-  uploads = Dir.mktmpdir('ls_uploads')
-  artifact = File.join(proj, 'releases', 'SaneBar-2.1.84.zip')
-  target = File.join(uploads, 'SaneBar-2.1.84.zip')
-  File.write(target, 'X' * File.size(artifact))
-  res, code = run_stage(proj, uploads)
-  code.zero? && res['status'] == 'staged' && File.read(target) == File.read(artifact)
 end
 
 check('missing staging folder is a safe no-op (exit 0)') do

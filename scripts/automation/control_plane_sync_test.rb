@@ -71,34 +71,6 @@ tests << lambda do
          'Mini control-plane sync should include shared .agents skills')
   assert(sync_source.include?('Shared agent skills parity check failed'),
          'Mini control-plane sync should verify shared .agents skill parity')
-  assert(sync_source.include?('LOCAL_CLAUDE_SKILLS_DIR="$HOME/.claude/skills"'),
-         'Mini control-plane sync should include Claude skill mirrors')
-  assert(sync_source.include?('rsync -a --delete "$LOCAL_CLAUDE_SKILLS_DIR/"'),
-         'Mini control-plane sync should mirror Claude skill files')
-end
-
-tests << lambda do
-  sync_source = File.read(SYNC)
-  assert(sync_source.include?('GATE_STATE_REL_FILES='),
-         'Mini control-plane sync should name gate certifier state files')
-  assert(sync_source.include?('.claude/gate-overrides.json'),
-         'Mini control-plane sync should include override tokens')
-  assert(sync_source.include?('.claude/state.json'),
-         'Mini control-plane sync should include filled research evidence state')
-  assert(sync_source.include?('rsync -au --no-links "$local_path" "$MINI_HOST:$remote_path"'),
-         'Mini control-plane sync should copy newer local gate state to Mini')
-  assert(sync_source.include?('rsync -au --no-links "$MINI_HOST:$remote_path" "$local_path"'),
-         'Mini control-plane sync should copy newer Mini gate state back locally')
-  assert(sync_source.include?('Gate certifier state parity check failed'),
-         'Mini control-plane sync should verify gate state parity')
-end
-
-tests << lambda do
-  sync_source = File.read(SYNC)
-  assert(sync_source.include?('SaneApps/infra/SaneProcess/scripts/mcp_singleton_bridge.cjs'),
-         'Mini control-plane sync should include the live singleton bridge script')
-  assert(sync_source.include?('mcp_singleton_bridge.cjs\\" install all >/dev/null'),
-         'Mini control-plane sync should refresh singleton LaunchAgents after copying bridge code')
 end
 
 tests.each(&:call)

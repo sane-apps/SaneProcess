@@ -216,13 +216,25 @@ Before using or declaring a Codex plugin missing:
    `release_preflight`, `appstore_preflight`, `sane_test.rb`, `check-inbox.sh`,
    `sales`, `downloads`, `events`, or the app-specific visual proof path.
 
+Browser and app-control ladder:
+
+1. Brave/Chrome dashboard or portal control: Browser/Chrome plugin through
+   `node_repl`.
+2. Visible native app/window state: Computer Use `get_app_state`.
+3. Deterministic macOS action: `macos-automator` AppleScript/JXA.
+4. Repeatable website QA: Playwright with Brave defaults.
+5. Final proof: Mini screenshot wrapper or app-specific visual receipt.
+
+This applies to Codex and Claude. Check live plugin/tool state before falling
+back to raw SSH screenshots, blind `osascript`, or manual browser work.
+
 Use this routing table for Codex plugin skills:
 
 | Work | Useful Codex plugin family | SaneApps close-out |
 |------|----------------------------|--------------------|
 | macOS app UI, AppKit interop, signing, packaging, telemetry, test triage | Build macOS Apps | Mini-first `SaneMaster.rb verify`; use `sane_test.rb` for runtime proof |
 | iOS companion apps, simulator proof, App Intents, leaks, performance | Build iOS Apps | Project verify plus fresh simulator/runtime evidence |
-| Websites and local frontend debugging | Build Web Apps, Browser | `release_preflight` for shipped web surfaces and Cloudflare Pages release path |
+| Websites, browser portals, and local frontend debugging | Build Web Apps, Browser/Chrome Plugin, Computer Use | `release_preflight` for shipped web surfaces and Cloudflare Pages release path; screenshots are final proof, not the primary control path |
 | New product UI direction, redesign, prototype, image-to-code, visual QA | Product Design, Figma | Start with a brief/visual target; get approval before code; verify plus clean screenshots after implementation |
 | Marketing positioning, ad concepts, mood boards, editable decks, social resizes | Creative Production, Canva | Check live product facts and brand/copy rules; run `launch_readiness` before public launch use |
 | Repo/path security scan, diff security review, threat model, fix validation | Codex Security | Use for security-specific work; fixes still require `verify` and relevant release checks |

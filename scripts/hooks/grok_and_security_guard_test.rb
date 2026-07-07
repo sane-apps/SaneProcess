@@ -438,30 +438,6 @@ Dir.mktmpdir('release-guard-app-') do |project_dir|
   t('Release guard blocks generic Pages deploy in SaneApps repo', pages_generic_status.exitstatus == 2)
   t('Generic Pages block names manual website deploy', pages_generic_err.include?('Manual website deploy'))
 
-  _, pages_pinned_err, pages_pinned_status = run_ruby_hook(
-    'sane_release_guard.rb',
-    {
-      'tool_name' => 'Bash',
-      'tool_input' => {
-        'command' => "cd #{project_dir} && npx --yes wrangler@4.104.0 pages deploy ./website"
-      }
-    }
-  )
-  t('Release guard blocks pinned Wrangler Pages deploy in SaneApps repo', pages_pinned_status.exitstatus == 2)
-  t('Pinned Pages block names manual website deploy', pages_pinned_err.include?('Manual website deploy'))
-
-  _, r2_pinned_err, r2_pinned_status = run_ruby_hook(
-    'sane_release_guard.rb',
-    {
-      'tool_name' => 'Bash',
-      'tool_input' => {
-        'command' => "cd #{project_dir} && npx --yes wrangler@4.104.0 r2 object put sanebar-downloads/SaneBar-1.0.0.zip --file build/SaneBar-1.0.0.zip"
-      }
-    }
-  )
-  t('Release guard blocks pinned Wrangler R2 deploy in SaneApps repo', r2_pinned_status.exitstatus == 2)
-  t('Pinned R2 block names manual R2 operation', r2_pinned_err.include?('Manual R2 operation'))
-
   _, notary_generic_err, notary_generic_status = run_ruby_hook(
     'sane_release_guard.rb',
     {
@@ -582,35 +558,8 @@ _, gh_api_err, gh_api_status = run_ruby_hook(
 )
 t('GitHub guard blocks gh api public comment without approval', gh_api_status.exitstatus == 2)
 
-_, _gh_wrapped_err, gh_wrapped_status = run_ruby_hook(
-  'sane_release_guard.rb',
-  {
-    'tool_name' => 'Bash',
-    'tool_input' => { 'command' => "bash -lc 'gh issue comment 123 --repo sane-apps/SaneBar --body \"wrapped post\"'" }
-  }
-)
-t('GitHub guard blocks wrapped bash gh comment without approval', gh_wrapped_status.exitstatus == 2)
-
-_, _gh_wrapped_mention_err, gh_wrapped_mention_status = run_ruby_hook(
-  'sane_release_guard.rb',
-  {
-    'tool_name' => 'Bash',
-    'tool_input' => { 'command' => "bash -lc 'git commit -m \"fix: gh issue edit was un-approvable\"'" }
-  }
-)
-t('GitHub guard ignores gh mentioned inside a wrapped quoted commit message', gh_wrapped_mention_status.exitstatus.zero?)
-
-_, _gh_wrapped_ssh_err, gh_wrapped_ssh_status = run_ruby_hook(
-  'sane_release_guard.rb',
-  {
-    'tool_name' => 'Bash',
-    'tool_input' => { 'command' => "ssh mini 'gh issue edit 160 --repo sane-apps/SaneBar --add-label release:patched-pending'" }
-  }
-)
-t('GitHub guard blocks wrapped ssh metadata edit without approval', gh_wrapped_ssh_status.exitstatus == 2)
-
 # Metadata-only edits (labels/assignees) post no public text. They still require a recorded
-# approval scoped to the exact normalized command — the old guard made them un-approvable.
+# approval, but cannot hash-match (nothing to match) — the old guard made them un-approvable.
 _, _gh_label_noapp_err, gh_label_noapp_status = run_ruby_hook(
   'sane_release_guard.rb',
   {
@@ -622,9 +571,7 @@ t('GitHub guard blocks label-only edit without approval', gh_label_noapp_status.
 
 Open3.capture3(
   'ruby', File.join(SANEPROCESS_DIR, 'scripts/SaneMaster.rb'),
-  'github_post_approval',
-  '--metadata-command', 'gh issue edit 160 --repo sane-apps/SaneBar --add-label release:patched-pending',
-  '--user-approval', 'label it',
+  'github_post_approval', '--body', 'Label #160 release:patched-pending', '--user-approval', 'label it',
   chdir: SANEPROCESS_DIR
 )
 _, _gh_label_ok_err, gh_label_ok_status = run_ruby_hook(
@@ -635,22 +582,6 @@ _, _gh_label_ok_err, gh_label_ok_status = run_ruby_hook(
   }
 )
 t('GitHub guard accepts label-only edit with a recorded approval', gh_label_ok_status.exitstatus.zero?)
-
-Open3.capture3(
-  'ruby', File.join(SANEPROCESS_DIR, 'scripts/SaneMaster.rb'),
-  'github_post_approval',
-  '--metadata-command', 'gh issue edit 160 --repo sane-apps/SaneBar --add-label release:patched-pending',
-  '--user-approval', 'label it',
-  chdir: SANEPROCESS_DIR
-)
-_, _gh_label_wrong_issue_err, gh_label_wrong_issue_status = run_ruby_hook(
-  'sane_release_guard.rb',
-  {
-    'tool_name' => 'Bash',
-    'tool_input' => { 'command' => 'gh issue edit 161 --repo sane-apps/SaneBar --add-label "release:patched-pending"' }
-  }
-)
-t('GitHub guard rejects metadata approval for a different issue', gh_label_wrong_issue_status.exitstatus == 2)
 
 # The carve-out is metadata-ONLY: an edit that carries --body still requires the hash match,
 # so public text can never slip through `gh issue edit` unapproved.

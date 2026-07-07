@@ -17,10 +17,6 @@ recent_actions.json
 compliance_streak.json
 user_patterns.json
 active_skills.json
-gate-overrides.json
-gate-hits.json
-gate-hammer-log.jsonl
-unfair-gates.json
 
 # Logs
 *.log

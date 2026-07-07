@@ -307,7 +307,7 @@ module SaneTrackTest
         }
       SWIFT
     })
-    if result&.include?('BLIND TEST WARNING') && result&.include?('DEVELOPMENT.md')
+    if result&.include?('BLIND TEST WARNING') && result&.include?('TEST_BLINDNESS_AUDIT.md')
       passed += 1
       warn '  PASS: Pure source.contains test file FLAGS as blind'
     else

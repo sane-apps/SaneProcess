@@ -114,23 +114,12 @@ LOCAL_PM="$LOCAL_CODEX_DIR/automations/saneops-pm-run/automation.toml"
 LOCAL_DB="$LOCAL_CODEX_DIR/sqlite/codex-dev.db"
 LOCAL_SKILLS_REGISTRY="$LOCAL_CODEX_DIR/SKILLS_REGISTRY.md"
 LOCAL_SKILLS_DIR="$LOCAL_CODEX_DIR/skills"
-LOCAL_CLAUDE_SKILLS_REGISTRY="$HOME/.claude/SKILLS_REGISTRY.md"
-LOCAL_CLAUDE_SKILLS_DIR="$HOME/.claude/skills"
 LOCAL_AGENTS_SKILLS_DIR="$HOME/.agents/skills"
 LOCAL_KNOWLEDGE_GRAPH="$HOME/.claude/memory/knowledge-graph.jsonl"
-LOCAL_SANEPROCESS="$HOME/SaneApps/infra/SaneProcess"
 CODEX_BIN_FILES=(
   "check-mcps"
   "github-mcp-bridge.mjs"
   "xcode-mcpbridge-wrapper.sh"
-)
-GATE_STATE_REL_FILES=(
-  ".claude/gate-overrides.json"
-  ".claude/gate-override-log.jsonl"
-  ".claude/state.json"
-  ".claude/unfair-gates.json"
-  ".claude/gate-hits.json"
-  ".claude/gate-hammer-log.jsonl"
 )
 CONTROL_PLANE_REL_FILES=(
   "SaneApps/infra/scripts/check-inbox.sh"
@@ -141,7 +130,6 @@ CONTROL_PLANE_REL_FILES=(
   "SaneApps/infra/SaneProcess/scripts/mini/mini-reclaim-automation-windows.sh"
   "SaneApps/infra/SaneProcess/scripts/mini/mini-nightly.sh"
   "SaneApps/infra/SaneProcess/scripts/mini/mini-prepare-automation-root.sh"
-  "SaneApps/infra/SaneProcess/scripts/mcp_singleton_bridge.cjs"
   "SaneApps/infra/SaneProcess/scripts/validation_report.rb"
   "SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb"
   "SaneApps/infra/SaneProcess/scripts/sanemaster/meta.rb"
@@ -153,8 +141,6 @@ CONTROL_PLANE_REL_FILES=(
 [[ -f "$LOCAL_CODEX_CONFIG" ]] || die "Missing local Codex config: $LOCAL_CODEX_CONFIG"
 [[ -f "$LOCAL_SKILLS_REGISTRY" ]] || die "Missing local Codex skills registry: $LOCAL_SKILLS_REGISTRY"
 [[ -d "$LOCAL_SKILLS_DIR" ]] || die "Missing local Codex skills dir: $LOCAL_SKILLS_DIR"
-[[ -f "$LOCAL_CLAUDE_SKILLS_REGISTRY" ]] || die "Missing local Claude skills registry: $LOCAL_CLAUDE_SKILLS_REGISTRY"
-[[ -d "$LOCAL_CLAUDE_SKILLS_DIR" ]] || die "Missing local Claude skills dir: $LOCAL_CLAUDE_SKILLS_DIR"
 [[ -d "$REPO_CODEX_BIN_DIR" ]] || die "Missing repo Codex bin dir: $REPO_CODEX_BIN_DIR"
 
 for rel in "${CONTROL_PLANE_REL_FILES[@]}"; do
@@ -364,11 +350,6 @@ scp -q "$TMP_CONFIG" "$MINI_HOST:$REMOTE_HOME/.codex/config.toml"
 scp -q "$LOCAL_SKILLS_REGISTRY" "$MINI_HOST:$REMOTE_HOME/.codex/SKILLS_REGISTRY.md"
 rsync -a --delete "$LOCAL_SKILLS_DIR/" "$MINI_HOST:$REMOTE_HOME/.codex/skills/"
 
-log "Syncing Claude skill registry and skills to $MINI_HOST..."
-ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.claude/skills\""
-scp -q "$LOCAL_CLAUDE_SKILLS_REGISTRY" "$MINI_HOST:$REMOTE_HOME/.claude/SKILLS_REGISTRY.md"
-rsync -a --delete "$LOCAL_CLAUDE_SKILLS_DIR/" "$MINI_HOST:$REMOTE_HOME/.claude/skills/"
-
 if [[ -d "$LOCAL_AGENTS_SKILLS_DIR" ]]; then
   log "Syncing shared agent skills to $MINI_HOST..."
   ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.agents/skills\""
@@ -387,30 +368,25 @@ if [[ -f "$LOCAL_KNOWLEDGE_GRAPH" ]]; then
   scp -q "$LOCAL_KNOWLEDGE_GRAPH" "$MINI_HOST:$REMOTE_HOME/.claude/memory/knowledge-graph.jsonl"
 fi
 
-sync_gate_state_file() {
-  local rel="$1"
-  local local_path="$LOCAL_SANEPROCESS/$rel"
-  local remote_path="$REMOTE_HOME/SaneApps/infra/SaneProcess/$rel"
-  local remote_dir
-  remote_dir=$(dirname "$remote_path")
-
-  ssh "$MINI_HOST" "mkdir -p \"$remote_dir\""
-  if [[ -f "$local_path" ]]; then
-    rsync -au --no-links "$local_path" "$MINI_HOST:$remote_path"
+# Pre-push validation gate: never sync a check-inbox.sh that fails its contract
+# suite, so the always-on Mini auto-close automation can't run a broken script.
+CHECK_INBOX_REL="SaneApps/infra/scripts/check-inbox.sh"
+CHECK_INBOX_TEST="$HOME/SaneApps/infra/SaneProcess/scripts/automation/check_inbox_report_test.py"
+SKIP_CHECK_INBOX=0
+if [[ -f "$CHECK_INBOX_TEST" ]]; then
+  log "Validating check-inbox.sh against its contract suite before pushing..."
+  if ! python3 "$CHECK_INBOX_TEST" >/tmp/check_inbox_gate.log 2>&1; then
+    SKIP_CHECK_INBOX=1
+    printf '⚠️  check-inbox.sh FAILED its contract suite — NOT pushing it to %s (Mini keeps last-good copy). See /tmp/check_inbox_gate.log\n' "$MINI_HOST" >&2
   fi
-  if ssh "$MINI_HOST" "[ -f \"$remote_path\" ]"; then
-    mkdir -p "$(dirname "$local_path")"
-    rsync -au --no-links "$MINI_HOST:$remote_path" "$local_path"
-  fi
-}
-
-log "Syncing gate certifier state with $MINI_HOST..."
-for rel in "${GATE_STATE_REL_FILES[@]}"; do
-  sync_gate_state_file "$rel"
-done
+fi
 
 log "Syncing control-plane files to $MINI_HOST..."
 for rel in "${CONTROL_PLANE_REL_FILES[@]}"; do
+  if [[ "$rel" == "$CHECK_INBOX_REL" && "$SKIP_CHECK_INBOX" -eq 1 ]]; then
+    log "Skipping $rel (failed pre-push validation; Mini keeps last-good copy)"
+    continue
+  fi
   local_path="$HOME/$rel"
   remote_path="$REMOTE_HOME/$rel"
   remote_dir=$(dirname "$remote_path")
@@ -433,7 +409,6 @@ ssh "$MINI_HOST" "
   chmod +x \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/hooks/sane_ssh_guard.sh\"
   chmod +x \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/mini/mini-nightly.sh\"
   chmod +x \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/mini/mini-prepare-automation-root.sh\"
-  chmod +x \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/mcp_singleton_bridge.cjs\"
   chmod +x \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/validation_report.rb\"
   chmod +x \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb\"
   chmod +x \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/sanemaster/meta.rb\"
@@ -443,9 +418,6 @@ ssh "$MINI_HOST" "
   ln -sfn \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/hooks/sane_ssh_guard.sh\" \"$REMOTE_HOME/.local/bin/ssh\"
   rm -f \"$REMOTE_HOME/saneops-am-run.toml\" \"$REMOTE_HOME/saneops-pm-run.toml\"
 " || die "Remote copy failed"
-
-log "Refreshing MCP singleton LaunchAgents on $MINI_HOST..."
-ssh "$MINI_HOST" "\"$REMOTE_NODE\" \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/mcp_singleton_bridge.cjs\" install all >/dev/null" || die "MCP singleton LaunchAgent refresh failed"
 
 ssh "$MINI_HOST" python3 - "$REMOTE_HOME" <<'PY'
 import sqlite3
@@ -554,24 +526,6 @@ for rel in "${CONTROL_PLANE_REL_FILES[@]}"; do
 done
 if [[ "$mismatches" -gt 0 ]]; then
   die "Control-plane parity check failed ($mismatches mismatch(es))"
-fi
-
-gate_mismatches=0
-for rel in "${GATE_STATE_REL_FILES[@]}"; do
-  local_path="$LOCAL_SANEPROCESS/$rel"
-  remote_path="$REMOTE_HOME/SaneApps/infra/SaneProcess/$rel"
-  if [[ ! -f "$local_path" ]] && ! ssh "$MINI_HOST" "[ -f \"$remote_path\" ]"; then
-    continue
-  fi
-  local_hash=$(shasum -a 256 "$local_path" 2>/dev/null | cut -d' ' -f1)
-  remote_hash=$(ssh "$MINI_HOST" "shasum -a 256 \"$remote_path\" | cut -d' ' -f1" 2>/dev/null || echo "")
-  if [[ -z "$local_hash" || -z "$remote_hash" || "$local_hash" != "$remote_hash" ]]; then
-    echo "MISMATCH: $rel" >&2
-    gate_mismatches=$((gate_mismatches + 1))
-  fi
-done
-if [[ "$gate_mismatches" -gt 0 ]]; then
-  die "Gate certifier state parity check failed ($gate_mismatches mismatch(es))"
 fi
 
 local_registry_hash=$(shasum -a 256 "$LOCAL_SKILLS_REGISTRY" | cut -d' ' -f1)

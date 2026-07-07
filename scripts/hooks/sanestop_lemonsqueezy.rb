@@ -3,7 +3,6 @@
 require 'json'
 require 'open3'
 require 'timeout'
-require 'digest'
 
 # Post-release Stop-hook step: keep the Mini's ~/Desktop/LemonSqueezy-Uploads
 # folder staged to ONLY the latest release ZIP per app.
@@ -14,9 +13,8 @@ require 'digest'
 # so after a release Claude's post-flight runs this so the owner always finds
 # exactly the right file with no stale versions beside it.
 #
-# Non-blocking: auto-stages each distinct release command once, warns on
-# failure with the manual command. The heavy lifting lives in
-# stage_lemonsqueezy_uploads.rb.
+# Non-blocking: auto-stages on success (once per session), warns on failure with
+# the manual command. The heavy lifting lives in stage_lemonsqueezy_uploads.rb.
 module LemonSqueezyUploads
   STAGE_SCRIPT = File.expand_path('../stage_lemonsqueezy_uploads.rb', __dir__)
   REMOTE_STAGE_SCRIPT = '~/SaneApps/infra/SaneProcess/scripts/stage_lemonsqueezy_uploads.rb'
@@ -27,23 +25,15 @@ module LemonSqueezyUploads
   # Entry point called from process_stop. Never raises, never blocks.
   def stage_after_release(transcript_path)
     state = StateManager.get(:lemonsqueezy_uploads) || {}
-    staged_keys = Array(state[:staged_keys] || state['staged_keys'])
+    return if state[:done] || state['done']
 
-    release = detect_release_deploy(transcript_path)
-    return unless release
+    project = detect_release_deploy_project(transcript_path)
+    return unless project
 
-    project = release[:project]
-    key = release_key(release)
-    return if staged_keys.include?(key)
-
-    res = run_staging(project, force_remote: release[:remote_mini])
+    res = run_staging(project)
     app = File.basename(project.to_s)
     if res[:ok]
-      StateManager.update(:lemonsqueezy_uploads) do |v|
-        current = v || {}
-        keys = Array(current[:staged_keys] || current['staged_keys'])
-        current.merge('staged_keys' => (keys + [key]).uniq.last(20), 'done' => false)
-      end
+      StateManager.update(:lemonsqueezy_uploads) { |v| (v || {}).merge('done' => true) }
       if res[:status] == 'staged'
         warn '---'
         warn "📦 LemonSqueezy-Uploads auto-staged for #{app} (post-release): #{res[:message]}"
@@ -52,7 +42,6 @@ module LemonSqueezyUploads
     else
       warn '---'
       warn "📦 LemonSqueezy-Uploads NOT staged for #{app} after release: #{res[:message]}"
-      warn '   Stop is still continuing; this is a non-blocking follow-up.'
       warn '   The owner uploads the LS hosted file from ~/Desktop/LemonSqueezy-Uploads on the mini.'
       warn "   Stage it: ruby #{REMOTE_STAGE_SCRIPT} --project #{project}"
       warn '---'
@@ -64,45 +53,70 @@ module LemonSqueezyUploads
 
   # Most recent `release.sh ... --deploy/--full` command's --project, or nil.
   # Extracts each Bash command string from the transcript JSON (escape-aware) so
-  # a quoted --notes value cannot truncate the match.
+  # a quoted --notes value cannot truncate the match. Processes the transcript
+  # per JSONL line so the command can be paired with its own entry's "cwd".
   def detect_release_deploy_project(transcript_path)
-    detect_release_deploy(transcript_path)&.fetch(:project, nil)
-  end
-
-  def detect_release_deploy(transcript_path)
     return nil unless transcript_path && File.exist?(transcript_path)
 
-    content = File.read(transcript_path, encoding: Encoding::UTF_8)
-    release = nil
-    content.scan(/"command"\s*:\s*"((?:[^"\\]|\\.)*)"/).each do |match|
-      cmd = match[0].gsub('\\n', "\n").gsub('\\t', "\t").gsub('\\/', '/').gsub('\\"', '"').gsub('\\\\', '\\')
+    project = nil
+    File.foreach(transcript_path, encoding: Encoding::UTF_8) do |line|
+      next unless line.include?('release.sh')
+
+      cm = line.match(/"command"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+      next unless cm
+
+      cmd = unescape_transcript_string(cm[1])
       next unless cmd.include?('release.sh')
       next unless cmd.include?('--deploy') || cmd.include?('--full')
 
       pm = cmd.match(/--project\s+(\S+)/)
       next unless pm
 
-      project = pm[1].gsub(/["']/, '') # last release this session wins (strip stray quotes)
-      release = { project: project, command: cmd, remote_mini: remote_mini_release_command?(cmd) }
+      raw = pm[1].gsub(/["']/, '') # strip stray quotes
+      cwd_match = line.match(/"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+      entry_cwd = cwd_match ? unescape_transcript_string(cwd_match[1]) : nil
+      resolved = resolve_project_argument(raw, cmd, entry_cwd)
+      project = resolved if resolved # last resolvable release this session wins
     end
-    release
+    project
   rescue StandardError
     nil
   end
 
-  def remote_mini_release_command?(cmd)
-    cmd.to_s.match?(/\bssh\b[^\n;&|]*\bmini\b[^\n;&|]*\brelease\.sh\b/)
+  # `--project $PWD` (and friends) reach the transcript UNEXPANDED — the shell
+  # variable only had a value inside the (possibly remote) shell that ran the
+  # command. Passing the literal `$PWD` to the staging script produced the
+  # useless "could not resolve version for $PWD" nag at every session end (hit
+  # live 2026-07-02). Resolve it from what the command itself tells us: the
+  # last `cd <dir>` before release.sh (the `ssh mini 'cd <app> && release.sh
+  # --project $PWD'` pattern), else the transcript entry's own cwd. Unresolvable
+  # variables return nil so the nag never fires with a broken command line.
+  def resolve_project_argument(raw, cmd, entry_cwd)
+    pwd_form = raw.match?(/\A(?:\$\{?PWD\}?|\$\(pwd\)|\.)\z/)
+    return raw unless pwd_form || raw.start_with?('$') || !raw.start_with?('/', '~')
+
+    if pwd_form
+      before_release = cmd.split('release.sh', 2).first.to_s
+      cd_dir = before_release.scan(/(?<![\w-])cd\s+(\S+)/).flatten.last
+      return cd_dir.gsub(/["']/, '') if cd_dir
+      return entry_cwd if entry_cwd && !entry_cwd.empty?
+
+      return nil
+    end
+    return nil if raw.start_with?('$') # some other unexpanded variable
+
+    entry_cwd && !entry_cwd.empty? ? File.join(entry_cwd, raw) : nil
   end
 
-  def release_key(release)
-    Digest::SHA256.hexdigest("#{release[:project]}\0#{release[:command]}")
+  def unescape_transcript_string(value)
+    value.gsub('\\n', "\n").gsub('\\t', "\t").gsub('\\/', '/').gsub('\\"', '"').gsub('\\\\', '\\')
   end
 
   # Run the staging script where the folder lives (locally on the mini, else via
   # ssh mini). Returns { ok:, status:, message: }; never raises.
-  def run_staging(project, force_remote: false)
+  def run_staging(project)
     out =
-      if !force_remote && File.directory?(UPLOADS_FOLDER)
+      if File.directory?(UPLOADS_FOLDER)
         capture(['ruby', STAGE_SCRIPT, '--project', File.expand_path(project), '--json'])
       else
         escaped = "'#{project.to_s.gsub("'", "'\\''")}'"

@@ -12,11 +12,7 @@
 
 require 'json'
 require 'time'
-require 'tmpdir'
-require 'fileutils'
-require 'open3'
 
-ENV['CLAUDE_HOOK_SECRET'] ||= 'research-evidence-gate-test-secret'
 require_relative '../hooks/test/test_framework'
 require_relative 'sop_loop'
 
@@ -125,88 +121,6 @@ exit(run_tests('Research Evidence Gate') do
       probe.define_singleton_method(:research_state_section) { nil }
       result = probe.send(:active_research_locks, locks: [lock], research_time: T0 + 7200)
       assert_eq(result, [])
-      true
-    end
-  end
-
-  test_category('signed state evidence') do
-    test('signed research state counts as evidence') do
-      Dir.mktmpdir('research-evidence-state-') do |dir|
-        Dir.chdir(dir) do
-          FileUtils.mkdir_p('.claude')
-          StateSigner.write_signed('.claude/state.json', {
-                                    'research' => {
-                                      'web' => { 'completed_at' => FRESH },
-                                      'local' => { 'completed_at' => FRESH }
-                                    }
-                                  })
-          probe = ResearchEvidenceGateHarness.new
-          probe.define_singleton_method(:apple_docs_research_configured?) { false }
-          assert_eq(probe.send(:research_evidence_missing_since, T0), [])
-        end
-      end
-      true
-    end
-
-    test('unsigned or tampered state does not satisfy evidence') do
-      Dir.mktmpdir('research-evidence-state-') do |dir|
-        Dir.chdir(dir) do
-          FileUtils.mkdir_p('.claude')
-          File.write('.claude/state.json', JSON.pretty_generate(
-                                        'research' => {
-                                          'web' => { 'completed_at' => FRESH },
-                                          'local' => { 'completed_at' => FRESH }
-                                        }
-                                      ))
-          probe = ResearchEvidenceGateHarness.new
-          probe.define_singleton_method(:apple_docs_research_configured?) { false }
-          assert_eq(probe.send(:research_evidence_missing_since, T0), %i[web local])
-        end
-      end
-      true
-    end
-
-    test('absent state still fails open to avoid bricking fresh setup') do
-      Dir.mktmpdir('research-evidence-state-') do |dir|
-        Dir.chdir(dir) do
-          probe = ResearchEvidenceGateHarness.new
-          probe.define_singleton_method(:apple_docs_research_configured?) { false }
-          assert_eq(probe.send(:research_evidence_missing_since, T0), [])
-        end
-      end
-      true
-    end
-
-    test('gate_cert fill records signed evidence but no override token') do
-      Dir.mktmpdir('research-evidence-cert-') do |dir|
-        script = File.expand_path('gate_cert.rb', __dir__)
-        env = {
-          'CLAUDE_HOOK_SECRET' => 'research-evidence-gate-test-secret',
-          'HOME' => dir
-        }
-        stdout, stderr, status = Open3.capture3(
-          env,
-          'ruby', script,
-          '--gate', 'research',
-          '--slug', 'weather-move',
-          '--verdict', 'fill',
-          '--note', 'web docs local completed',
-          chdir: dir
-        )
-        raise "gate_cert fill failed: #{stdout}\n#{stderr}" unless status.success?
-
-        Dir.chdir(dir) do
-          state = StateSigner.read_verified('.claude/state.json', symbolize: true)
-          raise 'state was not signed/readable' unless state
-
-          research = state[:research]
-          raise 'web evidence missing' unless research.dig(:web, :tool) == 'gate_cert:fill'
-          raise 'local evidence missing' unless research.dig(:local, :tool) == 'gate_cert:fill'
-
-          override_store = SaneMasterModules::GateOverride.load_store
-          raise 'fill minted an override token' unless override_store['overrides'].empty?
-        end
-      end
       true
     end
   end

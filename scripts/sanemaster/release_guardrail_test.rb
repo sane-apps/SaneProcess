@@ -3309,6 +3309,68 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       subject.singleton_class.remove_method(:customer_ui_run_command) rescue nil
     end
 
+    test('customer UI sweep fails when the target launch command fails') do
+      Dir.mktmpdir('customer-ui-launch-failure-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'scripts'))
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        File.write(File.join(dir, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(dir, 'scripts', 'customer_ui_action_sweep.rb'), "#!/usr/bin/env ruby\n")
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            actions:
+              - id: visible-flow
+                title: Visible Flow
+                release_required: true
+                required_proof_level: runtime_visual
+                functional_state:
+                  description: Ready
+          YAML
+        )
+
+        calls = []
+        subject.define_singleton_method(:customer_ui_mini_host?) { true }
+        subject.define_singleton_method(:customer_ui_cleanup_before_sweep) do |app|
+          calls << [:cleanup, app]
+          []
+        end
+        subject.define_singleton_method(:customer_ui_visual_precheck) do |app|
+          calls << [:visual_precheck, app]
+          { ok: true, issues: [] }
+        end
+        subject.define_singleton_method(:customer_ui_run_command) do |*cmd|
+          calls << cmd
+          status = Struct.new(:success?).new(cmd != ['./scripts/SaneMaster.rb', 'launch'])
+          [cmd.join(' ') + "\n❌ Rebuild failed!\n", status]
+        end
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.customer_ui_sweep_report(dry_run: false)
+        end
+
+        assert(!report[:ok], "expected customer UI sweep to fail after launch failure: #{report.inspect}")
+        assert_eq(calls, [['./scripts/SaneMaster.rb', 'launch']])
+        assert(report[:issues].any? { |issue| issue.include?('Mini target launch failed before customer UI sweep') },
+               "expected launch failure issue, got #{report[:issues].inspect}")
+      end
+      true
+    ensure
+      subject.singleton_class.remove_method(:customer_ui_mini_host?) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_cleanup_before_sweep) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_visual_precheck) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_run_command) rescue nil
+    end
+
+    test('SaneMaster launch command exits nonzero when launch_app fails') do
+      source = File.read(File.expand_path('../SaneMaster.rb', __dir__), encoding: Encoding::UTF_8)
+      launch_case = source[/when 'launch', 'run'.*?when 'logs'/m].to_s
+
+      assert_includes(launch_case, 'success = launch_app(args)')
+      assert_includes(launch_case, 'exit(success ? 0 : 1)')
+      true
+    end
+
     test('SaneBar customer UI sweep auto-launches the release app when preflight cleanup stopped it') do
       Dir.mktmpdir('customer-ui-sanebar-autolaunch-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'scripts'))

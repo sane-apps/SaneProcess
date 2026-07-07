@@ -116,7 +116,7 @@ module SaneTrackBlindTests
     <<~WARN.chomp
       🚩 BLIND TEST WARNING: this test asserts source structure (#{blind_count} of #{total_assertions} assertions use source.contains/String(contentsOf:)), not runtime behavior — a real regression will pass it.
          Pair it with a runtime gate that reproduces the failure AND the success by driving the app, and assert the customer-observable end-state.
-         Source-fingerprint guards are not behavioral coverage. See DEVELOPMENT.md.
+         Source-fingerprint guards are not behavioral coverage. See docs/TEST_BLINDNESS_AUDIT.md.
     WARN
   end
 end

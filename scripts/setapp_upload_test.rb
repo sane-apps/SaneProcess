@@ -424,6 +424,50 @@ exit(run_tests('Setapp Upload Tests') do
       end
     end
 
+    test('create-version skips the pinned version id check but keeps app/bundle checks') do
+      upload = SetappUpload.allocate
+      upload.instance_variable_set(
+        :@archive_metadata,
+        { app_name: 'SaneClip', bundle_id: 'com.saneclip.app-setapp', version: '2312', ui_version: '2.3.12' }
+      )
+      # No version_id at all: allowed when creating, because a Released
+      # (status 10) version rejects PATCH and a fresh record gets a new id.
+      upload.instance_variable_set(:@options, { app_id: '1847', version_id: nil, create_version: true })
+      outcome = begin
+        upload.send(:validate_portal_target_matches_archive!)
+        :no_abort
+      rescue SystemExit
+        :aborted
+      end
+      assert_eq(outcome, :no_abort, 'create-version must not require the pinned version id')
+
+      upload.instance_variable_set(
+        :@archive_metadata,
+        { app_name: 'SaneClip', bundle_id: 'com.wrong.bundle', version: '2312', ui_version: '2.3.12' }
+      )
+      expect_abort_includes('expects bundle id com.saneclip.app-setapp') do
+        upload.send(:validate_portal_target_matches_archive!)
+      end
+    end
+
+    test('pending-submission status is action required unless explicitly allowed') do
+      upload = SetappUpload.allocate
+      upload.instance_variable_set(:@options, { allow_needs_revision: false })
+
+      expect_abort_includes('Pending Submission') do
+        upload.send(:enforce_portal_review_state!, { 'data' => { 'status' => 1 } })
+      end
+
+      upload.instance_variable_set(:@options, { allow_needs_revision: true })
+      outcome = begin
+        upload.send(:enforce_portal_review_state!, { 'data' => { 'status' => 1 } })
+        :no_abort
+      rescue SystemExit
+        :aborted
+      end
+      assert_eq(outcome, :no_abort, '--allow-needs-revision must accept Pending Submission')
+    end
+
     test('CI upload proof data must include hosted archive and matching versions') do
       upload = SetappUpload.allocate
       upload.instance_variable_set(
@@ -848,6 +892,163 @@ exit(run_tests('Setapp Upload Tests') do
 
         assert(!status.success?, output)
         assert_includes(output, 'missing NSUpdateSecurityPolicy')
+      end
+      true
+    end
+
+    test('weak-only Sparkle linkage parser accepts weak links and rejects strong links') do
+      require_relative 'setapp_upload' unless defined?(SetappUpload)
+
+      weak_output = <<~OTOOL
+        Load command 12
+                  cmd LC_LOAD_WEAK_DYLIB
+              cmdsize 96
+                 name @rpath/Sparkle.framework/Versions/B/Sparkle (offset 24)
+        Load command 13
+                  cmd LC_LOAD_DYLIB
+              cmdsize 56
+                 name /usr/lib/libobjc.A.dylib (offset 24)
+      OTOOL
+      strong_output = <<~OTOOL
+        Load command 12
+                  cmd LC_LOAD_DYLIB
+              cmdsize 96
+                 name @rpath/Sparkle.framework/Versions/B/Sparkle (offset 24)
+      OTOOL
+      no_sparkle_output = <<~OTOOL
+        Load command 12
+                  cmd LC_LOAD_DYLIB
+              cmdsize 56
+                 name /usr/lib/libobjc.A.dylib (offset 24)
+      OTOOL
+
+      assert(SetappUpload.sparkle_linkage_weak_only_from_otool?(weak_output), 'weak Sparkle link must pass')
+      assert(!SetappUpload.sparkle_linkage_weak_only_from_otool?(strong_output), 'strong Sparkle link must fail')
+      assert(SetappUpload.sparkle_linkage_weak_only_from_otool?(no_sparkle_output), 'no Sparkle link must pass')
+      true
+    end
+
+    test('tolerates unreachable direct-license residue in the executable, still rejects it in resources') do
+      Dir.mktmpdir('setapp-upload-test') do |dir|
+        # Build the fixture's own executable (rather than reusing
+        # create_setapp_fixture, which signs before this test could append
+        # bytes — a post-sign append fails strict validation on re-sign) so
+        # the extra string bytes are present in the Mach-O BEFORE the one and
+        # only codesign call, mirroring how "Enter License Key"/"checkoutURL"
+        # land in the compiled binary as unreachable LicenseService residue.
+        app_root = File.join(dir, 'SaneClip.app')
+        app_contents = File.join(app_root, 'Contents')
+        app_resources = File.join(app_contents, 'Resources')
+        app_macos = File.join(app_contents, 'MacOS')
+        FileUtils.mkdir_p([app_resources, app_macos])
+        create_root_icon_png(File.join(app_resources, 'AppIcon.icns'))
+        File.write(File.join(app_contents, 'Info.plist'), <<~PLIST)
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>SaneClip</string>
+            <key>CFBundleName</key>
+            <string>SaneClip</string>
+            <key>CFBundleIconFile</key>
+            <string>AppIcon</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.saneclip.app-setapp</string>
+            <key>CFBundleShortVersionString</key>
+            <string>2.3.9</string>
+            <key>CFBundleVersion</key>
+            <string>2309</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>MPSupportedArchitectures</key>
+            <array>
+              <string>arm64</string>
+              <string>x86_64</string>
+            </array>
+            <key>NSUpdateSecurityPolicy</key>
+            <dict>
+              <key>AllowProcesses</key>
+              <dict>
+                <key>MEHY5QF425</key>
+                <array>
+                  <string>com.setapp.DesktopClient.SetappAgent</string>
+                </array>
+              </dict>
+            </dict>
+          </dict>
+          </plist>
+        PLIST
+        exe_path = File.join(app_macos, 'SaneClip')
+        # Compile a real Mach-O containing the strings as proper literals —
+        # macOS codesign's strict validation rejects any Mach-O with bytes
+        # appended past what its load commands declare (a hardening against
+        # exactly the "smuggle extra bytes into a signed binary" trick),
+        # so the string must be genuinely compiled in, not appended.
+        source_path = File.join(dir, 'residue.c')
+        File.write(source_path, <<~C)
+          const char *residue = "Enter License Key checkoutURL";
+          int main(void) { return residue[0] == 0 ? 1 : 0; }
+        C
+        compile_output, compile_status = Open3.capture2e(
+          'clang', '-arch', 'arm64', '-arch', 'x86_64', '-o', exe_path, source_path
+        )
+        assert(compile_status.success?, compile_output)
+
+        output, status = Open3.capture2e('codesign', '--force', '--sign', '-', app_root)
+        assert(status.success?, output)
+        zip_path = File.join(dir, 'SaneClip-Setapp.zip')
+        zip_app(app_root, zip_path)
+
+        output, status = Open3.capture2e('ruby', SCRIPT_PATH, '--validate-only', '--zip', zip_path)
+
+        assert(status.success?, output)
+        assert_includes(output, 'inert direct-channel residue tolerated')
+        assert_includes(output, 'direct license-key UI copy')
+      end
+      true
+    end
+
+    test('rejects direct-license residue in a resource file even though the executable tolerance exists') do
+      Dir.mktmpdir('setapp-upload-test') do |dir|
+        app_root = create_setapp_fixture(dir)
+        File.write(File.join(app_root, 'Contents', 'Resources', 'residue.txt'), 'checkoutURL lives here')
+        output, status = Open3.capture2e('codesign', '--force', '--sign', '-', app_root)
+        assert(status.success?, output)
+        zip_path = File.join(dir, 'SaneClip-Setapp.zip')
+        zip_app(app_root, zip_path)
+
+        output, status = Open3.capture2e('ruby', SCRIPT_PATH, '--validate-only', '--zip', zip_path)
+
+        assert(!status.success?, output)
+        assert_includes(output, 'forbidden direct-channel residue')
+        assert_includes(output, 'non-binary file')
+      end
+      true
+    end
+
+    test('inert Sparkle strings in non-binary files remain fatal') do
+      Dir.mktmpdir('setapp-upload-test') do |dir|
+        app_root = create_setapp_fixture(dir)
+        # A framework-reference string in a RESOURCE is configuration, not
+        # linker fallout — must stay fatal even under the weak-link tolerance.
+        File.write(File.join(app_root, 'Contents', 'Resources', 'residue.txt'), 'loads Sparkle.framework at runtime')
+        output, status = Open3.capture2e('codesign', '--force', '--sign', '-', app_root)
+        assert(status.success?, output)
+        zip_path = File.join(dir, 'SaneClip-Setapp.zip')
+        zip_app(app_root, zip_path)
+
+        output, status = Open3.capture2e(
+          'ruby',
+          SCRIPT_PATH,
+          '--validate-only',
+          '--zip',
+          zip_path
+        )
+
+        assert(!status.success?, output)
+        assert_includes(output, 'forbidden direct-channel residue')
+        assert_includes(output, 'non-binary file')
       end
       true
     end

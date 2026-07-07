@@ -145,10 +145,7 @@ module SaneMasterModules
     end
 
     def refresh_unfair(gate:, now:)
-      # Clearing tokens expire quickly; unfairness evidence should not. Count
-      # override verdicts from the audit log so a gate that false-blocks three
-      # times across normal work gaps still flags itself for repair.
-      overrides = override_log_entries.select { |override| override['gate'] == gate && override['verdict'] == 'override' }
+      overrides = load_store['overrides'].select { |override| override['gate'] == gate }
       return if overrides.length < UNFAIR_THRESHOLD
 
       timestamps = overrides.map { |override| override['certified_at'] }.compact
@@ -173,19 +170,6 @@ module SaneMasterModules
       parsed.is_a?(Hash) ? parsed : {}
     rescue StandardError
       {}
-    end
-
-    def override_log_entries
-      return [] unless File.exist?(OVERRIDE_LOG)
-
-      File.readlines(OVERRIDE_LOG, chomp: true, encoding: Encoding::UTF_8).filter_map do |line|
-        parsed = JSON.parse(line)
-        parsed.is_a?(Hash) ? parsed : nil
-      rescue JSON::ParserError
-        nil
-      end
-    rescue StandardError
-      []
     end
 
     def parse_time(value)

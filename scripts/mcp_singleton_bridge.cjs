@@ -10,31 +10,9 @@ const { randomUUID } = require('crypto');
 const SCRIPT_PATH = fs.realpathSync(__filename);
 const HOME = os.homedir();
 const NODE_EXECUTABLE = process.execPath;
-const NODE_LAUNCH_EXECUTABLE = firstExecutable([
-  '/opt/homebrew/bin/node',
-  '/usr/local/bin/node',
-  NODE_EXECUTABLE,
-]);
 const LOG_DIR = path.join(HOME, 'Library', 'Logs', 'SaneApps', 'mcp-singleton');
 const PLIST_DIR = path.join(HOME, 'Library', 'LaunchAgents');
 const PLIST_LABEL_PREFIX = 'com.saneapps.mcp-singleton';
-const BACKEND_ENV_ALLOWLIST = [
-  'TMPDIR',
-  'TEMP',
-  'TMP',
-  'USER',
-  'LOGNAME',
-  'SHELL',
-  'LANG',
-  'LC_ALL',
-  'LC_CTYPE',
-  'SSL_CERT_FILE',
-  'NODE_EXTRA_CA_CERTS',
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'ALL_PROXY',
-  'NO_PROXY',
-];
 
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
@@ -81,22 +59,11 @@ const BACKEND_PATH = unique([
   process.env.PATH,
 ]).join(':');
 
-function baseBackendEnv() {
-  const env = {
-    HOME,
-    PATH: BACKEND_PATH,
-  };
-  for (const key of BACKEND_ENV_ALLOWLIST) {
-    if (process.env[key]) {
-      env[key] = process.env[key];
-    }
-  }
-  return env;
-}
-
 function backendEnv(spec) {
   return {
-    ...baseBackendEnv(),
+    ...process.env,
+    HOME,
+    PATH: BACKEND_PATH,
     ...(spec.env || {}),
   };
 }
@@ -251,7 +218,7 @@ function plistXml(spec) {
   <string>${plistLabel(spec.name)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${NODE_LAUNCH_EXECUTABLE}</string>
+    <string>${process.execPath}</string>
     <string>${SCRIPT_PATH}</string>
     <string>serve</string>
     <string>${spec.name}</string>

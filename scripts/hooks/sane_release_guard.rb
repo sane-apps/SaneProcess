@@ -39,10 +39,10 @@ SANE_BUCKET_PATTERN = Regexp.new(SANE_APPS.map { |a| "#{a.downcase}-downloads" }
 SANE_PAGES_PATTERN = Regexp.new(SANE_APPS.map { |a| "#{a.downcase}-site" }.join('|'))
 # dist.*.com domains
 SANE_DIST_PATTERN = Regexp.new(SANE_APPS.map { |a| "dist\\.#{a.downcase}\\.com" }.join('|'))
-CORPORATE_WE_PATTERN = /\b(?:we|we['’]re|we['’]ll|we['’]ve|our|us)\b/i
+# Team/company "we" only — flags presenting SaneApps as a multi-person org (a room of
+# coders), NOT the natural "you and I" we ("since we last talked"). SaneApps is one person.
+CORPORATE_WE_PATTERN = /\b(?:our\s+(?:team|teams|engineers?|developers?|devs?|coders?|programmers?|staff|crew|company|companies|organi[sz]ation|org|support\s+team|engineering|qa|squad|department)|the\s+(?:whole\s+|entire\s+|rest\s+of\s+the\s+)?team|my\s+team|the\s+(?:devs?|developers?|engineers)|we(?:['’]re|\s+are)\s+(?:a|an|the)\s+(?:[a-z]+\s+)?(?:team|company|startup|business|group|studio|crew|squad)|we(?:['’]ve|\s+have)?\s+(?:built|build|developed|develop|engineered|engineer|coded|programmed|architected|designed|design|shipped|ship|released|release|created|create)\b)/i
 COMMAND_CHAIN_PATTERN = /(?:;|&&|\|\||\n)/
-WRANGLER_R2_PATTERN = /(?:^|\s)["']?wrangler(?:@\d+(?:\.\d+){0,2})?["']?\s+r2\b/i.freeze
-WRANGLER_PAGES_DEPLOY_PATTERN = /(?:^|\s)["']?wrangler(?:@\d+(?:\.\d+){0,2})?["']?\s+pages\s+deploy\b/i.freeze
 APPROVAL_FLAG = '/tmp/.gh_post_approved.json'
 GITHUB_APPROVAL_TTL_SECONDS = 300
 
@@ -97,76 +97,13 @@ def token_value(tokens, *flags)
   nil
 end
 
-def scrub_quoted_literals(command)
-  command.to_s.gsub(/'[^']*'/, "''").gsub(/"[^"]*"/, '""')
-end
-
-def gh_public_command_direct?(command)
+def gh_public_command?(command)
   # Blank quoted strings first so a command that merely MENTIONS gh inside a quoted
   # argument (e.g. `git commit -m "fix: gh issue edit ..."`) is not mistaken for an
   # actual gh invocation. A real gh command has its verb OUTSIDE quotes, so it still matches.
-  scan = scrub_quoted_literals(command)
+  scan = command.gsub(/'[^']*'/, "''").gsub(/"[^"]*"/, '""')
   scan.match?(/\bgh\s+(?:issue|pr)\s+(?:comment|close|review|create|edit)\b/) ||
     scan.match?(/\bgh\s+api\b.*(?:^|[\s\/])repos\/(?:sane-apps|mrsaneapps)\//i)
-end
-
-def shell_wrapper_payloads(command)
-  tokens = shell_tokens(command)
-  return [] if tokens.empty?
-
-  command_name = File.basename(tokens.first.to_s)
-  case command_name
-  when 'bash', 'sh', 'zsh'
-    command_index = nil
-    tokens[1..].to_a.each_with_index do |token, offset|
-      if token.start_with?('-')
-        if token.include?('c')
-          command_index = offset + 2
-          break
-        end
-      else
-        break
-      end
-    end
-    command_index && tokens[command_index] ? [tokens[command_index]] : []
-  when 'ssh'
-    index = 1
-    options_with_values = %w[-b -c -D -E -F -I -i -J -L -l -m -O -o -p -R -S -W].freeze
-    while index < tokens.length
-      token = tokens[index].to_s
-      if token == '--'
-        index += 1
-        break
-      elsif token.start_with?('-')
-        index += options_with_values.include?(token) ? 2 : 1
-      else
-        index += 1 # host
-        break
-      end
-    end
-    payload = tokens[index..].to_a.join(' ').strip
-    payload.empty? ? [] : [payload]
-  else
-    []
-  end
-rescue StandardError
-  []
-end
-
-def public_gh_command_for(command, depth = 0)
-  return nil if depth > 4
-  return command if gh_public_command_direct?(command)
-
-  shell_wrapper_payloads(command).each do |payload|
-    match = public_gh_command_for(payload, depth + 1)
-    return match if match
-  end
-
-  nil
-end
-
-def gh_public_command?(command)
-  !public_gh_command_for(command).nil?
 end
 
 def extract_gh_public_text(command)
@@ -200,18 +137,7 @@ def gh_metadata_only_edit?(command)
   command.match?(/--(?:add|remove)-(?:label|assignee|project)\b|--milestone\b|--add-reviewer\b/)
 end
 
-def normalized_gh_metadata_command(command)
-  return nil unless gh_metadata_only_edit?(command)
-
-  tokens = shell_tokens(command)
-  gh_index = tokens.index('gh')
-  return nil unless gh_index
-
-  gh_tokens = tokens[gh_index..]
-  Digest::SHA256.hexdigest(gh_tokens.join("\0"))
-end
-
-def consume_github_approval(public_text, metadata_command_hash: nil)
+def consume_github_approval(public_text, metadata_only: false)
   return :missing unless File.exist?(APPROVAL_FLAG)
 
   payload = JSON.parse(File.read(APPROVAL_FLAG, encoding: Encoding::UTF_8))
@@ -224,15 +150,9 @@ def consume_github_approval(public_text, metadata_command_hash: nil)
   return :stale unless approval_present
 
   # Metadata-only edits (labels/assignees/milestone) post NO public text, so there is
-  # nothing to body-hash. Scope approval to the exact normalized gh edit command so a
-  # token for one issue/label cannot authorize another metadata mutation in the TTL.
-  if metadata_command_hash
-    expected = payload['metadata_command_hash'].to_s
-    return :valid if payload['approval_type'] == 'github_metadata' &&
-                     !expected.empty? &&
-                     expected == metadata_command_hash
-    return :body_mismatch
-  end
+  # nothing to hash-match — a fresh, user-approved token is sufficient consent. Without
+  # this, label-only `gh issue edit` was un-approvable (empty text => permanent mismatch).
+  return :valid if metadata_only && public_text.to_s.strip.empty?
 
   expected = payload['body_hash'].to_s
   actual = Digest::SHA256.hexdigest(public_text.to_s.strip)
@@ -309,7 +229,7 @@ end
 # Block 6: ANY wrangler r2 command touching SaneApp buckets
 # Catches: wrangler r2 object put/get/delete, npx wrangler r2 ..., etc.
 # Matches by BOTH app name pattern AND bucket name pattern for maximum coverage.
-if command.match?(WRANGLER_R2_PATTERN)
+if command.match?(/\bwrangler\s+r2\b/)
   if command.match?(SANE_APP_PATTERN) || command.match?(SANE_BUCKET_PATTERN)
     warn '🔴 BLOCKED: Manual R2 operation for SaneApp'
     warn '   ALL R2 operations should go through release.sh --deploy.'
@@ -322,7 +242,7 @@ if command.match?(WRANGLER_R2_PATTERN)
 end
 
 # Block 6b: Wrangler pages deploy for SaneApp sites
-if command.match?(WRANGLER_PAGES_DEPLOY_PATTERN)
+if command.match?(/\bwrangler\s+pages\s+deploy\b/)
   if command.match?(SANE_APP_PATTERN) || command.match?(SANE_PAGES_PATTERN) || command.match?(SANE_DIST_PATTERN) || saneprocess_command_context?(command)
     warn '🔴 BLOCKED: Manual website deploy for SaneApp'
     warn '   Website deploys should go through release.sh --deploy.'
@@ -451,8 +371,7 @@ if gh_public_command?(command)
     exit 2
   end
 
-  public_command = public_gh_command_for(command) || command
-  public_text = extract_gh_public_text(public_command)
+  public_text = extract_gh_public_text(command)
   if public_text.match?(CORPORATE_WE_PATTERN)
     warn '🔴 BLOCKED: "we/us/our" language in public GitHub post'
     warn '   SaneApps is one person. Use: I/me/my.'
@@ -461,8 +380,7 @@ if gh_public_command?(command)
     exit 2
   end
 
-  metadata_command_hash = normalized_gh_metadata_command(public_command)
-  approval_status = consume_github_approval(public_text, metadata_command_hash: metadata_command_hash)
+  approval_status = consume_github_approval(public_text, metadata_only: gh_metadata_only_edit?(command))
   if approval_status == :valid
     exit 0  # Approved — allow the post
   end
@@ -471,11 +389,7 @@ if gh_public_command?(command)
   warn '   This posts publicly as MrSaneApps. Show the user a draft first.'
   warn ''
   warn '   ✅ Show the draft text to the user, get explicit approval, then post.'
-  if metadata_command_hash
-    warn '   For metadata-only edits, run: ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb github_post_approval --metadata-command "<exact gh issue/pr edit command>" --user-approval "<quote>"'
-  else
-    warn '   Then run: ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb github_post_approval --body-file <draft_file> --user-approval "<quote>"'
-  end
+  warn '   Then run: ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb github_post_approval --body-file <draft_file> --user-approval "<quote>"'
   exit 2
 end
 

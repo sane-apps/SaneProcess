@@ -110,15 +110,6 @@ require_relative 'sanemaster/sales'
 require_relative 'sanemaster/downloads'
 
 class SaneMaster
-  GATE_STATE_RELATIVE_FILES = %w[
-    .claude/gate-overrides.json
-    .claude/gate-override-log.jsonl
-    .claude/state.json
-    .claude/unfair-gates.json
-    .claude/gate-hits.json
-    .claude/gate-hammer-log.jsonl
-  ].freeze
-
   include SaneMasterModules::Base
   include SaneMasterModules::Memory
   include SaneMasterModules::Dependencies
@@ -278,7 +269,7 @@ class SaneMaster
     session: {
       desc: 'Session state, approvals, and loop controls',
       commands: {
-        'github_post_approval' => { args: '--body|--body-file <TEXT|PATH> | --metadata-command <GH_EDIT> --user-approval "QUOTE"', desc: 'Record exact-text approval before public GitHub posting' },
+        'github_post_approval' => { args: '--body|--body-file <TEXT|PATH> --user-approval "QUOTE"', desc: 'Record exact-text approval before public GitHub posting' },
         'email_force_approval' => { args: '--action ACTION --id ID --reason TEXT --user-approval "QUOTE"', desc: 'Record scoped approval for check-inbox --force' },
         'session_end' => { args: '[--skip-prompts]', desc: 'End session with insight extraction' },
         'reset_breaker' => { args: '', desc: 'Reset circuit breaker (unblock tools)' },
@@ -602,24 +593,26 @@ class SaneMaster
       preserve_release_artifacts = release_artifact_resume_requested?(command, args)
       routed_webhook_repo = nil
       remote_saneui_repo = nil
-      sync_gate_state_from_mini!(Dir.pwd, remote_repo)
       execution_repo = if release_routed
                          prepare_release_workspace_on_mini!(Dir.pwd, remote_repo, preserve_release_artifacts: preserve_release_artifacts)
                        else
-                         sync_workspace_to_mini!(remote_repo)
-                         remote_repo
+                         # Non-release routes execute in a persistent scratch
+                         # workspace; the canonical Mini repo stays clean so the
+                         # release dirty-peer gate can never be tripped by our
+                         # own verify/sweep overlays again.
+                         prepare_verify_workspace_on_mini!(Dir.pwd, remote_repo)
                        end
-      execution_saneprocess_repo = release_routed ? routed_release_path_for_local(saneprocess_repo_root) : remote_saneprocess_repo
+      execution_saneprocess_repo = release_routed ? routed_release_path_for_local(saneprocess_repo_root) : routed_verify_path_for_local(saneprocess_repo_root)
       if workspace_uses_saneui?(Dir.pwd) && Dir.exist?(saneui_repo_root)
         remote_saneui_repo = map_local_path_to_mini(saneui_repo_root)
         unless remote_saneui_repo
           abort "❌ Could not map SaneUI to mini: #{saneui_repo_root}"
         end
-        remote_saneui_repo = routed_release_path_for_local(saneui_repo_root) if release_routed
+        remote_saneui_repo = release_routed ? routed_release_path_for_local(saneui_repo_root) : routed_verify_path_for_local(saneui_repo_root)
         sync_local_dir_to_mini!(saneui_repo_root, remote_saneui_repo, label: 'SaneUI')
       end
       sync_local_dir_to_mini!(saneprocess_repo_root, execution_saneprocess_repo, label: 'SaneProcess')
-      sync_setapp_app_workspaces_to_mini! if setapp_route_command?(command)
+      sync_setapp_app_workspaces_to_mini!(release_routed: release_routed) if setapp_route_command?(command)
       sync_release_artifacts_to_mini!(Dir.pwd, execution_repo) if preserve_release_artifacts
       if release_routed
         routed_webhook_repo = sync_release_support_repos_to_mini!(release_routed: true, command: command)
@@ -681,7 +674,6 @@ class SaneMaster
       remote_ok = ssh_system('mini', "cd #{Shellwords.escape(execution_repo)} && #{remote_cmd}")
       remote_status = $?.respond_to?(:exitstatus) ? $?.exitstatus : (remote_ok ? 0 : 1)
       sync_outputs_from_mini!(Dir.pwd, execution_repo)
-      sync_gate_state_from_mini!(Dir.pwd, execution_repo)
       cleanup_bulk_outputs_on_mini!(execution_repo)
       sync_release_artifacts_from_mini!(Dir.pwd, execution_repo, warn_only: true) if release_routed
       sync_release_support_repos_from_origin! if release_routed && remote_status.zero? &&
@@ -740,8 +732,14 @@ class SaneMaster
 
   def running_on_mini_host?
     host = Socket.gethostname.to_s.downcase
-    user = ENV.fetch('USER', '').downcase
-    host.include?('mini') || user == 'stephansmac'
+    return true if host.include?('mini')
+
+    if RUBY_PLATFORM.include?('darwin')
+      computer_name, status = Open3.capture2('/usr/sbin/scutil', '--get', 'ComputerName')
+      return true if status.success? && computer_name.to_s.downcase.include?('mac mini')
+    end
+
+    false
   rescue StandardError
     false
   end
@@ -786,11 +784,6 @@ class SaneMaster
     false
   rescue StandardError
     false
-  end
-
-  def sync_workspace_to_mini!(remote_repo)
-    route_log("🔄 Syncing local workspace snapshot to mini (#{remote_repo})")
-    sync_local_dir_to_mini!(Dir.pwd, remote_repo, label: nil)
   end
 
   def prepare_release_workspace_on_mini!(local_repo, remote_repo, preserve_release_artifacts: false)
@@ -984,6 +977,90 @@ PY
     File.join('/Users/stephansmac', '.sanemaster', 'routed-workspaces', digest)
   end
 
+  # Persistent (per-repo, reused across runs for incremental build speed)
+  # scratch root for NON-release routed commands. Verify/sweep overlays used to
+  # rsync straight onto the canonical Mini repo, leaving it permanently dirty —
+  # the root cause of the recurring dirty-peer release blocks, wrong-branch
+  # commits on the Mini, and the months-old auto-reconcile stash pile.
+  def mini_verify_workspace_root(local_repo)
+    digest = Digest::SHA256.hexdigest(File.expand_path(local_repo))[0, 12]
+    File.join('/Users/stephansmac', '.sanemaster', 'verify-workspaces', digest)
+  end
+
+  def routed_verify_path_for_local(local_path, local_repo = Dir.pwd)
+    absolute_path = File.expand_path(local_path)
+    relative_path = if absolute_path.start_with?('/Users/sj/')
+                      absolute_path.delete_prefix('/Users/sj/')
+                    elsif absolute_path.start_with?('/Users/stephansmac/')
+                      absolute_path.delete_prefix('/Users/stephansmac/')
+                    else
+                      abort "❌ Could not mirror path into routed verify workspace: #{absolute_path}"
+                    end
+    File.join(mini_verify_workspace_root(local_repo), relative_path)
+  end
+
+  # Prepare the scratch workspace for a non-release routed command: align its
+  # git state to the local HEAD (so receipt source fingerprints match by
+  # construction), then let the caller overlay the working tree. The canonical
+  # Mini repo is never written. Unlike the release path this tolerates
+  # unpushed branches (verify's whole point is pre-push proof) and skips
+  # `clean -fdx` so incremental build caches survive between runs.
+  def prepare_verify_workspace_on_mini!(local_repo, remote_repo)
+    branch = current_git_branch(local_repo)
+    head = current_git_head(local_repo)
+    scratch_repo = routed_verify_path_for_local(local_repo, local_repo)
+    bundle_branch = branch
+    branch = 'sanemaster-route-verify' if branch.empty? || branch == 'HEAD'
+
+    remote_bundle_path = File.join(
+      '/tmp',
+      "sanemaster-verify-#{Digest::SHA256.hexdigest("#{File.expand_path(local_repo)}:#{head}")[0, 16]}.bundle"
+    )
+    needs_bundle = !head.empty? &&
+                   !bundle_branch.empty? && bundle_branch != 'HEAD' &&
+                   !mini_repo_has_commit?(scratch_repo, head)
+    sync_git_bundle_to_mini!(local_repo, bundle_branch, remote_bundle_path) if needs_bundle
+
+    remote_cmd = <<~SH
+      set -e
+      scratch=#{Shellwords.escape(scratch_repo)}
+      canonical=#{Shellwords.escape(remote_repo)}
+      bundle_path=#{Shellwords.escape(remote_bundle_path)}
+      cleanup() { rm -f "$bundle_path"; }
+      trap cleanup EXIT
+      if [ ! -d "$scratch/.git" ]; then
+        mkdir -p "$(dirname "$scratch")"
+        rm -rf "$scratch"
+        if [ -d "$canonical/.git" ]; then
+          git clone --no-checkout "$canonical" "$scratch" >/dev/null 2>&1
+        else
+          mkdir -p "$scratch"
+          git -C "$scratch" init -q
+        fi
+      fi
+      cd "$scratch"
+      if [ -n #{Shellwords.escape(head)} ] && ! git rev-parse --verify #{Shellwords.escape("#{head}^{commit}")} >/dev/null 2>&1; then
+        if [ -f "$bundle_path" ]; then
+          git fetch "$bundle_path" #{Shellwords.escape(branch)} >/dev/null 2>&1 || true
+        fi
+        if [ -d "$canonical/.git" ]; then
+          git fetch "$canonical" >/dev/null 2>&1 || true
+        fi
+      fi
+      if [ -n #{Shellwords.escape(head)} ] && git rev-parse --verify #{Shellwords.escape("#{head}^{commit}")} >/dev/null 2>&1; then
+        git checkout -q -B #{Shellwords.escape(branch)} #{Shellwords.escape(head)} 2>/dev/null || true
+        git reset -q --hard #{Shellwords.escape(head)} 2>/dev/null || true
+      fi
+    SH
+    ok = ssh_system('mini', remote_cmd)
+    abort '❌ Failed to prepare the routed verify workspace on the mini.' unless ok
+
+    route_log("🔄 Syncing local workspace snapshot to mini (#{scratch_repo})")
+    sync_local_dir_to_mini!(local_repo, scratch_repo, label: nil)
+    apply_git_deleted_paths_to_mini!(local_repo, scratch_repo)
+    scratch_repo
+  end
+
   def routed_release_path_for_local(local_path, local_repo = Dir.pwd)
     absolute_path = File.expand_path(local_path)
     relative_path = if absolute_path.start_with?('/Users/sj/')
@@ -1070,12 +1147,22 @@ PY
     File.expand_path('~/SaneApps/infra/sane-email-automation')
   end
 
-  def sync_setapp_app_workspaces_to_mini!
+  # Setapp app workspaces must land where the EXECUTING SaneProcess copy will
+  # look for them. Non-release routes execute SaneProcess from the scratch
+  # verify workspace, so the app repos mirror into the same scratch root
+  # (relative ../../apps/<App> lookups stay consistent); release routes keep
+  # their own routed-release mapping via the caller. Canonical Mini repos are
+  # never written either way.
+  def sync_setapp_app_workspaces_to_mini!(release_routed: false)
     setapp_enabled_app_dirs.each do |app_dir|
       local_repo = File.join(saneapps_root, 'apps', app_dir)
       next unless Dir.exist?(local_repo)
 
-      remote_repo = map_local_path_to_mini(local_repo)
+      remote_repo = if release_routed
+                      routed_release_path_for_local(local_repo)
+                    else
+                      routed_verify_path_for_local(local_repo)
+                    end
       abort "❌ Could not map Setapp app #{app_dir} to mini: #{local_repo}" unless remote_repo
 
       sync_local_dir_to_mini!(local_repo, remote_repo, label: "#{app_dir} Setapp app")
@@ -1618,18 +1705,6 @@ PY
     warn '⚠️  Failed to sync Mini .sane customer UI receipt back to the local workspace.' unless ok
   end
 
-  def sync_gate_state_from_mini!(local_repo, remote_repo)
-    GATE_STATE_RELATIVE_FILES.each do |relative_path|
-      remote_path = File.join(remote_repo, relative_path)
-      next unless mini_path_exists_fast?(remote_path)
-
-      local_path = File.join(File.expand_path(local_repo), relative_path)
-      FileUtils.mkdir_p(File.dirname(local_path))
-      ok = route_system('rsync', '-azu', '--no-links', "mini:#{remote_path}", local_path)
-      warn "⚠️  Failed to sync Mini gate state back to local workspace (#{relative_path})." unless ok
-    end
-  end
-
   def mini_output_receipt_rsync_filters
     [
       '--include', 'qa_status.json',
@@ -1971,7 +2046,8 @@ PY
 
     # Interactive Debugging
     when 'launch', 'run'
-      launch_app(args)
+      success = launch_app(args)
+      exit(success ? 0 : 1)
     when 'logs'
       show_app_logs(args)
     when 'test_mode', 'tm'
@@ -2062,7 +2138,6 @@ PY
   def github_post_approval(args)
     quote = nil
     body = nil
-    metadata_command = nil
     i = 0
     while i < args.length
       case args[i]
@@ -2078,9 +2153,6 @@ PY
 
         body = File.read(file, encoding: Encoding::UTF_8)
         i += 1
-      when '--metadata-command', '--metadata-edit-command'
-        metadata_command = args[i + 1]
-        i += 1
       else
         quote ||= args[i]
       end
@@ -2089,55 +2161,18 @@ PY
 
     quote = quote.to_s.strip
     abort '❌ Missing explicit user approval quote. Use --user-approval "post it".' if quote.empty?
-    metadata_hash = github_metadata_command_hash(metadata_command)
-    abort '❌ Use either --metadata-command or --body/--body-file, not both.' if metadata_hash && body.to_s.strip.length.positive?
     body = body.to_s.strip
+    abort '❌ Missing exact public post body. Use --body "final text" or --body-file <path>.' if body.empty?
 
     path = '/tmp/.gh_post_approved.json'
     payload = {
       'created_at' => Time.now.to_i,
-      'user_approval' => quote
+      'user_approval' => quote,
+      'body_hash' => Digest::SHA256.hexdigest(body)
     }
-
-    if metadata_hash
-      payload['approval_type'] = 'github_metadata'
-      payload['metadata_command_hash'] = metadata_hash
-      File.write(path, JSON.pretty_generate(payload))
-      File.chmod(0o600, path)
-      puts '✅ GitHub metadata-edit approval recorded for 5 minutes.'
-      return
-    end
-
-    abort '❌ Missing exact public post body. Use --body "final text" or --body-file <path>.' if body.empty?
-
-    payload['body_hash'] = Digest::SHA256.hexdigest(body)
     File.write(path, JSON.pretty_generate(payload))
     File.chmod(0o600, path)
     puts '✅ GitHub public-post approval recorded for 5 minutes.'
-  end
-
-  def github_metadata_command_hash(command)
-    command = command.to_s.strip
-    return nil if command.empty?
-
-    tokens = Shellwords.split(command)
-    gh_index = tokens.index('gh')
-    abort '❌ Metadata approval must be for a gh issue/pr edit command.' unless gh_index
-
-    gh_tokens = tokens[gh_index..]
-    unless gh_tokens[1]&.match?(/\A(?:issue|pr)\z/) && gh_tokens[2] == 'edit'
-      abort '❌ Metadata approval must be for a gh issue/pr edit command.'
-    end
-    if gh_tokens.any? { |token| token.match?(/\A--(?:body|comment|title)\z|--body-file\z|--comment-file\z/) }
-      abort '❌ Metadata approval cannot include public body/title/comment text.'
-    end
-    unless gh_tokens.any? { |token| token.match?(/\A--(?:add|remove)-(?:label|assignee|project)\z|--milestone\z|--add-reviewer\z/) }
-      abort '❌ Metadata approval must include a label, assignee, project, reviewer, or milestone edit.'
-    end
-
-    Digest::SHA256.hexdigest(gh_tokens.join("\0"))
-  rescue ArgumentError
-    abort '❌ Could not parse metadata command. Pass the exact gh issue/pr edit command.'
   end
 
   def email_force_approval(args)
@@ -2556,8 +2591,8 @@ PY
       ]
     },
     'setapp_upload' => {
-      usage: 'setapp_upload --zip ZIP --release-notes-file PATH --review-comments-file PATH [--portal-fallback --app-id ID --version-id ID]',
-      description: 'Upload a Setapp build. Uses the official CI endpoint when SETAPP_AUTOMATION_TOKEN is present; portal fallback now fails if the version remains Needs Revision after attach.',
+      usage: 'setapp_upload --zip ZIP --release-notes-file PATH --review-comments-file PATH [--portal-fallback --app-id ID (--version-id ID | --create-version)]',
+      description: 'Upload a Setapp build. Canonical auth: `source ~/.config/nv/env` loads SETAPP_PORTAL_TOKEN from the keychain for --portal-fallback. New public release (pinned version Released) needs --create-version (PATCH is rejected); reupload during review PATCHes via --version-id. See templates/RELEASE_SOP.md "Upload through the standard Setapp lane".',
       flags: {
         '--zip PATH' => 'Setapp ZIP archive to upload',
         '--release-notes TEXT' => 'Public Setapp user-facing release notes text',

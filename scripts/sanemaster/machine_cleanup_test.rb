@@ -442,6 +442,99 @@ exit(run_tests('SaneMaster Machine Cleanup Tests') do
       end
     end
 
+    test('healthy disk preserves expensive caches but still cleans cheap ones') do
+      with_home do |home|
+        playwright = mkdir_home_path(home, 'Library/Caches/ms-playwright')
+        huggingface = mkdir_home_path(home, '.cache/huggingface')
+        homebrew = mkdir_home_path(home, 'Library/Caches/Homebrew')
+        sizes = {
+          File.expand_path(playwright) => 2.0,
+          File.expand_path(huggingface) => 20.0,
+          File.expand_path(homebrew) => 6.0
+        }
+        subject = MachineCleanupHarness.new(disk: { available_gb: 80 }, sizes: sizes)
+
+        plan = subject.send(:build_machine_cleanup_plan, {
+          apply: false,
+          host: 'local',
+          min_free_gb: 30,
+          cache_threshold_gb: 5,
+          deriveddata_age_days: 2,
+          trash_threshold_gb: 99,
+          preserve_apps: []
+        })
+
+        assert_eq(plan[:disk_pressure], false)
+        cleaned = plan[:actions].select { |a| a[:category] == 'disposable_cache' }.map { |a| a[:path] }
+        preserved = plan[:actions].select { |a| a[:type] == 'skip' && a[:category] == 'expensive_cache_preserved' }.map { |a| a[:path] }
+        assert_includes(cleaned, homebrew)
+        assert_includes(preserved, playwright)
+        assert_includes(preserved, huggingface)
+        assert(!cleaned.include?(playwright), 'expected playwright browsers to survive a healthy-disk cleanup')
+        assert(!cleaned.include?(huggingface), 'expected huggingface models to survive a healthy-disk cleanup')
+      end
+    end
+
+    test('disk pressure makes expensive caches eligible again') do
+      with_home do |home|
+        playwright = mkdir_home_path(home, 'Library/Caches/ms-playwright')
+        sizes = { File.expand_path(playwright) => 6.0 }
+        subject = MachineCleanupHarness.new(disk: { available_gb: 12 }, sizes: sizes)
+
+        plan = subject.send(:build_machine_cleanup_plan, {
+          apply: false,
+          host: 'local',
+          min_free_gb: 30,
+          cache_threshold_gb: 5,
+          deriveddata_age_days: 2,
+          trash_threshold_gb: 99,
+          preserve_apps: []
+        })
+
+        assert_eq(plan[:disk_pressure], true)
+        cleaned = plan[:actions].select { |a| a[:category] == 'disposable_cache' }.map { |a| a[:path] }
+        assert_includes(cleaned, playwright)
+      end
+    end
+
+    test('healthy-disk server reset preserves npm caches and simulator runtimes but still resets devices') do
+      with_home do |home|
+        npm_npx = mkdir_home_path(home, '.npm/_npx')
+        npm_cache = mkdir_home_path(home, '.npm/_cacache')
+        sizes = {
+          File.expand_path(npm_npx) => 1.0,
+          File.expand_path(npm_cache) => 1.0
+        }
+        subject = MachineCleanupHarness.new(disk: { available_gb: 80 }, sizes: sizes)
+
+        plan = subject.send(:build_machine_cleanup_plan, {
+          apply: false,
+          host: 'local',
+          server: true,
+          min_free_gb: 30,
+          cache_threshold_gb: 99,
+          deriveddata_age_days: 999,
+          trash_threshold_gb: 99,
+          preserve_apps: []
+        })
+
+        categories = plan[:actions].map { |action| action[:category] }
+        npm_actions = plan[:actions].select { |a| a[:category] == 'server_expensive_cache' }
+        assert_eq(npm_actions.map { |a| a[:type] }.uniq, ['skip'])
+        assert_eq(npm_actions.map { |a| a[:path] }.sort, [npm_cache, npm_npx].sort)
+        assert_includes(categories, 'server_simulator_delete')
+        runtime_action = plan[:actions].find { |a| a[:category] == 'server_simulator_runtime_delete' }
+        assert_eq(runtime_action[:type], 'skip')
+
+        # Apply without the simctl command actions (they would really run); skips must be inert.
+        trash_only_plan = { actions: plan[:actions].reject { |a| a[:type] == 'command' } }
+        result = subject.send(:apply_machine_cleanup_plan, trash_only_plan, quiet: true)
+        assert(!subject.trashed.include?(npm_npx), 'expected npx cache (wrangler/playwright CLIs) to survive a healthy-disk server reset')
+        assert(!subject.trashed.include?(npm_cache), 'expected npm cacache to survive a healthy-disk server reset')
+        assert_eq(result[:success], true)
+      end
+    end
+
     test('server mode skips repo artifact pruning while build or training work is active') do
       with_home do |home|
         repo_build = mkdir_home_path(home, 'SaneApps/apps/SaneBar/.build')

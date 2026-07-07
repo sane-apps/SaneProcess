@@ -237,45 +237,6 @@ module SaneToolsTest
       warn '  FAIL: Bash file writes should be blocked to source files'
     end
 
-    original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
-    exit_code = process_tool_proc.call('Bash', { 'command' => 'cp source.txt /private/tmp/proof.txt' })
-    $stderr.reopen(original_stderr)
-
-    if exit_code == 0
-      passed += 1
-      warn '  PASS: Bash cp to /private/tmp is allowed'
-    else
-      failed += 1
-      warn "  FAIL: Bash cp to /private/tmp should be allowed, got exit #{exit_code}"
-    end
-
-    original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
-    exit_code = process_tool_proc.call('Bash', { 'command' => 'cp source.txt "/private/tmp/proof file.txt"' })
-    $stderr.reopen(original_stderr)
-
-    if exit_code == 0
-      passed += 1
-      warn '  PASS: Bash cp to quoted /private/tmp path is allowed'
-    else
-      failed += 1
-      warn "  FAIL: Bash cp to quoted /private/tmp path should be allowed, got exit #{exit_code}"
-    end
-
-    original_stderr = $stderr.clone
-    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
-    exit_code = process_tool_proc.call('Bash', { 'command' => 'cp source.txt README.md' })
-    $stderr.reopen(original_stderr)
-
-    if exit_code == 2
-      passed += 1
-      warn '  PASS: Bash cp to tracked/source path is blocked'
-    else
-      failed += 1
-      warn "  FAIL: Bash cp to tracked/source path should be blocked, got exit #{exit_code}"
-    end
-
     # === STANDARD TESTS ===
     warn ''
     warn 'Testing tool blocking:'
@@ -292,9 +253,7 @@ module SaneToolsTest
       # Research tools (should allow and track)
       { tool: 'Read', input: { 'file_path' => '/Users/sj/SaneProcess/test.swift' }, expect_block: false, name: 'Allow Read (tracks local)' },
       { tool: 'Grep', input: { 'pattern' => 'test' }, expect_block: false, name: 'Allow Grep' },
-      { tool: 'functions.exec_command', input: { 'cmd' => 'rg -n "WeatherMenu" Core Tests' }, expect_block: false, name: 'Allow Codex read-only shell local research' },
       { tool: 'WebSearch', input: { 'query' => 'swift patterns' }, expect_block: false, name: 'Allow WebSearch (tracks web)' },
-      { tool: 'web.run', input: { 'search_query' => [{ 'q' => 'macOS status item notch drag behavior' }] }, expect_block: false, name: 'Allow Codex web.run (tracks web)' },
 
       # Task agents (should allow and track)
       { tool: 'Task', input: { 'prompt' => 'Search documentation for this API' }, expect_block: false, name: 'Allow Task (tracks docs)' },

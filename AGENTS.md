@@ -140,6 +140,24 @@ Raw `ssh mini ... screencapture ...` is not a fallback; it is blocked by
 `scripts/hooks/sane_ssh_guard.sh` and the Bash guard dispatcher. Use the
 canonical Mini screenshot wrapper or fix that wrapper.
 
+## Browser And App Control
+
+Before driving a portal, dashboard, or visible desktop app, check the live tool
+surface. If Browser or Chrome control is active, use it through `node_repl` for
+Brave/Chrome DOM work before raw AppleScript, screenshots, SSH capture, or
+manual browsing.
+
+For visible native app/window state, use Computer Use `get_app_state` before
+falling back to screenshot-only inspection. Use `macos-automator` for
+deterministic AppleScript/JXA and app-specific automation tips. Use Playwright
+with the SaneApps Brave defaults for repeatable website QA.
+
+Screenshots remain final evidence, not the first control mechanism. Use
+`scripts/mini/capture-mini-screenshot.sh` only when a receipt needs an image.
+The same ladder applies in Claude when its browser/app-control plugin is
+active; compare live tools (`claude mcp list` and the current tool surface)
+with config before declaring a tool missing.
+
 ## Tool Discovery
 
 Before declaring a tool missing or inventing a repeated workaround:
@@ -183,6 +201,9 @@ Default mailbox: SaneApps work email `hi@saneapps.com`.
   curl.
 - Run `review <id>` before reply or resolve.
 - Show the exact draft and wait for explicit approval before sending.
+- Existing app users should be told to update from inside the app. Do not send
+  website/download links for update/fix/test replies unless the user needs a
+  reinstall or direct-download recovery path.
 - Use signoff exactly:
 
 ```text
@@ -254,7 +275,6 @@ Common MCPs:
 - `apple-docs` for Apple API docs; WebSearch for third-party library docs (the context7 plugin is currently toggled off / not callable).
 - `macos-automator` for repeatable macOS GUI automation.
 - `xcode` / XcodeBuildMCP for IDE/simulator/device proof when relevant.
-- `github` (remote Copilot MCP, `https://api.githubcopilot.com/mcp/`) for issues/PRs/repo access. Must stay permanently connected via an `Authorization: Bearer <gh PAT>` header at user scope (headless, no browser OAuth). If it shows "Failed to connect", re-add with the header rather than relying on interactive auth.
 - Serena and memory graph for project and cross-session knowledge.
 - Cloudflare API MCP for read-only Pages/R2/Worker drift checks when installed.
 

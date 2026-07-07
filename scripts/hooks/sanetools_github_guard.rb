@@ -16,7 +16,9 @@ module SaneToolsGitHubGuard
   GITHUB_APPROVAL_FLAG = '/tmp/.gh_post_approved.json'
   GITHUB_APPROVAL_TTL_SECONDS = 300
   SANE_OWNER_PATTERN = /\A(?:sane-apps|mrsaneapps)\z/i
-  CORPORATE_WE_PATTERN = /\b(?:we|we['’]re|we['’]ll|we['’]ve|our|us)\b/i
+  # Team/company "we" only — flags presenting SaneApps as a multi-person org (a room of
+  # coders), NOT the natural "you and I" we ("since we last talked"). SaneApps is one person.
+  CORPORATE_WE_PATTERN = /\b(?:our\s+(?:team|teams|engineers?|developers?|devs?|coders?|programmers?|staff|crew|company|companies|organi[sz]ation|org|support\s+team|engineering|qa|squad|department)|the\s+(?:whole\s+|entire\s+|rest\s+of\s+the\s+)?team|my\s+team|the\s+(?:devs?|developers?|engineers)|we(?:['’]re|\s+are)\s+(?:a|an|the)\s+(?:[a-z]+\s+)?(?:team|company|startup|business|group|studio|crew|squad)|we(?:['’]ve|\s+have)?\s+(?:built|build|developed|develop|engineered|engineer|coded|programmed|architected|designed|design|shipped|ship|released|release|created|create)\b)/i
 
   def check_github_post_guard(tool_name, tool_input)
     return nil unless GITHUB_PUBLIC_POST_TOOLS.include?(tool_name)

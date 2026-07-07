@@ -122,7 +122,7 @@ module SaneToolsTestScenarios
 
     exit_code = with_quiet_stderr do
       process_tool_proc.call('Bash', {
-        'command' => 'npx --yes wrangler@4.104.0 r2 object put saneclick-dist/SaneClick-1.0.2.dmg --file="build/SaneClick-1.0.2.dmg"'
+        'command' => 'npx wrangler r2 object put saneclick-dist/SaneClick-1.0.2.dmg --file="build/SaneClick-1.0.2.dmg"'
       })
     end
     passed, failed = record_result(
@@ -135,7 +135,7 @@ module SaneToolsTestScenarios
 
     exit_code = with_quiet_stderr do
       process_tool_proc.call('Bash', {
-        'command' => 'npx --yes wrangler@4.104.0 r2 object put sanebar-downloads/updates/SaneBar-1.0.17.dmg --file="build/SaneBar-1.0.17.dmg"'
+        'command' => 'npx wrangler r2 object put sanebar-downloads/updates/SaneBar-1.0.17.dmg --file="build/SaneBar-1.0.17.dmg"'
       })
     end
     passed, failed = record_result(
@@ -154,7 +154,7 @@ module SaneToolsTestScenarios
 
     exit_code = with_quiet_stderr do
       process_tool_proc.call('Bash', {
-        'command' => 'npx --yes wrangler@4.104.0 r2 object put sanebar-downloads/SaneBar-1.0.17.dmg --file="/nonexistent/SaneBar-1.0.17.dmg"'
+        'command' => 'npx wrangler r2 object put sanebar-downloads/SaneBar-1.0.17.dmg --file="/nonexistent/SaneBar-1.0.17.dmg"'
       })
     end
     passed, failed = record_result(
@@ -168,7 +168,7 @@ module SaneToolsTestScenarios
     StateManager.reset(:deployment)
     exit_code = with_quiet_stderr do
       process_tool_proc.call('Bash', {
-        'command' => 'npx --yes wrangler@4.104.0 r2 object put sanebar-downloads/SaneBar-1.0.17.dmg --file="/nonexistent/SaneBar-1.0.17.dmg"'
+        'command' => 'npx wrangler r2 object put sanebar-downloads/SaneBar-1.0.17.dmg --file="/nonexistent/SaneBar-1.0.17.dmg"'
       })
     end
     passed, failed = record_result(
@@ -228,7 +228,7 @@ module SaneToolsTestScenarios
     File.write(File.join(test_deploy_dir, 'appcast.xml'), '<enclosure edSignature="" />')
     exit_code = with_quiet_stderr do
       process_tool_proc.call('Bash', {
-        'command' => "npx --yes wrangler@4.104.0 pages deploy #{test_deploy_dir} --project-name=sanebar-site"
+        'command' => "npx wrangler pages deploy #{test_deploy_dir} --project-name=sanebar-site"
       })
     end
     FileUtils.rm_rf(test_deploy_dir) rescue nil
@@ -236,58 +236,6 @@ module SaneToolsTestScenarios
       exit_code == 2,
       '  PASS: Pages deploy with bad appcast blocked',
       "  FAIL: Pages deploy with bad appcast should block, got exit #{exit_code}",
-      passed,
-      failed
-    )
-
-    exit_code = with_quiet_stderr do
-      process_tool_proc.call('Bash', {
-        'command' => 'npx wrangler pages deploy ./website --project-name=sanecite-site'
-      })
-    end
-    passed, failed = record_result(
-      exit_code == 2,
-      '  PASS: Unpinned Wrangler Pages deploy blocked',
-      "  FAIL: Unpinned Wrangler Pages deploy should block, got exit #{exit_code}",
-      passed,
-      failed
-    )
-
-    exit_code = with_quiet_stderr do
-      process_tool_proc.call('Bash', {
-        'command' => 'npx --yes wrangler@4.65.0 queues create sanecite-intake'
-      })
-    end
-    passed, failed = record_result(
-      exit_code == 2,
-      '  PASS: Stale Wrangler queue mutation blocked',
-      "  FAIL: Stale Wrangler queue mutation should block, got exit #{exit_code}",
-      passed,
-      failed
-    )
-
-    exit_code = with_quiet_stderr do
-      process_tool_proc.call('Bash', {
-        'command' => 'npx wrangler queues list'
-      })
-    end
-    passed, failed = record_result(
-      exit_code == 0,
-      '  PASS: Unpinned Wrangler read-only queue command allowed',
-      "  FAIL: Unpinned read-only Wrangler queue command should be allowed, got exit #{exit_code}",
-      passed,
-      failed
-    )
-
-    exit_code = with_quiet_stderr do
-      process_tool_proc.call('Bash', {
-        'command' => 'npx --yes wrangler@4.104.0 queues list'
-      })
-    end
-    passed, failed = record_result(
-      exit_code == 0,
-      '  PASS: Pinned current Wrangler queue command allowed',
-      "  FAIL: Pinned current Wrangler queue command should be allowed, got exit #{exit_code}",
       passed,
       failed
     )

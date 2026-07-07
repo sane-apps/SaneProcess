@@ -25,7 +25,6 @@
 
 require 'fileutils'
 require 'json'
-require 'digest'
 
 module StageLemonSqueezyUploads
   DEFAULT_UPLOADS_DIR = File.expand_path('~/Desktop/LemonSqueezy-Uploads')
@@ -87,25 +86,6 @@ module StageLemonSqueezyUploads
     false
   end
 
-  def same_file_contents?(left, right)
-    return false unless File.file?(left) && File.file?(right)
-    return false if File.symlink?(left)
-
-    File.size(left) == File.size(right) &&
-      Digest::SHA256.file(left).hexdigest == Digest::SHA256.file(right).hexdigest
-  rescue StandardError
-    false
-  end
-
-  def replace_file(source, target)
-    remove_file(target) if File.exist?(target) || File.symlink?(target)
-    tmp = "#{target}.tmp-#{$PROCESS_ID}"
-    FileUtils.cp(source, tmp)
-    FileUtils.mv(tmp, target)
-  ensure
-    FileUtils.rm_f(tmp) if tmp && File.exist?(tmp)
-  end
-
   # Returns a result hash; never raises.
   def stage(project:, uploads_dir: DEFAULT_UPLOADS_DIR, version: nil)
     return result(:error, 'no --project given') if project.to_s.empty?
@@ -129,10 +109,11 @@ module StageLemonSqueezyUploads
     end
 
     target = File.join(uploads_dir, "#{app}-#{version}.zip")
+    artifact_size = File.size(artifact)
 
     staged_now = false
-    unless same_file_contents?(target, artifact)
-      replace_file(artifact, target)
+    unless File.file?(target) && File.size(target) == artifact_size
+      FileUtils.cp(artifact, target)
       staged_now = true
     end
 
@@ -146,7 +127,7 @@ module StageLemonSqueezyUploads
     end
 
     # Verify final state.
-    ok = same_file_contents?(target, artifact) &&
+    ok = File.file?(target) && File.size(target) == artifact_size &&
          Dir.glob(File.join(uploads_dir, "#{app}-*.zip")).map { |p| File.basename(p) } == [File.basename(target)]
     unless ok
       return result(:error, "staging verification failed for #{app} #{version}", app: app, version: version)

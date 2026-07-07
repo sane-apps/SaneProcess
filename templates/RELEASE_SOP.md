@@ -325,21 +325,48 @@ Before any Setapp submission or handoff:
   - Developer ID signing, notarization/stapling, Gatekeeper acceptance, and
     quarantined launch proof from the final ZIP
 
-7. Upload through the standard Setapp lane:
-- Preferred: `./scripts/SaneMaster.rb setapp_upload --zip /path/to/App-Setapp.zip --release-notes-file /path/to/notes.txt --review-comments-file /path/to/private-review-comments.txt` with `SETAPP_AUTOMATION_TOKEN`.
-- Fallback for the known portal defect where an in-review page shows `Reupload .ZIP` but clicking it does nothing:
+7. Upload through the standard Setapp lane (CANONICAL — token first):
+- **Auth**: the portal token lives in the keychain (`sane-env` /
+  `SETAPP_PORTAL_TOKEN`, both machines). Load it before any Setapp command:
+
+```bash
+source ~/.config/nv/env   # exports SETAPP_PORTAL_TOKEN from the keychain
+```
+
+  `setapp_upload.rb` reads `ENV['SETAPP_PORTAL_TOKEN']` first, then falls back
+  to the Safari `access_token` cookie on the Mini. If the API returns 401 the
+  token expired: harvest a fresh `access_token` cookie from a logged-in
+  developer.setapp.com browser session and have the owner re-store it
+  (`security add-generic-password -U -s sane-env -a SETAPP_PORTAL_TOKEN -w
+  '<token>'`) — agent hooks intentionally block keychain writes. Never PRINT
+  token values into logs or chat; keychain + env var only.
+  (`SETAPP_AUTOMATION_TOKEN` — the official CI Bearer lane — was never
+  provisioned; the portal-token lane is the working path.)
+- **New public release** (the pinned version is Released/status 10 — the
+  normal case): the portal API rejects PATCH with HTTP 400 "The archive tmp
+  name field is forbidden". Create a NEW version record:
 
 ```bash
 ./scripts/SaneMaster.rb setapp_upload \
-  --portal-fallback \
+  --portal-fallback --create-version \
   --app-id <setapp_app_id> \
-  --version-id <existing_version_id> \
+  --allow-needs-revision \
   --zip /path/to/App-Setapp.zip \
   --release-notes-file /path/to/notes.txt \
   --review-comments-file /path/to/private-review-comments.txt
 ```
 
-- After fallback upload, verify both the Apps page and `GET /v1/versions/<version_id>` show the expected build/display versions.
+  The script prints the NEW version id — update the app's `.saneprocess`
+  `setapp.version_id` to it and commit. The new record lands in **Pending
+  Submission** (status 1): the owner must click **Submit for review** in the
+  portal.
+- **Reupload during review** (version is In Review / Needs Revision and the
+  portal's `Reupload .ZIP` button is broken): same command WITHOUT
+  `--create-version`, adding `--version-id <pinned_version_id>` — this PATCHes
+  the existing record.
+- After upload, verify both the Apps page and `GET /v1/versions/<version_id>`
+  show the expected build/display versions (the script also downloads the
+  hosted archive and proves SHA256 byte-match against the local zip).
 - After any `setapp_media_sync`, verify the public `https://setapp.com/apps/...`
   page. A successful portal sync is necessary but not sufficient because the
   public listing page may continue serving older cached/generated screenshot
@@ -348,7 +375,6 @@ Before any Setapp submission or handoff:
   manual release, release it in the portal, wait for the public state to update,
   and rerun `./scripts/SaneMaster.rb setapp_status` until it shows released/live
   with no action required.
-- Never print or store Setapp browser `access_token` / `refresh_token` values.
 
 ### 1. Build, Sign, Notarize, DMG (Single Command)
 

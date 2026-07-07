@@ -487,7 +487,15 @@ module SaneStopPersistenceTest
         host: 'mini',
         inspected: true,
         generated_at: Time.now.utc.iso8601,
-        screenshots: [screenshot_path]
+        screenshots: [screenshot_path],
+        claims: [
+          {
+            id: 'sanestop-fixture',
+            claim: 'Structured visual receipt maps the verified UI claim to a screenshot',
+            status: 'passed',
+            screenshots: [screenshot_path]
+          }
+        ]
       )
     )
     StateManager.update(:visual_verification) do |v|

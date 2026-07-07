@@ -8,6 +8,7 @@ module SaneMasterModules
     require 'tmpdir'
 
     SANEAPPS_TEST_MODE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo].freeze
+    SIGNED_RELEASE_RUNTIME_APPS = %w[SaneClip].freeze
 
     def project_name
       @project_name ||= if respond_to?(:config_value, true)
@@ -438,7 +439,7 @@ module SaneMasterModules
     end
 
     def tcc_identity_sensitive_project?
-      %w[SaneBar SaneClick SaneVideo].include?(project_name)
+      %w[SaneBar SaneClick SaneClip SaneVideo].include?(project_name)
     end
 
     def transient_local_app_path
@@ -1097,6 +1098,7 @@ module SaneMasterModules
 
     def should_retry_unsigned_debug?(build_config:, output:, status:)
       return false if status.success?
+      return false if signed_release_runtime_required?
       return false unless (ENV['SANEMASTER_ALLOW_UNSIGNED_FALLBACK'] || '1') != '0'
       return false unless ENV['SSH_CONNECTION'] || ENV['SANEMASTER_HEADLESS'] == '1'
       return false if build_config == 'Debug' && ENV['SANEMASTER_UNSIGNED_FALLBACK_ACTIVE'] == '1'
@@ -1129,6 +1131,14 @@ module SaneMasterModules
     end
 
     def launch_build_config(args)
+      if signed_release_runtime_required?
+        requested = args.include?('--proddebug') ? 'ProdDebug' : ENV['SANEMASTER_BUILD_CONFIG'].to_s.strip
+        unless requested.empty? || requested.casecmp('release').zero?
+          puts "⚠️  #{project_name} test mode uses signed Release runtime only; forcing Release to preserve TCC."
+        end
+        return 'Release'
+      end
+
       if ENV['SANEMASTER_UNSIGNED_FALLBACK_ACTIVE'] == '1' &&
          ENV['SANEMASTER_BUILD_CONFIG'].to_s.strip.casecmp('debug').zero?
         puts '⚠️  Unsigned fallback active: launching Debug build configuration.'
@@ -1178,6 +1188,10 @@ module SaneMasterModules
       Dir.glob('**/*.swift').reject do |path|
         path.split(File::SEPARATOR).any? { |part| ignored_roots.include?(part) }
       end
+    end
+
+    def signed_release_runtime_required?
+      SIGNED_RELEASE_RUNTIME_APPS.include?(project_name)
     end
 
     def launch_env_vars(allow_keychain:, force_free_mode:)

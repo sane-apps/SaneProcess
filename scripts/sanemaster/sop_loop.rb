@@ -20,7 +20,6 @@
 require 'json'
 require 'fileutils'
 require_relative '../hooks/core/sop_score'
-require_relative '../hooks/state_signer'
 require_relative 'gate_override'
 require_relative 'hammer_watch'
 
@@ -35,7 +34,6 @@ module SaneMasterModules
     # Gate identifiers for the certifier override + unfair-gate tracking.
     RESEARCH_GATE_NAME = 'research'
     VERIFY_ESCALATION_GATE_NAME = 'verify-escalation'
-    RESEARCH_STATE_INVALID = :__research_state_invalid__
     SATISFACTION_FILE = '.claude/process_satisfaction.json'
     REQUIREMENTS_FILE = '.claude/prompt_requirements.json'
     ENFORCEMENT_LOG = '.claude/enforcement_log.jsonl'
@@ -674,6 +672,12 @@ module SaneMasterModules
       puts "Blocked command: #{command_name}"
       puts ''
 
+      # Loudest signal first: are we hammering this gate without doing the work?
+      [RESEARCH_GATE_NAME, VERIFY_ESCALATION_GATE_NAME].each do |gate|
+        hammer = HammerWatch.banner(gate: gate)
+        puts "#{hammer}\n\n" if hammer
+      end
+
       puts "1. #{verify_block[:message]}" if verify_block
       unsatisfied_locks.each_with_index do |lock, index|
         offset = verify_block ? 2 : 1
@@ -701,24 +705,9 @@ module SaneMasterModules
       puts 'This guard clears only when those research tool-calls have run since the block AND research.md is updated.'
       puts ''
       puts 'Believe this block is UNFAIR (you did the work, or the requirement does not apply)?'
-      puts 'Invoke the gate certifier (ARCHITECTURE.md → ADR-011 Gate Certifier). Verdicts:'
-      puts '  fill     = certifier did the missing work; deterministic gate still decides'
-      puts '  uphold   = block is fair; gate stays closed'
-      puts '  override = rare false block; records a signed 2h override'
-      puts ''
-      puts 'Ready-to-paste certifier commands (use the verdict the certifier can prove):'
-      if verify_block
-        puts "  ruby scripts/sanemaster/gate_cert.rb --gate #{VERIFY_ESCALATION_GATE_NAME} --slug verify --verdict fill --note \"<evidence read and action taken>\""
-      end
-      unsatisfied_locks.each do |lock|
-        puts "  ruby scripts/sanemaster/gate_cert.rb --gate #{RESEARCH_GATE_NAME} --slug #{lock[:slug]} --verdict fill --note \"<evidence read and action taken>\""
-      end
-      puts ''
-
-      [RESEARCH_GATE_NAME, VERIFY_ESCALATION_GATE_NAME].each do |gate|
-        hammer = HammerWatch.banner(gate: gate)
-        puts "#{hammer}\n\n" if hammer
-      end
+      puts 'Do not hand-wave past it — invoke the gate certifier (ARCHITECTURE.md → ADR-011 Gate Certifier):'
+      puts 'an evidence-reading examiner either DOES the missing work for you, or — only if the'
+      puts 'gate is genuinely wrong — records a signed override. Repeated overrides auto-flag the gate.'
       puts ''
       exit 1
     end
@@ -924,14 +913,13 @@ module SaneMasterModules
     RESEARCH_EVIDENCE_ALWAYS = %i[web local].freeze
 
     # Categories lacking a completed_at strictly newer than the lock trigger.
-    # Empty == evidence satisfied. Missing state fails open for fresh setup;
-    # present-but-invalid/tampered state counts as missing evidence.
+    # Empty == evidence satisfied. Fails OPEN (never bricks verify) when the
+    # hook state cannot be read.
     def research_evidence_missing_since(trigger_time)
       return [] if trigger_time.nil?
 
       research = research_state_section
       return [] if research.nil?
-      return effective_research_evidence_categories if research == RESEARCH_STATE_INVALID
 
       missing_research_evidence(research, effective_research_evidence_categories, trigger_time)
     rescue StandardError
@@ -965,13 +953,11 @@ module SaneMasterModules
       path = File.join('.claude', 'state.json')
       return nil unless File.exist?(path)
 
-      data = StateSigner.read_verified(path, symbolize: true)
-      return RESEARCH_STATE_INVALID unless data.is_a?(Hash)
-
+      data = JSON.parse(File.read(path, encoding: Encoding::UTF_8), symbolize_names: true)
       section = data[:research] || data.dig(:data, :research)
       section.is_a?(Hash) ? section : nil
     rescue StandardError
-      RESEARCH_STATE_INVALID
+      nil
     end
 
     def apple_docs_research_configured?

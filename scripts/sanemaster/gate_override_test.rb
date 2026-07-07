@@ -93,16 +93,5 @@ in_tmp do
 end
 
 warn ''
-warn '--- self-improvement counts audit history, not just live TTL tokens ---'
-in_tmp do
-  GO.record(gate: 'research', slug: 'day1', verdict: 'override', note: 'x', now: NOW)
-  GO.record(gate: 'research', slug: 'day2', verdict: 'override', note: 'x', now: NOW + GO::DEFAULT_TTL_SECONDS + 60)
-  GO.record(gate: 'research', slug: 'day3', verdict: 'override', note: 'x', now: NOW + (GO::DEFAULT_TTL_SECONDS * 2) + 120)
-  t('expired clearing tokens still count toward unfair-gate flagging', GO.unfair?(gate: 'research'))
-  t('only the newest TTL-bound override clears current blocks',
-    GO.clears?(gate: 'research', slug: 'day3', trigger_time: NOW + (GO::DEFAULT_TTL_SECONDS * 2), now: NOW + (GO::DEFAULT_TTL_SECONDS * 2) + 180))
-end
-
-warn ''
 warn "#{$passed}/#{$total} gate-override tests passed"
 exit($passed == $total ? 0 : 1)

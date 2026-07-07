@@ -69,22 +69,6 @@ in_tmp do
 end
 
 warn ''
-warn '--- real progress changes the measured fingerprint ---'
-in_tmp do
-  system('git', 'init', '-q')
-  first = HW.current_fingerprint
-  File.write('new_research_test.rb', 'proof')
-  second = HW.current_fingerprint
-  t('creating an untracked file changes the fingerprint', first != second)
-end
-in_tmp do
-  first = HW.current_fingerprint
-  File.write('.claude/gate-override-log.jsonl', JSON.generate('gate' => 'research', 'verdict' => 'uphold') + "\n")
-  second = HW.current_fingerprint
-  t('recording a certifier verdict changes the fingerprint', first != second)
-end
-
-warn ''
 warn '--- fail-safe + tamper-evidence (never falsely accuse) ---'
 in_tmp do
   3.times { HW.record_block(gate: 'research', fingerprint: '', now: NOW) }

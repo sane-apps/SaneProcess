@@ -35,9 +35,7 @@ module SaneToolsResearch
   # (plugin and server names may contain hyphens). Both prefixes must count
   # as the same server for verification and research tracking.
   def mcp_tool_pattern(server, tool_prefix = //)
-    server_aliases = [server.to_s, server.to_s.tr('-', '_')].uniq
-    server_pattern = server_aliases.map { |name| Regexp.escape(name) }.join('|')
-    /\Amcp__(?:plugin_[\w-]+_)?(?:#{server_pattern})(?:__|\.)#{tool_prefix}/
+    /\Amcp__(?:plugin_[\w-]+_)?#{Regexp.escape(server)}__#{tool_prefix}/
   end
 
   # Match a RESEARCH_CATEGORIES tool glob (e.g. "mcp__context7__*") against a
@@ -46,7 +44,7 @@ module SaneToolsResearch
     prefix = tool_glob.sub('*', '')
     return true if tool_name.start_with?(prefix)
 
-    server = prefix[/\Amcp__([\w-]+)(?:__|\.)\z/, 1]
+    server = prefix[/\Amcp__([\w-]+)__\z/, 1]
     return false unless server
 
     tool_name.match?(mcp_tool_pattern(server))

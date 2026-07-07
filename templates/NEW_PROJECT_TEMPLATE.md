@@ -21,7 +21,7 @@
 [ ] SESSION_HANDOFF.md (project root)
 [ ] .saneprocess (project root — release config)
 [ ] Resources/DMGIcon.icns (for DMG file icon)
-[ ] ~/.zshrc cd alias
+[ ] ~/.zshrc alias
 [ ] Verify all files
 ```
 
@@ -214,6 +214,13 @@ saneloop-archive/
       "command": "npx",
       "args": ["-y", "@mweinbach/apple-docs-mcp@1.3.1"]
     },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github@2025.4.8"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      }
+    },
     "context7": {
       "command": "npx",
       "args": ["-y", "@upstash/context7-mcp@2.2.5"]
@@ -221,10 +228,6 @@ saneloop-archive/
   }
 }
 ```
-
-GitHub MCP is provided by the hardened user-level bridge at
-`~/.codex/bin/github-mcp-bridge.mjs` after SaneProcess sync. Do not add a
-project-local `npx @modelcontextprotocol/server-github` entry with a token.
 
 **For menu bar apps**, add macos-automator:
 ```json
@@ -369,7 +372,7 @@ mcps:
 
 ```bash
 # Claude Code compatibility alias (2-letter code)
-alias XX='cd /path/to/ProjectName'
+alias XX='cd /path/to/ProjectName && claude --dangerously-skip-permissions'
 ```
 
 **IMPORTANT**: Avoid `sh` as alias (shadows `/bin/sh`)

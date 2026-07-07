@@ -26,10 +26,33 @@ shell_quote() {
   printf "%q" "$1"
 }
 
+run_with_timeout() {
+  local seconds="$1"
+  local pid=""
+  local elapsed=0
+  shift
+
+  "$@" >/dev/null 2>&1 &
+  pid="$!"
+  while kill -0 "$pid" >/dev/null 2>&1; do
+    if [ "$elapsed" -ge "$seconds" ]; then
+      kill "$pid" >/dev/null 2>&1 || true
+      sleep 0.2
+      kill -KILL "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
+      return 124
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  wait "$pid" >/dev/null 2>&1
+}
+
 close_window=1
 poll_seconds=1
 start_delay_seconds="${MINI_GUI_RUN_START_DELAY:-0.6}"
 launch_grace_seconds="${MINI_GUI_RUN_LAUNCH_GRACE_SECONDS:-8}"
+cleanup_timeout_seconds="${MINI_GUI_RUN_CLEANUP_TIMEOUT_SECONDS:-5}"
 log_file=""
 status_file=""
 title="Mini GUI Run"
@@ -115,9 +138,9 @@ reclaim_windows() {
   [ -x "$RECLAIM_SCRIPT_PATH" ] || return 0
 
   if [ "$reclaim_all" -eq 1 ]; then
-    "$RECLAIM_SCRIPT_PATH" --all --title "$title" "$@" >/dev/null 2>&1 || true
+    run_with_timeout "$cleanup_timeout_seconds" "$RECLAIM_SCRIPT_PATH" --all --title "$title" "$@" || true
   else
-    "$RECLAIM_SCRIPT_PATH" --title "$title" "$@" >/dev/null 2>&1 || true
+    run_with_timeout "$cleanup_timeout_seconds" "$RECLAIM_SCRIPT_PATH" --title "$title" "$@" || true
   fi
 }
 
@@ -230,7 +253,7 @@ while [ ! -f "$status_file" ]; do
 done
 
 if [ "$close_window" -eq 1 ] && [ -n "${window_id:-}" ]; then
-  close_window_by_id "$window_id"
+  run_with_timeout "$cleanup_timeout_seconds" close_window_by_id "$window_id" || true
 fi
 
 reclaim_windows --hide-terminal

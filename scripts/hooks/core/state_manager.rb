@@ -68,11 +68,12 @@ module StateManager
       unique_files: [],
       last_file: nil
     },
-    # Release command keys already staged by sanestop_lemonsqueezy. Kept in
-    # SCHEMA so merge_with_defaults preserves it across state reloads without
-    # turning the hook into a one-shot forever skip.
+    # Set true by sanestop_lemonsqueezy once the LemonSqueezy-Uploads folder is
+    # staged after a release this session. Kept in SCHEMA so merge_with_defaults
+    # preserves it across state reloads (else the post-release staging re-runs
+    # on every Stop).
     lemonsqueezy_uploads: {
-      staged_keys: []
+      done: false
     },
     saneloop: {
       active: false,

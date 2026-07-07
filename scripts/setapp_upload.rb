@@ -43,6 +43,7 @@ class SetappUpload
   MAX_ARCHIVE_BYTES = 1 * 1024 * 1024 * 1024
   MAX_ARCHIVE_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
   STATUS_LABELS = {
+    1 => 'Pending Submission',
     2 => 'Needs Revision',
     5 => 'In Review',
     9 => 'Manual Release Required',
@@ -65,16 +66,61 @@ class SetappUpload
   ].freeze
   FORBIDDEN_SETAPP_PAYLOAD_PATTERNS = [
     [/\bSaneSparkleRow\b/i, 'Sparkle settings UI'],
-    [/\bSparkle\.framework\b/i, 'Sparkle framework reference'],
     [/\bSUFeedURL\b/i, 'Sparkle feed key'],
-    [/\bAppStoreProductID\b/i, 'direct/App Store product identifier key'],
-    [/sparkle-project\.org/i, 'Sparkle project URL'],
-    [/\blemon ?squeezy\b/i, 'Lemon Squeezy direct-license string'],
-    [%r{api\.lemonsqueezy\.com/v1/licenses/validate}i, 'Lemon Squeezy license API string'],
-    [/\b(?:Enter|Paste) License Key\b/i, 'direct license-key UI copy'],
-    [/\bcheckout(?:URL|Clicked)?\b/i, 'direct checkout code/copy'],
     [%r{github\.com/sponsors}i, 'GitHub Sponsors/donation link'],
     [/\bdirect download\b/i, 'direct-download copy']
+  ].freeze
+
+  # Inert direct-channel residue: strings that unavoidably land in the main
+  # executable because the shared app TARGET weak-links the Sparkle SPM
+  # product for all configs and shared SaneUI carries direct-channel string
+  # constants. These are tolerated ONLY in Mach-O binaries and ONLY when the
+  # bundle is proven functionally Sparkle-free: no Sparkle.framework payload
+  # anywhere (separately fatal above) AND every Sparkle load command is
+  # LC_LOAD_WEAK_DYLIB (a strong link to a stripped framework would crash at
+  # launch). Setapp approved builds with exactly this weak-link shape (e.g.
+  # SaneClip 2.3.9, thread #895). The same strings anywhere else (plists,
+  # resources) remain fatal — there they are configuration, not linker
+  # fallout. Owner decision 2026-07-01: verify non-functionality instead of
+  # string hygiene until the dedicated no-Sparkle Setapp target exists.
+  INERT_WEAK_LINK_PAYLOAD_PATTERNS = [
+    [/\bSparkle\.framework\b/i, 'Sparkle framework reference'],
+    [/\bAppStoreProductID\b/i, 'direct/App Store product identifier key'],
+    [/sparkle-project\.org/i, 'Sparkle project URL']
+  ].freeze
+
+  # Direct-license residue from shared SaneUI's LicenseService, which serves
+  # direct/App Store/Setapp purchase from one class used by 7 SaneApps
+  # products — splitting it into per-channel modules is a bigger, riskier cut
+  # than is safe to make blind across apps this scanner can't test. What IS
+  # verified: SaneUI's SaneLicenseServiceSetappGateTests.swift
+  # (sane-apps/SaneUI, added alongside this tolerance) pins the FULL
+  # reachability chain for a Setapp-backed instance — checkoutURL is nil,
+  # activate(key:) and checkCachedLicense() both return before EVER calling
+  # validateWithLemonSqueezy()/lemonSqueezyValidationURL() (the two call sites
+  # that construct and hit the LemonSqueezy API), and the entry-UI branch that
+  # would show "Enter/Paste License Key" copy is unreachable behind
+  # usesSetappPurchase/usesAppStorePurchase checks in the view's if/else-if
+  # chain.
+  #
+  # LicenseService's ascii([UInt8]) helper does NOT remove the literal
+  # "lemonsqueezy"/"licenses"/"validate" bytes from the compiled binary — it
+  # only hides the string from a SOURCE-code grep. The Swift array literal
+  # still compiles to the exact same readable ASCII bytes in the Mach-O, so a
+  # binary `strings` scan finds it regardless (verified directly: repro
+  # 2026-07-01, SaneClip 2.3.12 Setapp build). Do not treat that helper as a
+  # binary-level defense for this tolerance's purposes.
+  #
+  # Tolerated ONLY in Mach-O binaries (a resource/plist hit remains fatal —
+  # that would be configuration, not compiled-in dead code). Owner decision
+  # 2026-07-01: verify non-functionality instead of string hygiene until the
+  # dedicated no-Sparkle, no-direct-license Setapp target exists (tracked:
+  # SaneClip session task #26).
+  INERT_UNREACHABLE_LICENSE_PAYLOAD_PATTERNS = [
+    [/\b(?:Enter|Paste) License Key\b/i, 'direct license-key UI copy'],
+    [/\bcheckout(?:URL|Clicked)?\b/i, 'direct checkout code/copy'],
+    [/\blemon ?squeezy\b/i, 'Lemon Squeezy direct-license string'],
+    [%r{api\.lemonsqueezy\.com/v1/licenses/validate}i, 'Lemon Squeezy license API string']
   ].freeze
   PROFILE_REQUIRED_ENTITLEMENTS = [
     'com.apple.developer.icloud-container-identifiers',
@@ -152,6 +198,9 @@ class SetappUpload
         @options[:allow_overwrite] = parse_bool(value)
       end
       opts.on('--portal-fallback', 'Use logged-in portal upload + patch path') { @options[:portal_fallback] = true }
+      opts.on('--create-version', 'POST a new portal version instead of patching. Required once the pinned version is Released (status 10): the portal API rejects PATCH with "The archive tmp name field is forbidden" (hit live 2026-07-02, SaneClip 2.3.12). Update .saneprocess version_id to the new id afterwards.') do
+        @options[:create_version] = true
+      end
       opts.on('--no-safari-token', 'Do not read the portal token from Safari cookies') { @options[:safari_token] = false }
       opts.on('--allow-needs-revision', 'Attach archive without failing when the portal still needs Submit for review') do
         @options[:allow_needs_revision] = true
@@ -182,10 +231,11 @@ class SetappUpload
     validate_archive!
     enforce_manifest_policies!
 
+    abort '--create-version only applies to --portal-fallback' if @options[:create_version] && !@options[:portal_fallback]
     return unless @options[:portal_fallback]
 
     abort 'Portal fallback requires --app-id' if @options[:app_id].to_s.empty?
-    abort 'Portal fallback requires --version-id' if @options[:version_id].to_s.empty?
+    abort 'Portal fallback requires --version-id' if @options[:version_id].to_s.empty? && !@options[:create_version]
     validate_portal_target_matches_archive!
   end
 
@@ -569,13 +619,64 @@ class SetappUpload
       output, _stderr, status = capture3_with_timeout(10, '/usr/bin/strings', '-a', path)
       next unless status.success?
 
+      relative = relative_extract_path(File.dirname(app_path), path)
+
       FORBIDDEN_SETAPP_PAYLOAD_PATTERNS.each do |pattern, reason|
         next unless output.match?(pattern)
 
-        relative = relative_extract_path(File.dirname(app_path), path)
         abort "Setapp archive contains forbidden direct-channel residue (#{reason}) in #{relative}"
       end
+
+      INERT_WEAK_LINK_PAYLOAD_PATTERNS.each do |pattern, reason|
+        next unless output.match?(pattern)
+
+        unless macho_file?(path)
+          abort "Setapp archive contains forbidden direct-channel residue (#{reason}) in #{relative} (non-binary file — configuration, not linker fallout)"
+        end
+        unless sparkle_linkage_weak_only?(path)
+          abort "Setapp archive contains forbidden direct-channel residue (#{reason}) in #{relative} (Sparkle is strongly linked — a stripped framework would crash at launch)"
+        end
+
+        warn "note: inert direct-channel residue tolerated in #{relative} (#{reason}): Sparkle payload absent, load commands weak-only"
+        break # inertness proven once per file; no need to re-check per pattern
+      end
+
+      INERT_UNREACHABLE_LICENSE_PAYLOAD_PATTERNS.each do |pattern, reason|
+        next unless output.match?(pattern)
+
+        unless macho_file?(path)
+          abort "Setapp archive contains forbidden direct-channel residue (#{reason}) in #{relative} (non-binary file — configuration, not linker fallout)"
+        end
+
+        warn "note: inert direct-channel residue tolerated in #{relative} (#{reason}): unreachable per SaneUI SaneLicenseServiceSetappGateTests"
+        break # inertness proven once per file; no need to re-check per pattern
+      end
     end
+  end
+
+  # True when every Sparkle load command in the Mach-O is a weak link
+  # (LC_LOAD_WEAK_DYLIB). A binary with no Sparkle load commands also passes.
+  def sparkle_linkage_weak_only?(macho_path)
+    output, _stderr, status = capture3_with_timeout(15, '/usr/bin/otool', '-l', macho_path)
+    return false unless status.success?
+
+    self.class.sparkle_linkage_weak_only_from_otool?(output)
+  end
+
+  # Pure parser, class-level so tests can exercise it without a real binary.
+  def self.sparkle_linkage_weak_only_from_otool?(otool_output)
+    current_cmd = nil
+    otool_output.each_line do |line|
+      if (match = line.match(/^\s*cmd\s+(LC_\w+)/))
+        current_cmd = match[1]
+        next
+      end
+
+      next unless line.match?(/^\s*name\s+.*Sparkle\.framework/i)
+      return false unless current_cmd == 'LC_LOAD_WEAK_DYLIB'
+    end
+
+    true
   end
 
   def setapp_payload_scan_candidate?(path)
@@ -784,7 +885,7 @@ class SetappUpload
       abort "Unknown Setapp app id #{@options[:app_id]}; add its app name and bundle id before using portal fallback"
     end
 
-    if @options[:version_id].to_s != target[:version_id]
+    if !@options[:create_version] && @options[:version_id].to_s != target[:version_id]
       abort "Setapp portal app #{@options[:app_id]} expects version id #{target[:version_id]}, but received #{@options[:version_id]}"
     end
     if @archive_metadata[:app_name] != target[:app_name]
@@ -959,20 +1060,37 @@ class SetappUpload
     abort "Setapp upload response missing: #{missing.join(', ')}" unless missing.empty?
     validate_upload_response_matches_archive!(data)
 
-    patch_payload = {
+    payload = {
       archive_tmp_name: data.fetch('archive_tmp_name'),
       icon_url: data.fetch('icon_url'),
       version: data.fetch('version'),
       ui_version: data.fetch('ui_version'),
       release_notes: @options[:release_notes]
     }
-    patch_payload[:vendor_comment] = @options[:review_comments] unless @options[:review_comments].to_s.strip.empty?
-    patch_response = curl_json(
-      "#{API_BASE}/versions/#{@options[:version_id]}",
-      "Token #{token}",
-      patch_payload
-    )
-    fail_unless_success!(patch_response, expected: [200])
+    payload[:vendor_comment] = @options[:review_comments] unless @options[:review_comments].to_s.strip.empty?
+
+    if @options[:create_version]
+      # A Released (status 10) version rejects PATCH ("The archive tmp name
+      # field is forbidden"), so each new public release POSTs a fresh
+      # version record. release_on_approval is a required field on create;
+      # enforce_manifest_policies! already forbids true where .saneprocess
+      # demands manual release.
+      payload[:application_id] = @options[:app_id].to_i
+      payload[:release_on_approval] = @options[:release_on_approval]
+      patch_response = curl_json("#{API_BASE}/versions", "Token #{token}", payload, method: 'POST')
+      fail_unless_success!(patch_response, expected: [200, 201])
+      created_id = patch_response.dig(:json, 'data', 'id').to_s
+      abort 'Setapp create-version response did not include a version id' if created_id.empty?
+      @options[:version_id] = created_id
+      warn "Setapp created version #{created_id}; update this app's .saneprocess setapp.version_id (was pinned to the previous release)."
+    else
+      patch_response = curl_json(
+        "#{API_BASE}/versions/#{@options[:version_id]}",
+        "Token #{token}",
+        payload
+      )
+      fail_unless_success!(patch_response, expected: [200])
+    end
 
     status_response = curl_get("#{API_BASE}/versions/#{@options[:version_id]}", "Token #{token}")
     fail_unless_success!(status_response, expected: [200])
@@ -1045,11 +1163,11 @@ class SetappUpload
     with_curl_config(url, authorization, extra_args: form_args.flatten)
   end
 
-  def curl_json(url, authorization, payload)
+  def curl_json(url, authorization, payload, method: 'PATCH')
     Tempfile.create(['setapp-upload-payload', '.json']) do |payload_file|
       payload_file.write(JSON.generate(payload))
       payload_file.flush
-      with_curl_config(url, authorization, method: 'PATCH', json: true, extra_args: ['--data-binary', "@#{payload_file.path}"])
+      with_curl_config(url, authorization, method: method, json: true, extra_args: ['--data-binary', "@#{payload_file.path}"])
     end
   end
 
@@ -1289,7 +1407,7 @@ class SetappUpload
     data = payload.is_a?(Hash) ? payload['data'] : nil
     status_code = data.is_a?(Hash) ? data['status'].to_i : 0
     return unless action_required_status?(status_code)
-    return if status_code == 2 && @options[:allow_needs_revision]
+    return if [1, 2].include?(status_code) && @options[:allow_needs_revision]
 
     abort "Setapp archive was attached, but the version is still #{status_label(status_code)}. The build is NOT complete; #{portal_action_message(status_code)}"
   end
@@ -1304,7 +1422,7 @@ class SetappUpload
 
   def portal_action_message(code)
     case code.to_i
-    when 2
+    when 1, 2
       'click Submit for review in developer.setapp.com, then rerun setapp_status.'
     when 9
       'manually release the approved version in developer.setapp.com, then rerun setapp_status.'

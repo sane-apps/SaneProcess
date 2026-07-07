@@ -13,7 +13,6 @@ Usage:
 import argparse
 import json
 import os
-import re
 import shlex
 import subprocess
 import sys
@@ -24,7 +23,6 @@ from pathlib import Path
 
 API_BASE = "https://dist.saneapps.com/api/stats"
 ENV_CACHE_FILE = Path(os.environ.get("SANE_ENV_CACHE_FILE", "~/.config/nv/env")).expanduser()
-SANEAPPS_ROOT = Path(__file__).resolve().parents[4]
 FUNNEL_EVENT_TYPES = [
     "app_launch_free",
     "app_launch_pro",
@@ -42,83 +40,6 @@ FUNNEL_EVENT_TYPES = [
     "license_activated",
     "first_value_action",
 ]
-
-
-def normalize_version(version):
-    match = re.search(r"\d+(?:\.\d+)+", str(version or ""))
-    return match.group(0) if match else ""
-
-
-def version_key(version):
-    normalized = normalize_version(version)
-    if not normalized:
-        return (-1,)
-    return tuple(int(part) for part in normalized.split("."))
-
-
-def row_count(row):
-    try:
-        return int(row.get("count", 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def latest_versions(rows):
-    latest = {}
-    for row in rows:
-        app = row.get("app")
-        version = row.get("version")
-        if not app or not version:
-            continue
-        if app not in latest or version_key(version) > version_key(latest[app]):
-            latest[app] = version
-    return latest
-
-
-def project_versions():
-    versions = {}
-    for project_file in (SANEAPPS_ROOT / "apps").glob("*/project.yml"):
-        app = project_file.parent.name.lower()
-        try:
-            for line in project_file.read_text(encoding="utf-8").splitlines():
-                match = re.match(r"\s*MARKETING_VERSION:\s*\"?([^\"\s]+)\"?", line)
-                if match:
-                    versions[app] = normalize_version(match.group(1))
-                    break
-        except OSError:
-            continue
-    return {app: version for app, version in versions.items() if version}
-
-
-def current_versions(rows):
-    versions = project_versions()
-    observed = latest_versions(rows)
-    for app, version in observed.items():
-        versions.setdefault(str(app).lower(), normalize_version(version))
-    return versions
-
-
-def is_qualified_download(row, latest_by_app):
-    source = row.get("source")
-    if row.get("mode") == "gated":
-        return True
-    if source in ("sparkle", "homebrew"):
-        return True
-    app = str(row.get("app") or "").lower()
-    return source == "website" and normalize_version(row.get("version")) == latest_by_app.get(app)
-
-
-def quality_counts(row, latest_by_app):
-    count = row_count(row)
-    if is_qualified_download(row, latest_by_app):
-        return count, 0
-    if row.get("source") == "website":
-        return 0, count
-    return 0, 0
-
-
-def print_quality_note():
-    print("\nQualified = Sparkle/Homebrew/gated + current-version website; not a human count. Old-site = old-version public website hits.")
 
 
 def load_env_cache():
@@ -229,70 +150,47 @@ def print_daily(rows, window_days=90):
         "This Week": defaultdict(int),
         window_label: defaultdict(int),
     }
-    latest_by_app = current_versions(rows)
 
     for r in rows:
-        count = row_count(r)
-        source = r.get("source") or "unknown"
-        date = r.get("date")
-        qualified, likely_automated = quality_counts(r, latest_by_app)
+        count = r["count"]
+        source = r["source"]
+        date = r["date"]
 
         buckets[window_label][source] += count
         buckets[window_label]["total"] += count
-        buckets[window_label]["qualified"] += qualified
-        buckets[window_label]["likely_automated"] += likely_automated
 
         if date in week_dates:
             buckets["This Week"][source] += count
             buckets["This Week"]["total"] += count
-            buckets["This Week"]["qualified"] += qualified
-            buckets["This Week"]["likely_automated"] += likely_automated
 
         if date == today:
             buckets["Today"][source] += count
             buckets["Today"]["total"] += count
-            buckets["Today"]["qualified"] += qualified
-            buckets["Today"]["likely_automated"] += likely_automated
         elif date == yesterday:
             buckets["Yesterday"][source] += count
             buckets["Yesterday"]["total"] += count
-            buckets["Yesterday"]["qualified"] += qualified
-            buckets["Yesterday"]["likely_automated"] += likely_automated
 
-    print(f"{'Period':<15} {'Raw':>7} {'Qualified':>10} {'Old-site':>9} {'Sparkle':>9} {'Homebrew':>9} {'Website':>9}")
-    print("-" * 75)
+    print(f"{'Period':<15} {'Total':>7} {'Sparkle':>9} {'Homebrew':>9} {'Website':>9} {'Unknown':>9}")
+    print("-" * 60)
     for name in ["Today", "Yesterday", "This Week", window_label]:
         b = buckets[name]
-        print(
-            f"{name:<15} {b['total']:>7} {b['qualified']:>10} {b['likely_automated']:>9} "
-            f"{b.get('sparkle', 0):>9} {b.get('homebrew', 0):>9} {b.get('website', 0):>9}"
-        )
-    print_quality_note()
+        print(f"{name:<15} {b['total']:>7} {b.get('sparkle', 0):>9} {b.get('homebrew', 0):>9} {b.get('website', 0):>9} {b.get('unknown', 0):>9}")
 
 
 def print_by_app(rows):
     """Downloads grouped by app."""
     apps = defaultdict(lambda: defaultdict(int))
-    latest_by_app = current_versions(rows)
 
     for r in rows:
-        app = r.get("app") or "unknown"
-        qualified, likely_automated = quality_counts(r, latest_by_app)
-        count = row_count(r)
-        apps[app][r.get("source") or "unknown"] += count
-        apps[app]["total"] += count
-        apps[app]["qualified"] += qualified
-        apps[app]["likely_automated"] += likely_automated
+        app = r["app"]
+        apps[app][r["source"]] += r["count"]
+        apps[app]["total"] += r["count"]
 
-    print(f"\n{'App':<15} {'Raw':>7} {'Qualified':>10} {'Old-site':>9} {'Sparkle':>9} {'Homebrew':>9} {'Website':>9}")
-    print("-" * 75)
+    print(f"\n{'App':<15} {'Total':>7} {'Sparkle':>9} {'Homebrew':>9} {'Website':>9} {'Unknown':>9}")
+    print("-" * 60)
     for app in sorted(apps, key=lambda a: apps[a]["total"], reverse=True):
         a = apps[app]
-        print(
-            f"{app:<15} {a['total']:>7} {a['qualified']:>10} {a['likely_automated']:>9} "
-            f"{a.get('sparkle', 0):>9} {a.get('homebrew', 0):>9} {a.get('website', 0):>9}"
-        )
-    print_quality_note()
+        print(f"{app:<15} {a['total']:>7} {a.get('sparkle', 0):>9} {a.get('homebrew', 0):>9} {a.get('website', 0):>9} {a.get('unknown', 0):>9}")
 
 
 def print_by_version(rows):
@@ -300,10 +198,9 @@ def print_by_version(rows):
     versions = defaultdict(lambda: {"count": 0, "source": defaultdict(int)})
 
     for r in rows:
-        count = row_count(r)
-        key = f"{r.get('app') or 'unknown'} {r.get('version') or 'unknown'}"
-        versions[key]["count"] += count
-        versions[key]["source"][r.get("source") or "unknown"] += count
+        key = f"{r['app']} {r['version']}"
+        versions[key]["count"] += r["count"]
+        versions[key]["source"][r["source"]] += r["count"]
 
     print(f"\n{'App Version':<25} {'Total':>7} {'Sparkle':>9} {'Website':>9}")
     print("-" * 50)

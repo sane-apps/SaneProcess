@@ -5,7 +5,6 @@
 # (extracted from sanetools.rb per Rule #10).
 
 require 'json'
-require 'shellwords'
 require 'socket'
 require_relative 'core/local_ui_guard'
 require_relative 'core/mandatory_workflows'
@@ -505,14 +504,7 @@ module SaneToolsChecks
         # destinations via the same SAFE_REDIRECT_TARGETS set used for redirects — a cp/mv
         # to a tracked path still has an unsafe destination and stays blocked.
         if target.nil? && scan.match?(/\b(?:cp|mv)\b/)
-          begin
-            shell_tokens = Shellwords.split(command)
-            if shell_tokens.any? { |token| %w[cp mv].include?(File.basename(token.to_s)) }
-              target = shell_tokens.reject { |t| t.empty? || t.start_with?('-') }.last
-            end
-          rescue ArgumentError
-            target = nil
-          end
+          target = scan.split(/[\s|&;]+/).reject { |t| t.empty? || t.start_with?('-') }.last
         end
 
         return nil if target && target.match?(SAFE_REDIRECT_TARGETS)

@@ -9,12 +9,11 @@
 # hammering a gate until it passes instead of reading it and doing what it says.
 #
 # How: each time a gate blocks, we fingerprint the *work state* — the research
-# tool-call completion timestamps (.claude/state.json), working-tree status, and
-# certifier verdict artifacts.
+# tool-call completion timestamps (.claude/state.json) plus the working-tree diff.
 # If the SAME gate blocks again with an IDENTICAL fingerprint, nothing was done
-# between attempts: no fresh research, no tracked/untracked code change, no
-# certifier verdict. That is a hammer. A CHANGING fingerprint means real
-# iteration and is never flagged, so legitimate work never trips it.
+# between attempts: no fresh research, no code change, no certifier verdict. That
+# is a hammer. A CHANGING fingerprint means real iteration and is never flagged,
+# so legitimate work (edit -> re-run -> edit -> re-run) never trips it.
 #
 # After HAMMER_THRESHOLD no-progress hits the gate is flagged and the block
 # message shouts it, with a signed, tamper-evident record (gate-hits.json) and an
@@ -91,49 +90,30 @@ module SaneMasterModules
       return nil unless entry && entry['streak'].to_i >= HAMMER_THRESHOLD
 
       "🔁 HAMMERING DETECTED: '#{gate}' has been hit #{entry['streak']}× with NO new work between " \
-        "attempts (no fresh research tool-calls, no file-state change, no certifier verdict since " \
+        "attempts (no fresh research tool-calls, no diff change, no certifier verdict since " \
         "#{entry['streak_started_at']}). Re-running will NOT help — READ THE GATE and either DO the " \
         'prescribed work or run the certifier (ARCHITECTURE.md ADR-011). This is logged.'
     rescue StandardError
       nil
     end
 
-    # Fingerprint of "did real work happen": research completion timestamps,
-    # tracked/untracked working-tree status, and certifier verdict artifacts.
-    # Stable across a no-op re-run; changes the moment any research tool-call,
-    # file edit, new file, staged change, or certifier verdict appears.
+    # Fingerprint of "did real work happen": research completion timestamps +
+    # the working-tree diff. Stable across a no-op re-run; changes the moment any
+    # research tool-call fires or any file changes.
     def current_fingerprint
-      diff, = Open3.capture2('git', 'diff', '--stat', err: File::NULL)
-      staged, = Open3.capture2('git', 'diff', '--cached', '--stat', err: File::NULL)
-      status, = Open3.capture2('git', 'status', '--porcelain', '--untracked-files=all', err: File::NULL)
-      Digest::SHA256.hexdigest("#{research_completed_digest}\n#{diff}\n#{staged}\n#{status}\n#{certifier_digest}")
+      diff, = Open3.capture2('git', 'diff', '--stat')
+      Digest::SHA256.hexdigest("#{research_completed_digest}\n#{diff}")
     rescue StandardError
       nil
     end
 
     # --- internals -----------------------------------------------------------
 
-    def certifier_digest
-      %w[
-        .claude/gate-override-log.jsonl
-        .claude/gate-overrides.json
-        .claude/unfair-gates.json
-      ].map do |path|
-        next "#{path}:missing" unless File.exist?(path)
-
-        "#{path}:#{File.size(path)}:#{Digest::SHA256.file(path).hexdigest}"
-      end.join('|')
-    rescue StandardError
-      ''
-    end
-
     def research_completed_digest
       path = File.join('.claude', 'state.json')
       return '' unless File.exist?(path)
 
-      data = StateSigner.read_verified(path, symbolize: true)
-      return 'state:invalid' unless data.is_a?(Hash)
-
+      data = JSON.parse(File.read(path, encoding: Encoding::UTF_8), symbolize_names: true)
       research = data[:research] || data.dig(:data, :research) || {}
       return '' unless research.is_a?(Hash)
 

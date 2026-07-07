@@ -58,6 +58,37 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
       ENV.delete('SANEMASTER_UNSIGNED_FALLBACK_ACTIVE')
     end
 
+    test('SaneClip does not retry unsigned debug after signing failure') do
+      ENV['SANEMASTER_HEADLESS'] = '1'
+      ENV.delete('SANEMASTER_UNSIGNED_FALLBACK_ACTIVE')
+
+      output = <<~TEXT
+        /Users/tester/SaneClip.xcodeproj: error: "SaneClip" requires a provisioning profile with the iCloud feature.
+        Automatic signing is disabled and unable to generate a profile.
+      TEXT
+
+      Dir.mktmpdir('sanemaster-saneclip-runtime') do |dir|
+        File.write(File.join(dir, '.saneprocess'), "name: SaneClip\nscheme: SaneClip\n")
+
+        Dir.chdir(dir) do
+          harness = TestModeHarness.new
+          result = harness.send(
+            :should_retry_unsigned_debug?,
+            build_config: 'Release',
+            output: output,
+            status: Status.new(false)
+          )
+
+          assert(!result, 'SaneClip must fail closed instead of launching unsigned Debug')
+        end
+      end
+
+      true
+    ensure
+      ENV.delete('SANEMASTER_HEADLESS')
+      ENV.delete('SANEMASTER_UNSIGNED_FALLBACK_ACTIVE')
+    end
+
     test('does not retry when build already succeeded') do
       ENV['SANEMASTER_HEADLESS'] = '1'
 
@@ -76,6 +107,32 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
   end
 
   test_category('Launch mode preservation') do
+    test('SaneClip test_mode always selects signed Release runtime') do
+      saved_config = ENV['SANEMASTER_BUILD_CONFIG']
+
+      Dir.mktmpdir('sanemaster-saneclip-launch') do |dir|
+        File.write(File.join(dir, '.saneprocess'), "name: SaneClip\nscheme: SaneClip\n")
+
+        Dir.chdir(dir) do
+          harness = TestModeHarness.new
+
+          assert_eq(harness.send(:launch_build_config, []), 'Release')
+          assert_eq(harness.send(:launch_build_config, ['--proddebug']), 'Release')
+
+          ENV['SANEMASTER_BUILD_CONFIG'] = 'Debug'
+          assert_eq(harness.send(:launch_build_config, []), 'Release')
+        end
+      end
+
+      true
+    ensure
+      if saved_config.nil?
+        ENV.delete('SANEMASTER_BUILD_CONFIG')
+      else
+        ENV['SANEMASTER_BUILD_CONFIG'] = saved_config
+      end
+    end
+
     test('launch can reuse existing canonical app when DerivedData product was cleaned') do
       source = File.read(TEST_MODE_PATH)
 
