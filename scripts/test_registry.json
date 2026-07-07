@@ -236,6 +236,12 @@
       "cmd": ["ruby", "scripts/hooks/session_start_cleanup_test.rb"]
     },
     {
+      "path": "scripts/sanemaster/verify_escalation_test.rb",
+      "label": "SaneProcess verify two-strike escalation tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/verify_escalation_test.rb"]
+    },
+    {
       "path": "scripts/mini/mini_train_cleanup_test.rb",
       "label": "SaneProcess Mini train cleanup tests",
       "status": "required",

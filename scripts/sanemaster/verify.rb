@@ -128,11 +128,12 @@ module SaneMasterModules
           suggest_memory_record if respond_to?(:suggest_memory_record)
         else
           failure_message = result[:timeout] ? 'verify timeout' : 'verify failure'
+          failure_log_text = File.exist?('test_output.txt') ? File.read('test_output.txt') : ''
           failure = classify_verify_result(
             success: false,
             timeout: result[:timeout],
             tests_run: result[:tests_run],
-            log_text: File.exist?('test_output.txt') ? File.read('test_output.txt') : ''
+            log_text: failure_log_text
           )
           record_process_metric(
             'verify',
@@ -153,7 +154,11 @@ module SaneMasterModules
           state = if running_from_preflight
                     { consecutive_failures: load_verify_state[:consecutive_failures].to_i }
                   else
-                    record_verify_attempt(success: false, message: failure_message)
+                    record_verify_attempt(
+                      success: false,
+                      message: failure_message,
+                      fingerprint: verify_failure_fingerprint(failure_log_text)
+                    )
                   end
           log_size = File.exist?('test_output.txt') ? File.size('test_output.txt') : 0
           if log_size.zero?
@@ -175,6 +180,27 @@ module SaneMasterModules
       ensure
         cleanup_test_processes(permission_monitor)
       end
+    end
+
+    # Stable identity of WHICH tests failed, so the two-strike escalation can
+    # distinguish "same problem twice" (escalate) from "fixed one problem,
+    # surfaced the next" (legitimate iteration, streak restarts — see
+    # record_verify_attempt). nil when the log carries no failure markers
+    # (build died first): callers keep the conservative always-increment
+    # behavior for that case.
+    def verify_failure_fingerprint(log_text)
+      text = log_text.to_s.dup.force_encoding('UTF-8')
+      text = text.scrub('?') unless text.valid_encoding?
+      # map+compact, not filter_map: must stay Ruby 2.6-compatible.
+      lines = text.each_line.map do |line|
+        stripped = line.strip
+        next nil unless stripped.start_with?('❌') || stripped =~ /\AFAIL(ED)?[: ]/ || stripped =~ /\A✖ /
+        stripped
+      end.compact.uniq.sort
+      return nil if lines.empty?
+
+      require 'digest'
+      Digest::SHA256.hexdigest(lines.join("\n"))[0, 16]
     end
 
     def run_verify_preflight

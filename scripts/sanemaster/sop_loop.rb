@@ -722,7 +722,7 @@ module SaneMasterModules
       exit 1
     end
 
-    def record_verify_attempt(success:, message:)
+    def record_verify_attempt(success:, message:, fingerprint: nil)
       state = load_verify_state
 
       if success
@@ -730,12 +730,25 @@ module SaneMasterModules
         state[:last_result] = 'passed'
         state[:last_failure_at] = nil
         state[:last_failure_message] = nil
+        state[:last_failure_fingerprint] = nil
         state[:escalated_at] = nil
       else
-        state[:consecutive_failures] = state[:consecutive_failures].to_i + 1
+        # The two-strike rule escalates on repeated failures of the SAME
+        # problem (its own message says so). A failure with a DIFFERENT
+        # failing-test fingerprint is legitimate iteration — fix one problem,
+        # surface the next — and must restart the streak, not escalate.
+        # (Certifier-audited: the gate self-flagged unfair 2026-07-07 after
+        # arming three times on unrelated pre-existing stale-fixture reds.)
+        # Unknown fingerprints (nil, e.g. build died before tests) keep the
+        # old always-increment behavior so coverage is not lost.
+        previous = state[:last_failure_fingerprint]
+        same_problem = fingerprint.nil? || previous.nil? || fingerprint == previous
+        state[:consecutive_failures] = same_problem ? state[:consecutive_failures].to_i + 1 : 1
+        state[:escalated_at] = nil unless same_problem
         state[:last_result] = 'failed'
         state[:last_failure_at] = Time.now.iso8601
         state[:last_failure_message] = message
+        state[:last_failure_fingerprint] = fingerprint
         state[:escalated_at] ||= state[:last_failure_at] if state[:consecutive_failures] >= 2
       end
 

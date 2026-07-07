@@ -56,13 +56,16 @@ def uncommitted_working_tree_files(cwd = Dir.pwd)
   out, status = Open3.capture2e('git', '-C', cwd, 'status', '--porcelain', '--untracked-files=all')
   return nil unless status.success?
 
-  out.each_line.filter_map do |line|
-    path = line[3..]&.strip
+  # map+compact, not filter_map: hooks run under the system ruby (2.6), where
+  # filter_map does not exist — it raised NoMethodError into the rescue below,
+  # silently reverting RULE #4 to the counter behavior it replaces.
+  out.each_line.map do |line|
+    path = line[3..-1]&.strip
     next nil if path.nil? || path.empty?
 
     # Rename entries are "old -> new"; the new path is what currently exists.
     path.include?(' -> ') ? path.split(' -> ').last : path
-  end
+  end.compact
 rescue StandardError
   nil
 end
