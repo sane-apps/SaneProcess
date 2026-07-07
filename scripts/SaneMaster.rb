@@ -707,6 +707,11 @@ class SaneMaster
     if @route_logs_to_stderr
       options = options.merge(out: $stderr, err: $stderr)
     end
+    # Skip the splat for empty options: under ruby 2.6 `system(*cmd, **{})`
+    # appends a literal {} argument (pre-3.0 kwargs), which corrupts the
+    # command args (seen as a phantom rsync target in release_route tests).
+    return system(*command) if options.empty?
+
     system(*command, **options)
   end
 
@@ -748,6 +753,9 @@ class SaneMaster
   def ssh_system(*args, tty: false, **options)
     ssh_args = ['ssh', '-n']
     ssh_args << '-tt' if tty && $stdout.tty?
+    # See route_system: empty **options under ruby 2.6 appends a literal {}.
+    return system(*ssh_args, *args) if options.empty?
+
     system(*ssh_args, *args, **options)
   end
 

@@ -130,6 +130,9 @@ module SaneMasterModules
       options = {}
       options[:out] = out unless out.nil?
       options[:err] = err unless err.nil?
+      # Empty **options under ruby 2.6 appends a literal {} (see route_system).
+      return system(ruby_tool_env.merge(extra_env), *command) if options.empty?
+
       system(ruby_tool_env.merge(extra_env), *command, **options)
     end
 
@@ -141,6 +144,9 @@ module SaneMasterModules
       options = {}
       options[:out] = out unless out.nil?
       options[:err] = err unless err.nil?
+      # Empty **options under ruby 2.6 appends a literal {} (see route_system).
+      return system(bundle_tool_env.merge(extra_env), *command) if options.empty?
+
       system(bundle_tool_env.merge(extra_env), *command, **options)
     end
 
