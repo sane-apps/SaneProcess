@@ -33,7 +33,7 @@ class SetappStatus
     enforce_mini_host! unless @options[:fixture]
     token = @options[:fixture] ? nil : portal_token
     if token.to_s.empty? && !@options[:fixture]
-      return unavailable('open developer.setapp.com in Safari on the Mini or set SETAPP_PORTAL_TOKEN')
+      return unavailable('open and sign in to developer.setapp.com in Brave on the Mini or set SETAPP_PORTAL_TOKEN')
     end
 
     rows = @options[:apps].map { |app| row_for(app, token) }
@@ -145,10 +145,17 @@ class SetappStatus
     return env_token unless env_token.empty?
 
     script = <<~APPLESCRIPT
-      tell application "Safari"
-        if not running then return "{\\"error\\":\\"Safari is not running\\"}"
-        if (count of documents) is 0 then return "{\\"error\\":\\"Safari has no open document\\"}"
-        return do JavaScript "JSON.stringify({host: location.hostname, token: decodeURIComponent((document.cookie.split('; ').find(c=>c.startsWith('access_token='))||'=').split('=')[1]||'')})" in front document
+      tell application "Brave Browser"
+        if not running then return "{\\"error\\":\\"Brave is not running\\"}"
+        if (count of windows) is 0 then return "{\\"error\\":\\"Brave has no open window\\"}"
+        repeat with browserWindow in windows
+          repeat with browserTab in tabs of browserWindow
+            if (URL of browserTab starts with "https://developer.setapp.com") then
+              return execute browserTab javascript "JSON.stringify({host: location.hostname, token: decodeURIComponent((document.cookie.split('; ').find(c=>c.startsWith('access_token='))||'=').split('=')[1]||'')})"
+            end if
+          end repeat
+        end repeat
+        return "{\\"error\\":\\"No open developer.setapp.com tab\\"}"
       end tell
     APPLESCRIPT
     output, _stderr, status = Open3.capture3('/usr/bin/osascript', stdin_data: script)

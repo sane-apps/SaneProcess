@@ -82,8 +82,6 @@ module SaneToolsResearch
       File.join(project_dir, '.claude', 'settings.json'),
       File.expand_path('~/.codex/config.toml'),
       File.join(project_dir, '.codex', 'config.toml'),
-      File.expand_path('~/.gemini/settings.json'),
-      File.join(project_dir, '.gemini', 'settings.json'),
       File.expand_path('~/.grok/config.toml'),
       File.join(project_dir, '.grok', 'config.toml')
     ].uniq

@@ -121,7 +121,9 @@ class SocialCardAuditTests(unittest.TestCase):
     def test_current_saneapps_sites_have_social_cards(self):
         module = load_module()
         checked, issues = module.audit_sites()
-        self.assertEqual(100, checked)
+        # The live page count moves as sites gain pages (100 -> 101 broke this
+        # on 2026-07-07); assert real coverage without pinning the exact count.
+        self.assertGreaterEqual(checked, 100)
         self.assertEqual([], issues)
 
 

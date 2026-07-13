@@ -226,7 +226,7 @@ through `SaneMaster.rb`.
 
 Client adapter state is stored locally in the relevant runtime directory; shared scripts and guards are used by any compatible client.
 
-## Documentation Map
+## Operator Docs Map
 
 | Need | Source | Owns |
 |------|--------|------|

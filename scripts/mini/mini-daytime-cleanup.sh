@@ -11,7 +11,7 @@ if [ "${1:-}" = "--dry-run" ]; then
   DRY_RUN=true
 fi
 
-LOW_VALUE_AGENT_LIST="${LOW_VALUE_AGENT_LIST:-com.saneapps.nv-benchmark,com.saneapps.codex-keepalive}"
+LOW_VALUE_AGENT_LIST="${LOW_VALUE_AGENT_LIST:-com.saneapps.codex-keepalive}"
 PURGE_ALL_LOGIN_ITEMS="${PURGE_ALL_LOGIN_ITEMS:-true}"
 
 run_cmd() {

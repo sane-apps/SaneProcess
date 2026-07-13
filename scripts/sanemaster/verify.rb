@@ -7,12 +7,14 @@ require 'time'
 require 'tmpdir'
 
 require_relative 'verify_support'
+require_relative 'verify_permissions'
 require_relative 'verify_doctor'
 
 module SaneMasterModules
   # Build, test execution, permissions, test validation.
-  # Execution/support helpers live in verify_support.rb; doctor environment
-  # checks live in verify_doctor.rb (Rule #10 split).
+  # Execution/support helpers live in verify_support.rb; permission-monitoring
+  # helpers live in verify_permissions.rb; doctor environment checks live in
+  # verify_doctor.rb (Rule #10 split).
   module Verify
     def doctor
       puts '🏥 --- [ SANEMASTER DOCTOR ] ---'
@@ -33,29 +35,51 @@ module SaneMasterModules
       suggest_memory_record if respond_to?(:suggest_memory_record)
     end
 
+    # Headless / cron / empty-locale shells leave Ruby's default_external at
+    # US-ASCII, so a mid-suite File.read of a non-ASCII source (e.g. release.rb)
+    # throws "invalid byte sequence in US-ASCII" and fails the suite for reasons
+    # unrelated to the code under test. Force a UTF-8 locale for this process AND
+    # the child test processes it spawns (they inherit ENV), so verify is robust
+    # regardless of the caller's environment.
+    def ensure_utf8_locale!
+      utf8 = 'en_US.UTF-8'
+      ascii = ->(value) { value.to_s.strip.empty? || value.to_s.strip.match?(/\A(?:C|POSIX)\z/i) }
+      ENV['LANG'] = utf8 if ascii.call(ENV['LANG'])
+      ENV['LC_ALL'] = utf8 if ascii.call(ENV['LC_ALL'])
+      ENV['LC_CTYPE'] = utf8 if ascii.call(ENV['LC_CTYPE'])
+      if Encoding.default_external == Encoding::US_ASCII
+        Encoding.default_external = Encoding::UTF_8
+        Encoding.default_internal = Encoding::UTF_8
+      end
+    rescue StandardError
+      nil
+    end
+
     def verify(args)
+      ensure_utf8_locale!
+      default_timeout = config_value(%w[tests verify_timeout_seconds], 'SANEMASTER_VERIFY_TIMEOUT', 300).to_i
+      begin
+        options = parse_verify_args(args, default_timeout: default_timeout)
+      rescue ArgumentError => e
+        puts "❌ Invalid verify arguments: #{e.message}"
+        puts '   Usage: verify [--ui|--ui-only] [--clean] [--no-grant-permissions] [--signed-tests] [--skip-test-validation] [--quiet] [--timeout positive_seconds]'
+        exit 2
+      end
       running_from_preflight = verify_running_as_preflight?
       return unless running_from_preflight || ensure_research_gate_clear!('verify')
 
       assert_no_runtime_probe_lock_for_verify!
 
       if test_targets_disabled?
-        handle_disabled_tests(args)
+        handle_disabled_tests(options)
         return
       end
 
-      clean_first = args.include?('--clean')
-      include_ui = args.include?('--ui')
-      default_timeout = config_value(%w[tests verify_timeout_seconds], 'SANEMASTER_VERIFY_TIMEOUT', 300).to_i
-      timeout_flag_index = args.index('--timeout')
-      timeout = if timeout_flag_index
-                  override = args[timeout_flag_index + 1]
-                  parsed_override = override&.to_i
-                  parsed_override.to_i.positive? ? parsed_override.to_i : default_timeout
-                else
-                  default_timeout
-                end
-      signed_tests = args.include?('--signed-tests') || ENV['SANEMASTER_SIGN_TEST_BUILDS'] == '1'
+      clean_first = options[:clean]
+      ui_only = options[:ui_only]
+      include_ui = options[:include_ui]
+      timeout = options[:timeout]
+      signed_tests = options[:signed_tests] || ENV['SANEMASTER_SIGN_TEST_BUILDS'] == '1'
 
       run_verify_preflight
       enforce_saneui_source_of_truth!
@@ -65,22 +89,36 @@ module SaneMasterModules
 
       puts '🔨 --- [ SANEMASTER VERIFY ] ---'
       puts 'Building and running tests with progress monitoring...'
-      auto_permissions = !args.include?('--no-grant-permissions') && ENV['SANEMASTER_GRANT_PERMISSIONS'] != '0'
+      auto_permissions = !options[:no_grant_permissions] && ENV['SANEMASTER_GRANT_PERMISSIONS'] != '0'
       permissions_status = auto_permissions ? '✅ monitor active' : 'off (--no-grant-permissions)'
       puts "⏱️  Timeout: #{timeout}s | Auto-handling permissions: #{permissions_status}"
-      puts include_ui ? '📱 Including UI tests (use --ui flag)' : '⚡ Unit tests only (use --ui to include UI tests)'
-      puts signed_tests ? '🔐 Test builds will use normal code signing' : '🧪 Headless mode: test builds run without code signing'
+      if ui_only
+        puts '📱 UI tests only (diagnostic lane)'
+      else
+        puts include_ui ? '📱 Including UI tests (use --ui flag)' : '⚡ Unit tests only (use --ui to include UI tests)'
+      end
+      if include_ui
+        puts '🔐 Unit tests run headless; the UI runner uses normal code signing in a separate session'
+      else
+        puts signed_tests ? '🔐 Test builds will use normal code signing' : '🧪 Headless mode: test builds run without code signing'
+      end
       puts ''
 
       permission_monitor = auto_permissions ? grant_test_permissions(timeout_seconds: timeout) : nil
       terminate_running_app_instance
-      validate_test_references unless args.include?('--skip-test-validation')
+      validate_test_references unless options[:skip_test_validation]
 
       begin
         test_start_time = Time.now
-        result = run_tests_with_progress(timeout_seconds: timeout, include_ui: include_ui, signed_tests: signed_tests)
+        result = run_tests_with_progress(
+          timeout_seconds: timeout,
+          include_ui: include_ui,
+          signed_tests: signed_tests,
+          ui_only: ui_only
+        )
+        zero_test_success = result[:success] && result[:tests_run].to_i.zero?
 
-        if result[:success]
+        if result[:success] && !zero_test_success
           evidence_strength = verify_evidence_strength(result[:tests_run])
           enforce_no_unresolved_permission_prompt!(permission_monitor)
           verify_repo_cleanliness!(before_snapshot: repo_status_before)
@@ -93,23 +131,30 @@ module SaneMasterModules
             source_fingerprint: verify_source_fingerprint,
             duration_seconds: result[:duration],
             include_ui: include_ui,
+            ui_only: ui_only,
             signed_tests: signed_tests
           ) if respond_to?(:record_process_metric)
           record_verify_attempt(success: true, message: 'verify') unless running_from_preflight
-          if result[:tests_run].to_i.zero?
-            puts "\n⚠️  Verify succeeded but counted 0 tests."
-            puts '   Treat this as build/syntax evidence only, not tested evidence.'
-          end
           puts "\n✅ Tests passed! (#{result[:tests_run]} tests, #{result[:duration]}s)"
           # Suggest recording patterns after successful test run
           suggest_memory_record if respond_to?(:suggest_memory_record)
         else
-          failure_message = result[:timeout] ? 'verify timeout' : 'verify failure'
+          failure_message = if zero_test_success
+                              'verify zero-test failure'
+                            elsif result[:timeout]
+                              'verify timeout'
+                            else
+                              'verify failure'
+                            end
+          # The verifier writes each command to a unique receipt log. Use the
+          # bounded output returned by the command that actually failed rather
+          # than the legacy test_output.txt path, which may be stale or absent.
+          failure_log_text = result[:failure_output].to_s
           failure = classify_verify_result(
-            success: false,
+            success: zero_test_success,
             timeout: result[:timeout],
             tests_run: result[:tests_run],
-            log_text: File.exist?('test_output.txt') ? File.read('test_output.txt') : ''
+            log_text: failure_log_text
           )
           record_process_metric(
             'verify',
@@ -120,6 +165,7 @@ module SaneMasterModules
             source_fingerprint: verify_source_fingerprint,
             duration_seconds: result[:duration],
             include_ui: include_ui,
+            ui_only: ui_only,
             signed_tests: signed_tests,
             reason: failure_message,
             timeout_actual: result[:timeout],
@@ -127,14 +173,17 @@ module SaneMasterModules
             failure_bucket: failure[:bucket],
             failure_hint: failure[:hint]
           ) if respond_to?(:record_process_metric)
-          state = if running_from_preflight
-                    { consecutive_failures: load_verify_state[:consecutive_failures].to_i }
-                  else
-                    record_verify_attempt(success: false, message: failure_message)
-                  end
-          log_size = File.exist?('test_output.txt') ? File.size('test_output.txt') : 0
-          if log_size.zero?
-            puts "\n❌ Tests failed: xcodebuild produced no output (test_output.txt is empty)."
+          # A verify nested inside release/App Store preflight is still a real
+          # verify attempt. Skipping it let repeated identical failures evade
+          # the two-strike research gate simply by using another canonical
+          # wrapper.
+          state = record_verify_failure_attempt(failure_message, failure_log_text, result)
+          log_size = failure_log_text.bytesize
+          if zero_test_success
+            puts "\n❌ Verify failed: the test runner reported success but counted 0 tests."
+            puts '   This is not tested evidence. Check test discovery and result parsing, then rerun verify.'
+          elsif log_size.zero?
+            puts "\n❌ Tests failed: the failing verify command produced no receipt output."
             puts '   This usually means the build process failed to start or was killed immediately.'
             puts '   Try: ./scripts/SaneMaster.rb clean --nuclear && ./scripts/SaneMaster.rb verify'
           else
@@ -142,7 +191,7 @@ module SaneMasterModules
             puts "⚠️  Test run timed out after #{timeout}s" if result[:timeout]
             diagnose(nil, dump: true, since: test_start_time)
           end
-          if !running_from_preflight && state[:consecutive_failures].to_i >= 2
+          if state[:consecutive_failures].to_i >= 2
             puts ''
             puts '🛑 TWO-STRIKE RULE TRIGGERED'
             puts '   Fresh research is now required before more app work.'
@@ -152,6 +201,107 @@ module SaneMasterModules
       ensure
         cleanup_test_processes(permission_monitor)
       end
+    end
+
+    def parse_verify_args(args, default_timeout:)
+      unless default_timeout.to_s.match?(/\A[1-9]\d*\z/)
+        raise ArgumentError, "configured timeout must be a positive integer, got #{default_timeout.inspect}"
+      end
+
+      allowed_flags = %w[
+        --clean
+        --ui
+        --ui-only
+        --signed-tests
+        --no-grant-permissions
+        --skip-test-validation
+        --quiet
+      ].freeze
+      seen = {}
+      parsed = {}
+      index = 0
+      while index < args.length
+        argument = args[index].to_s
+        if argument == '--timeout'
+          raise ArgumentError, 'duplicate --timeout' if seen[argument]
+
+          value = args[index + 1]
+          unless value.to_s.match?(/\A[1-9]\d*\z/)
+            raise ArgumentError, '--timeout requires a positive integer value'
+          end
+          seen[argument] = true
+          parsed[:timeout] = value.to_i
+          index += 2
+          next
+        end
+
+        raise ArgumentError, "unknown argument #{argument.inspect}" unless allowed_flags.include?(argument)
+        raise ArgumentError, "duplicate #{argument}" if seen[argument]
+
+        seen[argument] = true
+        index += 1
+      end
+      raise ArgumentError, '--ui and --ui-only cannot be combined' if seen['--ui'] && seen['--ui-only']
+
+      {
+        clean: seen.key?('--clean'),
+        ui_only: seen.key?('--ui-only'),
+        include_ui: seen.key?('--ui') || seen.key?('--ui-only'),
+        signed_tests: seen.key?('--signed-tests'),
+        no_grant_permissions: seen.key?('--no-grant-permissions'),
+        skip_test_validation: seen.key?('--skip-test-validation'),
+        quiet: seen.key?('--quiet'),
+        timeout: parsed.fetch(:timeout, default_timeout)
+      }
+    end
+
+    def record_verify_failure_attempt(message, failure_output, result)
+      record_verify_attempt(
+        success: false,
+        message: message,
+        fingerprint: verify_failure_fingerprint(
+          failure_output,
+          fallback_identity: [result[:failure_label], result[:exit_status]].compact.join(':')
+        )
+      )
+    end
+
+    # Stable identity of WHICH tests failed, so the two-strike escalation can
+    # distinguish "same problem twice" (escalate) from "fixed one problem,
+    # surfaced the next" (legitimate iteration, streak restarts — see
+    # record_verify_attempt). Compiler diagnostics count too: sequential fixes
+    # commonly surface a different strict-concurrency error before tests start,
+    # and those are not repeated attempts at the same problem. When a runner
+    # exits without a recognized marker, bind the fingerprint to the failing
+    # lane and its bounded output. nil is reserved for a truly unidentified
+    # failure; two nil values must never be claimed as the "same problem."
+    def verify_failure_fingerprint(log_text, fallback_identity: nil)
+      text = log_text.to_s.dup.force_encoding('UTF-8')
+      text = text.scrub('?') unless text.valid_encoding?
+      # map+compact, not filter_map: must stay Ruby 2.6-compatible.
+      lines = text.each_line.map do |line|
+        stripped = line.strip
+        test_failure = stripped.start_with?('❌') || stripped =~ /\AFAIL(ED)?[: ]/ || stripped =~ /\A✖ /
+        compiler_failure = stripped.match?(%r{\.(?:swift|m|mm|c|cc|cpp|h|hpp):\d+(?::\d+)?:\s+(?:fatal\s+)?error:})
+        next nil unless test_failure || compiler_failure
+        stripped
+      end.compact.uniq.sort
+      if lines.empty?
+        fallback = fallback_identity.to_s.strip
+        return nil if fallback.empty?
+
+        # Preserve the failing lane while stripping common volatile values so
+        # a repeated opaque runner failure remains stable across attempts.
+        normalized = text.gsub(/\e\[[0-9;]*m/, '')
+                         .gsub(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b/, '<timestamp>')
+                         .gsub(/\bpid[=: ]+\d+\b/i, 'pid=<pid>')
+                         .gsub(/\belapsed[=: ]+\d+(?:\.\d+)?s?\b/i, 'elapsed=<duration>')
+                         .lines.map(&:strip).reject(&:empty?).last(80).join("\n")
+        lines = ["lane=#{fallback}", normalized]
+      end
+
+      require 'digest'
+      Digest::SHA256.hexdigest(lines.join("\n"))[0, 16]
     end
 
     def run_verify_preflight
@@ -470,9 +620,14 @@ module SaneMasterModules
           return false
         end
 
-        return true if system_with_bundle_env(preferred_bundle_bin, 'exec', 'fastlane', 'lint')
+        output, status = capture2e_with_bundle_env(preferred_bundle_bin, 'exec', 'fastlane', 'lint')
+        return true if status.success?
 
-        puts '  ⚠️  bundle exec fastlane lint failed (gem/bundler or lane issue).'
+        if output.match?(/Bundler::GemNotFound|Could not find .* in locally installed gems/)
+          puts '  ⚠️  Fastlane bundle dependencies are not installed; using direct linters.'
+        else
+          puts '  ⚠️  bundle exec fastlane lint failed; using direct linters.'
+        end
         return false
       end
 
@@ -490,14 +645,16 @@ module SaneMasterModules
 
       if command_available?('swiftlint')
         any_tool = true
-        ok &&= system('swiftlint', 'lint', '--quiet')
+        swiftlint_ok = system('swiftlint', 'lint', '--quiet')
+        ok = false unless swiftlint_ok
       else
         puts '  ⚠️  SwiftLint not found (brew install swiftlint).'
       end
 
       if command_available?('swiftformat')
         any_tool = true
-        ok &&= system('swiftformat', '.', '--lint', '--quiet')
+        swiftformat_ok = system('swiftformat', '.', '--lint', '--quiet')
+        ok = false unless swiftformat_ok
       else
         puts '  ⚠️  SwiftFormat not found (brew install swiftformat).'
       end

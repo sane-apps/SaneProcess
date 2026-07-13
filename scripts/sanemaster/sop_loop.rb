@@ -20,6 +20,8 @@
 require 'json'
 require 'fileutils'
 require_relative '../hooks/core/sop_score'
+require_relative 'gate_override'
+require_relative 'hammer_watch'
 
 module SaneMasterModules
   module SOPLoop
@@ -29,6 +31,9 @@ module SaneMasterModules
     RESEARCH_MD_FILE = '.claude/research.md'
     AUTO_RESEARCH_LOCK_REFRESH_SECONDS = 900
     AUTO_RESEARCH_LOCK_APPS = %w[SaneBar SaneClip].freeze
+    # Gate identifiers for the certifier override + unfair-gate tracking.
+    RESEARCH_GATE_NAME = 'research'
+    VERIFY_ESCALATION_GATE_NAME = 'verify-escalation'
     SATISFACTION_FILE = '.claude/process_satisfaction.json'
     REQUIREMENTS_FILE = '.claude/prompt_requirements.json'
     ENFORCEMENT_LOG = '.claude/enforcement_log.jsonl'
@@ -649,11 +654,29 @@ module SaneMasterModules
       verify_block = verify_escalation_block(research_time: research_time)
       unsatisfied_locks = active_research_locks(research_time: research_time)
 
-      return true if verify_block.nil? && unsatisfied_locks.empty?
+      if verify_block.nil? && unsatisfied_locks.empty?
+        # Passed — any prior hammering streak on these gates is resolved.
+        HammerWatch.clear(gate: RESEARCH_GATE_NAME)
+        HammerWatch.clear(gate: VERIFY_ESCALATION_GATE_NAME)
+        return true
+      end
+
+      # Hammer watch: record this block against a fingerprint of the current work
+      # state. Re-hitting a gate with an unchanged fingerprint (no fresh research,
+      # no diff change, no certifier verdict) is hammering, not progress.
+      fingerprint = HammerWatch.current_fingerprint
+      HammerWatch.record_block(gate: RESEARCH_GATE_NAME, fingerprint: fingerprint) if unsatisfied_locks.any?
+      HammerWatch.record_block(gate: VERIFY_ESCALATION_GATE_NAME, fingerprint: fingerprint) if verify_block
 
       puts '🛑 --- [ RESEARCH REQUIRED ] ---'
       puts "Blocked command: #{command_name}"
       puts ''
+
+      # Loudest signal first: are we hammering this gate without doing the work?
+      [RESEARCH_GATE_NAME, VERIFY_ESCALATION_GATE_NAME].each do |gate|
+        hammer = HammerWatch.banner(gate: gate)
+        puts "#{hammer}\n\n" if hammer
+      end
 
       puts "1. #{verify_block[:message]}" if verify_block
       unsatisfied_locks.each_with_index do |lock, index|
@@ -661,14 +684,47 @@ module SaneMasterModules
         puts "#{index + offset}. #{lock[:slug]}: #{lock[:reason]}"
       end
 
+      reference_trigger = gate_reference_trigger(verify_block: verify_block, locks: unsatisfied_locks)
+      missing_evidence = reference_trigger ? research_evidence_missing_since(reference_trigger) : []
+
+      # Self-improvement: if a gate has been certifier-overridden as unfair enough
+      # times, shout it here so it gets FIXED instead of repeatedly overridden.
+      [RESEARCH_GATE_NAME, VERIFY_ESCALATION_GATE_NAME].each do |gate|
+        banner = GateOverride.unfair_banner(gate: gate)
+        puts "\n#{banner}" if banner
+      end
+
       puts ''
-      puts 'Next step: update .claude/research.md with fresh docs + web + GitHub + local findings.'
-      puts 'Then rerun the command. This guard auto-clears once research.md is newer than the block.'
+      if missing_evidence.any?
+        puts 'Fresh research tool-calls still MISSING since this was flagged'
+        puts '(a research.md edit alone will NOT clear this — that loophole is closed):'
+        missing_evidence.each { |category| puts "  - #{research_evidence_instruction(category)}" }
+        puts ''
+      end
+      puts 'Next step: actually RUN the research above, then record the findings in .claude/research.md.'
+      puts 'This guard clears only when those research tool-calls have run since the block AND research.md is updated.'
+      puts ''
+      puts 'Believe this block is UNFAIR (you did the work, or the requirement does not apply)?'
+      puts 'Or did the gate arm CORRECTLY on a problem you have since fixed and verified?'
+      puts 'Do not hand-wave past it — invoke the gate certifier (ARCHITECTURE.md → ADR-011 Gate Certifier):'
+      puts 'an evidence-reading examiner either DOES the missing work for you, records a signed'
+      puts 'override (only if the gate is genuinely wrong; repeated overrides auto-flag the gate),'
+      puts 'or records a RESOLVED clear (gate was right, note cites the verified fix commit).'
+      # State the exact ids the certifier must pass: a token minted under the
+      # wrong gate id never matches its clears? check (hit live 2026-07-07 —
+      # a verify-escalation block was overridden under gate 'research' and
+      # silently failed to clear).
+      if verify_block
+        puts "Certifier ids for THIS block: --gate #{VERIFY_ESCALATION_GATE_NAME} --slug verify"
+      end
+      unsatisfied_locks.each do |lock|
+        puts "Certifier ids for THIS block: --gate #{RESEARCH_GATE_NAME} --slug #{lock[:slug]}"
+      end
       puts ''
       exit 1
     end
 
-    def record_verify_attempt(success:, message:)
+    def record_verify_attempt(success:, message:, fingerprint: nil)
       state = load_verify_state
 
       if success
@@ -676,12 +732,26 @@ module SaneMasterModules
         state[:last_result] = 'passed'
         state[:last_failure_at] = nil
         state[:last_failure_message] = nil
+        state[:last_failure_fingerprint] = nil
         state[:escalated_at] = nil
       else
-        state[:consecutive_failures] = state[:consecutive_failures].to_i + 1
+        # The two-strike rule escalates on repeated failures of the SAME
+        # problem (its own message says so). A failure with a DIFFERENT
+        # failing-test fingerprint is legitimate iteration — fix one problem,
+        # surface the next — and must restart the streak, not escalate.
+        # (Certifier-audited: the gate self-flagged unfair 2026-07-07 after
+        # arming three times on unrelated pre-existing stale-fixture reds.)
+        # Unknown fingerprints (nil, e.g. a runner died without output) cannot
+        # prove two attempts hit the same problem. Keep verify red, but restart
+        # the streak instead of sending unrelated failures into research.
+        previous = state[:last_failure_fingerprint]
+        same_problem = !fingerprint.nil? && !previous.nil? && fingerprint == previous
+        state[:consecutive_failures] = same_problem ? state[:consecutive_failures].to_i + 1 : 1
+        state[:escalated_at] = nil unless same_problem
         state[:last_result] = 'failed'
         state[:last_failure_at] = Time.now.iso8601
         state[:last_failure_message] = message
+        state[:last_failure_fingerprint] = fingerprint
         state[:escalated_at] ||= state[:last_failure_at] if state[:consecutive_failures] >= 2
       end
 
@@ -814,7 +884,15 @@ module SaneMasterModules
     def active_research_locks(locks: load_research_locks, research_time: research_updated_at)
       locks.select do |lock|
         trigger_time = lock_trigger_time(lock)
-        research_time.nil? || trigger_time.nil? || research_time <= trigger_time
+        stale_md = research_time.nil? || trigger_time.nil? || research_time <= trigger_time
+        # research.md is fresh, but a touch is no longer enough: the lock stays
+        # active until real research tool-calls have run since it fired.
+        otherwise_blocked = stale_md || research_evidence_missing_since(trigger_time).any?
+        next false unless otherwise_blocked
+
+        # Blocked on the deterministic floor — stays blocked unless a certifier
+        # minted a signed override ruling THIS block unfair (read-only check).
+        !GateOverride.clears?(gate: RESEARCH_GATE_NAME, slug: lock[:slug], trigger_time: trigger_time)
       end
     end
 
@@ -822,7 +900,12 @@ module SaneMasterModules
       return nil unless state[:consecutive_failures].to_i >= 2
 
       escalated_at = parse_gate_time(state[:escalated_at] || state[:last_failure_at])
-      if research_time && escalated_at && research_time > escalated_at
+      evidence_cleared = research_time && escalated_at && research_time > escalated_at &&
+                         research_evidence_missing_since(escalated_at).empty?
+      override_cleared = GateOverride.clears?(
+        gate: VERIFY_ESCALATION_GATE_NAME, slug: 'verify', trigger_time: escalated_at
+      )
+      if evidence_cleared || override_cleared
         clear_verify_escalation!
         return nil
       end
@@ -844,6 +927,101 @@ module SaneMasterModules
 
     def lock_trigger_time(lock)
       parse_gate_time(lock[:source_updated_at] || lock[:created_at])
+    end
+
+    # --- Research EVIDENCE gate (tool-call backed) ---------------------------
+    # A research lock / verify-escalation must NOT clear on a bare research.md
+    # touch (mtime) alone — that let a hand-edit with zero fresh research satisfy
+    # the gate. Require the same tool-call-tracked research categories the edit
+    # gate already enforces (StateManager :research, written by sanetools
+    # track_research with a completed_at timestamp + via_task flag so subagent
+    # research counts too), proven FRESH since the lock fired.
+    RESEARCH_EVIDENCE_ALWAYS = %i[web local].freeze
+
+    # Categories lacking a completed_at strictly newer than the lock trigger.
+    # Empty == evidence satisfied. Fails OPEN (never bricks verify) when the
+    # hook state cannot be read.
+    def research_evidence_missing_since(trigger_time)
+      return [] if trigger_time.nil?
+
+      research = research_state_section
+      return [] if research.nil?
+
+      missing_research_evidence(research, effective_research_evidence_categories, trigger_time)
+    rescue StandardError
+      []
+    end
+
+    # Pure: given the :research state hash, the categories to enforce, and the
+    # lock trigger time, return the categories whose completed_at is missing or
+    # not strictly newer than the trigger. Unit-tested directly (no filesystem).
+    def missing_research_evidence(research, effective_categories, trigger_time)
+      return [] if trigger_time.nil?
+
+      effective_categories.reject do |cat|
+        entry = research[cat] || research[cat.to_s]
+        completed = entry.is_a?(Hash) ? (entry[:completed_at] || entry['completed_at']) : nil
+        ts = parse_gate_time(completed)
+        ts && ts > trigger_time
+      end
+    end
+
+    # web + local always (built-in tools, always satisfiable so never a false
+    # block); docs only when apple-docs is actually configured (mirrors the edit
+    # gate's effective_research_categories so a down/absent MCP can't deadlock).
+    def effective_research_evidence_categories
+      cats = RESEARCH_EVIDENCE_ALWAYS.dup
+      cats << :docs if apple_docs_research_configured?
+      cats
+    end
+
+    def research_state_section
+      path = File.join('.claude', 'state.json')
+      return nil unless File.exist?(path)
+
+      data = JSON.parse(File.read(path, encoding: Encoding::UTF_8), symbolize_names: true)
+      section = data[:research] || data.dig(:data, :research)
+      section.is_a?(Hash) ? section : nil
+    rescue StandardError
+      nil
+    end
+
+    def apple_docs_research_configured?
+      probe = research_evidence_probe
+      return false if probe.nil?
+
+      probe.configured_mcp_keys.include?(:apple_docs)
+    rescue StandardError
+      false
+    end
+
+    def research_evidence_probe
+      @research_evidence_probe ||= begin
+        require_relative '../hooks/sanetools_research'
+        Class.new { include SaneToolsResearch }.new
+      end
+    rescue StandardError, LoadError
+      nil
+    end
+
+    def research_evidence_instruction(category)
+      case category
+      when :web then 'WEB: run WebSearch / WebFetch (current best practices, competitor + GitHub examples)'
+      when :docs then 'DOCS: call mcp__apple-docs__* (verify the Apple APIs you are touching actually exist/behave as assumed)'
+      when :local then 'LOCAL: Read / Grep / Glob the relevant existing code'
+      else "#{category.to_s.upcase}: complete this research category"
+      end
+    end
+
+    # Strictest (newest) trigger among the still-active blocks: evidence must be
+    # newer than this to clear everything.
+    def gate_reference_trigger(verify_block:, locks:)
+      times = locks.map { |lock| lock_trigger_time(lock) }
+      if verify_block
+        state = load_verify_state
+        times << parse_gate_time(state[:escalated_at] || state[:last_failure_at])
+      end
+      times.compact.max
     end
 
     def run_verify_check

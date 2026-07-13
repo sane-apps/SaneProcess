@@ -296,6 +296,8 @@ module SaneMasterModules
         # Always-true boolean logic
         { pattern: /== true\s*\|\|\s*.*== false/i, name: 'x == true || x == false (always true)' },
         { pattern: /== false\s*\|\|\s*.*== true/i, name: 'x == false || x == true (always true)' },
+        { pattern: /#expect\s*\([^\n]*\.count\s*>=\s*0\b/i, name: '#expect(collection.count >= 0)' },
+        { pattern: /XCTAssertGreaterThanOrEqual\s*\([^,\n]*\.count\s*,\s*0\b/i, name: 'XCTAssertGreaterThanOrEqual(collection.count, 0)' },
         # Placeholder assertions
         { pattern: /XCTAssert.*TODO/i, name: 'XCTAssert with TODO' },
         { pattern: /XCTAssert.*FIXME/i, name: 'XCTAssert with FIXME' },
@@ -609,7 +611,8 @@ module SaneMasterModules
       end
 
       combined_name = "#{header_text} #{test_name}"
-      e2e_named = combined_name.match?(/e2e|end[\s-]?to[\s-]?end|integration|regression|scenario|flow/i)
+      # Match test-claim words, not substrings such as "overflow" or "workflow".
+      e2e_named = combined_name.match?(/\be2e\b|\bend[\s-]?to[\s-]?end\b|\bintegration\b|\bregression\b|\bscenario\b|\bflow\b/i)
       boundary_call = body.match?(/SearchService|MenuBarManager|HidingService|AccessibilityService|BartenderImportService|ScheduleTriggerService|TriggerService|FocusModeService|StatusBarController|PersistenceService|reorderIcon|moveMenuBarIcon|clickMenuBarItem|importItems|resolveLatestClickTarget/)
       if e2e_named && !boundary_call
         issues[:e2e] << {

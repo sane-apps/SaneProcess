@@ -3,7 +3,6 @@
 # Runs at 7 PM EST daily via LaunchAgent (com.saneapps.daily-report)
 #
 # Architecture: fetch raw data -> deterministic concise markdown report
-# Optional legacy nv summary stays opt-in via SANE_ENABLE_LEGACY_NV_SUMMARY=1.
 # Goal: scannable in 30 seconds, actionable, no noise
 
 set -uo pipefail
@@ -140,8 +139,6 @@ DIST_KEY="$(load_secret "dist-analytics" "api_key" "DIST_ANALYTICS_KEY" || true)
 EMAIL_API_KEY="$(load_secret "sane-email-automation" "api_key" "SANE_EMAIL_API_KEY" "EMAIL_API_KEY" || true)"
 
 # Tools check
-NV_CMD="${SANE_LEGACY_NV_CMD:-$HOME/.local/bin/nv}"
-ENABLE_LEGACY_NV_SUMMARY="${SANE_ENABLE_LEGACY_NV_SUMMARY:-0}"
 GH_CMD=$(command -v gh 2>/dev/null || echo "")
 LISTING_ACTIONS_SCRIPT="$SCRIPT_DIR/listing-actions.py"
 
@@ -1047,45 +1044,6 @@ section_git_status() {
   echo "" >> "$REPORT_FILE"
 }
 
-# =============================================================================
-# Executive Summary (optional legacy nv path; disabled by default)
-# =============================================================================
-section_executive_summary() {
-  if [[ "$ENABLE_LEGACY_NV_SUMMARY" != "1" ]]; then return 0; fi
-  if [[ ! -x "$NV_CMD" ]]; then return 0; fi
-
-  local report_so_far
-  report_so_far=$(cat "$REPORT_FILE")
-
-  local summary
-  summary=$(timeout 60 "$NV_CMD" -m kimi-fast --no-stream \
-    "You are the CTO reviewing an evening report for a solo indie Mac app developer (SaneApps: SaneBar, SaneClick, SaneClip, SaneHosts, SaneSync, SaneVideo). Write a 5-line EXECUTIVE SUMMARY. Format:
-
-🟢/🟡/🔴 [Overall status one-liner]
-- Revenue: [one-liner with numbers]
-- Downloads: [one-liner with numbers]
-- GitHub: [one-liner with numbers]
-- Action needed: [the ONE most important thing to do today]
-
-Be specific with numbers. No fluff." <<< "$report_so_far" 2>/dev/null || echo "")
-
-  if [[ -n "$summary" ]]; then
-    local header footer
-    header=$(head -6 "$REPORT_FILE")
-    footer=$(tail -n +7 "$REPORT_FILE")
-
-    cat > "$REPORT_FILE" <<EOF
-$header
-$summary
-
----
-
-$(echo "$footer" | sed '1{/^---$/d;}' | sed '1{/^$/d;}')
-EOF
-  fi
-}
-
-# =============================================================================
 # Run all sections with error isolation
 # =============================================================================
 safe_section "Revenue" section_revenue
@@ -1098,9 +1056,6 @@ safe_section "Health" section_health
 safe_section "SEO & Social Preview" section_seo_social
 safe_section "Version Drift" section_version_drift
 safe_section "Git Status" section_git_status
-
-# Executive summary LAST (reads entire report, writes TL;DR at top)
-safe_section "Executive Summary" section_executive_summary
 
 # Footer
 cat >> "$REPORT_FILE" <<EOF

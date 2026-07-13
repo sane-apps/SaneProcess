@@ -431,7 +431,14 @@ def validate_skill_execution
 
   required_skill = skill_state[:required]
   invoked = skill_state[:invoked]
-  subagents_spawned = skill_state[:subagents_spawned] || 0
+  native_reviews = skill_state[:subagents_spawned] || 0
+  codex_review_lanes = if !skill_state[:invoked_at].to_s.empty? &&
+                          skill_state[:codex_review_invoked_at] == skill_state[:invoked_at]
+                         skill_state[:codex_review_lanes_completed] || 0
+                       else
+                         0
+                       end
+  review_coverage = native_reviews + codex_review_lanes
   runner_started = skill_state[:runner_started] || false
   runner_proved = skill_state[:runner_proved] || false
 
@@ -451,10 +458,11 @@ def validate_skill_execution
     issues << "  You should have used the Skill tool to invoke it"
   end
 
-  # Check if enough subagents were spawned
-  if min_subagents > 0 && subagents_spawned < min_subagents
-    issues << "Skill '#{required_skill}' requires #{min_subagents}+ subagents, only #{subagents_spawned} spawned"
-    issues << "  You should have used Task tool to spawn subagents for heavy work"
+  # Completed native Task reviews and authoritative Codex fan-out receipt lanes
+  # are equivalent independent perspectives for audit coverage.
+  if min_subagents > 0 && review_coverage < min_subagents
+    issues << "Skill '#{required_skill}' requires #{min_subagents}+ review perspectives, only #{review_coverage} completed (#{native_reviews} completed native Task reviews + #{codex_review_lanes} read-only Codex fan-out lanes)"
+    issues << '  Use completed native Task reviews or authoritative read-only Codex fan-out receipts for heavy review work'
   end
 
   if requires_runner && !runner_proved
@@ -475,9 +483,9 @@ def validate_skill_execution
     end
   end
 
-  if required_skill == 'docs_audit' && runner_proved && subagents_spawned < min_subagents
+  if required_skill == 'docs_audit' && runner_proved && review_coverage < min_subagents
     issues << "Skill '#{required_skill}' no longer accepts runner-only execution"
-    issues << "  Spawn GPT subagents for the audit swarm instead of using gpt_audit.py"
+    issues << '  Use completed native Task reviews or authoritative read-only Codex fan-out receipts'
   end
 
   issues.concat(validate_sane_audit_artifact) if required_skill == 'sane_audit'
@@ -583,7 +591,7 @@ def process_stop(stop_hook_active, transcript_path = nil)
     warn ''
     if blocking_skill
       warn "This is blocking because #{required_skill} is required for this session."
-      warn 'Re-run the audit with the required GPT subagent swarm and summary artifact, then try again.'
+      warn 'Re-run the audit with completed native Task reviews or authoritative read-only Codex fan-out receipts and the summary artifact, then try again.'
       warn '=' * 50
       warn ''
       record_blocked_stop_accounting(transcript_path, 'skill_execution', skill_issues.join("\n"))
@@ -757,6 +765,7 @@ elsif ARGV.include?('--self-test-internal')
       method(:check_score_variance),
       method(:check_weasel_words),
       method(:calculate_sop_score),
+      method(:update_validation_metrics),
       LOG_FILE
     )
   end

@@ -10,6 +10,13 @@ require 'json'
 require 'tmpdir'
 require_relative 'core/state_manager'
 require_relative 'sanetrack_test_tautology'
+require_relative '../sanemaster/release'
+require_relative '../sanemaster/verify_support'
+
+class SaneTrackReleaseFingerprintHarness
+  include SaneMasterModules::Release
+  include SaneMasterModules::Verify
+end
 
 module SaneTrackTest
   def self.run(process_result_proc, detect_actual_failure_proc, normalize_error_proc,
@@ -500,12 +507,17 @@ module SaneTrackTest
     StateManager.update(:skill) do |s|
       s[:required] = 'docs_audit'
       s[:invoked] = true
+      s[:invoked_at] = Time.now.iso8601
       s[:subagents_spawned] = 0
       s[:runner_proved] = false
       s[:runner_commands] = []
       s
     end
-    process_result_proc.call('Task', { 'prompt' => 'Run engineer audit perspective', 'subagent_type' => 'general-purpose' }, { 'output' => 'ok' })
+    process_result_proc.call(
+      'Task',
+      { 'prompt' => 'Run engineer audit perspective', 'subagent_type' => 'general-purpose' },
+      { 'status' => 'completed', 'task_id' => 'engineer-audit', 'output' => 'Concrete review findings' }
+    )
     skill = StateManager.get(:skill)
     if skill[:subagents_spawned] == 1
       passed += 1
@@ -632,11 +644,18 @@ module SaneTrackTest
       old_metrics_path = ENV['SANEMASTER_PROCESS_METRICS_PATH']
       ENV['SANEMASTER_PROCESS_METRICS_PATH'] = File.join(tmpdir, 'process_metrics.jsonl')
       Dir.chdir(tmpdir) do
+        system('git', 'init', '-q')
+        system('git', 'config', 'user.email', 'test@example.com')
+        system('git', 'config', 'user.name', 'Test')
+        File.write('README.md', "runner proof fixture\n")
+        system('git', 'add', 'README.md')
+        system('git', 'commit', '-q', '-m', 'init')
+        canonical_sanemaster = File.expand_path('../SaneMaster.rb', __dir__)
         {
-          'status' => 'ruby scripts/SaneMaster.rb status',
-          'verify' => 'ruby scripts/SaneMaster.rb verify',
-          'ship' => 'ruby scripts/SaneMaster.rb release_preflight',
-          'check_inbox' => 'ruby scripts/SaneMaster.rb check_inbox'
+          'status' => "ruby #{canonical_sanemaster} status",
+          'verify' => "ruby #{canonical_sanemaster} verify",
+          'ship' => "ruby #{canonical_sanemaster} release_preflight",
+          'check_inbox' => "ruby #{canonical_sanemaster} check_inbox"
         }.each do |workflow, runner_command|
           StateManager.reset(:skill)
           StateManager.update(:skill) do |s|
@@ -648,8 +667,8 @@ module SaneTrackTest
             s
           end
 
-          write_runner_proof_fixture(workflow, ENV['SANEMASTER_PROCESS_METRICS_PATH'])
-          process_result_proc.call('Bash', { 'command' => runner_command }, { 'output' => 'ok' })
+          receipt_id = write_runner_proof_fixture(workflow, ENV['SANEMASTER_PROCESS_METRICS_PATH'])
+          process_result_proc.call('Bash', { 'command' => runner_command }, { 'output' => "ok\nSANEMASTER_WORKFLOW_RECEIPT=#{receipt_id}" })
           skill = StateManager.get(:skill)
           if skill[:runner_proved] == true && skill[:runner_commands].include?(runner_command)
             passed += 1
@@ -659,8 +678,196 @@ module SaneTrackTest
             warn "  FAIL: #{workflow} runner command should satisfy workflow proof, got #{skill.inspect}"
           end
         end
+
+        wrapper_dir = File.join(tmpdir, 'scripts')
+        FileUtils.mkdir_p(wrapper_dir)
+        wrapper = File.join(wrapper_dir, 'SaneMaster.rb')
+        wrapper_source = <<~BASH
+          #!/bin/bash
+          set -e
+          find_saneprocess_infra() { :; }
+          INFRA="#{canonical_sanemaster}"
+          exec "${INFRA}" "$@"
+        BASH
+        File.write(wrapper, wrapper_source)
+        FileUtils.chmod(0o755, wrapper)
+        system('git', 'add', 'scripts/SaneMaster.rb')
+        system('git', 'commit', '-q', '-m', 'add canonical wrapper')
+
+        StateManager.reset(:skill)
+        StateManager.update(:skill) { |s| s.merge(required: 'status', runner_proved: false, runner_started: false) }
+        wrapper_receipt = write_runner_proof_fixture('status', ENV['SANEMASTER_PROCESS_METRICS_PATH'])
+        wrapper_command = './scripts/SaneMaster.rb status'
+        process_result_proc.call('Bash', { 'command' => wrapper_command }, {
+          'exit_code' => 0, 'output' => "ok\nSANEMASTER_WORKFLOW_RECEIPT=#{wrapper_receipt}"
+        })
+        if StateManager.get(:skill)[:runner_proved] == true
+          passed += 1
+          warn '  PASS: clean canonical app wrapper normalizes to the infra runner receipt hash'
+        else
+          failed += 1
+          warn '  FAIL: canonical app wrapper should prove the matching workflow receipt'
+        end
+
+        File.open(wrapper, 'a') { |file| file.puts('echo unsafe-extra-command') }
+        StateManager.reset(:skill)
+        StateManager.update(:skill) { |s| s.merge(required: 'status', runner_proved: false, runner_started: false) }
+        dirty_wrapper_receipt = write_runner_proof_fixture('status', ENV['SANEMASTER_PROCESS_METRICS_PATH'])
+        process_result_proc.call('Bash', { 'command' => wrapper_command }, {
+          'exit_code' => 0, 'output' => "ok\nSANEMASTER_WORKFLOW_RECEIPT=#{dirty_wrapper_receipt}"
+        })
+        if StateManager.get(:skill)[:runner_proved] == false
+          passed += 1
+          warn '  PASS: modified app wrapper cannot reuse a canonical runner receipt'
+        else
+          failed += 1
+          warn '  FAIL: dirty app wrapper must not prove a canonical workflow receipt'
+        end
+        File.write(wrapper, wrapper_source)
+
+        StateManager.reset(:skill)
+        StateManager.update(:skill) { |s| s.merge(required: 'status', runner_proved: false, runner_started: false) }
+        incomplete_id = write_runner_proof_fixture(
+          'status', ENV['SANEMASTER_PROCESS_METRICS_PATH'], exit_status: 3
+        )
+        process_result_proc.call('Bash', { 'command' => "ruby #{canonical_sanemaster} status" }, {
+          'exit_code' => 3, 'output' => "incomplete\nSANEMASTER_WORKFLOW_RECEIPT=#{incomplete_id}"
+        })
+        if StateManager.get(:skill)[:runner_proved] == true
+          passed += 1
+          warn '  PASS: status exit 3 with matching incomplete receipt counts as completed status proof'
+        else
+          failed += 1
+          warn '  FAIL: matching status exit 3 receipt should count as completed-but-incomplete proof'
+        end
+
+        StateManager.reset(:skill)
+        StateManager.update(:skill) { |s| s.merge(required: 'status', runner_proved: false, runner_started: false) }
+        rejected_nonzero_id = write_runner_proof_fixture(
+          'status', ENV['SANEMASTER_PROCESS_METRICS_PATH'], exit_status: 2
+        )
+        process_result_proc.call('Bash', { 'command' => "ruby #{canonical_sanemaster} status" }, {
+          'exit_code' => 2, 'output' => "failed\nSANEMASTER_WORKFLOW_RECEIPT=#{rejected_nonzero_id}"
+        })
+        if StateManager.get(:skill)[:runner_proved] == false
+          passed += 1
+          warn '  PASS: arbitrary nonzero status cannot prove runner completion'
+        else
+          failed += 1
+          warn '  FAIL: only documented status exit 3 may count as incomplete completion'
+        end
+
+        StateManager.reset(:skill)
+        StateManager.update(:skill) { |s| s.merge(required: 'status', runner_proved: false, runner_started: false) }
+        write_runner_proof_fixture('status', ENV['SANEMASTER_PROCESS_METRICS_PATH'])
+        process_result_proc.call('Bash', { 'command' => "ruby #{canonical_sanemaster} status; true" }, { 'exit_code' => 0, 'output' => 'ok' })
+        if StateManager.get(:skill)[:runner_proved] == false
+          passed += 1
+          warn '  PASS: compound runner command cannot reuse a successful receipt'
+        else
+          failed += 1
+          warn '  FAIL: compound runner command must not prove status'
+        end
+
+        StateManager.reset(:skill)
+        StateManager.update(:skill) { |s| s.merge(required: 'status', runner_proved: false, runner_started: false) }
+        receipt_id = write_runner_proof_fixture('status', ENV['SANEMASTER_PROCESS_METRICS_PATH'])
+        clean_status = "ruby #{canonical_sanemaster} status"
+        receipt_output = "ok\nSANEMASTER_WORKFLOW_RECEIPT=#{receipt_id}"
+        process_result_proc.call('Bash', { 'command' => clean_status }, { 'exit_code' => 0, 'output' => receipt_output })
+        first_proved = StateManager.get(:skill)[:runner_proved] == true
+        StateManager.update(:skill) { |s| s[:runner_proved] = false; s }
+        process_result_proc.call('Bash', { 'command' => clean_status }, { 'exit_code' => 0, 'output' => receipt_output })
+        if first_proved && StateManager.get(:skill)[:runner_proved] == false
+          passed += 1
+          warn '  PASS: consumed workflow receipt cannot prove a second runner invocation'
+        else
+          failed += 1
+          warn '  FAIL: runner receipt replay must be rejected'
+        end
+
+
+        StateManager.reset(:skill)
+        StateManager.update(:skill) { |s| s.merge(required: 'status', runner_proved: false, runner_started: false) }
+        forged_id = write_runner_proof_fixture('status', ENV['SANEMASTER_PROCESS_METRICS_PATH'])
+        fake_runner = File.join(Dir.tmpdir, 'SaneMaster.rb')
+        File.write(fake_runner, "#!/usr/bin/env ruby\n")
+        process_result_proc.call(
+          'Bash', { 'command' => "ruby #{fake_runner} status" },
+          { 'exit_code' => 0, 'output' => "ok\nSANEMASTER_WORKFLOW_RECEIPT=#{forged_id}" }
+        )
+        if StateManager.get(:skill)[:runner_proved] == false
+          passed += 1
+          warn '  PASS: noncanonical SaneMaster runner cannot reuse a forged metric and echoed receipt ID'
+        else
+          failed += 1
+          warn '  FAIL: noncanonical SaneMaster runner must not prove status'
+        end
+        FileUtils.rm_f(fake_runner)
+
+        %w[status check_inbox].zip([
+          'bash scripts/automation/sane-status-crossref.sh',
+          'bash scripts/check-inbox.sh check'
+        ]).each do |workflow, direct_command|
+          StateManager.reset(:skill)
+          StateManager.update(:skill) { |s| s.merge(required: workflow, runner_proved: false, runner_started: false) }
+          direct_id = write_runner_proof_fixture(workflow, ENV['SANEMASTER_PROCESS_METRICS_PATH'])
+          process_result_proc.call(
+            'Bash', { 'command' => direct_command },
+            { 'exit_code' => 0, 'output' => "ok\nSANEMASTER_WORKFLOW_RECEIPT=#{direct_id}" }
+          )
+          if StateManager.get(:skill)[:runner_proved] == false && StateManager.get(:skill)[:runner_started] == false
+            passed += 1
+            warn "  PASS: direct #{workflow} implementation pattern is not presented as receipt-bound truth"
+          else
+            failed += 1
+            warn "  FAIL: direct #{workflow} implementation must not match canonical runner proof"
+          end
+        end
+
+        StateManager.reset(:skill)
+        StateManager.update(:skill) { |s| s.merge(required: 'ship', runner_proved: false, runner_started: false) }
+        write_runner_proof_fixture('ship', ENV['SANEMASTER_PROCESS_METRICS_PATH'])
+        process_result_proc.call(
+          'Bash', { 'command' => "ruby #{canonical_sanemaster} release_preflight" },
+          { 'exit_code' => 0, 'output' => "ok\nSANEMASTER_WORKFLOW_RECEIPT=#{'f' * 32}" }
+        )
+        if StateManager.get(:skill)[:runner_proved] == false
+          passed += 1
+          warn '  PASS: ship proof must bind to the just-completed release_preflight workflow receipt'
+        else
+          failed += 1
+          warn '  FAIL: stale release_preflight status cannot prove an unrelated ship command'
+        end
+
+        clearance_path = File.expand_path('~/.claude/ship_clearance/TestApp.json')
+        valid_clearance = {
+          'app' => 'TestApp',
+          'project_dir' => Dir.pwd,
+          'git_sha' => `git -C #{Dir.pwd.shellescape} rev-parse HEAD`.strip,
+          'cleared_at' => Time.now.utc.iso8601,
+          'expires_at' => (Time.now.utc + 3600).iso8601
+        }
+        invalid_clearances = [
+          valid_clearance.reject { |key, _| key == 'project_dir' },
+          valid_clearance.reject { |key, _| key == 'git_sha' },
+          valid_clearance.merge('expires_at' => 'not-a-time'),
+          valid_clearance.merge('expires_at' => (Time.now.utc - 60).iso8601)
+        ]
+        invalid_clearances_rejected = invalid_clearances.all? do |payload|
+          StateSigner.write_signed(clearance_path, payload)
+          ship_clearance_proof.nil?
+        end
+        if invalid_clearances_rejected
+          passed += 1
+          warn '  PASS: ship completion proof rejects incomplete malformed and expired clearance'
+        else
+          failed += 1
+          warn '  FAIL: ship completion proof accepted an invalid clearance token'
+        end
       end
       ENV['SANEMASTER_PROCESS_METRICS_PATH'] = old_metrics_path
+      Thread.current[:saneprocess_sanetrack_release_receipt_signer] = nil
     end
 
     # === MCP VERIFICATION TRACKING TESTS ===
@@ -754,25 +961,61 @@ module SaneTrackTest
 end
 
 module SaneTrackTest
-  def self.write_runner_proof_fixture(workflow, metrics_path)
-    timestamp = Time.now.utc.iso8601
+  def self.write_runner_proof_fixture(workflow, metrics_path, exit_status: 0)
+    # Preserve sub-second identity so back-to-back fixtures cannot collapse to
+    # the same replay fingerprint on fast machines.
+    timestamp = Time.now.utc.iso8601(6)
+    receipt_id = SecureRandom.hex(16)
     case workflow
-    when 'verify'
+    when 'verify', 'status', 'check_inbox'
       FileUtils.mkdir_p(File.dirname(metrics_path))
+      canonical = File.expand_path('../SaneMaster.rb', __dir__)
+      digest = Digest::SHA256.hexdigest(['ruby', canonical, workflow].join("\0"))
       File.open(metrics_path, 'a') do |file|
-        file.puts(JSON.generate('timestamp' => timestamp, 'type' => 'verify', 'cwd' => Dir.pwd, 'success' => true, 'tests_run' => 12))
+        file.puts(JSON.generate(
+          'timestamp' => timestamp, 'completed_at' => timestamp, 'type' => 'workflow_receipt',
+          'receipt_id' => receipt_id,
+          'cwd' => Dir.pwd, 'workflow' => "sanemaster:#{workflow}", 'success' => exit_status.zero?,
+          'exit_status' => exit_status, 'command_sha256' => digest
+        ))
       end
-    when 'status', 'check_inbox'
-      FileUtils.mkdir_p(File.dirname(metrics_path))
-      File.open(metrics_path, 'a') do |file|
-        file.puts(JSON.generate('timestamp' => timestamp, 'type' => 'workflow_receipt', 'cwd' => Dir.pwd, 'workflow' => workflow, 'success' => true))
-      end
+      receipt_id
     when 'ship'
       File.write(File.join(Dir.pwd, '.saneprocess'), "name: TestApp\n")
       FileUtils.mkdir_p(File.join(Dir.pwd, 'outputs'))
-      File.write(
+      require_relative 'release_receipt_signer'
+      signer = ReleaseReceiptSigner.test_signer(secret: 'sanetrack-release-preflight-test')
+      Thread.current[:saneprocess_sanetrack_release_receipt_signer] = signer
+      fingerprint_harness = SaneTrackReleaseFingerprintHarness.new
+      release_fingerprint = fingerprint_harness.send(:release_status_source_fingerprint, Dir.pwd)
+      verify_fingerprint = fingerprint_harness.send(:verify_source_fingerprint, Dir.pwd)
+      unless release_fingerprint.to_s.match?(/\A[0-9a-f]{64}\z/) && verify_fingerprint == release_fingerprint
+        raise "release/verify fingerprint mismatch: release=#{release_fingerprint.inspect}, verify=#{verify_fingerprint.inspect}"
+      end
+      source_fingerprint = release_fingerprint
+      started_at = (Time.now.utc - 0.2).iso8601(6)
+      generated_at = (Time.now.utc - 0.1).iso8601(6)
+      completed_at = Time.now.utc.iso8601(6)
+      signer.write(
         File.join(Dir.pwd, 'outputs', 'release_preflight_status.json'),
-        JSON.pretty_generate('generatedAt' => timestamp, 'status' => 'passed')
+        {
+          'type' => 'release_preflight_status',
+          'generatedAt' => generated_at,
+          'status' => 'passed',
+          'issues' => [],
+          'miniRuntime' => true,
+          'sourceFingerprint' => source_fingerprint,
+          'verifyEvidence' => {
+            'type' => 'verify',
+            'success' => true,
+            'timestamp' => generated_at,
+            'host' => 'Stephans-Mac-mini.local',
+            'cwd' => File.realpath(Dir.pwd),
+            'testsRun' => 12,
+            'sourceFingerprint' => source_fingerprint
+          }
+        },
+        producer: 'saneprocess.release_preflight.v1'
       )
       require_relative 'state_signer'
       StateSigner.write_signed(
@@ -780,10 +1023,23 @@ module SaneTrackTest
         {
           'app' => 'TestApp',
           'project_dir' => Dir.pwd,
+          'git_sha' => `git -C #{Dir.pwd.shellescape} rev-parse HEAD`.strip,
           'cleared_at' => timestamp,
           'expires_at' => (Time.now.utc + 3600).iso8601
         }
       )
+      FileUtils.mkdir_p(File.dirname(metrics_path))
+      canonical = File.expand_path('../SaneMaster.rb', __dir__)
+      digest = Digest::SHA256.hexdigest(['ruby', canonical, 'release_preflight'].join("\0"))
+      File.open(metrics_path, 'a') do |file|
+        file.puts(JSON.generate(
+          'timestamp' => completed_at, 'started_at' => started_at, 'completed_at' => completed_at,
+          'type' => 'workflow_receipt', 'receipt_id' => receipt_id, 'cwd' => Dir.pwd,
+          'workflow' => 'sanemaster:release_preflight', 'success' => true,
+          'exit_status' => 0, 'command_sha256' => digest, 'source_fingerprint' => source_fingerprint
+        ))
+      end
+      receipt_id
     end
   end
 end

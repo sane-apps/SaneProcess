@@ -34,7 +34,15 @@ module SaneVisualReceipt
     default = DEFAULT_RECEIPTS.map { |path| File.join(cwd, path) }
     visual = Dir.glob(File.join(cwd, 'outputs', 'visual-audit*', '*.json')) +
              Dir.glob(File.join(cwd, 'outputs', 'visual_audit*', '*.json'))
-    (default + visual).uniq
+    # Umbrella sessions run with cwd = ~/SaneApps while the receipt lives in
+    # the app repo that was actually edited (apps/<App>/outputs/...). Without
+    # this the Stop gate can NEVER be satisfied from an umbrella session — the
+    # receipt exists and validates, but the glob never finds it (hit live
+    # 2026-07-02, SaneClip 2.3.12).
+    umbrella = Dir.glob(File.join(cwd, 'apps', '*', 'outputs', 'visual-audit*', '*.json')) +
+               Dir.glob(File.join(cwd, 'apps', '*', 'outputs', 'visual_audit*', '*.json')) +
+               Dir.glob(File.join(cwd, 'apps', '*', 'outputs', 'customer_ui_action_receipt.json'))
+    (default + visual + umbrella).uniq
   end
 
   def expand_path(cwd, path)
@@ -65,6 +73,7 @@ module SaneVisualReceipt
   end
 
   def customer_ui_receipt_valid?(cwd, receipt)
+    return false if visual_audit_receipt?(receipt)
     return false unless receipt['status'].to_s == 'passed'
     return false unless acceptable_visual_host?(receipt)
     return false if Array(receipt['screenshots']).empty?
@@ -73,7 +82,7 @@ module SaneVisualReceipt
   end
 
   def visual_audit_receipt_valid?(cwd, receipt, receipt_path)
-    return false unless receipt['type'].to_s == 'visual_audit' || receipt['schema'].to_s == 'saneprocess.visual_audit'
+    return false unless visual_audit_receipt?(receipt)
     return false unless %w[passed pass clean].include?((receipt['status'] || receipt['verdict']).to_s.downcase)
     return false unless acceptable_visual_host?(receipt)
     return false unless receipt['inspected'] == true || receipt['audit_recorded'] == true
@@ -84,6 +93,29 @@ module SaneVisualReceipt
 
     screenshots.all? do |path|
       screenshot_file?(cwd, path) || screenshot_file?(File.dirname(receipt_path), path)
+    end && claim_mapped_visual_evidence?(cwd, receipt, receipt_path)
+  end
+
+  def visual_audit_receipt?(receipt)
+    receipt['type'].to_s == 'visual_audit' || receipt['schema'].to_s == 'saneprocess.visual_audit'
+  end
+
+  def claim_mapped_visual_evidence?(cwd, receipt, receipt_path)
+    claims = Array(receipt['claims'])
+    return false if claims.empty?
+
+    claims.all? do |claim|
+      next false unless claim.is_a?(Hash)
+      next false unless claim['id'].to_s.strip != '' || claim['claim'].to_s.strip != '' || claim['label'].to_s.strip != ''
+      next false unless %w[passed pass clean].include?((claim['status'] || claim['verdict']).to_s.downcase)
+
+      paths = Array(claim['screenshots'] || claim['screenshot_paths'] || claim['evidence'])
+      paths = paths.map { |item| item.is_a?(Hash) ? item['path'] : item }.compact
+      next false if paths.empty?
+
+      paths.all? do |path|
+        screenshot_file?(cwd, path) || screenshot_file?(File.dirname(receipt_path), path)
+      end
     end
   end
 

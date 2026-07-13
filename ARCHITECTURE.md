@@ -452,6 +452,12 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
 - Trigger maps and AGENTS changes can be regression-tested before they ship.
 - Support, release, UI runtime, tool discovery, subagent hygiene, session lifecycle, and SOP score-cap workflows can be tested as multi-step receipts instead of more prompt prose.
 - Multi-agent delegation remains useful, but workflow complexity should be driven by eval failures and task shape, not by default escalation.
+- Reviewer breadth and execution concurrency are separate controls. Useful
+  perspectives determine review breadth; live client/host capacity determines
+  simultaneous workers. Stateful work uses native subagents, while isolated
+  read-only perspectives may use ephemeral sandboxed `codex exec` fan-out;
+  interactive waves are only a compatibility fallback. The operational source
+  of truth is `DEVELOPMENT.md` under "Reviewer fan-out routing."
 - Skill descriptions and duplicate-name drift become tested routing surfaces rather than informal prose.
 - Client-managed Codex plugins are runtime adapter surfaces. SaneProcess records category routing in `DEVELOPMENT.md`, but release/support/security proof stays with repo-owned wrappers and eval coverage instead of an exhaustive plugin inventory.
 - Verification scope is a tested workflow surface. `proof_plan` classifies
@@ -496,6 +502,34 @@ Hook-block telemetry must also preserve the actual block family. `MCP ACTIONS PE
 - Useful failures become candidate tests without making every near miss a blocking rule.
 - Backtests can target a specific metrics file with `--metrics PATH`, including Mini logs, while remaining local-only.
 - The report itself stays read-only so it does not pollute the metric stream it analyzes.
+
+---
+
+### ADR-011: Research/verify gates are a deterministic floor with an evidence-grounded override and self-flagging unfairness (2026-06-29)
+
+**Context:** The research gate (`sop_loop.rb`) used to clear when `.claude/research.md` was merely *newer* than the lock (mtime). A bare hand-edit — even one reusing old citations and running zero fresh searches — satisfied it. That is gameable. The opposite failure is just as bad: a gate that blocks *unfairly* (a required MCP is down, the requirement does not apply, or an unrelated pre-existing test failure poisons `verify`) strands work with no self-service way out, forcing a human to babysit it.
+
+**Decision:** Two layers.
+
+1. **Deterministic floor (ungameable, cheap, no friction in the common case).** A research lock clears only when the tool-call-tracked research categories the *edit* gate already records (`StateManager :research`, written by `sanetools track_research` with a `completed_at` timestamp and `via_task` flag) are **fresh since the lock fired** — `web` + `local` always, `docs` only when apple-docs is configured (so a down MCP cannot deadlock). `via_task` credits research done inside a subagent. Reading state fails OPEN so the gate can never brick `verify`. (`research_evidence_missing_since`, `effective_research_evidence_categories`.)
+
+2. **Certifier override (the escape hatch, self-healing) + self-flagging unfairness.** A fixed-prompt, adversarial, evidence-reading certifier subagent (protocol below) is invoked on a block. For a *lazy* block it **does the missing research itself**, which satisfies the floor naturally — no token. Only for a genuine *false* block does it mint a signed (`StateSigner` HMAC) override token via `gate_cert.rb`; a hand-edited token fails verification and grants nothing. Tokens are TTL-bound (2h) and must post-date the block. Because laziness is *fixed* rather than waved through, the **only** thing that ever mints an OVERRIDE token is a true false-block — so each override is a vote that the gate is unfair. After `UNFAIR_THRESHOLD` overrides a gate auto-flags itself in `unfair-gates.json` and the block message shouts "FIX THE GATE", with no human watching for it. A fourth verdict, **RESOLVED**, covers the remaining case (found live 2026-07-07): the gate armed *correctly*, and the root cause has since been fixed and verified — it mints the same signed, TTL-bound clearing token but does **not** feed the unfair counter, so merited post-fix clears cannot pollute the self-improvement signal. A resolved note must cite the fix commit (a sha `gate_cert.rb` verifies exists in the repo); an uncited or unverifiable citation rejects the verdict. (`gate_override.rb`.)
+
+**Gate Certifier protocol (canonical; the calling agent cannot soften it).** Default verdict is **UPHOLD**. Examine the evidence yourself — never accept the caller's summary: the block message + lock trigger; `.claude/state.json → research` freshness vs trigger; `.claude/research-locks.json`; `git diff`; the session tool-call history. Then choose one: **FILL** (common — the work was not done; do the real WebSearch / `mcp__apple-docs__*` / Read+Grep now, write findings to `.claude/research.md`, then `gate_cert.rb … --verdict fill`); **UPHOLD** (not done and out of scope now — `--verdict uphold`, gate stays closed); **OVERRIDE** (rare — the work genuinely *was* done or the requirement cannot apply, yet the gate blocks — `--verdict override --note "<why, citing evidence>"`); or **RESOLVED** (the gate armed *correctly* and the root cause is since fixed+verified — `--verdict resolved --note "<what the strikes were, citing the fix commit sha>"`; clears the block without voting the gate unfair — never use it when the fix is unproven, and never use OVERRIDE for a post-fix clear, which would falsely feed the unfair counter). Hard rules: never override to dodge FILL-able work; base the verdict on evidence you read; one verdict per invocation; be specific in `--note` (permanent audit trail in `gate-override-log.jsonl`).
+
+3. **Hammer detector (the symmetric twin of the unfair detector) + self-flagging laziness.** The unfair detector catches "the GATE is wrong"; this catches "the AGENT is lazy" — hammering a gate until it passes instead of reading it and doing what it says. Every block fingerprints the *work state* (research tool-call completion timestamps + the working-tree diff). Re-hitting the same gate with an **identical** fingerprint means nothing was done between attempts (no fresh research, no diff change, no certifier verdict) — a hammer. A **changing** fingerprint is real iteration and is never flagged, so legitimate edit→re-run→edit loops never trip it. After `HAMMER_THRESHOLD` no-progress hits the block message shouts it, with a signed `gate-hits.json` and an append-only `gate-hammer-log.jsonl`, so the operator has a mechanical signal of laziness without having to watch the agent. Passing the gate clears the streak. Fingerprint that can't be measured never accrues a streak (never falsely accuses). (`hammer_watch.rb`.)
+
+Together the three signals triangulate intent from evidence, not the agent's say-so: repeated block + overrides ⇒ the gate is unfair (fix the gate); repeated block + unchanged fingerprint ⇒ the agent is hammering (do the work); changing fingerprint ⇒ legitimate progress.
+
+**Consequences:**
+- A research.md touch no longer clears the gate; real tool-calls do. Gaming the common path is closed.
+- Hammering a gate is now visible to the operator on its own telemetry — they do not have to interrogate the agent to know whether it engaged the gate or just re-ran it.
+- Unfair blocks have a self-service, audited way out that mostly *fixes* the gap instead of bypassing it.
+- Gates that are repeatedly wrong surface themselves for a fix — the process improves itself instead of accumulating friction.
+- Verify escalation fingerprints the exact failing command receipt. An unidentified
+  failure never proves that a later unidentified failure is the same problem; verify
+  stays red, but the two-strike research gate does not group two `nil` identities.
+- Perfect ungameability is not claimed: the certifier is an LLM the agent invokes, so the override is "hard to forge (signed) + always logged + self-flagging", not cryptographically impossible. The deterministic floor remains the real teeth.
 
 ---
 
@@ -547,9 +581,19 @@ Hook-block telemetry must also preserve the actual block family. `MCP ACTIONS PE
 - **Edit without research:** PreToolUse blocks mutations until gate satisfied
 - **Inline script detection:** `python -c`, `ruby -e`, `node -e`, `perl -e` blocked as bash mutations
 - **Doom loops:** Circuit breaker trips after 2 consecutive failures or 2 matching error signatures
+- **Catastrophic action boundary:** `sane_catastrophic_guard.rb` denies
+  repository/history, production-infrastructure, database, credential,
+  ownership, refund, and license-revocation destruction without an
+  agent-writable override. Claude runs it for every tool and again through the
+  Bash dispatcher; Codex also uses restricted filesystem/app permissions and
+  hard command-prefix rules. Ordinary branches, commits, PRs, deploys,
+  uploads, tests, and reversible deletes remain available.
 
 **Known gaps:**
-- MCP tools can bypass enforcement (no wildcard matcher support — see ADR-003)
+- Raw Codex MCP servers do not share Claude's generic PreToolUse hook. Their
+  genuine boundary must come from disabled/destructive tool declarations and
+  provider-side restricted credentials; local command rules alone are not a
+  substitute.
 - State file can be deleted (hook fails safe, re-creates with defaults)
 - Optional helper hooks can still fail open, but blocking hook registration is checked for masked exits so `|| true` cannot silently disable enforcement.
 

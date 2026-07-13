@@ -37,7 +37,7 @@ class SetappMediaSync
 
     enforce_mini_host!
     token = portal_token
-    abort 'Missing Setapp portal token. Log into developer.setapp.com in Safari on this machine, or set SETAPP_PORTAL_TOKEN.' if token.empty?
+    abort 'Missing Setapp portal token. Log into developer.setapp.com in Brave on the Mini, or set SETAPP_PORTAL_TOKEN.' if token.empty?
 
     results = apply_public_page_proof(apps.map { |app| sync_app(app, token) })
     print_results(results)
@@ -51,7 +51,7 @@ class SetappMediaSync
       opts.on('--app NAME', 'Only sync one Setapp app from .saneprocess') { |value| @options[:app_name] = value }
       opts.on('--dry-run', 'Validate and print the planned screenshot upload order without changing Setapp') { @options[:dry_run] = true }
       opts.on('--json', 'Print machine-readable output') { @options[:json] = true }
-      opts.on('--no-safari-token', 'Do not read the portal token from Safari cookies') { @options[:safari_token] = false }
+      opts.on('--no-safari-token', 'Legacy alias: do not read the portal token from Brave cookies') { @options[:safari_token] = false }
       opts.on('--allow-pending-public-page', 'Exit 0 after portal sync even though public setapp.com proof is still pending') { @options[:allow_pending_public_page] = true }
       opts.on('--public-page-proof-file PATH', 'JSON proof that public setapp.com listing screenshots have propagated') { |value| @options[:public_page_proof_file] = value }
     end
@@ -322,29 +322,34 @@ class SetappMediaSync
     return '' unless @options[:safari_token]
 
     script = <<~APPLESCRIPT
-      tell application "Safari"
-        if not running then return "{\\"error\\":\\"Safari is not running\\"}"
-        if (count of documents) is 0 then return "{\\"error\\":\\"Safari has no open document\\"}"
-        return do JavaScript "JSON.stringify({host: location.hostname, token: decodeURIComponent((document.cookie.split('; ').find(c=>c.startsWith('access_token='))||'=').split('=')[1]||'')})" in front document
+      tell application "Brave Browser"
+        if not running then return "{\\"error\\":\\"Brave is not running\\"}"
+        if (count of windows) is 0 then return "{\\"error\\":\\"Brave has no open window\\"}"
+        repeat with browserWindow in windows
+          repeat with browserTab in tabs of browserWindow
+            if (URL of browserTab starts with "https://developer.setapp.com") then
+              return execute browserTab javascript "JSON.stringify({host: location.hostname, token: decodeURIComponent((document.cookie.split('; ').find(c=>c.startsWith('access_token='))||'=').split('=')[1]||'')})"
+            end if
+          end repeat
+        end repeat
+        return "{\\"error\\":\\"No open developer.setapp.com tab\\"}"
       end tell
     APPLESCRIPT
     output, stderr, status = capture3_with_timeout(10, '/usr/bin/osascript', stdin_data: script)
     unless status.success?
-      abort "Could not read Setapp portal token from Safari via AppleScript: #{stderr.strip}"
+      abort "Could not read Setapp portal token from Brave via AppleScript: #{stderr.strip}"
     end
 
     data = JSON.parse(output)
-    abort 'Safari is not running or has no open Setapp developer page' if data['error']
-    unless data['host'].to_s == 'developer.setapp.com'
-      abort "Safari front tab must be developer.setapp.com for Setapp media sync; current host is #{data['host']}"
-    end
+    abort 'Brave is not running or has no open Setapp developer page' if data['error']
+    abort "Brave Setapp tab returned unexpected host #{data['host']}" unless data['host'].to_s == 'developer.setapp.com'
 
     token = data['token'].to_s
-    abort 'Setapp portal token was empty; refresh developer.setapp.com in Safari and retry' if token.empty?
+    abort 'Setapp portal token was empty; sign in to developer.setapp.com in Brave and retry' if token.empty?
 
     token
   rescue JSON::ParserError => e
-    abort "Could not parse Setapp portal token response from Safari: #{e.message}"
+    abort "Could not parse Setapp portal token response from Brave: #{e.message}"
   end
 
   def curl_form(url, authorization, form_args)

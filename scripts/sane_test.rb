@@ -27,6 +27,9 @@ require 'fileutils'
 require 'tmpdir'
 require 'shellwords'
 require 'time'
+require 'socket'
+require 'digest'
+require 'etc'
 
 APPS = {
   'SaneBar' => {
@@ -78,8 +81,15 @@ MINI_HOST = 'mini'
 MINI_APPS_DIR = '/Applications'
 MINI_LEGACY_USER_APPS_DIR = '~/Applications'
 TRANSIENT_STAGE_ROOT = '/tmp/saneapps-staging.noindex'
+SIGNED_RELEASE_RUNTIME_APPS = %w[SaneClip].freeze
 
 class SaneTest
+  SANEAPPS_DEVELOPER_TEAM_ID = 'M78L6FXD48'
+  CODESIGN_BIN = '/usr/bin/codesign'
+  SECURITY_BIN = '/usr/bin/security'
+  NESTED_CODE_ROOTS = %w[Frameworks PlugIns XPCServices Helpers Library/LoginItems].freeze
+  class SigningValidationError < StandardError; end
+
   def initialize(app_name, args)
     @app_name = app_name
     @config = APPS[app_name]
@@ -93,7 +103,7 @@ class SaneTest
     @fresh = args.include?('--fresh')
     @allow_keychain = args.include?('--allow-keychain')
     @allow_unsigned_debug = args.include?('--allow-unsigned-debug')
-    @release_build = args.include?('--release')
+    @release_build = args.include?('--release') || signed_release_runtime_required?
     @hardware = args.include?('--hardware')
     @target = nil
     @last_build_config = nil
@@ -123,6 +133,11 @@ class SaneTest
   def determine_target
     return :local if @force_local
 
+    if running_on_mini_host?
+      puts '✅ Already running on Mac mini → using local canonical path'
+      return :local
+    end
+
     if mini_reachable?
       puts '✅ Mac mini is reachable → deploying there'
       :mini
@@ -135,6 +150,16 @@ class SaneTest
   def mini_reachable?
     system('ssh', '-o', 'ConnectTimeout=2', '-o', 'BatchMode=yes', MINI_HOST, 'true',
            out: File::NULL, err: File::NULL)
+  end
+
+  def running_on_mini_host?
+    host = Socket.gethostname.to_s.downcase
+    return true if host.include?('mini')
+
+    computer_name, status = Open3.capture2('/usr/sbin/scutil', '--get', 'ComputerName')
+    status.success? && computer_name.to_s.downcase.include?('mac mini')
+  rescue StandardError
+    false
   end
 
   def bundle_ids
@@ -174,8 +199,15 @@ class SaneTest
   end
 
   def kill_remote
+    # Quit cleanly first: a bare SIGKILL on an activated GUI/agent app leaves a
+    # ghost Dock tile that accumulates across test runs. Graceful quit lets
+    # macOS remove the tile; SIGKILL is the fallback and killall Dock sweeps any
+    # tile a force-killed app left behind.
+    ssh(%(osascript -e 'quit app "#{@app_name}"' 2>/dev/null; true))
+    sleep 1
     ssh("killall -9 #{@app_name} 2>/dev/null; true")
     sleep 1
+    ssh('killall Dock 2>/dev/null; true')
     result = ssh_capture("pgrep -x #{@app_name} 2>/dev/null").strip
     abort "   ❌ Failed to kill #{@app_name} (PID: #{result})" unless result.empty?
   end
@@ -373,7 +405,9 @@ class SaneTest
 
           remote_requirement = Shellwords.escape(requirement)
           remote_app = Shellwords.escape(canonical_remote_app_path)
-          matches = system('ssh', MINI_HOST, "codesign -R #{remote_requirement} #{remote_app}",
+          remote_codesign = "/usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C " \
+                            "/usr/bin/codesign -R #{remote_requirement} #{remote_app}"
+          matches = system('ssh', MINI_HOST, remote_codesign,
                            out: File::NULL, err: File::NULL)
           unless matches
             stale_detected = true
@@ -467,27 +501,481 @@ class SaneTest
   def ensure_developer_id_signature_local
     app_path = canonical_local_app_path
     unless app_path && File.exist?(app_path)
-      warn '   Re-sign skipped: staged app not found'
-      return
+      abort '   ❌ Re-sign required but staged app was not found'
     end
-    if `codesign -dv --verbose=2 "#{app_path}" 2>&1`.include?('Developer ID Application')
+    existing_entitlements = signed_entitlements_xml(app_path)
+    if existing_entitlements && deep_signature_valid?(app_path) && saneapps_signature_tree_valid?(app_path)
       warn '   Already Developer ID-signed; existing TCC grants should hold'
       return
     end
-    identity = `security find-identity -v -p codesigning 2>/dev/null`
-               .lines.map { |line| line[/"(Developer ID Application: [^"]+)"/, 1] }.compact.first
+    # A previously re-signed app can be Developer ID-signed while lacking its
+    # original entitlement payload. Recover from the fresh Xcode product when
+    # it is still available instead of accepting that stripped canonical copy.
+    entitlements = existing_entitlements || fresh_build_entitlements_xml(app_path)
+    if developer_id_signed?(app_path) && entitlements.nil?
+      abort '   ❌ Developer ID app has no entitlement payload and no fresh signed payload is available to restore'
+    end
+    identity_output, identity_status = codesigning_identity_output
+    identity = developer_id_identity_from_output(identity_output) if identity_status.success?
     unless identity
+      if @allow_unsigned_debug && !signed_release_runtime_required?
+        warn '   ⚠️  Explicit --allow-unsigned-debug exception: Developer ID re-sign skipped'
+        return
+      end
+
       warn '   ⚠️  No "Developer ID Application" identity found — TCC grant may not hold'
       warn '   (menu-bar moves can silently fail; grant Accessibility manually or import the cert).'
-      return
+      abort '   ❌ Developer ID re-sign is required for trustworthy TCC/runtime proof'
     end
-    if system('codesign', '--force', '--deep', '--options', 'runtime',
-              '--sign', identity, app_path, out: File::NULL, err: File::NULL)
+    sign_out, status = resign_with_developer_id(identity, app_path, entitlements)
+    if status.success?
       warn "   Re-signed with #{identity}"
       warn '   (preserves the existing Accessibility/TCC grant for this build)'
+    elsif sign_out.include?('errSecInternalComponent')
+      # Deterministic, not guesswork: this specific failure means codesign can't
+      # reach the signing key from a plain ssh shell. Run the build in the Mini's
+      # GUI session, which has keychain access.
+      warn '   ⚠️  Re-sign failed: errSecInternalComponent — codesign cannot reach the'
+      warn '       signing key over plain ssh. Run the build/sign in the Mini GUI session:'
+      warn "         ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-gui-run.sh \\"
+      warn '           --title "build" --log-file /tmp/build.log -- \\'
+      warn "           \"cd #{@app_dir} && ruby #{__FILE__} #{@app_name} --release --local\"'"
+      warn '       (one-time alternative: set the login-keychain codesign partition list; see mini/README.md).'
+      abort '   ❌ Developer ID re-sign failed; refusing to launch an untrusted TCC runtime'
     else
       warn '   ⚠️  Re-sign failed — TCC grant may not hold; menu-bar moves can fail'
+      first = sign_out.lines.map(&:strip).reject(&:empty?).first
+      warn "   codesign: #{first}" if first
+      abort '   ❌ Developer ID re-sign failed; refusing to launch an invalid or partially signed app'
     end
+  rescue SigningValidationError => e
+    abort "   ❌ Developer ID re-sign validation failed: #{e.message}"
+  end
+
+  def developer_id_identity_from_output(output)
+    output.to_s.lines.map do |line|
+      identity = line[/"(Developer ID Application: [^"]+)"/, 1]
+      identity if identity&.include?("(#{SANEAPPS_DEVELOPER_TEAM_ID})")
+    end.compact.first
+  end
+
+  def signing_command_environment
+    {
+      'HOME' => Etc.getpwuid(Process.uid).dir,
+      'TMPDIR' => '/tmp',
+      'PATH' => '/usr/bin:/bin',
+      'LANG' => 'C',
+      'LC_ALL' => 'C'
+    }
+  end
+
+  def capture_signing_command(*command)
+    executable = command.first
+    unless [CODESIGN_BIN, SECURITY_BIN].include?(executable)
+      raise SigningValidationError, "untrusted signing executable: #{executable}"
+    end
+
+    Open3.capture2e(signing_command_environment, *command, unsetenv_others: true)
+  end
+
+  def capture_signing_command3(*command)
+    executable = command.first
+    unless [CODESIGN_BIN, SECURITY_BIN].include?(executable)
+      raise SigningValidationError, "untrusted signing executable: #{executable}"
+    end
+
+    Open3.capture3(signing_command_environment, *command, unsetenv_others: true)
+  end
+
+  def system_signing_command(*command, **options)
+    executable = command.first
+    unless [CODESIGN_BIN, SECURITY_BIN].include?(executable)
+      raise SigningValidationError, "untrusted signing executable: #{executable}"
+    end
+
+    system(signing_command_environment, *command, **options, unsetenv_others: true)
+  end
+
+  def codesigning_identity_output
+    capture_signing_command(SECURITY_BIN, 'find-identity', '-v', '-p', 'codesigning')
+  end
+
+  # `--deep` is intentionally absent. Apple deprecates it for signing and
+  # applies every parent signing option to nested code, which can incorrectly
+  # give frameworks or helpers the app's entitlement payload. Nested code keeps
+  # its existing valid signature while the outer app is re-signed.
+  def developer_id_resign_command(identity, app_path, entitlements_path: nil)
+    command = [
+      CODESIGN_BIN, '--force', '--sign', identity, '--options', 'runtime',
+      '--preserve-metadata=identifier,requirements,entitlements'
+    ]
+    command.concat(['--entitlements', entitlements_path]) if entitlements_path
+    command << app_path
+  end
+
+  def resign_with_developer_id(identity, app_path, entitlements)
+    nested_output, nested_status = resign_nested_code_with_developer_id(identity, app_path)
+    return [nested_output, nested_status] unless nested_status.success?
+
+    unless entitlements
+      app_output, app_status = capture_signing_command(*developer_id_resign_command(identity, app_path))
+      return verify_resigned_app(app_path, nested_output + app_output, app_status)
+    end
+
+    Dir.mktmpdir('saneapps-entitlements') do |dir|
+      entitlements_path = File.join(dir, 'preserved.entitlements')
+      File.binwrite(entitlements_path, entitlements)
+      app_output, app_status = capture_signing_command(
+        *developer_id_resign_command(identity, app_path, entitlements_path: entitlements_path)
+      )
+      return verify_resigned_app(app_path, nested_output + app_output, app_status)
+    end
+  end
+
+  # Xcode strips development-only framework resources (for example Sparkle's
+  # Headers and Modules) after SwiftPM has signed the package product. Re-sign
+  # each physical nested code bundle after staging so its resource seal matches
+  # the shipped files. Signing deepest-first keeps parent seals current, while
+  # applying no app entitlement file to nested code prevents entitlement leaks.
+  def resign_nested_code_with_developer_id(identity, app_path)
+    output = +''
+    last_status = nil
+    trusted_nested_code = trusted_fresh_nested_code_map!(app_path)
+
+    nested_code_paths(app_path).each do |path|
+      relative_path = nested_code_relative_path(app_path, path)
+      trusted_path = trusted_nested_code[relative_path]
+      unless trusted_path
+        raise SigningValidationError, "nested code is absent from the fresh build product: #{relative_path}"
+      end
+
+      validate_existing_nested_signature!(path, trusted_path: trusted_path, relative_path: relative_path)
+      command = developer_id_resign_command(identity, path)
+      command_output, status = capture_signing_command(*command)
+      output << command_output
+      return [output, status] unless status.success?
+      validate_saneapps_developer_id_signature!(path)
+
+      last_status = status
+    end
+
+    last_status ||= Open3.capture2e('/usr/bin/true').last
+    [output, last_status]
+  end
+
+  def trusted_fresh_nested_code_map!(app_path)
+    fresh_app = find_derived_data_app
+    unless fresh_app && File.directory?(fresh_app)
+      raise SigningValidationError, 'fresh build product is unavailable for nested-code validation'
+    end
+
+    staged_root = File.realpath(app_path)
+    fresh_root = File.realpath(fresh_app)
+    if staged_root == fresh_root
+      raise SigningValidationError, 'fresh build product must be distinct from the staged runtime app'
+    end
+
+    validate_staged_manifest_matches_fresh!(app_path, fresh_app)
+
+    nested_code_paths(fresh_app).each_with_object({}) do |path, trusted|
+      relative_path = nested_code_relative_path(fresh_app, path)
+      raise SigningValidationError, "duplicate nested code path in fresh build: #{relative_path}" if trusted.key?(relative_path)
+
+      trusted[relative_path] = path
+    end
+  rescue Errno::ENOENT => e
+    raise SigningValidationError, "fresh build product cannot be resolved: #{e.message}"
+  end
+
+  def validate_staged_manifest_matches_fresh!(staged_app, fresh_app)
+    staged_manifest = bundle_contents_manifest!(staged_app, role: 'staged')
+    fresh_manifest = bundle_contents_manifest!(fresh_app, role: 'fresh-build')
+    paths = (staged_manifest.keys | fresh_manifest.keys).sort
+
+    paths.each do |relative_path|
+      staged = staged_manifest[relative_path]
+      fresh = fresh_manifest[relative_path]
+      unless staged
+        raise SigningValidationError, "staged app is missing fresh-build path: #{relative_path}"
+      end
+      unless fresh
+        raise SigningValidationError, "staged app contains an added path: #{relative_path}"
+      end
+
+      mismatches = (staged.keys | fresh.keys).reject { |field| staged[field] == fresh[field] }
+      next if mismatches.empty?
+
+      raise SigningValidationError,
+            "staged app differs from fresh build at #{relative_path} (#{mismatches.join(', ')})"
+    end
+
+    true
+  end
+
+  # Staging uses `ditto --noextattr --noacl`, so filesystem content, modes, and
+  # symlink topology must remain identical. Extended attributes and ACLs are the
+  # only deliberate build-strip differences and are not part of this manifest.
+  def bundle_contents_manifest!(app_path, role:)
+    contents = File.join(app_path, 'Contents')
+    root_metadata = File.lstat(contents)
+    if root_metadata.symlink? || !root_metadata.directory?
+      raise SigningValidationError, "#{role} app Contents is not a physical directory: #{contents}"
+    end
+
+    manifest = { '.' => { type: 'directory', mode: root_metadata.mode & 0o7777 } }
+    collect_manifest_entries!(contents, contents, manifest, role: role)
+    manifest
+  rescue Errno::ENOENT => e
+    raise SigningValidationError, "#{role} app manifest cannot be read: #{e.message}"
+  end
+
+  def collect_manifest_entries!(root, directory, manifest, role:)
+    Dir.each_child(directory).sort.each do |name|
+      path = File.join(directory, name)
+      relative_path = path.delete_prefix("#{root}/")
+      metadata = File.lstat(path)
+      entry = if metadata.directory?
+                { type: 'directory', mode: metadata.mode & 0o7777 }
+              elsif metadata.file?
+                {
+                  type: 'file', mode: metadata.mode & 0o7777, size: metadata.size,
+                  sha256: regular_file_sha256!(path, metadata, role: role)
+                }
+              elsif metadata.symlink?
+                target = File.readlink(path)
+                { type: 'symlink', size: target.bytesize, target: target }
+              else
+                raise SigningValidationError, "#{role} app contains unsupported filesystem object: #{relative_path}"
+              end
+
+      manifest[relative_path] = entry
+      collect_manifest_entries!(root, path, manifest, role: role) if metadata.directory?
+    end
+  end
+
+  def regular_file_sha256!(path, expected_metadata, role:)
+    flags = File::RDONLY
+    flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+    digest = Digest::SHA256.new
+    File.open(path, flags) do |file|
+      opened_metadata = file.stat
+      unless opened_metadata.file? && opened_metadata.dev == expected_metadata.dev &&
+             opened_metadata.ino == expected_metadata.ino && opened_metadata.size == expected_metadata.size
+        raise SigningValidationError, "#{role} app file changed during manifest read: #{path}"
+      end
+
+      while (chunk = file.read(64 * 1024))
+        digest << chunk
+      end
+    end
+    digest.hexdigest
+  rescue Errno::ELOOP, Errno::ENOENT => e
+    raise SigningValidationError, "#{role} app file cannot be hashed safely: #{path} (#{e.message})"
+  end
+
+  def nested_code_paths(app_path)
+    contents = File.join(app_path, 'Contents')
+    return [] unless File.directory?(contents)
+
+    bundle_suffixes = %w[.appex .app .bundle .framework .plugin .xpc]
+    candidates = NESTED_CODE_ROOTS.flat_map do |root|
+      root_path = File.join(contents, root)
+      next [] unless File.exist?(root_path) || File.symlink?(root_path)
+
+      root_metadata = File.lstat(root_path)
+      raise SigningValidationError, "nested code root is a symlink: #{root_path}" if root_metadata.symlink?
+      raise SigningValidationError, "nested code root is not a directory: #{root_path}" unless root_metadata.directory?
+
+      Dir.glob(File.join(root_path, '**', '*'), File::FNM_DOTMATCH)
+    end
+    bundles = candidates.select do |path|
+      bundle_suffixes.include?(File.extname(path))
+    end
+    libraries = candidates.select { |path| File.extname(path) == '.dylib' }
+
+    (bundles + libraries)
+      .map { |path| validated_nested_code_path(app_path, path) }
+      .uniq
+      .sort_by { |path| [-path.count(File::SEPARATOR), path] }
+  end
+
+  def validated_nested_code_path(app_path, candidate)
+    metadata = File.lstat(candidate)
+    raise SigningValidationError, "nested code candidate is a symlink: #{candidate}" if metadata.symlink?
+
+    suffix = File.extname(candidate)
+    expected_type = suffix == '.dylib' ? metadata.file? : metadata.directory?
+    raise SigningValidationError, "nested code candidate has unexpected type: #{candidate}" unless expected_type
+
+    app_root = File.realpath(app_path)
+    real_path = File.realpath(candidate)
+    unless real_path.start_with?("#{app_root}/Contents/")
+      raise SigningValidationError, "nested code candidate escapes staged app: #{candidate}"
+    end
+
+    relative = real_path.delete_prefix("#{app_root}/Contents/")
+    unless NESTED_CODE_ROOTS.any? { |root| relative == root || relative.start_with?("#{root}/") }
+      raise SigningValidationError, "nested code candidate is outside an approved code root: #{relative}"
+    end
+    File.expand_path(candidate)
+  end
+
+  def nested_code_relative_path(app_path, path)
+    app_root = File.realpath(app_path)
+    real_path = File.realpath(path)
+    prefix = "#{app_root}/Contents/"
+    unless real_path.start_with?(prefix)
+      raise SigningValidationError, "nested code candidate escapes staged app: #{path}"
+    end
+
+    real_path.delete_prefix(prefix)
+  rescue Errno::ENOENT => e
+    raise SigningValidationError, "nested code path cannot be resolved: #{e.message}"
+  end
+
+  def code_signature_details(path)
+    capture_signing_command(CODESIGN_BIN, '-dv', '--verbose=4', '-r-', path)
+  end
+
+  def validate_existing_nested_signature!(path, trusted_path:, relative_path:)
+    staged_identity = nested_code_signature_identity!(path, role: 'staged')
+    trusted_identity = nested_code_signature_identity!(trusted_path, role: 'fresh-build')
+    mismatches = %i[type identifier cdhash].reject do |field|
+      staged_identity[field] == trusted_identity[field]
+    end
+    return true if mismatches.empty?
+
+    raise SigningValidationError,
+          "nested code does not match fresh build at #{relative_path} (#{mismatches.join(', ')})"
+  end
+
+  def nested_code_signature_identity!(path, role:)
+    details, status = code_signature_details(path)
+    valid_requirement = details.include?('designated =>') && details.include?('anchor apple generic')
+    valid_team = details.include?("TeamIdentifier=#{SANEAPPS_DEVELOPER_TEAM_ID}") &&
+                 details.include?("certificate leaf[subject.OU] = #{SANEAPPS_DEVELOPER_TEAM_ID}")
+    identifier = details[/^Identifier=(.+)$/i, 1].to_s.strip
+    cdhash = details[/^CDHash=([0-9a-f]+)$/i, 1].to_s.downcase
+    valid_identity = !identifier.empty? && cdhash.match?(/\A[0-9a-f]{20,128}\z/)
+    if status.success? && valid_requirement && valid_team && valid_identity
+      executable = nested_code_executable_path!(path, details, role: role)
+      unless nested_code_executable_signature_valid?(executable)
+        raise SigningValidationError,
+              "refusing to sign #{role} nested code whose executable signature is invalid: #{path}"
+      end
+
+      metadata = File.lstat(path)
+      return {
+        type: metadata.file? ? "file:#{File.extname(path)}" : "directory:#{File.extname(path)}",
+        identifier: identifier,
+        cdhash: cdhash
+      }
+    end
+
+    raise SigningValidationError,
+          "refusing to sign #{role} nested code without a matching SaneApps signature identity: #{path}"
+  rescue Errno::ENOENT => e
+    raise SigningValidationError, "#{role} nested code cannot be inspected: #{e.message}"
+  end
+
+  def nested_code_executable_path!(path, signature_details, role:)
+    object_path = File.realpath(path)
+    metadata = File.lstat(path)
+    executable_path = if metadata.file?
+                        object_path
+                      else
+                        reported = signature_details[/^Executable=(.+)$/i, 1].to_s.strip
+                        raise SigningValidationError, "#{role} nested code has no signed executable path: #{path}" if reported.empty?
+
+                        File.realpath(reported)
+                      end
+    if metadata.directory? && !executable_path.start_with?("#{object_path}/")
+      raise SigningValidationError, "#{role} nested executable escapes its code object: #{path}"
+    end
+    raise SigningValidationError, "#{role} nested executable is not a regular file: #{executable_path}" unless File.file?(executable_path)
+
+    executable_path
+  rescue Errno::ENOENT => e
+    raise SigningValidationError, "#{role} nested executable cannot be resolved: #{e.message}"
+  end
+
+  def nested_code_executable_signature_valid?(executable_path)
+    _output, status = capture_signing_command(
+      CODESIGN_BIN, '--verify', '--strict', '--verbose=2', executable_path
+    )
+    status.success?
+  end
+
+  def validate_saneapps_developer_id_signature!(path)
+    details, status = code_signature_details(path)
+    valid = status.success? &&
+            details.include?("Authority=Developer ID Application:") &&
+            details.include?("TeamIdentifier=#{SANEAPPS_DEVELOPER_TEAM_ID}") &&
+            details.include?('designated =>') &&
+            details.include?('anchor apple generic') &&
+            details.include?("certificate leaf[subject.OU] = #{SANEAPPS_DEVELOPER_TEAM_ID}")
+    raise SigningValidationError, "signature does not preserve the SaneApps designated requirement: #{path}" unless valid
+
+    true
+  end
+
+  def verify_resigned_app(app_path, output, preceding_status)
+    return [output, preceding_status] unless preceding_status.success?
+
+    verify_output, verify_status = capture_signing_command(
+      CODESIGN_BIN, '--verify', '--deep', '--strict', '--verbose=2', app_path
+    )
+    validate_saneapps_developer_id_signature!(app_path) if verify_status.success?
+    [output + verify_output, verify_status]
+  end
+
+  def deep_signature_valid?(app_path)
+    system_signing_command(
+      CODESIGN_BIN, '--verify', '--deep', '--strict', app_path,
+      out: File::NULL, err: File::NULL
+    )
+  end
+
+  def developer_id_signed?(app_path)
+    validate_saneapps_developer_id_signature!(app_path)
+    true
+  rescue SigningValidationError
+    false
+  end
+
+  def saneapps_signature_tree_valid?(app_path)
+    validate_saneapps_developer_id_signature!(app_path)
+    nested_code_paths(app_path).each { |path| validate_saneapps_developer_id_signature!(path) }
+    true
+  rescue SigningValidationError, Errno::ENOENT
+    false
+  end
+
+  def fresh_build_entitlements_xml(app_path)
+    fresh_build = find_derived_data_app
+    return nil unless fresh_build && File.expand_path(fresh_build) != File.expand_path(app_path)
+
+    signed_entitlements_xml(fresh_build)
+  end
+
+  def signed_entitlements_xml(app_path)
+    stdout, stderr, status = capture_signing_command3(
+      CODESIGN_BIN, '--display', '--entitlements', '-', '--xml', app_path
+    )
+    return nil unless status.success?
+
+    [stdout, stderr].map { |output| entitlement_plist_from_codesign_output(output) }.compact.first
+  end
+
+  def entitlement_plist_from_codesign_output(output)
+    normalized = self.class.normalize_command_output(output)
+    start_index = normalized.index('<?xml') || normalized.index('<plist')
+    return nil unless start_index
+
+    end_index = normalized.index('</plist>', start_index)
+    return nil unless end_index
+
+    normalized[start_index..(end_index + '</plist>'.length - 1)]
   end
 
   # Enforce the live-logging finding: print the exact, working capture command
@@ -506,8 +994,13 @@ class SaneTest
   end
 
   def kill_local
+    # Graceful quit before SIGKILL so macOS clears the Dock tile (a hard kill on
+    # an activated app leaves a ghost tile); killall Dock is the backstop.
+    system('osascript', '-e', %(quit app "#{@app_name}"), err: File::NULL, out: File::NULL)
+    sleep 1
     system('killall', '-9', @app_name, err: File::NULL)
     sleep 1
+    system('killall', 'Dock', err: File::NULL, out: File::NULL)
     abort "   ❌ Failed to kill #{@app_name}" if system('pgrep', '-x', @app_name, out: File::NULL)
   end
 
@@ -625,7 +1118,10 @@ class SaneTest
           next
         end
 
-        matches = system('codesign', "-R=#{requirement}", app_path, out: File::NULL, err: File::NULL)
+        matches = system_signing_command(
+          CODESIGN_BIN, "-R=#{requirement}", app_path,
+          out: File::NULL, err: File::NULL
+        )
         stale_row_ids << row_id unless matches
       ensure
         FileUtils.rm_f(csreq_path)
@@ -664,11 +1160,18 @@ class SaneTest
     reconcile_accessibility_trust_local(app_path)
     ensure_gatekeeper_safe_launch!(app_path)
 
-    open_args = launch_env_pairs
-    if @allow_keychain
-      system('open', *open_args, app_path)
+    if launch_services_gatekeeper_rejected?(app_path)
+      warn "   LaunchServices would show Gatekeeper for #{app_path}; launching executable directly."
+      executable = File.join(app_path, 'Contents', 'MacOS', @app_name)
+      pid = spawn(launch_env_hash, executable, *direct_launch_args, out: File::NULL, err: File::NULL)
+      Process.detach(pid)
     else
-      system('open', *open_args, app_path, '--args', '--sane-no-keychain')
+      open_args = launch_env_pairs
+      if @allow_keychain
+        system('open', *open_args, app_path)
+      else
+        system('open', *open_args, app_path, '--args', '--sane-no-keychain')
+      end
     end
     sleep 2
     processes = local_app_processes(app_path)
@@ -694,8 +1197,20 @@ class SaneTest
   end
 
   def ad_hoc_signed?(app_path)
-    output = `codesign -dv --verbose=4 "#{app_path}" 2>&1`
+    output, = capture_signing_command(CODESIGN_BIN, '-dv', '--verbose=4', app_path)
     output.include?('Signature=adhoc')
+  end
+
+  def launch_services_gatekeeper_rejected?(app_path)
+    return false unless quarantined?(app_path)
+
+    _stdout, _stderr, status = Open3.capture3('spctl', '-a', '-vv', app_path)
+    !status.success?
+  end
+
+  def quarantined?(app_path)
+    _stdout, _stderr, status = Open3.capture3('xattr', '-p', 'com.apple.quarantine', app_path)
+    status.success?
   end
 
   def clear_gatekeeper_staging_attributes(app_path)
@@ -726,6 +1241,8 @@ class SaneTest
       File.expand_path(File.join(TRANSIENT_STAGE_ROOT, "#{@app_name}.app")),
       File.expand_path("/tmp/#{@app_name}.app"),
       File.expand_path("~/Library/Developer/Xcode/DerivedData/#{@app_name}-*/Build/Products/*/#{@app_name}.app"),
+      File.expand_path("~/Library/Developer/Xcode/DerivedData/#{@app_name}-*/Index.noindex/Build/Products/**/#{@app_name}.app"),
+      File.expand_path("~/Library/Caches/com.github.peripheryapp/DerivedData*/Build/Products/**/#{@app_name}.app"),
       File.expand_path("~/codex-runs/**/#{@app_name}.app"),
       File.expand_path("~/codex-runs/.worktrees/**/#{@app_name}.app"),
       File.expand_path("~/SaneApps/apps/#{@app_name}/build/**/#{@app_name}.app"),
@@ -855,17 +1372,18 @@ class SaneTest
   EARLY_ADOPTER_KEY = 'early-adopter'.freeze
 
   def set_license_mode_local
-    bid = @config[:dev]
+    bid = local_runtime_bundle_id
     if @free_mode
       warn '   Clearing fallback license data (free mode)...'
-      clear_license_fallback_local(bid)
+      ([bid] + bundle_ids).compact.uniq.each { |bundle_id| clear_license_fallback_local(bundle_id) }
       # Clear cached validation and grandfathered flag from settings
       clear_license_settings_local
       warn '   License cleared — app will launch as Free user'
     elsif @pro_mode
       warn '   Writing fallback license data (pro mode)...'
+      ([bid] + bundle_ids).compact.uniq.each { |bundle_id| clear_license_fallback_local(bundle_id) }
       set_pro_fallback_local(bid)
-      warn '   Pro fallback key written (no keychain access required)'
+      warn "   Pro fallback key written for #{bid} (no keychain access required)"
     end
   end
 
@@ -897,6 +1415,13 @@ class SaneTest
 
   def fallback_domain(bundle_id)
     bundle_id
+  end
+
+  def local_runtime_bundle_id
+    bundle_id = bundle_id_for_app(canonical_local_app_path)
+    return bundle_id if bundle_id && bundle_id.match?(/\A[a-zA-Z0-9.\-]+\z/)
+
+    @config[:prod]
   end
 
   def legacy_fallback_domain(bundle_id)
@@ -994,6 +1519,7 @@ class SaneTest
     permissionless_automation = @hardware ? '0' : '1'
     hardware_tests = @hardware ? '1' : '0'
     env_args = [
+      '--env', 'SANEAPPS_SKIP_MOVE_TO_APPLICATIONS=1',
       '--env', "SANEAPPS_PERMISSIONLESS_AUTOMATION=#{permissionless_automation}",
       '--env', "SANEVIDEO_ENABLE_HARDWARE_TESTS=#{hardware_tests}"
     ]
@@ -1002,6 +1528,15 @@ class SaneTest
       env_args += ['--env', 'SANEAPPS_FORCE_FREE_MODE=1'] unless @app_name == 'SaneBar'
     end
     env_args
+  end
+
+  def launch_env_hash
+    launch_env_pairs.each_slice(2).each_with_object({}) do |(flag, assignment), env|
+      next unless flag == '--env' && assignment
+
+      key, value = assignment.split('=', 2)
+      env[key] = value.to_s if key && !key.empty?
+    end
   end
 
   def clear_license_settings_local
@@ -1050,7 +1585,13 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
       end
 
       # Check if signing certificates are available; fall back to ad-hoc if not
-      has_signing_cert = !`security find-identity -v -p codesigning 2>/dev/null`.strip.start_with?('0 valid')
+      identities, identity_status = codesigning_identity_output
+      identities = '' unless identity_status.success?
+      has_signing_cert = !identities.strip.start_with?('0 valid')
+      has_developer_id = identities.include?('"Developer ID Application:')
+      if signed_release_runtime_required? && !has_developer_id
+        abort "   ❌ #{@app_name} runtime testing requires Developer ID signing; refusing unsigned/dev launch."
+      end
 
       # SaneBar has a known macOS WindowServer failure mode when launched from
       # local unsigned Debug builds. Enforce signed ProdDebug for local runs.
@@ -1065,10 +1606,10 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
       # ProdDebug has proper signing + entitlements.
       # Fall back to Debug if ProdDebug config doesn't exist (e.g., xcodeproj-based projects).
       # --release: Build with Release config for production testing (e.g., license gate).
+      has_prod_debug = SaneTest.normalize_command_output(`xcodebuild -list 2>/dev/null`).include?('ProdDebug')
       if @release_build
         config_name = 'Release'
       else
-        has_prod_debug = SaneTest.normalize_command_output(`xcodebuild -list 2>/dev/null`).include?('ProdDebug')
         config_name = (has_signing_cert && has_prod_debug) ? 'ProdDebug' : 'Debug'
       end
       @last_build_config = config_name
@@ -1084,7 +1625,7 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
       if has_signing_cert
         # Keep dev bundle ID even with ProdDebug config for non-SaneBar apps.
         # SaneBar local stability depends on signed ProdDebug with default bundle.
-        if @app_name != 'SaneBar'
+        if dev_bundle_override_for_build?(config_name)
           dev_bundle_id = @config[:dev]
           if dev_bundle_id
             build_args << "PRODUCT_BUNDLE_IDENTIFIER=#{dev_bundle_id}"
@@ -1093,7 +1634,7 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
         # For apps without ProdDebug, keep Debug launches ad-hoc signed.
         # Forcing Apple Development signing here can fail on package bundles
         # during unattended Mini builds (errSecInternalComponent).
-        unless has_prod_debug
+        if unsigned_debug_overrides_for_build?(config_name, has_prod_debug)
           build_args += [
             'CODE_SIGN_IDENTITY=-',
             'CODE_SIGNING_REQUIRED=NO',
@@ -1161,6 +1702,24 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
       return result if result
     end
     nil
+  end
+
+  def signed_release_runtime_required?
+    SIGNED_RELEASE_RUNTIME_APPS.include?(@app_name)
+  end
+
+  def dev_bundle_override_for_build?(config_name)
+    @app_name != 'SaneBar' && config_name != 'Release'
+  end
+
+  def unsigned_debug_overrides_for_build?(config_name, has_prod_debug)
+    config_name != 'Release' && !has_prod_debug
+  end
+
+  def direct_launch_args
+    args = ['--sane-skip-app-move']
+    args << '--sane-no-keychain' unless @allow_keychain
+    args
   end
 
   def artifact_mtime(app_bundle_path)
@@ -1254,30 +1813,33 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
   end
 end
 
-# ── Main ──────────────────────────────────────────────────────
+if __FILE__ == $PROGRAM_NAME
+  # ── Main ──────────────────────────────────────────────────────
 
-if ARGV.empty? || ARGV[0] == '--help'
-  warn 'Usage: ruby scripts/sane_test.rb <AppName> [options]'
-  warn ''
-  warn "Available apps: #{APPS.keys.join(', ')}"
-  warn ''
-  warn 'Options:'
-  warn '  --local      Force local testing (skip mini even if reachable)'
-  warn '  --no-logs    Skip log streaming after launch'
-  warn '  --fresh      Wipe ALL state (App Support, UserDefaults, TCC, license) — true first launch'
-  warn '  --free-mode  Clear fallback license data — launch as Free user'
-  warn '  --pro-mode   Write fallback Pro marker — launch in Pro mode'
-  warn '  --reset-tcc  Reset TCC/Accessibility permissions (only for fresh installs)'
-  warn '  --repair-accessibility  Repair duplicate/stale Accessibility entries if inspection finds them'
-  warn '  --allow-keychain  Allow real keychain access during app launch (default is no-keychain)'
-  warn '  --allow-unsigned-debug  Allow local SaneBar Debug launch without signing certs (unsupported visibility path)'
-  warn '  --release    Build Release config and stage it to the canonical app path'
-  warn '  --hardware   Allow real hardware/permission prompts for SaneVideo camera verification'
-  warn ''
-  warn 'Default: deploys to Mac mini if reachable, local otherwise.'
-  warn 'TCC is preserved by default — single-copy enforcement prevents stale grants.'
-  warn 'Use --fresh to test onboarding or first-launch experience.'
-  exit 0
+  if ARGV.empty? || ARGV[0] == '--help'
+    warn 'Usage: ruby scripts/sane_test.rb <AppName> [options]'
+    warn ''
+    warn "Available apps: #{APPS.keys.join(', ')}"
+    warn ''
+    warn 'Options:'
+    warn '  --local      Force local testing (skip mini even if reachable)'
+    warn '  --no-logs    Skip log streaming after launch'
+    warn '  --fresh      Wipe ALL state (App Support, UserDefaults, TCC, license) — true first launch'
+    warn '  --free-mode  Clear fallback license data — launch as Free user'
+    warn '  --pro-mode   Write fallback Pro marker — launch in Pro mode'
+    warn '  --reset-tcc  Reset TCC/Accessibility permissions (only for fresh installs)'
+    warn '  --repair-accessibility  Repair duplicate/stale Accessibility entries if inspection finds them'
+    warn '  --allow-keychain  Allow real keychain access during app launch (default is no-keychain)'
+    warn '  --allow-unsigned-debug  Allow local SaneBar Debug launch without signing certs (unsupported visibility path)'
+    warn '  --release    Build Release config and stage it to the canonical app path'
+    warn '  --hardware   Allow real hardware/permission prompts for SaneVideo camera verification'
+    warn ''
+    warn 'Default: deploys to Mac mini if reachable, local otherwise.'
+    warn 'SaneClip always uses signed Release runtime to preserve TCC.'
+    warn 'TCC is preserved by default — single-copy enforcement prevents stale grants.'
+    warn 'Use --fresh to test onboarding or first-launch experience.'
+    exit 0
+  end
+
+  SaneTest.new(ARGV[0], ARGV[1..] || []).run
 end
-
-SaneTest.new(ARGV[0], ARGV[1..] || []).run

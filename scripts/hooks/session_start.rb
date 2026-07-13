@@ -681,6 +681,8 @@ begin
   log_debug "run_mcp_watchdog_cleanup done"
   cleanup_orphaned_subagents          # Clean up orphan --resume subagents
   log_debug "cleanup_orphaned_subagents done"
+  cleanup_orphaned_dev_servers        # Reap leaked agent dev/test servers (RAM discipline)
+  log_debug "cleanup_orphaned_dev_servers done"
   ensure_claude_dir
   log_debug "ensure_claude_dir done"
   rotate_log_files                  # Prevent unbounded log growth

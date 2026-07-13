@@ -145,14 +145,15 @@ module SaneMasterModules
     end
 
     def dirty_repos(text)
-      text.lines.filter_map do |line|
+      # map+compact, not filter_map: must stay Ruby 2.6-compatible (system ruby).
+      text.lines.map do |line|
         next unless line.start_with?('| ')
         cells = line.split('|').map(&:strip)
         next unless cells.length >= 6
         next unless cells[2].include?('Dirty') || cells[2].include?('failed') || cells[3].to_i.positive?
 
         cells[1]
-      end.uniq
+      end.compact.uniq
     end
 
     def section(text, heading)

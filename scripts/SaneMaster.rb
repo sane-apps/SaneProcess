@@ -65,6 +65,7 @@ require 'socket'
 require 'digest'
 require 'fileutils'
 require 'digest'
+require 'securerandom'
 require 'English'
 require 'yaml'
 
@@ -103,6 +104,7 @@ require_relative 'sanemaster/session'
 require_relative 'sanemaster/circuit_breaker_state'
 require_relative 'sanemaster/structural_compliance'
 require_relative 'sanemaster/saneui_guard'
+require_relative 'sanemaster/upgrade_path_proof'
 require_relative 'sanemaster/release'
 require_relative 'sanemaster/release_readiness'
 require_relative 'sanemaster/ci_helpers'
@@ -110,6 +112,7 @@ require_relative 'sanemaster/sales'
 require_relative 'sanemaster/downloads'
 
 class SaneMaster
+  ROUTE_CONTEXT_UNTRACKED_SWIFT_MAX_BYTES = 2 * 1024 * 1024
   include SaneMasterModules::Base
   include SaneMasterModules::Memory
   include SaneMasterModules::Dependencies
@@ -142,6 +145,7 @@ class SaneMaster
   include SaneMasterModules::UniversalControl
   include SaneMasterModules::Session
   include SaneMasterModules::StructuralCompliance
+  include SaneMasterModules::UpgradePathProof
   include SaneMasterModules::Release
   include SaneMasterModules::ReleaseReadiness
   include SaneMasterModules::CIHelpers
@@ -155,12 +159,13 @@ class SaneMaster
     build: {
       desc: 'Build, test, and validate code',
       commands: {
-        'verify' => { args: '[--ui] [--clean] [--no-grant-permissions] [--timeout seconds]', desc: 'Build and run tests (unit by default, --ui for UI)' },
+        'verify' => { args: '[--ui|--ui-only] [--clean] [--no-grant-permissions] [--signed-tests] [--skip-test-validation] [--quiet] [--timeout positive_seconds]', desc: 'Build and run tests with strict arguments, one global Xcode deadline, and scope-matched xcresult evidence' },
         'clean' => { args: '[--nuclear]', desc: 'Wipe build cache and test states' },
         'lint' => { args: '', desc: 'Run SwiftLint and auto-fix issues' },
         'release' => { args: '[--full|--deploy|--no-deploy|--skip-notarize|--version X.Y.Z|--notes "..."]', desc: 'Build, sign, notarize, package, and optionally deploy' },
+        'upgrade_path_proof' => { args: '', desc: 'Run the configured behavioral upgrade test and write signed Mini proof' },
         'release_preflight' => { args: '', desc: 'Run all pre-release safety checks without building' },
-        'appstore_preflight' => { args: '', desc: 'Run App Store submission compliance checks for active App Store lanes' }
+        'appstore_preflight' => { args: '[--platform macos|ios] [--pkg PATH | --asc-build-id ID --build-number N]', desc: 'Run App Store submission compliance checks and optionally bind the exact submission target' }
       }
     },
     gen: {
@@ -255,8 +260,9 @@ class SaneMaster
     ops: {
       desc: 'Status, support, and Mini control-plane workflows',
       commands: {
-        'status' => { args: '', desc: 'Run the live cross-reference status report' },
+        'status' => { args: '[--fast|--full]', desc: 'Run truthful status coverage; full is default and exits 3 when any selected lane is unavailable' },
         'operator_brief' => { args: '[--nightly-report PATH] [--morning-report PATH] [--handoff PATH] [--output PATH] [--json]', desc: 'Summarize current SaneApps receipts into a prioritized operator brief' },
+        'business_appointment' => { args: 'add --title TITLE --start "YYYY-MM-DD HH:MM" --attendee EMAIL [--apply] [--json]', desc: 'Create SaneApps-owned business calendar appointments; refuses personal Gmail/calendar routes' },
         'check_inbox' => { args: '[check|review <id>|read <id>|reply ...]', desc: 'Forward to the canonical support inbox workflow' },
         'sync_mini' => { args: '[mini] [--quiet] [--no-restart]', desc: 'Sync the Codex control-plane profile to the Mini (see also: sync_grok)' },
         'sync_grok' => { args: '[mini] [--quiet]', desc: 'Sync the Grok control-plane profile (grok-bin, config, .agents/skills) to the Mini' },
@@ -269,7 +275,7 @@ class SaneMaster
     session: {
       desc: 'Session state, approvals, and loop controls',
       commands: {
-        'github_post_approval' => { args: '--body|--body-file <TEXT|PATH> --user-approval "QUOTE"', desc: 'Record exact-text approval before public GitHub posting' },
+        'github_post_approval' => { args: '--body|--body-file <TEXT|PATH>|--admin --user-approval "QUOTE"', desc: 'Record exact-text approval before public GitHub posting (--admin for no-body settings API calls)' },
         'email_force_approval' => { args: '--action ACTION --id ID --reason TEXT --user-approval "QUOTE"', desc: 'Record scoped approval for check-inbox --force' },
         'session_end' => { args: '[--skip-prompts]', desc: 'End session with insight extraction' },
         'reset_breaker' => { args: '', desc: 'Reset circuit breaker (unblock tools)' },
@@ -296,7 +302,7 @@ class SaneMaster
         'enable_ci_tests' => { args: '', desc: 'Enable test targets in project.yml for CI' },
         'restore_ci_tests' => { args: '', desc: 'Restore project.yml from CI backup' },
         'fix_mocks' => { args: '', desc: 'Add @testable import to generated mocks' },
-        'monitor_tests' => { args: '[scheme] [test] [timeout]', desc: 'Run tests with timeout and progress' },
+        'monitor_tests' => { args: '[--scheme NAME] [--test SELECTOR] [--timeout POSITIVE_SECONDS]', desc: 'Run tests with progress and require parsed xcresult proof of at least one passed selected test case' },
         'image_info' => { args: '<path>', desc: 'Extract image info and base64' }
       }
     },
@@ -314,7 +320,7 @@ class SaneMaster
   }.freeze
 
   QUICK_START = [
-    { cmd: 'status', desc: 'Live project status cross-reference' },
+    { cmd: 'status [--fast|--full]', desc: 'Truthful status coverage (full by default)' },
     { cmd: 'verify', desc: 'Build + run tests' },
     { cmd: 'check_inbox', desc: 'Support inbox status and review' },
     { cmd: 'test_mode', desc: 'Kill → Build → Launch → Logs' },
@@ -343,6 +349,7 @@ class SaneMaster
                                   audit
                                   system_check
                                   release
+                                  upgrade_path_proof
                                   release_preflight
                                   appstore_preflight
                                   asp
@@ -527,7 +534,9 @@ class SaneMaster
     exit_status = 1
     raise
   ensure
-    record_sanemaster_workflow_receipt(command, workflow_args, started_at, exit_status) if command
+    # Help is read-only discovery, not workflow evidence. Keeping it receipt-free
+    # prevents help consumers from receiving telemetry markers on stderr.
+    record_sanemaster_workflow_receipt(command, workflow_args, started_at, exit_status) if command && command != 'help'
     auto_dedupe_runtime_apps!(command) if exit_status.to_i.zero?
   end
 
@@ -549,6 +558,7 @@ class SaneMaster
   end
 
   def maybe_route_to_mini!(command, args)
+    routed_appstore_binding_dir = nil
     return if ENV['SANEMASTER_DISABLE_MINI_ROUTING'] == '1'
     return if running_on_mini_host?
     return unless MINI_FIRST_COMMANDS.include?(command)
@@ -596,21 +606,29 @@ class SaneMaster
       execution_repo = if release_routed
                          prepare_release_workspace_on_mini!(Dir.pwd, remote_repo, preserve_release_artifacts: preserve_release_artifacts)
                        else
-                         sync_workspace_to_mini!(remote_repo)
-                         remote_repo
+                         # Non-release routes execute in a persistent scratch
+                         # workspace; the canonical Mini repo stays clean so the
+                         # release dirty-peer gate can never be tripped by our
+                         # own verify/sweep overlays again.
+                         prepare_verify_workspace_on_mini!(Dir.pwd, remote_repo)
                        end
-      execution_saneprocess_repo = release_routed ? routed_release_path_for_local(saneprocess_repo_root) : remote_saneprocess_repo
+      execution_saneprocess_repo = release_routed ? routed_release_path_for_local(saneprocess_repo_root) : routed_verify_path_for_local(saneprocess_repo_root)
       if workspace_uses_saneui?(Dir.pwd) && Dir.exist?(saneui_repo_root)
         remote_saneui_repo = map_local_path_to_mini(saneui_repo_root)
         unless remote_saneui_repo
           abort "❌ Could not map SaneUI to mini: #{saneui_repo_root}"
         end
-        remote_saneui_repo = routed_release_path_for_local(saneui_repo_root) if release_routed
+        remote_saneui_repo = release_routed ? routed_release_path_for_local(saneui_repo_root) : routed_verify_path_for_local(saneui_repo_root)
         sync_local_dir_to_mini!(saneui_repo_root, remote_saneui_repo, label: 'SaneUI')
       end
       sync_local_dir_to_mini!(saneprocess_repo_root, execution_saneprocess_repo, label: 'SaneProcess')
-      sync_setapp_app_workspaces_to_mini! if setapp_route_command?(command)
+      sync_setapp_app_workspaces_to_mini!(release_routed: release_routed) if setapp_route_command?(command)
       sync_release_artifacts_to_mini!(Dir.pwd, execution_repo) if preserve_release_artifacts
+      routed_args, routed_appstore_binding_dir = route_appstore_preflight_package_to_mini(
+        command,
+        args,
+        execution_repo
+      )
       if release_routed
         routed_webhook_repo = sync_release_support_repos_to_mini!(release_routed: true, command: command)
         sync_cktool_auth_to_mini!
@@ -665,7 +683,7 @@ class SaneMaster
       end
       remote_env_prefix = forwarded_env.empty? ? '' : "#{forwarded_env.join(' ')} "
       remote_script = File.join(execution_saneprocess_repo, 'scripts', 'SaneMaster.rb')
-      remote_cmd = "#{remote_env_prefix}ruby #{Shellwords.escape(remote_script)} #{([command] + args).map { |arg| Shellwords.escape(arg) }.join(' ')}"
+      remote_cmd = "#{remote_env_prefix}ruby #{Shellwords.escape(remote_script)} #{([command] + routed_args).map { |arg| Shellwords.escape(arg) }.join(' ')}"
       route_log("📍 Mini-first routing: #{command} -> mini (#{execution_repo})")
       $stdout.flush
       remote_ok = ssh_system('mini', "cd #{Shellwords.escape(execution_repo)} && #{remote_cmd}")
@@ -683,6 +701,7 @@ class SaneMaster
       exit remote_status
     end
   ensure
+    cleanup_routed_appstore_preflight_package(routed_appstore_binding_dir) if routed_appstore_binding_dir
     @route_logs_to_stderr = false
   end
 
@@ -703,6 +722,11 @@ class SaneMaster
     if @route_logs_to_stderr
       options = options.merge(out: $stderr, err: $stderr)
     end
+    # Skip the splat for empty options: under ruby 2.6 `system(*cmd, **{})`
+    # appends a literal {} argument (pre-3.0 kwargs), which corrupts the
+    # command args (seen as a phantom rsync target in release_route tests).
+    return system(*command) if options.empty?
+
     system(*command, **options)
   end
 
@@ -729,8 +753,14 @@ class SaneMaster
 
   def running_on_mini_host?
     host = Socket.gethostname.to_s.downcase
-    user = ENV.fetch('USER', '').downcase
-    host.include?('mini') || user == 'stephansmac'
+    return true if host.include?('mini')
+
+    if RUBY_PLATFORM.include?('darwin')
+      computer_name, status = Open3.capture2('/usr/sbin/scutil', '--get', 'ComputerName')
+      return true if status.success? && computer_name.to_s.downcase.include?('mac mini')
+    end
+
+    false
   rescue StandardError
     false
   end
@@ -738,6 +768,9 @@ class SaneMaster
   def ssh_system(*args, tty: false, **options)
     ssh_args = ['ssh', '-n']
     ssh_args << '-tt' if tty && $stdout.tty?
+    # See route_system: empty **options under ruby 2.6 appends a literal {}.
+    return system(*ssh_args, *args) if options.empty?
+
     system(*ssh_args, *args, **options)
   end
 
@@ -775,11 +808,6 @@ class SaneMaster
     false
   rescue StandardError
     false
-  end
-
-  def sync_workspace_to_mini!(remote_repo)
-    route_log("🔄 Syncing local workspace snapshot to mini (#{remote_repo})")
-    sync_local_dir_to_mini!(Dir.pwd, remote_repo, label: nil)
   end
 
   def prepare_release_workspace_on_mini!(local_repo, remote_repo, preserve_release_artifacts: false)
@@ -973,6 +1001,90 @@ PY
     File.join('/Users/stephansmac', '.sanemaster', 'routed-workspaces', digest)
   end
 
+  # Persistent (per-repo, reused across runs for incremental build speed)
+  # scratch root for NON-release routed commands. Verify/sweep overlays used to
+  # rsync straight onto the canonical Mini repo, leaving it permanently dirty —
+  # the root cause of the recurring dirty-peer release blocks, wrong-branch
+  # commits on the Mini, and the months-old auto-reconcile stash pile.
+  def mini_verify_workspace_root(local_repo)
+    digest = Digest::SHA256.hexdigest(File.expand_path(local_repo))[0, 12]
+    File.join('/Users/stephansmac', '.sanemaster', 'verify-workspaces', digest)
+  end
+
+  def routed_verify_path_for_local(local_path, local_repo = Dir.pwd)
+    absolute_path = File.expand_path(local_path)
+    relative_path = if absolute_path.start_with?('/Users/sj/')
+                      absolute_path.delete_prefix('/Users/sj/')
+                    elsif absolute_path.start_with?('/Users/stephansmac/')
+                      absolute_path.delete_prefix('/Users/stephansmac/')
+                    else
+                      abort "❌ Could not mirror path into routed verify workspace: #{absolute_path}"
+                    end
+    File.join(mini_verify_workspace_root(local_repo), relative_path)
+  end
+
+  # Prepare the scratch workspace for a non-release routed command: align its
+  # git state to the local HEAD (so receipt source fingerprints match by
+  # construction), then let the caller overlay the working tree. The canonical
+  # Mini repo is never written. Unlike the release path this tolerates
+  # unpushed branches (verify's whole point is pre-push proof) and skips
+  # `clean -fdx` so incremental build caches survive between runs.
+  def prepare_verify_workspace_on_mini!(local_repo, remote_repo)
+    branch = current_git_branch(local_repo)
+    head = current_git_head(local_repo)
+    scratch_repo = routed_verify_path_for_local(local_repo, local_repo)
+    bundle_branch = branch
+    branch = 'sanemaster-route-verify' if branch.empty? || branch == 'HEAD'
+
+    remote_bundle_path = File.join(
+      '/tmp',
+      "sanemaster-verify-#{Digest::SHA256.hexdigest("#{File.expand_path(local_repo)}:#{head}")[0, 16]}.bundle"
+    )
+    needs_bundle = !head.empty? &&
+                   !bundle_branch.empty? && bundle_branch != 'HEAD' &&
+                   !mini_repo_has_commit?(scratch_repo, head)
+    sync_git_bundle_to_mini!(local_repo, bundle_branch, remote_bundle_path) if needs_bundle
+
+    remote_cmd = <<~SH
+      set -e
+      scratch=#{Shellwords.escape(scratch_repo)}
+      canonical=#{Shellwords.escape(remote_repo)}
+      bundle_path=#{Shellwords.escape(remote_bundle_path)}
+      cleanup() { rm -f "$bundle_path"; }
+      trap cleanup EXIT
+      if [ ! -d "$scratch/.git" ]; then
+        mkdir -p "$(dirname "$scratch")"
+        rm -rf "$scratch"
+        if [ -d "$canonical/.git" ]; then
+          git clone --no-checkout "$canonical" "$scratch" >/dev/null 2>&1
+        else
+          mkdir -p "$scratch"
+          git -C "$scratch" init -q
+        fi
+      fi
+      cd "$scratch"
+      if [ -n #{Shellwords.escape(head)} ] && ! git rev-parse --verify #{Shellwords.escape("#{head}^{commit}")} >/dev/null 2>&1; then
+        if [ -f "$bundle_path" ]; then
+          git fetch "$bundle_path" #{Shellwords.escape(branch)} >/dev/null 2>&1 || true
+        fi
+        if [ -d "$canonical/.git" ]; then
+          git fetch "$canonical" >/dev/null 2>&1 || true
+        fi
+      fi
+      if [ -n #{Shellwords.escape(head)} ] && git rev-parse --verify #{Shellwords.escape("#{head}^{commit}")} >/dev/null 2>&1; then
+        git checkout -q -B #{Shellwords.escape(branch)} #{Shellwords.escape(head)} 2>/dev/null || true
+        git reset -q --hard #{Shellwords.escape(head)} 2>/dev/null || true
+      fi
+    SH
+    ok = ssh_system('mini', remote_cmd)
+    abort '❌ Failed to prepare the routed verify workspace on the mini.' unless ok
+
+    route_log("🔄 Syncing local workspace snapshot to mini (#{scratch_repo})")
+    sync_local_dir_to_mini!(local_repo, scratch_repo, label: nil)
+    apply_git_deleted_paths_to_mini!(local_repo, scratch_repo)
+    scratch_repo
+  end
+
   def routed_release_path_for_local(local_path, local_repo = Dir.pwd)
     absolute_path = File.expand_path(local_path)
     relative_path = if absolute_path.start_with?('/Users/sj/')
@@ -1015,7 +1127,7 @@ PY
   end
 
   def release_routed_command?(command)
-    %w[release release_preflight appstore_preflight asp].include?(command)
+    %w[release upgrade_path_proof release_preflight appstore_preflight asp].include?(command)
   end
 
   def routed_command_requires_support_repo_sync?(command)
@@ -1059,12 +1171,22 @@ PY
     File.expand_path('~/SaneApps/infra/sane-email-automation')
   end
 
-  def sync_setapp_app_workspaces_to_mini!
+  # Setapp app workspaces must land where the EXECUTING SaneProcess copy will
+  # look for them. Non-release routes execute SaneProcess from the scratch
+  # verify workspace, so the app repos mirror into the same scratch root
+  # (relative ../../apps/<App> lookups stay consistent); release routes keep
+  # their own routed-release mapping via the caller. Canonical Mini repos are
+  # never written either way.
+  def sync_setapp_app_workspaces_to_mini!(release_routed: false)
     setapp_enabled_app_dirs.each do |app_dir|
       local_repo = File.join(saneapps_root, 'apps', app_dir)
       next unless Dir.exist?(local_repo)
 
-      remote_repo = map_local_path_to_mini(local_repo)
+      remote_repo = if release_routed
+                      routed_release_path_for_local(local_repo)
+                    else
+                      routed_verify_path_for_local(local_repo)
+                    end
       abort "❌ Could not map Setapp app #{app_dir} to mini: #{local_repo}" unless remote_repo
 
       sync_local_dir_to_mini!(local_repo, remote_repo, label: "#{app_dir} Setapp app")
@@ -1099,10 +1221,12 @@ PY
     exit_status = $CHILD_STATUS&.exitstatus || (success ? 0 : 1)
     route_metadata = respond_to?(:workflow_receipt_route_metadata, true) ? workflow_receipt_route_metadata(workflow, success: success) : {}
     unless ENV['SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT'] == '1'
-      record_process_metric(
+      receipt_id = SecureRandom.hex(16)
+      recorded = record_process_metric(
         'workflow_receipt',
         {
           schema_version: 3,
+          receipt_id: receipt_id,
           workflow: workflow,
           success: success,
           command: command.join(' '),
@@ -1114,6 +1238,7 @@ PY
           host: Socket.gethostname
         }.merge(route_metadata)
       ) if respond_to?(:record_process_metric)
+      warn "SANEMASTER_WORKFLOW_RECEIPT=#{receipt_id}" if recorded
     end
     exit(exit_status)
   end
@@ -1125,10 +1250,15 @@ PY
     command_parts = ['ruby', File.join(saneprocess_repo_root, 'scripts', 'SaneMaster.rb'), *Array(args)]
     workflow = "sanemaster:#{command}"
     route_metadata = respond_to?(:workflow_receipt_route_metadata, true) ? workflow_receipt_route_metadata(workflow, success: exit_status.to_i.zero?) : {}
-    record_process_metric(
+    if command.to_s == 'release_preflight' && exit_status.to_i.zero? && respond_to?(:release_status_source_fingerprint, true)
+      route_metadata = route_metadata.merge(source_fingerprint: release_status_source_fingerprint(Dir.pwd))
+    end
+    receipt_id = SecureRandom.hex(16)
+    recorded = record_process_metric(
       'workflow_receipt',
       {
         schema_version: 3,
+        receipt_id: receipt_id,
         workflow: workflow,
         success: exit_status.to_i.zero?,
         command: command_parts.join(' '),
@@ -1141,19 +1271,25 @@ PY
         client: ENV['CLAUDECODE'] || ENV['CLAUDE_CODE'] ? 'claude' : (ENV['CODEX_HOME'] ? 'codex' : 'unknown')
       }.merge(route_metadata)
     )
+    warn "SANEMASTER_WORKFLOW_RECEIPT=#{receipt_id}" if recorded
   rescue StandardError => e
     warn "⚠️  Could not record workflow receipt: #{e.message}" if ENV['DEBUG']
   end
 
-  def run_status(_args = [])
+  def run_status(args = [])
     script = File.join(saneprocess_repo_root, 'scripts', 'automation', 'sane-status-crossref.sh')
-    run_external_command_with_workflow_receipt('status', 'bash', script)
+    run_external_command_with_workflow_receipt('status', 'bash', script, *args)
   end
 
   def run_check_inbox(args = [])
     script = File.join(infra_scripts_root, 'check-inbox.sh')
     forwarded_args = args.empty? ? ['check'] : args
     run_external_command_with_workflow_receipt('check_inbox', script, *forwarded_args)
+  end
+
+  def run_business_appointment(args = [])
+    script = File.join(saneprocess_repo_root, 'scripts', 'automation', 'business_appointment.rb')
+    run_external_command_with_workflow_receipt('business_appointment', 'ruby', script, *args)
   end
 
   def run_python_automation_script(script_name, args)
@@ -1375,6 +1511,9 @@ PY
       '--exclude', 'build',
       '--include', 'outputs/',
       '--include', 'outputs/customer_ui_action_receipt.json',
+      '--include', 'outputs/upgrade_path_behavioral_receipt.json',
+      '--include', 'outputs/upgrade-path-proof/',
+      '--include', 'outputs/upgrade-path-proof/***',
       '--include', 'outputs/customer-ui/',
       '--include', 'outputs/customer-ui/***',
       '--include', 'outputs/runtime-preflight/',
@@ -1454,18 +1593,26 @@ PY
     dirty_output, = Open3.capture2('git', '-C', repo_dir, 'status', '--porcelain')
     branch, = Open3.capture2('git', '-C', repo_dir, 'rev-parse', '--abbrev-ref', 'HEAD')
     head, = Open3.capture2('git', '-C', repo_dir, 'rev-parse', 'HEAD')
-    history_base, history_base_status = Open3.capture2e('git', '-C', repo_dir, 'rev-parse', '--verify', 'HEAD~5')
-    changed_files_output, changed_files_status = if history_base_status.success?
-                                                   Open3.capture2(
-                                                     'git', '-C', repo_dir, 'diff',
-                                                     "#{history_base.strip}..HEAD", '--name-only', '--', '*.swift'
-                                                   )
-                                                 else
-                                                   Open3.capture2(
-                                                     'git', '-C', repo_dir, 'diff',
-                                                     '--name-only', 'HEAD', '--', '*.swift'
-                                                   )
-                                                 end
+    # The last reachable release tag is the release boundary. Comparing it
+    # directly to the working tree includes every unreleased commit plus staged
+    # and unstaged changes; repos without a release tag compare to the empty tree.
+    swift_diff_range = release_unreleased_history_base(repo_dir)
+    changed_files_output, changed_files_status = Open3.capture2(
+      'git', '-C', repo_dir, 'diff', swift_diff_range, '--name-only', '--', '*.swift'
+    )
+    changed_diff_output, changed_diff_status = Open3.capture2(
+      'git', '-C', repo_dir, 'diff', swift_diff_range, '--unified=3', '--no-color', '--no-ext-diff', '--', '*.swift'
+    )
+    untracked_output, untracked_status = Open3.capture2(
+      'git', '-C', repo_dir, 'ls-files', '-z', '--others', '--exclude-standard', '--', '*.swift'
+    )
+    untracked_swift_files = untracked_status.success? ? untracked_output.split("\0").reject(&:empty?) : []
+    untracked_swift_diff, untracked_error = route_context_untracked_swift_diff(repo_dir, untracked_swift_files)
+    diff_errors = []
+    diff_errors << 'git diff --name-only failed' unless changed_files_status.success?
+    diff_errors << 'git diff failed' unless changed_diff_status.success?
+    diff_errors << 'git ls-files for untracked Swift failed' unless untracked_status.success?
+    diff_errors << untracked_error if untracked_error
     stash_reports = if respond_to?(:auto_reconcile_stash_reports)
                       auto_reconcile_stash_reports(repo_path: repo_dir).map do |report|
                         {
@@ -1487,13 +1634,15 @@ PY
       'dirty_files' => dirty_output.to_s.lines.map(&:chomp).reject(&:empty?),
       'auto_reconcile_stash_reports' => stash_reports,
       'recent_changed_swift_files' => if changed_files_status.success?
-                                        changed_files_output.to_s.lines.map(&:strip).reject(&:empty?)
+                                        (changed_files_output.to_s.lines.map(&:strip) + untracked_swift_files).reject(&:empty?).uniq.sort
                                       else
-                                        []
+                                        untracked_swift_files.uniq.sort
                                       end,
+      'recent_swift_diff' => changed_diff_status.success? ? changed_diff_output.to_s + untracked_swift_diff : '',
+      'recent_swift_diff_error' => diff_errors.join('; '),
       'remote_sync' => local_repo_remote_sync_context(repo_dir, branch.to_s.strip, head.to_s.strip)
     }
-  rescue StandardError
+  rescue StandardError => e
     {
       'path' => repo_dir,
       'branch' => '',
@@ -1502,8 +1651,38 @@ PY
       'dirty_files' => [],
       'auto_reconcile_stash_reports' => [],
       'recent_changed_swift_files' => [],
+      'recent_swift_diff' => '',
+      'recent_swift_diff_error' => "route context failed: #{e.class}: #{e.message}",
       'remote_sync' => { 'status' => 'unavailable' }
     }
+  end
+
+  def route_context_untracked_swift_diff(repo_dir, paths)
+    chunks = paths.map do |relative_path|
+      absolute_path = File.expand_path(relative_path, repo_dir)
+      repo_root = File.realpath(repo_dir)
+      metadata = File.lstat(absolute_path)
+      raise "symlink or non-regular untracked Swift path: #{relative_path}" unless metadata.file?
+      raise "untracked Swift file exceeds #{ROUTE_CONTEXT_UNTRACKED_SWIFT_MAX_BYTES} bytes: #{relative_path}" if metadata.size > ROUTE_CONTEXT_UNTRACKED_SWIFT_MAX_BYTES
+
+      real_path = File.realpath(absolute_path)
+      unless real_path.start_with?("#{repo_root}/")
+        raise "untracked Swift path escapes repository: #{relative_path}"
+      end
+
+      contents = File.binread(real_path, ROUTE_CONTEXT_UNTRACKED_SWIFT_MAX_BYTES + 1)
+      raise "untracked Swift file grew beyond size limit: #{relative_path}" if contents.bytesize > ROUTE_CONTEXT_UNTRACKED_SWIFT_MAX_BYTES
+      contents = contents.force_encoding(Encoding::UTF_8)
+      contents = contents.scrub('?') unless contents.valid_encoding?
+      source = JSON.generate("a/#{relative_path}")
+      destination = JSON.generate("b/#{relative_path}")
+      added = contents.each_line.map { |line| "+#{line}" }.join
+      added << "\n" unless added.empty? || added.end_with?("\n")
+      "diff --git #{source} #{destination}\n--- /dev/null\n+++ #{destination}\n#{added}"
+    end
+    [chunks.join, nil]
+  rescue StandardError => e
+    ['', "unable to include untracked Swift: #{e.message}"]
   end
 
   def local_repo_remote_sync_context(repo_dir, branch, head)
@@ -1611,6 +1790,10 @@ PY
     [
       '--include', 'qa_status.json',
       '--include', 'release_preflight_status.json',
+      '--include', 'appstore_preflight_status.json',
+      '--include', 'upgrade_path_behavioral_receipt.json',
+      '--include', 'upgrade-path-proof/',
+      '--include', 'upgrade-path-proof/***',
       '--include', 'customer_ui_action_receipt.json',
       '--include', 'validation/',
       '--include', 'validation/qa_status.json',
@@ -1637,7 +1820,7 @@ PY
       find "$out" -mindepth 1 -maxdepth 1 -print | while IFS= read -r path; do
         base=${path##*/}
         case "$base" in
-          qa_status.json|release_preflight_status.json|customer_ui_action_receipt.json|validation|customer-ui|runtime-preflight|visual_smoke|process-abtest) continue ;;
+          qa_status.json|release_preflight_status.json|appstore_preflight_status.json|upgrade_path_behavioral_receipt.json|upgrade-path-proof|customer_ui_action_receipt.json|validation|customer-ui|runtime-preflight|visual_smoke|process-abtest) continue ;;
         esac
         /usr/bin/trash "$path" 2>/dev/null || trash "$path" 2>/dev/null || true
       done
@@ -1664,6 +1847,43 @@ PY
       end
       abort "❌ Failed to sync routed release artifacts for #{relative_path} to the mini." unless ok
     end
+  end
+
+  def route_appstore_preflight_package_to_mini(command, args, execution_repo)
+    routed_args = Array(args).dup
+    return [routed_args, nil] unless %w[appstore_preflight asp].include?(command.to_s)
+
+    package_index = routed_args.index('--pkg')
+    return [routed_args, nil] unless package_index
+
+    package_argument = routed_args[package_index + 1].to_s
+    abort '❌ appstore_preflight --pkg requires a package path.' if package_argument.empty?
+
+    local_package = File.expand_path(package_argument, Dir.pwd)
+    abort "❌ App Store preflight package not found: #{local_package}" unless File.file?(local_package)
+
+    digest = Digest::SHA256.file(local_package).hexdigest
+    binding_dir = File.join(execution_repo, '.sanemaster', 'appstore-preflight-bindings', digest)
+    remote_package = File.join(binding_dir, File.basename(local_package))
+    ok = ssh_system('mini', "mkdir -p #{Shellwords.escape(binding_dir)}")
+    abort '❌ Failed to prepare Mini App Store preflight package binding directory.' unless ok
+
+    ok = route_system('rsync', '-az', '--no-links', local_package, "mini:#{remote_package}")
+    abort '❌ Failed to sync exact App Store preflight package to the Mini.' unless ok
+
+    routed_args[package_index + 1] = remote_package
+    [routed_args, binding_dir]
+  end
+
+  def cleanup_routed_appstore_preflight_package(binding_dir)
+    return if binding_dir.to_s.empty?
+
+    parent = File.dirname(binding_dir)
+    command = <<~SH
+      /usr/bin/trash #{Shellwords.escape(binding_dir)} 2>/dev/null || trash #{Shellwords.escape(binding_dir)} 2>/dev/null || true
+      rmdir #{Shellwords.escape(parent)} 2>/dev/null || true
+    SH
+    ssh_system('mini', command, out: File::NULL, err: File::NULL)
   end
 
   def sync_release_artifacts_from_mini!(local_repo, remote_repo, warn_only: false)
@@ -1781,6 +2001,8 @@ PY
     when 'operator_brief', 'operator-brief', 'brief'
       success = operator_brief(args)
       exit(success ? 0 : 1) if args.include?('--strict')
+    when 'business_appointment', 'business-appointment', 'appointment'
+      run_business_appointment(args)
     when 'check_inbox', 'check-inbox', 'inbox'
       run_check_inbox(args)
     when 'sync_mini', 'sync-mini'
@@ -1854,10 +2076,27 @@ PY
       launch_readiness(args)
     when 'release'
       release(args)
+    when 'upgrade_path_proof', 'upgrade-path-proof'
+      producer = SaneMasterModules::UpgradePathProof::UPGRADE_PRODUCER
+      if ReleaseReceiptSigner.canonical_producer_child?(producer)
+        upgrade_path_proof(args)
+      else
+        exit ReleaseReceiptSigner.run_canonical_producer(producer, project_root: Dir.pwd, args: args)
+      end
     when 'release_preflight'
-      release_preflight(args)
+      producer = SaneMasterModules::UpgradePathProof::RELEASE_PREFLIGHT_PRODUCER
+      if ReleaseReceiptSigner.canonical_producer_child?(producer)
+        release_preflight(args)
+      else
+        exit ReleaseReceiptSigner.run_canonical_producer(producer, project_root: Dir.pwd, args: args)
+      end
     when 'appstore_preflight', 'asp'
-      appstore_preflight(args)
+      producer = 'saneprocess.appstore_preflight.v1'
+      if ReleaseReceiptSigner.canonical_producer_child?(producer)
+        appstore_preflight(args)
+      else
+        exit ReleaseReceiptSigner.run_canonical_producer(producer, project_root: Dir.pwd, args: args)
+      end
 
     # Sales & Downloads
     when 'sales'
@@ -1948,7 +2187,8 @@ PY
 
     # Interactive Debugging
     when 'launch', 'run'
-      launch_app(args)
+      success = launch_app(args)
+      exit(success ? 0 : 1)
     when 'logs'
       show_app_logs(args)
     when 'test_mode', 'tm'
@@ -2039,6 +2279,7 @@ PY
   def github_post_approval(args)
     quote = nil
     body = nil
+    admin = false
     i = 0
     while i < args.length
       case args[i]
@@ -2054,6 +2295,10 @@ PY
 
         body = File.read(file, encoding: Encoding::UTF_8)
         i += 1
+      when '--admin', '--no-body'
+        # Admin API calls (repo settings, branch protection) post no public
+        # text; the user-approved token alone is the consent record.
+        admin = true
       else
         quote ||= args[i]
       end
@@ -2063,17 +2308,20 @@ PY
     quote = quote.to_s.strip
     abort '❌ Missing explicit user approval quote. Use --user-approval "post it".' if quote.empty?
     body = body.to_s.strip
-    abort '❌ Missing exact public post body. Use --body "final text" or --body-file <path>.' if body.empty?
+    if body.empty? && !admin
+      abort '❌ Missing exact public post body. Use --body "final text" or --body-file <path>, or --admin for settings-only API calls with no post body.'
+    end
 
     path = '/tmp/.gh_post_approved.json'
     payload = {
       'created_at' => Time.now.to_i,
       'user_approval' => quote,
-      'body_hash' => Digest::SHA256.hexdigest(body)
+      'body_hash' => body.empty? ? '' : Digest::SHA256.hexdigest(body),
+      'admin' => admin
     }
     File.write(path, JSON.pretty_generate(payload))
     File.chmod(0o600, path)
-    puts '✅ GitHub public-post approval recorded for 5 minutes.'
+    puts admin ? '✅ GitHub admin-call approval recorded for 5 minutes.' : '✅ GitHub public-post approval recorded for 5 minutes.'
   end
 
   def email_force_approval(args)
@@ -2313,17 +2561,22 @@ PY
   # rubocop:disable Lint/UselessConstantScoping
   COMMAND_DETAILS = {
     'verify' => {
-      usage: 'verify [--ui] [--clean] [--no-grant-permissions] [--timeout seconds]',
-      description: 'Build the project and run tests',
+      usage: 'verify [--ui|--ui-only] [--clean] [--no-grant-permissions] [--signed-tests] [--skip-test-validation] [--quiet] [--timeout positive_seconds]',
+      description: 'Build and run tests; every Xcode phase must exit zero and provide scope-matched xcresult evidence.',
       flags: {
-        '--ui' => 'Run UI tests instead of unit tests',
+        '--ui' => 'Run unit/integration tests, then signed UI tests in a separate session',
+        '--ui-only' => 'Run only the signed UI-test session for focused diagnostics',
         '--clean' => 'Clean build before testing',
         '--no-grant-permissions' => 'Disable the Mini permission monitor for this run',
-        '--timeout seconds' => 'Override the verify timeout in seconds'
+        '--signed-tests' => 'Keep normal code signing enabled for the unit-test phase',
+        '--skip-test-validation' => 'Skip the pre-run static test-reference validation',
+        '--quiet' => 'Compatibility flag for callers that redirect verify output to a log',
+        '--timeout positive_seconds' => 'Set one monotonic deadline shared across all Xcode test phases'
       },
       examples: [
         'verify                     # Run unit tests',
-        'verify --ui                # Run UI tests',
+        'verify --ui                # Run unit/integration plus signed UI tests',
+        'verify --ui-only           # Run only the signed UI-test lane',
         'verify --clean             # Clean build first',
         'verify --no-grant-permissions # Disable the permission monitor for diagnostics',
         'verify --timeout 900       # Allow longer-running suites to finish'
@@ -2420,11 +2673,16 @@ PY
       ]
     },
     'status' => {
-      usage: 'status',
-      description: 'Run the live status cross-reference across git, inbox, Setapp, issues, releases, and current signals.',
-      flags: {},
+      usage: 'status [--fast|--full]',
+      description: 'Run the full cross-reference across git, inbox, Setapp, hosted files, GitHub, releases, and current signals by default. Exit 3 means one or more selected lanes were unavailable.',
+      flags: {
+        '--fast' => 'Explicit partial summary: show active inbox actions and key worktrees only; still exits 3 if either selected lane is unavailable.',
+        '--full' => 'Explicitly run the default full cross-reference, including the core worktree summary and all 10 deep lanes; every lane is attempted before the verdict.'
+      },
       examples: [
-        'status'
+        'status',
+        'status --fast',
+        'status --full'
       ]
     },
     'operator_brief' => {
@@ -2442,6 +2700,24 @@ PY
         'operator_brief',
         'operator_brief --json',
         'operator-brief --strict'
+      ]
+    },
+    'business_appointment' => {
+      usage: 'business_appointment add --title TITLE --start "YYYY-MM-DD HH:MM" --attendee EMAIL [--apply] [--json]',
+      description: 'Preview or create SaneApps-owned business calendar appointments without using personal Gmail/calendar routes.',
+      flags: {
+        '--attendee EMAIL' => 'Invitee address. Repeat for multiple attendees.',
+        '--meeting-url URL' => 'Video call or appointment URL to include on the event.',
+        '--duration-minutes N' => 'Event length in minutes. Default: 30.',
+        '--reminders-minutes N' => 'Popup reminder minutes. Default: 15.',
+        '--dedupe-key KEY' => 'Optional idempotency key. Default is derived from calendar, title, start, timezone, and attendees.',
+        '--confirm-send TEXT' => 'Required with --apply. Use the confirm_send value from preview JSON.',
+        '--apply' => 'Create the event only after business calendar credentials are configured.',
+        '--json' => 'Print machine-readable receipt JSON'
+      },
+      examples: [
+        'business_appointment add --title "SaneCite call" --start "2026-07-13 09:00" --attendee prospect@example.com --json',
+        'business-appointment add --title "Test invite" --start "2026-07-06 09:00" --attendee stephanjoseph2007@gmail.com --confirm-send "send hi@saneapps.com invite to stephanjoseph2007@gmail.com at 2026-07-06T09:00:00 America/New_York" --apply --json'
       ]
     },
     'check_inbox' => {
@@ -2492,8 +2768,8 @@ PY
       ]
     },
     'setapp_upload' => {
-      usage: 'setapp_upload --zip ZIP --release-notes-file PATH --review-comments-file PATH [--portal-fallback --app-id ID --version-id ID]',
-      description: 'Upload a Setapp build. Uses the official CI endpoint when SETAPP_AUTOMATION_TOKEN is present; portal fallback now fails if the version remains Needs Revision after attach.',
+      usage: 'setapp_upload --zip ZIP --release-notes-file PATH --review-comments-file PATH [--portal-fallback --app-id ID (--version-id ID | --create-version)]',
+      description: 'Upload a Setapp build. Canonical auth: `source ~/.config/nv/env` loads SETAPP_PORTAL_TOKEN from the keychain for --portal-fallback. New public release (pinned version Released) needs --create-version (PATCH is rejected); reupload during review PATCHes via --version-id. See templates/RELEASE_SOP.md "Upload through the standard Setapp lane".',
       flags: {
         '--zip PATH' => 'Setapp ZIP archive to upload',
         '--release-notes TEXT' => 'Public Setapp user-facing release notes text',
@@ -2520,7 +2796,7 @@ PY
         '--app NAME' => 'Only sync one app, such as SaneBar or SaneClip',
         '--dry-run' => 'Validate and print the planned screenshot order without changing Setapp',
         '--json' => 'Print machine-readable output',
-        '--no-safari-token' => 'Do not read the developer.setapp.com Safari token',
+        '--no-safari-token' => 'Legacy alias: do not read the developer.setapp.com Brave token',
         '--allow-pending-public-page' => 'Exit 0 after portal sync even though public setapp.com proof is still pending',
         '--public-page-proof-file PATH' => 'JSON receipt proving the public Setapp page shows the expected screenshots'
       },
@@ -2809,10 +3085,15 @@ PY
       examples: ['session_end', 'se', 'session_end --skip-prompts']
     },
     'appstore_preflight' => {
-      usage: 'appstore_preflight (or asp)',
-      description: 'Run App Store submission compliance checks for active App Store lanes; skips direct-only apps with appstore.enabled: false',
-      flags: {},
-      examples: ['appstore_preflight', 'asp']
+      usage: 'appstore_preflight (or asp) [--platform macos|ios] [--pkg PATH | --asc-build-id ID --build-number N]',
+      description: 'Run App Store submission compliance checks for active App Store lanes; optionally bind the signed receipt to the exact package or existing ASC build',
+      flags: {
+        '--platform PLATFORM' => 'Platform for exact submission binding (macos or ios)',
+        '--pkg PATH' => 'Bind authorization to this exact package digest and bundle metadata',
+        '--asc-build-id ID' => 'Bind authorization to an exact existing App Store Connect build ID',
+        '--build-number N' => 'Required CFBundleVersion when binding an existing ASC build'
+      },
+      examples: ['appstore_preflight', 'appstore_preflight --platform macos --pkg build/Example.pkg', 'asp --platform ios --asc-build-id BUILD_ID --build-number 100']
     },
     'sales' => {
       usage: 'sales [--daily|--month|--products|--fees|--find-customer-orders --email E --name N --product P|--license-status KEY|--disable-license-key KEY|--refund-order ID|--refund-order-number N|--refund-duplicate-license-key KEY --keep-license-key KEY --approval-note PATH|--include-refunded|--json]',
@@ -2937,12 +3218,16 @@ PY
       examples: ['fix_mocks']
     },
     'monitor_tests' => {
-      usage: 'monitor_tests [scheme] [test_name] [timeout_seconds]',
-      description: 'Run xcodebuild tests with live progress reporting and timeout detection.',
-      flags: {},
+      usage: 'monitor_tests [--scheme NAME] [--test SELECTOR] [--timeout POSITIVE_SECONDS]',
+      description: 'Run xcodebuild tests with live progress, bounded cleanup, and parsed xcresult proof of nonzero selected test cases.',
+      flags: {
+        '--scheme NAME' => 'Scheme to test (default: current project scheme)',
+        '--test SELECTOR' => 'Exact xcodebuild only-testing selector',
+        '--timeout POSITIVE_SECONDS' => 'Timeout before verified process-tree cleanup (default: 300)'
+      },
       examples: [
         'monitor_tests                          # Test current scheme, 5min timeout',
-        'monitor_tests SaneBar MyTest 120       # Specific test, 2min timeout'
+        'monitor_tests --scheme SaneBar --test SaneBarTests/HistoryTests/testPaste --timeout 120'
       ]
     },
     'image_info' => {

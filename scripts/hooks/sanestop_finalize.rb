@@ -56,13 +56,16 @@ def uncommitted_working_tree_files(cwd = Dir.pwd)
   out, status = Open3.capture2e('git', '-C', cwd, 'status', '--porcelain', '--untracked-files=all')
   return nil unless status.success?
 
-  out.each_line.filter_map do |line|
-    path = line[3..]&.strip
+  # map+compact, not filter_map: hooks run under the system ruby (2.6), where
+  # filter_map does not exist — it raised NoMethodError into the rescue below,
+  # silently reverting RULE #4 to the counter behavior it replaces.
+  out.each_line.map do |line|
+    path = line[3..-1]&.strip
     next nil if path.nil? || path.empty?
 
     # Rename entries are "old -> new"; the new path is what currently exists.
     path.include?(' -> ') ? path.split(' -> ').last : path
-  end
+  end.compact
 rescue StandardError
   nil
 end
@@ -121,9 +124,40 @@ end
 # Customer-facing UI work requires screenshot-backed inspection, not just green
 # functional tests.
 
+# Returns the still-real customer-facing UI files that genuinely require a
+# visual receipt. A path qualifies only when BOTH hold:
+#   1. it still exists on disk, and
+#   2. it was edited by THIS session's own Edit/Write/bash-mutation tracking
+#      (i.e. it appears in edits[:unique_files] — subagent-internal edits and
+#      merely-read/referenced files never land there).
+# This drops the phantom-file false positives (e.g. scraped names for files that
+# were never edited or no longer exist) without weakening the real gate.
+def live_customer_facing_ui_files(visual)
+  candidate_paths = visual[:required_files_paths] || []
+  return [] if candidate_paths.empty?
+
+  edited_paths = (StateManager.get(:edits)[:unique_files] || [])
+
+  candidate_paths.select do |path|
+    next false unless edited_paths.include?(path)
+
+    File.exist?(File.expand_path(path.to_s, Dir.pwd))
+  end
+rescue StandardError => e
+  warn "⚠️  Visual UI file reconciliation error: #{e.message}" if ENV['DEBUG']
+  []
+end
+
 def check_visual_verification_required
   visual = StateManager.get(:visual_verification)
   return nil unless visual[:required]
+
+  # Only genuine, still-present customer-facing UI edits require a receipt.
+  # Drop phantom entries: files that no longer exist on disk (deleted, reverted,
+  # renamed, or carried over from a different checkout) and any path that was not
+  # actually edited by THIS session's own Edit/Write/bash-mutation tracking.
+  real_ui_files = live_customer_facing_ui_files(visual)
+  return nil if real_ui_files.empty?
 
   receipt_paths = SaneVisualReceipt.valid_receipt_paths(
     cwd: Dir.pwd,
@@ -133,7 +167,7 @@ def check_visual_verification_required
 
   return nil if receipt_paths.any?
 
-  files = (visual[:required_files] || []).first(10)
+  files = real_ui_files.map { |path| File.basename(path) }.uniq.first(10)
   reason = visual[:reason] || 'visual verification required'
 
   "   Visual verification is required (#{reason}).\n" \
@@ -221,11 +255,17 @@ def update_validation_metrics
   cb = StateManager.get(:circuit_breaker)
   block_stats = count_session_blocks_and_resets
   missed_loops = count_missed_doom_loops
+  # Compute this before entering StateManager.update. The predicate reads the
+  # edits section through StateManager.get; doing that from inside the update
+  # block attempts to reacquire the same file lock and pays the full lock
+  # timeout on every completed stop (especially visible in the self-test,
+  # which invokes process_stop many times).
+  strong_verify_success = strong_session_verify_success?
 
   StateManager.update(:validation) do |v|
     # Q4: Session tracking
     v[:sessions_total] = (v[:sessions_total] || 0) + 1
-    if strong_session_verify_success?
+    if strong_verify_success
       v[:sessions_with_tests_passing] = (v[:sessions_with_tests_passing] || 0) + 1
     end
     if cb[:tripped]

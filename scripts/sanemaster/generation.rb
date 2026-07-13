@@ -115,7 +115,9 @@ module SaneMasterModules
       help_output = Dir.chdir(saneprocess_root) { `./scripts/SaneMaster.rb 2>&1` }
 
       commands_in_help = help_output.scan(/^\s+(\w+)/).flatten.uniq
-      commands_in_help.reject! { |c| %w[Examples: Commands: console check_xcodegen check_protocol_changes].include?(c) }
+      commands_in_help.reject! do |command|
+        %w[Quick Categories Examples Aliases Commands console check_xcodegen check_protocol_changes].include?(command)
+      end
 
       commands_in_help.each do |cmd|
         issues << "Command '#{cmd}' exists in SaneMaster but not documented in DEVELOPMENT.md" unless dev_doc.include?(cmd) || dev_doc.include?("`#{cmd}`")

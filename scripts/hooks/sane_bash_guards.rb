@@ -12,6 +12,7 @@ require 'json'
 require 'shellwords'
 
 GUARDS = %w[
+  sane_catastrophic_guard.rb
   sane_launch_guard.rb
   sane_release_guard.rb
   sane_ship_guard.rb
@@ -60,6 +61,34 @@ def raw_remote_screencapture?(remote)
   remote_text = remote.join(' ')
 
   command_text_invokes?(remote_text, 'screencapture')
+end
+
+def remote_peekaboo_screen_capture?(remote_text)
+  %w[image capture list].any? do |sub|
+    command_text_invokes?(remote_text, 'peekaboo', subcommand: sub)
+  end
+end
+
+def remote_ffmpeg_screen_capture?(remote_text)
+  command_text_invokes?(remote_text, 'ffmpeg') && remote_text.include?('avfoundation')
+end
+
+# Any screen-capture/video tool invoked DIRECTLY on the Mini over ssh. macOS
+# attributes the TCC screen-recording check to the ssh session's process, so a
+# direct capture fails even when the tool's own binary is granted. The reliable
+# path is the Mini's already-granted Terminal session via mini-gui-run.sh (which
+# capture-mini-screenshot.sh uses internally). A tool nested inside a
+# `mini-gui-run.sh -- "…"` argument is not a top-level invocation, so it is not
+# flagged here — but a raw tool run alongside the wrapper name (e.g. after `;`)
+# still is, which closes the mention-the-wrapper evasion.
+def raw_remote_screen_tool?(remote)
+  return false if remote.empty?
+
+  remote_text = remote.join(' ')
+
+  command_text_invokes?(remote_text, 'screencapture') ||
+    remote_peekaboo_screen_capture?(remote_text) ||
+    remote_ffmpeg_screen_capture?(remote_text)
 end
 
 def detached_remote_saneapps_qa?(remote)
@@ -188,7 +217,7 @@ rescue ArgumentError
 end
 
 def raw_mini_screenshot_command?(command)
-  mini_ssh_remote_matches?(command) { |remote| raw_remote_screencapture?(remote) }
+  mini_ssh_remote_matches?(command) { |remote| raw_remote_screen_tool?(remote) }
 end
 
 def detached_mini_saneapps_qa_command?(command)
@@ -254,15 +283,21 @@ def block_raw_mini_screenshot_if_needed(payload)
   return unless command && raw_mini_screenshot_command?(command)
 
   warn <<~MESSAGE
-    🔴 BLOCKED: raw Mini screenshot command.
+    🔴 BLOCKED: raw Mini screen capture over ssh (screenshot / video / peekaboo / ffmpeg).
 
-    This bypasses the canonical Mini GUI-session screenshot wrapper and has
-    repeatedly produced false failures.
+    Direct ssh screen capture fails via macOS TCC even when the tool's own binary
+    is granted — the screen-recording check is attributed to the ssh session, not
+    the tool. The reliable path is the Mini's already-granted Terminal session.
 
-    Use:
+    Screenshot:
       ~/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh desktop
-      ~/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh --app "SaneBar" --mode temp
+      ~/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh --app "SaneClip" --mode temp
+    Screen recording (video):
+      ~/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh --video --duration 5 --copy-to /tmp/rec
+    Any other screen tool (peekaboo, ffmpeg -f avfoundation, …):
+      ssh mini 'bash ~/SaneApps/infra/SaneProcess/scripts/mini/mini-gui-run.sh --close-window -- "<your screen command>"'
 
+    Note: cliclick and other Accessibility-only tools work over plain ssh already.
     If the canonical wrapper is genuinely broken or missing, fix that tool first.
   MESSAGE
   exit 2

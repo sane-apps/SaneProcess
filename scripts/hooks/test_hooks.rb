@@ -51,6 +51,13 @@ class HookTests
     test_group("UTF-8 Pinned Reads") do
       test("non-ASCII visual receipt survives locale-less read") { test_visual_receipt_non_ascii_locale }
       test("non-ASCII learnings survive locale-less read") { test_learnings_non_ascii_locale }
+      test("em-dash payload signs and round-trips under C locale") { test_state_signer_em_dash_c_locale }
+    end
+
+    # Umbrella-session artifact discovery + transcript project resolution
+    test_group("Umbrella Session Fixes") do
+      test("visual receipt discovered inside apps/<App>/outputs") { test_visual_receipt_umbrella_discovery }
+      test("LS staging resolves --project \$PWD from the command's cd") { test_lemonsqueezy_project_resolution_from_transcript }
     end
 
     # Blocked-path enforcement through the real sanetools entry point
@@ -215,6 +222,103 @@ class HookTests
     end
   end
 
+  # Regression (hit live 2026-07-07): gate_cert.rb recorded an override note
+  # containing an em dash; under a C locale the note string reaches
+  # StateSigner mis-tagged and to_json raised
+  # (Encoding::UndefinedConversionError on ruby 2.6/json 2.1 for BINARY,
+  # JSON::GeneratorError on ruby 4/json 2.19 for US-ASCII — json 3.0 will
+  # raise for BINARY too), crashing the hook mid-write. Both taggings must
+  # sign, and the signature computed over the mis-tagged payload must verify
+  # against the UTF-8 bytes read back from disk.
+  def test_state_signer_em_dash_c_locale
+    require 'tmpdir'
+    Dir.mktmpdir('signer-utf8-') do |dir|
+      path = File.join(dir, 'signed.json')
+      script = 'require File.join(ENV["HOOKS_DIR"], "state_signer"); ' \
+               'raw = "override \xE2\x80\x94 em dash"; ' \
+               '["ASCII-8BIT", "US-ASCII"].each_with_index { |enc, i| ' \
+               'note = raw.dup.force_encoding(enc); ' \
+               'path = ENV["SIGNED_PATH"] + i.to_s; ' \
+               'StateSigner.write_signed(path, { "note" => note }); ' \
+               'data = StateSigner.read_verified(path); ' \
+               'exit(1) unless data && data["note"].unpack1("H*") == note.unpack1("H*") }; ' \
+               'exit(0)'
+      _out, _err, status = Open3.capture3(
+        { 'HOOKS_DIR' => __dir__, 'SIGNED_PATH' => path,
+          'CLAUDE_HOOK_SECRET' => ENV['CLAUDE_HOOK_SECRET'],
+          'LANG' => 'C', 'LC_ALL' => 'C' },
+        'ruby', '-E', 'US-ASCII', '-e', script
+      )
+      status.success?
+    end
+  end
+
+  # `release.sh --project $PWD` reaches the transcript unexpanded; the LS
+  # staging step must resolve it from the command's own `cd` (ssh-mini
+  # pattern) or the entry cwd — never pass the literal `$PWD` through (that
+  # produced the unusable "could not resolve version for $PWD" nag, hit live
+  # 2026-07-02).
+  def test_lemonsqueezy_project_resolution_from_transcript
+    require 'tmpdir'
+    Dir.mktmpdir('ls-transcript-') do |dir|
+      transcript = File.join(dir, 'transcript.jsonl')
+      ssh_cmd = %q{ssh mini 'cd ~/SaneApps/apps/FakeApp && ./scripts/release.sh --project $PWD --deploy'}
+      entries = [
+        { 'cwd' => '/Users/owner/SaneApps', 'command' => ssh_cmd },
+        { 'cwd' => '/irrelevant', 'command' => 'echo release.sh mention without deploy' }
+      ]
+      File.write(transcript, entries.map { |e| JSON.generate(e) }.join("\n") + "\n", encoding: Encoding::UTF_8)
+
+      script = 'require File.join(ENV["HOOKS_DIR"], "sanestop_lemonsqueezy"); ' \
+               'project = LemonSqueezyUploads.detect_release_deploy_project(ENV["LS_TRANSCRIPT"]); ' \
+               'exit(project == "~/SaneApps/apps/FakeApp" ? 0 : 1)'
+      _out, _err, status = Open3.capture3(
+        { 'HOOKS_DIR' => __dir__, 'LS_TRANSCRIPT' => transcript, 'LANG' => 'C', 'LC_ALL' => 'C' },
+        'ruby', '-E', 'US-ASCII', '-e', script
+      )
+      status.success?
+    end
+  end
+
+  # Umbrella sessions (cwd = ~/SaneApps) must discover receipts inside the
+  # edited app repo (apps/<App>/outputs/visual-audit*/). Before the umbrella
+  # glob, the Stop gate was unsatisfiable from an umbrella session even with a
+  # valid receipt on disk (hit live 2026-07-02, SaneClip 2.3.12).
+  def test_visual_receipt_umbrella_discovery
+    require 'tmpdir'
+    require 'time'
+    Dir.mktmpdir('receipt-umbrella-') do |umbrella|
+      audit_dir = File.join(umbrella, 'apps', 'FakeApp', 'outputs', 'visual-audit-fake')
+      FileUtils.mkdir_p(audit_dir)
+      shot = File.join(audit_dir, 'shot.png')
+      File.write(shot, 'png')
+      receipt = {
+        'schema' => 'saneprocess.visual_audit',
+        'type' => 'visual_audit',
+        'status' => 'passed',
+        'host' => 'Mac Mini',
+        'inspected' => true,
+        'generated_at' => Time.now.iso8601,
+        'screenshots' => [shot],
+        # claim-mapped evidence is required since the claims-to-screenshot
+        # validation (visual_receipt.rb claim_mapped_visual_evidence?)
+        'claims' => [
+          { 'id' => 'fake-claim', 'status' => 'passed', 'screenshots' => [shot] }
+        ]
+      }
+      File.write(File.join(audit_dir, 'receipt.json'), JSON.generate(receipt), encoding: Encoding::UTF_8)
+
+      script = 'require File.join(ENV["HOOKS_DIR"], "core/visual_receipt"); ' \
+               'paths = SaneVisualReceipt.valid_receipt_paths(cwd: ENV["RECEIPT_CWD"], candidate_paths: [], started_at: Time.at(0)); ' \
+               'exit(paths.length == 1 ? 0 : 1)'
+      _out, _err, status = Open3.capture3(
+        { 'HOOKS_DIR' => __dir__, 'RECEIPT_CWD' => umbrella, 'LANG' => 'C', 'LC_ALL' => 'C' },
+        'ruby', '-E', 'US-ASCII', '-e', script
+      )
+      status.success?
+    end
+  end
+
   # Session learnings routinely contain em dashes and arrows. Without the
   # encoding pin in session_briefing.rb, every line fails JSON.parse under a
   # US-ASCII default and the rescue silently returns zero learnings.
@@ -316,8 +420,14 @@ class HookTests
     end
     wrapped = commands.select { |command| command.include?('run_hook.sh') }
 
-    wrapped.length == 6 &&
+    pre_tool_commands = settings.fetch('hooks').fetch('PreToolUse').flat_map do |group|
+      group.fetch('hooks', []).map { |hook| hook['command'].to_s }
+    end
+
+    wrapped.length == 7 &&
       wrapped.all? { |command| command.length < 90 } &&
+      pre_tool_commands[0].include?('sane_catastrophic_guard.rb') &&
+      pre_tool_commands[1].include?('sanetools.rb') &&
       commands.none? { |command| command.include?('if [ -n "${CLAUDECODE}${CLAUDE_CODE}" ]') }
   end
 

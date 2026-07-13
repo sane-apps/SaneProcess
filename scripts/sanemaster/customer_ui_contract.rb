@@ -579,7 +579,13 @@ module SaneMasterModules
     end
 
     def customer_ui_mini_host?
-      Socket.gethostname.downcase.include?('mini') || ENV.fetch('USER', '').downcase == 'stephansmac'
+      host = Socket.gethostname.to_s.downcase
+      return true if host.include?('mini')
+
+      return false unless RUBY_PLATFORM.include?('darwin')
+
+      computer_name, status = Open3.capture2('/usr/sbin/scutil', '--get', 'ComputerName')
+      status.success? && computer_name.to_s.downcase.include?('mac mini')
     end
 
     def customer_ui_air_fallback_approved?
@@ -589,7 +595,6 @@ module SaneMasterModules
     def customer_ui_receipt_host_allowed?(host)
       normalized = host.to_s.downcase
       return true if normalized == 'mini' || normalized.include?('mini')
-      return true if normalized == 'stephansmac'
       return false unless customer_ui_air_fallback_approved?
 
       normalized == Socket.gethostname.to_s.downcase ||
@@ -1976,7 +1981,14 @@ module SaneMasterModules
           next
         end
 
-        issues << "#{id}: status is #{result['status'].inspect}, expected \"passed\"" unless result['status'].to_s == 'passed'
+        coverage_status = result['coverage_status'].to_s.strip
+        action_status = result['status'].to_s.strip
+        if coverage_status.empty?
+          issues << "#{id}: status is #{result['status'].inspect}, expected \"passed\"" unless action_status == 'passed'
+        else
+          issues << "#{id}: coverage_status is #{result['coverage_status'].inspect}, expected \"covered\"" unless coverage_status == 'covered'
+          issues << "#{id}: do not mix coverage_status with action status; use action status only for real completion receipts" unless action_status.empty?
+        end
         required_proof_level = action['required_proof_level'].to_s
         proof_level = result['proof_level'].to_s.strip
         if proof_level.empty?
@@ -2030,6 +2042,8 @@ module SaneMasterModules
         result['functional_state'],
         result['inputs'],
         result['output_assertions'],
+        result['declared_inputs'],
+        result['covered_assertions'],
         result['workflow'],
         result['evidence']
       ].map { |value| value.is_a?(String) ? value : JSON.generate(value) }.join("\n")
@@ -2531,12 +2545,14 @@ module SaneMasterModules
 
       if Array(action['user_inputs']).any?
         inputs = Array(result['inputs']).map(&:to_s).map(&:strip).reject(&:empty?)
+        inputs.concat(Array(result['declared_inputs']).map(&:to_s).map(&:strip).reject(&:empty?))
         issues << "#{id}: missing exercised user inputs from receipt" if inputs.empty?
       end
 
       expected_outputs = Array(action['expected_outputs']).map(&:to_s).map(&:strip).reject(&:empty?)
       if expected_outputs.any?
         output_assertions = Array(result['output_assertions']).map(&:to_s).map(&:strip).reject(&:empty?)
+        output_assertions.concat(Array(result['covered_assertions']).map(&:to_s).map(&:strip).reject(&:empty?))
         issues << "#{id}: missing output_assertions proving expected outcomes" if output_assertions.empty?
       end
 
@@ -2668,19 +2684,21 @@ module SaneMasterModules
 
       workflow = result['workflow']
       unless workflow.is_a?(Hash)
-        return ["#{id}: missing structured workflow proof; runtime evidence must name the runner, completed steps, outcome, and artifacts"]
+        return ["#{id}: missing structured workflow proof; runtime evidence must name the runner, covered steps, outcome, and artifacts"]
       end
 
       issues = []
       issues << "#{id}: workflow proof missing runner" if workflow['runner'].to_s.strip.empty?
       issues << "#{id}: workflow proof missing outcome" if workflow['outcome'].to_s.strip.empty?
 
+      covered_steps = Array(workflow['steps_covered']).map(&:to_s).map(&:strip).reject(&:empty?)
       completed_steps = Array(workflow['steps_completed']).map(&:to_s).map(&:strip).reject(&:empty?)
-      issues << "#{id}: workflow proof missing steps_completed" if completed_steps.empty?
+      proof_steps = covered_steps.empty? ? completed_steps : covered_steps
+      issues << "#{id}: workflow proof missing steps_covered" if proof_steps.empty?
       declared_steps = Array(action['steps']).map(&:to_s).map(&:strip).reject(&:empty?)
-      missing_steps = declared_steps - completed_steps
+      missing_steps = declared_steps - proof_steps
       unless missing_steps.empty?
-        issues << "#{id}: workflow proof did not complete declared step(s): #{missing_steps.join(' | ')}"
+        issues << "#{id}: workflow proof did not cover declared step(s): #{missing_steps.join(' | ')}"
       end
 
       artifacts = Array(workflow['artifacts']).map(&:to_s).map(&:strip).reject(&:empty?)
@@ -2832,7 +2850,7 @@ module SaneMasterModules
       return true if receipt_fingerprint == legacy_fingerprint
       legacy_harness_fingerprint = customer_ui_source_fingerprint(include_release_harness: true)
       return true if receipt_fingerprint == legacy_harness_fingerprint
-      false
+      customer_ui_visual_sources_unchanged_since_receipt?(receipt)
     end
 
     def customer_ui_source_fingerprint(include_tests: false, include_release_harness: false)
@@ -2843,7 +2861,7 @@ module SaneMasterModules
 
         digest.update(entry.fetch(:digest_path))
         digest.update("\0")
-        digest.update(Digest::SHA256.file(absolute_path).hexdigest)
+        digest.update(Digest::SHA256.hexdigest(customer_ui_source_digest_content(entry)))
         digest.update("\0")
       end
       digest.hexdigest
@@ -2852,12 +2870,16 @@ module SaneMasterModules
     def customer_ui_source_entries(include_tests: false, include_release_harness: false)
       app_entries = customer_ui_source_files(include_tests: include_tests, include_release_harness: include_release_harness).map do |relative_path|
         {
+          scope: :app,
+          relative_path: relative_path,
           digest_path: "app/#{relative_path}",
           absolute_path: File.join(Dir.pwd, relative_path)
         }
       end
       shared_entries = customer_ui_shared_source_files(include_release_harness: include_release_harness).map do |relative_path|
         {
+          scope: :shared,
+          relative_path: relative_path,
           digest_path: "SaneApps/#{relative_path}",
           absolute_path: File.join(customer_ui_saneapps_root, relative_path)
         }
@@ -2899,12 +2921,11 @@ module SaneMasterModules
       return true if CUSTOMER_UI_MANIFEST_PATHS.include?(path)
       return include_tests if path.start_with?('Tests/')
       return include_tests if path.match?(%r{\A(?:scripts|Scripts)/.*(?:_test|Test)\.(?:rb|py|sh)\z})
-      return true if path == '.saneprocess' || path == 'project.yml' || path == 'Package.swift'
-      return true if path.end_with?('.xcodeproj/project.pbxproj')
+      return false if path == '.saneprocess' || path == 'project.yml' || path == 'Package.swift' || path == 'Package.resolved'
+      return false if path.end_with?('.xcodeproj/project.pbxproj')
       return true if path.start_with?('Sane') || path.start_with?('Shared/')
       return true if path.start_with?('Sources/')
-      return true if path == 'scripts/qa.rb' || path == 'Scripts/qa.rb'
-      return true if path.start_with?('scripts/customer_ui_qa') || path.start_with?('Scripts/customer_ui_qa')
+      return false if path.start_with?('scripts/', 'Scripts/')
 
       CUSTOMER_UI_SOURCE_EXTENSIONS.include?(File.extname(path)) &&
         !path.start_with?('docs/') &&
@@ -2915,20 +2936,20 @@ module SaneMasterModules
     def customer_ui_shared_source_files(include_release_harness: false)
       root = customer_ui_saneapps_root
       patterns = [
-        'infra/SaneUI/Sources/**/*.{swift,xcstrings}',
-        'infra/SaneProcess/scripts/SaneMaster.rb',
-        'infra/SaneProcess/scripts/sanemaster/test_mode.rb',
-        'infra/SaneProcess/scripts/sanemaster/visual_smoke.rb',
-        'infra/SaneProcess/scripts/sanemaster/customer_ui_contract.rb',
-        'infra/SaneProcess/scripts/hooks/**/*.{rb,sh}'
+        'infra/SaneUI/Sources/**/*.{swift,xcstrings}'
       ]
       if include_release_harness
         patterns.concat(
           [
+            'infra/SaneProcess/scripts/SaneMaster.rb',
             'infra/SaneProcess/scripts/release.sh',
+            'infra/SaneProcess/scripts/sanemaster/test_mode.rb',
+            'infra/SaneProcess/scripts/sanemaster/visual_smoke.rb',
+            'infra/SaneProcess/scripts/sanemaster/customer_ui_contract.rb',
             'infra/SaneProcess/scripts/sanemaster/release.rb',
             'infra/SaneProcess/scripts/sanemaster/release_readiness.rb',
-            'infra/SaneProcess/scripts/sanemaster/release_guardrail_test.rb'
+            'infra/SaneProcess/scripts/sanemaster/release_guardrail_test.rb',
+            'infra/SaneProcess/scripts/hooks/**/*.{rb,sh}'
           ]
         )
       end
@@ -2939,6 +2960,80 @@ module SaneMasterModules
               .sort
     rescue StandardError
       []
+    end
+
+    def customer_ui_source_digest_content(entry)
+      content = File.read(entry.fetch(:absolute_path), encoding: Encoding::UTF_8, invalid: :replace, undef: :replace)
+      customer_ui_normalize_visual_source_content(entry.fetch(:relative_path).to_s, content)
+    rescue StandardError
+      File.binread(entry.fetch(:absolute_path))
+    end
+
+    def customer_ui_normalize_visual_source_content(relative_path, content)
+      return content unless customer_ui_version_metadata_path?(relative_path)
+
+      content
+        .lines
+        .reject { |line| line.match?(/\b(?:CURRENT_PROJECT_VERSION|MARKETING_VERSION)\b\s*(?:=|:)/) }
+        .join
+    end
+
+    def customer_ui_version_metadata_path?(relative_path)
+      relative_path == 'project.yml' ||
+        relative_path.end_with?('.xcodeproj/project.pbxproj') ||
+        relative_path.end_with?('.xcconfig')
+    end
+
+    def customer_ui_visual_sources_unchanged_since_receipt?(receipt)
+      generated_at = Time.parse(receipt['generated_at'].to_s)
+      customer_ui_stale_visual_source_entries_since(generated_at).empty?
+    rescue ArgumentError, TypeError
+      false
+    end
+
+    def customer_ui_stale_visual_source_entries_since(generated_at)
+      customer_ui_source_entries.select do |entry|
+        absolute_path = entry.fetch(:absolute_path)
+        next false unless File.file?(absolute_path)
+        next false unless File.mtime(absolute_path) > generated_at
+        next false if customer_ui_app_source_matches_receipt_baseline?(entry, generated_at)
+
+        true
+      end
+    end
+
+    def customer_ui_app_source_matches_receipt_baseline?(entry, generated_at)
+      return false unless entry.fetch(:scope) == :app
+
+      relative_path = entry.fetch(:relative_path).to_s
+      baseline = customer_ui_git_file_before_time(relative_path, generated_at)
+      return false if baseline.nil?
+
+      current = customer_ui_source_digest_content(entry)
+      customer_ui_normalize_visual_source_content(relative_path, baseline) == current
+    end
+
+    def customer_ui_git_file_before_time(relative_path, generated_at)
+      commit, status = Open3.capture2e(
+        'git',
+        'rev-list',
+        '-1',
+        "--before=#{generated_at.utc.iso8601}",
+        'HEAD',
+        '--',
+        relative_path
+      )
+      return nil unless status.success?
+
+      commit = commit.to_s.strip
+      return nil if commit.empty?
+
+      content, show_status = Open3.capture2e('git', 'show', "#{commit}:#{relative_path}")
+      return nil unless show_status.success?
+
+      content
+    rescue StandardError
+      nil
     end
 
     def customer_ui_saneapps_root

@@ -369,6 +369,17 @@ class ValidationOutputHarness < ValidationReport
   def save_snapshot; end
 end
 
+class SignedQaValidationHarness < ValidationReport
+  def initialize(verifier)
+    super()
+    @verifier = verifier
+  end
+
+  def release_preflight_receipt_verifier
+    @verifier
+  end
+end
+
 class UrlStatusHarness < ValidationReport
   attr_reader :commands
 
@@ -425,6 +436,25 @@ def write_qa_status(path, source_fingerprint: nil, extra: {})
   }.merge(extra)
   payload['sourceFingerprint'] = source_fingerprint if source_fingerprint
   File.write(File.join(path, 'outputs', 'qa_status.json'), JSON.pretty_generate(payload))
+end
+
+def write_signed_release_preflight_status(path, signer, source_fingerprint: nil)
+  FileUtils.mkdir_p(File.join(path, 'outputs'))
+  receipt = File.join(path, 'outputs', 'release_preflight_status.json')
+  payload = {
+    'type' => 'release_preflight_status',
+    'generatedAt' => Time.now.utc.iso8601,
+    'status' => 'passed',
+    'issues' => [],
+    'issueCount' => 0
+  }
+  payload['sourceFingerprint'] = source_fingerprint if source_fingerprint
+  signer.write(
+    receipt,
+    payload,
+    producer: 'saneprocess.release_preflight.v1'
+  )
+  receipt
 end
 
 exit(run_tests('Validation report tests') do
@@ -521,6 +551,59 @@ exit(run_tests('Validation report tests') do
 
       assert_eq(issues, [])
       assert(warnings.any? { |warning| warning.include?('SaneBar') && warning.include?('macOS 15.0') })
+      true
+    end
+
+    test('parses informational appcast entries that omit Sparkle build versions') do
+      subject = WebsiteDistributionHarness.new(
+        products: [],
+        bodies: {
+          'https://saneclip.com/appcast.xml' => <<~XML
+            <?xml version="1.0"?>
+            <rss><channel>
+              <item>
+                <title>2.3.18</title>
+                <enclosure url="https://dist.saneclip.com/updates/SaneClip-2.3.18.zip"
+                           sparkle:version="2318"
+                           sparkle:shortVersionString="2.3.18"
+                           sparkle:edSignature="abc" />
+              </item>
+              <item>
+                <title>2.2.12</title>
+                <link>https://saneclip.com/download</link>
+                <sparkle:shortVersionString>2.2.12</sparkle:shortVersionString>
+                <sparkle:informationalUpdate>
+                  <sparkle:belowVersion>2208</sparkle:belowVersion>
+                </sparkle:informationalUpdate>
+              </item>
+            </channel></rss>
+          XML
+        }
+      )
+
+      snapshot = subject.send(:fetch_live_appcast_snapshot, 'saneclip.com')
+
+      assert_eq(snapshot[:informational_entries_missing_versions], ['2.2.12'])
+      true
+    end
+
+    test('flags informational live appcast entries missing Sparkle build versions') do
+      subject = ReleaseIntegrityHarness.new
+      issues = []
+      warnings = []
+      product = product_definition('SaneClip', slug: 'saneclip', domain: 'saneclip.com')
+      snapshot = {
+        body: '<rss><channel><item></item></channel></rss>',
+        latest_item: '<item></item>',
+        enclosure_url: 'https://dist.saneclip.com/updates/SaneClip-2.3.18.zip',
+        has_signature: true,
+        minimum_system_version: '14.0',
+        informational_entries_missing_versions: ['2.2.12']
+      }
+
+      subject.send(:check_live_appcast_snapshot, snapshot, product, issues, warnings)
+
+      assert(issues.any? { |issue| issue.include?('SaneClip') && issue.include?('missing sparkle:version') && issue.include?('2.2.12') })
       true
     end
 
@@ -1746,6 +1829,71 @@ exit(run_tests('Validation report tests') do
         status = ValidationReport.new.send(:latest_project_qa_status, dir)
 
         assert(status['staleReasons'].include?('repository has uncommitted changes'))
+      end
+      true
+    end
+
+    test('accepts a cryptographically verified release preflight as project QA evidence') do
+      Dir.mktmpdir('qa-signed-release-preflight-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'SaneScan'))
+        File.write(File.join(dir, 'SaneScan', 'App.swift'), "import SwiftUI\n")
+        init_git_fixture(dir)
+        signer = ReleaseReceiptSigner.test_signer(
+          secret: 'validation-report-release-test',
+          root: ReleaseReceiptSigner::ROOT
+        )
+        subject = SignedQaValidationHarness.new(signer)
+        fingerprint = subject.send(:project_qa_source_fingerprint, dir)
+        write_signed_release_preflight_status(dir, signer, source_fingerprint: fingerprint)
+
+        status = subject.send(:latest_project_qa_status, dir)
+        assert(status)
+        assert_eq(status['status'], 'passed')
+        assert_eq(status['sourceFingerprint'], fingerprint)
+      end
+      true
+    end
+
+    test('rejects an unsigned release preflight instead of parsing raw JSON') do
+      Dir.mktmpdir('qa-unsigned-release-preflight-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(
+          File.join(dir, 'outputs', 'release_preflight_status.json'),
+          JSON.generate('type' => 'release_preflight_status', 'status' => 'passed', 'issues' => [])
+        )
+        signer = ReleaseReceiptSigner.test_signer(
+          secret: 'validation-report-release-test',
+          root: ReleaseReceiptSigner::ROOT
+        )
+
+        status = SignedQaValidationHarness.new(signer).send(:latest_project_qa_status, dir)
+        assert_eq(status, nil)
+      end
+      true
+    end
+
+    test('ignores a newer forged release preflight and retains older valid QA evidence') do
+      Dir.mktmpdir('qa-forged-release-preflight-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'SaneScan'))
+        File.write(File.join(dir, 'SaneScan', 'App.swift'), "import SwiftUI\n")
+        init_git_fixture(dir)
+        signer = ReleaseReceiptSigner.test_signer(
+          secret: 'validation-report-release-test',
+          root: ReleaseReceiptSigner::ROOT
+        )
+        subject = SignedQaValidationHarness.new(signer)
+        fingerprint = subject.send(:project_qa_source_fingerprint, dir)
+        write_qa_status(dir, source_fingerprint: fingerprint, extra: { 'source' => 'qa_status' })
+        qa_path = File.join(dir, 'outputs', 'qa_status.json')
+        File.utime(Time.now - 10, Time.now - 10, qa_path)
+        File.write(
+          File.join(dir, 'outputs', 'release_preflight_status.json'),
+          JSON.generate('type' => 'release_preflight_status', 'status' => 'passed', 'issues' => [])
+        )
+
+        status = subject.send(:latest_project_qa_status, dir)
+        assert(status)
+        assert_eq(status['source'], 'qa_status')
       end
       true
     end

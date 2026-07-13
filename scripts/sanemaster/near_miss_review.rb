@@ -432,7 +432,7 @@ module SaneMasterModules
     end
 
     def near_miss_mini_host?(host)
-      host.to_s.downcase.include?('mini') || host.to_s.downcase == 'stephansmac'
+      host.to_s.downcase.include?('mini')
     end
 
     def near_miss_severity_rank(severity)

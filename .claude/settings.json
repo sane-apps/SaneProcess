@@ -1,5 +1,9 @@
 {
   "permissions": {
+    "defaultMode": "acceptEdits",
+    "additionalDirectories": [
+      "/Users/stephansmac/SaneApps"
+    ],
     "allow": [
       "Bash(./scripts/SaneMaster.rb:*)",
       "Bash(xcodegen:*)",
@@ -31,12 +35,89 @@
       "mcp__apple-docs__*",
       "mcp__context7__*",
       "mcp__github__*",
-      "mcp__gemini__*",
       "mcp__macos-automator__*",
       "mcp__xcode__*",
       "mcp__XcodeBuildMCP__*",
       "mcp__memory__*"
-    ]
+    ],
+    "deny": [
+      "Read(//Users/stephansmac/.config/nv/env)",
+      "Read(//Users/stephansmac/.private_keys/**)",
+      "Read(//Users/stephansmac/.ssh/id_*)",
+      "Read(//Users/stephansmac/.aws/credentials)",
+      "Read(//Users/stephansmac/.netrc)",
+      "Read(//Users/stephansmac/.codex/auth.json)",
+      "Read(//Users/stephansmac/.claude/.credentials.json)",
+      "Edit(//Users/stephansmac/.config/nv/env)",
+      "Edit(//Users/stephansmac/.private_keys/**)",
+      "Edit(//Users/stephansmac/.ssh/id_*)",
+      "Edit(//Users/stephansmac/.aws/credentials)",
+      "Edit(//Users/stephansmac/.netrc)",
+      "Edit(//Users/stephansmac/.codex/auth.json)",
+      "Edit(//Users/stephansmac/.claude/.credentials.json)"
+    ],
+    "disableBypassPermissionsMode": "disable"
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "autoAllowBashIfSandboxed": true,
+    "allowUnsandboxedCommands": false,
+    "excludedCommands": [],
+    "filesystem": {
+      "allowWrite": [
+        "/Users/stephansmac/SaneApps"
+      ],
+      "denyRead": [
+        "~/.config/nv/env",
+        "~/.private_keys",
+        "~/.ssh/id_*",
+        "~/.aws/credentials",
+        "~/.netrc",
+        "~/.codex/auth.json",
+        "~/.claude/.credentials.json"
+      ],
+      "denyWrite": [
+        "~/.config/nv/env",
+        "~/.private_keys",
+        "~/.ssh/id_*",
+        "~/.aws/credentials",
+        "~/.netrc",
+        "~/.codex/auth.json",
+        "~/.claude/.credentials.json"
+      ]
+    },
+    "credentials": {
+      "files": [
+        { "path": "~/.config/nv/env", "mode": "deny" },
+        { "path": "~/.private_keys", "mode": "deny" },
+        { "path": "~/.ssh/id_*", "mode": "deny" },
+        { "path": "~/.aws/credentials", "mode": "deny" },
+        { "path": "~/.netrc", "mode": "deny" },
+        { "path": "~/.codex/auth.json", "mode": "deny" },
+        { "path": "~/.claude/.credentials.json", "mode": "deny" }
+      ]
+    },
+    "network": {
+      "allowedDomains": [
+        "api.anthropic.com",
+        "api.cloudflare.com",
+        "api.github.com",
+        "api.lemonsqueezy.com",
+        "api.openai.com",
+        "api.resend.com",
+        "developer.apple.com",
+        "github.com",
+        "*.github.com",
+        "objects.githubusercontent.com",
+        "raw.githubusercontent.com",
+        "registry.npmjs.org",
+        "rubygems.org",
+        "mini",
+        "*.local"
+      ],
+      "allowLocalBinding": true
+    }
   },
   "model": "opus",
   "hooks": {
@@ -63,6 +144,15 @@
       }
     ],
     "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh sane_catastrophic_guard.rb",
+            "timeout": 5
+          }
+        ]
+      },
       {
         "hooks": [
           {
@@ -150,7 +240,7 @@
     "hookify@claude-plugins-official": true
   },
   "effortLevel": "high",
-  "skipDangerousModePermissionPrompt": true,
+  "skipDangerousModePermissionPrompt": false,
   "skipWorkflowUsageWarning": true,
   "agentPushNotifEnabled": true
 }

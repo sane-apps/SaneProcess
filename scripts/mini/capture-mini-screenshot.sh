@@ -8,8 +8,9 @@ MINI_HOST="${MINI_HOST:-mini}"
 REMOTE_MINI_GUI_RUN="${REMOTE_MINI_GUI_RUN:-~/SaneApps/infra/SaneProcess/scripts/mini/mini-gui-run.sh}"
 REMOTE_VISUAL_GUARD="${REMOTE_VISUAL_GUARD:-~/SaneApps/infra/SaneProcess/scripts/mini/mini-visual-workspace-guard.sh}"
 MINI_HOST_FALLBACKS="${MINI_HOST_FALLBACKS:-stephansmac@Stephans-Mac-mini.local stephansmac@stephans-mac-mini.local}"
-MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS="${MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS:-60}"
+MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS="${MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS:-120}"
 SKIP_CLEANUP=false
+use_local_runner=false
 
 case "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" in
   ''|*[!0-9]*)
@@ -33,14 +34,27 @@ Examples:
   capture-mini-screenshot.sh desktop
   capture-mini-screenshot.sh desktop --path /tmp/mini-proof.png
   capture-mini-screenshot.sh desktop --copy-to /tmp/mini-proof
+  capture-mini-screenshot.sh --skip-cleanup desktop --copy-to /tmp/mini-diag  # DIAGNOSTIC: raw screen
   capture-mini-screenshot.sh --list-windows --app "SaneClip"
   capture-mini-screenshot.sh --app "SaneClip" --window-name "Settings" --mode temp
   capture-mini-screenshot.sh --active-window --mode temp
+  capture-mini-screenshot.sh --video --duration 5 --out /tmp/rec.mp4 --copy-to /tmp/local  # SCREEN RECORDING
+
+Video:
+  --video [--duration SECONDS] [--out REMOTE_MP4] [--copy-to LOCAL_DIR]
+  Records the Mini screen with ffmpeg inside the granted Terminal session.
+  Override the avfoundation screen index with MINI_SCREEN_AVF_INDEX (default 2).
 
 Notes:
   - Runs inside the Mini's logged-in GUI Terminal session.
   - First use may require Screen Recording permission for Terminal on the Mini.
   - Arguments are forwarded directly to the screenshot helper.
+  - PROOF captures (default): the visual-workspace guard hides Codex/Terminal
+    for a clean marketing/receipt shot.
+  - DIAGNOSTIC captures (--skip-cleanup): NO guard, so the screen is captured
+    AS-IS. Use this to catch permission pop-ups, app sheets, or a stuck modal —
+    the default cleanup would hide the very window you need to see. Then Read the
+    PNG; a capture you don't open proves nothing.
 EOF
   exit 2
 }
@@ -48,9 +62,37 @@ EOF
 [ $# -gt 0 ] || usage
 
 local_copy_to=""
+capture_video=false
+video_duration=5
+video_out=""
 forward_args=()
 while [ $# -gt 0 ]; do
   case "${1:-}" in
+    --video)
+      capture_video=true
+      ;;
+    --duration)
+      shift
+      [ $# -gt 0 ] || {
+        echo "Missing value for --duration" >&2
+        usage
+      }
+      video_duration="$1"
+      ;;
+    --duration=*)
+      video_duration="${1#--duration=}"
+      ;;
+    --out)
+      shift
+      [ $# -gt 0 ] || {
+        echo "Missing value for --out" >&2
+        usage
+      }
+      video_out="$1"
+      ;;
+    --out=*)
+      video_out="${1#--out=}"
+      ;;
     --copy-to)
       shift
       [ $# -gt 0 ] || {
@@ -76,7 +118,21 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-set -- "${forward_args[@]}"
+
+if $capture_video; then
+  case "$video_duration" in
+    ''|*[!0-9]*)
+      echo "--duration must be a positive integer number of seconds" >&2
+      exit 2
+      ;;
+  esac
+  [ "$video_duration" -gt 0 ] || {
+    echo "--duration must be a positive integer number of seconds" >&2
+    exit 2
+  }
+fi
+
+set -- ${forward_args[@]+"${forward_args[@]}"}
 
 if [ "${1:-}" = "desktop" ]; then
   shift
@@ -93,12 +149,14 @@ if [ "${1:-}" = "desktop" ]; then
   fi
 fi
 
-[ -d "$LOCAL_SKILL_DIR" ] || {
-  echo "Missing local screenshot helper scripts at: $LOCAL_SKILL_DIR" >&2
-  echo "Install the SaneProcess screenshot helper bundle or set LOCAL_SCREENSHOT_HELPER_DIR." >&2
-  echo "Run this wrapper from the controlling machine, not from a plain ssh shell on the Mini." >&2
-  exit 1
-}
+if ! $capture_video; then
+  [ -d "$LOCAL_SKILL_DIR" ] || {
+    echo "Missing local screenshot helper scripts at: $LOCAL_SKILL_DIR" >&2
+    echo "Install the SaneProcess screenshot helper bundle or set LOCAL_SCREENSHOT_HELPER_DIR." >&2
+    echo "Run this wrapper from the controlling machine, not from a plain ssh shell on the Mini." >&2
+    exit 1
+  }
+fi
 
 has_active_window=false
 has_explicit_target=false
@@ -249,29 +307,163 @@ run_remote_runner_with_timeout() {
   return "$status"
 }
 
-resolved_mini_host="$(resolve_mini_host "$MINI_HOST")"
-remote_home="$(ssh "$resolved_mini_host" 'printf %s "$HOME"')"
+run_local_runner_with_timeout() {
+  local timeout_seconds="$1"
+  local runner="$2"
+  local output_file=""
+  local status_file=""
+  local pid=""
+  local elapsed=0
+  local status=1
+
+  output_file="$(mktemp "/tmp/capture-mini-screenshot-output.XXXXXX")"
+  status_file="$(mktemp "/tmp/capture-mini-screenshot-status.XXXXXX")"
+
+  (
+    bash -lc "$runner" >"$output_file" 2>&1
+    printf '%s' "$?" >"$status_file"
+  ) &
+  pid="$!"
+
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$elapsed" -ge "$timeout_seconds" ]; then
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      cat "$output_file" 2>/dev/null || true
+      rm -f "$output_file" "$status_file"
+      echo "Mini screenshot capture timed out after ${timeout_seconds}s; inspect the Mini for a stuck GUI runner or permission prompt." >&2
+      return 124
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  wait "$pid" 2>/dev/null || true
+  cat "$output_file" 2>/dev/null || true
+  if [ -s "$status_file" ]; then
+    status="$(cat "$status_file")"
+  else
+    status=1
+  fi
+  rm -f "$output_file" "$status_file"
+  return "$status"
+}
+
+running_on_mini() {
+  [ "${MINI_SCREENSHOT_FORCE_SSH:-0}" = "1" ] && return 1
+
+  case "$(hostname 2>/dev/null || true)" in
+    Stephans-Mac-mini.local|stephans-mac-mini.local|Stephans-Mac-mini|stephans-mac-mini)
+      return 0
+      ;;
+  esac
+
+  case "$(scutil --get ComputerName 2>/dev/null || true)" in
+    *Mac\ mini*|*Mac\ Mini*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+running_in_ssh_session() {
+  [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]
+}
+
+printed_screenshot_path() {
+  awk '/^\/.*\.(png|jpg|jpeg|heic)$/ { path=$0 } END { if (path != "") print path }'
+}
+
+if running_on_mini; then
+  use_local_runner=true
+  resolved_mini_host=""
+  remote_home="$HOME"
+else
+  resolved_mini_host="$(resolve_mini_host "$MINI_HOST")"
+  remote_home="$(ssh "$resolved_mini_host" 'printf %s "$HOME"')"
+fi
 REMOTE_MINI_GUI_RUN="$(expand_remote_home_path "$REMOTE_MINI_GUI_RUN" "$remote_home")"
 REMOTE_VISUAL_GUARD="$(expand_remote_home_path "$REMOTE_VISUAL_GUARD" "$remote_home")"
 
-rsync -az "$LOCAL_SKILL_DIR/" "${resolved_mini_host}:${REMOTE_HELPER_DIR}/"
+# --- Screen recording (video) ---------------------------------------------
+# ffmpeg runs inside the Mini's logged-in GUI Terminal session (via
+# mini-gui-run.sh), the same granted context the screenshot path uses — the
+# only reliable way to capture the Mini screen over ssh (a direct ssh
+# ffmpeg/screencapture is blocked by TCC responsible-process attribution).
+if $capture_video; then
+  video_out="${video_out:-/tmp/mini-record.mp4}"
+  screen_index="${MINI_SCREEN_AVF_INDEX:-2}" # avfoundation "Capture screen 0"
+  ff_out_q="$(printf '%q' "$video_out")"
+  ff_cmd="ffmpeg -y -f avfoundation -capture_cursor 1 -framerate 15 -i ${screen_index}:none -t ${video_duration} ${ff_out_q} && printf 'RECORDING %s\\n' ${ff_out_q}"
+  video_runner="$(remote_cmd bash "$REMOTE_MINI_GUI_RUN" --title "Mini Screen Recording" --close-window -- "$ff_cmd")"
+  vtimeout=$((video_duration + 30))
+  video_output="$(run_remote_runner_with_timeout "$vtimeout" "$resolved_mini_host" "$video_runner")" || {
+    echo "Mini screen recording failed. If it is a permission error, grant Screen Recording to Terminal on the Mini (this wrapper runs ffmpeg inside Terminal's session)." >&2
+    exit 1
+  }
+  printf '%s\n' "$video_output"
+  if [ -n "$local_copy_to" ]; then
+    mkdir -p "$local_copy_to"
+    rsync -az "${resolved_mini_host}:${video_out}" "$local_copy_to/"
+    echo "Copied recording to $local_copy_to/" >&2
+  fi
+  exit 0
+fi
+
+if $use_local_runner; then
+  mkdir -p "$REMOTE_HELPER_DIR"
+  rsync -az "$LOCAL_SKILL_DIR/" "${REMOTE_HELPER_DIR}/"
+else
+  rsync -az "$LOCAL_SKILL_DIR/" "${resolved_mini_host}:${REMOTE_HELPER_DIR}/"
+fi
 
 forwarded_args="$(remote_cmd "$@")"
 guard_cmd=""
+guard_env=""
+if $use_local_runner && ! running_in_ssh_session; then
+  guard_env="MINI_VISUAL_AVOID_TERMINAL_AUTOMATION=1 "
+fi
 if [ -n "$target_app" ]; then
   if ! $SKIP_CLEANUP; then
-    guard_cmd="bash ${REMOTE_VISUAL_GUARD} --cleanup --app $(printf '%q' "$target_app") && "
+    guard_cmd="${guard_env}bash ${REMOTE_VISUAL_GUARD} --cleanup --app $(printf '%q' "$target_app") && "
   fi
 elif [ "$has_explicit_target" = false ]; then
   if ! $SKIP_CLEANUP; then
-    guard_cmd="bash ${REMOTE_VISUAL_GUARD} --desktop --cleanup && "
+    guard_cmd="${guard_env}bash ${REMOTE_VISUAL_GUARD} --desktop --cleanup && "
   fi
 fi
 cmd="${guard_cmd}CODEX_SCREENSHOT_NO_PERMISSION_PROMPT=1 bash ${REMOTE_HELPER_DIR}/ensure_macos_permissions.sh && CODEX_SCREENSHOT_NO_PERMISSION_PROMPT=1 python3 ${REMOTE_HELPER_DIR}/take_screenshot.py ${forwarded_args}"
-remote_runner="$(remote_cmd bash "$REMOTE_MINI_GUI_RUN" --title "Mini Screenshot" --reclaim-all --close-window -- "$cmd")"
+if $use_local_runner && ! running_in_ssh_session; then
+  runner_cmd="$cmd"
+else
+  runner_cmd="$(remote_cmd bash "$REMOTE_MINI_GUI_RUN" --title "Mini Screenshot" --reclaim-all --close-window -- "$cmd")"
+fi
 
 capture_status=0
-capture_output="$(run_remote_runner_with_timeout "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" "$resolved_mini_host" "$remote_runner")" || capture_status=$?
+if $use_local_runner; then
+  capture_output="$(run_local_runner_with_timeout "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" "$runner_cmd")" || capture_status=$?
+else
+  capture_output="$(run_remote_runner_with_timeout "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" "$resolved_mini_host" "$runner_cmd")" || capture_status=$?
+fi
+if [ "$capture_status" -ne 0 ]; then
+  recovered_path="$(printf '%s\n' "$capture_output" | printed_screenshot_path)"
+  if [ -n "${recovered_path:-}" ]; then
+    if $use_local_runner; then
+      [ -s "$recovered_path" ] || recovered_path=""
+    else
+      ssh "$resolved_mini_host" "[ -s $(printf '%q' "$recovered_path") ]" >/dev/null 2>&1 || recovered_path=""
+    fi
+  fi
+  if [ -n "${recovered_path:-}" ]; then
+    echo "Recovered screenshot path printed before runner failure: ${recovered_path}" >&2
+    capture_status=0
+  else
+    recovered_path=""
+  fi
+fi
 printf '%s\n' "$capture_output"
 if [ "$capture_status" -ne 0 ]; then
   exit "$capture_status"
@@ -283,7 +475,11 @@ if [ -n "$local_copy_to" ]; then
   while IFS= read -r remote_path; do
     case "$remote_path" in
       /*.png|/*.jpg|/*.jpeg|/*.heic)
-        rsync -az "${resolved_mini_host}:${remote_path}" "$local_copy_to/"
+        if $use_local_runner; then
+          cp "$remote_path" "$local_copy_to/"
+        else
+          rsync -az "${resolved_mini_host}:${remote_path}" "$local_copy_to/"
+        fi
         copied=true
         ;;
     esac

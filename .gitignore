@@ -17,6 +17,13 @@ CLAUDE.md
 .claude/research.md
 .claude/state.json
 .claude/state.json.lock
+.claude/gate-hits.json
+.claude/gate-overrides.json
+.claude/gate-override-log.jsonl
+.claude/gate-hammer-log.jsonl
+.claude/unfair-gates.json
+.claude/research-locks.json
+.claude/sop-verify-state.json
 .claude/bypass_active.json
 .claude/enforcement_breaker.json
 .claude/saneloop-state.json

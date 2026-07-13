@@ -15,6 +15,13 @@ KEYCHAIN_FALLBACK_ENABLED="${SANE_KEYCHAIN_FALLBACK:-1}"
 # Ensure Homebrew-installed tools resolve in non-interactive shells (CI/SSH).
 export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
+# Pinned Wrangler for all Cloudflare mutations (DEVELOPMENT.md policy): bare
+# `npx wrangler` can resolve stale local versions — SaneCite queue creation
+# failed under 4.65.0 and succeeded under 4.104.0. Override deliberately via
+# SANEPROCESS_WRANGLER_VERSION when needed.
+SANEPROCESS_WRANGLER_VERSION="${SANEPROCESS_WRANGLER_VERSION:-4.104.0}"
+WRANGLER_NPX_PACKAGE="wrangler@${SANEPROCESS_WRANGLER_VERSION}"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -1897,6 +1904,10 @@ release_probe_error_suffix() {
 release_probe_status_text() {
     local status="$1"
     local error_file="$2"
+    if [[ "${status}" == skipped* ]]; then
+        printf '%s' "${status}"
+        return 0
+    fi
     if [ -n "${status}" ]; then
         printf 'HTTP %s' "${status}"
     else
@@ -1949,11 +1960,17 @@ run_post_release_checks() {
     local dist_url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
     local appcast_url="https://${SITE_HOST}/appcast.xml"
     local checkout_url="https://go.saneapps.com/buy/${LOWER_APP_NAME}"
+    local configured_checkout_url=""
+    local has_configured_checkout=false
     local site_url="https://${SITE_HOST}/"
     local download_page_url="https://${SITE_HOST}/download"
     local strict="${STRICT_PUBLIC_CHANNEL_SYNC}"
 
     log_info "Running strict post-release checks..."
+    configured_checkout_url=$(lookup_checkout_url_for_slug "${LOWER_APP_NAME}")
+    if [ -n "${configured_checkout_url}" ]; then
+        has_configured_checkout=true
+    fi
 
     local probe_dir
     probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/sane-post-release-probes.XXXXXX") || {
@@ -1970,8 +1987,12 @@ run_post_release_checks() {
     probe_pids+=("$!")
     ( extract_content_length_with_user_agent "${dist_url}" "Sparkle/2" > "${probe_dir}/dist_sparkle.length" 2>"${probe_dir}/dist_sparkle_length.err" || true ) &
     probe_pids+=("$!")
-    ( extract_http_status "${checkout_url}" > "${probe_dir}/checkout.status" 2>"${probe_dir}/checkout.err" || true ) &
-    probe_pids+=("$!")
+    if [ "${has_configured_checkout}" = true ]; then
+        ( extract_http_status "${checkout_url}" > "${probe_dir}/checkout.status" 2>"${probe_dir}/checkout.err" || true ) &
+        probe_pids+=("$!")
+    else
+        printf 'skipped: no configured checkout\n' > "${probe_dir}/checkout.status"
+    fi
     ( curl --connect-timeout 10 --max-time 30 -fsSL "${site_url}" > "${probe_dir}/site.body" 2>"${probe_dir}/site.err" || true ) &
     probe_pids+=("$!")
     if [ "${USE_SPARKLE}" = true ]; then
@@ -2135,21 +2156,22 @@ PY
         fi
     fi
 
-    local checkout_status
-    checkout_status=$(sed -n '1p' "${probe_dir}/checkout.status" 2>/dev/null | tr -d '\r\n')
-    if [ "${checkout_status}" != "200" ] && [ "${checkout_status}" != "301" ] && [ "${checkout_status}" != "302" ]; then
-        log_error "Checkout URL failed: ${checkout_url} returned $(release_probe_status_text "${checkout_status}" "${probe_dir}/checkout.err")"
-        return 1
-    fi
+    if [ "${has_configured_checkout}" = true ]; then
+        local checkout_status
+        checkout_status=$(sed -n '1p' "${probe_dir}/checkout.status" 2>/dev/null | tr -d '\r\n')
+        if [ "${checkout_status}" != "200" ] && [ "${checkout_status}" != "301" ] && [ "${checkout_status}" != "302" ]; then
+            log_error "Checkout URL failed: ${checkout_url} returned $(release_probe_status_text "${checkout_status}" "${probe_dir}/checkout.err")"
+            return 1
+        fi
 
-    # Follow redirects and verify the checkout lands on the expected Lemon Squeezy flow.
-    if [ "${checkout_status}" = "301" ] || [ "${checkout_status}" = "302" ]; then
+        # Follow redirects and verify the checkout lands on the expected Lemon Squeezy flow.
+        if [ "${checkout_status}" = "301" ] || [ "${checkout_status}" = "302" ]; then
         local expected_checkout_prefix=""
         local checkout_first_hop
         local checkout_first_hop_ok=false
         local checkout_final_status
         local checkout_final_url
-        expected_checkout_prefix=$(lookup_checkout_url_for_slug "${LOWER_APP_NAME}")
+        expected_checkout_prefix="${configured_checkout_url}"
         checkout_first_hop=$(extract_redirect_location "${checkout_url}" "Mozilla/5.0")
         if [ -n "${expected_checkout_prefix}" ] && [[ "${checkout_first_hop}" == "${expected_checkout_prefix}"* ]]; then
             checkout_first_hop_ok=true
@@ -2172,8 +2194,10 @@ PY
         fi
 
         if [ -n "${checkout_final_url}" ] && ! [[ "${checkout_final_url}" =~ ^https://([A-Za-z0-9-]+\.)?lemonsqueezy\.com/checkout/(buy|custom)/ ]]; then
-            if [ "${checkout_first_hop_ok}" = true ] && [[ "${checkout_final_url}" =~ ^https://([A-Za-z0-9-]+\.)?lemonsqueezy\.com/checkout/?$ ]]; then
+            if [ "${checkout_first_hop_ok}" = true ] && [[ "${checkout_final_url}" =~ ^https://([A-Za-z0-9-]+\.)?lemonsqueezy\.com/checkout/?(\?.*)?$ ]]; then
                 log_warn "Checkout final URL resolved to a provider anti-bot landing page (${checkout_final_url}); first hop matched configured checkout, so checkout is treated as healthy."
+            elif [ "${checkout_first_hop_ok}" = true ] && [[ "${checkout_final_url}" =~ ^https://([A-Za-z0-9-]+\.)?lemonsqueezy\.com/checkout/cart/ ]] && [[ "${checkout_final_url}" == *"custom=1"* ]]; then
+                log_warn "Checkout final URL resolved to Lemon's custom-checkout cart (${checkout_final_url}); first hop matched configured checkout, so checkout is treated as healthy."
             else
                 log_error "Checkout URL redirect chain landed on unexpected destination: ${checkout_final_url}"
                 return 1
@@ -2186,6 +2210,9 @@ PY
                 return 1
             fi
         fi
+    fi
+    else
+        log_info "Skipping checkout verification: ${LOWER_APP_NAME} has no configured checkout in products.yml."
     fi
 
     if ! verify_lemonsqueezy_hosted_file_sync; then
@@ -2720,7 +2747,12 @@ receipt_path = ARGV[1]
 max_age_seconds = ARGV[2].to_i
 process_root = File.expand_path(ARGV[3])
 
-payload = JSON.parse(File.read(receipt_path, encoding: Encoding::UTF_8))
+require File.join(process_root, 'scripts', 'hooks', 'release_receipt_signer')
+payload = ReleaseReceiptSigner.production.read(
+  receipt_path,
+  producer: 'saneprocess.release_preflight.v1'
+)
+raise 'release_preflight receipt is unsigned or tampered' unless payload.is_a?(Hash)
 raise 'release_preflight status is not passed' unless payload['status'].to_s == 'passed'
 raise 'release_preflight has issues' unless payload['issues'].to_a.empty?
 raise 'release_preflight was not generated on Mini runtime' unless payload['miniRuntime'] == true
@@ -2772,6 +2804,7 @@ app_folder = File.basename(project_path)
 source_file = lambda do |relative_path|
 	  path = relative_path.to_s
 	  return false if path.empty?
+	  return false if %w[.sane/upgrade_path_behavioral_receipt.json outputs/upgrade_path_behavioral_receipt.json].include?(path)
 		  return true if path == 'docs/_redirects' || path == 'website/_redirects'
 		  return true if path.match?(%r{\A(?:docs|website)/.*\.(?:css|html|js|json|xml)\z})
 		  return true if path == 'outputs/customer_ui_action_receipt.json'
@@ -2873,8 +2906,63 @@ actual_fingerprint = digest.hexdigest
 expected_fingerprint = payload['sourceFingerprint'].to_s
 raise 'release_preflight source fingerprint mismatch' if expected_fingerprint.empty? || expected_fingerprint != actual_fingerprint
 
+verify = payload['verifyEvidence']
+raise 'release_preflight structured verify receipt is missing' unless verify.is_a?(Hash)
+raise 'release_preflight verify receipt is not successful' unless verify['type'].to_s == 'verify' && verify['success'] == true
+raise 'release_preflight verify receipt has zero tests' unless verify['testsRun'].to_i.positive?
+raise 'release_preflight verify receipt is build-only' if %w[build_only failed].include?(verify['evidenceStrength'].to_s)
+raise 'release_preflight verify receipt was not generated on Mini' unless verify['host'].to_s.downcase.include?('mini')
+raise 'release_preflight verify receipt cwd mismatch' unless File.realpath(verify['cwd'].to_s) == File.realpath(project_path)
+verify_time = Time.parse(verify['timestamp'].to_s)
+raise 'release_preflight verify receipt is newer than preflight' if verify_time > generated_at + 5
+raise 'release_preflight verify receipt is stale' if verify_time < generated_at - max_age_seconds
+
+verify_parts = []
+[
+  %w[rev-parse HEAD],
+  %w[status --porcelain=v1 --untracked-files=all],
+  %w[diff --binary],
+  %w[diff --cached --binary]
+].each do |command|
+  output, command_status = Open3.capture2e('git', '-C', project_path, *command)
+  raise "could not compute current verify fingerprint: git #{command.join(' ')}" unless command_status.success?
+
+  verify_parts << output
+end
+current_verify_fingerprint = Digest::SHA256.hexdigest(verify_parts.join("\n---\n"))
+raise 'release_preflight verify receipt source fingerprint mismatch' unless verify['sourceFingerprint'].to_s == current_verify_fingerprint
+
+migration_files = payload['migrationFiles'].to_a
+if migration_files.any?
+  upgrade = payload['upgradePathEvidence']
+  raise 'release_preflight upgrade-path behavioral proof is missing' unless upgrade.is_a?(Hash)
+  raise 'release_preflight upgrade-path proof is not passed behavioral evidence' unless upgrade['type'].to_s == 'upgrade_path_behavioral_proof' && upgrade['status'].to_s == 'passed' && upgrade['behavioral'] == true
+  raise 'release_preflight upgrade-path proof has zero scenarios' unless upgrade['testsRun'].to_i.positive?
+  raise 'release_preflight upgrade-path proof was not generated on Mini' unless upgrade['miniRuntime'] == true
+  raise 'release_preflight upgrade-path proof source fingerprint mismatch' unless upgrade['sourceFingerprint'].to_s == actual_fingerprint
+  upgrade_time = Time.parse(upgrade['generatedAt'].to_s)
+  raise 'release_preflight upgrade-path proof is future-dated' if upgrade_time > generated_at + 300
+  upgrade_max_age = ENV.fetch('SANEPROCESS_UPGRADE_PATH_RECEIPT_MAX_AGE_SECONDS', (12 * 60 * 60).to_s).to_i
+  raise 'release_preflight upgrade-path proof is stale' if upgrade_max_age.positive? && (generated_at - upgrade_time) > upgrade_max_age
+  artifacts = upgrade['artifacts']
+  raise 'release_preflight upgrade-path artifact bindings are missing' unless artifacts.is_a?(Array)
+  roles = artifacts.map { |artifact| artifact.is_a?(Hash) ? artifact['role'].to_s : '' }
+  raise 'release_preflight upgrade-path result/runtime/log artifacts are incomplete' unless %w[result runtime log].all? { |role| roles.include?(role) }
+  artifacts.each do |artifact|
+    relative = artifact['path'].to_s
+    raise 'release_preflight upgrade-path artifact path is unsafe' if relative.empty? || relative.start_with?('/') || relative.split('/').include?('..')
+    artifact_path = File.join(project_path, relative)
+    metadata = File.lstat(artifact_path)
+    raise 'release_preflight upgrade-path artifact is not a regular file' unless metadata.file? && !metadata.symlink?
+    real_artifact = File.realpath(artifact_path)
+    raise 'release_preflight upgrade-path artifact escapes project' unless real_artifact.start_with?("#{File.realpath(project_path)}/")
+    raise 'release_preflight upgrade-path artifact size changed' unless File.size(real_artifact) == artifact['size'].to_i
+    raise 'release_preflight upgrade-path artifact digest changed' unless Digest::SHA256.file(real_artifact).hexdigest == artifact['sha256'].to_s
+  end
+end
+
 age_minutes = ((Time.now - generated_at) / 60.0).round(1)
-puts "generatedAt=#{payload['generatedAt']}, age=#{age_minutes}m, warnings=#{payload['warningCount'].to_i}"
+puts "generatedAt=#{payload['generatedAt']}, age=#{age_minutes}m, warnings=#{payload['warningCount'].to_i}, verify_tests=#{verify['testsRun'].to_i}, migration_files=#{migration_files.length}"
 RUBY
 }
 
@@ -3378,26 +3466,6 @@ run_tests() {
         return 0
     fi
 
-    test_log_indicates_success() {
-        local log_path="$1"
-        [ -f "${log_path}" ] || return 1
-
-        if grep -q "✅ Tests passed!" "${log_path}"; then
-            return 0
-        fi
-        if grep -Eq "Swift Testing:[[:space:]]+[0-9]+ tests .* passed" "${log_path}"; then
-            return 0
-        fi
-        if grep -q "Test Suite 'All tests' passed" "${log_path}"; then
-            return 0
-        fi
-        if grep -Eq "Executed [0-9]+ tests?, with 0 failures" "${log_path}"; then
-            return 0
-        fi
-
-        return 1
-    }
-
     if [ -x "${sanemaster_verify}" ]; then
         log_info "Using SaneMaster verify as the authoritative release test lane."
         if SANEMASTER_RELEASE_PREFLIGHT=1 "${sanemaster_verify}" verify --quiet >"${test_log}" 2>&1; then
@@ -3407,11 +3475,6 @@ run_tests() {
         fi
 
         cat "${test_log}"
-        if test_log_indicates_success "${test_log}"; then
-            log_warn "SaneMaster verify returned non-zero despite a clean pass. Continuing with release."
-            return 0
-        fi
-
         log_error "SaneMaster verify failed. Aborting release."
         restore_version_bump
         exit 1
@@ -3428,11 +3491,6 @@ run_tests() {
 
     cat "${test_log}"
 
-    if test_log_indicates_success "${test_log}"; then
-        log_warn "Test runner returned non-zero despite a clean pass. Continuing with release."
-        return 0
-    fi
-
     if grep -Eq 'Command CodeSign failed with a nonzero exit code|errSecInternalComponent|No profiles for .+ were found|Automatic signing is disabled and unable to generate a profile|requires a provisioning profile with the .+ feature' "${test_log}"; then
         log_warn "Signed test build failed due to signing/provisioning. Retrying unsigned tests..."
         if XDG_CACHE_HOME="${cache_root}" \
@@ -3445,10 +3503,6 @@ run_tests() {
         fi
 
         cat "${test_log}"
-        if test_log_indicates_success "${test_log}"; then
-            log_warn "Unsigned test runner returned non-zero despite a clean pass. Continuing with release."
-            return 0
-        fi
     fi
 
     log_error "Tests failed. Aborting release."
@@ -3513,6 +3567,67 @@ commit_version_bump() {
     else
         log_warn "No version bump commit created (maybe no changes)"
     fi
+}
+
+run_candidate_release_preflight() {
+    local sanemaster="${PROJECT_ROOT}/scripts/SaneMaster.rb"
+    if [ ! -f "${sanemaster}" ]; then
+        log_error "Candidate release preflight requires ${sanemaster}."
+        return 1
+    fi
+
+    log_info "Running signed release_preflight against the materialized v${VERSION} candidate..."
+    (
+        cd "${PROJECT_ROOT}"
+        ruby "${sanemaster}" release_preflight
+    )
+}
+
+prepare_and_authorize_full_release_candidate() {
+    log_info "Bumping version to ${VERSION}..."
+    bump_project_version "${VERSION}"
+
+    local version_bump_changed=0
+    local vf
+    for vf in "${VERSION_BUMP_FILES[@]}"; do
+        if ! git -C "${PROJECT_ROOT}" diff --quiet -- "${vf}" 2>/dev/null; then
+            version_bump_changed=1
+        fi
+    done
+    if [ "${version_bump_changed}" -ne 1 ]; then
+        log_warn "Version bump produced no tracked file changes. Continuing with existing versioned source state."
+    fi
+
+    update_changelog
+
+    if [ "${XCODEGEN}" = true ]; then
+        ensure_cmd xcodegen
+        log_info "Regenerating Xcode project..."
+        xcodegen generate
+        XCODEGEN_DONE=true
+    fi
+
+    commit_version_bump
+
+    # release_preflight owns the authoritative verify run and signs the resulting
+    # source/verify fingerprints. It must run after every source-generating release
+    # mutation so the receipt authorizes the exact candidate that will be archived.
+    if ! run_candidate_release_preflight; then
+        log_error "Candidate release_preflight failed after version/changelog/project generation."
+        exit 1
+    fi
+
+    local candidate_preflight_summary=""
+    if ! candidate_preflight_summary="$(fresh_release_preflight_receipt_summary 2>&1)"; then
+        log_error "Candidate release_preflight did not produce valid signed evidence for the materialized candidate."
+        log_error "${candidate_preflight_summary}"
+        exit 1
+    fi
+    log_info "Exact release candidate authorized (${candidate_preflight_summary})."
+
+    # This revalidates the signed receipt immediately before the build. Normally it
+    # skips duplicate verify because candidate release_preflight already ran tests.
+    run_tests
 }
 
 create_github_release() {
@@ -5453,7 +5568,7 @@ if [ "${WEBSITE_ONLY}" = true ]; then
     fi
 
     log_info "Deploying website to Cloudflare Pages (${PAGES_PROJECT}) from ${DEPLOY_DIR}..."
-    if ! npx wrangler pages deploy "${DEPLOY_DIR}" \
+    if ! npx --yes "${WRANGLER_NPX_PACKAGE}" pages deploy "${DEPLOY_DIR}" \
         --project-name="${PAGES_PROJECT}" \
         --branch="${PAGES_BRANCH}" \
         --commit-dirty=true \
@@ -5539,18 +5654,17 @@ if [ "${FULL_RELEASE}" = true ]; then
 
     # ─── Pre-release safety gates (learned from 46 issues + 200 emails) ───
 
-    # Gate 1: UserDefaults / migration change detection
-    # Settings migration is #1 cause of customer bugs (50% of critical issues)
-    DEFAULTS_CHANGED=$(git -C "${PROJECT_ROOT}" diff HEAD~5..HEAD --name-only -- '*.swift' | \
-        xargs grep -l 'UserDefaults\|setDefaultsIfNeeded\|registerDefaults\|migration\|migrate' 2>/dev/null | head -5)
-    if [ -n "${DEFAULTS_CHANGED}" ]; then
-        log_warn "═══ UPGRADE SAFETY WARNING ═══"
-        log_warn "These files touch UserDefaults/migration logic:"
-        echo "${DEFAULTS_CHANGED}" | while read f; do log_warn "  - ${f}"; done
-        log_warn "This is the #1 cause of customer regressions (v1.0.20 broke 5+ users)."
-        log_warn "BEFORE SHIPPING: test upgrade path from previous version with existing user data."
-        log_warn "════════════════════════════════"
+    # Gate 1: require preliminary structured verify and migration evidence before
+    # any release mutation. After version/changelog/project generation, the final
+    # candidate is preflighted and signature/fingerprint-validated again below.
+    FULL_PREFLIGHT_SUMMARY=""
+    if ! FULL_PREFLIGHT_SUMMARY="$(fresh_release_preflight_receipt_summary 2>&1)"; then
+        log_error "Full release requires a fresh structured release_preflight receipt."
+        log_error "${FULL_PREFLIGHT_SUMMARY}"
+        log_error "Run: ruby scripts/SaneMaster.rb release_preflight"
+        exit 1
     fi
+    log_info "Upgrade/verify release evidence cleared (${FULL_PREFLIGHT_SUMMARY})."
 
     # Gate 2: Pending customer emails
     EMAIL_API_KEY="${SANE_EMAIL_API_KEY:-${EMAIL_API_KEY:-}}"
@@ -5607,31 +5721,7 @@ if [ "${FULL_RELEASE}" = true ]; then
         log_warn "LemonSqueezy API returned ${LICENSE_STATUS} — may be experiencing issues."
     fi
 
-    run_tests
-
-    log_info "Bumping version to ${VERSION}..."
-    bump_project_version "${VERSION}"
-
-    VERSION_BUMP_CHANGED=0
-    for vf in "${VERSION_BUMP_FILES[@]}"; do
-        if ! git -C "${PROJECT_ROOT}" diff --quiet -- "${vf}" 2>/dev/null; then
-            VERSION_BUMP_CHANGED=1
-        fi
-    done
-    if [ "${VERSION_BUMP_CHANGED}" -ne 1 ]; then
-        log_warn "Version bump produced no tracked file changes. Continuing with existing versioned source state."
-    fi
-
-    update_changelog
-
-    if [ "${XCODEGEN}" = true ]; then
-        ensure_cmd xcodegen
-        log_info "Regenerating Xcode project..."
-        xcodegen generate
-        XCODEGEN_DONE=true
-    fi
-
-    commit_version_bump
+    prepare_and_authorize_full_release_candidate
 fi
 
 # Clean up previous builds (skip if reusing existing archive)
@@ -6273,7 +6363,7 @@ if [ "${RUN_DEPLOY}" = true ]; then
         log_error "R2 upload failed: CLOUDFLARE_API_TOKEN is unavailable."
         exit 1
     fi
-    if ! CLOUDFLARE_API_TOKEN="${upload_token}" npx wrangler r2 object put "${R2_BUCKET}/${R2_OBJECT_KEY}" \
+    if ! CLOUDFLARE_API_TOKEN="${upload_token}" npx --yes "${WRANGLER_NPX_PACKAGE}" r2 object put "${R2_BUCKET}/${R2_OBJECT_KEY}" \
         --file="${FINAL_ZIP}" --remote; then
         log_error "R2 upload failed."
         exit 1
@@ -6586,7 +6676,7 @@ PY
         log_info "Deploying website + appcast to Cloudflare Pages (${PAGES_PROJECT}) from ${DEPLOY_DIR}..."
         CURRENT_GATE="Deploy website to Cloudflare Pages"
         RELEASE_ERR_GATE_RECORDED=""
-        if ! npx wrangler pages deploy "${DEPLOY_DIR}" \
+        if ! npx --yes "${WRANGLER_NPX_PACKAGE}" pages deploy "${DEPLOY_DIR}" \
             --project-name="${PAGES_PROJECT}" \
             --branch="${PAGES_BRANCH}" \
             --commit-dirty=true \
@@ -6614,15 +6704,20 @@ PY
 
     # Step 4: Verify checkout/purchase link still works
     # LemonSqueezy slug change broke 26 URLs for 44 hours ($40 lost)
+    CONFIGURED_CHECKOUT_URL=$(lookup_checkout_url_for_slug "${LOWER_APP_NAME}")
     CHECKOUT_URL="https://go.saneapps.com/buy/${LOWER_APP_NAME}"
-    CHECKOUT_STATUS=$(curl --connect-timeout 10 --max-time 20 -sI -o /dev/null -w '%{http_code}' "${CHECKOUT_URL}" 2>/dev/null || echo "000")
-    if [ "${CHECKOUT_STATUS}" = "200" ] || [ "${CHECKOUT_STATUS}" = "301" ] || [ "${CHECKOUT_STATUS}" = "302" ]; then
-        log_info "Checkout link verified: ${CHECKOUT_URL} (${CHECKOUT_STATUS})"
-    elif [ "${CHECKOUT_STATUS}" = "000" ]; then
-        log_warn "Could not reach checkout URL: ${CHECKOUT_URL} (network error)"
+    if [ -z "${CONFIGURED_CHECKOUT_URL}" ]; then
+        log_info "Skipping checkout link verification: ${LOWER_APP_NAME} has no configured checkout in products.yml."
     else
-        log_warn "Checkout link may be broken: ${CHECKOUT_URL} returned ${CHECKOUT_STATUS}"
-        log_warn "Test the purchase flow manually before announcing this release."
+        CHECKOUT_STATUS=$(curl --connect-timeout 10 --max-time 20 -sI -o /dev/null -w '%{http_code}' "${CHECKOUT_URL}" 2>/dev/null || echo "000")
+        if [ "${CHECKOUT_STATUS}" = "200" ] || [ "${CHECKOUT_STATUS}" = "301" ] || [ "${CHECKOUT_STATUS}" = "302" ]; then
+            log_info "Checkout link verified: ${CHECKOUT_URL} (${CHECKOUT_STATUS})"
+        elif [ "${CHECKOUT_STATUS}" = "000" ]; then
+            log_warn "Could not reach checkout URL: ${CHECKOUT_URL} (network error)"
+        else
+            log_warn "Checkout link may be broken: ${CHECKOUT_URL} returned ${CHECKOUT_STATUS}"
+            log_warn "Test the purchase flow manually before announcing this release."
+        fi
     fi
 
     APPSTORE_SUBMIT_FAILED=false
@@ -6940,7 +7035,7 @@ PY
                     exit 1
                 fi
 
-                WEBHOOK_DEPLOY_OUTPUT=$(npx wrangler deploy --keep-vars 2>&1)
+                WEBHOOK_DEPLOY_OUTPUT=$(npx --yes "${WRANGLER_NPX_PACKAGE}" deploy --keep-vars 2>&1)
                 WEBHOOK_DEPLOY_STATUS=$?
                 if [ "${WEBHOOK_DEPLOY_STATUS}" -ne 0 ]; then
                     log_error "Webhook deploy failed."

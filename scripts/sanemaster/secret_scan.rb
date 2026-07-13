@@ -44,7 +44,6 @@ module SaneMasterModules
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.local/share/containers/podman/machine/machine\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.codex/auth\.json\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.codex/secrets/[^/]+\z},
-      %r{\A#{Regexp.escape(File.expand_path('~'))}/\.gemini/oauth_creds\.json\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.factory/auth\.json\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.grok/user-settings\.json\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.hivello/myst/config-mainnet\.toml\z},

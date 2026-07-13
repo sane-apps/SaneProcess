@@ -67,6 +67,11 @@ fi
 SANE_APPS="SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo"
 WINDOWLESS_TARGET_APPS="SaneBar"
 CLUTTER_APPS="Preview Safari TextEdit QuickTime Player Notes"
+# Operator/agent GUI apps that must NOT be quit (they are the operator's own
+# tools) but MUST be hidden before capture so they never contaminate the shot.
+# cleanup hides these, so the post-cleanup re-check passes deterministically
+# instead of refusing forever while one of them is on screen.
+HIDE_ONLY_APPS="Codex Cursor"
 DESKTOP_ARTIFACT_PATTERNS=$(cat <<'EOF'
 SaneProcess-rsync-misfire-*
 SaneUI-test-output-*.txt
@@ -88,6 +93,10 @@ json_escape() {
 
 local_air_fallback_approved() {
   [ "${SANE_APPROVE_LOCAL_UI_ON_AIR:-}" = "MR. SANE APPROVES LOCAL UI ON AIR" ]
+}
+
+avoid_terminal_automation() {
+  [ "${MINI_VISUAL_AVOID_TERMINAL_AUTOMATION:-0}" = "1" ]
 }
 
 run_with_timeout() {
@@ -202,9 +211,23 @@ EOF
 }
 
 hide_terminal() {
+  avoid_terminal_automation && return 0
+
   osascript_with_timeout 3 <<'APPLESCRIPT' >/dev/null || true
 tell application "System Events"
   if exists process "Terminal" then set visible of process "Terminal" to false
+end tell
+APPLESCRIPT
+}
+
+# Hide (do NOT quit) an operator/agent GUI app so it can't contaminate a
+# screenshot. Quitting would kill the operator's tools; hiding is reversible.
+hide_app() {
+  local app="$1"
+  [ -n "$app" ] || return 0
+  osascript_with_timeout 3 <<APPLESCRIPT >/dev/null || true
+tell application "System Events"
+  if exists process "${app}" then set visible of process "${app}" to false
 end tell
 APPLESCRIPT
 }
@@ -412,6 +435,9 @@ cleanup_workspace() {
   cleanup_desktop_artifacts
   dismiss_system_popovers
   hide_terminal
+  for app in $HIDE_ONLY_APPS; do
+    hide_app "$app"
+  done
   if ! $DESKTOP_MODE; then
     osascript_with_timeout 3 <<APPLESCRIPT >/dev/null || true
 tell application "System Events"
@@ -503,6 +529,18 @@ return 0
 APPLESCRIPT
 }
 
+target_peekaboo_window_count() {
+  command -v peekaboo >/dev/null 2>&1 || return 0
+  peekaboo list windows --app "$TARGET_APP" --json 2>/dev/null | ruby -rjson -e '
+    data = JSON.parse(STDIN.read) rescue {}
+    windows = data.dig("data", "windows") || []
+    count = windows.count do |window|
+      window["isOnScreen"] != false && window["isMinimized"] != true
+    end
+    puts count
+  ' 2>/dev/null || true
+}
+
 running_sane_processes() {
   /usr/bin/pgrep -fl "Sane(Bar|Click|Clip|Hosts|Sales|Sync|Video)" 2>/dev/null || true
   /usr/bin/pgrep -fl "/SaneSync/scripts/inference_server.py" 2>/dev/null || true
@@ -570,6 +608,18 @@ else
   target_windows="$(target_window_count | sed 's/^ *//;s/ *$//')"
 fi
 [ -n "$target_windows" ] || target_windows=0
+if ! $DESKTOP_MODE && [ "$target_windows" = "0" ]; then
+  peekaboo_target_windows="$(target_peekaboo_window_count | sed 's/^ *//;s/ *$//')"
+  case "$peekaboo_target_windows" in
+    ''|*[!0-9]*)
+      ;;
+    *)
+      if [ "$peekaboo_target_windows" -gt 0 ]; then
+        target_windows="$peekaboo_target_windows"
+      fi
+      ;;
+  esac
+fi
 [ "$target_windows" = "0" ] || target_visible=true
 
 windowless_target=false

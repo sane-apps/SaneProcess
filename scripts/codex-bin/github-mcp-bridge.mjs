@@ -182,7 +182,7 @@ process.stdin.on("data", (chunk) => {
       continue;
     }
 
-    child.stdin.write(encodeFramed(normalized));
+    child.stdin.write(`${normalized}\n`);
   }
 });
 

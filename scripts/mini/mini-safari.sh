@@ -37,11 +37,31 @@ PY
 
 run_remote_applescript() {
   local script="$1"
+  if is_current_mini; then
+    if ! osascript <<EOF
+$script
+EOF
+    then
+      echo "Local Mini Safari automation is unavailable (Automation/TCC or Safari scripting access)." >&2
+      return 1
+    fi
+    return $?
+  fi
   ssh "$(resolve_mini_host)" <<EOF
 osascript <<'APPLESCRIPT'
 $script
 APPLESCRIPT
 EOF
+}
+
+is_current_mini() {
+  local local_host
+  [[ "${MINI_SAFARI_FORCE_LOCAL:-0}" == "1" ]] && return 0
+  local_host="$(scutil --get LocalHostName 2>/dev/null || hostname -s 2>/dev/null || true)"
+  case "${local_host}" in
+    *Mac-mini*|*mac-mini*|*MacMini*|*macmini*) return 0 ;;
+  esac
+  return 1
 }
 
 resolve_mini_host() {

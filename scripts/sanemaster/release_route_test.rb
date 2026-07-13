@@ -140,6 +140,42 @@ exit(run_tests('SaneMaster Release Routing Tests') do
         true
       end
     end
+
+
+    test('syncs and remaps an exact App Store preflight package for Mini execution') do
+      with_temp_repo do |repo|
+        package = File.join(repo, 'Example.pkg')
+        File.write(package, 'exact-package-bytes')
+        execution_repo = '/Users/stephansmac/.sanemaster/routed-workspaces/abcd/SaneApps/apps/Example'
+
+        subject.system_calls.clear
+        Dir.chdir(repo) do
+          routed_args, binding_dir = subject.send(
+            :route_appstore_preflight_package_to_mini,
+            'appstore_preflight',
+            ['--platform', 'macos', '--pkg', package],
+            execution_repo
+          )
+
+          assert_eq(routed_args[0, 2], ['--platform', 'macos'])
+          assert_eq(routed_args[2], '--pkg')
+          assert(routed_args[3].start_with?(execution_repo), 'expected package path inside the canonical producer project root')
+          assert(routed_args[3].end_with?('/Example.pkg'))
+          assert(binding_dir && routed_args[3].start_with?(binding_dir))
+
+          rsync_call = subject.system_calls.find { |call| call.first == 'rsync' }
+          assert(rsync_call, 'expected exact package rsync')
+          assert_includes(rsync_call, '--no-links')
+          assert_includes(rsync_call, package)
+          assert_includes(rsync_call, "mini:#{routed_args[3]}")
+
+          subject.send(:cleanup_routed_appstore_preflight_package, binding_dir)
+          cleanup_call = subject.system_calls.reverse.find { |call| call.first == 'ssh' }
+          assert(cleanup_call.any? { |part| part.to_s.include?('/usr/bin/trash') }, 'expected routed binding cleanup')
+        end
+      end
+      true
+    end
   end
 
   test_category('Workspace sync to mini') do
@@ -197,6 +233,127 @@ exit(run_tests('SaneMaster Release Routing Tests') do
       true
     end
 
+    test('route context carries added Swift lines for Mini release preflight scanning') do
+      with_temp_repo do |repo|
+        Open3.capture2e('git', '-C', repo, 'init')
+        Open3.capture2e('git', '-C', repo, 'config', 'user.email', 'test@example.invalid')
+        Open3.capture2e('git', '-C', repo, 'config', 'user.name', 'SaneProcess Test')
+        source_dir = File.join(repo, 'SaneVideo', 'Core', 'Utilities')
+        source_path = File.join(source_dir, 'TestEnvironment.swift')
+        FileUtils.mkdir_p(source_dir)
+        File.write(source_path, "let persisted = UserDefaults.standard.bool(forKey: \"open_editor\")\n")
+        Open3.capture2e('git', '-C', repo, 'add', '.')
+        Open3.capture2e('git', '-C', repo, 'commit', '-m', 'baseline')
+        Open3.capture2e('git', '-C', repo, 'tag', 'v1.0.0')
+        5.times do |index|
+          File.write(File.join(repo, 'README.md'), "history #{index}\n")
+          Open3.capture2e('git', '-C', repo, 'add', 'README.md')
+          Open3.capture2e('git', '-C', repo, 'commit', '-m', "history #{index}")
+        end
+        File.write(
+          source_path,
+          "let persisted = UserDefaults.standard.bool(forKey: \"open_editor\")\nlet alias = \"SANEVIDEO_TEST_ASSET_PATH\"\n"
+        )
+
+        context = subject.send(:local_repo_route_context, repo)
+        added_lines = context.fetch('recent_swift_diff').lines.select do |line|
+          line.start_with?('+') && !line.start_with?('+++')
+        end
+
+        assert_eq(added_lines, ["+let alias = \"SANEVIDEO_TEST_ASSET_PATH\"\n"])
+        assert_eq(
+          context.fetch('recent_changed_swift_files'),
+          ['SaneVideo/Core/Utilities/TestEnvironment.swift']
+        )
+      end
+      true
+    end
+
+    test('route context carries Swift changes older than five commits since the latest release tag') do
+      with_temp_repo do |repo|
+        Open3.capture2e('git', '-C', repo, 'init')
+        Open3.capture2e('git', '-C', repo, 'config', 'user.email', 'test@example.invalid')
+        Open3.capture2e('git', '-C', repo, 'config', 'user.name', 'SaneProcess Test')
+        source = File.join(repo, 'Sources', 'Preferences.swift')
+        FileUtils.mkdir_p(File.dirname(source))
+        File.write(source, "let defaultRate = 1.0\n")
+        Open3.capture2e('git', '-C', repo, 'add', '.')
+        Open3.capture2e('git', '-C', repo, 'commit', '-m', 'released baseline')
+        Open3.capture2e('git', '-C', repo, 'tag', 'v1.0.0')
+        File.write(source, "let defaultRate = 1.25\nlet defaults = UserDefaults.standard\n")
+        Open3.capture2e('git', '-C', repo, 'add', source)
+        Open3.capture2e('git', '-C', repo, 'commit', '-m', 'defaults change')
+        6.times do |index|
+          File.write(File.join(repo, 'README.md'), "history #{index}\n")
+          Open3.capture2e('git', '-C', repo, 'add', 'README.md')
+          Open3.capture2e('git', '-C', repo, 'commit', '-m', "history #{index}")
+        end
+
+        context = subject.send(:local_repo_route_context, repo)
+
+        assert_includes(context.fetch('recent_changed_swift_files'), 'Sources/Preferences.swift')
+        assert_includes(context.fetch('recent_swift_diff'), '+let defaults = UserDefaults.standard')
+      end
+      true
+    end
+
+    test('route context includes committed Swift from a young repo and untracked production Swift') do
+      with_temp_repo do |repo|
+        Open3.capture2e('git', '-C', repo, 'init')
+        Open3.capture2e('git', '-C', repo, 'config', 'user.email', 'test@example.invalid')
+        Open3.capture2e('git', '-C', repo, 'config', 'user.name', 'SaneProcess Test')
+        committed = File.join(repo, 'Sources', 'Preferences.swift')
+        untracked = File.join(repo, 'Sources', 'NewMigration.swift')
+        FileUtils.mkdir_p(File.dirname(committed))
+        File.write(committed, "let defaults = UserDefaults.standard\n")
+        Open3.capture2e('git', '-C', repo, 'add', '.')
+        Open3.capture2e('git', '-C', repo, 'commit', '-m', 'young baseline')
+        File.write(untracked, "func migrateLegacyDefaults() {}\n")
+
+        context = subject.send(:local_repo_route_context, repo)
+
+        assert_eq(context.fetch('recent_swift_diff_error'), '')
+        assert_includes(context.fetch('recent_changed_swift_files'), 'Sources/Preferences.swift')
+        assert_includes(context.fetch('recent_changed_swift_files'), 'Sources/NewMigration.swift')
+        assert_includes(context.fetch('recent_swift_diff'), '+let defaults = UserDefaults.standard')
+        assert_includes(context.fetch('recent_swift_diff'), '+func migrateLegacyDefaults() {}')
+      end
+      true
+    end
+
+    test('routed sync carries signed upgrade proof and immutable evidence instead of route-context JSON') do
+      with_temp_repo do |repo|
+        subject.send(:sync_local_dir_to_mini!, repo, '/mini/repo')
+        rsync = subject.system_calls.find { |call| call.first == 'rsync' }
+        assert_includes(rsync, 'outputs/upgrade_path_behavioral_receipt.json')
+        assert_includes(rsync, 'outputs/upgrade-path-proof/***')
+      end
+      true
+    end
+
+    test('route context rejects an untracked Swift symlink instead of reading outside the repo') do
+      with_temp_repo do |repo|
+        Open3.capture2e('git', '-C', repo, 'init')
+        Open3.capture2e('git', '-C', repo, 'config', 'user.email', 'test@example.invalid')
+        Open3.capture2e('git', '-C', repo, 'config', 'user.name', 'SaneProcess Test')
+        File.write(File.join(repo, 'README.md'), "baseline\n")
+        Open3.capture2e('git', '-C', repo, 'add', '.')
+        Open3.capture2e('git', '-C', repo, 'commit', '-m', 'baseline')
+        outside = File.join(File.dirname(repo), "outside-#{File.basename(repo)}.swift")
+        File.write(outside, "let defaults = UserDefaults.standard\n")
+        FileUtils.mkdir_p(File.join(repo, 'Sources'))
+        File.symlink(outside, File.join(repo, 'Sources', 'Injected.swift'))
+
+        context = subject.send(:local_repo_route_context, repo)
+
+        assert_includes(context.fetch('recent_swift_diff_error'), 'symlink or non-regular')
+        assert(!context.fetch('recent_swift_diff').include?('UserDefaults.standard'))
+      ensure
+        FileUtils.rm_f(outside) if outside
+      end
+      true
+    end
+
     test('excludes local worktree archives and generated outputs but keeps canonical UI receipt') do
       with_temp_repo do |repo|
         FileUtils.mkdir_p(File.join(repo, '.worktrees', 'archive'))
@@ -245,6 +402,7 @@ exit(run_tests('SaneMaster Release Routing Tests') do
         assert(rsync_call, 'expected a reverse-output rsync call')
         assert_includes(rsync_call, 'qa_status.json')
         assert_includes(rsync_call, 'release_preflight_status.json')
+        assert_includes(rsync_call, 'appstore_preflight_status.json')
         assert_includes(rsync_call, 'customer_ui_action_receipt.json')
         assert_includes(rsync_call, 'customer-ui/***')
         assert_includes(rsync_call, 'runtime-preflight/***')
@@ -291,6 +449,7 @@ exit(run_tests('SaneMaster Release Routing Tests') do
       assert_includes(remote_cmd, 'base=${path##*/}')
       assert_includes(remote_cmd, 'qa_status.json')
       assert_includes(remote_cmd, 'release_preflight_status.json')
+      assert_includes(remote_cmd, 'appstore_preflight_status.json')
       assert_includes(remote_cmd, 'customer_ui_action_receipt.json')
       assert_includes(remote_cmd, 'validation')
       assert_includes(remote_cmd, 'customer-ui')
@@ -447,6 +606,18 @@ exit(run_tests('SaneMaster Release Routing Tests') do
   end
 
   test_category('Mini repo normalization after routed verify') do
+    test('Mini host detection never treats the shared username as machine identity') do
+      source = File.read(File.expand_path('../SaneMaster.rb', __dir__), encoding: Encoding::UTF_8)
+
+      assert_includes(source, "Socket.gethostname.to_s.downcase")
+      assert_includes(source, "'/usr/sbin/scutil', '--get', 'ComputerName'")
+      assert(!source.include?("user == 'stephansmac'"),
+             'SaneMaster must not skip Mini routing just because the Air and Mini share a username')
+      assert(!source.include?("ENV.fetch('USER', '').downcase"),
+             'SaneMaster Mini identity must come from host identity, not USER')
+      true
+    end
+
     test('resets the mini branch to origin when the local repo is clean and matched') do
       with_temp_repo do |repo|
         subject.system_calls.clear

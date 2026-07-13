@@ -36,6 +36,7 @@ require 'tmpdir'
 require 'digest'
 require 'optparse'
 require_relative 'hooks/core/process_metrics'
+require_relative 'hooks/release_receipt_signer'
 
 class ValidationReport
   SANE_APPS_ROOT = File.expand_path('~/SaneApps')
@@ -1517,6 +1518,7 @@ class ValidationReport
     latest_item = snapshot[:latest_item].to_s
     latest_url = snapshot[:enclosure_url].to_s
     informational_entries_missing_links = Array(snapshot[:informational_entries_missing_links])
+    informational_entries_missing_versions = Array(snapshot[:informational_entries_missing_versions])
     informational_constraint_version_mismatches = Array(snapshot[:informational_constraint_version_mismatches])
 
     if latest_url.nil? || latest_url.empty?
@@ -1526,6 +1528,9 @@ class ValidationReport
 
     unless informational_entries_missing_links.empty?
       issues << "[#{app_name}] Informational appcast entries are missing item <link>: #{informational_entries_missing_links.join(', ')}"
+    end
+    unless informational_entries_missing_versions.empty?
+      issues << "[#{app_name}] Informational appcast entries are missing sparkle:version: #{informational_entries_missing_versions.join(', ')}"
     end
     unless informational_constraint_version_mismatches.empty?
       issues << "[#{app_name}] Informational appcast entries compare against display versions instead of CFBundleVersion: #{informational_constraint_version_mismatches.join(', ')}"
@@ -2893,6 +2898,18 @@ class ValidationReport
                 item[/<title>\s*([^<]+)\s*<\/title>/m, 1]
       acc << (version.to_s.strip.empty? ? '<unknown version>' : version.to_s.strip)
     end
+    informational_entries_missing_versions = body.scan(/<item\b.*?<\/item>/m).each_with_object([]) do |item, acc|
+      next unless item.include?('<sparkle:informationalUpdate')
+
+      item_build = item[/sparkle:version="([^"]+)"/, 1] ||
+                   item[/<sparkle:version>\s*([^<]+)\s*<\/sparkle:version>/m, 1]
+      next unless item_build.to_s.strip.empty?
+
+      version = item[/sparkle:shortVersionString="([^"]+)"/, 1] ||
+                item[/<sparkle:shortVersionString>\s*([^<]+)\s*<\/sparkle:shortVersionString>/m, 1] ||
+                item[/<title>\s*([^<]+)\s*<\/title>/m, 1]
+      acc << (version.to_s.strip.empty? ? '<unknown version>' : version.to_s.strip)
+    end
     informational_constraint_version_mismatches = body.scan(/<item\b.*?<\/item>/m).each_with_object([]) do |item, acc|
       next unless item.include?('<sparkle:informationalUpdate')
 
@@ -2920,6 +2937,7 @@ class ValidationReport
       minimum_system_version: minimum_system_version.to_s.strip,
       has_signature: has_signature,
       informational_entries_missing_links: informational_entries_missing_links,
+      informational_entries_missing_versions: informational_entries_missing_versions,
       informational_constraint_version_mismatches: informational_constraint_version_mismatches
     }
   rescue StandardError
@@ -3605,12 +3623,27 @@ class ValidationReport
       File.join(project_path, 'outputs', 'release_preflight_status.json'),
       File.join(project_path, 'outputs', 'validation', 'qa_status.json')
     ]
-    status_path = candidates
-      .select { |path| File.exist?(path) }
-      .max_by { |path| File.mtime(path) }
-    return nil unless status_path
+    status_path = nil
+    status = nil
+    candidates.select { |path| File.exist?(path) }.sort_by { |path| File.mtime(path) }.reverse_each do |candidate|
+      parsed = if File.basename(candidate) == 'release_preflight_status.json'
+                 release_preflight_receipt_verifier.read(
+                   candidate,
+                   producer: 'saneprocess.release_preflight.v1'
+                 )
+               else
+                 JSON.parse(File.read(candidate))
+               end
+      next unless parsed.is_a?(Hash)
 
-    status = JSON.parse(File.read(status_path))
+      status_path = candidate
+      status = parsed
+      break
+    rescue JSON::ParserError
+      next
+    end
+    return nil unless status_path && status
+
     snapshot_time = begin
       Time.parse(status['generatedAt'].to_s)
     rescue ArgumentError
@@ -3639,6 +3672,10 @@ class ValidationReport
     nil
   rescue StandardError
     nil
+  end
+
+  def release_preflight_receipt_verifier
+    ReleaseReceiptSigner.production
   end
 
   def project_qa_source_fingerprint(project_path)

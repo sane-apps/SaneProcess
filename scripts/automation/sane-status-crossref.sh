@@ -1,12 +1,14 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash
+set -uo pipefail
+
+STATUS_SAFE_PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
+export PATH="$STATUS_SAFE_PATH"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 CHECK_INBOX="${HOME}/SaneApps/infra/scripts/check-inbox.sh"
 SANE_MASTER="${REPO_ROOT}/SaneMaster.rb"
-GITHUB_QUEUE="${SCRIPT_DIR}/github-queue.sh"
 LISTING_JSON_PATH="${STATUS_LISTING_JSON_PATH:-}"
 LISTING_JSON_CLEANUP=0
 HOSTED_JSON_PATH="${STATUS_HOSTED_JSON_PATH:-}"
@@ -18,50 +20,78 @@ GITHUB_PRS_JSON_CLEANUP=0
 STATUS_GITHUB_ACTIVITY_LIMIT="${STATUS_GITHUB_ACTIVITY_LIMIT:-50}"
 STATUS_GITHUB_COMMENT_LIMIT="${STATUS_GITHUB_COMMENT_LIMIT:-3}"
 STATUS_GITHUB_NOTIFICATION_ACTIVITY_LIMIT="${STATUS_GITHUB_NOTIFICATION_ACTIVITY_LIMIT:-10}"
+STATUS_MODE="full"
+STATUS_INCOMPLETE_EXIT=3
+STATUS_UNAVAILABLE_COUNT=0
+STATUS_UNAVAILABLE_LANES=""
 
-load_github_token() {
-  if [[ -n "${GH_TOKEN:-}" || -n "${GITHUB_TOKEN:-}" ]]; then
-    if [[ -z "${GH_TOKEN:-}" && -n "${GITHUB_TOKEN:-}" ]]; then
-      export GH_TOKEN="$GITHUB_TOKEN"
-    fi
-    if [[ -z "${GITHUB_TOKEN:-}" && -n "${GH_TOKEN:-}" ]]; then
-      export GITHUB_TOKEN="$GH_TOKEN"
-    fi
+for arg in "$@"; do
+  case "$arg" in
+    --full|full)
+      STATUS_MODE="full"
+      ;;
+    --fast|fast)
+      STATUS_MODE="fast"
+      ;;
+    -h|--help)
+      echo "Usage: sane-status-crossref.sh [--fast|--full]"
+      echo "Default: --full (includes release and distribution blockers)"
+      echo "Exit 0: every selected lane ran; exit 3: one or more selected lanes were unavailable."
+      echo "Fast mode is always partial and prints that disclaimer even when a selected lane fails."
+      exit 0
+      ;;
+    *)
+      echo "Unknown status argument: $arg" >&2
+      echo "Usage: sane-status-crossref.sh [--fast|--full]" >&2
+      exit 2
+      ;;
+  esac
+done
+
+run_status_lane() {
+  local label="$1"
+  shift
+  local exit_status detail
+
+  if "$@"; then
     return 0
+  else
+    exit_status=$?
   fi
 
-  local token_path token
-  token_path="${STATUS_GITHUB_TOKEN_FILE:-${HOME}/.codex/secrets/github_token}"
-  if [[ -r "$token_path" ]]; then
-    token="$(tr -d '\r\n' < "$token_path" 2>/dev/null || true)"
-    if [[ -n "$token" ]]; then
-      export GITHUB_TOKEN="$token"
-      export GH_TOKEN="$token"
-    fi
+  printf '⚠️  Lane unavailable: %s (exit %s)\n' "$label" "$exit_status"
+  detail="${label} (exit ${exit_status})"
+  STATUS_UNAVAILABLE_COUNT=$((STATUS_UNAVAILABLE_COUNT + 1))
+  if [[ -z "$STATUS_UNAVAILABLE_LANES" ]]; then
+    STATUS_UNAVAILABLE_LANES="$detail"
+  else
+    STATUS_UNAVAILABLE_LANES="${STATUS_UNAVAILABLE_LANES}
+${detail}"
   fi
+  return 0
 }
 
-load_github_token
+print_unavailable_lanes() {
+  printf '%s\n' "$STATUS_UNAVAILABLE_LANES" | while IFS= read -r lane; do
+    [[ -n "$lane" ]] && printf -- '- %s\n' "$lane"
+  done
+}
 
-run_setapp_status_with_safari_retry() {
-  local output_path mini_safari
+run_setapp_status() {
+  local output_path command_status
   output_path="$(mktemp "${TMPDIR:-/tmp}/sane-status-setapp.XXXXXX")"
 
-  ruby "$SANE_MASTER" setapp_status --soft > "$output_path" || true
-  if grep -q 'open developer.setapp.com in Safari on the Mini' "$output_path"; then
-    mini_safari="${REPO_ROOT}/mini/mini-safari.sh"
-    if [[ -x "$mini_safari" ]]; then
-      echo "Setapp status token unavailable; retrying with the current Mini Safari tab..."
-      "$mini_safari" open-read-current "https://developer.setapp.com" 5 400 >/dev/null || true
-      ruby "$SANE_MASTER" setapp_status --soft || true
-    else
-      cat "$output_path"
-    fi
+  if ruby "$SANE_MASTER" setapp_status --soft > "$output_path"; then
+    command_status=0
   else
-    cat "$output_path"
+    command_status=$?
   fi
-
+  cat "$output_path"
+  if grep -Eq 'Status unavailable:|Treat Setapp status as incomplete' "$output_path"; then
+    command_status=1
+  fi
   rm -f "$output_path"
+  return "$command_status"
 }
 
 if [[ -z "$LISTING_JSON_PATH" ]]; then
@@ -85,6 +115,9 @@ if [[ -z "$GITHUB_PRS_JSON_PATH" ]]; then
 fi
 
 cleanup() {
+  if declare -f status_github_cleanup >/dev/null 2>&1; then
+    status_github_cleanup
+  fi
   if [[ "$LISTING_JSON_CLEANUP" -eq 1 ]]; then
     rm -f "$LISTING_JSON_PATH"
   fi
@@ -101,336 +134,85 @@ cleanup() {
 
 trap cleanup EXIT
 
-github_notifications() {
-  if ! command -v gh >/dev/null 2>&1; then
-    echo "GitHub CLI (gh) not installed"
-    return 1
-  fi
+print_key_worktrees() {
+  local repo label branch_line dirty_output dirty_count shown_count
+  local unavailable=0
 
-  local output notifications_path
-  output="$(gh api notifications --paginate 2>&1)" || {
-    echo "Unable to fetch GitHub notifications."
-    echo "$output"
-    return 1
-  }
-  notifications_path="$(mktemp "${TMPDIR:-/tmp}/sane-status-gh-notifications.XXXXXX")"
-  printf '%s\n' "$output" > "$notifications_path"
-
-  python3 - "$notifications_path" <<'PY'
-import json
-import sys
-
-try:
-    with open(sys.argv[1], "r", encoding="utf-8") as handle:
-        notifications = json.load(handle)
-except json.JSONDecodeError as exc:
-    print(f"Unable to parse GitHub notifications JSON: {exc}")
-    sys.exit(1)
-
-print(f"Notifications: {len(notifications)}")
-if not notifications:
-    print("No unread GitHub notifications.")
-    sys.exit(0)
-
-for item in notifications[:20]:
-    repo = (item.get("repository") or {}).get("full_name", "")
-    subject = item.get("subject") or {}
-    title = subject.get("title", "")
-    reason = item.get("reason", "")
-    updated = item.get("updated_at", "")
-    subject_type = subject.get("type", "")
-    url = subject.get("url", "")
-    print(f"- {repo}: {subject_type} | {reason} | {updated}")
-    print(f"  {title}")
-    if url:
-        print(f"  api: {url}")
-PY
-  rm -f "$notifications_path"
-}
-
-fetch_github_items_json() {
-  local mode="$1"
-  local out_path="$2"
-  if [[ "$mode" == "issues" ]]; then
-    gh search issues --owner sane-apps --state open --limit "$STATUS_GITHUB_ACTIVITY_LIMIT" \
-      --json repository,number,title,updatedAt,url > "$out_path"
-  else
-    gh search prs --owner sane-apps --state open --limit "$STATUS_GITHUB_ACTIVITY_LIMIT" \
-      --json repository,number,title,updatedAt,url,author,isDraft > "$out_path"
-  fi
-}
-
-github_comment_activity() {
-  if ! command -v gh >/dev/null 2>&1; then
-    echo "GitHub CLI (gh) not installed"
-    return 1
-  fi
-
-  fetch_github_items_json issues "$GITHUB_ISSUES_JSON_PATH" || {
-    echo "Unable to fetch GitHub issues for comment review."
-    return 1
-  }
-  fetch_github_items_json prs "$GITHUB_PRS_JSON_PATH" || {
-    echo "Unable to fetch GitHub PRs for comment review."
-    return 1
-  }
-
-  local items_path
-  items_path="$(mktemp "${TMPDIR:-/tmp}/sane-status-gh-items.XXXXXX")"
-  python3 - "$GITHUB_ISSUES_JSON_PATH" "$GITHUB_PRS_JSON_PATH" > "$items_path" <<'PY'
-import json
-import sys
-
-for kind, path in (("issue", sys.argv[1]), ("pr", sys.argv[2])):
-    with open(path, "r", encoding="utf-8") as handle:
-        rows = json.load(handle)
-    for row in rows:
-        repo = (row.get("repository") or {}).get("nameWithOwner", "")
-        number = row.get("number")
-        updated = row.get("updatedAt", "")
-        title = row.get("title", "")
-        if repo and number:
-            print(f"{kind}\t{repo}\t{number}\t{updated}\t{title}")
-PY
-  local detail_path
-  while IFS=$'\t' read -r kind repo number updated title; do
-    [[ -n "$kind" ]] || continue
-    detail_path="$(mktemp "${TMPDIR:-/tmp}/sane-status-gh-detail.XXXXXX")"
-    if [[ "$kind" == "issue" ]]; then
-      if ! gh issue view "$number" --repo "$repo" --comments \
-        --json title,url,updatedAt,comments,labels > "$detail_path" 2>/dev/null; then
-        echo "- $repo #$number: unable to read issue comments"
-        rm -f "$detail_path"
-        continue
-      fi
-      python3 - "$detail_path" "$kind" "$repo" "$number" "$updated" "$title" "$STATUS_GITHUB_COMMENT_LIMIT" <<'PY'
-import json
-import sys
-
-path, kind, repo, number, updated, title, limit = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6], int(sys.argv[7])
-try:
-    with open(path, "r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-except json.JSONDecodeError:
-    print(f"- {repo} #{number}: unable to read {kind} comments")
-    sys.exit(0)
-
-comments = payload.get("comments") or []
-labels = ", ".join((label.get("name") or "") for label in (payload.get("labels") or []) if label.get("name"))
-print(f"- {repo} #{number}: {payload.get('title') or title}")
-print(f"  Updated: {payload.get('updatedAt') or updated} | Comments read: {len(comments)} | Labels: {labels or 'none'}")
-for comment in comments[-limit:]:
-    author = (comment.get("author") or {}).get("login", "unknown")
-    created = comment.get("createdAt") or comment.get("updatedAt") or ""
-    body = " ".join((comment.get("body") or "").split())
-    if len(body) > 220:
-        body = body[:217] + "..."
-    print(f"  - {created} @{author}: {body}")
-PY
-    else
-      if ! gh pr view "$number" --repo "$repo" --comments \
-        --json title,url,updatedAt,comments,labels,reviews,author,isDraft > "$detail_path" 2>/dev/null; then
-        echo "- $repo PR #$number: unable to read PR comments"
-        rm -f "$detail_path"
-        continue
-      fi
-      python3 - "$detail_path" "$kind" "$repo" "$number" "$updated" "$title" "$STATUS_GITHUB_COMMENT_LIMIT" <<'PY'
-import json
-import sys
-
-path, kind, repo, number, updated, title, limit = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6], int(sys.argv[7])
-try:
-    with open(path, "r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-except json.JSONDecodeError:
-    print(f"- {repo} PR #{number}: unable to read PR comments")
-    sys.exit(0)
-
-comments = payload.get("comments") or []
-reviews = payload.get("reviews") or []
-labels = ", ".join((label.get("name") or "") for label in (payload.get("labels") or []) if label.get("name"))
-author = ((payload.get("author") or {}).get("login")) or "unknown"
-state = "DRAFT" if payload.get("isDraft") else "OPEN"
-print(f"- {repo} PR #{number}: {payload.get('title') or title}")
-print(f"  State: {state} | Author: @{author} | Updated: {payload.get('updatedAt') or updated} | Comments read: {len(comments)} | Reviews read: {len(reviews)} | Labels: {labels or 'none'}")
-for comment in comments[-limit:]:
-    comment_author = (comment.get("author") or {}).get("login", "unknown")
-    created = comment.get("createdAt") or comment.get("updatedAt") or ""
-    body = " ".join((comment.get("body") or "").split())
-    if len(body) > 220:
-        body = body[:217] + "..."
-    print(f"  - comment {created} @{comment_author}: {body}")
-for review in reviews[-limit:]:
-    review_author = (review.get("author") or {}).get("login", "unknown")
-    submitted = review.get("submittedAt") or ""
-    state = review.get("state") or ""
-    body = " ".join((review.get("body") or "").split())
-    if len(body) > 220:
-        body = body[:217] + "..."
-    print(f"  - review {submitted} @{review_author} [{state}]: {body}")
-PY
+  for repo in \
+    "$HOME/SaneApps/websites/sanecite-saas" \
+    "$HOME/SaneApps/apps/SaneClip" \
+    "$HOME/SaneApps/infra/SaneProcess"; do
+    label="${repo#$HOME/SaneApps/}"
+    if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      printf -- '- %s: unavailable (not a Git worktree)\n' "$label"
+      unavailable=1
+      continue
     fi
-    rm -f "$detail_path"
-  done < "$items_path"
-  rm -f "$items_path"
+
+    if ! branch_line="$(git -C "$repo" status --short --branch | sed -n '1p')"; then
+      printf -- '- %s: unavailable (git status failed)\n' "$label"
+      unavailable=1
+      continue
+    fi
+    if ! dirty_output="$(git -C "$repo" status --porcelain --untracked-files=normal)"; then
+      printf -- '- %s: unavailable (git worktree scan failed)\n' "$label"
+      unavailable=1
+      continue
+    fi
+    dirty_count="$(printf '%s\n' "$dirty_output" | sed '/^$/d' | wc -l | tr -d ' ')"
+    printf -- '- %s: %s | dirty files: %s\n' "$label" "$branch_line" "$dirty_count"
+    if [[ "$dirty_count" -gt 0 ]]; then
+      printf '%s\n' "$dirty_output" | sed -n '1,8p' | sed 's/^/    /'
+      shown_count=8
+      if [[ "$dirty_count" -gt "$shown_count" ]]; then
+        printf '    ... %s more\n' "$((dirty_count - shown_count))"
+      fi
+    fi
+  done
+
+  return "$unavailable"
 }
 
-github_external_notification_activity() {
-  if ! command -v gh >/dev/null 2>&1; then
-    echo "GitHub CLI (gh) not installed"
-    return 1
-  fi
+fast_status() {
+  printf '\nSane status fast (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+  printf '%s\n' "----------------------------------------"
 
-  local output notifications_path items_path
-  output="$(gh api notifications --paginate 2>&1)" || {
-    echo "Unable to fetch GitHub notifications for external activity review."
-    echo "$output"
-    return 1
-  }
-  notifications_path="$(mktemp "${TMPDIR:-/tmp}/sane-status-gh-notifications.XXXXXX")"
-  items_path="$(mktemp "${TMPDIR:-/tmp}/sane-status-gh-notification-items.XXXXXX")"
-  printf '%s\n' "$output" > "$notifications_path"
+  printf '\n[1/3] Active inbox actions\n'
+  run_status_lane "Active inbox actions" env INBOX_FETCH_LIMIT="${STATUS_INBOX_LIMIT:-200}" "$CHECK_INBOX" active-summary
 
-  if ! python3 - "$notifications_path" "$STATUS_GITHUB_NOTIFICATION_ACTIVITY_LIMIT" > "$items_path" <<'PY'
-import json
-import re
-import sys
+  printf '\n[2/3] Key worktrees\n'
+  run_status_lane "Key worktrees" print_key_worktrees
 
-path, limit = sys.argv[1], int(sys.argv[2])
-try:
-    with open(path, "r", encoding="utf-8") as handle:
-        notifications = json.load(handle)
-except json.JSONDecodeError as exc:
-    print(f"Unable to parse GitHub notifications JSON: {exc}", file=sys.stderr)
-    sys.exit(1)
+  printf '\n[3/3] Deep lanes\n'
+  echo "Skipped sales, Setapp, hosted-file dashboard, outreach, and GitHub comment expansion in fast mode."
+  echo "Run: ruby $SANE_MASTER status"
+  printf '\nFast summary complete; this is not a full readiness verdict.\n'
 
-seen = set()
-for item in notifications:
-    repo = ((item.get("repository") or {}).get("full_name") or "").strip()
-    if not repo or repo.startswith("sane-apps/"):
-        continue
-    if not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo):
-        continue
-    subject = item.get("subject") or {}
-    subject_type = subject.get("type") or ""
-    if subject_type not in ("Issue", "PullRequest"):
-        continue
-    url = subject.get("url") or ""
-    match = re.search(r"/(?:issues|pulls)/(\d+)$", url)
-    if not match:
-        continue
-    number = match.group(1)
-    if not number.isdigit():
-        continue
-    kind = "pr" if subject_type == "PullRequest" else "issue"
-    key = (kind, repo, number)
-    if key in seen:
-        continue
-    seen.add(key)
-    print("\t".join([
-        kind,
-        repo,
-        number,
-        item.get("updated_at") or "",
-        item.get("reason") or "",
-        subject.get("title") or "",
-    ]))
-    if len(seen) >= limit:
-        break
-PY
-  then
-    rm -f "$notifications_path" "$items_path"
-    return 1
-  fi
-
-  if [[ ! -s "$items_path" ]]; then
-    echo "No external GitHub issue/PR notifications to expand."
-    rm -f "$notifications_path" "$items_path"
+  if [[ "$STATUS_UNAVAILABLE_COUNT" -eq 0 ]]; then
+    printf 'FAST STATUS: PARTIAL — selected lanes available (exit 0).\n'
     return 0
   fi
 
-  echo "External notification-backed GitHub threads:"
-  local detail_path
-  while IFS=$'\t' read -r kind repo number updated reason title; do
-    [[ -n "$kind" ]] || continue
-    detail_path="$(mktemp "${TMPDIR:-/tmp}/sane-status-gh-notification-detail.XXXXXX")"
-    if [[ "$kind" == "issue" ]]; then
-      if ! gh issue view "$number" --repo "$repo" --comments \
-        --json title,state,url,updatedAt,comments,labels > "$detail_path" 2>/dev/null; then
-        echo "- $repo #$number: unable to read notification-backed issue ($reason)"
-        rm -f "$detail_path"
-        continue
-      fi
-      python3 - "$detail_path" "$repo" "$number" "$updated" "$reason" "$title" "$STATUS_GITHUB_COMMENT_LIMIT" <<'PY'
-import json
-import sys
-
-path, repo, number, updated, reason, title, limit = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6], int(sys.argv[7])
-try:
-    with open(path, "r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-except json.JSONDecodeError:
-    print(f"- {repo} #{number}: unable to read notification-backed issue comments")
-    sys.exit(0)
-
-comments = payload.get("comments") or []
-labels = ", ".join((label.get("name") or "") for label in (payload.get("labels") or []) if label.get("name"))
-print(f"- {repo} #{number}: {payload.get('title') or title}")
-print(f"  Notification: {reason} | State: {payload.get('state') or 'unknown'} | Updated: {payload.get('updatedAt') or updated} | Comments read: {len(comments)} | Labels: {labels or 'none'}")
-for comment in comments[-limit:]:
-    author = (comment.get("author") or {}).get("login", "unknown")
-    created = comment.get("createdAt") or comment.get("updatedAt") or ""
-    body = " ".join((comment.get("body") or "").split())
-    if len(body) > 220:
-        body = body[:217] + "..."
-    print(f"  - comment {created} @{author}: {body}")
-PY
-    else
-      if ! gh pr view "$number" --repo "$repo" --comments \
-        --json title,state,url,updatedAt,comments,reviews,author,isDraft > "$detail_path" 2>/dev/null; then
-        echo "- $repo PR #$number: unable to read notification-backed PR ($reason)"
-        rm -f "$detail_path"
-        continue
-      fi
-      python3 - "$detail_path" "$repo" "$number" "$updated" "$reason" "$title" "$STATUS_GITHUB_COMMENT_LIMIT" <<'PY'
-import json
-import sys
-
-path, repo, number, updated, reason, title, limit = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6], int(sys.argv[7])
-try:
-    with open(path, "r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-except json.JSONDecodeError:
-    print(f"- {repo} PR #{number}: unable to read notification-backed PR comments")
-    sys.exit(0)
-
-comments = payload.get("comments") or []
-reviews = payload.get("reviews") or []
-author = ((payload.get("author") or {}).get("login")) or "unknown"
-state = payload.get("state") or ("DRAFT" if payload.get("isDraft") else "OPEN")
-print(f"- {repo} PR #{number}: {payload.get('title') or title}")
-print(f"  Notification: {reason} | State: {state} | Author: @{author} | Updated: {payload.get('updatedAt') or updated} | Comments read: {len(comments)} | Reviews read: {len(reviews)}")
-for comment in comments[-limit:]:
-    comment_author = (comment.get("author") or {}).get("login", "unknown")
-    created = comment.get("createdAt") or comment.get("updatedAt") or ""
-    body = " ".join((comment.get("body") or "").split())
-    if len(body) > 220:
-        body = body[:217] + "..."
-    print(f"  - comment {created} @{comment_author}: {body}")
-for review in reviews[-limit:]:
-    review_author = (review.get("author") or {}).get("login", "unknown")
-    submitted = review.get("submittedAt") or ""
-    review_state = review.get("state") or ""
-    body = " ".join((review.get("body") or "").split())
-    if len(body) > 220:
-        body = body[:217] + "..."
-    print(f"  - review {submitted} @{review_author} [{review_state}]: {body}")
-PY
-    fi
-    rm -f "$detail_path"
-  done < "$items_path"
-  rm -f "$notifications_path" "$items_path"
+  printf 'FAST STATUS: PARTIAL AND INCOMPLETE — %s selected lane(s) unavailable.\n' "$STATUS_UNAVAILABLE_COUNT"
+  print_unavailable_lanes
+  printf 'Exit %s means selected status coverage was incomplete.\n' "$STATUS_INCOMPLETE_EXIT"
+  return "$STATUS_INCOMPLETE_EXIT"
 }
+
+source "$SCRIPT_DIR/sane-status-github.sh" || {
+  echo "Unable to load the status GitHub helper." >&2
+  exit 1
+}
+
+if [[ "$STATUS_MODE" == "fast" ]]; then
+  fast_status
+  exit $?
+fi
+
+if [[ "${STATUS_GITHUB_NOTIFICATIONS_ONLY:-0}" == "1" ]]; then
+  github_notifications
+  exit $?
+fi
 
 outreach_launch_status() {
   ruby <<'RUBY'
@@ -570,112 +352,78 @@ end
 RUBY
 }
 
+full_listing_status() {
+  ruby "$SANE_MASTER" listing_actions --json-out "$LISTING_JSON_PATH" >/dev/null || return $?
+  ruby -rjson -e '
+    rows = JSON.parse(File.read(ARGV.fetch(0))).fetch("current_actions", [])
+    needs = rows.select { |row| row["action_status"] == "Needs action" }
+    puts "Current actions: #{rows.length}"
+    puts "Needs action: #{needs.length} | Optional: #{rows.count { |row| row["action_status"] == "Optional" }} | Monitor: #{rows.count { |row| row["action_status"] == "Monitor" }}"
+    needs.first(10).each { |row| puts "- #{row["site"]}: #{row["workflow"]} (email ##{row["latest_email_id"]})" }
+    puts "No live listing/setup actions." if needs.empty?
+  ' "$LISTING_JSON_PATH"
+}
+
+full_hosted_file_status() {
+  ruby "$SANE_MASTER" hosted_file_actions --json > "$HOSTED_JSON_PATH" || return $?
+  ruby -rjson -e '
+    rows = JSON.parse(File.read(ARGV.fetch(0))).fetch("current_actions", [])
+    puts "Needs dashboard sync: #{rows.length}"
+    rows.first(10).each { |row| puts "- #{row["app"]}: hosted #{row.fetch("hosted_version", "?")} -> expected #{row.fetch("expected_version", "?")} (variant #{row["variant_id"]})" }
+    puts "No hosted-file dashboard actions." if rows.empty?
+  ' "$HOSTED_JSON_PATH"
+}
+
+full_github_comment_status() {
+  local exit_status=0
+
+  github_comment_activity || exit_status=$?
+  github_external_notification_activity || exit_status=$?
+  return "$exit_status"
+}
+
 printf '\nSane status cross-reference (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S')"
 printf '%s\n' "----------------------------------------"
 
+printf '\n[Core] Key worktrees\n'
+run_status_lane "Core key worktrees" print_key_worktrees
+
 printf '\n[1/10] Sales (last 30 days)\n'
-if [[ -x "$SANE_MASTER" ]]; then
-  ruby "$SANE_MASTER" sales --days 30
-else
-  echo "SaneMaster sales not executable"
-fi
+run_status_lane "Sales" ruby "$SANE_MASTER" sales --days 30
 
 printf '\n[2/10] Inbox status\n'
-if [[ -x "$CHECK_INBOX" ]]; then
-  "$CHECK_INBOX"
-else
-  echo "check-inbox.sh not found at $CHECK_INBOX"
-fi
+run_status_lane "Inbox status" "$CHECK_INBOX"
 
 printf '\n[3/10] Listing actions\n'
-if [[ -x "$SANE_MASTER" ]]; then
-  ruby "$SANE_MASTER" listing_actions --json-out "$LISTING_JSON_PATH" >/dev/null
-  python3 - "$LISTING_JSON_PATH" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], "r", encoding="utf-8") as handle:
-    payload = json.load(handle)
-current = payload.get("current_actions", [])
-needs = [row for row in current if row.get("action_status") == "Needs action"]
-optional = [row for row in current if row.get("action_status") == "Optional"]
-monitor = [row for row in current if row.get("action_status") == "Monitor"]
-
-print(f"Current actions: {len(current)}")
-print(f"Needs action: {len(needs)} | Optional: {len(optional)} | Monitor: {len(monitor)}")
-if needs:
-    print("")
-    for row in needs[:10]:
-        print(
-            f"- {row.get('site', '')}: {row.get('workflow', '')} "
-            f"(email #{row.get('latest_email_id', '')})"
-        )
-else:
-    print("No live listing/setup actions.")
-PY
-else
-  echo "SaneMaster listing_actions not executable"
-fi
+run_status_lane "Listing actions" full_listing_status
 
 printf '\n[4/10] Hosted-file dashboard actions\n'
-if [[ -x "$SANE_MASTER" ]]; then
-  if ruby "$SANE_MASTER" hosted_file_actions --json > "$HOSTED_JSON_PATH"; then
-    python3 - "$HOSTED_JSON_PATH" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], "r", encoding="utf-8") as handle:
-    payload = json.load(handle)
-
-current = payload.get("current_actions", [])
-print(f"Needs dashboard sync: {len(current)}")
-if current:
-    print("")
-    for row in current[:10]:
-        app = row.get("app", "")
-        hosted = row.get("hosted_version", "?")
-        expected = row.get("expected_version", "?")
-        variant = row.get("variant_id", "")
-        print(f"- {app}: hosted {hosted} -> expected {expected} (variant {variant})")
-else:
-    print("No hosted-file dashboard actions.")
-PY
-  else
-    echo "Unable to fetch hosted-file dashboard actions."
-  fi
-else
-  echo "SaneMaster hosted_file_actions not executable"
-fi
+run_status_lane "Hosted-file dashboard actions" full_hosted_file_status
 
 printf '\n[5/10] Setapp distribution channel\n'
-if [[ -x "$SANE_MASTER" ]]; then
-  run_setapp_status_with_safari_retry
-else
-  echo "SaneMaster setapp_status not executable"
-fi
+run_status_lane "Setapp distribution channel" run_setapp_status
 
 printf '\n[6/10] Outreach / launch operations\n'
-outreach_launch_status || true
+run_status_lane "Outreach / launch operations" outreach_launch_status
 
 printf '\n[7/10] GitHub notifications\n'
-github_notifications || true
+run_status_lane "GitHub notifications" github_notifications
 
 printf '\n[8/10] Open GitHub issues (sane-apps org)\n'
-if [[ -x "$GITHUB_QUEUE" ]]; then
-  "$GITHUB_QUEUE" issues --scope org-wide --limit "${STATUS_GITHUB_LIMIT:-200}"
-else
-  echo "github-queue.sh not found at $GITHUB_QUEUE"
-fi
+run_status_lane "Open GitHub issues" status_github_queue issues "${STATUS_GITHUB_LIMIT:-200}"
 
 printf '\n[9/10] Open GitHub PRs (sane-apps org)\n'
-if [[ -x "$GITHUB_QUEUE" ]]; then
-  "$GITHUB_QUEUE" prs --scope org-wide --limit "${STATUS_GITHUB_LIMIT:-200}"
-else
-  echo "github-queue.sh not found at $GITHUB_QUEUE"
-fi
+run_status_lane "Open GitHub PRs" status_github_queue prs "${STATUS_GITHUB_LIMIT:-200}"
 
 printf '\n[10/10] GitHub comment/review activity on open issues, PRs, and external notifications\n'
-github_comment_activity || true
-github_external_notification_activity || true
+run_status_lane "GitHub comment/review activity" full_github_comment_status
 
-printf '\nDone.\n'
+if [[ "$STATUS_UNAVAILABLE_COUNT" -eq 0 ]]; then
+  printf '\nFULL STATUS: COMPLETE — all selected lanes ran. Review reported blockers above.\n'
+  exit 0
+fi
+
+printf '\nFULL STATUS: INCOMPLETE — %s selected lane(s) unavailable.\n' "$STATUS_UNAVAILABLE_COUNT"
+print_unavailable_lanes
+printf 'Exit %s means full status coverage was incomplete.\n' "$STATUS_INCOMPLETE_EXIT"
+exit "$STATUS_INCOMPLETE_EXIT"

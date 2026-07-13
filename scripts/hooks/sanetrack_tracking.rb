@@ -49,6 +49,7 @@ def track_edit(tool_name, tool_input, tool_response)
 
   track_visual_requirement_from_edit(file_path)
   track_visual_audit_note(tool_name, tool_input, file_path)
+  invalidate_review_credits_if_source_changed
 rescue StandardError
   # Don't fail on verification tracking
 end
@@ -81,6 +82,7 @@ def track_bash_mutation(tool_name, tool_input, tool_response)
     track_visual_requirement_from_edit(path)
     track_visual_audit_note('Bash', { 'content' => command }, path)
   end
+  invalidate_review_credits_if_source_changed
 rescue StandardError => e
   warn "⚠️  Bash mutation tracking error: #{e.message}" if ENV['DEBUG']
 end
@@ -128,6 +130,14 @@ def track_visual_requirement_from_edit(file_path)
     basename = File.basename(file_path)
     visual[:required_files] << basename unless visual[:required_files].include?(basename)
     visual[:required_files] = visual[:required_files].last(20)
+    # Keep the FULL path too so the stop gate can drop phantom files that no
+    # longer exist on disk (deleted/reverted/renamed, or carried over from a
+    # different checkout). Only paths recorded here — from the main session's
+    # own Edit/Write and bash mutations — can ever require a visual receipt;
+    # subagent-internal edits never reach this per-tool tracking path.
+    visual[:required_files_paths] ||= []
+    visual[:required_files_paths] << file_path unless visual[:required_files_paths].include?(file_path)
+    visual[:required_files_paths] = visual[:required_files_paths].last(20)
     visual
   end
 rescue StandardError

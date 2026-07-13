@@ -16,6 +16,7 @@ require 'time'
 require 'yaml'
 require 'digest'
 require 'open3'
+require 'set'
 require_relative 'core/process_metrics'
 require_relative 'core/project_root'
 require_relative 'core/visual_receipt'
@@ -99,8 +100,51 @@ def non_doc_edits(cwd)
     # paths that are neither present nor a current git deletion/change.
     next unless File.exist?(expanded_path) || git_changed_path?(project_root, expanded_path)
 
-    kept << raw_path
+    kept << expanded_path
   end
+end
+
+# Resolve symlinked prefixes (e.g. ~/SaneApps aliases) so dirty-path comparison
+# is exact instead of basename-fuzzy. Falls back to the input on any error,
+# including paths whose file no longer exists (git deletions).
+def normalize_tree_path(path)
+  File.realdirpath(path)
+rescue StandardError
+  path
+end
+
+# Net uncommitted working-tree paths (modified, staged, or untracked),
+# normalized to absolute paths. nil when cwd is not inside a git repo or git is
+# unavailable. Parity with sanestop_finalize RULE #4: the gate judges NET source
+# state, not the cumulative session edit counter — work that was committed (or
+# reset to origin) leaves a clean tree and must not re-fire this block forever.
+# The old counter-only behavior let state.json accumulate hundreds of stale
+# entries (including files from long-retired tooling) that made completion
+# unsatisfiable without a fresh verify even when nothing was actually pending.
+def uncommitted_working_tree_paths(cwd)
+  root_out, root_status = Open3.capture2e('git', '-C', cwd, 'rev-parse', '--show-toplevel')
+  return nil unless root_status.success?
+
+  root = root_out.strip
+  out, status = Open3.capture2e('git', '-C', root, 'status', '--porcelain', '--untracked-files=all')
+  return nil unless status.success?
+
+  # map+compact, not filter_map: hooks run under the system ruby (2.6), where
+  # Enumerator#filter_map does not exist — it raised NoMethodError into the
+  # rescue below, silently reverting this gate to counter behavior (the exact
+  # stale-entry deadlock the net-diff judgment exists to fix).
+  out.each_line.map do |line|
+    path = line[3..-1]&.strip
+    next nil if path.nil? || path.empty?
+
+    # Rename entries are "old -> new"; the new path is what currently exists.
+    path = path.split(' -> ').last if path.include?(' -> ')
+    # git quotes paths with special characters.
+    path = path[1..-2] if path.start_with?('"') && path.end_with?('"')
+    normalize_tree_path(File.expand_path(path, root))
+  end.compact
+rescue StandardError
+  nil
 end
 
 def current_source_fingerprint(cwd)
@@ -187,6 +231,19 @@ if visual['required']
 end
 
 non_doc_files = non_doc_edits(cwd)
+
+# Judge NET state, not the cumulative session counter (parity with sanestop
+# RULE #4): of the session's non-doc edits, only those STILL uncommitted in the
+# working tree require fresh proof. Committed work is resolved. When git state
+# is unknown (non-repo cwd), keep the counter behavior so coverage is not lost.
+dirty_paths = uncommitted_working_tree_paths(cwd)
+unless dirty_paths.nil?
+  dirty_set = dirty_paths.to_set
+  non_doc_files = non_doc_files.select do |path|
+    dirty_set.include?(normalize_tree_path(File.expand_path(path)))
+  end
+end
+
 exit 0 if non_doc_files.empty?
 
 if recent_verified_metric?(cwd, project_name)
@@ -194,8 +251,10 @@ if recent_verified_metric?(cwd, project_name)
   exit 0
 else
   warn "🔴 Task \"#{task_subject}\" completed without recent test verification"
-  warn "   Non-doc edits: #{non_doc_files.map { |path| File.basename(path) }.uniq.first(6).join(', ')}"
+  warn "   Gate scope: project '#{project_name}' at #{cwd} (resolved from the session cwd — if this task belongs to a different repo, cd into that repo first)"
+  warn "   Uncommitted non-doc edits: #{non_doc_files.map { |path| File.basename(path) }.uniq.first(6).join(', ')}"
   warn '   Required proof: a fresh SaneMaster verify metric with counted tests, matching source fingerprint, and current project.'
   warn '   Run: ./scripts/SaneMaster.rb verify'
+  warn '   (Committed work — a clean working tree — is already treated as resolved.)'
   exit 2
 end

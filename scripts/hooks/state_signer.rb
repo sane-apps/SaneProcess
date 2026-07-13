@@ -37,6 +37,8 @@ module StateSigner
   KEYCHAIN_ACCOUNT = 'hmac_secret'
   SECRET_FILE = File.expand_path('~/.claude_hook_secret')  # Legacy fallback
   ENV_CACHE_FILE = File.expand_path(ENV.fetch('SANE_ENV_CACHE_FILE', '~/.config/nv/env'))
+  SECURITY_BIN = '/usr/bin/security'
+  SECURITY_ENV = { 'PATH' => '/usr/bin:/bin', 'LC_ALL' => 'C', 'LANG' => 'C' }.freeze
   SIGNATURE_KEY = '__sig__'
   TIMESTAMP_KEY = '__ts__'
 
@@ -46,7 +48,11 @@ module StateSigner
     end
 
     def sign(data)
-      payload = data.to_json
+      # Pin UTF-8 before digesting: under a C locale, caller strings arrive
+      # tagged US-ASCII/BINARY and to_json raises
+      # Encoding::UndefinedConversionError on any non-ASCII byte (e.g. an
+      # em dash in a gate-override note, hit live 2026-07-07).
+      payload = deep_utf8(data).to_json
       OpenSSL::HMAC.hexdigest('SHA256', secret, payload)
     end
 
@@ -57,7 +63,11 @@ module StateSigner
 
     # Write data with embedded signature
     def write_signed(path, data)
-      data = data.dup
+      # deep_utf8 both deep-copies and re-tags strings so pretty_generate and
+      # File.write cannot raise under a non-UTF-8 locale. The signature is
+      # computed over the normalized payload, so read_verified (which parses
+      # the file as UTF-8) reproduces the exact same bytes.
+      data = deep_utf8(data)
       data[TIMESTAMP_KEY] = Time.now.utc.iso8601
 
       # Remove existing signature before computing new one
@@ -65,7 +75,7 @@ module StateSigner
       data[SIGNATURE_KEY] = sign(data)
 
       FileUtils.mkdir_p(File.dirname(path))
-      File.write(path, JSON.pretty_generate(data))
+      File.write(path, JSON.pretty_generate(data), encoding: Encoding::UTF_8)
       data
     end
 
@@ -119,6 +129,26 @@ module StateSigner
     end
 
     private
+
+    # Deep copy with every String re-tagged/transcoded to valid UTF-8. Hook
+    # subprocesses without a UTF-8 locale hand us US-ASCII/BINARY-tagged
+    # strings whose bytes are really UTF-8; re-tag when the bytes are valid
+    # UTF-8, transcode with replacement otherwise so signing never raises.
+    def deep_utf8(value)
+      case value
+      when String
+        utf8 = value.dup.force_encoding(Encoding::UTF_8)
+        return utf8 if utf8.valid_encoding?
+
+        value.encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: '?')
+      when Hash
+        value.each_with_object({}) { |(k, v), out| out[deep_utf8(k)] = deep_utf8(v) }
+      when Array
+        value.map { |item| deep_utf8(item) }
+      else
+        value
+      end
+    end
 
     def macos?
       RUBY_PLATFORM.include?('darwin')
@@ -202,11 +232,13 @@ module StateSigner
       return nil if ENV['SANE_NO_KEYCHAIN'] == '1'
 
       result, = Open3.capture2(
-        'security', 'find-generic-password',
+        SECURITY_ENV,
+        SECURITY_BIN, 'find-generic-password',
         '-s', KEYCHAIN_SERVICE,
         '-a', KEYCHAIN_ACCOUNT,
         '-w',
-        err: File::NULL
+        err: File::NULL,
+        unsetenv_others: true
       )
       result = result.to_s.strip
       persist_secret_to_env_cache(result) unless result.empty?
@@ -220,19 +252,23 @@ module StateSigner
 
       # Delete existing entry if present (security add fails on duplicate)
       system(
-        'security', 'delete-generic-password',
+        SECURITY_ENV,
+        SECURITY_BIN, 'delete-generic-password',
         '-s', KEYCHAIN_SERVICE,
         '-a', KEYCHAIN_ACCOUNT,
         out: File::NULL,
-        err: File::NULL
+        err: File::NULL,
+        unsetenv_others: true
       )
       success = system(
-        'security', 'add-generic-password',
+        SECURITY_ENV,
+        SECURITY_BIN, 'add-generic-password',
         '-s', KEYCHAIN_SERVICE,
         '-a', KEYCHAIN_ACCOUNT,
         '-w', secret,
         out: File::NULL,
-        err: File::NULL
+        err: File::NULL,
+        unsetenv_others: true
       )
       persist_secret_to_env_cache(secret) if success
       # Fall back to file if Keychain write fails
@@ -263,7 +299,9 @@ module StateSigner
   end
 end
 
-# CLI mode for testing/migration
+# Read-only CLI. Signing is deliberately unavailable: a general arbitrary-file
+# signing command would turn this helper into an authorization oracle for any
+# consumer that trusts StateSigner receipts.
 if __FILE__ == $PROGRAM_NAME
   require 'optparse'
 
@@ -272,8 +310,6 @@ if __FILE__ == $PROGRAM_NAME
     opts.banner = 'Usage: state_signer.rb [options] <file>'
 
     opts.on('-v', '--verify', 'Verify file signature') { options[:verify] = true }
-    opts.on('-s', '--sign', 'Sign file (in place)') { options[:sign] = true }
-    opts.on('-m', '--migrate', 'Migrate unsigned to signed') { options[:migrate] = true }
     opts.on('-r', '--read', 'Read verified content') { options[:read] = true }
   end.parse!
 
@@ -291,14 +327,6 @@ if __FILE__ == $PROGRAM_NAME
       puts '❌ Signature INVALID or missing'
       exit 1
     end
-  elsif options[:sign] || options[:migrate]
-    if StateSigner.migrate_to_signed(file)
-      puts "✅ File signed: #{file}"
-      exit 0
-    else
-      puts "❌ Failed to sign: #{file}"
-      exit 1
-    end
   elsif options[:read]
     data = StateSigner.read_verified(file)
     if data
@@ -309,7 +337,7 @@ if __FILE__ == $PROGRAM_NAME
       exit 1
     end
   else
-    warn 'Specify --verify, --sign, --migrate, or --read'
+    warn 'Specify --verify or --read'
     exit 1
   end
 end

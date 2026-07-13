@@ -65,9 +65,6 @@ SESSION_HANDOFF.md
 # Tooling
 # ═══════════════════════════════════════════════════════════════
 
-# Gemini/Agentic
-.gemini
-.gemini/
 .mcp.json
 
 # Claude Code - track project config, ignore user/transient state

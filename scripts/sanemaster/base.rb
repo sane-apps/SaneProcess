@@ -52,8 +52,9 @@ module SaneMasterModules
                                       diagnose
                                       crash_report
                                       crashes
-                                      release
-                                      release_preflight
+      release
+      upgrade_path_proof
+      release_preflight
                                       appstore_preflight
                                       setapp_status
                                       setapp-status
@@ -130,6 +131,9 @@ module SaneMasterModules
       options = {}
       options[:out] = out unless out.nil?
       options[:err] = err unless err.nil?
+      # Empty **options under ruby 2.6 appends a literal {} (see route_system).
+      return system(ruby_tool_env.merge(extra_env), *command) if options.empty?
+
       system(ruby_tool_env.merge(extra_env), *command, **options)
     end
 
@@ -141,6 +145,9 @@ module SaneMasterModules
       options = {}
       options[:out] = out unless out.nil?
       options[:err] = err unless err.nil?
+      # Empty **options under ruby 2.6 appends a literal {} (see route_system).
+      return system(bundle_tool_env.merge(extra_env), *command) if options.empty?
+
       system(bundle_tool_env.merge(extra_env), *command, **options)
     end
 
@@ -227,7 +234,11 @@ module SaneMasterModules
     end
 
     def project_ui_destination
-      @project_ui_destination ||= config_value(%w[tests ui_destination], 'SANEMASTER_UI_DESTINATION', 'platform=iOS Simulator,name=iPhone 17 Pro')
+      @project_ui_destination ||= config_value(
+        %w[tests ui_destination],
+        'SANEMASTER_UI_DESTINATION',
+        default_project_test_destination
+      )
     end
 
     def resolved_xcodebuild_destination(destination)

@@ -4,14 +4,18 @@ require 'json'
 require 'fileutils'
 require 'open3'
 require 'socket'
+require 'securerandom'
 require 'time'
 require 'tmpdir'
 
 module SaneMasterModules
   # Verify execution/support helpers (split from verify.rb for Rule #10):
-  # git snapshots, permission monitoring, process cleanup, test command
-  # construction, runner execution, progress parsing, result classification.
+  # git snapshots, process cleanup, test command construction, runner
+  # execution, progress parsing, result classification. Permission-monitoring
+  # helpers live in verify_permissions.rb (further Rule #10 split).
   module Verify
+    VERIFY_COMMAND_EVIDENCE_MAX_BYTES = 2 * 1024 * 1024
+
     private
 
     def git_status_snapshot(repo_path = Dir.pwd)
@@ -30,20 +34,15 @@ module SaneMasterModules
 
     def verify_source_fingerprint(repo_path = Dir.pwd)
       root_out, root_status = Open3.capture2e('git', '-C', repo_path, 'rev-parse', '--show-toplevel')
-      return 'unknown' unless root_status.success?
+      return 'unknown' unless respond_to?(:release_status_source_fingerprint, true)
 
-      root = root_out.strip
-      parts = []
-      [
-        %w[rev-parse HEAD],
-        %w[status --porcelain=v1 --untracked-files=all],
-        %w[diff --binary],
-        %w[diff --cached --binary]
-      ].each do |command|
-        out, = Open3.capture2e('git', '-C', root, *command)
-        parts << out
-      end
-      Digest::SHA256.hexdigest(parts.join("\n---\n"))
+      # Release preflight, its workflow receipt, and verify evidence must bind
+      # to one candidate identity. The release fingerprint hashes the bytes of
+      # every release-relevant tracked and untracked source, whereas git status
+      # plus diff text omits the contents of untracked files.
+      root = root_status.success? ? root_out.strip : File.realpath(repo_path)
+      fingerprint = release_status_source_fingerprint(root).to_s
+      fingerprint.match?(/\A[0-9a-f]{64}\z/) ? fingerprint : 'unknown'
     rescue StandardError
       'unknown'
     end
@@ -78,14 +77,14 @@ module SaneMasterModules
         (content.include?('# targets:') && content.include?("#   - #{project_tests_dir}"))
     end
 
-    def handle_disabled_tests(args)
+    def handle_disabled_tests(options)
       puts '⚠️  Test targets are temporarily disabled due to SwiftUICore linker error (Xcode 16/macOS 26.2 bug)'
       puts '📝 Test files are preserved - they will be re-enabled when Xcode is updated'
       puts ''
       puts 'Building main app only (tests skipped)...'
       puts ''
 
-      clean([]) if args.include?('--clean')
+      clean([]) if options[:clean]
 
       puts "🔨 Building #{project_name} app..."
       result = system('xcodebuild', *xcodebuild_container_args, '-scheme', project_scheme,
@@ -93,78 +92,12 @@ module SaneMasterModules
       puts ''
       if result
         puts '✅ Build succeeded (tests disabled)'
+        puts '❌ Verify cannot pass without executed test evidence. Re-enable the test targets and rerun verify.'
+        exit 1
       else
         puts '❌ Build failed'
         exit 1
       end
-    end
-
-    def grant_test_permissions(timeout_seconds:)
-      print '🔐 Granting test permissions... '
-      verify_permission_services.each do |service|
-        system('tccutil', 'reset', service, @bundle_id, err: File::NULL)
-      end
-
-      permission_pid = nil
-      log_path = nil
-      script_path = File.join(__dir__, '..', 'grant_permissions.applescript')
-      if File.exist?(script_path)
-        log_path = File.join(Dir.tmpdir, "sanemaster_permission_monitor_#{project_name}.log")
-        File.write(log_path, "Permission monitor for #{project_name} started at #{Time.now.utc.iso8601}\n")
-        monitor_duration = [timeout_seconds.to_i + 120, 300].max
-        permission_pid = Process.spawn(
-          'osascript',
-          script_path,
-          project_name,
-          monitor_duration.to_s,
-          out: log_path,
-          err: [:child, :out]
-        )
-        Process.detach(permission_pid)
-      end
-
-      puts '✅'
-      { pid: permission_pid, log_path: log_path }
-    end
-
-    def enforce_no_unresolved_permission_prompt!(permission_monitor)
-      log_path = permission_monitor.is_a?(Hash) ? permission_monitor[:log_path] : nil
-      return unless log_path && File.exist?(log_path)
-
-      log = File.read(log_path)
-      return unless permission_monitor_blocked?(log)
-
-      puts "\n❌ Permission prompt/manual grant detected during verify."
-      puts "   Permission monitor log: #{log_path}"
-      puts '   Resolve the Mini prompt, then rerun verify. Do not treat this run as release evidence.'
-      exit 1
-    end
-
-    def permission_monitor_blocked?(log)
-      log.include?('manual grant may be needed') ||
-        log.include?('PROTECTED_FOLDER_PROMPT')
-    end
-
-    def verify_permission_services
-      services = %w[Camera Microphone ScreenRecording]
-      services += protected_folder_permission_services if reset_protected_folder_permissions_for_verify?
-      services
-    end
-
-    def protected_folder_permission_services
-      %w[
-        SystemPolicyDocumentsFolder
-        SystemPolicyDesktopFolder
-        SystemPolicyDownloadsFolder
-      ]
-    end
-
-    def reset_protected_folder_permissions_for_verify?
-      return false if saneprocess_config['type'].to_s == 'infra'
-
-      has_xcode_project = project_xcodeproj && !project_xcodeproj.to_s.empty?
-      has_workspace = project_workspace && !project_workspace.to_s.empty?
-      has_xcode_project || has_workspace
     end
 
     def assert_no_runtime_probe_lock_for_verify!
@@ -238,12 +171,6 @@ module SaneMasterModules
         end
       end
 
-      system('pkill', '-f', 'grant_permissions.applescript', err: File::NULL)
-      terminate_project_test_processes('TERM')
-      sleep(0.5)
-      terminate_project_test_processes('KILL')
-      system('killall', '-9', project_name, err: File::NULL)
-
       puts '✅'
     end
 
@@ -257,22 +184,51 @@ module SaneMasterModules
       end
     end
 
-    def run_tests_with_progress(timeout_seconds:, include_ui: false, signed_tests: false)
+    def run_tests_with_progress(timeout_seconds:, include_ui: false, signed_tests: false, ui_only: false)
       require 'open3'
 
       run_verify_preflight
 
-      commands = build_test_commands(include_ui, signed_tests)
+      commands = build_test_commands(include_ui, signed_tests, ui_only: ui_only)
+      script_only = commands.all? { |entry| entry[:script_only] }
+      global_deadline = verify_monotonic_now + timeout_seconds.to_f unless script_only
       state = { start_time: Time.now, tests_run: 0, swift_testing_total: 0, current_test: nil, last_update: Time.now,
                 swift_testing_failed: false,
                 phase: nil, last_log_line: nil, last_log_at: nil,
                 spinner_chars: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'], spinner_idx: 0 }
 
       result = { success: true, timeout: false }
+      authoritative_test_count = 0
       commands.each_with_index do |entry, index|
         puts "▶️  #{entry[:label]}" if commands.length > 1
-        result = execute_with_logging(entry[:cmd], timeout_seconds, append: index.positive?, label: entry[:label], progress_state: state) do |line|
+        phase_timeout = if script_only
+                          timeout_seconds.to_f
+                        else
+                          global_deadline - verify_monotonic_now
+                        end
+        if phase_timeout <= 0
+          result = { success: false, timeout: true, exit_status: nil }
+          break
+        end
+        result = execute_with_logging(
+          entry[:cmd],
+          phase_timeout,
+          append: index.positive?,
+          label: entry[:label],
+          progress_state: state,
+          log_path: entry[:log_path]
+        ) do |line|
           handle_progress_update(line, state)
+        end
+        result[:failure_label] = entry[:label]
+        if result[:success] && entry[:xcresult_path]
+          summary = verify_xcresult_phase_summary(entry[:xcresult_path], entry[:test_selector])
+          unless summary[:ok]
+            puts "   ❌ Untrustworthy #{entry[:label]} evidence: #{summary[:error]}"
+            result[:success] = false
+            result[:evidence_error] = summary[:error]
+          end
+          authoritative_test_count += summary[:matched_test_count].to_i if summary[:ok]
         end
         break unless result[:success]
       end
@@ -281,18 +237,67 @@ module SaneMasterModules
       cleanup_test_processes
 
       # Use Swift Testing total if available (more accurate), otherwise fall back to counted tests
-      total_tests = [state[:swift_testing_total].to_i, state[:tests_run].to_i].max
+      total_tests = if script_only
+                      [state[:swift_testing_total].to_i, state[:tests_run].to_i].max
+                    else
+                      authoritative_test_count
+                    end
       # A Swift Testing run failure is authoritative even when the runner exit
       # status or the XCTest phase summary looked clean (mixed-runner runs
       # previously reported "Tests passed!" over real Swift Testing failures).
       success = result[:success] && !state[:swift_testing_failed]
-      { success: success, tests_run: total_tests, duration: (Time.now - state[:start_time]).to_i, timeout: result[:timeout] }
+      {
+        success: success,
+        tests_run: total_tests,
+        duration: (Time.now - state[:start_time]).to_i,
+        timeout: result[:timeout],
+        failure_output: success ? nil : result[:output],
+        failure_label: success ? nil : result[:failure_label],
+        exit_status: result[:exit_status]
+      }
+    end
+
+    def verify_monotonic_now
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+
+    def verify_xcresult_phase_summary(result_bundle_path, test_selector)
+      run_directory = File.dirname(result_bundle_path)
+      return verify_empty_xcresult_summary('Result bundle was not created as a directory') unless secure_test_path_exists?(result_bundle_path)
+      secure_test_existing_artifact!(result_bundle_path, run_directory, directory: true)
+      return verify_empty_xcresult_summary('Result bundle was not created as a directory') unless File.directory?(result_bundle_path)
+      info_plist = File.join(result_bundle_path, 'Info.plist')
+      if secure_test_path_exists?(info_plist)
+        metadata = File.lstat(info_plist)
+        raise "Unsafe symlink test artifact: #{info_plist}" if metadata.symlink?
+      end
+      return verify_empty_xcresult_summary('Result bundle is missing Info.plist') unless File.file?(info_plist)
+      return verify_empty_xcresult_summary('Shared xcresult parser is unavailable') unless respond_to?(:monitor_test_result_summary, true)
+
+      monitor_test_result_summary(result_bundle_path, test_selector)
+    rescue Errno::ENOENT => e
+      verify_empty_xcresult_summary(e.message)
+    rescue StandardError => e
+      verify_empty_xcresult_summary(e.message)
+    end
+
+    def verify_empty_xcresult_summary(error)
+      {
+        ok: false,
+        discovered_test_count: 0,
+        passed_test_count: 0,
+        matched_test_count: 0,
+        error: error
+      }
     end
 
     def verify_log_indicates_failure?(text)
       body = text.to_s
       return true if body.match?(/\*\* TEST FAILED \*\*/)
       return true if body.match?(/\*\* BUILD FAILED \*\*/)
+      return true if body.match?(/^Testing failed:/)
+      return true if body.include?('Unable to find a destination matching the provided destination specifier')
+      return true if body.match?(/^xcodebuild: error:/)
       return true if body.match?(/error:\s+-\[[^\]]+\]/)
       return true if body.match?(/Executed \d+ tests?, with [1-9]\d* failures?/)
       return true if body.match?(/Executed \d+ tests?, with \d+ failures?, with [1-9]\d* unexpected/)
@@ -400,29 +405,61 @@ module SaneMasterModules
       count.zero? ? { bucket: 'unknown_zero_test_failure', hint: 'zero tests were counted but no known signature matched' } : { bucket: 'unknown_failure', hint: 'failure did not match a known verify bucket' }
     end
 
-    def build_test_commands(include_ui, signed_tests = false)
+    def build_test_commands(include_ui, signed_tests = false, ui_only: false)
       script_commands = script_only_verify_commands
       if script_commands
         puts '  ℹ️  No Xcode project detected. Running the scripted SaneProcess verify suite.'
-        return script_commands
+        return attach_verify_artifact_paths(script_commands.map { |entry| entry.merge(script_only: true) }, xcresult: false)
       end
 
-      if include_ui && mixed_platform_ui_tests?
-        return [
-          { label: "#{project_scheme} unit tests", cmd: build_test_command(false, signed_tests) },
-          { label: "#{project_ui_scheme} UI tests", cmd: build_ui_test_command(signed_tests) }
-        ]
+      if ui_only
+        return attach_verify_result_bundles([
+          { label: "#{project_ui_scheme} UI tests", cmd: build_ui_test_command(signed_tests), test_selector: project_ui_test_target }
+        ])
       end
 
-      [{ label: include_ui ? "#{project_scheme} unit + UI tests" : "#{project_scheme} unit tests",
-         cmd: build_test_command(include_ui, signed_tests) }]
+      # App-hosted unit tests and UI tests use different runner lifecycles.
+      # Keeping them in separate xcodebuild sessions avoids Xcode 26 leaving
+      # the UI runner suspended after the unit-test host exits.
+      if include_ui && ui_tests_present?
+        return attach_verify_result_bundles([
+          { label: "#{project_scheme} unit tests", cmd: build_test_command(false, signed_tests), test_selector: project_test_target },
+          { label: "#{project_ui_scheme} UI tests", cmd: build_ui_test_command(signed_tests), test_selector: project_ui_test_target }
+        ])
+      end
+
+      attach_verify_result_bundles([
+        { label: include_ui ? "#{project_scheme} unit + UI tests" : "#{project_scheme} unit tests",
+          cmd: build_test_command(include_ui, signed_tests), test_selector: project_test_target }
+      ])
+    end
+
+    def attach_verify_result_bundles(entries)
+      attach_verify_artifact_paths(entries, xcresult: true)
+    end
+
+    def attach_verify_artifact_paths(entries, xcresult:)
+      run_id = "#{Time.now.utc.strftime('%Y%m%dT%H%M%S.%6NZ')}-#{Process.pid}-#{SecureRandom.hex(4)}"
+      run_directory = File.join(File.realpath(Dir.pwd), 'outputs', 'verify', run_id)
+      secure_test_prepare_run_directory!(project_root: Dir.pwd, lane: 'verify', run_directory: run_directory)
+      entries.each_with_index.map do |entry, index|
+        result_bundle_path = File.join(run_directory, format('%02d-test.xcresult', index + 1))
+        log_path = File.join(run_directory, format('%02d-test.log', index + 1))
+        secure_test_assert_absent!(log_path, run_directory)
+        attributes = { log_path: log_path, run_directory: run_directory }
+        if xcresult
+          secure_test_assert_absent!(result_bundle_path, run_directory)
+          attributes[:cmd] = entry.fetch(:cmd) + ['-resultBundlePath', result_bundle_path]
+          attributes[:xcresult_path] = result_bundle_path
+        end
+        entry.merge(attributes)
+      end
     end
 
     def script_only_verify_commands
       return nil unless project_name == 'SaneProcess'
       return nil if workspace_usable_for_scheme?(project_scheme)
       return nil if project_xcodeproj && File.exist?(project_xcodeproj.to_s)
-      return nil if package_path_for_test_target(project_test_target)
 
       issues = script_only_verify_registry_issues
       if issues.any?
@@ -507,13 +544,6 @@ module SaneMasterModules
           puts '  📦 Running unit tests only...'
         end
       end
-      if use_test_plan? && !include_ui
-        package_path = package_path_for_test_target(project_test_target)
-        if package_path
-          puts "  ℹ️  Running package test target directly: #{project_test_target} (#{package_path})"
-          return ['swift', 'test', '--package-path', package_path, '--filter', project_test_target]
-        end
-      end
       args = ['xcodebuild', 'test']
       args.concat(xcodebuild_container_args)
       args.concat(['-scheme', project_scheme, '-destination', resolved_xcodebuild_destination(project_unit_destination)])
@@ -546,7 +576,7 @@ module SaneMasterModules
           args << "-only-testing:#{project_test_target}"
         end
       end
-      unless signed_tests
+      unless signed_tests || include_ui
         args.concat([
                       'CODE_SIGNING_ALLOWED=NO',
                       'CODE_SIGNING_REQUIRED=NO',
@@ -559,23 +589,15 @@ module SaneMasterModules
       args
     end
 
-    def build_ui_test_command(signed_tests = false)
+    def build_ui_test_command(_signed_tests = false)
       args = ['xcodebuild', 'test']
       args.concat(xcodebuild_container_args_for_scheme(project_ui_scheme))
       args.concat(['-scheme', project_ui_scheme, '-destination', resolved_xcodebuild_destination(project_ui_destination)])
       args.concat(['-parallel-testing-enabled', 'NO'])
       args.concat(['-parallel-testing-worker-count', '1'])
       args << "-only-testing:#{project_ui_test_target}"
-      unless signed_tests
-        args.concat([
-                      'CODE_SIGNING_ALLOWED=NO',
-                      'CODE_SIGNING_REQUIRED=NO',
-                      'CODE_SIGN_IDENTITY=',
-                      'DEVELOPMENT_TEAM=',
-                      'PROVISIONING_PROFILE_SPECIFIER=',
-                      'PROVISIONING_PROFILE='
-                    ])
-      end
+      # UI test runners must remain signed so launchd can initialize the
+      # runner and XCTest can launch the host application.
       args
     end
 
@@ -612,16 +634,30 @@ module SaneMasterModules
       project_ui_scheme.to_s != project_scheme.to_s || !project_ui_destination.to_s.include?('platform=macOS')
     end
 
-    def execute_with_logging(cmd, timeout_seconds, append: false, label: nil, progress_state: nil)
+    def execute_with_logging(cmd, timeout_seconds, append: false, label: nil, progress_state: nil, log_path: nil)
       success = false
       timed_out = false
+      exit_status = nil
+      command_output = String.new
 
-      File.open('test_output.txt', append ? 'a' : 'w') do |log_file|
-        puts '   📝 Full logs: test_output.txt'
+      if log_path.nil?
+        run_id = "adhoc-#{Time.now.utc.strftime('%Y%m%dT%H%M%S.%6NZ')}-#{Process.pid}-#{SecureRandom.hex(4)}"
+        run_directory = File.join(File.realpath(Dir.pwd), 'outputs', 'verify', run_id)
+        secure_test_prepare_run_directory!(project_root: Dir.pwd, lane: 'verify', run_directory: run_directory)
+        log_path = File.join(run_directory, 'test.log')
+      end
+      run_directory = File.dirname(log_path)
+      log_file = secure_test_open_new_file(log_path, run_directory)
+      begin
+        puts "   📝 Full logs: #{log_path}"
         log_file.puts("\n=== #{label} ===") if label
 
-        Open3.popen2e(*cmd) do |stdin, stdout_err, wait_thr|
+        Open3.popen2e(*cmd, pgroup: true) do |stdin, stdout_err, wait_thr|
           stdin.close
+          tracked_descendants = []
+          root_identity = monitor_test_process_identity(wait_thr.pid)
+          tracked_identities = {}
+          cleanup_error = nil
           progress_state ||= {
             tests_run: 0,
             swift_testing_total: 0,
@@ -631,7 +667,7 @@ module SaneMasterModules
           }
           heartbeat_context = {
             label: label,
-            log_path: 'test_output.txt',
+            log_path: log_path,
             started_at: Time.now,
             last_output_at: Time.now,
             state: progress_state
@@ -641,6 +677,7 @@ module SaneMasterModules
             stdout_err.each_line do |line|
               line = line.chomp
               line = line.scrub('?') unless line.valid_encoding?
+              append_verify_command_evidence(command_output, "#{line}\n")
               log_file.puts(line)
               log_file.flush
               heartbeat_context[:last_output_at] = Time.now
@@ -654,45 +691,76 @@ module SaneMasterModules
             nil
           end
 
-          if wait_for_process_with_timeout(wait_thr, timeout_seconds, heartbeat: heartbeat_context)
-            success = wait_thr.value.success?
-          else
-            timed_out = true
-            handle_timeout(timeout_seconds, wait_thr.pid)
-          end
-
           begin
-            stdout_err.close unless stdout_err.closed?
-          rescue IOError
-            nil
+            if wait_for_process_with_timeout(
+              wait_thr,
+              timeout_seconds,
+              heartbeat: heartbeat_context,
+              tracked_descendants: tracked_descendants,
+              root_identity: root_identity,
+              tracked_identities: tracked_identities
+            )
+              process_status = wait_thr.value
+              exit_status = process_status.exitstatus
+              success = process_status.success?
+            else
+              timed_out = true
+              handle_timeout(timeout_seconds, wait_thr.pid)
+              wait_thr.join(2)
+            end
+          ensure
+            begin
+              terminate_monitor_test_process_group(
+                wait_thr.pid,
+                root_identity: root_identity,
+                tracked_identities: tracked_identities,
+                tracked_descendants: tracked_descendants,
+                grace_seconds: 0.5,
+                kill_grace_seconds: 1.0
+              )
+            rescue StandardError => e
+              cleanup_error = e
+            end
+            begin
+              stdout_err.close unless stdout_err.closed?
+            rescue IOError
+              nil
+            end
+            reader.join(2)
+            reader.kill if reader.alive?
           end
-
-          reader.join(2)
-          reader.kill if reader.alive?
+          raise cleanup_error if cleanup_error
         end
+      ensure
+        log_file.close unless log_file.closed?
       end
 
-      if !success && !timed_out && File.exist?('test_output.txt')
-        log_output = File.read('test_output.txt') rescue ''
-        if verify_log_only_has_benign_app_intents_failure?(log_output)
-          puts '   ℹ️  Test log only contains known App Intents autoShortcut diagnostics after a clean pass; treating verify as successful.'
-          success = true
-        elsif verify_log_indicates_failure?(log_output)
-          puts '   ℹ️  Test log contains explicit failure markers; preserving the non-zero verify result.'
-        elsif verify_log_indicates_success?(log_output)
-          puts '   ℹ️  Test log shows a clean pass despite a non-zero runner exit; treating verify as successful.'
-          success = true
-        end
-      end
-
-      { success: success && !timed_out, timeout: timed_out }
+      {
+        success: success && !timed_out,
+        timeout: timed_out,
+        exit_status: exit_status,
+        output: command_output
+      }
     end
 
-    def wait_for_process_with_timeout(wait_thr, timeout_seconds, heartbeat: nil)
+    def append_verify_command_evidence(buffer, text, max_bytes: VERIFY_COMMAND_EVIDENCE_MAX_BYTES)
+      buffer << text
+      return buffer if buffer.bytesize <= max_bytes
+
+      tail = buffer.byteslice(buffer.bytesize - max_bytes, max_bytes).to_s
+      tail = tail.force_encoding(Encoding::UTF_8)
+      tail = tail.scrub('?') unless tail.valid_encoding?
+      buffer.replace(tail)
+    end
+
+    def wait_for_process_with_timeout(wait_thr, timeout_seconds, heartbeat: nil, tracked_descendants: [],
+                                      root_identity: nil, tracked_identities: {})
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds.to_f
       last_heartbeat_at = Time.at(0)
 
       loop do
+        tracked_descendants.concat(monitor_test_descendant_pids(wait_thr.pid)).uniq!
+        monitor_test_track_descendant_identities(root_identity, tracked_identities) if root_identity
         return true unless wait_thr.alive?
         return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
 
@@ -824,25 +892,9 @@ module SaneMasterModules
     def handle_timeout(timeout_seconds, process_pid = nil)
       puts "\n\n⏱️  TIMEOUT: Test run exceeded #{timeout_seconds}s"
       puts '   This usually means a test is stuck or waiting for user input'
-      puts '🔪 Force killing all test processes...'
+      puts '🔪 Stopping this verify run process group...'
 
-      begin
-        Process.kill('TERM', process_pid) if process_pid
-      rescue Errno::ESRCH, Errno::EPERM
-        nil
-      end
-
-      3.times do |attempt|
-        # Use -x for exact match to avoid killing helper processes
-        system('pkill', '-9', '-f', 'xcodebuild test', err: File::NULL)
-        system('pkill', '-9', '-x', 'xcodebuild', err: File::NULL)
-        system('killall', '-9', 'xcodebuild', err: File::NULL)
-        system('killall', '-9', project_name, err: File::NULL)
-        system('pkill', '-9', '-x', 'xctest', err: File::NULL)
-        sleep(0.5) if attempt < 2
-      end
-
-      puts '✅ Processes killed'
+      puts "   Cleanup is enforced for process group #{process_pid} and captured descendants." if process_pid
     end
   end
 end

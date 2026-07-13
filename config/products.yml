@@ -12,8 +12,8 @@
 products:
   sanebar:
     name: SaneBar
-    checkout_uuid: 8a6ddf02-574e-4b20-8c94-d3fa15c1cc8e
-    license_gated: true    # Basic/Pro gating active — all release channels allowed
+    donation_url: https://github.com/sponsors/MrSaneApps
+    license_gated: true    # RETIRED: free + open source (MIT), not sold. Kept true so the audit still permits public GitHub releases (correct for OSS); does NOT mean paid/gated. Do not advertise - see sanebar-retired memory.
     domain: sanebar.com
     dist_domain: dist.sanebar.com
     github_repo: sane-apps/SaneBar
@@ -98,11 +98,10 @@ redirect:
 bundles:
   bundle:
     name: SaneApps Everything Bundle
-    checkout_url: "https://saneapps.lemonsqueezy.com/checkout/custom/b2566137-793d-4d72-8860-3f85cdf44bbb?signature=2bc90f207f17dbda0cfe88bbecdd6c6770f599d5e7c3f5f7eda4be876fb62f7b"
+    checkout_url: "https://saneapps.lemonsqueezy.com/checkout/custom/b572a5cf-2eb4-490d-adea-51d5fc57d6e4?signature=94dfad4c052a2d416089189cf63f11fffd2e1a3265109b08bf0fc3f9c56b8328"
     route: https://go.saneapps.com/buy/bundle
     price: "$49.99"
     includes:
-      - sanebar
       - saneclip
       - saneclick
       - sanehosts

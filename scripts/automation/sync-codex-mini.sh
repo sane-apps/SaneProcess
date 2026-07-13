@@ -1,16 +1,13 @@
 #!/bin/bash
-# Sync SaneOps Codex automation config and active Codex skill metadata from the
-# local machine to the Mac mini. Local role: paused (no duplicate runs). Mini
-# role now mirrors that safe paused state by default so reconcile/start-workday
-# cannot silently re-enable background runs. Explicit activation is opt-in.
+# Sync the Codex control-plane profile from the local machine to the Mac Mini.
+# Automation records are deliberately outside this sync boundary: production
+# automation mutations must go through Codex automation_update.
 
 set -euo pipefail
 
 MINI_HOST="mini"
 QUIET=0
 RESTART_CODEX=1
-REMOTE_AM_STATUS="PAUSED"
-REMOTE_PM_STATUS="PAUSED"
 DUMP_CONFIG=0
 
 usage() {
@@ -21,11 +18,6 @@ Examples:
   $(basename "$0")
   $(basename "$0") mini --quiet
   $(basename "$0") mini --no-restart
-  $(basename "$0") mini --activate-mini-runs
-  $(basename "$0") mini --activate-mini-am
-  $(basename "$0") mini --activate-mini-pm
-  $(basename "$0") mini --pause-mini-am
-  $(basename "$0") mini --pause-mini-pm
   $(basename "$0") --dump-config
 USAGE
 }
@@ -55,27 +47,6 @@ while [[ $# -gt 0 ]]; do
       RESTART_CODEX=0
       shift
       ;;
-    --activate-mini-runs)
-      REMOTE_AM_STATUS="ACTIVE"
-      REMOTE_PM_STATUS="ACTIVE"
-      shift
-      ;;
-    --activate-mini-am)
-      REMOTE_AM_STATUS="ACTIVE"
-      shift
-      ;;
-    --activate-mini-pm)
-      REMOTE_PM_STATUS="ACTIVE"
-      shift
-      ;;
-    --pause-mini-am)
-      REMOTE_AM_STATUS="PAUSED"
-      shift
-      ;;
-    --pause-mini-pm)
-      REMOTE_PM_STATUS="PAUSED"
-      shift
-      ;;
     --dump-config)
       DUMP_CONFIG=1
       shift
@@ -94,8 +65,6 @@ if [[ "$DUMP_CONFIG" -eq 1 ]]; then
   printf 'MINI_HOST=%s\n' "$MINI_HOST"
   printf 'QUIET=%s\n' "$QUIET"
   printf 'RESTART_CODEX=%s\n' "$RESTART_CODEX"
-  printf 'REMOTE_AM_STATUS=%s\n' "$REMOTE_AM_STATUS"
-  printf 'REMOTE_PM_STATUS=%s\n' "$REMOTE_PM_STATUS"
   exit 0
 fi
 
@@ -109,9 +78,6 @@ LOCAL_CODEX_BIN_DIR="$LOCAL_CODEX_DIR/bin"
 LOCAL_CODEX_STANDALONE_BIN="$LOCAL_CODEX_DIR/packages/standalone/current/codex"
 MIN_CODEX_CLI_VERSION="0.139.0"
 REPO_CODEX_BIN_DIR="$HOME/SaneApps/infra/SaneProcess/scripts/codex-bin"
-LOCAL_AM="$LOCAL_CODEX_DIR/automations/saneops-am-run/automation.toml"
-LOCAL_PM="$LOCAL_CODEX_DIR/automations/saneops-pm-run/automation.toml"
-LOCAL_DB="$LOCAL_CODEX_DIR/sqlite/codex-dev.db"
 LOCAL_SKILLS_REGISTRY="$LOCAL_CODEX_DIR/SKILLS_REGISTRY.md"
 LOCAL_SKILLS_DIR="$LOCAL_CODEX_DIR/skills"
 LOCAL_AGENTS_SKILLS_DIR="$HOME/.agents/skills"
@@ -136,8 +102,6 @@ CONTROL_PLANE_REL_FILES=(
   "SaneApps/infra/SaneProcess/scripts/sanemaster/verify.rb"
 )
 
-[[ -f "$LOCAL_AM" ]] || die "Missing local automation file: $LOCAL_AM"
-[[ -f "$LOCAL_PM" ]] || die "Missing local automation file: $LOCAL_PM"
 [[ -f "$LOCAL_CODEX_CONFIG" ]] || die "Missing local Codex config: $LOCAL_CODEX_CONFIG"
 [[ -f "$LOCAL_SKILLS_REGISTRY" ]] || die "Missing local Codex skills registry: $LOCAL_SKILLS_REGISTRY"
 [[ -d "$LOCAL_SKILLS_DIR" ]] || die "Missing local Codex skills dir: $LOCAL_SKILLS_DIR"
@@ -270,36 +234,15 @@ for bin_name in "${CODEX_BIN_FILES[@]}"; do
   chmod +x "$LOCAL_CODEX_BIN_DIR/$bin_name"
 done
 
-set_status_in_file() {
-  local file="$1"
-  local status="$2"
-  perl -0pi -e "s/^status = \"[^\"]*\"/status = \"${status}\"/m" "$file"
-}
-
-# Local machine should never run these automatically.
-set_status_in_file "$LOCAL_AM" "PAUSED"
-set_status_in_file "$LOCAL_PM" "PAUSED"
-
-if [[ -f "$LOCAL_DB" ]]; then
-  sqlite3 "$LOCAL_DB" "
-    UPDATE automations SET status='PAUSED', updated_at=(strftime('%s','now')*1000) WHERE id='saneops-am-run';
-    UPDATE automations SET status='PAUSED', updated_at=(strftime('%s','now')*1000) WHERE id='saneops-pm-run';
-  " >/dev/null 2>&1 || true
-fi
-
 REMOTE_HOME=$(ssh -o ConnectTimeout=8 "$MINI_HOST" 'printf %s "$HOME"') || die "Could not reach $MINI_HOST"
 REMOTE_NODE=$(ssh -o ConnectTimeout=8 "$MINI_HOST" 'command -v node') || die "Could not resolve node on $MINI_HOST"
 ensure_remote_codex_standalone
 
 TMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TMP_DIR"' EXIT
+trap 'rm -r "$TMP_DIR"' EXIT
 
 TMP_CONFIG="$TMP_DIR/config.toml"
-TMP_AM="$TMP_DIR/saneops-am-run.toml"
-TMP_PM="$TMP_DIR/saneops-pm-run.toml"
 cp "$LOCAL_CODEX_CONFIG" "$TMP_CONFIG"
-cp "$LOCAL_AM" "$TMP_AM"
-cp "$LOCAL_PM" "$TMP_PM"
 
 rewrite_paths() {
   local file="$1"
@@ -334,15 +277,6 @@ PY
 
 rewrite_paths "$TMP_CONFIG"
 rewrite_codex_config "$TMP_CONFIG" "$REMOTE_NODE"
-rewrite_paths "$TMP_AM"
-rewrite_paths "$TMP_PM"
-
-# Mini role: active unattended runner unless explicitly paused.
-set_status_in_file "$TMP_AM" "$REMOTE_AM_STATUS"
-set_status_in_file "$TMP_PM" "$REMOTE_PM_STATUS"
-
-log "Syncing SaneOps automation files to $MINI_HOST..."
-scp -q "$TMP_AM" "$TMP_PM" "$MINI_HOST:$REMOTE_HOME/"
 
 log "Syncing Codex skill registry and skills to $MINI_HOST..."
 ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.codex/skills\""
@@ -368,8 +302,43 @@ if [[ -f "$LOCAL_KNOWLEDGE_GRAPH" ]]; then
   scp -q "$LOCAL_KNOWLEDGE_GRAPH" "$MINI_HOST:$REMOTE_HOME/.claude/memory/knowledge-graph.jsonl"
 fi
 
+# Sync the two agent memory stores that both agents rely on but that were previously Air-only: the Claude
+# file-based project memory (~/.claude/projects/<proj>/memory) and the Serena store (~/SaneApps/.serena/
+# memories). Air is canonical. Back up the Mini side first + NO --delete, so a Mini-side write is never lost.
+# Project-dir names are path-derived, so map Air's $HOME to the Mini's $REMOTE_HOME. (memory-sync SOP 2026-07-07.)
+LOCAL_PROJ_DIR="$(printf '%s' "$HOME/SaneApps" | sed 's#/#-#g')"
+REMOTE_PROJ_DIR="$(printf '%s' "$REMOTE_HOME/SaneApps" | sed 's#/#-#g')"
+LOCAL_FILE_MEM="$HOME/.claude/projects/$LOCAL_PROJ_DIR/memory"
+LOCAL_SERENA_MEM="$HOME/SaneApps/.serena/memories"
+if [[ -d "$LOCAL_FILE_MEM" || -d "$LOCAL_SERENA_MEM" ]]; then
+  log "Syncing agent memory (file-based + Serena) to $MINI_HOST (backup-first, no-delete)..."
+  MEM_TS="$(date +%Y%m%d-%H%M%S)"
+  ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.claude/backups\" \"$REMOTE_HOME/.claude/projects/$REMOTE_PROJ_DIR/memory\" \"$REMOTE_HOME/SaneApps/.serena/memories\"; \
+    cp -a \"$REMOTE_HOME/.claude/projects/$REMOTE_PROJ_DIR/memory\" \"$REMOTE_HOME/.claude/backups/memory-$MEM_TS\" 2>/dev/null; \
+    cp -a \"$REMOTE_HOME/SaneApps/.serena/memories\" \"$REMOTE_HOME/.claude/backups/serena-$MEM_TS\" 2>/dev/null; true"
+  [[ -d "$LOCAL_FILE_MEM" ]] && rsync -a "$LOCAL_FILE_MEM/" "$MINI_HOST:$REMOTE_HOME/.claude/projects/$REMOTE_PROJ_DIR/memory/"
+  [[ -d "$LOCAL_SERENA_MEM" ]] && rsync -a "$LOCAL_SERENA_MEM/" "$MINI_HOST:$REMOTE_HOME/SaneApps/.serena/memories/"
+fi
+
+# Pre-push validation gate: never sync a check-inbox.sh that fails its contract
+# suite, so Mini support workflows keep their last-known-good classifier route.
+CHECK_INBOX_REL="SaneApps/infra/scripts/check-inbox.sh"
+CHECK_INBOX_TEST="$HOME/SaneApps/infra/SaneProcess/scripts/automation/check_inbox_report_test.py"
+SKIP_CHECK_INBOX=0
+if [[ -f "$CHECK_INBOX_TEST" ]]; then
+  log "Validating check-inbox.sh against its contract suite before pushing..."
+  if ! python3 "$CHECK_INBOX_TEST" >/tmp/check_inbox_gate.log 2>&1; then
+    SKIP_CHECK_INBOX=1
+    printf '⚠️  check-inbox.sh FAILED its contract suite — NOT pushing it to %s (Mini keeps last-good copy). See /tmp/check_inbox_gate.log\n' "$MINI_HOST" >&2
+  fi
+fi
+
 log "Syncing control-plane files to $MINI_HOST..."
 for rel in "${CONTROL_PLANE_REL_FILES[@]}"; do
+  if [[ "$rel" == "$CHECK_INBOX_REL" && "$SKIP_CHECK_INBOX" -eq 1 ]]; then
+    log "Skipping $rel (failed pre-push validation; Mini keeps last-good copy)"
+    continue
+  fi
   local_path="$HOME/$rel"
   remote_path="$REMOTE_HOME/$rel"
   remote_dir=$(dirname "$remote_path")
@@ -379,9 +348,6 @@ done
 
 ssh "$MINI_HOST" "
   set -e
-  mkdir -p \"$REMOTE_HOME/.codex/automations/saneops-am-run\" \"$REMOTE_HOME/.codex/automations/saneops-pm-run\"
-  cp \"$REMOTE_HOME/saneops-am-run.toml\" \"$REMOTE_HOME/.codex/automations/saneops-am-run/automation.toml\"
-  cp \"$REMOTE_HOME/saneops-pm-run.toml\" \"$REMOTE_HOME/.codex/automations/saneops-pm-run/automation.toml\"
   chmod +x \"$REMOTE_HOME/.codex/bin/check-mcps\"
   chmod +x \"$REMOTE_HOME/.codex/bin/github-mcp-bridge.mjs\"
   chmod +x \"$REMOTE_HOME/.codex/bin/xcode-mcpbridge-wrapper.sh\"
@@ -399,103 +365,7 @@ ssh "$MINI_HOST" "
   mkdir -p \"$REMOTE_HOME/.local/bin\"
   ln -sfn \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/hooks/sane_curl_guard.sh\" \"$REMOTE_HOME/.local/bin/curl\"
   ln -sfn \"$REMOTE_HOME/SaneApps/infra/SaneProcess/scripts/hooks/sane_ssh_guard.sh\" \"$REMOTE_HOME/.local/bin/ssh\"
-  rm -f \"$REMOTE_HOME/saneops-am-run.toml\" \"$REMOTE_HOME/saneops-pm-run.toml\"
 " || die "Remote copy failed"
-
-ssh "$MINI_HOST" python3 - "$REMOTE_HOME" <<'PY'
-import sqlite3
-import sys
-import time
-from pathlib import Path
-
-remote_home = Path(sys.argv[1])
-db_path = remote_home / ".codex/sqlite/codex-dev.db"
-am_path = remote_home / ".codex/automations/saneops-am-run/automation.toml"
-pm_path = remote_home / ".codex/automations/saneops-pm-run/automation.toml"
-
-if not db_path.exists():
-    raise SystemExit(f"Missing automation DB: {db_path}")
-
-
-def parse_toml(path: Path):
-    data = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = [part.strip() for part in line.split("=", 1)]
-        if key in {"id", "name", "prompt", "status", "rrule"}:
-            if value.startswith('"') and value.endswith('"'):
-                data[key] = value[1:-1].replace('\\"', '"').replace("\\\\", "\\")
-        elif key == "cwds":
-            data[key] = value
-    missing = [k for k in ("id", "name", "prompt", "status", "rrule", "cwds") if k not in data]
-    if missing:
-        raise ValueError(f"{path}: missing keys {missing}")
-    return data
-
-
-def upsert(conn: sqlite3.Connection, data: dict):
-    now_ms = int(time.time() * 1000)
-    existing = conn.execute(
-        "SELECT 1 FROM automations WHERE id = ?",
-        (data["id"],),
-    ).fetchone()
-
-    if existing:
-        conn.execute(
-            """
-            UPDATE automations
-               SET name = ?,
-                   prompt = ?,
-                   status = ?,
-                   cwds = ?,
-                   rrule = ?,
-                   updated_at = ?
-             WHERE id = ?
-            """,
-            (
-                data["name"],
-                data["prompt"],
-                data["status"],
-                data["cwds"],
-                data["rrule"],
-                now_ms,
-                data["id"],
-            ),
-        )
-    else:
-        conn.execute(
-            """
-            INSERT INTO automations
-              (id, name, prompt, status, next_run_at, last_run_at, cwds, rrule, created_at, updated_at)
-            VALUES
-              (?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)
-            """,
-            (
-                data["id"],
-                data["name"],
-                data["prompt"],
-                data["status"],
-                data["cwds"],
-                data["rrule"],
-                now_ms,
-                now_ms,
-            ),
-        )
-
-
-am = parse_toml(am_path)
-pm = parse_toml(pm_path)
-
-conn = sqlite3.connect(str(db_path))
-try:
-    upsert(conn, am)
-    upsert(conn, pm)
-    conn.commit()
-finally:
-    conn.close()
-PY
 
 log "Verifying control-plane parity (Air ↔ Mini)..."
 mismatches=0
@@ -551,30 +421,11 @@ if [[ -d "$LOCAL_AGENTS_SKILLS_DIR" ]]; then
 fi
 
 if [[ "$RESTART_CODEX" -eq 1 ]]; then
-  log "Restarting Codex on $MINI_HOST to reload automation definitions..."
+  log "Restarting Codex on $MINI_HOST to reload the control-plane profile..."
   ssh "$MINI_HOST" 'pkill -f "/Applications/Codex.app/Contents/MacOS/Codex" >/dev/null 2>&1 || true; sleep 1; open -ga Codex'
   sleep 3
 fi
 
 log ""
-log "Local status (should be paused):"
-grep -n '^name\|^status\|^rrule' "$LOCAL_AM" "$LOCAL_PM"
-
-log ""
-log "Mini status files:"
-ssh "$MINI_HOST" "grep -n '^name\\|^status\\|^rrule' \"$REMOTE_HOME/.codex/automations/saneops-am-run/automation.toml\" \"$REMOTE_HOME/.codex/automations/saneops-pm-run/automation.toml\""
-
-log ""
-log "Mini scheduler DB:"
-ssh "$MINI_HOST" "sqlite3 -header -column \"$REMOTE_HOME/.codex/sqlite/codex-dev.db\" \"SELECT id,name,status,datetime(next_run_at/1000,'unixepoch','localtime') AS next_run_local, datetime(last_run_at/1000,'unixepoch','localtime') AS last_run_local FROM automations;\""
-
-log ""
-if [[ "$REMOTE_AM_STATUS" == "ACTIVE" && "$REMOTE_PM_STATUS" == "ACTIVE" ]]; then
-  log "Done. Mini AM and PM automations are ACTIVE; local automations remain paused."
-elif [[ "$REMOTE_AM_STATUS" == "ACTIVE" ]]; then
-  log "Done. Mini AM automation is ACTIVE and Mini PM is PAUSED; local automations remain paused."
-elif [[ "$REMOTE_PM_STATUS" == "ACTIVE" ]]; then
-  log "Done. Mini PM automation is ACTIVE and Mini AM is PAUSED; local automations remain paused."
-else
-  log "Done. Mini AM and PM automations are PAUSED; local automations remain paused."
-fi
+log "Done. Codex config, skills, helpers, memory, and repo-owned control-plane files are synchronized."
+log "Automation records were not inspected or changed; use automation_update for production mutations."

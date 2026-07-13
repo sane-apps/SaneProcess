@@ -39,7 +39,9 @@ SANE_BUCKET_PATTERN = Regexp.new(SANE_APPS.map { |a| "#{a.downcase}-downloads" }
 SANE_PAGES_PATTERN = Regexp.new(SANE_APPS.map { |a| "#{a.downcase}-site" }.join('|'))
 # dist.*.com domains
 SANE_DIST_PATTERN = Regexp.new(SANE_APPS.map { |a| "dist\\.#{a.downcase}\\.com" }.join('|'))
-CORPORATE_WE_PATTERN = /\b(?:we|we['’]re|we['’]ll|we['’]ve|our|us)\b/i
+# Team/company "we" only — flags presenting SaneApps as a multi-person org (a room of
+# coders), NOT the natural "you and I" we ("since we last talked"). SaneApps is one person.
+CORPORATE_WE_PATTERN = /\b(?:our\s+(?:team|teams|engineers?|developers?|devs?|coders?|programmers?|staff|crew|company|companies|organi[sz]ation|org|support\s+team|engineering|qa|squad|department)|the\s+(?:whole\s+|entire\s+|rest\s+of\s+the\s+)?team|my\s+team|the\s+(?:devs?|developers?|engineers)|we(?:['’]re|\s+are)\s+(?:a|an|the)\s+(?:[a-z]+\s+)?(?:team|company|startup|business|group|studio|crew|squad)|we(?:['’]ve|\s+have)?\s+(?:built|build|developed|develop|engineered|engineer|coded|programmed|architected|designed|design|shipped|ship|released|release|created|create)\b)/i
 COMMAND_CHAIN_PATTERN = /(?:;|&&|\|\||\n)/
 APPROVAL_FLAG = '/tmp/.gh_post_approved.json'
 GITHUB_APPROVAL_TTL_SECONDS = 300
@@ -147,10 +149,12 @@ def consume_github_approval(public_text, metadata_only: false)
                      !payload['user_approval'].to_s.strip.empty?
   return :stale unless approval_present
 
-  # Metadata-only edits (labels/assignees/milestone) post NO public text, so there is
-  # nothing to hash-match — a fresh, user-approved token is sufficient consent. Without
-  # this, label-only `gh issue edit` was un-approvable (empty text => permanent mismatch).
-  return :valid if metadata_only && public_text.to_s.strip.empty?
+  # Metadata-only edits (labels/assignees/milestone) and admin API calls (repo
+  # settings, branch protection) post NO public text, so there is nothing to
+  # hash-match — a fresh, user-approved token is sufficient consent. Admin
+  # tokens must be recorded explicitly via `github_post_approval --admin`.
+  # Without this, such calls were un-approvable (empty text => permanent mismatch).
+  return :valid if public_text.to_s.strip.empty? && (metadata_only || payload['admin'] == true)
 
   expected = payload['body_hash'].to_s
   actual = Digest::SHA256.hexdigest(public_text.to_s.strip)
@@ -388,6 +392,9 @@ if gh_public_command?(command)
   warn ''
   warn '   ✅ Show the draft text to the user, get explicit approval, then post.'
   warn '   Then run: ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb github_post_approval --body-file <draft_file> --user-approval "<quote>"'
+  warn '   For admin API calls with no post body (repo settings, branch protection):'
+  warn '   describe the action to the user, get approval, then run:'
+  warn '   ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb github_post_approval --admin --user-approval "<quote>"'
   exit 2
 end
 

@@ -51,20 +51,42 @@ exit(run_tests('SaneUI Guard Tests') do
                 var body: some View { EmptyView() }
             }
           SWIFT
-          'DirectDistributionSupport.swift' => <<~SWIFT
+          'DirectDistributionSupport.swift' => <<~SWIFT,
             import SwiftUI
 
             struct SaneSparkleRow: View {
                 var body: some View { Text("dup") }
             }
           SWIFT
+          'UI/Settings/SaneSparkleRow.swift' => <<~SWIFT
+            // Direct-distribution ONLY.
+            #if !APP_STORE && !SETAPP
+
+                import SwiftUI
+
+                struct SaneSparkleRow: View {
+                    var body: some View { Text("gated app-local copy") }
+                }
+
+            #endif
+          SWIFT
         }
       ) do |dir|
         report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
         labels = report[:errors].map(&:label)
+        sparkle_details = report[:errors]
+                          .select { |finding| finding.label == 'Ungated SaneSparkleRow definition' }
+                          .map(&:detail)
 
         assert(report[:applicable], 'expected app repo to be checked')
-        assert_includes(labels, 'Local SaneSparkleRow clone')
+        # Ungated definition (would ship the symbol in Setapp binaries) stays an error...
+        assert_includes(labels, 'Ungated SaneSparkleRow definition')
+        assert_includes(sparkle_details, 'DirectDistributionSupport.swift')
+        # ...but a fully channel-gated app-local copy is the sanctioned pattern.
+        assert(
+          !sparkle_details.include?('UI/Settings/SaneSparkleRow.swift'),
+          'channel-gated SaneSparkleRow copy must not be flagged'
+        )
         assert_includes(labels, 'Email support link in settings UI')
         assert_includes(labels, 'Default bordered button in settings UI')
         assert_includes(labels, 'Legacy Manage Access copy')

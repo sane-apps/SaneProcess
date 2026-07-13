@@ -10,6 +10,10 @@ and command help lives in `./scripts/SaneMaster.rb help <category>`.
 
 ```bash
 ruby scripts/SaneMaster.rb verify                 # canonical full verification
+ruby scripts/SaneMaster.rb verify --ui            # unit/integration plus signed UI tests
+ruby scripts/SaneMaster.rb verify --ui-only       # focused UI-runner diagnostic lane
+ruby scripts/SaneMaster.rb verify_api API Framework # confirm an Apple SDK symbol exists
+ruby scripts/SaneMaster.rb verify_mocks            # check generated mocks match protocols
 ruby scripts/hooks/test_hooks.rb                  # hook integration suite
 ruby scripts/SaneMaster.rb tool_discovery --query "..." # tool/MCP proof receipt
 ruby scripts/SaneMaster.rb process_metrics --export-otel outputs/process-traces.json
@@ -65,6 +69,31 @@ If `ssh mini` is down but `ssh mini-lan` works, the problem is the Cloudflare
 tunnel/TXT bridge, not Mini availability. Do not fall back to local app testing
 until that route has been diagnosed or the user approves the exact exception.
 
+### Host Identity: `ssh mini` Loops Back On The Mini
+
+Agent sessions opened on `~/SaneApps` are not always on the MacBook Air —
+they frequently run ON the Mini itself. The Mini and Air are distinct hosts and
+may use different local accounts. On the Mini, `ssh mini` silently connects back
+to the same machine: same filesystem, same working tree, same inodes.
+
+Consequences (root-caused 2026-07-07 after a false "Air↔Mini working trees
+auto-sync" diagnosis — "local" edits appearing on "the Mini" were one tree
+seen twice; there is no sync daemon, and none is installed):
+
+- Run `hostname` BEFORE any cross-machine reasoning, "sync" diagnosis, or
+  claim that something was verified "on both machines".
+- On the Mini, local-vs-`ssh mini` comparisons prove nothing about the Air.
+  To distinguish, compare `ls -i <file>` locally and over ssh — equal inodes
+  mean loopback.
+- Local shell and `ssh mini` shell can still resolve DIFFERENT rubies on the
+  same box (system `/usr/bin/ruby` 2.6 vs Homebrew ruby via login-shell PATH),
+  so "both rubies" proofs remain meaningful even when both ran on the Mini —
+  just label them as ruby-version proofs, not machine proofs.
+- No clobber risk exists from any mirror daemon (LaunchAgents sweep clean of
+  sync/rsync/mirror jobs). The real risk is epistemic: double-counting one
+  machine as two, or assuming a "clean tree on the other machine" that is in
+  fact the same dirty tree.
+
 Codex Mini remote-control health:
 
 ```bash
@@ -97,6 +126,23 @@ canonical runner or local verification command, then route it through
 Non-doc edits are not complete just because a hook saw a command that looked like
 a test. Completion gates require a fresh counted `SaneMaster.rb verify` metric
 with tested evidence and a source fingerprint matching the current repo.
+
+### Cloudflare And Browser Proof
+
+SaneApps Cloudflare mutations use pinned Wrangler by default. `npx wrangler`
+can resolve stale local versions; SaneCite queue creation failed under
+Wrangler 4.65.0 and succeeded under `wrangler@4.104.0`. Shared release paths
+set `SANEPROCESS_WRANGLER_VERSION=4.104.0` unless deliberately overridden.
+For SaneApps website/app deploys, use `release.sh --website-only` or
+`release.sh --deploy`; the release guards still block ad-hoc Pages/R2 mutations.
+Deliberately manual Cloudflare maintenance commands should use
+`npx --yes wrangler@4.104.0 ...`.
+
+Website visual verification should use real browser automation. On SaneApps
+operator Macs, use Brave with Playwright via `NODE_PATH=/opt/homebrew/lib/node_modules`
+and `executablePath: "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"`.
+Save screenshots under `outputs/playwright/` or the workflow's existing
+`outputs/<workflow>/visual/` directory.
 
 ## Documentation Standard
 
@@ -199,20 +245,63 @@ Before using or declaring a Codex plugin missing:
    `release_preflight`, `appstore_preflight`, `sane_test.rb`, `check-inbox.sh`,
    `sales`, `downloads`, `events`, or the app-specific visual proof path.
 
+### Reviewer fan-out routing
+
+Reviewer count follows the number of useful independent perspectives, not a
+hard-coded thread total. The active client's interactive-subagent limit is only
+a limit on simultaneous stateful threads; it is not a limit on the size of a
+review.
+
+Choose the route by capability:
+
+- Use native `spawn_agent` (Codex) or Task/subagent tools (Claude) for work that
+  is stateful, interactive, write-capable, or likely to need follow-up.
+- Use separate `codex exec --ephemeral -s read-only` processes for isolated,
+  read-only review perspectives. Give every process the same context brief and
+  target, and save each result to its own output file. This is the normal
+  high-fanout route when the useful perspective count exceeds the currently
+  available interactive slots.
+- Size simultaneous processes from current host/service capacity and active
+  client configuration. Queue additional independent perspectives as capacity
+  becomes available; do not reduce the total perspective set merely because a
+  client currently exposes fewer interactive slots.
+- Use interactive waves only when the isolated `codex exec` route is genuinely
+  unavailable or the work requires shared state/follow-up. Waves are a
+  compatibility fallback, not a reviewer ceiling.
+
+Before declaring either route unavailable, check the live tool surface, run
+`codex --version` and `codex exec --help`, then run
+`ruby scripts/SaneMaster.rb tool_discovery --query "reviewer fan-out"`. For
+batch review, keep `--ephemeral` and `-s read-only`; never substitute a
+dangerous bypass flag. Review outputs remain evidence for the parent synthesis,
+not authority to edit, merge, release, or mutate external state.
+
+Browser and app-control ladder:
+
+1. Brave/Chrome dashboard or portal control: Browser/Chrome plugin through
+   `node_repl`.
+2. Visible native app/window state: Computer Use `get_app_state`.
+3. Deterministic macOS action: `macos-automator` AppleScript/JXA.
+4. Repeatable website QA: Playwright with Brave defaults.
+5. Final proof: Mini screenshot wrapper or app-specific visual receipt.
+
+This applies to Codex and Claude. Check live plugin/tool state before falling
+back to raw SSH screenshots, blind `osascript`, or manual browser work.
+
 Use this routing table for Codex plugin skills:
 
 | Work | Useful Codex plugin family | SaneApps close-out |
 |------|----------------------------|--------------------|
 | macOS app UI, AppKit interop, signing, packaging, telemetry, test triage | Build macOS Apps | Mini-first `SaneMaster.rb verify`; use `sane_test.rb` for runtime proof |
 | iOS companion apps, simulator proof, App Intents, leaks, performance | Build iOS Apps | Project verify plus fresh simulator/runtime evidence |
-| Websites and local frontend debugging | Build Web Apps, Browser | `release_preflight` for shipped web surfaces and Cloudflare Pages release path |
+| Websites, browser portals, and local frontend debugging | Build Web Apps, Browser/Chrome Plugin, Computer Use | `release_preflight` for shipped web surfaces and Cloudflare Pages release path; screenshots are final proof, not the primary control path |
 | New product UI direction, redesign, prototype, image-to-code, visual QA | Product Design, Figma | Start with a brief/visual target; get approval before code; verify plus clean screenshots after implementation |
 | Marketing positioning, ad concepts, mood boards, editable decks, social resizes | Creative Production, Canva | Check live product facts and brand/copy rules; run `launch_readiness` before public launch use |
 | Repo/path security scan, diff security review, threat model, fix validation | Codex Security | Use for security-specific work; fixes still require `verify` and relevant release checks |
 | OpenAI API, Agents SDK, ChatGPT App, OpenAI key or MCP work | OpenAI Developers | Use official-doc-backed skill flow; keep secrets in the approved Keychain/env path |
 | Cloudflare Pages/R2/Workers/Durable Objects/Tunnels | Cloudflare | Prefer SaneProcess release wrappers for deploy/release proof; use plugin docs for platform details |
 | GitHub PRs/issues/CI metadata | GitHub | Cross-check support email before closing customer-reported issues |
-| Personal Gmail, Drive, Docs, Sheets, Slides, Calendar deliverables | Google plugins | Generic "email" still means `hi@saneapps.com` through `check-inbox.sh` |
+| Personal email, docs, sheets, slides, or calendar deliverables | Explicit one-off connector only | Not a default SaneApps route; generic "email" still means `hi@saneapps.com` through `check-inbox.sh` |
 | KPI reports, metric diagnostics, dashboards | Data Analytics | Use `SaneMaster.rb sales`, `downloads`, `events`, or `/outreach` first for canonical SaneApps signals |
 | Presenter videos, generated media, stock assets, programmatic videos | HeyGen, HyperFrames, Picsart, Fal, Shutterstock, Remotion | Treat as marketing assets, not runtime verification evidence |
 
@@ -265,8 +354,23 @@ receipts. Run `ruby scripts/SaneMaster.rb` or `help <category>` for full help.
 | Runtime launch/proof | `ruby scripts/SaneMaster.rb test_mode` plus app-specific `customer_ui_sweep`, or `visual_smoke` only when no app sweep exists |
 | Verification scope plan | `ruby scripts/SaneMaster.rb proof_plan --task "..."` |
 | Support inbox | `ruby scripts/SaneMaster.rb check_inbox` |
+| Business appointments | `ruby scripts/SaneMaster.rb business_appointment add --title TITLE --start "YYYY-MM-DD HH:MM" --attendee EMAIL` |
 | Sales/download/funnel | `sales`, `downloads`, `events` |
 | Machine cleanup | `ruby scripts/SaneMaster.rb machine_cleanup --host mini --apply` |
+
+Business appointment live writes require `SANEAPPS_BUSINESS_CALENDAR_ID` and
+`GOOGLE_CALENDAR_ACCESS_TOKEN`. Preview mode prints the required
+`confirm_send` phrase; live mode requires that exact phrase, checks for an
+existing event by dedupe key, creates a no-attendee event first, verifies Google
+reports `hi@saneapps.com` as organizer, then adds attendees with notifications.
+If organizer proof fails, no attendee invite is sent.
+
+Business appointment follow-up email uses the SaneCite/prospecting identity,
+not the support-email identity: `Stephan Joseph`, `SaneCite Founder`, and the
+approved phone number `7277589785`. SaneCite prospect emails should use the
+existing SaneCite visual email frame from the SaneCite codebase (dark header,
+warm off-white page, cyan accent, SaneCite wordmark) and must not use the
+generic support signoff.
 
 `process_eval` is the gate for real workflow improvement, not synthetic
 busywork. Trace fixtures define required event shapes, but slimming/expanding
@@ -352,6 +456,32 @@ bash ~/SaneApps/infra/SaneProcess/scripts/release.sh \
   --project "$(pwd)" --full --version X.Y.Z --notes "..." --deploy
 ```
 
+When recent production Swift changes touch defaults registration or migration
+behavior, configure the real upgrade lane in `.saneprocess` and run it before
+preflight:
+
+```yaml
+release:
+  upgrade_path_test:
+    command:
+      - ruby
+      - scripts/upgrade_path_behavioral_test.rb
+    from_version: "1.9.0"
+    timeout_seconds: 900
+```
+
+```bash
+ruby scripts/SaneMaster.rb upgrade_path_proof
+ruby scripts/SaneMaster.rb release_preflight
+```
+
+The configured process must drive the customer-observable upgrade behavior and
+write the JSON result and runtime artifact at the paths supplied by
+`SANEMASTER_UPGRADE_RESULT_PATH` and
+`SANEMASTER_UPGRADE_RUNTIME_ARTIFACT_PATH`. SaneMaster supplies the one-use
+challenge plus app/version/source values, runs this lane on the Mini, and signs
+the source-bound receipt. There is no CLI success override.
+
 App Store lanes are active only when `.saneprocess` enables them:
 
 ```bash
@@ -381,6 +511,18 @@ Release rules:
   bundles for SaneApps proof.
 - Use the app-specific `customer_ui_sweep` when it exists. Use `visual_smoke`
   only when no app-specific sweep exists.
+- For customer-reported UI bugs, the proof must map each customer claim to one
+  or more screenshots that reproduce the same state or demonstrate the fixed
+  state. Generic "app is open" screenshots, permission dialogs, or unrelated
+  desktop captures are not proof.
+- `saneprocess.visual_audit` receipts must include `claims` entries with
+  screenshot paths for every verified claim. The hook layer rejects visual-audit
+  receipts that only list screenshots without claim mapping.
+- Customer UI proof freshness is scoped to visual-impact sources. Reuse a valid
+  receipt when only tests, release harnesses, screenshot wrappers, docs,
+  appcast/site metadata, or version/project metadata changed after the proof.
+  Rerun proof when app UI/runtime source, assets, localization, the action
+  manifest, or shared SaneUI source changed after the receipt.
 - Obstructed, clipped, partial, or helper-window-contaminated screenshots are
   invalid.
 - Hidden macOS prompts can invalidate app-window-only screenshots; check full

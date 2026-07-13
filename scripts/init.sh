@@ -395,7 +395,26 @@ if [ "$INSTALL_CLAUDE" -eq 1 ]; then
         "hooks": [
           {
             "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/sane_catastrophic_guard.rb",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/sanetools.rb",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby \"$CLAUDE_PROJECT_DIR\"/scripts/hooks/sane_bash_guards.rb",
             "timeout": 5000
           }
         ]

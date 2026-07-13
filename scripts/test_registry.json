@@ -8,6 +8,12 @@
       "cmd": ["ruby", "scripts/hooks/test_hooks.rb"]
     },
     {
+      "path": "scripts/hooks/release_receipt_signer_test.rb",
+      "label": "SaneProcess release receipt signer security tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/hooks/release_receipt_signer_test.rb"]
+    },
+    {
       "path": "scripts/hooks/sanestop_lemonsqueezy_test.rb",
       "label": "SaneProcess post-release LemonSqueezy-Uploads staging tests",
       "status": "required",
@@ -36,6 +42,12 @@
       "label": "SaneProcess Bash guard dispatcher tests",
       "status": "required",
       "cmd": ["ruby", "scripts/hooks/sane_bash_guards_test.rb"]
+    },
+    {
+      "path": "scripts/hooks/sane_catastrophic_guard_test.rb",
+      "label": "SaneProcess catastrophic operation guard tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/hooks/sane_catastrophic_guard_test.rb"]
     },
     {
       "path": "scripts/hooks/sane_build_tool_guard_test.rb",
@@ -92,6 +104,12 @@
       "cmd": ["ruby", "scripts/automation/control_plane_sync_test.rb"]
     },
     {
+      "path": "scripts/automation/gpt_audit_test.py",
+      "label": "SaneProcess Codex fan-out audit runner tests",
+      "status": "required",
+      "cmd": ["/Applications/Xcode.app/Contents/Developer/usr/bin/python3", "-B", "scripts/automation/gpt_audit_test.py"]
+    },
+    {
       "path": "scripts/automation/email_delivery_test.py",
       "label": "SaneProcess email delivery tests",
       "status": "required",
@@ -108,6 +126,12 @@
       "label": "SaneProcess check-inbox report classifier tests",
       "status": "required",
       "cmd": ["python3", "-B", "scripts/automation/check_inbox_report_test.py"]
+    },
+    {
+      "path": "scripts/automation/business_appointment_test.rb",
+      "label": "SaneApps business appointment guard tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/automation/business_appointment_test.rb"]
     },
     {
       "path": "scripts/automation/sane_support_kickoff_test.py",
@@ -224,6 +248,18 @@
       "cmd": ["ruby", "scripts/mini/mini_memory_guard_test.rb"]
     },
     {
+      "path": "scripts/hooks/session_start_cleanup_test.rb",
+      "label": "SaneProcess session-start dev-server reaper classifier tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/hooks/session_start_cleanup_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/verify_escalation_test.rb",
+      "label": "SaneProcess verify two-strike escalation tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/verify_escalation_test.rb"]
+    },
+    {
       "path": "scripts/mini/mini_train_cleanup_test.rb",
       "label": "SaneProcess Mini train cleanup tests",
       "status": "required",
@@ -248,6 +284,24 @@
       "cmd": ["ruby", "scripts/sanemaster/dependencies_test.rb"]
     },
     {
+      "path": "scripts/sanemaster/research_evidence_gate_test.rb",
+      "label": "Research evidence gate tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/research_evidence_gate_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/gate_override_test.rb",
+      "label": "Gate certifier override + unfair-gate tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/gate_override_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/hammer_watch_test.rb",
+      "label": "Hammer detector (no-progress gate re-hits) tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/hammer_watch_test.rb"]
+    },
+    {
       "path": "scripts/sanemaster/gate_review_test.rb",
       "label": "SaneProcess gate review tests",
       "status": "required",
@@ -270,6 +324,18 @@
       "label": "SaneProcess command registry tests",
       "status": "required",
       "cmd": ["ruby", "scripts/sanemaster/command_registry_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/ci_helpers_test.rb",
+      "label": "SaneProcess CI helper tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/ci_helpers_test.rb"]
+    },
+    {
+      "path": "scripts/sanemaster/upgrade_path_proof_test.rb",
+      "label": "SaneProcess upgrade path proof security tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/upgrade_path_proof_test.rb"]
     },
     {
       "path": "scripts/sanemaster/operator_brief_test.rb",
@@ -404,6 +470,12 @@
       "cmd": ["ruby", "scripts/sanemaster/verify_guard_test.rb"]
     },
     {
+      "path": "scripts/sanemaster/verify_permissions_test.rb",
+      "label": "SaneProcess verify TCC-preservation tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/verify_permissions_test.rb"]
+    },
+    {
       "path": "scripts/validation_report_test.rb",
       "label": "SaneProcess validation report tests",
       "status": "required",
@@ -426,6 +498,18 @@
       "label": "Grok hook and security guard regression tests",
       "status": "required",
       "cmd": ["ruby", "scripts/hooks/grok_and_security_guard_test.rb"]
+    },
+    {
+      "path": "scripts/hooks/sane_automation_guard_test.rb",
+      "label": "Mini automation guard regression tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/hooks/sane_automation_guard_test.rb"]
+    },
+    {
+      "path": "scripts/hooks/sanetrack_codex_review_test.rb",
+      "label": "SaneTrack Codex fan-out review receipt tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/hooks/sanetrack_codex_review_test.rb"]
     },
     {
       "path": "scripts/hooks/sanestop_test.rb",

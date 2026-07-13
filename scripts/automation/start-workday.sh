@@ -1,12 +1,11 @@
 #!/bin/bash
-# Start-of-day workflow from MacBook Air. Default behavior keeps Mini
-# automations paused so a manual work session does not fight unattended runs.
+# Start-of-day workflow from MacBook Air. Automation state is managed only by
+# Codex automation_update and is outside this control-plane sync.
 
 set -euo pipefail
 
 MINI_HOST="mini"
 OPEN_FILES=1
-ACTIVATE_MINI_RUNS=0
 
 usage() {
   cat <<USAGE
@@ -15,7 +14,6 @@ Usage: $(basename "$0") [mini-host] [--no-open]
 Examples:
   $(basename "$0")
   $(basename "$0") mini --no-open
-  $(basename "$0") mini --activate-mini-runs
 USAGE
 }
 
@@ -27,10 +25,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-open)
       OPEN_FILES=0
-      shift
-      ;;
-    --activate-mini-runs)
-      ACTIVATE_MINI_RUNS=1
       shift
       ;;
     --*)
@@ -55,13 +49,8 @@ LOCAL_INBOX="$HOME/SaneApps/infra/scripts/check-inbox.sh"
 mkdir -p "$OUT_DIR"
 
 echo "== SaneOps Workday Start =="
-if [[ "$ACTIVATE_MINI_RUNS" -eq 1 ]]; then
-  echo "1) Syncing automation config to Mini and activating Mini runs..."
-  bash "$SYNC_SCRIPT" "$MINI_HOST" --activate-mini-runs
-else
-  echo "1) Syncing automation config to Mini and keeping Mini runs paused..."
-  bash "$SYNC_SCRIPT" "$MINI_HOST" --pause-mini-am --pause-mini-pm
-fi
+echo "1) Syncing the Codex control-plane profile to Mini..."
+bash "$SYNC_SCRIPT" "$MINI_HOST"
 
 echo ""
 echo "2) Air↔Mini repo reconcile..."
@@ -75,8 +64,7 @@ scp -q "$MINI_HOST:~/SaneApps/infra/SaneProcess/outputs/morning_report.md" "$OUT
 scp -q "$MINI_HOST:~/SaneApps/infra/SaneProcess/outputs/nightly_report.md" "$OUT_DIR/nightly_report.mini.md" 2>/dev/null || true
 
 echo ""
-echo "4) Mini automation status:"
-ssh "$MINI_HOST" 'sqlite3 -header -column ~/.codex/sqlite/codex-dev.db "SELECT id,name,status,datetime(next_run_at/1000,\"unixepoch\",\"localtime\") AS next_run_local, datetime(last_run_at/1000,\"unixepoch\",\"localtime\") AS last_run_local FROM automations;"'
+echo "4) Automation state remains API-owned; inspect it in Codex Scheduled when needed."
 
 echo ""
 echo "5) Inbox summary (local):"

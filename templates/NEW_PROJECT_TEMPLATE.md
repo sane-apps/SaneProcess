@@ -373,9 +373,6 @@ mcps:
 ```bash
 # Claude Code compatibility alias (2-letter code)
 alias XX='cd /path/to/ProjectName && claude --dangerously-skip-permissions'
-
-# Gemini (g + 2-letter code)
-alias gXX='cd /path/to/ProjectName && gemini'
 ```
 
 **IMPORTANT**: Avoid `sh` as alias (shadows `/bin/sh`)

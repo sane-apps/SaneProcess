@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 import json
+import http.server
 import os
+import socketserver
 import subprocess
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +24,7 @@ def email_row(
     category="other",
     created_at="2026-06-17 14:11:00",
     body_text="",
+    body_html="",
 ):
     return {
         "id": email_id,
@@ -32,12 +36,155 @@ def email_row(
         "priority": "normal",
         "created_at": created_at,
         "body_text": body_text,
-        "body_html": "",
+        "body_html": body_html,
         "summary": "",
     }
 
 
 class CheckInboxReportTests(unittest.TestCase):
+    def run_open_review_media(self, opener_exit, *, explicit_host=True, local_hostname=None):
+        source = CHECK_INBOX.read_text(encoding="utf-8")
+        start = source.index("default_review_media_host() {")
+        end = source.index("\n}\n\nrequire_spam_safe_to_mark", start) + 2
+        function_source = source[start:end]
+
+        with tempfile.TemporaryDirectory(prefix="check-inbox-open-media-") as tmpdir:
+            tmp = Path(tmpdir)
+            media = tmp / "evidence.mp4"
+            media.write_bytes(b"synthetic-media")
+            opener = tmp / "open-stub"
+            opener.write_text(
+                f"#!/bin/sh\nprintf 'OPEN_ARGS:%s\\n' \"$*\"\nexit {opener_exit}\n",
+                encoding="utf-8",
+            )
+            opener.chmod(0o755)
+            script = f"{function_source}\nopen_review_media MEDIA {media!s}\n"
+            env = {
+                **os.environ,
+                "SANE_OPEN_COMMAND": str(opener),
+            }
+            if explicit_host:
+                env["SANE_REVIEW_MEDIA_HOST"] = "local"
+            else:
+                env.pop("SANE_REVIEW_MEDIA_HOST", None)
+            if local_hostname is not None:
+                env["SANE_LOCAL_HOSTNAME"] = local_hostname
+            return subprocess.run(
+                ["bash", "-c", script],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+    def test_failed_local_media_open_fails_closed(self):
+        result = self.run_open_review_media(7)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("MEDIA OPEN FAILED", result.stdout)
+        self.assertNotIn("OPENED LOCALLY", result.stdout)
+
+    def test_successful_local_media_open_is_recorded(self):
+        result = self.run_open_review_media(0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("OPEN_ARGS:-a QuickTime Player", result.stdout)
+        self.assertIn("MEDIA OPENED LOCALLY: 1 file(s)", result.stdout)
+
+    def test_mini_defaults_to_local_media_open_without_ssh_loopback(self):
+        result = self.run_open_review_media(
+            0,
+            explicit_host=False,
+            local_hostname="Stephans-Mac-mini",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("MEDIA OPENED LOCALLY: 1 file(s)", result.stdout)
+
+    def run_linked_media_extractor(self, email):
+        source = CHECK_INBOX.read_text(encoding="utf-8")
+        marker = 'LINK_MEDIA_OUTPUT=$(EMAIL_ID="$EMAIL_ID" DEST="$LINK_DEST" python3 - "$EMAIL_JSON_FILE" <<\'PYEOF\'\n'
+        start = source.index(marker) + len(marker)
+        end = source.index("\nPYEOF\n)", start)
+        extractor = source[start:end]
+
+        with tempfile.TemporaryDirectory(prefix="check-inbox-linked-media-") as tmpdir:
+            tmp = Path(tmpdir)
+            email_path = tmp / "email.json"
+            dest = tmp / "linked-media"
+            email_path.write_text(json.dumps({"email": email}), encoding="utf-8")
+            env = os.environ.copy()
+            env.update({"EMAIL_ID": str(email["id"]), "DEST": str(dest)})
+            result = subprocess.run(
+                ["python3", "-", str(email_path)],
+                input=extractor,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            files = {path.name: path.read_bytes() for path in dest.glob("*")} if dest.exists() else {}
+            return result, files
+
+    def test_review_does_not_treat_remote_html_decorations_as_customer_evidence(self):
+        html_assets = """\
+        <a href="https://app.intercom.com/ratings?rating_index=1">
+          <img src="https://apollo.example/rating-1-60x60.png">
+        </a>
+        <img src="https://twilio.example/default-avatar-80.png">
+        <img src="https://images.macpaw.example/macpaw-logo-grey.png">
+        <img src="https://vendor.example/signature-emoji.gif">
+        <img src="https://vendor.example/tracking-pixel.gif">
+        """
+        result, files = self.run_linked_media_extractor(
+            email_row(
+                1200,
+                from_email="vendor@example.com",
+                subject="Routine vendor reply",
+                status="needs_human",
+                body_text="Thanks for the update.",
+                body_html=html_assets,
+            )
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(files, {})
+
+    def test_review_downloads_media_link_explicitly_present_in_plain_text(self):
+        payload = b"customer-video-evidence"
+
+        class EvidenceHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, _format, *_args):
+                return
+
+        with socketserver.TCPServer(("127.0.0.1", 0), EvidenceHandler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            port = server.server_address[1]
+            result, files = self.run_linked_media_extractor(
+                email_row(
+                    1201,
+                    from_email="customer@example.com",
+                    subject="Video of the problem",
+                    status="needs_human",
+                    body_text=f"Here is the requested evidence: http://127.0.0.1:{port}/customer-evidence.mp4",
+                    body_html='<img src="https://vendor.example/logo.png">',
+                )
+            )
+            server.shutdown()
+            thread.join(timeout=2)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("LINKED_MEDIA_SAVED", result.stdout)
+        self.assertEqual(list(files.values()), [payload])
+
     def run_command(self, args, emails, resend=None, *, reviewed_ids=None):
         with tempfile.TemporaryDirectory(prefix="check-inbox-report-") as tmpdir:
             tmp = Path(tmpdir)
@@ -65,6 +212,7 @@ class CheckInboxReportTests(unittest.TestCase):
                     "CHECK_INBOX_SKIP_ACTIONS": "1",
                     "CHECK_INBOX_SKIP_POSITIVE_FEEDBACK": "1",
                     "SANE_NO_KEYCHAIN": "1",
+                    "SANE_RUNTIME_DIR": str(home / ".sane"),
                     "INBOX_FETCH_LIMIT": "50",
                 }
             )
@@ -83,8 +231,96 @@ class CheckInboxReportTests(unittest.TestCase):
 
     def run_report(self, emails, resend=None):
         result = self.run_command([], emails, resend)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
         return result.stdout
+
+    def test_active_summary_surfaces_apollo_api_thread_as_business_blocker(self):
+        result = self.run_command(
+            ["active-summary"],
+            [
+                email_row(
+                    990001,
+                    from_email="support@apollo.example.invalid",
+                    subject="Synthetic Apollo API access fixture",
+                    status="needs_human",
+                    created_at="2099-01-03 15:52:07",
+                    body_text=(
+                        "This synthetic Apollo account has no API keys associated with it. "
+                        "Are you using MCP? Which test API key are you using?"
+                    ),
+                ),
+                email_row(
+                    990002,
+                    from_email="support@apollo.example.invalid",
+                    subject="Synthetic prospecting newsletter fixture",
+                    status="needs_human",
+                    created_at="2099-01-03 10:00:00",
+                    body_text="Synthetic prospecting newsletter. Unsubscribe from Apollo tips.",
+                ),
+                email_row(
+                    990003,
+                    from_email="customer@example.invalid",
+                    subject="Synthetic SaneClip issue fixture",
+                    status="needs_human",
+                    created_at="2099-01-03 02:55:13",
+                    body_text="Synthetic report: the fixed window still has a subsequent-paste problem.",
+                ),
+            ],
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Business/API threads:", result.stdout)
+        self.assertIn("#990001 [REVIEW REQUIRED]", result.stdout)
+        self.assertIn("Apollo", result.stdout)
+        business_section = result.stdout.split("Support/product bugs:", 1)[0]
+        self.assertNotIn("#990002", business_section)
+        self.assertIn("Never classify open business/vendor/API threads as noise before review.", result.stdout)
+        self.assertIn("Support/product bugs:", result.stdout)
+        support_section = result.stdout.split("Support/product bugs:", 1)[1].split("Other open threads:", 1)[0]
+        self.assertNotIn("#990002", support_section)
+        self.assertIn("#990003 [REVIEW REQUIRED]", result.stdout)
+        self.assertIn("Other open threads:", result.stdout)
+        self.assertIn("#990002 [REVIEW REQUIRED]", result.stdout)
+
+    def test_verify_facts_detects_api_and_receipt_claims(self):
+        with tempfile.TemporaryDirectory(prefix="check-inbox-facts-") as tmpdir:
+            tmp = Path(tmpdir)
+            body_file = tmp / "apollo_reply.txt"
+            evidence_file = tmp / "evidence.txt"
+            body_file.write_text(
+                "\n".join(
+                    [
+                        "Hi Example Support,",
+                        "",
+                        "Synthetic usage stats returns HTTP 200.",
+                        "Synthetic People Search returns HTTP 403 API_INACCESSIBLE and says the test key is on a free plan.",
+                        "I paid for a synthetic Professional fixture on January 2, 2099: test receipt #TEST-0000.",
+                        "",
+                        "Mr. Sane",
+                        "https://saneapps.com",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            evidence_file.write_text("NO_FACTUAL_CLAIMS\n", encoding="utf-8")
+
+            result = self.run_command(
+                ["verify-facts", "990001", str(body_file), str(evidence_file)],
+                [
+                    email_row(
+                        990001,
+                        from_email="support@apollo.example.invalid",
+                        subject="Synthetic Apollo API key fixture",
+                        status="needs_human",
+                        body_text="Which synthetic API key are you using?",
+                    )
+                ],
+                reviewed_ids=[990001],
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Factual claim signal in draft: yes", result.stdout)
+        self.assertIn("Draft has factual claims but evidence file says NO_FACTUAL_CLAIMS", result.stdout)
 
     def test_replied_external_partner_mail_requires_review_without_latest_reply(self):
         output = self.run_report(
@@ -136,7 +372,13 @@ class CheckInboxReportTests(unittest.TestCase):
         self.assertIn("#886", output)
         self.assertNotIn("resolve-batch 886", output)
 
-    def test_low_risk_replied_thread_is_cleanup_candidate_but_not_batch_command(self):
+    def test_low_risk_replied_thread_is_suppressed_and_auto_resolve_candidate(self):
+        # NEW CONTRACT (deliberate owner-requested suppression): a low-risk routine
+        # thread we already replied to, with the customer silent, is no longer surfaced
+        # under "LOW-RISK DELIVERED REPLY FOUND". Instead it is SUPPRESSED under
+        # "WE RESPONDED LAST" and, once our reply is aged >= AUTO_RESOLVE_DAYS (5d) with
+        # no customer response, it appears as an AUTO-RESOLVE [DRY-RUN] candidate.
+        # Default remains dry-run: nothing is resolved here (no APPLY env set).
         output = self.run_report(
             [
                 email_row(
@@ -145,6 +387,7 @@ class CheckInboxReportTests(unittest.TestCase):
                     subject="Routine notification",
                     status="pending",
                     category="other",
+                    created_at="2026-06-17 14:11:00",
                     body_text="Routine notification acknowledged.",
                 )
             ],
@@ -161,8 +404,13 @@ class CheckInboxReportTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("LOW-RISK DELIVERED REPLY FOUND AFTER LATEST INBOUND", output)
-        self.assertIn("check-inbox.sh review 901", output)
+        # Suppressed under the quiet "we responded last" line, not the cleanup bucket.
+        self.assertIn("WE RESPONDED LAST", output)
+        self.assertNotIn("LOW-RISK DELIVERED REPLY FOUND AFTER LATEST INBOUND", output)
+        # Aged >= 5d (reply 2026-06-17) => dry-run auto-resolve candidate, not an apply.
+        self.assertIn("AUTO-RESOLVE [DRY-RUN", output)
+        self.assertIn("#901", output)
+        self.assertNotIn("AUTO-RESOLVED: #901", output)
         self.assertNotIn("resolve-batch 901", output)
 
     def test_resolved_setapp_review_blocker_is_not_silently_skipped(self):
@@ -208,6 +456,62 @@ class CheckInboxReportTests(unittest.TestCase):
         self.assertIn("Platform review blocker surfaced", result.stdout)
         self.assertIn("weaknesses=0", result.stdout)
         self.assertNotIn("not high-priority support", result.stdout)
+
+    def test_classification_audit_flags_trusted_account_actions_hidden_as_spam(self):
+        rows = [
+            email_row(
+                1116,
+                from_email="support@globaldomaingroup.com",
+                subject="WHOIS Contact Record Verification for getsaneapps.com",
+                status="spam",
+                category="spam",
+            ),
+            email_row(
+                1118,
+                from_email="support@globaldomaingroup.com",
+                subject="Registration confirmation for getsaneapps.com",
+                status="spam",
+                category="spam",
+            ),
+            email_row(
+                1120,
+                from_email="gmail-noreply@google.com",
+                subject="Gmail Confirmation - Send Mail as hi@saneapps.com",
+                status="spam",
+                category="spam",
+            ),
+        ]
+        result = self.run_command(["classification-audit", "50"], rows)
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("Trusted account/domain workflow hidden as spam/system", result.stdout)
+        self.assertIn("#1116", result.stdout)
+        self.assertIn("#1118", result.stdout)
+        self.assertIn("#1120", result.stdout)
+        self.assertIn("critical=3", result.stdout)
+
+    def test_normal_report_surfaces_trusted_account_actions_even_when_spammed(self):
+        output = self.run_report([
+            email_row(
+                1116,
+                from_email="support@globaldomaingroup.com",
+                subject="WHOIS Contact Record Verification for getsaneapps.com",
+                status="spam",
+                category="spam",
+            ),
+            email_row(
+                1120,
+                from_email="gmail-noreply@google.com",
+                subject="Gmail Confirmation - Send Mail as hi@saneapps.com",
+                status="spam",
+                category="spam",
+            ),
+        ])
+
+        self.assertIn("TRUSTED ACCOUNT ACTIONS HIDDEN BY CLASSIFICATION", output)
+        self.assertIn("#1116", output)
+        self.assertIn("#1120", output)
+        self.assertIn("Review and reopen", output)
 
     def test_resolved_support_thread_with_latest_bounce_stays_visible(self):
         output = self.run_report(

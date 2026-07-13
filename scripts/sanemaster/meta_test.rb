@@ -154,6 +154,39 @@ exit(run_tests('SaneMaster Meta Tests') do
       true
     end
 
+    test('flags nonnegative collection count assertions') do
+      subject = MetaHarness.new
+
+      Dir.mktmpdir('meta-count-scan-') do |dir|
+        test_dir = File.join(dir, 'ExampleTests')
+        FileUtils.mkdir_p(test_dir)
+        File.write(File.join(test_dir, 'CountTests.swift'), <<~SWIFT)
+          import Testing
+          import XCTest
+
+          @Test func swiftTestingTautology() {
+            #expect(items.count >= 0)
+          }
+
+          func xctestTautology() {
+            XCTAssertGreaterThanOrEqual(items.count, 0)
+          }
+        SWIFT
+
+        Dir.chdir(dir) do
+          subject.instance_variable_set(:@project_tests_dir, 'ExampleTests')
+          result = nil
+          capture_stdout do
+            result = subject.send(:scan_test_quality, verbose: false)
+          end
+
+          assert_eq(result[:blocking_count], 2)
+          assert_eq(result[:issues][:tautologies].map { |issue| issue[:line] }, [5, 9])
+        end
+      end
+      true
+    end
+
     test('ignores heredoc fixture payloads in Ruby scanner tests') do
       subject = MetaHarness.new
 
@@ -179,6 +212,40 @@ exit(run_tests('SaneMaster Meta Tests') do
 
           assert_eq(result[:blocking_count], 0)
           assert_eq(result[:issues][:tautologies].length, 0)
+        end
+      end
+      true
+    end
+
+    test('does not mistake overflow or workflow substrings for e2e claims') do
+      subject = MetaHarness.new
+
+      Dir.mktmpdir('meta-e2e-word-boundary-') do |dir|
+        test_dir = File.join(dir, 'ExampleTests')
+        FileUtils.mkdir_p(test_dir)
+        File.write(File.join(test_dir, 'BoundaryTests.swift'), <<~SWIFT)
+          import Testing
+
+          @Test("Audio overflow preserves queued samples")
+          func overflowPreservesSamples() {
+            #expect(queue.count == expectedCount)
+          }
+
+          @Test("Real integration path")
+          func integrationPath() {
+            #expect(output == expectedOutput)
+          }
+        SWIFT
+
+        Dir.chdir(dir) do
+          subject.instance_variable_set(:@project_tests_dir, 'ExampleTests')
+          result = nil
+          capture_stdout do
+            result = subject.send(:scan_test_quality, verbose: false)
+          end
+
+          assert_eq(result[:issues][:e2e].length, 1)
+          assert(!result[:issues][:e2e].first[:pattern].include?('overflowPreservesSamples'))
         end
       end
       true

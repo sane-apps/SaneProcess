@@ -64,8 +64,6 @@ class ContaminationChecker
     'debug.log',
     # Git
     '.git/',
-    # Gemini config (separate AI)
-    '.gemini/'
   ].freeze
 
   # Critical files that should NEVER reference other projects

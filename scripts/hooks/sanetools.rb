@@ -112,13 +112,14 @@ BASH_FILE_WRITE_PATTERN = Regexp.union(
   # Bulk file operations (M8 addition)
   /\bxargs\b.*\b(touch|rm|mv|cp)\b/,
   # Move/overwrite (M8 addition)
-  /\bmv\s+/,
-  # Inline script execution (can write files without redirection)
-  /\bpython3?\s+-c\b/,
-  /\bruby\s+-e\b/,
-  /\bnode\s+-e\b/,
-  /\bperl\s+-e\b/,
-  /\bswift\s+-e\b/
+  /\bmv\s+/
+  # NOTE: inline-script execution (`ruby -e`, `python -c`, `node -e`, `perl -e`,
+  # `swift -e`, `ruby /tmp/foo.rb`) is deliberately NOT matched here. Those
+  # invocations are overwhelmingly read-only diagnostics, and firing on every one
+  # of them blocked legitimate reads (e.g. `ruby -e 'puts File.read(...)'`) and
+  # /tmp-only scratch writes. A genuine bash file write still gets caught by the
+  # redirect/tee/cp/mv patterns above, which already honor SAFE_REDIRECT_TARGETS
+  # (so redirecting an inline script to a non-/tmp path is still blocked).
 ).freeze
 
 EDIT_KEYWORDS = %w[edit write create modify change update add remove delete fix patch].freeze
@@ -183,7 +184,6 @@ end
 
 def track_research(tool_name, tool_input)
   research_done = false
-
   RESEARCH_CATEGORIES.each do |category, config|
     if config[:tools].any? { |t| SaneToolsChecks.research_tool_match?(tool_name, t) }
       mark_research_done(category, tool_name, false)

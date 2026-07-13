@@ -18,6 +18,15 @@ All SaneApps macOS apps use **Cloudflare** for update distribution:
 ./scripts/SaneMaster.rb release_preflight
 ```
 
+If production Swift changes touch defaults or migration behavior, first run
+`./scripts/SaneMaster.rb upgrade_path_proof`. The app's `.saneprocess` must
+configure `release.upgrade_path_test.command` as an argv array and set
+`from_version`. A hand-written result file or source/string-only test is not
+proof: the configured command must exercise the runtime upgrade path and emit
+the challenge-bound result and runtime artifact requested by SaneMaster.
+Preflight and full release verify the signed receipt, current source digest,
+Mini runtime, versions, test count, and evidence artifact digests.
+
 Runs automated safety checks before release, including:
 1. Tests pass
 2. API compatibility against `release.min_system_version`
@@ -135,17 +144,14 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
 - If the failure is `productbuild failed` with `errSecInteractionNotAllowed` / `CSSMERR_CSP_NO_USER_INTERACTION`, the Mini is missing headless keychain access for the installer identity.
 - Fix the keychain session first. Do not retry uploads blindly.
 
-5. If App Store Connect or Apple Developer portal state must be inspected or repaired, drive Safari on the Mini directly before looking for new browser tools.
+5. If App Store Connect or Apple Developer portal state must be inspected or repaired, use the authenticated Brave session on the Mini.
 
 - App Store Connect login and `developer.apple.com` login are separate. Verify both on the Mini.
-- Use one Safari window and one active portal tab for App Store Connect / Apple Developer / Apple ID login work. Do not open a new ASC/developer/idmsa tab for each action; repeated tabs can invalidate the session and lock Passwords/2FA flows.
-- Preferred control path is Mini Safari + AppleScript/JavaScript:
-  - `tell application "Safari" to return URL of front document`
-  - `tell application "Safari" to do JavaScript "document.body.innerText"` in front document
-  - `~/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh list-tabs`
-  - `~/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh open-read-current "<url>"` for ASC/developer/idmsa pages
-  - `~/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh read <tab_index>`
-  - `~/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh js <tab_index> "<javascript>"`
+- Use the existing authenticated Brave profile for App Store Connect / Apple Developer / Apple ID login work. Reuse a matching tab when possible; repeated login tabs can invalidate the session and lock Passwords/2FA flows.
+- Preferred control path is the active Browser/Chrome control surface or `macos-automator` JXA against `Brave Browser`:
+  - enumerate Brave tabs and confirm the exact URL before acting
+  - read `document.body.innerText` through the active Brave tab
+  - use DOM selectors and `.click()` only after confirming the exact target review/profile page
   - use `document.querySelector(...)` / `.click()` only after confirming the tab URL is the exact target review/profile page
 - Use this path to inspect reviewer screenshots/download links, App Review page text, and Apple Developer profile detail/edit pages.
 - Use the same path for listing/directory activation links when distribution status matters.
@@ -325,21 +331,49 @@ Before any Setapp submission or handoff:
   - Developer ID signing, notarization/stapling, Gatekeeper acceptance, and
     quarantined launch proof from the final ZIP
 
-7. Upload through the standard Setapp lane:
-- Preferred: `./scripts/SaneMaster.rb setapp_upload --zip /path/to/App-Setapp.zip --release-notes-file /path/to/notes.txt --review-comments-file /path/to/private-review-comments.txt` with `SETAPP_AUTOMATION_TOKEN`.
-- Fallback for the known portal defect where an in-review page shows `Reupload .ZIP` but clicking it does nothing:
+7. Upload through the standard Setapp lane (CANONICAL — token first):
+- **Auth**: the portal token lives in the keychain (`sane-env` /
+  `SETAPP_PORTAL_TOKEN`, both machines). Load it before any Setapp command:
+
+```bash
+source ~/.config/nv/env   # exports SETAPP_PORTAL_TOKEN from the keychain
+```
+
+  `setapp_upload.rb` reads `ENV['SETAPP_PORTAL_TOKEN']` first, then falls back
+  to the Brave `access_token` cookie on the Mini. Brave is the canonical
+  authenticated admin browser; Safari is not a Setapp dependency. If the API returns 401 the
+  token expired: harvest a fresh `access_token` cookie from a logged-in
+  developer.setapp.com browser session and have the owner re-store it
+  (`security add-generic-password -U -s sane-env -a SETAPP_PORTAL_TOKEN -w
+  '<token>'`) — agent hooks intentionally block keychain writes. Never PRINT
+  token values into logs or chat; keychain + env var only.
+  (`SETAPP_AUTOMATION_TOKEN` — the official CI Bearer lane — was never
+  provisioned; the portal-token lane is the working path.)
+- **New public release** (the pinned version is Released/status 10 — the
+  normal case): the portal API rejects PATCH with HTTP 400 "The archive tmp
+  name field is forbidden". Create a NEW version record:
 
 ```bash
 ./scripts/SaneMaster.rb setapp_upload \
-  --portal-fallback \
+  --portal-fallback --create-version \
   --app-id <setapp_app_id> \
-  --version-id <existing_version_id> \
+  --allow-needs-revision \
   --zip /path/to/App-Setapp.zip \
   --release-notes-file /path/to/notes.txt \
   --review-comments-file /path/to/private-review-comments.txt
 ```
 
-- After fallback upload, verify both the Apps page and `GET /v1/versions/<version_id>` show the expected build/display versions.
+  The script prints the NEW version id — update the app's `.saneprocess`
+  `setapp.version_id` to it and commit. The new record lands in **Pending
+  Submission** (status 1): the owner must click **Submit for review** in the
+  portal.
+- **Reupload during review** (version is In Review / Needs Revision and the
+  portal's `Reupload .ZIP` button is broken): same command WITHOUT
+  `--create-version`, adding `--version-id <pinned_version_id>` — this PATCHes
+  the existing record.
+- After upload, verify both the Apps page and `GET /v1/versions/<version_id>`
+  show the expected build/display versions (the script also downloads the
+  hosted archive and proves SHA256 byte-match against the local zip).
 - After any `setapp_media_sync`, verify the public `https://setapp.com/apps/...`
   page. A successful portal sync is necessary but not sufficient because the
   public listing page may continue serving older cached/generated screenshot
@@ -348,7 +382,6 @@ Before any Setapp submission or handoff:
   manual release, release it in the portal, wait for the public state to update,
   and rerun `./scripts/SaneMaster.rb setapp_status` until it shows released/live
   with no action required.
-- Never print or store Setapp browser `access_token` / `refresh_token` values.
 
 ### 1. Build, Sign, Notarize, DMG (Single Command)
 
