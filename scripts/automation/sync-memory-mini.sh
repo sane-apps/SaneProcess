@@ -2,8 +2,9 @@
 # Targeted Air->Mini sync of the two agent memory stores BOTH agents rely on but that were previously Air-only:
 #   1) the Claude file-based project memory  (~/.claude/projects/<proj>/memory)
 #   2) the Serena store                       (~/SaneApps/.serena/memories)
-# Standalone (no Codex-automation prereqs, unlike sync-codex-mini.sh, which aborts if those are absent). Air is
-# canonical; backs up the Mini side FIRST and uses NO --delete so a Mini-side write is never lost. Project-dir
+# Standalone memory-only route. The broader sync-codex-mini.sh also carries
+# these stores but never reads or writes automation state. Air is canonical;
+# backs up the Mini side FIRST and uses NO --delete so a Mini-side write is never lost. Project-dir
 # names are path-derived, so Air's $HOME is mapped to the Mini's $REMOTE_HOME. (memory-sync SOP 2026-07-07.)
 # Usage: sync-memory-mini.sh [mini-host]   (default host: mini)
 set -uo pipefail

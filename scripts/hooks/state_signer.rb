@@ -37,6 +37,8 @@ module StateSigner
   KEYCHAIN_ACCOUNT = 'hmac_secret'
   SECRET_FILE = File.expand_path('~/.claude_hook_secret')  # Legacy fallback
   ENV_CACHE_FILE = File.expand_path(ENV.fetch('SANE_ENV_CACHE_FILE', '~/.config/nv/env'))
+  SECURITY_BIN = '/usr/bin/security'
+  SECURITY_ENV = { 'PATH' => '/usr/bin:/bin', 'LC_ALL' => 'C', 'LANG' => 'C' }.freeze
   SIGNATURE_KEY = '__sig__'
   TIMESTAMP_KEY = '__ts__'
 
@@ -230,11 +232,13 @@ module StateSigner
       return nil if ENV['SANE_NO_KEYCHAIN'] == '1'
 
       result, = Open3.capture2(
-        'security', 'find-generic-password',
+        SECURITY_ENV,
+        SECURITY_BIN, 'find-generic-password',
         '-s', KEYCHAIN_SERVICE,
         '-a', KEYCHAIN_ACCOUNT,
         '-w',
-        err: File::NULL
+        err: File::NULL,
+        unsetenv_others: true
       )
       result = result.to_s.strip
       persist_secret_to_env_cache(result) unless result.empty?
@@ -248,19 +252,23 @@ module StateSigner
 
       # Delete existing entry if present (security add fails on duplicate)
       system(
-        'security', 'delete-generic-password',
+        SECURITY_ENV,
+        SECURITY_BIN, 'delete-generic-password',
         '-s', KEYCHAIN_SERVICE,
         '-a', KEYCHAIN_ACCOUNT,
         out: File::NULL,
-        err: File::NULL
+        err: File::NULL,
+        unsetenv_others: true
       )
       success = system(
-        'security', 'add-generic-password',
+        SECURITY_ENV,
+        SECURITY_BIN, 'add-generic-password',
         '-s', KEYCHAIN_SERVICE,
         '-a', KEYCHAIN_ACCOUNT,
         '-w', secret,
         out: File::NULL,
-        err: File::NULL
+        err: File::NULL,
+        unsetenv_others: true
       )
       persist_secret_to_env_cache(secret) if success
       # Fall back to file if Keychain write fails
@@ -291,7 +299,9 @@ module StateSigner
   end
 end
 
-# CLI mode for testing/migration
+# Read-only CLI. Signing is deliberately unavailable: a general arbitrary-file
+# signing command would turn this helper into an authorization oracle for any
+# consumer that trusts StateSigner receipts.
 if __FILE__ == $PROGRAM_NAME
   require 'optparse'
 
@@ -300,8 +310,6 @@ if __FILE__ == $PROGRAM_NAME
     opts.banner = 'Usage: state_signer.rb [options] <file>'
 
     opts.on('-v', '--verify', 'Verify file signature') { options[:verify] = true }
-    opts.on('-s', '--sign', 'Sign file (in place)') { options[:sign] = true }
-    opts.on('-m', '--migrate', 'Migrate unsigned to signed') { options[:migrate] = true }
     opts.on('-r', '--read', 'Read verified content') { options[:read] = true }
   end.parse!
 
@@ -319,14 +327,6 @@ if __FILE__ == $PROGRAM_NAME
       puts '❌ Signature INVALID or missing'
       exit 1
     end
-  elsif options[:sign] || options[:migrate]
-    if StateSigner.migrate_to_signed(file)
-      puts "✅ File signed: #{file}"
-      exit 0
-    else
-      puts "❌ Failed to sign: #{file}"
-      exit 1
-    end
   elsif options[:read]
     data = StateSigner.read_verified(file)
     if data
@@ -337,7 +337,7 @@ if __FILE__ == $PROGRAM_NAME
       exit 1
     end
   else
-    warn 'Specify --verify, --sign, --migrate, or --read'
+    warn 'Specify --verify or --read'
     exit 1
   end
 end

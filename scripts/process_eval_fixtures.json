@@ -131,15 +131,15 @@
     },
     {
       "id": "subagent_hygiene_receipt",
-      "description": "Subagent delegation proves stale cleanup, mandatory prompt fragments, stop-on-hook-block, Mini-first, and close-after-result.",
+      "description": "Native Task review coverage proves stale cleanup, mandatory prompt fragments, stop-on-hook-block, Mini-first, completed nonempty final output, and stable-identity deduplication.",
       "events": [
         { "type": "command", "name": "stale_subagent_cleanup" },
         { "type": "subagent_prompt", "name": "read hooks and active config" },
         { "type": "subagent_prompt", "name": "stop on hook block" },
         { "type": "subagent_prompt", "name": "never build or launch locally" },
         { "type": "subagent_prompt", "name": "use ssh mini" },
-        { "type": "metric", "name": "subagent_spawned" },
-        { "type": "metric", "name": "subagent_closed" }
+        { "type": "metric", "name": "native_task_completed_nonempty" },
+        { "type": "artifact", "name": "native_task_stable_identity_deduped" }
       ],
       "expect": {
         "required_events": [
@@ -148,10 +148,65 @@
           "stop on hook block",
           "never build or launch locally",
           "ssh mini",
-          "subagent_spawned",
-          "subagent_closed"
+          "native_task_completed_nonempty",
+          "native_task_stable_identity_deduped"
         ],
-        "forbidden_events": ["ignored hook block", "local build", "local launch"]
+        "forbidden_events": ["spawn attempt counted", "started task counted", "empty task result counted", "ignored hook block", "local build", "local launch"]
+      }
+    },
+    {
+      "id": "codex_gpt_audit_manifest_receipt",
+      "description": "A canonical gpt_audit batch proves each counted Codex perspective succeeded read-only and wrote a nonempty output artifact.",
+      "events": [
+        { "type": "command", "name": "gpt_audit.py --backend codex-exec" },
+        { "type": "artifact", "name": "CODEX_FANOUT_RECEIPT manifest.json" },
+        { "type": "artifact", "name": "gpt_audit_manifest canonical_runner=true full_quorum=true unique_perspectives=true unique_artifacts=true input_sha256_verified=true codex_trusted_realpath=true codex_sha256_verified=true report_sha256_verified=true artifact_sha256_verified=true nonce_command_bound=true shell_control_rejected=true fresh=true backend=codex-exec read_only=true isolated_user_config=true authoritative=true synthesis=succeeded output_nonempty=true" },
+        { "type": "metric", "name": "codex_review_lane_completed" }
+      ],
+      "expect": {
+        "required_events": [
+          "gpt_audit.py",
+          "backend codex-exec",
+          "CODEX_FANOUT_RECEIPT",
+          "gpt_audit_manifest",
+          "canonical_runner=true",
+          "full_quorum=true",
+          "unique_perspectives=true",
+          "unique_artifacts=true",
+          "input_sha256_verified=true",
+          "codex_trusted_realpath=true",
+          "codex_sha256_verified=true",
+          "report_sha256_verified=true",
+          "artifact_sha256_verified=true",
+          "nonce_command_bound=true",
+          "shell_control_rejected=true",
+          "fresh=true",
+          "read_only=true",
+          "isolated_user_config=true",
+          "authoritative=true",
+          "synthesis=succeeded",
+          "output_nonempty=true",
+          "codex_review_lane_completed"
+        ],
+        "ordered_events": [
+          "gpt_audit.py",
+          "CODEX_FANOUT_RECEIPT",
+          "codex_review_lane_completed"
+        ],
+        "forbidden_events": [
+          "responses-api counted as Codex fan-out",
+          "fake runner counted",
+          "codex binary override counted",
+          "PATH-shadowing codex counted",
+          "duplicate perspective counted",
+          "duplicate artifact counted",
+          "hash mismatch counted",
+          "stale manifest counted",
+          "non-authoritative manifest counted",
+          "failed synthesis counted",
+          "failed manifest lane counted",
+          "empty manifest output counted"
+        ]
       }
     },
     {

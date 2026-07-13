@@ -36,6 +36,7 @@ require 'tmpdir'
 require 'digest'
 require 'optparse'
 require_relative 'hooks/core/process_metrics'
+require_relative 'hooks/release_receipt_signer'
 
 class ValidationReport
   SANE_APPS_ROOT = File.expand_path('~/SaneApps')
@@ -3622,12 +3623,27 @@ class ValidationReport
       File.join(project_path, 'outputs', 'release_preflight_status.json'),
       File.join(project_path, 'outputs', 'validation', 'qa_status.json')
     ]
-    status_path = candidates
-      .select { |path| File.exist?(path) }
-      .max_by { |path| File.mtime(path) }
-    return nil unless status_path
+    status_path = nil
+    status = nil
+    candidates.select { |path| File.exist?(path) }.sort_by { |path| File.mtime(path) }.reverse_each do |candidate|
+      parsed = if File.basename(candidate) == 'release_preflight_status.json'
+                 release_preflight_receipt_verifier.read(
+                   candidate,
+                   producer: 'saneprocess.release_preflight.v1'
+                 )
+               else
+                 JSON.parse(File.read(candidate))
+               end
+      next unless parsed.is_a?(Hash)
 
-    status = JSON.parse(File.read(status_path))
+      status_path = candidate
+      status = parsed
+      break
+    rescue JSON::ParserError
+      next
+    end
+    return nil unless status_path && status
+
     snapshot_time = begin
       Time.parse(status['generatedAt'].to_s)
     rescue ArgumentError
@@ -3656,6 +3672,10 @@ class ValidationReport
     nil
   rescue StandardError
     nil
+  end
+
+  def release_preflight_receipt_verifier
+    ReleaseReceiptSigner.production
   end
 
   def project_qa_source_fingerprint(project_path)

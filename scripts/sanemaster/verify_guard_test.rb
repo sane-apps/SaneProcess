@@ -2,16 +2,19 @@
 # frozen_string_literal: true
 
 require 'fileutils'
+require 'rbconfig'
 require 'stringio'
 require 'tmpdir'
 
 require_relative '../hooks/test/test_framework'
 require_relative 'base'
+require_relative 'ci_helpers'
 require_relative 'verify'
 
 class VerifyHarness
   include SaneMasterModules::Base
   include SaneMasterModules::Verify
+  include SaneMasterModules::CIHelpers
 end
 
 def init_git_repo(path)
@@ -367,6 +370,186 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
     end
   end
 
+  test_category('Strict verify contract') do
+    test('strictly parses verify flags and rejects unknown duplicate conflicting or invalid arguments') do
+      parsed = subject.send(
+        :parse_verify_args,
+        %w[--ui --clean --signed-tests --no-grant-permissions --skip-test-validation --quiet --timeout 45],
+        default_timeout: 300
+      )
+      assert_eq(parsed[:include_ui], true)
+      assert_eq(parsed[:ui_only], false)
+      assert_eq(parsed[:timeout], 45)
+      assert_eq(parsed[:quiet], true)
+
+      invalid_sets = [
+        ['--unknown'],
+        ['--clean', '--clean'],
+        ['--ui', '--ui-only'],
+        ['--timeout'],
+        ['--timeout', '0'],
+        ['--timeout', '-1'],
+        ['--timeout', 'abc'],
+        ['--timeout', '10', '--timeout', '20']
+      ]
+      invalid_sets.each do |arguments|
+        error = nil
+        begin
+          subject.send(:parse_verify_args, arguments, default_timeout: 300)
+        rescue ArgumentError => e
+          error = e
+        end
+        assert(error, "expected #{arguments.inspect} to be rejected")
+      end
+
+      invalid_default = nil
+      begin
+        subject.send(:parse_verify_args, [], default_timeout: 0)
+      rescue ArgumentError => e
+        invalid_default = e
+      end
+      assert(invalid_default, 'nonpositive configured timeout must be rejected')
+      true
+    end
+
+    test('assigns a unique result bundle and requested scope to every Xcode phase') do
+      Dir.mktmpdir('verify-result-bundles-') do |dir|
+        File.write(
+          File.join(dir, '.saneprocess'),
+          <<~YAML
+            name: SaneVideo
+            type: macos_app
+            scheme: SaneVideo
+            project: SaneVideo.xcodeproj
+            tests:
+              unit_target: SaneVideoTests
+              ui_target: SaneVideoUITests
+          YAML
+        )
+        Dir.mkdir(File.join(dir, 'SaneVideoUITests'))
+        Dir.chdir(dir) do
+          phases = VerifyHarness.new.send(:build_test_commands, true)
+          paths = phases.map { |entry| entry[:xcresult_path] }
+
+          assert_eq(phases.map { |entry| entry[:test_selector] }, %w[SaneVideoTests SaneVideoUITests])
+          assert_eq(paths.uniq.length, 2)
+          phases.each do |entry|
+            index = entry[:cmd].index('-resultBundlePath')
+            assert(index, 'every xcodebuild test phase needs -resultBundlePath')
+            assert_eq(entry[:cmd][index + 1], entry[:xcresult_path])
+          end
+        end
+      end
+      true
+    end
+
+    test('rejects missing xcresult evidence and scope mismatches through the shared parser') do
+      Dir.mktmpdir('verify-xcresult-proof-') do |dir|
+        missing = subject.send(:verify_xcresult_phase_summary, File.join(dir, 'missing.xcresult'), 'SaneVideoTests')
+        assert_eq(missing[:ok], false)
+        assert_includes(missing[:error], 'not created')
+
+        bundle = File.join(dir, 'unit.xcresult')
+        FileUtils.mkdir_p(bundle)
+        File.write(File.join(bundle, 'Info.plist'), 'fixture')
+        subject.define_singleton_method(:monitor_test_result_summary) do |_path, selector|
+          {
+            ok: false,
+            discovered_test_count: 1,
+            passed_test_count: 1,
+            matched_test_count: 0,
+            error: "xcresult does not contain a passed test matching #{selector.inspect}"
+          }
+        end
+        mismatch = subject.send(:verify_xcresult_phase_summary, bundle, 'SaneVideoTests')
+        assert_eq(mismatch[:ok], false)
+        assert_includes(mismatch[:error], 'SaneVideoTests')
+      end
+      true
+    end
+
+    test('shares one monotonic timeout budget across unit and UI Xcode phases') do
+      Dir.mktmpdir('verify-global-deadline-') do |dir|
+        bundles = %w[unit ui].map do |name|
+          path = File.join(dir, "#{name}.xcresult")
+          FileUtils.mkdir_p(path)
+          File.write(File.join(path, 'Info.plist'), 'fixture')
+          path
+        end
+        fresh_subject = VerifyHarness.new
+        phases = [
+          { label: 'unit', cmd: ['unit'], test_selector: 'AppTests', xcresult_path: bundles[0] },
+          { label: 'ui', cmd: ['ui'], test_selector: 'AppUITests', xcresult_path: bundles[1] }
+        ]
+        times = [100.0, 100.0, 104.0]
+        received_timeouts = []
+        fresh_subject.define_singleton_method(:run_verify_preflight) {}
+        fresh_subject.define_singleton_method(:build_test_commands) { |*_args, **_options| phases }
+        fresh_subject.define_singleton_method(:verify_monotonic_now) { times.shift }
+        fresh_subject.define_singleton_method(:execute_with_logging) do |_cmd, timeout, **_options|
+          received_timeouts << timeout
+          { success: true, timeout: false, exit_status: 0 }
+        end
+        fresh_subject.define_singleton_method(:monitor_test_result_summary) do |_path, _selector|
+          { ok: true, discovered_test_count: 1, passed_test_count: 1, matched_test_count: 1, error: nil }
+        end
+        fresh_subject.define_singleton_method(:cleanup_test_processes) { |_monitor = nil| }
+
+        result = fresh_subject.send(:run_tests_with_progress, timeout_seconds: 10, include_ui: true)
+
+        assert_eq(received_timeouts, [10.0, 6.0])
+        assert_eq(result[:success], true)
+        assert_eq(result[:tests_run], 2)
+      end
+      true
+    end
+
+    test('script-only registered summary evidence stays log-counted without xcresult') do
+      fresh_subject = VerifyHarness.new
+      timeouts = []
+      fresh_subject.define_singleton_method(:run_verify_preflight) {}
+      fresh_subject.define_singleton_method(:build_test_commands) do |*_args, **_options|
+        [
+          { label: 'ruby test one', cmd: ['one'], script_only: true },
+          { label: 'ruby test two', cmd: ['two'], script_only: true }
+        ]
+      end
+      fresh_subject.define_singleton_method(:execute_with_logging) do |_cmd, timeout, **_options, &block|
+        timeouts << timeout
+        block.call('RESULTS: 1/1 passed')
+        { success: true, timeout: false, exit_status: 0 }
+      end
+      fresh_subject.define_singleton_method(:cleanup_test_processes) { |_monitor = nil| }
+
+      result = fresh_subject.send(:run_tests_with_progress, timeout_seconds: 10)
+
+      assert_eq(timeouts, [10.0, 10.0])
+      assert_eq(result[:success], true)
+      assert_eq(result[:tests_run], 2)
+      true
+    end
+
+    test('disabled Xcode test targets cannot turn a build-only result into verify success') do
+      fresh_subject = VerifyHarness.new
+      fresh_subject.define_singleton_method(:project_name) { 'Example' }
+      fresh_subject.define_singleton_method(:project_scheme) { 'Example' }
+      fresh_subject.define_singleton_method(:xcodebuild_container_args) { ['-project', 'Example.xcodeproj'] }
+      fresh_subject.define_singleton_method(:system) { |*_args| true }
+      status = nil
+      output = capture_stdout do
+        begin
+          fresh_subject.send(:handle_disabled_tests, clean: false)
+        rescue SystemExit => e
+          status = e.status
+        end
+      end
+
+      assert_eq(status, 1)
+      assert_includes(output, 'cannot pass without executed test evidence')
+      true
+    end
+  end
+
   test_category('Project test destinations') do
     test('uses the configured iOS simulator destination for iOS-only unit tests') do
       Dir.mktmpdir('verify-ios-destination-') do |dir|
@@ -455,9 +638,106 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
       end
       true
     end
+
+    test('keeps macOS as the default UI test destination for desktop projects') do
+      Dir.mktmpdir('verify-macos-ui-destination-') do |dir|
+        File.write(
+          File.join(dir, '.saneprocess'),
+          <<~YAML
+            name: SaneVideo
+            type: macos_app
+            scheme: SaneVideo
+            project: SaneVideo.xcodeproj
+            tests:
+              ui_target: SaneVideoUITests
+          YAML
+        )
+        Dir.chdir(dir) do
+          fresh_subject = VerifyHarness.new
+          command = fresh_subject.send(:build_ui_test_command)
+
+          destination_index = command.index('-destination')
+          assert_eq(command[destination_index + 1], 'platform=macOS,arch=arm64')
+        end
+      end
+      true
+    end
+
+    test('keeps macOS UI test runners signed so XCTest can launch') do
+      Dir.mktmpdir('verify-macos-ui-signing-') do |dir|
+        File.write(
+          File.join(dir, '.saneprocess'),
+          <<~YAML
+            name: SaneVideo
+            type: macos_app
+            scheme: SaneVideo
+            project: SaneVideo.xcodeproj
+            tests:
+              unit_target: SaneVideoTests
+              ui_target: SaneVideoUITests
+          YAML
+        )
+        Dir.mkdir(File.join(dir, 'SaneVideoUITests'))
+        Dir.chdir(dir) do
+          fresh_subject = VerifyHarness.new
+          combined_command = fresh_subject.send(:build_test_command, true)
+          ui_command = fresh_subject.send(:build_ui_test_command)
+          commands = fresh_subject.send(:build_test_commands, true)
+          ui_only_commands = fresh_subject.send(:build_test_commands, true, false, ui_only: true)
+
+          assert(!combined_command.include?('CODE_SIGNING_ALLOWED=NO'), 'combined UI test command must stay signed')
+          assert(!ui_command.include?('CODE_SIGNING_ALLOWED=NO'), 'dedicated UI test command must stay signed')
+          assert_eq(commands.length, 2)
+          assert_includes(commands[0][:cmd], 'CODE_SIGNING_ALLOWED=NO')
+          assert(!commands[1][:cmd].include?('CODE_SIGNING_ALLOWED=NO'), 'separate UI session must stay signed')
+          assert_eq(ui_only_commands.length, 1)
+          assert_eq(ui_only_commands[0][:label], 'SaneVideo UI tests')
+          assert(!ui_only_commands[0][:cmd].include?('CODE_SIGNING_ALLOWED=NO'))
+        end
+      end
+      true
+    end
   end
 
   test_category('Quality command fallback') do
+    test('suppresses Bundler stack traces when Fastlane dependencies are missing') do
+      Dir.mktmpdir('verify-lint-bundle-fallback-') do |dir|
+        File.write(File.join(dir, 'Gemfile'), "source 'https://rubygems.org'\n")
+        Dir.chdir(dir) do
+          fresh_subject = VerifyHarness.new
+          fresh_subject.define_singleton_method(:bundle_available?) { true }
+          fresh_subject.define_singleton_method(:preferred_bundle_bin) { '/tmp/fake-bundle' }
+          fresh_subject.define_singleton_method(:capture2e_with_bundle_env) do |*_args|
+            [
+              "Bundler::GemNotFound: Could not find xcodeproj in locally installed gems\nfrom noisy-stack",
+              Struct.new(:success?).new(false)
+            ]
+          end
+
+          output = capture_stdout { fresh_subject.send(:run_fastlane_lint) }
+
+          assert_includes(output, 'Fastlane bundle dependencies are not installed')
+          assert(!output.include?('noisy-stack'), 'raw Bundler stack must not be printed')
+        end
+      end
+      true
+    end
+
+    test('runs both direct linters even when the first one fails') do
+      calls = []
+      subject.define_singleton_method(:command_available?) { |_command| true }
+      subject.define_singleton_method(:system) do |*command|
+        calls << command
+        command.first != 'swiftlint'
+      end
+
+      result = subject.send(:run_direct_lint)
+
+      assert_eq(result, false)
+      assert_eq(calls.map(&:first), %w[swiftlint swiftformat])
+      true
+    end
+
     test('falls back to rubocop when no fastlane quality lane exists') do
       fallback_called = false
       subject.define_singleton_method(:bundle_available?) { true }
@@ -510,6 +790,120 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
       assert_eq(result[:success], false)
       assert_eq(result[:timeout], true)
       assert(elapsed < 4, "expected timeout path to return promptly, got #{elapsed.round(2)}s")
+      true
+    end
+
+    test('Interrupt cleanup kills a captured descendant that escaped the process group') do
+      Dir.mktmpdir('verify-interrupt-tree-') do |dir|
+        child_pid = nil
+        begin
+          Dir.chdir(dir) do
+            child_pid_path = File.join(dir, 'escaped.pid')
+            command = [
+              RbConfig.ruby,
+              '-e',
+              <<~RUBY,
+                path = ARGV.fetch(0)
+                child = fork do
+                  Process.setsid
+                  Signal.trap('TERM', 'IGNORE')
+                  File.write(path, Process.pid.to_s)
+                  loop { sleep 1 }
+                end
+                Process.wait(child)
+              RUBY
+              child_pid_path
+            ]
+            fresh_subject = VerifyHarness.new
+            fresh_subject.define_singleton_method(:wait_for_process_with_timeout) do |_wait_thr, _timeout, **options|
+              deadline = Time.now + 5
+              sleep 0.01 until File.file?(child_pid_path) || Time.now >= deadline
+              child_pid = File.read(child_pid_path).to_i
+              options.fetch(:tracked_descendants) << child_pid
+              raise Interrupt, 'deterministic cancellation'
+            end
+
+            interrupted = false
+            begin
+              fresh_subject.send(:execute_with_logging, command, 5, label: 'interrupt cleanup')
+            rescue Interrupt
+              interrupted = true
+            end
+            child_pid = File.read(child_pid_path).to_i
+            assert(interrupted, 'fixture must propagate Interrupt after cleanup')
+            assert(!fresh_subject.send(:monitor_test_pid_alive?, child_pid), 'escaped child survived verify Interrupt cleanup')
+          end
+        ensure
+          if child_pid.to_i.positive?
+            begin
+              Process.kill('KILL', child_pid)
+            rescue Errno::ESRCH
+              nil
+            end
+          end
+        end
+      end
+      true
+    end
+
+    test('verify artifact setup rejects a symlinked outputs parent') do
+      Dir.mktmpdir('verify-symlink-output-') do |dir|
+        outside = Dir.mktmpdir('verify-symlink-outside-')
+        File.symlink(outside, File.join(dir, 'outputs'))
+        error = Dir.chdir(dir) do
+          begin
+            subject.send(:attach_verify_result_bundles, [{ label: 'unit', cmd: ['true'], test_selector: nil }])
+            nil
+          rescue StandardError => e
+            e
+          end
+        end
+        assert(error, 'verify must reject a symlinked outputs parent')
+        assert_includes(error.message, 'Unsafe symlink')
+        assert_eq(Dir.children(outside), [])
+      ensure
+        FileUtils.remove_entry(outside) if outside && File.directory?(outside)
+      end
+      true
+    end
+
+    test('verify evidence buffer is bounded and retains the newest output') do
+      buffer = String.new
+      subject.send(:append_verify_command_evidence, buffer, 'old-output-', max_bytes: 12)
+      subject.send(:append_verify_command_evidence, buffer, 'new-result', max_bytes: 12)
+
+      assert(buffer.bytesize <= 12, "expected bounded evidence, got #{buffer.bytesize} bytes")
+      assert_includes(buffer, 'new-result')
+      true
+    end
+
+    test('timeout cleanup targets only the owned process group') do
+      source = File.read(File.expand_path('verify_support.rb', __dir__))
+      timeout_body = source[source.index('def handle_timeout')..]
+
+      assert_includes(source, 'Open3.popen2e(*cmd, pgroup: true)')
+      assert(!timeout_body.include?('pkill'), 'timeout must not pkill another verify run')
+      assert(!timeout_body.include?('killall'), 'timeout must not kill host-wide xcodebuild or app processes')
+      assert_includes(source, 'terminate_monitor_test_process_group(')
+      assert_includes(source, 'tracked_descendants: tracked_descendants')
+      true
+    end
+
+    test('never changes a nonzero process status to success from passing log text') do
+      Dir.mktmpdir('verify-nonzero-authority-') do |dir|
+        Dir.chdir(dir) do
+          result = subject.send(
+            :execute_with_logging,
+            ['sh', '-c', %q{printf "Test Suite 'All tests' passed\nExecuted 3 tests, with 0 failures\n"; exit 7}],
+            5,
+            label: 'nonzero authority'
+          )
+
+          assert_eq(result[:success], false)
+          assert_eq(result[:timeout], false)
+          assert_eq(result[:exit_status], 7)
+        end
+      end
       true
     end
   end
@@ -577,6 +971,50 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
       true
     end
 
+    test('never hides a missing xcodebuild destination behind an earlier clean pass') do
+      body = <<~LOG
+        Test run with 719 tests in 105 suites passed after 15.891 seconds.
+        2026-07-10 App[1] connection to service named com.apple.linkd.autoShortcut
+        xcodebuild: error: Unable to find a destination matching the provided destination specifier:
+                { id:STALE-SIMULATOR-ID }
+      LOG
+
+      assert_eq(subject.send(:verify_log_indicates_failure?, body), true)
+      assert_eq(subject.send(:verify_log_only_has_benign_app_intents_failure?, body), false)
+      assert_eq(subject.send(:verify_log_indicates_success?, body), false)
+      true
+    end
+
+    test('treats the Xcode UI runner Testing failed summary as authoritative') do
+      log = <<~LOG
+        Testing failed:
+        SaneVideoUITests-Runner encountered an error (The test runner hung before establishing connection.)
+      LOG
+
+      assert(subject.send(:verify_log_indicates_failure?, log))
+      assert(!subject.send(:verify_log_indicates_success?, log))
+      true
+    end
+
+    test('an appended UI command cannot inherit an earlier unit-test success') do
+      Dir.mktmpdir('verify-appended-command-scope-') do |dir|
+        Dir.chdir(dir) do
+          File.write('test_output.txt', "Test Suite 'All tests' passed\n")
+          result = subject.send(
+            :execute_with_logging,
+            ['sh', '-c', 'echo "Testing failed:"; echo "com.apple.linkd.autoShortcut"; exit 1'],
+            5,
+            append: true,
+            label: 'UI tests'
+          )
+
+          assert(!result[:success], 'UI failure must remain red even when the aggregate log has an earlier pass')
+          assert_includes(result[:output], 'Testing failed:')
+        end
+      end
+      true
+    end
+
     test('counts script test summaries instead of reporting zero tests') do
       state = {
         start_time: Time.now,
@@ -595,6 +1033,75 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
       end
 
       assert_eq(state[:tests_run], 9)
+      true
+    end
+
+    test('normal verify rejects a successful runner result that counted zero tests') do
+      Dir.mktmpdir('verify-zero-test-') do |dir|
+        Dir.chdir(dir) do
+          File.write('test_output.txt', "BUILD SUCCEEDED\n")
+          fresh_subject = VerifyHarness.new
+          metrics = []
+          attempts = []
+          suggested_memory = false
+
+          fresh_subject.define_singleton_method(:verify_running_as_preflight?) { false }
+          fresh_subject.define_singleton_method(:ensure_research_gate_clear!) { |_slug| true }
+          fresh_subject.define_singleton_method(:assert_no_runtime_probe_lock_for_verify!) {}
+          fresh_subject.define_singleton_method(:test_targets_disabled?) { false }
+          fresh_subject.define_singleton_method(:config_value) { |_keys, _env, fallback| fallback }
+          fresh_subject.define_singleton_method(:run_verify_preflight) {}
+          fresh_subject.define_singleton_method(:enforce_saneui_source_of_truth!) {}
+          fresh_subject.define_singleton_method(:ensure_sanevideo_test_assets!) {}
+          fresh_subject.define_singleton_method(:git_status_snapshot) { [] }
+          fresh_subject.define_singleton_method(:grant_test_permissions) { |**_options| nil }
+          fresh_subject.define_singleton_method(:terminate_running_app_instance) {}
+          fresh_subject.define_singleton_method(:validate_test_references) {}
+          fresh_subject.define_singleton_method(:run_tests_with_progress) do |**_options|
+            { success: true, tests_run: 0, duration: 1, timeout: false }
+          end
+          fresh_subject.define_singleton_method(:verify_metric_host) { 'test-host' }
+          fresh_subject.define_singleton_method(:verify_source_fingerprint) { 'source-fingerprint' }
+          fresh_subject.define_singleton_method(:record_process_metric) do |type, **attributes|
+            metrics << attributes.merge(type: type)
+          end
+          fresh_subject.define_singleton_method(:record_verify_attempt) do |**attributes|
+            attempts << attributes
+            { consecutive_failures: 1 }
+          end
+          fresh_subject.define_singleton_method(:diagnose) { |_error = nil, **_options| }
+          fresh_subject.define_singleton_method(:cleanup_test_processes) { |_monitor = nil| }
+          fresh_subject.define_singleton_method(:suggest_memory_record) { suggested_memory = true }
+          fresh_subject.define_singleton_method(:enforce_no_unresolved_permission_prompt!) do |_monitor|
+            raise 'zero-test result reached success-only permission enforcement'
+          end
+          fresh_subject.define_singleton_method(:verify_repo_cleanliness!) do |**_options|
+            raise 'zero-test result reached success-only cleanliness enforcement'
+          end
+
+          status = nil
+          output = capture_stdout do
+            begin
+              fresh_subject.verify([])
+            rescue SystemExit => e
+              status = e.status
+            end
+          end
+
+          assert_eq(status, 1)
+          assert_includes(output, 'reported success but counted 0 tests')
+          assert(!output.include?('Tests passed!'), 'zero tests must never be labeled passed')
+          assert_eq(metrics.length, 1)
+          assert_eq(metrics.first[:success], false)
+          assert_eq(metrics.first[:tests_run], 0)
+          assert_eq(metrics.first[:evidence_strength], 'failed')
+          assert_eq(metrics.first[:failure_bucket], 'weak_zero_test_success')
+          assert_eq(attempts.length, 1)
+          assert_eq(attempts.first[:success], false)
+          assert_eq(attempts.first[:message], 'verify zero-test failure')
+          assert_eq(suggested_memory, false)
+        end
+      end
       true
     end
 

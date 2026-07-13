@@ -255,11 +255,17 @@ def update_validation_metrics
   cb = StateManager.get(:circuit_breaker)
   block_stats = count_session_blocks_and_resets
   missed_loops = count_missed_doom_loops
+  # Compute this before entering StateManager.update. The predicate reads the
+  # edits section through StateManager.get; doing that from inside the update
+  # block attempts to reacquire the same file lock and pays the full lock
+  # timeout on every completed stop (especially visible in the self-test,
+  # which invokes process_stop many times).
+  strong_verify_success = strong_session_verify_success?
 
   StateManager.update(:validation) do |v|
     # Q4: Session tracking
     v[:sessions_total] = (v[:sessions_total] || 0) + 1
-    if strong_session_verify_success?
+    if strong_verify_success
       v[:sessions_with_tests_passing] = (v[:sessions_with_tests_passing] || 0) + 1
     end
     if cb[:tripped]

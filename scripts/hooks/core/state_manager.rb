@@ -233,6 +233,12 @@ module StateManager
       invoked: false,          # Whether Skill tool was actually called
       invoked_at: nil,         # Timestamp of invocation
       subagents_spawned: 0,    # Count of Task tool calls (subagents)
+      native_review_fingerprints: [], # Completed native review identities for the bound source
+      review_source_fingerprint: nil, # Exact source state shared by accumulated review credits
+      codex_review_lanes_completed: 0,
+      codex_review_lane_fingerprints: [],
+      codex_review_lanes: [],
+      codex_review_invoked_at: nil,
       runner_started: false,   # Whether a matching runner-backed workflow command was attempted
       runner_proved: false,    # Whether successful workflow proof/receipt was seen for the active skill
       runner_attempts: [],     # Matching runner command attempts and result status

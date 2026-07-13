@@ -145,9 +145,15 @@ on run argv
             -- 4. Check for System Preferences/Settings windows that might have opened
             if exists process "System Settings" then
                 tell process "System Settings"
-                    -- If System Settings opened, we can't auto-grant, but we log it
+                    -- A closed/hidden Settings window remains in the AX tree on
+                    -- current macOS. Only block verification for a window the
+                    -- user could actually be expected to act on.
                     if exists (window 1) then
-                        log "⚠️ System Settings opened - manual grant may be needed"
+                        try
+                            if visible of window 1 then
+                                log "⚠️ System Settings opened - manual grant may be needed"
+                            end if
+                        end try
                     end if
                 end tell
             end if
@@ -155,7 +161,11 @@ on run argv
             if exists process "System Preferences" then
                 tell process "System Preferences"
                     if exists (window 1) then
-                        log "⚠️ System Preferences opened - manual grant may be needed"
+                        try
+                            if visible of window 1 then
+                                log "⚠️ System Preferences opened - manual grant may be needed"
+                            end if
+                        end try
                     end if
                 end tell
             end if

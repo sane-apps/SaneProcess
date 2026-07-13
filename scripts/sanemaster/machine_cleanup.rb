@@ -72,7 +72,6 @@ module SaneMasterModules
       '~/SaneApps-automation/infra'
     ].freeze
     SERVER_EXACT_CLEANUP_PATHS = [
-      '~/Movies/SaneVideo',
       '~/Documents/huggingface',
       '~/Dev/TZPaintStudio',
       '~/SaneApps-setapp-verify',
@@ -103,9 +102,7 @@ module SaneMasterModules
       '~/.codex/.tmp',
       '~/.codex-sync-backups',
       '~/.sanemaster/routed-workspaces',
-      '~/Library/Developer/XcodeBuildMCP/workspaces',
-      '~/Library/Application Support/SaneVideo',
-      '~/Library/Containers/com.sanevideo.app'
+      '~/Library/Developer/XcodeBuildMCP/workspaces'
     ].freeze
     SERVER_CODE_SIGN_CLONE_GLOBS = [
       '/private/var/folders/*/*/X/com.openai.codex.code_sign_clone',

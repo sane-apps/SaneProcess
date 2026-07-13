@@ -19,6 +19,41 @@ require_relative 'core/state_manager'
 require_relative 'sanestop_persistence_test'
 
 module SaneStopTest
+  def self.nested_state_read_during_update?(update_validation_metrics_proc)
+    singleton = StateManager.singleton_class
+    original_get = StateManager.method(:get)
+    original_update = StateManager.method(:update)
+    inside_update = false
+    nested_read = false
+
+    singleton.send(:define_method, :get) do |section, key = nil|
+      if inside_update
+        nested_read = true
+        section_data = (StateManager::SCHEMA[section] || {}).dup
+        key ? section_data[key] : section_data
+      else
+        original_get.call(section, key)
+      end
+    end
+    singleton.send(:define_method, :update) do |section, &block|
+      original_update.call(section) do |section_data|
+        previous = inside_update
+        inside_update = true
+        begin
+          block.call(section_data)
+        ensure
+          inside_update = previous
+        end
+      end
+    end
+
+    update_validation_metrics_proc.call
+    nested_read
+  ensure
+    singleton.send(:define_method, :get, original_get) if singleton && original_get
+    singleton.send(:define_method, :update, original_update) if singleton && original_update
+  end
+
   def self.ensure_git_repo!
     _out, status = Open3.capture2e('git', '-C', Dir.pwd, 'rev-parse', '--show-toplevel')
     return if status.success?
@@ -86,7 +121,8 @@ module SaneStopTest
     end
   end
 
-  def self.run(process_stop_proc, check_score_variance_proc, check_weasel_words_proc, calculate_sop_score_proc, log_file)
+  def self.run(process_stop_proc, check_score_variance_proc, check_weasel_words_proc,
+               calculate_sop_score_proc, update_validation_metrics_proc, log_file)
     warn 'SaneStop Self-Test'
     warn '=' * 40
     ensure_git_repo!
@@ -100,6 +136,19 @@ module SaneStopTest
 
     passed = 0
     failed = 0
+
+    # Regression: update_validation_metrics used to call
+    # strong_session_verify_success? while StateManager.update(:validation)
+    # held the state lock. That predicate reads :edits, causing a same-process
+    # lock timeout for every completed process_stop invocation.
+    StateManager.reset(:validation)
+    if nested_state_read_during_update?(update_validation_metrics_proc)
+      failed += 1
+      warn '  FAIL: Validation metrics performed a nested StateManager read while updating state'
+    else
+      passed += 1
+      warn '  PASS: Validation metrics gathers read-side evidence before acquiring the update lock'
+    end
 
     # Test 1: No edits = no reminder
     original_stderr = $stderr.clone

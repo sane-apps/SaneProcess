@@ -114,30 +114,51 @@ Dir.mktmpdir('ship-guard-clearance-') do |home_dir|
     }
     clearance_dir = File.join(home_dir, '.claude', 'ship_clearance')
     FileUtils.mkdir_p(clearance_dir)
-    old_hook_secret = ENV['CLAUDE_HOOK_SECRET']
-    old_no_keychain = ENV['SANE_NO_KEYCHAIN']
-    old_env_cache_write = ENV['SANE_ENV_CACHE_WRITE']
-    begin
-      ENV['CLAUDE_HOOK_SECRET'] = test_hook_secret
-      ENV['SANE_NO_KEYCHAIN'] = '1'
-      ENV['SANE_ENV_CACHE_WRITE'] = '0'
-      StateSigner.instance_variable_set(:@secret, nil)
-      StateSigner.write_signed(
-        File.join(clearance_dir, 'SaneBar.json'),
-        {
-          'app' => 'SaneBar',
-          'project_dir' => project_dir,
-          'git_sha' => baseline_sha,
-          'cleared_at' => Time.now.utc.iso8601,
-          'expires_at' => (Time.now.utc + 3600).iso8601
-        }
-      )
-    ensure
-      old_hook_secret.nil? ? ENV.delete('CLAUDE_HOOK_SECRET') : ENV['CLAUDE_HOOK_SECRET'] = old_hook_secret
-      old_no_keychain.nil? ? ENV.delete('SANE_NO_KEYCHAIN') : ENV['SANE_NO_KEYCHAIN'] = old_no_keychain
-      old_env_cache_write.nil? ? ENV.delete('SANE_ENV_CACHE_WRITE') : ENV['SANE_ENV_CACHE_WRITE'] = old_env_cache_write
-      StateSigner.instance_variable_set(:@secret, nil)
+    clearance_path = File.join(clearance_dir, 'SaneBar.json')
+    write_clearance = lambda do |payload|
+      old_hook_secret = ENV['CLAUDE_HOOK_SECRET']
+      old_no_keychain = ENV['SANE_NO_KEYCHAIN']
+      old_env_cache_write = ENV['SANE_ENV_CACHE_WRITE']
+      begin
+        ENV['CLAUDE_HOOK_SECRET'] = test_hook_secret
+        ENV['SANE_NO_KEYCHAIN'] = '1'
+        ENV['SANE_ENV_CACHE_WRITE'] = '0'
+        StateSigner.instance_variable_set(:@secret, nil)
+        StateSigner.write_signed(clearance_path, payload)
+      ensure
+        old_hook_secret.nil? ? ENV.delete('CLAUDE_HOOK_SECRET') : ENV['CLAUDE_HOOK_SECRET'] = old_hook_secret
+        old_no_keychain.nil? ? ENV.delete('SANE_NO_KEYCHAIN') : ENV['SANE_NO_KEYCHAIN'] = old_no_keychain
+        old_env_cache_write.nil? ? ENV.delete('SANE_ENV_CACHE_WRITE') : ENV['SANE_ENV_CACHE_WRITE'] = old_env_cache_write
+        StateSigner.instance_variable_set(:@secret, nil)
+      end
     end
+    valid_clearance = {
+      'app' => 'SaneBar',
+      'project_dir' => project_dir,
+      'git_sha' => baseline_sha,
+      'cleared_at' => Time.now.utc.iso8601,
+      'expires_at' => (Time.now.utc + 3600).iso8601
+    }
+    write_clearance.call(valid_clearance)
+
+    release_payload = {
+      'tool_name' => 'Bash',
+      'tool_input' => {
+        'command' => "bash scripts/release.sh --project #{project_dir} --full --deploy"
+      }
+    }
+    [
+      ['missing project_dir', valid_clearance.reject { |key, _| key == 'project_dir' }, 'project mismatch'],
+      ['missing git_sha', valid_clearance.reject { |key, _| key == 'git_sha' }, 'valid git_sha'],
+      ['malformed expires_at', valid_clearance.merge('expires_at' => 'not-a-time'), 'malformed, or expired'],
+      ['missing expires_at', valid_clearance.reject { |key, _| key == 'expires_at' }, 'malformed, or expired']
+    ].each do |label, payload, expected_error|
+      write_clearance.call(payload)
+      _, invalid_err, invalid_status = run_ruby_hook('sane_ship_guard.rb', release_payload, ship_guard_env)
+      t("Ship clearance blocks #{label}", invalid_status.exitstatus == 2)
+      t("#{label} block is explicit", invalid_err.include?(expected_error))
+    end
+    write_clearance.call(valid_clearance)
 
     FileUtils.mkdir_p(File.join(project_dir, 'outputs'))
     File.write(File.join(project_dir, 'outputs', 'release_preflight_status.json'), "{}\n")
@@ -310,6 +331,8 @@ Dir.mktmpdir('state-signer-keychain-write-') do |dir|
   File.chmod(0o755, fake_security)
   script = <<~'RUBY'
     require File.expand_path('state_signer', Dir.pwd)
+    StateSigner.send(:remove_const, :SECURITY_BIN)
+    StateSigner.const_set(:SECURITY_BIN, ENV.fetch('FAKE_SECURITY_BIN'))
     StateSigner.instance_variable_set(:@secret, nil)
     StateSigner.secret
     raise 'file fallback missing' unless File.exist?(File.expand_path('~/.claude_hook_secret'))
@@ -317,6 +340,7 @@ Dir.mktmpdir('state-signer-keychain-write-') do |dir|
   env = {
     'HOME' => home_dir,
     'PATH' => "#{bin_dir}:#{ENV.fetch('PATH')}",
+    'FAKE_SECURITY_BIN' => fake_security,
     'SECURITY_LOG' => log_path,
     'SANE_ENV_CACHE_FILE' => File.join(dir, 'env'),
     'SANE_ENV_CACHE_WRITE' => '0',

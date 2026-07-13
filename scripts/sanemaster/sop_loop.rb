@@ -741,10 +741,11 @@ module SaneMasterModules
         # surface the next — and must restart the streak, not escalate.
         # (Certifier-audited: the gate self-flagged unfair 2026-07-07 after
         # arming three times on unrelated pre-existing stale-fixture reds.)
-        # Unknown fingerprints (nil, e.g. build died before tests) keep the
-        # old always-increment behavior so coverage is not lost.
+        # Unknown fingerprints (nil, e.g. a runner died without output) cannot
+        # prove two attempts hit the same problem. Keep verify red, but restart
+        # the streak instead of sending unrelated failures into research.
         previous = state[:last_failure_fingerprint]
-        same_problem = fingerprint.nil? || previous.nil? || fingerprint == previous
+        same_problem = !fingerprint.nil? && !previous.nil? && fingerprint == previous
         state[:consecutive_failures] = same_problem ? state[:consecutive_failures].to_i + 1 : 1
         state[:escalated_at] = nil unless same_problem
         state[:last_result] = 'failed'

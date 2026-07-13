@@ -10,15 +10,20 @@ require 'yaml'
 require 'json'
 require 'open3'
 require 'openssl'
+require 'optparse'
 require 'base64'
 require 'digest'
 require 'socket'
+require 'pathname'
+require_relative 'upgrade_path_proof'
 
 module SaneMasterModules
   # Unified release entrypoint (delegates to SaneProcess release.sh)
   module Release
+    include SaneMasterModules::UpgradePathProof
     ENV_CACHE_FILE = File.expand_path(ENV.fetch('SANE_ENV_CACHE_FILE', '~/.config/nv/env'))
     DEFAULT_LAUNCH_READY_MAX_PREFLIGHT_AGE_DAYS = 7
+    UNTRACKED_SWIFT_MAX_BYTES = 2 * 1024 * 1024
     REQUIRED_LAUNCH_PACKAGE_FIELDS = %w[
       status
       audience
@@ -32,6 +37,12 @@ module SaneMasterModules
       go_no_go
     ].freeze
     REQUIRED_LAUNCH_PROOF_ASSET_FIELDS = %w[type status].freeze
+    UPGRADE_PATH_RECEIPT_PATHS = %w[
+      .sane/upgrade_path_behavioral_receipt.json
+      outputs/upgrade_path_behavioral_receipt.json
+    ].freeze
+    UPGRADE_PATH_RECEIPT_MAX_AGE_SECONDS = 12 * 60 * 60
+    SIGNED_RECEIPT_CLOCK_SKEW_SECONDS = 5
 
     def appcast_drift_failure_only?(verify_output)
       xcresult_path = verify_output[/Analyzing result:\s+(.+\.xcresult)/, 1]
@@ -64,6 +75,275 @@ module SaneMasterModules
       content.encode(Encoding::UTF_8, Encoding::BINARY, invalid: :replace, undef: :replace, replace: '?')
     rescue StandardError
       ''
+    end
+
+    def swift_test_only_path?(path)
+      normalized = path.to_s.sub(%r{\A\./}, '')
+      components = normalized.split('/')
+      return true if components.any? { |component| component.match?(/(?:UI)?Tests\z/) }
+
+      File.basename(normalized).match?(/(?:Test|Tests|Spec)\.swift\z/)
+    end
+
+    def git_diff_destination_path(header)
+      raw_path = header.to_s.delete_prefix('+++ ').strip
+      return nil if raw_path == '/dev/null'
+
+      if raw_path.start_with?('"')
+        raw_path = JSON.parse(raw_path)
+      end
+      raw_path.delete_prefix('b/')
+    rescue JSON::ParserError
+      nil
+    end
+
+    def added_swift_lines_by_file(diff)
+      current_path = nil
+      diff.to_s.each_line.each_with_object(Hash.new { |hash, key| hash[key] = [] }) do |line, added_lines|
+        if line.start_with?('+++ ')
+          current_path = git_diff_destination_path(line)
+          current_path = nil unless current_path&.end_with?('.swift')
+          next
+        end
+        next unless current_path && line.start_with?('+') && !line.start_with?('+++')
+
+        added_lines[current_path] << line.delete_prefix('+')
+      end
+    end
+
+    def defaults_migration_changed_files_from_diff(diff)
+      pattern = /UserDefaults|setDefaultsIfNeeded|registerDefaults|migration|migrate/i
+      path_pattern = /(?:Defaults?|Preferences?|Migration)/i
+      default_map_pattern = /(?:\bUserDefaults(?:\.standard)?|\b[a-zA-Z_]\w*)\s*\.register\s*\(\s*defaults\s*:|\b(?:registered|registration|initial|factory|standard|user)?Defaults\w*\b\s*(?::[^=\n]+)?=/i
+      swift_diff_hunks_by_file(diff).each_with_object([]) do |(path, hunks), files|
+        next if swift_test_only_path?(path)
+        relevant = hunks.any? do |hunk|
+          changed_lines = hunk[:added] + hunk[:deleted]
+          hunk_lines = changed_lines + hunk[:context]
+          changed_lines.any? { |line| line.match?(pattern) } ||
+            (changed_lines.any? && path.match?(path_pattern)) ||
+            (changed_lines.any? && hunk_lines.any? { |line| line.match?(default_map_pattern) }) ||
+            (hunk[:added].any? && hunk[:deleted].any? && hunk[:context].any? { |line| line.match?(pattern) })
+        end
+        next unless relevant
+
+        files << path
+      end.sort
+    end
+
+    def swift_diff_hunks_by_file(diff)
+      current_path = nil
+      current_hunk = nil
+      diff.to_s.each_line.each_with_object(Hash.new { |hash, key| hash[key] = [] }) do |line, files|
+        if line.start_with?('diff --git ')
+          paths = Shellwords.shellsplit(line.delete_prefix('diff --git ').strip)
+          current_path = paths.last&.delete_prefix('b/')
+          current_path = nil unless current_path&.end_with?('.swift')
+          current_hunk = nil
+          next
+        end
+        if line.start_with?('+++ ')
+          destination = git_diff_destination_path(line)
+          current_path = destination if destination&.end_with?('.swift')
+          next
+        end
+        next unless current_path
+
+        if line.start_with?('@@')
+          current_hunk = { added: [], deleted: [], context: [] }
+          files[current_path] << current_hunk
+          next
+        end
+        next if line.start_with?('--- ', '+++ ')
+        next unless line.start_with?('+', '-', ' ')
+
+        unless current_hunk
+          current_hunk = { added: [], deleted: [], context: [] }
+          files[current_path] << current_hunk
+        end
+        if line.start_with?('+')
+          current_hunk[:added] << line.delete_prefix('+')
+        elsif line.start_with?('-')
+          current_hunk[:deleted] << line.delete_prefix('-')
+        else
+          current_hunk[:context] << line.delete_prefix(' ')
+        end
+      end
+    rescue ArgumentError
+      {}
+    end
+
+    def release_unreleased_history_base(repo_dir)
+      tags_output, tags_status = Open3.capture2e('git', '-C', repo_dir, 'tag', '--merged', 'HEAD', '--list')
+      stable_tags = if tags_status.success?
+                      tags_output.lines.map(&:strip).grep(/\Av\d+\.\d+\.\d+\z/)
+                    else
+                      []
+                    end
+      unless stable_tags.empty?
+        describe_args = ['git', '-C', repo_dir, 'describe', '--tags', '--abbrev=0']
+        stable_tags.each { |tag| describe_args.concat(['--match', tag]) }
+        tag, status = Open3.capture2e(*describe_args, 'HEAD')
+        return tag.strip if status.success? && tag.to_s.strip.match?(/\Av\d+\.\d+\.\d+\z/)
+      end
+
+      '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+    end
+
+    def upgrade_path_behavioral_proof_report(app_name:, routed_workspace: nil, project_path: Dir.pwd,
+                                             source_fingerprint: nil, now: Time.now.utc)
+      receipt, receipt_path = upgrade_path_behavioral_receipt(
+        routed_workspace: routed_workspace,
+        project_path: project_path
+      )
+      return { ok: false, error: 'upgrade-path behavioral proof receipt is missing' } unless receipt.is_a?(Hash)
+      return { ok: false, error: receipt['_route_error'].to_s } if receipt['_route_error']
+
+      expected_fingerprint = source_fingerprint.to_s
+      expected_fingerprint = release_status_source_fingerprint(project_path).to_s if expected_fingerprint.empty?
+      generated_at = Time.parse(receipt['generatedAt'].to_s)
+      max_age = ENV.fetch(
+        'SANEPROCESS_UPGRADE_PATH_RECEIPT_MAX_AGE_SECONDS',
+        UPGRADE_PATH_RECEIPT_MAX_AGE_SECONDS.to_s
+      ).to_i
+      current_version = Dir.chdir(project_path) { release_current_project_version[:version].to_s }
+      errors = []
+      errors << 'receipt type must be upgrade_path_behavioral_proof' unless receipt['type'].to_s == 'upgrade_path_behavioral_proof'
+      errors << 'receipt status is not passed' unless receipt['status'].to_s == 'passed'
+      errors << 'receipt is not marked behavioral' unless receipt['behavioral'] == true
+      errors << "receipt app does not match #{app_name}" unless receipt['app'].to_s == app_name.to_s
+      errors << 'receipt did not execute any upgrade scenarios' unless receipt['testsRun'].to_i.positive?
+      errors << 'receipt was not generated on Mini runtime' unless receipt['miniRuntime'] == true
+      errors << 'receipt source fingerprint is missing or stale' if expected_fingerprint.empty? || receipt['sourceFingerprint'].to_s != expected_fingerprint
+      errors << 'receipt fromVersion is missing' if receipt['fromVersion'].to_s.strip.empty?
+      errors << 'receipt toVersion is missing' if receipt['toVersion'].to_s.strip.empty?
+      if !current_version.empty? && receipt['toVersion'].to_s != current_version
+        errors << "receipt toVersion #{receipt['toVersion']} does not match current version #{current_version}"
+      end
+      errors << 'receipt does not prove an upgrade between different versions' if receipt['fromVersion'].to_s == receipt['toVersion'].to_s
+      errors << 'receipt is future-dated' if generated_at > now + SIGNED_RECEIPT_CLOCK_SKEW_SECONDS
+      errors << 'receipt is stale' if max_age.positive? && (now - generated_at) > max_age
+      artifact_error = upgrade_path_verify_artifacts(receipt, project_path)
+      errors << artifact_error if artifact_error
+
+      return { ok: false, error: errors.join('; '), receipt_path: receipt_path } if errors.any?
+
+      {
+        ok: true,
+        receipt_path: receipt_path,
+        evidence: receipt.reject { |key, _value| key == '__ts__' }
+      }
+    rescue ArgumentError, TypeError => e
+      { ok: false, error: "upgrade-path behavioral proof receipt is malformed: #{e.message}", receipt_path: receipt_path }
+    end
+
+    def release_verify_evidence_from_metrics(since:, source_fingerprint:, project_path: Dir.pwd, metrics_path: nil)
+      path = metrics_path || (respond_to?(:process_metrics_path) ? process_metrics_path : nil)
+      return nil if path.to_s.empty? || !File.file?(path)
+
+      expected_root = File.realpath(project_path)
+      since_time = since.is_a?(Time) ? since : Time.parse(since.to_s)
+      File.readlines(path, chomp: true).reverse_each do |line|
+        event = JSON.parse(line)
+        next unless event['type'].to_s == 'verify' && event['success'] == true
+        next unless event['tests_run'].to_i.positive?
+        next if %w[build_only failed].include?(event['evidence_strength'].to_s)
+        next unless event['source_fingerprint'].to_s == source_fingerprint.to_s
+        next unless File.realpath(event['cwd'].to_s) == expected_root
+        next unless event['host'].to_s.downcase.include?('mini')
+
+        timestamp = Time.parse(event['timestamp'].to_s)
+        next if timestamp < since_time - 1 || timestamp > Time.now.utc + 300
+
+        return {
+          'type' => 'verify',
+          'success' => true,
+          'timestamp' => timestamp.utc.iso8601,
+          'host' => event['host'],
+          'cwd' => expected_root,
+          'testsRun' => event['tests_run'].to_i,
+          'evidenceStrength' => event['evidence_strength'],
+          'sourceFingerprint' => event['source_fingerprint']
+        }
+      rescue JSON::ParserError, ArgumentError, Errno::ENOENT, Errno::EACCES
+        next
+      end
+      nil
+    rescue StandardError
+      nil
+    end
+
+    def release_verify_result_valid?(status:, evidence:)
+      status && status.success? && evidence.is_a?(Hash) && evidence['success'] == true
+    end
+
+    def upgrade_path_behavioral_receipt(routed_workspace:, project_path:)
+      project_root = File.realpath(project_path)
+      UPGRADE_PATH_RECEIPT_PATHS.reverse_each do |relative_path|
+        path = File.join(project_root, relative_path)
+        next unless release_regular_file_without_symlinked_parent?(path)
+        verified = upgrade_path_read_signed(path, producer: UPGRADE_PRODUCER)
+        next unless verified.is_a?(Hash)
+
+        return [verified, path]
+      end
+      [nil, nil]
+    rescue StandardError => e
+      [{ '_route_error' => "upgrade-path behavioral proof receipt is invalid: #{e.message}" }, path]
+    end
+
+    def recent_swift_diff_for_preflight(routed_workspace)
+      if routed_workspace.is_a?(Hash) && routed_workspace.key?('recent_swift_diff')
+        routed_error = routed_workspace['recent_swift_diff_error'].to_s.strip
+        raise "Unable to inspect recent Swift changes: #{routed_error}" unless routed_error.empty?
+
+        return routed_workspace['recent_swift_diff'].to_s
+      end
+
+      # Diff the latest released tag against the working tree so every
+      # unreleased commit plus staged/unstaged release work is inspected.
+      range = release_unreleased_history_base(Dir.pwd)
+      output, status = Open3.capture2(
+        'git', 'diff', range, '--unified=3', '--no-color', '--no-ext-diff', '--', '*.swift'
+      )
+      raise 'Unable to inspect tracked Swift changes with git diff' unless status.success?
+
+      untracked_output, untracked_status = Open3.capture2(
+        'git', 'ls-files', '-z', '--others', '--exclude-standard', '--', '*.swift'
+      )
+      raise 'Unable to inspect untracked Swift files with git ls-files' unless untracked_status.success?
+
+      untracked_paths = untracked_output.split("\0").reject(&:empty?)
+      untracked_diff, untracked_error = release_untracked_swift_diff(Dir.pwd, untracked_paths)
+      raise "Unable to inspect untracked Swift changes: #{untracked_error}" if untracked_error
+
+      output.to_s + untracked_diff
+    end
+
+    def release_untracked_swift_diff(repo_dir, paths)
+      chunks = paths.map do |relative_path|
+        absolute_path = File.expand_path(relative_path, repo_dir)
+        repo_root = File.realpath(repo_dir)
+        metadata = File.lstat(absolute_path)
+        raise "symlink or non-regular path #{relative_path}" unless metadata.file?
+        raise "file exceeds #{UNTRACKED_SWIFT_MAX_BYTES} bytes: #{relative_path}" if metadata.size > UNTRACKED_SWIFT_MAX_BYTES
+
+        real_path = File.realpath(absolute_path)
+        raise "path escapes repository #{relative_path}" unless real_path.start_with?("#{repo_root}/")
+
+        contents = File.binread(real_path, UNTRACKED_SWIFT_MAX_BYTES + 1)
+        raise "file grew beyond size limit: #{relative_path}" if contents.bytesize > UNTRACKED_SWIFT_MAX_BYTES
+        contents = contents.force_encoding(Encoding::UTF_8)
+        contents = contents.scrub('?') unless contents.valid_encoding?
+        source = JSON.generate("a/#{relative_path}")
+        destination = JSON.generate("b/#{relative_path}")
+        added = contents.each_line.map { |line| "+#{line}" }.join
+        added << "\n" unless added.empty? || added.end_with?("\n")
+        "diff --git #{source} #{destination}\n--- /dev/null\n+++ #{destination}\n#{added}"
+      end
+      [chunks.join, nil]
+    rescue StandardError => e
+      ['', e.message]
     end
 
     def auto_reconcile_stash_noise_file?(path)
@@ -760,6 +1040,33 @@ module SaneMasterModules
       { version: '', build: '', url: '' }
     end
 
+    def website_routes_to_download_page?(homepage_body)
+      homepage_body.to_s.match?(%r{href\s*=\s*["'](?:https?://[^"']+)?/download(?:[?#][^"']*)?["']}i)
+    end
+
+    def website_versioned_archive_version(app_name:, homepage_body:, download_page_body: '')
+      archive_pattern = /#{Regexp.escape(app_name)}-(\d+\.\d+(?:\.\d+)?)\.(?:zip|dmg)/
+      homepage_version = homepage_body.to_s[archive_pattern, 1].to_s.strip
+      return homepage_version unless homepage_version.empty?
+      return '' unless website_routes_to_download_page?(homepage_body)
+
+      download_page_body.to_s[archive_pattern, 1].to_s.strip
+    end
+
+    def website_versioned_archive_version_for_domain(app_name:, website_domain:)
+      homepage_body = fetch_text("https://#{website_domain}")
+      download_page_body = if website_routes_to_download_page?(homepage_body)
+                             fetch_text("https://#{website_domain}/download")
+                           else
+                             ''
+                           end
+      website_versioned_archive_version(
+        app_name: app_name,
+        homepage_body: homepage_body,
+        download_page_body: download_page_body
+      )
+    end
+
     def informational_appcast_entries_missing_links(xml)
       xml.to_s.scan(/<item\b.*?<\/item>/m).each_with_object([]) do |item, acc|
         next unless item.include?('<sparkle:informationalUpdate')
@@ -828,8 +1135,6 @@ module SaneMasterModules
 
     def verify_output_indicates_success?(output)
       text = output.to_s
-      return true if text.include?('clean pass despite a non-zero runner exit')
-      return true if text.include?('Test log shows a clean pass despite a non-zero runner exit; treating verify as successful.')
       return false if verify_output_indicates_failure?(text)
 
       return true if text.include?('✅ Tests passed!')
@@ -1215,6 +1520,61 @@ module SaneMasterModules
 
     def prepublish_channel_version_drift?(channel_version:, project_version:)
       compare_semver(channel_version, project_version) == -1
+    end
+
+    def homebrew_lane_declared?(config)
+      homebrew = config.is_a?(Hash) ? (config['homebrew'] || config[:homebrew]) : nil
+      return false unless homebrew.is_a?(Hash)
+
+      enabled = homebrew.key?('enabled') ? homebrew['enabled'] : homebrew[:enabled]
+      return false if enabled == false
+      return true if enabled == true
+
+      !metadata_value(homebrew, 'tap_repo').to_s.empty?
+    end
+
+    def homebrew_tap_repo(config)
+      homebrew = config.is_a?(Hash) ? (config['homebrew'] || config[:homebrew]) : nil
+      metadata_value(homebrew, 'tap_repo') || 'sane-apps/homebrew-tap'
+    end
+
+    def homebrew_cask_preflight_result(config:, tap_status:, cask_body:, project_version:, appcast_version:)
+      status = tap_status.to_s.strip
+      result = { message: '', warnings: [], issues: [] }
+
+      unless status == '200'
+        if status == '404' && !homebrew_lane_declared?(config)
+          result[:message] = '⏭️  skipped (no Homebrew lane declared and no existing cask found)'
+        else
+          result[:message] = "⚠️  returned #{status}"
+          result[:warnings] << "Homebrew tap cask not reachable (#{status})"
+        end
+        return result
+      end
+
+      cask_version = cask_body.to_s[/version\s+"([^"]+)"/, 1].to_s.strip
+      if cask_version.empty?
+        result[:message] = '⚠️  could not parse cask version'
+        result[:warnings] << 'Homebrew cask version unreadable'
+      elsif project_version.to_s.empty?
+        result[:message] = "✅ reachable (v#{cask_version}, project version unknown)"
+      elsif cask_version == project_version
+        result[:message] = "✅ (v#{cask_version})"
+      elsif prepublish_channel_version_drift?(
+        channel_version: cask_version,
+        project_version: project_version
+      ) && prepublish_channel_version_drift?(
+        channel_version: appcast_version,
+        project_version: project_version
+      )
+        result[:message] = "⚠️  cask has v#{cask_version}, project is v#{project_version} (expected before publish)"
+        result[:warnings] << "Homebrew cask version #{cask_version} is older than project MARKETING_VERSION #{project_version} (expected before publish)"
+      else
+        result[:message] = "❌ cask has v#{cask_version}, project is v#{project_version}"
+        result[:issues] << "Homebrew cask version mismatch: cask=#{cask_version} project=#{project_version}"
+      end
+
+      result
     end
 
     def archive_bundle_versions(zip_url:, app_name:)
@@ -1913,12 +2273,36 @@ module SaneMasterModules
       type == 'auto_renewable_subscription' || type == 'subscription' || type.include?('auto_renewable')
     end
 
+    def appstore_fingerprint_entries(root:, paths:)
+      root_real = File.realpath(root)
+      Array(paths).sort.map do |relative_path|
+        next if relative_path == 'outputs/appstore_preflight_status.json'
+        next if relative_path.start_with?('.sanemaster/appstore-preflight-bindings/')
+
+        absolute_path = File.expand_path(relative_path, root_real)
+        unless absolute_path.start_with?("#{root_real}/")
+          raise "fingerprint path escapes project root: #{relative_path}"
+        end
+
+        metadata = File.lstat(absolute_path)
+        if metadata.symlink?
+          "L:#{relative_path}:#{File.readlink(absolute_path)}"
+        elsif metadata.file?
+          "F:#{relative_path}:#{OpenSSL::Digest::SHA256.file(absolute_path).hexdigest}"
+        else
+          "O:#{relative_path}:#{metadata.mode}"
+        end
+      end.compact
+    end
+
     def appstore_worktree_fingerprint(root: Dir.pwd)
       git_dir, git_status = Open3.capture2e('git', '-C', root, 'rev-parse', '--git-dir')
       unless git_status.success? && !git_dir.to_s.strip.empty?
-        files = Dir.glob(File.join(root, '**/*')).select { |path| File.file?(path) }
-        files.reject! { |path| path.end_with?('/outputs/appstore_preflight_status.json') }
-        material = files.sort.map { |path| "#{path.sub("#{root}/", '')}:#{File.size(path)}:#{File.mtime(path).to_i}" }.join("\n")
+        paths = Dir.glob(File.join(root, '**/*'), File::FNM_DOTMATCH)
+          .reject { |path| %w[. ..].include?(File.basename(path)) }
+          .select { |path| File.file?(path) || File.symlink?(path) }
+          .map { |path| path.sub(%r{\A#{Regexp.escape(File.expand_path(root))}/?}, '') }
+        material = appstore_fingerprint_entries(root: root, paths: paths).join("\n")
         return OpenSSL::Digest::SHA256.hexdigest(material)
       end
 
@@ -1927,20 +2311,139 @@ module SaneMasterModules
         out, = Open3.capture2e('git', '-C', root, *command.split(' '))
         parts << out
       end
+      untracked, untracked_status = Open3.capture2e(
+        'git', '-C', root, 'ls-files', '-z', '--others', '--exclude-standard'
+      )
+      raise 'git ls-files failed while fingerprinting untracked content' unless untracked_status.success?
+
+      parts << appstore_fingerprint_entries(root: root, paths: untracked.split("\0").reject(&:empty?)).join("\n")
       OpenSSL::Digest::SHA256.hexdigest(parts.join("\n---\n"))
     rescue StandardError
       'unknown'
     end
 
-    def write_appstore_preflight_status_snapshot(path:, status:, issues:, warnings:, app_name:, app_id:, version:, build:, platforms:)
+    def appstore_package_info(pkg_path)
+      read_plist = lambda do |info_path|
+        return nil unless info_path && File.file?(info_path)
+
+        values = %w[CFBundleIdentifier CFBundleShortVersionString CFBundleVersion].map do |key|
+          Open3.capture2('/usr/libexec/PlistBuddy', '-c', "Print :#{key}", info_path).first.to_s.strip
+        end
+        return nil if values.any?(&:empty?)
+
+        { bundle_id: values[0], version: values[1], build: values[2] }
+      end
+
+      Dir.mktmpdir('sanemaster_appstore_binding') do |tmpdir|
+        if pkg_path.end_with?('.ipa')
+          return nil unless system(
+            'unzip', '-qq', '-o', pkg_path, 'Payload/*.app/Info.plist', '-d', tmpdir,
+            out: File::NULL, err: File::NULL
+          )
+
+          return read_plist.call(Dir.glob(File.join(tmpdir, 'Payload', '*.app', 'Info.plist')).first)
+        end
+
+        return nil unless pkg_path.end_with?('.pkg')
+
+        expanded = File.join(tmpdir, 'expanded')
+        return nil unless system('pkgutil', '--expand-full', pkg_path, expanded, out: File::NULL, err: File::NULL)
+
+        candidates = Dir.glob(File.join(expanded, '**', 'Payload', '*.app', 'Contents', 'Info.plist'))
+        info_path = candidates.find { |candidate| !candidate.include?('/Frameworks/') && !candidate.include?('/PlugIns/') } || candidates.first
+        read_plist.call(info_path)
+      end
+    end
+
+    def appstore_preflight_submission_target(args:, version:, build:, platforms:, issues:)
+      options = {}
+      parser = OptionParser.new do |opts|
+        opts.on('--pkg PATH') { |value| options[:pkg] = value }
+        opts.on('--asc-build-id ID') { |value| options[:asc_build_id] = value }
+        opts.on('--build-number NUMBER') { |value| options[:build] = value }
+        opts.on('--platform PLATFORM') { |value| options[:platform] = value.to_s.downcase }
+      end
+      parser.parse!(Array(args).dup)
+
+      if options[:pkg] && options[:asc_build_id]
+        issues << 'App Store preflight submission binding cannot target both a package and an existing ASC build'
+        return nil
+      end
+      return nil unless options[:pkg] || options[:asc_build_id]
+
+      platform = options[:platform].to_s
+      if platform.empty? || !Array(platforms).map { |item| item.to_s.downcase }.include?(platform)
+        issues << "App Store preflight submission platform is invalid or not configured: #{platform.inspect}"
+        return nil
+      end
+
+      if options[:pkg]
+        path = File.expand_path(options[:pkg])
+        unless File.file?(path)
+          issues << "App Store submission package not found: #{path}"
+          return nil
+        end
+
+        info = appstore_package_info(path)
+        unless info
+          issues << "Could not extract bundle identity from App Store submission package: #{path}"
+          return nil
+        end
+        issues << "Submission package version #{info[:version]} does not match preflight version #{version}" unless info[:version].to_s == version.to_s
+        issues << "Submission package build #{info[:build]} does not match preflight build #{build}" unless info[:build].to_s == build.to_s
+        expected_platform = path.end_with?('.ipa') ? 'ios' : (path.end_with?('.pkg') ? 'macos' : '')
+        issues << "Submission package type does not match platform #{platform}" unless expected_platform == platform
+        signing_targets = if platform == 'macos'
+                            appstore_macos_signing_targets(File.join(Dir.pwd, 'project.yml'))
+                          else
+                            appstore_mobile_signing_targets(File.join(Dir.pwd, 'project.yml'))
+                          end
+        expected_bundle_ids = Array(signing_targets).map { |target| target[:bundle_id].to_s }.reject(&:empty?).uniq
+        if expected_bundle_ids.any? && !expected_bundle_ids.include?(info[:bundle_id].to_s)
+          issues << "Submission package bundle ID #{info[:bundle_id]} is not an App Store target bundle ID (expected #{expected_bundle_ids.join(', ')})"
+        end
+
+        return {
+          type: 'package',
+          platform: platform,
+          fileName: File.basename(path),
+          sha256: OpenSSL::Digest::SHA256.file(path).hexdigest,
+          size: File.size(path),
+          bundleId: info[:bundle_id],
+          version: info[:version],
+          build: info[:build]
+        }
+      end
+
+      requested_build = options[:build].to_s
+      if options[:asc_build_id].to_s.empty? || requested_build.empty?
+        issues << 'Existing ASC build binding requires both --asc-build-id and --build-number'
+        return nil
+      end
+      issues << "Existing ASC build #{requested_build} does not match preflight build #{build}" unless requested_build == build.to_s
+      {
+        type: 'asc_build',
+        platform: platform,
+        ascBuildId: options[:asc_build_id].to_s,
+        version: version.to_s,
+        build: requested_build
+      }
+    rescue OptionParser::ParseError => e
+      issues << "Invalid App Store preflight submission binding: #{e.message}"
+      nil
+    end
+
+    def write_appstore_preflight_status_snapshot(path:, status:, issues:, warnings:, app_name:, app_id:, version:, build:, platforms:, submission_target: nil)
       FileUtils.mkdir_p(File.dirname(path))
       payload = {
+        type: 'appstore_preflight_status',
         generatedAt: Time.now.iso8601,
         projectName: app_name,
         appId: app_id.to_s,
         version: version.to_s,
         build: build.to_s,
         platforms: Array(platforms).map(&:to_s),
+        submissionTarget: submission_target,
         worktreeFingerprint: appstore_worktree_fingerprint(root: Dir.pwd),
         status: status,
         issueCount: issues.count,
@@ -1948,9 +2451,12 @@ module SaneMasterModules
         issues: issues,
         warnings: warnings
       }
-      File.write(path, JSON.pretty_generate(payload))
-    rescue StandardError
-      nil
+      upgrade_path_write_signed_atomic!(
+        path,
+        payload,
+        producer: 'saneprocess.appstore_preflight.v1',
+        project_root: File.realpath(Dir.pwd)
+      )
     end
 
     def subscription_purchase_flow_guardrail_report(source_blob:, appstore_config:, config:)
@@ -2519,9 +3025,11 @@ module SaneMasterModules
       0
     end
 
-    def write_release_status_snapshot(path:, status:, issues:, warnings:)
+    def write_release_status_snapshot(path:, status:, issues:, warnings:, verify_evidence: nil,
+                                      migration_files: [], upgrade_path_evidence: nil)
       FileUtils.mkdir_p(File.dirname(path))
       payload = {
+        type: 'release_preflight_status',
         generatedAt: Time.now.iso8601,
         host: Socket.gethostname,
         miniRuntime: release_status_mini_runtime?,
@@ -2531,11 +3039,17 @@ module SaneMasterModules
         issueCount: issues.count,
         warningCount: warnings.count,
         issues: issues,
-        warnings: warnings
+        warnings: warnings,
+        verifyEvidence: verify_evidence,
+        migrationFiles: Array(migration_files),
+        upgradePathEvidence: upgrade_path_evidence
       }
-      File.write(path, JSON.pretty_generate(payload))
-    rescue StandardError
-      nil
+      upgrade_path_write_signed_atomic!(
+        path,
+        payload,
+        producer: RELEASE_PREFLIGHT_PRODUCER,
+        project_root: File.realpath(Dir.pwd)
+      )
     end
 
     def release_status_source_fingerprint(project_path = Dir.pwd)
@@ -2685,6 +3199,7 @@ module SaneMasterModules
 
     def release_status_source_file?(project_path, relative_path)
       return false if relative_path.to_s.empty?
+      return false if UPGRADE_PATH_RECEIPT_PATHS.include?(relative_path.to_s)
       return true if relative_path == 'docs/_redirects' || relative_path == 'website/_redirects'
       return true if relative_path.match?(%r{\A(?:docs|website)/.*\.(?:css|html|js|json|xml)\z})
       return true if relative_path == 'outputs/customer_ui_action_receipt.json'
@@ -2859,7 +3374,10 @@ module SaneMasterModules
         return report
       end
 
-      preflight_status = JSON.parse(File.read(report[:release_preflight_path])) rescue nil
+      preflight_status = upgrade_path_read_signed(
+        report[:release_preflight_path],
+        producer: RELEASE_PREFLIGHT_PRODUCER
+      )
       unless preflight_status.is_a?(Hash)
         launch_readiness_add_release_proof_finding!(
           report,
@@ -2871,12 +3389,26 @@ module SaneMasterModules
       end
 
       report[:release_preflight_status] = preflight_status['status'].to_s
+      current_source_fingerprint = release_status_source_fingerprint(Dir.pwd).to_s
+      if current_source_fingerprint.empty? || preflight_status['sourceFingerprint'].to_s != current_source_fingerprint
+        launch_readiness_add_release_proof_finding!(
+          report,
+          live_release_state: live_release_state,
+          message: 'release_preflight_status.json does not match current source'
+        )
+      end
       generated_at = begin
         Time.parse(preflight_status['generatedAt'].to_s)
       rescue StandardError
         nil
       end
-      if generated_at
+      if generated_at && generated_at > Time.now + SIGNED_RECEIPT_CLOCK_SKEW_SECONDS
+        launch_readiness_add_release_proof_finding!(
+          report,
+          live_release_state: live_release_state,
+          message: 'release_preflight_status.json is future-dated'
+        )
+      elsif generated_at
         age_days = ((Time.now - generated_at) / 86_400.0).round(2)
         report[:release_preflight_age_days] = age_days
         if age_days > max_preflight_age_days
@@ -3230,6 +3762,59 @@ module SaneMasterModules
       []
     end
 
+    def review_notes_explain_app_store_business_model?(notes)
+      normalized = notes.to_s.downcase.gsub(/\s+/, ' ').strip
+      sentences = normalized.split(/[.!?;\n]+/).map(&:strip).reject(&:empty?)
+
+      contradictory_model = normalized.match?(%r{
+        \bbasic(?:\s+(?:tier|mode|access))?\s+(?:is\s+not|isn't|isnt|remains\s+not)\s+free\b
+        |
+        \b(?:a\s+)?(?:\d+[- ]day\s+)?(?:pro\s+)?trial\s+(?:is\s+not|isn't|isnt|remains\s+not)\s+free\b
+        |
+        \b(?:no|without|not)\s+(?:an?\s+)?(?:one-time\s+)?(?:app\s+store\s+)?in-app\s+purchase\b
+        |
+        \bdoes(?:n't|\s+not)\s+(?:require|use)\s+(?:an?\s+)?(?:one-time\s+)?(?:app\s+store\s+)?in-app\s+purchase\b
+        |
+        \bin-app\s+purchase\b.{0,24}\b(?:is\s+not|are\s+not|isn't|isnt|aren't|arent)\s+(?:required|used|available)\b
+        |
+        \bpro\b.{0,24}\b(?:
+          (?:cannot|can't|cant)\s+be\s+purchased
+          |
+          (?:is\s+not|isn't|isnt)\s+available\s+for\s+(?:an?\s+)?(?:in-app\s+)?purchase
+          |
+          is\s+unavailable\s+for\s+(?:an?\s+)?(?:in-app\s+)?purchase
+        )\b
+        |
+        \b(?:pro\s+)?(?:can\s+be\s+)?purchas(?:e|ed)\s+(?:through|via|from|on)\s+(?:the\s+)?(?:website|web\s*site|external\s+checkout)\b
+        |
+        \b(?:website|web\s*site|external\s+checkout|license\s+keys?)\b.{0,40}\b(?:unlocks?|upgrades?)\s+(?:the\s+)?(?:app|pro)\b
+      }x)
+      return false if contradictory_model
+
+      free_basic_path = sentences.any? do |sentence|
+        sentence.match?(/\bbasic(?:\s+(?:tier|mode|access))?\s+(?:is|remains)\s+(?:available\s+)?free\b/)
+      end
+      trial_offer = sentences.any? do |sentence|
+        sentence.match?(/\b(?:a\s+)?(?:\d+[- ]day\s+)?(?:pro\s+)?trial\s+(?:starts|begins|is\s+available|is\s+included)\b/)
+      end
+      trial_conversion = sentences.any? do |sentence|
+        sentence.match?(/\bafter\s+(?:the\s+)?trial\b.*\b(?:continued\s+(?:app\s+)?access\s+requires|pro\s+(?:access\s+)?requires|purchase|unlock)\b/)
+      end
+      app_store_purchase_path = sentences.any? do |sentence|
+        sentence.match?(/\b(?:pro|unlocks?\s+pro|upgrade\s+to\s+pro|continued\s+(?:app\s+)?access)\b.*\b(?:one-time\s+)?(?:app\s+store\s+)?in-app\s+purchase\b/) ||
+          sentence.match?(/\b(?:one-time\s+)?(?:app\s+store\s+)?in-app\s+purchase\b.*\b(?:unlocks?\s+pro|pro\s+unlock|continued\s+(?:app\s+)?access)\b/) ||
+          sentence.match?(/\bpurchase\s+(?:through|via|from|in)\s+(?:the\s+)?app\s+store\b.*\b(?:unlocks?\s+pro|pro\s+unlock|continued\s+(?:app\s+)?access)\b/)
+      end
+      no_external_checkout = sentences.any? { |sentence| sentence.match?(/\bno\s+(?:external|website|web)\s+checkout\b/) }
+      no_license_keys = sentences.any? do |sentence|
+        sentence.match?(/\bno\s+license\s+keys?\b/) ||
+          sentence.match?(/\bno\s+(?:external|website|web)\s+checkout\s+(?:or|and)\s+license\s+keys?\b/)
+      end
+
+      (free_basic_path || (trial_offer && trial_conversion)) &&
+        app_store_purchase_path && no_external_checkout && no_license_keys
+    end
+
     def reviewer_access_guardrail_report(source_blob:, appstore_config:, platforms:)
       report = { applicable: false, issues: [], warnings: [], summary: '' }
       normalized_platforms = Array(platforms).map { |p| p.to_s.downcase }.uniq
@@ -3253,9 +3838,7 @@ module SaneMasterModules
         notes_downcase = notes_text.downcase
         no_account_path = notes_downcase.match?(/no account required|no api key required|no credentials required|no sign.?in required|no .*payment .*launch|no .*payment .*demo/)
         demo_path = notes_downcase.match?(/demo|sample data|try demo data|enable demo mode/)
-        business_model_path = notes_downcase.match?(/basic is free|free\./) &&
-                              notes_downcase.match?(/in-app purchase|app store/) &&
-                              notes_downcase.match?(/no external checkout|no license key|no license keys/)
+        business_model_path = review_notes_explain_app_store_business_model?(notes_text)
         external_account_clarity = notes_downcase.match?(/existing merchant|their own .*api|their own sales data|not sold by|do not unlock paid app features|do not unlock paid app features or digital content/)
         business_model_answers = {
           'who the paid/external users are' => /merchant|seller|creator|business|store owner/,
@@ -3330,7 +3913,7 @@ module SaneMasterModules
         end
 
         unless business_model_path
-          report[:warnings] << "[#{platform}] Review notes do not clearly explain the App Store business model (free/basic, Pro unlock path, no website license flow)"
+          report[:issues] << "[#{platform}] Review notes do not clearly explain the App Store business model (free/basic, Pro unlock path, no website license flow)"
         end
 
         if has_external_credentials && !external_account_clarity
@@ -3460,6 +4043,9 @@ module SaneMasterModules
 
       issues = []
       warnings = []
+      verify_evidence = nil
+      upgrade_path_evidence = nil
+      defaults_files = []
       preflight_status_path = File.join(Dir.pwd, 'outputs', 'release_preflight_status.json')
       saneprocess_path = File.join(Dir.pwd, '.saneprocess')
       preflight_config = if File.exist?(saneprocess_path)
@@ -3696,22 +4282,24 @@ module SaneMasterModules
 
       # 3. UserDefaults / migration changes
       print '  Defaults/migration changes... '
-      changed_files = if routed_workspace
-                        Array(routed_workspace['recent_changed_swift_files']).join("\n")
-                      else
-                        output, = Open3.capture2('git', 'diff', 'HEAD~5..HEAD', '--name-only', '--', '*.swift')
-                        output
-                      end
-      defaults_files = changed_files.to_s.strip.split("\n")
-        .select { |f| File.exist?(f) }
-        .select do |f|
-          content = File.read(f) rescue ''
-          content.match?(/UserDefaults|setDefaultsIfNeeded|registerDefaults|migration|migrate/i)
-        end
+      defaults_files = defaults_migration_changed_files_from_diff(
+        recent_swift_diff_for_preflight(routed_workspace)
+      )
       if defaults_files.any?
         puts "⚠️  #{defaults_files.count} file(s)"
         defaults_files.each { |f| puts "    - #{f}" }
-        warnings << 'UserDefaults/migration code changed — upgrade path test required'
+        upgrade_report = upgrade_path_behavioral_proof_report(
+          app_name: preflight_app_name,
+          routed_workspace: routed_workspace,
+          source_fingerprint: release_status_source_fingerprint
+        )
+        if upgrade_report[:ok]
+          upgrade_path_evidence = upgrade_report[:evidence]
+          puts "    ✅ Fresh behavioral upgrade proof: #{upgrade_report[:receipt_path]}"
+        else
+          puts "    ❌ #{upgrade_report[:error]}"
+          issues << "UserDefaults/migration code changed without current behavioral upgrade-path proof: #{upgrade_report[:error]}"
+        end
       else
         puts '✅ none'
       end
@@ -3947,9 +4535,10 @@ module SaneMasterModules
       # 8. Homebrew tap reachable + version match
       print '  Homebrew tap... '
       cask_app = preflight_app_name.downcase
-      cask_url_base = "https://raw.githubusercontent.com/sane-apps/homebrew-tap/main/Casks/#{cask_app}.rb"
+      tap_repo = homebrew_tap_repo(preflight_config)
+      cask_url_base = "https://raw.githubusercontent.com/#{tap_repo}/main/Casks/#{cask_app}.rb"
       cask_commit = nil
-      commits_api = "https://api.github.com/repos/sane-apps/homebrew-tap/commits?path=Casks/#{cask_app}.rb&per_page=1"
+      commits_api = "https://api.github.com/repos/#{tap_repo}/commits?path=Casks/#{cask_app}.rb&per_page=1"
       commits_json, commits_status = Open3.capture2(
         'curl', '--connect-timeout', '10', '--max-time', '20', '-fsSL', commits_api
       )
@@ -3958,7 +4547,7 @@ module SaneMasterModules
         cask_commit = commits.first['sha'].to_s.strip if commits.is_a?(Array) && commits.first.is_a?(Hash)
       end
       cask_url = if cask_commit && !cask_commit.empty?
-                   "https://raw.githubusercontent.com/sane-apps/homebrew-tap/#{cask_commit}/Casks/#{cask_app}.rb"
+                   "https://raw.githubusercontent.com/#{tap_repo}/#{cask_commit}/Casks/#{cask_app}.rb"
                  else
                    cask_url_base
                  end
@@ -3967,36 +4556,23 @@ module SaneMasterModules
         '-sI', '-o', '/dev/null', '-w', '%{http_code}', cask_url
       )
       tap_status = tap_status.strip
-      if tap_status == '200'
-        cask_body, = Open3.capture2(
-          'curl', '--connect-timeout', '10', '--max-time', '20', '-fsSL', cask_url
-        )
-        cask_version = cask_body[/version\s+"([^"]+)"/, 1].to_s.strip
-        project_version = project_marketing_version(project_yml_content)
-        if cask_version.empty?
-          puts '⚠️  could not parse cask version'
-          warnings << 'Homebrew cask version unreadable'
-        elsif project_version.empty?
-          puts "✅ reachable (v#{cask_version}, project version unknown)"
-        elsif cask_version == project_version
-          puts "✅ (v#{cask_version})"
-        elsif prepublish_channel_version_drift?(
-          channel_version: cask_version,
-          project_version: project_version
-        ) && prepublish_channel_version_drift?(
-          channel_version: local_latest_appcast_version,
-          project_version: project_version
-        )
-          puts "⚠️  cask has v#{cask_version}, project is v#{project_version} (expected before publish)"
-          warnings << "Homebrew cask version #{cask_version} is older than project MARKETING_VERSION #{project_version} (expected before publish)"
-        else
-          puts "❌ cask has v#{cask_version}, project is v#{project_version}"
-          issues << "Homebrew cask version mismatch: cask=#{cask_version} project=#{project_version}"
-        end
-      else
-        puts "⚠️  returned #{tap_status}"
-        warnings << "Homebrew tap cask not reachable (#{tap_status})"
-      end
+      cask_body = if tap_status == '200'
+                    Open3.capture2(
+                      'curl', '--connect-timeout', '10', '--max-time', '20', '-fsSL', cask_url
+                    ).first
+                  else
+                    ''
+                  end
+      homebrew_result = homebrew_cask_preflight_result(
+        config: preflight_config,
+        tap_status: tap_status,
+        cask_body: cask_body,
+        project_version: project_marketing_version(project_yml_content),
+        appcast_version: local_latest_appcast_version
+      )
+      puts homebrew_result[:message]
+      warnings.concat(homebrew_result[:warnings])
+      issues.concat(homebrew_result[:issues])
 
       # 9. Release timing
       print '  Release timing... '
@@ -4022,11 +4598,13 @@ module SaneMasterModules
       if website_domain.empty? || live_appcast_item[:version].to_s.empty?
         puts '⏭️  no website/appcast version'
       else
-        website_body = fetch_text("https://#{website_domain}")
-        website_version = website_body[/#{Regexp.escape(preflight_app_name)}-(\d+\.\d+(?:\.\d+)?)\.(?:zip|dmg)/, 1].to_s.strip
+        website_version = website_versioned_archive_version_for_domain(
+          app_name: preflight_app_name,
+          website_domain: website_domain
+        )
         if website_version.empty?
-          puts '⚠️  no direct versioned archive link found'
-          warnings << "#{preflight_app_name} website has no direct versioned archive link to compare against appcast"
+          puts '⚠️  no reachable versioned archive link found'
+          warnings << "#{preflight_app_name} website has no reachable versioned archive link to compare against appcast"
         elsif website_version == live_appcast_item[:version]
           puts "✅ #{preflight_app_name} v#{website_version}"
         else
@@ -4088,6 +4666,7 @@ module SaneMasterModules
       else
         verify_env = { 'SANEMASTER_RELEASE_PREFLIGHT' => '1' }
         puts
+        verify_started_at = Time.now.utc
         out, status = capture_release_command_output(
           verify_env,
           './scripts/SaneMaster.rb',
@@ -4097,18 +4676,26 @@ module SaneMasterModules
           heartbeat_seconds: 15,
           timeout_seconds: release_verify_timeout_seconds
         )
-        verify_cleanup = verify_output_indicates_runtime_dedupe_cleanup?(out, app_name: preflight_app_name)
-        if status&.success? || verify_output_indicates_success?(out) || verify_cleanup
-          if verify_cleanup
-            puts '  Tests... ✅ (after runtime app dedupe cleanup)'
-          else
-            puts '  Tests... ✅'
-          end
+        verify_fingerprint = if respond_to?(:verify_source_fingerprint, true)
+                               send(:verify_source_fingerprint).to_s
+                             else
+                               ''
+                             end
+        verify_evidence = release_verify_evidence_from_metrics(
+          since: verify_started_at,
+          source_fingerprint: verify_fingerprint
+        )
+        if release_verify_result_valid?(status: status, evidence: verify_evidence)
+          puts '  Tests... ✅ (successful process + structured current verify receipt)'
         else
           puts '  Tests... ❌ FAIL'
           hint = summarized_output_tail(out)
           puts "    ↳ #{hint}" unless hint.empty?
-          issues << 'Tests failing'
+          issues << if !status&.success?
+                      'Tests failing or timed out'
+                    else
+                      'Verify completed without a structured current source-fingerprint receipt'
+                    end
         end
       end
 
@@ -4168,7 +4755,10 @@ module SaneMasterModules
         path: preflight_status_path,
         status: issues.any? ? 'failed' : 'passed',
         issues: issues,
-        warnings: warnings
+        warnings: warnings,
+        verify_evidence: verify_evidence,
+        migration_files: defaults_files,
+        upgrade_path_evidence: upgrade_path_evidence
       )
       record_process_metric(
         'release_preflight',
@@ -4205,7 +4795,7 @@ module SaneMasterModules
     # App Store submission preflight — validates everything Apple checks during review.
     # Derived from Apple's App Review Guidelines + community rejection checklists.
     # Works for any SaneApps project with a .saneprocess config.
-    def appstore_preflight(_args)
+    def appstore_preflight(args)
       return unless ensure_research_gate_clear!('appstore_preflight')
 
       require 'json'
@@ -4362,6 +4952,13 @@ module SaneMasterModules
         puts '⚠️  could not read from project.yml/xcconfig'
         warnings << 'Could not read version info from project.yml/xcconfig'
       end
+      submission_target = appstore_preflight_submission_target(
+        args: args,
+        version: version_str,
+        build: build_num,
+        platforms: platforms,
+        issues: issues
+      )
 
       # 2b. Entitlements file
       print '  │ Entitlements... '
@@ -4694,6 +5291,7 @@ module SaneMasterModules
       print '  │ Tests... '
       verify_env = { 'SANEMASTER_APPSTORE_PREFLIGHT' => '1' }
       puts
+      verify_started_at = Time.now.utc
       out, status = capture_release_command_output(
         verify_env,
         './scripts/SaneMaster.rb',
@@ -4703,25 +5301,26 @@ module SaneMasterModules
         heartbeat_seconds: 15,
         timeout_seconds: release_verify_timeout_seconds
       )
-      verify_cleanup = verify_output_indicates_runtime_dedupe_cleanup?(out, app_name: config['name'] || File.basename(Dir.pwd))
-      if status&.success? || verify_output_indicates_success?(out) || verify_cleanup
-        if verify_cleanup
-          puts '  │ Tests... ✅ (after runtime app dedupe cleanup)'
-        else
-          puts '  │ Tests... ✅'
-        end
-      elsif out.include?('Newest appcast entry should match MARKETING_VERSION') &&
-            out.scan('Expectation failed:').length == 1
-        puts '  │ Tests... ⚠️  appcast/version drift'
-        warnings << 'Direct-download appcast is one version behind MARKETING_VERSION (non-blocking for App Store submission)'
-      elsif appcast_drift_failure_only?(out)
-        puts '  │ Tests... ⚠️  appcast/version drift'
-        warnings << 'Direct-download appcast is one version behind MARKETING_VERSION (non-blocking for App Store submission)'
+      verify_fingerprint = if respond_to?(:verify_source_fingerprint, true)
+                             send(:verify_source_fingerprint).to_s
+                           else
+                             ''
+                           end
+      verify_evidence = release_verify_evidence_from_metrics(
+        since: verify_started_at,
+        source_fingerprint: verify_fingerprint
+      )
+      if release_verify_result_valid?(status: status, evidence: verify_evidence)
+        puts '  │ Tests... ✅ (successful process + structured current verify receipt)'
       else
         puts '  │ Tests... ❌ FAIL'
         hint = summarized_output_tail(out)
         puts "  │   ↳ #{hint}" unless hint.empty?
-        issues << 'Tests failing — fix before submission'
+        if status.nil? || !status.success?
+          issues << 'Tests failing or timed out — fix before submission'
+        else
+          issues << 'Tests completed without a structured current Mini verify receipt — fix before submission'
+        end
       end
 
       # 5a1. CloudKit production schema
@@ -5544,7 +6143,8 @@ module SaneMasterModules
         app_id: asc_app_id,
         version: version_str,
         build: build_num,
-        platforms: platforms
+        platforms: platforms,
+        submission_target: submission_target
       )
 
       record_process_metric(

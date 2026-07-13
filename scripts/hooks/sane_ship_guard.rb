@@ -178,35 +178,55 @@ unless data['app'] == app_name
   exit 2
 end
 
+# Every clearance must identify the exact project and reviewed commit. Optional
+# identity fields turn a signed but incomplete token into an indefinite bypass.
+clearance_project = data['project_dir'].to_s.strip
+clearance_sha = data['git_sha'].to_s.strip
+project_matches = begin
+  !clearance_project.empty? && File.realpath(clearance_project) == File.realpath(project_dir)
+rescue Errno::ENOENT, Errno::EACCES
+  false
+end
+unless project_matches
+  warn "🔴 BLOCKED: Clearance project mismatch for #{app_name}"
+  warn "   Clearance dir: #{clearance_project.empty? ? '(missing)' : clearance_project}"
+  warn "   Current dir:   #{project_dir}"
+  exit 2
+end
+unless clearance_sha.match?(/\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/i)
+  warn "🔴 BLOCKED: Ship clearance is missing a valid git_sha for #{app_name}"
+  warn '   Run /ship again to bind clearance to the reviewed commit.'
+  exit 2
+end
+
 # Check whether commits after clearance changed release-relevant inputs.
 current_sha = `git -C #{project_dir.shellescape} rev-parse HEAD 2>/dev/null`.strip
-if data['git_sha'] && release_relevant_commits_changed?(project_dir, data['git_sha'], current_sha)
+unless current_sha.match?(/\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/i)
+  warn "🔴 BLOCKED: Could not resolve the current git SHA for #{app_name}"
+  exit 2
+end
+if release_relevant_commits_changed?(project_dir, clearance_sha, current_sha)
   warn "🔴 BLOCKED: Release-relevant code changed since /ship clearance for #{app_name}"
-  warn "   Clearance SHA: #{data['git_sha'][0..7]}"
+  warn "   Clearance SHA: #{clearance_sha[0..7]}"
   warn "   Current HEAD:  #{current_sha[0..7]}"
   warn ''
   warn '   Run /ship again. Receipt-only, docs-only, and generated-output commits do not invalidate clearance.'
   exit 2
 end
 
-# Check expiry
-if data['expires_at']
-  expires = Time.parse(data['expires_at']) rescue nil
-  if expires && Time.now.utc > expires
-    warn "🔴 BLOCKED: Ship clearance expired for #{app_name}"
-    warn "   Cleared at: #{data['cleared_at']}"
-    warn "   Expired at: #{data['expires_at']}"
-    warn ''
-    warn '   Clearance has a 4-hour TTL. Run /ship again.'
-    exit 2
-  end
+# Check expiry. Missing or malformed timestamps must fail closed; otherwise a
+# corrupted signed token becomes effectively permanent.
+begin
+  expires = Time.parse(data['expires_at'].to_s)
+rescue ArgumentError, TypeError
+  expires = nil
 end
-
-# Check project directory matches
-if data['project_dir'] && data['project_dir'] != project_dir
-  warn "🔴 BLOCKED: Clearance project mismatch for #{app_name}"
-  warn "   Clearance dir: #{data['project_dir']}"
-  warn "   Current dir:   #{project_dir}"
+unless expires && expires > Time.now.utc
+  warn "🔴 BLOCKED: Ship clearance is missing, malformed, or expired for #{app_name}"
+  warn "   Cleared at: #{data['cleared_at']}"
+  warn "   Expires at: #{data['expires_at'].to_s.empty? ? '(missing)' : data['expires_at']}"
+  warn ''
+  warn '   Clearance has a 4-hour TTL. Run /ship again.'
   exit 2
 end
 

@@ -17,8 +17,15 @@ exit(run_tests('SaneMaster Command Alias Tests') do
       assert_eq(master.send(:canonical_command_name, 'appointment'), 'business_appointment')
       assert_eq(master.send(:canonical_command_name, 'business-appointment'), 'business_appointment')
       assert_eq(master.send(:canonical_command_name, 'release-readiness'), 'release_readiness')
+      assert_eq(master.send(:canonical_command_name, 'upgrade-path-proof'), 'upgrade_path_proof')
       assert_eq(master.send(:canonical_command_name, 'tool-receipt'), 'tool_discovery')
       assert_eq(master.send(:canonical_command_name, 'verify'), 'verify')
+      true
+    end
+
+    test('upgrade proof is advertised and Mini-first') do
+      assert(SaneMaster::COMMANDS.fetch(:build).fetch(:commands).key?('upgrade_path_proof'))
+      assert(SaneMaster::MINI_FIRST_COMMANDS.include?('upgrade_path_proof'))
       true
     end
 

@@ -26,8 +26,10 @@ end
 
 require 'json'
 require 'fileutils'
+require 'open3'
 require 'shellwords'
 require 'time'
+require 'digest'
 require_relative 'core/mandatory_workflows'
 require_relative 'core/state_manager'
 require_relative 'core/process_metrics'
@@ -258,7 +260,8 @@ MAX_ACTION_LOG = 20
 include SaneTrackStateUpdates
 
 # === SKILL TRACKING ===
-# Track Skill tool invocations and Task tool calls (subagents)
+# Track Skill tool invocations and independent review coverage.
+require_relative 'sanetrack_review_tracking'
 
 SKILL_RUNNER_PATTERNS = MandatoryWorkflows.skill_requirements.each_with_object({}) do |(name, config), acc|
   patterns = MandatoryWorkflows.runner_patterns_for(name)
@@ -266,37 +269,6 @@ SKILL_RUNNER_PATTERNS = MandatoryWorkflows.skill_requirements.each_with_object({
 
   acc[name.to_s] = patterns
 end.freeze
-
-def track_skill_invocation(tool_name, tool_input)
-  return unless tool_name == 'Skill'
-
-  skill_name = tool_input['skill'] || tool_input[:skill]
-  return unless skill_name
-
-  StateManager.update(:skill) do |s|
-    s[:invoked] = true
-    s[:invoked_at] = Time.now.iso8601
-    s[:invoked_skill] = skill_name
-    s
-  end
-rescue StandardError => e
-  warn "⚠️  Skill tracking error: #{e.message}" if ENV['DEBUG']
-end
-
-def track_subagent_spawn(tool_name, tool_input)
-  return unless ['Task', 'spawn_agent', 'multi_agent_v1.spawn_agent'].include?(tool_name)
-
-  # Only count if a skill is required
-  skill_state = StateManager.get(:skill)
-  return unless skill_state[:required]
-
-  StateManager.update(:skill) do |s|
-    s[:subagents_spawned] = (s[:subagents_spawned] || 0) + 1
-    s
-  end
-rescue StandardError => e
-  warn "⚠️  Subagent tracking error: #{e.message}" if ENV['DEBUG']
-end
 
 def track_skill_runner(tool_name, tool_input, tool_response)
   return unless tool_name == 'Bash'
@@ -307,6 +279,7 @@ def track_skill_runner(tool_name, tool_input, tool_response)
 
   command = tool_input['command'] || tool_input[:command] || ''
   return if command.empty?
+  return if MandatoryWorkflows.unsafe_shell_command?(command)
 
   patterns = SKILL_RUNNER_PATTERNS[required_skill] || []
   return unless patterns.any? { |pattern| command.match?(pattern) }
@@ -328,6 +301,9 @@ def track_skill_runner(tool_name, tool_input, tool_response)
     if proof
       s[:runner_proved] = true
       s[:runner_proof] = proof
+      s[:runner_receipt_fingerprints] ||= []
+      s[:runner_receipt_fingerprints] << proof[:fingerprint] if proof[:fingerprint]
+      s[:runner_receipt_fingerprints] = s[:runner_receipt_fingerprints].compact.uniq.last(50)
     else
       s[:runner_proved] = false unless s[:runner_proved]
     end
@@ -349,28 +325,72 @@ def bash_response_successful?(tool_response)
 end
 
 def runner_proof_for(required_skill, command, tool_response)
-  return nil unless bash_response_successful?(tool_response)
+  response_ok = bash_response_successful?(tool_response) ||
+                (required_skill.to_s == 'status' && completed_incomplete_status_response?(tool_response))
+  return nil unless response_ok
 
   case required_skill.to_s
   when 'evolve'
     latest_authoritative_tool_discovery_receipt(command)
   when 'verify'
-    latest_recent_process_metric('verify') do |event|
-      event['success'] == true
-    end&.then { |event| { type: 'process_metric', metric: 'verify', timestamp: event['timestamp'], tests_run: event['tests_run'] } }
+    matching_runner_receipt(required_skill, command, tool_response)
   when 'ship'
-    release_preflight_proof
+    runner_receipt = matching_runner_receipt(required_skill, command, tool_response, workflow: 'release_preflight')
+    release_preflight_proof(runner_receipt: runner_receipt)
   when 'status'
-    latest_recent_process_metric('workflow_receipt') do |event|
-      event['workflow'].to_s == 'status' && event['success'] == true
-    end&.then { |event| { type: 'process_metric', metric: 'workflow_receipt', workflow: 'status', timestamp: event['timestamp'] } }
+    matching_runner_receipt(required_skill, command, tool_response)
   when 'check_inbox'
-    latest_recent_process_metric('workflow_receipt') do |event|
-      event['workflow'].to_s == 'check_inbox' && event['success'] == true
-    end&.then { |event| { type: 'process_metric', metric: 'workflow_receipt', workflow: 'check_inbox', timestamp: event['timestamp'] } }
+    matching_runner_receipt(required_skill, command, tool_response)
   else
     { type: 'command_success', command: command.strip }
   end
+end
+
+def completed_incomplete_status_response?(tool_response)
+  return false unless tool_response.is_a?(Hash)
+  return false unless (tool_response['error'] || tool_response[:error]).to_s.strip.empty?
+  return false if tool_response['interrupted'] == true || tool_response[:interrupted] == true
+
+  exit_code = tool_response['exit_code'] || tool_response[:exit_code]
+  !exit_code.nil? && exit_code.to_i == 3
+end
+
+def matching_runner_receipt(required_skill, command, tool_response, workflow: required_skill)
+  expected_hash = runner_command_sha256(command)
+  return nil unless expected_hash
+  response_status = tool_response['exit_code'] || tool_response[:exit_code]
+  response_status = response_status.nil? ? 0 : response_status.to_i
+  allowed_status = response_status.zero? || (workflow.to_s == 'status' && response_status == 3)
+  return nil unless allowed_status
+
+  output = tool_response['output'] || tool_response[:output] || tool_response['stdout'] || tool_response[:stdout]
+  receipt_id = output.to_s.scan(/\bSANEMASTER_WORKFLOW_RECEIPT=([0-9a-f]{32})\b/).flatten.last
+  return nil unless receipt_id
+
+  consumed = Array(StateManager.get(:skill)[:runner_receipt_fingerprints])
+  event = latest_recent_process_metric('workflow_receipt') do |candidate|
+    completed = parse_time(candidate['completed_at'] || candidate['timestamp'])
+    fingerprint = runner_receipt_fingerprint(candidate)
+    candidate['workflow'].to_s == "sanemaster:#{workflow}" && candidate['receipt_id'].to_s == receipt_id &&
+      candidate['success'] == response_status.zero? &&
+      candidate['exit_status'].to_i == response_status && candidate['command_sha256'] == expected_hash &&
+      File.realpath(candidate['cwd'].to_s) == File.realpath(Dir.pwd) &&
+      (Time.now - completed).between?(0, 10) && !consumed.include?(fingerprint)
+  end
+  return nil unless event
+
+  {
+    type: 'process_metric', metric: 'workflow_receipt', workflow: workflow,
+    timestamp: event['completed_at'] || event['timestamp'], fingerprint: runner_receipt_fingerprint(event),
+    receipt_id: event['receipt_id'], started_at: event['started_at'],
+    completed_at: event['completed_at'] || event['timestamp'], source_fingerprint: event['source_fingerprint']
+  }
+rescue Errno::ENOENT, Errno::EACCES
+  nil
+end
+
+def runner_receipt_fingerprint(event)
+  Digest::SHA256.hexdigest([event['receipt_id'], event['workflow'], event['command_sha256'], event['completed_at'] || event['timestamp']].join("\0"))
 end
 
 # === RELEASE/VERIFICATION PROOF HELPERS (in sanetrack_proofs.rb) ===
@@ -511,7 +531,8 @@ end
 def process_result(tool_name, tool_input, tool_response)
   # === SKILL TRACKING (before error detection) ===
   track_skill_invocation(tool_name, tool_input)
-  track_subagent_spawn(tool_name, tool_input)
+  track_subagent_spawn(tool_name, tool_input, tool_response)
+  track_codex_review_lane(tool_name, tool_input, tool_response)
   track_skill_runner(tool_name, tool_input, tool_response)
 
   # === RESEARCH PROTOCOL: Validate research agent writes ===

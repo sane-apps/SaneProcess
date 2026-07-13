@@ -33,6 +33,10 @@ require 'uri'
 require 'yaml'
 require 'tmpdir'
 require 'open3'
+require 'rbconfig'
+require_relative 'hooks/release_receipt_signer'
+
+APPSTORE_PREFLIGHT_CLOCK_SKEW_SECONDS = 5
 
 begin
   require 'jwt'
@@ -407,6 +411,59 @@ def resolve_version_metadata(appstore_cfg:, app_name:, asc_platform:)
   trim_metadata_to_limits(metadata)
 end
 
+def review_notes_explain_app_store_business_model?(notes)
+  normalized = notes.to_s.downcase.gsub(/\s+/, ' ').strip
+  sentences = normalized.split(/[.!?;\n]+/).map(&:strip).reject(&:empty?)
+
+  contradictory_model = normalized.match?(%r{
+    \bbasic(?:\s+(?:tier|mode|access))?\s+(?:is\s+not|isn't|isnt|remains\s+not)\s+free\b
+    |
+    \b(?:a\s+)?(?:\d+[- ]day\s+)?(?:pro\s+)?trial\s+(?:is\s+not|isn't|isnt|remains\s+not)\s+free\b
+    |
+    \b(?:no|without|not)\s+(?:an?\s+)?(?:one-time\s+)?(?:app\s+store\s+)?in-app\s+purchase\b
+    |
+    \bdoes(?:n't|\s+not)\s+(?:require|use)\s+(?:an?\s+)?(?:one-time\s+)?(?:app\s+store\s+)?in-app\s+purchase\b
+    |
+    \bin-app\s+purchase\b.{0,24}\b(?:is\s+not|are\s+not|isn't|isnt|aren't|arent)\s+(?:required|used|available)\b
+    |
+    \bpro\b.{0,24}\b(?:
+      (?:cannot|can't|cant)\s+be\s+purchased
+      |
+      (?:is\s+not|isn't|isnt)\s+available\s+for\s+(?:an?\s+)?(?:in-app\s+)?purchase
+      |
+      is\s+unavailable\s+for\s+(?:an?\s+)?(?:in-app\s+)?purchase
+    )\b
+    |
+    \b(?:pro\s+)?(?:can\s+be\s+)?purchas(?:e|ed)\s+(?:through|via|from|on)\s+(?:the\s+)?(?:website|web\s*site|external\s+checkout)\b
+    |
+    \b(?:website|web\s*site|external\s+checkout|license\s+keys?)\b.{0,40}\b(?:unlocks?|upgrades?)\s+(?:the\s+)?(?:app|pro)\b
+  }x)
+  return false if contradictory_model
+
+  free_basic_path = sentences.any? do |sentence|
+    sentence.match?(/\bbasic(?:\s+(?:tier|mode|access))?\s+(?:is|remains)\s+(?:available\s+)?free\b/)
+  end
+  trial_offer = sentences.any? do |sentence|
+    sentence.match?(/\b(?:a\s+)?(?:\d+[- ]day\s+)?(?:pro\s+)?trial\s+(?:starts|begins|is\s+available|is\s+included)\b/)
+  end
+  trial_conversion = sentences.any? do |sentence|
+    sentence.match?(/\bafter\s+(?:the\s+)?trial\b.*\b(?:continued\s+(?:app\s+)?access\s+requires|pro\s+(?:access\s+)?requires|purchase|unlock)\b/)
+  end
+  app_store_purchase_path = sentences.any? do |sentence|
+    sentence.match?(/\b(?:pro|unlocks?\s+pro|upgrade\s+to\s+pro|continued\s+(?:app\s+)?access)\b.*\b(?:one-time\s+)?(?:app\s+store\s+)?in-app\s+purchase\b/) ||
+      sentence.match?(/\b(?:one-time\s+)?(?:app\s+store\s+)?in-app\s+purchase\b.*\b(?:unlocks?\s+pro|pro\s+unlock|continued\s+(?:app\s+)?access)\b/) ||
+      sentence.match?(/\bpurchase\s+(?:through|via|from|in)\s+(?:the\s+)?app\s+store\b.*\b(?:unlocks?\s+pro|pro\s+unlock|continued\s+(?:app\s+)?access)\b/)
+  end
+  no_external_checkout = sentences.any? { |sentence| sentence.match?(/\bno\s+(?:external|website|web)\s+checkout\b/) }
+  no_license_keys = sentences.any? do |sentence|
+    sentence.match?(/\bno\s+license\s+keys?\b/) ||
+      sentence.match?(/\bno\s+(?:external|website|web)\s+checkout\s+(?:or|and)\s+license\s+keys?\b/)
+  end
+
+  (free_basic_path || (trial_offer && trial_conversion)) &&
+    app_store_purchase_path && no_external_checkout && no_license_keys
+end
+
 def metadata_review_readiness_report(config:, asc_platform:, app_name:, project_root:)
   appstore_cfg = config['appstore'] || {}
   metadata = resolve_version_metadata(appstore_cfg: appstore_cfg, app_name: app_name, asc_platform: asc_platform)
@@ -544,10 +601,8 @@ def metadata_review_readiness_report(config:, asc_platform:, app_name:, project_
       warnings << "#{platform_label} onboarding paywall appears one-shot; review notes should mention a durable post-onboarding upgrade path like Settings > License"
     end
 
-    unless notes_downcase.match?(/basic is free|free\./) &&
-           notes_downcase.match?(/in-app purchase|app store/) &&
-           notes_downcase.match?(/no external checkout|no license key|no license keys/)
-      warnings << "#{platform_label} review notes do not fully explain the App Store business model"
+    unless review_notes_explain_app_store_business_model?(notes_downcase)
+      issues << "#{platform_label} review notes do not fully explain the App Store business model"
     end
 
     if has_external_credentials &&
@@ -4206,12 +4261,34 @@ def wait_for_version_state_transition(app_id:, asc_platform:, version_string:, t
   last_state
 end
 
+def appstore_fingerprint_entries(project_root, paths)
+  root_real = File.realpath(project_root)
+  Array(paths).sort.map do |relative_path|
+    next if relative_path == 'outputs/appstore_preflight_status.json'
+    next if relative_path.start_with?('.sanemaster/appstore-preflight-bindings/')
+
+    absolute_path = File.expand_path(relative_path, root_real)
+    raise "fingerprint path escapes project root: #{relative_path}" unless absolute_path.start_with?("#{root_real}/")
+
+    metadata = File.lstat(absolute_path)
+    if metadata.symlink?
+      "L:#{relative_path}:#{File.readlink(absolute_path)}"
+    elsif metadata.file?
+      "F:#{relative_path}:#{Digest::SHA256.file(absolute_path).hexdigest}"
+    else
+      "O:#{relative_path}:#{metadata.mode}"
+    end
+  end.compact
+end
+
 def appstore_worktree_fingerprint(project_root)
   git_dir, git_status = Open3.capture2e('git', '-C', project_root, 'rev-parse', '--git-dir')
   unless git_status.success? && !git_dir.to_s.strip.empty?
-    files = Dir.glob(File.join(project_root, '**/*')).select { |path| File.file?(path) }
-    files.reject! { |path| path.end_with?('/outputs/appstore_preflight_status.json') }
-    material = files.sort.map { |path| "#{path.sub("#{project_root}/", '')}:#{File.size(path)}:#{File.mtime(path).to_i}" }.join("\n")
+    paths = Dir.glob(File.join(project_root, '**/*'), File::FNM_DOTMATCH)
+      .reject { |path| %w[. ..].include?(File.basename(path)) }
+      .select { |path| File.file?(path) || File.symlink?(path) }
+      .map { |path| path.sub(%r{\A#{Regexp.escape(File.expand_path(project_root))}/?}, '') }
+    material = appstore_fingerprint_entries(project_root, paths).join("\n")
     return Digest::SHA256.hexdigest(material)
   end
 
@@ -4220,40 +4297,119 @@ def appstore_worktree_fingerprint(project_root)
     out, = Open3.capture2e('git', '-C', project_root, *command.split(' '))
     parts << out
   end
+  untracked, untracked_status = Open3.capture2e(
+    'git', '-C', project_root, 'ls-files', '-z', '--others', '--exclude-standard'
+  )
+  raise 'git ls-files failed while fingerprinting untracked content' unless untracked_status.success?
+
+  parts << appstore_fingerprint_entries(project_root, untracked.split("\0").reject(&:empty?)).join("\n")
   Digest::SHA256.hexdigest(parts.join("\n---\n"))
 rescue StandardError
   'unknown'
 end
 
-def fresh_appstore_preflight_receipt?(project_root:, app_id:, version:, platform:, max_age_seconds: 14_400)
+def appstore_package_submission_target(pkg_path, platform:)
+  info = extract_app_info_from_package(pkg_path)
+  return nil unless info
+
+  {
+    'type' => 'package',
+    'platform' => platform.to_s.downcase,
+    'fileName' => File.basename(pkg_path),
+    'sha256' => Digest::SHA256.file(pkg_path).hexdigest,
+    'size' => File.size(pkg_path),
+    'bundleId' => info[:bundle_id].to_s,
+    'version' => info[:short_version].to_s,
+    'build' => info[:build_number].to_s,
+    'path' => File.expand_path(pkg_path)
+  }
+rescue StandardError
+  nil
+end
+
+def appstore_asc_submission_target(build_id:, build_number:, version:, platform:)
+  {
+    'type' => 'asc_build',
+    'platform' => platform.to_s.downcase,
+    'ascBuildId' => build_id.to_s,
+    'version' => version.to_s,
+    'build' => build_number.to_s
+  }
+end
+
+def appstore_submission_targets_match?(receipt_target, expected_target)
+  return false unless receipt_target.is_a?(Hash) && expected_target.is_a?(Hash)
+
+  keys = case expected_target['type'].to_s
+         when 'package'
+           %w[type platform fileName sha256 size bundleId version build]
+         when 'asc_build'
+           %w[type platform ascBuildId version build]
+         else
+           return false
+         end
+  keys.all? { |key| receipt_target[key].to_s == expected_target[key].to_s }
+end
+
+def refresh_appstore_preflight_binding(project_root:, submission_target:, command_runner: nil)
+  script = File.join(project_root, 'scripts', 'SaneMaster.rb')
+  return [false, "missing canonical preflight command: #{script}"] unless File.file?(script)
+
+  command = [RbConfig.ruby, script, 'appstore_preflight', '--platform', submission_target.fetch('platform')]
+  if submission_target['type'] == 'package'
+    command += ['--pkg', submission_target.fetch('path')]
+  else
+    command += [
+      '--asc-build-id', submission_target.fetch('ascBuildId'),
+      '--build-number', submission_target.fetch('build')
+    ]
+  end
+
+  success = command_runner ? command_runner.call(command) : system(*command)
+  [success == true, success == true ? command : 'App Store preflight submission binding failed']
+end
+
+def fresh_appstore_preflight_receipt?(project_root:, app_id:, version:, platform:, max_age_seconds: 14_400,
+                                      submission_target:, receipt_signer: nil)
   path = File.join(project_root, 'outputs', 'appstore_preflight_status.json')
   return [false, "missing #{path}; run ./scripts/SaneMaster.rb appstore_preflight"] unless File.exist?(path)
 
-  receipt = JSON.parse(File.read(path))
+  signer = receipt_signer || ReleaseReceiptSigner.production
+  receipt = signer.read(path, producer: 'saneprocess.appstore_preflight.v1')
+  return [false, 'appstore_preflight receipt is not signed or its signature is invalid'] unless receipt.is_a?(Hash)
   return [false, "latest appstore_preflight is #{receipt['status'].inspect}, expected \"passed\""] unless receipt['status'].to_s == 'passed'
+  return [false, 'appstore_preflight receipt contains issues despite passed status'] unless Array(receipt['issues']).empty?
 
   receipt_app_id = receipt['appId'].to_s
-  if !receipt_app_id.empty? && !app_id.to_s.empty? && receipt_app_id != app_id.to_s
+  if receipt_app_id.empty? || app_id.to_s.empty? || receipt_app_id != app_id.to_s
     return [false, "appstore_preflight appId mismatch: receipt=#{receipt_app_id}, submit=#{app_id}"]
   end
 
   receipt_version = receipt['version'].to_s
-  if !receipt_version.empty? && receipt_version != version.to_s
+  if receipt_version.empty? || version.to_s.empty? || receipt_version != version.to_s
     return [false, "appstore_preflight version mismatch: receipt=#{receipt_version}, submit=#{version}"]
   end
 
   receipt_platforms = Array(receipt['platforms']).map { |p| p.to_s.downcase }
-  if receipt_platforms.any? && !receipt_platforms.include?(platform.to_s.downcase)
+  if platform.to_s.empty? || receipt_platforms.empty? || !receipt_platforms.include?(platform.to_s.downcase)
     return [false, "appstore_preflight platform mismatch: receipt=#{receipt_platforms.join(',')}, submit=#{platform}"]
+  end
+
+  unless appstore_submission_targets_match?(receipt['submissionTarget'], submission_target)
+    return [false, 'appstore_preflight receipt is not bound to the exact package or ASC build selected for submission']
   end
 
   generated_at = Time.parse(receipt['generatedAt'].to_s)
   age = Time.now - generated_at
+  return [false, 'appstore_preflight receipt is future-dated'] if age < -APPSTORE_PREFLIGHT_CLOCK_SKEW_SECONDS
   return [false, "appstore_preflight receipt is stale (#{(age / 60).round} minutes old)"] if age > max_age_seconds
 
   expected_fingerprint = receipt['worktreeFingerprint'].to_s
   current_fingerprint = appstore_worktree_fingerprint(project_root)
-  if !expected_fingerprint.empty? && expected_fingerprint != 'unknown' && expected_fingerprint != current_fingerprint
+  unless expected_fingerprint.match?(/\A[0-9a-f]{64}\z/) && current_fingerprint.match?(/\A[0-9a-f]{64}\z/)
+    return [false, 'appstore_preflight worktree fingerprint is missing or invalid']
+  end
+  if expected_fingerprint != current_fingerprint
     return [false, 'appstore_preflight receipt does not match current worktree; rerun preflight after code/metadata changes']
   end
 
@@ -4879,20 +5035,89 @@ artifact_label = options[:skip_upload] ? 'existing ASC build' : File.basename(pk
 log_info "App Store submission: #{artifact_label} v#{version} (#{platform})"
 log_info "App ID: #{app_id}"
 
+build_number =
+  if options[:build_number]
+    options[:build_number].to_s
+  elsif options[:skip_upload]
+    detected_build_number = detect_project_build_number(project_root)
+    if detected_build_number
+      log_info "Using build number #{detected_build_number} from project metadata."
+      detected_build_number
+    else
+      default_build_number(version)
+    end
+  end
+
+token = nil
+build_id = nil
+submission_target = nil
+if options[:skip_upload]
+  token = generate_jwt
+  build_id = wait_for_build(app_id, build_number, asc_platform, token, skip_upload: true)
+  unless build_id
+    log_error "Requested reused build #{build_number} was not found. Refusing version-string fallback in --skip-upload mode."
+    exit 1
+  end
+  submission_target = appstore_asc_submission_target(
+    build_id: build_id,
+    build_number: build_number,
+    version: version,
+    platform: platform
+  )
+else
+  submission_target = appstore_package_submission_target(pkg_path, platform: platform)
+  unless submission_target
+    log_error 'Could not extract an exact identity from the App Store package. Refusing upload.'
+    exit 1
+  end
+
+  expected_package_platform = pkg_path.end_with?('.ipa') ? 'ios' : (pkg_path.end_with?('.pkg') ? 'macos' : '')
+  if expected_package_platform != platform.to_s.downcase
+    log_error "Package type does not match submission platform: package=#{expected_package_platform.inspect}, submit=#{platform}"
+    exit 1
+  end
+  if submission_target['version'] != version.to_s
+    log_error "Package version #{submission_target['version']} does not match requested version #{version}."
+    exit 1
+  end
+  if options[:build_number] && submission_target['build'] != options[:build_number].to_s
+    log_error "Package build #{submission_target['build']} does not match --build-number #{options[:build_number]}."
+    exit 1
+  end
+  build_number = submission_target['build']
+end
+
 preflight_ok, preflight_detail = fresh_appstore_preflight_receipt?(
   project_root: project_root,
   app_id: app_id,
   version: version,
-  platform: platform
+  platform: platform,
+  submission_target: submission_target
 )
 unless preflight_ok
-  log_error "App Store submission blocked: #{preflight_detail}"
-  log_error 'Run ./scripts/SaneMaster.rb appstore_preflight and fix every blocking issue before submitting.'
-  exit 1
+  log_info "Refreshing App Store preflight for the exact submission target: #{preflight_detail}"
+  refresh_ok, refresh_detail = refresh_appstore_preflight_binding(
+    project_root: project_root,
+    submission_target: submission_target
+  )
+  unless refresh_ok
+    log_error "App Store submission blocked: #{refresh_detail}"
+    log_error 'Run the canonical Mini App Store preflight for this exact package/build and fix every blocking issue.'
+    exit 1
+  end
+  preflight_ok, preflight_detail = fresh_appstore_preflight_receipt?(
+    project_root: project_root,
+    app_id: app_id,
+    version: version,
+    platform: platform,
+    submission_target: submission_target
+  )
+  unless preflight_ok
+    log_error "App Store submission blocked after exact-target preflight: #{preflight_detail}"
+    exit 1
+  end
 end
 log_info "Fresh App Store preflight receipt: #{preflight_detail}"
-
-token = generate_jwt
 
 # Step 1: Upload build
 unless options[:skip_upload]
@@ -4905,29 +5130,14 @@ else
 end
 
 # Step 2: Wait for processing
-build_number =
-  if options[:build_number]
-    options[:build_number]
-  elsif options[:skip_upload]
-    detected_build_number = detect_project_build_number(project_root)
-    if detected_build_number
-      log_info "Using build number #{detected_build_number} from project metadata."
-      detected_build_number
-    else
-      default_build_number(version)
-    end
-  else
-    extract_build_number_from_package(pkg_path) || default_build_number(version)
+unless options[:skip_upload]
+  token = generate_jwt
+  build_id = wait_for_build(app_id, build_number, asc_platform, token, skip_upload: false)
+  unless build_id
+    # Some older projects used the marketing version as CFBundleVersion.
+    log_info "Retrying build lookup with version string #{version}..."
+    build_id = wait_for_build(app_id, version, asc_platform, token, skip_upload: false)
   end
-build_id = wait_for_build(app_id, build_number, asc_platform, token, skip_upload: options[:skip_upload])
-unless build_id
-  if options[:skip_upload] && options[:build_number]
-    log_error "Requested reused build #{build_number} was not found. Refusing version-string fallback in --skip-upload mode."
-    exit 1
-  end
-  # Try with the version string itself (some projects use version as build number)
-  log_info "Retrying build lookup with version string #{version}..."
-  build_id = wait_for_build(app_id, version, asc_platform, token, skip_upload: options[:skip_upload])
 end
 
 unless build_id

@@ -11,6 +11,8 @@
 require 'json'
 require 'shellwords'
 require 'time'
+require_relative 'state_signer'
+require_relative 'release_receipt_signer'
 
 # Canonical SaneProcess repo root. SaneMaster.rb tool_discovery always writes its
 # receipt under <SaneProcess>/outputs/, regardless of the project cwd, so the
@@ -74,12 +76,43 @@ def authoritative_tool_discovery_receipt?(receipt, expected_query)
   true
 end
 
-def release_preflight_proof
+def release_preflight_receipt_signer
+  Thread.current[:saneprocess_sanetrack_release_receipt_signer] || ReleaseReceiptSigner.production
+end
+
+def release_preflight_proof(runner_receipt: nil, receipt_signer: nil)
+  return nil unless runner_receipt.is_a?(Hash)
+
   path = File.join(Dir.pwd, 'outputs', 'release_preflight_status.json')
   return nil unless File.file?(path) && recent_time?(File.mtime(path))
 
-  data = JSON.parse(File.read(path, encoding: Encoding::UTF_8))
+  signer = receipt_signer || release_preflight_receipt_signer
+  data = signer.read(path, producer: 'saneprocess.release_preflight.v1')
+  return nil unless data.is_a?(Hash)
   return nil unless data['status'].to_s == 'passed'
+  return nil unless Array(data['issues']).empty?
+  return nil unless data['miniRuntime'] == true
+
+  started_at = Time.parse(runner_receipt[:started_at].to_s)
+  completed_at = Time.parse(runner_receipt[:completed_at].to_s)
+  generated_at = Time.parse(data['generatedAt'].to_s)
+  return nil unless generated_at.between?(started_at - 1, completed_at + 1)
+  return nil if generated_at > Time.now.utc + 300
+
+  current_fingerprint = runner_receipt[:source_fingerprint].to_s
+  receipt_fingerprint = data['sourceFingerprint'].to_s
+  return nil unless current_fingerprint.match?(/\A[0-9a-f]{64}\z/)
+  return nil unless receipt_fingerprint == current_fingerprint
+
+  verify = data['verifyEvidence']
+  return nil unless verify.is_a?(Hash) && verify['type'].to_s == 'verify' && verify['success'] == true
+  return nil unless verify['testsRun'].to_i.positive?
+  return nil unless verify['host'].to_s.downcase.include?('mini')
+  return nil unless File.realpath(verify['cwd'].to_s) == File.realpath(Dir.pwd)
+  return nil unless verify['sourceFingerprint'].to_s == current_fingerprint
+  verify_at = Time.parse(verify['timestamp'].to_s)
+  return nil unless verify_at.between?(started_at - 1, generated_at + 1)
+
   clearance = ship_clearance_proof
   return nil unless clearance
 
@@ -89,9 +122,11 @@ def release_preflight_proof
     generated_at: data['generatedAt'],
     status: data['status'],
     clearance_path: clearance[:path],
-    app: clearance[:app]
+    app: clearance[:app],
+    fingerprint: runner_receipt[:fingerprint],
+    workflow_receipt_id: runner_receipt[:receipt_id]
   }
-rescue JSON::ParserError
+rescue StandardError
   nil
 end
 
@@ -108,15 +143,18 @@ def ship_clearance_proof(project_dir = Dir.pwd)
   require_relative 'state_signer'
   data = StateSigner.read_verified(clearance_path)
   return nil unless data && data['app'] == app_name
-  return nil if data['project_dir'] && File.expand_path(data['project_dir']) != File.expand_path(project_dir)
+  clearance_project = data['project_dir'].to_s.strip
+  return nil if clearance_project.empty?
+  return nil unless File.realpath(clearance_project) == File.realpath(project_dir)
 
-  if data['expires_at']
-    expires = Time.parse(data['expires_at']) rescue nil
-    return nil if expires && Time.now.utc > expires
-  end
+  expires = Time.parse(data['expires_at'].to_s)
+  return nil unless expires > Time.now.utc
 
   current_sha = `git -C #{project_dir.shellescape} rev-parse HEAD 2>/dev/null`.strip
-  return nil if data['git_sha'] && release_relevant_clearance_commits_changed?(project_dir, data['git_sha'], current_sha)
+  clearance_sha = data['git_sha'].to_s.strip
+  return nil unless clearance_sha.match?(/\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/i)
+  return nil unless current_sha.match?(/\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/i)
+  return nil if release_relevant_clearance_commits_changed?(project_dir, clearance_sha, current_sha)
 
   { path: clearance_path, app: app_name }
 rescue StandardError

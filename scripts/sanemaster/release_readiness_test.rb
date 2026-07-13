@@ -6,14 +6,22 @@ require 'json'
 require 'open3'
 require 'tmpdir'
 
+ENV['CLAUDE_HOOK_SECRET'] ||= 'release-readiness-test-secret'
+
 require_relative '../hooks/test/test_framework'
 require_relative '../SaneMaster'
+
+TEST_RELEASE_RECEIPT_SIGNER = ReleaseReceiptSigner.test_signer(secret: 'release-readiness-test-secret')
 
 class ReleaseReadinessHarness < SaneMaster
   attr_writer :apps_root
 
   def release_readiness_apps_root
     @apps_root
+  end
+
+  def release_readiness_receipt_signer
+    TEST_RELEASE_RECEIPT_SIGNER
   end
 end
 
@@ -24,7 +32,12 @@ def init_release_readiness_app(root, name, preflight:, qa: nil, dirty: false)
   FileUtils.mkdir_p(File.join(app, 'outputs'))
   File.write(File.join(app, '.saneprocess'), "name: #{name}\n")
   File.write(File.join(app, 'README.md'), "#{name}\n")
-  File.write(File.join(app, 'outputs', 'release_preflight_status.json'), JSON.pretty_generate(preflight))
+  preflight = preflight.merge('type' => 'release_preflight_status')
+  TEST_RELEASE_RECEIPT_SIGNER.write(
+    File.join(app, 'outputs', 'release_preflight_status.json'),
+    preflight.dup,
+    producer: 'saneprocess.release_preflight.v1'
+  )
   File.write(File.join(app, 'outputs', 'qa_status.json'), JSON.pretty_generate(qa)) if qa
 
   system('git', '-C', app, 'init', '-q')
@@ -35,7 +48,11 @@ def init_release_readiness_app(root, name, preflight:, qa: nil, dirty: false)
   if preflight['sourceFingerprint'] == '__CURRENT__'
     harness = ReleaseReadinessHarness.new
     preflight = preflight.merge('sourceFingerprint' => harness.send(:release_status_source_fingerprint, app))
-    File.write(File.join(app, 'outputs', 'release_preflight_status.json'), JSON.pretty_generate(preflight))
+    TEST_RELEASE_RECEIPT_SIGNER.write(
+      File.join(app, 'outputs', 'release_preflight_status.json'),
+      preflight,
+      producer: 'saneprocess.release_preflight.v1'
+    )
   end
   File.write(File.join(app, 'dirty.txt'), "dirty\n") if dirty
   app
@@ -217,7 +234,11 @@ exit(run_tests('SaneMaster Release Readiness Tests') do
         preflight_path = File.join(app, 'outputs', 'release_preflight_status.json')
         preflight_payload = JSON.parse(File.read(preflight_path))
         preflight_payload['sourceFingerprint'] = ReleaseReadinessHarness.new.send(:release_status_source_fingerprint, app)
-        File.write(preflight_path, JSON.pretty_generate(preflight_payload))
+        TEST_RELEASE_RECEIPT_SIGNER.write(
+          preflight_path,
+          preflight_payload,
+          producer: 'saneprocess.release_preflight.v1'
+        )
 
         subject = ReleaseReadinessHarness.new
         subject.apps_root = root
@@ -279,7 +300,7 @@ exit(run_tests('SaneMaster Release Readiness Tests') do
       true
     end
 
-    test('SaneMaster release_readiness --json prints parseable JSON in local mode') do
+    test('SaneMaster release_readiness CLI rejects test-only signatures and keeps JSON parseable') do
       Dir.mktmpdir('release-readiness-cli-') do |root|
         app = init_release_readiness_app(
           root,
@@ -304,8 +325,10 @@ exit(run_tests('SaneMaster Release Readiness Tests') do
         )
 
         parsed = JSON.parse(stdout)
-        assert(status.success?, "expected green candidate exit 0, got stderr=#{stderr.inspect}")
-        assert_eq(parsed.dig('summary', 'ready'), true)
+        assert(!status.success?, 'production CLI must reject a test-mode release authorization receipt')
+        assert_eq(parsed.dig('summary', 'ready'), false)
+        blockers = parsed.dig('apps', 0, 'candidate_readiness', 'blockers') || []
+        assert(blockers.any? { |item| item.include?('release_preflight receipt missing') })
         assert(stdout.lstrip.start_with?('{'), 'JSON stdout should not be prefixed by commentary')
       end
       true

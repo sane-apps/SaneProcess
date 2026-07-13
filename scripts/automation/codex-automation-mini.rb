@@ -34,11 +34,11 @@ def toml_value(val)
 end
 
 def write_toml(path, auto)
-  lines = FIELD_ORDER.filter_map do |key|
+  lines = FIELD_ORDER.map do |key|
     next unless auto.key?(key)
 
     "#{key} = #{toml_value(auto[key])}"
-  end
+  end.compact
   File.write(path, lines.join("\n") + "\n")
 end
 

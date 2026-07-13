@@ -161,7 +161,7 @@ exit(run_tests('SaneMaster Process Eval Tests') do
       result = subject.run_trace_eval_fixture(File.expand_path('../process_eval_fixtures.json', __dir__))
 
       assert(result[:passed], result[:traces].reject { |entry| entry[:passed] }.inspect)
-      assert_eq(result[:trace_count], 17)
+      assert_eq(result[:trace_count], 18)
       true
     end
 
@@ -298,7 +298,7 @@ exit(run_tests('SaneMaster Process Eval Tests') do
           )
 
           assert(result[:passed], result.inspect)
-          assert_eq(result.dig(:trace_eval, :trace_count), 17)
+          assert_eq(result.dig(:trace_eval, :trace_count), 18)
           assert_eq(result.dig(:sop_review, :sessions, :total), 1)
           assert_eq(result.dig(:live_telemetry, :event_count), 2)
           assert_eq(result.dig(:abtest_review, :receipt_count), 0)

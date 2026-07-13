@@ -40,24 +40,90 @@ lead-research.py --domain setapp.com --domain macstories.net
 
 ### gpt_audit.py
 
-Standalone GPT audit runner for scripted or non-interactive audit batches.
+Standalone GPT audit runner for scripted or non-interactive audit batches. It
+defaults to independent ephemeral Codex CLI lanes and does not require
+`OPENAI_API_KEY`.
+
+Codex lanes also pass `--ignore-user-config`, so user MCP/plugin/app
+configuration is not loaded while Codex authentication remains available. The
+current CLI has no supported no-network flag: read-only sandboxing is not
+network isolation, and the selected model can still make network requests.
+Child processes receive a minimal runtime/auth environment; API keys and
+unrelated token/secret variables are not forwarded. Do not include secrets in
+audit inputs.
+
+Authoritative runs accept a repo under `SANEAPPS_ROOT` (default `~/SaneApps`),
+a regular current-user bundle inside that repo or the mode-0700
+`/tmp/saneprocess-gpt-audit-inputs` staging root, and prompts only from the
+installed `~/.codex/skills/{audit,critic}/prompts` roots. Empty, oversized,
+symlinked, or duplicate-content inputs are rejected. Outputs are limited to
+repo `outputs/` or `/tmp/saneprocess-gpt-audit-receipts`; the report must be a
+direct child of the selected mode-0700 output directory.
 
 **Usage:**
 ```bash
-python3 gpt_audit.py \
+/Applications/Xcode.app/Contents/Developer/usr/bin/python3 /Users/stephansmac/SaneApps/infra/SaneProcess/scripts/automation/gpt_audit.py \
   --title "Docs Audit" \
-  --bundle /tmp/audit_bundle.txt \
-  --prompts-dir ~/.codex/skills/audit/prompts \
-  --out-dir /tmp/docs_audit_outputs \
-  --report /tmp/docs_audit_outputs/summary.md
+  --repo /Users/stephansmac/SaneApps/infra/SaneProcess \
+  --bundle /Users/stephansmac/SaneApps/infra/SaneProcess/outputs/gpt-audit-inputs/audit_bundle.txt \
+  --prompts-dir /Users/stephansmac/.codex/skills/audit/prompts \
+  --out-dir /Users/stephansmac/SaneApps/infra/SaneProcess/outputs/gpt-audit/docs \
+  --report /Users/stephansmac/SaneApps/infra/SaneProcess/outputs/gpt-audit/docs/summary.md \
+  --max-workers 4
+
+# Diagnostic partial quorum: always non-authoritative, returns nonzero,
+# and never emits CODEX_FANOUT_RECEIPT.
+/Applications/Xcode.app/Contents/Developer/usr/bin/python3 /Users/stephansmac/SaneApps/infra/SaneProcess/scripts/automation/gpt_audit.py \
+  --repo /Users/stephansmac/SaneApps/infra/SaneProcess \
+  --bundle /Users/stephansmac/SaneApps/infra/SaneProcess/outputs/gpt-audit-inputs/audit_bundle.txt \
+  --prompts-dir /Users/stephansmac/.codex/skills/audit/prompts \
+  --out-dir /Users/stephansmac/SaneApps/infra/SaneProcess/outputs/gpt-audit/partial \
+  --report /Users/stephansmac/SaneApps/infra/SaneProcess/outputs/gpt-audit/partial/summary.md \
+  --required-success 3 --allow-partial
+
+# Explicit API fallback (requires OPENAI_API_KEY)
+/Applications/Xcode.app/Contents/Developer/usr/bin/python3 /Users/stephansmac/SaneApps/infra/SaneProcess/scripts/automation/gpt_audit.py --backend responses-api \
+  --repo /Users/stephansmac/SaneApps/infra/SaneProcess \
+  --bundle /Users/stephansmac/SaneApps/infra/SaneProcess/outputs/gpt-audit-inputs/audit_bundle.txt \
+  --prompts-dir /Users/stephansmac/.codex/skills/audit/prompts \
+  --out-dir /Users/stephansmac/SaneApps/infra/SaneProcess/outputs/gpt-audit/api \
+  --report /Users/stephansmac/SaneApps/infra/SaneProcess/outputs/gpt-audit/api/summary.md
 ```
+
+Create the bundle as a regular UTF-8 file at the shown repo-owned input path
+before running an example. The absolute Python launcher and script paths are
+part of the authoritative hook command binding; do not replace them with
+`python3`, a repo-local launcher, `~`, or shell-variable aliases.
 
 **What it does:**
 1. Loads all perspective prompts from a prompt directory.
-2. Sends the same audit bundle to multiple GPT perspectives in parallel through the Responses API.
+2. Runs every prompt as a separate
+   `codex exec --ephemeral --ignore-user-config -s read-only` lane, with
+   configurable concurrency and no total perspective cap. The Responses API
+   remains available through `--backend responses-api`.
 3. Writes one raw markdown file per perspective.
 4. Runs a synthesis pass to merge duplicates and contradictions.
-5. Writes a consolidated markdown report plus a JSON manifest.
+5. Atomically writes a consolidated markdown report plus a JSON manifest with
+   per-lane SHA-256, unique perspective/artifact identity, runner path, full
+   count, isolation, freshness, and synthesis evidence. By default every prompt
+   must succeed. It prints `CODEX_FANOUT_RECEIPT=<absolute manifest path>` only
+   for a full-quorum successful synthesis using the repo-owned runner and a
+   fixed absolute, root-owned Python launcher and a canonical signed Codex
+   installation. Authoritative runs ignore inherited
+   `PATH`: Codex must satisfy OpenAI Team ID `2DC432GLL2` and its designated
+   code requirement, and is selected only from the standalone install under
+   `~/.codex/packages/standalone/current/` or the ChatGPT app resource.
+   `--codex-bin` is rejected for authoritative runs. Partial, failed, or
+   overridden runs return nonzero without a receipt.
+
+The receipt is concrete local provenance, not cryptographic attestation or a
+security boundary against malicious code already running as the same user. An
+agent with workspace write access can forge local files. The hook therefore
+validates the canonical runner realpath, internal counts, isolation flags,
+input hashes, the trusted Python and Codex realpaths and binary hashes, invocation
+nonce/command binding, unique names
+and artifact realpaths, report/artifact hashes, freshness, and successful
+authoritative synthesis before counting coverage.
 
 **Status:** `/audit` now uses GPT subagents as the standard path. Use `gpt_audit.py` only when
 you explicitly need a scripted fallback.
@@ -272,17 +338,35 @@ Use this after website copy or release-page changes. It is a manual audit helper
 
 ### sane-status-crossref.sh
 
-One-command cross-reference run for business health (sales, inbox, and GitHub issues).
+One-command cross-reference run for operational and business status. The default
+is the full status surface; fast mode is an explicitly partial intake view.
 
 **Usage:**
 ```bash
-ruby scripts/SaneMaster.rb status
+ruby scripts/SaneMaster.rb status          # Default: full
+ruby scripts/SaneMaster.rb status --full   # Explicit full status
+ruby scripts/SaneMaster.rb status --fast   # Inbox + key worktrees only
 ```
 
-**What it does:**
-1. Shows last-30-day LemonSqueezy sales summary.
-2. Shows current inbox status and action-needed threads.
-3. Shows open GitHub issues across core SaneApps repos.
+**Modes:**
+1. `--full` checks key worktrees, sales, inbox, listing actions, hosted-file
+   dashboard actions, Setapp, outreach, GitHub notifications, open issues and
+   PRs, and comment/review activity.
+2. `--fast` checks active inbox actions and key worktrees. It always labels the
+   result partial and does not claim release or distribution readiness.
+
+Status is read-only: an unavailable portal lane such as Setapp is reported as
+incomplete and does not launch browser automation.
+
+**Exit contract:**
+- `0`: every lane selected by the chosen mode ran. Reported business or release
+  blockers still require review.
+- `3`: one or more selected lanes were unavailable, so status coverage is
+  incomplete. This applies to both full and fast mode.
+- `2`: invalid command-line arguments.
+
+GitHub credentials are loaded by the focused status helper and exposed only to
+a verified, absolute GitHub CLI child with a fixed minimal `PATH`.
 
 ### sane-support-kickoff.sh
 

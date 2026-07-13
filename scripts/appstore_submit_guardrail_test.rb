@@ -4,7 +4,17 @@
 require 'tmpdir'
 
 require_relative 'hooks/test/test_framework'
+require_relative 'hooks/release_receipt_signer'
 require_relative 'appstore_submit'
+
+APPSTORE_PREFLIGHT_TEST_SIGNER = ReleaseReceiptSigner.test_signer(secret: 'appstore-preflight-guardrail-test')
+APPSTORE_PREFLIGHT_ASC_TARGET = {
+  'type' => 'asc_build',
+  'platform' => 'ios',
+  'ascBuildId' => 'asc-build-123',
+  'version' => '1.0',
+  'build' => '100'
+}.freeze
 
 def with_env(overrides)
   previous = {}
@@ -186,12 +196,15 @@ class AppStoreSubmitGuardrailHarness
   end
 end
 
-def build_metadata_config(marketing_url: nil)
+def build_metadata_config(
+  marketing_url: nil,
+  review_notes: 'Basic is free. This App Store build unlocks Pro with an in-app purchase. No external checkout or license key is used.'
+)
   {
     'name' => 'SaneTest',
     'appstore' => {
       'privacy_policy_url' => 'https://example.com/privacy',
-      'review_notes' => 'Basic is free. This App Store build unlocks Pro with an in-app purchase. No external checkout or license key is used.',
+      'review_notes' => review_notes,
       'metadata' => {
         'macos' => {
           'description' => 'Short focused description for the Mac app.',
@@ -262,7 +275,9 @@ exit(run_tests('App Store Submit Guardrail Tests') do
           project_root: dir,
           app_id: '123',
           version: '1.0',
-          platform: 'ios'
+          platform: 'ios',
+          submission_target: APPSTORE_PREFLIGHT_ASC_TARGET,
+          receipt_signer: APPSTORE_PREFLIGHT_TEST_SIGNER
         )
 
         assert(!ok, 'expected missing preflight receipt to block submission')
@@ -276,19 +291,144 @@ exit(run_tests('App Store Submit Guardrail Tests') do
         FileUtils.mkdir_p(File.join(dir, 'outputs'))
         File.write(File.join(dir, '.saneprocess'), "name: Example\n")
         fingerprint = appstore_worktree_fingerprint(dir)
+        APPSTORE_PREFLIGHT_TEST_SIGNER.write(
+          File.join(dir, 'outputs', 'appstore_preflight_status.json'),
+          {
+            'type' => 'appstore_preflight_status',
+            'generatedAt' => Time.now.iso8601,
+            'status' => 'passed',
+            'appId' => '123',
+            'version' => '1.0',
+            'platforms' => ['ios'],
+            'submissionTarget' => APPSTORE_PREFLIGHT_ASC_TARGET,
+            'worktreeFingerprint' => fingerprint,
+            'issueCount' => 0,
+            'warningCount' => 0,
+            'issues' => [],
+            'warnings' => []
+          },
+          producer: 'saneprocess.appstore_preflight.v1'
+        )
+
+        ok, detail = fresh_appstore_preflight_receipt?(
+          project_root: dir,
+          app_id: '123',
+          version: '1.0',
+          platform: 'ios',
+          submission_target: APPSTORE_PREFLIGHT_ASC_TARGET,
+          receipt_signer: APPSTORE_PREFLIGHT_TEST_SIGNER
+        )
+
+        assert(ok, "expected fresh preflight receipt to pass: #{detail}")
+      end
+      true
+    end
+
+    test('rejects a receipt bound to a different exact ASC build identity') do
+      Dir.mktmpdir('mismatched-appstore-build-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: Example\n")
+        APPSTORE_PREFLIGHT_TEST_SIGNER.write(
+          File.join(dir, 'outputs', 'appstore_preflight_status.json'),
+          {
+            'type' => 'appstore_preflight_status',
+            'generatedAt' => Time.now.iso8601,
+            'status' => 'passed',
+            'appId' => '123',
+            'version' => '1.0',
+            'platforms' => ['ios'],
+            'submissionTarget' => APPSTORE_PREFLIGHT_ASC_TARGET,
+            'worktreeFingerprint' => appstore_worktree_fingerprint(dir),
+            'issues' => []
+          },
+          producer: 'saneprocess.appstore_preflight.v1'
+        )
+
+        different_target = APPSTORE_PREFLIGHT_ASC_TARGET.merge('ascBuildId' => 'asc-build-999')
+        ok, detail = fresh_appstore_preflight_receipt?(
+          project_root: dir,
+          app_id: '123',
+          version: '1.0',
+          platform: 'ios',
+          submission_target: different_target,
+          receipt_signer: APPSTORE_PREFLIGHT_TEST_SIGNER
+        )
+
+        assert(!ok, 'expected a different ASC build ID to invalidate preflight authorization')
+        assert_includes(detail, 'exact package or ASC build')
+      end
+      true
+    end
+
+    test('package binding compares digest and metadata exactly') do
+      target = {
+        'type' => 'package',
+        'platform' => 'macos',
+        'fileName' => 'Example.pkg',
+        'sha256' => 'a' * 64,
+        'size' => 42,
+        'bundleId' => 'com.example.app',
+        'version' => '1.0',
+        'build' => '100'
+      }
+
+      assert(appstore_submission_targets_match?(target, target.dup), 'exact package identity should match')
+      assert(
+        !appstore_submission_targets_match?(target, target.merge('sha256' => 'b' * 64)),
+        'different package bytes must not share authorization'
+      )
+      true
+    end
+
+    test('fingerprint changes when git-untracked content changes without size or mtime drift') do
+      Dir.mktmpdir('git-untracked-appstore-fingerprint-') do |dir|
+        Open3.capture2e('git', '-C', dir, 'init')
+        path = File.join(dir, 'candidate.txt')
+        File.write(path, 'AAAA')
+        fixed_time = Time.at(1_700_000_000)
+        File.utime(fixed_time, fixed_time, path)
+        before = appstore_worktree_fingerprint(dir)
+
+        File.write(path, 'BBBB')
+        File.utime(fixed_time, fixed_time, path)
+        after = appstore_worktree_fingerprint(dir)
+
+        assert(before != after, 'git fingerprint must hash untracked file contents')
+      end
+      true
+    end
+
+    test('non-git fingerprint hashes file contents instead of size and mtime only') do
+      Dir.mktmpdir('non-git-appstore-fingerprint-') do |dir|
+        path = File.join(dir, 'candidate.txt')
+        File.write(path, 'AAAA')
+        fixed_time = Time.at(1_700_000_000)
+        File.utime(fixed_time, fixed_time, path)
+        before = appstore_worktree_fingerprint(dir)
+
+        File.write(path, 'BBBB')
+        File.utime(fixed_time, fixed_time, path)
+        after = appstore_worktree_fingerprint(dir)
+
+        assert(before != after, 'non-git fingerprint must hash file contents')
+      end
+      true
+    end
+
+    test('rejects unsigned App Store preflight receipts') do
+      Dir.mktmpdir('unsigned-appstore-preflight-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: Example\n")
         File.write(
           File.join(dir, 'outputs', 'appstore_preflight_status.json'),
-          JSON.pretty_generate(
+          JSON.generate(
             generatedAt: Time.now.iso8601,
             status: 'passed',
             appId: '123',
             version: '1.0',
             platforms: ['ios'],
-            worktreeFingerprint: fingerprint,
-            issueCount: 0,
-            warningCount: 0,
-            issues: [],
-            warnings: []
+            worktreeFingerprint: appstore_worktree_fingerprint(dir),
+            issues: []
           )
         )
 
@@ -296,10 +436,83 @@ exit(run_tests('App Store Submit Guardrail Tests') do
           project_root: dir,
           app_id: '123',
           version: '1.0',
-          platform: 'ios'
+          platform: 'ios',
+          submission_target: APPSTORE_PREFLIGHT_ASC_TARGET,
+          receipt_signer: APPSTORE_PREFLIGHT_TEST_SIGNER
         )
 
-        assert(ok, "expected fresh preflight receipt to pass: #{detail}")
+        assert(!ok, 'expected unsigned receipt to be rejected')
+        assert_includes(detail, 'signed')
+      end
+      true
+    end
+
+    test('rejects App Store preflight receipts with missing target bindings') do
+      Dir.mktmpdir('unbound-appstore-preflight-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: Example\n")
+        APPSTORE_PREFLIGHT_TEST_SIGNER.write(
+          File.join(dir, 'outputs', 'appstore_preflight_status.json'),
+          {
+            'type' => 'appstore_preflight_status',
+            'generatedAt' => Time.now.iso8601,
+            'status' => 'passed',
+            'appId' => '',
+            'version' => '',
+            'platforms' => [],
+            'worktreeFingerprint' => '',
+            'issues' => []
+          },
+          producer: 'saneprocess.appstore_preflight.v1'
+        )
+
+        ok, detail = fresh_appstore_preflight_receipt?(
+          project_root: dir,
+          app_id: '123',
+          version: '1.0',
+          platform: 'ios',
+          submission_target: APPSTORE_PREFLIGHT_ASC_TARGET,
+          receipt_signer: APPSTORE_PREFLIGHT_TEST_SIGNER
+        )
+
+        assert(!ok, 'expected missing target bindings to be rejected')
+        assert_match(detail, /appId|version|platform|fingerprint/)
+      end
+      true
+    end
+
+    test('rejects correctly signed App Store preflight receipts four minutes in the future') do
+      Dir.mktmpdir('future-appstore-preflight-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, '.saneprocess'), "name: Example\n")
+        fingerprint = appstore_worktree_fingerprint(dir)
+        APPSTORE_PREFLIGHT_TEST_SIGNER.write(
+          File.join(dir, 'outputs', 'appstore_preflight_status.json'),
+          {
+            'type' => 'appstore_preflight_status',
+            'generatedAt' => (Time.now.utc + (4 * 60)).iso8601,
+            'status' => 'passed',
+            'appId' => '123',
+            'version' => '1.0',
+            'platforms' => ['ios'],
+            'submissionTarget' => APPSTORE_PREFLIGHT_ASC_TARGET,
+            'worktreeFingerprint' => fingerprint,
+            'issues' => []
+          },
+          producer: 'saneprocess.appstore_preflight.v1'
+        )
+
+        ok, detail = fresh_appstore_preflight_receipt?(
+          project_root: dir,
+          app_id: '123',
+          version: '1.0',
+          platform: 'ios',
+          submission_target: APPSTORE_PREFLIGHT_ASC_TARGET,
+          receipt_signer: APPSTORE_PREFLIGHT_TEST_SIGNER
+        )
+
+        assert(!ok, 'expected future-dated receipt to be rejected')
+        assert_includes(detail, 'future')
       end
       true
     end
@@ -427,6 +640,103 @@ exit(run_tests('App Store Submit Guardrail Tests') do
           report[:warnings],
           'macOS onboarding paywall appears one-shot; review notes should mention a durable post-onboarding upgrade path like Settings > License'
         )
+      end
+      true
+    end
+
+    test('accepts an accurately documented trial-then-purchase business model') do
+      subject.stub_url_status('https://example.com/support', code: 200)
+      subject.stub_url_status('https://example.com/privacy', code: 200)
+
+      Dir.mktmpdir('appstore-submit-guardrails') do |dir|
+        File.write(
+          File.join(dir, 'Dummy.swift'),
+          "import Foundation\nfinal class LicenseService {}\nstruct WelcomeGateView {}\nstruct LicenseSettingsView {}\nlet hasSeenWelcome = true\nfunc purchasePro() {}\n"
+        )
+
+        config = build_metadata_config(
+          review_notes: 'A 14-day Pro trial starts on launch. After the trial, continued app access requires an optional one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used.'
+        )
+        config['appstore']['product_id'] = 'com.example.app.pro'
+
+        report = subject.send(
+          :metadata_review_readiness_report,
+          config: config,
+          asc_platform: 'MAC_OS',
+          app_name: 'SaneTest',
+          project_root: dir
+        )
+
+        assert(!report[:issues].include?('macOS review notes do not fully explain the App Store business model'))
+      end
+      true
+    end
+
+    test('does not treat a bare App Store mention as an explicit purchase path') do
+      subject.stub_url_status('https://example.com/support', code: 200)
+      subject.stub_url_status('https://example.com/privacy', code: 200)
+
+      Dir.mktmpdir('appstore-submit-guardrails') do |dir|
+        File.write(
+          File.join(dir, 'Dummy.swift'),
+          "import Foundation\nfinal class LicenseService {}\nstruct WelcomeGateView {}\nstruct LicenseSettingsView {}\nlet hasSeenWelcome = true\nfunc purchasePro() {}\n"
+        )
+        config = build_metadata_config(
+          review_notes: 'A 14-day trial is available in this App Store build. After the trial, continued access requires Pro access. No external checkout or license keys are used.'
+        )
+        config['appstore']['product_id'] = 'com.example.app.pro'
+
+        report = subject.send(
+          :metadata_review_readiness_report,
+          config: config,
+          asc_platform: 'MAC_OS',
+          app_name: 'SaneTest',
+          project_root: dir
+        )
+
+        assert_includes(report[:issues], 'macOS review notes do not fully explain the App Store business model')
+      end
+      true
+    end
+
+    test('rejects negated or contradictory App Store business-model claims') do
+      subject.stub_url_status('https://example.com/support', code: 200)
+      subject.stub_url_status('https://example.com/privacy', code: 200)
+
+      invalid_notes = [
+        'Basic is not free. Pro is a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used.',
+        'A 14-day Pro trial starts on launch. The trial is not free. After the trial, continued app access requires a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used.',
+        'Basic is free. Pro is not an in-app purchase. Pro is a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used.',
+        'Basic is free. An App Store in-app purchase is not required. Pro is a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used.',
+        'Basic is free. Pro cannot be purchased in the app. Pro is a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used.',
+        "Basic is free. Pro isn't available for purchase in the app. Pro is a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used.",
+        'Basic is free. Pro is not available for purchase in the app. Pro is a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used.',
+        'Basic is free. Pro is a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used. Pro can be purchased through the website.'
+      ]
+
+      Dir.mktmpdir('appstore-submit-guardrails') do |dir|
+        File.write(
+          File.join(dir, 'Dummy.swift'),
+          "import Foundation\nfinal class LicenseService {}\nstruct WelcomeGateView {}\nstruct LicenseSettingsView {}\nlet hasSeenWelcome = true\nfunc purchasePro() {}\n"
+        )
+
+        invalid_notes.each do |review_notes|
+          config = build_metadata_config(review_notes: review_notes)
+          config['appstore']['product_id'] = 'com.example.app.pro'
+          report = subject.send(
+            :metadata_review_readiness_report,
+            config: config,
+            asc_platform: 'MAC_OS',
+            app_name: 'SaneTest',
+            project_root: dir
+          )
+
+          assert_includes(
+            report[:issues],
+            'macOS review notes do not fully explain the App Store business model',
+            "expected rejection for: #{review_notes}"
+          )
+        end
       end
       true
     end

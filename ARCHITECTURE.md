@@ -452,6 +452,12 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
 - Trigger maps and AGENTS changes can be regression-tested before they ship.
 - Support, release, UI runtime, tool discovery, subagent hygiene, session lifecycle, and SOP score-cap workflows can be tested as multi-step receipts instead of more prompt prose.
 - Multi-agent delegation remains useful, but workflow complexity should be driven by eval failures and task shape, not by default escalation.
+- Reviewer breadth and execution concurrency are separate controls. Useful
+  perspectives determine review breadth; live client/host capacity determines
+  simultaneous workers. Stateful work uses native subagents, while isolated
+  read-only perspectives may use ephemeral sandboxed `codex exec` fan-out;
+  interactive waves are only a compatibility fallback. The operational source
+  of truth is `DEVELOPMENT.md` under "Reviewer fan-out routing."
 - Skill descriptions and duplicate-name drift become tested routing surfaces rather than informal prose.
 - Client-managed Codex plugins are runtime adapter surfaces. SaneProcess records category routing in `DEVELOPMENT.md`, but release/support/security proof stays with repo-owned wrappers and eval coverage instead of an exhaustive plugin inventory.
 - Verification scope is a tested workflow surface. `proof_plan` classifies
@@ -520,6 +526,9 @@ Together the three signals triangulate intent from evidence, not the agent's say
 - Hammering a gate is now visible to the operator on its own telemetry — they do not have to interrogate the agent to know whether it engaged the gate or just re-ran it.
 - Unfair blocks have a self-service, audited way out that mostly *fixes* the gap instead of bypassing it.
 - Gates that are repeatedly wrong surface themselves for a fix — the process improves itself instead of accumulating friction.
+- Verify escalation fingerprints the exact failing command receipt. An unidentified
+  failure never proves that a later unidentified failure is the same problem; verify
+  stays red, but the two-strike research gate does not group two `nil` identities.
 - Perfect ungameability is not claimed: the certifier is an LLM the agent invokes, so the override is "hard to forge (signed) + always logged + self-flagging", not cryptographically impossible. The deterministic floor remains the real teeth.
 
 ---

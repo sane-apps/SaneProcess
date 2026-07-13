@@ -61,7 +61,12 @@ def write_fake_saneprocess_root(root)
     <<~SH
       #!/bin/bash
       cat <<'EOF'
+      Quick Start:
+        Categories (use 'help <category>' for details):
         check_docs
+      Examples:
+        check_docs
+      Aliases: sm = ./scripts/SaneMaster.rb
       EOF
     SH
   )

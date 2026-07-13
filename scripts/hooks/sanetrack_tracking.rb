@@ -49,6 +49,7 @@ def track_edit(tool_name, tool_input, tool_response)
 
   track_visual_requirement_from_edit(file_path)
   track_visual_audit_note(tool_name, tool_input, file_path)
+  invalidate_review_credits_if_source_changed
 rescue StandardError
   # Don't fail on verification tracking
 end
@@ -81,6 +82,7 @@ def track_bash_mutation(tool_name, tool_input, tool_response)
     track_visual_requirement_from_edit(path)
     track_visual_audit_note('Bash', { 'content' => command }, path)
   end
+  invalidate_review_credits_if_source_changed
 rescue StandardError => e
   warn "⚠️  Bash mutation tracking error: #{e.message}" if ENV['DEBUG']
 end

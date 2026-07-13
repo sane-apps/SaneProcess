@@ -291,24 +291,26 @@ test_category('Store validation + installer') do
       env = { 'SANE_AUTOMATION_STORE' => store }
       spec = File.join(store, 'spec.json')
       File.write(spec, JSON.generate(valid_cron('status' => 'PAUSED')))
-      out, _e, s = Open3.capture3(env, 'ruby', INSTALLER, 'install', spec)
+      out, _e, s = Open3.capture3(env, '/usr/bin/ruby', INSTALLER, 'install', spec)
       assert_eq(s.exitstatus, 0)
       toml_path = out.strip
       assert(File.file?(toml_path), 'toml written')
       first = SaneAutomationGuard.parse_toml(File.read(toml_path, encoding: 'UTF-8'))
       assert_eq(first['id'], 'test-cron')
+      assert_eq(first['prompt'], %q{Say "hi" — with\nnewline})
+      assert_eq(first['cwds'], ['/Users/stephansmac/SaneApps/infra/SaneProcess'])
       created = first['created_at']
       assert(created.is_a?(Integer) && created.positive?)
 
       sleep 0.01
-      _o, _e2, s2 = Open3.capture3(env, 'ruby', INSTALLER, 'install', spec)
+      _o, _e2, s2 = Open3.capture3(env, '/usr/bin/ruby', INSTALLER, 'install', spec)
       assert_eq(s2.exitstatus, 0)
       second = SaneAutomationGuard.parse_toml(File.read(toml_path, encoding: 'UTF-8'))
       assert_eq(second['created_at'], created, 'created_at preserved on reinstall')
       assert(second['updated_at'] >= created)
 
       File.write(spec, JSON.generate(valid_cron('model' => 'gpt-4.1')))
-      _o, err, s3 = Open3.capture3(env, 'ruby', INSTALLER, 'install', spec)
+      _o, err, s3 = Open3.capture3(env, '/usr/bin/ruby', INSTALLER, 'install', spec)
       assert_eq(s3.exitstatus, 1)
       assert_match(err, /spec rejected/)
     end

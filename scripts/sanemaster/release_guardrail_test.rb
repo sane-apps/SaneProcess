@@ -8,10 +8,73 @@ require 'stringio'
 require 'tmpdir'
 require 'zlib'
 
+ENV['CLAUDE_HOOK_SECRET'] ||= 'release-guardrail-test-secret'
+
 require_relative '../hooks/test/test_framework'
 require_relative 'customer_ui_contract'
 require_relative 'gate_review'
 require_relative 'release'
+require_relative 'verify_support'
+
+RELEASE_GUARDRAIL_TEST_SIGNER = ReleaseReceiptSigner.test_signer(secret: 'release-guardrail-test-secret')
+
+def write_signed_upgrade_receipt(dir, generated_at:, source_fingerprint:, tests_run: 2)
+  evidence_dir = File.join(dir, 'outputs', 'upgrade-path-proof', 'test-run')
+  FileUtils.mkdir_p(evidence_dir)
+  artifacts = {
+    'result' => "{\"status\":\"passed\"}\n",
+    'runtime' => "runtime-upgrade-observation\n",
+    'log' => "behavioral upgrade test passed\n"
+  }.map do |role, contents|
+    filename = role == 'runtime' ? 'runtime.artifact' : "#{role}.#{role == 'result' ? 'json' : 'log'}"
+    path = File.join(evidence_dir, filename)
+    File.write(path, contents)
+    {
+      'role' => role,
+      'path' => path.sub(%r{\A#{Regexp.escape(dir)}/?}, ''),
+      'sha256' => Digest::SHA256.file(path).hexdigest,
+      'size' => File.size(path)
+    }
+  end
+  receipt = {
+    'schemaVersion' => 1,
+    'type' => 'upgrade_path_behavioral_proof',
+    'status' => 'passed',
+    'behavioral' => true,
+    'app' => 'SaneExample',
+    'generatedAt' => generated_at.iso8601,
+    'sourceFingerprint' => source_fingerprint,
+    'fromVersion' => '1.9.0',
+    'toVersion' => '2.0.0',
+    'testsRun' => tests_run,
+    'miniRuntime' => true,
+    'process' => { 'pid' => 123, 'exitStatus' => 0, 'argv' => [RbConfig.ruby, 'scripts/upgrade_test.rb'] },
+    'artifacts' => artifacts
+  }
+  path = File.join(dir, 'outputs', 'upgrade_path_behavioral_receipt.json')
+  RELEASE_GUARDRAIL_TEST_SIGNER.write(
+    path,
+    receipt,
+    producer: 'saneprocess.upgrade_path_proof.v1'
+  )
+  path
+end
+
+def write_signed_json_fixture(path, json)
+  payload = JSON.parse(json)
+  project_root = File.dirname(File.dirname(path))
+  if File.basename(path) == 'release_preflight_status.json'
+    payload['type'] = 'release_preflight_status'
+    payload['sourceFingerprint'] ||= ReleaseGuardrailHarness.new.send(:release_status_source_fingerprint, project_root)
+    RELEASE_GUARDRAIL_TEST_SIGNER.write(
+      path,
+      payload,
+      producer: 'saneprocess.release_preflight.v1'
+    )
+  else
+    StateSigner.write_signed(path, payload)
+  end
+end
 
 def capture_stdout
   original_stdout = $stdout
@@ -157,6 +220,23 @@ class ReleaseGuardrailHarness
 
   def saneprocess_repo_root
     @saneprocess_repo_root
+  end
+
+  def saneprocess_config
+    path = File.join(Dir.pwd, '.saneprocess')
+    File.exist?(path) ? (YAML.safe_load(File.read(path)) || {}) : {}
+  end
+
+  def saneprocess_value(*keys)
+    keys.reduce(saneprocess_config) { |value, key| value.is_a?(Hash) ? value[key.to_s] : nil }
+  end
+
+  def release_status_mini_runtime?
+    true
+  end
+
+  def release_receipt_signer
+    RELEASE_GUARDRAIL_TEST_SIGNER
   end
 
   def stub_url_status(url, code:, location: '', error: nil)
@@ -3928,7 +4008,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
               weak_launch_blockers: []
           YAML
         )
-        File.write(
+        write_signed_json_fixture(
           File.join(dir, 'outputs', 'release_preflight_status.json'),
           JSON.pretty_generate(
             generatedAt: Time.now.utc.iso8601,
@@ -3947,6 +4027,26 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         end
 
         assert(report[:ok], "expected launch readiness to pass: #{report.inspect}")
+
+        write_signed_json_fixture(
+          File.join(dir, 'outputs', 'release_preflight_status.json'),
+          JSON.pretty_generate(
+            generatedAt: (Time.now.utc + (4 * 60)).iso8601,
+            projectName: 'SaneExample',
+            status: 'passed',
+            issueCount: 0,
+            warningCount: 0,
+            issues: [],
+            warnings: []
+          )
+        )
+        future_report = Dir.chdir(dir) do
+          subject.launch_readiness_report(config: { 'name' => 'SaneExample' })
+        end
+        assert_includes(
+          (future_report[:issues] + future_report[:warnings]).join("\n"),
+          'release_preflight_status.json is future-dated'
+        )
       end
       true
     end
@@ -3990,7 +4090,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
                 - Already launched on Product Hunt/HN; do not relaunch without a new product story.
           YAML
         )
-        File.write(
+        write_signed_json_fixture(
           File.join(dir, 'outputs', 'release_preflight_status.json'),
           JSON.pretty_generate(
             generatedAt: (Time.now.utc - (9 * 86_400)).iso8601,
@@ -4036,10 +4136,54 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         end
 
         payload = JSON.parse(File.read(status_path))
+        verified = subject.send(
+          :upgrade_path_read_signed,
+          status_path,
+          producer: SaneMasterModules::UpgradePathProof::RELEASE_PREFLIGHT_PRODUCER
+        )
         fingerprint = payload['sourceFingerprint'].to_s
+        assert(verified, 'release preflight status must be signed')
         assert_eq(fingerprint.length, 64)
         assert_match(fingerprint, /\A[0-9a-f]{64}\z/)
+        payload['status'] = 'failed'
+        File.write(status_path, JSON.generate(payload))
+        assert_eq(
+          subject.send(
+            :upgrade_path_read_signed,
+            status_path,
+            producer: SaneMasterModules::UpgradePathProof::RELEASE_PREFLIGHT_PRODUCER
+          ),
+          nil,
+          'tampered preflight receipt must be rejected'
+        )
+        File.write(File.join(dir, 'project.yml'), "name: SaneExample\nchanged: true\n")
+        assert(subject.send(:release_status_source_fingerprint, dir) != fingerprint, 'replayed proof must not match changed source')
       end
+      true
+    end
+
+    test('release status snapshot writer fails closed when signing or persistence fails') do
+      original = subject.method(:upgrade_path_write_signed_atomic!)
+      subject.define_singleton_method(:upgrade_path_write_signed_atomic!) do |*_args, **_kwargs|
+        raise IOError, 'simulated signed receipt write failure'
+      end
+
+      error = nil
+      begin
+        subject.write_release_status_snapshot(
+          path: File.join(Dir.tmpdir, 'release-preflight-write-failure.json'),
+          status: 'passed',
+          issues: [],
+          warnings: []
+        )
+      rescue IOError => e
+        error = e
+      ensure
+        subject.define_singleton_method(:upgrade_path_write_signed_atomic!, original)
+      end
+
+      assert(error, 'expected signed release status write failure to propagate')
+      assert_includes(error.message, 'simulated signed receipt write failure')
       true
     end
 
@@ -4105,7 +4249,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
                 - No hosted video yet.
           YAML
         )
-        File.write(
+        write_signed_json_fixture(
           File.join(dir, 'outputs', 'release_preflight_status.json'),
           JSON.pretty_generate(
             generatedAt: Time.now.utc.iso8601,
@@ -4172,7 +4316,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
               weak_launch_blockers: []
           YAML
         )
-        File.write(
+        write_signed_json_fixture(
           File.join(dir, 'outputs', 'release_preflight_status.json'),
           JSON.pretty_generate(
             generatedAt: Time.now.utc.iso8601,
@@ -4231,7 +4375,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
               weak_launch_blockers: []
           YAML
         )
-        File.write(
+        write_signed_json_fixture(
           File.join(dir, 'outputs', 'release_preflight_status.json'),
           JSON.pretty_generate(
             generatedAt: Time.now.utc.iso8601,
@@ -4292,7 +4436,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
               weak_launch_blockers: []
           YAML
         )
-        File.write(
+        write_signed_json_fixture(
           File.join(dir, 'outputs', 'release_preflight_status.json'),
           JSON.pretty_generate(
             generatedAt: Time.now.utc.iso8601,
@@ -4356,7 +4500,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
               weak_launch_blockers: []
           YAML
         )
-        File.write(
+        write_signed_json_fixture(
           File.join(dir, 'outputs', 'release_preflight_status.json'),
           JSON.pretty_generate(
             generatedAt: (Time.now.utc - (9 * 86_400)).iso8601,
@@ -4423,7 +4567,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
               weak_launch_blockers: []
           YAML
         )
-        File.write(
+        write_signed_json_fixture(
           File.join(dir, 'outputs', 'release_preflight_status.json'),
           JSON.pretty_generate(
             generatedAt: (Time.now.utc - (9 * 86_400)).iso8601,
@@ -4514,6 +4658,109 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         assert_eq(result, true)
         assert_includes(output, 'App Store lane disabled in .saneprocess')
         assert_includes(output, 'Use release_preflight for direct-download release readiness')
+      end
+      true
+    end
+
+    test('appstore preflight binds an exact ASC build and rejects build-number drift') do
+      issues = []
+      target = subject.send(
+        :appstore_preflight_submission_target,
+        args: ['--platform', 'ios', '--asc-build-id', 'build-123', '--build-number', '100'],
+        version: '1.0',
+        build: '100',
+        platforms: ['ios'],
+        issues: issues
+      )
+
+      assert_eq(issues, [])
+      assert_eq(target[:type], 'asc_build')
+      assert_eq(target[:ascBuildId], 'build-123')
+      assert_eq(target[:build], '100')
+
+      drift_issues = []
+      subject.send(
+        :appstore_preflight_submission_target,
+        args: ['--platform', 'ios', '--asc-build-id', 'build-123', '--build-number', '101'],
+        version: '1.0',
+        build: '100',
+        platforms: ['ios'],
+        issues: drift_issues
+      )
+      assert(drift_issues.any? { |issue| issue.include?('does not match preflight build') })
+      true
+    end
+
+    test('appstore package binding rejects a package from another bundle target') do
+      Dir.mktmpdir('appstore-package-target-') do |dir|
+        File.write(
+          File.join(dir, 'project.yml'),
+          <<~YAML
+            targets:
+              Example:
+                type: application
+                platform: macOS
+                bundleId: com.example.direct
+                settings:
+                  configs:
+                    Release-AppStore:
+                      PRODUCT_BUNDLE_IDENTIFIER: com.example.mas
+          YAML
+        )
+        package = File.join(dir, 'Example.pkg')
+        File.write(package, 'package-bytes')
+        binding_subject = Class.new(ReleaseGuardrailHarness) do
+          attr_accessor :stub_package_bundle_id
+
+          def appstore_package_info(_path)
+            { bundle_id: stub_package_bundle_id, version: '1.0', build: '100' }
+          end
+        end.new
+
+        Dir.chdir(dir) do
+          binding_subject.stub_package_bundle_id = 'com.example.mas'
+          matching_issues = []
+          target = binding_subject.send(
+            :appstore_preflight_submission_target,
+            args: ['--platform', 'macos', '--pkg', package],
+            version: '1.0',
+            build: '100',
+            platforms: ['macos'],
+            issues: matching_issues
+          )
+          assert_eq(matching_issues, [])
+          assert_eq(target[:bundleId], 'com.example.mas')
+
+          binding_subject.stub_package_bundle_id = 'com.attacker.other'
+          mismatched_issues = []
+          binding_subject.send(
+            :appstore_preflight_submission_target,
+            args: ['--platform', 'macos', '--pkg', package],
+            version: '1.0',
+            build: '100',
+            platforms: ['macos'],
+            issues: mismatched_issues
+          )
+          assert(mismatched_issues.any? { |issue| issue.include?('not an App Store target bundle ID') })
+        end
+      end
+      true
+    end
+
+    test('appstore preflight fingerprint hashes git-untracked file contents') do
+      Dir.mktmpdir('release-appstore-fingerprint-') do |dir|
+        Open3.capture2e('git', '-C', dir, 'init')
+        path = File.join(dir, 'candidate.txt')
+        File.write(path, 'AAAA')
+        fixed_time = Time.at(1_700_000_000)
+        File.utime(fixed_time, fixed_time, path)
+        before = subject.send(:appstore_worktree_fingerprint, root: dir)
+
+        File.write(path, 'BBBB')
+        File.utime(fixed_time, fixed_time, path)
+        after = subject.send(:appstore_worktree_fingerprint, root: dir)
+
+        assert(before != after, 'signed preflight fingerprint must bind untracked file bytes')
       end
       true
     end
@@ -4740,6 +4987,691 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
   end
 
   test_category('Release test lane policy') do
+    test('defaults scanner ignores unrelated additions in a production file that already uses UserDefaults') do
+      diff = <<~DIFF
+        diff --git a/SaneVideo/Core/Utilities/TestEnvironment.swift b/SaneVideo/Core/Utilities/TestEnvironment.swift
+        --- a/SaneVideo/Core/Utilities/TestEnvironment.swift
+        +++ b/SaneVideo/Core/Utilities/TestEnvironment.swift
+        @@ -265 +265 @@ enum TestEnvironment {
+        +            ?? environment["SANEVIDEO_TEST_ASSET_PATH"]
+      DIFF
+
+      files = subject.send(:defaults_migration_changed_files_from_diff, diff)
+
+      assert_eq(files, [])
+      true
+    end
+
+    test('defaults scanner excludes matching additions in test-only Swift files') do
+      diff = <<~DIFF
+        diff --git a/SaneVideoTests/Features/Editing/ProjectEditingTests.swift b/SaneVideoTests/Features/Editing/ProjectEditingTests.swift
+        --- a/SaneVideoTests/Features/Editing/ProjectEditingTests.swift
+        +++ b/SaneVideoTests/Features/Editing/ProjectEditingTests.swift
+        @@ -28,0 +29 @@ final class ProjectEditingTests: XCTestCase {
+        +        UserDefaults.standard.set(true, forKey: "magneticTimeline")
+      DIFF
+
+      files = subject.send(:defaults_migration_changed_files_from_diff, diff)
+
+      assert_eq(files, [])
+      true
+    end
+
+    test('defaults scanner does not misclassify production Latest or Contest Swift files as tests') do
+      diff = <<~DIFF
+        diff --git a/SaneVideo/Models/Latest.swift b/SaneVideo/Models/Latest.swift
+        --- a/SaneVideo/Models/Latest.swift
+        +++ b/SaneVideo/Models/Latest.swift
+        @@ -4,0 +5 @@ struct Latest {
+        +    let migration = UserDefaults.standard.bool(forKey: "latest")
+        diff --git a/SaneVideo/Features/Contest.swift b/SaneVideo/Features/Contest.swift
+        --- a/SaneVideo/Features/Contest.swift
+        +++ b/SaneVideo/Features/Contest.swift
+        @@ -4,0 +5 @@ struct Contest {
+        +    func migrateLegacyDefaults() {}
+      DIFF
+
+      files = subject.send(:defaults_migration_changed_files_from_diff, diff)
+
+      assert_eq(files, ['SaneVideo/Features/Contest.swift', 'SaneVideo/Models/Latest.swift'])
+      true
+    end
+
+    test('defaults scanner catches added production UserDefaults and migration code') do
+      diff = <<~DIFF
+        diff --git a/SaneVideo/State/UserPreferences.swift b/SaneVideo/State/UserPreferences.swift
+        --- a/SaneVideo/State/UserPreferences.swift
+        +++ b/SaneVideo/State/UserPreferences.swift
+        @@ -20,0 +21 @@ final class UserPreferences {
+        +        UserDefaults.standard.set(newValue, forKey: "RecordingFPS")
+        diff --git a/SaneVideo/Core/Utilities/DefaultsMigration.swift b/SaneVideo/Core/Utilities/DefaultsMigration.swift
+        --- a/SaneVideo/Core/Utilities/DefaultsMigration.swift
+        +++ b/SaneVideo/Core/Utilities/DefaultsMigration.swift
+        @@ -4,0 +5 @@ enum DefaultsMigration {
+        +    static func migrateLegacyDefaults() {}
+      DIFF
+
+      files = subject.send(:defaults_migration_changed_files_from_diff, diff)
+
+      assert_eq(
+        files,
+        [
+          'SaneVideo/Core/Utilities/DefaultsMigration.swift',
+          'SaneVideo/State/UserPreferences.swift'
+        ]
+      )
+      true
+    end
+
+    test('defaults scanner catches deleted production UserDefaults code') do
+      diff = <<~DIFF
+        diff --git a/SaneVideo/State/UserPreferences.swift b/SaneVideo/State/UserPreferences.swift
+        --- a/SaneVideo/State/UserPreferences.swift
+        +++ b/SaneVideo/State/UserPreferences.swift
+        @@ -20 +19,0 @@ final class UserPreferences {
+        -        UserDefaults.standard.set(true, forKey: "RecordingFPS")
+      DIFF
+
+      files = subject.send(:defaults_migration_changed_files_from_diff, diff)
+
+      assert_eq(files, ['SaneVideo/State/UserPreferences.swift'])
+      true
+    end
+
+    test('defaults scanner catches value-only changes beside UserDefaults context') do
+      diff = <<~DIFF
+        diff --git a/SaneVideo/State/PlaybackState.swift b/SaneVideo/State/PlaybackState.swift
+        --- a/SaneVideo/State/PlaybackState.swift
+        +++ b/SaneVideo/State/PlaybackState.swift
+        @@ -20,3 +20,3 @@ final class PlaybackState {
+             let defaults = UserDefaults.standard
+        -    let defaultRate = 1.0
+        +    let defaultRate = 1.25
+             func registerDefaults() {}
+      DIFF
+
+      files = subject.send(:defaults_migration_changed_files_from_diff, diff)
+
+      assert_eq(files, ['SaneVideo/State/PlaybackState.swift'])
+      true
+    end
+
+    test('defaults scanner catches additions deletions and value changes inside registered default maps') do
+      diff = <<~DIFF
+        diff --git a/SaneVideo/State/AddedDefaults.swift b/SaneVideo/State/AddedDefaults.swift
+        --- a/SaneVideo/State/AddedDefaults.swift
+        +++ b/SaneVideo/State/AddedDefaults.swift
+        @@ -20,2 +20,3 @@ func configureDefaults() {
+             UserDefaults.standard.register(defaults: [
+        +        "newFeature": true,
+             ])
+        diff --git a/SaneVideo/State/RemovedDefaults.swift b/SaneVideo/State/RemovedDefaults.swift
+        --- a/SaneVideo/State/RemovedDefaults.swift
+        +++ b/SaneVideo/State/RemovedDefaults.swift
+        @@ -20,3 +20,2 @@ func configureDefaults() {
+             defaults.register(defaults: [
+        -        "legacyFeature": false,
+             ])
+        diff --git a/SaneVideo/State/ChangedDefaults.swift b/SaneVideo/State/ChangedDefaults.swift
+        --- a/SaneVideo/State/ChangedDefaults.swift
+        +++ b/SaneVideo/State/ChangedDefaults.swift
+        @@ -20,3 +20,3 @@ func configureDefaults() {
+             defaults.register(defaults: [
+        -        "featureEnabled": false,
+        +        "featureEnabled": true,
+             ])
+        diff --git a/SaneVideo/State/SettingsState.swift b/SaneVideo/State/SettingsState.swift
+        --- a/SaneVideo/State/SettingsState.swift
+        +++ b/SaneVideo/State/SettingsState.swift
+        @@ -20,3 +20,3 @@ enum SettingsDefaults {
+             static let initialDefaults: [String: Any] = [
+        -        "playbackRate": 1.0,
+        +        "playbackRate": 1.25,
+             ]
+      DIFF
+
+      files = subject.send(:defaults_migration_changed_files_from_diff, diff)
+
+      assert_eq(
+        files,
+        [
+          'SaneVideo/State/AddedDefaults.swift',
+          'SaneVideo/State/ChangedDefaults.swift',
+          'SaneVideo/State/RemovedDefaults.swift',
+          'SaneVideo/State/SettingsState.swift'
+        ]
+      )
+      true
+    end
+
+    test('release and verify fingerprints share one content-complete candidate identity') do
+      Dir.mktmpdir('release-verify-fingerprint-') do |dir|
+        git = lambda do |*args|
+          output, status = Open3.capture2e('git', '-C', dir, *args)
+          assert(status.success?, "git #{args.join(' ')} failed: #{output}")
+          output
+        end
+        git.call('init')
+        git.call('config', 'user.email', 'test@example.invalid')
+        git.call('config', 'user.name', 'SaneProcess Test')
+        FileUtils.mkdir_p(File.join(dir, 'Sources'))
+        File.write(File.join(dir, 'Sources', 'App.swift'), "struct App {}\n")
+        git.call('add', '.')
+        git.call('commit', '-m', 'baseline')
+        untracked = File.join(dir, 'Sources', 'Generated.swift')
+        File.write(untracked, "let mode = \"alpha\"\n")
+
+        fingerprint_subject = Class.new(ReleaseGuardrailHarness) do
+          include SaneMasterModules::Verify
+        end.new
+        release_before = fingerprint_subject.send(:release_status_source_fingerprint, dir)
+        verify_before = fingerprint_subject.send(:verify_source_fingerprint, dir)
+        File.write(untracked, "let mode = \"bravo\"\n")
+        release_after = fingerprint_subject.send(:release_status_source_fingerprint, dir)
+        verify_after = fingerprint_subject.send(:verify_source_fingerprint, dir)
+
+        assert_eq(verify_before, release_before)
+        assert_eq(verify_after, release_after)
+        assert(release_before != release_after, 'untracked source byte changes must invalidate candidate identity')
+      end
+      true
+    end
+
+    test('defaults scanner includes uncommitted production changes with a five-commit history') do
+      Dir.mktmpdir('defaults-working-tree-') do |dir|
+        git = lambda do |*args|
+          output, status = Open3.capture2e('git', '-C', dir, *args)
+          assert(status.success?, "git #{args.join(' ')} failed: #{output}")
+          output
+        end
+
+        git.call('init')
+        git.call('config', 'user.email', 'test@example.invalid')
+        git.call('config', 'user.name', 'SaneProcess Test')
+        source_dir = File.join(dir, 'SaneVideo', 'State')
+        source_path = File.join(source_dir, 'UserPreferences.swift')
+        FileUtils.mkdir_p(source_dir)
+        File.write(source_path, "final class UserPreferences {}\n")
+        git.call('add', '.')
+        git.call('commit', '-m', 'baseline')
+        5.times do |index|
+          File.write(File.join(dir, 'README.md'), "history #{index}\n")
+          git.call('add', 'README.md')
+          git.call('commit', '-m', "history #{index}")
+        end
+        File.write(
+          source_path,
+          "final class UserPreferences {\n  let defaults = UserDefaults.standard\n}\n"
+        )
+
+        files = Dir.chdir(dir) do
+          diff = subject.send(:recent_swift_diff_for_preflight, nil)
+          subject.send(:defaults_migration_changed_files_from_diff, diff)
+        end
+
+        assert_eq(files, ['SaneVideo/State/UserPreferences.swift'])
+      end
+      true
+    end
+
+    test('defaults scanner covers all changes since the latest release tag') do
+      Dir.mktmpdir('defaults-unreleased-history-') do |dir|
+        git = lambda do |*args|
+          output, status = Open3.capture2e('git', '-C', dir, *args)
+          assert(status.success?, "git #{args.join(' ')} failed: #{output}")
+          output
+        end
+
+        git.call('init')
+        git.call('config', 'user.email', 'test@example.invalid')
+        git.call('config', 'user.name', 'SaneProcess Test')
+        source_dir = File.join(dir, 'SaneVideo', 'State')
+        source_path = File.join(source_dir, 'UserPreferences.swift')
+        FileUtils.mkdir_p(source_dir)
+        File.write(source_path, "final class UserPreferences {}\n")
+        git.call('add', '.')
+        git.call('commit', '-m', 'released baseline')
+        git.call('tag', 'v1.0.0')
+        File.write(source_path, "final class UserPreferences {\n  let defaults = UserDefaults.standard\n}\n")
+        git.call('add', source_path)
+        git.call('commit', '-m', 'change defaults after release')
+        6.times do |index|
+          File.write(File.join(dir, 'README.md'), "history #{index}\n")
+          git.call('add', 'README.md')
+          git.call('commit', '-m', "history #{index}")
+        end
+
+        files = Dir.chdir(dir) do
+          diff = subject.send(:recent_swift_diff_for_preflight, nil)
+          subject.send(:defaults_migration_changed_files_from_diff, diff)
+        end
+
+        assert_eq(files, ['SaneVideo/State/UserPreferences.swift'])
+      end
+      true
+    end
+
+    test('unreleased history ignores prerelease debug and malformed version tags') do
+      Dir.mktmpdir('defaults-stable-release-tag-') do |dir|
+        git = lambda do |*args|
+          output, status = Open3.capture2e('git', '-C', dir, *args)
+          assert(status.success?, "git #{args.join(' ')} failed: #{output}")
+          output
+        end
+        git.call('init')
+        git.call('config', 'user.email', 'test@example.invalid')
+        git.call('config', 'user.name', 'SaneProcess Test')
+        File.write(File.join(dir, 'App.swift'), "let released = true\n")
+        git.call('add', '.')
+        git.call('commit', '-m', 'stable release')
+        git.call('tag', 'v1.2.3')
+
+        %w[v1.3.0-beta.1 v9.9.9-debug v2.0 v2.0.0.1].each_with_index do |tag, index|
+          File.write(File.join(dir, 'App.swift'), "let unreleased = #{index}\n")
+          git.call('add', 'App.swift')
+          git.call('commit', '-m', "candidate #{tag}")
+          git.call('tag', tag)
+        end
+
+        base = subject.send(:release_unreleased_history_base, dir)
+
+        assert_eq(base, 'v1.2.3')
+      end
+      true
+    end
+
+    test('defaults scanner includes untracked production Swift and committed Swift in a young repo') do
+      Dir.mktmpdir('defaults-young-repo-') do |dir|
+        git = lambda do |*args|
+          output, status = Open3.capture2e('git', '-C', dir, *args)
+          assert(status.success?, "git #{args.join(' ')} failed: #{output}")
+          output
+        end
+
+        git.call('init')
+        git.call('config', 'user.email', 'test@example.invalid')
+        git.call('config', 'user.name', 'SaneProcess Test')
+        source_dir = File.join(dir, 'Sources')
+        FileUtils.mkdir_p(source_dir)
+        File.write(File.join(source_dir, 'Preferences.swift'), "let defaults = UserDefaults.standard\n")
+        git.call('add', '.')
+        git.call('commit', '-m', 'young baseline')
+        File.write(File.join(source_dir, 'NewMigration.swift'), "func migrateLegacyDefaults() {}\n")
+
+        files = Dir.chdir(dir) do
+          diff = subject.send(:recent_swift_diff_for_preflight, nil)
+          subject.send(:defaults_migration_changed_files_from_diff, diff)
+        end
+
+        assert_eq(files, ['Sources/NewMigration.swift', 'Sources/Preferences.swift'])
+      end
+      true
+    end
+
+    test('defaults scanner fails closed when routed git inspection failed') do
+      error = nil
+      begin
+        subject.send(
+          :recent_swift_diff_for_preflight,
+          'recent_swift_diff' => '',
+          'recent_swift_diff_error' => 'git diff failed'
+        )
+      rescue RuntimeError => e
+        error = e
+      end
+
+      assert(error, 'expected routed diff failure to raise')
+      assert_includes(error.message, 'git diff failed')
+      true
+    end
+
+    test('defaults scanner rejects an untracked Swift symlink outside the repository') do
+      Dir.mktmpdir('defaults-symlink-repo-') do |dir|
+        outside = File.join(File.dirname(dir), "outside-#{File.basename(dir)}.swift")
+        File.write(outside, "let defaults = UserDefaults.standard\n")
+        FileUtils.mkdir_p(File.join(dir, 'Sources'))
+        File.symlink(outside, File.join(dir, 'Sources', 'Injected.swift'))
+
+        _diff, error = subject.send(:release_untracked_swift_diff, dir, ['Sources/Injected.swift'])
+
+        assert_includes(error, 'symlink or non-regular')
+      ensure
+        FileUtils.rm_f(outside) if outside
+      end
+      true
+    end
+
+    test('migration changes are blocked without an upgrade-path behavioral receipt') do
+      Dir.mktmpdir('upgrade-proof-missing-') do |dir|
+        File.write(File.join(dir, 'project.yml'), "MARKETING_VERSION: \"2.0.0\"\n")
+
+        report = subject.send(
+          :upgrade_path_behavioral_proof_report,
+          app_name: 'SaneExample',
+          project_path: dir,
+          source_fingerprint: 'a' * 64
+        )
+
+        assert(!report[:ok])
+        assert_includes(report[:error], 'receipt is missing')
+      end
+      true
+    end
+
+    test('migration changes are blocked by a stale upgrade-path behavioral receipt') do
+      Dir.mktmpdir('upgrade-proof-stale-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, 'project.yml'), "MARKETING_VERSION: \"2.0.0\"\n")
+        write_signed_upgrade_receipt(
+          dir,
+          generated_at: Time.now.utc - (13 * 60 * 60),
+          source_fingerprint: 'a' * 64,
+          tests_run: 1
+        )
+
+        report = subject.send(
+          :upgrade_path_behavioral_proof_report,
+          app_name: 'SaneExample',
+          project_path: dir,
+          source_fingerprint: 'a' * 64
+        )
+
+        assert(!report[:ok])
+        assert_includes(report[:error], 'receipt is stale')
+      end
+      true
+    end
+
+    test('migration changes reject a correctly signed upgrade receipt four minutes in the future') do
+      Dir.mktmpdir('upgrade-proof-future-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, 'project.yml'), "MARKETING_VERSION: \"2.0.0\"\n")
+        write_signed_upgrade_receipt(
+          dir,
+          generated_at: Time.now.utc + (4 * 60),
+          source_fingerprint: 'a' * 64,
+          tests_run: 2
+        )
+
+        report = subject.send(
+          :upgrade_path_behavioral_proof_report,
+          app_name: 'SaneExample',
+          project_path: dir,
+          source_fingerprint: 'a' * 64
+        )
+
+        assert(!report[:ok])
+        assert_includes(report[:error], 'future-dated')
+      end
+      true
+    end
+
+    test('migration changes accept current source-bound behavioral upgrade proof') do
+      Dir.mktmpdir('upgrade-proof-current-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'outputs'))
+        File.write(File.join(dir, 'project.yml'), "MARKETING_VERSION: \"2.0.0\"\n")
+        write_signed_upgrade_receipt(
+          dir,
+          generated_at: Time.now.utc,
+          source_fingerprint: 'a' * 64,
+          tests_run: 2
+        )
+
+        report = subject.send(
+          :upgrade_path_behavioral_proof_report,
+          app_name: 'SaneExample',
+          project_path: dir,
+          source_fingerprint: 'a' * 64
+        )
+
+        assert(report[:ok], report.inspect)
+        assert_eq(report.dig(:evidence, 'testsRun'), 2)
+        assert_eq(report.dig(:evidence, 'sourceFingerprint'), 'a' * 64)
+      end
+      true
+    end
+
+    test('upgrade proof rejects a project-configured self-attesting executable') do
+      Dir.mktmpdir('upgrade-proof-command-') do |dir|
+        File.write(
+          File.join(dir, '.saneprocess'),
+          YAML.dump(
+            'name' => 'SaneExample',
+            'release' => {
+              'upgrade_path_test' => {
+                'command' => [RbConfig.ruby, 'scripts/upgrade_test.rb'],
+                'from_version' => '1.9.0',
+                'timeout_seconds' => 10
+              }
+            }
+          )
+        )
+        failure = nil
+        begin
+          Dir.chdir(dir) { subject.upgrade_path_proof([]) }
+        rescue SystemExit => error
+          failure = error
+        end
+        assert(failure, 'project-configured command must be rejected before execution')
+        assert(!File.exist?(File.join(dir, 'outputs', 'upgrade_path_behavioral_receipt.json')))
+      end
+      true
+    end
+
+    test('unsigned shadow receipt is skipped but tamper and source replay are rejected') do
+      Dir.mktmpdir('upgrade-proof-integrity-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, '.sane'))
+        File.write(File.join(dir, 'project.yml'), "MARKETING_VERSION: \"2.0.0\"\n")
+        File.write(File.join(dir, '.sane', 'upgrade_path_behavioral_receipt.json'), JSON.generate('status' => 'passed'))
+        receipt_path = write_signed_upgrade_receipt(dir, generated_at: Time.now.utc, source_fingerprint: 'a' * 64)
+
+        valid = subject.send(:upgrade_path_behavioral_proof_report, app_name: 'SaneExample', project_path: dir, source_fingerprint: 'a' * 64)
+        replay = subject.send(:upgrade_path_behavioral_proof_report, app_name: 'SaneExample', project_path: dir, source_fingerprint: 'b' * 64)
+        assert(valid[:ok], valid.inspect)
+        assert(!replay[:ok])
+        assert_includes(replay[:error], 'source fingerprint')
+
+        payload = JSON.parse(File.read(receipt_path))
+        payload['testsRun'] = 999
+        File.write(receipt_path, JSON.generate(payload))
+        tampered = subject.send(:upgrade_path_behavioral_proof_report, app_name: 'SaneExample', project_path: dir, source_fingerprint: 'a' * 64)
+        assert(!tampered[:ok])
+        assert_includes(tampered[:error], 'receipt is missing')
+      end
+      true
+    end
+
+    test('release verify requires both successful process status and structured current evidence') do
+      success_status = Struct.new(:success?).new(true)
+      failed_status = Struct.new(:success?).new(false)
+      evidence = { 'success' => true, 'testsRun' => 12, 'sourceFingerprint' => 'a' * 64 }
+
+      assert(subject.send(:release_verify_result_valid?, status: success_status, evidence: evidence))
+      assert(!subject.send(:release_verify_result_valid?, status: failed_status, evidence: evidence), 'nonzero status must fail despite pass-looking evidence')
+      assert(!subject.send(:release_verify_result_valid?, status: nil, evidence: evidence), 'timeout/nil status must fail despite pass-looking evidence')
+      assert(!subject.send(:release_verify_result_valid?, status: success_status, evidence: nil), 'successful status without receipt must fail')
+      true
+    end
+
+    test('structured verify evidence must be current source-bound Mini behavioral proof') do
+      Dir.mktmpdir('verify-evidence-') do |dir|
+        metrics_path = File.join(dir, 'process_metrics.jsonl')
+        now = Time.now.utc
+        fingerprint = 'b' * 64
+        events = [
+          {
+            type: 'verify', success: true, tests_run: 12, evidence_strength: 'behavioral',
+            source_fingerprint: 'stale', cwd: dir, host: 'Stephans-Mac-mini.local',
+            timestamp: now.iso8601
+          },
+          {
+            type: 'verify', success: true, tests_run: 12, evidence_strength: 'behavioral',
+            source_fingerprint: fingerprint, cwd: dir, host: 'Stephans-Mac-mini.local',
+            timestamp: now.iso8601
+          }
+        ]
+        File.write(metrics_path, events.map { |event| JSON.generate(event) }.join("\n") + "\n")
+
+        current = subject.send(
+          :release_verify_evidence_from_metrics,
+          since: now - 1,
+          source_fingerprint: fingerprint,
+          project_path: dir,
+          metrics_path: metrics_path
+        )
+        stale = subject.send(
+          :release_verify_evidence_from_metrics,
+          since: now + 60,
+          source_fingerprint: fingerprint,
+          project_path: dir,
+          metrics_path: metrics_path
+        )
+
+        assert_eq(current['sourceFingerprint'], fingerprint)
+        assert_eq(current['testsRun'], 12)
+        assert_eq(stale, nil)
+      end
+      true
+    end
+
+    test('App Store preflight rejects nonzero or timeout status despite passing-looking verify evidence') do
+      failed_status = Struct.new(:success?).new(false)
+      evidence = { 'success' => true, 'testsRun' => 12, 'sourceFingerprint' => 'a' * 64 }
+
+      assert(!subject.send(:release_verify_result_valid?, status: failed_status, evidence: evidence))
+      assert(!subject.send(:release_verify_result_valid?, status: nil, evidence: evidence))
+      true
+    end
+
+    test('release preflight warns when a declared Homebrew cask is missing') do
+      result = subject.send(
+        :homebrew_cask_preflight_result,
+        config: { 'homebrew' => { 'tap_repo' => 'sane-apps/homebrew-tap' } },
+        tap_status: '404',
+        cask_body: '',
+        project_version: '1.2.3',
+        appcast_version: '1.2.3'
+      )
+
+      assert_includes(result[:message], 'returned 404')
+      assert_eq(result[:warnings], ['Homebrew tap cask not reachable (404)'])
+      assert_eq(result[:issues], [])
+      true
+    end
+
+    test('release preflight skips a missing undeclared Homebrew cask') do
+      result = subject.send(
+        :homebrew_cask_preflight_result,
+        config: {},
+        tap_status: '404',
+        cask_body: '',
+        project_version: '1.2.3',
+        appcast_version: '1.2.3'
+      )
+
+      assert_includes(result[:message], 'skipped')
+      assert_includes(result[:message], 'no Homebrew lane declared')
+      assert_eq(result[:warnings], [])
+      assert_eq(result[:issues], [])
+      true
+    end
+
+    test('release preflight version-checks an existing cask even when the lane is undeclared') do
+      result = subject.send(
+        :homebrew_cask_preflight_result,
+        config: {},
+        tap_status: '200',
+        cask_body: "cask \"sane-example\" do\n  version \"1.2.2\"\nend\n",
+        project_version: '1.2.3',
+        appcast_version: '1.2.3'
+      )
+
+      assert_includes(result[:message], 'cask has v1.2.2')
+      assert_eq(result[:warnings], [])
+      assert_eq(result[:issues], ['Homebrew cask version mismatch: cask=1.2.2 project=1.2.3'])
+      true
+    end
+
+    test('release preflight resolves versioned archives through a homepage download route') do
+      homepage = <<~HTML
+        <a class="button" href="/download">Download for Mac</a>
+      HTML
+      download_page = <<~HTML
+        <a href="https://dist.saneexample.com/updates/SaneExample-1.2.3.zip">Download</a>
+      HTML
+
+      version = subject.send(
+        :website_versioned_archive_version,
+        app_name: 'SaneExample',
+        homepage_body: homepage,
+        download_page_body: download_page
+      )
+
+      assert_eq(version, '1.2.3')
+      assert(subject.send(:website_routes_to_download_page?, homepage))
+      true
+    end
+
+    test('release preflight does not accept an orphaned versioned download page') do
+      homepage = '<a href="/features">Features</a>'
+      download_page = '<a href="https://dist.saneexample.com/updates/SaneExample-9.9.9.zip">Download</a>'
+
+      version = subject.send(
+        :website_versioned_archive_version,
+        app_name: 'SaneExample',
+        homepage_body: homepage,
+        download_page_body: download_page
+      )
+
+      assert_eq(version, '')
+      assert(!subject.send(:website_routes_to_download_page?, homepage))
+      true
+    end
+
+    test('release preflight prefers a direct homepage archive over the download page') do
+      homepage = '<a href="https://dist.saneexample.com/updates/SaneExample-1.2.4.zip">Download</a>'
+      download_page = '<a href="https://dist.saneexample.com/updates/SaneExample-1.2.3.zip">Old download</a>'
+
+      version = subject.send(
+        :website_versioned_archive_version,
+        app_name: 'SaneExample',
+        homepage_body: homepage,
+        download_page_body: download_page
+      )
+
+      assert_eq(version, '1.2.4')
+      true
+    end
+
+    test('release preflight fetches a linked download page and resolves its archive') do
+      fetch_harness = Class.new do
+        include SaneMasterModules::Release
+
+        attr_reader :requested_urls
+
+        def initialize
+          @requested_urls = []
+        end
+
+        def fetch_text(url)
+          @requested_urls << url
+          {
+            'https://saneexample.com' => '<a href="/download">Download for Mac</a>',
+            'https://saneexample.com/download' => '<a href="https://dist.saneexample.com/SaneExample-1.2.3.zip">Download</a>'
+          }.fetch(url)
+        end
+      end.new
+
+      version = fetch_harness.website_versioned_archive_version_for_domain(
+        app_name: 'SaneExample',
+        website_domain: 'saneexample.com'
+      )
+
+      assert_eq(version, '1.2.3')
+      assert_eq(fetch_harness.requested_urls, ['https://saneexample.com', 'https://saneexample.com/download'])
+      true
+    end
+
     test('release preflight blocks macOS 26 ScreenCaptureKit symbols below the release minimum') do
       Dir.mktmpdir('api-compat-') do |dir|
         source = File.join(dir, 'ScreenCaptureService.swift')
@@ -4781,9 +5713,20 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert(!subject.send(:prepublish_channel_version_drift?, channel_version: '2.1.59', project_version: '2.1.59'))
       assert(!subject.send(:prepublish_channel_version_drift?, channel_version: '2.1.60', project_version: '2.1.59'))
 
-      release_source = File.read(File.join(__dir__, 'release.rb'))
-      assert_includes(release_source, 'Homebrew cask version #{cask_version} is older than project MARKETING_VERSION #{project_version} (expected before publish)')
-      assert_includes(release_source, 'channel_version: local_latest_appcast_version')
+      result = subject.send(
+        :homebrew_cask_preflight_result,
+        config: {},
+        tap_status: '200',
+        cask_body: "cask \"sane-example\" do\n  version \"2.1.58\"\nend\n",
+        project_version: '2.1.59',
+        appcast_version: '2.1.58'
+      )
+      assert_includes(result[:message], 'expected before publish')
+      assert_eq(
+        result[:warnings],
+        ['Homebrew cask version 2.1.58 is older than project MARKETING_VERSION 2.1.59 (expected before publish)']
+      )
+      assert_eq(result[:issues], [])
       true
     end
 
@@ -5137,6 +6080,150 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_includes(run_tests_body, 'fresh_release_preflight_receipt_summary')
       assert_includes(run_tests_body, 'Skipping duplicate SaneMaster verify')
       assert_includes(run_tests_body, 'SANEPROCESS_RELEASE_ALWAYS_RUN_TESTS=1')
+      true
+    end
+
+    test('release.sh authorizes the materialized candidate only after every release mutation') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+      candidate_body = release_script[/prepare_and_authorize_full_release_candidate\(\) \{.*?^}/m]
+      assert(!candidate_body.nil?, 'expected a bounded candidate authorization function in release.sh')
+      assert_match(
+        release_script,
+        /prepare_and_authorize_full_release_candidate\nfi\n\n# Clean up previous builds/,
+        'full release flow must invoke candidate authorization immediately before the build phase'
+      )
+
+      Dir.mktmpdir('release-candidate-order-') do |dir|
+        harness = File.join(dir, 'candidate-order-harness.sh')
+        events = File.join(dir, 'events.log')
+        File.write(
+          harness,
+          <<~BASH
+            #!/bin/bash
+            set -eE
+            EVENTS=#{events.inspect}
+            PROJECT_ROOT=#{dir.inspect}
+            VERSION=2.4.6
+            VERSION_BUMP_FILES=()
+            XCODEGEN=true
+            XCODEGEN_DONE=false
+            record() { printf '%s\n' "$1" >> "${EVENTS}"; }
+            log_info() { :; }
+            log_warn() { :; }
+            log_error() { :; }
+            bump_project_version() { record bump; }
+            update_changelog() { record changelog; }
+            ensure_cmd() { :; }
+            xcodegen() { record xcodegen; }
+            commit_version_bump() { record commit; }
+            run_candidate_release_preflight() { record preflight; }
+            fresh_release_preflight_receipt_summary() { record receipt; printf 'signed-candidate'; }
+            run_tests() { record tests; }
+
+            #{candidate_body}
+
+            prepare_and_authorize_full_release_candidate
+          BASH
+        )
+
+        output, status = Open3.capture2e('bash', harness)
+        assert(status.success?, "candidate authorization harness failed: #{output}")
+        assert_eq(File.readlines(events, chomp: true), %w[bump changelog xcodegen commit preflight receipt tests])
+      end
+      true
+    end
+
+    test('release.sh stops before receipt reuse and tests when post-mutation preflight fails') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+      candidate_body = release_script[/prepare_and_authorize_full_release_candidate\(\) \{.*?^}/m]
+      assert(!candidate_body.nil?, 'expected a bounded candidate authorization function in release.sh')
+
+      Dir.mktmpdir('release-candidate-preflight-failure-') do |dir|
+        harness = File.join(dir, 'candidate-failure-harness.sh')
+        events = File.join(dir, 'events.log')
+        File.write(
+          harness,
+          <<~BASH
+            #!/bin/bash
+            set -eE
+            EVENTS=#{events.inspect}
+            PROJECT_ROOT=#{dir.inspect}
+            VERSION=2.4.6
+            VERSION_BUMP_FILES=()
+            XCODEGEN=false
+            XCODEGEN_DONE=false
+            record() { printf '%s\n' "$1" >> "${EVENTS}"; }
+            log_info() { :; }
+            log_warn() { :; }
+            log_error() { record error; }
+            bump_project_version() { record bump; }
+            update_changelog() { record changelog; }
+            commit_version_bump() { record commit; }
+            run_candidate_release_preflight() { record preflight; return 42; }
+            fresh_release_preflight_receipt_summary() { record receipt; }
+            run_tests() { record tests; }
+
+            #{candidate_body}
+
+            prepare_and_authorize_full_release_candidate
+          BASH
+        )
+
+        _output, status = Open3.capture2e('bash', harness)
+        assert(!status.success?, 'failed post-mutation preflight must abort the release')
+        assert_eq(File.readlines(events, chomp: true), %w[bump changelog commit preflight error])
+      end
+      true
+    end
+
+    test('release.sh fails when authoritative SaneMaster verify exits nonzero despite passing-looking output') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+      run_tests_body = release_script[/run_tests\(\) \{.*?^}/m]
+      assert(!run_tests_body.nil?, 'expected run_tests body in release.sh')
+
+      Dir.mktmpdir('release-authoritative-verify-') do |dir|
+        project_root = File.join(dir, 'project')
+        sane_master = File.join(project_root, 'scripts', 'SaneMaster.rb')
+        FileUtils.mkdir_p(File.dirname(sane_master))
+        File.write(
+          sane_master,
+          <<~BASH
+            #!/bin/bash
+            printf '%s\n' '✅ Tests passed!'
+            printf '%s\n' 'Swift Testing: 12 tests in 3 suites passed'
+            exit 42
+          BASH
+        )
+        FileUtils.chmod(0o755, sane_master)
+
+        harness = File.join(dir, 'verify-harness.sh')
+        File.write(
+          harness,
+          <<~BASH
+            #!/bin/bash
+            set -eE
+            PROJECT_ROOT=#{project_root.inspect}
+            SCHEME=SaneExample
+            WORKSPACE=''
+            XCODEPROJ=''
+            SANEPROCESS_RELEASE_ALWAYS_RUN_TESTS=1
+            log_info() { printf '[INFO] %s\n' "$1"; }
+            log_warn() { printf '[WARN] %s\n' "$1"; }
+            log_error() { printf '[ERROR] %s\n' "$1"; }
+            restore_version_bump() { :; }
+
+            #{run_tests_body}
+
+            run_tests
+          BASH
+        )
+
+        output, status = Open3.capture2e({ 'HOME' => dir }, 'bash', harness)
+
+        assert(!status.success?, "nonzero authoritative verify must fail release: #{output}")
+        assert_includes(output, 'SaneMaster verify failed. Aborting release.')
+        assert(!output.include?('Continuing with release.'), 'release must not override authoritative verify status from log text')
+      end
       true
     end
 
@@ -5957,6 +7044,71 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('accepts trial-then-purchase review notes as a complete App Store business model') do
+      report = subject.send(
+        :reviewer_access_guardrail_report,
+        source_blob: {
+          'all' => "import Foundation\nfinal class LicenseService {}\nstruct WelcomeGateView {}\nstruct LicenseSettingsView {}\nlet hasSeenWelcome = true\nfunc purchasePro() {}\n",
+          'macos' => "import Foundation\nfinal class LicenseService {}\nstruct WelcomeGateView {}\nstruct LicenseSettingsView {}\nlet hasSeenWelcome = true\nfunc purchasePro() {}\n"
+        },
+        appstore_config: {
+          'review_notes' => 'A 14-day Pro trial starts on launch. After the trial, continued app access requires an optional one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used.'
+        },
+        platforms: ['macos']
+      )
+
+      issue = '[macos] Review notes do not clearly explain the App Store business model (free/basic, Pro unlock path, no website license flow)'
+      assert(!report[:issues].include?(issue))
+      true
+    end
+
+    test('rejects review notes that mention the App Store without an explicit purchase path') do
+      report = subject.send(
+        :reviewer_access_guardrail_report,
+        source_blob: {
+          'all' => "import Foundation\nfinal class LicenseService {}\nstruct WelcomeGateView {}\nstruct LicenseSettingsView {}\nlet hasSeenWelcome = true\nfunc purchasePro() {}\n",
+          'macos' => "import Foundation\nfinal class LicenseService {}\nstruct WelcomeGateView {}\nstruct LicenseSettingsView {}\nlet hasSeenWelcome = true\nfunc purchasePro() {}\n"
+        },
+        appstore_config: {
+          'review_notes' => 'A 14-day trial is available in this App Store build. After the trial, continued access requires Pro access. No external checkout or license keys are used.'
+        },
+        platforms: ['macos']
+      )
+
+      issue = '[macos] Review notes do not clearly explain the App Store business model (free/basic, Pro unlock path, no website license flow)'
+      assert_includes(report[:issues], issue)
+      true
+    end
+
+    test('rejects negated or contradictory App Store business-model claims') do
+      source_blob = {
+        'all' => "import Foundation\nfinal class LicenseService {}\nstruct WelcomeGateView {}\nstruct LicenseSettingsView {}\nlet hasSeenWelcome = true\nfunc purchasePro() {}\n",
+        'macos' => "import Foundation\nfinal class LicenseService {}\nstruct WelcomeGateView {}\nstruct LicenseSettingsView {}\nlet hasSeenWelcome = true\nfunc purchasePro() {}\n"
+      }
+      invalid_notes = [
+        'Basic is not free. Pro is a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used.',
+        'A 14-day Pro trial starts on launch. The trial is not free. After the trial, continued app access requires a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used.',
+        'Basic is free. Pro is not an in-app purchase. Pro is a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used.',
+        'Basic is free. An App Store in-app purchase is not required. Pro is a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used.',
+        'Basic is free. Pro cannot be purchased in the app. Pro is a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used.',
+        "Basic is free. Pro isn't available for purchase in the app. Pro is a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used.",
+        'Basic is free. Pro is not available for purchase in the app. Pro is a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used.',
+        'Basic is free. Pro is a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used. Pro can be purchased through the website.'
+      ]
+      issue = '[macos] Review notes do not clearly explain the App Store business model (free/basic, Pro unlock path, no website license flow)'
+
+      invalid_notes.each do |review_notes|
+        report = subject.send(
+          :reviewer_access_guardrail_report,
+          source_blob: source_blob,
+          appstore_config: { 'review_notes' => review_notes },
+          platforms: ['macos']
+        )
+        assert_includes(report[:issues], issue, "expected rejection for: #{review_notes}")
+      end
+      true
+    end
+
     test('fails when review notes mention Settings > License but source has no license surface') do
       report = subject.send(
         :reviewer_access_guardrail_report,
@@ -6189,14 +7341,14 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
-    test('accepts verify clean-pass override even when raw runner failure markers are present') do
+    test('rejects verify clean-pass text when raw runner failure markers are present') do
       body = <<~LOG
         ** TEST FAILED **
         ✅ 7 targets (clean pass despite a non-zero runner exit)
       LOG
 
       assert(subject.send(:verify_output_indicates_failure?, body), 'raw failure markers should still be detectable')
-      assert(subject.send(:verify_output_indicates_success?, body), 'clean-pass override should win for release preflight parsing')
+      assert(!subject.send(:verify_output_indicates_success?, body), 'pass-looking log text must never override failure evidence')
       true
     end
 

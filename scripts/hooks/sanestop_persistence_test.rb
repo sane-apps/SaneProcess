@@ -153,6 +153,23 @@ module SaneStopPersistenceTest
       warn "  FAIL: docs_audit without subagents should block, got #{exit_code}"
     end
 
+    # Guidance must name both supported independent-review routes. Task-only
+    # wording incorrectly rejects completed read-only Codex fan-out lanes.
+    captured = StringIO.new
+    original_stderr = $stderr
+    $stderr = captured
+    exit_code = process_stop_proc.call(false)
+    $stderr = original_stderr
+    guidance = captured.string
+    if exit_code == 2 && guidance.include?('completed native Task reviews') &&
+       guidance.include?('authoritative read-only Codex fan-out receipts')
+      passed += 1
+      warn '  PASS: docs_audit block names completed native and authoritative receipt routes'
+    else
+      failed += 1
+      warn "  FAIL: docs_audit guidance should name both review routes: #{guidance.inspect[0..200]}"
+    end
+
     StateManager.update(:skill) do |s|
       s[:required] = 'docs_audit'
       s[:invoked] = true
@@ -171,6 +188,29 @@ module SaneStopPersistenceTest
     else
       failed += 1
       warn "  FAIL: docs_audit runner-only path should block, got #{exit_code}"
+    end
+
+    StateManager.update(:skill) do |s|
+      s[:required] = 'docs_audit'
+      s[:invoked] = true
+      s[:invoked_at] = Time.now.iso8601
+      s[:subagents_spawned] = 4
+      s[:codex_review_lanes_completed] = 1
+      s[:codex_review_invoked_at] = s[:invoked_at]
+      s[:runner_proved] = false
+      s[:runner_commands] = []
+      s
+    end
+    original_stderr = $stderr.clone
+    $stderr.reopen('/dev/null', 'w')
+    exit_code = process_stop_proc.call(false)
+    $stderr.reopen(original_stderr)
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: native agents and completed Codex review lanes combine for coverage'
+    else
+      failed += 1
+      warn "  FAIL: combined native/Codex review coverage should allow stop, got #{exit_code}"
     end
 
     StateManager.update(:skill) do |s|

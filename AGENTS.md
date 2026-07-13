@@ -105,6 +105,12 @@ unless the user explicitly asks for that specific run.
 Do not use Gemini/Google provider paths as standard SaneApps tooling; use
 Apple Docs, macOS Automator, Grok, Codex, Claude, and SaneMaster routes instead.
 
+Reviewer count is perspective-driven, not capped by the active client's native
+interactive-thread limit. Use native subagents for stateful/interactive work
+and read-only ephemeral `codex exec` fan-out for isolated perspectives; use
+waves only as a fallback. See `DEVELOPMENT.md` under "Reviewer fan-out routing"
+for the canonical route and required live tool/version discovery.
+
 ## Canonical Routes
 
 Use SaneMaster for stateful workflows. Read-only diagnostics are fine, but
@@ -157,6 +163,17 @@ Screenshots remain final evidence, not the first control mechanism. Use
 The same ladder applies in Claude when its browser/app-control plugin is
 active; compare live tools (`claude mcp list` and the current tool surface)
 with config before declaring a tool missing.
+
+Brave on the Mac Mini is the canonical authenticated control plane for
+Setapp, App Store Connect, Apollo, Lemon Squeezy, Cloudflare, Resend, and
+similar admin portals. This applies to both Codex and Claude. API wrappers
+remain preferred when healthy, but agents must inspect the live Brave session
+before declaring an admin surface unavailable. Safari is not a Setapp
+dependency. A missing portal token blocks only the unattended API lane, not
+browser access. Managed shell `osascript` may report that Brave cannot be
+found even while the direct browser/Mac automation surface is working; treat
+that as a shell Automation/TCC boundary and inspect Brave through the active
+agent control surface.
 
 ## Tool Discovery
 

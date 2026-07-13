@@ -91,6 +91,465 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
     end
   end
 
+  test_category('Developer ID entitlement preservation') do
+    test('re-signing fails closed when the staged app is missing') do
+      sanevideo = SaneTest.allocate
+      sanevideo.define_singleton_method(:canonical_local_app_path) { '/tmp/definitely-missing-sanevideo.app' }
+      exit_error = nil
+      begin
+        sanevideo.send(:ensure_developer_id_signature_local)
+      rescue SystemExit => e
+        exit_error = e
+      end
+
+      assert(exit_error && !exit_error.success?, 'missing staged app must abort runtime launch')
+      true
+    end
+
+    test('re-signing fails closed when a Developer ID app has no restorable entitlements') do
+      sanevideo = SaneTest.allocate
+      Dir.mktmpdir('sane-test-entitlements') do |dir|
+        app = File.join(dir, 'SaneVideo.app')
+        FileUtils.mkdir_p(app)
+        sanevideo.define_singleton_method(:canonical_local_app_path) { app }
+        sanevideo.define_singleton_method(:signed_entitlements_xml) { |_path| nil }
+        sanevideo.define_singleton_method(:developer_id_signed?) { |_path| true }
+        sanevideo.define_singleton_method(:fresh_build_entitlements_xml) { |_path| nil }
+        exit_error = nil
+        begin
+          sanevideo.send(:ensure_developer_id_signature_local)
+        rescue SystemExit => e
+          exit_error = e
+        end
+
+        assert(exit_error && !exit_error.success?, 'stripped Developer ID app must not launch')
+      end
+      true
+    end
+
+    test('re-sign command preserves app entitlements without applying them to nested code') do
+      sanevideo = SaneTest.allocate
+      command = sanevideo.send(
+        :developer_id_resign_command,
+        'Developer ID Application: SaneApps (M78L6FXD48)',
+        '/Applications/SaneVideo.app',
+        entitlements_path: '/tmp/sanevideo-preserved.entitlements'
+      )
+
+      assert_eq(
+        command,
+        [
+          '/usr/bin/codesign', '--force', '--sign', 'Developer ID Application: SaneApps (M78L6FXD48)',
+          '--options', 'runtime', '--preserve-metadata=identifier,requirements,entitlements',
+          '--entitlements', '/tmp/sanevideo-preserved.entitlements', '/Applications/SaneVideo.app'
+        ]
+      )
+      assert(!command.include?('--deep'), 'nested frameworks must retain their own signatures and entitlements')
+      true
+    end
+
+    test('Developer ID selection accepts only the configured SaneApps team') do
+      identities = <<~OUTPUT
+        1) ABC "Developer ID Application: Other Vendor (OTHERTEAM1)"
+        2) DEF "Developer ID Application: SaneApps (M78L6FXD48)"
+      OUTPUT
+      identity = SaneTest.allocate.send(:developer_id_identity_from_output, identities)
+
+      assert_eq(identity, 'Developer ID Application: SaneApps (M78L6FXD48)')
+      true
+    end
+
+    test('signing trust-boundary calls ignore PATH-injected security and codesign tools') do
+      sanevideo = SaneTest.allocate
+      Dir.mktmpdir('sane-test-fake-signing-path') do |dir|
+        marker = File.join(dir, 'fake-tool-invoked')
+        %w[codesign security].each do |tool|
+          path = File.join(dir, tool)
+          File.write(path, "#!/bin/sh\nprintf invoked >> #{Shellwords.escape(marker)}\nexit 0\n")
+          FileUtils.chmod(0o755, path)
+        end
+
+        original_path = ENV['PATH']
+        original_dyld = ENV['DYLD_INSERT_LIBRARIES']
+        begin
+          ENV['PATH'] = "#{dir}:#{original_path}"
+          ENV['DYLD_INSERT_LIBRARIES'] = '/tmp/injected.dylib'
+          missing_app = File.join(dir, 'missing.app')
+          sanevideo.send(:code_signature_details, missing_app)
+          sanevideo.send(:signed_entitlements_xml, missing_app)
+          sanevideo.send(:deep_signature_valid?, missing_app)
+          sanevideo.send(:codesigning_identity_output)
+
+          assert(!File.exist?(marker), 'PATH-injected security tools must never execute')
+          environment = sanevideo.send(:signing_command_environment)
+          assert_eq(environment['PATH'], '/usr/bin:/bin')
+          assert(!environment.key?('DYLD_INSERT_LIBRARIES'), 'dangerous parent environment must not cross the signing boundary')
+        ensure
+          ENV['PATH'] = original_path
+          if original_dyld
+            ENV['DYLD_INSERT_LIBRARIES'] = original_dyld
+          else
+            ENV.delete('DYLD_INSERT_LIBRARIES')
+          end
+        end
+      end
+      true
+    end
+
+    test('post-sign validation requires the SaneApps team and designated requirement') do
+      sanevideo = SaneTest.allocate
+      success = Object.new
+      success.define_singleton_method(:success?) { true }
+      valid_details = <<~OUTPUT
+        Authority=Developer ID Application: SaneApps (M78L6FXD48)
+        TeamIdentifier=M78L6FXD48
+        designated => identifier "com.sanevideo.app" and anchor apple generic and certificate leaf[subject.OU] = M78L6FXD48
+      OUTPUT
+      sanevideo.define_singleton_method(:code_signature_details) { |_path| [valid_details, success] }
+      assert(sanevideo.send(:validate_saneapps_developer_id_signature!, '/Applications/SaneVideo.app'))
+
+      invalid_details = valid_details.sub('TeamIdentifier=M78L6FXD48', 'TeamIdentifier=OTHERTEAM1')
+      sanevideo.define_singleton_method(:code_signature_details) { |_path| [invalid_details, success] }
+      error = nil
+      begin
+        sanevideo.send(:validate_saneapps_developer_id_signature!, '/Applications/SaneVideo.app')
+      rescue SaneTest::SigningValidationError => e
+        error = e
+      end
+      assert(error, 'a different Developer ID team must fail closed')
+      true
+    end
+
+    test('entitlement extraction returns only the signed plist payload') do
+      sanevideo = SaneTest.allocate
+      output = <<~OUTPUT
+        Executable=/Applications/SaneVideo.app/Contents/MacOS/SaneVideo
+        <?xml version="1.0" encoding="UTF-8"?>
+        <plist version="1.0"><dict><key>com.apple.security.device.camera</key><true/></dict></plist>
+        Authority=Developer ID Application: SaneApps (M78L6FXD48)
+      OUTPUT
+
+      assert_eq(
+        sanevideo.send(:entitlement_plist_from_codesign_output, output),
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>com.apple.security.device.camera</key><true/></dict></plist>"
+      )
+      true
+    end
+
+    test('nested code is enumerated deepest-first without following framework symlinks') do
+      Dir.mktmpdir('sane-test-signing') do |dir|
+        app = File.join(dir, 'Example.app')
+        framework = File.join(app, 'Contents', 'Frameworks', 'Sparkle.framework')
+        updater = File.join(framework, 'Versions', 'B', 'Updater.app')
+        xpc = File.join(framework, 'Versions', 'B', 'XPCServices', 'Downloader.xpc')
+        dylib = File.join(updater, 'Contents', 'Frameworks', 'Runtime.dylib')
+        [framework, updater, xpc, File.dirname(dylib)].each { |path| FileUtils.mkdir_p(path) }
+        File.binwrite(dylib, 'signed runtime placeholder')
+        File.symlink('Versions/B', File.join(framework, 'Current'))
+
+        paths = SaneTest.allocate.send(:nested_code_paths, app)
+
+        assert_eq(paths.uniq, paths, 'nested paths should never be signed twice')
+        assert(paths.index(dylib) < paths.index(updater), 'a nested library must be signed before its app')
+        assert(paths.index(xpc) < paths.index(framework), 'an XPC service must be signed before its framework')
+        assert(paths.index(updater) < paths.index(framework), 'an updater app must be signed before its framework')
+        assert(!paths.any? { |path| path.include?('/Current/') }, 'framework symlink aliases must not be traversed')
+      end
+      true
+    end
+
+    test('nested code enumeration rejects a symlinked bundle candidate') do
+      Dir.mktmpdir('sane-test-signing-symlink') do |dir|
+        app = File.join(dir, 'Example.app')
+        frameworks = File.join(app, 'Contents', 'Frameworks')
+        outside = File.join(dir, 'Injected.framework')
+        FileUtils.mkdir_p([frameworks, outside])
+        File.symlink(outside, File.join(frameworks, 'Injected.framework'))
+
+        error = nil
+        begin
+          SaneTest.allocate.send(:nested_code_paths, app)
+        rescue SaneTest::SigningValidationError => e
+          error = e
+        end
+        assert(error, 'symlinked nested code must not be followed or re-signed')
+        assert_includes(error.message, 'symlink')
+      end
+      true
+    end
+
+    test('staged manifest accepts an exact runtime copy including modes and symlink targets') do
+      sanevideo = SaneTest.allocate
+      Dir.mktmpdir('sane-test-manifest-match') do |dir|
+        staged = File.join(dir, 'Staged.app')
+        fresh = File.join(dir, 'Fresh.app')
+        [staged, fresh].each do |app|
+          executable = File.join(app, 'Contents', 'MacOS', 'Example')
+          resource = File.join(app, 'Contents', 'Resources', 'runtime.json')
+          framework_version = File.join(app, 'Contents', 'Frameworks', 'Example.framework', 'Versions', 'A')
+          FileUtils.mkdir_p([File.dirname(executable), File.dirname(resource), framework_version])
+          File.binwrite(executable, 'runtime executable')
+          FileUtils.chmod(0o755, executable)
+          File.binwrite(resource, '{"enabled":true}')
+          File.symlink('A', File.join(File.dirname(framework_version), 'Current'))
+        end
+
+        assert(sanevideo.send(:validate_staged_manifest_matches_fresh!, staged, fresh))
+      end
+      true
+    end
+
+    test('staged manifest rejects a modified runtime resource even when its size is unchanged') do
+      sanevideo = SaneTest.allocate
+      Dir.mktmpdir('sane-test-manifest-modified') do |dir|
+        staged = File.join(dir, 'Staged.app')
+        fresh = File.join(dir, 'Fresh.app')
+        [staged, fresh].each do |app|
+          resource = File.join(app, 'Contents', 'Resources', 'runtime.json')
+          FileUtils.mkdir_p(File.dirname(resource))
+          File.binwrite(resource, '{"mode":"safe"}')
+        end
+        File.binwrite(File.join(staged, 'Contents', 'Resources', 'runtime.json'), '{"mode":"evil"}')
+
+        error = nil
+        begin
+          sanevideo.send(:validate_staged_manifest_matches_fresh!, staged, fresh)
+        rescue SaneTest::SigningValidationError => e
+          error = e
+        end
+
+        assert(error, 'modified runtime resources must block nested re-signing')
+        assert_includes(error.message, 'sha256')
+      end
+      true
+    end
+
+    test('staged manifest rejects added scripts models and configuration') do
+      sanevideo = SaneTest.allocate
+      Dir.mktmpdir('sane-test-manifest-added') do |dir|
+        staged = File.join(dir, 'Staged.app')
+        fresh = File.join(dir, 'Fresh.app')
+        [staged, fresh].each do |app|
+          resource = File.join(app, 'Contents', 'Resources', 'runtime.json')
+          FileUtils.mkdir_p(File.dirname(resource))
+          File.binwrite(resource, '{"mode":"safe"}')
+        end
+        injected = File.join(staged, 'Contents', 'Resources', 'Injected.mlmodelc', 'weights.bin')
+        FileUtils.mkdir_p(File.dirname(injected))
+        File.binwrite(injected, 'untrusted model')
+
+        error = nil
+        begin
+          sanevideo.send(:validate_staged_manifest_matches_fresh!, staged, fresh)
+        rescue SaneTest::SigningValidationError => e
+          error = e
+        end
+
+        assert(error, 'added runtime content must block nested re-signing')
+        assert_includes(error.message, 'added path')
+      end
+      true
+    end
+
+    test('staged manifest rejects executable-mode and symlink-target changes') do
+      sanevideo = SaneTest.allocate
+      Dir.mktmpdir('sane-test-manifest-metadata') do |dir|
+        staged = File.join(dir, 'Staged.app')
+        fresh = File.join(dir, 'Fresh.app')
+        [staged, fresh].each do |app|
+          executable = File.join(app, 'Contents', 'MacOS', 'Example')
+          versions = File.join(app, 'Contents', 'Frameworks', 'Example.framework', 'Versions')
+          FileUtils.mkdir_p([File.dirname(executable), File.join(versions, 'A'), File.join(versions, 'B')])
+          File.binwrite(executable, 'runtime executable')
+          FileUtils.chmod(0o755, executable)
+          File.symlink('A', File.join(versions, 'Current'))
+        end
+        FileUtils.chmod(0o644, File.join(staged, 'Contents', 'MacOS', 'Example'))
+
+        mode_error = nil
+        begin
+          sanevideo.send(:validate_staged_manifest_matches_fresh!, staged, fresh)
+        rescue SaneTest::SigningValidationError => e
+          mode_error = e
+        end
+        assert(mode_error, 'executable mode changes must block nested re-signing')
+        assert_includes(mode_error.message, 'mode')
+
+        FileUtils.chmod(0o755, File.join(staged, 'Contents', 'MacOS', 'Example'))
+        FileUtils.rm_f(File.join(staged, 'Contents', 'Frameworks', 'Example.framework', 'Versions', 'Current'))
+        File.symlink('B', File.join(staged, 'Contents', 'Frameworks', 'Example.framework', 'Versions', 'Current'))
+        target_error = nil
+        begin
+          sanevideo.send(:validate_staged_manifest_matches_fresh!, staged, fresh)
+        rescue SaneTest::SigningValidationError => e
+          target_error = e
+        end
+        assert(target_error, 'symlink target changes must block nested re-signing')
+        assert_includes(target_error.message, 'target')
+      end
+      true
+    end
+
+    test('nested re-sign validation rejects unsigned injected code') do
+      sanevideo = SaneTest.allocate
+      failed = Object.new
+      failed.define_singleton_method(:success?) { false }
+      sanevideo.define_singleton_method(:code_signature_details) { |_path| ['', failed] }
+
+      error = nil
+      begin
+        sanevideo.send(
+          :validate_existing_nested_signature!,
+          '/tmp/Injected.framework',
+          trusted_path: '/tmp/Fresh.framework',
+          relative_path: 'Frameworks/Injected.framework'
+        )
+      rescue SaneTest::SigningValidationError => e
+        error = e
+      end
+      assert(error, 'unsigned nested code must not be adopted by the SaneApps signature')
+      true
+    end
+
+    test('nested re-sign validation rejects code signed by another developer team') do
+      sanevideo = SaneTest.allocate
+      success = Object.new
+      success.define_singleton_method(:success?) { true }
+      other_team = <<~OUTPUT
+        Identifier=com.example.Dependency
+        CDHash=1111111111111111111111111111111111111111
+        TeamIdentifier=OTHERTEAM1
+        designated => identifier "com.example.Dependency" and anchor apple generic and certificate leaf[subject.OU] = OTHERTEAM1
+      OUTPUT
+      trusted_team = other_team
+        .sub('TeamIdentifier=OTHERTEAM1', 'TeamIdentifier=M78L6FXD48')
+        .sub('subject.OU] = OTHERTEAM1', 'subject.OU] = M78L6FXD48')
+      sanevideo.define_singleton_method(:code_signature_details) do |path|
+        [path.include?('Injected') ? other_team : trusted_team, success]
+      end
+
+      error = nil
+      begin
+        sanevideo.send(
+          :validate_existing_nested_signature!,
+          '/tmp/Injected.framework',
+          trusted_path: '/tmp/Fresh.framework',
+          relative_path: 'Frameworks/Injected.framework'
+        )
+      rescue SaneTest::SigningValidationError => e
+        error = e
+      end
+
+      assert(error, 'other-team nested code must never be adopted by the SaneApps signature')
+      assert_includes(error.message, 'matching SaneApps signature identity')
+      true
+    end
+
+    test('nested re-sign validation rejects a SaneApps-signed object that differs from the fresh build') do
+      sanevideo = SaneTest.allocate
+      success = Object.new
+      success.define_singleton_method(:success?) { true }
+      details = lambda do |cdhash|
+        <<~OUTPUT
+          Identifier=com.example.Dependency
+          CDHash=#{cdhash}
+          TeamIdentifier=M78L6FXD48
+          designated => identifier "com.example.Dependency" and anchor apple generic and certificate leaf[subject.OU] = M78L6FXD48
+        OUTPUT
+      end
+      sanevideo.define_singleton_method(:code_signature_details) do |path|
+        hash = path.include?('Staged') ? '1' * 40 : '2' * 40
+        [details.call(hash), success]
+      end
+      sanevideo.define_singleton_method(:nested_code_executable_path!) { |path, _details, role:| "#{path}/#{role}" }
+      sanevideo.define_singleton_method(:nested_code_executable_signature_valid?) { |_path| true }
+
+      Dir.mktmpdir('sane-test-signing-mismatch') do |dir|
+        staged = File.join(dir, 'Staged.framework')
+        fresh = File.join(dir, 'Fresh.framework')
+        FileUtils.mkdir_p([staged, fresh])
+        error = nil
+        begin
+          sanevideo.send(
+            :validate_existing_nested_signature!,
+            staged,
+            trusted_path: fresh,
+            relative_path: 'Frameworks/Dependency.framework'
+          )
+        rescue SaneTest::SigningValidationError => e
+          error = e
+        end
+
+        assert(error, 'fresh-build content mismatch must block nested code adoption')
+        assert_includes(error.message, 'cdhash')
+      end
+      true
+    end
+
+    test('nested re-sign validation preserves a matching SaneApps repair candidate') do
+      sanevideo = SaneTest.allocate
+      success = Object.new
+      success.define_singleton_method(:success?) { true }
+      valid_details = <<~OUTPUT
+        Identifier=com.example.Dependency
+        CDHash=1111111111111111111111111111111111111111
+        TeamIdentifier=M78L6FXD48
+        designated => identifier "com.example.Dependency" and anchor apple generic and certificate leaf[subject.OU] = M78L6FXD48
+      OUTPUT
+      sanevideo.define_singleton_method(:code_signature_details) { |_path| [valid_details, success] }
+      sanevideo.define_singleton_method(:nested_code_executable_path!) { |path, _details, role:| "#{path}/#{role}" }
+      sanevideo.define_singleton_method(:nested_code_executable_signature_valid?) { |_path| true }
+
+      Dir.mktmpdir('sane-test-signing-match') do |dir|
+        staged = File.join(dir, 'Staged.framework')
+        fresh = File.join(dir, 'Fresh.framework')
+        FileUtils.mkdir_p([staged, fresh])
+        accepted = sanevideo.send(
+          :validate_existing_nested_signature!,
+          staged,
+          trusted_path: fresh,
+          relative_path: 'Frameworks/Dependency.framework'
+        )
+
+        assert_eq(accepted, true)
+      end
+      true
+    end
+
+    test('nested re-sign validation rejects modified code that retains stale SaneApps signature metadata') do
+      sanevideo = SaneTest.allocate
+      success = Object.new
+      success.define_singleton_method(:success?) { true }
+      stale_details = <<~OUTPUT
+        Identifier=com.example.Dependency
+        CDHash=1111111111111111111111111111111111111111
+        TeamIdentifier=M78L6FXD48
+        designated => identifier "com.example.Dependency" and anchor apple generic and certificate leaf[subject.OU] = M78L6FXD48
+      OUTPUT
+      sanevideo.define_singleton_method(:code_signature_details) { |_path| [stale_details, success] }
+      sanevideo.define_singleton_method(:nested_code_executable_path!) { |path, _details, role:| "#{path}/#{role}" }
+      sanevideo.define_singleton_method(:nested_code_executable_signature_valid?) do |path|
+        !path.include?('/staged')
+      end
+
+      error = nil
+      begin
+        sanevideo.send(
+          :validate_existing_nested_signature!,
+          '/tmp/Staged.framework',
+          trusted_path: '/tmp/Fresh.framework',
+          relative_path: 'Frameworks/Dependency.framework'
+        )
+      rescue SaneTest::SigningValidationError => e
+        error = e
+      end
+
+      assert(error, 'stale signature metadata must not authenticate modified nested code')
+      assert_includes(error.message, 'executable signature is invalid')
+      true
+    end
+  end
+
   test_category('SaneClip signed runtime path') do
     test('sane_test treats SaneClip as a signed Release runtime app') do
       saneclip = SaneTest.allocate
@@ -190,6 +649,20 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
   end
 
   test_category('Canonical launch owner') do
+    test('sane_test removes Xcode index and Periphery app copies before launch') do
+      source = File.read(SANE_TEST_PATH)
+
+      assert_includes(
+        source,
+        'Library/Developer/Xcode/DerivedData/#{@app_name}-*/Index.noindex/Build/Products/**/#{@app_name}.app'
+      )
+      assert_includes(
+        source,
+        'Library/Caches/com.github.peripheryapp/DerivedData*/Build/Products/**/#{@app_name}.app'
+      )
+      true
+    end
+
     test('app_test_mode delegates Basic and Pro launches to sane_test') do
       source = File.read(SCRIPT_PATH)
 

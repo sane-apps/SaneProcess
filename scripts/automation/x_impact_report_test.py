@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -31,12 +32,17 @@ class XImpactReportTests(unittest.TestCase):
     def test_backtest_matches_posts_to_sales_and_daily_lift(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            fixture_post_day = datetime.now(timezone.utc).date() - timedelta(days=1)
+
+            def fixture_date(offset: int) -> str:
+                return (fixture_post_day + timedelta(days=offset)).isoformat()
+
             post_log = root / "post-log.jsonl"
             post_log.write_text(
                 json.dumps(
                     {
                         "ok": True,
-                        "posted_at": "2026-06-10T10:00:00-04:00",
+                        "posted_at": f"{fixture_date(0)}T10:00:00-04:00",
                         "product": "SaneClip",
                         "kind": "post",
                         "text": "SaneClip test https://saneclip.com",
@@ -50,11 +56,11 @@ class XImpactReportTests(unittest.TestCase):
                 root,
                 "own-posts.json",
                 {
-                    "fetched_at": "2026-06-11T00:00:00Z",
+                    "fetched_at": f"{fixture_date(1)}T00:00:00Z",
                     "tweets": [
                         {
                             "id": "1234567890123456789",
-                            "created_at": "2026-06-10T14:00:00Z",
+                            "created_at": f"{fixture_date(0)}T14:00:00Z",
                             "text": "SaneClip test https://t.co/example",
                             "entities": {
                                 "urls": [
@@ -82,13 +88,13 @@ class XImpactReportTests(unittest.TestCase):
                 [
                     {
                         "product": "SaneClip",
-                        "created_at": "2026-06-10T16:00:00Z",
+                        "created_at": f"{fixture_date(0)}T16:00:00Z",
                         "net": 14.0,
                         "refunded": False,
                     },
                     {
                         "product": "SaneBar",
-                        "created_at": "2026-06-10T17:00:00Z",
+                        "created_at": f"{fixture_date(0)}T17:00:00Z",
                         "net": 14.0,
                         "refunded": False,
                     },
@@ -100,11 +106,11 @@ class XImpactReportTests(unittest.TestCase):
                 {
                     "total": 0,
                     "rows": [
-                        {"app": "saneclip", "date": "2026-06-07", "count": 5},
-                        {"app": "saneclip", "date": "2026-06-08", "count": 5},
-                        {"app": "saneclip", "date": "2026-06-09", "count": 5},
-                        {"app": "saneclip", "date": "2026-06-10", "count": 12},
-                        {"app": "saneclip", "date": "2026-06-11", "count": 8},
+                        {"app": "saneclip", "date": fixture_date(-3), "count": 5},
+                        {"app": "saneclip", "date": fixture_date(-2), "count": 5},
+                        {"app": "saneclip", "date": fixture_date(-1), "count": 5},
+                        {"app": "saneclip", "date": fixture_date(0), "count": 12},
+                        {"app": "saneclip", "date": fixture_date(1), "count": 8},
                     ],
                 },
             )
@@ -113,11 +119,11 @@ class XImpactReportTests(unittest.TestCase):
                 "events.json",
                 {
                     "events": [
-                        {"app": "saneclip", "event": "checkout_clicked", "date": "2026-06-07", "count": 1},
-                        {"app": "saneclip", "event": "checkout_clicked", "date": "2026-06-08", "count": 1},
-                        {"app": "saneclip", "event": "checkout_clicked", "date": "2026-06-09", "count": 1},
-                        {"app": "saneclip", "event": "checkout_clicked", "date": "2026-06-10", "count": 4},
-                        {"app": "saneclip", "event": "checkout_clicked", "date": "2026-06-11", "count": 3},
+                        {"app": "saneclip", "event": "checkout_clicked", "date": fixture_date(-3), "count": 1},
+                        {"app": "saneclip", "event": "checkout_clicked", "date": fixture_date(-2), "count": 1},
+                        {"app": "saneclip", "event": "checkout_clicked", "date": fixture_date(-1), "count": 1},
+                        {"app": "saneclip", "event": "checkout_clicked", "date": fixture_date(0), "count": 4},
+                        {"app": "saneclip", "event": "checkout_clicked", "date": fixture_date(1), "count": 3},
                     ]
                 },
             )

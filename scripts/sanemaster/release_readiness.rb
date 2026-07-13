@@ -4,6 +4,7 @@ require 'json'
 require 'open3'
 require 'time'
 require 'yaml'
+require_relative '../hooks/release_receipt_signer'
 
 module SaneMasterModules
   module ReleaseReadiness
@@ -125,7 +126,10 @@ module SaneMasterModules
     def release_readiness_app_report(project_path)
       manifest = release_readiness_manifest(project_path)
       app_name = manifest['name'].to_s.empty? ? File.basename(project_path) : manifest['name'].to_s
-      preflight = release_readiness_read_json(File.join(project_path, 'outputs', 'release_preflight_status.json'))
+      preflight = release_readiness_receipt_signer.read(
+        File.join(project_path, 'outputs', 'release_preflight_status.json'),
+        producer: 'saneprocess.release_preflight.v1'
+      )
       qa = release_readiness_read_json(File.join(project_path, 'outputs', 'qa_status.json'))
       dirty_entries = release_readiness_git_status(project_path)
       current_source_fingerprint = release_status_source_fingerprint(project_path)
@@ -146,6 +150,10 @@ module SaneMasterModules
           dirty_entries: dirty_entries.first(20)
         }
       }
+    end
+
+    def release_readiness_receipt_signer
+      ReleaseReceiptSigner.production
     end
 
     def release_readiness_candidate_status(preflight, qa, dirty_entries, current_source_fingerprint, project_path)

@@ -20,6 +20,7 @@ module SaneMasterModules
       'resource-soak' => 'resource_soak',
       'customer-ui-sweep' => 'customer_ui_sweep',
       'release-readiness' => 'release_readiness',
+      'upgrade-path-proof' => 'upgrade_path_proof',
       'route-cost-review' => 'route_cost_review',
       'rcr' => 'route_cost_review',
       'near-miss-review' => 'near_miss_review',

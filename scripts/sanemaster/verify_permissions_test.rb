@@ -64,6 +64,14 @@ end
 
 exit(run_tests('SaneMaster Verify Permission Preservation Tests') do
   test_category('TCC preservation') do
+    test('permission monitor ignores closed System Settings windows') do
+      monitor_source = File.read(File.expand_path('../grant_permissions.applescript', __dir__))
+
+      assert_includes(monitor_source, 'if visible of window 1 then')
+      assert_eq(monitor_source.scan('if visible of window 1 then').length, 2)
+      true
+    end
+
     test('grant_test_permissions never issues a tccutil reset') do
       subject = VerifyPermissionsHarness.new
       subject.define_singleton_method(:project_name) { 'SaneClip' }

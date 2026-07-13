@@ -50,9 +50,30 @@ exit(run_tests('Verify Escalation Tests') do
       assert(a != b, 'distinct failures must not collide')
     end
 
+    test('different compiler errors produce different fingerprints') do
+      h = VerifyEscalationHarness.new
+      a = h.verify_failure_fingerprint(
+        '/repo/ScreenRecorder.swift:118:22: error: helper is inaccessible due to private protection level'
+      )
+      b = h.verify_failure_fingerprint(
+        '/repo/ScreenRecorder+Delegates.swift:131:65: error: sending stream risks causing data races'
+      )
+      assert(!a.nil?, 'Swift compiler errors must produce a fingerprint')
+      assert(a != b, 'distinct compiler errors must not collide')
+    end
+
     test('no failure markers yields nil (unknown problem)') do
       h = VerifyEscalationHarness.new
       assert_eq(nil, h.verify_failure_fingerprint("all good\n1000 tests passed\n"))
+    end
+
+    test('opaque runner failures bind to the failing lane and bounded output') do
+      h = VerifyEscalationHarness.new
+      a = h.verify_failure_fingerprint("runner stopped at 2026-07-13T17:02:00Z pid=123\n", fallback_identity: 'release readiness:1')
+      b = h.verify_failure_fingerprint("runner stopped at 2026-07-13T17:03:00Z pid=456\n", fallback_identity: 'release readiness:1')
+      c = h.verify_failure_fingerprint("runner stopped at 2026-07-13T17:03:00Z pid=456\n", fallback_identity: 'GPT audit:1')
+      assert_eq(a, b)
+      assert(a != c, 'different failing lanes must not collide when output is opaque')
     end
 
     test('survives invalid encodings') do
@@ -63,6 +84,20 @@ exit(run_tests('Verify Escalation Tests') do
   end
 
   test_category('two-strike streak semantics') do
+    test('preflight-wrapped failures still enter the same two-strike state') do
+      with_state_dir do |h|
+        old = ENV['SANEMASTER_RELEASE_PREFLIGHT']
+        ENV['SANEMASTER_RELEASE_PREFLIGHT'] = '1'
+        result = { failure_label: 'release readiness', exit_status: 1 }
+        h.send(:record_verify_failure_attempt, 'verify failure', "❌ release readiness failed\n", result)
+        state = h.send(:record_verify_failure_attempt, 'verify failure', "❌ release readiness failed\n", result)
+        assert_eq(2, state[:consecutive_failures])
+        assert(!state[:escalated_at].nil?, 'canonical preflight wrapping must not bypass escalation')
+      ensure
+        ENV['SANEMASTER_RELEASE_PREFLIGHT'] = old
+      end
+    end
+
     test('same fingerprint twice escalates') do
       with_state_dir do |h|
         h.record_verify_attempt(success: false, message: 'verify failure', fingerprint: 'aaaa')
@@ -81,12 +116,12 @@ exit(run_tests('Verify Escalation Tests') do
       end
     end
 
-    test('unknown fingerprint keeps the conservative escalation') do
+    test('unknown fingerprints never claim unrelated failures are the same problem') do
       with_state_dir do |h|
         h.record_verify_attempt(success: false, message: 'verify failure', fingerprint: nil)
         state = h.record_verify_attempt(success: false, message: 'verify failure', fingerprint: nil)
-        assert_eq(2, state[:consecutive_failures])
-        assert(!state[:escalated_at].nil?)
+        assert_eq(1, state[:consecutive_failures])
+        assert_eq(nil, state[:escalated_at])
       end
     end
 
@@ -100,4 +135,5 @@ exit(run_tests('Verify Escalation Tests') do
       end
     end
   end
+
 end)

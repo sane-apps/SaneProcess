@@ -475,6 +475,35 @@ exit(run_tests('SaneMaster Machine Cleanup Tests') do
       end
     end
 
+    test('server cleanup never treats SaneVideo customer data as disposable') do
+      with_home do |home|
+        customer_paths = [
+          mkdir_home_path(home, 'Movies/SaneVideo'),
+          mkdir_home_path(home, 'Library/Application Support/SaneVideo'),
+          mkdir_home_path(home, 'Library/Containers/com.sanevideo.app')
+        ]
+        sizes = customer_paths.to_h { |path| [File.expand_path(path), 2.0] }
+        subject = MachineCleanupHarness.new(disk: { available_gb: 80 }, sizes: sizes)
+
+        plan = subject.send(:build_machine_cleanup_plan, {
+          apply: false,
+          host: 'local',
+          server: true,
+          min_free_gb: 30,
+          cache_threshold_gb: 99,
+          deriveddata_age_days: 999,
+          trash_threshold_gb: 99,
+          preserve_apps: []
+        })
+
+        cleanup_paths = plan[:actions].map { |action| action[:path] }.compact
+        customer_paths.each do |path|
+          assert(!cleanup_paths.include?(path), "expected customer data to stay out of cleanup plan: #{path}")
+          assert_eq(subject.send(:machine_cleanup_safe_path?, path), false)
+        end
+      end
+    end
+
     test('disk pressure makes expensive caches eligible again') do
       with_home do |home|
         playwright = mkdir_home_path(home, 'Library/Caches/ms-playwright')

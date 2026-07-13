@@ -184,7 +184,6 @@ end
 
 def track_research(tool_name, tool_input)
   research_done = false
-
   RESEARCH_CATEGORIES.each do |category, config|
     if config[:tools].any? { |t| SaneToolsChecks.research_tool_match?(tool_name, t) }
       mark_research_done(category, tool_name, false)

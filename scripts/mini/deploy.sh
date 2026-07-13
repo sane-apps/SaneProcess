@@ -123,7 +123,7 @@ mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-memory-guard.sh ]; then bash 
 
 echo ""
 echo "Skipped legacy Claude global-config sync."
-echo "Use scripts/automation/sync-codex-mini.sh for the active Codex skill/automation sync path."
+echo "Use scripts/automation/sync-codex-mini.sh for the active Codex control-plane sync path."
 
 if [ "$PREPARE_FAILED" -ne 0 ]; then
   exit 1

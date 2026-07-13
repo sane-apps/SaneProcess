@@ -10,6 +10,10 @@ and command help lives in `./scripts/SaneMaster.rb help <category>`.
 
 ```bash
 ruby scripts/SaneMaster.rb verify                 # canonical full verification
+ruby scripts/SaneMaster.rb verify --ui            # unit/integration plus signed UI tests
+ruby scripts/SaneMaster.rb verify --ui-only       # focused UI-runner diagnostic lane
+ruby scripts/SaneMaster.rb verify_api API Framework # confirm an Apple SDK symbol exists
+ruby scripts/SaneMaster.rb verify_mocks            # check generated mocks match protocols
 ruby scripts/hooks/test_hooks.rb                  # hook integration suite
 ruby scripts/SaneMaster.rb tool_discovery --query "..." # tool/MCP proof receipt
 ruby scripts/SaneMaster.rb process_metrics --export-otel outputs/process-traces.json
@@ -64,6 +68,31 @@ tail -50 ~/Library/Logs/SaneApps/mini-remote-ssh-tunnel.log
 If `ssh mini` is down but `ssh mini-lan` works, the problem is the Cloudflare
 tunnel/TXT bridge, not Mini availability. Do not fall back to local app testing
 until that route has been diagnosed or the user approves the exact exception.
+
+### Host Identity: `ssh mini` Loops Back On The Mini
+
+Agent sessions opened on `~/SaneApps` are not always on the MacBook Air —
+they frequently run ON the Mini itself. The Mini and Air are distinct hosts and
+may use different local accounts. On the Mini, `ssh mini` silently connects back
+to the same machine: same filesystem, same working tree, same inodes.
+
+Consequences (root-caused 2026-07-07 after a false "Air↔Mini working trees
+auto-sync" diagnosis — "local" edits appearing on "the Mini" were one tree
+seen twice; there is no sync daemon, and none is installed):
+
+- Run `hostname` BEFORE any cross-machine reasoning, "sync" diagnosis, or
+  claim that something was verified "on both machines".
+- On the Mini, local-vs-`ssh mini` comparisons prove nothing about the Air.
+  To distinguish, compare `ls -i <file>` locally and over ssh — equal inodes
+  mean loopback.
+- Local shell and `ssh mini` shell can still resolve DIFFERENT rubies on the
+  same box (system `/usr/bin/ruby` 2.6 vs Homebrew ruby via login-shell PATH),
+  so "both rubies" proofs remain meaningful even when both ran on the Mini —
+  just label them as ruby-version proofs, not machine proofs.
+- No clobber risk exists from any mirror daemon (LaunchAgents sweep clean of
+  sync/rsync/mirror jobs). The real risk is epistemic: double-counting one
+  machine as two, or assuming a "clean tree on the other machine" that is in
+  fact the same dirty tree.
 
 Codex Mini remote-control health:
 
@@ -215,6 +244,37 @@ Before using or declaring a Codex plugin missing:
 4. Finish stateful SaneApps work with the canonical proof command: `verify`,
    `release_preflight`, `appstore_preflight`, `sane_test.rb`, `check-inbox.sh`,
    `sales`, `downloads`, `events`, or the app-specific visual proof path.
+
+### Reviewer fan-out routing
+
+Reviewer count follows the number of useful independent perspectives, not a
+hard-coded thread total. The active client's interactive-subagent limit is only
+a limit on simultaneous stateful threads; it is not a limit on the size of a
+review.
+
+Choose the route by capability:
+
+- Use native `spawn_agent` (Codex) or Task/subagent tools (Claude) for work that
+  is stateful, interactive, write-capable, or likely to need follow-up.
+- Use separate `codex exec --ephemeral -s read-only` processes for isolated,
+  read-only review perspectives. Give every process the same context brief and
+  target, and save each result to its own output file. This is the normal
+  high-fanout route when the useful perspective count exceeds the currently
+  available interactive slots.
+- Size simultaneous processes from current host/service capacity and active
+  client configuration. Queue additional independent perspectives as capacity
+  becomes available; do not reduce the total perspective set merely because a
+  client currently exposes fewer interactive slots.
+- Use interactive waves only when the isolated `codex exec` route is genuinely
+  unavailable or the work requires shared state/follow-up. Waves are a
+  compatibility fallback, not a reviewer ceiling.
+
+Before declaring either route unavailable, check the live tool surface, run
+`codex --version` and `codex exec --help`, then run
+`ruby scripts/SaneMaster.rb tool_discovery --query "reviewer fan-out"`. For
+batch review, keep `--ephemeral` and `-s read-only`; never substitute a
+dangerous bypass flag. Review outputs remain evidence for the parent synthesis,
+not authority to edit, merge, release, or mutate external state.
 
 Browser and app-control ladder:
 
@@ -395,6 +455,32 @@ ruby scripts/SaneMaster.rb release_preflight
 bash ~/SaneApps/infra/SaneProcess/scripts/release.sh \
   --project "$(pwd)" --full --version X.Y.Z --notes "..." --deploy
 ```
+
+When recent production Swift changes touch defaults registration or migration
+behavior, configure the real upgrade lane in `.saneprocess` and run it before
+preflight:
+
+```yaml
+release:
+  upgrade_path_test:
+    command:
+      - ruby
+      - scripts/upgrade_path_behavioral_test.rb
+    from_version: "1.9.0"
+    timeout_seconds: 900
+```
+
+```bash
+ruby scripts/SaneMaster.rb upgrade_path_proof
+ruby scripts/SaneMaster.rb release_preflight
+```
+
+The configured process must drive the customer-observable upgrade behavior and
+write the JSON result and runtime artifact at the paths supplied by
+`SANEMASTER_UPGRADE_RESULT_PATH` and
+`SANEMASTER_UPGRADE_RUNTIME_ARTIFACT_PATH`. SaneMaster supplies the one-use
+challenge plus app/version/source values, runs this lane on the Mini, and signs
+the source-bound receipt. There is no CLI success override.
 
 App Store lanes are active only when `.saneprocess` enables them:
 

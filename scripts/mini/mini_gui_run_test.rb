@@ -292,6 +292,9 @@ exit(run_tests('Mini GUI Runner Tests') do
       assert_includes(mini_safari_source, 'resolve_mini_host()')
       assert_includes(mini_safari_source, 'mini_screenshot --skip-cleanup --mode temp')
       assert_includes(mini_safari_source, 'ssh "$(resolve_mini_host)"')
+      assert_includes(mini_safari_source, 'is_current_mini()')
+      assert_includes(mini_safari_source, 'MINI_SAFARI_FORCE_LOCAL')
+      assert_includes(mini_safari_source, 'Local Mini Safari automation is unavailable')
       assert_includes(mini_safari_source, 'unexpected Apple auth state')
       true
     end
