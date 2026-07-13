@@ -572,9 +572,19 @@ Together the three signals triangulate intent from evidence, not the agent's say
 - **Edit without research:** PreToolUse blocks mutations until gate satisfied
 - **Inline script detection:** `python -c`, `ruby -e`, `node -e`, `perl -e` blocked as bash mutations
 - **Doom loops:** Circuit breaker trips after 2 consecutive failures or 2 matching error signatures
+- **Catastrophic action boundary:** `sane_catastrophic_guard.rb` denies
+  repository/history, production-infrastructure, database, credential,
+  ownership, refund, and license-revocation destruction without an
+  agent-writable override. Claude runs it for every tool and again through the
+  Bash dispatcher; Codex also uses restricted filesystem/app permissions and
+  hard command-prefix rules. Ordinary branches, commits, PRs, deploys,
+  uploads, tests, and reversible deletes remain available.
 
 **Known gaps:**
-- MCP tools can bypass enforcement (no wildcard matcher support — see ADR-003)
+- Raw Codex MCP servers do not share Claude's generic PreToolUse hook. Their
+  genuine boundary must come from disabled/destructive tool declarations and
+  provider-side restricted credentials; local command rules alone are not a
+  substitute.
 - State file can be deleted (hook fails safe, re-creates with defaults)
 - Optional helper hooks can still fail open, but blocking hook registration is checked for masked exits so `|| true` cannot silently disable enforcement.
 

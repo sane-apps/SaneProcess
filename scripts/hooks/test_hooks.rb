@@ -420,8 +420,14 @@ class HookTests
     end
     wrapped = commands.select { |command| command.include?('run_hook.sh') }
 
-    wrapped.length == 6 &&
+    pre_tool_commands = settings.fetch('hooks').fetch('PreToolUse').flat_map do |group|
+      group.fetch('hooks', []).map { |hook| hook['command'].to_s }
+    end
+
+    wrapped.length == 7 &&
       wrapped.all? { |command| command.length < 90 } &&
+      pre_tool_commands[0].include?('sane_catastrophic_guard.rb') &&
+      pre_tool_commands[1].include?('sanetools.rb') &&
       commands.none? { |command| command.include?('if [ -n "${CLAUDECODE}${CLAUDE_CODE}" ]') }
   end
 
