@@ -11,13 +11,150 @@
 # CLI: ruby sane_automation_guard.rb --validate ~/.codex/automations
 # Exit 0 = store passes, 1 = violations (listed on stderr).
 
+require 'json'
+require 'open3'
+require 'pathname'
 require 'socket'
 
 module SaneAutomationGuard
   DEFAULT_STORE = File.expand_path('~/.codex/automations')
+  DEFAULT_STATE_DB = File.expand_path(ENV.fetch('SANE_AUTOMATION_STATE_DB', '~/.codex/state_5.sqlite'))
+  DEFAULT_SESSIONS_ROOT = File.expand_path(ENV.fetch('SANE_AUTOMATION_SESSIONS_ROOT', '~/.codex/sessions'))
+  DEFAULT_ALLOWED_CWD_ROOTS = ENV.fetch('SANE_AUTOMATION_ALLOWED_CWD_ROOTS', '/Users/stephansmac/SaneApps')
+                                 .split(File::PATH_SEPARATOR).map { |path| File.expand_path(path) }.freeze
   REQUIRED_FIELDS = %w[id kind name prompt status rrule].freeze
-  EFFORT_OK = %w[medium high xhigh].freeze
-  MIN_GPT_VERSION = 5.5
+  EFFORT_OK = %w[medium high xhigh max ultra].freeze
+  MIN_GPT_VERSION = [5, 5].freeze
+  MIN_GPT_LABEL = MIN_GPT_VERSION.join('.').freeze
+  CANONICAL_UUID = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/.freeze
+  THREAD_COLUMNS = %w[id archived cwd rollout_path model reasoning_effort].freeze
+
+  class SqliteThreadStore
+    def initialize(sqlite_command: ENV.fetch('SQLITE3', 'sqlite3'))
+      @sqlite_command = sqlite_command
+    end
+
+    def fetch_thread(db_path, thread_id)
+      raise "state DB is not a readable regular file: #{db_path}" unless File.file?(db_path) && File.readable?(db_path)
+
+      columns = query(db_path, 'PRAGMA table_info(threads)').map { |column| column['name'] }
+      missing = THREAD_COLUMNS - columns
+      raise "threads schema missing columns: #{missing.join(', ')}" unless missing.empty?
+
+      query(db_path, <<~SQL)
+        SELECT id, archived, cwd, rollout_path, model, reasoning_effort
+        FROM threads
+        WHERE id = '#{thread_id}'
+      SQL
+    end
+
+    private
+
+    def query(db_path, sql)
+      stdout, stderr, status = Open3.capture3(@sqlite_command, '-readonly', '-json', db_path, sql)
+      raise "read-only SQLite query failed: #{stderr.strip}" unless status.success?
+
+      JSON.parse(stdout.empty? ? '[]' : stdout)
+    rescue JSON::ParserError => e
+      raise "invalid SQLite JSON output: #{e.message}"
+    end
+  end
+
+  class HeartbeatTargetResolver
+    def initialize(state_db: DEFAULT_STATE_DB, sessions_root: DEFAULT_SESSIONS_ROOT,
+                   allowed_cwd_roots: DEFAULT_ALLOWED_CWD_ROOTS, thread_store: SqliteThreadStore.new)
+      @state_db = File.expand_path(state_db)
+      @sessions_root = File.expand_path(sessions_root)
+      @allowed_cwd_roots = allowed_cwd_roots.map { |path| File.expand_path(path) }
+      @thread_store = thread_store
+    end
+
+    def validate(thread_id, automation: {})
+      return ['heartbeat target_thread_id must be a canonical lowercase UUID'] unless CANONICAL_UUID.match?(thread_id.to_s)
+
+      rows = @thread_store.fetch_thread(@state_db, thread_id)
+      return ["heartbeat target `#{thread_id}` has no thread row in the current state DB"] if rows.empty?
+      return ["heartbeat target `#{thread_id}` has #{rows.size} thread rows; expected exactly one"] unless rows.size == 1
+
+      row = rows.first
+      violations = []
+      violations << "heartbeat target `#{thread_id}` is archived" unless row['archived'].to_i.zero?
+
+      cwd = row['cwd'].to_s
+      violations << "heartbeat target cwd `#{cwd}` is not an allowed Mini-local directory" unless allowed_cwd?(cwd)
+
+      metadata = rollout_metadata(row['rollout_path'].to_s, violations)
+      if metadata
+        violations << "rollout session_meta id `#{metadata['id']}` does not match target `#{thread_id}`" unless metadata['id'] == thread_id
+        unless normalized_path(metadata['cwd']) == normalized_path(cwd)
+          violations << "rollout cwd `#{metadata['cwd']}` does not agree with thread cwd `#{cwd}`"
+        end
+      end
+
+      unless model_effort_compliant?(row['model'], row['reasoning_effort'])
+        violations << "heartbeat thread row model/reasoning must be gpt-#{MIN_GPT_LABEL}+ with #{EFFORT_OK.join('/')} effort"
+      end
+      violations
+    rescue StandardError => e
+      ["heartbeat target validation failed closed: #{e.message}"]
+    end
+
+    private
+
+    def normalized_path(path)
+      return nil unless Pathname.new(path.to_s).absolute?
+
+      File.expand_path(path)
+    end
+
+    def contained_path?(path, root)
+      path == root || path.start_with?(root + File::SEPARATOR)
+    end
+
+    def allowed_cwd?(cwd)
+      return false unless Pathname.new(cwd).absolute? && File.directory?(cwd)
+
+      real_cwd = File.realpath(cwd)
+      @allowed_cwd_roots.any? do |root|
+        File.directory?(root) && contained_path?(real_cwd, File.realpath(root))
+      end
+    rescue SystemCallError
+      false
+    end
+
+    def rollout_metadata(rollout_path, violations)
+      unless File.file?(rollout_path)
+        violations << "heartbeat rollout is missing or not a regular file: #{rollout_path}"
+        return nil
+      end
+
+      real_root = File.realpath(@sessions_root)
+      real_rollout = File.realpath(rollout_path)
+      unless contained_path?(real_rollout, real_root)
+        violations << "heartbeat rollout escapes the current sessions root: #{rollout_path}"
+        return nil
+      end
+
+      File.foreach(real_rollout, encoding: 'UTF-8') do |line|
+        next if line.strip.empty?
+
+        entry = JSON.parse(line)
+        return entry['payload'] if entry['type'] == 'session_meta' && entry['payload'].is_a?(Hash)
+      end
+      violations << "heartbeat rollout has no session_meta record: #{rollout_path}"
+      nil
+    rescue JSON::ParserError => e
+      violations << "heartbeat rollout contains invalid JSON before session_meta: #{e.message}"
+      nil
+    rescue SystemCallError => e
+      violations << "heartbeat rollout is unreadable: #{e.message}"
+      nil
+    end
+
+    def model_effort_compliant?(model, effort)
+      SaneAutomationGuard.gpt_version_ok?(model) && EFFORT_OK.include?(effort.to_s)
+    end
+  end
 
   module_function
 
@@ -60,14 +197,14 @@ module SaneAutomationGuard
   end
 
   def gpt_version_ok?(model)
-    m = model.to_s.match(/\Agpt-(\d+(?:\.\d+)?)/)
+    m = model.to_s.match(/\Agpt-(\d+)(?:\.(\d+))?(?:-|$)/)
     return false unless m
 
-    m[1].to_f >= MIN_GPT_VERSION
+    ([m[1].to_i, m[2].to_i] <=> MIN_GPT_VERSION) >= 0
   end
 
   # Returns an array of violation strings (empty = valid).
-  def validate_automation(auto, dir_id:, host_is_mini: mini_host?)
+  def validate_automation(auto, dir_id:, host_is_mini: mini_host?, target_resolver: HeartbeatTargetResolver.new)
     v = []
     REQUIRED_FIELDS.each do |f|
       v << "missing required field `#{f}`" if auto[f].to_s.strip.empty?
@@ -79,7 +216,7 @@ module SaneAutomationGuard
 
     case auto['kind']
     when 'cron'
-      v << "cron model `#{auto['model']}` must be gpt-#{MIN_GPT_VERSION} or newer" unless gpt_version_ok?(auto['model'])
+      v << "cron model `#{auto['model']}` must be gpt-#{MIN_GPT_LABEL} or newer" unless gpt_version_ok?(auto['model'])
       unless EFFORT_OK.include?(auto['reasoning_effort'].to_s)
         v << "cron reasoning_effort `#{auto['reasoning_effort']}` must be one of #{EFFORT_OK.join('/')}"
       end
@@ -92,13 +229,17 @@ module SaneAutomationGuard
         end
       end
     when 'heartbeat'
-      v << 'heartbeat must declare `target_thread_id`' if auto['target_thread_id'].to_s.strip.empty?
+      # PAUSED specs are safe storage. Activation is the boundary that requires
+      # a real current-session target, so stale targets cannot become ACTIVE.
+      if auto['status'] == 'ACTIVE'
+        v.concat(target_resolver.validate(auto['target_thread_id'].to_s, automation: auto))
+      end
     end
     v
   end
 
   # Returns { checked:, skipped:, violations: { "<id>" => [..] } }
-  def validate_store(store_dir, host_is_mini: mini_host?)
+  def validate_store(store_dir, host_is_mini: mini_host?, target_resolver: HeartbeatTargetResolver.new)
     checked = 0
     skipped = 0
     violations = {}
@@ -119,10 +260,17 @@ module SaneAutomationGuard
         violations[dir_id] = ["automation.toml unreadable: #{e.message}"]
         next
       end
-      problems = validate_automation(auto, dir_id: dir_id, host_is_mini: host_is_mini)
+      problems = validate_automation(auto, dir_id: dir_id, host_is_mini: host_is_mini,
+                                    target_resolver: target_resolver)
       violations[dir_id] = problems unless problems.empty?
     end
-    { checked: checked, skipped: skipped, violations: violations }
+    live_targets_checked = Dir.glob(File.join(store_dir, '*/automation.toml')).count do |path|
+      auto = parse_toml(File.read(path, encoding: 'UTF-8'))
+      auto['kind'] == 'heartbeat' && auto['status'] == 'ACTIVE'
+    rescue StandardError
+      false
+    end
+    { checked: checked, skipped: skipped, live_targets_checked: live_targets_checked, violations: violations }
   end
 end
 
@@ -139,7 +287,9 @@ if __FILE__ == $PROGRAM_NAME
 
   report = SaneAutomationGuard.validate_store(store)
   if report[:violations].empty?
-    warn "sane_automation_guard: OK — #{report[:checked]} automation(s) valid, #{report[:skipped]} non-spec dir(s) skipped"
+    warn "sane_automation_guard: OK — #{report[:checked]} automation spec(s) schema-valid; " \
+         "#{report[:live_targets_checked]} ACTIVE heartbeat target(s) live-target-valid; " \
+         "#{report[:skipped]} non-spec dir(s) skipped"
     exit 0
   end
 

@@ -169,7 +169,7 @@ MINI_HOST=sj@Stephans-Mac-mini.local \
 MINI_SSH_OPTS='-i ~/.ssh/id_ed25519_codex_loopback' \
   bash scripts/mini/deploy.sh
 
-# Sync the active Codex automation + skill profile to Mini
+# Sync the active Codex control-plane profile to Mini
 ruby scripts/SaneMaster.rb sync_mini
 
 # Direct helper path when debugging the wrapper itself
@@ -181,6 +181,7 @@ scp scripts/mini/mini-train.sh mini:~/SaneApps/infra/scripts/
 
 Legacy note:
 - Canonical Air↔Mini control-plane and memory parity is `ruby scripts/SaneMaster.rb sync_mini`; the automation script is the implementation helper.
+- Automation records are API-owned and are never copied or recreated by this sync. Use `automation_update` on the Mini for production changes.
 - `deploy.sh` manages Mini runtime scripts only and should not be used to recreate a second config-sync lane.
 
 Default root behavior:

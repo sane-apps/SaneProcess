@@ -138,9 +138,19 @@ Daily development status report across all projects.
 morning-report.sh
 ```
 
+### Production Codex heartbeats
+
+Recurring Codex automation is Mini-owned and intentionally limited to two
+lanes: SaneApps Operations at 08:30 Mini local time and SaneCite Growth at
+10:00. Both append to live pinned Mini-local tasks. ACTIVE records must pass
+`sane_automation_guard.rb --validate ~/.codex/automations`, which verifies the
+task database row, session rollout identity/cwd containment, and GPT-5.5+
+reasoning profile. Use `automation_update` on the Mini for every production
+automation change; sync/reconcile scripts never mutate automation records.
+
 ### sync-codex-mini.sh
 
-Sync SaneOps Codex automation config plus the active Codex skill registry and Codex control-plane helpers from MacBook to Mini and enforce runner roles.
+Sync the active Codex config, skill registry, skills, repo-owned helpers, and control-plane files from MacBook to Mini.
 
 **Usage:**
 ```bash
@@ -152,21 +162,19 @@ ruby scripts/SaneMaster.rb sync_mini mini --quiet --no-restart
 ```
 
 **What it does:**
-1. Forces local Codex automations to paused (prevents duplicate runs).
-2. Rewrites home paths for Mini and syncs automation TOML files.
-3. Syncs the active Codex skill registry (`~/.codex/SKILLS_REGISTRY.md`) and `~/.codex/skills/` to Mini.
-4. Installs the repo-owned Codex control-plane helpers from `scripts/codex-bin/` into local `~/.codex/bin/`.
-5. Mirrors those same helpers to Mini, including `check-mcps`, `github-mcp-bridge.mjs`, and `xcode-mcpbridge-wrapper.sh`.
-6. Syncs critical control-plane scripts (`check-inbox.sh`, `git-sync-safe.sh`, hooks, validation/reporting scripts).
-7. Seeds Mini's local knowledge graph cache from `~/.claude/memory/knowledge-graph.jsonl` when present.
-8. Updates Mini automation SQLite rows from TOML so prompt/status changes apply immediately.
-9. Verifies Air↔Mini SHA-256 parity for synced control-plane files, Codex binaries, and dry-run `rsync` parity for Codex skills.
-10. Mirrors the safe local paused state by default so sync/reconcile cannot silently re-enable Mini background runs. Use explicit activation flags when you intentionally want Mini unattended runs.
-11. Optionally restarts Codex on Mini so scheduler reloads immediately.
+1. Rewrites local home and Node paths in a temporary Mini config copy.
+2. Syncs the active Codex skill registry (`~/.codex/SKILLS_REGISTRY.md`), `~/.codex/skills/`, and shared `~/.agents/skills/` to Mini.
+3. Installs the repo-owned Codex control-plane helpers from `scripts/codex-bin/` into local `~/.codex/bin/` and mirrors them to Mini.
+4. Syncs critical control-plane scripts (`check-inbox.sh`, `git-sync-safe.sh`, hooks, validation/reporting scripts).
+5. Seeds Mini's local knowledge graph cache and backup-first agent memory stores when present.
+6. Verifies Air↔Mini SHA-256 parity for control-plane files and helpers plus dry-run `rsync` parity for skills.
+7. Optionally restarts Codex on Mini so the control-plane profile reloads.
+
+It never reads or writes Codex automation TOML or SQLite state. Production automation changes must use `automation_update` on the Mini; the Air remains free of recurring Codex automation records.
 
 ### start-workday.sh
 
-One-command MacBook workflow start that keeps Mini runs paused by default so manual sessions do not race unattended automation.
+One-command MacBook workflow start for control-plane parity, repo reconciliation, and current reports.
 
 **Usage:**
 ```bash
@@ -175,11 +183,10 @@ start-workday.sh mini --no-open
 ```
 
 **What it does:**
-1. Syncs automation config to Mini.
-   Default behavior keeps Mini AM/PM runs paused. Use `--activate-mini-runs` only when you explicitly want unattended Mini runs re-enabled.
+1. Syncs the Codex control-plane profile to Mini without inspecting or changing automation state.
 2. Runs the canonical Air↔Mini reconcile wrapper (`reconcile-air-mini.sh mini --no-sync-control-plane`).
 3. Pulls latest Mini morning/nightly reports locally.
-4. Shows Mini automation scheduler status.
+4. Leaves automation inspection and mutation to Codex Scheduled and `automation_update`.
 5. Runs inbox summary locally.
 6. Opens reports and Codex app (unless `--no-open`).
 
@@ -195,8 +202,7 @@ reconcile-air-mini.sh mini --no-sync-control-plane
 ```
 
 **What it does:**
-1. Optionally syncs control-plane files to Mini without restarting Codex.
-   Default behavior keeps Mini AM/PM runs paused. Use `--activate-mini-runs` only when you explicitly want unattended Mini runs re-enabled.
+1. Optionally syncs control-plane files to Mini without restarting Codex or touching automation state.
 2. Runs `git-sync-safe.sh` on the Mini first.
 3. Runs `git-sync-safe.sh --peer mini` locally.
 4. Fails loudly on dirty canonical repos so work is reconciled explicitly.
