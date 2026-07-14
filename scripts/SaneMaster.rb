@@ -246,7 +246,8 @@ class SaneMaster
         'universal_control_reset' => { args: '[--status] [--dry-run] [--local-only|--mini-only] [--cleanup-mini] [--reboot-mini]', desc: 'Recover Air↔Mini Universal Control / pointer handoff' },
         'work_session_on' => { args: '', desc: 'Start keep-awake + no-lock work session guard' },
         'work_session_off' => { args: '', desc: 'Restore previous lock settings and stop work-session guard' },
-        'work_session_status' => { args: '', desc: 'Show current work-session guard state' }
+        'work_session_status' => { args: '', desc: 'Show current work-session guard state' },
+        'server_acceptance' => { args: '[--mini HOST] [--skip-sync] [--json] [--plan] [--output DIR]', desc: 'Prove Air-to-Mini server, access, dependency, and sync invariants without production mutation' }
       }
     },
     meta: {
@@ -2052,6 +2053,9 @@ PY
       work_session_off
     when 'work_session_status', 'wsst'
       work_session_status
+    when 'server_acceptance', 'server-acceptance', 'air_mini_acceptance', 'air-mini-acceptance'
+      system('/opt/homebrew/opt/ruby/bin/ruby', File.join(__dir__, 'automation', 'air_mini_acceptance.rb'), *args)
+      exit($CHILD_STATUS.exitstatus || 1) unless $CHILD_STATUS&.success?
 
     # Build & Test
     when 'verify'

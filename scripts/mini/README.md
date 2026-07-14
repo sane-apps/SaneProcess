@@ -38,6 +38,18 @@ ssh -G mini | grep -E '^(hostname|proxycommand|identityfile) '
 ssh mini 'hostname; whoami'
 ```
 
+After client or machine restarts, run the deterministic read-only acceptance
+from the Air before beginning normal work:
+
+```bash
+ruby scripts/SaneMaster.rb server_acceptance
+```
+
+It writes JSON and Markdown receipts under `outputs/restart-acceptance/` and
+fails closed on dependency drift, private-route failure, server-service drift,
+repository mismatch, or memory checksum mismatch. Browser/UI and full app
+build matrices remain separate because those require their canonical tools.
+
 Use `ssh mini-lan` only to diagnose same-network Bonjour. If LAN is unavailable,
 `ssh mini` automatically uses Tailscale. If both private routes fail, the proxy
 fails clearly rather than hiding the outage behind an ephemeral hostname.
