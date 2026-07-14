@@ -16,6 +16,8 @@ CONFIG_FILE="$HOME/.ssh/config"
 MINI_CONFIG="$CONFIG_DIR/saneapps-mini.conf"
 PROXY_SRC="$SCRIPT_DIR/saneapps-mini-proxy.sh"
 PROXY_DEST="$HOME/.local/bin/saneapps-mini-proxy"
+TAILSCALE_CLI_SRC="$SCRIPT_DIR/saneapps-tailscale.sh"
+TAILSCALE_CLI_DEST="$HOME/.local/bin/tailscale"
 AGENT_LABEL="com.saneapps.tailscaled-userspace"
 AGENT_PLIST="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
 TS_STATE_DIR="$HOME/Library/Application Support/tailscaled-userspace"
@@ -46,6 +48,7 @@ if ! grep -q '^Include ~/.ssh/config.d/\*.conf' "$CONFIG_FILE"; then
 fi
 
 install -m 755 "$PROXY_SRC" "$PROXY_DEST"
+install -m 755 "$TAILSCALE_CLI_SRC" "$TAILSCALE_CLI_DEST"
 
 cat > "$MINI_CONFIG" <<'EOF'
 Host mini mini-remote
@@ -76,8 +79,10 @@ EOF
 chmod 600 "$CONFIG_FILE" "$MINI_CONFIG"
 
 # --- Tailscale daemon (this machine, client side) ---------------------------
-TS="$(command -v tailscale || true)"
-[ -z "$TS" ] && [ -x /opt/homebrew/bin/tailscale ] && TS=/opt/homebrew/bin/tailscale
+TS=""
+[ -x /opt/homebrew/bin/tailscale ] && TS=/opt/homebrew/bin/tailscale
+[ -z "$TS" ] && [ -x /usr/local/bin/tailscale ] && TS=/usr/local/bin/tailscale
+[ -z "$TS" ] && TS="$(command -v tailscale || true)"
 
 if [ -n "$TS" ]; then
   if "$TS" status >/dev/null 2>&1; then
@@ -135,5 +140,5 @@ else
   echo "tailscale not installed; only the same-LAN route will be available." >&2
 fi
 
-echo "Installed $MINI_CONFIG and $PROXY_DEST"
+echo "Installed $MINI_CONFIG, $PROXY_DEST, and $TAILSCALE_CLI_DEST"
 echo "Verify with: ssh mini 'hostname; whoami'"

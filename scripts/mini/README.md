@@ -25,6 +25,11 @@ root-owned Homebrew tailscaled LaunchDaemon. The Air runs the authenticated
 userspace `com.saneapps.tailscaled-userspace` LaunchAgent with `RunAtLoad` and
 `KeepAlive`, so off-LAN access returns after normal Air login.
 
+The controller installer also owns `~/.local/bin/tailscale`. That thin wrapper
+selects the userspace socket automatically when present, so ordinary commands
+such as `tailscale status`, `tailscale ping`, and `tailscale nc` work without a
+machine-specific `--socket` flag.
+
 Install or repair the Air configuration:
 
 ```bash
