@@ -26,6 +26,10 @@ module SaneAppsDependencyBaseline
     node@24 ruby python@3.14 xcodegen swiftlint swiftformat lefthook fastlane
     tailscale gh jq create-dmg mockolo periphery ripgrep xcbeautify
   ].freeze
+  ROLE_FORMULAE = {
+    air: [],
+    mini: %w[pango]
+  }.freeze
   SHARED_NPM = %w[
     @modelcontextprotocol/sdk
     @modelcontextprotocol/server-github
@@ -117,8 +121,12 @@ module SaneAppsDependencyBaseline
     raise "command failed (#{command.join(' ')}):\n#{stdout}#{stderr}"
   end
 
-  def formula_state
-    stdout = run!(BREW, 'info', '--json=v2', *SHARED_FORMULAE,
+  def formulae(role)
+    (SHARED_FORMULAE + ROLE_FORMULAE.fetch(role)).uniq
+  end
+
+  def formula_state(role)
+    stdout = run!(BREW, 'info', '--json=v2', *formulae(role),
                   env: { 'HOMEBREW_NO_AUTO_UPDATE' => '1' })
     JSON.parse(stdout).fetch('formulae').map do |formula|
       installed = formula.fetch('installed').map { |entry| entry.fetch('version') }
@@ -145,10 +153,10 @@ module SaneAppsDependencyBaseline
     JSON.parse(stdout).fetch('dependencies', {}).transform_values { |entry| entry['version'] }
   end
 
-  def apply_formulae
-    installed = formula_state.to_h { |entry| [entry[:name], entry[:installed].any?] }
-    missing = SHARED_FORMULAE.reject { |name| installed[name] }
-    present = SHARED_FORMULAE.select { |name| installed[name] }
+  def apply_formulae(role)
+    installed = formula_state(role).to_h { |entry| [entry[:name], entry[:installed].any?] }
+    missing = formulae(role).reject { |name| installed[name] }
+    present = formulae(role).select { |name| installed[name] }
     run!(BREW, 'install', *missing) if missing.any?
     run!(BREW, 'upgrade', *present) if present.any?
   end
@@ -168,7 +176,7 @@ module SaneAppsDependencyBaseline
     shell_ok, shell_message = install_shell_baseline(home: home, apply: false)
     problems << shell_message unless shell_ok
 
-    formula_state.each do |entry|
+    formula_state(role).each do |entry|
       problems << "missing formula: #{entry[:name]}" if entry[:installed].empty?
       problems << "outdated formula: #{entry[:name]} -> #{entry[:stable]}" if entry[:outdated]
     end
@@ -208,7 +216,7 @@ module SaneAppsDependencyBaseline
 
     run!(BREW, 'update') if options[:apply] && options[:refresh]
     if options[:apply]
-      apply_formulae
+      apply_formulae(role)
       ok, message = install_shell_baseline(home: home, apply: true)
       raise message unless ok
       puts message

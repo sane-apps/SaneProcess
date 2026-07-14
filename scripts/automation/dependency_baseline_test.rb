@@ -42,5 +42,9 @@ assert(SaneAppsDependencyBaseline.npm_packages(:air).include?('@upstash/context7
        'Air research dependency missing')
 assert(SaneAppsDependencyBaseline::NODE_BIN.end_with?('/node@24/bin'),
        'Node LTS executable path drifted')
+assert(SaneAppsDependencyBaseline.formulae(:mini).include?('pango'),
+       'Mini PDF renderer dependency missing')
+assert(!SaneAppsDependencyBaseline.formulae(:air).include?('pango'),
+       'Air should not inherit the Mini-only PDF renderer stack')
 
-puts 'PASS 12/12'
+puts 'PASS 14/14'
