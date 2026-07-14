@@ -9,6 +9,7 @@ require 'tmpdir'
 include TestFramework
 
 INSTALLER = File.expand_path('mini-install-agentmemory.sh', __dir__)
+SUPERVISOR = File.expand_path('mini-agentmemory-supervisor.sh', __dir__)
 
 exit(run_tests('Mini AgentMemory Tests') do
   test_category('restart durability') do
@@ -17,13 +18,15 @@ exit(run_tests('Mini AgentMemory Tests') do
         fake_bin = File.join(dir, 'agentmemory')
         plist = File.join(dir, 'com.saneapps.agentmemory.plist')
         log_dir = File.join(dir, 'logs')
+        supervisor = File.join(dir, 'libexec', 'agentmemory-supervisor')
         File.write(fake_bin, "#!/bin/sh\nexit 0\n")
         FileUtils.chmod(0o755, fake_bin)
         env = {
           'HOME' => dir,
           'SANE_AGENTMEMORY_BIN' => fake_bin,
           'SANE_AGENTMEMORY_PLIST' => plist,
-          'SANE_AGENTMEMORY_LOG_DIR' => log_dir
+          'SANE_AGENTMEMORY_LOG_DIR' => log_dir,
+          'SANE_AGENTMEMORY_SUPERVISOR' => supervisor
         }
         _out, err, status = Open3.capture3(env, '/bin/bash', INSTALLER, '--dry-run')
         assert(status.success?, err)
@@ -37,7 +40,97 @@ exit(run_tests('Mini AgentMemory Tests') do
         assert_includes(source, '<integer>30</integer>')
         assert_includes(source, '<key>WorkingDirectory</key>')
         assert_includes(source, "<string>#{dir}</string>")
+        assert_includes(source, "<string>#{supervisor}</string>")
+        assert(File.executable?(supervisor), 'installed supervisor must be executable')
         assert_includes(File.read(INSTALLER), "grep -Eq 'Health:[[:space:]].*healthy'")
+        true
+      end
+    end
+
+    test('exits nonzero when the child engine loses health so launchd can restart it') do
+      Dir.mktmpdir('agentmemory-supervisor') do |dir|
+        fake_bin = File.join(dir, 'agentmemory')
+        count = File.join(dir, 'status-count')
+        File.write(fake_bin, <<~SH)
+          #!/bin/sh
+          case "${1:-}" in
+            status)
+              count=0
+              [ ! -f "$STATUS_COUNT" ] || count="$(cat "$STATUS_COUNT")"
+              count=$((count + 1))
+              printf '%s\n' "$count" > "$STATUS_COUNT"
+              if [ "$count" -le 2 ]; then
+                echo 'Health: healthy'
+                exit 0
+              fi
+              echo 'Health: unknown'
+              exit 1
+              ;;
+            stop)
+              exit 0
+              ;;
+            *)
+              while :; do sleep 1; done
+              ;;
+          esac
+        SH
+        FileUtils.chmod(0o755, fake_bin)
+        env = {
+          'SANE_AGENTMEMORY_BIN' => fake_bin,
+          'SANE_AGENTMEMORY_HEALTH_INTERVAL' => '0.1',
+          'SANE_AGENTMEMORY_HEALTH_MISSES' => '2',
+          'SANE_AGENTMEMORY_STARTUP_ATTEMPTS' => '2',
+          'SANE_AGENTMEMORY_STARTUP_INTERVAL' => '0.1',
+          'STATUS_COUNT' => count
+        }
+        _out, err, status = Open3.capture3(env, '/bin/bash', SUPERVISOR)
+        assert(!status.success?, 'supervisor must request a launchd restart after sustained health loss')
+        assert_includes(err, 'exiting for launchd restart')
+        true
+      end
+    end
+
+    test('uses a bounded noninteractive admin fallback when remote launchd bootstrap is denied') do
+      Dir.mktmpdir('agentmemory-remote-install') do |dir|
+        fake_bin = File.join(dir, 'agentmemory')
+        fake_launchctl = File.join(dir, 'launchctl')
+        fake_sudo = File.join(dir, 'sudo')
+        launchctl_log = File.join(dir, 'launchctl.log')
+        sudo_log = File.join(dir, 'sudo.log')
+        plist = File.join(dir, 'com.saneapps.agentmemory.plist')
+        supervisor = File.join(dir, 'libexec', 'agentmemory-supervisor')
+        File.write(fake_bin, <<~SH)
+          #!/bin/sh
+          [ "${1:-}" != status ] || echo 'Health: healthy'
+          exit 0
+        SH
+        File.write(fake_launchctl, <<~SH)
+          #!/bin/sh
+          echo "$*" >> "$LAUNCHCTL_LOG"
+          [ "${1:-}" != bootstrap ]
+        SH
+        File.write(fake_sudo, <<~SH)
+          #!/bin/sh
+          echo "$*" >> "$SUDO_LOG"
+          exit 0
+        SH
+        FileUtils.chmod(0o755, [fake_bin, fake_launchctl, fake_sudo])
+        env = {
+          'HOME' => dir,
+          'SANE_AGENTMEMORY_BIN' => fake_bin,
+          'SANE_AGENTMEMORY_PLIST' => plist,
+          'SANE_AGENTMEMORY_LOG_DIR' => File.join(dir, 'logs'),
+          'SANE_AGENTMEMORY_SUPERVISOR' => supervisor,
+          'SANE_LAUNCHCTL_BIN' => fake_launchctl,
+          'SANE_SUDO_BIN' => fake_sudo,
+          'LAUNCHCTL_LOG' => launchctl_log,
+          'SUDO_LOG' => sudo_log
+        }
+        out, err, status = Open3.capture3(env, '/bin/bash', INSTALLER)
+        assert(status.success?, "#{out}\n#{err}")
+        assert_includes(File.read(launchctl_log), 'bootstrap gui/')
+        assert_includes(File.read(sudo_log), "-n #{fake_launchctl} bootstrap gui/")
+        assert_includes(out, 'noninteractive admin fallback')
         true
       end
     end

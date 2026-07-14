@@ -728,16 +728,13 @@ module SaneMasterModules
       end
     end
 
-    # Check Memory MCP configuration
+    # Check the current Mini-owned AgentMemory service configuration.
     def check_memory_health
-      sources = collect_mcp_sources
-      return { status: :warning, message: 'No MCP configuration found' } if sources.empty?
-
-      has_memory = sources.any? { |source| (source[:servers] || {}).key?('memory') }
-      return { status: :warning, message: 'Memory MCP not configured' } unless has_memory
-
-      # Memory is MCP-managed (in-process), can't check file directly.
-      { status: :ok, message: 'Memory MCP configured (use mcp__memory__read_graph to validate content)' }
+      socket = Socket.tcp('127.0.0.1', 3111, connect_timeout: 2)
+      socket.close
+      { status: :ok, message: 'AgentMemory is listening on the Mini-owned port 3111' }
+    rescue SystemCallError, SocketError
+      { status: :warning, message: 'AgentMemory is not responding on the Mini-owned port 3111' }
     end
 
     # Full health check - consolidates quick checks + meta audit

@@ -49,7 +49,7 @@ pkill -f 'claude.*dangerously-skip-permissions'
 Every project must keep active research in the existing project research cache
 (`.codex/research.md` by default, or a documented client-specific equivalent)
 and promote durable decisions into `ARCHITECTURE.md`, `DEVELOPMENT.md`,
-`AGENTS.md`, memory, or the knowledge graph. Do not create orphan root-level
+`AGENTS.md`, memory, or AgentMemory. Do not create orphan root-level
 research documents.
 
 1. **API Research** - External APIs, SDKs, dependencies with verified documentation
@@ -652,23 +652,19 @@ end
 {
   "mcpServers": {
     "apple-docs": {
-      "command": "npx",
-      "args": ["-y", "@mweinbach/apple-docs-mcp@1.3.1"]
-    },
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github@2025.4.8"],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
-      }
+      "type": "http",
+      "url": "http://127.0.0.1:37911/mcp"
     },
     "context7": {
-      "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp@2.2.5"]
+      "command": "/opt/homebrew/opt/node@24/bin/npx",
+      "args": ["-y", "@upstash/context7-mcp@3.2.3"]
     }
   }
 }
 ```
+
+GitHub MCP authentication is configured globally through the SaneProcess
+credential bridge; never place a raw token reference in a project template.
 
 ### 9.2 Shell Alias
 
@@ -742,7 +738,6 @@ struct MyTests {
 |---------|----------|-------|
 | **SaneBar** | `~/SaneApps/apps/SaneBar` | Full mature setup, menu bar app, canonical SaneProcess release lane |
 | **SaneClip** | `~/SaneApps/apps/SaneClip` | Clipboard manager, $5 paid |
-| **SaneSync** | `~/SaneApps/apps/SaneSync` | Cloud sync (WIP) |
 | **SaneHosts** | `~/SaneApps/apps/SaneHosts` | Hosts file manager |
 | **SaneProcess** | `~/SaneApps/infra/SaneProcess` | Hook master, templates |
 

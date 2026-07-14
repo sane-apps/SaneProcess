@@ -6044,6 +6044,77 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('release.sh refuses to rewrite an existing remote release tag') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+      create_release_body = release_script[/create_github_release\(\) \{.*?^}/m]
+      assert(!create_release_body.nil?, 'expected create_github_release body in release.sh')
+      assert(!create_release_body.include?('tag -f'), 'release tags must never be force-retargeted')
+      assert(!create_release_body.include?('push --force'), 'remote release tags must never be force-pushed')
+
+      Dir.mktmpdir('immutable-release-tag-') do |dir|
+        project_root = File.join(dir, 'project')
+        remote_root = File.join(dir, 'remote.git')
+        build_dir = File.join(dir, 'build')
+        fake_bin = File.join(dir, 'bin')
+        FileUtils.mkdir_p([project_root, build_dir, fake_bin])
+
+        git = lambda do |repo, *args|
+          output, status = Open3.capture2e('git', '-C', repo, *args)
+          assert(status.success?, "git #{args.join(' ')} failed: #{output}")
+          output.strip
+        end
+        _output, status = Open3.capture2e('git', 'init', '--bare', remote_root)
+        assert(status.success?, 'expected local bare remote initialization to succeed')
+        git.call(project_root, 'init')
+        git.call(project_root, 'config', 'user.email', 'test@example.invalid')
+        git.call(project_root, 'config', 'user.name', 'SaneProcess Test')
+        File.write(File.join(project_root, 'fixture.txt'), "first\n")
+        git.call(project_root, 'add', 'fixture.txt')
+        git.call(project_root, 'commit', '-m', 'first')
+        original_commit = git.call(project_root, 'rev-parse', 'HEAD')
+        git.call(project_root, 'tag', 'v1.2.3')
+        git.call(project_root, 'remote', 'add', 'origin', remote_root)
+        git.call(project_root, 'push', 'origin', 'refs/tags/v1.2.3')
+        File.write(File.join(project_root, 'fixture.txt'), "second\n")
+        git.call(project_root, 'add', 'fixture.txt')
+        git.call(project_root, 'commit', '-m', 'second')
+
+        gh_path = File.join(fake_bin, 'gh')
+        File.write(gh_path, "#!/bin/sh\nexit 99\n")
+        FileUtils.chmod(0o755, gh_path)
+        harness = File.join(dir, 'immutable-tag-harness.sh')
+        File.write(
+          harness,
+          <<~BASH
+            #!/bin/bash
+            PROJECT_ROOT=#{project_root.inspect}
+            BUILD_DIR=#{build_dir.inspect}
+            VERSION=1.2.3
+            APP_NAME=SaneExample
+            SITE_HOST=saneexample.com
+            DIST_HOST=dist.saneexample.com
+            GITHUB_REPO=sane-apps/SaneExample
+            STRICT_PUBLIC_CHANNEL_SYNC=true
+            RELEASE_NOTES='test release'
+            log_info() { printf '[INFO] %s\n' "$1"; }
+            log_warn() { printf '[WARN] %s\n' "$1"; }
+            log_error() { printf '[ERROR] %s\n' "$1"; }
+
+            #{create_release_body}
+
+            create_github_release
+          BASH
+        )
+
+        output, status = Open3.capture2e({ 'PATH' => "#{fake_bin}:#{ENV.fetch('PATH')}" }, 'bash', harness)
+        assert(!status.success?, "mismatched remote tag must abort release: #{output}")
+        assert_includes(output, 'refusing to rewrite it')
+        assert_includes(output, 'Published release tags are immutable')
+        assert_eq(git.call(remote_root, 'rev-parse', 'refs/tags/v1.2.3'), original_commit)
+      end
+      true
+    end
+
     test('release.sh bounds GitHub API fallback and keeps bearer tokens out of curl argv') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
       release_module = File.read(File.expand_path('release.rb', __dir__))

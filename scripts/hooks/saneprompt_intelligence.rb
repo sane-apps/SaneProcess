@@ -199,7 +199,7 @@ module SanePromptIntelligence
     lines.join(' | ')
   end
 
-  # === MEMORY MCP INTEGRATION ===
+  # === DURABLE MEMORY INTEGRATION ===
   # Check for staged learnings from previous session's sanestop.rb
 
   def check_memory_staging
@@ -218,16 +218,16 @@ module SanePromptIntelligence
     return nil unless entity
 
     lines = []
-    lines << 'MEMORY MCP UPDATE NEEDED:'
+    lines << 'DURABLE MEMORY UPDATE NEEDED:'
     lines << ''
-    lines << 'Previous session staged high-value learnings. Save to Memory MCP:'
+    lines << 'Previous session staged high-value learnings. Save through AgentMemory or project memory:'
     lines << ''
     lines << "Entity: #{entity['name']}"
     lines << "Type: #{entity['type']}"
     lines << 'Observations:'
     entity['observations'].each { |obs| lines << "  - #{obs}" }
     lines << ''
-    lines << 'ACTION REQUIRED: Save this learning via Memory MCP add_observations tool'
+    lines << 'ACTION REQUIRED: Save this learning through AgentMemory or the project durable-memory files'
     lines << "Then delete: #{MEMORY_STAGING_FILE}"
 
     lines.join("\n")

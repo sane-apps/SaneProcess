@@ -46,8 +46,13 @@ The hook runtime does not send telemetry. Optional operator-run automation scrip
 
 The enforcement hooks (saneprompt, sanetools, sanetrack, sanestop) run as local Ruby scripts with the same permissions as your development environment. They:
 
-- Do not execute arbitrary code
-- Only read/write to designated state files
+- Inspect tool requests and results, invoke documented bounded helper commands
+  where a workflow requires them, and write local state, logs, and receipts
+- Never elevate their own privileges; any external mutation remains behind the
+  documented SaneMaster/release/support workflow and its approval gates
+- Allow approved local tools to consume credentials internally, including when
+  invoked from the Air over SSH, while keeping raw secret values non-exportable
+  and out of prompts, logs, tracked files, receipts, and subprocess output
 - Exit with codes 0 (allow) or 2 (block)
 
 ---

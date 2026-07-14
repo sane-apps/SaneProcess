@@ -192,7 +192,8 @@ module SaneToolsResearch
   end
 
   # MCP verification tools (read-only operations to prove connectivity)
-  # NOTE: Official Memory MCP (@modelcontextprotocol/server-memory) is global, not project-verified
+  # AgentMemory is a Mini-owned service and is checked by the server acceptance path,
+  # not by this per-project edit gate.
   # Context7 and GitHub were removed from required verification: GitHub migrated
   # to the `gh` skill and Context7 is not connected in Claude sessions, so
   # requiring them stalled every edit at N/3 with no way to reach 3/3.
@@ -241,7 +242,7 @@ module SaneToolsResearch
              "Cannot edit until pending MCP/memory actions are handled.\n" \
              "#{pending_actions.map { |a| "  ⚠️  #{a}" }.join("\n")}\n" \
              "\n" \
-             "Use the memory MCP to save the staged learning, then remove #{staging_file}."
+             "Save the staged learning through AgentMemory or durable project memory, then remove #{staging_file}."
     end
 
     return nil if configured_mcps.empty?

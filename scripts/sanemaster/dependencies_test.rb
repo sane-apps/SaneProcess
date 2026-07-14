@@ -325,13 +325,13 @@ exit(run_tests('SaneMaster MCP Watchdog Tests') do
   test_category('MCP singleton bridge') do
     test('generates LaunchAgent plists with the current Node executable') do
       bridge = File.expand_path('../mcp_singleton_bridge.cjs', __dir__)
-      node = ENV['NODE'] || '/opt/homebrew/bin/node'
+      node = '/opt/homebrew/opt/node@24/bin/node'
       assert(File.executable?(node), "expected Node executable at #{node}")
-      node_realpath = File.realpath(node)
 
       output, status = Open3.capture2e(node, bridge, 'plist', 'apple-docs')
       assert(status.success?, output)
-      assert_includes(output, node_realpath)
+      assert_includes(output, node)
+      assert(!output.include?('/opt/homebrew/bin/node'), 'singleton plists must not pin the removed unversioned Homebrew Node path')
       assert(!output.include?('/usr/local/bin/node'), 'singleton plists must not pin the removed Intel Homebrew Node path')
       true
     end

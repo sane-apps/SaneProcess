@@ -287,7 +287,7 @@ exists:
 2. **Exit codes matter** — 0 allow, 2 block
 3. **Fail safe** — On error, allow (don't block randomly)
 4. **Self-testable** — Every hook has `--self-test`
-5. **Centralized config** — All paths in Config module
+5. **Owned configuration** — Constants and paths live beside the behavior that owns them
 6. **Text ≠ Error** — Check explicit error fields, not content
 
 ---
@@ -469,8 +469,8 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
 - Context quality is a tested workflow surface. Broad reviews should start from
   `context_bundle`, not raw code snippets, so reviewers get active rules,
   handoff state, research cards, proof receipt links, and promotion targets for
-  stale knowledge while Markdown and Serena memory files remain the bundle
-  sources. Durable facts can still be promoted to the memory graph separately.
+  stale knowledge while Markdown, Serena memory files, and Mini AgentMemory
+  remain the maintained context sources.
 
 ### ADR-009: HTML is a generated review artifact, not the source of truth (2026-05-13)
 
@@ -554,11 +554,17 @@ access, security, build/ops support, persistent data, reporting, and bounded
 maintenance services.
 
 Air-to-Mini access uses private LAN then authenticated Tailscale; the legacy
-Cloudflare quick tunnel is retired. GitHub `main` is canonical for code, while
+Cloudflare quick tunnel is retired. Mini-to-Air recovery uses a separate
+Mini-only Ed25519 identity over Tailscale with agent forwarding disabled, so
+the server never needs the Air's GitHub or signing credentials. GitHub `main`
+is canonical for code, while
 uncommitted Mini work is preserved as non-clobbering Air-side snapshots rather
 than raw-mirrored. Claude/Serena/Codex file memories use a conflict-preserving
 two-way Air recurrence. Shared AgentMemory runs as a Mini LaunchAgent with a
 pinned home working directory so its 1,201-memory database survives restarts.
+The LaunchAgent executes a supervisor that checks the real HTTP engine health;
+two consecutive misses stop the complete worker and return nonzero so
+launchd's unsuccessful-exit keepalive can recover from a dead child engine.
 
 ---
 
@@ -568,7 +574,7 @@ pinned home working directory so its 1,201-memory database survives restarts.
 
 | Tool | Enforcement | Orphan Cleanup | Circuit Breaker | Research Gate | Signed State | Tests |
 |------|:-:|:-:|:-:|:-:|:-:|:-:|
-| **SaneProcess** | Hooks | Yes | Yes | Yes | HMAC | 412 |
+| **SaneProcess** | Hooks | Yes | Yes | Yes | HMAC | `SaneMaster.rb verify` |
 | CLAUDE.md rules | Suggestions only | — | — | — | — | — |
 | .cursorrules | Suggestions only | — | — | — | — | — |
 | [rulesync](https://github.com/dyoshikawa/rulesync) | File sync | — | — | — | — | — |

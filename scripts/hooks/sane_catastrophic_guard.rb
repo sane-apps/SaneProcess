@@ -15,6 +15,10 @@ SSH_OPTIONS_WITH_VALUE = %w[-b -c -D -E -e -F -I -i -J -L -l -m -O -o -p -Q -R -
 CATASTROPHIC_RESOURCES = /(?:repo(?:sitory)?|project|bucket|database|account|organization|org|zone|domain|token|credential|secret|role|owner(?:ship)?|namespace)/i.freeze
 DESTRUCTIVE_TOOL_VERBS = /(?:delete|destroy|transfer|revoke|remove|drop|truncate|disable)/i.freeze
 REVERSIBLE_TOOL_RESOURCES = /(?:file|symbol|message|email|event|thread|draft|comment|memory|observation|relation|entity|automation)/i.freeze
+PROTECTED_DELETE_ROOTS = %w[/ /System /Library /Applications /Users].freeze
+CWD_WIDE_DELETE_TARGETS = %w[
+  . ./ * ./* .* ./.* .[!.]* ./.[!.]* ..?* ./..?* {*,.*} ./{*,.*}
+].freeze
 
 def split_shell_segments(text)
   segments = []
@@ -148,15 +152,67 @@ def destructive_business_operation?(base, args)
     joined.match?(/\bsales\s+(?:refund|disable-license)\b/)
 end
 
-def destroys_workspace_root?(base, args, cwd)
-  return false unless base == 'rm' && args.any? { |arg| arg.match?(/\A-[^-]*r/) && arg.include?('f') }
+def recursive_rm?(args)
+  args.any? { |arg| arg == '--recursive' || arg.match?(/\A-[^-]*[rR]/) }
+end
 
-  targets = args.reject { |arg| arg.start_with?('-') }
-  targets.any? do |target|
-    target.match?(%r{\A(?:~|/Users/[^/]+)/SaneApps/?\z}) ||
-      target.match?(%r{(?:\A|/)\.git/?\z}) ||
-      (%w[. ./].include?(target) && cwd.to_s.start_with?('/Users/stephansmac/SaneApps'))
+def deletion_targets(args)
+  positional = false
+  args.filter_map do |arg|
+    if arg == '--'
+      positional = true
+      next
+    end
+    next if !positional && arg.start_with?('-')
+
+    arg
   end
+end
+
+def expand_delete_target(target, cwd)
+  base = cwd.to_s.empty? ? Dir.pwd : File.expand_path(cwd.to_s)
+  expanded = target.to_s
+                   .sub(/\A~(?=\/|\z)/, Dir.home)
+                   .sub(/\A(?:\$HOME|\$\{HOME\})(?=\/|\z)/, Dir.home)
+                   .sub(/\A(?:\$PWD|\$\{PWD\}|\$\(pwd\))(?=\/|\z)/, base)
+  File.expand_path(expanded, base)
+rescue ArgumentError
+  target.to_s
+end
+
+def delete_target_root(target)
+  target.to_s.sub(%r{/(?:\*|\.\*|\{\*,\.\*\})\z}, '')
+end
+
+def repo_root_path?(path)
+  File.directory?(path) && File.exist?(File.join(path, '.git'))
+end
+
+def protected_delete_target?(target, cwd)
+  raw = target.to_s
+  return true if CWD_WIDE_DELETE_TARGETS.include?(raw)
+
+  expanded = expand_delete_target(raw, cwd)
+  root = expand_delete_target(delete_target_root(raw), cwd)
+  normalized = expanded == '/' ? expanded : expanded.sub(%r{/+\z}, '')
+  normalized_root = root == '/' ? root : root.sub(%r{/+\z}, '')
+  protected_roots = PROTECTED_DELETE_ROOTS + [Dir.home, File.join(Dir.home, 'SaneApps')]
+
+  protected_roots.include?(normalized) ||
+    protected_roots.include?(normalized_root) ||
+    normalized.match?(%r{\A/Users/[^/]+(?:/SaneApps)?\z}) ||
+    normalized_root.match?(%r{\A/Users/[^/]+(?:/SaneApps)?\z}) ||
+    File.basename(normalized) == '.git' ||
+    repo_root_path?(normalized) ||
+    repo_root_path?(normalized_root)
+end
+
+def destroys_protected_path?(base, args, cwd)
+  destructive_rm = base == 'rm' && recursive_rm?(args)
+  destructive_trash = base == 'trash'
+  return false unless destructive_rm || destructive_trash
+
+  deletion_targets(args).any? { |target| protected_delete_target?(target, cwd) }
 end
 
 def catastrophic_segment?(segment, cwd)
@@ -177,7 +233,7 @@ def catastrophic_segment?(segment, cwd)
   return true if %w[curl wget http].include?(base) && destructive_http?(args)
   return true if destructive_sql?(base, args)
   return true if destructive_business_operation?(base, args)
-  return true if destroys_workspace_root?(base, args, cwd)
+  return true if destroys_protected_path?(base, args, cwd)
 
   nested_commands(tokens).any? { |command| catastrophic_command?(command, cwd, 1) }
 end

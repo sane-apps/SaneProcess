@@ -321,6 +321,33 @@ class SopPolicyDiffHarness < ValidationReport
   end
 end
 
+class CleanSessionTruthHarness < ValidationReport
+  attr_reader :sources, :correction_notes
+
+  def initialize(root:, sources:, correction_notes:)
+    super()
+    @root = root
+    @sources = sources
+    @correction_notes = correction_notes
+  end
+
+  def saneprocess_repo_root
+    @root
+  end
+
+  def clean_session_truth_sources
+    @sources
+  end
+
+  def clean_session_truth_enabled?(_sources)
+    true
+  end
+
+  def clean_session_truth_correction_notes
+    @correction_notes
+  end
+end
+
 class ValidationOutputHarness < ValidationReport
   attr_reader :release_checklists_called
 
@@ -458,6 +485,100 @@ def write_signed_release_preflight_status(path, signer, source_fingerprint: nil)
 end
 
 exit(run_tests('Validation report tests') do
+  test_category('Q0 clean-session operating truth') do
+    def clean_session_fixture(root)
+      common = "> **Status: superseded on 2026-07-14.** Current operating truth only.\n"
+      research = <<~TEXT
+        <!-- SANEPROCESS_CLEAN_SESSION_TRUTH_V1 -->
+        scripts/automation/sync-memory-mini.sh
+        com.saneapps.memory-sync
+        ssh mini
+        ssh air
+        Daily Mini hygiene never shuts down or restarts.
+        A guarded Sunday restart is the only power lane.
+        Local SaneAI, SaneSync, and ML training are retired.
+        scripts/mini/capture-mini-screenshot.sh
+      TEXT
+      sources = {
+        'research' => File.join(root, 'research.md'),
+        'active-handoff' => File.join(root, 'SESSION_HANDOFF.md'),
+        'serena-air-mini-parity' => File.join(root, 'serena-parity.md'),
+        'serena-suggested-commands' => File.join(root, 'suggested.md'),
+        'claude-memory-sync' => File.join(root, 'memory-sync.md'),
+        'claude-cross-agent-bridge' => File.join(root, 'cross-agent.md'),
+        'claude-inbox-automation' => File.join(root, 'inbox.md'),
+        'claude-memory-architecture' => File.join(root, 'architecture.md'),
+        'claude-mini-interactive' => File.join(root, 'interactive.md')
+      }
+      File.write(sources['research'], research)
+      File.write(sources['active-handoff'], "Active handoff: daily hygiene has no power action.\n")
+      sources.each do |label, path|
+        next if %w[research active-handoff].include?(label)
+
+        File.write(path, common)
+      end
+      note = File.join(root, 'codex-correction.md')
+      File.write(note, "SANEPROCESS_CLEAN_SESSION_TRUTH_V1\nscripts/automation/sync-memory-mini.sh\n")
+      [sources, note]
+    end
+
+    test('accepts one coherent current topology with superseded history') do
+      Dir.mktmpdir('clean-session-truth') do |root|
+        sources, note = clean_session_fixture(root)
+        subject = CleanSessionTruthHarness.new(root: root, sources: sources, correction_notes: [note])
+        issues = []
+        subject.send(:check_clean_session_truth, issues)
+        assert_eq(issues, [])
+      end
+      true
+    end
+
+    test('rejects retired canonical routes and the old daily reboot claim') do
+      Dir.mktmpdir('clean-session-stale') do |root|
+        sources, note = clean_session_fixture(root)
+        File.write(sources['claude-memory-sync'], <<~TEXT)
+          > Status: superseded on 2026-07-14.
+          sync-memory-bidir.sh is the canonical memory route.
+        TEXT
+        File.write(sources['active-handoff'], 'the existing guard will reboot only in the 05:00 safe window')
+        subject = CleanSessionTruthHarness.new(root: root, sources: sources, correction_notes: [note])
+        issues = []
+        subject.send(:check_clean_session_truth, issues)
+        assert(issues.any? { |issue| issue.include?('retired bidirectional script described as canonical') }, issues.inspect)
+        assert(issues.any? { |issue| issue.include?('daily guard described as a reboot path') }, issues.inspect)
+      end
+      true
+    end
+
+    test('requires supersession metadata and one Codex correction note') do
+      Dir.mktmpdir('clean-session-metadata') do |root|
+        sources, _note = clean_session_fixture(root)
+        File.write(sources['claude-inbox-automation'], "Current automation without history status.\n")
+        subject = CleanSessionTruthHarness.new(root: root, sources: sources, correction_notes: [])
+        issues = []
+        subject.send(:check_clean_session_truth, issues)
+        assert(issues.any? { |issue| issue.include?('claude-inbox-automation') }, issues.inspect)
+        assert(issues.any? { |issue| issue.include?('correction note count is 0') }, issues.inspect)
+      end
+      true
+    end
+  end
+
+  test_category('Q0 global hook completeness') do
+    test('finds the required hook across every group instead of only the first guard') do
+      hooks = {
+        'PreToolUse' => [
+          { 'hooks' => [{ 'command' => 'ruby sane_catastrophic_guard.rb' }] },
+          { 'hooks' => [{ 'command' => 'ruby sanetools.rb' }] }
+        ]
+      }
+      commands = ValidationReport.new.send(:configured_hook_commands, hooks, 'PreToolUse')
+      assert_eq(commands, ['ruby sane_catastrophic_guard.rb', 'ruby sanetools.rb'])
+      assert(commands.any? { |command| command.include?('sanetools.rb') })
+      true
+    end
+  end
+
   test_category('CLI routing') do
     test('parses help without running the full report') do
       options = ValidationReport.parse_cli_args(['--help'])
@@ -2206,6 +2327,9 @@ exit(run_tests('Validation report tests') do
       subject.instance_variable_set(:@warnings, [])
       subject.instance_variable_set(:@metrics, {})
       subject.define_singleton_method(:resolve_secret_value) { |_service, _account, *_env_names| '' }
+      subject.define_singleton_method(:agentmemory_status_output) do
+        "Connected — v0.9.27 at http://localhost:3111\nHealth: ✓ healthy\nMemories: 1,201\n"
+      end
 
       subject.send(:q9_support_infrastructure)
       issues = subject.instance_variable_get(:@issues).join("\n")
@@ -2215,6 +2339,8 @@ exit(run_tests('Validation report tests') do
       assert_includes(warnings, 'Q9 SUPPORT: Cloudflare API live credential check skipped in no-prompt validation mode')
       assert_includes(warnings, 'Q9 SUPPORT: Resend Email API live credential check skipped in no-prompt validation mode')
       assert_includes(warnings, 'Q9 SUPPORT: Lemon Squeezy API live credential check skipped in no-prompt validation mode')
+      assert(!warnings.include?('Knowledge graph'), warnings)
+      assert(!warnings.include?('AgentMemory is unavailable'), warnings)
       true
     ensure
       ENV['SANE_ALLOW_KEYCHAIN_PROMPTS'] = old_allow if old_allow

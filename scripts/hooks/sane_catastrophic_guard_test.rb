@@ -8,6 +8,7 @@ require_relative 'test/test_framework'
 include TestFramework
 
 HOOK = File.expand_path('sane_catastrophic_guard.rb', __dir__)
+REPO_ROOT = File.expand_path('../..', __dir__)
 
 def run_payload(payload)
   Open3.capture3('ruby', HOOK, stdin_data: JSON.generate(payload))
@@ -41,10 +42,36 @@ BLOCKED_COMMANDS = [
   "mysql -e 'DELETE FROM customers;'",
   'ruby scripts/SaneMaster.rb sales --refund order_123',
   'ruby scripts/SaneMaster.rb sales --disable-license-key abc',
+  'rm -rf /',
+  'rm -r /System',
+  'rm -R /Library',
+  'rm -rf /Applications/',
+  'rm -r -f /Users',
+  'rm -rf /System/*',
+  'rm -rf ~',
+  'rm -rf "$HOME"',
+  'rm -rf "$HOME"/*',
+  'rm -rf /Users/sj',
+  'rm -rf /Users/sj/SaneApps',
   'rm -rf /Users/stephansmac/SaneApps',
+  'rm -rf ~/SaneApps',
+  "rm -rf #{REPO_ROOT}",
+  "rm -rf #{REPO_ROOT}/*",
   'rm -rf .',
+  'rm -rf *',
+  'rm -rf ./*',
+  'rm -rf .*',
+  'rm -rf {*,.*}',
+  'trash /',
+  '/usr/bin/trash /System',
+  'trash "$HOME"',
+  'trash ~/SaneApps',
+  "trash #{REPO_ROOT}",
+  "trash #{REPO_ROOT}/*",
+  'trash *',
   "bash -lc 'gh repo delete MrSaneApps/SaneBar --yes'",
   "ssh mini 'git push --force origin main'",
+  "ssh air 'rm -rf /Users/sj/SaneApps'",
   "ssh -o BatchMode=yes mini 'git push --force origin main'",
   "rg 'gh repo delete' README.md; gh repo delete MrSaneApps/SaneBar --yes"
 ].freeze
@@ -66,6 +93,12 @@ ALLOWED_COMMANDS = [
   "printf '%s' 'git push --force origin main'",
   "git commit -m 'block wrangler pages project delete'",
   'rm -rf .build',
+  'rm -r .build',
+  'rm -rf .build/*',
+  'rm -rf ~/Library/Developer/Xcode/DerivedData/*',
+  'rm -rf /tmp/sane-test-*',
+  'trash .build',
+  'trash /tmp/sane-single-fixture',
   "ssh mini 'cd ~/SaneApps && git status --short'"
 ].freeze
 

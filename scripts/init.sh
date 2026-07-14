@@ -618,10 +618,11 @@ show_install_commands() {
     fi
 }
 
-show_install_commands "context7" "npx -y @upstash/context7-mcp@2.2.5" ""
+show_install_commands "context7" "npx -y @upstash/context7-mcp@3.2.3" ""
 show_install_commands "github" "npx -y @modelcontextprotocol/server-github@2025.4.8" "Requires: GITHUB_PERSONAL_ACCESS_TOKEN"
 if [ "$PLATFORM" = "macOS" ]; then
     show_install_commands "apple-docs" "npx -y @mweinbach/apple-docs-mcp@1.3.1" ""
+    show_install_commands "macos-automator" "npx -y @steipete/macos-automator-mcp@0.4.5" ""
 fi
 echo ""
 

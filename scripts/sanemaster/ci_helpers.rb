@@ -214,7 +214,7 @@ module SaneMasterModules
       timed_out = false
       termination_error = nil
       tracked_descendants = []
-      root_identity = monitor_test_process_identity(pid)
+      root_identity = monitor_test_owned_process_identity(pid)
       tracked_identities = {}
 
       begin

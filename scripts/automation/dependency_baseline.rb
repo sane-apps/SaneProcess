@@ -33,7 +33,6 @@ module SaneAppsDependencyBaseline
   SHARED_NPM = %w[
     @modelcontextprotocol/sdk
     @modelcontextprotocol/server-github
-    @modelcontextprotocol/server-memory
     @mweinbach/apple-docs-mcp
     @steipete/macos-automator-mcp
   ].freeze
@@ -41,9 +40,20 @@ module SaneAppsDependencyBaseline
     air: %w[@upstash/context7-mcp firecrawl-cli @google/gemini-cli],
     mini: %w[@agentmemory/agentmemory playwright]
   }.freeze
+  NPM_VERSIONS = {
+    '@agentmemory/agentmemory' => '0.9.27',
+    '@google/gemini-cli' => '0.50.0',
+    '@modelcontextprotocol/sdk' => '1.29.0',
+    '@modelcontextprotocol/server-github' => '2025.4.8',
+    '@mweinbach/apple-docs-mcp' => '1.3.1',
+    '@steipete/macos-automator-mcp' => '0.4.5',
+    '@upstash/context7-mcp' => '3.2.3',
+    'firecrawl-cli' => '1.19.26',
+    'playwright' => '1.61.1'
+  }.freeze
   # Node's Homebrew LTS bottle supplies the matching npm. A separately updated
   # global npm creates a second CLI version and changes which binary PATH finds.
-  FORBIDDEN_GLOBAL_NPM = %w[wrangler npm].freeze
+  FORBIDDEN_GLOBAL_NPM = %w[wrangler npm @modelcontextprotocol/server-memory].freeze
 
   module_function
 
@@ -147,6 +157,27 @@ module SaneAppsDependencyBaseline
     (SHARED_NPM + ROLE_NPM.fetch(role)).uniq
   end
 
+  def npm_specs(role)
+    npm_packages(role).map { |name| "#{name}@#{NPM_VERSIONS.fetch(name)}" }
+  end
+
+  def npm_version_problems(role, installed)
+    problems = []
+    npm_packages(role).each do |name|
+      expected = NPM_VERSIONS.fetch(name)
+      actual = installed[name]
+      if actual.nil?
+        problems << "missing npm package: #{name}"
+      elsif actual != expected
+        problems << "npm package version drift: #{name} #{actual} != #{expected}"
+      end
+    end
+    FORBIDDEN_GLOBAL_NPM.each do |name|
+      problems << "forbidden global npm package: #{name}" if installed.key?(name)
+    end
+    problems
+  end
+
   def npm_state(home)
     stdout = run!(File.join(NODE_BIN, 'npm'), 'ls', '-g', '--depth=0', '--json',
                   env: npm_env(home))
@@ -163,8 +194,7 @@ module SaneAppsDependencyBaseline
 
   def apply_npm(role, home)
     npm = File.join(NODE_BIN, 'npm')
-    packages = npm_packages(role).map { |name| "#{name}@latest" }
-    run!(npm, 'install', '-g', *packages, env: npm_env(home))
+    run!(npm, 'install', '-g', *npm_specs(role), env: npm_env(home))
     FORBIDDEN_GLOBAL_NPM.each do |name|
       current = npm_state(home)
       run!(npm, 'uninstall', '-g', name, env: npm_env(home)) if current.key?(name)
@@ -185,12 +215,7 @@ module SaneAppsDependencyBaseline
     npm = File.join(NODE_BIN, 'npm')
     if File.executable?(node) && File.executable?(npm)
       packages = npm_state(home)
-      npm_packages(role).each do |name|
-        problems << "missing npm package: #{name}" unless packages.key?(name)
-      end
-      FORBIDDEN_GLOBAL_NPM.each do |name|
-        problems << "forbidden global npm package: #{name}" if packages.key?(name)
-      end
+      problems.concat(npm_version_problems(role, packages))
       node_version = run!(node, '--version').strip
       problems << "Node LTS baseline not active: #{node_version}" unless node_version.start_with?('v24.')
     else

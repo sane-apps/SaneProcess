@@ -6,17 +6,27 @@ import path from "node:path";
 import process from "node:process";
 
 const HOME_DIR = os.homedir();
-const GITHUB_SERVER_PATH = path.join(
-  HOME_DIR,
-  ".npm-global",
-  "lib",
-  "node_modules",
-  "@modelcontextprotocol",
-  "server-github",
-  "dist",
-  "index.js",
-);
-const GITHUB_SERVER_NPX_PKG = "@modelcontextprotocol/server-github";
+const GITHUB_SERVER_VERSION = "2025.4.8";
+const GITHUB_SERVER_PATHS = [
+  path.join(
+    HOME_DIR,
+    ".npm-global",
+    "lib",
+    "node_modules",
+    "@modelcontextprotocol",
+    "server-github",
+    "dist",
+    "index.js",
+  ),
+  path.join(
+    "/opt/homebrew/lib/node_modules",
+    "@modelcontextprotocol",
+    "server-github",
+    "dist",
+    "index.js",
+  ),
+];
+const GITHUB_SERVER_NPX_PKG = `@modelcontextprotocol/server-github@${GITHUB_SERVER_VERSION}`;
 
 const GH_BIN_CANDIDATES = [
   "gh",
@@ -27,8 +37,9 @@ const GH_BIN_CANDIDATES = [
 const LOCAL_TOKEN_FILE = path.join(os.homedir(), ".codex", "secrets", "github_token");
 
 function resolveServerLaunch() {
-  if (fs.existsSync(GITHUB_SERVER_PATH)) {
-    return { command: process.execPath, args: [GITHUB_SERVER_PATH] };
+  const installed = GITHUB_SERVER_PATHS.find((candidate) => fs.existsSync(candidate));
+  if (installed) {
+    return { command: process.execPath, args: [installed] };
   }
   return { command: "npx", args: ["-y", GITHUB_SERVER_NPX_PKG] };
 }
@@ -89,6 +100,11 @@ function resolveToken() {
 }
 
 const token = resolveToken();
+if (process.argv.includes("--credential-status")) {
+  console.log(`github-credential=${token ? "available" : "missing"}`);
+  process.exit(token ? 0 : 1);
+}
+
 if (!token) {
   console.error("GitHub MCP bridge: no GitHub token found. Starting without auth token.");
 }

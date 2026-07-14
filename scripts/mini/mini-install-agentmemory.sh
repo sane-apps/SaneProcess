@@ -8,12 +8,19 @@ LABEL="com.saneapps.agentmemory"
 PLIST="${SANE_AGENTMEMORY_PLIST:-$HOME/Library/LaunchAgents/$LABEL.plist}"
 LOG_DIR="${SANE_AGENTMEMORY_LOG_DIR:-$HOME/Library/Logs/SaneApps}"
 AGENTMEMORY="${SANE_AGENTMEMORY_BIN:-/opt/homebrew/bin/agentmemory}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SUPERVISOR_SOURCE="${SANE_AGENTMEMORY_SUPERVISOR_SOURCE:-$SCRIPT_DIR/mini-agentmemory-supervisor.sh}"
+SUPERVISOR="${SANE_AGENTMEMORY_SUPERVISOR:-$HOME/.local/libexec/sane-agentmemory-supervisor}"
+LAUNCHCTL="${SANE_LAUNCHCTL_BIN:-/bin/launchctl}"
+SUDO="${SANE_SUDO_BIN:-/usr/bin/sudo}"
 DRY_RUN=0
 
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 [[ -x "$AGENTMEMORY" ]] || { echo "Missing AgentMemory CLI: $AGENTMEMORY" >&2; exit 1; }
+[[ -x "$SUPERVISOR_SOURCE" ]] || { echo "Missing AgentMemory supervisor: $SUPERVISOR_SOURCE" >&2; exit 1; }
 
-mkdir -p "$(dirname "$PLIST")" "$LOG_DIR"
+mkdir -p "$(dirname "$PLIST")" "$LOG_DIR" "$(dirname "$SUPERVISOR")"
+install -m 755 "$SUPERVISOR_SOURCE" "$SUPERVISOR"
 cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -23,7 +30,7 @@ cat > "$PLIST" <<PLIST
   <string>$LABEL</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$AGENTMEMORY</string>
+    <string>$SUPERVISOR</string>
   </array>
   <key>WorkingDirectory</key>
   <string>$HOME</string>
@@ -44,6 +51,8 @@ cat > "$PLIST" <<PLIST
     <string>$HOME</string>
     <key>PATH</key>
     <string>/opt/homebrew/opt/node@24/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>SANE_AGENTMEMORY_BIN</key>
+    <string>$AGENTMEMORY</string>
   </dict>
   <key>StandardOutPath</key>
   <string>$LOG_DIR/agentmemory.out.log</string>
@@ -62,10 +71,21 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
 fi
 
 uid="$(id -u)"
-launchctl bootout "gui/$uid/$LABEL" 2>/dev/null || true
+if ! "$LAUNCHCTL" bootout "gui/$uid/$LABEL" 2>/dev/null; then
+  "$SUDO" -n "$LAUNCHCTL" bootout "gui/$uid/$LABEL" 2>/dev/null || true
+fi
 "$AGENTMEMORY" stop --force >/dev/null 2>&1 || true
-launchctl bootstrap "gui/$uid" "$PLIST"
-launchctl enable "gui/$uid/$LABEL" 2>/dev/null || true
+if ! bootstrap_error="$("$LAUNCHCTL" bootstrap "gui/$uid" "$PLIST" 2>&1)"; then
+  if "$SUDO" -n "$LAUNCHCTL" bootstrap "gui/$uid" "$PLIST"; then
+    echo "Loaded $LABEL through the noninteractive admin fallback."
+  else
+    printf '%s\n' "$bootstrap_error" >&2
+    echo "Could not load $LABEL from this session. Run this installer once in the logged-in Mini Terminal." >&2
+    exit 1
+  fi
+fi
+"$LAUNCHCTL" enable "gui/$uid/$LABEL" 2>/dev/null || \
+  "$SUDO" -n "$LAUNCHCTL" enable "gui/$uid/$LABEL" 2>/dev/null || true
 echo "Installed $LABEL; waiting for AgentMemory health"
 attempt=1
 while [ "$attempt" -le 15 ]; do

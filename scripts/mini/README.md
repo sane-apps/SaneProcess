@@ -54,6 +54,21 @@ Use `ssh mini-lan` only to diagnose same-network Bonjour. If LAN is unavailable,
 `ssh mini` automatically uses Tailscale. If both private routes fail, the proxy
 fails clearly rather than hiding the outage behind an ephemeral hostname.
 
+## Mini To Air Access
+
+The return route is intentionally available for recovery and bidirectional
+operations. It uses a dedicated Mini-only key instead of forwarding the Air's
+SSH agent or reusing GitHub/signing credentials:
+
+```bash
+bash scripts/mini/install-air-return-ssh.sh
+ssh air 'hostname; whoami'
+```
+
+The installer adds the public half to the Air once, pins `air` to its Tailscale
+address, disables agent forwarding, and leaves a normal interactive shell
+available. Both machines must still be authenticated to the private tailnet.
+
 ## Shared Memory And Cross-Machine Drift
 
 The Mini owns the shared AgentMemory worker on loopback port 3111:
@@ -65,8 +80,10 @@ agentmemory status
 
 `com.saneapps.agentmemory` is a user LaunchAgent with `RunAtLoad`, unsuccessful-
 exit keepalive, a 30-second throttle, explicit `HOME`, and working directory
-`/Users/stephansmac`. The working directory is required because AgentMemory's
-database is `~/data/state_store.db`. The Air uses
+`/Users/stephansmac`. Its supervisor checks the real HTTP health surface, not
+just the long-lived Node wrapper; two consecutive health failures terminate the
+whole worker with a nonzero exit so launchd restarts it. The working directory
+is required because AgentMemory's database is `~/data/state_store.db`. The Air uses
 `scripts/automation/agentmemory-mcp-air.sh` to create a bounded SSH tunnel to
 the Mini and then starts the stdio MCP shim.
 
@@ -91,10 +108,12 @@ bash scripts/automation/sync-memory-mini.sh mini --strict
 GitHub `main` is the source of truth for code. `git-sync-safe.sh` fast-forwards
 clean repos and pushes clean committed `main`/`master` work; it never auto-
 commits or auto-stashes. Dirty work is not raw-mirrored. Instead,
-`--snapshot-only` preserves a binary patch, status/base receipts, and a
-secret-filtered untracked archive under `outputs/dirty-work-snapshots/`; the Air
-pulls those snapshots every 15 minutes. Dirty or divergent repos remain loud
-until a human commits or reconciles them.
+`--snapshot-only` preserves current tracked/untracked file archives plus
+deletion, staging, status, and base receipts under
+`outputs/dirty-work-snapshots/`; it never stores removed-line or deleted-file
+preimages that may contain retired secrets. The Air pulls those snapshots every
+15 minutes. Dirty or divergent repos remain loud until a human commits or
+reconciles them.
 
 The old Air `com.saneapps.repo-reconcile` job stays disabled while canonical app
 repos contain intentional dirty work. Enable it only after both machines are on
@@ -132,6 +151,7 @@ sudo tail -50 /var/log/sane-mini-weekly-restart.log
 | Script | Schedule | Purpose |
 |---|---:|---|
 | `install-mini-ssh-config.sh` | On demand on Air | Installs LAN to Tailscale `ssh mini` routing |
+| `install-air-return-ssh.sh` | On demand on Mini | Installs dedicated Tailscale `ssh air` return routing |
 | `saneapps-mini-proxy.sh` | Every `ssh mini` | Chooses LAN, then Tailscale |
 | `mini-install-agentmemory.sh` | On demand on Mini | Installs restart-durable shared memory worker |
 | `mini-prepare-automation-root.sh` | On demand | Refreshes clean build/test automation clones |
@@ -144,6 +164,19 @@ sudo tail -50 /var/log/sane-mini-weekly-restart.log
 | `bootstrap-build-server.sh` | On demand | Proves headless signing and App Store credentials |
 | `mini-gui-run.sh` | Wrapper/manual | Runs work in the logged-in Mini GUI session |
 | `mini-visual-workspace-guard.sh` | Before proof | Clears contaminated screenshot/runtime state |
+
+The nightly job runs one bounded `SaneMaster.rb verify` per active automation
+checkout. Its PID-owned lock is recovered only after the recorded owner exits;
+verification, automation-root cleanup, and operator-brief generation each have
+an explicit process-group deadline.
+
+The former `mini-daytime-cleanup.sh`, `mini-license-test.sh`, and
+`mini-codex-keepalive.sh` entry points are retired. They were unowned one-off
+tools with unsafe effects (purging login items, deleting live license state, or
+installing/opening Codex). `deploy.sh` disables the legacy keepalive label and
+moves installed copies to Trash. Supported cleanup, license verification, and
+Codex control-plane work must use their canonical SaneMaster or automation
+workflows.
 
 ## Deployment
 

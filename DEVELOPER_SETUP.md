@@ -9,11 +9,22 @@ with `README.md`, `DEVELOPMENT.md`, and their own project credentials.
 ## Prerequisites
 
 - macOS (Apple Silicon)
-- Xcode 16+
-- Node.js 18+ (for Cloudflare Workers)
-- Ruby 3+ (for build scripts)
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/) (`npm i -g wrangler`)
+- Current Xcode supported by the active app projects
+- Homebrew Node 24 LTS and its bundled npm
+- Homebrew Ruby 4.x for SaneApps automation; macOS Ruby is bootstrap fallback only
+- Python 3.14 for the shared operator baseline unless a repo has a documented pin
 - [GitHub CLI](https://cli.github.com/) (`brew install gh`)
+
+Install and verify the role-aware baseline instead of assembling versions by
+hand:
+
+```bash
+ruby scripts/automation/dependency_baseline.rb --check
+# Add --apply only when intentionally converging this machine.
+```
+
+Do not install global Wrangler. Release paths pin `wrangler@4.104.0` so Air and
+Mini behavior cannot drift with a global npm update.
 
 ## Tool Install Log (Required)
 
@@ -41,10 +52,10 @@ When any new local tool is installed for build/release/test work, record it here
 **Setup:**
 ```bash
 # Login to Cloudflare
-npx wrangler login
+npx --yes wrangler@4.104.0 login
 
 # Verify access
-npx wrangler whoami
+npx --yes wrangler@4.104.0 whoami
 ```
 
 **API token** (ask owner for token with these permissions):
@@ -88,13 +99,13 @@ xcrun notarytool store-credentials "notarytool" \
 export NOTARY_API_KEY_PATH="$HOME/.private_keys/AuthKey_YOUR_API_KEY_ID.p8"
 export NOTARY_API_KEY_ID="YOUR_API_KEY_ID"
 export NOTARY_API_ISSUER_ID="YOUR_ISSUER_ID"
-export SANEBAR_KEYCHAIN_PASSWORD="<your-login-keychain-password>"
-
 # Validate all release gates before building/publishing:
 cd ~/SaneApps/infra/SaneProcess/scripts
 ./release.sh --project ~/SaneApps/apps/SaneHosts --preflight-only --allow-unsynced-peer --version 1.0.9
 ```
-If preflight reports `Codesign cannot access signing key`, the keychain password env is missing/invalid.
+If preflight reports `Codesign cannot access signing key`, run
+`scripts/mini/bootstrap-build-server.sh` in the logged-in Mini session. Do not
+store a login password in an environment variable or startup file.
 
 ---
 
@@ -135,8 +146,8 @@ security add-generic-password -s lemonsqueezy -a api_key -w "YOUR_KEY"
 
 # For Cloudflare Worker (email automation)
 cd ~/SaneApps/infra/sane-email-automation
-npx wrangler secret put LEMONSQUEEZY_API_KEY
-npx wrangler secret put LEMONSQUEEZY_WEBHOOK_SECRET
+npx --yes wrangler@4.104.0 secret put LEMONSQUEEZY_API_KEY
+npx --yes wrangler@4.104.0 secret put LEMONSQUEEZY_WEBHOOK_SECRET
 ```
 
 ---
@@ -151,7 +162,7 @@ npx wrangler secret put LEMONSQUEEZY_WEBHOOK_SECRET
 security add-generic-password -s resend -a api_key -w "YOUR_KEY"
 
 # For Cloudflare Worker
-npx wrangler secret put RESEND_API_KEY
+npx --yes wrangler@4.104.0 secret put RESEND_API_KEY
 ```
 
 Domain `saneapps.com` is already verified in Resend.
@@ -165,14 +176,14 @@ Domain `saneapps.com` is already verified in Resend.
 | Item | Detail |
 |------|--------|
 | Org | `sane-apps` |
-| Repos | SaneBar, SaneClick, SaneClip, SaneHosts, SaneSync, SaneVideo, sane-email-automation |
+| Repos | Active repos are discovered from `~/SaneApps/apps` and `config/products.yml`; local SaneAI/SaneSync runtime is retired |
 
 **Setup:**
 ```bash
 gh auth login
 
 # For Cloudflare Worker (issue creation from emails)
-npx wrangler secret put GITHUB_TOKEN
+npx --yes wrangler@4.104.0 secret put GITHUB_TOKEN
 ```
 
 ---
@@ -189,15 +200,15 @@ cd ~/SaneApps/infra/sane-email-automation
 npm install
 
 # Set all secrets
-npx wrangler secret put API_KEY
-npx wrangler secret put RESEND_API_KEY
-npx wrangler secret put GITHUB_TOKEN
-npx wrangler secret put LEMONSQUEEZY_API_KEY
-npx wrangler secret put LEMONSQUEEZY_WEBHOOK_SECRET
-npx wrangler secret put DOWNLOAD_SIGNING_SECRET
+npx --yes wrangler@4.104.0 secret put API_KEY
+npx --yes wrangler@4.104.0 secret put RESEND_API_KEY
+npx --yes wrangler@4.104.0 secret put GITHUB_TOKEN
+npx --yes wrangler@4.104.0 secret put LEMONSQUEEZY_API_KEY
+npx --yes wrangler@4.104.0 secret put LEMONSQUEEZY_WEBHOOK_SECRET
+npx --yes wrangler@4.104.0 secret put DOWNLOAD_SIGNING_SECRET
 
 # Deploy
-npx wrangler deploy
+npx --yes wrangler@4.104.0 deploy
 ```
 
 API key for local testing (ask owner, stored in keychain as `sane-email-automation` / `api_key`).
@@ -257,7 +268,7 @@ After setup, verify everything works:
 
 ```bash
 # Cloudflare
-npx wrangler whoami
+npx --yes wrangler@4.104.0 whoami
 
 # GitHub
 gh auth status

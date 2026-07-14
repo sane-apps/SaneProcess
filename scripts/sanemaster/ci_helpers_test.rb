@@ -48,6 +48,10 @@ class CIHelpersHarness
     send(:monitor_test_parse_process_snapshot, output)
   end
 
+  def process_scan_available?
+    send(:monitor_test_process_scan_available?)
+  end
+
   def result_summary(data, selector = nil)
     send(:monitor_test_result_summary_from_data, data, selector)
   end
@@ -522,7 +526,11 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
         ENV['PATH'] = root
         begin
           identity = subject.send(:monitor_test_process_identity, Process.pid)
-          assert_eq(identity[:pid], Process.pid)
+          if subject.process_scan_available?
+            assert_eq(identity[:pid], Process.pid)
+          else
+            assert_eq(identity, nil)
+          end
           assert(!File.exist?(marker), 'cleanup discovery must never execute PATH-shadowed ps')
         ensure
           ENV['PATH'] = original_path
@@ -549,6 +557,19 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
 
 
     test('kills a captured descendant after the original process group exits') do
+      unless subject.process_scan_available?
+        pid = Process.spawn(RbConfig.ruby, '-e', 'Signal.trap("TERM") { exit! 0 }; loop { sleep 1 }', pgroup: true)
+        begin
+          assert_eq(subject.terminate_process_tree(pid, grace_seconds: 0.2, kill_grace_seconds: 1.0), true)
+          Process.wait(pid)
+          assert(!subject.process_alive?(pid), 'sandbox fallback left the isolated root alive')
+        ensure
+          Process.kill('KILL', pid) rescue nil
+          Process.wait(pid) rescue nil
+        end
+        next true
+      end
+
       root_pid = nil
       child_pid = nil
       begin
@@ -598,6 +619,19 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
     end
 
     test('captures and kills a late descendant created after TERM') do
+      unless subject.process_scan_available?
+        pid = Process.spawn(RbConfig.ruby, '-e', 'Signal.trap("TERM", "IGNORE"); loop { sleep 1 }', pgroup: true)
+        begin
+          assert_eq(subject.terminate_process_tree(pid, grace_seconds: 0.1, kill_grace_seconds: 1.0), true)
+          Process.wait(pid)
+          assert(!subject.process_alive?(pid), 'sandbox fallback left the TERM-resistant root alive')
+        ensure
+          Process.kill('KILL', pid) rescue nil
+          Process.wait(pid) rescue nil
+        end
+        next true
+      end
+
       root_pid = nil
       late_pid = nil
       begin

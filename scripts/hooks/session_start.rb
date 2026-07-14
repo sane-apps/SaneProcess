@@ -236,7 +236,7 @@ MEMORY_STAGING_FILE = File.join(CLAUDE_DIR, 'memory_staging.json')
 def check_pending_mcp_actions
   pending = []
 
-  # Check memory staging (uses official @modelcontextprotocol/server-memory)
+  # Check legacy memory staging and route it into the current durable layer.
   if File.exist?(MEMORY_STAGING_FILE)
     begin
       staging = JSON.parse(File.read(MEMORY_STAGING_FILE, encoding: Encoding::UTF_8))
@@ -244,7 +244,7 @@ def check_pending_mcp_actions
         pending << {
           type: 'memory_staging',
           message: "Memory staging needs saving: #{staging['suggested_entity']&.dig('name') || 'learnings'}",
-          action: 'Save via Memory MCP add_observations tool, then delete memory_staging.json'
+          action: 'Save through AgentMemory or the project durable-memory files, then remove memory_staging.json after success'
         }
       end
     rescue StandardError

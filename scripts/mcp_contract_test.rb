@@ -2,6 +2,10 @@
 # frozen_string_literal: true
 
 require_relative 'hooks/test/test_framework'
+require_relative 'automation/dependency_baseline'
+require 'json'
+require 'open3'
+require 'yaml'
 
 include TestFramework
 
@@ -16,44 +20,108 @@ def repo_path(relative_path)
 end
 
 exit(run_tests('SaneProcess MCP contract tests') do
-  test_category('structured output') do
-    test('central memory tools declare output schemas') do
-      source = server_source('scripts/mcp-central-memory/server.mjs')
+  test_category('standard MCP surface') do
+    test('project GitHub MCP uses the Node 24 credential bridge') do
+      source = server_source('.mcp.json')
+      config = JSON.parse(source)
+      github = config.fetch('mcpServers').fetch('github')
 
-      %w[remember recall recent stats delete_by_external_id import_knowledge_graph].each do |tool_name|
-        tool_index = source.index("name: '#{tool_name}'")
-        assert(tool_index, "missing central-memory tool #{tool_name}")
-        next_tool_index = source.index("\n  {\n    name:", tool_index + 1) || source.index("\n];", tool_index)
-        tool_block = source[tool_index...next_tool_index]
-        assert_includes(tool_block, 'outputSchema:')
+      assert_eq(github.fetch('command'), '/opt/homebrew/opt/node@24/bin/node')
+      assert_eq(github.fetch('args'), ['scripts/codex-bin/github-mcp-bridge.mjs'])
+      assert(!github.key?('env'), 'project config must not inject raw GitHub credentials')
+      assert(!source.include?('${GITHUB_TOKEN}'), 'project config must not reference a raw GitHub token')
+      assert(File.executable?(github.fetch('command')), 'configured Node 24 command must be executable')
+      assert(File.file?(repo_path(github.fetch('args').first)), 'configured GitHub bridge must exist')
+      true
+    end
+
+    test('project manifest advertises canonical commands and actual MCPs') do
+      project_mcp = JSON.parse(server_source('.mcp.json')).fetch('mcpServers').keys.sort
+      manifest = YAML.safe_load(server_source('.saneprocess'))
+
+      assert_eq(manifest.dig('commands', 'verify'), 'ruby scripts/SaneMaster.rb verify')
+      assert_eq(manifest.dig('commands', 'test'), 'ruby scripts/qa.rb')
+      assert_eq(manifest.fetch('mcps').sort, project_mcp)
+      manifest.fetch('commands').values.each do |command|
+        script = command.split.find { |part| part.start_with?('scripts/') }
+        assert(File.file?(repo_path(script)), "manifest command target must exist: #{script}") if script
       end
       true
     end
 
-    test('central memory responses include structuredContent') do
-      source = server_source('scripts/mcp-central-memory/server.mjs')
+    test('configured executable paths and singleton endpoints resolve') do
+      servers = JSON.parse(server_source('.mcp.json')).fetch('mcpServers')
+      servers.each do |name, config|
+        command = config['command']
+        next unless command
 
-      assert_includes(source, 'structuredContent: payload')
+        if command.start_with?('/')
+          assert(File.executable?(command), "#{name} command is not executable: #{command}")
+        else
+          resolved, status = Open3.capture2e('/usr/bin/which', command)
+          assert(status.success? && File.executable?(resolved.strip), "#{name} command does not resolve: #{command}")
+        end
+      end
+
+      node = '/opt/homebrew/opt/node@24/bin/node'
+      bridge = repo_path('scripts/mcp_singleton_bridge.cjs')
+      output, status = Open3.capture2e(node, bridge, 'list')
+      assert(status.success?, output)
+      %w[apple-docs macos-automator].each do |name|
+        assert_includes(output, "#{name}\thttp://127.0.0.1:")
+        assert_includes(output, servers.fetch(name).fetch('url'))
+      end
       true
     end
 
-    test('graph memory tools keep output schemas and structuredContent') do
-      source = server_source('scripts/mcp-memory-enhanced/server.mjs')
+    test('singleton LaunchAgents use Node 24 and bounded failure recovery') do
+      node = '/opt/homebrew/opt/node@24/bin/node'
+      bridge = repo_path('scripts/mcp_singleton_bridge.cjs')
+      output, status = Open3.capture2e(node, bridge, 'plist', 'macos-automator')
 
-      assert(source.scan('outputSchema:').length >= 8, 'expected graph-memory tools to declare output schemas')
-      assert_includes(source, 'structuredContent:')
+      assert(status.success?, output)
+      assert_includes(output, '<string>/opt/homebrew/opt/node@24/bin/node</string>')
+      assert_match(output, %r{<key>KeepAlive</key>\s*<dict>\s*<key>SuccessfulExit</key>\s*<false/>\s*</dict>})
+      assert_match(output, %r{<key>ThrottleInterval</key>\s*<integer>60</integer>})
+      assert_includes(server_source('scripts/mcp_singleton_bridge.cjs'), '@steipete/macos-automator-mcp@0.4.5')
       true
     end
-  end
 
-  test_category('standard MCP surface') do
-    test('check-mcps keeps central-memory optional and blocks legacy providers') do
+    test('MCP package pins agree across dependency consumers') do
+      pins = SaneAppsDependencyBaseline::NPM_VERSIONS
+      expectations = {
+        'scripts/mcp_singleton_bridge.cjs' => %w[@mweinbach/apple-docs-mcp @steipete/macos-automator-mcp],
+        'scripts/sanemaster/dependencies.rb' => %w[@mweinbach/apple-docs-mcp @modelcontextprotocol/server-github @upstash/context7-mcp @steipete/macos-automator-mcp],
+        'scripts/init.sh' => %w[@mweinbach/apple-docs-mcp @modelcontextprotocol/server-github @upstash/context7-mcp @steipete/macos-automator-mcp]
+      }
+
+      expectations.each do |path, packages|
+        source = server_source(path)
+        packages.each do |package|
+          assert_includes(source, "#{package}@#{pins.fetch(package)}")
+        end
+      end
+      true
+    end
+
+    test('check-mcps does not revive retired memory servers and blocks legacy providers') do
       source = server_source('scripts/codex-bin/check-mcps')
 
-      assert_includes(source, '"central-memory":')
-      assert_match(source, /"central-memory": \{.*?optional: true/m, 'central-memory should not fail the standard MCP baseline when local Postgres is off')
+      assert(!source.include?('"central-memory":'), 'central-memory must not be a default health probe')
+      assert_includes(source, 'if (configured[name]?.enabled === false) continue;')
+      assert(!source.match?(/^\s+memory:\s*\{/), 'knowledge-graph memory must not be a default health probe')
       assert_includes(source, 'new Set(["nvidia-build", "gemini", "google", "google-gemini"])')
       assert_includes(source, 'legacy provider disabled for SaneApps')
+      true
+    end
+
+    test('singleton inventory excludes the retired knowledge-graph server') do
+      source = server_source('scripts/mcp_singleton_bridge.cjs')
+      baseline = server_source('scripts/automation/dependency_baseline.rb')
+
+      assert(!source.match?(/^\s+memory:\s*\{/), 'retired memory singleton remains active')
+      assert_includes(baseline, '@modelcontextprotocol/server-memory')
+      assert_match(baseline, /FORBIDDEN_GLOBAL_NPM.*@modelcontextprotocol\/server-memory/)
       true
     end
 
@@ -62,6 +130,8 @@ exit(run_tests('SaneProcess MCP contract tests') do
 
       assert_includes(source, 'child.stdin.write(`${normalized}\\n`);')
       assert(!source.include?('child.stdin.write(encodeFramed(normalized));'), 'server-github hangs when parent JSON is forwarded as content-length frames')
+      assert_includes(source, 'GITHUB_SERVER_VERSION = "2025.4.8"')
+      assert_includes(source, '"/opt/homebrew/lib/node_modules"')
       true
     end
 

@@ -3,9 +3,9 @@
 This file provides public AI-readable guidance for projects using SaneProcess.
 See [README.md](README.md) for full documentation.
 
-Private/local files (not tracked in git):
-- `CLAUDE.md` — project-specific AI rules and session procedures
-- `SESSION_HANDOFF.md` — recent work context between sessions
+Private/local operator files may include `CLAUDE.md` and
+`SESSION_HANDOFF.md`. Their tracking policy is project-specific; they never
+override the client-neutral `AGENTS.md` contract.
 
 Codex note: Codex reads repo `AGENTS.md` first. Treat this file as the public reference for the Claude-native hook runtime and the shared SOP concepts behind it.
 
@@ -13,7 +13,7 @@ Codex note: Codex reads repo `AGENTS.md` first. Treat this file as the public re
 
 ## Hook Architecture
 
-Five hooks enforce discipline at each Claude Code lifecycle event:
+Six lifecycle events enforce discipline in the current Claude adapter:
 
 | Hook | Event | Exit Codes |
 |------|-------|------------|
@@ -21,6 +21,7 @@ Five hooks enforce discipline at each Claude Code lifecycle event:
 | `saneprompt.rb` | UserPromptSubmit | 0 (always) |
 | `sanetools.rb` | PreToolUse | 0=allow, 2=block |
 | `sanetrack.rb` | PostToolUse | 0 (always) |
+| `task_completed_gate.rb` | TaskCompleted | 0=complete, 2=missing required proof |
 | `sanestop.rb` | Stop | 0 (always) |
 
 ## When Hooks Block You

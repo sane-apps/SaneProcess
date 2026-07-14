@@ -41,6 +41,32 @@ exit(run_tests('Air Mini Acceptance Tests') do
       true
     end
 
+    test('requires AgentMemory to run through the self-healing supervisor') do
+      supervised = <<~TEXT
+        gui/501/com.saneapps.agentmemory = {
+          state = running
+          program = /Users/stephansmac/.local/libexec/sane-agentmemory-supervisor
+        }
+      TEXT
+      assert(SaneAppsAirMiniAcceptance::Validators.agentmemory_service_supervised?(supervised))
+      assert(!SaneAppsAirMiniAcceptance::Validators.agentmemory_service_supervised?(supervised.sub('sane-agentmemory-supervisor', 'agentmemory')))
+      true
+    end
+
+    test('accepts only redacted usable credential receipts') do
+      receipt = "github-credential=available\nSummary: PASS=14 FAIL=0\n"
+      assert(SaneAppsAirMiniAcceptance::Validators.credential_consumers_healthy?(receipt))
+      assert(!SaneAppsAirMiniAcceptance::Validators.credential_consumers_healthy?(receipt.sub('FAIL=0', 'FAIL=1')))
+      true
+    end
+
+    test('requires a real MCP initialize response') do
+      response = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1}\nhttp=200\n"
+      assert(SaneAppsAirMiniAcceptance::Validators.mcp_endpoint_healthy?(response))
+      assert(!SaneAppsAirMiniAcceptance::Validators.mcp_endpoint_healthy?(response.sub('http=200', 'http=503')))
+      true
+    end
+
     test('requires exact Air Mini origin repository parity') do
       sha = 'a' * 40
       assert(SaneAppsAirMiniAcceptance::Validators.repo_parity?([sha, sha, sha].join("\n")))
@@ -56,7 +82,8 @@ exit(run_tests('Air Mini Acceptance Tests') do
       plan = JSON.parse(stdout)
       ids = plan.map { |entry| entry.fetch('id') }
       %w[air-process-access air-mini-lan air-mini-tailscale mini-air-return mini-dependencies
-         mini-power mini-weekly-restart mini-agentmemory-health mini-retired-training
+         mini-power mini-weekly-restart mini-agentmemory-health air-github-credential
+         mini-credential-consumers mini-mcp-apple-docs mini-mcp-macos-automator mini-mcp-serena mini-retired-training
          saneprocess-parity sanecite-parity memory-checksum-parity acceptance-contracts].each do |id|
         assert(ids.include?(id), "missing plan check #{id}")
       end

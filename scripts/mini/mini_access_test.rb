@@ -12,6 +12,7 @@ include TestFramework
 PROXY = File.expand_path('saneapps-mini-proxy.sh', __dir__)
 INSTALLER = File.expand_path('install-mini-ssh-config.sh', __dir__)
 TAILSCALE_CLI = File.expand_path('saneapps-tailscale.sh', __dir__)
+AIR_RETURN_INSTALLER = File.expand_path('install-air-return-ssh.sh', __dir__)
 
 def write_executable(path, body)
   File.write(path, body)
@@ -141,6 +142,49 @@ exit(run_tests('Mini Access Tests') do
       assert_includes(userspace_log, 'tailscaled.sock status')
       assert(system_log.strip == 'status', system_log)
       true
+    end
+  end
+
+  test_category('return connection') do
+    test('installs a dedicated non-forwarded Mini-to-Air identity') do
+      Dir.mktmpdir('air-return-installer') do |home|
+        bin = File.join(home, 'bin')
+        FileUtils.mkdir_p(bin)
+        fake_ssh = File.join(bin, 'ssh')
+        ssh_log = File.join(home, 'ssh.log')
+        air_keys = File.join(home, 'air-authorized-keys')
+        write_executable(fake_ssh, <<~SH)
+          #!/bin/sh
+          echo "$*" >> "$SANE_SSH_LOG"
+          if [ ! -t 0 ]; then
+            key="$(cat)"
+            [ -z "$key" ] || printf '%s\n' "$key" >> "$SANE_AIR_AUTHORIZED_KEYS"
+          fi
+          exit 0
+        SH
+        env = {
+          'HOME' => home,
+          'SANE_AIR_HOST' => '100.64.240.115',
+          'SANE_AIR_KEY_FILE' => File.join(home, '.ssh', 'saneapps-mini-to-air'),
+          'SANE_SSH_BIN' => fake_ssh,
+          'SANE_SSH_LOG' => ssh_log,
+          'SANE_AIR_AUTHORIZED_KEYS' => air_keys
+        }
+        _out, err, status = Open3.capture3(env, '/bin/bash', AIR_RETURN_INSTALLER)
+        assert(status.success?, err)
+        config = File.read(File.join(home, '.ssh', 'config.d', 'saneapps-air.conf'))
+        private_key = File.join(home, '.ssh', 'saneapps-mini-to-air')
+        assert(File.exist?(private_key), 'dedicated private key must exist')
+        assert(File.executable?(AIR_RETURN_INSTALLER), 'installer must be executable')
+        assert_includes(config, 'Host air air-remote 100.64.240.115')
+        assert_includes(config, "IdentityFile #{private_key}")
+        assert_includes(config, 'IdentitiesOnly yes')
+        assert_includes(config, 'ForwardAgent no')
+        assert_includes(File.read(ssh_log), '-F /dev/null')
+        assert_includes(File.read(ssh_log), '-o BatchMode=yes air')
+        assert_includes(File.read(air_keys), 'saneapps-mini-to-air')
+        true
+      end
     end
   end
 end)

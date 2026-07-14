@@ -245,7 +245,7 @@ def main
     - Read this file before changing behavior.
     - Keep active research in `.codex/research.md`.
     - Promote durable decisions into `ARCHITECTURE.md`, `DEVELOPMENT.md`,
-      `SESSION_HANDOFF.md`, memory, or the knowledge graph.
+      `SESSION_HANDOFF.md`, memory, or AgentMemory.
     - Use `./scripts/SaneMaster.rb` for build, test, release, analytics, and
       other stateful SaneApps workflows.
   MD

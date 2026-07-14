@@ -62,8 +62,10 @@ class HookTests
 
     # Blocked-path enforcement through the real sanetools entry point
     test_group("Blocked Paths (entry point)") do
-      test("PathDetector blocks ~/.ssh") { test_path_blocks_ssh }
-      test("PathDetector blocks /etc") { test_path_blocks_etc }
+      test("PathDetector blocks SSH private keys") { test_path_blocks_ssh }
+      test("PathDetector allows harmless SSH reads") { test_path_allows_ssh_diagnostics }
+      test("PathDetector allows /etc and /usr reads") { test_path_allows_system_diagnostics }
+      test("PathDetector blocks diagnostic-path edits") { test_path_blocks_diagnostic_edits }
       test("PathDetector allows project paths") { test_path_allows_project }
       test("PathDetector allows /tmp") { test_path_allows_tmp }
     end
@@ -85,7 +87,7 @@ class HookTests
       test("session_start.rb syntax valid") { test_entry_syntax('session_start.rb') }
       test("sanetools_refusal.rb syntax valid") { test_entry_syntax('sanetools_refusal.rb') }
       test("run_hook.sh syntax valid") { test_shell_entry_syntax('run_hook.sh') }
-      test("settings use compact hook wrapper") { test_settings_use_hook_wrapper }
+      test("project and global settings use one hook stack") { test_settings_use_one_hook_stack }
       test("settings keep operator workflows usable without exposing private keys") { test_settings_operator_sandbox_policy }
     end
 
@@ -346,8 +348,21 @@ class HookTests
     run_hook('Read', '~/.ssh/id_rsa') == 2
   end
 
-  def test_path_blocks_etc
-    run_hook('Read', '/etc/passwd') == 2
+  def test_path_allows_ssh_diagnostics
+    %w[config known_hosts authorized_keys id_ed25519.pub].all? do |name|
+      run_hook('Read', File.join(Dir.home, '.ssh', name)).zero?
+    end
+  end
+
+  def test_path_allows_system_diagnostics
+    run_hook('Read', '/etc/passwd').zero? && run_hook('Read', '/private/etc/hosts').zero? && run_hook('Read', '/usr/bin/ruby').zero?
+  end
+
+  def test_path_blocks_diagnostic_edits
+    run_hook('Edit', File.join(Dir.home, '.ssh', 'config')) == 2 &&
+      run_hook('Edit', '/etc/passwd') == 2 &&
+      run_hook('Edit', '/private/etc/hosts') == 2 &&
+      run_hook('Edit', '/usr/bin/ruby') == 2
   end
 
   def test_path_allows_project
@@ -413,23 +428,16 @@ class HookTests
     status.success?
   end
 
-  def test_settings_use_hook_wrapper
-    settings_path = File.expand_path('../../.claude/settings.json', __dir__)
-    settings = JSON.parse(File.read(settings_path))
-    commands = settings.fetch('hooks').values.flat_map do |groups|
-      groups.flat_map { |group| group.fetch('hooks', []).map { |hook| hook['command'].to_s } }
-    end
-    wrapped = commands.select { |command| command.include?('run_hook.sh') }
-
-    pre_tool_commands = settings.fetch('hooks').fetch('PreToolUse').flat_map do |group|
+  def test_settings_use_one_hook_stack
+    project = JSON.parse(File.read(File.expand_path('../../.claude/settings.json', __dir__)))
+    global = JSON.parse(File.read(File.expand_path('~/.claude/settings.json')))
+    pre_tool_commands = project.fetch('hooks').fetch('PreToolUse').flat_map do |group|
       group.fetch('hooks', []).map { |hook| hook['command'].to_s }
     end
 
-    wrapped.length == 7 &&
-      wrapped.all? { |command| command.length < 90 } &&
+    project.fetch('hooks') == global.fetch('hooks') &&
       pre_tool_commands[0].include?('sane_catastrophic_guard.rb') &&
-      pre_tool_commands[1].include?('sanetools.rb') &&
-      commands.none? { |command| command.include?('if [ -n "${CLAUDECODE}${CLAUDE_CODE}" ]') }
+      pre_tool_commands[1].include?('sanetools.rb')
   end
 
   def test_settings_operator_sandbox_policy

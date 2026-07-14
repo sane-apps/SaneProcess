@@ -108,6 +108,21 @@ module SaneAppsAirMiniAcceptance
         text.match?(/Embeddings:\s+.*embeddings/) && count && count >= 1_201
     end
 
+    def agentmemory_service_supervised?(text)
+      text.include?('com.saneapps.agentmemory') && text.include?('state = running') &&
+        text.include?('sane-agentmemory-supervisor')
+    end
+
+    def credential_consumers_healthy?(text)
+      text.include?('github-credential=available') &&
+        text.match?(/Summary:\s+PASS=\d+\s+FAIL=0/)
+    end
+
+    def mcp_endpoint_healthy?(text)
+      text.lines.any? { |line| line.start_with?('http=200') } &&
+        (text.include?('jsonrpc') || text.include?('event: message'))
+    end
+
     def repo_parity?(text)
       heads = text.lines.map(&:strip).reject(&:empty?)
       heads.length == 3 && heads.uniq.length == 1 && heads.first.match?(/\A[0-9a-f]{40}\z/)
@@ -185,6 +200,8 @@ module SaneAppsAirMiniAcceptance
               ssh('/opt/homebrew/bin/agentmemory status'), timeout: 30) do |text|
         Validators.agentmemory_healthy?(text)
       end
+      credential_consumer_checks
+      mini_mcp_checks
       retired_service_check
       repo_checks
       memory_sync_check if @sync
@@ -262,6 +279,40 @@ module SaneAppsAirMiniAcceptance
       "/bin/zsh -lc #{Shellwords.escape(version_script)}"
     end
 
+    def github_credential_command
+      node = '/opt/homebrew/opt/node@24/bin/node'
+      bridge = File.join(@repo_root, 'scripts/codex-bin/github-mcp-bridge.mjs')
+      [node, bridge, '--credential-status']
+    end
+
+    def credential_consumer_checks
+      execute('air-github-credential', 'Air GitHub credential consumer', 'air',
+              github_credential_command, timeout: 20) do |text|
+        text.include?('github-credential=available')
+      end
+      remote_bridge = '$HOME/SaneApps/infra/SaneProcess/scripts/codex-bin/github-mcp-bridge.mjs'
+      bootstrap = '$HOME/SaneApps/infra/SaneProcess/scripts/mini/bootstrap-build-server.sh'
+      command = "/opt/homebrew/opt/node@24/bin/node #{remote_bridge} --credential-status && /bin/bash #{bootstrap}"
+      execute('mini-credential-consumers', 'Mini signing, App Store, and GitHub credentials usable without export',
+              'air->mini', ssh(command), timeout: 120) do |text|
+        Validators.credential_consumers_healthy?(text)
+      end
+    end
+
+    def mini_mcp_checks
+      {
+        'mini-mcp-apple-docs' => 37_911,
+        'mini-mcp-macos-automator' => 37_913,
+        'mini-mcp-serena' => 37_917
+      }.each do |id, port|
+        payload = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"sane-acceptance","version":"1"}}}'
+        command = "/usr/bin/curl --silent --show-error --max-time 8 -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' --data #{Shellwords.escape(payload)} -w '\\nhttp=%{http_code}\\n' http://127.0.0.1:#{port}/mcp"
+        execute(id, "Mini #{id.delete_prefix('mini-mcp-')} MCP endpoint", 'mini', ssh(command), timeout: 20) do |text|
+          Validators.mcp_endpoint_healthy?(text)
+        end
+      end
+    end
+
     def private_route_check
       config = File.join(@home, '.ssh/config.d/saneapps-mini.conf')
       proxy = File.join(@home, '.local/bin/saneapps-mini-proxy')
@@ -296,7 +347,8 @@ module SaneAppsAirMiniAcceptance
       }.each do |id, (description, label, must_run)|
         command = "uid=$(/usr/bin/id -u); /bin/launchctl print gui/$uid/#{label}"
         execute(id, description, 'mini', ssh(command), timeout: 20) do |text|
-          text.include?(label) && (!must_run || text.include?('state = running'))
+          base_state = text.include?(label) && (!must_run || text.include?('state = running'))
+          base_state && (label != 'com.saneapps.agentmemory' || Validators.agentmemory_service_supervised?(text))
         end
       end
       execute('mini-weekly-restart', 'Mini guarded weekly restart daemon', 'mini',

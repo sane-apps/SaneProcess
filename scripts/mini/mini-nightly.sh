@@ -1,7 +1,6 @@
 #!/bin/bash
-# mini-nightly.sh - Nightly automation for Mac mini build server
-# Runs at 8:45 AM daily via LaunchAgent
-# Results available via: ssh mini cat ~/SaneApps/outputs/nightly_report.md
+# mini-nightly.sh - Bounded nightly verification for the Mac mini server
+# Runs at 8:45 AM daily via LaunchAgent.
 
 set -uo pipefail
 
@@ -19,23 +18,166 @@ REPORT="$OUTPUT_DIR/nightly_report.md"
 DATE=$(date +"%Y-%m-%d %A")
 TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CANONICAL_SOURCE_ROOT="$HOME/SaneApps"
+SANEMASTER_SCRIPT="$CANONICAL_SOURCE_ROOT/infra/SaneProcess/scripts/SaneMaster.rb"
+VERIFY_TIMEOUT_SECONDS="${MINI_NIGHTLY_VERIFY_TIMEOUT_SECONDS:-1800}"
+CLEANUP_TIMEOUT_SECONDS="${MINI_NIGHTLY_CLEANUP_TIMEOUT_SECONDS:-1200}"
+OPERATOR_BRIEF_TIMEOUT_SECONDS="${MINI_NIGHTLY_OPERATOR_BRIEF_TIMEOUT_SECONDS:-120}"
+LOCK_DIR="$OUTPUT_DIR/.nightly.lock"
+LOCK_OWNER_FILE="$LOCK_DIR/owner.pid"
+VERIFY_RESULTS="$OUTPUT_DIR/.nightly-verify-results.$$"
+VERIFY_LOG_DIR="$OUTPUT_DIR/nightly-verify-logs"
+OPERATOR_BRIEF_TEMP="$OUTPUT_DIR/.operator-brief.$$"
+LOCK_HELD=0
 
-mkdir -p "$OUTPUT_DIR"
-
-# Lock file (with stale lock detection)
-LOCKFILE="$OUTPUT_DIR/.nightly.lock"
-if ! mkdir "$LOCKFILE" 2>/dev/null; then
-  # Check if lock is stale (older than 2 hours)
-  if [ -d "$LOCKFILE" ] && [ "$(find "$LOCKFILE" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
-    echo "Removing stale lock (>2 hours old)" >&2
-    rm -rf "$LOCKFILE"
-    mkdir "$LOCKFILE" 2>/dev/null || { echo "Cannot acquire lock" >&2; exit 1; }
-  else
-    echo "Another nightly instance is running" >&2
-    exit 1
+require_positive_integer() {
+  local name="$1"
+  local value="$2"
+  case "$value" in
+    ''|*[!0-9]*)
+      echo "$name must be a positive integer" >&2
+      exit 64
+      ;;
+  esac
+  if [ "$value" -le 0 ]; then
+    echo "$name must be a positive integer" >&2
+    exit 64
   fi
+}
+
+require_positive_integer MINI_NIGHTLY_VERIFY_TIMEOUT_SECONDS "$VERIFY_TIMEOUT_SECONDS"
+require_positive_integer MINI_NIGHTLY_CLEANUP_TIMEOUT_SECONDS "$CLEANUP_TIMEOUT_SECONDS"
+require_positive_integer MINI_NIGHTLY_OPERATOR_BRIEF_TIMEOUT_SECONDS "$OPERATOR_BRIEF_TIMEOUT_SECONDS"
+VERIFY_OUTER_TIMEOUT_SECONDS=$((VERIFY_TIMEOUT_SECONDS + 60))
+
+mkdir -p "$OUTPUT_DIR" "$VERIFY_LOG_DIR"
+
+cleanup_nightly() {
+  local owner=""
+  rm -f "$VERIFY_RESULTS"
+  rm -f "$OPERATOR_BRIEF_TEMP"
+  if [ "$LOCK_HELD" -eq 1 ] && [ -f "$LOCK_OWNER_FILE" ]; then
+    owner=$(cat "$LOCK_OWNER_FILE" 2>/dev/null || true)
+    if [ "$owner" = "$$" ]; then
+      rm -f "$LOCK_OWNER_FILE"
+      rmdir "$LOCK_DIR" 2>/dev/null || true
+    fi
+  fi
+}
+
+trap cleanup_nightly EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+acquire_nightly_lock() {
+  local owner=""
+
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    printf '%s\n' "$$" > "$LOCK_OWNER_FILE"
+    LOCK_HELD=1
+    return 0
+  fi
+
+  if [ -f "$LOCK_OWNER_FILE" ]; then
+    owner=$(cat "$LOCK_OWNER_FILE" 2>/dev/null || true)
+  fi
+  case "$owner" in
+    ''|*[!0-9]*) ;;
+    *)
+      if kill -0 "$owner" 2>/dev/null; then
+        echo "Another nightly instance is running (pid=$owner)" >&2
+        return 1
+      fi
+      ;;
+  esac
+
+  # A stale lock is removable only when its recorded owner is absent. The lock
+  # directory is deliberately constrained to one owner file, so no recursive
+  # deletion is needed or allowed.
+  rm -f "$LOCK_OWNER_FILE"
+  if ! rmdir "$LOCK_DIR" 2>/dev/null; then
+    echo "Cannot recover malformed nightly lock: $LOCK_DIR" >&2
+    return 1
+  fi
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo "Another nightly instance acquired the lock" >&2
+    return 1
+  fi
+  printf '%s\n' "$$" > "$LOCK_OWNER_FILE"
+  LOCK_HELD=1
+}
+
+# Run a command in its own process group. The Ruby wrapper enforces a hard
+# outer deadline and always terminates the complete child group before return.
+run_bounded_command() {
+  local timeout_seconds="$1"
+  local working_directory="$2"
+  local log_path="$3"
+  shift 3
+
+  ruby -ropen3 -e '
+    timeout = Integer(ARGV.shift)
+    working_directory = ARGV.shift
+    log_path = ARGV.shift
+    command = ARGV
+    child_pid = nil
+    reader = nil
+
+    terminate_group = lambda do
+      next unless child_pid
+      Process.kill("TERM", -child_pid) rescue nil
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+      while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+        break unless Process.kill(0, child_pid) rescue false
+        sleep 0.1
+      end
+      Process.kill("KILL", -child_pid) rescue nil
+    end
+
+    Signal.trap("TERM") { terminate_group.call; exit 143 }
+    Signal.trap("INT") { terminate_group.call; exit 130 }
+
+    status = nil
+    File.open(log_path, "w") do |log|
+      Open3.popen2e(*command, chdir: working_directory, pgroup: true) do |stdin, output, wait_thr|
+        child_pid = wait_thr.pid
+        stdin.close
+        reader = Thread.new { IO.copy_stream(output, log) }
+        unless wait_thr.join(timeout)
+          terminate_group.call
+          wait_thr.join(5)
+          reader.join(2)
+          exit 124
+        end
+        reader.join
+        status = wait_thr.value
+      end
+    end
+    exit(status&.exitstatus || 1)
+  ' "$timeout_seconds" "$working_directory" "$log_path" "$@"
+}
+
+is_active_repo() {
+  local repo_dir="$1"
+  local name
+  name=$(basename "$repo_dir")
+
+  [ -d "$repo_dir/.git" ] || return 1
+  [ -x "$repo_dir/scripts/SaneMaster.rb" ] || return 1
+  case "$name" in
+    SaneAI|SaneSync|*-clean|*-reconcile-preview-*|*-release-main|*-release-peer|*_codex_*|*-codex-*|*codex_sync*|*codex_test*|*-preview-*|*-worktree-*)
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+if [ "${MINI_NIGHTLY_LIBRARY_ONLY:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
 fi
-trap 'rm -rf "$LOCKFILE"' EXIT
+
+acquire_nightly_lock || exit 1
+: > "$VERIFY_RESULTS"
 
 cat > "$REPORT" <<EOF
 # Mac Mini Nightly Report — $DATE
@@ -47,7 +189,7 @@ Generated at $TIMESTAMP
 EOF
 
 # =============================================================================
-# Section 1: Git Pull All Repos
+# Section 1: Git Sync
 # =============================================================================
 echo "## Git Sync" >> "$REPORT"
 echo "" >> "$REPORT"
@@ -59,7 +201,6 @@ for repo_dir in "$APPS_DIR"/* "$INFRA_DIR"/*; do
   repo_name=$(basename "$repo_dir")
 
   cd "$repo_dir" || continue
-
   if ! git fetch origin 2>/dev/null; then
     echo "| $repo_name | Fetch failed | - | - | - |" >> "$REPORT"
     continue
@@ -95,200 +236,114 @@ echo "---" >> "$REPORT"
 echo "" >> "$REPORT"
 
 # =============================================================================
-# Section 2: Build All Apps
+# Section 2: Canonical bounded verification
 # =============================================================================
 echo "## Build Results" >> "$REPORT"
 echo "" >> "$REPORT"
+echo "Build and test are owned by one canonical, bounded SaneMaster verify per active repo." >> "$REPORT"
+echo "Per-repo outcomes are listed under Test Results." >> "$REPORT"
+echo "" >> "$REPORT"
+echo "---" >> "$REPORT"
+echo "" >> "$REPORT"
 
-BUILD_PASS=0
-BUILD_FAIL=0
+VERIFY_PASS=0
+VERIFY_FAIL=0
+VERIFY_SKIP=0
 
-for app_dir in "$APPS_DIR"/Sane*; do
-  [ -d "$app_dir" ] || continue
-  app_name=$(basename "$app_dir")
-
-  cd "$app_dir" || continue
-
-  # Find xcodeproj or Package.swift
-  SCHEME=""
-  BUILD_TYPE=""
-
-  if ls *.xcodeproj 1>/dev/null 2>&1; then
-    proj=$(ls -d *.xcodeproj | head -1)
-    # Prefer workspace over project (resolves local Swift packages)
-    ws=""
-    if ls *.xcworkspace 1>/dev/null 2>&1; then
-      ws=$(ls -d *.xcworkspace | head -1)
-      ALL_SCHEMES=$(xcodebuild -workspace "$ws" -list 2>/dev/null | awk '/Schemes:/{found=1; next} found && /^[[:space:]]+/{print; next} found{exit}' | xargs -I{} echo {})
-    else
-      ALL_SCHEMES=$(xcodebuild -project "$proj" -list 2>/dev/null | awk '/Schemes:/{found=1; next} found && /^[[:space:]]+/{print; next} found{exit}' | xargs -I{} echo {})
-    fi
-    SCHEME=$(echo "$ALL_SCHEMES" | grep -x "$app_name" | head -1)
-    [ -z "$SCHEME" ] && SCHEME=$(echo "$ALL_SCHEMES" | head -1)
-    if [ -n "$SCHEME" ]; then
-      BUILD_TYPE="xcode"
-    fi
-  elif [ -f "Package.swift" ]; then
-    BUILD_TYPE="spm"
-  fi
-
-  if [ -z "$BUILD_TYPE" ]; then
-    echo "### $app_name" >> "$REPORT"
-    echo "**Skipped** — no project or package found" >> "$REPORT"
-    echo "" >> "$REPORT"
+for repo_dir in "$APPS_DIR"/* "$INFRA_DIR"/*; do
+  [ -d "$repo_dir/.git" ] || continue
+  if ! is_active_repo "$repo_dir"; then
+    VERIFY_SKIP=$((VERIFY_SKIP + 1))
     continue
   fi
 
-  echo "### $app_name" >> "$REPORT"
+  rel_path="${repo_dir#$SANE_ROOT/}"
+  safe_name=$(printf '%s' "$rel_path" | tr '/ ' '__')
+  verify_log="$VERIFY_LOG_DIR/${safe_name}.log"
+  verify_start=$(date +%s)
+  verify_status=0
+  run_bounded_command \
+    "$VERIFY_OUTER_TIMEOUT_SECONDS" \
+    "$repo_dir" \
+    "$verify_log" \
+    /usr/bin/env SANEMASTER_VERIFY_TIMEOUT="$VERIFY_TIMEOUT_SECONDS" \
+    "$repo_dir/scripts/SaneMaster.rb" verify --timeout "$VERIFY_TIMEOUT_SECONDS" --no-grant-permissions || verify_status=$?
+  verify_end=$(date +%s)
+  verify_duration=$((verify_end - verify_start))
 
-  # Clean stale Runner.app bundles — macOS 26 protects registered .app bundles,
-  # causing EPERM when the linker tries to overwrite them on subsequent builds
-  for runner in ~/Library/Developer/Xcode/DerivedData/"${app_name}"-*/Build/Products/Debug/*-Runner.app; do
-    [ -e "$runner" ] && rm -rf "$runner"
-  done
-
-  build_start=$(date +%s)
-  if [ "$BUILD_TYPE" = "xcode" ]; then
-    BUILD_TARGET_FLAG="-project $proj"
-    [ -n "$ws" ] && BUILD_TARGET_FLAG="-workspace $ws"
-    build_output=$(xcodebuild $BUILD_TARGET_FLAG -scheme "$SCHEME" -configuration Debug build -quiet -destination 'platform=macOS' CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO 2>&1)
+  if [ "$verify_status" -eq 0 ]; then
+    verify_result="PASS"
+    VERIFY_PASS=$((VERIFY_PASS + 1))
+  elif [ "$verify_status" -eq 124 ]; then
+    verify_result="TIMEOUT"
+    VERIFY_FAIL=$((VERIFY_FAIL + 1))
   else
-    build_output=$(swift build 2>&1)
+    verify_result="FAIL"
+    VERIFY_FAIL=$((VERIFY_FAIL + 1))
   fi
-  build_exit=$?
-  build_end=$(date +%s)
-  build_time=$((build_end - build_start))
-
-  if [ $build_exit -eq 0 ]; then
-    echo "**PASS** (${build_time}s)" >> "$REPORT"
-    BUILD_PASS=$((BUILD_PASS + 1))
-  else
-    echo "**FAIL** (exit $build_exit, ${build_time}s)" >> "$REPORT"
-    echo '```' >> "$REPORT"
-    echo "$build_output" | tail -20 >> "$REPORT"
-    echo '```' >> "$REPORT"
-    BUILD_FAIL=$((BUILD_FAIL + 1))
-  fi
-  echo "" >> "$REPORT"
+  printf '%s\t%s\t%s\t%s\n' "$rel_path" "$verify_result" "$verify_status" "$verify_duration" >> "$VERIFY_RESULTS"
 done
 
-echo "**Summary:** $BUILD_PASS passed, $BUILD_FAIL failed" >> "$REPORT"
-echo "" >> "$REPORT"
-echo "---" >> "$REPORT"
-echo "" >> "$REPORT"
-
-# =============================================================================
-# Section 3: Run Tests
-# =============================================================================
 echo "## Test Results" >> "$REPORT"
 echo "" >> "$REPORT"
-
-TEST_PASS=0
-TEST_FAIL=0
-
-for app_dir in "$APPS_DIR"/Sane*; do
-  [ -d "$app_dir" ] || continue
-  app_name=$(basename "$app_dir")
-
-  cd "$app_dir" || continue
-
-  # Check if tests exist — prefer SPM package tests (reliable on headless Mini)
-  TEST_TYPE=""
-  SPM_PKG_DIR=""
-  # Check for local SPM packages with tests (e.g. SaneHostsPackage/Tests/)
-  for pkg_dir in "${app_name}Package" "Package"; do
-    if [ -f "$pkg_dir/Package.swift" ] && [ -d "$pkg_dir/Tests" ]; then
-      SPM_PKG_DIR="$pkg_dir"
-      TEST_TYPE="spm_local"
-      break
-    fi
-  done
-  # Fall back to xcodeproj tests (skip UI tests on headless Mini)
-  if [ -z "$TEST_TYPE" ] && ls *.xcodeproj 1>/dev/null 2>&1; then
-    proj=$(ls -d *.xcodeproj | head -1)
-    ws=""
-    if ls *.xcworkspace 1>/dev/null 2>&1; then
-      ws=$(ls -d *.xcworkspace | head -1)
-      ALL_SCHEMES=$(xcodebuild -workspace "$ws" -list 2>/dev/null | awk '/Schemes:/{found=1; next} found && /^[[:space:]]+/{print; next} found{exit}' | xargs -I{} echo {})
+if [ ! -s "$VERIFY_RESULTS" ]; then
+  echo "**Skipped** — no active repo with an executable scripts/SaneMaster.rb wrapper was found." >> "$REPORT"
+else
+  while IFS=$'\t' read -r rel_path verify_result verify_status verify_duration; do
+    safe_name=$(printf '%s' "$rel_path" | tr '/ ' '__')
+    verify_log="$VERIFY_LOG_DIR/${safe_name}.log"
+    echo "### $rel_path" >> "$REPORT"
+    if [ "$verify_result" = "PASS" ]; then
+      echo "**PASS** — canonical verify (${verify_duration}s)" >> "$REPORT"
+    elif [ "$verify_result" = "TIMEOUT" ]; then
+      echo "**FAIL** — canonical verify exceeded its bounded deadline (${verify_duration}s, exit 124)" >> "$REPORT"
     else
-      ALL_SCHEMES=$(xcodebuild -project "$proj" -list 2>/dev/null | awk '/Schemes:/{found=1; next} found && /^[[:space:]]+/{print; next} found{exit}' | xargs -I{} echo {})
+      echo "**FAIL** — canonical verify exited $verify_status (${verify_duration}s)" >> "$REPORT"
     fi
-    SCHEME=$(echo "$ALL_SCHEMES" | grep -x "$app_name" | head -1)
-    [ -z "$SCHEME" ] && SCHEME=$(echo "$ALL_SCHEMES" | head -1)
-    if [ -n "$SCHEME" ]; then
-      TEST_TYPE="xcode"
+    if [ "$verify_result" != "PASS" ] && [ -s "$verify_log" ]; then
+      echo '```' >> "$REPORT"
+      tail -30 "$verify_log" >> "$REPORT"
+      echo '```' >> "$REPORT"
     fi
-  elif [ -z "$TEST_TYPE" ] && [ -f "Package.swift" ]; then
-    TEST_TYPE="spm"
-  fi
-
-  if [ -z "$TEST_TYPE" ]; then continue; fi
-
-  echo "### $app_name" >> "$REPORT"
-
-  if [ "$TEST_TYPE" = "spm_local" ]; then
-    # Run swift test in local SPM package directory (reliable on headless Mini)
-    test_output=$(cd "$SPM_PKG_DIR" && swift test 2>&1)
-  elif [ "$TEST_TYPE" = "xcode" ]; then
-    TEST_TARGET_FLAG="-project $proj"
-    [ -n "$ws" ] && TEST_TARGET_FLAG="-workspace $ws"
-    # Skip UI tests on headless Mini — they require a GUI and hang indefinitely
-    SKIP_FLAGS=""
-    for ui_target in $(echo "$ALL_SCHEMES" | grep -i "UITest"); do
-      SKIP_FLAGS="$SKIP_FLAGS -skip-testing:${ui_target}"
-    done
-    test_output=$(xcodebuild $TEST_TARGET_FLAG -scheme "$SCHEME" test $SKIP_FLAGS -quiet -destination 'platform=macOS' CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO 2>&1)
-  else
-    test_output=$(swift test 2>&1)
-  fi
-  test_exit=$?
-
-  if [ $test_exit -eq 0 ]; then
-    # Extract test count if available
-    test_count=$(echo "$test_output" | grep -oE '[0-9]+ test[s]? passed' | head -1)
-    echo "**PASS** ${test_count:-""}" >> "$REPORT"
-    TEST_PASS=$((TEST_PASS + 1))
-  else
-    echo "**FAIL** (exit $test_exit)" >> "$REPORT"
-    echo '```' >> "$REPORT"
-    echo "$test_output" | grep -E "(FAIL|error:|fatal)" | tail -10 >> "$REPORT"
-    echo '```' >> "$REPORT"
-    TEST_FAIL=$((TEST_FAIL + 1))
-  fi
-  echo "" >> "$REPORT"
-done
-
-echo "**Summary:** $TEST_PASS passed, $TEST_FAIL failed" >> "$REPORT"
+    echo "" >> "$REPORT"
+  done < "$VERIFY_RESULTS"
+fi
+echo "**Summary:** $VERIFY_PASS passed, $VERIFY_FAIL failed, $VERIFY_SKIP non-active/unowned checkout(s) skipped" >> "$REPORT"
 echo "" >> "$REPORT"
 echo "---" >> "$REPORT"
 echo "" >> "$REPORT"
 
 # =============================================================================
-# Section 4: Automation Root Cleanup
+# Section 3: Bounded automation-root cleanup
 # =============================================================================
 echo "## Automation Root Cleanup" >> "$REPORT"
 echo "" >> "$REPORT"
 
 AUTOMATION_PREP_SCRIPT="$SCRIPT_DIR/mini-prepare-automation-root.sh"
-CANONICAL_SOURCE_ROOT="$HOME/SaneApps"
 cleanup_exit=0
-cleanup_output=""
+cleanup_log="$OUTPUT_DIR/nightly-automation-cleanup.log"
 
 if [ "$SANE_ROOT" = "$CANONICAL_SOURCE_ROOT" ]; then
   echo "**Skipped** - nightly is running against the canonical human repo" >> "$REPORT"
 elif [ ! -x "$AUTOMATION_PREP_SCRIPT" ]; then
   echo "**Skipped** - missing automation-root prep script" >> "$REPORT"
 else
-  cleanup_output=$(AUTOMATION_ROOT="$SANE_ROOT" SANE_SOURCE_ROOT="$CANONICAL_SOURCE_ROOT" /bin/bash "$AUTOMATION_PREP_SCRIPT" 2>&1) || cleanup_exit=$?
+  run_bounded_command \
+    "$CLEANUP_TIMEOUT_SECONDS" \
+    "$SCRIPT_DIR" \
+    "$cleanup_log" \
+    /usr/bin/env AUTOMATION_ROOT="$SANE_ROOT" SANE_SOURCE_ROOT="$CANONICAL_SOURCE_ROOT" \
+    /bin/bash "$AUTOMATION_PREP_SCRIPT" || cleanup_exit=$?
   if [ "$cleanup_exit" -eq 0 ]; then
     echo "**PASS** - automation root re-synced and cleaned after nightly work" >> "$REPORT"
+  elif [ "$cleanup_exit" -eq 124 ]; then
+    echo "**FAIL** - automation root cleanup timed out after ${CLEANUP_TIMEOUT_SECONDS}s" >> "$REPORT"
   else
     echo "**FAIL** (exit $cleanup_exit) - automation root cleanup reported problems" >> "$REPORT"
   fi
-
-  if [ -n "$cleanup_output" ]; then
+  if [ -s "$cleanup_log" ]; then
     echo '```' >> "$REPORT"
-    echo "$cleanup_output" | tail -40 >> "$REPORT"
+    tail -40 "$cleanup_log" >> "$REPORT"
     echo '```' >> "$REPORT"
   fi
 fi
@@ -298,7 +353,7 @@ echo "---" >> "$REPORT"
 echo "" >> "$REPORT"
 
 # =============================================================================
-# Section 5: Disk & System Health
+# Section 4: Disk and system health
 # =============================================================================
 echo "## System Health" >> "$REPORT"
 echo "" >> "$REPORT"
@@ -306,47 +361,54 @@ echo "" >> "$REPORT"
 disk_free=$(df -h / | tail -1 | awk '{print $4}')
 disk_pct=$(df -h / | tail -1 | awk '{print $5}')
 echo "**Disk:** $disk_free free ($disk_pct used)" >> "$REPORT"
-
-# Memory pressure
-memory_pressure=$(memory_pressure 2>/dev/null | grep "System-wide" | head -1 || echo "Unknown")
-echo "**Memory:** $memory_pressure" >> "$REPORT"
-
-# Uptime
+memory_state=$(memory_pressure 2>/dev/null | grep "System-wide" | head -1 || echo "Unknown")
+echo "**Memory:** $memory_state" >> "$REPORT"
 echo "**Uptime:** $(uptime | sed 's/.*up /up /' | sed 's/,.*//')" >> "$REPORT"
 echo "" >> "$REPORT"
 
 # =============================================================================
-# Section 6: Operator Brief
+# Section 5: Bounded operator brief
 # =============================================================================
 echo "## Operator Brief" >> "$REPORT"
 echo "" >> "$REPORT"
 
 OPERATOR_BRIEF_OUTPUT="$OUTPUT_DIR/operator_brief.md"
 operator_brief_exit=0
-operator_brief_stdout=""
+operator_brief_written=0
+operator_brief_log="$OUTPUT_DIR/nightly-operator-brief.log"
 
-if [ ! -f "$MACHINE_CLEANUP_SCRIPT" ]; then
-  echo "**Skipped** - missing SaneMaster operator_brief command" >> "$REPORT"
+if [ ! -f "$SANEMASTER_SCRIPT" ]; then
+  echo "**Skipped** - missing SaneMaster operator_brief command at $SANEMASTER_SCRIPT" >> "$REPORT"
 else
-  operator_brief_stdout=$(ruby "$MACHINE_CLEANUP_SCRIPT" operator_brief --nightly-report "$REPORT" --morning-report "$OUTPUT_DIR/morning_report.md" --handoff "$CANONICAL_SOURCE_ROOT/infra/SaneProcess/SESSION_HANDOFF.md" --output "$OPERATOR_BRIEF_OUTPUT" 2>&1) || operator_brief_exit=$?
-  if [ "$operator_brief_exit" -eq 0 ]; then
+  run_bounded_command \
+    "$OPERATOR_BRIEF_TIMEOUT_SECONDS" \
+    "$CANONICAL_SOURCE_ROOT/infra/SaneProcess" \
+    "$operator_brief_log" \
+    ruby "$SANEMASTER_SCRIPT" operator_brief \
+    --nightly-report "$REPORT" \
+    --morning-report "$OUTPUT_DIR/morning_report.md" \
+    --handoff "$CANONICAL_SOURCE_ROOT/infra/SaneProcess/SESSION_HANDOFF.md" \
+    --output "$OPERATOR_BRIEF_TEMP" || operator_brief_exit=$?
+  if { [ "$operator_brief_exit" -eq 0 ] || [ "$operator_brief_exit" -eq 1 ]; } && [ -s "$OPERATOR_BRIEF_TEMP" ]; then
+    mv "$OPERATOR_BRIEF_TEMP" "$OPERATOR_BRIEF_OUTPUT"
+    operator_brief_written=1
+  fi
+  if [ "$operator_brief_exit" -eq 0 ] && [ "$operator_brief_written" -eq 1 ]; then
     echo "**PASS** - wrote $OPERATOR_BRIEF_OUTPUT" >> "$REPORT"
+  elif [ "$operator_brief_exit" -eq 1 ] && [ "$operator_brief_written" -eq 1 ]; then
+    echo "**PASS** - wrote $OPERATOR_BRIEF_OUTPUT with priorities requiring attention" >> "$REPORT"
+  elif [ "$operator_brief_exit" -eq 124 ]; then
+    echo "**FAIL** - operator brief timed out after ${OPERATOR_BRIEF_TIMEOUT_SECONDS}s" >> "$REPORT"
   else
     echo "**FAIL** (exit $operator_brief_exit) - operator brief generation failed" >> "$REPORT"
   fi
-
-  if [ -n "$operator_brief_stdout" ]; then
+  if [ -s "$operator_brief_log" ]; then
     echo '```' >> "$REPORT"
-    echo "$operator_brief_stdout" | tail -80 >> "$REPORT"
+    tail -80 "$operator_brief_log" >> "$REPORT"
     echo '```' >> "$REPORT"
   fi
 fi
 
-echo "" >> "$REPORT"
-
-# =============================================================================
-# Footer
-# =============================================================================
 cat >> "$REPORT" <<EOF
 
 ---

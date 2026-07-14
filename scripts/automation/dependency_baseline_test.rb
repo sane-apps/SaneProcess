@@ -4,7 +4,10 @@
 require 'tmpdir'
 require_relative 'dependency_baseline'
 
+$assertion_count = 0
+
 def assert(condition, message)
+  $assertion_count += 1
   raise message unless condition
 end
 
@@ -50,4 +53,33 @@ assert(SaneAppsDependencyBaseline.formulae(:mini).include?('pango'),
 assert(!SaneAppsDependencyBaseline.formulae(:air).include?('pango'),
        'Air should not inherit the Mini-only PDF renderer stack')
 
-puts 'PASS 14/14'
+all_packages = (
+  SaneAppsDependencyBaseline.npm_packages(:air) +
+  SaneAppsDependencyBaseline.npm_packages(:mini)
+).uniq.sort
+assert(SaneAppsDependencyBaseline::NPM_VERSIONS.keys.sort == all_packages,
+       'every managed npm package must have exactly one version pin')
+assert(SaneAppsDependencyBaseline::NPM_VERSIONS['@steipete/macos-automator-mcp'] == '0.4.5',
+       'macOS Automator MCP pin drifted')
+assert(SaneAppsDependencyBaseline::NPM_VERSIONS['@upstash/context7-mcp'] == '3.2.3',
+       'Context7 MCP pin drifted')
+assert(SaneAppsDependencyBaseline.npm_specs(:mini).include?('@agentmemory/agentmemory@0.9.27'),
+       'Mini AgentMemory install is not version-pinned')
+assert(SaneAppsDependencyBaseline.npm_specs(:air).none? { |spec| spec.end_with?('@latest') },
+       'dependency apply must not float managed packages to latest')
+
+mini_installed = SaneAppsDependencyBaseline.npm_packages(:mini).to_h do |name|
+  [name, SaneAppsDependencyBaseline::NPM_VERSIONS.fetch(name)]
+end
+assert(SaneAppsDependencyBaseline.npm_version_problems(:mini, mini_installed).empty?,
+       'exact Mini package pins should pass')
+
+drifted = mini_installed.merge('@steipete/macos-automator-mcp' => '0.4.1')
+assert(SaneAppsDependencyBaseline.npm_version_problems(:mini, drifted).any? { |problem| problem.include?('0.4.1 != 0.4.5') },
+       'version drift must fail the dependency check')
+
+forbidden = mini_installed.merge('npm' => '99.0.0')
+assert(SaneAppsDependencyBaseline.npm_version_problems(:mini, forbidden).include?('forbidden global npm package: npm'),
+       'forbidden global packages must fail the dependency check')
+
+puts "PASS #{$assertion_count}/#{$assertion_count}"

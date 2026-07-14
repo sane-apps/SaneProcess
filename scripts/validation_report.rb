@@ -83,6 +83,39 @@ class ValidationReport
   ].freeze
   WORKFLOW_EXCEPTIONS_CONFIG_PATH = File.join(File.dirname(__FILE__), '..', 'config', 'github_workflow_exceptions.yml')
   RED_NOISE_BUDGET_DAYS = 7
+  CLEAN_SESSION_TRUTH_MARKER = 'SANEPROCESS_CLEAN_SESSION_TRUTH_V1'
+  CLEAN_SESSION_SUPERSEDED_LABELS = %w[
+    serena-air-mini-parity
+    serena-suggested-commands
+    claude-memory-sync
+    claude-cross-agent-bridge
+    claude-inbox-automation
+    claude-memory-architecture
+    claude-mini-interactive
+  ].freeze
+  CLEAN_SESSION_REQUIRED_RESEARCH_PHRASES = [
+    CLEAN_SESSION_TRUTH_MARKER,
+    'scripts/automation/sync-memory-mini.sh',
+    'com.saneapps.memory-sync',
+    'ssh mini',
+    'ssh air',
+    'Daily Mini hygiene never shuts down or restarts',
+    'guarded Sunday restart',
+    'Local SaneAI, SaneSync, and ML training are retired',
+    'scripts/mini/capture-mini-screenshot.sh'
+  ].freeze
+  CLEAN_SESSION_FORBIDDEN_CLAIMS = {
+    /(?:sync-memory-bidir\.sh.{0,120}\bcanonical\b|\bcanonical\b.{0,120}sync-memory-bidir\.sh)/im => 'retired bidirectional script described as canonical',
+    /(?:old(?: one-way)?\s+)?sync-memory-mini\.sh\s+(?:is|was)\s+superseded/im => 'current memory sync described as superseded',
+    /sync-memory-crossagent\.sh.{0,160}(?:SessionStart|SessionEnd|session hooks?|canonical)/im => 'retired cross-agent bridge described as active',
+    /com\.saneapps\.codex-mini-sync.{0,120}(?:active|pushes|hourly)/im => 'retired Air control-plane recurrence described as active',
+    /no [`']?air[`']? ssh alias/im => 'Mini-to-Air return route described as missing',
+    /raw screencapture.{0,120}\b(?:fine|supported|canonical)\b/im => 'raw Mini screenshot described as supported',
+    /existing guard will reboot only in the 05:00 safe window/im => 'daily guard described as a reboot path',
+    /(?:central-memory.{0,240}\brunning on Air\b|central-memory\s+(?:is\s+)?(?:canonical|current))/im => 'retired central-memory described as active',
+    /(?:SaneAI|SaneSync).{0,100}(?:training|model).{0,100}\b(?:active|scheduled|target)\b/im => 'retired local AI training described as active',
+    /(?:\b(?:use|required|canonical)\b.{0,40}self-SSH|self-SSH\s+(?:is\s+)?(?:required|canonical|supported))/im => 'self-SSH described as an operating route'
+  }.freeze
   CUSTOMER_UI_MANIFEST_PATHS = [
     'Tests/CustomerUIActions.yml',
     'tests/customer_ui_actions.yml',
@@ -469,10 +502,10 @@ class ValidationReport
         hooks = settings['hooks'] || {}
 
         hook_file_map.each do |hook_name, hook_file|
-          hook_cmd = hooks.dig(hook_name, 0, 'hooks', 0, 'command') || ''
-          if hook_cmd.empty?
+          hook_commands = configured_hook_commands(hooks, hook_name)
+          if hook_commands.empty?
             issues_found << "Global #{hook_name} hook missing"
-          elsif !hook_cmd.include?(hook_file)
+          elsif hook_commands.none? { |command| command.include?(hook_file) }
             issues_found << "Global #{hook_name} hook doesn't reference #{hook_file}"
           end
         end
@@ -512,6 +545,11 @@ class ValidationReport
     # All CLAUDE.md files should list all sister apps
     check_sister_apps_lists(issues_found)
 
+    # === CLEAN-SESSION OPERATING TRUTH ===
+    # A fresh agent reads more than checked-in docs. Reject active memory and
+    # handoff claims that can resurrect retired Mini power/sync/training paths.
+    check_clean_session_truth(issues_found)
+
     # === CODEX SKILL HEALTH CHECK ===
     # Local Codex skills should use real entrypoint files and match the Codex registry.
     check_codex_skill_health(issues_found)
@@ -528,6 +566,104 @@ class ValidationReport
 
     issues_found.each do |issue|
       @issues << "Q0 CONFIG: #{issue}"
+    end
+  end
+
+  def configured_hook_commands(hooks, hook_name)
+    Array(hooks[hook_name]).flat_map do |group|
+      Array(group['hooks']).filter_map { |hook| hook['command'] }
+    end
+  end
+
+  def check_clean_session_truth(issues_found)
+    sources = clean_session_truth_sources
+    return unless clean_session_truth_enabled?(sources)
+
+    contents = {}
+    sources.each do |label, path|
+      if path.nil? || !File.file?(path)
+        issues_found << "Clean-session truth source missing: #{label}"
+        next
+      end
+
+      contents[label] = File.read(path)
+    rescue StandardError => e
+      issues_found << "Clean-session truth source unreadable: #{label} (#{e.class})"
+    end
+
+    research = contents['research'].to_s
+    CLEAN_SESSION_REQUIRED_RESEARCH_PHRASES.each do |phrase|
+      next if research.include?(phrase)
+
+      issues_found << "Clean-session research missing current contract: #{phrase}"
+    end
+
+    CLEAN_SESSION_SUPERSEDED_LABELS.each do |label|
+      content = contents[label]
+      next unless content
+      next if content.lines.first(15).join.match?(/Status:\s*[^\n]*superseded/i)
+
+      issues_found << "Clean-session historical memory lacks superseded status: #{label}"
+    end
+
+    contents.each do |label, content|
+      CLEAN_SESSION_FORBIDDEN_CLAIMS.each do |pattern, description|
+        next unless content.match?(pattern)
+
+        issues_found << "Clean-session stale claim in #{label}: #{description}"
+      end
+    end
+
+    notes = clean_session_truth_correction_notes
+    if notes.size != 1
+      issues_found << "Clean-session Codex correction note count is #{notes.size}; expected exactly 1"
+    elsif !File.read(notes.first).include?('scripts/automation/sync-memory-mini.sh')
+      issues_found << 'Clean-session Codex correction note does not name the current memory sync'
+    end
+
+    %w[sync-memory-bidir.sh sync-memory-crossagent.sh].each do |retired_script|
+      path = File.join(saneprocess_repo_root, 'scripts', 'automation', retired_script)
+      issues_found << "Retired clean-session route restored: #{retired_script}" if File.exist?(path)
+    end
+  rescue StandardError => e
+    issues_found << "Clean-session truth lint failed: #{e.class}: #{e.message}"
+  end
+
+  def clean_session_truth_enabled?(sources)
+    File.file?(sources['research']) &&
+      (Dir.exist?(clean_session_truth_claude_memory_root) || Dir.exist?(clean_session_truth_codex_notes_root))
+  end
+
+  def clean_session_truth_sources
+    repo_root = saneprocess_repo_root
+    memory_root = clean_session_truth_claude_memory_root
+    {
+      'research' => File.join(repo_root, '.claude', 'research.md'),
+      'active-handoff' => File.join(repo_root, 'SESSION_HANDOFF.md'),
+      'serena-air-mini-parity' => File.join(repo_root, '.serena', 'memories', 'air-mini-memory-parity-apr25-2026.md'),
+      'serena-suggested-commands' => File.join(repo_root, '.serena', 'memories', 'suggested_commands.md'),
+      'claude-memory-sync' => File.join(memory_root, 'memory-sync-direction-air-canonical.md'),
+      'claude-cross-agent-bridge' => File.join(memory_root, 'cross-agent-memory-bridge.md'),
+      'claude-inbox-automation' => File.join(memory_root, 'inbox-auto-close-automation.md'),
+      'claude-memory-architecture' => File.join(memory_root, 'memory-architecture-consolidation-2026-07-13.md'),
+      'claude-mini-interactive' => File.join(memory_root, 'mini-interactive-usetest-limits.md')
+    }
+  end
+
+  def clean_session_truth_claude_memory_root
+    project_slug = sane_apps_root.tr('/', '-')
+    File.expand_path(File.join('~/.claude/projects', project_slug, 'memory'))
+  end
+
+  def clean_session_truth_codex_notes_root
+    File.expand_path('~/.codex/memories/extensions/ad_hoc/notes')
+  end
+
+  def clean_session_truth_correction_notes
+    Dir.glob(File.join(clean_session_truth_codex_notes_root, '*.md')).select do |path|
+      File.file?(path) && File.read(path).include?(CLEAN_SESSION_TRUTH_MARKER)
+    rescue StandardError
+      false
     end
   end
 
@@ -2068,10 +2204,14 @@ class ValidationReport
       end
     end
 
-    # Check knowledge graph exists (official Memory MCP)
-    kg_path = File.expand_path('~/.claude/memory/knowledge-graph.jsonl')
-    unless File.exist?(kg_path)
-      warnings_found << "Knowledge graph missing at #{kg_path} (Memory MCP not seeded)"
+    # AgentMemory replaced the retired file-backed knowledge-graph MCP. This
+    # check consumes only the redacted status surface and never reads memory or
+    # credential files directly.
+    agentmemory = agentmemory_status_output
+    unless agentmemory.match?(/Connected.*v0\.9\.27/m) &&
+           agentmemory.match?(/Health:\s+.*healthy/) &&
+           agentmemory.match?(/Memories:\s+\d[\d,]*/)
+      warnings_found << 'AgentMemory is unavailable or unhealthy on the Mini-owned port 3111'
     end
 
     @metrics[:support_infrastructure] = {
@@ -2082,6 +2222,16 @@ class ValidationReport
 
     issues_found.each { |i| @issues << "Q9 SUPPORT: #{i}" }
     warnings_found.each { |w| @warnings << "Q9 SUPPORT: #{w}" }
+  end
+
+  def agentmemory_status_output
+    command = ['/opt/homebrew/bin/agentmemory', 'status']
+    return '' unless File.executable?(command.first)
+
+    stdout, stderr, status = Open3.capture3(*command)
+    status.success? ? stdout : "#{stdout}\n#{stderr}"
+  rescue StandardError
+    ''
   end
 
   # Q10: DOCUMENTATION CURRENCY

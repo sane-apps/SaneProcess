@@ -38,7 +38,8 @@
 | **Shared UI** | `~/SaneApps/infra/SaneUI/` |
 | **Hooks/tooling** | `~/SaneApps/infra/SaneProcess/` |
 
-**Sister apps:** SaneBar, SaneClip, SaneVideo, SaneSync, SaneHosts, SaneAI, SaneScript
+**Sister apps:** derive the active list from current `apps/*/.saneprocess`
+manifests; do not preserve a hardcoded historical portfolio list here.
 
 ---
 

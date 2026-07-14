@@ -655,7 +655,7 @@ module SaneMasterModules
         Open3.popen2e(*cmd, pgroup: true) do |stdin, stdout_err, wait_thr|
           stdin.close
           tracked_descendants = []
-          root_identity = monitor_test_process_identity(wait_thr.pid)
+          root_identity = monitor_test_owned_process_identity(wait_thr.pid)
           tracked_identities = {}
           cleanup_error = nil
           progress_state ||= {

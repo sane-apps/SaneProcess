@@ -1,5 +1,9 @@
 # Suggested Commands for SaneProcess
 
+> **Status: superseded command list refreshed on 2026-07-14.** Prefer
+> `AGENTS.md`, `scripts/mini/README.md`, and current `SaneMaster.rb` help over
+> remembered command snippets.
+
 ## Testing
 ```bash
 # Run hook tier tests
@@ -28,8 +32,10 @@ ruby scripts/SaneMaster.rb verify --timeout 900
 # Check for hook drift between projects
 ruby scripts/sync_check.rb ~/SaneBar
 ruby scripts/sync_check.rb ~/SaneVideo
-ruby scripts/sync_check.rb ~/SaneSync
 ```
+
+Local SaneAI/SaneSync and ML-training clones are retired from the Mini. Do not
+recreate them for sync checks.
 
 ## Hook Testing (Manual)
 ```bash
@@ -41,15 +47,18 @@ echo '{"prompt": "fix the bug"}' | ruby scripts/hooks/saneprompt.rb
 ## State Management
 ```bash
 # View current state
-cat .claude/state/enforcement_state.json | jq .
-
-# Reset state (for testing)
-rm .claude/state/*.json
+jq . .claude/state.json
 ```
+
+Hook state is signed and managed through the existing state manager/session
+hooks. Do not delete `.claude` state files by hand. Use the documented
+SaneMaster or hook-specific reset command for the exact subsystem being reset.
 
 ## macOS Utilities
 ```bash
 # Standard Darwin commands
-ls -la, cd, pwd, grep, find, cat, head, tail
-git status, git diff, git log
+ls -la
+git status --short
+git diff
+git log --oneline -n 20
 ```

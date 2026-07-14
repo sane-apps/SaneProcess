@@ -9,7 +9,11 @@ const { randomUUID } = require('crypto');
 
 const SCRIPT_PATH = fs.realpathSync(__filename);
 const HOME = os.homedir();
-const NODE_EXECUTABLE = process.execPath;
+const NODE_24_BIN = '/opt/homebrew/opt/node@24/bin';
+const NODE_EXECUTABLE = firstExecutable([
+  path.join(NODE_24_BIN, 'node'),
+  process.execPath,
+]);
 const LOG_DIR = path.join(HOME, 'Library', 'Logs', 'SaneApps', 'mcp-singleton');
 const PLIST_DIR = path.join(HOME, 'Library', 'LaunchAgents');
 const PLIST_LABEL_PREFIX = 'com.saneapps.mcp-singleton';
@@ -37,6 +41,7 @@ function firstExecutable(candidates) {
 
 const NPX_EXECUTABLE = firstExecutable([
   path.join(path.dirname(NODE_EXECUTABLE), 'npx'),
+  path.join(NODE_24_BIN, 'npx'),
   '/opt/homebrew/bin/npx',
   '/usr/local/bin/npx',
   'npx',
@@ -77,15 +82,7 @@ const SERVER_SPECS = {
   'macos-automator': {
     port: 37913,
     command: NPX_EXECUTABLE,
-    args: ['-y', '@steipete/macos-automator-mcp@0.4.1'],
-  },
-  memory: {
-    port: 37914,
-    command: NODE_EXECUTABLE,
-    args: [homePath('SaneApps', 'infra', 'SaneProcess', 'scripts', 'mcp-memory-enhanced', 'server.mjs')],
-    env: {
-      MEMORY_FILE_PATH: homePath('.claude', 'memory', 'knowledge-graph.jsonl'),
-    },
+    args: ['-y', '@steipete/macos-automator-mcp@0.4.5'],
   },
   serena: {
     port: 37917,
@@ -123,7 +120,6 @@ function npmRootCandidates() {
 
 const SDK_BASE_CANDIDATES = npmRootCandidates().flatMap((root) => [
   path.join(root, '@modelcontextprotocol', 'sdk', 'dist', 'cjs'),
-  path.join(root, '@modelcontextprotocol', 'server-memory', 'node_modules', '@modelcontextprotocol', 'sdk', 'dist', 'cjs'),
   path.join(root, '@steipete', 'macos-automator-mcp', 'node_modules', '@modelcontextprotocol', 'sdk', 'dist', 'cjs'),
   path.join(root, '@mweinbach', 'apple-docs-mcp', 'node_modules', '@modelcontextprotocol', 'sdk', 'dist', 'cjs'),
 ]);
@@ -218,7 +214,7 @@ function plistXml(spec) {
   <string>${plistLabel(spec.name)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${process.execPath}</string>
+    <string>${NODE_EXECUTABLE}</string>
     <string>${SCRIPT_PATH}</string>
     <string>serve</string>
     <string>${spec.name}</string>
@@ -226,7 +222,12 @@ function plistXml(spec) {
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
   <key>WorkingDirectory</key>
   <string>${HOME}</string>
   <key>StandardOutPath</key>
@@ -262,6 +263,16 @@ function runLaunchctl(args, allowFailure = false) {
   return result;
 }
 
+function waitForLaunchctlRemoval(spec, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = runLaunchctl(['print', launchctlLabel(spec)], true);
+    if (result.status !== 0) return;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  }
+  throw new Error(`Timed out waiting for ${launchctlLabel(spec)} to stop`);
+}
+
 function installAgents(name) {
   fs.mkdirSync(LOG_DIR, { recursive: true });
   fs.mkdirSync(PLIST_DIR, { recursive: true });
@@ -270,8 +281,9 @@ function installAgents(name) {
     const targetPath = plistPath(spec.name);
     fs.writeFileSync(targetPath, plistXml(spec), 'utf8');
     runLaunchctl(['bootout', launchctlDomain(), targetPath], true);
-    runLaunchctl(['bootstrap', launchctlDomain(), targetPath]);
+    waitForLaunchctlRemoval(spec);
     runLaunchctl(['enable', launchctlLabel(spec)], true);
+    runLaunchctl(['bootstrap', launchctlDomain(), targetPath]);
     console.log(`installed ${spec.name}\t${targetPath}`);
   }
 }

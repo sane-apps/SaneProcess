@@ -298,9 +298,24 @@ module SaneToolsTest
 
     tests = [
       # Blocked paths
-      { tool: 'Read', input: { 'file_path' => '~/.ssh/id_rsa' }, expect_block: true, name: 'Block ~/.ssh/' },
-      { tool: 'Edit', input: { 'file_path' => '/etc/passwd' }, expect_block: true, name: 'Block /etc/' },
+      { tool: 'Read', input: { 'file_path' => '~/.ssh/id_rsa' }, expect_block: true, name: 'Block SSH private key read' },
+      { tool: 'Read', input: { 'file_path' => '~/.aws/credentials' }, expect_block: true, name: 'Block secret-store read' },
+      { tool: 'Read', input: { 'file_path' => File.join(Dir.pwd, '.env') }, expect_block: true, name: 'Block project secret read' },
+      { tool: 'Edit', input: { 'file_path' => '~/.ssh/config' }, expect_block: true, name: 'Block SSH config edit' },
+      { tool: 'Edit', input: { 'file_path' => '/etc/passwd' }, expect_block: true, name: 'Block /etc edit' },
+      { tool: 'Edit', input: { 'file_path' => '/private/etc/hosts' }, expect_block: true, name: 'Block canonical /private/etc edit' },
+      { tool: 'Edit', input: { 'file_path' => '/usr/bin/ruby' }, expect_block: true, name: 'Block /usr edit' },
       { tool: 'Write', input: { 'file_path' => '/var/log/test' }, expect_block: true, name: 'Block /var/' },
+
+      # Harmless read-only diagnostics
+      { tool: 'Read', input: { 'file_path' => '~/.ssh/config' }, expect_block: false, name: 'Allow SSH config read' },
+      { tool: 'Read', input: { 'file_path' => '~/.ssh/config.d/saneapps-mini.conf' }, expect_block: false, name: 'Allow SSH include read' },
+      { tool: 'Read', input: { 'file_path' => '~/.ssh/id_ed25519.pub' }, expect_block: false, name: 'Allow SSH public-key read' },
+      { tool: 'Read', input: { 'file_path' => '~/.ssh/known_hosts' }, expect_block: false, name: 'Allow known_hosts read' },
+      { tool: 'Read', input: { 'file_path' => '~/.ssh/authorized_keys' }, expect_block: false, name: 'Allow authorized_keys read' },
+      { tool: 'Read', input: { 'file_path' => '/etc/passwd' }, expect_block: false, name: 'Allow /etc diagnostic read' },
+      { tool: 'Read', input: { 'file_path' => '/private/etc/hosts' }, expect_block: false, name: 'Allow canonical /private/etc diagnostic read' },
+      { tool: 'Read', input: { 'file_path' => '/usr/bin/ruby' }, expect_block: false, name: 'Allow /usr diagnostic read' },
 
       # Edit without research (should block)
       { tool: 'Edit', input: { 'file_path' => '/Users/sj/SaneProcess/test.swift' }, expect_block: true, name: 'Block edit without research' },

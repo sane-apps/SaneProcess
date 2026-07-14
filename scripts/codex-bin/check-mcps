@@ -31,7 +31,6 @@ function npmRootCandidates() {
 
 const SDK_BASE_CANDIDATES = npmRootCandidates().flatMap((root) => [
   path.join(root, "@modelcontextprotocol", "sdk", "dist", "cjs"),
-  path.join(root, "@modelcontextprotocol", "server-memory", "node_modules", "@modelcontextprotocol", "sdk", "dist", "cjs"),
   path.join(root, "@steipete", "macos-automator-mcp", "node_modules", "@modelcontextprotocol", "sdk", "dist", "cjs"),
 ]);
 
@@ -474,7 +473,8 @@ for name, spec in servers.items():
         "command": spec.get("command"),
         "args": spec.get("args", []),
         "url": spec.get("url"),
-        "env": spec.get("env", {})
+        "env": spec.get("env", {}),
+        "enabled": spec.get("enabled", True)
     }
 
 print(json.dumps(out))
@@ -523,23 +523,6 @@ async function main() {
       args: [homePath(".npm-global", "lib", "node_modules", "@steipete", "macos-automator-mcp", "dist", "server.js")],
       toolCall: { name: "get_scripting_tips", arguments: { search_term: "Safari URL", limit: 1 } },
     },
-    memory: {
-      command: "node",
-      args: [homePath(".npm-global", "lib", "node_modules", "@modelcontextprotocol", "server-memory", "dist", "index.js")],
-      env: { MEMORY_FILE_PATH: homePath(".claude", "memory", "knowledge-graph.jsonl") },
-      toolCall: { name: "search_nodes", arguments: { query: "SaneBar" } },
-    },
-    "central-memory": {
-      command: "node",
-      args: [homePath("SaneApps", "infra", "SaneProcess", "scripts", "mcp-central-memory", "server.mjs")],
-      env: {
-        CENTRAL_MEMORY_DATABASE_URL: "postgresql://localhost:5432/central_memory",
-        CENTRAL_MEMORY_EMBED_MODEL: "text-embedding-3-small",
-        CENTRAL_MEMORY_EMBED_DIMENSIONS: "1536",
-      },
-      optional: true,
-      toolCall: { name: "stats", arguments: {} },
-    },
     serena: {
       command: "uvx",
       args: ["--from", "git+https://github.com/oraios/serena", "serena", "start-mcp-server", "--context", "claude-code", "--project-from-cwd"],
@@ -553,6 +536,10 @@ async function main() {
       optional: true,
       checkInitializeOnly: true,
     },
+    "computer-use": {
+      optional: true,
+      checkInitializeOnly: true,
+    },
   };
   const specs = [];
 
@@ -561,10 +548,12 @@ async function main() {
   const disabledLegacyServers = new Set(["nvidia-build", "gemini", "google", "google-gemini"]);
 
   for (const [name, defaults] of Object.entries(defaultChecks)) {
+    if (configured[name]?.enabled === false) continue;
     specs.push(mergeSpec(name, defaults, configured[name]));
   }
 
   for (const [name, spec] of Object.entries(configured)) {
+    if (spec.enabled === false) continue;
     if (disabledLegacyServers.has(name)) {
       results.push({
         name,

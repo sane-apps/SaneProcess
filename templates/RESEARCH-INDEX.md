@@ -5,7 +5,7 @@
 >
 > **Rule:** Keep active research in the project research cache first
 > (`.codex/research.md` by default). Promote durable decisions into the core docs,
-> Serena, or the knowledge graph. Use this index only for cross-app references
+> Serena, or AgentMemory. Use this index only for cross-app references
 > that remain useful after promotion.
 
 ---
@@ -45,24 +45,6 @@
 | (Add research here) | - | - | - |
 
 ### SaneVideo
-
-| Topic | File | Status | Date |
-|-------|------|--------|------|
-| (Add research here) | - | - | - |
-
-### SaneSync
-
-| Topic | File | Status | Date |
-|-------|------|--------|------|
-| (Add research here) | - | - | - |
-
-### SaneScript
-
-| Topic | File | Status | Date |
-|-------|------|--------|------|
-| (Add research here) | - | - | - |
-
-### SaneAI
 
 | Topic | File | Status | Date |
 |-------|------|--------|------|
@@ -118,7 +100,7 @@ DistributedNotificationCenter.default().addObserver(
 2. Save active findings in the app's `.codex/research.md` unless the project
    documents a different active cache.
 3. Promote durable decisions into `ARCHITECTURE.md`, `DEVELOPMENT.md`,
-   `AGENTS.md`, `SESSION_HANDOFF.md`, Serena, or the knowledge graph.
+   `AGENTS.md`, `SESSION_HANDOFF.md`, Serena, or AgentMemory.
 4. Add a link here only when the research should be discoverable across apps.
 
 ---
@@ -127,7 +109,7 @@ DistributedNotificationCenter.default().addObserver(
 
 If you can't find research:
 
-1. **Check Serena memories:** Use `read_memory` or Official Memory MCP
+1. **Check durable memory:** Use Serena or the Mini-owned AgentMemory service
 2. **Grep all projects:** `grep -r "topic" ~/SaneApps/`
 3. **Check session handoffs:** Each app has `SESSION_HANDOFF.md`
 4. **Ask the active agent:** "What research exists for [topic]?"

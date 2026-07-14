@@ -59,43 +59,37 @@ does not work off-LAN, diagnose the authenticated Tailscale client/daemon. Do
 not fall back to local app testing until the private route is repaired or the
 user approves the exact exception.
 
-### Host Identity: `ssh mini` Loops Back On The Mini
+### Host Identity: Direct On Mini, SSH From Air
 
-Agent sessions opened on `~/SaneApps` are not always on the MacBook Air —
-they frequently run ON the Mini itself. The Mini and Air are distinct hosts and
-may use different local accounts. On the Mini, `ssh mini` silently connects back
-to the same machine: same filesystem, same working tree, same inodes.
+Run `hostname` before cross-machine reasoning. On the Mini, work directly in
+the local checkout; do not add a self-SSH hop. From the Air, `ssh mini` is the
+canonical controller route. A local-vs-`ssh mini` comparison performed on the
+Mini sees the same filesystem and proves nothing about Air parity.
 
-Consequences (root-caused 2026-07-07 after a false "Air↔Mini working trees
-auto-sync" diagnosis — "local" edits appearing on "the Mini" were one tree
-seen twice):
+GitHub `main` is canonical for committed code. Dirty work is snapshot-only and
+never auto-applied. The Air's conflict-preserving 15-minute file-memory sync is
+a separate lane and must not be mistaken for working-tree mirroring.
 
-- Run `hostname` BEFORE any cross-machine reasoning, "sync" diagnosis, or
-  claim that something was verified "on both machines".
-- On the Mini, local-vs-`ssh mini` comparisons prove nothing about the Air.
-  To distinguish, compare `ls -i <file>` locally and over ssh — equal inodes
-  mean loopback.
-- Local shell and `ssh mini` shell can still resolve DIFFERENT rubies on the
-  same box (system `/usr/bin/ruby` 2.6 vs Homebrew ruby via login-shell PATH),
-  so "both rubies" proofs remain meaningful even when both ran on the Mini —
-  just label them as ruby-version proofs, not machine proofs.
-- No raw working-tree mirror exists. GitHub `main` is canonical for committed
-  code; dirty work is snapshot-only and never auto-applied. The Air does run a
-  conflict-preserving file-memory sync every 15 minutes, which is a separate
-  lane and must not be mistaken for code-tree parity.
+After either client or machine restarts, run this from the Air:
+
+```bash
+ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb server_acceptance
+```
+
+The receipt is Air-owned under `outputs/restart-acceptance/`; record its full
+Air path when citing it from a shared handoff.
 
 Codex Mini remote-control health:
 
 ```bash
 ssh mini 'codex app-server daemon version'
 ssh mini 'codex app-server daemon restart; codex app-server daemon enable-remote-control'
-ssh mini 'launchctl print gui/$(id -u)/com.saneapps.codex-keepalive'
 ```
 
-The keepalive LaunchAgent must include
-`SANEPROCESS_ENABLE_MINI_CODEX_KEEPALIVE=1`. The keepalive refreshes the
-headless Codex remote-control daemon without opening GUI windows; it opens the
-Codex app only when no SaneApps app is running and no app server is present.
+The retired `com.saneapps.codex-keepalive` job must remain absent. It installed
+software and opened GUI apps from a background timer. Normal Air control uses
+SSH; restart the Codex app-server explicitly only when that optional remote-
+control lane is needed.
 
 Tailscale health:
 
@@ -109,6 +103,17 @@ Mini daemon is a root `RunAtLoad`/`KeepAlive` LaunchDaemon; the Air uses an
 authenticated userspace `RunAtLoad`/`KeepAlive` LaunchAgent and returns after
 normal Air login.
 
+The return route is explicit and independently keyed:
+
+```bash
+ssh mini 'bash ~/SaneApps/infra/SaneProcess/scripts/mini/install-air-return-ssh.sh'
+ssh mini "ssh air 'hostname; whoami'"
+```
+
+Do not enable agent forwarding for this path. The dedicated key permits normal
+recovery/operations on the Air without exposing Air GitHub or signing keys to
+the Mini.
+
 File-backed Claude, Serena, and Codex memories use
 `scripts/automation/sync-memory-mini.sh`, installed on the Air as
 `com.saneapps.memory-sync` (`RunAtLoad`, then every 15 minutes). It is backup-
@@ -117,6 +122,13 @@ same-file version as `.sane-conflict-*` on both machines. It also pulls Mini
 dirty-work snapshots without applying them. The shared AgentMemory worker is
 Mini-owned by `com.saneapps.agentmemory`; the Air MCP wrapper reaches it through
 a bounded SSH tunnel.
+The Mini LaunchAgent must point to `sane-agentmemory-supervisor`, not directly
+to the `agentmemory` wrapper. Verify both the service program and HTTP corpus:
+
+```bash
+ssh mini 'launchctl print gui/$(id -u)/com.saneapps.agentmemory'
+ssh mini '/opt/homebrew/bin/agentmemory status'
+```
 
 Public adopters do not need a Mac Mini. Replace Mini-first with your own
 canonical runner or local verification command, then route it through
@@ -541,7 +553,8 @@ Optional accelerators:
 - Codex marketplace plugins and connectors: use the matching skill instructions
   for domain work, then close SaneApps workflows with SaneMaster or the relevant
   shared wrapper.
-- `central-memory`: semantic recall when configured.
+- `agentmemory`: Mini-owned semantic recall, reached directly on the Mini and
+  through the bounded Air SSH MCP tunnel.
 - Cloudflare API MCP/plugin: read-only Pages/R2/Worker drift checks.
 
 Health checks:

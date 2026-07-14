@@ -271,20 +271,29 @@ begin
 
   reset_state!
 
-  test("Read ~/.ssh/config", true, SANETOOLS,
+  test("Read ~/.ssh/config", false, SANETOOLS,
     { 'tool_name' => 'Read', 'tool_input' => { 'file_path' => File.expand_path('~/.ssh/config') } })
+
+  test("Read ~/.ssh public key", false, SANETOOLS,
+    { 'tool_name' => 'Read', 'tool_input' => { 'file_path' => File.expand_path('~/.ssh/id_ed25519.pub') } })
+
+  test("Read ~/.ssh private key", true, SANETOOLS,
+    { 'tool_name' => 'Read', 'tool_input' => { 'file_path' => File.expand_path('~/.ssh/id_ed25519') } })
 
   test("Read ~/.aws/credentials", true, SANETOOLS,
     { 'tool_name' => 'Read', 'tool_input' => { 'file_path' => File.expand_path('~/.aws/credentials') } })
 
-  test("Read /etc/passwd", true, SANETOOLS,
+  test("Read /etc/passwd", false, SANETOOLS,
     { 'tool_name' => 'Read', 'tool_input' => { 'file_path' => '/etc/passwd' } })
 
   test("Read .env file", true, SANETOOLS,
     { 'tool_name' => 'Read', 'tool_input' => { 'file_path' => '/project/.env' } })
 
-  test("Read bare /etc directory", true, SANETOOLS,
+  test("Read bare /etc directory", false, SANETOOLS,
     { 'tool_name' => 'Read', 'tool_input' => { 'file_path' => '/etc' } })
+
+  test("Edit /etc/passwd", true, SANETOOLS,
+    { 'tool_name' => 'Edit', 'tool_input' => { 'file_path' => '/etc/passwd' } })
 
   # URL-encoded absolute path - should be caught after decoding
   test("URL encoded path bypass (%2Fetc)", true, SANETOOLS,

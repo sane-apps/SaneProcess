@@ -7,8 +7,8 @@ type: infra
 
 # Build & test commands (emitted in session briefing)
 commands:
-  verify: ruby scripts/qa.rb
-  test: ruby scripts/hooks/test/tier_tests.rb
+  verify: ruby scripts/SaneMaster.rb verify
+  test: ruby scripts/qa.rb
   health: ruby scripts/validation_report.rb
 
 # Required documentation (compliance checker validates presence)
@@ -22,8 +22,10 @@ docs:
 # MCPs this project relies on (emitted in session briefing)
 mcps:
   - apple-docs
-  - context7
   - github
+  - macos-automator
+  - openaiDeveloperDocs
+  - xcode
 
 # Website
 website: false

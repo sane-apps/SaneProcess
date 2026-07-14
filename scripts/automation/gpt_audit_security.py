@@ -35,6 +35,7 @@ class ProcessIdentity(NamedTuple):
     started: str
     executable: str
     command_sha256: str
+    owned_child: bool = False
 
 
 class BoundProcessTree(NamedTuple):
@@ -286,17 +287,20 @@ def _minimal_ps_env() -> dict[str, str]:
 
 
 def process_identity(pid: int) -> ProcessIdentity | None:
-    result = subprocess.run(
-        [
-            "/bin/ps", "-ww", "-p", str(pid),
-            "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat=", "-o", "lstart=",
-            "-o", "comm=", "-o", "command=",
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-        env=_minimal_ps_env(),
-    )
+    try:
+        result = subprocess.run(
+            [
+                "/bin/ps", "-ww", "-p", str(pid),
+                "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat=", "-o", "lstart=",
+                "-o", "comm=", "-o", "command=",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=_minimal_ps_env(),
+        )
+    except PermissionError:
+        return None
     if result.returncode != 0 or not result.stdout.strip():
         return None
     fields = result.stdout.strip().split(maxsplit=10)
@@ -324,10 +328,13 @@ def process_identity(pid: int) -> ProcessIdentity | None:
 
 
 def _process_relations() -> dict[int, tuple[int, int]]:
-    result = subprocess.run(
-        ["/bin/ps", "-axo", "pid=,ppid=,pgid="],
-        text=True, capture_output=True, check=False, env=_minimal_ps_env(),
-    )
+    try:
+        result = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,ppid=,pgid="],
+            text=True, capture_output=True, check=False, env=_minimal_ps_env(),
+        )
+    except PermissionError as exc:
+        raise RuntimeError("/bin/ps process snapshot is unavailable in this client sandbox") from exc
     if result.returncode != 0:
         raise RuntimeError(f"/bin/ps process snapshot failed: {result.returncode}")
     relations: dict[int, tuple[int, int]] = {}
@@ -355,6 +362,8 @@ def _same_process(expected: ProcessIdentity, current: ProcessIdentity | None) ->
 
 
 def _capture_bound_members(binding: BoundProcessTree) -> None:
+    if binding.root.owned_child:
+        return
     relations = _process_relations()
     root_current = process_identity(binding.root.pid)
     valid_roots = [identity for identity in binding.identities.values() if _same_process(identity, process_identity(identity.pid))]
@@ -388,6 +397,22 @@ def bind_process_group(process: subprocess.Popen[str]) -> BoundProcessTree:
             binding = BoundProcessTree(identity, {identity.pid: identity})
             _capture_bound_members(binding)
             return binding
+        if identity is None and process.poll() is None:
+            try:
+                pgid = os.getpgid(process.pid)
+            except (ProcessLookupError, PermissionError):
+                pgid = -1
+            if pgid == process.pid:
+                owned = ProcessIdentity(
+                    process.pid,
+                    pgid,
+                    os.getpid(),
+                    f"owned-child-{process.pid}",
+                    "owned isolated Codex child",
+                    "",
+                    True,
+                )
+                return BoundProcessTree(owned, {owned.pid: owned})
         if process.poll() is not None:
             break
         time.sleep(0.01)
@@ -419,6 +444,31 @@ def terminate_bound_process_group(
     binding = identity if isinstance(identity, BoundProcessTree) else BoundProcessTree(identity, {identity.pid: identity})
     if binding.root.pid != process.pid or binding.root.pgid != process.pid:
         return False, "bound root does not match the isolated subprocess; no signal sent"
+    if binding.root.owned_child:
+        if process.poll() is not None:
+            return True, "owned isolated child already exited"
+        try:
+            if os.getpgid(process.pid) != process.pid:
+                return False, "owned child no longer leads its isolated process group"
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except PermissionError:
+                process.terminate()
+            time.sleep(0.2)
+            if process.poll() is not None:
+                return True, "owned isolated child exited after TERM without process-table access"
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except PermissionError:
+                process.kill()
+            except ProcessLookupError:
+                return True, "owned isolated child group exited after TERM"
+            process.wait(timeout=1)
+            return True, "terminated owned isolated child group without process-table access"
+        except (ProcessLookupError, ChildProcessError):
+            return True, "owned isolated child group already exited"
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return False, f"could not terminate owned isolated child group: {exc}"
     root_before = process_identity(binding.root.pid)
     if not _same_process(binding.root, root_before) and len(binding.identities) == 1:
         return False, f"root identity changed or disappeared before TERM: expected={binding.root!r} current={root_before!r}"

@@ -9,7 +9,7 @@ module SaneMasterModules
 
     def terminate_monitor_test_process_group(pid, root_identity: nil, tracked_identities: {}, tracked_descendants: [],
                                              grace_seconds: 1.0, kill_grace_seconds: 1.0)
-      root_identity ||= monitor_test_process_identity(pid)
+      root_identity ||= monitor_test_owned_process_identity(pid)
       tracked_descendants.each { |child_pid| monitor_test_capture_identity!(tracked_identities, child_pid) }
       tracked_identities = monitor_test_expand_descendant_identities(root_identity, tracked_identities)
       begin
@@ -132,8 +132,15 @@ module SaneMasterModules
     def monitor_test_revalidated_identity(identity)
       return nil unless identity
 
+      if identity[:owned_child] && @monitor_test_process_scan_unavailable
+        return identity if Process.getpgid(identity[:pid]) == identity[:pgid]
+        return nil
+      end
+
       current = monitor_test_process_identity(identity[:pid])
       current if monitor_test_same_identity?(identity, current)
+    rescue Errno::ESRCH, Errno::EPERM
+      nil
     end
 
     def monitor_test_same_identity?(captured, current)
@@ -148,12 +155,45 @@ module SaneMasterModules
     def monitor_test_identity_present?(identity, snapshot)
       return false unless identity
 
+      if identity[:owned_child] && @monitor_test_process_scan_unavailable
+        return Process.getpgid(identity[:pid]) == identity[:pgid]
+      end
+
       current = snapshot.find { |process| process[:pid] == identity[:pid] }
       monitor_test_same_identity?(identity, current)
+    rescue Errno::ESRCH, Errno::EPERM
+      false
     end
 
     def monitor_test_process_identity(pid)
       monitor_test_live_process_snapshot.find { |process| process[:pid] == pid }
+    end
+
+    def monitor_test_process_scan_available?
+      monitor_test_live_process_snapshot
+      !@monitor_test_process_scan_unavailable
+    end
+
+    # Call only for a PID returned directly by this process's spawn/fork path.
+    # The explicit process group remains safely identifiable when a client
+    # sandbox denies process-table enumeration.
+    def monitor_test_owned_process_identity(pid)
+      identity = monitor_test_process_identity(pid)
+      return identity if identity
+
+      pgid = Process.getpgid(pid)
+      return nil unless pgid == pid
+
+      {
+        pid: pid,
+        ppid: Process.pid,
+        pgid: pgid,
+        start_time: "owned-child-#{pid}",
+        command: 'owned isolated child process',
+        owned_child: true
+      }
+    rescue Errno::ESRCH, Errno::EPERM
+      nil
     end
 
     def monitor_test_process_group_alive?(pid)
@@ -170,11 +210,18 @@ module SaneMasterModules
         '/bin/ps', '-axo', 'pid=,ppid=,pgid=,stat=,lstart=,command=',
         unsetenv_others: true
       )
-      raise "Could not inspect timed-out test processes: ps exited #{status.exitstatus}" unless status.success?
+      unless status.success?
+        @monitor_test_process_scan_unavailable = true
+        @monitor_test_process_scan_error = "ps exited #{status.exitstatus}: #{output.to_s.strip}"
+        return []
+      end
 
+      @monitor_test_process_scan_unavailable = false
       monitor_test_parse_process_snapshot(output)
     rescue SystemCallError => e
-      raise "Could not inspect timed-out test processes: #{e.message}"
+      @monitor_test_process_scan_unavailable = true
+      @monitor_test_process_scan_error = e.message
+      []
     end
 
     def monitor_test_parse_process_snapshot(output)

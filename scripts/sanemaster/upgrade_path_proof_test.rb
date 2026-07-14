@@ -364,6 +364,22 @@ exit(run_tests('Upgrade Path Proof Security Tests') do
           end
           sleep 30
         RUBY
+        unless subject.send(:monitor_test_process_scan_available?)
+          error = assert_raises(StandardError) do
+            subject.send(
+              :upgrade_path_spawn,
+              [File.realpath(RbConfig.ruby), '-e', script, pid_path],
+              { 'PATH' => '/usr/bin:/bin', 'HOME' => Dir.home, 'LANG' => 'C', 'LC_ALL' => 'C' },
+              root,
+              File.join(root, 'command.log'),
+              0.5
+            )
+          end
+          assert_includes(error.message, 'Could not bind canonical upgrade runner identity')
+          assert(!File.exist?(pid_path), 'sandboxed runner executed before identity binding')
+          next true
+        end
+
         result = subject.send(
           :upgrade_path_spawn,
           [File.realpath(RbConfig.ruby), '-e', script, pid_path],
@@ -391,6 +407,22 @@ exit(run_tests('Upgrade Path Proof Security Tests') do
           sleep 0.3
           exit 0
         RUBY
+        unless subject.send(:monitor_test_process_scan_available?)
+          error = assert_raises(StandardError) do
+            subject.send(
+              :upgrade_path_spawn,
+              [File.realpath(RbConfig.ruby), '-e', script, pid_path],
+              { 'PATH' => '/usr/bin:/bin', 'HOME' => Dir.home, 'LANG' => 'C', 'LC_ALL' => 'C' },
+              root,
+              File.join(root, 'command.log'),
+              5
+            )
+          end
+          assert_includes(error.message, 'Could not bind canonical upgrade runner identity')
+          assert(!File.exist?(pid_path), 'sandboxed runner executed before identity binding')
+          next true
+        end
+
         result = subject.send(
           :upgrade_path_spawn,
           [File.realpath(RbConfig.ruby), '-e', script, pid_path],

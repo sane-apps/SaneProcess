@@ -119,7 +119,6 @@ saneloop-archive/
       "Bash(du:*)",
       "Bash(df:*)",
       "Bash(curl:*)",
-      "mcp__memory__*",
       "mcp__apple-docs__*",
       "mcp__context7__*",
       "mcp__github__*",
@@ -211,19 +210,12 @@ saneloop-archive/
 {
   "mcpServers": {
     "apple-docs": {
-      "command": "npx",
-      "args": ["-y", "@mweinbach/apple-docs-mcp@1.3.1"]
-    },
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github@2025.4.8"],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
-      }
+      "type": "http",
+      "url": "http://127.0.0.1:37911/mcp"
     },
     "context7": {
-      "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp@2.2.5"]
+      "command": "/opt/homebrew/opt/node@24/bin/npx",
+      "args": ["-y", "@upstash/context7-mcp@3.2.3"]
     }
   }
 }
@@ -232,10 +224,13 @@ saneloop-archive/
 **For menu bar apps**, add macos-automator:
 ```json
     "macos-automator": {
-      "command": "npx",
-      "args": ["-y", "@steipete/macos-automator-mcp@0.4.1"]
+      "type": "http",
+      "url": "http://127.0.0.1:37913/mcp"
     }
 ```
+
+GitHub MCP authentication is global and consumer-scoped through the SaneProcess
+credential bridge. Do not add raw token interpolation to a project file.
 
 ---
 
@@ -384,7 +379,6 @@ alias XX='cd /path/to/ProjectName && claude --dangerously-skip-permissions'
 | `sb` | SaneBar | ~/SaneApps/apps/SaneBar |
 | `sc` | SaneClip | ~/SaneApps/apps/SaneClip |
 | `sp` | SaneProcess | ~/SaneApps/infra/SaneProcess |
-| `ss` | SaneSync | ~/SaneApps/apps/SaneSync |
 | `sv` | SaneVideo | ~/SaneApps/apps/SaneVideo |
 | `sah` | SaneHosts | ~/SaneApps/apps/SaneHosts |
 
@@ -414,7 +408,6 @@ source ~/.zshrc
 |---------|------|-------|
 | **SaneBar** | Menu bar app | Full mature setup, UI automation |
 | **SaneProcess** | Hook master | Central hub for hooks system |
-| **SaneSync** | macOS app | Cloud sync, file operations |
 | **SaneHosts** | macOS app | Privileged helper, XPC |
 | **SaneClip** | Menu bar app | Clipboard manager |
 

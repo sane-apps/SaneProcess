@@ -150,7 +150,7 @@ ruby scripts/SaneMaster.rb status
 ruby scripts/SaneMaster.rb release_preflight
 ruby scripts/SaneMaster.rb appstore_preflight  # only when .saneprocess appstore.enabled: true
 ruby scripts/SaneMaster.rb tool_discovery --query "missing screenshot diff tool"
-ruby scripts/SaneMaster.rb secret_scan --path /Users/sj
+ruby scripts/SaneMaster.rb secret_scan --path "$HOME"
 ruby scripts/SaneMaster.rb runtime_evidence --dry-run --break Sources/App.swift:42
 ruby scripts/SaneMaster.rb visual_smoke --app ExampleApp --dry-run
 ruby scripts/SaneMaster.rb process_metrics --json
@@ -234,6 +234,7 @@ Client adapter state is stored locally in the relevant runtime directory; shared
 | Command map and verification workflow | [DEVELOPMENT.md](DEVELOPMENT.md) | Canonical commands, verification paths, daily SOP |
 | Architecture, durable decisions, and tradeoffs | [ARCHITECTURE.md](ARCHITECTURE.md) | System design, decisions, research notes, tradeoffs |
 | Hook-layer behavior and tests | [scripts/hooks/README.md](scripts/hooks/README.md) | Native hook adapter details |
+| SaneApps Mini server and Air/Mini continuity | [scripts/mini/README.md](scripts/mini/README.md) | Private routes, restart policy, services, memory, and post-restart acceptance |
 | Codex helper install/runtime notes | [scripts/codex-bin/README.md](scripts/codex-bin/README.md) | Helper source mirrored to `~/.codex/bin/` |
 
 The rule is deliberate: update an existing source-of-truth doc before adding
@@ -258,7 +259,9 @@ ARCHITECTURE.md   System design and durable decisions
 ## Requirements
 
 - macOS or Linux
-- Ruby available on the target machine. Current hooks are written to run on the system Ruby used by macOS automation lanes; Ruby 3.x is recommended for local development.
+- Ruby available on the target machine. The converged SaneApps operator baseline
+  is Homebrew Ruby 4.0.x at `/opt/homebrew/opt/ruby/bin/ruby`; hook code remains
+  compatible with the macOS automation runtime where a system Ruby invokes it.
 - A compatible coding agent that can follow repo instructions and scripts. Codex and native lifecycle-hook paths have the best-documented support today.
 
 ## Tests
@@ -291,6 +294,8 @@ MIT License. See [LICENSE](LICENSE).
 ---
 
 Built by [SaneApps](https://saneapps.com).
+
+Support: [hi@saneapps.com](mailto:hi@saneapps.com)
 
 <!-- SANEAPPS_AI_CONTRIB_START -->
 ### LLM-Assisted Contributions

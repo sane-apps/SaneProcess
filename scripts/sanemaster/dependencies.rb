@@ -135,9 +135,10 @@ module SaneMasterModules
       sop_mcps = {
         'apple-docs' => { package: '@mweinbach/apple-docs-mcp@1.3.1', required: true },
         'github' => { package: '@modelcontextprotocol/server-github@2025.4.8', required: true },
-        'context7' => { package: '@upstash/context7-mcp@2.2.5', required: true },
+        'context7' => { package: '@upstash/context7-mcp@3.2.3', required: false },
         'xcode' => { package: 'mcpbridge', required: true },
-        'macos-automator' => { package: '@steipete/macos-automator-mcp@0.4.1', required: true }
+        'macos-automator' => { package: '@steipete/macos-automator-mcp@0.4.5', required: true },
+        'openaiDeveloperDocs' => { package: 'https://developers.openai.com/mcp', required: true }
       }
 
       config_paths = ['.mcp.json']
@@ -280,8 +281,18 @@ module SaneMasterModules
 
     def capture_mcp_process_snapshot
       process_index = {}
+      begin
+        output, status = Open3.capture2e('/bin/ps', '-axo', 'pid=,ppid=,etime=,%cpu=,state=,command=')
+      rescue SystemCallError => e
+        return build_mcp_process_snapshot(process_index).merge(process_scan_error: e.message)
+      end
+      unless status.success?
+        return build_mcp_process_snapshot(process_index).merge(
+          process_scan_error: output.to_s.strip.empty? ? "ps exited #{status.exitstatus}" : output.to_s.strip
+        )
+      end
 
-      `ps -axo pid=,ppid=,etime=,%cpu=,state=,command=`.each_line do |line|
+      output.each_line do |line|
         match = line.match(/^\s*(\d+)\s+(\d+)\s+([0-9:\-]+)\s+([0-9.]+)\s+(\S+)\s+(.*)$/)
         next unless match
 
@@ -461,6 +472,7 @@ module SaneMasterModules
 
       {
         checked_at: Time.now.iso8601,
+        process_scan_error: snapshot[:process_scan_error],
         total_processes: processes.length,
         total_instances: instances.length,
         max_per_server: max_per_server,
@@ -711,7 +723,7 @@ module SaneMasterModules
       configured_servers = configured_mcp_servers.map { |s| normalize_server_name(s) }.uniq.sort
       running_servers = analysis[:by_server].keys.map { |s| normalize_server_name(s) }.uniq.sort
       required_runtime_servers = required_runtime_mcp_servers(configured_servers)
-      missing_runtime = required_runtime_servers - running_servers
+      missing_runtime = analysis[:process_scan_error] ? [] : required_runtime_servers - running_servers
       duplicate_servers = analysis[:duplicate_servers].map { |d| d[:server] }.sort
       duplicate_codex_servers = Array(analysis[:duplicate_codex_groups]).map { |d| d[:server] }.sort.uniq
       stale_sidecars = Array(analysis[:codex_sidecars]).select { |sidecar| sidecar[:cleanup_eligible] }
@@ -720,6 +732,7 @@ module SaneMasterModules
       {
         configured_servers: configured_servers,
         running_servers: running_servers,
+        process_scan_error: analysis[:process_scan_error],
         required_runtime_servers: required_runtime_servers,
         missing_runtime: missing_runtime,
         duplicate_servers: duplicate_servers,
@@ -740,6 +753,12 @@ module SaneMasterModules
       puts "   Configured MCPs: #{doctor[:configured_servers].join(', ')}"
       puts "   Running MCPs:    #{doctor[:running_servers].join(', ')}"
       puts ''
+
+      if doctor[:process_scan_error]
+        puts "   ⚠️  Process inventory unavailable: #{doctor[:process_scan_error]}"
+        puts '   Live protocol results below remain authoritative.'
+        puts ''
+      end
 
       if doctor[:required_runtime_servers].empty?
         puts '   ℹ️  No MCP servers marked as always-on required.'
@@ -881,9 +900,12 @@ module SaneMasterModules
     end
 
     def mcp_servers_from_toml(contents)
-      contents.scan(/^\s*\[mcp_servers\.([^\]]+)\]/).flatten.reject do |name|
-        name.include?('.')
-      end.map do |name|
+      contents.split(/(?=^\s*\[mcp_servers\.)/).filter_map do |section|
+        name = section[/^\s*\[mcp_servers\.([^\]]+)\]/, 1]
+        next unless name
+        next if name.include?('.')
+        next if section.match?(/^\s*enabled\s*=\s*false\b/i)
+
         name.delete_prefix('"').delete_suffix('"').delete_prefix("'").delete_suffix("'")
       end
     rescue StandardError
@@ -1301,9 +1323,11 @@ module SaneMasterModules
         if servers.key?(name)
           package = servers[name]['args']&.last || 'unknown'
           puts "   ✅ #{name}: Configured (#{package})"
+        elsif !info[:required]
+          puts "   ℹ️  #{name}: optional and not configured"
         else
           puts "   ❌ #{name}: MISSING"
-          all_valid = false if info[:required]
+          all_valid = false
         end
       end
 

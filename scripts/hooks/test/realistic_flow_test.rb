@@ -243,8 +243,8 @@ begin
   # STEP 5: Claude tries to access sensitive path
   # ==========================================================================
 
-  print_step(5, "Claude tries to read ~/.ssh")
-  puts "#{YELLOW}   (Curious Claude: 'Let me just check the ssh config...')#{RESET}"
+  print_step(5, "Claude reads harmless SSH diagnostics")
+  puts "#{YELLOW}   (Claude checks the public SSH config without touching private keys.)#{RESET}"
 
   ssh_input = {
     'tool_name' => 'Read',
@@ -254,7 +254,7 @@ begin
   }
 
   result = run_hook(SANETOOLS, ssh_input)
-  results << print_result(result, true)  # Should be BLOCKED
+  results << print_result(result, false)  # Read-only SSH config diagnostics are allowed
 
   # ==========================================================================
   # STEP 6: Claude FINALLY does it right - proper research

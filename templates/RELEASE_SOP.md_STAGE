@@ -42,7 +42,7 @@ end
 # ==============================================================================
 # Modular architecture - see Scripts/sanemaster/ for implementations:
 #   base.rb        - Shared constants and utilities
-#   memory.rb      - Memory MCP integration
+#   memory.rb      - Legacy memory-command compatibility stubs
 #   dependencies.rb - Version checking, dependency graphs
 #   generation.rb   - Test/mock generation, templates
 #   diagnostics.rb  - Crash analysis, xcresult diagnosis
@@ -322,7 +322,7 @@ class SaneMaster
     { cmd: 'tool_discovery', desc: 'Prove existing-tool checks before workarounds' }
   ].freeze
 
-  KNOWN_SANE_APPS = %w[SaneBar SaneClip SaneClick SaneHosts SaneSales SaneSync SaneVideo].freeze
+  KNOWN_SANE_APPS = %w[SaneBar SaneClip SaneClick SaneHosts SaneSales SaneVideo].freeze
   AUTO_DEDUPE_COMMANDS = Set.new(%w[
     verify
     launch

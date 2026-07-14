@@ -82,18 +82,30 @@ prune_repo_noise() {
   fi
 }
 
+snapshot_path_allowed() {
+  local path="$1"
+  case "$path" in
+    *.pem|*.p8|.env|*/.env|.env.*|*/.env.*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 snapshot_dirty_repo() {
-  local repo="$1" name="$2" fingerprint snapshot_dir latest_file latest_fingerprint untracked_list
+  local repo="$1" name="$2" fingerprint snapshot_dir latest_file latest_fingerprint
+  local tracked_list deleted_list staged_list untracked_list
   fingerprint=$(
     {
-      git -C "$repo" status --porcelain=v1
-      git -C "$repo" diff --binary HEAD
+      git -C "$repo" status --porcelain=v1 -z
+      while IFS= read -r -d '' tracked; do
+        snapshot_path_allowed "$tracked" || continue
+        printf 'tracked\0%s\0' "$tracked"
+        shasum -a 256 "$repo/$tracked"
+      done < <(git -C "$repo" diff --name-only --diff-filter=ACMRTUXB -z HEAD)
+      while IFS= read -r -d '' deleted; do
+        printf 'deleted\0%s\0' "$deleted"
+      done < <(git -C "$repo" diff --name-only --diff-filter=D -z HEAD)
       while IFS= read -r -d '' untracked; do
-        if [[ "$untracked" == *.pem || "$untracked" == *.p8 ||
-              "$untracked" == .env || "$untracked" == */.env ||
-              "$untracked" == .env.* || "$untracked" == */.env.* ]]; then
-          continue
-        fi
+        snapshot_path_allowed "$untracked" || continue
         shasum -a 256 "$repo/$untracked"
       done < <(git -C "$repo" ls-files --others --exclude-standard -z)
     } | shasum -a 256 | cut -d' ' -f1
@@ -110,20 +122,33 @@ snapshot_dirty_repo() {
   mkdir -p "$snapshot_dir"
   chmod 700 "$snapshot_dir"
   git -C "$repo" status --short --branch > "$snapshot_dir/status.txt"
-  git -C "$repo" diff --binary HEAD > "$snapshot_dir/worktree.patch"
-  git -C "$repo" diff --binary --cached > "$snapshot_dir/staged.patch"
   git -C "$repo" rev-parse HEAD > "$snapshot_dir/base-head.txt"
   git -C "$repo" branch --show-current > "$snapshot_dir/branch.txt"
   git -C "$repo" remote get-url origin > "$snapshot_dir/origin.txt" 2>/dev/null || true
   printf '%s\n' "$fingerprint" > "$snapshot_dir/fingerprint.txt"
 
+  # Preserve only the current dirty state. A traditional patch copies removed
+  # lines and whole deleted-file preimages, which can resurrect credentials
+  # that the worktree intentionally removed. Git HEAD already preserves the
+  # base; this archive plus deletion/index manifests preserves the desired end
+  # state without copying historical secret material.
+  tracked_list="$snapshot_dir/tracked-current-files.zlist"
+  while IFS= read -r -d '' tracked; do
+    snapshot_path_allowed "$tracked" || continue
+    printf '%s\0' "$tracked" >> "$tracked_list"
+  done < <(git -C "$repo" diff --name-only --diff-filter=ACMRTUXB -z HEAD)
+  if [[ -s "$tracked_list" ]]; then
+    /usr/bin/tar -C "$repo" --null -T "$tracked_list" -czf "$snapshot_dir/tracked-current-files.tar.gz"
+  fi
+
+  deleted_list="$snapshot_dir/deleted-files.zlist"
+  git -C "$repo" diff --name-only --diff-filter=D -z HEAD > "$deleted_list"
+  staged_list="$snapshot_dir/staged-files.zlist"
+  git -C "$repo" diff --cached --name-only -z > "$staged_list"
+
   untracked_list="$snapshot_dir/untracked-files.zlist"
   while IFS= read -r -d '' untracked; do
-    if [[ "$untracked" == *.pem || "$untracked" == *.p8 ||
-          "$untracked" == .env || "$untracked" == */.env ||
-          "$untracked" == .env.* || "$untracked" == */.env.* ]]; then
-      continue
-    fi
+    snapshot_path_allowed "$untracked" || continue
     printf '%s\0' "$untracked" >> "$untracked_list"
   done < <(git -C "$repo" ls-files --others --exclude-standard -z)
   if [[ -s "$untracked_list" ]]; then

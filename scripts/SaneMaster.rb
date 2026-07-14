@@ -42,7 +42,7 @@ end
 # ==============================================================================
 # Modular architecture - see Scripts/sanemaster/ for implementations:
 #   base.rb        - Shared constants and utilities
-#   memory.rb      - Memory MCP integration
+#   memory.rb      - Legacy memory-command compatibility stubs
 #   dependencies.rb - Version checking, dependency graphs
 #   generation.rb   - Test/mock generation, templates
 #   diagnostics.rb  - Crash analysis, xcresult diagnosis

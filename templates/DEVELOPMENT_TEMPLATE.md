@@ -188,7 +188,7 @@ This is the standard protocol for investigating problems. Used by Rule #3, Circu
 | **context7 MCP** | Library documentation | Third-party packages |
 | **WebSearch/WebFetch** | Solutions, patterns, best practices | Error messages, architectural questions |
 | **Grep/Glob/Read** | Local investigation | Find similar patterns, check implementations |
-| **memory MCP** | Past bug patterns, architecture decisions | "Have we seen this before?" |
+| **AgentMemory** | Past bug patterns, architecture decisions | "Have we seen this before?" |
 | **verify_api** | SDK symbol verification | Before using any unfamiliar API |
 
 ### Research Output → Plan

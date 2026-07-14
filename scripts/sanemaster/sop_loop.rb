@@ -19,6 +19,7 @@
 
 require 'json'
 require 'fileutils'
+require_relative '../hooks/core/project_root'
 require_relative '../hooks/core/sop_score'
 require_relative 'gate_override'
 require_relative 'hammer_watch'
@@ -685,7 +686,17 @@ module SaneMasterModules
       end
 
       reference_trigger = gate_reference_trigger(verify_block: verify_block, locks: unsatisfied_locks)
-      missing_evidence = reference_trigger ? research_evidence_missing_since(reference_trigger) : []
+      evidence_categories = []
+      evidence_categories.concat(verify_research_evidence_categories) if verify_block
+      evidence_categories.concat(effective_research_evidence_categories) if unsatisfied_locks.any?
+      missing_evidence = if reference_trigger
+                           research_evidence_missing_since(
+                             reference_trigger,
+                             categories: evidence_categories.uniq
+                           )
+                         else
+                           []
+                         end
 
       # Self-improvement: if a gate has been certifier-overridden as unfair enough
       # times, shout it here so it gets FIXED instead of repeatedly overridden.
@@ -901,7 +912,10 @@ module SaneMasterModules
 
       escalated_at = parse_gate_time(state[:escalated_at] || state[:last_failure_at])
       evidence_cleared = research_time && escalated_at && research_time > escalated_at &&
-                         research_evidence_missing_since(escalated_at).empty?
+                         research_evidence_missing_since(
+                           escalated_at,
+                           categories: verify_research_evidence_categories
+                         ).empty?
       override_cleared = GateOverride.clears?(
         gate: VERIFY_ESCALATION_GATE_NAME, slug: 'verify', trigger_time: escalated_at
       )
@@ -941,13 +955,22 @@ module SaneMasterModules
     # Categories lacking a completed_at strictly newer than the lock trigger.
     # Empty == evidence satisfied. Fails OPEN (never bricks verify) when the
     # hook state cannot be read.
-    def research_evidence_missing_since(trigger_time)
+    def research_evidence_missing_since(trigger_time, categories: effective_research_evidence_categories)
       return [] if trigger_time.nil?
+
+      # Claude hook state cannot observe Codex Read/rg calls. For SaneProcess
+      # self-development, a durable research-cache update newer than the
+      # escalation is the client-neutral local receipt. Other categories and
+      # product repos remain tool-call-backed.
+      if saneprocess_self_development? && categories.include?(:local)
+        local_time = research_updated_at
+        categories = categories - %i[local] if local_time && local_time > trigger_time
+      end
 
       research = research_state_section
       return [] if research.nil?
 
-      missing_research_evidence(research, effective_research_evidence_categories, trigger_time)
+      missing_research_evidence(research, categories, trigger_time)
     rescue StandardError
       []
     end
@@ -973,6 +996,22 @@ module SaneMasterModules
       cats = RESEARCH_EVIDENCE_ALWAYS.dup
       cats << :docs if apple_docs_research_configured?
       cats
+    end
+
+    # SaneProcess self-development failures are answered by local source, logs,
+    # and deterministic tests. Product/app failures retain the broader research
+    # floor. This prevents a Ruby/Python runner failure from demanding unrelated
+    # competitor research or Apple API documentation.
+    def verify_research_evidence_categories
+      return %i[local] if saneprocess_self_development?
+
+      effective_research_evidence_categories
+    end
+
+    def saneprocess_self_development?
+      SaneProjectRoot.self_development?
+    rescue StandardError
+      false
     end
 
     def research_state_section

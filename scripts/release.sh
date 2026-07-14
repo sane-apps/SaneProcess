@@ -3667,30 +3667,48 @@ EOF
     target_commit=$(git -C "${PROJECT_ROOT}" rev-parse HEAD 2>/dev/null || echo "")
 
     if [ -n "${target_commit}" ]; then
+        local remote_tag_output=""
         local remote_tag_commit=""
-        remote_tag_commit=$(git -C "${PROJECT_ROOT}" ls-remote --tags origin "refs/tags/${tag}" 2>/dev/null | awk '{print $1}' | head -1)
-        if [ "${remote_tag_commit}" != "${target_commit}" ]; then
-            git -C "${PROJECT_ROOT}" tag -f "${tag}" "${target_commit}" >/dev/null 2>&1 || {
-                log_error "Failed to retarget local ${tag} tag to ${target_commit}."
-                return 1
-            }
+        local local_tag_commit=""
 
-            if [ -n "${remote_tag_commit}" ]; then
-                log_info "Updating remote ${tag} tag to ${target_commit} before GitHub release sync..."
-                local tag_push_output=""
-                if ! tag_push_output=$(GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push --force origin "refs/tags/${tag}" 2>&1); then
-                    log_error "Failed to push corrected remote ${tag} tag before GitHub release sync."
-                    [ -n "${tag_push_output}" ] && log_error "git output: ${tag_push_output}"
+        if ! remote_tag_output=$(git -C "${PROJECT_ROOT}" ls-remote --tags origin \
+            "refs/tags/${tag}" "refs/tags/${tag}^{}" 2>&1); then
+            log_error "Could not inspect remote ${tag} before GitHub release sync."
+            [ -n "${remote_tag_output}" ] && log_error "git output: ${remote_tag_output}"
+            return 1
+        fi
+        remote_tag_commit=$(printf '%s\n' "${remote_tag_output}" | awk '$2 ~ /\^\{\}$/ { print $1; exit }')
+        if [ -z "${remote_tag_commit}" ]; then
+            remote_tag_commit=$(printf '%s\n' "${remote_tag_output}" | awk '{ print $1; exit }')
+        fi
+
+        if [ -n "${remote_tag_commit}" ] && [ "${remote_tag_commit}" != "${target_commit}" ]; then
+            log_error "Remote ${tag} already points to ${remote_tag_commit}; refusing to rewrite it to ${target_commit}."
+            log_error "Published release tags are immutable. Bump the version and create a new tag."
+            return 1
+        fi
+
+        if [ -z "${remote_tag_commit}" ]; then
+            local_tag_commit=$(git -C "${PROJECT_ROOT}" rev-parse -q --verify "refs/tags/${tag}^{commit}" 2>/dev/null || true)
+            if [ -n "${local_tag_commit}" ] && [ "${local_tag_commit}" != "${target_commit}" ]; then
+                log_error "Local ${tag} already points to ${local_tag_commit}; refusing to rewrite it to ${target_commit}."
+                log_error "Release tags are immutable. Bump the version and create a new tag."
+                return 1
+            fi
+
+            if [ -z "${local_tag_commit}" ]; then
+                git -C "${PROJECT_ROOT}" tag "${tag}" "${target_commit}" >/dev/null 2>&1 || {
+                    log_error "Failed to create local ${tag} tag at ${target_commit}."
                     return 1
-                fi
-            else
-                log_info "Pushing new remote ${tag} tag at ${target_commit} before GitHub release sync..."
-                local tag_push_output=""
-                if ! tag_push_output=$(GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push origin "refs/tags/${tag}" 2>&1); then
-                    log_error "Failed to push remote ${tag} tag before GitHub release sync."
-                    [ -n "${tag_push_output}" ] && log_error "git output: ${tag_push_output}"
-                    return 1
-                fi
+                }
+            fi
+
+            log_info "Pushing new remote ${tag} tag at ${target_commit} before GitHub release sync..."
+            local tag_push_output=""
+            if ! tag_push_output=$(GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push origin "refs/tags/${tag}" 2>&1); then
+                log_error "Failed to push remote ${tag} tag before GitHub release sync."
+                [ -n "${tag_push_output}" ] && log_error "git output: ${tag_push_output}"
+                return 1
             fi
         fi
     fi

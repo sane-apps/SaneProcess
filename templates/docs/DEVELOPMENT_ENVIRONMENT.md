@@ -53,12 +53,14 @@ optional so cloned SaneProcess checkouts still work with local scripts only.
 |--------|---------|---------|
 | `apple-docs` | Apple API documentation | Client-provided when installed |
 | `context7` | Library documentation | Client-provided when installed |
-| `memory` | Persistent learnings | Official Memory MCP |
-| `central-memory` | Optional semantic recall | Local Postgres + pgvector |
+| AgentMemory | Persistent semantic learnings | Mini-owned service, managed by `com.saneapps.agentmemory` |
 | `github` | GitHub operations | Client-provided when installed |
 | `macos-automator` | macOS automation/testing | Client-provided when installed |
 | `xcode` / XcodeBuildMCP | Optional Xcode build/test/preview and iOS simulator proof | `xcrun mcpbridge` or configured XcodeBuildMCP |
 | Cloudflare API MCP/plugin | Optional Pages/R2/Worker read-only drift checks | Local/user config only |
+
+The former official knowledge-graph and bespoke central-memory MCP servers are
+retired. Do not reinstall or add them to client health probes.
 
 Do not make Google Drive, Docs, Sheets, or Slides a standard release-evidence
 dependency. Store receipts and audit ledgers as local repo artifacts.
@@ -78,7 +80,6 @@ Copy to `~/.claude/settings.json`:
       "Bash(xcodebuild:*)",
       "Bash(xcrun:*)",
       "Bash(open:*)",
-      "mcp__memory__*",
       "mcp__apple-docs__*",
       "mcp__context7__*",
       "mcp__github__*",
@@ -479,5 +480,5 @@ alias build-release="xcodebuild -configuration Release build"
 
 1. **Apple APIs**: Use `mcp__apple-docs__search_apple_docs`
 2. **Library docs**: Use `mcp__context7__query-docs`
-3. **Past learnings**: Use Serena memories or Official Memory MCP
+3. **Past learnings**: Use Serena memories or the Mini-owned AgentMemory service
 4. **This documentation**: `~/SaneApps/infra/SaneProcess/templates/docs/`

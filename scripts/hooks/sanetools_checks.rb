@@ -18,25 +18,25 @@ require_relative 'sanetools_refusal'
 module SaneToolsChecks
   # Constants needed by checks
   BLOCKED_PATH_PATTERN = Regexp.union(
-    %r{^~?/\.ssh},
-    %r{^/etc(/|$)},    # Match /etc and /etc/anything
     %r{^/var(/|$)},    # Match /var and /var/anything
-    %r{^/usr(/|$)},    # Match /usr and /usr/anything (system binaries)
-    %r{^~?/\.aws},
-    %r{^~?/\.gnupg},
-    /\.env$/,
+    %r{(?:^|/)\.aws(?:/|$)},
+    %r{(?:^|/)\.gnupg(?:/|$)},
+    %r{(?:^|/)\.private_keys(?:/|$)},
+    %r{(?:^|/)\.config/nv/env$},
+    %r{(?:^|/)\.codex/auth\.json$},
+    %r{(?:^|/)\.claude/\.credentials\.json$},
+    %r{(?:^|/)\.env(?:\.[^/]+)?$},
+    /\.(?:pem|p8)$/i,
     /credentials\.json$/i,  # Block credentials.json but not credentials_template.json
     /secrets?\.ya?ml$/i,
-    # C1: HMAC secret moved to macOS Keychain (not file-readable)
-    # Legacy file path still blocked for migration safety
     /\.claude_hook_secret$/,
-    # Block netrc (contains credentials)
     /\.netrc$/
   ).freeze
+  READ_ONLY_SYSTEM_PATH_PATTERN = %r{\A/(?:etc|usr|private/etc)(?:/|\z)}.freeze
+  HARMLESS_SSH_READ_BASENAMES = %w[config known_hosts authorized_keys].freeze
 
   STATE_FILE_PATTERN = %r{\.claude/[^/]+\.json$}.freeze
 
-  # Shared with sane_launch_guard.rb via core/local_ui_guard.rb
   LOCAL_UI_TOOL_PATTERN = SaneLocalUIGuard::LOCAL_UI_TOOL_PATTERN
   LOCAL_UI_APPROVAL = SaneLocalUIGuard::LOCAL_UI_APPROVAL
   MINI_UNAVAILABLE_APPROVAL = SaneLocalUIGuard::MINI_UNAVAILABLE_APPROVAL
@@ -45,31 +45,12 @@ module SaneToolsChecks
   FILE_SIZE_SOFT_LIMIT = 500
   FILE_SIZE_HARD_LIMIT = 800
   FILE_SIZE_HARD_LIMIT_MD = 1500
-  # Self-degrade valve for the session-docs edit gate. Mirrors
-  # SaneToolsStartup::STARTUP_GATE_MAX_BLOCKS: a required-doc set can be
-  # unsatisfiable from a given session (cross-project read tracking, project_dir
-  # drift, or a required doc that does not exist at the expected path), so the
-  # gate must not wall off edits forever.
+  # Self-degrade valve for an unsatisfiable required-doc set.
   SESSION_DOCS_MAX_BLOCKS = 3
-  CORE_DOC_BASENAMES = %w[
-    AGENTS.md
-    README.md
-    DEVELOPMENT.md
-    ARCHITECTURE.md
-    SESSION_HANDOFF.md
-  ].freeze
-  SECRET_STARTUP_BASENAMES = %w[
-    .zshenv
-    .zprofile
-    .zshrc
-    .bash_profile
-    .bashrc
-    .profile
-  ].freeze
+  CORE_DOC_BASENAMES = %w[AGENTS.md README.md DEVELOPMENT.md ARCHITECTURE.md SESSION_HANDOFF.md].freeze
+  SECRET_STARTUP_BASENAMES = %w[.zshenv .zprofile .zshrc .bash_profile .bashrc .profile].freeze
 
-  # === SENSITIVE FILE PATTERNS ===
-  # Files with elevated blast radius — edits affect CI/CD, signing, deployment, or security.
-  # First edit blocks with explanation; retry auto-approves (user saw the warning).
+  # Elevated-blast-radius files block once, then permit an intentional retry.
   SENSITIVE_FILE_PATTERNS = [
     %r{\.github/workflows/},          # CI/CD pipelines
     %r{\.gitlab-ci\.yml$}i,           # GitLab CI
@@ -208,6 +189,28 @@ module SaneToolsChecks
       SaneLocalUIGuard.running_on_macbook_air?
     end
 
+    def harmless_ssh_read?(path)
+      ssh_root = File.join(Dir.home, '.ssh')
+      return false if File.symlink?(path)
+      return true if File.dirname(path) == ssh_root &&
+                     (HARMLESS_SSH_READ_BASENAMES.include?(File.basename(path)) || path.end_with?('.pub'))
+
+      config_root = File.join(ssh_root, 'config.d')
+      path.start_with?("#{config_root}/") && path.end_with?('.conf')
+    end
+
+    def ssh_path?(path)
+      current_ssh_root = File.join(Dir.home, '.ssh')
+      path == current_ssh_root || path.start_with?("#{current_ssh_root}/") || path.match?(%r{(?:^|/)\.ssh(?:/|$)})
+    end
+
+    def blocked_path_message(path, detail = 'This path is outside your project scope.')
+      "BLOCKED PATH: #{path}\n" \
+      "#{detail}\n" \
+      "DO THIS: Work only within the project directory.\n" \
+      "READ: DEVELOPMENT.md for allowed paths and project structure."
+    end
+
     def check_blocked_path(tool_input, tool_name = nil, edit_tools = [])
       path = tool_input['file_path'] || tool_input['path'] || tool_input[:file_path] || tool_input[:path]
       return nil unless path
@@ -228,7 +231,13 @@ module SaneToolsChecks
 
       expanded_path = File.expand_path(sanitized_path) rescue sanitized_path
       expanded_decoded = File.expand_path(decoded_path) rescue decoded_path
-      project_dir = File.expand_path(SaneProjectRoot.resolve) rescue nil
+
+      if decoded_path != sanitized_path &&
+         (expanded_decoded.match?(READ_ONLY_SYSTEM_PATH_PATTERN) || ssh_path?(expanded_decoded) || expanded_decoded.match?(BLOCKED_PATH_PATTERN))
+        return "BLOCKED PATH (encoded sensitive path): #{path}\n" \
+               "Obfuscated access to a protected path is not a normal diagnostic.\n" \
+               "DO THIS: Use the direct read-only diagnostic path."
+      end
 
       # Traversal detection: if input uses ".." to reach sensitive path segments, block it.
       # The raw path may not resolve to /etc from this CWD, but from a different CWD it would.
@@ -244,24 +253,21 @@ module SaneToolsChecks
         end
       end
 
-      [sanitized_path, decoded_path, expanded_path, expanded_decoded].each do |p|
-        in_project = project_dir && p.start_with?("#{project_dir}/")
-        if p.match?(BLOCKED_PATH_PATTERN)
-          next if in_project
+      [expanded_path, expanded_decoded].uniq.each do |p|
+        read_only_diagnostic = p.match?(READ_ONLY_SYSTEM_PATH_PATTERN) || harmless_ssh_read?(p)
+        if read_only_diagnostic
+          return blocked_path_message(path, 'Read-only diagnostics are allowed here, but edits remain blocked.') if edit_tools.include?(tool_name)
 
-          return "BLOCKED PATH: #{path}\n" \
-                 "This path is outside your project scope.\n" \
-                 "DO THIS: Work only within the project directory.\n" \
-                 "READ: DEVELOPMENT.md for allowed paths and project structure."
+          next
         end
 
-        # Path traversal detection: check for sensitive dirs anywhere in path
-        # Catches: ./test/../.ssh/key, /foo/bar/.ssh/id_rsa
-        # SSH trust files (authorized_keys, known_hosts) are not secrets and are
-        # legitimately managed by tooling (loopback SSH gives release scripts a
-        # stable Full Disk Access identity); private keys and config stay blocked.
-        sensitive_ssh = p.match?(%r{/\.ssh/}) && !p.match?(%r{/\.ssh/(?:authorized_keys|known_hosts)\z})
-        if sensitive_ssh || p.match?(%r{/\.aws/}) || p.match?(%r{/\.gnupg/})
+        return blocked_path_message(path, 'SSH private keys and non-public SSH state remain unreadable.') if ssh_path?(p)
+
+        if p.match?(BLOCKED_PATH_PATTERN)
+          return blocked_path_message(path, 'Private keys and secret stores remain unreadable and uneditable.')
+        end
+
+        if p.match?(%r{/\.aws/}) || p.match?(%r{/\.gnupg/})
           return "BLOCKED PATH (traversal detected): #{path}\n" \
                  "Path traversal to sensitive directory detected.\n" \
                  "DO THIS: Use direct paths within the project.\n" \

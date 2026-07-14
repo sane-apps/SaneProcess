@@ -8,15 +8,17 @@
 #   worktree_setup.sh clean                        - Remove all worktrees
 #   worktree_setup.sh status                       - Show status of all worktrees
 
+set -euo pipefail
+
 WORKTREE_BASE="$HOME/.claude-worktrees"
 
 create_worktrees() {
-    local repo_path="$1"
+    local repo_path="${1:-}"
     local count="${2:-3}"
     local repo_name
     repo_name=$(basename "$repo_path")
 
-    if [ ! -d "$repo_path/.git" ]; then
+    if [ -z "$repo_path" ] || [ ! -d "$repo_path/.git" ]; then
         echo "Error: $repo_path is not a git repository"
         return 1
     fi
@@ -45,10 +47,10 @@ create_worktrees() {
             echo "  Created worktree $i: $wt_path"
         fi
 
-        # Copy untracked .claude config files to worktree so hooks work
-        # (tracked files like rules/ are already in the worktree from git)
+        # Copy only declarative client config. Runtime state and circuit-breaker
+        # files are session-owned and must never leak between worktrees.
         mkdir -p "$wt_path/.claude"
-        for f in settings.json state.json circuit_breaker.json; do
+        for f in settings.json; do
             [ -f "$repo_path/.claude/$f" ] && cp "$repo_path/.claude/$f" "$wt_path/.claude/$f" 2>/dev/null
         done
         if [ -f "$repo_path/.mcp.json" ]; then
@@ -88,7 +90,7 @@ clean_worktrees() {
         return
     fi
 
-    echo "Removing all worktrees..."
+    echo "Removing clean worktrees..."
     for wt in "$WORKTREE_BASE"/*/; do
         if [ -d "$wt" ]; then
             local name
@@ -97,9 +99,17 @@ clean_worktrees() {
             local parent
             parent=$(git -C "$wt" rev-parse --git-common-dir 2>/dev/null)
             if [ -n "$parent" ] && [ -d "$parent" ]; then
-                git -C "$(dirname "$parent")" worktree remove "$wt" --force 2>/dev/null
+                if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
+                    echo "  Skipped dirty worktree: $name"
+                    continue
+                fi
+                if ! git -C "$(dirname "$parent")" worktree remove "$wt" 2>/dev/null; then
+                    echo "  Skipped worktree Git could not remove safely: $name"
+                    continue
+                fi
             else
-                rm -rf "$wt"
+                echo "  Skipped unowned directory (no Git worktree metadata): $name"
+                continue
             fi
             echo "  Removed: $name"
         fi

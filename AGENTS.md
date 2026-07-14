@@ -21,8 +21,8 @@ Hard enforcement lives in:
 - `scripts/SaneMaster.rb` and `scripts/sanemaster/` for canonical workflows.
 - `scripts/validation_report.rb`, `process_eval`, `sop_review`,
   `near_miss_review`, and tests for repeatable process health evidence.
-- `SESSION_HANDOFF.md`, `.claude/research.md`, Serena memory, and the memory
-  graph for active context and durable learnings.
+- `SESSION_HANDOFF.md`, `.claude/research.md`, Serena memory, and Mini-owned
+  AgentMemory for active context and durable learnings.
 
 ## Session Start
 
@@ -47,7 +47,7 @@ automation, UI/runtime, or multi-file work:
 When code, tooling, docs, policy, support, release, or UI/runtime behavior
 changed:
 
-1. Update Serena memory and the knowledge graph for changed facts.
+1. Update Serena memory and AgentMemory for changed facts.
 2. Update `SESSION_HANDOFF.md` with active state, proof, open issues, and next
    useful moves.
 3. Run `ruby scripts/SaneMaster.rb sop_review --json`.
@@ -69,7 +69,7 @@ fixes. Treat memory and handoff as live operational state.
 | 5 | House rules, use tools | Use canonical wrappers for build/test/release/launch/email/sales/support. |
 | 6 | Build, kill, launch, log | Runtime changes need full cycle proof; tooling/docs need matching tests/evals. |
 | 7 | No test? No rest | Every fix gets a meaningful test or explicit proof receipt — and no BLIND test: a test must fail for the real bug at RUNTIME (drive the app, assert the customer-observable end-state); structure/string-match guards (`source.contains`) are not behavioral coverage. |
-| 8 | Bug found? Write it down | Update Serena + memory graph when bugs change status. |
+| 8 | Bug found? Write it down | Update Serena + AgentMemory when bugs change status. |
 | 9 | New file? Gen the pile | Prefer templates/scaffolds and existing docs/files. |
 | 10 | 500 fine, 800 line | File and component-owner size both count; split at 800. |
 | 11 | Tool broke? Fix the yoke | Fix repeated tool failure in the tool/hook/skill path. |
@@ -83,6 +83,29 @@ Workflow: PLAN -> VERIFY -> BUILD -> TEST -> CONFIRM -> PROPOSE COMMIT.
 
 Do not commit or push unless the user asks, the task explicitly includes
 release/PR/publish, or a workflow requires it.
+
+## Authority And Safety
+
+When two instructions disagree, use this order:
+
+1. Live user instruction and current machine state.
+2. `AGENTS.md` for policy and `scripts/mini/README.md` for the Mini contract.
+3. `DEVELOPMENT.md` and `ARCHITECTURE.md` for commands and durable decisions.
+4. The compact `SESSION_HANDOFF.md` for current, host-qualified state.
+5. Dated research and memories only when they are not expired or superseded.
+
+Normal read, edit, build, test, commit, feature-push, SSH, rsync, and browser
+work must remain usable. Approved tools may consume local credentials internally,
+including when invoked from the Air over SSH, but agents must never dump, print,
+copy, or export raw secret material. Real
+sends, releases, uploads, reboots, and customer/data mutations use their
+canonical approval gates. Irreversible deletion of a home, repository,
+history, production resource, credential, ownership, license, or money is a
+manual user-only action and must be mechanically blocked even in bypass mode.
+
+Working locally on the Mini means working directly in the local checkout. Do
+not SSH to `mini` from the Mini; use `ssh mini` only from the Air/controller.
+Run `hostname` before cross-machine diagnosis, sync claims, or acceptance work.
 
 ## Subagents
 
@@ -308,19 +331,11 @@ Do not delete these guardrails without root-cause review and replay proof:
 
 ## MCPs
 
-Use MCPs when they are available, but keep SaneProcess proof portable through
-local scripts, repo docs, and Mini-first receipts.
-
-Common MCPs:
-
-- `apple-docs` for Apple API docs; WebSearch for third-party library docs (the context7 plugin is currently toggled off / not callable).
-- `macos-automator` for repeatable macOS GUI automation.
-- `xcode` / XcodeBuildMCP for IDE/simulator/device proof when relevant.
-- Serena and memory graph for project and cross-session knowledge.
-- Cloudflare API MCP for read-only Pages/R2/Worker drift checks when installed.
-
-Health check: `~/.codex/bin/check-mcps` and
-`ruby scripts/SaneMaster.rb mcp_watchdog doctor`.
+Use active MCPs when useful, but keep proof portable through local scripts and
+Mini receipts. Apple Docs covers Apple APIs, Context7 covers third-party docs,
+macOS Automator covers repeatable GUI automation, Xcode covers IDE/device work,
+Serena stores project notes, and AgentMemory provides shared recall. Check with
+`~/.codex/bin/check-mcps` and `ruby scripts/SaneMaster.rb mcp_watchdog doctor`.
 
 ## Environment
 
@@ -331,12 +346,3 @@ Health check: `~/.codex/bin/check-mcps` and
 - Outputs: `~/SaneApps/infra/SaneProcess/outputs/`
 - Screenshots: `~/Desktop/Screenshots/`
 - Templates: `~/SaneApps/infra/SaneProcess/templates/`
-
-## References
-
-- Full development/runbook detail: `DEVELOPMENT.md`
-- Architecture and historical rationale: `ARCHITECTURE.md`
-- Private operator setup: `DEVELOPER_SETUP.md`
-- Release SOP: `templates/RELEASE_SOP.md`
-- Active state: `SESSION_HANDOFF.md`
-- Research cache: `.claude/research.md`

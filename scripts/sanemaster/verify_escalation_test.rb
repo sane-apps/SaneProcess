@@ -84,6 +84,21 @@ exit(run_tests('Verify Escalation Tests') do
   end
 
   test_category('two-strike streak semantics') do
+    test('SaneProcess tooling failures require relevant local research only') do
+      h = VerifyEscalationHarness.new
+      h.define_singleton_method(:saneprocess_self_development?) { true }
+      assert_eq(%i[local], h.send(:verify_research_evidence_categories))
+    end
+
+    test('SaneProcess durable research update is a cross-client local receipt') do
+      h = VerifyEscalationHarness.new
+      trigger = Time.parse('2026-07-14T16:00:00-04:00')
+      h.define_singleton_method(:saneprocess_self_development?) { true }
+      h.define_singleton_method(:research_updated_at) { trigger + 1 }
+      h.define_singleton_method(:research_state_section) { {} }
+      assert_eq([], h.send(:research_evidence_missing_since, trigger, categories: %i[local]))
+    end
+
     test('preflight-wrapped failures still enter the same two-strike state') do
       with_state_dir do |h|
         old = ENV['SANEMASTER_RELEASE_PREFLIGHT']

@@ -76,7 +76,7 @@ module SaneTrackResearch
       warn "   research.md is #{line_count} lines (soft cap: #{RESEARCH_SOFT_CAP}, hard cap: #{RESEARCH_SIZE_CAP})"
     end
     warn '   research.md is a rolling index/scratchpad, not an archive.'
-    warn '   Never delete verified research just to satisfy the cap; first promote durable conclusions to ARCHITECTURE.md, DEVELOPMENT.md, AGENTS.md, SESSION_HANDOFF.md, Serena, or the knowledge graph.'
+    warn '   Never delete verified research just to satisfy the cap; first promote durable conclusions to ARCHITECTURE.md, DEVELOPMENT.md, AGENTS.md, SESSION_HANDOFF.md, Serena, or AgentMemory.'
     warn ''
   rescue StandardError => e
     warn "  Research size check error: #{e.message}" if ENV['DEBUG']

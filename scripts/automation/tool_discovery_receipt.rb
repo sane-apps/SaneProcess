@@ -159,10 +159,10 @@ class ToolDiscoveryReceipt
     },
     {
       name: 'Semantic cross-session recall',
-      keywords: %w[central-memory central memory semantic recall remember vector pgvector postgresql learnings research],
-      command: '~/.codex/bin/check-mcps; use central-memory recall/remember when the MCP is installed',
-      source: 'scripts/mcp-central-memory/server.mjs',
-      why: 'Central memory is optional for public SaneProcess users, but when present it should be the first semantic recall layer above graph/Serena memory.'
+      keywords: %w[agentmemory memory semantic recall remember learnings research],
+      command: 'npx @agentmemory/agentmemory status; use AgentMemory through the configured client integration',
+      source: 'com.saneapps.agentmemory on the Mac Mini',
+      why: 'The Mini-owned AgentMemory service is the durable semantic-memory layer; retired graph and central-memory servers must not be revived.'
     },
     {
       name: 'iOS simulator proof with XcodeBuildMCP',

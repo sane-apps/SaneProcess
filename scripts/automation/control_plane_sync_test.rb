@@ -355,6 +355,30 @@ tests << lambda do
 end
 
 tests << lambda do
+  wrapper_path = File.join(ROOT, 'codex-bin', 'xcode-mcpbridge-wrapper.sh')
+  run({}, '/bin/bash', '-n', wrapper_path)
+  Dir.mktmpdir('xcode-wrapper-sandbox-test') do |tmp|
+    home = File.join(tmp, 'home')
+    bin = File.join(tmp, 'bin')
+    FileUtils.mkdir_p(File.join(home, '.codex'))
+    write(File.join(home, '.codex', 'xcode-mcp-session-id'), "9ae70354-c553-46a8-b0ce-ac556609b07c\n")
+    write(File.join(bin, 'pgrep'), "#!/bin/bash\nexit 1\n", executable: true)
+    write(File.join(bin, 'launchctl'), <<~'BASH', executable: true)
+      #!/bin/bash
+      printf '  4242  -  application.com.apple.dt.Xcode.fixture\n'
+    BASH
+    write(File.join(bin, 'xcrun'), <<~'BASH', executable: true)
+      #!/bin/bash
+      printf 'pid=%s session=%s command=%s\n' "$MCP_XCODE_PID" "$MCP_XCODE_SESSION_ID" "$*"
+    BASH
+
+    output = run({ 'HOME' => home, 'PATH' => "#{bin}:/usr/bin:/bin" }, '/bin/bash', wrapper_path)
+    assert(output.include?('pid=4242'), 'Xcode MCP wrapper did not use launchd when pgrep was sandboxed')
+    assert(output.include?('command=mcpbridge'), 'Xcode MCP wrapper did not start the canonical bridge')
+  end
+end
+
+tests << lambda do
   Dir.mktmpdir('dirty-snapshot-test') do |tmp|
     home = File.join(tmp, 'home')
     repo = File.join(home, 'SaneApps', 'apps', 'FixtureApp')
@@ -365,11 +389,14 @@ tests << lambda do
     run({}, 'git', '-C', repo, 'config', 'user.email', 'fixture@example.com')
     run({}, 'git', '-C', repo, 'config', 'user.name', 'Fixture')
     write(File.join(repo, 'tracked.txt'), "clean\n")
+    write(File.join(repo, 'retired-secret.txt'), "sk_live_fixture_should_never_enter_snapshot_123456789\n")
     run({}, 'git', '-C', repo, 'add', 'tracked.txt')
+    run({}, 'git', '-C', repo, 'add', 'retired-secret.txt')
     run({}, 'git', '-C', repo, 'commit', '-m', 'fixture')
     run({}, 'git', '-C', repo, 'remote', 'add', 'origin', bare)
     run({}, 'git', '-C', repo, 'push', '-u', 'origin', 'main')
     write(File.join(repo, 'tracked.txt'), "dirty\n")
+    FileUtils.rm(File.join(repo, 'retired-secret.txt'))
     write(File.join(repo, 'untracked.txt'), "untracked\n")
     write(File.join(repo, 'recovery.orig'), "must survive\n")
     write(File.join(repo, '.DS_Store'), "must survive too\n")
@@ -383,7 +410,17 @@ tests << lambda do
     snapshot_root = File.join(home, 'SaneApps', 'infra', 'SaneProcess', 'outputs', 'dirty-work-snapshots', 'FixtureApp')
     latest = File.readlines(File.join(snapshot_root, 'latest.txt'), chomp: true)
     snapshot = latest[1]
-    assert(File.file?(File.join(snapshot, 'worktree.patch')), 'dirty patch missing')
+    tracked_archive = File.join(snapshot, 'tracked-current-files.tar.gz')
+    assert(File.file?(tracked_archive), 'current tracked-file archive missing')
+    archive_listing = run({}, '/usr/bin/tar', '-tzf', tracked_archive)
+    assert(archive_listing.lines.map(&:chomp).include?('tracked.txt'),
+           'current tracked-file archive did not preserve the dirty file')
+    deleted_manifest = File.binread(File.join(snapshot, 'deleted-files.zlist')).split("\0")
+    assert(deleted_manifest.include?('retired-secret.txt'), 'snapshot must retain the tracked deletion')
+    snapshot_bytes = Dir.glob(File.join(snapshot, '*')).select { |path| File.file?(path) }.map { |path| File.binread(path) }.join
+    assert(!snapshot_bytes.include?('sk_live_fixture_should_never_enter_snapshot'),
+           'snapshot must not copy the preimage of a deleted secret-bearing file')
+    assert(!File.exist?(File.join(snapshot, 'worktree.patch')), 'snapshot must not retain removed-line preimages')
     assert(File.file?(File.join(snapshot, 'untracked-files.tar.gz')), 'untracked archive missing')
     assert(File.read(File.join(snapshot, 'status.txt')).include?('tracked.txt'), 'status receipt missing dirty file')
     assert(File.read(File.join(repo, 'recovery.orig')) == "must survive\n", 'snapshot-only deleted recovery residue')

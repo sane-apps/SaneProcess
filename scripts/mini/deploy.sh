@@ -113,9 +113,18 @@ is_retired_training_file() {
   esac
 }
 
+is_retired_unowned_file() {
+  case "$(basename "$1")" in
+    mini-daytime-cleanup.sh|mini-license-test.sh|mini-codex-keepalive.sh)
+      return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 for script in "${DEPLOY_FILES[@]}"; do
   [ -f "$script" ] || continue
   is_retired_training_file "$script" && continue
+  is_retired_unowned_file "$script" && continue
   name=$(basename "$script")
   echo "  $name"
   if [ "$LOCAL_MODE" -eq 0 ]; then
@@ -139,12 +148,22 @@ done
 for path in "$HOME/SaneApps-automation/apps/SaneAI" "$HOME/SaneApps-automation/apps/SaneSync"; do
   [ ! -e "$path" ] || /usr/bin/trash "$path"
 done
+launchctl disable "gui/$uid/com.saneapps.codex-keepalive" 2>/dev/null || true
+launchctl bootout "gui/$uid/com.saneapps.codex-keepalive" 2>/dev/null || true
+keepalive_plist="$HOME/Library/LaunchAgents/com.saneapps.codex-keepalive.plist"
+[ ! -e "$keepalive_plist" ] || /usr/bin/trash "$keepalive_plist"
+for name in mini-daytime-cleanup.sh mini-license-test.sh mini-codex-keepalive.sh; do
+  for base in "$HOME/SaneApps/infra/SaneProcess/scripts/mini" "$HOME/SaneApps/infra/scripts"; do
+    retired_path="$base/$name"
+    [ ! -e "$retired_path" ] || /usr/bin/trash "$retired_path"
+  done
+done
 '
 
 # Syntax check all deployed scripts
 mini_ssh "
 for f in $REMOTE_PRIMARY_DIR/mini-*.sh; do
-  case \"\$(basename \"\$f\")\" in mini-install-training-agents.sh|mini-train-all.sh|mini-train-challengers.sh|mini-train.sh|mini-training-mode.sh) continue ;; esac
+  case \"\$(basename \"\$f\")\" in mini-install-training-agents.sh|mini-train-all.sh|mini-train-challengers.sh|mini-train.sh|mini-training-mode.sh|mini-daytime-cleanup.sh|mini-license-test.sh|mini-codex-keepalive.sh) continue ;; esac
   /bin/bash -n \"\$f\" && echo \"  OK: \$(basename \$f)\" || echo \"  FAIL: \$(basename \$f)\"
 done
 "
@@ -155,6 +174,7 @@ echo "Checksums (local → remote):"
 for script in "${DEPLOY_FILES[@]}"; do
   [ -f "$script" ] || continue
   is_retired_training_file "$script" && continue
+  is_retired_unowned_file "$script" && continue
   name=$(basename "$script")
   LOCAL_MD5=$(md5 -q "$script")
   REMOTE_MD5=$(mini_ssh "md5 -q $REMOTE_PRIMARY_DIR/$name")

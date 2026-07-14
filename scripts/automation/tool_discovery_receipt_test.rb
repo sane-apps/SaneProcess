@@ -78,7 +78,7 @@ exit(run_tests('Tool discovery receipt tests') do
           }
         else
           {
-            stdout: "[FAIL] central-memory - database unavailable\n",
+            stdout: "[FAIL] macos-automator - endpoint unavailable\n",
             stderr: '',
             exit_code: 1,
             timed_out: false,
@@ -90,7 +90,7 @@ exit(run_tests('Tool discovery receipt tests') do
       result = receipt.send(:run_doctor_check)
 
       assert_eq(result[:status], 'failed')
-      assert_includes(result.dig(:live_probe, :failures).join("\n"), 'central-memory')
+      assert_includes(result.dig(:live_probe, :failures).join("\n"), 'macos-automator')
       true
     end
 
@@ -157,13 +157,13 @@ exit(run_tests('Tool discovery receipt tests') do
       true
     end
 
-    test('recommends optional cloudflare central memory and xcodebuildmcp paths') do
+    test('recommends cloudflare AgentMemory and xcodebuildmcp paths') do
       cloudflare = ToolDiscoveryReceipt.new(['--query', 'cloudflare pages r2 appcast drift', '--skip-doctor', '--skip-validation'])
-      central = ToolDiscoveryReceipt.new(['--query', 'central memory semantic recall', '--skip-doctor', '--skip-validation'])
+      memory = ToolDiscoveryReceipt.new(['--query', 'agentmemory semantic recall', '--skip-doctor', '--skip-validation'])
       xcode = ToolDiscoveryReceipt.new(['--query', 'ios simulator proof xcodebuildmcp', '--skip-doctor', '--skip-validation'])
 
       assert_includes(cloudflare.send(:canonical_path_matches).map { |entry| entry[:name] }, 'Cloudflare release surface checks')
-      assert_includes(central.send(:canonical_path_matches).map { |entry| entry[:name] }, 'Semantic cross-session recall')
+      assert_includes(memory.send(:canonical_path_matches).map { |entry| entry[:name] }, 'Semantic cross-session recall')
       assert_includes(xcode.send(:canonical_path_matches).map { |entry| entry[:name] }, 'iOS simulator proof with XcodeBuildMCP')
       true
     end

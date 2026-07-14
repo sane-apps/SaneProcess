@@ -77,7 +77,7 @@ Before drafting or approving release notes, do a customer-facing audit instead o
 2. Check recent research and memory:
    - `.codex/research.md` first, or the existing project research cache if a
      different active cache is already documented
-   - Serena memory / knowledge graph notes for the app
+   - Serena / AgentMemory notes for the app
 3. Check the actual user-facing fixes since the last tag:
    - commits between tags
    - recent shipped/unshipped issue fixes
