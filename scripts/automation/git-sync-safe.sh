@@ -89,9 +89,11 @@ snapshot_dirty_repo() {
       git -C "$repo" status --porcelain=v1
       git -C "$repo" diff --binary HEAD
       while IFS= read -r -d '' untracked; do
-        case "$untracked" in
-          *.pem|*.p8|.env|*/.env|.env.*|*/.env.*) continue ;;
-        esac
+        if [[ "$untracked" == *.pem || "$untracked" == *.p8 ||
+              "$untracked" == .env || "$untracked" == */.env ||
+              "$untracked" == .env.* || "$untracked" == */.env.* ]]; then
+          continue
+        fi
         shasum -a 256 "$repo/$untracked"
       done < <(git -C "$repo" ls-files --others --exclude-standard -z)
     } | shasum -a 256 | cut -d' ' -f1
@@ -117,9 +119,11 @@ snapshot_dirty_repo() {
 
   untracked_list="$snapshot_dir/untracked-files.zlist"
   while IFS= read -r -d '' untracked; do
-    case "$untracked" in
-      *.pem|*.p8|.env|*/.env|.env.*|*/.env.*) continue ;;
-    esac
+    if [[ "$untracked" == *.pem || "$untracked" == *.p8 ||
+          "$untracked" == .env || "$untracked" == */.env ||
+          "$untracked" == .env.* || "$untracked" == */.env.* ]]; then
+      continue
+    fi
     printf '%s\0' "$untracked" >> "$untracked_list"
   done < <(git -C "$repo" ls-files --others --exclude-standard -z)
   if [[ -s "$untracked_list" ]]; then

@@ -343,7 +343,9 @@ tests << lambda do
 end
 
 tests << lambda do
-  git_sync_source = File.read(File.join(ROOT, 'automation', 'git-sync-safe.sh'))
+  git_sync_path = File.join(ROOT, 'automation', 'git-sync-safe.sh')
+  git_sync_source = File.read(git_sync_path)
+  run({}, '/bin/bash', '-n', git_sync_path)
   assert(git_sync_source.include?('SANEPROCESS_ALLOW_AUTO_STASH'),
          'legacy auto-stash path must require explicit operator opt-in')
   assert(git_sync_source.include?('no longer auto-stashes canonical repos by default'),
