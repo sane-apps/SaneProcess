@@ -122,6 +122,24 @@
       "cmd": ["/Applications/Xcode.app/Contents/Developer/usr/bin/python3", "-B", "scripts/automation/gpt_audit_test.py"]
     },
     {
+      "path": "scripts/automation/gpt_audit_readme_test.py",
+      "label": "SaneProcess Codex audit README contract tests",
+      "status": "required",
+      "cmd": ["/Applications/Xcode.app/Contents/Developer/usr/bin/python3", "-B", "scripts/automation/gpt_audit_readme_test.py"]
+    },
+    {
+      "path": "scripts/automation/saneapps_paths_test.py",
+      "label": "SaneProcess canonical tree resolution tests",
+      "status": "required",
+      "cmd": ["python3", "-B", "scripts/automation/saneapps_paths_test.py"]
+    },
+    {
+      "path": "scripts/sanemaster/routed_verify_metric_mirror_test.rb",
+      "label": "SaneProcess routed verify metric mirror tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/sanemaster/routed_verify_metric_mirror_test.rb"]
+    },
+    {
       "path": "scripts/automation/email_delivery_test.py",
       "label": "SaneProcess email delivery tests",
       "status": "required",

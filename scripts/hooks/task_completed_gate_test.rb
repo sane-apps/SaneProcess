@@ -9,6 +9,7 @@ require 'time'
 require 'digest'
 
 require_relative 'test/test_framework'
+require_relative '../sanemaster/source_fingerprint'
 
 include TestFramework
 
@@ -74,18 +75,13 @@ def init_git_repo(dir)
   system('git', 'commit', '-q', '-m', 'init', chdir: dir)
 end
 
+# Fixture events must carry the fingerprint PRODUCTION verify records —
+# SaneSourceFingerprint.release_status_source_fingerprint — not a test-local
+# recipe. A test-local git hash hid the real defect for months: the gate
+# compared receipts with a different algorithm than verify recorded, so the
+# metric proof path never matched outside these tests (fixed 2026-07-14).
 def source_fingerprint(dir)
-  parts = []
-  [
-    %w[rev-parse HEAD],
-    %w[status --porcelain=v1 --untracked-files=all],
-    %w[diff --binary],
-    %w[diff --cached --binary]
-  ].each do |command|
-    out = `git -C "#{dir}" #{command.join(' ')}`
-    parts << out
-  end
-  Digest::SHA256.hexdigest(parts.join("\n---\n"))
+  SaneSourceFingerprint.release_status_source_fingerprint(dir).to_s
 end
 
 def verified_metrics(project, timestamp: Time.now.utc.iso8601)
@@ -279,6 +275,41 @@ exit(run_tests('TaskCompleted Gate Tests') do
 
       assert_eq(status.exitstatus, 2)
       assert_includes(stderr, 'without recent test verification')
+      true
+    end
+
+    test('accepts a verify metric fingerprinted from an equal routed workspace copy') do
+      # Regression (2026-07-14): Mini-first routing computes the receipt
+      # fingerprint inside a relocated workspace COPY of the tree. The gate
+      # must accept it when the local tree content is equal — the old git-diff
+      # recipe differed between clones of identical content, so no routed
+      # receipt could ever satisfy the gate.
+      app_name = 'TaskGateWorkspaceCopy'
+      rows = lambda do |dir|
+        workspace = File.join(File.dirname(dir), 'verify-workspace', app_name)
+        FileUtils.mkdir_p(File.dirname(workspace))
+        FileUtils.cp_r(dir, workspace)
+        [{
+          timestamp: Time.now.utc.iso8601,
+          type: 'verify',
+          project: app_name,
+          cwd: workspace,
+          success: true,
+          tests_run: 12,
+          evidence_strength: 'tested',
+          host: 'Stephans-Mac-mini.local',
+          source_fingerprint: SaneSourceFingerprint.release_status_source_fingerprint(workspace).to_s
+        }]
+      end
+
+      _stdout, stderr, status = run_task_completed_gate(
+        app_name: app_name,
+        state: edit_state(['Sources/App.swift']),
+        metrics_rows: rows
+      )
+
+      assert_eq(status.exitstatus, 0, stderr)
+      assert_includes(stderr, 'verified by structured SaneMaster metric')
       true
     end
 

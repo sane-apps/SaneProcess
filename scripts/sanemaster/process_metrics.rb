@@ -3,10 +3,15 @@
 require 'json'
 require 'time'
 require 'digest'
+require 'open3'
+require 'set'
 require_relative '../hooks/core/process_metrics'
 
 module SaneMasterModules
   module ProcessMetrics
+    ROUTED_VERIFY_MIRROR_SKEW_SECONDS = 120
+    ROUTED_VERIFY_MIRROR_TAIL_LINES = 200
+
     def record_process_metric(type, payload = {})
       SaneProcessMetrics.record(
         type,
@@ -16,6 +21,98 @@ module SaneMasterModules
 
     def process_metrics_path
       SaneProcessMetrics.metrics_path
+    end
+
+    # Mini-first routing executes verify on the Mini, so its type=verify
+    # evidence lands in the MINI's metrics file while the local completion and
+    # stop gates read the LOCAL file. Mirror only this run's verify events
+    # back: the route time window keeps a stale receipt from ever being
+    # replayed into freshness, and the gates still require the recorded
+    # source fingerprint to equal the CURRENT tree fingerprint.
+    def mirror_routed_verify_metrics!(remote_host, started_at)
+      out, status = Open3.capture2(
+        'ssh', remote_host.to_s,
+        "tail -n #{ROUTED_VERIFY_MIRROR_TAIL_LINES} ~/.sanemaster/process_metrics.jsonl 2>/dev/null"
+      )
+      unless status.success?
+        warn "⚠️  Routed verify metric mirror skipped: could not read #{remote_host} metrics"
+        return 0
+      end
+
+      events = select_routed_verify_mirror_events(
+        out.lines,
+        window_start: started_at - ROUTED_VERIFY_MIRROR_SKEW_SECONDS,
+        window_end: Time.now.utc + ROUTED_VERIFY_MIRROR_SKEW_SECONDS,
+        existing_keys: local_verify_mirror_keys
+      )
+      events.each do |event|
+        SaneProcessMetrics.record(
+          'verify',
+          event.transform_keys(&:to_sym).merge(
+            mirrored_from: remote_host.to_s,
+            mirrored_at: Time.now.utc.iso8601
+          )
+        )
+      end
+      events.length
+    rescue StandardError => e
+      warn "⚠️  Routed verify metric mirror failed: #{e.message}"
+      0
+    end
+
+    # Pure filter so the mirror policy is directly testable: keep only
+    # parseable type=verify events inside the route window that are not
+    # already present locally.
+    def select_routed_verify_mirror_events(lines, window_start:, window_end:, existing_keys:)
+      lines.filter_map do |line|
+        event = begin
+          JSON.parse(line)
+        rescue JSON::ParserError
+          nil
+        end
+        next unless event.is_a?(Hash) && event['type'].to_s == 'verify'
+
+        timestamp = begin
+          Time.parse(event['timestamp'].to_s)
+        rescue ArgumentError, TypeError
+          nil
+        end
+        next unless timestamp
+        next if timestamp < window_start || timestamp > window_end
+        next if existing_keys.include?(verify_mirror_event_key(event))
+
+        event
+      end
+    end
+
+    def verify_mirror_event_key(event)
+      [
+        event['timestamp'] || event[:timestamp],
+        event['source_fingerprint'] || event[:source_fingerprint],
+        event['tests_run'] || event[:tests_run],
+        event['success'] || event[:success],
+        event['host'] || event[:host]
+      ].map(&:to_s).join('|')
+    end
+
+    def local_verify_mirror_keys(limit_lines: 1_000)
+      path = SaneProcessMetrics.metrics_path
+      return Set.new unless File.exist?(path)
+
+      keys = Set.new
+      File.readlines(path, encoding: Encoding::UTF_8).last(limit_lines).each do |line|
+        event = begin
+          JSON.parse(line)
+        rescue JSON::ParserError
+          nil
+        end
+        next unless event.is_a?(Hash) && event['type'].to_s == 'verify'
+
+        keys << verify_mirror_event_key(event)
+      end
+      keys
+    rescue StandardError
+      Set.new
     end
 
     def process_metrics_dashboard(args = [])

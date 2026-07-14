@@ -6,8 +6,10 @@ from __future__ import annotations
 from pathlib import Path
 
 
+from saneapps_paths import saneapps_root
+
 ROOT = Path(__file__).resolve().parents[2]
-SANEAPPS = ROOT.parents[1]
+SANEAPPS = saneapps_root()
 CHECK_INBOX = SANEAPPS / "infra" / "scripts" / "check-inbox.sh"
 APPS = SANEAPPS / "apps"
 

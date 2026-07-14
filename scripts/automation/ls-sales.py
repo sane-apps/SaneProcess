@@ -31,7 +31,10 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-INFRA_SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from saneapps_paths import infra_scripts_dir
+
+INFRA_SCRIPTS_DIR = infra_scripts_dir()
 sys.path.insert(0, str(INFRA_SCRIPTS_DIR))
 from customer_email_corrections import canonical_email, email_variants
 

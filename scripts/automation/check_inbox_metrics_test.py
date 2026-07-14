@@ -7,8 +7,10 @@ import unittest
 from pathlib import Path
 
 
+from saneapps_paths import check_inbox_script
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CHECK_INBOX = REPO_ROOT.parent / "scripts" / "check-inbox.sh"
+CHECK_INBOX = check_inbox_script()
 
 
 class CheckInboxMetricsTests(unittest.TestCase):

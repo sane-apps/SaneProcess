@@ -16,6 +16,7 @@ require 'digest'
 require 'socket'
 require 'pathname'
 require_relative 'upgrade_path_proof'
+require_relative 'source_fingerprint'
 
 module SaneMasterModules
   # Unified release entrypoint (delegates to SaneProcess release.sh)
@@ -37,10 +38,9 @@ module SaneMasterModules
       go_no_go
     ].freeze
     REQUIRED_LAUNCH_PROOF_ASSET_FIELDS = %w[type status].freeze
-    UPGRADE_PATH_RECEIPT_PATHS = %w[
-      .sane/upgrade_path_behavioral_receipt.json
-      outputs/upgrade_path_behavioral_receipt.json
-    ].freeze
+    # Single source of truth: the fingerprint module must exclude the same
+    # receipt paths the release upgrade lane owns, or the identities drift.
+    UPGRADE_PATH_RECEIPT_PATHS = SaneSourceFingerprint::UPGRADE_PATH_RECEIPT_PATHS
     UPGRADE_PATH_RECEIPT_MAX_AGE_SECONDS = 12 * 60 * 60
     SIGNED_RECEIPT_CLOCK_SKEW_SECONDS = 5
 
@@ -3052,111 +3052,46 @@ module SaneMasterModules
       )
     end
 
+    # Source-identity helpers live in SaneSourceFingerprint so hooks compare
+    # receipts with the exact algorithm that produced them. These delegators
+    # keep the historical release.rb API.
     def release_status_source_fingerprint(project_path = Dir.pwd)
-      entries = release_status_source_entries(project_path)
-      return nil if entries.empty?
-
-      digest = Digest::SHA256.new
-      entries.each do |entry|
-        absolute_path = entry.fetch(:absolute_path)
-        next unless File.file?(absolute_path)
-
-        digest.update(entry.fetch(:digest_path))
-        digest.update("\0")
-        digest.update(Digest::SHA256.file(absolute_path).hexdigest)
-        digest.update("\0")
-      end
-      digest.hexdigest
-    rescue StandardError
-      nil
+      SaneSourceFingerprint.release_status_source_fingerprint(
+        project_path,
+        saneapps_root: release_status_saneapps_root
+      )
     end
 
     def release_status_source_files(project_path)
-      tracked, tracked_status = Open3.capture2e('git', '-C', project_path, 'ls-files', '-z')
-      others, others_status = Open3.capture2e('git', '-C', project_path, 'ls-files', '--others', '--exclude-standard', '-z')
-      files = []
-      files.concat(tracked.split("\0")) if tracked_status.success?
-      files.concat(others.split("\0")) if others_status.success?
-      files = filesystem_release_status_source_files(project_path) if files.empty?
-      files.concat(release_status_proof_files(project_path))
-      files.select { |path| release_status_source_file?(project_path, path) }.uniq.sort
-    rescue StandardError
-      []
+      SaneSourceFingerprint.release_status_source_files(project_path)
     end
 
     def filesystem_release_status_source_files(project_path)
-      Dir.chdir(project_path) do
-        Dir.glob('**/*', File::FNM_DOTMATCH).reject do |path|
-          path.start_with?('.git/') ||
-            path.start_with?('outputs/') ||
-            path.start_with?('.sanemaster/') ||
-            File.directory?(path)
-        end
-      end
-    rescue StandardError
-      []
+      SaneSourceFingerprint.filesystem_release_status_source_files(project_path)
     end
 
     def release_status_source_entries(project_path)
-      app_entries = release_status_source_files(project_path).map do |relative_path|
-        {
-          digest_path: "app/#{relative_path}",
-          absolute_path: File.join(project_path, relative_path)
-        }
-      end
-
-      process_root = File.expand_path('../..', __dir__)
-      harness_entries = release_status_harness_source_files(process_root).map do |relative_path|
-        {
-          digest_path: "SaneProcess/#{relative_path}",
-          absolute_path: File.join(process_root, relative_path)
-        }
-      end
-      shared_entries = release_status_shared_source_files(project_path).map do |entry|
-        {
-          digest_path: entry.fetch(:digest_path),
-          absolute_path: entry.fetch(:absolute_path)
-        }
-      end
-
-      app_entries + harness_entries + shared_entries
-    rescue StandardError
-      []
+      SaneSourceFingerprint.release_status_source_entries(
+        project_path,
+        saneapps_root: release_status_saneapps_root
+      )
     end
 
     def release_status_shared_source_files(project_path)
-      root = if respond_to?(:saneapps_root, true)
-               saneapps_root
-             else
-               File.expand_path('../..', saneprocess_repo_root)
-             end
-      app_source = release_status_source_files(project_path)
-      receipt_paths = [
-        '.sane/customer_ui_action_receipt.json',
-        'outputs/customer_ui_action_receipt.json'
-      ]
-      needs_saneui = app_source.any? do |relative_path|
-        receipt_paths.include?(relative_path) ||
-          relative_path.start_with?('Sane', 'Shared/', 'Sources/', 'UI/', 'Core/')
-      end
-      return [] unless needs_saneui
+      SaneSourceFingerprint.release_status_shared_source_files(
+        project_path,
+        saneapps_root: release_status_saneapps_root
+      )
+    end
 
-      patterns = [
-        'infra/SaneUI/Sources/**/*.{swift,xcstrings}'
-      ]
-      patterns.flat_map { |pattern| Dir.glob(File.join(root, pattern)) }
-              .select { |path| File.file?(path) }
-              .map do |path|
-                relative_path = path.sub(%r{\A#{Regexp.escape(root)}/?}, '')
-                {
-                  digest_path: "SaneApps/#{relative_path}",
-                  absolute_path: path
-                }
-              end
-              .uniq { |entry| entry[:digest_path] }
-              .sort_by { |entry| entry[:digest_path] }
+    def release_status_saneapps_root
+      if respond_to?(:saneapps_root, true)
+        saneapps_root
+      else
+        File.expand_path('../..', saneprocess_repo_root)
+      end
     rescue StandardError
-      []
+      SaneSourceFingerprint.default_saneapps_root
     end
 
     def release_status_mini_runtime?
@@ -3165,80 +3100,16 @@ module SaneMasterModules
       false
     end
 
-    def release_status_harness_source_files(process_root = File.expand_path('../..', __dir__))
-      patterns = [
-        'scripts/SaneMaster.rb',
-        'scripts/release.sh',
-        'scripts/validation_report.rb',
-        'scripts/sanemaster/**/*.rb',
-        'scripts/hooks/**/*.{rb,sh}'
-      ]
-      patterns.flat_map { |pattern| Dir.glob(File.join(process_root, pattern)) }
-              .select { |path| File.file?(path) }
-              .map { |path| path.sub(%r{\A#{Regexp.escape(process_root)}/?}, '') }
-              .uniq
-              .sort
-    rescue StandardError
-      []
+    def release_status_harness_source_files(process_root = SaneSourceFingerprint.process_root)
+      SaneSourceFingerprint.release_status_harness_source_files(process_root)
     end
 
     def release_status_proof_files(project_path)
-      [
-        '.sane/customer_ui_action_receipt.json',
-        'outputs/customer_ui_action_receipt.json',
-        *Dir.glob(File.join(project_path, 'outputs', 'runtime-preflight', 'sanebar_runtime_*.{json,log}')).map do |path|
-          path.sub(%r{\A#{Regexp.escape(project_path)}/?}, '')
-        end,
-        *Dir.glob(File.join(project_path, 'outputs', 'customer-ui', '**', 'resource-soak-*')).map do |path|
-          path.sub(%r{\A#{Regexp.escape(project_path)}/?}, '')
-        end
-      ].select { |path| File.file?(File.join(project_path, path)) }
-    rescue StandardError
-      []
+      SaneSourceFingerprint.release_status_proof_files(project_path)
     end
 
     def release_status_source_file?(project_path, relative_path)
-      return false if relative_path.to_s.empty?
-      return false if UPGRADE_PATH_RECEIPT_PATHS.include?(relative_path.to_s)
-      return true if relative_path == 'docs/_redirects' || relative_path == 'website/_redirects'
-      return true if relative_path.match?(%r{\A(?:docs|website)/.*\.(?:css|html|js|json|xml)\z})
-      return true if relative_path == 'outputs/customer_ui_action_receipt.json'
-      return true if relative_path == '.sane/customer_ui_action_receipt.json'
-      return true if relative_path.match?(%r{\Aoutputs/runtime-preflight/sanebar_runtime_.*\.(?:json|log)\z})
-      return true if relative_path.match?(%r{\Aoutputs/customer-ui/.*resource-soak-.*\.(?:json|log)\z})
-      return false if %w[
-        .sane/customer_ui_action_receipt.json AGENTS.md ARCHITECTURE.md CLAUDE.md
-        DEVELOPMENT.md README.md SESSION_HANDOFF.md
-      ].include?(relative_path)
-      return false if relative_path.start_with?(
-        '.build/',
-        '.claude/',
-        '.codex/',
-        '.git/',
-        '.sanemaster/',
-        '.serena/',
-        'DerivedData/',
-        'build/',
-        'docs/',
-        'fastlane/test_output/',
-        'node_modules/',
-        'outputs/',
-        'releases/',
-        'vendor/bundle/',
-        'website/'
-      )
-
-      app_folder = File.basename(project_path)
-      return true if relative_path == '.saneprocess'
-      return true if %w[Package.resolved Package.swift project.yml].include?(relative_path)
-      return true if relative_path.end_with?('.xcodeproj/project.pbxproj')
-      return true if relative_path.start_with?("#{app_folder}/")
-      return true if relative_path.start_with?('Config/', 'Scripts/', 'Shared/', 'Sources/', 'Tests/', 'scripts/')
-
-      %w[
-        .c .cc .cpp .entitlements .h .json .metal .m .mm .plist .rb .sh .storyboard
-        .swift .xcconfig .xcprivacy .xcstrings .xib .yaml .yml
-      ].include?(File.extname(relative_path))
+      SaneSourceFingerprint.release_status_source_file?(project_path, relative_path)
     end
 
     def launch_readiness(args)

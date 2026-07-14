@@ -17,6 +17,7 @@ require 'open3'
 require 'fileutils'
 require_relative 'core/state_manager'
 require_relative 'sanestop_persistence_test'
+require_relative '../sanemaster/source_fingerprint'
 
 module SaneStopTest
   def self.nested_state_read_during_update?(update_validation_metrics_proc)
@@ -65,22 +66,13 @@ module SaneStopTest
     system('git', 'commit', '-q', '-m', 'init', chdir: Dir.pwd)
   end
 
+  # Same content-hash fingerprint production verify records; a test-local git
+  # recipe here would hide comparison drift (see task_completed_gate_test.rb).
   def self.source_fingerprint
     root_out, root_status = Open3.capture2e('git', '-C', Dir.pwd, 'rev-parse', '--show-toplevel')
-    return 'unknown' unless root_status.success?
-
-    root = root_out.strip
-    parts = []
-    [
-      %w[rev-parse HEAD],
-      %w[status --porcelain=v1 --untracked-files=all],
-      %w[diff --binary],
-      %w[diff --cached --binary]
-    ].each do |command|
-      out, = Open3.capture2e('git', '-C', root, *command)
-      parts << out
-    end
-    Digest::SHA256.hexdigest(parts.join("\n---\n"))
+    root = root_status.success? ? root_out.strip : Dir.pwd
+    fingerprint = SaneSourceFingerprint.release_status_source_fingerprint(root).to_s
+    fingerprint.match?(/\A[0-9a-f]{64}\z/) ? fingerprint : 'unknown'
   end
 
   def self.write_verify_metric(path, success: true, tests_run: 12, timestamp: Time.now.utc.iso8601)

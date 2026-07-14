@@ -32,6 +32,7 @@ require_relative 'core/visual_receipt'
 require_relative 'sanestop_finalize'
 require_relative 'sanestop_lemonsqueezy'
 require_relative 'core/project_root'
+require_relative '../sanemaster/source_fingerprint'
 LOG_FILE = File.expand_path('../../.claude/sanestop.log', __dir__)
 SOP_CSV = File.expand_path('../../outputs/sop_ratings.csv', __dir__)
 SOP_JSONL = File.expand_path('../../outputs/sop_ratings.jsonl', __dir__)
@@ -150,22 +151,13 @@ def session_verify_status
   }
 end
 
+# Must be the same content-hash algorithm verify receipts record — see the
+# matching note in task_completed_gate.rb (fixed 2026-07-14).
 def current_source_fingerprint(cwd = Dir.pwd)
   root_out, root_status = Open3.capture2e('git', '-C', cwd, 'rev-parse', '--show-toplevel')
-  return 'unknown' unless root_status.success?
-
-  root = root_out.strip
-  parts = []
-  [
-    %w[rev-parse HEAD],
-    %w[status --porcelain=v1 --untracked-files=all],
-    %w[diff --binary],
-    %w[diff --cached --binary]
-  ].each do |command|
-    out, = Open3.capture2e('git', '-C', root, *command)
-    parts << out
-  end
-  Digest::SHA256.hexdigest(parts.join("\n---\n"))
+  root = root_status.success? ? root_out.strip : cwd
+  fingerprint = SaneSourceFingerprint.release_status_source_fingerprint(root).to_s
+  fingerprint.match?(/\A[0-9a-f]{64}\z/) ? fingerprint : 'unknown'
 rescue StandardError
   'unknown'
 end

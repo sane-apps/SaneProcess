@@ -20,6 +20,7 @@ require 'set'
 require_relative 'core/process_metrics'
 require_relative 'core/project_root'
 require_relative 'core/visual_receipt'
+require_relative '../sanemaster/source_fingerprint'
 
 begin
   input = JSON.parse($stdin.read.force_encoding(Encoding::UTF_8))
@@ -176,22 +177,16 @@ rescue StandardError
   []
 end
 
+# Verify receipts record SaneSourceFingerprint.release_status_source_fingerprint
+# (pure content hash). The gate must compare with the SAME algorithm — the old
+# git-recipe hash (HEAD + status + diff) never matched a real receipt and even
+# differed between clones of identical content (per-clone `git diff` index-line
+# abbreviation), so the metric proof path was unsatisfiable (fixed 2026-07-14).
 def current_source_fingerprint(cwd)
   root_out, root_status = Open3.capture2e('git', '-C', cwd, 'rev-parse', '--show-toplevel')
-  return 'unknown' unless root_status.success?
-
-  root = root_out.strip
-  parts = []
-  [
-    %w[rev-parse HEAD],
-    %w[status --porcelain=v1 --untracked-files=all],
-    %w[diff --binary],
-    %w[diff --cached --binary]
-  ].each do |command|
-    out, = Open3.capture2e('git', '-C', root, *command)
-    parts << out
-  end
-  Digest::SHA256.hexdigest(parts.join("\n---\n"))
+  root = root_status.success? ? root_out.strip : cwd
+  fingerprint = SaneSourceFingerprint.release_status_source_fingerprint(root).to_s
+  fingerprint.match?(/\A[0-9a-f]{64}\z/) ? fingerprint : 'unknown'
 rescue StandardError
   'unknown'
 end

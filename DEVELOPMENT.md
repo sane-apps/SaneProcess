@@ -137,6 +137,11 @@ canonical runner or local verification command, then route it through
 Non-doc edits are not complete just because a hook saw a command that looked like
 a test. Completion gates require a fresh counted `SaneMaster.rb verify` metric
 with tested evidence and a source fingerprint matching the current repo.
+Receipt fingerprints are the `SaneSourceFingerprint` content hash
+(`scripts/sanemaster/source_fingerprint.rb`) — hooks must compare with that
+same module, never a git status/diff recipe. Mini-routed verify mirrors its
+fresh Mini-recorded `type=verify` metric into the controller's local metrics
+file after the run, so completion/stop gates work from the Air as well.
 
 ### Cloudflare And Browser Proof
 

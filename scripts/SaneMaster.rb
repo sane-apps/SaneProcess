@@ -687,8 +687,10 @@ class SaneMaster
       remote_cmd = "#{remote_env_prefix}ruby #{Shellwords.escape(remote_script)} #{([command] + routed_args).map { |arg| Shellwords.escape(arg) }.join(' ')}"
       route_log("📍 Mini-first routing: #{command} -> mini (#{execution_repo})")
       $stdout.flush
+      route_started_at = Time.now.utc
       remote_ok = ssh_system('mini', "cd #{Shellwords.escape(execution_repo)} && #{remote_cmd}")
       remote_status = $?.respond_to?(:exitstatus) ? $?.exitstatus : (remote_ok ? 0 : 1)
+      mirror_routed_verify_metrics!('mini', route_started_at) if command == 'verify'
       sync_outputs_from_mini!(Dir.pwd, execution_repo)
       cleanup_bulk_outputs_on_mini!(execution_repo)
       sync_release_artifacts_from_mini!(Dir.pwd, execution_repo, warn_only: true) if release_routed

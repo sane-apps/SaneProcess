@@ -20,7 +20,9 @@ def default_sane_apps_root() -> Path:
     configured = os.environ.get("SANE_APPS_ROOT")
     if configured:
         return Path(configured).expanduser()
-    return Path(__file__).resolve().parents[4]
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from saneapps_paths import saneapps_root
+    return saneapps_root()
 
 
 SANE_APPS_ROOT = default_sane_apps_root()

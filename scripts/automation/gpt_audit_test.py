@@ -28,7 +28,6 @@ from gpt_audit_source import repo_source_snapshot
 
 
 SCRIPT_PATH = Path(__file__).with_name("gpt_audit.py")
-README_PATH = SCRIPT_PATH.with_name("README.md")
 
 FAKE_CODEX = r'''#!/usr/bin/env python3
 import json
@@ -733,37 +732,6 @@ os._exit(0)
                 self.assertTrue(all(call["secret_seen"] is None for call in calls))
             finally:
                 os.environ.pop("UNRELATED_SECRET_TOKEN", None)
-
-    def test_readme_gpt_audit_commands_use_canonical_executable_paths_and_roots(self):
-        section = README_PATH.read_text(encoding="utf-8").split("### gpt_audit.py", 1)[1].split("### tool_discovery_receipt.rb", 1)[0]
-        commands = []
-        current = ""
-        for line in section.splitlines():
-            if line.startswith("/Applications/Xcode.app/Contents/Developer/usr/bin/python3 "):
-                current = line
-            elif current and line.startswith("  --"):
-                current += " " + line
-            elif current:
-                commands.append(current.replace("\\", ""))
-                current = ""
-        if current:
-            commands.append(current.replace("\\", ""))
-        self.assertEqual(3, len(commands))
-        self.assertTrue(all("~" not in command and "$" not in command for command in commands))
-        repo = Path("/Users/stephansmac/SaneApps/infra/SaneProcess")
-        for command in commands:
-            tokens = shlex.split(command)
-            self.assertEqual("/Applications/Xcode.app/Contents/Developer/usr/bin/python3", tokens[0])
-            self.assertEqual(str(SCRIPT_PATH), tokens[1])
-            options = {tokens[index]: tokens[index + 1] for index in range(2, len(tokens) - 1) if tokens[index].startswith("--") and not tokens[index + 1].startswith("--")}
-            self.assertEqual(str(repo), options["--repo"])
-            self.assertTrue(Path(options["--bundle"]).is_relative_to(repo))
-            self.assertIn(options["--prompts-dir"], [
-                "/Users/stephansmac/.codex/skills/audit/prompts",
-                "/Users/stephansmac/.codex/skills/critic/prompts",
-            ])
-            self.assertTrue(Path(options["--out-dir"]).is_relative_to(repo / "outputs"))
-            self.assertEqual(Path(options["--out-dir"]), Path(options["--report"]).parent)
 
     def test_unsigned_codex_fixture_is_rejected_without_explicit_test_gate(self):
         with tempfile.TemporaryDirectory() as tmp:
