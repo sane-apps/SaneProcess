@@ -102,10 +102,22 @@ exit(run_tests('Mini Access Tests') do
       Dir.mktmpdir('mini-access-installer') do |home|
         bin = File.join(home, 'bin')
         FileUtils.mkdir_p(bin)
-        write_executable(File.join(bin, 'tailscale'), "#!/bin/sh\n[ \"${1:-}\" = status ]\n")
-        env = { 'HOME' => home, 'PATH' => "#{bin}:/usr/bin:/bin" }
+        fake_tailscale = File.join(bin, 'tailscale')
+        fake_launchctl = File.join(bin, 'launchctl-must-not-run')
+        tailscale_log = File.join(home, 'tailscale-calls.log')
+        write_executable(fake_tailscale, "#!/bin/sh\necho \"$*\" >> \"$TAILSCALE_LOG\"\n[ \"${1:-}\" = status ]\n")
+        write_executable(fake_launchctl, "#!/bin/sh\necho real-launchctl-path-reached >&2\nexit 97\n")
+        env = {
+          'HOME' => home,
+          'PATH' => "#{bin}:/usr/bin:/bin",
+          'SANE_TAILSCALE_BIN' => fake_tailscale,
+          'SANE_LAUNCHCTL_BIN' => fake_launchctl,
+          'TAILSCALE_LOG' => tailscale_log
+        }
         _out, err, status = Open3.capture3(env, '/bin/bash', INSTALLER)
         assert(status.success?, err)
+        assert(!err.include?('real-launchctl-path-reached'), err)
+        assert_includes(File.read(tailscale_log), 'status')
         config = File.read(File.join(home, '.ssh', 'config.d', 'saneapps-mini.conf'))
         proxy = File.read(File.join(home, '.local', 'bin', 'saneapps-mini-proxy'))
         tailscale_cli = File.read(File.join(home, '.local', 'bin', 'tailscale'))

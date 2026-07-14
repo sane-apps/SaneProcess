@@ -22,6 +22,7 @@ AGENT_LABEL="com.saneapps.tailscaled-userspace"
 AGENT_PLIST="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
 TS_STATE_DIR="$HOME/Library/Application Support/tailscaled-userspace"
 BACKUP_STAMP="$(date +%Y%m%d-%H%M%S)"
+LAUNCHCTL="${SANE_LAUNCHCTL_BIN:-/bin/launchctl}"
 
 mkdir -p "$CONFIG_DIR" "$HOME/.local/bin"
 chmod 700 "$HOME/.ssh"
@@ -79,8 +80,8 @@ EOF
 chmod 600 "$CONFIG_FILE" "$MINI_CONFIG"
 
 # --- Tailscale daemon (this machine, client side) ---------------------------
-TS=""
-[ -x /opt/homebrew/bin/tailscale ] && TS=/opt/homebrew/bin/tailscale
+TS="${SANE_TAILSCALE_BIN:-}"
+[ -z "$TS" ] && [ -x /opt/homebrew/bin/tailscale ] && TS=/opt/homebrew/bin/tailscale
 [ -z "$TS" ] && [ -x /usr/local/bin/tailscale ] && TS=/usr/local/bin/tailscale
 [ -z "$TS" ] && TS="$(command -v tailscale || true)"
 
@@ -91,7 +92,7 @@ if [ -n "$TS" ]; then
        "$TS" --socket="$TS_STATE_DIR/tailscaled.sock" status >/dev/null 2>&1; then
     echo "tailscaled (userspace LaunchAgent) is running."
   else
-    TAILSCALED="$(dirname "$TS")/../opt/tailscale/bin/tailscaled"
+    TAILSCALED="${SANE_TAILSCALED_BIN:-$(dirname "$TS")/../opt/tailscale/bin/tailscaled}"
     [ -x "$TAILSCALED" ] || TAILSCALED=/opt/homebrew/opt/tailscale/bin/tailscaled
     if [ -x "$TAILSCALED" ]; then
       mkdir -p "$TS_STATE_DIR" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/SaneApps"
@@ -120,8 +121,8 @@ if [ -n "$TS" ]; then
 </dict>
 </plist>
 PLIST
-      launchctl bootout "gui/$(id -u)/$AGENT_LABEL" 2>/dev/null || true
-      launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST"
+      "$LAUNCHCTL" bootout "gui/$(id -u)/$AGENT_LABEL" 2>/dev/null || true
+      "$LAUNCHCTL" bootstrap "gui/$(id -u)" "$AGENT_PLIST"
       echo "Installed userspace tailscaled LaunchAgent ($AGENT_LABEL)."
       sleep 2
     fi
