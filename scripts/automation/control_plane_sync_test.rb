@@ -373,7 +373,11 @@ tests << lambda do
     write(File.join(repo, '.DS_Store'), "must survive too\n")
 
     _stdout, _stderr, status = run({ 'HOME' => home }, 'bash', File.join(ROOT, 'automation', 'git-sync-safe.sh'), '--snapshot-only') { true }
-    assert(status.success?, 'snapshot-only must preserve work without turning dirty state into a mutation failure')
+    assert(
+      status.success?,
+      "snapshot-only must preserve work without turning dirty state into a mutation failure\n" \
+      "STDOUT:\n#{_stdout}\nSTDERR:\n#{_stderr}"
+    )
     snapshot_root = File.join(home, 'SaneApps', 'infra', 'SaneProcess', 'outputs', 'dirty-work-snapshots', 'FixtureApp')
     latest = File.readlines(File.join(snapshot_root, 'latest.txt'), chomp: true)
     snapshot = latest[1]
