@@ -341,6 +341,24 @@ install-memory-sync-agent.sh
 3. Uses `sync-memory-mini.sh` for locked, backup-first, no-delete, conflict-preserving Claude/Serena/Codex parity.
 4. Triggers Mini snapshot-only preservation and pulls the snapshots to the Air without applying them.
 
+### dependency_baseline.rb
+
+Role-aware Air/Mini dependency convergence without copying every workstation
+utility onto the server or bulk-upgrading release lockfiles.
+
+```bash
+ruby scripts/automation/dependency_baseline.rb --check --role mini
+ruby scripts/automation/dependency_baseline.rb --apply --role mini
+ruby scripts/automation/dependency_baseline.rb --apply --role air
+```
+
+The baseline keeps Node 24 LTS, Homebrew Ruby, the shared build/release tools,
+and shared MCP packages current. It installs a restart-safe `.zshenv` PATH,
+preserves unrelated shell configuration with a timestamped backup, keeps
+role-specific npm tools separate, and removes the unpinned global Wrangler in
+favor of each repo's explicit release version. It does not upgrade SwiftPM,
+Gemfile, or npm lockfiles; those remain dedicated tested repo changes.
+
 ### website-consistency-check.sh
 
 Manual static site consistency pass for SaneApps marketing/docs surfaces.

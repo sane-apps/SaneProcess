@@ -104,6 +104,12 @@
       "cmd": ["ruby", "scripts/automation/control_plane_sync_test.rb"]
     },
     {
+      "path": "scripts/automation/dependency_baseline_test.rb",
+      "label": "Air and Mini dependency baseline tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/automation/dependency_baseline_test.rb"]
+    },
+    {
       "path": "scripts/automation/gpt_audit_test.py",
       "label": "SaneProcess Codex fan-out audit runner tests",
       "status": "required",
