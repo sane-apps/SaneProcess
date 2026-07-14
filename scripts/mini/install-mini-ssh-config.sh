@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Installs the controller-machine SSH aliases for the SaneApps Mac Mini.
-# Canonical `ssh mini` walks a connection ladder (LAN -> Tailscale ->
-# Cloudflare bridge) via ~/.local/bin/saneapps-mini-proxy so the same alias
+# Canonical `ssh mini` walks a connection ladder (LAN -> Tailscale) via
+# ~/.local/bin/saneapps-mini-proxy so the same alias
 # works on-LAN, off-LAN, and after either machine reboots.
 # `ssh mini-lan` keeps the direct Bonjour route for same-network diagnostics.
 #
@@ -23,15 +23,6 @@ BACKUP_STAMP="$(date +%Y%m%d-%H%M%S)"
 
 mkdir -p "$CONFIG_DIR" "$HOME/.local/bin"
 chmod 700 "$HOME/.ssh"
-
-if ! command -v cloudflared >/dev/null 2>&1 && [ ! -x /opt/homebrew/bin/cloudflared ]; then
-  if command -v brew >/dev/null 2>&1; then
-    brew install cloudflared 2>/dev/null || brew upgrade cloudflared
-  else
-    echo "cloudflared is required. Install it with Homebrew or put it on PATH." >&2
-    exit 1
-  fi
-fi
 
 if ! command -v tailscale >/dev/null 2>&1 && [ ! -x /opt/homebrew/bin/tailscale ]; then
   if command -v brew >/dev/null 2>&1; then
@@ -67,7 +58,7 @@ Host mini mini-remote
   ServerAliveInterval 30
   ServerAliveCountMax 3
   ConnectTimeout 15
-  # Connection ladder: LAN -> Tailscale -> Cloudflare TXT bridge.
+  # Connection ladder: LAN -> Tailscale.
   # See SaneProcess scripts/mini/saneapps-mini-proxy.sh (canonical source).
   ProxyCommand ~/.local/bin/saneapps-mini-proxy
 
@@ -141,7 +132,7 @@ PLIST
     echo "  $TS ${SOCK_ARGS[*]:-} up --hostname=\"\$(hostname -s | tr '[:upper:]' '[:lower:]')\""
   fi
 else
-  echo "tailscale not installed; ladder will use LAN + Cloudflare bridge only." >&2
+  echo "tailscale not installed; only the same-LAN route will be available." >&2
 fi
 
 echo "Installed $MINI_CONFIG and $PROXY_DEST"

@@ -86,6 +86,7 @@ class HookTests
       test("sanetools_refusal.rb syntax valid") { test_entry_syntax('sanetools_refusal.rb') }
       test("run_hook.sh syntax valid") { test_shell_entry_syntax('run_hook.sh') }
       test("settings use compact hook wrapper") { test_settings_use_hook_wrapper }
+      test("settings keep operator workflows usable without exposing private keys") { test_settings_operator_sandbox_policy }
     end
 
     # Test Circuit Breaker
@@ -429,6 +430,27 @@ class HookTests
       pre_tool_commands[0].include?('sane_catastrophic_guard.rb') &&
       pre_tool_commands[1].include?('sanetools.rb') &&
       commands.none? { |command| command.include?('if [ -n "${CLAUDECODE}${CLAUDE_CODE}" ]') }
+  end
+
+  def test_settings_operator_sandbox_policy
+    settings_path = File.expand_path('../../.claude/settings.json', __dir__)
+    settings = JSON.parse(File.read(settings_path))
+    permissions = settings.fetch('permissions')
+    sandbox = settings.fetch('sandbox')
+    filesystem = sandbox.fetch('filesystem')
+    network = sandbox.fetch('network')
+    private_key_paths = %w[id_ed25519 id_ed25519_github id_rsa id_ecdsa id_dsa].map { |name| "~/.ssh/#{name}" }
+    denied_reads = filesystem.fetch('denyRead')
+
+    !permissions.key?('disableBypassPermissionsMode') &&
+      sandbox.fetch('allowUnsandboxedCommands') == true &&
+      sandbox.fetch('excludedCommands').sort == ['rsync *', 'scp *', 'ssh *'] &&
+      filesystem.fetch('allowWrite').include?('~/.sanemaster') &&
+      filesystem.fetch('allowWrite').include?('/var/folders') &&
+      network.fetch('allowAllUnixSockets') == true &&
+      private_key_paths.all? { |path| denied_reads.include?(path) } &&
+      !denied_reads.include?('~/.ssh/id_*') &&
+      settings.fetch('hooks').fetch('PreToolUse').first.fetch('hooks').first.fetch('command').include?('sane_catastrophic_guard.rb')
   end
 
   # Circuit breaker tests

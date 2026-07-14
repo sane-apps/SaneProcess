@@ -248,6 +248,30 @@
       "cmd": ["ruby", "scripts/mini/mini_memory_guard_test.rb"]
     },
     {
+      "path": "scripts/mini/mini_weekly_restart_test.rb",
+      "label": "SaneProcess Mini weekly restart tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/mini/mini_weekly_restart_test.rb"]
+    },
+    {
+      "path": "scripts/mini/mini_access_test.rb",
+      "label": "SaneProcess Mini LAN and Tailscale access tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/mini/mini_access_test.rb"]
+    },
+    {
+      "path": "scripts/mini/mini_agentmemory_test.rb",
+      "label": "SaneProcess Mini AgentMemory service tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/mini/mini_agentmemory_test.rb"]
+    },
+    {
+      "path": "scripts/automation/memory_sync_test.rb",
+      "label": "SaneProcess Air and Mini memory sync tests",
+      "status": "required",
+      "cmd": ["ruby", "scripts/automation/memory_sync_test.rb"]
+    },
+    {
       "path": "scripts/hooks/session_start_cleanup_test.rb",
       "label": "SaneProcess session-start dev-server reaper classifier tests",
       "status": "required",
@@ -258,24 +282,6 @@
       "label": "SaneProcess verify two-strike escalation tests",
       "status": "required",
       "cmd": ["ruby", "scripts/sanemaster/verify_escalation_test.rb"]
-    },
-    {
-      "path": "scripts/mini/mini_train_cleanup_test.rb",
-      "label": "SaneProcess Mini train cleanup tests",
-      "status": "required",
-      "cmd": ["ruby", "scripts/mini/mini_train_cleanup_test.rb"]
-    },
-    {
-      "path": "scripts/mini/mini_train_process_test.rb",
-      "label": "SaneProcess Mini train process tests",
-      "status": "required",
-      "cmd": ["ruby", "scripts/mini/mini_train_process_test.rb"]
-    },
-    {
-      "path": "scripts/mini/training_daily_check_test.py",
-      "label": "SaneProcess Mini training daily check tests",
-      "status": "required",
-      "cmd": ["python3", "-B", "scripts/mini/training_daily_check_test.py"]
     },
     {
       "path": "scripts/sanemaster/dependencies_test.rb",

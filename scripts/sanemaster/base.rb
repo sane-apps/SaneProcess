@@ -29,6 +29,9 @@ module SaneMasterModules
     WORK_SESSION_STATE_FILE = File.expand_path('~/.sanemaster/work_session_state.json')
     WORK_SESSION_CAFFEINATE_PID_FILE = File.expand_path('~/.sanemaster/work_session_caffeinate.pid')
     WORK_SESSION_CAFFEINATE_LOG = File.expand_path('~/.sanemaster/work_session_caffeinate.log')
+    WORK_SESSION_RESTART_INHIBIT = File.expand_path('~/.sanemaster/restart-inhibit')
+    SERVER_MAINTENANCE_ACTIVE_DIR = File.expand_path('~/.sanemaster/maintenance-active')
+    SERVER_RESTART_EXCLUSIVE_DIR = File.expand_path('~/.sanemaster/restart-exclusive')
     WORK_SESSION_COMMANDS = Set.new(%w[
                                       verify
                                       clean
@@ -452,10 +455,28 @@ module SaneMasterModules
 
       ensure_sop_dirs
       FileUtils.mkdir_p(File.dirname(WORK_SESSION_STATE_FILE))
+      acquire_server_maintenance_holder!
+      FileUtils.touch(WORK_SESSION_RESTART_INHIBIT)
 
       activate_work_session_caffeinate
       capture_work_session_defaults unless File.exist?(WORK_SESSION_STATE_FILE)
       apply_work_session_defaults
+    end
+
+    def acquire_server_maintenance_holder!
+      return if @server_maintenance_holder_path
+      raise 'Mini weekly restart gate is active; retry after the restart window' if Dir.exist?(SERVER_RESTART_EXCLUSIVE_DIR)
+
+      FileUtils.mkdir_p(SERVER_MAINTENANCE_ACTIVE_DIR)
+      holder = File.join(SERVER_MAINTENANCE_ACTIVE_DIR, Process.pid.to_s)
+      File.write(holder, "#{Time.now.utc.iso8601}\n")
+      if Dir.exist?(SERVER_RESTART_EXCLUSIVE_DIR)
+        FileUtils.rm_f(holder)
+        raise 'Mini weekly restart gate became active; retry after the restart window'
+      end
+
+      @server_maintenance_holder_path = holder
+      at_exit { FileUtils.rm_f(holder) }
     end
 
     def work_session_on
@@ -468,6 +489,7 @@ module SaneMasterModules
       puts '🔓 --- [ WORK SESSION OFF ] ---'
       restore_work_session_defaults
       stop_work_session_caffeinate
+      FileUtils.rm_f(WORK_SESSION_RESTART_INHIBIT)
       print_work_session_status
     end
 

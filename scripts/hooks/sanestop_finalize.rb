@@ -1,6 +1,5 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-
 # ==============================================================================
 # SaneStop Finalize
 # ==============================================================================
@@ -14,7 +13,6 @@
 # constants (LOG_FILE, SOP_CSV, SESSION_LEARNINGS_FILE, ...) remain defined in
 # sanestop.rb and resolve here via top-level constant fallback.
 # ==============================================================================
-
 require 'json'
 require 'time'
 require 'date'
@@ -28,7 +26,6 @@ require_relative 'core/process_metrics'
 require_relative 'core/state_manager'
 require_relative 'core/visual_receipt'
 require_relative 'sanestop_learnings'
-
 TRANSCRIPT_TOKEN_KEYS = %w[
   input_tokens output_tokens total_tokens cached_tokens cache_read_input_tokens
   cache_creation_input_tokens reasoning_tokens
@@ -37,14 +34,17 @@ TRANSCRIPT_TOKEN_TOTAL_COMPONENTS = %w[
   input_tokens output_tokens cached_tokens cache_read_input_tokens
   cache_creation_input_tokens
 ].freeze unless defined?(TRANSCRIPT_TOKEN_TOTAL_COMPONENTS)
-
 # === RULE #4 ENFORCEMENT ===
 # Block session end if edits were made but no tests/verification ran.
 # This closes the gap where config changes, code changes, etc. go untested.
-
 # Files that don't require test verification (docs, config that's read-only, etc.)
 DOC_ONLY_EXTENSIONS = %w[.md .txt .mdx .rst .adoc].freeze
-
+def normalize_worktree_path(path, root = Dir.pwd)
+  expanded = File.expand_path(path.to_s, root)
+  File.realdirpath(expanded)
+rescue StandardError
+  expanded
+end
 # Net uncommitted source state. Returns the list of changed working-tree paths
 # (modified, staged, or untracked), or nil when the directory is not a git repo
 # or git is unavailable. RULE #4 keys off THIS, not the cumulative session edit
@@ -53,19 +53,25 @@ DOC_ONLY_EXTENSIONS = %w[.md .txt .mdx .rst .adoc].freeze
 # turn-end. The old counter could only be satisfied by a fresh build, so a
 # published release looped here forever.
 def uncommitted_working_tree_files(cwd = Dir.pwd)
-  out, status = Open3.capture2e('git', '-C', cwd, 'status', '--porcelain', '--untracked-files=all')
+  root_out, root_status = Open3.capture2e('git', '-C', cwd, 'rev-parse', '--show-toplevel')
+  return nil unless root_status.success?
+  root = root_out.strip
+  out, status = Open3.capture2e('git', '-C', root, 'status', '--porcelain', '--untracked-files=all')
   return nil unless status.success?
-
   # map+compact, not filter_map: hooks run under the system ruby (2.6), where
   # filter_map does not exist — it raised NoMethodError into the rescue below,
   # silently reverting RULE #4 to the counter behavior it replaces.
-  out.each_line.map do |line|
+  paths = out.each_line.map do |line|
     path = line[3..-1]&.strip
     next nil if path.nil? || path.empty?
-
     # Rename entries are "old -> new"; the new path is what currently exists.
-    path.include?(' -> ') ? path.split(' -> ').last : path
+    path = path.split(' -> ').last if path.include?(' -> ')
+    normalize_worktree_path(path.delete_prefix('"').delete_suffix('"'), root)
   end.compact
+  baseline = Array(StateManager.get(:edits)[:baseline_dirty_files]).map do |path|
+    normalize_worktree_path(path, root)
+  end
+  paths - baseline
 rescue StandardError
   nil
 end
@@ -105,8 +111,10 @@ def check_verification_required
   # not count, so this stays scoped to the session's own edits.
   dirty = uncommitted_working_tree_files
   unless dirty.nil?
-    dirty_basenames = dirty.map { |f| File.basename(f) }.to_set
-    still_uncommitted = non_doc_edits.select { |f| dirty_basenames.include?(File.basename(f)) }
+    dirty_paths = dirty.to_set
+    still_uncommitted = non_doc_edits.select do |file|
+      dirty_paths.include?(normalize_worktree_path(file))
+    end
     return nil if still_uncommitted.empty?
 
     return verification_block_message(still_uncommitted.length, still_uncommitted)

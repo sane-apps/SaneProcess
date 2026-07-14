@@ -1,6 +1,5 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-
 require 'stringio'
 require 'tmpdir'
 require 'json'
@@ -8,7 +7,6 @@ require 'time'
 require 'open3'
 require 'fileutils'
 require_relative 'core/state_manager'
-
 module SaneStopPersistenceTest
   def self.run(process_stop_proc)
     passed = 0
@@ -16,7 +14,6 @@ module SaneStopPersistenceTest
     # === HANDOFF ENFORCEMENT TESTS ===
     warn ''
     warn 'Testing handoff enforcement:'
-
     # Test: Significant edits without handoff update = BLOCK
     StateManager.reset(:edits)
     StateManager.reset(:verification)
@@ -39,7 +36,6 @@ module SaneStopPersistenceTest
       failed += 1
       warn "  FAIL: Should block without handoff, got exit #{exit_code}"
     end
-
     # Test: Significant edits WITH handoff + memory = allow
     StateManager.reset(:verification)
     StateManager.update(:handoff_tracking) do |h|
@@ -60,7 +56,6 @@ module SaneStopPersistenceTest
       failed += 1
       warn "  FAIL: Should allow with handoff+memory, got exit #{exit_code}"
     end
-
     # Test: Few edits (below threshold) without handoff = allow
     StateManager.reset(:handoff_tracking)
     StateManager.update(:handoff_tracking) do |h|
@@ -81,7 +76,6 @@ module SaneStopPersistenceTest
       failed += 1
       warn "  FAIL: Below threshold should allow, got exit #{exit_code}"
     end
-
     # Test: Always-persist file below threshold still blocks without handoff/memory
     StateManager.reset(:handoff_tracking)
     StateManager.update(:handoff_tracking) do |h|
@@ -104,7 +98,6 @@ module SaneStopPersistenceTest
       failed += 1
       warn "  FAIL: Always-persist work should block, got exit #{exit_code}"
     end
-
     # Test: Always-persist file with handoff + memory allows stop
     StateManager.reset(:verification)
     StateManager.update(:handoff_tracking) do |h|
@@ -127,11 +120,9 @@ module SaneStopPersistenceTest
       failed += 1
       warn "  FAIL: Always-persist work should allow with handoff+memory, got exit #{exit_code}"
     end
-
     # === TOOL DISCOVERY ENFORCEMENT TESTS ===
     warn ''
     warn 'Testing tool discovery enforcement:'
-
     StateManager.reset(:skill)
     StateManager.update(:skill) do |s|
       s[:required] = 'docs_audit'
@@ -152,7 +143,6 @@ module SaneStopPersistenceTest
       failed += 1
       warn "  FAIL: docs_audit without subagents should block, got #{exit_code}"
     end
-
     # Guidance must name both supported independent-review routes. Task-only
     # wording incorrectly rejects completed read-only Codex fan-out lanes.
     captured = StringIO.new

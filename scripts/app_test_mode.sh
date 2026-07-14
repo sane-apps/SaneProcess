@@ -6,7 +6,7 @@ set -euo pipefail
 # - Defaults to no-keychain launch path to avoid prompt floods.
 # - Supports local and mini hosts.
 
-APPS=(SaneBar SaneClip SaneClick SaneHosts SaneSales SaneSync SaneVideo)
+APPS=(SaneBar SaneClip SaneClick SaneHosts SaneSales SaneVideo)
 
 HOST="local"
 LAUNCH=0
@@ -95,7 +95,6 @@ fallback_bundle_id() {
     SaneClip) echo "com.saneclip.app" ;;
     SaneHosts) echo "com.mrsane.SaneHosts" ;;
     SaneSales) echo "com.sanesales.app" ;;
-    SaneSync) echo "com.sanesync.SaneSync" ;;
     SaneVideo) echo "com.sanevideo.app" ;;
     *) echo "com.saneapps.$(to_lower "$app")" ;;
   esac
@@ -752,7 +751,6 @@ if [ -z "$BUNDLE_ID" ]; then
     SaneClip) BUNDLE_ID="com.saneclip.app" ;;
     SaneHosts) BUNDLE_ID="com.mrsane.SaneHosts" ;;
     SaneSales) BUNDLE_ID="com.sanesales.app" ;;
-    SaneSync) BUNDLE_ID="com.sanesync.SaneSync" ;;
     SaneVideo) BUNDLE_ID="com.sanevideo.app" ;;
     *) BUNDLE_ID="com.saneapps.$(printf '%s' "$APP" | tr '[:upper:]' '[:lower:]')" ;;
   esac

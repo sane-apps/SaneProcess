@@ -133,7 +133,7 @@ def uncommitted_working_tree_paths(cwd)
   # Enumerator#filter_map does not exist — it raised NoMethodError into the
   # rescue below, silently reverting this gate to counter behavior (the exact
   # stale-entry deadlock the net-diff judgment exists to fix).
-  out.each_line.map do |line|
+  paths = out.each_line.map do |line|
     path = line[3..-1]&.strip
     next nil if path.nil? || path.empty?
 
@@ -143,8 +143,37 @@ def uncommitted_working_tree_paths(cwd)
     path = path[1..-2] if path.start_with?('"') && path.end_with?('"')
     normalize_tree_path(File.expand_path(path, root))
   end.compact
+
+  baseline = Array(hook_state_section(cwd, :edits)['baseline_dirty_files']).map do |path|
+    normalize_tree_path(File.expand_path(path.to_s, root))
+  end
+  paths - baseline
 rescue StandardError
   nil
+end
+
+def live_customer_facing_ui_files(cwd, visual)
+  candidates = Array(visual['required_files_paths'])
+  return [] if candidates.empty?
+
+  edits = hook_state_section(cwd, :edits)
+  baseline = Array(edits['baseline_dirty_files']).map do |path|
+    normalize_tree_path(File.expand_path(path.to_s, cwd))
+  end.to_set
+  edited = Array(edits['unique_files']).map do |path|
+    normalize_tree_path(File.expand_path(path.to_s, cwd))
+  end.to_set
+
+  candidates.map do |path|
+    expanded = normalize_tree_path(File.expand_path(path.to_s, cwd))
+    next nil unless edited.include?(expanded)
+    next nil if baseline.include?(expanded)
+    next nil unless File.exist?(expanded)
+
+    expanded
+  end.compact
+rescue StandardError
+  []
 end
 
 def current_source_fingerprint(cwd)
@@ -214,7 +243,9 @@ rescue StandardError
 end
 
 visual = visual_state(cwd)
-if visual['required']
+real_ui_files = live_customer_facing_ui_files(cwd, visual)
+explicit_visual_request = visual['reason'] == 'prompt_requested_visual_verification'
+if visual['required'] && (explicit_visual_request || real_ui_files.any?)
   visual_started_at = last_edit_time(cwd) || Time.now - 3600
   receipt_paths = SaneVisualReceipt.valid_receipt_paths(
     cwd: cwd,

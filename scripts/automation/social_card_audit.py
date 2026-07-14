@@ -74,7 +74,6 @@ def build_default_sites(root: Path = SANE_APPS_ROOT) -> list[Site]:
             "/assets/social-card.png",
         ),
         Site("SaneVideo", root / "apps/SaneVideo/docs", "https://sanevideo.com", "/images/og-image.png"),
-        Site("SaneSync", root / "apps/SaneSync/docs", "https://sanesync.com", "/images/og-image.png"),
         Site(
             "SaneApps",
             root / "web/saneapps.com",

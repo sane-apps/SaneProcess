@@ -83,7 +83,8 @@ if is_ai_session && running_on_macbook_air && ! approved_local_fallback; then
       echo "" >&2
       echo "   This would open or reveal release/dashboard state on the MacBook Air." >&2
       echo "   Use the Mini instead:" >&2
-      echo "     ~/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh open-current <url>" >&2
+      echo "     Brave on the Mini (Claude-in-Chrome widget / Codex Chrome lane) for dashboards" >&2
+      echo "     ~/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh open-current <url>  (App Store Connect ONLY)" >&2
       echo "     ssh mini 'open -R /path/on/mini'" >&2
       echo "" >&2
       echo "   Fallback requires explicit approval via:" >&2
@@ -97,7 +98,7 @@ if is_ai_session && running_on_macbook_air && ! approved_local_fallback; then
   if [[ "$command_text" == *"app.lemonsqueezy.com"* || "$command_text" == *"auth.lemonsqueezy.com"* || "$command_text" == *"LemonSqueezy-Uploads"* ]]; then
     echo "🔴 BLOCKED: Mini-first SaneApps GUI guard" >&2
     echo "   Command: ${command_text% }" >&2
-    echo "   Use Mini Safari/Finder for Lemon Squeezy dashboard sync work." >&2
+    echo "   Use Brave on the Mini (Claude-in-Chrome widget / Codex Chrome lane) + Mini Finder for Lemon Squeezy dashboard sync work. Never Safari." >&2
     exit 2
   fi
 fi

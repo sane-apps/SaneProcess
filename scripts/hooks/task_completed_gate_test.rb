@@ -121,6 +121,19 @@ def edit_state(files, verified: false, last_edit_at: nil)
   }
 end
 
+def visual_edit_state(path = 'Sources/ContentView.swift', **visual_overrides)
+  state = edit_state([path], last_edit_at: Time.now.utc.iso8601)
+  # Keep these tests focused on the visual gate; verification enforcement has
+  # its own coverage above and keys on the edit count.
+  state['edits']['count'] = 0
+  state['visual_verification'] = {
+    'required' => true,
+    'reason' => 'customer_facing_ui_file_edited',
+    'required_files_paths' => [path]
+  }.merge(visual_overrides.transform_keys(&:to_s))
+  state
+end
+
 def write_visual_receipt(dir, generated_at: Time.now.utc.iso8601)
   output_dir = File.join(dir, 'outputs', 'visual-audit-test')
   FileUtils.mkdir_p(output_dir)
@@ -271,7 +284,7 @@ exit(run_tests('TaskCompleted Gate Tests') do
 
     test('blocks required visual work without screenshot audit evidence') do
       app_name = 'TaskGateVisual'
-      state = { 'visual_verification' => { 'required' => true } }
+      state = visual_edit_state
 
       _stdout, stderr, status = run_task_completed_gate(app_name: app_name, state: state)
 
@@ -283,13 +296,13 @@ exit(run_tests('TaskCompleted Gate Tests') do
     test('blocks loose visual state without structured receipt') do
       app_name = 'TaskGateLooseVisual'
       state = {
-        'visual_verification' => {
-          'required' => true,
+        **visual_edit_state,
+        'visual_verification' => visual_edit_state['visual_verification'].merge(
           'evidence_commands' => ['screenshot outputs/visual-audit/fake.png'],
           'screenshot_paths' => ['outputs/visual-audit/fake.png'],
           'audit_recorded' => true,
           'audit_files' => ['SESSION_HANDOFF.md']
-        }
+        )
       }
 
       _stdout, stderr, status = run_task_completed_gate(app_name: app_name, state: state)
@@ -301,12 +314,7 @@ exit(run_tests('TaskCompleted Gate Tests') do
 
     test('blocks visual audit receipts that do not map screenshots to claims') do
       app_name = 'TaskGateUnmappedVisual'
-      state = {
-        'visual_verification' => {
-          'required' => true,
-          'audit_files' => ['outputs/visual-audit-test/receipt.json']
-        }
-      }
+      state = visual_edit_state(audit_files: ['outputs/visual-audit-test/receipt.json'])
 
       _stdout, stderr, status = run_task_completed_gate(
         app_name: app_name,
@@ -337,12 +345,7 @@ exit(run_tests('TaskCompleted Gate Tests') do
 
     test('allows visual task completion with structured Mini visual receipt') do
       app_name = 'TaskGateStructuredVisual'
-      state = {
-        'visual_verification' => {
-          'required' => true,
-          'audit_files' => ['outputs/visual-audit-test/receipt.json']
-        }
-      }
+      state = visual_edit_state(audit_files: ['outputs/visual-audit-test/receipt.json'])
 
       _stdout, _stderr, status = run_task_completed_gate(
         app_name: app_name,
@@ -356,17 +359,7 @@ exit(run_tests('TaskCompleted Gate Tests') do
 
     test('blocks visual receipt generated before later UI edit') do
       app_name = 'TaskGateStaleVisual'
-      state = {
-        'edits' => {
-          'count' => 1,
-          'unique_files' => ['Sources/ContentView.swift'],
-          'last_edit_at' => Time.now.utc.iso8601
-        },
-        'visual_verification' => {
-          'required' => true,
-          'audit_files' => ['outputs/visual-audit-test/receipt.json']
-        }
-      }
+      state = visual_edit_state(audit_files: ['outputs/visual-audit-test/receipt.json'])
 
       _stdout, stderr, status = run_task_completed_gate(
         app_name: app_name,
@@ -459,6 +452,38 @@ exit(run_tests('TaskCompleted Gate Tests') do
           File.write(File.join(dir, 'scratch-unrelated.txt'), "not a session edit\n")
           File.write(File.join(dir, 'unrelated.swift'), "// dirty but never edited by this session\n")
         end
+      )
+
+      assert_eq(status.exitstatus, 0, stderr)
+      true
+    end
+
+
+    test('pre-existing dirty file does not become current-session work') do
+      state = edit_state(['Sources/Existing.swift'])
+      state['edits']['baseline_dirty_files'] = ['Sources/Existing.swift']
+
+      _stdout, stderr, status = run_task_completed_gate(
+        app_name: 'TaskGateBaselineDirty',
+        state: state
+      )
+
+      assert_eq(status.exitstatus, 0, stderr)
+      true
+    end
+
+    test('stale UI requirement without a current-session UI edit does not block') do
+      state = edit_state(['scripts/build.rb'])
+      state['visual_verification'] = {
+        'required' => true,
+        'reason' => 'customer_facing_ui_file_edited',
+        'required_files_paths' => ['Sources/OldView.swift']
+      }
+
+      _stdout, stderr, status = run_task_completed_gate(
+        app_name: 'TaskGateStaleVisualState',
+        state: state,
+        metrics_rows: verified_metrics('TaskGateStaleVisualState')
       )
 
       assert_eq(status.exitstatus, 0, stderr)

@@ -50,6 +50,12 @@ class MachineCleanupHarness
     @routed_args = args.dup
     true
   end
+
+  def system(*args, **kwargs)
+    return true if args.first == 'xcrun'
+
+    super
+  end
 end
 
 include TestFramework
@@ -139,7 +145,7 @@ exit(run_tests('SaneMaster Machine Cleanup Tests') do
       assert_eq(subject.routed_args, ['--host', 'mini', '--server', '--apply'])
     end
 
-    test('plans cache cleanup only through safe roots and empties trash on apply') do
+    test('plans cache cleanup only through safe roots and preserves unrelated Trash on apply') do
       with_home do |home|
         cache_path = mkdir_home_path(home, '.cache/huggingface')
         trash_path = mkdir_home_path(home, '.Trash')
@@ -165,7 +171,7 @@ exit(run_tests('SaneMaster Machine Cleanup Tests') do
         result = subject.send(:apply_machine_cleanup_plan, plan, quiet: true)
         assert_eq(result[:success], true)
         assert_includes(subject.trashed, File.expand_path(cache_path))
-        assert(subject.emptied >= 1, 'expected Trash to be emptied after moving cache paths')
+        assert_eq(subject.emptied, 0)
       end
     end
 
@@ -197,7 +203,7 @@ exit(run_tests('SaneMaster Machine Cleanup Tests') do
       assert_eq(subject.send(:machine_cleanup_safe_path?, File.expand_path('~/SaneApps/apps/SaneSales')), false)
     end
 
-    test('server mode plans generated repo artifacts, process outputs, release staging, codex sessions, DerivedData, and simulator reset') do
+    test('server mode preserves process evidence and Codex state while pruning generated artifacts') do
       with_home do |home|
         downloads = mkdir_home_path(home, 'Downloads')
         File.write(File.join(downloads, 'old-installer.zip'), 'x')
@@ -249,21 +255,19 @@ exit(run_tests('SaneMaster Machine Cleanup Tests') do
 
         paths = plan[:actions].map { |action| action[:path] }.compact
         categories = plan[:actions].map { |action| action[:category] }
-        downloads_action = plan[:actions].find { |action| action[:path] == downloads }
-        process_outputs_action = plan[:actions].find { |action| action[:path] == process_outputs }
-        assert_eq(downloads_action[:type], 'trash_children')
-        assert_eq(process_outputs_action[:type], 'trash_children')
+        assert(!paths.include?(downloads), 'routine server cleanup must preserve Downloads')
+        assert(!paths.include?(process_outputs), 'SaneProcess receipts and dirty-work snapshots must survive cleanup')
         assert_includes(paths, repo_build)
         assert(!paths.include?(repo_outputs), 'expected generic app outputs to be preserved for QA evidence')
         assert_includes(paths, sanevideo_outputs)
         assert_includes(paths, nested_package_build)
         assert_includes(paths, release_work)
-        assert_includes(paths, codex_sessions)
-        assert_includes(paths, codex_archived_sessions)
+        assert(!paths.include?(codex_sessions), 'live Codex session state must survive cleanup')
+        assert(!paths.include?(codex_archived_sessions), 'archived Codex session state must survive cleanup')
         assert_includes(paths, npm_npx)
         assert_includes(paths, npm_cache)
         assert_includes(paths, scratch)
-        assert_includes(paths, codex_runs)
+        assert(!paths.include?(codex_runs), 'Codex run evidence must survive cleanup')
         assert_includes(paths, xcodebuildmcp_workspaces)
         assert_includes(paths, derived_data)
         assert_includes(categories, 'server_simulator_delete')
@@ -348,8 +352,11 @@ exit(run_tests('SaneMaster Machine Cleanup Tests') do
         preserve_apps: []
       })
 
-      skip = active_plan[:actions].find { |action| action[:category] == 'server_codex_residue' }
-      assert_eq(skip[:type], 'skip')
+      skip = active_plan[:actions].find do |action|
+        action[:type] == 'skip' && action[:category] == 'server_generated_artifacts'
+      end
+      assert(skip, 'active Codex GUI should block the entire generated-artifact cleanup lane')
+      assert_includes(skip[:reason], 'codex_gui_active')
     end
 
     test('server mode clears email review media from Desktop without touching SaneVideo evidence') do
@@ -405,19 +412,19 @@ exit(run_tests('SaneMaster Machine Cleanup Tests') do
       Dir.define_singleton_method(:glob) { |pattern| original_glob.call(pattern) } if original_glob
     end
 
-    test('trash_children clears protected folder contents without trashing folder root') do
+    test('trash_children clears an explicitly generated folder without trashing folder root') do
       with_home do |home|
-        downloads = mkdir_home_path(home, 'Downloads')
-        child = File.join(downloads, 'old-build.dmg')
+        generated = mkdir_home_path(home, 'tmp')
+        child = File.join(generated, 'old-build.dmg')
         File.write(child, 'x')
-        subject = MachineCleanupHarness.new(sizes: { File.expand_path(downloads) => 1.0 })
+        subject = MachineCleanupHarness.new(sizes: { File.expand_path(generated) => 1.0 })
 
         plan = {
           actions: [
             {
               type: 'trash_children',
               category: 'server_generated_artifacts',
-              path: downloads,
+              path: generated,
               size_gb: 1.0,
               reason: 'test'
             }
@@ -427,7 +434,22 @@ exit(run_tests('SaneMaster Machine Cleanup Tests') do
 
         assert_eq(result[:success], true)
         assert_includes(subject.trashed, child)
-        assert(!subject.trashed.include?(downloads), 'expected Downloads root to stay in place')
+        assert(!subject.trashed.include?(generated), 'expected generated root to stay in place')
+      end
+    end
+
+    test('server cleanup rejects symlinked roots and symlinked children') do
+      with_home do |home|
+        outside = mkdir_home_path(home, 'outside')
+        linked_tmp = File.join(home, 'tmp')
+        File.symlink(outside, linked_tmp)
+        safe_tmp = mkdir_home_path(home, 'SaneApps/tmp')
+        linked_child = File.join(safe_tmp, 'linked')
+        File.symlink(outside, linked_child)
+        subject = MachineCleanupHarness.new
+
+        assert_eq(subject.send(:machine_cleanup_safe_path?, linked_tmp), false)
+        assert_eq(subject.send(:machine_cleanup_safe_path?, linked_child), false)
       end
     end
 
@@ -564,7 +586,7 @@ exit(run_tests('SaneMaster Machine Cleanup Tests') do
       end
     end
 
-    test('server mode skips repo artifact pruning while build or training work is active') do
+    test('server mode skips repo artifact pruning while build, training, or Codex work is active') do
       with_home do |home|
         repo_build = mkdir_home_path(home, 'SaneApps/apps/SaneBar/.build')
         subject = MachineCleanupHarness.new(
@@ -590,6 +612,22 @@ exit(run_tests('SaneMaster Machine Cleanup Tests') do
         assert(!categories.include?('server_simulator_delete'), 'expected active build work to prevent simulator reset')
         assert(plan[:actions].any? { |action| action[:type] == 'skip' && action[:category] == 'server_generated_artifacts' })
         assert(plan[:actions].any? { |action| action[:type] == 'skip' && action[:category] == 'server_simulator' })
+      end
+
+      with_home do |home|
+        repo_build = mkdir_home_path(home, 'SaneApps/apps/SaneBar/.build')
+        subject = MachineCleanupHarness.new(
+          ps_rows: [{ pid: 20, ppid: 1, pgid: 20, stat: 'S', etime: '01:00', command: '/Applications/Codex.app/Contents/MacOS/Codex' }],
+          sizes: { File.expand_path(repo_build) => 4.0 }
+        )
+        plan = subject.send(:build_machine_cleanup_plan, {
+          apply: false, host: 'local', server: true, min_free_gb: 30,
+          cache_threshold_gb: 99, deriveddata_age_days: 2,
+          trash_threshold_gb: 99, preserve_apps: []
+        })
+        assert(!plan[:actions].any? { |action| action[:path] == repo_build },
+               'active Codex work must block generated artifact pruning')
+        assert(plan[:actions].any? { |action| action[:type] == 'skip' && action[:reason].include?('codex_gui_active') })
       end
     end
   end

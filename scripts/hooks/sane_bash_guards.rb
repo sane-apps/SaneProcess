@@ -352,12 +352,57 @@ def block_destructive_keychain_if_needed(payload)
   exit 2
 end
 
+# Safari automation is banned (owner rule 2026-07-14): Safari is routinely not
+# running on the Mini, loses sessions, and its automation path breaks. All agent
+# browser work runs in Brave (Claude-in-Chrome widget / Codex Chrome lane). Only
+# fire on actual INVOCATION of Safari automation — an osascript call that
+# targets Safari, or `open -a Safari` / `open -b com.apple.Safari` at a command
+# position (local or ssh-wrapped). Mentions (grep patterns, commit messages,
+# file edits) do not match. The App Store Connect lane is exempt because its
+# wrappers (mini-safari.sh, appstore_submit.rb) run their AppleScript
+# internally and never surface these patterns on the Bash command line.
+def safari_automation_command?(command)
+  return false unless command
+
+  tells_safari = /tell\s+app(?:lication)?\s+.?["']Safari["']/i
+  return true if command.match?(/\bosascript\b/) && command.match?(tells_safari)
+
+  open_safari = /open\s+(?:-[a-zA-Z]+\s+)*(?:-a\s+["']?Safari["']?|-b\s+["']?com\.apple\.Safari["']?)(?:\s|$)/
+  local  = /(?:\A|[;&|(){}\n]|&&|\|\|)\s*#{open_safari.source}/
+  remote = /\bssh\s+\S+\s+["']\s*#{open_safari.source}/
+  command.match?(local) || command.match?(remote)
+end
+
+def block_safari_automation_if_needed(payload)
+  command = bash_command_from_payload(payload)
+  return unless safari_automation_command?(command)
+
+  warn <<~MESSAGE
+    🔴 BLOCKED: Safari automation (owner rule 2026-07-14 — Brave only)
+
+    Safari scripting (osascript `tell application "Safari"`, `open -a Safari`)
+    is banned for agent browser work: Safari is routinely not running, loses
+    portal sessions, and the automation path breaks.
+
+    Use Brave instead:
+      • Claude: the Claude-in-Chrome widget connected to Brave on the Mini
+        (list_connected_browsers → select_browser → tabs_context_mcp → navigate)
+      • Codex: its Brave/Chrome control lane
+      • Portal tokens (e.g. Setapp): sign in at the portal in Brave on the Mini,
+        or set the stored token (SETAPP_PORTAL_TOKEN) — the scripts read Brave.
+
+    Sole exception: App Store Connect via mini-safari.sh (ASC lane only).
+  MESSAGE
+  exit 2
+end
+
 payload = $stdin.read.force_encoding(Encoding::UTF_8)
 original_stdin = $stdin
 
 block_destructive_keychain_if_needed(payload)
 block_raw_mini_screenshot_if_needed(payload)
 block_detached_mini_qa_if_needed(payload)
+block_safari_automation_if_needed(payload)
 
 GUARDS.each do |guard|
   $stdin = StringIO.new(payload)

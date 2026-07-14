@@ -89,6 +89,7 @@ def fake_transport!(bin_dir)
 
     case "$command" in
       *'printf %s "$HOME"'*) printf '%s' "$REMOTE_HOME" ;;
+      *'hostname -s'*) printf '%s\n' 'fixture-mini' ;;
       *'command -v node'*) printf '%s\n' "$REMOTE_NODE" ;;
       *'MIN_CODEX_CLI_VERSION='*'bash -s'*) cat >/dev/null ;;
       *'/.local/bin/codex" --version'*) printf 'codex-cli 0.139.0\n' ;;
@@ -151,11 +152,14 @@ def create_sync_fixture(home, remote_home)
     model = "gpt-5.6"
     command = "#{home}/bin/node"
     helper = "#{home}/SaneApps/infra/SaneProcess/scripts/codex-bin/check-mcps"
+
+    [mcp_servers.agentmemory]
+    command = "#{home}/SaneApps/infra/SaneProcess/scripts/automation/agentmemory-mcp-air.sh"
+    args = []
   TOML
   write(File.join(home, '.codex', 'SKILLS_REGISTRY.md'), "fixture registry\n")
   write(File.join(home, '.codex', 'skills', 'fixture', 'SKILL.md'), "fixture skill\n")
   write(File.join(home, '.agents', 'skills', 'shared', 'SKILL.md'), "shared skill\n")
-  write(File.join(home, '.claude', 'memory', 'knowledge-graph.jsonl'), "{\"fixture\":true}\n")
 
   CODEX_BIN_FILES.each do |name|
     write(File.join(home, 'SaneApps', 'infra', 'SaneProcess', 'scripts', 'codex-bin', name),
@@ -198,7 +202,7 @@ tests = []
 
 tests << lambda do
   dump = parse_dump(run({}, 'bash', SYNC, '--dump-config'))
-  assert(dump == { 'MINI_HOST' => 'mini', 'QUIET' => '0', 'RESTART_CODEX' => '1' },
+  assert(dump == { 'MINI_HOST' => 'mini', 'QUIET' => '0', 'RESTART_CODEX' => '0' },
          "unexpected sync config: #{dump}")
 
   _stdout, stderr, status = run({}, 'bash', SYNC, '--activate-mini-runs', '--dump-config') { true }
@@ -207,7 +211,7 @@ end
 
 tests << lambda do
   dump = parse_dump(run({}, 'bash', RECONCILE, '--dump-config'))
-  assert(dump == { 'MINI_HOST' => 'mini', 'QUIET' => '0', 'SYNC_CONTROL_PLANE' => '1' },
+  assert(dump == { 'MINI_HOST' => 'mini', 'QUIET' => '0', 'SYNC_CONTROL_PLANE' => '0' },
          "unexpected reconcile config: #{dump}")
 
   _stdout, stderr, status = run({}, 'bash', RECONCILE, '--activate-mini-runs', '--dump-config') { true }
@@ -228,6 +232,9 @@ tests << lambda do
   end
   assert(!reconcile_source.include?('--reconcile-dirty'),
          'unattended Air/Mini reconcile must not auto-stash dirty app repos')
+  air_memory = File.read(File.join(ROOT, 'automation', 'agentmemory-mcp-air.sh'))
+  assert(air_memory.include?('ConnectTimeout=3'), 'Air AgentMemory tunnel must fail quickly')
+  assert(air_memory.include?('-L 3111:127.0.0.1:3111 mini'), 'Air AgentMemory tunnel target drifted')
 end
 
 tests << lambda do
@@ -264,13 +271,13 @@ tests << lambda do
     remote_config = File.read(File.join(remote_home, '.codex', 'config.toml'))
     assert(remote_config.include?('command = "/fixture/bin/node"'), 'Mini config did not rewrite Node path')
     assert(remote_config.include?(remote_home), 'Mini config did not rewrite local home path')
+    assert(remote_config.include?('command = "npx"'), 'Mini config did not install direct AgentMemory MCP')
+    assert(remote_config.include?('AGENTMEMORY_URL = "http://localhost:3111"'), 'Mini AgentMemory URL missing')
+    assert(!remote_config.include?('agentmemory-mcp-air.sh'), 'Air AgentMemory tunnel leaked into Mini config')
     assert(File.file?(File.join(remote_home, '.codex', 'skills', 'fixture', 'SKILL.md')),
            'Codex skill did not sync')
     assert(File.file?(File.join(remote_home, '.agents', 'skills', 'shared', 'SKILL.md')),
            'shared agent skill did not sync')
-    assert(File.file?(File.join(remote_home, '.claude', 'memory', 'knowledge-graph.jsonl')),
-           'knowledge graph cache did not sync')
-
     CODEX_BIN_FILES.each do |name|
       assert(File.file?(File.join(remote_home, '.codex', 'bin', name)), "Codex helper did not sync: #{name}")
     end
@@ -321,7 +328,7 @@ tests << lambda do
       'REMOTE_HOME' => remote_home,
       'RECONCILE_LOG' => log
     }
-    run(env, 'bash', File.join(automation_dir, 'reconcile-air-mini.sh'), 'mini', '--quiet')
+    run(env, 'bash', File.join(automation_dir, 'reconcile-air-mini.sh'), 'mini', '--quiet', '--sync-control-plane')
     lines = File.readlines(log, chomp: true)
     assert(lines.count { |line| line.start_with?("sync\t") } == 1, "expected one control-plane sync: #{lines}")
     assert(lines.include?("sync\tmini --quiet --no-restart"), "unsafe sync args: #{lines}")
@@ -330,6 +337,8 @@ tests << lambda do
     FORBIDDEN_AUTOMATION_PATHS.each do |token|
       assert(lines.none? { |line| line.include?(token) }, "reconcile touched #{token}: #{lines}")
     end
+    assert(File.read(START_WORKDAY).include?('"$MINI_HOST" --no-restart'),
+           'start-workday must never interrupt an active Mini Codex process')
   end
 end
 
@@ -339,6 +348,41 @@ tests << lambda do
          'legacy auto-stash path must require explicit operator opt-in')
   assert(git_sync_source.include?('no longer auto-stashes canonical repos by default'),
          'auto-stash refusal should explain why it stopped')
+  assert(git_sync_source.include?('--snapshot-only'), 'non-clobbering dirty-work snapshot lane missing')
+  assert(git_sync_source.include?('without fetch'), 'snapshot-only contract must forbid repo mutation')
+end
+
+tests << lambda do
+  Dir.mktmpdir('dirty-snapshot-test') do |tmp|
+    home = File.join(tmp, 'home')
+    repo = File.join(home, 'SaneApps', 'apps', 'FixtureApp')
+    bare = File.join(tmp, 'origin.git')
+    FileUtils.mkdir_p(repo)
+    run({}, 'git', 'init', '--bare', bare)
+    run({}, 'git', '-C', repo, 'init', '-b', 'main')
+    run({}, 'git', '-C', repo, 'config', 'user.email', 'fixture@example.com')
+    run({}, 'git', '-C', repo, 'config', 'user.name', 'Fixture')
+    write(File.join(repo, 'tracked.txt'), "clean\n")
+    run({}, 'git', '-C', repo, 'add', 'tracked.txt')
+    run({}, 'git', '-C', repo, 'commit', '-m', 'fixture')
+    run({}, 'git', '-C', repo, 'remote', 'add', 'origin', bare)
+    run({}, 'git', '-C', repo, 'push', '-u', 'origin', 'main')
+    write(File.join(repo, 'tracked.txt'), "dirty\n")
+    write(File.join(repo, 'untracked.txt'), "untracked\n")
+    write(File.join(repo, 'recovery.orig'), "must survive\n")
+    write(File.join(repo, '.DS_Store'), "must survive too\n")
+
+    _stdout, _stderr, status = run({ 'HOME' => home }, 'bash', File.join(ROOT, 'automation', 'git-sync-safe.sh'), '--snapshot-only') { true }
+    assert(status.success?, 'snapshot-only must preserve work without turning dirty state into a mutation failure')
+    snapshot_root = File.join(home, 'SaneApps', 'infra', 'SaneProcess', 'outputs', 'dirty-work-snapshots', 'FixtureApp')
+    latest = File.readlines(File.join(snapshot_root, 'latest.txt'), chomp: true)
+    snapshot = latest[1]
+    assert(File.file?(File.join(snapshot, 'worktree.patch')), 'dirty patch missing')
+    assert(File.file?(File.join(snapshot, 'untracked-files.tar.gz')), 'untracked archive missing')
+    assert(File.read(File.join(snapshot, 'status.txt')).include?('tracked.txt'), 'status receipt missing dirty file')
+    assert(File.read(File.join(repo, 'recovery.orig')) == "must survive\n", 'snapshot-only deleted recovery residue')
+    assert(File.read(File.join(repo, '.DS_Store')) == "must survive too\n", 'snapshot-only mutated Finder residue')
+  end
 end
 
 tests.each(&:call)

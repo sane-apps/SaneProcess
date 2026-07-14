@@ -7,17 +7,17 @@ set -euo pipefail
 
 MINI_HOST="mini"
 QUIET=0
-RESTART_CODEX=1
+RESTART_CODEX=0
 DUMP_CONFIG=0
 
 usage() {
   cat <<USAGE
-Usage: $(basename "$0") [mini-host] [--quiet] [--no-restart]
+Usage: $(basename "$0") [mini-host] [--quiet] [--restart]
 
 Examples:
   $(basename "$0")
   $(basename "$0") mini --quiet
-  $(basename "$0") mini --no-restart
+  $(basename "$0") mini --restart
   $(basename "$0") --dump-config
 USAGE
 }
@@ -45,6 +45,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-restart)
       RESTART_CODEX=0
+      shift
+      ;;
+    --restart)
+      RESTART_CODEX=1
       shift
       ;;
     --dump-config)
@@ -81,7 +85,6 @@ REPO_CODEX_BIN_DIR="$HOME/SaneApps/infra/SaneProcess/scripts/codex-bin"
 LOCAL_SKILLS_REGISTRY="$LOCAL_CODEX_DIR/SKILLS_REGISTRY.md"
 LOCAL_SKILLS_DIR="$LOCAL_CODEX_DIR/skills"
 LOCAL_AGENTS_SKILLS_DIR="$HOME/.agents/skills"
-LOCAL_KNOWLEDGE_GRAPH="$HOME/.claude/memory/knowledge-graph.jsonl"
 CODEX_BIN_FILES=(
   "check-mcps"
   "github-mcp-bridge.mjs"
@@ -235,6 +238,9 @@ for bin_name in "${CODEX_BIN_FILES[@]}"; do
 done
 
 REMOTE_HOME=$(ssh -o ConnectTimeout=8 "$MINI_HOST" 'printf %s "$HOME"') || die "Could not reach $MINI_HOST"
+LOCAL_HOST="${SANE_LOCAL_HOST_OVERRIDE:-$(hostname -s 2>/dev/null || hostname)}"
+REMOTE_HOST="${SANE_REMOTE_HOST_OVERRIDE:-$(ssh -o ConnectTimeout=8 "$MINI_HOST" 'hostname -s 2>/dev/null || hostname')}" || die "Could not resolve host identity on $MINI_HOST"
+[[ -n "$REMOTE_HOST" && "$LOCAL_HOST" != "$REMOTE_HOST" ]] || die "Refusing Mini control-plane loopback on $LOCAL_HOST"
 REMOTE_NODE=$(ssh -o ConnectTimeout=8 "$MINI_HOST" 'command -v node') || die "Could not resolve node on $MINI_HOST"
 ensure_remote_codex_standalone
 
@@ -271,6 +277,24 @@ path = pathlib.Path(sys.argv[1])
 remote_node = sys.argv[2]
 text = path.read_text(encoding="utf-8")
 text = re.sub(r'^command = ".*node"$', f'command = "{remote_node}"', text, flags=re.MULTILINE)
+lines = text.splitlines()
+kept = []
+skipping = False
+for line in lines:
+    if line.startswith('[') and line.endswith(']'):
+        section = line[1:-1]
+        skipping = section in {'mcp_servers.agentmemory', 'mcp_servers.agentmemory.env'}
+    if not skipping:
+        kept.append(line)
+text = '\n'.join(kept).rstrip() + '''
+
+[mcp_servers.agentmemory]
+command = "npx"
+args = ["-y", "@agentmemory/mcp"]
+
+[mcp_servers.agentmemory.env]
+AGENTMEMORY_URL = "http://localhost:3111"
+'''
 path.write_text(text, encoding="utf-8")
 PY
 }
@@ -295,30 +319,6 @@ ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.codex/bin\""
 for bin_name in "${CODEX_BIN_FILES[@]}"; do
   scp -q "$REPO_CODEX_BIN_DIR/$bin_name" "$MINI_HOST:$REMOTE_HOME/.codex/bin/$bin_name"
 done
-
-if [[ -f "$LOCAL_KNOWLEDGE_GRAPH" ]]; then
-  log "Seeding knowledge graph cache on $MINI_HOST..."
-  ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.claude/memory\""
-  scp -q "$LOCAL_KNOWLEDGE_GRAPH" "$MINI_HOST:$REMOTE_HOME/.claude/memory/knowledge-graph.jsonl"
-fi
-
-# Sync the two agent memory stores that both agents rely on but that were previously Air-only: the Claude
-# file-based project memory (~/.claude/projects/<proj>/memory) and the Serena store (~/SaneApps/.serena/
-# memories). Air is canonical. Back up the Mini side first + NO --delete, so a Mini-side write is never lost.
-# Project-dir names are path-derived, so map Air's $HOME to the Mini's $REMOTE_HOME. (memory-sync SOP 2026-07-07.)
-LOCAL_PROJ_DIR="$(printf '%s' "$HOME/SaneApps" | sed 's#/#-#g')"
-REMOTE_PROJ_DIR="$(printf '%s' "$REMOTE_HOME/SaneApps" | sed 's#/#-#g')"
-LOCAL_FILE_MEM="$HOME/.claude/projects/$LOCAL_PROJ_DIR/memory"
-LOCAL_SERENA_MEM="$HOME/SaneApps/.serena/memories"
-if [[ -d "$LOCAL_FILE_MEM" || -d "$LOCAL_SERENA_MEM" ]]; then
-  log "Syncing agent memory (file-based + Serena) to $MINI_HOST (backup-first, no-delete)..."
-  MEM_TS="$(date +%Y%m%d-%H%M%S)"
-  ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.claude/backups\" \"$REMOTE_HOME/.claude/projects/$REMOTE_PROJ_DIR/memory\" \"$REMOTE_HOME/SaneApps/.serena/memories\"; \
-    cp -a \"$REMOTE_HOME/.claude/projects/$REMOTE_PROJ_DIR/memory\" \"$REMOTE_HOME/.claude/backups/memory-$MEM_TS\" 2>/dev/null; \
-    cp -a \"$REMOTE_HOME/SaneApps/.serena/memories\" \"$REMOTE_HOME/.claude/backups/serena-$MEM_TS\" 2>/dev/null; true"
-  [[ -d "$LOCAL_FILE_MEM" ]] && rsync -a "$LOCAL_FILE_MEM/" "$MINI_HOST:$REMOTE_HOME/.claude/projects/$REMOTE_PROJ_DIR/memory/"
-  [[ -d "$LOCAL_SERENA_MEM" ]] && rsync -a "$LOCAL_SERENA_MEM/" "$MINI_HOST:$REMOTE_HOME/SaneApps/.serena/memories/"
-fi
 
 # Pre-push validation gate: never sync a check-inbox.sh that fails its contract
 # suite, so Mini support workflows keep their last-known-good classifier route.
@@ -427,5 +427,6 @@ if [[ "$RESTART_CODEX" -eq 1 ]]; then
 fi
 
 log ""
-log "Done. Codex config, skills, helpers, memory, and repo-owned control-plane files are synchronized."
+log "Done. Codex config, skills, helpers, and repo-owned control-plane files are synchronized."
+log "File-backed memories use the separate conflict-preserving sync-memory-mini.sh lane."
 log "Automation records were not inspected or changed; use automation_update for production mutations."

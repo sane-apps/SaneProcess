@@ -66,13 +66,16 @@ Full verification remains `ruby scripts/SaneMaster.rb verify`; the focused comma
 | `sanetrack_research.rb` | Research write/size validation |
 | `sanetrack_state_updates.rb` | State mutation helpers for PostToolUse |
 | `sanetrack_tracking.rb` | Per-tool result tracking extracted from `sanetrack.rb` |
+| `sanetrack_review_tracking.rb` | Review-source binding and completed independent-review tracking |
 | `sanetrack_gate.rb` | Post-edit enforcement helpers |
 | `sanetrack_proofs.rb` | Proof receipt and runner tracking |
 | `sanestop_finalize.rb` | Session-end verification, receipts, and learnings extracted from `sanestop.rb` |
 | `sanestop_learnings.rb` | Session learnings capture + cap, extracted from `sanestop_finalize.rb` |
+| `sanestop_lemonsqueezy.rb` | Non-blocking post-release staging for Lemon Squeezy uploads |
 | `sanetrack_reminders.rb` | Feature reminders and logging |
 | `session_briefing.rb` | Session-start briefing output |
 | `session_start_cleanup.rb` | Session-start cleanup helpers |
+| `release_receipt_signer.rb` | Signs and verifies release-authorizing receipts from canonical producers |
 | `self_test_environment.rb` | Isolated temp project for `--self-test` |
 | `state_signer.rb` | State file signing/verification |
 
@@ -99,6 +102,8 @@ Full verification remains `ruby scripts/SaneMaster.rb verify`; the focused comma
 | `sanetools_gate_test.rb` | sanetools startup, GitHub, and MCP gate self-tests |
 | `sanetools_test_scenarios.rb` | shared sanetools self-test fixtures |
 | `sanetrack_test.rb` | sanetrack self-tests |
+| `sanetrack_test_mcp_verification.rb` | bare and plugin-prefixed MCP verification tracking self-tests |
+| `sanetrack_test_runner_proofs.rb` | canonical runner receipt, replay-resistance, and clearance self-tests |
 | `sanetrack_test_tautology.rb` | sanetrack tautology-detection (Rule #7) self-tests, extracted from `sanetrack_test.rb` |
 | `sanetrack_blind_tests.rb` | sanetrack blind/adversarial tracking self-tests |
 | `sanestop_test.rb` | sanestop self-tests |

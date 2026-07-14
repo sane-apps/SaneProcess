@@ -50,7 +50,7 @@ mkdir -p "$OUT_DIR"
 
 echo "== SaneOps Workday Start =="
 echo "1) Syncing the Codex control-plane profile to Mini..."
-bash "$SYNC_SCRIPT" "$MINI_HOST"
+bash "$SYNC_SCRIPT" "$MINI_HOST" --no-restart
 
 echo ""
 echo "2) Air↔Mini repo reconcile..."

@@ -62,12 +62,6 @@ APPS = {
     scheme: 'SaneSales',
     log_subsystem: 'com.sanesales'
   },
-  'SaneSync' => {
-    dev: 'com.sanesync.SaneSync',
-    prod: 'com.sanesync.SaneSync',
-    scheme: 'SaneSync',
-    log_subsystem: 'com.sanesync'
-  },
   'SaneVideo' => {
     dev: 'com.sanevideo.app',
     prod: 'com.sanevideo.app',

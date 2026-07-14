@@ -220,11 +220,11 @@ Sync the active Codex config, skill registry, skills, repo-owned helpers, and co
 
 **Usage:**
 ```bash
-# Sync to default host "mini" and restart Codex on Mini
+# Sync to default host "mini" without interrupting Codex on Mini
 ruby scripts/SaneMaster.rb sync_mini
 
-# Sync quietly without restarting Codex
-ruby scripts/SaneMaster.rb sync_mini mini --quiet --no-restart
+# Explicit maintenance-only reload after confirming no active Mini work
+ruby scripts/SaneMaster.rb sync_mini mini --restart
 ```
 
 **What it does:**
@@ -232,9 +232,9 @@ ruby scripts/SaneMaster.rb sync_mini mini --quiet --no-restart
 2. Syncs the active Codex skill registry (`~/.codex/SKILLS_REGISTRY.md`), `~/.codex/skills/`, and shared `~/.agents/skills/` to Mini.
 3. Installs the repo-owned Codex control-plane helpers from `scripts/codex-bin/` into local `~/.codex/bin/` and mirrors them to Mini.
 4. Syncs critical control-plane scripts (`check-inbox.sh`, `git-sync-safe.sh`, hooks, validation/reporting scripts).
-5. Seeds Mini's local knowledge graph cache and backup-first agent memory stores when present.
+5. Points Mini AgentMemory at the Mini-owned loopback service; file-backed memories are handled by the separate conflict-preserving sync lane.
 6. Verifies Air↔Mini SHA-256 parity for control-plane files and helpers plus dry-run `rsync` parity for skills.
-7. Optionally restarts Codex on Mini so the control-plane profile reloads.
+7. Preserves the running Mini Codex process by default; an explicit `--restart` is required to reload it.
 
 It never reads or writes Codex automation TOML or SQLite state. Production automation changes must use `automation_update` on the Mini; the Air remains free of recurring Codex automation records.
 
@@ -264,14 +264,15 @@ Canonical cross-machine repo reconcile for the local Mac plus Mini.
 ```bash
 reconcile-air-mini.sh
 reconcile-air-mini.sh mini --quiet
-reconcile-air-mini.sh mini --no-sync-control-plane
+reconcile-air-mini.sh mini --sync-control-plane
 ```
 
 **What it does:**
-1. Optionally syncs control-plane files to Mini without restarting Codex or touching automation state.
+1. Leaves control-plane sync off by default; `--sync-control-plane` is an explicit operator action.
 2. Runs `git-sync-safe.sh` on the Mini first.
 3. Runs `git-sync-safe.sh --peer mini` locally.
 4. Fails loudly on dirty canonical repos so work is reconciled explicitly.
+5. Pulls secret-filtered dirty-work snapshots from the Mini without applying them.
 
 ### git-sync-safe.sh
 
@@ -293,21 +294,25 @@ SANEPROCESS_ALLOW_AUTO_STASH=1 git-sync-safe.sh --peer mini --reconcile-dirty
 
 # Allow dirty working trees (warning-only mode)
 git-sync-safe.sh --allow-dirty
+
+# Preserve dirty work only; do not fetch, pull, push, stash, or mutate a worktree
+git-sync-safe.sh --snapshot-only
 ```
 
 **What it does:**
-1. Scans SaneApps repos (`apps/*`, `SaneAI`, `infra/SaneProcess`).
+1. Scans current SaneApps repos (`apps/*`, `infra/SaneProcess`, and any still-present legacy repo).
 2. Skips known transient repo clones such as release/preview/worktree scratch dirs.
 3. Prunes untracked Finder and patch residue (`.DS_Store`, `*.orig`, `*.rej`) before status checks.
 4. Fetches from origin.
 5. Fast-forward pulls only when clean.
 6. Auto-pushes only clean `main/master` ahead commits.
-7. Flags dirty trees as issues by default. `--reconcile-dirty` is a legacy manual recovery path and refuses to run unless `SANEPROCESS_ALLOW_AUTO_STASH=1` is set.
-7. Optional peer mode (`--peer <host>`) checks branch/head/dirty parity over SSH.
+7. Creates fingerprinted, secret-filtered snapshots for dirty trees without changing them.
+8. Flags dirty trees as issues by default. `--reconcile-dirty` is a legacy manual recovery path and refuses to run unless `SANEPROCESS_ALLOW_AUTO_STASH=1` is set.
+9. Optional peer mode (`--peer <host>`) checks branch/head/dirty parity over SSH.
 
 ### install-repo-reconcile-agent.sh
 
-Install the local LaunchAgent that runs unattended Air↔Mini reconcile twice daily.
+Legacy installer for the unattended Air↔Mini repo reconcile agent.
 
 **Usage:**
 ```bash
@@ -315,9 +320,26 @@ install-repo-reconcile-agent.sh
 ```
 
 **What it does:**
-1. Installs `~/Library/LaunchAgents/com.saneapps.repo-reconcile.plist`.
-2. Runs `reconcile-air-mini.sh mini` at `05:55` and `21:55` local time by default.
-3. Writes logs to `infra/SaneProcess/outputs/repo_reconcile.stdout.log` and `.stderr.log`.
+This agent stays disabled while any canonical app worktree is dirty. GitHub
+`main` is the committed-code source of truth; the memory-sync agent provides
+non-clobbering dirty-work backup snapshots. Use this installer only after an
+operator confirms every participating repo is clean and deliberately wants the
+twice-daily fast-forward reconcile lane.
+
+### install-memory-sync-agent.sh
+
+Install the Air-owned, restart-durable memory and dirty-snapshot recurrence.
+
+**Usage:**
+```bash
+install-memory-sync-agent.sh
+```
+
+**What it does:**
+1. Installs `~/Library/LaunchAgents/com.saneapps.memory-sync.plist`.
+2. Runs at login and every 15 minutes.
+3. Uses `sync-memory-mini.sh` for locked, backup-first, no-delete, conflict-preserving Claude/Serena/Codex parity.
+4. Triggers Mini snapshot-only preservation and pulls the snapshots to the Air without applying them.
 
 ### website-consistency-check.sh
 

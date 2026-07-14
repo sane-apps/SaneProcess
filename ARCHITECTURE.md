@@ -533,6 +533,35 @@ Together the three signals triangulate intent from evidence, not the agent's say
 
 ---
 
+### ADR-012: Mini maintenance and restart are separate fail-safe lanes (2026-07-14)
+
+The Mac Mini is an always-on build and operations server. Daily hygiene must
+never shut down or restart it. The deep `machine_cleanup` pass is bounded, and
+its timeout/failure is nonfatal so the remaining lightweight hygiene still
+runs. Routine cleanup preserves Downloads and unrelated Trash contents and
+rejects symlinked cleanup roots/children.
+
+A weekly restart is a separate root-owned LaunchDaemon. It may restart only on
+Sunday after verifying FileVault is off, the server user has automatic login,
+uptime is at least six days, and no build, release, recording, production
+worker, or software installation is active. A failed precondition skips the
+attempt and uses later same-Sunday retry windows; it never falls back to a GUI
+restart or forced shutdown.
+
+Local ML training is retired from the Mini. Deployment must not reinstall its
+agents or re-enable SaneAI evaluation. Server startup is limited to remote
+access, security, build/ops support, persistent data, reporting, and bounded
+maintenance services.
+
+Air-to-Mini access uses private LAN then authenticated Tailscale; the legacy
+Cloudflare quick tunnel is retired. GitHub `main` is canonical for code, while
+uncommitted Mini work is preserved as non-clobbering Air-side snapshots rather
+than raw-mirrored. Claude/Serena/Codex file memories use a conflict-preserving
+two-way Air recurrence. Shared AgentMemory runs as a Mini LaunchAgent with a
+pinned home working directory so its 1,201-memory database survives restarts.
+
+---
+
 ## 4. Landscape
 
 ### Comparison

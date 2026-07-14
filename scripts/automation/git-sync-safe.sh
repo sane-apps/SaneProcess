@@ -13,6 +13,7 @@ set -euo pipefail
 PEER_HOST=""
 STRICT_DIRTY=1
 RECONCILE_DIRTY=0
+SNAPSHOT_ONLY=0
 ROOT="$HOME/SaneApps"
 OUT_DIR="$ROOT/infra/SaneProcess/outputs"
 LOG_FILE="$OUT_DIR/git_sync_safe.log"
@@ -21,10 +22,11 @@ RUN_TAG=$(date '+%Y%m%d-%H%M%S')
 HOST_TAG=$(hostname -s 2>/dev/null || hostname)
 HOST_TAG=$(printf '%s' "$HOST_TAG" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9._-')
 PEER_HOME=""
+SNAPSHOT_ROOT="$OUT_DIR/dirty-work-snapshots"
 
 usage() {
   cat <<'USAGE'
-Usage: git-sync-safe.sh [--peer <host>] [--allow-dirty] [--reconcile-dirty]
+Usage: git-sync-safe.sh [--peer <host>] [--allow-dirty] [--reconcile-dirty] [--snapshot-only]
 
 Options:
   --peer <host>         Compare each repo against a peer machine over SSH.
@@ -32,6 +34,8 @@ Options:
   --allow-dirty         Do not fail when working trees are dirty.
   --reconcile-dirty     Legacy escape hatch. Refuses to auto-stash unless
                         SANEPROCESS_ALLOW_AUTO_STASH=1 is set explicitly.
+  --snapshot-only       Preserve dirty patches/untracked files without fetch,
+                        pull, push, stash, commit, or worktree mutation.
 USAGE
 }
 
@@ -78,6 +82,53 @@ prune_repo_noise() {
   fi
 }
 
+snapshot_dirty_repo() {
+  local repo="$1" name="$2" fingerprint snapshot_dir latest_file latest_fingerprint untracked_list
+  fingerprint=$(
+    {
+      git -C "$repo" status --porcelain=v1
+      git -C "$repo" diff --binary HEAD
+      while IFS= read -r -d '' untracked; do
+        case "$untracked" in
+          *.pem|*.p8|.env|*/.env|.env.*|*/.env.*) continue ;;
+        esac
+        shasum -a 256 "$repo/$untracked"
+      done < <(git -C "$repo" ls-files --others --exclude-standard -z)
+    } | shasum -a 256 | cut -d' ' -f1
+  )
+  latest_file="$SNAPSHOT_ROOT/$name/latest.txt"
+  latest_fingerprint=""
+  [[ -f "$latest_file" ]] && latest_fingerprint=$(sed -n '1p' "$latest_file")
+  if [[ "$fingerprint" == "$latest_fingerprint" ]]; then
+    log "  - Dirty snapshot already current: $fingerprint"
+    return 0
+  fi
+
+  snapshot_dir="$SNAPSHOT_ROOT/$name/$RUN_TAG-$HOST_TAG-$fingerprint"
+  mkdir -p "$snapshot_dir"
+  chmod 700 "$snapshot_dir"
+  git -C "$repo" status --short --branch > "$snapshot_dir/status.txt"
+  git -C "$repo" diff --binary HEAD > "$snapshot_dir/worktree.patch"
+  git -C "$repo" diff --binary --cached > "$snapshot_dir/staged.patch"
+  git -C "$repo" rev-parse HEAD > "$snapshot_dir/base-head.txt"
+  git -C "$repo" branch --show-current > "$snapshot_dir/branch.txt"
+  git -C "$repo" remote get-url origin > "$snapshot_dir/origin.txt" 2>/dev/null || true
+  printf '%s\n' "$fingerprint" > "$snapshot_dir/fingerprint.txt"
+
+  untracked_list="$snapshot_dir/untracked-files.zlist"
+  while IFS= read -r -d '' untracked; do
+    case "$untracked" in
+      *.pem|*.p8|.env|*/.env|.env.*|*/.env.*) continue ;;
+    esac
+    printf '%s\0' "$untracked" >> "$untracked_list"
+  done < <(git -C "$repo" ls-files --others --exclude-standard -z)
+  if [[ -s "$untracked_list" ]]; then
+    /usr/bin/tar -C "$repo" --null -T "$untracked_list" -czf "$snapshot_dir/untracked-files.tar.gz"
+  fi
+  printf '%s\n%s\n' "$fingerprint" "$snapshot_dir" > "$latest_file"
+  log "  - Preserved dirty work snapshot: $snapshot_dir"
+}
+
 is_syncable_repo_name() {
   local name="$1"
   case "$name" in
@@ -105,6 +156,7 @@ collect_repos() {
 
   [[ -d "$ROOT/SaneAI/.git" ]] && repos+=("$ROOT/SaneAI")
   [[ -d "$ROOT/infra/SaneProcess/.git" ]] && repos+=("$ROOT/infra/SaneProcess")
+  return 0
 }
 
 reconcile_dirty_repo() {
@@ -142,6 +194,10 @@ while [[ $# -gt 0 ]]; do
       RECONCILE_DIRTY=1
       shift
       ;;
+    --snapshot-only)
+      SNAPSHOT_ONLY=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -162,7 +218,9 @@ if [[ "$RECONCILE_DIRTY" -eq 1 && "${SANEPROCESS_ALLOW_AUTO_STASH:-0}" != "1" ]]
   exit 2
 fi
 
-prune_root_noise
+if [[ "$SNAPSHOT_ONLY" -eq 0 ]]; then
+  prune_root_noise
+fi
 
 {
   echo
@@ -205,13 +263,20 @@ for repo in "${repos[@]}"; do
     continue
   fi
 
-  prune_repo_noise "$repo"
-
   branch=$(git -C "$repo" symbolic-ref --short HEAD 2>/dev/null || echo "DETACHED")
   if [[ "$branch" == "DETACHED" ]]; then
     log "  - Skipped: detached HEAD"
     continue
   fi
+
+  if [[ "$SNAPSHOT_ONLY" -eq 1 ]]; then
+    dirty=$(git -C "$repo" status --porcelain | wc -l | tr -d ' ')
+    log "  - snapshot-only branch=$branch dirty=$dirty"
+    [[ "$dirty" -gt 0 ]] && snapshot_dirty_repo "$repo" "$name"
+    continue
+  fi
+
+  prune_repo_noise "$repo"
 
   if ! git -C "$repo" fetch origin --prune >/dev/null 2>&1; then
     log "  - ERROR: fetch failed"
@@ -222,6 +287,10 @@ for repo in "${repos[@]}"; do
   refresh_repo_state "$repo" "$branch"
 
   log "  - branch=$branch dirty=$dirty behind=$behind ahead=$ahead"
+
+  if [[ "$dirty" -gt 0 ]]; then
+    snapshot_dirty_repo "$repo" "$name"
+  fi
 
   if [[ "$dirty" -gt 0 && "$RECONCILE_DIRTY" -eq 1 ]]; then
     if reconcile_dirty_repo "$repo"; then

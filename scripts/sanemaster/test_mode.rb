@@ -7,7 +7,7 @@ module SaneMasterModules
     require 'open3'
     require 'tmpdir'
 
-    SANEAPPS_TEST_MODE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo].freeze
+    SANEAPPS_TEST_MODE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneVideo].freeze
     SIGNED_RELEASE_RUNTIME_APPS = %w[SaneClip].freeze
 
     def project_name
@@ -272,7 +272,6 @@ module SaneMasterModules
         system('osascript', '-e', "tell application \"#{app_name}\" to quit", out: File::NULL, err: File::NULL)
         system('killall', '-9', app_name, out: File::NULL, err: File::NULL)
       end
-      system('pkill', '-f', '/SaneSync/scripts/inference_server.py', out: File::NULL, err: File::NULL) unless project_name == 'SaneSync'
       puts '   ✅ Other app surfaces closed'
       puts ''
     end

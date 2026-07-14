@@ -153,6 +153,15 @@ surface. If Browser or Chrome control is active, use it through `node_repl` for
 Brave/Chrome DOM work before raw AppleScript, screenshots, SSH capture, or
 manual browsing.
 
+Mini browser work is Brave-only (owner rule, 2026-07-14): Claude drives Brave on
+the Mini through the Claude-in-Chrome extension; Codex drives Brave through its
+Chrome-control lane. Do not script Safari (AppleScript `do JavaScript`, cookie
+extraction, front-tab reads) for portal or web-proof work — Safari is routinely
+not running and its automation breaks. Tools whose fallback is a Safari cookie
+(e.g. `setapp_status` portal token) should be run through the Brave portal path
+or a refreshed stored token instead. The App Store Connect Safari lane is the
+single standing exception until the owner retires it.
+
 For visible native app/window state, use Computer Use `get_app_state` before
 falling back to screenshot-only inspection. Use `macos-automator` for
 deterministic AppleScript/JXA and app-specific automation tips. Use Playwright
@@ -221,12 +230,27 @@ Default mailbox: SaneApps work email `hi@saneapps.com`.
 - Existing app users should be told to update from inside the app. Do not send
   website/download links for update/fix/test replies unless the user needs a
   reinstall or direct-download recovery path.
-- Use signoff exactly:
+- Choose the signature by recipient type. Customers and end-user support use:
 
 ```text
 Mr. Sane
 https://saneapps.com
 ```
+
+Businesses, vendors, partners, API providers, and compliance/account-
+verification teams use the real-name business signature with the relevant
+product:
+
+```text
+Stephan Joseph
+Founder, SaneApps / [Product]
+727-758-9785
+hi@saneapps.com
+https://[relevant product site]
+```
+
+Never use the real-name signature for ordinary customer support, and never use
+`Mr. Sane` for business/vendor/compliance correspondence.
 
 Escalate refunds, complaints, legal issues, feature requests, attached problem
 media, identity ambiguity, and promises about unfixed bugs.

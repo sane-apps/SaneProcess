@@ -58,7 +58,7 @@ if [ -n "$CODEX_BIN" ]; then
   "$CODEX_BIN" app-server daemon enable-remote-control >/dev/null 2>&1 || true
 fi
 
-SANE_APPS='SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo'
+SANE_APPS='SaneBar SaneClick SaneClip SaneHosts SaneSales SaneVideo'
 
 for app in $SANE_APPS; do
   if pgrep -x "$app" >/dev/null 2>&1; then

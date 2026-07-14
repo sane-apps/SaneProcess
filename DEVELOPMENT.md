@@ -43,31 +43,21 @@ bash ~/SaneApps/infra/SaneProcess/scripts/mini/install-mini-ssh-config.sh
 ssh mini 'hostname; whoami'
 ```
 
-The installer writes `~/.ssh/config.d/saneapps-mini.conf`, where `mini` and
-`mini-remote` use Cloudflare Access via the TXT record
-`mini-ssh-host.saneapps.com`; `mini-lan` keeps the direct
-`stephans-mac-mini.local` route for LAN diagnostics only. Verify the bridge with:
+The installer writes `~/.ssh/config.d/saneapps-mini.conf`. `mini` and
+`mini-remote` use the first available private route: Bonjour LAN, then
+Tailscale. `mini-lan` keeps the direct `stephans-mac-mini.local` route for LAN
+diagnostics only. Verify both the normal alias and Tailscale state with:
 
 ```bash
-dig +short TXT mini-ssh-host.saneapps.com
-cloudflared --version
 ssh -G mini | grep -E '^(hostname|proxycommand|identityfile) '
 ssh mini 'hostname; whoami; pwd'
+tailscale status
 ```
 
-The Mini publishes that TXT record from a launchd-managed quick tunnel. Reinstall
-or repair it from a working Mini shell with:
-
-```bash
-cd ~/SaneApps/infra/SaneProcess
-bash scripts/mini/mini-install-remote-ssh-tunnel.sh
-launchctl print gui/$(id -u)/com.saneapps.mini-remote-ssh-tunnel
-tail -50 ~/Library/Logs/SaneApps/mini-remote-ssh-tunnel.log
-```
-
-If `ssh mini` is down but `ssh mini-lan` works, the problem is the Cloudflare
-tunnel/TXT bridge, not Mini availability. Do not fall back to local app testing
-until that route has been diagnosed or the user approves the exact exception.
+There is no public quick-tunnel fallback. If `ssh mini-lan` works but `ssh mini`
+does not work off-LAN, diagnose the authenticated Tailscale client/daemon. Do
+not fall back to local app testing until the private route is repaired or the
+user approves the exact exception.
 
 ### Host Identity: `ssh mini` Loops Back On The Mini
 
@@ -78,7 +68,7 @@ to the same machine: same filesystem, same working tree, same inodes.
 
 Consequences (root-caused 2026-07-07 after a false "Air↔Mini working trees
 auto-sync" diagnosis — "local" edits appearing on "the Mini" were one tree
-seen twice; there is no sync daemon, and none is installed):
+seen twice):
 
 - Run `hostname` BEFORE any cross-machine reasoning, "sync" diagnosis, or
   claim that something was verified "on both machines".
@@ -89,10 +79,10 @@ seen twice; there is no sync daemon, and none is installed):
   same box (system `/usr/bin/ruby` 2.6 vs Homebrew ruby via login-shell PATH),
   so "both rubies" proofs remain meaningful even when both ran on the Mini —
   just label them as ruby-version proofs, not machine proofs.
-- No clobber risk exists from any mirror daemon (LaunchAgents sweep clean of
-  sync/rsync/mirror jobs). The real risk is epistemic: double-counting one
-  machine as two, or assuming a "clean tree on the other machine" that is in
-  fact the same dirty tree.
+- No raw working-tree mirror exists. GitHub `main` is canonical for committed
+  code; dirty work is snapshot-only and never auto-applied. The Air does run a
+  conflict-preserving file-memory sync every 15 minutes, which is a separate
+  lane and must not be mistaken for code-tree parity.
 
 Codex Mini remote-control health:
 
@@ -107,17 +97,26 @@ The keepalive LaunchAgent must include
 headless Codex remote-control daemon without opening GUI windows; it opens the
 Codex app only when no SaneApps app is running and no app server is present.
 
-Tailscale setup state:
+Tailscale health:
 
 ```bash
 ssh mini 'tailscale status'
 ssh mini 'launchctl print system/homebrew.mxcl.tailscale'
 ```
 
-The Mini formula daemon can run as a root LaunchDaemon, but it is not a permanent
-route until the Mini is enrolled in a tailnet. The controller formula is
-installed but not running as root; local enrollment requires the user's local
-sudo/GUI approval or a reusable/preauthorized Tailscale auth key.
+Both Macs are enrolled in the MrSaneApps tailnet and report no key expiry. The
+Mini daemon is a root `RunAtLoad`/`KeepAlive` LaunchDaemon; the Air uses an
+authenticated userspace `RunAtLoad`/`KeepAlive` LaunchAgent and returns after
+normal Air login.
+
+File-backed Claude, Serena, and Codex memories use
+`scripts/automation/sync-memory-mini.sh`, installed on the Air as
+`com.saneapps.memory-sync` (`RunAtLoad`, then every 15 minutes). It is backup-
+first, no-delete, cross-host locked, checksum-verified, and preserves a losing
+same-file version as `.sane-conflict-*` on both machines. It also pulls Mini
+dirty-work snapshots without applying them. The shared AgentMemory worker is
+Mini-owned by `com.saneapps.agentmemory`; the Air MCP wrapper reaches it through
+a bounded SSH tunnel.
 
 Public adopters do not need a Mac Mini. Replace Mini-first with your own
 canonical runner or local verification command, then route it through
@@ -328,7 +327,7 @@ scripts/
   SaneMaster.rb              # primary CLI
   hooks/                     # Claude/native hook runtime + shared guards
   sanemaster/                # SaneMaster command modules
-  mini/                      # Mac Mini build/test/training helpers
+  mini/                      # Mac Mini build/test and always-on server helpers
   automation/                # vendor/API automation helpers
 templates/                   # release, bootstrap, and project templates
 ```
@@ -619,6 +618,16 @@ coverage is:
 - Work email means `hi@saneapps.com` through `check-inbox.sh`; do not use Gmail
   unless explicitly requested.
 - Always run `check-inbox.sh review <id>` before reply or resolve.
+- For customer media, a successful `open` call is not review evidence. Verify the
+  downloaded byte count, require a full decode, generate dense contact sheets,
+  inspect the complete action/result sequence, and match that exact path to the
+  code fix, regression coverage, same-settings Mini runtime proof, and released
+  channel before claiming the issue is fixed. The Mini review command falls
+  back to Brave when QuickTime or Preview is unavailable. If GUI launch is
+  unavailable, inspect the generated sheets through the active visual tool.
+  In either case, `check-inbox.sh confirm-media-review <id> <evidence_file>`
+  records semantic inspection separately from file opening. Ask the customer
+  to confirm on their Mac even when the local reproduction is green.
 - Every outbound support reply requires the exact approval flow: show the exact
   draft, run `present-draft` or `present-batch`, wait for explicit approval, run
   `approve ... --user-approval "<quote>"`, then send in a separate command.

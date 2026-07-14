@@ -512,7 +512,7 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
 
   test_category('macOS automation safety') do
     test('terminal-host command failure falls back to direct execution') do
-      subject.define_singleton_method(:visual_smoke_terminal_host_available) { true }
+      subject.define_singleton_method(:visual_smoke_terminal_host_available?) { true }
       subject.define_singleton_method(:run_visual_smoke_command_via_terminal) do |_command, timeout:|
         { success: false, timed_out: true, runner: 'terminal-host', timeout: timeout }
       end
@@ -528,7 +528,7 @@ exit(run_tests('SaneMaster Visual Smoke Tests') do
       true
     ensure
       %i[
-        visual_smoke_terminal_host_available
+        visual_smoke_terminal_host_available?
         run_visual_smoke_command_via_terminal
         run_visual_smoke_command_direct
       ].each { |method| subject.singleton_class.remove_method(method) rescue nil }

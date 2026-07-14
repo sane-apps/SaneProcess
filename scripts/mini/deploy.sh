@@ -1,6 +1,6 @@
 #!/bin/bash
 # deploy.sh — Deploy mini scripts to the Mac mini build server
-# Usage: bash scripts/mini/deploy.sh
+# Usage: bash scripts/mini/deploy.sh [--local]
 #
 # Copies the mini runtime scripts from this directory to the mini,
 # verifies they arrived intact, and runs syntax checks.
@@ -12,8 +12,24 @@ REMOTE_PRIMARY_DIR="~/SaneApps/infra/SaneProcess/scripts/mini"
 REMOTE_LEGACY_DIR="~/SaneApps/infra/scripts"
 MINI_HOST="${MINI_HOST:-mini}"
 MINI_SSH_OPTS="${MINI_SSH_OPTS:-}"
-ENABLE_MINI_TRAINING_AGENTS="${ENABLE_MINI_TRAINING_AGENTS:-0}"
 MINI_SSH_ARGS=()
+LOCAL_MODE=0
+
+case "${1:-}" in
+  --local)
+    LOCAL_MODE=1
+    shift
+    ;;
+  "") ;;
+  *)
+    echo "Usage: bash scripts/mini/deploy.sh [--local]" >&2
+    exit 64
+    ;;
+esac
+
+if [ "$LOCAL_MODE" -eq 1 ]; then
+  REMOTE_PRIMARY_DIR="$SCRIPT_DIR"
+fi
 
 if [ -n "$MINI_SSH_OPTS" ]; then
   old_ifs="$IFS"
@@ -27,6 +43,10 @@ if [ -n "$MINI_SSH_OPTS" ]; then
 fi
 
 mini_ssh() {
+  if [ "$LOCAL_MODE" -eq 1 ]; then
+    /bin/bash -lc "$*"
+    return
+  fi
   if [ "${#MINI_SSH_ARGS[@]}" -gt 0 ]; then
     ssh "${MINI_SSH_ARGS[@]}" "$MINI_HOST" "$@"
   else
@@ -35,6 +55,9 @@ mini_ssh() {
 }
 
 mini_scp() {
+  if [ "$LOCAL_MODE" -eq 1 ]; then
+    return
+  fi
   if [ "${#MINI_SSH_ARGS[@]}" -gt 0 ]; then
     scp -q "${MINI_SSH_ARGS[@]}" "$1" "$MINI_HOST:$2"
   else
@@ -43,6 +66,10 @@ mini_scp() {
 }
 
 mini_ping() {
+  if [ "$LOCAL_MODE" -eq 1 ]; then
+    printf ok
+    return
+  fi
   if [ "${#MINI_SSH_ARGS[@]}" -gt 0 ]; then
     ssh "${MINI_SSH_ARGS[@]}" -o BatchMode=yes -o ConnectTimeout=5 "$MINI_HOST" 'printf ok'
   else
@@ -50,7 +77,23 @@ mini_ping() {
   fi
 }
 
-echo "Deploying mini scripts to Mac mini..."
+configure_local_login_keychain() {
+  [ "$LOCAL_MODE" -eq 1 ] || return 0
+
+  keychain="$HOME/Library/Keychains/login.keychain-db"
+  echo ""
+  echo "Configuring the login keychain for unattended SSH sessions..."
+  echo "macOS may ask once for your login password; the script never reads or stores it."
+  security unlock-keychain "$keychain"
+  security set-keychain-settings "$keychain"
+  security show-keychain-info "$keychain"
+}
+
+if [ "$LOCAL_MODE" -eq 1 ]; then
+  echo "Deploying Mini services locally (no self-SSH)..."
+else
+  echo "Deploying mini scripts to Mac mini over SSH..."
+fi
 
 if ! mini_ping >/dev/null 2>&1; then
   echo "ERROR: Could not reach Mini host '$MINI_HOST'. Set MINI_HOST=user@host and MINI_SSH_OPTS if the ssh alias or key is unavailable." >&2
@@ -60,29 +103,50 @@ fi
 DEPLOYED=0
 DEPLOY_FILES=(
   "$SCRIPT_DIR"/mini-*.sh
-  "$SCRIPT_DIR"/evaluate_model.py
 )
+
+is_retired_training_file() {
+  case "$(basename "$1")" in
+    mini-install-training-agents.sh|mini-train-all.sh|mini-train-challengers.sh|mini-train.sh|mini-training-mode.sh)
+      return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 for script in "${DEPLOY_FILES[@]}"; do
   [ -f "$script" ] || continue
+  is_retired_training_file "$script" && continue
   name=$(basename "$script")
   echo "  $name"
-  mini_scp "$script" "$REMOTE_PRIMARY_DIR/$name"
-  mini_ssh "if [ -d $REMOTE_LEGACY_DIR ]; then cp $REMOTE_PRIMARY_DIR/$name $REMOTE_LEGACY_DIR/$name; fi" >/dev/null 2>&1 || true
+  if [ "$LOCAL_MODE" -eq 0 ]; then
+    mini_scp "$script" "$REMOTE_PRIMARY_DIR/$name"
+    mini_ssh "if [ -d $REMOTE_LEGACY_DIR ]; then cp $REMOTE_PRIMARY_DIR/$name $REMOTE_LEGACY_DIR/$name; fi" >/dev/null 2>&1 || true
+  fi
   DEPLOYED=$((DEPLOYED + 1))
 done
 
 echo ""
 echo "Verifying on mini..."
 
+mini_ssh '
+uid=$(id -u)
+for label in com.saneapps.training com.saneapps.training-daily-check com.saneapps.training-challengers com.saneapps.training-weekly com.saneapps.saneai-weekend-training-watchdog com.saneapps.nv-benchmark; do
+  launchctl disable "gui/$uid/$label" 2>/dev/null || true
+  launchctl bootout "gui/$uid/$label" 2>/dev/null || true
+  plist="$HOME/Library/LaunchAgents/$label.plist"
+  [ ! -e "$plist" ] || /usr/bin/trash "$plist"
+done
+for path in "$HOME/SaneApps-automation/apps/SaneAI" "$HOME/SaneApps-automation/apps/SaneSync"; do
+  [ ! -e "$path" ] || /usr/bin/trash "$path"
+done
+'
+
 # Syntax check all deployed scripts
 mini_ssh "
 for f in $REMOTE_PRIMARY_DIR/mini-*.sh; do
+  case \"\$(basename \"\$f\")\" in mini-install-training-agents.sh|mini-train-all.sh|mini-train-challengers.sh|mini-train.sh|mini-training-mode.sh) continue ;; esac
   /bin/bash -n \"\$f\" && echo \"  OK: \$(basename \$f)\" || echo \"  FAIL: \$(basename \$f)\"
 done
-if [ -f $REMOTE_PRIMARY_DIR/evaluate_model.py ]; then
-  python3 -m py_compile $REMOTE_PRIMARY_DIR/evaluate_model.py && echo \"  OK: evaluate_model.py\" || echo \"  FAIL: evaluate_model.py\"
-fi
 "
 
 # Checksum comparison
@@ -90,6 +154,7 @@ echo ""
 echo "Checksums (local → remote):"
 for script in "${DEPLOY_FILES[@]}"; do
   [ -f "$script" ] || continue
+  is_retired_training_file "$script" && continue
   name=$(basename "$script")
   LOCAL_MD5=$(md5 -q "$script")
   REMOTE_MD5=$(mini_ssh "md5 -q $REMOTE_PRIMARY_DIR/$name")
@@ -114,12 +179,10 @@ fi
 echo ""
 echo "Refreshing launch agents on mini..."
 mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-nightly-agent.sh ]; then NIGHTLY_HOUR=8 NIGHTLY_MINUTE=45 SANE_ROOT=\$HOME/SaneApps-automation SANE_OUTPUT_DIR=\$HOME/SaneApps/outputs bash $REMOTE_PRIMARY_DIR/mini-install-nightly-agent.sh; fi"
-if [ "$ENABLE_MINI_TRAINING_AGENTS" = "1" ]; then
-  mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-training-agents.sh ]; then SANE_ROOT=\$HOME/SaneApps-automation SANE_OUTPUT_DIR=\$HOME/SaneApps/outputs ENABLE_WEEKLY_TRAINING=true TRAIN_HARD_STOP_TIME=09:00 CHALLENGER_APP=SaneAI CHALLENGER_SELECTION_MODE=alternate CHALLENGER_ROTATION_ANCHOR_DATE=2026-05-02 CHALLENGER_ROTATION_ORDER=llama32-3b CHALLENGER_BUDGET_MIN=0 CHALLENGER_SKIP_WEEKDAY=0 RUN_CHALLENGERS_AFTER_WEEKLY=false CHALLENGER_HOUR=23 CHALLENGER_MINUTE=0 WEEKLY_TRAIN_HOUR=23 WEEKLY_TRAIN_MINUTE=0 READINESS_TARGET_APP=SaneSync TRAIN_ALERT_NOTIFY=true TRAIN_EXAMPLE_DROP_MAX_PCT=20 VALID_EXAMPLE_DROP_MAX_PCT=20 TRAINING_MODE_APP_QUIT_LIST=Xcode,SaneBar,SaneClick,SaneClip,SaneHosts,SaneSales,SaneSync,SaneVideo,Shottr,MenuMeters,gfxCardStatus,Safari bash $REMOTE_PRIMARY_DIR/mini-install-training-agents.sh; fi"
-else
-  echo "Skipped training agent refresh (set ENABLE_MINI_TRAINING_AGENTS=1 to re-enable)."
-fi
+echo "Training agents are retired and are never installed by deploy.sh."
 mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-memory-guard.sh ]; then bash $REMOTE_PRIMARY_DIR/mini-install-memory-guard.sh; fi"
+mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-weekly-restart.sh ]; then bash $REMOTE_PRIMARY_DIR/mini-install-weekly-restart.sh; fi"
+configure_local_login_keychain
 
 echo ""
 echo "Skipped legacy Claude global-config sync."

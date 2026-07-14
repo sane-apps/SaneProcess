@@ -1,4 +1,10 @@
 #!/bin/bash
+# APP STORE CONNECT LANE ONLY (owner rule 2026-07-14): this is the single
+# sanctioned Safari automation path, kept because ASC/Apple ID login state
+# lives in one Mini Safari tab. ALL other agent browser work uses Brave
+# (Claude-in-Chrome widget / Codex Chrome lane). Do not point this script at
+# non-Apple portals or dashboards — sane_bash_guards.rb blocks raw Safari
+# automation everywhere else.
 set -euo pipefail
 
 MINI_HOST="${MINI_HOST:-mini}"

@@ -111,13 +111,23 @@ def git_changed_files_after_bash
   status_out, status = Open3.capture2e('git', '-C', root, 'status', '--porcelain=v1', '--untracked-files=all')
   return [] unless status.success?
 
-  status_out.each_line.map do |line|
+  changed_files = status_out.each_line.map do |line|
     path = line[3..]&.strip
     next if path.to_s.empty?
 
     path = path.split(' -> ', 2).last if path.include?(' -> ')
-    File.expand_path(path, root)
+    expanded = File.expand_path(path.delete_prefix('"').delete_suffix('"'), root)
+    File.realdirpath(expanded)
+  rescue StandardError
+    expanded
   end.compact.uniq
+
+  baseline = Array(StateManager.get(:edits)[:baseline_dirty_files]).map do |path|
+    File.realdirpath(File.expand_path(path.to_s))
+  rescue StandardError
+    File.expand_path(path.to_s)
+  end
+  changed_files - baseline
 end
 
 def track_visual_requirement_from_edit(file_path)

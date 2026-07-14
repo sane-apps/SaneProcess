@@ -42,6 +42,91 @@ def email_row(
 
 
 class CheckInboxReportTests(unittest.TestCase):
+    def run_validate_email_format(self, body, email):
+        source = CHECK_INBOX.read_text(encoding="utf-8")
+        start = source.index("validate_email_format() {")
+        end = source.index("\nemail_body_sha256() {", start)
+        function_source = source[start:end]
+
+        with tempfile.TemporaryDirectory(prefix="check-inbox-signature-") as tmpdir:
+            tmp = Path(tmpdir)
+            body_file = tmp / "body.txt"
+            body_file.write_text(body, encoding="utf-8")
+            script = f"""
+curl() {{ printf '%s' "$SANE_TEST_EMAIL_META"; }}
+AUTH=test
+API_BASE=https://email.example.invalid
+EMAIL_FORMAT_OVERRIDE={tmp / 'no-format-override'}
+{function_source}
+validate_email_format {body_file} {email['id']}
+"""
+            env = os.environ.copy()
+            env["SANE_TEST_EMAIL_META"] = json.dumps(email)
+            return subprocess.run(
+                ["bash", "-c", script],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+    def test_business_correspondence_rejects_customer_alias_signature(self):
+        body = """Thanks for following up.\n\nHere are the requested details.\n\nMr. Sane\nhttps://saneapps.com\n"""
+        result = self.run_validate_email_format(
+            body,
+            email_row(
+                1115,
+                from_email="verifymyaccount@twilio.zendesk.com",
+                subject="Twilio Account Verification - Action Required",
+                status="needs_human",
+            ),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Business/vendor correspondence", result.stdout)
+
+    def test_business_correspondence_accepts_complete_real_name_signature(self):
+        body = """Thanks for following up.\n\nHere are the requested details.\n\nStephan Joseph\nFounder, SaneApps / SaneLot\n727-758-9785\nhi@saneapps.com\nhttps://sanelot.com\n"""
+        result = self.run_validate_email_format(
+            body,
+            email_row(
+                1124,
+                from_email="support@vinaudit.com",
+                subject="Following up on my SaneLot API inquiry",
+                status="needs_human",
+            ),
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_customer_support_rejects_real_name_business_signature(self):
+        body = """Thanks for the detailed report.\n\nPlease test the update. Thanks again.\n\nStephan Joseph\nFounder, SaneApps / SaneLot\n727-758-9785\nhi@saneapps.com\nhttps://sanelot.com\n"""
+        result = self.run_validate_email_format(
+            body,
+            email_row(
+                1083,
+                from_email="customer@outlook.com",
+                subject="SaneClip issue",
+                status="needs_human",
+                category="bug",
+            ),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("customer/support correspondence", result.stdout)
+
+    def test_customer_support_accepts_mr_sane_signature(self):
+        body = """Thanks for the detailed report.\n\nPlease test the update. Thanks again.\n\nMr. Sane\nhttps://saneapps.com\n"""
+        result = self.run_validate_email_format(
+            body,
+            email_row(
+                1083,
+                from_email="customer@outlook.com",
+                subject="SaneClip issue",
+                status="needs_human",
+                category="bug",
+            ),
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def run_open_review_media(self, opener_exit, *, explicit_host=True, local_hostname=None):
         source = CHECK_INBOX.read_text(encoding="utf-8")
         start = source.index("default_review_media_host() {")

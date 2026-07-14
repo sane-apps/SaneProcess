@@ -196,6 +196,37 @@ module SaneStopTest
       warn "  FAIL: Should block uncommitted unverified edits, got exit #{exit_code}"
     end
 
+    # Regression: dirt that existed when the session began belongs to neither a
+    # later Bash command nor this session's completion gate.
+    exit_code = nil
+    with_git_repo(committed: false) do |swift, _tmp|
+      StateManager.update(:edits) do |e|
+        e[:count] = 1
+        e[:unique_files] = [swift]
+        e[:baseline_dirty_files] = [swift]
+        e
+      end
+      StateManager.reset(:verification)
+      StateManager.update(:handoff_tracking) do |h|
+        h[:handoff_updated] = true
+        h[:memory_updated] = true
+        h
+      end
+
+      original_stderr = $stderr.clone
+      $stderr.reopen('/dev/null', 'w')
+      exit_code = process_stop_proc.call(false)
+      $stderr.reopen(original_stderr)
+    end
+
+    if exit_code == 0
+      passed += 1
+      warn '  PASS: Pre-existing dirty file -> allow stop without false Rule #4 block'
+    else
+      failed += 1
+      warn "  FAIL: Pre-existing dirty file should not count as session work, got exit #{exit_code}"
+    end
+
     # Test 2-net: Committed + pushed work (clean tree) -> ALLOW even with no
     # verify metric this session. This is the RULE #4 fix: the cumulative edit
     # counter used to fire forever after a release was committed, satisfiable

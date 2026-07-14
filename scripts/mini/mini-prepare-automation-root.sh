@@ -74,14 +74,41 @@ cleanup_stale_git_index_locks() {
   fi
 }
 
+is_retired_repo_name() {
+  local name="$1"
+  case "$name" in
+    SaneAI|SaneSync)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 is_syncable_repo_name() {
   local name="$1"
+  if is_retired_repo_name "$name"; then
+    return 1
+  fi
   case "$name" in
     *-reconcile-preview-*|*-release-main|*-release-peer|*_codex_*|*-codex-*|*codex_sync*|*codex_test*|*-preview-*|*-worktree-*)
       return 1
       ;;
   esac
   return 0
+}
+
+prune_retired_automation_repos() {
+  local name target
+  for name in SaneAI SaneSync; do
+    target="$AUTOMATION_ROOT/apps/$name"
+    if [ -e "$target" ] || [ -L "$target" ]; then
+      echo "RETIRE apps/$name (local Mini runtime is retired)"
+      if [ ! -x /usr/bin/trash ] || ! /usr/bin/trash "$target"; then
+        echo "FAIL  apps/$name could not be moved to Trash"
+        FAILURES=$((FAILURES + 1))
+      fi
+    fi
+  done
 }
 
 default_branch_for_repo() {
@@ -233,7 +260,11 @@ prepare_repo() {
 
   if [ ! -d "$target_repo/.git" ]; then
     echo "CLONE $rel_path [$branch]"
-    git clone --quiet --branch "$branch" --single-branch "$origin_url" "$target_repo"
+    # Seed from the same-machine source checkout. This is faster, works before
+    # SSH/Keychain auth is available after a reboot, and copies only committed
+    # state. Future refreshes still fetch from the canonical GitHub origin.
+    git clone --quiet --branch "$branch" --single-branch "$source_repo" "$target_repo"
+    git -C "$target_repo" remote set-url origin "$origin_url"
     CLONED=$((CLONED + 1))
     return 0
   fi
@@ -571,6 +602,7 @@ hydrate_sanevideo_assets() {
 mkdir -p "$AUTOMATION_ROOT/apps" "$AUTOMATION_ROOT/infra"
 acquire_prepare_lock || exit 1
 cleanup_stale_git_index_locks
+prune_retired_automation_repos
 printf 'managed_by=mini-prepare-automation-root\nsource_root=%s\nprepared_at=%s\n' \
   "$SOURCE_ROOT" "$(date '+%Y-%m-%d %H:%M:%S')" > "$AUTOMATION_MARKER"
 
@@ -582,16 +614,7 @@ for base in apps infra; do
   done
 done
 
-hydrate_training_dataset "SaneSync" train.jsonl valid.jsonl test.jsonl
-hydrate_training_dataset "SaneClip" train.jsonl valid.jsonl test.jsonl
-hydrate_training_dataset "SaneAI" train.jsonl valid.jsonl
-hydrate_training_dataset "SaneVideo" train.jsonl valid.jsonl
-hydrate_training_support_files "SaneAI" merge_training_data.py system_prompt.txt lora_config_mini.yaml eval_*.jsonl
-hydrate_training_support_files "SaneAI" supplemental_*.jsonl
-hydrate_training_support_files "SaneVideo" system_prompt.txt lora_config_mini.yaml eval_*.jsonl
-hydrate_training_subdir "SaneAI" challenger_configs
-hydrate_training_subdir "SaneSync" challenger_configs
-hydrate_training_subdir "SaneVideo" challenger_configs
+echo "Training data hydration retired; automation clones remain build/test only."
 
 hydrate_sanevideo_assets
 

@@ -63,13 +63,6 @@ def build_default_sites(root: Path = SANE_APPS_ROOT) -> list[Site]:
         ),
         Site("SaneVideo", root / "apps/SaneVideo/docs", "https://sanevideo.com", "/images/og-image.png"),
         Site(
-            "SaneSync",
-            root / "apps/SaneSync/docs",
-            "https://sanesync.com",
-            "/images/og-image.png",
-            allow_appcast_links=False,
-        ),
-        Site(
             "SaneApps",
             root / "web/saneapps.com",
             "https://saneapps.com",

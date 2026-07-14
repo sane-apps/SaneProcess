@@ -24,7 +24,7 @@ def assert_contains(path: Path, *needles: str) -> None:
 
 
 def test_all_bug_templates_warn_public_and_large_media() -> None:
-    apps = ["SaneBar", "SaneClick", "SaneClip", "SaneHosts", "SaneSales", "SaneSync", "SaneVideo"]
+    apps = ["SaneBar", "SaneClick", "SaneClip", "SaneHosts", "SaneSales", "SaneVideo"]
     for app in apps:
         template = APPS / app / ".github" / "ISSUE_TEMPLATE" / "bug_report.md"
         assert_contains(
@@ -37,7 +37,7 @@ def test_all_bug_templates_warn_public_and_large_media() -> None:
 
 
 def test_feature_request_templates_exist_for_all_customer_repos() -> None:
-    apps = ["SaneBar", "SaneClick", "SaneClip", "SaneHosts", "SaneSales", "SaneSync", "SaneVideo"]
+    apps = ["SaneBar", "SaneClick", "SaneClip", "SaneHosts", "SaneSales", "SaneVideo"]
     for app in apps:
         template = APPS / app / ".github" / "ISSUE_TEMPLATE" / "feature_request.md"
         assert template.exists(), f"missing feature request template: {template}"
@@ -51,9 +51,6 @@ def test_saneclip_ios_github_repo_is_not_double_prefixed() -> None:
 
 
 def test_private_repo_customer_surfaces_use_email_first() -> None:
-    assert_contains(APPS / "SaneSync" / "README.md", "Email bug reports to", "hi@saneapps.com")
-    assert_contains(APPS / "SaneSync" / "SaneSyncApp.swift", "Email Support", "mailto:hi@saneapps.com")
-    assert_contains(APPS / "SaneSync" / "PRIVACY.md", "Email [hi@saneapps.com]")
     assert_contains(APPS / "SaneVideo" / "PRIVACY.md", "Email [hi@saneapps.com]")
 
 

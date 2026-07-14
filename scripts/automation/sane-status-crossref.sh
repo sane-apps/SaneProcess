@@ -220,8 +220,7 @@ require 'date'
 require 'yaml'
 
 paths = Dir[
-  File.expand_path('~/SaneApps/apps/*/.outreach.yml'),
-  File.expand_path('~/SaneApps/SaneAI/.outreach.yml')
+  File.expand_path('~/SaneApps/apps/*/.outreach.yml')
 ].uniq.sort
 
 if paths.empty?

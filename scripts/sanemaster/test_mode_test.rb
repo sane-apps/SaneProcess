@@ -388,7 +388,7 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
       assert_includes(source, 'SANEAPPS_TEST_MODE_APPS')
       assert_includes(source, 'kill_other_saneapps_processes')
       assert_includes(source, 'SaneClickExtension')
-      assert_includes(source, '/SaneSync/scripts/inference_server.py')
+      assert(!source.include?('SaneSync'))
       assert_includes(source, 'Closing other SaneApps before testing')
       true
     end

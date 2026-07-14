@@ -320,9 +320,9 @@ class SeoSiteAuditTests(unittest.TestCase):
     def test_current_saneapps_sites_pass_seo_audit(self):
         module = load_module()
         checked, issues = module.audit_sites()
-        # The live page count moves as sites gain pages (100 -> 101 broke this
-        # on 2026-07-07); assert real coverage without pinning the exact count.
-        self.assertGreaterEqual(checked, 100)
+        # The live page count moves as active sites gain pages; assert broad
+        # coverage without pinning the exact count or retired products.
+        self.assertGreaterEqual(checked, 98)
         self.assertEqual([], issues)
 
 

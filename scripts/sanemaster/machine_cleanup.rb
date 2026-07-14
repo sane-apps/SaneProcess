@@ -12,7 +12,7 @@ module SaneMasterModules
     DEFAULT_CACHE_THRESHOLD_GB = 5
     DEFAULT_DERIVEDDATA_AGE_DAYS = 2
     DEFAULT_TRASH_THRESHOLD_GB = 1
-    SERVER_CLEANUP_BLOCKING_ACTIVE_FLAGS = %i[xcodebuild_active simulator_active training_active].freeze
+    SERVER_CLEANUP_BLOCKING_ACTIVE_FLAGS = %i[xcodebuild_active simulator_active training_active codex_gui_active].freeze
 
     DISPOSABLE_CACHE_PATHS = [
       '~/.cache/huggingface',
@@ -60,11 +60,7 @@ module SaneMasterModules
       xcuserdata
     ].freeze
     SERVER_GENERATED_RELATIVE_PATHS = (SERVER_GENERATED_DIR_NAMES + ['vendor/bundle']).freeze
-    SERVER_CHILD_CLEANUP_PATHS = [
-      '~/Downloads',
-      '~/tmp',
-      '~/SaneApps/infra/SaneProcess/outputs'
-    ].freeze
+    SERVER_CHILD_CLEANUP_PATHS = ['~/tmp'].freeze
     SERVER_REPO_ROOTS = [
       '~/SaneApps/apps',
       '~/SaneApps/infra',
@@ -87,20 +83,14 @@ module SaneMasterModules
       '~/SaneApps-automation/release-publish',
       '~/SaneApps-automation/release-worktrees',
       '~/scratch',
-      '~/codex-runs',
       '~/abtest-scratch',
       '~/tmp_sanebar_release',
       '~/tmp_sanebar_upgrade',
       '~/.tmp_saneclip_upgrade_dd_v222',
       '~/.tmp_saneclip_upgrade_dd_v223',
       '~/.tmp_saneclip_upgrade_install',
-      '~/.codex/sessions',
-      '~/.codex/archived_sessions',
-      '~/.codex/worktrees',
-      '~/.codex/runs',
       '~/.codex/tmp',
       '~/.codex/.tmp',
-      '~/.codex-sync-backups',
       '~/.sanemaster/routed-workspaces',
       '~/Library/Developer/XcodeBuildMCP/workspaces'
     ].freeze
@@ -499,11 +489,11 @@ module SaneMasterModules
       return nil if size_gb < options[:trash_threshold_gb]
 
       {
-        type: 'empty_trash',
+        type: 'skip',
         category: 'trash',
         path: trash,
         size_gb: size_gb,
-        reason: 'Trash exceeds threshold; do not let cleanup merely move GB elsewhere.'
+        reason: 'Trash exceeds threshold but is preserved; unattended cleanup never permanently deletes unrelated recoverable files.'
       }
     end
 
@@ -700,7 +690,7 @@ module SaneMasterModules
         active_apps: active.fetch(:apps, {}).keys.sort,
         action_count: actions.count { |action| action[:type] != 'skip' },
         skipped: actions.count { |action| action[:type] == 'skip' },
-        reclaimable_gb: actions.select { |action| %w[trash_path trash_children trash_matching_children empty_trash].include?(action[:type].to_s) }.sum { |action| action[:size_gb].to_f }.round(2)
+        reclaimable_gb: actions.select { |action| %w[trash_path trash_children trash_matching_children].include?(action[:type].to_s) }.sum { |action| action[:size_gb].to_f }.round(2)
       }
     end
 
@@ -731,12 +721,6 @@ module SaneMasterModules
           else
             failed << action.merge(error: 'path outside cleanup-safe roots')
           end
-        when 'empty_trash'
-          if empty_user_trash
-            applied << action
-          else
-            failed << action.merge(error: 'empty trash failed')
-          end
         when 'trash_children'
           if machine_cleanup_safe_path?(action[:path]) && trash_children(action[:path])
             applied << action
@@ -755,9 +739,6 @@ module SaneMasterModules
         end
       end
 
-      empty_user_trash if applied.any? { |action| %w[trash_path trash_children].include?(action[:type].to_s) }
-      empty_user_trash if applied.any? { |action| action[:type].to_s == 'trash_matching_children' }
-
       {
         success: failed.empty?,
         applied_count: applied.length,
@@ -768,6 +749,8 @@ module SaneMasterModules
 
     def machine_cleanup_safe_path?(path)
       expanded = File.expand_path(path)
+      return false if cleanup_path_uses_symlink?(expanded)
+
       safe_root = CLEANUP_SAFE_ROOTS.any? do |raw_root|
         root = File.expand_path(raw_root)
         expanded == root || expanded.start_with?("#{root}/")
@@ -781,6 +764,24 @@ module SaneMasterModules
       return true if server_codex_code_sign_clone_path?(expanded)
 
       server_repo_generated_path?(expanded)
+    end
+
+    def cleanup_path_uses_symlink?(path)
+      current = path
+      home = File.expand_path('~')
+      boundary = path == home || path.start_with?("#{home}/") ? home : File.dirname(path)
+      loop do
+        return true if File.symlink?(current)
+        break if current == boundary
+
+        parent = File.dirname(current)
+        break if parent == current
+
+        current = parent
+      end
+      false
+    rescue SystemCallError
+      true
     end
 
     def server_child_cleanup_paths
@@ -892,29 +893,6 @@ module SaneMasterModules
       end
     end
 
-    def empty_user_trash
-      return true if system('command', '-v', 'trash-empty', out: File::NULL, err: File::NULL) &&
-                     machine_cleanup_system_with_timeout(['trash-empty'], seconds: 60)
-      return true if ENV['SSH_CONNECTION'].to_s != '' && purge_trash_contents_safely
-      return true if machine_cleanup_system_with_timeout(
-        ['osascript', '-e', 'tell application "Finder" to empty the trash'],
-        seconds: 45
-      )
-      return true if purge_trash_contents_safely
-
-      false
-    end
-
-    def purge_trash_contents_safely
-      trash = File.expand_path('~/.Trash')
-      return true unless Dir.exist?(trash)
-      return false unless trash == File.join(Dir.home, '.Trash')
-
-      Dir.children(trash).all? do |entry|
-        system('/bin/rm', '-rf', '--', File.join(trash, entry), out: File::NULL, err: File::NULL)
-      end
-    end
-
     def machine_cleanup_system_with_timeout(argv, seconds:)
       pid = Process.spawn(*argv, out: File::NULL, err: File::NULL)
       wait_thr = Process.detach(pid)
@@ -945,7 +923,7 @@ module SaneMasterModules
       end
 
       puts
-      puts 'Dry-run only. Re-run with `--apply` to move planned paths to Trash and empty Trash.' if plan[:dry_run]
+      puts 'Dry-run only. Re-run with `--apply` to move planned paths to Trash; Trash itself is preserved.' if plan[:dry_run]
     end
 
     def path_size_gb(path)

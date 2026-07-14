@@ -771,12 +771,10 @@ module SaneMasterModules
       puts "\n═══ 2. PROJECT CONFIGURATION ═══"
       projects = {
         'SaneBar' => '~/SaneApps/apps/SaneBar',
-        'SaneSync' => '~/SaneApps/apps/SaneSync',
         'SaneVideo' => '~/SaneApps/apps/SaneVideo',
         'SaneClip' => '~/SaneApps/apps/SaneClip',
         'SaneHosts' => '~/SaneApps/apps/SaneHosts',
-        'SaneClick' => '~/SaneApps/apps/SaneClick',
-        'SaneAI' => '~/SaneApps/apps/SaneAI'
+        'SaneClick' => '~/SaneApps/apps/SaneClick'
       }
 
       projects.each do |name, path|

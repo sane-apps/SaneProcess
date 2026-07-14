@@ -142,7 +142,6 @@ class ValidationReport
   PROJECTS = %w[
     apps/SaneBar
     apps/SaneVideo
-    apps/SaneSync
     apps/SaneScan
     apps/SaneClip
     apps/SaneHosts
@@ -155,7 +154,6 @@ class ValidationReport
   APP_PROJECTS = %w[
     apps/SaneBar
     apps/SaneVideo
-    apps/SaneSync
     apps/SaneScan
     apps/SaneClip
     apps/SaneHosts

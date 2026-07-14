@@ -111,6 +111,28 @@ def find_sop_file
   candidates.find { |f| File.exist?(File.join(PROJECT_DIR, f)) }
 end
 
+def current_git_dirty_files
+  root_out, root_status = Open3.capture2e('git', '-C', PROJECT_DIR, 'rev-parse', '--show-toplevel')
+  return [] unless root_status.success?
+
+  root = root_out.strip
+  status_out, status = Open3.capture2e('git', '-C', root, 'status', '--porcelain=v1', '--untracked-files=all')
+  return [] unless status.success?
+
+  status_out.each_line.map do |line|
+    path = line[3..-1]&.strip
+    next if path.to_s.empty?
+
+    path = path.split(' -> ', 2).last if path.include?(' -> ')
+    expanded = File.expand_path(path.delete_prefix('"').delete_suffix('"'), root)
+    File.realdirpath(expanded)
+  rescue StandardError
+    expanded
+  end.compact.uniq
+rescue StandardError
+  []
+end
+
 # Clear stale satisfaction from previous sessions
 # New session = fresh slate, must re-earn compliance
 def clear_stale_satisfaction
@@ -125,6 +147,7 @@ def clear_stale_satisfaction
   StateManager.reset(:verification)
   StateManager.reset(:planning)
   StateManager.reset(:deployment)
+  StateManager.reset(:visual_verification)
 
   # Per-session work/requirement counters must NOT bleed across sessions, or a
   # new session inherits stale state and fires false gates:
@@ -138,6 +161,13 @@ def clear_stale_satisfaction
   # saneprompt re-populates :requirements and :skill on the first prompt of the
   # session, so resetting here is safe.
   StateManager.reset(:edits)
+  StateManager.update(:edits) do |edits|
+    # A session owns only changes made after it starts. Keeping the initial
+    # working-tree dirt separate prevents unrelated/pre-existing files from
+    # being attributed to a later Bash command or completion gate.
+    edits[:baseline_dirty_files] = current_git_dirty_files
+    edits
+  end
   StateManager.reset(:requirements)
   StateManager.reset(:handoff_tracking)
   StateManager.reset(:skill)

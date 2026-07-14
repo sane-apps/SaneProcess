@@ -41,7 +41,9 @@ CORPORATE_WE_PATTERN = /\b(?:our\s+(?:team|teams|engineers?|developers?|devs?|co
 APPRECIATION_PATTERN = /\b(?:thank(s| you)?|appreciat(e|ion|ing)|grateful)\b/i
 HELPING_MAKE_PATTERN = /\bhelping make\b.*\bbetter\b/i
 MR_SANE_SIGNOFF_PATTERN = /\bMr\.?\s+Sane\b/
-STANDARD_EMAIL_SIGNOFF_PATTERN = /(?:^|\n)(?:Mr\.?\s+Sane\s*(?:\nhttps:\/\/saneapps\.com)?|Stephan Joseph\s*\nFounder, SaneCite\s*(?:\n727-758-9785)?\s*\nhttps:\/\/sanecite\.com)\s*\z/i
+CUSTOMER_EMAIL_SIGNOFF_PATTERN = /(?:^|\n)Mr\.?\s+Sane\s*(?:\nhttps:\/\/saneapps\.com)?\s*\z/i
+BUSINESS_EMAIL_SIGNOFF_PATTERN = /(?:^|\n)Stephan Joseph\s*\nFounder, SaneApps(?: \/ (?:SaneLot|SaneCite))?\s*\n727-758-9785\s*\nhi@saneapps\.com\s*\nhttps:\/\/(?:saneapps|sanelot|sanecite)\.com\/?\s*\z/i
+STANDARD_EMAIL_SIGNOFF_PATTERN = /(?:^|\n)(?:Mr\.?\s+Sane\s*(?:\nhttps:\/\/saneapps\.com)?|Stephan Joseph\s*\nFounder, SaneApps(?: \/ (?:SaneLot|SaneCite))?\s*\n727-758-9785\s*\nhi@saneapps\.com\s*\nhttps:\/\/(?:saneapps|sanelot|sanecite)\.com\/?)\s*\z/i
 
 def email_format_valid?(body)
   text = body.to_s
@@ -53,9 +55,12 @@ def email_format_valid?(body)
 
   opens_with_appreciation = first_chunk.match?(APPRECIATION_PATTERN)
   closes_with_appreciation = last_chunk.match?(APPRECIATION_PATTERN)
-  has_signoff = stripped.match?(STANDARD_EMAIL_SIGNOFF_PATTERN)
+  customer_signoff = stripped.match?(CUSTOMER_EMAIL_SIGNOFF_PATTERN)
+  business_signoff = stripped.match?(BUSINESS_EMAIL_SIGNOFF_PATTERN)
 
-  opens_with_appreciation && closes_with_appreciation && has_signoff
+  return opens_with_appreciation if business_signoff
+
+  opens_with_appreciation && closes_with_appreciation && customer_signoff
 end
 
 # Verify the canonical check-inbox approval JSON exists, matches the body hash,
@@ -316,8 +321,9 @@ if command.include?('check-inbox.sh')
       warn '   Required structure:'
       warn '   1) Open with thanks or appreciation'
       warn '   2) Close with thanks or appreciation'
-      warn '   3) End with "Mr. Sane"'
-      warn '      Optional final line: "https://saneapps.com"'
+      warn '   3) Use the recipient-appropriate signature:'
+      warn '      Customer/support: Mr. Sane + https://saneapps.com'
+      warn '      Business/vendor/compliance: Stephan Joseph + role + phone + work email + relevant site'
       warn ''
       warn '   User can override: touch /tmp/.email_format_override'
       exit 2

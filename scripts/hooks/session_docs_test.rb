@@ -534,6 +534,12 @@ StateManager.update(:edits) { |e| e[:count] = 3; e[:unique_files] = ['Old.swift'
 StateManager.update(:requirements) { |r| r[:requested] = ['stale']; r[:is_big_task] = true; r }
 StateManager.update(:handoff_tracking) { |h| h[:memory_updated] = true; h[:handoff_updated] = true; h }
 StateManager.update(:skill) { |s| s[:required] = 'status'; s[:invoked] = true; s }
+StateManager.update(:visual_verification) do |v|
+  v[:required] = true
+  v[:reason] = 'customer_facing_ui_file_edited'
+  v[:required_files_paths] = ['OldView.swift']
+  v
+end
 StateManager.update(:mcp_health) do |h|
   h[:verified_this_session] = true
   h[:degraded] = true
@@ -546,11 +552,14 @@ edits = StateManager.get(:edits)
 requirements = StateManager.get(:requirements)
 handoff = StateManager.get(:handoff_tracking)
 skill = StateManager.get(:skill)
+visual = StateManager.get(:visual_verification)
 mcp = StateManager.get(:mcp_health)
 t('session_start clears edit count', edits[:count].to_i.zero?)
+t('session_start captures dirty-file baseline', edits[:baseline_dirty_files].is_a?(Array))
 t('session_start clears stale requested requirements', Array(requirements[:requested]).empty?)
 t('session_start clears stale handoff tracking', !handoff[:memory_updated] && !handoff[:handoff_updated])
 t('session_start clears stale skill requirement', skill[:required].nil?)
+t('session_start clears stale visual requirement', visual[:required] == false)
 t('session_start resets MCP degraded state', mcp[:degraded] == false && mcp[:gate_block_attempts].to_i.zero?)
 
 # === CLEANUP ===

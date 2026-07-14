@@ -1,5 +1,5 @@
 #!/bin/bash
-# mini-memory-guard.sh - Daily Mac mini hygiene + safe reboot gate
+# mini-memory-guard.sh - Daily Mac mini hygiene for the always-on server
 # Intended to run via LaunchAgent in early-morning hours.
 #
 # Goals:
@@ -7,47 +7,37 @@
 # - Kill stale dev app binaries from DerivedData.
 # - Prune stale routed release workspaces and validation output.
 # - Rotate oversized logs.
-# - Reboot only when safe (night window, no critical jobs).
-
+# - Never shut down or restart the Mini automatically.
+# - Bound deep cleanup so morning availability is predictable.
 set -euo pipefail
-
 DRY_RUN=0
-FORCE_REBOOT=0
 COMPILER_SERVICES_ONLY=0
-
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
-    --force-reboot) FORCE_REBOOT=1 ;;
     --compiler-services-only) COMPILER_SERVICES_ONLY=1 ;;
     *)
-      echo "Usage: $0 [--dry-run] [--force-reboot] [--compiler-services-only]" >&2
+      echo "Usage: $0 [--dry-run] [--compiler-services-only]" >&2
       exit 2
       ;;
   esac
 done
-
 OUTPUT_DIR="$HOME/SaneApps/outputs"
 LOG_FILE="$OUTPUT_DIR/mini_memory_guard.log"
 mkdir -p "$OUTPUT_DIR"
-
 log() {
   local msg="$1"
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $msg" | tee -a "$LOG_FILE"
 }
-
 get_load1() {
   uptime | awk -F'load averages: ' '{print $2}' | tr -d ',' | awk '{print $1}'
 }
-
 get_swap_used_mb() {
   sysctl vm.swapusage | awk -F'used = ' '{print $2}' | awk '{gsub(/M/,"",$1); print $1}'
 }
-
 get_free_pct() {
   memory_pressure -Q 2>/dev/null | awk -F': ' '/free percentage/{gsub(/%/,"",$2); print $2; exit}'
 }
-
 get_uptime_days() {
   local up
   up="$(uptime)"
@@ -57,26 +47,21 @@ get_uptime_days() {
     echo "0"
   fi
 }
-
 get_data_disk_free_gb() {
   df -g /System/Volumes/Data | tail -1 | awk '{print $4}'
 }
-
 path_size_mb() {
   local mb
   mb="$(du -sm "$1" 2>/dev/null | awk '{print $1}')" || mb=0
   echo "${mb:-0}"
 }
 
-is_training_running() {
-  pgrep -f "mlx_lm lora --train" >/dev/null 2>&1 || \
-    pgrep -f "mini-train.sh" >/dev/null 2>&1 || \
-    pgrep -f "mini-train-all.sh" >/dev/null 2>&1
-}
-
-is_nightly_running() {
+is_server_work_active() {
   pgrep -f "mini-nightly.sh" >/dev/null 2>&1 || \
-    pgrep -f "xcodebuild .*Sane" >/dev/null 2>&1
+    pgrep -f "xcodebuild .*Sane" >/dev/null 2>&1 || \
+    pgrep -f "swift (build|test)" >/dev/null 2>&1 || \
+    pgrep -f "SaneMaster.*(verify|launch|release|test_mode)" >/dev/null 2>&1 || \
+    pgrep -f '/DerivedData/.*/Sane[^ ]*\.app/Contents/MacOS/Sane' >/dev/null 2>&1
 }
 
 rotate_if_large() {
@@ -106,8 +91,7 @@ safe_remove_path() {
     "$HOME/Library/Developer/Xcode/DerivedData/"*|\
     "$HOME/Library/Developer/CoreSimulator/Devices/"*|\
     "$HOME/.sanemaster/routed-workspaces/"*|\
-    "$HOME/.codex-sync-backups/"*|\
-    "$HOME/.Trash/"*)
+    "$HOME/.codex-sync-backups/"*)
       ;;
     *)
       log "Refusing delete outside safe roots: $path"
@@ -115,12 +99,21 @@ safe_remove_path() {
       ;;
   esac
 
+  local component="$path"
+  while [ "$component" != "$HOME" ] && [ "$component" != "/" ]; do
+    if [ -L "$component" ]; then
+      log "Refusing cleanup through symlinked path component: $component"
+      return 1
+    fi
+    component="$(dirname "$component")"
+  done
+
   if [ "$DRY_RUN" -eq 1 ]; then
     log "DRY RUN: would remove $path"
     return 0
   fi
 
-  rm -rf "$path"
+  /usr/bin/trash "$path"
 }
 
 prune_old_dirs_by_mtime() {
@@ -172,73 +165,11 @@ prune_old_dirs_by_mtime() {
   fi
 }
 
-prune_sweep_dirs() {
-  local sweeps_root="$1"
-  local keep_days="$2"
-  local label="$3"
-  local min_keep="$4"
-
-  [ -d "$sweeps_root" ] || return 0
-  [[ "$keep_days" =~ ^[0-9]+$ ]] || keep_days=3
-  [[ "$min_keep" =~ ^[0-9]+$ ]] || min_keep=4
-
-  local cutoff
-  cutoff=$(date -v-"${keep_days}"d +"%Y-%m-%d")
-  local removed=0
-  local freed_mb=0
-
-  local sweep_idx=0
-  for sweep_dir in $(ls -1dt "$sweeps_root"/sweep_* "$sweeps_root"/challenger_* 2>/dev/null); do
-    [ -d "$sweep_dir" ] || continue
-    sweep_idx=$((sweep_idx + 1))
-    if [ "$sweep_idx" -le "$min_keep" ]; then
-      continue
-    fi
-
-    local sweep_date
-    sweep_date=$(basename "$sweep_dir" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
-    [ -z "$sweep_date" ] && continue
-
-    if [[ "$sweep_date" < "$cutoff" ]]; then
-      local dir_mb
-      dir_mb=$(path_size_mb "$sweep_dir")
-      safe_remove_path "$sweep_dir" || continue
-      removed=$((removed + 1))
-      freed_mb=$((freed_mb + dir_mb))
-    fi
-  done
-
-  if [ "$removed" -gt 0 ]; then
-    log "Pruned $removed ${label} dir(s), freed ${freed_mb}MB (keep_days=$keep_days min_keep=$min_keep)"
-  else
-    log "No ${label} dirs older than ${keep_days} day(s) beyond min_keep=$min_keep"
-  fi
-}
-
-cleanup_training_artifacts() {
-  # Production sweeps should be short-lived checkpoints; keep recent history only.
-  for sane_root in "$HOME/SaneApps" "$HOME/SaneApps-automation"; do
-    [ -d "$sane_root/apps" ] || continue
-
-    prune_sweep_dirs "$sane_root/apps/SaneAI/models/sweeps" "${SANEAI_SWEEP_KEEP_DAYS:-3}" "SaneAI sweep" "${SANEAI_SWEEP_MIN_KEEP:-4}"
-    prune_sweep_dirs "$sane_root/apps/SaneSync/models/sweeps" "${SANESYNC_SWEEP_KEEP_DAYS:-7}" "SaneSync sweep" "${SANESYNC_SWEEP_MIN_KEEP:-4}"
-
-    # Temporary fusion test outputs can be multi-GB and are safe to discard.
-    for tmp_dir in "$sane_root/apps/SaneSync/models"/_fuse_test_*; do
-      [ -d "$tmp_dir" ] || continue
-      local dir_mb
-      dir_mb=$(path_size_mb "$tmp_dir")
-      safe_remove_path "$tmp_dir" || continue
-      log "Removed temporary fusion dir $(basename "$tmp_dir") (${dir_mb}MB)"
-    done
-  done
-}
-
 cleanup_orphaned_compiler_services() {
   local service_name pids pid ppid rss_kb killed_count failed_count found_count large_count reboot_marker threshold_kb
 
-  if is_training_running || is_nightly_running; then
-    log "Compiler service cleanup skipped because build/training is active."
+  if is_server_work_active; then
+    log "Compiler service cleanup skipped because a build is active."
     return 0
   fi
 
@@ -380,8 +311,8 @@ cleanup_coresimulator_devices() {
     return 0
   fi
 
-  if is_training_running || is_nightly_running; then
-    log "CoreSimulator devices are large (${devices_mb}MB) but build/training is active; skipping cleanup."
+  if is_server_work_active; then
+    log "CoreSimulator devices are large (${devices_mb}MB) but a build is active; skipping cleanup."
     return 0
   fi
 
@@ -398,26 +329,12 @@ cleanup_coresimulator_devices() {
 
 cleanup_trash() {
   local trash_root="$HOME/.Trash"
-  local max_mb="${TRASH_MAX_MB:-256}"
   [ -d "$trash_root" ] || return 0
 
   local trash_mb
   trash_mb=$(path_size_mb "$trash_root")
   [ -n "$trash_mb" ] || trash_mb=0
-  if [ "$trash_mb" -le "$max_mb" ]; then
-    log "Trash within limit (${trash_mb}MB <= ${max_mb}MB)"
-    return 0
-  fi
-
-  local removed=0
-  local path
-  while IFS= read -r path; do
-    [ -n "$path" ] || continue
-    safe_remove_path "$path" || continue
-    removed=$((removed + 1))
-  done < <(find "$trash_root" -mindepth 1 -maxdepth 1 -print)
-
-  log "Trash cleanup removed $removed path(s) (pre-clean size: ${trash_mb}MB)"
+  log "Trash preserved (${trash_mb}MB); automatic server hygiene never permanently deletes user Trash."
 }
 
 cleanup_large_deriveddata() {
@@ -435,8 +352,8 @@ cleanup_large_deriveddata() {
     return 0
   fi
 
-  if is_training_running || is_nightly_running; then
-    log "DerivedData is large (${dd_mb}MB) but build/training is active; skipping cleanup."
+  if is_server_work_active; then
+    log "DerivedData is large (${dd_mb}MB) but a build is active; skipping cleanup."
     return 0
   fi
 
@@ -450,129 +367,60 @@ cleanup_large_deriveddata() {
   log "DerivedData cleanup removed $removed path(s) (pre-clean size: ${dd_mb}MB)"
 }
 
-cleanup_stale_deriveddata_apps() {
-  local stale_count
-  stale_count=$(ps -axo command | awk '/\/DerivedData\/.*\/Sane[^ ]*\.app\/Contents\/MacOS\/Sane/{count++} END{print count+0}')
-  if [ "$stale_count" -eq 0 ]; then
-    log "No stale DerivedData Sane app processes"
-    return 0
-  fi
-
-  log "Found $stale_count stale DerivedData Sane app process(es)"
-  if [ "$DRY_RUN" -eq 1 ]; then
-    ps -axo pid,etime,command | grep -E '/DerivedData/.*/Sane[^ ]*\.app/Contents/MacOS/Sane' | grep -v grep | tee -a "$LOG_FILE" || true
-    return 0
-  fi
-
-  pkill -f '/DerivedData/.*/Sane[^ ]*\.app/Contents/MacOS/Sane' || true
-  sleep 1
-  log "Killed stale DerivedData Sane app process(es)"
-}
-
 run_sanemaster_server_cleanup() {
   local sanemaster="$HOME/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb"
+  local timeout_seconds="${MACHINE_CLEANUP_TIMEOUT_SECONDS:-1200}"
   [ -f "$sanemaster" ] || {
     log "SaneMaster server cleanup skipped; missing $sanemaster"
     return 0
   }
 
-  if is_training_running || is_nightly_running; then
-    log "SaneMaster server cleanup skipped because build/training is active."
+  if is_server_work_active; then
+    log "SaneMaster server cleanup skipped because a build is active."
     return 0
   fi
 
-  log "Running SaneMaster machine_cleanup --server"
-  if [ "$DRY_RUN" -eq 1 ]; then
-    ruby "$sanemaster" machine_cleanup --host local --server --json >> "$LOG_FILE" 2>&1 || {
-      log "SaneMaster server cleanup dry-run failed"
-      return 1
-    }
-  else
-    ruby "$sanemaster" machine_cleanup --host local --server --apply --quiet --json >> "$LOG_FILE" 2>&1 || {
-      log "SaneMaster server cleanup failed"
-      return 1
-    }
-  fi
-}
-
-in_reboot_window() {
-  local hour
-  hour=$(date +%H)
-  hour=$((10#$hour))
-  # Reboot window: 05:00-05:59 local
-  [ "$hour" -eq 5 ]
-}
-
-should_reboot() {
-  local load1 swap_mb free_pct uptime_days
-  load1="$(get_load1)"
-  swap_mb="$(get_swap_used_mb)"
-  free_pct="$(get_free_pct)"
-  uptime_days="$(get_uptime_days)"
-
-  local reasons=""
-  if awk "BEGIN {exit !($swap_mb >= 3072)}"; then
-    reasons="high swap (${swap_mb}MB)"
-  fi
-  if [ "$uptime_days" -ge 7 ]; then
-    if [ -n "$reasons" ]; then reasons="$reasons, "; fi
-    reasons="${reasons}long uptime (${uptime_days}d)"
-  fi
-  if awk "BEGIN {exit !($load1 >= 14)}"; then
-    if [ -n "$reasons" ]; then reasons="$reasons, "; fi
-    reasons="${reasons}high load (${load1})"
-  fi
-  if [ -f "$OUTPUT_DIR/.compiler_service_reboot_required" ]; then
-    if [ -n "$reasons" ]; then reasons="$reasons, "; fi
-    reasons="${reasons}root-owned compiler service cleanup requires restart"
+  log "Running bounded SaneMaster machine_cleanup --server (timeout=${timeout_seconds}s)"
+  local command=(ruby "$sanemaster" machine_cleanup --host local --server --json)
+  if [ "$DRY_RUN" -eq 0 ]; then
+    command=(ruby "$sanemaster" machine_cleanup --host local --server --apply --quiet --json)
   fi
 
-  if [ "$FORCE_REBOOT" -eq 1 ]; then
-    reasons="forced by operator"
-  fi
+  set +e
+  ruby -ropen3 -e '
+    timeout = Integer(ARGV.shift)
+    command = ARGV
+    status = nil
+    Open3.popen2e(*command, pgroup: true) do |stdin, output, wait_thr|
+      stdin.close
+      reader = Thread.new { IO.copy_stream(output, STDOUT) }
+      unless wait_thr.join(timeout)
+        Process.kill("TERM", -wait_thr.pid) rescue nil
+        wait_thr.join(5)
+        # Kill the group even if only its leader honored TERM.
+        Process.kill("KILL", -wait_thr.pid) rescue nil
+        wait_thr.join(5)
+        reader.join(2)
+        exit 124
+      end
+      reader.join
+      status = wait_thr.value
+    end
+    exit(status&.exitstatus || 1)
+  ' "$timeout_seconds" "${command[@]}" >> "$LOG_FILE" 2>&1
+  local cleanup_status=$?
+  set -e
 
-  if [ -z "$reasons" ]; then
-    echo ""
-  else
-    echo "$reasons"
+  if [ "$cleanup_status" -eq 124 ]; then
+    log "SaneMaster server cleanup timed out after ${timeout_seconds}s; remaining hygiene will continue"
+    return 0
   fi
-}
-
-maybe_reboot() {
-  local reasons
-  reasons="$(should_reboot)"
-  if [ -z "$reasons" ]; then
-    log "Reboot not needed"
+  if [ "$cleanup_status" -ne 0 ]; then
+    log "SaneMaster server cleanup failed (status=$cleanup_status); remaining hygiene will continue"
     return 0
   fi
 
-  if ! in_reboot_window; then
-    log "Reboot needed ($reasons) but outside safe window (05:00-05:59). Skipping."
-    return 0
-  fi
-
-  if is_training_running; then
-    log "Reboot needed ($reasons) but training is active. Skipping."
-    return 0
-  fi
-
-  if is_nightly_running; then
-    log "Reboot needed ($reasons) but nightly build/test is active. Skipping."
-    return 0
-  fi
-
-  log "Reboot approved ($reasons)"
-  if [ "$DRY_RUN" -eq 1 ]; then
-    log "DRY RUN: would restart now via System Events"
-    return 0
-  fi
-
-  if /usr/bin/osascript -e 'tell application "System Events" to restart' >/dev/null 2>&1; then
-    log "Restart command sent successfully"
-  else
-    log "Restart command failed (osascript/System Events denied)"
-    return 1
-  fi
+  log "SaneMaster server cleanup complete"
 }
 
 main() {
@@ -583,7 +431,7 @@ main() {
   uptime_days="$(get_uptime_days)"
   disk_free_gb="$(get_data_disk_free_gb)"
 
-  log "mini-memory-guard start (dry_run=$DRY_RUN force_reboot=$FORCE_REBOOT)"
+  log "mini-memory-guard start (dry_run=$DRY_RUN auto_restart=disabled)"
   log "Health before: load1=$load1 swap_used_mb=$swap_mb free_pct=${free_pct:-unknown} uptime_days=$uptime_days disk_free_gb=${disk_free_gb:-unknown}"
 
   if [ "$COMPILER_SERVICES_ONLY" -eq 1 ]; then
@@ -597,20 +445,12 @@ main() {
     return 0
   fi
 
-  rotate_if_large "$OUTPUT_DIR/training.stdout.log" 31457280 8388608
-  rotate_if_large "$OUTPUT_DIR/training.stderr.log" 10485760 2097152
-  rotate_if_large "$OUTPUT_DIR/training-challengers.stdout.log" 20971520 4194304
-  rotate_if_large "$OUTPUT_DIR/training-challengers.stderr.log" 10485760 2097152
-  rotate_if_large "$OUTPUT_DIR/training-weekly.stdout.log" 20971520 4194304
-  rotate_if_large "$OUTPUT_DIR/training-weekly.stderr.log" 10485760 2097152
   rotate_if_large "$OUTPUT_DIR/nightly.stdout.log" 10485760 2097152
   rotate_if_large "$OUTPUT_DIR/nightly.stderr.log" 10485760 2097152
   rotate_if_large "$OUTPUT_DIR/memory-guard.stdout.log" 5242880 1048576
   rotate_if_large "$OUTPUT_DIR/memory-guard.stderr.log" 2097152 524288
   rotate_if_large "$OUTPUT_DIR/mini_memory_guard.log" 5242880 1048576
-  rotate_if_large "$OUTPUT_DIR/alerts/training/history.log" 5242880 524288
 
-  cleanup_training_artifacts
   cleanup_orphaned_compiler_services
   cleanup_routed_workspaces
   cleanup_sanevideo_outputs
@@ -622,9 +462,6 @@ main() {
   cleanup_trash
   cleanup_coresimulator_devices
   cleanup_large_deriveddata
-  cleanup_stale_deriveddata_apps
-  maybe_reboot
-
   load1="$(get_load1)"
   swap_mb="$(get_swap_used_mb)"
   free_pct="$(get_free_pct)"

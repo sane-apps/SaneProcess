@@ -66,6 +66,7 @@ module StateManager
     edits: {
       count: 0,
       unique_files: [],
+      baseline_dirty_files: [],
       last_file: nil
     },
     # Set true by sanestop_lemonsqueezy once the LemonSqueezy-Uploads folder is

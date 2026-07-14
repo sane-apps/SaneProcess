@@ -5,17 +5,17 @@ set -euo pipefail
 
 MINI_HOST="mini"
 QUIET=0
-SYNC_CONTROL_PLANE=1
+SYNC_CONTROL_PLANE=0
 DUMP_CONFIG=0
 
 usage() {
   cat <<USAGE
-Usage: $(basename "$0") [mini-host] [--quiet] [--no-sync-control-plane]
+Usage: $(basename "$0") [mini-host] [--quiet] [--sync-control-plane]
 
 Examples:
   $(basename "$0")
   $(basename "$0") mini --quiet
-  $(basename "$0") mini --no-sync-control-plane
+  $(basename "$0") mini --sync-control-plane
   $(basename "$0") --dump-config
 USAGE
 }
@@ -39,6 +39,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --quiet)
       QUIET=1
+      shift
+      ;;
+    --sync-control-plane)
+      SYNC_CONTROL_PLANE=1
       shift
       ;;
     --no-sync-control-plane)
@@ -82,9 +86,20 @@ remote_home=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$MINI_HOST" 'printf %s "
 remote_git_sync="$remote_home/SaneApps/infra/SaneProcess/scripts/automation/git-sync-safe.sh"
 
 log "2) Reconciling canonical repos on $MINI_HOST..."
-ssh -o BatchMode=yes -o ConnectTimeout=8 "$MINI_HOST" "bash \"$remote_git_sync\""
+issues=0
+ssh -o BatchMode=yes -o ConnectTimeout=8 "$MINI_HOST" "bash \"$remote_git_sync\"" || issues=$((issues + 1))
+
+remote_host=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$MINI_HOST" 'hostname -s 2>/dev/null || hostname' 2>/dev/null || echo mini)
+snapshot_dest="$ROOT/outputs/peer-dirty-backups/$remote_host"
+mkdir -p "$snapshot_dest"
+rsync -a -e "ssh -o BatchMode=yes -o ConnectTimeout=8" \
+  "$MINI_HOST:$remote_home/SaneApps/infra/SaneProcess/outputs/dirty-work-snapshots/" \
+  "$snapshot_dest/" 2>/dev/null || true
 
 log "3) Reconciling canonical repos locally and verifying parity with $MINI_HOST..."
-bash "$GIT_SYNC_SCRIPT" --peer "$MINI_HOST"
+bash "$GIT_SYNC_SCRIPT" --peer "$MINI_HOST" || issues=$((issues + 1))
 
+if [[ "$issues" -gt 0 ]]; then
+  die "Air/Mini reconcile preserved dirty-work snapshots but found $issues repo issue group(s)"
+fi
 log "Air/Mini reconcile complete."
