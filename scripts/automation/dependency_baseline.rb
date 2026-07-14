@@ -37,7 +37,9 @@ module SaneAppsDependencyBaseline
     air: %w[@upstash/context7-mcp firecrawl-cli @google/gemini-cli],
     mini: %w[@agentmemory/agentmemory playwright]
   }.freeze
-  FORBIDDEN_GLOBAL_NPM = %w[wrangler].freeze
+  # Node's Homebrew LTS bottle supplies the matching npm. A separately updated
+  # global npm creates a second CLI version and changes which binary PATH finds.
+  FORBIDDEN_GLOBAL_NPM = %w[wrangler npm].freeze
 
   module_function
 
@@ -154,7 +156,7 @@ module SaneAppsDependencyBaseline
   def apply_npm(role, home)
     npm = File.join(NODE_BIN, 'npm')
     packages = npm_packages(role).map { |name| "#{name}@latest" }
-    run!(npm, 'install', '-g', 'npm@latest', *packages, env: npm_env(home))
+    run!(npm, 'install', '-g', *packages, env: npm_env(home))
     FORBIDDEN_GLOBAL_NPM.each do |name|
       current = npm_state(home)
       run!(npm, 'uninstall', '-g', name, env: npm_env(home)) if current.key?(name)

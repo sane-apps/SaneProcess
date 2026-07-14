@@ -34,6 +34,8 @@ assert(!SaneAppsDependencyBaseline::SHARED_FORMULAE.include?('bash'),
        'Homebrew Bash must not replace Apple Bash compatibility')
 assert(!SaneAppsDependencyBaseline::SHARED_NPM.include?('wrangler'),
        'release-pinned Wrangler must not become a global baseline')
+assert(SaneAppsDependencyBaseline::FORBIDDEN_GLOBAL_NPM.include?('npm'),
+       'Node LTS must use its bundled npm to prevent CLI drift')
 assert(SaneAppsDependencyBaseline.npm_packages(:mini).include?('playwright'),
        'Mini browser dependency missing')
 assert(SaneAppsDependencyBaseline.npm_packages(:air).include?('@upstash/context7-mcp'),
@@ -41,4 +43,4 @@ assert(SaneAppsDependencyBaseline.npm_packages(:air).include?('@upstash/context7
 assert(SaneAppsDependencyBaseline::NODE_BIN.end_with?('/node@24/bin'),
        'Node LTS executable path drifted')
 
-puts 'PASS 11/11'
+puts 'PASS 12/12'
