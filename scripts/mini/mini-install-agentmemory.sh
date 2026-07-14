@@ -43,7 +43,7 @@ cat > "$PLIST" <<PLIST
     <key>HOME</key>
     <string>$HOME</string>
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>/opt/homebrew/opt/node@24/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>StandardOutPath</key>
   <string>$LOG_DIR/agentmemory.out.log</string>
@@ -66,4 +66,18 @@ launchctl bootout "gui/$uid/$LABEL" 2>/dev/null || true
 "$AGENTMEMORY" stop --force >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$uid" "$PLIST"
 launchctl enable "gui/$uid/$LABEL" 2>/dev/null || true
-echo "Installed and started $LABEL"
+echo "Installed $LABEL; waiting for AgentMemory health"
+attempt=1
+while [ "$attempt" -le 15 ]; do
+  status_output="$($AGENTMEMORY status 2>&1 || true)"
+  if printf '%s\n' "$status_output" | grep -Eq 'Health:[[:space:]].*healthy'; then
+    echo "Started healthy $LABEL"
+    exit 0
+  fi
+  sleep 2
+  attempt=$((attempt + 1))
+done
+
+printf '%s\n' "$status_output" >&2
+echo "AgentMemory did not become healthy within 30 seconds" >&2
+exit 1

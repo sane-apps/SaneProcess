@@ -29,6 +29,7 @@ exit(run_tests('Mini AgentMemory Tests') do
         assert(status.success?, err)
         source = File.read(plist)
         assert_includes(source, '<string>com.saneapps.agentmemory</string>')
+        assert_includes(source, '<string>/opt/homebrew/opt/node@24/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>')
         assert_includes(source, '<key>RunAtLoad</key>')
         assert_includes(source, '<key>KeepAlive</key>')
         assert_includes(source, '<key>SuccessfulExit</key>')
@@ -36,7 +37,7 @@ exit(run_tests('Mini AgentMemory Tests') do
         assert_includes(source, '<integer>30</integer>')
         assert_includes(source, '<key>WorkingDirectory</key>')
         assert_includes(source, "<string>#{dir}</string>")
-        assert_includes(source, '<string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>')
+        assert_includes(File.read(INSTALLER), "grep -Eq 'Health:[[:space:]].*healthy'")
         true
       end
     end
