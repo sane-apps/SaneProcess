@@ -22,6 +22,9 @@ Dir.mktmpdir('dependency-baseline') do |home|
          'managed shell block duplicated')
   assert(desired.include?('/opt/homebrew/opt/node@24/bin'), 'Node 24 path missing')
   assert(desired.include?('/opt/homebrew/opt/ruby/bin'), 'Homebrew Ruby path missing')
+  managed_path = SaneAppsDependencyBaseline.managed_path(home)
+  assert(managed_path.index(File.join(home, '.local', 'bin')) < managed_path.index('/opt/homebrew/bin'),
+         'managed command wrappers must precede Homebrew shims')
   assert(desired.include?('export KEEP_ME="yes"'), 'unmanaged shell content was lost')
   assert(!desired.include?('$HOME/.local/bin:$PATH'), 'legacy path survived migration')
   assert(SaneAppsDependencyBaseline.normalized_zshenv(desired, home) == desired,

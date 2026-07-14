@@ -52,8 +52,8 @@ module SaneAppsDependencyBaseline
   end
 
   def managed_path(home)
-    [NODE_BIN, RUBY_BIN, '/opt/homebrew/bin', '/usr/local/bin',
-     File.join(home, '.npm-global', 'bin'), File.join(home, '.local', 'bin'),
+    [File.join(home, '.local', 'bin'), NODE_BIN, RUBY_BIN,
+     '/opt/homebrew/bin', '/usr/local/bin', File.join(home, '.npm-global', 'bin'),
      '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':')
   end
 
