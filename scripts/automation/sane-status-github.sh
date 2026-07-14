@@ -97,6 +97,7 @@ status_read_github_token() {
     print token
   ' "$token_path" 2>/dev/null || {
     echo "GitHub token source is missing, empty, symlinked, foreign-owned, or too permissive." >&2
+    echo "Provision it from the canonical keychain store: bash ${STATUS_GITHUB_HELPER_DIR}/provision-github-status-token.sh" >&2
     return 1
   }
 }
@@ -209,18 +210,26 @@ def notification_run(item, repo):
         raise RuntimeError("check suite has no GitHub Actions run link")
 
     # GitHub currently returns null subject URLs for CheckSuite inbox rows.
-    # Correlate only to a failed run for the same repository/workflow and a
-    # close completion timestamp; otherwise fail closed as unknown.
+    # Correlate only to a failed run for the same repository/workflow (and the
+    # branch the title names, when present) with a close completion timestamp;
+    # otherwise fail closed as unknown. Never pin the query to one branch:
+    # CheckSuite failures arrive from any branch (regression 2026-07-14,
+    # chore/node24-lts failures were unmatched under a hardcoded branch=main).
     if repo not in repo_run_cache:
-        repo_run_cache[repo] = gh_json(f"repos/{repo}/actions/runs?branch=main&per_page=100").get("workflow_runs", [])
+        repo_run_cache[repo] = gh_json(f"repos/{repo}/actions/runs?per_page=100").get("workflow_runs", [])
     notified_at = timestamp(item.get("updated_at"))
-    workflow_hint = str(subject.get("title") or "").split(" workflow run", 1)[0].strip().lower()
+    title = str(subject.get("title") or "")
+    workflow_hint = title.split(" workflow run", 1)[0].strip().lower()
+    branch_match = re.search(r" for (.+) branch$", title.strip())
+    branch_hint = branch_match.group(1).strip() if branch_match else ""
     candidates = []
     for candidate in repo_run_cache[repo]:
         if candidate.get("conclusion") != "failure":
             continue
         name = str(candidate.get("name") or "").strip().lower()
         if workflow_hint and name and name != workflow_hint:
+            continue
+        if branch_hint and str(candidate.get("head_branch") or "") != branch_hint:
             continue
         run_at = timestamp(candidate.get("updated_at") or candidate.get("created_at"))
         if not notified_at or not run_at:

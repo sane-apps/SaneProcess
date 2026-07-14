@@ -574,7 +574,7 @@ class StatusCrossrefScriptTests(unittest.TestCase):
                       */actions/runs/10) printf '{"id":10,"workflow_id":5,"head_branch":"main","head_sha":"old-a","created_at":"2026-07-13T01:00:00Z","status":"completed","conclusion":"failure"}\n' ;;
                       */actions/runs/20) printf '{"id":20,"workflow_id":5,"head_branch":"main","head_sha":"old-b","created_at":"2026-07-13T03:00:00Z","status":"completed","conclusion":"failure"}\n' ;;
                       */actions/runs/30) printf '{"id":30,"workflow_id":5,"head_branch":"main","head_sha":"current","created_at":"2026-07-13T05:00:00Z","status":"completed","conclusion":"failure"}\n' ;;
-                      *"actions/runs?branch=main&per_page=100") printf '%s\n' '{"workflow_runs":[{"id":10,"name":"deploy","workflow_id":5,"head_branch":"main","head_sha":"old-a","created_at":"2026-07-13T00:55:00Z","updated_at":"2026-07-13T01:00:00Z","status":"completed","conclusion":"failure"},{"id":20,"name":"deploy","workflow_id":5,"head_branch":"main","head_sha":"old-b","created_at":"2026-07-13T02:55:00Z","updated_at":"2026-07-13T03:00:00Z","status":"completed","conclusion":"failure"},{"id":30,"name":"deploy","workflow_id":5,"head_branch":"main","head_sha":"current","created_at":"2026-07-13T04:55:00Z","updated_at":"2026-07-13T05:00:00Z","status":"completed","conclusion":"failure"}]}' ;;
+                      *"actions/runs?per_page=100") printf '%s\n' '{"workflow_runs":[{"id":10,"name":"deploy","workflow_id":5,"head_branch":"main","head_sha":"old-a","created_at":"2026-07-13T00:55:00Z","updated_at":"2026-07-13T01:00:00Z","status":"completed","conclusion":"failure"},{"id":20,"name":"deploy","workflow_id":5,"head_branch":"main","head_sha":"old-b","created_at":"2026-07-13T02:55:00Z","updated_at":"2026-07-13T03:00:00Z","status":"completed","conclusion":"failure"},{"id":30,"name":"deploy","workflow_id":5,"head_branch":"main","head_sha":"current","created_at":"2026-07-13T04:55:00Z","updated_at":"2026-07-13T05:00:00Z","status":"completed","conclusion":"failure"}]}' ;;
                       *"actions/workflows/5/runs?branch=main&per_page=20") printf '%s\n' '{"workflow_runs":[{"id":15,"head_sha":"green-a","created_at":"2026-07-13T02:00:00Z","status":"completed","conclusion":"success"},{"id":25,"head_sha":"green-b","created_at":"2026-07-13T04:00:00Z","status":"completed","conclusion":"success"},{"id":30,"head_sha":"current","created_at":"2026-07-13T05:00:00Z","status":"completed","conclusion":"failure"}]}' ;;
                       *) echo "unexpected gh endpoint: $endpoint" >&2; exit 1 ;;
                     esac
@@ -603,6 +603,64 @@ class StatusCrossrefScriptTests(unittest.TestCase):
             self.assertIn("CheckSuite summary: active=1 superseded=2 recovered=0 unknown=0", result.stdout)
             self.assertEqual(result.stdout.count("| superseded"), 2)
             self.assertEqual(result.stdout.count("| active"), 1)
+
+    def test_checksuite_notification_matches_failed_run_on_non_main_branch(self):
+        # Regression (2026-07-14): the null-URL CheckSuite fallback queried
+        # actions/runs?branch=main, so a failure on any other branch (e.g.
+        # chore/node24-lts) could never match and fail-closed to unknown,
+        # leaving the whole status run marked incomplete.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_home = root / "home"
+            fake_home.mkdir()
+            script_copy = root / "sane-status-crossref.sh"
+            copy_status_runner(script_copy)
+
+            token_path = fake_home / ".codex" / "secrets" / "github_token"
+            token_path.parent.mkdir(parents=True)
+            token_path.write_text("fake-status-token\n", encoding="utf-8")
+            token_path.chmod(0o600)
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            write_executable(
+                bin_dir / "gh",
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env bash
+                    endpoint="$2"
+                    if [[ "$1" == "api" && "$endpoint" == "notifications" ]]; then
+                      printf '%s\n' '[{"repository":{"full_name":"MrSaneApps/sanecite-saas"},"subject":{"title":"deploy workflow run failed for chore/node24-lts branch","type":"CheckSuite","url":null},"reason":"ci_activity","updated_at":"2026-07-14T18:06:32Z"}]'
+                      exit 0
+                    fi
+                    case "$endpoint" in
+                      *"actions/runs?per_page=100") printf '%s\n' '{"workflow_runs":[{"id":40,"name":"deploy","workflow_id":5,"head_branch":"main","head_sha":"other","created_at":"2026-07-14T18:00:00Z","updated_at":"2026-07-14T18:05:00Z","status":"completed","conclusion":"failure"},{"id":41,"name":"deploy","workflow_id":5,"head_branch":"chore/node24-lts","head_sha":"node24","created_at":"2026-07-14T18:01:00Z","updated_at":"2026-07-14T18:06:00Z","status":"completed","conclusion":"failure"}]}' ;;
+                      *"actions/workflows/5/runs?branch=chore%2Fnode24-lts&per_page=20") printf '%s\n' '{"workflow_runs":[{"id":41,"head_sha":"node24","created_at":"2026-07-14T18:01:00Z","status":"completed","conclusion":"failure"}]}' ;;
+                      *) echo "unexpected gh endpoint: $endpoint" >&2; exit 1 ;;
+                    esac
+                    """
+                ).lstrip(),
+            )
+
+            result = subprocess.run(
+                ["/bin/bash", str(script_copy)],
+                env={
+                    **os.environ,
+                    "HOME": str(fake_home),
+                    "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                    "STATUS_TEST_MODE": "1",
+                    "STATUS_GH_BIN": str(bin_dir / "gh"),
+                    "STATUS_GITHUB_NOTIFICATIONS_ONLY": "1",
+                },
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+            self.assertIn("CheckSuite summary: active=1 superseded=0 recovered=0 unknown=0", result.stdout)
+            self.assertNotIn("could not be matched", result.stdout)
 
     def test_setapp_status_reports_incomplete_without_launching_a_browser(self):
         with tempfile.TemporaryDirectory() as tmp:

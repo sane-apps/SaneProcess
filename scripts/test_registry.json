@@ -140,6 +140,12 @@
       "cmd": ["ruby", "scripts/sanemaster/routed_verify_metric_mirror_test.rb"]
     },
     {
+      "path": "scripts/automation/provision_github_status_token_test.py",
+      "label": "SaneProcess GitHub status token provisioning tests",
+      "status": "required",
+      "cmd": ["python3", "-B", "scripts/automation/provision_github_status_token_test.py"]
+    },
+    {
       "path": "scripts/automation/email_delivery_test.py",
       "label": "SaneProcess email delivery tests",
       "status": "required",
