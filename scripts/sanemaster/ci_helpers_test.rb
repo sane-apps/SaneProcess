@@ -419,6 +419,57 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
       true
     end
 
+    test('matches a bare target selector through the enclosing test bundle') do
+      # Regression (2026-07-14): current xcresulttool emits bare
+      # "Suite/testName()" identifiers with the target name only on the bundle
+      # node, so SaneHosts evidence (selector "SaneHostsFeatureTests") was
+      # rejected on every machine even though all tests passed.
+      bundle_shaped_data = {
+        'testNodes' => [
+          {
+            'nodeType' => 'Test Plan',
+            'nodeIdentifier' => 'SaneHosts',
+            'result' => 'Passed',
+            'children' => [
+              {
+                'nodeType' => 'Unit test bundle',
+                'nodeIdentifier' => 'SaneHostsFeatureTests.xctest',
+                'result' => 'Passed',
+                'children' => [
+                  {
+                    'nodeType' => 'Test Suite',
+                    'nodeIdentifier' => 'ProSectionIconTests',
+                    'result' => 'Passed',
+                    'children' => [
+                      {
+                        'nodeType' => 'Test Case',
+                        'nodeIdentifier' => 'ProSectionIconTests/padlockOpensWhenPro()',
+                        'result' => 'Passed'
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+
+      by_target = subject.result_summary(bundle_shaped_data, 'SaneHostsFeatureTests')
+      by_target_and_suite = subject.result_summary(
+        bundle_shaped_data,
+        'SaneHostsFeatureTests/ProSectionIconTests/padlockOpensWhenPro'
+      )
+      wrong_target = subject.result_summary(bundle_shaped_data, 'SaneHostsUITests')
+
+      assert_eq(by_target[:ok], true)
+      assert_eq(by_target[:matched_test_count], 1)
+      assert_eq(by_target_and_suite[:ok], true)
+      assert_eq(wrong_target[:ok], false)
+      assert_includes(wrong_target[:error], 'does not contain a passed test matching')
+      true
+    end
+
     test('uses the actual Mini hostname and parseable UTC timestamps by default') do
       Dir.mktmpdir('ci-helpers-') do |root|
         plan = subject.monitor_plan(

@@ -668,7 +668,11 @@ module SaneMasterModules
                         passed_nodes
                       else
                         passed_nodes.select do |node|
-                          monitor_test_identifier_matches_selector?(node[:identifier], test_selector)
+                          monitor_test_identifier_matches_selector?(
+                            node[:identifier],
+                            test_selector,
+                            bundle: node[:bundle]
+                          )
                         end
                       end
       error = if nodes.empty?
@@ -687,17 +691,21 @@ module SaneMasterModules
       }
     end
 
-    def monitor_test_result_nodes(value, found = [])
+    def monitor_test_result_nodes(value, found = [], bundle = nil)
       if value.is_a?(Hash)
         node_type = value['nodeType'].to_s
         identifier = value['nodeIdentifier'] || value['testIdentifier'] || value['name']
         result = value['result']
+        # xcresulttool does not always target-prefix test identifiers (current
+        # Xcode emits bare "Suite/testName()"), so remember the enclosing test
+        # bundle: it is the only reliable carrier of the target name.
+        bundle = identifier.to_s.sub(/\.xctest\z/, '') if node_type.end_with?('test bundle')
         if ['Test Case', 'Test Case Run'].include?(node_type) && result
-          found << { identifier: identifier.to_s, result: result.to_s, node_type: node_type }
+          found << { identifier: identifier.to_s, result: result.to_s, node_type: node_type, bundle: bundle }
         end
-        value.each_value { |child| monitor_test_result_nodes(child, found) }
+        value.each_value { |child| monitor_test_result_nodes(child, found, bundle) }
       elsif value.is_a?(Array)
-        value.each { |child| monitor_test_result_nodes(child, found) }
+        value.each { |child| monitor_test_result_nodes(child, found, bundle) }
       end
       found
     end
@@ -710,12 +718,26 @@ module SaneMasterModules
       end.values
     end
 
-    def monitor_test_identifier_matches_selector?(identifier, selector)
+    def monitor_test_identifier_matches_selector?(identifier, selector, bundle: nil)
       actual = identifier.to_s.sub(/\(\)\z/, '')
       expected = selector.to_s.sub(/\(\)\z/, '')
       normalized = expected.sub(%r{\A([^/]+)/}, '\\1.')
-      actual == expected || actual == normalized ||
-        actual.start_with?("#{expected}/") || actual.start_with?("#{normalized}/")
+      return true if actual == expected || actual == normalized ||
+                     actual.start_with?("#{expected}/") || actual.start_with?("#{normalized}/")
+
+      # Current xcresulttool emits bare "Suite/testName()" identifiers with the
+      # target name only on the enclosing bundle node. A bare-target selector
+      # matches any test inside that bundle; a "Target/Suite/..." selector
+      # matches when the bundle owns the target and the remainder matches the
+      # bare identifier (regression 2026-07-14: SaneHosts evidence was rejected
+      # everywhere despite every test passing).
+      bundle_name = bundle.to_s
+      return false if bundle_name.empty?
+      return true if expected == bundle_name
+      return false unless expected.start_with?("#{bundle_name}/")
+
+      remainder = expected.delete_prefix("#{bundle_name}/")
+      actual == remainder || actual.start_with?("#{remainder}/")
     end
 
   end
