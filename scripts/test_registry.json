@@ -929,6 +929,15 @@
         "ruby",
         "scripts/instruction_lint.rb"
       ]
+    },
+    {
+      "path": "scripts/sanemaster/verify_doctor_identifier_test.rb",
+      "label": "Verify doctor UI-identifier consistency (labeled-arg declarations)",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/verify_doctor_identifier_test.rb"
+      ]
     }
   ]
 }
