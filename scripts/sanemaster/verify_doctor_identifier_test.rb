@@ -82,6 +82,34 @@ check('labeled accessibilityIdentifier: "..." init argument is declared') do
   end
 end
 
+check('suffixed ...ID: labels are declarations (SaneVideo cancelID/actionID)') do
+  with_fixture do
+    File.write('App/Views/C.swift', <<~SWIFT)
+      SheetFooter(
+          cancelID: "demo_studio.cancel",
+          actionID: "demo_studio.save"
+      )
+    SWIFT
+    ids = harness.extract_ui_identifiers
+    ids.include?('demo_studio.cancel') && ids.include?('demo_studio.save')
+  end
+end
+
+check('bare id: label with dotted identifier is a declaration (SaneVideo audio action)') do
+  with_fixture do
+    File.write('App/Views/D.swift', %(ActionRow(\n    id: "audio.action.repair_sync"\n)\n))
+    harness.extract_ui_identifiers.include?('audio.action.repair_sync')
+  end
+end
+
+check('id: labels with non-identifier-shaped values are NOT declarations') do
+  with_fixture do
+    File.write('App/Views/E.swift', %(Model(id: "UUID-1234"): id: "plainword"\n))
+    ids = harness.extract_ui_identifiers
+    !ids.include?('UUID-1234') && !ids.include?('plainword')
+  end
+end
+
 check('identifiers inside UITests are NOT treated as declarations') do
   with_fixture do
     File.write('AppUITests/T.swift', %(app.buttons["only.in.tests"].tap()\n))

@@ -201,10 +201,15 @@ module SaneMasterModules
         content = File.read(file)
         content.scan(/\.accessibilityIdentifier\(["']([^"']+)["']\)/) { |match| identifiers << match[0] }
         content.scan(/accessibilityIdentifier\(["']([^"']+)["']\)/) { |match| identifiers << match[0] }
-        # Labeled component arguments forward identifiers into shared views,
-        # e.g. SheetHeader(accessibilityID: "voiceover.sheet.close") — these are
-        # declarations too (2026-07-15 SaneVideo pre-push false failure).
-        content.scan(/\baccessibility(?:ID|Identifier)\s*:\s*["']([^"']+)["']/) { |match| identifiers << match[0] }
+        # Labeled component arguments forward identifiers into shared views —
+        # accessibilityID:, cancelID:, actionID:, bare id:, ...Identifier: —
+        # these are declarations too (2026-07-15 SaneVideo pre-push false
+        # failures). Value must be identifier-shaped (dotted/dashed lowercase,
+        # same shape looks_like_custom_ui_identifier? accepts) so data-model
+        # ids like id: "UUID-1234" are not swallowed.
+        content.scan(/\b\w*[Ii][Dd](?:entifier)?\s*:\s*["']([a-z0-9]+(?:[._-][A-Za-z0-9]+)+)["']/) do |match|
+          identifiers << match[0]
+        end
       end
 
       identifiers.to_a
