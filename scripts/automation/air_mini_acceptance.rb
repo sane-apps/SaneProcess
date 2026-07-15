@@ -113,6 +113,30 @@ module SaneAppsAirMiniAcceptance
         text.include?('sane-agentmemory-supervisor')
     end
 
+    def agentmemory_tunnel_supervised?(text)
+      text.include?('com.saneapps.agentmemory-tunnel') && text.include?('state = running') &&
+        text.include?('agentmemory-mcp-air.sh') && text.include?('--tunnel')
+    end
+
+    def json_http_response(text)
+      return nil unless text.lines.any? { |line| line.strip == 'http=200' }
+
+      body = text.lines.reject { |line| line.start_with?('http=') }.join.strip
+      JSON.parse(body)
+    rescue JSON::ParserError
+      nil
+    end
+
+    def agentmemory_rest_health?(text)
+      payload = json_http_response(text)
+      payload.is_a?(Hash) && payload['service'] == 'agentmemory' && payload['status'] == 'healthy'
+    end
+
+    def agentmemory_search_response?(text)
+      payload = json_http_response(text)
+      payload.is_a?(Hash) && payload['results'].is_a?(Array) && !payload['results'].empty?
+    end
+
     def credential_consumers_healthy?(text)
       text.include?('github-credential=available') &&
         text.match?(/Summary:\s+PASS=\d+\s+FAIL=0/)
@@ -170,6 +194,7 @@ module SaneAppsAirMiniAcceptance
               ['/bin/launchctl', 'print', "gui/#{Process.uid}/com.saneapps.memory-sync"], timeout: 15) do |text|
         text.include?('com.saneapps.memory-sync')
       end
+      air_agentmemory_checks
       private_route_check
       execute('air-mini-lan', 'Air to Mini normal SSH', 'air->mini', ssh('hostname; /usr/bin/whoami'), timeout: 30) do |text|
         Validators.identity?(text, hostname_fragment: 'mac-mini', user: 'stephansmac')
@@ -310,6 +335,27 @@ module SaneAppsAirMiniAcceptance
         execute(id, "Mini #{id.delete_prefix('mini-mcp-')} MCP endpoint", 'mini', ssh(command), timeout: 20) do |text|
           Validators.mcp_endpoint_healthy?(text)
         end
+      end
+    end
+
+    def air_agentmemory_checks
+      execute('air-agentmemory-tunnel', 'Air AgentMemory tunnel supervision', 'air',
+              ['/bin/launchctl', 'print', "gui/#{Process.uid}/com.saneapps.agentmemory-tunnel"], timeout: 15) do |text|
+        Validators.agentmemory_tunnel_supervised?(text)
+      end
+
+      health = ['/usr/bin/curl', '--silent', '--show-error', '--max-time', '5',
+                '-w', '\nhttp=%{http_code}\n', 'http://127.0.0.1:3111/agentmemory/health']
+      execute('air-agentmemory-health', 'Air loopback AgentMemory health', 'air', health, timeout: 10) do |text|
+        Validators.agentmemory_rest_health?(text)
+      end
+
+      payload = JSON.generate(query: 'SaneApps memory durability', limit: 1, format: 'compact')
+      search = ['/usr/bin/curl', '--silent', '--show-error', '--max-time', '8',
+                '-H', 'Content-Type: application/json', '--data', payload,
+                '-w', '\nhttp=%{http_code}\n', 'http://127.0.0.1:3111/agentmemory/search']
+      execute('air-agentmemory-search', 'Air AgentMemory search canary', 'air', search, timeout: 15) do |text|
+        Validators.agentmemory_search_response?(text)
       end
     end
 

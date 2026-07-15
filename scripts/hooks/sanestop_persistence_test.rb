@@ -36,6 +36,18 @@ module SaneStopPersistenceTest
       failed += 1
       warn "  FAIL: Should block without handoff, got exit #{exit_code}"
     end
+    captured = StringIO.new
+    original_stderr = $stderr
+    $stderr = captured
+    process_stop_proc.call(false)
+    $stderr = original_stderr
+    if captured.string.include?('AgentMemory memory_save/memory_lesson_save')
+      passed += 1
+      warn '  PASS: Missing-memory guidance names current AgentMemory durable writes'
+    else
+      failed += 1
+      warn "  FAIL: Missing-memory guidance omitted AgentMemory: #{captured.string.inspect[0..240]}"
+    end
     # Test: Significant edits WITH handoff + memory = allow
     StateManager.reset(:verification)
     StateManager.update(:handoff_tracking) do |h|

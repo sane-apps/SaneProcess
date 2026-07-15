@@ -21,19 +21,19 @@ Hard enforcement lives in:
 - `scripts/SaneMaster.rb` and `scripts/sanemaster/` for canonical workflows.
 - `scripts/validation_report.rb`, `process_eval`, `sop_review`,
   `near_miss_review`, and tests for repeatable process health evidence.
-- `SESSION_HANDOFF.md`, `.claude/research.md`, Serena memory, and Mini-owned
-  AgentMemory for active context and durable learnings.
+- `SESSION_HANDOFF.md`, `.claude/research.md`, agent file memory, and
+  Mini-owned AgentMemory for active context and durable learnings. Serena is
+  code-navigation only; its memories were absorbed into AgentMemory.
 
 ## Session Start
-
-Use right-sized startup.
 
 For tiny read-only answers or one local command, read the relevant file/command
 surface and answer. For code, audit, release, support, payment, App Store,
 automation, UI/runtime, or multi-file work:
 
 1. Read `SESSION_HANDOFF.md`.
-2. Read relevant Serena memory and the active client skill registry.
+2. Read relevant file memory and the active skill registry; query shared
+   context with AgentMemory `memory_recall` or `memory_smart_search`.
 3. Run `~/.codex/bin/check-mcps` when MCP health affects the task.
 4. Run `ruby scripts/validation_report.rb` for release/audit/process work.
    Add `--release-checklists` only when you need the deep all-app artifact
@@ -47,7 +47,8 @@ automation, UI/runtime, or multi-file work:
 When code, tooling, docs, policy, support, release, or UI/runtime behavior
 changed:
 
-1. Update Serena memory and AgentMemory for changed facts.
+1. Update project-scoped file memory and persist cross-project AgentMemory
+   facts/lessons with `memory_save` or `memory_lesson_save`.
 2. Update `SESSION_HANDOFF.md` with active state, proof, open issues, and next
    useful moves.
 3. Run `ruby scripts/SaneMaster.rb sop_review --json`.
@@ -69,7 +70,7 @@ fixes. Treat memory and handoff as live operational state.
 | 5 | House rules, use tools | Use canonical wrappers for build/test/release/launch/email/sales/support. |
 | 6 | Build, kill, launch, log | Runtime changes need full cycle proof; tooling/docs need matching tests/evals. |
 | 7 | No test? No rest | Every fix gets a meaningful test or explicit proof receipt — and no BLIND test: a test must fail for the real bug at RUNTIME (drive the app, assert the customer-observable end-state); structure/string-match guards (`source.contains`) are not behavioral coverage. |
-| 8 | Bug found? Write it down | Update Serena + AgentMemory when bugs change status. |
+| 8 | Bug found? Write it down | Update file memory + AgentMemory when bugs change status. |
 | 9 | New file? Gen the pile | Prefer templates/scaffolds and existing docs/files. |
 | 10 | 500 fine, 800 line | File and component-owner size both count; split at 800. |
 | 11 | Tool broke? Fix the yoke | Fix repeated tool failure in the tool/hook/skill path. |
@@ -182,8 +183,10 @@ Chrome-control lane. Do not script Safari (AppleScript `do JavaScript`, cookie
 extraction, front-tab reads) for portal or web-proof work — Safari is routinely
 not running and its automation breaks. Tools whose fallback is a Safari cookie
 (e.g. `setapp_status` portal token) should be run through the Brave portal path
-or a refreshed stored token instead. The App Store Connect Safari lane is the
-single standing exception until the owner retires it.
+or a refreshed stored token instead. Corrected 2026-07-15: the owner retired
+the App Store Connect Safari exception — ASC and Apple ID portal work also runs
+through Brave on the Mini; `scripts/mini/mini-safari.sh` is legacy, do not
+extend it.
 
 For visible native app/window state, use Computer Use `get_app_state` before
 falling back to screenshot-only inspection. Use `macos-automator` for
@@ -331,10 +334,12 @@ Do not delete these guardrails without root-cause review and replay proof:
 
 ## MCPs
 
-Use active MCPs when useful, but keep proof portable through local scripts and
-Mini receipts. Apple Docs covers Apple APIs, Context7 covers third-party docs,
-macOS Automator covers repeatable GUI automation, Xcode covers IDE/device work,
-Serena stores project notes, and AgentMemory provides shared recall. Check with
+Keep MCP proof portable. Serena is code-navigation tooling only — its memories
+were absorbed into AgentMemory (corrected 2026-07-15). Mini AgentMemory uses
+`memory_recall`/`memory_smart_search` for shared recall and
+`memory_save`/`memory_lesson_save` for durable writes. Graph extraction is
+intentionally off, so `Knowledge graph not enabled` is not an outage; legacy
+`mcp__memory__*`/`mcp__central-memory__*` are retired. Check MCPs with
 `~/.codex/bin/check-mcps` and `ruby scripts/SaneMaster.rb mcp_watchdog doctor`.
 
 ## Environment

@@ -358,9 +358,9 @@ end
 # fire on actual INVOCATION of Safari automation — an osascript call that
 # targets Safari, or `open -a Safari` / `open -b com.apple.Safari` at a command
 # position (local or ssh-wrapped). Mentions (grep patterns, commit messages,
-# file edits) do not match. The App Store Connect lane is exempt because its
-# wrappers (mini-safari.sh, appstore_submit.rb) run their AppleScript
-# internally and never surface these patterns on the Bash command line.
+# file edits) do not match. Corrected 2026-07-15: the owner retired the App
+# Store Connect Safari exception — ASC portal work also runs through Brave, and
+# the legacy wrappers (mini-safari.sh) are not a sanctioned lane.
 def safari_automation_command?(command)
   return false unless command
 
@@ -391,7 +391,8 @@ def block_safari_automation_if_needed(payload)
       • Portal tokens (e.g. Setapp): sign in at the portal in Brave on the Mini,
         or set the stored token (SETAPP_PORTAL_TOKEN) — the scripts read Brave.
 
-    Sole exception: App Store Connect via mini-safari.sh (ASC lane only).
+    App Store Connect and Apple ID portals also run through Brave
+    (owner retired the ASC Safari exception 2026-07-15; mini-safari.sh is legacy).
   MESSAGE
   exit 2
 end

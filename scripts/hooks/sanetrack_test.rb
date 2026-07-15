@@ -469,8 +469,13 @@ module SaneTrackTest
       warn "  FAIL: Serena write_memory should set memory_updated, got #{handoff.inspect}"
     end
 
-    # Test: Memory MCP mutations mark memory_updated
-    %w[mcp__memory__add_observations mcp__memory__create_entities mcp__memory__create_relations].each do |memory_tool|
+    # Test: current AgentMemory durable writes mark memory_updated, including
+    # the plugin-prefixed client form.
+    %w[
+      mcp__agentmemory__memory_save
+      mcp__agentmemory__memory_lesson_save
+      mcp__plugin_agentmemory_agentmemory__memory_save
+    ].each do |memory_tool|
       StateManager.reset(:handoff_tracking)
       process_result_proc.call(memory_tool, {}, { 'success' => true })
       handoff = StateManager.get(:handoff_tracking)

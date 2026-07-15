@@ -100,6 +100,54 @@ validate_email_format {body_file} {email['id']}
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_business_correspondence_accepts_any_product_lane_signature(self):
+        # Owner ruling 2026-07-15: ONE business signature template that works
+        # for every product lane, not just SaneLot/SaneCite.
+        body = """Thanks for following up.\n\nHere are the requested partnership details.\n\nStephan Joseph\nFounder, SaneApps / SaneClip\n727-758-9785\nhi@saneapps.com\nhttps://saneclip.com\n"""
+        result = self.run_validate_email_format(
+            body,
+            email_row(
+                1125,
+                from_email="partnerships@setapp.com",
+                subject="SaneClip partnership question",
+                status="needs_human",
+                category="sales",
+            ),
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_business_correspondence_rejects_retired_sanecite_founder_variant(self):
+        # Retired 2026-07-15: "SaneCite Founder" role line, "(727) 758-9785"
+        # phone format, and the missing email line must keep failing.
+        body = """Thanks for following up.\n\nHere are the requested details.\n\nStephan Joseph\nSaneCite Founder\n(727) 758-9785\n"""
+        result = self.run_validate_email_format(
+            body,
+            email_row(
+                1126,
+                from_email="partnerships@setapp.com",
+                subject="SaneCite partnership question",
+                status="needs_human",
+                category="sales",
+            ),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Business/vendor correspondence", result.stdout)
+
+    def test_business_correspondence_rejects_retired_paren_phone_format(self):
+        body = """Thanks for following up.\n\nHere are the requested details.\n\nStephan Joseph\nFounder, SaneApps / SaneCite\n(727) 758-9785\nhi@saneapps.com\nhttps://sanecite.com\n"""
+        result = self.run_validate_email_format(
+            body,
+            email_row(
+                1127,
+                from_email="partnerships@setapp.com",
+                subject="SaneCite partnership question",
+                status="needs_human",
+                category="sales",
+            ),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Business/vendor correspondence", result.stdout)
+
     def test_customer_support_rejects_real_name_business_signature(self):
         body = """Thanks for the detailed report.\n\nPlease test the update. Thanks again.\n\nStephan Joseph\nFounder, SaneApps / SaneLot\n727-758-9785\nhi@saneapps.com\nhttps://sanelot.com\n"""
         result = self.run_validate_email_format(

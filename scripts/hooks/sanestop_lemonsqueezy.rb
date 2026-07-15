@@ -8,10 +8,11 @@ require 'timeout'
 # folder staged to ONLY the latest release ZIP per app.
 #
 # Lemon Squeezy's hosted file is the one release channel release.sh cannot
-# auto-deploy — the owner replaces it by hand in the LS dashboard, and that
-# folder is the staging area. Codex can drive the browser upload; Claude cannot,
-# so after a release Claude's post-flight runs this so the owner always finds
-# exactly the right file with no stale versions beside it.
+# auto-deploy — the file is replaced by hand in the LS dashboard, and that
+# folder is the staging area. Codex or the owner drives the upload; Claude can
+# click through dashboards via Brave but cannot upload files through the
+# browser, so after a release Claude's post-flight runs this so the uploader
+# always finds exactly the right file with no stale versions beside it.
 #
 # Non-blocking: auto-stages on success (once per session), warns on failure with
 # the manual command. The heavy lifting lives in stage_lemonsqueezy_uploads.rb.

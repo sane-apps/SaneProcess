@@ -83,6 +83,16 @@ exit(run_tests('Research Evidence Gate') do
     end
   end
 
+  test_category('current memory guidance') do
+    test('research steps use AgentMemory instead of the retired graph MCP') do
+      steps = subject.send(:default_research_steps).join(' ')
+      assert_includes(steps, 'mcp__agentmemory__memory_smart_search')
+      assert_includes(steps, 'mcp__agentmemory__memory_recall')
+      assert(!steps.include?('mcp__memory__'), 'research guidance still names the retired graph MCP')
+      true
+    end
+  end
+
   test_category('active_research_locks wired to evidence') do
     lock = { source_updated_at: T0.iso8601 }
 

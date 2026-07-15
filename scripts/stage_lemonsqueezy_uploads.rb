@@ -6,11 +6,12 @@
 # release ZIP per app.
 #
 # Why: Lemon Squeezy's hosted file is the one release channel release.sh cannot
-# auto-deploy — the owner replaces it by hand in the LS dashboard, and this
-# folder is the staging area. Codex can drive that browser upload; Claude
-# cannot, so Claude's post-flight (the Stop hook) runs this after every release
-# so the owner always finds exactly the right file with no stale versions
-# beside it. See memory lemonsqueezy-uploads-folder-rule.
+# auto-deploy — the file is replaced by hand in the LS dashboard, and this
+# folder is the staging area. Codex or the owner drives that upload; Claude can
+# click through dashboards via Brave but cannot upload files through the
+# browser, so Claude's post-flight (the Stop hook) runs this after every
+# release so the uploader always finds exactly the right file with no stale
+# versions beside it. See memory lemonsqueezy-uploads-folder-rule.
 #
 # Idempotent. Operates on the LOCAL filesystem (run it on the host that holds
 # the artifacts + the staging folder — the Mac mini). On a host with no staging
@@ -53,8 +54,18 @@ module StageLemonSqueezyUploads
     opts
   end
 
-  # MARKETING_VERSION: "2.1.84"  (project.yml)
+  # Version sources, in order:
+  #   1. project.yml         `MARKETING_VERSION: "2.1.84"`  (XcodeGen apps)
+  #   2. Config/*.xcconfig   `MARKETING_VERSION = 1.1.22`   (SaneHosts has no
+  #      project.yml; Shared.xcconfig is read first, then any other Config
+  #      xcconfig)
+  # A leading [0-9] is required so build-setting references ($(inherited),
+  # $(MARKETING_VERSION)) are never mistaken for a version.
   def marketing_version(project)
+    version_from_project_yml(project) || version_from_xcconfig(project)
+  end
+
+  def version_from_project_yml(project)
     yml = File.join(project, 'project.yml')
     return nil unless File.file?(yml)
 
@@ -65,6 +76,27 @@ module StageLemonSqueezyUploads
     nil
   rescue StandardError
     nil
+  end
+
+  def version_from_xcconfig(project)
+    xcconfig_files(project).each do |path|
+      File.foreach(path) do |line|
+        # `MARKETING_VERSION = 1.1.22`, tolerating an xcconfig condition
+        # suffix such as MARKETING_VERSION[sdk=macosx*] = 1.1.22
+        m = line.match(/^\s*MARKETING_VERSION(?:\[[^\]]*\])?\s*=\s*"?([0-9][^"\s]*)"?/)
+        return m[1] if m
+      end
+    end
+    nil
+  rescue StandardError
+    nil
+  end
+
+  # Shared.xcconfig first (the SaneApps convention), then any sibling.
+  def xcconfig_files(project)
+    shared = File.join(project, 'Config', 'Shared.xcconfig')
+    ([shared] + Dir.glob(File.join(project, 'Config', '*.xcconfig')).sort)
+      .uniq.select { |p| File.file?(p) }
   end
 
   def find_artifact(project, app, version)
@@ -94,7 +126,11 @@ module StageLemonSqueezyUploads
     uploads_dir = File.expand_path(uploads_dir)
     app = File.basename(project)
     version ||= marketing_version(project)
-    return result(:error, "could not resolve version for #{app} (missing/odd project.yml)") if version.to_s.empty?
+    if version.to_s.empty?
+      return result(:error,
+                    "could not resolve version for #{app} " \
+                    '(no MARKETING_VERSION in project.yml or Config/*.xcconfig)')
+    end
 
     # Not the staging host (no folder) → safe no-op, not a failure.
     unless File.directory?(uploads_dir)

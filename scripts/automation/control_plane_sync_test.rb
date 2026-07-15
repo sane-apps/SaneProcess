@@ -234,7 +234,12 @@ tests << lambda do
          'unattended Air/Mini reconcile must not auto-stash dirty app repos')
   air_memory = File.read(File.join(ROOT, 'automation', 'agentmemory-mcp-air.sh'))
   assert(air_memory.include?('ConnectTimeout=3'), 'Air AgentMemory tunnel must fail quickly')
-  assert(air_memory.include?('-L 3111:127.0.0.1:3111 mini'), 'Air AgentMemory tunnel target drifted')
+  assert(air_memory.include?('127.0.0.1:3111'), 'Air AgentMemory tunnel target drifted')
+  assert(air_memory.include?('ServerAliveInterval=15'), 'Air AgentMemory tunnel must detect dead connections')
+  assert(air_memory.include?('ServerAliveCountMax=3'), 'Air AgentMemory tunnel retry bound drifted')
+  assert(air_memory.include?('kickstart "gui/'), 'Air MCP clients must kickstart the single tunnel owner')
+  assert(!air_memory.include?('kickstart -k'), 'Air MCP clients must not kill a tunnel owned by another client')
+  assert(!air_memory.include?('ssh -f'), 'Air MCP shim must not create detached per-client tunnels')
 end
 
 tests << lambda do

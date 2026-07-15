@@ -53,6 +53,30 @@ exit(run_tests('Air Mini Acceptance Tests') do
       true
     end
 
+    test('requires the Air tunnel to be launchd-owned in foreground mode') do
+      supervised = <<~TEXT
+        gui/501/com.saneapps.agentmemory-tunnel = {
+          state = running
+          program = /Users/sj/SaneApps/infra/SaneProcess/scripts/automation/agentmemory-mcp-air.sh
+          arguments = { --tunnel }
+        }
+      TEXT
+      assert(SaneAppsAirMiniAcceptance::Validators.agentmemory_tunnel_supervised?(supervised))
+      assert(!SaneAppsAirMiniAcceptance::Validators.agentmemory_tunnel_supervised?(supervised.sub('state = running', 'state = exited')))
+      true
+    end
+
+    test('requires healthy Air REST and a real search response') do
+      health = "{\"service\":\"agentmemory\",\"status\":\"healthy\"}\nhttp=200\n"
+      search = "{\"format\":\"compact\",\"results\":[{\"title\":\"SaneApps memory durability\"}]}\nhttp=200\n"
+      assert(SaneAppsAirMiniAcceptance::Validators.agentmemory_rest_health?(health))
+      assert(SaneAppsAirMiniAcceptance::Validators.agentmemory_search_response?(search))
+      assert(!SaneAppsAirMiniAcceptance::Validators.agentmemory_rest_health?(health.sub('healthy', 'degraded')))
+      assert(!SaneAppsAirMiniAcceptance::Validators.agentmemory_search_response?("{\"results\":[]}\nhttp=200\n"))
+      assert(!SaneAppsAirMiniAcceptance::Validators.agentmemory_search_response?(search.sub('http=200', 'http=503')))
+      true
+    end
+
     test('accepts only redacted usable credential receipts') do
       receipt = "github-credential=available\nSummary: PASS=14 FAIL=0\n"
       assert(SaneAppsAirMiniAcceptance::Validators.credential_consumers_healthy?(receipt))
@@ -81,7 +105,8 @@ exit(run_tests('Air Mini Acceptance Tests') do
       assert(status.success?, stderr)
       plan = JSON.parse(stdout)
       ids = plan.map { |entry| entry.fetch('id') }
-      %w[air-process-access air-mini-lan air-mini-tailscale mini-air-return mini-dependencies
+      %w[air-process-access air-agentmemory-tunnel air-agentmemory-health air-agentmemory-search
+         air-mini-lan air-mini-tailscale mini-air-return mini-dependencies
          mini-power mini-weekly-restart mini-agentmemory-health air-github-credential
          mini-credential-consumers mini-mcp-apple-docs mini-mcp-macos-automator mini-mcp-serena mini-retired-training
          saneprocess-parity sanecite-parity memory-checksum-parity acceptance-contracts].each do |id|

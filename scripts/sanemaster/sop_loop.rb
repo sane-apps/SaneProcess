@@ -812,7 +812,7 @@ module SaneMasterModules
 
     def default_research_steps
       [
-        'Check memory for past failures (mcp__memory__read_graph)',
+        'Check shared AgentMemory for past failures (mcp__agentmemory__memory_smart_search or mcp__agentmemory__memory_recall)',
         'Verify API exists before using (Rule #2)',
         'Read relevant documentation'
       ]

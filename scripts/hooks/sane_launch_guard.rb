@@ -147,10 +147,9 @@ if command.match?(LOCAL_DASHBOARD_OPEN_PATTERN) &&
   warn '🔴 BLOCKED: Mini-first SaneApps dashboard/file open'
   warn "   Command: #{command}"
   warn ''
-  warn '   ✅ Use Brave on the Mini (Claude-in-Chrome widget / Codex Chrome lane) for Lemon Squeezy'
-  warn '      and other dashboards; Mini Finder for release upload artifacts. Never script Safari.'
-  warn '   ✅ App Store Connect is the ONLY Safari lane:'
-  warn '     ~/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh open-current <url>  (ASC only)'
+  warn '   ✅ Use Brave on the Mini (Claude-in-Chrome widget / Codex Chrome lane) for Lemon Squeezy,'
+  warn '      App Store Connect, and other dashboards; Mini Finder for release upload artifacts.'
+  warn '      Never script Safari (owner retired the ASC Safari exception 2026-07-15).'
   warn "     ssh mini 'open -R /path/on/mini'"
   exit 2
 end

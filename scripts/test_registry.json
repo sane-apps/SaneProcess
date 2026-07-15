@@ -5,535 +5,819 @@
       "path": "scripts/hooks/test_hooks.rb",
       "label": "SaneProcess hook integration tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/hooks/test_hooks.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/hooks/test_hooks.rb"
+      ]
     },
     {
       "path": "scripts/hooks/release_receipt_signer_test.rb",
       "label": "SaneProcess release receipt signer security tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/hooks/release_receipt_signer_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/hooks/release_receipt_signer_test.rb"
+      ]
     },
     {
       "path": "scripts/hooks/sanestop_lemonsqueezy_test.rb",
       "label": "SaneProcess post-release LemonSqueezy-Uploads staging tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/hooks/sanestop_lemonsqueezy_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/hooks/sanestop_lemonsqueezy_test.rb"
+      ]
     },
     {
       "path": "scripts/hooks/sane_rsync_guard_test.rb",
       "label": "SaneProcess rsync guard tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/hooks/sane_rsync_guard_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/hooks/sane_rsync_guard_test.rb"
+      ]
     },
     {
       "path": "scripts/hooks/sane_open_guard_test.rb",
       "label": "SaneProcess open guard tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/hooks/sane_open_guard_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/hooks/sane_open_guard_test.rb"
+      ]
     },
     {
       "path": "scripts/hooks/sane_ssh_guard_test.rb",
       "label": "SaneProcess ssh guard tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/hooks/sane_ssh_guard_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/hooks/sane_ssh_guard_test.rb"
+      ]
     },
     {
       "path": "scripts/hooks/sane_bash_guards_test.rb",
       "label": "SaneProcess Bash guard dispatcher tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/hooks/sane_bash_guards_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/hooks/sane_bash_guards_test.rb"
+      ]
     },
     {
       "path": "scripts/hooks/sane_catastrophic_guard_test.rb",
       "label": "SaneProcess catastrophic operation guard tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/hooks/sane_catastrophic_guard_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/hooks/sane_catastrophic_guard_test.rb"
+      ]
     },
     {
       "path": "scripts/hooks/sane_build_tool_guard_test.rb",
       "label": "SaneProcess build tool shell guard tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/hooks/sane_build_tool_guard_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/hooks/sane_build_tool_guard_test.rb"
+      ]
     },
     {
       "path": "scripts/app_test_mode_test.rb",
       "label": "SaneProcess app test mode tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/app_test_mode_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/app_test_mode_test.rb"
+      ]
     },
     {
       "path": "scripts/qa_test.rb",
       "label": "SaneProcess QA harness tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/qa_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/qa_test.rb"
+      ]
     },
     {
       "path": "scripts/setapp_upload_test.rb",
       "label": "SaneProcess Setapp upload tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/setapp_upload_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/setapp_upload_test.rb"
+      ]
     },
     {
       "path": "scripts/setapp_status_test.rb",
       "label": "SaneProcess Setapp status tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/setapp_status_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/setapp_status_test.rb"
+      ]
     },
     {
       "path": "scripts/setapp_media_sync_test.rb",
       "label": "SaneProcess Setapp media sync tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/setapp_media_sync_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/setapp_media_sync_test.rb"
+      ]
     },
     {
       "path": "scripts/appstore_public_screenshot_audit_test.rb",
       "label": "SaneProcess public screenshot audit tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/appstore_public_screenshot_audit_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/appstore_public_screenshot_audit_test.rb"
+      ]
     },
     {
       "path": "scripts/appstore_submit_guardrail_test.rb",
       "label": "SaneProcess App Store guard tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/appstore_submit_guardrail_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/appstore_submit_guardrail_test.rb"
+      ]
     },
     {
       "path": "scripts/automation/control_plane_sync_test.rb",
       "label": "SaneProcess control plane sync tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/automation/control_plane_sync_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/automation/control_plane_sync_test.rb"
+      ]
     },
     {
       "path": "scripts/automation/dependency_baseline_test.rb",
       "label": "Air and Mini dependency baseline tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/automation/dependency_baseline_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/automation/dependency_baseline_test.rb"
+      ]
     },
     {
       "path": "scripts/automation/air_mini_acceptance_test.rb",
       "label": "Air and Mini restart acceptance tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/automation/air_mini_acceptance_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/automation/air_mini_acceptance_test.rb"
+      ]
     },
     {
       "path": "scripts/automation/gpt_audit_test.py",
       "label": "SaneProcess Codex fan-out audit runner tests",
       "status": "required",
-      "cmd": ["/Applications/Xcode.app/Contents/Developer/usr/bin/python3", "-B", "scripts/automation/gpt_audit_test.py"]
+      "cmd": [
+        "/Applications/Xcode.app/Contents/Developer/usr/bin/python3",
+        "-B",
+        "scripts/automation/gpt_audit_test.py"
+      ]
     },
     {
       "path": "scripts/automation/gpt_audit_readme_test.py",
       "label": "SaneProcess Codex audit README contract tests",
       "status": "required",
-      "cmd": ["/Applications/Xcode.app/Contents/Developer/usr/bin/python3", "-B", "scripts/automation/gpt_audit_readme_test.py"]
+      "cmd": [
+        "/Applications/Xcode.app/Contents/Developer/usr/bin/python3",
+        "-B",
+        "scripts/automation/gpt_audit_readme_test.py"
+      ]
     },
     {
       "path": "scripts/automation/saneapps_paths_test.py",
       "label": "SaneProcess canonical tree resolution tests",
       "status": "required",
-      "cmd": ["python3", "-B", "scripts/automation/saneapps_paths_test.py"]
+      "cmd": [
+        "python3",
+        "-B",
+        "scripts/automation/saneapps_paths_test.py"
+      ]
     },
     {
       "path": "scripts/sanemaster/routed_verify_metric_mirror_test.rb",
       "label": "SaneProcess routed verify metric mirror tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/routed_verify_metric_mirror_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/routed_verify_metric_mirror_test.rb"
+      ]
     },
     {
       "path": "scripts/automation/provision_github_status_token_test.py",
       "label": "SaneProcess GitHub status token provisioning tests",
       "status": "required",
-      "cmd": ["python3", "-B", "scripts/automation/provision_github_status_token_test.py"]
+      "cmd": [
+        "python3",
+        "-B",
+        "scripts/automation/provision_github_status_token_test.py"
+      ]
     },
     {
       "path": "scripts/sane_test_resign_lane_test.rb",
       "label": "SaneTest re-sign lane regression tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sane_test_resign_lane_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sane_test_resign_lane_test.rb"
+      ]
     },
     {
       "path": "scripts/automation/email_delivery_test.py",
       "label": "SaneProcess email delivery tests",
       "status": "required",
-      "cmd": ["python3", "-B", "scripts/automation/email_delivery_test.py"]
+      "cmd": [
+        "python3",
+        "-B",
+        "scripts/automation/email_delivery_test.py"
+      ]
     },
     {
       "path": "scripts/automation/check_inbox_metrics_test.py",
       "label": "SaneProcess check-inbox process metric tests",
       "status": "required",
-      "cmd": ["python3", "-B", "scripts/automation/check_inbox_metrics_test.py"]
+      "cmd": [
+        "python3",
+        "-B",
+        "scripts/automation/check_inbox_metrics_test.py"
+      ]
     },
     {
       "path": "scripts/automation/check_inbox_report_test.py",
       "label": "SaneProcess check-inbox report classifier tests",
       "status": "required",
-      "cmd": ["python3", "-B", "scripts/automation/check_inbox_report_test.py"]
+      "cmd": [
+        "python3",
+        "-B",
+        "scripts/automation/check_inbox_report_test.py"
+      ]
     },
     {
       "path": "scripts/automation/business_appointment_test.rb",
       "label": "SaneApps business appointment guard tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/automation/business_appointment_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/automation/business_appointment_test.rb"
+      ]
     },
     {
       "path": "scripts/automation/sane_support_kickoff_test.py",
       "label": "SaneProcess support kickoff summary tests",
       "status": "required",
-      "cmd": ["python3", "-B", "scripts/automation/sane_support_kickoff_test.py"]
+      "cmd": [
+        "python3",
+        "-B",
+        "scripts/automation/sane_support_kickoff_test.py"
+      ]
     },
     {
       "path": "scripts/automation/github_reporting_guard_test.py",
       "label": "SaneApps GitHub reporting regression tests",
       "status": "required",
-      "cmd": ["python3", "-B", "scripts/automation/github_reporting_guard_test.py"]
+      "cmd": [
+        "python3",
+        "-B",
+        "scripts/automation/github_reporting_guard_test.py"
+      ]
     },
     {
       "path": "scripts/automation/hosted_file_actions_test.py",
       "label": "SaneProcess hosted file action tests",
       "status": "required",
-      "cmd": ["python3", "-B", "scripts/automation/hosted_file_actions_test.py"]
+      "cmd": [
+        "python3",
+        "-B",
+        "scripts/automation/hosted_file_actions_test.py"
+      ]
     },
     {
       "path": "scripts/automation/listing_actions_test.py",
       "label": "SaneProcess listing action tests",
       "status": "required",
-      "cmd": ["python3", "-B", "scripts/automation/listing_actions_test.py"]
+      "cmd": [
+        "python3",
+        "-B",
+        "scripts/automation/listing_actions_test.py"
+      ]
     },
     {
       "path": "scripts/automation/ls_sales_test.py",
       "label": "SaneProcess LemonSqueezy sales tests",
       "status": "required",
-      "cmd": ["python3", "-B", "scripts/automation/ls_sales_test.py"]
+      "cmd": [
+        "python3",
+        "-B",
+        "scripts/automation/ls_sales_test.py"
+      ]
     },
     {
       "path": "scripts/automation/status_crossref_test.py",
       "label": "SaneProcess status cross-reference tests",
       "status": "required",
-      "cmd": ["python3", "-B", "scripts/automation/status_crossref_test.py"]
+      "cmd": [
+        "python3",
+        "-B",
+        "scripts/automation/status_crossref_test.py"
+      ]
     },
     {
       "path": "scripts/automation/social_card_audit_test.py",
       "label": "SaneApps social card audit tests",
       "status": "required",
-      "cmd": ["python3", "-B", "scripts/automation/social_card_audit_test.py"]
+      "cmd": [
+        "python3",
+        "-B",
+        "scripts/automation/social_card_audit_test.py"
+      ]
     },
     {
       "path": "scripts/automation/seo_site_audit_test.py",
       "label": "SaneApps SEO site audit tests",
       "status": "required",
-      "cmd": ["python3", "-B", "scripts/automation/seo_site_audit_test.py"]
+      "cmd": [
+        "python3",
+        "-B",
+        "scripts/automation/seo_site_audit_test.py"
+      ]
     },
     {
       "path": "scripts/automation/x_opportunity_scout_test.py",
       "label": "SaneProcess X opportunity scout tests",
       "status": "required",
-      "cmd": ["python3", "-B", "scripts/automation/x_opportunity_scout_test.py"]
+      "cmd": [
+        "python3",
+        "-B",
+        "scripts/automation/x_opportunity_scout_test.py"
+      ]
     },
     {
       "path": "scripts/automation/x_impact_report_test.py",
       "label": "SaneProcess X impact report tests",
       "status": "required",
-      "cmd": ["python3", "-B", "scripts/automation/x_impact_report_test.py"]
+      "cmd": [
+        "python3",
+        "-B",
+        "scripts/automation/x_impact_report_test.py"
+      ]
     },
     {
       "path": "scripts/dedupe_sane_apps_test.rb",
       "label": "SaneProcess dedupe tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/dedupe_sane_apps_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/dedupe_sane_apps_test.rb"
+      ]
     },
     {
       "path": "scripts/hooks/session_docs_test.rb",
       "label": "SaneProcess session document enforcement tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/hooks/session_docs_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/hooks/session_docs_test.rb"
+      ]
     },
     {
       "path": "scripts/hooks/core/sop_score_test.rb",
       "label": "SaneProcess shared SOP scoring tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/hooks/core/sop_score_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/hooks/core/sop_score_test.rb"
+      ]
     },
     {
       "path": "scripts/hooks/task_completed_gate_test.rb",
       "label": "SaneProcess task completion gate tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/hooks/task_completed_gate_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/hooks/task_completed_gate_test.rb"
+      ]
     },
     {
       "path": "scripts/hooks/test/split_brain_test.rb",
       "label": "SaneProcess project root split-brain regression tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/hooks/test/split_brain_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/hooks/test/split_brain_test.rb"
+      ]
     },
     {
       "path": "scripts/mini/mini_gui_run_test.rb",
       "label": "SaneProcess Mini GUI runner tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/mini/mini_gui_run_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/mini/mini_gui_run_test.rb"
+      ]
     },
     {
       "path": "scripts/mini/deploy_test.rb",
       "label": "SaneProcess Mini deploy guard tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/mini/deploy_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/mini/deploy_test.rb"
+      ]
     },
     {
       "path": "scripts/mini/bootstrap_build_server_test.rb",
       "label": "SaneProcess Mini bootstrap credential tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/mini/bootstrap_build_server_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/mini/bootstrap_build_server_test.rb"
+      ]
     },
     {
       "path": "scripts/mini/mini_memory_guard_test.rb",
       "label": "SaneProcess Mini memory guard tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/mini/mini_memory_guard_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/mini/mini_memory_guard_test.rb"
+      ]
     },
     {
       "path": "scripts/mini/mini_weekly_restart_test.rb",
       "label": "SaneProcess Mini weekly restart tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/mini/mini_weekly_restart_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/mini/mini_weekly_restart_test.rb"
+      ]
     },
     {
       "path": "scripts/mini/mini_access_test.rb",
       "label": "SaneProcess Mini LAN and Tailscale access tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/mini/mini_access_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/mini/mini_access_test.rb"
+      ]
     },
     {
       "path": "scripts/mini/mini_agentmemory_test.rb",
       "label": "SaneProcess Mini AgentMemory service tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/mini/mini_agentmemory_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/mini/mini_agentmemory_test.rb"
+      ]
     },
     {
       "path": "scripts/automation/memory_sync_test.rb",
       "label": "SaneProcess Air and Mini memory sync tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/automation/memory_sync_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/automation/memory_sync_test.rb"
+      ]
     },
     {
       "path": "scripts/hooks/session_start_cleanup_test.rb",
       "label": "SaneProcess session-start dev-server reaper classifier tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/hooks/session_start_cleanup_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/hooks/session_start_cleanup_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/verify_escalation_test.rb",
       "label": "SaneProcess verify two-strike escalation tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/verify_escalation_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/verify_escalation_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/dependencies_test.rb",
       "label": "SaneProcess dependency watchdog tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/dependencies_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/dependencies_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/research_evidence_gate_test.rb",
       "label": "Research evidence gate tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/research_evidence_gate_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/research_evidence_gate_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/gate_override_test.rb",
       "label": "Gate certifier override + unfair-gate tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/gate_override_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/gate_override_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/hammer_watch_test.rb",
       "label": "Hammer detector (no-progress gate re-hits) tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/hammer_watch_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/hammer_watch_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/gate_review_test.rb",
       "label": "SaneProcess gate review tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/gate_review_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/gate_review_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/generation_test.rb",
       "label": "SaneProcess generation tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/generation_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/generation_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/process_metrics_test.rb",
       "label": "SaneProcess process metrics tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/process_metrics_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/process_metrics_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/command_registry_test.rb",
       "label": "SaneProcess command registry tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/command_registry_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/command_registry_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/ci_helpers_test.rb",
       "label": "SaneProcess CI helper tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/ci_helpers_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/ci_helpers_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/upgrade_path_proof_test.rb",
       "label": "SaneProcess upgrade path proof security tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/upgrade_path_proof_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/upgrade_path_proof_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/operator_brief_test.rb",
       "label": "SaneProcess operator brief tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/operator_brief_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/operator_brief_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/ponytail_audit_test.rb",
       "label": "SaneProcess ponytail audit tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/ponytail_audit_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/ponytail_audit_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/machine_cleanup_test.rb",
       "label": "SaneProcess machine cleanup tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/machine_cleanup_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/machine_cleanup_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/meta_test.rb",
       "label": "SaneProcess meta health tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/meta_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/meta_test.rb"
+      ]
     },
     {
       "path": "scripts/mcp_contract_test.rb",
       "label": "SaneProcess MCP contract tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/mcp_contract_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/mcp_contract_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/near_miss_review_test.rb",
       "label": "SaneProcess near-miss review tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/near_miss_review_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/near_miss_review_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/verify_failure_review_test.rb",
       "label": "SaneProcess verify failure review tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/verify_failure_review_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/verify_failure_review_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/process_eval_test.rb",
       "label": "SaneProcess workflow receipt eval tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/process_eval_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/process_eval_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/agent_workflow_test.rb",
       "label": "SaneProcess agent workflow eval tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/agent_workflow_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/agent_workflow_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/context_bundle_test.rb",
       "label": "SaneProcess context bundle tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/context_bundle_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/context_bundle_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/release_guardrail_test.rb",
       "label": "SaneProcess release guardrail tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/release_guardrail_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/release_guardrail_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/release_readiness_test.rb",
       "label": "SaneProcess release readiness tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/release_readiness_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/release_readiness_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/bootstrap_secret_redaction_test.rb",
       "label": "SaneProcess bootstrap secret redaction tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/bootstrap_secret_redaction_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/bootstrap_secret_redaction_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/release_route_test.rb",
       "label": "SaneProcess release route tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/release_route_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/release_route_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/runtime_snapshot_test.rb",
       "label": "SaneProcess runtime evidence tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/runtime_snapshot_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/runtime_snapshot_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/visual_smoke_test.rb",
       "label": "SaneProcess visual smoke evidence tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/visual_smoke_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/visual_smoke_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/saneui_guard_test.rb",
       "label": "SaneProcess SaneUI guard tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/saneui_guard_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/saneui_guard_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/structural_compliance_test.rb",
       "label": "SaneProcess structural compliance tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/structural_compliance_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/structural_compliance_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/secret_scan_test.rb",
       "label": "SaneProcess secret scan wrapper tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/secret_scan_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/secret_scan_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/test_mode_test.rb",
       "label": "SaneProcess test mode tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/test_mode_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/test_mode_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/universal_control_test.rb",
       "label": "SaneProcess Universal Control recovery tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/universal_control_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/universal_control_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/verify_guard_test.rb",
       "label": "SaneProcess verify guard tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/verify_guard_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/verify_guard_test.rb"
+      ]
     },
     {
       "path": "scripts/sanemaster/verify_permissions_test.rb",
       "label": "SaneProcess verify TCC-preservation tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/sanemaster/verify_permissions_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/verify_permissions_test.rb"
+      ]
     },
     {
       "path": "scripts/validation_report_test.rb",
       "label": "SaneProcess validation report tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/validation_report_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/validation_report_test.rb"
+      ]
     },
     {
       "path": "scripts/automation/tool_discovery_receipt_test.rb",
       "label": "SaneProcess tool discovery receipt tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/automation/tool_discovery_receipt_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/automation/tool_discovery_receipt_test.rb"
+      ]
     },
     {
       "path": "scripts/hooks/saneprompt_test.rb",
@@ -545,19 +829,28 @@
       "path": "scripts/hooks/grok_and_security_guard_test.rb",
       "label": "Grok hook and security guard regression tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/hooks/grok_and_security_guard_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/hooks/grok_and_security_guard_test.rb"
+      ]
     },
     {
       "path": "scripts/hooks/sane_automation_guard_test.rb",
       "label": "Mini automation guard regression tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/hooks/sane_automation_guard_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/hooks/sane_automation_guard_test.rb"
+      ]
     },
     {
       "path": "scripts/hooks/sanetrack_codex_review_test.rb",
       "label": "SaneTrack Codex fan-out review receipt tests",
       "status": "required",
-      "cmd": ["ruby", "scripts/hooks/sanetrack_codex_review_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/hooks/sanetrack_codex_review_test.rb"
+      ]
     },
     {
       "path": "scripts/hooks/sanestop_test.rb",
@@ -623,7 +916,19 @@
       "path": "scripts/sane_test_locale_test.rb",
       "label": "SaneProcess C-locale survival tests for launch/build entry points",
       "status": "required",
-      "cmd": ["ruby", "scripts/sane_test_locale_test.rb"]
+      "cmd": [
+        "ruby",
+        "scripts/sane_test_locale_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/instruction_lint.rb",
+      "label": "Instruction-surface conflict lint (one voice across AGENTS/CLAUDE/brand/skills/memory index)",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/instruction_lint.rb"
+      ]
     }
   ]
 }

@@ -728,9 +728,11 @@ end
 def resolve_review_contact(config)
   cfg_contact = config.dig('appstore', 'contact') || {}
 
+  # Apple review/compliance is a real-name vendor lane (owner ruling
+  # 2026-07-15): never the Mr. Sane customer alias here.
   name = present_value(ENV['APPSTORE_CONTACT_NAME']) ||
          present_value(cfg_contact['name']) ||
-         'Mr. Sane'
+         'Stephan Joseph'
   first_name, last_name = name.split(' ', 2)
 
   phone = present_value(ENV['APPSTORE_CONTACT_PHONE']) ||
@@ -750,8 +752,8 @@ def resolve_review_contact(config)
   end
 
   {
-    first_name: first_name || 'Mr.',
-    last_name: last_name || 'Sane',
+    first_name: first_name || 'Stephan',
+    last_name: last_name || 'Joseph',
     phone: phone,
     email: email
   }

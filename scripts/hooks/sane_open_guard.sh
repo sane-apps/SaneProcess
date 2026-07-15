@@ -83,8 +83,8 @@ if is_ai_session && running_on_macbook_air && ! approved_local_fallback; then
       echo "" >&2
       echo "   This would open or reveal release/dashboard state on the MacBook Air." >&2
       echo "   Use the Mini instead:" >&2
-      echo "     Brave on the Mini (Claude-in-Chrome widget / Codex Chrome lane) for dashboards" >&2
-      echo "     ~/SaneApps/infra/SaneProcess/scripts/mini/mini-safari.sh open-current <url>  (App Store Connect ONLY)" >&2
+      echo "     Brave on the Mini (Claude-in-Chrome widget / Codex Chrome lane) for dashboards," >&2
+      echo "     including App Store Connect (owner retired the ASC Safari exception 2026-07-15)" >&2
       echo "     ssh mini 'open -R /path/on/mini'" >&2
       echo "" >&2
       echo "   Fallback requires explicit approval via:" >&2

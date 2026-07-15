@@ -42,8 +42,12 @@ APPRECIATION_PATTERN = /\b(?:thank(s| you)?|appreciat(e|ion|ing)|grateful)\b/i
 HELPING_MAKE_PATTERN = /\bhelping make\b.*\bbetter\b/i
 MR_SANE_SIGNOFF_PATTERN = /\bMr\.?\s+Sane\b/
 CUSTOMER_EMAIL_SIGNOFF_PATTERN = /(?:^|\n)Mr\.?\s+Sane\s*(?:\nhttps:\/\/saneapps\.com)?\s*\z/i
-BUSINESS_EMAIL_SIGNOFF_PATTERN = /(?:^|\n)Stephan Joseph\s*\nFounder, SaneApps(?: \/ (?:SaneLot|SaneCite))?\s*\n727-758-9785\s*\nhi@saneapps\.com\s*\nhttps:\/\/(?:saneapps|sanelot|sanecite)\.com\/?\s*\z/i
-STANDARD_EMAIL_SIGNOFF_PATTERN = /(?:^|\n)(?:Mr\.?\s+Sane\s*(?:\nhttps:\/\/saneapps\.com)?|Stephan Joseph\s*\nFounder, SaneApps(?: \/ (?:SaneLot|SaneCite))?\s*\n727-758-9785\s*\nhi@saneapps\.com\s*\nhttps:\/\/(?:saneapps|sanelot|sanecite)\.com\/?)\s*\z/i
+# Owner ruling 2026-07-15: ONE business signature template that works for every
+# product lane. Keep these lists in sync with validate_email_format in
+# ~/SaneApps/infra/scripts/check-inbox.sh.
+BUSINESS_SIGNATURE_PRODUCTS = 'SaneHosts|SaneClip|SaneClick|SaneSales|SaneVideo|SaneScan|SaneLot|SaneCite'
+BUSINESS_SIGNATURE_SITES = 'saneapps|sanehosts|saneclip|saneclick|sanesales|sanevideo|sanescan|sanelot|sanecite'
+BUSINESS_EMAIL_SIGNOFF_PATTERN = /(?:^|\n)Stephan Joseph\s*\nFounder, SaneApps(?: \/ (?:#{BUSINESS_SIGNATURE_PRODUCTS}))?\s*\n727-758-9785\s*\nhi@saneapps\.com\s*\nhttps:\/\/(?:#{BUSINESS_SIGNATURE_SITES})\.com\/?\s*\z/i
 
 def email_format_valid?(body)
   text = body.to_s

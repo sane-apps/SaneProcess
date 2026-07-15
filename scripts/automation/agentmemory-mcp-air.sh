@@ -1,14 +1,65 @@
 #!/bin/bash
 # Air-side MCP shim for the shared AgentMemory server on the always-on Mini.
-# Reuse an existing local tunnel or create one with a bounded SSH attempt, then
-# run the stdio MCP shim against loopback. A temporarily unreachable Mini must
-# never hang an Air agent session.
+# One launchd-owned foreground process owns the shared loopback tunnel. MCP
+# clients only verify/kickstart that owner, so simultaneous clients never race
+# to bind port 3111 or leave detached ssh processes behind.
 set -uo pipefail
 
-if ! nc -z 127.0.0.1 3111 >/dev/null 2>&1; then
-  ssh -f -N -o ConnectTimeout=3 -o BatchMode=yes -o ExitOnForwardFailure=yes \
-    -L 3111:127.0.0.1:3111 mini >/dev/null 2>&1 || true
+LABEL="${SANE_AGENTMEMORY_TUNNEL_LABEL:-com.saneapps.agentmemory-tunnel}"
+MINI_HOST="${SANE_AGENTMEMORY_MINI_HOST:-mini}"
+LOCAL_PORT="${SANE_AGENTMEMORY_LOCAL_PORT:-3111}"
+URL="${SANE_AGENTMEMORY_URL:-http://127.0.0.1:$LOCAL_PORT}"
+LAUNCHCTL="${SANE_LAUNCHCTL_BIN:-/bin/launchctl}"
+CURL="${SANE_CURL_BIN:-/usr/bin/curl}"
+SSH="${SANE_SSH_BIN:-/usr/bin/ssh}"
+NPX="${SANE_NPX_BIN:-npx}"
+WAIT_ATTEMPTS="${SANE_AGENTMEMORY_WAIT_ATTEMPTS:-6}"
+WAIT_INTERVAL="${SANE_AGENTMEMORY_WAIT_INTERVAL:-0.5}"
+
+usage() {
+  echo "Usage: $(basename "$0") [--tunnel]" >&2
+  exit 2
+}
+
+health_ready() {
+  "$CURL" --silent --fail --max-time 1 "$URL/agentmemory/health" >/dev/null 2>&1
+}
+
+if [[ "${1:-}" == "--tunnel" ]]; then
+  [[ "$#" -eq 1 ]] || usage
+  exec "$SSH" -N \
+    -o BatchMode=yes \
+    -o ConnectTimeout=3 \
+    -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=15 \
+    -o ServerAliveCountMax=3 \
+    -L "$LOCAL_PORT:127.0.0.1:3111" \
+    "$MINI_HOST"
 fi
 
-export AGENTMEMORY_URL="http://localhost:3111"
-exec npx -y @agentmemory/mcp
+[[ "$#" -eq 0 ]] || usage
+
+if ! health_ready; then
+  if ! "$LAUNCHCTL" kickstart "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+    echo "AgentMemory tunnel LaunchAgent is unavailable; run install-memory-sync-agent.sh on the Air" >&2
+    exit 1
+  fi
+
+  attempt=0
+  while [[ "$attempt" -lt "$WAIT_ATTEMPTS" ]]; do
+    health_ready && break
+    attempt=$((attempt + 1))
+    sleep "$WAIT_INTERVAL"
+  done
+fi
+
+if ! health_ready; then
+  echo "AgentMemory tunnel did not become healthy at $URL within the bounded startup window" >&2
+  exit 1
+fi
+
+export AGENTMEMORY_URL="$URL"
+# Never silently fall back to the shim's private local store if the shared
+# service drops after startup; the shared memory lane must fail truthfully.
+export AGENTMEMORY_FORCE_PROXY=1
+exec "$NPX" -y @agentmemory/mcp

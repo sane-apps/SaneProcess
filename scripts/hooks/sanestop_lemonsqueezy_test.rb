@@ -10,6 +10,7 @@ require 'json'
 require 'tmpdir'
 require 'fileutils'
 require_relative 'sanestop_lemonsqueezy'
+require_relative '../stage_lemonsqueezy_uploads'
 
 @passed = 0
 @failed = 0
@@ -97,6 +98,18 @@ def fake_project(app, version)
   dir
 end
 
+# A SaneHosts-shaped project: NO project.yml — the version lives in
+# Config/Shared.xcconfig as `MARKETING_VERSION = 1.1.22` (note `=`, not `:`).
+def fake_xcconfig_project(app, version, filename: 'Shared.xcconfig')
+  dir = File.join(Dir.mktmpdir('ls_proj_xc'), app)
+  FileUtils.mkdir_p(File.join(dir, 'releases'))
+  FileUtils.mkdir_p(File.join(dir, 'Config'))
+  File.write(File.join(dir, 'Config', filename),
+             "// Shared build settings\nMARKETING_VERSION = #{version}\nCURRENT_PROJECT_VERSION = 1122\n")
+  File.write(File.join(dir, 'releases', "#{app}-#{version}.zip"), 'ARTIFACT-BYTES')
+  dir
+end
+
 def run_stage(project, uploads)
   out, status = Open3.capture2e('ruby', STAGE, '--project', project, '--uploads-dir', uploads, '--json')
   [JSON.parse(out.lines.map(&:strip).find { |l| l.start_with?('{') } || '{}'), status.exitstatus]
@@ -139,6 +152,61 @@ check('missing artifact is a real failure (exit 2)') do
   res2, code2 = Open3.capture2e('ruby', STAGE, '--project', proj, '--uploads-dir', uploads, '--version', '9.9.9', '--json')
   parsed = JSON.parse(res2.lines.map(&:strip).find { |l| l.start_with?('{') } || '{}')
   code.zero? && code2.exitstatus == 2 && parsed['status'] == 'error'
+end
+
+puts ''
+puts 'Testing version resolution across both project shapes:'
+
+# Regression for the 2026-07-15 incident: SaneHosts has no project.yml, so
+# staging silently no-opped every release and ~/Desktop/LemonSqueezy-Uploads
+# kept SaneHosts-1.1.20.zip — the build without the Pro padlock and
+# large-profile activation fixes — long after 1.1.22 shipped.
+check('SaneHosts resolves 1.1.22 from Config/Shared.xcconfig when project.yml is absent') do
+  proj = fake_xcconfig_project('SaneHosts', '1.1.22')
+  StageLemonSqueezyUploads.marketing_version(proj) == '1.1.22'
+end
+
+check('xcconfig project stages the current ZIP and removes the stale one (end-to-end)') do
+  proj = fake_xcconfig_project('SaneHosts', '1.1.22')
+  uploads = Dir.mktmpdir('ls_uploads')
+  File.write(File.join(uploads, 'SaneHosts-1.1.20.zip'), 'stale-build-with-known-bugs')
+  File.write(File.join(uploads, 'SaneBar-2.1.89.zip'), 'keep')
+  res, code = run_stage(proj, uploads)
+  files = Dir.glob(File.join(uploads, '*.zip')).map { |p| File.basename(p) }.sort
+  code.zero? && res['status'] == 'staged' &&
+    files == ['SaneBar-2.1.89.zip', 'SaneHosts-1.1.22.zip']
+end
+
+check('project.yml apps still resolve (xcconfig fallback did not regress them)') do
+  StageLemonSqueezyUploads.marketing_version(fake_project('SaneBar', '2.1.89')) == '2.1.89'
+end
+
+check('project.yml wins when a project somehow carries both sources') do
+  proj = fake_project('SaneBar', '2.1.89')
+  FileUtils.mkdir_p(File.join(proj, 'Config'))
+  File.write(File.join(proj, 'Config', 'Shared.xcconfig'), "MARKETING_VERSION = 9.9.9\n")
+  StageLemonSqueezyUploads.marketing_version(proj) == '2.1.89'
+end
+
+check('a $(...) build-setting reference is not mistaken for a version') do
+  dir = File.join(Dir.mktmpdir('ls_proj_ref'), 'SaneHosts')
+  FileUtils.mkdir_p(File.join(dir, 'Config'))
+  File.write(File.join(dir, 'Config', 'Shared.xcconfig'), "MARKETING_VERSION = $(inherited)\n")
+  StageLemonSqueezyUploads.marketing_version(dir).nil?
+end
+
+check('a non-Shared Config xcconfig is still read') do
+  proj = fake_xcconfig_project('SaneHosts', '1.1.22', filename: 'App.xcconfig')
+  StageLemonSqueezyUploads.marketing_version(proj) == '1.1.22'
+end
+
+check('unresolvable version names both sources in the error') do
+  dir = File.join(Dir.mktmpdir('ls_proj_none'), 'SaneHosts')
+  FileUtils.mkdir_p(dir)
+  uploads = Dir.mktmpdir('ls_uploads')
+  res, code = run_stage(dir, uploads)
+  code == 2 && res['status'] == 'error' &&
+    res['message'].include?('project.yml') && res['message'].downcase.include?('xcconfig')
 end
 
 puts ''

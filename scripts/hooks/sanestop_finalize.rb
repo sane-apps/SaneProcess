@@ -328,7 +328,7 @@ def check_handoff_required
   # Build block message
   missing = []
   missing << 'SESSION_HANDOFF.md' unless handoff_updated
-  missing << 'memory (MEMORY.md or Serena write_memory)' unless memory_updated
+  missing << 'memory (AgentMemory memory_save/memory_lesson_save, MEMORY.md, or Serena write_memory)' unless memory_updated
   file_list = always_persist_required ? always_persist_files : sig_files
   why = if always_persist_required
           "These files are tooling or durable docs and must be persisted even for a single edit."
@@ -346,7 +346,7 @@ def check_handoff_required
   "   \n" \
   "   What to do:\n" \
   "   • Update SESSION_HANDOFF.md with what was done + what's pending\n" \
-  "   • Update memory with the reusable tooling/docs learnings or decisions\n" \
+  "   • Update AgentMemory (memory_save/memory_lesson_save) or the durable project memory with reusable learnings\n" \
   "   • Both must be updated before the session can end"
 rescue StandardError => e
   warn "⚠️  Handoff check error: #{e.message}" if ENV['DEBUG']

@@ -343,8 +343,7 @@ end
 end
 [
   ['quoted Safari mention', 'git commit -m "docs: do not open -a Safari"'],
-  ['source search for Safari', 'rg "tell application Safari" scripts'],
-  ['sanctioned ASC wrapper', 'scripts/mini/mini-safari.sh open-current https://appstoreconnect.apple.com']
+  ['source search for Safari', 'rg "tell application Safari" scripts']
 ].each do |label, command|
   _, safari_err, safari_status = run_ruby_hook(
     'sane_bash_guards.rb',
@@ -352,6 +351,18 @@ end
   )
   t("Safari guard allows #{label}", safari_status.exitstatus.zero? && safari_err.empty?)
 end
+# Corrected 2026-07-15: the owner retired the App Store Connect Safari
+# exception — ASC portal work runs through Brave on the Mini, and the legacy
+# mini-safari.sh wrapper is no longer a sanctioned lane.
+_, legacy_asc_err, legacy_asc_status = run_ruby_hook(
+  'sane_bash_guards.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'scripts/mini/mini-safari.sh open-current https://appstoreconnect.apple.com' }
+  }
+)
+t('Safari guard blocks legacy mini-safari.sh ASC wrapper', legacy_asc_status.exitstatus == 2)
+t('Legacy ASC wrapper block points to the Brave lane', legacy_asc_err.include?('Brave'))
 _, launch_chain_err, launch_chain_status = run_ruby_hook(
   'sane_launch_guard.rb',
   {
@@ -714,6 +725,73 @@ Dir.mktmpdir('email-guard-test-') do |dir|
   )
   t('Email guard rejects business signature missing contact details', incomplete_business_status.exitstatus == 2)
   t('Business signature block explains recipient-specific format', incomplete_business_err.include?('Business/vendor/compliance'))
+
+  # Owner ruling 2026-07-15: ONE business signature template that works for
+  # every product lane, not just SaneLot/SaneCite.
+  saneclip_business_body = <<~BODY
+    Thanks for reaching out about SaneClip.
+
+    Here are the requested partnership details.
+
+    Stephan Joseph
+    Founder, SaneApps / SaneClip
+    727-758-9785
+    hi@saneapps.com
+    https://saneclip.com
+  BODY
+  File.write(body_path, saneclip_business_body)
+  File.write(
+    approval_path,
+    JSON.pretty_generate(
+      'created_at' => Time.now.to_i - 10,
+      'body_hash' => Digest::SHA256.hexdigest(saneclip_business_body.strip),
+      'body_file' => body_path,
+      'user_approval' => 'send saneclip business reply'
+    )
+  )
+  _, saneclip_business_err, saneclip_business_status = run_ruby_hook(
+    'sane_email_guard.rb',
+    { 'tool_name' => 'Bash', 'tool_input' => { 'command' => "check-inbox.sh reply 125 #{body_path}" } }
+  )
+  t('Email guard accepts business signature for any product lane (SaneClip)', saneclip_business_status.exitstatus == 0)
+  t('Approved SaneClip business email guard stays quiet', saneclip_business_err.empty?)
+  FileUtils.rm_f(approval_path)
+
+  # Retired variants (owner ruling 2026-07-15) must STILL be rejected after the
+  # product/site allowlists were genericized.
+  retired_founder_body = <<~BODY
+    Thanks for following up.
+
+    Here are the requested details.
+
+    Stephan Joseph
+    SaneCite Founder
+    (727) 758-9785
+  BODY
+  File.write(body_path, retired_founder_body)
+  _, _retired_founder_err, retired_founder_status = run_ruby_hook(
+    'sane_email_guard.rb',
+    { 'tool_name' => 'Bash', 'tool_input' => { 'command' => "check-inbox.sh reply 126 #{body_path}" } }
+  )
+  t('Email guard still rejects retired "SaneCite Founder" signature variant', retired_founder_status.exitstatus == 2)
+
+  paren_phone_body = <<~BODY
+    Thanks for following up.
+
+    Here are the requested details.
+
+    Stephan Joseph
+    Founder, SaneApps / SaneCite
+    (727) 758-9785
+    hi@saneapps.com
+    https://sanecite.com
+  BODY
+  File.write(body_path, paren_phone_body)
+  _, _paren_phone_err, paren_phone_status = run_ruby_hook(
+    'sane_email_guard.rb',
+    { 'tool_name' => 'Bash', 'tool_input' => { 'command' => "check-inbox.sh reply 127 #{body_path}" } }
+  )
+  t('Email guard still rejects retired "(727) 758-9785" phone format', paren_phone_status.exitstatus == 2)
 end
 
 email_force_path = '/tmp/.email_force_approved.json'

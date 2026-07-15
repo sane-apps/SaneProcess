@@ -218,6 +218,11 @@ Startup steps tracked:
 
 Tracks Sparkle signing and stapler verification to block unsafe deploy actions.
 
+Note (2026-07-15): the tracked state family (`sparkle_signed_dmgs`,
+`staple_verified_dmgs`) is DMG-named for legacy reasons; shipped release
+artifacts are ZIPs. The names are load-bearing hook state keys — do not rename
+them without a migration.
+
 ```mermaid
 flowchart TD
     SIGN[sign_update(.swift) DMG] --> REC_SIGN[Record sparkle_signed_dmgs]
@@ -446,7 +451,7 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
 
 **Context:** The May 2026 Claude/Codex workflow refresh found that SaneProcess already follows the main external guidance: source-of-truth `AGENTS.md`, scoped wrappers, Mini-first runtime evidence, skills, subagents, memory, and context compaction. The remaining gap is measuring whether prompts route to the right workflow, skill, command, or approval gate.
 
-**Decision:** Add deterministic agent workflow fixtures through `SaneMaster.rb agent_eval`. Add receipt-level workflow fixtures through `SaneMaster.rb process_eval` / `trace_eval`, plus `sop_review` for score-history and cap analysis. Add `agent_env_review` for recurring setup drift and `skill_lint` for skill routing quality. Add `context_bundle` for subagent, critic, and resume packets: it writes a compact local Markdown snapshot with YAML frontmatter, allowlisted source excerpts, recent receipt links, and Updated/Status/TTL cards parsed from existing research and Serena memory files. Keep these in SaneMaster instead of creating a separate agent-eval framework or another memory database. The shared SOP score rubric lives in `scripts/hooks/core/sop_score.rb`; score-producing paths must call it instead of duplicating the rubric.
+**Decision:** Add deterministic agent workflow fixtures through `SaneMaster.rb agent_eval`. Add receipt-level workflow fixtures through `SaneMaster.rb process_eval` / `trace_eval`, plus `sop_review` for score-history and cap analysis. Add `agent_env_review` for recurring setup drift and `skill_lint` for skill routing quality. Add `context_bundle` for subagent, critic, and resume packets: it writes a compact local Markdown snapshot with YAML frontmatter, allowlisted source excerpts, recent receipt links, and Updated/Status/TTL cards parsed from existing research and legacy Serena memory files. Keep these in SaneMaster instead of creating a separate agent-eval framework or another memory database. The shared SOP score rubric lives in `scripts/hooks/core/sop_score.rb`; score-producing paths must call it instead of duplicating the rubric.
 
 **Consequences:**
 - Trigger maps and AGENTS changes can be regression-tested before they ship.
@@ -469,8 +474,9 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
 - Context quality is a tested workflow surface. Broad reviews should start from
   `context_bundle`, not raw code snippets, so reviewers get active rules,
   handoff state, research cards, proof receipt links, and promotion targets for
-  stale knowledge while Markdown, Serena memory files, and Mini AgentMemory
-  remain the maintained context sources.
+  stale knowledge while Markdown docs, agent file memory, and Mini AgentMemory
+  remain the maintained context sources (legacy Serena memory files were
+  absorbed into AgentMemory 2026-07-15; Serena itself is code-navigation only).
 
 ### ADR-009: HTML is a generated review artifact, not the source of truth (2026-05-13)
 
@@ -561,10 +567,25 @@ is canonical for code, while
 uncommitted Mini work is preserved as non-clobbering Air-side snapshots rather
 than raw-mirrored. Claude/Serena/Codex file memories use a conflict-preserving
 two-way Air recurrence. Shared AgentMemory runs as a Mini LaunchAgent with a
-pinned home working directory so its 1,201-memory database survives restarts.
+pinned home working directory so its database survives restarts. The Air
+reaches Mini loopback port 3111 through a private persistent SSH tunnel; a
+one-shot detached tunnel owned by an individual MCP startup is not durable
+enough for the cross-machine contract.
 The LaunchAgent executes a supervisor that checks the real HTTP engine health;
 two consecutive misses stop the complete worker and return nonzero so
 launchd's unsuccessful-exit keepalive can recover from a dead child engine.
+Semantic recall (`memory_recall` / `memory_smart_search`) and durable writes
+(`memory_save` / `memory_lesson_save`) are the supported shared-memory
+contract. In `@agentmemory/mcp` v0.9.27, `memory_save` is durable but global/
+unscoped because the standalone proxy drops its advertised `project` field.
+Project-scoped facts use Mini loopback REST `/agentmemory/remember` until the
+upstream shim is fixed; this limitation is not an AgentMemory outage. Graph
+extraction and `memory_graph_query` are optional and
+intentionally disabled; the retired standalone `mcp__memory__*` graph must
+not be restored. The imported legacy corpus is currently unscoped global
+history. Supported inference migration cannot disambiguate it, so it remains
+searchable legacy context rather than being bulk-mutated into guessed
+project scopes.
 
 ---
 

@@ -266,6 +266,22 @@ exit(run_tests('App Store Submit Guardrail Tests') do
       assert_eq(status, 1)
       true
     end
+
+    test('default review contact is the real-name compliance identity') do
+      # Owner ruling 2026-07-15: Apple review/compliance is a real-name vendor
+      # lane — the default contact is Stephan Joseph, never the Mr. Sane alias.
+      with_env(
+        'APPSTORE_CONTACT_NAME' => nil,
+        'APPSTORE_CONTACT_PHONE' => '727-758-9785',
+        'APPSTORE_CONTACT_EMAIL' => nil
+      ) do
+        contact = resolve_review_contact({})
+        assert_eq(contact[:first_name], 'Stephan')
+        assert_eq(contact[:last_name], 'Joseph')
+        assert_eq(contact[:email], 'hi@saneapps.com')
+      end
+      true
+    end
   end
 
   test_category('Mandatory preflight receipt') do

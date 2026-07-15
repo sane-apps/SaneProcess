@@ -1,10 +1,9 @@
 #!/bin/bash
-# APP STORE CONNECT LANE ONLY (owner rule 2026-07-14): this is the single
-# sanctioned Safari automation path, kept because ASC/Apple ID login state
-# lives in one Mini Safari tab. ALL other agent browser work uses Brave
-# (Claude-in-Chrome widget / Codex Chrome lane). Do not point this script at
-# non-Apple portals or dashboards — sane_bash_guards.rb blocks raw Safari
-# automation everywhere else.
+# LEGACY (owner retired the Safari exception 2026-07-15): ASC portal work runs
+# through Brave on the Mini (Claude-in-Chrome widget / Codex Chrome lane), like
+# ALL other agent browser work. Do not extend this script or point it at any
+# portal — sane_bash_guards.rb blocks Safari automation, including this wrapper.
+# Kept only as reference for the old ASC/Apple ID Safari tab flow.
 set -euo pipefail
 
 MINI_HOST="${MINI_HOST:-mini}"

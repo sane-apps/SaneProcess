@@ -27,7 +27,10 @@ class SaneOpenGuardTest < Minitest::Test
     assert_equal 2, status.exitstatus
     assert_includes stderr, 'Mini-first SaneApps GUI guard'
     assert_includes stderr, 'Lemon Squeezy dashboard URL'
-    assert_includes stderr, 'mini-safari.sh open-current'
+    # Corrected 2026-07-15: the owner retired the ASC Safari exception, so the
+    # guard must steer to Brave, never the legacy mini-safari.sh wrapper.
+    assert_includes stderr, 'Brave on the Mini'
+    refute_includes stderr, 'mini-safari.sh'
   end
 
   def test_blocks_local_lemon_upload_reveal_on_macbook_air

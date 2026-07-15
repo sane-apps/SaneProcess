@@ -1,13 +1,13 @@
 # Script File Rules
 
-> Pattern: `**/scripts/**/*.rb`, `**/*.rb`, `**/hooks/**/*.rb`
+> Pattern: `**/scripts/**/*.rb`, `**/*.rb`
 
 ---
 
 ## Requirements
 
 1. **frozen_string_literal** - Always add pragma at top
-2. **Exit codes matter** - 0 = success, 1 = blocked/error
+2. **Exit codes matter** - 0 = success, non-zero = failure. Hook files follow `hooks.md` instead (exit 2 blocks, exit 1 is warning-only)
 3. **Warn, don't puts** - Use `warn` for messages (goes to stderr)
 4. **Handle missing input** - Read from stdin, handle empty gracefully
 

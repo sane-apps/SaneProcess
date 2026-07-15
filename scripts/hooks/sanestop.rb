@@ -612,9 +612,10 @@ def process_stop(stop_hook_active, transcript_path = nil)
   end
 
   # === POST-RELEASE: keep the Lemon Squeezy manual-upload folder current ===
-  # Codex drives the LS dashboard upload directly; Claude cannot, so after a
+  # Codex or the owner drives the LS dashboard upload; Claude can click through
+  # dashboards via Brave but cannot upload files through the browser, so after a
   # release this auto-stages the Mini's ~/Desktop/LemonSqueezy-Uploads folder to
-  # ONLY the latest ZIP per app, so the owner always finds the right file. Never
+  # ONLY the latest ZIP per app, so the uploader always finds the right file. Never
   # blocks. See stage_lemonsqueezy_uploads.rb + memory lemonsqueezy-uploads-folder-rule.
   LemonSqueezyUploads.stage_after_release(transcript_path)
 

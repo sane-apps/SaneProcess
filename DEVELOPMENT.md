@@ -120,8 +120,11 @@ File-backed Claude, Serena, and Codex memories use
 first, no-delete, cross-host locked, checksum-verified, and preserves a losing
 same-file version as `.sane-conflict-*` on both machines. It also pulls Mini
 dirty-work snapshots without applying them. The shared AgentMemory worker is
-Mini-owned by `com.saneapps.agentmemory`; the Air MCP wrapper reaches it through
-a bounded SSH tunnel.
+Mini-owned by `com.saneapps.agentmemory`. The Air must maintain a private,
+persistent SSH tunnel to Mini loopback port 3111; Air MCP clients use that local
+endpoint instead of creating an unmonitored one-shot detached tunnel. Tunnel
+health is part of Air acceptance and must survive normal client restarts without
+changing AgentMemory's loopback-only exposure.
 The Mini LaunchAgent must point to `sane-agentmemory-supervisor`, not directly
 to the `agentmemory` wrapper. Verify both the service program and HTTP corpus:
 
@@ -381,12 +384,14 @@ existing event by dedupe key, creates a no-attendee event first, verifies Google
 reports `hi@saneapps.com` as organizer, then adds attendees with notifications.
 If organizer proof fails, no attendee invite is sent.
 
-Business appointment follow-up email uses the SaneCite/prospecting identity,
-not the support-email identity: `Stephan Joseph`, `SaneCite Founder`, and the
-approved phone number `7277589785`. SaneCite prospect emails should use the
-existing SaneCite visual email frame from the SaneCite codebase (dark header,
-warm off-white page, cyan accent, SaneCite wordmark) and must not use the
-generic support signoff.
+Business appointment follow-up email uses the canonical real-name business
+signature from `AGENTS.md` (Customer Email section) with the relevant product
+line, e.g. `Founder, SaneApps / SaneCite`, phone `727-758-9785`, and
+`hi@saneapps.com` — never the `Mr. Sane` support signoff. (Corrected
+2026-07-15: the old `SaneCite Founder` / `7277589785` variant is retired.)
+SaneCite prospect emails should use the existing SaneCite visual email frame
+from the SaneCite codebase (dark header, warm off-white page, cyan accent,
+SaneCite wordmark).
 
 `process_eval` is the gate for real workflow improvement, not synthetic
 busywork. Trace fixtures define required event shapes, but slimming/expanding
@@ -559,7 +564,13 @@ Optional accelerators:
   for domain work, then close SaneApps workflows with SaneMaster or the relevant
   shared wrapper.
 - `agentmemory`: Mini-owned semantic recall, reached directly on the Mini and
-  through the bounded Air SSH MCP tunnel.
+  through the persistent private Air SSH tunnel. Use
+  `mcp__agentmemory__memory_recall` or `memory_smart_search` for recall and
+  `memory_save` or `memory_lesson_save` for durable global writes. In
+  `@agentmemory/mcp` v0.9.27, the standalone proxy drops `memory_save.project`;
+  project-scoped facts therefore use Mini loopback REST
+  `/agentmemory/remember` until the upstream shim is fixed. Do not describe an
+  MCP `memory_save` as project-scoped.
 - Cloudflare API MCP/plugin: read-only Pages/R2/Worker drift checks.
 
 Health checks:
@@ -578,6 +589,13 @@ Tool discovery and MCP health answer different questions:
   probe when available.
 - `~/.codex/bin/check-mcps` is the direct Codex MCP endpoint proof. Process
   presence alone is not evidence that Codex can call the tools.
+- AgentMemory health requires an active-client semantic recall canary, not just
+  a running engine or an open port. Air acceptance must prove Air loopback 3111,
+  MCP initialization, and a non-mutating `memory_recall` or
+  `memory_smart_search` call through the Air route.
+- `memory_graph_query` is not a health canary. Graph extraction is optional and
+  intentionally off in the SaneApps contract, so `Knowledge graph not enabled`
+  must not be reported as shared-memory failure.
 - A green MCP check does not clear repo validation. A red repo validation run
   does not prove a tool is missing.
 - Run the tool-discovery receipt before proposing a new tool, wrapper, or

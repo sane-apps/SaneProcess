@@ -9,8 +9,8 @@
 1. **Exit 0 to allow** - Tool call proceeds
 2. **Exit 2 to BLOCK** - Tool call is prevented (Claude Code standard)
 3. **Exit 1 = warning only** - Shows warning but tool proceeds
-3. **Warn for messages** - User sees stderr output
-4. **Handle errors gracefully** - Don't block on unexpected errors
+4. **Warn for messages** - User sees stderr output
+5. **Handle errors gracefully** - Don't block on unexpected errors
 
 ## Right
 
@@ -59,9 +59,10 @@ end
 # Missing error handling - will crash and block unexpectedly
 data = JSON.parse($stdin.read)
 
-# Using exit 1 for warnings - will block the tool
+# Wrong channel and wrong exit for a warning: exit 1 does NOT block
+# (the tool proceeds), and puts writes to stdout, which can corrupt hook output
 if file_too_large?(data)
-  puts "Warning: file is large"
-  exit 1  # Should warn and exit 0 for warnings
+  puts "Warning: file is large"  # Should be warn (stderr)
+  exit 1  # Should be warn + exit 0; use exit 2 only to BLOCK
 end
 ```

@@ -11,6 +11,7 @@ include TestFramework
 
 SCRIPT = File.expand_path('sync-memory-mini.sh', __dir__)
 INSTALLER = File.expand_path('install-memory-sync-agent.sh', __dir__)
+AGENTMEMORY_SHIM = File.expand_path('agentmemory-mcp-air.sh', __dir__)
 
 def memory_paths(home)
   slug = File.join(home, 'SaneApps').tr('/', '-')
@@ -155,17 +156,21 @@ exit(run_tests('Memory Sync Tests') do
   end
 
   test_category('Air recurrence') do
-    test('installs a RunAtLoad 15-minute LaunchAgent') do
+    test('installs recurrence plus one persistent AgentMemory tunnel LaunchAgent') do
       Dir.mktmpdir('memory-agent') do |dir|
         fixture_dir = File.join(dir, 'scripts', 'automation')
         FileUtils.mkdir_p(fixture_dir)
         FileUtils.cp(SCRIPT, File.join(fixture_dir, 'sync-memory-mini.sh'))
         FileUtils.cp(INSTALLER, File.join(fixture_dir, 'install-memory-sync-agent.sh'))
+        FileUtils.cp(AGENTMEMORY_SHIM, File.join(fixture_dir, 'agentmemory-mcp-air.sh'))
         FileUtils.chmod(0o755, File.join(fixture_dir, 'sync-memory-mini.sh'))
+        FileUtils.chmod(0o755, File.join(fixture_dir, 'agentmemory-mcp-air.sh'))
         plist = File.join(dir, 'memory-sync.plist')
+        tunnel_plist = File.join(dir, 'agentmemory-tunnel.plist')
         env = {
           'HOME' => dir,
           'SANE_MEMORY_SYNC_PLIST' => plist,
+          'SANE_AGENTMEMORY_TUNNEL_PLIST' => tunnel_plist,
           'SANE_MEMORY_SYNC_LOG_DIR' => File.join(dir, 'logs')
         }
         _out, err, status = Open3.capture3(env, '/bin/bash', File.join(fixture_dir, 'install-memory-sync-agent.sh'), '--dry-run')
@@ -175,9 +180,89 @@ exit(run_tests('Memory Sync Tests') do
         assert_includes(source, '<key>RunAtLoad</key>')
         assert_includes(source, '<key>StartInterval</key>')
         assert_includes(source, '<integer>900</integer>')
+        tunnel_source = File.read(tunnel_plist)
+        assert_includes(tunnel_source, '<string>com.saneapps.agentmemory-tunnel</string>')
+        assert_includes(tunnel_source, '<string>--tunnel</string>')
+        assert_includes(tunnel_source, '<key>RunAtLoad</key>')
+        assert_includes(tunnel_source, '<key>KeepAlive</key>')
+        assert_includes(tunnel_source, '<key>ThrottleInterval</key>')
+        assert_includes(tunnel_source, 'agentmemory_tunnel.stderr.log')
         _bad_out, bad_err, bad_status = Open3.capture3(env, '/bin/bash', File.join(fixture_dir, 'install-memory-sync-agent.sh'), 'mini')
         assert(!bad_status.success?, 'installer silently accepted an unknown host argument')
         assert_includes(bad_err, 'Usage:')
+        true
+      end
+    end
+
+    test('Air MCP shim uses one kickstarted owner and fails closed without health') do
+      source = File.read(AGENTMEMORY_SHIM)
+      assert_includes(source, 'kickstart "gui/')
+      assert_includes(source, 'AGENTMEMORY_FORCE_PROXY=1')
+      assert_includes(source, 'ServerAliveInterval=15')
+      assert_includes(source, 'ServerAliveCountMax=3')
+      assert_includes(source, 'ExitOnForwardFailure=yes')
+      assert(!source.include?('kickstart -k'), 'MCP clients must not kill a shared tunnel owned by another client')
+      assert(!source.include?('ssh -f'), 'shim must not create a detached per-client tunnel')
+      true
+    end
+
+    test('Air MCP shim kickstarts the owner before executing the forced-proxy MCP') do
+      Dir.mktmpdir('agentmemory-air-shim') do |dir|
+        health_count = File.join(dir, 'health-count')
+        launchctl_log = File.join(dir, 'launchctl.log')
+        npx_log = File.join(dir, 'npx.log')
+        fake_launchctl = File.join(dir, 'launchctl')
+        fake_curl = File.join(dir, 'curl')
+        fake_npx = File.join(dir, 'npx')
+        File.write(fake_launchctl, "#!/bin/sh\necho \"$*\" > \"$LAUNCHCTL_LOG\"\n")
+        File.write(fake_curl, <<~SH)
+          #!/bin/sh
+          count=0
+          [ ! -f "$HEALTH_COUNT" ] || count="$(cat "$HEALTH_COUNT")"
+          count=$((count + 1))
+          echo "$count" > "$HEALTH_COUNT"
+          [ "$count" -ge 2 ]
+        SH
+        File.write(fake_npx, <<~SH)
+          #!/bin/sh
+          printf 'args=%s\nurl=%s\nforce=%s\n' "$*" "$AGENTMEMORY_URL" "$AGENTMEMORY_FORCE_PROXY" > "$NPX_LOG"
+        SH
+        FileUtils.chmod(0o755, [fake_launchctl, fake_curl, fake_npx])
+        env = {
+          'SANE_LAUNCHCTL_BIN' => fake_launchctl,
+          'SANE_CURL_BIN' => fake_curl,
+          'SANE_NPX_BIN' => fake_npx,
+          'SANE_AGENTMEMORY_WAIT_INTERVAL' => '0',
+          'HEALTH_COUNT' => health_count,
+          'LAUNCHCTL_LOG' => launchctl_log,
+          'NPX_LOG' => npx_log
+        }
+        _out, err, status = Open3.capture3(env, '/bin/bash', AGENTMEMORY_SHIM)
+        assert(status.success?, err)
+        assert_includes(File.read(launchctl_log), 'kickstart gui/')
+        mcp = File.read(npx_log)
+        assert_includes(mcp, 'args=-y @agentmemory/mcp')
+        assert_includes(mcp, 'url=http://127.0.0.1:3111')
+        assert_includes(mcp, 'force=1')
+        true
+      end
+    end
+
+    test('foreground tunnel mode execs bounded SSH without launchctl') do
+      Dir.mktmpdir('agentmemory-air-tunnel') do |dir|
+        ssh_log = File.join(dir, 'ssh.log')
+        fake_ssh = File.join(dir, 'ssh')
+        File.write(fake_ssh, "#!/bin/sh\necho \"$*\" > \"$SSH_LOG\"\n")
+        FileUtils.chmod(0o755, fake_ssh)
+        env = { 'SANE_SSH_BIN' => fake_ssh, 'SSH_LOG' => ssh_log }
+        _out, err, status = Open3.capture3(env, '/bin/bash', AGENTMEMORY_SHIM, '--tunnel')
+        assert(status.success?, err)
+        ssh = File.read(ssh_log)
+        assert_includes(ssh, '-N')
+        assert_includes(ssh, 'ExitOnForwardFailure=yes')
+        assert_includes(ssh, 'ServerAliveInterval=15')
+        assert_includes(ssh, 'ServerAliveCountMax=3')
+        assert_includes(ssh, '-L 3111:127.0.0.1:3111 mini')
         true
       end
     end

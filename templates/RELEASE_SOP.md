@@ -5,10 +5,10 @@
 All SaneApps macOS apps use **Cloudflare** for update distribution:
 
 - **Website + Appcast**: Served from `{app}.com` (Cloudflare Pages)
-- **DMG Downloads**: Served from `dist.{app}.com/updates/{App}-{version}.dmg` (Cloudflare R2 via `sane-dist` Worker)
+- **ZIP Downloads**: Served from `dist.{app}.com/updates/{App}-{version}.zip` (Cloudflare R2 via `sane-dist` Worker; shipped artifacts are ZIPs — corrected 2026-07-15, DMG wording retired)
 - **Worker**: `sane-dist` handles routing — `/updates/` path is public (Sparkle), root path is gated (signed URLs)
 
-**DO NOT use GitHub Releases for DMG distribution.**
+**DO NOT use GitHub Releases for release artifact distribution.**
 
 ## Release Checklist
 
@@ -75,9 +75,9 @@ Before drafting or approving release notes, do a customer-facing audit instead o
    - recent email replies where I said `next build`, `next release`, or similar
    - recent GitHub issue comments with the same promise
 2. Check recent research and memory:
-   - `.codex/research.md` first, or the existing project research cache if a
+   - `.claude/research.md` first, or the existing project research cache if a
      different active cache is already documented
-   - Serena / AgentMemory notes for the app
+   - file memory / AgentMemory notes for the app
 3. Check the actual user-facing fixes since the last tag:
    - commits between tags
    - recent shipped/unshipped issue fixes
@@ -162,7 +162,7 @@ ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb \
 ./scripts/SaneMaster.rb appstore_preflight  # active App Store lanes only
 ```
 
-If the lane is disabled, do not diagnose App Store policy failures for that app as part of a normal release. Use `release_preflight` for direct-download readiness and treat App Store metadata as dormant reference until the lane is explicitly re-enabled. SaneBar and SaneClick are direct-download-only under the current strategy.
+If the lane is disabled, do not diagnose App Store policy failures for that app as part of a normal release. Use `release_preflight` for direct-download readiness and treat App Store metadata as dormant reference until the lane is explicitly re-enabled. SaneClick is direct-download-only under the current strategy; SaneBar is retired (free + open source — it still ships direct-download builds but is no longer paid or advertised).
 
 4. Fix the reviewer issue at the root:
 - Accessibility request for non-accessibility use: remove the runtime path from the App Store build.
@@ -383,14 +383,12 @@ source ~/.config/nv/env   # exports SETAPP_PORTAL_TOKEN from the keychain
   and rerun `./scripts/SaneMaster.rb setapp_status` until it shows released/live
   with no action required.
 
-### 1. Build, Sign, Notarize, DMG (Single Command)
+### 1. Build, Sign, Notarize, ZIP (Single Command)
 
 ```bash
-# Unified entrypoint (uses per-project .saneprocess config)
-./scripts/SaneMaster.rb release
-
-# Full release (version bump + tests + GitHub metadata)
-./scripts/SaneMaster.rb release --full --version X.Y.Z --notes "Release notes"
+# Canonical release entrypoint (Corrected 2026-07-15: the old
+# `SaneMaster.rb release` recipe is retired)
+bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project <app-dir> --full --deploy
 ```
 
 For dual-platform App Store releases, `release.sh` is still the primary path. If the iOS leg needs recovery after a partial release, the known-good fallback is:
@@ -489,13 +487,13 @@ release session.
 
 - **Name**: `sanebar-downloads`
 - **Account**: `$CLOUDFLARE_ACCOUNT_ID`
-- **Usage**: Shared bucket for ALL SaneApps distribution files (.dmg and .zip)
+- **Usage**: Shared bucket for ALL SaneApps distribution files (.zip; legacy .dmg objects remain)
 
 ## Critical Rules
 
-1. **NEVER use GitHub Releases** for DMG hosting — use Cloudflare R2
+1. **NEVER use GitHub Releases** for release ZIP hosting — use Cloudflare R2
 2. **NEVER use GitHub Pages** for websites — use Cloudflare Pages
-3. **ALWAYS sign DMGs** with Sparkle EdDSA
+3. **ALWAYS sign release ZIPs** with Sparkle EdDSA
 4. **ALWAYS verify** downloads work before announcing release
 5. **Use `release.sh`** for Pages deploy and R2 uploads; raw `wrangler` is fallback-only
 6. **ONE Sparkle key per org** — store in keychain, never generate per-project keys
