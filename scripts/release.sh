@@ -1817,16 +1817,25 @@ verify_lemonsqueezy_hosted_file_sync() {
 
     mkdir -p "${output_dir}"
 
+    # stdout only: SaneMaster prints workflow receipts and bootstrap notices
+    # on stderr, and merging them corrupts the JSON payload for the parser.
+    local hosted_stderr_file
+    hosted_stderr_file=$(mktemp "${TMPDIR:-/tmp}/hosted-file-actions-stderr.XXXXXX")
     set +e
-    hosted_json=$(ruby "${sanemaster_script}" hosted_file_actions --json 2>&1)
+    hosted_json=$(ruby "${sanemaster_script}" hosted_file_actions --json 2>"${hosted_stderr_file}")
     hosted_status=$?
     set -e
 
     if [ "${hosted_status}" -ne 0 ]; then
         log_error "Lemon Squeezy hosted-file verification failed."
         log_error "${hosted_json}"
+        while IFS= read -r line; do
+            [ -n "${line}" ] && log_error "  ${line}"
+        done < "${hosted_stderr_file}"
+        rm -f "${hosted_stderr_file}"
         return 1
     fi
+    rm -f "${hosted_stderr_file}"
 
     printf '%s\n' "${hosted_json}" > "${receipt_path}"
 
