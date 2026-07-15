@@ -215,6 +215,33 @@ module SaneMasterModules
       identifiers.to_a
     end
 
+    # Interpolated declarations — .accessibilityIdentifier("sidebar.tab.\(x)")
+    # — declare a dynamic FAMILY. Their static dotted prefix satisfies any
+    # concrete test reference under it (2026-07-15 SaneVideo false failure).
+    def dynamic_identifier_prefixes
+      prefixes = Set.new
+      Dir.glob(File.join(Dir.pwd, '**/*.swift')).each do |file|
+        next if file.include?('/Tests/') || file.include?('/UITests/') ||
+                file.include?('/Mocks/') || file.include?('/.build/') ||
+                file.include?('/DerivedData/') || file.include?('/docs/')
+        next unless File.exist?(file)
+
+        File.read(file).scan(/(?:accessibilityIdentifier\(|\b\w*[Ii][Dd](?:entifier)?\s*:\s*)["']([a-z0-9]+(?:[._-][A-Za-z0-9]+)*[._-])\\\(/) do |match|
+          prefix = match[0]
+          prefixes << prefix if prefix.include?('.')
+        end
+      end
+      prefixes.to_a
+    end
+
+    def missing_test_identifiers
+      declared = extract_ui_identifiers
+      prefixes = dynamic_identifier_prefixes
+      extract_test_references.reject do |ref|
+        declared.include?(ref) || prefixes.any? { |p| ref.start_with?(p) }
+      end
+    end
+
     def extract_test_references
       return Set.new.to_a unless ui_tests_present?
 

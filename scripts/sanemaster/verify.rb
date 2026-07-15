@@ -702,7 +702,7 @@ module SaneMasterModules
       test_references = extract_test_references
       puts "  Found #{test_references.count} references in test code"
 
-      missing_in_ui = test_references - ui_identifiers
+      missing_in_ui = missing_test_identifiers
 
       if missing_in_ui.any?
         puts "\n❌ CRITICAL: Tests reference non-existent identifiers:"

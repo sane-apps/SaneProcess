@@ -39,8 +39,9 @@ class VerifyDoctorHarness
   def project_ui_tests_dir = File.join(Dir.pwd, 'AppUITests')
   def project_app_dir = File.join(Dir.pwd, 'App')
   def ui_tests_present? = Dir.exist?(project_ui_tests_dir)
-  # The module marks its helpers private; expose the two under test.
-  public :extract_ui_identifiers, :extract_test_references
+  # The module marks its helpers private; expose those under test.
+  public :extract_ui_identifiers, :extract_test_references,
+         :dynamic_identifier_prefixes, :missing_test_identifiers
 end
 
 def with_fixture
@@ -114,6 +115,29 @@ check('identifiers inside UITests are NOT treated as declarations') do
   with_fixture do
     File.write('AppUITests/T.swift', %(app.buttons["only.in.tests"].tap()\n))
     !harness.extract_ui_identifiers.include?('only.in.tests')
+  end
+end
+
+check('interpolated declaration yields its static prefix (dynamic id family)') do
+  with_fixture do
+    File.write('App/Views/F.swift', <<~'SWIFT')
+      .accessibilityIdentifier("sidebar.tab.\(label.lowercased())")
+    SWIFT
+    harness.dynamic_identifier_prefixes.include?('sidebar.tab.')
+  end
+end
+
+check('concrete reference under a dynamic prefix is not missing; unrelated is') do
+  with_fixture do
+    File.write('App/Views/F.swift', <<~'SWIFT')
+      .accessibilityIdentifier("sidebar.tab.\(label.lowercased())")
+    SWIFT
+    File.write('AppUITests/T.swift', <<~SWIFT)
+      app.buttons["sidebar.tab.media"].tap()
+      app.buttons["totally.unrelated.id"].tap()
+    SWIFT
+    missing = harness.missing_test_identifiers
+    !missing.include?('sidebar.tab.media') && missing.include?('totally.unrelated.id')
   end
 end
 
