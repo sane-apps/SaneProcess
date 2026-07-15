@@ -3457,7 +3457,14 @@ run_candidate_release_preflight() {
     log_info "Running signed release_preflight against the materialized v${VERSION} candidate..."
     (
         cd "${PROJECT_ROOT}"
-        ruby "${sanemaster}" release_preflight
+        # App repos ship scripts/SaneMaster.rb as a bash wrapper that execs the
+        # infra runner, so it must run via its own shebang; forcing `ruby` dies
+        # with "no Ruby script found in input".
+        if [ -x "${sanemaster}" ]; then
+            "${sanemaster}" release_preflight
+        else
+            ruby "${sanemaster}" release_preflight
+        fi
     )
 }
 
