@@ -2804,20 +2804,11 @@ verify_time = Time.parse(verify['timestamp'].to_s)
 raise 'release_preflight verify receipt is newer than preflight' if verify_time > generated_at + 5
 raise 'release_preflight verify receipt is stale' if verify_time < generated_at - max_age_seconds
 
-verify_parts = []
-[
-  %w[rev-parse HEAD],
-  %w[status --porcelain=v1 --untracked-files=all],
-  %w[diff --binary],
-  %w[diff --cached --binary]
-].each do |command|
-  output, command_status = Open3.capture2e('git', '-C', project_path, *command)
-  raise "could not compute current verify fingerprint: git #{command.join(' ')}" unless command_status.success?
-
-  verify_parts << output
-end
-current_verify_fingerprint = Digest::SHA256.hexdigest(verify_parts.join("\n---\n"))
-raise 'release_preflight verify receipt source fingerprint mismatch' unless verify['sourceFingerprint'].to_s == current_verify_fingerprint
+# Verify evidence records the SaneSourceFingerprint content hash (the same
+# identity the receipt itself carries), so freshness is proven by comparing
+# against the module-computed fingerprint of the current tree. The old
+# HEAD+status+diff recipe here never matched the recorded value.
+raise 'release_preflight verify receipt source fingerprint mismatch' unless verify['sourceFingerprint'].to_s == actual_fingerprint
 
 migration_files = payload['migrationFiles'].to_a
 if migration_files.any?
