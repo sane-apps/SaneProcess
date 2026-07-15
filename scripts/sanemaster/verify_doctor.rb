@@ -204,7 +204,7 @@ module SaneMasterModules
         # Labeled component arguments forward identifiers into shared views,
         # e.g. SheetHeader(accessibilityID: "voiceover.sheet.close") — these are
         # declarations too (2026-07-15 SaneVideo pre-push false failure).
-        content.scan(/\baccessibilityID(?:entifier)?\s*:\s*["']([^"']+)["']/) { |match| identifiers << match[0] }
+        content.scan(/\baccessibility(?:ID|Identifier)\s*:\s*["']([^"']+)["']/) { |match| identifiers << match[0] }
       end
 
       identifiers.to_a
