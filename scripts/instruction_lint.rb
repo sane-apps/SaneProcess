@@ -30,6 +30,7 @@ SURFACES = [
   *Dir.glob("#{HOME}/SaneApps/apps/*/AGENTS.md"),
   *Dir.glob("#{HOME}/SaneApps/apps/*/CLAUDE.md"),
   *Dir.glob("#{HOME}/.codex/skills/{audit,sane-audit,social,outreach}/**/*.md"),
+  *Dir.glob("#{HOME}/SaneApps/meta/skills/**/*.md"),
 ].select { |p| File.file?(p) }
 
 # A line may mention a banned term only while retiring it. Checked against the
