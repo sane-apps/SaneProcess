@@ -91,6 +91,8 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
     end
   end
 
+  # Single-copy/re-sign ordering and third-party nested-signature regressions
+  # live in scripts/sane_test_resign_lane_test.rb (Rule #10 size split).
   test_category('Developer ID entitlement preservation') do
     test('re-signing fails closed when the staged app is missing') do
       sanevideo = SaneTest.allocate
@@ -278,6 +280,7 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
       true
     end
 
+
     test('staged manifest accepts an exact runtime copy including modes and symlink targets') do
       sanevideo = SaneTest.allocate
       Dir.mktmpdir('sane-test-manifest-match') do |dir|
@@ -427,21 +430,29 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
       sanevideo.define_singleton_method(:code_signature_details) do |path|
         [path.include?('Injected') ? other_team : trusted_team, success]
       end
+      sanevideo.define_singleton_method(:nested_code_executable_path!) { |path, _details, role:| path }
+      sanevideo.define_singleton_method(:nested_code_executable_signature_valid?) { |_path| true }
 
       error = nil
       begin
-        sanevideo.send(
-          :validate_existing_nested_signature!,
-          '/tmp/Injected.framework',
-          trusted_path: '/tmp/Fresh.framework',
-          relative_path: 'Frameworks/Injected.framework'
-        )
+        Dir.mktmpdir('sane-test-other-team') do |dir|
+          staged = File.join(dir, 'Injected.framework')
+          fresh = File.join(dir, 'Fresh.framework')
+          FileUtils.mkdir_p([staged, fresh])
+          sanevideo.send(
+            :validate_existing_nested_signature!,
+            staged,
+            trusted_path: fresh,
+            relative_path: 'Frameworks/Injected.framework'
+          )
+        end
       rescue SaneTest::SigningValidationError => e
         error = e
       end
 
       assert(error, 'other-team nested code must never be adopted by the SaneApps signature')
-      assert_includes(error.message, 'matching SaneApps signature identity')
+      assert_includes(error.message, 'does not match fresh build')
+      assert_includes(error.message, 'team')
       true
     end
 
@@ -534,18 +545,24 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
 
       error = nil
       begin
-        sanevideo.send(
-          :validate_existing_nested_signature!,
-          '/tmp/Staged.framework',
-          trusted_path: '/tmp/Fresh.framework',
-          relative_path: 'Frameworks/Dependency.framework'
-        )
+        Dir.mktmpdir('sane-test-stale-metadata') do |dir|
+          staged = File.join(dir, 'Staged.framework')
+          fresh = File.join(dir, 'Fresh.framework')
+          FileUtils.mkdir_p([staged, fresh])
+          sanevideo.send(
+            :validate_existing_nested_signature!,
+            staged,
+            trusted_path: fresh,
+            relative_path: 'Frameworks/Dependency.framework'
+          )
+        end
       rescue SaneTest::SigningValidationError => e
         error = e
       end
 
       assert(error, 'stale signature metadata must not authenticate modified nested code')
-      assert_includes(error.message, 'executable signature is invalid')
+      assert_includes(error.message, 'does not match fresh build')
+      assert_includes(error.message, 'executable_valid')
       true
     end
   end

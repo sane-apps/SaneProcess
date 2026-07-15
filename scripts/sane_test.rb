@@ -474,12 +474,16 @@ class SaneTest
     step("#{n += 1}. Clean ALL stale copies") { clean_local }
     build_label = @release_build ? 'Build fresh release build' : 'Build fresh debug build'
     step("#{n += 1}. #{build_label}") { build_debug }
-    step("#{n += 1}. Verify single copy") { verify_single_copy_local }
+    step("#{n += 1}. Stage canonical runtime copy") { stage_canonical_copy_local }
     step("#{n += 1}. Inspect Accessibility entries") { dedupe_accessibility_entries_local }
     step("#{n += 1}. Fresh reset") { fresh_reset_local } if @fresh
     step("#{n += 1}. Reset TCC permissions") { reset_tcc_local } if @reset_tcc && !@fresh
     step("#{n += 1}. Set license mode") { set_license_mode_local } if (@free_mode || @pro_mode) && !@fresh
+    # Re-sign validation compares the staged app against the fresh DerivedData
+    # product (its trust anchor), so the single-copy sweep that trashes every
+    # non-canonical bundle must run AFTER re-signing, and before launch.
     step("#{n += 1}. Re-sign with Developer ID (preserve TCC)") { ensure_developer_id_signature_local }
+    step("#{n += 1}. Enforce single runtime copy") { enforce_single_copy_local }
     step("#{n += 1}. Launch locally") { launch_local }
     print_air_ui_test_hints_local
     stream_logs_local unless @no_logs
@@ -635,8 +639,15 @@ class SaneTest
     output = +''
     last_status = nil
     trusted_nested_code = trusted_fresh_nested_code_map!(app_path)
+    paths = nested_code_paths(app_path)
 
-    nested_code_paths(app_path).each do |path|
+    # Phase 1: validate the whole PRISTINE staged tree against the fresh
+    # anchor before changing any signature. Re-signing nested children breaks
+    # the enclosing bundle's resource seal, so interleaving validation with
+    # signing makes the loop reject its own earlier work when it reaches the
+    # parent (seen 2026-07-14 on Sparkle.framework after its XPCs were
+    # re-signed).
+    paths.each do |path|
       relative_path = nested_code_relative_path(app_path, path)
       trusted_path = trusted_nested_code[relative_path]
       unless trusted_path
@@ -644,6 +655,11 @@ class SaneTest
       end
 
       validate_existing_nested_signature!(path, trusted_path: trusted_path, relative_path: relative_path)
+    end
+
+    # Phase 2: sign deepest-first so parent seals are rebuilt over the newly
+    # signed children, post-validating every object.
+    paths.each do |path|
       command = developer_id_resign_command(identity, path)
       command_output, status = capture_signing_command(*command)
       output << command_output
@@ -789,28 +805,40 @@ class SaneTest
 
     (bundles + libraries)
       .map { |path| validated_nested_code_path(app_path, path) }
+      .compact
       .uniq
       .sort_by { |path| [-path.count(File::SEPARATOR), path] }
   end
 
   def validated_nested_code_path(app_path, candidate)
     metadata = File.lstat(candidate)
-    raise SigningValidationError, "nested code candidate is a symlink: #{candidate}" if metadata.symlink?
-
-    suffix = File.extname(candidate)
-    expected_type = suffix == '.dylib' ? metadata.file? : metadata.directory?
-    raise SigningValidationError, "nested code candidate has unexpected type: #{candidate}" unless expected_type
-
     app_root = File.realpath(app_path)
-    real_path = File.realpath(candidate)
+    real_path = begin
+      File.realpath(candidate)
+    rescue Errno::ENOENT
+      raise SigningValidationError, "nested code candidate is a broken symlink: #{candidate}"
+    end
     unless real_path.start_with?("#{app_root}/Contents/")
-      raise SigningValidationError, "nested code candidate escapes staged app: #{candidate}"
+      kind = metadata.symlink? ? 'symlinked nested code candidate' : 'nested code candidate'
+      raise SigningValidationError, "#{kind} escapes staged app: #{candidate}"
     end
 
     relative = real_path.delete_prefix("#{app_root}/Contents/")
     unless NESTED_CODE_ROOTS.any? { |root| relative == root || relative.start_with?("#{root}/") }
       raise SigningValidationError, "nested code candidate is outside an approved code root: #{relative}"
     end
+
+    # Standard framework layouts alias nested bundles through Versions/
+    # symlinks (Sparkle.framework/Updater.app -> Versions/B/Updater.app).
+    # The alias's real bundle is enumerated separately, so once the target is
+    # proven to stay inside an approved code root the alias is skipped rather
+    # than double-signed. Escaping or broken symlinks raised above.
+    return nil if metadata.symlink?
+
+    suffix = File.extname(candidate)
+    expected_type = suffix == '.dylib' ? metadata.file? : metadata.directory?
+    raise SigningValidationError, "nested code candidate has unexpected type: #{candidate}" unless expected_type
+
     File.expand_path(candidate)
   end
 
@@ -834,7 +862,7 @@ class SaneTest
   def validate_existing_nested_signature!(path, trusted_path:, relative_path:)
     staged_identity = nested_code_signature_identity!(path, role: 'staged')
     trusted_identity = nested_code_signature_identity!(trusted_path, role: 'fresh-build')
-    mismatches = %i[type identifier cdhash].reject do |field|
+    mismatches = %i[type identifier cdhash team executable_valid].reject do |field|
       staged_identity[field] == trusted_identity[field]
     end
     return true if mismatches.empty?
@@ -846,23 +874,43 @@ class SaneTest
   def nested_code_signature_identity!(path, role:)
     details, status = code_signature_details(path)
     valid_requirement = details.include?('designated =>') && details.include?('anchor apple generic')
-    valid_team = details.include?("TeamIdentifier=#{SANEAPPS_DEVELOPER_TEAM_ID}") &&
-                 details.include?("certificate leaf[subject.OU] = #{SANEAPPS_DEVELOPER_TEAM_ID}")
+    team = details[/^TeamIdentifier=(.+)$/i, 1].to_s.strip
+    sane_team = details.include?("TeamIdentifier=#{SANEAPPS_DEVELOPER_TEAM_ID}") &&
+                details.include?("certificate leaf[subject.OU] = #{SANEAPPS_DEVELOPER_TEAM_ID}")
+    # The fresh build product is the trust anchor: a staged nested object is
+    # only ever accepted as an exact identity match of it (type, identifier,
+    # cdhash, and the signature flavor below joined into the compared tuple).
+    # A local Debug build legitimately leaves third-party nested services
+    # (e.g. Sparkle's XPCServices) ad-hoc signed or upstream-team signed, so
+    # pinning the SaneApps team here can never pass for them; cdhash equality
+    # against the fresh anchor pins the exact bytes instead. Objects whose
+    # signature cannot be inspected at all are still refused.
+    signature_anchor =
+      if sane_team && valid_requirement
+        "saneapps:#{SANEAPPS_DEVELOPER_TEAM_ID}"
+      elsif valid_requirement && !team.empty? && team.casecmp('not set') != 0
+        "team:#{team}"
+      elsif details.include?('Signature=adhoc')
+        'adhoc'
+      end
     identifier = details[/^Identifier=(.+)$/i, 1].to_s.strip
     cdhash = details[/^CDHash=([0-9a-f]+)$/i, 1].to_s.downcase
     valid_identity = !identifier.empty? && cdhash.match?(/\A[0-9a-f]{20,128}\z/)
-    if status.success? && valid_requirement && valid_team && valid_identity
+    if status.success? && signature_anchor && valid_identity
       executable = nested_code_executable_path!(path, details, role: role)
-      unless nested_code_executable_signature_valid?(executable)
-        raise SigningValidationError,
-              "refusing to sign #{role} nested code whose executable signature is invalid: #{path}"
-      end
-
+      # Absolute seal validity is not an invariant of a local Debug product:
+      # Xcode's embed step routinely leaves third-party frameworks (Sparkle)
+      # failing strict verification even in the fresh build. What matters is
+      # PARITY with the fresh anchor, so the verdict joins the compared
+      # identity tuple: a staged object whose seal state differs from the
+      # fresh build's is refused, while an identical one passes.
       metadata = File.lstat(path)
       return {
         type: metadata.file? ? "file:#{File.extname(path)}" : "directory:#{File.extname(path)}",
         identifier: identifier,
-        cdhash: cdhash
+        cdhash: cdhash,
+        team: signature_anchor,
+        executable_valid: nested_code_executable_signature_valid?(executable)
       }
     end
 
@@ -1010,10 +1058,21 @@ class SaneTest
     warn "   Removed #{removed_temp_files} temp file(s), trashed #{trashed_copies} non-canonical app bundle(s)"
   end
 
-  def verify_single_copy_local
+  def stage_canonical_copy_local
     dd_app = find_derived_data_app
     abort '   ❌ Built app not found in DerivedData' unless dd_app
-    canonical = stage_to_canonical_local_app_path(dd_app)
+    @staged_canonical_app_path = stage_to_canonical_local_app_path(dd_app)
+    warn "   Staged runtime copy at #{@staged_canonical_app_path}"
+    warn '   Fresh build product preserved in DerivedData for re-sign validation'
+  end
+
+  # Runs after re-signing: the fresh DerivedData product had to survive until
+  # nested-code validation compared it against the staged app. From here on,
+  # exactly one runtime copy may exist so TCC identity and launches stay
+  # unambiguous.
+  def enforce_single_copy_local
+    canonical = @staged_canonical_app_path || canonical_local_app_path
+    abort '   ❌ Canonical runtime copy is missing' unless canonical && File.exist?(canonical)
     trashed_copies = trash_noncanonical_local_app_copies(preserve_path: canonical)
     remaining = local_app_copy_paths.reject { |path| File.expand_path(path) == File.expand_path(canonical) }
     unless remaining.empty?
