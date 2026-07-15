@@ -6032,14 +6032,14 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_includes(release_script, "payload['miniRuntime'] == true")
       assert_includes(release_script, 'release_preflight was not generated on Mini runtime')
       assert_includes(release_script, 'process_root = File.expand_path(ARGV[3])')
-      assert_includes(release_script, 'SaneProcess/#{relative_path}')
-      assert_includes(release_script, 'SaneApps/#{relative_path}')
-      assert_includes(release_script, "File.join(process_root, 'scripts', 'sanemaster'")
-      assert_includes(release_script, "File.join(process_root, 'scripts', 'hooks'")
-      assert_includes(release_script, "File.join(saneapps_root, 'infra', 'SaneUI', 'Sources'")
+      # The receipt fingerprint must be validated by the SAME shared module
+      # that produced it (an inline digest reimplementation drifted and
+      # rejected every valid receipt for Sane*-prefixed apps, 2026-07-14).
+      assert_includes(release_script, "require File.join(process_root, 'scripts', 'sanemaster', 'source_fingerprint')")
+      assert_includes(release_script, 'SaneSourceFingerprint.release_status_source_fingerprint(project_path)')
+      assert(!release_script.include?('digest.update("SaneProcess/'),
+             'release.sh must not carry an inline copy of the fingerprint digest')
       assert_includes(release_script, 'customer UI receipt is stale for release_preflight reuse')
-      assert_includes(release_script, '(?:css|html|js|json|xml)')
-      assert_includes(release_script, "path == 'docs/_redirects' || path == 'website/_redirects'")
       assert_includes(release_script, 'Project QA guardrails covered by fresh SaneMaster release_preflight receipt')
       true
     end
