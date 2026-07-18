@@ -6198,6 +6198,21 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('release.sh pushes detached metadata only to its verified reconcile branch') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+      reconcile_gate = release_script[/enforce_machine_reconcile\(\) \{.*?^\}/m]
+      push_helper = release_script[/push_project_release_head\(\) \{.*?^\}/m]
+      assert(!reconcile_gate.nil?, 'expected machine reconcile body in release.sh')
+      assert(!push_helper.nil?, 'expected detached release metadata push helper in release.sh')
+      assert_includes(reconcile_gate, 'RELEASE_DETACHED_CANDIDATE_BRANCH="${peer_branch}"')
+      assert_includes(push_helper, 'Refusing to push detached release metadata without a verified reconcile branch.')
+      assert_includes(push_helper, 'HEAD:refs/heads/${release_branch}')
+      assert(!push_helper.include?('push --force'), 'release metadata must never force-push a branch')
+      assert_operator(release_script.scan('push_project_release_head').length, :>=, 3,
+                      'both version and release metadata syncs must use the guarded push helper')
+      true
+    end
+
     test('machine reconcile maps release candidates to the canonical peer checkout') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
       peer_path_helper = release_script[/default_peer_repo_path_for_project\(\) \{.*?^\}/m]

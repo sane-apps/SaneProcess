@@ -3100,6 +3100,7 @@ enforce_machine_reconcile() {
             expected_origin_head=$(git -C "${PROJECT_ROOT}" rev-parse "refs/remotes/origin/${peer_branch}" 2>/dev/null || true)
             if [ -n "${expected_origin_head}" ] && [ "${local_head}" = "${expected_origin_head}" ]; then
                 log_info "Detached release candidate matches origin/${peer_branch} at ${local_head:0:12}."
+                RELEASE_DETACHED_CANDIDATE_BRANCH="${peer_branch}"
                 local_branch="${peer_branch}"
             else
                 log_error "Detached release candidate does not match origin/${peer_branch}; refusing to release an untracked commit."
@@ -3179,6 +3180,23 @@ enforce_machine_reconcile() {
     fi
 
     log_info "Machine reconcile gate passed: local and ${peer_host} are synced at ${local_head:0:12}"
+}
+
+push_project_release_head() {
+    local branch release_branch
+    branch=$(git -C "${PROJECT_ROOT}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+
+    if [ "${branch}" = "HEAD" ]; then
+        release_branch="${RELEASE_DETACHED_CANDIDATE_BRANCH:-}"
+        if [ -z "${release_branch}" ]; then
+            log_error "Refusing to push detached release metadata without a verified reconcile branch."
+            return 1
+        fi
+        GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push origin "HEAD:refs/heads/${release_branch}"
+        return $?
+    fi
+
+    GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push
 }
 
 enforce_reconcile_policy() {
@@ -5262,6 +5280,7 @@ RELEASE_RECONCILE_ENABLED="${RELEASE_RECONCILE_ENABLED:-true}"
 RELEASE_PEER_HOST="${RELEASE_PEER_HOST:-}"
 RELEASE_PEER_REPO_PATH="${RELEASE_PEER_REPO_PATH:-}"
 RELEASE_PEER_BRANCH="${RELEASE_PEER_BRANCH:-main}"
+RELEASE_DETACHED_CANDIDATE_BRANCH=""
 PAGES_BRANCH="${PAGES_BRANCH:-main}"
 
 if ! enforce_release_override_approvals; then
@@ -6850,7 +6869,7 @@ PY
         git -C "${PROJECT_ROOT}" add "${VERSION_SYNC_FILES[@]}"
         if ! git -C "${PROJECT_ROOT}" diff --cached --quiet; then
             git -C "${PROJECT_ROOT}" commit -m "chore: sync ${VERSION} version metadata and site download links"
-            if ! GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push; then
+            if ! push_project_release_head; then
                 log_error "Failed to push version metadata/site link commit."
                 POST_RELEASE_REPO_SYNC_FAILED=true
                 POST_RELEASE_REPO_SYNC_DETAILS+=("Version metadata/site link commit push failed.")
@@ -6880,7 +6899,7 @@ PY
         log_info "Committing release metadata update..."
         git -C "${PROJECT_ROOT}" add "${RELEASE_METADATA_SYNC_FILES[@]}"
         git -C "${PROJECT_ROOT}" commit -m "chore: sync release metadata for v${VERSION}"
-        if ! GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C "${PROJECT_ROOT}" push; then
+        if ! push_project_release_head; then
             log_error "Failed to push release metadata commit for v${VERSION}."
             POST_RELEASE_REPO_SYNC_FAILED=true
             POST_RELEASE_REPO_SYNC_DETAILS+=("Release metadata commit push failed.")
