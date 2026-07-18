@@ -64,6 +64,7 @@ UPGRADE_NONCE = 'a' * 64
 
 def monitor_receipt_fixture(root, started_at:, finished_at:, scheme: 'Example',
                             selector: 'ExampleTests/UpgradeTests/testUpgrade',
+                            package_path: nil,
                             test_plan: nil,
                             upgrade_run_id: UPGRADE_RUN_ID, upgrade_nonce: UPGRADE_NONCE)
   binding = Digest::SHA256.hexdigest("#{upgrade_run_id}\0#{upgrade_nonce}")[0, 16]
@@ -79,6 +80,7 @@ def monitor_receipt_fixture(root, started_at:, finished_at:, scheme: 'Example',
     'upgrade_nonce' => upgrade_nonce,
     'host' => Socket.gethostname,
     'scheme' => scheme,
+    'package_path' => package_path,
     'test_plan' => test_plan,
     'test_selector' => selector,
     'started_at' => started_at.iso8601(6),
@@ -150,6 +152,20 @@ exit(run_tests('Upgrade Path Proof Security Tests') do
 
       assert_includes(argv, '--test-plan')
       assert_eq(argv[argv.index('--test-plan') + 1], 'SaneHosts')
+      true
+    end
+
+    test('runner binds an optional package path to the canonical monitor command') do
+      argv = subject.send(
+        :upgrade_path_runner_argv,
+        scheme: 'SaneHostsFeature-Package',
+        package_path: 'SaneHostsPackage',
+        test_selector: 'SaneHostsFeatureTests/ProfileStoreEssentialsPolicyTests/createsEssentialsAlongsideExistingEntries',
+        timeout_seconds: 120
+      )
+
+      assert_includes(argv, '--package-path')
+      assert_eq(argv[argv.index('--package-path') + 1], 'SaneHostsPackage')
       true
     end
 

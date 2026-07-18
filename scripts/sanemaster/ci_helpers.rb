@@ -155,10 +155,11 @@ module SaneMasterModules
         options = monitor_test_options(args, default_scheme: project_scheme)
       rescue ArgumentError => e
         puts "❌ Invalid monitor_tests arguments: #{e.message}"
-        puts '   Usage: monitor_tests [--scheme NAME] [--test-plan NAME] [--test SELECTOR] [--timeout POSITIVE_SECONDS]'
+        puts '   Usage: monitor_tests [--scheme NAME] [--package-path PATH] [--test-plan NAME] [--test SELECTOR] [--timeout POSITIVE_SECONDS]'
         exit 2
       end
       scheme = options.fetch(:scheme)
+      package_path = options[:package_path]
       test_plan = options[:test_plan]
       test_name = options[:test_selector]
       timeout = options.fetch(:timeout)
@@ -167,6 +168,7 @@ module SaneMasterModules
       plan = monitor_test_plan(
         root: Dir.pwd,
         scheme: scheme,
+        package_path: package_path,
         test_plan: test_plan,
         test_selector: test_name,
         started_at: started_at,
@@ -182,6 +184,7 @@ module SaneMasterModules
       secure_test_assert_absent!(plan.fetch(:receipt_path), plan.fetch(:run_directory))
 
       puts "🔍 Monitoring tests for scheme: #{scheme}"
+      puts "   Package: #{package_path}" if package_path
       puts "   Test plan: #{test_plan}" if test_plan
       puts "   Test: #{test_name}" if test_name
       puts "   Timeout: #{timeout}s"
@@ -194,7 +197,7 @@ module SaneMasterModules
       # Start test in background
       log_io = secure_test_open_new_file(log_file, plan.fetch(:run_directory))
       begin
-        pid = Process.spawn(*cmd, out: log_io, err: log_io, pgroup: true)
+        pid = Process.spawn(*cmd, chdir: plan.fetch(:working_directory), out: log_io, err: log_io, pgroup: true)
       rescue StandardError => e
         log_io.write("Unable to start xcodebuild: #{e.class}: #{e.message}\n")
         log_io.flush
@@ -449,11 +452,11 @@ module SaneMasterModules
       remaining = args.dup
       until remaining.empty?
         argument = remaining.shift
-        match = argument.match(/\A--(scheme|test-plan|test|timeout)=(.*)\z/)
+        match = argument.match(/\A--(scheme|package-path|test-plan|test|timeout)=(.*)\z/)
         if match
           key = match[1]
           value = match[2]
-        elsif %w[--scheme --test-plan --test --timeout].include?(argument)
+        elsif %w[--scheme --package-path --test-plan --test --timeout].include?(argument)
           key = argument.delete_prefix('--')
           value = remaining.shift
           raise ArgumentError, "#{argument} requires a value" if value.nil? || value.start_with?('--')
@@ -464,6 +467,7 @@ module SaneMasterModules
         raise ArgumentError, "--#{key} requires a value" if value.empty?
         symbol = case key
                  when 'test' then :test_selector
+                 when 'package-path' then :package_path
                  when 'test-plan' then :test_plan
                  else key.to_sym
                  end
@@ -482,13 +486,14 @@ module SaneMasterModules
 
       {
         scheme: scheme,
+        package_path: values[:package_path],
         test_plan: values[:test_plan],
         test_selector: values[:test_selector],
         timeout: timeout_text.to_i
       }
     end
 
-    def monitor_test_plan(root:, scheme:, test_plan: nil, test_selector:, started_at:, pid: Process.pid, nonce: SecureRandom.hex(4),
+    def monitor_test_plan(root:, scheme:, package_path: nil, test_plan: nil, test_selector:, started_at:, pid: Process.pid, nonce: SecureRandom.hex(4),
                           upgrade_run_id: nil, upgrade_nonce: nil)
       project_root = File.realpath(root)
       upgrade_run_id = upgrade_run_id.to_s.strip
@@ -507,6 +512,7 @@ module SaneMasterModules
       end
       run_directory = File.join(project_root, 'outputs', 'monitor-tests', run_id)
       result_bundle_path = File.join(run_directory, 'test.xcresult')
+      working_directory = monitor_test_working_directory(project_root, package_path)
       command = [
         'xcodebuild', 'test', '-scheme', scheme,
         '-destination', 'platform=macOS,arch=arm64',
@@ -522,6 +528,7 @@ module SaneMasterModules
 
       {
         project_root: project_root,
+        working_directory: working_directory,
         run_directory: run_directory,
         result_bundle_path: result_bundle_path,
         xcresult_path: result_bundle_path,
@@ -530,11 +537,25 @@ module SaneMasterModules
         command: command,
         run_id: run_id,
         scheme: scheme,
+        package_path: package_path,
         test_plan: test_plan,
         test_selector: test_selector,
         upgrade_run_id: upgrade_run_id.empty? ? nil : upgrade_run_id,
         upgrade_nonce: upgrade_nonce.empty? ? nil : upgrade_nonce
       }
+    end
+
+    def monitor_test_working_directory(project_root, package_path)
+      return project_root if package_path.nil?
+
+      candidate = File.expand_path(package_path, project_root)
+      raise ArgumentError, '--package-path must stay within the project root' unless candidate.start_with?("#{project_root}#{File::SEPARATOR}")
+      raise ArgumentError, '--package-path must be an existing directory' unless File.directory?(candidate)
+
+      resolved = File.realpath(candidate)
+      raise ArgumentError, '--package-path must not resolve outside the project root' unless resolved.start_with?("#{project_root}#{File::SEPARATOR}")
+
+      resolved
     end
 
     def build_monitor_test_receipt(plan:, started_at:, completed_at:, exit_status:, timed_out:,
@@ -580,6 +601,7 @@ module SaneMasterModules
         upgrade_nonce: plan[:upgrade_nonce],
         host: host,
         scheme: plan.fetch(:scheme),
+        package_path: plan[:package_path],
         test_plan: plan[:test_plan],
         test_selector: plan[:test_selector],
         started_at: started_at.utc.iso8601(6),

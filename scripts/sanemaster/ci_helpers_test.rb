@@ -70,7 +70,7 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
   test_category('Monitor test CLI options') do
     test('parses strict named options and preserves safe defaults') do
       explicit = subject.monitor_options(
-        ['--scheme', 'SaneVideo', '--test-plan', 'Release', '--test=SaneVideoTests/PlaybackTests/testPlay', '--timeout', '120']
+        ['--scheme', 'SaneVideo', '--package-path', 'Feature', '--test-plan', 'Release', '--test=SaneVideoTests/PlaybackTests/testPlay', '--timeout', '120']
       )
       defaults = subject.monitor_options([], default_scheme: 'CurrentProject')
 
@@ -78,12 +78,13 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
         explicit,
         {
           scheme: 'SaneVideo',
+          package_path: 'Feature',
           test_plan: 'Release',
           test_selector: 'SaneVideoTests/PlaybackTests/testPlay',
           timeout: 120
         }
       )
-      assert_eq(defaults, { scheme: 'CurrentProject', test_plan: nil, test_selector: nil, timeout: 300 })
+      assert_eq(defaults, { scheme: 'CurrentProject', package_path: nil, test_plan: nil, test_selector: nil, timeout: 300 })
       true
     end
 
@@ -94,6 +95,7 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
         ['--scheme'] => '--scheme requires a value',
         ['--test', '--timeout', '30'] => '--test requires a value',
         ['--test-plan'] => '--test-plan requires a value',
+        ['--package-path'] => '--package-path requires a value',
         ['--scheme', 'One', '--scheme=Two'] => '--scheme was provided more than once',
         ['--timeout', '0'] => '--timeout must be a positive integer',
         ['--timeout=-1'] => '--timeout must be a positive integer',
@@ -184,6 +186,26 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
         assert_includes(plan[:command], '-testPlan')
         assert_eq(plan[:command][plan[:command].index('-testPlan') + 1], 'SaneHosts')
         assert(!plan[:command].include?('-only-testing'), 'test-plan execution must not target a local package test bundle directly')
+      end
+      true
+    end
+
+    test('runs a package scheme from a project-contained package directory') do
+      Dir.mktmpdir('ci-helpers-') do |root|
+        package = File.join(root, 'SaneHostsPackage')
+        Dir.mkdir(package)
+        plan = subject.monitor_plan(
+          root: root,
+          scheme: 'SaneHostsFeature-Package',
+          package_path: 'SaneHostsPackage',
+          test_selector: 'SaneHostsFeatureTests/ProfileStoreEssentialsPolicyTests/createsEssentialsAlongsideExistingEntries',
+          started_at: started_at,
+          pid: 4321,
+          nonce: 'package'
+        )
+
+        assert_eq(plan[:working_directory], File.realpath(package))
+        assert_eq(plan[:package_path], 'SaneHostsPackage')
       end
       true
     end

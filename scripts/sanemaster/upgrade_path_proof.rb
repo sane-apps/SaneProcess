@@ -46,6 +46,8 @@ module SaneMasterModules
       end
 
       scheme = config['scheme'].to_s.strip
+      package_path = config['package_path'].to_s.strip
+      package_path = nil if package_path.empty?
       test_plan = config['test_plan'].to_s.strip
       test_plan = nil if test_plan.empty?
       test_selector = config['test_selector'].to_s.strip
@@ -80,6 +82,7 @@ module SaneMasterModules
 
       argv = upgrade_path_runner_argv(
         scheme: scheme,
+        package_path: package_path,
         test_plan: test_plan,
         test_selector: test_selector,
         timeout_seconds: timeout_seconds
@@ -99,6 +102,7 @@ module SaneMasterModules
         monitor_receipt_path,
         project_root: project_root,
         scheme: scheme,
+        package_path: package_path,
         test_plan: test_plan,
         test_selector: test_selector,
         started_at: started_at,
@@ -113,6 +117,7 @@ module SaneMasterModules
         'source' => monitor_receipt.fetch('source'),
         'status' => monitor_receipt.fetch('status'),
         'scheme' => scheme,
+        'packagePath' => package_path,
         'testPlan' => test_plan,
         'testSelector' => test_selector,
         'runId' => monitor_receipt.fetch('upgrade_run_id'),
@@ -133,6 +138,7 @@ module SaneMasterModules
         'toVersion' => to_version,
         'sourceFingerprint' => source_fingerprint,
         'scheme' => scheme,
+        'packagePath' => package_path,
         'testPlan' => test_plan,
         'testSelector' => test_selector,
         'discoveredTests' => result_summary.fetch(:discovered_test_count),
@@ -248,10 +254,11 @@ module SaneMasterModules
 
     private
 
-    def upgrade_path_runner_argv(scheme:, test_plan: nil, test_selector:, timeout_seconds:)
+    def upgrade_path_runner_argv(scheme:, package_path: nil, test_plan: nil, test_selector:, timeout_seconds:)
       runner = File.realpath(File.join(__dir__, '..', 'SaneMaster.rb'))
       ruby = File.realpath(RbConfig.ruby)
       argv = [ruby, runner, 'monitor_tests', '--scheme', scheme]
+      argv += ['--package-path', package_path] if package_path
       argv += ['--test-plan', test_plan] if test_plan
       argv + ['--test', test_selector, '--timeout', timeout_seconds.to_s]
     end
@@ -408,7 +415,7 @@ module SaneMasterModules
       path
     end
 
-    def upgrade_path_validate_monitor_receipt!(path, project_root:, scheme:, test_plan: nil, test_selector:, started_at:, finished_at:,
+    def upgrade_path_validate_monitor_receipt!(path, project_root:, scheme:, package_path: nil, test_plan: nil, test_selector:, started_at:, finished_at:,
                                                run_id:, nonce:)
       receipt = JSON.parse(File.read(path, encoding: Encoding::UTF_8))
       receipt_directory = File.realpath(File.dirname(path))
@@ -425,6 +432,7 @@ module SaneMasterModules
         'upgrade_nonce' => nonce,
         'host' => Socket.gethostname,
         'scheme' => scheme,
+        'package_path' => package_path,
         'test_plan' => test_plan,
         'test_selector' => test_selector,
         'result_bundle_exists' => true,
