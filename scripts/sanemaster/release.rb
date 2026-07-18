@@ -1947,6 +1947,358 @@ module SaneMasterModules
       markers
     end
 
+    APPSTORE_PERMISSION_PLIST_KEYS = %w[
+      NSAccessibilityUsageDescription
+      NSAppleEventsUsageDescription
+    ].freeze
+
+    def appstore_plistbuddy_capture(*args)
+      Open3.capture2e('/usr/libexec/PlistBuddy', *args)
+    end
+
+    def appstore_built_plist_permission_report(info_plist)
+      issues = []
+      declarations = APPSTORE_PERMISSION_PLIST_KEYS.to_h { |key| [key, false] }
+      unless File.file?(info_plist)
+        issues << 'App Store artifact audit could not find the built Info.plist'
+        return { verified: false, root_dump: '', declarations: declarations, issues: issues }
+      end
+
+      root_dump, root_status = appstore_plistbuddy_capture('-c', 'Print', info_plist)
+      unless root_status.success?
+        detail = summarized_output_tail(root_dump)
+        message = 'App Store artifact audit could not parse the built Info.plist with PlistBuddy'
+        message += ": #{detail}" unless detail.empty?
+        issues << message
+        return { verified: false, root_dump: '', declarations: declarations, issues: issues }
+      end
+
+      APPSTORE_PERMISSION_PLIST_KEYS.each do |key|
+        output, status = appstore_plistbuddy_capture('-c', "Print :#{key}", info_plist)
+        if status.success?
+          declarations[key] = true
+        elsif !output.to_s.match?(/Does Not Exist/i)
+          detail = summarized_output_tail(output)
+          message = "App Store artifact audit could not query built Info.plist root key #{key}"
+          message += ": #{detail}" unless detail.empty?
+          issues << message
+        end
+      end
+
+      {
+        verified: issues.empty?,
+        root_dump: root_dump.to_s,
+        declarations: declarations,
+        issues: issues
+      }
+    rescue StandardError => e
+      {
+        verified: false,
+        root_dump: '',
+        declarations: declarations,
+        issues: ["App Store artifact audit could not inspect the built Info.plist: #{e.message}"]
+      }
+    end
+
+    def appstore_permission_artifact_findings(review_notes_blob:, declarations:, artifact_blob:, strings_out:, nm_out:, otool_out:,
+                                               payload_label: nil)
+      issues = []
+      warnings = []
+      suffix = payload_label.to_s.empty? ? '' : " in #{payload_label}"
+
+      if review_notes_blob.match?(/does not request accessibility/i) &&
+         declarations['NSAccessibilityUsageDescription']
+        issues << "Review notes claim no Accessibility request, but built Info.plist still declares NSAccessibilityUsageDescription#{suffix}"
+      end
+
+      if review_notes_blob.match?(/does not request.*apple events|no apple events/i) &&
+         declarations['NSAppleEventsUsageDescription']
+        issues << "Review notes claim no Apple Events request, but built Info.plist still declares NSAppleEventsUsageDescription#{suffix}"
+      end
+
+      accessibility_markers = []
+      accessibility_markers << 'ApplicationServices linkage' if otool_out.include?('ApplicationServices.framework')
+      accessibility_markers << 'AXIsProcessTrusted symbol' if nm_out.match?(/_AXIsProcessTrusted/)
+      accessibility_markers << 'Accessibility settings deep link' if strings_out.include?('Privacy_Accessibility')
+      if accessibility_markers.any?
+        issues << "Built App Store artifact still contains Accessibility markers (#{accessibility_markers.join(', ')})#{suffix}"
+      end
+
+      apple_events_markers = []
+      apple_events_markers << 'osascript runtime' if artifact_blob.include?('/usr/bin/osascript')
+      if declarations['NSAppleEventsUsageDescription']
+        apple_events_markers << 'Apple Events usage description'
+      end
+      if apple_events_markers.any?
+        warnings << "Built App Store artifact still contains Apple Events markers (#{apple_events_markers.join(', ')})#{suffix} — verify App Review notes and App Store policy fit"
+      end
+
+      { issues: issues, warnings: warnings }
+    end
+
+    def appstore_artifact_capture(*command)
+      Open3.capture2e(*command)
+    end
+
+    def appstore_macho_file?(path)
+      magic = File.binread(path, 4)
+      ["\xFE\xED\xFA\xCE", "\xCE\xFA\xED\xFE", "\xFE\xED\xFA\xCF", "\xCF\xFA\xED\xFE",
+       "\xCA\xFE\xBA\xBE", "\xBE\xBA\xFE\xCA"].any? { |candidate| magic == candidate.b }
+    rescue StandardError
+      false
+    end
+
+    def appstore_runnable_non_macho_file?(path)
+      metadata = File.stat(path)
+      return false unless metadata.file?
+      return false if appstore_macho_file?(path)
+      return true unless (metadata.mode & 0o111).zero?
+
+      File.open(path, 'rb') { |file| file.read(2) } == '#!'
+    rescue StandardError
+      false
+    end
+
+    def appstore_shipped_executable_inventory(app_dir:, platform:, main_binary:)
+      issues = []
+      paths = [main_binary]
+      string_only_paths = []
+      roots = if platform.to_s.downcase == 'macos'
+                %w[Contents/Helpers Contents/PlugIns Contents/XPCServices Contents/Library/LoginItems Contents/Frameworks]
+              else
+                %w[PlugIns Watch AppClips Frameworks]
+              end.map { |relative| File.join(app_dir, relative) }.select { |path| Dir.exist?(path) }
+
+      bundle_dirs = roots.flat_map do |root|
+        %w[app appex xpc].flat_map { |extension| Dir.glob(File.join(root, '**', "*.#{extension}")) }
+      end.select { |path| File.directory?(path) }.uniq.sort
+      bundle_dirs.each do |bundle_dir|
+        mac_layout = Dir.exist?(File.join(bundle_dir, 'Contents'))
+        info_path = File.join(bundle_dir, mac_layout ? 'Contents/Info.plist' : 'Info.plist')
+        unless File.file?(info_path)
+          issues << "Recognized embedded bundle is missing Info.plist: #{bundle_dir.sub(%r{\A#{Regexp.escape(app_dir)}/?}, '')}"
+          next
+        end
+        executable_out, executable_status = appstore_plistbuddy_capture('-c', 'Print :CFBundleExecutable', info_path)
+        executable = executable_out.to_s.strip
+        unless executable_status.success? && !executable.empty?
+          issues << "Recognized embedded bundle has no readable CFBundleExecutable: #{bundle_dir.sub(%r{\A#{Regexp.escape(app_dir)}/?}, '')}"
+          next
+        end
+        executable_path = File.join(bundle_dir, mac_layout ? 'Contents/MacOS' : '', executable)
+        if File.file?(executable_path)
+          paths << executable_path
+        else
+          issues << "Recognized embedded bundle executable is missing: #{executable_path.sub(%r{\A#{Regexp.escape(app_dir)}/?}, '')}"
+        end
+      end
+
+      framework_dirs = roots.flat_map { |root| Dir.glob(File.join(root, '**', '*.framework')) }
+        .select { |path| File.directory?(path) }.uniq.sort
+      framework_dirs.each do |framework_dir|
+        info_paths = [
+          File.join(framework_dir, 'Info.plist'),
+          File.join(framework_dir, 'Resources', 'Info.plist'),
+          *Dir.glob(File.join(framework_dir, 'Versions', '*', 'Resources', 'Info.plist'))
+        ].select { |path| File.file?(path) }.uniq
+        if info_paths.empty?
+          relative = framework_dir.sub(%r{\A#{Regexp.escape(app_dir)}/?}, '')
+          issues << "Recognized framework is missing Info.plist: #{relative}"
+          next
+        end
+        executable_names = info_paths.map do |info_path|
+          output, status = appstore_plistbuddy_capture('-c', 'Print :CFBundleExecutable', info_path)
+          unless status.success? && !output.to_s.strip.empty?
+            issues << "Recognized framework has an unreadable CFBundleExecutable: #{info_path.sub(%r{\A#{Regexp.escape(app_dir)}/?}, '')}"
+            next
+          end
+          output.to_s.strip
+        end.compact.uniq
+        candidates = executable_names.flat_map do |name|
+          [
+            File.join(framework_dir, name),
+            File.join(framework_dir, 'Versions', 'Current', name),
+            *Dir.glob(File.join(framework_dir, 'Versions', '*', name))
+          ]
+        end.select { |path| File.file?(path) }
+        candidates = candidates.group_by { |path| File.realpath(path) rescue File.expand_path(path) }.values.map(&:first)
+        if candidates.length == 1
+          paths << candidates.first
+        else
+          relative = framework_dir.sub(%r{\A#{Regexp.escape(app_dir)}/?}, '')
+          issues << "Recognized framework executable identity is #{candidates.empty? ? 'missing' : 'ambiguous'}: #{relative}"
+        end
+      end
+
+      framework_roots = roots.select { |root| File.basename(root) == 'Frameworks' }
+      bundle_dirs.each do |bundle_dir|
+        framework_roots << File.join(bundle_dir, 'Frameworks')
+        framework_roots << File.join(bundle_dir, 'Contents', 'Frameworks')
+      end
+      framework_roots.select! { |root| Dir.exist?(root) }
+      framework_roots.uniq!
+      framework_roots.each do |root|
+        Dir.glob(File.join(root, '**', '*.dylib')).select { |path| File.file?(path) }.each { |path| paths << path }
+      end
+      roots.each do |root|
+        Dir.glob(File.join(root, '**', '*')).select { |path| File.file?(path) }.each do |path|
+          relative_to_root = path.sub(%r{\A#{Regexp.escape(root)}/?}, '')
+          next if relative_to_root.split(File::SEPARATOR).include?('Resources')
+
+          if appstore_macho_file?(path)
+            paths << path
+          elsif appstore_runnable_non_macho_file?(path)
+            paths << path
+            string_only_paths << path
+          end
+        end
+      end
+      paths = paths.group_by { |path| File.realpath(path) rescue File.expand_path(path) }.values.map(&:first)
+      string_only_paths = string_only_paths.map { |path| File.realpath(path) rescue File.expand_path(path) }.uniq
+      { paths: paths, issues: issues, string_only_paths: string_only_paths }
+    end
+
+    def appstore_payload_framework_dirs(executable_path:, app_dir:, main_frameworks_dir:)
+      dirs = [main_frameworks_dir]
+      cursor = File.dirname(executable_path)
+      while cursor.start_with?(File.expand_path(app_dir))
+        if File.basename(cursor).match?(/\.(?:app|appex|xpc)\z/)
+          dirs << File.join(cursor, 'Frameworks')
+          dirs << File.join(cursor, 'Contents', 'Frameworks')
+        end
+        parent = File.dirname(cursor)
+        break if parent == cursor
+
+        cursor = parent
+      end
+      dirs.compact.select { |path| Dir.exist?(path) }.uniq
+    end
+
+    def appstore_compiled_artifact_report(app_dir:, platform:, expected_bundle_id:, review_notes_blob:,
+                                          configured_product_id:, uses_storekit_unlock:)
+      issues = []
+      warnings = []
+      identity = appstore_select_submission_app(
+        app_dirs: [app_dir],
+        expected_bundle_ids: [expected_bundle_id],
+        platform: platform
+      )
+      return { verified: false, issues: identity[:issues], warnings: warnings } unless identity[:verified]
+
+      permission_plist_report = appstore_built_plist_permission_report(identity[:info_plist])
+      unless permission_plist_report[:verified]
+        return { verified: false, issues: permission_plist_report[:issues], warnings: warnings }
+      end
+
+      product_out, product_status = appstore_plistbuddy_capture('-c', 'Print :AppStoreProductID', identity[:info_plist])
+      built_product_id = product_status.success? ? product_out.to_s.strip : ''
+      unless product_status.success? || product_out.to_s.match?(/Does Not Exist/i)
+        issues << 'App Store artifact audit could not query AppStoreProductID from the built Info.plist'
+      end
+      if uses_storekit_unlock
+        if built_product_id.empty?
+          issues << 'Built App Store artifact is missing Info.plist key AppStoreProductID (StoreKit unlock flow detected)'
+        elsif !configured_product_id.to_s.empty? && built_product_id != configured_product_id.to_s
+          issues << "Built AppStoreProductID mismatch (expected #{configured_product_id}, got #{built_product_id})"
+        end
+      end
+
+      binary_path = File.join(identity[:layout][:executable_dir], identity[:executable])
+      unless File.file?(binary_path)
+        issues << "App Store artifact audit could not find app executable for #{expected_bundle_id}"
+        return { verified: false, issues: issues, warnings: warnings }
+      end
+
+      inventory = appstore_shipped_executable_inventory(
+        app_dir: app_dir,
+        platform: platform,
+        main_binary: binary_path
+      )
+      issues.concat(inventory[:issues])
+      inventory[:paths].each do |payload_path|
+        payload_label = payload_path.sub(%r{\A#{Regexp.escape(app_dir)}/?}, '')
+        canonical_payload_path = File.realpath(payload_path) rescue File.expand_path(payload_path)
+        string_only = Array(inventory[:string_only_paths]).include?(canonical_payload_path)
+        command_results = { strings: appstore_artifact_capture('strings', '-a', payload_path) }
+        unless string_only
+          command_results[:otool] = appstore_artifact_capture('otool', '-L', payload_path)
+          command_results[:nm] = appstore_artifact_capture('nm', '-m', payload_path)
+        end
+        command_results.each do |name, (_output, status)|
+          issues << "App Store artifact audit could not run #{name} on shipped executable #{payload_label}" unless status.success?
+        end
+        next unless command_results.values.all? { |_output, status| status.success? }
+
+        otool_out = command_results.dig(:otool, 0).to_s
+        strings_out = command_results[:strings][0].to_s
+        nm_out = command_results.dig(:nm, 0).to_s
+        framework_dirs = appstore_payload_framework_dirs(
+          executable_path: payload_path,
+          app_dir: app_dir,
+          main_frameworks_dir: identity[:layout][:frameworks_dir]
+        )
+        unresolved = otool_out.lines.drop(1).map(&:strip).reject(&:empty?).map do |line|
+          lib = line.split(' (').first.to_s.strip
+          next unless lib.start_with?('@rpath/')
+          next if line.include?(', weak)')
+
+          relative = lib.sub('@rpath/', '')
+          lib unless framework_dirs.any? { |dir| File.exist?(File.join(dir, relative)) }
+        end.compact
+        if unresolved.any?
+          issues << "App Store artifact has unresolved non-weak dylib references in #{payload_label}: #{unresolved.uniq.join(', ')}"
+        end
+
+        artifact_blob = [payload_path == binary_path ? permission_plist_report[:root_dump] : '', strings_out, nm_out, otool_out].join("\n")
+        direct_purchase_markers = appstore_direct_purchase_markers(artifact_blob, built_product_id: built_product_id)
+        if direct_purchase_markers.any?
+          issues << "Built App Store artifact still exposes direct-purchase markers in #{payload_label} (#{direct_purchase_markers.join(', ')})"
+        elsif artifact_blob.match?(%r{api\.lemonsqueezy\.com/v1/licenses/validate}i) && !built_product_id.empty?
+          warnings << "Built App Store artifact still contains LemonSqueezy license-validation strings in #{payload_label} — verify website-license code is unreachable in the App Store build"
+        end
+
+        donation_markers = appstore_donation_markers(artifact_blob)
+        if donation_markers.any?
+          issues << "Built App Store artifact still exposes donation/support markers in #{payload_label} (#{donation_markers.join(', ')})"
+        end
+
+        update_markers = appstore_update_markers(strings_out: strings_out, otool_out: otool_out)
+        if update_markers.any?
+          issues << "Built App Store artifact still exposes outside-update markers in #{payload_label} (#{update_markers.join(', ')})"
+        end
+
+        payload_declarations = if payload_path == binary_path
+                                 permission_plist_report[:declarations]
+                               else
+                                 { 'NSAccessibilityUsageDescription' => false, 'NSAppleEventsUsageDescription' => false }
+                               end
+        permission_findings = appstore_permission_artifact_findings(
+          review_notes_blob: payload_path == binary_path ? review_notes_blob : '',
+          declarations: payload_declarations,
+          artifact_blob: artifact_blob,
+          strings_out: strings_out,
+          nm_out: nm_out,
+          otool_out: otool_out,
+          payload_label: payload_label
+        )
+        issues.concat(permission_findings[:issues])
+        warnings.concat(permission_findings[:warnings])
+      end
+
+      launch_daemons_dir = identity[:layout][:launch_daemons_dir]
+      if launch_daemons_dir && Dir.exist?(launch_daemons_dir)
+        issues << 'Built App Store artifact still embeds LaunchDaemons payload — Mac App Store apps cannot ship launchd daemons or agents'
+      end
+
+      { verified: issues.empty?, issues: issues.uniq, warnings: warnings.uniq }
+    rescue StandardError => e
+      {
+        verified: false,
+        issues: ["Compiled App Store artifact audit failed unexpectedly: #{e.message}"],
+        warnings: warnings || []
+      }
+    end
+
     def image_edge_luminance_report(path)
       return nil unless path && File.file?(path)
 
@@ -2277,7 +2629,7 @@ module SaneMasterModules
       root_real = File.realpath(root)
       Array(paths).sort.map do |relative_path|
         next if relative_path == 'outputs/appstore_preflight_status.json'
-        next if relative_path.start_with?('.sanemaster/appstore-preflight-bindings/')
+        next if relative_path.start_with?('outputs/appstore-preflight-bindings/')
 
         absolute_path = File.expand_path(relative_path, root_real)
         unless absolute_path.start_with?("#{root_real}/")
@@ -2322,54 +2674,162 @@ module SaneMasterModules
       'unknown'
     end
 
-    def appstore_package_info(pkg_path)
-      read_plist = lambda do |info_path|
-        return nil unless info_path && File.file?(info_path)
+    def appstore_bundle_layout(app_dir, platform:)
+      if platform.to_s == 'ios'
+        {
+          info_plist: File.join(app_dir, 'Info.plist'),
+          executable_dir: app_dir,
+          frameworks_dir: File.join(app_dir, 'Frameworks'),
+          launch_daemons_dir: nil
+        }
+      else
+        contents = File.join(app_dir, 'Contents')
+        {
+          info_plist: File.join(contents, 'Info.plist'),
+          executable_dir: File.join(contents, 'MacOS'),
+          frameworks_dir: File.join(contents, 'Frameworks'),
+          launch_daemons_dir: File.join(contents, 'Library', 'LaunchDaemons')
+        }
+      end
+    end
 
-        values = %w[CFBundleIdentifier CFBundleShortVersionString CFBundleVersion].map do |key|
-          Open3.capture2('/usr/libexec/PlistBuddy', '-c', "Print :#{key}", info_path).first.to_s.strip
+    def appstore_bundle_identity_report(app_dir, platform:)
+      layout = appstore_bundle_layout(app_dir, platform: platform)
+      info_path = layout[:info_plist]
+      return { verified: false, issue: "App Store artifact is missing Info.plist: #{app_dir}" } unless File.file?(info_path)
+
+      values = {}
+      %w[CFBundleIdentifier CFBundleShortVersionString CFBundleVersion CFBundleExecutable].each do |key|
+        output, status = appstore_plistbuddy_capture('-c', "Print :#{key}", info_path)
+        value = output.to_s.strip
+        unless status.success? && !value.empty?
+          return { verified: false, issue: "App Store artifact could not read #{key} from #{info_path}" }
         end
-        return nil if values.any?(&:empty?)
+        values[key] = value
+      end
+      {
+        verified: true,
+        app_dir: app_dir,
+        info_plist: info_path,
+        bundle_id: values['CFBundleIdentifier'],
+        version: values['CFBundleShortVersionString'],
+        build: values['CFBundleVersion'],
+        executable: values['CFBundleExecutable'],
+        layout: layout
+      }
+    rescue StandardError => e
+      { verified: false, issue: "App Store artifact identity inspection failed for #{app_dir}: #{e.message}" }
+    end
 
-        { bundle_id: values[0], version: values[1], build: values[2] }
+    def appstore_select_submission_app(app_dirs:, expected_bundle_ids:, platform:)
+      expected = Array(expected_bundle_ids).map(&:to_s).reject(&:empty?).uniq
+      if expected.empty?
+        return { verified: false, issues: ['Cannot resolve the expected App Store bundle ID for exact artifact selection'] }
       end
 
-      Dir.mktmpdir('sanemaster_appstore_binding') do |tmpdir|
-        if pkg_path.end_with?('.ipa')
-          return nil unless system(
-            'unzip', '-qq', '-o', pkg_path, 'Payload/*.app/Info.plist', '-d', tmpdir,
-            out: File::NULL, err: File::NULL
-          )
+      candidates = Array(app_dirs).uniq.sort.map do |app_dir|
+        appstore_bundle_identity_report(app_dir, platform: platform)
+      end
+      matches = candidates.select { |candidate| candidate[:verified] && expected.include?(candidate[:bundle_id]) }
+      if matches.length != 1
+        discovered = candidates.select { |candidate| candidate[:verified] }.map { |candidate| candidate[:bundle_id] }.uniq
+        detail = discovered.empty? ? 'none with readable identity' : discovered.join(', ')
+        issue = if matches.empty?
+                  "Exact App Store artifact not found for bundle ID #{expected.join(' or ')} (found: #{detail})"
+                else
+                  "App Store artifact selection is ambiguous for bundle ID #{matches.first[:bundle_id]} (#{matches.length} matches)"
+                end
+        identity_issues = candidates.reject { |candidate| candidate[:verified] }.map { |candidate| candidate[:issue] }
+        return { verified: false, issues: [issue, *identity_issues].compact }
+      end
 
-          return read_plist.call(Dir.glob(File.join(tmpdir, 'Payload', '*.app', 'Info.plist')).first)
+      matches.first.merge(issues: [])
+    end
+
+    def appstore_pkg_top_level_app_dirs(expanded_dir)
+      Dir.glob(File.join(expanded_dir, '**', 'Payload', '**', '*.app')).select do |path|
+        relative = path.split('/Payload/', 2)[1].to_s
+        parents = relative.split('/')[0...-1]
+        parents.none? { |component| component.end_with?('.app') }
+      end.uniq.sort
+    end
+
+    def appstore_with_submission_package_app(pkg_path, expected_bundle_ids:, expected_sha256: nil)
+      platform = if pkg_path.end_with?('.ipa')
+                   'ios'
+                 elsif pkg_path.end_with?('.pkg')
+                   'macos'
+                 end
+      unless platform
+        return yield(verified: false, issues: ["Unsupported App Store package type: #{pkg_path}"])
+      end
+
+      digest_before = OpenSSL::Digest::SHA256.file(pkg_path).hexdigest
+      if expected_sha256 && digest_before != expected_sha256.to_s
+        return yield(verified: false, issues: ['Exact App Store package bytes do not match the bound submissionTarget.sha256'])
+      end
+
+      Dir.mktmpdir('sanemaster_appstore_package_audit') do |tmpdir|
+        extraction_issue = nil
+        app_dirs = begin
+          if platform == 'ios'
+            extracted = system('unzip', '-qq', '-o', pkg_path, '-d', tmpdir, out: File::NULL, err: File::NULL)
+            extraction_issue = "Could not extract exact iOS submission package: #{pkg_path}" unless extracted
+            extracted ? Dir.glob(File.join(tmpdir, 'Payload', '*.app')) : []
+          else
+            expanded = File.join(tmpdir, 'expanded')
+            extracted = system('pkgutil', '--expand-full', pkg_path, expanded, out: File::NULL, err: File::NULL)
+            extraction_issue = "Could not extract exact macOS submission package: #{pkg_path}" unless extracted
+            extracted ? appstore_pkg_top_level_app_dirs(expanded) : []
+          end
+        rescue StandardError => e
+          extraction_issue = "Exact App Store package extraction failed: #{e.message}"
+          []
+        end
+        return yield(verified: false, issues: [extraction_issue]) if extraction_issue
+
+        digest_after = OpenSSL::Digest::SHA256.file(pkg_path).hexdigest
+        unless digest_after == digest_before && (!expected_sha256 || digest_after == expected_sha256.to_s)
+          return yield(verified: false, issues: ['Exact App Store package changed while it was being extracted for audit'])
         end
 
-        return nil unless pkg_path.end_with?('.pkg')
-
-        expanded = File.join(tmpdir, 'expanded')
-        return nil unless system('pkgutil', '--expand-full', pkg_path, expanded, out: File::NULL, err: File::NULL)
-
-        candidates = Dir.glob(File.join(expanded, '**', 'Payload', '*.app', 'Contents', 'Info.plist'))
-        info_path = candidates.find { |candidate| !candidate.include?('/Frameworks/') && !candidate.include?('/PlugIns/') } || candidates.first
-        read_plist.call(info_path)
+        selection = appstore_select_submission_app(
+          app_dirs: app_dirs,
+          expected_bundle_ids: expected_bundle_ids,
+          platform: platform
+        )
+        yield selection.merge(platform: platform)
       end
+    end
+
+    def appstore_package_info(pkg_path, expected_bundle_ids:, expected_sha256: nil)
+      result = nil
+      appstore_with_submission_package_app(
+        pkg_path,
+        expected_bundle_ids: expected_bundle_ids,
+        expected_sha256: expected_sha256
+      ) do |selection|
+        @appstore_package_info_issues = Array(selection[:issues])
+        if selection[:verified]
+          result = {
+            bundle_id: selection[:bundle_id],
+            version: selection[:version],
+            build: selection[:build]
+          }
+        end
+      end
+      result
     end
 
     def appstore_preflight_submission_target(args:, version:, build:, platforms:, issues:)
       options = {}
       parser = OptionParser.new do |opts|
         opts.on('--pkg PATH') { |value| options[:pkg] = value }
-        opts.on('--asc-build-id ID') { |value| options[:asc_build_id] = value }
-        opts.on('--build-number NUMBER') { |value| options[:build] = value }
         opts.on('--platform PLATFORM') { |value| options[:platform] = value.to_s.downcase }
       end
       parser.parse!(Array(args).dup)
 
-      if options[:pkg] && options[:asc_build_id]
-        issues << 'App Store preflight submission binding cannot target both a package and an existing ASC build'
-        return nil
-      end
-      return nil unless options[:pkg] || options[:asc_build_id]
+      return nil unless options[:pkg]
 
       platform = options[:platform].to_s
       if platform.empty? || !Array(platforms).map { |item| item.to_s.downcase }.include?(platform)
@@ -2384,21 +2844,34 @@ module SaneMasterModules
           return nil
         end
 
-        info = appstore_package_info(path)
-        unless info
-          issues << "Could not extract bundle identity from App Store submission package: #{path}"
-          return nil
-        end
-        issues << "Submission package version #{info[:version]} does not match preflight version #{version}" unless info[:version].to_s == version.to_s
-        issues << "Submission package build #{info[:build]} does not match preflight build #{build}" unless info[:build].to_s == build.to_s
-        expected_platform = path.end_with?('.ipa') ? 'ios' : (path.end_with?('.pkg') ? 'macos' : '')
-        issues << "Submission package type does not match platform #{platform}" unless expected_platform == platform
         signing_targets = if platform == 'macos'
                             appstore_macos_signing_targets(File.join(Dir.pwd, 'project.yml'))
                           else
                             appstore_mobile_signing_targets(File.join(Dir.pwd, 'project.yml'))
                           end
         expected_bundle_ids = Array(signing_targets).map { |target| target[:bundle_id].to_s }.reject(&:empty?).uniq
+        if expected_bundle_ids.empty?
+          issues << "Cannot resolve an App Store target bundle ID for package inspection on #{platform}"
+          return nil
+        end
+
+        package_sha256 = OpenSSL::Digest::SHA256.file(path).hexdigest
+        info = appstore_package_info(
+          path,
+          expected_bundle_ids: expected_bundle_ids,
+          expected_sha256: package_sha256
+        )
+        unless info
+          detail = Array(@appstore_package_info_issues).join('; ')
+          message = "Could not extract a unique expected bundle identity from App Store submission package: #{path}"
+          message += " (#{detail})" unless detail.empty?
+          issues << message
+          return nil
+        end
+        issues << "Submission package version #{info[:version]} does not match preflight version #{version}" unless info[:version].to_s == version.to_s
+        issues << "Submission package build #{info[:build]} does not match preflight build #{build}" unless info[:build].to_s == build.to_s
+        expected_platform = path.end_with?('.ipa') ? 'ios' : (path.end_with?('.pkg') ? 'macos' : '')
+        issues << "Submission package type does not match platform #{platform}" unless expected_platform == platform
         if expected_bundle_ids.any? && !expected_bundle_ids.include?(info[:bundle_id].to_s)
           issues << "Submission package bundle ID #{info[:bundle_id]} is not an App Store target bundle ID (expected #{expected_bundle_ids.join(', ')})"
         end
@@ -2407,27 +2880,14 @@ module SaneMasterModules
           type: 'package',
           platform: platform,
           fileName: File.basename(path),
-          sha256: OpenSSL::Digest::SHA256.file(path).hexdigest,
+          sha256: package_sha256,
           size: File.size(path),
           bundleId: info[:bundle_id],
           version: info[:version],
-          build: info[:build]
+          build: info[:build],
+          path: path
         }
       end
-
-      requested_build = options[:build].to_s
-      if options[:asc_build_id].to_s.empty? || requested_build.empty?
-        issues << 'Existing ASC build binding requires both --asc-build-id and --build-number'
-        return nil
-      end
-      issues << "Existing ASC build #{requested_build} does not match preflight build #{build}" unless requested_build == build.to_s
-      {
-        type: 'asc_build',
-        platform: platform,
-        ascBuildId: options[:asc_build_id].to_s,
-        version: version.to_s,
-        build: requested_build
-      }
     rescue OptionParser::ParseError => e
       issues << "Invalid App Store preflight submission binding: #{e.message}"
       nil
@@ -2443,7 +2903,7 @@ module SaneMasterModules
         version: version.to_s,
         build: build.to_s,
         platforms: Array(platforms).map(&:to_s),
-        submissionTarget: submission_target,
+        submissionTarget: submission_target&.reject { |key, _value| key.to_s == 'path' },
         worktreeFingerprint: appstore_worktree_fingerprint(root: Dir.pwd),
         status: status,
         issueCount: issues.count,
@@ -5670,15 +6130,58 @@ module SaneMasterModules
 
       # 5h. Build App Store config and audit resulting artifact for runtime blockers
       print '  │ Compiled App Store artifact audit... '
-      if platforms.include?('macos')
-        compiled_artifact_verified_clean = false
-        begin
+      compiled_artifact_verified_clean = false
+      artifact_report = nil
+      begin
+        if submission_target && submission_target[:path]
+          package_path = submission_target[:path].to_s
+          actual_sha = File.file?(package_path) ? OpenSSL::Digest::SHA256.file(package_path).hexdigest : ''
+          if actual_sha != submission_target[:sha256].to_s
+            artifact_report = {
+              verified: false,
+              issues: ['Exact App Store package bytes changed after submissionTarget binding; rerun preflight for the selected package'],
+              warnings: []
+            }
+          else
+            appstore_with_submission_package_app(
+              package_path,
+              expected_bundle_ids: [submission_target[:bundleId]],
+              expected_sha256: submission_target[:sha256]
+            ) do |selection|
+              artifact_report = if selection[:verified]
+                                  appstore_compiled_artifact_report(
+                                    app_dir: selection[:app_dir],
+                                    platform: selection[:platform],
+                                    expected_bundle_id: submission_target[:bundleId],
+                                    review_notes_blob: review_notes_blob,
+                                    configured_product_id: configured_product_id,
+                                    uses_storekit_unlock: uses_storekit_unlock
+                                  )
+                                else
+                                  { verified: false, issues: selection[:issues], warnings: [] }
+                                end
+            end
+          end
+        elsif platforms.include?('macos')
           Dir.mktmpdir('sanemaster_asc_audit') do |tmpdir|
             derived_data = File.join(tmpdir, 'DerivedData')
             configuration = (asc_config_name || appstore_config['configuration'] || 'Release-AppStore').to_s
             scheme = (appstore_config['scheme'] || config['scheme'] || app_name).to_s
             workspace = config['workspace']
             project = config['project'] || Dir.glob('*.xcodeproj').first
+            signing_targets = appstore_macos_signing_targets(project_yml)
+            named_targets = signing_targets.select { |target| target[:name].to_s == scheme }
+            expected_bundle_ids = (named_targets.empty? ? signing_targets : named_targets)
+              .map { |target| target[:bundle_id].to_s }.reject(&:empty?).uniq
+
+            if expected_bundle_ids.length != 1
+              artifact_report = {
+                verified: false,
+                issues: ["Cannot resolve one exact App Store bundle ID for scheme #{scheme} (found: #{expected_bundle_ids.join(', ')})"],
+                warnings: []
+              }
+              next
+            end
 
             build_cmd = ['xcodebuild']
             if workspace && File.exist?(workspace)
@@ -5686,17 +6189,12 @@ module SaneMasterModules
             elsif project && File.exist?(project)
               build_cmd += ['-project', project]
             else
-              puts '❌ project/workspace not found'
-              issues << 'Cannot run compiled App Store artifact audit: missing workspace/project path'
-              break
+              artifact_report = { verified: false, issues: ['Cannot run compiled App Store artifact audit: missing workspace/project path'], warnings: [] }
+              next
             end
             build_cmd += [
-              '-scheme', scheme,
-              '-configuration', configuration,
-              '-destination', 'platform=macOS',
-              '-derivedDataPath', derived_data,
-              'CODE_SIGNING_ALLOWED=NO',
-              'build'
+              '-scheme', scheme, '-configuration', configuration, '-destination', 'platform=macOS',
+              '-derivedDataPath', derived_data, 'CODE_SIGNING_ALLOWED=NO', 'build'
             ]
             effective_build_flags = Array(appstore_config['build_flags']).map(&:to_s).reject(&:empty?)
             unless configured_product_id.empty? || effective_build_flags.any? { |flag| flag.start_with?('INFOPLIST_KEY_AppStoreProductID=') }
@@ -5704,140 +6202,56 @@ module SaneMasterModules
             end
             build_cmd.concat(effective_build_flags)
             build_cmd.concat(Array(appstore_config['archive_extra_args']).map(&:to_s).reject(&:empty?))
-
             build_out, build_status = Open3.capture2e(*build_cmd)
             unless build_status.success?
-              puts '❌ build failed'
               hint = summarized_output_tail(build_out)
-              puts "  │   ↳ #{hint}" unless hint.empty?
-              issues << "App Store artifact audit build failed for configuration #{configuration}"
+              message = "App Store artifact audit build failed for configuration #{configuration}"
+              message += ": #{hint}" unless hint.empty?
+              artifact_report = { verified: false, issues: [message], warnings: [] }
               next
             end
 
-            app_dir = Dir.glob(File.join(derived_data, 'Build', 'Products', configuration, '*.app'))
-              .reject { |p| p.include?('.appex/') }.first
-            if app_dir.nil?
-              puts '❌ built app missing'
-              issues << "App Store artifact audit could not find built .app under #{configuration}"
-              next
-            end
-
-            info_plist = File.join(app_dir, 'Contents', 'Info.plist')
-            plist_dump = File.read(info_plist) rescue ''
-            executable, = Open3.capture2('/usr/libexec/PlistBuddy', '-c', 'Print :CFBundleExecutable', info_plist)
-            executable = executable.to_s.strip
-            binary_path = File.join(app_dir, 'Contents', 'MacOS', executable)
-            built_product_id, = Open3.capture2('/usr/libexec/PlistBuddy', '-c', 'Print :AppStoreProductID', info_plist)
-            built_product_id = built_product_id.to_s.strip
-            if uses_storekit_unlock
-              if built_product_id.empty?
-                issues << 'Built App Store artifact is missing Info.plist key AppStoreProductID (StoreKit unlock flow detected)'
-              elsif !configured_product_id.empty? && built_product_id != configured_product_id
-                issues << "Built AppStoreProductID mismatch (expected #{configured_product_id}, got #{built_product_id})"
-              end
-            end
-
-            if File.file?(binary_path)
-              otool_out, = Open3.capture2('otool', '-L', binary_path)
-              strings_out, = Open3.capture2('strings', '-a', binary_path)
-              nm_out, = Open3.capture2('nm', '-m', binary_path)
-              dylib_lines = otool_out.lines.drop(1).map(&:strip).reject(&:empty?)
-              unresolved = []
-
-              dylib_lines.each do |line|
-                lib = line.split(' (').first.to_s.strip
-                next unless lib.start_with?('@rpath/')
-                next if line.include?(', weak)')
-
-                rel = lib.sub('@rpath/', '')
-                candidate = File.join(app_dir, 'Contents', 'Frameworks', rel)
-                unresolved << lib unless File.exist?(candidate)
-              end
-
-              sparkle_framework = File.join(app_dir, 'Contents', 'Frameworks', 'Sparkle.framework')
-              sparkle_ref = dylib_lines.find { |line| line.include?('@rpath/Sparkle.framework') }
-              if sparkle_ref && !sparkle_ref.include?(', weak)') && !File.exist?(sparkle_framework)
-                unresolved << '@rpath/Sparkle.framework/Versions/B/Sparkle'
-              end
-
-              if unresolved.any?
-                puts "❌ unresolved dylibs (#{unresolved.uniq.count})"
-                issues << "App Store artifact has unresolved non-weak dylib references: #{unresolved.uniq.join(', ')}"
-              else
-                artifact_blob = [plist_dump, strings_out, nm_out, otool_out].join("\n")
-                artifact_issues = []
-                artifact_warnings = []
-                launch_daemons_dir = File.join(app_dir, 'Contents', 'Library', 'LaunchDaemons')
-
-                if Dir.exist?(launch_daemons_dir)
-                  artifact_issues << 'Built App Store artifact still embeds LaunchDaemons payload — Mac App Store apps cannot ship launchd daemons or agents'
-                end
-
-                direct_purchase_markers = appstore_direct_purchase_markers(artifact_blob, built_product_id: built_product_id)
-                if direct_purchase_markers.any?
-                  artifact_issues << "Built App Store artifact still exposes direct-purchase markers (#{direct_purchase_markers.join(', ')})"
-                elsif artifact_blob.match?(%r{api\.lemonsqueezy\.com/v1/licenses/validate}i) && !built_product_id.empty?
-                  artifact_warnings << 'Built App Store artifact still contains LemonSqueezy license-validation strings — verify website-license code is unreachable in the App Store build'
-                end
-
-                donation_markers = appstore_donation_markers(artifact_blob)
-                if donation_markers.any?
-                  artifact_issues << "Built App Store artifact still exposes donation/support markers (#{donation_markers.join(', ')})"
-                end
-
-                update_markers = appstore_update_markers(strings_out: strings_out, otool_out: otool_out)
-                if update_markers.any?
-                  artifact_issues << "Built App Store artifact still exposes outside-update markers (#{update_markers.join(', ')})"
-                end
-
-                if review_notes_blob.match?(/does not request accessibility/i) &&
-                   artifact_blob.include?('NSAccessibilityUsageDescription')
-                  artifact_issues << 'Review notes claim no Accessibility request, but built Info.plist still declares NSAccessibilityUsageDescription'
-                end
-
-                if review_notes_blob.match?(/does not request.*apple events|no apple events/i) &&
-                   artifact_blob.include?('NSAppleEventsUsageDescription')
-                  artifact_issues << 'Review notes claim no Apple Events request, but built Info.plist still declares NSAppleEventsUsageDescription'
-                end
-
-                accessibility_markers = []
-                accessibility_markers << 'ApplicationServices linkage' if otool_out.include?('ApplicationServices.framework')
-                accessibility_markers << 'AXIsProcessTrusted symbol' if nm_out.match?(/_AXIsProcessTrusted/)
-                accessibility_markers << 'Accessibility settings deep link' if strings_out.include?('Privacy_Accessibility')
-                if accessibility_markers.any?
-                  artifact_issues << "Built App Store artifact still contains Accessibility markers (#{accessibility_markers.join(', ')})"
-                end
-
-                apple_events_markers = []
-                apple_events_markers << 'osascript runtime' if artifact_blob.include?('/usr/bin/osascript')
-                apple_events_markers << 'Apple Events usage description' if artifact_blob.include?('NSAppleEventsUsageDescription')
-                if apple_events_markers.any?
-                  artifact_warnings << "Built App Store artifact still contains Apple Events markers (#{apple_events_markers.join(', ')}) — verify App Review notes and App Store policy fit"
-                end
-
-                if artifact_issues.empty?
-                  puts '✅'
-                  compiled_artifact_verified_clean = true
-                else
-                  puts "❌ #{artifact_issues.first}"
-                  artifact_issues.each { |msg| issues << msg }
-                end
-                artifact_warnings.each { |msg| warnings << msg }
-              end
-            else
-              puts '❌ executable missing'
-              issues << 'App Store artifact audit could not find app executable'
-            end
+            candidates = Dir.glob(File.join(derived_data, 'Build', 'Products', configuration, '*.app'))
+            selection = appstore_select_submission_app(
+              app_dirs: candidates,
+              expected_bundle_ids: expected_bundle_ids,
+              platform: 'macos'
+            )
+            artifact_report = if selection[:verified]
+                                appstore_compiled_artifact_report(
+                                  app_dir: selection[:app_dir], platform: 'macos',
+                                  expected_bundle_id: expected_bundle_ids.first,
+                                  review_notes_blob: review_notes_blob,
+                                  configured_product_id: configured_product_id,
+                                  uses_storekit_unlock: uses_storekit_unlock
+                                )
+                              else
+                                { verified: false, issues: selection[:issues], warnings: [] }
+                              end
           end
-        rescue StandardError => e
-          puts "⚠️  audit error: #{e.message}"
-          warnings << "Compiled App Store artifact audit failed unexpectedly: #{e.message}"
+        else
+          puts '⏭️  skipped (unbound non-macOS diagnostic)'
         end
+      rescue StandardError => e
+        artifact_report = {
+          verified: false,
+          issues: ["Compiled App Store artifact audit failed unexpectedly: #{e.message}"],
+          warnings: []
+        }
+      end
+
+      if artifact_report
+        compiled_artifact_verified_clean = artifact_report[:verified] == true
         if compiled_artifact_verified_clean
-          warnings.delete('Policy guard: Source contains clipboard automation for non-App-Store builds, but the App Store build script strips automation usage descriptions and review notes describe manual paste. Verify the compiled App Store artifact before blocking submission.')
+          puts '✅'
+        else
+          puts "❌ #{artifact_report[:issues].first}"
+          Array(artifact_report[:issues]).each { |msg| issues << msg }
         end
-      else
-        puts '⏭️  skipped (non-macOS submission)'
+        Array(artifact_report[:warnings]).each { |msg| warnings << msg }
+      end
+      if compiled_artifact_verified_clean
+        warnings.delete('Policy guard: Source contains clipboard automation for non-App-Store builds, but the App Store build script strips automation usage descriptions and review notes describe manual paste. Verify the compiled App Store artifact before blocking submission.')
       end
 
       # 5h. No DEBUG/development code leaking into release

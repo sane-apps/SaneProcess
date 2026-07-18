@@ -364,6 +364,9 @@ end
 def safari_automation_command?(command)
   return false unless command
 
+  legacy_wrapper = /(?:\A|[;&|(){}\n]|&&|\|\|)\s*(?:\S*\/)?mini-safari\.sh(?:\s|$)/
+  return true if command.match?(legacy_wrapper)
+
   tells_safari = /tell\s+app(?:lication)?\s+.?["']Safari["']/i
   return true if command.match?(/\bosascript\b/) && command.match?(tells_safari)
 

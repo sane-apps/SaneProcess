@@ -55,7 +55,7 @@ module ReleaseReceiptSigner
       payload_type: 'appstore_preflight_status',
       command: 'appstore_preflight',
       receipt: 'outputs/appstore_preflight_status.json',
-      option_flags: %w[--platform --pkg --asc-build-id --build-number],
+      option_flags: %w[--platform --pkg],
       receipt_optional_on_success: true
     },
     'saneprocess.upgrade_path_proof.v1' => {

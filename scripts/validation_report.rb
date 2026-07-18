@@ -532,6 +532,7 @@ class ValidationReport
         issues_found << "[#{project}] Missing .saneprocess manifest (global hooks won't fire)"
       end
     end
+    issues_found.concat(storekit_product_parity_issues)
 
     # === GLOBAL MCP PATH CHECK ===
     # Verify legacy global .mcp.json paths are valid when present.
@@ -571,8 +572,38 @@ class ValidationReport
 
   def configured_hook_commands(hooks, hook_name)
     Array(hooks[hook_name]).flat_map do |group|
-      Array(group['hooks']).filter_map { |hook| hook['command'] }
+      Array(group['hooks']).map { |hook| hook['command'] }.compact
     end
+  end
+
+  def storekit_product_parity_issues(products_config_path: PRODUCT_CONFIG_PATH,
+                                     apps_root: File.join(SANE_APPS_ROOT, 'apps'))
+    raw = YAML.safe_load(File.read(products_config_path), permitted_classes: []) || {}
+    products = raw['products'].is_a?(Hash) ? raw['products'] : {}
+    products.each_with_object([]) do |(_slug, product), issues|
+      next unless product.is_a?(Hash)
+
+      central_id = product['storekit_product_id'].to_s.strip
+      app_name = product['name'].to_s.strip
+      next if central_id.empty? || app_name.empty?
+
+      manifest_path = File.join(apps_root, app_name, '.saneprocess')
+      next unless File.file?(manifest_path)
+
+      manifest = YAML.safe_load(File.read(manifest_path), permitted_classes: []) || {}
+      appstore = manifest['appstore'].is_a?(Hash) ? manifest['appstore'] : {}
+      iap = appstore['iap'].is_a?(Hash) ? appstore['iap'] : {}
+      {
+        'appstore.product_id' => appstore['product_id'].to_s.strip,
+        'appstore.iap.product_id' => iap['product_id'].to_s.strip
+      }.each do |label, manifest_id|
+        next if manifest_id == central_id
+
+        issues << "[#{app_name}] StoreKit product drift: config=#{central_id.inspect}, #{label}=#{manifest_id.inspect}"
+      end
+    end
+  rescue StandardError => e
+    ["StoreKit product parity check failed: #{e.class}: #{e.message}"]
   end
 
   def check_clean_session_truth(issues_found)

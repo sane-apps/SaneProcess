@@ -2067,6 +2067,43 @@ exit(run_tests('Validation report tests') do
       true
     end
 
+    test('checks StoreKit product parity with standalone injected fixtures') do
+      Dir.mktmpdir('storekit-parity-') do |dir|
+        products_path = File.join(dir, 'products.yml')
+        apps_root = File.join(dir, 'apps')
+        manifest_path = File.join(apps_root, 'SaneScan', '.saneprocess')
+        FileUtils.mkdir_p(File.dirname(manifest_path))
+        File.write(
+          products_path,
+          "products:\n  sanescan:\n    name: SaneScan\n    storekit_product_id: com.sanescan.app.pro.yearly6\n"
+        )
+        File.write(
+          manifest_path,
+          "appstore:\n  product_id: com.sanescan.app.pro.yearly6\n  iap:\n    product_id: com.sanescan.app.pro.yearly6\n"
+        )
+        subject = ValidationReport.new
+        matching = subject.send(
+          :storekit_product_parity_issues,
+          products_config_path: products_path,
+          apps_root: apps_root
+        )
+        assert_eq(matching, [])
+
+        File.write(
+          manifest_path,
+          "appstore:\n  product_id: com.sanescan.app.pro.legacy\n  iap:\n    product_id: com.sanescan.app.pro.yearly6\n"
+        )
+        drift = subject.send(
+          :storekit_product_parity_issues,
+          products_config_path: products_path,
+          apps_root: apps_root
+        )
+        assert_includes(drift.join("\n"), 'appstore.product_id')
+        assert_includes(drift.join("\n"), 'legacy')
+      end
+      true
+    end
+
     test('classifies process and release findings separately with actions') do
       subject = ValidationReport.new
 
