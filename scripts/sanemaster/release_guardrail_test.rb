@@ -6198,6 +6198,16 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('machine reconcile maps release candidates to the canonical peer checkout') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+      peer_path_helper = release_script[/default_peer_repo_path_for_project\(\) \{.*?^\}/m]
+      assert(!peer_path_helper.nil?, 'expected default peer path helper in release.sh')
+      assert_includes(peer_path_helper, 'local project_path="${PROJECT_ROOT%/.release-candidate}"')
+      assert_includes(peer_path_helper, '"/Users/sj/${project_path#/Users/stephansmac/}"')
+      assert_includes(peer_path_helper, '"/Users/stephansmac/${project_path#/Users/sj/}"')
+      true
+    end
+
     test('release.sh refuses to rewrite an existing remote release tag') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
       create_release_body = release_script[/create_github_release\(\) \{.*?^}/m]

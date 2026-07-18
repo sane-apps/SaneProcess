@@ -3015,12 +3015,17 @@ default_peer_host_for_project() {
 }
 
 default_peer_repo_path_for_project() {
-    case "${PROJECT_ROOT}" in
+    # Release candidates are intentionally detached worktrees. Their peer is
+    # the canonical checkout on the other machine, not a matching transient
+    # .release-candidate directory that may not exist there.
+    local project_path="${PROJECT_ROOT%/.release-candidate}"
+
+    case "${project_path}" in
         /Users/sj/*)
-            echo "/Users/stephansmac/${PROJECT_ROOT#/Users/sj/}"
+            echo "/Users/stephansmac/${project_path#/Users/sj/}"
             ;;
         /Users/stephansmac/*)
-            echo "/Users/sj/${PROJECT_ROOT#/Users/stephansmac/}"
+            echo "/Users/sj/${project_path#/Users/stephansmac/}"
             ;;
         *)
             echo ""
