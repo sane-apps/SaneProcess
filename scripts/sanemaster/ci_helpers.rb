@@ -155,10 +155,11 @@ module SaneMasterModules
         options = monitor_test_options(args, default_scheme: project_scheme)
       rescue ArgumentError => e
         puts "❌ Invalid monitor_tests arguments: #{e.message}"
-        puts '   Usage: monitor_tests [--scheme NAME] [--test SELECTOR] [--timeout POSITIVE_SECONDS]'
+        puts '   Usage: monitor_tests [--scheme NAME] [--test-plan NAME] [--test SELECTOR] [--timeout POSITIVE_SECONDS]'
         exit 2
       end
       scheme = options.fetch(:scheme)
+      test_plan = options[:test_plan]
       test_name = options[:test_selector]
       timeout = options.fetch(:timeout)
       started_at = Time.now.utc
@@ -166,6 +167,7 @@ module SaneMasterModules
       plan = monitor_test_plan(
         root: Dir.pwd,
         scheme: scheme,
+        test_plan: test_plan,
         test_selector: test_name,
         started_at: started_at,
         upgrade_run_id: ENV['SANEMASTER_UPGRADE_RUN_ID'],
@@ -180,6 +182,7 @@ module SaneMasterModules
       secure_test_assert_absent!(plan.fetch(:receipt_path), plan.fetch(:run_directory))
 
       puts "🔍 Monitoring tests for scheme: #{scheme}"
+      puts "   Test plan: #{test_plan}" if test_plan
       puts "   Test: #{test_name}" if test_name
       puts "   Timeout: #{timeout}s"
       puts "   Results: #{plan.fetch(:result_bundle_path)}"
@@ -446,11 +449,11 @@ module SaneMasterModules
       remaining = args.dup
       until remaining.empty?
         argument = remaining.shift
-        match = argument.match(/\A--(scheme|test|timeout)=(.*)\z/)
+        match = argument.match(/\A--(scheme|test-plan|test|timeout)=(.*)\z/)
         if match
           key = match[1]
           value = match[2]
-        elsif %w[--scheme --test --timeout].include?(argument)
+        elsif %w[--scheme --test-plan --test --timeout].include?(argument)
           key = argument.delete_prefix('--')
           value = remaining.shift
           raise ArgumentError, "#{argument} requires a value" if value.nil? || value.start_with?('--')
@@ -459,7 +462,11 @@ module SaneMasterModules
         end
 
         raise ArgumentError, "--#{key} requires a value" if value.empty?
-        symbol = key == 'test' ? :test_selector : key.to_sym
+        symbol = case key
+                 when 'test' then :test_selector
+                 when 'test-plan' then :test_plan
+                 else key.to_sym
+                 end
         raise ArgumentError, "--#{key} was provided more than once" if values.key?(symbol)
 
         values[symbol] = value
@@ -475,12 +482,13 @@ module SaneMasterModules
 
       {
         scheme: scheme,
+        test_plan: values[:test_plan],
         test_selector: values[:test_selector],
         timeout: timeout_text.to_i
       }
     end
 
-    def monitor_test_plan(root:, scheme:, test_selector:, started_at:, pid: Process.pid, nonce: SecureRandom.hex(4),
+    def monitor_test_plan(root:, scheme:, test_plan: nil, test_selector:, started_at:, pid: Process.pid, nonce: SecureRandom.hex(4),
                           upgrade_run_id: nil, upgrade_nonce: nil)
       project_root = File.realpath(root)
       upgrade_run_id = upgrade_run_id.to_s.strip
@@ -504,6 +512,7 @@ module SaneMasterModules
         '-destination', 'platform=macOS,arch=arm64',
         '-resultBundlePath', result_bundle_path
       ]
+      command += ['-testPlan', test_plan] if test_plan
       command += ['-only-testing', test_selector] if test_selector
 
       {
@@ -516,6 +525,7 @@ module SaneMasterModules
         command: command,
         run_id: run_id,
         scheme: scheme,
+        test_plan: test_plan,
         test_selector: test_selector,
         upgrade_run_id: upgrade_run_id.empty? ? nil : upgrade_run_id,
         upgrade_nonce: upgrade_nonce.empty? ? nil : upgrade_nonce
@@ -565,6 +575,7 @@ module SaneMasterModules
         upgrade_nonce: plan[:upgrade_nonce],
         host: host,
         scheme: plan.fetch(:scheme),
+        test_plan: plan[:test_plan],
         test_selector: plan[:test_selector],
         started_at: started_at.utc.iso8601(6),
         completed_at: completed_at.utc.iso8601(6),

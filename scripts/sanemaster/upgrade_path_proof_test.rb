@@ -64,6 +64,7 @@ UPGRADE_NONCE = 'a' * 64
 
 def monitor_receipt_fixture(root, started_at:, finished_at:, scheme: 'Example',
                             selector: 'ExampleTests/UpgradeTests/testUpgrade',
+                            test_plan: nil,
                             upgrade_run_id: UPGRADE_RUN_ID, upgrade_nonce: UPGRADE_NONCE)
   binding = Digest::SHA256.hexdigest("#{upgrade_run_id}\0#{upgrade_nonce}")[0, 16]
   run = File.join(root, 'outputs', 'monitor-tests', "run-1-upgrade-#{binding}")
@@ -78,6 +79,7 @@ def monitor_receipt_fixture(root, started_at:, finished_at:, scheme: 'Example',
     'upgrade_nonce' => upgrade_nonce,
     'host' => Socket.gethostname,
     'scheme' => scheme,
+    'test_plan' => test_plan,
     'test_selector' => selector,
     'started_at' => started_at.iso8601(6),
     'completed_at' => finished_at.iso8601(6),
@@ -134,6 +136,20 @@ exit(run_tests('Upgrade Path Proof Security Tests') do
       environment = subject.send(:upgrade_path_runner_env, UPGRADE_RUN_ID, UPGRADE_NONCE)
       assert_eq(environment['SANEMASTER_UPGRADE_RUN_ID'], UPGRADE_RUN_ID)
       assert_eq(environment['SANEMASTER_UPGRADE_NONCE'], UPGRADE_NONCE)
+      true
+    end
+
+    test('runner binds an optional test plan to the canonical monitor command') do
+      argv = subject.send(
+        :upgrade_path_runner_argv,
+        scheme: 'SaneHosts',
+        test_plan: 'SaneHosts',
+        test_selector: 'SaneHostsFeatureTests/ProfileStoreEssentialsPolicyTests/createsEssentialsAlongsideExistingEntries',
+        timeout_seconds: 120
+      )
+
+      assert_includes(argv, '--test-plan')
+      assert_eq(argv[argv.index('--test-plan') + 1], 'SaneHosts')
       true
     end
 

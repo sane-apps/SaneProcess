@@ -70,7 +70,7 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
   test_category('Monitor test CLI options') do
     test('parses strict named options and preserves safe defaults') do
       explicit = subject.monitor_options(
-        ['--scheme', 'SaneVideo', '--test=SaneVideoTests/PlaybackTests/testPlay', '--timeout', '120']
+        ['--scheme', 'SaneVideo', '--test-plan', 'Release', '--test=SaneVideoTests/PlaybackTests/testPlay', '--timeout', '120']
       )
       defaults = subject.monitor_options([], default_scheme: 'CurrentProject')
 
@@ -78,11 +78,12 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
         explicit,
         {
           scheme: 'SaneVideo',
+          test_plan: 'Release',
           test_selector: 'SaneVideoTests/PlaybackTests/testPlay',
           timeout: 120
         }
       )
-      assert_eq(defaults, { scheme: 'CurrentProject', test_selector: nil, timeout: 300 })
+      assert_eq(defaults, { scheme: 'CurrentProject', test_plan: nil, test_selector: nil, timeout: 300 })
       true
     end
 
@@ -92,6 +93,7 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
         ['--bogus', 'value'] => 'unknown argument',
         ['--scheme'] => '--scheme requires a value',
         ['--test', '--timeout', '30'] => '--test requires a value',
+        ['--test-plan'] => '--test-plan requires a value',
         ['--scheme', 'One', '--scheme=Two'] => '--scheme was provided more than once',
         ['--timeout', '0'] => '--timeout must be a positive integer',
         ['--timeout=-1'] => '--timeout must be a positive integer',
@@ -162,6 +164,25 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
 
         assert(!plan[:command].include?('-only-testing'), 'all-tests plans must not invent a selector')
         assert_eq(plan[:test_selector], nil)
+      end
+      true
+    end
+
+    test('includes an explicit test plan before the selected test') do
+      Dir.mktmpdir('ci-helpers-') do |root|
+        plan = subject.monitor_plan(
+          root: root,
+          scheme: 'SaneHosts',
+          test_plan: 'SaneHosts',
+          test_selector: 'SaneHostsFeatureTests/ProfileStoreEssentialsPolicyTests/createsEssentialsAlongsideExistingEntries',
+          started_at: started_at,
+          pid: 4321,
+          nonce: 'test-plan'
+        )
+
+        assert_eq(plan[:test_plan], 'SaneHosts')
+        assert_includes(plan[:command], '-testPlan')
+        assert_eq(plan[:command][plan[:command].index('-testPlan') + 1], 'SaneHosts')
       end
       true
     end
