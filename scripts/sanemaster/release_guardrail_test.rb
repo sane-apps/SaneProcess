@@ -6036,6 +6036,14 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('release.sh accepts the documented team ID option') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+
+      assert_includes(release_script, 'echo "  --team-id ID')
+      assert_match(/--team-id\)\s+TEAM_ID="\$2"\s+shift 2/m, release_script)
+      true
+    end
+
     test('release.sh trusts fresh SaneMaster release_preflight proof before raw project QA') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
 

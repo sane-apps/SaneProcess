@@ -2458,6 +2458,7 @@ print_help() {
     echo "Options:"
     echo "  --project PATH      Project root (defaults to current directory)"
     echo "  --config PATH       Config file (defaults to <project>/.saneprocess if present)"
+    echo "  --team-id ID        Apple Developer Team ID for signing and provisioning"
     echo "  --full              Version bump, tests, git commit"
     echo "  --deploy            Upload to R2, update appcast, deploy website (run after build)"
     echo "  --github-release    Create/update GitHub release (uploads ZIP for approved apps only)"
@@ -4980,6 +4981,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --config)
             CONFIG_PATH="$2"
+            shift 2
+            ;;
+        --team-id)
+            TEAM_ID="$2"
             shift 2
             ;;
         --skip-notarize)
