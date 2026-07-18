@@ -4165,7 +4165,11 @@ module SaneMasterModules
         platform_has_demo_mode = platform_source.match?(/Try Demo Data|Enable Demo Mode|demoMode|DemoData|demo data/i)
         platform_has_try_demo_action = platform_source.match?(/Try Demo Data/i)
         platform_has_settings_demo_toggle = platform_source.match?(/Enable Demo Mode|Disable Demo Mode/i)
-        platform_uses_license_service = platform_source.match?(/\bLicenseService\b/)
+        # Shared core files can reference LicenseService without being compiled
+        # into a platform's purchase UI. Require an actual purchase surface
+        # before imposing App Review's paid-unlock navigation requirements.
+        platform_uses_license_service = platform_source.match?(/\bLicenseService\b/) &&
+                                        platform_source.match?(/Unlock Pro|purchasePro\(|restorePurchases\(/i)
         notes_text = review_notes_for_platform(appstore_config, platform).to_s
         notes_downcase = notes_text.downcase
         no_account_path = notes_downcase.match?(/no account required|no api key required|no credentials required|no sign.?in required|no .*payment .*launch|no .*payment .*demo/)

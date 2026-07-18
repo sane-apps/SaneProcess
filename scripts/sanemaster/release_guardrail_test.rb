@@ -7693,7 +7693,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         source_blob: {
           'all' => "import Foundation\nfinal class LicenseService {}\n",
           'macos' => "import Foundation\nfinal class LicenseService {}\nstruct LicenseSettingsView {}\nfunc purchasePro() {}\n",
-          'ios' => "import Foundation\nstruct DemoData {}\n"
+          'ios' => "import Foundation\nfinal class LicenseService {}\nstruct DemoData {}\n"
         },
         appstore_config: {
           'review_notes_by_platform' => {
