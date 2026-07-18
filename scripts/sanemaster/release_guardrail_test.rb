@@ -7872,6 +7872,39 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       end
       true
     end
+
+    test('ignores app extensions when collecting macOS App Store signing targets') do
+      Dir.mktmpdir do |dir|
+        project_yml = File.join(dir, 'project.yml')
+        File.write(project_yml, <<~YAML)
+          targets:
+            MainApp:
+              type: application
+              platform: macOS
+              bundleId: com.example.app
+              settings:
+                configs:
+                  Release-AppStore:
+                    CODE_SIGN_STYLE: Automatic
+                    CODE_SIGN_IDENTITY: "Apple Distribution"
+            MainAppWidget:
+              type: app-extension
+              platform: macOS
+              bundleId: com.example.app.widget
+              settings:
+                configs:
+                  Release-AppStore:
+                    CODE_SIGN_STYLE: Automatic
+                    CODE_SIGN_IDENTITY: "Apple Distribution"
+        YAML
+
+        targets = subject.send(:appstore_macos_signing_targets, project_yml)
+
+        assert_eq(targets.length, 1)
+        assert_eq(targets.first[:name], 'MainApp')
+      end
+      true
+    end
   end
 
   test_category('Verify output parsing') do

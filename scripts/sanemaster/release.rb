@@ -848,7 +848,7 @@ module SaneMasterModules
       targets.each do |name, spec|
         next unless spec.is_a?(Hash)
         next unless spec['platform'].to_s == 'macOS'
-        next if spec['type'].to_s.start_with?('bundle.')
+        next unless spec['type'].to_s == 'application'
 
         release_appstore = spec.dig('settings', 'configs', 'Release-AppStore') || {}
         next if release_appstore.empty?
