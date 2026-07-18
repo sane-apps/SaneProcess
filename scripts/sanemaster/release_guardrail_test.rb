@@ -7687,6 +7687,28 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('does not require an iOS Pro path when only the macOS source has license service') do
+      report = subject.send(
+        :reviewer_access_guardrail_report,
+        source_blob: {
+          'all' => "import Foundation\nfinal class LicenseService {}\n",
+          'macos' => "import Foundation\nfinal class LicenseService {}\nstruct LicenseSettingsView {}\nfunc purchasePro() {}\n",
+          'ios' => "import Foundation\nstruct DemoData {}\n"
+        },
+        appstore_config: {
+          'review_notes_by_platform' => {
+            'macos' => 'Basic is free. Pro is a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used.',
+            'ios' => 'The iPhone and iPad companion is free. Built-in demo history is shown when no synced history exists. No external checkout or license keys are used.'
+          }
+        },
+        platforms: %w[macos ios]
+      )
+
+      assert(!report[:issues].any? { |issue| issue.start_with?('[ios]') })
+      assert(!report[:warnings].any? { |warning| warning.start_with?('[ios]') })
+      true
+    end
+
   end
 
   test_category('ASC version lane guardrails') do

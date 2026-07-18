@@ -4165,6 +4165,7 @@ module SaneMasterModules
         platform_has_demo_mode = platform_source.match?(/Try Demo Data|Enable Demo Mode|demoMode|DemoData|demo data/i)
         platform_has_try_demo_action = platform_source.match?(/Try Demo Data/i)
         platform_has_settings_demo_toggle = platform_source.match?(/Enable Demo Mode|Disable Demo Mode/i)
+        platform_uses_license_service = platform_source.match?(/\bLicenseService\b/)
         notes_text = review_notes_for_platform(appstore_config, platform).to_s
         notes_downcase = notes_text.downcase
         no_account_path = notes_downcase.match?(/no account required|no api key required|no credentials required|no sign.?in required|no .*payment .*launch|no .*payment .*demo/)
@@ -4212,7 +4213,7 @@ module SaneMasterModules
           report[:issues] << "[#{platform}] Review notes mention “Enable Demo Mode”, but that settings action is not present in the code"
         end
 
-        next unless uses_license_service
+        next unless platform_uses_license_service
 
         purchase_surface_path = notes_downcase.match?(/settings\s*>\s*license|license tab|unlock pro|upgrade to pro|restore purchases|browse library|locked categor|open .*license/i)
         durable_purchase_surface_path = notes_downcase.match?(/settings\s*>\s*license|license tab|browse library|locked categor|open .*license/i)
