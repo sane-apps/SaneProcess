@@ -6181,6 +6181,23 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('machine reconcile accepts a detached release candidate only when it exactly matches origin main') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+      reconcile_gate = release_script[/enforce_machine_reconcile\(\) \{.*?^\}/m]
+      assert(!reconcile_gate.nil?, 'expected enforce_machine_reconcile body in release.sh')
+      assert_includes(reconcile_gate, 'refs/remotes/origin/${peer_branch}')
+      assert_includes(reconcile_gate, 'Detached release candidate matches origin/${peer_branch}')
+      assert_includes(reconcile_gate, 'Detached release candidate does not match origin/${peer_branch}; refusing to release an untracked commit.')
+
+      detached_index = reconcile_gate.index('if [ "${local_branch}" = "HEAD" ]; then')
+      origin_index = reconcile_gate.index('refs/remotes/origin/${peer_branch}')
+      rejection_index = reconcile_gate.index('refusing to release an untracked commit')
+      assert(!detached_index.nil? && !origin_index.nil? && !rejection_index.nil?, 'expected explicit detached candidate verification')
+      assert(detached_index < origin_index && origin_index < rejection_index,
+             'detached candidates must resolve and compare origin before release continues')
+      true
+    end
+
     test('release.sh refuses to rewrite an existing remote release tag') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
       create_release_body = release_script[/create_github_release\(\) \{.*?^}/m]

@@ -3090,8 +3090,22 @@ enforce_machine_reconcile() {
     fi
 
     if [ -n "${peer_branch}" ] && [ "${local_branch}" != "${peer_branch}" ]; then
-        log_error "Local branch is '${local_branch}', expected '${peer_branch}' for release."
-        exit 1
+        local expected_origin_head=""
+        if [ "${local_branch}" = "HEAD" ]; then
+            expected_origin_head=$(git -C "${PROJECT_ROOT}" rev-parse "refs/remotes/origin/${peer_branch}" 2>/dev/null || true)
+            if [ -n "${expected_origin_head}" ] && [ "${local_head}" = "${expected_origin_head}" ]; then
+                log_info "Detached release candidate matches origin/${peer_branch} at ${local_head:0:12}."
+                local_branch="${peer_branch}"
+            else
+                log_error "Detached release candidate does not match origin/${peer_branch}; refusing to release an untracked commit."
+                log_error "Local HEAD: ${local_head}"
+                log_error "origin/${peer_branch}: ${expected_origin_head:-unavailable}"
+                exit 1
+            fi
+        else
+            log_error "Local branch is '${local_branch}', expected '${peer_branch}' for release."
+            exit 1
+        fi
     fi
 
     if mini_route_context_active; then
