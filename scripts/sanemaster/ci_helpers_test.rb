@@ -168,7 +168,7 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
       true
     end
 
-    test('includes an explicit test plan before the selected test') do
+    test('uses an explicit test plan and verifies the selected test from xcresult') do
       Dir.mktmpdir('ci-helpers-') do |root|
         plan = subject.monitor_plan(
           root: root,
@@ -183,6 +183,7 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
         assert_eq(plan[:test_plan], 'SaneHosts')
         assert_includes(plan[:command], '-testPlan')
         assert_eq(plan[:command][plan[:command].index('-testPlan') + 1], 'SaneHosts')
+        assert(!plan[:command].include?('-only-testing'), 'test-plan execution must not target a local package test bundle directly')
       end
       true
     end
