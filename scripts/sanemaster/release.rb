@@ -1538,7 +1538,24 @@ module SaneMasterModules
       metadata_value(homebrew, 'tap_repo') || 'sane-apps/homebrew-tap'
     end
 
-    def homebrew_cask_preflight_result(config:, tap_status:, cask_body:, project_version:, appcast_version:)
+    def homebrew_macos_symbol_for_system_version(system_version)
+      case system_version.to_s.strip
+      when /\A10\.15(?:\.\d+)?\z/ then 'catalina'
+      when /\A11(?:\.\d+)?\z/ then 'big_sur'
+      when /\A12(?:\.\d+)?\z/ then 'monterey'
+      when /\A13(?:\.\d+)?\z/ then 'ventura'
+      when /\A14(?:\.\d+)?\z/ then 'sonoma'
+      when /\A15(?:\.\d+)?\z/ then 'sequoia'
+      when /\A26(?:\.\d+)?\z/ then 'tahoe'
+      end
+    end
+
+    def release_min_system_version(config)
+      release = config.is_a?(Hash) ? (config['release'] || config[:release]) : nil
+      metadata_value(release, 'min_system_version').to_s.strip
+    end
+
+    def homebrew_cask_preflight_result(config:, tap_status:, cask_body:, project_version:, appcast_version:, min_system_version: nil)
       status = tap_status.to_s.strip
       result = { message: '', warnings: [], issues: [] }
 
@@ -1572,6 +1589,26 @@ module SaneMasterModules
       else
         result[:message] = "❌ cask has v#{cask_version}, project is v#{project_version}"
         result[:issues] << "Homebrew cask version mismatch: cask=#{cask_version} project=#{project_version}"
+      end
+
+      expected_macos_symbol = homebrew_macos_symbol_for_system_version(min_system_version)
+      if min_system_version && !min_system_version.to_s.empty? && expected_macos_symbol.nil?
+        result[:issues] << "Unsupported release min_system_version for Homebrew cask: #{min_system_version}"
+      elsif expected_macos_symbol
+        actual_macos_symbol = cask_body.to_s[/depends_on\s+macos:\s*:([a-z_]+)/, 1]
+        if actual_macos_symbol.nil?
+          result[:issues] << 'Homebrew cask macOS requirement unreadable'
+        elsif actual_macos_symbol != expected_macos_symbol
+          prepublish_drift = prepublish_channel_version_drift?(
+            channel_version: cask_version,
+            project_version: project_version
+          ) && prepublish_channel_version_drift?(
+            channel_version: appcast_version,
+            project_version: project_version
+          )
+          message = "Homebrew cask macOS mismatch: cask=#{actual_macos_symbol} release=#{expected_macos_symbol}"
+          prepublish_drift ? result[:warnings] << "#{message} (will sync on publish)" : result[:issues] << message
+        end
       end
 
       result
@@ -4904,7 +4941,8 @@ module SaneMasterModules
         tap_status: tap_status,
         cask_body: cask_body,
         project_version: project_marketing_version(project_yml_content),
-        appcast_version: local_latest_appcast_version
+        appcast_version: local_latest_appcast_version,
+        min_system_version: release_min_system_version(preflight_config)
       )
       puts homebrew_result[:message]
       warnings.concat(homebrew_result[:warnings])

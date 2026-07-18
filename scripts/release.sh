@@ -56,6 +56,21 @@ log_error() {
     RELEASE_ERRORS+=("$1")
 }
 
+# Homebrew casks use named macOS releases rather than version numbers. Keep the
+# cask requirement aligned with the appcast and project release configuration.
+homebrew_macos_symbol_for_system_version() {
+    case "$1" in
+        10.15|10.15.*) echo "catalina" ;;
+        11|11.*) echo "big_sur" ;;
+        12|12.*) echo "monterey" ;;
+        13|13.*) echo "ventura" ;;
+        14|14.*) echo "sonoma" ;;
+        15|15.*) echo "sequoia" ;;
+        26|26.*) echo "tahoe" ;;
+        *) return 1 ;;
+    esac
+}
+
 run_logged_command() {
     local log_path="$1"
     shift
@@ -6817,6 +6832,13 @@ PY
     CASK_FILE="Casks/${LOWER_APP_NAME}.rb"
     HOMEBREW_TAP_DIR="/tmp/homebrew-tap-update-$$"
     if [ -n "${HOMEBREW_TAP_REPO}" ]; then
+        if ! HOMEBREW_MACOS_SYMBOL="$(homebrew_macos_symbol_for_system_version "${MIN_SYSTEM_VERSION}")"; then
+            log_error "Unsupported MIN_SYSTEM_VERSION for Homebrew cask: ${MIN_SYSTEM_VERSION}."
+            if [ "${STRICT_PUBLIC_CHANNEL_SYNC}" = true ]; then
+                exit 1
+            fi
+            HOMEBREW_MACOS_SYMBOL=""
+        fi
         HOMEBREW_TAP_GIT_URL_RESOLVED="$(resolve_homebrew_tap_git_url)"
         log_info "Updating Homebrew cask in ${HOMEBREW_TAP_REPO}..."
 
@@ -6826,6 +6848,17 @@ PY
                 # Update version and SHA256 in the cask formula
                 sed -i '' "s/version \"[^\"]*\"/version \"${VERSION}\"/" "${HOMEBREW_TAP_DIR}/${CASK_FILE}"
                 sed -i '' "s/sha256 \"[^\"]*\"/sha256 \"${SHA256}\"/" "${HOMEBREW_TAP_DIR}/${CASK_FILE}"
+                if [ -n "${HOMEBREW_MACOS_SYMBOL}" ]; then
+                    if grep -Eq '^[[:space:]]*depends_on[[:space:]]+macos:[[:space:]]*:[[:alnum:]_]+' "${HOMEBREW_TAP_DIR}/${CASK_FILE}"; then
+                        sed -E -i '' "s|^([[:space:]]*depends_on[[:space:]]+macos:[[:space:]]*):[[:alnum:]_]+|\\1:${HOMEBREW_MACOS_SYMBOL}|" "${HOMEBREW_TAP_DIR}/${CASK_FILE}"
+                    else
+                        log_error "Homebrew cask ${CASK_FILE} has no macOS dependency to synchronize."
+                        if [ "${STRICT_PUBLIC_CHANNEL_SYNC}" = true ]; then
+                            exit 1
+                        fi
+                        log_warn "Leaving the Homebrew cask macOS requirement unchanged."
+                    fi
+                fi
 
                 # Commit and push
                 cd "${HOMEBREW_TAP_DIR}"
@@ -6873,7 +6906,7 @@ PY
             CASK_CHECK=$(curl --connect-timeout 10 --max-time 20 -s "${CASK_RAW_URL}" 2>/dev/null)
             CASK_CHECK_SOURCE="raw.githubusercontent"
         fi
-        if echo "${CASK_CHECK}" | grep -q "version \"${VERSION}\"" && echo "${CASK_CHECK}" | grep -q "sha256 \"${SHA256}\""; then
+        if echo "${CASK_CHECK}" | grep -q "version \"${VERSION}\"" && echo "${CASK_CHECK}" | grep -q "sha256 \"${SHA256}\"" && { [ -z "${HOMEBREW_MACOS_SYMBOL:-}" ] || echo "${CASK_CHECK}" | grep -Eq "^[[:space:]]*depends_on[[:space:]]+macos:[[:space:]]*:${HOMEBREW_MACOS_SYMBOL}([[:space:]]|$)"; }; then
             log_info "Homebrew cask verified via ${CASK_CHECK_SOURCE}: v${VERSION} live at ${CASK_RAW_URL}"
         else
             log_warn "Homebrew cask may not have propagated. Check: ${CASK_RAW_URL}"

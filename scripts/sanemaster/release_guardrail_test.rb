@@ -5609,6 +5609,69 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('Homebrew cask preflight treats an older cask macOS floor as a publish-time sync') do
+      result = subject.send(
+        :homebrew_cask_preflight_result,
+        config: { 'homebrew' => { 'tap_repo' => 'sane-apps/homebrew-tap' } },
+        tap_status: '200',
+        cask_body: "cask \"sane-example\" do\n  version \"2.3.20\"\n  depends_on macos: :sequoia\nend\n",
+        project_version: '2.3.21',
+        appcast_version: '2.3.20',
+        min_system_version: '14.0'
+      )
+
+      assert_eq(
+        result[:warnings],
+        [
+          'Homebrew cask version 2.3.20 is older than project MARKETING_VERSION 2.3.21 (expected before publish)',
+          'Homebrew cask macOS mismatch: cask=sequoia release=sonoma (will sync on publish)'
+        ]
+      )
+      assert_eq(result[:issues], [])
+      true
+    end
+
+    test('Homebrew cask preflight rejects a mismatched macOS floor when versions are current') do
+      result = subject.send(
+        :homebrew_cask_preflight_result,
+        config: { 'homebrew' => { 'tap_repo' => 'sane-apps/homebrew-tap' } },
+        tap_status: '200',
+        cask_body: "cask \"sane-example\" do\n  version \"2.3.21\"\n  depends_on macos: :sequoia\nend\n",
+        project_version: '2.3.21',
+        appcast_version: '2.3.21',
+        min_system_version: '14.0'
+      )
+
+      assert_eq(result[:warnings], [])
+      assert_eq(result[:issues], ['Homebrew cask macOS mismatch: cask=sequoia release=sonoma'])
+      true
+    end
+
+    test('release shell maps configured macOS floors to Homebrew symbols') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+      helper = release_script[/homebrew_macos_symbol_for_system_version\(\) \{.*?^\}/m]
+      assert(!helper.nil?, 'expected release shell Homebrew macOS mapping helper')
+
+      Dir.mktmpdir('homebrew-macos-symbol-test') do |dir|
+        harness = File.join(dir, 'mapping.sh')
+        File.write(
+          harness,
+          <<~BASH
+            set -e
+            #{helper}
+            printf '%s|%s|%s' \\
+              "$(homebrew_macos_symbol_for_system_version 14.0)" \\
+              "$(homebrew_macos_symbol_for_system_version 15.4)" \\
+              "$(homebrew_macos_symbol_for_system_version 26.0)"
+          BASH
+        )
+        output, status = Open3.capture2e('bash', harness)
+        assert(status.success?, "expected release shell mapping helper to execute: #{output}")
+        assert_eq(output, 'sonoma|sequoia|tahoe')
+      end
+      true
+    end
+
     test('release preflight resolves versioned archives through a homepage download route') do
       homepage = <<~HTML
         <a class="button" href="/download">Download for Mac</a>
