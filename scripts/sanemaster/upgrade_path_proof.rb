@@ -168,6 +168,7 @@ module SaneMasterModules
         'schemaVersion' => 2,
         'type' => 'upgrade_path_behavioral_proof',
         'status' => 'passed',
+        'issues' => [],
         'behavioral' => true,
         'app' => app_name,
         'fromVersion' => from_version,
