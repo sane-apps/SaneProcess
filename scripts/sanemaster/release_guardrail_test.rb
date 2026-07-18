@@ -6040,7 +6040,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
 
       assert_includes(release_script, 'echo "  --team-id ID')
-      assert_match(/--team-id\)\s+TEAM_ID="\$2"\s+shift 2/m, release_script)
+      assert_match(release_script, /--team-id\)\s+TEAM_ID="\$2"\s+shift 2/m)
       true
     end
 
