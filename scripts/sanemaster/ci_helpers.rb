@@ -518,10 +518,10 @@ module SaneMasterModules
         '-destination', 'platform=macOS,arch=arm64',
         '-resultBundlePath', result_bundle_path
       ]
-      if test_plan
-        # Xcode cannot apply -only-testing to a local package test target in a
-        # test plan. Run the plan, then require the exact selector in xcresult.
-        command += ['-testPlan', test_plan]
+      if test_plan || package_path
+        # Xcode cannot apply -only-testing to Swift Testing package targets.
+        # Run the requested scope, then require the exact selector in xcresult.
+        command += ['-testPlan', test_plan] if test_plan
       else
         command += ['-only-testing', test_selector] if test_selector
       end

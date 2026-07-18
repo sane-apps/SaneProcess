@@ -206,6 +206,7 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
 
         assert_eq(plan[:working_directory], File.realpath(package))
         assert_eq(plan[:package_path], 'SaneHostsPackage')
+        assert(!plan[:command].include?('-only-testing'), 'package execution must verify the exact selector from xcresult')
       end
       true
     end
