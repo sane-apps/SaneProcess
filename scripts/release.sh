@@ -2540,9 +2540,10 @@ ensure_git_clean() {
         return 0
     fi
 
-    local -a expected_release_mutations unexpected_mutations
+    local -a expected_release_mutations unexpected_mutations allowed_runtime_evidence
     expected_release_mutations=()
     unexpected_mutations=()
+    allowed_runtime_evidence=()
 
     while IFS= read -r line; do
         [ -z "${line}" ] && continue
@@ -2551,25 +2552,38 @@ ensure_git_clean() {
             project.yml|CHANGELOG.md|docs/appcast.xml|docs/index.html|website/index.html|*.xcodeproj/project.pbxproj)
                 expected_release_mutations+=("${path}")
                 ;;
+            .sane/customer_ui_action_receipt.json|outputs/customer_ui_action_receipt.json)
+                # release_preflight requires this generated Mini runtime proof and
+                # validates its freshness and source fingerprint before any upload.
+                # Do not require operators to commit ephemeral evidence just to ship.
+                allowed_runtime_evidence+=("${path}")
+                ;;
             *)
                 unexpected_mutations+=("${path}")
                 ;;
         esac
     done <<< "${status_output}"
 
-    log_error "Git working directory not clean."
-    log_error "Dirty files:"
-    while IFS= read -r line; do
-        [ -n "${line}" ] && log_error "  ${line}"
-    done <<< "${status_output}"
-
     if [ ${#unexpected_mutations[@]} -gt 0 ]; then
+        log_error "Git working directory not clean."
+        log_error "Dirty files:"
+        while IFS= read -r line; do
+            [ -n "${line}" ] && log_error "  ${line}"
+        done <<< "${status_output}"
         log_error "Unexpected dirty files are present. Reconcile these changes before release."
         log_error "Review: git -C \"${PROJECT_ROOT}\" diff -- ${unexpected_mutations[*]}"
     elif [ ${#expected_release_mutations[@]} -gt 0 ]; then
+        log_error "Git working directory not clean."
+        log_error "Dirty files:"
+        while IFS= read -r line; do
+            [ -n "${line}" ] && log_error "  ${line}"
+        done <<< "${status_output}"
         log_error "Only known release-mutated files are dirty."
         log_error "Finish reconciliation first: keep/commit good changes, restore bad ones."
         log_error "Review: git -C \"${PROJECT_ROOT}\" diff -- ${expected_release_mutations[*]}"
+    elif [ ${#allowed_runtime_evidence[@]} -gt 0 ]; then
+        log_info "Allowing generated customer UI evidence while the signed release_preflight receipt is revalidated: ${allowed_runtime_evidence[*]}"
+        return 0
     fi
     exit 1
 }

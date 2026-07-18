@@ -6132,6 +6132,53 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('release.sh permits only generated customer UI receipt dirt before revalidating signed preflight evidence') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+      clean_gate = release_script[/ensure_git_clean\(\) \{.*?^\}/m]
+      assert(!clean_gate.nil?, 'expected ensure_git_clean body in release.sh')
+      assert_includes(clean_gate, '.sane/customer_ui_action_receipt.json|outputs/customer_ui_action_receipt.json')
+      assert_includes(clean_gate, 'signed release_preflight receipt is revalidated')
+
+      Dir.mktmpdir('release-clean-runtime-evidence-') do |dir|
+        fake_bin = File.join(dir, 'bin')
+        FileUtils.mkdir_p(fake_bin)
+        status_path = File.join(dir, 'git-status.txt')
+        fake_git = File.join(fake_bin, 'git')
+        File.write(fake_git, "#!/bin/sh\ncat #{status_path.inspect}\n")
+        FileUtils.chmod(0o755, fake_git)
+
+        run_gate = lambda do |status_output|
+          File.write(status_path, status_output)
+          harness = File.join(dir, 'clean-gate-harness.sh')
+          File.write(
+            harness,
+            <<~BASH
+              #!/bin/bash
+              PROJECT_ROOT=#{dir.inspect}
+              mini_route_context_active() { return 1; }
+              mini_route_workspace_field() { return 1; }
+              log_info() { printf '[INFO] %s\\n' "$1"; }
+              log_error() { printf '[ERROR] %s\\n' "$1"; }
+
+              #{clean_gate}
+
+              ensure_git_clean
+            BASH
+          )
+          Open3.capture2e({ 'PATH' => "#{fake_bin}:#{ENV.fetch('PATH')}" }, 'bash', harness)
+        end
+
+        receipt_output, receipt_status = run_gate.call(" M .sane/customer_ui_action_receipt.json\n")
+        assert(receipt_status.success?, "generated runtime receipt should pass the clean gate: #{receipt_output}")
+        assert_includes(receipt_output, 'signed release_preflight receipt is revalidated')
+
+        source_output, source_status = run_gate.call(" M SaneClip/SaneClipApp.swift\n")
+        assert(!source_status.success?, "source modifications must still fail the clean gate: #{source_output}")
+        assert_includes(source_output, 'Unexpected dirty files are present')
+      end
+      true
+    end
+
     test('release.sh refuses to rewrite an existing remote release tag') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
       create_release_body = release_script[/create_github_release\(\) \{.*?^}/m]
