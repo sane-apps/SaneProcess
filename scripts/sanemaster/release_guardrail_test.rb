@@ -131,6 +131,51 @@ def write_test_png_with_text(path, text:, source: 'outputs/shared-source.png', w
   )
 end
 
+def write_artifact_test_app(root, name:, bundle_id:, platform: 'macos', executable_text: 'clean artifact')
+  app_dir = File.join(root, "#{name}.app")
+  if platform == 'ios'
+    info_path = File.join(app_dir, 'Info.plist')
+    binary_path = File.join(app_dir, name)
+  else
+    info_path = File.join(app_dir, 'Contents', 'Info.plist')
+    binary_path = File.join(app_dir, 'Contents', 'MacOS', name)
+  end
+  FileUtils.mkdir_p(File.dirname(binary_path))
+  File.write(
+    info_path,
+    <<~PLIST
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+      <plist version="1.0"><dict>
+        <key>CFBundleIdentifier</key><string>#{bundle_id}</string>
+        <key>CFBundleShortVersionString</key><string>1.0</string>
+        <key>CFBundleVersion</key><string>100</string>
+        <key>CFBundleExecutable</key><string>#{name}</string>
+      </dict></plist>
+    PLIST
+  )
+  File.write(binary_path, executable_text)
+  app_dir
+end
+
+def write_artifact_test_extension(root, name:, bundle_id:, executable_text: 'clean extension')
+  bundle_dir = File.join(root, "#{name}.appex")
+  binary_path = File.join(bundle_dir, name)
+  FileUtils.mkdir_p(bundle_dir)
+  File.write(
+    File.join(bundle_dir, 'Info.plist'),
+    <<~PLIST
+      <?xml version="1.0" encoding="UTF-8"?>
+      <plist version="1.0"><dict>
+        <key>CFBundleIdentifier</key><string>#{bundle_id}</string>
+        <key>CFBundleExecutable</key><string>#{name}</string>
+      </dict></plist>
+    PLIST
+  )
+  File.write(binary_path, executable_text)
+  bundle_dir
+end
+
 def write_resource_soak_pair(dir, version:, build:, include_log: true, keyword_candidate: false)
   now = Time.now.utc
   evidence_dir = File.join(dir, 'outputs', 'customer-ui', 'resource-soak-proof')
@@ -4662,35 +4707,6 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
-    test('appstore preflight binds an exact ASC build and rejects build-number drift') do
-      issues = []
-      target = subject.send(
-        :appstore_preflight_submission_target,
-        args: ['--platform', 'ios', '--asc-build-id', 'build-123', '--build-number', '100'],
-        version: '1.0',
-        build: '100',
-        platforms: ['ios'],
-        issues: issues
-      )
-
-      assert_eq(issues, [])
-      assert_eq(target[:type], 'asc_build')
-      assert_eq(target[:ascBuildId], 'build-123')
-      assert_eq(target[:build], '100')
-
-      drift_issues = []
-      subject.send(
-        :appstore_preflight_submission_target,
-        args: ['--platform', 'ios', '--asc-build-id', 'build-123', '--build-number', '101'],
-        version: '1.0',
-        build: '100',
-        platforms: ['ios'],
-        issues: drift_issues
-      )
-      assert(drift_issues.any? { |issue| issue.include?('does not match preflight build') })
-      true
-    end
-
     test('appstore package binding rejects a package from another bundle target') do
       Dir.mktmpdir('appstore-package-target-') do |dir|
         File.write(
@@ -4712,7 +4728,8 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         binding_subject = Class.new(ReleaseGuardrailHarness) do
           attr_accessor :stub_package_bundle_id
 
-          def appstore_package_info(_path)
+          def appstore_package_info(_path, expected_bundle_ids:, expected_sha256: nil)
+            _ = [expected_bundle_ids, expected_sha256]
             { bundle_id: stub_package_bundle_id, version: '1.0', build: '100' }
           end
         end.new
@@ -6591,6 +6608,373 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
   end
 
   test_category('Artifact marker detection') do
+    test('selects the exact submitted app by bundle ID instead of the first helper app') do
+      Dir.mktmpdir('artifact-exact-app-selection-') do |dir|
+        helper = write_artifact_test_app(dir, name: 'AHelper', bundle_id: 'com.example.helper')
+        submitted = write_artifact_test_app(dir, name: 'ZSubmitted', bundle_id: 'com.example.submitted')
+
+        selection = subject.send(
+          :appstore_select_submission_app,
+          app_dirs: [helper, submitted],
+          expected_bundle_ids: ['com.example.submitted'],
+          platform: 'macos'
+        )
+
+        assert_eq(selection[:verified], true)
+        assert_eq(selection[:app_dir], submitted)
+      end
+      true
+    end
+
+    test('discovers a pkg app below its install root without treating nested helpers as products') do
+      Dir.mktmpdir('artifact-pkg-layout-') do |dir|
+        payload = File.join(dir, 'component', 'Payload', 'Applications')
+        submitted = write_artifact_test_app(payload, name: 'Submitted', bundle_id: 'com.example.submitted')
+        nested_root = File.join(submitted, 'Contents', 'Helpers')
+        write_artifact_test_app(nested_root, name: 'NestedHelper', bundle_id: 'com.example.helper')
+
+        candidates = subject.send(:appstore_pkg_top_level_app_dirs, dir)
+
+        assert_eq(candidates, [submitted])
+      end
+      true
+    end
+
+    test('blocks ambiguous and unreadable exact artifact identities') do
+      Dir.mktmpdir('artifact-identity-failure-') do |dir|
+        first = write_artifact_test_app(dir, name: 'First', bundle_id: 'com.example.submitted')
+        second = write_artifact_test_app(dir, name: 'Second', bundle_id: 'com.example.submitted')
+        ambiguous = subject.send(
+          :appstore_select_submission_app,
+          app_dirs: [first, second],
+          expected_bundle_ids: ['com.example.submitted'],
+          platform: 'macos'
+        )
+        assert_eq(ambiguous[:verified], false)
+        assert_includes(ambiguous[:issues].join("\n"), 'ambiguous')
+
+        File.write(File.join(first, 'Contents', 'Info.plist'), 'not a plist')
+        unreadable = subject.send(
+          :appstore_select_submission_app,
+          app_dirs: [first],
+          expected_bundle_ids: ['com.example.submitted'],
+          platform: 'macos'
+        )
+        assert_eq(unreadable[:verified], false)
+        assert_includes(unreadable[:issues].join("\n"), 'could not read CFBundleIdentifier')
+      end
+      true
+    end
+
+    test('audits forbidden markers from the exact package artifact instead of a clean rebuild') do
+      Dir.mktmpdir('artifact-package-vs-rebuild-') do |dir|
+        clean_app = write_artifact_test_app(dir, name: 'CleanBuild', bundle_id: 'com.example.app')
+        package_app = write_artifact_test_app(
+          dir,
+          name: 'SubmittedPackage',
+          bundle_id: 'com.example.app',
+          executable_text: 'https://go.saneapps.com/buy/example'
+        )
+        audit_subject = ReleaseGuardrailHarness.new
+        success_status = Struct.new(:success?).new(true)
+        audit_subject.define_singleton_method(:appstore_artifact_capture) do |*command|
+          output = case command.first
+                   when 'strings' then File.read(command.last)
+                   when 'otool' then "#{command.last}:\n"
+                   else ''
+                   end
+          [output, success_status]
+        end
+
+        clean_report = audit_subject.send(
+          :appstore_compiled_artifact_report,
+          app_dir: clean_app,
+          platform: 'macos',
+          expected_bundle_id: 'com.example.app',
+          review_notes_blob: '',
+          configured_product_id: '',
+          uses_storekit_unlock: false
+        )
+        package_report = audit_subject.send(
+          :appstore_compiled_artifact_report,
+          app_dir: package_app,
+          platform: 'macos',
+          expected_bundle_id: 'com.example.app',
+          review_notes_blob: '',
+          configured_product_id: '',
+          uses_storekit_unlock: false
+        )
+
+        assert_eq(clean_report[:verified], true)
+        assert_eq(package_report[:verified], false)
+        assert_includes(package_report[:issues].join("\n"), 'direct-purchase markers')
+      end
+      true
+    end
+
+    test('audits an exact iOS app bundle layout') do
+      Dir.mktmpdir('artifact-ios-layout-') do |dir|
+        ios_app = write_artifact_test_app(dir, name: 'SaneIOS', bundle_id: 'com.example.ios', platform: 'ios')
+        audit_subject = ReleaseGuardrailHarness.new
+        success_status = Struct.new(:success?).new(true)
+        audit_subject.define_singleton_method(:appstore_artifact_capture) do |*command|
+          [command.first == 'otool' ? "#{command.last}:\n" : '', success_status]
+        end
+
+        report = audit_subject.send(
+          :appstore_compiled_artifact_report,
+          app_dir: ios_app,
+          platform: 'ios',
+          expected_bundle_id: 'com.example.ios',
+          review_notes_blob: '',
+          configured_product_id: '',
+          uses_storekit_unlock: false
+        )
+
+        assert_eq(report[:verified], true)
+      end
+      true
+    end
+
+    test('audits recognized embedded helper apps but ignores arbitrary resource decoys') do
+      Dir.mktmpdir('artifact-embedded-helper-') do |dir|
+        app_dir = write_artifact_test_app(dir, name: 'MainApp', bundle_id: 'com.example.main')
+        helpers_root = File.join(app_dir, 'Contents', 'Helpers')
+        helper_dir = write_artifact_test_app(
+          helpers_root,
+          name: 'BadHelper',
+          bundle_id: 'com.example.helper',
+          executable_text: 'https://go.saneapps.com/buy/example'
+        )
+        resource = File.join(app_dir, 'Contents', 'Resources', 'checkout-decoy.txt')
+        FileUtils.mkdir_p(File.dirname(resource))
+        File.write(resource, 'https://go.saneapps.com/buy/resource-decoy')
+        audit_subject = ReleaseGuardrailHarness.new
+        success_status = Struct.new(:success?).new(true)
+        audit_subject.define_singleton_method(:appstore_artifact_capture) do |*command|
+          output = command.first == 'otool' ? "#{command.last}:\n" : File.read(command.last)
+          [output, success_status]
+        end
+
+        blocked = audit_subject.send(
+          :appstore_compiled_artifact_report,
+          app_dir: app_dir,
+          platform: 'macos',
+          expected_bundle_id: 'com.example.main',
+          review_notes_blob: '',
+          configured_product_id: '',
+          uses_storekit_unlock: false
+        )
+        assert_eq(blocked[:verified], false)
+        assert_includes(blocked[:issues].join("\n"), 'BadHelper.app/Contents/MacOS/BadHelper')
+        assert_includes(blocked[:issues].join("\n"), 'direct-purchase markers')
+
+        File.write(File.join(helper_dir, 'Contents', 'MacOS', 'BadHelper'), 'clean helper')
+        clean = audit_subject.send(
+          :appstore_compiled_artifact_report,
+          app_dir: app_dir,
+          platform: 'macos',
+          expected_bundle_id: 'com.example.main',
+          review_notes_blob: '',
+          configured_product_id: '',
+          uses_storekit_unlock: false
+        )
+        assert_eq(clean[:verified], true, 'resource-only marker decoy must not be treated as shipped executable code')
+      end
+      true
+    end
+
+    test('audits bare Mach-O helpers and dylibs inside embedded bundle Frameworks') do
+      Dir.mktmpdir('artifact-bare-helper-') do |dir|
+        app_dir = write_artifact_test_app(dir, name: 'MainApp', bundle_id: 'com.example.main')
+        helpers_root = File.join(app_dir, 'Contents', 'Helpers')
+        embedded = write_artifact_test_app(
+          helpers_root,
+          name: 'EmbeddedHelper',
+          bundle_id: 'com.example.embedded'
+        )
+        bare_helper = File.join(helpers_root, 'BareMachO')
+        File.binwrite(bare_helper, "\xCF\xFA\xED\xFE".b + 'https://go.saneapps.com/buy/bare')
+        nested_dylib = File.join(embedded, 'Contents', 'Frameworks', 'Hidden.dylib')
+        FileUtils.mkdir_p(File.dirname(nested_dylib))
+        File.write(nested_dylib, 'Sponsor on GitHub')
+        resource_script = File.join(app_dir, 'Contents', 'Resources', 'looks-executable.sh')
+        FileUtils.mkdir_p(File.dirname(resource_script))
+        File.write(resource_script, "#!/bin/sh\nhttps://go.saneapps.com/buy/ignored\n")
+        File.chmod(0o755, resource_script)
+        audit_subject = ReleaseGuardrailHarness.new
+        success_status = Struct.new(:success?).new(true)
+        audit_subject.define_singleton_method(:appstore_artifact_capture) do |*command|
+          output = if command.first == 'otool'
+                     "#{command.last}:\n"
+                   elsif command.first == 'strings' && command.last == bare_helper
+                     File.binread(command.last).byteslice(4..-1)
+                   elsif command.first == 'strings'
+                     File.read(command.last)
+                   else
+                     ''
+                   end
+          [output, success_status]
+        end
+
+        report = audit_subject.send(
+          :appstore_compiled_artifact_report,
+          app_dir: app_dir,
+          platform: 'macos',
+          expected_bundle_id: 'com.example.main',
+          review_notes_blob: '',
+          configured_product_id: '',
+          uses_storekit_unlock: false
+        )
+        joined = report[:issues].join("\n")
+        assert_includes(joined, 'Contents/Helpers/BareMachO')
+        assert_includes(joined, 'Hidden.dylib')
+        assert(!joined.include?('looks-executable.sh'), 'resource scripts must stay outside executable inventory')
+      end
+      true
+    end
+
+    test('audits runnable helper scripts in code roots while ignoring Resources scripts') do
+      Dir.mktmpdir('artifact-runnable-helper-script-') do |dir|
+        app_dir = write_artifact_test_app(dir, name: 'MainApp', bundle_id: 'com.example.main')
+        executable_helper = File.join(app_dir, 'Contents', 'Helpers', 'checkout-helper')
+        shebang_helper = File.join(app_dir, 'Contents', 'Helpers', 'support-helper.sh')
+        resource_script = File.join(app_dir, 'Contents', 'Resources', 'ignored-helper.sh')
+        FileUtils.mkdir_p(File.dirname(executable_helper))
+        FileUtils.mkdir_p(File.dirname(resource_script))
+        File.write(executable_helper, 'https://go.saneapps.com/buy/helper')
+        File.chmod(0o755, executable_helper)
+        File.write(shebang_helper, "#!/bin/sh\nSponsor on GitHub\n")
+        File.chmod(0o644, shebang_helper)
+        File.write(resource_script, "#!/bin/sh\nhttps://go.saneapps.com/buy/ignored\n")
+        File.chmod(0o755, resource_script)
+
+        audit_subject = ReleaseGuardrailHarness.new
+        success_status = Struct.new(:success?).new(true)
+        audit_subject.define_singleton_method(:appstore_artifact_capture) do |*command|
+          output = command.first == 'strings' ? File.read(command.last) : "#{command.last}:\n"
+          [output, success_status]
+        end
+
+        report = audit_subject.send(
+          :appstore_compiled_artifact_report,
+          app_dir: app_dir,
+          platform: 'macos',
+          expected_bundle_id: 'com.example.main',
+          review_notes_blob: '',
+          configured_product_id: '',
+          uses_storekit_unlock: false
+        )
+        joined = report[:issues].join("\n")
+        assert_eq(report[:verified], false)
+        assert_includes(joined, 'Contents/Helpers/checkout-helper')
+        assert_includes(joined, 'direct-purchase markers')
+        assert_includes(joined, 'Contents/Helpers/support-helper.sh')
+        assert_includes(joined, 'donation/support markers')
+        assert(!joined.include?('ignored-helper.sh'), 'Resources scripts must remain outside executable inventory')
+      end
+      true
+    end
+
+    test('fails closed when a recognized framework has no supported Info.plist') do
+      Dir.mktmpdir('artifact-framework-missing-plist-') do |dir|
+        app_dir = write_artifact_test_app(dir, name: 'MainIOS', bundle_id: 'com.example.ios', platform: 'ios')
+        framework_dir = File.join(app_dir, 'Frameworks', 'Missing.framework')
+        framework_binary = File.join(framework_dir, 'Missing')
+        FileUtils.mkdir_p(framework_dir)
+        File.write(framework_binary, 'clean framework binary')
+
+        inventory = ReleaseGuardrailHarness.new.send(
+          :appstore_shipped_executable_inventory,
+          app_dir: app_dir,
+          platform: 'ios',
+          main_binary: File.join(app_dir, 'MainIOS')
+        )
+
+        assert_includes(
+          inventory[:issues].join("\n"),
+          'Recognized framework is missing Info.plist: Frameworks/Missing.framework'
+        )
+        assert(!inventory[:paths].include?(framework_binary), 'missing framework metadata must not be guessed from its directory name')
+      end
+      true
+    end
+
+    test('audits iOS app extensions and fails closed on malformed recognized bundles') do
+      Dir.mktmpdir('artifact-ios-extension-') do |dir|
+        app_dir = write_artifact_test_app(dir, name: 'MainIOS', bundle_id: 'com.example.ios', platform: 'ios')
+        plugins = File.join(app_dir, 'PlugIns')
+        write_artifact_test_extension(
+          plugins,
+          name: 'ShareExtension',
+          bundle_id: 'com.example.ios.share',
+          executable_text: 'Privacy_Accessibility'
+        )
+        audit_subject = ReleaseGuardrailHarness.new
+        success_status = Struct.new(:success?).new(true)
+        audit_subject.define_singleton_method(:appstore_artifact_capture) do |*command|
+          output = command.first == 'otool' ? "#{command.last}:\n" : File.read(command.last)
+          [output, success_status]
+        end
+
+        blocked = audit_subject.send(
+          :appstore_compiled_artifact_report,
+          app_dir: app_dir,
+          platform: 'ios',
+          expected_bundle_id: 'com.example.ios',
+          review_notes_blob: '',
+          configured_product_id: '',
+          uses_storekit_unlock: false
+        )
+        assert_eq(blocked[:verified], false)
+        assert_includes(blocked[:issues].join("\n"), 'ShareExtension.appex/ShareExtension')
+        assert_includes(blocked[:issues].join("\n"), 'Accessibility markers')
+
+        malformed = File.join(plugins, 'Malformed.xpc')
+        FileUtils.mkdir_p(malformed)
+        flat_framework = File.join(app_dir, 'Frameworks', 'Malformed.framework')
+        FileUtils.mkdir_p(flat_framework)
+        File.write(File.join(flat_framework, 'Info.plist'), '<plist><dict></dict></plist>')
+        malformed_report = audit_subject.send(
+          :appstore_compiled_artifact_report,
+          app_dir: app_dir,
+          platform: 'ios',
+          expected_bundle_id: 'com.example.ios',
+          review_notes_blob: '',
+          configured_product_id: '',
+          uses_storekit_unlock: false
+        )
+        assert_includes(malformed_report[:issues].join("\n"), 'missing Info.plist')
+        assert_includes(malformed_report[:issues].join("\n"), 'unreadable CFBundleExecutable')
+      end
+      true
+    end
+
+    test('unexpected artifact audit exceptions are blocking and never verified clean') do
+      Dir.mktmpdir('artifact-unexpected-error-') do |dir|
+        app_dir = write_artifact_test_app(dir, name: 'Explodes', bundle_id: 'com.example.explodes')
+        audit_subject = ReleaseGuardrailHarness.new
+        audit_subject.define_singleton_method(:appstore_artifact_capture) do |*_command|
+          raise 'tool exploded'
+        end
+
+        report = audit_subject.send(
+          :appstore_compiled_artifact_report,
+          app_dir: app_dir,
+          platform: 'macos',
+          expected_bundle_id: 'com.example.explodes',
+          review_notes_blob: '',
+          configured_product_id: '',
+          uses_storekit_unlock: false
+        )
+
+        assert_eq(report[:verified], false)
+        assert_includes(report[:issues].join("\n"), 'failed unexpectedly')
+        assert_includes(report[:issues].join("\n"), 'tool exploded')
+      end
+      true
+    end
+
     test('detects donation and support markers in App Store artifacts') do
       hits = subject.send(
         :appstore_donation_markers,
@@ -6646,6 +7030,99 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       )
 
       assert_eq(hits, [])
+      true
+    end
+
+    test('ignores executable permission-key decoys when built plist root keys are absent') do
+      Dir.mktmpdir('artifact-plist-decoys-') do |dir|
+        plist = File.join(dir, 'Info.plist')
+        File.write(
+          plist,
+          <<~PLIST
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0"><dict>
+              <key>CFBundleExecutable</key><string>SaneExample</string>
+            </dict></plist>
+          PLIST
+        )
+
+        plist_report = subject.send(:appstore_built_plist_permission_report, plist)
+        findings = subject.send(
+          :appstore_permission_artifact_findings,
+          review_notes_blob: 'This build does not request accessibility and uses no Apple Events.',
+          declarations: plist_report[:declarations],
+          artifact_blob: "NSAccessibilityUsageDescription\nNSAppleEventsUsageDescription",
+          strings_out: "NSAccessibilityUsageDescription\nNSAppleEventsUsageDescription",
+          nm_out: '',
+          otool_out: ''
+        )
+
+        assert_eq(plist_report[:verified], true)
+        assert_eq(plist_report[:declarations]['NSAccessibilityUsageDescription'], false)
+        assert_eq(plist_report[:declarations]['NSAppleEventsUsageDescription'], false)
+        assert_eq(findings[:issues], [])
+        assert_eq(findings[:warnings], [])
+      end
+      true
+    end
+
+    test('detects permission declarations from exact built plist root keys') do
+      Dir.mktmpdir('artifact-plist-permissions-') do |dir|
+        plist = File.join(dir, 'Info.plist')
+        File.write(
+          plist,
+          <<~PLIST
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0"><dict>
+              <key>CFBundleExecutable</key><string>SaneExample</string>
+              <key>NSAccessibilityUsageDescription</key><string>Control selected UI.</string>
+              <key>NSAppleEventsUsageDescription</key><string>Automate the selected app.</string>
+            </dict></plist>
+          PLIST
+        )
+
+        plist_report = subject.send(:appstore_built_plist_permission_report, plist)
+        findings = subject.send(
+          :appstore_permission_artifact_findings,
+          review_notes_blob: 'This build does not request accessibility and uses no Apple Events.',
+          declarations: plist_report[:declarations],
+          artifact_blob: '',
+          strings_out: '',
+          nm_out: '',
+          otool_out: ''
+        )
+
+        assert_eq(plist_report[:verified], true)
+        assert_eq(plist_report[:declarations]['NSAccessibilityUsageDescription'], true)
+        assert_eq(plist_report[:declarations]['NSAppleEventsUsageDescription'], true)
+        assert(findings[:issues].any? { |issue| issue.include?('NSAccessibilityUsageDescription') })
+        assert(findings[:issues].any? { |issue| issue.include?('NSAppleEventsUsageDescription') })
+        assert(findings[:warnings].any? { |warning| warning.include?('Apple Events usage description') })
+      end
+      true
+    end
+
+    test('blocks artifact verification when built plist parsing fails') do
+      Dir.mktmpdir('artifact-plist-parser-failure-') do |dir|
+        plist = File.join(dir, 'Info.plist')
+        File.binwrite(plist, "not a plist\x00\xFF".b)
+
+        report = subject.send(:appstore_built_plist_permission_report, plist)
+
+        assert_eq(report[:verified], false)
+        assert(!report[:issues].empty?, 'parser failure must create a blocking artifact issue')
+        assert_includes(report[:issues].join("\n"), 'could not parse the built Info.plist')
+      end
+      true
+    end
+
+    test('blocks artifact verification when the built plist is missing') do
+      report = subject.send(:appstore_built_plist_permission_report, '/tmp/does-not-exist/Info.plist')
+
+      assert_eq(report[:verified], false)
+      assert_includes(report[:issues].join("\n"), 'could not find the built Info.plist')
       true
     end
 

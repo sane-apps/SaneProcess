@@ -95,11 +95,9 @@ When two instructions disagree, use this order:
 4. The compact `SESSION_HANDOFF.md` for current, host-qualified state.
 5. Dated research and memories only when they are not expired or superseded.
 
-Normal read, edit, build, test, commit, feature-push, SSH, rsync, and browser
-work must remain usable. Approved tools may consume local credentials internally,
-including when invoked from the Air over SSH, but agents must never dump, print,
-copy, or export raw secret material. Real
-sends, releases, uploads, reboots, and customer/data mutations use their
+Normal read, edit, build, test, commit, feature-push, SSH, rsync, and browser work must remain usable.
+Approved tools may consume local credentials internally, including when invoked from the Air over
+SSH, but agents must never dump, print, copy, or export raw secret material. Real sends, releases, uploads, reboots, and customer/data mutations use their
 canonical approval gates. Irreversible deletion of a home, repository,
 history, production resource, credential, ownership, license, or money is a
 manual user-only action and must be mechanically blocked even in bypass mode.
@@ -160,12 +158,10 @@ the wrapper.
 | Route cost review | `ruby scripts/SaneMaster.rb route_cost_review --json` |
 | Mini screenshot | `scripts/mini/capture-mini-screenshot.sh desktop` or app mode wrapper |
 
-Runtime app tests must attach a live app log stream from before launch/relaunch
-through the tested workflow and save the log receipt path. A GUI/runtime result
-without live logs is invalid because the agent cannot see what is happening.
+Runtime app tests must attach a live app log stream from before launch/relaunch through
+the tested workflow and save the receipt path. GUI/runtime results without live logs are invalid.
 
-If a canonical route fails, fix the route or explain why it is insufficient.
-Do not silently work around it.
+If a canonical route fails, fix it or explain why it is insufficient; do not silently work around it.
 Raw `ssh mini ... screencapture ...` is not a fallback; it is blocked by
 `scripts/hooks/sane_ssh_guard.sh` and the Bash guard dispatcher. Use the
 canonical Mini screenshot wrapper or fix that wrapper.

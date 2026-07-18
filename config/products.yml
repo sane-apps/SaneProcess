@@ -52,7 +52,7 @@ products:
     domain: sanescan.saneapps.com
     github_repo: sane-apps/SaneScan
     appstore_id: "6770391054"
-    storekit_product_id: com.sanescan.app.pro.annual
+    storekit_product_id: com.sanescan.app.pro.yearly6
 
   sanesync:
     name: SaneSync

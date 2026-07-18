@@ -165,7 +165,7 @@ class SaneMaster
         'release' => { args: '[--full|--deploy|--no-deploy|--skip-notarize|--version X.Y.Z|--notes "..."]', desc: 'Build, sign, notarize, package, and optionally deploy' },
         'upgrade_path_proof' => { args: '', desc: 'Run the configured behavioral upgrade test and write signed Mini proof' },
         'release_preflight' => { args: '', desc: 'Run all pre-release safety checks without building' },
-        'appstore_preflight' => { args: '[--platform macos|ios] [--pkg PATH | --asc-build-id ID --build-number N]', desc: 'Run App Store submission compliance checks and optionally bind the exact submission target' }
+        'appstore_preflight' => { args: '[--platform macos|ios] [--pkg PATH]', desc: 'Run App Store submission checks and bind authorization to an exact fresh package' }
       }
     },
     gen: {
@@ -524,6 +524,7 @@ class SaneMaster
       return
     end
 
+    reject_retired_appstore_reuse!(command, args)
     ensure_work_session_ready!(command)
     maybe_route_to_mini!(command, args)
 
@@ -542,6 +543,20 @@ class SaneMaster
   end
 
   private
+
+  def reject_retired_appstore_reuse!(command, args)
+    return unless %w[appstore_preflight asp].include?(command.to_s)
+
+    retired = %w[--asc-build-id --build-number].select do |flag|
+      Array(args).any? { |arg| arg == flag || arg.start_with?("#{flag}=") }
+    end
+    return if retired.empty?
+
+    warn "❌ Retired App Store preflight option(s): #{retired.join(', ')}"
+    warn 'Existing ASC build reuse is disabled because exact remote bytes cannot be proven.'
+    warn 'Increment the build number, create a fresh package, then run appstore_preflight --platform PLATFORM --pkg PATH.'
+    exit 2
+  end
 
   def auto_dedupe_runtime_apps!(command)
     return if command.nil?
@@ -1866,13 +1881,19 @@ PY
     abort "❌ App Store preflight package not found: #{local_package}" unless File.file?(local_package)
 
     digest = Digest::SHA256.file(local_package).hexdigest
-    binding_dir = File.join(execution_repo, '.sanemaster', 'appstore-preflight-bindings', digest)
+    binding_root = File.join(execution_repo, 'outputs', 'appstore-preflight-bindings')
+    binding_dir = File.join(binding_root, digest)
     remote_package = File.join(binding_dir, File.basename(local_package))
-    ok = ssh_system('mini', "mkdir -p #{Shellwords.escape(binding_dir)}")
+    ok = ssh_system(
+      'mini',
+      "mkdir -p #{Shellwords.escape(binding_dir)} && chmod 700 #{Shellwords.escape(binding_root)} #{Shellwords.escape(binding_dir)}"
+    )
     abort '❌ Failed to prepare Mini App Store preflight package binding directory.' unless ok
 
     ok = route_system('rsync', '-az', '--no-links', local_package, "mini:#{remote_package}")
     abort '❌ Failed to sync exact App Store preflight package to the Mini.' unless ok
+    ok = ssh_system('mini', "chmod 400 #{Shellwords.escape(remote_package)}")
+    abort '❌ Failed to lock exact App Store preflight package on the Mini.' unless ok
 
     routed_args[package_index + 1] = remote_package
     [routed_args, binding_dir]
@@ -3091,15 +3112,13 @@ PY
       examples: ['session_end', 'se', 'session_end --skip-prompts']
     },
     'appstore_preflight' => {
-      usage: 'appstore_preflight (or asp) [--platform macos|ios] [--pkg PATH | --asc-build-id ID --build-number N]',
-      description: 'Run App Store submission compliance checks for active App Store lanes; optionally bind the signed receipt to the exact package or existing ASC build',
+      usage: 'appstore_preflight (or asp) [--platform macos|ios] [--pkg PATH]',
+      description: 'Run App Store submission checks and bind the signed receipt to an exact fresh package; existing ASC build reuse is retired because remote bytes cannot be proven',
       flags: {
         '--platform PLATFORM' => 'Platform for exact submission binding (macos or ios)',
-        '--pkg PATH' => 'Bind authorization to this exact package digest and bundle metadata',
-        '--asc-build-id ID' => 'Bind authorization to an exact existing App Store Connect build ID',
-        '--build-number N' => 'Required CFBundleVersion when binding an existing ASC build'
+        '--pkg PATH' => 'Bind authorization to this exact fresh package digest and bundle metadata'
       },
-      examples: ['appstore_preflight', 'appstore_preflight --platform macos --pkg build/Example.pkg', 'asp --platform ios --asc-build-id BUILD_ID --build-number 100']
+      examples: ['appstore_preflight', 'appstore_preflight --platform macos --pkg build/Example.pkg', 'asp --platform ios --pkg build/Example.ipa']
     },
     'sales' => {
       usage: 'sales [--daily|--month|--products|--fees|--find-customer-orders --email E --name N --product P|--license-status KEY|--disable-license-key KEY|--refund-order ID|--refund-order-number N|--refund-duplicate-license-key KEY --keep-license-key KEY --approval-note PATH|--include-refunded|--json]',

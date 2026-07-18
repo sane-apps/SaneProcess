@@ -9,11 +9,14 @@ require_relative 'appstore_submit'
 
 APPSTORE_PREFLIGHT_TEST_SIGNER = ReleaseReceiptSigner.test_signer(secret: 'appstore-preflight-guardrail-test')
 APPSTORE_PREFLIGHT_ASC_TARGET = {
-  'type' => 'asc_build',
+  'type' => 'package',
   'platform' => 'ios',
-  'ascBuildId' => 'asc-build-123',
   'version' => '1.0',
-  'build' => '100'
+  'build' => '100',
+  'fileName' => 'Example.ipa',
+  'sha256' => 'a' * 64,
+  'size' => 42,
+  'bundleId' => 'com.example.app'
 }.freeze
 
 def with_env(overrides)
@@ -27,6 +30,21 @@ ensure
   previous.each do |key, value|
     value == :__missing__ ? ENV.delete(key) : ENV[key] = value
   end
+end
+
+def write_submit_test_plist(path, bundle_id:)
+  FileUtils.mkdir_p(File.dirname(path))
+  File.write(
+    path,
+    <<~PLIST
+      <?xml version="1.0" encoding="UTF-8"?>
+      <plist version="1.0"><dict>
+        <key>CFBundleIdentifier</key><string>#{bundle_id}</string>
+        <key>CFBundleShortVersionString</key><string>1.0</string>
+        <key>CFBundleVersion</key><string>100</string>
+      </dict></plist>
+    PLIST
+  )
 end
 
 class AppStoreSubmitGuardrailHarness
@@ -196,6 +214,16 @@ class AppStoreSubmitGuardrailHarness
   end
 end
 
+class AppStoreBuildWaitHarness
+  def initialize(response)
+    @response = response
+  end
+
+  def asc_get(*_args, **_kwargs)
+    @response
+  end
+end
+
 def build_metadata_config(
   marketing_url: nil,
   review_notes: 'Basic is free. This App Store build unlocks Pro with an in-app purchase. No external checkout or license key is used.'
@@ -340,7 +368,7 @@ exit(run_tests('App Store Submit Guardrail Tests') do
       true
     end
 
-    test('rejects a receipt bound to a different exact ASC build identity') do
+    test('rejects a receipt bound to different exact package bytes') do
       Dir.mktmpdir('mismatched-appstore-build-') do |dir|
         FileUtils.mkdir_p(File.join(dir, 'outputs'))
         File.write(File.join(dir, '.saneprocess'), "name: Example\n")
@@ -360,7 +388,7 @@ exit(run_tests('App Store Submit Guardrail Tests') do
           producer: 'saneprocess.appstore_preflight.v1'
         )
 
-        different_target = APPSTORE_PREFLIGHT_ASC_TARGET.merge('ascBuildId' => 'asc-build-999')
+        different_target = APPSTORE_PREFLIGHT_ASC_TARGET.merge('sha256' => 'b' * 64)
         ok, detail = fresh_appstore_preflight_receipt?(
           project_root: dir,
           app_id: '123',
@@ -370,9 +398,23 @@ exit(run_tests('App Store Submit Guardrail Tests') do
           receipt_signer: APPSTORE_PREFLIGHT_TEST_SIGNER
         )
 
-        assert(!ok, 'expected a different ASC build ID to invalidate preflight authorization')
-        assert_includes(detail, 'exact package or ASC build')
+        assert(!ok, 'expected different package bytes to invalidate preflight authorization')
+        assert_includes(detail, 'exact fresh package')
       end
+      true
+    end
+
+    test('--skip-upload is retired with actionable fresh-build guidance') do
+      output, status = Open3.capture2e(
+        RbConfig.ruby,
+        File.expand_path('appstore_submit.rb', __dir__),
+        '--skip-upload', '--app-id', '123', '--version', '1.0',
+        '--platform', 'ios', '--project-root', Dir.tmpdir
+      )
+      assert(!status.success?)
+      assert_includes(output, '--skip-upload is retired')
+      assert_includes(output, 'exact remote ASC bytes cannot be proven')
+      assert_includes(output, 'Increment the build number')
       true
     end
 
@@ -393,6 +435,70 @@ exit(run_tests('App Store Submit Guardrail Tests') do
         !appstore_submission_targets_match?(target, target.merge('sha256' => 'b' * 64)),
         'different package bytes must not share authorization'
       )
+      true
+    end
+
+    test('refuses package bytes changed after exact-target preflight') do
+      Dir.mktmpdir('appstore-package-byte-binding-') do |dir|
+        path = File.join(dir, 'Example.ipa')
+        File.write(path, 'audited bytes')
+        target = {
+          'type' => 'package',
+          'sha256' => Digest::SHA256.file(path).hexdigest,
+          'size' => File.size(path)
+        }
+
+        assert(appstore_package_bytes_match_target?(path, target))
+        File.write(path, 'different unaudited bytes')
+        assert(!appstore_package_bytes_match_target?(path, target))
+      end
+      true
+    end
+
+    test('uploads from a private read-only verified staging copy immune to source mutation') do
+      Dir.mktmpdir('appstore-package-staging-') do |dir|
+        source = File.join(dir, 'Example.ipa')
+        File.write(source, 'audited bytes')
+        target = {
+          'type' => 'package',
+          'sha256' => Digest::SHA256.file(source).hexdigest,
+          'size' => File.size(source)
+        }
+        fingerprint_before_staging = appstore_worktree_fingerprint(dir)
+        staged = stage_appstore_package(source, project_root: dir)
+        assert(staged, 'expected verified staging to succeed')
+        assert(staged.start_with?(File.join(File.realpath(dir), 'outputs', 'appstore-preflight-bindings')))
+        assert_eq(File.stat(File.dirname(staged)).mode & 0o777, 0o700)
+        assert_eq(File.stat(staged).mode & 0o777, 0o400)
+        assert_eq(appstore_worktree_fingerprint(dir), fingerprint_before_staging)
+
+        File.write(source, 'mutated source bytes')
+        assert(appstore_package_bytes_match_target?(staged, target))
+        assert(!appstore_package_bytes_match_target?(source, target))
+        assert_eq(File.read(staged), 'audited bytes')
+      end
+      true
+    end
+
+    test('classifies new duplicate and failed uploads distinctly') do
+      assert_eq(classify_appstore_upload_output(success: true, output: 'No errors uploading'), :uploaded)
+      assert_eq(classify_appstore_upload_output(success: false, output: 'Bundle already exists'), :duplicate)
+      assert_eq(classify_appstore_upload_output(success: true, output: 'Upload succeeded but bundle already exists'), :duplicate)
+      assert_eq(classify_appstore_upload_output(success: false, output: 'Validation failed'), :failed)
+      true
+    end
+
+    test('has no generic upload fallback when exact package identity cannot be reparsed') do
+      Dir.mktmpdir('appstore-exact-upload-command-') do |dir|
+        invalid = File.join(dir, 'Invalid.ipa')
+        File.write(invalid, 'not an ipa')
+        command = exact_appstore_upload_command(
+          invalid,
+          app_id: '123',
+          credentials: { key_id: 'KEY', issuer_id: 'ISSUER' }
+        )
+        assert_eq(command, nil)
+      end
       true
     end
 
@@ -547,6 +653,120 @@ exit(run_tests('App Store Submit Guardrail Tests') do
 
         assert(!ensure_strict_customer_ui_contract!(dir), 'expected failed strict UI contract to block upload')
       end
+      true
+    end
+  end
+
+  test_category('Package identity selection') do
+    test('selects a unique expected app identity instead of the first plist') do
+      Dir.mktmpdir('submit-package-selection-') do |dir|
+        helper = File.join(dir, 'AHelper.app', 'Info.plist')
+        submitted = File.join(dir, 'ZSubmitted.app', 'Info.plist')
+        write_submit_test_plist(helper, bundle_id: 'com.example.helper')
+        write_submit_test_plist(submitted, bundle_id: 'com.example.submitted')
+
+        info = select_unique_package_app_info(
+          [helper, submitted],
+          expected_bundle_id: 'com.example.submitted'
+        )
+
+        assert_eq(info[:bundle_id], 'com.example.submitted')
+      end
+      true
+    end
+
+    test('fails closed when package identity is ambiguous or unreadable') do
+      Dir.mktmpdir('submit-package-ambiguous-') do |dir|
+        first = File.join(dir, 'First.app', 'Info.plist')
+        second = File.join(dir, 'Second.app', 'Info.plist')
+        write_submit_test_plist(first, bundle_id: 'com.example.same')
+        write_submit_test_plist(second, bundle_id: 'com.example.same')
+
+        assert_eq(select_unique_package_app_info([first, second]), nil)
+        File.write(first, 'not a plist')
+        assert_eq(select_unique_package_app_info([first]), nil)
+      end
+      true
+    end
+
+    test('finds pkg app identities below install roots and excludes nested helper apps') do
+      Dir.mktmpdir('submit-pkg-layout-') do |dir|
+        submitted = File.join(dir, 'component', 'Payload', 'Applications', 'Submitted.app', 'Contents', 'Info.plist')
+        nested = File.join(
+          dir, 'component', 'Payload', 'Applications', 'Submitted.app', 'Contents',
+          'Helpers', 'Nested.app', 'Contents', 'Info.plist'
+        )
+        write_submit_test_plist(submitted, bundle_id: 'com.example.submitted')
+        write_submit_test_plist(nested, bundle_id: 'com.example.nested')
+
+        assert_eq(top_level_pkg_app_info_paths(dir), [submitted])
+      end
+      true
+    end
+  end
+
+  test_category('Exact ASC build identity') do
+    test('requires build number marketing version and platform to match one included identity') do
+      response = {
+        'data' => [{
+          'id' => 'build-1',
+          'type' => 'builds',
+          'attributes' => { 'version' => '100', 'processingState' => 'VALID' },
+          'relationships' => { 'preReleaseVersion' => { 'data' => { 'id' => 'pre-1' } } }
+        }],
+        'included' => [{
+          'id' => 'pre-1',
+          'type' => 'preReleaseVersions',
+          'attributes' => { 'version' => '1.0', 'platform' => 'IOS' }
+        }]
+      }
+      harness = AppStoreBuildWaitHarness.new(response)
+      build_id = harness.send(
+        :wait_for_build,
+        'app-1', '100', 'IOS', 'token',
+        expected_marketing_version: '1.0'
+      )
+      assert_eq(build_id, 'build-1')
+      true
+    end
+
+    test('rejects duplicate build numbers belonging to another marketing version') do
+      response = {
+        'data' => [{
+          'id' => 'wrong-version',
+          'attributes' => { 'version' => '100', 'processingState' => 'VALID' },
+          'relationships' => { 'preReleaseVersion' => { 'data' => { 'id' => 'pre-old' } } }
+        }],
+        'included' => [{
+          'id' => 'pre-old',
+          'type' => 'preReleaseVersions',
+          'attributes' => { 'version' => '0.9', 'platform' => 'IOS' }
+        }]
+      }
+      build_id = AppStoreBuildWaitHarness.new(response).send(
+        :wait_for_build,
+        'app-1', '100', 'IOS', 'token',
+        expected_marketing_version: '1.0'
+      )
+      assert_eq(build_id, nil)
+      true
+    end
+
+    test('fails closed when ASC omits included pre-release identity') do
+      response = {
+        'data' => [{
+          'id' => 'unbound-build',
+          'attributes' => { 'version' => '100', 'processingState' => 'VALID' },
+          'relationships' => { 'preReleaseVersion' => { 'data' => { 'id' => 'missing' } } }
+        }],
+        'included' => []
+      }
+      build_id = AppStoreBuildWaitHarness.new(response).send(
+        :wait_for_build,
+        'app-1', '100', 'IOS', 'token',
+        expected_marketing_version: '1.0'
+      )
+      assert_eq(build_id, nil)
       true
     end
   end

@@ -250,7 +250,7 @@ def ensure_strict_customer_ui_contract!(project_root)
   sanemaster = File.join(project_root, 'scripts', 'SaneMaster.rb')
   unless File.file?(sanemaster)
     log_error "Missing SaneMaster wrapper at #{sanemaster}; cannot verify strict customer UI contract."
-    return false
+    return :failed
   end
 
   command = sanemaster_invocation(sanemaster)
@@ -963,30 +963,47 @@ end
 
 # ─── Package Metadata ───
 
-def extract_app_info_from_package(pkg_path)
-  read_plist = lambda do |info_path|
-    return nil unless info_path && File.exist?(info_path)
+def app_info_from_plist(info_path)
+  return nil unless info_path && File.file?(info_path)
 
-    bundle_id = `"/usr/libexec/PlistBuddy" -c 'Print :CFBundleIdentifier' #{Shellwords.escape(info_path)} 2>/dev/null`.strip
-    short_version = `"/usr/libexec/PlistBuddy" -c 'Print :CFBundleShortVersionString' #{Shellwords.escape(info_path)} 2>/dev/null`.strip
-    build_number = `"/usr/libexec/PlistBuddy" -c 'Print :CFBundleVersion' #{Shellwords.escape(info_path)} 2>/dev/null`.strip
+  values = %w[CFBundleIdentifier CFBundleShortVersionString CFBundleVersion].map do |key|
+    output, status = Open3.capture2e('/usr/libexec/PlistBuddy', '-c', "Print :#{key}", info_path)
+    return nil unless status.success? && !output.to_s.strip.empty?
 
-    return nil if bundle_id.empty? || short_version.empty? || build_number.empty?
-
-    {
-      bundle_id: bundle_id,
-      short_version: short_version,
-      build_number: build_number
-    }
+    output.to_s.strip
   end
+  { bundle_id: values[0], short_version: values[1], build_number: values[2] }
+rescue StandardError
+  nil
+end
+
+def select_unique_package_app_info(info_paths, expected_bundle_id: nil)
+  candidates = Array(info_paths).uniq.sort.map { |path| app_info_from_plist(path) }.compact
+  unless expected_bundle_id.to_s.empty?
+    candidates = candidates.select { |candidate| candidate[:bundle_id] == expected_bundle_id.to_s }
+  end
+  return nil unless candidates.length == 1
+
+  candidates.first
+end
+
+def top_level_pkg_app_info_paths(expanded_dir)
+  Dir.glob(File.join(expanded_dir, '**', 'Payload', '**', '*.app', 'Contents', 'Info.plist')).select do |path|
+    relative = path.split('/Payload/', 2)[1].to_s
+    app_components = relative.split('/').select { |component| component.end_with?('.app') }
+    app_components.length == 1
+  end.uniq.sort
+end
+
+def extract_app_info_from_package(pkg_path, expected_bundle_id: nil)
 
   if pkg_path.end_with?('.ipa')
     Dir.mktmpdir('asc_info_plist') do |tmpdir|
       unzip_ok = system("unzip -qq -o #{Shellwords.escape(pkg_path)} 'Payload/*.app/Info.plist' -d #{Shellwords.escape(tmpdir)} >/dev/null 2>&1")
       return nil unless unzip_ok
 
-      info_path = Dir.glob(File.join(tmpdir, 'Payload', '*.app', 'Info.plist')).first
-      return read_plist.call(info_path)
+      info_paths = Dir.glob(File.join(tmpdir, 'Payload', '*.app', 'Info.plist'))
+      return select_unique_package_app_info(info_paths, expected_bundle_id: expected_bundle_id)
     end
   elsif pkg_path.end_with?('.pkg')
     Dir.mktmpdir('asc_pkg_info') do |tmpdir|
@@ -994,9 +1011,8 @@ def extract_app_info_from_package(pkg_path)
       expand_ok = system('pkgutil', '--expand-full', pkg_path, expanded, out: File::NULL, err: File::NULL)
       return nil unless expand_ok
 
-      candidates = Dir.glob(File.join(expanded, '**', 'Payload', '*.app', 'Contents', 'Info.plist'))
-      info_path = candidates.find { |p| !p.include?('/Frameworks/') && !p.include?('/PlugIns/') } || candidates.first
-      return read_plist.call(info_path)
+      info_paths = top_level_pkg_app_info_paths(expanded)
+      return select_unique_package_app_info(info_paths, expected_bundle_id: expected_bundle_id)
     end
   end
 
@@ -1005,36 +1021,33 @@ end
 
 # ─── Upload Build ───
 
-def upload_build(pkg_path, app_id:, version:)
-  log_info "Uploading #{File.basename(pkg_path)} via altool..."
-
-  credentials = require_asc_credentials!
+def exact_appstore_upload_command(pkg_path, app_id:, credentials:)
   package_info = extract_app_info_from_package(pkg_path)
-  cmd =
-    if package_info
-      [
-        'xcrun', 'altool', '--upload-package', pkg_path,
-        '-t', pkg_path.end_with?('.ipa') ? 'ios' : 'macos',
-        '--apple-id', app_id,
-        '--bundle-id', package_info[:bundle_id],
-        '--bundle-version', package_info[:build_number],
-        '--bundle-short-version-string', package_info[:short_version],
-        '--wait',
-        '--apiKey', credentials[:key_id],
-        '--apiIssuer', credentials[:issuer_id]
-      ]
-    else
-      [
-        'xcrun', 'altool', '--upload-app',
-        '-f', pkg_path,
-        '--apiKey', credentials[:key_id],
-        '--apiIssuer', credentials[:issuer_id],
-        '-t', pkg_path.end_with?('.ipa') ? 'ios' : 'macos'
-      ]
-    end
+  return nil unless package_info
 
-  output = `#{cmd.map { |c| Shellwords.escape(c) }.join(' ')} 2>&1`
-  success = $?.success?
+  [
+    'xcrun', 'altool', '--upload-package', pkg_path,
+    '-t', pkg_path.end_with?('.ipa') ? 'ios' : 'macos',
+    '--apple-id', app_id,
+    '--bundle-id', package_info[:bundle_id],
+    '--bundle-version', package_info[:build_number],
+    '--bundle-short-version-string', package_info[:short_version],
+    '--wait',
+    '--apiKey', credentials[:key_id],
+    '--apiIssuer', credentials[:issuer_id]
+  ]
+end
+
+def classify_appstore_upload_output(success:, output:)
+  duplicate_upload_patterns = [
+    /already been uploaded/i,
+    /already exists/i,
+    /bundle version must be higher than the previously uploaded version/i,
+    /ENTITY_ERROR\.ATTRIBUTE\.INVALID\.DUPLICATE/i,
+    /attribute with a value that has already been used/i
+  ]
+  return :duplicate if duplicate_upload_patterns.any? { |pattern| output.match?(pattern) }
+
   output_failure_patterns = [
     /upload failed/i,
     /validation failed/i,
@@ -1043,96 +1056,89 @@ def upload_build(pkg_path, app_id:, version:)
     /app sandbox not enabled/i
   ]
   reported_failure = output_failure_patterns.any? { |pattern| output.match?(pattern) }
+  return :uploaded if success && !reported_failure
 
-  if success && !reported_failure
-    log_info 'Upload complete.'
-  else
-    duplicate_upload_patterns = [
-      /already been uploaded/i,
-      /already exists/i,
-      /bundle version must be higher than the previously uploaded version/i,
-      /ENTITY_ERROR\.ATTRIBUTE\.INVALID\.DUPLICATE/i,
-      /attribute with a value that has already been used/i
-    ]
-    if duplicate_upload_patterns.any? { |pattern| output.match?(pattern) }
-      log_info 'Build already uploaded — continuing.'
-      return true
-    end
-    log_error "altool upload failed:\n#{output}"
-    return false
+  :failed
+end
+
+def upload_build(pkg_path, app_id:, version:)
+  log_info "Uploading #{File.basename(pkg_path)} via altool..."
+
+  credentials = require_asc_credentials!
+  cmd = exact_appstore_upload_command(pkg_path, app_id: app_id, credentials: credentials)
+  unless cmd
+    log_error 'Could not reparse one exact top-level app identity from the staged package. Refusing generic upload fallback.'
+    return :failed
   end
 
-  true
+  output = `#{cmd.map { |c| Shellwords.escape(c) }.join(' ')} 2>&1`
+  outcome = classify_appstore_upload_output(success: $?.success?, output: output)
+  case outcome
+  when :uploaded
+    log_info 'Upload complete.'
+  when :duplicate
+    log_error 'Build already exists in ASC. Increment the build number, create a fresh package, and retry the normal upload.'
+  else
+    log_error "altool upload failed:\n#{output}"
+  end
+  outcome
 end
 
 # ─── Poll for Build Processing ───
 
-def asc_build_rows(app_id, asc_platform, token, limit: 50)
-  path = "/builds?filter[app]=#{app_id}&filter[preReleaseVersion.platform]=#{asc_platform}" \
-         "&include=preReleaseVersion&limit=#{limit}"
-  resp = asc_get(path, token: token)
-  return [] unless resp && resp['data']
-
-  pre_versions = {}
-  (resp['included'] || []).each do |entry|
-    next unless entry['type'] == 'preReleaseVersions'
-
-    pre_versions[entry['id']] = entry.dig('attributes', 'version')
-  end
-
-  (resp['data'] || []).map do |build|
-    attrs = build['attributes'] || {}
-    pre_id = build.dig('relationships', 'preReleaseVersion', 'data', 'id')
-    {
-      id: build['id'],
-      build: attrs['version'].to_s,
-      processing: attrs['processingState'].to_s,
-      expired: attrs['expired'],
-      uploaded: attrs['uploadedDate'].to_s,
-      prerelease: pre_versions[pre_id].to_s
-    }
-  end
-end
-
-def summarize_build_rows(rows, max: 6)
-  rows
-    .sort_by { |row| [row[:uploaded].to_s, row[:build].to_s] }
-    .reverse
-    .first(max)
-    .map { |row| "#{row[:build]}@#{row[:prerelease]} (#{row[:processing]})" }
-    .join(', ')
-end
-
-def wait_for_build(app_id, version, asc_platform, token, skip_upload: false)
-  log_info "Waiting for build #{version} to finish processing (up to #{BUILD_POLL_TIMEOUT / 60} min)..."
+def wait_for_build(app_id, build_number, asc_platform, token, expected_marketing_version:)
+  log_info "Waiting for build #{build_number} (version #{expected_marketing_version}) to finish processing (up to #{BUILD_POLL_TIMEOUT / 60} min)..."
 
   deadline = Time.now + BUILD_POLL_TIMEOUT
   build_id = nil
-  skip_upload_presence_checked = false
 
   while Time.now < deadline
-    path = "/builds?filter[app]=#{app_id}&filter[version]=#{version}" \
+    path = "/builds?filter[app]=#{app_id}&filter[version]=#{build_number}" \
            "&filter[preReleaseVersion.platform]=#{asc_platform}" \
            "&filter[processingState]=PROCESSING,VALID,INVALID" \
            "&sort=-uploadedDate&limit=5&include=preReleaseVersion"
     resp = asc_get(path, token: token)
 
     if resp && resp['data']
-      pr_versions = {}
+      prerelease_identities = {}
       (resp['included'] || []).each do |entry|
         next unless entry['type'] == 'preReleaseVersions'
 
-        pr_versions[entry['id']] = entry.dig('attributes', 'platform')
+        prerelease_identities[entry['id']] = {
+          platform: entry.dig('attributes', 'platform').to_s,
+          version: entry.dig('attributes', 'version').to_s
+        }
       end
 
-      # Find build matching our platform
-      build = resp['data'].find do |b|
+      numbered_builds = resp['data'].select do |b|
         attrs = b['attributes'] || {}
-        next false unless attrs['version'].to_s == version.to_s
-
-        pr_id = b.dig('relationships', 'preReleaseVersion', 'data', 'id')
-        platform = pr_versions[pr_id]
-        platform.nil? || platform == asc_platform
+        attrs['version'].to_s == build_number.to_s
+      end
+      if numbered_builds.any?
+        missing_identity = numbered_builds.any? do |build|
+          prerelease_identities[build.dig('relationships', 'preReleaseVersion', 'data', 'id')].nil?
+        end
+        if missing_identity
+          log_error "ASC build #{build_number} is missing included pre-release version identity; refusing ambiguous selection."
+          return nil
+        end
+        exact_builds = numbered_builds.select do |build|
+          identity = prerelease_identities[build.dig('relationships', 'preReleaseVersion', 'data', 'id')]
+          identity[:platform] == asc_platform && identity[:version] == expected_marketing_version.to_s
+        end
+        if exact_builds.empty?
+          identities = numbered_builds.map do |build|
+            prerelease_identities[build.dig('relationships', 'preReleaseVersion', 'data', 'id')]
+          end
+          summary = identities.map { |identity| "#{identity[:version]}@#{identity[:platform]}" }.uniq.join(', ')
+          log_error "ASC build #{build_number} belongs to #{summary}, not #{expected_marketing_version}@#{asc_platform}."
+          return nil
+        end
+        if exact_builds.length != 1
+          log_error "ASC build #{build_number} is ambiguous for #{expected_marketing_version}@#{asc_platform}."
+          return nil
+        end
+        build = exact_builds.first
       end
 
       if build
@@ -1141,26 +1147,16 @@ def wait_for_build(app_id, version, asc_platform, token, skip_upload: false)
 
         case state
         when 'VALID'
-          log_info "Build #{version} processed successfully (ID: #{build_id})"
+          log_info "Build #{build_number} processed successfully (ID: #{build_id})"
           return build_id
         when 'INVALID'
-          log_error "Build #{version} failed processing (INVALID)"
+          log_error "Build #{build_number} failed processing (INVALID)"
           return nil
         else
           log_info "Build processing... (#{state})"
         end
       else
         log_info 'Build not yet visible in ASC...'
-        if skip_upload && !skip_upload_presence_checked
-          rows = asc_build_rows(app_id, asc_platform, token, limit: 25)
-          unless rows.any? { |row| row[:build].to_s == version.to_s }
-            log_error "Requested existing build #{version} is not visible in ASC for #{asc_platform}."
-            summary = summarize_build_rows(rows)
-            log_error(summary.empty? ? 'No candidate builds are currently visible for this platform.' : "Visible builds: #{summary}")
-            return nil
-          end
-          skip_upload_presence_checked = true
-        end
       end
     end
 
@@ -4214,35 +4210,7 @@ def detect_project_build_number(project_root)
 end
 
 def extract_build_number_from_package(pkg_path)
-  if pkg_path.end_with?('.ipa')
-    Dir.mktmpdir('asc_info_plist') do |tmpdir|
-      unzip_ok = system("unzip -qq -o #{Shellwords.escape(pkg_path)} 'Payload/*.app/Info.plist' -d #{Shellwords.escape(tmpdir)} >/dev/null 2>&1")
-      return nil unless unzip_ok
-
-      info_path = Dir.glob(File.join(tmpdir, 'Payload', '*.app', 'Info.plist')).first
-      return nil unless info_path && File.exist?(info_path)
-
-      bundle_version = `"/usr/libexec/PlistBuddy" -c 'Print :CFBundleVersion' #{Shellwords.escape(info_path)} 2>/dev/null`.strip
-      return bundle_version unless bundle_version.empty?
-      nil
-    end
-  elsif pkg_path.end_with?('.pkg')
-    Dir.mktmpdir('asc_pkg_info') do |tmpdir|
-      expanded = File.join(tmpdir, 'expanded')
-      expand_ok = system('pkgutil', '--expand-full', pkg_path, expanded, out: File::NULL, err: File::NULL)
-      return nil unless expand_ok
-
-      candidates = Dir.glob(File.join(expanded, '**', 'Payload', '*.app', 'Contents', 'Info.plist'))
-      info_path = candidates.find { |p| !p.include?('/Frameworks/') && !p.include?('/PlugIns/') } || candidates.first
-      return nil unless info_path && File.exist?(info_path)
-
-      bundle_version = `"/usr/libexec/PlistBuddy" -c 'Print :CFBundleVersion' #{Shellwords.escape(info_path)} 2>/dev/null`.strip
-      return bundle_version unless bundle_version.empty?
-      nil
-    end
-  else
-    nil
-  end
+  extract_app_info_from_package(pkg_path)&.dig(:build_number)
 end
 
 def wait_for_version_state_transition(app_id:, asc_platform:, version_string:, timeout_seconds: 300, interval_seconds: 8)
@@ -4267,7 +4235,7 @@ def appstore_fingerprint_entries(project_root, paths)
   root_real = File.realpath(project_root)
   Array(paths).sort.map do |relative_path|
     next if relative_path == 'outputs/appstore_preflight_status.json'
-    next if relative_path.start_with?('.sanemaster/appstore-preflight-bindings/')
+    next if relative_path.start_with?('outputs/appstore-preflight-bindings/')
 
     absolute_path = File.expand_path(relative_path, root_real)
     raise "fingerprint path escapes project root: #{relative_path}" unless absolute_path.start_with?("#{root_real}/")
@@ -4329,28 +4297,50 @@ rescue StandardError
   nil
 end
 
-def appstore_asc_submission_target(build_id:, build_number:, version:, platform:)
-  {
-    'type' => 'asc_build',
-    'platform' => platform.to_s.downcase,
-    'ascBuildId' => build_id.to_s,
-    'version' => version.to_s,
-    'build' => build_number.to_s
-  }
-end
-
 def appstore_submission_targets_match?(receipt_target, expected_target)
   return false unless receipt_target.is_a?(Hash) && expected_target.is_a?(Hash)
+  return false unless expected_target['type'].to_s == 'package'
 
-  keys = case expected_target['type'].to_s
-         when 'package'
-           %w[type platform fileName sha256 size bundleId version build]
-         when 'asc_build'
-           %w[type platform ascBuildId version build]
-         else
-           return false
-         end
+  keys = %w[type platform fileName sha256 size bundleId version build]
   keys.all? { |key| receipt_target[key].to_s == expected_target[key].to_s }
+end
+
+def appstore_package_bytes_match_target?(pkg_path, submission_target)
+  return false unless submission_target.is_a?(Hash) && submission_target['type'].to_s == 'package'
+  return false unless File.file?(pkg_path)
+
+  Digest::SHA256.file(pkg_path).hexdigest == submission_target['sha256'].to_s &&
+    File.size(pkg_path).to_s == submission_target['size'].to_s
+rescue StandardError
+  false
+end
+
+def stage_appstore_package(pkg_path, project_root:)
+  return false unless File.file?(pkg_path)
+
+  project = File.realpath(project_root)
+  bindings_root = File.join(project, 'outputs', 'appstore-preflight-bindings')
+  FileUtils.mkdir_p(bindings_root, mode: 0o700)
+  metadata = File.lstat(bindings_root)
+  return false unless metadata.directory? && !metadata.symlink?
+  return false unless File.realpath(bindings_root).start_with?("#{project}/")
+
+  File.chmod(0o700, bindings_root)
+  dir = Dir.mktmpdir('upload-', bindings_root)
+  File.chmod(0o700, dir)
+  staged_path = File.join(dir, File.basename(pkg_path))
+  FileUtils.copy_file(pkg_path, staged_path)
+  File.chmod(0o400, staged_path)
+  at_exit do
+    FileUtils.remove_entry_secure(dir) if Dir.exist?(dir)
+    Dir.rmdir(bindings_root) if Dir.exist?(bindings_root) && Dir.empty?(bindings_root)
+  rescue SystemCallError
+    nil
+  end
+  staged_path
+rescue StandardError => e
+  log_error "Could not create immutable verified upload staging copy: #{e.message}"
+  false
 end
 
 def refresh_appstore_preflight_binding(project_root:, submission_target:, command_runner: nil)
@@ -4358,14 +4348,7 @@ def refresh_appstore_preflight_binding(project_root:, submission_target:, comman
   return [false, "missing canonical preflight command: #{script}"] unless File.file?(script)
 
   command = [RbConfig.ruby, script, 'appstore_preflight', '--platform', submission_target.fetch('platform')]
-  if submission_target['type'] == 'package'
-    command += ['--pkg', submission_target.fetch('path')]
-  else
-    command += [
-      '--asc-build-id', submission_target.fetch('ascBuildId'),
-      '--build-number', submission_target.fetch('build')
-    ]
-  end
+  command += ['--pkg', submission_target.fetch('path')]
 
   success = command_runner ? command_runner.call(command) : system(*command)
   [success == true, success == true ? command : 'App Store preflight submission binding failed']
@@ -4398,7 +4381,7 @@ def fresh_appstore_preflight_receipt?(project_root:, app_id:, version:, platform
   end
 
   unless appstore_submission_targets_match?(receipt['submissionTarget'], submission_target)
-    return [false, 'appstore_preflight receipt is not bound to the exact package or ASC build selected for submission']
+    return [false, 'appstore_preflight receipt is not bound to the exact fresh package selected for submission']
   end
 
   generated_at = Time.parse(receipt['generatedAt'].to_s)
@@ -4433,7 +4416,7 @@ OptionParser.new do |opts|
   opts.on('--build-number NUMBER', 'Build number override (CFBundleVersion)') { |v| options[:build_number] = v }
   opts.on('--platform PLATFORM', 'macos or ios') { |v| options[:platform] = v }
   opts.on('--project-root PATH', 'Project root directory') { |v| options[:project_root] = v }
-  opts.on('--skip-upload', 'Skip binary upload; use existing processed build in ASC') { options[:skip_upload] = true }
+  opts.on('--skip-upload', 'Retired: existing ASC build reuse is not safely supported') { options[:skip_upload] = true }
   opts.on('--skip-screenshots', 'Skip screenshot upload; use screenshots already present in ASC') { options[:skip_screenshots] = true }
   opts.on('--screenshots-only', 'Upload screenshots to an existing ASC version (no upload, no build attach, no submission)') { options[:screenshots_only] = true }
   opts.on('--iap-only', 'Ensure configured App Store IAP metadata is complete and exit') { options[:iap_only] = true }
@@ -4451,6 +4434,12 @@ OptionParser.new do |opts|
   opts.on('--sync-metadata-only', 'Sync metadata/accessibility/review fields for an existing version (no upload, no submission)') { options[:sync_metadata_only] = true }
   opts.on('--test-screenshots', 'Test screenshot resize only (no API calls)') { options[:test_screenshots] = true }
 end.parse!
+
+if options[:skip_upload]
+  log_error '--skip-upload is retired because the exact remote ASC bytes cannot be proven.'
+  log_error 'Increment the build number, create a fresh package, and use the normal upload path.'
+  exit 1
+end
 
 # Test screenshots mode
 if options[:test_screenshots]
@@ -4983,8 +4972,7 @@ if options[:iap_only]
 end
 
 # Validate required options
-required = %i[app_id version platform project_root]
-required << :pkg unless options[:skip_upload]
+required = %i[pkg app_id version platform project_root]
 required.each do |key|
   unless options[key]
     log_error "Missing required option: --#{key.to_s.tr('_', '-')}"
@@ -5004,7 +4992,7 @@ unless asc_platform
   exit 1
 end
 
-if !options[:skip_upload] && !File.exist?(pkg_path)
+unless File.exist?(pkg_path)
   log_error "Package not found: #{pkg_path}"
   exit 1
 end
@@ -5033,61 +5021,40 @@ if !config_app_id.empty?
   end
 end
 
-artifact_label = options[:skip_upload] ? 'existing ASC build' : File.basename(pkg_path)
-log_info "App Store submission: #{artifact_label} v#{version} (#{platform})"
+log_info "App Store submission: #{File.basename(pkg_path)} v#{version} (#{platform})"
 log_info "App ID: #{app_id}"
 
-build_number =
-  if options[:build_number]
-    options[:build_number].to_s
-  elsif options[:skip_upload]
-    detected_build_number = detect_project_build_number(project_root)
-    if detected_build_number
-      log_info "Using build number #{detected_build_number} from project metadata."
-      detected_build_number
-    else
-      default_build_number(version)
-    end
-  end
+build_number = options[:build_number]&.to_s
+
+staged_pkg_path = stage_appstore_package(pkg_path, project_root: project_root)
+unless staged_pkg_path
+  log_error 'Could not stage a private immutable copy of the App Store package.'
+  exit 1
+end
+pkg_path = staged_pkg_path
+package_target = appstore_package_submission_target(pkg_path, platform: platform)
+unless package_target
+  log_error 'Could not extract one exact top-level app identity from the App Store package. Refusing submission.'
+  exit 1
+end
+expected_package_platform = pkg_path.end_with?('.ipa') ? 'ios' : (pkg_path.end_with?('.pkg') ? 'macos' : '')
+if expected_package_platform != platform.to_s.downcase
+  log_error "Package type does not match submission platform: package=#{expected_package_platform.inspect}, submit=#{platform}"
+  exit 1
+end
+if package_target['version'] != version.to_s
+  log_error "Package version #{package_target['version']} does not match requested version #{version}."
+  exit 1
+end
+if build_number && package_target['build'] != build_number
+  log_error "Package build #{package_target['build']} does not match --build-number #{build_number}."
+  exit 1
+end
+build_number = package_target['build']
 
 token = nil
 build_id = nil
-submission_target = nil
-if options[:skip_upload]
-  token = generate_jwt
-  build_id = wait_for_build(app_id, build_number, asc_platform, token, skip_upload: true)
-  unless build_id
-    log_error "Requested reused build #{build_number} was not found. Refusing version-string fallback in --skip-upload mode."
-    exit 1
-  end
-  submission_target = appstore_asc_submission_target(
-    build_id: build_id,
-    build_number: build_number,
-    version: version,
-    platform: platform
-  )
-else
-  submission_target = appstore_package_submission_target(pkg_path, platform: platform)
-  unless submission_target
-    log_error 'Could not extract an exact identity from the App Store package. Refusing upload.'
-    exit 1
-  end
-
-  expected_package_platform = pkg_path.end_with?('.ipa') ? 'ios' : (pkg_path.end_with?('.pkg') ? 'macos' : '')
-  if expected_package_platform != platform.to_s.downcase
-    log_error "Package type does not match submission platform: package=#{expected_package_platform.inspect}, submit=#{platform}"
-    exit 1
-  end
-  if submission_target['version'] != version.to_s
-    log_error "Package version #{submission_target['version']} does not match requested version #{version}."
-    exit 1
-  end
-  if options[:build_number] && submission_target['build'] != options[:build_number].to_s
-    log_error "Package build #{submission_target['build']} does not match --build-number #{options[:build_number]}."
-    exit 1
-  end
-  build_number = submission_target['build']
-end
+submission_target = package_target
 
 preflight_ok, preflight_detail = fresh_appstore_preflight_receipt?(
   project_root: project_root,
@@ -5122,28 +5089,28 @@ end
 log_info "Fresh App Store preflight receipt: #{preflight_detail}"
 
 # Step 1: Upload build
-unless options[:skip_upload]
-  unless upload_build(pkg_path, app_id: app_id, version: version)
-    log_error 'Build upload failed. Aborting.'
-    exit 1
-  end
-else
-  log_info 'Skipping binary upload (--skip-upload).'
+unless appstore_package_bytes_match_target?(pkg_path, package_target)
+  log_error 'App Store package bytes changed after exact-target preflight. Refusing to upload an unaudited package.'
+  exit 1
+end
+upload_outcome = upload_build(pkg_path, app_id: app_id, version: version)
+if upload_outcome == :duplicate
+  log_error 'Existing-build reuse is disabled because exact remote bytes cannot be proven.'
+  log_error 'Increment the build number, create a fresh package, and retry the normal upload.'
+  exit 1
+elsif upload_outcome == :failed
+  log_error 'Build upload failed. Aborting.'
+  exit 1
 end
 
 # Step 2: Wait for processing
-unless options[:skip_upload]
-  token = generate_jwt
-  build_id = wait_for_build(app_id, build_number, asc_platform, token, skip_upload: false)
-  unless build_id
-    # Some older projects used the marketing version as CFBundleVersion.
-    log_info "Retrying build lookup with version string #{version}..."
-    build_id = wait_for_build(app_id, version, asc_platform, token, skip_upload: false)
-  end
-end
-
+token = generate_jwt
+build_id = wait_for_build(
+  app_id, build_number, asc_platform, token,
+  expected_marketing_version: version
+)
 unless build_id
-  log_error 'Build not found after processing. Check App Store Connect manually.'
+  log_error "Uploaded build #{build_number} was not found by exact build number, marketing version, and platform."
   exit 1
 end
 
