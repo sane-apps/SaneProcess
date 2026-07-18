@@ -6138,6 +6138,8 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert(!clean_gate.nil?, 'expected ensure_git_clean body in release.sh')
       assert_includes(clean_gate, '.sane/customer_ui_action_receipt.json|outputs/customer_ui_action_receipt.json')
       assert_includes(clean_gate, 'signed release_preflight receipt is revalidated')
+      assert_includes(release_script, 'generated_customer_ui_runtime_evidence_only "${local_dirty_files}"')
+      assert_includes(release_script, 'generated_customer_ui_runtime_evidence_only "${peer_dirty_files}"')
 
       Dir.mktmpdir('release-clean-runtime-evidence-') do |dir|
         fake_bin = File.join(dir, 'bin')

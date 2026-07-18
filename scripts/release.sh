@@ -2524,6 +2524,27 @@ array_contains() {
     return 1
 }
 
+generated_customer_ui_runtime_evidence_only() {
+    local status_output="$1"
+    local line path found=0
+
+    [ -n "${status_output}" ] || return 1
+    while IFS= read -r line; do
+        [ -z "${line}" ] && continue
+        path="${line#?? }"
+        case "${path}" in
+            .sane/customer_ui_action_receipt.json|outputs/customer_ui_action_receipt.json)
+                found=1
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    done <<< "${status_output}"
+
+    [ "${found}" -eq 1 ]
+}
+
 ensure_git_clean() {
     if mini_route_context_active; then
         local routed_dirty_count
@@ -3054,14 +3075,18 @@ enforce_machine_reconcile() {
     fi
 
     if [ "${local_dirty}" != "0" ]; then
-        log_error "Local repo is not clean (${local_dirty} change(s)). Resolve before release."
-        if [ -n "${local_dirty_files}" ]; then
-            log_error "Local dirty files:"
-            while IFS= read -r line; do
-                [ -n "${line}" ] && log_error "  ${line}"
-            done <<< "${local_dirty_files}"
+        if generated_customer_ui_runtime_evidence_only "${local_dirty_files}"; then
+            log_info "Allowing generated customer UI evidence through machine reconcile while signed release_preflight evidence is revalidated."
+        else
+            log_error "Local repo is not clean (${local_dirty} change(s)). Resolve before release."
+            if [ -n "${local_dirty_files}" ]; then
+                log_error "Local dirty files:"
+                while IFS= read -r line; do
+                    [ -n "${line}" ] && log_error "  ${line}"
+                done <<< "${local_dirty_files}"
+            fi
+            exit 1
         fi
-        exit 1
     fi
 
     if [ -n "${peer_branch}" ] && [ "${local_branch}" != "${peer_branch}" ]; then
@@ -3100,18 +3125,22 @@ enforce_machine_reconcile() {
     fi
 
     if [ "${peer_dirty}" != "0" ]; then
-        log_error "Peer repo has ${peer_dirty} uncommitted change(s): ${peer_host}:${peer_repo_path}"
-        log_error "Reconcile both machines before release, or use --allow-unsynced-peer for emergencies."
         peer_dirty_files=$(ssh -o BatchMode=yes -o ConnectTimeout=6 "${peer_host}" \
             "cd ${peer_path_escaped} >/dev/null 2>&1 && git status --porcelain 2>/dev/null | sed -n '1,50p'" 2>/dev/null || true)
-        if [ -n "${peer_dirty_files}" ]; then
-            log_error "Peer dirty files (first 50):"
-            local peer_line
-            while IFS= read -r peer_line; do
-                [ -n "${peer_line}" ] && log_error "  ${peer_line}"
-            done <<< "${peer_dirty_files}"
+        if generated_customer_ui_runtime_evidence_only "${peer_dirty_files}"; then
+            log_info "Peer has only generated customer UI evidence; signed release_preflight evidence will be revalidated."
+        else
+            log_error "Peer repo has ${peer_dirty} uncommitted change(s): ${peer_host}:${peer_repo_path}"
+            log_error "Reconcile both machines before release, or use --allow-unsynced-peer for emergencies."
+            if [ -n "${peer_dirty_files}" ]; then
+                log_error "Peer dirty files (first 50):"
+                local peer_line
+                while IFS= read -r peer_line; do
+                    [ -n "${peer_line}" ] && log_error "  ${peer_line}"
+                done <<< "${peer_dirty_files}"
+            fi
+            exit 1
         fi
-        exit 1
     fi
 
     if [ -n "${peer_branch}" ] && [ "${peer_ref_branch}" != "${peer_branch}" ]; then
