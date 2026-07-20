@@ -18,6 +18,7 @@ ruby scripts/hooks/test_hooks.rb                  # hook integration suite
 ruby scripts/SaneMaster.rb tool_discovery --query "..." # tool/MCP proof receipt
 ruby scripts/SaneMaster.rb process_metrics --export-otel outputs/process-traces.json
 ruby scripts/SaneMaster.rb route_cost_review --json # rank expensive proof-route risks
+ruby scripts/SaneMaster.rb ai_meter --days 7 --json # read Cloudflare AI usage and estimated cost
 ruby scripts/SaneMaster.rb context_bundle --task "review this workflow"
 cd /tmp/repo && /path/to/SaneProcess/scripts/init.sh --client generic
 ```

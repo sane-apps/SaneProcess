@@ -589,6 +589,43 @@ project scopes.
 
 ---
 
+### ADR-013: Portfolio AI metering stays read-only and content-free (2026-07-20)
+
+**Context:** SaneLot and SaneCite use Workers AI through different routing
+paths. Existing logs and health counters do not provide one privacy-safe view
+of attempts, latency, token coverage, and recurring post-credit model cost.
+
+**Decision:** `SaneMaster.rb ai_meter` reads the shared `sane_ai_meter`
+Analytics Engine dataset through the existing Mini Cloudflare credential path.
+The versioned `v1` schema contains only allowlisted static labels, finite measures,
+and bounded quality codes; it never contains prompts, responses,
+customer/document IDs, exception text, request IDs, or Gateway IDs. Queries
+weight sampled rows with `_sample_interval`, report weighted average latency
+rather than a fake p95, and distinguish unavailable credentials,
+delayed/empty ingestion, and query errors. A dated allowlist uses Cloudflare's
+official token pricing; stale rates or unpriced models suppress the estimate.
+The morning report consumes the same command output. No new dashboard, Worker,
+database, or automation is introduced.
+
+The fixed slots are: `index1=product`; blobs 1-9 are `event_type`,
+`schema_version`, `product`, `task`, `context`, `model`, `route`,
+`outcome`, and `usage_state`; doubles 1-8 are attempt ordinal, latency
+milliseconds, input tokens, output tokens, total tokens, usage-available flag,
+success flag, and quality code. Attempt ordinal is never summed as a call
+count. Inference attempts currently use quality `-1` (unknown); canaries and
+benchmarks remain separate evidence and are not queried by this report.
+
+**Consequences:**
+- Both products can be compared without enabling AI Gateway request logging or
+  storing customer content.
+- Missing usage remains visible as token coverage instead of fabricated cost.
+- Retry counts come from attempt ordinals. Served fallbacks use the exact
+  `fallback_success` outcome and can therefore be counted without inference.
+- The result is a recurring gross post-credit estimate, not invoice or credit
+  truth.
+
+---
+
 ## 4. Landscape
 
 ### Comparison

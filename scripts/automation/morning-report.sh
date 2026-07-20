@@ -404,7 +404,28 @@ print(f'{total_pv}|{total_uq}|{top_day} ({top_uq})')
 }
 
 # =============================================================================
-# Section 4: GitHub Traction
+# Section 4: AI Usage & Cost (Analytics Engine)
+# =============================================================================
+section_ai_meter() {
+  local acct
+  acct=$(get_cf_account)
+  local meter_error="$CACHE_DIR/ai_meter_error.log"
+
+  if ! CLOUDFLARE_API_TOKEN="$CF_TOKEN" CLOUDFLARE_ACCOUNT_ID="$acct" \
+    ruby "$SCRIPT_DIR/../SaneMaster.rb" \
+      ai_meter --days 7 --markdown >> "$REPORT_FILE" 2> "$meter_error"; then
+    echo "## AI Usage & Cost (7-day)" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    echo "**Status:** query_error (ai_meter command failed)" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    echo "---" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    return 1
+  fi
+}
+
+# =============================================================================
+# Section 5: GitHub Traction
 # =============================================================================
 section_github_traction() {
   echo "## GitHub" >> "$REPORT_FILE"
@@ -1049,6 +1070,7 @@ section_git_status() {
 safe_section "Revenue" section_revenue
 safe_section "Downloads" section_downloads
 safe_section "Website Traffic" section_website_traffic
+safe_section "AI Meter" section_ai_meter
 safe_section "GitHub" section_github_traction
 safe_section "Customer Intel" section_customer_intel
 safe_section "Listing Actions" section_listing_actions

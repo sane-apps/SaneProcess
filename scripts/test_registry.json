@@ -568,6 +568,15 @@
       ]
     },
     {
+      "path": "scripts/sanemaster/ai_meter_test.rb",
+      "label": "SaneProcess Cloudflare AI meter tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/ai_meter_test.rb"
+      ]
+    },
+    {
       "path": "scripts/sanemaster/command_registry_test.rb",
       "label": "SaneProcess command registry tests",
       "status": "required",

@@ -81,6 +81,7 @@ require_relative 'sanemaster/customer_ui_contract'
 require_relative 'sanemaster/bootstrap'
 require_relative 'sanemaster/test_mode'
 require_relative 'sanemaster/process_metrics'
+require_relative 'sanemaster/ai_meter'
 require_relative 'sanemaster/near_miss_review'
 require_relative 'sanemaster/verify_failure_review'
 require_relative 'sanemaster/process_eval'
@@ -124,6 +125,7 @@ class SaneMaster
   include SaneMasterModules::Bootstrap
   include SaneMasterModules::TestMode
   include SaneMasterModules::ProcessMetrics
+  include SaneMasterModules::AIMeter
   include SaneMasterModules::NearMissReview
   include SaneMasterModules::VerifyFailureReview
   include SaneMasterModules::ProcessEval
@@ -193,6 +195,7 @@ class SaneMaster
         'release_readiness' => { args: '[--json] [--app APP] [--scope candidate|portfolio]', desc: 'Report candidate patch readiness separately from portfolio health' },
         'launch_readiness' => { args: '[--json] [--max-age-days N]', desc: 'Validate launch gates for new launch actions while treating already-live product proof drift as advisory' },
         'process_metrics' => { args: '[--json] [--export-json PATH] [--export-html PATH] [--export-otel PATH]', desc: 'Summarize verify churn, session quality, hook blocks, and export audit traces' },
+        'ai_meter' => { args: '[--days N] [--json|--markdown]', desc: 'Read Cloudflare AI usage, reliability, latency, token coverage, and estimated cost' },
         'route_cost_review' => { args: '[--json] [--metrics PATH] [--limit N|--all] [--min-count N] [--include-bookkeeping]', desc: 'Rank expensive workflow receipts and proof-scope misroute risks' },
         'near_miss_review' => { args: '[--json] [--metrics PATH] [--limit N|--all] [--min-count N] [--include-test-events]', desc: 'Mine process telemetry for useful near-miss guard/eval candidates' },
         'verify_failure_review' => { args: '[--json] [--metrics PATH] [--limit N|--all] [--min-count N]', desc: 'Cluster zero-test verify failures by likely root cause' },
@@ -409,6 +412,7 @@ class SaneMaster
                                   validation-report
                                   process_metrics
                                   sop_metrics
+                                  ai_meter
                                   route_cost_review
                                   route-cost-review
                                   rcr
@@ -1987,6 +1991,8 @@ PY
       )
     when 'process_metrics', 'sop_metrics'
       process_metrics_dashboard(args)
+    when 'ai_meter'
+      ai_meter(args)
     when 'route_cost_review', 'route-cost-review', 'rcr'
       route_cost_review(args)
     when 'near_miss_review', 'near-miss-review', 'nmr'
