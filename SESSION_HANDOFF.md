@@ -16,8 +16,10 @@ dated research, Serena, AgentMemory, and durable architecture decisions.
   fallbacks, latency, token coverage, token totals, and dated cost estimates for
   SaneLot and SaneCite from the shared Cloudflare Analytics Engine
   `sane_ai_meter` v1 dataset. The existing morning report consumes the command;
-  no new Worker, dashboard, recurring automation, or producer-side mutation was
-  added.
+  no new Worker, dashboard, or producer-side mutation was added. The existing
+  Mini-local `saneapps-launch-ops` automation now performs a Friday seven-day
+  portfolio review with cost, reliability, coverage, and separate quality
+  evidence gates, so the owner does not need to remember to run it.
 - The final eight-file rollout patch is
   `outputs/ai-meter/saneprocess-ai-meter.patch`, SHA-256
   `51b3b0af5566f32f908f85989f8a5b7b0964688bb44228e2f8667b4dd132cf1d`.
