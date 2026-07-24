@@ -66,7 +66,7 @@ def build_default_sites(root: Path = SANE_APPS_ROOT) -> list[Site]:
         Site("SaneVideo", root / "apps/SaneVideo/docs", "https://sanevideo.com", "/images/og-image.png"),
         Site(
             "SaneApps",
-            root / "web/saneapps.com",
+            root / "websites/saneapps.com",
             "https://saneapps.com",
             "/og-image.png",
             {"bundle.html": "/bundle-og-image.png"},
