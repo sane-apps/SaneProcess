@@ -99,14 +99,21 @@ snapshot_dirty_repo() {
       while IFS= read -r -d '' tracked; do
         snapshot_path_allowed "$tracked" || continue
         printf 'tracked\0%s\0' "$tracked"
-        shasum -a 256 "$repo/$tracked"
+        if [[ -f "$repo/$tracked" ]]; then
+          shasum -a 256 "$repo/$tracked"
+        fi
       done < <(git -C "$repo" diff --name-only --diff-filter=ACMRTUXB -z HEAD)
       while IFS= read -r -d '' deleted; do
         printf 'deleted\0%s\0' "$deleted"
       done < <(git -C "$repo" diff --name-only --diff-filter=D -z HEAD)
       while IFS= read -r -d '' untracked; do
         snapshot_path_allowed "$untracked" || continue
-        shasum -a 256 "$repo/$untracked"
+        # Nested repos and worktrees arrive as one directory entry that cannot be
+        # hashed; the path keeps them in the fingerprint, only files get a sum.
+        printf 'untracked\0%s\0' "$untracked"
+        if [[ -f "$repo/$untracked" ]]; then
+          shasum -a 256 "$repo/$untracked"
+        fi
       done < <(git -C "$repo" ls-files --others --exclude-standard -z)
     } | shasum -a 256 | cut -d' ' -f1
   )

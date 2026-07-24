@@ -430,6 +430,23 @@ tests << lambda do
     assert(File.read(File.join(snapshot, 'status.txt')).include?('tracked.txt'), 'status receipt missing dirty file')
     assert(File.read(File.join(repo, 'recovery.orig')) == "must survive\n", 'snapshot-only deleted recovery residue')
     assert(File.read(File.join(repo, '.DS_Store')) == "must survive too\n", 'snapshot-only mutated Finder residue')
+
+    # A nested repo or worktree is reported by `git ls-files --others` as a single
+    # directory entry, which shasum cannot hash. It must still register in the
+    # dirty fingerprint instead of being dropped with a hashing error.
+    fingerprint_before = File.readlines(File.join(snapshot_root, 'latest.txt'), chomp: true).first
+    nested = File.join(repo, 'nested-evidence')
+    FileUtils.mkdir_p(nested)
+    run({}, 'git', 'init', '-b', 'main', nested)
+    write(File.join(nested, 'evidence.txt'), "nested\n")
+    _nested_stdout, nested_stderr, nested_status = run({ 'HOME' => home }, 'bash', File.join(ROOT, 'automation', 'git-sync-safe.sh'), '--snapshot-only') { true }
+    assert(nested_status.success?,
+           "snapshot-only must survive a nested repo\nSTDERR:\n#{nested_stderr}")
+    assert(!nested_stderr.include?('Is a directory'),
+           "nested repo must not be handed to shasum as a directory\nSTDERR:\n#{nested_stderr}")
+    fingerprint_after = File.readlines(File.join(snapshot_root, 'latest.txt'), chomp: true).first
+    assert(fingerprint_before != fingerprint_after,
+           'an untracked nested repo must change the dirty fingerprint, not vanish from it')
   end
 end
 
