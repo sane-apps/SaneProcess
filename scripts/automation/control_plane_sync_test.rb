@@ -447,6 +447,41 @@ tests << lambda do
     fingerprint_after = File.readlines(File.join(snapshot_root, 'latest.txt'), chomp: true).first
     assert(fingerprint_before != fingerprint_after,
            'an untracked nested repo must change the dirty fingerprint, not vanish from it')
+
+    # Dirty-work protection must follow the layout in meta/PROJECT_MAP.md. Products
+    # live in websites/ too, and their uncommitted work was going unsnapshotted.
+    site = File.join(home, 'SaneApps', 'websites', 'FixtureSite')
+    site_origin = File.join(tmp, 'site-origin.git')
+    FileUtils.mkdir_p(site)
+    run({}, 'git', 'init', '--bare', site_origin)
+    run({}, 'git', '-C', site, 'init', '-b', 'main')
+    run({}, 'git', '-C', site, 'config', 'user.email', 'fixture@example.com')
+    run({}, 'git', '-C', site, 'config', 'user.name', 'Fixture')
+    write(File.join(site, 'index.html'), "<h1>clean</h1>\n")
+    run({}, 'git', '-C', site, 'add', 'index.html')
+    run({}, 'git', '-C', site, 'commit', '-m', 'site fixture')
+    run({}, 'git', '-C', site, 'remote', 'add', 'origin', site_origin)
+    run({}, 'git', '-C', site, 'push', '-u', 'origin', 'main')
+    write(File.join(site, 'index.html'), "<h1>uncommitted work</h1>\n")
+
+    _site_stdout, site_stderr, site_status = run({ 'HOME' => home }, 'bash', File.join(ROOT, 'automation', 'git-sync-safe.sh'), '--snapshot-only') { true }
+    assert(site_status.success?, "snapshot-only failed with a websites/ repo\nSTDERR:\n#{site_stderr}")
+    site_snapshot_root = File.join(home, 'SaneApps', 'infra', 'SaneProcess', 'outputs', 'dirty-work-snapshots', 'FixtureSite')
+    assert(File.directory?(site_snapshot_root),
+           'a dirty websites/ repo must get dirty-work snapshot protection')
+
+    # The mutating lane auto-pushes clean main commits. websites/* are Cloudflare
+    # Pages sites that publish on push, so they must stay out of it: broader
+    # snapshot coverage must never turn the daily reconcile into a deploy.
+    run({}, 'git', '-C', site, 'checkout', '--', 'index.html')
+    full_log = File.join(home, 'SaneApps', 'infra', 'SaneProcess', 'outputs', 'git_sync_safe.log')
+    File.write(full_log, '') if File.exist?(full_log) # the log appends across runs
+    full_stdout, full_stderr, _full_status = run({ 'HOME' => home }, 'bash', File.join(ROOT, 'automation', 'git-sync-safe.sh')) { true }
+    processed = File.exist?(full_log) ? File.read(full_log) : "#{full_stdout}\n#{full_stderr}"
+    assert(processed.include?('FixtureApp'),
+           "mutating lane must still cover apps/\n#{processed}")
+    assert(!processed.include?('FixtureSite'),
+           "mutating lane must not touch websites/ (publishes on push)\n#{processed}")
   end
 end
 

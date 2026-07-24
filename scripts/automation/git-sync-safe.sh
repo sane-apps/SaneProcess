@@ -168,7 +168,7 @@ snapshot_dirty_repo() {
 is_syncable_repo_name() {
   local name="$1"
   case "$name" in
-    *-reconcile-preview-*|*-release-main|*-release-peer|*-release-run|*_codex_*|*-codex-*|*codex_sync*|*codex_test*|*-preview-*|*-worktree-*)
+    *-reconcile-preview-*|*-release-main*|*-release-peer*|*-release-run*|*_codex_*|*-codex-*|*codex_sync*|*codex_test*|*-preview-*|*-worktree-*|*-preserved-*|*.stale-*)
       return 1
       ;;
   esac
@@ -176,11 +176,23 @@ is_syncable_repo_name() {
 }
 
 collect_repos() {
-  local repo_path repo_name
+  local repo_path repo_name candidates
 
   repos=()
 
-  for repo_path in "$ROOT/apps"/*; do
+  # The mutating lane auto-pushes clean main commits, so it stays on the
+  # historically covered set: websites/* are Cloudflare Pages sites that publish
+  # on push, and widening protection must never become a surprise deploy.
+  candidates=("$ROOT/apps"/*)
+  if [[ "$SNAPSHOT_ONLY" == "1" ]]; then
+    # Snapshot-only never mutates a repo, so it covers every bucket in
+    # meta/PROJECT_MAP.md plus repos at the SaneApps root (sanelot, meta).
+    candidates+=("$ROOT/websites"/* "$ROOT/infra"/* "$ROOT/mcp"/* "$ROOT/clients"/* "$ROOT"/*)
+  else
+    candidates+=("$ROOT/infra/SaneProcess")
+  fi
+
+  for repo_path in "${candidates[@]}"; do
     [[ -d "$repo_path/.git" ]] || continue
     repo_name=$(basename "$repo_path")
     if ! is_syncable_repo_name "$repo_name"; then
@@ -189,9 +201,6 @@ collect_repos() {
     fi
     repos+=("$repo_path")
   done
-
-  [[ -d "$ROOT/SaneAI/.git" ]] && repos+=("$ROOT/SaneAI")
-  [[ -d "$ROOT/infra/SaneProcess/.git" ]] && repos+=("$ROOT/infra/SaneProcess")
   return 0
 }
 
