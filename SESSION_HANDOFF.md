@@ -9,6 +9,22 @@ Branch/base: canonical `main`; branch-convergence work was reviewed from
 This file is current state only. Historical detail belongs in git history,
 dated research, Serena, AgentMemory, and durable architecture decisions.
 
+## 2026-07-27 SaneHosts Release Worker Repair
+
+- SaneHosts 1.1.24 exposed a release-tool bug: the email Worker checkout was on
+  a local snapshot branch, so the release committed and pushed download
+  metadata there while strict verification correctly checked GitHub `main`.
+- `release.sh` now derives the Worker's canonical branch from `origin/HEAD`,
+  falls back to `main`, pushes `HEAD` explicitly to that branch, and updates
+  bundle download entries along with direct-product entries.
+- Focused release guardrails pass 244/244. The Worker main repair is commit
+  `d727220`; its full Node suite passes 50/50 and Cloudflare deployed version
+  `02527f71-6164-4fd7-86a7-b2a95e5983f9`.
+- SaneHosts 1.1.24 strict post-release verification passed across appcast,
+  dist, website, checkout routing, Lemon Squeezy hosted files, Worker, source,
+  JSON-LD, download redirect, GitHub, and Homebrew. Receipt:
+  `apps/SaneHosts/outputs/post-release-checks-1.1.24-final-20260727.log`.
+
 ## Unified Cloudflare AI Meter Rollout
 
 - The Mini-first, read-only `SaneMaster.rb ai_meter` command supports `--days`,

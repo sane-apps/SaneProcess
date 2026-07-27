@@ -7017,6 +7017,10 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_includes(release_script, 'using a clean temporary clone for webhook release sync')
       assert_includes(release_script, 'git clone --no-checkout "${remote_url}" "${clean_repo}"')
       assert_includes(release_script, 'WEBHOOK_WORK_DIR="${clean_repo}"')
+      assert_includes(release_script, 'refs/remotes/origin/HEAD')
+      assert_includes(release_script, 'branch="${branch:-main}"')
+      assert_includes(release_script, 'git push origin "HEAD:${WEBHOOK_BRANCH}"')
+      assert_includes(release_script, "product: '${APP_NAME}', file: '${APP_NAME}-${VERSION}${CURRENT_EXT}'")
       assert(!release_script.include?('Refusing to deploy a mixed Worker checkout.'),
              'expected the old hard stop on dirty sane-email-automation checkout to be removed')
       true

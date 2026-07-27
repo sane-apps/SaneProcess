@@ -3246,10 +3246,11 @@ webhook_checkout_branch() {
     local repo_dir="$1"
     local branch=""
 
-    branch=$(git -C "${repo_dir}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-    if [ -z "${branch}" ] || [ "${branch}" = "HEAD" ]; then
-        branch="main"
-    fi
+    # Release metadata belongs on the remote's canonical branch. A dirty local
+    # worker checkout may intentionally sit on a snapshot branch.
+    branch=$(git -C "${repo_dir}" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+    branch="${branch#origin/}"
+    branch="${branch:-main}"
     printf '%s' "${branch}"
 }
 
@@ -7024,6 +7025,7 @@ PY
             CURRENT_EXT=$(echo "${OLD_ENTRY}" | grep -o '\.\(zip\|dmg\)' | head -1)
             CURRENT_EXT="${CURRENT_EXT:-.zip}"
             sed -i '' "s|'${APP_NAME}': { file: '${APP_NAME}-[^']*'|'${APP_NAME}': { file: '${APP_NAME}-${VERSION}${CURRENT_EXT}'|" "${WEBHOOK_WORK_JS}"
+            sed -i '' "s|{ product: '${APP_NAME}', file: '${APP_NAME}-[^']*'|{ product: '${APP_NAME}', file: '${APP_NAME}-${VERSION}${CURRENT_EXT}'|g" "${WEBHOOK_WORK_JS}"
             log_info "Updated email webhook: ${APP_NAME} → ${APP_NAME}-${VERSION}${CURRENT_EXT}"
 
             # Commit and deploy
@@ -7038,7 +7040,7 @@ PY
                         cd "${PROJECT_ROOT}"
                         exit 1
                     fi
-                    if ! GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git push 2>/dev/null; then
+                    if ! GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git push origin "HEAD:${WEBHOOK_BRANCH}" 2>/dev/null; then
                         log_error "Webhook push failed — remote main is not updated."
                         cd "${PROJECT_ROOT}"
                         exit 1
