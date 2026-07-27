@@ -487,6 +487,7 @@ module SaneMasterModules
       Dir.glob('**/Info.plist').reject do |path|
         segments = path.split(File::SEPARATOR)
         ignored_segments.any? { |segment| segments.include?(segment) } ||
+          segments.any? { |segment| segment.end_with?('.xcarchive') } ||
           ignored_nested.any? { |nested| segments.each_cons(nested.length).any? { |candidate| candidate == nested } }
       end
     end
@@ -834,6 +835,31 @@ module SaneMasterModules
           app_groups: groups.reject(&:empty?)
         }
       end
+    rescue StandardError
+      []
+    end
+
+    def appstore_application_bundle_ids(project_yml_path, platform:)
+      return [] unless project_yml_path && File.exist?(project_yml_path)
+
+      project = YAML.safe_load(File.read(project_yml_path)) || {}
+      targets = project['targets'] || {}
+      wanted_platform = platform.to_s.downcase
+
+      targets.each_with_object([]) do |(_name, spec), bundle_ids|
+        next unless spec.is_a?(Hash)
+        next unless spec['type'].to_s == 'application'
+        next unless spec['platform'].to_s.downcase == wanted_platform
+
+        bundle_id =
+          spec.dig('settings', 'configs', 'Release-AppStore', 'PRODUCT_BUNDLE_IDENTIFIER') ||
+          spec.dig('settings', 'base', 'PRODUCT_BUNDLE_IDENTIFIER') ||
+          spec['bundleId']
+        bundle_id = bundle_id.to_s.strip
+        next if bundle_id.empty? || bundle_id.include?('$(')
+
+        bundle_ids << bundle_id
+      end.uniq
     rescue StandardError
       []
     end
@@ -1661,9 +1687,14 @@ module SaneMasterModules
       return report unless uses_license_service || !configured_product_id.to_s.strip.empty?
 
       report[:applicable] = true
-      gate_hits = source_blob.scan(/\bisPro\b|\bisLicensed\b|\busesAppStorePurchase\b/).count
-      has_runtime_gate = source_blob.match?(/guard\s+.*isPro|if\s+.*isPro|!isPro/)
-      has_purchase_path = source_blob.match?(/\bpurchasePro\s*\(/) || source_blob.match?(/\bProduct\.purchase\s*\(/)
+      gate_marker = /\b(?:isPro|isLicensed|usesAppStorePurchase|isSubscribed)\b/
+      gate_hits = source_blob.scan(gate_marker).count
+      has_runtime_gate = source_blob.match?(
+        /(?:guard|if)\s+[^\n{]*\b(?:isPro|isLicensed|usesAppStorePurchase|isSubscribed)\b/
+      )
+      has_purchase_path = source_blob.match?(/\bpurchasePro\s*\(/) ||
+                          source_blob.match?(/\bProduct\.purchase\s*\(/) ||
+                          source_blob.match?(/\b(?:[A-Za-z_][A-Za-z0-9_]*)?product[A-Za-z0-9_]*\.purchase\s*\(/i)
       has_restore_path = source_blob.match?(/\brestorePurchases\s*\(/) || source_blob.match?(/\bAppStore\.sync\s*\(/)
       has_upgrade_ui = source_blob.match?(/Unlock Pro|Pro feature|Upgrade|Restore Purchases|One-time unlock|Buy Now/i)
       has_checkout_fallback = source_blob.match?(/go\.saneapps\.com\/buy\//) || source_blob.match?(/\bcheckoutURL\b/)
@@ -1683,11 +1714,13 @@ module SaneMasterModules
         end
       end
 
-      report[:issues] << 'No in-app purchase path found (purchasePro/Product.purchase)' unless has_purchase_path
+      report[:issues] << 'No in-app purchase path found (purchasePro/Product.purchase/product.purchase)' unless has_purchase_path
       report[:issues] << 'No restore purchases path found (restorePurchases/AppStore.sync)' unless has_restore_path
       report[:issues] << 'No unlock/upgrade UI copy detected' unless has_upgrade_ui
-      report[:issues] << 'No effective runtime Pro feature gates detected (isPro/isLicensed checks)' if gate_hits < 6 || !has_runtime_gate
-      report[:warnings] << 'No direct checkout fallback found for website builds' unless has_checkout_fallback
+      report[:issues] << 'No effective runtime paid-feature gates detected (Pro/license/subscription checks)' if gate_hits < 6 || !has_runtime_gate
+      if uses_license_service && !has_checkout_fallback
+        report[:warnings] << 'No direct checkout fallback found for website builds'
+      end
       if shared_or_package_branch
         report[:warnings] << 'Shared/package source contains #if APP_STORE branches. Xcode app-target flags do not automatically propagate into Swift package targets; rely on runtime gates or package-level defines instead of assuming compile-time stripping.'
       end
@@ -2605,15 +2638,23 @@ module SaneMasterModules
       if detail_code.between?(200, 299) && detail_response.is_a?(Hash)
         status_counts = Hash.new(0)
         territory_rows = Array(detail_response['data'])
+        selected_count = 0
+        release_ready_count = 0
         territory_rows.each do |entry|
           statuses = Array(entry.dig('attributes', 'contentStatuses')).map(&:to_s).reject(&:empty?)
           key = statuses.empty? ? 'UNKNOWN' : statuses.join('+')
           status_counts[key] += 1
+
+          selected = entry.dig('attributes', 'available') == true
+          selected_count += 1 if selected
+          release_ready = statuses.include?('AVAILABLE') ||
+                          statuses.include?('AVAILABLE_FOR_SALE_UNRELEASED_APP')
+          release_ready_count += 1 if selected && release_ready
         end
         availability[:content_status_counts] = status_counts
-        availability[:available_count] = status_counts['AVAILABLE']
-        availability[:all_territories_available] = availability[:available_count].to_i.positive? &&
-                                                   availability[:available_count].to_i == territory_rows.length
+        availability[:available_count] = selected_count
+        availability[:all_territories_available] = release_ready_count.positive? &&
+                                                   release_ready_count == territory_rows.length
       end
 
       availability
@@ -2791,6 +2832,31 @@ module SaneMasterModules
       end.uniq.sort
     end
 
+    def with_launch_services_clean_tempdir(prefix)
+      Dir.mktmpdir(prefix) do |tmpdir|
+        FileUtils.touch(File.join(tmpdir, '.metadata_never_index'))
+        begin
+          yield tmpdir
+        ensure
+          unregister_launch_services_paths(Dir.glob(File.join(tmpdir, '**', '*.app')))
+        end
+      end
+    end
+
+    def unregister_launch_services_paths(paths)
+      lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+      return unless File.executable?(lsregister)
+
+      Array(paths)
+        .map { |path| File.expand_path(path) }
+        .uniq
+        .sort_by { |path| -path.count(File::SEPARATOR) }
+        .each do |path|
+          system(lsregister, '-u', path, out: File::NULL, err: File::NULL)
+        end
+      system(lsregister, '-gc', out: File::NULL, err: File::NULL)
+    end
+
     def appstore_with_submission_package_app(pkg_path, expected_bundle_ids:, expected_sha256: nil)
       platform = if pkg_path.end_with?('.ipa')
                    'ios'
@@ -2806,7 +2872,7 @@ module SaneMasterModules
         return yield(verified: false, issues: ['Exact App Store package bytes do not match the bound submissionTarget.sha256'])
       end
 
-      Dir.mktmpdir('sanemaster_appstore_package_audit') do |tmpdir|
+      with_launch_services_clean_tempdir('sanemaster_appstore_package_audit') do |tmpdir|
         extraction_issue = nil
         app_dirs = begin
           if platform == 'ios'
@@ -2887,6 +2953,12 @@ module SaneMasterModules
                             appstore_mobile_signing_targets(File.join(Dir.pwd, 'project.yml'))
                           end
         expected_bundle_ids = Array(signing_targets).map { |target| target[:bundle_id].to_s }.reject(&:empty?).uniq
+        if expected_bundle_ids.empty?
+          expected_bundle_ids = appstore_application_bundle_ids(
+            File.join(Dir.pwd, 'project.yml'),
+            platform: platform
+          )
+        end
         if expected_bundle_ids.empty?
           issues << "Cannot resolve an App Store target bundle ID for package inspection on #{platform}"
           return nil
@@ -3330,18 +3402,33 @@ module SaneMasterModules
       platform_path = platform.to_s.downcase == 'ios' ? 'ios' : 'macos'
       target_url = "https://appstoreconnect.apple.com/apps/#{app_id}/distribution/#{platform_path}/version/inflight"
       script = <<~JXA
-        var safari = Application('Safari');
-        safari.includeStandardAdditions = true;
-        if (!safari.running()) {
+        var brave = Application('Brave Browser');
+        brave.includeStandardAdditions = true;
+        if (!brave.running()) {
           console.log('UNAVAILABLE');
-        } else if (safari.documents().length === 0) {
+        } else if (brave.windows().length === 0) {
           console.log('UNAVAILABLE');
         } else {
-          var tab = safari.windows[0].currentTab();
+          var tab = null;
+          var windows = brave.windows();
+          for (var windowIndex = 0; windowIndex < windows.length && !tab; windowIndex++) {
+            var tabs = windows[windowIndex].tabs();
+            for (var tabIndex = 0; tabIndex < tabs.length; tabIndex++) {
+              var candidateURL = '';
+              try { candidateURL = String(tabs[tabIndex].url()); } catch (candidateError) {}
+              if (candidateURL.indexOf('https://appstoreconnect.apple.com') === 0) {
+                tab = tabs[tabIndex];
+                break;
+              }
+            }
+          }
+          if (!tab) {
+            console.log('UNAVAILABLE');
+          } else {
           var originalURL = '';
           try { originalURL = String(tab.url()); } catch (originalUrlError) {}
           function run(js) {
-            return safari.doJavaScript(js, { in: tab });
+            return tab.execute({ javascript: js });
           }
           try {
             tab.url = #{target_url.to_json};
@@ -3392,12 +3479,17 @@ module SaneMasterModules
                 })()`);
               } catch (closeError) {}
             }
-            console.log(found ? 'FOUND' : 'MISSING');
+            if (pageUrl.indexOf('https://appstoreconnect.apple.com') !== 0) {
+              console.log('UNAVAILABLE');
+            } else {
+              console.log(found ? 'FOUND' : 'MISSING');
+            }
           } catch (error) {
             console.log('ERROR:' + error.toString());
           }
           if (originalURL && originalURL.length > 0) {
             try { tab.url = originalURL; } catch (restoreError) {}
+          }
           }
         }
       JXA
@@ -5574,7 +5666,7 @@ module SaneMasterModules
 
       # Check Info.plist for these keys
       plist_paths = project_info_plist_paths
-      plist_content = plist_paths.map { |f| File.read(f) rescue '' }.join("\n")
+      plist_content = plist_paths.map { |f| safe_read(f) }.join("\n")
 
       # Also check project.yml for plist values
       yml_content = File.exist?(project_yml) ? File.read(project_yml) : ''
@@ -5921,7 +6013,7 @@ module SaneMasterModules
 
             if ui_attached
               puts "⚠️  #{configured_product_id} (READY_TO_SUBMIT, attached on version page)"
-              warnings << "App Store Connect still reports #{record_label} #{configured_product_id} as READY_TO_SUBMIT, but Safari verified it is attached under Included Assets for #{ready_lane_platform} #{version_str}"
+              warnings << "App Store Connect still reports #{record_label} #{configured_product_id} as READY_TO_SUBMIT, but Brave verified it is attached under Included Assets for #{ready_lane_platform} #{version_str}"
             elsif ready_lane_platform && appstore_iap_attachment_receipt_valid?(
               app_id: asc_app_id,
               platform: ready_lane_platform,
@@ -6206,7 +6298,7 @@ module SaneMasterModules
             end
           end
         elsif platforms.include?('macos')
-          Dir.mktmpdir('sanemaster_asc_audit') do |tmpdir|
+          with_launch_services_clean_tempdir('sanemaster_asc_audit') do |tmpdir|
             derived_data = File.join(tmpdir, 'DerivedData')
             configuration = (asc_config_name || appstore_config['configuration'] || 'Release-AppStore').to_s
             scheme = (appstore_config['scheme'] || config['scheme'] || app_name).to_s

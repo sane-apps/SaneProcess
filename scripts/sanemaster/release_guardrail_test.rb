@@ -372,6 +372,27 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       end
       true
     end
+
+    test('ignores archived binary Info.plists and keeps project plist reads UTF-8 safe') do
+      Dir.mktmpdir('project-binary-plist-paths-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'SaneExample'))
+        archive_dir = File.join(dir, 'builds', 'SaneExample.xcarchive', 'Products', 'Applications', 'SaneExample.app')
+        FileUtils.mkdir_p(archive_dir)
+        File.binwrite(File.join(dir, 'SaneExample', 'Info.plist'), "<plist>\xFF</plist>".b)
+        File.binwrite(File.join(archive_dir, 'Info.plist'), "bplist00\xFF".b)
+
+        paths = nil
+        content = nil
+        Dir.chdir(dir) do
+          paths = subject.project_info_plist_paths
+          content = paths.map { |path| subject.safe_read(path) }.join("\n")
+        end
+
+        assert(paths.sort == ['SaneExample/Info.plist'], "expected archive plist exclusion, got #{paths.inspect}")
+        assert(content.valid_encoding?, 'expected project Info.plist scan content to be valid UTF-8')
+      end
+      true
+    end
   end
 
   test_category('Customer UI action release contract') do
@@ -386,6 +407,62 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
 
         assert(!report[:ok], 'expected missing customer UI contract to block')
         assert_includes(report[:issues].join("\n"), 'Missing customer UI action contract')
+      end
+      true
+    end
+
+    test('selects an explicit customer UI release profile without deleting the full ledger') do
+      Dir.mktmpdir('customer-ui-release-profile-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'Tests'))
+        File.write(
+          File.join(dir, 'Tests', 'CustomerUIActions.yml'),
+          <<~YAML
+            version: 1
+            app: SaneExample
+            release_profiles:
+              appstore_fix:
+                - reviewer-flow
+            actions:
+              - id: reviewer-flow
+                title: Reviewer flow works
+                surfaces: [First run]
+                steps: [Connect reviewer device]
+                assertions: [Inventory opens]
+                evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [screenshot]
+                historical_failure_classes: [activation_noop]
+                functional_state:
+                  description: Protected reviewer code is active
+                  setup_steps: [Provision the bounded reviewer credential]
+              - id: later-admin-flow
+                title: Later admin flow
+                surfaces: [Admin]
+                steps: [Open admin]
+                assertions: [Admin opens]
+                evidence: [screenshot]
+                required_proof_level: runtime_visual
+                required_evidence_types: [screenshot]
+                historical_failure_classes: [window_not_launched]
+                functional_state:
+                  description: Admin fixture is active
+                  setup_steps: [Provision the admin fixture]
+          YAML
+        )
+
+        report = nil
+        Dir.chdir(dir) do
+          report = subject.customer_ui_contract_report(
+            config: {
+              'name' => 'SaneExample',
+              'customer_ui_release_profile' => 'appstore_fix'
+            }
+          )
+        end
+
+        assert_eq(report[:release_profile], 'appstore_fix')
+        assert_eq(report[:action_count], 1)
+        assert_includes(report[:issues].join("\n"), 'Missing fresh customer UI QA receipt')
       end
       true
     end
@@ -4707,6 +4784,19 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('temporary App Store audits suppress indexing and unregister extracted app bundles') do
+      source = File.read(File.expand_path('release.rb', __dir__))
+
+      assert_includes(source, "FileUtils.touch(File.join(tmpdir, '.metadata_never_index'))")
+      assert_includes(source, "unregister_launch_services_paths(Dir.glob(File.join(tmpdir, '**', '*.app')))")
+      assert_includes(source, '.sort_by { |path| -path.count(File::SEPARATOR) }')
+      assert_includes(source, "system(lsregister, '-u', path")
+      assert_includes(source, "system(lsregister, '-gc'")
+      assert_includes(source, "with_launch_services_clean_tempdir('sanemaster_asc_audit')")
+      assert_includes(source, "with_launch_services_clean_tempdir('sanemaster_appstore_package_audit')")
+      true
+    end
+
     test('appstore package binding rejects a package from another bundle target') do
       Dir.mktmpdir('appstore-package-target-') do |dir|
         File.write(
@@ -4759,6 +4849,50 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
             issues: mismatched_issues
           )
           assert(mismatched_issues.any? { |issue| issue.include?('not an App Store target bundle ID') })
+        end
+      end
+      true
+    end
+
+    test('ios package binding resolves an application target without a Release-AppStore config') do
+      Dir.mktmpdir('appstore-ios-package-target-') do |dir|
+        File.write(
+          File.join(dir, 'project.yml'),
+          <<~YAML
+            targets:
+              Example:
+                type: application
+                platform: iOS
+                settings:
+                  base:
+                    PRODUCT_BUNDLE_IDENTIFIER: com.example.ios
+        YAML
+        )
+        package = File.join(dir, 'Example.ipa')
+        File.write(package, 'package-bytes')
+        binding_subject = Class.new(ReleaseGuardrailHarness) do
+          def appstore_package_info(_path, expected_bundle_ids:, expected_sha256: nil)
+            _ = expected_sha256
+            {
+              bundle_id: expected_bundle_ids.fetch(0),
+              version: '1.0',
+              build: '100'
+            }
+          end
+        end.new
+
+        Dir.chdir(dir) do
+          issues = []
+          target = binding_subject.send(
+            :appstore_preflight_submission_target,
+            args: ['--platform', 'ios', '--pkg', package],
+            version: '1.0',
+            build: '100',
+            platforms: ['ios'],
+            issues: issues
+          )
+          assert_eq(issues, [])
+          assert_eq(target[:bundleId], 'com.example.ios')
         end
       end
       true
@@ -4829,8 +4963,8 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         200,
         {
           'data' => [
-            { 'attributes' => { 'contentStatuses' => ['AVAILABLE'] } },
-            { 'attributes' => { 'contentStatuses' => ['AVAILABLE'] } }
+            { 'attributes' => { 'available' => true, 'contentStatuses' => ['AVAILABLE'] } },
+            { 'attributes' => { 'available' => true, 'contentStatuses' => ['AVAILABLE'] } }
           ]
         },
         base: 'https://api.appstoreconnect.apple.com/v2'
@@ -4842,6 +4976,97 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_eq(status[:territory_total], 2)
       assert_eq(status[:available_count], 2)
       assert_eq(status[:all_territories_available], true)
+      true
+    end
+
+    test('accepts selected territories for an unreleased app') do
+      subject.stub_asc_json_with_status(
+        '/apps/123/appAvailabilityV2',
+        200,
+        {
+          'data' => {
+            'id' => '123',
+            'type' => 'appAvailabilities',
+            'attributes' => { 'availableInNewTerritories' => true }
+          }
+        }
+      )
+      subject.stub_asc_json_with_status(
+        '/appAvailabilities/123/relationships/territoryAvailabilities?limit=200',
+        200,
+        {
+          'data' => [
+            { 'type' => 'territoryAvailabilities', 'id' => 'usa' },
+            { 'type' => 'territoryAvailabilities', 'id' => 'can' }
+          ],
+          'meta' => { 'paging' => { 'total' => 2 } }
+        },
+        base: 'https://api.appstoreconnect.apple.com/v2'
+      )
+      subject.stub_asc_json_with_status(
+        '/appAvailabilities/123/territoryAvailabilities?limit=200',
+        200,
+        {
+          'data' => [
+            {
+              'attributes' => {
+                'available' => true,
+                'contentStatuses' => %w[CANNOT_SELL AVAILABLE_FOR_SALE_UNRELEASED_APP]
+              }
+            },
+            {
+              'attributes' => {
+                'available' => true,
+                'contentStatuses' => %w[CANNOT_SELL AVAILABLE_FOR_SALE_UNRELEASED_APP]
+              }
+            }
+          ]
+        },
+        base: 'https://api.appstoreconnect.apple.com/v2'
+      )
+
+      status = subject.send(:asc_app_availability_status, app_id: '123')
+
+      assert_eq(status[:available_count], 2)
+      assert_eq(status[:all_territories_available], true)
+      true
+    end
+
+    test('rejects selected territories with a real App Store restriction') do
+      subject.stub_asc_json_with_status(
+        '/apps/123/appAvailabilityV2',
+        200,
+        { 'data' => { 'id' => '123', 'type' => 'appAvailabilities' } }
+      )
+      subject.stub_asc_json_with_status(
+        '/appAvailabilities/123/relationships/territoryAvailabilities?limit=200',
+        200,
+        {
+          'data' => [{ 'type' => 'territoryAvailabilities', 'id' => 'usa' }],
+          'meta' => { 'paging' => { 'total' => 1 } }
+        },
+        base: 'https://api.appstoreconnect.apple.com/v2'
+      )
+      subject.stub_asc_json_with_status(
+        '/appAvailabilities/123/territoryAvailabilities?limit=200',
+        200,
+        {
+          'data' => [
+            {
+              'attributes' => {
+                'available' => true,
+                'contentStatuses' => %w[CANNOT_SELL MISSING_RATING]
+              }
+            }
+          ]
+        },
+        base: 'https://api.appstoreconnect.apple.com/v2'
+      )
+
+      status = subject.send(:asc_app_availability_status, app_id: '123')
+
+      assert_eq(status[:available_count], 1)
+      assert_eq(status[:all_territories_available], false)
       true
     end
 
@@ -4975,6 +5200,84 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       )
 
       assert(report[:issues].empty?, "expected complete disclosure to pass: #{report[:issues].inspect}")
+      true
+    end
+  end
+
+  test_category('Monetization source guardrails') do
+    test('accepts standard StoreKit 2 instance purchase and subscription gates') do
+      report = subject.send(
+        :monetization_guardrail_report,
+        source_blob: <<~SWIFT,
+          import StoreKit
+          final class StoreManager {
+            var isSubscribed = false
+            func purchase(_ product: Product) async throws { try await product.purchase() }
+            func restore() async throws { try await AppStore.sync() }
+          }
+          func publish(_ store: StoreManager) {
+            if store.isSubscribed { print("publish") }
+            guard store.isSubscribed else { return }
+            _ = store.isSubscribed
+            _ = store.isSubscribed
+            _ = store.isSubscribed
+            _ = store.isSubscribed
+            print("Restore purchases")
+          }
+        SWIFT
+        configured_product_id: 'com.example.monthly',
+        has_product_id_marker: true,
+        strict_appstore_product_id: true,
+        shared_or_package_branch: false
+      )
+
+      assert(report[:issues].empty?, "expected StoreKit 2 flow to pass: #{report[:issues].inspect}")
+      assert(report[:warnings].empty?, "StoreKit-only apps must not be told to add external checkout: #{report[:warnings].inspect}")
+      assert_includes(report[:summary], 'purchase=yes')
+      assert_includes(report[:summary], 'restore=yes')
+      true
+    end
+
+    test('does not accept an unrelated purchase method as StoreKit checkout') do
+      report = subject.send(
+        :monetization_guardrail_report,
+        source_blob: <<~SWIFT,
+          import StoreKit
+          struct Cart { func purchase() {} }
+          let cart = Cart()
+          func publish(isSubscribed: Bool) {
+            if isSubscribed { cart.purchase() }
+            _ = isSubscribed; _ = isSubscribed; _ = isSubscribed
+            _ = isSubscribed; _ = isSubscribed
+            print("Restore Purchases")
+            try? AppStore.sync()
+          }
+        SWIFT
+        configured_product_id: 'com.example.monthly',
+        has_product_id_marker: true,
+        strict_appstore_product_id: true,
+        shared_or_package_branch: false
+      )
+
+      assert_includes(
+        report[:issues],
+        'No in-app purchase path found (purchasePro/Product.purchase/product.purchase)'
+      )
+      true
+    end
+
+
+    test('keeps website checkout guidance for direct-license apps') do
+      report = subject.send(
+        :monetization_guardrail_report,
+        source_blob: 'final class LicenseService {}',
+        configured_product_id: '',
+        has_product_id_marker: false,
+        strict_appstore_product_id: false,
+        shared_or_package_branch: false
+      )
+
+      assert_includes(report[:warnings], 'No direct checkout fallback found for website builds')
       true
     end
   end
@@ -7701,7 +8004,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
   end
 
   test_category('Reviewer IAP path guardrails') do
-    test('accepts FOUND from Safari probe even if Safari exits non-zero') do
+    test('accepts FOUND from Brave probe even if Brave exits non-zero') do
       subject.stub_osascript_jxa("FOUND\nERROR:Error: Can't convert types.\n", success: false)
 
       found = subject.send(
@@ -7715,7 +8018,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
-    test('scopes Safari IAP probe to the requested platform version page URL') do
+    test('scopes Brave IAP probe to the requested platform version page URL') do
       subject.stub_osascript_jxa("MISSING\n", success: true)
 
       subject.send(
