@@ -50,14 +50,15 @@ end
 class AppStoreSubmitGuardrailHarness
   def initialize
     @stubbed_url_statuses = {}
-    @stubbed_safari_snapshot = nil
-    @stubbed_safari_snapshots = nil
-    @safari_snapshot_calls = []
-    @stubbed_safari_javascript = nil
+    @stubbed_brave_snapshot = nil
+    @stubbed_brave_snapshots = nil
+    @brave_snapshot_calls = []
+    @stubbed_brave_javascript = nil
     @stubbed_patch_result = nil
     @stubbed_iap_record = nil
     @stubbed_iap_records = nil
     @stubbed_subscription_record = nil
+    @stubbed_subscription_records = nil
     @stubbed_version_page_includes_iap = :__unset
     @stubbed_get_statuses = {}
     @stubbed_post_result = nil
@@ -75,47 +76,47 @@ class AppStoreSubmitGuardrailHarness
     end
   end
 
-  def stub_safari_snapshot(snapshot)
-    @stubbed_safari_snapshot = snapshot
+  def stub_brave_snapshot(snapshot)
+    @stubbed_brave_snapshot = snapshot
   end
 
-  def stub_safari_snapshots(snapshots)
-    @stubbed_safari_snapshots = Array(snapshots).dup
-    @safari_snapshot_calls = []
+  def stub_brave_snapshots(snapshots)
+    @stubbed_brave_snapshots = Array(snapshots).dup
+    @brave_snapshot_calls = []
   end
 
-  attr_reader :safari_snapshot_calls
+  attr_reader :brave_snapshot_calls
 
-  def safari_page_snapshot(url:, delay_seconds: 8, navigate: true)
-    @safari_snapshot_calls << {
+  def brave_page_snapshot(url:, delay_seconds: 8, navigate: true)
+    @brave_snapshot_calls << {
       url: url,
       delay_seconds: delay_seconds,
       navigate: navigate
     }
-    if @stubbed_safari_snapshots && !@stubbed_safari_snapshots.empty?
-      return @stubbed_safari_snapshots.shift
+    if @stubbed_brave_snapshots && !@stubbed_brave_snapshots.empty?
+      return @stubbed_brave_snapshots.shift
     end
-    @stubbed_safari_snapshot || { 'url' => '', 'body' => '' }
+    @stubbed_brave_snapshot || { 'url' => '', 'body' => '' }
   end
 
-  def stub_safari_javascript(output)
-    @stubbed_safari_javascript = output
-    @safari_snapshot_calls = []
+  def stub_brave_javascript(output)
+    @stubbed_brave_javascript = output
+    @brave_snapshot_calls = []
   end
 
-  def run_safari_javascript(url:, javascript:, delay_seconds: 8, navigate: true)
-    @safari_snapshot_calls << {
+  def run_brave_javascript(url:, javascript:, delay_seconds: 8, navigate: true)
+    @brave_snapshot_calls << {
       url: url,
       delay_seconds: delay_seconds,
       navigate: navigate,
       javascript: javascript
     }
     _ = javascript
-    if @stubbed_safari_javascript.is_a?(Array) && !@stubbed_safari_javascript.empty?
-      return @stubbed_safari_javascript.shift
+    if @stubbed_brave_javascript.is_a?(Array) && !@stubbed_brave_javascript.empty?
+      return @stubbed_brave_javascript.shift
     end
 
-    @stubbed_safari_javascript || JSON.generate('url' => '', 'clicks' => [], 'body' => '')
+    @stubbed_brave_javascript || JSON.generate('url' => '', 'clicks' => [], 'body' => '')
   end
 
   def stub_patch_result(code, resp)
@@ -171,6 +172,14 @@ class AppStoreSubmitGuardrailHarness
     @stubbed_subscription_record = record
   end
 
+  def stub_subscription_records(records)
+    @stubbed_subscription_records = records
+  end
+
+  def list_app_subscriptions(*_args, **_kwargs)
+    @stubbed_subscription_records || []
+  end
+
   def find_subscription_by_product_id(*_args, **_kwargs)
     @stubbed_subscription_record
   end
@@ -211,6 +220,86 @@ class AppStoreSubmitGuardrailHarness
 
   def generate_jwt
     'stub-jwt'
+  end
+end
+
+class BraveSnapshotGuardHarness
+  def initialize(payload)
+    @payload = payload
+  end
+
+  def run_brave_javascript(**_kwargs)
+    JSON.generate(@payload)
+  end
+end
+
+class BraveRawResultHarness
+  def initialize(raw)
+    @raw = raw
+  end
+
+  def run_brave_javascript(**_kwargs)
+    @raw
+  end
+end
+
+class ObsoleteSubscriptionDeletionHarness
+  attr_reader :delete_paths
+
+  def initialize(get_responses:, delete_responses:)
+    @get_responses = Hash.new { |hash, key| hash[key] = [] }
+    get_responses.each { |path, responses| @get_responses[path] = Array(responses).dup }
+    @delete_responses = delete_responses.transform_values { |responses| Array(responses).dup }
+    @delete_paths = []
+  end
+
+  def asc_get_with_status(path, **_kwargs)
+    responses = @get_responses[path]
+    raise "missing get response for #{path}" if responses.empty?
+
+    responses.shift
+  end
+
+  def asc_delete_with_status(path, **_kwargs)
+    @delete_paths << path
+    responses = @delete_responses.fetch(path) { raise "missing delete response for #{path}" }
+    raise "exhausted delete responses for #{path}" if responses.empty?
+
+    responses.shift
+  end
+end
+
+class ReviewDetailHarness
+  attr_reader :get_paths, :patch_calls, :post_calls
+
+  def initialize(existing: nil, post_result: { 'data' => { 'id' => 'created-detail' } })
+    @existing = existing
+    @post_result = post_result
+    @get_paths = []
+    @patch_calls = []
+    @post_calls = []
+  end
+
+  def asc_get(path, **_kwargs)
+    @get_paths << path
+    return {} unless @existing
+
+    {
+      'data' => {
+        'id' => 'detail-1',
+        'attributes' => @existing
+      }
+    }
+  end
+
+  def asc_patch(path, body:, **_kwargs)
+    @patch_calls << { path: path, body: body }
+    { 'data' => { 'id' => 'detail-1' } }
+  end
+
+  def asc_post(path, body:, **_kwargs)
+    @post_calls << { path: path, body: body }
+    @post_result
   end
 end
 
@@ -308,6 +397,173 @@ exit(run_tests('App Store Submit Guardrail Tests') do
         assert_eq(contact[:last_name], 'Joseph')
         assert_eq(contact[:email], 'hi@saneapps.com')
       end
+      true
+    end
+  end
+
+  test_category('Protected App Review demo credentials') do
+    contact = {
+      first_name: 'Review',
+      last_name: 'Contact',
+      phone: '+15555550100',
+      email: 'review@example.com',
+      notes: 'Enter the protected connection code.'
+    }
+
+    test('resolves a configured password from an owner-only file') do
+      Dir.mktmpdir('appstore-review-password-') do |dir|
+        secret_path = File.join(dir, 'review-code.txt')
+        File.write(secret_path, "fixture-connection-code\n")
+        File.chmod(0o600, secret_path)
+        config = {
+          'appstore' => {
+            'review_demo_account' => {
+              'name' => 'Example App Review',
+              'password_file' => secret_path
+            }
+          }
+        }
+
+        account = resolve_review_demo_account(config, project_root: dir)
+
+        assert_eq(account[:name], 'Example App Review')
+        assert_eq(account[:password], 'fixture-connection-code')
+      end
+      true
+    end
+
+    test('fails closed for missing or insecure password files') do
+      Dir.mktmpdir('appstore-review-password-invalid-') do |dir|
+        missing_config = {
+          'appstore' => {
+            'review_demo_account' => {
+              'name' => 'Example App Review',
+              'password_file' => File.join(dir, 'missing.txt')
+            }
+          }
+        }
+        begin
+          resolve_review_demo_account(missing_config, project_root: dir)
+          assert(false, 'expected a missing review password file to fail')
+        rescue ArgumentError => e
+          assert_includes(e.message, 'missing or is not a regular file')
+        end
+
+        insecure_path = File.join(dir, 'insecure.txt')
+        File.write(insecure_path, 'fixture-secret-must-not-appear')
+        File.chmod(0o644, insecure_path)
+        insecure_config = {
+          'appstore' => {
+            'review_demo_account' => {
+              'name' => 'Example App Review',
+              'password_file' => insecure_path
+            }
+          }
+        }
+        begin
+          resolve_review_demo_account(insecure_config, project_root: dir)
+          assert(false, 'expected an insecure review password file to fail')
+        rescue ArgumentError => e
+          assert_includes(e.message, 'permissions 600')
+          assert(!e.message.include?('fixture-secret-must-not-appear'), 'diagnostic must not expose secret contents')
+        end
+      end
+      true
+    end
+
+    test('creates review detail with protected demo account fields') do
+      harness = ReviewDetailHarness.new
+      protected_contact = contact.merge(
+        demo_account: {
+          name: 'Example App Review',
+          password: 'fixture-connection-code'
+        }
+      )
+
+      assert(harness.send(:ensure_review_detail, 'version-1', protected_contact, 'token'))
+      assert_eq(harness.post_calls.length, 1)
+      attributes = harness.post_calls.first[:body].dig(:data, :attributes)
+      assert_eq(attributes[:demoAccountRequired], true)
+      assert_eq(attributes[:demoAccountName], 'Example App Review')
+      assert_eq(attributes[:demoAccountPassword], 'fixture-connection-code')
+      true
+    end
+
+    test('updates changed protected demo account fields') do
+      harness = ReviewDetailHarness.new(
+        existing: {
+          'contactFirstName' => contact[:first_name],
+          'contactLastName' => contact[:last_name],
+          'contactPhone' => contact[:phone],
+          'contactEmail' => contact[:email],
+          'notes' => contact[:notes],
+          'demoAccountRequired' => false
+        }
+      )
+      protected_contact = contact.merge(
+        demo_account: {
+          name: 'Example App Review',
+          password: 'fixture-connection-code'
+        }
+      )
+
+      assert(harness.send(:ensure_review_detail, 'version-1', protected_contact, 'token'))
+      assert_eq(harness.patch_calls.length, 1)
+      attributes = harness.patch_calls.first[:body].dig(:data, :attributes)
+      assert_eq(attributes[:demoAccountRequired], true)
+      assert_eq(attributes[:demoAccountName], 'Example App Review')
+      assert_eq(attributes[:demoAccountPassword], 'fixture-connection-code')
+      true
+    end
+
+    test('does not update an already matching protected demo account') do
+      protected_contact = contact.merge(
+        demo_account: {
+          name: 'Example App Review',
+          password: 'fixture-connection-code'
+        }
+      )
+      harness = ReviewDetailHarness.new(
+        existing: {
+          'contactFirstName' => contact[:first_name],
+          'contactLastName' => contact[:last_name],
+          'contactPhone' => contact[:phone],
+          'contactEmail' => contact[:email],
+          'notes' => contact[:notes],
+          'demoAccountRequired' => true,
+          'demoAccountName' => 'Example App Review',
+          'demoAccountPassword' => 'fixture-connection-code'
+        }
+      )
+
+      assert(harness.send(:ensure_review_detail, 'version-1', protected_contact, 'token'))
+      assert_eq(harness.patch_calls, [])
+      true
+    end
+
+    test('preserves demoAccountRequired false when no demo account is configured') do
+      harness = ReviewDetailHarness.new
+
+      assert(harness.send(:ensure_review_detail, 'version-1', contact, 'token'))
+      attributes = harness.post_calls.first[:body].dig(:data, :attributes)
+      assert_eq(attributes[:demoAccountRequired], false)
+      assert(!attributes.key?(:demoAccountName), 'unconfigured apps must not send a demo account name')
+      assert(!attributes.key?(:demoAccountPassword), 'unconfigured apps must not send a demo account password')
+      true
+    end
+
+    test('redacts the configured demo password from ASC error excerpts') do
+      body = {
+        data: {
+          attributes: {
+            demoAccountPassword: 'fixture-connection-code'
+          }
+        }
+      }
+      response = 'Rejected password fixture-connection-code in request'
+      redacted = redact_asc_response_body(response, body)
+
+      assert_eq(redacted, 'Rejected password [REDACTED] in request')
       true
     end
   end
@@ -705,6 +961,34 @@ exit(run_tests('App Store Submit Guardrail Tests') do
     end
   end
 
+  test_category('Exact package preflight binding') do
+    test('refreshes package binding through a bash project SaneMaster wrapper') do
+      Dir.mktmpdir('appstore-binding-wrapper-') do |dir|
+        FileUtils.mkdir_p(File.join(dir, 'scripts'))
+        wrapper = File.join(dir, 'scripts', 'SaneMaster.rb')
+        File.write(wrapper, "#!/bin/bash\nexit 0\n")
+        FileUtils.chmod('+x', wrapper)
+        captured = nil
+
+        success, = refresh_appstore_preflight_binding(
+          project_root: dir,
+          submission_target: APPSTORE_PREFLIGHT_ASC_TARGET.merge('path' => '/tmp/Example.pkg'),
+          command_runner: lambda do |command|
+            captured = command
+            true
+          end
+        )
+
+        assert(success, 'expected binding refresh to accept the canonical wrapper')
+        assert_eq(captured.first(2), ['bash', wrapper])
+        assert_eq(captured.drop(2), [
+          'appstore_preflight', '--platform', 'ios', '--pkg', '/tmp/Example.pkg'
+        ])
+      end
+      true
+    end
+  end
+
   test_category('Exact ASC build identity') do
     test('requires build number marketing version and platform to match one included identity') do
       response = {
@@ -979,6 +1263,138 @@ exit(run_tests('App Store Submit Guardrail Tests') do
   end
 
   test_category('IAP submission guardrails') do
+    test('explicit no-IAP policy requires retired subscriptions to be unavailable and detached') do
+      product_id = 'com.example.retired.monthly'
+      subject.stub_subscription_records([
+        {
+          'type' => 'subscriptions',
+          'id' => 'sub-1',
+          'attributes' => {
+            'productId' => product_id,
+            'state' => 'READY_TO_SUBMIT'
+          }
+        }
+      ])
+      subject.stub_iap_records([])
+      subject.stub_version_page_includes_iap(false)
+      subject.stub_get_status(
+        '/subscriptions/sub-1/subscriptionAvailability?include=availableTerritories&limit[availableTerritories]=50',
+        200,
+        {
+          'data' => {
+            'attributes' => { 'availableInNewTerritories' => false },
+            'relationships' => {
+              'availableTerritories' => {
+                'meta' => { 'paging' => { 'total' => 0 } },
+                'data' => []
+              }
+            }
+          }
+        }
+      )
+      subject.stub_get_status(
+        '/reviewSubmissions/review-1/items?include=appStoreVersion&limit=200',
+        200,
+        {
+          'data' => [
+            {
+              'relationships' => {
+                'appStoreVersion' => {
+                  'data' => { 'type' => 'appStoreVersions', 'id' => 'version-1' }
+                }
+              }
+            }
+          ]
+        }
+      )
+
+      ok = subject.send(
+        :ensure_no_iap_readiness,
+        app_id: 'app-1',
+        version_id: 'version-1',
+        platform: 'ios',
+        config: {
+          'appstore' => {
+            'iap_policy' => 'none',
+            'retired_product_ids' => [product_id]
+          }
+        },
+        token: 'stub-jwt',
+        linked_submission: { id: 'review-1' }
+      )
+
+      assert_eq(ok, true)
+      true
+    end
+
+    test('explicit no-IAP policy fails when a retired subscription is attached') do
+      product_id = 'com.example.retired.monthly'
+      subject.stub_subscription_records([
+        {
+          'type' => 'subscriptions',
+          'id' => 'sub-1',
+          'attributes' => { 'productId' => product_id }
+        }
+      ])
+      subject.stub_iap_records([])
+      subject.stub_version_page_includes_iap(true)
+      subject.stub_get_status(
+        '/subscriptions/sub-1/subscriptionAvailability?include=availableTerritories&limit[availableTerritories]=50',
+        200,
+        {
+          'data' => {
+            'attributes' => { 'availableInNewTerritories' => false },
+            'relationships' => {
+              'availableTerritories' => {
+                'meta' => { 'paging' => { 'total' => 0 } },
+                'data' => []
+              }
+            }
+          }
+        }
+      )
+
+      ok = subject.send(
+        :ensure_no_iap_readiness,
+        app_id: 'app-1',
+        version_id: 'version-1',
+        platform: 'ios',
+        config: {
+          'appstore' => {
+            'iap_policy' => 'none',
+            'retired_product_ids' => [product_id]
+          }
+        },
+        token: 'stub-jwt'
+      )
+
+      assert_eq(ok, false)
+      true
+    end
+
+    test('explicit no-IAP policy rejects extra App Store products') do
+      subject.stub_subscription_records([])
+      subject.stub_iap_records([
+        {
+          'type' => 'inAppPurchases',
+          'id' => 'iap-1',
+          'attributes' => { 'productId' => 'com.example.unexpected' }
+        }
+      ])
+
+      ok = subject.send(
+        :ensure_no_iap_readiness,
+        app_id: 'app-1',
+        version_id: 'version-1',
+        platform: 'ios',
+        config: { 'appstore' => { 'iap_policy' => 'none' } },
+        token: 'stub-jwt'
+      )
+
+      assert_eq(ok, false)
+      true
+    end
+
     test('creates missing app availability with JSON API local IDs') do
       subject.stub_get_status(
         '/apps/app-1/appAvailabilityV2',
@@ -1032,7 +1448,7 @@ exit(run_tests('App Store Submit Guardrail Tests') do
     end
 
     test('detects an attached IAP from the live version page snapshot') do
-      subject.stub_safari_snapshot(
+      subject.stub_brave_snapshot(
         'url' => 'https://appstoreconnect.apple.com/apps/123/distribution/macos/version/inflight',
         'body' => "Included Assets\nIn-App Purchases and Subscriptions\ncom.example.pro.unlock\n"
       )
@@ -1138,7 +1554,7 @@ exit(run_tests('App Store Submit Guardrail Tests') do
       true
     end
 
-    test('allows first subscription only when Safari proves it is attached to the app version') do
+    test('allows first subscription only when Brave proves it is attached to the app version') do
       subject.stub_subscription_record(
         {
           'id' => 'sub-1',
@@ -1165,7 +1581,7 @@ exit(run_tests('App Store Submit Guardrail Tests') do
       true
     end
 
-    test('first subscription reports unknown when Safari attachment proof is unavailable') do
+    test('first subscription reports unknown when Brave attachment proof is unavailable') do
       subject.stub_subscription_record(
         {
           'id' => 'sub-1',
@@ -1194,7 +1610,7 @@ exit(run_tests('App Store Submit Guardrail Tests') do
 
     test('version page IAP proof waits through partial Included Assets loads') do
       subject.stub_version_page_includes_iap(:__unset)
-      subject.stub_safari_snapshots([
+      subject.stub_brave_snapshots([
         { 'body' => 'Included Assets\nIn-App Purchases and Subscriptions\nLoading...' },
         { 'body' => 'Included Assets\nIn-App Purchases and Subscriptions\ncom.example.pro.yearly' }
       ])
@@ -1207,7 +1623,7 @@ exit(run_tests('App Store Submit Guardrail Tests') do
       )
 
       assert_eq(ok, true)
-      assert_eq(subject.safari_snapshot_calls.length, 2)
+      assert_eq(subject.brave_snapshot_calls.length, 2)
       true
     end
 
@@ -1285,9 +1701,274 @@ exit(run_tests('App Store Submit Guardrail Tests') do
     end
   end
 
+  test_category('Obsolete subscription deletion') do
+    test('deletes only the exact READY_TO_SUBMIT subscription then its verified-empty group') do
+      app_id = 'app-1'
+      subscription_id = 'sub-1'
+      group_id = 'group-1'
+      product_id = 'com.example.monthly'
+      group_members_path = "/subscriptionGroups/#{group_id}/subscriptions?limit=200"
+      app_groups_path = "/apps/#{app_id}/subscriptionGroups?include=subscriptions&limit=200"
+      harness = ObsoleteSubscriptionDeletionHarness.new(
+        get_responses: {
+          "/subscriptions/#{subscription_id}" => [
+            [200, {
+              'data' => {
+                'id' => subscription_id,
+                'type' => 'subscriptions',
+                'attributes' => {
+                  'name' => 'Example Monthly',
+                  'productId' => product_id,
+                  'state' => 'READY_TO_SUBMIT'
+                }
+              }
+            }],
+            [404, { 'errors' => [] }]
+          ],
+          "/subscriptions/#{subscription_id}/versions?limit=200" => [[200, { 'data' => [] }]],
+          "/subscriptionGroups/#{group_id}" => [
+            [200, {
+              'data' => {
+                'id' => group_id,
+                'type' => 'subscriptionGroups',
+                'attributes' => { 'referenceName' => 'Example Plans' }
+              }
+            }],
+            [404, { 'errors' => [] }]
+          ],
+          group_members_path => [
+            [200, {
+              'data' => [{
+                'id' => subscription_id,
+                'type' => 'subscriptions',
+                'attributes' => { 'productId' => product_id }
+              }]
+            }],
+            [200, { 'data' => [] }]
+          ],
+          app_groups_path => [
+            [200, {
+              'data' => [{ 'id' => group_id, 'type' => 'subscriptionGroups' }],
+              'included' => [{ 'id' => subscription_id, 'type' => 'subscriptions' }]
+            }],
+            [200, { 'data' => [], 'included' => [] }]
+          ]
+        },
+        delete_responses: {
+          "/subscriptions/#{subscription_id}" => [[204, { 'raw' => '' }]],
+          "/subscriptionGroups/#{group_id}" => [[204, { 'raw' => '' }]]
+        }
+      )
+
+      result = harness.send(
+        :delete_obsolete_draft_subscription_and_group,
+        app_id: app_id,
+        subscription_id: subscription_id,
+        group_id: group_id,
+        expected_product_id: product_id,
+        expected_name: 'Example Monthly',
+        token: 'token'
+      )
+
+      assert_eq(
+        harness.delete_paths,
+        ["/subscriptions/#{subscription_id}", "/subscriptionGroups/#{group_id}"]
+      )
+      assert_eq(result[:subscription_readback_http], 404)
+      assert_eq(result[:group_readback_http], 404)
+      true
+    end
+
+    test('refuses deletion when the live product identity does not match') do
+      harness = ObsoleteSubscriptionDeletionHarness.new(
+        get_responses: {
+          '/subscriptions/sub-1' => [[200, {
+            'data' => {
+              'id' => 'sub-1',
+              'type' => 'subscriptions',
+              'attributes' => {
+                'name' => 'Example Monthly',
+                'productId' => 'com.example.different',
+                'state' => 'READY_TO_SUBMIT'
+              }
+            }
+          }]]
+        },
+        delete_responses: {}
+      )
+
+      begin
+        harness.send(
+          :delete_obsolete_draft_subscription_and_group,
+          app_id: 'app-1',
+          subscription_id: 'sub-1',
+          group_id: 'group-1',
+          expected_product_id: 'com.example.monthly',
+          expected_name: 'Example Monthly',
+          token: 'token'
+        )
+        assert(false, 'expected product mismatch to block deletion')
+      rescue StandardError => e
+        assert_includes(e.message, 'identity/state mismatch')
+      end
+
+      assert_eq(harness.delete_paths, [])
+      true
+    end
+
+    test('refuses group deletion when the group contains any additional subscription') do
+      group_members_path = '/subscriptionGroups/group-1/subscriptions?limit=200'
+      harness = ObsoleteSubscriptionDeletionHarness.new(
+        get_responses: {
+          '/subscriptions/sub-1' => [[200, {
+            'data' => {
+              'id' => 'sub-1',
+              'type' => 'subscriptions',
+              'attributes' => {
+                'name' => 'Example Monthly',
+                'productId' => 'com.example.monthly',
+                'state' => 'READY_TO_SUBMIT'
+              }
+            }
+          }]],
+          '/subscriptions/sub-1/versions?limit=200' => [[200, { 'data' => [] }]],
+          '/subscriptionGroups/group-1' => [[200, {
+            'data' => { 'id' => 'group-1', 'type' => 'subscriptionGroups' }
+          }]],
+          group_members_path => [[200, {
+            'data' => [
+              {
+                'id' => 'sub-1',
+                'type' => 'subscriptions',
+                'attributes' => { 'productId' => 'com.example.monthly' }
+              },
+              {
+                'id' => 'sub-2',
+                'type' => 'subscriptions',
+                'attributes' => { 'productId' => 'com.example.annual' }
+              }
+            ]
+          }]]
+        },
+        delete_responses: {}
+      )
+
+      begin
+        harness.send(
+          :delete_obsolete_draft_subscription_and_group,
+          app_id: 'app-1',
+          subscription_id: 'sub-1',
+          group_id: 'group-1',
+          expected_product_id: 'com.example.monthly',
+          expected_name: 'Example Monthly',
+          token: 'token'
+        )
+        assert(false, 'expected extra group member to block deletion')
+      rescue StandardError => e
+        assert_includes(e.message, 'must contain only subscription')
+      end
+
+      assert_eq(harness.delete_paths, [])
+      true
+    end
+
+    test('refuses API deletion for a Developer Rejected subscription version') do
+      harness = ObsoleteSubscriptionDeletionHarness.new(
+        get_responses: {
+          '/subscriptions/sub-1' => [[200, {
+            'data' => {
+              'id' => 'sub-1',
+              'type' => 'subscriptions',
+              'attributes' => {
+                'name' => 'Example Monthly',
+                'productId' => 'com.example.monthly',
+                'state' => 'READY_TO_SUBMIT'
+              }
+            }
+          }]],
+          '/subscriptions/sub-1/versions?limit=200' => [[200, {
+            'data' => [{
+              'id' => 'version-1',
+              'type' => 'subscriptionVersions',
+              'attributes' => { 'state' => 'DEVELOPER_REJECTED' }
+            }]
+          }]]
+        },
+        delete_responses: {}
+      )
+
+      begin
+        harness.send(
+          :delete_obsolete_draft_subscription_and_group,
+          app_id: 'app-1',
+          subscription_id: 'sub-1',
+          group_id: 'group-1',
+          expected_product_id: 'com.example.monthly',
+          expected_name: 'Example Monthly',
+          token: 'token'
+        )
+        assert(false, 'expected Developer Rejected subscription to block permanent deletion')
+      rescue StandardError => e
+        assert_includes(e.message, 'DEVELOPER_REJECTED')
+        assert_includes(e.message, 'remove it from sale')
+      end
+
+      assert_eq(harness.delete_paths, [])
+      true
+    end
+  end
+
   test_category('Review package capture') do
-    test('polls the review page without renavigating after the first Safari load') do
-      subject.stub_safari_snapshots(
+    test('production adapter is Brave-only and requires an existing ASC tab') do
+      source = File.read(File.expand_path('appstore_submit.rb', __dir__))
+
+      assert_includes(source, 'tell application "Brave Browser"')
+      assert_includes(source, 'Brave Browser has no open App Store Connect tab.')
+      assert(!source.match?(/tell\s+application\s+["']Safari["']/i), 'App Store submitter must not embed Safari')
+      true
+    end
+
+    test('fails closed when Brave returns an authentication page') do
+      harness = BraveSnapshotGuardHarness.new(
+        'url' => 'https://appstoreconnect.apple.com/',
+        'body' => 'authResult=FAILED Sign In with your Apple Account'
+      )
+      begin
+        harness.send(:brave_page_snapshot, url: 'https://appstoreconnect.apple.com/apps/123')
+        assert(false, 'expected expired Brave auth to fail closed')
+      rescue StandardError => e
+        assert_includes(e.message, 'authentication is expired')
+      end
+      true
+    end
+
+    test('fails closed when Brave returns a non-ASC host') do
+      harness = BraveSnapshotGuardHarness.new(
+        'url' => 'https://idmsa.apple.com/appleauth/auth/signin',
+        'body' => 'Sign In'
+      )
+      begin
+        harness.send(:brave_page_snapshot, url: 'https://appstoreconnect.apple.com/apps/123')
+        assert(false, 'expected wrong Brave host to fail closed')
+      rescue StandardError => e
+        assert_includes(e.message, 'unexpected App Store Connect URL')
+      end
+      true
+    end
+
+    test('fails closed when Brave returns malformed download metadata') do
+      harness = BraveRawResultHarness.new('not-json')
+      begin
+        harness.send(:click_review_downloads_in_brave, app_id: '123', submission_id: 'sub-1')
+        assert(false, 'expected malformed Brave download metadata to fail closed')
+      rescue StandardError => e
+        assert_includes(e.message, 'invalid App Review download metadata')
+      end
+      true
+    end
+
+    test('polls the review page without renavigating after the first Brave load') do
+      subject.stub_brave_snapshots(
         [
           {
             'url' => 'https://appstoreconnect.apple.com/apps/123/distribution/reviewsubmissions/details/sub-1',
@@ -1301,20 +1982,20 @@ exit(run_tests('App Store Submit Guardrail Tests') do
       )
 
       review_text = subject.send(
-        :fetch_review_message_from_safari,
+        :fetch_review_message_from_brave,
         app_id: '123',
         submission_id: 'sub-1'
       )
 
       assert_includes(review_text, 'Messages (1)')
-      assert_eq(subject.safari_snapshot_calls.length, 2)
-      assert_eq(subject.safari_snapshot_calls[0][:navigate], true)
-      assert_eq(subject.safari_snapshot_calls[1][:navigate], false)
+      assert_eq(subject.brave_snapshot_calls.length, 2)
+      assert_eq(subject.brave_snapshot_calls[0][:navigate], true)
+      assert_eq(subject.brave_snapshot_calls[1][:navigate], false)
       true
     end
 
     test('does not accept a submission header without the actual reviewer message') do
-      subject.stub_safari_snapshots(
+      subject.stub_brave_snapshots(
         [
           {
             'url' => 'https://appstoreconnect.apple.com/apps/123/distribution/reviewsubmissions/details/sub-1',
@@ -1328,22 +2009,22 @@ exit(run_tests('App Store Submit Guardrail Tests') do
       )
 
       review_text = subject.send(
-        :fetch_review_message_from_safari,
+        :fetch_review_message_from_brave,
         app_id: '123',
         submission_id: 'sub-1'
       )
 
       assert_includes(review_text, 'Hello,')
-      assert_eq(subject.safari_snapshot_calls.length, 2)
+      assert_eq(subject.brave_snapshot_calls.length, 2)
       true
     end
 
     test('captures review evidence and copies downloaded attachments') do
-      subject.stub_safari_snapshot(
+      subject.stub_brave_snapshot(
         'url' => 'https://appstoreconnect.apple.com/apps/123/distribution/reviewsubmissions/details/sub-1',
         'body' => "Messages (1)\nApple\nHello,\nGuideline 2.4.5(vii)\n"
       )
-      subject.stub_safari_javascript(
+      subject.stub_brave_javascript(
         JSON.generate(
           'url' => 'https://appstoreconnect.apple.com/apps/123/distribution/reviewsubmissions/details/sub-1',
           'clicks' => ['Download screenshot'],
@@ -1358,7 +2039,7 @@ exit(run_tests('App Store Submit Guardrail Tests') do
         File.write(File.join(downloads_dir, 'Screenshot-0326-125858.png'), 'fresh attachment')
 
         package = subject.send(
-          :fetch_review_package_from_safari,
+          :fetch_review_package_from_brave,
           app_id: '123',
           submission_id: 'sub-1',
           downloads_dir: downloads_dir,
@@ -1377,7 +2058,7 @@ exit(run_tests('App Store Submit Guardrail Tests') do
     end
 
     test('clears every visible empty draft submission before reporting success') do
-      subject.stub_safari_javascript(
+      subject.stub_brave_javascript(
         [
           JSON.generate('action' => 'clicked', 'remainingBefore' => 2),
           JSON.generate('action' => 'clicked', 'remainingBefore' => 1),
@@ -1385,14 +2066,14 @@ exit(run_tests('App Store Submit Guardrail Tests') do
         ]
       )
 
-      result = subject.send(:delete_empty_draft_submissions_from_safari, app_id: '123')
+      result = subject.send(:delete_empty_draft_submissions_from_brave, app_id: '123')
 
       assert_eq(result[:deleted_count], 2)
       assert_eq(result[:remaining_count], 0)
-      assert_eq(subject.safari_snapshot_calls.length, 3)
-      assert_eq(subject.safari_snapshot_calls[0][:navigate], true)
-      assert_eq(subject.safari_snapshot_calls[1][:navigate], false)
-      assert_eq(subject.safari_snapshot_calls[2][:navigate], false)
+      assert_eq(subject.brave_snapshot_calls.length, 3)
+      assert_eq(subject.brave_snapshot_calls[0][:navigate], true)
+      assert_eq(subject.brave_snapshot_calls[1][:navigate], false)
+      assert_eq(subject.brave_snapshot_calls[2][:navigate], false)
       true
     end
 

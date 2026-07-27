@@ -34,6 +34,7 @@ require 'yaml'
 require 'tmpdir'
 require 'open3'
 require 'rbconfig'
+require 'pathname'
 require_relative 'hooks/release_receipt_signer'
 
 APPSTORE_PREFLIGHT_CLOCK_SKEW_SECONDS = 5
@@ -759,6 +760,50 @@ def resolve_review_contact(config)
   }
 end
 
+def resolve_review_demo_account(config, project_root:)
+  demo_cfg = config.dig('appstore', 'review_demo_account')
+  return nil unless demo_cfg.is_a?(Hash)
+
+  account_name = config_value(demo_cfg, 'name', 'account_name')
+  password_file = config_value(demo_cfg, 'password_file')
+  if account_name.nil? || password_file.nil?
+    raise ArgumentError,
+          'appstore.review_demo_account requires non-empty name and password_file values'
+  end
+
+  expanded_path =
+    if Pathname.new(password_file).absolute?
+      File.expand_path(password_file)
+    else
+      File.expand_path(password_file, project_root)
+    end
+
+  unless File.file?(expanded_path)
+    raise ArgumentError, 'App Store review demo password file is missing or is not a regular file'
+  end
+  if File.symlink?(expanded_path)
+    raise ArgumentError, 'App Store review demo password file must not be a symbolic link'
+  end
+
+  mode = File.stat(expanded_path).mode & 0o777
+  unless mode == 0o600
+    raise ArgumentError, 'App Store review demo password file must have permissions 600'
+  end
+
+  password = File.read(expanded_path, encoding: Encoding::UTF_8).strip
+  if password.empty?
+    raise ArgumentError, 'App Store review demo password file is empty'
+  end
+  if password.bytesize > 4_096
+    raise ArgumentError, 'App Store review demo password file exceeds the 4096-byte limit'
+  end
+
+  {
+    name: account_name,
+    password: password
+  }
+end
+
 # ─── JWT Token Generation ───
 
 def generate_jwt
@@ -787,6 +832,18 @@ def generate_jwt
 end
 
 # ─── HTTP Helpers ───
+
+def redact_asc_response_body(response_body, request_body)
+  response_text = response_body.to_s
+  return response_text[0..500] unless request_body.is_a?(Hash)
+
+  secret = request_body.dig(:data, :attributes, :demoAccountPassword) ||
+           request_body.dig('data', 'attributes', 'demoAccountPassword')
+  secret = secret.to_s
+  return response_text[0..500] if secret.empty?
+
+  response_text.gsub(secret, '[REDACTED]')[0..500]
+end
 
 def asc_request(method, path, body: nil, token: nil, retry_on_unauthorized: true)
   token ||= generate_jwt
@@ -826,7 +883,7 @@ def asc_request(method, path, body: nil, token: nil, retry_on_unauthorized: true
 
   unless response.is_a?(Net::HTTPSuccess) || response.is_a?(Net::HTTPCreated)
     log_error "ASC API #{method.upcase} #{path} → #{response.code}"
-    log_error response.body[0..500] if response.body
+    log_error redact_asc_response_body(response.body, body) if response.body
     return nil
   end
 
@@ -1230,33 +1287,50 @@ def applescript_quote(text)
   text.to_s.gsub('\\', '\\\\\\').gsub('"', '\"')
 end
 
-def run_safari_javascript(url:, javascript:, delay_seconds: 8, navigate: true)
+def run_brave_javascript(url:, javascript:, delay_seconds: 8, navigate: true)
   script = <<~APPLESCRIPT
-    tell application "Safari"
+    tell application "Brave Browser"
       if not running then
-        error "Safari is not running."
+        error "Brave Browser is not running."
       end if
 
       if (count of windows) = 0 then
-        make new document with properties {URL:"#{applescript_quote(url)}"}
+        error "Brave Browser has no open window."
       end if
 
+      set ascTab to missing value
+      repeat with browserWindow in windows
+        repeat with browserTab in tabs of browserWindow
+          if (URL of browserTab starts with "https://appstoreconnect.apple.com") then
+            set ascTab to browserTab
+            exit repeat
+          end if
+        end repeat
+        if ascTab is not missing value then exit repeat
+      end repeat
+
+      if ascTab is missing value then
+        error "Brave Browser has no open App Store Connect tab."
+      end if
       if #{navigate ? 'true' : 'false'} then
-        set URL of current tab of front window to "#{applescript_quote(url)}"
+        set URL of ascTab to "#{applescript_quote(url)}"
       end if
 
       delay #{delay_seconds}
-      return do JavaScript "#{applescript_quote(javascript)}" in current tab of front window
+      if (URL of ascTab does not start with "https://appstoreconnect.apple.com") then
+        error "Brave App Store Connect authentication is unavailable."
+      end if
+      return execute ascTab javascript "#{applescript_quote(javascript)}"
     end tell
   APPLESCRIPT
 
   stdout, stderr, status = Open3.capture3('osascript', stdin_data: script)
-  raise(stderr.strip.empty? ? 'Safari automation failed.' : stderr.strip) unless status.success?
+  raise(stderr.strip.empty? ? 'Brave App Store Connect automation failed.' : stderr.strip) unless status.success?
 
   stdout
 end
 
-def safari_page_snapshot(url:, delay_seconds: 8, navigate: true)
+def brave_page_snapshot(url:, delay_seconds: 8, navigate: true)
   javascript = <<~JAVASCRIPT
     JSON.stringify({
       url: location.href,
@@ -1264,10 +1338,19 @@ def safari_page_snapshot(url:, delay_seconds: 8, navigate: true)
     })
   JAVASCRIPT
 
-  raw = run_safari_javascript(url: url, javascript: javascript, delay_seconds: delay_seconds, navigate: navigate)
-  JSON.parse(raw)
-rescue JSON::ParserError
-  { 'url' => url, 'body' => raw.to_s }
+  raw = run_brave_javascript(url: url, javascript: javascript, delay_seconds: delay_seconds, navigate: navigate)
+  snapshot = JSON.parse(raw)
+  current_url = snapshot['url'].to_s
+  body = snapshot['body'].to_s
+  unless current_url.start_with?('https://appstoreconnect.apple.com/')
+    raise "Brave returned an unexpected App Store Connect URL: #{current_url}"
+  end
+  if body.include?('authResult=FAILED') || body.match?(/\bSign In\b.*\bApple (?:Account|ID)\b/i)
+    raise 'Brave App Store Connect authentication is expired; sign in in Brave and retry.'
+  end
+  snapshot
+rescue JSON::ParserError => e
+  raise "Brave returned invalid App Store Connect page JSON: #{e.message}"
 end
 
 def version_page_includes_iap?(app_id:, platform:, product_id:)
@@ -1277,7 +1360,7 @@ def version_page_includes_iap?(app_id:, platform:, product_id:)
   url = "https://appstoreconnect.apple.com/apps/#{app_id}/distribution/#{platform_path}/version/inflight"
 
   6.times do |attempt|
-    snapshot = safari_page_snapshot(
+    snapshot = brave_page_snapshot(
       url: url,
       delay_seconds: attempt.zero? ? 8 : 2,
       navigate: attempt.zero?
@@ -1317,11 +1400,11 @@ def normalize_review_page_text(text)
   start_index ? clean[start_index..].strip : clean
 end
 
-def fetch_review_message_from_safari(app_id:, submission_id:)
+def fetch_review_message_from_brave(app_id:, submission_id:)
   review_url = "https://appstoreconnect.apple.com/apps/#{app_id}/distribution/reviewsubmissions/details/#{submission_id}"
   delays = [10, 5, 5, 5]
   delays.each_with_index do |delay_seconds, attempt|
-    snapshot = safari_page_snapshot(
+    snapshot = brave_page_snapshot(
       url: review_url,
       delay_seconds: delay_seconds,
       navigate: attempt.zero?
@@ -1333,7 +1416,7 @@ def fetch_review_message_from_safari(app_id:, submission_id:)
     return normalize_review_page_text(body) if url_matches && body_matches
   end
 
-  raise "Safari did not open the expected App Review page for app #{app_id} submission #{submission_id}."
+  raise "Brave did not open the expected App Review page for app #{app_id} submission #{submission_id}."
 end
 
 def review_downloads_dir
@@ -1366,7 +1449,7 @@ def new_downloads_since(before_snapshot, downloads_dir)
   end.sort_by { |path| File.mtime(path) }.reverse
 end
 
-def click_review_downloads_in_safari(app_id:, submission_id:)
+def click_review_downloads_in_brave(app_id:, submission_id:)
   review_url = "https://appstoreconnect.apple.com/apps/#{app_id}/distribution/reviewsubmissions/details/#{submission_id}"
   javascript = <<~JAVASCRIPT
     JSON.stringify((() => {
@@ -1420,20 +1503,16 @@ def click_review_downloads_in_safari(app_id:, submission_id:)
     })())
   JAVASCRIPT
 
-  raw = run_safari_javascript(url: review_url, javascript: javascript, delay_seconds: 2, navigate: false)
+  raw = run_brave_javascript(url: review_url, javascript: javascript, delay_seconds: 2, navigate: false)
   JSON.parse(raw)
-rescue JSON::ParserError
-  {
-    'url' => review_url,
-    'clicks' => [],
-    'body' => ''
-  }
+rescue JSON::ParserError => e
+  raise "Brave returned invalid App Review download metadata: #{e.message}"
 end
 
-def fetch_review_package_from_safari(app_id:, submission_id:, downloads_dir: review_downloads_dir, download_wait_seconds: 5)
-  review_text = fetch_review_message_from_safari(app_id: app_id, submission_id: submission_id)
+def fetch_review_package_from_brave(app_id:, submission_id:, downloads_dir: review_downloads_dir, download_wait_seconds: 5)
+  review_text = fetch_review_message_from_brave(app_id: app_id, submission_id: submission_id)
   before_snapshot = snapshot_downloads(downloads_dir)
-  click_payload = click_review_downloads_in_safari(app_id: app_id, submission_id: submission_id)
+  click_payload = click_review_downloads_in_brave(app_id: app_id, submission_id: submission_id)
   sleep download_wait_seconds if download_wait_seconds.to_i.positive?
   downloaded_files = new_downloads_since(before_snapshot, downloads_dir)
 
@@ -1481,7 +1560,7 @@ def persist_review_package(package:, output_dir:)
   summary
 end
 
-def delete_empty_draft_submissions_from_safari(app_id:, max_iterations: 20)
+def delete_empty_draft_submissions_from_brave(app_id:, max_iterations: 20)
   review_url = "https://appstoreconnect.apple.com/apps/#{app_id}/distribution/reviewsubmissions"
   deleted_count = 0
 
@@ -1515,7 +1594,7 @@ def delete_empty_draft_submissions_from_safari(app_id:, max_iterations: 20)
       })()
     JAVASCRIPT
 
-    raw = run_safari_javascript(
+    raw = run_brave_javascript(
       url: review_url,
       javascript: javascript,
       delay_seconds: delay_seconds,
@@ -1538,10 +1617,10 @@ def delete_empty_draft_submissions_from_safari(app_id:, max_iterations: 20)
     }
   end
 
-  raise 'Timed out while deleting draft submissions in Safari.'
+  raise 'Timed out while deleting draft submissions in Brave.'
 end
 
-def remove_app_from_safari(app_id:)
+def remove_app_from_brave(app_id:)
   info_url = "https://appstoreconnect.apple.com/apps/#{app_id}/distribution/info"
   click_remove_app = <<~JAVASCRIPT
     (() => {
@@ -1580,30 +1659,43 @@ def remove_app_from_safari(app_id:)
   JAVASCRIPT
 
   script = <<~APPLESCRIPT
-    tell application "Safari"
+    tell application "Brave Browser"
       if not running then
-        error "Safari is not running."
+        error "Brave Browser is not running."
       end if
 
-      if (count of documents) = 0 then
-        make new document with properties {URL:"#{applescript_quote(info_url)}"}
-      else
-        set URL of front document to "#{applescript_quote(info_url)}"
+      if (count of windows) = 0 then
+        error "Brave Browser has no open window."
       end if
+      set ascTab to missing value
+      repeat with browserWindow in windows
+        repeat with browserTab in tabs of browserWindow
+          if (URL of browserTab starts with "https://appstoreconnect.apple.com") then
+            set ascTab to browserTab
+            exit repeat
+          end if
+        end repeat
+        if ascTab is not missing value then exit repeat
+      end repeat
+      if ascTab is missing value then error "Brave Browser has no open App Store Connect tab."
+      set URL of ascTab to "#{applescript_quote(info_url)}"
       delay 10
+      if (URL of ascTab does not start with "https://appstoreconnect.apple.com") then
+        error "Brave App Store Connect authentication is unavailable."
+      end if
 
-      set stepOne to do JavaScript "#{applescript_quote(click_remove_app)}" in front document
+      set stepOne to execute ascTab javascript "#{applescript_quote(click_remove_app)}"
       delay 2
-      set stepTwo to do JavaScript "#{applescript_quote(click_confirm)}" in front document
+      set stepTwo to execute ascTab javascript "#{applescript_quote(click_confirm)}"
       delay 4
-      set snapshot to do JavaScript "#{applescript_quote(snapshot_script)}" in front document
+      set snapshot to execute ascTab javascript "#{applescript_quote(snapshot_script)}"
 
       return stepOne & linefeed & "<<<ASC_SPLIT>>>" & linefeed & stepTwo & linefeed & "<<<ASC_SPLIT>>>" & linefeed & snapshot
     end tell
   APPLESCRIPT
 
   stdout, stderr, status = Open3.capture3('osascript', stdin_data: script)
-  raise(stderr.strip.empty? ? 'Safari remove-app automation failed.' : stderr.strip) unless status.success?
+  raise(stderr.strip.empty? ? 'Brave remove-app automation failed.' : stderr.strip) unless status.success?
 
   parts = stdout.split("\n<<<ASC_SPLIT>>>\n", 3)
   step_one = JSON.parse(parts[0].to_s, symbolize_names: true)
@@ -1869,6 +1961,11 @@ end
 # ─── Review Contact Detail ───
 
 def ensure_review_detail(version_id, contact, token)
+  demo_account = contact[:demo_account]
+  demo_account_required = !demo_account.nil?
+  desired_demo_name = demo_account && demo_account[:name].to_s
+  desired_demo_password = demo_account && demo_account[:password].to_s
+
   # Check if review detail already exists
   path = "/appStoreVersions/#{version_id}/appStoreReviewDetail"
   resp = asc_get(path, token: token)
@@ -1884,23 +1981,30 @@ def ensure_review_detail(version_id, contact, token)
                    existing['contactLastName'] != contact[:last_name] ||
                    existing['contactPhone'] != contact[:phone] ||
                    existing['contactEmail'] != contact[:email] ||
-                   existing['demoAccountRequired'] != false ||
+                   existing['demoAccountRequired'] != demo_account_required ||
+                   (demo_account_required && existing['demoAccountName'].to_s != desired_demo_name) ||
+                   (demo_account_required && existing['demoAccountPassword'].to_s != desired_demo_password) ||
                    (!desired_notes.empty? && existing_notes != desired_notes)
 
     if needs_update
       log_info 'Updating review contact detail...'
+      attributes = {
+        contactFirstName: contact[:first_name],
+        contactLastName: contact[:last_name],
+        contactPhone: contact[:phone],
+        contactEmail: contact[:email],
+        notes: desired_notes.empty? ? existing_notes : desired_notes,
+        demoAccountRequired: demo_account_required
+      }
+      if demo_account_required
+        attributes[:demoAccountName] = desired_demo_name
+        attributes[:demoAccountPassword] = desired_demo_password
+      end
       body = {
         data: {
           type: 'appStoreReviewDetails',
           id: detail_id,
-          attributes: {
-            contactFirstName: contact[:first_name],
-            contactLastName: contact[:last_name],
-            contactPhone: contact[:phone],
-            contactEmail: contact[:email],
-            notes: desired_notes.empty? ? existing_notes : desired_notes,
-            demoAccountRequired: false
-          }
+          attributes: attributes
         }
       }
       asc_patch("/appStoreReviewDetails/#{detail_id}", body: body, token: token)
@@ -1912,17 +2016,22 @@ def ensure_review_detail(version_id, contact, token)
 
   # Create review detail
   log_info 'Creating review contact detail...'
+  attributes = {
+    contactFirstName: contact[:first_name],
+    contactLastName: contact[:last_name],
+    contactPhone: contact[:phone],
+    contactEmail: contact[:email],
+    notes: contact[:notes].to_s,
+    demoAccountRequired: demo_account_required
+  }
+  if demo_account_required
+    attributes[:demoAccountName] = desired_demo_name
+    attributes[:demoAccountPassword] = desired_demo_password
+  end
   body = {
     data: {
       type: 'appStoreReviewDetails',
-      attributes: {
-        contactFirstName: contact[:first_name],
-        contactLastName: contact[:last_name],
-        contactPhone: contact[:phone],
-        contactEmail: contact[:email],
-        notes: contact[:notes].to_s,
-        demoAccountRequired: false
-      },
+      attributes: attributes,
       relationships: {
         appStoreVersion: {
           data: { type: 'appStoreVersions', id: version_id }
@@ -3396,10 +3505,255 @@ def list_app_subscriptions(app_id:, token:)
   end
 end
 
+def no_iap_policy?(config)
+  config.dig('appstore', 'iap_policy').to_s.strip.downcase == 'none'
+end
+
+def retired_iap_product_ids(config)
+  Array(config.dig('appstore', 'retired_product_ids'))
+    .map { |value| value.to_s.strip }
+    .reject(&:empty?)
+    .uniq
+end
+
+def ensure_no_iap_readiness(
+  app_id:,
+  version_id:,
+  platform:,
+  config:,
+  token:,
+  linked_submission: nil
+)
+  unless no_iap_policy?(config)
+    log_error 'No-IAP readiness requires appstore.iap_policy: none.'
+    return false
+  end
+
+  retired_ids = retired_iap_product_ids(config)
+  subscriptions = list_app_subscriptions(app_id: app_id, token: token)
+  subscription_ids = subscriptions.map { |entry| entry.dig('attributes', 'productId').to_s.strip }
+  unexpected_subscriptions = subscription_ids.reject { |product_id| retired_ids.include?(product_id) }
+  unless unexpected_subscriptions.empty?
+    log_error "No-IAP policy found unapproved subscriptions: #{unexpected_subscriptions.join(', ')}"
+    return false
+  end
+
+  iaps = list_app_iaps(app_id: app_id, token: token)
+  unless iaps.empty?
+    product_ids = iaps.map { |entry| entry.dig('attributes', 'productId').to_s.strip }
+    log_error "No-IAP policy found in-app purchases: #{product_ids.join(', ')}"
+    return false
+  end
+
+  subscriptions.each do |subscription|
+    subscription_id = subscription['id'].to_s
+    product_id = subscription.dig('attributes', 'productId').to_s.strip
+    code, availability = asc_get_with_status(
+      "/subscriptions/#{subscription_id}/subscriptionAvailability" \
+      '?include=availableTerritories&limit[availableTerritories]=50',
+      token: token
+    )
+    available_in_new = availability.dig('data', 'attributes', 'availableInNewTerritories')
+    territory_total = availability.dig(
+      'data', 'relationships', 'availableTerritories', 'meta', 'paging', 'total'
+    )
+    territory_rows = Array(availability.dig(
+      'data', 'relationships', 'availableTerritories', 'data'
+    ))
+    unless code == 200 && available_in_new == false &&
+           territory_total.to_i.zero? && territory_rows.empty?
+      log_error(
+        "Retired subscription #{product_id} is still available " \
+        "(HTTP #{code}, newTerritories=#{available_in_new.inspect}, territories=#{territory_total.inspect})."
+      )
+      return false
+    end
+
+    attachment = iap_version_attachment_status(
+      app_id: app_id,
+      platform: platform,
+      product_id: product_id
+    )
+    unless attachment == :not_attached
+      log_error(
+        "Retired subscription #{product_id} attachment state is #{attachment}; " \
+        'Included Assets must prove it is absent in signed-in Brave.'
+      )
+      return false
+    end
+    log_info "Retired subscription #{product_id} is unavailable and absent from Included Assets."
+  end
+
+  if linked_submission && linked_submission[:id]
+    path = "/reviewSubmissions/#{linked_submission[:id]}/items?include=appStoreVersion&limit=200"
+    code, response = asc_get_with_status(path, token: token)
+    items = Array(response['data'])
+    only_version = code == 200 && !items.empty? && items.all? do |item|
+      relationships = item.fetch('relationships', {})
+      relationships.keys == ['appStoreVersion'] &&
+        relationships.dig('appStoreVersion', 'data', 'id').to_s == version_id.to_s
+    end
+    unless only_version
+      log_error 'Review submission contains an item other than the selected app version.'
+      return false
+    end
+    log_info "Review submission #{linked_submission[:id]} contains only app version #{version_id}."
+  end
+
+  true
+end
+
 def find_subscription_by_product_id(app_id:, product_id:, token:)
   list_app_subscriptions(app_id: app_id, token: token).find do |entry|
     entry.dig('attributes', 'productId').to_s.strip == product_id.to_s.strip
   end
+end
+
+def delete_obsolete_draft_subscription_and_group(
+  app_id:,
+  subscription_id:,
+  group_id:,
+  expected_product_id:,
+  expected_name:,
+  token:
+)
+  subscription_code, subscription_response = asc_get_with_status(
+    "/subscriptions/#{subscription_id}",
+    token: token
+  )
+  unless subscription_code == 200
+    raise "Refusing deletion: subscription #{subscription_id} read returned HTTP #{subscription_code}."
+  end
+
+  subscription = subscription_response['data']
+  attributes = subscription&.fetch('attributes', {}) || {}
+  identity_matches =
+    subscription&.fetch('id', nil).to_s == subscription_id.to_s &&
+    subscription&.fetch('type', nil).to_s == 'subscriptions' &&
+    attributes['productId'].to_s == expected_product_id.to_s &&
+    attributes['name'].to_s == expected_name.to_s &&
+    attributes['state'].to_s == 'READY_TO_SUBMIT'
+  unless identity_matches
+    raise(
+      "Refusing deletion: subscription identity/state mismatch " \
+      "(id=#{subscription&.fetch('id', nil)}, productId=#{attributes['productId']}, " \
+      "name=#{attributes['name']}, state=#{attributes['state']})."
+    )
+  end
+
+  versions_code, versions_response = asc_get_with_status(
+    "/subscriptions/#{subscription_id}/versions?limit=200",
+    token: token
+  )
+  version_states = Array(versions_response['data']).map do |entry|
+    entry.dig('attributes', 'state').to_s
+  end
+  unless versions_code == 200
+    raise "Refusing deletion: subscription version state read returned HTTP #{versions_code}."
+  end
+  if version_states.include?('DEVELOPER_REJECTED')
+    raise(
+      "Refusing deletion: subscription #{subscription_id} has a DEVELOPER_REJECTED version. " \
+      "App Store Connect does not permit permanent deletion in this state; remove it from sale " \
+      "and exclude it from the app version instead."
+    )
+  end
+
+  group_code, group_response = asc_get_with_status("/subscriptionGroups/#{group_id}", token: token)
+  unless group_code == 200 &&
+         group_response.dig('data', 'id').to_s == group_id.to_s &&
+         group_response.dig('data', 'type').to_s == 'subscriptionGroups'
+    raise "Refusing deletion: subscription group #{group_id} identity check failed (HTTP #{group_code})."
+  end
+
+  members_path = "/subscriptionGroups/#{group_id}/subscriptions?limit=200"
+  members_code, members_response = asc_get_with_status(members_path, token: token)
+  members = Array(members_response['data'])
+  unless members_code == 200 &&
+         members.length == 1 &&
+         members.first['id'].to_s == subscription_id.to_s &&
+         members.first.dig('attributes', 'productId').to_s == expected_product_id.to_s
+    member_ids = members.map { |entry| entry['id'].to_s }
+    raise(
+      "Refusing deletion: group #{group_id} must contain only subscription #{subscription_id}; " \
+      "found #{member_ids.inspect} (HTTP #{members_code})."
+    )
+  end
+
+  app_groups_path = "/apps/#{app_id}/subscriptionGroups?include=subscriptions&limit=200"
+  app_groups_code, app_groups_response = asc_get_with_status(app_groups_path, token: token)
+  app_group_ids = Array(app_groups_response['data']).map { |entry| entry['id'].to_s }
+  included_subscription_ids = Array(app_groups_response['included'])
+                              .select { |entry| entry['type'] == 'subscriptions' }
+                              .map { |entry| entry['id'].to_s }
+  unless app_groups_code == 200 &&
+         app_group_ids.include?(group_id.to_s) &&
+         included_subscription_ids.include?(subscription_id.to_s)
+    raise(
+      "Refusing deletion: exact subscription/group is not linked to app #{app_id} " \
+      "(HTTP #{app_groups_code})."
+    )
+  end
+
+  delete_subscription_code, delete_subscription_response = asc_delete_with_status(
+    "/subscriptions/#{subscription_id}",
+    token: token
+  )
+  unless delete_subscription_code == 204
+    detail = delete_subscription_response.dig('errors', 0, 'detail') ||
+             delete_subscription_response.dig('errors', 0, 'title') ||
+             'unknown error'
+    raise "Subscription deletion failed (HTTP #{delete_subscription_code}): #{detail}"
+  end
+
+  subscription_readback_code, = asc_get_with_status("/subscriptions/#{subscription_id}", token: token)
+  unless subscription_readback_code == 404
+    raise(
+      "Subscription deletion was not confirmed: expected HTTP 404 read-back, " \
+      "got #{subscription_readback_code}."
+    )
+  end
+
+  empty_members_code, empty_members_response = asc_get_with_status(members_path, token: token)
+  unless empty_members_code == 200 && Array(empty_members_response['data']).empty?
+    raise(
+      "Subscription group #{group_id} is not empty after subscription deletion " \
+      "(HTTP #{empty_members_code}); refusing group deletion."
+    )
+  end
+
+  delete_group_code, delete_group_response = asc_delete_with_status(
+    "/subscriptionGroups/#{group_id}",
+    token: token
+  )
+  unless delete_group_code == 204
+    detail = delete_group_response.dig('errors', 0, 'detail') ||
+             delete_group_response.dig('errors', 0, 'title') ||
+             'unknown error'
+    raise "Subscription group deletion failed (HTTP #{delete_group_code}): #{detail}"
+  end
+
+  group_readback_code, = asc_get_with_status("/subscriptionGroups/#{group_id}", token: token)
+  final_app_groups_code, final_app_groups_response = asc_get_with_status(app_groups_path, token: token)
+  remaining_group_ids = Array(final_app_groups_response['data']).map { |entry| entry['id'].to_s }
+  unless group_readback_code == 404 &&
+         final_app_groups_code == 200 &&
+         !remaining_group_ids.include?(group_id.to_s)
+    raise(
+      "Subscription group deletion was not confirmed " \
+      "(group HTTP #{group_readback_code}, app groups HTTP #{final_app_groups_code})."
+    )
+  end
+
+  {
+    app_id: app_id.to_s,
+    deleted_subscription_id: subscription_id.to_s,
+    deleted_subscription_group_id: group_id.to_s,
+    product_id: expected_product_id.to_s,
+    subscription_readback_http: subscription_readback_code,
+    group_readback_http: group_readback_code,
+    remaining_group_ids: remaining_group_ids
+  }
 end
 
 def extra_active_iaps(app_id:, product_id:, token:)
@@ -3512,7 +3866,7 @@ def ensure_subscription_readiness(app_id:, product_id:, project_root:, config:, 
       log_warn "Subscription #{label} is selected under Included Assets; continuing so the app binary submission carries the first subscription."
       return true
     elsif attachment_status == :unknown
-      log_error "Could not verify whether #{product_id} is attached to the app version in Safari."
+      log_error "Could not verify whether #{product_id} is attached to the app version in Brave."
       log_error 'Open App Store Connect and inspect Included Assets before retrying.'
       return :version_attachment_unknown
     end
@@ -3649,7 +4003,7 @@ def ensure_iap_readiness(app_id:, product_id:, project_root:, config:, token:, p
         log_warn "IAP #{label} is already attached under Included Assets; continuing with app submission."
         return true
       elsif attachment_status == :unknown
-        log_error "Could not verify whether #{product_id} is attached to the app version in Safari."
+        log_error "Could not verify whether #{product_id} is attached to the app version in Brave."
         log_error 'Open App Store Connect and inspect Included Assets before retrying.'
         return false
       end
@@ -3925,7 +4279,7 @@ def mark_review_submission_submitted(submission_id, token)
 end
 
 def clear_draft_submissions_ui_for_submit(app_id)
-  result = delete_empty_draft_submissions_from_safari(app_id: app_id)
+  result = delete_empty_draft_submissions_from_brave(app_id: app_id)
   if result[:remaining_count].positive?
     log_warn "Deleted #{result[:deleted_count]} draft submission(s), but #{result[:remaining_count]} still remain."
     return false
@@ -3934,7 +4288,7 @@ def clear_draft_submissions_ui_for_submit(app_id)
   log_warn "Deleted #{result[:deleted_count]} stale draft submission(s)."
   true
 rescue StandardError => e
-  log_warn "Could not clear stale Draft Submissions via Safari: #{e.message}"
+  log_warn "Could not clear stale Draft Submissions via Brave: #{e.message}"
   false
 end
 
@@ -4070,7 +4424,7 @@ def clear_review_submission(submission_id, token)
   else
     detail = resp.dig('errors', 0, 'detail') || resp.dig('errors', 0, 'title') || "HTTP #{code}"
     log_warn "Could not clear review submission #{submission_id}: #{detail}"
-    log_warn 'If App Review still shows empty Draft Submissions, run appstore_submit.rb --clear-draft-submissions-ui on the signed-in Safari host.'
+    log_warn 'If App Review still shows empty Draft Submissions, run appstore_submit.rb --clear-draft-submissions-ui on the signed-in Brave host.'
     false
   end
 end
@@ -4347,7 +4701,8 @@ def refresh_appstore_preflight_binding(project_root:, submission_target:, comman
   script = File.join(project_root, 'scripts', 'SaneMaster.rb')
   return [false, "missing canonical preflight command: #{script}"] unless File.file?(script)
 
-  command = [RbConfig.ruby, script, 'appstore_preflight', '--platform', submission_target.fetch('platform')]
+  command = sanemaster_invocation(script)
+  command += ['appstore_preflight', '--platform', submission_target.fetch('platform')]
   command += ['--pkg', submission_target.fetch('path')]
 
   success = command_runner ? command_runner.call(command) : system(*command)
@@ -4419,18 +4774,23 @@ OptionParser.new do |opts|
   opts.on('--skip-upload', 'Retired: existing ASC build reuse is not safely supported') { options[:skip_upload] = true }
   opts.on('--skip-screenshots', 'Skip screenshot upload; use screenshots already present in ASC') { options[:skip_screenshots] = true }
   opts.on('--screenshots-only', 'Upload screenshots to an existing ASC version (no upload, no build attach, no submission)') { options[:screenshots_only] = true }
-  opts.on('--iap-only', 'Ensure configured App Store IAP metadata is complete and exit') { options[:iap_only] = true }
+  opts.on('--iap-only', 'Ensure configured IAP or explicit no-IAP policy is ready and exit') { options[:iap_only] = true }
   opts.on('--iap-price-usd PRICE', 'Target US IAP price for auto-created price schedule (default: 6.99)') { |v| options[:iap_price_usd] = v }
   opts.on('--preflight-version-state', 'Check editable ASC version state only (no upload, no submission)') { options[:preflight_version_state] = true }
   opts.on('--repair-version-state', 'Attempt ASC lane repair before version-state preflight') { options[:repair_version_state] = true }
   opts.on('--withdraw-version VERSION', 'Withdraw an existing ASC app version lane (clears submission + linked review submission)') { |v| options[:withdraw_version] = v }
   opts.on('--list-builds', 'List ASC builds for app/platform (diagnostic)') { options[:list_builds] = true }
   opts.on('--list-versions', 'List ASC app versions and review states (diagnostic)') { options[:list_versions] = true }
-  opts.on('--fetch-review-message', 'Open linked App Review detail in Safari and print the visible reviewer message text') { options[:fetch_review_message] = true }
-  opts.on('--fetch-review-package', 'Open linked App Review detail in Safari, click visible Download actions, and save reviewer evidence locally') { options[:fetch_review_package] = true }
+  opts.on('--fetch-review-message', 'Open linked App Review detail in signed-in Brave and print the visible reviewer message text') { options[:fetch_review_message] = true }
+  opts.on('--fetch-review-package', 'Open linked App Review detail in signed-in Brave, click visible Download actions, and save reviewer evidence locally') { options[:fetch_review_package] = true }
   opts.on('--review-package-dir PATH', 'Output directory for --fetch-review-package (default: PROJECT_ROOT/outputs/appreview-...)') { |v| options[:review_package_dir] = v }
-  opts.on('--clear-draft-submissions-ui', 'Delete empty Draft Submissions for this app using signed-in Safari') { options[:clear_draft_submissions_ui] = true }
-  opts.on('--remove-app-ui', 'Remove this app from App Store Connect using signed-in Safari') { options[:remove_app_ui] = true }
+  opts.on('--clear-draft-submissions-ui', 'Delete empty Draft Submissions for this app using signed-in Brave') { options[:clear_draft_submissions_ui] = true }
+  opts.on('--remove-app-ui', 'Remove this app from App Store Connect using signed-in Brave') { options[:remove_app_ui] = true }
+  opts.on('--delete-obsolete-subscription ID', 'Permanently delete one exact READY_TO_SUBMIT subscription and its now-empty group') { |v| options[:delete_obsolete_subscription] = v }
+  opts.on('--subscription-group-id ID', 'Exact subscription group for --delete-obsolete-subscription') { |v| options[:subscription_group_id] = v }
+  opts.on('--expected-product-id ID', 'Expected product ID for guarded subscription deletion') { |v| options[:expected_product_id] = v }
+  opts.on('--expected-subscription-name NAME', 'Expected reference name for guarded subscription deletion') { |v| options[:expected_subscription_name] = v }
+  opts.on('--confirm-delete-obsolete-subscription', 'Confirm permanent deletion after exact live identity/state checks') { options[:confirm_delete_obsolete_subscription] = true }
   opts.on('--sync-metadata-only', 'Sync metadata/accessibility/review fields for an existing version (no upload, no submission)') { options[:sync_metadata_only] = true }
   opts.on('--test-screenshots', 'Test screenshot resize only (no API calls)') { options[:test_screenshots] = true }
 end.parse!
@@ -4439,6 +4799,49 @@ if options[:skip_upload]
   log_error '--skip-upload is retired because the exact remote ASC bytes cannot be proven.'
   log_error 'Increment the build number, create a fresh package, and use the normal upload path.'
   exit 1
+end
+
+if options[:delete_obsolete_subscription]
+  required = %i[
+    app_id
+    subscription_group_id
+    expected_product_id
+    expected_subscription_name
+    confirm_delete_obsolete_subscription
+  ]
+  missing = required.reject { |key| options[key] }
+  unless missing.empty?
+    log_error(
+      "Guarded deletion requires: " \
+      "#{missing.map { |key| "--#{key.to_s.tr('_', '-')}" }.join(', ')}"
+    )
+    exit 1
+  end
+
+  begin
+    result = delete_obsolete_draft_subscription_and_group(
+      app_id: options[:app_id],
+      subscription_id: options[:delete_obsolete_subscription],
+      group_id: options[:subscription_group_id],
+      expected_product_id: options[:expected_product_id],
+      expected_name: options[:expected_subscription_name],
+      token: generate_jwt
+    )
+  rescue StandardError => e
+    log_error e.message
+    exit 1
+  end
+
+  log_info(
+    "Deleted obsolete READY_TO_SUBMIT subscription " \
+    "#{result[:deleted_subscription_id]} (#{result[:product_id]})."
+  )
+  log_info(
+    "Deleted now-empty subscription group #{result[:deleted_subscription_group_id]}; " \
+    "read-back HTTP #{result[:group_readback_http]}."
+  )
+  puts JSON.pretty_generate(result)
+  exit 0
 end
 
 # Test screenshots mode
@@ -4685,10 +5088,10 @@ if options[:fetch_review_message]
   end
 
   begin
-    text = fetch_review_message_from_safari(app_id: options[:app_id], submission_id: submission[:id])
+    text = fetch_review_message_from_brave(app_id: options[:app_id], submission_id: submission[:id])
   rescue StandardError => e
-    log_error "Failed to fetch review message from Safari: #{e.message}"
-    log_error 'Requirements: Safari signed into App Store Connect, and "Allow JavaScript from Apple Events" enabled in Safari Develop menu.'
+    log_error "Failed to fetch review message from Brave: #{e.message}"
+    log_error 'Requirement: sign in to App Store Connect in an existing Brave tab on the Mini.'
     exit 1
   end
 
@@ -4725,13 +5128,13 @@ if options[:fetch_review_package]
   end
 
   begin
-    package = fetch_review_package_from_safari(
+    package = fetch_review_package_from_brave(
       app_id: options[:app_id],
       submission_id: submission[:id]
     )
   rescue StandardError => e
-    log_error "Failed to fetch review package from Safari: #{e.message}"
-    log_error 'Requirements: Safari signed into App Store Connect, and "Allow JavaScript from Apple Events" enabled in Safari Develop menu.'
+    log_error "Failed to fetch review package from Brave: #{e.message}"
+    log_error 'Requirement: sign in to App Store Connect in an existing Brave tab on the Mini.'
     exit 1
   end
 
@@ -4767,10 +5170,10 @@ if options[:clear_draft_submissions_ui]
   end
 
   begin
-    result = delete_empty_draft_submissions_from_safari(app_id: options[:app_id])
+    result = delete_empty_draft_submissions_from_brave(app_id: options[:app_id])
   rescue StandardError => e
-    log_error "Failed to clear draft submissions in Safari: #{e.message}"
-    log_error 'Requirements: run this on the host where Safari is signed into App Store Connect and Apple Events JS is enabled.'
+    log_error "Failed to clear draft submissions in Brave: #{e.message}"
+    log_error 'Requirement: run this on the Mini with an authenticated App Store Connect tab open in Brave.'
     exit 1
   end
 
@@ -4791,10 +5194,10 @@ if options[:remove_app_ui]
   end
 
   begin
-    result = remove_app_from_safari(app_id: options[:app_id])
+    result = remove_app_from_brave(app_id: options[:app_id])
   rescue StandardError => e
-    log_error "Failed to remove app in Safari: #{e.message}"
-    log_error 'Requirements: run this on the host where Safari is signed into App Store Connect and Apple Events JS is enabled.'
+    log_error "Failed to remove app in Brave: #{e.message}"
+    log_error 'Requirement: run this on the Mini with an authenticated App Store Connect tab open in Brave.'
     exit 1
   end
 
@@ -4908,6 +5311,7 @@ if options[:sync_metadata_only]
 
   contact = resolve_review_contact(config)
   contact[:notes] = resolve_review_notes(config, asc_platform)
+  contact[:demo_account] = resolve_review_demo_account(config, project_root: project_root)
   ensure_review_detail(version_id, contact, token)
 
   unless metadata_ok
@@ -4938,7 +5342,7 @@ if options[:iap_only]
            end
 
   product_id = config.dig('appstore', 'product_id').to_s.strip
-  if product_id.empty?
+  if product_id.empty? && !no_iap_policy?(config)
     log_error 'No appstore.product_id configured in .saneprocess.'
     exit 1
   end
@@ -4946,7 +5350,30 @@ if options[:iap_only]
   price_usd = resolve_iap_price_usd(config, options)
 
   token = generate_jwt
-  ok = if auto_renewable_subscription_config?(config)
+  ok = if no_iap_policy?(config)
+         unless options[:platform] && options[:version]
+           log_error 'No-IAP verification requires --platform and --version.'
+           exit 1
+         end
+         asc_platform = PLATFORM_MAP[options[:platform]]
+         version_record = asc_platform &&
+                          find_version_any_state(app_id, asc_platform, options[:version], token)
+         unless version_record
+           log_error "Could not find version #{options[:version]} on #{options[:platform]}."
+           exit 1
+         end
+         linked = find_linked_review_submission(
+           app_id, asc_platform, version_record['id'], token
+         )
+         ensure_no_iap_readiness(
+           app_id: app_id,
+           version_id: version_record['id'],
+           platform: options[:platform],
+           config: config,
+           token: token,
+           linked_submission: linked
+         )
+       elsif auto_renewable_subscription_config?(config)
          ensure_subscription_readiness(
            app_id: app_id,
            product_id: product_id,
@@ -5138,6 +5565,7 @@ end
 # Step 5: Ensure review contact detail
 contact = resolve_review_contact(config)
 contact[:notes] = resolve_review_notes(config, asc_platform)
+contact[:demo_account] = resolve_review_demo_account(config, project_root: project_root)
 ensure_review_detail(version_id, contact, token)
 
 # Step 6: Upload screenshots (if configured)
@@ -5172,7 +5600,23 @@ end
 
 # Step 7c: Ensure App Store IAP metadata/submission readiness (if configured)
 configured_product_id = config.dig('appstore', 'product_id').to_s.strip
-unless configured_product_id.empty?
+if no_iap_policy?(config)
+  token = generate_jwt
+  linked_submission = find_linked_review_submission(
+    app_id, asc_platform, version_id, token
+  )
+  unless ensure_no_iap_readiness(
+    app_id: app_id,
+    version_id: version_id,
+    platform: platform,
+    config: config,
+    token: token,
+    linked_submission: linked_submission
+  )
+    log_error 'No-IAP readiness failed. Resolve App Store product attachment or availability state.'
+    exit 1
+  end
+elsif !configured_product_id.empty?
   iap_price_usd = resolve_iap_price_usd(config, options)
   token = generate_jwt
   iap_ok = if auto_renewable_subscription_config?(config)
