@@ -3516,13 +3516,85 @@ def retired_iap_product_ids(config)
     .uniq
 end
 
+def retired_subscription_names(config, subscriptions)
+  ids = retired_iap_product_ids(config)
+  subscriptions.select { |entry| ids.include?(entry.dig('attributes', 'productId').to_s.strip) }
+               .map { |entry| entry.dig('attributes', 'name').to_s.strip }
+               .reject(&:empty?)
+end
+
+def included_assets_iap_section_text(body)
+  text = body.to_s
+  return '' if text.empty?
+
+  start = text.index('Included Assets')
+  return '' unless start
+
+  chunk = text[start..]
+  end_markers = [
+    'App Review Information', 'Version Information', 'Routing App Coverage',
+    'App Store Version Release', 'Phased Release', 'Reset Summary Rating'
+  ]
+  ends = end_markers.map { |marker| chunk.index(marker) }.compact
+  chunk = ends.empty? ? chunk : chunk[0...ends.min]
+  chunk.strip
+end
+
+def included_assets_section_lists_retired_iap?(section_text, retired_product_ids:, retired_names: [])
+  section = section_text.to_s
+  return false if section.empty?
+
+  if retired_product_ids.any? { |product_id| section.include?(product_id.to_s) }
+    return true
+  end
+  if retired_names.any? { |name| !name.empty? && section.include?(name) }
+    return true
+  end
+
+  help_only = section.include?('can now be submitted for review from the In-App Purchases')
+  section.match?(/monthly subscription/i) && !help_only
+end
+
+def subscription_has_rejected_version?(subscription_id:, token:)
+  code, response = asc_get_with_status("/subscriptions/#{subscription_id}/versions?limit=200", token: token)
+  return true unless code == 200
+
+  Array(response['data']).any? do |entry|
+    entry.dig('attributes', 'state').to_s == 'DEVELOPER_REJECTED'
+  end
+end
+
+def write_no_iap_readiness_receipt(project_root:, app_id:, version_id:, subscriptions:)
+  root = File.expand_path(project_root)
+  path = File.join(root, 'outputs', 'appstore_no_iap_readiness_receipt.json')
+  FileUtils.mkdir_p(File.dirname(path))
+  payload = {
+    'generated_at' => Time.now.utc.iso8601,
+    'app_id' => app_id.to_s,
+    'version_id' => version_id.to_s,
+    'iap_policy' => 'none',
+    'retired_subscriptions' => subscriptions.map do |entry|
+      {
+        'id' => entry['id'].to_s,
+        'product_id' => entry.dig('attributes', 'productId').to_s,
+        'name' => entry.dig('attributes', 'name').to_s,
+        'state' => entry.dig('attributes', 'state').to_s
+      }
+    end,
+    'included_assets_empty' => true
+  }
+  File.write(path, JSON.pretty_generate(payload))
+  path
+end
+
 def ensure_no_iap_readiness(
   app_id:,
   version_id:,
   platform:,
   config:,
   token:,
-  linked_submission: nil
+  linked_submission: nil,
+  project_root: Dir.pwd
 )
   unless no_iap_policy?(config)
     log_error 'No-IAP readiness requires appstore.iap_policy: none.'
@@ -3581,6 +3653,16 @@ def ensure_no_iap_readiness(
       )
       return false
     end
+
+    if subscription_has_rejected_version?(subscription_id: subscription_id, token: token)
+      # App Store Connect refuses permanent deletion after a subscription version is
+      # DEVELOPER_REJECTED. Unavailable + detached is the strongest tombstone ASC allows.
+      log_warn(
+        "Retired subscription #{product_id} still exists with a DEVELOPER_REJECTED version " \
+        '(ASC will not delete it). Confirmed unavailable and absent from Included Assets; ' \
+        'Resolution Center must state the product is retired/not offered.'
+      )
+    end
     log_info "Retired subscription #{product_id} is unavailable and absent from Included Assets."
   end
 
@@ -3599,6 +3681,35 @@ def ensure_no_iap_readiness(
     end
     log_info "Review submission #{linked_submission[:id]} contains only app version #{version_id}."
   end
+
+  platform_path = platform.to_s.downcase == 'ios' ? 'ios' : 'macos'
+  snapshot = brave_page_snapshot(
+    url: "https://appstoreconnect.apple.com/apps/#{app_id}/distribution/#{platform_path}/version/inflight",
+    delay_seconds: 10
+  )
+  section = included_assets_iap_section_text(snapshot['body'])
+  retired_names = retired_subscription_names(config, subscriptions)
+  if included_assets_section_lists_retired_iap?(
+    section,
+    retired_product_ids: retired_ids,
+    retired_names: retired_names
+  )
+    log_error(
+      'Included Assets still lists a retired in-app purchase or subscription on the inflight version page. ' \
+      'Open App Store Connect in Brave, clear Included Assets, save, and rerun --iap-only before submission.'
+    )
+    return false
+  end
+
+  receipt_path = write_no_iap_readiness_receipt(
+    project_root: project_root,
+    app_id: app_id,
+    version_id: version_id,
+    subscriptions: subscriptions.select do |entry|
+      retired_ids.include?(entry.dig('attributes', 'productId').to_s.strip)
+    end
+  )
+  log_info "No-IAP readiness receipt: #{receipt_path}"
 
   true
 end
@@ -5371,7 +5482,8 @@ if options[:iap_only]
            platform: options[:platform],
            config: config,
            token: token,
-           linked_submission: linked
+           linked_submission: linked,
+           project_root: project_root
          )
        elsif auto_renewable_subscription_config?(config)
          ensure_subscription_readiness(
@@ -5611,7 +5723,8 @@ if no_iap_policy?(config)
     platform: platform,
     config: config,
     token: token,
-    linked_submission: linked_submission
+    linked_submission: linked_submission,
+    project_root: project_root
   )
     log_error 'No-IAP readiness failed. Resolve App Store product attachment or availability state.'
     exit 1

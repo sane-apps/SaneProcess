@@ -1293,6 +1293,11 @@ exit(run_tests('App Store Submit Guardrail Tests') do
         }
       )
       subject.stub_get_status(
+        '/subscriptions/sub-1/versions?limit=200',
+        200,
+        { 'data' => [{ 'attributes' => { 'state' => 'READY_TO_SUBMIT' } }] }
+      )
+      subject.stub_get_status(
         '/reviewSubmissions/review-1/items?include=appStoreVersion&limit=200',
         200,
         {
@@ -1308,6 +1313,11 @@ exit(run_tests('App Store Submit Guardrail Tests') do
         }
       )
 
+      subject.stub_brave_snapshot(
+        'url' => 'https://appstoreconnect.apple.com/apps/app-1/distribution/ios/version/inflight',
+        'body' => "Included Assets\nIn-App Purchases and Subscriptions\n"
+      )
+
       ok = subject.send(
         :ensure_no_iap_readiness,
         app_id: 'app-1',
@@ -1320,7 +1330,8 @@ exit(run_tests('App Store Submit Guardrail Tests') do
           }
         },
         token: 'stub-jwt',
-        linked_submission: { id: 'review-1' }
+        linked_submission: { id: 'review-1' },
+        project_root: Dir.tmpdir
       )
 
       assert_eq(ok, true)
@@ -1338,6 +1349,11 @@ exit(run_tests('App Store Submit Guardrail Tests') do
       ])
       subject.stub_iap_records([])
       subject.stub_version_page_includes_iap(true)
+      subject.stub_get_status(
+        '/subscriptions/sub-1/versions?limit=200',
+        200,
+        { 'data' => [{ 'attributes' => { 'state' => 'READY_TO_SUBMIT' } }] }
+      )
       subject.stub_get_status(
         '/subscriptions/sub-1/subscriptionAvailability?include=availableTerritories&limit[availableTerritories]=50',
         200,
@@ -1366,6 +1382,116 @@ exit(run_tests('App Store Submit Guardrail Tests') do
           }
         },
         token: 'stub-jwt'
+      )
+
+      assert_eq(ok, false)
+      true
+    end
+
+    test('explicit no-IAP policy allows undeletable DEVELOPER_REJECTED tombstone when unavailable and detached') do
+      product_id = 'com.example.retired.monthly'
+      subject.stub_subscription_records([
+        {
+          'type' => 'subscriptions',
+          'id' => 'sub-1',
+          'attributes' => { 'productId' => product_id, 'name' => 'Example Monthly' }
+        }
+      ])
+      subject.stub_iap_records([])
+      subject.stub_version_page_includes_iap(false)
+      subject.stub_get_status(
+        '/subscriptions/sub-1/versions?limit=200',
+        200,
+        { 'data' => [{ 'attributes' => { 'state' => 'DEVELOPER_REJECTED' } }] }
+      )
+      subject.stub_get_status(
+        '/subscriptions/sub-1/subscriptionAvailability?include=availableTerritories&limit[availableTerritories]=50',
+        200,
+        {
+          'data' => {
+            'attributes' => { 'availableInNewTerritories' => false },
+            'relationships' => {
+              'availableTerritories' => {
+                'meta' => { 'paging' => { 'total' => 0 } },
+                'data' => []
+              }
+            }
+          }
+        }
+      )
+      subject.stub_brave_snapshot(
+        'url' => 'https://appstoreconnect.apple.com/apps/app-1/distribution/ios/version/inflight',
+        'body' => "Included Assets\nIn-App Purchases and Subscriptions\n"
+      )
+
+      ok = subject.send(
+        :ensure_no_iap_readiness,
+        app_id: 'app-1',
+        version_id: 'version-1',
+        platform: 'ios',
+        config: {
+          'appstore' => {
+            'iap_policy' => 'none',
+            'retired_product_ids' => [product_id]
+          }
+        },
+        token: 'stub-jwt',
+        project_root: Dir.tmpdir
+      )
+
+      assert_eq(ok, true)
+      true
+    end
+
+    test('explicit no-IAP policy fails when Included Assets section still lists retired IAP') do
+      product_id = 'com.example.retired.monthly'
+      subject.stub_subscription_records([
+        {
+          'type' => 'subscriptions',
+          'id' => 'sub-1',
+          'attributes' => { 'productId' => product_id, 'name' => 'Example Monthly' }
+        }
+      ])
+      subject.stub_iap_records([])
+      subject.stub_version_page_includes_iap(false)
+      subject.stub_get_status(
+        '/subscriptions/sub-1/versions?limit=200',
+        200,
+        { 'data' => [{ 'attributes' => { 'state' => 'READY_TO_SUBMIT' } }] }
+      )
+      subject.stub_get_status(
+        '/subscriptions/sub-1/subscriptionAvailability?include=availableTerritories&limit[availableTerritories]=50',
+        200,
+        {
+          'data' => {
+            'attributes' => { 'availableInNewTerritories' => false },
+            'relationships' => {
+              'availableTerritories' => {
+                'meta' => { 'paging' => { 'total' => 0 } },
+                'data' => []
+              }
+            }
+          }
+        }
+      )
+      subject.stub_brave_snapshot(
+        'url' => 'https://appstoreconnect.apple.com/apps/app-1/distribution/ios/version/inflight',
+        'body' => "Included Assets\nIn-App Purchases and Subscriptions\n#{product_id}\n"
+      )
+
+      ok = subject.send(
+        :ensure_no_iap_readiness,
+        app_id: 'app-1',
+        version_id: 'version-1',
+        platform: 'ios',
+        config: {
+          'appstore' => {
+            'iap_policy' => 'none',
+            'retired_product_ids' => [product_id]
+          }
+        },
+        token: 'stub-jwt',
+        project_root: Dir.tmpdir
       )
 
       assert_eq(ok, false)
@@ -1448,6 +1574,7 @@ exit(run_tests('App Store Submit Guardrail Tests') do
     end
 
     test('detects an attached IAP from the live version page snapshot') do
+      subject.stub_version_page_includes_iap(:__unset)
       subject.stub_brave_snapshot(
         'url' => 'https://appstoreconnect.apple.com/apps/123/distribution/macos/version/inflight',
         'body' => "Included Assets\nIn-App Purchases and Subscriptions\ncom.example.pro.unlock\n"

@@ -3254,6 +3254,95 @@ module SaneMasterModules
       status
     end
 
+    def appstore_no_iap_policy?(appstore_config)
+      appstore_config['iap_policy'].to_s.strip.downcase == 'none'
+    end
+
+    def asc_list_app_subscriptions(app_id:, token:)
+      response = asc_get_json("/apps/#{app_id}/subscriptionGroups?include=subscriptions&limit=200", token: token)
+      return [] unless response.is_a?(Hash)
+
+      subscriptions = Array(response['included']).select { |entry| entry['type'] == 'subscriptions' }
+      if subscriptions.empty?
+        Array(response['data']).each do |group|
+          group_id = group['id'].to_s.strip
+          next if group_id.empty?
+
+          group_response = asc_get_json("/subscriptionGroups/#{group_id}/subscriptions?limit=200", token: token)
+          subscriptions.concat(Array(group_response&.dig('data'))) if group_response.is_a?(Hash)
+        end
+      end
+      subscriptions
+    end
+
+    def asc_subscription_has_rejected_version?(subscription_id:, token:)
+      response = asc_get_json("/subscriptions/#{subscription_id}/versions?limit=200", token: token)
+      return true unless response.is_a?(Hash)
+
+      Array(response['data']).any? do |entry|
+        entry.dig('attributes', 'state').to_s == 'DEVELOPER_REJECTED'
+      end
+    end
+
+    def appstore_no_iap_preflight_report(app_id:, appstore_config:, lane_reports:, version_str:)
+      report = { applicable: true, issues: [], warnings: [], summary: '' }
+      retired_ids = Array(appstore_config['retired_product_ids'])
+                    .map { |value| value.to_s.strip }
+                    .reject(&:empty?)
+                    .uniq
+      token = appstore_connect_token
+      unless token
+        report[:warnings] << 'Could not verify no-IAP App Store Connect state without API token'
+        report[:summary] = 'lookup unavailable'
+        return report
+      end
+
+      subscriptions = asc_list_app_subscriptions(app_id: app_id, token: token)
+      unexpected = subscriptions.reject do |entry|
+        retired_ids.include?(entry.dig('attributes', 'productId').to_s.strip)
+      end
+      unless unexpected.empty?
+        product_ids = unexpected.map { |entry| entry.dig('attributes', 'productId').to_s.strip }.join(', ')
+        report[:issues] << "App Store Connect still has non-retired subscriptions: #{product_ids}"
+      end
+
+      subscriptions.select do |entry|
+        retired_ids.include?(entry.dig('attributes', 'productId').to_s.strip)
+      end.each do |entry|
+        product_id = entry.dig('attributes', 'productId').to_s.strip
+        subscription_id = entry['id'].to_s.strip
+        name = entry.dig('attributes', 'name').to_s.strip
+
+        if asc_subscription_has_rejected_version?(subscription_id: subscription_id, token: token)
+          report[:warnings] <<(
+            "Retired subscription #{product_id} (#{name}) has a DEVELOPER_REJECTED subscription version; " \
+            'ASC refuses permanent deletion. Confirm unavailable + not in Included Assets, and reply in Resolution Center.'
+          )
+        end
+
+        ready_lane = lane_reports.find do |_platform, lane_report|
+          %w[PREPARE_FOR_SUBMISSION DEVELOPER_REJECTED REJECTED READY_FOR_REVIEW].include?(
+            lane_report[:target_state].to_s
+          )
+        end
+        ready_lane_platform = ready_lane&.first
+        if ready_lane_platform &&
+           appstore_version_ui_includes_iap?(app_id: app_id, platform: ready_lane_platform, product_id: product_id)
+          report[:issues] <<(
+            "Retired subscription #{product_id} is still selected under Included Assets for " \
+            "#{ready_lane_platform} #{version_str}"
+          )
+        end
+      end
+
+      report[:summary] = if report[:issues].empty?
+                             "no IAP attached; #{retired_ids.length} retired subscription(s) checked"
+                           else
+                             report[:issues].first
+                           end
+      report
+    end
+
     def appstore_iap_attachment_receipt_valid?(app_id:, platform:, version:, product_id:)
       path = [
         File.join(Dir.pwd, '.sane', 'appstore_iap_attachment_receipt.json'),
@@ -5930,6 +6019,24 @@ module SaneMasterModules
         puts '⏭️  skipped (non-macOS submission)'
       end
 
+      # 5d0. Explicit no-IAP policy (Stripe-only / enterprise companion apps)
+      if appstore_no_iap_policy?(appstore_config)
+        print '  │ No-IAP ASC policy... '
+        no_iap_report = appstore_no_iap_preflight_report(
+          app_id: asc_app_id,
+          appstore_config: appstore_config,
+          lane_reports: lane_reports,
+          version_str: version_str
+        )
+        if no_iap_report[:issues].empty?
+          puts "✅ #{no_iap_report[:summary]}"
+        else
+          puts "❌ #{no_iap_report[:issues].first}"
+          no_iap_report[:issues].each { |msg| issues << "No-IAP policy: #{msg}" }
+        end
+        no_iap_report[:warnings].each { |msg| warnings << "No-IAP policy: #{msg}" }
+      end
+
       # 5d. StoreKit product ID routing for App Store unlock flow
       print '  │ StoreKit product ID routing... '
       uses_storekit_unlock = all_source.match?(/\bLicenseService\s*\(/)
@@ -5962,7 +6069,9 @@ module SaneMasterModules
 
       # 5d2. App Store Connect IAP record exists
       print '  │ ASC IAP record... '
-      if configured_product_id.empty?
+      if appstore_no_iap_policy?(appstore_config)
+        puts '⏭️  skipped (iap_policy: none)'
+      elsif configured_product_id.empty?
         puts '⏭️  skipped (no appstore.product_id configured)'
       elsif asc_app_id.to_s.strip.empty?
         puts '⚠️  skipped (no ASC app_id)'
