@@ -7502,6 +7502,23 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('does not mistake deactivation copy for an App Store activation CTA') do
+      deactivation_hits = subject.send(
+        :appstore_direct_purchase_markers,
+        'Deactivate License',
+        built_product_id: 'com.example.unlock'
+      )
+      activation_hits = subject.send(
+        :appstore_direct_purchase_markers,
+        'Activate License',
+        built_product_id: 'com.example.unlock'
+      )
+
+      assert_eq(deactivation_hits, [])
+      assert_includes(activation_hits, 'manual key entry CTA')
+      true
+    end
+
     test('ignores executable permission-key decoys when built plist root keys are absent') do
       Dir.mktmpdir('artifact-plist-decoys-') do |dir|
         plist = File.join(dir, 'Info.plist')
@@ -8074,7 +8091,25 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         platforms: ['macos']
       )
 
-      issue = '[macos] Review notes do not clearly explain the App Store business model (free/basic, Pro unlock path, no website license flow)'
+      issue = '[macos] Review notes do not clearly explain the App Store business model (included access, in-app unlock path, no website license flow)'
+      assert(!report[:issues].include?(issue))
+      true
+    end
+
+    test('accepts included actions plus a one-time Full Access purchase') do
+      report = subject.send(
+        :reviewer_access_guardrail_report,
+        source_blob: {
+          'all' => "import Foundation\nfinal class LicenseService {}\nstruct LicenseSettingsView {}\nfunc purchasePro() {}\n",
+          'macos' => "import Foundation\nfinal class LicenseService {}\nstruct LicenseSettingsView {}\nfunc purchasePro() {}\n"
+        },
+        appstore_config: {
+          'review_notes' => 'The app includes 13 actions. A one-time App Store purchase adds 24 more actions. Open Settings > License to buy or restore Full Access. There is no external checkout and no license key.'
+        },
+        platforms: ['macos']
+      )
+
+      issue = '[macos] Review notes do not clearly explain the App Store business model (included access, in-app unlock path, no website license flow)'
       assert(!report[:issues].include?(issue))
       true
     end
@@ -8092,7 +8127,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         platforms: ['macos']
       )
 
-      issue = '[macos] Review notes do not clearly explain the App Store business model (free/basic, Pro unlock path, no website license flow)'
+      issue = '[macos] Review notes do not clearly explain the App Store business model (included access, in-app unlock path, no website license flow)'
       assert_includes(report[:issues], issue)
       true
     end
@@ -8112,7 +8147,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
         'Basic is free. Pro is not available for purchase in the app. Pro is a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used.',
         'Basic is free. Pro is a one-time App Store in-app purchase available in Settings > License. No external checkout or license keys are used. Pro can be purchased through the website.'
       ]
-      issue = '[macos] Review notes do not clearly explain the App Store business model (free/basic, Pro unlock path, no website license flow)'
+      issue = '[macos] Review notes do not clearly explain the App Store business model (included access, in-app unlock path, no website license flow)'
 
       invalid_notes.each do |review_notes|
         report = subject.send(

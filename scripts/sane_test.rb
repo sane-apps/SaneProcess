@@ -30,6 +30,7 @@ require 'time'
 require 'socket'
 require 'digest'
 require 'etc'
+require 'rbconfig'
 
 APPS = {
   'SaneBar' => {
@@ -42,7 +43,8 @@ APPS = {
     dev: 'com.saneclick.SaneClick',
     prod: 'com.saneclick.SaneClick',
     scheme: 'SaneClick',
-    log_subsystem: 'com.saneclick'
+    log_subsystem: 'com.saneclick',
+    group_containers: ['M78L6FXD48.group.com.saneclick.app']
   },
   'SaneClip' => {
     dev: 'com.saneclip.dev',
@@ -76,6 +78,7 @@ MINI_APPS_DIR = '/Applications'
 MINI_LEGACY_USER_APPS_DIR = '~/Applications'
 TRANSIENT_STAGE_ROOT = '/tmp/saneapps-staging.noindex'
 SIGNED_RELEASE_RUNTIME_APPS = %w[SaneClip].freeze
+LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
 
 class SaneTest
   SANEAPPS_DEVELOPER_TEAM_ID = 'M78L6FXD48'
@@ -97,6 +100,7 @@ class SaneTest
     @fresh = args.include?('--fresh')
     @allow_keychain = args.include?('--allow-keychain')
     @allow_unsigned_debug = args.include?('--allow-unsigned-debug')
+    @sync_workspace_to_mini = args.include?('--sync-to-mini')
     @release_build = args.include?('--release') || signed_release_runtime_required?
     @hardware = args.include?('--hardware')
     @target = nil
@@ -176,6 +180,15 @@ class SaneTest
     @config[:prod]
   end
 
+  def unregister_launch_services_remote(path)
+    remote_path = path.start_with?('~/') ? "$HOME/#{path.delete_prefix('~/')}" : Shellwords.escape(path)
+    ssh(%(find #{remote_path} -depth -type d -name '*.app' -print 2>/dev/null | while IFS= read -r bundle; do #{LSREGISTER} -u "$bundle" >/dev/null 2>&1; done; true))
+  end
+
+  def compact_launch_services_remote
+    ssh("#{LSREGISTER} -gc >/dev/null 2>&1; true")
+  end
+
   # ── Remote (Mac mini) workflow ──────────────────────────────
 
   def run_remote
@@ -187,8 +200,17 @@ class SaneTest
     abort "❌ Could not map sane_test.rb to mini: #{__FILE__}" unless remote_script_path
 
     n = 0
-    step("#{n += 1}. Sync SaneProcess launcher to mini") { sync_file_to_mini(__FILE__, remote_script_path) }
-    step("#{n += 1}. Sync app workspace to mini") { sync_repo_to_mini(@app_dir, remote_app_dir) }
+    if @sync_workspace_to_mini
+      step("#{n += 1}. Verify explicit Mini sync is safe") do
+        assert_remote_sync_safe!(@app_dir, remote_app_dir)
+      end
+      step("#{n += 1}. Sync SaneProcess launcher to mini") { sync_file_to_mini(__FILE__, remote_script_path) }
+      step("#{n += 1}. Sync app workspace to mini") { sync_repo_to_mini(@app_dir, remote_app_dir) }
+    else
+      step("#{n += 1}. Verify canonical Mini app checkout") do
+        assert_canonical_remote_repo!(remote_app_dir)
+      end
+    end
     step("#{n += 1}. Run full build + launch flow on mini") { exec_remote_sane_test(remote_saneprocess_dir) }
   end
 
@@ -219,6 +241,7 @@ class SaneTest
     locations.each do |loc|
       exists = ssh_capture("[ -e #{loc} ] && echo yes || echo no").strip
       if exists == 'yes'
+        unregister_launch_services_remote(loc)
         ssh("rm -rf #{loc}")
         count += 1
       end
@@ -226,12 +249,12 @@ class SaneTest
     # Also nuke any .app bundles in DerivedData on the mini (shouldn't exist but safety)
     dd_apps = ssh_capture("find ~/Library/Developer/Xcode/DerivedData/#{@app_name}-*/Build/Products -name '#{@app_name}.app' -type d 2>/dev/null").strip
     dd_apps.split("\n").reject(&:empty?).each do |path|
+      unregister_launch_services_remote(path)
       ssh("rm -rf '#{path}'")
       count += 1
     end
-    # Flush Launch Services so macOS doesn't resolve to a stale cached path
-    ssh("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -kill -r -domain local -domain system -domain user 2>/dev/null; true")
-    warn "   Removed #{count} stale copies, flushed Launch Services on mini"
+    compact_launch_services_remote
+    warn "   Removed #{count} stale copies, compacted Launch Services on mini"
   end
 
   def reset_tcc_remote
@@ -247,6 +270,10 @@ class SaneTest
   def fresh_reset_remote
     # Wipe Application Support
     ssh("rm -rf \"$HOME/Library/Application Support/#{@app_name}\" 2>/dev/null; true")
+    group_container_ids.each do |container_id|
+      path = "$HOME/Library/Group Containers/#{container_id}"
+      ssh("[ ! -e \"#{path}\" ] || /usr/bin/trash \"#{path}\"")
+    end
     # Wipe UserDefaults for ALL bundle IDs (dev + prod) and flush preferences cache
     bundle_ids.each do |b|
       ssh("defaults delete #{b} 2>/dev/null; true")
@@ -262,13 +289,20 @@ class SaneTest
     end
     # Clear no-keychain fallback license data for ALL bundle IDs
     runtime_bids.each { |b| clear_license_fallback_remote(b) }
-    warn "   Wiped App Support, UserDefaults, TCC, fallback license for #{runtime_bids.join(', ')}"
+    warn "   Wiped App Support, App Group state, UserDefaults, TCC, fallback license for #{runtime_bids.join(', ')}"
   end
 
   def fresh_reset_local
     # Wipe Application Support
     app_support = File.expand_path("~/Library/Application Support/#{@app_name}")
     FileUtils.rm_rf(app_support) if File.exist?(app_support)
+    group_container_ids.each do |container_id|
+      path = File.expand_path("~/Library/Group Containers/#{container_id}")
+      next unless File.exist?(path)
+
+      ok = system('/usr/bin/trash', path, out: File::NULL, err: File::NULL)
+      abort "   ❌ Failed to move App Group state to Trash: #{path}" unless ok
+    end
     # Wipe UserDefaults for ALL bundle IDs (dev + prod) and flush preferences cache
     bundle_ids.each do |b|
       system('defaults', 'delete', b, err: File::NULL, out: File::NULL)
@@ -284,7 +318,11 @@ class SaneTest
     end
     # Clear no-keychain fallback license data for ALL bundle IDs
     bundle_ids.each { |b| clear_license_fallback_local(b) }
-    warn "   Wiped App Support, UserDefaults, TCC, fallback license for #{bundle_ids.join(', ')}"
+    warn "   Wiped App Support, App Group state, UserDefaults, TCC, fallback license for #{bundle_ids.join(', ')}"
+  end
+
+  def group_container_ids
+    Array(@config[:group_containers])
   end
 
   def verify_single_copy_remote
@@ -301,10 +339,10 @@ class SaneTest
       warn "   ⚠️  Found #{non_canonical.size} extra copies — removing:"
       non_canonical.each do |path|
         warn "      #{path}"
+        unregister_launch_services_remote(path)
         ssh("rm -rf '#{path}'")
       end
-      # Re-flush Launch Services after cleanup
-      ssh("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -kill -r -domain local -domain system -domain user 2>/dev/null; true")
+      compact_launch_services_remote
     end
   end
 
@@ -1334,8 +1372,43 @@ class SaneTest
   def trash_local_path(path)
     return unless File.exist?(path)
 
+    unregister_launch_services_local(path)
     ok = system('/usr/bin/trash', path, out: File::NULL, err: File::NULL)
     abort "   ❌ Failed to move stale app bundle to Trash: #{path}" unless ok
+
+    refresh_launch_services_hygiene_local
+  end
+
+  def unregister_launch_services_local(path)
+    return unless File.executable?(LSREGISTER)
+
+    root = File.expand_path(path)
+    bundles = Dir.glob(File.join(root, '**', '*.app')).sort_by { |bundle| -bundle.count(File::SEPARATOR) }
+    bundles << root if root.end_with?('.app')
+    bundles.uniq.each do |bundle|
+      system(LSREGISTER, '-u', bundle, out: File::NULL, err: File::NULL)
+    end
+  end
+
+  def register_canonical_launch_services_local(path)
+    return unless File.executable?(LSREGISTER)
+
+    system(LSREGISTER, '-f', File.expand_path(path), out: File::NULL, err: File::NULL) if File.directory?(path)
+    system(LSREGISTER, '-gc', out: File::NULL, err: File::NULL)
+  end
+
+  def refresh_launch_services_hygiene_local
+    script = File.expand_path('dedupe_sane_apps.rb', __dir__)
+    ok = system(
+      RbConfig.ruby,
+      script,
+      '--apps',
+      @app_name,
+      '--launch-services-only',
+      out: File::NULL,
+      err: File::NULL
+    )
+    abort "   ❌ Launch Services cleanup failed for #{@app_name}" unless ok
   end
 
   def local_app_processes(app_path)
@@ -1379,6 +1452,7 @@ class SaneTest
         if File.exist?(target_app_path)
           # Avoid creating backup app bundle identities under /Applications.
           # TCC can retain those paths and keep stale camera attribution alive.
+          unregister_launch_services_local(target_app_path)
           FileUtils.rm_rf(target_app_path)
         end
         FileUtils.mv(temp_app_path, target_app_path)
@@ -1392,11 +1466,7 @@ class SaneTest
 
     abort "   ❌ Canonical app missing after staging: #{target_app_path}" unless staged_ok
 
-    lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
-    if File.exist?(lsregister)
-      system(lsregister, '-kill', '-r', '-domain', 'local', '-domain', 'system', '-domain', 'user',
-             out: File::NULL, err: File::NULL)
-    end
+    register_canonical_launch_services_local(target_app_path)
 
     target_app_path
   end
@@ -1822,6 +1892,62 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
     abort "   ❌ Failed to sync #{local_path} to mini" unless ok
   end
 
+  def assert_canonical_remote_repo!(remote_repo)
+    command = [
+      "test -d #{Shellwords.escape(File.join(remote_repo, '.git'))}",
+      "git -C #{Shellwords.escape(remote_repo)} rev-parse --is-inside-work-tree >/dev/null"
+    ].join(' && ')
+    return if ssh(command)
+
+    abort "   ❌ Canonical Mini checkout is missing or invalid: #{remote_repo}"
+  end
+
+  def assert_remote_sync_safe!(local_repo, remote_repo)
+    assert_canonical_remote_repo!(remote_repo)
+
+    branch = remote_git_value(remote_repo, 'branch')
+    status = remote_git_value(remote_repo, 'status')
+    local_head = local_git_value(local_repo, 'rev-parse', 'HEAD')
+    remote_head = remote_git_value(remote_repo, 'head')
+    local_origin = normalized_git_origin(local_git_value(local_repo, 'config', '--get', 'remote.origin.url'))
+    remote_origin = normalized_git_origin(remote_git_value(remote_repo, 'config'))
+
+    abort "   ❌ Refusing sync: Mini checkout is on #{branch.inspect}, not main" unless branch == 'main'
+    abort '   ❌ Refusing sync: Mini checkout has uncommitted changes' unless status.empty?
+    abort '   ❌ Refusing sync: Air and Mini commits differ' unless local_head == remote_head
+    return if local_origin == remote_origin && !local_origin.empty?
+
+    abort '   ❌ Refusing sync: Air and Mini remotes do not match'
+  end
+
+  def local_git_value(repo, *args)
+    stdout, status = Open3.capture2('git', '-C', File.expand_path(repo), *args)
+    abort "   ❌ Could not inspect local git checkout: #{repo}" unless status.success?
+
+    stdout.strip
+  end
+
+  def remote_git_value(repo, kind)
+    git_args = {
+      'branch' => 'branch --show-current',
+      'status' => 'status --porcelain',
+      'head' => 'rev-parse HEAD',
+      'config' => 'config --get remote.origin.url'
+    }.fetch(kind)
+    output = ssh_capture("git -C #{Shellwords.escape(repo)} #{git_args}")
+    abort "   ❌ Could not inspect Mini git checkout: #{repo}" if output.empty? && kind != 'status'
+
+    output.strip
+  end
+
+  def normalized_git_origin(url)
+    url.to_s
+       .sub(%r{\Ahttps?://(?:[^/@]+@)?github\.com/}, '')
+       .sub(%r{\Agit@github\.com:}, '')
+       .delete_suffix('.git')
+       .downcase
+  end
+
   def sync_repo_to_mini(local_repo, remote_repo)
     ok = system(
       'rsync',
@@ -1886,8 +2012,9 @@ if __FILE__ == $PROGRAM_NAME
     warn '  --allow-unsigned-debug  Allow local SaneBar Debug launch without signing certs (unsupported visibility path)'
     warn '  --release    Build Release config and stage it to the canonical app path'
     warn '  --hardware   Allow real hardware/permission prompts for SaneVideo camera verification'
+    warn '  --sync-to-mini  Explicitly sync a matching clean main checkout to the Mini'
     warn ''
-    warn 'Default: deploys to Mac mini if reachable, local otherwise.'
+    warn 'Default: runs the canonical Mac mini checkout if reachable, local otherwise.'
     warn 'SaneClip always uses signed Release runtime to preserve TCC.'
     warn 'TCC is preserved by default — single-copy enforcement prevents stale grants.'
     warn 'Use --fresh to test onboarding or first-launch experience.'

@@ -68,6 +68,29 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
     end
   end
 
+  test_category('True fresh-install reset') do
+    test('SaneClick fresh reset clears App Group state through Trash') do
+      source = File.read(SANE_TEST_PATH)
+
+      assert_includes(
+        source,
+        "group_containers: ['M78L6FXD48.group.com.saneclick.app']",
+        'SaneClick must declare the App Group that owns scripts and monitored folders'
+      )
+      assert_includes(
+        source,
+        'File.expand_path("~/Library/Group Containers/#{container_id}")',
+        'local fresh reset must resolve declared App Group containers'
+      )
+      assert_includes(
+        source,
+        "system('/usr/bin/trash', path",
+        'fresh reset must clear App Group state recoverably'
+      )
+      true
+    end
+  end
+
   test_category('Hardware verification mode') do
     test('sane_test supports real SaneVideo camera launches') do
       source = File.read(SANE_TEST_PATH)
@@ -579,6 +602,20 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
       true
     end
 
+    test('SaneClip cleanup unregisters removed app paths without full database resets') do
+      source = File.read(SANE_TEST_PATH)
+
+      assert_includes(source, '#{LSREGISTER} -u')
+      assert_includes(source, '#{LSREGISTER} -gc')
+      assert_includes(source, 'find #{remote_path} -depth -type d -name \'*.app\'')
+      assert_includes(source, "Dir.glob(File.join(root, '**', '*.app'))")
+      assert_includes(source, "system(LSREGISTER, '-u', bundle")
+      assert_includes(source, "system(LSREGISTER, '-f', File.expand_path(path)")
+      assert(!source.include?('lsregister -kill -r'),
+             'removed lsregister reset flags must not return')
+      true
+    end
+
     test('Release builds keep the production bundle id') do
       saneclip = SaneTest.allocate
       saneclip.instance_variable_set(:@app_name, 'SaneClip')
@@ -666,6 +703,29 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
   end
 
   test_category('Canonical launch owner') do
+    test('sane_test cleans the trashed destination from Launch Services') do
+      saneclip = SaneTest.allocate
+      saneclip.instance_variable_set(:@app_name, 'SaneClip')
+      calls = []
+
+      Dir.mktmpdir('sane-test-launch-services') do |dir|
+        app = File.join(dir, 'SaneClip.app')
+        FileUtils.mkdir_p(app)
+        saneclip.define_singleton_method(:unregister_launch_services_local) { |_path| }
+        saneclip.define_singleton_method(:system) do |*args, **_kwargs|
+          calls << args
+          true
+        end
+
+        saneclip.send(:trash_local_path, app)
+      end
+
+      hygiene_call = calls.find { |args| args.include?('--launch-services-only') }
+      assert(hygiene_call, 'trash must be followed by scoped Launch Services hygiene')
+      assert_includes(hygiene_call, 'SaneClip')
+      true
+    end
+
     test('sane_test removes Xcode index and Periphery app copies before launch') do
       source = File.read(SANE_TEST_PATH)
 
@@ -690,6 +750,75 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
       assert_includes(source, 'ruby "$launcher" "${launcher_args[@]}"')
       assert(!source.include?('launch_app_local()'), 'mode launch should not duplicate local app launching')
       assert(!source.include?('launch_app_remote()'), 'mode launch should not duplicate remote app launching')
+      true
+    end
+  end
+
+  test_category('Mini canonical workspace guard') do
+    test('remote flow reuses the canonical Mini launcher and app checkout by default') do
+      runner = SaneTest.allocate
+      runner.instance_variable_set(:@app_dir, '/Users/sj/SaneApps/apps/SaneClip')
+      runner.instance_variable_set(:@raw_args, [])
+      runner.instance_variable_set(:@sync_workspace_to_mini, false)
+      used = []
+      runner.define_singleton_method(:step) { |_name, &block| block.call }
+      runner.define_singleton_method(:assert_canonical_remote_repo!) { |path| used << path }
+      runner.define_singleton_method(:sync_repo_to_mini) { |*| raise 'unexpected sync' }
+      runner.define_singleton_method(:exec_remote_sane_test) { |path| used << [:exec, path] }
+
+      runner.send(:run_remote)
+
+      assert_includes(used, '/Users/stephansmac/SaneApps/apps/SaneClip')
+      assert_includes(used, [:exec, '/Users/stephansmac/SaneApps/infra/SaneProcess'])
+      true
+    end
+
+    test('explicit sync refuses dirty, divergent, or feature-branch Mini repos and accepts matching clean main') do
+      cases = [
+        ['main', ' M changed.swift', 'same-head'],
+        ['codex/feature', '', 'same-head'],
+        ['main', '', 'different-head']
+      ]
+      cases.each do |branch, dirty, remote_head|
+        runner = SaneTest.allocate
+        runner.define_singleton_method(:assert_canonical_remote_repo!) { |_repo| true }
+        runner.define_singleton_method(:local_git_value) do |_repo, *args|
+          args.first == 'rev-parse' ? 'same-head' : 'git@github.com:sane-apps/SaneClip.git'
+        end
+        runner.define_singleton_method(:remote_git_value) do |_repo, *args|
+          {
+            'branch' => branch,
+            'status' => dirty,
+            'head' => remote_head,
+            'config' => 'https://github.com/sane-apps/SaneClip.git'
+          }[args.first]
+        end
+        refused = false
+        begin
+          runner.send(:assert_remote_sync_safe!, '/air/SaneClip', '/mini/SaneClip')
+        rescue SystemExit
+          refused = true
+        end
+        assert(
+          refused,
+          "sync must refuse branch=#{branch.inspect} dirty=#{dirty.inspect} head=#{remote_head.inspect}"
+        )
+      end
+
+      clean = SaneTest.allocate
+      clean.define_singleton_method(:assert_canonical_remote_repo!) { |_repo| true }
+      clean.define_singleton_method(:local_git_value) do |_repo, *args|
+        args.first == 'rev-parse' ? 'same-head' : 'https://example-token@github.com/sane-apps/SaneClip.git'
+      end
+      clean.define_singleton_method(:remote_git_value) do |_repo, *args|
+        {
+          'branch' => 'main',
+          'status' => '',
+          'head' => 'same-head',
+          'config' => 'https://github.com/sane-apps/SaneClip.git'
+        }[args.first]
+      end
+      assert_eq(clean.send(:assert_remote_sync_safe!, '/air/SaneClip', '/mini/SaneClip'), nil)
       true
     end
   end

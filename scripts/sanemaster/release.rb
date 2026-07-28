@@ -1990,7 +1990,7 @@ module SaneMasterModules
       markers << 'website checkout URL' if artifact_blob.match?(/go\.saneapps\.com\/buy\//i)
       markers << 'license key entry copy' if artifact_blob.match?(/Enter License Key|license key/i) && !has_storekit_unlock
       markers << 'purchase key entry copy' if artifact_blob.match?(/Use Purchase Key|purchase key|Activation Code/i)
-      markers << 'manual key entry CTA' if artifact_blob.match?(/I Have a Key|Enter Key|Activate License/i)
+      markers << 'manual key entry CTA' if artifact_blob.match?(/I Have a Key|Enter Key|\bActivate License/i)
       markers
     end
 
@@ -4343,6 +4343,10 @@ module SaneMasterModules
       free_basic_path = sentences.any? do |sentence|
         sentence.match?(/\bbasic(?:\s+(?:tier|mode|access))?\s+(?:is|remains)\s+(?:available\s+)?free\b/)
       end
+      included_actions_path = sentences.any? do |sentence|
+        sentence.match?(/\b(?:the\s+)?app\s+includes\s+\d+\s+(?:built-in\s+)?actions?\b/) ||
+          sentence.match?(/\b\d+\s+(?:built-in\s+)?actions?\s+(?:are|remain)\s+included\b/)
+      end
       trial_offer = sentences.any? do |sentence|
         sentence.match?(/\b(?:a\s+)?(?:\d+[- ]day\s+)?(?:pro\s+)?trial\s+(?:starts|begins|is\s+available|is\s+included)\b/)
       end
@@ -4352,7 +4356,8 @@ module SaneMasterModules
       app_store_purchase_path = sentences.any? do |sentence|
         sentence.match?(/\b(?:pro|unlocks?\s+pro|upgrade\s+to\s+pro|continued\s+(?:app\s+)?access)\b.*\b(?:one-time\s+)?(?:app\s+store\s+)?in-app\s+purchase\b/) ||
           sentence.match?(/\b(?:one-time\s+)?(?:app\s+store\s+)?in-app\s+purchase\b.*\b(?:unlocks?\s+pro|pro\s+unlock|continued\s+(?:app\s+)?access)\b/) ||
-          sentence.match?(/\bpurchase\s+(?:through|via|from|in)\s+(?:the\s+)?app\s+store\b.*\b(?:unlocks?\s+pro|pro\s+unlock|continued\s+(?:app\s+)?access)\b/)
+          sentence.match?(/\bpurchase\s+(?:through|via|from|in)\s+(?:the\s+)?app\s+store\b.*\b(?:unlocks?\s+pro|pro\s+unlock|continued\s+(?:app\s+)?access)\b/) ||
+          sentence.match?(/\b(?:one-time\s+)?app\s+store\s+(?:in-app\s+)?purchase\b.*\b(?:adds?|unlocks?)\b/)
       end
       no_external_checkout = sentences.any? { |sentence| sentence.match?(/\bno\s+(?:external|website|web)\s+checkout\b/) }
       no_license_keys = sentences.any? do |sentence|
@@ -4360,7 +4365,7 @@ module SaneMasterModules
           sentence.match?(/\bno\s+(?:external|website|web)\s+checkout\s+(?:or|and)\s+license\s+keys?\b/)
       end
 
-      (free_basic_path || (trial_offer && trial_conversion)) &&
+      (free_basic_path || included_actions_path || (trial_offer && trial_conversion)) &&
         app_store_purchase_path && no_external_checkout && no_license_keys
     end
 
@@ -4467,7 +4472,7 @@ module SaneMasterModules
         end
 
         unless business_model_path
-          report[:issues] << "[#{platform}] Review notes do not clearly explain the App Store business model (free/basic, Pro unlock path, no website license flow)"
+          report[:issues] << "[#{platform}] Review notes do not clearly explain the App Store business model (included access, in-app unlock path, no website license flow)"
         end
 
         if has_external_credentials && !external_account_clarity

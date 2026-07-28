@@ -1192,6 +1192,34 @@ exit(run_tests('App Store Submit Guardrail Tests') do
       true
     end
 
+    test('accepts included actions plus a one-time Full Access purchase') do
+      subject.stub_url_status('https://example.com/support', code: 200)
+      subject.stub_url_status('https://example.com/privacy', code: 200)
+
+      Dir.mktmpdir('appstore-submit-guardrails') do |dir|
+        File.write(
+          File.join(dir, 'Dummy.swift'),
+          "import Foundation\nfinal class LicenseService {}\nstruct LicenseSettingsView {}\nfunc purchasePro() {}\n"
+        )
+
+        config = build_metadata_config(
+          review_notes: 'The app includes 13 actions. A one-time App Store purchase adds 24 more actions. Open Settings > License to buy or restore Full Access. There is no external checkout and no license key.'
+        )
+        config['appstore']['product_id'] = 'com.example.app.pro'
+
+        report = subject.send(
+          :metadata_review_readiness_report,
+          config: config,
+          asc_platform: 'MAC_OS',
+          app_name: 'SaneTest',
+          project_root: dir
+        )
+
+        assert(!report[:issues].include?('macOS review notes do not fully explain the App Store business model'))
+      end
+      true
+    end
+
     test('does not treat a bare App Store mention as an explicit purchase path') do
       subject.stub_url_status('https://example.com/support', code: 200)
       subject.stub_url_status('https://example.com/privacy', code: 200)
