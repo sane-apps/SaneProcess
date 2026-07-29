@@ -17,26 +17,49 @@ module SaneGuiFeedback
   CURSOR_STATE_PATH = File.expand_path('~/.cursor/sane_gui_feedback.json').freeze
   PENDING_TTL_SECONDS = 30 * 60
 
-  # Mutations that change a GUI/portal surface. Click return is not proof.
+  # Hard mutations: always a GUI/portal action. Click return is not proof.
   # Do NOT match bare `osascript` — completion chimes use
   # `osascript -e 'display notification …'` and are not portal clicks.
-  GUI_ACTION_PATTERNS = [
+  HARD_GUI_PATTERNS = [
     /\bSystem Events\b/i,
     /\bclick\b.*\b(?:button|menu item|UI element|checkbox|radio)\b/i,
     /\bkeystroke\b/i,
     /\bkey code\b/i,
     /\btell application\b.*\bBrave\b/i,
     /\bBrave Browser\b.*\b(?:click|keystroke|execute|javascript|do JavaScript)\b/i,
+    /\bpeekaboo\b.*\bclick\b/i,
+    /\bmini-gui-run\.sh\b/i,
+    /\bcliclick\b/i,
+    /\bxdotool\b/i,
+    /\bplaywright\b.*\b(?:click|goto|fill|locator|setInputFiles)\b/i,
+    /\bchromium\.connectOverCDP\b/i
+  ].freeze
+
+  # Soft portal phrases: only GUI when paired with automation context.
+  # Otherwise `git commit -m "... Update Review ..."` false-positives (2026-07-29).
+  SOFT_PORTAL_PATTERNS = [
     /\bappstoreconnect\.apple\.com\b/i,
     /\bApple Developer\b/i,
     /\bResolution Center\b/i,
     /\bUpdate Review\b/i,
-    /\bSubmit for Review\b/i,
-    /\bpeekaboo\b.*\bclick\b/i,
-    /\bmini-gui-run\.sh\b/i,
-    /\bcliclick\b/i,
-    /\bxdotool\b/i
+    /\bSubmit for Review\b/i
   ].freeze
+
+  AUTOMATION_CONTEXT_PATTERNS = [
+    /\bosascript\b/i,
+    /\bSystem Events\b/i,
+    /\bBrave\b/i,
+    /\bplaywright\b/i,
+    /\bpeekaboo\b/i,
+    /\bcliclick\b/i,
+    /\bmini-gui-run\.sh\b/i,
+    /\bxdotool\b/i,
+    /\bconnectOverCDP\b/i,
+    /\bfilechooser\b/i
+  ].freeze
+
+  # Kept for callers/tests that still reference the combined list.
+  GUI_ACTION_PATTERNS = (HARD_GUI_PATTERNS + SOFT_PORTAL_PATTERNS).freeze
 
   # Completely ignore these even if other patterns match in the same shell blob.
   BENIGN_OSASCRIPT_PATTERNS = [
@@ -102,9 +125,27 @@ module SaneGuiFeedback
     text = command.to_s
     return false if text.strip.empty?
     return false if benign_osascript?(text)
+    return false if git_docs_only?(text)
     return false if feedback_poll?(text) && !mutationish?(text)
 
-    GUI_ACTION_PATTERNS.any? { |pattern| text.match?(pattern) }
+    return true if HARD_GUI_PATTERNS.any? { |pattern| text.match?(pattern) }
+
+    soft = SOFT_PORTAL_PATTERNS.any? { |pattern| text.match?(pattern) }
+    soft && automation_context?(text)
+  end
+
+  def automation_context?(command)
+    AUTOMATION_CONTEXT_PATTERNS.any? { |pattern| command.to_s.match?(pattern) }
+  end
+
+  # git commit/push/add with portal words in the message is not a GUI click.
+  def git_docs_only?(command)
+    text = command.to_s
+    return false unless text.match?(/\bgit\s+(?:add|commit|push|status|diff|log|show|restore|stash|pull|fetch|rebase|checkout|branch|tag)\b/i)
+    return false if HARD_GUI_PATTERNS.any? { |pattern| text.match?(pattern) }
+    return false if automation_context?(text)
+
+    true
   end
 
   def benign_osascript?(command)
