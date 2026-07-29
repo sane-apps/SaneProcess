@@ -31,6 +31,27 @@ failures += 1 unless check(
 )
 
 failures += 1 unless check(
+  'git commit message mentioning Update Review is NOT a GUI action',
+  !SaneGuiFeedback.gui_action?(
+    "git commit -m \"$(cat <<'EOF'\nDocument ASC hang.\nasc_upload retries before agents claim Update Review success.\nEOF\n)\""
+  )
+)
+
+failures += 1 unless check(
+  'git add/push alone is NOT a GUI action',
+  !SaneGuiFeedback.gui_action?(
+    'export PATH="/opt/homebrew/bin:$PATH"; cd ~/SaneApps/apps/SaneLot; git add SESSION_HANDOFF.md; git push origin HEAD'
+  )
+)
+
+failures += 1 unless check(
+  'Brave + App Store Connect URL is a GUI action',
+  SaneGuiFeedback.gui_action?(
+    'osascript -e \'tell application "Brave Browser" to open location "https://appstoreconnect.apple.com"\''
+  )
+)
+
+failures += 1 unless check(
   'capture-mini-screenshot is feedback, not a mutation',
   SaneGuiFeedback.feedback_poll?('~/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh desktop') &&
     !SaneGuiFeedback.gui_action?('~/SaneApps/infra/SaneProcess/scripts/mini/capture-mini-screenshot.sh desktop')
