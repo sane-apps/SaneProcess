@@ -44,6 +44,10 @@ def output_context(prompt_type, rules, triggers, prompt, frustrations = [], dete
     lines << '  - Settings/About/license/update UI work MUST start from SaneUI Catalog and shared components, not app-local clones'
     lines << '  - SaneUI source of truth: ~/SaneApps/infra/SaneUI/Sources/SaneUICatalog/SaneUICatalogApp.swift'
   end
+  if defined?(SaneGuiFeedback) && SaneGuiFeedback.portal_prompt?(prompt)
+    lines << '  - GUI ACTION FEEDBACK LOOP: after every portal/osascript/Brave click, re-read dialog/page/AX/API before claiming success'
+    lines << '  - Click return is not done; name the live UI state (dialog title, build #, status) before the next click'
+  end
   if prompt_type == :big_task
     lines << ''
     lines << 'BIG TASK - Additional guardrails:'

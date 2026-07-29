@@ -30,6 +30,7 @@ require 'fileutils'
 require 'time'
 require_relative 'core/mandatory_workflows'
 require_relative 'core/state_manager'
+require_relative 'core/gui_feedback'
 require_relative 'saneprompt_intelligence'
 require_relative 'saneprompt_commands'
 require_relative 'saneprompt_output'
@@ -451,6 +452,19 @@ rescue StandardError => e
   debug_log("set_visual_verification_requirement error: #{e.message}")
 end
 
+def set_gui_feedback_requirement(prompt)
+  return unless SaneGuiFeedback.portal_prompt?(prompt)
+
+  warn ''
+  warn '=' * 50
+  warn 'GUI ACTION FEEDBACK LOOP REQUIRED'
+  warn SaneGuiFeedback.prompt_inject_text
+  warn '=' * 50
+  warn ''
+rescue StandardError => e
+  debug_log("set_gui_feedback_requirement error: #{e.message}")
+end
+
 # === INTELLIGENCE: Requirement Extraction ===
 
 def extract_requirements(prompt)
@@ -588,6 +602,9 @@ def process_prompt(prompt)
 
   # 6b. Visual verification is a first-class acceptance criterion for UI work.
   set_visual_verification_requirement(prompt)
+
+  # 6c. ASC/Brave/portal GUI work requires a feedback poll after every click.
+  set_gui_feedback_requirement(prompt)
 
   # 7. Get learned patterns from previous sessions
   learned_patterns = get_learned_patterns

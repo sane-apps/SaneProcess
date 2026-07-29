@@ -587,6 +587,9 @@ def process_result(tool_name, tool_input, tool_response)
     # === VISUAL VERIFICATION: Track screenshot/audit evidence commands ===
     track_visual_evidence(tool_name, tool_input)
 
+    # === GUI FEEDBACK LOOP: Portal/osascript clicks need a follow-up read ===
+    track_gui_feedback(tool_name, tool_input)
+
     # === MCP VERIFICATION: Track successes for MCP tools ===
     track_mcp_verification(tool_name, true)
 
@@ -638,6 +641,9 @@ def process_result(tool_name, tool_input, tool_response)
 
     # === FEATURE REMINDER: Suggest Explore subagent for complex searches ===
     emit_explore_reminder(tool_name, tool_input)
+
+    # === GUI FEEDBACK LOOP: Remind after Brave/osascript/ASC mutations ===
+    emit_gui_feedback_reminder(tool_name, tool_input, tool_response)
 
     # === CONTEXT WARNING: Check transcript size, warn before auto-compact ===
     ContextCompact.check_and_warn

@@ -30,6 +30,7 @@ ruby scripts/hooks/saneprompt.rb --self-test
 ruby scripts/hooks/sanetools.rb --self-test
 ruby scripts/hooks/sanetrack.rb --self-test
 ruby scripts/hooks/sanestop.rb --self-test
+ruby scripts/hooks/gui_feedback_test.rb
 ruby scripts/hooks/test_hooks.rb
 ruby scripts/hooks/session_docs_test.rb
 ruby scripts/hooks/grok_and_security_guard_test.rb
@@ -158,3 +159,21 @@ Run the full test suite:
 ruby scripts/hooks/test_hooks.rb
 ruby scripts/SaneMaster.rb verify
 ```
+
+## Cursor GUI feedback
+
+Permanent owner rule (2026-07-29): after GUI/portal mutations, re-read dialog/page/AX/API before claiming success.
+
+Shared logic: `scripts/hooks/core/gui_feedback.rb`  
+Tests: `ruby scripts/hooks/gui_feedback_test.rb`
+
+Install Cursor adapters on the controller (Air):
+
+```bash
+mkdir -p ~/.cursor/hooks
+cp scripts/hooks/cursor/gui_feedback_after_shell.rb ~/.cursor/hooks/
+cp scripts/hooks/cursor/gui_feedback_stop.rb ~/.cursor/hooks/
+chmod +x ~/.cursor/hooks/gui_feedback_*.rb
+# Merge hooks.json.example into ~/.cursor/hooks.json (afterShellExecution + stop)
+```
+

@@ -17,7 +17,7 @@ prefer pointing to that mechanism instead of duplicating the whole policy here.
 Hard enforcement lives in:
 
 - `scripts/hooks/` for launch, build-route, release, email, GitHub, tracking,
-  session-end, security, visual-proof, and completion gates.
+  session-end, security, visual-proof, GUI-feedback-loop, and completion gates.
 - `scripts/SaneMaster.rb` and `scripts/sanemaster/` for canonical workflows.
 - `scripts/validation_report.rb`, `process_eval`, `sop_review`,
   `near_miss_review`, and tests for repeatable process health evidence.
@@ -241,12 +241,20 @@ Green tests are not enough for customer-facing UI claims.
   `process_eval --require-ui-proof` treats missing or local-only UI proof as a
   blocker.
 
+## GUI / Portal Feedback Loop
+
+Click return is not success. After Brave/ASC/osascript/System Events mutations,
+re-read dialog/page/AX/API state before claiming done. Shared detector:
+`scripts/hooks/core/gui_feedback.rb` (Claude sanetrack/sanestop; Cursor
+`~/.cursor/hooks` afterShellExecution + stop follow-up).
+
 ## Customer Email
 
 Default mailbox: SaneApps work email `hi@saneapps.com`.
 
 - Use `check-inbox.sh` / `SaneMaster.rb check_inbox`; never manual email API
-  curl.
+  curl. For campaign receipts, run `check-inbox.sh campaign-audit --subject "..."
+  --since <ISO-8601>` for every subject; it joins Resend and Cloudflare history.
 - Run `review <id>` before reply or resolve.
 - Show the exact draft and wait for explicit approval before sending.
 - Existing app users should be told to update from inside the app. Do not send

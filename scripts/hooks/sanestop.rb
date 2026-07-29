@@ -690,6 +690,22 @@ def process_stop(stop_hook_active, transcript_path = nil)
     return 2
   end
 
+  # === GUI FEEDBACK LOOP: portal/osascript clicks need a follow-up read ===
+  gui_feedback_block = check_gui_feedback_pending
+  if gui_feedback_block
+    warn ''
+    warn '=' * 50
+    warn '🔴 GUI FEEDBACK BLOCK: Clicked without reading the page/dialog'
+    warn ''
+    warn gui_feedback_block
+    warn ''
+    warn '   Do not claim ASC/Brave/GUI steps done from click return alone.'
+    warn '=' * 50
+    warn ''
+    record_blocked_stop_accounting(transcript_path, 'gui_feedback', gui_feedback_block)
+    return 2
+  end
+
   # Check if summary needed (non-blocking reminder)
   check_summary_needed
 

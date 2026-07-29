@@ -16,17 +16,19 @@ require 'json'
 require 'fileutils'
 require_relative 'core/state_manager'
 require_relative 'core/process_metrics'
+require_relative 'core/gui_feedback'
 
 REMINDER_COOLDOWN = 300 # 5 minutes in seconds
+GUI_FEEDBACK_REMINDER_COOLDOWN = 45 # portal clicks need tighter loops
 
-def should_remind?(reminder_type)
+def should_remind?(reminder_type, cooldown: REMINDER_COOLDOWN)
   reminders = StateManager.get(:reminders) || {}
   last_at = reminders["#{reminder_type}_at".to_sym]
   return true unless last_at
 
   begin
     time_since = Time.now - Time.parse(last_at)
-    time_since >= REMINDER_COOLDOWN
+    time_since >= cooldown
   rescue ArgumentError
     true # If timestamp is invalid, allow reminder
   end
@@ -81,6 +83,30 @@ def emit_explore_reminder(tool_name, tool_input)
   warn ''
   warn '💡 TIP: Quick lookup? → Task(subagent_type: "Explore") — fast, disposable'
   warn '   Real research? → Task(subagent_type: "general-purpose", model: "gpt-5.2" or "gpt-5.4") — persists to .claude/research.md'
+  warn ''
+end
+
+def emit_gui_feedback_reminder(tool_name, tool_input, tool_response = nil)
+  return unless tool_name == 'Bash'
+
+  command = tool_input['command'] || tool_input[:command] || ''
+  return if command.empty?
+  return unless SaneGuiFeedback.gui_action?(command)
+
+  # Always remind after a GUI mutation; cooldown still applies so we do not spam.
+  return unless should_remind?(:gui_feedback, cooldown: GUI_FEEDBACK_REMINDER_COOLDOWN)
+
+  record_reminder(:gui_feedback)
+  output = tool_response.is_a?(Hash) ? (tool_response['output'] || tool_response[:output] || tool_response.to_s) : tool_response.to_s
+  signal = SaneGuiFeedback.output_needs_attention?(output)
+
+  warn ''
+  warn '=' * 50
+  warn SaneGuiFeedback.reminder_text(
+    action_summary: command.gsub(/\s+/, ' ').strip,
+    output_signal: signal
+  )
+  warn '=' * 50
   warn ''
 end
 

@@ -23,6 +23,7 @@ require_relative 'core/mandatory_workflows'
 require_relative 'core/session_docs'
 require_relative 'core/state_manager'
 require_relative 'core/process_metrics'
+require_relative 'core/gui_feedback'
 
 # === TRACKING FUNCTIONS ===
 
@@ -227,6 +228,19 @@ def track_visual_evidence(tool_name, tool_input)
   end
 rescue StandardError
   # Don't fail on visual tracking
+end
+
+# === GUI FEEDBACK LOOP ===
+# Portal/osascript/Brave clicks require a follow-up read of dialog/page/AX/API.
+def track_gui_feedback(tool_name, tool_input)
+  return unless tool_name == 'Bash'
+
+  command = tool_input['command'] || tool_input[:command] || ''
+  return if command.empty?
+
+  SaneGuiFeedback.track_command!(command)
+rescue StandardError
+  # Don't fail on GUI feedback tracking
 end
 
 # === MCP VERIFICATION TRACKING ===

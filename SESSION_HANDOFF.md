@@ -1,13 +1,24 @@
 # SaneProcess Session Handoff
 
-As of: 2026-07-20 00:27 America/New_York
-Owner host: `Stephans-Mac-mini.local` (`stephansmac`)
-Repo: `/Users/stephansmac/SaneApps/infra/SaneProcess`
-Branch/base: canonical `main`; branch-convergence work was reviewed from
-`229198a` and is published through the repository's normal PR path.
+As of: 2026-07-29 America/New_York
+Owner host: Mac Mini = tree truth; Air = controller.
+Repo: `~/SaneApps/infra/SaneProcess`
 
 This file is current state only. Historical detail belongs in git history,
-dated research, Serena, AgentMemory, and durable architecture decisions.
+dated research, AgentMemory, and durable architecture decisions.
+
+## 2026-07-29 GUI action feedback loop
+
+- Owner complaint: agents treat ASC/Brave/osascript click return as success and
+  skip reading dialogs/page/AX/API (false "Update Review" success with
+  "Newer Build Available" unread).
+- Permanent rule added to `~/AGENTS.md` (GUI action feedback loop).
+- Shared detector: `scripts/hooks/core/gui_feedback.rb`
+  - Claude: sanetrack PostToolUse reminder + pending state; sanestop blocks;
+    saneprompt injects on portal/ASC prompts.
+  - Cursor: `~/.cursor/hooks/gui_feedback_after_shell.rb` +
+    `gui_feedback_stop.rb` (follow-up up to 2 loops).
+- Proof: `ruby scripts/hooks/gui_feedback_test.rb` ALL PASS.
 
 ## 2026-07-27 SaneHosts Release Worker Repair
 

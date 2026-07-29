@@ -25,6 +25,7 @@ require_relative 'core/mandatory_workflows'
 require_relative 'core/process_metrics'
 require_relative 'core/state_manager'
 require_relative 'core/visual_receipt'
+require_relative 'core/gui_feedback'
 require_relative 'sanestop_learnings'
 TRANSCRIPT_TOKEN_KEYS = %w[
   input_tokens output_tokens total_tokens cached_tokens cache_read_input_tokens
@@ -154,6 +155,23 @@ def live_customer_facing_ui_files(visual)
 rescue StandardError => e
   warn "⚠️  Visual UI file reconciliation error: #{e.message}" if ENV['DEBUG']
   []
+end
+
+def check_gui_feedback_pending
+  return nil unless defined?(SaneGuiFeedback)
+  return nil unless SaneGuiFeedback.pending?
+
+  action = SaneGuiFeedback.pending_summary
+  action_bit = action.empty? ? 'a recent GUI/portal mutation' : action
+
+  "   GUI feedback loop incomplete after #{action_bit}.\n" \
+  "   Click/keystroke/osascript exit 0 is not success.\n" \
+  "   Re-read the live dialog/page/AX/API state (bound poll), name what it shows,\n" \
+  "   then continue or report the blocker. Capture a Mini screenshot if needed.\n" \
+  "   Only then claim the portal/GUI step done."
+rescue StandardError => e
+  warn "⚠️  GUI feedback check error: #{e.message}" if ENV['DEBUG']
+  nil
 end
 
 def check_visual_verification_required
