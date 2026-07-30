@@ -86,12 +86,32 @@ exit(run_tests('Mini GUI Runner Tests') do
 
     test('reclaim helper verifies automation windows actually close') do
       assert_includes(reclaim_source, 'on windowStillExists(targetID)')
+      assert_includes(reclaim_source, 'on closeThroughAccessibility(targetToken)')
+      assert_includes(reclaim_source, 'on pressTerminateIfPresent(targetWindow)')
+      assert_includes(reclaim_source, 'if title of candidateButton is "Terminate"')
+      assert_includes(reclaim_source, 'perform action "AXPress" of closeButton')
       assert_includes(reclaim_source, 'repeat 20 times')
       assert_includes(reclaim_source, 'if my windowStillExists(targetID) is false then return "closed"')
-      assert_includes(reclaim_source, 'tell application "System Events" to keystroke "w" using command down')
       assert_includes(reclaim_source, 'return "still-open"')
       assert_includes(reclaim_source, 'warning: automation window still open after close attempt')
       assert_includes(reclaim_source, '/usr/bin/pkill -x Terminal')
+      true
+    end
+
+    test('reclaim never exposes or foregrounds Terminal while cleaning up') do
+      assert(!reclaim_source.include?('set miniaturized of w to false'),
+             'reclaim must not expose a hidden automation window')
+      assert(!reclaim_source.include?('set index of w to 1'),
+             'reclaim must not raise an automation window above the app')
+      assert(!reclaim_source.include?("\n        activate\n"),
+             'reclaim must not foreground Terminal')
+      assert(!reclaim_source.include?('keystroke "w" using command down'),
+             'reclaim must not use a focus-stealing keyboard fallback')
+      assert(!reclaim_source.include?('set frontmost of process "Terminal"'),
+             'reclaim must not make Terminal frontmost')
+      start_reclaim = runner_source.lines.find { |line| line.strip.start_with?('reclaim_windows') && !line.include?('()') }
+      assert_eq(start_reclaim&.strip, 'reclaim_windows --hide-terminal',
+                'runner must hide stale Terminal hosts before launching work')
       true
     end
   end

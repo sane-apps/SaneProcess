@@ -189,6 +189,13 @@ falling back to screenshot-only inspection. Use `macos-automator` for
 deterministic AppleScript/JXA and app-specific automation tips. Use Playwright
 with the SaneApps Brave defaults for repeatable website QA.
 
+Mini Terminal-host rule: cleanup must never unminimize, raise, maximize, or
+activate an automation Terminal window. Use title-scoped reclaim during an app
+interaction sequence; reserve `--reclaim-all` for workflow boundaries. Pass
+`--restore-bundle-id <bundle-id>` when the hidden Terminal command controls an
+open app. If Terminal becomes visible or frontmost, stop the GUI sequence and
+fix the runner before clicking again.
+
 Screenshots remain final evidence, not the first control mechanism. Use
 `scripts/mini/capture-mini-screenshot.sh` only when a receipt needs an image.
 The same ladder applies in Claude when its browser/app-control plugin is

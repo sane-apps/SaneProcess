@@ -225,6 +225,21 @@ Reclaim stale automation windows with:
 ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-reclaim-automation-windows.sh --all --hide-terminal'
 ```
 
+Terminal-host automation is focus-neutral:
+
+- Reclaim must never unminimize, raise, maximize, or activate a Terminal window.
+- `mini-gui-run.sh` hides stale Terminal hosts before and after each command,
+  including when a close attempt fails.
+- If Terminal prompts to terminate child processes, reclaim uses the hidden
+  window's accessibility controls. It must not expose the prompt or use a
+  focus-dependent keyboard shortcut.
+- Use the default title-scoped reclaim during a GUI sequence. Reserve
+  `--reclaim-all` for a workflow boundary, not each click.
+- When the command controls an open app, pass `--restore-bundle-id <bundle-id>`
+  so the target app regains focus after the hidden Terminal command starts.
+- If Terminal becomes visible or frontmost, stop the GUI sequence and repair
+  the runner before retrying.
+
 ## Live Launchd Inventory
 
 ```text
