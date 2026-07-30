@@ -1153,8 +1153,17 @@ module SaneMasterModules
     end
 
     def built_app_candidates(build_config)
-      dd_glob = File.expand_path("~/Library/Developer/Xcode/DerivedData/#{project_name}-*/Build/Products/#{build_config}")
-      Dir.glob(File.join(dd_glob, "#{project_name}.app")).sort_by { |path| File.mtime(path) }.reverse
+      derived_data_roots.flat_map do |root|
+        dd_glob = File.join(root, "#{project_name}-*", 'Build', 'Products', build_config)
+        Dir.glob(File.join(dd_glob, "#{project_name}.app"))
+      end.uniq.sort_by { |path| File.mtime(path) }.reverse
+    end
+
+    def derived_data_roots
+      roots = [File.expand_path('~/Library/Developer/Xcode/DerivedData')]
+      fixed_home = ENV['CFFIXED_USER_HOME'].to_s.strip
+      roots << File.join(File.expand_path(fixed_home), 'Library', 'Developer', 'Xcode', 'DerivedData') unless fixed_home.empty?
+      roots.uniq
     end
 
     def app_bundle_executable_path(app_path)
