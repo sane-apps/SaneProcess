@@ -52,17 +52,29 @@ on run argv
     delay 0.5
     set targetTab to do script shellCommand
     delay 0.2
-    set targetWindowID to id of front window
     try
       set custom title of targetTab to windowTitle
     end try
+    set targetWindow to first window whose selected tab is targetTab
+    set targetWindowID to id of targetWindow
     try
-      set bounds of front window to {-2200, 80, -1200, 720}
+      set bounds of targetWindow to {-2200, 80, -1200, 720}
     end try
     try
-      set miniaturized of front window to true
+      set miniaturized of targetWindow to true
     end try
   end tell
+
+  -- Terminal can ignore or briefly reverse miniaturization while the launched
+  -- command changes tab state. Hiding the host process before this launcher
+  -- returns prevents the automation window from covering the target app.
+  try
+    tell application "System Events"
+      if exists process "Terminal" then
+        set visible of process "Terminal" to false
+      end if
+    end tell
+  end try
 
   try
     if explicitRestoreBundleID is not "" then
