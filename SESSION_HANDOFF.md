@@ -7,6 +7,26 @@ Repo: `~/SaneApps/infra/SaneProcess`
 This file is current state only. Historical detail belongs in git history,
 dated research, AgentMemory, and durable architecture decisions.
 
+## 2026-07-30 customer UI execution-evidence routing
+
+- Branch `fix/customer-ui-execution-evidence-routing` adds
+  `customer_ui_sweep --execution-evidence PATH` to the canonical command.
+- Evidence must be a regular non-symlink JSON file under
+  `outputs/customer-ui`. Air routing validates it before sync, remaps it into
+  the exact Mini verify workspace, and verifies the synced SHA-256 before the
+  app runner receives the path.
+- Focused Mini proof passed: `release_route_test.rb` 28/28,
+  `command_registry_test.rb` 6/6, and Ruby syntax checks for the changed
+  command and contract files.
+- Full `SaneMaster.rb verify --timeout 900` remains blocked before test
+  execution by two pre-existing unregistered files:
+  `scripts/automation/app_review_watch_test.rb` and
+  `scripts/hooks/gui_feedback_test.rb`. A broader guardrail run also retained
+  two unrelated baseline failures; the new execution-evidence cases passed.
+- No installed-path screenshot acceptance was added. A deterministic positive
+  screenshot test needs a real GUI window, so it does not belong in unit tests
+  and must remain a separate Mini acceptance run.
+
 ## 2026-07-29 Mini Terminal focus repair
 
 - Repeated `mini-gui-run.sh --reclaim-all` calls exposed and foregrounded stale

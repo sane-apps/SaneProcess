@@ -224,7 +224,7 @@ class SaneMaster
         'runtime_evidence' => { args: '[--executable PATH|--pid PID] [--break File.swift:LINE] [--expr EXPR]', desc: 'Capture LLDB runtime evidence without launching apps' },
         'visual_smoke' => { args: '[--app NAME] [--require-peekaboo] [--json] [--dry-run]', desc: 'Capture Peekaboo visual/AX evidence receipt' },
         'resource_soak' => { args: '[--adaptive|--fixed] [--duration-seconds N] [--interval-seconds N] [--json]', desc: 'Run the Mini release-candidate resource check proof' },
-        'customer_ui_sweep' => { args: '[--json] [--dry-run] [--no-exit]', desc: 'Run the app customer workflow runner, then validate the release UI contract' },
+        'customer_ui_sweep' => { args: '[--execution-evidence PATH] [--json] [--dry-run] [--no-exit]', desc: 'Run the app customer workflow runner, then validate the release UI contract' },
         'customer_ui_contract' => { args: '[--json] [--no-exit] [--strict-visual]', desc: 'Validate release-required customer UI action QA manifest and fresh receipt' },
         'menu_scan' => { args: '[--json] [--owners bundle1,bundle2]', desc: 'Menu bar diagnostics (detected/normalized/excluded)' },
         'mode' => { args: '[<AppName>] <pro|basic|free|status|owner-check|owner-install|owner-pro|owner-verify|list> [--launch] [--host local|mini]', desc: 'Set/query test mode or owner-mode install/license state' }
@@ -613,6 +613,8 @@ class SaneMaster
       return
     end
 
+    customer_ui_evidence_context = customer_ui_execution_evidence_route_context(command, args)
+
     remote_saneprocess_repo = map_local_path_to_mini(saneprocess_repo_root)
     unless remote_saneprocess_repo
       abort "❌ Could not map SaneProcess to mini: #{saneprocess_repo_root}"
@@ -644,9 +646,15 @@ class SaneMaster
       sync_local_dir_to_mini!(saneprocess_repo_root, execution_saneprocess_repo, label: 'SaneProcess')
       sync_setapp_app_workspaces_to_mini!(release_routed: release_routed) if setapp_route_command?(command)
       sync_release_artifacts_to_mini!(Dir.pwd, execution_repo) if preserve_release_artifacts
-      routed_args, routed_appstore_binding_dir = route_appstore_preflight_package_to_mini(
+      routed_args = route_customer_ui_execution_evidence_to_mini(
         command,
         args,
+        execution_repo,
+        customer_ui_evidence_context
+      )
+      routed_args, routed_appstore_binding_dir = route_appstore_preflight_package_to_mini(
+        command,
+        routed_args,
         execution_repo
       )
       if release_routed
@@ -1903,6 +1911,56 @@ PY
     [routed_args, binding_dir]
   end
 
+  def customer_ui_execution_evidence_route_context(command, args)
+    return nil unless %w[customer_ui_sweep customer-ui-sweep].include?(command.to_s)
+
+    options = parse_customer_ui_sweep_args(Array(args))
+    argument = options[:execution_evidence_path]
+    return nil if argument.to_s.empty?
+
+    local_path = customer_ui_execution_evidence_path!(argument)
+    project_root = File.realpath(Dir.pwd)
+    relative_path = local_path.delete_prefix("#{project_root}/")
+    abort '❌ Customer UI execution evidence must be inside the current project.' if relative_path == local_path
+
+    {
+      local_path: local_path,
+      relative_path: relative_path,
+      sha256: Digest::SHA256.file(local_path).hexdigest
+    }
+  rescue ArgumentError => e
+    abort "❌ #{e.message}"
+  end
+
+  def route_customer_ui_execution_evidence_to_mini(command, args, execution_repo, context)
+    routed_args = Array(args).dup
+    return routed_args unless %w[customer_ui_sweep customer-ui-sweep].include?(command.to_s)
+    return routed_args unless context
+
+    remote_path = File.join(execution_repo, context.fetch(:relative_path))
+    expected_sha256 = context.fetch(:sha256)
+    remote_ok = ssh_system(
+      'mini',
+      "test -f #{Shellwords.escape(remote_path)} && " \
+      "test ! -L #{Shellwords.escape(remote_path)} && " \
+      "test \"$(/usr/bin/shasum -a 256 #{Shellwords.escape(remote_path)} | awk '{print $1}')\" = #{Shellwords.escape(expected_sha256)}"
+    )
+    unless remote_ok
+      abort '❌ Customer UI execution evidence was not safely synced byte-for-byte into the routed Mini workspace.'
+    end
+
+    separated_index = routed_args.index('--execution-evidence')
+    if separated_index
+      routed_args[separated_index + 1] = remote_path
+    else
+      equals_index = routed_args.index { |arg| arg.start_with?('--execution-evidence=') }
+      abort '❌ Customer UI execution evidence routing lost its CLI argument.' unless equals_index
+
+      routed_args[equals_index] = "--execution-evidence=#{remote_path}"
+    end
+    routed_args
+  end
+
   def cleanup_routed_appstore_preflight_package(binding_dir)
     return if binding_dir.to_s.empty?
 
@@ -3062,15 +3120,17 @@ PY
       ]
     },
     'customer_ui_sweep' => {
-      usage: 'customer_ui_sweep [--json] [--dry-run] [--no-exit]',
+      usage: 'customer_ui_sweep [--execution-evidence PATH] [--json] [--dry-run] [--no-exit]',
       description: 'Run the project customer workflow runner on the Mini, clean the visual workspace first, and then validate the customer UI action contract.',
       flags: {
+        '--execution-evidence PATH' => 'Forward a fresh execution receipt under outputs/customer-ui to the app runner in the exact routed Mini workspace',
         '--json' => 'Print machine-readable result JSON',
         '--dry-run' => 'Validate that a project workflow runner exists without launching or clicking the app',
         '--no-exit' => 'Return the report without exiting non-zero'
       },
       examples: [
         'customer_ui_sweep --dry-run',
+        'customer_ui_sweep --execution-evidence outputs/customer-ui/run/execution-evidence.json --json',
         'customer_ui_sweep --json'
       ]
     },
