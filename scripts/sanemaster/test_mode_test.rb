@@ -141,6 +141,36 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
       true
     end
 
+    test('launch finds build products under an isolated CFFIXED_USER_HOME') do
+      saved_fixed_home = ENV['CFFIXED_USER_HOME']
+
+      Dir.mktmpdir('sanemaster-isolated-home') do |dir|
+        project_dir = File.join(dir, 'project')
+        fixed_home = File.join(dir, 'fixture-home')
+        app_path = File.join(
+          fixed_home,
+          'Library/Developer/Xcode/DerivedData/SaneHosts-test/Build/Products/Release/SaneHosts.app'
+        )
+        executable = File.join(app_path, 'Contents/MacOS/SaneHosts')
+        FileUtils.mkdir_p([project_dir, File.dirname(executable)])
+        File.write(File.join(project_dir, '.saneprocess'), "name: SaneHosts\nscheme: SaneHosts\n")
+        File.write(executable, "#!/bin/sh\n")
+        FileUtils.chmod(0o755, executable)
+        ENV['CFFIXED_USER_HOME'] = fixed_home
+
+        Dir.chdir(project_dir) do
+          harness = TestModeHarness.new
+
+          assert_includes(harness.send(:built_app_candidates, 'Release'), app_path)
+          assert(harness.send(:app_bundle_executable?, app_path), 'isolated app must have a runnable executable')
+        end
+      end
+
+      true
+    ensure
+      saved_fixed_home.nil? ? ENV.delete('CFFIXED_USER_HOME') : ENV['CFFIXED_USER_HOME'] = saved_fixed_home
+    end
+
     test('no-keychain launch state is passed through LaunchServices open') do
       result = subject.send(
         :open_launch_env_pairs,

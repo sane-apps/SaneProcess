@@ -7,6 +7,18 @@ Repo: `~/SaneApps/infra/SaneProcess`
 This file is current state only. Historical detail belongs in git history,
 dated research, AgentMemory, and durable architecture decisions.
 
+## 2026-07-30 Isolated runtime DerivedData discovery
+
+- The first SaneHosts live retry after provisioning parity built successfully,
+  but `CFFIXED_USER_HOME` caused Xcode to place DerivedData under the isolated
+  fixture home. `test_mode` searched only the login user's DerivedData, treated
+  the official install as stale, rebuilt, then failed to find the new app.
+- `test_mode` now searches both the login user's DerivedData and the active
+  `CFFIXED_USER_HOME` DerivedData root. The regression test creates a runnable
+  app bundle under an isolated fixture home and proves it is selected.
+- The retry failed before launch. No SaneHosts customer action ran and no
+  production hosts file was changed.
+
 ## 2026-07-30 Release test-mode provisioning parity
 
 - SaneHosts `test_mode --release` failed twice because the runtime build path
