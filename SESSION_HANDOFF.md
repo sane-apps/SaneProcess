@@ -14,8 +14,8 @@ dated research, AgentMemory, and durable architecture decisions.
   SSH, rsync, the visual guard, or the Mini GUI runner.
 - The focused behavioral regression stubs SSH and rsync, supplies invalid
   runtime configuration, runs both help flags, and requires zero side effects.
-  `mini_gui_run_test.rb` passes 33/33 locally; Mini proof is required before
-  merge.
+  `mini_gui_run_test.rb` passes 33/33 on the Mini. A direct Mini `--help` run
+  with invalid runtime configuration exited 0 in 0.00 seconds.
 
 ## 2026-07-30 Mini GUI host visibility repair
 
