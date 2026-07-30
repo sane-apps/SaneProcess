@@ -7,6 +7,22 @@ Repo: `~/SaneApps/infra/SaneProcess`
 This file is current state only. Historical detail belongs in git history,
 dated research, AgentMemory, and durable architecture decisions.
 
+## 2026-07-30 Mini GUI host visibility repair
+
+- A fresh SaneClick 1.3.3 app-only capture proved the screenshot bytes were
+  clean, but the logged-in GUI runner exposed a large Terminal window titled
+  `SaneApps Automation: Mini Screenshot` while the command ran. The target app
+  stayed non-frontmost until post-command reclaim finished.
+- `mini-gui-run.applescript` now binds window mutations to the exact Terminal
+  window launched for the command, miniaturizes that window, and forces the
+  Terminal host process hidden before the launcher returns. This keeps the
+  automation host from covering the target even if Terminal reverses
+  miniaturization while a busy tab changes state.
+- Focused Mini proof passed 32/32 and the AppleScript compiled. A live
+  12-second Mini acceptance command finished successfully while the bound AX
+  read reported no Terminal process or window. SaneClick's live proof remains
+  separate and resumes only after this shared fix lands.
+
 ## 2026-07-30 customer UI execution-evidence routing
 
 - Branch `fix/customer-ui-execution-evidence-routing` adds

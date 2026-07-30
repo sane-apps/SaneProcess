@@ -49,6 +49,20 @@ exit(run_tests('Mini GUI Runner Tests') do
       true
     end
 
+    test('launcher hides its exact Terminal host before returning control') do
+      assert_includes(apple_script_source, 'set targetWindow to first window whose selected tab is targetTab')
+      assert_includes(apple_script_source, 'set targetWindowID to id of targetWindow')
+      assert_includes(apple_script_source, 'set bounds of targetWindow to {-2200, 80, -1200, 720}')
+      assert_includes(apple_script_source, 'set miniaturized of targetWindow to true')
+      assert_includes(apple_script_source, 'set visible of process "Terminal" to false')
+
+      hide_position = apple_script_source.index('set visible of process "Terminal" to false')
+      return_position = apple_script_source.index('return (targetWindowID as string)')
+      assert(hide_position && return_position && hide_position < return_position,
+             'launcher must hide Terminal before returning the automation window id')
+      true
+    end
+
     test('runner waits for Terminal-launched shell to start before trusting idle state') do
       assert_includes(runner_source, 'window_busy_state()')
       assert_includes(runner_source, 'exists_state="$(')
