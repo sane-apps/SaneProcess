@@ -144,7 +144,9 @@ reclaim_windows() {
   fi
 }
 
-reclaim_windows
+# Cleanup is focus-neutral. Hide any stale Terminal host even when closing it
+# fails, so it cannot cover the app being automated.
+reclaim_windows --hide-terminal
 
 inner_script=$(cat <<EOF
 printf '%s\n' "\$\$" > $(shell_quote "$started_file")

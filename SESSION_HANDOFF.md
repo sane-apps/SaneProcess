@@ -7,6 +7,21 @@ Repo: `~/SaneApps/infra/SaneProcess`
 This file is current state only. Historical detail belongs in git history,
 dated research, AgentMemory, and durable architecture decisions.
 
+## 2026-07-29 Mini Terminal focus repair
+
+- Repeated `mini-gui-run.sh --reclaim-all` calls exposed and foregrounded stale
+  automation Terminal windows, covering SaneClick during native UI control.
+- `mini-reclaim-automation-windows.sh` no longer unminimizes, raises, activates,
+  or sends focus-dependent shortcuts to Terminal. Hidden terminate-process
+  sheets are handled through their accessibility controls.
+- The runner now hides stale Terminal hosts before and after each command.
+  `AGENTS.md` and `scripts/mini/README.md` require title-scoped reclaim during
+  click sequences, `--reclaim-all` only at workflow boundaries, and
+  `--restore-bundle-id` for app control.
+- Mini proof: focused suite 30/30; live reclaim closed two stuck automation
+  windows, preserved the normal Terminal window, kept Terminal hidden, and
+  preserved Finder as the frontmost app.
+
 ## 2026-07-29 GUI action feedback loop
 
 - Owner complaint: agents treat ASC/Brave/osascript click return as success and

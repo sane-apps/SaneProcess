@@ -109,8 +109,49 @@ is_known_legacy_automation_window() {
 
 close_window_by_id() {
   local target_id="$1"
-  /usr/bin/osascript <<OSA
-set targetID to ${target_id}
+  local target_token="$2"
+  /usr/bin/osascript - "$target_id" "$target_token" <<'OSA'
+on pressTerminateIfPresent(targetWindow)
+  tell application "System Events"
+    tell process "Terminal"
+      try
+        if (count of sheets of targetWindow) is 0 then return false
+        set targetSheet to sheet 1 of targetWindow
+        repeat with candidateButton in buttons of targetSheet
+          try
+            if title of candidateButton is "Terminate" then
+              perform action "AXPress" of candidateButton
+              return true
+            end if
+          end try
+        end repeat
+      end try
+  end tell
+  end tell
+  return false
+end pressTerminateIfPresent
+
+on closeThroughAccessibility(targetToken)
+  tell application "System Events"
+    if not (exists process "Terminal") then return false
+    tell process "Terminal"
+      repeat with candidateWindow in windows
+        try
+          if name of candidateWindow contains targetToken then
+            if my pressTerminateIfPresent(candidateWindow) then return true
+            set closeButton to first button of candidateWindow whose description is "close button"
+            perform action "AXPress" of closeButton
+            delay 0.2
+            my pressTerminateIfPresent(candidateWindow)
+            return true
+          end if
+        end try
+      end repeat
+    end tell
+  end tell
+  return false
+end closeThroughAccessibility
+
 on windowStillExists(targetID)
   tell application "Terminal"
     repeat with candidateWindow in windows
@@ -122,6 +163,9 @@ on windowStillExists(targetID)
   return false
 end windowStillExists
 
+on run argv
+set targetID to item 1 of argv as integer
+set targetToken to item 2 of argv
 tell application "System Events"
   if not (exists process "Terminal") then return "missing-terminal"
 end tell
@@ -129,19 +173,12 @@ tell application "Terminal"
   repeat with w in windows
     try
       if id of w is equal to targetID then
-        try
-          set miniaturized of w to false
-          set index of w to 1
-        end try
         close w saving no
         repeat 20 times
           delay 0.1
           if my windowStillExists(targetID) is false then return "closed"
         end repeat
-        activate
-        try
-          tell application "System Events" to keystroke "w" using command down
-        end try
+        my closeThroughAccessibility(targetToken)
         repeat 20 times
           delay 0.1
           if my windowStillExists(targetID) is false then return "closed"
@@ -152,6 +189,7 @@ tell application "Terminal"
   end repeat
 end tell
 return "not-found"
+end run
 OSA
 }
 
@@ -221,7 +259,8 @@ while IFS=$'\t' read -r window_id window_name tab_title; do
     if [ "$dry_run" -eq 1 ]; then
       printf 'would close %s\t%s\t%s\n' "$window_id" "$window_name" "$tab_title"
     else
-      close_result="$(close_window_by_id "$window_id" 2>/dev/null || true)"
+      close_token="${tab_title:-$window_name}"
+      close_result="$(close_window_by_id "$window_id" "$close_token" 2>/dev/null || true)"
       case "$close_result" in
         closed|not-found|missing-terminal)
           ;;
