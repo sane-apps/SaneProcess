@@ -228,8 +228,11 @@ ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-reclaim-automation-wind
 Terminal-host automation is focus-neutral:
 
 - Reclaim must never unminimize, raise, maximize, or activate a Terminal window.
-- `mini-gui-run.sh` hides stale Terminal hosts before and after each command,
-  including when a close attempt fails.
+- Reclaim hides Terminal before it lists or closes windows, so a slow or timed
+  out close cannot expose the host. `mini-gui-run.sh` repeats the hide after
+  each command and does not return while its host remains accessibility-visible.
+  Inert Terminal scripting records with no tab, TTY, process, or accessibility
+  window are not visible blockers.
 - If Terminal prompts to terminate child processes, reclaim uses the hidden
   window's accessibility controls. It must not expose the prompt or use a
   focus-dependent keyboard shortcut.

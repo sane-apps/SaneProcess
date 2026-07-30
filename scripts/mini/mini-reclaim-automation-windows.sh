@@ -54,6 +54,16 @@ if [ "$reclaim_all" -ne 1 ] && [ -z "$requested_title" ]; then
   usage
 fi
 
+hide_terminal_now() {
+  /usr/bin/osascript -e 'tell application "System Events" to set visible of process "Terminal" to false' >/dev/null 2>&1 || true
+}
+
+# Visibility is the safety boundary. Hide first so a slow or timed-out close
+# can never leave an automation Terminal window covering the target app.
+if [ "$hide_terminal" -eq 1 ] && [ "$dry_run" -ne 1 ]; then
+  hide_terminal_now
+fi
+
 list_windows() {
   /usr/bin/osascript <<'OSA'
 set outputLines to {}
@@ -197,14 +207,16 @@ window_matches_reclaim_scope() {
   local name="$1"
   local tab_title="$2"
 
-  if is_prefixed_window "$name" "$tab_title"; then
-    return 0
-  fi
   if is_requested_title_window "$name" "$tab_title"; then
     return 0
   fi
-  if [ "$reclaim_all" -eq 1 ] && is_known_legacy_automation_window "${name} ${tab_title}"; then
-    return 0
+  if [ "$reclaim_all" -eq 1 ]; then
+    if is_prefixed_window "$name" "$tab_title"; then
+      return 0
+    fi
+    if is_known_legacy_automation_window "${name} ${tab_title}"; then
+      return 0
+    fi
   fi
 
   return 1
@@ -278,7 +290,7 @@ if [ "$dry_run" -ne 1 ]; then
 fi
 
 if [ "$hide_terminal" -eq 1 ] && [ "$dry_run" -ne 1 ]; then
-  /usr/bin/osascript -e 'tell application "System Events" to set visible of process "Terminal" to false' >/dev/null 2>&1 || true
+  hide_terminal_now
 fi
 
 if [ "$dry_run" -ne 1 ]; then

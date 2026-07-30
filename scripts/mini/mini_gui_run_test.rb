@@ -51,6 +51,8 @@ exit(run_tests('Mini GUI Runner Tests') do
 
     test('runner waits for Terminal-launched shell to start before trusting idle state') do
       assert_includes(runner_source, 'window_busy_state()')
+      assert_includes(runner_source, 'exists_state="$(')
+      assert_includes(runner_source, '[ "$exists_state" = "true" ]')
       assert_includes(runner_source, 'return "idle"')
       assert_includes(runner_source, 'launch_grace_seconds="${MINI_GUI_RUN_LAUNCH_GRACE_SECONDS:-8}"')
       assert_includes(runner_source, 'inner_script_path="$tmp_dir/command.sh"')
@@ -64,11 +66,21 @@ exit(run_tests('Mini GUI Runner Tests') do
       true
     end
 
+    test('runner does not return while its automation window still exists') do
+      assert_includes(runner_source, 'automation_window_is_accessible()')
+      assert_includes(runner_source, 'if name of candidateWindow contains targetTitle then return true')
+      assert_includes(runner_source, 'while automation_window_is_accessible "$window_title" && [ "$cleanup_poll_count" -lt 50 ]')
+      assert_includes(runner_source, 'cleanup_poll_count=$((cleanup_poll_count + 1))')
+      assert_includes(runner_source, 'mini-gui-run: automation window remained visible after focus-neutral cleanup')
+      true
+    end
+
     test('runner time-bounds post-command window cleanup') do
-      assert_includes(runner_source, 'MINI_GUI_RUN_CLEANUP_TIMEOUT_SECONDS:-5')
+      assert_includes(runner_source, 'MINI_GUI_RUN_CLEANUP_TIMEOUT_SECONDS:-15')
       assert_includes(runner_source, 'run_with_timeout()')
       assert_includes(runner_source, 'run_with_timeout "$cleanup_timeout_seconds" "$RECLAIM_SCRIPT_PATH" --all --title "$title"')
-      assert_includes(runner_source, 'run_with_timeout "$cleanup_timeout_seconds" close_window_by_id "$window_id"')
+      assert(!runner_source.include?('close_window_by_id()'),
+             'runner must leave window closing to the focus-neutral reclaim helper')
       true
     end
 
@@ -78,6 +90,8 @@ exit(run_tests('Mini GUI Runner Tests') do
       assert_includes(reclaim_source, 'if not (exists process "Terminal") then return ""')
       assert_includes(reclaim_source, '--all --hide-terminal')
       assert_includes(reclaim_source, 'is_known_legacy_automation_window')
+      assert_match(reclaim_source, /if \[ "\$reclaim_all" -eq 1 \]; then\s+if is_prefixed_window/m,
+                   'prefixed windows outside the requested title must require --all')
       assert_includes(reclaim_source, "tell application \"Terminal\" to quit saving no")
       assert_includes(reclaim_source, '" App Store "')
       assert_includes(reclaim_source, '" GUI Capture "')
@@ -109,6 +123,10 @@ exit(run_tests('Mini GUI Runner Tests') do
              'reclaim must not use a focus-stealing keyboard fallback')
       assert(!reclaim_source.include?('set frontmost of process "Terminal"'),
              'reclaim must not make Terminal frontmost')
+      hide_position = reclaim_source.index('if [ "$hide_terminal" -eq 1 ] && [ "$dry_run" -ne 1 ]; then')
+      list_position = reclaim_source.index('list_windows()')
+      assert(hide_position && list_position && hide_position < list_position,
+             'reclaim must hide Terminal before listing or closing windows')
       start_reclaim = runner_source.lines.find { |line| line.strip.start_with?('reclaim_windows') && !line.include?('()') }
       assert_eq(start_reclaim&.strip, 'reclaim_windows --hide-terminal',
                 'runner must hide stale Terminal hosts before launching work')
