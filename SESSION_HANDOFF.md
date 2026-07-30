@@ -13,14 +13,20 @@ dated research, AgentMemory, and durable architecture decisions.
   automation Terminal windows, covering SaneClick during native UI control.
 - `mini-reclaim-automation-windows.sh` no longer unminimizes, raises, activates,
   or sends focus-dependent shortcuts to Terminal. Hidden terminate-process
-  sheets are handled through their accessibility controls.
-- The runner now hides stale Terminal hosts before and after each command.
+  sheets are handled through their accessibility controls. Reclaim hides
+  Terminal before any close work, and the runner allows 15 bounded seconds for
+  process-termination sheets.
+- The runner hides stale Terminal hosts before and after each command.
+  Its window-existence check now preserves AppleScript's true/false result, and
+  the runner waits until its host is no longer accessibility-visible before
+  returning. Inert Terminal scripting ghosts with no tab, TTY, process, or AX
+  window are not treated as visible blockers.
   `AGENTS.md` and `scripts/mini/README.md` require title-scoped reclaim during
   click sequences, `--reclaim-all` only at workflow boundaries, and
   `--restore-bundle-id` for app control.
-- Mini proof: focused suite 30/30; live reclaim closed two stuck automation
-  windows, preserved the normal Terminal window, kept Terminal hidden, and
-  preserved Finder as the frontmost app.
+- Mini proof: focused suite 31/31. End-to-end runner acceptance returned status
+  `0`, preserved Finder as the frontmost app, kept Terminal hidden, and left
+  zero accessibility-visible automation windows.
 
 ## 2026-07-29 GUI action feedback loop
 

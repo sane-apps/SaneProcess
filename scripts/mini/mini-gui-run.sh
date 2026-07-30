@@ -52,7 +52,7 @@ close_window=1
 poll_seconds=1
 start_delay_seconds="${MINI_GUI_RUN_START_DELAY:-0.6}"
 launch_grace_seconds="${MINI_GUI_RUN_LAUNCH_GRACE_SECONDS:-8}"
-cleanup_timeout_seconds="${MINI_GUI_RUN_CLEANUP_TIMEOUT_SECONDS:-5}"
+cleanup_timeout_seconds="${MINI_GUI_RUN_CLEANUP_TIMEOUT_SECONDS:-15}"
 log_file=""
 status_file=""
 title="Mini GUI Run"
@@ -176,7 +176,9 @@ window_id="$(
 
 window_still_exists() {
   local target_id="$1"
-  /usr/bin/osascript <<EOF >/dev/null 2>&1
+  local exists_state=""
+  exists_state="$(
+    /usr/bin/osascript <<EOF 2>/dev/null
 tell application "Terminal"
   repeat with w in windows
     try
@@ -186,6 +188,8 @@ tell application "Terminal"
 end tell
 return false
 EOF
+  )"
+  [ "$exists_state" = "true" ]
 }
 
 window_busy_state() {
@@ -208,20 +212,28 @@ return "missing"
 EOF
 }
 
-close_window_by_id() {
-  local target_id="$1"
-  /usr/bin/osascript <<EOF >/dev/null 2>&1
-tell application "Terminal"
-  repeat with w in windows
-    try
-      if id of w is equal to ${target_id} then
-        close w saving no
-        exit repeat
-      end if
-    end try
-  end repeat
-end tell
-EOF
+automation_window_is_accessible() {
+  local target_title="$1"
+  local accessible_state=""
+  accessible_state="$(
+    /usr/bin/osascript - "$target_title" <<'OSA' 2>/dev/null
+on run argv
+  set targetTitle to item 1 of argv
+  tell application "System Events"
+    if not (exists process "Terminal") then return false
+    tell process "Terminal"
+      repeat with candidateWindow in windows
+        try
+          if name of candidateWindow contains targetTitle then return true
+        end try
+      end repeat
+    end tell
+  end tell
+  return false
+end run
+OSA
+  )"
+  [ "$accessible_state" = "true" ]
 }
 
 idle_poll_count=0
@@ -254,11 +266,17 @@ while [ ! -f "$status_file" ]; do
   esac
 done
 
-if [ "$close_window" -eq 1 ] && [ -n "${window_id:-}" ]; then
-  run_with_timeout "$cleanup_timeout_seconds" close_window_by_id "$window_id" || true
-fi
-
 reclaim_windows --hide-terminal
+
+cleanup_poll_count=0
+while automation_window_is_accessible "$window_title" && [ "$cleanup_poll_count" -lt 50 ]; do
+  sleep 0.1
+  cleanup_poll_count=$((cleanup_poll_count + 1))
+done
+if automation_window_is_accessible "$window_title"; then
+  echo "mini-gui-run: automation window remained visible after focus-neutral cleanup: $window_id" >&2
+  exit 1
+fi
 
 if [ ! -f "$status_file" ]; then
   echo "mini-gui-run: command finished without a status file: $status_file" >&2
