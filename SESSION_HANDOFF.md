@@ -28,6 +28,69 @@ dated research, AgentMemory, and durable architecture decisions.
   `0`, preserved Finder as the frontmost app, kept Terminal hidden, and left
   zero accessibility-visible automation windows.
 
+## 2026-07-29 end-session clean-state ledger
+
+- Every active primary checkout under `~/SaneApps` is clean on both hosts.
+  The historical Air snapshot under `archive/SaneProcess-preserved-20260714-133017`
+  was left unchanged and is not an active checkout.
+- Stale linked worktrees were checkpointed and removed: one Air SaneVideo A/B
+  worktree; Mini SaneClick, SaneClip, SaneBar, SaneSales, SaneScan, and
+  SaneVideo release/audit worktrees. No uncommitted state was discarded.
+- Diverged local tips remain recoverable on
+  `checkpoint/air-sanelot-site-20260729` at `53b5e110`,
+  `checkpoint/mini-sanevideo-main-20260729` at `3f2ba80d`, and
+  `checkpoint/mini-main-20260729` in SaneProcess at `833d39d`.
+- Air stash receipts:
+  `infra/scripts=4ba036a1`,
+  `sanelot=cc6fa11d`,
+  `apps/SaneLot=371c381e`,
+  `apps/SaneVideo=f8d48890`,
+  `websites/sanecite-saas=56971ff7`,
+  `websites/sanelot.com=b108067f`,
+  `infra/SaneProcess=2b98bcf3`, and
+  `SaneVideo A/B=8a46908a`.
+- Mini primary-checkout stash receipts:
+  `SaneUI=726083f2`,
+  `sanelot=6a8afe4d`,
+  `SaneLot=eeaddfa5`,
+  `SaneBar=cd72f2de`,
+  `SaneVideo=b6bbf68d`,
+  `SaneSales=d1a96fdf`,
+  `SaneScan=f75a55ec`,
+  `sanecite-saas=053f7444`,
+  `prophecy-ledger=f1cbf68b`,
+  `sanelot.com=ae5cf67c`, and
+  `SaneProcess=22db9b48`.
+- Mini stale-worktree stash receipts:
+  `SaneClick Keychain=18ea4473`,
+  `SaneClick release=2bcf448e`,
+  `SaneClip 2.3.22=cadf96a6`,
+  `SaneClip 2.3.23=bf9f9a9d`,
+  `SaneBar audit=f4fc7c44`,
+  `SaneBar reorder=274b9d70`,
+  `SaneBar reorder feature=0e074c1e`,
+  `SaneSales gating=d8c99c57`,
+  `SaneScan handoff=cb1a1a6a`,
+  `SaneVideo E2E=87f0b1fa`,
+  `SaneVideo mirror=c1e07b17`, and
+  `SaneVideo release=533208b9`.
+- Canonical cleanup receipts:
+  Mini safe `29375cf850cb7560fe0f7f68cc476276` and server
+  `81dd4f7a14a10c2cf8f8b837f403b46d`; Air safe
+  `ff820a519830ba495405a957cfa6e257`. The Mini server pass kept the existing
+  recoverable Trash and skipped generated-artifact pruning while this Codex GUI
+  session was active.
+- Exact process cleanup shut down both booted SaneLot simulators, their app
+  processes, the three-day-old port-8765 server, SaneApps test processes, and
+  Xcode on both hosts. No app was preserved for overnight work.
+- SaneClick's canonical handoff now records 1.3.3/1303, the live licensed Mini
+  state, and the remaining screenshot-wrapper blocker. Its docs-only update
+  passed 189/189 tests and is on both the release branch and `main`.
+- GitHub end-of-day review found eight open, mergeable Dependabot PRs with no
+  configured checks and two intentional roadmap issues: SaneUI #1 and
+  SaneHosts #6. The dependency PRs remain open because mergeability without a
+  test result is not release proof.
+
 ## 2026-07-29 GUI action feedback loop
 
 - Owner complaint: agents treat ASC/Brave/osascript click return as success and
