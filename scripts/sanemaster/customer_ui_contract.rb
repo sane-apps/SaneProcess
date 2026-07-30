@@ -150,15 +150,17 @@ module SaneMasterModules
     end
 
     def customer_ui_sweep(args = [])
-      json = args.include?('--json')
-      dry_run = args.include?('--dry-run')
-      report = customer_ui_sweep_report(dry_run: dry_run)
-      if json
+      options = parse_customer_ui_sweep_args(args)
+      report = customer_ui_sweep_report(
+        dry_run: options[:dry_run],
+        execution_evidence_path: options[:execution_evidence_path]
+      )
+      if options[:json]
         puts JSON.pretty_generate(report)
       else
         puts format_customer_ui_sweep_report(report)
       end
-      exit 1 unless report[:ok] || args.include?('--no-exit')
+      exit 1 unless report[:ok] || options[:no_exit]
       report
     end
 
@@ -375,7 +377,7 @@ module SaneMasterModules
       }
     end
 
-    def customer_ui_sweep_report(dry_run: false)
+    def customer_ui_sweep_report(dry_run: false, execution_evidence_path: nil)
       config = current_saneprocess_config
       app_name = metadata_value(config, 'name') || File.basename(Dir.pwd)
       script_path = CUSTOMER_UI_SWEEP_PATHS.find { |path| File.file?(path) }
@@ -397,11 +399,14 @@ module SaneMasterModules
         }
       end
 
+      execution_evidence_path = customer_ui_execution_evidence_path!(execution_evidence_path) if execution_evidence_path
+
       if dry_run
         return {
           ok: true,
           app: app_name,
           script_path: script_path,
+          execution_evidence_path: execution_evidence_path,
           dry_run: true,
           issues: []
         }
@@ -435,7 +440,9 @@ module SaneMasterModules
           next({ ok: false, app: app_name, script_path: script_path, issues: visual_precheck[:issues] })
         end
 
-        output, status = customer_ui_run_command(RbConfig.ruby, script_path)
+        runner_command = [RbConfig.ruby, script_path]
+        runner_command.concat(['--execution-evidence', execution_evidence_path]) if execution_evidence_path
+        output, status = customer_ui_run_command(*runner_command)
         unless status.success?
           next({ ok: false, app: app_name, script_path: script_path, issues: ["Customer UI workflow runner failed: #{output}"] })
         end
@@ -445,6 +452,7 @@ module SaneMasterModules
           ok: contract[:ok],
           app: app_name,
           script_path: script_path,
+          execution_evidence_path: execution_evidence_path,
           contract: contract,
           runner_output: output,
           issues: Array(contract[:issues])
@@ -569,6 +577,63 @@ module SaneMasterModules
     end
 
     private
+
+    def parse_customer_ui_sweep_args(args)
+      options = {
+        json: false,
+        dry_run: false,
+        no_exit: false,
+        execution_evidence_path: nil
+      }
+      i = 0
+      while i < args.length
+        arg = args[i]
+        case arg
+        when '--json'
+          options[:json] = true
+        when '--dry-run'
+          options[:dry_run] = true
+        when '--no-exit'
+          options[:no_exit] = true
+        when '--local'
+          # Consumed by SaneMaster Mini routing.
+        when '--execution-evidence'
+          raise ArgumentError, '--execution-evidence may only be supplied once' if options[:execution_evidence_path]
+
+          options[:execution_evidence_path] = customer_ui_required_arg(args, i, arg)
+          i += 1
+        when /\A--execution-evidence=(.+)\z/
+          raise ArgumentError, '--execution-evidence may only be supplied once' if options[:execution_evidence_path]
+
+          options[:execution_evidence_path] = Regexp.last_match(1)
+        else
+          raise ArgumentError, "unknown option: #{arg}"
+        end
+        i += 1
+      end
+      options
+    end
+
+    def customer_ui_execution_evidence_path!(path)
+      project_root = File.expand_path(Dir.pwd)
+      allowed_root = File.join(project_root, 'outputs', 'customer-ui')
+      expanded = File.expand_path(path.to_s, project_root)
+      raise ArgumentError, '--execution-evidence must be a JSON file' unless File.extname(expanded).downcase == '.json'
+
+      safe_customer_ui_directory_path!(File.dirname(expanded))
+      stat = File.lstat(expanded)
+      raise ArgumentError, '--execution-evidence must be a regular non-symlink file' unless stat.file? && !stat.symlink?
+
+      real_path = File.realpath(expanded)
+      real_allowed_root = File.realpath(allowed_root)
+      unless real_path.start_with?("#{real_allowed_root}/")
+        raise ArgumentError, '--execution-evidence must be under outputs/customer-ui'
+      end
+
+      real_path
+    rescue Errno::ENOENT
+      raise ArgumentError, "customer UI execution evidence not found: #{expanded}"
+    end
 
     def customer_ui_report_utf8(value)
       value.to_s.encode('UTF-8', invalid: :replace, undef: :replace, replace: '�')

@@ -29,6 +29,15 @@ exit(run_tests('SaneMaster Command Alias Tests') do
       true
     end
 
+    test('customer UI sweep advertises routed execution evidence') do
+      summary = SaneMaster::COMMANDS.fetch(:debug).fetch(:commands).fetch('customer_ui_sweep')
+      detail = SaneMaster::COMMAND_DETAILS.fetch('customer_ui_sweep')
+      assert_includes(summary[:args], '--execution-evidence PATH')
+      assert_includes(detail[:usage], '--execution-evidence PATH')
+      assert(detail[:examples].any? { |example| example.include?('--execution-evidence') })
+      true
+    end
+
     test('App Store help requires a fresh local package and retires remote build reuse') do
       summary = SaneMaster::COMMANDS.fetch(:build).fetch(:commands).fetch('appstore_preflight')
       detail = SaneMaster::COMMAND_DETAILS.fetch('appstore_preflight')

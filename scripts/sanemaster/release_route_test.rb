@@ -176,6 +176,152 @@ exit(run_tests('SaneMaster Release Routing Tests') do
       end
       true
     end
+
+    test('remaps customer UI execution evidence into the exact routed Mini workspace') do
+      with_temp_repo do |repo|
+        evidence_dir = File.join(repo, 'outputs', 'customer-ui', 'run-123')
+        evidence = File.join(evidence_dir, 'execution-evidence.json')
+        execution_repo = '/Users/stephansmac/.sanemaster/verify-workspaces/abcd/SaneApps/apps/SaneClick'
+        FileUtils.mkdir_p(evidence_dir)
+        File.write(evidence, "{\"status\":\"passed\"}\n")
+
+        subject.system_calls.clear
+        Dir.chdir(repo) do
+          args = ['--execution-evidence', evidence, '--json']
+          context = subject.send(:customer_ui_execution_evidence_route_context, 'customer_ui_sweep', args)
+          routed_args = subject.send(
+            :route_customer_ui_execution_evidence_to_mini,
+            'customer_ui_sweep',
+            args,
+            execution_repo,
+            context
+          )
+
+          expected_remote = File.join(execution_repo, 'outputs', 'customer-ui', 'run-123', 'execution-evidence.json')
+          assert_eq(routed_args, ['--execution-evidence', expected_remote, '--json'])
+          safety_check = subject.system_calls.find do |call|
+            call.first == 'ssh' &&
+              call.any? do |part|
+                part.to_s.include?("test -f #{expected_remote}") &&
+                  part.to_s.include?('/usr/bin/shasum -a 256') &&
+                  part.to_s.include?(Digest::SHA256.file(evidence).hexdigest)
+              end
+          end
+          assert(safety_check, 'expected a regular non-symlink digest check for the synced Mini evidence')
+        end
+      end
+      true
+    end
+
+    test('remaps equals-form customer UI execution evidence without changing other arguments') do
+      with_temp_repo do |repo|
+        evidence_dir = File.join(repo, 'outputs', 'customer-ui')
+        evidence = File.join(evidence_dir, 'execution-evidence.json')
+        execution_repo = '/Users/stephansmac/.sanemaster/verify-workspaces/abcd/SaneApps/apps/SaneClick'
+        FileUtils.mkdir_p(evidence_dir)
+        File.write(evidence, "{\"status\":\"passed\"}\n")
+
+        subject.system_calls.clear
+        Dir.chdir(repo) do
+          args = ["--execution-evidence=#{evidence}", '--no-exit']
+          context = subject.send(:customer_ui_execution_evidence_route_context, 'customer-ui-sweep', args)
+          routed_args = subject.send(
+            :route_customer_ui_execution_evidence_to_mini,
+            'customer-ui-sweep',
+            args,
+            execution_repo,
+            context
+          )
+
+          expected_remote = File.join(execution_repo, 'outputs', 'customer-ui', 'execution-evidence.json')
+          assert_eq(routed_args, ["--execution-evidence=#{expected_remote}", '--no-exit'])
+        end
+      end
+      true
+    end
+
+    test('forwards safe customer UI execution evidence to the app runner') do
+      with_temp_repo do |repo|
+        FileUtils.mkdir_p(File.join(repo, 'scripts'))
+        FileUtils.mkdir_p(File.join(repo, 'outputs', 'customer-ui'))
+        evidence_path = File.join(repo, 'outputs', 'customer-ui', 'execution-evidence.json')
+        File.write(File.join(repo, '.saneprocess'), "name: SaneExample\n")
+        File.write(File.join(repo, 'scripts', 'customer_ui_action_sweep.rb'), "#!/usr/bin/env ruby\n")
+        File.write(evidence_path, "{\"status\":\"passed\"}\n")
+
+        calls = []
+        subject.define_singleton_method(:customer_ui_mini_host?) { true }
+        subject.define_singleton_method(:customer_ui_prepare_target_before_sweep) { |_app| [] }
+        subject.define_singleton_method(:customer_ui_cleanup_before_sweep) { |_app| [] }
+        subject.define_singleton_method(:customer_ui_refresh_runtime_evidence_before_sweep) { |_app| [] }
+        subject.define_singleton_method(:customer_ui_visual_precheck) { |_app| { ok: true, issues: [] } }
+        subject.define_singleton_method(:customer_ui_contract_report) do |config: nil, strict_visual: false|
+          { ok: true, issues: [], config: config, strict_visual: strict_visual }
+        end
+        subject.define_singleton_method(:customer_ui_run_command) do |*cmd|
+          calls << cmd
+          [cmd.join(' '), Struct.new(:success?).new(true)]
+        end
+
+        report = nil
+        Dir.chdir(repo) do
+          report = subject.customer_ui_sweep_report(
+            dry_run: false,
+            execution_evidence_path: 'outputs/customer-ui/execution-evidence.json'
+          )
+        end
+
+        assert(report[:ok], "expected execution-evidence sweep to pass: #{report.inspect}")
+        assert_eq(report[:execution_evidence_path], File.realpath(evidence_path))
+        assert_eq(
+          calls.last,
+          [
+            RbConfig.ruby,
+            'scripts/customer_ui_action_sweep.rb',
+            '--execution-evidence',
+            File.realpath(evidence_path)
+          ]
+        )
+      end
+      true
+    ensure
+      subject.singleton_class.remove_method(:customer_ui_mini_host?) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_prepare_target_before_sweep) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_cleanup_before_sweep) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_refresh_runtime_evidence_before_sweep) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_visual_precheck) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_contract_report) rescue nil
+      subject.singleton_class.remove_method(:customer_ui_run_command) rescue nil
+    end
+
+    test('rejects customer UI execution evidence outside its durable root and symlinks') do
+      with_temp_repo do |repo|
+        FileUtils.mkdir_p(File.join(repo, 'outputs', 'customer-ui'))
+        outside = File.join(repo, 'outside.json')
+        symlink = File.join(repo, 'outputs', 'customer-ui', 'linked.json')
+        File.write(outside, "{}\n")
+        File.symlink(outside, symlink)
+
+        outside_error = nil
+        symlink_error = nil
+        Dir.chdir(repo) do
+          begin
+            subject.send(:customer_ui_execution_evidence_path!, outside)
+          rescue ArgumentError => e
+            outside_error = e.message
+          end
+          begin
+            subject.send(:customer_ui_execution_evidence_path!, symlink)
+          rescue ArgumentError => e
+            symlink_error = e.message
+          end
+        end
+
+        assert_includes(outside_error, 'must be under outputs/customer-ui')
+        assert_includes(symlink_error, 'regular non-symlink file')
+      end
+      true
+    end
   end
 
   test_category('Workspace sync to mini') do
