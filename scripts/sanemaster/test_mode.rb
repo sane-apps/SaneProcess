@@ -9,6 +9,19 @@ module SaneMasterModules
 
     SANEAPPS_TEST_MODE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneVideo].freeze
     SIGNED_RELEASE_RUNTIME_APPS = %w[SaneClip].freeze
+    SIGNING_SECRET_ENV_KEYS = %w[
+      ASC_AUTH_KEY_ID
+      ASC_AUTH_ISSUER_ID
+      ASC_AUTH_KEY_PATH
+      ASC_KEY_ID
+      ASC_ISSUER_ID
+      ASC_KEY_PATH
+      SANEBAR_KEYCHAIN_PATH
+      SANEBAR_KEYCHAIN_PASSWORD
+      KEYCHAIN_PATH
+      KEYCHAIN_PASSWORD
+      KEYCHAIN_PASS
+    ].freeze
 
     def project_name
       @project_name ||= if respond_to?(:config_value, true)
@@ -294,7 +307,7 @@ module SaneMasterModules
       transient_app = transient_local_app_path
 
       if env_override && !env_override.strip.empty?
-        override_path = File.expand_path(env_override)
+        override_path = validated_canonical_app_override(env_override, app_name: app_name, transient_app: transient_app)
         if unsigned_fallback_active? && override_path.start_with?('/Applications/')
           puts "⚠️  Ignoring SANEMASTER_CANONICAL_APP_PATH=#{override_path} during unsigned fallback."
           puts "   Using a transient non-indexed staging path instead to avoid replacing a signed /Applications install."
@@ -310,6 +323,19 @@ module SaneMasterModules
       return system_app if File.exist?(system_app)
 
       system_app
+    end
+
+    def validated_canonical_app_override(raw_path, app_name:, transient_app:)
+      override_path = File.expand_path(raw_path.to_s)
+      approved_paths = [
+        File.join('/Applications', app_name),
+        File.expand_path(File.join('~/Applications', app_name)),
+        File.expand_path(transient_app)
+      ].uniq
+      return override_path if approved_paths.include?(override_path)
+
+      raise ArgumentError,
+            "Unsafe canonical app override: #{override_path}. Expected one of: #{approved_paths.join(', ')}"
     end
 
     def stage_to_canonical_local_app_path(source_app_path)
@@ -375,7 +401,7 @@ module SaneMasterModules
           if File.exist?(target_app_path)
             # Avoid creating backup app bundle identities under /Applications.
             # TCC can retain those paths and keep stale camera attribution alive.
-            FileUtils.rm_rf(target_app_path)
+            trash_local_path(target_app_path)
           end
 
           FileUtils.mv(temp_app_path, target_app_path)
@@ -603,7 +629,7 @@ module SaneMasterModules
     def codesign_authority_lines(app_path)
       return [] unless app_path && File.exist?(app_path)
 
-      output = `codesign -dv --verbose=2 "#{app_path}" 2>&1`
+      output, = Open3.capture2e('codesign', '-dv', '--verbose=2', app_path)
       output.lines.map(&:strip).grep(/\AAuthority=/)
     end
 
@@ -616,7 +642,7 @@ module SaneMasterModules
     end
 
     def ad_hoc_signed?(app_path)
-      output = `codesign -dv --verbose=4 "#{app_path}" 2>&1`
+      output, = Open3.capture2e('codesign', '-dv', '--verbose=4', app_path)
       output.include?('Signature=adhoc')
     end
 
@@ -741,7 +767,10 @@ module SaneMasterModules
       info_plist = File.join(app_path, 'Contents', 'Info.plist')
       return nil unless File.exist?(info_plist)
 
-      bundle_id = `"/usr/libexec/PlistBuddy" -c "Print :CFBundleIdentifier" "#{info_plist}" 2>/dev/null`.strip
+      bundle_id, status = Open3.capture2('/usr/libexec/PlistBuddy', '-c', 'Print :CFBundleIdentifier', info_plist)
+      return nil unless status.success?
+
+      bundle_id = bundle_id.strip
       return nil if bundle_id.empty?
 
       bundle_id
@@ -1119,7 +1148,8 @@ module SaneMasterModules
 
         key, raw_value = text.split('=', 2)
         key = key.to_s.strip
-        next if key.empty? || ENV.key?(key)
+        next unless SIGNING_SECRET_ENV_KEYS.include?(key)
+        next if ENV.key?(key)
 
         value = raw_value.to_s.strip
         if value.start_with?('"') && value.end_with?('"') && value.length >= 2

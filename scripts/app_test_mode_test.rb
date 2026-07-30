@@ -43,6 +43,16 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
       assert_includes(source, '/tmp/saneapps-staging.noindex/${app}.app')
       true
     end
+
+    test('sane_test validates canonical app overrides and avoids shell interpolation') do
+      source = File.read(SANE_TEST_PATH)
+
+      assert_includes(source, 'validated_canonical_app_override')
+      assert_includes(source, "Open3.capture2('/usr/libexec/PlistBuddy'")
+      assert(!source.include?('`\"/usr/libexec/PlistBuddy\" -c \"Print :CFBundleIdentifier\"'),
+             'bundle paths must not be interpolated into a shell command')
+      true
+    end
   end
 
   test_category('No-keychain fallback domain') do

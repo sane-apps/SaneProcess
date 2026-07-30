@@ -171,6 +171,58 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
       saved_fixed_home.nil? ? ENV.delete('CFFIXED_USER_HOME') : ENV['CFFIXED_USER_HOME'] = saved_fixed_home
     end
 
+    test('canonical app override rejects arbitrary directories') do
+      saved_override = ENV['SANEMASTER_CANONICAL_APP_PATH']
+
+      Dir.mktmpdir('sanemaster-unsafe-stage') do |dir|
+        File.write(File.join(dir, '.saneprocess'), "name: SaneHosts\nscheme: SaneHosts\n")
+        ENV['SANEMASTER_CANONICAL_APP_PATH'] = dir
+
+        error = Dir.chdir(dir) do
+          begin
+            TestModeHarness.new.send(:canonical_local_app_path)
+            nil
+          rescue ArgumentError => e
+            e
+          end
+        end
+
+        assert(error, 'arbitrary override must fail closed')
+        assert_includes(error.message, 'Unsafe canonical app override')
+      end
+
+      true
+    ensure
+      saved_override.nil? ? ENV.delete('SANEMASTER_CANONICAL_APP_PATH') : ENV['SANEMASTER_CANONICAL_APP_PATH'] = saved_override
+    end
+
+    test('signing secret loader imports only signing credentials') do
+      saved_home = ENV['HOME']
+      saved_signing = ENV.delete('ASC_AUTH_KEY_ID')
+      saved_unrelated = ENV.delete('LEMONSQUEEZY_API_KEY')
+
+      Dir.mktmpdir('sanemaster-signing-secrets') do |dir|
+        secrets_dir = File.join(dir, '.config', 'saneprocess')
+        FileUtils.mkdir_p(secrets_dir)
+        File.write(
+          File.join(secrets_dir, 'secrets.env'),
+          "ASC_AUTH_KEY_ID=TEST_KEY\nLEMONSQUEEZY_API_KEY=must_not_load\n"
+        )
+        ENV['HOME'] = dir
+
+        TestModeHarness.new.send(:load_saneprocess_secrets_env)
+
+        assert_eq(ENV['ASC_AUTH_KEY_ID'], 'TEST_KEY')
+        assert_eq(ENV['LEMONSQUEEZY_API_KEY'], nil)
+      end
+
+      true
+    ensure
+      ENV['HOME'] = saved_home
+      saved_signing.nil? ? ENV.delete('ASC_AUTH_KEY_ID') : ENV['ASC_AUTH_KEY_ID'] = saved_signing
+      saved_unrelated.nil? ? ENV.delete('LEMONSQUEEZY_API_KEY') : ENV['LEMONSQUEEZY_API_KEY'] = saved_unrelated
+    end
+
     test('no-keychain launch state is passed through LaunchServices open') do
       result = subject.send(
         :open_launch_env_pairs,

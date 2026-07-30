@@ -7,6 +7,19 @@ Repo: `~/SaneApps/infra/SaneProcess`
 This file is current state only. Historical detail belongs in git history,
 dated research, AgentMemory, and durable architecture decisions.
 
+## 2026-07-30 Launcher path and secret hardening
+
+- End-session security review found that canonical app path overrides were not
+  constrained before the staging replacement path, signature checks used
+  shell-interpolated paths, and Release test mode imported unrelated secrets
+  into the build environment.
+- Both shared launchers now allow only the exact system, user Applications, or
+  SaneApps transient path for the named app. Existing app replacement moves
+  the old bundle to Trash. Signature and bundle-ID reads use argument arrays,
+  and the secrets loader imports only signing and keychain variables.
+- Regression coverage rejects an arbitrary directory override and proves that
+  an unrelated commerce key is not imported into the build environment.
+
 ## 2026-07-30 Isolated runtime DerivedData discovery
 
 - The first SaneHosts live retry after provisioning parity built successfully,
