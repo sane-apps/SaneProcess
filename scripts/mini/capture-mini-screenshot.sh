@@ -12,20 +12,10 @@ MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS="${MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECON
 SKIP_CLEANUP=false
 use_local_runner=false
 
-case "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" in
-  ''|*[!0-9]*)
-    echo "MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS must be a positive integer" >&2
-    exit 2
-    ;;
-esac
-if [ "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" -le 0 ]; then
-  echo "MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS must be a positive integer" >&2
-  exit 2
-fi
-
-usage() {
-  cat <<'EOF' >&2
+print_usage() {
+  cat <<'EOF'
 Usage:
+  capture-mini-screenshot.sh -h|--help
   capture-mini-screenshot.sh desktop [--copy-to LOCAL_DIR] [take_screenshot.py args...]
   capture-mini-screenshot.sh [--skip-cleanup] [take_screenshot.py args...]
   capture-mini-screenshot.sh [take_screenshot.py args...]
@@ -56,10 +46,34 @@ Notes:
     the default cleanup would hide the very window you need to see. Then Read the
     PNG; a capture you don't open proves nothing.
 EOF
+}
+
+usage() {
+  print_usage >&2
   exit 2
 }
 
 [ $# -gt 0 ] || usage
+
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help)
+      print_usage
+      exit 0
+      ;;
+  esac
+done
+
+case "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" in
+  ''|*[!0-9]*)
+    echo "MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS must be a positive integer" >&2
+    exit 2
+    ;;
+esac
+if [ "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" -le 0 ]; then
+  echo "MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS must be a positive integer" >&2
+  exit 2
+fi
 
 local_copy_to=""
 capture_video=false

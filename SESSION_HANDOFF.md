@@ -7,6 +7,16 @@ Repo: `~/SaneApps/infra/SaneProcess`
 This file is current state only. Historical detail belongs in git history,
 dated research, AgentMemory, and durable architecture decisions.
 
+## 2026-07-30 Mini screenshot help fast path
+
+- `capture-mini-screenshot.sh -h` and `--help` now print local usage and exit
+  successfully before timeout validation, helper checks, host resolution,
+  SSH, rsync, the visual guard, or the Mini GUI runner.
+- The focused behavioral regression stubs SSH and rsync, supplies invalid
+  runtime configuration, runs both help flags, and requires zero side effects.
+  `mini_gui_run_test.rb` passes 33/33 locally; Mini proof is required before
+  merge.
+
 ## 2026-07-30 Mini GUI host visibility repair
 
 - A fresh SaneClick 1.3.3 app-only capture proved the screenshot bytes were

@@ -2,6 +2,8 @@
 # frozen_string_literal: true
 
 require_relative '../hooks/test/test_framework'
+require 'open3'
+require 'tmpdir'
 
 include TestFramework
 
@@ -149,6 +151,45 @@ exit(run_tests('Mini GUI Runner Tests') do
   end
 
   test_category('Screenshot wrapper safety') do
+    test('capture wrapper prints local help without Mini or GUI side effects') do
+      Dir.mktmpdir('capture-mini-help-test') do |stub_dir|
+        marker_path = File.join(stub_dir, 'side-effects.log')
+        %w[ssh rsync].each do |command|
+          stub_path = File.join(stub_dir, command)
+          File.write(
+            stub_path,
+            <<~SH
+              #!/bin/sh
+              printf '%s\n' "$0 $*" >> "$SANE_HELP_SIDE_EFFECT_MARKER"
+              exit 97
+            SH
+          )
+          File.chmod(0o755, stub_path)
+        end
+
+        %w[-h --help].each do |help_flag|
+          File.delete(marker_path) if File.exist?(marker_path)
+          stdout, stderr, status = Open3.capture3(
+            {
+              'PATH' => "#{stub_dir}:#{ENV.fetch('PATH')}",
+              'LOCAL_SCREENSHOT_HELPER_DIR' => File.join(stub_dir, 'missing-helper'),
+              'MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS' => 'invalid',
+              'SANE_HELP_SIDE_EFFECT_MARKER' => marker_path
+            },
+            '/bin/bash',
+            SCREENSHOT_WRAPPER_PATH,
+            help_flag
+          )
+
+          assert(status.success?, "#{help_flag} must exit successfully, got #{status.exitstatus}")
+          assert_includes(stdout, 'Usage:')
+          assert_eq(stderr, '', "#{help_flag} must not report an error")
+          assert(!File.exist?(marker_path), "#{help_flag} must not call ssh or rsync")
+        end
+      end
+      true
+    end
+
     test('capture wrapper resolves the Mini host before rsync and ssh') do
       assert_includes(screenshot_wrapper_source, 'resolve_mini_host()')
       assert_includes(screenshot_wrapper_source, 'MINI_HOST_FALLBACKS')
