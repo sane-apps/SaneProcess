@@ -1314,16 +1314,29 @@ class SaneTest
 
   def canonical_local_app_path
     env_override = ENV['SANETEST_CANONICAL_APP_PATH'] || ENV['SANEMASTER_CANONICAL_APP_PATH']
-    return File.expand_path(env_override) if env_override && !env_override.strip.empty?
-
     app_name = "#{@app_name}.app"
     system_app = File.join('/Applications', app_name)
     transient_app = File.expand_path(File.join(TRANSIENT_STAGE_ROOT, app_name))
+    if env_override && !env_override.strip.empty?
+      return validated_canonical_app_override(env_override, app_name: app_name, transient_app: transient_app)
+    end
 
     return system_app if system_app_dir_writable?
     return system_app if File.exist?(system_app)
 
     transient_app
+  end
+
+  def validated_canonical_app_override(raw_path, app_name:, transient_app:)
+    override_path = File.expand_path(raw_path.to_s)
+    approved_paths = [
+      File.join('/Applications', app_name),
+      File.expand_path(File.join('~/Applications', app_name)),
+      File.expand_path(transient_app)
+    ].uniq
+    return override_path if approved_paths.include?(override_path)
+
+    abort "   ❌ Unsafe canonical app override: #{override_path}. Expected one of: #{approved_paths.join(', ')}"
   end
 
   def local_app_copy_paths
@@ -1453,7 +1466,7 @@ class SaneTest
           # Avoid creating backup app bundle identities under /Applications.
           # TCC can retain those paths and keep stale camera attribution alive.
           unregister_launch_services_local(target_app_path)
-          FileUtils.rm_rf(target_app_path)
+          trash_local_path(target_app_path)
         end
         FileUtils.mv(temp_app_path, target_app_path)
         clear_gatekeeper_staging_attributes(target_app_path)
@@ -1475,7 +1488,10 @@ class SaneTest
     info_plist = File.join(app_path, 'Contents', 'Info.plist')
     return nil unless File.exist?(info_plist)
 
-    bundle_id = `"/usr/libexec/PlistBuddy" -c "Print :CFBundleIdentifier" "#{info_plist}" 2>/dev/null`.strip
+    bundle_id, status = Open3.capture2('/usr/libexec/PlistBuddy', '-c', 'Print :CFBundleIdentifier', info_plist)
+    return nil unless status.success?
+
+    bundle_id = bundle_id.strip
     return nil if bundle_id.empty?
 
     bundle_id
