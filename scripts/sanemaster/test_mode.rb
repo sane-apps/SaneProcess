@@ -849,8 +849,10 @@ module SaneMasterModules
       ENV['SANEMASTER_BUILD_CONFIG'] = build_config
 
       cmd = ['xcodebuild', *xcodebuild_container_args, '-scheme', project_scheme, '-configuration', build_config,
-             '-destination', 'platform=macOS', 'ENABLE_DEBUG_DYLIB=NO', *release_runtime_build_args(build_config), 'build']
+             '-destination', test_mode_build_destination(build_config), *release_runtime_provisioning_args(build_config),
+             'ENABLE_DEBUG_DYLIB=NO', *release_runtime_build_args(build_config), 'build']
       stdout, status = capture2e_without_reader_thread(*cmd, label: 'test_mode build', timeout: test_mode_build_timeout_seconds)
+      stdout = redact_test_mode_signing_auth(stdout)
 
       if should_retry_unsigned_debug?(build_config: build_config, output: stdout, status: status)
         fallback_config = build_config == 'Release-AppStore' ? build_config : 'Debug'
@@ -906,7 +908,7 @@ module SaneMasterModules
 
           next unless timeout && (Time.now - started_at) >= timeout
 
-          output << "\n#{label} timeout after #{timeout}s: #{cmd.join(' ')}\n"
+          output << "\n#{label} timeout after #{timeout}s: #{redact_test_mode_signing_auth(cmd.join(' '))}\n"
           terminate_process_group(wait_thr)
           status = command_failed_status
           drain_command_output(stdout_err, output, max_drain_seconds: 1.0)
@@ -975,6 +977,41 @@ module SaneMasterModules
       configured = saneprocess_value('release', 'test_mode_extra_args') ||
                    saneprocess_value('release', 'archive_extra_args')
       Array(configured).map(&:to_s).map(&:strip).reject(&:empty?)
+    end
+
+    def test_mode_build_destination(build_config)
+      build_config == 'Release' ? 'generic/platform=macOS' : 'platform=macOS'
+    end
+
+    def release_runtime_provisioning_args(build_config)
+      return [] unless build_config == 'Release'
+
+      args = ['-allowProvisioningUpdates']
+      key_path = ENV['ASC_AUTH_KEY_PATH'].to_s.strip
+      key_id = ENV['ASC_AUTH_KEY_ID'].to_s.strip
+      issuer_id = ENV['ASC_AUTH_ISSUER_ID'].to_s.strip
+      return args if key_path.empty? || key_id.empty? || issuer_id.empty?
+      key_path = File.expand_path(key_path)
+      return args unless File.file?(key_path)
+
+      args + [
+        '-authenticationKeyPath', key_path,
+        '-authenticationKeyID', key_id,
+        '-authenticationKeyIssuerID', issuer_id
+      ]
+    end
+
+    def redact_test_mode_signing_auth(output)
+      redacted = output.to_s.dup
+      %w[ASC_AUTH_KEY_PATH ASC_AUTH_KEY_ID ASC_AUTH_ISSUER_ID].each do |key|
+        value = ENV[key].to_s
+        redacted.gsub!(value, '[REDACTED]') unless value.empty?
+      end
+      redacted.gsub!(
+        /(-authenticationKey(?:Path|ID|IssuerID)\s+)(?:"[^"]*"|'[^']*'|\S+)/,
+        '\1[REDACTED]'
+      )
+      redacted
     end
 
     def prepare_signing_session_for_build(build_config)

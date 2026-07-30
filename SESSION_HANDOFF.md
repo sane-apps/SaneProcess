@@ -7,6 +7,29 @@ Repo: `~/SaneApps/infra/SaneProcess`
 This file is current state only. Historical detail belongs in git history,
 dated research, AgentMemory, and durable architecture decisions.
 
+## 2026-07-30 Release test-mode provisioning parity
+
+- SaneHosts `test_mode --release` failed twice because the runtime build path
+  asked Xcode for the named Developer ID profile without the provisioning
+  update/authentication arguments used by the successful release archive.
+  The cached profile is valid and byte-identical to the profile embedded in
+  `/Applications/SaneHosts.app`; profile regeneration is not the fix.
+- Release test mode now uses `generic/platform=macOS`,
+  `-allowProvisioningUpdates`, and the complete ASC authentication argument
+  set when all three credential values are available. Debug behavior is
+  unchanged: it keeps `platform=macOS` and receives no provisioning flags.
+  Authentication values are redacted from captured or timeout output.
+- Focused proof passed locally and on the Mini: `test_mode_test.rb` 27/27.
+  Canonical Mini `SaneMaster.rb verify --timeout 900` stopped before tests on
+  the two existing unregistered test files already recorded below:
+  `scripts/automation/app_review_watch_test.rb` and
+  `scripts/hooks/gui_feedback_test.rb`. Workflow receipt
+  `f1aed7d97091d7b167c371abecb8d796`; cleanup receipt
+  `98ab18300869304b5d02f5172b598a45`.
+- No app was launched. The next live SaneHosts retry belongs to the parent
+  workflow after review and merge. The Mini Terminal visibility fixes below
+  remain unchanged.
+
 ## 2026-07-30 Mini screenshot help fast path
 
 - `capture-mini-screenshot.sh -h` and `--help` now print local usage and exit

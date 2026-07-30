@@ -325,6 +325,43 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
       true
     end
 
+    test('release test_mode uses generic destination and authenticated provisioning updates') do
+      saved = %w[ASC_AUTH_KEY_PATH ASC_AUTH_KEY_ID ASC_AUTH_ISSUER_ID].to_h { |key| [key, ENV[key]] }
+
+      Dir.mktmpdir('sanemaster-test-mode-auth') do |dir|
+        key_path = File.join(dir, 'AuthKey_TEST.p8')
+        File.write(key_path, 'test fixture')
+        ENV['ASC_AUTH_KEY_PATH'] = key_path
+        ENV['ASC_AUTH_KEY_ID'] = 'TEST_KEY_ID'
+        ENV['ASC_AUTH_ISSUER_ID'] = 'TEST_ISSUER_ID'
+
+        args = subject.send(:release_runtime_provisioning_args, 'Release')
+
+        assert_eq(subject.send(:test_mode_build_destination, 'Release'), 'generic/platform=macOS')
+        assert_eq(
+          args,
+          [
+            '-allowProvisioningUpdates',
+            '-authenticationKeyPath', key_path,
+            '-authenticationKeyID', 'TEST_KEY_ID',
+            '-authenticationKeyIssuerID', 'TEST_ISSUER_ID'
+          ]
+        )
+
+        rendered = subject.send(:redact_test_mode_signing_auth, args.join(' '))
+        assert(!rendered.include?(key_path), 'output must redact the authentication key path')
+        assert(!rendered.include?('TEST_KEY_ID'), 'output must redact the authentication key id')
+        assert(!rendered.include?('TEST_ISSUER_ID'), 'output must redact the authentication issuer id')
+        assert_includes(rendered, '-authenticationKeyPath [REDACTED]')
+      end
+
+      true
+    ensure
+      saved&.each do |key, value|
+        value.nil? ? ENV.delete(key) : ENV[key] = value
+      end
+    end
+
     test('debug test_mode build does not inherit release signing args') do
       Dir.mktmpdir('sanemaster-test-mode-debug-signing') do |dir|
         File.write(
@@ -340,6 +377,8 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
           harness = TestModeHarness.new
 
           assert(harness.send(:release_runtime_build_args, 'Debug').empty?)
+          assert(harness.send(:release_runtime_provisioning_args, 'Debug').empty?)
+          assert_eq(harness.send(:test_mode_build_destination, 'Debug'), 'platform=macOS')
         end
       end
 
