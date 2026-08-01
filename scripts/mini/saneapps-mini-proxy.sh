@@ -27,12 +27,22 @@ if [ -z "${TS}" ] && [ -x /opt/homebrew/bin/tailscale ]; then
   TS=/opt/homebrew/bin/tailscale
 fi
 if [ -n "${TS}" ]; then
+  # Do NOT pass --socket here when TS is ~/.local/bin/tailscale — that wrapper
+  # already selects the userspace daemon. Injecting --socket made
+  # `ping -c 1 --timeout=3s` fail under ProxyCommand while a bare
+  # `tailscale ping` succeeded (2026-07-31). Only the native Homebrew binary
+  # needs an explicit --socket for the userspace daemon.
   TS_ARGS=()
-  USERSPACE_SOCK="${SANE_TAILSCALE_SOCKET:-$HOME/Library/Application Support/tailscaled-userspace/tailscaled.sock}"
-  if [ -S "$USERSPACE_SOCK" ]; then
-    TS_ARGS=(--socket="$USERSPACE_SOCK")
-  fi
-  if "$TS" ${TS_ARGS[@]+"${TS_ARGS[@]}"} ping -c 1 --timeout=3s "$MINI_TS_HOST" >/dev/null 2>&1; then
+  case "$TS" in
+    */.local/bin/tailscale) ;;
+    *)
+      USERSPACE_SOCK="${SANE_TAILSCALE_SOCKET:-$HOME/Library/Application Support/tailscaled-userspace/tailscaled.sock}"
+      if [ -S "$USERSPACE_SOCK" ]; then
+        TS_ARGS=(--socket="$USERSPACE_SOCK")
+      fi
+      ;;
+  esac
+  if "$TS" ${TS_ARGS[@]+"${TS_ARGS[@]}"} ping -c 1 --timeout=5s "$MINI_TS_HOST" >/dev/null 2>&1; then
     exec "$TS" ${TS_ARGS[@]+"${TS_ARGS[@]}"} nc "$MINI_TS_HOST" "$PORT"
   fi
 fi
