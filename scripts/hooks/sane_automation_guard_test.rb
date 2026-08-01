@@ -18,7 +18,7 @@ def valid_cron(overrides = {})
   {
     'version' => 1, 'id' => 'test-cron', 'kind' => 'cron', 'name' => 'Test Cron',
     'prompt' => 'Say "hi" — with\nnewline', 'status' => 'ACTIVE',
-    'rrule' => 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0', 'model' => 'gpt-5.5',
+    'rrule' => 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0', 'model' => 'default',
     'reasoning_effort' => 'medium', 'execution_environment' => 'local',
     'cwds' => ['/Users/stephansmac/SaneApps/infra/SaneProcess']
   }.merge(overrides)
@@ -92,6 +92,7 @@ test_category('Model gate') do
   # framework note: `expected: false` is swallowed by `tc[:expected] || tc[:expect]`,
   # so truthy sentinels are used instead of booleans
   parameterized_test('gpt version policy', [
+    { input: 'default', expected: 'ok' },
     { input: 'gpt-5.5', expected: 'ok' }, { input: 'gpt-5.5-codex', expected: 'ok' },
     { input: 'gpt-5.10', expected: 'ok' }, { input: 'gpt-6', expected: 'ok' },
     { input: 'gpt-10.2', expected: 'ok' },
@@ -110,7 +111,7 @@ test_category('Automation validation') do
   end
 
   parameterized_test('cron policy violations', [
-    { input: { 'model' => 'gpt-4.1' }, expected: /gpt-5.5 or newer/ },
+    { input: { 'model' => 'gpt-5.6-terra' }, expected: /must be `default`/ },
     { input: { 'reasoning_effort' => 'low' }, expected: /reasoning_effort/ },
     { input: { 'cwds' => [] }, expected: /non-empty `cwds`/ },
     { input: { 'cwds' => ['relative/path'] }, expected: /absolute path/ },
@@ -236,7 +237,7 @@ test_category('Store validation + installer') do
       good = File.join(store, 'good-cron'); FileUtils.mkdir_p(good)
       File.write(File.join(good, 'automation.toml'),
                  "id = \"good-cron\"\nkind = \"cron\"\nname = \"G\"\nprompt = \"p\"\nstatus = \"PAUSED\"\n" \
-                 "rrule = \"FREQ=DAILY\"\nmodel = \"gpt-5.5\"\nreasoning_effort = \"high\"\ncwds = [\"/tmp\"]\n")
+                 "rrule = \"FREQ=DAILY\"\nmodel = \"default\"\nreasoning_effort = \"high\"\ncwds = [\"/tmp\"]\n")
       bad = File.join(store, 'bad-cron'); FileUtils.mkdir_p(bad)
       File.write(File.join(bad, 'automation.toml'),
                  "id = \"bad-cron\"\nkind = \"cron\"\nname = \"B\"\nprompt = \"p\"\nstatus = \"ACTIVE\"\n" \
@@ -254,7 +255,7 @@ test_category('Store validation + installer') do
       good = File.join(store, 'ok'); FileUtils.mkdir_p(good)
       File.write(File.join(good, 'automation.toml'),
                  "id = \"ok\"\nkind = \"cron\"\nname = \"G\"\nprompt = \"p\"\nstatus = \"PAUSED\"\n" \
-                 "rrule = \"FREQ=DAILY\"\nmodel = \"gpt-6\"\nreasoning_effort = \"medium\"\ncwds = [\"/tmp\"]\n")
+                 "rrule = \"FREQ=DAILY\"\nmodel = \"default\"\nreasoning_effort = \"medium\"\ncwds = [\"/tmp\"]\n")
       _o, _e, s = Open3.capture3('ruby', GUARD, '--validate', store)
       assert_eq(s.exitstatus, 0)
       File.write(File.join(good, 'automation.toml'), "id = \"ok\"\nkind = \"cron\"\n")

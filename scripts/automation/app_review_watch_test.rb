@@ -326,8 +326,16 @@ exit(run_tests('App Review Watch Tests') do
       state = store.load
 
       assert_eq(result['pending_count'], 0)
+      assert_eq(result['delivered_count'], 1)
+      assert_eq(result.dig('delivered', 0, 'apps'), ['SaneLot'])
+      assert_eq(result.dig('delivered', 0, 'changes', 0, 'state'), 'REJECTED')
       assert_eq(state.dig('delivered_entities', '1:review_submission:s1', 'state'), 'REJECTED')
       assert_eq(state['delivery_receipts'].length, 1)
+
+      unchanged = SaneAppReviewWatch::Engine.new(store: store, sender: WatchSender.new).run(
+        '1:review_submission:s1' => watch_entity(state: 'REJECTED')
+      )
+      assert_eq(unchanged['delivered_count'], 0)
       true
     end
   end

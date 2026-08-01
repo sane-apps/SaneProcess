@@ -9,8 +9,9 @@
 #   ruby codex-automation-mini.rb validate
 #
 # Policy (enforced via scripts/hooks/sane_automation_guard.rb): cron specs need
-# id/kind/name/prompt/status/rrule + model gpt-5.5+ with reasoning_effort
-# medium+ and Mini-local cwds; heartbeats need target_thread_id. Installs are
+# id/kind/name/prompt/status/rrule + model `default` with reasoning_effort
+# medium+ and Mini-local cwds so model upgrades flow through automatically;
+# heartbeats need target_thread_id. Installs are
 # refused on non-Mini hosts — run from the Air via `ssh mini '...'`.
 
 require 'json'

@@ -343,9 +343,9 @@ module SaneAppReviewWatch
         state['observed_entities'] = current
         state['last_checked_at'] = @now.call.iso8601
         @store.save(state)
-        deliver_pending(state)
+        delivered = deliver_pending(state)
         @store.save(state)
-        result(state, diagnostics)
+        result(state, diagnostics, delivered)
       end
     end
 
@@ -413,6 +413,7 @@ module SaneAppReviewWatch
     end
 
     def deliver_pending(state)
+      delivered = []
       state.fetch('pending_alerts').values.sort_by { |event| event.fetch('first_seen_at') }.each do |event|
         event['attempt_count'] = event['attempt_count'].to_i + 1
         event['last_attempt_at'] = @now.call.iso8601
@@ -423,6 +424,14 @@ module SaneAppReviewWatch
             state.fetch('delivered_entities')[change.fetch('entity_key')] = change.reject { |key, _| key == 'previous_state' }
           end
           state.fetch('delivery_receipts')[event.fetch('id')] = receipt
+          delivered << {
+            'id' => event.fetch('id'),
+            'delivered_at' => receipt.fetch('delivered_at'),
+            'apps' => event.fetch('changes').map { |change| change.fetch('app_name') }.uniq.sort,
+            'changes' => event.fetch('changes').map do |change|
+              change.slice('app_name', 'entity_type', 'previous_state', 'state', 'version', 'platform')
+            end
+          }
           state.fetch('pending_alerts').delete(event.fetch('id'))
           @store.save(state)
         rescue SaneInternalReport::DeliveryError, StandardError => e
@@ -430,9 +439,10 @@ module SaneAppReviewWatch
           @store.save(state)
         end
       end
+      delivered
     end
 
-    def result(state, diagnostics)
+    def result(state, diagnostics, delivered)
       pending = state.fetch('pending_alerts').values
       status =
         if diagnostics.any? && pending.any?
@@ -447,6 +457,8 @@ module SaneAppReviewWatch
       {
         'status' => status,
         'last_checked_at' => state['last_checked_at'],
+        'delivered_count' => delivered.length,
+        'delivered' => delivered,
         'pending_count' => pending.length,
         'diagnostics' => diagnostics,
         'pending' => pending.map do |event|

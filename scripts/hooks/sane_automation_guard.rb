@@ -3,7 +3,8 @@
 
 # Validates the Codex automation store (~/.codex/automations/<id>/automation.toml)
 # against the SaneApps automation policy in ~/AGENTS.md:
-#   - cron automations must use gpt-5.5 or newer with reasoning_effort medium+
+#   - cron automations must use the active client's `default` model with
+#     reasoning_effort medium+ so model upgrades flow through automatically
 #   - cron cwds must be non-empty absolute Mini-local paths
 #   - heartbeats must target an existing Mini-local thread (presence checked)
 #   - on any non-Mini host (e.g. the Air), every automation must stay PAUSED
@@ -24,6 +25,7 @@ module SaneAutomationGuard
                                  .split(File::PATH_SEPARATOR).map { |path| File.expand_path(path) }.freeze
   REQUIRED_FIELDS = %w[id kind name prompt status rrule].freeze
   EFFORT_OK = %w[medium high xhigh max ultra].freeze
+  DEFAULT_MODEL = 'default'
   MIN_GPT_VERSION = [5, 5].freeze
   MIN_GPT_LABEL = MIN_GPT_VERSION.join('.').freeze
   CANONICAL_UUID = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/.freeze
@@ -92,7 +94,7 @@ module SaneAutomationGuard
       end
 
       unless model_effort_compliant?(row['model'], row['reasoning_effort'])
-        violations << "heartbeat thread row model/reasoning must be gpt-#{MIN_GPT_LABEL}+ with #{EFFORT_OK.join('/')} effort"
+        violations << "heartbeat thread row model/reasoning must resolve to the current default or gpt-#{MIN_GPT_LABEL}+ with #{EFFORT_OK.join('/')} effort"
       end
       violations
     rescue StandardError => e
@@ -197,6 +199,8 @@ module SaneAutomationGuard
   end
 
   def gpt_version_ok?(model)
+    return true if model.to_s == DEFAULT_MODEL
+
     m = model.to_s.match(/\Agpt-(\d+)(?:\.(\d+))?(?:-|$)/)
     return false unless m
 
@@ -216,7 +220,9 @@ module SaneAutomationGuard
 
     case auto['kind']
     when 'cron'
-      v << "cron model `#{auto['model']}` must be gpt-#{MIN_GPT_LABEL} or newer" unless gpt_version_ok?(auto['model'])
+      unless auto['model'].to_s == DEFAULT_MODEL
+        v << "cron model `#{auto['model']}` must be `default` so the latest supported model is selected automatically"
+      end
       unless EFFORT_OK.include?(auto['reasoning_effort'].to_s)
         v << "cron reasoning_effort `#{auto['reasoning_effort']}` must be one of #{EFFORT_OK.join('/')}"
       end
