@@ -3837,11 +3837,41 @@ upload_github_release_asset() {
     if gh release upload "${tag}" "${FINAL_ZIP}" --repo "${GITHUB_REPO}" --clobber >/dev/null 2>&1; then
         log_info "Uploaded GitHub release asset: ${tag}/${asset_name}"
     else
-        if [ "${strict}" = true ]; then
-            log_error "Failed to upload required GitHub release asset ${tag}/${asset_name}."
-            return 1
+        # gh may send Content-Type: application/zip and get HTTP 400 from uploads.github.com.
+        # Fall back to the documented octet-stream upload using GITHUB_TOKEN.
+        local release_id=""
+        release_id="$(gh api "repos/${GITHUB_REPO}/releases/tags/${tag}" --jq '.id' 2>/dev/null || true)"
+        if [ -z "${release_id}" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
+            release_id="$(curl -fsS \
+                -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${tag}" \
+                | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null || true)"
         fi
-        log_warn "Failed to upload GitHub release asset ${tag}/${asset_name} (non-fatal)."
+        if [ -n "${release_id}" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
+            if curl -fsS -X POST \
+                -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                -H "Content-Type: application/octet-stream" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                --data-binary @"${FINAL_ZIP}" \
+                "https://uploads.github.com/repos/${GITHUB_REPO}/releases/${release_id}/assets?name=${asset_name}" \
+                >/dev/null; then
+                log_info "Uploaded GitHub release asset via API fallback: ${tag}/${asset_name}"
+            else
+                if [ "${strict}" = true ]; then
+                    log_error "Failed to upload required GitHub release asset ${tag}/${asset_name}."
+                    return 1
+                fi
+                log_warn "Failed to upload GitHub release asset ${tag}/${asset_name} (non-fatal)."
+            fi
+        else
+            if [ "${strict}" = true ]; then
+                log_error "Failed to upload required GitHub release asset ${tag}/${asset_name}."
+                return 1
+            fi
+            log_warn "Failed to upload GitHub release asset ${tag}/${asset_name} (non-fatal)."
+        fi
     fi
 
     if ! gh release view "${tag}" --repo "${GITHUB_REPO}" --json assets --jq '.assets[].name' 2>/dev/null | grep -Fxq "${asset_name}"; then
