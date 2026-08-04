@@ -48,6 +48,7 @@ emit('WORKSPACE', fetch_config(config, 'build', 'workspace'))
 emit('XCODEPROJ', fetch_config(config, 'build', 'xcodeproj') || fetch_config(config, 'project'))
 
 # Release settings
+emit('RELEASE_ENABLED', fetch_config(config, 'release', 'enabled'))
 emit('DIST_HOST', fetch_config(config, 'release', 'dist_host'))
 emit('SITE_HOST', fetch_config(config, 'release', 'site_host') || fetch_config(config, 'website_domain'))
 emit('R2_BUCKET', fetch_config(config, 'release', 'r2_bucket'))

@@ -6655,6 +6655,21 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       true
     end
 
+    test('release.sh fails closed on release.enabled false and avoids Sparkle URLs when Sparkle is off') do
+      release_script = File.read(File.expand_path('../release.sh', __dir__))
+      env_loader = File.read(File.expand_path('../saneprocess_env.rb', __dir__))
+
+      assert_includes(env_loader, "emit('RELEASE_ENABLED', fetch_config(config, 'release', 'enabled'))")
+      assert_includes(release_script, 'RELEASE_ENABLED_NORMALIZED')
+      assert_includes(release_script, 'exit 78')
+      assert_includes(release_script, 'GitHub-only release allowed')
+      create_release_body = release_script[/create_github_release\(\) \{.*?^}/m]
+      assert(!create_release_body.nil?, 'expected create_github_release body in release.sh')
+      assert_includes(create_release_body, 'releases/tag/${tag}')
+      assert_includes(create_release_body, 'sparkle_on')
+      true
+    end
+
     test('release.sh bounds GitHub API fallback and keeps bearer tokens out of curl argv') do
       release_script = File.read(File.expand_path('../release.sh', __dir__))
       release_module = File.read(File.expand_path('release.rb', __dir__))
