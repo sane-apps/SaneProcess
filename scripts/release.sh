@@ -5923,9 +5923,13 @@ APP_PATH="${EXPORT_PATH}/${APP_NAME}.app"
 fix_and_verify_zipped_apps_in_app "${APP_PATH}"
 sanity_check_app_for_notarization "${APP_PATH}"
 
-# Verify code signature
+# Verify code signature (explicit status check: ERR trap may disable set -e)
 log_info "Verifying code signature..."
-codesign --verify --deep --strict "${APP_PATH}"
+if ! codesign --verify --deep --strict "${APP_PATH}"; then
+    log_error "Code signature verification failed for ${APP_PATH}"
+    track_gate_result "Code signature verify" "failure" "codesign --verify --deep --strict failed"
+    exit 1
+fi
 log_info "Code signature verified!"
 
 # Verify Sparkle configuration
@@ -6192,24 +6196,78 @@ if [ "${SKIP_NOTARIZE}" = false ]; then
     CURRENT_GATE="Notarization submit+staple"
     RELEASE_ERR_GATE_RECORDED=""
 
+    # notarytool --wait exits 0 even when status is Invalid; parse JSON.
+    NOTARY_JSON="${BUILD_DIR}/${APP_NAME}-notary-submit.json"
+    rm -f "${NOTARY_JSON}"
     if [ "${NOTARY_AUTH_MODE}" = "api-key" ]; then
         xcrun notarytool submit "${NOTARIZE_ZIP}" \
             --key "${NOTARY_API_KEY_PATH}" \
             --key-id "${NOTARY_API_KEY_ID}" \
             --issuer "${NOTARY_API_ISSUER_ID}" \
-            --wait
+            --wait \
+            --output-format json > "${NOTARY_JSON}"
     else
         xcrun notarytool submit "${NOTARIZE_ZIP}" \
             --keychain-profile "${NOTARY_PROFILE}" \
-            --wait
+            --wait \
+            --output-format json > "${NOTARY_JSON}"
+    fi
+
+    NOTARY_STATUS="$(python3 - "${NOTARY_JSON}" <<'PY'
+import json, sys
+path = sys.argv[1]
+try:
+    data = json.load(open(path, encoding="utf-8"))
+except Exception as exc:
+    print(f"unreadable:{exc}")
+    raise SystemExit(0)
+print(str(data.get("status") or "").strip())
+PY
+)"
+    if [ "${NOTARY_STATUS}" != "Accepted" ]; then
+        log_error "Notarization did not accept the archive (status=${NOTARY_STATUS:-unknown})."
+        log_error "Receipt: ${NOTARY_JSON}"
+        if [ -f "${NOTARY_JSON}" ]; then
+            NOTARY_ID="$(python3 - "${NOTARY_JSON}" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+print(str(data.get("id") or data.get("submissionId") or "").strip())
+PY
+)"
+            if [ -n "${NOTARY_ID}" ]; then
+                log_error "Fetching notary log for ${NOTARY_ID}..."
+                if [ "${NOTARY_AUTH_MODE}" = "api-key" ]; then
+                    xcrun notarytool log "${NOTARY_ID}" \
+                        --key "${NOTARY_API_KEY_PATH}" \
+                        --key-id "${NOTARY_API_KEY_ID}" \
+                        --issuer "${NOTARY_API_ISSUER_ID}" || true
+                else
+                    xcrun notarytool log "${NOTARY_ID}" \
+                        --keychain-profile "${NOTARY_PROFILE}" || true
+                fi
+            fi
+        fi
+        track_gate_result "Notarization submit+staple" "failure" "notary status ${NOTARY_STATUS:-unknown}"
+        exit 1
     fi
 
     log_info "Stapling notarization ticket to app..."
-    xcrun stapler staple "${APP_PATH}"
+    if ! xcrun stapler staple "${APP_PATH}"; then
+        log_error "stapler staple failed for ${APP_PATH}"
+        track_gate_result "Notarization submit+staple" "failure" "stapler staple failed"
+        exit 1
+    fi
 
     if [ "${VERIFY_STAPLE}" = true ]; then
         log_info "Verifying staple..."
-        xcrun stapler validate "${APP_PATH}"
+        if ! xcrun stapler validate "${APP_PATH}"; then
+            log_error "stapler validate failed for ${APP_PATH}"
+            track_gate_result "Notarization submit+staple" "failure" "stapler validate failed"
+            exit 1
+        fi
     fi
 
     log_info "Notarization complete!"
