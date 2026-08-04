@@ -3644,7 +3644,20 @@ create_github_release() {
     local tag="v${VERSION}"
     local title="${APP_NAME} ${VERSION}"
     local notes_file="${BUILD_DIR}/github-release-notes-${VERSION}.md"
-    cat > "${notes_file}" <<EOF
+    local sparkle_on
+    sparkle_on="$(printf '%s' "${USE_SPARKLE:-true}" | tr '[:upper:]' '[:lower:]')"
+    if [ "${sparkle_on}" = "false" ] || [ "${sparkle_on}" = "0" ] || [ "${sparkle_on}" = "no" ]; then
+        cat > "${notes_file}" <<EOF
+## ${APP_NAME} ${VERSION}
+
+${RELEASE_NOTES:-Release ${VERSION}}
+
+Distribution:
+- GitHub Release: https://github.com/${GITHUB_REPO}/releases/tag/${tag}
+- Download the notarized DMG/ZIP attached to this release
+EOF
+    else
+        cat > "${notes_file}" <<EOF
 ## ${APP_NAME} ${VERSION}
 
 ${RELEASE_NOTES:-Release ${VERSION}}
@@ -3653,6 +3666,7 @@ Distribution:
 - Sparkle appcast: https://${SITE_HOST}/appcast.xml
 - Direct download: https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip
 EOF
+    fi
 
     local target_commit
     target_commit=$(git -C "${PROJECT_ROOT}" rev-parse HEAD 2>/dev/null || echo "")
@@ -5229,6 +5243,24 @@ fi
 
 hydrate_headless_release_env
 
+# Fail closed when .saneprocess sets release.enabled: false.
+# Allow help/preflight-only so projects can diagnose without publishing.
+RELEASE_ENABLED_NORMALIZED="$(printf '%s' "${RELEASE_ENABLED:-}" | tr '[:upper:]' '[:lower:]')"
+if [ "${RELEASE_ENABLED_NORMALIZED}" = "false" ] || [ "${RELEASE_ENABLED_NORMALIZED}" = "0" ] || [ "${RELEASE_ENABLED_NORMALIZED}" = "no" ]; then
+    if [ "${PREFLIGHT_ONLY}" = true ]; then
+        log_warn "release.enabled is false in .saneprocess — preflight-only continues; publish paths remain blocked."
+    elif [ "${FULL_RELEASE}" = true ] || [ "${RUN_DEPLOY}" = true ] || [ "${RUN_GH_RELEASE}" = true ] || [ "${WEBSITE_ONLY}" = true ] || [ "${POST_RELEASE_CHECKS_ONLY}" = true ]; then
+        log_error "Release is disabled by .saneprocess (release.enabled: false)."
+        log_error "Set release.enabled: true before --full / --deploy / --github-release."
+        exit 78
+    elif [ "${SKIP_BUILD}" != true ]; then
+        # Default archive/sign/notary path (no explicit publish flag) also blocked.
+        log_error "Release is disabled by .saneprocess (release.enabled: false)."
+        log_error "Set release.enabled: true, or pass --preflight-only."
+        exit 78
+    fi
+fi
+
 if [ "${EXPLICIT_APPSTORE_PLATFORMS_SET}" -eq 1 ]; then
     unset APPSTORE_PLATFORMS
     APPSTORE_PLATFORMS=("${EXPLICIT_APPSTORE_PLATFORMS}")
@@ -5301,9 +5333,19 @@ for approved_app in "${PUBLIC_CHANNEL_APPS[@]}"; do
 done
 
 if [ "${PUBLIC_CHANNEL_APPROVED}" != true ]; then
-    if [ "${RUN_GH_RELEASE}" = true ]; then
+    # Explicit --github-release with a configured repo is allowed for GitHub-only
+    # lanes (Sparkle off). Auto-enable-on-deploy and Homebrew stay public-channel-only.
+    sparkle_flag="$(printf '%s' "${USE_SPARKLE:-true}" | tr '[:upper:]' '[:lower:]')"
+    github_only=false
+    if { [ "${sparkle_flag}" = "false" ] || [ "${sparkle_flag}" = "0" ] || [ "${sparkle_flag}" = "no" ]; } \
+        && [ -n "${GITHUB_REPO:-}" ]; then
+        github_only=true
+    fi
+    if [ "${RUN_GH_RELEASE}" = true ] && [ "${github_only}" != true ]; then
         log_warn "GitHub release metadata disabled: ${APP_NAME} is not in PUBLIC_CHANNEL_ALLOWLIST (${PUBLIC_CHANNEL_ALLOWLIST})"
         RUN_GH_RELEASE=false
+    elif [ "${RUN_GH_RELEASE}" = true ] && [ "${github_only}" = true ]; then
+        log_info "GitHub-only release allowed for ${APP_NAME} (Sparkle off, repo ${GITHUB_REPO})."
     fi
     if [ -n "${HOMEBREW_TAP_REPO}" ]; then
         log_warn "Homebrew cask publish disabled: ${APP_NAME} is not in PUBLIC_CHANNEL_ALLOWLIST (${PUBLIC_CHANNEL_ALLOWLIST})"
