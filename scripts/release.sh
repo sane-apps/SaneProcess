@@ -3783,7 +3783,9 @@ EOF
 
 upload_github_release_asset() {
     local strict="${STRICT_PUBLIC_CHANNEL_SYNC}"
-    if [ "${PUBLIC_CHANNEL_APPROVED}" != true ]; then
+    # GitHub-only lanes (Sparkle off + GITHUB_REPO) may upload assets without
+    # being on the Sparkle/Homebrew PUBLIC_CHANNEL_ALLOWLIST.
+    if [ "${PUBLIC_CHANNEL_APPROVED}" != true ] && [ "${GITHUB_ONLY_LANE:-false}" != true ]; then
         if [ "${strict}" = true ]; then
             log_error "GitHub binary upload is required but ${APP_NAME} is not in PUBLIC_CHANNEL_ALLOWLIST."
             return 1
@@ -5323,6 +5325,7 @@ fi
 enforce_reconcile_policy
 
 PUBLIC_CHANNEL_APPROVED=false
+GITHUB_ONLY_LANE=false
 IFS=',' read -r -a PUBLIC_CHANNEL_APPS <<< "${PUBLIC_CHANNEL_ALLOWLIST}"
 for approved_app in "${PUBLIC_CHANNEL_APPS[@]}"; do
     approved_app="$(echo "${approved_app}" | tr -d '[:space:]')"
@@ -5336,15 +5339,14 @@ if [ "${PUBLIC_CHANNEL_APPROVED}" != true ]; then
     # Explicit --github-release with a configured repo is allowed for GitHub-only
     # lanes (Sparkle off). Auto-enable-on-deploy and Homebrew stay public-channel-only.
     sparkle_flag="$(printf '%s' "${USE_SPARKLE:-true}" | tr '[:upper:]' '[:lower:]')"
-    github_only=false
     if { [ "${sparkle_flag}" = "false" ] || [ "${sparkle_flag}" = "0" ] || [ "${sparkle_flag}" = "no" ]; } \
         && [ -n "${GITHUB_REPO:-}" ]; then
-        github_only=true
+        GITHUB_ONLY_LANE=true
     fi
-    if [ "${RUN_GH_RELEASE}" = true ] && [ "${github_only}" != true ]; then
+    if [ "${RUN_GH_RELEASE}" = true ] && [ "${GITHUB_ONLY_LANE}" != true ]; then
         log_warn "GitHub release metadata disabled: ${APP_NAME} is not in PUBLIC_CHANNEL_ALLOWLIST (${PUBLIC_CHANNEL_ALLOWLIST})"
         RUN_GH_RELEASE=false
-    elif [ "${RUN_GH_RELEASE}" = true ] && [ "${github_only}" = true ]; then
+    elif [ "${RUN_GH_RELEASE}" = true ] && [ "${GITHUB_ONLY_LANE}" = true ]; then
         log_info "GitHub-only release allowed for ${APP_NAME} (Sparkle off, repo ${GITHUB_REPO})."
     fi
     if [ -n "${HOMEBREW_TAP_REPO}" ]; then
