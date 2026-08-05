@@ -5303,6 +5303,8 @@ APP_NAME="${APP_NAME:-$(basename "${PROJECT_ROOT}")}"
 if [ "${APP_NAME}" = "saneapps.com" ]; then
     APP_NAME="SaneApps"
 fi
+# Customer-facing .app bundle name may differ from repo/scheme name (e.g. ZecBooks vs SaneBooks).
+PRODUCT_APP_NAME="${PRODUCT_APP_NAME:-${APP_NAME}}"
 SCHEME="${SCHEME:-${APP_NAME}}"
 LOWER_APP_NAME="$(echo "${APP_NAME}" | tr '[:upper:]' '[:lower:]')"
 BUNDLE_ID="${BUNDLE_ID:-com.${LOWER_APP_NAME}.app}"
@@ -5884,11 +5886,17 @@ if [ "${SKIP_BUILD}" = false ]; then
     fi
 
     # Verify bundle ID inside archive
-    archive_app_path="${ARCHIVE_PATH}/Products/Applications/${APP_NAME}.app"
+    archive_app_path="${ARCHIVE_PATH}/Products/Applications/${PRODUCT_APP_NAME}.app"
     if [ ! -d "${archive_app_path}" ]; then
-        log_error "Archive app not found at ${archive_app_path}"
+        # Fallback: single archived .app when product_name and repo name diverge.
+        archive_app_path="$(find "${ARCHIVE_PATH}/Products/Applications" -maxdepth 1 -type d -name '*.app' 2>/dev/null | head -1 || true)"
+    fi
+    if [ -z "${archive_app_path}" ] || [ ! -d "${archive_app_path}" ]; then
+        log_error "Archive app not found at ${ARCHIVE_PATH}/Products/Applications/${PRODUCT_APP_NAME}.app"
         exit 1
     fi
+    PRODUCT_APP_NAME="$(basename "${archive_app_path}" .app)"
+    log_info "Using archived product app: ${PRODUCT_APP_NAME}.app"
 
     archive_bundle_id=$(defaults read "${archive_app_path}/Contents/Info" CFBundleIdentifier 2>/dev/null || true)
     if [ -z "${archive_bundle_id}" ]; then
@@ -5932,8 +5940,8 @@ if ! run_logged_command "${BUILD_DIR}/build.log" \
             exit 1
         fi
         mkdir -p "${EXPORT_PATH}"
-        rm -rf "${EXPORT_PATH:?}/${APP_NAME}.app"
-        if ! /usr/bin/ditto "${archive_app_path}" "${EXPORT_PATH}/${APP_NAME}.app"; then
+        rm -rf "${EXPORT_PATH:?}/${PRODUCT_APP_NAME}.app"
+        if ! /usr/bin/ditto "${archive_app_path}" "${EXPORT_PATH}/${PRODUCT_APP_NAME}.app"; then
             log_error "Failed to stage archive app into export path."
             track_gate_result "Export signed app" "failure" "${RELEASE_LAST_ERROR}"
             exit 1
@@ -5949,7 +5957,16 @@ else
 fi
 CURRENT_GATE=""
 
-APP_PATH="${EXPORT_PATH}/${APP_NAME}.app"
+APP_PATH="${EXPORT_PATH}/${PRODUCT_APP_NAME}.app"
+if [ ! -d "${APP_PATH}" ]; then
+    APP_PATH="$(find "${EXPORT_PATH}" -maxdepth 1 -type d -name '*.app' 2>/dev/null | head -1 || true)"
+fi
+if [ -z "${APP_PATH}" ] || [ ! -d "${APP_PATH}" ]; then
+    log_error "Exported app not found under ${EXPORT_PATH} (expected ${PRODUCT_APP_NAME}.app)"
+    exit 1
+fi
+PRODUCT_APP_NAME="$(basename "${APP_PATH}" .app)"
+log_info "Using product app bundle: ${PRODUCT_APP_NAME}.app"
 
 # Notarization preflight
 fix_and_verify_zipped_apps_in_app "${APP_PATH}"
