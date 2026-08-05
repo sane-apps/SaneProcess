@@ -7080,6 +7080,15 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_includes(release_script, 'Website-only deploy blocked: appcast link ${appcast_link} has no local route')
       assert_includes(release_script, 'Live appcast manual download link')
       assert_includes(release_script, 'Appcast manual download link')
+      # product_name may diverge from repo APP_NAME (ZecBooks vs SaneBooks)
+      assert_includes(
+        release_script,
+        'DIST_ARCHIVE_URL="https://${DIST_HOST}/updates/${DIST_ARTIFACT_NAME}-${appcast_ver}.zip"'
+      )
+      assert(
+        !release_script.match?(%r{DIST_ARCHIVE_URL="https://\$\{DIST_HOST\}/updates/\$\{APP_NAME\}-\$\{appcast_ver\}\.zip"}),
+        'website-only live verify must not expect APP_NAME zip when DIST_ARTIFACT_NAME differs'
+      )
       true
     end
 
@@ -7093,7 +7102,7 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
       assert_includes(release_script, 'refs/remotes/origin/HEAD')
       assert_includes(release_script, 'branch="${branch:-main}"')
       assert_includes(release_script, 'git push origin "HEAD:${WEBHOOK_BRANCH}"')
-      assert_includes(release_script, "product: '${APP_NAME}', file: '${APP_NAME}-${VERSION}${CURRENT_EXT}'")
+      assert_includes(release_script, "product: '${APP_NAME}', file: '${DIST_ARTIFACT_NAME}-${VERSION}${CURRENT_EXT}'")
       assert(!release_script.include?('Refusing to deploy a mixed Worker checkout.'),
              'expected the old hard stop on dirty sane-email-automation checkout to be removed')
       true

@@ -1192,7 +1192,7 @@ verify_live_appcast_link_route() {
         return 0
     fi
 
-    found_download_ver=$(printf '%s' "${effective_url}" | grep -oE "https://${DIST_HOST}/updates/${APP_NAME}-[0-9]+\.[0-9]+\.[0-9]+\.zip" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+    found_download_ver=$(printf '%s' "${effective_url}" | grep -oE "https://${DIST_HOST}/updates/(${DIST_ARTIFACT_NAME}|${APP_NAME})-[0-9]+\.[0-9]+\.[0-9]+\.zip" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
     if [ -n "${found_download_ver}" ]; then
         log_error "${label} points to v${found_download_ver}, expected ${expected_dist_url}: ${appcast_link}"
         return 1
@@ -2331,7 +2331,7 @@ PY
     if [ -n "${site_body}" ]; then
         local expected_download_url="https://${DIST_HOST}/updates/${DIST_ARTIFACT_NAME}-${VERSION}.zip"
         local homepage_download_ver=""
-        homepage_download_ver=$(grep -oE "https://${DIST_HOST}/updates/${APP_NAME}-[0-9]+\.[0-9]+\.[0-9]+\.zip" <<< "${site_body}" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+        homepage_download_ver=$(grep -oE "https://${DIST_HOST}/updates/(${DIST_ARTIFACT_NAME}|${APP_NAME})-[0-9]+\.[0-9]+\.[0-9]+\.zip" <<< "${site_body}" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
         if grep -Fq "${expected_download_url}" <<< "${site_body}"; then
             log_info "Website download link verified: ${expected_download_url}"
         elif [ -n "${homepage_download_ver}" ]; then
@@ -2348,12 +2348,12 @@ PY
                 log_info "Website download flow verified via ${download_page_url}: ${expected_download_url}"
             else
                 found_download_ver=$(printf '%s\n%s' "${site_body}" "${download_page_body}" | \
-                    grep -oE "https://${DIST_HOST}/updates/${APP_NAME}-[0-9]+\.[0-9]+\.[0-9]+\.zip" | \
+                    grep -oE "https://${DIST_HOST}/updates/(${DIST_ARTIFACT_NAME}|${APP_NAME})-[0-9]+\.[0-9]+\.[0-9]+\.zip" | \
                     head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
                 if [ -n "${found_download_ver}" ]; then
                     log_error "Website download flow points to v${found_download_ver}, expected v${VERSION}: ${download_page_url}"
                 else
-                    log_error "Website has no download link matching ${APP_NAME}-*.zip pattern on ${site_url} or ${download_page_url}"
+                    log_error "Website has no download link matching ${DIST_ARTIFACT_NAME}-*.zip (or ${APP_NAME}-*.zip) on ${site_url} or ${download_page_url}"
                 fi
                 return 1
             fi
@@ -5694,7 +5694,9 @@ if [ "${WEBSITE_ONLY}" = true ]; then
         fi
         if [ -n "${appcast_ver}" ]; then
             APPCAST_LINK_URL=$(appcast_link_for_version "${APPCAST_CONTENT}" "${appcast_ver}" "")
-            DIST_ARCHIVE_URL="https://${DIST_HOST}/updates/${APP_NAME}-${appcast_ver}.zip"
+            # Public zip basename follows product_name (DIST_ARTIFACT_NAME), not repo APP_NAME
+            # (e.g. ZecBooks-0.1.1.zip for SaneBooks).
+            DIST_ARCHIVE_URL="https://${DIST_HOST}/updates/${DIST_ARTIFACT_NAME}-${appcast_ver}.zip"
             if ! verify_live_appcast_link_route "${APPCAST_LINK_URL}" "${DIST_ARCHIVE_URL}" "Live appcast manual download link"; then
                 exit 1
             fi
