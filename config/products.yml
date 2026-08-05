@@ -85,6 +85,14 @@ products:
     appcast: https://sanesales.com/appcast.xml
     checkout_uuid: 5f7903d4-d6c8-4da4-b3e3-4586ef86bb51
 
+  sanebooks:
+    name: ZecBooks
+    # Free / source-available Mac app. Sparkle + site on zecbooks.app.
+    domain: zecbooks.app
+    dist_domain: dist.zecbooks.app
+    github_repo: sane-apps/SaneBooks
+    appcast: https://zecbooks.app/appcast.xml
+
 # LemonSqueezy store configuration
 store:
   slug: saneapps
@@ -120,3 +128,4 @@ all_domains:
   - saneapps.com
   - sanesync.com
   - sanevideo.com
+  - zecbooks.app
