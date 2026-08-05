@@ -1816,7 +1816,8 @@ extract_email_webhook_version() {
         return 0
     fi
 
-    echo "${webhook_entry}" | grep -oE "${app_name}-[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?'
+    # file may use DIST_ARTIFACT_NAME (ZecBooks-0.1.1.zip) while the PRODUCT_CONFIG key stays APP_NAME.
+    echo "${webhook_entry}" | grep -oE "file: '[^']+'" | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1
 }
 
 verify_lemonsqueezy_hosted_file_sync() {
@@ -1984,7 +1985,7 @@ write_post_release_probe_receipt() {
 }
 
 run_post_release_checks() {
-    local dist_url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
+    local dist_url="https://${DIST_HOST}/updates/${DIST_ARTIFACT_NAME}-${VERSION}.zip"
     local appcast_url="https://${SITE_HOST}/appcast.xml"
     local checkout_url="https://go.saneapps.com/buy/${LOWER_APP_NAME}"
     local configured_checkout_url=""
@@ -2166,7 +2167,7 @@ PY
             log_warn "GITHUB_REPO is empty — skipping GitHub release post-release verification."
         else
             local gh_tag="v${VERSION}"
-            local gh_asset="${APP_NAME}-${VERSION}.zip"
+            local gh_asset="${DIST_ARTIFACT_NAME}-${VERSION}.zip"
             if ! gh release view "${gh_tag}" --repo "${GITHUB_REPO}" >/dev/null 2>&1; then
                 if [ "${strict}" = true ]; then
                     log_error "GitHub release missing after deploy: ${GITHUB_REPO}@${gh_tag}"
@@ -2328,7 +2329,7 @@ PY
     local site_body
     site_body=$(cat "${probe_dir}/site.body" 2>/dev/null || true)
     if [ -n "${site_body}" ]; then
-        local expected_download_url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
+        local expected_download_url="https://${DIST_HOST}/updates/${DIST_ARTIFACT_NAME}-${VERSION}.zip"
         local homepage_download_ver=""
         homepage_download_ver=$(grep -oE "https://${DIST_HOST}/updates/${APP_NAME}-[0-9]+\.[0-9]+\.[0-9]+\.zip" <<< "${site_body}" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
         if grep -Fq "${expected_download_url}" <<< "${site_body}"; then
@@ -2385,8 +2386,8 @@ PY
         return 1
     fi
 
-    if [ "${webhook_file}" != "${APP_NAME}-${VERSION}.zip" ]; then
-        log_error "Live email webhook file mismatch: ${webhook_file:-missing}, expected ${APP_NAME}-${VERSION}.zip"
+    if [ "${webhook_file}" != "${DIST_ARTIFACT_NAME}-${VERSION}.zip" ]; then
+        log_error "Live email webhook file mismatch: ${webhook_file:-missing}, expected ${DIST_ARTIFACT_NAME}-${VERSION}.zip"
         return 1
     fi
 
@@ -3667,7 +3668,7 @@ ${RELEASE_NOTES:-Release ${VERSION}}
 
 Distribution:
 - Sparkle appcast: https://${SITE_HOST}/appcast.xml
-- Direct download: https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip
+- Direct download: https://${DIST_HOST}/updates/${DIST_ARTIFACT_NAME}-${VERSION}.zip
 EOF
     fi
 
@@ -3912,7 +3913,7 @@ purge_github_binary_assets() {
 
     local deleted=0
     local failed=0
-    local keep_zip="${APP_NAME}-${VERSION}.zip"
+    local keep_zip="${DIST_ARTIFACT_NAME}-${VERSION}.zip"
     local keep_dmg="${APP_NAME}-${VERSION}.dmg"
     while IFS= read -r tag; do
         [ -n "${tag}" ] || continue
@@ -5306,8 +5307,10 @@ APP_NAME="${APP_NAME:-$(basename "${PROJECT_ROOT}")}"
 if [ "${APP_NAME}" = "saneapps.com" ]; then
     APP_NAME="SaneApps"
 fi
-# Customer-facing .app bundle name may differ from repo/scheme name (e.g. ZecBooks vs SaneBooks).
+# Customer-facing .app / download artifact name may differ from repo/scheme name (e.g. ZecBooks vs SaneBooks).
 PRODUCT_APP_NAME="${PRODUCT_APP_NAME:-${APP_NAME}}"
+# Public zip/R2/appcast/download basename follows the customer product name.
+DIST_ARTIFACT_NAME="${DIST_ARTIFACT_NAME:-${PRODUCT_APP_NAME}}"
 SCHEME="${SCHEME:-${APP_NAME}}"
 LOWER_APP_NAME="$(echo "${APP_NAME}" | tr '[:upper:]' '[:lower:]')"
 BUNDLE_ID="${BUNDLE_ID:-com.${LOWER_APP_NAME}.app}"
@@ -5557,7 +5560,7 @@ if [ "${POST_RELEASE_CHECKS_ONLY}" = true ]; then
     if [ -z "${SHA256:-}" ] && [ -n "${HOMEBREW_TAP_REPO}" ]; then
         post_release_dist_zip=$(mktemp "/tmp/${APP_NAME}-post-release-check.XXXXXX.zip")
         register_release_temp_path "${post_release_dist_zip}"
-        if ! curl --connect-timeout 10 --max-time 120 -fsSL "https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip" -o "${post_release_dist_zip}"; then
+        if ! curl --connect-timeout 10 --max-time 120 -fsSL "https://${DIST_HOST}/updates/${DIST_ARTIFACT_NAME}-${VERSION}.zip" -o "${post_release_dist_zip}"; then
             remove_path "${post_release_dist_zip}"
             log_error "Could not download live dist ZIP to infer SHA256 for post-release verification."
             exit 1
@@ -5602,7 +5605,7 @@ if [ "${WEBSITE_ONLY}" = true ]; then
         # Handle both element (<sparkle:shortVersionString>X.Y.Z</...) and attribute (sparkle:shortVersionString="X.Y.Z") formats
         appcast_ver=$(grep -oE 'shortVersionString[^0-9]*[0-9]+\.[0-9]+\.[0-9]+' "${DEPLOY_DIR}/appcast.xml" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
         site_download_ver=""
-        site_download_ver=$(grep -oE "${APP_NAME}-[0-9]+\.[0-9]+\.[0-9]+\.zip" "${DEPLOY_DIR}/index.html" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+        site_download_ver=$(grep -oE "${DIST_ARTIFACT_NAME}-[0-9]+\.[0-9]+\.[0-9]+\.zip" "${DEPLOY_DIR}/index.html" | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
         if [ -n "${appcast_ver}" ] && [ -n "${site_download_ver}" ]; then
             if [ "${appcast_ver}" != "${site_download_ver}" ]; then
                 log_error "Version drift detected in website-only deploy:"
@@ -5613,7 +5616,7 @@ if [ "${WEBSITE_ONLY}" = true ]; then
             fi
             log_info "Version consistency check passed: appcast and website both at v${appcast_ver}"
 
-            dist_archive_url="https://${DIST_HOST}/updates/${APP_NAME}-${appcast_ver}.zip"
+            dist_archive_url="https://${DIST_HOST}/updates/${DIST_ARTIFACT_NAME}-${appcast_ver}.zip"
             dist_archive_status=$(extract_http_status_with_user_agent "${dist_archive_url}" "Sparkle/2")
             if [ "${dist_archive_status}" != "200" ] && [ "${dist_archive_status}" != "206" ]; then
                 log_error "Website-only deploy blocked: dist archive is not reachable at ${dist_archive_url} (HTTP ${dist_archive_status})"
@@ -5899,6 +5902,14 @@ if [ "${SKIP_BUILD}" = false ]; then
         exit 1
     fi
     PRODUCT_APP_NAME="$(basename "${archive_app_path}" .app)"
+    DIST_ARTIFACT_NAME="${DIST_ARTIFACT_NAME:-${PRODUCT_APP_NAME}}"
+    if [ "${DIST_ARTIFACT_NAME}" = "${APP_NAME}" ] || [ -z "${DIST_ARTIFACT_NAME}" ]; then
+        DIST_ARTIFACT_NAME="${PRODUCT_APP_NAME}"
+    fi
+    # Prefer the on-disk product name for public artifacts when product_name is set.
+    if [ "${PRODUCT_APP_NAME}" != "${APP_NAME}" ]; then
+        DIST_ARTIFACT_NAME="${PRODUCT_APP_NAME}"
+    fi
     log_info "Using archived product app: ${PRODUCT_APP_NAME}.app"
 
     archive_bundle_id=$(defaults read "${archive_app_path}/Contents/Info" CFBundleIdentifier 2>/dev/null || true)
@@ -5969,7 +5980,12 @@ if [ -z "${APP_PATH}" ] || [ ! -d "${APP_PATH}" ]; then
     exit 1
 fi
 PRODUCT_APP_NAME="$(basename "${APP_PATH}" .app)"
+if [ "${PRODUCT_APP_NAME}" != "${APP_NAME}" ]; then
+    DIST_ARTIFACT_NAME="${PRODUCT_APP_NAME}"
+fi
+DIST_ARTIFACT_NAME="${DIST_ARTIFACT_NAME:-${PRODUCT_APP_NAME}}"
 log_info "Using product app bundle: ${PRODUCT_APP_NAME}.app"
+log_info "Dist artifact basename: ${DIST_ARTIFACT_NAME}-${VERSION}.zip"
 
 # Notarization preflight
 fix_and_verify_zipped_apps_in_app "${APP_PATH}"
@@ -6233,7 +6249,7 @@ fi
 log_info "Version: ${VERSION} (${BUILD_NUMBER})"
 
 # Package as ZIP (simpler, app icon survives HTTP download, no resource fork issues)
-ZIP_NAME="${APP_NAME}-${VERSION}"
+ZIP_NAME="${DIST_ARTIFACT_NAME}-${VERSION}"
 NOTARIZE_ZIP="${BUILD_DIR}/${APP_NAME}-notarize.zip"
 ZIP_PATH="${BUILD_DIR}/${ZIP_NAME}.zip"
 
@@ -6413,7 +6429,7 @@ ${OPTIONAL_SPARKLE_FIELDS}            <description>
                 ${FORMATTED_NOTES}
                 ]]>
             </description>
-            <enclosure url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
+            <enclosure url="https://${DIST_HOST}/updates/${DIST_ARTIFACT_NAME}-${VERSION}.zip"
                        sparkle:version="${BUILD_NUMBER}"
                        sparkle:shortVersionString="${VERSION}"
                        length="${FILE_SIZE}"
@@ -6523,7 +6539,7 @@ if [ "${RUN_DEPLOY}" = true ]; then
     RELEASE_ERR_GATE_RECORDED=""
     # Dist worker maps /updates/<file> URLs to bare R2 object keys.
     # Keep the public URL path for clients, but store object without prefix.
-    R2_OBJECT_KEY="${APP_NAME}-${VERSION}.zip"
+    R2_OBJECT_KEY="${DIST_ARTIFACT_NAME}-${VERSION}.zip"
     upload_token="${CLOUDFLARE_API_TOKEN:-$(resolve_cloudflare_api_token || true)}"
     if [ -z "${upload_token}" ]; then
         log_error "R2 upload failed: CLOUDFLARE_API_TOKEN is unavailable."
@@ -6541,15 +6557,15 @@ if [ "${RUN_DEPLOY}" = true ]; then
 
     # Verify R2 upload
     log_info "Verifying download URL..."
-    HTTP_STATUS_BROWSER=$(extract_http_status "https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip")
-    HTTP_STATUS_SPARKLE=$(extract_http_status_with_user_agent "https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip" "Sparkle/2")
+    HTTP_STATUS_BROWSER=$(extract_http_status "https://${DIST_HOST}/updates/${DIST_ARTIFACT_NAME}-${VERSION}.zip")
+    HTTP_STATUS_SPARKLE=$(extract_http_status_with_user_agent "https://${DIST_HOST}/updates/${DIST_ARTIFACT_NAME}-${VERSION}.zip" "Sparkle/2")
     if { [ "${HTTP_STATUS_BROWSER}" != "200" ] && [ "${HTTP_STATUS_BROWSER}" != "206" ]; } || \
        { [ "${HTTP_STATUS_SPARKLE}" != "200" ] && [ "${HTTP_STATUS_SPARKLE}" != "206" ]; }; then
-        log_error "R2 verification FAILED! https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip returned browser=${HTTP_STATUS_BROWSER}, sparkle=${HTTP_STATUS_SPARKLE}"
+        log_error "R2 verification FAILED! https://${DIST_HOST}/updates/${DIST_ARTIFACT_NAME}-${VERSION}.zip returned browser=${HTTP_STATUS_BROWSER}, sparkle=${HTTP_STATUS_SPARKLE}"
         log_error "Check dist Worker routing and update/download channel rules."
         exit 1
     fi
-    log_info "Download verified: https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip (browser=${HTTP_STATUS_BROWSER}, sparkle=${HTTP_STATUS_SPARKLE})"
+    log_info "Download verified: https://${DIST_HOST}/updates/${DIST_ARTIFACT_NAME}-${VERSION}.zip (browser=${HTTP_STATUS_BROWSER}, sparkle=${HTTP_STATUS_SPARKLE})"
 
     # Step 1b: Optionally clean up old versions from R2.
     # Historical binaries stay available by default so downgrade links and
@@ -6658,7 +6674,7 @@ ${OPTIONAL_SPARKLE_FIELDS}            <description>
                 ${FORMATTED_NOTES}
                 ]]>
             </description>
-            <enclosure url="https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
+            <enclosure url="https://${DIST_HOST}/updates/${DIST_ARTIFACT_NAME}-${VERSION}.zip"
                        sparkle:version="${BUILD_NUMBER}"
                        sparkle:shortVersionString="${VERSION}"
                        length="${FILE_SIZE}"
@@ -6744,7 +6760,7 @@ PY
             if [ ! -f "${INDEX_HTML}" ]; then
                 continue
             fi
-            UPDATE_RESULT=$(APP_NAME="${APP_NAME}" VERSION="${VERSION}" INDEX_HTML="${INDEX_HTML}" python3 <<'PY'
+            UPDATE_RESULT=$(APP_NAME="${APP_NAME}" DIST_ARTIFACT_NAME="${DIST_ARTIFACT_NAME}" VERSION="${VERSION}" INDEX_HTML="${INDEX_HTML}" python3 <<'PY'
 import os
 import pathlib
 import re
@@ -6752,13 +6768,17 @@ import tempfile
 
 path = pathlib.Path(os.environ["INDEX_HTML"])
 app_name = re.escape(os.environ["APP_NAME"])
+dist_name = re.escape(os.environ["DIST_ARTIFACT_NAME"])
 version = os.environ["VERSION"]
 text = path.read_text(encoding="utf-8")
 
-download_pattern = re.compile(rf"{app_name}-[0-9]+\.[0-9]+(?:\.[0-9]+)?\.(?:zip|dmg)")
+names = {os.environ["APP_NAME"], os.environ["DIST_ARTIFACT_NAME"]}
+names = sorted({n for n in names if n})
+name_alt = "|".join(re.escape(n) for n in names)
+download_pattern = re.compile(rf"(?:{name_alt})-[0-9]+\.[0-9]+(?:\.[0-9]+)?\.(?:zip|dmg)")
 software_pattern = re.compile(r'"softwareVersion": "[^"]*"')
 
-new_text, download_count = download_pattern.subn(f'{os.environ["APP_NAME"]}-{version}.zip', text)
+new_text, download_count = download_pattern.subn(f'{os.environ["DIST_ARTIFACT_NAME"]}-{version}.zip', text)
 new_text, software_count = software_pattern.subn(f'"softwareVersion": "{version}"', new_text)
 
 if new_text != text:
@@ -6779,7 +6799,7 @@ PY
             SOFTWARE_COUNT="${UPDATE_RESULT##*,}"
 
             if [ "${DOWNLOAD_COUNT}" -gt 0 ]; then
-                log_info "Updated ${DOWNLOAD_COUNT} download link(s) in $(basename "${SITE_DIR}")/${PAGE_NAME} → ${APP_NAME}-${VERSION}.zip"
+                log_info "Updated ${DOWNLOAD_COUNT} download link(s) in $(basename "${SITE_DIR}")/${PAGE_NAME} → ${DIST_ARTIFACT_NAME}-${VERSION}.zip"
             fi
             if [ "${SOFTWARE_COUNT}" -gt 0 ]; then
                 log_info "Updated softwareVersion in $(basename "${SITE_DIR}")/${PAGE_NAME} → ${VERSION}"
@@ -6788,19 +6808,20 @@ PY
 
         REDIRECTS_FILE="${SITE_DIR}/_redirects"
         if [ -f "${REDIRECTS_FILE}" ]; then
-            REDIRECT_UPDATE_COUNT=$(APP_NAME="${APP_NAME}" VERSION="${VERSION}" REDIRECTS_FILE="${REDIRECTS_FILE}" python3 <<'PY'
+            REDIRECT_UPDATE_COUNT=$(APP_NAME="${APP_NAME}" DIST_ARTIFACT_NAME="${DIST_ARTIFACT_NAME}" VERSION="${VERSION}" REDIRECTS_FILE="${REDIRECTS_FILE}" python3 <<'PY'
 import os
 import pathlib
 import re
 import tempfile
 
 path = pathlib.Path(os.environ["REDIRECTS_FILE"])
-app_name = re.escape(os.environ["APP_NAME"])
 version = os.environ["VERSION"]
 text = path.read_text(encoding="utf-8")
 
-download_pattern = re.compile(rf"{app_name}-[0-9]+\.[0-9]+(?:\.[0-9]+)?\.(?:zip|dmg)")
-new_text, download_count = download_pattern.subn(f'{os.environ["APP_NAME"]}-{version}.zip', text)
+names = sorted({n for n in (os.environ["APP_NAME"], os.environ["DIST_ARTIFACT_NAME"]) if n})
+name_alt = "|".join(re.escape(n) for n in names)
+download_pattern = re.compile(rf"(?:{name_alt})-[0-9]+\.[0-9]+(?:\.[0-9]+)?\.(?:zip|dmg)")
+new_text, download_count = download_pattern.subn(f'{os.environ["DIST_ARTIFACT_NAME"]}-{version}.zip', text)
 
 if new_text != text:
     tmp_path = None
@@ -6817,7 +6838,7 @@ print(download_count)
 PY
 )
             if [ "${REDIRECT_UPDATE_COUNT}" -gt 0 ]; then
-                log_info "Updated ${REDIRECT_UPDATE_COUNT} download redirect(s) in $(basename "${SITE_DIR}")/_redirects → ${APP_NAME}-${VERSION}.zip"
+                log_info "Updated ${REDIRECT_UPDATE_COUNT} download redirect(s) in $(basename "${SITE_DIR}")/_redirects → ${DIST_ARTIFACT_NAME}-${VERSION}.zip"
             fi
         fi
     done
@@ -7176,9 +7197,9 @@ PY
             # Determine extension from current entry (zip or dmg)
             CURRENT_EXT=$(echo "${OLD_ENTRY}" | grep -o '\.\(zip\|dmg\)' | head -1)
             CURRENT_EXT="${CURRENT_EXT:-.zip}"
-            sed -i '' "s|'${APP_NAME}': { file: '${APP_NAME}-[^']*'|'${APP_NAME}': { file: '${APP_NAME}-${VERSION}${CURRENT_EXT}'|" "${WEBHOOK_WORK_JS}"
-            sed -i '' "s|{ product: '${APP_NAME}', file: '${APP_NAME}-[^']*'|{ product: '${APP_NAME}', file: '${APP_NAME}-${VERSION}${CURRENT_EXT}'|g" "${WEBHOOK_WORK_JS}"
-            log_info "Updated email webhook: ${APP_NAME} → ${APP_NAME}-${VERSION}${CURRENT_EXT}"
+            sed -i '' "s|'${APP_NAME}': { file: '[^']*'|'${APP_NAME}': { file: '${DIST_ARTIFACT_NAME}-${VERSION}${CURRENT_EXT}'|" "${WEBHOOK_WORK_JS}"
+            sed -i '' "s|{ product: '${APP_NAME}', file: '[^']*'|{ product: '${APP_NAME}', file: '${DIST_ARTIFACT_NAME}-${VERSION}${CURRENT_EXT}'|g" "${WEBHOOK_WORK_JS}"
+            log_info "Updated email webhook: ${APP_NAME} → ${DIST_ARTIFACT_NAME}-${VERSION}${CURRENT_EXT}"
 
             # Commit and deploy
             if cd "${WEBHOOK_WORK_DIR}" 2>/dev/null; then
@@ -7238,11 +7259,11 @@ PY
             # Verify local replacement, remote source, and the deployed worker.
             WEBHOOK_VERIFY=$(grep "'${APP_NAME}'" "${WEBHOOK_WORK_JS}" 2>/dev/null || true)
             if [ -n "${WEBHOOK_VERIFY}" ]; then
-                if echo "${WEBHOOK_VERIFY}" | grep -q "${APP_NAME}-${VERSION}"; then
-                    log_info "Webhook local version verified: ${APP_NAME}-${VERSION} in PRODUCT_CONFIG"
+                if echo "${WEBHOOK_VERIFY}" | grep -q "${DIST_ARTIFACT_NAME}-${VERSION}"; then
+                    log_info "Webhook local version verified: ${DIST_ARTIFACT_NAME}-${VERSION} in PRODUCT_CONFIG"
                 else
-                    ACTUAL_VER=$(echo "${WEBHOOK_VERIFY}" | grep -oE "${APP_NAME}-[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1)
-                    log_error "Webhook version mismatch after update: expected ${APP_NAME}-${VERSION} but found ${ACTUAL_VER:-unknown}"
+                    ACTUAL_VER=$(echo "${WEBHOOK_VERIFY}" | grep -oE "[A-Za-z0-9]+-[0-9]+\.[0-9]+(\.[0-9]+)?" | head -1)
+                    log_error "Webhook version mismatch after update: expected ${DIST_ARTIFACT_NAME}-${VERSION} but found ${ACTUAL_VER:-unknown}"
                     log_error "The sed replacement may have failed silently. Edit ${WEBHOOK_JS} manually."
                     exit 1
                 fi
@@ -7314,7 +7335,7 @@ PY
         done
         exit 1
     fi
-    log_info "  ZIP:      https://${DIST_HOST}/updates/${APP_NAME}-${VERSION}.zip"
+    log_info "  ZIP:      https://${DIST_HOST}/updates/${DIST_ARTIFACT_NAME}-${VERSION}.zip"
     log_info "  Appcast:  https://${SITE_HOST}/appcast.xml"
     log_info "  Homebrew: brew install --cask sane-apps/tap/${LOWER_APP_NAME}"
     log_info "═══════════════════════════════════════════"
