@@ -1439,7 +1439,10 @@ verify_archive_bundle_version() {
     fi
 
     local app_bundle_path
-    app_bundle_path=$(find "${unpack_dir}" -maxdepth 6 -type d -name "${APP_NAME}.app" | head -1)
+    app_bundle_path=$(find "${unpack_dir}" -maxdepth 6 -type d -name "${PRODUCT_APP_NAME}.app" 2>/dev/null | head -1)
+    if [ -z "${app_bundle_path}" ]; then
+        app_bundle_path=$(find "${unpack_dir}" -maxdepth 6 -type d -name "${APP_NAME}.app" 2>/dev/null | head -1)
+    fi
     if [ -z "${app_bundle_path}" ]; then
         app_bundle_path=$(find "${unpack_dir}" -maxdepth 6 -type d -name "*.app" | head -1)
     fi
