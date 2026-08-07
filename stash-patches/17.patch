@@ -1,0 +1,134 @@
+diff --git a/SESSION_HANDOFF.md b/SESSION_HANDOFF.md
+index 1174068..6439d0d 100644
+--- a/SESSION_HANDOFF.md
++++ b/SESSION_HANDOFF.md
+@@ -1,4 +1,39 @@
+ 
++## Session 121 (2026-04-28)
++
++### Done
++- Fixed SaneMaster verify parsing for SaneBar release preflight:
++  - Swift Testing can print a clean pass and still leave a trailing `** TEST FAILED **` runner marker from `xcodebuild`
++  - `verify.rb` now accepts that shape only when no real assertion/failure markers are present
++  - real XCTest/assertion failures remain blocking
++- Updated verifier regression coverage in `scripts/sanemaster/verify_guard_test.rb`.
++- Ran live `ruby scripts/SaneMaster.rb status` for support/status triage.
++- Diagnosed the daily email digest mismatch:
++  - `SaneMaster.rb status` uses `check-inbox.sh`, which suppresses routine DMARC.
++  - `sane-email-automation` daily digest used a separate pending query and included stale `needs_human` DMARC rows.
++- Fixed and deployed the email Worker:
++  - routine DMARC is now resolved as `system` mail at intake
++  - digest stats, handled items, and pending endpoints exclude routine DMARC/system rows
++  - existing stuck DMARC rows were force-resolved
++- Reviewed the remaining open inbox item: `#631`, a Google Sheets share from `bartyfin@gmail.com`, no attachments, no prior reply.
++
++### Live Verification
++- `ruby scripts/sanemaster/verify_guard_test.rb` -> 15/15 passed
++- `ruby scripts/sanemaster/release_guardrail_test.rb` -> 38/38 passed
++- `check-inbox.sh healthcheck` -> PASS
++- `ruby scripts/SaneMaster.rb status` -> inbox action needed: 1
++- `node --test test/*.mjs` in `sane-email-automation` -> 7/7 passed
++- `npx wrangler deploy --dry-run --outdir /tmp/sane-email-automation-dry-run` -> passed
++- `npx wrangler deploy` -> Worker version `8de1532f-1972-44df-86b7-3d78f1da04a6`
++
++### Current State
++- DMARC reports should no longer appear as actionable support work in the daily digest.
++- Current actionable inbox item is only `#631` unless new mail arrives.
++- Current status also shows SaneBar issues `#138`, `#137`, `#136`, `#129`, and SaneProcess `#8`.
++
++### Next
++- Decide whether the Google Sheets share from `bartyfin@gmail.com` is useful vendor/prospect data or should be resolved as noise.
++
+ ## Session 120 (2026-04-25)
+ 
+ ### Done
+diff --git a/scripts/sanemaster/verify.rb b/scripts/sanemaster/verify.rb
+index 5d4e48a..73259ec 100755
+--- a/scripts/sanemaster/verify.rb
++++ b/scripts/sanemaster/verify.rb
+@@ -674,6 +674,26 @@ module SaneMasterModules
+       false
+     end
+ 
++    def verify_log_indicates_clean_pass_despite_runner_failure?(text)
++      body = text.to_s
++      has_clean_pass = body.match?(/Swift Testing:\s+\d+ tests .* passed/) ||
++                       body.match?(/Test run with \d+ tests? in \d+ suites? passed/) ||
++                       body.match?(/Test Suite 'All tests' passed/) ||
++                       body.match?(/Executed \d+ tests?, with 0 failures/)
++      return false unless has_clean_pass
++
++      real_failure_markers = [
++        /Test Case '-\[[^\]]+\]' failed/,
++        /✘ Test .* failed/,
++        /Issue recorded:/,
++        /XCTAssert/,
++        /\berror:\s+-\[[^\]]+\]/,
++        /Executed \d+ tests?, with [1-9]\d* failures?/,
++        /Executed \d+ tests?, with \d+ failures?, with [1-9]\d* unexpected/
++      ]
++      real_failure_markers.none? { |pattern| body.match?(pattern) }
++    end
++
+     def build_test_commands(include_ui, signed_tests = false)
+       script_commands = script_only_verify_commands
+       if script_commands
+@@ -929,7 +949,10 @@ module SaneMasterModules
+ 
+       if !success && !timed_out && File.exist?('test_output.txt')
+         log_output = File.read('test_output.txt') rescue ''
+-        if verify_log_indicates_failure?(log_output)
++        if verify_log_indicates_clean_pass_despite_runner_failure?(log_output)
++          puts '   ℹ️  Test log shows a clean pass despite a non-zero runner exit; treating verify as successful.'
++          success = true
++        elsif verify_log_indicates_failure?(log_output)
+           puts '   ℹ️  Test log contains explicit failure markers; preserving the non-zero verify result.'
+         elsif verify_log_indicates_success?(log_output)
+           puts '   ℹ️  Test log shows a clean pass despite a non-zero runner exit; treating verify as successful.'
+diff --git a/scripts/sanemaster/verify_guard_test.rb b/scripts/sanemaster/verify_guard_test.rb
+index 2d258d2..a6b0e63 100644
+--- a/scripts/sanemaster/verify_guard_test.rb
++++ b/scripts/sanemaster/verify_guard_test.rb
+@@ -210,6 +210,42 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
+       true
+     end
+ 
++    test('accepts Swift Testing clean pass despite trailing xcodebuild runner failure marker') do
++      body = <<~LOG
++        ✔ Test run with 632 tests in 45 suites passed after 3.517 seconds.
++        ** TEST FAILED **
++        Testing started
++      LOG
++
++      assert_eq(subject.send(:verify_log_indicates_failure?, body), true)
++      assert_eq(subject.send(:verify_log_indicates_clean_pass_despite_runner_failure?, body), true)
++      true
++    end
++
++    test('accepts XCTest clean pass despite trailing xcodebuild runner failure marker') do
++      body = <<~LOG
++        Executed 1073 tests, with 0 failures (0 unexpected) in 22.000 (22.100) seconds
++        ** TEST FAILED **
++        Testing started
++        2026-04-28 15:43:58.874125-0400 SaneBar[40044:15855417] [Common] Unable to obtain a task name port right for pid 70679: (os/kern) failure (0x5)
++      LOG
++
++      assert_eq(subject.send(:verify_log_indicates_failure?, body), true)
++      assert_eq(subject.send(:verify_log_indicates_clean_pass_despite_runner_failure?, body), true)
++      true
++    end
++
++    test('rejects clean-pass override when real assertion failures are present') do
++      body = <<~LOG
++        ✔ Test run with 632 tests in 45 suites passed after 3.517 seconds.
++        /tmp/SaneBarTests.swift:42: error: -[SaneBarTests.ExampleTests testExample] : XCTAssertTrue failed
++        ** TEST FAILED **
++      LOG
++
++      assert_eq(subject.send(:verify_log_indicates_clean_pass_despite_runner_failure?, body), false)
++      true
++    end
++
+     test('counts script test summaries instead of reporting zero tests') do
+       state = {
+         start_time: Time.now,

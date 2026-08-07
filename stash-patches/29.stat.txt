@@ -1,0 +1,19 @@
+ DEVELOPMENT.md                                     |  10 +
+ scripts/automation/git-sync-safe.sh                |  37 ++-
+ scripts/automation/reconcile-air-mini.sh           |  71 +++++-
+ scripts/automation/sane-status-crossref.sh         |  30 ++-
+ scripts/automation/start-workday.sh                |  52 ++++-
+ scripts/automation/sync-codex-mini.sh              | 125 ++++++++--
+ scripts/mini/README.md                             |   8 +
+ scripts/mini/install-training-daily-check-agent.sh |  18 ++
+ scripts/mini/mini-prepare-automation-root.sh       | 113 ++++++---
+ scripts/mini/mini_train_process_test.rb            |  34 +++
+ scripts/mini/training-daily-check.py               | 253 ++++++++++++++++-----
+ scripts/scaffold.rb                                |  10 -
+ scripts/validation_report.rb                       |  72 ++++++
+ scripts/validation_report_test.rb                  | 160 +++++++++++++
+ templates/AGENTS_TEMPLATE.md                       |   1 +
+ templates/FULL_PROJECT_BOOTSTRAP.md                |  12 +-
+ templates/docs/NEW_APP_CHECKLIST.md                |   4 +-
+ templates/docs/SANEAPPS_RELEASE_PROCESS.md         |  17 +-
+ 18 files changed, 874 insertions(+), 153 deletions(-)

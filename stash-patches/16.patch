@@ -1,0 +1,2788 @@
+diff --git a/DEVELOPMENT.md b/DEVELOPMENT.md
+index 324bea9..54f6b20 100644
+--- a/DEVELOPMENT.md
++++ b/DEVELOPMENT.md
+@@ -677,29 +677,31 @@ Version policy:
+ 
+ Minimum sign-off before any Setapp ship:
+ 
+-1. Build and launch the Setapp config on the mini.
+-2. Verify the built app is on the expected Setapp bundle ID.
+-3. Verify `setappPublicKey.pem` is embedded.
+-4. Verify Sparkle is absent from the build product and absent from visible settings/about UI.
+-5. Verify no Lemon Squeezy purchase/key-entry path is visible.
+-6. Verify no Donate / GitHub Sponsors UI is visible.
+-7. Verify Setapp-specific usage reporting is wired where required.
+-8. Verify macOS 13+ update policy is present in the built Info.plist.
+-9. If sandboxed, verify the Setapp Mach service entitlement is present.
+-10. Verify direct and App Store builds still behave correctly after the Setapp code lands.
+-11. If the Setapp lane still shares a target with the direct lane, run `sanitize_distribution_bundle.rb` and then re-sign the bundle before launch verification.
++1. Run `bash ~/SaneApps/infra/SaneProcess/scripts/mini/bootstrap-build-server.sh` on the mini and require a clean pass before any Setapp signing/archive work.
++2. Confirm the bootstrap proves Developer ID signing from the mini login keychain: it must read `SANEBAR_KEYCHAIN_PASSWORD` from keychain, `~/.config/saneprocess/secrets.env`, or `~/.config/nv/env`; unlock the keychain; set the `codesign` partition list; and pass the Developer ID codesign probe.
++3. Build and launch the Setapp config on the mini.
++4. Verify the built app is on the expected Setapp bundle ID.
++5. Verify `setappPublicKey.pem` is embedded.
++6. Verify Sparkle is absent from the build product and absent from visible settings/about UI.
++7. Verify no Lemon Squeezy purchase/key-entry path is visible.
++8. Verify no Donate / GitHub Sponsors UI is visible.
++9. Verify Setapp-specific usage reporting is wired where required.
++10. Verify macOS 13+ update policy is present in the built Info.plist.
++11. If sandboxed, verify the Setapp Mach service entitlement is present.
++12. Verify direct and App Store builds still behave correctly after the Setapp code lands.
++13. If the Setapp lane still shares a target with the direct lane, run `sanitize_distribution_bundle.rb` and then re-sign the bundle before launch verification.
+ 
+ ### Hidden Gotchas To Plan For Up Front
+ 
+ - Setapp docs still publicly describe a narrower rollout than the email offer. Trust the live business thread for eligibility, but still code to the published technical requirements.
+-- Universal build support is the largest likely technical blocker for current arm64-only projects.
++- Universal build support is a required Setapp release gate; arm64-only artifacts must fail before upload.
+ - SaneBar is a menu bar app, so Setapp usage reporting is not optional polish.
+ - SaneClip has more bundle surfaces than SaneBar (widgets / extensions), so Setapp bundle-family drift needs an explicit review even if the first Setapp lane ships with fewer surfaces.
+ - Xcode same-target Setapp configs can look clean in source while still re-embedding Sparkle after target shell phases. Do not trust the raw built bundle without the final sanitizer check.
+ - A sanitized bundle that launches locally after ad hoc re-sign is good verification signal, but it is not a substitute for the real signed Setapp release path.
+ - Current mini verification state as of 2026-03-18:
+   - SaneBar and SaneClip clean mini worktrees build as Setapp bundles with the right `-setapp` bundle IDs.
+-  - Their built Info.plists now include `NSUpdateSecurityPolicy` and `MPSupportedArchitectures = [arm64]`.
++  - Their built Info.plists now include `NSUpdateSecurityPolicy` and must declare `MPSupportedArchitectures = [arm64, x86_64]`.
+   - SaneClip's Setapp-specific entitlement file includes `com.setapp.ProvisioningService`.
+   - Both sanitized bundles launch on the mini after ad hoc re-sign.
+   - `setappPublicKey.pem` is still absent, so runtime entitlement validation is still incomplete.
+diff --git a/scripts/SaneMaster.rb b/scripts/SaneMaster.rb
+index bd72e1f..db5b983 100755
+--- a/scripts/SaneMaster.rb
++++ b/scripts/SaneMaster.rb
+@@ -51,6 +51,7 @@ require_relative 'sanemaster/session'
+ require_relative 'sanemaster/circuit_breaker_state'
+ require_relative 'sanemaster/structural_compliance'
+ require_relative 'sanemaster/saneui_guard'
++require_relative 'sanemaster/runtime_e2e'
+ require_relative 'sanemaster/release'
+ require_relative 'sanemaster/ci_helpers'
+ require_relative 'sanemaster/sales'
+@@ -79,6 +80,7 @@ class SaneMaster
+   include SaneMasterModules::HostedFileActions
+   include SaneMasterModules::Session
+   include SaneMasterModules::StructuralCompliance
++  include SaneMasterModules::RuntimeE2E
+   include SaneMasterModules::Release
+   include SaneMasterModules::CIHelpers
+   include SaneMasterModules::Sales
+@@ -97,8 +99,11 @@ class SaneMaster
+         'clean' => { args: '[--nuclear]', desc: 'Wipe build cache and test states' },
+         'lint' => { args: '', desc: 'Run SwiftLint and auto-fix issues' },
+         'release' => { args: '[--full|--deploy|--no-deploy|--skip-notarize|--version X.Y.Z|--notes "..."]', desc: 'Build, sign, notarize, package, and optionally deploy' },
++        'runtime_e2e' => { args: '[AppName] [--host mini] [--live-seconds N] [--basic-only|--pro-only] [--json]', desc: 'Launch signed runtime in Basic + Pro on the Mini and run E2E smoke' },
+         'release_preflight' => { args: '', desc: 'Run all pre-release safety checks without building' },
+-        'appstore_preflight' => { args: '', desc: 'Run App Store submission compliance checks' }
++        'appstore_preflight' => { args: '', desc: 'Run App Store submission compliance checks' },
++        'setapp_preflight' => { args: '<archive.zip|App.app>', desc: 'Run Setapp bundle/archive compliance checks before portal upload' },
++        'setapp_runtime_verify' => { args: '<archive.zip|App.app>', desc: 'Install and launch the exact Setapp artifact, then run navigation smoke' }
+       }
+     },
+     gen: {
+@@ -121,6 +126,7 @@ class SaneMaster
+         'check_docs' => { args: '', desc: 'Check docs are in sync with code' },
+         'check_binary' => { args: '', desc: 'Audit binary for security issues' },
+         'test_scan' => { args: '[-v]', desc: 'Scan tests for tautologies and hardcoded values' },
++        'slop_check' => { args: '[-v]', desc: 'Scan for maintainability drift and AI-style slop' },
+         'gate_review' => { args: '<fixture.json> [--json]', desc: 'Review candidate prevention gates against seed/block/allow fixtures' },
+         'structural' => { args: '[path]', desc: 'Structural compliance check (sc)' },
+         'compliance' => { args: '[path]', desc: 'Structural + session compliance (cr)' }
+@@ -256,6 +262,8 @@ class SaneMaster
+                                   audit
+                                   system_check
+                                   release
++                                  runtime_e2e
++                                  e2e
+                                   release_preflight
+                                   appstore_preflight
+                                   asp
+@@ -411,21 +419,16 @@ class SaneMaster
+     end
+ 
+     unless mini_reachable?
+-      puts '⚠️  Mac mini is unreachable. Falling back to local execution.'
+-      return
++      abort "❌ Mac mini is unreachable for '#{command}'. Fix mini access or rerun with --local."
+     end
+ 
+     remote_repo = map_local_path_to_mini(Dir.pwd)
+     unless remote_repo
+-      puts "⚠️  Could not map local path to mini: #{Dir.pwd}"
+-      puts '   Falling back to local execution.'
+-      return
++      abort "❌ Could not map local path to mini: #{Dir.pwd}. Fix the route mapping or rerun with --local."
+     end
+ 
+     unless mini_path_exists?(remote_repo)
+-      puts "⚠️  Repo not found on mini: #{remote_repo}"
+-      puts '   Falling back to local execution.'
+-      return
++      abort "❌ Repo not found on mini: #{remote_repo}. Sync or clone it there, or rerun with --local."
+     end
+ 
+     remote_saneprocess_repo = map_local_path_to_mini(saneprocess_repo_root)
+@@ -1327,6 +1330,10 @@ PY
+       release_preflight(args)
+     when 'appstore_preflight', 'asp'
+       appstore_preflight(args)
++    when 'setapp_preflight', 'setapp-preflight', 'sapp'
++      setapp_preflight(args)
++    when 'setapp_runtime_verify', 'setapp-runtime-verify', 'sapp-runtime'
++      setapp_runtime_verify(args)
+ 
+     # Sales & Downloads
+     when 'sales'
+@@ -1387,6 +1394,8 @@ PY
+       check_deprecations
+     when 'swift6_check', 'swift6', 'concurrency_check'
+       swift6_check
++    when 'runtime_e2e', 'e2e'
++      exit(runtime_e2e(args) ? 0 : 1)
+     when 'saneui_guard', 'ui_guard'
+       target = args.first || Dir.pwd
+       success = SaneMasterModules::SaneUIGuard.run_cli(target)
+@@ -1395,6 +1404,9 @@ PY
+       run_test_suite(args)
+     when 'test_scan', 'scan_tests', 'test_quality'
+       run_test_scan(args)
++    when 'slop_check', 'check_slop', 'slop'
++      report = run_slop_check(args)
++      exit(report[:status] == :warning ? 1 : 0)
+     when 'gate_review', 'review_gate', 'gate_rule_review'
+       success = run_gate_review(args)
+       exit(success ? 0 : 1)
+@@ -1975,6 +1987,18 @@ PY
+       flags: {},
+       examples: ['appstore_preflight', 'asp']
+     },
++    'setapp_preflight' => {
++      usage: 'setapp_preflight <archive.zip|App.app> (or sapp)',
++      description: 'Run Setapp submission checks against the exact archive or app bundle before developer portal upload.',
++      flags: {},
++      examples: ['setapp_preflight ~/Downloads/SaneClip-Setapp.zip', 'sapp build/SaneBar.app']
++    },
++    'setapp_runtime_verify' => {
++      usage: 'setapp_runtime_verify <archive.zip|App.app> (or sapp-runtime)',
++      description: 'Install the exact Setapp archive/app on the runtime host, verify launch survival, and run app-specific navigation smoke.',
++      flags: {},
++      examples: ['setapp_runtime_verify ~/Downloads/SaneClip-Setapp.zip', 'sapp-runtime build/SaneBar.app']
++    },
+     'sales' => {
+       usage: 'sales [--daily|--month|--products|--fees|--find-customer-orders --email E --name N --product P|--license-status KEY|--disable-license-key KEY|--refund-order ID|--refund-order-number N|--refund-duplicate-license-key KEY --keep-license-key KEY --approval-note PATH|--include-refunded|--json]',
+       description: 'LemonSqueezy sales report and guarded order refunds. Default: daily breakdown (today/yesterday/week/all-time).',
+diff --git a/scripts/app_test_mode.sh b/scripts/app_test_mode.sh
+index 31dab44..0ac3582 100755
+--- a/scripts/app_test_mode.sh
++++ b/scripts/app_test_mode.sh
+@@ -1263,9 +1263,14 @@ app_owner_check() {
+ 
+ owner_install_local() {
+   local app="$1"
+-  local bundle
++  local bundle issue
+ 
+   bundle="$(local_bundle_path "$app")"
++  issue="$(local_install_identity_issue "$app" "$bundle")"
++  if [[ -n "$issue" ]]; then
++    echo "info: repairing local $app install ($issue)"
++    rm -rf "$bundle"
++  fi
+   if [[ ! -d "$bundle" ]]; then
+     if ! bootstrap_install_local "$app"; then
+       echo "error: app not found at $bundle and bootstrap failed" >&2
+@@ -1284,9 +1289,14 @@ owner_install_local() {
+ 
+ owner_install_remote() {
+   local app="$1"
+-  local bundle
++  local bundle issue
+ 
+   bundle="$(remote_bundle_path "$app")"
++  issue="$(remote_install_identity_issue "$app" "$bundle")"
++  if [[ -n "$issue" ]]; then
++    echo "info: repairing $app install on mini ($issue)"
++    ssh -o ConnectTimeout=5 -o BatchMode=yes mini "rm -rf '$bundle'"
++  fi
+   if ! ssh -o ConnectTimeout=5 -o BatchMode=yes mini "[ -d \"$bundle\" ]" >/dev/null 2>&1; then
+     if ! bootstrap_install_remote "$app"; then
+       echo "error: app not found at $bundle on mini and bootstrap failed" >&2
+@@ -1311,6 +1321,85 @@ owner_install() {
+   fi
+ }
+ 
++local_install_identity_issue() {
++  local app="$1"
++  local bundle="$2"
++  local expected_bundle actual_bundle sign_output signed_identifier signed_team expected_signing_team
++  local info_plist="$bundle/Contents/Info.plist"
++
++  [[ -d "$bundle" ]] || return 0
++
++  expected_bundle="$(fallback_bundle_id "$app")"
++  actual_bundle="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info_plist" 2>/dev/null || true)"
++  if [[ "$actual_bundle" != "$expected_bundle" ]]; then
++    echo "bundle id $actual_bundle"
++    return 0
++  fi
++
++  [[ "$ALLOW_UNSIGNED_INSTALL" -eq 1 ]] && return 0
++
++  sign_output="$(codesign -dv --verbose=2 "$bundle" 2>&1 || true)"
++  signed_identifier="$(printf '%s\n' "$sign_output" | sed -n 's/^Identifier=//p' | head -n 1)"
++  signed_team="$(printf '%s\n' "$sign_output" | sed -n 's/^TeamIdentifier=//p' | head -n 1)"
++  expected_signing_team="$(expected_team_id)"
++
++  if [[ -z "$signed_team" || "$signed_team" == "not set" ]]; then
++    echo "unsigned install"
++    return 0
++  fi
++
++  if [[ "$signed_team" != "$expected_signing_team" ]]; then
++    echo "signing team $signed_team"
++    return 0
++  fi
++
++  if [[ "$signed_identifier" != "$expected_bundle" ]]; then
++    echo "code-sign identifier $signed_identifier"
++  fi
++}
++
++remote_install_identity_issue() {
++  local app="$1"
++  local bundle="$2"
++  local expected_bundle identity_blob actual_bundle signed_identifier signed_team expected_signing_team remote_cmd
++
++  ssh -o ConnectTimeout=5 -o BatchMode=yes mini "[ -d \"$bundle\" ]" >/dev/null 2>&1 || return 0
++
++  expected_bundle="$(fallback_bundle_id "$app")"
++  expected_signing_team="$(expected_team_id)"
++  remote_cmd=$(cat <<REMOTE
++APP_BUNDLE="$bundle"
++/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "\$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true
++codesign -dv --verbose=2 "\$APP_BUNDLE" 2>&1 | sed -n 's/^Identifier=//p; s/^TeamIdentifier=//p'
++REMOTE
++)
++  identity_blob="$(ssh -o ConnectTimeout=5 -o BatchMode=yes mini "$remote_cmd" || true)"
++  actual_bundle="$(printf '%s\n' "$identity_blob" | sed -n '1p')"
++  signed_identifier="$(printf '%s\n' "$identity_blob" | sed -n '2p')"
++  signed_team="$(printf '%s\n' "$identity_blob" | sed -n '3p')"
++
++  if [[ "$actual_bundle" != "$expected_bundle" ]]; then
++    echo "bundle id $actual_bundle"
++    return 0
++  fi
++
++  [[ "$ALLOW_UNSIGNED_INSTALL" -eq 1 ]] && return 0
++
++  if [[ -z "$signed_team" || "$signed_team" == "not set" ]]; then
++    echo "unsigned install"
++    return 0
++  fi
++
++  if [[ "$signed_team" != "$expected_signing_team" ]]; then
++    echo "signing team $signed_team"
++    return 0
++  fi
++
++  if [[ "$signed_identifier" != "$expected_bundle" ]]; then
++    echo "code-sign identifier $signed_identifier"
++  fi
++}
++
+ owner_pro_local() {
+   local app="$1"
+   set_app_mode_keychain_local "$app" "pro"
+diff --git a/scripts/app_test_mode_test.rb b/scripts/app_test_mode_test.rb
+index 226f8e7..0931b6c 100644
+--- a/scripts/app_test_mode_test.rb
++++ b/scripts/app_test_mode_test.rb
+@@ -31,6 +31,16 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
+       )
+       true
+     end
++
++    test('owner install repairs stale canonical installs before bootstrapping') do
++      source = File.read(SCRIPT_PATH)
++
++      assert_includes(source, 'issue="$(local_install_identity_issue "$app" "$bundle")"')
++      assert_includes(source, 'echo "info: repairing local $app install ($issue)"')
++      assert_includes(source, 'issue="$(remote_install_identity_issue "$app" "$bundle")"')
++      assert_includes(source, 'echo "info: repairing $app install on mini ($issue)"')
++      true
++    end
+   end
+ 
+   test_category('No user Applications fallback') do
+diff --git a/scripts/mini/bootstrap-build-server.sh b/scripts/mini/bootstrap-build-server.sh
+index 6d99741..a7e17df 100755
+--- a/scripts/mini/bootstrap-build-server.sh
++++ b/scripts/mini/bootstrap-build-server.sh
+@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+ SECRETS_ENV_DIR="${HOME}/.config/saneprocess"
+ SECRETS_ENV_FILE="${SECRETS_ENV_DIR}/secrets.env"
++NV_ENV_FILE="${HOME}/.config/nv/env"
+ 
+ SEED_MISSING=false
+ EXPORT_ENV_FILE=false
+@@ -233,19 +234,19 @@ ensure_service_value() {
+ 
+ env_file_get() {
+     local key="$1"
+-    if [ ! -f "${SECRETS_ENV_FILE}" ]; then
+-        return 1
+-    fi
++    local value env_file file_escaped
+ 
+-    local value file_escaped
+-    file_escaped="$(printf '%q' "${SECRETS_ENV_FILE}")"
+-    value=$(/bin/bash -lc "set -a; source ${file_escaped} >/dev/null 2>&1 || exit 1; printf '%s' \"\${${key}:-}\"" 2>/dev/null || true)
+-    if [ -z "${value}" ]; then
+-        return 1
+-    fi
++    for env_file in "${SECRETS_ENV_FILE}" "${NV_ENV_FILE}"; do
++        [ -f "${env_file}" ] || continue
++        file_escaped="$(printf '%q' "${env_file}")"
++        value=$(/bin/bash -lc "set -a; source ${file_escaped} >/dev/null 2>&1 || exit 1; printf '%s' \"\${${key}:-}\"" 2>/dev/null || true)
++        if [ -n "${value}" ]; then
++            printf '%s' "${value}"
++            return 0
++        fi
++    done
+ 
+-    printf '%s' "${value}"
+-    return 0
++    return 1
+ }
+ 
+ resolve_secret() {
+diff --git a/scripts/sane_test.rb b/scripts/sane_test.rb
+index b34160c..c82beb2 100755
+--- a/scripts/sane_test.rb
++++ b/scripts/sane_test.rb
+@@ -118,8 +118,7 @@ class SaneTest
+       puts '✅ Mac mini is reachable → deploying there'
+       :mini
+     else
+-      puts '⚠️  Mac mini not reachable → testing locally'
+-      :local
++      abort '❌ Mac mini not reachable. Fix mini access or rerun with --local.'
+     end
+   end
+ 
+diff --git a/scripts/sanemaster/base.rb b/scripts/sanemaster/base.rb
+index 8942890..c20c51b 100644
+--- a/scripts/sanemaster/base.rb
++++ b/scripts/sanemaster/base.rb
+@@ -46,6 +46,12 @@ module SaneMasterModules
+                                       release
+                                       release_preflight
+                                       appstore_preflight
++                                      setapp_preflight
++                                      setapp-preflight
++                                      setapp_runtime_verify
++                                      setapp-runtime-verify
++                                      sapp-runtime
++                                      sapp
+                                       asp
+                                     ]).freeze
+ 
+diff --git a/scripts/sanemaster/meta.rb b/scripts/sanemaster/meta.rb
+index 8ad3711..a7c9957 100755
+--- a/scripts/sanemaster/meta.rb
++++ b/scripts/sanemaster/meta.rb
+@@ -24,6 +24,11 @@ module SaneMasterModules
+     CRASH_REPORT_WARN = 5         # Warn if unaddressed crashes pile up
+     TEST_COUNT_MIN = 900          # Warn if test count drops significantly
+     TEST_QUALITY_WARN = 0         # Zero tolerance for test anti-patterns
++    SLOP_DUPLICATE_WINDOW_LINES = 8
++    SLOP_NESTING_WARN = 5
++    SLOP_NESTING_HARD = 7
++    SLOP_BRITTLE_SOURCE_WARN = 6
++    SLOP_BRITTLE_SOURCE_HARD = 12
+ 
+     def run_meta(_args = [])
+       start_time = Time.now
+@@ -229,6 +234,14 @@ module SaneMasterModules
+       scan_test_quality(verbose: verbose)
+     end
+ 
++    def run_slop_check(args = [])
++      verbose = args.include?('--verbose') || args.include?('-v')
++      puts '🧹 --- [ SLOP CHECK ] ---'
++      puts 'Scanning for maintainability drift and high-confidence AI-style slop...'
++      puts ''
++      scan_slop(verbose: verbose)
++    end
++
+     # Core scanning logic - used by both check_test_quality and run_test_scan
+     def scan_test_quality(verbose: false)
+       # Comprehensive patterns from test_quality_checker.rb
+@@ -417,6 +430,39 @@ module SaneMasterModules
+       }
+     end
+ 
++    def scan_slop(verbose: false, target_root: Dir.pwd, paths: nil, emit_output: true)
++      issues = { blocking: [], advisory: [] }
++      candidate_files = paths || slop_candidate_files(target_root)
++
++      candidate_files.each do |file|
++        next unless File.file?(file)
++
++        content = File.read(file)
++        relative_path = file.sub(%r{^#{Regexp.escape(target_root)}/?}, '')
++        ext = File.extname(file)
++
++        scan_slop_file_length(relative_path, content, issues)
++        scan_slop_deep_nesting(relative_path, content, ext, issues)
++        scan_slop_duplicate_blocks(relative_path, content, ext, issues)
++        scan_slop_source_shape_tests(relative_path, content, issues)
++        scan_slop_ai_artifact_comments(relative_path, content, ext, issues)
++      end
++
++      blocking_count = issues[:blocking].count
++      advisory_count = issues[:advisory].count
++      status = blocking_count.positive? ? :warning : :ok
++      report = {
++        status: status,
++        issues: issues,
++        blocking_count: blocking_count,
++        advisory_count: advisory_count,
++        count: blocking_count + advisory_count
++      }
++
++      print_slop_report(report, verbose: verbose) if emit_output
++      report
++    end
++
+     def scan_test_structure(content, relative_path, issues)
+       lines = content.lines
+       test_name_regex = /"(.*?)"/
+@@ -455,6 +501,260 @@ module SaneMasterModules
+       end
+     end
+ 
++    def slop_candidate_files(target_root)
++      files = Dir.glob(File.join(target_root, '**', '*.{swift,rb,py,sh}'), File::FNM_EXTGLOB)
++      files.reject do |path|
++        next true unless File.file?(path)
++
++        relative = path.sub(%r{^#{Regexp.escape(target_root)}/?}, '')
++        slop_ignored_path?(relative) || slop_generated_file?(relative)
++      end.sort
++    end
++
++    def slop_ignored_path?(relative_path)
++      ignored_fragments = %w[
++        /.git/
++        /.build/
++        /.worktrees/
++        /DerivedData/
++        /build/
++        /Pods/
++        /Carthage/
++        /vendor/
++        /archives/
++        /node_modules/
++        /coverage/
++        /outputs/
++      ]
++      ignored_fragments.any? { |fragment| relative_path.include?(fragment.delete_prefix('/')) || relative_path.include?(fragment) }
++    end
++
++    def slop_generated_file?(relative_path)
++      relative_path.include?('Mocks.swift') ||
++        relative_path.include?('.generated.') ||
++        relative_path.include?('/Generated/')
++    end
++
++    def scan_slop_file_length(relative_path, content, issues)
++      line_count = content.lines.count
++      if line_count > SWIFT_FILE_HARD_LIMIT
++        issues[:advisory] << {
++          file: relative_path,
++          kind: 'oversized-file',
++          message: "#{line_count} lines; split this file before release"
++        }
++      elsif line_count > SWIFT_FILE_SOFT_LIMIT
++        issues[:advisory] << {
++          file: relative_path,
++          kind: 'large-file',
++          message: "#{line_count} lines; approaching hard-to-audit size"
++        }
++      end
++    end
++
++    def scan_slop_deep_nesting(relative_path, content, ext, issues)
++      return unless ext == '.swift'
++
++      max_depth = slop_max_brace_depth(content, ext)
++      if max_depth >= SLOP_NESTING_HARD
++        issues[:advisory] << {
++          file: relative_path,
++          kind: 'deep-nesting',
++          message: "maximum nesting depth #{max_depth}; flatten control flow"
++        }
++      elsif max_depth >= SLOP_NESTING_WARN
++        issues[:advisory] << {
++          file: relative_path,
++          kind: 'deep-nesting',
++          message: "maximum nesting depth #{max_depth}; readability is drifting"
++        }
++      end
++    end
++
++    def scan_slop_duplicate_blocks(relative_path, content, ext, issues)
++      duplicate = slop_duplicate_block(content, ext)
++      return unless duplicate
++
++      issues[:advisory] << {
++        file: relative_path,
++        kind: 'duplicate-block',
++        message: "repeated #{SLOP_DUPLICATE_WINDOW_LINES}-line block at lines #{duplicate[:first_line]} and #{duplicate[:second_line]}"
++      }
++    end
++
++    def scan_slop_source_shape_tests(relative_path, content, issues)
++      return unless relative_path.match?(/test/i)
++
++      source_reads = content.scan(/\b(?:String\s*\(\s*contentsOf:|File\.read\s*\()/).count
++      contains_assertions = content.scan(/\b(?:source|content|text|script|plist|pbxproj|manifest)\.contains\s*\(/).count
++      multiline_contains = content.scan(/\.contains\s*\([^)]*\\n/m).count
++      return if source_reads.zero? || contains_assertions.zero?
++
++      if contains_assertions >= SLOP_BRITTLE_SOURCE_HARD
++        issues[:advisory] << {
++          file: relative_path,
++          kind: 'brittle-source-test',
++          message: "#{contains_assertions} source-shape assertions; convert the highest-value ones to behavior tests"
++        }
++      elsif contains_assertions >= SLOP_BRITTLE_SOURCE_WARN
++        issues[:advisory] << {
++          file: relative_path,
++          kind: 'brittle-source-test',
++          message: "#{contains_assertions} source-shape assertions; this is starting to drift from behavior coverage"
++        }
++      end
++
++      return unless multiline_contains >= 2
++
++      issues[:advisory] << {
++        file: relative_path,
++        kind: 'whitespace-sensitive-source-test',
++        message: "#{multiline_contains} multiline source-string assertions depend on formatting"
++      }
++    end
++
++    def scan_slop_ai_artifact_comments(relative_path, content, ext, issues)
++      markers = [
++        /ai can read/i,
++        /generated by (?:ai|chatgpt|claude|copilot)/i,
++        /copied from (?:chatgpt|claude|copilot)/i
++      ]
++
++      content.lines.each_with_index do |line, idx|
++        comment = slop_comment_text(line, ext)
++        next unless comment
++
++        marker = markers.find { |pattern| comment.match?(pattern) }
++        next unless marker
++
++        issues[:blocking] << {
++          file: relative_path,
++          line: idx + 1,
++          kind: 'ai-artifact-comment',
++          message: "comment includes '#{comment.strip}'"
++        }
++      end
++    end
++
++    def slop_comment_text(line, ext)
++      case ext
++      when '.swift'
++        line[%r{//(.*)$}, 1]
++      when '.rb', '.py', '.sh'
++        line[/#(.*)$/, 1]
++      else
++        nil
++      end
++    end
++
++    def slop_max_brace_depth(content, ext)
++      depth = 0
++      max_depth = 0
++      content.each_line do |line|
++        stripped = slop_strip_strings_and_comments(line, ext)
++        stripped.each_char do |char|
++          if char == '}'
++            depth = [depth - 1, 0].max
++          elsif char == '{'
++            depth += 1
++            max_depth = [max_depth, depth].max
++          end
++        end
++      end
++      max_depth
++    end
++
++    def slop_duplicate_block(content, ext)
++      normalized_lines = content.lines.each_with_index.map do |line, idx|
++        normalized = slop_normalized_line(line, ext)
++        next if normalized.empty?
++
++        { line: idx + 1, text: normalized }
++      end.compact
++      return nil if normalized_lines.length < SLOP_DUPLICATE_WINDOW_LINES * 2
++
++      windows = Hash.new { |hash, key| hash[key] = [] }
++      normalized_lines.each_cons(SLOP_DUPLICATE_WINDOW_LINES) do |window|
++        next if slop_window_trivial?(window)
++
++        block_text = window.map { |entry| entry[:text] }.join("\n")
++        next if block_text.length < 240
++
++        windows[block_text] << window.first[:line]
++      end
++
++      block_text, starts = windows.find do |_text, line_numbers|
++        line_numbers.length > 1 && line_numbers.each_cons(2).any? { |first, second| (second - first) >= SLOP_DUPLICATE_WINDOW_LINES }
++      end
++      return nil unless block_text && starts
++
++      { first_line: starts[0], second_line: starts[1], block: block_text }
++    end
++
++    def slop_window_trivial?(window)
++      trivial = window.count do |entry|
++        entry[:text].match?(/\A(?:[\{\}\[\]\(\),]+|else|do|end)\z/)
++      end
++      trivial >= (SLOP_DUPLICATE_WINDOW_LINES / 2)
++    end
++
++    def slop_normalized_line(line, ext)
++      stripped = slop_strip_strings_and_comments(line, ext)
++      normalized = stripped.strip.gsub(/\s+/, ' ')
++      return '' if normalized.empty?
++      return '' if normalized.start_with?('import ')
++
++      normalized
++    end
++
++    def slop_strip_strings_and_comments(line, ext)
++      without_strings = line.gsub(/"(?:\\.|[^"\\])*"/, '""')
++      case ext
++      when '.swift'
++        without_strings.sub(%r{//.*$}, '')
++      when '.rb', '.py', '.sh'
++        without_strings.sub(/#.*$/, '')
++      else
++        without_strings
++      end
++    end
++
++    def print_slop_report(report, verbose:)
++      if report[:blocking_count].zero? && report[:advisory_count].zero?
++        puts '   ✅ No high-confidence slop markers detected'
++        puts ''
++        return
++      end
++
++      if verbose
++        if report[:issues][:blocking].any?
++          puts '❌ BLOCKING ISSUES:'
++          report[:issues][:blocking].each do |issue|
++            location = issue[:line] ? "#{issue[:file]}:#{issue[:line]}" : issue[:file]
++            puts "   • #{location} — #{issue[:kind]}: #{issue[:message]}"
++          end
++          puts ''
++        end
++
++        if report[:issues][:advisory].any?
++          puts '⚠️  ADVISORY ISSUES:'
++          report[:issues][:advisory].each do |issue|
++            puts "   • #{issue[:file]} — #{issue[:kind]}: #{issue[:message]}"
++          end
++          puts ''
++        end
++      else
++        puts "   ❌ #{report[:blocking_count]} blocking slop issue(s)" if report[:blocking_count].positive?
++        report[:issues][:blocking].group_by { |issue| issue[:file] }.each do |file, grouped|
++          kinds = grouped.map { |issue| issue[:kind] }.uniq.join(', ')
++          puts "      ⚠️  #{file}: #{kinds}"
++        end
++        puts "   ⚠️  #{report[:advisory_count]} advisory slop issue(s)" if report[:advisory_count].positive?
++      end
++
++      puts ''
++    end
++
+     def extract_test_body(lines, start_idx)
+       i = start_idx
+       depth = 0
+diff --git a/scripts/sanemaster/release.rb b/scripts/sanemaster/release.rb
+index bcd65cb..004c0a0 100644
+--- a/scripts/sanemaster/release.rb
++++ b/scripts/sanemaster/release.rb
+@@ -11,6 +11,8 @@ require 'json'
+ require 'open3'
+ require 'openssl'
+ require 'base64'
++require 'find'
++require 'tmpdir'
+ 
+ module SaneMasterModules
+   # Unified release entrypoint (delegates to SaneProcess release.sh)
+@@ -872,6 +874,8 @@ module SaneMasterModules
+     def appstore_fetch_url_status(url)
+       uri = URI(url.to_s)
+       request = Net::HTTP::Get.new(uri)
++      request['User-Agent'] = 'Mozilla/5.0 (Macintosh; Intel Mac OS X) SaneProcess/1.0'
++      request['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+ 
+       http = Net::HTTP.new(uri.host, uri.port)
+       http.use_ssl = uri.scheme == 'https'
+@@ -1295,6 +1299,35 @@ module SaneMasterModules
+       report
+     end
+ 
++    def asc_app_store_release_report(app_id:, platform:)
++      report = { applicable: false, released: false, summary: '' }
++      return report if app_id.to_s.strip.empty?
++
++      token = appstore_connect_token
++      return report if token.nil?
++
++      asc_platform = platform.to_s.downcase == 'ios' ? 'IOS' : 'MAC_OS'
++      response = asc_get_json("/apps/#{app_id}/appStoreVersions?filter[platform]=#{asc_platform}&limit=200", token: token)
++      return report unless response.is_a?(Hash)
++
++      versions = Array(response['data']).map do |entry|
++        {
++          version: entry.dig('attributes', 'versionString').to_s.strip,
++          state: entry.dig('attributes', 'appStoreState').to_s.strip
++        }
++      end
++      report[:applicable] = true
++      ready = versions.find { |entry| entry[:state] == 'READY_FOR_SALE' }
++      if ready
++        report[:released] = true
++        report[:summary] = "#{ready[:version]} (READY_FOR_SALE)"
++      else
++        report[:summary] = versions.map { |entry| "#{entry[:version]} (#{entry[:state]})" }.reject { |value| value == ' ()' }.join(', ')
++        report[:summary] = 'no App Store versions returned' if report[:summary].empty?
++      end
++      report
++    end
++
+     def appstore_version_ui_includes_iap?(app_id:, platform:, product_id:)
+       return nil if app_id.to_s.strip.empty? || product_id.to_s.strip.empty?
+ 
+@@ -2043,7 +2076,42 @@ module SaneMasterModules
+         puts '⏭️  skipped (no qa.rb)'
+       end
+ 
+-    # 1b. Monetization guardrails (protect against accidental full-free releases)
++      print '  Runtime E2E... '
++      runtime_report = release_preflight_runtime_e2e_report(app_name: preflight_app_name)
++      case runtime_report[:status]
++      when :skipped
++        puts "⏭️  #{runtime_report[:summary]}"
++      when :ok
++        puts "✅ #{runtime_report[:summary]}"
++      else
++        puts '❌ FAIL'
++        issues << "Runtime E2E: #{runtime_report[:summary]}"
++      end
++      Array(runtime_report[:warnings]).each { |warning| warnings << "Runtime E2E: #{warning}" }
++
++      # 1b. Slop check
++      print '  Slop check... '
++      slop_report = release_preflight_slop_report(target_root: Dir.pwd)
++      if slop_report[:blocking_count].zero?
++        if slop_report[:advisory_count].positive?
++          puts "✅ #{slop_report[:advisory_count]} advisory"
++          slop_report[:issues][:advisory].each do |issue|
++            warnings << "Slop check: #{issue[:file]} — #{issue[:message]}"
++          end
++        else
++          puts '✅'
++        end
++      else
++        puts '❌ FAIL'
++        slop_report[:issues][:blocking].each do |issue|
++          issues << "Slop check: #{issue[:file]} — #{issue[:message]}"
++        end
++        slop_report[:issues][:advisory].each do |issue|
++          warnings << "Slop check: #{issue[:file]} — #{issue[:message]}"
++        end
++      end
++
++      # 1c. Monetization guardrails (protect against accidental full-free releases)
+       print '  Monetization guardrails... '
+       project_yml_content = File.exist?('project.yml') ? safe_read('project.yml') : ''
+       plist_content = Dir.glob('**/*.plist').reject { |p| p.include?('DerivedData') || p.include?('build/') }.map { |p| safe_read(p) }.join("\n")
+@@ -2075,7 +2143,7 @@ module SaneMasterModules
+         puts '⏭️  skipped (no license/pro model detected)'
+       end
+ 
+-      # 1c. CloudKit production schema readiness
++      # 1d. CloudKit production schema readiness
+       print '  CloudKit production schema... '
+       cloudkit_report = cloudkit_schema_guardrail_report(config: preflight_config, environment: 'production')
+       if cloudkit_report[:applicable]
+@@ -2539,6 +2607,40 @@ module SaneMasterModules
+       exit 1 if issues.any?
+     end
+ 
++    def release_preflight_slop_report(target_root:)
++      scan_slop(verbose: false, target_root: target_root, emit_output: false)
++    end
++
++    def release_preflight_runtime_e2e_report(app_name:, host: 'mini')
++      return { status: :skipped, summary: 'not an app repo', warnings: [] } unless release_preflight_runtime_e2e_app?(app_name)
++
++      report = runtime_e2e_report(
++        app_name: app_name,
++        host: host,
++        emit_output: false
++      )
++      {
++        status: report[:status],
++        summary: report[:summary],
++        warnings: report[:modes].select { |mode| mode[:probe][:status] == :skipped }
++          .map { |mode| "#{mode[:mode]} probe skipped (#{mode[:probe][:summary]})" }
++      }
++    rescue StandardError => e
++      {
++        status: :error,
++        summary: e.message,
++        warnings: []
++      }
++    end
++
++    def release_preflight_runtime_e2e_app?(app_name)
++      if respond_to?(:known_runtime_e2e_apps, true)
++        send(:known_runtime_e2e_apps).include?(app_name)
++      else
++        %w[SaneBar SaneClip SaneClick SaneHosts SaneSales SaneSync SaneVideo].include?(app_name)
++      end
++    end
++
+     def release_gate_fixture_reports(app_name)
+       release_gate_fixture_paths(app_name).map do |fixture_path|
+         review_gate_fixture(JSON.parse(File.read(fixture_path)), fixture_path: fixture_path)
+@@ -2560,6 +2662,1150 @@ module SaneMasterModules
+       Dir.glob(File.join(root, 'test', 'fixtures', 'gates', "#{normalized}_*.json")).sort
+     end
+ 
++    SETAPP_REQUIRED_INFO_KEYS = %w[
++      CFBundleIdentifier
++      CFBundleName
++      CFBundleIconFile
++      CFBundleVersion
++      CFBundleShortVersionString
++      NSUpdateSecurityPolicy
++      MPSupportedArchitectures
++    ].freeze
++
++    SETAPP_FORBIDDEN_INFO_KEYS = %w[
++      AppStoreProductID
++      SUFeedURL
++      SUPublicEDKey
++      SUEnableAutomaticChecks
++    ].freeze
++
++    SETAPP_FORBIDDEN_ARTIFACT_PATTERNS = {
++      'direct checkout URL' => %r{go\.saneapps\.com/buy/|lemonsqueezy\.com|checkout\.lemonsqueezy\.com}i,
++      'App Store rating/share prompt' => /Rate on App Store|Share app[^A-Za-z]+App Store/i,
++      'Setapp endorsement confusion' => /official Setapp app|endorsed by Setapp|endorsed by MacPaw/i,
++      'notification marketing copy' => /promotional notification|marketing notification/i
++    }.freeze
++
++    SETAPP_REVIEW_WARNING_PATTERNS = {
++      'direct license-key copy' => /Enter License Key|Use Purchase Key|Activation Code/i,
++      'third-party updater UI copy' => /Check for Updates|Automatically check for updates|Software Updates/i
++    }.freeze
++
++    SETAPP_AGENT_BUNDLE_ID = 'com.setapp.DesktopClient.SetappAgent'
++    SETAPP_AGENT_TEAM_ID = 'MEHY5QF425'
++    SETAPP_MACH_SERVICE = 'com.setapp.ProvisioningService'
++    SETAPP_REQUIRED_ICON_SIZE = 1024
++
++    def setapp_preflight(args)
++      return unless ensure_research_gate_clear!('setapp_preflight')
++
++      artifact = args.find { |arg| !arg.start_with?('-') }
++      if artifact.to_s.strip.empty?
++        warn 'Usage: ./scripts/SaneMaster.rb setapp_preflight <archive.zip|App.app>'
++        exit 2
++      end
++
++      artifact = File.expand_path(artifact)
++      unless File.exist?(artifact)
++        warn "Setapp artifact not found: #{artifact}"
++        exit 2
++      end
++
++      puts '📦 --- [ SETAPP PREFLIGHT ] ---'
++      puts "Artifact: #{artifact}"
++      puts ''
++
++      Dir.mktmpdir('setapp-preflight-') do |tmpdir|
++        result = setapp_resolve_artifact(artifact, tmpdir)
++        issues = result[:issues]
++        warnings = result[:warnings]
++        app_path = result[:app_path]
++        adjacent_dir = result[:adjacent_dir]
++        config = setapp_project_config
++
++        setapp_audit_project_metadata(config, issues, warnings)
++        setapp_audit_ios_companion(config, issues, warnings)
++
++        if app_path && File.directory?(app_path)
++          setapp_audit_app_bundle(app_path, adjacent_dir: adjacent_dir, config: config, issues: issues, warnings: warnings)
++        end
++
++        puts ''
++        puts '═' * 55
++        puts '  SETAPP PREFLIGHT'
++        puts '═' * 55
++        if issues.any?
++          puts ''
++          puts "  ❌ BLOCKED: #{issues.count} issue(s) must be fixed"
++          issues.each_with_index { |issue, index| puts "     #{index + 1}. #{issue}" }
++        end
++        if warnings.any?
++          puts ''
++          puts "  ⚠️  #{warnings.count} warning(s) to review:"
++          warnings.each_with_index { |warning, index| puts "     #{index + 1}. #{warning}" }
++        end
++        puts ''
++        if issues.empty?
++          puts '  ✅ ALL CLEAR — Setapp archive is ready for portal upload'
++        else
++          puts '  🔴 FIX ISSUES ABOVE before uploading to Setapp'
++        end
++        puts '═' * 55
++
++        record_process_metric(
++          'setapp_preflight',
++          success: issues.empty?,
++          app: app_path ? File.basename(app_path, '.app') : File.basename(artifact),
++          issues_count: issues.length,
++          warnings_count: warnings.length
++        ) if respond_to?(:record_process_metric)
++
++        exit 1 if issues.any?
++      end
++    end
++
++    def setapp_runtime_verify(args)
++      return unless ensure_research_gate_clear!('setapp_runtime_verify')
++
++      artifact = args.find { |arg| !arg.start_with?('-') }
++      if artifact.to_s.strip.empty?
++        warn 'Usage: ./scripts/SaneMaster.rb setapp_runtime_verify <archive.zip|App.app>'
++        exit 2
++      end
++
++      artifact = File.expand_path(artifact)
++      unless File.exist?(artifact)
++        warn "Setapp artifact not found: #{artifact}"
++        exit 2
++      end
++
++      puts '🧭 --- [ SETAPP RUNTIME VERIFY ] ---'
++      puts "Artifact: #{artifact}"
++      puts ''
++
++      issues = []
++      Dir.mktmpdir('setapp-runtime-') do |tmpdir|
++        result = setapp_resolve_artifact(artifact, tmpdir)
++        issues.concat(result[:issues])
++        app_path = result[:app_path]
++        if app_path && File.directory?(app_path)
++          setapp_verify_installed_artifact_runtime(app_path, issues)
++        else
++          issues << 'No app bundle was available for runtime verification'
++        end
++      end
++
++      puts ''
++      puts '═' * 55
++      puts '  SETAPP RUNTIME VERIFY'
++      puts '═' * 55
++      if issues.empty?
++        puts '  ✅ ALL CLEAR — exact Setapp artifact launches and is navigable'
++      else
++        puts "  ❌ BLOCKED: #{issues.count} runtime issue(s) must be fixed"
++        issues.each_with_index { |issue, index| puts "     #{index + 1}. #{issue}" }
++      end
++      puts '═' * 55
++
++      record_process_metric(
++        'setapp_runtime_verify',
++        success: issues.empty?,
++        app: File.basename(artifact),
++        issues_count: issues.length
++      ) if respond_to?(:record_process_metric)
++
++      exit 1 if issues.any?
++    end
++
++    def setapp_verify_installed_artifact_runtime(app_path, issues)
++      app_name = File.basename(app_path, '.app')
++      destination = File.join('/Applications', "#{app_name}.app")
++      setapp_assert_desktop_environment(issues)
++      return if issues.any?
++
++      puts "  Installing exact artifact for runtime proof... #{destination}"
++      setapp_terminate_app(app_name)
++      setapp_trash_path(destination) if File.exist?(destination)
++      unless system('/usr/bin/ditto', app_path, destination, out: File::NULL, err: File::NULL)
++        issues << "Could not install exact Setapp artifact to #{destination}"
++        return
++      end
++
++      print '  Launch from installed artifact... '
++      bundle_id = plist_file_to_hash(File.join(destination, 'Contents', 'Info.plist'))['CFBundleIdentifier'].to_s
++      proof_path = setapp_runtime_proof_output_path(app_name, bundle_id)
++      proof_request_paths = setapp_runtime_proof_request_paths(app_name, bundle_id)
++      launched_at = Time.now
++      FileUtils.rm_f(proof_path)
++      FileUtils.mkdir_p(File.dirname(proof_path))
++      proof_request_paths.each do |request_path|
++        FileUtils.mkdir_p(File.dirname(request_path))
++        File.write(request_path, proof_path)
++      end
++      unless system(
++        '/usr/bin/open',
++        '-n',
++        destination,
++        '--args',
++        '--sane-no-keychain',
++        '--sane-setapp-proof-path',
++        proof_path,
++        out: File::NULL,
++        err: File::NULL
++      )
++        puts '❌'
++        issues << "Launch Services could not open #{destination}"
++        return
++      end
++
++      unless setapp_wait_for_process(app_name, destination)
++        puts '❌'
++        issues << "#{app_name} did not remain running from #{destination}"
++        return
++      end
++      puts '✅'
++
++      sleep 3
++      setapp_capture_launch_screenshot(app_name, since: launched_at, issues: issues)
++      setapp_review_launch_logs(app_name, bundle_id: bundle_id, since: launched_at, issues: issues)
++      crashes = if respond_to?(:recent_runtime_e2e_crashes, true)
++                  recent_runtime_e2e_crashes(app_name: app_name, host: 'local', since: Time.now.utc - 60)
++                else
++                  []
++                end
++      issues << "#{app_name} produced crash report(s) after artifact launch: #{crashes.join(', ')}" if crashes.any?
++
++      setapp_probe_artifact_navigation(app_name, proof_path, issues)
++    ensure
++      proof_request_paths&.each { |request_path| FileUtils.rm_f(request_path) }
++      setapp_terminate_app(app_name) if app_name
++    end
++
++    def setapp_review_launch_logs(app_name, bundle_id:, since:, issues:)
++      print '  Launch log review... '
++      seconds = [[(Time.now - since).ceil + 20, 60].max, 300].min
++      predicate = %(process == "#{app_name}" OR eventMessage CONTAINS[c] "1701" OR eventMessage CONTAINS[c] "#{bundle_id}")
++      output, status = setapp_capture2e_with_timeout(
++        '/usr/bin/log',
++        'show',
++        '--style',
++        'compact',
++        '--last',
++        "#{seconds}s",
++        '--predicate',
++        predicate,
++        timeout_seconds: 15
++      )
++      unless status.success?
++        puts '❌'
++        issues << "#{app_name} launch log review failed: #{summarized_output_tail(output)}"
++        return
++      end
++
++      blocking = setapp_blocking_launch_log_lines(output)
++      if blocking.any?
++        puts '❌'
++        blocking.each { |line| puts "     log: #{line}" }
++        issues << "#{app_name} produced Setapp provisioning/XPC errors during launch"
++        return
++      end
++
++      notable = setapp_notable_launch_log_lines(output)
++      if notable.empty?
++        puts '✅'
++      else
++        puts '⚠️'
++        notable.each { |line| puts "     log: #{line}" }
++      end
++    end
++
++    def setapp_blocking_launch_log_lines(output)
++      output.to_s.lines.each_with_object([]) do |line, lines|
++        text = line.strip
++        next if text.empty?
++        next if text.include?('Error getting enterprise-managed associated domains data') &&
++                text.include?('If this device is not enterprise-managed, this is normal')
++        next unless text.match?(/Setapp\.XPC|com\.setapp|Provisioning/i)
++        next unless text.match?(/-401400|-412003|serviceRespondedWithError|License is nil|Failed to fetch license|This application is no longer available/i)
++
++        lines << text
++      end.last(12)
++    end
++
++    def setapp_capture_launch_screenshot(app_name, since:, issues:)
++      print '  Launch screenshot... '
++      screenshot_dir = File.expand_path('~/Desktop/Screenshots')
++      FileUtils.mkdir_p(screenshot_dir)
++      timestamp = since.utc.strftime('%Y%m%d-%H%M%S')
++      screenshot_path = File.join(screenshot_dir, "setapp-runtime-#{app_name}-#{timestamp}.png")
++      output, status = setapp_capture_launch_screenshot_command(app_name, screenshot_path)
++      if status.success? && File.exist?(screenshot_path) && File.size?(screenshot_path)
++        puts "✅ #{screenshot_path}"
++      else
++        puts '❌'
++        issues << "#{app_name} launch screenshot failed: #{summarized_output_tail(output)}"
++      end
++    end
++
++    def setapp_capture_launch_screenshot_command(app_name, screenshot_path)
++      gui_runner = File.expand_path('~/SaneApps/infra/SaneProcess/scripts/mini/mini-gui-run.sh')
++      command = setapp_screencapture_command(app_name, screenshot_path)
++      if File.executable?(gui_runner)
++        return setapp_capture2e_with_timeout(
++          'bash',
++          gui_runner,
++          '--title',
++          "#{app_name} Launch Screenshot",
++          '--reclaim-all',
++          '--close-window',
++          '--',
++          command,
++          timeout_seconds: 30
++        )
++      end
++
++      setapp_capture2e_with_timeout('/bin/bash', '-lc', command, timeout_seconds: 15)
++    end
++
++    def setapp_screencapture_command(app_name, screenshot_path)
++      activate_script = %(tell application "System Events" to set frontmost of process "#{applescript_string_literal(app_name)}" to true)
++      [
++        "/usr/bin/osascript -e #{Shellwords.escape(activate_script)} >/dev/null 2>&1 || true",
++        'sleep 1',
++        "/usr/sbin/screencapture -x #{Shellwords.escape(screenshot_path)}"
++      ].join('; ')
++    end
++
++    def setapp_notable_launch_log_lines(output)
++      output.to_s.lines.each_with_object([]) do |line, lines|
++        text = line.strip
++        next if text.empty?
++        next if text.include?('Error getting enterprise-managed associated domains data') &&
++                text.include?('If this device is not enterprise-managed, this is normal')
++        next unless text.match?(/1701|Setapp\.XPC|Provisioning|runtime proof|proof/i)
++
++        lines << text
++      end.last(12)
++    end
++
++    def setapp_runtime_proof_output_path(app_name, bundle_id)
++      filename = "setapp-runtime-#{app_name}-#{Process.pid}.json"
++      if bundle_id.to_s.strip.empty?
++        File.join(Dir.tmpdir, filename)
++      else
++        File.expand_path("~/Library/Containers/#{bundle_id}/Data/tmp/#{filename}")
++      end
++    end
++
++    def setapp_runtime_proof_request_paths(app_name, bundle_id)
++      filename = "sane-setapp-runtime-proof-request-#{app_name}.txt"
++      paths = [File.join(Dir.tmpdir, filename)]
++      unless bundle_id.to_s.strip.empty?
++        paths << File.expand_path("~/Library/Containers/#{bundle_id}/Data/tmp/#{filename}")
++      end
++      paths.uniq
++    end
++
++    def setapp_assert_desktop_environment(issues)
++      print '  Setapp Desktop runtime... '
++      environment_issues = setapp_desktop_environment_issues
++      if environment_issues.empty?
++        puts '✅'
++      else
++        puts '❌'
++        issues.concat(environment_issues)
++      end
++    end
++
++    def setapp_desktop_environment_issues
++      issues = []
++      issues << 'Setapp Desktop is not installed at /Applications/Setapp.app' unless File.directory?('/Applications/Setapp.app')
++
++      launchctl_out, launchctl_status = setapp_capture2e_with_timeout(
++        '/bin/launchctl',
++        'print',
++        "gui/#{Process.uid}",
++        timeout_seconds: 5
++      )
++      if launchctl_status.success?
++        unless launchctl_out.include?('com.setapp.DesktopClient.SetappAgent')
++          issues << 'SetappAgent is not loaded in the active user session'
++        end
++        unless launchctl_out.include?('com.setapp.ProvisioningService')
++          issues << 'Setapp provisioning service is not registered in the active user session'
++        end
++      else
++        issues << "Could not inspect Setapp launch services: #{summarized_output_tail(launchctl_out)}"
++      end
++
++      pgrep_out, pgrep_status = setapp_capture2e_with_timeout('/usr/bin/pgrep', '-fl', 'SetappAgent', timeout_seconds: 5)
++      issues << 'SetappAgent process is not running' unless pgrep_status.success? && pgrep_out.include?('SetappAgent')
++
++      issues
++    end
++
++    def setapp_probe_artifact_navigation(app_name, proof_path, issues)
++      print '  Navigation smoke... '
++      proof = setapp_wait_for_runtime_proof(proof_path)
++      if setapp_runtime_proof_valid?(app_name, proof)
++        puts '✅'
++      else
++        puts '❌'
++        issues << "#{app_name} artifact navigation failed: #{setapp_runtime_proof_failure(app_name, proof, proof_path)}"
++      end
++    end
++
++    def setapp_wait_for_runtime_proof(proof_path, timeout_seconds: 20)
++      deadline = Time.now + timeout_seconds
++      last_proof = nil
++      until Time.now >= deadline
++        if File.exist?(proof_path)
++          last_proof = JSON.parse(File.read(proof_path))
++          return last_proof if setapp_runtime_proof_valid?(last_proof['app'].to_s, last_proof)
++        end
++        sleep 0.25
++      end
++      last_proof
++    rescue JSON::ParserError
++      { '_parse_error' => true, 'path' => proof_path }
++    end
++
++    def setapp_runtime_proof_valid?(app_name, proof)
++      return false unless proof.is_a?(Hash)
++
++      case app_name
++      when 'SaneClip'
++        proof['app'] == 'SaneClip' &&
++          proof['settingsVisible'] == true &&
++          proof['settingsTitle'].to_s.include?('SaneClip Settings')
++      when 'SaneBar'
++        proof['app'] == 'SaneBar' &&
++          proof['settingsVisible'] == true &&
++          proof['settingsTitle'].to_s.include?('SaneBar Settings') &&
++          proof['iconPanelVisible'] == true &&
++          proof['iconPanelMode'] == 'findIcon'
++      else
++        proof['app'] == app_name
++      end
++    end
++
++    def setapp_runtime_proof_failure(app_name, proof, proof_path)
++      return "proof receipt was not written within 20s at #{proof_path}" if proof.nil?
++      return "proof receipt was not valid JSON at #{proof_path}" if proof['_parse_error']
++
++      "unexpected proof receipt for #{app_name}: #{proof.inspect}"
++    end
++
++    def setapp_wait_for_process(app_name, app_path, timeout_seconds: 12)
++      deadline = Time.now + timeout_seconds
++      expected_executable = File.join(app_path, 'Contents', 'MacOS', app_name)
++      while Time.now < deadline
++        out, = Open3.capture2e('ps', '-axo', 'pid=,command=')
++        return true if out.lines.any? { |line| line.include?(expected_executable) }
++
++        sleep 1
++      end
++      false
++    end
++
++    def setapp_run_osascript(script)
++      Tempfile.create(['setapp-runtime', '.applescript']) do |file|
++        file.write(script)
++        file.flush
++        return setapp_capture2e_with_timeout('/usr/bin/osascript', file.path, timeout_seconds: 20)
++      end
++    end
++
++    def setapp_capture2e_with_timeout(*command, timeout_seconds:)
++      output = +''
++      status = nil
++      Open3.popen3(*command) do |stdin, stdout, stderr, wait_thr|
++        stdin.close
++        readers = [stdout, stderr].map do |stream|
++          Thread.new do
++            begin
++              stream.each_line { |line| output << line }
++            rescue IOError
++              nil
++            end
++          end
++        end
++
++        if wait_thr.join(timeout_seconds)
++          status = wait_thr.value
++        else
++          output << "\nTimed out after #{timeout_seconds}s: #{command.join(' ')}\n"
++          begin
++            Process.kill('TERM', wait_thr.pid)
++          rescue Errno::ESRCH
++            nil
++          end
++          sleep 1
++          begin
++            Process.kill('KILL', wait_thr.pid)
++          rescue Errno::ESRCH
++            nil
++          end
++          status = Struct.new(:success?) do
++            def exitstatus
++              nil
++            end
++          end.new(false)
++        end
++        readers.each { |reader| reader.join(1) }
++      end
++      [output, status]
++    end
++
++    def setapp_terminate_app(app_name)
++      system('/usr/bin/pkill', '-x', app_name.to_s, out: File::NULL, err: File::NULL)
++      sleep 1
++    end
++
++    def setapp_trash_path(path)
++      return unless File.exist?(path)
++
++      ok = system('/usr/bin/trash', path, out: File::NULL, err: File::NULL)
++      raise "Failed to move existing app bundle to Trash: #{path}" unless ok
++    end
++
++    def setapp_project_config
++      path = File.join(Dir.pwd, '.saneprocess')
++      File.exist?(path) ? (YAML.safe_load(safe_read(path)) || {}) : {}
++    rescue StandardError
++      {}
++    end
++
++    def setapp_resolve_artifact(artifact, tmpdir)
++      issues = []
++      warnings = []
++
++      if File.extname(artifact).downcase == '.zip'
++        out, status = Open3.capture2e('/usr/bin/ditto', '-x', '-k', artifact, tmpdir)
++        unless status.success?
++          issues << "Archive could not be extracted with ditto: #{summarized_output_tail(out)}"
++          return { app_path: nil, adjacent_dir: nil, issues: issues, warnings: warnings }
++        end
++
++        entries = Dir.children(tmpdir)
++        issues << 'Archive contains __MACOSX metadata; recreate it with ditto, not Finder compression' if entries.include?('__MACOSX')
++        app_paths = Dir.glob(File.join(tmpdir, '**', '*.app')).select { |path| File.directory?(path) }
++        upload_app_paths = app_paths.select do |path|
++          path.delete_prefix(tmpdir).sub(%r{\A/}, '').split(File::SEPARATOR).length <= 2
++        end
++        if upload_app_paths.length != 1
++          issues << "Archive must contain exactly one upload .app bundle at root or one directory deep; found #{upload_app_paths.length}"
++          fallback_app = upload_app_paths.first || app_paths.first
++          return { app_path: fallback_app, adjacent_dir: fallback_app && File.dirname(fallback_app), issues: issues, warnings: warnings }
++        end
++
++        app_path = upload_app_paths.first
++        adjacent_dir = File.dirname(app_path)
++        relative = app_path.delete_prefix(tmpdir).sub(%r{\A/}, '')
++        unless relative.split(File::SEPARATOR).length <= 2
++          issues << "Archive app must be at root or one directory deep; found #{relative}"
++        end
++
++        root_entries = entries.reject { |entry| entry == '__MACOSX' }
++        top = relative.split(File::SEPARATOR).first
++        unless root_entries.all? { |entry| entry == top || entry == File.basename(app_path) || entry.end_with?('.png') }
++          issues << "Archive has extra top-level entries: #{root_entries.join(', ')}"
++        end
++
++        { app_path: app_path, adjacent_dir: adjacent_dir, issues: issues, warnings: warnings }
++      elsif File.extname(artifact).downcase == '.app' && File.directory?(artifact)
++        { app_path: artifact, adjacent_dir: File.dirname(artifact), issues: issues, warnings: warnings }
++      else
++        issues << 'Artifact must be a .zip archive or .app bundle'
++        { app_path: nil, adjacent_dir: nil, issues: issues, warnings: warnings }
++      end
++    end
++
++    def setapp_audit_project_metadata(config, issues, warnings)
++      app_name = metadata_value(config, 'name') || File.basename(Dir.pwd)
++      appstore = config['appstore'].is_a?(Hash) ? config['appstore'] : {}
++      setapp = config['setapp'].is_a?(Hash) ? config['setapp'] : {}
++      website_domain = metadata_value(config, 'website_domain') || metadata_value(config, 'website', 'domain')
++
++      puts '  ┌── Setapp Docs Coverage ──'
++      print '  │ Published policies... '
++      privacy_url = metadata_value(setapp, 'privacy_policy_url') ||
++                    metadata_value(appstore, 'privacy_policy_url') ||
++                    (website_domain ? "https://#{website_domain}/privacy" : nil)
++      terms_url = metadata_value(setapp, 'terms_url') ||
++                  metadata_value(appstore, 'terms_url') ||
++                  (website_domain ? "https://#{website_domain}/terms" : nil)
++      support_url = metadata_value(setapp, 'support_url') ||
++                    metadata_value(appstore, 'support_url') ||
++                    (website_domain ? "https://#{website_domain}/support" : nil)
++
++      policy_reports = {
++        'privacy policy' => privacy_url,
++        'terms of use' => terms_url,
++        'support URL/email' => support_url
++      }.map do |label, value|
++        setapp_policy_endpoint_report(label, value)
++      end
++      failed_policies = policy_reports.reject { |report| report[:ok] }
++      if failed_policies.empty?
++        puts '✅'
++      else
++        puts '❌'
++        failed_policies.each { |report| issues << report[:message] }
++      end
++
++      print '  │ Portal metadata source... '
++      if setapp.empty?
++        puts '⚠️  no .saneprocess setapp section'
++        warnings << '.saneprocess has no setapp section; portal-only fields must be manually verified before submission'
++      else
++        puts '✅'
++      end
++
++      print '  │ Screenshot assets... '
++      screenshot_patterns = if setapp.dig('screenshots', 'macos')
++                              Array(setapp.dig('screenshots', 'macos'))
++                            elsif appstore.dig('screenshots', 'macos')
++                              Array(appstore.dig('screenshots', 'macos'))
++                            else
++                              []
++                            end
++      screenshot_paths = screenshot_patterns.flat_map { |pattern| Dir.glob(File.expand_path(pattern.to_s, Dir.pwd)) }.uniq
++      if screenshot_paths.empty?
++        puts '❌ none found'
++        issues << 'No local macOS screenshot assets found for Setapp metadata verification'
++      elsif screenshot_paths.length > 5
++        puts '❌ too many'
++        issues << "Setapp macOS screenshots are limited to 5 files; found #{screenshot_paths.length}"
++      else
++        bad_type = screenshot_paths.reject { |path| %w[.png .jpg .jpeg].include?(File.extname(path).downcase) }
++        bad = screenshot_paths.select do |path|
++          width, height = setapp_image_dimensions(path)
++          width.to_i < 1280 || height.to_i < 800 || (width.to_f / height.to_f - 1.6).abs > 0.05
++        end
++        if bad_type.any?
++          puts '❌ unsupported type'
++          issues << "Setapp macOS screenshots must be .png or .jpg: #{bad_type.map { |p| File.basename(p) }.join(', ')}"
++        elsif bad.empty?
++          puts "✅ #{screenshot_paths.length} file(s)"
++        else
++          puts '❌ size/ratio drift'
++          issues << "Some macOS screenshots do not meet Setapp 16:10 1280x800 guidance: #{bad.map { |p| File.basename(p) }.join(', ')}"
++        end
++      end
++
++      print '  │ Review checklist evidence... '
++      checklist = Array(setapp['review_checklist'])
++      if checklist.empty?
++        puts '⚠️  not recorded'
++        warnings << "No setapp.review_checklist recorded for #{app_name}; verify no hidden/demo/trial behavior, no paid add-ons, no ads/promotions, no unsolicited notifications, and no unauthorized data transmission"
++      else
++        puts "✅ #{checklist.length} item(s)"
++        checklist_text = checklist.join("\n")
++        unless checklist_text.match?(/Setapp Desktop Client|Setapp desktop client/i) &&
++               checklist_text.match?(/regular mode/i)
++          issues << 'Setapp review checklist must record testing with Setapp Desktop Client in regular mode'
++        end
++      end
++
++      print '  │ Portal text limits... '
++      text_limit_issues = setapp_portal_text_limit_issues(setapp)
++      if text_limit_issues.empty?
++        puts '✅'
++      else
++        puts '❌'
++        issues.concat(text_limit_issues)
++      end
++      puts '  │'
++    end
++
++    def setapp_portal_text_limit_issues(setapp)
++      required_limits = {
++        'release_notes' => 5_000,
++        'description' => 3_000,
++        'key_benefits' => 80,
++        'review_comments' => 2_000
++      }
++      required_limits.each_with_object([]) do |(key, limit), acc|
++        value = setapp[key].to_s.strip
++        if value.empty?
++          acc << "Setapp #{key} must be recorded in .saneprocess before portal submission"
++        elsif value.length > limit
++          acc << "Setapp #{key} exceeds #{limit} characters (#{value.length})"
++        end
++      end
++    end
++
++    def setapp_audit_ios_companion(config, issues, warnings)
++      setapp = config['setapp'].is_a?(Hash) ? config['setapp'] : {}
++      ios = setapp['ios'].is_a?(Hash) ? setapp['ios'] : {}
++      return unless ios['enabled'] == true
++
++      appstore = config['appstore'].is_a?(Hash) ? config['appstore'] : {}
++      puts '  ┌── iOS Companion Requirements ──'
++
++      print '  │ App Store public URL... '
++      app_store_url = ios['app_store_url'].to_s.strip
++      health = app_store_url.empty? ? { ok: false, error: 'missing URL' } : appstore_url_health(app_store_url)
++      app_id = appstore['app_id'].to_s.strip
++      release_report = asc_app_store_release_report(app_id: app_id, platform: 'ios')
++      if health[:ok]
++        puts '✅'
++      elsif health[:code].to_i == 429 && release_report[:released]
++        puts '✅ ASC fallback'
++        warnings << "Apple App Store web URL returned HTTP 429, but App Store Connect confirms iOS release state: #{release_report[:summary]}"
++      else
++        puts '❌'
++        issues << "Setapp iOS companion App Store URL is not reachable: #{app_store_url.empty? ? '(missing)' : app_store_url} (#{health[:error] || health[:code]})"
++      end
++
++      print '  │ App Store release state... '
++      if app_id.empty?
++        puts '❌'
++        issues << 'Setapp iOS companion requires appstore.app_id so App Store release state can be verified'
++      elsif release_report[:released]
++        puts "✅ #{release_report[:summary]}"
++      elsif release_report[:applicable]
++        puts '❌'
++        issues << "Setapp iOS companion must be approved/released on the App Store before Setapp review; current iOS states: #{release_report[:summary]}"
++      else
++        puts '❌'
++        issues << 'Could not verify Setapp iOS companion App Store release state through App Store Connect'
++      end
++
++      print '  │ Free app + IAP price metadata... '
++      setapp_price = ios['price_usd']
++      iap_price = appstore.dig('iap', 'price_usd')
++      if appstore['product_id'].to_s.strip.empty?
++        puts '❌'
++        issues << 'Setapp iOS companion requires an App Store IAP product ID for non-Setapp users'
++      elsif setapp_price.nil? || iap_price.nil? || setapp_price.to_f != iap_price.to_f
++        puts '❌'
++        issues << "Setapp iOS price must match App Store IAP price (setapp=#{setapp_price.inspect}, appstore=#{iap_price.inspect})"
++      else
++        puts '✅'
++      end
++
++      print '  │ iOS public key... '
++      public_key_path = File.expand_path(ios['public_key'].to_s.empty? ? 'iOS/setappPublicKey-iOS.pem' : ios['public_key'].to_s, Dir.pwd)
++      if File.file?(public_key_path)
++        puts '✅'
++      else
++        puts '❌'
++        issues << "Setapp iOS public key is missing: #{public_key_path}"
++      end
++
++      ios_info_path = File.join(Dir.pwd, 'iOS', 'Info.plist')
++      ios_info = plist_file_to_hash(ios_info_path)
++      schemes = Array(ios_info['CFBundleURLTypes']).flat_map { |entry| Array(entry['CFBundleURLSchemes']) }.map(&:to_s)
++      bundle_id = ios['bundle_id'].to_s.strip
++
++      print '  │ URL schemes... '
++      if bundle_id.empty?
++        puts '❌'
++        issues << 'Setapp iOS companion bundle_id is missing from .saneprocess setapp.ios'
++      elsif schemes.include?(bundle_id) && schemes.include?(bundle_id.downcase)
++        puts '✅'
++      else
++        puts '❌'
++        issues << "Setapp iOS URL schemes must include bundle ID and lowercase bundle ID #{bundle_id}; found #{schemes.join(', ')}"
++      end
++
++      print '  │ Framework initialization... '
++      ios_sources = Dir.glob(File.join(Dir.pwd, 'iOS', '**', '*.swift')).map { |path| safe_read(path) }.join("\n")
++      has_start = ios_sources.include?('SetappManager.shared.start')
++      has_open = ios_sources.include?('SetappManager.shared.canOpen') && ios_sources.include?('SetappManager.shared.open')
++      if has_start && has_open
++        puts '✅'
++      else
++        puts '❌'
++        issues << 'Setapp iOS companion must initialize SetappManager and handle Setapp activation URLs'
++      end
++
++      print '  │ App extensions assertion... '
++      checklist_text = Array(setapp['review_checklist']).join("\n")
++      if checklist_text.match?(/iOS companion|Setapp activation|extensions|widget/i)
++        puts '✅'
++      else
++        puts '⚠️  not recorded'
++        warnings << 'Setapp iOS companion has app extensions; verify paid features are available to active Setapp users across extensions'
++      end
++      puts '  │'
++    end
++
++    def setapp_policy_endpoint_report(label, value)
++      text = value.to_s.strip
++      return { ok: false, message: "Missing Setapp #{label}" } if text.empty?
++      if text.match?(/\A[^@\s]+@[^@\s]+\.[^@\s]+\z/)
++        return { ok: true, message: "#{label}: #{text}" } if label == 'support URL/email'
++
++        return { ok: false, message: "Setapp #{label} must be a published URL, not an email address" }
++      end
++
++      health = appstore_url_health(text)
++      if health[:ok]
++        { ok: true, message: "#{label}: #{text}" }
++      else
++        { ok: false, message: "Setapp #{label} is not reachable: #{text} (#{health[:error] || health[:code]})" }
++      end
++    end
++
++    def setapp_audit_app_bundle(app_path, adjacent_dir:, config:, issues:, warnings:)
++      app_name = File.basename(app_path, '.app')
++      info_path = File.join(app_path, 'Contents', 'Info.plist')
++      info = plist_file_to_hash(info_path)
++
++      puts '  ┌── macOS Bundle Requirements ──'
++      print '  Bundle Info.plist... '
++      missing_keys = SETAPP_REQUIRED_INFO_KEYS.reject { |key| info.key?(key) && !info[key].to_s.strip.empty? }
++      if missing_keys.empty?
++        puts '✅'
++      else
++        puts '❌'
++        issues << "Info.plist missing Setapp-required key(s): #{missing_keys.join(', ')}"
++      end
++
++      bundle_id = info['CFBundleIdentifier'].to_s
++      setapp = config['setapp'].is_a?(Hash) ? config['setapp'] : {}
++      expected_bundle_id = metadata_value(setapp, 'bundle_id').to_s
++      if !expected_bundle_id.empty? && bundle_id != expected_bundle_id
++        issues << "Setapp bundle ID must match .saneprocess exactly: expected #{expected_bundle_id}, found #{bundle_id}"
++      end
++      issues << "Bundle ID must use Setapp lane suffix (-setapp); found #{bundle_id}" unless bundle_id.end_with?('-setapp')
++      unless bundle_id.match?(/\A[A-Za-z0-9.-]+-setapp\z/)
++        issues << "Setapp bundle ID must be reverse-DNS-safe with ASCII letters, digits, periods, and hyphen-minus only; found #{bundle_id}"
++      end
++
++      forbidden_keys = SETAPP_FORBIDDEN_INFO_KEYS.select { |key| info.key?(key) }
++      issues << "Setapp build must not include direct/App Store updater or purchase key(s): #{forbidden_keys.join(', ')}" if forbidden_keys.any?
++
++      update_policy = info['NSUpdateSecurityPolicy'].is_a?(Hash) ? info['NSUpdateSecurityPolicy'] : {}
++      allowed = update_policy.dig('AllowProcesses', SETAPP_AGENT_TEAM_ID)
++      unless Array(allowed).include?(SETAPP_AGENT_BUNDLE_ID)
++        issues << "NSUpdateSecurityPolicy must allow #{SETAPP_AGENT_BUNDLE_ID} for team #{SETAPP_AGENT_TEAM_ID}"
++      end
++
++      architectures = Array(info['MPSupportedArchitectures']).map(&:to_s)
++      if architectures.empty?
++        issues << 'MPSupportedArchitectures must be explicit for Setapp'
++      elsif !(architectures.include?('arm64') && architectures.include?('x86_64'))
++        issues << "Setapp macOS builds must declare both arm64 and x86_64 in MPSupportedArchitectures; found #{architectures.join(', ')}"
++      end
++
++      size_bytes = setapp_directory_size(app_path)
++      if size_bytes > 1_000_000_000
++        issues << format('Setapp app bundle exceeds 1 GB limit: %.1f MB', size_bytes / 1_000_000.0)
++      end
++
++      setapp_audit_icons(app_path, adjacent_dir, app_name, info, issues, warnings)
++      setapp_audit_public_key(app_path, issues)
++      setapp_audit_nested_bundle_ids(app_path, bundle_id, issues)
++      setapp_audit_framework_integration(app_path, issues)
++      setapp_audit_entitlements(app_path, issues)
++      setapp_audit_linked_frameworks(app_path, config, issues)
++      setapp_audit_signing(app_path, issues)
++      setapp_audit_binary_architectures(app_path, architectures, config, issues)
++      setapp_audit_forbidden_functionality(app_path, config, issues, warnings)
++      puts '  │'
++    end
++
++    def setapp_directory_size(path)
++      total = 0
++      Find.find(path) { |entry| total += File.size(entry) if File.file?(entry) }
++      total
++    rescue StandardError
++      0
++    end
++
++    def setapp_audit_icons(app_path, adjacent_dir, app_name, info, issues, warnings)
++      icon_candidates = [
++        File.join(adjacent_dir, 'AppIcon.png'),
++        File.join(adjacent_dir, "#{app_name}.png")
++      ].uniq
++      adjacent_icon = icon_candidates.find { |path| File.file?(path) }
++      if adjacent_icon
++        width, height = setapp_image_dimensions(adjacent_icon)
++        if width.to_i >= SETAPP_REQUIRED_ICON_SIZE && height.to_i >= SETAPP_REQUIRED_ICON_SIZE
++          puts "  Adjacent PNG icon... ✅ #{File.basename(adjacent_icon)} #{width}x#{height}"
++        else
++          puts '  Adjacent PNG icon... ❌'
++          issues << "Adjacent Setapp PNG icon must be at least #{SETAPP_REQUIRED_ICON_SIZE}x#{SETAPP_REQUIRED_ICON_SIZE}; found #{width || '?'}x#{height || '?'}"
++        end
++      else
++        puts '  Adjacent PNG icon... ❌'
++        issues << "Archive must include AppIcon.png or #{app_name}.png next to #{app_name}.app"
++      end
++
++      icon_file = info['CFBundleIconFile'].to_s
++      icon_file = 'AppIcon' if icon_file.strip.empty?
++      icon_file += '.icns' unless File.extname(icon_file) == '.icns'
++      icon_path = File.join(app_path, 'Contents', 'Resources', icon_file)
++      unless File.file?(icon_path)
++        issues << "CFBundleIconFile points to #{icon_file}, but the file was not found in Contents/Resources"
++        return
++      end
++
++      width, height = setapp_image_dimensions(icon_path)
++      if width.to_i < SETAPP_REQUIRED_ICON_SIZE || height.to_i < SETAPP_REQUIRED_ICON_SIZE
++        issues << "Bundle ICNS specified by CFBundleIconFile must include at least #{SETAPP_REQUIRED_ICON_SIZE}px artwork; sips reported #{width || '?'}x#{height || '?'}"
++      end
++    end
++
++    def setapp_image_dimensions(path)
++      return setapp_icns_dimensions(path) if File.extname(path.to_s).casecmp('.icns').zero?
++
++      out, status = Open3.capture2e('sips', '-g', 'pixelWidth', '-g', 'pixelHeight', path.to_s)
++      return [nil, nil] unless status.success?
++
++      [out[/pixelWidth:\s*(\d+)/, 1]&.to_i, out[/pixelHeight:\s*(\d+)/, 1]&.to_i]
++    rescue StandardError
++      [nil, nil]
++    end
++
++    def setapp_icns_dimensions(path)
++      Dir.mktmpdir('setapp-icns-') do |dir|
++        iconset = File.join(dir, 'AppIcon.iconset')
++        _out, status = Open3.capture2e('iconutil', '-c', 'iconset', '-o', iconset, path.to_s)
++        return setapp_sips_dimensions(path) unless status.success?
++
++        dimensions = Dir.glob(File.join(iconset, '*.png')).map do |png|
++          width, height = setapp_sips_dimensions(png)
++          width && height ? [width, height] : nil
++        end.compact
++        return setapp_sips_dimensions(path) if dimensions.empty?
++
++        [dimensions.map(&:first).max, dimensions.map(&:last).max]
++      end
++    rescue StandardError
++      setapp_sips_dimensions(path)
++    end
++
++    def setapp_sips_dimensions(path)
++      out, status = Open3.capture2e('sips', '-g', 'pixelWidth', '-g', 'pixelHeight', path.to_s)
++      return [nil, nil] unless status.success?
++
++      [out[/pixelWidth:\s*(\d+)/, 1]&.to_i, out[/pixelHeight:\s*(\d+)/, 1]&.to_i]
++    rescue StandardError
++      [nil, nil]
++    end
++
++    def setapp_audit_public_key(app_path, issues)
++      print '  Setapp public key... '
++      exact_path = File.join(app_path, 'Contents', 'Resources', 'setappPublicKey.pem')
++      setapp = setapp_project_config.fetch('setapp', {})
++      expected_sha = setapp['public_key_sha256'].to_s.strip
++      actual_sha = File.file?(exact_path) ? OpenSSL::Digest::SHA256.file(exact_path).hexdigest : ''
++      if File.file?(exact_path) && !expected_sha.empty? && actual_sha == expected_sha
++        puts '✅'
++      elsif File.file?(exact_path) && expected_sha.empty?
++        puts '❌'
++        issues << 'Setapp public_key_sha256 must be recorded in .saneprocess so the app/platform public key is verified, not merely present'
++      elsif File.file?(exact_path)
++        puts '❌'
++        issues << "Setapp public key SHA-256 mismatch: expected #{expected_sha}, found #{actual_sha}"
++      else
++        puts '❌'
++        candidates = Dir.glob(File.join(app_path, 'Contents', 'Resources', '**', '*setappPublicKey*.pem'), File::FNM_CASEFOLD)
++        suffix = candidates.empty? ? '' : " (found non-exact candidate(s): #{candidates.map { |path| path.sub("#{app_path}/Contents/Resources/", '') }.join(', ')})"
++        issues << "Setapp public key resource must be named exactly Contents/Resources/setappPublicKey.pem#{suffix}"
++      end
++    end
++
++    def setapp_audit_nested_bundle_ids(app_path, parent_bundle_id, issues)
++      nested_plists = Dir.glob(File.join(app_path, 'Contents', '{Frameworks,PlugIns,Library}', '**', 'Info.plist'), File::FNM_EXTGLOB)
++      bad = nested_plists.each_with_object([]) do |plist_path, acc|
++        info = plist_file_to_hash(plist_path)
++        nested_id = info['CFBundleIdentifier'].to_s
++        next if nested_id.empty?
++        next if nested_id.start_with?("#{parent_bundle_id}.")
++        next if nested_id.start_with?('com.apple.')
++        next if nested_id.match?(/\A(?:org|com)\.(?:sparkle-project|macpaw|setapp)\b/i)
++
++        acc << "#{nested_id} (#{plist_path.sub("#{app_path}/", '')})"
++      end
++      issues << "Nested executable/helper bundle IDs must follow #{parent_bundle_id}.<name>: #{bad.join(', ')}" if bad.any?
++    end
++
++    def setapp_audit_framework_integration(app_path, issues)
++      print '  Setapp framework integration... '
++      blob = setapp_artifact_strings(app_path)
++      debug_dylibs = Dir.glob(File.join(app_path, 'Contents', '**', 'debug.dylib'), File::FNM_CASEFOLD)
++      missing_scv = !blob.match?(/__scv__\d+(?:\.\d+)*/)
++
++      if missing_scv || debug_dylibs.any?
++        puts '❌'
++        issues << 'Setapp Framework version symbol (__scv__) is missing from the app artifact' if missing_scv
++        if debug_dylibs.any?
++          issues << "Setapp artifact must not include debug.dylib: #{debug_dylibs.map { |path| path.sub("#{app_path}/", '') }.join(', ')}"
++        end
++      else
++        puts '✅'
++      end
++    end
++
++    def setapp_entitlements(app_path)
++      out, status = Open3.capture2e('codesign', '-d', '--entitlements', ':-', app_path.to_s)
++      return {} unless status.success? || out.include?('<plist')
++
++      plist = out[out.index('<plist')..] || out[out.index('<?xml')..] || ''
++      return {} if plist.strip.empty?
++
++      Tempfile.create(['setapp-entitlements', '.plist']) do |file|
++        file.write(plist)
++        file.flush
++        return plist_file_to_hash(file.path)
++      end
++    rescue StandardError
++      {}
++    end
++
++    def setapp_audit_entitlements(app_path, issues)
++      print '  Sandbox entitlements... '
++      entitlements = setapp_entitlements(app_path)
++      if entitlements.empty?
++        puts '⚠️  unreadable'
++        return
++      end
++
++      puts '✅'
++
++      sandboxed = entitlements['com.apple.security.app-sandbox'] == true
++      mach = Array(entitlements['com.apple.security.temporary-exception.mach-lookup.global-name'])
++      if sandboxed && !mach.include?(SETAPP_MACH_SERVICE)
++        issues << "Sandboxed Setapp app must include Mach exception #{SETAPP_MACH_SERVICE}"
++      end
++    end
++
++    def setapp_exception_documented?(setapp, key)
++      exceptions = setapp['documented_exceptions'].is_a?(Hash) ? setapp['documented_exceptions'] : {}
++      !exceptions[key.to_s].to_s.strip.empty?
++    end
++
++    def setapp_audit_linked_frameworks(app_path, config, issues)
++      print '  Linked frameworks... '
++      executable = File.join(app_path, 'Contents', 'MacOS', File.basename(app_path, '.app'))
++      unless File.file?(executable)
++        puts '⚠️  no main executable'
++        return
++      end
++
++      out, _status = Open3.capture2e('otool', '-L', executable)
++      needs_sparkle = out.include?('Sparkle.framework')
++      sparkle_path = File.join(app_path, 'Contents', 'Frameworks', 'Sparkle.framework')
++      if needs_sparkle && !File.directory?(sparkle_path)
++        puts '❌'
++        issues << 'Main executable links Sparkle.framework, but Contents/Frameworks/Sparkle.framework is missing'
++      elsif needs_sparkle && !setapp_exception_documented?(config.fetch('setapp', {}), 'retained_sparkle_framework')
++        puts '❌'
++        issues << 'Setapp docs prohibit non-Setapp updater frameworks; retained Sparkle.framework requires documented_exceptions.retained_sparkle_framework explaining why it is inert and required for launch'
++      else
++        puts '✅'
++      end
++    end
++
++    def setapp_audit_signing(app_path, issues)
++      print '  Code signing and notarization... '
++      out, status = Open3.capture2e('codesign', '--verify', '--deep', '--strict', '--verbose=2', app_path.to_s)
++      unless status.success?
++        puts '❌'
++        issues << "codesign verification failed: #{summarized_output_tail(out)}"
++        return
++      end
++
++      out, status = Open3.capture2e('spctl', '--assess', '--type', 'execute', '--verbose=4', app_path.to_s)
++      if status.success?
++        puts '✅'
++      else
++        puts '❌'
++        issues << "Gatekeeper assessment failed: #{summarized_output_tail(out)}"
++      end
++    end
++
++    def setapp_audit_binary_architectures(app_path, declared_architectures, config, issues)
++      print '  Binary architectures... '
++      executable = File.join(app_path, 'Contents', 'MacOS', File.basename(app_path, '.app'))
++      out, status = Open3.capture2e('lipo', '-archs', executable)
++      unless status.success?
++        puts '❌ unreadable'
++        issues << 'Could not inspect main executable architectures with lipo'
++        return
++      end
++
++      actual = out.split(/\s+/).reject(&:empty?)
++      missing = Array(declared_architectures).map(&:to_s) - actual
++      if missing.any?
++        puts '❌'
++        issues << "MPSupportedArchitectures declares #{missing.join(', ')} but main executable has #{actual.join(', ')}"
++      elsif actual.include?('arm64') && actual.include?('x86_64')
++        puts '✅ universal'
++      else
++        puts "❌ #{actual.join(', ')}"
++        issues << "Setapp macOS main executable must be universal arm64+x86_64; found #{actual.join(', ')}"
++      end
++    end
++
++    def setapp_audit_forbidden_functionality(app_path, config, issues, warnings)
++      puts '  ┌── Review Guideline Heuristics ──'
++      blob = setapp_artifact_strings(app_path)
++
++      high_confidence_hits = []
++      SETAPP_FORBIDDEN_ARTIFACT_PATTERNS.each do |label, pattern|
++        high_confidence_hits << label if blob.match?(pattern)
++      end
++      if high_confidence_hits.empty?
++        puts '  │ Forbidden purchase/update/rating markers... ✅'
++      else
++        puts '  │ Forbidden purchase/update/rating markers... ❌'
++        high_confidence_hits.each { |hit| issues << "Setapp artifact appears to include forbidden functionality marker: #{hit}" }
++      end
++
++      review_hits = SETAPP_REVIEW_WARNING_PATTERNS.keys.select { |label| blob.match?(SETAPP_REVIEW_WARNING_PATTERNS[label]) }
++      setapp = config['setapp'].is_a?(Hash) ? config['setapp'] : {}
++      review_hits.each do |hit|
++        exception_key = hit == 'direct license-key copy' ? 'license_strings_unreachable' : 'retained_sparkle_framework'
++        unless setapp_exception_documented?(setapp, exception_key)
++          issues << "Artifact contains #{hit}; add documented_exceptions.#{exception_key} only after verifying the Setapp channel hides/removes that functionality at runtime"
++        end
++      end
++
++      login_item_hit = blob.match?(/SMLoginItemSetEnabled|LaunchAgent|Login Item/i)
++      if login_item_hit
++        warnings << 'Artifact contains login-item/LaunchAgent markers; verify startup is opt-in and cannot manipulate usage statistics'
++      end
++
++      notification_hit = blob.match?(/UNUserNotificationCenter|NSUserNotification|requestAuthorization/i)
++      if notification_hit && !setapp_exception_documented?(setapp, 'notification_apis')
++        warnings << 'Artifact contains notification APIs; verify notifications are permissioned, non-sensitive, and not promotional'
++      end
++
++      setapp = config['setapp'].is_a?(Hash) ? config['setapp'] : {}
++      app_type = setapp['app_type'].to_s
++      if app_type == 'menu_bar' || blob.match?(/NSStatusItem|MenuBarExtra|statusItem/i)
++        if blob.match?(/userInteraction|STPUsageEventUserInteraction|reportUsageEvent/i)
++          puts '  │ Menu bar usage reporting... ✅'
++        else
++          puts '  │ Menu bar usage reporting... ❌'
++          issues << 'Menu bar Setapp app must report userInteraction usage events after real menu bar activation'
++        end
++      end
++
++      puts '  │ Privacy-sensitive APIs... ✅ reviewed as heuristic'
++    end
++
++    def setapp_artifact_strings(app_path)
++      paths = Dir.glob(File.join(app_path, 'Contents', '{MacOS,Frameworks,PlugIns,Resources}', '**', '*'), File::FNM_EXTGLOB)
++                 .select { |path| File.file?(path) && File.size(path) < 25_000_000 }
++      strings = +''
++      paths.each do |path|
++        out, = Open3.capture2e('strings', '-a', path.to_s)
++        strings << out
++        strings << "\n"
++      end
++      strings
++    rescue StandardError
++      ''
++    end
++
+     # App Store submission preflight — validates everything Apple checks during review.
+     # Derived from Apple's App Review Guidelines + community rejection checklists.
+     # Works for any SaneApps project with a .saneprocess config.
+@@ -2977,6 +4223,40 @@ module SaneMasterModules
+         issues << 'Tests failing — fix before submission'
+       end
+ 
++      print '  │ Runtime E2E... '
++      runtime_report = release_preflight_runtime_e2e_report(app_name: app_name)
++      case runtime_report[:status]
++      when :skipped
++        puts "⏭️  #{runtime_report[:summary]}"
++      when :ok
++        puts "✅ #{runtime_report[:summary]}"
++      else
++        puts '❌ FAIL'
++        issues << "Runtime E2E: #{runtime_report[:summary]}"
++      end
++      Array(runtime_report[:warnings]).each { |warning| warnings << "Runtime E2E: #{warning}" }
++
++      print '  │ Slop check... '
++      slop_report = release_preflight_slop_report(target_root: Dir.pwd)
++      if slop_report[:blocking_count].zero?
++        if slop_report[:advisory_count].positive?
++          puts "✅ #{slop_report[:advisory_count]} advisory"
++          slop_report[:issues][:advisory].each do |issue|
++            warnings << "Slop check: #{issue[:file]} — #{issue[:message]}"
++          end
++        else
++          puts '✅'
++        end
++      else
++        puts '❌ FAIL'
++        slop_report[:issues][:blocking].each do |issue|
++          issues << "Slop check: #{issue[:file]} — #{issue[:message]}"
++        end
++        slop_report[:issues][:advisory].each do |issue|
++          warnings << "Slop check: #{issue[:file]} — #{issue[:message]}"
++        end
++      end
++
+       # 5a1. CloudKit production schema
+       print '  │ CloudKit production schema... '
+       cloudkit_report = cloudkit_schema_guardrail_report(config: config, environment: 'production')
+diff --git a/scripts/sanemaster/release_guardrail_test.rb b/scripts/sanemaster/release_guardrail_test.rb
+index fe3ad1d..8bcb269 100644
+--- a/scripts/sanemaster/release_guardrail_test.rb
++++ b/scripts/sanemaster/release_guardrail_test.rb
+@@ -2,11 +2,16 @@
+ # frozen_string_literal: true
+ 
+ require_relative '../hooks/test/test_framework'
++require_relative 'base'
+ require_relative 'gate_review'
++require_relative 'meta'
++require_relative 'runtime_e2e'
+ require_relative 'release'
+ 
+ class ReleaseGuardrailHarness
++  include SaneMasterModules::Meta
+   include SaneMasterModules::GateReview
++  include SaneMasterModules::RuntimeE2E
+   include SaneMasterModules::Release
+ 
+   def initialize
+@@ -91,6 +96,91 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
+   end
+ 
+   test_category('Release test lane policy') do
++    test('SaneMaster exposes Setapp preflight as a first-class release gate') do
++      sanemaster = File.read(File.expand_path('../SaneMaster.rb', __dir__))
++      base = File.read(File.expand_path('base.rb', __dir__))
++
++      assert_includes(sanemaster, "'setapp_preflight'")
++      assert_includes(sanemaster, "when 'setapp_preflight', 'setapp-preflight', 'sapp'")
++      assert_includes(sanemaster, 'Run Setapp bundle/archive compliance checks before portal upload')
++      assert_includes(base, 'setapp_preflight')
++      assert_includes(sanemaster, "'setapp_runtime_verify'")
++      assert_includes(sanemaster, "when 'setapp_runtime_verify', 'setapp-runtime-verify', 'sapp-runtime'")
++      assert_includes(base, 'setapp_runtime_verify')
++      true
++    end
++
++    test('SaneClip Setapp runtime smoke opens settings through URL scheme') do
++      release_source = File.read(File.expand_path('release.rb', __dir__))
++
++      assert_includes(release_source, "'--sane-setapp-proof-path'")
++      assert_includes(release_source, 'sane-setapp-runtime-proof-request')
++      assert_includes(release_source, 'setapp_runtime_proof_output_path')
++      assert_includes(release_source, 'Library/Containers')
++      assert_includes(release_source, 'setapp_wait_for_runtime_proof')
++      assert_includes(release_source, "proof['settingsTitle'].to_s.include?('SaneClip Settings')")
++      assert_includes(release_source, "proof['iconPanelMode'] == 'findIcon'")
++      assert(!release_source.include?('keystroke ","'), 'Setapp runtime smoke should not depend on menu shortcuts')
++      true
++    end
++
++    test('Setapp runtime verify requires the local Setapp Desktop service') do
++      release_source = File.read(File.expand_path('release.rb', __dir__))
++
++      assert_includes(release_source, 'setapp_assert_desktop_environment(issues)')
++      assert_includes(release_source, "'/Applications/Setapp.app'")
++      assert_includes(release_source, 'com.setapp.DesktopClient.SetappAgent')
++      assert_includes(release_source, 'com.setapp.ProvisioningService')
++      true
++    end
++
++    test('Mini bootstrap treats Developer ID signing as a first-class Setapp prerequisite') do
++      bootstrap = File.read(File.expand_path('../mini/bootstrap-build-server.sh', __dir__))
++
++      assert_includes(bootstrap, 'SANEBAR_KEYCHAIN_PASSWORD')
++      assert_includes(bootstrap, 'set-key-partition-list')
++      assert_includes(bootstrap, 'Developer ID Application')
++      assert_includes(bootstrap, '.config/nv/env')
++      true
++    end
++
++    test('Setapp runtime AppleScript execution is bounded') do
++      release_source = File.read(File.expand_path('release.rb', __dir__))
++
++      assert_includes(release_source, 'setapp_capture2e_with_timeout')
++      assert_includes(release_source, 'wait_thr.join(timeout_seconds)')
++      assert_includes(release_source, "Process.kill('TERM', wait_thr.pid)")
++      assert_includes(release_source, "Process.kill('KILL', wait_thr.pid)")
++      true
++    end
++
++    test('Setapp runtime verify reviews launch logs after every artifact launch') do
++      release_source = File.read(File.expand_path('release.rb', __dir__))
++
++      assert_includes(release_source, 'setapp_capture_launch_screenshot(app_name, since: launched_at, issues: issues)')
++      assert_includes(release_source, 'setapp-runtime-#{app_name}-#{timestamp}.png')
++      assert_includes(release_source, 'mini-gui-run.sh')
++      assert_includes(release_source, 'Launch Screenshot')
++      assert_includes(release_source, 'setapp_review_launch_logs(app_name, bundle_id: bundle_id, since: launched_at, issues: issues)')
++      assert_includes(release_source, 'eventMessage CONTAINS[c] "1701"')
++      assert_includes(release_source, 'eventMessage CONTAINS[c] "#{bundle_id}"')
++      assert_includes(release_source, 'setapp_blocking_launch_log_lines')
++      assert_includes(release_source, 'Setapp provisioning/XPC errors during launch')
++      assert_includes(release_source, 'setapp_notable_launch_log_lines')
++      assert_includes(release_source, 'If this device is not enterprise-managed, this is normal')
++      true
++    end
++
++    test('Setapp distribution sanitizer does not remove strongly linked Sparkle frameworks') do
++      sanitizer = File.read(File.expand_path('../sanitize_distribution_bundle.rb', __dir__))
++      setapp_rules = sanitizer[/\"setapp\" => \{.*?\n  \}/m]
++
++      assert(!setapp_rules.nil?, 'expected setapp sanitizer rules')
++      assert_includes(setapp_rules, 'strip_sparkle_framework: false')
++      assert_includes(sanitizer, 'if rules[:strip_sparkle_framework]')
++      true
++    end
++
+     test('release.sh prefers SaneMaster verify before raw xcodebuild fallbacks') do
+       release_script = File.read(File.expand_path('../release.sh', __dir__))
+ 
+@@ -137,6 +227,238 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
+     end
+   end
+ 
++  test_category('Setapp preflight requirements') do
++    test('accepts a clean Setapp archive shape with app and adjacent PNG icon') do
++      Dir.mktmpdir('setapp-archive-') do |dir|
++        stage = File.join(dir, 'Stage')
++        FileUtils.mkdir_p(File.join(stage, 'Demo.app'))
++        File.write(File.join(stage, 'AppIcon.png'), 'png')
++        zip = File.join(dir, 'Demo.zip')
++        system('/usr/bin/ditto', '-c', '-k', stage, zip, out: File::NULL, err: File::NULL)
++
++        report = subject.send(:setapp_resolve_artifact, zip, File.join(dir, 'Extract'))
++
++        assert_eq(report[:issues], [])
++        assert(report[:app_path].end_with?('Demo.app'))
++        assert_eq(File.basename(report[:adjacent_dir]), 'Extract')
++      end
++      true
++    end
++
++    test('rejects archives with multiple app bundles') do
++      Dir.mktmpdir('setapp-multiple-apps-') do |dir|
++        stage = File.join(dir, 'Stage')
++        FileUtils.mkdir_p(File.join(stage, 'One.app'))
++        FileUtils.mkdir_p(File.join(stage, 'Two.app'))
++        zip = File.join(dir, 'Demo.zip')
++        system('/usr/bin/ditto', '-c', '-k', stage, zip, out: File::NULL, err: File::NULL)
++
++        report = subject.send(:setapp_resolve_artifact, zip, File.join(dir, 'Extract'))
++
++        assert_includes(report[:issues].join("\n"), 'exactly one upload .app bundle')
++      end
++      true
++    end
++
++    test('maps Setapp policy URLs through the existing URL health checker') do
++      subject.stub_url_status('https://example.com/privacy', code: 200)
++
++      ok = subject.send(:setapp_policy_endpoint_report, 'privacy policy', 'https://example.com/privacy')
++      missing = subject.send(:setapp_policy_endpoint_report, 'terms of use', '')
++      email_policy = subject.send(:setapp_policy_endpoint_report, 'privacy policy', 'hi@example.com')
++      email_support = subject.send(:setapp_policy_endpoint_report, 'support URL/email', 'hi@example.com')
++
++      assert(ok[:ok], 'expected healthy URL to pass')
++      assert(!missing[:ok], 'expected missing URL to fail')
++      assert(!email_policy[:ok], 'expected privacy policy email to fail')
++      assert(email_support[:ok], 'expected support email to pass')
++      assert_includes(missing[:message], 'Missing Setapp terms of use')
++      true
++    end
++
++    test('rejects extra top-level Setapp archive entries') do
++      Dir.mktmpdir('setapp-extra-entries-') do |dir|
++        stage = File.join(dir, 'Stage')
++        FileUtils.mkdir_p(File.join(stage, 'Demo.app'))
++        File.write(File.join(stage, 'AppIcon.png'), 'png')
++        File.write(File.join(stage, 'extra.txt'), 'not allowed')
++        zip = File.join(dir, 'Demo.zip')
++        system('/usr/bin/ditto', '-c', '-k', stage, zip, out: File::NULL, err: File::NULL)
++
++        report = subject.send(:setapp_resolve_artifact, zip, File.join(dir, 'Extract'))
++
++        assert_includes(report[:issues].join("\n"), 'extra top-level entries')
++      end
++      true
++    end
++
++    test('requires Setapp portal text fields and enforces documented limits') do
++      issues = subject.send(
++        :setapp_portal_text_limit_issues,
++        {
++          'release_notes' => 'Ready',
++          'description' => 'Useful app',
++          'key_benefits' => 'x' * 81,
++          'review_comments' => ''
++        }
++      )
++
++      assert_includes(issues.join("\n"), 'key_benefits exceeds 80')
++      assert_includes(issues.join("\n"), 'review_comments must be recorded')
++      true
++    end
++
++    test('separates hard forbidden Setapp markers from review-warning markers') do
++      hard_labels = SaneMasterModules::Release::SETAPP_FORBIDDEN_ARTIFACT_PATTERNS.keys
++      warning_labels = SaneMasterModules::Release::SETAPP_REVIEW_WARNING_PATTERNS.keys
++
++      assert_includes(hard_labels, 'direct checkout URL')
++      assert_includes(hard_labels, 'App Store rating/share prompt')
++      assert_includes(warning_labels, 'direct license-key copy')
++      assert_includes(warning_labels, 'third-party updater UI copy')
++      true
++    end
++
++    test('requires exact Setapp public key filename in bundle resources') do
++      Dir.mktmpdir('setapp-key-') do |dir|
++        app = File.join(dir, 'Demo.app')
++        resources = File.join(app, 'Contents', 'Resources')
++        FileUtils.mkdir_p(resources)
++        File.write(File.join(resources, 'setappPublicKey-iOS.pem'), 'ios-key')
++
++        issues = []
++        subject.send(:setapp_audit_public_key, app, issues)
++        assert_includes(issues.join("\n"), 'setappPublicKey.pem')
++
++        File.write(File.join(resources, 'setappPublicKey.pem'), 'mac-key')
++        issues = []
++        expected_sha = OpenSSL::Digest::SHA256.file(File.join(resources, 'setappPublicKey.pem')).hexdigest
++        harness = ReleaseGuardrailHarness.new
++        harness.define_singleton_method(:setapp_project_config) { { 'setapp' => { 'public_key_sha256' => expected_sha } } }
++        harness.send(:setapp_audit_public_key, app, issues)
++        assert_eq(issues, [])
++      end
++      true
++    end
++
++    test('audits ICNS icons by inspecting the largest iconset representation') do
++      release_source = File.read(File.expand_path('release.rb', __dir__))
++
++      assert_includes(release_source, "File.extname(path.to_s).casecmp('.icns').zero?")
++      assert_includes(release_source, "Open3.capture2e('iconutil', '-c', 'iconset'")
++      assert_includes(release_source, "dimensions.map(&:first).max")
++      true
++    end
++
++    test('compares Setapp bundle ID against nested .saneprocess setapp.bundle_id') do
++      Dir.mktmpdir('setapp-bundle-id-') do |dir|
++        app = File.join(dir, 'Demo.app')
++        contents = File.join(app, 'Contents')
++        FileUtils.mkdir_p(contents)
++        File.write(
++          File.join(contents, 'Info.plist'),
++          <<~PLIST
++            <?xml version="1.0" encoding="UTF-8"?>
++            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++            <plist version="1.0"><dict>
++              <key>CFBundleIdentifier</key><string>com.example.demo-setapp</string>
++              <key>CFBundleName</key><string>Demo</string>
++              <key>CFBundleIconFile</key><string>AppIcon</string>
++              <key>CFBundleVersion</key><string>1</string>
++              <key>CFBundleShortVersionString</key><string>1.0</string>
++              <key>NSUpdateSecurityPolicy</key><dict>
++                <key>AllowProcesses</key><dict>
++                  <key>MEHY5QF425</key><array><string>com.setapp.DesktopClient.SetappAgent</string></array>
++                </dict>
++              </dict>
++              <key>MPSupportedArchitectures</key><array><string>arm64</string><string>x86_64</string></array>
++            </dict></plist>
++          PLIST
++        )
++
++        harness = ReleaseGuardrailHarness.new
++        %i[
++          setapp_audit_icons
++          setapp_audit_public_key
++          setapp_audit_nested_bundle_ids
++          setapp_audit_framework_integration
++          setapp_audit_entitlements
++          setapp_audit_linked_frameworks
++          setapp_audit_signing
++          setapp_audit_binary_architectures
++          setapp_audit_forbidden_functionality
++        ].each do |method_name|
++          harness.define_singleton_method(method_name) { |*_args, **_kwargs| nil }
++        end
++
++        issues = []
++        harness.send(
++          :setapp_audit_app_bundle,
++          app,
++          adjacent_dir: dir,
++          config: {
++            'setapp' => {
++              'bundle_id' => 'com.example.demo-setapp'
++            }
++          },
++          issues: issues,
++          warnings: []
++        )
++
++        assert(!issues.join("\n").include?('Setapp bundle ID must match'), "unexpected bundle ID issue: #{issues.join(', ')}")
++      end
++      true
++    end
++
++    test('requires Setapp framework version symbol and blocks debug dylib') do
++      Dir.mktmpdir('setapp-framework-') do |dir|
++        app = File.join(dir, 'Demo.app')
++        FileUtils.mkdir_p(File.join(app, 'Contents', 'MacOS'))
++
++        harness = ReleaseGuardrailHarness.new
++        harness.define_singleton_method(:setapp_artifact_strings) { |_app_path| '' }
++        issues = []
++        harness.send(:setapp_audit_framework_integration, app, issues)
++        assert_includes(issues.join("\n"), '__scv__')
++
++        harness.define_singleton_method(:setapp_artifact_strings) { |_app_path| '__scv__5.0.1' }
++        File.write(File.join(app, 'Contents', 'MacOS', 'debug.dylib'), 'debug')
++        issues = []
++        harness.send(:setapp_audit_framework_integration, app, issues)
++        assert_includes(issues.join("\n"), 'debug.dylib')
++      end
++      true
++    end
++
++    test('reports iOS App Store release state from App Store Connect') do
++      subject.stub_asc_json(
++        '/apps/123/appStoreVersions?filter[platform]=IOS&limit=200',
++        'data' => [
++          { 'attributes' => { 'versionString' => '1.0', 'appStoreState' => 'READY_FOR_SALE' } }
++        ]
++      )
++
++      report = subject.send(:asc_app_store_release_report, app_id: '123', platform: 'ios')
++
++      assert(report[:applicable], 'expected App Store Connect response to apply')
++      assert(report[:released], 'expected READY_FOR_SALE to count as released')
++      assert_includes(report[:summary], 'READY_FOR_SALE')
++      true
++    end
++
++    test('Setapp icon gate tracks the documented 1024px requirement') do
++      assert_eq(SaneMasterModules::Release::SETAPP_REQUIRED_ICON_SIZE, 1024)
++      true
++    end
++
++    test('Setapp release gate stays compatible with the Mini Ruby') do
++      release_source = File.read(File.expand_path('release.rb', __dir__))
++
++      assert(!release_source.include?('.filter_map'), 'Mini system Ruby is 2.6 and does not support filter_map')
++      true
++    end
++  end
++
+   test_category('Release gate fixtures') do
+     test('finds app-specific gate fixtures in the SaneProcess fixture registry') do
+       Dir.mktmpdir('release-gates-') do |dir|
+@@ -186,6 +508,158 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
+     end
+   end
+ 
++  test_category('Release preflight slop gate') do
++    test('reuses the shared slop scanner without emitting standalone output') do
++      harness = ReleaseGuardrailHarness.new
++      captured = nil
++      harness.define_singleton_method(:scan_slop) do |verbose:, target_root:, emit_output:|
++        captured = { verbose: verbose, target_root: target_root, emit_output: emit_output }
++        {
++          status: :ok,
++          blocking_count: 0,
++          advisory_count: 1,
++          issues: { blocking: [], advisory: [{ file: 'Tests/Foo.swift', message: 'warn' }] }
++        }
++      end
++
++      report = harness.send(:release_preflight_slop_report, target_root: '/tmp/demo')
++
++      assert_eq(report[:advisory_count], 1)
++      assert_eq(captured[:verbose], false)
++      assert_eq(captured[:target_root], '/tmp/demo')
++      assert_eq(captured[:emit_output], false)
++      true
++    end
++  end
++
++  test_category('Release preflight runtime E2E gate') do
++    test('skips runtime E2E for non-app repos') do
++      report = subject.send(:release_preflight_runtime_e2e_report, app_name: 'SaneProcess')
++
++      assert_eq(report[:status], :skipped)
++      assert_includes(report[:summary], 'not an app repo')
++      true
++    end
++
++    test('summarizes runtime E2E success for shipped apps') do
++      subject.define_singleton_method(:runtime_e2e_report) do |app_name:, host:, emit_output:, **_opts|
++        _ = [app_name, host, emit_output]
++        {
++          status: :ok,
++          summary: 'basic=ok, pro=ok',
++          modes: [
++            { mode: :basic, probe: { status: :ok, summary: 'ok' } },
++            { mode: :pro, probe: { status: :ok, summary: 'ok' } }
++          ]
++        }
++      end
++
++      report = subject.send(:release_preflight_runtime_e2e_report, app_name: 'SaneBar')
++
++      assert_eq(report[:status], :ok)
++      assert_eq(report[:summary], 'basic=ok, pro=ok')
++      assert_eq(report[:warnings], [])
++      true
++    end
++  end
++
++  test_category('Shared slop scanner') do
++    test('flags duplicate blocks, deep nesting, and AI-artifact comments') do
++      Dir.mktmpdir('slop-scan-') do |dir|
++        FileUtils.mkdir_p(File.join(dir, 'App'))
++        File.write(
++          File.join(dir, 'App', 'Sloppy.swift'),
++          <<~SWIFT
++            func sloppy() {
++                if true {
++                    if true {
++                        if true {
++                            if true {
++                                if true {
++                                    if true {
++                                        if true {
++                                            print("nested")
++                                        }
++                                    }
++                                }
++                            }
++                        }
++                    }
++                }
++            }
++
++            // DEBUG: Write to file so AI can read it
++            func duplicateA() {
++                let one = longConfigurationValue("first duplicated configuration line")
++                let two = longConfigurationValue("second duplicated configuration line")
++                let three = longConfigurationValue("third duplicated configuration line")
++                let four = longConfigurationValue("fourth duplicated configuration line")
++                let five = longConfigurationValue("fifth duplicated configuration line")
++                let six = longConfigurationValue("sixth duplicated configuration line")
++                let seven = longConfigurationValue("seventh duplicated configuration line")
++                let eight = longConfigurationValue("eighth duplicated configuration line")
++            }
++
++            func duplicateB() {
++                let one = longConfigurationValue("first duplicated configuration line")
++                let two = longConfigurationValue("second duplicated configuration line")
++                let three = longConfigurationValue("third duplicated configuration line")
++                let four = longConfigurationValue("fourth duplicated configuration line")
++                let five = longConfigurationValue("fifth duplicated configuration line")
++                let six = longConfigurationValue("sixth duplicated configuration line")
++                let seven = longConfigurationValue("seventh duplicated configuration line")
++                let eight = longConfigurationValue("eighth duplicated configuration line")
++            }
++          SWIFT
++        )
++
++        report = subject.send(:scan_slop, verbose: false, target_root: dir, emit_output: false)
++
++        assert_eq(report[:status], :warning)
++        blocking_kinds = report[:issues][:blocking].map { |issue| issue[:kind] }
++        advisory_kinds = report[:issues][:advisory].map { |issue| issue[:kind] }
++        assert_includes(advisory_kinds, 'deep-nesting')
++        assert_includes(advisory_kinds, 'duplicate-block')
++        assert_includes(blocking_kinds, 'ai-artifact-comment')
++      end
++      true
++    end
++
++    test('flags brittle source-shape tests as advisory drift before they dominate a suite') do
++      Dir.mktmpdir('slop-source-test-') do |dir|
++        FileUtils.mkdir_p(File.join(dir, 'Tests'))
++        File.write(
++          File.join(dir, 'Tests', 'RuntimeGuardTests.swift'),
++          <<~SWIFT
++            import XCTest
++
++            final class RuntimeGuardTests: XCTestCase {
++                func testSourceShape() throws {
++                    let source = try String(contentsOf: URL(fileURLWithPath: "/tmp/Foo.swift"))
++                    XCTAssertTrue(source.contains("one"))
++                    XCTAssertTrue(source.contains("two"))
++                    XCTAssertTrue(source.contains("three"))
++                    XCTAssertTrue(source.contains("four"))
++                    XCTAssertTrue(source.contains("five"))
++                    XCTAssertTrue(source.contains("six"))
++                    XCTAssertTrue(source.contains("if !success,\\n    retry()"))
++                    XCTAssertTrue(source.contains("guard thing else {\\n    return }"))
++                }
++            }
++          SWIFT
++        )
++
++        report = subject.send(:scan_slop, verbose: false, target_root: dir, emit_output: false)
++
++        assert_eq(report[:status], :ok)
++        advisory_kinds = report[:issues][:advisory].map { |issue| issue[:kind] }
++        assert_includes(advisory_kinds, 'brittle-source-test')
++        assert_includes(advisory_kinds, 'whitespace-sensitive-source-test')
++      end
++      true
++    end
++  end
++
+   test_category('Artifact marker detection') do
+     test('detects donation and support markers in App Store artifacts') do
+       hits = subject.send(
+diff --git a/scripts/sanemaster/verify.rb b/scripts/sanemaster/verify.rb
+index 5d4e48a..277e88e 100755
+--- a/scripts/sanemaster/verify.rb
++++ b/scripts/sanemaster/verify.rb
+@@ -451,21 +451,46 @@ module SaneMasterModules
+ 
+     def run_quality_report
+       puts '📊 --- [ SANEMASTER QUALITY ] ---'
++      quality_ok = true
++
+       unless bundle_available?
+         puts '❌ Quality report generation failed.'
+-        return
++        quality_ok = false
++      else
++        output, status = capture2e_with_bundle_env(preferred_bundle_bin, 'exec', 'fastlane', 'quality')
++        if status.success?
++          puts '✅ Quality report generation complete.'
++        elsif output.include?('Could not find lane')
++          puts 'ℹ️  No fastlane quality lane; falling back to the bundled rubocop report.'
++          rubocop_issues = check_rubocop_issues
++          rubocop_limit = defined?(SaneMasterModules::Meta::RUBOCOP_OFFENSE_LIMIT) ? SaneMasterModules::Meta::RUBOCOP_OFFENSE_LIMIT : 30
++          quality_ok &&= rubocop_issues <= rubocop_limit
++        else
++          puts output unless output.to_s.strip.empty?
++          puts '❌ Quality report generation failed.'
++          quality_ok = false
++        end
+       end
+ 
+-      output, status = capture2e_with_bundle_env(preferred_bundle_bin, 'exec', 'fastlane', 'quality')
+-      if status.success?
+-        puts '✅ Quality report generation complete.'
+-      elsif output.include?('Could not find lane')
+-        puts 'ℹ️  No fastlane quality lane; falling back to the bundled rubocop report.'
+-        check_rubocop_issues
++      puts ''
++      print '🧹 Slop check... '
++      slop_report = scan_slop(verbose: false, emit_output: false)
++      if slop_report[:blocking_count].zero?
++        if slop_report[:advisory_count].positive?
++          puts "✅ #{slop_report[:advisory_count]} advisory"
++        else
++          puts '✅'
++        end
+       else
+-        puts output unless output.to_s.strip.empty?
+-        puts '❌ Quality report generation failed.'
++        puts '❌ FAIL'
++        slop_report[:issues][:blocking].first(5).each do |issue|
++          location = issue[:line] ? "#{issue[:file]}:#{issue[:line]}" : issue[:file]
++          puts "   - #{location}: #{issue[:message]}"
++        end
++        quality_ok = false
+       end
++
++      quality_ok
+     end
+ 
+     def validate_test_references
+diff --git a/scripts/sanemaster/verify_guard_test.rb b/scripts/sanemaster/verify_guard_test.rb
+index 2d258d2..f98bb85 100644
+--- a/scripts/sanemaster/verify_guard_test.rb
++++ b/scripts/sanemaster/verify_guard_test.rb
+@@ -133,6 +133,7 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
+   test_category('Quality command fallback') do
+     test('falls back to rubocop when no fastlane quality lane exists') do
+       fallback_called = false
++      slop_called = false
+       subject.define_singleton_method(:bundle_available?) { true }
+       subject.define_singleton_method(:preferred_bundle_bin) { '/tmp/fake-bundle' }
+       subject.define_singleton_method(:capture2e_with_bundle_env) do |*_args|
+@@ -142,15 +143,22 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
+         fallback_called = true
+         0
+       end
++      subject.define_singleton_method(:scan_slop) do |verbose:, emit_output:, target_root: Dir.pwd|
++        slop_called = true
++        { status: :ok, blocking_count: 0, advisory_count: 0, issues: { blocking: [], advisory: [] } }
++      end
+ 
+       output = capture_stdout { subject.send(:run_quality_report) }
+ 
+       assert(fallback_called, 'expected rubocop fallback to run')
++      assert(slop_called, 'expected slop check to run as part of quality')
+       assert_includes(output, 'No fastlane quality lane')
++      assert_includes(output, 'Slop check...')
+       true
+     end
+ 
+     test('reports a real fastlane quality failure without masking it') do
++      slop_called = false
+       subject.define_singleton_method(:bundle_available?) { true }
+       subject.define_singleton_method(:preferred_bundle_bin) { '/tmp/fake-bundle' }
+       subject.define_singleton_method(:capture2e_with_bundle_env) do |*_args|
+@@ -159,13 +167,42 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
+       subject.define_singleton_method(:check_rubocop_issues) do
+         raise 'rubocop fallback should not run for real fastlane failures'
+       end
++      subject.define_singleton_method(:scan_slop) do |verbose:, emit_output:, target_root: Dir.pwd|
++        slop_called = true
++        { status: :ok, blocking_count: 0, advisory_count: 0, issues: { blocking: [], advisory: [] } }
++      end
+ 
+       output = capture_stdout { subject.send(:run_quality_report) }
+ 
++      assert(slop_called, 'expected slop check to still run after a fastlane failure')
+       assert_includes(output, 'fastlane exploded')
+       assert_includes(output, '❌ Quality report generation failed.')
+       true
+     end
++
++    test('fails quality when slop check finds blocking issues') do
++      subject.define_singleton_method(:bundle_available?) { true }
++      subject.define_singleton_method(:preferred_bundle_bin) { '/tmp/fake-bundle' }
++      subject.define_singleton_method(:capture2e_with_bundle_env) do |*_args|
++        ['ok', Struct.new(:success?).new(true)]
++      end
++      subject.define_singleton_method(:scan_slop) do |verbose:, emit_output:, target_root: Dir.pwd|
++        {
++          status: :warning,
++          blocking_count: 1,
++          advisory_count: 0,
++          issues: { blocking: [{ file: 'App/Sloppy.swift', message: 'duplicate block' }], advisory: [] }
++        }
++      end
++
++      result = nil
++      output = capture_stdout { result = subject.send(:run_quality_report) }
++
++      assert_eq(result, false)
++      assert_includes(output, 'Slop check... ❌ FAIL')
++      assert_includes(output, 'App/Sloppy.swift: duplicate block')
++      true
++    end
+   end
+ 
+   test_category('Verify timeout handling') do
+diff --git a/scripts/sanitize_distribution_bundle.rb b/scripts/sanitize_distribution_bundle.rb
+index d5433b2..7334e3c 100644
+--- a/scripts/sanitize_distribution_bundle.rb
++++ b/scripts/sanitize_distribution_bundle.rb
+@@ -7,6 +7,7 @@ require "optparse"
+ 
+ CHANNEL_RULES = {
+   "setapp" => {
++    strip_sparkle_framework: false,
+     plist_keys: %w[
+       SUFeedURL
+       SUPublicEDKey
+@@ -16,6 +17,7 @@ CHANNEL_RULES = {
+     ]
+   },
+   "appstore" => {
++    strip_sparkle_framework: true,
+     plist_keys: %w[
+       SUFeedURL
+       SUPublicEDKey
+@@ -74,9 +76,11 @@ def sparkle_linked?(binary_path)
+ end
+ 
+ frameworks_removed = 0
+-Dir.glob(File.join(bundle_path, "**", "Sparkle.framework")).each do |framework_path|
+-  FileUtils.rm_rf(framework_path)
+-  frameworks_removed += 1
++if rules[:strip_sparkle_framework]
++  Dir.glob(File.join(bundle_path, "**", "Sparkle.framework")).each do |framework_path|
++    FileUtils.rm_rf(framework_path)
++    frameworks_removed += 1
++  end
+ end
+ 
+ deleted_keys = []
+@@ -86,6 +90,7 @@ end
+ 
+ patched_binaries = []
+ Find.find(bundle_path) do |path|
++  next unless rules[:strip_sparkle_framework]
+   next unless path.include?("/Contents/MacOS/")
+   next unless File.file?(path)
+   next unless sparkle_linked?(path)
+diff --git a/scripts/test_registry.json b/scripts/test_registry.json
+index 3559481..6b747a0 100644
+--- a/scripts/test_registry.json
++++ b/scripts/test_registry.json
+@@ -139,6 +139,12 @@
+       "status": "required",
+       "cmd": ["ruby", "scripts/sanemaster/release_route_test.rb"]
+     },
++    {
++      "path": "scripts/sanemaster/runtime_e2e_test.rb",
++      "label": "SaneProcess runtime E2E tests",
++      "status": "required",
++      "cmd": ["ruby", "scripts/sanemaster/runtime_e2e_test.rb"]
++    },
+     {
+       "path": "scripts/sanemaster/saneui_guard_test.rb",
+       "label": "SaneProcess SaneUI guard tests",
+diff --git a/templates/RELEASE_SOP.md b/templates/RELEASE_SOP.md
+index 0d362e4..784116c 100644
+--- a/templates/RELEASE_SOP.md
++++ b/templates/RELEASE_SOP.md
+@@ -266,7 +266,7 @@ Before any Setapp submission or handoff:
+ 
+ 4. Confirm the app-specific gotchas:
+ - menu bar apps must report Setapp usage events such as `.userInteraction`
+-- arm64-only projects must not assume Setapp universal readiness without proof
++- Setapp macOS submissions must prove a universal `arm64` + `x86_64` app binary before upload
+ - widget/extension bundle families must be reviewed explicitly if they ship in the Setapp lane
+ 
+ 5. Confirm channel drift is not being introduced:

@@ -1,0 +1,9 @@
+ scripts/mini/README.md                  |   1 +
+ scripts/mini/deploy.sh                  |   9 +-
+ scripts/mini/evaluate_model.py          | 180 +++++++++++++++++------
+ scripts/mini/mini-nightly.sh            |  22 ++-
+ scripts/mini/mini-train-all.sh          |  20 ++-
+ scripts/mini/mini-train.sh              | 252 ++++++++++++++++++++++----------
+ scripts/mini/mini_train_process_test.rb |  75 ++++++++++
+ scripts/mini/training-daily-check.py    | 181 +++++++++++++++++++++--
+ 8 files changed, 589 insertions(+), 151 deletions(-)

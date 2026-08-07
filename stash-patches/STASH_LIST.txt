@@ -1,0 +1,34 @@
+stash@{0}: On main: EOD 2026-07-29 Mini SaneProcess mixed work
+stash@{1}: On main: pre-20260727-control-plane-union-mini
+stash@{2}: On main: superseded 7/14 working-tree state (pre-reconciliation, preserved 2026-07-15)
+stash@{3}: On fix/hook-staleness-gates: codex-mini-doc-sweep-pre-ff-20260613
+stash@{4}: On fix/hook-staleness-gates: codex-mini-pre-doc-sweep-20260613
+stash@{5}: WIP on fix/hook-staleness-gates: 58d1a34 refactor: streamline pass 1 — dead architecture out, guards deduped, installs derive from require graph
+stash@{6}: WIP on codex/mini-handoff-20260608-211327: 159671c fix: standardize Lefthook bundle execution
+stash@{7}: On codex/mini-handoff-20260608-211327: reviewed mixed SaneProcess WIP before clean consolidation 2026-06-11
+stash@{8}: On main: safety: pre-reconcile SaneProcess WIP 2026-06-01
+stash@{9}: On main: reconcile local duplicate of SaneProcess 165ef6f SOP hardening
+stash@{10}: On main: auto-reconcile-20260508-215529-stephans-macbook-air
+stash@{11}: On main: auto-reconcile-20260507-215529-stephans-macbook-air
+stash@{12}: On main: auto-reconcile-20260506-215531-stephans-macbook-air
+stash@{13}: On cleanup/public-generalization-visuals: auto-reconcile-20260505-215537-stephans-macbook-air
+stash@{14}: On main: auto-reconcile-20260430-215529-stephans-macbook-air
+stash@{15}: On main: auto-reconcile-20260430-055528-stephans-macbook-air
+stash@{16}: On main: auto-reconcile-20260429-215525-stephans-macbook-air
+stash@{17}: On main: auto-reconcile-20260428-215531-stephans-macbook-air
+stash@{18}: On main: codex-clean-worktree-2026-04-27 SaneProcess
+stash@{19}: On main: auto-reconcile-20260425-215529-stephans-macbook-air
+stash@{20}: On main: auto-reconcile-20260425-055529-stephans-macbook-air
+stash@{21}: On (no branch): manual-cleanup-20260424-153709-stephans-macbook-air
+stash@{22}: On (no branch): manual-cleanup-20260424-153709-stephans-macbook-air
+stash@{23}: On codex/release-gate-hardening: manual-cleanup-20260424-153709-stephans-macbook-air
+stash@{24}: On main: auto-reconcile-20260424-153503-stephans-macbook-air
+stash@{25}: On main: auto-reconcile-20260423-215529-stephans-macbook-air
+stash@{26}: On main: auto-reconcile-20260420-101042-stephans-macbook-air
+stash@{27}: On main: auto-reconcile-20260418-055526-stephans-macbook-air
+stash@{28}: On main: auto-reconcile-20260414-055533-stephans-macbook-air
+stash@{29}: On main: auto-reconcile-20260413-215540-stephans-macbook-air
+stash@{30}: On main: auto-reconcile-20260413-155607-stephans-macbook-air
+stash@{31}: On main: auto-reconcile-20260413-152145-stephans-macbook-air
+stash@{32}: On main: auto-reconcile-20260411-055525-stephans-macbook-air
+stash@{33}: On main: auto-reconcile-20260410-215527-stephans-macbook-air

@@ -1,0 +1,4 @@
+ SESSION_HANDOFF.md                      | 35 ++++++++++++++++++++++++++++++++
+ scripts/sanemaster/verify.rb            | 25 ++++++++++++++++++++++-
+ scripts/sanemaster/verify_guard_test.rb | 36 +++++++++++++++++++++++++++++++++
+ 3 files changed, 95 insertions(+), 1 deletion(-)

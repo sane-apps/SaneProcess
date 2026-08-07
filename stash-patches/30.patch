@@ -1,0 +1,1150 @@
+diff --git a/scripts/automation/git-sync-safe.sh b/scripts/automation/git-sync-safe.sh
+index 8ce5da2..9afcf4e 100755
+--- a/scripts/automation/git-sync-safe.sh
++++ b/scripts/automation/git-sync-safe.sh
+@@ -10,6 +10,8 @@
+ set -euo pipefail
+ 
+ PEER_HOST=""
++PEER_SSH_OPTS="${PEER_SSH_OPTS:-}"
++PEER_SSH_TIMEOUT="${PEER_SSH_TIMEOUT:-30}"
+ STRICT_DIRTY=1
+ RECONCILE_DIRTY=0
+ ROOT="$HOME/SaneApps"
+@@ -37,6 +39,37 @@ log() {
+   echo "$*" | tee -a "$LOG_FILE"
+ }
+ 
++PEER_SSH_ARGS=()
++if [[ -n "$PEER_SSH_OPTS" ]]; then
++  # shellcheck disable=SC2206
++  PEER_SSH_ARGS=($PEER_SSH_OPTS)
++fi
++
++peer_ssh() {
++  ssh "${PEER_SSH_ARGS[@]}" "$PEER_HOST" "$@"
++}
++
++capture_with_timeout() {
++  local timeout_s="$1"
++  shift
++  python3 - "$timeout_s" "$@" <<'PY'
++import subprocess
++import sys
++
++timeout = float(sys.argv[1])
++cmd = sys.argv[2:]
++try:
++    completed = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
++except subprocess.TimeoutExpired:
++    print(f"ERROR: command timed out after {int(timeout)}s: {' '.join(cmd[:4])}", file=sys.stderr)
++    sys.exit(124)
++
++sys.stdout.write(completed.stdout)
++sys.stderr.write(completed.stderr)
++sys.exit(completed.returncode)
++PY
++}
++
+ refresh_repo_state() {
+   local repo="$1"
+   local branch="$2"
+@@ -174,7 +207,7 @@ fi
+ 
+ issues=0
+ if [[ -n "$PEER_HOST" ]]; then
+-  if ! PEER_HOME=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$PEER_HOST" 'printf %s "$HOME"' 2>/dev/null); then
++  if ! PEER_HOME=$(capture_with_timeout "$PEER_SSH_TIMEOUT" ssh "${PEER_SSH_ARGS[@]}" -o BatchMode=yes -o ConnectTimeout=8 "$PEER_HOST" 'printf %s "$HOME"' 2>/dev/null); then
+     log "WARNING: Could not resolve peer home via SSH ($PEER_HOST); continuing local-only checks"
+     PEER_HOST=""
+     issues=$((issues + 1))
+@@ -266,7 +299,7 @@ for repo in "${repos[@]}"; do
+     rel="${repo#$ROOT/}"
+     peer_repo="$PEER_HOME/SaneApps/$rel"
+ 
+-    if ! peer_report=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$PEER_HOST" \
++    if ! peer_report=$(capture_with_timeout "$PEER_SSH_TIMEOUT" ssh "${PEER_SSH_ARGS[@]}" -o BatchMode=yes -o ConnectTimeout=8 "$PEER_HOST" \
+       "repo=\"$peer_repo\"; if [ ! -d \"\$repo/.git\" ] && [ \"$rel\" = \"SaneAI\" ]; then repo=\"$PEER_HOME/SaneApps/apps/SaneAI\"; fi; if [ -d \"\$repo/.git\" ]; then printf 'HEAD=%s\nBRANCH=%s\nDIRTY=%s\nPATH=%s\n' \"\$(git -C \"\$repo\" rev-parse HEAD 2>/dev/null || echo)\" \"\$(git -C \"\$repo\" rev-parse --abbrev-ref HEAD 2>/dev/null || echo)\" \"\$(git -C \"\$repo\" status --porcelain 2>/dev/null | wc -l | tr -d ' ')\" \"\$repo\"; else echo 'MISSING=1'; fi" 2>/dev/null); then
+       log "  - ERROR: peer check failed ($PEER_HOST:$peer_repo)"
+       issues=$((issues + 1))
+diff --git a/scripts/automation/reconcile-air-mini.sh b/scripts/automation/reconcile-air-mini.sh
+index 8f041fc..56a9040 100755
+--- a/scripts/automation/reconcile-air-mini.sh
++++ b/scripts/automation/reconcile-air-mini.sh
+@@ -4,6 +4,8 @@
+ set -euo pipefail
+ 
+ MINI_HOST="mini"
++MINI_SSH_OPTS="${MINI_SSH_OPTS:-}"
++MINI_SSH_TIMEOUT="${MINI_SSH_TIMEOUT:-30}"
+ QUIET=0
+ SYNC_CONTROL_PLANE=1
+ 
+@@ -29,6 +31,67 @@ die() {
+   exit 1
+ }
+ 
++default_mini_ssh_opts() {
++  local key_path
++  for key_path in "$HOME/.ssh/id_ed25519_codex_loopback" "$HOME/.ssh/id_ed25519"; do
++    if [[ -f "$key_path" ]]; then
++      printf '%s' "-i $key_path -o IdentitiesOnly=yes -o IdentityAgent=none -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o NumberOfPasswordPrompts=0"
++      return 0
++    fi
++  done
++  return 1
++}
++
++if [[ -z "$MINI_SSH_OPTS" ]]; then
++  MINI_SSH_OPTS="$(default_mini_ssh_opts || true)"
++fi
++
++MINI_SSH_ARGS=()
++if [[ -n "$MINI_SSH_OPTS" ]]; then
++  # shellcheck disable=SC2206
++  MINI_SSH_ARGS=($MINI_SSH_OPTS)
++fi
++
++run_with_timeout() {
++  local timeout_s="$1"
++  shift
++  python3 - "$timeout_s" "$@" <<'PY'
++import subprocess
++import sys
++
++timeout = float(sys.argv[1])
++cmd = sys.argv[2:]
++try:
++    completed = subprocess.run(cmd, timeout=timeout)
++except subprocess.TimeoutExpired:
++    print(f"ERROR: command timed out after {int(timeout)}s: {' '.join(cmd[:4])}", file=sys.stderr)
++    sys.exit(124)
++
++sys.exit(completed.returncode)
++PY
++}
++
++capture_with_timeout() {
++  local timeout_s="$1"
++  shift
++  python3 - "$timeout_s" "$@" <<'PY'
++import subprocess
++import sys
++
++timeout = float(sys.argv[1])
++cmd = sys.argv[2:]
++try:
++    completed = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
++except subprocess.TimeoutExpired:
++    print(f"ERROR: command timed out after {int(timeout)}s: {' '.join(cmd[:4])}", file=sys.stderr)
++    sys.exit(124)
++
++sys.stdout.write(completed.stdout)
++sys.stderr.write(completed.stderr)
++sys.exit(completed.returncode)
++PY
++}
++
+ while [[ $# -gt 0 ]]; do
+   case "$1" in
+     -h|--help)
+@@ -62,16 +125,16 @@ GIT_SYNC_SCRIPT="$ROOT/scripts/automation/git-sync-safe.sh"
+ if [[ "$SYNC_CONTROL_PLANE" -eq 1 ]]; then
+   [[ -x "$SYNC_SCRIPT" ]] || die "Missing control-plane sync script: $SYNC_SCRIPT"
+   log "1) Syncing control-plane files to $MINI_HOST..."
+-  bash "$SYNC_SCRIPT" "$MINI_HOST" --quiet --no-restart
++  MINI_SSH_OPTS="$MINI_SSH_OPTS" MINI_SSH_TIMEOUT="$MINI_SSH_TIMEOUT" bash "$SYNC_SCRIPT" "$MINI_HOST" --quiet --no-restart
+ fi
+ 
+-remote_home=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$MINI_HOST" 'printf %s "$HOME"') || die "Could not resolve $MINI_HOST home"
++remote_home=$(capture_with_timeout "$MINI_SSH_TIMEOUT" ssh "${MINI_SSH_ARGS[@]}" -o BatchMode=yes -o ConnectTimeout=8 "$MINI_HOST" 'printf %s "$HOME"') || die "Could not resolve $MINI_HOST home"
+ remote_git_sync="$remote_home/SaneApps/infra/SaneProcess/scripts/automation/git-sync-safe.sh"
+ 
+ log "2) Reconciling canonical repos on $MINI_HOST..."
+-ssh -o BatchMode=yes -o ConnectTimeout=8 "$MINI_HOST" "bash \"$remote_git_sync\" --reconcile-dirty"
++run_with_timeout "$MINI_SSH_TIMEOUT" ssh "${MINI_SSH_ARGS[@]}" -o BatchMode=yes -o ConnectTimeout=8 "$MINI_HOST" "bash \"$remote_git_sync\" --reconcile-dirty"
+ 
+ log "3) Reconciling canonical repos locally and verifying parity with $MINI_HOST..."
+-bash "$GIT_SYNC_SCRIPT" --peer "$MINI_HOST" --reconcile-dirty
++PEER_SSH_OPTS="$MINI_SSH_OPTS" PEER_SSH_TIMEOUT="$MINI_SSH_TIMEOUT" bash "$GIT_SYNC_SCRIPT" --peer "$MINI_HOST" --reconcile-dirty
+ 
+ log "Air/Mini reconcile complete."
+diff --git a/scripts/automation/sane-status-crossref.sh b/scripts/automation/sane-status-crossref.sh
+index 6a6c9d7..1e50d5c 100755
+--- a/scripts/automation/sane-status-crossref.sh
++++ b/scripts/automation/sane-status-crossref.sh
+@@ -2,10 +2,20 @@
+ set -euo pipefail
+ 
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
++STATUS_REPO_ROOT="${STATUS_REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
++SCRIPTS_ROOT="${STATUS_REPO_ROOT}/scripts"
+ 
+-CHECK_INBOX="${HOME}/SaneApps/infra/scripts/check-inbox.sh"
+-SANE_MASTER="${REPO_ROOT}/SaneMaster.rb"
++CHECK_INBOX="${CHECK_INBOX:-${HOME}/SaneApps/infra/scripts/check-inbox.sh}"
++SANE_MASTER="${SANE_MASTER:-${SCRIPTS_ROOT}/SaneMaster.rb}"
++APPS_ROOT="${APPS_ROOT:-$(cd "$STATUS_REPO_ROOT/../.." && pwd)/apps}"
++
++LISTING_JSON="$(mktemp -t sane-status-listing.XXXXXX.json)"
++
++cleanup() {
++  rm -f "$LISTING_JSON"
++}
++
++trap cleanup EXIT
+ 
+ printf '\nSane status cross-reference (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+ printf '%s\n' "----------------------------------------"
+@@ -26,11 +36,17 @@ fi
+ 
+ printf '\n[3/5] Listing actions\n'
+ if [[ -x "$SANE_MASTER" ]]; then
+-  ruby "$SANE_MASTER" listing_actions --json | python3 - <<'PY'
++  ruby "$SANE_MASTER" listing_actions --json-out "$LISTING_JSON" >/dev/null
++  if [[ ! -s "$LISTING_JSON" ]]; then
++    echo "Listing actions JSON was not written."
++    exit 1
++  fi
++  python3 - "$LISTING_JSON" <<'PY'
+ import json
++import pathlib
+ import sys
+ 
+-payload = json.load(sys.stdin)
++payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+ current = payload.get("current_actions", [])
+ needs = [row for row in current if row.get("action_status") == "Needs action"]
+ optional = [row for row in current if row.get("action_status") == "Optional"]
+@@ -55,7 +71,7 @@ fi
+ printf '\n[4/5] Open GitHub issues (sane-apps org)\n'
+ if command -v gh >/dev/null 2>&1; then
+   for repo in SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo; do
+-    echo "\n## $repo"
++    printf '\n## %s\n' "$repo"
+     gh issue list -R "sane-apps/${repo}" --state open --limit 10 || echo "  Unable to fetch issues for ${repo} (auth missing or no issues)."
+   done
+ else
+@@ -65,7 +81,7 @@ fi
+ printf '\n[5/5] Open GitHub PRs (sane-apps org)\n'
+ if command -v gh >/dev/null 2>&1; then
+   for repo in SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo; do
+-    echo "\n## $repo"
++    printf '\n## %s\n' "$repo"
+     gh pr list -R "sane-apps/${repo}" --state open --limit 10 || echo "  Unable to fetch PRs for ${repo} (auth missing or no PRs)."
+   done
+ else
+diff --git a/scripts/automation/start-workday.sh b/scripts/automation/start-workday.sh
+index 7630dac..4963ff0 100755
+--- a/scripts/automation/start-workday.sh
++++ b/scripts/automation/start-workday.sh
+@@ -4,6 +4,8 @@
+ set -euo pipefail
+ 
+ MINI_HOST="mini"
++MINI_SSH_OPTS="${MINI_SSH_OPTS:-}"
++MINI_SSH_TIMEOUT="${MINI_SSH_TIMEOUT:-30}"
+ OPEN_FILES=1
+ 
+ usage() {
+@@ -37,6 +39,46 @@ while [[ $# -gt 0 ]]; do
+   esac
+ done
+ 
++default_mini_ssh_opts() {
++  local key_path
++  for key_path in "$HOME/.ssh/id_ed25519_codex_loopback" "$HOME/.ssh/id_ed25519"; do
++    if [[ -f "$key_path" ]]; then
++      printf '%s' "-i $key_path -o IdentitiesOnly=yes -o IdentityAgent=none -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o NumberOfPasswordPrompts=0"
++      return 0
++    fi
++  done
++  return 1
++}
++
++if [[ -z "$MINI_SSH_OPTS" ]]; then
++  MINI_SSH_OPTS="$(default_mini_ssh_opts || true)"
++fi
++
++MINI_SSH_ARGS=()
++if [[ -n "$MINI_SSH_OPTS" ]]; then
++  # shellcheck disable=SC2206
++  MINI_SSH_ARGS=($MINI_SSH_OPTS)
++fi
++
++run_with_timeout() {
++  local timeout_s="$1"
++  shift
++  python3 - "$timeout_s" "$@" <<'PY'
++import subprocess
++import sys
++
++timeout = float(sys.argv[1])
++cmd = sys.argv[2:]
++try:
++    completed = subprocess.run(cmd, timeout=timeout)
++except subprocess.TimeoutExpired:
++    print(f"ERROR: command timed out after {int(timeout)}s: {' '.join(cmd[:4])}", file=sys.stderr)
++    sys.exit(124)
++
++sys.exit(completed.returncode)
++PY
++}
++
+ ROOT="$HOME/SaneApps/infra/SaneProcess"
+ SYNC_SCRIPT="$ROOT/scripts/automation/sync-codex-mini.sh"
+ RECONCILE_SCRIPT="$ROOT/scripts/automation/reconcile-air-mini.sh"
+@@ -49,22 +91,22 @@ mkdir -p "$OUT_DIR"
+ 
+ echo "== SaneOps Workday Start =="
+ echo "1) Syncing automation config to Mini..."
+-bash "$SYNC_SCRIPT" "$MINI_HOST"
++MINI_SSH_OPTS="$MINI_SSH_OPTS" MINI_SSH_TIMEOUT="$MINI_SSH_TIMEOUT" bash "$SYNC_SCRIPT" "$MINI_HOST"
+ 
+ echo ""
+ echo "2) Air↔Mini repo reconcile..."
+-if ! "$RECONCILE_SCRIPT" "$MINI_HOST" --no-sync-control-plane; then
++if ! MINI_SSH_OPTS="$MINI_SSH_OPTS" MINI_SSH_TIMEOUT="$MINI_SSH_TIMEOUT" "$RECONCILE_SCRIPT" "$MINI_HOST" --no-sync-control-plane; then
+   echo "WARNING: Air↔Mini reconcile reported issues"
+ fi
+ 
+ echo ""
+ echo "3) Fetching Mini reports..."
+-scp -q "$MINI_HOST:~/SaneApps/infra/SaneProcess/outputs/morning_report.md" "$OUT_DIR/morning_report.mini.md" 2>/dev/null || true
+-scp -q "$MINI_HOST:~/SaneApps/infra/SaneProcess/outputs/nightly_report.md" "$OUT_DIR/nightly_report.mini.md" 2>/dev/null || true
++run_with_timeout "$MINI_SSH_TIMEOUT" scp -q "${MINI_SSH_ARGS[@]}" "$MINI_HOST:~/SaneApps/infra/SaneProcess/outputs/morning_report.md" "$OUT_DIR/morning_report.mini.md" >/dev/null 2>&1 || true
++run_with_timeout "$MINI_SSH_TIMEOUT" scp -q "${MINI_SSH_ARGS[@]}" "$MINI_HOST:~/SaneApps/infra/SaneProcess/outputs/nightly_report.md" "$OUT_DIR/nightly_report.mini.md" >/dev/null 2>&1 || true
+ 
+ echo ""
+ echo "4) Mini automation status:"
+-ssh "$MINI_HOST" 'sqlite3 -header -column ~/.codex/sqlite/codex-dev.db "SELECT id,name,status,datetime(next_run_at/1000,\"unixepoch\",\"localtime\") AS next_run_local, datetime(last_run_at/1000,\"unixepoch\",\"localtime\") AS last_run_local FROM automations;"'
++run_with_timeout "$MINI_SSH_TIMEOUT" ssh "${MINI_SSH_ARGS[@]}" "$MINI_HOST" 'sqlite3 -header -column ~/.codex/sqlite/codex-dev.db "SELECT id,name,status,datetime(next_run_at/1000,\"unixepoch\",\"localtime\") AS next_run_local, datetime(last_run_at/1000,\"unixepoch\",\"localtime\") AS last_run_local FROM automations;"'
+ 
+ echo ""
+ echo "5) Inbox summary (local):"
+diff --git a/scripts/automation/sync-codex-mini.sh b/scripts/automation/sync-codex-mini.sh
+index c3979dc..c0ae1ca 100755
+--- a/scripts/automation/sync-codex-mini.sh
++++ b/scripts/automation/sync-codex-mini.sh
+@@ -7,6 +7,8 @@
+ set -euo pipefail
+ 
+ MINI_HOST="mini"
++MINI_SSH_OPTS="${MINI_SSH_OPTS:-}"
++MINI_SSH_TIMEOUT="${MINI_SSH_TIMEOUT:-30}"
+ QUIET=0
+ RESTART_CODEX=1
+ REMOTE_AM_STATUS="ACTIVE"
+@@ -36,6 +38,83 @@ die() {
+   exit 1
+ }
+ 
++default_mini_ssh_opts() {
++  local key_path
++  for key_path in "$HOME/.ssh/id_ed25519_codex_loopback" "$HOME/.ssh/id_ed25519"; do
++    if [[ -f "$key_path" ]]; then
++      printf '%s' "-i $key_path -o IdentitiesOnly=yes -o IdentityAgent=none -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o NumberOfPasswordPrompts=0"
++      return 0
++    fi
++  done
++  return 1
++}
++
++if [[ -z "$MINI_SSH_OPTS" ]]; then
++  MINI_SSH_OPTS="$(default_mini_ssh_opts || true)"
++fi
++
++MINI_SSH_ARGS=()
++if [[ -n "$MINI_SSH_OPTS" ]]; then
++  # shellcheck disable=SC2206
++  MINI_SSH_ARGS=($MINI_SSH_OPTS)
++fi
++MINI_RSYNC_SHELL="ssh"
++if [[ -n "$MINI_SSH_OPTS" ]]; then
++  MINI_RSYNC_SHELL="ssh $MINI_SSH_OPTS"
++fi
++
++mini_ssh() {
++  run_with_timeout "$MINI_SSH_TIMEOUT" ssh "${MINI_SSH_ARGS[@]}" "$MINI_HOST" "$@"
++}
++
++mini_scp() {
++  run_with_timeout "$MINI_SSH_TIMEOUT" scp -q "${MINI_SSH_ARGS[@]}" "$@"
++}
++
++mini_rsync() {
++  run_with_timeout "$MINI_SSH_TIMEOUT" rsync -e "$MINI_RSYNC_SHELL" "$@"
++}
++
++run_with_timeout() {
++  local timeout_s="$1"
++  shift
++  python3 - "$timeout_s" "$@" <<'PY'
++import subprocess
++import sys
++
++timeout = float(sys.argv[1])
++cmd = sys.argv[2:]
++try:
++    completed = subprocess.run(cmd, timeout=timeout)
++except subprocess.TimeoutExpired:
++    print(f"ERROR: command timed out after {int(timeout)}s: {' '.join(cmd[:4])}", file=sys.stderr)
++    sys.exit(124)
++
++sys.exit(completed.returncode)
++PY
++}
++
++capture_with_timeout() {
++  local timeout_s="$1"
++  shift
++  python3 - "$timeout_s" "$@" <<'PY'
++import subprocess
++import sys
++
++timeout = float(sys.argv[1])
++cmd = sys.argv[2:]
++try:
++    completed = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
++except subprocess.TimeoutExpired:
++    print(f"ERROR: command timed out after {int(timeout)}s: {' '.join(cmd[:4])}", file=sys.stderr)
++    sys.exit(124)
++
++sys.stdout.write(completed.stdout)
++sys.stderr.write(completed.stderr)
++sys.exit(completed.returncode)
++PY
++}
++
+ while [[ $# -gt 0 ]]; do
+   case "$1" in
+     -h|--help)
+@@ -141,8 +220,8 @@ if [[ -f "$LOCAL_DB" ]]; then
+   " >/dev/null 2>&1 || true
+ fi
+ 
+-REMOTE_HOME=$(ssh -o ConnectTimeout=8 "$MINI_HOST" 'printf %s "$HOME"') || die "Could not reach $MINI_HOST"
+-REMOTE_NODE=$(ssh -o ConnectTimeout=8 "$MINI_HOST" 'command -v node') || die "Could not resolve node on $MINI_HOST"
++REMOTE_HOME=$(capture_with_timeout "$MINI_SSH_TIMEOUT" ssh "${MINI_SSH_ARGS[@]}" -o ConnectTimeout=8 "$MINI_HOST" 'printf %s "$HOME"') || die "Could not reach $MINI_HOST"
++REMOTE_NODE=$(capture_with_timeout "$MINI_SSH_TIMEOUT" ssh "${MINI_SSH_ARGS[@]}" -o ConnectTimeout=8 "$MINI_HOST" 'command -v node') || die "Could not resolve node on $MINI_HOST"
+ 
+ TMP_DIR=$(mktemp -d)
+ trap 'rm -rf "$TMP_DIR"' EXIT
+@@ -195,24 +274,24 @@ set_status_in_file "$TMP_AM" "$REMOTE_AM_STATUS"
+ set_status_in_file "$TMP_PM" "$REMOTE_PM_STATUS"
+ 
+ log "Syncing SaneOps automation files to $MINI_HOST..."
+-scp -q "$TMP_AM" "$TMP_PM" "$MINI_HOST:$REMOTE_HOME/"
++mini_scp "$TMP_AM" "$TMP_PM" "$MINI_HOST:$REMOTE_HOME/"
+ 
+ log "Syncing Codex skill registry and skills to $MINI_HOST..."
+-ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.codex/skills\""
+-scp -q "$TMP_CONFIG" "$MINI_HOST:$REMOTE_HOME/.codex/config.toml"
+-scp -q "$LOCAL_SKILLS_REGISTRY" "$MINI_HOST:$REMOTE_HOME/.codex/SKILLS_REGISTRY.md"
+-rsync -a --delete "$LOCAL_SKILLS_DIR/" "$MINI_HOST:$REMOTE_HOME/.codex/skills/"
++mini_ssh "mkdir -p \"$REMOTE_HOME/.codex/skills\""
++mini_scp "$TMP_CONFIG" "$MINI_HOST:$REMOTE_HOME/.codex/config.toml"
++mini_scp "$LOCAL_SKILLS_REGISTRY" "$MINI_HOST:$REMOTE_HOME/.codex/SKILLS_REGISTRY.md"
++mini_rsync -a --delete "$LOCAL_SKILLS_DIR/" "$MINI_HOST:$REMOTE_HOME/.codex/skills/"
+ 
+ log "Syncing Codex control-plane helpers to $MINI_HOST..."
+-ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.codex/bin\""
++mini_ssh "mkdir -p \"$REMOTE_HOME/.codex/bin\""
+ for bin_name in "${CODEX_BIN_FILES[@]}"; do
+-  scp -q "$REPO_CODEX_BIN_DIR/$bin_name" "$MINI_HOST:$REMOTE_HOME/.codex/bin/$bin_name"
++  mini_scp "$REPO_CODEX_BIN_DIR/$bin_name" "$MINI_HOST:$REMOTE_HOME/.codex/bin/$bin_name"
+ done
+ 
+ if [[ -f "$LOCAL_KNOWLEDGE_GRAPH" ]]; then
+   log "Seeding knowledge graph cache on $MINI_HOST..."
+-  ssh "$MINI_HOST" "mkdir -p \"$REMOTE_HOME/.claude/memory\""
+-  scp -q "$LOCAL_KNOWLEDGE_GRAPH" "$MINI_HOST:$REMOTE_HOME/.claude/memory/knowledge-graph.jsonl"
++  mini_ssh "mkdir -p \"$REMOTE_HOME/.claude/memory\""
++  mini_scp "$LOCAL_KNOWLEDGE_GRAPH" "$MINI_HOST:$REMOTE_HOME/.claude/memory/knowledge-graph.jsonl"
+ fi
+ 
+ log "Syncing control-plane files to $MINI_HOST..."
+@@ -220,11 +299,11 @@ for rel in "${CONTROL_PLANE_REL_FILES[@]}"; do
+   local_path="$HOME/$rel"
+   remote_path="$REMOTE_HOME/$rel"
+   remote_dir=$(dirname "$remote_path")
+-  ssh "$MINI_HOST" "mkdir -p \"$remote_dir\""
+-  scp -q "$local_path" "$MINI_HOST:$remote_path"
++  mini_ssh "mkdir -p \"$remote_dir\""
++  mini_scp "$local_path" "$MINI_HOST:$remote_path"
+ done
+ 
+-ssh "$MINI_HOST" "
++mini_ssh "
+   set -e
+   mkdir -p \"$REMOTE_HOME/.codex/automations/saneops-am-run\" \"$REMOTE_HOME/.codex/automations/saneops-pm-run\"
+   cp \"$REMOTE_HOME/saneops-am-run.toml\" \"$REMOTE_HOME/.codex/automations/saneops-am-run/automation.toml\"
+@@ -247,7 +326,7 @@ ssh "$MINI_HOST" "
+   rm -f \"$REMOTE_HOME/saneops-am-run.toml\" \"$REMOTE_HOME/saneops-pm-run.toml\"
+ " || die "Remote copy failed"
+ 
+-ssh "$MINI_HOST" python3 - "$REMOTE_HOME" <<'PY'
++mini_ssh python3 - "$REMOTE_HOME" <<'PY'
+ import sqlite3
+ import sys
+ import time
+@@ -346,7 +425,7 @@ log "Verifying control-plane parity (Air ↔ Mini)..."
+ mismatches=0
+ for rel in "${CONTROL_PLANE_REL_FILES[@]}"; do
+   local_hash=$(shasum -a 256 "$HOME/$rel" | cut -d' ' -f1)
+-  remote_hash=$(ssh "$MINI_HOST" "shasum -a 256 \"$REMOTE_HOME/$rel\" | cut -d' ' -f1" 2>/dev/null || echo "")
++  remote_hash=$(mini_ssh "shasum -a 256 \"$REMOTE_HOME/$rel\" | cut -d' ' -f1" 2>/dev/null || echo "")
+   if [[ -z "$remote_hash" || "$local_hash" != "$remote_hash" ]]; then
+     echo "MISMATCH: $rel" >&2
+     mismatches=$((mismatches + 1))
+@@ -357,20 +436,20 @@ if [[ "$mismatches" -gt 0 ]]; then
+ fi
+ 
+ local_registry_hash=$(shasum -a 256 "$LOCAL_SKILLS_REGISTRY" | cut -d' ' -f1)
+-remote_registry_hash=$(ssh "$MINI_HOST" "shasum -a 256 \"$REMOTE_HOME/.codex/SKILLS_REGISTRY.md\" | cut -d' ' -f1" 2>/dev/null || echo "")
++remote_registry_hash=$(mini_ssh "shasum -a 256 \"$REMOTE_HOME/.codex/SKILLS_REGISTRY.md\" | cut -d' ' -f1" 2>/dev/null || echo "")
+ [[ -n "$remote_registry_hash" && "$local_registry_hash" == "$remote_registry_hash" ]] || die "Codex skills registry parity check failed"
+ 
+ for bin_name in "${CODEX_BIN_FILES[@]}"; do
+   local_bin_hash=$(shasum -a 256 "$REPO_CODEX_BIN_DIR/$bin_name" | cut -d' ' -f1)
+-  remote_bin_hash=$(ssh "$MINI_HOST" "shasum -a 256 \"$REMOTE_HOME/.codex/bin/$bin_name\" | cut -d' ' -f1" 2>/dev/null || echo "")
++  remote_bin_hash=$(mini_ssh "shasum -a 256 \"$REMOTE_HOME/.codex/bin/$bin_name\" | cut -d' ' -f1" 2>/dev/null || echo "")
+   [[ -n "$remote_bin_hash" && "$local_bin_hash" == "$remote_bin_hash" ]] || die "Codex bin parity check failed for $bin_name"
+ done
+ 
+ local_config_hash=$(shasum -a 256 "$TMP_CONFIG" | cut -d' ' -f1)
+-remote_config_hash=$(ssh "$MINI_HOST" "shasum -a 256 \"$REMOTE_HOME/.codex/config.toml\" | cut -d' ' -f1" 2>/dev/null || echo "")
++remote_config_hash=$(mini_ssh "shasum -a 256 \"$REMOTE_HOME/.codex/config.toml\" | cut -d' ' -f1" 2>/dev/null || echo "")
+ [[ -n "$remote_config_hash" && "$local_config_hash" == "$remote_config_hash" ]] || die "Codex config parity check failed"
+ 
+-skills_dry_run=$(rsync -a --delete --checksum --dry-run "$LOCAL_SKILLS_DIR/" "$MINI_HOST:$REMOTE_HOME/.codex/skills/" 2>/dev/null || true)
++skills_dry_run=$(mini_rsync -a --delete --checksum --dry-run "$LOCAL_SKILLS_DIR/" "$MINI_HOST:$REMOTE_HOME/.codex/skills/" 2>/dev/null || true)
+ if [[ -n "${skills_dry_run//[[:space:]]/}" ]]; then
+   echo "$skills_dry_run" >&2
+   die "Codex skills parity check failed"
+@@ -378,7 +457,7 @@ fi
+ 
+ if [[ "$RESTART_CODEX" -eq 1 ]]; then
+   log "Restarting Codex on $MINI_HOST to reload automation definitions..."
+-  ssh "$MINI_HOST" 'pkill -f "/Applications/Codex.app/Contents/MacOS/Codex" >/dev/null 2>&1 || true; sleep 1; open -ga Codex'
++  mini_ssh 'pkill -f "/Applications/Codex.app/Contents/MacOS/Codex" >/dev/null 2>&1 || true; sleep 1; open -ga Codex'
+   sleep 3
+ fi
+ 
+@@ -388,11 +467,11 @@ grep -n '^name\|^status\|^rrule' "$LOCAL_AM" "$LOCAL_PM"
+ 
+ log ""
+ log "Mini status files:"
+-ssh "$MINI_HOST" "grep -n '^name\\|^status\\|^rrule' \"$REMOTE_HOME/.codex/automations/saneops-am-run/automation.toml\" \"$REMOTE_HOME/.codex/automations/saneops-pm-run/automation.toml\""
++mini_ssh "grep -n '^name\\|^status\\|^rrule' \"$REMOTE_HOME/.codex/automations/saneops-am-run/automation.toml\" \"$REMOTE_HOME/.codex/automations/saneops-pm-run/automation.toml\""
+ 
+ log ""
+ log "Mini scheduler DB:"
+-ssh "$MINI_HOST" "sqlite3 -header -column \"$REMOTE_HOME/.codex/sqlite/codex-dev.db\" \"SELECT id,name,status,datetime(next_run_at/1000,'unixepoch','localtime') AS next_run_local, datetime(last_run_at/1000,'unixepoch','localtime') AS last_run_local FROM automations;\""
++mini_ssh "sqlite3 -header -column \"$REMOTE_HOME/.codex/sqlite/codex-dev.db\" \"SELECT id,name,status,datetime(next_run_at/1000,'unixepoch','localtime') AS next_run_local, datetime(last_run_at/1000,'unixepoch','localtime') AS last_run_local FROM automations;\""
+ 
+ log ""
+ if [[ "$REMOTE_AM_STATUS" == "ACTIVE" && "$REMOTE_PM_STATUS" == "ACTIVE" ]]; then
+diff --git a/scripts/mini/README.md b/scripts/mini/README.md
+index c445c5f..c3e9347 100644
+--- a/scripts/mini/README.md
++++ b/scripts/mini/README.md
+@@ -33,6 +33,13 @@ MINI_HOST=sj@Stephans-Mac-mini.local \
+ MINI_SSH_OPTS='-i ~/.ssh/id_ed25519_codex_loopback' \
+   bash scripts/mini/deploy.sh
+ 
++# If the dedicated loopback key is missing, the scripts now auto-fallback to
++# ~/.ssh/id_ed25519 with IdentitiesOnly + publickey-only auth unless you
++# override MINI_SSH_OPTS yourself.
++# Use MINI_SSH_TIMEOUT to bound auth stalls after the TCP connect succeeds.
++MINI_SSH_TIMEOUT=15 \
++  bash scripts/automation/reconcile-air-mini.sh mini --no-sync-control-plane
++
+ # Sync the active Codex automation + skill profile to Mini
+ bash scripts/automation/sync-codex-mini.sh mini --no-restart
+ 
+@@ -149,6 +156,7 @@ LaunchAgent (5:40 AM)
+ - **Isolation enabled** — deploy refreshes `~/SaneApps-automation`, launch agents point `SANE_ROOT` there, and each scheduled training lane now re-runs `mini-prepare-automation-root.sh` before training so stale dirty clones fail fast instead of silently training on drifted state.
+ - **Managed overlays only** — automation-root prep is allowed to reset hydrated training overlays (`train.jsonl`, eval packs, challenger configs, generated fixtures) before syncing. Any other dirt still fails the prep step.
+ - **Training data hydration** — `mini-prepare-automation-root.sh` copies local-only `train.jsonl` / `valid.jsonl` datasets for SaneSync, SaneClip, SaneAI, and SaneVideo into the clean clones before training.
++- **SaneAI repo mapping** — if the source tree still has `~/SaneApps/SaneAI` as a top-level repo, automation-root prep now maps it into `~/SaneApps-automation/apps/SaneAI` so the training runners see the canonical layout they expect.
+ - **Dataset regression guard** — `mini-train.sh` now fails before spending GPU time if the current train/valid counts shrink too far versus the latest successful run for that lane.
+ - **Current bakeoff mode** — the daily challenger agent is pinned to `smollm3-3b` on `SaneAI` because `llama32-3b` reproducibly OOMs on the 8 GB Mini, runs until `08:30`, and skips Sundays so the weekly `SaneAI` run gets the full window.
+ - **Unsafe-model preflight** — `mini-train.sh` now blocks `mlx-community/Llama-3.2-3B-Instruct-4bit` before launch on the 8 GB Mini unless `ALLOW_UNSAFE_TRAINING=true` is set, so the weekly lane fails cleanly with a report/alert instead of crashing Python on Metal OOM.
+diff --git a/scripts/mini/install-training-daily-check-agent.sh b/scripts/mini/install-training-daily-check-agent.sh
+index 4cc6f5d..3c7dc6f 100644
+--- a/scripts/mini/install-training-daily-check-agent.sh
++++ b/scripts/mini/install-training-daily-check-agent.sh
+@@ -13,9 +13,25 @@ OUTPUT_DIR="$HOME/SaneApps/infra/SaneProcess/outputs"
+ PYTHON_BIN="${PYTHON_BIN:-$(command -v python3)}"
+ TRAIN_DAILY_CHECK_HOST="${TRAIN_DAILY_CHECK_HOST:-${MINI_HOST:-mini}}"
+ TRAIN_DAILY_CHECK_SSH_OPTS="${TRAIN_DAILY_CHECK_SSH_OPTS:-${MINI_SSH_OPTS:-}}"
++TRAIN_DAILY_CHECK_SSH_TIMEOUT="${TRAIN_DAILY_CHECK_SSH_TIMEOUT:-${MINI_SSH_TIMEOUT:-30}}"
+ TRAIN_DAILY_CHECK_HOUR="${TRAIN_DAILY_CHECK_HOUR:-9}"
+ TRAIN_DAILY_CHECK_MINUTE="${TRAIN_DAILY_CHECK_MINUTE:-15}"
+ 
++default_mini_ssh_opts() {
++  local key_path
++  for key_path in "$HOME/.ssh/id_ed25519_codex_loopback" "$HOME/.ssh/id_ed25519"; do
++    if [[ -f "$key_path" ]]; then
++      printf '%s' "-i $key_path -o IdentitiesOnly=yes -o IdentityAgent=none -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o NumberOfPasswordPrompts=0"
++      return 0
++    fi
++  done
++  return 1
++}
++
++if [[ -z "$TRAIN_DAILY_CHECK_SSH_OPTS" ]]; then
++  TRAIN_DAILY_CHECK_SSH_OPTS="$(default_mini_ssh_opts || true)"
++fi
++
+ mkdir -p "$HOME/Library/LaunchAgents" "$OUTPUT_DIR"
+ 
+ cat > "$PLIST" <<EOF
+@@ -56,6 +72,8 @@ cat > "$PLIST" <<EOF
+     <string>${HOME}</string>
+     <key>TRAIN_DAILY_CHECK_SSH_OPTS</key>
+     <string>${TRAIN_DAILY_CHECK_SSH_OPTS}</string>
++    <key>TRAIN_DAILY_CHECK_SSH_TIMEOUT</key>
++    <string>${TRAIN_DAILY_CHECK_SSH_TIMEOUT}</string>
+   </dict>
+ </dict>
+ </plist>
+diff --git a/scripts/mini/mini-prepare-automation-root.sh b/scripts/mini/mini-prepare-automation-root.sh
+index d331511..2a6d0e4 100755
+--- a/scripts/mini/mini-prepare-automation-root.sh
++++ b/scripts/mini/mini-prepare-automation-root.sh
+@@ -15,6 +15,31 @@ CLONED=0
+ SKIPPED=0
+ WARNINGS=0
+ 
++is_training_critical_rel_path() {
++  local rel_path="$1"
++  case "$rel_path" in
++    apps/SaneAI|apps/SaneClip|apps/SaneSync|apps/SaneVideo)
++      return 0
++      ;;
++  esac
++  return 1
++}
++
++report_repo_sync_issue() {
++  local rel_path="$1"
++  local detail="$2"
++
++  if is_training_critical_rel_path "$rel_path"; then
++    echo "FAIL  $rel_path ($detail)"
++    FAILURES=$((FAILURES + 1))
++    return 1
++  fi
++
++  echo "WARN  $rel_path ($detail; non-critical)"
++  WARNINGS=$((WARNINGS + 1))
++  return 0
++}
++
+ is_syncable_repo_name() {
+   local name="$1"
+   case "$name" in
+@@ -163,7 +188,10 @@ prepare_repo() {
+ 
+   if [ ! -d "$target_repo/.git" ]; then
+     echo "CLONE $rel_path [$branch]"
+-    git clone --quiet --branch "$branch" --single-branch "$origin_url" "$target_repo"
++    if ! git clone --quiet --branch "$branch" --single-branch "$origin_url" "$target_repo"; then
++      report_repo_sync_issue "$rel_path" "clone failed"
++      return $?
++    fi
+     CLONED=$((CLONED + 1))
+     return 0
+   fi
+@@ -171,38 +199,58 @@ prepare_repo() {
+   dirty_count=$(git -C "$target_repo" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+   if [ "$dirty_count" != "0" ]; then
+     if ! reset_managed_overlay_paths "$target_repo" "$rel_path"; then
+-      echo "FAIL  $rel_path (automation repo dirty: $dirty_count)"
+-      FAILURES=$((FAILURES + 1))
+-      return 1
++      report_repo_sync_issue "$rel_path" "automation repo dirty: $dirty_count"
++      return $?
+     fi
+ 
+     dirty_count=$(git -C "$target_repo" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+     if [ "$dirty_count" != "0" ]; then
+-      echo "FAIL  $rel_path (automation repo still dirty: $dirty_count)"
+-      FAILURES=$((FAILURES + 1))
+-      return 1
++      report_repo_sync_issue "$rel_path" "automation repo still dirty: $dirty_count"
++      return $?
+     fi
+   fi
+ 
+   if ! git -C "$target_repo" fetch origin --prune >/dev/null 2>&1; then
+-    echo "FAIL  $rel_path (fetch failed)"
+-    FAILURES=$((FAILURES + 1))
+-    return 1
++    report_repo_sync_issue "$rel_path" "fetch failed"
++    return $?
+   fi
+ 
+   if ! git -C "$target_repo" rev-parse --verify "$branch" >/dev/null 2>&1; then
+-    git -C "$target_repo" checkout --quiet -b "$branch" "origin/$branch"
++    if ! git -C "$target_repo" checkout --quiet -b "$branch" "origin/$branch"; then
++      report_repo_sync_issue "$rel_path" "checkout failed for branch $branch"
++      return $?
++    fi
+   else
+-    git -C "$target_repo" checkout --quiet "$branch"
++    if ! git -C "$target_repo" checkout --quiet "$branch"; then
++      report_repo_sync_issue "$rel_path" "checkout failed for branch $branch"
++      return $?
++    fi
+   fi
+ 
+   if git -C "$target_repo" pull --ff-only origin "$branch" >/dev/null 2>&1; then
+     echo "SYNC  $rel_path [$branch]"
+     UPDATED=$((UPDATED + 1))
+   else
+-    echo "FAIL  $rel_path (ff-only pull failed)"
+-    FAILURES=$((FAILURES + 1))
+-    return 1
++    report_repo_sync_issue "$rel_path" "ff-only pull failed"
++    return $?
++  fi
++}
++
++source_repo_entries() {
++  local base source_repo rel_path
++
++  for base in apps infra; do
++    for source_repo in "$SOURCE_ROOT/$base"/*; do
++      [ -d "$source_repo/.git" ] || continue
++      rel_path="${source_repo#$SOURCE_ROOT/}"
++      printf '%s\t%s\n' "$source_repo" "$rel_path"
++    done
++  done
++
++  # SaneAI still lives as a top-level repo in some source roots, but the
++  # training runners always expect it at apps/SaneAI inside the automation root.
++  if [ -d "$SOURCE_ROOT/SaneAI/.git" ] && [ ! -d "$SOURCE_ROOT/apps/SaneAI/.git" ]; then
++    printf '%s\t%s\n' "$SOURCE_ROOT/SaneAI" "apps/SaneAI"
+   fi
+ }
+ 
+@@ -260,17 +308,10 @@ source_training_root_candidates() {
+   local -a candidates
+   local candidate
+ 
+-  if [ "$app_name" = "SaneAI" ]; then
+-    candidates=(
+-      "$SOURCE_ROOT/$app_name/training_data"
+-      "$SOURCE_ROOT/apps/$app_name/training_data"
+-    )
+-  else
+-    candidates=(
+-      "$SOURCE_ROOT/apps/$app_name/training_data"
+-      "$SOURCE_ROOT/$app_name/training_data"
+-    )
+-  fi
++  candidates=(
++    "$SOURCE_ROOT/apps/$app_name/training_data"
++    "$SOURCE_ROOT/$app_name/training_data"
++  )
+ 
+   for candidate in "${candidates[@]}"; do
+     printf '%s\n' "$candidate"
+@@ -344,7 +385,7 @@ hydrate_training_dataset() {
+ 
+   [ -d "$AUTOMATION_ROOT/apps/$app_name" ] || return 0
+ 
+-  source_dir=$(source_training_dir_for_app "$app_name")
++  source_dir=$(source_training_dir_for_app "$app_name" || true)
+ 
+   if [ ! -d "$source_dir" ]; then
+     echo "WARN  apps/$app_name training_data missing in source root"
+@@ -353,7 +394,7 @@ hydrate_training_dataset() {
+   fi
+ 
+   for rel_file in "$@"; do
+-    source_file=$(resolve_source_training_path "$app_name" "$rel_file")
++    source_file=$(resolve_source_training_path "$app_name" "$rel_file" || true)
+     target_file="$target_dir/$rel_file"
+ 
+     if target_repo_tracks_training_path "$app_name" "$rel_file"; then
+@@ -391,7 +432,7 @@ hydrate_training_support_files() {
+   local pattern source_file rel_file target_file matched
+ 
+   [ -d "$AUTOMATION_ROOT/apps/$app_name" ] || return 0
+-  source_dir=$(source_training_dir_for_app "$app_name")
++  source_dir=$(source_training_dir_for_app "$app_name" || true)
+   [ -d "$source_dir" ] || return 0
+ 
+   for pattern in "$@"; do
+@@ -438,7 +479,7 @@ hydrate_training_subdir() {
+   local target_dir="$AUTOMATION_ROOT/apps/$app_name/training_data/$rel_dir"
+ 
+   [ -d "$AUTOMATION_ROOT/apps/$app_name" ] || return 0
+-  source_dir=$(resolve_source_training_path "$app_name" "$rel_dir")
++  source_dir=$(resolve_source_training_path "$app_name" "$rel_dir" || true)
+   if [ ! -d "$source_dir" ]; then
+     echo "WARN  apps/$app_name/training_data/$rel_dir missing in source root"
+     WARNINGS=$((WARNINGS + 1))
+@@ -495,13 +536,11 @@ mkdir -p "$AUTOMATION_ROOT/apps" "$AUTOMATION_ROOT/infra"
+ printf 'managed_by=mini-prepare-automation-root\nsource_root=%s\nprepared_at=%s\n' \
+   "$SOURCE_ROOT" "$(date '+%Y-%m-%d %H:%M:%S')" > "$AUTOMATION_MARKER"
+ 
+-for base in apps infra; do
+-  for source_repo in "$SOURCE_ROOT/$base"/*; do
+-    [ -d "$source_repo/.git" ] || continue
+-    rel_path="${source_repo#$SOURCE_ROOT/}"
+-    prepare_repo "$source_repo" "$rel_path" || true
+-  done
+-done
++while IFS=$'\t' read -r source_repo rel_path; do
++  [ -n "$source_repo" ] || continue
++  [ -n "$rel_path" ] || continue
++  prepare_repo "$source_repo" "$rel_path" || true
++done < <(source_repo_entries)
+ 
+ hydrate_training_dataset "SaneSync" train.jsonl valid.jsonl test.jsonl
+ hydrate_training_dataset "SaneClip" train.jsonl valid.jsonl test.jsonl
+diff --git a/scripts/mini/mini_train_process_test.rb b/scripts/mini/mini_train_process_test.rb
+index 36129c7..1d6f4df 100644
+--- a/scripts/mini/mini_train_process_test.rb
++++ b/scripts/mini/mini_train_process_test.rb
+@@ -9,11 +9,13 @@ TRAIN_PATH = File.expand_path('mini-train.sh', __dir__)
+ TRAIN_ALL_PATH = File.expand_path('mini-train-all.sh', __dir__)
+ TRAIN_CHALLENGERS_PATH = File.expand_path('mini-train-challengers.sh', __dir__)
+ EVAL_PATH = File.expand_path('evaluate_model.py', __dir__)
++PREP_PATH = File.expand_path('mini-prepare-automation-root.sh', __dir__)
+ 
+ train_source = File.read(TRAIN_PATH)
+ train_all_source = File.read(TRAIN_ALL_PATH)
+ train_challengers_source = File.read(TRAIN_CHALLENGERS_PATH)
+ eval_source = File.read(EVAL_PATH)
++prep_source = File.read(PREP_PATH)
+ 
+ exit(run_tests('Mini Train Process Tests') do
+   test_category('Sweep scheduling') do
+@@ -42,6 +44,38 @@ exit(run_tests('Mini Train Process Tests') do
+       assert_includes(train_challengers_source, 'prepare_automation_root_if_needed')
+       true
+     end
++
++    test('SaneAI training data prefers apps path before top-level fallback') do
++      apps_idx = prep_source.index('"$SOURCE_ROOT/apps/$app_name/training_data"')
++      top_idx = prep_source.index('"$SOURCE_ROOT/$app_name/training_data"')
++      assert(!apps_idx.nil?, 'expected apps training path to exist in prep script')
++      assert(!top_idx.nil?, 'expected top-level fallback training path to exist in prep script')
++      assert(apps_idx < top_idx, 'expected apps path to be preferred before top-level fallback')
++      true
++    end
++
++    test('top-level SaneAI repo can populate apps/SaneAI in the automation root') do
++      assert_includes(prep_source, 'source_repo_entries()')
++      assert_includes(prep_source, '"$SOURCE_ROOT/SaneAI"')
++      assert_includes(prep_source, '"apps/SaneAI"')
++      assert_includes(prep_source, '[ ! -d "$SOURCE_ROOT/apps/SaneAI/.git" ]')
++      true
++    end
++
++    test('only training-critical repo sync failures block the automation prep') do
++      assert_includes(prep_source, 'is_training_critical_rel_path()')
++      assert_includes(prep_source, 'apps/SaneAI|apps/SaneClip|apps/SaneSync|apps/SaneVideo')
++      assert_includes(prep_source, 'report_repo_sync_issue()')
++      assert_includes(prep_source, 'non-critical')
++      true
++    end
++
++    test('missing source training files do not abort prep before warning handling') do
++      assert_includes(prep_source, 'source_training_dir_for_app "$app_name" || true')
++      assert_includes(prep_source, 'resolve_source_training_path "$app_name" "$rel_file" || true')
++      assert_includes(prep_source, 'resolve_source_training_path "$app_name" "$rel_dir" || true')
++      true
++    end
+   end
+ 
+   test_category('Unsafe model guard') do
+diff --git a/scripts/mini/training-daily-check.py b/scripts/mini/training-daily-check.py
+index 831d370..13310e6 100644
+--- a/scripts/mini/training-daily-check.py
++++ b/scripts/mini/training-daily-check.py
+@@ -34,12 +34,21 @@ def read_last_tsv(path_str):
+     return rows[-1] if rows else None
+ 
+ 
+-def read_last_metrics(app_name):
++def read_last_metrics(app_name, mode=None):
+     history_dir = BASE / "history" / app_name
+     for filename in ("training_metrics_workflow_v1.tsv", "training_metrics.tsv"):
+-        row = read_last_tsv(history_dir / filename)
+-        if row:
+-            return row
++        path = history_dir / filename
++        if not path.exists():
++            continue
++        with path.open("r", encoding="utf-8") as handle:
++            rows = list(csv.DictReader(handle, delimiter="\t"))
++        if not rows:
++            continue
++        if mode is None:
++            return rows[-1]
++        for row in reversed(rows):
++            if row.get("mode") == mode:
++                return row
+     return None
+ 
+ 
+@@ -80,6 +89,7 @@ def read_current_alerts():
+         alerts.append(
+             {
+                 "path": str(path),
++                "lane": path.stem.split("_", 1)[1] if "_" in path.stem else "",
+                 "preview": " | ".join(lines[1:5]),
+             }
+         )
+@@ -87,15 +97,21 @@ def read_current_alerts():
+ 
+ 
+ latest_ai = read_last_metrics("SaneAI")
++latest_ai_production = read_last_metrics("SaneAI", "production")
++latest_ai_challenger = read_last_metrics("SaneAI", "challenger")
+ latest_sync = read_last_metrics("SaneSync")
+ latest_readiness = read_last_tsv(BASE / "history" / "SaneAI" / "readiness_vs_SaneSync_workflow_v1.tsv")
+ 
+ payload = {
+     "generated_at": datetime.now().isoformat(timespec="seconds"),
+     "latest_saneai": latest_ai,
++    "latest_saneai_production": latest_ai_production,
++    "latest_saneai_challenger": latest_ai_challenger,
+     "latest_sanesync": latest_sync,
+     "latest_readiness": latest_readiness,
+     "latest_saneai_report": parse_report(latest_ai.get("report_archive") if latest_ai else ""),
++    "latest_saneai_production_report": parse_report(latest_ai_production.get("report_archive") if latest_ai_production else ""),
++    "latest_saneai_challenger_report": parse_report(latest_ai_challenger.get("report_archive") if latest_ai_challenger else ""),
+     "latest_sanesync_report": parse_report(latest_sync.get("report_archive") if latest_sync else ""),
+     "current_alerts": read_current_alerts(),
+ }
+@@ -106,18 +122,23 @@ print(json.dumps(payload))
+ 
+ def fetch_remote_snapshot(host: str) -> dict:
+     ssh_opts = os.environ.get("TRAIN_DAILY_CHECK_SSH_OPTS") or os.environ.get("MINI_SSH_OPTS") or ""
++    ssh_timeout = int(os.environ.get("TRAIN_DAILY_CHECK_SSH_TIMEOUT") or os.environ.get("MINI_SSH_TIMEOUT") or "30")
+     ssh_cmd = ["ssh"]
+     if ssh_opts:
+         ssh_cmd.extend(shlex.split(ssh_opts))
+     ssh_cmd.extend(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, "python3", "-"])
+ 
+-    result = subprocess.run(
+-        ssh_cmd,
+-        input=REMOTE_SNAPSHOT_SCRIPT,
+-        capture_output=True,
+-        text=True,
+-        check=False,
+-    )
++    try:
++        result = subprocess.run(
++            ssh_cmd,
++            input=REMOTE_SNAPSHOT_SCRIPT,
++            capture_output=True,
++            text=True,
++            check=False,
++            timeout=ssh_timeout,
++        )
++    except subprocess.TimeoutExpired as exc:
++        raise RuntimeError(f"ssh timed out after {ssh_timeout}s for host {host}") from exc
+     if result.returncode != 0:
+         raise RuntimeError(result.stderr.strip() or f"ssh exited {result.returncode}")
+     return json.loads(result.stdout)
+@@ -136,11 +157,29 @@ def age_hours(timestamp: str | None) -> int | None:
+     return int((datetime.now() - dt).total_seconds() // 3600)
+ 
+ 
++def metric_display_lines(metric: dict, report: dict, score_label: str) -> list[str]:
++    return [
++        f"- Timestamp: {metric.get('timestamp', 'missing')}",
++        f"- Mode: {metric.get('mode', 'missing')}",
++        f"- Status: {metric.get('status', 'missing')}",
++        f"- Model: {metric.get('model', 'missing')}",
++        f"- Train/valid: {metric.get('train_examples', 'missing')} / {metric.get('valid_examples', 'missing')}",
++        f"- {score_label}: {metric.get('best_accuracy', 'missing')}%",
++        f"- Workflow gate: {report.get('workflow_gate', 'missing')}",
++        f"- Result: {report.get('result', 'missing')}",
++        f"- Report: {report.get('report_path', metric.get('report_archive', 'missing'))}",
++    ]
++
++
+ def write_report(report_path: Path, snapshot: dict, summary: str) -> None:
+     latest_ai = snapshot.get("latest_saneai") or {}
++    latest_ai_production = snapshot.get("latest_saneai_production") or {}
++    latest_ai_challenger = snapshot.get("latest_saneai_challenger") or {}
+     latest_sync = snapshot.get("latest_sanesync") or {}
+     latest_readiness = snapshot.get("latest_readiness") or {}
+     ai_report = snapshot.get("latest_saneai_report") or {}
++    ai_production_report = snapshot.get("latest_saneai_production_report") or {}
++    ai_challenger_report = snapshot.get("latest_saneai_challenger_report") or {}
+     sync_report = snapshot.get("latest_sanesync_report") or {}
+     alerts = snapshot.get("current_alerts") or []
+ 
+@@ -153,35 +192,50 @@ def write_report(report_path: Path, snapshot: dict, summary: str) -> None:
+         "",
+         summary,
+         "",
+-        "## SaneAI",
+-        "",
+-        f"- Timestamp: {latest_ai.get('timestamp', 'missing')}",
+-        f"- Model: {latest_ai.get('model', 'missing')}",
+-        f"- Train/valid: {latest_ai.get('train_examples', 'missing')} / {latest_ai.get('valid_examples', 'missing')}",
+-        f"- Best workflow-first score: {latest_ai.get('best_accuracy', 'missing')}%",
+-        f"- Workflow gate: {ai_report.get('workflow_gate', 'missing')}",
+-        f"- Result: {ai_report.get('result', 'missing')}",
+-        f"- Report: {ai_report.get('report_path', latest_ai.get('report_archive', 'missing'))}",
+-        "",
+-        "## SaneSync",
+-        "",
+-        f"- Timestamp: {latest_sync.get('timestamp', 'missing')}",
+-        f"- Mode: {latest_sync.get('mode', 'missing')}",
+-        f"- Model: {latest_sync.get('model', 'missing')}",
+-        f"- Best score: {latest_sync.get('best_accuracy', 'missing')}%",
+-        f"- Report: {sync_report.get('report_path', latest_sync.get('report_archive', 'missing'))}",
+-        "",
+-        "## Readiness",
+-        "",
+-        f"- Timestamp: {latest_readiness.get('timestamp', 'missing')}",
+-        f"- Status: {latest_readiness.get('status', 'missing')}",
+-        f"- Delta: {latest_readiness.get('delta', 'missing')}",
+-        f"- Source report: {latest_readiness.get('source_report', 'missing')}",
+-        f"- Target report: {latest_readiness.get('target_report', 'missing') or 'missing'}",
+-        "",
+-        "## Active Alerts",
++        "## SaneAI Latest",
+         "",
+     ]
++    lines.extend(metric_display_lines(latest_ai, ai_report, "Best workflow-first score"))
++    lines.extend(
++        [
++            "",
++            "## SaneAI Production",
++            "",
++        ]
++    )
++    lines.extend(metric_display_lines(latest_ai_production, ai_production_report, "Best workflow-first score"))
++    lines.extend(
++        [
++            "",
++            "## SaneAI Challenger",
++            "",
++        ]
++    )
++    lines.extend(metric_display_lines(latest_ai_challenger, ai_challenger_report, "Best workflow-first score"))
++    lines.extend(
++        [
++            "",
++            "## SaneSync",
++            "",
++            f"- Timestamp: {latest_sync.get('timestamp', 'missing')}",
++            f"- Mode: {latest_sync.get('mode', 'missing')}",
++            f"- Status: {latest_sync.get('status', 'missing')}",
++            f"- Model: {latest_sync.get('model', 'missing')}",
++            f"- Best score: {latest_sync.get('best_accuracy', 'missing')}%",
++            f"- Report: {sync_report.get('report_path', latest_sync.get('report_archive', 'missing'))}",
++            "",
++            "## Readiness",
++            "",
++            f"- Timestamp: {latest_readiness.get('timestamp', 'missing')}",
++            f"- Status: {latest_readiness.get('status', 'missing')}",
++            f"- Delta: {latest_readiness.get('delta', 'missing')}",
++            f"- Source report: {latest_readiness.get('source_report', 'missing')}",
++            f"- Target report: {latest_readiness.get('target_report', 'missing') or 'missing'}",
++            "",
++            "## Active Alerts",
++            "",
++        ]
++    )
+ 
+     if alerts:
+         for alert in alerts:
+@@ -194,34 +248,69 @@ def write_report(report_path: Path, snapshot: dict, summary: str) -> None:
+ 
+ def build_summary(snapshot: dict) -> tuple[str, str]:
+     latest_ai = snapshot.get("latest_saneai") or {}
++    latest_ai_production = snapshot.get("latest_saneai_production") or {}
++    latest_ai_challenger = snapshot.get("latest_saneai_challenger") or {}
+     latest_readiness = snapshot.get("latest_readiness") or {}
+     ai_report = snapshot.get("latest_saneai_report") or {}
++    ai_challenger_report = snapshot.get("latest_saneai_challenger_report") or {}
+     alerts = snapshot.get("current_alerts") or []
+ 
+-    ai_score = latest_ai.get("best_accuracy", "?")
+-    ai_timestamp = latest_ai.get("timestamp")
+-    ai_age = age_hours(ai_timestamp)
++    latest_score = latest_ai.get("best_accuracy", "?")
++    latest_age = age_hours(latest_ai.get("timestamp"))
++    production_timestamp = latest_ai_production.get("timestamp")
++    production_age = age_hours(production_timestamp)
++    production_status = latest_ai_production.get("status", "missing")
++    production_score = latest_ai_production.get("best_accuracy", "?")
++    challenger_score = latest_ai_challenger.get("best_accuracy", "?")
++    challenger_gate = ai_challenger_report.get("workflow_gate", "missing")
+     readiness_status = latest_readiness.get("status", "missing")
+-    workflow_gate = ai_report.get("workflow_gate", "missing")
++    has_production_alert = any(alert.get("lane") == "production" for alert in alerts)
+ 
+-    if alerts:
+-        title = "SaneAI training alert"
+-        message = f"{len(alerts)} active alert(s). Latest SaneAI score {ai_score}%."
++    if has_production_alert:
++        title = "SaneAI production blocked"
++        message = (
++            f"Production lane last failed on {production_timestamp or 'missing'}; "
++            f"challenger is {challenger_score}% and still failing the workflow gate."
++        )
+     elif not latest_ai:
+         title = "SaneAI training missing"
+         message = "No SaneAI training metrics found on the Mini."
+-    elif ai_age is not None and ai_age > 36:
++    elif not latest_ai_production:
++        title = "SaneAI production missing"
++        message = (
++            f"Latest SaneAI metric is {latest_score}% from {latest_ai.get('mode', 'unknown')}; "
++            "no production baseline is recorded."
++        )
++    elif production_age is not None and production_age > 192:
++        title = "SaneAI production stale"
++        message = (
++            f"Production lane is {production_age}h stale; latest production score is "
++            f"{production_score}% from {production_timestamp}."
++        )
++    elif production_status != "success":
++        title = "SaneAI production failing"
++        message = (
++            f"Latest production lane is {production_status} from {production_timestamp}; "
++            f"challenger is {challenger_score}%."
++        )
++    elif latest_age is not None and latest_age > 36:
+         title = "SaneAI training stale"
+-        message = f"Latest SaneAI metric is {ai_age}h old. Check the Mini run."
++        message = f"Latest SaneAI metric is {latest_age}h old. Check the Mini run."
+     elif readiness_status in {"missing_target_baseline", "missing_target_production_baseline"}:
+         title = "SaneAI needs baseline"
+-        message = f"SaneAI {ai_score}% and readiness is blocked: {readiness_status}."
+-    elif "FAIL" in workflow_gate or ai_report.get("result") == "NEEDS WORK":
++        message = f"SaneAI {latest_score}% and readiness is blocked: {readiness_status}."
++    elif "FAIL" in challenger_gate or ai_challenger_report.get("result") == "NEEDS WORK":
++        title = "SaneAI needs work"
++        message = (
++            f"Production is {production_score}% from {production_timestamp}; "
++            f"challenger is still {challenger_score}% with workflow gate failing."
++        )
++    elif "FAIL" in ai_report.get("workflow_gate", "missing") or ai_report.get("result") == "NEEDS WORK":
+         title = "SaneAI needs work"
+-        message = f"SaneAI is still at {ai_score}% with workflow gate failing."
++        message = f"SaneAI is still at {latest_score}% with workflow gate failing."
+     else:
+         title = "SaneAI daily check"
+-        message = f"SaneAI latest score {ai_score}%. Readiness: {readiness_status}."
++        message = f"SaneAI latest score {latest_score}%. Readiness: {readiness_status}."
+ 
+     return title, message
+ 

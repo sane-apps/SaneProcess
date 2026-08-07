@@ -1,0 +1,4 @@
+ DEVELOPMENT.md                |  9 ++---
+ scripts/app_test_mode_test.rb | 28 ++++++++++++++++
+ scripts/sane_test.rb          | 76 +++++++++++++++++++++++++++++++++++++++++--
+ 3 files changed, 106 insertions(+), 7 deletions(-)

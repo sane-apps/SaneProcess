@@ -1,0 +1,576 @@
+diff --git a/scripts/automation/README.md b/scripts/automation/README.md
+index e87d8f3..eb4a410 100644
+--- a/scripts/automation/README.md
++++ b/scripts/automation/README.md
+@@ -296,7 +296,7 @@ git-sync-safe.sh --allow-dirty
+ **What it does:**
+ 1. Scans SaneApps repos (`apps/*`, `SaneAI`, `infra/SaneProcess`).
+ 2. Skips known transient repo clones such as release/preview/worktree scratch dirs.
+-3. Prunes untracked Finder and patch residue (`.DS_Store`, `*.orig`, `*.rej`) before status checks.
++3. Prunes untracked Finder, patch, and stray repo-root Swift module residue (`.DS_Store`, `*.orig`, `*.rej`, `Swift-*.swiftmodule`, `Swift-*.swiftdoc`, `Swift-*.abi.json`) before status checks.
+ 4. Fetches from origin.
+ 5. Fast-forward pulls only when clean.
+ 6. Auto-pushes only clean `main/master` ahead commits.
+diff --git a/scripts/automation/git-sync-safe.sh b/scripts/automation/git-sync-safe.sh
+index 8ce5da2..ef50c3c 100755
+--- a/scripts/automation/git-sync-safe.sh
++++ b/scripts/automation/git-sync-safe.sh
+@@ -69,7 +69,17 @@ prune_repo_noise() {
+     fi
+     rm -f "$path"
+     count=$((count + 1))
+-  done < <(find "$repo" -type f \( -name '.DS_Store' -o -name '*.orig' -o -name '*.rej' \) -print0)
++  done < <(find "$repo" -maxdepth 1 -type f \( -name '.DS_Store' -o -name '*.orig' -o -name '*.rej' -o -name 'Swift-*.swiftmodule' -o -name 'Swift-*.swiftdoc' -o -name 'Swift-*.abi.json' \) -print0)
++
++  while IFS= read -r -d '' path; do
++    [[ -n "$path" ]] || continue
++    rel="${path#$repo/}"
++    if git -C "$repo" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
++      continue
++    fi
++    rm -f "$path"
++    count=$((count + 1))
++  done < <(find "$repo" -mindepth 2 -type f \( -name '.DS_Store' -o -name '*.orig' -o -name '*.rej' \) -print0)
+ 
+   if [[ "$count" -gt 0 ]]; then
+     log "  - Pruned $count untracked noise file(s)"
+diff --git a/scripts/automation/listing-actions.py b/scripts/automation/listing-actions.py
+index 9181f96..8e306cf 100644
+--- a/scripts/automation/listing-actions.py
++++ b/scripts/automation/listing-actions.py
+@@ -12,16 +12,23 @@ import os
+ import shlex
+ import subprocess
+ import sys
+-import zipfile
+ from datetime import datetime, timezone
+ from pathlib import Path
+-from xml.sax.saxutils import escape
+ 
+ SCRIPT_DIR = Path(__file__).resolve().parent
+ if str(SCRIPT_DIR) not in sys.path:
+     sys.path.insert(0, str(SCRIPT_DIR))
+ 
+ from listing_actions_rules import build_current_actions, build_email_history
++from listing_actions_workbook import (
++    CURRENT_HEADERS,
++    HISTORY_HEADERS,
++    current_rows_for_workbook,
++    handoff_rows,
++    history_rows_for_workbook,
++    make_link_cell,
++    write_xlsx,
++)
+ 
+ ENV_CACHE_FILE = Path(os.environ.get("SANE_ENV_CACHE_FILE", "~/.config/nv/env")).expanduser()
+ DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "outputs" / "listing_actions"
+@@ -156,102 +163,6 @@ def fetch_emails(api_key, page_size=200, max_pages=10):
+     return all_rows
+ 
+ 
+-def column_name(index):
+-    result = ""
+-    while index:
+-        index, remainder = divmod(index - 1, 26)
+-        result = chr(65 + remainder) + result
+-    return result
+-
+-
+-def worksheet_xml(headers, rows):
+-    all_rows = [headers] + rows
+-    last_col = column_name(len(headers))
+-    lines = [
+-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+-        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+-        f'  <dimension ref="A1:{last_col}{len(all_rows)}"/>',
+-        '  <sheetData>',
+-    ]
+-    for row_index, row in enumerate(all_rows, start=1):
+-        lines.append(f'    <row r="{row_index}">')
+-        for col_index, value in enumerate(row, start=1):
+-            if value is None or value == "":
+-                continue
+-            text = escape(str(value)).replace("\n", "&#10;")
+-            ref = f"{column_name(col_index)}{row_index}"
+-            lines.append(f'      <c r="{ref}" t="inlineStr"><is><t xml:space="preserve">{text}</t></is></c>')
+-        lines.append("    </row>")
+-    lines.extend(["  </sheetData>", "</worksheet>"])
+-    return "\n".join(lines)
+-
+-
+-def write_xlsx(path, sheets):
+-    created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+-    path.parent.mkdir(parents=True, exist_ok=True)
+-    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+-        zf.writestr(
+-            "[Content_Types].xml",
+-            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+-  <Default Extension="xml" ContentType="application/xml"/>
+-  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+-  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+-  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+-  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+-</Types>""",
+-        )
+-        zf.writestr(
+-            "_rels/.rels",
+-            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+-  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+-</Relationships>""",
+-        )
+-        zf.writestr(
+-            "docProps/core.xml",
+-            f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+-<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+-  <dc:creator>Codex</dc:creator>
+-  <cp:lastModifiedBy>Codex</cp:lastModifiedBy>
+-  <dcterms:created xsi:type="dcterms:W3CDTF">{created}</dcterms:created>
+-  <dcterms:modified xsi:type="dcterms:W3CDTF">{created}</dcterms:modified>
+-  <dc:title>SaneBar listing action tracker</dc:title>
+-</cp:coreProperties>""",
+-        )
+-        zf.writestr(
+-            "docProps/app.xml",
+-            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+-<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
+-  <Application>Codex</Application>
+-</Properties>""",
+-        )
+-        zf.writestr(
+-            "xl/workbook.xml",
+-            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+-  <sheets>
+-    <sheet name="Current Actions" sheetId="1" r:id="rId1"/>
+-    <sheet name="Email History" sheetId="2" r:id="rId2"/>
+-  </sheets>
+-</workbook>""",
+-        )
+-        zf.writestr(
+-            "xl/_rels/workbook.xml.rels",
+-            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+-</Relationships>""",
+-        )
+-        for index, (headers, rows) in enumerate(sheets, start=1):
+-            zf.writestr(f"xl/worksheets/sheet{index}.xml", worksheet_xml(headers, rows))
+-
+-
+ def rows_for_sheet(columns, records):
+     return [[record.get(column, "") for column in columns] for record in records]
+ 
+@@ -295,8 +206,36 @@ def main():
+     write_xlsx(
+         output_path,
+         [
+-            (CURRENT_COLUMNS, rows_for_sheet(CURRENT_COLUMNS, current)),
+-            (HISTORY_COLUMNS, rows_for_sheet(HISTORY_COLUMNS, history)),
++            {
++                "name": "Assistant Handoff",
++                "rows": handoff_rows(current, payload["generated_at"]),
++                "column_widths": [10, 14, 22, 34, 42, 56, 36, 28, 42, 18],
++                "header_rows": {5, 10},
++                "title_rows": {1},
++                "label_rows": {2, 3},
++                "status_cols": {1, 2},
++                "wrap_cols": set(range(1, 11)),
++            },
++            {
++                "name": "Current Actions",
++                "rows": [CURRENT_HEADERS] + current_rows_for_workbook(current),
++                "column_widths": [14, 20, 34, 34, 48, 34, 26, 18, 18, 14, 14, 42, 30],
++                "freeze_cell": "A2",
++                "autofilter_row": 1,
++                "header_rows": {1},
++                "status_cols": {1},
++                "wrap_cols": set(range(1, 14)),
++            },
++            {
++                "name": "Email History",
++                "rows": [HISTORY_HEADERS] + history_rows_for_workbook(history),
++                "column_widths": [18, 30, 12, 18, 12, 14, 12, 26, 42, 34, 48, 34, 26, 42, 30],
++                "freeze_cell": "A2",
++                "autofilter_row": 1,
++                "header_rows": {1},
++                "status_cols": {3},
++                "wrap_cols": set(range(1, 16)),
++            },
+         ],
+     )
+     latest_path = output_path.parent / "latest.xlsx"
+diff --git a/scripts/automation/listing_actions_rules.py b/scripts/automation/listing_actions_rules.py
+index e987e15..da3d57a 100644
+--- a/scripts/automation/listing_actions_rules.py
++++ b/scripts/automation/listing_actions_rules.py
+@@ -62,6 +62,11 @@ LISTING_IGNORE_TOKENS = (
+     "webinar",
+     "newsletter",
+ )
++WORKFLOW_SUPERSEDED_BY = {
++    ("SaaSworthy", "Verify vendor portal invite"): {
++        ("SaaSworthy", "Complete vendor portal profile"),
++    },
++}
+ 
+ 
+ def extract_urls(*chunks):
+@@ -417,27 +422,37 @@ def build_current_actions(history_rows):
+         grouped[(row["site"], row["workflow"])].append(row)
+ 
+     current = []
++    current_by_key = {}
+     for rows in grouped.values():
+         rows.sort(key=lambda item: parse_timestamp(item["created_at"]), reverse=True)
+         latest = rows[0]
+-        current.append(
+-            {
+-                "site": latest["site"],
+-                "workflow": latest["workflow"],
+-                "action_status": latest["required"] if latest["required"] in {"Optional", "Monitor"} else "Needs action",
+-                "required": latest["required"],
+-                "latest_date": latest["created_at"],
+-                "latest_email_id": latest["email_id"],
+-                "latest_thread_status": latest["status"],
+-                "latest_subject": latest["subject"],
+-                "action": latest["action"],
+-                "instructions": latest["instructions"],
+-                "primary_link": latest["primary_link"],
+-                "secondary_link": latest["secondary_link"],
+-                "source_email_ids": ", ".join(str(item["email_id"]) for item in rows),
+-                "note": latest["note"],
+-            }
++        current_item = {
++            "site": latest["site"],
++            "workflow": latest["workflow"],
++            "action_status": latest["required"] if latest["required"] in {"Optional", "Monitor"} else "Needs action",
++            "required": latest["required"],
++            "latest_date": latest["created_at"],
++            "latest_email_id": latest["email_id"],
++            "latest_thread_status": latest["status"],
++            "latest_subject": latest["subject"],
++            "action": latest["action"],
++            "instructions": latest["instructions"],
++            "primary_link": latest["primary_link"],
++            "secondary_link": latest["secondary_link"],
++            "source_email_ids": ", ".join(str(item["email_id"]) for item in rows),
++            "note": latest["note"],
++        }
++        current.append(current_item)
++        current_by_key[(current_item["site"], current_item["workflow"])] = current_item
++
++    current = [
++        item
++        for item in current
++        if not any(
++            current_by_key.get(superseding_key)
++            for superseding_key in WORKFLOW_SUPERSEDED_BY.get((item["site"], item["workflow"]), set())
+         )
++    ]
+     status_rank = {"Needs action": 0, "Optional": 1, "Monitor": 2}
+     current.sort(key=lambda item: (status_rank.get(item["action_status"], 9), item["site"], item["workflow"]))
+     return current
+diff --git a/scripts/automation/listing_actions_test.py b/scripts/automation/listing_actions_test.py
+index 7385af5..92625f9 100644
+--- a/scripts/automation/listing_actions_test.py
++++ b/scripts/automation/listing_actions_test.py
+@@ -89,6 +89,47 @@ class ListingActionTests(unittest.TestCase):
+         self.assertEqual(current[0]["action_status"], "Needs action")
+         self.assertEqual(current[0]["latest_thread_status"], "resolved")
+ 
++    def test_build_current_actions_drops_superseded_saasworthy_invite(self):
++        history = [
++            {
++                "site": "SaaSworthy",
++                "workflow": "Verify vendor portal invite",
++                "required": "Required",
++                "action": "Verify the invite",
++                "instructions": "Click verify.",
++                "primary_link": "https://example.com/verify",
++                "secondary_link": "",
++                "note": "",
++                "email_id": 508,
++                "status": "needs_human",
++                "category": "other",
++                "from_email": "team@saasworthy.com",
++                "subject": "Welcome",
++                "created_at": "2026-04-03 09:27:11",
++                "all_urls": "",
++            },
++            {
++                "site": "SaaSworthy",
++                "workflow": "Complete vendor portal profile",
++                "required": "Required",
++                "action": "Finish the profile",
++                "instructions": "Log in and fill it out.",
++                "primary_link": "https://example.com/vendor",
++                "secondary_link": "",
++                "note": "",
++                "email_id": 531,
++                "status": "needs_human",
++                "category": "other",
++                "from_email": "team@saasworthy.com",
++                "subject": "Portal active",
++                "created_at": "2026-04-04 02:32:12",
++                "all_urls": "",
++            },
++        ]
++        current = LISTING_RULES.build_current_actions(history)
++        self.assertEqual(len(current), 1)
++        self.assertEqual(current[0]["workflow"], "Complete vendor portal profile")
++
+     def test_build_email_history_collects_classified_rows(self):
+         rows = [
+             make_email(
+@@ -171,23 +212,74 @@ class ListingActionTests(unittest.TestCase):
+             LISTING_ACTIONS.write_xlsx(
+                 output_path,
+                 [
+-                    (
+-                        ["site", "action_status"],
+-                        [["SourceForge", "Needs action"]],
+-                    ),
+-                    (
+-                        ["site", "subject"],
+-                        [["SourceForge", "SaneBar on SourceForge"]],
+-                    ),
++                    {
++                        "name": "Assistant Handoff",
++                        "rows": [
++                            ["Listing and Vendor Handoff"],
++                            ["Status", "Count", "Open"],
++                            ["Needs action", 1, LISTING_ACTIONS.make_link_cell("https://example.com/open", "Open link")],
++                        ],
++                    },
++                    {"name": "Current Actions", "rows": [["Site", "Status"], ["SourceForge", "Needs action"]]},
++                    {"name": "Email History", "rows": [["Site", "Subject"], ["SourceForge", "SaneBar on SourceForge"]]},
+                 ],
+             )
+             self.assertTrue(output_path.exists())
+             with zipfile.ZipFile(output_path) as zf:
+                 workbook_xml = zf.read("xl/workbook.xml").decode("utf-8")
+                 sheet_xml = zf.read("xl/worksheets/sheet1.xml").decode("utf-8")
++            self.assertIn('sheet name="Assistant Handoff"', workbook_xml)
+             self.assertIn('sheet name="Current Actions"', workbook_xml)
+-            self.assertIn("SourceForge", sheet_xml)
++            self.assertIn("Listing and Vendor Handoff", sheet_xml)
+             self.assertIn("Needs action", sheet_xml)
++            self.assertIn("HYPERLINK", sheet_xml)
++            self.assertIn("Open link", sheet_xml)
++
++    def test_handoff_rows_include_close_guidance(self):
++        rows = LISTING_ACTIONS.handoff_rows(
++            [
++                {
++                    "action_status": "Needs action",
++                    "site": "SourceForge",
++                    "workflow": "Claim the SaneBar page",
++                    "action": "Claim the page",
++                    "instructions": "Click claim.",
++                    "primary_link": "https://sourceforge.net/software/product/SaneBar/claim",
++                    "secondary_link": "",
++                    "source_email_ids": "528",
++                }
++            ],
++            "2026-04-10T17:00:00+00:00",
++        )
++        flat_text = "\n".join(" | ".join(str(cell) for cell in row) for row in rows)
++        self.assertIn("Listing and Vendor Handoff", flat_text)
++        self.assertIn("Close after the task is copied into the tracker", flat_text)
++
++    def test_history_rows_replace_raw_urls_with_summary_and_links(self):
++        rows = LISTING_ACTIONS.history_rows_for_workbook(
++            [
++                {
++                    "site": "SourceForge",
++                    "workflow": "Claim the SaneBar page",
++                    "required": "Required",
++                    "created_at": "2026-04-10 12:00:00",
++                    "email_id": 528,
++                    "status": "resolved",
++                    "category": "other",
++                    "from_email": "software@slashdotmedia.com",
++                    "subject": "SaneBar on SourceForge",
++                    "action": "Claim the page",
++                    "instructions": "Click claim.",
++                    "primary_link": "https://sourceforge.net/software/product/SaneBar/claim",
++                    "secondary_link": "https://sourceforge.net/software/product/SaneBar/",
++                    "all_urls": "https://sourceforge.net/software/product/SaneBar/claim\nhttps://sourceforge.net/software/product/SaneBar/",
++                    "note": "Live page exists.",
++                }
++            ]
++        )
++        self.assertEqual(rows[0][11]["text"], "Open link")
++        self.assertEqual(rows[0][12]["text"], "Backup link")
++        self.assertEqual(rows[0][13], "2 captured URLs")
+ 
+     def test_main_writes_json_out_and_xlsx(self):
+         sample_payload = [make_email(email_id=508, body_text="Verify https://sendgrid.net/ls/click/abc")]
+diff --git a/scripts/automation/sane-status-crossref.sh b/scripts/automation/sane-status-crossref.sh
+index 6a6c9d7..75832de 100755
+--- a/scripts/automation/sane-status-crossref.sh
++++ b/scripts/automation/sane-status-crossref.sh
+@@ -2,35 +2,47 @@
+ set -euo pipefail
+ 
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
++REPO_ROOT="${STATUS_REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+ 
+-CHECK_INBOX="${HOME}/SaneApps/infra/scripts/check-inbox.sh"
+-SANE_MASTER="${REPO_ROOT}/SaneMaster.rb"
++CHECK_INBOX="${CHECK_INBOX:-${HOME}/SaneApps/infra/scripts/check-inbox.sh}"
++SANE_MASTER="${SANE_MASTER:-${REPO_ROOT}/SaneMaster.rb}"
++APPS_ROOT="${APPS_ROOT:-${HOME}/SaneApps/apps}"
++LISTING_ACTIONS_JSON=""
++
++cleanup() {
++  if [[ -n "$LISTING_ACTIONS_JSON" && -f "$LISTING_ACTIONS_JSON" ]]; then
++    rm -f "$LISTING_ACTIONS_JSON"
++  fi
++}
++trap cleanup EXIT
+ 
+ printf '\nSane status cross-reference (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+ printf '%s\n' "----------------------------------------"
+ 
+-printf '\n[1/5] Sales (last 30 days)\n'
++printf '\n[1/6] Sales (last 30 days)\n'
+ if [[ -x "$SANE_MASTER" ]]; then
+   ruby "$SANE_MASTER" sales --days 30
+ else
+   echo "SaneMaster sales not executable"
+ fi
+ 
+-printf '\n[2/5] Inbox status\n'
++printf '\n[2/6] Inbox status\n'
+ if [[ -x "$CHECK_INBOX" ]]; then
+   "$CHECK_INBOX"
+ else
+   echo "check-inbox.sh not found at $CHECK_INBOX"
+ fi
+ 
+-printf '\n[3/5] Listing actions\n'
++printf '\n[3/6] Listing actions\n'
+ if [[ -x "$SANE_MASTER" ]]; then
+-  ruby "$SANE_MASTER" listing_actions --json | python3 - <<'PY'
++  LISTING_ACTIONS_JSON="$(mktemp "${TMPDIR:-/tmp}/listing_actions_status.XXXXXX.json")"
++  ruby "$SANE_MASTER" listing_actions --json-out "$LISTING_ACTIONS_JSON" >/dev/null
++  python3 - "$LISTING_ACTIONS_JSON" <<'PY'
+ import json
+ import sys
++from pathlib import Path
+ 
+-payload = json.load(sys.stdin)
++payload = json.loads(Path(sys.argv[1]).read_text())
+ current = payload.get("current_actions", [])
+ needs = [row for row in current if row.get("action_status") == "Needs action"]
+ optional = [row for row in current if row.get("action_status") == "Optional"]
+@@ -52,20 +64,82 @@ else
+   echo "SaneMaster listing_actions not executable"
+ fi
+ 
+-printf '\n[4/5] Open GitHub issues (sane-apps org)\n'
++printf '\n[4/6] Open GitHub issues (sane-apps org)\n'
+ if command -v gh >/dev/null 2>&1; then
+   for repo in SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo; do
+-    echo "\n## $repo"
++    printf '\n## %s\n' "$repo"
+     gh issue list -R "sane-apps/${repo}" --state open --limit 10 || echo "  Unable to fetch issues for ${repo} (auth missing or no issues)."
+   done
+ else
+   echo "GitHub CLI (gh) not installed"
+ fi
+ 
+-printf '\n[5/5] Open GitHub PRs (sane-apps org)\n'
++printf '\n[5/6] App Store lanes\n'
++if [[ -x "$SANE_MASTER" ]]; then
++  ruby - "$REPO_ROOT" "$APPS_ROOT" <<'RUBY'
++require 'yaml'
++
++repo_root = File.expand_path(ARGV[0])
++apps_root = File.expand_path(ARGV[1])
++require File.join(repo_root, 'SaneMaster.rb')
++
++def current_version_for(project_yml_path)
++  return nil unless File.exist?(project_yml_path)
++
++  versions = File.read(project_yml_path).scan(/MARKETING_VERSION:\s*["']?([^"'\s]+)["']?/).flatten.uniq
++  return nil if versions.empty?
++  return versions.first if versions.length == 1
++
++  versions.max
++end
++
++sm = SaneMaster.new
++found = false
++
++Dir.glob(File.join(apps_root, '*', '.saneprocess')).sort.each do |manifest_path|
++  manifest = YAML.safe_load(File.read(manifest_path), aliases: true) || {}
++  appstore = manifest['appstore'].is_a?(Hash) ? manifest['appstore'] : {}
++  next unless appstore['enabled']
++
++  found = true
++  app_dir = File.dirname(manifest_path)
++  app_name = manifest['name'] || File.basename(app_dir)
++  version = current_version_for(File.join(app_dir, 'project.yml'))
++  if version.to_s.strip.empty?
++    puts "- #{app_name}: appstore enabled, but current MARKETING_VERSION could not be determined"
++    next
++  end
++
++  platforms = Array(appstore['platforms'] || ['macos']).map(&:to_s)
++  app_id = appstore['app_id'].to_s
++  platform_summaries = []
++
++  platforms.each do |platform|
++    report = sm.send(:asc_version_lane_guardrail_report, app_id: app_id, platform: platform, version_string: version)
++    summary = report[:summary].to_s.strip
++    state = report[:target_state].to_s.strip
++    if state == 'PENDING_DEVELOPER_RELEASE'
++      platform_summaries << "#{platform}=#{summary} ACTION: release manually"
++    elsif summary.empty?
++      platform_summaries << "#{platform}=unavailable"
++    else
++      platform_summaries << "#{platform}=#{summary}"
++    end
++  end
++
++  puts "- #{app_name} #{version}: #{platform_summaries.join(' | ')}"
++end
++
++puts "No appstore-enabled app manifests found." unless found
++RUBY
++else
++  echo "SaneMaster not executable"
++fi
++
++printf '\n[6/6] Open GitHub PRs (sane-apps org)\n'
+ if command -v gh >/dev/null 2>&1; then
+   for repo in SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo; do
+-    echo "\n## $repo"
++    printf '\n## %s\n' "$repo"
+     gh pr list -R "sane-apps/${repo}" --state open --limit 10 || echo "  Unable to fetch PRs for ${repo} (auth missing or no PRs)."
+   done
+ else
+diff --git a/templates/gitignore b/templates/gitignore
+index 29decfe..577c053 100644
+--- a/templates/gitignore
++++ b/templates/gitignore
+@@ -25,6 +25,9 @@ Packages/**/.swiftpm/
+ *.xcresult/
+ *.xccheckout/
+ *.xcworkspace/contents.xcworkspacedata
++/Swift-*.swiftmodule
++/Swift-*.swiftdoc
++/Swift-*.abi.json
+ 
+ # macOS
+ .DS_Store

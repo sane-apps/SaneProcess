@@ -1,0 +1,188 @@
+diff --git a/SESSION_HANDOFF.md b/SESSION_HANDOFF.md
+index 1174068..94f25e3 100644
+--- a/SESSION_HANDOFF.md
++++ b/SESSION_HANDOFF.md
+@@ -1,4 +1,45 @@
+ 
++## Session 121 (2026-04-27)
++
++### Done
++- Added a SaneAI small-model challenger bakeoff for the 8 GB Mini:
++  - `qwen3-0.6b`
++  - `qwen25-1.5b`
++  - `gemma3-1b-it`
++  - `qwen35-0.8b-optiq`
++- Updated Mini training LaunchAgent defaults/deploy path to rotate:
++  `smollm3-3b,qwen3-0.6b,qwen25-1.5b,gemma3-1b-it,qwen35-0.8b-optiq`
++- Fixed `mini-prepare-automation-root.sh` so `challenger_configs/` is mirrored from the Mini source root into the clean automation root instead of being skipped as git-managed.
++- Hardened Mini LaunchAgent installers so they boot out by label and plist path before bootstrapping; this fixed a `launchctl bootstrap` I/O error caused by already-loaded agents.
++
++### Live Verification
++- `bash -n` passed for:
++  - `scripts/mini/mini-prepare-automation-root.sh`
++  - `scripts/mini/mini-install-nightly-agent.sh`
++  - `scripts/mini/mini-install-training-agents.sh`
++  - `scripts/mini/deploy.sh`
++- `ruby scripts/mini/mini_train_process_test.rb` -> `15/15`
++- Live `scripts/mini/deploy.sh` succeeded on the Mini.
++- Mini LaunchAgent `com.saneapps.training-challengers` now has the five-model rotation.
++- Mini automation root contains the new SaneAI challenger configs.
++- Qwen3 0.6B smoke completed:
++  - report: `~/SaneApps/outputs/automation-smoke/qwen3-0.6b/challenger_report_SaneAI_qwen3-0.6b.md`
++  - `2` training steps
++  - `1.197 it/sec`
++  - `19.758 tokens/sec`
++  - `2.499 GB` peak memory
++  - `0%` strict workflow score
++
++### Current State
++- Production remains SmolLM3.
++- SmolLM3 is operationally better than Llama on this Mini: recent Llama runs failed fast with exit `134`; SmolLM3 trains, but strict workflow JSON quality is still weak.
++- The small-model bakeoff is live in scheduled testing.
++
++### Next
++- Let nightly runs collect full 50-iter results before changing production.
++- Compare challengers on strict workflow score, raw score, runtime, tokens/sec, and peak memory.
++- Treat Qwen3.5 OptiQ as experimental until one scheduled full run proves direct `mlx-lm` LoRA compatibility.
++
+ ## Session 120 (2026-04-25)
+ 
+ ### Done
+diff --git a/scripts/mini/README.md b/scripts/mini/README.md
+index 6f9a280..ff8197e 100644
+--- a/scripts/mini/README.md
++++ b/scripts/mini/README.md
+@@ -159,7 +159,7 @@ LaunchAgent (5:40 AM)
+ - **Managed overlays only** — automation-root prep is allowed to reset hydrated training overlays (`train.jsonl`, eval packs, challenger configs, generated fixtures) before syncing. Any other dirt still fails the prep step.
+ - **Training data hydration** — `mini-prepare-automation-root.sh` copies local-only `train.jsonl` / `valid.jsonl` datasets for SaneSync, SaneClip, SaneAI, and SaneVideo into the clean clones before training.
+ - **Dataset regression guard** — `mini-train.sh` now fails before spending GPU time if the current train/valid counts shrink too far versus the latest successful run for that lane.
+-- **Current bakeoff mode** — the daily challenger agent is pinned to `smollm3-3b` on `SaneAI` because `llama32-3b` reproducibly OOMs on the 8 GB Mini, runs until `08:30`, and skips Sundays so the weekly `SaneAI` run gets the full window.
++- **Current bakeoff mode** — the daily challenger agent rotates through `smollm3-3b,qwen3-0.6b,qwen25-1.5b,gemma3-1b-it,qwen35-0.8b-optiq` on `SaneAI`, runs until `08:30`, and skips Sundays so the weekly `SaneAI` run gets the full window. `llama32-3b` reproducibly OOMs on the 8 GB Mini and is no longer in the scheduled rotation.
+ - **Production Mini baseline** — `lora_config_mini.yaml` now points at `smollm3-3b` as the scheduled production model on the 8 GB Mini; `llama32-3b` remains a manual off-Mini experiment until it is requalified.
+ - **Unsafe-model preflight** — `mini-train.sh` now blocks `mlx-community/Llama-3.2-3B-Instruct-4bit` before launch on the 8 GB Mini unless `ALLOW_UNSAFE_TRAINING=true` is set, so the weekly lane fails cleanly with a report/alert instead of crashing Python on Metal OOM.
+ - **Clean-start training** — `mini-train.sh` now drains stale `mlx_lm` / `evaluate_model.py` processes before each run and purges inactive memory so one crashed/manual lane does not poison the next scheduled lane.
+@@ -244,7 +244,7 @@ ssh mini '
+   TRAIN_POLL_INTERVAL_SEC=5 \
+   TRAIN_STALL_TIMEOUT_MIN=15 \
+   CHALLENGER_SELECTION_MODE=alternate \
+-  CHALLENGER_ROTATION_ORDER=smollm3-3b \
++  CHALLENGER_ROTATION_ORDER=smollm3-3b,qwen3-0.6b,qwen25-1.5b,gemma3-1b-it,qwen35-0.8b-optiq \
+   EVAL_SUITES=commentary_workflow,core \
+   EVAL_MAX_CASES=6 \
+   EVAL_MAX_TOKENS=128 \
+@@ -275,7 +275,7 @@ ssh mini '
+   TRAIN_HARD_STOP_TIME=23:59 \
+   TRAIN_POLL_INTERVAL_SEC=15 \
+   CHALLENGER_SELECTION_MODE=alternate \
+-  CHALLENGER_ROTATION_ORDER=smollm3-3b \
++  CHALLENGER_ROTATION_ORDER=smollm3-3b,qwen3-0.6b,qwen25-1.5b,gemma3-1b-it,qwen35-0.8b-optiq \
+   EVAL_MAX_TOKENS=128 \
+   SANE_ROOT=$HOME/SaneApps-automation \
+   SANE_OUTPUT_DIR=$HOME/SaneApps/outputs/automation-e2e \
+diff --git a/scripts/mini/deploy.sh b/scripts/mini/deploy.sh
+index de87b8f..1d8ee30 100755
+--- a/scripts/mini/deploy.sh
++++ b/scripts/mini/deploy.sh
+@@ -113,7 +113,7 @@ fi
+ echo ""
+ echo "Refreshing launch agents on mini..."
+ mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-nightly-agent.sh ]; then NIGHTLY_HOUR=8 NIGHTLY_MINUTE=45 SANE_ROOT=\$HOME/SaneApps-automation SANE_OUTPUT_DIR=\$HOME/SaneApps/outputs bash $REMOTE_PRIMARY_DIR/mini-install-nightly-agent.sh; fi"
+-mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-training-agents.sh ]; then SANE_ROOT=\$HOME/SaneApps-automation SANE_OUTPUT_DIR=\$HOME/SaneApps/outputs ENABLE_WEEKLY_TRAINING=true TRAIN_HARD_STOP_TIME=08:30 CHALLENGER_APP=SaneAI CHALLENGER_SELECTION_MODE=alternate CHALLENGER_ROTATION_ANCHOR_DATE=2026-03-12 CHALLENGER_ROTATION_ORDER=smollm3-3b CHALLENGER_BUDGET_MIN=0 CHALLENGER_SKIP_WEEKDAY=0 RUN_CHALLENGERS_AFTER_WEEKLY=false WEEKLY_TRAIN_HOUR=1 WEEKLY_TRAIN_MINUTE=0 READINESS_TARGET_APP=SaneSync TRAIN_ALERT_NOTIFY=true TRAIN_EXAMPLE_DROP_MAX_PCT=20 VALID_EXAMPLE_DROP_MAX_PCT=20 bash $REMOTE_PRIMARY_DIR/mini-install-training-agents.sh; fi"
++mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-training-agents.sh ]; then SANE_ROOT=\$HOME/SaneApps-automation SANE_OUTPUT_DIR=\$HOME/SaneApps/outputs ENABLE_WEEKLY_TRAINING=true TRAIN_HARD_STOP_TIME=08:30 CHALLENGER_APP=SaneAI CHALLENGER_SELECTION_MODE=alternate CHALLENGER_ROTATION_ANCHOR_DATE=2026-03-12 CHALLENGER_ROTATION_ORDER=smollm3-3b,qwen3-0.6b,qwen25-1.5b,gemma3-1b-it,qwen35-0.8b-optiq CHALLENGER_BUDGET_MIN=0 CHALLENGER_SKIP_WEEKDAY=0 RUN_CHALLENGERS_AFTER_WEEKLY=false WEEKLY_TRAIN_HOUR=1 WEEKLY_TRAIN_MINUTE=0 READINESS_TARGET_APP=SaneSync TRAIN_ALERT_NOTIFY=true TRAIN_EXAMPLE_DROP_MAX_PCT=20 VALID_EXAMPLE_DROP_MAX_PCT=20 bash $REMOTE_PRIMARY_DIR/mini-install-training-agents.sh; fi"
+ mini_ssh "if [ -f $REMOTE_PRIMARY_DIR/mini-install-memory-guard.sh ]; then bash $REMOTE_PRIMARY_DIR/mini-install-memory-guard.sh; fi"
+ 
+ echo ""
+diff --git a/scripts/mini/mini-install-nightly-agent.sh b/scripts/mini/mini-install-nightly-agent.sh
+index fb1aa2f..6f028d4 100644
+--- a/scripts/mini/mini-install-nightly-agent.sh
++++ b/scripts/mini/mini-install-nightly-agent.sh
+@@ -20,6 +20,18 @@ NIGHTLY_MINUTE="${NIGHTLY_MINUTE:-45}"
+ 
+ mkdir -p "$HOME/Library/LaunchAgents" "$OUTPUT_DIR"
+ 
++bootstrap_agent() {
++  local label="$1"
++  local plist="$2"
++  local domain="gui/$(id -u)"
++
++  launchctl bootout "$domain/$label" 2>/dev/null || true
++  launchctl bootout "$domain" "$plist" 2>/dev/null || true
++  sleep 1
++  launchctl bootstrap "$domain" "$plist"
++  launchctl enable "$domain/$label" 2>/dev/null || true
++}
++
+ cat > "$PLIST" <<EOF
+ <?xml version="1.0" encoding="UTF-8"?>
+ <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+@@ -60,9 +72,7 @@ cat > "$PLIST" <<EOF
+ </plist>
+ EOF
+ 
+-launchctl bootout "gui/$(id -u)/${AGENT_LABEL}" 2>/dev/null || true
+-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+-launchctl enable "gui/$(id -u)/${AGENT_LABEL}" 2>/dev/null || true
++bootstrap_agent "$AGENT_LABEL" "$PLIST"
+ 
+ echo "Installed ${AGENT_LABEL}"
+ plutil -p "$PLIST"
+diff --git a/scripts/mini/mini-install-training-agents.sh b/scripts/mini/mini-install-training-agents.sh
+index d4e82df..ea3ae54 100644
+--- a/scripts/mini/mini-install-training-agents.sh
++++ b/scripts/mini/mini-install-training-agents.sh
+@@ -20,7 +20,7 @@ TRAIN_HARD_STOP_TIME="${TRAIN_HARD_STOP_TIME:-08:30}"
+ READINESS_TARGET_APP="${READINESS_TARGET_APP:-}"
+ CHALLENGER_SELECTION_MODE="${CHALLENGER_SELECTION_MODE:-alternate}"
+ CHALLENGER_ROTATION_ANCHOR_DATE="${CHALLENGER_ROTATION_ANCHOR_DATE:-2026-03-07}"
+-CHALLENGER_ROTATION_ORDER="${CHALLENGER_ROTATION_ORDER:-smollm3-3b}"
++CHALLENGER_ROTATION_ORDER="${CHALLENGER_ROTATION_ORDER:-smollm3-3b,qwen3-0.6b,qwen25-1.5b,gemma3-1b-it,qwen35-0.8b-optiq}"
+ CHALLENGER_BUDGET_MIN="${CHALLENGER_BUDGET_MIN:-0}"
+ CHALLENGER_SKIP_WEEKDAY="${CHALLENGER_SKIP_WEEKDAY:-0}"
+ RUN_CHALLENGERS_AFTER_WEEKLY="${RUN_CHALLENGERS_AFTER_WEEKLY:-false}"
+@@ -53,6 +53,18 @@ LEGACY_PLIST="$LAUNCH_AGENTS_DIR/${LEGACY_LABEL}.plist"
+ 
+ mkdir -p "$LAUNCH_AGENTS_DIR" "$OUTPUT_DIR"
+ 
++bootstrap_agent() {
++  local label="$1"
++  local plist="$2"
++  local domain="gui/$(id -u)"
++
++  launchctl bootout "$domain/$label" 2>/dev/null || true
++  launchctl bootout "$domain" "$plist" 2>/dev/null || true
++  sleep 1
++  launchctl bootstrap "$domain" "$plist"
++  launchctl enable "$domain/$label" 2>/dev/null || true
++}
++
+ cat > "$CHALLENGER_PLIST" <<EOF
+ <?xml version="1.0" encoding="UTF-8"?>
+ <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+@@ -215,12 +227,10 @@ for label in "$CHALLENGER_LABEL" "$WEEKLY_LABEL"; do
+   launchctl bootout "gui/$(id -u)/${label}" 2>/dev/null || true
+ done
+ 
+-launchctl bootstrap "gui/$(id -u)" "$CHALLENGER_PLIST"
+-launchctl enable "gui/$(id -u)/${CHALLENGER_LABEL}" 2>/dev/null || true
++bootstrap_agent "$CHALLENGER_LABEL" "$CHALLENGER_PLIST"
+ 
+ if [ "$ENABLE_WEEKLY_TRAINING" = "true" ]; then
+-  launchctl bootstrap "gui/$(id -u)" "$WEEKLY_PLIST"
+-  launchctl enable "gui/$(id -u)/${WEEKLY_LABEL}" 2>/dev/null || true
++  bootstrap_agent "$WEEKLY_LABEL" "$WEEKLY_PLIST"
+ else
+   rm -f "$WEEKLY_PLIST"
+ fi
+diff --git a/scripts/mini/mini-prepare-automation-root.sh b/scripts/mini/mini-prepare-automation-root.sh
+index 5c452fe..3d0d023 100755
+--- a/scripts/mini/mini-prepare-automation-root.sh
++++ b/scripts/mini/mini-prepare-automation-root.sh
+@@ -455,7 +455,7 @@ hydrate_training_subdir() {
+     return 0
+   fi
+ 
+-  if target_repo_tracks_training_prefix "$app_name" "$rel_dir"; then
++  if [ "$rel_dir" != "challenger_configs" ] && target_repo_tracks_training_prefix "$app_name" "$rel_dir"; then
+     echo "KEEP  apps/$app_name/training_data/$rel_dir [git-managed]"
+     return 0
+   fi

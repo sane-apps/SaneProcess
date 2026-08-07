@@ -1,0 +1,8 @@
+ scripts/automation/README.md                |   2 +-
+ scripts/automation/git-sync-safe.sh         |  12 ++-
+ scripts/automation/listing-actions.py       | 139 ++++++++--------------------
+ scripts/automation/listing_actions_rules.py |  49 ++++++----
+ scripts/automation/listing_actions_test.py  | 110 ++++++++++++++++++++--
+ scripts/automation/sane-status-crossref.sh  |  98 +++++++++++++++++---
+ templates/gitignore                         |   3 +
+ 7 files changed, 273 insertions(+), 140 deletions(-)

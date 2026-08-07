@@ -1,0 +1,1 @@
+stash@{5}: WIP on fix/hook-staleness-gates: 58d1a34 refactor: streamline pass 1 — dead architecture out, guards deduped, installs derive from require graph

@@ -1,0 +1,16 @@
+ DEVELOPMENT.md                               |   28 +-
+ scripts/SaneMaster.rb                        |   42 +-
+ scripts/app_test_mode.sh                     |   93 +-
+ scripts/app_test_mode_test.rb                |   10 +
+ scripts/mini/bootstrap-build-server.sh       |   23 +-
+ scripts/sane_test.rb                         |    3 +-
+ scripts/sanemaster/base.rb                   |    6 +
+ scripts/sanemaster/meta.rb                   |  300 ++++++
+ scripts/sanemaster/release.rb                | 1284 +++++++++++++++++++++++++-
+ scripts/sanemaster/release_guardrail_test.rb |  474 ++++++++++
+ scripts/sanemaster/verify.rb                 |   43 +-
+ scripts/sanemaster/verify_guard_test.rb      |   37 +
+ scripts/sanitize_distribution_bundle.rb      |   11 +-
+ scripts/test_registry.json                   |    6 +
+ templates/RELEASE_SOP.md                     |    2 +-
+ 15 files changed, 2310 insertions(+), 52 deletions(-)

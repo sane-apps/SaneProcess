@@ -1,0 +1,1063 @@
+diff --git a/scripts/dedupe_sane_apps.rb b/scripts/dedupe_sane_apps.rb
+index 921bf80..6034270 100644
+--- a/scripts/dedupe_sane_apps.rb
++++ b/scripts/dedupe_sane_apps.rb
+@@ -110,8 +110,11 @@ class DedupeSaneApps
+       File.expand_path("~/codex-runs/**/#{app}.app"),
+       File.expand_path("~/SaneApps/apps/#{app}/build/**/#{app}.app"),
+       File.expand_path("~/SaneApps/apps/#{app}/outputs/**/#{app}.app"),
++      File.expand_path("~/SaneApps/infra/SaneProcess/outputs/**/#{app}.app"),
++      File.expand_path("~/SaneApps/outputs/**/#{app}.app"),
+       File.expand_path("~/SaneApps/release/**/#{app}.app"),
+       File.expand_path("~/SaneApps/release-publish/**/#{app}.app"),
++      File.expand_path("~/SaneApps/release-work/**/#{app}.app"),
+       File.expand_path("~/SaneApps/release-worktrees/**/#{app}.app"),
+       File.expand_path("~/SaneApps/tmp/**/#{app}.app"),
+       File.expand_path("~/tmp/**/#{app}.app")
+@@ -213,9 +216,12 @@ class DedupeSaneApps
+       File.expand_path("~/Library/Developer/Xcode/DerivedData"),
+       File.expand_path("~/SaneApps/apps/#{app}/build"),
+       File.expand_path("~/SaneApps/apps/#{app}/outputs"),
++      File.expand_path("~/SaneApps/infra/SaneProcess/outputs"),
++      File.expand_path("~/SaneApps/outputs"),
+       File.expand_path('~/SaneApps/release'),
+       File.expand_path('~/SaneApps/tmp'),
+       File.expand_path('~/SaneApps/release-publish'),
++      File.expand_path('~/SaneApps/release-work'),
+       File.expand_path('~/SaneApps/release-worktrees'),
+       File.expand_path('~/tmp'),
+       TRANSIENT_STAGE_ROOT
+diff --git a/scripts/dedupe_sane_apps_test.rb b/scripts/dedupe_sane_apps_test.rb
+index 7de9cac..3ede870 100644
+--- a/scripts/dedupe_sane_apps_test.rb
++++ b/scripts/dedupe_sane_apps_test.rb
+@@ -14,8 +14,11 @@ exit(run_tests('Dedupe Sane Apps Tests') do
+ 
+       assert_includes(source, "TRANSIENT_STAGE_ROOT = File.expand_path('/tmp/saneapps-staging.noindex')")
+       assert_includes(source, "File.expand_path(\"~/SaneApps/apps/\#{app}/outputs/**/\#{app}.app\")")
++      assert_includes(source, "File.expand_path(\"~/SaneApps/infra/SaneProcess/outputs/**/\#{app}.app\")")
++      assert_includes(source, "File.expand_path(\"~/SaneApps/outputs/**/\#{app}.app\")")
+       assert_includes(source, "File.expand_path(\"~/SaneApps/release/**/\#{app}.app\")")
+       assert_includes(source, "File.expand_path(\"~/SaneApps/release-publish/**/\#{app}.app\")")
++      assert_includes(source, "File.expand_path(\"~/SaneApps/release-work/**/\#{app}.app\")")
+       assert_includes(source, "File.expand_path(\"~/SaneApps/release-worktrees/**/\#{app}.app\")")
+       assert_includes(source, "File.expand_path(\"~/SaneApps/tmp/**/\#{app}.app\")")
+       true
+@@ -42,7 +45,10 @@ exit(run_tests('Dedupe Sane Apps Tests') do
+       assert_includes(source, "File.expand_path(\"~/Library/Developer/Xcode/DerivedData\")")
+       assert_includes(source, "File.expand_path(\"~/SaneApps/apps/\#{app}/build\")")
+       assert_includes(source, "File.expand_path(\"~/SaneApps/apps/\#{app}/outputs\")")
++      assert_includes(source, "File.expand_path(\"~/SaneApps/infra/SaneProcess/outputs\")")
++      assert_includes(source, "File.expand_path(\"~/SaneApps/outputs\")")
+       assert_includes(source, "File.expand_path('~/SaneApps/release')")
++      assert_includes(source, "File.expand_path('~/SaneApps/release-work')")
+       assert_includes(source, 'File.write(marker, \'\')')
+       true
+     end
+diff --git a/scripts/sanemaster/saneui_guard.rb b/scripts/sanemaster/saneui_guard.rb
+index 60531a2..d2c1771 100644
+--- a/scripts/sanemaster/saneui_guard.rb
++++ b/scripts/sanemaster/saneui_guard.rb
+@@ -18,6 +18,11 @@ module SaneMasterModules
+       /DirectDistributionSupport\.swift$/i,
+       /License.*View\.swift$/i
+     ].freeze
++    MENU_SURFACE_MATCHERS = [
++      /NSStatusItem/,
++      /applicationDockMenu\s*\(/,
++      /CommandGroup\s*\(\s*replacing:\s*\.appSettings/
++    ].freeze
+     SOURCE_OF_TRUTH_HINT = [
+       'Extend shared SaneUI instead of app-local settings chrome.',
+       'Inspect ~/SaneApps/infra/SaneUI/Sources/SaneUICatalog/SaneUICatalogApp.swift first.',
+@@ -38,7 +43,8 @@ module SaneMasterModules
+ 
+       files = swift_source_files(root)
+       contents = files.to_h { |file| [file, File.read(file)] }
+-      settings_files = files.select { |file| settings_ui_file?(file) }
++      settings_files = files.select { |file| settings_ui_file?(file) || settings_ui_content?(contents[file]) }
++      privacy_metadata = privacy_metadata_content(root)
+ 
+       errors = []
+       warnings = []
+@@ -46,6 +52,15 @@ module SaneMasterModules
+       contents.each do |file, content|
+         relative = relative_path(root, file)
+ 
++        if content.include?('enableByDefaultIfNeeded') || content.match?(/SaneLoginItemPolicy\.setEnabled\s*\(\s*true\b/)
++          errors << Finding.new(
++            severity: :error,
++            label: 'Launch at login auto-registration',
++            detail: relative,
++            fix: 'Do not silently register login items at launch. Use SaneLoginItemPolicy.offerDefaultLaunchAtLoginIfNeeded or SaneLoginItemToggle so SMAppService registration follows an explicit user choice.'
++          )
++        end
++
+         if content.match?(/^\s*struct\s+SaneSparkleRow\b/m)
+           errors << Finding.new(
+             severity: :error,
+@@ -55,7 +70,57 @@ module SaneMasterModules
+           )
+         end
+ 
+-        next unless settings_ui_file?(file)
++        if File.basename(file) == 'DirectDistributionSupport.swift'
++          raw_mover_patterns = [
++            /moveItem\s*\(/,
++            /removeItem\s*\(/,
++            /rm -rf/,
++            /do shell script/,
++            /osascript/,
++            /tell application "Finder"/,
++            /Finder"\s*\n\s*if exists .* then delete/m
++          ]
++
++          if raw_mover_patterns.any? { |pattern| content.match?(pattern) }
++            errors << Finding.new(
++              severity: :error,
++              label: 'App-local move-to-Applications implementation',
++              detail: relative,
++              fix: 'Delegate move-to-Applications behavior to shared SaneUI.SaneApplicationMover. Do not move/delete/relaunch app bundles from app-local code.'
++            )
++          end
++        end
++
++        if content.match?(/\.(?:documentDirectory|desktopDirectory|downloadsDirectory)\b/) ||
++           content.match?(/(?:NSHomeDirectory\(\)|homeDirectoryForCurrentUser).*?(?:Documents|Desktop|Downloads)/m)
++          errors << Finding.new(
++            severity: :error,
++            label: 'Protected user folder access without shared policy',
++            detail: relative,
++            fix: 'Use SaneAppStorage for app-private files. For user-visible import/export, use NSOpenPanel/NSSavePanel and security-scoped user selection instead of direct Documents/Desktop/Downloads access.'
++          )
++        end
++
++        if content.match?(/x-apple\.systempreferences:com\.apple\.preference\.security\?Privacy_/) &&
++           !content.include?('SaneSystemSettingsDestination')
++          warnings << Finding.new(
++            severity: :warning,
++            label: 'Raw privacy settings URL not using shared SaneUI',
++            detail: relative,
++            fix: 'Use SaneSystemSettingsDestination and SanePermissionAction so privacy recovery links are centralized and testable.'
++          )
++        end
++
++        if permission_guidance_content?(content) && !content.include?('SanePermissionGuidanceView') && !content.include?('SanePermissionAction')
++          warnings << Finding.new(
++            severity: :warning,
++            label: 'Permission guidance not using shared SaneUI',
++            detail: relative,
++            fix: 'Use SanePermissionGuidanceView and SanePermissionAction so permission recovery copy, buttons, and System Settings destinations stay consistent.'
++          )
++        end
++
++        next unless settings_ui_file?(file) || settings_ui_content?(content) || permission_guidance_content?(content)
+ 
+         content.each_line.with_index(1) do |line, line_number|
+           detail = "#{relative}:#{line_number}"
+@@ -78,7 +143,7 @@ module SaneMasterModules
+             )
+           end
+ 
+-          if line.match?(/\.buttonStyle\(\.bordered\)/)
++          if line.match?(/\.buttonStyle\(\.bordered(?:Prominent)?\)/)
+             errors << Finding.new(
+               severity: :error,
+               label: 'Default bordered button in settings UI',
+@@ -89,6 +154,10 @@ module SaneMasterModules
+         end
+       end
+ 
++      privacy_usage_findings(contents, privacy_metadata).each do |finding|
++        errors << finding
++      end
++
+       if settings_files.any? && macos_app_manifest?(manifest) && !contents.values.any? { |content| content.include?('SaneSettingsContainer(') }
+         warnings << Finding.new(
+           severity: :warning,
+@@ -117,6 +186,38 @@ module SaneMasterModules
+         )
+       end
+ 
++      if contents.values.any? { |content| menu_surface_file?(content) } &&
++         !contents.values.any? { |content| shared_standard_menu_usage?(content) }
++        warnings << Finding.new(
++          severity: :warning,
++          label: 'Menu surfaces not using shared SaneUI standard menu items',
++          detail: File.basename(root),
++          fix: 'Use SaneStandardMenu for app menu, status-item menu, and Dock menu Settings/Updates/Quit entries so license, bug report, and update access stay reachable.'
++        )
++      end
++
++      if direct_sparkle_app?(contents, privacy_metadata) &&
++         !contents.values.any? { |content| content.include?('SaneUpdateEligibility') }
++        errors << Finding.new(
++          severity: :error,
++          label: 'Sparkle updates without shared install eligibility',
++          detail: File.basename(root),
++          fix: 'Gate Sparkle initialization, manual update checks, and update UI with SaneUpdateEligibility so direct builds outside Applications cannot present fragile updater flows.'
++        )
++      end
++
++      if macos_app_manifest?(manifest) &&
++         settings_files.any? &&
++         contents.values.any? { |content| content.include?('SaneActivationPolicy') || content.include?('SaneBackgroundAppDefaults.showDockIcon') } &&
++         !contents.values.any? { |content| content.include?('SaneLoginItemToggle()') }
++        warnings << Finding.new(
++          severity: :warning,
++          label: 'Launch at login toggle not exposed',
++          detail: File.basename(root),
++          fix: 'Expose SaneLoginItemToggle in the shared settings startup/general area so users can control launch at login.'
++        )
++      end
++
+       {
+         applicable: true,
+         manifest: manifest,
+@@ -188,7 +289,9 @@ module SaneMasterModules
+           file.include?('/SourcePackages/') ||
+           file.include?('/Packages/') ||
+           file.include?('/docs/') ||
+-          file.include?('/Tests/')
++          file.include?('/scripts/') ||
++          file.include?('/Tests/') ||
++          file.match?(%r{/[^/]+Tests/})
+       end
+     end
+ 
+@@ -196,6 +299,98 @@ module SaneMasterModules
+       SETTINGS_UI_MATCHERS.any? { |pattern| file.match?(pattern) }
+     end
+ 
++    def settings_ui_content?(content)
++      content.match?(/Settings\s*\{/) ||
++        content.match?(/^\s*struct\s+\w*Settings\w*\s*:\s*View\b/m) ||
++        content.match?(/^\s*struct\s+SettingsView\s*:\s*View\b/m) ||
++        content.include?('SaneSettingsContainer(')
++    end
++
++    def permission_guidance_content?(content)
++      content.match?(/PermissionPrompt\w*\s*:\s*View/) ||
++        (content.match?(/^\s*struct\s+\w+\s*:\s*View\b/m) &&
++          (
++            content.match?(/\b(permission|denied)\b/i) &&
++              content.match?(/Accessibility|Automation|Screen Recording|ScreenCapture|Microphone|Camera|Photos|Files and Folders|Full Disk Access|Login Items|Privacy_(?:Accessibility|Automation|ScreenCapture|Microphone|Camera|Photos|FilesAndFolders|AllFiles)/i)
++          ))
++    end
++
++    def menu_surface_file?(content)
++      MENU_SURFACE_MATCHERS.any? { |pattern| content.match?(pattern) }
++    end
++
++    def shared_standard_menu_usage?(content)
++      content.include?('SaneStandardMenu.')
++    end
++
++    def direct_sparkle_app?(contents, metadata)
++      source = contents.values.join("\n")
++      has_sparkle_runtime = source.match?(/SPUStandardUpdaterController|SPUUpdater|import\s+Sparkle/)
++      has_update_surface = source.match?(/SaneSparkleRow\(|checkForUpdates/) || metadata.include?('SUFeedURL')
++      has_sparkle_runtime && has_update_surface
++    end
++
++    def privacy_metadata_content(root)
++      Dir.glob(File.join(root, '**', '*.{plist,yml,yaml}')).reject do |file|
++        file.include?('/.build/') ||
++          file.include?('/build/') ||
++          file.include?('/DerivedData/') ||
++          file.include?('/SourcePackages/') ||
++          file.include?('/Packages/')
++      end.map { |file| File.read(file) }.join("\n")
++    end
++
++    def privacy_usage_findings(contents, metadata)
++      source = contents.values.join("\n")
++      checks = [
++        {
++          label: 'Microphone usage without Info.plist purpose string',
++          api_patterns: [
++            /AVAudioApplication\.requestRecordPermission/,
++            /AVCaptureDevice\.requestAccess\s*\(\s*for:\s*\.audio/,
++            /AVAudioRecorder\b/
++          ],
++          required_keys: ['NSMicrophoneUsageDescription'],
++          fix: 'Add NSMicrophoneUsageDescription with a concrete user-facing reason for audio recording.'
++        },
++        {
++          label: 'Apple Events automation without Info.plist purpose string',
++          api_patterns: [
++            /NSAppleScript\b/,
++            /osascript/,
++            /AppleScriptRunner/,
++            /NSAppleEventsUsageDescription/
++          ],
++          required_keys: ['NSAppleEventsUsageDescription'],
++          fix: 'Add NSAppleEventsUsageDescription explaining which apps the app controls and why.'
++        },
++        {
++          label: 'Photos access without Info.plist purpose string',
++          api_patterns: [
++            /PHPhotoLibrary\b/,
++            /PhotosUI\b/,
++            /tell application "Photos"/,
++            /targetHint:\s*"Photos"/,
++            /importToPhotos/
++          ],
++          required_keys: ['NSPhotoLibraryUsageDescription', 'NSPhotoLibraryAddUsageDescription'],
++          fix: 'Add NSPhotoLibraryUsageDescription or NSPhotoLibraryAddUsageDescription for Photos import/access.'
++        }
++      ]
++
++      checks.each_with_object([]) do |check, findings|
++        next unless check[:api_patterns].any? { |pattern| source.match?(pattern) }
++        next if check[:required_keys].any? { |key| metadata.include?(key) }
++
++        findings << Finding.new(
++          severity: :error,
++          label: check[:label],
++          detail: check[:required_keys].join(' or '),
++          fix: check[:fix]
++        )
++      end
++    end
++
+     def relative_path(root, file)
+       file.delete_prefix("#{root}/")
+     end
+diff --git a/scripts/sanemaster/saneui_guard_test.rb b/scripts/sanemaster/saneui_guard_test.rb
+index fae92df..c64568b 100644
+--- a/scripts/sanemaster/saneui_guard_test.rb
++++ b/scripts/sanemaster/saneui_guard_test.rb
+@@ -67,6 +67,90 @@ exit(run_tests('SaneUI Guard Tests') do
+         true
+       end
+     end
++
++    test('flags app-local move-to-Applications implementations') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'DirectDistributionSupport.swift' => <<~SWIFT
++            import AppKit
++
++            enum SaneAppMover {
++                static func moveToApplicationsFolderIfNeeded() -> Bool {
++                    try? FileManager.default.removeItem(atPath: "/Applications/Test.app")
++                    try? FileManager.default.moveItem(atPath: Bundle.main.bundlePath, toPath: "/Applications/Test.app")
++                    return true
++                }
++            }
++          SWIFT
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        labels = report[:errors].map(&:label)
++
++        assert_includes(labels, 'App-local move-to-Applications implementation')
++        true
++      end
++    end
++
++    test('blocks direct protected user folder access') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'Services/LogManager.swift' => <<~SWIFT,
++            import Foundation
++
++            final class LogManager {
++                func write() {
++                    let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
++                    try? "log".write(to: url.appendingPathComponent("log.txt"), atomically: true, encoding: .utf8)
++                }
++            }
++          SWIFT
++          'Services/ExportManager.swift' => <<~SWIFT
++            import Foundation
++
++            final class ExportManager {
++                func write() {
++                    let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
++                    try? Data().write(to: url.appendingPathComponent("export.mov"))
++                }
++            }
++          SWIFT
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        labels = report[:errors].map(&:label)
++
++        assert_includes(labels, 'Protected user folder access without shared policy')
++        true
++      end
++    end
++
++    test('allows DirectDistributionSupport to wrap shared SaneApplicationMover') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'DirectDistributionSupport.swift' => <<~SWIFT
++            import SaneUI
++
++            enum SaneAppMover {
++                typealias Prompt = SaneApplicationMover.Prompt
++
++                static func moveToApplicationsFolderIfNeeded(prompt: Prompt) -> Bool {
++                    SaneApplicationMover.moveToApplicationsFolderIfNeeded(prompt: prompt)
++                }
++            }
++          SWIFT
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        labels = report[:errors].map(&:label)
++
++        assert(!labels.include?('App-local move-to-Applications implementation'), 'expected shared wrapper to be allowed')
++        true
++      end
++    end
+   end
+ 
+   test_category('Migration warnings') do
+@@ -92,6 +176,40 @@ exit(run_tests('SaneUI Guard Tests') do
+       end
+     end
+ 
++    test('detects settings views embedded outside SettingsView paths') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'ExampleApp.swift' => <<~SWIFT
++            import SwiftUI
++
++            @main
++            struct ExampleApp: App {
++                var body: some Scene {
++                    Settings {
++                        SettingsView()
++                    }
++                }
++            }
++
++            struct SettingsView: View {
++                var body: some View {
++                    TabView {
++                        Text("General")
++                    }
++                }
++            }
++          SWIFT
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        labels = report[:warnings].map(&:label)
++
++        assert_includes(labels, 'Settings container not using shared SaneUI shell')
++        true
++      end
++    end
++
+     test('does not warn when the shared license view is specialized with a bridged service') do
+       with_repo(
+         manifest_type: 'macos_app',
+@@ -121,6 +239,501 @@ exit(run_tests('SaneUI Guard Tests') do
+         true
+       end
+     end
++
++    test('warns when menu surfaces hand-roll settings and update items') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'AppDelegate.swift' => <<~SWIFT
++            import AppKit
++
++            final class AppDelegate: NSObject, NSApplicationDelegate {
++                private var statusItem: NSStatusItem?
++
++                func applicationDockMenu(_: NSApplication) -> NSMenu? {
++                    let menu = NSMenu()
++                    menu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ""))
++                    return menu
++                }
++
++                @objc private func openSettings() {}
++            }
++          SWIFT
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        labels = report[:warnings].map(&:label)
++
++        assert_includes(labels, 'Menu surfaces not using shared SaneUI standard menu items')
++        true
++      end
++    end
++
++    test('allows menu surfaces that use shared SaneStandardMenu') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'AppDelegate.swift' => <<~SWIFT
++            import AppKit
++            import SaneUI
++
++            final class AppDelegate: NSObject, NSApplicationDelegate {
++                private var statusItem: NSStatusItem?
++
++                func applicationDockMenu(_: NSApplication) -> NSMenu? {
++                    let menu = NSMenu()
++                    menu.addItem(SaneStandardMenu.settingsItem(target: self, action: #selector(openSettings), keyEquivalent: ""))
++                    return menu
++                }
++
++                @objc private func openSettings() {}
++            }
++          SWIFT
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        labels = report[:warnings].map(&:label)
++
++        assert(!labels.include?('Menu surfaces not using shared SaneUI standard menu items'), 'expected shared standard menu item to pass')
++        true
++      end
++    end
++
++    test('allows menu surfaces that use shared SaneStandardMenu core utility helper') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'AppDelegate.swift' => <<~SWIFT
++            import AppKit
++            import SaneUI
++
++            final class AppDelegate: NSObject, NSApplicationDelegate {
++                private var statusItem: NSStatusItem?
++
++                func applicationDockMenu(_: NSApplication) -> NSMenu? {
++                    let menu = NSMenu()
++                    SaneStandardMenu.addCoreUtilityItems(
++                        to: menu,
++                        appName: "TestApp",
++                        target: self,
++                        settingsAction: #selector(openSettings),
++                        licenseAction: #selector(openLicense),
++                        checkForUpdatesAction: #selector(checkForUpdates),
++                        aboutAndBugReportAction: #selector(openAbout),
++                        quitAction: #selector(quit)
++                    )
++                    return menu
++                }
++
++                @objc private func openSettings() {}
++                @objc private func openLicense() {}
++                @objc private func checkForUpdates() {}
++                @objc private func openAbout() {}
++                @objc private func quit() {}
++            }
++          SWIFT
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        labels = report[:warnings].map(&:label)
++
++        assert(!labels.include?('Menu surfaces not using shared SaneUI standard menu items'), 'expected shared core utility helper to pass')
++        true
++      end
++    end
++
++    test('allows menu surfaces that compose supported SaneStandardMenu helpers directly') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'AppDelegate.swift' => <<~SWIFT
++            import AppKit
++            import SaneUI
++
++            final class AppDelegate: NSObject, NSApplicationDelegate {
++                private var statusItem: NSStatusItem?
++
++                func applicationDockMenu(_: NSApplication) -> NSMenu? {
++                    let menu = NSMenu()
++                    menu.addItem(SaneStandardMenu.licenseItem(target: self, action: #selector(openLicense)))
++                    menu.addItem(SaneStandardMenu.checkForUpdatesItem(target: self, action: #selector(checkForUpdates)))
++                    menu.addItem(SaneStandardMenu.aboutAndBugReportItem(target: self, action: #selector(openAbout)))
++                    menu.addItem(SaneStandardMenu.quitItem(appName: "TestApp", target: self, action: #selector(quit)))
++                    return menu
++                }
++
++                @objc private func openLicense() {}
++                @objc private func checkForUpdates() {}
++                @objc private func openAbout() {}
++                @objc private func quit() {}
++            }
++          SWIFT
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        labels = report[:warnings].map(&:label)
++
++        assert(!labels.include?('Menu surfaces not using shared SaneUI standard menu items'), 'expected direct shared standard menu helpers to pass')
++        true
++      end
++    end
++
++    test('blocks Sparkle update surfaces without shared install eligibility') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'UpdateService.swift' => <<~SWIFT,
++            import Sparkle
++
++            final class UpdateService {
++                private var updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
++            }
++          SWIFT
++          'UI/Settings/SettingsView.swift' => <<~SWIFT
++            import SaneUI
++            import SwiftUI
++
++            struct SettingsView: View {
++                var body: some View {
++                    SaneSparkleRow(
++                        automaticallyChecks: .constant(true),
++                        checkFrequency: .constant(.daily),
++                        onCheckNow: {}
++                    )
++                }
++            }
++          SWIFT
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        labels = report[:errors].map(&:label)
++
++        assert_includes(labels, 'Sparkle updates without shared install eligibility')
++        true
++      end
++    end
++
++    test('blocks Sparkle updater with appcast metadata even without settings row') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'UpdateService.swift' => <<~SWIFT,
++            import Sparkle
++
++            final class UpdateService {
++                private var updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
++            }
++          SWIFT
++          'App/Info.plist' => <<~PLIST
++            <plist><dict>
++              <key>SUFeedURL</key>
++              <string>https://example.com/appcast.xml</string>
++            </dict></plist>
++          PLIST
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        labels = report[:errors].map(&:label)
++
++        assert_includes(labels, 'Sparkle updates without shared install eligibility')
++        true
++      end
++    end
++
++    test('blocks launch-at-login auto-registration') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'AppDelegate.swift' => <<~SWIFT
++            import SaneUI
++
++            final class AppDelegate {
++                func launch() {
++                    try? SaneLoginItemPolicy.setEnabled(true)
++                }
++            }
++          SWIFT
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        labels = report[:errors].map(&:label)
++
++        assert_includes(labels, 'Launch at login auto-registration')
++        true
++      end
++    end
++
++    test('allows consented default launch-at-login prompt') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'AppDelegate.swift' => <<~SWIFT
++            import SaneUI
++
++            final class AppDelegate {
++                func launch() {
++                    SaneLoginItemPolicy.scheduleDefaultLaunchAtLoginPrompt(appName: "Example")
++                }
++            }
++          SWIFT
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        labels = report[:errors].map(&:label)
++
++        assert(!labels.include?('Launch at login auto-registration'), 'expected consent prompt flow to pass')
++        true
++      end
++    end
++
++    test('allows Sparkle update surfaces gated by SaneUpdateEligibility') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'UpdateService.swift' => <<~SWIFT,
++            import SaneUI
++            import Sparkle
++
++            final class UpdateService {
++                private let updateEligibility: SaneUpdateEligibility = .eligible
++                private var updaterController: SPUStandardUpdaterController?
++            }
++          SWIFT
++          'UI/Settings/SettingsView.swift' => <<~SWIFT
++            import SaneUI
++            import SwiftUI
++
++            struct SettingsView: View {
++                var body: some View {
++                    SaneSparkleRow(
++                        automaticallyChecks: .constant(true),
++                        checkFrequency: .constant(.daily),
++                        onCheckNow: {}
++                    )
++                }
++            }
++          SWIFT
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        labels = report[:errors].map(&:label)
++
++        assert(!labels.include?('Sparkle updates without shared install eligibility'), 'expected shared update eligibility to pass')
++        true
++      end
++    end
++
++    test('warns when background app settings omit explicit login item toggle') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'UI/Settings/SettingsView.swift' => <<~SWIFT,
++            import SaneUI
++            import SwiftUI
++
++            struct SettingsView: View {
++                var body: some View {
++                    SaneSettingsContainer(defaultTab: Tab.general) { _ in
++                        SaneDockIconToggle(showDockIcon: .constant(false))
++                    }
++                }
++
++                enum Tab: String, SaneSettingsTab {
++                    case general = "General"
++                    var icon: String { "gearshape" }
++                    var iconColor: Color { .white }
++                }
++            }
++          SWIFT
++          'AppDelegate.swift' => 'SaneActivationPolicy.applyPolicy(showDockIcon: false)'
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        labels = report[:warnings].map(&:label)
++
++        assert_includes(labels, 'Launch at login toggle not exposed')
++        true
++      end
++    end
++
++    test('warns when permission recovery hand-rolls settings links') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'UI/PermissionPromptView.swift' => <<~SWIFT
++            import SwiftUI
++
++            struct PermissionPromptView: View {
++                var body: some View {
++                    VStack {
++                        Text("Automation Access")
++                        Button("Open Automation Settings") {}
++                            .buttonStyle(.borderedProminent)
++                    }
++                }
++            }
++          SWIFT
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        warning_labels = report[:warnings].map(&:label)
++        error_labels = report[:errors].map(&:label)
++
++        assert_includes(warning_labels, 'Permission guidance not using shared SaneUI')
++        assert_includes(error_labels, 'Default bordered button in settings UI')
++        true
++      end
++    end
++
++    test('warns when screen recording recovery hand-rolls settings links') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'UI/ScreenRecordingAccessView.swift' => <<~SWIFT
++            import SwiftUI
++
++            struct ScreenRecordingAccessView: View {
++                var body: some View {
++                    VStack {
++                        Text("Screen Recording access is denied")
++                        Button("Open Screen Recording Settings") {}
++                            .buttonStyle(.bordered)
++                    }
++                }
++            }
++          SWIFT
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        warning_labels = report[:warnings].map(&:label)
++        error_labels = report[:errors].map(&:label)
++
++        assert_includes(warning_labels, 'Permission guidance not using shared SaneUI')
++        assert_includes(error_labels, 'Default bordered button in settings UI')
++        true
++      end
++    end
++
++    test('warns when privacy settings URLs bypass shared SaneUI destinations') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'UI/PermissionsView.swift' => <<~SWIFT
++            import SwiftUI
++
++            struct PermissionsView: View {
++                var body: some View {
++                    Button("Open") {
++                        _ = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")
++                    }
++                }
++            }
++          SWIFT
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        labels = report[:warnings].map(&:label)
++
++        assert_includes(labels, 'Raw privacy settings URL not using shared SaneUI')
++        true
++      end
++    end
++
++    test('allows inline permission recovery that uses shared SanePermissionAction') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'UI/ScreenRecordingAccessView.swift' => <<~SWIFT
++            import SaneUI
++            import SwiftUI
++
++            struct ScreenRecordingAccessView: View {
++                let action = SanePermissionAction(
++                    title: "Open Screen Recording Settings",
++                    destination: .screenRecording
++                )
++
++                var body: some View {
++                    Button("Open Settings") { action.open() }
++                }
++            }
++          SWIFT
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        warning_labels = report[:warnings].map(&:label)
++
++        assert(!warning_labels.include?('Permission guidance not using shared SaneUI'), 'expected shared permission action to pass')
++        true
++      end
++    end
++
++    test('blocks microphone APIs without usage description') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'AudioService.swift' => <<~SWIFT,
++            import AVFoundation
++
++            final class AudioService {
++                var recorder: AVAudioRecorder?
++            }
++          SWIFT
++          'App/Info.plist' => <<~PLIST
++            <plist><dict></dict></plist>
++          PLIST
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        labels = report[:errors].map(&:label)
++
++        assert_includes(labels, 'Microphone usage without Info.plist purpose string')
++        true
++      end
++    end
++
++    test('allows privacy APIs with matching usage descriptions') do
++      with_repo(
++        manifest_type: 'macos_app',
++        files: {
++          'AudioService.swift' => <<~SWIFT,
++            import AVFoundation
++
++            final class AudioService {
++                var recorder: AVAudioRecorder?
++            }
++          SWIFT
++          'AppleScriptRunner.swift' => <<~SWIFT,
++            import Foundation
++
++            enum AppleScriptRunner {
++                static func run() {
++                    let process = Process()
++                    process.arguments = ["-e", "tell application \\"Photos\\" to activate"]
++                }
++            }
++          SWIFT
++          'App/Info.plist' => <<~PLIST
++            <plist><dict>
++              <key>NSMicrophoneUsageDescription</key>
++              <string>Record voice commands.</string>
++              <key>NSAppleEventsUsageDescription</key>
++              <string>Control apps on request.</string>
++              <key>NSPhotoLibraryUsageDescription</key>
++              <string>Import files into Photos.</string>
++            </dict></plist>
++          PLIST
++        }
++      ) do |dir|
++        report = SaneMasterModules::SaneUIGuard.report_for_path(dir)
++        labels = report[:errors].map(&:label)
++
++        assert(!labels.include?('Microphone usage without Info.plist purpose string'), 'expected microphone usage string to pass')
++        assert(!labels.include?('Apple Events automation without Info.plist purpose string'), 'expected Apple Events usage string to pass')
++        assert(!labels.include?('Photos access without Info.plist purpose string'), 'expected Photos usage string to pass')
++        true
++      end
++    end
+   end
+ 
+   test_category('Scope') do
+diff --git a/shared/MoveToApplications.swift b/shared/MoveToApplications.swift
+index 7967331..d7eea07 100644
+--- a/shared/MoveToApplications.swift
++++ b/shared/MoveToApplications.swift
+@@ -1,5 +1,6 @@
+ #if os(macOS)
+     import AppKit
++    import SaneUI
+ 
+     /// Shared move-to-Applications prompt for all SaneApps.
+     ///
+@@ -8,77 +9,19 @@
+     ///
+     /// Returns `true` if the app is being moved (caller should return early).
+     ///
+-    /// How it works:
+-    /// 1. Checks if the app is already in /Applications — exits early if so
+-    /// 2. Shows a native alert asking the user to move
+-    /// 3. Tries a direct FileManager move first (works if user has write access)
+-    /// 4. Falls back to AppleScript `with administrator privileges` (shows password prompt)
+-    /// 5. Relaunches from /Applications on success
++    /// The implementation lives in SaneUI so every app uses the same tested
++    /// copy-then-relaunch behavior.
+     enum SaneAppMover {
+         @discardableResult
+         static func moveToApplicationsFolderIfNeeded() -> Bool {
+-            let appPath = Bundle.main.bundlePath
+-            let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
+-                ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+-                ?? "This app"
+-
+-            guard !appPath.hasPrefix("/Applications") else { return false }
+-
+-            NSApp.activate(ignoringOtherApps: true)
+-
+-            let alert = NSAlert()
+-            alert.messageText = "Move to Applications?"
+-            alert.informativeText = "\(appName) works best from your Applications folder. Move it there now? You may be asked for your password."
+-            alert.alertStyle = .informational
+-            alert.addButton(withTitle: "Move to Applications")
+-            alert.addButton(withTitle: "Not Now")
+-
+-            guard alert.runModal() == .alertFirstButtonReturn else { return false }
+-
+-            let destPath = "/Applications/\(appName).app"
+-            let fm = FileManager.default
+-
+-            // Try direct move first (no admin needed if user owns /Applications)
+-            var moved = false
+-            do {
+-                if fm.fileExists(atPath: destPath) {
+-                    try fm.removeItem(atPath: destPath)
+-                }
+-                try fm.moveItem(atPath: appPath, toPath: destPath)
+-                moved = true
+-            } catch {
+-                // Direct move failed — need admin privileges
+-            }
+-
+-            if !moved {
+-                let escapedAppPath = appPath.replacingOccurrences(of: "'", with: "'\\''")
+-                let escapedDestPath = destPath.replacingOccurrences(of: "'", with: "'\\''")
+-                let script = "do shell script \"rm -rf '\(escapedDestPath)' && mv '\(escapedAppPath)' '\(escapedDestPath)'\" with administrator privileges"
+-
+-                let osa = Process()
+-                osa.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+-                osa.arguments = ["-e", script]
+-                do {
+-                    try osa.run()
+-                    osa.waitUntilExit()
+-                    guard osa.terminationStatus == 0 else {
+-                        // User cancelled the admin prompt
+-                        return false
+-                    }
+-                } catch {
+-                    return false
+-                }
+-            }
+-
+-            // Relaunch from /Applications
+-            do {
+-                let task = Process()
+-                task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+-                task.arguments = [destPath]
+-                try task.run()
+-            } catch {}
+-            NSApp.terminate(nil)
+-            return true
++            SaneApplicationMover.moveToApplicationsFolderIfNeeded(
++                prompt: .init(
++                    messageText: "Move to Applications?",
++                    informativeText: "{appName} works best from your Applications folder. Move it there now?",
++                    moveButtonTitle: "Move to Applications",
++                    cancelButtonTitle: "Not Now"
++                )
++            )
+         }
+     }
+ #endif

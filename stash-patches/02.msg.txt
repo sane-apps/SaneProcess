@@ -1,0 +1,1 @@
+stash@{2}: On main: superseded 7/14 working-tree state (pre-reconciliation, preserved 2026-07-15)

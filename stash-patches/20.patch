@@ -1,0 +1,271 @@
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index fde9d81..076b597 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -536,6 +536,20 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
+ - Release and support operations leave auditable local breadcrumbs without adding a service dependency.
+ - Tests can redirect metrics into temp files and assert real records without touching user data.
+ 
++### ADR-008: External agent workflow tools remain optional and evidence-gated (2026-04-25)
++
++**Context:** The Dicklesworthstone agent-workflow repositories contain useful primitives: session-history search (`cass`), warning-only bug scanning (`ubs`), destructive-command explanation packs (`dcg`), local task graphs (`br`/`bv`), and agent settings backup (`asb`). They also bring installer, version, platform, and workflow gravity that does not fit SaneProcess as a default dependency.
++
++**Decision:** SaneProcess evaluates these tools through `ruby scripts/SaneMaster.rb external_tools`. The command uses safe read-only probes when tools are already installed and reports concrete adopt/watch/skip recommendations. It does not install them, does not add them to default verify, and does not replace canonical SaneProcess paths such as `status`, `check_inbox`, `verify`, `gate_review`, or Mini-first runtime proof. The command is strict Mini-first by default because local fallback would evaluate the wrong host; `--local` is reserved for explicit controller-machine inspection.
++
++**Consequences:**
++- `cass` can become an optional research surface if it proves useful on real session history.
++- `ubs` can only graduate as warning-only evidence after false positives and runtime cost are measured.
++- `dcg` rule ideas must still pass local fixture review before any SaneProcess blocker changes.
++- `br`/`bv` can support large local backlog planning, but GitHub issues and support inbox remain the release/support source of truth.
++- `asb` is suitable for explicit agent-config backup, not normal build/release flow.
++- Initial Mini evidence on 2026-04-25 kept both installed candidates out of default adoption: `cass` had useful session metadata but an unhealthy search index, and `ubs` failed on a module checksum mismatch before scanning.
++
+ ---
+ 
+ ## 4. Landscape
+diff --git a/DEVELOPMENT.md b/DEVELOPMENT.md
+index 324bea9..b85bea1 100644
+--- a/DEVELOPMENT.md
++++ b/DEVELOPMENT.md
+@@ -118,6 +118,7 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
+ | `test_mode` | Kill → Build → Launch → Logs |
+ | `doctor` | Environment health check |
+ | `tool_discovery --query "..."` | Generate a proof receipt before using a workaround or adding a tool |
++| `external_tools [--json]` | Evaluate optional external agent-workflow tools without making them dependencies |
+ | `gate_review <fixture.json> [--json]` | Deterministically review candidate prevention gates before promoting them into enforcement |
+ | `sync_mini [mini] [--quiet] [--no-restart] [--activate-mini-runs]` | Sync the active Codex control-plane profile to the Mini; default keeps Mini AM/PM runs paused unless activation is explicit |
+ | `universal_control_reset [--status|--reboot-mini|--cleanup-mini]` | Recover Air↔Mini Universal Control / pointer handoff |
+@@ -213,6 +214,25 @@ Tracker columns are designed for owner action, not inbox triage:
+ Do not hunt around for ad hoc tools.
+ Use the documented standard path first, then use `tool_discovery` if you still think something is missing.
+ 
++### External Agent-Tool Evaluation
++
++Use `ruby scripts/SaneMaster.rb external_tools` before adopting agent-workflow tools from outside SaneProcess.
++
++The command is read-only and optional by design. It checks tools such as `cass`, `ubs`, `dcg`, `br`/`bv`, and `asb` only when they are already installed, records what their safe probe actually returned, and gives an adopt/watch/skip recommendation. Missing tools stay missing; SaneProcess must not turn third-party `curl | bash` installers into default setup. On non-Mini hosts, `external_tools` is strict Mini-first unless `--local` is passed explicitly.
++
++Default adoption rules:
++- `cass`: strongest candidate, useful as an optional session-history research surface.
++- `ubs`: warning-only trial candidate for changed-file scans; never a hard verify gate until false positives and runtime are measured.
++- `dcg`: mine rule-pack/explain ideas, but keep SaneProcess guards local and fixture-reviewed.
++- `br`/`bv`: useful for large local backlogs, not a replacement for GitHub issues, support inbox, or release blockers.
++- `asb`: useful for explicit agent-config backup workflows, but not part of normal verify/release.
++
++2026-04-25 Mini baseline (source: `ruby scripts/SaneMaster.rb external_tools --json --timeout 30`; TTL: re-check after upstream tool updates):
++- `cass 0.3.7` found real SaneProcess history metadata (`40` conversations, `16161` messages) and can list recent sessions, but lexical search is not usable until the index is repaired.
++- `cass index --full` ingested the local Claude/Codex corpus but failed during lexical rebuild with a shard-count mismatch, so `cass` is not adopted yet.
++- `ubs 5.1.1` starts under Homebrew `bash`, but the Ruby module fetch fails checksum verification, so `ubs` is not safe to wire into `verify`.
++- Current decision: keep the SaneMaster evaluation lane, but do not add any of these tools as default dependencies.
++
+ ### Release README Gate
+ 
+ `scripts/release.sh` now runs `scripts/automation/nv-readme-check.sh` as part of the release flow.
+diff --git a/SESSION_HANDOFF.md b/SESSION_HANDOFF.md
+index bed5dc0..14b1acd 100644
+--- a/SESSION_HANDOFF.md
++++ b/SESSION_HANDOFF.md
+@@ -1,4 +1,52 @@
+ 
++## Session 113 (2026-04-25)
++
++### Done
++- Evaluated the Dicklesworthstone external agent-workflow tools against SaneProcess and implemented the useful part as an optional evidence lane:
++  - added `ruby scripts/SaneMaster.rb external_tools`
++  - added safe probes for `cass`, `ubs`, `dcg`, `br`/`bv`, and `asb`
++  - added JSON and human output modes
++  - registered `scripts/sanemaster/external_tools_test.rb` in `scripts/test_registry.json`
++  - documented the adoption rules in `DEVELOPMENT.md` and ADR-008 in `ARCHITECTURE.md`
++- Installed and tested the two strongest Homebrew candidates on the Mini:
++  - `cass 0.3.7`
++  - `ubs 5.1.1`
++  - Homebrew `bash` was installed because `ubs` requires Bash 4+ and macOS system Bash is 3.2.
++- Made `external_tools` strict Mini-first by default so it does not silently report the controller machine’s missing tools. `--local` is now an explicit parser-supported escape hatch.
++- Hardened Mini routing by raising the SSH connect timeout to 8 seconds and retrying once before declaring the Mini unreachable.
++
++### Live Verification
++- Mini `ruby scripts/SaneMaster.rb external_tools --json --timeout 30`:
++  - installed: `cass`, `ubs`
++  - missing: `dcg`, `br`/`bv`, `asb`
++  - `cass`: `installed_but_index_unhealthy`
++  - `ubs`: `installed_but_module_checksum_mismatch`
++- Mini direct `cass sessions --workspace ~/SaneApps/infra/SaneProcess --limit 3 --json` returned real SaneProcess session metadata.
++- Mini direct `cass search "SaneMaster external_tools" --workspace ~/SaneApps/infra/SaneProcess --limit 3 --json` returned no hits and warned that the Tantivy search index is missing.
++- Mini direct `cass index --full` found local Claude/Codex history but failed during lexical rebuild with a shard-count mismatch.
++- Mini direct `ubs --diff --format=json` failed before scanning because the fetched Ruby module checksum did not match the expected checksum.
++- Mini targeted `ruby scripts/sanemaster/external_tools_test.rb` -> `9/9`
++- Mini full `ruby scripts/SaneMaster.rb verify --timeout 900` -> passed:
++  - latest final line: `✅ Tests passed! (199 tests, 109s)`
++
++### Current State
++- SaneProcess now has a repeatable way to evaluate these external tools without adopting them as dependencies.
++- Current practical value:
++  - `cass` is useful for listing session metadata right now, but not for search until its index path is repaired.
++  - `ubs` is not usable yet because checksum verification blocks the Ruby scan module.
++- Nothing from this evaluation is wired into default `verify`, release, support, or status paths.
++
++### Next
++- Re-check `cass` after an upstream fix or a safe local index repair path exists.
++- Re-check `ubs` after the Ruby module checksum mismatch is resolved upstream or a pinned local module source is documented.
++- Keep `dcg`, `br`/`bv`, and `asb` optional/watch-only unless a concrete SaneProcess workflow needs them.
++
++### SOP: 9/10
++- (+) Used Mini-first evidence for implementation and end-to-end verification.
++- (+) Added regression tests and full verify proof before calling the work done.
++- (+) Kept external tools optional and evidence-gated instead of adding default dependencies.
++- (-) Initial route attempts exposed a false local fallback; fixed the command to fail strict Mini-first instead.
++
+ ## Session 112 (2026-04-24)
+ 
+ ### Done
+diff --git a/scripts/SaneMaster.rb b/scripts/SaneMaster.rb
+index bd72e1f..6d73c66 100755
+--- a/scripts/SaneMaster.rb
++++ b/scripts/SaneMaster.rb
+@@ -44,6 +44,7 @@ require_relative 'sanemaster/export'
+ require_relative 'sanemaster/md_export'
+ require_relative 'sanemaster/meta'
+ require_relative 'sanemaster/tool_discovery'
++require_relative 'sanemaster/external_tools'
+ require_relative 'sanemaster/gate_review'
+ require_relative 'sanemaster/universal_control'
+ require_relative 'sanemaster/hosted_file_actions'
+@@ -59,6 +60,8 @@ require_relative 'sanemaster/leads'
+ require_relative 'sanemaster/listing_actions'
+ 
+ class SaneMaster
++  MINI_SSH_CONNECT_TIMEOUT_SECONDS = 8
++
+   include SaneMasterModules::Base
+   include SaneMasterModules::Memory
+   include SaneMasterModules::Dependencies
+@@ -74,6 +77,7 @@ class SaneMaster
+   include SaneMasterModules::MdExport
+   include SaneMasterModules::Meta
+   include SaneMasterModules::ToolDiscovery
++  include SaneMasterModules::ExternalTools
+   include SaneMasterModules::GateReview
+   include SaneMasterModules::UniversalControl
+   include SaneMasterModules::HostedFileActions
+@@ -143,6 +147,7 @@ class SaneMaster
+       commands: {
+         'doctor' => { args: '', desc: 'Check environment health' },
+         'tool_discovery' => { args: '--query "TEXT"', desc: 'Generate a proof receipt before workarounds or new tools' },
++        'external_tools' => { args: '[--json] [--repo PATH] [--timeout N]', desc: 'Evaluate optional external agent-workflow tools without making them dependencies' },
+         'health' => { args: '', desc: 'Quick health check (< 100ms)' },
+         'bootstrap' => { args: '[--check-only]', desc: 'Full environment setup' },
+         'setup' => { args: '', desc: 'Install gems and dependencies' },
+@@ -268,6 +273,7 @@ class SaneMaster
+                                   validate_test_references
+                                   validate-tests
+                                   doctor
++                                  external_tools
+                                   health
+                                   reset
+                                   check_permissions
+@@ -289,6 +295,9 @@ class SaneMaster
+                                   crashes
+                                   menu_scan
+                                 ]).freeze
++  STRICT_MINI_FIRST_COMMANDS = Set.new(%w[
++    external_tools
++  ]).freeze
+ 
+   def initialize
+     @bundle_id = detect_bundle_id
+@@ -411,6 +420,9 @@ class SaneMaster
+     end
+ 
+     unless mini_reachable?
++      if STRICT_MINI_FIRST_COMMANDS.include?(command)
++        abort "❌ Mac mini is unreachable; #{command} requires Mini-first evidence. Retry when SSH is healthy or pass --local explicitly."
++      end
+       puts '⚠️  Mac mini is unreachable. Falling back to local execution.'
+       return
+     end
+@@ -549,7 +561,14 @@ class SaneMaster
+   end
+ 
+   def mini_reachable?
+-    ssh_system('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=2', 'mini', 'true', out: File::NULL, err: File::NULL)
++    2.times do |attempt|
++      return true if ssh_system('-o', 'BatchMode=yes', '-o', "ConnectTimeout=#{MINI_SSH_CONNECT_TIMEOUT_SECONDS}",
++                                'mini', 'true', out: File::NULL, err: File::NULL)
++
++      sleep 1 if attempt.zero?
++    end
++
++    false
+   end
+ 
+   def map_local_path_to_mini(local_path)
+@@ -560,7 +579,7 @@ class SaneMaster
+   end
+ 
+   def mini_path_exists?(remote_path)
+-    ssh_system('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=3', 'mini',
++    ssh_system('-o', 'BatchMode=yes', '-o', "ConnectTimeout=#{MINI_SSH_CONNECT_TIMEOUT_SECONDS}", 'mini',
+                "test -d #{Shellwords.escape(remote_path)}", out: File::NULL, err: File::NULL)
+   end
+ 
+@@ -1283,6 +1302,9 @@ PY
+       run_sync_mini(args)
+     when 'tool_discovery', 'tool_receipt', 'tool-receipt'
+       tool_discovery(args)
++    when 'external_tools', 'agent_tools', 'tool_eval'
++      success = external_tools(args)
++      exit(success ? 0 : 1)
+     when 'health', 'h'
+       run_health(args)
+     when 'meta', 'tooling', 'audit-self'
+@@ -1785,6 +1807,21 @@ PY
+         'tool_receipt --query "do we already have a website crawler?"'
+       ]
+     },
++    'external_tools' => {
++      usage: 'external_tools [--json] [--local] [--repo PATH] [--timeout N]',
++      description: 'Evaluate optional external agent-workflow tools such as cass, ubs, dcg, br/bv, and asb with safe read-only probes.',
++      flags: {
++        '--json' => 'Print structured JSON only',
++        '--local' => 'Bypass Mini-first routing and evaluate this host explicitly',
++        '--repo PATH' => 'Evaluate a specific repo path instead of the current directory',
++        '--timeout N' => 'Per-probe timeout in seconds'
++      },
++      examples: [
++        'external_tools',
++        'external_tools --json',
++        'tool_eval --repo ~/SaneApps/infra/SaneProcess'
++      ]
++    },
+     'status' => {
+       usage: 'status',
+       description: 'Run the live status cross-reference across git, inbox, issues, releases, and current signals.',
+diff --git a/scripts/sanemaster/base.rb b/scripts/sanemaster/base.rb
+index 8942890..4e59935 100644
+--- a/scripts/sanemaster/base.rb
++++ b/scripts/sanemaster/base.rb
+@@ -31,6 +31,7 @@ module SaneMasterModules
+                                       lint
+                                       audit
+                                       tool_discovery
++                                      external_tools
+                                       tool_receipt
+                                       system_check
+                                       doctor
+diff --git a/scripts/test_registry.json b/scripts/test_registry.json
+index 3559481..3ea6b62 100644
+--- a/scripts/test_registry.json
++++ b/scripts/test_registry.json
+@@ -109,6 +109,12 @@
+       "status": "required",
+       "cmd": ["ruby", "scripts/sanemaster/dependencies_test.rb"]
+     },
++    {
++      "path": "scripts/sanemaster/external_tools_test.rb",
++      "label": "SaneProcess external tool evaluation tests",
++      "status": "required",
++      "cmd": ["ruby", "scripts/sanemaster/external_tools_test.rb"]
++    },
+     {
+       "path": "scripts/sanemaster/gate_review_test.rb",
+       "label": "SaneProcess gate review tests",

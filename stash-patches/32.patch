@@ -1,0 +1,234 @@
+diff --git a/scripts/automation/README.md b/scripts/automation/README.md
+index e87d8f3..aaf8ef4 100644
+--- a/scripts/automation/README.md
++++ b/scripts/automation/README.md
+@@ -5,6 +5,7 @@ Scripts for automating development and business tasks across SaneApps projects.
+ repo-root-safe rule:
+ - Prefer `ruby scripts/SaneMaster.rb ...`, `bash scripts/automation/...`, or `python3 scripts/automation/...` from the repo root.
+ - Bare commands in this directory are implementation detail examples, not the primary operator path.
++- `git-sync-safe.sh` now also prunes untracked repo-root `Swift-*.swiftmodule`, `Swift-*.swiftdoc`, and `Swift-*.abi.json` residue so generated Swift module caches do not linger as fake repo drift.
+ 
+ ## Prerequisites
+ 
+diff --git a/scripts/automation/git-sync-safe.sh b/scripts/automation/git-sync-safe.sh
+index 8ce5da2..2d3f8d9 100755
+--- a/scripts/automation/git-sync-safe.sh
++++ b/scripts/automation/git-sync-safe.sh
+@@ -71,6 +71,16 @@ prune_repo_noise() {
+     count=$((count + 1))
+   done < <(find "$repo" -type f \( -name '.DS_Store' -o -name '*.orig' -o -name '*.rej' \) -print0)
+ 
++  while IFS= read -r -d '' path; do
++    [[ -n "$path" ]] || continue
++    rel="${path#$repo/}"
++    if git -C "$repo" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
++      continue
++    fi
++    rm -f "$path"
++    count=$((count + 1))
++  done < <(find "$repo" -maxdepth 1 -type f \( -name 'Swift-*.swiftmodule' -o -name 'Swift-*.swiftdoc' -o -name 'Swift-*.abi.json' \) -print0)
++
+   if [[ "$count" -gt 0 ]]; then
+     log "  - Pruned $count untracked noise file(s)"
+   fi
+diff --git a/scripts/sync_check.rb b/scripts/sync_check.rb
+index 00facc0..e012f88 100755
+--- a/scripts/sync_check.rb
++++ b/scripts/sync_check.rb
+@@ -38,6 +38,14 @@ class SyncCheck
+     '.gitignore' => File.join(SANEPROCESS_ROOT, 'templates', 'gitignore'),
+     'lefthook.yml' => File.join(SANEPROCESS_ROOT, 'templates', 'lefthook.yml')
+   }.freeze
++  GITIGNORE_EXTENSION_HEADER = '# Project-specific additions'.freeze
++  GITIGNORE_EXTENSION_NOTE = '# Keep repo-only ignore rules inside this block so sync_check can preserve them.'.freeze
++  GITIGNORE_EXTENSION_START = '# BEGIN PROJECT-SPECIFIC .gitignore'.freeze
++  GITIGNORE_EXTENSION_END = '# END PROJECT-SPECIFIC .gitignore'.freeze
++  SWIFTLINT_EXTENSION_HEADER = '  # Project-specific SwiftLint exclusions'.freeze
++  SWIFTLINT_EXTENSION_NOTE = '  # Keep repo-only exclusions inside this block so sync_check can preserve them.'.freeze
++  SWIFTLINT_EXTENSION_START = '  # BEGIN PROJECT-SPECIFIC swiftlint exclusions'.freeze
++  SWIFTLINT_EXTENSION_END = '  # END PROJECT-SPECIFIC swiftlint exclusions'.freeze
+ 
+   # Governance files that should be identical across all projects
+   SYNC_GOVERNANCE = %w[
+@@ -260,8 +268,14 @@ class SyncCheck
+ 
+         if src && dst && File.exist?(src)
+           FileUtils.mkdir_p(File.dirname(dst))
+-          FileUtils.cp(src, dst)
+-          FileUtils.chmod(0o755, dst) if dst.end_with?('.rb')
++          if diff[:file] == '.gitignore'
++            File.write(dst, merge_gitignore_template(File.read(src), File.exist?(dst) ? File.read(dst) : nil))
++          elsif diff[:file] == '.swiftlint.yml'
++            File.write(dst, merge_swiftlint_template(File.read(src), File.exist?(dst) ? File.read(dst) : nil))
++          else
++            FileUtils.cp(src, dst)
++            FileUtils.chmod(0o755, dst) if dst.end_with?('.rb')
++          end
+           puts "  ✅ Copied #{diff[:file]} to #{diff[:project]}"
+           fixed += 1
+         else
+@@ -569,8 +583,8 @@ class SyncCheck
+         next
+       end
+ 
+-      sp_content = File.read(template_path).strip
+-      proj_content = File.read(proj_path).strip
++      sp_content = normalized_config_content(dest_name, template_path)
++      proj_content = normalized_config_content(dest_name, proj_path)
+ 
+       next if sp_content == proj_content
+ 
+@@ -627,6 +641,118 @@ class SyncCheck
+       .gsub(/^\s*\n/, "\n")
+       .strip
+   end
++
++  def normalized_config_content(dest_name, path)
++    content = File.read(path)
++    return normalize_gitignore_for_compare(content) if dest_name == '.gitignore'
++    return normalize_swiftlint_for_compare(content) if dest_name == '.swiftlint.yml'
++
++    content.strip
++  end
++
++  def normalize_gitignore_for_compare(content)
++    lines = content.lines(chomp: true)
++    normalized = []
++    inside_extension_block = false
++
++    lines.each do |line|
++      next if line == GITIGNORE_EXTENSION_HEADER || line == GITIGNORE_EXTENSION_NOTE
++
++      if line == GITIGNORE_EXTENSION_START
++        inside_extension_block = true
++        next
++      end
++
++      if line == GITIGNORE_EXTENSION_END
++        inside_extension_block = false
++        next
++      end
++
++      normalized << line unless inside_extension_block
++    end
++
++    normalized.join("\n").strip
++  end
++
++  def gitignore_extension_lines(content)
++    return [] if content.nil? || content.empty?
++
++    lines = content.lines(chomp: true)
++    start = lines.index(GITIGNORE_EXTENSION_START)
++    return [] unless start
++
++    finish_offset = lines[(start + 1)..]&.index(GITIGNORE_EXTENSION_END)
++    return [] unless finish_offset
++
++    lines[(start + 1)...(start + 1 + finish_offset)]
++  end
++
++  def merge_gitignore_template(template_content, project_content)
++    lines = template_content.lines(chomp: true)
++    start = lines.index(GITIGNORE_EXTENSION_START)
++    finish_offset = lines[(start + 1)..]&.index(GITIGNORE_EXTENSION_END) if start
++    return template_content unless start && finish_offset
++
++    merged = []
++    merged.concat(lines[0..start])
++    extension_lines = gitignore_extension_lines(project_content)
++    merged.concat(extension_lines) unless extension_lines.empty?
++    merged << GITIGNORE_EXTENSION_END
++    merged.concat(lines[(start + finish_offset + 2)..] || [])
++    merged.join("\n") + "\n"
++  end
++
++  def normalize_swiftlint_for_compare(content)
++    lines = content.lines(chomp: true)
++    normalized = []
++    inside_extension_block = false
++
++    lines.each do |line|
++      next if line == SWIFTLINT_EXTENSION_HEADER || line == SWIFTLINT_EXTENSION_NOTE
++
++      if line == SWIFTLINT_EXTENSION_START
++        inside_extension_block = true
++        next
++      end
++
++      if line == SWIFTLINT_EXTENSION_END
++        inside_extension_block = false
++        next
++      end
++
++      normalized << line unless inside_extension_block
++    end
++
++    normalized.join("\n").strip
++  end
++
++  def swiftlint_extension_lines(content)
++    return [] if content.nil? || content.empty?
++
++    lines = content.lines(chomp: true)
++    start = lines.index(SWIFTLINT_EXTENSION_START)
++    return [] unless start
++
++    finish_offset = lines[(start + 1)..]&.index(SWIFTLINT_EXTENSION_END)
++    return [] unless finish_offset
++
++    lines[(start + 1)...(start + 1 + finish_offset)]
++  end
++
++  def merge_swiftlint_template(template_content, project_content)
++    lines = template_content.lines(chomp: true)
++    start = lines.index(SWIFTLINT_EXTENSION_START)
++    finish_offset = lines[(start + 1)..]&.index(SWIFTLINT_EXTENSION_END) if start
++    return template_content unless start && finish_offset
++
++    merged = []
++    merged.concat(lines[0..start])
++    extension_lines = swiftlint_extension_lines(project_content)
++    merged.concat(extension_lines) unless extension_lines.empty?
++    merged << SWIFTLINT_EXTENSION_END
++    merged.concat(lines[(start + finish_offset + 2)..] || [])
++    merged.join("\n") + "\n"
++  end
+ end
+ 
+ # Run if executed directly
+diff --git a/templates/gitignore b/templates/gitignore
+index 29decfe..1f451b9 100644
+--- a/templates/gitignore
++++ b/templates/gitignore
+@@ -25,6 +25,9 @@ Packages/**/.swiftpm/
+ *.xcresult/
+ *.xccheckout/
+ *.xcworkspace/contents.xcworkspacedata
++/Swift-*.swiftmodule
++/Swift-*.swiftdoc
++/Swift-*.abi.json
+ 
+ # macOS
+ .DS_Store
+@@ -196,3 +199,8 @@ MinimalTest/
+ *.bak
+ project.yml.bak
+ scripts/*.swift
++
++# Project-specific additions
++# Keep repo-only ignore rules inside this block so sync_check can preserve them.
++# BEGIN PROJECT-SPECIFIC .gitignore
++# END PROJECT-SPECIFIC .gitignore
+diff --git a/templates/swiftlint.yml b/templates/swiftlint.yml
+index 2018f6c..edce3ee 100644
+--- a/templates/swiftlint.yml
++++ b/templates/swiftlint.yml
+@@ -42,3 +42,7 @@ excluded:
+   - build
+   - vendor
+   - node_modules
++  # Project-specific SwiftLint exclusions
++  # Keep repo-only exclusions inside this block so sync_check can preserve them.
++  # BEGIN PROJECT-SPECIFIC swiftlint exclusions
++  # END PROJECT-SPECIFIC swiftlint exclusions

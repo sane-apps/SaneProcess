@@ -1,0 +1,22 @@
+ AGENTS.md                                    |  70 ++++++++++++++++-
+ CLAUDE_PUBLIC.md                             |   9 ++-
+ DEVELOPMENT.md                               | 109 ++++++++++++++++++++++++--
+ README.md                                    |   3 +
+ SESSION_HANDOFF.md                           | 113 +++++++++++++++++++++++++++
+ scripts/automation/listing_actions_rules.py  |   7 ++
+ scripts/automation/listing_actions_test.py   |  49 ++++++++++--
+ scripts/hooks/sanestop.rb                    | 102 +++++++++++++++++++++++-
+ scripts/hooks/sanestop_test.rb               |  19 +++++
+ scripts/release.sh                           |  93 ++++++++++++++++++++++
+ scripts/sanemaster/release_guardrail_test.rb |  20 +++++
+ scripts/validation_report.rb                 |  29 +++++++
+ templates/AGENTS_TEMPLATE.md                 |  16 ++++
+ templates/FOUNDER_CHECKLIST.md               |   2 +-
+ templates/FULL_PROJECT_BOOTSTRAP.md          |  28 ++++---
+ templates/NEW_PROJECT_TEMPLATE.md            |   4 +-
+ templates/RELEASE_SOP.md                     | 108 +++++++++++++++++++++++--
+ templates/RESEARCH-INDEX.md                  |  12 +--
+ templates/boilerplate/README.md              |  10 +--
+ templates/docs/NEW_APP_CHECKLIST.md          |  14 ++--
+ templates/docs/SANEAPPS_RELEASE_PROCESS.md   |   6 +-
+ 21 files changed, 761 insertions(+), 62 deletions(-)

@@ -1,0 +1,5 @@
+ scripts/automation/README.md             |  6 +++--
+ scripts/automation/reconcile-air-mini.sh | 26 ++++++++++++++++++++-
+ scripts/automation/start-workday.sh      | 18 ++++++++++++---
+ scripts/automation/sync-codex-mini.sh    | 39 ++++++++++++++++++++++++++++----
+ 4 files changed, 79 insertions(+), 10 deletions(-)

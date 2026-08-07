@@ -1,0 +1,11 @@
+ scripts/automation/git-sync-safe.sh                |  37 +++-
+ scripts/automation/reconcile-air-mini.sh           |  71 +++++++-
+ scripts/automation/sane-status-crossref.sh         |  30 +++-
+ scripts/automation/start-workday.sh                |  52 +++++-
+ scripts/automation/sync-codex-mini.sh              | 125 +++++++++++---
+ scripts/mini/README.md                             |   8 +
+ scripts/mini/install-training-daily-check-agent.sh |  18 ++
+ scripts/mini/mini-prepare-automation-root.sh       | 113 ++++++++----
+ scripts/mini/mini_train_process_test.rb            |  34 ++++
+ scripts/mini/training-daily-check.py               | 191 +++++++++++++++------
+ 10 files changed, 550 insertions(+), 129 deletions(-)

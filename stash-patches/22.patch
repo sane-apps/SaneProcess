@@ -1,0 +1,40 @@
+diff --git a/SESSION_HANDOFF.md b/SESSION_HANDOFF.md
+index ae9b44a..cf43e9f 100644
+--- a/SESSION_HANDOFF.md
++++ b/SESSION_HANDOFF.md
+@@ -1,4 +1,35 @@
+ 
++## Session 106 (2026-04-20)
++
++### Done
++- Ran the mandatory `status` workflow for SaneSales using the canonical live commands after the worktree-local `bash scripts/automation/sane-status-crossref.sh` sales step failed again with `ModuleNotFoundError: No module named 'customer_email_corrections'`.
++- Confirmed live SaneSales state from the canonical checkout:
++  - LemonSqueezy: still no SaneSales product row in `ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb sales --products`
++  - Events: yesterday `7` new free users, this week `61`, last 90 days `276`, activations `0`
++  - Downloads: `3,555` total (`3,540` website, `15` Sparkle), current top versions `1.2.6=1,246`, `1.2.3=813`, `1.2.1=533`, `1.2.7=490`
++  - Inbox healthcheck passed and the live open queue showed no SaneSales-specific action thread
++  - GitHub: `sane-apps/SaneSales` has no open issues
++- Confirmed live App Store Connect lane state with `appstore_submit.rb --list-versions`:
++  - macOS `1.2.7` is `READY_FOR_SALE`
++  - iOS `1.2.6` is `READY_FOR_SALE`
++- Because both App Store lanes are resolved/live, I did not fetch a Mini review package on this run.
++
++### Current State
++- SaneSales itself is clean and live across both App Store lanes, with no open GitHub issue and no inbox thread currently tied to the app.
++- The current blocker is tooling drift, not the app: the worktree-local status runner still cannot load the sales helper module, so status automation must keep falling back to the canonical `~/SaneApps/infra/SaneProcess` runners for accurate sales data.
++- Open GitHub issues seen in this repo during session end check: `SaneProcess #8` only.
++- Research topics checked: no `research.md` file present in either this worktree or `~/SaneApps/apps/SaneSales`.
++- Feature requests seen during this run: none for SaneSales.
++
++### Next
++- Fix the worktree-local `ls-sales.py` import path so `bash scripts/automation/sane-status-crossref.sh` can report SaneSales without falling back to the canonical checkout.
++- Re-run the App Store status automation after the next SaneSales submission or if either ASC lane leaves `READY_FOR_SALE`.
++
++### SOP: 9/10
++- (+) Used the mandatory status workflow and then the canonical runner-backed fallback instead of inventing ad hoc sales scraping.
++- (+) Checked live ASC lane state before deciding whether the Mini review-package path was required.
++- (-) The worktree status runner is still not self-contained for sales, so the automation is not yet green end-to-end from the worktree.
++
+ ## Session 105 (2026-04-20)
+ 
+ ### Done

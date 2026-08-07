@@ -1,0 +1,1402 @@
+diff --git a/DEVELOPMENT.md b/DEVELOPMENT.md
+index 2dfc02c..21f7a04 100644
+--- a/DEVELOPMENT.md
++++ b/DEVELOPMENT.md
+@@ -151,6 +151,9 @@ Red-noise budget: a validation finding older than seven days must be fixed, expl
+ 
+ QA snapshot refresh is intentionally explicit. Run `ruby scripts/SaneMaster.rb refresh_qa_snapshots --dry-run` first, review the app commands it would run, then rerun with `--run` only for deliberate app-readiness work.
+ | `sync_mini [mini] [--quiet] [--no-restart] [--activate-mini-runs]` | Sync the active Codex control-plane profile to the Mini; default keeps Mini AM/PM runs paused unless activation is explicit |
++| `mini_ssh_repair [host] [user]` | Restore Air-to-Mini key-based SSH through a visible Terminal password prompt and pin `Host mini` to IPv4; use when `mini_preflight` reports SSH authentication failure |
++| `mini_preflight [--setapp] [--gui]` | Fail-fast Mini access check before release-critical work |
++| `setapp_verify --zip ZIP --release-notes-file PATH` | Canonical Setapp pre-upload proof: Mini archive preflight, exact-ZIP launch, warning scan, and screenshots |
+ | `universal_control_reset [--status|--reboot-mini|--cleanup-mini]` | Recover Air↔Mini Universal Control / pointer handoff |
+ | `export` | Export code/docs (PDF/MD) |
+ | `listing_actions` | Export the current listing/setup action tracker from inbox history |
+@@ -710,57 +713,39 @@ Version policy:
+ - If a Setapp-only or App-Store-only constraint forces different behavior, the version number can still match; the release notes should explain only the channel-specific differences.
+ - Avoid channel-only hidden fixes that never get documented. This is how support drift starts.
+ 
+-### Setapp Verification Matrix
++### Setapp Verification And Upload
+ 
+-Minimum sign-off before any Setapp ship:
++The durable operator source of truth is `templates/RELEASE_SOP.md` section `0c. Setapp Lane Prep`. Keep the full upload sequence there so Setapp instructions do not drift across docs.
+ 
+-1. Build and launch the Setapp config on the mini.
+-2. Verify the built app is on the expected Setapp bundle ID.
+-3. Verify `setappPublicKey.pem` is embedded.
+-4. Verify Sparkle is absent from the build product and absent from visible settings/about UI.
+-5. Verify no Lemon Squeezy purchase/key-entry path is visible.
+-6. Verify no Donate / GitHub Sponsors UI is visible.
+-7. Verify Setapp-specific usage reporting is wired where required.
+-8. Verify macOS 13+ update policy is present in the built Info.plist.
+-9. If sandboxed, verify the Setapp Mach service entitlement is present.
+-10. Verify direct and App Store builds still behave correctly after the Setapp code lands.
+-11. If the Setapp lane still shares a target with the direct lane, run `sanitize_distribution_bundle.rb` and then re-sign the bundle before launch verification.
+-
+-### Setapp Upload / Replacement Standard
+-
+-Use the shared upload lane instead of hand-clicking portal forms:
++The command chain is:
+ 
+ ```bash
+-./scripts/SaneMaster.rb setapp_upload \
+-  --zip /path/to/App-Setapp-X.Y.Z.zip \
+-  --release-notes-file /path/to/setapp-notes.txt
++./scripts/SaneMaster.rb mini_preflight --setapp --gui
++./scripts/SaneMaster.rb setapp_verify --zip /path/to/App-Setapp.zip --release-notes-file /path/to/setapp-public-notes.txt
++./scripts/SaneMaster.rb setapp_upload --zip /path/to/App-Setapp.zip --release-notes-file /path/to/setapp-public-notes.txt --runtime-proof-file /path/to/setapp-runtime-proof.json
+ ```
+ 
+-Preferred path:
+-- Use `SETAPP_AUTOMATION_TOKEN` with Setapp's documented `POST /v1/ci/version` endpoint.
+-- Include `--allow-overwrite true` when replacing a build that is waiting for review.
++`setapp_verify` is the pre-upload gate. It runs the archive preflight, extracts the exact notarized ZIP on the Mini, launches that exact app bundle, captures screenshots, scans visible Accessibility text for runtime warnings, and writes `setapp-runtime-proof.json`.
+ 
+-Portal fallback path:
+-- Use only when the web portal is logged in but the visible `Reupload .ZIP` button is inert or read-only.
+-- Run on the Mini with Safari logged into `developer.setapp.com`.
+-- Pass the existing Setapp app id and version id:
++For Setapp rejections, evidence collection is part of preflight. Download and inspect all reviewer media links in the email body before diagnosing or uploading; CleanShot links in a no-reply reviewer email count as media even when there are no file attachments. Record the saved media paths and what each screenshot/video proves.
+ 
+-```bash
+-./scripts/SaneMaster.rb setapp_upload \
+-  --portal-fallback \
+-  --app-id 1848 \
+-  --version-id 46885 \
+-  --zip /path/to/SaneBar-Setapp-2.1.47-iconfix.zip \
+-  --release-notes-file /path/to/setapp-notes.txt
+-```
++Upload is blocked without a fresh matching runtime proof. A visible Setapp warning such as `SaneClip could not be validated correctly... error code: -412003` is a failed proof by default, even if the process is still running.
++
++Exception: if Setapp has explicitly confirmed that developer-side launch fails because the app is not purchased before review, rerun `setapp_verify` with `--allow-expected-local-setapp-license`. That flag only passes when the Mini's local Setapp provisioning DB records `error.license.app-not-purchased` / `This app is not purchased`, and the proof is classified as `expected_local_setapp_license_block`. For the 2026-05-07 incident, this is backed by MacPaw email #640. Do not use the exception for any other validation text.
++
++If reviewer-only comments are needed, use `setapp_upload --portal-fallback --review-notes-file ...`. The portal path writes those notes to Setapp's private `vendor_comment` field and sets Needs Revision builds back to status `5` (In Review). The CI upload path must keep public Release notes customer-facing because it cannot set private reviewer comments.
++
++Setapp token policy:
++- `SETAPP_PORTAL_TOKEN` is an authenticated developer-portal session token. The upload script can read it from a logged-in Mini Safari session at runtime, but it is not a stable CI credential and should not be treated as the permanent solution.
++- `SETAPP_AUTOMATION_TOKEN` is the stable CI credential. Setapp's current submission docs say to request this automation token from the Developer Support Representative; portal self-generation is documented as future functionality.
+ 
+-What the fallback does:
+-1. Uploads the archive through the portal-backed `/v1/versions/upload_archive` endpoint.
+-2. Verifies Setapp extracted the bundle id, build version, display version, and icon.
+-3. Patches the existing version record with the temporary archive reference and release notes.
+-4. Recheck the Setapp Apps page and API record; do not trust the stale page label alone.
++Mini access policy:
++- `setapp_preflight` and `setapp_upload` are strict Mini commands. They must not silently fall back to local execution.
++- `setapp_verify` orchestrates from the controller but all archive/runtime/screenshot proof is performed on the Mini.
++- A changed SSH host key, authentication failure, logged-out Mini GUI, missing output write access, or missing Setapp tooling is a blocker. Fix that first; do not upload from a local fallback unless the user explicitly approves `SANEMASTER_ALLOW_LOCAL_RELEASE_FALLBACK=1`.
++- For Mini SSH auth repair, use `./scripts/SaneMaster.rb mini_ssh_repair`; it pins `Host mini` to IPv4 with `AddressFamily inet`, installs this Mac's SSH public key on the Mini, saves the successful password in Keychain service `mini-sudo`, and verifies key auth.
+ 
+-Do not print, paste, or save Setapp `access_token` / `refresh_token` values. The script reads the Safari token only in-process and uses temp curl config files with `0600` permissions.
++Do not print, paste, or save Setapp `access_token` / `refresh_token` values. The upload script reads the Safari token only in-process and uses temp curl config files with `0600` permissions.
+ 
+ ### Hidden Gotchas To Plan For Up Front
+ 
+@@ -770,13 +755,10 @@ Do not print, paste, or save Setapp `access_token` / `refresh_token` values. The
+ - SaneClip has more bundle surfaces than SaneBar (widgets / extensions), so Setapp bundle-family drift needs an explicit review even if the first Setapp lane ships with fewer surfaces.
+ - Xcode same-target Setapp configs can look clean in source while still re-embedding Sparkle after target shell phases. Do not trust the raw built bundle without the final sanitizer check.
+ - A sanitized bundle that launches locally after ad hoc re-sign is good verification signal, but it is not a substitute for the real signed Setapp release path.
+-- Current mini verification state as of 2026-03-18:
+-  - SaneBar and SaneClip clean mini worktrees build as Setapp bundles with the right `-setapp` bundle IDs.
+-  - Their built Info.plists now include `NSUpdateSecurityPolicy` and `MPSupportedArchitectures = [arm64]`.
+-  - SaneClip's Setapp-specific entitlement file includes `com.setapp.ProvisioningService`.
+-  - Both sanitized bundles launch on the mini after ad hoc re-sign.
+-  - `setappPublicKey.pem` is still absent, so runtime entitlement validation is still incomplete.
+-  - A real signed SaneClip Setapp build is still blocked by provisioning/iCloud profile setup, not by code logic.
++- Current Setapp incident state as of 2026-05-07:
++  - Older submitted ZIPs were rejected because they were not notarized/stapled even though local codesign checks passed.
++  - The current preflight also blocks missing secure timestamps, development entitlements, missing `setappPublicKey.pem`, and direct-lane leftovers.
++  - Exact-ZIP runtime proof caught Setapp validation error `-412003`. MacPaw email #640 says this is expected when the app is not purchased on Setapp before review; the tool may classify only that DB-backed local state with `--allow-expected-local-setapp-license`.
+ - Current local persistence is mixed:
+   - app-support data paths are app-name based (`Application Support/SaneBar`, `Application Support/SaneClip`)
+   - keychain service defaults are bundle-ID based
+diff --git a/scripts/SaneMaster.rb b/scripts/SaneMaster.rb
+index 23839bd..596de39 100755
+--- a/scripts/SaneMaster.rb
++++ b/scripts/SaneMaster.rb
+@@ -174,6 +174,10 @@ class SaneMaster
+         'status' => { args: '', desc: 'Run the live cross-reference status report' },
+         'check_inbox' => { args: '[check|review <id>|read <id>|reply ...]', desc: 'Forward to the canonical support inbox workflow' },
+         'sync_mini' => { args: '[mini] [--quiet] [--no-restart]', desc: 'Sync the Codex control-plane profile to the Mini' },
++        'mini_preflight' => { args: '[--setapp] [--gui] [--json]', desc: 'Fail-fast check for Mini SSH, GUI, repo, outputs, and release tooling access' },
++        'mini_ssh_repair' => { args: '[host] [user]', desc: 'Open a visible Terminal password prompt to restore Air-to-Mini key-based SSH' },
++        'setapp_preflight' => { args: '--zip ZIP --release-notes TEXT', desc: 'Validate a Setapp archive before upload: bundle shape, notes, notarization, stapler, and Gatekeeper' },
++        'setapp_verify' => { args: '--zip ZIP --release-notes-file PATH [--allow-expected-local-setapp-license]', desc: 'Run the full Setapp gate: Mini archive preflight, exact-ZIP launch, warning scan, and screenshot proof' },
+         'setapp_upload' => { args: '--zip ZIP --release-notes TEXT [--portal-fallback --app-id ID --version-id ID]', desc: 'Upload or replace a Setapp review build using the standard Setapp lane' }
+       }
+     },
+@@ -262,6 +266,8 @@ class SaneMaster
+                                   release_preflight
+                                   appstore_preflight
+                                   asp
++                                  setapp_preflight
++                                  setapp-preflight
+                                   setapp_upload
+                                   setapp-upload
+                                   launch
+@@ -299,6 +305,31 @@ class SaneMaster
+                                   qa_refresh
+                                 ]).freeze
+ 
++  STRICT_MINI_COMMANDS = Set.new(%w[
++                                  release
++                                  release_preflight
++                                  appstore_preflight
++                                  asp
++                                  setapp_preflight
++                                  setapp-preflight
++                                  setapp_upload
++                                  setapp-upload
++                                ]).freeze
++
++  SETAPP_MINI_COMMANDS = Set.new(%w[
++                                  setapp_preflight
++                                  setapp-preflight
++                                  setapp_upload
++                                  setapp-upload
++                                ]).freeze
++
++  SETAPP_FILE_FLAGS = %w[
++    --zip
++    --release-notes-file
++    --review-notes-file
++    --runtime-proof-file
++  ].freeze
++
+   def initialize
+     @bundle_id = detect_bundle_id
+   end
+@@ -409,30 +440,48 @@ class SaneMaster
+     return if running_on_mini_host?
+     return unless MINI_FIRST_COMMANDS.include?(command)
+ 
++    strict_mini = STRICT_MINI_COMMANDS.include?(command)
++
+     if ENV['SANEMASTER_UNSIGNED_FALLBACK_ACTIVE'] == '1' && %w[launch run test_mode tm].include?(command)
+       puts '⚠️  Unsigned fallback active; running locally to honor Debug fallback.'
+       return
+     end
+ 
+     if args.include?('--local') || ENV['SANEMASTER_FORCE_LOCAL'] == '1'
++      if strict_mini && ENV['SANEMASTER_ALLOW_LOCAL_RELEASE_FALLBACK'] != '1'
++        abort "❌ #{command} is release-critical and must run on the Mini. Remove --local/SANEMASTER_FORCE_LOCAL, or set SANEMASTER_ALLOW_LOCAL_RELEASE_FALLBACK=1 only with explicit approval."
++      end
+       puts '⚠️  Mini-first bypass active (--local or SANEMASTER_FORCE_LOCAL=1); running locally.'
+       return
+     end
+ 
+-    unless mini_reachable?
+-      puts '⚠️  Mac mini is unreachable. Falling back to local execution.'
++    mini_preflight = mini_preflight_status(
++      require_setapp: SETAPP_MINI_COMMANDS.include?(command),
++      require_gui: command == 'setapp_upload' || command == 'setapp-upload' || args.include?('--portal-fallback')
++    )
++    unless mini_preflight[:ok]
++      if strict_mini
++        abort format_mini_preflight_failure(command, mini_preflight)
++      end
++      puts "⚠️  Mac mini preflight failed. Falling back to local execution.\n#{mini_preflight_summary(mini_preflight)}"
+       return
+     end
+ 
+     remote_repo = map_local_path_to_mini(Dir.pwd)
+     unless remote_repo
+-      puts "⚠️  Could not map local path to mini: #{Dir.pwd}"
++      message = "Could not map local path to mini: #{Dir.pwd}"
++      abort "❌ #{message}" if strict_mini
++
++      puts "⚠️  #{message}"
+       puts '   Falling back to local execution.'
+       return
+     end
+ 
+     unless mini_path_exists?(remote_repo)
+-      puts "⚠️  Repo not found on mini: #{remote_repo}"
++      message = "Repo not found on mini: #{remote_repo}"
++      abort "❌ #{message}" if strict_mini
++
++      puts "⚠️  #{message}"
+       puts '   Falling back to local execution.'
+       return
+     end
+@@ -504,7 +553,8 @@ class SaneMaster
+       end
+       remote_env_prefix = forwarded_env.empty? ? '' : "#{forwarded_env.join(' ')} "
+       remote_script = File.join(execution_saneprocess_repo, 'scripts', 'SaneMaster.rb')
+-      remote_cmd = "#{remote_env_prefix}ruby #{Shellwords.escape(remote_script)} #{([command] + args).map { |arg| Shellwords.escape(arg) }.join(' ')}"
++      remote_args = prepare_mini_command_args!(command, args)
++      remote_cmd = "#{remote_env_prefix}ruby #{Shellwords.escape(remote_script)} #{([command] + remote_args).map { |arg| Shellwords.escape(arg) }.join(' ')}"
+       puts "📍 Mini-first routing: #{command} -> mini (#{execution_repo})"
+       $stdout.flush
+       remote_ok = ssh_system('mini', "cd #{Shellwords.escape(execution_repo)} && #{remote_cmd}")
+@@ -573,6 +623,161 @@ class SaneMaster
+                "test -d #{Shellwords.escape(remote_path)}", out: File::NULL, err: File::NULL)
+   end
+ 
++  def mini_preflight_status(require_setapp: false, require_gui: false)
++    remote_script = <<~'SH'
++      fail() {
++        printf 'MINI_PREFLIGHT_FAIL: %s\n' "$1" >&2
++        exit 44
++      }
++
++      user_name=$(whoami 2>/dev/null || printf unknown)
++      home_dir=${HOME:-}
++      [ -n "$home_dir" ] || fail "HOME is not set"
++      [ -d "$home_dir/SaneApps" ] || fail "$home_dir/SaneApps is missing"
++      [ -d "$home_dir/SaneApps/infra/SaneProcess" ] || fail "$home_dir/SaneApps/infra/SaneProcess is missing"
++      mkdir -p "$home_dir/SaneApps/outputs" 2>/dev/null || fail "cannot create $home_dir/SaneApps/outputs"
++      [ -w "$home_dir/SaneApps/outputs" ] || fail "$home_dir/SaneApps/outputs is not writable"
++      command -v ruby >/dev/null 2>&1 || fail "ruby is missing"
++      command -v rsync >/dev/null 2>&1 || fail "rsync is missing"
++
++      if [ "${SANEMASTER_MINI_PREFLIGHT_SETAPP:-0}" = "1" ]; then
++        command -v xcodebuild >/dev/null 2>&1 || fail "xcodebuild is missing"
++        command -v codesign >/dev/null 2>&1 || fail "codesign is missing"
++        command -v ditto >/dev/null 2>&1 || fail "ditto is missing"
++        command -v sips >/dev/null 2>&1 || fail "sips is missing"
++        command -v zip >/dev/null 2>&1 || fail "zip is missing"
++        [ -x /usr/sbin/spctl ] || fail "spctl is missing"
++        xcrun --find notarytool >/dev/null 2>&1 || fail "notarytool is unavailable through xcrun"
++        xcrun --find stapler >/dev/null 2>&1 || fail "stapler is unavailable through xcrun"
++      fi
++
++      if [ "${SANEMASTER_MINI_PREFLIGHT_GUI:-0}" = "1" ]; then
++        console_user=$(stat -f %Su /dev/console 2>/dev/null || printf unknown)
++        [ "$console_user" = "$user_name" ] || fail "Mini GUI console user is $console_user, expected $user_name"
++        pgrep -x Dock >/dev/null 2>&1 || fail "Dock is not running; Mini may be logged out"
++      fi
++
++      printf 'Mini preflight PASS host=%s user=%s gui=%s setapp=%s\n' \
++        "$(hostname 2>/dev/null || printf unknown)" \
++        "$user_name" \
++        "${SANEMASTER_MINI_PREFLIGHT_GUI:-0}" \
++        "${SANEMASTER_MINI_PREFLIGHT_SETAPP:-0}"
++    SH
++
++    env_prefix = []
++    env_prefix << 'SANEMASTER_MINI_PREFLIGHT_SETAPP=1' if require_setapp
++    env_prefix << 'SANEMASTER_MINI_PREFLIGHT_GUI=1' if require_gui
++    remote_command = ([*env_prefix, 'sh', '-c', Shellwords.escape(remote_script)]).join(' ')
++    stdout, stderr, status = Open3.capture3(
++      'ssh',
++      '-o',
++      'BatchMode=yes',
++      '-o',
++      'ConnectTimeout=5',
++      'mini',
++      remote_command
++    )
++    {
++      ok: status.success?,
++      status: status.exitstatus,
++      stdout: stdout.to_s,
++      stderr: stderr.to_s,
++      require_setapp: require_setapp,
++      require_gui: require_gui
++    }
++  rescue StandardError => e
++    {
++      ok: false,
++      status: nil,
++      stdout: '',
++      stderr: e.message,
++      require_setapp: require_setapp,
++      require_gui: require_gui
++    }
++  end
++
++  def mini_preflight_summary(result)
++    text = [result[:stdout], result[:stderr]].join("\n").strip
++    return text unless text.empty?
++
++    "Mini preflight exited with status #{result[:status] || 'unknown'}."
++  end
++
++  def format_mini_preflight_failure(command, result)
++    detail = mini_preflight_summary(result)
++    hint = if detail.include?('REMOTE HOST IDENTIFICATION HAS CHANGED')
++             'SSH host key changed. Confirm the new Mini fingerprint before replacing the saved known_hosts entry.'
++           elsif detail.match?(/Permission denied|publickey/i)
++             'SSH authentication failed. Run `ruby scripts/SaneMaster.rb mini_ssh_repair`; it restores key auth and pins Host mini to IPv4.'
++           elsif detail.match?(/Could not resolve hostname|Name or service not known|nodename nor servname/i)
++             'Mini hostname did not resolve. Confirm the Mini is awake, logged in, and visible on the local network.'
++           elsif detail.match?(/No route to host|Network is unreachable|Connection timed out|Connection refused/i)
++             'Mini network path failed. Check Mini power/login/network first; if host-key prompts vary by address, pin Host mini with AddressFamily inet via mini_ssh_repair.'
++           elsif result[:require_gui]
++             'Mini GUI access is required for this Setapp path. Log into the Mini desktop session and retry.'
++           else
++             'Mini access is required for this release-critical command. Fix the Mini preflight before retrying.'
++           end
++
++    "❌ Mac Mini preflight failed before #{command}.\n#{hint}\n\n#{detail}"
++  end
++
++  def prepare_mini_command_args!(command, args)
++    return args unless SETAPP_MINI_COMMANDS.include?(command)
++
++    prepared = []
++    index = 0
++    while index < args.length
++      arg = args[index]
++      if SETAPP_FILE_FLAGS.include?(arg)
++        value = args[index + 1]
++        abort "❌ #{arg} requires a file path before routing to the Mini." if value.to_s.empty?
++
++        prepared << arg
++        prepared << sync_setapp_file_arg_to_mini!(arg, value)
++        index += 2
++        next
++      end
++
++      split_flag = SETAPP_FILE_FLAGS.find { |flag| arg.start_with?("#{flag}=") }
++      if split_flag
++        local_value = arg.split('=', 2).last
++        prepared << "#{split_flag}=#{sync_setapp_file_arg_to_mini!(split_flag, local_value)}"
++      else
++        prepared << arg
++      end
++      index += 1
++    end
++    prepared
++  end
++
++  def sync_setapp_file_arg_to_mini!(flag, path)
++    local_path = File.expand_path(path, Dir.pwd)
++    abort "❌ #{flag} file not found before Mini routing: #{local_path}" unless File.file?(local_path)
++
++    remote_path = remote_file_path_for_local_file(local_path)
++    remote_parent = File.dirname(remote_path)
++    ok = ssh_system('mini', "mkdir -p #{Shellwords.escape(remote_parent)}")
++    abort "❌ Failed to prepare Mini directory for #{flag}: #{remote_parent}" unless ok
++
++    puts "🔄 Syncing #{flag} to mini (#{remote_path})"
++    ok = system('rsync', '-az', local_path, "mini:#{remote_path}")
++    abort "❌ Failed to sync #{flag} to the Mini: #{local_path}" unless ok
++
++    ok = ssh_system('mini', "test -r #{Shellwords.escape(remote_path)}")
++    abort "❌ Mini cannot read synced #{flag}: #{remote_path}" unless ok
++
++    remote_path
++  end
++
++  def remote_file_path_for_local_file(local_path)
++    mapped = map_local_path_to_mini(local_path)
++    return mapped if mapped
++
++    digest = Digest::SHA256.hexdigest(local_path)[0, 16]
++    File.join('/Users/stephansmac', '.sanemaster', 'setapp-artifacts', digest, File.basename(local_path))
++  end
++
+   def repo_has_uncommitted_changes?
+     return false unless system('git', 'rev-parse', '--is-inside-work-tree', out: File::NULL, err: File::NULL)
+     return true unless system('git', 'diff', '--quiet', '--ignore-submodules=dirty', out: File::NULL, err: File::NULL)
+@@ -831,6 +1036,62 @@ PY
+     run_external_command('bash', script, *forwarded_args)
+   end
+ 
++  def run_mini_preflight(args = [])
++    require_setapp = args.include?('--setapp')
++    require_gui = args.include?('--gui')
++    json = args.include?('--json')
++    unknown = args.reject { |arg| %w[--setapp --gui --json].include?(arg) }
++    abort "Unknown mini_preflight option(s): #{unknown.join(', ')}" unless unknown.empty?
++
++    result = mini_preflight_status(require_setapp: require_setapp, require_gui: require_gui)
++    if json
++      puts JSON.pretty_generate(result)
++    elsif result[:ok]
++      puts mini_preflight_summary(result)
++    else
++      warn format_mini_preflight_failure('mini_preflight', result)
++    end
++    exit(result[:ok] ? 0 : 1)
++  end
++
++  def run_mini_ssh_repair(args = [])
++    host = args[0].to_s.empty? ? 'stephans-mac-mini.local' : args[0]
++    user_name = args[1].to_s.empty? ? 'stephansmac' : args[1]
++    unknown = args.drop(2)
++    abort "Unknown mini_ssh_repair argument(s): #{unknown.join(', ')}" unless unknown.empty?
++
++    helper = File.join(saneprocess_repo_root, 'scripts', 'mini', 'repair-mini-ssh-key.sh')
++    abort "Mini SSH repair helper missing: #{helper}" unless File.file?(helper)
++
++    FileUtils.chmod(0o755, helper)
++    command = [
++      'cd',
++      Shellwords.escape(saneprocess_repo_root),
++      '&&',
++      Shellwords.escape(helper),
++      Shellwords.escape(host),
++      Shellwords.escape(user_name),
++      ';',
++      'printf',
++      Shellwords.escape('\nPress Return to close this window...'),
++      ';',
++      'read',
++      '-r',
++      '_'
++    ].join(' ')
++    apple_script = <<~APPLESCRIPT
++      tell application "Terminal"
++        activate
++        do script #{command.dump}
++      end tell
++    APPLESCRIPT
++    ok = system('/usr/bin/osascript', '-e', apple_script)
++    abort 'Failed to open Terminal for Mini SSH repair.' unless ok
++
++    puts 'Opened Terminal for Mini SSH repair. Enter the Mini password in that Terminal window.'
++    puts 'After it completes, rerun: ruby scripts/SaneMaster.rb mini_preflight --setapp --gui'
++  end
++
+   def sync_release_support_repos_to_mini!(release_routed: false, command: nil)
+     webhook_repo = sane_email_automation_repo_root
+     return unless Dir.exist?(webhook_repo)
+@@ -1294,8 +1555,16 @@ PY
+       run_check_inbox(args)
+     when 'sync_mini', 'sync-mini'
+       run_sync_mini(args)
++    when 'mini_preflight', 'mini-preflight'
++      run_mini_preflight(args)
++    when 'mini_ssh_repair', 'mini-ssh-repair'
++      run_mini_ssh_repair(args)
++    when 'setapp_preflight', 'setapp-preflight'
++      abort 'setapp_preflight failed' unless system('ruby', File.join(__dir__, 'setapp_upload.rb'), '--preflight-only', *args)
++    when 'setapp_verify', 'setapp-verify'
++      abort 'setapp_verify failed' unless system('ruby', File.join(__dir__, 'setapp_verify.rb'), *args)
+     when 'setapp_upload', 'setapp-upload'
+-      system('ruby', File.join(__dir__, 'setapp_upload.rb'), *args)
++      abort 'setapp_upload failed' unless system('ruby', File.join(__dir__, 'setapp_upload.rb'), *args)
+     when 'tool_discovery', 'tool_receipt', 'tool-receipt'
+       tool_discovery(args)
+     when 'health', 'h'
+@@ -1830,21 +2099,84 @@ PY
+         'sync_mini mini --quiet --no-restart'
+       ]
+     },
++    'mini_preflight' => {
++      usage: 'mini_preflight [--setapp] [--gui] [--json]',
++      description: 'Fail fast before release-critical work when the Mini is unreachable, logged out, missing output write access, or missing Setapp release tools.',
++      flags: {
++        '--setapp' => 'Also require Setapp release tools: xcodebuild, codesign, ditto, sips, zip, spctl, notarytool, and stapler',
++        '--gui' => 'Require the Mini desktop session to be logged in as the SSH user with Dock running',
++        '--json' => 'Print machine-readable preflight result'
++      },
++      examples: [
++        'mini_preflight',
++        'mini_preflight --setapp --gui'
++      ]
++    },
++    'mini_ssh_repair' => {
++      usage: 'mini_ssh_repair [host] [user]',
++      description: 'Open a normal Terminal window that prompts for the Mini password, pins Host mini to IPv4 in ~/.ssh/config, saves the password to Keychain service mini-sudo after success, installs this Air public key in Mini authorized_keys, and verifies key-based SSH.',
++      flags: {},
++      examples: [
++        'mini_ssh_repair',
++        'mini_ssh_repair stephans-mac-mini.local stephansmac'
++      ]
++    },
+     'setapp_upload' => {
+-      usage: 'setapp_upload --zip ZIP --release-notes TEXT [--portal-fallback --app-id ID --version-id ID]',
++      usage: 'setapp_upload --zip ZIP --release-notes TEXT --runtime-proof-file PATH [--portal-fallback --app-id ID --version-id ID]',
+       description: 'Upload a Setapp build. Uses the official CI endpoint when SETAPP_AUTOMATION_TOKEN is present; use --portal-fallback only for a logged-in portal replacement when the in-review Reupload button is inert.',
+       flags: {
+         '--zip PATH' => 'Setapp ZIP archive to upload',
+-        '--release-notes TEXT' => 'Release notes text',
+-        '--release-notes-file PATH' => 'Read release notes from a file',
++        '--release-notes TEXT' => 'Public customer-facing Release notes text',
++        '--release-notes-file PATH' => 'Read public customer-facing Release notes from a file',
++        '--runtime-proof-file PATH' => 'JSON proof produced by setapp_verify for this exact ZIP; required for upload',
++        '--review-notes TEXT' => 'Private comments for the Setapp review team; supported through --portal-fallback vendor_comment, blocked on CI upload',
++        '--review-notes-file PATH' => 'Read private Setapp review team comments from a file; supported through --portal-fallback vendor_comment',
+         '--portal-fallback' => 'Use developer portal upload_archive + version PATCH path',
+         '--app-id ID' => 'Setapp application id for portal fallback',
+         '--version-id ID' => 'Existing Setapp version id for portal fallback',
+         '--dry-run' => 'Validate and print the planned path without uploading'
+       },
+       examples: [
+-        'setapp_upload --zip outputs/SaneBar-Setapp.zip --release-notes "SaneBar 2.1.47..."',
+-        'setapp_upload --portal-fallback --app-id 1848 --version-id 46885 --zip outputs/SaneBar-Setapp.zip --release-notes-file /tmp/setapp-notes.txt'
++        'setapp_upload --zip outputs/SaneBar-Setapp.zip --release-notes-file /tmp/setapp-notes.txt --runtime-proof-file outputs/setapp_runtime_proof/.../setapp-runtime-proof.json',
++        'setapp_upload --portal-fallback --app-id 1848 --version-id 46885 --zip outputs/SaneBar-Setapp.zip --release-notes-file /tmp/setapp-notes.txt --review-notes-file /tmp/setapp-review-comments.txt --runtime-proof-file outputs/setapp_runtime_proof/.../setapp-runtime-proof.json'
++      ]
++    },
++    'setapp_verify' => {
++      usage: 'setapp_verify --zip ZIP --release-notes-file PATH [--review-notes-file PATH] [--open-url URL] [--allow-expected-local-setapp-license]',
++      description: 'Canonical pre-upload Setapp proof. Runs Setapp archive preflight on the Mini, extracts the exact notarized ZIP, launches that exact app bundle on the Mini, captures screenshots, scans visible Accessibility text for Setapp/runtime warnings, and writes setapp-runtime-proof.json.',
++      flags: {
++        '--zip PATH' => 'Exact Setapp ZIP archive to verify',
++        '--release-notes TEXT' => 'Public customer-facing Release notes text',
++        '--release-notes-file PATH' => 'Read public customer-facing Release notes from a file',
++        '--review-notes-file PATH' => 'Lint private review comments during archive preflight',
++        '--app-name NAME' => 'Override app/process name for screenshot capture',
++        '--open-url URL' => 'Optional app URL to open after launch',
++        '--wait SECONDS' => 'Wait after launch before scanning windows',
++        '--proof-dir PATH' => 'Local proof output directory',
++        '--keep-running' => 'Leave the app running after proof capture',
++        '--allow-expected-local-setapp-license' => 'Allow only the MacPaw-confirmed local app-not-purchased Setapp validation blocker',
++        '--json' => 'Print proof JSON'
++      },
++      examples: [
++        'setapp_verify --zip outputs/SaneBar-Setapp.zip --release-notes-file /tmp/setapp-public-notes.txt --open-url sanebar://settings',
++        'setapp_verify --zip outputs/SaneBar-Setapp.zip --release-notes-file /tmp/setapp-public-notes.txt --allow-expected-local-setapp-license',
++        'setapp_verify --zip outputs/SaneClip-Setapp.zip --release-notes-file /tmp/setapp-public-notes.txt'
++      ]
++    },
++    'setapp_preflight' => {
++      usage: 'setapp_preflight --zip ZIP --release-notes TEXT',
++      description: 'Validate the exact Setapp review ZIP before upload. Blocks archives that fail Setapp bundle structure, public-note hygiene, code signing, secure timestamp, notarization stapling, Gatekeeper assessment, or development entitlement checks.',
++      flags: {
++        '--zip PATH' => 'Setapp ZIP archive to inspect',
++        '--release-notes TEXT' => 'Public customer-facing Release notes text',
++        '--release-notes-file PATH' => 'Read public customer-facing Release notes from a file',
++        '--review-notes TEXT' => 'Private comments for the Setapp review team; linted separately from public notes',
++        '--review-notes-file PATH' => 'Read private Setapp review team comments from a file',
++        '--json' => 'Print machine-readable preflight result'
++      },
++      examples: [
++        'setapp_preflight --zip outputs/SaneBar-Setapp.zip --release-notes-file /tmp/setapp-public-notes.txt',
++        'setapp_preflight --zip outputs/SaneClip-Setapp.zip --release-notes "Stability improvements." --review-notes-file /tmp/setapp-review-comments.txt'
+       ]
+     },
+     'universal_control_reset' => {
+diff --git a/scripts/automation/morning-report.sh b/scripts/automation/morning-report.sh
+index ea3f427..c9e3ad6 100755
+--- a/scripts/automation/morning-report.sh
++++ b/scripts/automation/morning-report.sh
+@@ -521,9 +521,11 @@ for db in dbs:
+       -d "{\"sql\": \"$1\"}" 2>/dev/null
+   }
+ 
+-  # Pending/new emails — only show needs_human items
++  # Pending/new emails — only show actionable customer items, not paid promo/listing fallout.
++  local customer_pending_where
++  customer_pending_where="status IN ('pending','new','needs_human') AND lower(coalesce(category,'')) NOT IN ('spam','system','sales') AND NOT (((lower(coalesce(from_email,'')) LIKE '%producthunt%' OR lower(coalesce(subject,'')) LIKE '%product hunt%' OR lower(coalesce(body_text,'')) LIKE '%product hunt%' OR lower(coalesce(subject,'')) LIKE '%paid promotion%' OR lower(coalesce(body_text,'')) LIKE '%paid promotion%' OR lower(coalesce(subject,'')) LIKE '%paid listing%' OR lower(coalesce(body_text,'')) LIKE '%paid listing%' OR lower(coalesce(subject,'')) LIKE '%featured listing%' OR lower(coalesce(body_text,'')) LIKE '%featured listing%' OR lower(coalesce(subject,'')) LIKE '%premium listing%' OR lower(coalesce(body_text,'')) LIKE '%premium listing%' OR lower(coalesce(subject,'')) LIKE '%featured placement%' OR lower(coalesce(body_text,'')) LIKE '%featured placement%' OR lower(coalesce(subject,'')) LIKE '%sponsored placement%' OR lower(coalesce(body_text,'')) LIKE '%sponsored placement%' OR lower(coalesce(subject,'')) LIKE '%media kit%' OR lower(coalesce(body_text,'')) LIKE '%media kit%' OR lower(coalesce(subject,'')) LIKE '%startup directory%' OR lower(coalesce(body_text,'')) LIKE '%startup directory%' OR lower(coalesce(subject,'')) LIKE '%app directory%' OR lower(coalesce(body_text,'')) LIKE '%app directory%' OR lower(coalesce(subject,'')) LIKE '%submit your app%' OR lower(coalesce(body_text,'')) LIKE '%submit your app%' OR lower(coalesce(subject,'')) LIKE '%launch your product%' OR lower(coalesce(body_text,'')) LIKE '%launch your product%' OR lower(coalesce(subject,'')) LIKE '%promote your app%' OR lower(coalesce(body_text,'')) LIKE '%promote your app%' OR lower(coalesce(subject,'')) LIKE '%feature your product%' OR lower(coalesce(body_text,'')) LIKE '%feature your product%' OR lower(coalesce(subject,'')) LIKE '%saashunt%' OR lower(coalesce(body_text,'')) LIKE '%saashunt%' OR lower(coalesce(subject,'')) LIKE '%devhub%' OR lower(coalesce(body_text,'')) LIKE '%devhub%' OR lower(coalesce(subject,'')) LIKE '%growth insights%' OR lower(coalesce(body_text,'')) LIKE '%growth insights%' OR lower(coalesce(subject,'')) LIKE '%lead generation%' OR lower(coalesce(body_text,'')) LIKE '%lead generation%' OR lower(coalesce(subject,'')) LIKE '%rank higher%' OR lower(coalesce(body_text,'')) LIKE '%rank higher%' OR lower(coalesce(subject,'')) LIKE '%visibility package%' OR lower(coalesce(body_text,'')) LIKE '%visibility package%') AND NOT (lower(coalesce(from_email,'')) LIKE '%macpaw%' OR lower(coalesce(from_email,'')) LIKE '%setapp%' OR lower(coalesce(subject,'')) LIKE '%setapp%' OR lower(coalesce(body_text,'')) LIKE '%setapp%' OR lower(coalesce(subject,'')) LIKE '%license key%' OR lower(coalesce(body_text,'')) LIKE '%license key%' OR lower(coalesce(subject,'')) LIKE '%activation%' OR lower(coalesce(body_text,'')) LIKE '%activation%' OR lower(coalesce(subject,'')) LIKE '%purchase%' OR lower(coalesce(body_text,'')) LIKE '%purchase%' OR lower(coalesce(subject,'')) LIKE '%order number%' OR lower(coalesce(body_text,'')) LIKE '%order number%' OR lower(coalesce(subject,'')) LIKE '%refund%' OR lower(coalesce(body_text,'')) LIKE '%refund%' OR lower(coalesce(subject,'')) LIKE '%crash%' OR lower(coalesce(body_text,'')) LIKE '%crash%' OR lower(coalesce(subject,'')) LIKE '%bug%' OR lower(coalesce(body_text,'')) LIKE '%bug%' OR lower(coalesce(subject,'')) LIKE '%broken%' OR lower(coalesce(body_text,'')) LIKE '%broken%' OR lower(coalesce(subject,'')) LIKE '%not working%' OR lower(coalesce(body_text,'')) LIKE '%not working%' OR lower(coalesce(subject,'')) LIKE '%won''t launch%' OR lower(coalesce(body_text,'')) LIKE '%won''t launch%')))"
+   local pending_count
+-  pending_count=$(d1_query "SELECT COUNT(*) as c FROM emails WHERE status IN ('pending','new','needs_human')" | python3 -c "
++  pending_count=$(d1_query "SELECT COUNT(*) as c FROM emails WHERE $customer_pending_where" | python3 -c "
+ import json, sys
+ d = json.load(sys.stdin)
+ print(d.get('result',[{}])[0].get('results',[{}])[0].get('c', 0))
+@@ -531,7 +533,7 @@ print(d.get('result',[{}])[0].get('results',[{}])[0].get('c', 0))
+ 
+   if [[ "$pending_count" -gt 0 ]]; then
+     local pending
+-    pending=$(d1_query "SELECT from_email, subject, priority, created_at FROM emails WHERE status IN ('pending','new','needs_human') ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at DESC LIMIT 5" | python3 -c "
++    pending=$(d1_query "SELECT from_email, subject, priority, created_at FROM emails WHERE $customer_pending_where ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at DESC LIMIT 5" | python3 -c "
+ import json, sys
+ d = json.load(sys.stdin)
+ rows = d.get('result',[{}])[0].get('results',[])
+diff --git a/scripts/mini/README.md b/scripts/mini/README.md
+index 036fc54..14c3b20 100644
+--- a/scripts/mini/README.md
++++ b/scripts/mini/README.md
+@@ -10,6 +10,15 @@ ruby scripts/SaneMaster.rb sync_mini
+ 
+ `scripts/automation/sync-codex-mini.sh` is the implementation helper behind that workflow, not the primary operator entrypoint.
+ 
++For Mini access repair, use the wrapper:
++
++```bash
++ruby scripts/SaneMaster.rb mini_preflight --setapp --gui
++ruby scripts/SaneMaster.rb mini_ssh_repair
++```
++
++`mini_ssh_repair` is the only public SSH repair path. It pins `Host mini` to IPv4 with `AddressFamily inet`, installs this Mac's public key on the Mini, saves the successful password in Keychain service `mini-sudo`, and verifies key-based SSH. Do not maintain separate ad hoc SSH restore scripts.
++
+ ## Scripts
+ 
+ | Script | Schedule | Purpose |
+diff --git a/scripts/sanemaster/base.rb b/scripts/sanemaster/base.rb
+index dd885c2..33b62c1 100644
+--- a/scripts/sanemaster/base.rb
++++ b/scripts/sanemaster/base.rb
+@@ -46,6 +46,12 @@ module SaneMasterModules
+                                       release
+                                       release_preflight
+                                       appstore_preflight
++                                      mini_preflight
++                                      mini-preflight
++                                      setapp_preflight
++                                      setapp-preflight
++                                      setapp_verify
++                                      setapp-verify
+                                       setapp_upload
+                                       setapp-upload
+                                       asp
+diff --git a/scripts/setapp_upload.rb b/scripts/setapp_upload.rb
+index 565e766..805c966 100755
+--- a/scripts/setapp_upload.rb
++++ b/scripts/setapp_upload.rb
+@@ -2,9 +2,14 @@
+ # frozen_string_literal: true
+ 
+ require 'json'
++require 'fileutils'
++require 'find'
++require 'digest'
+ require 'open3'
+ require 'optparse'
+ require 'tempfile'
++require 'tmpdir'
++require 'time'
+ 
+ class SetappUpload
+   CommandStatus = Struct.new(:exitstatus) do
+@@ -12,6 +17,7 @@ class SetappUpload
+       exitstatus.to_i.zero?
+     end
+   end
++  PreflightResult = Struct.new(:app_path, :bundle_id, :display_version, :build_version, :icon_path, keyword_init: true)
+ 
+   API_BASE = 'https://developer-api.setapp.com/v1'
+   CI_ENDPOINT = "#{API_BASE}/ci/version"
+@@ -26,15 +32,24 @@ class SetappUpload
+       portal_fallback: false,
+       safari_token: true,
+       json: false,
+-      dry_run: false
++      dry_run: false,
++      preflight_only: false
+     }
+     parse!(argv)
+   end
+ 
+   def run
+     validate!
++    if @options[:preflight_only]
++      preflight = preflight_archive!(strict_distribution: true)
++      print_preflight_result(preflight)
++      return true
++    end
++
+     return dry_run if @options[:dry_run]
+ 
++    preflight_archive!(strict_distribution: true)
++
+     if @options[:portal_fallback]
+       run_portal_fallback
+     else
+@@ -52,6 +67,11 @@ class SetappUpload
+       opts.on('--release-notes-file PATH', 'Read release notes from a file') do |value|
+         @options[:release_notes] = File.read(value)
+       end
++      opts.on('--review-notes TEXT', 'Private comments for the Setapp review team') { |value| @options[:review_notes] = value }
++      opts.on('--review-notes-file PATH', 'Read private Setapp review team comments from a file') do |value|
++        @options[:review_notes] = File.read(value)
++      end
++      opts.on('--runtime-proof-file PATH', 'JSON proof from SaneMaster setapp_verify for this exact ZIP') { |value| @options[:runtime_proof_file] = value }
+       opts.on('--app-id ID', 'Setapp application id; required for portal fallback') { |value| @options[:app_id] = value }
+       opts.on('--version-id ID', 'Existing Setapp version id to patch; required for portal fallback') { |value| @options[:version_id] = value }
+       opts.on('--status STATUS', 'CI upload status: draft or review') { |value| @options[:status] = value }
+@@ -66,6 +86,7 @@ class SetappUpload
+       opts.on('--no-safari-token', 'Do not read the portal token from Safari cookies') { @options[:safari_token] = false }
+       opts.on('--json', 'Print machine-readable response') { @options[:json] = true }
+       opts.on('--dry-run', 'Validate inputs and print the planned upload path') { @options[:dry_run] = true }
++      opts.on('--preflight-only', 'Run Setapp archive preflight without uploading') { @options[:preflight_only] = true }
+       opts.on('-h', '--help', 'Show help') do
+         puts opts
+         exit 0
+@@ -82,6 +103,8 @@ class SetappUpload
+     abort "ZIP not found: #{@options[:zip]}" unless File.file?(@options[:zip])
+     abort 'Missing --release-notes or --release-notes-file' if @options[:release_notes].to_s.strip.empty?
+     abort 'Setapp status must be draft or review' unless %w[draft review].include?(@options[:status])
++    validate_notes!
++    validate_runtime_proof! unless @options[:preflight_only] || @options[:dry_run]
+ 
+     return unless @options[:portal_fallback]
+ 
+@@ -89,6 +112,253 @@ class SetappUpload
+     abort 'Portal fallback requires --version-id' if @options[:version_id].to_s.empty?
+   end
+ 
++  def validate_notes!
++    release_notes = @options[:release_notes].to_s.strip
++    review_notes = @options[:review_notes].to_s.strip
++    abort 'Setapp release notes exceed 5000 characters' if release_notes.length > 5_000
++    abort 'Setapp review team comments exceed 2000 characters' if review_notes.length > 2_000
++
++    internal_terms = [
++      /review team/i,
++      /dedicated setapp target/i,
++      /bundle identifier/i,
++      /public key/i,
++      /Sparkle/i,
++      /Lemon Squeezy/i,
++      /provisioning profile/i,
++      /entitlements?/i,
++      /CloudKit/i,
++      /iCloud entitlement/i,
++      /sandbox/i,
++      /notari[sz]/i,
++      /stapler/i,
++      /Gatekeeper/i
++    ]
++    matches = internal_terms.select { |pattern| release_notes.match?(pattern) }
++    return if matches.empty?
++
++    abort 'Release notes contain reviewer/internal implementation wording. Move that material to --review-notes-file and keep --release-notes-file customer-facing.'
++  end
++
++  def validate_runtime_proof!
++    if ENV['SETAPP_UPLOAD_ALLOW_UNVERIFIED'].to_s == '1'
++      warn '⚠️  SETAPP_UPLOAD_ALLOW_UNVERIFIED=1 is set; skipping runtime-proof gate.'
++      return
++    end
++
++    proof_path = @options[:runtime_proof_file].to_s
++    abort 'Missing --runtime-proof-file. Run `ruby scripts/SaneMaster.rb setapp_verify --zip ... --release-notes-file ...` and pass its setapp-runtime-proof.json before upload.' if proof_path.empty?
++    abort "Runtime proof file not found: #{proof_path}" unless File.file?(proof_path)
++
++    proof = JSON.parse(File.read(proof_path))
++    allowed_statuses = %w[passed expected_local_setapp_license_block]
++    abort 'Runtime proof did not pass or match an explicitly confirmed local Setapp license blocker; upload blocked.' unless allowed_statuses.include?(proof['status'])
++    expected_digest = Digest::SHA256.file(File.expand_path(@options[:zip])).hexdigest
++    abort 'Runtime proof does not match this exact ZIP SHA-256; rerun setapp_verify for the current archive.' unless proof['zip_sha256'] == expected_digest
++
++    created_at = Time.parse(proof.fetch('created_at'))
++    abort 'Runtime proof is older than 24 hours; rerun setapp_verify before upload.' if Time.now.utc - created_at > 86_400
++
++    validate_runtime_proof_classification!(proof)
++    abort 'Runtime proof does not include a screenshot artifact; upload blocked.' if Array(proof['screenshots']).empty?
++  rescue JSON::ParserError => e
++    abort "Runtime proof is not valid JSON: #{e.message}"
++  rescue KeyError, ArgumentError => e
++    abort "Runtime proof is missing required fields: #{e.message}"
++  end
++
++  def validate_runtime_proof_classification!(proof)
++    if proof['status'] == 'passed'
++      abort 'Runtime proof contains warning text; upload blocked.' unless Array(proof['warnings']).empty?
++      return
++    end
++
++    complete_expected_block =
++      proof['classification'] == 'expected_local_setapp_license_block' &&
++      proof['classification_confirmed_by'].to_s.include?('MacPaw email #640') &&
++      proof['setapp_license_state'].to_s.match?(/error\.license\.app-not-purchased|This app is not purchased/i) &&
++      Array(proof['warnings']).any?
++
++    return if complete_expected_block
++
++    abort 'Runtime proof expected-local Setapp license classification is incomplete; upload blocked.'
++  end
++
++  def preflight_archive!(strict_distribution:)
++    Dir.mktmpdir('setapp-preflight') do |dir|
++      extract_archive!(dir)
++      app_path = find_review_app!(dir)
++      icon_path = find_review_icon!(app_path)
++      metadata = verify_info_plist!(app_path)
++      verify_setapp_resources!(app_path)
++      verify_direct_lane_removed!(app_path)
++      verify_distribution_signature!(app_path) if strict_distribution
++
++      return PreflightResult.new(
++        app_path: app_path,
++        bundle_id: metadata.fetch(:bundle_id),
++        display_version: metadata.fetch(:display_version),
++        build_version: metadata.fetch(:build_version),
++        icon_path: icon_path
++      )
++    end
++  end
++
++  def extract_archive!(destination)
++    _stdout, stderr, status = capture3_with_timeout(
++      120,
++      '/usr/bin/ditto',
++      '-x',
++      '-k',
++      File.expand_path(@options[:zip]),
++      destination
++    )
++    abort "Setapp preflight failed: archive could not be extracted with ditto: #{stderr.strip}" unless status.success?
++
++    hidden = Dir.glob(File.join(destination, '**', '__MACOSX'), File::FNM_DOTMATCH)
++    abort 'Setapp preflight failed: archive contains __MACOSX metadata. Recreate it without Finder compression.' unless hidden.empty?
++  end
++
++  def find_review_app!(root)
++    app_paths = []
++    Find.find(root) do |path|
++      next unless File.directory?(path) && File.extname(path) == '.app'
++
++      relative = path.delete_prefix("#{root}/")
++      next if relative.include?('.app/Contents/')
++
++      app_paths << path
++      Find.prune
++    end
++
++    abort 'Setapp preflight failed: archive must contain exactly one top-level .app bundle' unless app_paths.length == 1
++
++    relative = app_paths.first.delete_prefix("#{root}/")
++    depth = relative.split(File::SEPARATOR).length
++    abort 'Setapp preflight failed: .app must be in the archive root or one single root directory' if depth > 2
++
++    app_paths.first
++  end
++
++  def find_review_icon!(app_path)
++    sibling_dir = File.dirname(app_path)
++    pngs = Dir.glob(File.join(sibling_dir, '*.png')).sort
++    abort 'Setapp preflight failed: missing sibling PNG icon beside the .app bundle' if pngs.empty?
++
++    icon = pngs.find { |path| icon_large_enough?(path) }
++    abort 'Setapp preflight failed: sibling PNG icon must be at least 512x512 pixels' unless icon
++
++    icon
++  end
++
++  def icon_large_enough?(path)
++    output, stderr, status = capture3_with_timeout(20, '/usr/bin/sips', '-g', 'pixelWidth', '-g', 'pixelHeight', path)
++    abort "Setapp preflight failed: could not inspect icon #{File.basename(path)}: #{stderr.strip}" unless status.success?
++
++    width = output[/pixelWidth:\s*(\d+)/, 1].to_i
++    height = output[/pixelHeight:\s*(\d+)/, 1].to_i
++    width >= 512 && height >= 512
++  end
++
++  def verify_info_plist!(app_path)
++    info_plist = File.join(app_path, 'Contents', 'Info.plist')
++    abort 'Setapp preflight failed: missing Contents/Info.plist' unless File.file?(info_plist)
++
++    required = %w[
++      CFBundleIdentifier
++      CFBundleName
++      CFBundleIconFile
++      CFBundleVersion
++      CFBundleShortVersionString
++      NSUpdateSecurityPolicy
++    ]
++    missing = required.select { |key| plist_value(info_plist, key).to_s.strip.empty? }
++    abort "Setapp preflight failed: Info.plist missing required key(s): #{missing.join(', ')}" unless missing.empty?
++
++    policy = plist_value(info_plist, 'NSUpdateSecurityPolicy:AllowProcesses:MEHY5QF425:0')
++    unless policy.to_s == 'com.setapp.DesktopClient.SetappAgent'
++      abort 'Setapp preflight failed: NSUpdateSecurityPolicy must allow com.setapp.DesktopClient.SetappAgent for team MEHY5QF425'
++    end
++
++    {
++      bundle_id: plist_value(info_plist, 'CFBundleIdentifier'),
++      display_version: plist_value(info_plist, 'CFBundleShortVersionString'),
++      build_version: plist_value(info_plist, 'CFBundleVersion')
++    }
++  end
++
++  def plist_value(plist, key)
++    output, _stderr, status = capture3_with_timeout(10, '/usr/libexec/PlistBuddy', '-c', "Print :#{key}", plist)
++    return nil unless status.success?
++
++    output.strip
++  end
++
++  def verify_setapp_resources!(app_path)
++    key_path = File.join(app_path, 'Contents', 'Resources', 'setappPublicKey.pem')
++    abort 'Setapp preflight failed: missing Contents/Resources/setappPublicKey.pem' unless File.file?(key_path)
++  end
++
++  def verify_direct_lane_removed!(app_path)
++    info_plist = File.join(app_path, 'Contents', 'Info.plist')
++    forbidden_info = %w[SUFeedURL SUPublicEDKey SUEnableAutomaticChecks SUEnableSystemProfiling AppStoreProductID]
++    present = forbidden_info.select { |key| !plist_value(info_plist, key).nil? }
++    abort "Setapp preflight failed: direct/App Store metadata still present in Info.plist: #{present.join(', ')}" unless present.empty?
++
++    sparkle = File.join(app_path, 'Contents', 'Frameworks', 'Sparkle.framework')
++    abort 'Setapp preflight failed: Sparkle.framework is still embedded' if File.exist?(sparkle)
++  end
++
++  def verify_distribution_signature!(app_path)
++    run_required('codesign strict verification', '/usr/bin/codesign', '--verify', '--deep', '--strict', '--verbose=4', app_path)
++    verify_no_development_entitlements!(app_path)
++    verify_secure_timestamps!(app_path)
++    run_required('stapler validation', '/usr/bin/xcrun', 'stapler', 'validate', '-v', app_path)
++    run_required('Gatekeeper assessment', '/usr/sbin/spctl', '-a', '-vvv', '-t', 'exec', app_path)
++  end
++
++  def verify_no_development_entitlements!(app_path)
++    offenders = signed_executables(app_path).select do |path|
++      output, stderr, status = capture3_with_timeout(20, '/usr/bin/codesign', '-d', '--entitlements', ':-', path)
++      status.success? && "#{output}\n#{stderr}".include?('com.apple.security.get-task-allow')
++    end
++    return if offenders.empty?
++
++    abort "Setapp preflight failed: development get-task-allow entitlement present in #{offenders.map { |path| path.delete_prefix("#{app_path}/") }.join(', ')}"
++  end
++
++  def verify_secure_timestamps!(app_path)
++    offenders = signed_executables(app_path).select do |path|
++      output, stderr, status = capture3_with_timeout(20, '/usr/bin/codesign', '-dv', '--verbose=4', path)
++      next false unless status.success?
++
++      detail = "#{output}\n#{stderr}"
++      !detail.match?(/^Timestamp=/) || detail.match?(/^Timestamp=none$/)
++    end
++    return if offenders.empty?
++
++    abort "Setapp preflight failed: secure timestamp missing in #{offenders.map { |path| path.delete_prefix("#{app_path}/") }.join(', ')}"
++  end
++
++  def signed_executables(app_path)
++    executables = []
++    Find.find(app_path) do |path|
++      next unless File.file?(path) && File.executable?(path)
++
++      _output, _stderr, status = capture3_with_timeout(10, '/usr/bin/codesign', '-dv', path)
++      executables << path if status.success?
++    end
++    executables
++  end
++
++  def run_required(label, *command)
++    output, stderr, status = capture3_with_timeout(120, *command)
++    return if status.success?
++
++    detail = [output, stderr].join("\n").strip
++    abort "Setapp preflight failed: #{label} failed: #{detail}"
++  end
++
+   def dry_run
+     payload = {
+       mode: @options[:portal_fallback] ? 'portal_fallback' : 'ci',
+@@ -99,7 +369,9 @@ class SetappUpload
+       status: @options[:status],
+       beta: @options[:beta],
+       release_on_approval: @options[:release_on_approval],
+-      allow_overwrite: @options[:allow_overwrite]
++      allow_overwrite: @options[:allow_overwrite],
++      review_notes: @options[:review_notes].to_s.strip.empty? ? nil : (@options[:portal_fallback] ? 'will be sent as Setapp vendor_comment' : 'must be entered through portal fallback'),
++      runtime_proof_file: @options[:runtime_proof_file]
+     }
+ 
+     return puts(JSON.pretty_generate(payload)) if @options[:json]
+@@ -109,6 +381,8 @@ class SetappUpload
+   end
+ 
+   def run_ci_upload
++    abort 'Setapp CI upload cannot set private review team comments. Save those in the portal Comments for the review team field, then rerun without --review-notes-file.' unless @options[:review_notes].to_s.strip.empty?
++
+     token = ENV['SETAPP_AUTOMATION_TOKEN'].to_s
+     abort 'Missing SETAPP_AUTOMATION_TOKEN for official Setapp CI upload' if token.empty?
+ 
+@@ -152,8 +426,16 @@ class SetappUpload
+       icon_url: data.fetch('icon_url'),
+       version: data.fetch('version'),
+       ui_version: data.fetch('ui_version'),
+-      release_notes: @options[:release_notes]
++      release_notes: @options[:release_notes],
++      release_on_approval: @options[:release_on_approval]
+     }
++    review_notes = @options[:review_notes].to_s.strip
++    patch_payload[:vendor_comment] = review_notes unless review_notes.empty?
++    if @options[:status] == 'review'
++      patch_payload[:status] = 5
++      patch_payload[:media_files] = fetch_existing_media_files(token)
++    end
++
+     patch_response = curl_json(
+       "#{API_BASE}/versions/#{@options[:version_id]}",
+       "Token #{token}",
+@@ -163,6 +445,18 @@ class SetappUpload
+     print_result('Setapp portal fallback attached archive', patch_response[:json])
+   end
+ 
++  def fetch_existing_media_files(token)
++    response = curl_get(
++      "#{API_BASE}/applications/#{@options[:app_id]}?include=versions,pricing_tiers",
++      "Token #{token}"
++    )
++    fail_unless_success!(response, expected: [200])
++
++    versions = response.dig(:json, 'data', 'versions') || []
++    version = versions.find { |entry| entry['id'].to_s == @options[:version_id].to_s } || {}
++    version['mediaFiles'] || version['media_files'] || []
++  end
++
+   def portal_token
+     env_token = ENV['SETAPP_PORTAL_TOKEN'].to_s
+     return env_token unless env_token.empty?
+@@ -196,6 +490,10 @@ class SetappUpload
+     with_curl_config(url, authorization, extra_args: form_args.flatten)
+   end
+ 
++  def curl_get(url, authorization)
++    with_curl_config(url, authorization, method: 'GET')
++  end
++
+   def curl_json(url, authorization, payload)
+     Tempfile.create(['setapp-upload-payload', '.json']) do |payload_file|
+       payload_file.write(JSON.generate(payload))
+@@ -340,6 +638,23 @@ class SetappUpload
+     puts "  archive: #{data['archive_url']}" if data['archive_url']
+   end
+ 
++  def print_preflight_result(result)
++    return puts(JSON.pretty_generate({
++      zip: File.expand_path(@options[:zip]),
++      bundle_id: result.bundle_id,
++      display_version: result.display_version,
++      build_version: result.build_version,
++      icon: File.basename(result.icon_path),
++      status: 'passed'
++    })) if @options[:json]
++
++    puts 'Setapp preflight passed'
++    puts "  zip: #{File.expand_path(@options[:zip])}"
++    puts "  bundle id: #{result.bundle_id}"
++    puts "  version: #{result.display_version} (#{result.build_version})"
++    puts "  icon: #{File.basename(result.icon_path)}"
++  end
++
+   def parse_bool(value)
+     case value.to_s.downcase
+     when '1', 'true', 'yes' then true
+diff --git a/scripts/setapp_upload_test.rb b/scripts/setapp_upload_test.rb
+index 2ec02c6..e81393d 100755
+--- a/scripts/setapp_upload_test.rb
++++ b/scripts/setapp_upload_test.rb
+@@ -2,12 +2,16 @@
+ # frozen_string_literal: true
+ 
+ require 'open3'
++require 'digest'
++require 'json'
+ require 'tempfile'
++require 'time'
+ require_relative 'hooks/test/test_framework'
+ 
+ include TestFramework
+ 
+ SCRIPT_PATH = File.expand_path('setapp_upload.rb', __dir__)
++VERIFY_SCRIPT_PATH = File.expand_path('setapp_verify.rb', __dir__)
+ SANEMASTER_PATH = File.expand_path('SaneMaster.rb', __dir__)
+ SANEMASTER_BASE_PATH = File.expand_path('sanemaster/base.rb', __dir__)
+ 
+@@ -19,6 +23,10 @@ exit(run_tests('Setapp Upload Tests') do
+       assert_includes(source, 'https://developer-api.setapp.com/v1')
+       assert_includes(source, '/ci/version')
+       assert_includes(source, '/versions/upload_archive')
++      assert_includes(source, 'vendor_comment')
++      assert_includes(source, 'media_files')
++      assert_includes(source, 'patch_payload[:status] = 5')
++      assert_includes(source, 'fetch_existing_media_files')
+       assert_includes(source, 'SETAPP_AUTOMATION_TOKEN')
+       assert_includes(source, 'SETAPP_PORTAL_TOKEN')
+       assert_includes(source, '"Token #{token}"')
+@@ -65,9 +73,217 @@ exit(run_tests('Setapp Upload Tests') do
+ 
+       assert_includes(source, "'setapp_upload'")
+       assert_includes(source, "when 'setapp_upload', 'setapp-upload'")
++      assert_includes(source, "abort 'setapp_upload failed'")
+       assert_includes(source, 'setapp_upload')
++      assert_includes(source, 'STRICT_MINI_COMMANDS')
++      assert_includes(source, 'SETAPP_MINI_COMMANDS')
+       assert_includes(base_source, 'setapp_upload')
+       true
+     end
++
++    test('SaneMaster exposes setapp_preflight as a Mini-first command') do
++      source = File.read(SANEMASTER_PATH)
++      base_source = File.read(SANEMASTER_BASE_PATH)
++
++      assert_includes(source, "'setapp_preflight'")
++      assert_includes(source, "when 'setapp_preflight', 'setapp-preflight'")
++      assert_includes(source, "'--preflight-only'")
++      assert_includes(source, "abort 'setapp_preflight failed'")
++      assert_includes(source, 'prepare_mini_command_args!')
++      assert_includes(source, 'sync_setapp_file_arg_to_mini!')
++      assert_includes(base_source, 'setapp_preflight')
++      true
++    end
++
++    test('SaneMaster exposes setapp_verify as the runtime proof gate') do
++      source = File.read(SANEMASTER_PATH)
++      verify_source = File.read(VERIFY_SCRIPT_PATH)
++      base_source = File.read(SANEMASTER_BASE_PATH)
++
++      assert_includes(source, "'setapp_verify'")
++      assert_includes(source, "when 'setapp_verify', 'setapp-verify'")
++      assert_includes(source, 'setapp_verify.rb')
++      assert_includes(source, '--runtime-proof-file PATH')
++      assert_includes(verify_source, 'could not be validated')
++      assert_includes(verify_source, '412003')
++      assert_includes(verify_source, 'capture-mini-screenshot.sh')
++      assert_includes(verify_source, 'setapp-runtime-proof.json')
++      assert_includes(verify_source, '--allow-expected-local-setapp-license')
++      assert_includes(verify_source, 'expected_local_setapp_license_block')
++      assert_includes(base_source, 'setapp_verify')
++      true
++    end
++
++    test('SaneMaster exposes Mini preflight and blocks release-critical local fallback') do
++      source = File.read(SANEMASTER_PATH)
++
++      assert_includes(source, "'mini_preflight'")
++      assert_includes(source, "when 'mini_preflight', 'mini-preflight'")
++      assert_includes(source, 'mini_preflight_status')
++      assert_includes(source, 'SANEMASTER_ALLOW_LOCAL_RELEASE_FALLBACK')
++      assert_includes(source, 'REMOTE HOST IDENTIFICATION HAS CHANGED')
++      assert_includes(source, 'Mini GUI console user')
++      true
++    end
++
++    test('SaneMaster exposes visible Mini SSH repair path') do
++      source = File.read(SANEMASTER_PATH)
++      helper_path = File.expand_path('mini/repair-mini-ssh-key.sh', __dir__)
++      helper_source = File.read(helper_path)
++
++      assert_includes(source, "'mini_ssh_repair'")
++      assert_includes(source, "when 'mini_ssh_repair', 'mini-ssh-repair'")
++      assert_includes(source, 'repair-mini-ssh-key.sh')
++      assert_includes(source, 'do script')
++      assert_includes(helper_source, 'mini-sudo')
++      assert_includes(helper_source, 'authorized_keys')
++      assert_includes(helper_source, 'security add-generic-password')
++      assert_includes(helper_source, 'key_ssh_ok')
++      true
++    end
++
++    test('preflight blocks archives before upload') do
++      Tempfile.create(['setapp-preflight-test', '.zip']) do |zip|
++        zip.write('PK')
++        zip.flush
++
++        output, status = Open3.capture2e(
++          'ruby',
++          SCRIPT_PATH,
++          '--preflight-only',
++          '--zip',
++          zip.path,
++          '--release-notes',
++          'Stability improvements.'
++        )
++
++        assert(!status.success?, output)
++        assert_includes(output, 'Setapp preflight failed')
++      end
++      true
++    end
++
++    test('upload requires runtime proof unless explicitly dry-running') do
++      Tempfile.create(['setapp-upload-test', '.zip']) do |zip|
++        zip.write('PK')
++        zip.flush
++
++        output, status = Open3.capture2e(
++          'ruby',
++          SCRIPT_PATH,
++          '--zip',
++          zip.path,
++          '--release-notes',
++          'Stability improvements.'
++        )
++
++        assert(!status.success?, output)
++        assert_includes(output, 'Missing --runtime-proof-file')
++      end
++      true
++    end
++
++    test('upload blocks runtime proof for a different archive digest') do
++      Tempfile.create(['setapp-upload-test', '.zip']) do |zip|
++        zip.write('PK')
++        zip.flush
++
++        Tempfile.create(['setapp-runtime-proof', '.json']) do |proof|
++          proof.write({
++            status: 'passed',
++            created_at: Time.now.utc.iso8601,
++            zip_sha256: 'wrong',
++            warnings: [],
++            screenshots: ['proof.png']
++          }.to_json)
++          proof.flush
++
++          output, status = Open3.capture2e(
++            'ruby',
++            SCRIPT_PATH,
++            '--zip',
++            zip.path,
++            '--release-notes',
++            'Stability improvements.',
++            '--runtime-proof-file',
++            proof.path
++          )
++
++          assert(!status.success?, output)
++          assert_includes(output, 'does not match this exact ZIP')
++        end
++      end
++      true
++    end
++
++    test('upload accepts explicitly confirmed local Setapp app-not-purchased proof before archive preflight') do
++      Tempfile.create(['setapp-upload-test', '.zip']) do |zip|
++        zip.write('PK')
++        zip.flush
++
++        Tempfile.create(['setapp-runtime-proof', '.json']) do |proof|
++          proof.write({
++            status: 'expected_local_setapp_license_block',
++            classification: 'expected_local_setapp_license_block',
++            classification_confirmed_by: 'MacPaw email #640, 2026-04-30: app not purchased on Setapp fails locally and is expected before review',
++            setapp_license_state: 'com.saneclip.app-setapp|{"message":"This app is not purchased","errors":[{"constraints":["error.license.app-not-purchased"]}]}',
++            created_at: Time.now.utc.iso8601,
++            zip_sha256: Digest::SHA256.file(zip.path).hexdigest,
++            warnings: ['-?412003'],
++            screenshots: ['proof.png']
++          }.to_json)
++          proof.flush
++
++          output, status = Open3.capture2e(
++            'ruby',
++            SCRIPT_PATH,
++            '--zip',
++            zip.path,
++            '--release-notes',
++            'Stability improvements.',
++            '--runtime-proof-file',
++            proof.path
++          )
++
++          assert(!status.success?, output)
++          assert(!output.include?('Runtime proof did not pass'), output)
++          assert(!output.include?('expected-local Setapp license classification is incomplete'), output)
++          assert_includes(output, 'Setapp preflight failed')
++        end
++      end
++      true
++    end
++
++    test('public release notes reject reviewer-only implementation details') do
++      Tempfile.create(['setapp-notes-test', '.zip']) do |zip|
++        zip.write('PK')
++        zip.flush
++
++        output, status = Open3.capture2e(
++          'ruby',
++          SCRIPT_PATH,
++          '--preflight-only',
++          '--zip',
++          zip.path,
++          '--release-notes',
++          'This build uses the dedicated Setapp target and bundled public key.'
++        )
++
++        assert(!status.success?, output)
++        assert_includes(output, 'Move that material to --review-notes-file')
++      end
++      true
++    end
++
++    test('preflight includes notarization and development-entitlement gates') do
++      source = File.read(SCRIPT_PATH)
++
++      assert_includes(source, 'stapler')
++      assert_includes(source, 'spctl')
++      assert_includes(source, 'com.apple.security.get-task-allow')
++      assert_includes(source, 'Timestamp=')
++      assert_includes(source, 'setappPublicKey.pem')
++      true
++    end
+   end
+ end)
+diff --git a/templates/RELEASE_SOP.md b/templates/RELEASE_SOP.md
+index 82f6a48..eb3cc31 100644
+--- a/templates/RELEASE_SOP.md
++++ b/templates/RELEASE_SOP.md
+@@ -247,11 +247,17 @@ Treat Setapp as a separate channel, not as a direct-build shortcut.
+ 
+ Before any Setapp submission or handoff:
+ 
+-1. Confirm the business lane:
++1. Collect all reviewer evidence before diagnosing:
++- read the latest Setapp email thread and the no-reply reviewer notification
++- download every linked reviewer media URL in the email body, not just file attachments; CleanShot links, screenshots, videos, PDFs, and logs all count
++- open every downloaded image/video/PDF locally and summarize what it proves before changing code, uploading, or telling the user it is fixed
++- identify the active Setapp contacts from the thread; include the integration rep on follow-up emails when they were looped in
++
++2. Confirm the business lane:
+ - Direct website sales stay on Lemon Squeezy.
+ - Setapp's Stripe onboarding does **not** replace the website/direct flow.
+ 
+-2. Confirm the product lane:
++3. Confirm the product lane:
+ - separate `-setapp` bundle ID
+ - explicit Setapp build config
+ - no Sparkle in the Setapp build
+@@ -259,31 +265,40 @@ Before any Setapp submission or handoff:
+ - no Donate / GitHub Sponsors UI
+ - if the Setapp build still shares a target with the direct lane, plan a final bundle sanitation + re-sign step
+ 
+-3. Confirm Setapp resources and policies:
++4. Confirm Setapp resources and policies:
+ - `setappPublicKey.pem` bundled
+ - macOS 13+ update policy for `com.setapp.DesktopClient.SetappAgent`
+ - if sandboxed, `com.setapp.ProvisioningService` Mach exception
+ 
+-4. Confirm the app-specific gotchas:
++5. Confirm the app-specific gotchas:
+ - menu bar apps must report Setapp usage events such as `.userInteraction`
+ - arm64-only projects must not assume Setapp universal readiness without proof
+ - widget/extension bundle families must be reviewed explicitly if they ship in the Setapp lane
+ 
+-5. Confirm channel drift is not being introduced:
++6. Confirm channel drift is not being introduced:
+ - direct release notes still describe the direct lane
+ - App Store text still describes the App Store lane
+ - Setapp wording stays in the Setapp-specific surfaces only
+ 
+-6. Confirm the built artifact, not just the source config:
++7. Confirm the built artifact, not just the source config:
+ - run `sanitize_distribution_bundle.rb --channel setapp /path/to/App.app`
+ - re-sign the sanitized bundle before launch verification
+ - verify the sanitized bundle has:
+   - no embedded `Sparkle.framework`
+   - no `SU*` keys
+   - no direct key-entry / checkout copy
+-
+-7. Upload through the standard Setapp lane:
+-- Preferred: `./scripts/SaneMaster.rb setapp_upload --zip /path/to/App-Setapp.zip --release-notes-file /path/to/notes.txt` with `SETAPP_AUTOMATION_TOKEN`.
++- package only after final signing, notarization, and stapling
++- run `./scripts/SaneMaster.rb mini_preflight --setapp --gui` before Setapp proof work; stop if SSH host key, login state, output write access, or Setapp tooling fails
++- run `./scripts/SaneMaster.rb setapp_verify --zip /path/to/App-Setapp.zip --release-notes-file /path/to/setapp-public-notes.txt --review-notes-file /path/to/setapp-review-comments.txt`
++- do not upload until `setapp_verify` passes stapler validation, Gatekeeper assessment, exact-ZIP launch, visible-warning scan, and saved screenshot proof
++- a Setapp modal such as `could not be validated correctly` or error code `-412003` is a failed proof by default, even if the process is still running
++- narrow exception: if MacPaw explicitly confirms the developer-side failure is expected because the app is not purchased before review, rerun `setapp_verify` with `--allow-expected-local-setapp-license`; the proof is only upload-eligible when it also captures Setapp's local provisioning DB state as `error.license.app-not-purchased` / `This app is not purchased`
++
++8. Upload through the standard Setapp lane:
++- Preferred when a Setapp automation token is configured: `./scripts/SaneMaster.rb setapp_upload --zip /path/to/App-Setapp.zip --release-notes-file /path/to/setapp-public-notes.txt --runtime-proof-file /path/to/setapp-runtime-proof.json`.
++- If private review comments are needed or the automation token is unavailable, use `--portal-fallback`; it writes `--review-notes-file` into Setapp's private `vendor_comment` field and resubmits Needs Revision versions with status `5`.
++- Keep public Release notes customer-facing. Bundle IDs, targets, public keys, entitlement/provisioning details, notarization notes, and other reviewer-only implementation details belong in Setapp's private "Comments for the review team" field / `vendor_comment`.
++- Token policy: `SETAPP_PORTAL_TOKEN` is only an authenticated developer-portal session token and can be read from logged-in Mini Safari at runtime; do not treat it as a stable CI secret. `SETAPP_AUTOMATION_TOKEN` is the stable CI token. Setapp's current docs say to request that token from the Developer Support Representative; portal self-generation is documented as future functionality.
+ - Fallback for the known portal defect where an in-review page shows `Reupload .ZIP` but clicking it does nothing:
+ 
+ ```bash
+@@ -292,11 +307,21 @@ Before any Setapp submission or handoff:
+   --app-id <setapp_app_id> \
+   --version-id <existing_version_id> \
+   --zip /path/to/App-Setapp.zip \
+-  --release-notes-file /path/to/notes.txt
++  --release-notes-file /path/to/setapp-public-notes.txt \
++  --review-notes-file /path/to/setapp-review-comments.txt \
++  --runtime-proof-file /path/to/setapp-runtime-proof.json
+ ```
+ 
+ - After fallback upload, verify both the Apps page and `GET /v1/versions/<version_id>` show the expected build/display versions.
+ - Never print or store Setapp browser `access_token` / `refresh_token` values.
++- `setapp_preflight` and `setapp_upload` are strict Mini commands. They fail instead of silently falling back to local execution, and they sync exact archive/notes file arguments to Mini-readable paths before running.
++
++Mini failure decision tree:
++- `REMOTE HOST IDENTIFICATION HAS CHANGED`: stop and verify the Mini fingerprint on the trusted local network before replacing `known_hosts`.
++- `Permission denied` / `publickey`: run `./scripts/SaneMaster.rb mini_ssh_repair`; it pins `Host mini` to IPv4, installs the Air public key, saves the successful password in Keychain service `mini-sudo`, and verifies key SSH.
++- `Could not resolve hostname`, `No route to host`, or inconsistent fingerprints by address family: confirm the Mini is awake/logged in, then ensure `Host mini` uses `AddressFamily inet`.
++- GUI/Dock failure: log into the Mini desktop session; Setapp upload/proof work does not proceed headless.
++- Any Setapp runtime alert in the screenshot or Accessibility text is release-blocking until resolved or explicitly confirmed by Setapp in writing for that exact pre-review condition.
+ 
+ ### 1. Build, Sign, Notarize, DMG (Single Command)
+ 

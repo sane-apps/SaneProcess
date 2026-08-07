@@ -1,0 +1,3 @@
+ scripts/sane_test.rb            | 34 ++++++++++++++++++++++++++++++++++
+ scripts/sanemaster/test_mode.rb | 16 ++++++++++++++++
+ 2 files changed, 50 insertions(+)

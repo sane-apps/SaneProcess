@@ -1,0 +1,19 @@
+ AGENTS.md                                    |   7 +
+ DEVELOPMENT.md                               | 116 +++++-
+ scripts/SaneMaster.rb                        |  30 +-
+ scripts/grant_permissions.applescript        |  11 +-
+ scripts/mini/README.md                       |  12 +
+ scripts/mini/capture-mini-screenshot.sh      |  20 +-
+ scripts/mini/mini_gui_run_test.rb            |  17 +
+ scripts/sanemaster/customer_ui_contract.rb   | 502 ++++++++++++++++++++++-
+ scripts/sanemaster/release_guardrail_test.rb | 571 ++++++++++++++++++++++++++-
+ scripts/sanemaster/test_mode.rb              |  19 +
+ scripts/sanemaster/test_mode_test.rb         |  13 +
+ scripts/sanemaster/verify.rb                 |  44 ++-
+ scripts/sanemaster/visual_smoke.rb           | 159 +++++++-
+ scripts/sanemaster/visual_smoke_test.rb      |  97 +++++
+ scripts/setapp_upload.rb                     |  36 ++
+ scripts/setapp_upload_test.rb                |  72 ++++
+ scripts/test_registry.json                   |   6 +
+ templates/customer_ui_actions.yml            |  65 +++
+ 18 files changed, 1751 insertions(+), 46 deletions(-)

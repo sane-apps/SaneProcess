@@ -1,0 +1,2121 @@
+diff --git a/.claude/settings.json b/.claude/settings.json
+index 016f337..16e7dcf 100644
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+@@ -46,7 +46,7 @@
+         "hooks": [
+           {
+             "type": "command",
+-            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb; else exit 0; fi",
++            "command": "~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh session_start.rb",
+             "timeout": 15
+           }
+         ]
+@@ -57,7 +57,7 @@
+         "hooks": [
+           {
+             "type": "command",
+-            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/saneprompt.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/saneprompt.rb; else exit 0; fi",
++            "command": "~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh saneprompt.rb",
+             "timeout": 5
+           }
+         ]
+@@ -68,7 +68,7 @@
+         "hooks": [
+           {
+             "type": "command",
+-            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetools.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetools.rb; else exit 0; fi",
++            "command": "~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh sanetools.rb",
+             "timeout": 5
+           }
+         ]
+@@ -78,40 +78,10 @@
+         "hooks": [
+           {
+             "type": "command",
+-            "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sane_launch_guard.rb",
+-            "timeout": 3
+-          }
+-        ]
+-      },
+-      {
+-        "matcher": "Bash",
+-        "hooks": [
+-          {
+-            "type": "command",
+-            "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sane_release_guard.rb",
+-            "timeout": 3
+-          }
+-        ]
+-      },
+-      {
+-        "matcher": "Bash",
+-        "hooks": [
+-          {
+-            "type": "command",
+-            "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sane_ship_guard.rb",
++            "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sane_bash_guards.rb",
+             "timeout": 5
+           }
+         ]
+-      },
+-      {
+-        "matcher": "Bash",
+-        "hooks": [
+-          {
+-            "type": "command",
+-            "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sane_email_guard.rb",
+-            "timeout": 3
+-          }
+-        ]
+       }
+     ],
+     "PostToolUse": [
+@@ -119,7 +89,7 @@
+         "hooks": [
+           {
+             "type": "command",
+-            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetrack.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanetrack.rb; else exit 0; fi",
++            "command": "~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh sanetrack.rb",
+             "timeout": 5
+           }
+         ]
+@@ -151,7 +121,7 @@
+         "hooks": [
+           {
+             "type": "command",
+-            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/task_completed_gate.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/task_completed_gate.rb; else exit 0; fi",
++            "command": "~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh task_completed_gate.rb",
+             "timeout": 5
+           }
+         ]
+@@ -162,7 +132,7 @@
+         "hooks": [
+           {
+             "type": "command",
+-            "command": "if [ -n \"${CLAUDECODE}${CLAUDE_CODE}\" ] && [ -f .saneprocess ] && [ -f ~/SaneApps/infra/SaneProcess/scripts/hooks/sanestop.rb ]; then ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sanestop.rb; else exit 0; fi",
++            "command": "~/SaneApps/infra/SaneProcess/scripts/hooks/run_hook.sh sanestop.rb",
+             "timeout": 5
+           }
+         ]
+@@ -184,4 +154,4 @@
+   "skipDangerousModePermissionPrompt": true,
+   "agentPushNotifEnabled": true,
+   "skipWorkflowUsageWarning": true
+-}
+\ No newline at end of file
++}
+diff --git a/scripts/SaneMaster.rb b/scripts/SaneMaster.rb
+index a6cb750..44851ba 100755
+--- a/scripts/SaneMaster.rb
++++ b/scripts/SaneMaster.rb
+@@ -228,16 +228,9 @@ class SaneMaster
+         'setapp_upload' => { args: '--zip ZIP --release-notes TEXT [--portal-fallback --app-id ID --version-id ID]', desc: 'Upload or replace a Setapp review build using the standard Setapp lane' }
+       }
+     },
+-    memory: {
+-      desc: 'Cross-session memory (MCP)',
++    session: {
++      desc: 'Session state, approvals, and loop controls',
+       commands: {
+-        'mc' => { args: '', desc: 'Show memory context' },
+-        'mr' => { args: '<type> <name>', desc: 'Record new entity' },
+-        'mp' => { args: '[--dry-run]', desc: 'Prune stale entities' },
+-        'mh' => { args: '', desc: 'Memory health check (entity/token counts)' },
+-        'msync' => { args: '(pipe JSON)', desc: 'Sync MCP memory to local cache' },
+-        'mcompact' => { args: '[--dry-run] [--aggressive]', desc: 'Compact memory (trim verbose, dedupe)' },
+-        'mcleanup' => { args: '(pipe JSON)', desc: 'Analyze MCP memory, generate cleanup commands' },
+         'github_post_approval' => { args: '--body|--body-file <TEXT|PATH> --user-approval "QUOTE"', desc: 'Record exact-text approval before public GitHub posting' },
+         'email_force_approval' => { args: '--action ACTION --id ID --reason TEXT --user-approval "QUOTE"', desc: 'Record scoped approval for check-inbox --force' },
+         'session_end' => { args: '[--skip-prompts]', desc: 'End session with insight extraction' },
+@@ -986,25 +979,29 @@ PY
+     completed_at = Time.now.utc
+     exit_status = $CHILD_STATUS&.exitstatus || (success ? 0 : 1)
+     route_metadata = respond_to?(:workflow_receipt_route_metadata, true) ? workflow_receipt_route_metadata(workflow, success: success) : {}
+-    record_process_metric(
+-      'workflow_receipt',
+-      {
+-        schema_version: 3,
+-        workflow: workflow,
+-        success: success,
+-        command: command.join(' '),
+-        command_sha256: Digest::SHA256.hexdigest(command.join("\0")),
+-        started_at: started_at.iso8601,
+-        completed_at: completed_at.iso8601,
+-        duration_ms: ((completed_at - started_at) * 1000).round,
+-        exit_status: exit_status,
+-        host: Socket.gethostname
+-      }.merge(route_metadata)
+-    ) if respond_to?(:record_process_metric)
++    unless ENV['SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT'] == '1'
++      record_process_metric(
++        'workflow_receipt',
++        {
++          schema_version: 3,
++          workflow: workflow,
++          success: success,
++          command: command.join(' '),
++          command_sha256: Digest::SHA256.hexdigest(command.join("\0")),
++          started_at: started_at.iso8601,
++          completed_at: completed_at.iso8601,
++          duration_ms: ((completed_at - started_at) * 1000).round,
++          exit_status: exit_status,
++          host: Socket.gethostname
++        }.merge(route_metadata)
++      ) if respond_to?(:record_process_metric)
++    end
+     exit(exit_status)
+   end
+ 
+   def record_sanemaster_workflow_receipt(command, args, started_at, exit_status)
++    return if ENV['SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT'] == '1'
++
+     completed_at = Time.now.utc
+     command_parts = ['ruby', File.join(saneprocess_repo_root, 'scripts', 'SaneMaster.rb'), *Array(args)]
+     workflow = "sanemaster:#{command}"
+@@ -1794,21 +1791,7 @@ PY
+     when 'mode', 'test_mode_switch', 'license_mode'
+       app_test_mode(args)
+ 
+-    # Memory MCP
+-    when 'memory_context', 'mc'
+-      show_memory_context(args)
+-    when 'memory_record', 'mr'
+-      record_memory_entity(args)
+-    when 'memory_prune', 'mp'
+-      prune_memory_entities(args)
+-    when 'memory_health', 'mh'
+-      memory_health(args)
+-    when 'memory_sync', 'msync'
+-      memory_sync(args)
+-    when 'memory_compact', 'mcompact'
+-      memory_compact(args)
+-    when 'memory_cleanup', 'mcleanup'
+-      memory_cleanup(args)
++    # Session state, approvals, and loop controls
+     when 'github_post_approval', 'github-post-approval', 'gh_post_approval', 'gh-post-approval'
+       github_post_approval(args)
+     when 'email_force_approval', 'email-force-approval', 'email_force_approve', 'email-force-approve'
+@@ -2551,18 +2534,6 @@ PY
+         'launch_readiness --max-age-days 3'
+       ]
+     },
+-    'mc' => {
+-      usage: 'mc',
+-      description: 'Show current Memory MCP context',
+-      flags: {},
+-      examples: ['mc']
+-    },
+-    'mr' => {
+-      usage: 'mr <type> <name>',
+-      description: 'Record new entity to Memory MCP',
+-      flags: {},
+-      examples: ['mr bug CrashOnExport', 'mr fix AudioSyncIssue']
+-    },
+     'deps' => {
+       usage: 'deps [--dot]',
+       description: 'Show dependency graph',
+diff --git a/scripts/hooks/core/context_compact.rb b/scripts/hooks/core/context_compact.rb
+index 0814cc2..4f4c004 100644
+--- a/scripts/hooks/core/context_compact.rb
++++ b/scripts/hooks/core/context_compact.rb
+@@ -12,6 +12,7 @@
+ # ==============================================================================
+ 
+ require_relative 'state_manager'
++require_relative 'project_root'
+ 
+ module ContextCompact
+   CLAUDE_DIR = File.expand_path('../../../.claude', __dir__)
+@@ -23,7 +24,7 @@ module ContextCompact
+   def self.find_transcript
+     return @cached_transcript_path if @cached_transcript_path
+ 
+-    project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
++    project_dir = SaneProjectRoot.resolve
+     sanitized = project_dir.gsub('/', '-')
+     session_dir = File.expand_path("~/.claude/projects/#{sanitized}")
+     return nil unless Dir.exist?(session_dir)
+diff --git a/scripts/hooks/core/process_metrics.rb b/scripts/hooks/core/process_metrics.rb
+index 87346cc..30c92d4 100644
+--- a/scripts/hooks/core/process_metrics.rb
++++ b/scripts/hooks/core/process_metrics.rb
+@@ -6,6 +6,8 @@ require 'time'
+ 
+ module SaneProcessMetrics
+   DEFAULT_PATH = File.expand_path('~/.sanemaster/process_metrics.jsonl')
++  DEFAULT_MAX_BYTES = 6 * 1024 * 1024
++  DEFAULT_ROTATE_KEEP = 3
+ 
+   module_function
+ 
+@@ -19,6 +21,7 @@ module SaneProcessMetrics
+ 
+     path = metrics_path
+     FileUtils.mkdir_p(File.dirname(path))
++    rotate_if_needed(path)
+     File.open(path, 'a') { |file| file.puts(JSON.generate(event)) }
+     true
+   rescue StandardError => e
+@@ -30,6 +33,32 @@ module SaneProcessMetrics
+     ENV['SANEMASTER_PROCESS_METRICS_PATH'] || DEFAULT_PATH
+   end
+ 
++  def rotate_if_needed(path)
++    return if ENV['SANEMASTER_PROCESS_METRICS_ROTATE_DISABLE'] == '1'
++
++    max_bytes = positive_integer_env('SANEMASTER_PROCESS_METRICS_MAX_BYTES', DEFAULT_MAX_BYTES)
++    return if max_bytes <= 0
++    return unless File.exist?(path) && File.size(path) >= max_bytes
++
++    keep = positive_integer_env('SANEMASTER_PROCESS_METRICS_ROTATE_KEEP', DEFAULT_ROTATE_KEEP)
++    keep = 1 if keep < 1
++
++    keep.downto(1) do |index|
++      source = index == 1 ? path : "#{path}.#{index - 1}"
++      target = "#{path}.#{index}"
++      next unless File.exist?(source)
++
++      FileUtils.rm_f(target)
++      FileUtils.mv(source, target)
++    end
++  end
++
++  def positive_integer_env(name, fallback)
++    Integer(ENV.fetch(name, fallback.to_s))
++  rescue ArgumentError
++    fallback
++  end
++
+   def mini_or_structured_fallback?(event)
+     host = event['host'].to_s.downcase
+     return true if host.include?('mini')
+diff --git a/scripts/hooks/core/state_manager.rb b/scripts/hooks/core/state_manager.rb
+index 64dc9ff..578401f 100644
+--- a/scripts/hooks/core/state_manager.rb
++++ b/scripts/hooks/core/state_manager.rb
+@@ -34,9 +34,10 @@ require 'json'
+ require 'fileutils'
+ require 'tempfile'
+ require_relative '../state_signer'
++require_relative 'project_root'
+ 
+ module StateManager
+-  PROJECT_DIR = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
++  PROJECT_DIR = SaneProjectRoot.resolve
+   STATE_FILE = File.join(PROJECT_DIR, '.claude', 'state.json')
+   LOCK_FILE = "#{STATE_FILE}.lock"
+ 
+diff --git a/scripts/hooks/saneprompt_commands.rb b/scripts/hooks/saneprompt_commands.rb
+index 18bc024..e23f1a4 100644
+--- a/scripts/hooks/saneprompt_commands.rb
++++ b/scripts/hooks/saneprompt_commands.rb
+@@ -15,9 +15,10 @@
+ require 'json'
+ require 'fileutils'
+ require_relative 'core/state_manager'
++require_relative 'core/project_root'
+ 
+ module SanePromptCommands
+-  CLAUDE_DIR = File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.claude')
++  CLAUDE_DIR = File.join(SaneProjectRoot.resolve, '.claude')
+   BYPASS_FILE = File.join(CLAUDE_DIR, 'bypass_active.json')
+   SANEMASTER_PATH = File.expand_path('../../scripts/SaneMaster.rb', __dir__)
+ 
+diff --git a/scripts/hooks/sanestop.rb b/scripts/hooks/sanestop.rb
+index c91f1d0..53fe551 100755
+--- a/scripts/hooks/sanestop.rb
++++ b/scripts/hooks/sanestop.rb
+@@ -584,6 +584,7 @@ def process_stop(stop_hook_active, transcript_path = nil)
+       warn 'Re-run the audit with the required GPT subagent swarm and summary artifact, then try again.'
+       warn '=' * 50
+       warn ''
++      record_blocked_stop_accounting(transcript_path, 'skill_execution', skill_issues.join("\n"))
+       return 2
+     end
+     warn 'This is logged but NOT blocking.'
+@@ -620,6 +621,7 @@ def process_stop(stop_hook_active, transcript_path = nil)
+     warn '   No workaround claim without a receipt.'
+     warn '=' * 50
+     warn ''
++    record_blocked_stop_accounting(transcript_path, 'tool_discovery', tool_discovery_block)
+     return 2
+   end
+ 
+@@ -636,6 +638,7 @@ def process_stop(stop_hook_active, transcript_path = nil)
+     warn '   Update SESSION_HANDOFF.md and/or memory, then try again.'
+     warn '=' * 50
+     warn ''
++    record_blocked_stop_accounting(transcript_path, 'handoff', handoff_block)
+     return 2  # BLOCK — Claude must address this
+   end
+ 
+@@ -652,6 +655,7 @@ def process_stop(stop_hook_active, transcript_path = nil)
+     warn '   Run tests, a health check, or verification before finishing.'
+     warn '=' * 50
+     warn ''
++    record_blocked_stop_accounting(transcript_path, 'verification', verification_block)
+     return 2  # BLOCK — Claude must address this
+   end
+ 
+@@ -667,6 +671,7 @@ def process_stop(stop_hook_active, transcript_path = nil)
+     warn '   Do not claim customer-facing UI work is done from functional tests alone.'
+     warn '=' * 50
+     warn ''
++    record_blocked_stop_accounting(transcript_path, 'visual_verification', visual_block)
+     return 2
+   end
+ 
+@@ -674,7 +679,7 @@ def process_stop(stop_hook_active, transcript_path = nil)
+   check_summary_needed
+ 
+   # Save learnings
+-  stats = save_session_learnings
++  stats = save_session_learnings(transcript_path)
+ 
+   # Report to user
+   if stats[:edits] > 0 || stats[:violations].any?
+@@ -745,6 +750,8 @@ elsif ARGV.include?('--self-test-internal')
+   require 'tmpdir'
+   Dir.mktmpdir('sanestop-self-test-metrics-') do |dir|
+     ENV['SANEMASTER_PROCESS_METRICS_PATH'] = File.join(dir, 'process_metrics.jsonl')
++    ENV['SANE_SOP_CSV_PATH'] = File.join(dir, 'sop_ratings.csv')
++    ENV['SANE_SOP_JSONL_PATH'] = File.join(dir, 'sop_ratings.jsonl')
+     ENV['SANE_SKIP_MCP_WATCHDOG_CLEANUP'] = '1'
+     exit run_internal_self_test.call
+   end
+diff --git a/scripts/hooks/sanestop_finalize.rb b/scripts/hooks/sanestop_finalize.rb
+index b9ec1e5..69d3cb9 100644
+--- a/scripts/hooks/sanestop_finalize.rb
++++ b/scripts/hooks/sanestop_finalize.rb
+@@ -28,6 +28,15 @@ require_relative 'core/process_metrics'
+ require_relative 'core/state_manager'
+ require_relative 'core/visual_receipt'
+ 
++TRANSCRIPT_TOKEN_KEYS = %w[
++  input_tokens output_tokens total_tokens cached_tokens cache_read_input_tokens
++  cache_creation_input_tokens reasoning_tokens
++].freeze unless defined?(TRANSCRIPT_TOKEN_KEYS)
++TRANSCRIPT_TOKEN_TOTAL_COMPONENTS = %w[
++  input_tokens output_tokens cached_tokens cache_read_input_tokens
++  cache_creation_input_tokens
++].freeze unless defined?(TRANSCRIPT_TOKEN_TOTAL_COMPONENTS)
++
+ # === RULE #4 ENFORCEMENT ===
+ # Block session end if edits were made but no tests/verification ran.
+ # This closes the gap where config changes, code changes, etc. go untested.
+@@ -270,7 +279,69 @@ def check_summary_needed
+   nil  # Don't block, just remind
+ end
+ 
+-def save_session_learnings
++def transcript_token_summary(transcript_path)
++  counts = Hash.new(0)
++  return empty_transcript_token_summary if transcript_path.to_s.strip.empty?
++  return empty_transcript_token_summary unless File.file?(transcript_path)
++
++  File.foreach(transcript_path, encoding: Encoding::UTF_8) do |line|
++    next if line.strip.empty?
++
++    collect_transcript_tokens(JSON.parse(line), counts)
++  rescue JSON::ParserError
++    next
++  end
++
++  total = counts['total_tokens']
++  total = TRANSCRIPT_TOKEN_TOTAL_COMPONENTS.sum { |key| counts[key].to_i } if total.to_i.zero?
++  {
++    transcript_total_tokens: total.to_i,
++    transcript_input_tokens: counts['input_tokens'].to_i,
++    transcript_output_tokens: counts['output_tokens'].to_i,
++    transcript_cached_tokens: counts['cached_tokens'].to_i,
++    transcript_cache_read_tokens: counts['cache_read_input_tokens'].to_i,
++    transcript_cache_creation_tokens: counts['cache_creation_input_tokens'].to_i,
++    transcript_reasoning_tokens: counts['reasoning_tokens'].to_i
++  }
++rescue StandardError
++  empty_transcript_token_summary
++end
++
++def empty_transcript_token_summary
++  {
++    transcript_total_tokens: 0,
++    transcript_input_tokens: 0,
++    transcript_output_tokens: 0,
++    transcript_cached_tokens: 0,
++    transcript_cache_read_tokens: 0,
++    transcript_cache_creation_tokens: 0,
++    transcript_reasoning_tokens: 0
++  }
++end
++
++def collect_transcript_tokens(value, counts)
++  case value
++  when Hash
++    value.each do |key, child|
++      key = key.to_s
++      token_value = transcript_token_value(child)
++      counts[key] += token_value if token_value && TRANSCRIPT_TOKEN_KEYS.include?(key)
++      collect_transcript_tokens(child, counts) if child.is_a?(Hash) || child.is_a?(Array)
++    end
++  when Array
++    value.each { |child| collect_transcript_tokens(child, counts) }
++  end
++end
++
++def transcript_token_value(value)
++  return value if value.is_a?(Integer)
++  return value.to_i if value.is_a?(Float)
++  return value.to_i if value.is_a?(String) && value.match?(/\A\d+\z/)
++
++  nil
++end
++
++def build_session_stats(transcript_path: nil, outcome: 'completed', block_family: nil, block_reason: nil)
+   edits = StateManager.get(:edits)
+   research = StateManager.get(:research)
+   cb = StateManager.get(:circuit_breaker)
+@@ -281,12 +352,15 @@ def save_session_learnings
+   sop_receipt = build_sop_receipt(violations)
+   sop_score = sop_receipt[:sop_score]
+ 
+-  # Calculate session stats
+   verify_status = session_verify_status
+-  stats = {
++  {
+     timestamp: Time.now.iso8601,
+     session_id: sop_receipt[:session_id],
+     client: sop_receipt[:client],
++    outcome: outcome,
++    stop_blocked: outcome.to_s == 'blocked',
++    block_family: block_family,
++    block_reason: block_reason,
+     edits: edits[:count] || 0,
+     unique_files: edits[:unique_files]&.length || 0,
+     research_done: research.compact.keys.length,
+@@ -306,50 +380,117 @@ def save_session_learnings
+     final_verify_success: verify_status[:last_success],
+     final_verify_tests_run: verify_status[:last_tests_run],
+     final_verify_evidence_strength: verify_status[:last_evidence_strength],
+-    final_verify_timestamp: verify_status[:last_timestamp]
+-  }
++    final_verify_timestamp: verify_status[:last_timestamp],
++    final_verify_source_fingerprint: verify_status[:last_source_fingerprint]
++  }.merge(transcript_token_summary(transcript_path))
++end
+ 
++def record_session_accounting(transcript_path: nil, outcome: 'completed', block_family: nil, block_reason: nil, update_validation: true)
++  stats = build_session_stats(
++    transcript_path: transcript_path,
++    outcome: outcome,
++    block_family: block_family,
++    block_reason: block_reason
++  )
+   SaneProcessMetrics.record(
+     'session_end',
+     session_id: stats[:session_id],
+     client: stats[:client],
+-    success: verify_status[:last_success],
+-    sop_score: sop_score,
++    outcome: stats[:outcome],
++    stop_blocked: stats[:stop_blocked],
++    block_family: stats[:block_family],
++    block_reason: stats[:block_reason],
++    success: stats[:final_verify_success],
++    sop_score: stats[:sop_score],
+     base_score: stats[:base_score],
+     block_count: stats[:block_count],
+     cap_score: stats[:cap_score],
+     cap_reason: stats[:cap_reason],
+     edits: stats[:edits],
+     unique_files: stats[:unique_files],
+-    verify_attempts: verify_status[:attempts],
+-    verify_failures: verify_status[:failures],
+-    verify_zero_test_failures: verify_status[:zero_test_failures],
+-    verify_zero_test_successes: verify_status[:zero_test_successes],
+-    final_verify_success: verify_status[:last_success],
+-    final_verify_tests_run: verify_status[:last_tests_run],
+-    final_verify_evidence_strength: verify_status[:last_evidence_strength],
+-    final_verify_timestamp: verify_status[:last_timestamp]
++    verify_attempts: stats[:verify_attempts],
++    verify_failures: stats[:verify_failures],
++    verify_zero_test_failures: stats[:verify_zero_test_failures],
++    verify_zero_test_successes: stats[:verify_zero_test_successes],
++    final_verify_success: stats[:final_verify_success],
++    final_verify_tests_run: stats[:final_verify_tests_run],
++    final_verify_evidence_strength: stats[:final_verify_evidence_strength],
++    final_verify_timestamp: stats[:final_verify_timestamp],
++    final_verify_source_fingerprint: stats[:final_verify_source_fingerprint],
++    transcript_total_tokens: stats[:transcript_total_tokens],
++    transcript_input_tokens: stats[:transcript_input_tokens],
++    transcript_output_tokens: stats[:transcript_output_tokens],
++    transcript_cached_tokens: stats[:transcript_cached_tokens],
++    transcript_cache_read_tokens: stats[:transcript_cache_read_tokens],
++    transcript_cache_creation_tokens: stats[:transcript_cache_creation_tokens],
++    transcript_reasoning_tokens: stats[:transcript_reasoning_tokens]
+   )
+-  SaneProcessMetrics.record('session_receipt', build_client_neutral_session_receipt(stats, violations, verify_status))
++  SaneProcessMetrics.record('session_receipt', build_client_neutral_session_receipt(stats))
++  record_block_outcomes(stats)
++
++  update_validation_metrics if update_validation
++  stats
++end
++
++def record_blocked_stop_accounting(transcript_path, block_family, block_reason)
++  record_session_accounting(
++    transcript_path: transcript_path,
++    outcome: 'blocked',
++    block_family: block_family,
++    block_reason: block_reason,
++    update_validation: false
++  )
++end
++
++def record_block_outcomes(stats)
++  rows = stats[:violations].each_with_object({}) do |(rule, count), memo|
++    memo[rule.to_s] = count.to_i
++  end
++  rows[stats[:block_family].to_s] ||= 1 if stats[:stop_blocked] && stats[:block_family]
++  rows.each do |rule, count|
++    SaneProcessMetrics.record(
++      'block_outcome',
++      session_id: stats[:session_id],
++      outcome: stats[:outcome],
++      stop_blocked: stats[:stop_blocked],
++      rule_family: rule,
++      count: count,
++      block_family: stats[:block_family],
++      block_reason: stats[:block_reason]
++    )
++  end
++end
++
++def save_session_learnings(transcript_path = nil)
++  stats = record_session_accounting(transcript_path: transcript_path, outcome: 'completed')
+ 
+   # Update patterns for future sessions
+-  update_session_patterns(violations, sop_score)
++  update_session_patterns(stats[:violations], stats[:sop_score])
+ 
+   # Check score variance (warns if suspiciously consistent)
+-  check_score_variance(sop_score)
++  check_score_variance(stats[:sop_score])
+ 
+   # Check weasel words in recent edits
+   check_weasel_words
+ 
+-  # Update validation metrics (Q1 block accuracy, Q2 missed doom loops, Q4 session counts)
+-  update_validation_metrics
+-
+   log_session(stats)
+   capture_session_learnings
+   stats
+ end
+ 
+-def build_client_neutral_session_receipt(stats, violations, verify_status)
++def build_client_neutral_session_receipt(stats, violations = nil, verify_status = nil)
++  violations ||= stats[:violations] || {}
++  verify_status ||= {
++    attempts: stats[:verify_attempts],
++    failures: stats[:verify_failures],
++    zero_test_failures: stats[:verify_zero_test_failures],
++    zero_test_successes: stats[:verify_zero_test_successes],
++    last_success: stats[:final_verify_success],
++    last_tests_run: stats[:final_verify_tests_run],
++    last_evidence_strength: stats[:final_verify_evidence_strength],
++    last_timestamp: stats[:final_verify_timestamp],
++    last_source_fingerprint: stats[:final_verify_source_fingerprint]
++  }
+   started_at = session_start_time
+   completed_at = Time.now.utc
+   git_root = current_git_value('rev-parse', '--show-toplevel')
+@@ -361,6 +502,10 @@ def build_client_neutral_session_receipt(stats, violations, verify_status)
+     client: client,
+     client_name: client,
+     client_kind: client_kind(client),
++    outcome: stats[:outcome],
++    stop_blocked: stats[:stop_blocked],
++    block_family: stats[:block_family],
++    block_reason: stats[:block_reason],
+     host: Socket.gethostname,
+     git_root: git_root,
+     git_head: current_git_value('rev-parse', 'HEAD'),
+@@ -384,6 +529,13 @@ def build_client_neutral_session_receipt(stats, violations, verify_status)
+     final_verify_evidence_strength: verify_status[:last_evidence_strength],
+     final_verify_timestamp: verify_status[:last_timestamp],
+     final_verify_source_fingerprint: verify_status[:last_source_fingerprint],
++    transcript_total_tokens: stats[:transcript_total_tokens],
++    transcript_input_tokens: stats[:transcript_input_tokens],
++    transcript_output_tokens: stats[:transcript_output_tokens],
++    transcript_cached_tokens: stats[:transcript_cached_tokens],
++    transcript_cache_read_tokens: stats[:transcript_cache_read_tokens],
++    transcript_cache_creation_tokens: stats[:transcript_cache_creation_tokens],
++    transcript_reasoning_tokens: stats[:transcript_reasoning_tokens],
+     workflow_receipt_ids: recent_workflow_receipt_ids,
+     visual_receipt_paths: current_visual_receipt_paths,
+     handoff_updated: handoff_updated_since?(started_at),
+@@ -526,12 +678,14 @@ end
+ def append_sop_receipts(stats)
+   return unless stats[:sop_score]
+ 
+-  csv_dir = File.dirname(SOP_CSV)
++  csv_path = sop_csv_path
++  jsonl_path = sop_jsonl_path
++  csv_dir = File.dirname(csv_path)
+   FileUtils.mkdir_p(csv_dir)
+ 
+   # Create header if file doesn't exist or is empty
+-  unless File.exist?(SOP_CSV) && File.size(SOP_CSV) > 0
+-    File.write(SOP_CSV, "date,sop_score,session_id,client,block_count,cap_reason,verify_attempts,verify_failures,final_verify_success,edits,unique_files,notes_json\n")
++  unless File.exist?(csv_path) && File.size(csv_path) > 0
++    File.write(csv_path, "date,sop_score,session_id,client,block_count,cap_reason,verify_attempts,verify_failures,final_verify_success,edits,unique_files,notes_json\n")
+   end
+ 
+   notes = JSON.generate(
+@@ -559,12 +713,20 @@ def append_sop_receipts(stats)
+     stats[:unique_files],
+     notes
+   ].map { |value| csv_escape(value) }.join(',')
+-  File.open(SOP_CSV, 'a') { |f| f.puts(row) }
+-  File.open(SOP_JSONL, 'a') { |f| f.puts(JSON.generate(stats)) }
++  File.open(csv_path, 'a') { |f| f.puts(row) }
++  File.open(jsonl_path, 'a') { |f| f.puts(JSON.generate(stats)) }
+ rescue StandardError
+   # Don't fail on CSV errors
+ end
+ 
++def sop_csv_path
++  ENV['SANE_SOP_CSV_PATH'] || ENV['SOP_CSV'] || SOP_CSV
++end
++
++def sop_jsonl_path
++  ENV['SANE_SOP_JSONL_PATH'] || ENV['SOP_JSONL'] || SOP_JSONL
++end
++
+ def csv_escape(value)
+   text = value.nil? ? '' : value.to_s
+   return text unless text.match?(/[",\n]/)
+@@ -587,6 +749,7 @@ def run_mcp_watchdog_cleanup
+   return unless File.exist?(sane_master)
+ 
+   system(
++    { 'SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT' => '1' },
+     RbConfig.ruby, sane_master, 'mcp_watchdog', 'clean',
+     '--quiet', '--max', '4', '--grace', '0',
+     out: File::NULL, err: File::NULL
+diff --git a/scripts/hooks/sanestop_test.rb b/scripts/hooks/sanestop_test.rb
+index b7a76c3..806a47a 100644
+--- a/scripts/hooks/sanestop_test.rb
++++ b/scripts/hooks/sanestop_test.rb
+@@ -18,6 +18,17 @@ require 'fileutils'
+ require_relative 'core/state_manager'
+ 
+ module SaneStopTest
++  def self.ensure_git_repo!
++    _out, status = Open3.capture2e('git', '-C', Dir.pwd, 'rev-parse', '--show-toplevel')
++    return if status.success?
++
++    system('git', 'init', '-q', chdir: Dir.pwd)
++    system('git', 'config', 'user.email', 'test@example.com', chdir: Dir.pwd)
++    system('git', 'config', 'user.name', 'Test', chdir: Dir.pwd)
++    system('git', 'add', '.', chdir: Dir.pwd)
++    system('git', 'commit', '-q', '-m', 'init', chdir: Dir.pwd)
++  end
++
+   def self.source_fingerprint
+     root_out, root_status = Open3.capture2e('git', '-C', Dir.pwd, 'rev-parse', '--show-toplevel')
+     return 'unknown' unless root_status.success?
+@@ -51,6 +62,7 @@ module SaneStopTest
+   def self.run(process_stop_proc, check_score_variance_proc, check_weasel_words_proc, calculate_sop_score_proc, log_file)
+     warn 'SaneStop Self-Test'
+     warn '=' * 40
++    ensure_git_repo!
+ 
+     # Reset state
+     StateManager.reset(:edits)
+@@ -133,6 +145,61 @@ module SaneStopTest
+       warn "  FAIL: Verified edits should allow stop, got exit #{exit_code}"
+     end
+ 
++    # Test 2b-2: Blocked stops still write session_end accounting, tokens, and block outcomes
++    Dir.mktmpdir('sanestop-blocked-accounting') do |tmpdir|
++      old_metrics_path = ENV['SANEMASTER_PROCESS_METRICS_PATH']
++      metrics_path = File.join(tmpdir, 'process_metrics.jsonl')
++      transcript_path = File.join(tmpdir, 'transcript.jsonl')
++      ENV['SANEMASTER_PROCESS_METRICS_PATH'] = metrics_path
++      File.write(transcript_path, JSON.generate('message' => { 'usage' => { 'input_tokens' => 10, 'output_tokens' => 5, 'cache_read_input_tokens' => 4 } }) + "\n")
++
++      StateManager.update(:edits) do |e|
++        e[:count] = 1
++        e[:unique_files] = ['/tmp/example.rb']
++        e[:last_edit_at] = Time.now.iso8601
++        e
++      end
++      StateManager.reset(:verification)
++      StateManager.update(:handoff_tracking) do |h|
++        h[:handoff_updated] = true
++        h[:memory_updated] = true
++        h
++      end
++      StateManager.update(:enforcement) do |e|
++        e[:session_started_at] = (Time.now - 60).iso8601
++        e[:blocks] = [{ timestamp: Time.now.iso8601, rule: 'Rule #4' }]
++        e
++      end
++
++      original_stderr = $stderr.clone
++      $stderr.reopen('/dev/null', 'w')
++      exit_code = process_stop_proc.call(false, transcript_path)
++      $stderr.reopen(original_stderr)
++
++      rows = File.readlines(metrics_path, chomp: true).map { |line| JSON.parse(line) }
++      session_end = rows.find { |row| row['type'] == 'session_end' }
++      receipt = rows.find { |row| row['type'] == 'session_receipt' }
++      outcomes = rows.select { |row| row['type'] == 'block_outcome' }
++      if exit_code == 2 &&
++         session_end &&
++         session_end['outcome'] == 'blocked' &&
++         session_end['stop_blocked'] == true &&
++         session_end['block_family'] == 'verification' &&
++         session_end['transcript_total_tokens'] == 19 &&
++         receipt &&
++         receipt['outcome'] == 'blocked' &&
++         outcomes.any? { |row| row['rule_family'] == 'Rule #4' } &&
++         outcomes.any? { |row| row['rule_family'] == 'verification' }
++        passed += 1
++        warn '  PASS: Blocked stop records session_end, transcript tokens, and block_outcome rows'
++      else
++        failed += 1
++        warn '  FAIL: Blocked stop should record session_end, transcript tokens, and block_outcome rows'
++      end
++    ensure
++      ENV['SANEMASTER_PROCESS_METRICS_PATH'] = old_metrics_path
++    end
++
+     # Test 2c: Doc-only edits = allow stop without verification
+     StateManager.update(:edits) do |e|
+       e[:count] = 2
+@@ -182,6 +249,42 @@ module SaneStopTest
+       warn '  FAIL: Log file not created'
+     end
+ 
++    Dir.mktmpdir('sanestop-sop-override') do |tmpdir|
++      old_csv_path = ENV['SANE_SOP_CSV_PATH']
++      old_jsonl_path = ENV['SANE_SOP_JSONL_PATH']
++      ENV['SANE_SOP_CSV_PATH'] = File.join(tmpdir, 'sop_ratings.csv')
++      ENV['SANE_SOP_JSONL_PATH'] = File.join(tmpdir, 'sop_ratings.jsonl')
++      StateManager.reset(:edits)
++      StateManager.reset(:verification)
++      StateManager.reset(:circuit_breaker)
++      StateManager.reset(:handoff_tracking)
++      StateManager.update(:enforcement) { |e| e[:blocks] = []; e }
++
++      original_stderr = $stderr.clone
++      $stderr.reopen('/dev/null', 'w')
++      exit_code = process_stop_proc.call(false)
++      $stderr.reopen(original_stderr)
++
++      if exit_code == 0 && File.exist?(ENV['SANE_SOP_CSV_PATH']) && File.exist?(ENV['SANE_SOP_JSONL_PATH'])
++        passed += 1
++        warn '  PASS: SOP receipt paths honor environment override'
++      else
++        failed += 1
++        warn '  FAIL: SOP receipt paths should honor environment override'
++      end
++    ensure
++      if old_csv_path
++        ENV['SANE_SOP_CSV_PATH'] = old_csv_path
++      else
++        ENV.delete('SANE_SOP_CSV_PATH')
++      end
++      if old_jsonl_path
++        ENV['SANE_SOP_JSONL_PATH'] = old_jsonl_path
++      else
++        ENV.delete('SANE_SOP_JSONL_PATH')
++      end
++    end
++
+     # === SCORE VARIANCE DETECTION TESTS ===
+     warn ''
+     warn 'Testing score variance detection:'
+diff --git a/scripts/hooks/sanetools.rb b/scripts/hooks/sanetools.rb
+index e8169a5..9a1c98b 100755
+--- a/scripts/hooks/sanetools.rb
++++ b/scripts/hooks/sanetools.rb
+@@ -30,9 +30,10 @@ require_relative 'core/state_manager'
+ require_relative 'core/process_metrics'
+ require_relative 'sanetools_checks'
+ require_relative 'sanetools_startup'
++require_relative 'core/project_root'
+ 
+ # === SAFEMODE BYPASS ===
+-BYPASS_FILE = File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.claude', 'bypass_active.json')
++BYPASS_FILE = File.join(SaneProjectRoot.resolve, '.claude', 'bypass_active.json')
+ BYPASS_ACTIVE = File.exist?(BYPASS_FILE)
+ 
+ LOG_FILE = File.expand_path('../../.claude/sanetools.log', __dir__)
+@@ -158,7 +159,7 @@ BREAKER_RECOVERY_PATTERN = Regexp.union(
+ def breaker_recovery_call?(tool_name, tool_input)
+   return false unless tool_name == 'Bash'
+ 
+-  command = (tool_input['command'] || tool_input[:command]).to_s
++  command = SaneLocalUIGuard.strip_quoted((tool_input['command'] || tool_input[:command]).to_s)
+   command.match?(BREAKER_RECOVERY_PATTERN)
+ end
+ 
+@@ -344,13 +345,15 @@ def detect_rule_from_reason(reason)
+ end
+ 
+ def output_block(reason, tool_name = nil)
++  # Check for refusal to read (repeated same block) before printing the full
++  # block. Repeats get compact output so the same wall of text is not echoed.
++  escalation = tool_name ? SaneToolsChecks.check_refusal_to_read(tool_name, reason) : nil
++
+   warn '---'
+   warn 'SANETOOLS BLOCKED'
+   warn ''
+-  warn reason
++  warn(escalation || reason)
+ 
+-  # Check for refusal to read (repeated same block)
+-  escalation = tool_name ? SaneToolsChecks.check_refusal_to_read(tool_name, reason) : nil
+   SaneProcessMetrics.record(
+     'hook_block',
+     tool: tool_name,
+@@ -358,10 +361,6 @@ def output_block(reason, tool_name = nil)
+     reason: reason.lines.first&.strip,
+     escalated: !escalation.nil?
+   )
+-  if escalation
+-    warn ''
+-    warn escalation
+-  end
+ 
+   warn '---'
+ end
+@@ -499,7 +498,7 @@ def process_tool(tool_name, tool_input)
+   end
+ 
+   # === DEPLOYMENT SAFETY (SaneApps-specific — only enforce for .saneprocess projects) ===
+-  if File.exist?(File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.saneprocess'))
++  if File.exist?(File.join(SaneProjectRoot.resolve, '.saneprocess'))
+     if (reason = SaneToolsChecks.check_r2_upload(tool_name, tool_input))
+       log_action(tool_name, true, reason)
+       output_block(reason, tool_name)
+@@ -618,7 +617,7 @@ def store_research_mtime_if_needed(tool_name, tool_input)
+   prompt = tool_input['prompt'] || tool_input[:prompt] || ''
+   return unless prompt.match?(/research\.md/i)
+ 
+-  project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
++  project_dir = SaneProjectRoot.resolve
+   research_md = File.join(project_dir, '.claude', 'research.md')
+   mtime = File.exist?(research_md) ? File.mtime(research_md).iso8601 : nil
+ 
+diff --git a/scripts/hooks/sanetools_checks.rb b/scripts/hooks/sanetools_checks.rb
+index baa2270..faf8429 100755
+--- a/scripts/hooks/sanetools_checks.rb
++++ b/scripts/hooks/sanetools_checks.rb
+@@ -13,6 +13,7 @@ require_relative 'sanetools_gaming'
+ require_relative 'sanetools_deploy'
+ require_relative 'sanetools_github_guard'
+ require_relative 'sanetools_research'
++require_relative 'sanetools_refusal'
+ 
+ module SaneToolsChecks
+   # Constants needed by checks
+@@ -206,7 +207,7 @@ module SaneToolsChecks
+ 
+       expanded_path = File.expand_path(sanitized_path) rescue sanitized_path
+       expanded_decoded = File.expand_path(decoded_path) rescue decoded_path
+-      project_dir = File.expand_path(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd) rescue nil
++      project_dir = File.expand_path(SaneProjectRoot.resolve) rescue nil
+ 
+       # Traversal detection: if input uses ".." to reach sensitive path segments, block it.
+       # The raw path may not resolve to /etc from this CWD, but from a different CWD it would.
+@@ -345,7 +346,7 @@ module SaneToolsChecks
+       return nil if File.exist?(path)
+ 
+       expanded_path = File.expand_path(path)
+-      project_dir = File.expand_path(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
++      project_dir = File.expand_path(SaneProjectRoot.resolve)
+       return nil unless expanded_path.start_with?("#{project_dir}/")
+ 
+       return nil unless expanded_path.end_with?('.md')
+@@ -424,6 +425,7 @@ module SaneToolsChecks
+ 
+     def check_table_ban(tool_name, tool_input, edit_tools)
+       return nil unless edit_tools.include?(tool_name)
++      return nil if markdown_target?(tool_input)
+ 
+       content = tool_input['new_string'] || tool_input[:new_string] ||
+                 tool_input['content'] || tool_input[:content] || ''
+@@ -446,6 +448,12 @@ module SaneToolsChecks
+       nil
+     end
+ 
++    def markdown_target?(tool_input)
++      path = tool_input['file_path'] || tool_input[:file_path] ||
++             tool_input['path'] || tool_input[:path] || ''
++      path.to_s.downcase.end_with?('.md', '.markdown')
++    end
++
+     def check_bash_bypass(tool_name, tool_input, bash_file_write_pattern)
+       return nil unless tool_name == 'Bash'
+ 
+@@ -551,12 +559,23 @@ module SaneToolsChecks
+       return nil unless cb[:tripped]
+ 
+       "CIRCUIT BREAKER TRIPPED\n" \
+-      "#{cb[:failures]} consecutive failures detected.\n" \
++      "#{circuit_breaker_trip_summary(cb)}\n" \
+       "Last error: #{cb[:last_error]}\n" \
+       "Rule #3: stop, read the error, and research before retrying.\n" \
+       "Reset only after documenting the root cause: rb-"
+     end
+ 
++    def circuit_breaker_trip_summary(cb)
++      failures = cb[:failures].to_i
++      return "#{failures} consecutive failures detected." if failures.positive?
++
++      signatures = cb[:error_signatures] || {}
++      signature, count = signatures.find { |_key, value| value.to_i >= 2 }
++      return "same signature #{count.to_i}x detected (#{signature})." if signature
++
++      'breaker is tripped.'
++    end
++
+     # === SESSION DOC ENFORCEMENT ===
+     # Block edit tools until required session docs have been read
+     def check_session_docs_read(tool_name, edit_tools)
+@@ -701,86 +720,8 @@ module SaneToolsChecks
+     end
+ 
+     # === INTELLIGENCE: Refusal to Read Detection ===
+-    # Detect when AI is blocked repeatedly for same reason but keeps trying
+-    # instead of reading the message and following instructions
+-
+-    def check_refusal_to_read(tool_name, block_reason)
+-      return nil unless block_reason
+-
+-      # Extract the block type from the reason
+-      block_type = case block_reason
+-                   when /RESEARCH INCOMPLETE/i then 'research_incomplete'
+-                   when /BLOCKED PATH/i then 'blocked_path'
+-                   when /FILE SIZE/i then 'file_size'
+-                   when /BASH.*WRITE/i then 'bash_write'
+-                   when /STATE.*BYPASS|STATE.*PROTECTED/i then 'state_bypass'
+-                   when /MCP.*VERIFICATION/i then 'mcp_verification'
+-                   when /MCP ACTIONS PENDING/i then 'mcp_actions_pending'
+-                   when /SANELOOP REQUIRED/i then 'saneloop_required'
+-                   when /READ REQUIRED DOCS/i then 'session_docs'
+-                   else 'other'
+-                   end
+-
+-      # Track consecutive blocks of same type
+-      blocks = StateManager.get(:refusal_tracking) || {}
+-      current = blocks[block_type] || { count: 0, last_tool: nil }
+-
+-      # Increment if same block type
+-      current[:count] += 1
+-      current[:last_tool] = tool_name
+-      current[:last_at] = Time.now.iso8601
+-
+-      StateManager.update(:refusal_tracking) do |b|
+-        b[block_type] = current
+-        b
+-      end
+-
+-      # Escalate based on count
+-      case current[:count]
+-      when 1
+-        nil # First block - normal message
+-      when 2
+-        # Second block - add READ THE MESSAGE reminder
+-        "\n" \
+-        "⚠️  SAME BLOCK TWICE - READ THE MESSAGE ABOVE\n" \
+-        "You were just blocked for this. The FIX is in the message.\n" \
+-        "DO NOT try again. READ the block message. FOLLOW the instructions."
+-      else
+-        # 3+ blocks - halt and require acknowledgment
+-        "REFUSAL TO READ DETECTED - SESSION HALTED\n" \
+-        "You've been blocked #{current[:count]}x for: #{block_type}\n" \
+-        "\n" \
+-        "Each block message told you EXACTLY what to do.\n" \
+-        "You ignored it and kept trying different approaches.\n" \
+-        "\n" \
+-        "THIS IS THE PROBLEM THE HOOKS EXIST TO SOLVE.\n" \
+-        "\n" \
+-        "USER: Type 'reset blocks' or 'unblock' to allow retry.\n" \
+-        "      Type 'reset?' to see all reset commands.\n" \
+-        "      Resets are LOGGED and do NOT disable enforcement."
+-      end
+-    end
+-
+-    def reset_refusal_tracking(block_type = nil)
+-      if block_type
+-        StateManager.update(:refusal_tracking) { |b| b.delete(block_type); b }
+-      else
+-        StateManager.reset(:refusal_tracking)
+-      end
+-    end
+-
+-    # Reset tracking when AI does the RIGHT thing (reward obedience)
+-    def reward_correct_behavior(action_type)
+-      case action_type
+-      when :research_done
+-        reset_refusal_tracking('research_incomplete')
+-        warn "✅ Research complete. You may now edit."
+-      when :used_correct_tool
+-        warn "✅ Correct tool used. Proceeding."
+-      when :read_sop
+-        warn "✅ SOP acknowledged. You're following the process."
+-      end
+-    end
++    # Extracted to sanetools_refusal.rb per Rule #10
++    include SaneToolsRefusal
+ 
+     # === INTELLIGENCE: Gaming Detection ===
+     # Extracted to sanetools_gaming.rb per Rule #10
+diff --git a/scripts/hooks/sanetools_deploy.rb b/scripts/hooks/sanetools_deploy.rb
+index e1bbb16..d886b10 100644
+--- a/scripts/hooks/sanetools_deploy.rb
++++ b/scripts/hooks/sanetools_deploy.rb
+@@ -19,6 +19,7 @@
+ 
+ require 'time'
+ require_relative 'core/state_manager'
++require_relative 'core/project_root'
+ 
+ module SaneToolsDeploy
+   # All SaneApps share ONE R2 bucket via the dist Worker
+@@ -168,7 +169,7 @@ module SaneToolsDeploy
+       dmg_filename = url_match[1]
+ 
+       # Try to find local DMG and compare size
+-      project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
++      project_dir = SaneProjectRoot.resolve
+       possible_paths = Dir.glob("#{project_dir}/**/#{dmg_filename}") +
+                        Dir.glob("#{File.expand_path('~')}/Desktop/#{dmg_filename}")
+ 
+diff --git a/scripts/hooks/sanetools_research.rb b/scripts/hooks/sanetools_research.rb
+index 08e02ad..c04ee77 100644
+--- a/scripts/hooks/sanetools_research.rb
++++ b/scripts/hooks/sanetools_research.rb
+@@ -13,6 +13,7 @@
+ 
+ require 'json'
+ require_relative 'core/state_manager'
++require_relative 'core/project_root'
+ 
+ module SaneToolsResearch
+   # Categories that require specific MCPs — auto-satisfy if those MCPs aren't available.
+@@ -48,7 +49,7 @@ module SaneToolsResearch
+     tool_name.match?(mcp_tool_pattern(server))
+   end
+ 
+-  def configured_mcp_keys(project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
++  def configured_mcp_keys(project_dir = SaneProjectRoot.resolve)
+     server_names = configured_mcp_server_names(project_dir)
+ 
+     MCP_SERVER_NAME_MAP.each_with_object([]) do |(key, server_name), configured|
+@@ -56,7 +57,7 @@ module SaneToolsResearch
+     end
+   end
+ 
+-  def configured_mcp_server_names(project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
++  def configured_mcp_server_names(project_dir = SaneProjectRoot.resolve)
+     configured_mcp_config_paths(project_dir).each_with_object([]) do |path, names|
+       next unless File.exist?(path)
+ 
+@@ -108,7 +109,7 @@ module SaneToolsResearch
+     end
+   end
+ 
+-  def configured_mcp_verification_info(project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
++  def configured_mcp_verification_info(project_dir = SaneProjectRoot.resolve)
+     configured = configured_mcp_keys(project_dir)
+     MCP_VERIFICATION_INFO.select { |key, _info| configured.include?(key) }
+   end
+@@ -182,10 +183,10 @@ module SaneToolsResearch
+   # Block edits until ALL MCPs have been verified this session
+   # User insight: "how can you make sure all systems are go before work begins?"
+ 
+-  CLAUDE_DIR = File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.claude')
++  CLAUDE_DIR = File.join(SaneProjectRoot.resolve, '.claude')
+   MEMORY_STAGING_FILE = File.join(CLAUDE_DIR, 'memory_staging.json')
+ 
+-  def memory_staging_file(project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd)
++  def memory_staging_file(project_dir = SaneProjectRoot.resolve)
+     File.join(project_dir, '.claude', 'memory_staging.json')
+   end
+ 
+@@ -207,7 +208,7 @@ module SaneToolsResearch
+     return nil unless edit_tools.include?(tool_name)
+ 
+     # Only enforce MCP verification for projects with .saneprocess manifest
+-    project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
++    project_dir = SaneProjectRoot.resolve
+     return nil unless File.exist?(File.join(project_dir, '.saneprocess'))
+ 
+     configured_mcps = configured_mcp_verification_info(project_dir)
+diff --git a/scripts/hooks/sanetools_startup.rb b/scripts/hooks/sanetools_startup.rb
+index 1c11458..c334c48 100644
+--- a/scripts/hooks/sanetools_startup.rb
++++ b/scripts/hooks/sanetools_startup.rb
+@@ -12,6 +12,7 @@
+ # ==============================================================================
+ 
+ require_relative 'core/state_manager'
++require_relative 'core/project_root'
+ 
+ module SaneToolsStartup
+   # Tools that are always allowed during startup (needed to complete startup steps)
+@@ -43,7 +44,7 @@ module SaneToolsStartup
+     # Returns nil if allowed, or a block message string if blocked.
+     def check_startup_gate(tool_name, tool_input)
+       # Only enforce in SaneProcess projects
+-      project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
++      project_dir = SaneProjectRoot.resolve
+       return nil unless File.exist?(File.join(project_dir, '.saneprocess'))
+ 
+       gate = StateManager.get(:startup_gate)
+diff --git a/scripts/hooks/sanetools_test.rb b/scripts/hooks/sanetools_test.rb
+index a6c3d0a..0f5bfed 100755
+--- a/scripts/hooks/sanetools_test.rb
++++ b/scripts/hooks/sanetools_test.rb
+@@ -184,6 +184,34 @@ module SaneToolsTest
+       warn "  FAIL: Circuit breaker should allow research tools, got Read=#{read_exit} Grep=#{grep_exit} WebSearch=#{web_exit}"
+     end
+ 
++    StateManager.update(:circuit_breaker) do |cb|
++      cb[:tripped] = true
++      cb[:failures] = 0
++      cb[:error_signatures] = { COMMAND_NOT_FOUND: 2 }
++      cb[:last_error] = 'COMMAND_NOT_FOUND x2'
++      cb
++    end
++    message = SaneToolsChecks.check_circuit_breaker
++    if message.include?('same signature 2x') && !message.include?('0 consecutive failures')
++      passed += 1
++      warn '  PASS: Signature-trip breaker message avoids 0 consecutive failures copy'
++    else
++      failed += 1
++      warn "  FAIL: Signature-trip breaker message should name same signature, got #{message.inspect}"
++    end
++
++    original_stderr = $stderr.clone
++    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
++    quoted_pipe_exit = process_tool_proc.call('Bash', { 'command' => "grep -R 'foo|bar' scripts/hooks" })
++    $stderr.reopen(original_stderr)
++    if quoted_pipe_exit == 0
++      passed += 1
++      warn '  PASS: Breaker recovery allows quoted grep pipe patterns'
++    else
++      failed += 1
++      warn "  FAIL: Quoted grep pipe should not block breaker recovery, got exit #{quoted_pipe_exit}"
++    end
++
+     # Reset circuit breaker for remaining tests
+     StateManager.reset(:circuit_breaker)
+ 
+@@ -559,6 +587,50 @@ module SaneToolsTest
+     passed += scenario_passed
+     failed += scenario_failed
+ 
++    # === TABLE BAN TESTS ===
++    warn ''
++    warn 'Testing table ban markdown exemption:'
++
++    table_markdown = "| Name | Value |\n| --- | --- |\n| Sane | Process |\n"
++    [
++      ['/Users/sj/SaneProcess/README.md', 'Markdown .md table allowed'],
++      ['/Users/sj/SaneProcess/docs/release-notes.markdown', 'Markdown .markdown table allowed']
++    ].each do |path, label|
++      original_stderr = $stderr.clone
++      $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
++      exit_code = process_tool_proc.call('Edit', {
++                                           'file_path' => path,
++                                           'old_string' => '',
++                                           'new_string' => table_markdown
++                                         })
++      $stderr.reopen(original_stderr)
++
++      if exit_code == 0
++        passed += 1
++        warn "  PASS: #{label}"
++      else
++        failed += 1
++        warn "  FAIL: #{label}, got exit #{exit_code}"
++      end
++    end
++
++    original_stderr = $stderr.clone
++    $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
++    exit_code = process_tool_proc.call('Edit', {
++                                         'file_path' => '/Users/sj/SaneProcess/website/index.html',
++                                         'old_string' => '',
++                                         'new_string' => table_markdown
++                                       })
++    $stderr.reopen(original_stderr)
++
++    if exit_code == 2
++      passed += 1
++      warn '  PASS: Non-markdown table edit remains blocked'
++    else
++      failed += 1
++      warn "  FAIL: Non-markdown table edit should block, got exit #{exit_code}"
++    end
++
+     # Cleanup
+     StateManager.reset(:sensitive_approvals)
+     StateManager.reset(:edit_attempts)
+@@ -911,7 +983,10 @@ module SaneToolsTest
+     ENV['CLAUDE_PROJECT_DIR'] = deg_project_dir
+     original_stderr = $stderr.clone
+     $stderr.reopen('/dev/null', 'w') unless ENV['SANE_TEST_DEBUG']
+-    deg_results = Array.new(3) { SaneToolsChecks.check_pending_mcp_actions('Edit', %w[Edit Write]) }
++    deg_results = nil
++    Dir.chdir(deg_project_dir) do
++      deg_results = Array.new(3) { SaneToolsChecks.check_pending_mcp_actions('Edit', %w[Edit Write]) }
++    end
+     $stderr.reopen(original_stderr)
+     ENV['CLAUDE_PROJECT_DIR'] = old_project_dir
+ 
+@@ -943,6 +1018,17 @@ module SaneToolsTest
+       warn "  FAIL: MCP actions pending refusal tracking should not use other, got #{tracking.keys.inspect}"
+     end
+ 
++    repeat_message = SaneToolsChecks.check_refusal_to_read('Edit', mcp_pending_reason)
++    if repeat_message.to_s.include?('SAME BLOCK TWICE: mcp_actions_pending') &&
++       repeat_message.to_s.include?('Resolve the pending MCP/memory action') &&
++       !repeat_message.to_s.include?('Each block message told you')
++      passed += 1
++      warn '  PASS: Repeated blocks use compact remedial message'
++    else
++      failed += 1
++      warn "  FAIL: Repeated block message should be compact, got #{repeat_message.inspect}"
++    end
++
+     FileUtils.rm_rf(deg_project_dir) if Dir.exist?(deg_project_dir)
+     StateManager.update(:mcp_health) do |h|
+       h[:verified_this_session] = true
+diff --git a/scripts/hooks/sanetools_test_scenarios.rb b/scripts/hooks/sanetools_test_scenarios.rb
+index d113dc9..0b24385 100644
+--- a/scripts/hooks/sanetools_test_scenarios.rb
++++ b/scripts/hooks/sanetools_test_scenarios.rb
+@@ -5,6 +5,7 @@ require 'fileutils'
+ require 'open3'
+ require 'tmpdir'
+ require_relative 'core/state_manager'
++require_relative 'core/project_root'
+ 
+ module SaneToolsTestScenarios
+   module_function
+@@ -16,9 +17,11 @@ module SaneToolsTestScenarios
+     warn ''
+     warn 'Testing new-file and component-owner guards:'
+ 
+-    project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
++    project_dir = SaneProjectRoot.resolve
+     orphan_doc = File.join(project_dir, 'TESTING.md')
+     readme_doc = File.join(project_dir, 'README.md')
++    readme_existed = File.exist?(readme_doc)
++    readme_contents = File.binread(readme_doc) if readme_existed
+     FileUtils.rm_f(orphan_doc)
+     FileUtils.rm_f(readme_doc)
+ 
+@@ -66,6 +69,16 @@ module SaneToolsTestScenarios
+     )
+ 
+     [passed, failed]
++  ensure
++    FileUtils.rm_f(orphan_doc) if orphan_doc
++    FileUtils.rm_rf(owner_dir) if owner_dir && File.directory?(owner_dir)
++    if readme_doc
++      if readme_existed
++        File.binwrite(readme_doc, readme_contents)
++      else
++        FileUtils.rm_f(readme_doc)
++      end
++    end
+   end
+ 
+   def run_deployment_safety_tests(process_tool_proc, research_categories)
+@@ -198,7 +211,7 @@ module SaneToolsTestScenarios
+ 
+     exit_code = with_quiet_stderr do
+       process_tool_proc.call('Edit', {
+-        'file_path' => File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, 'website', 'appcast.xml'),
++        'file_path' => File.join(SaneProjectRoot.resolve, 'website', 'appcast.xml'),
+         'old_string' => 'old content',
+         'new_string' => '<enclosure url="https://dist.sanebar.com/SaneBar-9.9.9-test.dmg" edSignature="validSig123==" length="12345" />'
+       })
+diff --git a/scripts/hooks/sanetrack_gate.rb b/scripts/hooks/sanetrack_gate.rb
+index 93fb577..3b2b0b8 100644
+--- a/scripts/hooks/sanetrack_gate.rb
++++ b/scripts/hooks/sanetrack_gate.rb
+@@ -56,6 +56,17 @@ def track_startup_gate_step(tool_name, tool_input)
+ 
+   when 'Bash'
+     command = tool_input['command'] || tool_input[:command] || ''
++    orphan_cleanup_ran =
++      command.match?(/pgrep\s+-f\s+['"]Codex\.\*--resume['"]/) &&
++      command.match?(/ps\s+-o\s+ppid=/) &&
++      command.match?(/grep\s+-q\s+Codex/) &&
++      command.match?(/kill\s+\$?pid\b/)
++
++    if orphan_cleanup_ran && !steps[:orphan_cleanup]
++      steps[:orphan_cleanup] = true
++      gate[:step_timestamps][:orphan_cleanup] = Time.now.iso8601
++      changed = true
++    end
+ 
+     if command.match?(/validation_report\.rb/) && !steps[:validation_report]
+       steps[:validation_report] = true
+diff --git a/scripts/hooks/sanetrack_research.rb b/scripts/hooks/sanetrack_research.rb
+index 1eeb7ab..180fc44 100644
+--- a/scripts/hooks/sanetrack_research.rb
++++ b/scripts/hooks/sanetrack_research.rb
+@@ -13,6 +13,7 @@
+ # ==============================================================================
+ 
+ require_relative 'core/state_manager'
++require_relative 'core/project_root'
+ 
+ module SaneTrackResearch
+   RESEARCH_SOFT_CAP = 160
+@@ -34,7 +35,7 @@ module SaneTrackResearch
+       r
+     end
+ 
+-    project_dir = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
++    project_dir = SaneProjectRoot.resolve
+     research_md = File.join(project_dir, '.claude', 'research.md')
+ 
+     pre_mtime = pending[:pre_mtime]
+diff --git a/scripts/hooks/self_test_environment.rb b/scripts/hooks/self_test_environment.rb
+index 75b6aec..d2ab7d3 100644
+--- a/scripts/hooks/self_test_environment.rb
++++ b/scripts/hooks/self_test_environment.rb
+@@ -18,6 +18,7 @@ module SelfTestEnvironment
+ 
+   class << self
+     def run_isolated(hook_file, internal_flag: '--self-test-internal')
++      hook_path = File.expand_path(hook_file)
+       Dir.mktmpdir("saneprocess-self-test-#{File.basename(hook_file, '.rb')}-") do |project_dir|
+         setup_project(project_dir)
+         stdout, stderr, status = Open3.capture3(
+@@ -28,7 +29,8 @@ module SelfTestEnvironment
+             'SANEMASTER_PROCESS_METRICS_PATH' => File.join(project_dir, '.sanemaster', 'process_metrics.jsonl'),
+             'SANE_ENV_CACHE_WRITE' => '0'
+           },
+-          'ruby', hook_file, internal_flag
++          'ruby', hook_path, internal_flag,
++          chdir: project_dir
+         )
+         $stdout.write(stdout)
+         $stderr.write(stderr)
+diff --git a/scripts/hooks/session_briefing.rb b/scripts/hooks/session_briefing.rb
+index 2388b77..c84ecf9 100644
+--- a/scripts/hooks/session_briefing.rb
++++ b/scripts/hooks/session_briefing.rb
+@@ -17,8 +17,9 @@
+ 
+ require 'json'
+ require 'yaml'
++require_relative 'core/project_root'
+ 
+-SANEPROCESS_PATH = File.join(ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd, '.saneprocess')
++SANEPROCESS_PATH = File.join(SaneProjectRoot.resolve, '.saneprocess')
+ 
+ # Build a compact briefing from the .saneprocess manifest.
+ # Returns a string to inject into session context, or nil if no manifest.
+diff --git a/scripts/hooks/session_docs_test.rb b/scripts/hooks/session_docs_test.rb
+index b5fa1ae..b744ca3 100644
+--- a/scripts/hooks/session_docs_test.rb
++++ b/scripts/hooks/session_docs_test.rb
+@@ -21,6 +21,7 @@ ENV['CLAUDE_PROJECT_DIR'] = PROJECT_DIR
+ ENV['CLAUDE_HOOK_SECRET'] = 'session-docs-test-secret'
+ at_exit { FileUtils.rm_rf(TEST_ROOT) }
+ 
++Dir.chdir(PROJECT_DIR)
+ require_relative 'core/state_manager'
+ 
+ $passed = 0
+@@ -49,7 +50,7 @@ def run_hook(hook, json_hash)
+     CHILD_ENV,
+     'ruby', File.join(HOOK_DIR, hook),
+     stdin_data: json,
+-    chdir: SANEPROCESS_DIR
++    chdir: PROJECT_DIR
+   )
+ end
+ 
+@@ -390,7 +391,7 @@ warn '--- Test 16: State CLI inspection ---'
+ stdout, _, _ = Open3.capture3(
+   CHILD_ENV,
+   'ruby', File.join(HOOK_DIR, 'core/state_manager.rb'), '--get', 'session_docs',
+-  chdir: SANEPROCESS_DIR
++  chdir: PROJECT_DIR
+ )
+ parsed = begin; JSON.parse(stdout); rescue; nil; end
+ t('CLI --get session_docs returns valid JSON', parsed != nil)
+diff --git a/scripts/hooks/session_start.rb b/scripts/hooks/session_start.rb
+index 3fc79c3..6278c10 100755
+--- a/scripts/hooks/session_start.rb
++++ b/scripts/hooks/session_start.rb
+@@ -27,8 +27,9 @@ require 'open3'
+ require 'rbconfig'
+ require_relative 'state_signer'
+ require_relative 'session_start_cleanup'
++require_relative 'core/project_root'
+ 
+-PROJECT_DIR = ENV['CLAUDE_PROJECT_DIR'] || Dir.pwd
++PROJECT_DIR = SaneProjectRoot.resolve
+ CLAUDE_DIR = File.join(PROJECT_DIR, '.claude')
+ BREAKER_FILE = File.join(CLAUDE_DIR, 'circuit_breaker.json')
+ FAILURE_FILE = File.join(CLAUDE_DIR, 'failure_state.json')
+@@ -93,6 +94,16 @@ def reset_session_state
+   if File.exist?(FAILURE_FILE)
+     File.delete(FAILURE_FILE)
+   end
++
++  require_relative 'core/state_manager'
++  StateManager.update(:circuit_breaker) do |cb|
++    next cb if cb[:tripped]
++
++    cb[:failures] = 0
++    cb[:last_error] = nil
++    cb[:error_signatures] = {}
++    cb
++  end
+ end
+ 
+ def find_sop_file
+diff --git a/scripts/hooks/session_start_cleanup.rb b/scripts/hooks/session_start_cleanup.rb
+index d4d27f4..f27c1e3 100644
+--- a/scripts/hooks/session_start_cleanup.rb
++++ b/scripts/hooks/session_start_cleanup.rb
+@@ -229,6 +229,7 @@ module SessionStartCleanup
+     return unless File.exist?(sane_master)
+ 
+     ok = system(
++      { 'SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT' => '1' },
+       RbConfig.ruby, sane_master, 'mcp_watchdog', 'clean',
+       '--quiet', '--max', '4', '--grace', '0',
+       out: File::NULL, err: File::NULL
+@@ -244,6 +245,7 @@ module SessionStartCleanup
+     return unless delay_seconds.to_i.positive?
+ 
+     pid = Process.spawn(
++      { 'SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT' => '1' },
+       RbConfig.ruby,
+       '-e',
+       <<~RUBY,
+diff --git a/scripts/hooks/state_signer.rb b/scripts/hooks/state_signer.rb
+index 5e815be..a182731 100755
+--- a/scripts/hooks/state_signer.rb
++++ b/scripts/hooks/state_signer.rb
+@@ -29,6 +29,7 @@ require 'fileutils'
+ require 'securerandom'
+ require 'shellwords'
+ require 'open3'
++require 'time'
+ 
+ module StateSigner
+   SECRET_ENV_VAR = 'CLAUDE_HOOK_SECRET'
+diff --git a/scripts/hooks/task_completed_gate.rb b/scripts/hooks/task_completed_gate.rb
+index 8157a03..a507645 100755
+--- a/scripts/hooks/task_completed_gate.rb
++++ b/scripts/hooks/task_completed_gate.rb
+@@ -17,6 +17,7 @@ require 'yaml'
+ require 'digest'
+ require 'open3'
+ require_relative 'core/process_metrics'
++require_relative 'core/project_root'
+ require_relative 'core/visual_receipt'
+ 
+ begin
+@@ -25,7 +26,7 @@ rescue JSON::ParserError, Errno::ENOENT
+   exit 0
+ end
+ 
+-cwd = Dir.pwd
++cwd = SaneProjectRoot.resolve
+ task_subject = input['task_subject'] || 'unknown task'
+ DOC_ONLY_EXTENSIONS = %w[.md .txt .mdx .rst .adoc].freeze
+ 
+@@ -64,13 +65,42 @@ rescue JSON::ParserError, Errno::ENOENT
+   {}
+ end
+ 
++def git_changed_path?(cwd, expanded_path)
++  root_out, root_status = Open3.capture2e('git', '-C', cwd, 'rev-parse', '--show-toplevel')
++  return false unless root_status.success?
++
++  root = File.expand_path(root_out.strip)
++  path = File.expand_path(expanded_path)
++  return false unless path == root || path.start_with?("#{root}/")
++
++  rel = path == root ? '.' : path.delete_prefix("#{root}/")
++  out, status = Open3.capture2e('git', '-C', root, 'status', '--porcelain=v1', '--', rel)
++  status.success? && !out.strip.empty?
++rescue StandardError
++  false
++end
++
+ def non_doc_edits(cwd)
+   edits = hook_state_section(cwd, :edits)
+   edit_count = edits['count'].to_i
+   files = Array(edits['unique_files'])
+   return [] if edit_count.zero?
+ 
+-  files.reject { |path| DOC_ONLY_EXTENSIONS.include?(File.extname(path.to_s).downcase) }
++  project_root = File.expand_path(cwd)
++  files.each_with_object([]) do |path, kept|
++    raw_path = path.to_s
++    next if raw_path.empty?
++    next if DOC_ONLY_EXTENSIONS.include?(File.extname(raw_path).downcase)
++
++    expanded_path = File.expand_path(raw_path.start_with?('/') ? raw_path : File.join(project_root, raw_path))
++    next unless expanded_path == project_root || expanded_path.start_with?("#{project_root}/")
++
++    # Stale state can carry edit entries from an older project/session. Ignore
++    # paths that are neither present nor a current git deletion/change.
++    next unless File.exist?(expanded_path) || git_changed_path?(project_root, expanded_path)
++
++    kept << raw_path
++  end
+ end
+ 
+ def current_source_fingerprint(cwd)
+diff --git a/scripts/hooks/task_completed_gate_test.rb b/scripts/hooks/task_completed_gate_test.rb
+index 10d8113..618c305 100644
+--- a/scripts/hooks/task_completed_gate_test.rb
++++ b/scripts/hooks/task_completed_gate_test.rb
+@@ -14,7 +14,7 @@ include TestFramework
+ 
+ SCRIPT = File.expand_path('task_completed_gate.rb', __dir__)
+ 
+-def run_task_completed_gate(app_name: nil, repo_name: nil, state: nil, metrics_rows: nil, mutate_after_metrics: nil)
++def run_task_completed_gate(app_name: nil, repo_name: nil, state: nil, metrics_rows: nil, mutate_after_metrics: nil, create_edit_files: true, extra_env: {})
+   Dir.mktmpdir('task-completed-gate-') do |dir|
+     app_dir = if app_name
+                 File.join(dir, 'SaneApps', 'apps', app_name)
+@@ -30,6 +30,7 @@ def run_task_completed_gate(app_name: nil, repo_name: nil, state: nil, metrics_r
+     end
+ 
+     Array(state&.dig('edits', 'unique_files')).each do |relative|
++      next unless create_edit_files
+       next if relative.to_s.start_with?('/')
+ 
+       path = File.join(app_dir, relative)
+@@ -48,7 +49,7 @@ def run_task_completed_gate(app_name: nil, repo_name: nil, state: nil, metrics_r
+       {
+         'PATH' => ENV.fetch('PATH', ''),
+         'SANEMASTER_PROCESS_METRICS_PATH' => metrics_path
+-      },
++      }.merge(extra_env),
+       'ruby',
+       SCRIPT,
+       stdin_data: JSON.generate('task_subject' => 'fixture task'),
+@@ -359,5 +360,67 @@ exit(run_tests('TaskCompleted Gate Tests') do
+       assert_eq(status.exitstatus, 0)
+       true
+     end
++
++    test('ignores stale non-doc edit paths that are absent and not git changes') do
++      _stdout, _stderr, status = run_task_completed_gate(
++        repo_name: 'SaneProcess',
++        state: edit_state(['scripts/hooks/stale_from_old_session.rb']),
++        create_edit_files: false
++      )
++
++      assert_eq(status.exitstatus, 0)
++      true
++    end
++
++    test('blocks real git deletions even when the edited file is absent') do
++      _stdout, stderr, status = run_task_completed_gate(
++        repo_name: 'SaneProcess',
++        state: edit_state(['scripts/hooks/deleted_current_session.rb']),
++        mutate_after_metrics: lambda do |dir|
++          FileUtils.rm_f(File.join(dir, 'scripts', 'hooks', 'deleted_current_session.rb'))
++        end
++      )
++
++      assert_eq(status.exitstatus, 2)
++      assert_includes(stderr, 'without recent test verification')
++      assert_includes(stderr, 'deleted_current_session.rb')
++      true
++    end
++
++    test('uses cwd project state over a different marked CLAUDE_PROJECT_DIR') do
++      Dir.mktmpdir('task-completed-cross-repo-') do |dir|
++        repo_a = File.join(dir, 'SaneApps', 'infra', 'RepoA')
++        repo_b = File.join(dir, 'SaneApps', 'infra', 'RepoB')
++        [repo_a, repo_b].each do |repo|
++          FileUtils.mkdir_p(File.join(repo, '.claude'))
++          File.write(File.join(repo, '.saneprocess'), "name: #{File.basename(repo)}\ntype: infrastructure\n")
++        end
++        File.write(File.join(repo_a, '.claude', 'state.json'), JSON.pretty_generate(edit_state(['README.md'])))
++        File.write(File.join(repo_b, '.claude', 'state.json'), JSON.pretty_generate(edit_state(['scripts/hooks/live_repo.rb'])))
++        FileUtils.mkdir_p(File.join(repo_b, 'scripts', 'hooks'))
++        File.write(File.join(repo_b, 'scripts', 'hooks', 'live_repo.rb'), "fixture\n")
++        init_git_repo(repo_a)
++        init_git_repo(repo_b)
++
++        metrics_path = File.join(dir, 'metrics.jsonl')
++        File.write(metrics_path, '')
++        _stdout, stderr, status = Open3.capture3(
++          {
++            'PATH' => ENV.fetch('PATH', ''),
++            'SANEMASTER_PROCESS_METRICS_PATH' => metrics_path,
++            'CLAUDE_PROJECT_DIR' => repo_a
++          },
++          'ruby',
++          SCRIPT,
++          stdin_data: JSON.generate('task_subject' => 'fixture task'),
++          chdir: repo_b
++        )
++
++        assert_eq(status.exitstatus, 2)
++        assert_includes(stderr, 'without recent test verification')
++        assert_includes(stderr, 'live_repo.rb')
++      end
++      true
++    end
+   end
+ end)
+diff --git a/scripts/hooks/test/tier_tests.rb b/scripts/hooks/test/tier_tests.rb
+index 39da269..1652d6b 100644
+--- a/scripts/hooks/test/tier_tests.rb
++++ b/scripts/hooks/test/tier_tests.rb
+@@ -19,6 +19,7 @@ ENV['CLAUDE_PROJECT_DIR'] = PROJECT_DIR
+ ENV['CLAUDE_HOOK_SECRET'] = TEST_HOOK_SECRET
+ ENV['SANEMASTER_PROCESS_METRICS_PATH'] = File.join(PROJECT_DIR, '.sanemaster', 'process_metrics.jsonl')
+ 
++Dir.chdir(PROJECT_DIR)
+ require_relative '../core/state_manager'
+ 
+ at_exit { FileUtils.rm_rf(PROJECT_DIR) if File.exist?(PROJECT_DIR) }
+@@ -57,6 +58,7 @@ class TierTest
+     stdout, stderr, status = Open3.capture3(
+       env_with_defaults,
+       'ruby', hook_path,
++      chdir: PROJECT_DIR,
+       stdin_data: stdin_data.to_json
+     )
+ 
+diff --git a/scripts/hooks/test_hooks.rb b/scripts/hooks/test_hooks.rb
+index e70206d..5c5402f 100755
+--- a/scripts/hooks/test_hooks.rb
++++ b/scripts/hooks/test_hooks.rb
+@@ -11,6 +11,7 @@
+ require 'json'
+ require 'open3'
+ require 'fileutils'
++require 'time'
+ require_relative 'self_test_environment'
+ 
+ PROJECT_DIR = SelfTestEnvironment.create_project('hook-system-tests')
+@@ -75,6 +76,9 @@ class HookTests
+       test("sanetools.rb syntax valid") { test_entry_syntax('sanetools.rb') }
+       test("sanetrack.rb syntax valid") { test_entry_syntax('sanetrack.rb') }
+       test("session_start.rb syntax valid") { test_entry_syntax('session_start.rb') }
++      test("sanetools_refusal.rb syntax valid") { test_entry_syntax('sanetools_refusal.rb') }
++      test("run_hook.sh syntax valid") { test_shell_entry_syntax('run_hook.sh') }
++      test("settings use compact hook wrapper") { test_settings_use_hook_wrapper }
+     end
+ 
+     # Test Circuit Breaker
+@@ -242,7 +246,7 @@ class HookTests
+   end
+ 
+   def test_path_allows_project
+-    run_hook('Read', "#{PROJECT_DIR}/README.md") == 0
++    run_hook('Read', File.join(File.realpath(PROJECT_DIR), 'README.md')) == 0
+   end
+ 
+   def test_path_allows_tmp
+@@ -298,6 +302,25 @@ class HookTests
+     status.success?
+   end
+ 
++  def test_shell_entry_syntax(file)
++    path = File.join(__dir__, file)
++    _, status = Open3.capture2e('bash', '-n', path)
++    status.success?
++  end
++
++  def test_settings_use_hook_wrapper
++    settings_path = File.expand_path('../../.claude/settings.json', __dir__)
++    settings = JSON.parse(File.read(settings_path))
++    commands = settings.fetch('hooks').values.flat_map do |groups|
++      groups.flat_map { |group| group.fetch('hooks', []).map { |hook| hook['command'].to_s } }
++    end
++    wrapped = commands.select { |command| command.include?('run_hook.sh') }
++
++    wrapped.length == 6 &&
++      wrapped.all? { |command| command.length < 90 } &&
++      commands.none? { |command| command.include?('if [ -n "${CLAUDECODE}${CLAUDE_CODE}" ]') }
++  end
++
+   # Circuit breaker tests
+   def test_circuit_breaker_tracks
+     require_relative 'core/state_manager'
+@@ -351,6 +374,7 @@ class HookTests
+     stdout, stderr, status = Open3.capture3(
+       { 'CLAUDE_PROJECT_DIR' => PROJECT_DIR }.merge(extra_env),
+       'ruby', hook_path,
++      chdir: PROJECT_DIR,
+       stdin_data: JSON.generate(input)
+     )
+ 
+@@ -361,6 +385,9 @@ end
+ # Run tests
+ if __FILE__ == $PROGRAM_NAME
+   tests = HookTests.new
+-  success = tests.run_all
++  success = nil
++  Dir.chdir(PROJECT_DIR) do
++    success = tests.run_all
++  end
+   exit(success ? 0 : 1)
+ end
+diff --git a/scripts/sanemaster/base.rb b/scripts/sanemaster/base.rb
+index 9e5acc4..f3b8f7f 100644
+--- a/scripts/sanemaster/base.rb
++++ b/scripts/sanemaster/base.rb
+@@ -21,7 +21,6 @@ module SaneMasterModules
+     VERSION_CACHE_FILE = File.expand_path('~/.sanemaster/versions_cache.json')
+     VERSION_CACHE_MAX_AGE = 7 * 24 * 60 * 60 # 7 days in seconds
+     TEMPLATE_DIR = File.expand_path('~/.sanemaster/templates')
+-    LEGACY_MEMORY_FILE = File.join(Dir.pwd, '.claude', 'memory.json')
+     WORK_SESSION_STATE_FILE = File.expand_path('~/.sanemaster/work_session_state.json')
+     WORK_SESSION_CAFFEINATE_PID_FILE = File.expand_path('~/.sanemaster/work_session_caffeinate.pid')
+     WORK_SESSION_CAFFEINATE_LOG = File.expand_path('~/.sanemaster/work_session_caffeinate.log')
+@@ -592,67 +591,5 @@ module SaneMasterModules
+       end
+     end
+ 
+-    # --- Memory Helpers ---
+-
+-    # Load memory from STDIN (piped from mcp__memory__read_graph) or local cache
+-    def load_memory(from_stdin: false)
+-      if from_stdin
+-        input = begin
+-          $stdin.read.strip
+-        rescue StandardError
+-          ''
+-        end
+-        return nil if input.empty?
+-
+-        begin
+-          memory = JSON.parse(input)
+-          # Cache locally for future use
+-          save_memory(memory)
+-          memory
+-        rescue JSON::ParserError
+-          nil
+-        end
+-      elsif File.exist?(LEGACY_MEMORY_FILE)
+-        JSON.parse(File.read(LEGACY_MEMORY_FILE))
+-      else
+-        warn ''
+-        warn '⚠️  No legacy local memory cache found at .claude/memory.json'
+-        warn ''
+-        warn 'To use memory commands, pipe from MCP:'
+-        warn '  1. Ask Claude to run: mcp__memory__read_graph'
+-        warn '  2. Copy the JSON output'
+-        warn '  3. Run: echo \'<json>\' | ./scripts/SaneMaster.rb <command>'
+-        warn ''
+-        warn 'Or use: ./scripts/SaneMaster.rb msync to create a cache.'
+-        warn ''
+-        nil
+-      end
+-    rescue JSON::ParserError
+-      nil
+-    end
+-
+-    def save_memory(memory)
+-      FileUtils.mkdir_p(File.dirname(LEGACY_MEMORY_FILE))
+-      File.write(LEGACY_MEMORY_FILE, JSON.pretty_generate(memory))
+-    end
+-
+-    # Sync memory from STDIN (requires piping from mcp__memory__read_graph)
+-    def memory_sync(_args)
+-      puts '🔄 --- [ MEMORY SYNC ] ---'
+-      puts ''
+-      puts 'Paste the output from mcp__memory__read_graph below,'
+-      puts 'then press Ctrl+D (or Ctrl+Z on Windows) when done:'
+-      puts ''
+-
+-      memory = load_memory(from_stdin: true)
+-      if memory
+-        count = (memory['entities'] || []).count
+-        puts ''
+-        puts "✅ Synced #{count} entities to .claude/memory.json"
+-      else
+-        puts ''
+-        puts '❌ No valid JSON received'
+-      end
+-    end
+   end
+ end
+diff --git a/scripts/sanemaster/command_registry_test.rb b/scripts/sanemaster/command_registry_test.rb
+index 468c308..1724514 100644
+--- a/scripts/sanemaster/command_registry_test.rb
++++ b/scripts/sanemaster/command_registry_test.rb
+@@ -42,6 +42,66 @@ exit(run_tests('SaneMaster Command Registry Tests') do
+       true
+     end
+ 
++    test('dead memory commands are not advertised') do
++      result = SaneMaster.new.send(:build_registry_review)
++      dead_commands = %w[mc mr mp mh msync mcompact mcleanup]
++      live_session_commands = %w[
++        github_post_approval email_force_approval session_end reset_breaker
++        breaker_status breaker_errors research_status research_lock
++        research_unlock saneloop
++      ]
++
++      assert(!SaneMaster::COMMANDS.key?(:memory), 'memory category should not be advertised')
++      assert(SaneMaster::COMMANDS.key?(:session), 'session category should own live state commands')
++      dead_commands.each do |command|
++        assert(!result[:commands].key?(command), "dead memory command still advertised: #{command}")
++        assert(!SaneMaster::COMMAND_DETAILS.key?(command), "dead memory command has detailed help: #{command}")
++      end
++      live_session_commands.each do |command|
++        assert_eq(result.dig(:commands, command, :category), 'session', "#{command} should be in session category")
++      end
++      true
++    end
++
++    test('help shows session commands without legacy memory sync') do
++      stdout, stderr, status = Open3.capture3(
++        { 'SANEMASTER_DISABLE_MINI_ROUTING' => '1' },
++        'ruby',
++        File.expand_path('../SaneMaster.rb', __dir__),
++        'help',
++        'session'
++      )
++
++      assert_eq(status.exitstatus, 0)
++      assert_eq(stderr, '')
++      assert_includes(stdout, 'session_end')
++      assert_includes(stdout, 'saneloop')
++      assert(!stdout.include?('msync'), 'session help should not advertise legacy memory sync')
++      assert(!stdout.include?('mcompact'), 'session help should not advertise legacy memory compact')
++
++      unknown_stdout, unknown_stderr, unknown_status = Open3.capture3(
++        { 'SANEMASTER_DISABLE_MINI_ROUTING' => '1' },
++        'ruby',
++        File.expand_path('../SaneMaster.rb', __dir__),
++        'help',
++        'memory'
++      )
++      assert_eq(unknown_status.exitstatus, 0)
++      assert_eq(unknown_stderr, '')
++      assert_includes(unknown_stdout, "No detailed help available for 'memory'")
++      assert(!unknown_stdout.include?('msync'), 'memory detail fallback should not advertise legacy memory sync')
++
++      msync_stdout, msync_stderr, msync_status = Open3.capture3(
++        { 'SANEMASTER_DISABLE_MINI_ROUTING' => '1' },
++        'ruby',
++        File.expand_path('../SaneMaster.rb', __dir__),
++        'msync'
++      )
++      assert_eq(msync_status.exitstatus, 0)
++      assert_includes("#{msync_stdout}\n#{msync_stderr}", 'Unknown command: msync')
++      true
++    end
++
+     test('registry_review command prints JSON without expensive workflow execution') do
+       stdout, stderr, status = Open3.capture3(
+         { 'SANEMASTER_DISABLE_MINI_ROUTING' => '1' },
+diff --git a/scripts/sanemaster/process_metrics_test.rb b/scripts/sanemaster/process_metrics_test.rb
+index c07f08c..c17e2c5 100644
+--- a/scripts/sanemaster/process_metrics_test.rb
++++ b/scripts/sanemaster/process_metrics_test.rb
+@@ -81,6 +81,17 @@ exit(run_tests('SaneMaster Process Metrics Tests') do
+       true
+     end
+ 
++    test('SaneMaster help short-circuits before Mini routing') do
++      source = File.read(File.expand_path('../SaneMaster.rb', __dir__))
++      help_index = source.index("if args.empty? || ['--help', '-h'].include?(args.first)")
++      route_index = source.index('maybe_route_to_mini!(command, args)')
++
++      assert(help_index, 'expected top-level help check')
++      assert(route_index, 'expected Mini routing call')
++      assert(help_index < route_index, 'top-level --help must return before Mini routing')
++      true
++    end
++
+     test('records structured verify evidence without external services') do
+       Dir.mktmpdir('process-metrics-') do |dir|
+         path = File.join(dir, 'metrics.jsonl')
+@@ -109,6 +120,61 @@ exit(run_tests('SaneMaster Process Metrics Tests') do
+       true
+     end
+ 
++    test('rotates process_metrics.jsonl when it exceeds the configured size cap') do
++      Dir.mktmpdir('process-metrics-rotate-') do |dir|
++        path = File.join(dir, 'metrics.jsonl')
++        previous_metrics_path = ENV['SANEMASTER_PROCESS_METRICS_PATH']
++        previous_max = ENV['SANEMASTER_PROCESS_METRICS_MAX_BYTES']
++        previous_keep = ENV['SANEMASTER_PROCESS_METRICS_ROTATE_KEEP']
++        ENV['SANEMASTER_PROCESS_METRICS_PATH'] = path
++        ENV['SANEMASTER_PROCESS_METRICS_MAX_BYTES'] = '32'
++        ENV['SANEMASTER_PROCESS_METRICS_ROTATE_KEEP'] = '2'
++        File.write(path, "#{'x' * 64}\n")
++
++        begin
++          assert(SaneProcessMetrics.record('unit_event', ok: true))
++        ensure
++          if previous_metrics_path
++            ENV['SANEMASTER_PROCESS_METRICS_PATH'] = previous_metrics_path
++          else
++            ENV.delete('SANEMASTER_PROCESS_METRICS_PATH')
++          end
++          previous_max ? ENV['SANEMASTER_PROCESS_METRICS_MAX_BYTES'] = previous_max : ENV.delete('SANEMASTER_PROCESS_METRICS_MAX_BYTES')
++          previous_keep ? ENV['SANEMASTER_PROCESS_METRICS_ROTATE_KEEP'] = previous_keep : ENV.delete('SANEMASTER_PROCESS_METRICS_ROTATE_KEEP')
++        end
++
++        rows = File.readlines(path, chomp: true).map { |line| JSON.parse(line) }
++        assert(File.exist?("#{path}.1"), 'expected previous ledger to rotate to .1')
++        assert_eq(rows.length, 1)
++        assert_eq(rows.first['type'], 'unit_event')
++      end
++      true
++    end
++
++    test('workflow receipt suppression skips internal watchdog cleanup telemetry') do
++      Dir.mktmpdir('workflow-receipt-suppress-') do |dir|
++        path = File.join(dir, 'metrics.jsonl')
++        previous_metrics_path = ENV['SANEMASTER_PROCESS_METRICS_PATH']
++        previous_suppression = ENV['SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT']
++        ENV['SANEMASTER_PROCESS_METRICS_PATH'] = path
++        ENV['SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT'] = '1'
++
++        begin
++          SaneMaster.new.send(:record_sanemaster_workflow_receipt, 'mcp_watchdog', %w[mcp_watchdog clean], Time.now.utc, 0)
++        ensure
++          if previous_metrics_path
++            ENV['SANEMASTER_PROCESS_METRICS_PATH'] = previous_metrics_path
++          else
++            ENV.delete('SANEMASTER_PROCESS_METRICS_PATH')
++          end
++          previous_suppression ? ENV['SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT'] = previous_suppression : ENV.delete('SANEMASTER_SUPPRESS_WORKFLOW_RECEIPT')
++        end
++
++        assert(!File.exist?(path) || File.zero?(path), 'expected suppression to avoid writing workflow_receipt')
++      end
++      true
++    end
++
+     test('records audit-grade v3 workflow receipts for wrapped commands') do
+       Dir.mktmpdir('workflow-receipt-v2-') do |dir|
+         path = File.join(dir, 'metrics.jsonl')
+diff --git a/scripts/sanemaster/session.rb b/scripts/sanemaster/session.rb
+index f36cdad..3e86d4c 100644
+--- a/scripts/sanemaster/session.rb
++++ b/scripts/sanemaster/session.rb
+@@ -178,18 +178,6 @@ module SaneMasterModules
+       puts '=' * 60
+       puts ''
+ 
+-      # Show memory stats
+-      memory = load_memory
+-      if memory && memory['entities']
+-        entities = memory['entities']
+-        entity_count = entities.count
+-        estimated_tokens = (memory.to_json.length / 4.0).round
+-
+-        puts "📊 Memory: #{entity_count} entities (~#{estimated_tokens} tokens)"
+-        puts "   ⚠️  Entity count HIGH (#{entity_count}/60)" if entity_count > 60
+-        puts "   ⚠️  Token count HIGH (~#{estimated_tokens}/8000)" if estimated_tokens > 8000
+-      end
+-
+       # Show compliance report if audit log exists
+       audit_log = File.join(Dir.pwd, '.claude', 'audit_log.jsonl')
+       return unless File.exist?(audit_log) && File.size(audit_log).positive?
+diff --git a/scripts/sanemaster_completions.zsh b/scripts/sanemaster_completions.zsh
+index 4bf5b5d..2b9aea6 100644
+--- a/scripts/sanemaster_completions.zsh
++++ b/scripts/sanemaster_completions.zsh
+@@ -53,10 +53,17 @@ _sanemaster() {
+         'reset:Reset TCC permissions'
+         'restore:Fix Xcode/Launch Services issues'
+ 
+-        # Memory MCP
+-        'mc:Show memory context'
+-        'mr:Record new entity'
+-        'mp:Prune stale entities'
++        # Session state
++        'github_post_approval:Record exact-text approval before public GitHub posting'
++        'email_force_approval:Record scoped approval for check-inbox --force'
++        'session_end:End session with insight extraction'
++        'reset_breaker:Reset circuit breaker'
++        'breaker_status:Show circuit breaker status'
++        'breaker_errors:Show recent failure messages'
++        'research_status:Show active research gates and locks'
++        'research_lock:Require fresh research before more work'
++        'research_unlock:Clear a manual research lock'
++        'saneloop:Native structured task loop'
+ 
+         # Export
+         'export:Export code to PDF'
+@@ -151,7 +158,7 @@ _sanemaster() {
+                         'check:Static analysis and validation'
+                         'debug:Debugging and crash analysis'
+                         'env:Environment and setup'
+-                        'memory:Cross-session memory (MCP)'
++                        'session:Session state, approvals, and loop controls'
+                         'export:Export and documentation'
+                     )
+                     _describe -t categories 'help category' categories
+@@ -167,11 +174,6 @@ _sanemaster() {
+                         '--path[Path to xcresult]:file:_files -g "*.xcresult"' \
+                         '--help[Show command help]'
+                     ;;
+-                mp|memory_prune)
+-                    _arguments \
+-                        '--dry-run[Show what would be pruned]' \
+-                        '--help[Show command help]'
+-                    ;;
+                 *)
+                     _arguments '--help[Show command help]'
+                     ;;
+diff --git a/scripts/test_registry.json b/scripts/test_registry.json
+index 3a6bb75..027b8cb 100644
+--- a/scripts/test_registry.json
++++ b/scripts/test_registry.json
+@@ -19,6 +19,12 @@
+       "status": "required",
+       "cmd": ["ruby", "scripts/hooks/sane_open_guard_test.rb"]
+     },
++    {
++      "path": "scripts/hooks/sane_bash_guards_test.rb",
++      "label": "SaneProcess Bash guard dispatcher tests",
++      "status": "required",
++      "cmd": ["ruby", "scripts/hooks/sane_bash_guards_test.rb"]
++    },
+     {
+       "path": "scripts/hooks/sane_build_tool_guard_test.rb",
+       "label": "SaneProcess build tool shell guard tests",
+@@ -121,6 +127,12 @@
+       "status": "required",
+       "cmd": ["ruby", "scripts/hooks/task_completed_gate_test.rb"]
+     },
++    {
++      "path": "scripts/hooks/test/split_brain_test.rb",
++      "label": "SaneProcess project root split-brain regression tests",
++      "status": "required",
++      "cmd": ["ruby", "scripts/hooks/test/split_brain_test.rb"]
++    },
+     {
+       "path": "scripts/mini/mini_gui_run_test.rb",
+       "label": "SaneProcess Mini GUI runner tests",

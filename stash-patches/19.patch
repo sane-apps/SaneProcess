@@ -1,0 +1,997 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index d5136a7..70ee49c 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -227,6 +227,10 @@ Do not treat the mini as ready unless the bootstrap passes. The release path mus
+ - **Morning releases preferred** — full day to monitor
+ - Full details: `SaneProcess/templates/RELEASE_SOP.md`
+ 
++**Release-note copy rule:** write update notes like a customer deciding whether to install. Lead with the visible reason to update: what works better, what gets fixed, what becomes easier, or what new capability they get. If there is no strong customer-visible angle, say `General updates and improvements.` Do not expose internal pricing-plan, Basic-vs-Pro, entitlement, paywall, or business-model framing in public update notes.
++
++**Privacy-safe analytics rule:** anonymous aggregate business analytics are allowed when they are disclosed plainly and used to run the business: downloads, update checks, page views, app launches, free/pro launch mix, button clicks, purchase lifecycle, license activations, crashes, and broad feature adoption. Do not call this `spyware` or treat it as forbidden just because it measures conversion. Spyware risk means personal or invasive collection: user IDs, cookies used to identify people, ad IDs, cross-site/app tracking, raw IP retention for analytics, customer content, clipboard data, file names, URLs clicked inside the app, browser history, host entries, videos, sales/order data, API keys, names, emails, license keys, or selling/sharing user-level data. Do not write `no analytics`, `no telemetry`, `zero tracking`, or `no network requests` unless the app literally has none. Prefer: `privacy-preserving aggregate analytics; no personal data or customer content; no selling data.`
++
+ ---
+ 
+ ## Website Deployment
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index fde9d81..bc0c384 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -536,6 +536,29 @@ The current shared purchase logic mostly infers "direct vs App Store" from `AppS
+ - Release and support operations leave auditable local breadcrumbs without adding a service dependency.
+ - Tests can redirect metrics into temp files and assert real records without touching user data.
+ 
++### ADR-008: External agent workflow tools remain optional and evidence-gated (2026-04-25)
++
++**Context:** The Dicklesworthstone agent-workflow repositories contain useful primitives: session-history search (`cass`), warning-only bug scanning (`ubs`), destructive-command explanation packs (`dcg`), local task graphs (`br`/`bv`), and agent settings backup (`asb`). They also bring installer, version, platform, and workflow gravity that does not fit SaneProcess as a default dependency.
++
++**Decision:** SaneProcess evaluates these tools through `ruby scripts/SaneMaster.rb external_tools`. The command uses safe read-only probes when tools are already installed and reports concrete adopt/watch/skip recommendations. It does not install them, does not add them to default verify, and does not replace canonical SaneProcess paths such as `status`, `check_inbox`, `verify`, `gate_review`, or Mini-first runtime proof. The command is strict Mini-first by default because local fallback would evaluate the wrong host; `--local` is reserved for explicit controller-machine inspection.
++
++**Consequences:**
++- `cass` can become an optional research surface if it proves useful on real session history.
++- `ubs` can only graduate as warning-only evidence after false positives and runtime cost are measured.
++- Initial Mini evidence on 2026-04-25 kept both installed candidates out of default adoption: `cass` had useful session metadata but an unhealthy search index, and `ubs` failed on a module checksum mismatch before scanning.
++
++### ADR-009: Privacy-safe analytics distinguish aggregate business signals from spyware (2026-04-25)
++
++**Context:** SaneApps needs conversion, download, launch, update, purchase, activation, crash, and broad feature-adoption metrics to run the business. Overbroad `no analytics` and `no telemetry` claims make normal aggregate measurement look like a violation, while the real customer concern is spyware: hidden personal/content/device surveillance or selling user-level data.
++
++**Decision:** SaneApps allows plainly disclosed, privacy-preserving aggregate analytics. The standard forbids personal or invasive analytics payloads: user IDs, cookies used to identify people, ad IDs, cross-site/app tracking, raw IP retention for analytics, customer content, clipboard data, file names, app-internal clicked URLs, browser history, host entries, videos, sales/order data, API keys, names, emails, license keys, and user-level sale/sharing. New privacy copy must avoid absolute `no analytics`, `no telemetry`, `zero tracking`, or `no network requests` claims unless they are literally true for that app.
++
++**Consequences:**
++- App and website instrumentation should use allowlisted event names and fields.
++- Product privacy pages should disclose aggregate analytics in customer language instead of hiding it or overstating it.
++- Website analytics such as Cloudflare can remain only when the site discloses cookie-free aggregate website analytics and does not promise stricter no-page/referrer measurement.
++- Release review must treat stale privacy promises as blockers when customer-visible behavior includes aggregate analytics or network services.
++
+ ---
+ 
+ ## 4. Landscape
+diff --git a/DEVELOPMENT.md b/DEVELOPMENT.md
+index 324bea9..069b5f0 100644
+--- a/DEVELOPMENT.md
++++ b/DEVELOPMENT.md
+@@ -118,8 +118,9 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
+ | `test_mode` | Kill → Build → Launch → Logs |
+ | `doctor` | Environment health check |
+ | `tool_discovery --query "..."` | Generate a proof receipt before using a workaround or adding a tool |
++| `external_tools [--json]` | Evaluate optional external agent-workflow tools without making them dependencies |
+ | `gate_review <fixture.json> [--json]` | Deterministically review candidate prevention gates before promoting them into enforcement |
+-| `sync_mini [mini] [--quiet] [--no-restart] [--activate-mini-runs]` | Sync the active Codex control-plane profile to the Mini; default keeps Mini AM/PM runs paused unless activation is explicit |
++| `sync_mini [peer-host] [--quiet] [--no-restart] [--activate-mini-runs]` | Sync the active Codex control-plane profile to the peer machine and merge machine-local memory state; defaults to `mini` from Air and `Stephans-MacBook-Air.local` from Mini |
+ | `universal_control_reset [--status|--reboot-mini|--cleanup-mini]` | Recover Air↔Mini Universal Control / pointer handoff |
+ | `export` | Export code/docs (PDF/MD) |
+ | `listing_actions` | Export the current listing/setup action tracker from inbox history |
+@@ -213,6 +214,17 @@ Tracker columns are designed for owner action, not inbox triage:
+ Do not hunt around for ad hoc tools.
+ Use the documented standard path first, then use `tool_discovery` if you still think something is missing.
+ 
++### External Agent-Tool Evaluation
++
++Use `ruby scripts/SaneMaster.rb external_tools` before adopting agent-workflow tools from outside SaneProcess.
++
++The command is read-only and optional by design. It checks tools such as `cass`, `ubs`, `dcg`, `br`/`bv`, and `asb` only when they are already installed, records what their safe probe actually returned, and gives an adopt/watch/skip recommendation. Missing tools stay missing; SaneProcess must not turn third-party `curl | bash` installers into default setup. On non-Mini hosts, `external_tools` is strict Mini-first unless `--local` is passed explicitly.
++
++2026-04-25 Mini baseline (source: `ruby scripts/SaneMaster.rb external_tools --timeout 30`; TTL: re-check after upstream tool updates):
++- `cass 0.3.7` found real SaneProcess history metadata (`40` conversations, `16161` messages) and can list recent sessions, but lexical search is not usable until the index is repaired.
++- `ubs 5.1.1` starts under Homebrew `bash`, but the Ruby module fetch fails checksum verification, so `ubs` is not safe to wire into `verify`.
++- Current decision: keep the SaneMaster evaluation lane, but do not add any of these tools as default dependencies.
++
+ ### Release README Gate
+ 
+ `scripts/release.sh` now runs `scripts/automation/nv-readme-check.sh` as part of the release flow.
+@@ -261,7 +273,7 @@ SaneApps is Mini/local first.
+ | Launch and smoke-test an app | `ruby scripts/SaneMaster.rb test_mode --release --no-logs` | Manual local launches and stale DerivedData builds |
+ | Mini live window screenshots | `scripts/mini/capture-mini-screenshot.sh --app "<App>" --window-name "<Window>" --mode temp` | Plain `ssh` + `screencapture` guessing from a non-GUI shell |
+ | Mini Safari tab control | `scripts/mini/mini-safari.sh open-read "<url>"` | One-off raw `ssh mini osascript` snippets for Safari evidence, listing links, or portal checks |
+-| Sync Codex control-plane to the Mini | `ruby scripts/SaneMaster.rb sync_mini [mini] [--quiet] [--no-restart] [--activate-mini-runs]` | Manual sync script hunting or recreating a second Mini config lane |
++| Sync Codex control-plane + memory across Air/Mini | `ruby scripts/SaneMaster.rb sync_mini [peer-host] [--quiet] [--no-restart] [--activate-mini-runs]` | Manual sync script hunting or letting Mini-only work drift out of Air context |
+ | Air↔Mini pointer handoff recovery | `ruby scripts/SaneMaster.rb universal_control_reset` | Random killall / reboot guessing when Universal Control breaks |
+ | App Store review readiness | `ruby scripts/SaneMaster.rb appstore_preflight` | Clicking around ASC first and guessing what Apple meant |
+ | Headless Mini signing bootstrap | `bash scripts/mini/bootstrap-build-server.sh` | Trying App Store archive/export first and debugging signing after the failure |
+@@ -292,7 +304,7 @@ SaneProcess includes a semantic memory MCP server for cross-session retrieval.
+ - Bootstrap: `scripts/mcp-central-memory/bootstrap-local.sh`
+ - Default DB: `postgresql://<local-user>@localhost:5432/central_memory`
+ - MCP key: `central-memory` in `/Users/sj/.codex/config.toml` and `.mcp.json`
+-- Codex control-plane helper source lives in `scripts/codex-bin/`; `ruby scripts/SaneMaster.rb sync_mini` installs that source into local `~/.codex/bin/` and mirrors it to Mini. Safe default keeps Mini AM/PM runs paused so manual Air sessions do not silently reactivate unattended Mini work. Use `--activate-mini-runs` only when you intentionally want the Mini scheduler active again.
++- Codex control-plane helper source lives in `scripts/codex-bin/`; `ruby scripts/SaneMaster.rb sync_mini` installs that source into local `~/.codex/bin/` and mirrors it to the peer machine. It also merges the graph memory JSONL, session learnings JSONL, and canonical repo `.serena/memories/` directories so direct Mini work stays visible when you go back to the Air. Safe default keeps peer AM/PM runs paused unless you explicitly activate them.
+ 
+ Setup:
+ 
+@@ -434,6 +446,20 @@ From any app directory with a `.saneprocess` config:
+ ./scripts/SaneMaster.rb release --full --version X.Y.Z --notes "Release notes"
+ ```
+ 
++Release-note copy is customer-facing update motivation, not internal implementation narration. Every `--notes` value should answer: why should a customer download this update? Prefer concrete benefits such as “Improves reliability when saving host changes” or “Fixes an issue where hidden menu bar items could reappear.” If there is no stronger customer-visible angle, use `General updates and improvements.` Never publish Basic-vs-Pro, entitlement, paywall, monetization, or business-model framing as the reason to update.
++
++### Privacy-Safe Analytics Standard
++
++SaneApps may use privacy-preserving aggregate analytics for business operations. Acceptable events include downloads, update checks, page views, app launches, free/pro launch mix, buy/download button clicks, purchase started/completed, license activations, crashes, and broad feature adoption.
++
++The hard line is personal or invasive collection. Analytics must not include user IDs, cookies used to identify people, ad IDs, cross-site/app tracking, raw IP retention for analytics, customer content, clipboard data, file names, app-internal clicked URLs, browser history, host entries, videos, sales/order data, API keys, names, emails, license keys, or user-level sale/sharing.
++
++Customer-facing privacy copy should say what is true:
++- Good: `privacy-preserving aggregate analytics`, `anonymous download and conversion counts`, `no personal data or customer content`, `no selling data`.
++- Bad unless literally true: `no analytics`, `no telemetry`, `zero tracking`, `no network requests`.
++
++Cloudflare or similar privacy-friendly website analytics can be used if the privacy page discloses cookie-free aggregate website analytics. If a site promises no page/referrer analytics at all, remove the tool or change the promise.
++
+ ### Release truth path
+ 
+ For Mini-first apps, the release signal now has one canonical path:
+diff --git a/SESSION_HANDOFF.md b/SESSION_HANDOFF.md
+index bed5dc0..f9e5275 100644
+--- a/SESSION_HANDOFF.md
++++ b/SESSION_HANDOFF.md
+@@ -1,4 +1,207 @@
+ 
++## Session 119 (2026-04-25)
++
++### Done
++- Clarified the SaneApps privacy standard: anonymous aggregate business analytics are allowed when disclosed plainly; spyware means personal/customer-content/device surveillance, hidden tracking, or user-level data sale/sharing.
++- Updated durable SaneProcess SOP docs to stop treating conversion/download analytics as inherently suspicious.
++- Replaced scaffolded `no analytics` / `no telemetry` privacy boilerplate with privacy-preserving aggregate analytics language.
++
++### Live Verification
++- `ruby -c scripts/scaffold.rb` -> `Syntax OK`
++- `ruby scripts/sanemaster/release_guardrail_test.rb` -> `41/41 passed`
++- `rg` confirmed the new privacy standard appears in `AGENTS.md`, `DEVELOPMENT.md`, `ARCHITECTURE.md`, `templates/RELEASE_SOP.md`, and `scripts/scaffold.rb`.
++
++### Current State
++- The approved standard allows aggregate counts for downloads, updates, app launches, free/pro mix, button clicks, purchase lifecycle, activations, crashes, and broad feature adoption.
++- Forbidden analytics payloads include names, emails, license keys, API keys, customer content, clipboard data, file names, host entries, videos, sales/order data, app-internal clicked URLs, ad IDs, cross-site IDs, and raw IP retention for analytics.
++- Cloudflare-style cookie-free website analytics are acceptable only with honest disclosure; do not promise no page/referrer analytics if using a tool that provides those dimensions.
++
++### Next
++- Align app privacy pages and website CTA helpers with this standard, starting with stale `no analytics`, `no telemetry`, `zero tracking`, and old clicked-URL CTA stubs.
++
++## Session 118 (2026-04-25)
++
++### Done
++- Traced the recurring “Codex will not intelligently use sub-agents unless explicitly requested” restriction to the installed Codex runtime payload, not to repo-local config.
++- Confirmed both machines already had `multi_agent = true`; the missing piece was standing explicit authorization that survives machine switches.
++- Added a global standing authorization block to `~/.codex/AGENTS.md` on the Mini:
++  - user explicitly authorizes useful sub-agent/delegation/parallel work unless opted out in the current message
++- Extended `scripts/automation/sync-codex-mini.sh` so Air↔Mini sync now also mirrors `~/.codex/AGENTS.md` and parity-checks it.
++- Added regression coverage in `scripts/automation/control_plane_sync_test.rb` and updated `scripts/automation/README.md`.
++- Ran the live Mini -> Air sync with restart so the Air Codex instance reloaded the updated global instructions.
++
++### Live Verification
++- `bash -n scripts/automation/sync-codex-mini.sh` -> passed
++- `ruby scripts/automation/control_plane_sync_test.rb` -> `PASS 7/7`
++- Live sync:
++  - `bash scripts/automation/sync-codex-mini.sh Stephans-MacBook-Air.local --quiet`
++- Post-sync Air verification:
++  - `~/.codex/AGENTS.md` hash matches the Mini
++  - Air `~/.codex/AGENTS.md` contains:
++    - `SUBAGENT AUTHORIZATION: ALWAYS ON UNLESS OPTED OUT`
++    - `The user explicitly authorizes Codex to use sub-agents...`
++
++### Current State
++- The restrictive language is still embedded in the Codex app/runtime bundle.
++- The effective local fix is to provide standing explicit user authorization in global Codex instructions and keep that file synced across both machines.
++- Air↔Mini context sync now covers:
++  - global Codex instructions (`~/.codex/AGENTS.md`)
++  - Codex config/skills
++  - machine-local memory files
++  - repo Serena memories
++
++### Next
++- If the Air still shows the same notice after a fresh session, inspect whether the UI text is static messaging versus actual agent-policy behavior.
++- Keep global `~/.codex/AGENTS.md` in the sync path; do not treat it as machine-local-only state.
++
++## Session 117 (2026-04-25)
++
++### Done
++- Hardened the Air↔Mini context sync path so direct Mini work no longer falls out of Air context.
++- `scripts/automation/sync-codex-mini.sh` now:
++  - detects local machine role and defaults the peer host accordingly
++  - merges `~/.claude/memory/knowledge-graph.jsonl`
++  - merges `~/.claude/session_learnings.jsonl`
++  - syncs canonical repo `.serena/memories/` directories both ways
++- `scripts/automation/reconcile-air-mini.sh` now uses the same machine-role detection, so it works when run from the Mini directly instead of assuming the Air is always the controller.
++- `scripts/hooks/session_start.rb` now prints the active host/role at session start.
++
++### Live Verification
++- `bash -n scripts/automation/sync-codex-mini.sh` -> passed
++- `bash -n scripts/automation/reconcile-air-mini.sh` -> passed
++- `ruby scripts/automation/control_plane_sync_test.rb` -> `PASS 7/7`
++- Live Mini -> Air sync passed with:
++  - `bash scripts/automation/sync-codex-mini.sh Stephans-MacBook-Air.local --no-restart`
++- Post-sync evidence on the Air:
++  - `infra/SaneProcess/.serena/memories/SaneVideo/standalone-workflow-lane-apr25-2026.md` exists
++  - `~/.claude/memory/knowledge-graph.jsonl` line count matches the Mini: `517`
++  - `~/.claude/session_learnings.jsonl` line count matches the Mini: `29`
++
++### Current State
++- The standard sync path now carries both control-plane config and durable machine-local context.
++- Direct Mini training/debug sessions should no longer disappear from the Air-side memory state after the next reconcile/sync.
++- This does not replace git sync for normal repo files; it closes the specific memory/context gap across hosts.
++
++### Next
++- Prefer `ruby scripts/SaneMaster.rb sync_mini` or `reconcile-air-mini.sh` after any direct Mini-only context work.
++- Keep training-specific repo changes on the normal repo/git path; use the memory parity lane for cross-session context, not as a repo sync substitute.
++
++## Session 116 (2026-04-25)
++
++### Done
++- Split the workflow-training target so `SaneVideo` now has a standalone workflow-only lane instead of relying on the merged generic `SaneAI` path.
++- Added/verified the standalone `SaneVideo` files under `apps/SaneVideo/training_data/`:
++  - workflow-only `system_prompt.txt`
++  - Mini configs
++  - strict workflow eval packs
++- Updated `scripts/mini/mini-train.sh` so `SaneVideo` defaults to workflow-only eval weighting and does not drag the generic `core` suite into the standalone lane.
++- Fixed `scripts/mini/mini-prepare-automation-root.sh` so the automation clone now hydrates the standalone `SaneVideo` support files too:
++  - `system_prompt.txt`
++  - `lora_config_mini.yaml`
++  - `eval_*.jsonl`
++  - `challenger_configs/`
++
++### Live Verification
++- `bash -n scripts/mini/mini-train.sh` passed earlier in the training audit pass.
++- `python3 -m py_compile apps/SaneVideo/training_data/generate_workflow_dataset.py` passed.
++- `ruby scripts/mini/mini_train_process_test.rb` passed `15/15`.
++- Local standalone Mini smoke completed cleanly:
++  - report: `~/SaneApps/outputs/sanevideo-smoke-local/training_report_SaneVideo.md`
++  - model: `mlx-community/SmolLM3-3B-4bit`
++  - sweep length: `2` steps
++  - peak memory: `3.256 GB`
++  - score: `0%` workflow-first, which is expectedly non-diagnostic for such a tiny smoke
++
++### Current State
++- The previous sync gap was real: the automation clone only hydrated `SaneVideo` `train.jsonl` and `valid.jsonl`, so the standalone lane could disappear on the next prep.
++- That gap is now closed in the source-of-truth prep script.
++- `SaneVideo` is now the workflow-specific model target.
++- `SaneSync` remains the generic operations-model target.
++
++### Next
++- Sync the updated human repo state into `~/SaneApps-automation` and use that root for the first real bounded standalone `SaneVideo` run.
++- Keep the merged `SaneAI` lane out of the promotion path for `SaneVideo` quality.
++- If standalone `SaneVideo` still fails the strict gate after a real bounded Mini run with training mode enabled, move only that lane off-Mini.
++
++## Session 115 (2026-04-25)
++
++### Done
++- Tightened the SaneSales conversion report so the funnel now shows launch, upsell, website CTA, purchase lifecycle, and activation counts in one table.
++- `scripts/automation/dl-report.py` now reports:
++  - New Free, Launch Free, Launch Pro, Upsell, Buy Click, Web Buy, Web Download, Purchase Start, Purchase Done, Activated
++  - top "Other Events" so locked-feature demand is visible instead of buried
++- Confirmed canonical SaneSales data on the Mini:
++  - 30d downloads: 2,664 total, 2,647 website
++  - 30d events: 297 new free, 735 free launches, 181 Pro launches, 7 upsell views, 2 buy clicks, 0 purchase starts, 0 purchase completions, 0 activations
++  - all-time LemonSqueezy product sales: no SaneSales orders
++- `scripts/link_monitor.rb` passed all 38 checks, including SaneSales checkout, redirect, download, appcast, and domain checks.
++
++### Live Verification
++- `python3 -m py_compile scripts/automation/dl-report.py` passed.
++- `ruby scripts/SaneMaster.rb events --app SaneSales --days 30` shows the new funnel columns.
++- Synthetic local report fixture confirmed Web Buy/Web Download columns render with counts.
++- Open GitHub issues: SaneProcess `#8` remains open as `watching-external`.
++
++### Current State
++- The funnel report is now good enough to distinguish:
++  - website buy intent
++  - in-app upsell buy intent
++  - App Store purchase starts/completions
++  - direct license activations
++- Existing validation report is still red for unrelated repo-wide issues in MCP repos, Q4 process metrics, and stale SaneClip docs.
++
++## Session 114 (2026-04-25)
++
++### Done
++- Updated release-note SOP so public update copy answers the customer question: `why should I download this update?`
++- Added release-note gate coverage in `scripts/release.sh`:
++  - rejects Basic-vs-Pro / entitlement / paywall / monetization / business-model framing
++  - allows `General updates and improvements.` as the fallback when there is no stronger customer-visible benefit
++  - accepts concrete customer-benefit copy like reliability, saving, speed, compatibility, or workflow improvements
++- Updated `AGENTS.md`, `DEVELOPMENT.md`, and `templates/RELEASE_SOP.md` with the new release-note rule.
++
++### Live Verification
++- Local targeted:
++  - `ruby scripts/sanemaster/release_guardrail_test.rb` -> `41/41`
++  - `bash -n scripts/release.sh` -> passed
++- Mini full:
++  - `ruby scripts/SaneMaster.rb verify --timeout 900` -> passed
++  - latest final line: `✅ Tests passed! (202 tests, 30s)`
++
++### Current State
++- Public update notes should never say the release is about internal Basic-vs-Pro framing.
++- If there is no better customer-facing reason, use `General updates and improvements.`
++
++## Session 113 (2026-04-25)
++
++### Done
++- Restored and tested the optional external agent-tool lane:
++  - `ruby scripts/SaneMaster.rb external_tools`
++  - safe probes for `cass`, `ubs`, `dcg`, `br`/`bv`, and `asb`
++  - strict Mini-first routing by default, with explicit `--local`
++  - registry-backed `scripts/sanemaster/external_tools_test.rb`
++- Ran live status on the Mini.
++- Ran the restored `external_tools` command through the Mini router after status.
++
++### Live Verification
++- Mini `ruby scripts/SaneMaster.rb status`:
++  - 30-day LemonSqueezy total: `53` orders, `$488.47` gross, `$448.15` keep
++  - inbox action needed: `0`
++  - open GitHub issues: SaneBar `#136`, SaneBar `#129`, SaneProcess `#8`
++  - open GitHub PRs: none
++  - hosted-file dashboard sync still needed for SaneBar, SaneClip, and SaneSales
++- Mini-routed `ruby scripts/SaneMaster.rb external_tools --timeout 30`:
++  - installed: `cass`, `ubs`
++  - missing: `dcg`, `br`/`bv`, `asb`
++  - `cass`: `installed_but_index_unhealthy`
++  - `ubs`: `installed_but_module_checksum_mismatch`
++- Local targeted `ruby scripts/sanemaster/external_tools_test.rb` -> `9/9`
++
++### Current State
++- `cass` is useful only for session listing until its index/search path is repaired.
++- `ubs` is not usable yet because the Ruby scan module checksum fails.
++- The external tools remain outside default `verify`, release, support, and status paths.
++
+ ## Session 112 (2026-04-24)
+ 
+ ### Done
+diff --git a/scripts/SaneMaster.rb b/scripts/SaneMaster.rb
+index bd72e1f..9c1e7b0 100755
+--- a/scripts/SaneMaster.rb
++++ b/scripts/SaneMaster.rb
+@@ -44,6 +44,7 @@ require_relative 'sanemaster/export'
+ require_relative 'sanemaster/md_export'
+ require_relative 'sanemaster/meta'
+ require_relative 'sanemaster/tool_discovery'
++require_relative 'sanemaster/external_tools'
+ require_relative 'sanemaster/gate_review'
+ require_relative 'sanemaster/universal_control'
+ require_relative 'sanemaster/hosted_file_actions'
+@@ -59,6 +60,8 @@ require_relative 'sanemaster/leads'
+ require_relative 'sanemaster/listing_actions'
+ 
+ class SaneMaster
++  MINI_SSH_CONNECT_TIMEOUT_SECONDS = 8
++
+   include SaneMasterModules::Base
+   include SaneMasterModules::Memory
+   include SaneMasterModules::Dependencies
+@@ -74,6 +77,7 @@ class SaneMaster
+   include SaneMasterModules::MdExport
+   include SaneMasterModules::Meta
+   include SaneMasterModules::ToolDiscovery
++  include SaneMasterModules::ExternalTools
+   include SaneMasterModules::GateReview
+   include SaneMasterModules::UniversalControl
+   include SaneMasterModules::HostedFileActions
+@@ -143,6 +147,7 @@ class SaneMaster
+       commands: {
+         'doctor' => { args: '', desc: 'Check environment health' },
+         'tool_discovery' => { args: '--query "TEXT"', desc: 'Generate a proof receipt before workarounds or new tools' },
++        'external_tools' => { args: '[--json] [--local] [--repo PATH] [--timeout N]', desc: 'Evaluate optional external agent-workflow tools without making them dependencies' },
+         'health' => { args: '', desc: 'Quick health check (< 100ms)' },
+         'bootstrap' => { args: '[--check-only]', desc: 'Full environment setup' },
+         'setup' => { args: '', desc: 'Install gems and dependencies' },
+@@ -268,6 +273,7 @@ class SaneMaster
+                                   validate_test_references
+                                   validate-tests
+                                   doctor
++                                  external_tools
+                                   health
+                                   reset
+                                   check_permissions
+@@ -289,6 +295,9 @@ class SaneMaster
+                                   crashes
+                                   menu_scan
+                                 ]).freeze
++  STRICT_MINI_FIRST_COMMANDS = Set.new(%w[
++    external_tools
++  ]).freeze
+ 
+   def initialize
+     @bundle_id = detect_bundle_id
+@@ -411,6 +420,9 @@ class SaneMaster
+     end
+ 
+     unless mini_reachable?
++      if STRICT_MINI_FIRST_COMMANDS.include?(command)
++        abort "❌ Mac mini is unreachable; #{command} requires Mini-first evidence. Retry when SSH is healthy or pass --local explicitly."
++      end
+       puts '⚠️  Mac mini is unreachable. Falling back to local execution.'
+       return
+     end
+@@ -549,7 +561,14 @@ class SaneMaster
+   end
+ 
+   def mini_reachable?
+-    ssh_system('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=2', 'mini', 'true', out: File::NULL, err: File::NULL)
++    2.times do |attempt|
++      return true if ssh_system('-o', 'BatchMode=yes', '-o', "ConnectTimeout=#{MINI_SSH_CONNECT_TIMEOUT_SECONDS}",
++                                'mini', 'true', out: File::NULL, err: File::NULL)
++
++      sleep 1 if attempt.zero?
++    end
++
++    false
+   end
+ 
+   def map_local_path_to_mini(local_path)
+@@ -560,7 +579,7 @@ class SaneMaster
+   end
+ 
+   def mini_path_exists?(remote_path)
+-    ssh_system('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=3', 'mini',
++    ssh_system('-o', 'BatchMode=yes', '-o', "ConnectTimeout=#{MINI_SSH_CONNECT_TIMEOUT_SECONDS}", 'mini',
+                "test -d #{Shellwords.escape(remote_path)}", out: File::NULL, err: File::NULL)
+   end
+ 
+@@ -1283,6 +1302,9 @@ PY
+       run_sync_mini(args)
+     when 'tool_discovery', 'tool_receipt', 'tool-receipt'
+       tool_discovery(args)
++    when 'external_tools', 'agent_tools', 'tool_eval'
++      success = external_tools(args)
++      exit(success ? 0 : 1)
+     when 'health', 'h'
+       run_health(args)
+     when 'meta', 'tooling', 'audit-self'
+@@ -1785,6 +1807,21 @@ PY
+         'tool_receipt --query "do we already have a website crawler?"'
+       ]
+     },
++    'external_tools' => {
++      usage: 'external_tools [--json] [--local] [--repo PATH] [--timeout N]',
++      description: 'Evaluate optional external agent-workflow tools such as cass, ubs, dcg, br/bv, and asb with safe read-only probes.',
++      flags: {
++        '--json' => 'Print structured JSON only',
++        '--local' => 'Bypass Mini-first routing and evaluate this host explicitly',
++        '--repo PATH' => 'Evaluate a specific repo path instead of the current directory',
++        '--timeout N' => 'Per-probe timeout in seconds'
++      },
++      examples: [
++        'external_tools',
++        'external_tools --json',
++        'tool_eval --repo ~/SaneApps/infra/SaneProcess'
++      ]
++    },
+     'status' => {
+       usage: 'status',
+       description: 'Run the live status cross-reference across git, inbox, issues, releases, and current signals.',
+diff --git a/scripts/automation/dl-report.py b/scripts/automation/dl-report.py
+index 1e09119..a6b4840 100755
+--- a/scripts/automation/dl-report.py
++++ b/scripts/automation/dl-report.py
+@@ -201,7 +201,19 @@ def print_events(events, window_days=90):
+     week_dates = set((now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7))
+     window_label = f"Last {window_days}d"
+ 
+-    event_types = ["new_free_user", "early_adopter_grant", "license_activated"]
++    event_columns = [
++        ("New Free", "new_free_user"),
++        ("Launch Free", "app_launch_free"),
++        ("Launch Pro", "app_launch_pro"),
++        ("Upsell", "upsell_shown"),
++        ("Buy Click", "upsell_clicked_buy"),
++        ("Web Buy", "website_buy_clicked"),
++        ("Web Download", "website_download_clicked"),
++        ("Purchase Start", "purchase_started"),
++        ("Purchase Done", "purchase_completed"),
++        ("Activated", "license_activated"),
++    ]
++    visible_events = {event for _label, event in event_columns}
+     buckets = {
+         "Today": defaultdict(int),
+         "Yesterday": defaultdict(int),
+@@ -223,11 +235,24 @@ def print_events(events, window_days=90):
+             buckets["Yesterday"][event] += count
+ 
+     print(f"\nUser Events — {today}")
+-    print(f"{'Period':<15} {'New Free':>10} {'Early Adopter':>15} {'Activated':>11}")
+-    print("-" * 55)
++    header = f"{'Period':<15}" + "".join(f" {label:>14}" for label, _event in event_columns)
++    print(header)
++    print("-" * len(header))
+     for name in ["Today", "Yesterday", "This Week", window_label]:
+         b = buckets[name]
+-        print(f"{name:<15} {b.get('new_free_user', 0):>10} {b.get('early_adopter_grant', 0):>15} {b.get('license_activated', 0):>11}")
++        print(f"{name:<15}" + "".join(f" {b.get(event, 0):>14}" for _label, event in event_columns))
++
++    other_totals = defaultdict(int)
++    for row in events:
++        event = row["event"]
++        if event not in visible_events:
++            other_totals[event] += row["count"]
++    if other_totals:
++        print(f"\nOther Events — Last {window_days}d")
++        print(f"{'Event':<32} {'Count':>8}")
++        print("-" * 42)
++        for event, count in sorted(other_totals.items(), key=lambda item: (-item[1], item[0]))[:12]:
++            print(f"{event:<32} {count:>8}")
+ 
+ 
+ def main():
+diff --git a/scripts/automation/hosted-file-actions.py b/scripts/automation/hosted-file-actions.py
+index 679bbc3..852f374 100644
+--- a/scripts/automation/hosted-file-actions.py
++++ b/scripts/automation/hosted-file-actions.py
+@@ -182,7 +182,21 @@ def fetch_json(url: str, api_key: str | None = None) -> dict[str, Any] | list[An
+ 
+ def fetch_text(url: str) -> str:
+     result = subprocess.run(
+-        ["curl", "-fsSL", "-A", "SaneProcess/1.0", url],
++        [
++            "curl",
++            "-fsSL",
++            "--connect-timeout",
++            "8",
++            "--max-time",
++            "30",
++            "--retry",
++            "2",
++            "--retry-delay",
++            "1",
++            "-A",
++            "SaneProcess/1.0",
++            url,
++        ],
+         capture_output=True,
+         text=True,
+     )
+@@ -276,7 +290,12 @@ def build_snapshot_rows(config: dict[str, Any], api_key: str) -> tuple[list[dict
+ 
+         filename = str((published_file or {}).get("attributes", {}).get("name", "")).strip()
+         hosted_version = extract_version_from_filename(filename)
+-        status = "In sync" if expected_version and hosted_version == expected_version else "Needs dashboard sync"
++        if not expected_version:
++            status = "Appcast unavailable"
++        elif hosted_version == expected_version:
++            status = "In sync"
++        else:
++            status = "Needs dashboard sync"
+ 
+         row = {
+             "app": app_name,
+diff --git a/scripts/automation/hosted_file_actions_test.py b/scripts/automation/hosted_file_actions_test.py
+index b4e260d..880bd03 100644
+--- a/scripts/automation/hosted_file_actions_test.py
++++ b/scripts/automation/hosted_file_actions_test.py
+@@ -75,6 +75,52 @@ class HostedFileActionTests(unittest.TestCase):
+         self.assertIn("variant 1227172", actions[0]["instructions"])
+         self.assertEqual(snapshot[0]["status"], "Needs dashboard sync")
+ 
++    def test_build_snapshot_rows_does_not_create_dashboard_action_when_appcast_unavailable(self):
++        config = {
++            "products": {
++                "sanebar": {
++                    "name": "SaneBar",
++                    "appcast": "https://sanebar.com/appcast.xml",
++                }
++            }
++        }
++        products = [
++            {
++                "id": "778575",
++                "attributes": {"name": "SaneBar", "slug": "sanebar"},
++            }
++        ]
++        variants = [
++            {
++                "id": "1227172",
++                "attributes": {"product_id": 778575},
++            }
++        ]
++        files = [
++            {
++                "attributes": {
++                    "status": "published",
++                    "name": "SaneBar-2.1.45.zip",
++                }
++            }
++        ]
++
++        def fake_fetch_collection(path, _api_key):
++            if "products" in path:
++                return products
++            if "variants?page" in path:
++                return variants
++            return files
++
++        with mock.patch.object(HOSTED_FILE_ACTIONS, "fetch_collection", side_effect=fake_fetch_collection), \
++            mock.patch.object(HOSTED_FILE_ACTIONS, "fetch_appcast_release", return_value=("", "")):
++            actions, snapshot = HOSTED_FILE_ACTIONS.build_snapshot_rows(config, "test-key")
++
++        self.assertEqual(actions, [])
++        self.assertEqual(snapshot[0]["expected_version"], "")
++        self.assertEqual(snapshot[0]["hosted_version"], "2.1.45")
++        self.assertEqual(snapshot[0]["status"], "Appcast unavailable")
++
+     def test_main_writes_json_out_and_xlsx(self):
+         sample_actions = [
+             {
+diff --git a/scripts/automation/reconcile-air-mini.sh b/scripts/automation/reconcile-air-mini.sh
+index e98763f..5c5bf39 100755
+--- a/scripts/automation/reconcile-air-mini.sh
++++ b/scripts/automation/reconcile-air-mini.sh
+@@ -3,7 +3,9 @@
+ 
+ set -euo pipefail
+ 
+-MINI_HOST="mini"
++DEFAULT_MINI_HOST="mini"
++DEFAULT_AIR_HOST="Stephans-MacBook-Air.local"
++PEER_HOST="${RECONCILE_PEER_HOST:-}"
+ QUIET=0
+ SYNC_CONTROL_PLANE=1
+ ACTIVATE_MINI_RUNS=0
+@@ -11,11 +13,12 @@ DUMP_CONFIG=0
+ 
+ usage() {
+   cat <<USAGE
+-Usage: $(basename "$0") [mini-host] [--quiet] [--no-sync-control-plane]
++Usage: $(basename "$0") [peer-host] [--quiet] [--no-sync-control-plane]
+ 
+ Examples:
+   $(basename "$0")
+   $(basename "$0") mini --quiet
++  $(basename "$0") Stephans-MacBook-Air.local --quiet
+   $(basename "$0") mini --activate-mini-runs
+   $(basename "$0") mini --no-sync-control-plane
+   $(basename "$0") --dump-config
+@@ -33,6 +36,52 @@ die() {
+   exit 1
+ }
+ 
++detect_local_machine_name() {
++  if [[ -n "${SYNC_LOCAL_MACHINE_NAME:-}" ]]; then
++    printf '%s' "${SYNC_LOCAL_MACHINE_NAME}"
++    return
++  fi
++
++  local name=""
++  name=$(scutil --get LocalHostName 2>/dev/null || true)
++  if [[ -z "$name" ]]; then
++    name=$(hostname -s 2>/dev/null || hostname)
++  fi
++  printf '%s' "$name"
++}
++
++detect_local_machine_role() {
++  if [[ -n "${SYNC_LOCAL_MACHINE_ROLE:-}" ]]; then
++    printf '%s' "${SYNC_LOCAL_MACHINE_ROLE}"
++    return
++  fi
++
++  local name
++  name=$(detect_local_machine_name | tr '[:upper:]' '[:lower:]')
++  case "$name" in
++    *mini*)
++      printf '%s' "mini"
++      ;;
++    *air*)
++      printf '%s' "air"
++      ;;
++    *)
++      printf '%s' "local"
++      ;;
++  esac
++}
++
++default_peer_host_for_role() {
++  case "$1" in
++    mini)
++      printf '%s' "$DEFAULT_AIR_HOST"
++      ;;
++    *)
++      printf '%s' "$DEFAULT_MINI_HOST"
++      ;;
++  esac
++}
++
+ while [[ $# -gt 0 ]]; do
+   case "$1" in
+     -h|--help)
+@@ -59,17 +108,25 @@ while [[ $# -gt 0 ]]; do
+       die "Unknown option: $1"
+       ;;
+     *)
+-      MINI_HOST="$1"
++      PEER_HOST="$1"
+       shift
+       ;;
+   esac
+ done
+ 
++LOCAL_MACHINE_NAME=$(detect_local_machine_name)
++LOCAL_MACHINE_ROLE=$(detect_local_machine_role)
++if [[ -z "$PEER_HOST" ]]; then
++  PEER_HOST=$(default_peer_host_for_role "$LOCAL_MACHINE_ROLE")
++fi
++
+ if [[ "$DUMP_CONFIG" -eq 1 ]]; then
+-  printf 'MINI_HOST=%s\n' "$MINI_HOST"
++  printf 'PEER_HOST=%s\n' "$PEER_HOST"
+   printf 'QUIET=%s\n' "$QUIET"
+   printf 'SYNC_CONTROL_PLANE=%s\n' "$SYNC_CONTROL_PLANE"
+   printf 'ACTIVATE_MINI_RUNS=%s\n' "$ACTIVATE_MINI_RUNS"
++  printf 'LOCAL_MACHINE_NAME=%s\n' "$LOCAL_MACHINE_NAME"
++  printf 'LOCAL_MACHINE_ROLE=%s\n' "$LOCAL_MACHINE_ROLE"
+   exit 0
+ fi
+ 
+@@ -81,21 +138,21 @@ GIT_SYNC_SCRIPT="$ROOT/scripts/automation/git-sync-safe.sh"
+ 
+ if [[ "$SYNC_CONTROL_PLANE" -eq 1 ]]; then
+   [[ -x "$SYNC_SCRIPT" ]] || die "Missing control-plane sync script: $SYNC_SCRIPT"
+-  log "1) Syncing control-plane files to $MINI_HOST..."
+-  sync_args=("$MINI_HOST" --quiet --no-restart --pause-mini-am --pause-mini-pm)
++  log "1) Syncing control-plane files to $PEER_HOST..."
++  sync_args=("$PEER_HOST" --quiet --no-restart --pause-mini-am --pause-mini-pm)
+   if [[ "$ACTIVATE_MINI_RUNS" -eq 1 ]]; then
+-    sync_args=("$MINI_HOST" --quiet --no-restart --activate-mini-runs)
++    sync_args=("$PEER_HOST" --quiet --no-restart --activate-mini-runs)
+   fi
+   bash "$SYNC_SCRIPT" "${sync_args[@]}"
+ fi
+ 
+-remote_home=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$MINI_HOST" 'printf %s "$HOME"') || die "Could not resolve $MINI_HOST home"
++remote_home=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$PEER_HOST" 'printf %s "$HOME"') || die "Could not resolve $PEER_HOST home"
+ remote_git_sync="$remote_home/SaneApps/infra/SaneProcess/scripts/automation/git-sync-safe.sh"
+ 
+-log "2) Reconciling canonical repos on $MINI_HOST..."
+-ssh -o BatchMode=yes -o ConnectTimeout=8 "$MINI_HOST" "bash \"$remote_git_sync\" --reconcile-dirty"
++log "2) Reconciling canonical repos on $PEER_HOST..."
++ssh -o BatchMode=yes -o ConnectTimeout=8 "$PEER_HOST" "bash \"$remote_git_sync\" --reconcile-dirty"
+ 
+-log "3) Reconciling canonical repos locally and verifying parity with $MINI_HOST..."
+-bash "$GIT_SYNC_SCRIPT" --peer "$MINI_HOST" --reconcile-dirty
++log "3) Reconciling canonical repos locally and verifying parity with $PEER_HOST..."
++bash "$GIT_SYNC_SCRIPT" --peer "$PEER_HOST" --reconcile-dirty
+ 
+-log "Air/Mini reconcile complete."
++log "Machine reconcile complete."
+diff --git a/scripts/hooks/session_start.rb b/scripts/hooks/session_start.rb
+index fddd8b2..d3bede3 100755
+--- a/scripts/hooks/session_start.rb
++++ b/scripts/hooks/session_start.rb
+@@ -159,6 +159,23 @@ rescue StandardError => e
+ end
+ 
+ def output_session_context
++  machine_name = begin
++    ENV['SYNC_LOCAL_MACHINE_NAME'] || `scutil --get LocalHostName 2>/dev/null`.strip
++  rescue StandardError
++    ''
++  end
++  machine_name = `hostname -s 2>/dev/null`.strip if machine_name.to_s.empty?
++  machine_role = case machine_name.downcase
++                 when /mini/
++                   'mini'
++                 when /air/
++                   'air'
++                 else
++                   'local'
++                 end
++
++  warn "🖥️  Session host: #{machine_name} (#{machine_role})" unless machine_name.to_s.empty?
++
+   # Only warn if there's an actual problem (no SOP)
+   sop_file = find_sop_file
+   unless sop_file
+diff --git a/scripts/mini/mini-prepare-automation-root.sh b/scripts/mini/mini-prepare-automation-root.sh
+index d331511..2fed2a4 100755
+--- a/scripts/mini/mini-prepare-automation-root.sh
++++ b/scripts/mini/mini-prepare-automation-root.sh
+@@ -61,6 +61,12 @@ managed_overlay_path_allowed() {
+     apps/SaneSync:training_data/challenger_configs/*|\
+     apps/SaneVideo:training_data/train.jsonl|\
+     apps/SaneVideo:training_data/valid.jsonl|\
++    apps/SaneVideo:training_data/system_prompt.txt|\
++    apps/SaneVideo:training_data/lora_config_mini.yaml|\
++    apps/SaneVideo:training_data/eval_*.jsonl|\
++    apps/SaneVideo:training_data/*.yaml|\
++    apps/SaneVideo:training_data/*.yml|\
++    apps/SaneVideo:training_data/challenger_configs/*|\
+     apps/SaneVideo:Tests/Assets/*)
+       return 0
+       ;;
+@@ -508,8 +514,10 @@ hydrate_training_dataset "SaneClip" train.jsonl valid.jsonl test.jsonl
+ hydrate_training_dataset "SaneAI" train.jsonl valid.jsonl
+ hydrate_training_dataset "SaneVideo" train.jsonl valid.jsonl
+ hydrate_training_support_files "SaneAI" merge_training_data.py system_prompt.txt lora_config_mini.yaml eval_*.jsonl
++hydrate_training_support_files "SaneVideo" system_prompt.txt lora_config_mini.yaml eval_*.jsonl
+ hydrate_training_subdir "SaneAI" challenger_configs
+ hydrate_training_subdir "SaneSync" challenger_configs
++hydrate_training_subdir "SaneVideo" challenger_configs
+ 
+ hydrate_sanevideo_assets
+ 
+diff --git a/scripts/release.sh b/scripts/release.sh
+index c54d7a7..b29f477 100755
+--- a/scripts/release.sh
++++ b/scripts/release.sh
+@@ -684,7 +684,7 @@ update_website_app_store_links_if_live() {
+ }
+ 
+ # Format release notes as clean HTML bullet list for Sparkle appcast.
+-# Hard rules: plain English, never scare customers, beautifully formatted.
++# Hard rules: plain English, customer benefit first, never scare customers.
+ # Input: newline-separated notes (one bullet per line)
+ # Output: HTML <ul><li> list with "What's New" heading
+ release_notes_required_for_mode() {
+@@ -718,6 +718,14 @@ validate_release_notes_text() {
+         return 1
+     fi
+ 
++    local plan_words="basic[[:space:]]*(vs|versus|/|and)[[:space:]]*pro|basic[^[:alnum:]]+pro|free tier|paid tier|pro tier|entitlement|paywall|monetization|business model|license model|upgrade to pro|unlock pro|pro unlock"
++    if echo "${raw_notes}" | grep -qiE "${plan_words}"; then
++        log_error "Release notes read like pricing-plan or entitlement notes, not a reason to install."
++        log_error "Rewrite from the customer's point of view: why should I download this update?"
++        log_error "Lead with the visible fix, speedup, compatibility improvement, or new workflow benefit."
++        return 1
++    fi
++
+     if echo "${raw_notes}" | grep -qE '#[0-9]+'; then
+         log_error "Release notes contain issue numbers (e.g. #79). Customers don't care about issue trackers."
+         log_error "Describe what changed in plain English."
+@@ -741,6 +749,13 @@ validate_release_notes_text() {
+         return 1
+     fi
+ 
++    local benefit_words="fix|fixes|fixed|update|updates|updated|improve|improves|improved|improvement|improvements|add|adds|added|make|makes|made|keep|keeps|kept|restore|restores|restored|prevent|prevents|prevented|remember|remembers|remembered|support|supports|supported|work|works|worked|faster|quicker|easier|clearer|smoother|more reliable|more consistent|more predictable|now"
++    if ! echo "${raw_notes}" | grep -qiE "\\b(${benefit_words})\\b"; then
++        log_error "Release notes do not give a clear customer reason to install."
++        log_error "Answer this in the notes: why should I download this update?"
++        return 1
++    fi
++
+     return 0
+ }
+ 
+@@ -1857,7 +1872,7 @@ print_help() {
+     echo "  --skip-notarize      Skip notarization (requires typed override approval)"
+     echo "  --skip-build         Skip build step (requires typed override approval)"
+     echo "  --version X.Y.Z      Set version number"
+-    echo "  --notes \"...\"      Release notes for changelog/release metadata (required for preflight/full/deploy/GitHub release)"
++    echo "  --notes \"...\"      Customer-facing reasons to install this update (required for preflight/full/deploy/GitHub release)"
+     echo "  --allow-republish    Allow republishing an already-live version/build (requires typed override approval)"
+     echo "  --allow-unsynced-peer  Bypass Air/mini reconcile gate (requires typed override approval)"
+     echo "  --allow-repeat-failure  Bypass repeat-failure guard once"
+@@ -4110,6 +4125,10 @@ run_release_preflight_only() {
+     return 0
+ }
+ 
++if [ "${SANEPROCESS_RELEASE_SH_SOURCE_ONLY:-0}" = "1" ]; then
++    return 0 2>/dev/null || exit 0
++fi
++
+ # Defaults/flags
+ PROJECT_ROOT=""
+ CONFIG_PATH=""
+diff --git a/scripts/sanemaster/base.rb b/scripts/sanemaster/base.rb
+index 8942890..4e59935 100644
+--- a/scripts/sanemaster/base.rb
++++ b/scripts/sanemaster/base.rb
+@@ -31,6 +31,7 @@ module SaneMasterModules
+                                       lint
+                                       audit
+                                       tool_discovery
++                                      external_tools
+                                       tool_receipt
+                                       system_check
+                                       doctor
+diff --git a/scripts/sanemaster/release_guardrail_test.rb b/scripts/sanemaster/release_guardrail_test.rb
+index fe3ad1d..8d9f826 100644
+--- a/scripts/sanemaster/release_guardrail_test.rb
++++ b/scripts/sanemaster/release_guardrail_test.rb
+@@ -1,6 +1,9 @@
+ #!/usr/bin/env ruby
+ # frozen_string_literal: true
+ 
++require 'open3'
++require 'shellwords'
++
+ require_relative '../hooks/test/test_framework'
+ require_relative 'gate_review'
+ require_relative 'release'
+@@ -59,6 +62,17 @@ class ReleaseGuardrailHarness
+   end
+ 
+   attr_reader :last_jxa_script
++
++  def release_notes_gate(notes)
++    script = File.expand_path('../release.sh', __dir__)
++    command = "source #{Shellwords.escape(script)} >/dev/null && validate_release_notes_text \"$TEST_NOTES\" true"
++    Open3.capture3(
++      { 'SANEPROCESS_RELEASE_SH_SOURCE_ONLY' => '1', 'TEST_NOTES' => notes },
++      'bash',
++      '-lc',
++      command
++    )
++  end
+ end
+ 
+ include TestFramework
+@@ -124,6 +138,28 @@ exit(run_tests('SaneMaster App Store Guardrail Tests') do
+       true
+     end
+ 
++    test('release notes reject Basic versus Pro framing') do
++      stdout, stderr, status = subject.release_notes_gate('Adds clearer Basic versus Pro messaging.')
++
++      assert(!status.success?, 'expected Basic versus Pro framing to fail')
++      assert_includes([stdout, stderr].join("\n"), 'why should I download this update')
++      true
++    end
++
++    test('release notes allow generic customer-facing fallback copy') do
++      _stdout, stderr, status = subject.release_notes_gate('General updates and improvements.')
++
++      assert(status.success?, "expected generic update fallback to pass: #{stderr}")
++      true
++    end
++
++    test('release notes accept concrete customer benefit copy') do
++      _stdout, stderr, status = subject.release_notes_gate('Improves reliability when saving host changes.')
++
++      assert(status.success?, "expected customer benefit note to pass: #{stderr}")
++      true
++    end
++
+     test('release.sh falls back to a clean webhook clone when the local worker checkout is dirty or behind') do
+       release_script = File.read(File.expand_path('../release.sh', __dir__))
+ 
+diff --git a/scripts/scaffold.rb b/scripts/scaffold.rb
+index 9d11c00..bff9c11 100755
+--- a/scripts/scaffold.rb
++++ b/scripts/scaffold.rb
+@@ -349,11 +349,15 @@ def main
+ 
+     ## Data Collection
+ 
+-    #{app_name} collects **zero** user data:
+-    - No analytics
+-    - No telemetry
+-    - No crash reporting to external services
+-    - No account required
++    #{app_name} does not collect personal data or customer content.
++
++    SaneApps may use privacy-preserving aggregate counts to understand downloads, updates, app launches, crashes, purchases, license activations, and broad feature adoption. These counts are used to run the business and improve the app.
++
++    #{app_name} does not collect:
++    - Names, email addresses, or account identifiers for analytics
++    - Advertising identifiers or cross-site tracking identifiers
++    - Customer content, file names, clipboard contents, browser history, host entries, videos, sales/order data, API keys, or license keys
++    - User-level data for sale or sharing with data brokers
+ 
+     ## Local Storage
+ 
+diff --git a/scripts/test_registry.json b/scripts/test_registry.json
+index 3559481..3ea6b62 100644
+--- a/scripts/test_registry.json
++++ b/scripts/test_registry.json
+@@ -109,6 +109,12 @@
+       "status": "required",
+       "cmd": ["ruby", "scripts/sanemaster/dependencies_test.rb"]
+     },
++    {
++      "path": "scripts/sanemaster/external_tools_test.rb",
++      "label": "SaneProcess external tool evaluation tests",
++      "status": "required",
++      "cmd": ["ruby", "scripts/sanemaster/external_tools_test.rb"]
++    },
+     {
+       "path": "scripts/sanemaster/gate_review_test.rb",
+       "label": "SaneProcess gate review tests",
+diff --git a/templates/RELEASE_SOP.md b/templates/RELEASE_SOP.md
+index 0d362e4..c843846 100644
+--- a/templates/RELEASE_SOP.md
++++ b/templates/RELEASE_SOP.md
+@@ -79,6 +79,12 @@ Hard rule:
+ - Do not use alarming words like `critical`, `severe`, `broken`, `failure`, `corruption`, or `regression` in customer-facing notes.
+ - Every bullet should answer the customer's question: `what does this do for me?`
+ - Prefer outcomes like `opens faster`, `stays in place after restart`, or `less nagging`, not internal causes or engineering details.
++- If there is no strong customer-visible angle, use `General updates and improvements.` That is better than exposing internal Basic-vs-Pro, entitlement, paywall, monetization, or business-model work.
++
++Privacy copy check:
++- Anonymous aggregate business analytics are allowed when disclosed plainly.
++- Do not ship stale `no analytics`, `no telemetry`, `zero tracking`, or `no network requests` copy if the app or website counts downloads, launches, page views, update checks, button clicks, purchases, activations, crashes, or feature adoption.
++- Never include personal/customer data in analytics: names, emails, license keys, API keys, customer content, clipboard data, file names, host entries, videos, sales/order data, app-internal clicked URLs, ad IDs, cross-site IDs, or raw IP retention for analytics.
+ 
+ **Headless App Store rule:**
+ - If `.saneprocess` enables `appstore.platforms: [macos, ios]`, run the mini bootstrap before release:

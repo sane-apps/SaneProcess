@@ -1,0 +1,2970 @@
+diff --git a/.claude/settings.json b/.claude/settings.json
+index a592d42..9f6d708 100644
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+@@ -112,17 +112,50 @@
+     },
+     "credentials": {
+       "files": [
+-        { "path": "~/.config/nv/env", "mode": "deny" },
+-        { "path": "~/.private_keys", "mode": "deny" },
+-        { "path": "~/.ssh/id_ed25519", "mode": "deny" },
+-        { "path": "~/.ssh/id_ed25519_github", "mode": "deny" },
+-        { "path": "~/.ssh/id_rsa", "mode": "deny" },
+-        { "path": "~/.ssh/id_ecdsa", "mode": "deny" },
+-        { "path": "~/.ssh/id_dsa", "mode": "deny" },
+-        { "path": "~/.aws/credentials", "mode": "deny" },
+-        { "path": "~/.netrc", "mode": "deny" },
+-        { "path": "~/.codex/auth.json", "mode": "deny" },
+-        { "path": "~/.claude/.credentials.json", "mode": "deny" }
++        {
++          "path": "~/.config/nv/env",
++          "mode": "deny"
++        },
++        {
++          "path": "~/.private_keys",
++          "mode": "deny"
++        },
++        {
++          "path": "~/.ssh/id_ed25519",
++          "mode": "deny"
++        },
++        {
++          "path": "~/.ssh/id_ed25519_github",
++          "mode": "deny"
++        },
++        {
++          "path": "~/.ssh/id_rsa",
++          "mode": "deny"
++        },
++        {
++          "path": "~/.ssh/id_ecdsa",
++          "mode": "deny"
++        },
++        {
++          "path": "~/.ssh/id_dsa",
++          "mode": "deny"
++        },
++        {
++          "path": "~/.aws/credentials",
++          "mode": "deny"
++        },
++        {
++          "path": "~/.netrc",
++          "mode": "deny"
++        },
++        {
++          "path": "~/.codex/auth.json",
++          "mode": "deny"
++        },
++        {
++          "path": "~/.claude/.credentials.json",
++          "mode": "deny"
++        }
+       ]
+     },
+     "network": {
+@@ -202,6 +235,16 @@
+             "timeout": 5
+           }
+         ]
++      },
++      {
++        "matcher": "Write|Edit",
++        "hooks": [
++          {
++            "type": "command",
++            "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sane_prose_guard.rb",
++            "timeout": 10
++          }
++        ]
+       }
+     ],
+     "PostToolUse": [
+@@ -274,4 +317,4 @@
+   "skipDangerousModePermissionPrompt": false,
+   "skipWorkflowUsageWarning": true,
+   "agentPushNotifEnabled": true
+-}
++}
+\ No newline at end of file
+diff --git a/AGENTS.md b/AGENTS.md
+index be54f0e..0d4799b 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -246,7 +246,8 @@ Green tests are not enough for customer-facing UI claims.
+ Default mailbox: SaneApps work email `hi@saneapps.com`.
+ 
+ - Use `check-inbox.sh` / `SaneMaster.rb check_inbox`; never manual email API
+-  curl.
++  curl. For campaign receipts, run `check-inbox.sh campaign-audit --subject "..."
++  --since <ISO-8601>` for every subject; it joins Resend and Cloudflare history.
+ - Run `review <id>` before reply or resolve.
+ - Show the exact draft and wait for explicit approval before sending.
+ - Existing app users should be told to update from inside the app. Do not send
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index 3940989..08c7df9 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -626,6 +626,34 @@ benchmarks remain separate evidence and are not queried by this report.
+ 
+ ---
+ 
++### ADR-014: Runtime cleanup must unregister app bundles before deletion (2026-07-24)
++
++**Context:** Build, test, App Store audit, and Setapp staging created temporary
++SaneApps bundles under DerivedData, Trash, and per-run temp roots. Deleting the
++files did not delete their LaunchServices identities. Broad user-domain
++`lsregister` rescans then re-registered stale copies, producing duplicate or
++ghost Dock tiles. SaneClip was especially visible because an Xcode Debug run
++could coexist with its canonical Developer ID Release login item.
++
++**Decision:**
++1. SaneClip runtime proof remains Developer ID-signed Release only; the main
++   Xcode Run scheme must use Release.
++2. Before removing an app bundle, unregister the outer bundle and every nested
++   `.app` bundle deepest-first with supported `lsregister -u`.
++3. After cleanup, register only the canonical `/Applications` bundle and compact
++   with `lsregister -gc`. Ordinary workflows must not rescan the whole user
++   domain.
++4. Temporary audit roots that contain built or extracted app bundles carry
++   `.metadata_never_index` and unregister their bundle trees in an `ensure`
++   path.
++5. SaneClip channels are one logical clipboard manager; direct, Debug, App
++   Store, and Setapp identities must never monitor the pasteboard concurrently.
++
++**Consequences:** Build products can still use Debug for headless tests, but
++post-test dedupe must leave no missing LaunchServices paths or live test
++processes. A post-workflow LaunchServices missing-path count is the operational
++receipt for this invariant.
++
+ ## 4. Landscape
+ 
+ ### Comparison
+@@ -717,8 +745,20 @@ Durable architecture rules:
+ 
+ - External API calls must route through `SaneMaster.rb`, release scripts, or
+   dedicated automation wrappers so they produce receipts and obey guardrails.
++- `sane_test.rb` treats the Mini's app and SaneProcess checkouts as canonical.
++  A controller run uses those checkouts without mirroring by default. The
++  optional `--sync-workspace-to-mini` path is explicit and fails before rsync
++  unless the target app repo is clean, on `main`, and has the same normalized
++  Git remote as the controller repo. This prevents stale controller files from
++  deleting dirty or feature-branch Mini work.
+ - Secrets live in Keychain or the approved env cache; docs must not become
+   credential ledgers.
++- Cross-machine secret writes use `sane-secret-set`. Its Mini half must run
++  through the logged-in GUI session because plain SSH cannot write the Mini
++  login keychain. The value crosses through a private bounded FIFO and never
++  appears in argv, command files, logs, receipts, or agent output. An
++  interrupted Air-only write is repaired with `--sync-mini NAME`, which reads
++  the approved local store internally and does not ask for a second paste.
+ - App Store Connect and vendor API quirks belong in release/preflight code plus
+   `templates/RELEASE_SOP.md`, not duplicated here.
+ - Background automation ownership belongs in `DEVELOPMENT.md`; this file should
+diff --git a/DEVELOPMENT.md b/DEVELOPMENT.md
+index 3ffa38d..de39990 100644
+--- a/DEVELOPMENT.md
++++ b/DEVELOPMENT.md
+@@ -192,8 +192,9 @@ SaneProcess has one SOP with multiple client adapters.
+ - `SaneMaster.rb bootstrap` updates stale `.ruby-version` pins in fix mode and
+   only warns in `--check-only` mode. It also installs missing required Ruby gems
+   in fix mode, even when a repo intentionally has no `Gemfile`.
+-- Keep low-level bootstrap/package validators Ruby 2.6-parseable until the
+-  Homebrew Ruby check has had a chance to run.
++- Keep low-level bootstrap/package validators and post-launch cleanup called by
++  system wrappers Ruby 2.6-compatible until the Homebrew Ruby check has had a
++  chance to run.
+ 
+ | Client | Install mode | Stable surface |
+ |--------|--------------|----------------|
+diff --git a/SESSION_HANDOFF.md b/SESSION_HANDOFF.md
+index d7cad08..e2ebe74 100644
+--- a/SESSION_HANDOFF.md
++++ b/SESSION_HANDOFF.md
+@@ -1,6 +1,6 @@
+ # SaneProcess Session Handoff
+ 
+-As of: 2026-07-20 00:27 America/New_York
++As of: 2026-07-27 12:08 America/New_York
+ Owner host: `Stephans-Mac-mini.local` (`stephansmac`)
+ Repo: `/Users/stephansmac/SaneApps/infra/SaneProcess`
+ Branch/base: canonical `main`; branch-convergence work was reviewed from
+@@ -25,6 +25,150 @@ dated research, Serena, AgentMemory, and durable architecture decisions.
+   JSON-LD, download redirect, GitHub, and Homebrew. Receipt:
+   `apps/SaneHosts/outputs/post-release-checks-1.1.24-final-20260727.log`.
+ 
++## 2026-07-26 SaneCite Wave-3 Audit Hardening
++
++- Root cause of the July 27 false-zero alert: explicit arm windows were filtered
++  by Resend `created_at` before `scheduled_at`, hiding records queued before
++  their send date. The canonical audit now scopes named arms by exact subject
++  and timezone-aware `scheduled_at`, uses due/attempted denominators, detects
++  overdue and expected-count blockers, and time/thread-scopes inbound replies.
++- Mini proof: focused campaign regressions pass 8/8, existing inbox-report tests
++  pass 29/29, syntax/registry validation passes, and the automation guard passes
++  35/35. The previously unregistered `sane_runaway_guard_test.rb` is now a
++  required registry entry and passes 13 tests / 26 assertions. Full SaneMaster
++  verify now advances past registry validation and is independently blocked by
++  the existing project/global hook-stack settings mismatch.
++- Live read-back: Arm A completed 55/55 with 46 delivered and 9 bounced
++  (16.36%), zero verified replies/unsubscribes. Arm B remains 533 scheduled as
++  134/134/134/131 for July 28-31, with zero duplicates, cross-arm overlap,
++  overdue rows, or blocking suppression overlap.
++- Restored the missing suppression ledger from the Air and reconciled it with
++  live campaign opt-out/provider-suppression state. The normalized union has
++  135 unique entries, mode 600, byte parity across Mini/Air, and zero overlap
++  with Arm B. Original durable ledgers were preserved as dated backups.
++- Updated the existing Mini-local `sanecite-ab-campaign-watch` automation in
++  place. It remains read-only and ACTIVE, now running at 08:30 and hourly
++  09:30-17:30 with exact arm/day expectations, suppression proof, overdue-send
++  detection, independent 10% bounce guards, Aug-1 verdict, and Aug-3 completion
++  criteria. No campaign email was resent, canceled, or rescheduled.
++
++## 2026-07-26 One-Paste Secret Sync Repair
++
++- `sane-secret-set NAME` previously wrote the Air stores, then failed on the
++  Mini because macOS denies login-keychain writes from a plain SSH process.
++- The shared tool now routes the Mini write through `mini-gui-run.sh` and a
++  private bounded FIFO. The value stays off argv, command files, logs, and
++  agent output. `--sync-mini NAME` repairs an interrupted prior run from the
++  stored Air value without another paste.
++- Live regression proof: `MILLIONVERIFIER_API_KEY` synced with matching
++  25-character fingerprint `bb6ba98f9128`; the Mini GUI read-back reported
++  Keychain and env agreement. A Mini call to MillionVerifier's credits endpoint
++  passed, then the exact 127 scheduled 2026-07-27 SaneCite Arm-A recipients
++  completed bulk verification: 55 OK, 43 catch-all, 25 invalid, and 4 unknown.
++  With owner approval, the 72 non-OK Monday records were canceled. Full-history
++  read-back proved 55 verified Arm-A records remain on 2026-07-27 and the 533
++  Apollo-verified Arm-B records remain untouched across 2026-07-28..31
++  (134/134/134/131). Total exact-subject schedule: 588.
++- Receipts:
++  `~/SaneApps/outputs/sanecite-apollo-outreach-2026-07-13/millionverifier-wave3-arm-a-{input,upload,status,report,ok,catch_all,exclude}.*`.
++  Prune receipt:
++  `~/SaneApps/outputs/sanecite-apollo-outreach-2026-07-13/millionverifier-wave3-arm-a-prune-receipt.json`.
++
++## 2026-07-24 LaunchServices and SaneClip Runtime Hygiene
++
++- Diagnosed duplicate SaneClip Dock icons as concurrent Developer ID Release and
++  Xcode Debug runtimes. The canonical policy already required signed Release;
++  the generated Xcode Run scheme still selected Debug and bypassed that rule.
++- SaneClip now runs the main Xcode scheme as Release and deduplicates all known
++  SaneClip bundle channels before capture starts.
++- The corrected portfolio-wide audit found 1,086 SaneApps LaunchServices
++  registrations, including 1,039 deleted paths. Cleanup unregistered all 1,077
++  noncanonical paths and re-registered only installed `/Applications` builds,
++  leaving 9 valid records and zero missing paths.
++- Shared cleanup now unregisters outer and nested `.app` bundles before trashing
++  them, registers only the canonical app, compacts with supported `lsregister
++  -gc`, and prevents App Store audit temp roots from being indexed. Removed all
++  ordinary uses of obsolete `lsregister -kill` and user-domain rescans from the
++  touched runtime paths.
++- Proof: focused suites 26/26, 4/4, 37/37, and 241/241; repeated canonical Mini
++  SaneClip verify 234/234 with receipt
++  `b39599f72822ee9a5a827452197da9ea`; final local LaunchServices read-back found
++  9 canonical records and zero missing paths. The portfolio validation report remains globally red on
++  pre-existing customer-UI/release evidence and Lemon Squeezy auth blockers,
++  unrelated to this repair.
++
++## 2026-07-23 Operations: Synthetic Email Containment
++
++- The daily canonical inbox route reviewed and force-resolved confirmed synthetic
++  calendar-test thread `#1011`; no customer mail was sent. The live inbox route
++  still warns that Resend history is truncated at 25 pages, so old reply evidence
++  remains incomplete.
++- A real intake defect was found: synthetic inbound probes could enter normal
++  Email and Resend intake, creating D1/customer records and owner notifications.
++  The local repair requires an exact configured probe sender plus opaque subject
++  marker before either intake route does any fetch/store/route/forward work.
++  `check-inbox.sh classifier-health` was added as the canonical read-only canary
++  state route. Focused `canary` + `categorize` tests pass 28/28 and Bash syntax
++  is green.
++- No deployment was performed. The live Worker does not yet return
++  `/api/classifier-health` JSON, so the new route currently reports unavailable.
++  Before deployment, configure the controlled sender and marker and run the
++  existing canonical deployment checks; retain fail-closed manual review.
++
++## App Store Screenshot Conversion Tooling
++
++- Added `scripts/appstore_screenshot_compositor.rb`, a deterministic Mini-side renderer that reads each app's existing `docs/appstore_screenshot_storyboard.yml`, keeps real app UI unchanged, and adds outcome-first headline treatment at declared App Store dimensions. Focused renderer test: `scripts/appstore_screenshot_compositor_test.rb` passed on the Mini on 2026-07-20.
++- SaneSales rendered four iPhone and four iPad draft composites; SaneScan rendered three iPhone composites. All were visually inspected for text legibility, clipping, overlap, and source integrity. They remain local drafts and were not uploaded.
++- The tool deliberately fails closed when a declared source image is absent. SaneClip's storyboard is therefore blocked until six fresh truthful source states are captured; it must not reuse the stale promotional/version/sync screenshots.
++
++## SaneCite Campaign Unsubscribe Repair
++
++- Inbound explicit unsubscribe requests now persist a campaign-only KV opt-out
++  immediately in the deployed `sane-email-automation` Worker. The opt-out is
++  deliberately separate from bounce/complaint suppression, so it blocks only
++  campaign mail and never a needed support reply.
++- The authenticated Worker campaign compose lane checks that opt-out before it
++  calls Resend. `check-inbox.sh campaign-audit --sync-opt-outs` is the explicit
++  backfill path for verified historical campaign requests; it passed live for
++  the one SaneCite recipient who sent four unsubscribe-language messages.
++- Deployment proof: Worker version `5086cb2b-7be3-4d05-bf70-20aff8a0f2ec`.
++  Focused proof: inbox/audit 30/30 and Worker 6/6 on the Mini. Do not use the
++  stale direct-Resend scripts in `~/shot/sanecite-jul14`; campaign sends must
++  use the Worker campaign lane so the opt-out guard is active.
++
++## B2B Support-Category Email Classification Repair
++
++- The shared `check-inbox.sh` format classifier previously treated the inbox
++  category `support` as an unconditional retail-customer lane. That incorrectly
++  rejected the required founder-real B2B signature for Twilio's account and
++  compliance correspondence even though the sender and subject were strongly
++  business-specific.
++- `support` now enters the B2B lane only when a strong business sender local
++  part or business subject is present. Generic product support, including an
++  ordinary `support@...` sender without business-subject evidence, remains in
++  the retail `Mr. Sane` lane.
++- Regression coverage includes both the Twilio compliance case and the generic
++  customer-support counterexample. The focused suite passed 30/30 tests.
++- SaneLot inbox email #1158 was then reconciled, two-source fact-verified,
++  hash-approved, and delivered in-thread. Strict thread-matched evidence:
++  Resend `2ec04775-ca38-4d6e-a777-e5f714ff42bf`, latest event `delivered`,
++  bounced 0, pending 0. Keep the thread open until Twilio responds.
++
++## App Store Availability Preflight Repair
++
++- SaneLot exposed a false App Store preflight blocker: Apple reports explicitly
++  selected territories for an unreleased app as
++  `CANNOT_SELL+AVAILABLE_FOR_SALE_UNRELEASED_APP`, while the guard accepted only
++  the final post-release `AVAILABLE` status.
++- `asc_app_availability_status` now requires every territory row to be selected
++  and accepts either `AVAILABLE` or `AVAILABLE_FOR_SALE_UNRELEASED_APP`. Real
++  restrictions such as `MISSING_RATING`, or an unselected territory, remain
++  blocking.
++- Live App Store Connect API read-back for SaneLot app `6789208379` reports all
++  175 territories selected and `all_territories_available: true` through the
++  repaired guard. Ruby syntax passed and
++  `scripts/sanemaster/release_guardrail_test.rb` passed 240/240.
++
+ ## Unified Cloudflare AI Meter Rollout
+ 
+ - The Mini-first, read-only `SaneMaster.rb ai_meter` command supports `--days`,
+@@ -228,6 +372,12 @@ dated research, Serena, AgentMemory, and durable architecture decisions.
+   forwarding.
+ - GitHub `main` is canonical for committed code. Dirty work is never mirrored,
+   auto-committed, auto-stashed, or auto-applied; it is preserved as snapshots.
++- `sane_test.rb` now reuses the canonical Mini SaneProcess and app checkouts by
++  default instead of rsyncing a controller checkout over them. Explicit app
++  sync requires `--sync-workspace-to-mini` and refuses a dirty, untracked, or
++  non-`main` Mini repo or a Git remote mismatch before rsync. Focused proof:
++  `scripts/app_test_mode_test.rb` 40/40. The related system-Ruby Launch Services
++  cleanup proof is `scripts/dedupe_sane_apps_test.rb` 9/9.
+ - Air `com.saneapps.memory-sync` owns conflict-preserving, backup-first,
+   no-delete Claude/Serena/Codex file-memory parity every 15 minutes.
+ - Mini `com.saneapps.agentmemory` owns shared semantic recall on loopback port
+diff --git a/config/products.yml b/config/products.yml
+index 4d086a7..54b937b 100644
+--- a/config/products.yml
++++ b/config/products.yml
+@@ -98,7 +98,9 @@ redirect:
+ bundles:
+   bundle:
+     name: SaneApps Everything Bundle
+-    checkout_url: "https://saneapps.lemonsqueezy.com/checkout/custom/b572a5cf-2eb4-490d-adea-51d5fc57d6e4?signature=94dfad4c052a2d416089189cf63f11fffd2e1a3265109b08bf0fc3f9c56b8328"
++    product_id: "1230177"
++    variant_id: "1923204"
++    checkout_url: "https://saneapps.lemonsqueezy.com/checkout/custom/aa593db3-91dd-4373-ac20-6d3a7e0a5ea7?signature=5dab4ca2676584f6dccd75f13888c42f0265fe977a46f967bf5e66ea782bfd13"
+     route: https://go.saneapps.com/buy/bundle
+     price: "$49.99"
+     includes:
+@@ -107,7 +109,7 @@ bundles:
+       - sanehosts
+       - sanesales
+       - sanevideo
+-    note: "One Lemon license key for current direct Mac Pro apps. App Store purchases are handled separately by Apple."
++    note: "One perpetual Lemon license key for current direct Mac Pro apps. App Store purchases are handled separately by Apple."
+ 
+ # Domains to monitor for expiry (includes unreleased products)
+ all_domains:
+diff --git a/scripts/automation/check_inbox_report_test.py b/scripts/automation/check_inbox_report_test.py
+index daf93ac..b111fea 100644
+--- a/scripts/automation/check_inbox_report_test.py
++++ b/scripts/automation/check_inbox_report_test.py
+@@ -15,8 +15,6 @@ from saneapps_paths import check_inbox_script
+ 
+ REPO_ROOT = Path(__file__).resolve().parents[2]
+ CHECK_INBOX = check_inbox_script()
+-
+-
+ def email_row(
+     email_id,
+     *,
+@@ -100,6 +98,34 @@ validate_email_format {body_file} {email['id']}
+         )
+         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+ 
++    def test_twilio_compliance_support_category_accepts_business_signature(self):
++        body = """Thanks for following up.\n\nHere are the requested details.\n\nStephan Joseph\nFounder, SaneApps / SaneLot\n727-758-9785\nhi@saneapps.com\nhttps://sanelot.com\n"""
++        result = self.run_validate_email_format(
++            body,
++            email_row(
++                1158,
++                from_email="verifymyaccount@twilio.zendesk.com",
++                subject="Twilio Account Verification - Action Required",
++                status="needs_human",
++                category="support",
++            ),
++        )
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++
++    def test_generic_support_category_keeps_customer_signature_lane(self):
++        body = """Thanks for the report.\n\nI am reviewing it. Thanks again.\n\nMr. Sane\nhttps://saneapps.com\n"""
++        result = self.run_validate_email_format(
++            body,
++            email_row(
++                1159,
++                from_email="support@customer-company.example",
++                subject="SaneClip issue",
++                status="needs_human",
++                category="support",
++            ),
++        )
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++
+     def test_business_correspondence_accepts_any_product_lane_signature(self):
+         # Owner ruling 2026-07-15: ONE business signature template that works
+         # for every product lane, not just SaneLot/SaneCite.
+diff --git a/scripts/automation/dl-report.py b/scripts/automation/dl-report.py
+index a8d4167..be14217 100755
+--- a/scripts/automation/dl-report.py
++++ b/scripts/automation/dl-report.py
+@@ -36,6 +36,7 @@ FUNNEL_EVENT_TYPES = [
+     "paywall_seen",
+     "upsell_shown",
+     "checkout_clicked",
++    "website_checkout_redirected",
+     "upsell_clicked_buy",
+     "license_activated",
+     "first_value_action",
+@@ -246,7 +247,7 @@ def print_events(events, window_days=90):
+         print(f"{name:<15} {b.get('new_free_user', 0):>10} {b.get('early_adopter_grant', 0):>15} {b.get('license_activated', 0):>11}")
+ 
+ 
+-def print_funnel_events(events, window_days=90):
++def print_funnel_events(events, event_dimensions, window_days=90):
+     """Aggregate privacy-safe funnel event breakdown."""
+     from datetime import timedelta, timezone
+     now = datetime.now(timezone.utc)
+@@ -256,9 +257,10 @@ def print_funnel_events(events, window_days=90):
+ 
+     totals = {event: defaultdict(int) for event in FUNNEL_EVENT_TYPES}
+ 
++    dimension_events = {"checkout_clicked", "website_checkout_redirected"}
+     for row in events:
+         event = row["event"]
+-        if event not in totals:
++        if event not in totals or event in dimension_events:
+             continue
+         count = row["count"]
+         date = row["date"]
+@@ -268,6 +270,29 @@ def print_funnel_events(events, window_days=90):
+         if date == today:
+             totals[event]["Today"] += count
+ 
++    excluded_legacy_checkout_clicks = 0
++    for row in event_dimensions:
++        event = row["event"]
++        platform = row.get("platform", "unknown")
++        channel = row.get("channel", "unknown")
++        if event == "checkout_clicked" and platform == "web" and channel == "website":
++            excluded_legacy_checkout_clicks += row["count"]
++            continue
++        if event == "checkout_clicked" and platform == "macos" and channel == "direct":
++            display_event = "checkout_clicked"
++        elif event == "website_checkout_redirected" and platform == "web" and channel == "website":
++            display_event = "website_checkout_redirected"
++        else:
++            continue
++
++        count = row["count"]
++        date = row["date"]
++        totals[display_event][window_label] += count
++        if date in week_dates:
++            totals[display_event]["This Week"] += count
++        if date == today:
++            totals[display_event]["Today"] += count
++
+     print(f"\nFunnel Events — aggregate only")
+     print(f"{'Event':<28} {'Today':>8} {'This Week':>10} {window_label:>12}")
+     print("-" * 62)
+@@ -277,6 +302,12 @@ def print_funnel_events(events, window_days=90):
+             continue
+         print(f"{event:<28} {b['Today']:>8} {b['This Week']:>10} {b[window_label]:>12}")
+ 
++    if excluded_legacy_checkout_clicks:
++        print(
++            f"Note: excluded {excluded_legacy_checkout_clicks} legacy web/website "
++            "checkout_clicked events from direct checkout totals."
++        )
++
+ 
+ def main():
+     parser = argparse.ArgumentParser(description="SaneApps download analytics report")
+@@ -296,15 +327,16 @@ def main():
+         return
+ 
+     events = data.get("events", [])
++    event_dimensions = data.get("event_dimensions", [])
+ 
+     if args.events:
+-        if not events:
++        if not events and not event_dimensions:
+             print("No event data found for the selected period.")
+             sys.exit(0)
+         app_label = args.app or "all apps"
+         print(f"Event Analytics — {app_label} — {datetime.now().strftime('%Y-%m-%d')}")
+         print_events(events, window_days=args.days)
+-        print_funnel_events(events, window_days=args.days)
++        print_funnel_events(events, event_dimensions, window_days=args.days)
+         return
+ 
+     rows = data.get("rows", [])
+@@ -321,13 +353,13 @@ def main():
+         print_daily(rows, window_days=args.days)
+         if events:
+             print_events(events, window_days=args.days)
+-            print_funnel_events(events, window_days=args.days)
++            print_funnel_events(events, event_dimensions, window_days=args.days)
+     else:
+         print_by_app(rows)
+         print_by_version(rows)
+         if events:
+             print_events(events, window_days=args.days)
+-            print_funnel_events(events, window_days=args.days)
++            print_funnel_events(events, event_dimensions, window_days=args.days)
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/scripts/automation/gpt_audit_test.py b/scripts/automation/gpt_audit_test.py
+index c08f3a7..273eb73 100644
+--- a/scripts/automation/gpt_audit_test.py
++++ b/scripts/automation/gpt_audit_test.py
+@@ -415,19 +415,31 @@ class GptAuditCodexExecTests(unittest.TestCase):
+                 )
+             )
+             thread.start()
+-            deadline = time.monotonic() + 5
+-            while not (root / "lock-marker").exists() and time.monotonic() < deadline:
+-                time.sleep(0.02)
+-            self.assertTrue((root / "lock-marker").exists())
++            marker = root / "lock-marker"
++            second = None
++            try:
++                # Fixture setup, Git initialization, source hashing, and runner
++                # startup can exceed five seconds on the 8 GB Mini. Wait almost
++                # as long as run_audit's 15-second subprocess guard, but stop
++                # early if the first run exits so its stderr can explain why.
++                deadline = time.monotonic() + 14
++                while not marker.exists() and thread.is_alive() and time.monotonic() < deadline:
++                    time.sleep(0.02)
++                if not marker.exists():
++                    first_stderr = first_result[0][0].stderr if first_result else "first audit exited without a result"
++                    self.fail(f"first audit never reached the lock hold: {first_stderr}")
++
++                second, _out, _log = self.run_audit(
++                    root, {"blocker": "BLOCK_LANE"}, required_success=1
++                )
++            finally:
++                thread.join(timeout=10)
+ 
+-            second, _out, _log = self.run_audit(
+-                root, {"blocker": "BLOCK_LANE"}, required_success=1
+-            )
+-            self.assertNotEqual(0, second.returncode)
+-            self.assertIn("already active", second.stderr)
+-            thread.join(timeout=10)
+             self.assertFalse(thread.is_alive())
+             self.assertEqual(0, first_result[0][0].returncode, first_result[0][0].stderr)
++            self.assertIsNotNone(second)
++            self.assertNotEqual(0, second.returncode)
++            self.assertIn("already active", second.stderr)
+ 
+     def test_source_snapshot_changes_for_tracked_and_untracked_bytes(self):
+         with tempfile.TemporaryDirectory() as tmp:
+diff --git a/scripts/automation/ls-sales.py b/scripts/automation/ls-sales.py
+index 7ee5c6e..48f697d 100755
+--- a/scripts/automation/ls-sales.py
++++ b/scripts/automation/ls-sales.py
+@@ -1177,9 +1177,12 @@ def print_daily(all_orders):
+             a = o["attributes"]
+             item = a.get("first_order_item") or {}
+             name = item.get("product_name", "Unknown")
+-            subtotal = a.get("subtotal_usd", 0) / 100
+             date = a["created_at"][:10]
+-            print(f"  {date}  ${subtotal:.2f}  {name}")
++            if a.get("total", 0) == 0:
++                print(f"  {date}  $0.00  {name} (discount redemption — no revenue)")
++            else:
++                subtotal = a.get("subtotal_usd", 0) / 100
++                print(f"  {date}  ${subtotal:.2f}  {name}")
+ 
+ 
+ def print_json(orders):
+diff --git a/scripts/automation/ls_sales_test.py b/scripts/automation/ls_sales_test.py
+index 84541f5..292828d 100644
+--- a/scripts/automation/ls_sales_test.py
++++ b/scripts/automation/ls_sales_test.py
+@@ -1,4 +1,5 @@
+ #!/usr/bin/env python3
++import io
+ import importlib.util
+ import os
+ import json
+@@ -26,6 +27,7 @@ def make_order(
+     product_name="SaneClip",
+     user_name="Test User",
+     user_email="user@example.com",
++    subtotal_usd=None,
+ ):
+     return {
+         "id": order_id,
+@@ -33,7 +35,7 @@ def make_order(
+             "status": status,
+             "refunded": refunded,
+             "total": total,
+-            "subtotal_usd": total,
++            "subtotal_usd": total if subtotal_usd is None else subtotal_usd,
+             "tax_usd": 0,
+             "currency": "USD",
+             "created_at": created_at,
+@@ -106,6 +108,30 @@ class LsSalesTests(unittest.TestCase):
+         filtered = LS_SALES.filter_orders(orders, args)
+         self.assertEqual(len(filtered), 2)
+ 
++    def test_print_daily_labels_zero_total_redemption_without_nominal_revenue(self):
++        orders = [
++            make_order(
++                total=0,
++                subtotal_usd=1999,
++                created_at="2026-03-27T12:00:00Z",
++                product_name="Discount Product",
++            ),
++            make_order(
++                total=699,
++                created_at="2026-03-26T12:00:00Z",
++                product_name="Paid Product",
++            ),
++        ]
++
++        output = io.StringIO()
++        with mock.patch("sys.stdout", output):
++            LS_SALES.print_daily(orders)
++
++        stdout = output.getvalue()
++        self.assertIn("$0.00  Discount Product (discount redemption — no revenue)", stdout)
++        self.assertNotIn("$19.99", stdout)
++        self.assertIn("$6.99  Paid Product", stdout)
++
+     def test_validate_refund_approval_requires_env_and_note(self):
+         args = SimpleNamespace(proof_file="/tmp/refund.txt", approval_note=None)
+         old = os.environ.pop("SANE_REFUND_APPROVED", None)
+diff --git a/scripts/automation/sync-memory-mini.sh b/scripts/automation/sync-memory-mini.sh
+index f35ba88..419ad28 100755
+--- a/scripts/automation/sync-memory-mini.sh
++++ b/scripts/automation/sync-memory-mini.sh
+@@ -58,6 +58,93 @@ skip_or_fail() {
+   exit 1
+ }
+ 
++# --- CPU discipline -------------------------------------------------------
++# 2026-07-24: three copies of this script ran concurrently on the Air at ~99%
++# CPU each for up to 2h55m and made the machine hot. rsync --checksum hashes
++# every file on every pass, so this is genuinely CPU-hungry work and must never
++# compete with the owner's interactive session.
++renice 10 $$ >/dev/null 2>&1 || true
++
++# A sync of markdown memory files takes seconds. If it is still running after
++# MAX_RUNTIME it is wedged, not working.
++MAX_RUNTIME="${SANE_SYNC_MAX_RUNTIME:-900}"
++STEP_TIMEOUT="${SANE_SYNC_STEP_TIMEOUT:-120}"
++
++# Per-call bound. This is the load-bearing guard: a watchdog child can be killed
++# out from under a script that survives orphaning (exactly what happened on
++# 2026-07-24 — `timeout 300` killed the timeout process, the sync got reparented
++# to launchd and ran another 68 minutes at 98.8% CPU with nothing left to stop
++# it). A timeout wrapped around each rsync/ssh cannot be orphaned away, because
++# it is in the call path rather than beside it.
++TIMEOUT_BIN=""
++for candidate in timeout gtimeout; do
++  command -v "$candidate" >/dev/null 2>&1 && { TIMEOUT_BIN="$candidate"; break; }
++done
++RUN_BOUNDED() {
++  if [[ -n "$TIMEOUT_BIN" ]]; then
++    "$TIMEOUT_BIN" "$STEP_TIMEOUT" "$@"
++  else
++    "$@"
++  fi
++}
++
++# Self-checked deadline. Unlike a watchdog child this cannot be orphaned away —
++# the script asks itself, between steps, whether it has overstayed.
++deadline_check() {
++  if (( SECONDS > MAX_RUNTIME )); then
++    echo "sync-memory-mini: exceeded ${MAX_RUNTIME}s at '$1' — aborting wedged sync" >&2
++    exit 1
++  fi
++}
++
++# Belt and braces: the watchdog still runs, but nothing depends on it surviving.
++(
++  sleep "$MAX_RUNTIME"
++  if kill -0 "$$" 2>/dev/null; then
++    echo "sync-memory-mini: exceeded ${MAX_RUNTIME}s — killing wedged sync (pid $$)" >&2
++    kill -9 "$$" 2>/dev/null || true
++  fi
++) &
++WATCHDOG_PID=$!
++
++# --- local single-instance lock -------------------------------------------
++# The Mini lock below protects the PEER's files. It does not stop this machine
++# from running N copies of itself, which is exactly what happened: a stale
++# ownerless remote lock got reclaimed by a second and third local process while
++# the first was still running. This lock is local, atomic (mkdir), and holds the
++# owning PID so a genuinely dead run can be reclaimed without a timer.
++LOCAL_LOCK="$HOME/.cache/saneapps-memory-sync.local.lock"
++mkdir -p "$HOME/.cache" 2>/dev/null || true
++LOCAL_LOCK_HELD=0
++if mkdir "$LOCAL_LOCK" 2>/dev/null; then
++  LOCAL_LOCK_HELD=1
++  printf '%s\n' "$$" > "$LOCAL_LOCK/pid"
++else
++  existing_pid="$(cat "$LOCAL_LOCK/pid" 2>/dev/null || true)"
++  if [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" 2>/dev/null; then
++    kill "$WATCHDOG_PID" 2>/dev/null || true
++    skip_or_fail "another sync is already running locally (pid $existing_pid); skipped"
++  fi
++  # Owner is dead (or the dir was left behind by a kill -9): reclaim it whole.
++  rm -rf "$LOCAL_LOCK" 2>/dev/null || true
++  if mkdir "$LOCAL_LOCK" 2>/dev/null; then
++    LOCAL_LOCK_HELD=1
++    printf '%s\n' "$$" > "$LOCAL_LOCK/pid"
++  else
++    kill "$WATCHDOG_PID" 2>/dev/null || true
++    skip_or_fail "could not take the local sync lock; skipped"
++  fi
++fi
++
++release_local_lock() {
++  [[ "$LOCAL_LOCK_HELD" -eq 1 ]] || return 0
++  if [[ "$(cat "$LOCAL_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then
++    rm -rf "$LOCAL_LOCK" 2>/dev/null || true
++  fi
++  kill "$WATCHDOG_PID" 2>/dev/null || true
++}
++trap release_local_lock EXIT INT TERM
++
+ if [[ -n "$LOCAL_PEER_HOME" ]]; then
+   REMOTE_HOME="${LOCAL_PEER_HOME%/}"
+ else
+@@ -73,15 +160,21 @@ fi
+ release_lock() {
+   [[ "$LOCK_HELD" -eq 1 ]] || return 0
+   if [[ -n "$LOCAL_PEER_HOME" ]]; then
++    # `rm -rf` the whole lock dir in ONE step. The old two-step (rm owner, then
++    # rmdir) left an OWNERLESS lock dir behind whenever the rmdir failed — and
++    # acquire_lock treats "no owner file + dir older than 30 min" as stale and
++    # reclaims it. That is how a second and third sync took a lock the first was
++    # still holding on 2026-07-24. Never leave the dir without its owner file.
+     if [[ "$(cat "$REMOTE_HOME/$LOCK_REL/owner" 2>/dev/null || true)" == "$LOCK_TOKEN" ]]; then
+-      rm -f "$REMOTE_HOME/$LOCK_REL/owner"
+-      rmdir "$REMOTE_HOME/$LOCK_REL" 2>/dev/null || true
++      rm -rf "$REMOTE_HOME/$LOCK_REL" 2>/dev/null || true
+     fi
+   else
+-    "${SSH[@]}" "$MINI_HOST" "test \"\$(cat '$REMOTE_HOME/$LOCK_REL/owner' 2>/dev/null)\" = '$LOCK_TOKEN' && rm -f '$REMOTE_HOME/$LOCK_REL/owner' && rmdir '$REMOTE_HOME/$LOCK_REL' || true" >/dev/null 2>&1 || true
++    "${SSH[@]}" "$MINI_HOST" "test \"\$(cat '$REMOTE_HOME/$LOCK_REL/owner' 2>/dev/null)\" = '$LOCK_TOKEN' && rm -rf '$REMOTE_HOME/$LOCK_REL' || true" >/dev/null 2>&1 || true
+   fi
+ }
+-trap release_lock EXIT INT TERM
++# Both locks release on the same trap. A second `trap ... EXIT` would REPLACE
++# the earlier one, silently leaking the local lock, so they are combined here.
++trap 'release_lock; release_local_lock' EXIT INT TERM
+ 
+ acquire_lock() {
+   local owner owner_host owner_pid
+@@ -184,29 +277,55 @@ local_backup_once() {
+   [[ -d "$HOME/$BACKUP_REL/$label" ]]
+ }
+ 
++# A `.sane-conflict-*` file is a terminal artifact: the losing side of a past
++# conflict, kept as local evidence. It is not live memory, so re-hashing and
++# re-shipping it on every pass is pure waste — and it compounds, because each
++# run's conflicts add more dead weight for the next run to checksum. On
++# 2026-07-24 these were 124 files and 8.6MB of the 21MB codex-memories tree
++# (41%), re-checksummed on all five passes of every sync. Excluded from transfer
++# and from parity, never deleted.
++CONFLICT_EXCLUDE=(--exclude '*.sane-conflict-*')
++
++# `~/.codex/memories` is a GIT REPO. Its `.git/` internals (index, refs, logs)
++# change on every commit, so rsyncing them between two machines by mtime made
++# EVERY sync conflict — 28 of the 124 conflict files on 2026-07-24 were git
++# internals, each spawning another backup file for the next run to checksum.
++# That is the compounding loop. Beyond the waste, shipping a live `.git/index`
++# or `refs/heads/main` between machines can leave the repo pointing at objects
++# the other side does not have. Git state syncs via git, never via rsync.
++GIT_EXCLUDE=(--exclude '.git/' --exclude '.git/**')
++
+ rsync_remote() {
+   local direction="$1" source="$2" destination="$3" suffix="$4"
+-  local opts=(-a --omit-dir-times --checksum --update --backup "--suffix=$suffix")
++  local opts=(-a --omit-dir-times --checksum --update --backup "--suffix=$suffix" "${CONFLICT_EXCLUDE[@]}" "${GIT_EXCLUDE[@]}")
+   if [[ -n "$LOCAL_PEER_HOME" ]]; then
+-    rsync "${opts[@]}" "$source/" "$destination/"
++    RUN_BOUNDED rsync "${opts[@]}" "$source/" "$destination/"
+   elif [[ "$direction" == "pull" ]]; then
+-    rsync "${opts[@]}" -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" "$MINI_HOST:$source/" "$destination/"
++    RUN_BOUNDED rsync "${opts[@]}" -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" "$MINI_HOST:$source/" "$destination/"
+   else
+-    rsync "${opts[@]}" -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" "$source/" "$MINI_HOST:$destination/"
++    RUN_BOUNDED rsync "${opts[@]}" -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" "$source/" "$MINI_HOST:$destination/"
+   fi
+ }
+ 
+ pair_has_drift() {
+   local local_dir="$1" remote_dir="$2" first second output
+   if [[ -n "$LOCAL_PEER_HOME" ]]; then
+-    first="$(rsync -ani --omit-dir-times --checksum "$local_dir/" "$remote_dir/")" || return 2
+-    second="$(rsync -ani --omit-dir-times --checksum "$remote_dir/" "$local_dir/")" || return 2
++    first="$(RUN_BOUNDED rsync -ani --omit-dir-times --checksum "${CONFLICT_EXCLUDE[@]}" "${GIT_EXCLUDE[@]}" "$local_dir/" "$remote_dir/")" || return 2
++    second="$(RUN_BOUNDED rsync -ani --omit-dir-times --checksum "${CONFLICT_EXCLUDE[@]}" "${GIT_EXCLUDE[@]}" "$remote_dir/" "$local_dir/")" || return 2
+   else
+-    first="$(rsync -ani --omit-dir-times --checksum -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" "$local_dir/" "$MINI_HOST:$remote_dir/")" || return 2
+-    second="$(rsync -ani --omit-dir-times --checksum -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" "$MINI_HOST:$remote_dir/" "$local_dir/")" || return 2
++    first="$(RUN_BOUNDED rsync -ani --omit-dir-times --checksum "${CONFLICT_EXCLUDE[@]}" "${GIT_EXCLUDE[@]}" -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" "$local_dir/" "$MINI_HOST:$remote_dir/")" || return 2
++    second="$(RUN_BOUNDED rsync -ani --omit-dir-times --checksum "${CONFLICT_EXCLUDE[@]}" "${GIT_EXCLUDE[@]}" -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" "$MINI_HOST:$remote_dir/" "$local_dir/")" || return 2
+   fi
+   output="$first$second"
+-  [[ -n "${output//[[:space:]]/}" ]]
++  # THE CPU BUG (fixed 2026-07-24). This was:
++  #     [[ -n "${output//[[:space:]]/}" ]]
++  # Bash's ${var//pat/} builds an entire new copy of the string to answer a
++  # yes/no question. `rsync -ani` over ~1500 files emits thousands of lines, so
++  # this burned ~99% CPU IN-PROCESS for hours with no child process running —
++  # which is why it looked like rsync was slow when rsync had already exited.
++  # grep short-circuits on the first non-space byte and is O(n).
++  printf '%s' "$output" | grep -q '[^[:space:]]'
++
+ }
+ 
+ sync_pair() {
+@@ -260,8 +379,10 @@ sync_pair() {
+ echo "Memory sync Air<->Mini ($MINI_HOST); lock acquired; stamp=$STAMP"
+ failures=0
+ for i in 0 1 2; do
++  deadline_check "${LABELS[$i]}"
+   sync_pair "${LOCAL_PATHS[$i]}" "${REMOTE_PATHS[$i]}" "${LABELS[$i]}" || failures=$((failures + 1))
+ done
++deadline_check "post-sync"
+ 
+ if [[ "$failures" -gt 0 ]]; then
+   echo "sync-memory-mini: $failures memory pair(s) failed" >&2
+diff --git a/scripts/automation/x_opportunity_scout_test.py b/scripts/automation/x_opportunity_scout_test.py
+index 8a30d69..75803e3 100755
+--- a/scripts/automation/x_opportunity_scout_test.py
++++ b/scripts/automation/x_opportunity_scout_test.py
+@@ -13,6 +13,7 @@ from pathlib import Path
+ 
+ 
+ SCRIPT_PATH = Path(__file__).with_name("x-opportunity-scout.py")
++HEARTBEAT_SCRIPT_PATH = Path.home() / "SaneApps" / "infra" / "scripts" / "x-opportunity-scout.py"
+ 
+ 
+ class XOpportunityScoutTests(unittest.TestCase):
+@@ -25,6 +26,15 @@ class XOpportunityScoutTests(unittest.TestCase):
+         spec.loader.exec_module(module)
+         return module
+ 
++    def load_heartbeat_module(self):
++        spec = importlib.util.spec_from_file_location("heartbeat_x_opportunity_scout_under_test", HEARTBEAT_SCRIPT_PATH)
++        self.assertIsNotNone(spec)
++        self.assertIsNotNone(spec.loader)
++        module = importlib.util.module_from_spec(spec)
++        sys.modules[spec.name] = module
++        spec.loader.exec_module(module)
++        return module
++
+     def write_outreach(self, root: Path, app: str, body: str) -> Path:
+         path = root / "apps" / app / ".outreach.yml"
+         path.parent.mkdir(parents=True)
+@@ -325,6 +335,127 @@ class XOpportunityScoutTests(unittest.TestCase):
+         self.assertEqual(captured["max_results"], 10)
+         self.assertEqual([item["id"] for item in results], ["100", "101", "102"])
+ 
++    def test_heartbeat_scout_rejects_keyword_false_positive(self):
++        module = self.load_heartbeat_module()
++        result = module.classify_candidate(
++            "SaneCite",
++            "Microsoft locked my Xbox account behind automated phone responses.",
++            "Gaming content creator",
++            "gamer",
++        )
++        self.assertIsNone(result)
++
++    def test_heartbeat_scout_qualifies_sanecite_pain(self):
++        module = self.load_heartbeat_module()
++        result = module.classify_candidate(
++            "SaneCite",
++            "We answer the same security questionnaire by hand in a spreadsheet every week.",
++            "Enterprise sales engineer",
++            "seller",
++        )
++        self.assertEqual(result["kind"], "pain")
++        self.assertTrue(result["actionable"])
++        self.assertEqual(result["recommended_action"], "quote_repost")
++        self.assertIn("Do not send an automated cold reply", result["next_action"])
++
++    def test_seen_actionable_candidate_resurfaces_until_acted_on(self):
++        module = self.load_heartbeat_module()
++        classification = {"actionable": True}
++
++        self.assertTrue(module.should_surface_candidate("123", classification, {"123"}, set()))
++        self.assertFalse(module.should_surface_candidate("123", classification, {"123"}, {"123"}))
++        self.assertFalse(module.should_surface_candidate("123", {"actionable": False}, {"123"}, set()))
++        self.assertTrue(module.should_surface_candidate("new", classification, {"123"}, set()))
++
++    def test_heartbeat_scout_qualifies_real_dealer_listing_as_a_lead(self):
++        module = self.load_heartbeat_module()
++        result = module.classify_candidate(
++            "SaneLot",
++            "New inventory in stock. Financing available and trade-ins welcome.",
++            "Independent used car dealer serving Tampa, Florida.",
++            "tampaautos",
++            "Tampa, Florida",
++        )
++        self.assertEqual(result["kind"], "beta_review_candidate")
++        self.assertEqual(result["region"], "us")
++        self.assertTrue(result["actionable"])
++        self.assertEqual(result["invite_url"], "https://testflight.apple.com/join/hPv1tGs2")
++        self.assertIn("feedback", result["next_action"])
++        self.assertIn("VIN to a verified live listing", result["value_hook"])
++        self.assertTrue(result["suggested_invite"].startswith("I built SaneLot to get a car"))
++        self.assertIn("from one iPhone", result["suggested_invite"])
++        self.assertIn("won’t invent facts", result["suggested_invite"])
++        self.assertIn("would you test it and give me blunt feedback?", result["suggested_invite"])
++        self.assertNotIn("practice", result["suggested_invite"].lower())
++        self.assertNotIn("We ", result["suggested_invite"])
++        self.assertIn("email or DM", result["preferred_channel"])
++
++    def test_heartbeat_scout_rejects_private_listing_and_classified_platform(self):
++        module = self.load_heartbeat_module()
++        private_seller = module.classify_candidate(
++            "SaneLot",
++            "My SUV is available now. DM for details.",
++            "Dad, golfer, coffee fan.",
++            "privateperson",
++        )
++        classified_platform = module.classify_candidate(
++            "SaneLot",
++            "New inventory available now.",
++            "Post free classified ads for cars and motorcycles.",
++            "adplatform",
++        )
++        self.assertIsNone(private_seller)
++        self.assertIsNone(classified_platform)
++
++    def test_heartbeat_scout_rejects_frazer_name_collision_and_automotive_vendor(self):
++        module = self.load_heartbeat_module()
++        name_collision = module.classify_candidate(
++            "SaneLot",
++            "The issue is traffic near Frazer Town hospital.",
++            "Local resident.",
++            "resident",
++        )
++        automotive_vendor = module.classify_candidate(
++            "SaneLot",
++            "Your DMS connects inventory, CRM, accounting and OEM platforms.",
++            "Dealership revenue platform with lifecycle management and intent mining.",
++            "vendor",
++        )
++        self.assertIsNone(name_collision)
++        self.assertIsNone(automotive_vendor)
++
++    def test_heartbeat_scout_qualifies_dealer_podcaster_as_review_partner(self):
++        module = self.load_heartbeat_module()
++        result = module.classify_candidate(
++            "SaneLot",
++            "Mastering dealership inventory means understanding local pricing trends.",
++            "A podcast about practical ways to make your dealership better.",
++            "dealerpodcast",
++        )
++        self.assertEqual(result["kind"], "beta_review_partner")
++        self.assertTrue(result["actionable"])
++        self.assertEqual(result["invite_url"], "https://testflight.apple.com/join/hPv1tGs2")
++        self.assertIn("verified live listing", result["suggested_invite"])
++        self.assertIn("guides the walkaround", result["suggested_invite"])
++        self.assertIn("You understand how cars actually move through a lot", result["suggested_invite"])
++        self.assertIn("blunt review", result["suggested_invite"])
++        self.assertNotIn("practice", result["suggested_invite"].lower())
++        self.assertNotIn("We ", result["suggested_invite"])
++        self.assertIn("exact copy approval", result["preferred_channel"])
++
++    def test_heartbeat_scout_keeps_non_us_dealers_as_market_signals(self):
++        module = self.load_heartbeat_module()
++        result = module.classify_candidate(
++            "SaneLot",
++            "Fresh inventory in stock at our showroom. KSh 2,000,000.",
++            "Trusted used car dealership in Mombasa.",
++            "mombasacars",
++            "Mombasa, Kenya",
++        )
++        self.assertEqual(result["kind"], "non_us_dealer_signal")
++        self.assertEqual(result["region"], "non_us")
++        self.assertFalse(result["actionable"])
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/scripts/dedupe_sane_apps.rb b/scripts/dedupe_sane_apps.rb
+index 32e9567..9b66cdf 100644
+--- a/scripts/dedupe_sane_apps.rb
++++ b/scripts/dedupe_sane_apps.rb
+@@ -21,6 +21,7 @@ class DedupeSaneApps
+     @dry_run = @args.delete('--dry-run')
+     @json = @args.delete('--json')
+     @remote = @args.delete('--remote')
++    @launch_services_only = @args.delete('--launch-services-only')
+ 
+     unknown = @apps - APPS
+     abort "Unknown app(s): #{unknown.join(', ')}" unless unknown.empty?
+@@ -29,6 +30,12 @@ class DedupeSaneApps
+   def run
+     return run_remote_wrapper unless local_host? || @remote
+ 
++    if @launch_services_only
++      flush_launch_services
++      print_results([])
++      return
++    end
++
+     results = @apps.map { |app| dedupe_app(app) }
+     flush_launch_services
+     print_results(results)
+@@ -56,6 +63,7 @@ class DedupeSaneApps
+     remote_args += ['--apps', @apps.join(',')] unless @apps == APPS
+     remote_args << '--dry-run' if @dry_run
+     remote_args << '--json' if @json
++    remote_args << '--launch-services-only' if @launch_services_only
+     remote_args << '--remote'
+ 
+     command = ['ssh', @host, 'ruby', '-', *remote_args]
+@@ -192,7 +200,10 @@ class DedupeSaneApps
+     ok = system('ditto', source, staging, out: File::NULL, err: File::NULL)
+     abort "Failed to stage #{source} to #{target}" unless ok && File.directory?(staging)
+ 
+-    FileUtils.rm_rf(target) if File.exist?(target)
++    if File.exist?(target)
++      unregister_launch_services_path(target)
++      FileUtils.rm_rf(target)
++    end
+     FileUtils.mv(staging, target)
+   ensure
+     FileUtils.rm_rf(staging) if defined?(staging) && staging && File.exist?(staging)
+@@ -202,20 +213,105 @@ class DedupeSaneApps
+     puts "Trashing #{path}" unless @json
+     return path if @dry_run
+ 
++    unregister_launch_services_path(path)
+     ok = system('/usr/bin/trash', path, out: File::NULL, err: File::NULL)
+     abort "Failed to trash #{path}" unless ok
+ 
+     path
+   end
+ 
++  def unregister_launch_services_path(path)
++    return unless File.executable?(LSREGISTER)
++
++    root = File.expand_path(path)
++    bundles = Dir.glob(File.join(root, '**', '*.app')).sort_by { |bundle| -bundle.count(File::SEPARATOR) }
++    bundles << root if root.end_with?('.app')
++    bundles.uniq.each do |bundle|
++      system(LSREGISTER, '-u', bundle, out: File::NULL, err: File::NULL)
++    end
++  end
++
+   def flush_launch_services
+     return unless File.exist?(LSREGISTER)
+ 
+     puts 'Refreshing Launch Services' unless @json
+     return if @dry_run
+ 
+-    system(LSREGISTER, '-kill', '-r', '-domain', 'local', '-domain', 'system', '-domain', 'user',
+-           out: File::NULL, err: File::NULL)
++    unregister_recorded_noncanonical_bundles
++    unregister_trashed_app_bundles
++    unregister_noncanonical_artifact_bundles
++    @apps.each do |app|
++      canonical = canonical_path(app)
++      system(LSREGISTER, '-f', canonical, out: File::NULL, err: File::NULL) if File.directory?(canonical)
++    end
++    system(LSREGISTER, '-gc', out: File::NULL, err: File::NULL)
++  end
++
++  # Launch Services can retain records after the bundle itself was deleted.
++  # Read those recorded paths from its own database so cleanup is not limited
++  # to app bundles that still exist on disk.
++  def unregister_recorded_noncanonical_bundles
++    @apps.each do |app|
++      recorded_app_paths(app)
++        .reject { |path| same_path?(path, canonical_path(app)) }
++        .sort_by { |path| -path.count(File::SEPARATOR) }
++        .each { |path| unregister_launch_services_path(path) }
++    end
++  end
++
++  def recorded_app_paths(app)
++    app_bundle = %r{(.*/#{Regexp.escape(app)}[^/]*\.app)(?:/|\s+\(0x)}
++    launch_services_dump.lines.map do |line|
++      next unless line.start_with?('path:')
++
++      line.delete_prefix('path:').strip[app_bundle, 1]
++    end.compact.uniq
++  end
++
++  def launch_services_dump
++    output, status = Open3.capture2e(LSREGISTER, '-dump')
++    status.success? ? output : ''
++  end
++
++  # Moving an app to Trash does not reliably remove its Launch Services entry.
++  # Leave Trash recoverable, but unregister every trashed copy before registering
++  # the one canonical /Applications build.
++  def unregister_trashed_app_bundles
++    trash_root = File.expand_path('~/.Trash')
++    return unless Dir.exist?(trash_root)
++
++    @apps.each do |app|
++      pattern = File.join(trash_root, '**', "#{app}*.app")
++      Dir.glob(pattern)
++        .select { |path| File.directory?(path) }
++        .sort_by { |path| -path.count(File::SEPARATOR) }
++        .each { |path| unregister_launch_services_path(path) }
++    end
++  end
++
++  # Xcode registers archive, export, and test products as it creates them.
++  # Preserve those release artifacts on disk, but remove their Launch Services
++  # registrations so the Dock resolves only the canonical /Applications app.
++  def unregister_noncanonical_artifact_bundles
++    @apps.each do |app|
++      patterns = [
++        File.expand_path("~/Library/Developer/Xcode/DerivedData/#{app}-*/Build/**/#{app}.app"),
++        File.expand_path("~/SaneApps/apps/#{app}*/build/**/#{app}.app"),
++        File.expand_path("~/SaneApps/apps/#{app}*/outputs/**/#{app}.app"),
++        File.expand_path("~/SaneApps/release*/**/#{app}.app"),
++        File.expand_path("~/codex-runs/**/#{app}.app"),
++        File.expand_path("~/tmp/**/#{app}.app"),
++        File.expand_path("/tmp/**/#{app}.app")
++      ]
++      patterns
++        .flat_map { |pattern| Dir.glob(pattern, File::FNM_DOTMATCH) }
++        .select { |path| File.directory?(path) }
++        .map { |path| File.expand_path(path) }
++        .reject { |path| same_path?(path, canonical_path(app)) }
++        .uniq
++        .sort_by { |path| -path.count(File::SEPARATOR) }
++        .each { |path| unregister_launch_services_path(path) }
++    end
+   end
+ 
+   def ensure_never_index_roots(app)
+@@ -275,9 +371,11 @@ class DedupeSaneApps
+   end
+ end
+ 
+-if ARGV.include?('--help')
+-  puts 'Usage: ruby scripts/dedupe_sane_apps.rb [--host mini] [--apps App1,App2] [--dry-run] [--json]'
+-  exit 0
+-end
++if $PROGRAM_NAME == __FILE__
++  if ARGV.include?('--help')
++    puts 'Usage: ruby scripts/dedupe_sane_apps.rb [--host mini] [--apps App1,App2] [--launch-services-only] [--dry-run] [--json]'
++    exit 0
++  end
+ 
+-DedupeSaneApps.new(ARGV).run
++  DedupeSaneApps.new(ARGV).run
++end
+diff --git a/scripts/dedupe_sane_apps_test.rb b/scripts/dedupe_sane_apps_test.rb
+index 7de9cac..abe2779 100644
+--- a/scripts/dedupe_sane_apps_test.rb
++++ b/scripts/dedupe_sane_apps_test.rb
+@@ -2,10 +2,12 @@
+ # frozen_string_literal: true
+ 
+ require_relative 'hooks/test/test_framework'
++require_relative 'dedupe_sane_apps'
+ 
+ include TestFramework
+ 
+ SCRIPT_PATH = File.expand_path('dedupe_sane_apps.rb', __dir__)
++RELEASE_SCRIPT_PATH = File.expand_path('release.sh', __dir__)
+ 
+ exit(run_tests('Dedupe Sane Apps Tests') do
+   test_category('Candidate coverage') do
+@@ -47,4 +49,92 @@ exit(run_tests('Dedupe Sane Apps Tests') do
+       true
+     end
+   end
++
++  test_category('Launch Services hygiene') do
++    test('launch-services-only mode never promotes or trashes app bundles') do
++      dedupe = DedupeSaneApps.new(['--apps', 'SaneClip', '--launch-services-only'])
++      calls = []
++      dedupe.define_singleton_method(:dedupe_app) do |_app|
++        raise 'launch-services-only mode attempted destructive dedupe'
++      end
++      dedupe.define_singleton_method(:flush_launch_services) { calls << :flush_launch_services }
++      dedupe.define_singleton_method(:print_results) { |results| calls << [:print_results, results] }
++
++      dedupe.run
++
++      assert_eq(calls, [:flush_launch_services, [:print_results, []]])
++      true
++    end
++
++    test('dedupe unregisters removed bundles and never resets the whole database') do
++      source = File.read(SCRIPT_PATH)
++
++      assert_includes(source, "Dir.glob(File.join(root, '**', '*.app'))")
++      assert_includes(source, "system(LSREGISTER, '-u', bundle")
++      assert_includes(source, "system(LSREGISTER, '-f', canonical")
++      assert_includes(source, "system(LSREGISTER, '-gc'")
++      assert(!source.include?("'-kill', '-r'"), 'lsregister -kill is removed on current macOS')
++      true
++    end
++
++    test('dedupe removes stale recorded paths even when their bundles no longer exist') do
++      dedupe = DedupeSaneApps.new(['--apps', 'SaneClip', '--launch-services-only'])
++      dump = <<~TEXT
++        path:                       /Users/tester/.Trash/SaneClip old.app (0x111)
++        path:                       /Applications/SaneClip.app (0x112)
++        path:                       /Applications/SaneClip.app/Contents/PlugIns/SaneClipWidgets.appex (0x113)
++        path:                       /Users/tester/Library/Developer/Xcode/DerivedData/SaneClip-a/Build/Products/Debug/SaneClip.app (0x114)
++        path:                       /Applications/SaneBar.app (0x115)
++      TEXT
++      removed = []
++      dedupe.define_singleton_method(:launch_services_dump) { dump }
++      dedupe.define_singleton_method(:unregister_launch_services_path) { |path| removed << path }
++
++      dedupe.send(:unregister_recorded_noncanonical_bundles)
++
++      assert_eq(
++        removed.sort,
++        [
++          '/Users/tester/.Trash/SaneClip old.app',
++          '/Users/tester/Library/Developer/Xcode/DerivedData/SaneClip-a/Build/Products/Debug/SaneClip.app'
++        ].sort
++      )
++      true
++    end
++
++    test('dedupe unregisters trashed app copies without deleting recoverable Trash') do
++      source = File.read(SCRIPT_PATH)
++
++      assert_includes(source, 'unregister_trashed_app_bundles')
++      assert_includes(source, "File.expand_path('~/.Trash')")
++      assert_includes(source, "File.join(trash_root, '**', \"\#{app}*.app\")")
++      assert_includes(source, 'unregister_launch_services_path(path)')
++      assert(!source.include?("FileUtils.rm_rf(trash_root)"),
++             'Launch Services cleanup must not empty or delete the user Trash')
++      true
++    end
++
++    test('dedupe unregisters release artifacts without deleting them') do
++      source = File.read(SCRIPT_PATH)
++
++      assert_includes(source, 'unregister_noncanonical_artifact_bundles')
++      assert_includes(source, "File.expand_path(\"~/SaneApps/apps/\#{app}*/build/**/\#{app}.app\")")
++      assert_includes(source, "File.expand_path(\"~/Library/Developer/Xcode/DerivedData/\#{app}-*/Build/**/\#{app}.app\")")
++      assert_includes(source, '.each { |path| unregister_launch_services_path(path) }')
++      method_source = source[/def unregister_noncanonical_artifact_bundles.*?(?=\n  def )/m]
++      assert(!method_source.to_s.include?('trash('),
++             'release artifacts must be unregistered without deleting the signed outputs')
++      true
++    end
++
++    test('release finalization always dedupes Launch Services and refreshes the Dock') do
++      source = File.read(RELEASE_SCRIPT_PATH)
++
++      assert_includes(source, 'cleanup_release_launch_services')
++      assert_includes(source, 'dedupe_sane_apps.rb')
++      assert_includes(source, '/usr/bin/killall Dock')
++      assert_includes(source, 'cleanup_release_launch_services >/dev/null 2>&1 || true')
++      true
++    end
++  end
+ end)
+diff --git a/scripts/hooks/grok_and_security_guard_test.rb b/scripts/hooks/grok_and_security_guard_test.rb
+index 6d5e2d1..4b1f1ff 100644
+--- a/scripts/hooks/grok_and_security_guard_test.rb
++++ b/scripts/hooks/grok_and_security_guard_test.rb
+@@ -363,6 +363,20 @@ _, legacy_asc_err, legacy_asc_status = run_ruby_hook(
+ )
+ t('Safari guard blocks legacy mini-safari.sh ASC wrapper', legacy_asc_status.exitstatus == 2)
+ t('Legacy ASC wrapper block points to the Brave lane', legacy_asc_err.include?('Brave'))
++Dir.mktmpdir('embedded-safari-source') do |dir|
++  bad_source = File.join(dir, 'appstore_submit.rb')
++  File.write(bad_source, "script = <<~APPLESCRIPT\n  tell application \"Safari\"\nAPPLESCRIPT\n")
++  lint_out, _lint_err, lint_status = Open3.capture3(
++    { 'SANE_INSTRUCTION_LINT_APP_STORE_BROWSER_SURFACES' => bad_source },
++    'ruby',
++    File.join(SANEPROCESS_DIR, 'scripts', 'instruction_lint.rb'),
++    '--json',
++    chdir: SANEPROCESS_DIR
++  )
++  lint_payload = JSON.parse(lint_out)
++  embedded_hits = lint_payload.fetch('violations').select { |violation| violation['rule'] == 'embedded-safari-app-store' }
++  t('Instruction lint rejects Safari embedded inside App Store Ruby tooling', !lint_status.success? && embedded_hits.length == 1)
++end
+ _, launch_chain_err, launch_chain_status = run_ruby_hook(
+   'sane_launch_guard.rb',
+   {
+diff --git a/scripts/hooks/sane_bash_guards.rb b/scripts/hooks/sane_bash_guards.rb
+index 353322f..4701528 100755
+--- a/scripts/hooks/sane_bash_guards.rb
++++ b/scripts/hooks/sane_bash_guards.rb
+@@ -17,6 +17,7 @@ GUARDS = %w[
+   sane_release_guard.rb
+   sane_ship_guard.rb
+   sane_email_guard.rb
++  sane_runaway_guard.rb
+ ].map { |name| File.expand_path(name, __dir__) }.freeze
+ 
+ SSH_OPTION_WITH_VALUE = %w[
+diff --git a/scripts/hooks/sane_email_guard.rb b/scripts/hooks/sane_email_guard.rb
+index 5e75f88..b2544a8 100755
+--- a/scripts/hooks/sane_email_guard.rb
++++ b/scripts/hooks/sane_email_guard.rb
+@@ -45,9 +45,9 @@ CUSTOMER_EMAIL_SIGNOFF_PATTERN = /(?:^|\n)Mr\.?\s+Sane\s*(?:\nhttps:\/\/saneapps
+ # Owner ruling 2026-07-15: ONE business signature template that works for every
+ # product lane. Keep these lists in sync with validate_email_format in
+ # ~/SaneApps/infra/scripts/check-inbox.sh.
+-BUSINESS_SIGNATURE_PRODUCTS = 'SaneHosts|SaneClip|SaneClick|SaneSales|SaneVideo|SaneScan|SaneLot|SaneCite'
++BUSINESS_SIGNATURE_PRODUCTS = 'SaneHosts|SaneClip|SaneClick|SaneSales|SaneVideo|SaneScan|SaneLot|SaneCite|The Prophecy Ledger'
+ BUSINESS_SIGNATURE_SITES = 'saneapps|sanehosts|saneclip|saneclick|sanesales|sanevideo|sanescan|sanelot|sanecite'
+-BUSINESS_EMAIL_SIGNOFF_PATTERN = /(?:^|\n)Stephan Joseph\s*\nFounder, SaneApps(?: \/ (?:#{BUSINESS_SIGNATURE_PRODUCTS}))?\s*\n727-758-9785\s*\nhi@saneapps\.com\s*\nhttps:\/\/(?:#{BUSINESS_SIGNATURE_SITES})\.com\/?\s*\z/i
++BUSINESS_EMAIL_SIGNOFF_PATTERN = /(?:^|\n)Stephan Joseph\s*\nFounder, SaneApps(?: \/ (?:#{BUSINESS_SIGNATURE_PRODUCTS}))?\s*\n727-758-9785\s*\nhi@saneapps\.com\s*\nhttps:\/\/(?:(?:#{BUSINESS_SIGNATURE_SITES})\.com|prophecy-ledger\.pages\.dev)\/?\s*\z/i
+ 
+ def email_format_valid?(body)
+   text = body.to_s
+diff --git a/scripts/hooks/test/test_framework.rb b/scripts/hooks/test/test_framework.rb
+index 557f16b..d1ed7e2 100644
+--- a/scripts/hooks/test/test_framework.rb
++++ b/scripts/hooks/test/test_framework.rb
+@@ -169,6 +169,12 @@ module TestFramework
+     raise message || "Expected to include #{item.inspect}"
+   end
+ 
++  def assert_operator(left, operator, right, message = nil)
++    return true if left.public_send(operator, right)
++
++    raise message || "Expected #{left.inspect} to be #{operator} #{right.inspect}"
++  end
++
+   # === TEST RUNNER ===
+ 
+   def run_tests(name = 'Tests')
+diff --git a/scripts/instruction_lint.rb b/scripts/instruction_lint.rb
+index e6869fb..f544616 100755
+--- a/scripts/instruction_lint.rb
++++ b/scripts/instruction_lint.rb
+@@ -84,6 +84,33 @@ Dir.glob("#{HOME}/.claude/projects/-Users-sj-SaneApps/memory/*{.sane-conflict-*,
+                   text: File.basename(f), why: 'stale sync artifact shadows a corrected canonical file' }
+ end
+ 
++# Shell hooks cannot see browser automation embedded inside a Ruby process.
++# Scan the two executable App Store control paths so Safari cannot be restored
++# behind an otherwise-allowed `ruby ...` or SaneMaster invocation.
++app_store_browser_surfaces =
++  if ENV['SANE_INSTRUCTION_LINT_APP_STORE_BROWSER_SURFACES'].to_s.empty?
++    [
++      "#{HOME}/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb",
++      "#{HOME}/SaneApps/infra/SaneProcess/scripts/sanemaster/release.rb"
++    ]
++  else
++    ENV.fetch('SANE_INSTRUCTION_LINT_APP_STORE_BROWSER_SURFACES').split(File::PATH_SEPARATOR)
++  end
++embedded_safari = /tell\s+application\s+["']Safari["']|Application\(\s*["']Safari["']\s*\)/i
++app_store_browser_surfaces.select { |path| File.file?(path) }.each do |path|
++  File.readlines(path).each_with_index do |line, index|
++    next unless line.match?(embedded_safari)
++
++    violations << {
++      rule: 'embedded-safari-app-store',
++      file: path.sub(HOME, '~'),
++      line: index + 1,
++      text: line.strip[0, 160],
++      why: 'App Store tooling is Brave-only; embedded Safari bypasses the shell invocation guard'
++    }
++  end
++end
++
+ if ARGV.include?('--json')
+   puts JSON.pretty_generate({ surfaces: SURFACES.length, violations: violations })
+ else
+diff --git a/scripts/mini/README.md b/scripts/mini/README.md
+index c795f2d..3162d7e 100644
+--- a/scripts/mini/README.md
++++ b/scripts/mini/README.md
+@@ -225,6 +225,24 @@ Reclaim stale automation windows with:
+ ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-reclaim-automation-windows.sh --all --hide-terminal'
+ ```
+ 
++Terminal-host automation is focus-neutral:
++
++- Reclaim must never unminimize, raise, maximize, or activate a Terminal window.
++- Reclaim hides Terminal before it lists or closes windows, so a slow or timed
++  out close cannot expose the host. `mini-gui-run.sh` repeats the hide after
++  each command and does not return while its host remains accessibility-visible.
++  Inert Terminal scripting records with no tab, TTY, process, or accessibility
++  window are not visible blockers.
++- If Terminal prompts to terminate child processes, reclaim uses the hidden
++  window's accessibility controls. It must not expose the prompt or use a
++  focus-dependent keyboard shortcut.
++- Use the default title-scoped reclaim during a GUI sequence. Reserve
++  `--reclaim-all` for a workflow boundary, not each click.
++- When the command controls an open app, pass `--restore-bundle-id <bundle-id>`
++  so the target app regains focus after the hidden Terminal command starts.
++- If Terminal becomes visible or frontmost, stop the GUI sequence and repair
++  the runner before retrying.
++
+ ## Live Launchd Inventory
+ 
+ ```text
+diff --git a/scripts/mini/capture-mini-screenshot.sh b/scripts/mini/capture-mini-screenshot.sh
+index 71e2bcd..e4cdcd4 100755
+--- a/scripts/mini/capture-mini-screenshot.sh
++++ b/scripts/mini/capture-mini-screenshot.sh
+@@ -10,6 +10,7 @@ REMOTE_VISUAL_GUARD="${REMOTE_VISUAL_GUARD:-~/SaneApps/infra/SaneProcess/scripts
+ MINI_HOST_FALLBACKS="${MINI_HOST_FALLBACKS:-stephansmac@Stephans-Mac-mini.local stephansmac@stephans-mac-mini.local}"
+ MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS="${MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS:-120}"
+ SKIP_CLEANUP=false
++IN_GUI_SESSION=false
+ use_local_runner=false
+ 
+ case "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" in
+@@ -28,6 +29,7 @@ usage() {
+ Usage:
+   capture-mini-screenshot.sh desktop [--copy-to LOCAL_DIR] [take_screenshot.py args...]
+   capture-mini-screenshot.sh [--skip-cleanup] [take_screenshot.py args...]
++  capture-mini-screenshot.sh --in-gui-session [--skip-cleanup] [take_screenshot.py args...]
+   capture-mini-screenshot.sh [take_screenshot.py args...]
+ 
+ Examples:
+@@ -35,6 +37,7 @@ Examples:
+   capture-mini-screenshot.sh desktop --path /tmp/mini-proof.png
+   capture-mini-screenshot.sh desktop --copy-to /tmp/mini-proof
+   capture-mini-screenshot.sh --skip-cleanup desktop --copy-to /tmp/mini-diag  # DIAGNOSTIC: raw screen
++  capture-mini-screenshot.sh --in-gui-session --skip-cleanup desktop --path /tmp/context-menu.png
+   capture-mini-screenshot.sh --list-windows --app "SaneClip"
+   capture-mini-screenshot.sh --app "SaneClip" --window-name "Settings" --mode temp
+   capture-mini-screenshot.sh --active-window --mode temp
+@@ -55,6 +58,10 @@ Notes:
+     AS-IS. Use this to catch permission pop-ups, app sheets, or a stuck modal —
+     the default cleanup would hide the very window you need to see. Then Read the
+     PNG; a capture you don't open proves nothing.
++  - IN-SESSION captures (--in-gui-session): use only from mini-gui-run.sh when
++    the caller has already prepared transient UI such as a context menu. This
++    keeps the capture in the current GUI shell and avoids a nested Terminal
++    session dismissing that UI.
+ EOF
+   exit 2
+ }
+@@ -107,6 +114,9 @@ while [ $# -gt 0 ]; do
+     --skip-cleanup)
+       SKIP_CLEANUP=true
+       ;;
++    --in-gui-session)
++      IN_GUI_SESSION=true
++      ;;
+     --full-screen|--out-dir)
+       echo "Unsupported Mini screenshot flag: $1" >&2
+       echo "Use the canonical desktop path instead: capture-mini-screenshot.sh desktop" >&2
+@@ -377,7 +387,15 @@ printed_screenshot_path() {
+   awk '/^\/.*\.(png|jpg|jpeg|heic)$/ { path=$0 } END { if (path != "") print path }'
+ }
+ 
+-if running_on_mini; then
++if $IN_GUI_SESSION; then
++  if ! running_on_mini; then
++    echo "--in-gui-session is valid only on the Mac Mini inside mini-gui-run.sh." >&2
++    exit 2
++  fi
++  use_local_runner=true
++  resolved_mini_host=""
++  remote_home="$HOME"
++elif running_on_mini; then
+   use_local_runner=true
+   resolved_mini_host=""
+   remote_home="$HOME"
+@@ -423,7 +441,7 @@ fi
+ forwarded_args="$(remote_cmd "$@")"
+ guard_cmd=""
+ guard_env=""
+-if $use_local_runner && ! running_in_ssh_session; then
++if $use_local_runner && { ! running_in_ssh_session || $IN_GUI_SESSION; }; then
+   guard_env="MINI_VISUAL_AVOID_TERMINAL_AUTOMATION=1 "
+ fi
+ if [ -n "$target_app" ]; then
+@@ -436,7 +454,7 @@ elif [ "$has_explicit_target" = false ]; then
+   fi
+ fi
+ cmd="${guard_cmd}CODEX_SCREENSHOT_NO_PERMISSION_PROMPT=1 bash ${REMOTE_HELPER_DIR}/ensure_macos_permissions.sh && CODEX_SCREENSHOT_NO_PERMISSION_PROMPT=1 python3 ${REMOTE_HELPER_DIR}/take_screenshot.py ${forwarded_args}"
+-if $use_local_runner && ! running_in_ssh_session; then
++if $use_local_runner && { ! running_in_ssh_session || $IN_GUI_SESSION; }; then
+   runner_cmd="$cmd"
+ else
+   runner_cmd="$(remote_cmd bash "$REMOTE_MINI_GUI_RUN" --title "Mini Screenshot" --reclaim-all --close-window -- "$cmd")"
+diff --git a/scripts/mini/mini-agentmemory-supervisor.sh b/scripts/mini/mini-agentmemory-supervisor.sh
+index 97c3648..4347c77 100755
+--- a/scripts/mini/mini-agentmemory-supervisor.sh
++++ b/scripts/mini/mini-agentmemory-supervisor.sh
+@@ -5,6 +5,8 @@ set -uo pipefail
+ # Convert sustained health loss into a non-zero exit that launchd can restart.
+ 
+ AGENTMEMORY="${SANE_AGENTMEMORY_BIN:-/opt/homebrew/bin/agentmemory}"
++CURL="${SANE_CURL_BIN:-/usr/bin/curl}"
++LIVEZ_URL="${SANE_AGENTMEMORY_LIVEZ_URL:-http://127.0.0.1:3111/agentmemory/livez}"
+ HEALTH_INTERVAL="${SANE_AGENTMEMORY_HEALTH_INTERVAL:-30}"
+ HEALTH_MISSES="${SANE_AGENTMEMORY_HEALTH_MISSES:-2}"
+ STARTUP_ATTEMPTS="${SANE_AGENTMEMORY_STARTUP_ATTEMPTS:-15}"
+@@ -12,7 +14,7 @@ STARTUP_INTERVAL="${SANE_AGENTMEMORY_STARTUP_INTERVAL:-2}"
+ CHILD_PID=""
+ 
+ healthy() {
+-  "$AGENTMEMORY" status 2>&1 | /usr/bin/grep -Eq 'Health:[[:space:]].*healthy'
++  "$CURL" -fsS --max-time 3 "$LIVEZ_URL" >/dev/null 2>&1
+ }
+ 
+ stop_child() {
+diff --git a/scripts/mini/mini-gui-run.sh b/scripts/mini/mini-gui-run.sh
+index bb350fe..45f424f 100755
+--- a/scripts/mini/mini-gui-run.sh
++++ b/scripts/mini/mini-gui-run.sh
+@@ -52,7 +52,7 @@ close_window=1
+ poll_seconds=1
+ start_delay_seconds="${MINI_GUI_RUN_START_DELAY:-0.6}"
+ launch_grace_seconds="${MINI_GUI_RUN_LAUNCH_GRACE_SECONDS:-8}"
+-cleanup_timeout_seconds="${MINI_GUI_RUN_CLEANUP_TIMEOUT_SECONDS:-5}"
++cleanup_timeout_seconds="${MINI_GUI_RUN_CLEANUP_TIMEOUT_SECONDS:-15}"
+ log_file=""
+ status_file=""
+ title="Mini GUI Run"
+@@ -144,7 +144,9 @@ reclaim_windows() {
+   fi
+ }
+ 
+-reclaim_windows
++# Cleanup is focus-neutral. Hide any stale Terminal host even when closing it
++# fails, so it cannot cover the app being automated.
++reclaim_windows --hide-terminal
+ 
+ inner_script=$(cat <<EOF
+ printf '%s\n' "\$\$" > $(shell_quote "$started_file")
+@@ -174,7 +176,9 @@ window_id="$(
+ 
+ window_still_exists() {
+   local target_id="$1"
+-  /usr/bin/osascript <<EOF >/dev/null 2>&1
++  local exists_state=""
++  exists_state="$(
++    /usr/bin/osascript <<EOF 2>/dev/null
+ tell application "Terminal"
+   repeat with w in windows
+     try
+@@ -184,6 +188,8 @@ tell application "Terminal"
+ end tell
+ return false
+ EOF
++  )"
++  [ "$exists_state" = "true" ]
+ }
+ 
+ window_busy_state() {
+@@ -206,20 +212,28 @@ return "missing"
+ EOF
+ }
+ 
+-close_window_by_id() {
+-  local target_id="$1"
+-  /usr/bin/osascript <<EOF >/dev/null 2>&1
+-tell application "Terminal"
+-  repeat with w in windows
+-    try
+-      if id of w is equal to ${target_id} then
+-        close w saving no
+-        exit repeat
+-      end if
+-    end try
+-  end repeat
+-end tell
+-EOF
++automation_window_is_accessible() {
++  local target_title="$1"
++  local accessible_state=""
++  accessible_state="$(
++    /usr/bin/osascript - "$target_title" <<'OSA' 2>/dev/null
++on run argv
++  set targetTitle to item 1 of argv
++  tell application "System Events"
++    if not (exists process "Terminal") then return false
++    tell process "Terminal"
++      repeat with candidateWindow in windows
++        try
++          if name of candidateWindow contains targetTitle then return true
++        end try
++      end repeat
++    end tell
++  end tell
++  return false
++end run
++OSA
++  )"
++  [ "$accessible_state" = "true" ]
+ }
+ 
+ idle_poll_count=0
+@@ -252,12 +266,18 @@ while [ ! -f "$status_file" ]; do
+   esac
+ done
+ 
+-if [ "$close_window" -eq 1 ] && [ -n "${window_id:-}" ]; then
+-  run_with_timeout "$cleanup_timeout_seconds" close_window_by_id "$window_id" || true
+-fi
+-
+ reclaim_windows --hide-terminal
+ 
++cleanup_poll_count=0
++while automation_window_is_accessible "$window_title" && [ "$cleanup_poll_count" -lt 50 ]; do
++  sleep 0.1
++  cleanup_poll_count=$((cleanup_poll_count + 1))
++done
++if automation_window_is_accessible "$window_title"; then
++  echo "mini-gui-run: automation window remained visible after focus-neutral cleanup: $window_id" >&2
++  exit 1
++fi
++
+ if [ ! -f "$status_file" ]; then
+   echo "mini-gui-run: command finished without a status file: $status_file" >&2
+   [ -s "$log_file" ] && cat "$log_file" >&2
+diff --git a/scripts/mini/mini-install-agentmemory.sh b/scripts/mini/mini-install-agentmemory.sh
+index 5cd7725..bb0a84f 100755
+--- a/scripts/mini/mini-install-agentmemory.sh
++++ b/scripts/mini/mini-install-agentmemory.sh
+@@ -8,6 +8,8 @@ LABEL="com.saneapps.agentmemory"
+ PLIST="${SANE_AGENTMEMORY_PLIST:-$HOME/Library/LaunchAgents/$LABEL.plist}"
+ LOG_DIR="${SANE_AGENTMEMORY_LOG_DIR:-$HOME/Library/Logs/SaneApps}"
+ AGENTMEMORY="${SANE_AGENTMEMORY_BIN:-/opt/homebrew/bin/agentmemory}"
++CURL="${SANE_CURL_BIN:-/usr/bin/curl}"
++LIVEZ_URL="${SANE_AGENTMEMORY_LIVEZ_URL:-http://127.0.0.1:3111/agentmemory/livez}"
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ SUPERVISOR_SOURCE="${SANE_AGENTMEMORY_SUPERVISOR_SOURCE:-$SCRIPT_DIR/mini-agentmemory-supervisor.sh}"
+ SUPERVISOR="${SANE_AGENTMEMORY_SUPERVISOR:-$HOME/.local/libexec/sane-agentmemory-supervisor}"
+@@ -89,8 +91,7 @@ fi
+ echo "Installed $LABEL; waiting for AgentMemory health"
+ attempt=1
+ while [ "$attempt" -le 15 ]; do
+-  status_output="$($AGENTMEMORY status 2>&1 || true)"
+-  if printf '%s\n' "$status_output" | grep -Eq 'Health:[[:space:]].*healthy'; then
++  if "$CURL" -fsS --max-time 3 "$LIVEZ_URL" >/dev/null 2>&1; then
+     echo "Started healthy $LABEL"
+     exit 0
+   fi
+@@ -98,6 +99,5 @@ while [ "$attempt" -le 15 ]; do
+   attempt=$((attempt + 1))
+ done
+ 
+-printf '%s\n' "$status_output" >&2
+ echo "AgentMemory did not become healthy within 30 seconds" >&2
+ exit 1
+diff --git a/scripts/mini/mini-reclaim-automation-windows.sh b/scripts/mini/mini-reclaim-automation-windows.sh
+index 8c6c222..7b4384e 100755
+--- a/scripts/mini/mini-reclaim-automation-windows.sh
++++ b/scripts/mini/mini-reclaim-automation-windows.sh
+@@ -54,6 +54,16 @@ if [ "$reclaim_all" -ne 1 ] && [ -z "$requested_title" ]; then
+   usage
+ fi
+ 
++hide_terminal_now() {
++  /usr/bin/osascript -e 'tell application "System Events" to set visible of process "Terminal" to false' >/dev/null 2>&1 || true
++}
++
++# Visibility is the safety boundary. Hide first so a slow or timed-out close
++# can never leave an automation Terminal window covering the target app.
++if [ "$hide_terminal" -eq 1 ] && [ "$dry_run" -ne 1 ]; then
++  hide_terminal_now
++fi
++
+ list_windows() {
+   /usr/bin/osascript <<'OSA'
+ set outputLines to {}
+@@ -109,8 +119,49 @@ is_known_legacy_automation_window() {
+ 
+ close_window_by_id() {
+   local target_id="$1"
+-  /usr/bin/osascript <<OSA
+-set targetID to ${target_id}
++  local target_token="$2"
++  /usr/bin/osascript - "$target_id" "$target_token" <<'OSA'
++on pressTerminateIfPresent(targetWindow)
++  tell application "System Events"
++    tell process "Terminal"
++      try
++        if (count of sheets of targetWindow) is 0 then return false
++        set targetSheet to sheet 1 of targetWindow
++        repeat with candidateButton in buttons of targetSheet
++          try
++            if title of candidateButton is "Terminate" then
++              perform action "AXPress" of candidateButton
++              return true
++            end if
++          end try
++        end repeat
++      end try
++  end tell
++  end tell
++  return false
++end pressTerminateIfPresent
++
++on closeThroughAccessibility(targetToken)
++  tell application "System Events"
++    if not (exists process "Terminal") then return false
++    tell process "Terminal"
++      repeat with candidateWindow in windows
++        try
++          if name of candidateWindow contains targetToken then
++            if my pressTerminateIfPresent(candidateWindow) then return true
++            set closeButton to first button of candidateWindow whose description is "close button"
++            perform action "AXPress" of closeButton
++            delay 0.2
++            my pressTerminateIfPresent(candidateWindow)
++            return true
++          end if
++        end try
++      end repeat
++    end tell
++  end tell
++  return false
++end closeThroughAccessibility
++
+ on windowStillExists(targetID)
+   tell application "Terminal"
+     repeat with candidateWindow in windows
+@@ -122,6 +173,9 @@ on windowStillExists(targetID)
+   return false
+ end windowStillExists
+ 
++on run argv
++set targetID to item 1 of argv as integer
++set targetToken to item 2 of argv
+ tell application "System Events"
+   if not (exists process "Terminal") then return "missing-terminal"
+ end tell
+@@ -129,19 +183,12 @@ tell application "Terminal"
+   repeat with w in windows
+     try
+       if id of w is equal to targetID then
+-        try
+-          set miniaturized of w to false
+-          set index of w to 1
+-        end try
+         close w saving no
+         repeat 20 times
+           delay 0.1
+           if my windowStillExists(targetID) is false then return "closed"
+         end repeat
+-        activate
+-        try
+-          tell application "System Events" to keystroke "w" using command down
+-        end try
++        my closeThroughAccessibility(targetToken)
+         repeat 20 times
+           delay 0.1
+           if my windowStillExists(targetID) is false then return "closed"
+@@ -152,6 +199,7 @@ tell application "Terminal"
+   end repeat
+ end tell
+ return "not-found"
++end run
+ OSA
+ }
+ 
+@@ -159,14 +207,16 @@ window_matches_reclaim_scope() {
+   local name="$1"
+   local tab_title="$2"
+ 
+-  if is_prefixed_window "$name" "$tab_title"; then
+-    return 0
+-  fi
+   if is_requested_title_window "$name" "$tab_title"; then
+     return 0
+   fi
+-  if [ "$reclaim_all" -eq 1 ] && is_known_legacy_automation_window "${name} ${tab_title}"; then
+-    return 0
++  if [ "$reclaim_all" -eq 1 ]; then
++    if is_prefixed_window "$name" "$tab_title"; then
++      return 0
++    fi
++    if is_known_legacy_automation_window "${name} ${tab_title}"; then
++      return 0
++    fi
+   fi
+ 
+   return 1
+@@ -221,7 +271,8 @@ while IFS=$'\t' read -r window_id window_name tab_title; do
+     if [ "$dry_run" -eq 1 ]; then
+       printf 'would close %s\t%s\t%s\n' "$window_id" "$window_name" "$tab_title"
+     else
+-      close_result="$(close_window_by_id "$window_id" 2>/dev/null || true)"
++      close_token="${tab_title:-$window_name}"
++      close_result="$(close_window_by_id "$window_id" "$close_token" 2>/dev/null || true)"
+       case "$close_result" in
+         closed|not-found|missing-terminal)
+           ;;
+@@ -239,7 +290,7 @@ if [ "$dry_run" -ne 1 ]; then
+ fi
+ 
+ if [ "$hide_terminal" -eq 1 ] && [ "$dry_run" -ne 1 ]; then
+-  /usr/bin/osascript -e 'tell application "System Events" to set visible of process "Terminal" to false' >/dev/null 2>&1 || true
++  hide_terminal_now
+ fi
+ 
+ if [ "$dry_run" -ne 1 ]; then
+diff --git a/scripts/mini/mini_agentmemory_test.rb b/scripts/mini/mini_agentmemory_test.rb
+index a6fc482..b7d3e02 100644
+--- a/scripts/mini/mini_agentmemory_test.rb
++++ b/scripts/mini/mini_agentmemory_test.rb
+@@ -42,27 +42,23 @@ exit(run_tests('Mini AgentMemory Tests') do
+         assert_includes(source, "<string>#{dir}</string>")
+         assert_includes(source, "<string>#{supervisor}</string>")
+         assert(File.executable?(supervisor), 'installed supervisor must be executable')
+-        assert_includes(File.read(INSTALLER), "grep -Eq 'Health:[[:space:]].*healthy'")
++        installed_supervisor = File.read(supervisor)
++        assert_includes(installed_supervisor, 'http://127.0.0.1:3111/agentmemory/livez')
++        assert(!installed_supervisor.include?('Health:[[:space:]].*healthy'), 'supervisor must not parse CLI display text')
++        assert_includes(File.read(INSTALLER), 'http://127.0.0.1:3111/agentmemory/livez')
+         true
+       end
+     end
+ 
+-    test('exits nonzero when the child engine loses health so launchd can restart it') do
+-      Dir.mktmpdir('agentmemory-supervisor') do |dir|
++    test('accepts direct livez success even when CLI status text is unknown') do
++      Dir.mktmpdir('agentmemory-supervisor-health') do |dir|
+         fake_bin = File.join(dir, 'agentmemory')
+-        count = File.join(dir, 'status-count')
++        fake_curl = File.join(dir, 'curl')
++        curl_log = File.join(dir, 'curl.log')
+         File.write(fake_bin, <<~SH)
+           #!/bin/sh
+           case "${1:-}" in
+             status)
+-              count=0
+-              [ ! -f "$STATUS_COUNT" ] || count="$(cat "$STATUS_COUNT")"
+-              count=$((count + 1))
+-              printf '%s\n' "$count" > "$STATUS_COUNT"
+-              if [ "$count" -le 2 ]; then
+-                echo 'Health: healthy'
+-                exit 0
+-              fi
+               echo 'Health: unknown'
+               exit 1
+               ;;
+@@ -74,14 +70,67 @@ exit(run_tests('Mini AgentMemory Tests') do
+               ;;
+           esac
+         SH
+-        FileUtils.chmod(0o755, fake_bin)
++        File.write(fake_curl, <<~SH)
++          #!/bin/sh
++          echo "$*" >> "$CURL_LOG"
++          exit 0
++        SH
++        FileUtils.chmod(0o755, [fake_bin, fake_curl])
+         env = {
+           'SANE_AGENTMEMORY_BIN' => fake_bin,
++          'SANE_CURL_BIN' => fake_curl,
++          'SANE_AGENTMEMORY_HEALTH_INTERVAL' => '0.05',
++          'SANE_AGENTMEMORY_STARTUP_ATTEMPTS' => '2',
++          'SANE_AGENTMEMORY_STARTUP_INTERVAL' => '0.05',
++          'CURL_LOG' => curl_log
++        }
++
++        _stdin, _stdout, stderr, wait_thread = Open3.popen3(env, '/bin/bash', SUPERVISOR)
++        sleep 0.2
++        Process.kill('TERM', wait_thread.pid)
++        status = wait_thread.value
++        error_text = stderr.read
++
++        assert(status.success?, error_text)
++        assert_includes(File.read(curl_log), 'http://127.0.0.1:3111/agentmemory/livez')
++        assert(!error_text.include?('startup health deadline'), error_text)
++        true
++      end
++    end
++
++    test('exits nonzero when the child engine loses health so launchd can restart it') do
++      Dir.mktmpdir('agentmemory-supervisor') do |dir|
++        fake_bin = File.join(dir, 'agentmemory')
++        fake_curl = File.join(dir, 'curl')
++        count = File.join(dir, 'livez-count')
++        File.write(fake_bin, <<~SH)
++          #!/bin/sh
++          case "${1:-}" in
++            stop)
++              exit 0
++              ;;
++            *)
++              while :; do sleep 1; done
++              ;;
++          esac
++        SH
++        File.write(fake_curl, <<~SH)
++          #!/bin/sh
++          count=0
++          [ ! -f "$LIVEZ_COUNT" ] || count="$(cat "$LIVEZ_COUNT")"
++          count=$((count + 1))
++          printf '%s\n' "$count" > "$LIVEZ_COUNT"
++          [ "$count" -le 2 ]
++        SH
++        FileUtils.chmod(0o755, [fake_bin, fake_curl])
++        env = {
++          'SANE_AGENTMEMORY_BIN' => fake_bin,
++          'SANE_CURL_BIN' => fake_curl,
+           'SANE_AGENTMEMORY_HEALTH_INTERVAL' => '0.1',
+           'SANE_AGENTMEMORY_HEALTH_MISSES' => '2',
+           'SANE_AGENTMEMORY_STARTUP_ATTEMPTS' => '2',
+           'SANE_AGENTMEMORY_STARTUP_INTERVAL' => '0.1',
+-          'STATUS_COUNT' => count
++          'LIVEZ_COUNT' => count
+         }
+         _out, err, status = Open3.capture3(env, '/bin/bash', SUPERVISOR)
+         assert(!status.success?, 'supervisor must request a launchd restart after sustained health loss')
+@@ -93,6 +142,7 @@ exit(run_tests('Mini AgentMemory Tests') do
+     test('uses a bounded noninteractive admin fallback when remote launchd bootstrap is denied') do
+       Dir.mktmpdir('agentmemory-remote-install') do |dir|
+         fake_bin = File.join(dir, 'agentmemory')
++        fake_curl = File.join(dir, 'curl')
+         fake_launchctl = File.join(dir, 'launchctl')
+         fake_sudo = File.join(dir, 'sudo')
+         launchctl_log = File.join(dir, 'launchctl.log')
+@@ -109,15 +159,20 @@ exit(run_tests('Mini AgentMemory Tests') do
+           echo "$*" >> "$LAUNCHCTL_LOG"
+           [ "${1:-}" != bootstrap ]
+         SH
++        File.write(fake_curl, <<~SH)
++          #!/bin/sh
++          exit 0
++        SH
+         File.write(fake_sudo, <<~SH)
+           #!/bin/sh
+           echo "$*" >> "$SUDO_LOG"
+           exit 0
+         SH
+-        FileUtils.chmod(0o755, [fake_bin, fake_launchctl, fake_sudo])
++        FileUtils.chmod(0o755, [fake_bin, fake_curl, fake_launchctl, fake_sudo])
+         env = {
+           'HOME' => dir,
+           'SANE_AGENTMEMORY_BIN' => fake_bin,
++          'SANE_CURL_BIN' => fake_curl,
+           'SANE_AGENTMEMORY_PLIST' => plist,
+           'SANE_AGENTMEMORY_LOG_DIR' => File.join(dir, 'logs'),
+           'SANE_AGENTMEMORY_SUPERVISOR' => supervisor,
+diff --git a/scripts/mini/mini_gui_run_test.rb b/scripts/mini/mini_gui_run_test.rb
+index 74df295..7ab090e 100644
+--- a/scripts/mini/mini_gui_run_test.rb
++++ b/scripts/mini/mini_gui_run_test.rb
+@@ -2,6 +2,7 @@
+ # frozen_string_literal: true
+ 
+ require_relative '../hooks/test/test_framework'
++require 'open3'
+ 
+ include TestFramework
+ 
+@@ -126,12 +127,34 @@ exit(run_tests('Mini GUI Runner Tests') do
+              'Mini screenshot wrapper must not identify the Mini by shared username')
+       assert_includes(screenshot_wrapper_source, 'use_local_runner=true')
+       assert_includes(screenshot_wrapper_source, 'running_in_ssh_session()')
+-      assert_includes(screenshot_wrapper_source, 'if $use_local_runner && ! running_in_ssh_session; then')
++      assert_includes(screenshot_wrapper_source, 'if $use_local_runner && { ! running_in_ssh_session || $IN_GUI_SESSION; }; then')
+       assert_includes(screenshot_wrapper_source, 'runner_cmd="$cmd"')
+       assert_includes(screenshot_wrapper_source, 'run_local_runner_with_timeout "$MINI_SCREENSHOT_CAPTURE_TIMEOUT_SECONDS" "$runner_cmd"')
+       true
+     end
+ 
++    test('capture wrapper rejects in-GUI-session mode away from the Mini') do
++      _stdout, stderr, status = Open3.capture3(
++        { 'MINI_SCREENSHOT_FORCE_SSH' => '1' },
++        'bash',
++        SCREENSHOT_WRAPPER_PATH,
++        '--in-gui-session',
++        'desktop'
++      )
++
++      assert(status.exitstatus == 2, "expected exit 2, got #{status.exitstatus}")
++      assert_includes(stderr, '--in-gui-session is valid only on the Mac Mini inside mini-gui-run.sh.')
++      true
++    end
++
++    test('capture wrapper keeps in-GUI-session captures in the current shell') do
++      assert_includes(screenshot_wrapper_source, 'IN_GUI_SESSION=false')
++      assert_includes(screenshot_wrapper_source, '--in-gui-session')
++      assert_includes(screenshot_wrapper_source, 'if $IN_GUI_SESSION; then')
++      assert_includes(screenshot_wrapper_source, '! running_in_ssh_session || $IN_GUI_SESSION')
++      true
++    end
++
+     test('capture wrapper can recover a screenshot path after GUI cleanup hangs') do
+       assert_includes(screenshot_wrapper_source, 'printed_screenshot_path()')
+       assert_includes(screenshot_wrapper_source, 'recovered_path="$(printf \'%s\\n\' "$capture_output" | printed_screenshot_path)"')
+diff --git a/scripts/release.sh b/scripts/release.sh
+index 4a67b07..9fde657 100755
+--- a/scripts/release.sh
++++ b/scripts/release.sh
+@@ -376,6 +376,16 @@ release_err_trap() {
+     fi
+ }
+ 
++cleanup_release_launch_services() {
++    local app="${APP_NAME:-}"
++    local dedupe_script="${SCRIPT_DIR}/dedupe_sane_apps.rb"
++    [ -n "${app}" ] || return 0
++    [ -f "${dedupe_script}" ] || return 0
++
++    ruby "${dedupe_script}" --apps "${app}" || return 1
++    /usr/bin/killall Dock >/dev/null 2>&1 || true
++}
++
+ release_exit_trap() {
+     local exit_code="$1"
+     set +e
+@@ -399,6 +409,7 @@ release_exit_trap() {
+             fi
+         done
+     fi
++    cleanup_release_launch_services >/dev/null 2>&1 || true
+ 
+     local status="success"
+     local summary="release completed"
+diff --git a/scripts/sanemaster/base.rb b/scripts/sanemaster/base.rb
+index f19d070..37131e1 100644
+--- a/scripts/sanemaster/base.rb
++++ b/scripts/sanemaster/base.rb
+@@ -300,7 +300,7 @@ module SaneMasterModules
+     def create_ios_simulator_destination(simulator_name, requested_os = nil)
+       return nil if ENV['SANEMASTER_AUTO_CREATE_IOS_SIMULATOR'] == '0'
+ 
+-      device_type = ios_simulator_device_types.find { |candidate| candidate[:name] == simulator_name }
++      device_type = ios_simulator_device_type_for(simulator_name)
+       return nil unless device_type
+ 
+       runtime = ios_simulator_runtimes_for(device_type[:identifier], requested_os).max_by do |candidate|
+@@ -336,7 +336,11 @@ module SaneMasterModules
+             identifier = device_type['identifier'].to_s
+             next device_types if name.empty? || identifier.empty?
+ 
+-            device_types << { name: name, identifier: identifier }
++            device_types << {
++              name: name,
++              identifier: identifier,
++              product_family: device_type['productFamily'].to_s
++            }
+           end
+         else
+           []
+@@ -346,6 +350,24 @@ module SaneMasterModules
+       []
+     end
+ 
++    # Custom simulator names are aliases, not CoreSimulator device type names.
++    # Prefer an exact type name whenever one exists; otherwise map an alias such
++    # as "SaneLot-iPhone" or "SaneLot-iPad" to an installed CoreSimulator type
++    # with the matching product family. Sorting makes that fallback stable across
++    # the JSON ordering returned by different Xcode versions.
++    def ios_simulator_device_type_for(simulator_name)
++      device_types = ios_simulator_device_types
++      exact_match = device_types.find { |candidate| candidate[:name] == simulator_name }
++      return exact_match if exact_match
++
++      product_family = simulator_name.to_s[/\b(iPhone|iPad)\b/i, 1]
++      return nil if product_family.nil?
++
++      device_types
++        .select { |candidate| candidate[:product_family].to_s.casecmp?(product_family) }
++        .min_by { |candidate| [candidate[:name].to_s, candidate[:identifier].to_s] }
++    end
++
+     def ios_simulator_runtimes_for(device_type_identifier, requested_os = nil)
+       output, status = Open3.capture2e('xcrun', 'simctl', 'list', 'runtimes', 'available', '--json')
+       return [] unless status.success?
+diff --git a/scripts/sanemaster/ci_helpers.rb b/scripts/sanemaster/ci_helpers.rb
+index d265b3b..50b4dc1 100644
+--- a/scripts/sanemaster/ci_helpers.rb
++++ b/scripts/sanemaster/ci_helpers.rb
+@@ -155,12 +155,13 @@ module SaneMasterModules
+         options = monitor_test_options(args, default_scheme: project_scheme)
+       rescue ArgumentError => e
+         puts "❌ Invalid monitor_tests arguments: #{e.message}"
+-        puts '   Usage: monitor_tests [--scheme NAME] [--package-path PATH] [--test-plan NAME] [--test SELECTOR] [--timeout POSITIVE_SECONDS]'
++        puts '   Usage: monitor_tests [--scheme NAME] [--package-path PATH] [--test-plan NAME] [--destination SPECIFIER] [--test SELECTOR] [--timeout POSITIVE_SECONDS]'
+         exit 2
+       end
+       scheme = options.fetch(:scheme)
+       package_path = options[:package_path]
+       test_plan = options[:test_plan]
++      destination = options[:destination]
+       test_name = options[:test_selector]
+       timeout = options.fetch(:timeout)
+       started_at = Time.now.utc
+@@ -170,6 +171,7 @@ module SaneMasterModules
+         scheme: scheme,
+         package_path: package_path,
+         test_plan: test_plan,
++        destination: destination,
+         test_selector: test_name,
+         started_at: started_at,
+         upgrade_run_id: ENV['SANEMASTER_UPGRADE_RUN_ID'],
+@@ -452,11 +454,11 @@ module SaneMasterModules
+       remaining = args.dup
+       until remaining.empty?
+         argument = remaining.shift
+-        match = argument.match(/\A--(scheme|package-path|test-plan|test|timeout)=(.*)\z/)
++        match = argument.match(/\A--(scheme|package-path|test-plan|destination|test|timeout)=(.*)\z/)
+         if match
+           key = match[1]
+           value = match[2]
+-        elsif %w[--scheme --package-path --test-plan --test --timeout].include?(argument)
++        elsif %w[--scheme --package-path --test-plan --destination --test --timeout].include?(argument)
+           key = argument.delete_prefix('--')
+           value = remaining.shift
+           raise ArgumentError, "#{argument} requires a value" if value.nil? || value.start_with?('--')
+@@ -488,12 +490,13 @@ module SaneMasterModules
+         scheme: scheme,
+         package_path: values[:package_path],
+         test_plan: values[:test_plan],
++        destination: values[:destination],
+         test_selector: values[:test_selector],
+         timeout: timeout_text.to_i
+       }
+     end
+ 
+-    def monitor_test_plan(root:, scheme:, package_path: nil, test_plan: nil, test_selector:, started_at:, pid: Process.pid, nonce: SecureRandom.hex(4),
++    def monitor_test_plan(root:, scheme:, package_path: nil, test_plan: nil, destination: nil, test_selector:, started_at:, pid: Process.pid, nonce: SecureRandom.hex(4),
+                           upgrade_run_id: nil, upgrade_nonce: nil)
+       project_root = File.realpath(root)
+       upgrade_run_id = upgrade_run_id.to_s.strip
+@@ -513,9 +516,10 @@ module SaneMasterModules
+       run_directory = File.join(project_root, 'outputs', 'monitor-tests', run_id)
+       result_bundle_path = File.join(run_directory, 'test.xcresult')
+       working_directory = monitor_test_working_directory(project_root, package_path)
++      effective_destination = destination || 'platform=macOS,arch=arm64'
+       command = [
+         'xcodebuild', 'test', '-scheme', scheme,
+-        '-destination', 'platform=macOS,arch=arm64',
++        '-destination', effective_destination,
+         '-resultBundlePath', result_bundle_path
+       ]
+       if test_plan || package_path
+@@ -539,6 +543,7 @@ module SaneMasterModules
+         scheme: scheme,
+         package_path: package_path,
+         test_plan: test_plan,
++        destination: destination,
+         test_selector: test_selector,
+         upgrade_run_id: upgrade_run_id.empty? ? nil : upgrade_run_id,
+         upgrade_nonce: upgrade_nonce.empty? ? nil : upgrade_nonce
+@@ -603,6 +608,7 @@ module SaneMasterModules
+         scheme: plan.fetch(:scheme),
+         package_path: plan[:package_path],
+         test_plan: plan[:test_plan],
++        destination: plan[:destination],
+         test_selector: plan[:test_selector],
+         started_at: started_at.utc.iso8601(6),
+         completed_at: completed_at.utc.iso8601(6),
+diff --git a/scripts/sanemaster/ci_helpers_test.rb b/scripts/sanemaster/ci_helpers_test.rb
+index bcd9d3f..c789b91 100644
+--- a/scripts/sanemaster/ci_helpers_test.rb
++++ b/scripts/sanemaster/ci_helpers_test.rb
+@@ -70,7 +70,7 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
+   test_category('Monitor test CLI options') do
+     test('parses strict named options and preserves safe defaults') do
+       explicit = subject.monitor_options(
+-        ['--scheme', 'SaneVideo', '--package-path', 'Feature', '--test-plan', 'Release', '--test=SaneVideoTests/PlaybackTests/testPlay', '--timeout', '120']
++        ['--scheme', 'SaneVideo', '--package-path', 'Feature', '--test-plan', 'Release', '--destination', 'platform=iOS Simulator,name=Test-iPhone', '--test=SaneVideoTests/PlaybackTests/testPlay', '--timeout', '120']
+       )
+       defaults = subject.monitor_options([], default_scheme: 'CurrentProject')
+ 
+@@ -80,11 +80,12 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
+           scheme: 'SaneVideo',
+           package_path: 'Feature',
+           test_plan: 'Release',
++          destination: 'platform=iOS Simulator,name=Test-iPhone',
+           test_selector: 'SaneVideoTests/PlaybackTests/testPlay',
+           timeout: 120
+         }
+       )
+-      assert_eq(defaults, { scheme: 'CurrentProject', package_path: nil, test_plan: nil, test_selector: nil, timeout: 300 })
++      assert_eq(defaults, { scheme: 'CurrentProject', package_path: nil, test_plan: nil, destination: nil, test_selector: nil, timeout: 300 })
+       true
+     end
+ 
+@@ -95,6 +96,7 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
+         ['--scheme'] => '--scheme requires a value',
+         ['--test', '--timeout', '30'] => '--test requires a value',
+         ['--test-plan'] => '--test-plan requires a value',
++        ['--destination'] => '--destination requires a value',
+         ['--package-path'] => '--package-path requires a value',
+         ['--scheme', 'One', '--scheme=Two'] => '--scheme was provided more than once',
+         ['--timeout', '0'] => '--timeout must be a positive integer',
+@@ -170,6 +172,25 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
+       true
+     end
+ 
++    test('uses an explicit iOS simulator destination without changing the default') do
++      Dir.mktmpdir('ci-helpers-ios-') do |root|
++        destination = 'platform=iOS Simulator,name=SaneLot-iPhone'
++        plan = subject.monitor_plan(
++          root: root,
++          scheme: 'SaneLot',
++          destination: destination,
++          test_selector: 'SaneLotTests/P0SafetyTests/testUpgrade',
++          started_at: started_at,
++          pid: 4321,
++          nonce: 'ios-destination'
++        )
++
++        assert_eq(plan[:destination], destination)
++        assert_eq(plan[:command][plan[:command].index('-destination') + 1], destination)
++      end
++      true
++    end
++
+     test('uses an explicit test plan and verifies the selected test from xcresult') do
+       Dir.mktmpdir('ci-helpers-') do |root|
+         plan = subject.monitor_plan(
+diff --git a/scripts/sanemaster/customer_ui_contract.rb b/scripts/sanemaster/customer_ui_contract.rb
+index 6b38561..f5026db 100644
+--- a/scripts/sanemaster/customer_ui_contract.rb
++++ b/scripts/sanemaster/customer_ui_contract.rb
+@@ -474,7 +474,13 @@ module SaneMasterModules
+ 
+       manifest = read_customer_ui_yaml(manifest_path)
+       actions = Array(manifest['actions'])
+-      required_actions = actions.reject { |action| action['release_required'] == false }
++      release_profile = config['customer_ui_release_profile'].to_s.strip
++      required_actions = customer_ui_required_actions(
++        manifest: manifest,
++        actions: actions,
++        release_profile: release_profile,
++        issues: issues
++      )
+ 
+       issues << 'Customer UI action contract has no release-required actions' if required_actions.empty?
+       issues.concat(customer_ui_manifest_issues(manifest_path, manifest, required_actions))
+@@ -491,6 +497,7 @@ module SaneMasterModules
+           receipt_path: nil,
+           manifest_sha256: manifest_sha,
+           source_fingerprint: source_fingerprint,
++          release_profile: release_profile.empty? ? nil : release_profile,
+           action_count: required_actions.length,
+           issues: issues,
+           warnings: warnings
+@@ -505,6 +512,7 @@ module SaneMasterModules
+         required_actions: required_actions,
+         manifest: manifest,
+         receipt: receipt,
++        release_profile: release_profile,
+         strict_visual: strict_visual
+       ))
+ 
+@@ -515,6 +523,7 @@ module SaneMasterModules
+         receipt_path: receipt_path,
+         manifest_sha256: manifest_sha,
+         source_fingerprint: source_fingerprint,
++        release_profile: release_profile.empty? ? nil : release_profile,
+         action_count: required_actions.length,
+         receipt_generated_at: receipt['generated_at'],
+         issues: issues,
+@@ -533,6 +542,29 @@ module SaneMasterModules
+       }
+     end
+ 
++    def customer_ui_required_actions(manifest:, actions:, release_profile:, issues:)
++      return actions.reject { |action| action['release_required'] == false } if release_profile.empty?
++
++      profiles = manifest['release_profiles']
++      unless profiles.is_a?(Hash) && profiles.key?(release_profile)
++        issues << "Unknown customer UI release profile #{release_profile.inspect}"
++        return []
++      end
++
++      profile_ids = Array(profiles[release_profile]).map(&:to_s).map(&:strip).reject(&:empty?)
++      issues << "Customer UI release profile #{release_profile.inspect} has no actions" if profile_ids.empty?
++      duplicates = profile_ids.tally.select { |_id, count| count > 1 }.keys
++      issues << "Customer UI release profile #{release_profile.inspect} repeats action(s): #{duplicates.join(', ')}" unless duplicates.empty?
++
++      actions_by_id = actions.each_with_object({}) do |action, memo|
++        id = action['id'].to_s.strip
++        memo[id] = action unless id.empty?
++      end
++      unknown_ids = profile_ids - actions_by_id.keys
++      issues << "Customer UI release profile #{release_profile.inspect} references unknown action(s): #{unknown_ids.join(', ')}" unless unknown_ids.empty?
++      profile_ids.filter_map { |id| actions_by_id[id] }
++    end
++
+     def format_customer_ui_contract_report(report)
+       lines = []
+       lines << '🧭 --- [ CUSTOMER UI ACTION CONTRACT ] ---'
+@@ -1924,9 +1956,14 @@ module SaneMasterModules
+       issues
+     end
+ 
+-    def customer_ui_receipt_issues(app_name:, manifest_sha:, source_fingerprint:, required_actions:, manifest: {}, receipt:, strict_visual: false)
++    def customer_ui_receipt_issues(app_name:, manifest_sha:, source_fingerprint:, required_actions:, manifest: {}, receipt:, release_profile: '', strict_visual: false)
+       issues = []
+       issues << "Receipt app #{receipt['app']} does not match #{app_name}" if receipt['app'].to_s != app_name.to_s
++      expected_profile = release_profile.to_s.strip
++      actual_profile = receipt['release_profile'].to_s.strip
++      unless actual_profile == expected_profile
++        issues << "Receipt release profile #{actual_profile.inspect} does not match #{expected_profile.inspect}"
++      end
+       issues << "Receipt status is #{receipt['status'].inspect}, expected \"passed\"" unless receipt['status'].to_s == 'passed'
+       unless customer_ui_receipt_host_allowed?(receipt['host'])
+         issues << 'Receipt was not generated on the Mini or an explicitly approved local Air fallback'
+diff --git a/scripts/sanemaster/test_mode.rb b/scripts/sanemaster/test_mode.rb
+index 84257fc..0d2d86d 100644
+--- a/scripts/sanemaster/test_mode.rb
++++ b/scripts/sanemaster/test_mode.rb
+@@ -5,6 +5,7 @@ module SaneMasterModules
+   module TestMode
+     require 'fileutils'
+     require 'open3'
++    require 'rbconfig'
+     require 'tmpdir'
+ 
+     SANEAPPS_TEST_MODE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneVideo].freeze
+@@ -145,12 +146,9 @@ module SaneMasterModules
+       puts '🛠️ --- [ SANEMASTER RESTORE ] ---'
+       puts 'Fixing common Xcode/Launch Services issues...'
+ 
+-      lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+-      if File.exist?(lsregister)
+-        print '  Resetting Launch Services database... '
+-        system(lsregister, '-r', '-f', '-apps', 'local,user,system', out: File::NULL, err: File::NULL)
+-        puts '✅'
+-      end
++      print '  Cleaning Launch Services and registering the canonical app... '
++      flush_launch_services_cache
++      puts '✅'
+ 
+       print '  Restarting Dock... '
+       system('killall', 'Dock')
+@@ -529,16 +527,47 @@ module SaneMasterModules
+     def trash_local_path(path)
+       return unless File.exist?(path)
+ 
++      unregister_launch_services_path(path)
+       ok = system('/usr/bin/trash', path, out: File::NULL, err: File::NULL)
+       raise "Failed to move stale app bundle to Trash: #{path}" unless ok
++
++      refresh_launch_services_hygiene
++    end
++
++    def refresh_launch_services_hygiene
++      script = File.expand_path('../dedupe_sane_apps.rb', __dir__)
++      ok = system(
++        RbConfig.ruby,
++        script,
++        '--apps',
++        project_name,
++        '--launch-services-only',
++        out: File::NULL,
++        err: File::NULL
++      )
++      raise "Launch Services cleanup failed for #{project_name}" unless ok
++    end
++
++    def unregister_launch_services_path(path)
++      lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
++      return unless File.executable?(lsregister)
++
++      root = File.expand_path(path)
++      bundles = Dir.glob(File.join(root, '**', '*.app')).sort_by { |bundle| -bundle.count(File::SEPARATOR) }
++      bundles << root if root.end_with?('.app')
++      bundles.uniq.each do |bundle|
++        system(lsregister, '-u', bundle, out: File::NULL, err: File::NULL)
++      end
+     end
+ 
+     def flush_launch_services_cache
+       lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+-      return unless File.exist?(lsregister)
++      return unless File.executable?(lsregister)
+ 
+-      unless system(lsregister, '-r', '-f', '-apps', 'local,user,system', out: File::NULL, err: File::NULL)
+-        puts '⚠️  Launch Services refresh failed; continuing with direct launch verification.'
++      canonical = canonical_local_app_path
++      system(lsregister, '-f', canonical, out: File::NULL, err: File::NULL) if File.directory?(canonical)
++      unless system(lsregister, '-gc', out: File::NULL, err: File::NULL)
++        puts '⚠️  Launch Services cleanup failed; continuing with direct launch verification.'
+       end
+     end
+ 
+diff --git a/scripts/sanemaster/test_mode_test.rb b/scripts/sanemaster/test_mode_test.rb
+index afe3417..f72f831 100644
+--- a/scripts/sanemaster/test_mode_test.rb
++++ b/scripts/sanemaster/test_mode_test.rb
+@@ -371,12 +371,40 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
+   end
+ 
+   test_category('Launch Services refresh') do
+-    test('test_mode uses supported lsregister refresh flags') do
++    test('test_mode cleans the trashed destination from Launch Services') do
++      harness = TestModeHarness.new
++      harness.instance_variable_set(:@project_name, 'SaneClip')
++      calls = []
++
++      Dir.mktmpdir('test-mode-launch-services') do |dir|
++        app = File.join(dir, 'SaneClip.app')
++        FileUtils.mkdir_p(app)
++        harness.define_singleton_method(:unregister_launch_services_path) { |_path| }
++        harness.define_singleton_method(:system) do |*args, **_kwargs|
++          calls << args
++          true
++        end
++
++        harness.send(:trash_local_path, app)
++      end
++
++      hygiene_call = calls.find { |args| args.include?('--launch-services-only') }
++      assert(hygiene_call, 'trash must be followed by scoped Launch Services hygiene')
++      assert_includes(hygiene_call, 'SaneClip')
++      true
++    end
++
++    test('test_mode unregisters stale copies and refreshes only the canonical app') do
+       source = File.read(TEST_MODE_PATH)
+ 
+-      assert_includes(source, "'-r', '-f', '-apps', 'local,user,system'")
++      assert_includes(source, "Dir.glob(File.join(root, '**', '*.app'))")
++      assert_includes(source, "system(lsregister, '-u', bundle")
++      assert_includes(source, "'-f', canonical")
++      assert_includes(source, "'-gc'")
++      assert(!source.include?("'-r', '-f', '-apps', 'local,user,system'"),
++             'full user-domain scans re-register trashed and DerivedData app bundles')
+       assert(!source.include?("'-kill', '-r'"), 'lsregister -kill is removed on current macOS')
+-      assert_includes(source, 'Launch Services refresh failed')
++      assert_includes(source, 'Launch Services cleanup failed')
+       true
+     end
+   end
+diff --git a/scripts/sanemaster/upgrade_path_proof.rb b/scripts/sanemaster/upgrade_path_proof.rb
+index eda6336..7e3c5dc 100644
+--- a/scripts/sanemaster/upgrade_path_proof.rb
++++ b/scripts/sanemaster/upgrade_path_proof.rb
+@@ -50,6 +50,8 @@ module SaneMasterModules
+       package_path = nil if package_path.empty?
+       test_plan = config['test_plan'].to_s.strip
+       test_plan = nil if test_plan.empty?
++      destination = config['destination'].to_s.strip
++      destination = nil if destination.empty?
+       test_selector = config['test_selector'].to_s.strip
+       abort 'release.upgrade_path_test.scheme is required.' if scheme.empty?
+       abort 'release.upgrade_path_test.test_selector is required.' if test_selector.empty?
+@@ -84,6 +86,7 @@ module SaneMasterModules
+         scheme: scheme,
+         package_path: package_path,
+         test_plan: test_plan,
++        destination: destination,
+         test_selector: test_selector,
+         timeout_seconds: timeout_seconds
+       )
+@@ -104,6 +107,7 @@ module SaneMasterModules
+         scheme: scheme,
+         package_path: package_path,
+         test_plan: test_plan,
++        destination: destination,
+         test_selector: test_selector,
+         started_at: started_at,
+         finished_at: finished_at,
+@@ -119,6 +123,7 @@ module SaneMasterModules
+         'scheme' => scheme,
+         'packagePath' => package_path,
+         'testPlan' => test_plan,
++        'destination' => destination,
+         'testSelector' => test_selector,
+         'runId' => monitor_receipt.fetch('upgrade_run_id'),
+         'monitorRunId' => monitor_receipt.fetch('run_id'),
+@@ -140,6 +145,7 @@ module SaneMasterModules
+         'scheme' => scheme,
+         'packagePath' => package_path,
+         'testPlan' => test_plan,
++        'destination' => destination,
+         'testSelector' => test_selector,
+         'discoveredTests' => result_summary.fetch(:discovered_test_count),
+         'passedTests' => result_summary.fetch(:passed_test_count),
+@@ -255,12 +261,13 @@ module SaneMasterModules
+ 
+     private
+ 
+-    def upgrade_path_runner_argv(scheme:, package_path: nil, test_plan: nil, test_selector:, timeout_seconds:)
++    def upgrade_path_runner_argv(scheme:, package_path: nil, test_plan: nil, destination: nil, test_selector:, timeout_seconds:)
+       runner = File.realpath(File.join(__dir__, '..', 'SaneMaster.rb'))
+       ruby = File.realpath(RbConfig.ruby)
+       argv = [ruby, runner, 'monitor_tests', '--scheme', scheme]
+       argv += ['--package-path', package_path] if package_path
+       argv += ['--test-plan', test_plan] if test_plan
++      argv += ['--destination', destination] if destination
+       argv + ['--test', test_selector, '--timeout', timeout_seconds.to_s]
+     end
+ 
+@@ -416,7 +423,7 @@ module SaneMasterModules
+       path
+     end
+ 
+-    def upgrade_path_validate_monitor_receipt!(path, project_root:, scheme:, package_path: nil, test_plan: nil, test_selector:, started_at:, finished_at:,
++    def upgrade_path_validate_monitor_receipt!(path, project_root:, scheme:, package_path: nil, test_plan: nil, destination: nil, test_selector:, started_at:, finished_at:,
+                                                run_id:, nonce:)
+       receipt = JSON.parse(File.read(path, encoding: Encoding::UTF_8))
+       receipt_directory = File.realpath(File.dirname(path))
+@@ -435,6 +442,7 @@ module SaneMasterModules
+         'scheme' => scheme,
+         'package_path' => package_path,
+         'test_plan' => test_plan,
++        'destination' => destination,
+         'test_selector' => test_selector,
+         'result_bundle_exists' => true,
+         'result_bundle_valid' => true,
+diff --git a/scripts/sanemaster/upgrade_path_proof_test.rb b/scripts/sanemaster/upgrade_path_proof_test.rb
+index d81631a..ff29876 100644
+--- a/scripts/sanemaster/upgrade_path_proof_test.rb
++++ b/scripts/sanemaster/upgrade_path_proof_test.rb
+@@ -66,6 +66,7 @@ def monitor_receipt_fixture(root, started_at:, finished_at:, scheme: 'Example',
+                             selector: 'ExampleTests/UpgradeTests/testUpgrade',
+                             package_path: nil,
+                             test_plan: nil,
++                            destination: nil,
+                             upgrade_run_id: UPGRADE_RUN_ID, upgrade_nonce: UPGRADE_NONCE)
+   binding = Digest::SHA256.hexdigest("#{upgrade_run_id}\0#{upgrade_nonce}")[0, 16]
+   run = File.join(root, 'outputs', 'monitor-tests', "run-1-upgrade-#{binding}")
+@@ -82,6 +83,7 @@ def monitor_receipt_fixture(root, started_at:, finished_at:, scheme: 'Example',
+     'scheme' => scheme,
+     'package_path' => package_path,
+     'test_plan' => test_plan,
++    'destination' => destination,
+     'test_selector' => selector,
+     'started_at' => started_at.iso8601(6),
+     'completed_at' => finished_at.iso8601(6),
+@@ -169,6 +171,21 @@ exit(run_tests('Upgrade Path Proof Security Tests') do
+       true
+     end
+ 
++    test('runner binds an optional simulator destination to the canonical monitor command') do
++      destination = 'platform=iOS Simulator,name=SaneLot-iPhone'
++      argv = subject.send(
++        :upgrade_path_runner_argv,
++        scheme: 'SaneLot',
++        destination: destination,
++        test_selector: 'SaneLotTests/P0SafetyTests/testUpgrade',
++        timeout_seconds: 120
++      )
++
++      assert_includes(argv, '--destination')
++      assert_eq(argv[argv.index('--destination') + 1], destination)
++      true
++    end
++
+     test('monitor runtime echoes the fresh upgrade binding and binds it into the xcresult run path') do
+       Dir.mktmpdir('upgrade-monitor-binding-') do |root|
+         started_at = Time.now.utc
+diff --git a/scripts/sanemaster/verify_doctor.rb b/scripts/sanemaster/verify_doctor.rb
+index 7cb6d01..627d3b8 100644
+--- a/scripts/sanemaster/verify_doctor.rb
++++ b/scripts/sanemaster/verify_doctor.rb
+@@ -201,6 +201,14 @@ module SaneMasterModules
+         content = File.read(file)
+         content.scan(/\.accessibilityIdentifier\(["']([^"']+)["']\)/) { |match| identifiers << match[0] }
+         content.scan(/accessibilityIdentifier\(["']([^"']+)["']\)/) { |match| identifiers << match[0] }
++        # A ternary can select between two fixed identifiers while preserving
++        # one shared SwiftUI control. Both literal branches are declarations.
++        content.scan(
++          /\.accessibilityIdentifier\(\s*[^?\n]+\?\s*["']([^"']+)["']\s*:\s*["']([^"']+)["']\s*\)/
++        ) do |first, second|
++          identifiers << first if looks_like_custom_ui_identifier?(first)
++          identifiers << second if looks_like_custom_ui_identifier?(second)
++        end
+         # Labeled component arguments forward identifiers into shared views —
+         # accessibilityID:, cancelID:, actionID:, bare id:, ...Identifier: —
+         # these are declarations too (2026-07-15 SaneVideo pre-push false
+diff --git a/scripts/sanemaster/verify_doctor_identifier_test.rb b/scripts/sanemaster/verify_doctor_identifier_test.rb
+index a0258f0..b179bb9 100644
+--- a/scripts/sanemaster/verify_doctor_identifier_test.rb
++++ b/scripts/sanemaster/verify_doctor_identifier_test.rb
+@@ -63,6 +63,31 @@ check('direct .accessibilityIdentifier("...") is declared') do
+   end
+ end
+ 
++check('ternary .accessibilityIdentifier declares both literal branches') do
++  with_fixture do
++    File.write('App/Views/Ternary.swift', <<~SWIFT)
++      TextField("", text: .constant(""))
++        .accessibilityIdentifier(field == .price ? "intake.price" : "intake.mileage")
++    SWIFT
++    ids = harness.extract_ui_identifiers
++    ids.include?('intake.price') && ids.include?('intake.mileage')
++  end
++end
++
++check('ternary identifier branches satisfy both test references') do
++  with_fixture do
++    File.write('App/Views/Ternary.swift', <<~SWIFT)
++      TextField("", text: .constant(""))
++        .accessibilityIdentifier(field == .price ? "intake.price" : "intake.mileage")
++    SWIFT
++    File.write('AppUITests/T.swift', <<~SWIFT)
++      app.textFields["intake.price"].tap()
++      app.textFields["intake.mileage"].tap()
++    SWIFT
++    harness.missing_test_identifiers.empty?
++  end
++end
++
+ check('labeled component argument accessibilityID: "..." is declared (SaneVideo regression)') do
+   with_fixture do
+     File.write('App/Views/Sheet.swift', <<~SWIFT)
+diff --git a/scripts/sanemaster/verify_guard_test.rb b/scripts/sanemaster/verify_guard_test.rb
+index 4a3dc7e..aa3e3af 100644
+--- a/scripts/sanemaster/verify_guard_test.rb
++++ b/scripts/sanemaster/verify_guard_test.rb
+@@ -133,6 +133,33 @@ end
+ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
+   subject = VerifyHarness.new
+ 
++  test_category('Launch Services cleanup') do
++    test('verify runs scoped Launch Services hygiene for a known SaneApp') do
++      harness = VerifyHarness.new
++      harness.define_singleton_method(:project_name) { 'SaneClip' }
++      calls = []
++      harness.define_singleton_method(:system) do |*args, **_kwargs|
++        calls << args
++        true
++      end
++
++      assert(harness.send(:cleanup_launch_services_after_verify))
++      hygiene_call = calls.find { |args| args.include?('--launch-services-only') }
++      assert(hygiene_call, 'verify must clean XCTest Launch Services registrations')
++      assert_includes(hygiene_call, 'SaneClip')
++      true
++    end
++
++    test('verify skips Launch Services hygiene for unrelated projects') do
++      harness = VerifyHarness.new
++      harness.define_singleton_method(:project_name) { 'ExampleApp' }
++      harness.define_singleton_method(:system) { |*_args| raise 'unexpected cleanup command' }
++
++      assert(harness.send(:cleanup_launch_services_after_verify))
++      true
++    end
++  end
++
+   test_category('Verify repo drift guard') do
+     test('reports no introduced drift for a clean repo') do
+       Dir.mktmpdir('verify-guard-clean-') do |dir|
+@@ -412,6 +439,44 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
+       true
+     end
+ 
++    test('uses a project verify timeout override when no CLI timeout is supplied') do
++      Dir.mktmpdir('verify-project-timeout-') do |dir|
++        File.write(
++          File.join(dir, '.saneprocess'),
++          <<~YAML
++            name: Example
++            type: ios_app
++            tests:
++              verify_timeout_seconds: 1800
++          YAML
++        )
++        had_env_timeout = ENV.key?('SANEMASTER_VERIFY_TIMEOUT')
++        previous_env_timeout = ENV.delete('SANEMASTER_VERIFY_TIMEOUT')
++        begin
++          Dir.chdir(dir) do
++            fresh_subject = VerifyHarness.new
++            configured_timeout = fresh_subject.send(
++              :config_value,
++              %w[tests verify_timeout_seconds],
++              'SANEMASTER_VERIFY_TIMEOUT',
++              300
++            ).to_i
++            parsed = fresh_subject.send(:parse_verify_args, [], default_timeout: configured_timeout)
++
++            assert_eq(configured_timeout, 1800)
++            assert_eq(parsed[:timeout], 1800)
++          end
++        ensure
++          if had_env_timeout
++            ENV['SANEMASTER_VERIFY_TIMEOUT'] = previous_env_timeout
++          else
++            ENV.delete('SANEMASTER_VERIFY_TIMEOUT')
++          end
++        end
++      end
++      true
++    end
++
+     test('assigns a unique result bundle and requested scope to every Xcode phase') do
+       Dir.mktmpdir('verify-result-bundles-') do |dir|
+         File.write(
+@@ -551,6 +616,55 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
+   end
+ 
+   test_category('Project test destinations') do
++    test('maps custom iPhone simulator aliases to a deterministic iPhone device type') do
++      fresh_subject = VerifyHarness.new
++      fresh_subject.define_singleton_method(:ios_simulator_device_types) do
++        [
++          { name: 'iPhone SE (3rd generation)', identifier: 'phone-se', product_family: 'iPhone' },
++          { name: 'iPhone 17 Pro', identifier: 'phone-pro', product_family: 'iPhone' },
++          { name: 'iPad Pro 13-inch (M4)', identifier: 'ipad-pro', product_family: 'iPad' }
++        ]
++      end
++
++      chosen = fresh_subject.send(:ios_simulator_device_type_for, 'SaneLot-iPhone')
++
++      assert_eq(chosen[:identifier], 'phone-pro')
++      assert_eq(chosen[:product_family], 'iPhone')
++      true
++    end
++
++    test('maps custom iPad simulator aliases to an iPad device type') do
++      fresh_subject = VerifyHarness.new
++      fresh_subject.define_singleton_method(:ios_simulator_device_types) do
++        [
++          { name: 'iPhone 17 Pro', identifier: 'phone-pro', product_family: 'iPhone' },
++          { name: 'iPad Air 13-inch (M3)', identifier: 'ipad-air', product_family: 'iPad' },
++          { name: 'iPad Pro 13-inch (M4)', identifier: 'ipad-pro', product_family: 'iPad' }
++        ]
++      end
++
++      chosen = fresh_subject.send(:ios_simulator_device_type_for, 'SaneLot-iPad')
++
++      assert_eq(chosen[:identifier], 'ipad-air')
++      assert_eq(chosen[:product_family], 'iPad')
++      true
++    end
++
++    test('preserves an exact simulator device-type name over product-family fallback') do
++      fresh_subject = VerifyHarness.new
++      fresh_subject.define_singleton_method(:ios_simulator_device_types) do
++        [
++          { name: 'iPhone 17 Pro', identifier: 'phone-pro', product_family: 'iPhone' },
++          { name: 'SaneLot-iPhone', identifier: 'exact-alias', product_family: 'iPhone' }
++        ]
++      end
++
++      chosen = fresh_subject.send(:ios_simulator_device_type_for, 'SaneLot-iPhone')
++
++      assert_eq(chosen[:identifier], 'exact-alias')
++      true
++    end
++
+     test('uses the configured iOS simulator destination for iOS-only unit tests') do
+       Dir.mktmpdir('verify-ios-destination-') do |dir|
+         File.write(
+diff --git a/scripts/sanemaster/verify_support.rb b/scripts/sanemaster/verify_support.rb
+index 00d9170..f3afeda 100644
+--- a/scripts/sanemaster/verify_support.rb
++++ b/scripts/sanemaster/verify_support.rb
+@@ -7,6 +7,7 @@ require 'socket'
+ require 'securerandom'
+ require 'time'
+ require 'tmpdir'
++require 'rbconfig'
+ 
+ module SaneMasterModules
+   # Verify execution/support helpers (split from verify.rb for Rule #10):
+@@ -15,6 +16,7 @@ module SaneMasterModules
+   # helpers live in verify_permissions.rb (further Rule #10 split).
+   module Verify
+     VERIFY_COMMAND_EVIDENCE_MAX_BYTES = 2 * 1024 * 1024
++    LAUNCH_SERVICES_HYGIENE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo].freeze
+ 
+     private
+ 
+@@ -171,9 +173,27 @@ module SaneMasterModules
+         end
+       end
+ 
++      cleanup_launch_services_after_verify
+       puts '✅'
+     end
+ 
++    def cleanup_launch_services_after_verify
++      return true unless LAUNCH_SERVICES_HYGIENE_APPS.include?(project_name)
++
++      script = File.expand_path('../dedupe_sane_apps.rb', __dir__)
++      ok = system(
++        RbConfig.ruby,
++        script,
++        '--apps',
++        project_name,
++        '--launch-services-only',
++        out: File::NULL,
++        err: File::NULL
++      )
++      warn "⚠️  Launch Services cleanup failed after verifying #{project_name}" unless ok
++      ok
++    end
++
+     def terminate_project_test_processes(signal)
+       stale_test_processes.each do |pid|
+         begin
+diff --git a/scripts/test_registry.json b/scripts/test_registry.json
+index fea5afa..4199af7 100644
+--- a/scripts/test_registry.json
++++ b/scripts/test_registry.json
+@@ -10,6 +10,36 @@
+         "scripts/hooks/test_hooks.rb"
+       ]
+     },
++    {
++      "path": "scripts/automation/dl_report_test.py",
++      "label": "SaneProcess direct-app funnel report tests",
++      "status": "required",
++      "cmd": [
++        "python3",
++        "-B",
++        "scripts/automation/dl_report_test.py"
++      ]
++    },
++    {
++      "path": "../cloudflare-workers/sane-checkout.test.mjs",
++      "label": "Sane checkout Worker behavior tests",
++      "status": "required",
++      "cmd": [
++        "node",
++        "--test",
++        "../cloudflare-workers/sane-checkout.test.mjs"
++      ]
++    },
++    {
++      "path": "../sane-dist-worker/sane-dist-worker.test.mjs",
++      "label": "Sane distribution Worker behavior tests",
++      "status": "required",
++      "cmd": [
++        "node",
++        "--test",
++        "../sane-dist-worker/sane-dist-worker.test.mjs"
++      ]
++    },
+     {
+       "path": "scripts/hooks/release_receipt_signer_test.rb",
+       "label": "SaneProcess release receipt signer security tests",
+@@ -64,6 +94,15 @@
+         "scripts/hooks/sane_bash_guards_test.rb"
+       ]
+     },
++    {
++      "path": "scripts/hooks/sane_runaway_guard_test.rb",
++      "label": "SaneProcess runaway command guard tests",
++      "status": "required",
++      "cmd": [
++        "ruby",
++        "scripts/hooks/sane_runaway_guard_test.rb"
++      ]
++    },
+     {
+       "path": "scripts/hooks/sane_catastrophic_guard_test.rb",
+       "label": "SaneProcess catastrophic operation guard tests",
+@@ -136,6 +175,15 @@
+         "scripts/appstore_public_screenshot_audit_test.rb"
+       ]
+     },
++    {
++      "path": "scripts/appstore_screenshot_compositor_test.rb",
++      "label": "SaneProcess App Store screenshot compositor tests",
++      "status": "required",
++      "cmd": [
++        "ruby",
++        "scripts/appstore_screenshot_compositor_test.rb"
++      ]
++    },
+     {
+       "path": "scripts/appstore_submit_guardrail_test.rb",
+       "label": "SaneProcess App Store guard tests",
+@@ -145,6 +193,15 @@
+         "scripts/appstore_submit_guardrail_test.rb"
+       ]
+     },
++    {
++      "path": "scripts/automation/app_review_watch_test.rb",
++      "label": "SaneProcess App Review watcher and delivery receipt tests",
++      "status": "required",
++      "cmd": [
++        "ruby",
++        "scripts/automation/app_review_watch_test.rb"
++      ]
++    },
+     {
+       "path": "scripts/automation/control_plane_sync_test.rb",
+       "label": "SaneProcess control plane sync tests",
+@@ -260,6 +317,16 @@
+         "scripts/automation/check_inbox_report_test.py"
+       ]
+     },
++    {
++      "path": "scripts/automation/campaign_audit_test.py",
++      "label": "SaneProcess campaign audit attribution tests",
++      "status": "required",
++      "cmd": [
++        "python3",
++        "-B",
++        "scripts/automation/campaign_audit_test.py"
++      ]
++    },
+     {
+       "path": "scripts/automation/business_appointment_test.rb",
+       "label": "SaneApps business appointment guard tests",
+@@ -949,4 +1016,4 @@
+       ]
+     }
+   ]
+-}
+\ No newline at end of file
++}
+diff --git a/scripts/validation_report_test.rb b/scripts/validation_report_test.rb
+index cee37f9..fcdb4a6 100644
+--- a/scripts/validation_report_test.rb
++++ b/scripts/validation_report_test.rb
+@@ -5,6 +5,7 @@ require_relative 'hooks/test/test_framework'
+ require_relative 'validation_report'
+ require 'tmpdir'
+ require 'stringio'
++require 'yaml'
+ 
+ class ValidationReportHarness < ValidationReport
+   attr_reader :issues, :warnings, :metrics, :verdict
+@@ -1010,6 +1011,20 @@ exit(run_tests('Validation report tests') do
+       true
+     end
+ 
++    test('keeps every public bundle redirect alias aligned with the configured bundle checkout') do
++      process_root = File.expand_path('..', __dir__)
++      config = YAML.load_file(File.join(process_root, 'config/products.yml'))
++      checkout_url = config.dig('bundles', 'bundle', 'checkout_url')
++      worker_source = File.read(File.expand_path('../cloudflare-workers/sane-checkout.js', process_root))
++
++      assert(!checkout_url.to_s.empty?)
++      %w[bundle sane-bundle].each do |slug|
++        assert_includes(worker_source, "'#{slug}': '#{checkout_url}'")
++      end
++      assert(!worker_source.include?('b572a5cf-2eb4-490d-adea-51d5fc57d6e4'))
++      true
++    end
++
+     test('flags unknown source checkout redirect routes') do
+       subject = WebsiteDistributionHarness.new(products: [], redirect_base: 'https://go.saneapps.com/buy')
+       Dir.mktmpdir do |dir|

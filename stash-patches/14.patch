@@ -1,0 +1,182 @@
+diff --git a/DEVELOPMENT.md b/DEVELOPMENT.md
+index 428af3d..48209b5 100644
+--- a/DEVELOPMENT.md
++++ b/DEVELOPMENT.md
+@@ -39,7 +39,7 @@ Codex extras that are stable enough to use in SOPs today:
+ - `tool_search` for deferred app/MCP capability discovery before claiming a tool is missing
+ - `computer-use` for live accessibility-tree inspection on the machine hosting the GUI
+ - `macos-automator` for reusable AppleScript/JXA discovery before writing raw scripts
+-- `mcp__nvidia_build__nvidia_vision` for second-pass screenshot audits after capture
++- Codex built-in visual verification tools for screenshot and live-GUI inspection after capture
+ - `automation_update` for user-approved recurring checks or follow-ups
+ 
+ Stable cross-client guardrails already enforced in shared runtime paths:
+@@ -486,12 +486,13 @@ ls -1 /tmp/app-renders
+ 
+ When the issue is iPhone/iPad-only, use the app's simulator screenshot script or the iOS screenshot lane instead of desktop capture.
+ 
+-4.5 **Codex second-pass visual audit**
++4.5 **Codex visual audit**
+ 
+-- After saving a Mini screenshot or deterministic render, run a screenshot-analysis pass such as `mcp__nvidia_build__nvidia_vision` when available.
+-- Use it to check for clipped controls, overlap, wrong selected state, unreadable copy, and obvious contrast drift.
++- After saving a Mini screenshot or deterministic render, inspect it with Codex's built-in visual verification tools.
++- Check for clipped controls, overlap, wrong selected state, unreadable copy, and obvious contrast drift.
+ - If Codex is attached to the same machine as the live GUI, `computer-use` can inspect the accessibility tree before or after capture.
+ - These are supplements. The canonical proof is still the clean Mini screenshot or deterministic render artifact.
++- Do not use NVIDIA agents, `nv` sweeps, or `nvidia_vision` for normal visual verification unless the user explicitly asks for that specific tool.
+ 
+ Hard rule:
+ - For any release-critical UI claim, keep at least one saved visual artifact: live Mini screenshot when available, otherwise a deterministic render PNG.
+diff --git a/scripts/app_test_mode_test.rb b/scripts/app_test_mode_test.rb
+index 226f8e7..48601b5 100644
+--- a/scripts/app_test_mode_test.rb
++++ b/scripts/app_test_mode_test.rb
+@@ -65,5 +65,33 @@ exit(run_tests('App Test Mode Bootstrap Tests') do
+              'sane_test should clear legacy no-keychain fallback keys after writing current defaults')
+       true
+     end
++
++    test('sane_test local license mode targets the staged runtime bundle') do
++      source = File.read(SANE_TEST_PATH)
++
++      assert_includes(
++        source,
++        'bid = bundle_id_for_app(canonical_local_app_path) || @config[:dev]',
++        'local --release free/pro mode should clear or write the actual staged bundle, not always the dev bundle'
++      )
++      true
++    end
++
++    test('sane_test release builds keep signing enabled when a cert exists') do
++      source = File.read(SANE_TEST_PATH)
++
++      assert_includes(source, 'has_prod_debug = `xcodebuild -list 2>/dev/null`.include?(\'ProdDebug\')')
++      assert_includes(
++        source,
++        'unless @release_build || has_prod_debug',
++        'release-mode sane_test must not append ad-hoc signing flags that break Accessibility/TCC identity'
++      )
++      assert_includes(
++        source,
++        'prepare_signing_session_for_build(config_name)',
++        'sane_test release-mode builds should unlock/configure the signing keychain instead of falling back to unsigned output'
++      )
++      true
++    end
+   end
+ end)
+diff --git a/scripts/sane_test.rb b/scripts/sane_test.rb
+index b34160c..6859028 100755
+--- a/scripts/sane_test.rb
++++ b/scripts/sane_test.rb
+@@ -774,7 +774,7 @@ class SaneTest
+   EARLY_ADOPTER_KEY = 'early-adopter'.freeze
+ 
+   def set_license_mode_local
+-    bid = @config[:dev]
++    bid = bundle_id_for_app(canonical_local_app_path) || @config[:dev]
+     if @free_mode
+       warn '   Clearing fallback license data (free mode)...'
+       clear_license_fallback_local(bid)
+@@ -972,13 +972,14 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
+       # ProdDebug has proper signing + entitlements.
+       # Fall back to Debug if ProdDebug config doesn't exist (e.g., xcodeproj-based projects).
+       # --release: Build with Release config for production testing (e.g., license gate).
++      has_prod_debug = `xcodebuild -list 2>/dev/null`.include?('ProdDebug')
+       if @release_build
+         config_name = 'Release'
+       else
+-        has_prod_debug = `xcodebuild -list 2>/dev/null`.include?('ProdDebug')
+         config_name = (has_signing_cert && has_prod_debug) ? 'ProdDebug' : 'Debug'
+       end
+       @last_build_config = config_name
++      prepare_signing_session_for_build(config_name)
+ 
+       build_args = [
+         'xcodebuild',
+@@ -1000,7 +1001,7 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
+         # For apps without ProdDebug, keep Debug launches ad-hoc signed.
+         # Forcing Apple Development signing here can fail on package bundles
+         # during unattended Mini builds (errSecInternalComponent).
+-        unless has_prod_debug
++        unless @release_build || has_prod_debug
+           build_args += [
+             'CODE_SIGN_IDENTITY=-',
+             'CODE_SIGNING_REQUIRED=NO',
+@@ -1047,6 +1048,75 @@ with open('$SETTINGS', 'w') as f: json.dump(s, f, indent=2)
+     end
+   end
+ 
++  def prepare_signing_session_for_build(config_name)
++    return unless %w[ProdDebug Release].include?(config_name)
++
++    load_saneprocess_secrets_env
++
++    login_keychain = ENV['SANEBAR_KEYCHAIN_PATH'] || ENV['KEYCHAIN_PATH'] || File.expand_path('~/Library/Keychains/login.keychain-db')
++    return unless File.exist?(login_keychain)
++
++    keychain_password = ENV['SANEBAR_KEYCHAIN_PASSWORD'] || ENV['KEYCHAIN_PASSWORD'] || ENV['KEYCHAIN_PASS']
++    return if keychain_password.to_s.strip.empty?
++
++    system('security', 'default-keychain', '-d', 'user', '-s', login_keychain, out: File::NULL, err: File::NULL)
++    system('security', 'list-keychains', '-d', 'user', '-s', login_keychain, '/Library/Keychains/System.keychain',
++           out: File::NULL, err: File::NULL)
++    system('security', 'set-keychain-settings', '-lut', '21600', login_keychain, out: File::NULL, err: File::NULL)
++
++    unless system('security', 'unlock-keychain', '-p', keychain_password, login_keychain, out: File::NULL, err: File::NULL)
++      warn "   ⚠️  Could not unlock login keychain for #{config_name} signing."
++      return
++    end
++
++    unless ENV['OTHER_CODE_SIGN_FLAGS'].to_s.include?("--keychain #{login_keychain}")
++      existing = ENV['OTHER_CODE_SIGN_FLAGS'].to_s.strip
++      prefix = "--keychain #{login_keychain}"
++      ENV['OTHER_CODE_SIGN_FLAGS'] = existing.empty? ? prefix : "#{prefix} #{existing}"
++    end
++
++    identities = `security find-identity -v -p codesigning "#{login_keychain}" 2>/dev/null`
++    identities.each_line do |line|
++      identity = line[/^\s*\d+\)\s+[0-9A-F]{40}\s+"([^"]+)"/, 1]
++      next if identity.nil? || identity.empty?
++
++      system('security', 'set-key-partition-list',
++             '-S', 'apple-tool:,apple:,codesign:',
++             '-s',
++             '-k', keychain_password,
++             '-D', identity,
++             '-t', 'private',
++             login_keychain,
++             out: File::NULL,
++             err: File::NULL)
++    end
++  end
++
++  def load_saneprocess_secrets_env
++    env_file = File.expand_path('~/.config/saneprocess/secrets.env')
++    return unless File.file?(env_file)
++
++    File.foreach(env_file) do |line|
++      next if line.strip.empty? || line.lstrip.start_with?('#')
++
++      text = line.sub(/\A\s*export\s+/, '').strip
++      next unless text.include?('=')
++
++      key, raw_value = text.split('=', 2)
++      key = key.to_s.strip
++      next if key.empty? || ENV.key?(key)
++
++      value = raw_value.to_s.strip
++      if value.start_with?('"') && value.end_with?('"') && value.length >= 2
++        value = value[1..-2]
++      elsif value.start_with?("'") && value.end_with?("'") && value.length >= 2
++        value = value[1..-2]
++      end
++
++      ENV[key] = value
++    end
++  end
++
+   def find_derived_data_app
+     fallback_configs = %w[Release ProdDebug Debug]
+     configs =

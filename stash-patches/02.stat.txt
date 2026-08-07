@@ -1,0 +1,20 @@
+ AGENTS.md                                         | 17 ++---
+ ARCHITECTURE.md                                   | 17 ++++-
+ DEVELOPMENT.md                                    | 22 +++++-
+ config/products.yml                               |  9 +++
+ scripts/SaneMaster.rb                             |  3 +-
+ scripts/automation/agentmemory-mcp-air.sh         | 67 ++++++++++++++---
+ scripts/automation/air_mini_acceptance.rb         | 46 ++++++++++++
+ scripts/automation/air_mini_acceptance_test.rb    | 27 ++++++-
+ scripts/automation/control_plane_sync_test.rb     |  7 +-
+ scripts/automation/install-memory-sync-agent.sh   | 50 ++++++++++++-
+ scripts/automation/memory_sync_test.rb            | 87 ++++++++++++++++++++++-
+ scripts/hooks/sane_release_guard.rb               |  2 +-
+ scripts/hooks/sanestop_finalize.rb                |  4 +-
+ scripts/hooks/sanestop_persistence_test.rb        | 12 ++++
+ scripts/hooks/sanetrack_state_updates.rb          |  1 +
+ scripts/hooks/sanetrack_test.rb                   |  9 ++-
+ scripts/sanemaster/research_evidence_gate_test.rb | 10 +++
+ scripts/sanemaster/sop_loop.rb                    |  2 +-
+ scripts/validation_report.rb                      |  2 +
+ 19 files changed, 362 insertions(+), 32 deletions(-)

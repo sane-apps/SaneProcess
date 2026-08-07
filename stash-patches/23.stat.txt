@@ -1,0 +1,7 @@
+ README.md                     |   2 +
+ scripts/SaneMaster.rb         |   5 ++
+ scripts/license_gen.rb        |  96 --------------------------
+ scripts/qa.rb                 |   4 ++
+ scripts/release.sh            | 154 ++++++++++++++++++++++++++++++++++++++++--
+ scripts/sanemaster/release.rb |  35 ++++++++++
+ 6 files changed, 195 insertions(+), 101 deletions(-)

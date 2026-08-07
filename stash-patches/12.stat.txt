@@ -1,0 +1,15 @@
+ ARCHITECTURE.md                              |   1 +
+ DEVELOPMENT.md                               |  36 +++-
+ scripts/SaneMaster.rb                        |  67 +++++-
+ scripts/hooks/sanetools.rb                   |   6 +
+ scripts/hooks/sanetools_checks.rb            |   1 +
+ scripts/hooks/sanetools_deploy.rb            |  14 ++
+ scripts/hooks/sanetools_test.rb              |  15 +-
+ scripts/hooks/sanetools_test_scenarios.rb    |  24 +++
+ scripts/sanemaster/base.rb                   |   5 +
+ scripts/sanemaster/release.rb                | 223 +++++++++++++++++++
+ scripts/sanemaster/release_guardrail_test.rb |  25 +++
+ scripts/setapp_upload.rb                     | 311 ++++++++++++++++++++++++++-
+ scripts/setapp_upload_test.rb                | 234 +++++++++++++++++++-
+ templates/RELEASE_SOP.md                     |  30 ++-
+ 14 files changed, 969 insertions(+), 23 deletions(-)

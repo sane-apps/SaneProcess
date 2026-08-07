@@ -1,0 +1,1 @@
+stash@{22}: On (no branch): manual-cleanup-20260424-153709-stephans-macbook-air

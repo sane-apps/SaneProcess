@@ -1,0 +1,1134 @@
+diff --git a/scripts/mini/README.md b/scripts/mini/README.md
+index c445c5f..b4c1217 100644
+--- a/scripts/mini/README.md
++++ b/scripts/mini/README.md
+@@ -152,6 +152,7 @@ LaunchAgent (5:40 AM)
+ - **Dataset regression guard** — `mini-train.sh` now fails before spending GPU time if the current train/valid counts shrink too far versus the latest successful run for that lane.
+ - **Current bakeoff mode** — the daily challenger agent is pinned to `smollm3-3b` on `SaneAI` because `llama32-3b` reproducibly OOMs on the 8 GB Mini, runs until `08:30`, and skips Sundays so the weekly `SaneAI` run gets the full window.
+ - **Unsafe-model preflight** — `mini-train.sh` now blocks `mlx-community/Llama-3.2-3B-Instruct-4bit` before launch on the 8 GB Mini unless `ALLOW_UNSAFE_TRAINING=true` is set, so the weekly lane fails cleanly with a report/alert instead of crashing Python on Metal OOM.
++- **MLX trainer floor** — on the 8 GB Mini, keep `mlx-lm >= 0.31.2`. That release includes the upstream LoRA trainer cache-clear fix; older stacks like `0.30.7` can survive validation and then die on the first training step with Metal `Insufficient Memory`.
+ - **Progress tracking** — every training run now archives a timestamped report under `outputs/history/<App>/` and appends a TSV metrics row so week-over-week comparisons survive report overwrites.
+ - **Interrupted run recovery** — `mini-train.sh` now evaluates the latest saved checkpoint when the hard stop interrupts a sweep, so overnight runs still produce scored signal instead of defaulting to `0%`.
+ - **Realistic sweep sizing** — `mini-train.sh` now takes its default sweep length from the config file instead of hardcoded `1000` / `2000` defaults, and rescales warmup alongside decay steps so shortened overnight sweeps do not spend most of their life in warmup.
+diff --git a/scripts/mini/deploy.sh b/scripts/mini/deploy.sh
+index de87b8f..397edfb 100755
+--- a/scripts/mini/deploy.sh
++++ b/scripts/mini/deploy.sh
+@@ -60,6 +60,7 @@ DEPLOYED=0
+ DEPLOY_FILES=(
+   "$SCRIPT_DIR"/mini-*.sh
+   "$SCRIPT_DIR"/evaluate_model.py
++  "$SCRIPT_DIR"/commentary_hybrid_probe.py
+ )
+ 
+ for script in "${DEPLOY_FILES[@]}"; do
+@@ -79,9 +80,11 @@ mini_ssh "
+ for f in $REMOTE_PRIMARY_DIR/mini-*.sh; do
+   /bin/bash -n \"\$f\" && echo \"  OK: \$(basename \$f)\" || echo \"  FAIL: \$(basename \$f)\"
+ done
+-if [ -f $REMOTE_PRIMARY_DIR/evaluate_model.py ]; then
+-  python3 -m py_compile $REMOTE_PRIMARY_DIR/evaluate_model.py && echo \"  OK: evaluate_model.py\" || echo \"  FAIL: evaluate_model.py\"
+-fi
++for py in evaluate_model.py commentary_hybrid_probe.py; do
++  if [ -f $REMOTE_PRIMARY_DIR/\$py ]; then
++    python3 -m py_compile $REMOTE_PRIMARY_DIR/\$py && echo \"  OK: \$py\" || echo \"  FAIL: \$py\"
++  fi
++done
+ "
+ 
+ # Checksum comparison
+diff --git a/scripts/mini/evaluate_model.py b/scripts/mini/evaluate_model.py
+index a4c54ba..03bbaf8 100644
+--- a/scripts/mini/evaluate_model.py
++++ b/scripts/mini/evaluate_model.py
+@@ -8,6 +8,8 @@ import gc
+ import glob
+ import json
+ import re
++import shlex
++import subprocess
+ import sys
+ from collections import defaultdict
+ from pathlib import Path
+@@ -68,6 +70,12 @@ def parse_args() -> argparse.Namespace:
+         default=0,
+         help="Optional hard ceiling applied after case-specific max_tokens overrides",
+     )
++    parser.add_argument(
++        "--external-suite",
++        action="append",
++        default=[],
++        help="External suite runner in the form suite_name=/path/to/script.py",
++    )
+     return parser.parse_args()
+ 
+ 
+@@ -121,12 +129,24 @@ def parse_suite_weights(raw_weights: list[str]) -> dict[str, int]:
+             weight = int(weight_text)
+         except ValueError as exc:
+             raise ValueError(f"Invalid suite weight {raw_weight!r}; weight must be an integer") from exc
+-        if weight <= 0:
+-            raise ValueError(f"Invalid suite weight {raw_weight!r}; weight must be > 0")
++        if weight < 0:
++            raise ValueError(f"Invalid suite weight {raw_weight!r}; weight must be >= 0")
+         suite_weights[name.strip()] = weight
+     return suite_weights
+ 
+ 
++def parse_external_suites(raw_suites: list[str]) -> dict[str, str]:
++    external_suites: dict[str, str] = {}
++    for raw_suite in raw_suites:
++        name, sep, command = raw_suite.partition("=")
++        name = name.strip()
++        command = command.strip()
++        if not sep or not name or not command:
++            raise ValueError(f"Invalid external suite {raw_suite!r}; expected suite=command")
++        external_suites[name] = command
++    return external_suites
++
++
+ def strip_code_fences(text: str) -> str:
+     stripped = text.strip()
+     if stripped.startswith("```"):
+@@ -281,6 +301,51 @@ def clear_metal_cache() -> None:
+         pass
+ 
+ 
++def build_external_command(command_text: str) -> list[str]:
++    command = shlex.split(command_text)
++    if not command:
++        raise ValueError("external suite command is empty")
++
++    command[0] = str(Path(command[0]).expanduser())
++    if command[0].endswith(".py"):
++        return [sys.executable, *command]
++    return command
++
++
++def run_external_suite(suite_name: str, command_text: str) -> tuple[list[str], int, int, int]:
++    command = build_external_command(command_text)
++    result = subprocess.run(
++        command,
++        capture_output=True,
++        text=True,
++        check=False,
++        timeout=60,
++    )
++    output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
++    lines = [line for line in output.splitlines() if line.strip()]
++
++    suite_line = None
++    for line in lines:
++        if line.startswith(f"SUITE:{suite_name}:"):
++            suite_line = line
++            break
++
++    if suite_line is None:
++        error_text = lines[-1] if lines else f"external suite exited {result.returncode}"
++        return [f"[{suite_name}] FAIL external_suite: {error_text}"], 0, 1, 0
++
++    _, _, passed_text, total_text, pct_text = suite_line.split(":", 4)
++    passed = int(passed_text)
++    total = int(total_text)
++    pct = int(pct_text)
++    visible_lines = [
++        line
++        for line in lines
++        if not line.startswith(("SUITE:", "RAW_SCORE:", "WEIGHTED_SCORE:", "SCORE:", "PRIMARY_SUITE:"))
++    ]
++    return visible_lines, passed, total, pct
++
++
+ def main() -> int:
+     args = parse_args()
+     train_file = Path(args.train_file).expanduser() if args.train_file else None
+@@ -291,6 +356,7 @@ def main() -> int:
+     eval_cases = load_eval_cases(eval_files, args.eval_glob)
+     try:
+         suite_weights = parse_suite_weights(args.suite_weight)
++        external_suites = parse_external_suites(args.external_suite)
+     except ValueError as exc:
+         print(str(exc), file=sys.stderr)
+         return 2
+@@ -298,68 +364,86 @@ def main() -> int:
+     selected_suites = set(args.suite)
+     if selected_suites:
+         eval_cases = [case for case in eval_cases if case.get("suite") in selected_suites]
++        external_suites = {
++            suite_name: command_text
++            for suite_name, command_text in external_suites.items()
++            if suite_name in selected_suites
++        }
+ 
+     if args.max_cases and args.max_cases > 0:
+         eval_cases = eval_cases[: args.max_cases]
+ 
+-    if not eval_cases:
++    if not eval_cases and not external_suites:
+         print("No eval cases matched the requested suites.", file=sys.stderr)
+         return 2
+ 
+-    clear_metal_cache()
+-
+-    if args.adapter_path:
+-        model, tokenizer = load(args.model, adapter_path=args.adapter_path)
+-    else:
+-        model, tokenizer = load(args.model)
+-
+     suite_stats = defaultdict(lambda: {"passed": 0, "total": 0})
+     passed = 0
+     total = 0
+     weighted_passed = 0
+     weighted_total = 0
+ 
+-    for case in eval_cases:
+-        suite = case.get("suite", "default")
+-        case_id = case.get("id", "case")
+-        expect_type = case.get("expect_type", "json")
+-        weight = suite_weights.get(suite, 1)
+-
+-        messages = build_messages(system_prompt, case)
+-        prompt = tokenizer.apply_chat_template(
+-            messages,
+-            tokenize=False,
+-            add_generation_prompt=True,
+-        )
+-        max_tokens = int(case.get("max_tokens", args.max_tokens))
+-        if args.max_tokens_cap > 0:
+-            max_tokens = min(max_tokens, args.max_tokens_cap)
+-        response = generate(
+-            model,
+-            tokenizer,
+-            prompt=prompt,
+-            max_tokens=max_tokens,
+-            verbose=False,
+-        )
++    if eval_cases:
+         clear_metal_cache()
+ 
+-        if expect_type == "workflow_plan":
+-            ok, reason = check_workflow_plan(response, case)
++        if args.adapter_path:
++            model, tokenizer = load(args.model, adapter_path=args.adapter_path)
+         else:
+-            ok = check_legacy_response(response, expect_type)
+-            reason = expect_type
+-
+-        suite_stats[suite]["total"] += 1
+-        total += 1
+-        weighted_total += weight
+-        if ok:
+-            suite_stats[suite]["passed"] += 1
+-            passed += 1
+-            weighted_passed += weight
+-
+-        status = "PASS" if ok else "FAIL"
+-        preview = format_preview(response)
+-        print(f"[{suite}] {status} {case_id}: {reason} -> {preview}")
++            model, tokenizer = load(args.model)
++
++        for case in eval_cases:
++            suite = case.get("suite", "default")
++            case_id = case.get("id", "case")
++            expect_type = case.get("expect_type", "json")
++            weight = suite_weights.get(suite, 1)
++
++            messages = build_messages(system_prompt, case)
++            prompt = tokenizer.apply_chat_template(
++                messages,
++                tokenize=False,
++                add_generation_prompt=True,
++            )
++            max_tokens = int(case.get("max_tokens", args.max_tokens))
++            if args.max_tokens_cap > 0:
++                max_tokens = min(max_tokens, args.max_tokens_cap)
++            response = generate(
++                model,
++                tokenizer,
++                prompt=prompt,
++                max_tokens=max_tokens,
++                verbose=False,
++            )
++            clear_metal_cache()
++
++            if expect_type == "workflow_plan":
++                ok, reason = check_workflow_plan(response, case)
++            else:
++                ok = check_legacy_response(response, expect_type)
++                reason = expect_type
++
++            suite_stats[suite]["total"] += 1
++            total += 1
++            weighted_total += weight
++            if ok:
++                suite_stats[suite]["passed"] += 1
++                passed += 1
++                weighted_passed += weight
++
++            status = "PASS" if ok else "FAIL"
++            preview = format_preview(response)
++            print(f"[{suite}] {status} {case_id}: {reason} -> {preview}")
++
++    for suite_name, command_text in external_suites.items():
++        weight = suite_weights.get(suite_name, 1)
++        visible_lines, suite_passed, suite_total, suite_pct = run_external_suite(suite_name, command_text)
++        for line in visible_lines:
++            print(line)
++        suite_stats[suite_name]["passed"] += suite_passed
++        suite_stats[suite_name]["total"] += suite_total
++        passed += suite_passed
++        total += suite_total
++        weighted_passed += suite_passed * weight
++        weighted_total += suite_total * weight
+ 
+     for suite in sorted(suite_stats):
+         suite_passed = suite_stats[suite]["passed"]
+diff --git a/scripts/mini/mini-nightly.sh b/scripts/mini/mini-nightly.sh
+index 3e434b4..a1540fb 100755
+--- a/scripts/mini/mini-nightly.sh
++++ b/scripts/mini/mini-nightly.sh
+@@ -19,8 +19,9 @@ REPORT="$OUTPUT_DIR/nightly_report.md"
+ DATE=$(date +"%Y-%m-%d %A")
+ TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
+ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+-EVAL_SUITE_WEIGHTS="${EVAL_SUITE_WEIGHTS:-commentary_workflow=4,workflow_packs=2,workflow_guardrails=2,core=1}"
+-PRIMARY_WORKFLOW_SUITE="${PRIMARY_WORKFLOW_SUITE:-commentary_workflow}"
++EXTERNAL_EVAL_SUITES="${EXTERNAL_EVAL_SUITES:-commentary_hybrid=$SCRIPT_DIR/commentary_hybrid_probe.py --suite commentary_hybrid,workflow_packs_hybrid=$SCRIPT_DIR/commentary_hybrid_probe.py --suite workflow_packs_hybrid,workflow_guardrails_hybrid=$SCRIPT_DIR/commentary_hybrid_probe.py --suite workflow_guardrails_hybrid}"
++EVAL_SUITE_WEIGHTS="${EVAL_SUITE_WEIGHTS:-commentary_hybrid=4,workflow_packs_hybrid=2,workflow_guardrails_hybrid=2,commentary_workflow=0,workflow_packs=0,workflow_guardrails=0,core=1}"
++PRIMARY_WORKFLOW_SUITE="${PRIMARY_WORKFLOW_SUITE:-commentary_hybrid}"
+ PRIMARY_WORKFLOW_MIN_PCT="${PRIMARY_WORKFLOW_MIN_PCT:-50}"
+ 
+ mkdir -p "$OUTPUT_DIR"
+@@ -277,7 +278,16 @@ SANEAI_DIR="$APPS_DIR/SaneAI"
+ SANEAI_TRAIN_DIR="$SANEAI_DIR/training_data"
+ SANEAI_ADAPTER="$SANEAI_DIR/models/production_adapter"
+ PYTHON="$HOME/mlx-env/bin/python3"
+-SANEAI_MODEL="mlx-community/Llama-3.2-3B-Instruct-4bit"
++SANEAI_MODEL="${SANEAI_MODEL:-}"
++SANEAI_METRICS_FILE="$OUTPUT_DIR/history/SaneAI/training_metrics_workflow_v1.tsv"
++
++if [ -z "$SANEAI_MODEL" ] && [ -f "$SANEAI_METRICS_FILE" ]; then
++  SANEAI_MODEL=$(awk -F '\t' '$1 == "SaneAI" && $2 == "production" { model = $3 } END { print model }' "$SANEAI_METRICS_FILE")
++fi
++
++if [ -z "$SANEAI_MODEL" ]; then
++  SANEAI_MODEL="mlx-community/Llama-3.2-3B-Instruct-4bit"
++fi
+ 
+ if [ -f "$EVAL_SCRIPT" ] && [ -d "$SANEAI_ADAPTER" ] && [ -f "$SANEAI_TRAIN_DIR/train.jsonl" ]; then
+   EVAL_CMD=(
+@@ -299,6 +309,12 @@ if [ -f "$EVAL_SCRIPT" ] && [ -d "$SANEAI_ADAPTER" ] && [ -f "$SANEAI_TRAIN_DIR/
+       EVAL_CMD=("${EVAL_CMD[@]}" --suite-weight "$suite_weight")
+     fi
+   done
++  for external_suite in $EXTERNAL_EVAL_SUITES; do
++    external_suite=$(printf '%s' "$external_suite" | sed 's/^ *//; s/ *$//')
++    if [ -n "$external_suite" ]; then
++      EVAL_CMD=("${EVAL_CMD[@]}" --external-suite "$external_suite")
++    fi
++  done
+   IFS="$old_ifs"
+ 
+   eval_output=$("${EVAL_CMD[@]}" 2>&1)
+diff --git a/scripts/mini/mini-train-all.sh b/scripts/mini/mini-train-all.sh
+index 1900c8e..97258e7 100755
+--- a/scripts/mini/mini-train-all.sh
++++ b/scripts/mini/mini-train-all.sh
+@@ -23,6 +23,8 @@ PYTHON="$HOME/mlx-env/bin/python3"
+ TRAIN_HARD_STOP_TIME="${TRAIN_HARD_STOP_TIME:-08:30}"
+ RUN_CHALLENGERS_AFTER_WEEKLY="${RUN_CHALLENGERS_AFTER_WEEKLY:-false}"
+ CHALLENGER_APP="${CHALLENGER_APP:-SaneAI}"
++SAFE_PRODUCTION_MODEL_ON_8GB="${SAFE_PRODUCTION_MODEL_ON_8GB:-mlx-community/SmolLM3-3B-4bit}"
++PRODUCTION_MODEL="${PRODUCTION_MODEL:-}"
+ mkdir -p "$LOG_DIR"
+ 
+ prepare_automation_root_if_needed() {
+@@ -94,10 +96,26 @@ if [ ! -f "$SANEAI_DIR/train.jsonl" ] || [ ! -f "$SANEAI_DIR/valid.jsonl" ]; the
+ fi
+ 
+ # Step 2: Train the production Llama model
++if [ -z "$PRODUCTION_MODEL" ]; then
++  total_ram_gb=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}')
++  if [[ "$total_ram_gb" =~ ^[0-9]+$ ]] && [ "$total_ram_gb" -le 8 ]; then
++    PRODUCTION_MODEL="$SAFE_PRODUCTION_MODEL_ON_8GB"
++  fi
++fi
++
++if [ -n "$PRODUCTION_MODEL" ]; then
++  echo "=== Weekly production model override: $PRODUCTION_MODEL ===" >> "$STDOUT_LOG"
++fi
++
+ PROD_START=$(date +%s)
++TRAIN_CMD=(bash "$SCRIPT_DIR/mini-train.sh" SaneAI)
++if [ -n "$PRODUCTION_MODEL" ]; then
++  TRAIN_CMD+=(--model "$PRODUCTION_MODEL")
++fi
++
+ SANE_ROOT="$SANE_ROOT" \
+ SANE_OUTPUT_DIR="$SANE_OUTPUT_DIR" \
+-  bash "$SCRIPT_DIR/mini-train.sh" SaneAI
++  "${TRAIN_CMD[@]}"
+ PROD_EXIT=$?
+ PROD_END=$(date +%s)
+ PROD_MINUTES=$(( (PROD_END - PROD_START) / 60 ))
+diff --git a/scripts/mini/mini-train.sh b/scripts/mini/mini-train.sh
+index ddcc173..7eae18d 100755
+--- a/scripts/mini/mini-train.sh
++++ b/scripts/mini/mini-train.sh
+@@ -120,15 +120,17 @@ TIMESTAMP_FILE=$(date +"%Y-%m-%d_%H-%M-%S")
+ START_EPOCH=$(date +%s)
+ MODE_LABEL="production"
+ READINESS_TARGET_APP="${READINESS_TARGET_APP:-}"
+-EVAL_SUITE_WEIGHTS="${EVAL_SUITE_WEIGHTS:-commentary_workflow=4,workflow_packs=2,workflow_guardrails=2,core=1}"
++EXTERNAL_EVAL_SUITES="${EXTERNAL_EVAL_SUITES:-commentary_hybrid=$SCRIPT_DIR/commentary_hybrid_probe.py --suite commentary_hybrid,workflow_packs_hybrid=$SCRIPT_DIR/commentary_hybrid_probe.py --suite workflow_packs_hybrid,workflow_guardrails_hybrid=$SCRIPT_DIR/commentary_hybrid_probe.py --suite workflow_guardrails_hybrid}"
++EVAL_SUITE_WEIGHTS="${EVAL_SUITE_WEIGHTS:-commentary_hybrid=4,workflow_packs_hybrid=2,workflow_guardrails_hybrid=2,commentary_workflow=0,workflow_packs=0,workflow_guardrails=0,core=1}"
+ EVAL_MAX_CASES="${EVAL_MAX_CASES:-0}"
+ EVAL_MAX_TOKENS="${EVAL_MAX_TOKENS:-128}"
+ EVAL_MAX_TOKENS_CAP="${EVAL_MAX_TOKENS_CAP:-0}"
+ EVAL_SUITES="${EVAL_SUITES:-}"
+-PRIMARY_WORKFLOW_SUITE="${PRIMARY_WORKFLOW_SUITE:-commentary_workflow}"
++PRIMARY_WORKFLOW_SUITE="${PRIMARY_WORKFLOW_SUITE:-commentary_hybrid}"
+ PRIMARY_WORKFLOW_MIN_PCT="${PRIMARY_WORKFLOW_MIN_PCT:-50}"
+ WORKFLOW_PASS_SCORE="${WORKFLOW_PASS_SCORE:-75}"
+ PRODUCTION_PROMOTE_SCORE="${PRODUCTION_PROMOTE_SCORE:-90}"
++MIN_MLX_LM_VERSION_FOR_8GB="${MIN_MLX_LM_VERSION_FOR_8GB:-0.31.2}"
+ if [ "$CHALLENGER_MODE" = true ]; then
+   MODE_LABEL="challenger"
+ fi
+@@ -160,6 +162,43 @@ if [ "$EVAL_MAX_TOKENS" -gt "$EVAL_MAX_TOKENS_CAP" ]; then
+   EVAL_MAX_TOKENS="$EVAL_MAX_TOKENS_CAP"
+ fi
+ 
++python_package_version() {
++  local package_name="$1"
++
++  "$PYTHON" - "$package_name" <<'PY' 2>/dev/null
++import importlib.metadata
++import sys
++
++package_name = sys.argv[1]
++try:
++    print(importlib.metadata.version(package_name))
++except importlib.metadata.PackageNotFoundError:
++    print("")
++PY
++}
++
++version_lt() {
++  local left="$1"
++  local right="$2"
++
++  "$PYTHON" - "$left" "$right" <<'PY'
++import re
++import sys
++
++left = sys.argv[1]
++right = sys.argv[2]
++
++def normalize(value: str):
++    parts = []
++    for token in value.split("."):
++        match = re.match(r"(\d+)", token)
++        parts.append(int(match.group(1)) if match else 0)
++    return tuple(parts)
++
++sys.exit(0 if normalize(left) < normalize(right) else 1)
++PY
++}
++
+ # Runtime safety guards for 8GB Mac mini
+ # Default challenger behavior is "run until hard stop time unless the process stalls."
+ MAX_TRAIN_RUNTIME_MIN="${MAX_TRAIN_RUNTIME_MIN:-0}"
+@@ -175,6 +214,7 @@ VALID_EXAMPLE_DROP_MAX_PCT="${VALID_EXAMPLE_DROP_MAX_PCT:-20}"
+ PARTIAL_CHECKPOINT_EVAL="${PARTIAL_CHECKPOINT_EVAL:-true}"
+ CHECKPOINT_FILES_TO_KEEP="${CHECKPOINT_FILES_TO_KEEP:-1}"
+ ALLOW_UNSAFE_TRAINING="${ALLOW_UNSAFE_TRAINING:-false}"
++ALLOW_OLD_MLX_LM_STACK="${ALLOW_OLD_MLX_LM_STACK:-false}"
+ 
+ resolve_base_config() {
+   local candidate=""
+@@ -727,7 +767,7 @@ find_previous_successful_metric() {
+ 
+   awk -F '\t' -v app="$APP_NAME" -v mode="$MODE_LABEL" -v model="$BASE_MODEL" '
+     NR == 1 { next }
+-    $1 == app && $2 == mode && $3 == model && $12 == "success" { line = $0 }
++    $1 == app && $2 == mode && $3 == model && $7 != "" && $12 == "success" { line = $0 }
+     END {
+       if (line != "") {
+         print line
+@@ -745,7 +785,7 @@ find_latest_successful_metric_for_mode() {
+ 
+   awk -F '\t' -v app="$APP_NAME" -v mode="$MODE_LABEL" '
+     NR == 1 { next }
+-    $1 == app && $2 == mode && $12 == "success" { line = $0 }
++    $1 == app && $2 == mode && $7 != "" && $12 == "success" { line = $0 }
+     END {
+       if (line != "") {
+         print line
+@@ -757,59 +797,65 @@ find_latest_successful_metric_for_mode() {
+ }
+ 
+ TARGET_BASELINE_MODE=""
++TARGET_BASELINE_LINE=""
+ 
+ find_latest_target_baseline_metric() {
+   local target_app="$1"
+-  local target_metrics_file="$SANE_OUTPUT_DIR/history/$target_app/training_metrics_workflow_v1.tsv"
++  local candidate_files=(
++    "$SANE_OUTPUT_DIR/history/$target_app/training_metrics_workflow_v1.tsv"
++    "$SANE_OUTPUT_DIR/history/$target_app/training_metrics.tsv"
++  )
++  local target_metrics_file=""
+   local baseline_line=""
+-
+-  if [ ! -f "$target_metrics_file" ]; then
+-    target_metrics_file="$SANE_OUTPUT_DIR/history/$target_app/training_metrics.tsv"
+-  fi
+-
+-  if [ ! -f "$target_metrics_file" ]; then
+-    return 1
+-  fi
+-
+-  baseline_line=$(
+-    awk -F '\t' -v app="$target_app" '
+-      NR == 1 { next }
+-      $1 == app && $2 == "production" && $12 == "success" { line = $0 }
+-      END {
+-        if (line != "") {
+-          print line
+-        } else {
+-          exit 1
++  local candidate
++
++  TARGET_BASELINE_MODE=""
++  TARGET_BASELINE_LINE=""
++
++  for candidate in "${candidate_files[@]}"; do
++    [ -f "$candidate" ] || continue
++    target_metrics_file="$candidate"
++
++    baseline_line=$(
++      awk -F '\t' -v app="$target_app" '
++        NR == 1 { next }
++        $1 == app && $2 == "production" && $7 != "" && $12 == "success" { line = $0 }
++        END {
++          if (line != "") {
++            print line
++          } else {
++            exit 1
++          }
+         }
+-      }
+-    ' "$target_metrics_file" 2>/dev/null || true
+-  )
++      ' "$target_metrics_file" 2>/dev/null || true
++    )
+ 
+-  if [ -n "$baseline_line" ]; then
+-    TARGET_BASELINE_MODE="production"
+-    printf '%s\n' "$baseline_line"
+-    return 0
+-  fi
++    if [ -n "$baseline_line" ]; then
++      TARGET_BASELINE_MODE="production"
++      TARGET_BASELINE_LINE="$baseline_line"
++      return 0
++    fi
+ 
+-  baseline_line=$(
+-    awk -F '\t' -v app="$target_app" '
+-      NR == 1 { next }
+-      $1 == app && $12 == "success" { line = $0 }
+-      END {
+-        if (line != "") {
+-          print line
+-        } else {
+-          exit 1
++    baseline_line=$(
++      awk -F '\t' -v app="$target_app" '
++        NR == 1 { next }
++        $1 == app && $7 != "" && $12 == "success" { line = $0 }
++        END {
++          if (line != "") {
++            print line
++          } else {
++            exit 1
++          }
+         }
+-      }
+-    ' "$target_metrics_file" 2>/dev/null || true
+-  )
++      ' "$target_metrics_file" 2>/dev/null || true
++    )
+ 
+-  if [ -n "$baseline_line" ]; then
+-    TARGET_BASELINE_MODE=$(printf '%s\n' "$baseline_line" | awk -F '\t' '{print $2}')
+-    printf '%s\n' "$baseline_line"
+-    return 0
+-  fi
++    if [ -n "$baseline_line" ]; then
++      TARGET_BASELINE_MODE=$(printf '%s\n' "$baseline_line" | awk -F '\t' '{print $2}')
++      TARGET_BASELINE_LINE="$baseline_line"
++      return 0
++    fi
++  done
+ 
+   return 1
+ }
+@@ -817,7 +863,7 @@ find_latest_target_baseline_metric() {
+ find_latest_target_production_metric() {
+   awk -F '\t' -v app="$1" '
+     NR == 1 { next }
+-    $1 == app && $2 == "production" && $12 == "success" { line = $0 }
++    $1 == app && $2 == "production" && $7 != "" && $12 == "success" { line = $0 }
+     END {
+       if (line != "") {
+         print line
+@@ -878,6 +924,16 @@ build_eval_command() {
+   done
+   IFS="$old_ifs"
+ 
++  old_ifs="$IFS"
++  IFS=','
++  for external_suite in $EXTERNAL_EVAL_SUITES; do
++    external_suite=$(printf '%s' "$external_suite" | sed 's/^ *//; s/ *$//')
++    if [ -n "$external_suite" ]; then
++      EVAL_CMD=("${EVAL_CMD[@]}" --external-suite "$external_suite")
++    fi
++  done
++  IFS="$old_ifs"
++
+   if [ "$EVAL_MAX_CASES" -gt 0 ]; then
+     EVAL_CMD=("${EVAL_CMD[@]}" --max-cases "$EVAL_MAX_CASES")
+   fi
+@@ -1106,6 +1162,14 @@ else
+   echo "Base model: $BASE_MODEL" >> "$REPORT"
+ fi
+ 
++MLX_LM_VERSION=$(python_package_version "mlx-lm")
++MLX_VERSION=$(python_package_version "mlx")
++MLX_METAL_VERSION=$(python_package_version "mlx-metal")
++echo "- mlx-lm: ${MLX_LM_VERSION:-unknown}" >> "$REPORT"
++echo "- mlx: ${MLX_VERSION:-unknown}" >> "$REPORT"
++echo "- mlx-metal: ${MLX_METAL_VERSION:-unknown}" >> "$REPORT"
++echo "" >> "$REPORT"
++
+ if [ -z "${MODEL_SHORT:-}" ]; then
+   MODEL_SHORT=$(echo "$BASE_MODEL" | sed 's|.*/||' | sed 's/-MLX-4bit//' | sed 's/-4bit//' | tr '[:upper:]' '[:lower:]')
+ fi
+@@ -1122,6 +1186,13 @@ append_metrics_header_if_needed
+ 
+ TOTAL_RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}')
+ UNSAFE_TRAINING_REASON=""
++if [ "$ALLOW_OLD_MLX_LM_STACK" != "true" ] && \
++   [ "${TOTAL_RAM_GB:-0}" -le 8 ] && \
++   [ -n "$MLX_LM_VERSION" ] && \
++   version_lt "$MLX_LM_VERSION" "$MIN_MLX_LM_VERSION_FOR_8GB"; then
++  UNSAFE_TRAINING_REASON="Blocked before launch: mlx-lm ${MLX_LM_VERSION} is below ${MIN_MLX_LM_VERSION_FOR_8GB}. On the 8 GB Mini, older mlx-lm stacks miss the upstream trainer cache-clear fix added in v0.31.2 and crash with Metal OOM during LoRA training. Upgrade ~/mlx-env (mlx-lm/mlx/mlx-metal) or override with ALLOW_OLD_MLX_LM_STACK=true for manual experiments."
++fi
++
+ if [ "$ALLOW_UNSAFE_TRAINING" != "true" ] && \
+    [ "${TOTAL_RAM_GB:-0}" -le 8 ] && \
+    [ "$BASE_MODEL" = "mlx-community/Llama-3.2-3B-Instruct-4bit" ]; then
+@@ -1220,6 +1291,7 @@ SUCCESSFUL_SWEEPS=0
+ LAST_SWEEP_LOG=""
+ LAST_FAILURE_SUMMARY=""
+ SKIPPED_EXISTING_SWEEPS=0
++SKIPPED_CACHED_RUN=false
+ REQUESTED_SWEEPS=0
+ 
+ if [ ! -f "$BASE_CONFIG" ]; then
+@@ -1257,12 +1329,19 @@ for ITERS in "${SWEEP_ITERS[@]}"; do
+   echo "### ${ITERS} iterations" >> "$REPORT"
+   echo "" >> "$REPORT"
+ 
+-  # Skip if already trained today
++  # Skip only if a completed validation already exists for this sweep today.
++  # Failed/interrupted sweeps leave adapter_config.json behind before eval.log,
++  # and those stale directories must be retried instead of blocking the rerun.
+   if [ -f "$ADAPTER_DIR/adapter_config.json" ]; then
+-    echo "Already trained today. Skipping." >> "$REPORT"
+-    echo "" >> "$REPORT"
+-    SKIPPED_EXISTING_SWEEPS=$((SKIPPED_EXISTING_SWEEPS + 1))
+-    continue
++    if [ -f "$ADAPTER_DIR/eval.log" ]; then
++      echo "Already trained today. Skipping." >> "$REPORT"
++      echo "" >> "$REPORT"
++      SKIPPED_EXISTING_SWEEPS=$((SKIPPED_EXISTING_SWEEPS + 1))
++      continue
++    fi
++
++    echo "Found incomplete prior sweep from today. Removing stale artifacts and retrying." >> "$REPORT"
++    rm -rf "$ADAPTER_DIR"
+   fi
+ 
+   mkdir -p "$ADAPTER_DIR"
+@@ -1671,6 +1750,8 @@ if [ -n "$BEST_ITERS" ]; then
+ else
+   if [ "$REQUESTED_SWEEPS" -gt 0 ] && [ "$SKIPPED_EXISTING_SWEEPS" -eq "$REQUESTED_SWEEPS" ]; then
+     echo "**No new sweeps ran.** All requested adapters already existed for today." >> "$REPORT"
++    echo "Metrics unchanged; reusing the latest completed sweep for this day." >> "$REPORT"
++    SKIPPED_CACHED_RUN=true
+     SCRIPT_EXIT=0
+   else
+     echo "**No successful training runs.**" >> "$REPORT"
+@@ -1731,7 +1812,12 @@ if [ -n "$READINESS_TARGET_APP" ]; then
+     echo "- No readiness assessment because the best evaluated result came from an interrupted run." >> "$REPORT"
+   else
+     TARGET_BASELINE_MODE=""
+-    TARGET_PRODUCTION_LINE=$(find_latest_target_baseline_metric "$READINESS_TARGET_APP" 2>/dev/null || true)
++    TARGET_BASELINE_LINE=""
++    if find_latest_target_baseline_metric "$READINESS_TARGET_APP" 2>/dev/null; then
++      TARGET_PRODUCTION_LINE="$TARGET_BASELINE_LINE"
++    else
++      TARGET_PRODUCTION_LINE=""
++    fi
+     if [ -z "$TARGET_PRODUCTION_LINE" ]; then
+       READINESS_STATUS="missing_target_baseline"
+       echo "- No production baseline found for $READINESS_TARGET_APP in $OUTPUT_DIR/history/$READINESS_TARGET_APP/training_metrics.tsv." >> "$REPORT"
+@@ -1798,37 +1884,41 @@ if [ "$SCRIPT_EXIT" -eq 0 ]; then
+   RUN_STATUS="success"
+ fi
+ 
+-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+-  "$APP_NAME" \
+-  "$MODE_LABEL" \
+-  "$BASE_MODEL" \
+-  "$TIMESTAMP" \
+-  "$TRAIN_EXAMPLES" \
+-  "$VALID_EXAMPLES" \
+-  "${BEST_ITERS:-}" \
+-  "${BEST_ACCURACY:-0}" \
+-  "${BEST_TIME_MIN:-}" \
+-  "$SUCCESSFUL_SWEEPS" \
+-  "$SCRIPT_EXIT" \
+-  "$RUN_STATUS" \
+-  "$REPORT_ARCHIVE" >> "$METRICS_FILE"
+-
+-if [ -n "$READINESS_TARGET_APP" ]; then
+-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
++if [ "$SKIPPED_CACHED_RUN" != "true" ]; then
++  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+     "$APP_NAME" \
+-    "$READINESS_TARGET_APP" \
+-    "$TIMESTAMP" \
++    "$MODE_LABEL" \
+     "$BASE_MODEL" \
++    "$TIMESTAMP" \
++    "$TRAIN_EXAMPLES" \
++    "$VALID_EXAMPLES" \
++    "${BEST_ITERS:-}" \
+     "${BEST_ACCURACY:-0}" \
+-    "$READINESS_TARGET_MODEL" \
+-    "$READINESS_TARGET_ACCURACY" \
+-    "$READINESS_DELTA" \
+-    "$READINESS_STATUS" \
+-    "$REPORT_ARCHIVE" \
+-    "$READINESS_TARGET_REPORT" >> "$READINESS_FILE"
++    "${BEST_TIME_MIN:-}" \
++    "$SUCCESSFUL_SWEEPS" \
++    "$SCRIPT_EXIT" \
++    "$RUN_STATUS" \
++    "$REPORT_ARCHIVE" >> "$METRICS_FILE"
++
++  if [ -n "$READINESS_TARGET_APP" ]; then
++    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
++      "$APP_NAME" \
++      "$READINESS_TARGET_APP" \
++      "$TIMESTAMP" \
++      "$BASE_MODEL" \
++      "${BEST_ACCURACY:-0}" \
++      "$READINESS_TARGET_MODEL" \
++      "$READINESS_TARGET_ACCURACY" \
++      "$READINESS_DELTA" \
++      "$READINESS_STATUS" \
++      "$REPORT_ARCHIVE" \
++      "$READINESS_TARGET_REPORT" >> "$READINESS_FILE"
++  fi
+ fi
+ 
+-if [ "$SCRIPT_EXIT" -eq 0 ]; then
++if [ "$SKIPPED_CACHED_RUN" = "true" ] && [ -z "$BEST_ITERS" ]; then
++  :
++elif [ "$SCRIPT_EXIT" -eq 0 ]; then
+   if [ -n "$BEST_ITERS" ]; then
+     emit_training_recovery_alert "best adapter sweep_${BEST_ITERS}_${DATE} reached ${BEST_ACCURACY}% workflow-first"
+   else
+diff --git a/scripts/mini/mini_train_process_test.rb b/scripts/mini/mini_train_process_test.rb
+index 36129c7..ab83751 100644
+--- a/scripts/mini/mini_train_process_test.rb
++++ b/scripts/mini/mini_train_process_test.rb
+@@ -9,11 +9,13 @@ TRAIN_PATH = File.expand_path('mini-train.sh', __dir__)
+ TRAIN_ALL_PATH = File.expand_path('mini-train-all.sh', __dir__)
+ TRAIN_CHALLENGERS_PATH = File.expand_path('mini-train-challengers.sh', __dir__)
+ EVAL_PATH = File.expand_path('evaluate_model.py', __dir__)
++DEPLOY_PATH = File.expand_path('deploy.sh', __dir__)
+ 
+ train_source = File.read(TRAIN_PATH)
+ train_all_source = File.read(TRAIN_ALL_PATH)
+ train_challengers_source = File.read(TRAIN_CHALLENGERS_PATH)
+ eval_source = File.read(EVAL_PATH)
++deploy_source = File.read(DEPLOY_PATH)
+ 
+ exit(run_tests('Mini Train Process Tests') do
+   test_category('Sweep scheduling') do
+@@ -51,6 +53,57 @@ exit(run_tests('Mini Train Process Tests') do
+       assert_includes(train_source, 'ALLOW_UNSAFE_TRAINING=true')
+       true
+     end
++
++    test('blocks stale mlx-lm stacks on the 8 GB Mini before Metal OOM') do
++      assert_includes(train_source, 'MIN_MLX_LM_VERSION_FOR_8GB')
++      assert_includes(train_source, 'ALLOW_OLD_MLX_LM_STACK')
++      assert_includes(train_source, 'trainer cache-clear fix added in v0.31.2')
++      true
++    end
++
++    test('weekly production lane falls back to SmolLM3 on the 8 GB Mini') do
++      assert_includes(train_all_source, 'SAFE_PRODUCTION_MODEL_ON_8GB')
++      assert_includes(train_all_source, 'mlx-community/SmolLM3-3B-4bit')
++      assert_includes(train_all_source, 'TRAIN_CMD+=(--model "$PRODUCTION_MODEL")')
++      true
++    end
++  end
++
++  test_category('Readiness fallback') do
++    test('readiness lookup falls back to legacy metrics when workflow metrics are empty') do
++      assert_includes(train_source, 'candidate_files=(')
++      assert_includes(train_source, 'training_metrics_workflow_v1.tsv')
++      assert_includes(train_source, 'training_metrics.tsv')
++      true
++    end
++
++    test('readiness mode survives baseline lookup without command-substitution loss') do
++      assert_includes(train_source, 'TARGET_BASELINE_LINE=""')
++      assert_includes(train_source, 'if find_latest_target_baseline_metric "$READINESS_TARGET_APP" 2>/dev/null; then')
++      assert_includes(train_source, 'TARGET_PRODUCTION_LINE="$TARGET_BASELINE_LINE"')
++      true
++    end
++
++    test('baseline lookup ignores fake success rows that never produced a best adapter') do
++      assert_includes(train_source, '$7 != "" && $12 == "success"')
++      true
++    end
++  end
++
++  test_category('Rerun safety') do
++    test('same-day reruns retry incomplete sweeps instead of skipping on stale adapter metadata') do
++      assert_includes(train_source, 'Found incomplete prior sweep from today. Removing stale artifacts and retrying.')
++      assert_includes(train_source, 'if [ -f "$ADAPTER_DIR/eval.log" ]; then')
++      assert_includes(train_source, 'rm -rf "$ADAPTER_DIR"')
++      true
++    end
++
++    test('all-skipped cache hits do not append fake zero-score success metrics') do
++      assert_includes(train_source, 'SKIPPED_CACHED_RUN=true')
++      assert_includes(train_source, 'Metrics unchanged; reusing the latest completed sweep for this day.')
++      assert_includes(train_source, 'if [ "$SKIPPED_CACHED_RUN" != "true" ]; then')
++      true
++    end
+   end
+ 
+   test_category('Eval contract') do
+@@ -59,5 +112,27 @@ exit(run_tests('Mini Train Process Tests') do
+       assert_includes(eval_source, 'args.max_tokens_cap')
+       true
+     end
++
++    test('mini-train.sh adds the hybrid commentary probe as an external eval suite') do
++      assert_includes(train_source, 'EXTERNAL_EVAL_SUITES')
++      assert_includes(train_source, 'commentary_hybrid=')
++      assert_includes(train_source, 'workflow_packs_hybrid=')
++      assert_includes(train_source, 'workflow_guardrails_hybrid=')
++      assert_includes(train_source, '--external-suite')
++      true
++    end
++
++    test('evaluate_model.py supports external suites and zero-weight legacy suites') do
++      assert_includes(eval_source, '--external-suite')
++      assert_includes(eval_source, 'weight must be >= 0')
++      assert_includes(eval_source, 'run_external_suite')
++      true
++    end
++
++    test('deploy.sh ships the hybrid commentary probe to the Mini') do
++      assert_includes(deploy_source, 'commentary_hybrid_probe.py')
++      assert_includes(deploy_source, 'for py in evaluate_model.py commentary_hybrid_probe.py')
++      true
++    end
+   end
+ end)
+diff --git a/scripts/mini/training-daily-check.py b/scripts/mini/training-daily-check.py
+index 831d370..b79b3e9 100644
+--- a/scripts/mini/training-daily-check.py
++++ b/scripts/mini/training-daily-check.py
+@@ -43,6 +43,46 @@ def read_last_metrics(app_name):
+     return None
+ 
+ 
++def read_last_metrics_for_mode(app_name, mode):
++    history_dir = BASE / "history" / app_name
++    for filename in ("training_metrics_workflow_v1.tsv", "training_metrics.tsv"):
++        path = history_dir / filename
++        if not path.exists():
++            continue
++        with path.open("r", encoding="utf-8") as handle:
++            rows = list(csv.DictReader(handle, delimiter="\t"))
++        line = None
++        for row in rows:
++            if row.get("app") == app_name and row.get("mode") == mode:
++                line = row
++        if line:
++            return line
++    return None
++
++
++def read_last_successful_metrics(app_name):
++    history_dir = BASE / "history" / app_name
++    for filename in ("training_metrics_workflow_v1.tsv", "training_metrics.tsv"):
++        path = history_dir / filename
++        if not path.exists():
++            continue
++        with path.open("r", encoding="utf-8") as handle:
++            rows = list(csv.DictReader(handle, delimiter="\t"))
++        production = None
++        any_success = None
++        for row in rows:
++            if row.get("app") != app_name or row.get("status") != "success" or not row.get("best_iters"):
++                continue
++            any_success = row
++            if row.get("mode") == "production":
++                production = row
++        if production:
++            return production
++        if any_success:
++            return any_success
++    return None
++
++
+ def parse_report(path_str):
+     if not path_str:
+         return {}
+@@ -80,6 +120,8 @@ def read_current_alerts():
+         alerts.append(
+             {
+                 "path": str(path),
++                "app": path.stem.split("_")[0] if "_" in path.stem else path.stem,
++                "mode": path.stem.split("_")[-1] if "_" in path.stem else "",
+                 "preview": " | ".join(lines[1:5]),
+             }
+         )
+@@ -87,16 +129,25 @@ def read_current_alerts():
+ 
+ 
+ latest_ai = read_last_metrics("SaneAI")
++latest_ai_production = read_last_metrics_for_mode("SaneAI", "production")
++latest_ai_challenger = read_last_metrics_for_mode("SaneAI", "challenger")
+ latest_sync = read_last_metrics("SaneSync")
++baseline_sync = read_last_successful_metrics("SaneSync")
+ latest_readiness = read_last_tsv(BASE / "history" / "SaneAI" / "readiness_vs_SaneSync_workflow_v1.tsv")
+ 
+ payload = {
+     "generated_at": datetime.now().isoformat(timespec="seconds"),
+     "latest_saneai": latest_ai,
++    "latest_saneai_production": latest_ai_production,
++    "latest_saneai_challenger": latest_ai_challenger,
+     "latest_sanesync": latest_sync,
++    "baseline_sanesync": baseline_sync,
+     "latest_readiness": latest_readiness,
+     "latest_saneai_report": parse_report(latest_ai.get("report_archive") if latest_ai else ""),
++    "latest_saneai_production_report": parse_report(latest_ai_production.get("report_archive") if latest_ai_production else ""),
++    "latest_saneai_challenger_report": parse_report(latest_ai_challenger.get("report_archive") if latest_ai_challenger else ""),
+     "latest_sanesync_report": parse_report(latest_sync.get("report_archive") if latest_sync else ""),
++    "baseline_sanesync_report": parse_report(baseline_sync.get("report_archive") if baseline_sync else ""),
+     "current_alerts": read_current_alerts(),
+ }
+ 
+@@ -136,12 +187,78 @@ def age_hours(timestamp: str | None) -> int | None:
+     return int((datetime.now() - dt).total_seconds() // 3600)
+ 
+ 
++def parse_int(value: str | None) -> int | None:
++    if value in (None, ""):
++        return None
++    try:
++        return int(str(value))
++    except ValueError:
++        return None
++
++
++def current_readiness(snapshot: dict) -> dict:
++    stored = dict(snapshot.get("latest_readiness") or {})
++    latest_ai = snapshot.get("latest_saneai_production") or snapshot.get("latest_saneai") or {}
++    baseline_sync = snapshot.get("baseline_sanesync") or snapshot.get("latest_sanesync") or {}
++    ai_report = snapshot.get("latest_saneai_production_report") or snapshot.get("latest_saneai_report") or {}
++
++    ai_score = parse_int(latest_ai.get("best_accuracy"))
++    sync_score = parse_int(baseline_sync.get("best_accuracy"))
++    if ai_score is None or sync_score is None or latest_ai.get("mode") != "production":
++        return stored
++
++    ai_ts = parse_timestamp(latest_ai.get("timestamp"))
++    readiness_ts = parse_timestamp(stored.get("timestamp"))
++    sync_ts = parse_timestamp(baseline_sync.get("timestamp"))
++
++    should_refresh = False
++    if not stored:
++        should_refresh = True
++    elif ai_ts and (readiness_ts is None or ai_ts > readiness_ts):
++        should_refresh = True
++    elif stored.get("status") == "missing_target_production_baseline" and baseline_sync.get("mode") == "production":
++        should_refresh = True
++    elif sync_ts and (readiness_ts is None or sync_ts > readiness_ts):
++        should_refresh = True
++
++    if not should_refresh:
++        return stored
++
++    readiness = {
++        "timestamp": latest_ai.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
++        "status": "missing_target_production_baseline",
++        "delta": str(ai_score - sync_score),
++        "source_report": latest_ai.get("report_archive", ""),
++        "target_report": baseline_sync.get("report_archive", ""),
++        "target_mode": baseline_sync.get("mode", "missing"),
++        "target_best_accuracy": str(sync_score),
++    }
++
++    if "FAIL" in ai_report.get("workflow_gate", ""):
++        readiness["status"] = "workflow_gate_failed"
++    elif baseline_sync.get("mode") != "production":
++        readiness["status"] = "missing_target_production_baseline"
++    elif ai_score >= sync_score:
++        readiness["status"] = "ready"
++    elif ai_score >= sync_score - 3:
++        readiness["status"] = "shadow_eval"
++    else:
++        readiness["status"] = "not_ready"
++
++    return readiness
++
++
+ def write_report(report_path: Path, snapshot: dict, summary: str) -> None:
+-    latest_ai = snapshot.get("latest_saneai") or {}
++    latest_ai = snapshot.get("latest_saneai_production") or snapshot.get("latest_saneai") or {}
++    latest_ai_overall = snapshot.get("latest_saneai") or {}
++    latest_ai_challenger = snapshot.get("latest_saneai_challenger") or {}
+     latest_sync = snapshot.get("latest_sanesync") or {}
+-    latest_readiness = snapshot.get("latest_readiness") or {}
+-    ai_report = snapshot.get("latest_saneai_report") or {}
++    baseline_sync = snapshot.get("baseline_sanesync") or {}
++    latest_readiness = current_readiness(snapshot)
++    ai_report = snapshot.get("latest_saneai_production_report") or snapshot.get("latest_saneai_report") or {}
++    challenger_report = snapshot.get("latest_saneai_challenger_report") or {}
+     sync_report = snapshot.get("latest_sanesync_report") or {}
++    baseline_sync_report = snapshot.get("baseline_sanesync_report") or {}
+     alerts = snapshot.get("current_alerts") or []
+ 
+     lines = [
+@@ -153,9 +270,10 @@ def write_report(report_path: Path, snapshot: dict, summary: str) -> None:
+         "",
+         summary,
+         "",
+-        "## SaneAI",
++        "## SaneAI Production",
+         "",
+         f"- Timestamp: {latest_ai.get('timestamp', 'missing')}",
++        f"- Latest overall row: {latest_ai_overall.get('mode', 'missing')} @ {latest_ai_overall.get('timestamp', 'missing')}",
+         f"- Model: {latest_ai.get('model', 'missing')}",
+         f"- Train/valid: {latest_ai.get('train_examples', 'missing')} / {latest_ai.get('valid_examples', 'missing')}",
+         f"- Best workflow-first score: {latest_ai.get('best_accuracy', 'missing')}%",
+@@ -163,6 +281,15 @@ def write_report(report_path: Path, snapshot: dict, summary: str) -> None:
+         f"- Result: {ai_report.get('result', 'missing')}",
+         f"- Report: {ai_report.get('report_path', latest_ai.get('report_archive', 'missing'))}",
+         "",
++        "## SaneAI Challenger",
++        "",
++        f"- Timestamp: {latest_ai_challenger.get('timestamp', 'missing')}",
++        f"- Model: {latest_ai_challenger.get('model', 'missing')}",
++        f"- Best workflow-first score: {latest_ai_challenger.get('best_accuracy', 'missing')}%",
++        f"- Workflow gate: {challenger_report.get('workflow_gate', 'missing')}",
++        f"- Result: {challenger_report.get('result', 'missing')}",
++        f"- Report: {challenger_report.get('report_path', latest_ai_challenger.get('report_archive', 'missing'))}",
++        "",
+         "## SaneSync",
+         "",
+         f"- Timestamp: {latest_sync.get('timestamp', 'missing')}",
+@@ -171,6 +298,14 @@ def write_report(report_path: Path, snapshot: dict, summary: str) -> None:
+         f"- Best score: {latest_sync.get('best_accuracy', 'missing')}%",
+         f"- Report: {sync_report.get('report_path', latest_sync.get('report_archive', 'missing'))}",
+         "",
++        "## SaneSync Baseline",
++        "",
++        f"- Timestamp: {baseline_sync.get('timestamp', 'missing')}",
++        f"- Mode: {baseline_sync.get('mode', 'missing')}",
++        f"- Model: {baseline_sync.get('model', 'missing')}",
++        f"- Best score: {baseline_sync.get('best_accuracy', 'missing')}%",
++        f"- Report: {baseline_sync_report.get('report_path', baseline_sync.get('report_archive', 'missing'))}",
++        "",
+         "## Readiness",
+         "",
+         f"- Timestamp: {latest_readiness.get('timestamp', 'missing')}",
+@@ -193,35 +328,51 @@ def write_report(report_path: Path, snapshot: dict, summary: str) -> None:
+ 
+ 
+ def build_summary(snapshot: dict) -> tuple[str, str]:
+-    latest_ai = snapshot.get("latest_saneai") or {}
+-    latest_readiness = snapshot.get("latest_readiness") or {}
+-    ai_report = snapshot.get("latest_saneai_report") or {}
++    latest_ai = snapshot.get("latest_saneai_production") or snapshot.get("latest_saneai") or {}
++    latest_ai_challenger = snapshot.get("latest_saneai_challenger") or {}
++    latest_readiness = current_readiness(snapshot)
++    ai_report = snapshot.get("latest_saneai_production_report") or snapshot.get("latest_saneai_report") or {}
+     alerts = snapshot.get("current_alerts") or []
++    production_alerts = [alert for alert in alerts if alert.get("mode") == "production"]
++    challenger_alerts = [alert for alert in alerts if alert.get("mode") == "challenger"]
+ 
+     ai_score = latest_ai.get("best_accuracy", "?")
+     ai_timestamp = latest_ai.get("timestamp")
+     ai_age = age_hours(ai_timestamp)
+     readiness_status = latest_readiness.get("status", "missing")
+     workflow_gate = ai_report.get("workflow_gate", "missing")
++    challenger_score = latest_ai_challenger.get("best_accuracy", "?")
+ 
+-    if alerts:
++    if production_alerts:
+         title = "SaneAI training alert"
+-        message = f"{len(alerts)} active alert(s). Latest SaneAI score {ai_score}%."
++        message = f"{len(production_alerts)} active production alert(s). Latest SaneAI production score {ai_score}%."
+     elif not latest_ai:
+         title = "SaneAI training missing"
+-        message = "No SaneAI training metrics found on the Mini."
++        message = "No SaneAI production metrics found on the Mini."
+     elif ai_age is not None and ai_age > 36:
+         title = "SaneAI training stale"
+-        message = f"Latest SaneAI metric is {ai_age}h old. Check the Mini run."
++        message = f"Latest SaneAI production metric is {ai_age}h old. Check the Mini run."
+     elif readiness_status in {"missing_target_baseline", "missing_target_production_baseline"}:
+         title = "SaneAI needs baseline"
+-        message = f"SaneAI {ai_score}% and readiness is blocked: {readiness_status}."
+-    elif "FAIL" in workflow_gate or ai_report.get("result") == "NEEDS WORK":
++        message = f"SaneAI production is {ai_score}% and readiness is blocked: {readiness_status}."
++    elif "FAIL" in workflow_gate:
++        title = "SaneAI needs work"
++        message = f"SaneAI production is still at {ai_score}% with workflow gate failing."
++    elif ai_report.get("result") == "NEEDS WORK":
+         title = "SaneAI needs work"
+-        message = f"SaneAI is still at {ai_score}% with workflow gate failing."
++        message = f"SaneAI production is still at {ai_score}%; workflow gate passed but the overall score is still below target."
++    elif readiness_status == "ready":
++        title = "SaneAI production ready"
++        if challenger_alerts:
++            message = f"SaneAI production is ready at {ai_score}%. Challenger lane still has {len(challenger_alerts)} active alert(s) with latest challenger at {challenger_score}%."
++        else:
++            message = f"SaneAI production is ready at {ai_score}%."
+     else:
+         title = "SaneAI daily check"
+-        message = f"SaneAI latest score {ai_score}%. Readiness: {readiness_status}."
++        if challenger_alerts:
++            message = f"SaneAI production is {ai_score}% ({readiness_status}). Challenger lane has {len(challenger_alerts)} active alert(s)."
++        else:
++            message = f"SaneAI production is {ai_score}%. Readiness: {readiness_status}."
+ 
+     return title, message
+ 

@@ -1,0 +1,18 @@
+ AGENTS.md                                      |   4 +
+ ARCHITECTURE.md                                |  23 +++
+ DEVELOPMENT.md                                 |  32 +++-
+ SESSION_HANDOFF.md                             | 203 +++++++++++++++++++++++++
+ scripts/SaneMaster.rb                          |  41 ++++-
+ scripts/automation/dl-report.py                |  33 +++-
+ scripts/automation/hosted-file-actions.py      |  23 ++-
+ scripts/automation/hosted_file_actions_test.py |  46 ++++++
+ scripts/automation/reconcile-air-mini.sh       |  83 ++++++++--
+ scripts/hooks/session_start.rb                 |  17 +++
+ scripts/mini/mini-prepare-automation-root.sh   |   8 +
+ scripts/release.sh                             |  23 ++-
+ scripts/sanemaster/base.rb                     |   1 +
+ scripts/sanemaster/release_guardrail_test.rb   |  36 +++++
+ scripts/scaffold.rb                            |  14 +-
+ scripts/test_registry.json                     |   6 +
+ templates/RELEASE_SOP.md                       |   6 +
+ 17 files changed, 568 insertions(+), 31 deletions(-)

@@ -1,0 +1,7 @@
+ SESSION_HANDOFF.md                           | 41 ++++++++++++++++++++++++++++
+ scripts/mini/README.md                       |  6 ++--
+ scripts/mini/deploy.sh                       |  2 +-
+ scripts/mini/mini-install-nightly-agent.sh   | 16 +++++++++--
+ scripts/mini/mini-install-training-agents.sh | 20 ++++++++++----
+ scripts/mini/mini-prepare-automation-root.sh |  2 +-
+ 6 files changed, 74 insertions(+), 13 deletions(-)

@@ -1,0 +1,6 @@
+ scripts/dedupe_sane_apps.rb             |   6 +
+ scripts/dedupe_sane_apps_test.rb        |   6 +
+ scripts/sanemaster/saneui_guard.rb      | 203 ++++++++++-
+ scripts/sanemaster/saneui_guard_test.rb | 613 ++++++++++++++++++++++++++++++++
+ shared/MoveToApplications.swift         |  79 +---
+ 5 files changed, 835 insertions(+), 72 deletions(-)

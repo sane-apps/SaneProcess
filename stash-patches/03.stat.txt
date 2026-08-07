@@ -1,0 +1,6 @@
+ AGENTS.md               |   2 +
+ ARCHITECTURE.md         | 390 ++++++++----------------------------------------
+ CHANGELOG.md            |  36 ++---
+ README.md               |  29 ++--
+ scripts/hooks/README.md |  62 ++++----
+ 5 files changed, 119 insertions(+), 400 deletions(-)

@@ -1,0 +1,434 @@
+diff --git a/README.md b/README.md
+index d7a002f..f5a6fbf 100644
+--- a/README.md
++++ b/README.md
+@@ -4,6 +4,8 @@
+ 
+ # SaneProcess
+ 
++> **Archived working copy.** Do not use this repo for active work. Canonical repo: `../SaneProcess`
++
+ **Stop Claude Code from wasting your time and crashing your machine.**
+ 
+ SaneProcess is a hook-based enforcement framework for Claude Code. It kills orphaned processes, stops doom loops, and forces research before edits.
+diff --git a/scripts/SaneMaster.rb b/scripts/SaneMaster.rb
+index d466644..a87fd06 100755
+--- a/scripts/SaneMaster.rb
++++ b/scripts/SaneMaster.rb
+@@ -4,6 +4,11 @@
+ # ==============================================================================
+ # SaneMaster: Professional Automation Suite for SaneApps
+ # ==============================================================================
++# Archived working copy guard.
++warn 'SaneProcess_release_gate_fix is an archived working copy.'
++warn 'Use the canonical repo instead: /Users/sj/SaneApps/infra/SaneProcess'
++exit 1
++
+ # Modular architecture - see Scripts/sanemaster/ for implementations:
+ #   base.rb        - Shared constants and utilities
+ #   memory.rb      - Memory MCP integration
+diff --git a/scripts/license_gen.rb b/scripts/license_gen.rb
+deleted file mode 100755
+index 64c4eab..0000000
+--- a/scripts/license_gen.rb
++++ /dev/null
+@@ -1,96 +0,0 @@
+-#!/usr/bin/env ruby
+-# frozen_string_literal: true
+-
+-#
+-# SaneProcess License Key Generator
+-# Generates valid license keys for customers
+-#
+-# Usage:
+-#   ruby scripts/license_gen.rb              # Generate 1 key
+-#   ruby scripts/license_gen.rb 5            # Generate 5 keys
+-#   ruby scripts/license_gen.rb --validate SP-XXXX-XXXX-XXXX-XXXX
+-#
+-
+-require 'digest'
+-require 'securerandom'
+-
+-class LicenseGenerator
+-  # Key format: SP-XXXX-XXXX-XXXX-XXXX
+-  # Last segment is SHA256 checksum of first 4 segments + salt
+-
+-  SALT = 'SaneProcess2026'
+-  CHARS = ('A'..'Z').to_a + ('0'..'9').to_a
+-
+-  def generate
+-    # Generate 4 random segments
+-    segments = 4.times.map { random_segment }
+-    data = "SP-#{segments.join('-')}"
+-
+-    # Calculate checksum
+-    checksum = Digest::SHA256.hexdigest("#{data}#{SALT}")[0..3].upcase
+-
+-    "#{data}-#{checksum}"
+-  end
+-
+-  def validate(key)
+-    # Check format: SP-XXXX-XXXX-XXXX-XXXX-XXXX (5 segments after SP-)
+-    unless key.match?(/^SP-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/)
+-      return { valid: false, error: 'Invalid format' }
+-    end
+-
+-    # Extract parts: SP + 4 data segments + 1 checksum
+-    parts = key.split('-')
+-    data = parts[0..4].join('-')  # SP-XXXX-XXXX-XXXX-XXXX
+-    checksum = parts[5]           # Last segment is checksum
+-
+-    # Verify checksum
+-    expected = Digest::SHA256.hexdigest("#{data}#{SALT}")[0..3].upcase
+-
+-    if checksum == expected
+-      { valid: true }
+-    else
+-      { valid: false, error: 'Invalid checksum' }
+-    end
+-  end
+-
+-  private
+-
+-  def random_segment
+-    4.times.map { CHARS.sample }.join
+-  end
+-end
+-
+-# CLI
+-if __FILE__ == $PROGRAM_NAME
+-  gen = LicenseGenerator.new
+-
+-  if ARGV[0] == '--validate'
+-    key = ARGV[1]
+-    if key.nil?
+-      puts 'Usage: ruby license_gen.rb --validate SP-XXXX-XXXX-XXXX-XXXX'
+-      exit 1
+-    end
+-
+-    result = gen.validate(key)
+-    if result[:valid]
+-      puts "✅ Valid license key"
+-      exit 0
+-    else
+-      puts "❌ Invalid: #{result[:error]}"
+-      exit 1
+-    end
+-  else
+-    count = (ARGV[0] || 1).to_i
+-    count = 1 if count < 1
+-    count = 100 if count > 100
+-
+-    if count == 1
+-      # Single key - just output the key for scripting
+-      puts gen.generate
+-    else
+-      puts "Generated #{count} license keys:"
+-      puts
+-      count.times { puts gen.generate }
+-    end
+-  end
+-end
+diff --git a/scripts/qa.rb b/scripts/qa.rb
+index 88f7675..e571d04 100755
+--- a/scripts/qa.rb
++++ b/scripts/qa.rb
+@@ -1,6 +1,10 @@
+ #!/usr/bin/env ruby
+ # frozen_string_literal: true
+ 
++warn 'SaneProcess_release_gate_fix is an archived working copy.'
++warn 'Use the canonical repo instead: /Users/sj/SaneApps/infra/SaneProcess'
++exit 1
++
+ #
+ # SaneProcess QA Script
+ # Automated product verification before release
+diff --git a/scripts/release.sh b/scripts/release.sh
+index b9bf574..9c0998d 100755
+--- a/scripts/release.sh
++++ b/scripts/release.sh
+@@ -5,6 +5,10 @@
+ # Builds, signs, notarizes, and packages a ZIP for any SaneApps project
+ #
+ 
++echo "SaneProcess_release_gate_fix is an archived working copy." >&2
++echo "Use the canonical repo instead: /Users/sj/SaneApps/infra/SaneProcess" >&2
++exit 1
++
+ set -e
+ 
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+@@ -819,13 +823,13 @@ print_help() {
+     echo "  --config PATH       Config file (defaults to <project>/.saneprocess if present)"
+     echo "  --full              Version bump, tests, git commit, GitHub release"
+     echo "  --deploy            Upload to R2, update appcast, deploy website (run after build)"
+-    echo "  --skip-notarize      Skip notarization (for local testing)"
+-    echo "  --skip-build         Skip build step (use existing archive)"
++    echo "  --skip-notarize      Skip notarization (requires typed override approval)"
++    echo "  --skip-build         Skip build step (requires typed override approval)"
+     echo "  --version X.Y.Z      Set version number"
+     echo "  --notes \"...\"      Release notes for GitHub (required with --full)"
+-    echo "  --allow-republish    Allow republishing an already-live version/build"
+-    echo "  --allow-unsynced-peer  Bypass Air/mini reconcile gate for this release"
+-    echo "  --skip-appstore      Skip App Store archive/export/upload even if enabled in config"
++    echo "  --allow-republish    Allow republishing an already-live version/build (requires typed override approval)"
++    echo "  --allow-unsynced-peer  Bypass Air/mini reconcile gate (requires typed override approval)"
++    echo "  --skip-appstore      Skip App Store archive/export/upload (requires typed override approval)"
+     echo "  --website-only       Deploy website + appcast only (no build/R2/signing)"
+     echo "  --preflight-only     Run all release gates and exit (no build/publish)"
+     echo "  -h, --help           Show this help"
+@@ -856,6 +860,91 @@ shell_true() {
+     esac
+ }
+ 
++record_override_flag() {
++    local flag="$1"
++    local existing
++    for existing in "${OVERRIDE_FLAGS_USED[@]}"; do
++        if [ "${existing}" = "${flag}" ]; then
++            return 0
++        fi
++    done
++    OVERRIDE_FLAGS_USED+=("${flag}")
++}
++
++override_approval_phrase_for_flag() {
++    case "$1" in
++        --skip-notarize) echo "MR. SANE APPROVES SKIP NOTARIZATION" ;;
++        --skip-build) echo "MR. SANE APPROVES SKIP BUILD" ;;
++        --allow-republish) echo "MR. SANE APPROVES REPUBLISH OVERRIDE" ;;
++        --allow-unsynced-peer) echo "MR. SANE APPROVES UNSYNCED PEER RELEASE" ;;
++        --skip-appstore) echo "MR. SANE APPROVES SKIP APPSTORE" ;;
++        *) echo "MR. SANE APPROVES RELEASE OVERRIDE" ;;
++    esac
++}
++
++override_reason_for_flag() {
++    case "$1" in
++        --skip-notarize) echo "Notarization is being skipped." ;;
++        --skip-build) echo "Build step is being skipped (reusing prior artifacts)." ;;
++        --allow-republish) echo "Release is republishing an already-live version/build." ;;
++        --allow-unsynced-peer) echo "Air/mini reconcile gate is being bypassed." ;;
++        --skip-appstore) echo "App Store submission path is being skipped." ;;
++        *) echo "A release safety override is being requested." ;;
++    esac
++}
++
++request_override_approval_for_flag() {
++    local flag="$1"
++    local phrase reason response
++    phrase="$(override_approval_phrase_for_flag "${flag}")"
++    reason="$(override_reason_for_flag "${flag}")"
++
++    if [ ! -t 0 ] || [ ! -t 1 ]; then
++        log_error "Override ${flag} requires interactive typed approval."
++        log_error "${reason}"
++        log_error "Run this release command in an interactive terminal and type exactly:"
++        log_error "${phrase}"
++        return 1
++    fi
++
++    echo
++    log_warn "Manual approval required for ${flag}"
++    log_warn "${reason}"
++    echo "Type exactly to continue:"
++    echo "${phrase}"
++    printf '> '
++    IFS= read -r response
++
++    if [ "${response}" != "${phrase}" ]; then
++        log_error "Approval phrase mismatch for ${flag}. Override denied."
++        return 1
++    fi
++
++    log_info "Override approved for ${flag}"
++    return 0
++}
++
++enforce_release_override_approvals() {
++    local flag
++    if [ ${#OVERRIDE_FLAGS_USED[@]} -eq 0 ]; then
++        return 0
++    fi
++
++    for flag in "${OVERRIDE_FLAGS_USED[@]}"; do
++        if ! request_override_approval_for_flag "${flag}"; then
++            return 1
++        fi
++    done
++    return 0
++}
++
++release_guardrails_required_for_mode() {
++    if [ "${PREFLIGHT_ONLY}" = true ] || [ "${FULL_RELEASE}" = true ] || [ "${RUN_DEPLOY}" = true ]; then
++        return 0
++    fi
++    return 1
++}
++
+ default_peer_host_for_project() {
+     case "${PROJECT_ROOT}" in
+         /Users/sj/*)
+@@ -1716,6 +1805,44 @@ check_appstore_gate() {
+     return 0
+ }
+ 
++check_project_qa_guardrails() {
++    if ! release_guardrails_required_for_mode; then
++        return 0
++    fi
++
++    local qa_script=""
++    if [ -f "${PROJECT_ROOT}/Scripts/qa.rb" ]; then
++        qa_script="${PROJECT_ROOT}/Scripts/qa.rb"
++    elif [ -f "${PROJECT_ROOT}/scripts/qa.rb" ]; then
++        qa_script="${PROJECT_ROOT}/scripts/qa.rb"
++    fi
++
++    if [ -z "${qa_script}" ]; then
++        log_warn "No project qa.rb found — skipping project QA guardrail."
++        return 0
++    fi
++
++    if ! command -v ruby >/dev/null 2>&1; then
++        log_error "Project QA guardrail requires ruby (missing from PATH)."
++        return 1
++    fi
++
++    local app_env_prefix app_preflight_key app_stability_key
++    app_env_prefix="$(echo "${APP_NAME}" | tr '[:lower:]-' '[:upper:]_' | tr -cd 'A-Z0-9_')"
++    app_preflight_key="${app_env_prefix}_RELEASE_PREFLIGHT"
++    app_stability_key="${app_env_prefix}_RUN_STABILITY_SUITE"
++
++    if env SANEPROCESS_RELEASE_PREFLIGHT=1 SANEPROCESS_RUN_STABILITY_SUITE=1 \
++        "${app_preflight_key}=1" "${app_stability_key}=1" \
++        ruby "${qa_script}"; then
++        return 0
++    fi
++
++    log_error "Project QA guardrails failed (${qa_script})."
++    log_error "Stop release, fix the issue, verify, then rerun."
++    return 1
++}
++
+ detect_project_marketing_version() {
+     local project_yml="${PROJECT_ROOT}/project.yml"
+     local pbxproj=""
+@@ -1984,6 +2111,7 @@ run_release_preflight_only() {
+     log_info "Running release preflight-only checks..."
+ 
+     run_gate "Required commands" check_required_commands
++    run_gate "Project QA guardrails" check_project_qa_guardrails
+     run_gate "Git clean" check_git_clean_gate
+     run_gate "Machine reconcile" check_reconcile_gate
+     run_gate "Version bump configuration" check_version_bump_gate
+@@ -2021,6 +2149,7 @@ ALLOW_REPUBLISH=false
+ ALLOW_UNSYNCED_PEER=false
+ SKIP_APPSTORE=false
+ PREFLIGHT_ONLY=false
++OVERRIDE_FLAGS_USED=()
+ 
+ # Parse arguments
+ while [[ $# -gt 0 ]]; do
+@@ -2035,10 +2164,12 @@ while [[ $# -gt 0 ]]; do
+             ;;
+         --skip-notarize)
+             SKIP_NOTARIZE=true
++            record_override_flag "--skip-notarize"
+             shift
+             ;;
+         --skip-build)
+             SKIP_BUILD=true
++            record_override_flag "--skip-build"
+             shift
+             ;;
+         --version)
+@@ -2051,14 +2182,17 @@ while [[ $# -gt 0 ]]; do
+             ;;
+         --allow-republish)
+             ALLOW_REPUBLISH=true
++            record_override_flag "--allow-republish"
+             shift
+             ;;
+         --allow-unsynced-peer)
+             ALLOW_UNSYNCED_PEER=true
++            record_override_flag "--allow-unsynced-peer"
+             shift
+             ;;
+         --skip-appstore)
+             SKIP_APPSTORE=true
++            record_override_flag "--skip-appstore"
+             shift
+             ;;
+         --full)
+@@ -2160,6 +2294,10 @@ RELEASE_PEER_HOST="${RELEASE_PEER_HOST:-}"
+ RELEASE_PEER_REPO_PATH="${RELEASE_PEER_REPO_PATH:-}"
+ RELEASE_PEER_BRANCH="${RELEASE_PEER_BRANCH:-main}"
+ 
++if ! enforce_release_override_approvals; then
++    exit 1
++fi
++
+ WORKSPACE="${WORKSPACE:-}"
+ XCODEPROJ="${XCODEPROJ:-}"
+ EXPORT_OPTIONS_PLIST="${EXPORT_OPTIONS_PLIST:-}"
+@@ -2287,6 +2425,12 @@ if [ "${PREFLIGHT_ONLY}" = true ]; then
+     exit 1
+ fi
+ 
++if [ "${FULL_RELEASE}" = true ] || [ "${RUN_DEPLOY}" = true ]; then
++    if ! check_project_qa_guardrails; then
++        exit 1
++    fi
++fi
++
+ # Full release flow
+ if [ "${FULL_RELEASE}" = true ]; then
+     if [ -z "${VERSION}" ]; then
+diff --git a/scripts/sanemaster/release.rb b/scripts/sanemaster/release.rb
+index b96744d..b4092b4 100644
+--- a/scripts/sanemaster/release.rb
++++ b/scripts/sanemaster/release.rb
+@@ -88,6 +88,41 @@ module SaneMasterModules
+         issues << 'Tests failing'
+       end
+ 
++      # 1a. Project QA guardrails (if project provides qa.rb)
++      print '  Project QA guardrails... '
++      qa_script = ['Scripts/qa.rb', 'scripts/qa.rb'].find { |path| File.exist?(path) }
++      if qa_script
++        app_name_for_env = begin
++          manifest = File.join(Dir.pwd, '.saneprocess')
++          if File.exist?(manifest)
++            match = File.read(manifest).match(/^name:\s*(.+)$/)
++            match ? match[1].strip : File.basename(Dir.pwd)
++          else
++            File.basename(Dir.pwd)
++          end
++        rescue StandardError
++          File.basename(Dir.pwd)
++        end
++
++        app_prefix = app_name_for_env.upcase.gsub(/[^A-Z0-9]+/, '_')
++        qa_env = {
++          'SANEPROCESS_RELEASE_PREFLIGHT' => '1',
++          'SANEPROCESS_RUN_STABILITY_SUITE' => '1',
++          "#{app_prefix}_RELEASE_PREFLIGHT" => '1',
++          "#{app_prefix}_RUN_STABILITY_SUITE" => '1',
++        }
++
++        _qa_out, qa_status = Open3.capture2e(qa_env, 'ruby', qa_script)
++        if qa_status.success?
++          puts "✅ (#{qa_script})"
++        else
++          puts '❌ FAIL'
++          issues << "Project QA guardrails failed (#{qa_script})"
++        end
++      else
++        puts '⏭️  skipped (no qa.rb)'
++      end
++
+       # 2. Git clean
+       print '  Git clean... '
+       dirty, = Open3.capture2('git', 'status', '--porcelain')

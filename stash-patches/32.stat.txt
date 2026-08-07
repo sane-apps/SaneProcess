@@ -1,0 +1,6 @@
+ scripts/automation/README.md        |   1 +
+ scripts/automation/git-sync-safe.sh |  10 +++
+ scripts/sync_check.rb               | 134 ++++++++++++++++++++++++++++++++++--
+ templates/gitignore                 |   8 +++
+ templates/swiftlint.yml             |   4 ++
+ 5 files changed, 153 insertions(+), 4 deletions(-)

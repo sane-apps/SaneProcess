@@ -1,0 +1,749 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index f56462e..4cda095 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -26,14 +26,13 @@ Hard enforcement lives in:
+ 
+ ## Session Start
+ 
+-Use right-sized startup.
+-
+ For tiny read-only answers or one local command, read the relevant file/command
+ surface and answer. For code, audit, release, support, payment, App Store,
+ automation, UI/runtime, or multi-file work:
+ 
+ 1. Read `SESSION_HANDOFF.md`.
+-2. Read relevant Serena memory and the active client skill registry.
++2. Read relevant Serena memory and the active skill registry; query shared
++   context with AgentMemory `memory_recall` or `memory_smart_search`.
+ 3. Run `~/.codex/bin/check-mcps` when MCP health affects the task.
+ 4. Run `ruby scripts/validation_report.rb` for release/audit/process work.
+    Add `--release-checklists` only when you need the deep all-app artifact
+@@ -47,7 +46,8 @@ automation, UI/runtime, or multi-file work:
+ When code, tooling, docs, policy, support, release, or UI/runtime behavior
+ changed:
+ 
+-1. Update Serena memory and AgentMemory for changed facts.
++1. Update project-scoped Serena context and persist cross-project AgentMemory
++   facts/lessons with `memory_save` or `memory_lesson_save`.
+ 2. Update `SESSION_HANDOFF.md` with active state, proof, open issues, and next
+    useful moves.
+ 3. Run `ruby scripts/SaneMaster.rb sop_review --json`.
+@@ -331,10 +331,11 @@ Do not delete these guardrails without root-cause review and replay proof:
+ 
+ ## MCPs
+ 
+-Use active MCPs when useful, but keep proof portable through local scripts and
+-Mini receipts. Apple Docs covers Apple APIs, Context7 covers third-party docs,
+-macOS Automator covers repeatable GUI automation, Xcode covers IDE/device work,
+-Serena stores project notes, and AgentMemory provides shared recall. Check with
++Keep MCP proof portable. Serena stores project notes; Mini AgentMemory uses
++`memory_recall`/`memory_smart_search` for shared recall and
++`memory_save`/`memory_lesson_save` for durable writes. Graph extraction is
++intentionally off, so `Knowledge graph not enabled` is not an outage; legacy
++`mcp__memory__*`/`mcp__central-memory__*` are retired. Check MCPs with
+ `~/.codex/bin/check-mcps` and `ruby scripts/SaneMaster.rb mcp_watchdog doctor`.
+ 
+ ## Environment
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index e1836e8..2673d85 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -561,10 +561,25 @@ is canonical for code, while
+ uncommitted Mini work is preserved as non-clobbering Air-side snapshots rather
+ than raw-mirrored. Claude/Serena/Codex file memories use a conflict-preserving
+ two-way Air recurrence. Shared AgentMemory runs as a Mini LaunchAgent with a
+-pinned home working directory so its 1,201-memory database survives restarts.
++pinned home working directory so its database survives restarts. The Air
++reaches Mini loopback port 3111 through a private persistent SSH tunnel; a
++one-shot detached tunnel owned by an individual MCP startup is not durable
++enough for the cross-machine contract.
+ The LaunchAgent executes a supervisor that checks the real HTTP engine health;
+ two consecutive misses stop the complete worker and return nonzero so
+ launchd's unsuccessful-exit keepalive can recover from a dead child engine.
++Semantic recall (`memory_recall` / `memory_smart_search`) and durable writes
++(`memory_save` / `memory_lesson_save`) are the supported shared-memory
++contract. In `@agentmemory/mcp` v0.9.27, `memory_save` is durable but global/
++unscoped because the standalone proxy drops its advertised `project` field.
++Project-scoped facts use Mini loopback REST `/agentmemory/remember` until the
++upstream shim is fixed; this limitation is not an AgentMemory outage. Graph
++extraction and `memory_graph_query` are optional and
++intentionally disabled; the retired standalone `mcp__memory__*` graph must
++not be restored. The imported legacy corpus is currently unscoped global
++history. Supported inference migration cannot disambiguate it, so it remains
++searchable legacy context rather than being bulk-mutated into guessed
++project scopes.
+ 
+ ---
+ 
+diff --git a/DEVELOPMENT.md b/DEVELOPMENT.md
+index ce75adf..0fa3a5c 100644
+--- a/DEVELOPMENT.md
++++ b/DEVELOPMENT.md
+@@ -120,8 +120,11 @@ File-backed Claude, Serena, and Codex memories use
+ first, no-delete, cross-host locked, checksum-verified, and preserves a losing
+ same-file version as `.sane-conflict-*` on both machines. It also pulls Mini
+ dirty-work snapshots without applying them. The shared AgentMemory worker is
+-Mini-owned by `com.saneapps.agentmemory`; the Air MCP wrapper reaches it through
+-a bounded SSH tunnel.
++Mini-owned by `com.saneapps.agentmemory`. The Air must maintain a private,
++persistent SSH tunnel to Mini loopback port 3111; Air MCP clients use that local
++endpoint instead of creating an unmonitored one-shot detached tunnel. Tunnel
++health is part of Air acceptance and must survive normal client restarts without
++changing AgentMemory's loopback-only exposure.
+ The Mini LaunchAgent must point to `sane-agentmemory-supervisor`, not directly
+ to the `agentmemory` wrapper. Verify both the service program and HTTP corpus:
+ 
+@@ -559,7 +562,13 @@ Optional accelerators:
+   for domain work, then close SaneApps workflows with SaneMaster or the relevant
+   shared wrapper.
+ - `agentmemory`: Mini-owned semantic recall, reached directly on the Mini and
+-  through the bounded Air SSH MCP tunnel.
++  through the persistent private Air SSH tunnel. Use
++  `mcp__agentmemory__memory_recall` or `memory_smart_search` for recall and
++  `memory_save` or `memory_lesson_save` for durable global writes. In
++  `@agentmemory/mcp` v0.9.27, the standalone proxy drops `memory_save.project`;
++  project-scoped facts therefore use Mini loopback REST
++  `/agentmemory/remember` until the upstream shim is fixed. Do not describe an
++  MCP `memory_save` as project-scoped.
+ - Cloudflare API MCP/plugin: read-only Pages/R2/Worker drift checks.
+ 
+ Health checks:
+@@ -578,6 +587,13 @@ Tool discovery and MCP health answer different questions:
+   probe when available.
+ - `~/.codex/bin/check-mcps` is the direct Codex MCP endpoint proof. Process
+   presence alone is not evidence that Codex can call the tools.
++- AgentMemory health requires an active-client semantic recall canary, not just
++  a running engine or an open port. Air acceptance must prove Air loopback 3111,
++  MCP initialization, and a non-mutating `memory_recall` or
++  `memory_smart_search` call through the Air route.
++- `memory_graph_query` is not a health canary. Graph extraction is optional and
++  intentionally off in the SaneApps contract, so `Knowledge graph not enabled`
++  must not be reported as shared-memory failure.
+ - A green MCP check does not clear repo validation. A red repo validation run
+   does not prove a tool is missing.
+ - Run the tool-discovery receipt before proposing a new tool, wrapper, or
+diff --git a/config/products.yml b/config/products.yml
+index 62705ba..98f381e 100644
+--- a/config/products.yml
++++ b/config/products.yml
+@@ -54,6 +54,14 @@ products:
+     appstore_id: "6770391054"
+     storekit_product_id: com.sanescan.app.pro.annual
+ 
++  sanelot:
++    name: SaneLot
++    type: ios_app
++    domain: sanelot.com
++    github_repo: MrSaneApps/sanelot-ios
++    appstore_id: "6789208379"
++    storekit_product_id: com.sanelot.app.core.monthly
++
+   sanesync:
+     name: SaneSync
+     # Unreleased: no checkout UUID yet
+@@ -117,6 +125,7 @@ all_domains:
+   - sanehosts.com
+   - sanesales.com
+   - sanescan.saneapps.com
++  - sanelot.com
+   - saneapps.com
+   - sanesync.com
+   - sanevideo.com
+diff --git a/scripts/SaneMaster.rb b/scripts/SaneMaster.rb
+index e8bb4c3..e271084 100755
+--- a/scripts/SaneMaster.rb
++++ b/scripts/SaneMaster.rb
+@@ -329,7 +329,7 @@ class SaneMaster
+     { cmd: 'tool_discovery', desc: 'Prove existing-tool checks before workarounds' }
+   ].freeze
+ 
+-  KNOWN_SANE_APPS = %w[SaneBar SaneClip SaneClick SaneHosts SaneSales SaneSync SaneVideo].freeze
++  KNOWN_SANE_APPS = %w[SaneBar SaneClip SaneClick SaneHosts SaneLot SaneSales SaneScan SaneSync SaneVideo].freeze
+   AUTO_DEDUPE_COMMANDS = Set.new(%w[
+     verify
+     launch
+@@ -547,6 +547,7 @@ class SaneMaster
+     return if command.nil?
+     return unless AUTO_DEDUPE_COMMANDS.include?(command)
+     return if ENV['SANEMASTER_SKIP_AUTO_DEDUPE'] == '1'
++    return if ios_only_project? # Launch Services and /Applications cleanup is macOS-only.
+ 
+     app = project_name
+     return unless KNOWN_SANE_APPS.include?(app)
+diff --git a/scripts/automation/agentmemory-mcp-air.sh b/scripts/automation/agentmemory-mcp-air.sh
+index f5b4f17..36160b5 100755
+--- a/scripts/automation/agentmemory-mcp-air.sh
++++ b/scripts/automation/agentmemory-mcp-air.sh
+@@ -1,14 +1,65 @@
+ #!/bin/bash
+ # Air-side MCP shim for the shared AgentMemory server on the always-on Mini.
+-# Reuse an existing local tunnel or create one with a bounded SSH attempt, then
+-# run the stdio MCP shim against loopback. A temporarily unreachable Mini must
+-# never hang an Air agent session.
++# One launchd-owned foreground process owns the shared loopback tunnel. MCP
++# clients only verify/kickstart that owner, so simultaneous clients never race
++# to bind port 3111 or leave detached ssh processes behind.
+ set -uo pipefail
+ 
+-if ! nc -z 127.0.0.1 3111 >/dev/null 2>&1; then
+-  ssh -f -N -o ConnectTimeout=3 -o BatchMode=yes -o ExitOnForwardFailure=yes \
+-    -L 3111:127.0.0.1:3111 mini >/dev/null 2>&1 || true
++LABEL="${SANE_AGENTMEMORY_TUNNEL_LABEL:-com.saneapps.agentmemory-tunnel}"
++MINI_HOST="${SANE_AGENTMEMORY_MINI_HOST:-mini}"
++LOCAL_PORT="${SANE_AGENTMEMORY_LOCAL_PORT:-3111}"
++URL="${SANE_AGENTMEMORY_URL:-http://127.0.0.1:$LOCAL_PORT}"
++LAUNCHCTL="${SANE_LAUNCHCTL_BIN:-/bin/launchctl}"
++CURL="${SANE_CURL_BIN:-/usr/bin/curl}"
++SSH="${SANE_SSH_BIN:-/usr/bin/ssh}"
++NPX="${SANE_NPX_BIN:-npx}"
++WAIT_ATTEMPTS="${SANE_AGENTMEMORY_WAIT_ATTEMPTS:-6}"
++WAIT_INTERVAL="${SANE_AGENTMEMORY_WAIT_INTERVAL:-0.5}"
++
++usage() {
++  echo "Usage: $(basename "$0") [--tunnel]" >&2
++  exit 2
++}
++
++health_ready() {
++  "$CURL" --silent --fail --max-time 1 "$URL/agentmemory/health" >/dev/null 2>&1
++}
++
++if [[ "${1:-}" == "--tunnel" ]]; then
++  [[ "$#" -eq 1 ]] || usage
++  exec "$SSH" -N \
++    -o BatchMode=yes \
++    -o ConnectTimeout=3 \
++    -o ExitOnForwardFailure=yes \
++    -o ServerAliveInterval=15 \
++    -o ServerAliveCountMax=3 \
++    -L "$LOCAL_PORT:127.0.0.1:3111" \
++    "$MINI_HOST"
++fi
++
++[[ "$#" -eq 0 ]] || usage
++
++if ! health_ready; then
++  if ! "$LAUNCHCTL" kickstart "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
++    echo "AgentMemory tunnel LaunchAgent is unavailable; run install-memory-sync-agent.sh on the Air" >&2
++    exit 1
++  fi
++
++  attempt=0
++  while [[ "$attempt" -lt "$WAIT_ATTEMPTS" ]]; do
++    health_ready && break
++    attempt=$((attempt + 1))
++    sleep "$WAIT_INTERVAL"
++  done
++fi
++
++if ! health_ready; then
++  echo "AgentMemory tunnel did not become healthy at $URL within the bounded startup window" >&2
++  exit 1
+ fi
+ 
+-export AGENTMEMORY_URL="http://localhost:3111"
+-exec npx -y @agentmemory/mcp
++export AGENTMEMORY_URL="$URL"
++# Never silently fall back to the shim's private local store if the shared
++# service drops after startup; the shared memory lane must fail truthfully.
++export AGENTMEMORY_FORCE_PROXY=1
++exec "$NPX" -y @agentmemory/mcp
+diff --git a/scripts/automation/air_mini_acceptance.rb b/scripts/automation/air_mini_acceptance.rb
+index 93bcf02..8750f80 100755
+--- a/scripts/automation/air_mini_acceptance.rb
++++ b/scripts/automation/air_mini_acceptance.rb
+@@ -113,6 +113,30 @@ module SaneAppsAirMiniAcceptance
+         text.include?('sane-agentmemory-supervisor')
+     end
+ 
++    def agentmemory_tunnel_supervised?(text)
++      text.include?('com.saneapps.agentmemory-tunnel') && text.include?('state = running') &&
++        text.include?('agentmemory-mcp-air.sh') && text.include?('--tunnel')
++    end
++
++    def json_http_response(text)
++      return nil unless text.lines.any? { |line| line.strip == 'http=200' }
++
++      body = text.lines.reject { |line| line.start_with?('http=') }.join.strip
++      JSON.parse(body)
++    rescue JSON::ParserError
++      nil
++    end
++
++    def agentmemory_rest_health?(text)
++      payload = json_http_response(text)
++      payload.is_a?(Hash) && payload['service'] == 'agentmemory' && payload['status'] == 'healthy'
++    end
++
++    def agentmemory_search_response?(text)
++      payload = json_http_response(text)
++      payload.is_a?(Hash) && payload['results'].is_a?(Array) && !payload['results'].empty?
++    end
++
+     def credential_consumers_healthy?(text)
+       text.include?('github-credential=available') &&
+         text.match?(/Summary:\s+PASS=\d+\s+FAIL=0/)
+@@ -170,6 +194,7 @@ module SaneAppsAirMiniAcceptance
+               ['/bin/launchctl', 'print', "gui/#{Process.uid}/com.saneapps.memory-sync"], timeout: 15) do |text|
+         text.include?('com.saneapps.memory-sync')
+       end
++      air_agentmemory_checks
+       private_route_check
+       execute('air-mini-lan', 'Air to Mini normal SSH', 'air->mini', ssh('hostname; /usr/bin/whoami'), timeout: 30) do |text|
+         Validators.identity?(text, hostname_fragment: 'mac-mini', user: 'stephansmac')
+@@ -313,6 +338,27 @@ module SaneAppsAirMiniAcceptance
+       end
+     end
+ 
++    def air_agentmemory_checks
++      execute('air-agentmemory-tunnel', 'Air AgentMemory tunnel supervision', 'air',
++              ['/bin/launchctl', 'print', "gui/#{Process.uid}/com.saneapps.agentmemory-tunnel"], timeout: 15) do |text|
++        Validators.agentmemory_tunnel_supervised?(text)
++      end
++
++      health = ['/usr/bin/curl', '--silent', '--show-error', '--max-time', '5',
++                '-w', '\nhttp=%{http_code}\n', 'http://127.0.0.1:3111/agentmemory/health']
++      execute('air-agentmemory-health', 'Air loopback AgentMemory health', 'air', health, timeout: 10) do |text|
++        Validators.agentmemory_rest_health?(text)
++      end
++
++      payload = JSON.generate(query: 'SaneApps memory durability', limit: 1, format: 'compact')
++      search = ['/usr/bin/curl', '--silent', '--show-error', '--max-time', '8',
++                '-H', 'Content-Type: application/json', '--data', payload,
++                '-w', '\nhttp=%{http_code}\n', 'http://127.0.0.1:3111/agentmemory/search']
++      execute('air-agentmemory-search', 'Air AgentMemory search canary', 'air', search, timeout: 15) do |text|
++        Validators.agentmemory_search_response?(text)
++      end
++    end
++
+     def private_route_check
+       config = File.join(@home, '.ssh/config.d/saneapps-mini.conf')
+       proxy = File.join(@home, '.local/bin/saneapps-mini-proxy')
+diff --git a/scripts/automation/air_mini_acceptance_test.rb b/scripts/automation/air_mini_acceptance_test.rb
+index a8c0813..ae73642 100755
+--- a/scripts/automation/air_mini_acceptance_test.rb
++++ b/scripts/automation/air_mini_acceptance_test.rb
+@@ -53,6 +53,30 @@ exit(run_tests('Air Mini Acceptance Tests') do
+       true
+     end
+ 
++    test('requires the Air tunnel to be launchd-owned in foreground mode') do
++      supervised = <<~TEXT
++        gui/501/com.saneapps.agentmemory-tunnel = {
++          state = running
++          program = /Users/sj/SaneApps/infra/SaneProcess/scripts/automation/agentmemory-mcp-air.sh
++          arguments = { --tunnel }
++        }
++      TEXT
++      assert(SaneAppsAirMiniAcceptance::Validators.agentmemory_tunnel_supervised?(supervised))
++      assert(!SaneAppsAirMiniAcceptance::Validators.agentmemory_tunnel_supervised?(supervised.sub('state = running', 'state = exited')))
++      true
++    end
++
++    test('requires healthy Air REST and a real search response') do
++      health = "{\"service\":\"agentmemory\",\"status\":\"healthy\"}\nhttp=200\n"
++      search = "{\"format\":\"compact\",\"results\":[{\"title\":\"SaneApps memory durability\"}]}\nhttp=200\n"
++      assert(SaneAppsAirMiniAcceptance::Validators.agentmemory_rest_health?(health))
++      assert(SaneAppsAirMiniAcceptance::Validators.agentmemory_search_response?(search))
++      assert(!SaneAppsAirMiniAcceptance::Validators.agentmemory_rest_health?(health.sub('healthy', 'degraded')))
++      assert(!SaneAppsAirMiniAcceptance::Validators.agentmemory_search_response?("{\"results\":[]}\nhttp=200\n"))
++      assert(!SaneAppsAirMiniAcceptance::Validators.agentmemory_search_response?(search.sub('http=200', 'http=503')))
++      true
++    end
++
+     test('accepts only redacted usable credential receipts') do
+       receipt = "github-credential=available\nSummary: PASS=14 FAIL=0\n"
+       assert(SaneAppsAirMiniAcceptance::Validators.credential_consumers_healthy?(receipt))
+@@ -81,7 +105,8 @@ exit(run_tests('Air Mini Acceptance Tests') do
+       assert(status.success?, stderr)
+       plan = JSON.parse(stdout)
+       ids = plan.map { |entry| entry.fetch('id') }
+-      %w[air-process-access air-mini-lan air-mini-tailscale mini-air-return mini-dependencies
++      %w[air-process-access air-agentmemory-tunnel air-agentmemory-health air-agentmemory-search
++         air-mini-lan air-mini-tailscale mini-air-return mini-dependencies
+          mini-power mini-weekly-restart mini-agentmemory-health air-github-credential
+          mini-credential-consumers mini-mcp-apple-docs mini-mcp-macos-automator mini-mcp-serena mini-retired-training
+          saneprocess-parity sanecite-parity memory-checksum-parity acceptance-contracts].each do |id|
+diff --git a/scripts/automation/control_plane_sync_test.rb b/scripts/automation/control_plane_sync_test.rb
+index f408f3a..95e0dd3 100644
+--- a/scripts/automation/control_plane_sync_test.rb
++++ b/scripts/automation/control_plane_sync_test.rb
+@@ -234,7 +234,12 @@ tests << lambda do
+          'unattended Air/Mini reconcile must not auto-stash dirty app repos')
+   air_memory = File.read(File.join(ROOT, 'automation', 'agentmemory-mcp-air.sh'))
+   assert(air_memory.include?('ConnectTimeout=3'), 'Air AgentMemory tunnel must fail quickly')
+-  assert(air_memory.include?('-L 3111:127.0.0.1:3111 mini'), 'Air AgentMemory tunnel target drifted')
++  assert(air_memory.include?('127.0.0.1:3111'), 'Air AgentMemory tunnel target drifted')
++  assert(air_memory.include?('ServerAliveInterval=15'), 'Air AgentMemory tunnel must detect dead connections')
++  assert(air_memory.include?('ServerAliveCountMax=3'), 'Air AgentMemory tunnel retry bound drifted')
++  assert(air_memory.include?('kickstart "gui/'), 'Air MCP clients must kickstart the single tunnel owner')
++  assert(!air_memory.include?('kickstart -k'), 'Air MCP clients must not kill a tunnel owned by another client')
++  assert(!air_memory.include?('ssh -f'), 'Air MCP shim must not create detached per-client tunnels')
+ end
+ 
+ tests << lambda do
+diff --git a/scripts/automation/install-memory-sync-agent.sh b/scripts/automation/install-memory-sync-agent.sh
+index dba8daa..73f55b6 100755
+--- a/scripts/automation/install-memory-sync-agent.sh
++++ b/scripts/automation/install-memory-sync-agent.sh
+@@ -6,9 +6,12 @@ set -euo pipefail
+ # Air-only writes through the conflict-preserving sync lane.
+ 
+ LABEL="com.saneapps.memory-sync"
++TUNNEL_LABEL="com.saneapps.agentmemory-tunnel"
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ SYNC_SCRIPT="$SCRIPT_DIR/sync-memory-mini.sh"
++TUNNEL_SCRIPT="$SCRIPT_DIR/agentmemory-mcp-air.sh"
+ PLIST="${SANE_MEMORY_SYNC_PLIST:-$HOME/Library/LaunchAgents/$LABEL.plist}"
++TUNNEL_PLIST="${SANE_AGENTMEMORY_TUNNEL_PLIST:-$HOME/Library/LaunchAgents/$TUNNEL_LABEL.plist}"
+ LOG_DIR="${SANE_MEMORY_SYNC_LOG_DIR:-$HOME/SaneApps/infra/SaneProcess/outputs}"
+ INTERVAL="${SANE_MEMORY_SYNC_INTERVAL:-900}"
+ DRY_RUN=0
+@@ -23,6 +26,7 @@ case "${1:-}" in
+ esac
+ [[ "$#" -le 1 ]] || { echo "Usage: $(basename "$0") [--dry-run]" >&2; exit 2; }
+ [[ -x "$SYNC_SCRIPT" ]] || { echo "Missing executable sync lane: $SYNC_SCRIPT" >&2; exit 1; }
++[[ -x "$TUNNEL_SCRIPT" ]] || { echo "Missing executable AgentMemory tunnel lane: $TUNNEL_SCRIPT" >&2; exit 1; }
+ [[ "$INTERVAL" =~ ^[0-9]+$ ]] || { echo "Invalid sync interval: $INTERVAL" >&2; exit 2; }
+ 
+ host="$(hostname -s 2>/dev/null || hostname)"
+@@ -31,7 +35,7 @@ if [[ "$DRY_RUN" -eq 0 && "$host" == *[Mm]ini* ]]; then
+   exit 2
+ fi
+ 
+-mkdir -p "$(dirname "$PLIST")" "$LOG_DIR"
++mkdir -p "$(dirname "$PLIST")" "$(dirname "$TUNNEL_PLIST")" "$LOG_DIR"
+ cat > "$PLIST" <<PLIST
+ <?xml version="1.0" encoding="UTF-8"?>
+ <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+@@ -68,15 +72,57 @@ cat > "$PLIST" <<PLIST
+ </plist>
+ PLIST
+ 
+-chmod 600 "$PLIST"
++cat > "$TUNNEL_PLIST" <<PLIST
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict>
++  <key>Label</key>
++  <string>$TUNNEL_LABEL</string>
++  <key>ProgramArguments</key>
++  <array>
++    <string>/bin/bash</string>
++    <string>$TUNNEL_SCRIPT</string>
++    <string>--tunnel</string>
++  </array>
++  <key>RunAtLoad</key>
++  <true/>
++  <key>KeepAlive</key>
++  <true/>
++  <key>ThrottleInterval</key>
++  <integer>30</integer>
++  <key>ProcessType</key>
++  <string>Background</string>
++  <key>EnvironmentVariables</key>
++  <dict>
++    <key>HOME</key>
++    <string>$HOME</string>
++    <key>PATH</key>
++    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
++  </dict>
++  <key>StandardOutPath</key>
++  <string>$LOG_DIR/agentmemory_tunnel.stdout.log</string>
++  <key>StandardErrorPath</key>
++  <string>$LOG_DIR/agentmemory_tunnel.stderr.log</string>
++</dict>
++</plist>
++PLIST
++
++chmod 600 "$PLIST" "$TUNNEL_PLIST"
+ plutil -lint "$PLIST" >/dev/null
++plutil -lint "$TUNNEL_PLIST" >/dev/null
+ if [[ "$DRY_RUN" -eq 1 ]]; then
+   echo "Validated Air memory-sync LaunchAgent: $PLIST"
++  echo "Validated Air AgentMemory tunnel LaunchAgent: $TUNNEL_PLIST"
+   exit 0
+ fi
+ 
+ uid="$(id -u)"
+ launchctl bootout "gui/$uid/$LABEL" 2>/dev/null || true
++launchctl bootout "gui/$uid/$TUNNEL_LABEL" 2>/dev/null || true
+ launchctl bootstrap "gui/$uid" "$PLIST"
++launchctl bootstrap "gui/$uid" "$TUNNEL_PLIST"
+ launchctl enable "gui/$uid/$LABEL" 2>/dev/null || true
++launchctl enable "gui/$uid/$TUNNEL_LABEL" 2>/dev/null || true
+ echo "Installed $LABEL (RunAtLoad + every ${INTERVAL}s)"
++echo "Installed $TUNNEL_LABEL (RunAtLoad + KeepAlive foreground tunnel)"
+diff --git a/scripts/automation/memory_sync_test.rb b/scripts/automation/memory_sync_test.rb
+index 7e6d301..611af6f 100644
+--- a/scripts/automation/memory_sync_test.rb
++++ b/scripts/automation/memory_sync_test.rb
+@@ -11,6 +11,7 @@ include TestFramework
+ 
+ SCRIPT = File.expand_path('sync-memory-mini.sh', __dir__)
+ INSTALLER = File.expand_path('install-memory-sync-agent.sh', __dir__)
++AGENTMEMORY_SHIM = File.expand_path('agentmemory-mcp-air.sh', __dir__)
+ 
+ def memory_paths(home)
+   slug = File.join(home, 'SaneApps').tr('/', '-')
+@@ -155,17 +156,21 @@ exit(run_tests('Memory Sync Tests') do
+   end
+ 
+   test_category('Air recurrence') do
+-    test('installs a RunAtLoad 15-minute LaunchAgent') do
++    test('installs recurrence plus one persistent AgentMemory tunnel LaunchAgent') do
+       Dir.mktmpdir('memory-agent') do |dir|
+         fixture_dir = File.join(dir, 'scripts', 'automation')
+         FileUtils.mkdir_p(fixture_dir)
+         FileUtils.cp(SCRIPT, File.join(fixture_dir, 'sync-memory-mini.sh'))
+         FileUtils.cp(INSTALLER, File.join(fixture_dir, 'install-memory-sync-agent.sh'))
++        FileUtils.cp(AGENTMEMORY_SHIM, File.join(fixture_dir, 'agentmemory-mcp-air.sh'))
+         FileUtils.chmod(0o755, File.join(fixture_dir, 'sync-memory-mini.sh'))
++        FileUtils.chmod(0o755, File.join(fixture_dir, 'agentmemory-mcp-air.sh'))
+         plist = File.join(dir, 'memory-sync.plist')
++        tunnel_plist = File.join(dir, 'agentmemory-tunnel.plist')
+         env = {
+           'HOME' => dir,
+           'SANE_MEMORY_SYNC_PLIST' => plist,
++          'SANE_AGENTMEMORY_TUNNEL_PLIST' => tunnel_plist,
+           'SANE_MEMORY_SYNC_LOG_DIR' => File.join(dir, 'logs')
+         }
+         _out, err, status = Open3.capture3(env, '/bin/bash', File.join(fixture_dir, 'install-memory-sync-agent.sh'), '--dry-run')
+@@ -175,11 +180,91 @@ exit(run_tests('Memory Sync Tests') do
+         assert_includes(source, '<key>RunAtLoad</key>')
+         assert_includes(source, '<key>StartInterval</key>')
+         assert_includes(source, '<integer>900</integer>')
++        tunnel_source = File.read(tunnel_plist)
++        assert_includes(tunnel_source, '<string>com.saneapps.agentmemory-tunnel</string>')
++        assert_includes(tunnel_source, '<string>--tunnel</string>')
++        assert_includes(tunnel_source, '<key>RunAtLoad</key>')
++        assert_includes(tunnel_source, '<key>KeepAlive</key>')
++        assert_includes(tunnel_source, '<key>ThrottleInterval</key>')
++        assert_includes(tunnel_source, 'agentmemory_tunnel.stderr.log')
+         _bad_out, bad_err, bad_status = Open3.capture3(env, '/bin/bash', File.join(fixture_dir, 'install-memory-sync-agent.sh'), 'mini')
+         assert(!bad_status.success?, 'installer silently accepted an unknown host argument')
+         assert_includes(bad_err, 'Usage:')
+         true
+       end
+     end
++
++    test('Air MCP shim uses one kickstarted owner and fails closed without health') do
++      source = File.read(AGENTMEMORY_SHIM)
++      assert_includes(source, 'kickstart "gui/')
++      assert_includes(source, 'AGENTMEMORY_FORCE_PROXY=1')
++      assert_includes(source, 'ServerAliveInterval=15')
++      assert_includes(source, 'ServerAliveCountMax=3')
++      assert_includes(source, 'ExitOnForwardFailure=yes')
++      assert(!source.include?('kickstart -k'), 'MCP clients must not kill a shared tunnel owned by another client')
++      assert(!source.include?('ssh -f'), 'shim must not create a detached per-client tunnel')
++      true
++    end
++
++    test('Air MCP shim kickstarts the owner before executing the forced-proxy MCP') do
++      Dir.mktmpdir('agentmemory-air-shim') do |dir|
++        health_count = File.join(dir, 'health-count')
++        launchctl_log = File.join(dir, 'launchctl.log')
++        npx_log = File.join(dir, 'npx.log')
++        fake_launchctl = File.join(dir, 'launchctl')
++        fake_curl = File.join(dir, 'curl')
++        fake_npx = File.join(dir, 'npx')
++        File.write(fake_launchctl, "#!/bin/sh\necho \"$*\" > \"$LAUNCHCTL_LOG\"\n")
++        File.write(fake_curl, <<~SH)
++          #!/bin/sh
++          count=0
++          [ ! -f "$HEALTH_COUNT" ] || count="$(cat "$HEALTH_COUNT")"
++          count=$((count + 1))
++          echo "$count" > "$HEALTH_COUNT"
++          [ "$count" -ge 2 ]
++        SH
++        File.write(fake_npx, <<~SH)
++          #!/bin/sh
++          printf 'args=%s\nurl=%s\nforce=%s\n' "$*" "$AGENTMEMORY_URL" "$AGENTMEMORY_FORCE_PROXY" > "$NPX_LOG"
++        SH
++        FileUtils.chmod(0o755, [fake_launchctl, fake_curl, fake_npx])
++        env = {
++          'SANE_LAUNCHCTL_BIN' => fake_launchctl,
++          'SANE_CURL_BIN' => fake_curl,
++          'SANE_NPX_BIN' => fake_npx,
++          'SANE_AGENTMEMORY_WAIT_INTERVAL' => '0',
++          'HEALTH_COUNT' => health_count,
++          'LAUNCHCTL_LOG' => launchctl_log,
++          'NPX_LOG' => npx_log
++        }
++        _out, err, status = Open3.capture3(env, '/bin/bash', AGENTMEMORY_SHIM)
++        assert(status.success?, err)
++        assert_includes(File.read(launchctl_log), 'kickstart gui/')
++        mcp = File.read(npx_log)
++        assert_includes(mcp, 'args=-y @agentmemory/mcp')
++        assert_includes(mcp, 'url=http://127.0.0.1:3111')
++        assert_includes(mcp, 'force=1')
++        true
++      end
++    end
++
++    test('foreground tunnel mode execs bounded SSH without launchctl') do
++      Dir.mktmpdir('agentmemory-air-tunnel') do |dir|
++        ssh_log = File.join(dir, 'ssh.log')
++        fake_ssh = File.join(dir, 'ssh')
++        File.write(fake_ssh, "#!/bin/sh\necho \"$*\" > \"$SSH_LOG\"\n")
++        FileUtils.chmod(0o755, fake_ssh)
++        env = { 'SANE_SSH_BIN' => fake_ssh, 'SSH_LOG' => ssh_log }
++        _out, err, status = Open3.capture3(env, '/bin/bash', AGENTMEMORY_SHIM, '--tunnel')
++        assert(status.success?, err)
++        ssh = File.read(ssh_log)
++        assert_includes(ssh, '-N')
++        assert_includes(ssh, 'ExitOnForwardFailure=yes')
++        assert_includes(ssh, 'ServerAliveInterval=15')
++        assert_includes(ssh, 'ServerAliveCountMax=3')
++        assert_includes(ssh, '-L 3111:127.0.0.1:3111 mini')
++        true
++      end
++    end
+   end
+ end)
+diff --git a/scripts/hooks/sane_release_guard.rb b/scripts/hooks/sane_release_guard.rb
+index 888dec6..d8fae69 100755
+--- a/scripts/hooks/sane_release_guard.rb
++++ b/scripts/hooks/sane_release_guard.rb
+@@ -31,7 +31,7 @@ require 'digest'
+ require 'json'
+ require 'shellwords'
+ 
+-SANE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneScan SaneSync SaneVideo].freeze
++SANE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneLot SaneSales SaneScan SaneSync SaneVideo].freeze
+ SANE_APP_PATTERN = Regexp.new(SANE_APPS.join('|'), Regexp::IGNORECASE)
+ # R2 bucket pattern — all apps use shared bucket (sanebar-downloads) but match any *-downloads to catch mistakes
+ SANE_BUCKET_PATTERN = Regexp.new(SANE_APPS.map { |a| "#{a.downcase}-downloads" }.join('|'))
+diff --git a/scripts/hooks/sanestop_finalize.rb b/scripts/hooks/sanestop_finalize.rb
+index 26b368e..efc3a59 100644
+--- a/scripts/hooks/sanestop_finalize.rb
++++ b/scripts/hooks/sanestop_finalize.rb
+@@ -328,7 +328,7 @@ def check_handoff_required
+   # Build block message
+   missing = []
+   missing << 'SESSION_HANDOFF.md' unless handoff_updated
+-  missing << 'memory (MEMORY.md or Serena write_memory)' unless memory_updated
++  missing << 'memory (AgentMemory memory_save/memory_lesson_save, MEMORY.md, or Serena write_memory)' unless memory_updated
+   file_list = always_persist_required ? always_persist_files : sig_files
+   why = if always_persist_required
+           "These files are tooling or durable docs and must be persisted even for a single edit."
+@@ -346,7 +346,7 @@ def check_handoff_required
+   "   \n" \
+   "   What to do:\n" \
+   "   • Update SESSION_HANDOFF.md with what was done + what's pending\n" \
+-  "   • Update memory with the reusable tooling/docs learnings or decisions\n" \
++  "   • Update AgentMemory (memory_save/memory_lesson_save) or the durable project memory with reusable learnings\n" \
+   "   • Both must be updated before the session can end"
+ rescue StandardError => e
+   warn "⚠️  Handoff check error: #{e.message}" if ENV['DEBUG']
+diff --git a/scripts/hooks/sanestop_persistence_test.rb b/scripts/hooks/sanestop_persistence_test.rb
+index c25f20c..cc11f9e 100644
+--- a/scripts/hooks/sanestop_persistence_test.rb
++++ b/scripts/hooks/sanestop_persistence_test.rb
+@@ -36,6 +36,18 @@ module SaneStopPersistenceTest
+       failed += 1
+       warn "  FAIL: Should block without handoff, got exit #{exit_code}"
+     end
++    captured = StringIO.new
++    original_stderr = $stderr
++    $stderr = captured
++    process_stop_proc.call(false)
++    $stderr = original_stderr
++    if captured.string.include?('AgentMemory memory_save/memory_lesson_save')
++      passed += 1
++      warn '  PASS: Missing-memory guidance names current AgentMemory durable writes'
++    else
++      failed += 1
++      warn "  FAIL: Missing-memory guidance omitted AgentMemory: #{captured.string.inspect[0..240]}"
++    end
+     # Test: Significant edits WITH handoff + memory = allow
+     StateManager.reset(:verification)
+     StateManager.update(:handoff_tracking) do |h|
+diff --git a/scripts/hooks/sanetrack_state_updates.rb b/scripts/hooks/sanetrack_state_updates.rb
+index 551b4ee..9bf2ffd 100644
+--- a/scripts/hooks/sanetrack_state_updates.rb
++++ b/scripts/hooks/sanetrack_state_updates.rb
+@@ -70,6 +70,7 @@ module SaneTrackStateUpdates
+ 
+   def track_handoff_status(tool_name, tool_input)
+     if tool_name == 'mcp__serena__write_memory' ||
++       tool_name.match?(/\Amcp__(?:plugin_[a-z0-9_-]+_)?agentmemory__(?:memory_save|memory_lesson_save)\z/i) ||
+        tool_name.match?(/\Amcp__(?:memory|central-memory)__(?:add|create|delete|update|write)_/i)
+       StateManager.update(:handoff_tracking) do |handoff|
+         handoff[:memory_updated] = true
+diff --git a/scripts/hooks/sanetrack_test.rb b/scripts/hooks/sanetrack_test.rb
+index 1bb6a4e..2f2b46f 100644
+--- a/scripts/hooks/sanetrack_test.rb
++++ b/scripts/hooks/sanetrack_test.rb
+@@ -469,8 +469,13 @@ module SaneTrackTest
+       warn "  FAIL: Serena write_memory should set memory_updated, got #{handoff.inspect}"
+     end
+ 
+-    # Test: Memory MCP mutations mark memory_updated
+-    %w[mcp__memory__add_observations mcp__memory__create_entities mcp__memory__create_relations].each do |memory_tool|
++    # Test: current AgentMemory durable writes mark memory_updated, including
++    # the plugin-prefixed client form.
++    %w[
++      mcp__agentmemory__memory_save
++      mcp__agentmemory__memory_lesson_save
++      mcp__plugin_agentmemory_agentmemory__memory_save
++    ].each do |memory_tool|
+       StateManager.reset(:handoff_tracking)
+       process_result_proc.call(memory_tool, {}, { 'success' => true })
+       handoff = StateManager.get(:handoff_tracking)
+diff --git a/scripts/sanemaster/research_evidence_gate_test.rb b/scripts/sanemaster/research_evidence_gate_test.rb
+index 77c04dc..a3e7fb5 100644
+--- a/scripts/sanemaster/research_evidence_gate_test.rb
++++ b/scripts/sanemaster/research_evidence_gate_test.rb
+@@ -83,6 +83,16 @@ exit(run_tests('Research Evidence Gate') do
+     end
+   end
+ 
++  test_category('current memory guidance') do
++    test('research steps use AgentMemory instead of the retired graph MCP') do
++      steps = subject.send(:default_research_steps).join(' ')
++      assert_includes(steps, 'mcp__agentmemory__memory_smart_search')
++      assert_includes(steps, 'mcp__agentmemory__memory_recall')
++      assert(!steps.include?('mcp__memory__'), 'research guidance still names the retired graph MCP')
++      true
++    end
++  end
++
+   test_category('active_research_locks wired to evidence') do
+     lock = { source_updated_at: T0.iso8601 }
+ 
+diff --git a/scripts/sanemaster/sop_loop.rb b/scripts/sanemaster/sop_loop.rb
+index 877d5a5..eb0b3d8 100644
+--- a/scripts/sanemaster/sop_loop.rb
++++ b/scripts/sanemaster/sop_loop.rb
+@@ -812,7 +812,7 @@ module SaneMasterModules
+ 
+     def default_research_steps
+       [
+-        'Check memory for past failures (mcp__memory__read_graph)',
++        'Check shared AgentMemory for past failures (mcp__agentmemory__memory_smart_search or mcp__agentmemory__memory_recall)',
+         'Verify API exists before using (Rule #2)',
+         'Read relevant documentation'
+       ]
+diff --git a/scripts/validation_report.rb b/scripts/validation_report.rb
+index 48841f3..59e9ef6 100755
+--- a/scripts/validation_report.rb
++++ b/scripts/validation_report.rb
+@@ -176,6 +176,7 @@ class ValidationReport
+     apps/SaneBar
+     apps/SaneVideo
+     apps/SaneScan
++    apps/SaneLot
+     apps/SaneClip
+     apps/SaneHosts
+     apps/SaneClick
+@@ -188,6 +189,7 @@ class ValidationReport
+     apps/SaneBar
+     apps/SaneVideo
+     apps/SaneScan
++    apps/SaneLot
+     apps/SaneClip
+     apps/SaneHosts
+     apps/SaneClick

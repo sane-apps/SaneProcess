@@ -1,0 +1,84 @@
+diff --git a/scripts/sane_test.rb b/scripts/sane_test.rb
+index b34160c..70575c5 100755
+--- a/scripts/sane_test.rb
++++ b/scripts/sane_test.rb
+@@ -419,6 +419,27 @@ class SaneTest
+     pid = ssh_capture("pgrep -x #{@app_name} 2>/dev/null").strip
+     abort '   ❌ App failed to launch on mini' if pid.empty?
+     warn "   Running (PID: #{pid})"
++    capture_launch_screenshot_remote
++  end
++
++  def capture_launch_screenshot_remote
++    timestamp = Time.now.strftime('%Y%m%d-%H%M%S')
++    remote_path = "$HOME/Desktop/Screenshots/sane-test-#{@app_name}-#{timestamp}.png"
++    gui_runner = '~/SaneApps/infra/SaneProcess/scripts/mini/mini-gui-run.sh'
++    capture_script = [
++      'mkdir -p "$HOME/Desktop/Screenshots"',
++      "osascript -e #{Shellwords.escape("tell application \"#{@app_name}\" to activate")} >/dev/null 2>&1 || true",
++      "screencapture -x #{Shellwords.escape(remote_path)}"
++    ].join('; ')
++
++    if ssh_capture("[ -x #{gui_runner} ] && echo yes || echo no").strip == 'yes'
++      ssh("bash #{gui_runner} --title #{Shellwords.escape("#{@app_name} Launch Screenshot")} --log-file /tmp/sane-test-#{@app_name}-screenshot.log --status-file /tmp/sane-test-#{@app_name}-screenshot.status --close-window -- #{Shellwords.escape(capture_script)}")
++    else
++      ssh(capture_script)
++    end
++    warn "   Launch screenshot: mini:#{remote_path}"
++  rescue StandardError => e
++    abort "   ❌ Launch screenshot failed: #{e.message}"
+   end
+ 
+   def stream_logs_remote
+@@ -620,6 +641,19 @@ class SaneTest
+ 
+     pid = processes.first.split(/\s+/, 2).first
+     warn "   Running canonical app at #{app_path} (PID: #{pid})"
++    capture_launch_screenshot_local
++  end
++
++  def capture_launch_screenshot_local
++    screenshots_dir = File.expand_path('~/Desktop/Screenshots')
++    FileUtils.mkdir_p(screenshots_dir)
++    timestamp = Time.now.strftime('%Y%m%d-%H%M%S')
++    screenshot_path = File.join(screenshots_dir, "sane-test-#{@app_name}-#{timestamp}.png")
++    system('osascript', '-e', "tell application \"#{@app_name}\" to activate", out: File::NULL, err: File::NULL)
++    unless system('screencapture', '-x', screenshot_path, out: File::NULL, err: File::NULL)
++      abort '   ❌ Launch screenshot failed'
++    end
++    warn "   Launch screenshot: #{screenshot_path}"
+   end
+ 
+   def repair_accessibility?
+diff --git a/scripts/sanemaster/test_mode.rb b/scripts/sanemaster/test_mode.rb
+index fa5b3f6..07332a9 100644
+--- a/scripts/sanemaster/test_mode.rb
++++ b/scripts/sanemaster/test_mode.rb
+@@ -109,11 +109,27 @@ module SaneMasterModules
+         end
+         mode_label = allow_keychain ? 'keychain-enabled' : 'no-keychain'
+         puts "✅ App launched (fresh build verified, #{mode_label})"
++        capture_launch_screenshot(launch_path)
+       end
+ 
+       true
+     end
+ 
++    def capture_launch_screenshot(_app_path)
++      screenshots_dir = File.expand_path('~/Desktop/Screenshots')
++      FileUtils.mkdir_p(screenshots_dir)
++      timestamp = Time.now.strftime('%Y%m%d-%H%M%S')
++      screenshot_path = File.join(screenshots_dir, "sanemaster-launch-#{project_name}-#{timestamp}.png")
++      system('osascript', '-e', "tell application \"#{project_name}\" to activate", out: File::NULL, err: File::NULL)
++      unless system('screencapture', '-x', screenshot_path, out: File::NULL, err: File::NULL)
++        puts '❌ Launch screenshot failed'
++        return false
++      end
++
++      puts "📸 Launch screenshot: #{screenshot_path}"
++      true
++    end
++
+     def restore_xcode
+       puts '🛠️ --- [ SANEMASTER RESTORE ] ---'
+       puts 'Fixing common Xcode/Launch Services issues...'

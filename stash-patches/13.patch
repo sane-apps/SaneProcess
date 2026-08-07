@@ -1,0 +1,177 @@
+diff --git a/.github/copilot-instructions.md b/.github/copilot-instructions.md
+index cc1cfae..c2f685f 100644
+--- a/.github/copilot-instructions.md
++++ b/.github/copilot-instructions.md
+@@ -2,14 +2,14 @@
+ 
+ ## Project Overview
+ 
+-SaneProcess is workflow enforcement for AI-assisted development across Claude Code, Codex, and compatible coding agents.
++SaneProcess is workflow enforcement for AI-assisted development across Codex, Claude Code, and compatible coding agents.
+ 
+ It provides:
+ 
+ - Client-neutral `AGENTS.md` operating rules
+-- Claude-native lifecycle hooks
++- Native lifecycle-hook adapters
+ - Codex-compatible skills, MCP guidance, and shared runtime guards
+-- `SaneMaster.rb` wrappers for verify, release, status, tool discovery, support, Mini sync, metrics, and quality checks
++- `SaneMaster.rb` wrappers for verify, release, status, tool discovery, metrics, remote runners, and quality checks
+ - SaneUI guardrails for shared settings/About/license/update surfaces
+ 
+ ## Source Of Truth
+@@ -29,8 +29,7 @@ Use `CLAUDE.md` only for Claude-specific overlay behavior. Do not put general po
+ scripts/
+   SaneMaster.rb        Main workflow CLI
+   sanemaster/          SaneMaster command modules
+-  hooks/               Claude-native hooks and tests
+-  mini/                Mac Mini runtime/build-server scripts
++  hooks/               Native hook adapters and tests
+   automation/          Automation helpers behind SaneMaster paths
+   codex-bin/           Codex helper source mirrored to ~/.codex/bin/
+ skills/                Reusable agent skills
+@@ -51,7 +50,7 @@ templates/             Project/docs/release/UI templates
+ 
+ For settings, About, license, updater, button-style, or typography work:
+ 
+-- Inspect `~/SaneApps/infra/SaneUI/Sources/SaneUICatalog/SaneUICatalogApp.swift` first.
++- Inspect the shared SaneUI catalog/source of truth first.
+ - Use shared `SaneSettingsContainer`, `SaneAboutView`, `LicenseSettingsView`, and `SaneSparkleRow` where applicable.
+ - Keep shared settings text bright white and at least `13pt`.
+ - Do not use `.secondary`, gray helper text, `mailto:` bug-report paths, `Manage Access` copy, app-local updater rows, local `SaneSparkleRow`, or `.buttonStyle(.bordered)` in settings/About/license/update UI.
+@@ -75,4 +74,4 @@ ruby scripts/hooks/sanetrack.rb --self-test
+ ruby scripts/hooks/sanestop.rb --self-test
+ ```
+ 
+-For SaneApps app runtime work, use the Mac Mini first. Do not replace Mini-first verification with local launches.
++Use `SaneMaster.rb verify` as the default proof path. When a project configures a remote runner or CI host, keep it behind a project wrapper so contributors do not need that private setup to understand or use SaneProcess.
+diff --git a/CONTRIBUTING.md b/CONTRIBUTING.md
+index fc467b9..228c796 100644
+--- a/CONTRIBUTING.md
++++ b/CONTRIBUTING.md
+@@ -30,7 +30,6 @@ SaneProcess/
+     SaneMaster.rb       Main workflow CLI
+     hooks/              Native hook layer
+     sanemaster/         CLI command modules
+-    mini/               Mac Mini runtime scripts
+     automation/         Helper scripts behind canonical wrappers
+   templates/            Project/docs/release/UI templates
+   skills/               Reusable agent skills
+diff --git a/README.md b/README.md
+index f17938b..9a0b00e 100644
+--- a/README.md
++++ b/README.md
+@@ -1,5 +1,5 @@
+ <p align="center">
+-  <img src="assets/hero-shield.jpeg" alt="SaneProcess - workflow enforcement for coding agents" width="100%">
++  <img src="assets/hero-process.jpeg" alt="SaneProcess - workflow guardrails for coding agents" width="100%">
+ </p>
+ 
+ # SaneProcess
+@@ -40,9 +40,9 @@ ruby scripts/hooks/sanestop.rb --self-test
+ | Agent rules | One `AGENTS.md` source of truth for compatible coding agents |
+ | Native hook adapters | Prompt classification, research gates, path blocking, circuit breaker, session summaries where the client supports lifecycle hooks |
+ | Codex path | `AGENTS.md`, `.agents/skills`, MCP, `~/.codex/config.toml`, and shared runtime guards |
+-| `SaneMaster.rb` | One CLI for verify, release, status, tool discovery, support, metrics, Mini sync, and quality checks |
++| `SaneMaster.rb` | One CLI for verify, release, status, tool discovery, metrics, and quality checks |
+ | Shared guards | Shell/script guardrails for risky paths where a client has no native pre-tool hook |
+-| Mini-first workflows | Remote build/test/runtime verification on the Mac Mini build server for SaneApps work |
++| Optional runner adapters | Use local checks by default, or plug in your own remote runner/build host if your team has one |
+ | Design-system checks | SaneUI drift detection for settings, About, license, and updater surfaces |
+ 
+ ## Supported Clients
+@@ -109,26 +109,25 @@ ruby scripts/SaneMaster.rb gate_review test/fixtures/gates/example.json
+ ruby scripts/SaneMaster.rb saneui_guard /path/to/app
+ ```
+ 
+-SaneApps-specific installs also use it for sales/download/event reporting, support inbox workflows, release evidence, Mini sync, QA snapshots, and hosted-file drift checks. See [DEVELOPMENT.md](DEVELOPMENT.md) for the full command map.
++Project-specific installs can add their own release, support, analytics, or remote-runner commands behind the same wrapper pattern. See [DEVELOPMENT.md](DEVELOPMENT.md) for the full command map.
+ 
+-## Mini-First Verification
++## Optional Remote Runners
+ 
+-For SaneApps app work, the Mac Mini is the canonical build/test/runtime host. This keeps the controller machine clean and makes UI/runtime proof reproducible.
++SaneProcess does not require a second machine. The default path is local verification:
+ 
+ ```bash
+-ruby scripts/SaneMaster.rb sync_mini
+-ruby ~/SaneApps/infra/SaneProcess/scripts/sane_test.rb SaneBar
++ruby scripts/SaneMaster.rb verify
+ ```
+ 
+-Mini runtime scripts live in [scripts/mini/README.md](scripts/mini/README.md). The direct `scripts/automation/sync-codex-mini.sh` script remains available, but operators should prefer the `SaneMaster.rb sync_mini` wrapper.
++Teams that already use a remote builder, CI runner, or dedicated test host can wire that through `SaneMaster.rb` so agents still call one safe project command instead of inventing raw build/test steps.
+ 
+ ## SaneUI Guardrails
+ 
+-SaneProcess also carries SaneApps design-system policy because visual drift is part of workflow drift.
++SaneProcess also carries SaneApps design-system policy as an example of enforcing product-specific UI rules alongside code workflow rules.
+ 
+-For settings, About, license, updater, button-style, or typography work:
++For projects using SaneUI settings, About, license, updater, button-style, or typography surfaces:
+ 
+-- Inspect `~/SaneApps/infra/SaneUI/Sources/SaneUICatalog/SaneUICatalogApp.swift` first.
++- Inspect the shared SaneUI catalog/source of truth first.
+ - Compose shared `SaneSettingsContainer`, `SaneAboutView`, `LicenseSettingsView`, and `SaneSparkleRow`.
+ - Keep shared settings text bright white and at least `13pt`.
+ - Do not use `.secondary`, gray helper text, `mailto:` bug-report paths, `Manage Access` copy, app-local updater rows, local `SaneSparkleRow`, or `.buttonStyle(.bordered)` in those surfaces.
+@@ -171,10 +170,9 @@ Client adapter state is stored locally in the relevant runtime directory; shared
+ | File | Owns |
+ |------|------|
+ | [AGENTS.md](AGENTS.md) | Client-neutral operating rules, trigger map, required workflows |
+-| [DEVELOPMENT.md](DEVELOPMENT.md) | Canonical commands, verification paths, Mini workflows, daily SOP |
++| [DEVELOPMENT.md](DEVELOPMENT.md) | Canonical commands, verification paths, daily SOP |
+ | [ARCHITECTURE.md](ARCHITECTURE.md) | System design, decisions, research notes, tradeoffs |
+ | [scripts/hooks/README.md](scripts/hooks/README.md) | Native hook layer |
+-| [scripts/mini/README.md](scripts/mini/README.md) | Mini runtime/build-server scripts |
+ | [scripts/codex-bin/README.md](scripts/codex-bin/README.md) | Codex helper source mirrored to `~/.codex/bin/` |
+ 
+ The rule is deliberate: update an existing source-of-truth doc before adding another markdown file.
+@@ -194,7 +192,6 @@ SaneProcess ships reusable skills that can be mirrored into `.agents/skills/` or
+ scripts/
+   hooks/          Native enforcement hooks and tests
+   sanemaster/     SaneMaster command modules
+-  mini/           Mac Mini runtime/build-server scripts
+   automation/     Scripted automation helpers
+   codex-bin/      Codex control-plane helper source
+ skills/           Reusable repo skills
+diff --git a/assets/hero-process.jpeg b/assets/hero-process.jpeg
+new file mode 100644
+index 0000000..0146407
+Binary files /dev/null and b/assets/hero-process.jpeg differ
+diff --git a/assets/hero-shield.jpeg b/assets/hero-shield.jpeg
+deleted file mode 100644
+index 06d8d1e..0000000
+Binary files a/assets/hero-shield.jpeg and /dev/null differ
+diff --git a/assets/saneprocess-mark.png b/assets/saneprocess-mark.png
+new file mode 100644
+index 0000000..77597c2
+Binary files /dev/null and b/assets/saneprocess-mark.png differ
+diff --git a/assets/social-preview.jpeg b/assets/social-preview.jpeg
+index e781a09..6ee2aeb 100644
+Binary files a/assets/social-preview.jpeg and b/assets/social-preview.jpeg differ
+diff --git a/templates/FULL_PROJECT_BOOTSTRAP.md b/templates/FULL_PROJECT_BOOTSTRAP.md
+index 61afe4f..beefc26 100644
+--- a/templates/FULL_PROJECT_BOOTSTRAP.md
++++ b/templates/FULL_PROJECT_BOOTSTRAP.md
+@@ -1,6 +1,7 @@
+ # Full Sane* Project Bootstrap Guide
+ 
+ > **Complete checklist for launching a new macOS app from scratch to distribution**
++> **SaneApps internal template:** replace SaneApps paths, shared keys, app names, release host choices, and private operational assumptions before reusing outside the SaneApps fleet.
+ > Last updated: 2026-01-20 (Migrated to sane-apps org, removed Homebrew, added paid distribution model)
+ 
+ ---
+diff --git a/templates/NEW_PROJECT_TEMPLATE.md b/templates/NEW_PROJECT_TEMPLATE.md
+index e99f17c..8715924 100644
+--- a/templates/NEW_PROJECT_TEMPLATE.md
++++ b/templates/NEW_PROJECT_TEMPLATE.md
+@@ -1,6 +1,7 @@
+ # Sane* Project Template
+ 
+-> Use this template when setting up a new Sane* project for Claude Code, Codex, and other compatible coding agents.
++> SaneApps internal template. Use this when setting up a new Sane* project for Claude Code, Codex, and other compatible coding agents.
++> Public adopters should treat hardcoded `~/SaneApps/...` paths and Sane* app names as examples to replace with their own repo paths and products.
+ > Trigger: "set up project template for X" or "use project template for X"
+ 
+ ## Quick Setup Checklist

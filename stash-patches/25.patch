@@ -1,0 +1,409 @@
+diff --git a/DEVELOPMENT.md b/DEVELOPMENT.md
+index 1d88463..69209b7 100644
+--- a/DEVELOPMENT.md
++++ b/DEVELOPMENT.md
+@@ -113,7 +113,7 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
+ | Command | Purpose |
+ |---------|---------|
+ | `verify [--ui]` | Build + run tests (include UI tests with `--ui`) |
+-| `status` | Live cross-reference across git, inbox, issues, release lanes, and current signals |
++| `status` | Mini-routed live cross-reference across git, inbox, listing actions, org-wide GitHub issues/PRs, release lanes, and current signals |
+ | `check_inbox [check|review <id>|read <id>|reply ...]` | Canonical support inbox workflow wrapper |
+ | `test_mode` | Kill → Build → Launch → Logs |
+ | `doctor` | Environment health check |
+@@ -193,7 +193,7 @@ This is a dashboard-action tracker, not an uploader. Lemon Squeezy currently exp
+ 
+ Operational SOP:
+ - `scripts/automation/morning-report.sh` now regenerates the workbook automatically, so new listing/setup emails show up in the nightly report without a manual spreadsheet pass.
+-- `scripts/automation/sane-status-crossref.sh` now shows the live listing-action counts and current `Needs action` rows.
++- `scripts/automation/sane-status-crossref.sh` now shows live listing-action counts, current `Needs action` rows, and org-wide GitHub issues/PRs. GitHub sections must still run when an earlier sales/inbox/listing section is unavailable.
+ - Known recurring vendors should get explicit rules in `scripts/automation/listing_actions_rules.py`.
+ - New unknown listing/setup senders are still surfaced via the generic heuristic path, with a note saying they should be promoted to a dedicated rule if they recur.
+ - If the open queue includes `StartupSubmit — Decide whether vendor must redo manual setups`, then downstream setup rows like Gartner, SaaSworthy, and SourceForge are vendor-owned remediation, not direct operator work. Keep them visible as evidence/monitoring, but do not manually complete those setups unless the user explicitly overrides that rule.
+@@ -231,7 +231,7 @@ SaneApps is Mini/local first.
+ | Need | Standard path | Not this |
+ |------|---------------|----------|
+ | Find the right tool first | `ruby scripts/SaneMaster.rb tool_discovery --query "..."` | Random searches, guessing, or inventing a new script first |
+-| Check live project status | `ruby scripts/SaneMaster.rb status` | Piecing status together manually from git, inbox, sales, and issues |
++| Check live project status | `ruby scripts/SaneMaster.rb status` | Piecing status together manually from git, inbox, sales, and GitHub queues |
+ | Build and test app code | `ruby scripts/SaneMaster.rb verify [--ui]` | Raw `xcodebuild` unless the tool itself is what you are fixing |
+ | Launch and smoke-test an app | `ruby scripts/SaneMaster.rb test_mode --release --no-logs` | Manual local launches and stale DerivedData builds |
+ | Mini live window screenshots | `scripts/mini/capture-mini-screenshot.sh --app "<App>" --window-name "<Window>" --mode temp` | Plain `ssh` + `screencapture` guessing from a non-GUI shell |
+diff --git a/SESSION_HANDOFF.md b/SESSION_HANDOFF.md
+index aa7690f..d7c8d07 100644
+--- a/SESSION_HANDOFF.md
++++ b/SESSION_HANDOFF.md
+@@ -2340,3 +2340,19 @@ Public guidance lives in `CLAUDE_PUBLIC.md`.
+ - Verified `./scripts/check-inbox.sh repair-replied-status --all-open` now runs cleanly after removing the brittle bulk-shell path; current run found `0` additional stale open threads with reply evidence.
+ - Reviewed current refund thread `#574` on the Mini so it is cleared for reply without `--force`.
+ - Net effect: the stale "already replied but still needs_human" drift for refund / duplicate-key threads is fixed at the API level, not just papered over in the shell wrapper.
++
++## 2026-04-23 - status GitHub queue blind spot fixed
++- Root cause: `scripts/automation/sane-status-crossref.sh` used a hardcoded seven-app GitHub repo list, so it omitted infra/support repos like `sane-apps/SaneProcess`, `SaneUI`, `SaneAI`, `Sane-AppleDocs`, `Sane-XcodeBuildMCP`, and `homebrew-tap`. `ruby scripts/SaneMaster.rb status` also was not in the Mini-first routing set.
++- Fixes:
++  - `sane-status-crossref.sh` now uses org-wide `gh search issues` and `gh search prs` against `sane-apps`, groups results by repo, and includes URLs.
++  - Earlier sales/inbox/listing section failures now print a warning and continue, so GitHub issues/PRs cannot be hidden by an unrelated transient failure.
++  - `scripts/SaneMaster.rb` now Mini-routes `status`.
++  - Codex and Claude status skill docs now point SaneProcess status runs at `ruby scripts/SaneMaster.rb status`, not the raw shell script.
++  - `DEVELOPMENT.md` and `scripts/automation/README.md` document org-wide GitHub coverage.
++- Regression test:
++  - `scripts/automation/status_crossref_test.py` proves a SaneProcess issue and PR appear, PRs returned by issue search are filtered out, and GitHub sections still run after sales/inbox failures.
++- Verification:
++  - Local: `bash -n scripts/automation/sane-status-crossref.sh`, `python3 -m unittest scripts/automation/status_crossref_test.py`, and `ruby -c scripts/SaneMaster.rb` passed.
++  - Mini canonical: `ruby scripts/SaneMaster.rb status` routed to Mini, completed end to end, and surfaced open issues `SaneBar #136`, `SaneBar #129`, `SaneProcess #8`, and `homebrew-tap #1`.
++  - The same Mini run surfaced 30 open PRs across `Sane-AppleDocs`, `Sane-XcodeBuildMCP`, `SaneClip`, `SaneProcess`, and `SaneVideo`, including `SaneProcess #9`.
++- Current status caveat: `check-inbox.sh` still has its own GitHub subsection that only shows SaneBar issues; the canonical status runner's new org-wide sections are now the source of truth for the full queue.
+diff --git a/scripts/SaneMaster.rb b/scripts/SaneMaster.rb
+index 9f60d8e..f7d36e1 100755
+--- a/scripts/SaneMaster.rb
++++ b/scripts/SaneMaster.rb
+@@ -264,6 +264,7 @@ class SaneMaster
+                                   validate-tests
+                                   doctor
+                                   health
++                                  status
+                                   reset
+                                   check_permissions
+                                   dead_code
+diff --git a/scripts/automation/README.md b/scripts/automation/README.md
+index 169b9bd..b6b30d3 100644
+--- a/scripts/automation/README.md
++++ b/scripts/automation/README.md
+@@ -338,7 +338,7 @@ Use this after website copy or release-page changes. It is a manual audit helper
+ 
+ ### sane-status-crossref.sh
+ 
+-One-command cross-reference run for business health (sales, inbox, and GitHub issues).
++One-command cross-reference run for business health (sales, inbox, listing actions, and GitHub issues/PRs).
+ 
+ **Usage:**
+ ```bash
+@@ -348,7 +348,9 @@ ruby scripts/SaneMaster.rb status
+ **What it does:**
+ 1. Shows last-30-day LemonSqueezy sales summary.
+ 2. Shows current inbox status and action-needed threads.
+-3. Shows open GitHub issues across core SaneApps repos.
++3. Shows live listing/setup action counts.
++4. Shows open GitHub issues and PRs across the whole `sane-apps` org, including infra and private repos visible to `gh`.
++5. Continues to later sections if sales, inbox, or listing actions has a transient failure, so GitHub work is not silently hidden.
+ 
+ ### sane-support-kickoff.sh
+ 
+diff --git a/scripts/automation/sane-status-crossref.sh b/scripts/automation/sane-status-crossref.sh
+index 3605706..c8a1388 100755
+--- a/scripts/automation/sane-status-crossref.sh
++++ b/scripts/automation/sane-status-crossref.sh
+@@ -4,45 +4,134 @@ set -euo pipefail
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ 
+-CHECK_INBOX="${HOME}/SaneApps/infra/scripts/check-inbox.sh"
+-SANE_MASTER="${REPO_ROOT}/SaneMaster.rb"
++CHECK_INBOX="${CHECK_INBOX:-${HOME}/SaneApps/infra/scripts/check-inbox.sh}"
++SANE_MASTER="${SANE_MASTER:-${REPO_ROOT}/SaneMaster.rb}"
++GITHUB_ORG="${STATUS_GITHUB_ORG:-sane-apps}"
++GITHUB_LIMIT="${STATUS_GITHUB_LIMIT:-1000}"
++GITHUB_PER_REPO_LIMIT="${STATUS_GITHUB_PER_REPO_LIMIT:-20}"
+ LISTING_JSON_PATH="${STATUS_LISTING_JSON_PATH:-}"
++GITHUB_ISSUES_JSON_PATH="${STATUS_GITHUB_ISSUES_JSON_PATH:-}"
++GITHUB_PRS_JSON_PATH="${STATUS_GITHUB_PRS_JSON_PATH:-}"
+ LISTING_JSON_CLEANUP=0
++GITHUB_ISSUES_JSON_CLEANUP=0
++GITHUB_PRS_JSON_CLEANUP=0
+ 
+ if [[ -z "$LISTING_JSON_PATH" ]]; then
+   LISTING_JSON_PATH="$(mktemp "${TMPDIR:-/tmp}/sane-status-listing.XXXXXX")"
+   LISTING_JSON_CLEANUP=1
+ fi
+ 
++if [[ -z "$GITHUB_ISSUES_JSON_PATH" ]]; then
++  GITHUB_ISSUES_JSON_PATH="$(mktemp "${TMPDIR:-/tmp}/sane-status-github-issues.XXXXXX")"
++  GITHUB_ISSUES_JSON_CLEANUP=1
++fi
++
++if [[ -z "$GITHUB_PRS_JSON_PATH" ]]; then
++  GITHUB_PRS_JSON_PATH="$(mktemp "${TMPDIR:-/tmp}/sane-status-github-prs.XXXXXX")"
++  GITHUB_PRS_JSON_CLEANUP=1
++fi
++
+ cleanup() {
+   if [[ "$LISTING_JSON_CLEANUP" -eq 1 ]]; then
+     rm -f "$LISTING_JSON_PATH"
+   fi
++  if [[ "$GITHUB_ISSUES_JSON_CLEANUP" -eq 1 ]]; then
++    rm -f "$GITHUB_ISSUES_JSON_PATH"
++  fi
++  if [[ "$GITHUB_PRS_JSON_CLEANUP" -eq 1 ]]; then
++    rm -f "$GITHUB_PRS_JSON_PATH"
++  fi
+ }
+ 
+ trap cleanup EXIT
+ 
++print_github_json() {
++  local path="$1"
++  local kind="$2"
++
++  STATUS_GITHUB_LIMIT="$GITHUB_LIMIT" STATUS_GITHUB_PER_REPO_LIMIT="$GITHUB_PER_REPO_LIMIT" python3 - "$path" "$kind" <<'PY'
++import json
++import os
++import sys
++from collections import defaultdict
++
++path, kind = sys.argv[1], sys.argv[2]
++try:
++    with open(path, "r", encoding="utf-8") as handle:
++        rows = json.load(handle)
++except Exception as exc:
++    print(f"Unable to parse GitHub {kind} data: {exc}")
++    sys.exit(0)
++
++if kind == "issues":
++    rows = [row for row in rows if not row.get("isPullRequest")]
++
++groups = defaultdict(list)
++for row in rows:
++    repo_obj = row.get("repository") or {}
++    repo = repo_obj.get("nameWithOwner") or repo_obj.get("name") or "unknown"
++    groups[repo].append(row)
++
++label = "issues" if kind == "issues" else "PRs"
++if not rows:
++    print(f"No open GitHub {label} found.")
++    sys.exit(0)
++
++print(f"Open GitHub {label}: {len(rows)} across {len(groups)} repos")
++search_limit = int(os.environ.get("STATUS_GITHUB_LIMIT", "0") or "0")
++if search_limit > 0 and len(rows) >= search_limit:
++    print(f"WARNING: GitHub {label} reached the configured search limit ({search_limit}); raise STATUS_GITHUB_LIMIT and rerun.")
++
++per_repo_limit = int(os.environ.get("STATUS_GITHUB_PER_REPO_LIMIT", "20"))
++
++for repo in sorted(groups):
++    repo_rows = sorted(
++        groups[repo],
++        key=lambda row: row.get("updatedAt") or "",
++        reverse=True,
++    )
++    print("")
++    print(f"## {repo}")
++    for row in repo_rows[:per_repo_limit]:
++        updated = (row.get("updatedAt") or "").split("T", 1)[0]
++        number = row.get("number", "?")
++        title = row.get("title", "").strip()
++        url = row.get("url", "")
++        suffix = f" ({updated})" if updated else ""
++        print(f"- #{number} {title}{suffix}")
++        if url:
++            print(f"  {url}")
++    remaining = len(repo_rows) - per_repo_limit
++    if remaining > 0:
++        print(f"- ... {remaining} more not shown")
++PY
++}
++
+ printf '\nSane status cross-reference (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+ printf '%s\n' "----------------------------------------"
+ 
+ printf '\n[1/5] Sales (last 30 days)\n'
+ if [[ -x "$SANE_MASTER" ]]; then
+-  ruby "$SANE_MASTER" sales --days 30
++  if ! ruby "$SANE_MASTER" sales --days 30; then
++    echo "Sales status unavailable; continuing with remaining status sections."
++  fi
+ else
+   echo "SaneMaster sales not executable"
+ fi
+ 
+ printf '\n[2/5] Inbox status\n'
+ if [[ -x "$CHECK_INBOX" ]]; then
+-  "$CHECK_INBOX"
++  if ! "$CHECK_INBOX"; then
++    echo "Inbox status unavailable; continuing with remaining status sections."
++  fi
+ else
+   echo "check-inbox.sh not found at $CHECK_INBOX"
+ fi
+ 
+ printf '\n[3/5] Listing actions\n'
+ if [[ -x "$SANE_MASTER" ]]; then
+-  ruby "$SANE_MASTER" listing_actions --json-out "$LISTING_JSON_PATH" >/dev/null
+-  python3 - "$LISTING_JSON_PATH" <<'PY'
++  if ruby "$SANE_MASTER" listing_actions --json-out "$LISTING_JSON_PATH" >/dev/null; then
++    if ! python3 - "$LISTING_JSON_PATH" <<'PY'
+ import json
+ import sys
+ 
+@@ -65,26 +154,44 @@ if needs:
+ else:
+     print("No live listing/setup actions.")
+ PY
++    then
++      echo "Listing actions parse failed; continuing with remaining status sections."
++    fi
++  else
++    echo "Listing actions unavailable; continuing with remaining status sections."
++  fi
+ else
+   echo "SaneMaster listing_actions not executable"
+ fi
+ 
+-printf '\n[4/5] Open GitHub issues (sane-apps org)\n'
++printf '\n[4/5] Open GitHub issues (%s org)\n' "$GITHUB_ORG"
+ if command -v gh >/dev/null 2>&1; then
+-  for repo in SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo; do
+-    printf '\n## %s\n' "$repo"
+-    gh issue list -R "sane-apps/${repo}" --state open --limit 10 || echo "  Unable to fetch issues for ${repo} (auth missing or no issues)."
+-  done
++  if gh search issues --owner "$GITHUB_ORG" --state open \
++    --archived=false \
++    --sort updated \
++    --limit "$GITHUB_LIMIT" \
++    --json repository,number,title,isPullRequest,updatedAt,url \
++    > "$GITHUB_ISSUES_JSON_PATH"; then
++    print_github_json "$GITHUB_ISSUES_JSON_PATH" "issues"
++  else
++    echo "Unable to fetch GitHub issues for ${GITHUB_ORG}; check gh auth/network."
++  fi
+ else
+   echo "GitHub CLI (gh) not installed"
+ fi
+ 
+-printf '\n[5/5] Open GitHub PRs (sane-apps org)\n'
++printf '\n[5/5] Open GitHub PRs (%s org)\n' "$GITHUB_ORG"
+ if command -v gh >/dev/null 2>&1; then
+-  for repo in SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo; do
+-    printf '\n## %s\n' "$repo"
+-    gh pr list -R "sane-apps/${repo}" --state open --limit 10 || echo "  Unable to fetch PRs for ${repo} (auth missing or no PRs)."
+-  done
++  if gh search prs --owner "$GITHUB_ORG" --state open \
++    --archived=false \
++    --sort updated \
++    --limit "$GITHUB_LIMIT" \
++    --json repository,number,title,updatedAt,url \
++    > "$GITHUB_PRS_JSON_PATH"; then
++    print_github_json "$GITHUB_PRS_JSON_PATH" "prs"
++  else
++    echo "Unable to fetch GitHub PRs for ${GITHUB_ORG}; check gh auth/network."
++  fi
+ else
+   echo "GitHub CLI (gh) not installed"
+ fi
+diff --git a/scripts/automation/status_crossref_test.py b/scripts/automation/status_crossref_test.py
+index f56a75c..3dca694 100644
+--- a/scripts/automation/status_crossref_test.py
++++ b/scripts/automation/status_crossref_test.py
+@@ -17,7 +17,7 @@ def write_executable(path: Path, body: str) -> None:
+ 
+ 
+ class StatusCrossrefScriptTests(unittest.TestCase):
+-    def test_runner_uses_json_file_flow_and_reaches_issue_and_pr_sections(self):
++    def test_runner_uses_org_wide_github_search_and_survives_section_failures(self):
+         with tempfile.TemporaryDirectory() as tmp:
+             root = Path(tmp)
+             fake_home = root / "home"
+@@ -41,7 +41,8 @@ class StatusCrossrefScriptTests(unittest.TestCase):
+                     command = ARGV.shift
+                     case command
+                     when "sales"
+-                      puts "stub sales ok"
++                      warn "stub sales failed"
++                      exit 42
+                     when "listing_actions"
+                       json_out = nil
+                       while (arg = ARGV.shift)
+@@ -74,7 +75,7 @@ class StatusCrossrefScriptTests(unittest.TestCase):
+             inbox_dir.mkdir(parents=True)
+             write_executable(
+                 inbox_dir / "check-inbox.sh",
+-                "#!/usr/bin/env bash\nprintf 'stub inbox ok\\n'\n",
++                "#!/usr/bin/env bash\nprintf 'stub inbox failed\\n'\nexit 7\n",
+             )
+ 
+             bin_dir = root / "bin"
+@@ -84,12 +85,56 @@ class StatusCrossrefScriptTests(unittest.TestCase):
+                 textwrap.dedent(
+                     """\
+                     #!/usr/bin/env bash
+-                    if [[ "$1" == "issue" && "$2" == "list" ]]; then
+-                      printf '123\\tOPEN\\tStub issue\\n'
++                    if [[ "$1" == "search" && "$2" == "issues" ]]; then
++                      cat <<'JSON'
++                    [
++                      {
++                        "repository": {"nameWithOwner": "sane-apps/SaneProcess"},
++                        "number": 8,
++                        "title": "Integration gate regression",
++                        "isPullRequest": false,
++                        "updatedAt": "2026-04-14T16:13:09Z",
++                        "url": "https://github.com/sane-apps/SaneProcess/issues/8"
++                      },
++                      {
++                        "repository": {"nameWithOwner": "sane-apps/SaneBar"},
++                        "number": 136,
++                        "title": "Arrangement bug is back",
++                        "isPullRequest": false,
++                        "updatedAt": "2026-04-23T18:10:01Z",
++                        "url": "https://github.com/sane-apps/SaneBar/issues/136"
++                      },
++                      {
++                        "repository": {"nameWithOwner": "sane-apps/SaneBar"},
++                        "number": 137,
++                        "title": "Pull request returned by issue search",
++                        "isPullRequest": true,
++                        "updatedAt": "2026-04-23T18:11:01Z",
++                        "url": "https://github.com/sane-apps/SaneBar/pull/137"
++                      }
++                    ]
++                    JSON
+                       exit 0
+                     fi
+-                    if [[ "$1" == "pr" && "$2" == "list" ]]; then
+-                      printf '17\\tOPEN\\tStub pr\\n'
++                    if [[ "$1" == "search" && "$2" == "prs" ]]; then
++                      cat <<'JSON'
++                    [
++                      {
++                        "repository": {"nameWithOwner": "sane-apps/SaneProcess"},
++                        "number": 9,
++                        "title": "chore(deps): bump hono",
++                        "updatedAt": "2026-04-16T03:04:21Z",
++                        "url": "https://github.com/sane-apps/SaneProcess/pull/9"
++                      },
++                      {
++                        "repository": {"nameWithOwner": "sane-apps/SaneClip"},
++                        "number": 8,
++                        "title": "ci: add codex-plugin-scanner workflow",
++                        "updatedAt": "2026-04-13T21:26:51Z",
++                        "url": "https://github.com/sane-apps/SaneClip/pull/8"
++                      }
++                    ]
++                    JSON
+                       exit 0
+                     fi
+                     echo "unexpected gh args: $*" >&2
+@@ -111,6 +156,8 @@ class StatusCrossrefScriptTests(unittest.TestCase):
+             )
+ 
+             self.assertEqual(result.returncode, 0, msg=result.stderr)
++            self.assertIn("Sales status unavailable", result.stdout)
++            self.assertIn("Inbox status unavailable", result.stdout)
+             self.assertIn("[3/5] Listing actions", result.stdout)
+             self.assertIn("Current actions: 1", result.stdout)
+             self.assertIn(
+@@ -118,9 +165,13 @@ class StatusCrossrefScriptTests(unittest.TestCase):
+                 result.stdout,
+             )
+             self.assertIn("[4/5] Open GitHub issues", result.stdout)
+-            self.assertIn("123\tOPEN\tStub issue", result.stdout)
++            self.assertIn("Open GitHub issues: 2 across 2 repos", result.stdout)
++            self.assertIn("## sane-apps/SaneProcess", result.stdout)
++            self.assertIn("#8 Integration gate regression", result.stdout)
++            self.assertNotIn("Pull request returned by issue search", result.stdout)
+             self.assertIn("[5/5] Open GitHub PRs", result.stdout)
+-            self.assertIn("17\tOPEN\tStub pr", result.stdout)
++            self.assertIn("Open GitHub PRs: 2 across 2 repos", result.stdout)
++            self.assertIn("#9 chore(deps): bump hono", result.stdout)
+             self.assertIn("Done.", result.stdout)
+ 
+ 

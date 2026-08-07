@@ -1,0 +1,240 @@
+diff --git a/scripts/automation/README.md b/scripts/automation/README.md
+index e87d8f3..169b9bd 100644
+--- a/scripts/automation/README.md
++++ b/scripts/automation/README.md
+@@ -234,12 +234,12 @@ ruby scripts/SaneMaster.rb sync_mini mini --quiet --no-restart
+ 7. Seeds Mini's local knowledge graph cache from `~/.claude/memory/knowledge-graph.jsonl` when present.
+ 8. Updates Mini automation SQLite rows from TOML so prompt/status changes apply immediately.
+ 9. Verifies Air↔Mini SHA-256 parity for synced control-plane files, Codex binaries, and dry-run `rsync` parity for Codex skills.
+-10. Sets Mini AM and PM runs active by default, with explicit pause flags when needed.
++10. Mirrors the safe local paused state by default so sync/reconcile cannot silently re-enable Mini background runs. Use explicit activation flags when you intentionally want Mini unattended runs.
+ 11. Optionally restarts Codex on Mini so scheduler reloads immediately.
+ 
+ ### start-workday.sh
+ 
+-One-command MacBook workflow start while Mini runs unattended.
++One-command MacBook workflow start that keeps Mini runs paused by default so manual sessions do not race unattended automation.
+ 
+ **Usage:**
+ ```bash
+@@ -249,6 +249,7 @@ start-workday.sh mini --no-open
+ 
+ **What it does:**
+ 1. Syncs automation config to Mini.
++   Default behavior keeps Mini AM/PM runs paused. Use `--activate-mini-runs` only when you explicitly want unattended Mini runs re-enabled.
+ 2. Runs the canonical Air↔Mini reconcile wrapper (`reconcile-air-mini.sh mini --no-sync-control-plane`).
+ 3. Pulls latest Mini morning/nightly reports locally.
+ 4. Shows Mini automation scheduler status.
+@@ -268,6 +269,7 @@ reconcile-air-mini.sh mini --no-sync-control-plane
+ 
+ **What it does:**
+ 1. Optionally syncs control-plane files to Mini without restarting Codex.
++   Default behavior keeps Mini AM/PM runs paused. Use `--activate-mini-runs` only when you explicitly want unattended Mini runs re-enabled.
+ 2. Runs `git-sync-safe.sh --reconcile-dirty` on the Mini first.
+ 3. Runs `git-sync-safe.sh --peer mini --reconcile-dirty` locally.
+ 4. Leaves canonical repos clean on both machines or fails loudly.
+diff --git a/scripts/automation/reconcile-air-mini.sh b/scripts/automation/reconcile-air-mini.sh
+index 8f041fc..e98763f 100755
+--- a/scripts/automation/reconcile-air-mini.sh
++++ b/scripts/automation/reconcile-air-mini.sh
+@@ -6,6 +6,8 @@ set -euo pipefail
+ MINI_HOST="mini"
+ QUIET=0
+ SYNC_CONTROL_PLANE=1
++ACTIVATE_MINI_RUNS=0
++DUMP_CONFIG=0
+ 
+ usage() {
+   cat <<USAGE
+@@ -14,7 +16,9 @@ Usage: $(basename "$0") [mini-host] [--quiet] [--no-sync-control-plane]
+ Examples:
+   $(basename "$0")
+   $(basename "$0") mini --quiet
++  $(basename "$0") mini --activate-mini-runs
+   $(basename "$0") mini --no-sync-control-plane
++  $(basename "$0") --dump-config
+ USAGE
+ }
+ 
+@@ -43,6 +47,14 @@ while [[ $# -gt 0 ]]; do
+       SYNC_CONTROL_PLANE=0
+       shift
+       ;;
++    --activate-mini-runs)
++      ACTIVATE_MINI_RUNS=1
++      shift
++      ;;
++    --dump-config)
++      DUMP_CONFIG=1
++      shift
++      ;;
+     --*)
+       die "Unknown option: $1"
+       ;;
+@@ -53,6 +65,14 @@ while [[ $# -gt 0 ]]; do
+   esac
+ done
+ 
++if [[ "$DUMP_CONFIG" -eq 1 ]]; then
++  printf 'MINI_HOST=%s\n' "$MINI_HOST"
++  printf 'QUIET=%s\n' "$QUIET"
++  printf 'SYNC_CONTROL_PLANE=%s\n' "$SYNC_CONTROL_PLANE"
++  printf 'ACTIVATE_MINI_RUNS=%s\n' "$ACTIVATE_MINI_RUNS"
++  exit 0
++fi
++
+ ROOT="$HOME/SaneApps/infra/SaneProcess"
+ SYNC_SCRIPT="$ROOT/scripts/automation/sync-codex-mini.sh"
+ GIT_SYNC_SCRIPT="$ROOT/scripts/automation/git-sync-safe.sh"
+@@ -62,7 +82,11 @@ GIT_SYNC_SCRIPT="$ROOT/scripts/automation/git-sync-safe.sh"
+ if [[ "$SYNC_CONTROL_PLANE" -eq 1 ]]; then
+   [[ -x "$SYNC_SCRIPT" ]] || die "Missing control-plane sync script: $SYNC_SCRIPT"
+   log "1) Syncing control-plane files to $MINI_HOST..."
+-  bash "$SYNC_SCRIPT" "$MINI_HOST" --quiet --no-restart
++  sync_args=("$MINI_HOST" --quiet --no-restart --pause-mini-am --pause-mini-pm)
++  if [[ "$ACTIVATE_MINI_RUNS" -eq 1 ]]; then
++    sync_args=("$MINI_HOST" --quiet --no-restart --activate-mini-runs)
++  fi
++  bash "$SYNC_SCRIPT" "${sync_args[@]}"
+ fi
+ 
+ remote_home=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$MINI_HOST" 'printf %s "$HOME"') || die "Could not resolve $MINI_HOST home"
+diff --git a/scripts/automation/start-workday.sh b/scripts/automation/start-workday.sh
+index 7630dac..888092c 100755
+--- a/scripts/automation/start-workday.sh
++++ b/scripts/automation/start-workday.sh
+@@ -1,10 +1,12 @@
+ #!/bin/bash
+-# Start-of-day workflow from MacBook Air while Mini runs automation.
++# Start-of-day workflow from MacBook Air. Default behavior keeps Mini
++# automations paused so a manual work session does not fight unattended runs.
+ 
+ set -euo pipefail
+ 
+ MINI_HOST="mini"
+ OPEN_FILES=1
++ACTIVATE_MINI_RUNS=0
+ 
+ usage() {
+   cat <<USAGE
+@@ -13,6 +15,7 @@ Usage: $(basename "$0") [mini-host] [--no-open]
+ Examples:
+   $(basename "$0")
+   $(basename "$0") mini --no-open
++  $(basename "$0") mini --activate-mini-runs
+ USAGE
+ }
+ 
+@@ -26,6 +29,10 @@ while [[ $# -gt 0 ]]; do
+       OPEN_FILES=0
+       shift
+       ;;
++    --activate-mini-runs)
++      ACTIVATE_MINI_RUNS=1
++      shift
++      ;;
+     --*)
+       echo "ERROR: Unknown option: $1" >&2
+       exit 1
+@@ -48,8 +55,13 @@ LOCAL_INBOX="$HOME/SaneApps/infra/scripts/check-inbox.sh"
+ mkdir -p "$OUT_DIR"
+ 
+ echo "== SaneOps Workday Start =="
+-echo "1) Syncing automation config to Mini..."
+-bash "$SYNC_SCRIPT" "$MINI_HOST"
++if [[ "$ACTIVATE_MINI_RUNS" -eq 1 ]]; then
++  echo "1) Syncing automation config to Mini and activating Mini runs..."
++  bash "$SYNC_SCRIPT" "$MINI_HOST" --activate-mini-runs
++else
++  echo "1) Syncing automation config to Mini and keeping Mini runs paused..."
++  bash "$SYNC_SCRIPT" "$MINI_HOST" --pause-mini-am --pause-mini-pm
++fi
+ 
+ echo ""
+ echo "2) Air↔Mini repo reconcile..."
+diff --git a/scripts/automation/sync-codex-mini.sh b/scripts/automation/sync-codex-mini.sh
+index 57cf9e0..ae79f89 100755
+--- a/scripts/automation/sync-codex-mini.sh
++++ b/scripts/automation/sync-codex-mini.sh
+@@ -1,16 +1,17 @@
+ #!/bin/bash
+ # Sync SaneOps Codex automation config and active Codex skill metadata from the
+ # local machine to the Mac mini. Local role: paused (no duplicate runs). Mini
+-# role: unattended runner for both morning and nightly SaneOps unless
+-# explicitly paused.
++# role now mirrors that safe paused state by default so reconcile/start-workday
++# cannot silently re-enable background runs. Explicit activation is opt-in.
+ 
+ set -euo pipefail
+ 
+ MINI_HOST="mini"
+ QUIET=0
+ RESTART_CODEX=1
+-REMOTE_AM_STATUS="ACTIVE"
+-REMOTE_PM_STATUS="ACTIVE"
++REMOTE_AM_STATUS="PAUSED"
++REMOTE_PM_STATUS="PAUSED"
++DUMP_CONFIG=0
+ 
+ usage() {
+   cat <<USAGE
+@@ -20,8 +21,12 @@ Examples:
+   $(basename "$0")
+   $(basename "$0") mini --quiet
+   $(basename "$0") mini --no-restart
++  $(basename "$0") mini --activate-mini-runs
++  $(basename "$0") mini --activate-mini-am
++  $(basename "$0") mini --activate-mini-pm
+   $(basename "$0") mini --pause-mini-am
+   $(basename "$0") mini --pause-mini-pm
++  $(basename "$0") --dump-config
+ USAGE
+ }
+ 
+@@ -50,6 +55,19 @@ while [[ $# -gt 0 ]]; do
+       RESTART_CODEX=0
+       shift
+       ;;
++    --activate-mini-runs)
++      REMOTE_AM_STATUS="ACTIVE"
++      REMOTE_PM_STATUS="ACTIVE"
++      shift
++      ;;
++    --activate-mini-am)
++      REMOTE_AM_STATUS="ACTIVE"
++      shift
++      ;;
++    --activate-mini-pm)
++      REMOTE_PM_STATUS="ACTIVE"
++      shift
++      ;;
+     --pause-mini-am)
+       REMOTE_AM_STATUS="PAUSED"
+       shift
+@@ -58,6 +76,10 @@ while [[ $# -gt 0 ]]; do
+       REMOTE_PM_STATUS="PAUSED"
+       shift
+       ;;
++    --dump-config)
++      DUMP_CONFIG=1
++      shift
++      ;;
+     --*)
+       die "Unknown option: $1"
+       ;;
+@@ -68,6 +90,15 @@ while [[ $# -gt 0 ]]; do
+   esac
+ done
+ 
++if [[ "$DUMP_CONFIG" -eq 1 ]]; then
++  printf 'MINI_HOST=%s\n' "$MINI_HOST"
++  printf 'QUIET=%s\n' "$QUIET"
++  printf 'RESTART_CODEX=%s\n' "$RESTART_CODEX"
++  printf 'REMOTE_AM_STATUS=%s\n' "$REMOTE_AM_STATUS"
++  printf 'REMOTE_PM_STATUS=%s\n' "$REMOTE_PM_STATUS"
++  exit 0
++fi
++
+ command -v ssh >/dev/null 2>&1 || die "ssh not found"
+ command -v scp >/dev/null 2>&1 || die "scp not found"
+ command -v rsync >/dev/null 2>&1 || die "rsync not found"

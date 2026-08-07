@@ -1,0 +1,3674 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index d5136a7..404dc37 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -392,7 +392,8 @@ ssh mini 'tail -20 ~/SaneApps/outputs/nightly_report.md'
+ | **Released with same version** | ALWAYS bump version before release. Sparkle ignores same-version. |
+ | **Posted about SaneApps without disclosure** | ALWAYS identify as the developer: "I built [App]." |
+ | **Tested on MacBook Air** | ALWAYS use Mac Mini (`ssh mini`). Only `--local` if mini is down. |
+-| **Left the mini cluttered after testing** | Close dead Terminal windows / remote shells and kill test-only app instances when the run is done. |
++| **Left the mini cluttered after testing** | Close dead Terminal windows / remote shells and kill test-only app instances as soon as each verification step ends, not just at session end. |
++| **Captured the wrong Mini window** | Never use bare `capture-mini-screenshot.sh --active-window`; target Safari/Preview/app windows explicitly with `--app` + `--window-name` or `--window-id`, then close Safari/Preview right after the capture. |
+ | **Needed GUI-session signing on the mini** | Use `scripts/mini/mini-gui-run.sh` instead of one-off `/tmp` AppleScripts, and let it auto-close its Terminal window. |
+ | **Used gray text in UI** | ALL text MUST be bright white. `.white` primary, `.white.opacity(0.9)` min for secondary. NEVER `.secondary` or gray. |
+ | **Sent email without showing draft** | ALWAYS show exact draft to user and get "send" approval first. |
+diff --git a/DEVELOPMENT.md b/DEVELOPMENT.md
+index afaf38f..b6eb393 100644
+--- a/DEVELOPMENT.md
++++ b/DEVELOPMENT.md
+@@ -23,6 +23,23 @@ Use the same anti-fragmentation rule across every SaneApps repo:
+ - Keep public site content in one obvious folder per repo and say where it lives in the README.
+ - When docs drift, fix the root canonical file first, then sync the website or supporting docs.
+ 
++## Pricing Source Of Truth
++
++Use two files together whenever prices, paywalls, app-store metadata, or direct-store copy change:
++
++- human-readable rollout logic and tracking: `docs/pricing-rollout-2026-04-14.md`
++- machine-readable product metadata: `config/products.yml`
++
++Do not hardcode a new default price in templates, websites, or prompts without updating both.
++After any price change, rerun:
++
++```bash
++ruby scripts/link_monitor.rb
++ruby scripts/validation_report.rb
++```
++
++Then do Mini-first screenshot verification for the updated pricing surfaces.
++
+ ## Client Compatibility
+ 
+ SaneProcess has one SOP and multiple client-specific enforcement surfaces.
+@@ -125,8 +142,12 @@ Use SaneMaster for automation in this repo (preferred over raw commands).
+ 
+ License support rule: real customer license keys come only from LemonSqueezy-backed orders and license-key records. Use `check-inbox.sh review` + `whois` + the LemonSqueezy recovery/backfill flow for missing-key support. Do not generate local fallback keys.
+ 
++Context-first rule: for any request to investigate, document, explain, audit, or fix a problem, do not jump straight to the latest symptom or the first plausible patch. Build the full incident context first: background, current symptom, affected systems, timeline, prior attempts, current evidence, likely causes, and the required outcome. Durable notes and handoffs must record that context, not just the last action taken. Only skip this when the user explicitly asks for a quick tactical pass.
++
+ Email delivery rule: do not treat Worker acceptance as success. Normal inbox operations must only count an outbound as sent when Resend shows delivery evidence (`delivered`, `opened`, `clicked`, or `complained`). A `bounced` or still-unconfirmed outbound remains actionable and must be surfaced in `check`, `context`, `audit`, and `check-reply` until it is fixed and resent.
+ 
++Vendor escalation rule: if a third-party vendor thread uses a relay address and that relay bounces, do not keep replying to the broken thread path. Escalate to the vendor's direct support address, note the relay failure in `SESSION_HANDOFF.md`, and keep the vendor issue open/high-priority until delivery is confirmed and the vendor responds with a concrete remediation plan.
++
+ Duplicate-purchase refund rule: when you can prove the same customer paid twice for the same product, you may auto-refund the duplicate order without waiting on the normal “documented unresolved bug >24h” threshold, as long as the action still has an audit note and proof file. Standard investigation path:
+ 
+ ```bash
+@@ -421,6 +442,7 @@ Run this from the controlling machine with Codex installed. The capture itself s
+ ```
+ 
+ - This runs inside the Mini's logged-in GUI Terminal session through `mini-gui-run.sh`.
++- The wrapper resolves the real Mini host before `rsync`/`ssh` and requests a full automation-window reclaim before capture.
+ - First use may trigger a one-time Screen Recording permission request for Terminal on the Mini.
+ - Do **not** trust plain `ssh ... screencapture` as the primary path for live app windows.
+ 
+@@ -661,13 +683,51 @@ Minimum sign-off before any Setapp ship:
+   - do not silently mix Setapp onboarding language into the direct site
+ - Setapp handles first-line billing/licensing support in the published model, so support tooling needs to know the customer channel before troubleshooting licensing or updates.
+ 
++### Pricing Source Of Truth And Tracking
++
++`infra/SaneProcess/config/products.yml` is the canonical source of truth for:
++- `price_usd`
++- `business_model`
++- `channel_strategy`
++- `tracking_started_on`
++- `bundle_components`
++
++Current shipped pricing policy:
++- `SaneClick` = `$9.99` once
++- `SaneBar`, `SaneClip`, `SaneHosts` = `$14.99` once
++- `SaneSales` = `$24.99` once
++- `Sane Mac Utilities Bundle` = `$34.99` once direct-only
++- App Store pricing should match direct pricing for apps that still ship on the App Store
++- Local-first utilities stay `Free Basic + one-time Pro`; do not add subscriptions without a real recurring service
++
++When pricing changes:
++1. Update `config/products.yml` first.
++2. Update app copy, website copy, checkout routing, and support docs in the same change window.
++3. Record the rollout date in `tracking_started_on`.
++4. Capture baseline and follow-up metrics with:
++
++```bash
++ruby scripts/SaneMaster.rb sales --products
++ruby scripts/SaneMaster.rb downloads --days 30
++ruby scripts/SaneMaster.rb events --days 30
++```
++
++Review pricing impact at 7, 30, and 90 days. Compare:
++- paid orders by product
++- net revenue by product
++- downloads by product
++- activations / `license_activated`
++- new free users
++
++Do not judge the pricing change on revenue alone. Watch for conversion quality, support load, and whether high-value apps stop looking artificially cheap.
++
+ ### App Store IAP Readiness
+ 
+ `scripts/appstore_submit.rb` now includes an IAP readiness pass for any App Store submission when `appstore.product_id` is set in `.saneprocess` (macOS or iOS).
+ 
+ What it auto-checks/fixes:
+ - Missing IAP localization (`en-US`)
+-- Missing IAP price schedule (defaults to `6.99` USD unless overridden)
++- Missing IAP price schedule (reads `.saneprocess appstore.iap.price_usd` unless overridden)
+ - Missing IAP review screenshot (uses first matching screenshot from `.saneprocess appstore.screenshots`)
+ - Missing IAP availability
+ - Missing IAP review note
+@@ -678,10 +738,20 @@ Useful commands:
+ # IAP readiness only (no build upload, no app submission)
+ ruby scripts/appstore_submit.rb --iap-only --app-id <APP_ID> --project-root .
+ 
+-# Override default IAP USD price during readiness pass
++# Override the configured IAP USD price during readiness pass
+ ruby scripts/appstore_submit.rb --iap-only --app-id <APP_ID> --project-root . --iap-price-usd 4.99
+ ```
+ 
++Required config:
++
++```yaml
++appstore:
++  iap:
++    price_usd: 14.99
++```
++
++There is no longer a global fallback IAP price. Each App Store app must declare its own one-time unlock price in `.saneprocess`, or pass `--iap-price-usd` explicitly for one-off readiness runs.
++
+ Important Apple constraint:
+ - If ASC returns `STATE_ERROR.FIRST_IAP_MUST_BE_SUBMITTED_ON_VERSION`, the IAP is ready but must be reviewed together with an app version submission.
+ - If you rotate away from a rejected IAP, rotate both `appstore.product_id` and `appstore.iap.display_name`. ASC keeps the old rejected IAP record, and duplicate display names will block creation of the replacement product.
+@@ -737,6 +807,62 @@ Recommended:
+ 
+ It also blocks generic fallback descriptions/keywords and flags iOS listing copy that still talks about macOS-only behavior.
+ 
++### App Store Screenshot Lane
++
++App Store screenshots are a release asset, not a marketing afterthought.
++
++Required SOP:
++- Capture and validate App Store screenshots on the Mini, not on the Air.
++- Do not run App Store screenshot capture from a plain `ssh mini 'bash ...'` shell. Use the Mini GUI session. The app capture scripts now auto-reroute through `scripts/mini/mini-gui-run.sh` when triggered from SSH on the Mini, because macOS window rendering can hang or produce blank assets without a real GUI-backed Terminal session.
++- Treat Terminal cleanup as part of the screenshot lane, not optional cleanup afterward. The shared Mini runner now tags automation windows with `SaneApps Automation:`, reclaims stale windows automatically, and screenshot lanes must request a full reclaim before they capture.
++- If the Mini desktop already looks polluted, reclaim it first with `ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-reclaim-automation-windows.sh --all --hide-terminal'`.
++- Use dedicated App Store screenshot assets. Do not reuse undersized website images and let App Store Connect scale them.
++- Audit every screenshot against the real app before upload. Each frame must show a real, current feature state and a clear story:
++  - what the screen is
++  - why the feature matters
++  - why a buyer would care
++- Reject any screenshot that is blurry, off-spec, stale, contaminated by Terminal/browser/dev UI, cropped into nonsense, or showing private/junk/demo text that would confuse a customer.
++- For every app with `appstore.enabled: true`, keep both scripts present and working:
++  - `scripts/capture_appstore_screenshots.sh`
++  - `scripts/validate_appstore_screenshots.sh`
++- For every app with `appstore.enabled: true`, keep `docs/appstore_screenshot_storyboard.yml` current. That storyboard is the source of truth for what each slot is supposed to show, why it matters, and which UI details must be visible.
++- Match Apple’s accepted screenshot sizes exactly. Current common lanes:
++  - iPhone 6.9": `1260x2736`, `1290x2796`, or `1320x2868`
++  - iPad 13": `2064x2752` or `2048x2732`
++  - Mac: `1280x800`, `1440x900`, `2560x1600`, or `2880x1800`
++  - Apple Watch: accepted device-specific sizes only
++- If screenshot text includes pricing or an upgrade CTA, that text must come from the app’s current runtime/display price label, not a hardcoded string in the screenshot view.
++- If an app has `scripts/validate_appstore_screenshots.sh`, `SaneMaster.rb appstore_preflight` now runs it and fails if it reports stale text, wrong sizes, or stale files.
++- `appstore_submit.rb` must also pass the app-level screenshot validator before it uploads screenshots, including `--screenshots-only` runs.
++- Run the shared public-page audit after any screenshot or metadata change that reaches App Store Connect:
++  - `ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_public_screenshot_audit.rb --project-root /path/to/app`
++  - The audit downloads the live customer-facing screenshots, compares them against the storyboard/local files, and writes an HTML plus JSON report.
++  - Open the generated HTML report and inspect the images side by side. Filename/order checks are not enough on their own because a stale live screenshot can keep the same basename while still showing old pixels or old pricing.
++- App Store Connect screenshot sets are effectively immutable once the lane is already submitted and live. If ASC returns `INVALID_STATE` / `Can't Delete Screenshot After Submit for review`, stop. Do not pretend the upload worked. The fix now requires a new App Store version, not another screenshot-only retry.
++- When price, paywall, App Store metadata, or website pricing changes, run a parity audit in this order:
++  1. `.saneprocess` metadata and IAP price
++  2. in-app runtime/display price labels
++  3. regenerated screenshot assets plus validator pass
++  4. App Store Connect IAP price schedule
++  5. live public App Store page price/copy/screenshots
++  6. website/direct-store copy
++- Do not call the rollout complete until the live public App Store page matches the canonical price and the submitted screenshots are sharp, current, and accurate.
++
++Practical rule:
++- upload-time resizing is not a fix. If the repo asset is off-spec, blurry, stale, or showing the wrong price, fix the source asset and regenerate it before submission.
++- If the screenshot is accurate but weak, replace it. “Technically true” is not good enough if it fails to explain the product or why someone should buy it.
++- Screenshot QA happens before submission, not after. If you discover a bad live screenshot on a `READY_FOR_SALE` lane, treat it as a release blocker for the next version and queue the corrected assets immediately.
++- Do not trust filename globs alone. The storyboard, the validator, and the live public audit all need to agree before an App Store screenshot lane is considered healthy.
++
++Use this order:
++
++```bash
++bash scripts/capture_appstore_screenshots.sh
++ruby scripts/SaneMaster.rb appstore_preflight
++ruby scripts/appstore_submit.rb --screenshots-only --app-id <APP_ID> --project-root .
++ruby scripts/appstore_submit.rb --sync-metadata-only --app-id <APP_ID> --project-root .
++```
++
+ ### App Store Policy Guardrails
+ 
+ `SaneMaster.rb appstore_preflight` now hard-fails known App Review rejection classes before submission:
+diff --git a/SESSION_HANDOFF.md b/SESSION_HANDOFF.md
+index f9f6427..f41f401 100644
+--- a/SESSION_HANDOFF.md
++++ b/SESSION_HANDOFF.md
+@@ -1,4 +1,322 @@
+ 
++## Session 112 (2026-04-17)
++
++### Done
++- Added a short-lived disk cache for `validation_report.rb` URL status/text probes at `~/.sanemaster/validation_network_cache.json`, so repeated validation passes reuse fresh network results for a brief window instead of redoing the same probes immediately.
++- Added regression coverage in `scripts/validation_report_test.rb` for disk-cached URL status and URL text reuse across validation instances.
++- Hardened `doctor` output in `scripts/sanemaster/verify.rb` so repos without a `Tests/Assets` lane no longer get a fake `test_video.mp4 missing` warning, and repos without protocol-driven mock generation no longer get a fake Mockolo warning.
++- Added regression coverage in `scripts/sanemaster/doctor_test.rb` for the new doctor skip behavior.
++
++### Verification Status
++- Local checks passed:
++  - `ruby scripts/validation_report_test.rb` → `19/19 passed`
++  - `ruby scripts/sanemaster/doctor_test.rb` → `2/2 passed`
++  - local repeated `validation_report.rb --json` runs were ~`23.3s`, but those were launched in parallel and are not the authoritative warm proof
++- Mini checks passed:
++  - `ruby scripts/validation_report_test.rb` → `19/19 passed`
++  - `ruby scripts/sanemaster/doctor_test.rb` → `2/2 passed`
++  - `ruby scripts/validation_report.rb --json`
++    - cold after deleting `~/.sanemaster/validation_network_cache.json` → `real 28.94s`
++    - immediate warm rerun → `real 8.08s`
++  - `ruby scripts/SaneMaster.rb status` after the validation cache work → `real 8.48s`
++  - `ruby scripts/SaneMaster.rb doctor` on the Mini now reports:
++    - `No Tests/Assets directory for this repo. Skipping test asset check.`
++    - `No protocol-driven mock lane detected for this repo. Skipping Mockolo check.`
++    instead of the old false warnings
++
++### Current State
++- The shared repeat-run paths are now substantially more efficient:
++  - `check_inbox` light path is cached
++  - `status` avoids duplicate inbox/GitHub work
++  - `meta` / `health` reuse tool-version cache and report real test health
++  - `tool_discovery` caches expensive health checks
++  - `validation_report` now has a true warm path for repeated runs
++- `doctor` is also more trustworthy for infra repos because it no longer reports missing lanes that do not apply.
++
++### Next
++- The next serious process-hardening target is structural splitting of the oversized shared Ruby files, starting with `scripts/appstore_submit.rb` or `scripts/sanemaster/release.rb`.
++- After that, reduce remaining cold-run cost in `validation_report.rb` further only if needed; warm repeat performance is now good.
++
++## Session 111 (2026-04-17)
++
++### Done
++- Fixed `SaneMaster.rb meta` test-health fallback so infra repos no longer falsely report `0 test files` just because they do not use only `*Tests.swift` targets. The fallback now counts shared Swift, Ruby, Python, and shell-style test files.
++- Added regression coverage in `scripts/sanemaster/meta_test.rb` for fallback test discovery and version-cache reads.
++- Hardened `scripts/automation/tool_discovery_receipt.rb` with a short-lived health-check cache for `doctor` and `validation_report`, so repeated tool-discovery receipts do not rerun the expensive checks every time.
++- Reused the shared `~/.sanemaster/versions_cache.json` in `scripts/sanemaster/meta.rb` so repeated `meta` / `health` runs stop paying the full Homebrew version-probe cost on every invocation.
++- Added regression coverage in `scripts/automation/tool_discovery_receipt_test.rb` for the new receipt health-cache behavior.
++
++### Verification Status
++- Local checks passed:
++  - `ruby scripts/sanemaster/meta_test.rb`
++  - `ruby scripts/automation/tool_discovery_receipt_test.rb`
++  - `ruby scripts/SaneMaster.rb meta`
++  - warm `ruby scripts/SaneMaster.rb tool_discovery --query "support inbox status validation release"` → `real 0.43s`
++- Mini checks passed:
++  - `ruby scripts/sanemaster/meta_test.rb`
++  - `ruby scripts/automation/tool_discovery_receipt_test.rb`
++  - `ruby scripts/SaneMaster.rb meta`
++    - cold after deleting `~/.sanemaster/versions_cache.json` → `real 10.94s`
++    - immediate warm rerun → `real 4.81s`
++  - `ruby scripts/SaneMaster.rb health` warm rerun → `real 4.82s`
++  - `ruby scripts/SaneMaster.rb tool_discovery --query "support inbox status validation release"`
++    - cold after deleting `outputs/tool-discovery/.health-check-cache.json` → `real 38.15s`
++    - immediate warm rerun → `real 0.42s`
++- Result accuracy proof:
++  - local `meta` now reports `34 test files`
++  - mini `meta` now reports `31 test files`
++
++### Current State
++- The shared high-frequency process paths are materially tighter now:
++  - `check_inbox` light path is cached and fast on repeat runs
++  - `status` no longer duplicates inbox/GitHub work
++  - `meta` / `health` stop lying about test coverage and are substantially faster on repeat runs
++  - `tool_discovery` now has a real warm path instead of redoing full receipt health checks every time
++- The main remaining process debt is structural, not one obvious hot-path bug: very large Ruby files like `appstore_submit.rb`, `sanemaster/release.rb`, `validation_report.rb`, and `SaneMaster.rb`.
++
++### Next
++- If continuing the process-hardening sweep, the next best target is structural splitting of the largest shared Ruby files, starting with `scripts/appstore_submit.rb` or `scripts/sanemaster/release.rb`.
++- Secondary target: make `meta` and `doctor` less noisy about optional/global tooling (`context7`, test assets) so the report separates real blockers from optional environment drift.
++
++## Session 110 (2026-04-17)
++
++### Done
++- Hardened `check-inbox.sh` so repeated runs stop repaginating the full Resend sent-history feed every time. The script now keeps a short-lived on-disk cache at `~/.cache/saneapps/check-inbox-resend-sent.json` with a default TTL of `120s`.
++- Added `build_recipient_index` + `open_thread_delivery_evidence` support in `scripts/automation/email_delivery.py` so inbox classification reuses a recipient index instead of rescanning the entire Resend payload for every inbox row.
++- Fixed `check-inbox.sh` helper loading to prefer the canonical `SaneProcess/scripts/automation` path first on `PYTHONPATH`, preventing stale stray `email_delivery.py` copies elsewhere from shadowing the shared helper.
++- Added regression coverage in `scripts/automation/email_delivery_test.py` for the indexed delivery-summary path and open-thread evidence mapping.
++
++### Verification Status
++- Local checks passed:
++  - `bash -n /Users/sj/SaneApps/infra/scripts/check-inbox.sh`
++  - `python3 scripts/automation/email_delivery_test.py`
++  - `python3 scripts/automation/status_crossref_test.py`
++- Mini checks passed:
++  - `bash -n /Users/stephansmac/SaneApps/infra/scripts/check-inbox.sh`
++  - `python3 scripts/automation/email_delivery_test.py` → `3/3 OK`
++  - `python3 scripts/automation/status_crossref_test.py` → `2/2 OK`
++  - Cold lightweight inbox run:
++    - `CHECK_INBOX_SKIP_GITHUB=1 CHECK_INBOX_SKIP_ACTIONS=1 CHECK_INBOX_SKIP_POSITIVE_FEEDBACK=1 ruby scripts/SaneMaster.rb check_inbox`
++    - `real 3.68s` after deleting the file cache
++  - Warm lightweight inbox run:
++    - same command immediately repeated
++    - `real 0.84s`
++  - Warm status run:
++    - `ruby scripts/SaneMaster.rb status`
++    - `real 11.67s`
++
++### Current State
++- `check-inbox.sh` is now fast and repeatable for normal same-session use instead of paying the full Resend pagination cost on every run.
++- The cache is intentionally short-lived. Fresh runs after the TTL still refetch live delivery state, so support review accuracy is preserved.
++- Earlier failed Mini proof attempts exposed two real shared-tool bugs that are now fixed:
++  - bad cache-write stdin wiring
++  - wrong `PYTHONPATH` precedence that could import a stale non-canonical helper
++
++### Next
++- If continuing the shared-process audit, the next best target is still `sanemaster/meta.rb` test-health accuracy so the infra audit stops reporting misleading `0 test files`.
++- After that, look at `release.sh` / `appstore_submit.rb` for the next round of runtime and robustness gains; `status` and `check-inbox` are in a much better place now.
++
++## Session 109 (2026-04-17)
++
++### Done
++- Audited the highest-traffic shared process paths instead of trying to “fix everything” blindly. The main runtime hotspots this pass were `validation_report.rb`, `check-inbox.sh`, and `scripts/automation/sane-status-crossref.sh`.
++- Hardened `scripts/automation/sane-status-crossref.sh` so the five status sections now run in parallel while preserving the same output order.
++- Removed duplicated work from the status path by calling `check-inbox.sh` with lightweight flags, so `status` no longer pays for the inbox script’s own GitHub issue scan, action boilerplate, or praise-only output before it runs its dedicated issue/PR sections.
++- Added focused regression coverage in `scripts/automation/status_crossref_test.py` for the lightweight inbox flags and the parallelized runner behavior.
++- Synced the updated status/inbox scripts to the Mini and re-verified them there.
++
++### Verification Status
++- Local checks passed:
++  - `bash -n scripts/automation/sane-status-crossref.sh`
++  - `bash -n /Users/sj/SaneApps/infra/scripts/check-inbox.sh`
++  - `python3 scripts/automation/status_crossref_test.py`
++- Mini checks passed:
++  - `python3 scripts/automation/status_crossref_test.py` → `2/2 OK`
++  - `CHECK_INBOX_SKIP_GITHUB=1 CHECK_INBOX_SKIP_ACTIONS=1 CHECK_INBOX_SKIP_POSITIVE_FEEDBACK=1 check-inbox.sh` rendered the intended lightweight inbox view
++  - `ruby scripts/SaneMaster.rb status` timed at `13.86s`
++- Conservative same-session baseline for `ruby scripts/SaneMaster.rb status` before this hardening was `19.15s` on the Mini.
++
++### Current State
++- The shared `status` path is materially tighter now and no longer wastes time duplicating inbox/GitHub work.
++- `check-inbox.sh` itself is still a large shared script with many inline Python blocks and repeated API/data-shaping paths. It remains a good future robustness target, but the current highest-ROI duplicate-work issue is fixed.
++- The broader audit still shows structural debt in oversized shared files (`release.sh`, `appstore_submit.rb`, `validation_report.rb`, `SaneMaster.rb`, `check-inbox.sh`). Those are maintainability concerns more than immediate runtime blockers.
++
++### Next
++- If continuing the process-hardening sweep, next best target is `check-inbox.sh` internals: collapse repeated email/reply evidence lookups and reduce temp-file/Python-wrapper churn without changing support behavior.
++- After that, fix `sanemaster/meta.rb` test-health accuracy so the infra self-audit stops reporting misleading `0 test files` in SaneProcess.
++
++## Session 108 (2026-04-16)
++
++### Done
++- Fixed the shared Mini GUI runner so automation windows are now tagged with the stable `SaneApps Automation:` prefix instead of relying on ad hoc per-run title suffixes.
++- Added `scripts/mini/mini-reclaim-automation-windows.sh` and wired it into `mini-gui-run.sh` plus `capture-mini-screenshot.sh`, so stale automation Terminal windows are reclaimed automatically and screenshot lanes can demand a full sweep before capture.
++- Hardened the Mini screenshot wrapper so it resolves the real Mini host before `rsync`/`ssh` instead of assuming the `mini` alias works in every shell.
++- Extended `universal_control_reset --cleanup-mini` so Mini cleanup now reclaims automation windows, not just hides Terminal/Codex and kills Preview/Safari.
++- Synced the updated Mini scripts to the Mini, ran a real reclaim sweep there, and confirmed the old stacked `SaneSales App Store Mac [...]` windows are gone.
++- Captured a fresh Mini desktop screenshot after the cleanup changes. The desktop is now clean: Finder is frontmost, Terminal is no longer polluting the desktop, and the active capture path no longer inserts its own visible Terminal window into the screenshot.
++- Re-verified the shared screenshot wrapper from the controller with `capture-mini-screenshot.sh --list-windows ...` after the host-resolution fix.
++
++### Root Cause
++- The original desktop mess was a shared-tooling problem, not one bad app script.
++- Legacy Mini GUI runs left named Terminal windows behind, and the shared tooling had no durable reclaim step for old automation windows.
++- The screenshot wrapper also assumed the `mini` alias would always be valid, which made the capture path brittle.
++- One follow-up bug appeared in the first reclaim helper draft: the helper serialized rows with the literal word `tab` instead of a real tab character, so the parser never saw window titles. That matcher bug is fixed.
++
++### Current State
++- Mini automation-window pollution is now under control in shared tooling.
++- The clean-state proof is the fresh Mini desktop screenshot plus the successful reclaim sweep on the Mini.
++- The live App Store product pages can still look bad even though the machine is now clean. I confirmed that on the live SaneClick page: the public screenshots are still visibly soft/blurry, so the remaining problem is the asset pipeline/App Store sync, not Mini desktop pollution.
++- Fresh screenshot audit findings:
++  - `SaneClick`: source screenshots are now fixed locally. The regenerated Mini set makes sense again: onboarding has real context and the upgrade path no longer shows the blank white pane.
++  - `SaneClip`: the regenerated Mac/iPhone/iPad set is coherent and validator-clean. The previously uploaded Mac screenshot with the garbage open-source / DMG / Lemon URL contamination is not acceptable and should be considered replaced in source.
++  - `SaneSales`: the regenerated Mac/iPhone/iPad/Watch assets are coherent, price-correct, and the Mac wildcard in `.saneprocess` is now narrowed to the canonical five-shot set only.
++  - New shared guardrail: `scripts/appstore_public_screenshot_audit.rb` now downloads the live public App Store screenshots, compares them against each app’s storyboard/local slot order, and emits a JSON + HTML report instead of relying on memory or a manual skim.
++  - New per-app source of truth: `docs/appstore_screenshot_storyboard.yml` now exists in `SaneClick`, `SaneClip`, and `SaneSales`, so every App Store slot has an explicit product story, purpose, and must-show checklist.
++  - Live public-page audit on the Mini now has exact mismatch proof:
++    - `SaneClick`: the live macOS set is still the old four-shot lane (`finder-context-menu`, `main-window`, `onboarding`, `script-library`), so the first screenshot still shows the polluted Finder/context-menu composition instead of the corrected onboarding story.
++    - `SaneClip`: the live iPhone set is still the old `1_history_dark` / `2_pinned_dark` / `3_settings_dark` trio, and the live Mac set is still the older six-shot `screenshot-menu` / `popover` / `settings` / `shortcuts` / `snippets` / `storage` lane instead of the current four-shot storyboard.
++    - `SaneSales`: the live iPhone set uses the corrected five filenames, but manual visual review of the public screenshots still showed the old `$6.99` onboarding image, so basename/order parity alone is not enough. The live Mac page also still exposes a ten-shot lane with six separate settings sub-pane screenshots (`settings-about`, `settings`, `settings-data`, `settings-general`, `settings-license`, `settings-providers`) instead of the current single canonical settings shot.
++  - Shared tooling: `appstore_submit.rb` now fails hard if ASC refuses screenshot replacement because the lane is already immutable after review submission. It no longer prints a fake success after 409 `INVALID_STATE` errors.
++  - App Store Connect constraint: current `READY_FOR_SALE` lanes do not allow in-place screenshot replacement. Real proof: attempting `--screenshots-only` on live `SaneClick 1.1.5` hit `Can't Delete Screenshot After Submit for review` and `INVALID_STATE`. That means the corrected assets are ready locally, but the live public App Store pages will only change on the next App Store version for each app.
++  - `SaneVideo`: still has `appstore.enabled: true` without screenshot config or screenshot scripts. That remains a structural App Store lane failure.
++
++### Next
++- When the next App Store versions are cut for `SaneClick`, `SaneClip`, and `SaneSales`, use the already-fixed screenshot assets instead of the currently-live broken ones.
++- Run `ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_public_screenshot_audit.rb --project-root <app>` after the next App Store metadata/screenshot sync so the live page is checked against the storyboard, not just the local PNG folder.
++- Do not waste time retrying screenshot-only uploads against `READY_FOR_SALE` lanes; they are locked. The next real fix point is the next version lane.
++- Keep `SaneVideo` out of any “ready” App Store audit state until screenshot config/scripts exist.
++- Keep the new `mini-reclaim-automation-windows.sh` path as the canonical recovery step whenever the Mini desktop starts accumulating automation windows again.
++
++## Session 107 (2026-04-16)
++
++### Done
++- Re-verified the StartupSubmit escalation instead of assuming the previous reply had landed.
++- Confirmed the April 10 reply to `david@startupsubmit.on.crisp.email` was sent but bounced, so that thread was not actually handled.
++- Verified the shared SaneApps email pipeline is healthy: API auth, inbox read, reply history, Resend history, and reconciliation all passed live healthcheck.
++- Sent the same corrective message directly to `support@startupsubmit.app`, explicitly noting that their Crisp thread emails were bouncing. That direct support email delivered successfully.
++- Corrected the listing tracker so StartupSubmit-owned setup work no longer gets surfaced as direct operator work. When the open StartupSubmit redo/remediation row is active, Gartner, SaaSworthy, and SourceForge setup rows are downgraded to monitor-only vendor-remediation evidence instead of `Needs action`.
++- Removed the stale SaaSworthy instruction that still told operators to use `hi@saneapps.com`; the tracker now points to the approved listing inbox path instead.
++
++### Incident Context
++- StartupSubmit was hired to handle startup/directory submission work so SaneApps would not have to do scattered manual account setup by hand.
++- For that work, the intended operational inbox was `mrsaneapps@gmail.com`. When a business-domain address was actually required, the approved fallback became `listings@saneapps.com`, which already routes into the same submissions workflow.
++- StartupSubmit instead used `hi@saneapps.com` for setup/action emails. That is the public business/support inbox and was never the correct destination for directory-account creation, OTPs, verification emails, or cleanup tasks.
++- That mistake created two problems at once:
++  - it spammed the wrong inbox with vendor/setup traffic
++  - it pushed setup burden back onto SaneApps, which defeats the point of paying StartupSubmit in the first place
++- The vendor then replied over a Crisp relay address (`*.on.crisp.email`). A corrective response was sent on April 10, 2026, but that reply bounced, which created false confidence that the issue had already been communicated when it had not.
++- On April 10, 2026, the fallback alias path was tightened specifically because of this vendor issue:
++  - normal path: `mrsaneapps@gmail.com`
++  - business-domain fallback only when required: `listings@saneapps.com`
++  - never use: `hi@saneapps.com`
++- On April 16, 2026, the email system was rechecked to make sure the problem was not on the SaneApps side. Shared email health passed, which strongly points to the Crisp relay path being the failed contact route rather than a general outbound-email failure.
++
++### Current State
++- StartupSubmit is now a documented high-priority vendor issue, not just a stale bounced thread.
++- Their `*.on.crisp.email` thread path is not reliable enough to treat as the primary contact route for this escalation.
++- The operational issue is still open until they respond with a remediation plan and a clean spreadsheet showing which listings were tied to which email path.
++- Specifically, they still owe:
++  - an audit of every submission already created
++  - identification of which email was used for each directory
++  - redo or transfer of any listing/account tied to `hi@saneapps.com`
++  - one clean spreadsheet with directory name, live listing URL, login URL, email used, credential status, and anything still pending
++- Current required email path remains:
++  - normal submission/setup inbox: `mrsaneapps@gmail.com`
++  - only-if-business-domain-required fallback: `listings@saneapps.com`
++  - never use for listing setup: `hi@saneapps.com`
++
++### Next
++- Treat any further StartupSubmit follow-up as high priority.
++- Prefer direct contact to `support@startupsubmit.app` if the Crisp relay is involved again or if thread replies do not show delivery evidence.
++- Do not mark StartupSubmit work as handled unless Resend shows delivery evidence and they respond with the requested remediation details.
++- Do not manually complete Gartner/SaaSworthy/SourceForge setup steps while StartupSubmit remediation is still open unless the user explicitly approves taking that work back from the vendor.
++
++## Session 106 (2026-04-14)
++
++### Done
++- Finished the machine-doable part of the pricing rollout instead of leaving it as “manual later”.
++- Patched `scripts/appstore_submit.rb` so IAP readiness now compares the live USA manual price and paginates price points before declaring success.
++- Verified the patch with new guardrail coverage in `scripts/appstore_submit_guardrail_test.rb` and synced the fix to the Mini.
++- Used the patched flow on the Mini to update live App Store Connect IAP pricing:
++  - `SaneClick` → `$9.99`
++  - `SaneClip` → `$14.99`
++  - `SaneSales` → `$24.99`
++- Removed the stale legacy `com.sanesales.app.pro.unlock` IAP from sale in App Store Connect Safari and then re-ran `--iap-only` successfully for `SaneSales`.
++- Deployed the updated production sites from the Mini for `SaneBar`, `SaneClick`, `SaneClip`, `SaneSales`, `SaneHosts`, and `saneapps.com`.
++- Found and fixed a real Mini tooling bug: `scripts/mini/mini-gui-run.sh` always passed `0` for the close-window flag, which leaked Terminal windows during screenshot and GUI runs.
++- Hardened `scripts/mini/capture-mini-screenshot.sh` to reject bare `--active-window` on the Mini so it does not capture the automation Terminal again.
++- Updated app `CLAUDE.md` sister-app lists to include `Sane Mac Utilities Bundle`, clearing the validator’s config drift.
++
++### Verification Status
++- `ruby scripts/appstore_submit_guardrail_test.rb` passes locally and on the Mini with the new stale-schedule and pagination coverage.
++- Live ASC verification on the Mini confirms:
++  - `SaneClick` = `$9.99`
++  - `SaneClip` = `$14.99`
++  - `SaneSales` = `$24.99`
++- `ruby scripts/link_monitor.rb` passed again on the Mini after the production deploys.
++- Direct HTML probes confirm the live custom domains now serve the intended pricing:
++  - `saneclick.com`
++  - `saneclip.com`
++  - `sanesales.com`
++  - `sanebar.com`
++  - `sanehosts.com`
++  - `saneapps.com`
++- Production screenshot review on the Mini found no pricing-layout regressions. `SaneBar` is still the most top-heavy hero, but spacing is clean and prices fit. `SaneClick`, `SaneClip`, `SaneSales`, and `SaneHosts` all look balanced at the new price points.
++- `ruby scripts/validation_report.rb` still returns `NEEDS DASHBOARD SYNC`, but now the remaining blockers are narrow and real:
++  - 5 Lemon hosted-file replacements
++  - Lemon product repricing / bundle product work
++  - non-pricing warning: `SaneHosts` README version mention
++
++### Current State
++- The App Store side of this pricing rollout is done.
++- The public production sites are updated and verified live.
++- The direct-store worker route for `/buy/sane-bundle` should still wait until the Lemon bundle product and checkout exist.
++- `SaneHosts` taught one deploy gotcha: raw `wrangler pages deploy` from a dirty worktree defaults to a preview `HEAD` deployment unless `--branch main` is passed, so production deploys must be explicit.
++- The Mini terminal-window leak was tooling, not just operator sloppiness. The close-window flag is now wired correctly.
++
++### Next
++- Reprice the Lemon Squeezy products and variants.
++- Create the `Sane Mac Utilities Bundle` Lemon product and checkout.
++- Replace the five stale Lemon hosted files so the dashboard matches the live appcasts.
++- After Lemon is done, add the `/buy/sane-bundle` redirect in the checkout worker and rerun `ruby scripts/validation_report.rb`.
++
++## Session 105 (2026-04-14)
++
++### Done
++- Landed the April 2026 shared pricing reset across SaneUI, SaneProcess, the umbrella site, Lemon bundle fulfillment, and the five shipped app repos.
++- Locked the portfolio on `free Basic + one-time Pro`, explicitly rejecting subscriptions and cloud-tied upsells for the current product mix.
++- Added canonical app pricing metadata in `config/products.yml`, bundle metadata for `Sane Mac Utilities Bundle`, and bundle-aware delivery email logic in `sane-email-automation`.
++- Fixed shared SaneUI license/paywall fallbacks so each app now shows the correct default price instead of inheriting the old universal `$6.99`.
++- Hardened `appstore_submit.rb` so App Store IAP readiness now requires explicit per-app `appstore.iap.price_usd` instead of relying on a hidden global fallback.
++- Added a dedicated rollout doc at `docs/pricing-rollout-2026-04-14.md` with the pricing matrix, business logic, manual dashboard work, and the tracking plan.
++
++### Verification Status
++- Local implementation pass is in place across the targeted repos.
++- Worker sweeps reported no remaining `$6.99` or apology-pricing copy inside the scoped app/site surfaces they edited.
++- Visual verification is complete on clean Mini worktrees for the updated public pricing pages.
++- Mini screenshots found no blocker layout regressions from the longer price strings. `SaneBar` remains the densest hero, but the `$14.99` price fits cleanly on desktop and mobile.
++- Mini baseline metrics are now captured in `docs/pricing-rollout-2026-04-14.md`.
++- Apple and Lemon Squeezy operational details were re-verified against their current official docs instead of being carried forward from memory.
++- Manual dashboard work is still pending:
++  - Lemon Squeezy repricing + new bundle product
++  - App Store Connect IAP price schedule updates for `SaneClick`, `SaneClip`, and `SaneSales`
++  - Lemon hosted-file dashboard drift still needs correction for all five shipped paid apps
++
++### Current State
++- Shared process docs now reflect the new policy:
++  - no subscriptions
++  - one-time pricing by value tier
++  - direct-only bundle
++- The rollout surfaced one important config gotcha: `.saneprocess` must use `appstore.iap.price_usd` or App Store readiness automation will fail. That mismatch is now corrected in the live app repos.
++- The Mini was used as the canonical verification lane with clean temporary worktrees under `~/tmp/pricing-rollout-verify` so dirty local repos did not masquerade as release-ready state.
++- `infra/SaneProcess` local remains behind `origin/main` by one unrelated commit, so do not describe the local checkout as fully synced until that commit is folded in after the rollout edits are committed or stashed safely.
++
++### Next
++- Reprice the Lemon Squeezy products/variants and create the new direct bundle product in the dashboard.
++- Update App Store Connect IAP price schedules for `SaneClick`, `SaneClip`, and `SaneSales`, then rerun `ruby scripts/SaneMaster.rb appstore_preflight` before the next submission lane.
++- Replace the stale Lemon hosted files so dashboard versions match the appcasts again.
++- After dashboard repricing is live, repeat the baseline commands at 7, 30, and 90 days and compare against `docs/pricing-rollout-2026-04-14.md`.
++
+ ## Session 104 (2026-04-14)
+ 
+ ### Done
+diff --git a/config/products.yml b/config/products.yml
+index 87e24ed..04334d0 100644
+--- a/config/products.yml
++++ b/config/products.yml
+@@ -8,10 +8,17 @@
+ # - checkout_uuid missing = unreleased, skip checkout/redirect/appcast checks
+ # - license_gated: true = Basic/Pro gating active, all release channels allowed (GitHub, Homebrew, R2)
+ # - license_gated missing/false = no gating, distribution restricted to Cloudflare R2/dist only
++# - price_usd + business_model are the canonical pricing source of truth for websites/docs/ops
++# - tracking_started_on marks the date to compare before/after sales + activation impact
++# - bundle_components lists included product slugs for direct-only bundle products
+ 
+ products:
+   sanebar:
+     name: SaneBar
++    price_usd: "14.99"
++    business_model: free_basic_plus_one_time_pro
++    channel_strategy: direct_only
++    tracking_started_on: "2026-04-14"
+     checkout_uuid: 8a6ddf02-574e-4b20-8c94-d3fa15c1cc8e
+     license_gated: true    # Basic/Pro gating active — all release channels allowed
+     domain: sanebar.com
+@@ -21,6 +28,10 @@ products:
+ 
+   saneclick:
+     name: SaneClick
++    price_usd: "9.99"
++    business_model: free_basic_plus_one_time_pro
++    channel_strategy: direct_and_app_store
++    tracking_started_on: "2026-04-14"
+     checkout_uuid: 679dbd1d-b808-44e7-98c8-8e679b592e93
+     license_gated: true    # Basic/Pro gating active — all release channels allowed
+     domain: saneclick.com
+@@ -30,6 +41,10 @@ products:
+ 
+   saneclip:
+     name: SaneClip
++    price_usd: "14.99"
++    business_model: free_basic_plus_one_time_pro
++    channel_strategy: direct_and_app_store
++    tracking_started_on: "2026-04-14"
+     checkout_uuid: e0d71010-bd20-49b6-b841-5522b39df95f
+     license_gated: true    # Basic/Pro gating active — all release channels allowed
+     domain: saneclip.com
+@@ -39,6 +54,10 @@ products:
+ 
+   sanehosts:
+     name: SaneHosts
++    price_usd: "14.99"
++    business_model: free_basic_plus_one_time_pro
++    channel_strategy: direct_only
++    tracking_started_on: "2026-04-14"
+     checkout_uuid: 83977cc9-900f-407f-a098-959141d474f2
+     license_gated: true    # Basic/Pro gating active — all release channels allowed
+     domain: sanehosts.com
+@@ -48,6 +67,9 @@ products:
+ 
+   sanesync:
+     name: SaneSync
++    price_usd: "39.99"
++    business_model: one_time_launch_price_tbd
++    channel_strategy: unreleased
+     # Unreleased: no checkout UUID yet
+     domain: sanesync.com
+     dist_domain: dist.sanesync.com
+@@ -56,6 +78,9 @@ products:
+ 
+   sanevideo:
+     name: SaneVideo
++    price_usd: "39.99"
++    business_model: one_time_launch_price_tbd
++    channel_strategy: unreleased
+     # Unreleased: no checkout UUID yet
+     domain: sanevideo.com
+     dist_domain: dist.sanevideo.com
+@@ -65,6 +90,10 @@ products:
+   sanesales:
+     name: SaneSales
+     type: universal
++    price_usd: "24.99"
++    business_model: free_basic_plus_one_time_pro
++    channel_strategy: direct_and_app_store
++    tracking_started_on: "2026-04-14"
+     license_gated: true    # Basic/Pro gating active — all release channels allowed
+     domain: sanesales.com
+     dist_domain: dist.sanesales.com
+@@ -72,6 +101,23 @@ products:
+     appcast: https://sanesales.com/appcast.xml
+     checkout_uuid: 5f7903d4-d6c8-4da4-b3e3-4586ef86bb51
+ 
++  sane-bundle:
++    name: Sane Mac Utilities Bundle
++    type: bundle
++    price_usd: "34.99"
++    business_model: direct_only_one_time_bundle
++    channel_strategy: direct_only
++    tracking_started_on: "2026-04-14"
++    bundle_components:
++      - sanebar
++      - saneclick
++      - saneclip
++      - sanehosts
++    monitor_links: false
++    download_redirect: false
++    domain: saneapps.com
++    github_repo: sane-apps/SaneApps
++
+ # LemonSqueezy store configuration
+ store:
+   slug: saneapps
+diff --git a/scripts/appstore_submit.rb b/scripts/appstore_submit.rb
+index 556acd8..a58265c 100755
+--- a/scripts/appstore_submit.rb
++++ b/scripts/appstore_submit.rb
+@@ -192,7 +192,6 @@ ACCESSIBILITY_FAMILIES_BY_PLATFORM = {
+   'IOS' => %w[IPHONE IPAD APPLE_TV APPLE_WATCH VISION]
+ }.freeze
+ 
+-IAP_DEFAULT_USD_PRICE = '6.99'
+ IAP_DEFAULT_REVIEW_NOTE = 'One-time Pro unlock. Purchase unlocks advanced features immediately.'
+ IAP_LOCALIZATION_NAME_MAX = 30
+ IAP_LOCALIZATION_DESCRIPTION_MAX = 45
+@@ -2316,6 +2315,13 @@ def wait_for_app_screenshot_removal(screenshot_id:, token:, timeout_seconds: 20)
+ end
+ 
+ def upload_screenshot_set(localization_id, files, spec, token)
++  stats = {
++    attempted: files.length,
++    uploaded: 0,
++    locked_state: false,
++    failures: []
++  }
++
+   # Fetch all sets, then match by display type locally.
+   # ASC filtering here has been inconsistent and can return mixed sets.
+   sets_path = "/appStoreVersionLocalizations/#{localization_id}/appScreenshotSets"
+@@ -2340,6 +2346,8 @@ def upload_screenshot_set(localization_id, files, spec, token)
+         unless [200, 202, 204, 404].include?(delete_code)
+           detail = delete_resp.dig('errors', 0, 'detail') || delete_resp.dig('errors', 0, 'title') || 'unknown error'
+           log_warn "Failed to remove existing screenshot #{screenshot_id} (#{state || 'unknown'}): #{detail}"
++          stats[:locked_state] = true if detail.include?('Can\'t Delete Screenshot After Submit for review')
++          stats[:failures] << "delete_existing:#{detail}"
+           next
+         end
+ 
+@@ -2389,9 +2397,15 @@ def upload_screenshot_set(localization_id, files, spec, token)
+       }
+     }
+ 
+-    reservation = asc_post('/appScreenshots', body: body, token: token)
+-    unless reservation && reservation.dig('data', 'id')
++    reserve_code, reservation = asc_post_with_status('/appScreenshots', body: body, token: token)
++    unless reserve_code.between?(200, 299) && reservation && reservation.dig('data', 'id')
+       log_warn "Failed to reserve upload slot for #{file_name}"
++      error_detail = reservation.dig('errors', 0, 'detail') || reservation.dig('errors', 0, 'title') || reservation.dig('errors', 0, 'code') || "http_#{reserve_code}"
++      if reserve_code == 409
++        error_code = reservation.dig('errors', 0, 'code').to_s
++        stats[:locked_state] = true if error_code.include?('INVALID_STATE')
++      end
++      stats[:failures] << "reserve_slot:#{error_detail}"
+       File.delete(resized) if File.exist?(resized)
+       next
+     end
+@@ -2431,21 +2445,35 @@ def upload_screenshot_set(localization_id, files, spec, token)
+       }
+     }
+     asc_patch("/appScreenshots/#{screenshot_id}", body: commit_body, token: token)
++    stats[:uploaded] += 1
+ 
+     File.delete(resized) if File.exist?(resized)
+   end
++
++  stats
+ end
+ 
+ def upload_screenshots(version_id, platform, project_root, config, token)
+   jobs = screenshot_jobs_for(platform, config)
+   return if jobs.empty?
+ 
++  validator = File.join(project_root, 'scripts', 'validate_appstore_screenshots.sh')
++  if File.file?(validator)
++    log_info "Running screenshot validator: #{validator}"
++    validator_ok = system('bash', validator, chdir: project_root)
++    unless validator_ok
++      log_error 'Screenshot validator failed. Regenerate or fix the canonical screenshot set before upload.'
++      exit 1
++    end
++  end
++
+   # Get the version's localizations to find where to attach screenshots
+   path = "/appStoreVersions/#{version_id}/appStoreVersionLocalizations"
+   resp = asc_get(path, token: token)
+   return unless resp && resp['data'] && !resp['data'].empty?
+ 
+   localization_id = resp['data'].first['id']
++  upload_results = []
+ 
+   jobs.each do |job|
+     pattern = File.join(project_root, job[:glob])
+@@ -2455,7 +2483,21 @@ def upload_screenshots(version_id, platform, project_root, config, token)
+       next
+     end
+     log_info "Found #{files.length} screenshot(s) for #{job[:display_type]}"
+-    upload_screenshot_set(localization_id, files, job, token)
++    upload_results << upload_screenshot_set(localization_id, files, job, token)
++  end
++
++  attempted = upload_results.sum { |result| result[:attempted].to_i }
++  uploaded = upload_results.sum { |result| result[:uploaded].to_i }
++  locked_state = upload_results.any? { |result| result[:locked_state] }
++
++  if attempted.positive? && uploaded < attempted
++    if locked_state
++      log_error "Screenshot upload blocked for #{platform}: App Store Connect will not modify screenshots on this lane after review submission."
++      log_error 'Create a new App Store version if you need to replace live screenshots.'
++    else
++      log_error "Screenshot upload failed for #{platform}: uploaded #{uploaded} of #{attempted} screenshot(s)."
++    end
++    exit 1
+   end
+ 
+   log_info "Screenshot upload complete for #{platform}"
+@@ -2644,20 +2686,76 @@ end
+ 
+ def ensure_iap_price_schedule(iap_id:, target_price_usd:, token:)
+   code, schedule = asc_get_v2("/inAppPurchases/#{iap_id}/iapPriceSchedule", token: token)
+-  return true if code == 200 && !schedule['data'].nil?
+ 
+-  pp_code, points = asc_get_v2("/inAppPurchases/#{iap_id}/pricePoints?filter%5Bterritory%5D=USA&limit=200", token: token)
+-  unless pp_code == 200
+-    log_error "Could not read IAP price points (HTTP #{pp_code})."
+-    return false
++  price_points_path = "/inAppPurchases/#{iap_id}/pricePoints?filter%5Bterritory%5D=USA&limit=200"
++  point = nil
++  loop do
++    pp_code, points = asc_get_v2(price_points_path, token: token)
++    unless pp_code == 200
++      log_error "Could not read IAP price points (HTTP #{pp_code})."
++      return false
++    end
++
++    point = points.fetch('data', []).find { |entry| entry.dig('attributes', 'customerPrice').to_s == target_price_usd.to_s }
++    break if point
++
++    next_link = points.dig('links', 'next').to_s
++    break if next_link.empty?
++
++    price_points_path = next_link.sub(ASC_V2_BASE, '')
+   end
+ 
+-  point = points.fetch('data', []).find { |entry| entry.dig('attributes', 'customerPrice').to_s == target_price_usd.to_s }
+   unless point
+     log_error "No USA price point found for #{target_price_usd}."
+     return false
+   end
+ 
++  if code == 200 && !schedule['data'].nil?
++    schedule_id = schedule.dig('data', 'id')
++    if schedule_id.to_s.empty?
++      log_error 'IAP price schedule exists but did not include a schedule id.'
++      return false
++    end
++
++    manual_path = "/inAppPurchasePriceSchedules/#{schedule_id}/manualPrices?include=inAppPurchasePricePoint,territory"
++    manual_code, manual_prices = asc_get_with_status(manual_path, token: token)
++    unless manual_code == 200
++      log_error "Could not read IAP manual prices (HTTP #{manual_code})."
++      return false
++    end
++
++    included_price_points = {}
++    Array(manual_prices['included']).each do |entry|
++      next unless entry['type'] == 'inAppPurchasePricePoints'
++
++      included_price_points[entry['id']] = entry
++    end
++
++    usa_manual_price = Array(manual_prices['data']).find do |entry|
++      entry.dig('relationships', 'territory', 'data', 'id') == 'USA'
++    end
++
++    if usa_manual_price
++      current_point_id = usa_manual_price.dig('relationships', 'inAppPurchasePricePoint', 'data', 'id')
++      current_price = included_price_points.dig(current_point_id, 'attributes', 'customerPrice').to_s
++      if current_point_id == point['id'] || current_price == target_price_usd.to_s
++        log_info "IAP price schedule already matches USA #{target_price_usd}."
++        return true
++      end
++
++      if current_price.empty?
++        log_info "IAP price schedule exists but the current USA manual price could not be resolved. Replacing it with #{target_price_usd}."
++      else
++        log_info "Updating IAP price schedule from USA #{current_price} to #{target_price_usd}."
++      end
++    else
++      log_info "IAP price schedule exists without a USA manual price. Setting USA #{target_price_usd}."
++    end
++  elsif code != 404
++    log_error "Could not read IAP price schedule (HTTP #{code})."
++    return false
++  end
++
+   local_id = '${price-usd}'
+   body = {
+     data: {
+@@ -3685,7 +3783,7 @@ OptionParser.new do |opts|
+   opts.on('--skip-screenshots', 'Skip screenshot upload; use screenshots already present in ASC') { options[:skip_screenshots] = true }
+   opts.on('--screenshots-only', 'Upload screenshots to an existing ASC version (no upload, no build attach, no submission)') { options[:screenshots_only] = true }
+   opts.on('--iap-only', 'Ensure configured App Store IAP metadata is complete and exit') { options[:iap_only] = true }
+-  opts.on('--iap-price-usd PRICE', 'Target US IAP price for auto-created price schedule (default: 6.99)') { |v| options[:iap_price_usd] = v }
++  opts.on('--iap-price-usd PRICE', 'Target US IAP price for auto-created price schedule (default: .saneprocess appstore.iap.price_usd)') { |v| options[:iap_price_usd] = v }
+   opts.on('--preflight-version-state', 'Check editable ASC version state only (no upload, no submission)') { options[:preflight_version_state] = true }
+   opts.on('--repair-version-state', 'Attempt ASC lane repair before version-state preflight') { options[:repair_version_state] = true }
+   opts.on('--withdraw-version VERSION', 'Withdraw an existing ASC app version lane (clears submission + linked review submission)') { |v| options[:withdraw_version] = v }
+@@ -4203,7 +4301,11 @@ if options[:iap_only]
+   end
+ 
+   price_usd = options[:iap_price_usd].to_s.strip
+-  price_usd = IAP_DEFAULT_USD_PRICE if price_usd.empty?
++  price_usd = config.dig('appstore', 'iap', 'price_usd').to_s.strip if price_usd.empty?
++  if price_usd.empty?
++    log_error 'No IAP price configured. Set appstore.iap.price_usd in .saneprocess or pass --iap-price-usd.'
++    exit 1
++  end
+ 
+   token = generate_jwt
+   ok = ensure_iap_readiness(
+@@ -4366,7 +4468,11 @@ end
+ configured_product_id = config.dig('appstore', 'product_id').to_s.strip
+ unless configured_product_id.empty?
+   iap_price_usd = options[:iap_price_usd].to_s.strip
+-  iap_price_usd = IAP_DEFAULT_USD_PRICE if iap_price_usd.empty?
++  iap_price_usd = config.dig('appstore', 'iap', 'price_usd').to_s.strip if iap_price_usd.empty?
++  if iap_price_usd.empty?
++    log_error 'No IAP price configured. Set appstore.iap.price_usd in .saneprocess or pass --iap-price-usd.'
++    exit 1
++  end
+   token = generate_jwt
+   iap_ok = ensure_iap_readiness(
+     app_id: app_id,
+diff --git a/scripts/appstore_submit_guardrail_test.rb b/scripts/appstore_submit_guardrail_test.rb
+index 8a9127f..1af669e 100644
+--- a/scripts/appstore_submit_guardrail_test.rb
++++ b/scripts/appstore_submit_guardrail_test.rb
+@@ -16,6 +16,9 @@ class AppStoreSubmitGuardrailHarness
+     @stubbed_patch_result = nil
+     @stubbed_iap_record = nil
+     @stubbed_iap_records = nil
++    @stubbed_raw_gets = {}
++    @stubbed_posts = {}
++    @system_stub = nil
+   end
+ 
+   def stub_url_status(url, code:, location: '', error: nil)
+@@ -74,6 +77,100 @@ class AppStoreSubmitGuardrailHarness
+     raise 'missing patch stub'
+   end
+ 
++  def stub_raw_get(path, code:, resp:)
++    @stubbed_raw_gets[path] = [code, resp]
++  end
++
++  def asc_get_with_status(path, token: nil, base: ASC_BASE)
++    _ = token
++    _ = base
++    @stubbed_raw_gets.fetch(path) do
++      raise "missing raw GET stub for #{path}"
++    end
++  end
++
++  def asc_get(path, token: nil, base: ASC_BASE)
++    code, resp = asc_get_with_status(path, token: token, base: base)
++    return resp if code.between?(200, 299)
++
++    nil
++  end
++
++  def stub_post(path, code:, resp:)
++    @stubbed_posts[path] = [code, resp]
++  end
++
++  def stub_system(&block)
++    @system_stub = block
++  end
++
++  def system(*args, **kwargs)
++    return @system_stub.call(*args, **kwargs) if @system_stub
++
++    super
++  end
++
++  def asc_post_with_status(path, body:, token: nil, base: ASC_BASE)
++    _ = body
++    _ = token
++    _ = base
++    @stubbed_posts.fetch(path) do
++      raise "missing POST stub for #{path}"
++    end
++  end
++
++  def stub_matching_iap_price_schedule(iap_id:, price_usd:)
++    schedule_id = "schedule-#{iap_id}"
++    point_id = "price-point-#{price_usd.tr('.', '-')}"
++
++    stub_raw_get(
++      "/inAppPurchases/#{iap_id}/iapPriceSchedule",
++      code: 200,
++      resp: {
++        'data' => {
++          'id' => schedule_id,
++          'relationships' => {
++            'manualPrices' => {
++              'links' => {
++                'related' => "https://api.appstoreconnect.apple.com/v1/inAppPurchasePriceSchedules/#{schedule_id}/manualPrices"
++              }
++            }
++          }
++        }
++      }
++    )
++    stub_raw_get(
++      "/inAppPurchases/#{iap_id}/pricePoints?filter%5Bterritory%5D=USA&limit=200",
++      code: 200,
++      resp: {
++        'data' => [
++          { 'id' => point_id, 'attributes' => { 'customerPrice' => price_usd } }
++        ]
++      }
++    )
++    stub_raw_get(
++      "/inAppPurchasePriceSchedules/#{schedule_id}/manualPrices?include=inAppPurchasePricePoint,territory",
++      code: 200,
++      resp: {
++        'data' => [
++          {
++            'relationships' => {
++              'territory' => { 'data' => { 'id' => 'USA' } },
++              'inAppPurchasePricePoint' => { 'data' => { 'id' => point_id } }
++            }
++          }
++        ],
++        'included' => [
++          {
++            'type' => 'inAppPurchasePricePoints',
++            'id' => point_id,
++            'attributes' => { 'customerPrice' => price_usd }
++          }
++        ]
++      }
++    )
++  end
++
+   def stub_iap_record(record)
+     @stubbed_iap_record = record
+   end
+@@ -94,10 +191,6 @@ class AppStoreSubmitGuardrailHarness
+     true
+   end
+ 
+-  def ensure_iap_price_schedule(**_kwargs)
+-    true
+-  end
+-
+   def ensure_iap_review_screenshot(**_kwargs)
+     true
+   end
+@@ -164,6 +257,153 @@ exit(run_tests('App Store Submit Guardrail Tests') do
+     end
+   end
+ 
++  test_category('IAP price schedule') do
++    test('keeps the existing schedule when the live USA price already matches') do
++      subject.stub_raw_get(
++        '/inAppPurchases/123/iapPriceSchedule',
++        code: 200,
++        resp: {
++          'data' => {
++            'id' => 'schedule-123',
++            'relationships' => {
++              'manualPrices' => {
++                'links' => {
++                  'related' => 'https://api.appstoreconnect.apple.com/v1/inAppPurchasePriceSchedules/schedule-123/manualPrices'
++                }
++              }
++            }
++          }
++        }
++      )
++      subject.stub_raw_get(
++        '/inAppPurchases/123/pricePoints?filter%5Bterritory%5D=USA&limit=200',
++        code: 200,
++        resp: {
++          'data' => [
++            { 'id' => 'price-point-999', 'attributes' => { 'customerPrice' => '9.99' } }
++          ]
++        }
++      )
++      subject.stub_raw_get(
++        '/inAppPurchasePriceSchedules/schedule-123/manualPrices?include=inAppPurchasePricePoint,territory',
++        code: 200,
++        resp: {
++          'data' => [
++            {
++              'relationships' => {
++                'territory' => { 'data' => { 'id' => 'USA' } },
++                'inAppPurchasePricePoint' => { 'data' => { 'id' => 'price-point-999' } }
++              }
++            }
++          ],
++          'included' => [
++            {
++              'type' => 'inAppPurchasePricePoints',
++              'id' => 'price-point-999',
++              'attributes' => { 'customerPrice' => '9.99' }
++            }
++          ]
++        }
++      )
++
++      result = subject.send(:ensure_iap_price_schedule, iap_id: '123', target_price_usd: '9.99', token: 'stub')
++
++      assert(result, 'expected matching schedule to pass')
++      true
++    end
++
++    test('replaces the existing schedule when the live USA price is stale') do
++      subject.stub_raw_get(
++        '/inAppPurchases/123/iapPriceSchedule',
++        code: 200,
++        resp: {
++          'data' => {
++            'id' => 'schedule-123',
++            'relationships' => {
++              'manualPrices' => {
++                'links' => {
++                  'related' => 'https://api.appstoreconnect.apple.com/v1/inAppPurchasePriceSchedules/schedule-123/manualPrices'
++                }
++              }
++            }
++          }
++        }
++      )
++      subject.stub_raw_get(
++        '/inAppPurchases/123/pricePoints?filter%5Bterritory%5D=USA&limit=200',
++        code: 200,
++        resp: {
++          'data' => [
++            { 'id' => 'price-point-999', 'attributes' => { 'customerPrice' => '9.99' } }
++          ]
++        }
++      )
++      subject.stub_raw_get(
++        '/inAppPurchasePriceSchedules/schedule-123/manualPrices?include=inAppPurchasePricePoint,territory',
++        code: 200,
++        resp: {
++          'data' => [
++            {
++              'relationships' => {
++                'territory' => { 'data' => { 'id' => 'USA' } },
++                'inAppPurchasePricePoint' => { 'data' => { 'id' => 'price-point-699' } }
++              }
++            }
++          ],
++          'included' => [
++            {
++              'type' => 'inAppPurchasePricePoints',
++              'id' => 'price-point-699',
++              'attributes' => { 'customerPrice' => '6.99' }
++            }
++          ]
++        }
++      )
++      subject.stub_post('/inAppPurchasePriceSchedules', code: 201, resp: { 'data' => { 'id' => 'new-schedule' } })
++
++      result = subject.send(:ensure_iap_price_schedule, iap_id: '123', target_price_usd: '9.99', token: 'stub')
++
++      assert(result, 'expected stale schedule replacement to pass')
++      true
++    end
++
++    test('follows paginated price points until it finds the target tier') do
++      subject.stub_raw_get(
++        '/inAppPurchases/123/iapPriceSchedule',
++        code: 404,
++        resp: { 'errors' => [{ 'detail' => 'not found' }] }
++      )
++      subject.stub_raw_get(
++        '/inAppPurchases/123/pricePoints?filter%5Bterritory%5D=USA&limit=200',
++        code: 200,
++        resp: {
++          'data' => [
++            { 'id' => 'price-point-699', 'attributes' => { 'customerPrice' => '6.99' } }
++          ],
++          'links' => {
++            'next' => 'https://api.appstoreconnect.apple.com/v2/inAppPurchases/123/pricePoints?filter%5Bterritory%5D=USA&cursor=next-page&limit=200'
++          }
++        }
++      )
++      subject.stub_raw_get(
++        '/inAppPurchases/123/pricePoints?filter%5Bterritory%5D=USA&cursor=next-page&limit=200',
++        code: 200,
++        resp: {
++          'data' => [
++            { 'id' => 'price-point-2499', 'attributes' => { 'customerPrice' => '24.99' } }
++          ],
++          'links' => {}
++        }
++      )
++      subject.stub_post('/inAppPurchasePriceSchedules', code: 201, resp: { 'data' => { 'id' => 'new-schedule' } })
++
++      result = subject.send(:ensure_iap_price_schedule, iap_id: '123', target_price_usd: '24.99', token: 'stub')
++
++      assert(result, 'expected paginated price point lookup to pass')
++      true
++    end
++  end
++
+   test_category('Metadata readiness') do
+     test('flags broken support and privacy URLs as hard issues') do
+       subject.stub_url_status('https://example.com/support', code: 404)
+@@ -250,6 +490,120 @@ exit(run_tests('App Store Submit Guardrail Tests') do
+     end
+   end
+ 
++  test_category('Screenshot upload guardrails') do
++    test('refuses screenshot upload when the validator fails') do
++      Dir.mktmpdir('appstore-submit-validator') do |dir|
++        scripts_dir = File.join(dir, 'scripts')
++        FileUtils.mkdir_p(scripts_dir)
++        validator = File.join(scripts_dir, 'validate_appstore_screenshots.sh')
++        File.write(validator, "#!/usr/bin/env bash\nexit 1\n")
++        File.chmod(0o755, validator)
++
++        begin
++          subject.send(
++            :upload_screenshots,
++            'version-1',
++            'MAC_OS',
++            dir,
++            {
++              'appstore' => {
++                'screenshots' => {
++                  'macos' => 'Screenshots/*.png'
++                }
++              }
++            },
++            'stub-token'
++          )
++          raise 'expected validator failure to abort upload'
++        rescue SystemExit => e
++          assert_eq(e.status, 1)
++        end
++      end
++
++      true
++    end
++
++    test('fails screenshot upload when App Store Connect locks the lane after review submission') do
++      Dir.mktmpdir('appstore-submit-locked-screens') do |dir|
++        scripts_dir = File.join(dir, 'scripts')
++        shots_dir = File.join(dir, 'Screenshots')
++        FileUtils.mkdir_p(scripts_dir)
++        FileUtils.mkdir_p(shots_dir)
++
++        validator = File.join(scripts_dir, 'validate_appstore_screenshots.sh')
++        File.write(validator, "#!/usr/bin/env bash\nexit 0\n")
++        File.chmod(0o755, validator)
++
++        png_path = File.join(shots_dir, 'appstore-mac-01.png')
++        File.binwrite(
++          png_path,
++          [
++            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0uoAAAAASUVORK5CYII='
++          ].pack('m0')
++        )
++
++        subject.stub_system { true }
++        subject.define_singleton_method(:resize_screenshot) { |src, *_args| src }
++        subject.stub_raw_get(
++          '/appStoreVersions/version-locked/appStoreVersionLocalizations',
++          code: 200,
++          resp: { 'data' => [{ 'id' => 'loc-1' }] }
++        )
++        subject.stub_raw_get(
++          '/appStoreVersionLocalizations/loc-1/appScreenshotSets',
++          code: 200,
++          resp: {
++            'data' => [
++              {
++                'id' => 'set-1',
++                'attributes' => { 'screenshotDisplayType' => 'APP_DESKTOP' }
++              }
++            ]
++          }
++        )
++        subject.stub_raw_get(
++          '/appScreenshotSets/set-1/appScreenshots',
++          code: 200,
++          resp: { 'data' => [] }
++        )
++        subject.stub_post(
++          '/appScreenshots',
++          code: 409,
++          resp: {
++            'errors' => [
++              {
++                'code' => 'ENTITY_ERROR.ATTRIBUTE.INVALID.INVALID_STATE',
++                'title' => 'An attribute value is not acceptable for the current resource state.'
++              }
++            ]
++          }
++        )
++
++        begin
++          subject.send(
++            :upload_screenshots,
++            'version-locked',
++            'MAC_OS',
++            dir,
++            {
++              'appstore' => {
++                'screenshots' => {
++                  'macos' => 'Screenshots/*.png'
++                }
++              }
++            },
++            'stub-token'
++          )
++          raise 'expected locked screenshot lane to abort upload'
++        rescue SystemExit => e
++          assert_eq(e.status, 1)
++        end
++      end
++
++      true
++    end
++  end
++
+   test_category('IAP submission guardrails') do
+     test('detects an attached IAP from the live version page snapshot') do
+       subject.stub_safari_snapshot(
+@@ -292,6 +646,7 @@ exit(run_tests('App Store Submit Guardrail Tests') do
+     end
+ 
+     test('treats IN_REVIEW as already review-ready') do
++      subject.stub_matching_iap_price_schedule(iap_id: 'iap-1', price_usd: '14.99')
+       subject.stub_iap_record(
+         {
+           'id' => 'iap-1',
+@@ -322,7 +677,7 @@ exit(run_tests('App Store Submit Guardrail Tests') do
+         project_root: '/tmp',
+         config: { 'appstore' => { 'iap' => { 'display_name' => 'Example Pro' } } },
+         token: 'stub-token',
+-        price_usd: '6.99',
++        price_usd: '14.99',
+         platform: 'macos',
+         version_string: '1.0.0'
+       )
+@@ -370,7 +725,7 @@ exit(run_tests('App Store Submit Guardrail Tests') do
+         project_root: '/tmp',
+         config: { 'appstore' => { 'iap' => { 'display_name' => 'Example Pro' } } },
+         token: 'stub-token',
+-        price_usd: '6.99',
++        price_usd: '14.99',
+         platform: 'macos',
+         version_string: '1.0.0'
+       )
+diff --git a/scripts/automation/sane-status-crossref.sh b/scripts/automation/sane-status-crossref.sh
+index 3605706..595d273 100755
+--- a/scripts/automation/sane-status-crossref.sh
++++ b/scripts/automation/sane-status-crossref.sh
+@@ -14,35 +14,40 @@ if [[ -z "$LISTING_JSON_PATH" ]]; then
+   LISTING_JSON_CLEANUP=1
+ fi
+ 
++STATUS_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sane-status.XXXXXX")"
++
+ cleanup() {
+   if [[ "$LISTING_JSON_CLEANUP" -eq 1 ]]; then
+     rm -f "$LISTING_JSON_PATH"
+   fi
++  rm -rf "$STATUS_TMP_DIR"
+ }
+ 
+ trap cleanup EXIT
+ 
+-printf '\nSane status cross-reference (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+-printf '%s\n' "----------------------------------------"
+-
+-printf '\n[1/5] Sales (last 30 days)\n'
+-if [[ -x "$SANE_MASTER" ]]; then
+-  ruby "$SANE_MASTER" sales --days 30
+-else
+-  echo "SaneMaster sales not executable"
+-fi
++run_sales_section() {
++  if [[ -x "$SANE_MASTER" ]]; then
++    ruby "$SANE_MASTER" sales --days 30
++  else
++    echo "SaneMaster sales not executable"
++  fi
++}
+ 
+-printf '\n[2/5] Inbox status\n'
+-if [[ -x "$CHECK_INBOX" ]]; then
+-  "$CHECK_INBOX"
+-else
+-  echo "check-inbox.sh not found at $CHECK_INBOX"
+-fi
++run_inbox_section() {
++  if [[ -x "$CHECK_INBOX" ]]; then
++    CHECK_INBOX_SKIP_GITHUB=1 \
++    CHECK_INBOX_SKIP_ACTIONS=1 \
++    CHECK_INBOX_SKIP_POSITIVE_FEEDBACK=1 \
++      "$CHECK_INBOX"
++  else
++    echo "check-inbox.sh not found at $CHECK_INBOX"
++  fi
++}
+ 
+-printf '\n[3/5] Listing actions\n'
+-if [[ -x "$SANE_MASTER" ]]; then
+-  ruby "$SANE_MASTER" listing_actions --json-out "$LISTING_JSON_PATH" >/dev/null
+-  python3 - "$LISTING_JSON_PATH" <<'PY'
++run_listing_section() {
++  if [[ -x "$SANE_MASTER" ]]; then
++    ruby "$SANE_MASTER" listing_actions --json-out "$LISTING_JSON_PATH" >/dev/null
++    python3 - "$LISTING_JSON_PATH" <<'PY'
+ import json
+ import sys
+ 
+@@ -65,28 +70,92 @@ if needs:
+ else:
+     print("No live listing/setup actions.")
+ PY
+-else
+-  echo "SaneMaster listing_actions not executable"
+-fi
++  else
++    echo "SaneMaster listing_actions not executable"
++  fi
++}
+ 
+-printf '\n[4/5] Open GitHub issues (sane-apps org)\n'
+-if command -v gh >/dev/null 2>&1; then
+-  for repo in SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo; do
+-    printf '\n## %s\n' "$repo"
+-    gh issue list -R "sane-apps/${repo}" --state open --limit 10 || echo "  Unable to fetch issues for ${repo} (auth missing or no issues)."
++run_repo_query_section() {
++  local mode="$1"
++  local heading_word="$2"
++  shift 2
++  local repos=("$@")
++  local repo_pids=()
++
++  if ! command -v gh >/dev/null 2>&1; then
++    echo "GitHub CLI (gh) not installed"
++    return 0
++  fi
++
++  for repo in "${repos[@]}"; do
++    {
++      if [[ "$mode" == "issue" ]]; then
++        gh issue list -R "sane-apps/${repo}" --state open --limit 10
++      else
++        gh pr list -R "sane-apps/${repo}" --state open --limit 10
++      fi
++    } >"$STATUS_TMP_DIR/${mode}_${repo}.txt" 2>"$STATUS_TMP_DIR/${mode}_${repo}.err" &
++    repo_pids+=("$!")
+   done
+-else
+-  echo "GitHub CLI (gh) not installed"
+-fi
+ 
+-printf '\n[5/5] Open GitHub PRs (sane-apps org)\n'
+-if command -v gh >/dev/null 2>&1; then
+-  for repo in SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo; do
++  for pid in "${repo_pids[@]}"; do
++    wait "$pid"
++  done
++
++  for repo in "${repos[@]}"; do
+     printf '\n## %s\n' "$repo"
+-    gh pr list -R "sane-apps/${repo}" --state open --limit 10 || echo "  Unable to fetch PRs for ${repo} (auth missing or no PRs)."
++    if [[ -s "$STATUS_TMP_DIR/${mode}_${repo}.txt" ]]; then
++      cat "$STATUS_TMP_DIR/${mode}_${repo}.txt"
++    elif [[ -s "$STATUS_TMP_DIR/${mode}_${repo}.err" ]]; then
++      echo "  Unable to fetch ${heading_word} for ${repo} (auth missing or no ${heading_word})."
++    else
++      echo "  Unable to fetch ${heading_word} for ${repo} (auth missing or no ${heading_word})."
++    fi
+   done
+-else
+-  echo "GitHub CLI (gh) not installed"
+-fi
++}
++
++run_github_issues_section() {
++  run_repo_query_section issue issues SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo
++}
++
++run_github_prs_section() {
++  run_repo_query_section pr PRs SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo
++}
++
++run_section_async() {
++  local pid_var="$1"
++  local name="$2"
++  shift 2
++  "$@" >"$STATUS_TMP_DIR/$name.txt" 2>&1 &
++  printf -v "$pid_var" '%s' "$!"
++}
++
++printf '\nSane status cross-reference (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S')"
++printf '%s\n' "----------------------------------------"
++
++run_section_async sales_pid sales run_sales_section
++run_section_async inbox_pid inbox run_inbox_section
++run_section_async listing_pid listing run_listing_section
++run_section_async issues_pid issues run_github_issues_section
++run_section_async prs_pid prs run_github_prs_section
++
++for pid in "$sales_pid" "$inbox_pid" "$listing_pid" "$issues_pid" "$prs_pid"; do
++  wait "$pid"
++done
++
++printf '\n[1/5] Sales (last 30 days)\n'
++cat "$STATUS_TMP_DIR/sales.txt"
++
++printf '\n[2/5] Inbox status\n'
++cat "$STATUS_TMP_DIR/inbox.txt"
++
++printf '\n[3/5] Listing actions\n'
++cat "$STATUS_TMP_DIR/listing.txt"
++
++printf '\n[4/5] Open GitHub issues (sane-apps org)\n'
++cat "$STATUS_TMP_DIR/issues.txt"
++
++printf '\n[5/5] Open GitHub PRs (sane-apps org)\n'
++cat "$STATUS_TMP_DIR/prs.txt"
+ 
+ printf '\nDone.\n'
+diff --git a/scripts/automation/status_crossref_test.py b/scripts/automation/status_crossref_test.py
+index f56a75c..b5eaddc 100644
+--- a/scripts/automation/status_crossref_test.py
++++ b/scripts/automation/status_crossref_test.py
+@@ -123,6 +123,102 @@ class StatusCrossrefScriptTests(unittest.TestCase):
+             self.assertIn("17\tOPEN\tStub pr", result.stdout)
+             self.assertIn("Done.", result.stdout)
+ 
++    def test_runner_requests_lightweight_inbox_view_and_parallelizes_sections(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp)
++            fake_home = root / "home"
++            fake_home.mkdir(parents=True)
++
++            repo_root = root / "scripts"
++            automation_dir = repo_root / "automation"
++            automation_dir.mkdir(parents=True)
++
++            script_copy = automation_dir / "sane-status-crossref.sh"
++            script_copy.write_text(SCRIPT_PATH.read_text(encoding="utf-8"), encoding="utf-8")
++            script_copy.chmod(SCRIPT_PATH.stat().st_mode)
++
++            sane_master = repo_root / "SaneMaster.rb"
++            sane_master.write_text(
++                textwrap.dedent(
++                    """\
++                    #!/usr/bin/env ruby
++                    require "json"
++                    command = ARGV.shift
++                    sleep 0.4
++                    case command
++                    when "sales"
++                      puts "stub sales ok"
++                    when "listing_actions"
++                      json_out = nil
++                      while (arg = ARGV.shift)
++                        json_out = ARGV.shift if arg == "--json-out"
++                      end
++                      abort("missing --json-out") unless json_out
++                      File.write(json_out, JSON.pretty_generate({current_actions: []}))
++                    else
++                      warn "unexpected command: #{command.inspect}"
++                      exit 1
++                    end
++                    """
++                ),
++                encoding="utf-8",
++            )
++            sane_master.chmod(sane_master.stat().st_mode | stat.S_IXUSR)
++
++            inbox_dir = fake_home / "SaneApps" / "infra" / "scripts"
++            inbox_dir.mkdir(parents=True)
++            write_executable(
++                inbox_dir / "check-inbox.sh",
++                textwrap.dedent(
++                    """\
++                    #!/usr/bin/env bash
++                    sleep 0.4
++                    printf 'flags:%s,%s,%s\\n' "${CHECK_INBOX_SKIP_GITHUB:-0}" "${CHECK_INBOX_SKIP_ACTIONS:-0}" "${CHECK_INBOX_SKIP_POSITIVE_FEEDBACK:-0}"
++                    """
++                ),
++            )
++
++            bin_dir = root / "bin"
++            bin_dir.mkdir()
++            write_executable(
++                bin_dir / "gh",
++                textwrap.dedent(
++                    """\
++                    #!/usr/bin/env bash
++                    sleep 0.4
++                    if [[ "$1" == "issue" && "$2" == "list" ]]; then
++                      printf '123\\tOPEN\\tStub issue\\n'
++                      exit 0
++                    fi
++                    if [[ "$1" == "pr" && "$2" == "list" ]]; then
++                      printf '17\\tOPEN\\tStub pr\\n'
++                      exit 0
++                    fi
++                    echo "unexpected gh args: $*" >&2
++                    exit 1
++                    """
++                ),
++            )
++
++            env = os.environ.copy()
++            env["HOME"] = str(fake_home)
++            env["PATH"] = f"{bin_dir}:{env['PATH']}"
++
++            started = subprocess.check_output(["python3", "-c", "import time; print(time.time())"], text=True)
++            result = subprocess.run(
++                ["bash", str(script_copy)],
++                capture_output=True,
++                text=True,
++                env=env,
++                check=False,
++            )
++            finished = subprocess.check_output(["python3", "-c", "import time; print(time.time())"], text=True)
++            elapsed = float(finished.strip()) - float(started.strip())
++
++            self.assertEqual(result.returncode, 0, msg=result.stderr)
++            self.assertIn("flags:1,1,1", result.stdout)
++            self.assertLess(elapsed, 2.2, msg=result.stdout)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/scripts/automation/tool_discovery_receipt.rb b/scripts/automation/tool_discovery_receipt.rb
+index 74dfcdc..356d240 100644
+--- a/scripts/automation/tool_discovery_receipt.rb
++++ b/scripts/automation/tool_discovery_receipt.rb
+@@ -12,6 +12,7 @@ require 'time'
+ class ToolDiscoveryReceipt
+   DEFAULT_LIMIT = 12
+   DEFAULT_TIMEOUT_SECONDS = 180
++  HEALTH_CACHE_TTL_SECONDS = 180
+   STOPWORDS = %w[
+     missing
+     tool
+@@ -146,6 +147,7 @@ class ToolDiscoveryReceipt
+       query: nil,
+       limit: DEFAULT_LIMIT,
+       timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
++      health_cache_ttl_seconds: HEALTH_CACHE_TTL_SECONDS,
+       run_doctor: true,
+       run_validation: true,
+       json_stdout: false
+@@ -195,6 +197,7 @@ class ToolDiscoveryReceipt
+       opts.on('--out-dir PATH', 'Directory for receipt artifacts') { |v| @options[:out_dir] = File.expand_path(v) }
+       opts.on('--limit N', Integer, 'Max matches per section') { |v| @options[:limit] = [v, 1].max }
+       opts.on('--timeout-seconds N', Integer, 'Timeout for doctor/validation commands') { |v| @options[:timeout_seconds] = [v, 30].max }
++      opts.on('--health-cache-ttl N', Integer, 'Reuse doctor/validation results for N seconds') { |v| @options[:health_cache_ttl_seconds] = [v, 0].max }
+       opts.on('--skip-doctor', 'Skip SaneMaster doctor') { @options[:run_doctor] = false }
+       opts.on('--skip-validation', 'Skip validation_report') { @options[:run_validation] = false }
+       opts.on('--json', 'Print the receipt JSON to stdout') { @options[:json_stdout] = true }
+@@ -335,41 +338,45 @@ class ToolDiscoveryReceipt
+   def run_doctor_check
+     return { skipped: true } unless @options[:run_doctor]
+ 
+-    script = File.join(@options[:project_root], 'scripts', 'SaneMaster.rb')
+-    command = [RbConfig.ruby, script, 'doctor']
+-    result = capture_command(command, chdir: @options[:project_root], timeout_seconds: @options[:timeout_seconds])
+-    lines = combined_output_lines(result).first(20)
+-
+-    {
+-      command: command.join(' '),
+-      status: result[:timed_out] ? 'timed_out' : (result[:success] ? 'ok' : 'failed'),
+-      exit_code: result[:exit_code],
+-      timed_out: result[:timed_out],
+-      warning_lines: lines.select { |line| line.match?(/[⚠️❌]/) },
+-      summary_lines: lines
+-    }
++    cached_health_check('doctor') do
++      script = File.join(@options[:project_root], 'scripts', 'SaneMaster.rb')
++      command = [RbConfig.ruby, script, 'doctor']
++      result = capture_command(command, chdir: @options[:project_root], timeout_seconds: @options[:timeout_seconds])
++      lines = combined_output_lines(result).first(20)
++
++      {
++        command: command.join(' '),
++        status: result[:timed_out] ? 'timed_out' : (result[:success] ? 'ok' : 'failed'),
++        exit_code: result[:exit_code],
++        timed_out: result[:timed_out],
++        warning_lines: lines.select { |line| line.match?(/[⚠️❌]/) },
++        summary_lines: lines
++      }
++    end
+   end
+ 
+   def run_validation_check
+     return { skipped: true } unless @options[:run_validation]
+ 
+-    script = File.join(@options[:project_root], 'scripts', 'validation_report.rb')
+-    command = [RbConfig.ruby, script, '--json']
+-    result = capture_command(command, chdir: @options[:project_root], timeout_seconds: @options[:timeout_seconds])
+-
+-    payload = parse_json(result[:stdout])
+-    {
+-      command: command.join(' '),
+-      status: result[:timed_out] ? 'timed_out' : (result[:success] ? 'ok' : 'failed'),
+-      exit_code: result[:exit_code],
+-      timed_out: result[:timed_out],
+-      verdict: payload && payload['verdict'],
+-      verdict_status: payload && payload.dig('verdict', 'status'),
+-      verdict_detail: payload && payload.dig('verdict', 'detail'),
+-      issue_count: payload && payload['issues']&.length,
+-      warning_count: payload && payload['warnings']&.length,
+-      parse_error: payload.nil? ? 'validation report did not return JSON' : nil
+-    }
++    cached_health_check('validation_report') do
++      script = File.join(@options[:project_root], 'scripts', 'validation_report.rb')
++      command = [RbConfig.ruby, script, '--json']
++      result = capture_command(command, chdir: @options[:project_root], timeout_seconds: @options[:timeout_seconds])
++
++      payload = parse_json(result[:stdout])
++      {
++        command: command.join(' '),
++        status: result[:timed_out] ? 'timed_out' : (result[:success] ? 'ok' : 'failed'),
++        exit_code: result[:exit_code],
++        timed_out: result[:timed_out],
++        verdict: payload && payload['verdict'],
++        verdict_status: payload && payload.dig('verdict', 'status'),
++        verdict_detail: payload && payload.dig('verdict', 'detail'),
++        issue_count: payload && payload['issues']&.length,
++        warning_count: payload && payload['warnings']&.length,
++        parse_error: payload.nil? ? 'validation report did not return JSON' : nil
++      }
++    end
+   end
+ 
+   def build_summary(receipt)
+@@ -538,6 +545,48 @@ class ToolDiscoveryReceipt
+       binary || 'rg'
+     end
+   end
++
++  def cached_health_check(key)
++    ttl = @options[:health_cache_ttl_seconds].to_i
++    cache = read_health_cache
++    project_key = File.expand_path(@options[:project_root])
++    cache_key = "#{project_key}:#{key}"
++    now = Time.now.to_i
++
++    if ttl.positive?
++      entry = cache[cache_key]
++      if entry.is_a?(Hash) && entry['cached_at'].to_i.positive? && (now - entry['cached_at'].to_i) <= ttl
++        result = entry['result']
++        return result.merge(cached: true) if result.is_a?(Hash)
++      end
++    end
++
++    result = yield
++    cache[cache_key] = {
++      'cached_at' => now,
++      'result' => result
++    }
++    write_health_cache(cache)
++    result.merge(cached: false)
++  end
++
++  def health_cache_path
++    File.join(@options[:out_dir], '.health-check-cache.json')
++  end
++
++  def read_health_cache
++    path = health_cache_path
++    return {} unless File.exist?(path)
++
++    JSON.parse(File.read(path))
++  rescue JSON::ParserError, Errno::ENOENT
++    {}
++  end
++
++  def write_health_cache(cache)
++    FileUtils.mkdir_p(@options[:out_dir])
++    File.write(health_cache_path, JSON.pretty_generate(cache))
++  end
+ end
+ 
+ ToolDiscoveryReceipt.new(ARGV).run if $PROGRAM_NAME == __FILE__
+diff --git a/scripts/link_monitor.rb b/scripts/link_monitor.rb
+index 836e1f2..96250d9 100755
+--- a/scripts/link_monitor.rb
++++ b/scripts/link_monitor.rb
+@@ -39,11 +39,19 @@ CRITICAL_URLS = {}.tap do |urls|
+     next if checkout_uuid.empty? || monitor_links == false
+ 
+     urls["#{product['name']} checkout"] = "#{STORE['checkout_base']}/#{checkout_uuid}"
+-    urls[product["domain"]] = "https://#{product['domain']}"
++    unless product["domain"].to_s.strip.empty?
++      urls[product["domain"]] = "https://#{product['domain']}"
++    end
+     urls["#{product['name']} redirect"] = "#{REDIRECT['base_url']}/#{slug}"
+-    urls["#{product['name']} download"] = "https://go.saneapps.com/download/#{slug}"
+-    urls["#{product['name']} appcast"] = product["appcast"]
+-    urls["#{product['name']} dist worker"] = "https://#{product['dist_domain']}/"
++    if product.fetch("download_redirect", true)
++      urls["#{product['name']} download"] = "https://go.saneapps.com/download/#{slug}"
++    end
++    unless product["appcast"].to_s.strip.empty?
++      urls["#{product['name']} appcast"] = product["appcast"]
++    end
++    unless product["dist_domain"].to_s.strip.empty?
++      urls["#{product['name']} dist worker"] = "https://#{product['dist_domain']}/"
++    end
+   end
+   urls["saneapps.com"] = "https://saneapps.com"
+   urls["LemonSqueezy store"] = STORE["base_url"]
+@@ -55,6 +63,8 @@ WEBSITE_DIRS = %w[
+   apps/SaneClip/docs
+   apps/SaneClick/docs
+   apps/SaneHosts/website
++  apps/SaneSales/docs
++  web/saneapps.com
+ ].freeze
+ 
+ TIMEOUT = 10
+diff --git a/scripts/mini/README.md b/scripts/mini/README.md
+index 858b97e..9d0797b 100644
+--- a/scripts/mini/README.md
++++ b/scripts/mini/README.md
+@@ -83,13 +83,22 @@ ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-gui-run.sh \
+ 
+ What it does:
+ - opens a real Terminal window in the logged-in Mini GUI session
++- tags that window with the shared `SaneApps Automation:` prefix
++- reclaims stale automation windows for the same job before launching
+ - runs the command there
+ - tees output to the requested log file
+ - waits for completion
+ - closes its own Terminal window by default
++- hides Terminal again after cleanup so old automation windows do not linger on the desktop
+ 
+ Use this for App Store archive/export/upload recovery on the Mini. Do not leave throwaway Terminal windows open.
+ 
++If the Mini already looks polluted, run:
++
++```bash
++ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-reclaim-automation-windows.sh --all --hide-terminal'
++```
++
+ ## Architecture
+ 
+ ```
+diff --git a/scripts/mini/capture-mini-screenshot.sh b/scripts/mini/capture-mini-screenshot.sh
+index 19ab65b..494215b 100755
+--- a/scripts/mini/capture-mini-screenshot.sh
++++ b/scripts/mini/capture-mini-screenshot.sh
+@@ -31,6 +31,27 @@ EOF
+   echo "Run this wrapper from the controlling machine where Codex is installed, not from a plain ssh shell on the Mini." >&2
+   exit 1
+ }
++
++has_active_window=false
++has_explicit_target=false
++for arg in "$@"; do
++  case "$arg" in
++    --active-window)
++      has_active_window=true
++      ;;
++    --app|--window-name|--window-id|--region|--interactive)
++      has_explicit_target=true
++      ;;
++  esac
++done
++
++if $has_active_window && ! $has_explicit_target; then
++  echo "Refusing Mini screenshot capture with bare --active-window." >&2
++  echo "That path often captures the automation Terminal instead of the intended app window." >&2
++  echo "Use --app/--window-name or --window-id, then close Safari/Preview after the capture." >&2
++  exit 2
++fi
++
+ remote_cmd() {
+   local out=""
+   local arg
+@@ -41,10 +62,30 @@ remote_cmd() {
+   printf '%s' "$out"
+ }
+ 
+-rsync -az "$LOCAL_SKILL_DIR/" "${MINI_HOST}:${REMOTE_HELPER_DIR}/"
++resolve_mini_host() {
++  local host="$1"
++  local resolved_host=""
++
++  if ssh -o BatchMode=yes -o ConnectTimeout=2 "$host" true >/dev/null 2>&1; then
++    printf '%s' "$host"
++    return 0
++  fi
++
++  resolved_host="$(ssh -G "$host" 2>/dev/null | awk '/^hostname /{print $2; exit}')"
++  if [ -n "$resolved_host" ]; then
++    printf '%s' "$resolved_host"
++    return 0
++  fi
++
++  printf '%s' "$host"
++}
++
++resolved_mini_host="$(resolve_mini_host "$MINI_HOST")"
++
++rsync -az "$LOCAL_SKILL_DIR/" "${resolved_mini_host}:${REMOTE_HELPER_DIR}/"
+ 
+ forwarded_args="$(remote_cmd "$@")"
+ cmd="bash ${REMOTE_HELPER_DIR}/ensure_macos_permissions.sh && python3 ${REMOTE_HELPER_DIR}/take_screenshot.py ${forwarded_args}"
+-remote_runner="$(remote_cmd bash "$REMOTE_MINI_GUI_RUN" --title "Mini Screenshot" --close-window -- "$cmd")"
++remote_runner="$(remote_cmd bash "$REMOTE_MINI_GUI_RUN" --title "Mini Screenshot" --reclaim-all --close-window -- "$cmd")"
+ 
+-ssh "$MINI_HOST" "$remote_runner"
++ssh "$resolved_mini_host" "$remote_runner"
+diff --git a/scripts/mini/mini-gui-run.applescript b/scripts/mini/mini-gui-run.applescript
+index af88e1d..7097e70 100644
+--- a/scripts/mini/mini-gui-run.applescript
++++ b/scripts/mini/mini-gui-run.applescript
+@@ -1,47 +1,29 @@
+ on run argv
+-  if (count of argv) < 4 then
+-    error "Usage: mini-gui-run.applescript <windowTitle> <shellCommand> <closeWindowFlag> <pollSeconds>"
++  if (count of argv) < 2 then
++    error "Usage: mini-gui-run.applescript <windowTitle> <shellCommand>"
+   end if
+ 
+   set windowTitle to item 1 of argv
+   set shellCommand to item 2 of argv
+-  set closeWindowFlag to item 3 of argv
+-  set pollSeconds to item 4 of argv
+-  set shouldClose to (closeWindowFlag is "1" or closeWindowFlag is "true")
+-  set pollDelay to (pollSeconds as real)
+ 
+   tell application "Terminal"
+-    activate
++    launch
+     set targetTab to do script shellCommand
+     set targetWindowID to id of front window
+     try
+       set custom title of targetTab to windowTitle
+     end try
+-
+-    repeat 86400 times
+-      delay pollDelay
+-      try
+-        if busy of targetTab is false then exit repeat
+-      on error
+-        exit repeat
+-      end try
+-    end repeat
+-
+-    if shouldClose then
+-      try
+-        repeat with w in windows
+-          try
+-            if id of w is equal to targetWindowID then
+-              set index of w to 1
+-              activate
+-              close front window saving no
+-              exit repeat
+-            end if
+-          end try
+-        end repeat
+-      end try
+-    end if
++    try
++      set bounds of front window to {-2200, 80, -1200, 720}
++    end try
++    try
++      set miniaturized of front window to true
++    end try
+   end tell
+ 
+-  return "OK"
++  try
++    tell application "Finder" to activate
++  end try
++
++  return (targetWindowID as string)
+ end run
+diff --git a/scripts/mini/mini-gui-run.sh b/scripts/mini/mini-gui-run.sh
+index f968cfe..83f7c50 100755
+--- a/scripts/mini/mini-gui-run.sh
++++ b/scripts/mini/mini-gui-run.sh
+@@ -7,11 +7,13 @@ set -euo pipefail
+ 
+ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ APPLESCRIPT_PATH="$SCRIPT_DIR/mini-gui-run.applescript"
++RECLAIM_SCRIPT_PATH="$SCRIPT_DIR/mini-reclaim-automation-windows.sh"
++AUTOMATION_WINDOW_PREFIX="${MINI_GUI_RUN_WINDOW_PREFIX:-SaneApps Automation: }"
+ 
+ usage() {
+   cat <<'EOF' >&2
+ Usage:
+-  mini-gui-run.sh [--log-file PATH] [--status-file PATH] [--title TEXT] [--keep-window] [--poll-seconds N] -- "shell command"
++  mini-gui-run.sh [--log-file PATH] [--status-file PATH] [--title TEXT] [--keep-window] [--reclaim-all] [--poll-seconds N] -- "shell command"
+ 
+ Examples:
+   mini-gui-run.sh --close-window --title "codesign probe" -- "codesign --force --sign \"Apple Distribution: ...\" /tmp/probe"
+@@ -26,9 +28,11 @@ shell_quote() {
+ 
+ close_window=1
+ poll_seconds=1
++start_delay_seconds="${MINI_GUI_RUN_START_DELAY:-0.6}"
+ log_file=""
+ status_file=""
+ title="Mini GUI Run"
++reclaim_all=0
+ 
+ while [ $# -gt 0 ]; do
+   case "$1" in
+@@ -51,6 +55,10 @@ while [ $# -gt 0 ]; do
+       close_window=0
+       shift
+       ;;
++    --reclaim-all)
++      reclaim_all=1
++      shift
++      ;;
+     --close-window)
+       close_window=1
+       shift
+@@ -73,7 +81,7 @@ done
+ [ $# -gt 0 ] || usage
+ 
+ command_string="$*"
+-window_title="${title} [$$-$(date +%s)]"
++window_title="${AUTOMATION_WINDOW_PREFIX}${title}"
+ quoted_command="$(shell_quote "$command_string")"
+ tmp_dir=""
+ cleanup_tmp=0
+@@ -95,9 +103,22 @@ rm -f "$status_file"
+ 
+ trap 'if [ "$cleanup_tmp" -eq 1 ] && [ -n "$tmp_dir" ] && [ -d "$tmp_dir" ]; then rm -rf "$tmp_dir"; fi' EXIT
+ 
++reclaim_windows() {
++  [ -x "$RECLAIM_SCRIPT_PATH" ] || return 0
++
++  if [ "$reclaim_all" -eq 1 ]; then
++    "$RECLAIM_SCRIPT_PATH" --all --title "$title" "$@" >/dev/null 2>&1 || true
++  else
++    "$RECLAIM_SCRIPT_PATH" --title "$title" "$@" >/dev/null 2>&1 || true
++  fi
++}
++
++reclaim_windows
++
+ inner_script=$(cat <<EOF
+ printf '\\033]1;%s\\007\\033]2;%s\\007' $(shell_quote "$window_title") $(shell_quote "$window_title")
+ set -o pipefail
++sleep $(shell_quote "$start_delay_seconds")
+ bash -lc ${quoted_command} 2>&1 | tee -a $(shell_quote "$log_file")
+ __mini_gui_status=\${PIPESTATUS[0]}
+ printf '%s\n' "\$__mini_gui_status" > $(shell_quote "$status_file")
+@@ -107,15 +128,53 @@ EOF
+ 
+ terminal_command="bash -lc $(shell_quote "$inner_script")"
+ 
+-/usr/bin/osascript "$APPLESCRIPT_PATH" "$window_title" "$terminal_command" "0" "$poll_seconds" >/dev/null
++window_id="$(
++  /usr/bin/osascript "$APPLESCRIPT_PATH" "$window_title" "$terminal_command"
++)"
++
++window_still_exists() {
++  local target_id="$1"
++  /usr/bin/osascript <<EOF >/dev/null 2>&1
++tell application "Terminal"
++  repeat with w in windows
++    try
++      if id of w is equal to ${target_id} then return true
++    end try
++  end repeat
++end tell
++return false
++EOF
++}
++
++close_window_by_id() {
++  local target_id="$1"
++  /usr/bin/osascript <<EOF >/dev/null 2>&1
++tell application "Terminal"
++  repeat with w in windows
++    try
++      if id of w is equal to ${target_id} then
++        close w saving no
++        exit repeat
++      end if
++    end try
++  end repeat
++end tell
++EOF
++}
+ 
+-if [ "$close_window" -eq 1 ]; then
+-  for _attempt in 1 2 3; do
+-    sleep 1
+-    /usr/bin/osascript -e 'tell application "Terminal" to close front window saving no' >/dev/null 2>&1 && break
+-  done
++while [ ! -f "$status_file" ]; do
++  sleep "$poll_seconds"
++  if ! window_still_exists "$window_id"; then
++    break
++  fi
++done
++
++if [ "$close_window" -eq 1 ] && [ -n "${window_id:-}" ]; then
++  close_window_by_id "$window_id"
+ fi
+ 
++reclaim_windows --hide-terminal
++
+ if [ ! -f "$status_file" ]; then
+   echo "mini-gui-run: command finished without a status file: $status_file" >&2
+   [ -s "$log_file" ] && cat "$log_file" >&2
+diff --git a/scripts/mini/mini-nightly.sh b/scripts/mini/mini-nightly.sh
+index 3e434b4..3c62517 100755
+--- a/scripts/mini/mini-nightly.sh
++++ b/scripts/mini/mini-nightly.sh
+@@ -278,6 +278,30 @@ SANEAI_TRAIN_DIR="$SANEAI_DIR/training_data"
+ SANEAI_ADAPTER="$SANEAI_DIR/models/production_adapter"
+ PYTHON="$HOME/mlx-env/bin/python3"
+ SANEAI_MODEL="mlx-community/Llama-3.2-3B-Instruct-4bit"
++SANEAI_ADAPTER_CONFIG="$SANEAI_ADAPTER/adapter_config.json"
++
++if [ -f "$SANEAI_ADAPTER_CONFIG" ]; then
++  resolved_model=$(
++    "$PYTHON" - <<'PY' "$SANEAI_ADAPTER_CONFIG" 2>/dev/null
++import json
++import sys
++
++path = sys.argv[1]
++try:
++    with open(path, "r", encoding="utf-8") as handle:
++        data = json.load(handle)
++except Exception:
++    sys.exit(1)
++
++model = data.get("model")
++if isinstance(model, str) and model:
++    print(model)
++PY
++  ) || resolved_model=""
++  if [ -n "$resolved_model" ]; then
++    SANEAI_MODEL="$resolved_model"
++  fi
++fi
+ 
+ if [ -f "$EVAL_SCRIPT" ] && [ -d "$SANEAI_ADAPTER" ] && [ -f "$SANEAI_TRAIN_DIR/train.jsonl" ]; then
+   EVAL_CMD=(
+diff --git a/scripts/mini/mini-train.sh b/scripts/mini/mini-train.sh
+index a817dd9..e0046ff 100755
+--- a/scripts/mini/mini-train.sh
++++ b/scripts/mini/mini-train.sh
+@@ -1787,6 +1787,7 @@ if [ -n "$BEST_ITERS" ]; then
+     echo "**Auto-promotion skipped:** interrupted checkpoint only. Require a fully completed sweep before production promotion." >> "$REPORT"
+   elif [ "$BEST_PRIMARY_STATUS" = "PASS" ] && [ "$BEST_ACCURACY" -ge "$PRODUCTION_PROMOTE_SCORE" ]; then
+     PROD_DIR="$MODELS_DIR/production_adapter"
++    rm -rf "$PROD_DIR"
+     mkdir -p "$PROD_DIR"
+     cp -r "$BEST_ADAPTER_DIR/"* "$PROD_DIR/"
+     echo "" >> "$REPORT"
+diff --git a/scripts/mini/mini_train_process_test.rb b/scripts/mini/mini_train_process_test.rb
+index 926a9d3..856cf53 100644
+--- a/scripts/mini/mini_train_process_test.rb
++++ b/scripts/mini/mini_train_process_test.rb
+@@ -8,11 +8,13 @@ include TestFramework
+ TRAIN_PATH = File.expand_path('mini-train.sh', __dir__)
+ TRAIN_ALL_PATH = File.expand_path('mini-train-all.sh', __dir__)
+ TRAIN_CHALLENGERS_PATH = File.expand_path('mini-train-challengers.sh', __dir__)
++NIGHTLY_PATH = File.expand_path('mini-nightly.sh', __dir__)
+ EVAL_PATH = File.expand_path('evaluate_model.py', __dir__)
+ 
+ train_source = File.read(TRAIN_PATH)
+ train_all_source = File.read(TRAIN_ALL_PATH)
+ train_challengers_source = File.read(TRAIN_CHALLENGERS_PATH)
++nightly_source = File.read(NIGHTLY_PATH)
+ eval_source = File.read(EVAL_PATH)
+ 
+ exit(run_tests('Mini Train Process Tests') do
+@@ -66,6 +68,20 @@ exit(run_tests('Mini Train Process Tests') do
+       assert_includes(train_source, 'purge 2>/dev/null || true')
+       true
+     end
++
++    test('production promotion replaces stale adapter contents before copying a winner') do
++      assert_includes(train_source, 'PROD_DIR="$MODELS_DIR/production_adapter"')
++      assert_includes(train_source, 'rm -rf "$PROD_DIR"')
++      assert_includes(train_source, 'cp -r "$BEST_ADAPTER_DIR/"* "$PROD_DIR/"')
++      true
++    end
++
++    test('nightly readiness derives the SaneAI base model from production adapter metadata') do
++      assert_includes(nightly_source, 'SANEAI_ADAPTER_CONFIG="$SANEAI_ADAPTER/adapter_config.json"')
++      assert_includes(nightly_source, 'json.load(handle)')
++      assert_includes(nightly_source, 'SANEAI_MODEL="$resolved_model"')
++      true
++    end
+   end
+ 
+   test_category('Unsafe model guard') do
+diff --git a/scripts/release.sh b/scripts/release.sh
+index 1b22e9a..012866a 100755
+--- a/scripts/release.sh
++++ b/scripts/release.sh
+@@ -1973,12 +1973,33 @@ override_reason_for_flag() {
+     esac
+ }
+ 
++release_phrase_preapproved() {
++    local phrase="$1"
++    [ -n "${phrase}" ] || return 1
++    [ -n "${SANE_RELEASE_APPROVALS:-}" ] || return 1
++
++    local candidate
++    while IFS= read -r candidate; do
++        [ -n "${candidate}" ] || continue
++        if [ "${candidate}" = "${phrase}" ]; then
++            return 0
++        fi
++    done < <(printf '%s\n' "${SANE_RELEASE_APPROVALS}" | tr ';' '\n')
++
++    return 1
++}
++
+ request_override_approval_for_flag() {
+     local flag="$1"
+     local phrase reason response
+     phrase="$(override_approval_phrase_for_flag "${flag}")"
+     reason="$(override_reason_for_flag "${flag}")"
+ 
++    if release_phrase_preapproved "${phrase}"; then
++        log_warn "Auto-approved override for ${flag} via SANE_RELEASE_APPROVALS."
++        return 0
++    fi
++
+     if [ ! -t 0 ] || [ ! -t 1 ]; then
+         log_error "Override ${flag} requires interactive typed approval."
+         log_error "${reason}"
+@@ -4176,8 +4197,11 @@ if [ -n "${CONFIG_PATH}" ]; then
+             log_error "Missing saneprocess_env.rb (required to read YAML config)"
+             exit 1
+         fi
+-        # shellcheck disable=SC2046
+-        eval "$("${SANEPROCESS_ENV_LOADER}" "${CONFIG_PATH}")"
++        SANEPROCESS_ENV_EXPORTS="$(mktemp -t saneprocess_env)"
++        "${SANEPROCESS_ENV_LOADER}" "${CONFIG_PATH}" > "${SANEPROCESS_ENV_EXPORTS}"
++        # shellcheck source=/dev/null
++        source "${SANEPROCESS_ENV_EXPORTS}"
++        rm -f "${SANEPROCESS_ENV_EXPORTS}"
+     else
+         # shellcheck source=/dev/null
+         set -a
+diff --git a/scripts/sanemaster/meta.rb b/scripts/sanemaster/meta.rb
+index 2eb9a96..e0af947 100755
+--- a/scripts/sanemaster/meta.rb
++++ b/scripts/sanemaster/meta.rb
+@@ -203,7 +203,7 @@ module SaneMasterModules
+       end
+ 
+       # Fallback: count test files
+-      test_files = Dir.glob("#{project_tests_dir}/**/*Tests.swift").count
++      test_files = fallback_test_file_count
+       puts "   ✅ #{test_files} test files"
+       puts ''
+       { count: test_files, status: :ok }
+@@ -410,6 +410,32 @@ module SaneMasterModules
+       }
+     end
+ 
++    def fallback_test_file_count
++      discover_test_files.count
++    end
++
++    def discover_test_files
++      patterns = []
++
++      [project_tests_dir, project_ui_tests_dir].each do |dir|
++        patterns << "#{dir}/**/*Tests.swift" if Dir.exist?(dir)
++      end
++
++      patterns.concat([
++                        'scripts/**/*_test.rb',
++                        'scripts/**/*_test.py',
++                        'scripts/**/*_test.sh',
++                        'scripts/**/*_tests.rb',
++                        'scripts/**/*_tests.py',
++                        'scripts/**/*tests.rb',
++                        'scripts/**/*tests.py'
++                      ])
++
++      Dir.glob(patterns)
++         .select { |path| File.file?(path) }
++         .uniq
++    end
++
+     def scan_test_structure(content, relative_path, issues)
+       lines = content.lines
+       test_name_regex = /"(.*?)"/
+@@ -609,23 +635,30 @@ module SaneMasterModules
+     def check_tool_versions_smart
+       puts '📦 Tool Versions:'
+       recommendations = []
++      latest_versions = load_cached_latest_versions
++      fetched_versions = latest_versions.dup
+ 
+       TOOL_LATEST_CHECK.each do |name, config|
+-        result = check_single_tool(name, config[:current_cmd], config[:brew])
++        latest = fetched_versions[name] || fetch_homebrew_latest_version(config[:brew])
++        fetched_versions[name] = latest if latest && latest != 'unknown'
++        result = check_single_tool(name, config[:current_cmd], latest)
+         recommendations << result if result
+       end
+ 
+       # Check Ruby separately with major version awareness
+-      ruby_result = check_ruby_version
++      ruby_latest = fetched_versions['ruby'] || fetch_homebrew_latest_version('ruby')
++      fetched_versions['ruby'] = ruby_latest if ruby_latest && ruby_latest != 'unknown'
++      ruby_result = check_ruby_version(ruby_latest)
+       recommendations << ruby_result if ruby_result
+ 
++      persist_latest_versions_cache(fetched_versions) unless fetched_versions.empty?
++
+       puts ''
+       recommendations
+     end
+ 
+-    def check_single_tool(name, current_cmd, brew_name)
++    def check_single_tool(name, current_cmd, latest)
+       current = `#{current_cmd} 2>/dev/null`.strip.split.last&.gsub(/[^\d.]/, '') || 'unknown'
+-      latest = `brew info #{brew_name} 2>/dev/null | head -1`.strip.match(/[\d.]+/)&.to_s || 'unknown'
+ 
+       return nil if current == 'unknown' || latest == 'unknown' || current == latest
+ 
+@@ -655,9 +688,9 @@ module SaneMasterModules
+       end
+     end
+ 
+-    def check_ruby_version
++    def check_ruby_version(latest = nil)
+       current = RUBY_VERSION
+-      latest = `brew info ruby 2>/dev/null | head -1`.strip.match(/\d+\.\d+\.\d+/)&.to_s
++      latest ||= fetch_homebrew_latest_version('ruby')
+ 
+       return nil unless latest && current != latest
+ 
+@@ -676,6 +709,40 @@ module SaneMasterModules
+       end
+     end
+ 
++    def load_cached_latest_versions
++      return {} unless File.exist?(version_cache_file)
++
++      cache = JSON.parse(File.read(version_cache_file))
++      fetched_at = Time.parse(cache['fetched_at'].to_s)
++      return {} if (Time.now - fetched_at) > VERSION_CACHE_MAX_AGE
++
++      versions = cache['versions']
++      versions.is_a?(Hash) ? versions : {}
++    rescue StandardError
++      {}
++    end
++
++    def persist_latest_versions_cache(versions)
++      ensure_sop_dirs
++      File.write(
++        version_cache_file,
++        JSON.pretty_generate({
++                               fetched_at: Time.now.iso8601,
++                               versions: versions
++                             })
++      )
++    rescue StandardError
++      nil
++    end
++
++    def fetch_homebrew_latest_version(formula)
++      `brew info #{formula} 2>/dev/null | head -1`.strip.match(/\d+\.\d+\.\d+/)&.to_s || 'unknown'
++    end
++
++    def version_cache_file
++      VERSION_CACHE_FILE
++    end
++
+     def check_hooks_health
+       puts '🪝 Claude Hooks:'
+ 
+diff --git a/scripts/sanemaster/release.rb b/scripts/sanemaster/release.rb
+index 6c87fea..68bad91 100644
+--- a/scripts/sanemaster/release.rb
++++ b/scripts/sanemaster/release.rb
+@@ -2496,6 +2496,66 @@ module SaneMasterModules
+       exit 1 if issues.any?
+     end
+ 
++    def appstore_screenshot_sizes_for_variant(variant)
++      add_landscape = lambda do |pairs|
++        pairs.flat_map { |width, height| [[width, height], [height, width]] }.uniq
++      end
++
++      case variant.to_s
++      when 'macos'
++        add_landscape.call([[1280, 800], [1440, 900], [2560, 1600], [2880, 1800]])
++      when 'ios', 'ios_67'
++        add_landscape.call([[1260, 2736], [1290, 2796], [1320, 2868]])
++      when 'ios_65'
++        add_landscape.call([[1284, 2778], [1242, 2688]])
++      when 'ipad', 'ipad_13', 'ipad_12.9', 'ipad_12_9'
++        add_landscape.call([[2064, 2752], [2048, 2732]])
++      when 'ipad_11'
++        add_landscape.call([[1488, 2266], [1668, 2420], [1668, 2388], [1640, 2360], [1668, 2224]])
++      when 'watch'
++        add_landscape.call([[422, 514], [410, 502], [416, 496], [396, 484], [368, 448], [312, 390]])
++      else
++        []
++      end
++    end
++
++    def screenshot_dimensions(path)
++      dims, = Open3.capture2('sips', '-g', 'pixelWidth', '-g', 'pixelHeight', path)
++      [
++        dims[/pixelWidth:\s*(\d+)/, 1].to_i,
++        dims[/pixelHeight:\s*(\d+)/, 1].to_i
++      ]
++    rescue StandardError
++      [0, 0]
++    end
++
++    def validate_appstore_screenshot_dimensions(path, variant)
++      width, height = screenshot_dimensions(path)
++      return "#{File.basename(path)} dimensions could not be read" if width.zero? || height.zero?
++
++      accepted = appstore_screenshot_sizes_for_variant(variant)
++      return nil if accepted.empty? || accepted.include?([width, height])
++
++      accepted_text = accepted.map { |pair| "#{pair[0]}x#{pair[1]}" }.uniq.join(', ')
++      "#{File.basename(path)} is #{width}x#{height}; accepted #{variant} sizes are #{accepted_text}"
++    end
++
++    def run_custom_appstore_screenshot_validator
++      validator = File.join(Dir.pwd, 'scripts', 'validate_appstore_screenshots.sh')
++      return { ok: true, output: nil } unless File.file?(validator)
++
++      output, status = Open3.capture2e('bash', validator, chdir: Dir.pwd)
++      {
++        ok: status.success?,
++        output: output.to_s.strip
++      }
++    rescue StandardError => e
++      {
++        ok: false,
++        output: e.message
++      }
++    end
++
+     # App Store submission preflight — validates everything Apple checks during review.
+     # Derived from Apple's App Review Guidelines + community rejection checklists.
+     # Works for any SaneApps project with a .saneprocess config.
+@@ -2700,6 +2760,10 @@ module SaneMasterModules
+       else
+         screenshot_issues = []
+         screenshot_summary = []
++        custom_screenshot_validation = run_custom_appstore_screenshot_validator
++        unless custom_screenshot_validation[:ok]
++          screenshot_issues << "Custom screenshot validator failed: #{custom_screenshot_validation[:output]}"
++        end
+         platforms.each do |platform|
+           key = platform == 'ios' ? 'ios' : 'macos'
+           glob_pattern = screenshots_config[key]
+@@ -2710,6 +2774,10 @@ module SaneMasterModules
+               if platform == 'macos' && files.count < 3
+                 warnings << "Only #{files.count} macOS screenshot(s) configured — Apple allows one, but 3-5 screenshots is a safer review baseline"
+               end
++              files.each do |f|
++                dimension_issue = validate_appstore_screenshot_dimensions(f, key)
++                screenshot_issues << dimension_issue if dimension_issue
++              end
+ 
+               # Validate screenshot dimensions for each device class
+               if platform == 'ios'
+@@ -2733,15 +2801,8 @@ module SaneMasterModules
+                   else
+                     screenshot_summary << "ipad: #{ipad_files.count}"
+                     ipad_files.each do |f|
+-                      dims, = Open3.capture2('sips', '-g', 'pixelWidth', '-g', 'pixelHeight', f)
+-                      width = dims[/pixelWidth:\s*(\d+)/, 1].to_i
+-                      height = dims[/pixelHeight:\s*(\d+)/, 1].to_i
+-                      next if width.zero? || height.zero?
+-
+-                      # iPad screenshots should be >= 1668 on shorter edge
+-                      if [width, height].min < 1668
+-                        screenshot_issues << "#{File.basename(f)} (#{width}x#{height}) appears too small for iPad screenshot requirements"
+-                      end
++                      dimension_issue = validate_appstore_screenshot_dimensions(f, 'ipad')
++                      screenshot_issues << dimension_issue if dimension_issue
+                     end
+                   end
+                 end
+@@ -2754,6 +2815,20 @@ module SaneMasterModules
+           end
+         end
+ 
++        watch_glob = screenshots_config['watch']
++        if watch_glob
++          watch_files = Dir.glob(File.join(Dir.pwd, watch_glob))
++          if watch_files.empty?
++            screenshot_issues << "No watch screenshots found matching: #{watch_glob}"
++          else
++            screenshot_summary << "watch: #{watch_files.count}"
++            watch_files.each do |f|
++              dimension_issue = validate_appstore_screenshot_dimensions(f, 'watch')
++              screenshot_issues << dimension_issue if dimension_issue
++            end
++          end
++        end
++
+         if screenshot_issues.empty?
+           puts "✅ #{screenshot_summary.join(', ')}"
+         else
+diff --git a/scripts/sanemaster/universal_control.rb b/scripts/sanemaster/universal_control.rb
+index 15d6d82..3795ac5 100644
+--- a/scripts/sanemaster/universal_control.rb
++++ b/scripts/sanemaster/universal_control.rb
+@@ -54,7 +54,7 @@ module SaneMasterModules
+           options[:local] = false
+           options[:mini] = true
+         end
+-        opts.on('--cleanup-mini', 'Hide Mini Terminal/Codex and close Preview/Safari') do
++        opts.on('--cleanup-mini', 'Reclaim Mini automation windows, hide Terminal/Codex, and close Preview/Safari') do
+           options[:cleanup_mini] = true
+           options[:mini] = true
+         end
+@@ -195,6 +195,7 @@ module SaneMasterModules
+                          <<~SH
+                            pkill -x Preview 2>/dev/null || true
+                            pkill -x Safari 2>/dev/null || true
++                           "$HOME/SaneApps/infra/SaneProcess/scripts/mini/mini-reclaim-automation-windows.sh" --all --hide-terminal 2>/dev/null || true
+                            osascript -e 'tell application "System Events" to set visible of process "Terminal" to false' 2>/dev/null || true
+                            osascript -e 'tell application "System Events" to set visible of process "Codex" to false' 2>/dev/null || true
+                          SH
+diff --git a/scripts/sanemaster/universal_control_test.rb b/scripts/sanemaster/universal_control_test.rb
+index 5f5ca56..bbf9e85 100644
+--- a/scripts/sanemaster/universal_control_test.rb
++++ b/scripts/sanemaster/universal_control_test.rb
+@@ -53,6 +53,7 @@ exit(run_tests('SaneMaster Universal Control Recovery Tests') do
+ 
+       assert_includes(script, 'pkill -x Preview')
+       assert_includes(script, 'pkill -x Safari')
++      assert_includes(script, 'mini-reclaim-automation-windows.sh" --all --hide-terminal')
+       assert_includes(script, 'set visible of process "Terminal" to false')
+       assert_includes(script, 'set visible of process "Codex" to false')
+       true
+diff --git a/scripts/sanemaster/verify.rb b/scripts/sanemaster/verify.rb
+index 8e4643a..cb52ab0 100755
+--- a/scripts/sanemaster/verify.rb
++++ b/scripts/sanemaster/verify.rb
+@@ -525,11 +525,13 @@ module SaneMasterModules
+ 
+     def test_targets_disabled?
+       project_yml = File.join(Dir.pwd, 'project.yml')
+-      return false unless File.exist?(project_yml)
++      if File.exist?(project_yml)
++        content = File.read(project_yml)
++        return true if content.include?('# Temporarily disabled test targets') ||
++                       (content.include?('# targets:') && content.include?("#   - #{project_tests_dir}"))
++      end
+ 
+-      content = File.read(project_yml)
+-      content.include?('# Temporarily disabled test targets') ||
+-        (content.include?('# targets:') && content.include?("#   - #{project_tests_dir}"))
++      saneprocess_value('tests', 'disable_due_to_swiftuicore_linker_bug') == true
+     end
+ 
+     def handle_disabled_tests(args)
+@@ -540,10 +542,22 @@ module SaneMasterModules
+       puts ''
+ 
+       clean([]) if args.include?('--clean')
++      signed_tests = args.include?('--signed-tests') || ENV['SANEMASTER_SIGN_TEST_BUILDS'] == '1'
+ 
+       puts "🔨 Building #{project_name} app..."
+-      result = system('xcodebuild', *xcodebuild_container_args, '-scheme', project_scheme,
+-                      '-destination', 'platform=macOS,arch=arm64', 'build')
++      build_args = ['xcodebuild', *xcodebuild_container_args, '-scheme', project_scheme,
++                    '-destination', 'platform=macOS,arch=arm64', 'build']
++      unless signed_tests
++        build_args.concat([
++                            'CODE_SIGNING_ALLOWED=NO',
++                            'CODE_SIGNING_REQUIRED=NO',
++                            'CODE_SIGN_IDENTITY=',
++                            'DEVELOPMENT_TEAM=',
++                            'PROVISIONING_PROFILE_SPECIFIER=',
++                            'PROVISIONING_PROFILE='
++                          ])
++      end
++      result = system(*build_args)
+       puts ''
+       if result
+         puts '✅ Build succeeded (tests disabled)'
+@@ -959,6 +973,11 @@ module SaneMasterModules
+       max_asset_mb = (ENV['SANEMASTER_MAX_TEST_ASSET_MB'] || '200').to_i
+       max_assets_dir_mb = (ENV['SANEMASTER_MAX_TEST_ASSETS_DIR_MB'] || '500').to_i
+ 
++      unless Dir.exist?(assets_dir)
++        puts '  ℹ️  No Tests/Assets directory for this repo. Skipping test asset check.'
++        return
++      end
++
+       if File.exist?(test_video)
+         size = File.size(test_video) / 1024 / 1024.0
+         size_str = size >= 1 ? "#{size.round(1)}MB" : "#{(size * 1024).round}KB"
+@@ -968,8 +987,6 @@ module SaneMasterModules
+         puts '     Run: ./scripts/SaneMaster.rb gen_assets'
+       end
+ 
+-      return unless Dir.exist?(assets_dir)
+-
+       total_bytes = 0
+       oversized = []
+       Dir.glob(File.join(assets_dir, '*')).each do |asset_path|
+@@ -1029,6 +1046,11 @@ module SaneMasterModules
+ 
+     def check_mockolo
+       puts "\n🎭 Mock Generation:"
++      unless mock_generation_relevant?
++        puts '  ℹ️  No protocol-driven mock lane detected for this repo. Skipping Mockolo check.'
++        return
++      end
++
+       if system('which mockolo > /dev/null 2>&1')
+         version = `mockolo --version 2>&1`.strip
+         puts "  ✅ Mockolo installed (#{version})"
+@@ -1077,6 +1099,14 @@ module SaneMasterModules
+       end
+     end
+ 
++    def mock_generation_relevant?
++      protocol_dir = File.join(project_app_dir, 'Core', 'Protocols')
++      return true if Dir.exist?(protocol_dir) && Dir.glob("#{protocol_dir}/**/*.swift").any?
++
++      mocks_file = File.join(project_tests_dir, 'Mocks', 'Mocks.swift')
++      File.exist?(mocks_file)
++    end
++
+     def check_derived_data
+       puts "\n📁 DerivedData:"
+       dd_path = File.expand_path("~/Library/Developer/Xcode/DerivedData/#{project_name}-*")
+diff --git a/scripts/validation_report.rb b/scripts/validation_report.rb
+index 1065f69..4fb4932 100755
+--- a/scripts/validation_report.rb
++++ b/scripts/validation_report.rb
+@@ -26,6 +26,7 @@ require 'open3'
+ require 'uri'
+ require 'shellwords'
+ require 'tmpdir'
++require 'digest'
+ 
+ class ValidationReport
+   SANE_APPS_ROOT = File.expand_path('~/SaneApps')
+@@ -35,6 +36,8 @@ class ValidationReport
+   WORKFLOW_POLICY_EXCEPTION_MARKER = 'SANEAPPS_GITHUB_HOSTED_EXCEPTION:'
+   MANUAL_WORKFLOW_TRIGGERS = %w[workflow_dispatch workflow_call].freeze
+   GITHUB_POLICY_SEGMENTS = %w[apps infra mcp web].freeze
++  NETWORK_CACHE_FILE = File.expand_path('~/.sanemaster/validation_network_cache.json')
++  NETWORK_CACHE_TTL_SECONDS = 120
+ 
+   PROJECTS = %w[
+     apps/SaneBar
+@@ -63,6 +66,12 @@ class ValidationReport
+     @warnings = []
+     @metrics = {}
+     @verdict = nil
++    @url_status_cache = {}
++    @url_text_cache = {}
++    @appcast_snapshot_cache = {}
++    @release_artifact_inspection_cache = {}
++    @github_repo_metadata_cache = {}
++    @github_release_presence_cache = {}
+   end
+ 
+   def run(format: :text)
+@@ -260,6 +269,10 @@ class ValidationReport
+     # Repo-owned workflows and Dependabot should stay local-first unless explicitly excepted.
+     check_github_workflow_policy(issues_found)
+ 
++    # === APP STORE ASSET LANE CHECK ===
++    # Enabled App Store apps must ship a real screenshot capture + validation lane.
++    check_appstore_asset_lanes(issues_found)
++
+     @metrics[:config_consistency] = {
+       issues: issues_found.size,
+       details: issues_found
+@@ -567,6 +580,31 @@ class ValidationReport
+     end
+   end
+ 
++  def check_appstore_asset_lanes(issues_found)
++    APP_PROJECTS.each do |project|
++      project_root = File.join(sane_apps_root, project)
++      manifest_path = File.join(project_root, '.saneprocess')
++      next unless File.exist?(manifest_path)
++
++      manifest = YAML.safe_load(File.read(manifest_path), permitted_classes: [Date, Time], aliases: true) || {}
++      appstore = manifest['appstore'] || {}
++      next unless appstore['enabled'] == true
++
++      repo_label = project_root.delete_prefix("#{sane_apps_root}/")
++      screenshots = appstore['screenshots'] || {}
++      capture_script = File.join(project_root, 'scripts', 'capture_appstore_screenshots.sh')
++      validator_script = File.join(project_root, 'scripts', 'validate_appstore_screenshots.sh')
++      storyboard_file = File.join(project_root, 'docs', 'appstore_screenshot_storyboard.yml')
++
++      issues_found << "[#{repo_label}] appstore.enabled is true but screenshots are not configured in .saneprocess" if screenshots.empty?
++      issues_found << "[#{repo_label}] appstore.enabled is true but scripts/capture_appstore_screenshots.sh is missing" unless File.exist?(capture_script)
++      issues_found << "[#{repo_label}] appstore.enabled is true but scripts/validate_appstore_screenshots.sh is missing" unless File.exist?(validator_script)
++      issues_found << "[#{repo_label}] appstore.enabled is true but docs/appstore_screenshot_storyboard.yml is missing" unless File.exist?(storyboard_file)
++    rescue Psych::SyntaxError => e
++      issues_found << "[#{repo_label || project}] invalid .saneprocess YAML (#{e.message})"
++    end
++  end
++
+   # Q1: Are blocks CORRECT?
+   # If user constantly overrides/bypasses, blocks are wrong = product is broken
+   def q1_block_accuracy
+@@ -861,12 +899,8 @@ class ValidationReport
+   end
+ 
+   def check_github_releases(product, issues, warnings)
+-    # Check if GitHub CLI is available
+-    return unless system('which gh > /dev/null 2>&1')
+-
+     safe_repo = product[:github_repo].to_s.empty? ? "sane-apps/#{product[:name]}" : product[:github_repo]
+-    result = `gh release list --repo #{Shellwords.shellescape(safe_repo)} --limit 1 2>&1`
+-    has_releases = result && !result.include?('no releases found') && !result.include?('not found') && !result.strip.empty?
++    has_releases = github_repo_has_releases?(safe_repo)
+ 
+     return unless has_releases
+ 
+@@ -943,8 +977,9 @@ class ValidationReport
+         File.join(product[:project_path], 'docs'),
+         File.join(product[:project_path], 'website')
+       ]
+-    end.uniq
+-    website_dirs.each do |full_dir|
++    end
++    website_dirs << File.join(SANE_APPS_ROOT, 'web', 'saneapps.com')
++    website_dirs.uniq.each do |full_dir|
+       next unless Dir.exist?(full_dir)
+       Dir.glob(File.join(full_dir, '**/*.html')).each do |html_file|
+         content = File.read(html_file)
+@@ -1004,45 +1039,59 @@ class ValidationReport
+   end
+ 
+   def check_url_status(url, follow_redirects: false)
+-    escaped_url = Shellwords.shellescape(url)
+-    head_cmd = if follow_redirects
+-                 "curl -sI -L -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 #{escaped_url} 2>&1"
+-               else
+-                 "curl -sI -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 #{escaped_url} 2>&1"
+-               end
+-    get_cmd = if follow_redirects
+-                "curl -sL -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 #{escaped_url} 2>&1"
+-              else
+-                "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 #{escaped_url} 2>&1"
+-              end
++    cache_key = [url, follow_redirects]
++    return @url_status_cache[cache_key] if @url_status_cache.key?(cache_key)
+ 
+-    statuses = []
+-    errors = []
+-
+-    2.times do
+-      head_result = `#{head_cmd}`.strip
+-      statuses << head_result
+-      if head_result.start_with?('5') || head_result == '000'
+-        # Some providers intermittently fail HEAD but succeed GET.
+-        get_result = `#{get_cmd}`.strip
+-        statuses << get_result
+-      end
++    disk_cache_key = network_cache_key('status', url: url, follow_redirects: follow_redirects)
++    disk_cached = read_network_cache_entry(disk_cache_key)
++    if disk_cached[:hit]
++      @url_status_cache[cache_key] = disk_cached[:value]
++      return @url_status_cache[cache_key]
+     end
+ 
+-    statuses.each do |result|
+-      errors << result if result.include?('Connection timed out') || result.include?('Could not resolve') || result.include?('Operation timed out')
+-      errors << result if result.include?('curl:')
+-    end
+-
+-    return 'timeout' if errors.any? { |e| e.include?('timed out') || e.include?('Could not resolve') }
+-    return 'error' if errors.any?
+-
+-    http_codes = statuses.select { |s| s.match?(/^\d{3}$/) }
+-    return 'error' if http_codes.empty?
+-    return http_codes.find { |c| %w[200 301 302].include?(c) } if http_codes.any? { |c| %w[200 301 302].include?(c) }
+-    return '5xx' if http_codes.any? { |c| c.start_with?('5') }
+-
+-    http_codes.first
++    statuses = []
++    head_result = run_curl_status_probe(url, follow_redirects: follow_redirects, head: true)
++    statuses << head_result
++
++    if head_result.start_with?('5') || head_result == '000'
++      # Some providers reject HEAD but still serve the same URL correctly via GET.
++      statuses << run_curl_status_probe(url, follow_redirects: follow_redirects, head: false)
++    end
++
++    errors = statuses.select do |result|
++      result.include?('Connection timed out') ||
++        result.include?('Could not resolve') ||
++        result.include?('Operation timed out') ||
++        result.include?('curl:')
++    end
++
++    resolved_status = if errors.any? { |error| error.include?('timed out') || error.include?('Could not resolve') }
++                        'timeout'
++                      elsif errors.any?
++                        'error'
++                      else
++                        http_codes = statuses.select { |status| status.match?(/^\d{3}$/) }
++                        if http_codes.empty?
++                          'error'
++                        elsif (success = http_codes.find { |code| %w[200 301 302].include?(code) })
++                          success
++                        elsif http_codes.any? { |code| code.start_with?('5') }
++                          '5xx'
++                        else
++                          http_codes.first
++                        end
++                      end
++
++    @url_status_cache[cache_key] = resolved_status
++    write_network_cache_entry(disk_cache_key, resolved_status)
++    @url_status_cache[cache_key]
++  end
++
++  def run_curl_status_probe(url, follow_redirects:, head:)
++    escaped_url = Shellwords.shellescape(url)
++    method_flags = head ? '-sI' : '-s'
++    redirect_flags = follow_redirects ? '-L' : ''
++    `curl #{method_flags} #{redirect_flags} -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 #{escaped_url} 2>&1`.strip
+   end
+ 
+   # Q8: CODE SIGNING STATUS
+@@ -1424,6 +1473,26 @@ class ValidationReport
+   end
+ 
+   def fetch_url_text(url, headers: {})
++    cache_key = [url, headers.sort_by { |key, _| key.to_s }]
++    return @url_text_cache[cache_key] if @url_text_cache.key?(cache_key)
++
++    disk_cache_key = network_cache_key('text', url: url, headers: cache_key.last)
++    disk_cached = read_network_cache_entry(disk_cache_key)
++    if disk_cached[:hit]
++      @url_text_cache[cache_key] = disk_cached[:value]
++      return @url_text_cache[cache_key]
++    end
++
++    @url_text_cache[cache_key] = perform_http_text_request(url, headers: headers)
++    write_network_cache_entry(disk_cache_key, @url_text_cache[cache_key])
++    @url_text_cache[cache_key]
++  rescue StandardError
++    @url_text_cache[cache_key] = ''
++    write_network_cache_entry(disk_cache_key, @url_text_cache[cache_key])
++    @url_text_cache[cache_key]
++  end
++
++  def perform_http_text_request(url, headers: {})
+     uri = URI(url)
+     request = Net::HTTP::Get.new(uri)
+     headers.each { |key, value| request[key] = value }
+@@ -1434,11 +1503,57 @@ class ValidationReport
+     http.read_timeout = 15
+ 
+     response = http.request(request)
+-    return '' unless response.is_a?(Net::HTTPSuccess)
++    response.is_a?(Net::HTTPSuccess) ? response.body.to_s : ''
++  end
++
++  def validation_network_cache_file
++    NETWORK_CACHE_FILE
++  end
++
++  def validation_network_cache_ttl_seconds
++    NETWORK_CACHE_TTL_SECONDS
++  end
++
++  def network_cache_key(kind, payload)
++    Digest::SHA256.hexdigest(JSON.generate({ kind: kind, payload: payload }))
++  end
++
++  def read_network_cache_entry(key)
++    ttl = validation_network_cache_ttl_seconds.to_i
++    return { hit: false } unless ttl.positive?
++
++    path = validation_network_cache_file
++    return { hit: false } unless File.exist?(path)
++
++    cache = JSON.parse(File.read(path))
++    entry = cache[key]
++    return { hit: false } unless entry.is_a?(Hash)
++
++    cached_at = entry['cached_at'].to_i
++    return { hit: false } if cached_at <= 0 || (Time.now.to_i - cached_at) > ttl
+ 
+-    response.body.to_s
++    { hit: true, value: entry['value'] }
+   rescue StandardError
+-    ''
++    { hit: false }
++  end
++
++  def write_network_cache_entry(key, value)
++    ttl = validation_network_cache_ttl_seconds.to_i
++    return unless ttl.positive?
++
++    path = validation_network_cache_file
++    FileUtils.mkdir_p(File.dirname(path))
++    cache =
++      if File.exist?(path)
++        JSON.parse(File.read(path))
++      else
++        {}
++      end
++    cache[key] = { 'cached_at' => Time.now.to_i, 'value' => value }
++    File.write(path, JSON.pretty_generate(cache))
++    File.chmod(0o600, path)
++  rescue StandardError
++    nil
+   end
+ 
+   def resolve_secret_value(service, account, *env_names)
+@@ -1576,10 +1691,14 @@ class ValidationReport
+ 
+   def fetch_live_appcast_snapshot(site_host)
+     return nil if site_host.to_s.strip.empty?
++    return @appcast_snapshot_cache[site_host] if @appcast_snapshot_cache.key?(site_host)
+ 
+     appcast_url = "https://#{site_host}/appcast.xml"
+     body = fetch_url_text(appcast_url)
+-    return nil if body.empty?
++    if body.empty?
++      @appcast_snapshot_cache[site_host] = nil
++      return nil
++    end
+ 
+     latest_item = body.scan(/<item\b.*?<\/item>/m).first || body
+     enclosure_url = latest_item[/<enclosure[^>]*\burl="([^"]+)"/m, 1].to_s
+@@ -1619,7 +1738,7 @@ class ValidationReport
+       acc << (version.to_s.strip.empty? ? '<unknown version>' : version.to_s.strip)
+     end
+ 
+-    {
++    @appcast_snapshot_cache[site_host] = {
+       appcast_url: appcast_url,
+       body: body,
+       latest_item: latest_item,
+@@ -1632,39 +1751,80 @@ class ValidationReport
+       informational_constraint_version_mismatches: informational_constraint_version_mismatches
+     }
+   rescue StandardError
+-    nil
++    @appcast_snapshot_cache[site_host] = nil
+   end
+ 
+   def inspect_live_release_artifact(url)
+     return { artifact_name: nil, signed: false, notarized: false, available: false } if url.to_s.strip.empty?
+ 
++    cache_key = [:live, url]
++    return @release_artifact_inspection_cache[cache_key] if @release_artifact_inspection_cache.key?(cache_key)
++
+     uri = URI(url)
+     artifact_name = File.basename(uri.path.to_s)
+ 
+     Dir.mktmpdir('validation_live_release_') do |dir|
+       local_path = File.join(dir, artifact_name.empty? ? 'release_artifact' : artifact_name)
+       _out, status = Open3.capture2e('curl', '-fsSL', url, '-o', local_path)
+-      return { artifact_name: artifact_name, signed: false, notarized: false, available: false } unless status.success? && File.exist?(local_path)
+-
+-      if local_path.end_with?('.zip')
+-        signed, notarized = zip_contains_signed_notarized_app?(local_path)
+-        return { artifact_name: artifact_name, signed: signed, notarized: notarized, available: true }
+-      end
+-
+-      if local_path.end_with?('.dmg')
+-        codesign_output = `codesign -dv "#{local_path}" 2>&1`
+-        stapler_result = `xcrun stapler validate "#{local_path}" 2>&1`
+-        signed = codesign_output.include?('Developer ID') || codesign_output.include?('TeamIdentifier=')
+-        notarized = stapler_result.include?('validated')
+-        return { artifact_name: artifact_name, signed: signed, notarized: notarized, available: true }
++      unless status.success? && File.exist?(local_path)
++        @release_artifact_inspection_cache[cache_key] = { artifact_name: artifact_name, signed: false, notarized: false, available: false }
++        return @release_artifact_inspection_cache[cache_key]
+       end
+ 
+-      { artifact_name: artifact_name, signed: false, notarized: false, available: true }
++      @release_artifact_inspection_cache[cache_key] = inspect_release_artifact_path(local_path)
+     end
+   rescue StandardError
+     { artifact_name: nil, signed: false, notarized: false, available: false }
+   end
+ 
++  def deep_live_artifact_inspection_enabled?
++    ENV['SANEPROCESS_DEEP_ARTIFACT_INSPECTION'] == '1'
++  end
++
++  # Default to local release artifacts so daily validation stays fast and repeatable.
++  def inspect_release_artifact_for_checklist(project_path, live_release_url)
++    if deep_live_artifact_inspection_enabled?
++      inspect_live_release_artifact(live_release_url).merge(source: :live)
++    else
++      inspect_local_release_artifact(project_path).merge(source: :local)
++    end
++  end
++
++  def inspect_local_release_artifact(project_path)
++    artifact_path = latest_local_release_artifact(project_path)
++    return { artifact_name: nil, signed: false, notarized: false, available: false } if artifact_path.to_s.empty?
++
++    cache_key = [:local, artifact_path]
++    return @release_artifact_inspection_cache[cache_key] if @release_artifact_inspection_cache.key?(cache_key)
++
++    @release_artifact_inspection_cache[cache_key] = inspect_release_artifact_path(artifact_path)
++  end
++
++  def latest_local_release_artifact(project_path)
++    Dir.glob(File.join(project_path, 'releases', '*.{dmg,zip}')).select { |path| File.file?(path) }.max_by { |path| File.mtime(path) }
++  end
++
++  def inspect_release_artifact_path(path)
++    artifact_name = File.basename(path.to_s)
++
++    if path.end_with?('.zip')
++      signed, notarized = zip_contains_signed_notarized_app?(path)
++      return { artifact_name: artifact_name, signed: signed, notarized: notarized, available: true }
++    end
++
++    if path.end_with?('.dmg')
++      codesign_output = `codesign -dv "#{path}" 2>&1`
++      stapler_result = `xcrun stapler validate "#{path}" 2>&1`
++      signed = codesign_output.include?('Developer ID') || codesign_output.include?('TeamIdentifier=')
++      notarized = stapler_result.include?('validated') || stapler_result.include?('The validate action worked!')
++      return { artifact_name: artifact_name, signed: signed, notarized: notarized, available: true }
++    end
++
++    { artifact_name: artifact_name, signed: false, notarized: false, available: true }
++  rescue StandardError
++    { artifact_name: artifact_name, signed: false, notarized: false, available: false }
++  end
++
+   def get_appcast_version(project_path)
+     appcast_paths = [
+       File.join(project_path, 'docs', 'appcast.xml'),
+@@ -1979,7 +2139,8 @@ class ValidationReport
+     website_url = "https://#{site_host}"
+     live_appcast = fetch_live_appcast_snapshot(site_host)
+     live_release_url = live_appcast && live_appcast[:enclosure_url].to_s
+-    live_artifact = inspect_live_release_artifact(live_release_url)
++    artifact_check = inspect_release_artifact_for_checklist(project_path, live_release_url)
++    artifact_source_label = artifact_check[:source] == :live ? 'Live' : 'Local'
+     page_content = fetch_url_text(website_url)
+     page_links = extract_page_links(page_content, base_url: website_url)
+ 
+@@ -1989,18 +2150,18 @@ class ValidationReport
+ 
+     # 1. GitHub repo exists
+     github_repo = product[:github_repo].to_s.empty? ? "sane-apps/#{app_name}" : product[:github_repo]
+-    repo_exists = system("gh repo view #{Shellwords.shellescape(github_repo)} > /dev/null 2>&1")
++    github_repo_metadata = fetch_github_repo_metadata(github_repo)
++    repo_exists = github_repo_metadata[:exists]
+     checklist << { name: "GitHub repo (#{github_repo})", status: repo_exists ? :done : :todo }
+ 
+     # 2. GitHub release policy (license-gated apps allow all channels; ungated = R2 only)
+     license_gated = product[:license_gated]
+ 
+     if repo_exists
+-      releases = `gh release list --repo sane-apps/#{app_name} --limit 1 2>/dev/null`.strip
+-      has_release = !releases.empty? && !releases.include?('no releases')
+       if license_gated
+         checklist << { name: "GitHub releases (allowed — license gated)", status: :done }
+       else
++        has_release = github_repo_has_releases?(github_repo)
+         checklist << { name: "No GitHub releases (no license gating)", status: has_release ? :todo : :done }
+       end
+     else
+@@ -2062,25 +2223,25 @@ class ValidationReport
+     # ===========================================
+ 
+     # 6. Live release artifact exists
+-    artifact_name = live_artifact[:artifact_name]
++    artifact_name = artifact_check[:artifact_name]
+     checklist << {
+-      name: artifact_name ? "Live release archive (#{artifact_name})" : 'Live release archive',
+-      status: live_artifact[:available] ? :done : :todo
++      name: artifact_name ? "#{artifact_source_label} release archive (#{artifact_name})" : "#{artifact_source_label} release archive",
++      status: artifact_check[:available] ? :done : :todo
+     }
+ 
+     # 7. Artifact signing check
+     # 8. Artifact notarization check
+-    if live_artifact[:available]
++    if artifact_check[:available]
+       if artifact_name.to_s.end_with?('.dmg')
+-        checklist << { name: 'Live DMG signed with Developer ID', status: live_artifact[:signed] ? :done : :todo }
+-        checklist << { name: 'Live DMG notarized & stapled', status: live_artifact[:notarized] ? :done : :todo }
++        checklist << { name: "#{artifact_source_label} DMG signed with Developer ID", status: artifact_check[:signed] ? :done : :todo }
++        checklist << { name: "#{artifact_source_label} DMG notarized & stapled", status: artifact_check[:notarized] ? :done : :todo }
+       else
+-        checklist << { name: 'Live ZIP contains Developer ID signed app', status: live_artifact[:signed] ? :done : :todo }
+-        checklist << { name: 'Live ZIP app notarization check', status: live_artifact[:notarized] ? :done : :todo }
++        checklist << { name: "#{artifact_source_label} ZIP contains Developer ID signed app", status: artifact_check[:signed] ? :done : :todo }
++        checklist << { name: "#{artifact_source_label} ZIP app notarization check", status: artifact_check[:notarized] ? :done : :todo }
+       end
+     else
+-      checklist << { name: 'Live ZIP contains Developer ID signed app', status: :todo }
+-      checklist << { name: 'Live ZIP app notarization check', status: :todo }
++      checklist << { name: "#{artifact_source_label} ZIP contains Developer ID signed app", status: :todo }
++      checklist << { name: "#{artifact_source_label} ZIP app notarization check", status: :todo }
+     end
+ 
+     # ===========================================
+@@ -2187,7 +2348,7 @@ class ValidationReport
+     end
+ 
+     # 20. GitHub issues enabled (for bug reports)
+-    has_issues = repo_exists && github_repo_has_issues?(github_repo)
++    has_issues = github_repo_metadata[:has_issues]
+     checklist << { name: "GitHub issues for bug reports", status: has_issues ? :done : :todo }
+ 
+     checklist
+@@ -2293,6 +2454,34 @@ class ValidationReport
+     %w[200 301 302].include?(check_url_status(url, follow_redirects: true))
+   end
+ 
++  def fetch_github_repo_metadata(github_repo)
++    return @github_repo_metadata_cache[github_repo] if @github_repo_metadata_cache.key?(github_repo)
++    return @github_repo_metadata_cache[github_repo] = { exists: false, has_issues: false } unless system('which gh > /dev/null 2>&1')
++
++    response = `gh api repos/#{Shellwords.shellescape(github_repo)} 2>/dev/null`
++    if $?.success? && !response.strip.empty?
++      parsed = JSON.parse(response)
++      @github_repo_metadata_cache[github_repo] = {
++        exists: true,
++        has_issues: parsed['has_issues'] == true
++      }
++    else
++      @github_repo_metadata_cache[github_repo] = { exists: false, has_issues: false }
++    end
++  rescue JSON::ParserError, StandardError
++    @github_repo_metadata_cache[github_repo] = { exists: false, has_issues: false }
++  end
++
++  def github_repo_has_releases?(github_repo)
++    return @github_release_presence_cache[github_repo] if @github_release_presence_cache.key?(github_repo)
++    return @github_release_presence_cache[github_repo] = false unless system('which gh > /dev/null 2>&1')
++
++    result = `gh release list --repo #{Shellwords.shellescape(github_repo)} --limit 1 2>/dev/null`
++    @github_release_presence_cache[github_repo] = !result.empty? && !result.include?('no releases found') && !result.include?('not found')
++  rescue StandardError
++    @github_release_presence_cache[github_repo] = false
++  end
++
+   def page_has_live_download_link?(links, live_release_url)
+     return false if live_release_url.to_s.strip.empty?
+ 
+@@ -2340,13 +2529,12 @@ class ValidationReport
+         link.include?('/cdn-cgi/l/email-protection') ||
+         link.start_with?(issue_prefix) ||
+         link == "#{issue_prefix}/new" ||
+-        link_status_ok?(link) && link.include?('/support')
++        (link.include?('/support') && link_status_ok?(link))
+     end
+   end
+ 
+   def github_repo_has_issues?(github_repo)
+-    result = `gh api repos/#{Shellwords.shellescape(github_repo)} --jq .has_issues 2>/dev/null`.to_s.strip
+-    result == 'true'
++    fetch_github_repo_metadata(github_repo)[:has_issues]
+   rescue StandardError
+     false
+   end
+diff --git a/scripts/validation_report_test.rb b/scripts/validation_report_test.rb
+index 1f94fe0..c1abc69 100644
+--- a/scripts/validation_report_test.rb
++++ b/scripts/validation_report_test.rb
+@@ -113,6 +113,120 @@ class WorkflowPolicyHarness < ValidationReport
+   end
+ end
+ 
++class UrlStatusHarness < ValidationReport
++  attr_reader :probes
++
++  def initialize(head_results:, get_results:, cache_file: nil)
++    super()
++    @head_results = head_results.dup
++    @get_results = get_results.dup
++    @probes = []
++    @cache_file = cache_file
++  end
++
++  def run_curl_status_probe(url, follow_redirects:, head:)
++    @probes << { url: url, follow_redirects: follow_redirects, head: head }
++    queue = head ? @head_results : @get_results
++    queue.shift || '000'
++  end
++
++  def validation_network_cache_file
++    @cache_file || super
++  end
++end
++
++class UrlTextHarness < ValidationReport
++  attr_reader :requests
++
++  def initialize(cache_file: nil, body: 'ok')
++    super()
++    @cache_file = cache_file
++    @body = body
++    @requests = []
++  end
++
++  def perform_http_text_request(url, headers: {})
++    @requests << { url: url, headers: headers }
++    @body
++  end
++
++  def validation_network_cache_file
++    @cache_file || super
++  end
++end
++
++class ChecklistArtifactHarness < ValidationReport
++  attr_reader :live_artifact_calls, :local_artifact_calls
++
++  def initialize(project_path:, deep_mode:)
++    super()
++    @project_path = project_path
++    @deep_mode = deep_mode
++    @live_artifact_calls = 0
++    @local_artifact_calls = 0
++  end
++
++  def deep_live_artifact_inspection_enabled?
++    @deep_mode
++  end
++
++  def fetch_live_appcast_snapshot(_site_host)
++    {
++      enclosure_url: 'https://downloads.example.com/SaneBar-2.1.39.zip',
++      version: '2.1.39',
++      has_signature: true
++    }
++  end
++
++  def inspect_live_release_artifact(_url)
++    @live_artifact_calls += 1
++    { artifact_name: 'SaneBar-2.1.39.zip', signed: true, notarized: true, available: true }
++  end
++
++  def inspect_local_release_artifact(_project_path)
++    @local_artifact_calls += 1
++    { artifact_name: 'SaneBar-2.1.39.zip', signed: true, notarized: true, available: true }
++  end
++
++  def fetch_url_text(_url, headers: {})
++    ''
++  end
++
++  def latest_project_qa_status(_project_path)
++    {
++      'status' => 'passed',
++      'generatedAt' => Time.now.iso8601,
++      'staleReasons' => []
++    }
++  end
++
++  def check_url_status(_url, follow_redirects: false)
++    '200'
++  end
++
++  def github_repo_has_issues?(_github_repo)
++    true
++  end
++
++  def system(*)
++    false
++  end
++end
++
++class SupportContactHarness < ValidationReport
++  attr_reader :checked_urls
++
++  def initialize
++    super()
++    @checked_urls = []
++  end
++
++  def check_url_status(url, follow_redirects: false)
++    @checked_urls << url
++    '200'
++  end
++end
++
+ include TestFramework
+ 
+ def product_definition(name, slug:, domain:)
+@@ -418,4 +532,195 @@ exit(run_tests('Validation report tests') do
+       true
+     end
+   end
++
++  test_category('Q0 App Store asset lane checks') do
++    test('flags enabled App Store apps that are missing screenshot capture and validator scripts') do
++      Dir.mktmpdir('validation-report-appstore-assets') do |tmpdir|
++        app_dir = File.join(tmpdir, 'apps/SaneClick')
++        FileUtils.mkdir_p(app_dir)
++        File.write(
++          File.join(app_dir, '.saneprocess'),
++          <<~YAML
++            appstore:
++              enabled: true
++              screenshots:
++                macos: docs/screenshots/appstore-mac-*.png
++          YAML
++        )
++
++        subject = WorkflowPolicyHarness.new(root: tmpdir)
++        issues = []
++        subject.send(:check_appstore_asset_lanes, issues)
++
++        assert_eq(issues.length, 3)
++        assert(issues.any? { |issue| issue.include?('scripts/capture_appstore_screenshots.sh is missing') })
++        assert(issues.any? { |issue| issue.include?('scripts/validate_appstore_screenshots.sh is missing') })
++        assert(issues.any? { |issue| issue.include?('docs/appstore_screenshot_storyboard.yml is missing') })
++      end
++
++      true
++    end
++
++    test('allows enabled App Store apps with screenshots plus capture and validator scripts') do
++      Dir.mktmpdir('validation-report-appstore-assets-ok') do |tmpdir|
++        app_dir = File.join(tmpdir, 'apps/SaneClick')
++        scripts_dir = File.join(app_dir, 'scripts')
++        docs_dir = File.join(app_dir, 'docs')
++        FileUtils.mkdir_p(scripts_dir)
++        FileUtils.mkdir_p(docs_dir)
++        File.write(
++          File.join(app_dir, '.saneprocess'),
++          <<~YAML
++            appstore:
++              enabled: true
++              screenshots:
++                macos: docs/screenshots/appstore-mac-*.png
++          YAML
++        )
++        File.write(File.join(scripts_dir, 'capture_appstore_screenshots.sh'), "#!/usr/bin/env bash\n")
++        File.write(File.join(scripts_dir, 'validate_appstore_screenshots.sh'), "#!/usr/bin/env bash\n")
++        File.write(File.join(docs_dir, 'appstore_screenshot_storyboard.yml'), "platforms: {}\n")
++
++        subject = WorkflowPolicyHarness.new(root: tmpdir)
++        issues = []
++        subject.send(:check_appstore_asset_lanes, issues)
++
++        assert_eq(issues, [])
++      end
++
++      true
++    end
++  end
++
++  test_category('Release checklist artifact inspection mode') do
++    test('uses local release inspection by default to keep the checklist fast') do
++      Dir.mktmpdir('validation-report-checklist-local') do |tmpdir|
++        subject = ChecklistArtifactHarness.new(project_path: tmpdir, deep_mode: false)
++
++        checklist = subject.send(
++          :generate_app_checklist,
++          product_definition('SaneBar', slug: 'sanebar', domain: 'sanebar.com').merge(
++            project_path: tmpdir,
++            github_repo: 'sane-apps/SaneBar',
++            license_gated: true
++          )
++        )
++
++        assert_eq(subject.local_artifact_calls, 1)
++        assert_eq(subject.live_artifact_calls, 0)
++        assert(checklist.any? { |item| item[:name] == 'Local release archive (SaneBar-2.1.39.zip)' && item[:status] == :done })
++      end
++
++      true
++    end
++
++    test('uses live artifact inspection only when deep mode is enabled') do
++      Dir.mktmpdir('validation-report-checklist-live') do |tmpdir|
++        subject = ChecklistArtifactHarness.new(project_path: tmpdir, deep_mode: true)
++
++        checklist = subject.send(
++          :generate_app_checklist,
++          product_definition('SaneBar', slug: 'sanebar', domain: 'sanebar.com').merge(
++            project_path: tmpdir,
++            github_repo: 'sane-apps/SaneBar',
++            license_gated: true
++          )
++        )
++
++        assert_eq(subject.local_artifact_calls, 0)
++        assert_eq(subject.live_artifact_calls, 1)
++        assert(checklist.any? { |item| item[:name] == 'Live release archive (SaneBar-2.1.39.zip)' && item[:status] == :done })
++      end
++
++      true
++    end
++  end
++
++  test_category('Support contact link checks') do
++    test('only probes links that actually look like support urls') do
++      subject = SupportContactHarness.new
++
++      has_support = subject.send(
++        :page_has_support_contact?,
++        [
++          'https://go.saneapps.com/buy/sanebar?ref=website-hero',
++          'https://saneapps.com/changelog',
++          'https://sanebar.com/support'
++        ],
++        'sane-apps/SaneBar'
++      )
++
++      assert_eq(has_support, true)
++      assert_eq(subject.checked_urls, ['https://sanebar.com/support'])
++      true
++    end
++  end
++
++  test_category('URL status probing') do
++    test('uses the first successful HEAD response without repeating the same probe') do
++      subject = UrlStatusHarness.new(head_results: ['200'], get_results: [])
++
++      status = subject.send(:check_url_status, 'https://example.com', follow_redirects: true)
++
++      assert_eq(status, '200')
++      assert_eq(subject.probes, [{ url: 'https://example.com', follow_redirects: true, head: true }])
++      true
++    end
++
++    test('falls back to GET only when HEAD fails') do
++      subject = UrlStatusHarness.new(head_results: ['000'], get_results: ['200'])
++
++      status = subject.send(:check_url_status, 'https://example.com/download.zip', follow_redirects: true)
++
++      assert_eq(status, '200')
++      assert_eq(subject.probes.length, 2)
++      assert_eq(subject.probes[0], { url: 'https://example.com/download.zip', follow_redirects: true, head: true })
++      assert_eq(subject.probes[1], { url: 'https://example.com/download.zip', follow_redirects: true, head: false })
++      true
++    end
++
++    test('memoizes repeated checks for the same url and redirect mode') do
++      subject = UrlStatusHarness.new(head_results: ['200'], get_results: [])
++
++      first = subject.send(:check_url_status, 'https://example.com', follow_redirects: false)
++      second = subject.send(:check_url_status, 'https://example.com', follow_redirects: false)
++
++      assert_eq(first, '200')
++      assert_eq(second, '200')
++      assert_eq(subject.probes.length, 1)
++      true
++    end
++
++    test('reuses the short-lived disk cache across validation instances') do
++      Dir.mktmpdir('validation-url-status-cache') do |tmpdir|
++        cache_file = File.join(tmpdir, 'validation_network_cache.json')
++
++        first = UrlStatusHarness.new(head_results: ['200'], get_results: [], cache_file: cache_file)
++        second = UrlStatusHarness.new(head_results: ['500'], get_results: ['500'], cache_file: cache_file)
++
++        assert_eq(first.send(:check_url_status, 'https://example.com', follow_redirects: true), '200')
++        assert_eq(second.send(:check_url_status, 'https://example.com', follow_redirects: true), '200')
++        assert_eq(first.probes.length, 1)
++        assert_eq(second.probes.length, 0)
++      end
++      true
++    end
++  end
++
++  test_category('URL text fetching') do
++    test('reuses the short-lived disk cache across validation instances') do
++      Dir.mktmpdir('validation-url-text-cache') do |tmpdir|
++        cache_file = File.join(tmpdir, 'validation_network_cache.json')
++
++        first = UrlTextHarness.new(cache_file: cache_file, body: '<xml>first</xml>')
++        second = UrlTextHarness.new(cache_file: cache_file, body: '<xml>second</xml>')
++
++        assert_eq(first.send(:fetch_url_text, 'https://example.com/appcast.xml'), '<xml>first</xml>')
++        assert_eq(second.send(:fetch_url_text, 'https://example.com/appcast.xml'), '<xml>first</xml>')
++        assert_eq(first.requests.length, 1)
++        assert_eq(second.requests.length, 0)
++      end
++      true
++    end
++  end
+ end)
+diff --git a/templates/FOUNDER_CHECKLIST.md b/templates/FOUNDER_CHECKLIST.md
+index 5c9427d..4196c6b 100644
+--- a/templates/FOUNDER_CHECKLIST.md
++++ b/templates/FOUNDER_CHECKLIST.md
+@@ -168,10 +168,15 @@
+ | 7.1 | Research App Store requirements | - | [ ] | Sandboxing, review guidelines |
+ | 7.2 | Evaluate sandboxing feasibility | SaneBar | [ ] | Menu bar apps are tricky |
+ | 7.3 | Evaluate sandboxing feasibility | SaneClip | [ ] | Clipboard access needs |
+-| 7.4 | Create App Store screenshots | All | [ ] | Specific dimensions required |
+-| 7.5 | Write App Store descriptions | All | [ ] | Different from website |
++| 7.4 | Create App Store screenshots | All | [ ] | Capture on the Mini, use exact Apple sizes, run through the GUI session instead of plain SSH, and keep capture + validator scripts in the repo |
++| 7.5 | Write App Store descriptions | All | [ ] | Different from website; must match actual product behavior and price |
+ | 7.6 | Decide: App Store or direct only | All | [ ] | Pros/cons for each |
+ 
++Before calling any App Store pricing or copy update complete:
++1. Verify `.saneprocess`, in-app price labels, screenshots, App Store Connect IAP price, live public App Store page, and website copy all match.
++2. Confirm the live App Store screenshots are sharp and not scaled/blurry.
++3. Confirm every screenshot still makes sense to a new buyer: accurate screen, clear context, no junk/dev/private content, and a visible feature story.
++
+ **App Store Pros**: Discoverability, trust, automatic updates
+ **App Store Cons**: 30% cut, sandboxing limits, review delays
+ 
+diff --git a/templates/FULL_PROJECT_BOOTSTRAP.md b/templates/FULL_PROJECT_BOOTSTRAP.md
+index 61afe4f..40affaf 100644
+--- a/templates/FULL_PROJECT_BOOTSTRAP.md
++++ b/templates/FULL_PROJECT_BOOTSTRAP.md
+@@ -111,7 +111,7 @@ For bootstrap tasks, use subagents with verification:
+ 
+ | Channel | What Users Get | Cost |
+ |---------|----------------|------|
+-| **Website** | Built DMG, ready to install | $5 |
++| **Website** | Built DMG, ready to install | Current one-time direct price |
+ | **GitHub** | Source code (clone & build yourself) | Free |
+ 
+ **No Homebrew distribution.** No free DMGs on GitHub releases.
+@@ -523,13 +523,13 @@ Sitemap: https://projectname.com/sitemap.xml
+ 
+ | Channel | What Users Get | Cost |
+ |---------|----------------|------|
+-| **Website** | Built DMG, ready to install | $5 |
++| **Website** | Built DMG, ready to install | Current one-time direct price |
+ | **GitHub** | Source code (clone & build yourself) | Free |
+ 
+ ### 6.2 Payment Setup (Lemon Squeezy)
+ 
+ - Store: `[appname].lemonsqueezy.com`
+-- Standard price: $5 one-time
++- Standard price: choose from the live matrix (`$9.99` entry utility, `$14.99` core utility, `$24.99+` higher-value app)
+ - Deliver DMG download link after payment
+ 
+ ### 6.3 FUNDING.yml
+@@ -543,7 +543,7 @@ custom: ["https://projectname.com"]
+ 
+ **GitHub Sponsors**: `https://github.com/sponsors/sane-apps`
+ 
+-For users who want to support beyond the $5.
++For users who want to support beyond the one-time purchase.
+ 
+ ---
+ 
+@@ -736,7 +736,7 @@ struct MyTests {
+ | Project | Location | Notes |
+ |---------|----------|-------|
+ | **SaneBar** | `~/SaneApps/apps/SaneBar` | Full mature setup, menu bar app, weekly GitHub Actions release |
+-| **SaneClip** | `~/SaneApps/apps/SaneClip` | Clipboard manager, $5 paid |
++| **SaneClip** | `~/SaneApps/apps/SaneClip` | Clipboard manager, $14.99 one-time |
+ | **SaneSync** | `~/SaneApps/apps/SaneSync` | Cloud sync (WIP) |
+ | **SaneHosts** | `~/SaneApps/apps/SaneHosts` | Hosts file manager |
+ | **SaneProcess** | `~/SaneApps/infra/SaneProcess` | Hook master, templates |
+@@ -781,7 +781,7 @@ ps aux | grep claude | grep -v grep  # Check for stale processes
+ 10. Set up `docs/` with index.html skeleton
+ 11. Create Cloudflare Pages project and deploy website
+ 12. Generate Sparkle keys, add to Info.plist
+-13. Set up Lemon Squeezy store for $5 DMG sales
++13. Set up Lemon Squeezy store for one-time DMG sales using the live pricing matrix
+ 14. Add alias to `~/.zshrc`
+ 
+ ### Phase 5: Release
+@@ -792,4 +792,4 @@ ps aux | grep claude | grep -v grep  # Check for stale processes
+ **Key differences:**
+ - Research comes FIRST, not during coding
+ - No Homebrew, no free DMGs on GitHub
+-- Source free on GitHub, built DMG costs $5 on website
++- Source free on GitHub, built DMG uses the live one-time website price
+diff --git a/templates/RELEASE_SOP.md b/templates/RELEASE_SOP.md
+index 5d7d6e8..23dd5a6 100644
+--- a/templates/RELEASE_SOP.md
++++ b/templates/RELEASE_SOP.md
+@@ -93,6 +93,35 @@ bash ~/SaneApps/infra/SaneProcess/scripts/mini/bootstrap-build-server.sh
+   - `codesign:ios-probe` when an iOS signing identity is installed
+ - The release path now sets the login-keychain partition list automatically. Do not bypass that with raw `xcodebuild` unless you are intentionally doing recovery work.
+ 
++**App Store screenshot rule:**
++- Capture App Store screenshots on the Mini.
++- Do not run the capture from a plain SSH shell on the Mini. The app-level screenshot capture scripts auto-reroute through `scripts/mini/mini-gui-run.sh`; keep that behavior intact.
++- Treat Terminal cleanup as part of the capture lane. The shared Mini runner now tags automation windows with `SaneApps Automation:`, reclaims stale windows automatically, and screenshot lanes must request a full reclaim before they capture.
++- If the Mini already looks polluted, run `ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-reclaim-automation-windows.sh --all --hide-terminal'` before you trust any visual result.
++- Every enabled App Store lane must have both `scripts/capture_appstore_screenshots.sh` and `scripts/validate_appstore_screenshots.sh`.
++- Every enabled App Store lane must have `docs/appstore_screenshot_storyboard.yml`, and that storyboard must still match the screenshot slot order you intend to ship.
++- Use dedicated App Store assets at Apple-accepted sizes. Do not upload undersized website art and rely on App Store Connect scaling.
++- Audit every screenshot against the live app before upload. Each screenshot must make sense on its own, show the intended feature clearly, and represent the current product truthfully.
++- Reject any screenshot that is blurry, off-spec, stale, contaminated by Terminal/browser/dev UI, or cropped so tightly that the feature loses context.
++- If screenshot text includes a price or upgrade CTA, it must come from the app’s current runtime/display price label, not a hardcoded screenshot string.
++- Run the app’s screenshot capture script first, then `./scripts/SaneMaster.rb appstore_preflight`, before any screenshot-only or metadata-only App Store sync.
++- `appstore_submit.rb` must pass the app-level screenshot validator before any screenshot upload, including `--screenshots-only`.
++- After App Store metadata or screenshots change, run the shared live-page audit:
++  - `ruby ~/SaneApps/infra/SaneProcess/scripts/appstore_public_screenshot_audit.rb --project-root /path/to/app`
++  - Do not call the lane healthy until that report shows the public page matching the storyboard/local set.
++  - Open the generated HTML report and compare the actual images side by side. Matching basenames are not enough if the live image still contains old pixels or old pricing.
++- If `appstore_submit.rb --screenshots-only` hits ASC `INVALID_STATE` / `Can't Delete Screenshot After Submit for review`, the lane is locked. Do not keep retrying. A live screenshot replacement now requires a new App Store version.
++- After any pricing, paywall, or App Store copy change, verify parity in this order before shipping:
++  1. `.saneprocess`
++  2. in-app runtime/display price labels
++  3. regenerated screenshots + validator
++  4. App Store Connect IAP price
++  5. live public App Store page
++  6. website/direct pricing copy
++- Do not call the rollout complete until the live public App Store page matches the canonical price/copy and the screenshots are visibly sharp.
++- If a screenshot is accurate but weak, replace it. A screenshot that does not explain the feature or why it matters is not release-ready.
++- Late screenshot QA is too late. If the current public page is wrong and the lane is already `READY_FOR_SALE`, queue the corrected assets into the very next version instead of treating it like a metadata-only fix.
++
+ ### 0b. App Store Rejection / Resubmission Workflow
+ 
+ When App Review rejects a lane, do this in order:
+@@ -175,7 +204,7 @@ ssh mini '~/SaneApps/infra/SaneProcess/scripts/mini/mini-gui-run.sh \
+ ```
+ 
+ - This is the standard recovery path for GUI-only codesign access on the Mini.
+-- The runner must close its own Terminal window when the command is done.
++- The runner must close its own Terminal window when the command is done and reclaim stale automation windows for the same job first.
+ - Do not leave throwaway remote Terminal windows behind after App Store work.
+ 
+ 7. After the code fix, rerun:
+@@ -231,6 +260,7 @@ Run this wrapper from the controlling machine with Codex installed. It copies th
+ 
+ - This wrapper copies the shared screenshot helper to the Mini and runs it through `mini-gui-run.sh`.
+ - It is the canonical live-window path.
++- It resolves the real Mini host before `rsync`/`ssh` and requests a full automation-window reclaim before capture.
+ - First use may require one-time Screen Recording permission for Terminal on the Mini.
+ 
+ 3. If live capture is blocked, use a deterministic render artifact from tests.
+diff --git a/templates/boilerplate/README.md b/templates/boilerplate/README.md
+index eeede50..1f52d2a 100644
+--- a/templates/boilerplate/README.md
++++ b/templates/boilerplate/README.md
+@@ -17,9 +17,9 @@ TODO:AppName is a TODO:category app for macOS that TODO:key benefit.
+ 
+ ## Installation
+ 
+-### Purchase ($5)
++### Purchase (One-Time)
+ 
+-Download the notarized DMG from [TODO:appname.com](https://TODO:appname.com).
++Download the notarized DMG from [TODO:appname.com](https://TODO:appname.com) at the current direct one-time price.
+ 
+ ### Build from Source (Free)
+ 
+diff --git a/templates/docs/NEW_APP_CHECKLIST.md b/templates/docs/NEW_APP_CHECKLIST.md
+index c1d75fb..7fc2ba1 100644
+--- a/templates/docs/NEW_APP_CHECKLIST.md
++++ b/templates/docs/NEW_APP_CHECKLIST.md
+@@ -52,7 +52,9 @@
+ - [ ] Create index.html (copy from SaneClip/SaneBar and customize)
+ - [ ] Add og-image.png (1200x630 for social previews)
+ - [ ] Add favicon
+-- [ ] Add screenshots
++- [ ] Add screenshots (capture on the Mini, at exact Apple/App Store sizes, use the GUI session instead of plain SSH for live app windows, and add both capture + validator scripts for any enabled App Store lane)
++- [ ] Verify App Store pricing/copy parity across `.saneprocess`, in-app labels, screenshots, App Store Connect, live public App Store page, and website copy
++- [ ] Audit each screenshot for clarity and intent: every frame should clearly show a real feature, explain itself visually, and be strong enough to help convert a sale
+ - [ ] Test mobile responsiveness
+ - [ ] Verify Open Graph tags work (use ogp.me debugger)
+ - [ ] Add robots.txt and sitemap.xml for SEO
+@@ -66,7 +68,7 @@
+ - [ ] Contact email in footer or about page
+ 
+ ### Distribution Model
+-- [ ] $5 one-time purchase on website for signed/notarized DMG
++- [ ] One-time purchase on website for the signed/notarized DMG using the current direct price band
+ - [ ] Free source on GitHub (MIT license)
+ - [ ] NO Homebrew cask (users build from source or pay)
+ - [ ] Download button links to purchase flow OR GitHub Releases
+@@ -137,7 +139,7 @@
+ - GitHub: https://github.com/sane-apps/AppName
+ - Releases: https://github.com/sane-apps/AppName/releases
+ - Issues: https://github.com/sane-apps/AppName/issues
+-- Purchase: $5 at appname.com
++- Purchase: current one-time price at appname.com
+ - Appcast: https://appname.com/appcast.xml
+ 
+ ### Key Files to Update Each Release
+diff --git a/templates/docs/SANEAPPS_RELEASE_PROCESS.md b/templates/docs/SANEAPPS_RELEASE_PROCESS.md
+index 89e7a2d..9c400d1 100644
+--- a/templates/docs/SANEAPPS_RELEASE_PROCESS.md
++++ b/templates/docs/SANEAPPS_RELEASE_PROCESS.md
+@@ -135,7 +135,7 @@ xcrun notarytool store-credentials "notarytool" \
+ 
+ ## 5. Distribution Channels
+ 
+-### Website (Paid DMG - $5)
++### Website (Paid DMG - one-time price)
+ 
+ DMGs are sold through the website via Lemon Squeezy:
+ - Users purchase on `appname.com`
+@@ -197,7 +197,7 @@ CLOUDFLARE_ACCOUNT_ID=2c267ab06352ba2522114c3081a8c5fa \
+ - [ ] Hero section with app icon and tagline
+ - [ ] Feature highlights (3-4 key features)
+ - [ ] Screenshots/demo
+-- [ ] Purchase button ($5 via Lemon Squeezy)
++- [ ] Purchase button with the current live one-time price via Lemon Squeezy
+ - [ ] "Build from source" link to GitHub
+ - [ ] Privacy/security callout
+ - [ ] Links: GitHub, Support, Privacy Policy
+@@ -231,8 +231,10 @@ custom:
+ 
+ ### Pricing Models
+ 
+-- **Free + Donations**: SaneBar, SaneHosts
+-- **Paid ($5)**: SaneClip (via Lemon Squeezy)
++- **Entry utility**: around `$9.99 once`
++- **Core utility**: around `$14.99 once`
++- **Higher-value or business app**: `$24.99+ once`
++- Use the live matrix in `infra/SaneProcess/docs/pricing-rollout-2026-04-14.md` instead of hardcoding `$5`.
+ 
+ ---
+ 

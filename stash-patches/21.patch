@@ -1,0 +1,36 @@
+diff --git a/SESSION_HANDOFF.md b/SESSION_HANDOFF.md
+index f9f6427..d598266 100644
+--- a/SESSION_HANDOFF.md
++++ b/SESSION_HANDOFF.md
+@@ -2154,3 +2154,31 @@ Public guidance lives in `CLAUDE_PUBLIC.md`.
+ - Verified `./scripts/check-inbox.sh repair-replied-status --all-open` now runs cleanly after removing the brittle bulk-shell path; current run found `0` additional stale open threads with reply evidence.
+ - Reviewed current refund thread `#574` on the Mini so it is cleared for reply without `--force`.
+ - Net effect: the stale "already replied but still needs_human" drift for refund / duplicate-key threads is fixed at the API level, not just papered over in the shell wrapper.
++
++## 2026-04-16 - SaneSales status automation
++
++### Done
++- Ran the required startup checks, the `status` skill workflow, and the canonical SaneMaster/tool-discovery paths for SaneSales.
++- Confirmed live SaneSales state: no open GitHub issues or PRs, inbox healthcheck passes, no SaneSales-specific open inbox queue match was surfaced, downloads total `2128`, and events show `161` new free users over the last 30 days with `0` activations.
++- Verified App Store Connect live lanes: macOS `1.2.7` is `WAITING_FOR_REVIEW` under submission `29356c1a-3e22-4630-99b9-283e950f417b`; iOS `1.2.6` is `READY_FOR_SALE`. The linked macOS review submission currently has one item in `READY_FOR_REVIEW`, not a rejection.
++- Attempted the required Mini `--fetch-review-package` path for the unresolved macOS lane; it failed because Safari on the Mini did not open the expected App Review page, so no fresh reviewer package was saved.
++- Reconfirmed the worktree-local `scripts/automation/sane-status-crossref.sh` sales step is still broken by the `customer_email_corrections` import-path bug; canonical `~/SaneApps/infra/SaneProcess` runners still work.
++
++### Docs
++- Updated Serena memory and the knowledge graph with the new SaneSales lane state plus the Mini Safari blocker.
++- `research.md` topics relevant to this run remain the SaneSales pricing/App Store notes in `docs/pricing-rollout-2026-04-14.md`; no new research topic was required because this was a live-status pass, not a new fix.
++
++### Open GitHub Issues
++- `sane-apps/SaneSales`: none open as of 2026-04-16.
++
++### Feature Requests
++- No SaneSales-specific feature request was active in the open inbox/GitHub status pulled for this run.
++
++### SOP: 9/10
++- (+) Followed the mandatory status workflow, canonical runners, Serena updates, and Mini evidence path.
++- (-) Mini Safari was not review-package ready, so the unresolved ASC lane could not yield a fresh downloaded evidence bundle.
++
++### Next
++- Fix the Mini Safari/App Store Connect review-page readiness so `appstore_submit.rb --fetch-review-package` works again for unresolved submissions.
++- Keep treating the SaneProcess worktree sales import failure as a tooling bug; use the canonical repo path for revenue/status automations until it is fixed.
++- Recheck the macOS `1.2.7` lane after Apple activity; if it flips to rejected or unresolved with reviewer text, fetch the full package immediately from the repaired Mini path.

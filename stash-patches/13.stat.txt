@@ -1,0 +1,10 @@
+ .github/copilot-instructions.md     |  13 ++++++-------
+ CONTRIBUTING.md                     |   1 -
+ README.md                           |  27 ++++++++++++---------------
+ assets/hero-process.jpeg            | Bin 0 -> 341472 bytes
+ assets/hero-shield.jpeg             | Bin 253071 -> 0 bytes
+ assets/saneprocess-mark.png         | Bin 0 -> 379780 bytes
+ assets/social-preview.jpeg          | Bin 108715 -> 130748 bytes
+ templates/FULL_PROJECT_BOOTSTRAP.md |   1 +
+ templates/NEW_PROJECT_TEMPLATE.md   |   3 ++-
+ 9 files changed, 21 insertions(+), 24 deletions(-)
