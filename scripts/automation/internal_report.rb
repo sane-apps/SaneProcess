@@ -13,7 +13,10 @@ require 'uri'
 
 module SaneInternalReport
   TEMPLATE_VERSION = 1
-  KIND = 'app_review_transition'
+  APP_REVIEW_KIND = 'app_review_transition'
+  CWS_REVIEW_KIND = 'chrome_web_store_transition'
+  KIND = APP_REVIEW_KIND
+  SUPPORTED_KINDS = [APP_REVIEW_KIND, CWS_REVIEW_KIND].freeze
   DELIVERED_EVENTS = %w[delivered opened clicked complained].freeze
   DEFAULT_TRANSPORT_COMMAND = [
     RbConfig.ruby,
@@ -27,10 +30,18 @@ module SaneInternalReport
 
   def render(event)
     validate_event!(event)
+    kind = event['kind'].to_s.empty? ? KIND : event.fetch('kind')
     names = event.fetch('changes').map { |change| change.fetch('app_name') }.uniq.sort
-    subject = names.length == 1 ? "App Review changed: #{names.first}" : 'SaneApps App Review changed'
+    chrome_web_store = kind == CWS_REVIEW_KIND
+    subject =
+      if chrome_web_store
+        names.length == 1 ? "Chrome Web Store changed: #{names.first}" : 'SaneApps Chrome Web Store changed'
+      else
+        names.length == 1 ? "App Review changed: #{names.first}" : 'SaneApps App Review changed'
+      end
     lines = [
-      'App Store Connect reported a review-state transition.',
+      chrome_web_store ? 'Chrome Web Store reported a review-state transition.' :
+        'App Store Connect reported a review-state transition.',
       '',
       *event.fetch('changes').sort_by { |change| change.fetch('entity_key') }.map do |change|
         previous = change['previous_state'].to_s.empty? ? 'new' : change['previous_state']
@@ -43,7 +54,7 @@ module SaneInternalReport
       "Detected: #{event.fetch('first_seen_at')}"
     ]
     {
-      'kind' => KIND,
+      'kind' => kind,
       'template_version' => TEMPLATE_VERSION,
       'event_id' => event.fetch('id'),
       'subject' => subject,
@@ -55,6 +66,8 @@ module SaneInternalReport
     raise DeliveryError, 'event must be a JSON object' unless event.is_a?(Hash)
     raise DeliveryError, 'event id is missing' if event['id'].to_s.empty?
     raise DeliveryError, 'event first_seen_at is missing' if event['first_seen_at'].to_s.empty?
+    kind = event['kind'].to_s.empty? ? KIND : event['kind'].to_s
+    raise DeliveryError, 'event kind is invalid' unless SUPPORTED_KINDS.include?(kind)
 
     changes = event['changes']
     raise DeliveryError, 'event changes must be a non-empty array' unless changes.is_a?(Array) && !changes.empty?
@@ -187,7 +200,7 @@ module SaneInternalReport
 
     def validate_envelope!(envelope)
       raise DeliveryError, 'internal-report envelope must be a JSON object' unless envelope.is_a?(Hash)
-      raise DeliveryError, 'internal-report kind is invalid' unless envelope['kind'] == KIND
+      raise DeliveryError, 'internal-report kind is invalid' unless SUPPORTED_KINDS.include?(envelope['kind'])
       raise DeliveryError, 'internal-report template version is invalid' unless envelope['template_version'].to_i == TEMPLATE_VERSION
       raise DeliveryError, 'internal-report event id is invalid' unless envelope['event_id'].to_s.match?(/\A[0-9a-f]{64}\z/)
 

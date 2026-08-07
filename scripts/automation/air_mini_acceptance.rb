@@ -118,6 +118,18 @@ module SaneAppsAirMiniAcceptance
         text.include?('agentmemory-mcp-air.sh') && text.include?('--tunnel')
     end
 
+    def session_guardian_supervised?(text)
+      text.include?('com.saneapps.session-guardian') &&
+        text.include?('session-guardian.sh') &&
+        text.include?('run interval = 600 seconds') &&
+        text.include?('last exit code = 0')
+    end
+
+    def agentmemory_livez?(text)
+      text.lines.any? { |line| line.strip == 'http=200' } &&
+        text.lines.reject { |line| line.start_with?('http=') }.join.strip.length.positive?
+    end
+
     def json_http_response(text)
       return nil unless text.lines.any? { |line| line.strip == 'http=200' }
 
@@ -194,6 +206,15 @@ module SaneAppsAirMiniAcceptance
               ['/bin/launchctl', 'print', "gui/#{Process.uid}/com.saneapps.memory-sync"], timeout: 15) do |text|
         text.include?('com.saneapps.memory-sync')
       end
+      execute('air-session-guardian', 'Air session guardian ownership and last run', 'air',
+              ['/bin/launchctl', 'print', "gui/#{Process.uid}/com.saneapps.session-guardian"], timeout: 15) do |text|
+        Validators.session_guardian_supervised?(text)
+      end
+      guardian = File.join(@repo_root, 'scripts/hooks/session-guardian.sh')
+      execute('air-session-guardian-health', 'Air session guardian read-only health probe', 'air',
+              ['/bin/bash', guardian, '--health'], timeout: 15) do |text|
+        text.lines.map(&:strip).include?('session-guardian healthy')
+      end
       air_agentmemory_checks
       private_route_check
       execute('air-mini-lan', 'Air to Mini normal SSH', 'air->mini', ssh('hostname; /usr/bin/whoami'), timeout: 30) do |text|
@@ -221,6 +242,7 @@ module SaneAppsAirMiniAcceptance
         Validators.power_current?(text)
       end
       mini_service_checks
+      mini_agentmemory_rest_checks
       execute('mini-agentmemory-health', 'Mini AgentMemory health and corpus', 'mini',
               ssh('/opt/homebrew/bin/agentmemory status'), timeout: 30) do |text|
         Validators.agentmemory_healthy?(text)
@@ -359,6 +381,24 @@ module SaneAppsAirMiniAcceptance
       end
     end
 
+    def mini_agentmemory_rest_checks
+      livez = "/usr/bin/curl --silent --show-error --max-time 5 -w '\\nhttp=%{http_code}\\n' http://127.0.0.1:3111/agentmemory/livez"
+      execute('mini-agentmemory-livez', 'Mini direct AgentMemory livez', 'mini', ssh(livez), timeout: 15) do |text|
+        Validators.agentmemory_livez?(text)
+      end
+
+      health = "/usr/bin/curl --silent --show-error --max-time 5 -w '\\nhttp=%{http_code}\\n' http://127.0.0.1:3111/agentmemory/health"
+      execute('mini-agentmemory-rest-health', 'Mini direct AgentMemory JSON health', 'mini', ssh(health), timeout: 15) do |text|
+        Validators.agentmemory_rest_health?(text)
+      end
+
+      payload = JSON.generate(query: 'SaneApps memory durability', limit: 1, format: 'compact')
+      search = "/usr/bin/curl --silent --show-error --max-time 8 -H 'Content-Type: application/json' --data #{Shellwords.escape(payload)} -w '\\nhttp=%{http_code}\\n' http://127.0.0.1:3111/agentmemory/search"
+      execute('mini-agentmemory-search', 'Mini direct AgentMemory search canary', 'mini', ssh(search), timeout: 20) do |text|
+        Validators.agentmemory_search_response?(text)
+      end
+    end
+
     def private_route_check
       config = File.join(@home, '.ssh/config.d/saneapps-mini.conf')
       proxy = File.join(@home, '.local/bin/saneapps-mini-proxy')
@@ -447,10 +487,12 @@ module SaneAppsAirMiniAcceptance
         scripts/mini/mini_agentmemory_test.rb
         scripts/automation/dependency_baseline_test.rb
         scripts/automation/memory_sync_test.rb
+        scripts/automation/session_guardian_test.rb
       ]
       command = ['/bin/zsh', '-lc', tests.map { |path| "ruby #{Shellwords.escape(File.join(@repo_root, path))}" }.join(' && ')]
       execute('acceptance-contracts', 'Server/access/sync regression contracts', 'air', command, timeout: 300) do |text|
-        !text.include?('failed (') && !text.include?('❌') && text.scan(/passed \(0 failed\)|PASS \d+\/\d+/).length >= 6
+        !text.include?('failed (') && !text.include?('❌') &&
+          text.scan(/passed \(0 failed\)|PASS \d+\/\d+/).length >= tests.length
       end
     end
   end

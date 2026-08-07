@@ -11,20 +11,10 @@ SYNC = File.join(ROOT, 'automation', 'sync-codex-mini.sh')
 RECONCILE = File.join(ROOT, 'automation', 'reconcile-air-mini.sh')
 START_WORKDAY = File.join(ROOT, 'automation', 'start-workday.sh')
 
-CONTROL_PLANE_REL_FILES = %w[
-  SaneApps/infra/scripts/check-inbox.sh
-  SaneApps/infra/SaneProcess/scripts/automation/git-sync-safe.sh
-  SaneApps/infra/SaneProcess/scripts/automation/reconcile-air-mini.sh
-  SaneApps/infra/SaneProcess/scripts/hooks/sane_curl_guard.sh
-  SaneApps/infra/SaneProcess/scripts/hooks/sane_ssh_guard.sh
-  SaneApps/infra/SaneProcess/scripts/mini/mini-reclaim-automation-windows.sh
-  SaneApps/infra/SaneProcess/scripts/mini/mini-nightly.sh
-  SaneApps/infra/SaneProcess/scripts/mini/mini-prepare-automation-root.sh
-  SaneApps/infra/SaneProcess/scripts/validation_report.rb
-  SaneApps/infra/SaneProcess/scripts/hooks/session_start.rb
-  SaneApps/infra/SaneProcess/scripts/sanemaster/meta.rb
-  SaneApps/infra/SaneProcess/scripts/sanemaster/verify.rb
-].freeze
+manifest_output, manifest_status = Open3.capture2('bash', SYNC, '--dump-manifest')
+raise 'could not load sync manifest' unless manifest_status.success?
+
+CONTROL_PLANE_REL_FILES = manifest_output.lines.map(&:strip).reject(&:empty?).freeze
 
 CODEX_BIN_FILES = %w[
   check-mcps
@@ -69,6 +59,19 @@ def sha(path)
   Digest::SHA256.file(path).hexdigest
 end
 
+def manifest_snapshot(root)
+  CONTROL_PLANE_REL_FILES.to_h do |rel|
+    path = File.join(root, rel)
+    [rel, File.file?(path) ? sha(path) : :missing]
+  end
+end
+
+def assert_manifest_snapshot(root, expected, label)
+  actual = manifest_snapshot(root)
+  changed = expected.keys.reject { |rel| expected[rel] == actual[rel] }
+  assert(changed.empty?, "#{label} changed manifest paths: #{changed.join(', ')}")
+end
+
 def fake_transport!(bin_dir)
   write(File.join(bin_dir, 'ssh'), <<~'BASH', executable: true)
     #!/bin/bash
@@ -90,9 +93,18 @@ def fake_transport!(bin_dir)
     case "$command" in
       *'printf %s "$HOME"'*) printf '%s' "$REMOTE_HOME" ;;
       *'hostname -s'*) printf '%s\n' 'fixture-mini' ;;
-      *'command -v node'*) printf '%s\n' "$REMOTE_NODE" ;;
-      *'MIN_CODEX_CLI_VERSION='*'bash -s'*) cat >/dev/null ;;
-      *'/.local/bin/codex" --version'*) printf 'codex-cli 0.139.0\n' ;;
+      *'SUPPORTED_CODEX_CLI_VERSION='*'bash -s'*) cat >/dev/null ;;
+      *'/.local/bin/codex" --version'*) printf 'codex-cli 0.250.0\n' ;;
+      *'--validate-manifest-root'*)
+        HOME="$REMOTE_HOME" /bin/bash -c "$command"
+        status=$?
+        if [[ "$status" -eq 0 && "${MUTATE_PEER_AFTER_STAGE:-0}" == "1" ]]; then
+          target="$REMOTE_HOME/SaneApps/infra/scripts/check-inbox.sh"
+          mkdir -p "$(dirname "$target")"
+          printf 'concurrent peer mutation\n' > "$target"
+        fi
+        exit "$status"
+        ;;
       *) HOME="$REMOTE_HOME" /bin/bash -c "$command" ;;
     esac
   BASH
@@ -157,9 +169,15 @@ def create_sync_fixture(home, remote_home)
     command = "#{home}/SaneApps/infra/SaneProcess/scripts/automation/agentmemory-mcp-air.sh"
     args = []
   TOML
+  write(File.join(remote_home, '.codex', 'config.toml'), <<~TOML)
+    model = "fixture-mini-managed"
+    command = "#{remote_home}/bin/node"
+  TOML
   write(File.join(home, '.codex', 'SKILLS_REGISTRY.md'), "fixture registry\n")
   write(File.join(home, '.codex', 'skills', 'fixture', 'SKILL.md'), "fixture skill\n")
   write(File.join(home, '.agents', 'skills', 'shared', 'SKILL.md'), "shared skill\n")
+  write(File.join(remote_home, '.codex', 'skills', 'mini-only', 'SKILL.md'), "preserve me\n")
+  write(File.join(remote_home, '.agents', 'skills', 'mini-only', 'SKILL.md'), "preserve me too\n")
 
   CODEX_BIN_FILES.each do |name|
     write(File.join(home, 'SaneApps', 'infra', 'SaneProcess', 'scripts', 'codex-bin', name),
@@ -168,11 +186,36 @@ def create_sync_fixture(home, remote_home)
   CONTROL_PLANE_REL_FILES.each do |rel|
     write(File.join(home, rel), "fixture #{rel}\n", executable: rel.end_with?('.sh', '.rb'))
   end
+  sync_rel = 'SaneApps/infra/SaneProcess/scripts/automation/sync-codex-mini.sh'
+  write(File.join(home, sync_rel), File.read(SYNC), executable: true)
+  git_sync_rel = 'SaneApps/infra/SaneProcess/scripts/automation/git-sync-safe.sh'
+  git_sync_fixture = <<~'BASH'
+    #!/bin/bash
+    printf 'snapshot\t%s\n' "$*" >> "$SYNC_OP_LOG"
+  BASH
+  write(File.join(home, git_sync_rel), git_sync_fixture, executable: true)
+  write(File.join(remote_home, git_sync_rel), git_sync_fixture, executable: true)
 
-  cli = "#!/bin/bash\necho 'codex-cli 0.139.0'\n"
+  cli = "#!/bin/bash\necho 'codex-cli 0.250.0'\n"
   write(File.join(home, '.codex', 'packages', 'standalone', 'current', 'codex'), cli, executable: true)
   write(File.join(home, '.local', 'bin', 'codex'), cli, executable: true)
+  write(File.join(remote_home, '.codex', 'packages', 'standalone', 'current', 'codex'), cli, executable: true)
   write(File.join(remote_home, '.local', 'bin', 'codex'), cli, executable: true)
+
+  write(File.join(remote_home, sync_rel), File.read(File.join(home, sync_rel)), executable: true)
+  [home, remote_home].each do |root|
+    repo = File.join(root, 'SaneApps', 'infra', 'SaneProcess')
+    write(File.join(repo, '.gitignore'), "*\n")
+    run({}, 'git', '-C', repo, 'init', '-b', 'main')
+    run({}, 'git', '-C', repo, 'config', 'user.email', 'fixture@example.com')
+    run({}, 'git', '-C', repo, 'config', 'user.name', 'Fixture')
+    run({}, 'git', '-C', repo, 'add', '-f', '.gitignore', 'scripts/automation/sync-codex-mini.sh')
+    commit_env = {
+      'GIT_AUTHOR_DATE' => '2026-01-01T00:00:00Z',
+      'GIT_COMMITTER_DATE' => '2026-01-01T00:00:00Z'
+    }
+    run(commit_env, 'git', '-C', repo, 'commit', '-m', 'fixture control plane')
+  end
 end
 
 def protect_automation_stores(home, remote_home)
@@ -202,8 +245,17 @@ tests = []
 
 tests << lambda do
   dump = parse_dump(run({}, 'bash', SYNC, '--dump-config'))
-  assert(dump == { 'MINI_HOST' => 'mini', 'QUIET' => '0', 'RESTART_CODEX' => '0' },
+  assert(dump == {
+           'MINI_HOST' => 'mini',
+           'QUIET' => '0',
+           'RESTART_CODEX' => '0',
+           'ALLOW_REVIEWED_DIRTY' => '0'
+         },
          "unexpected sync config: #{dump}")
+  assert(CONTROL_PLANE_REL_FILES.include?('SaneApps/infra/SaneProcess/scripts/automation/sync-codex-mini.sh'),
+         'sync manifest must include itself')
+  assert(CONTROL_PLANE_REL_FILES.include?('SaneApps/infra/SaneProcess/scripts/automation/control_plane_sync_test.rb'),
+         'sync manifest must include its contract test')
 
   _stdout, stderr, status = run({}, 'bash', SYNC, '--activate-mini-runs', '--dump-config') { true }
   assert(!status.success? && stderr.include?('Unknown option'), 'legacy activation flag must fail closed')
@@ -243,6 +295,204 @@ tests << lambda do
 end
 
 tests << lambda do
+  Dir.mktmpdir('control-plane-loopback-test') do |tmp|
+    home = File.join(tmp, 'home')
+    remote_home = File.join(tmp, 'remote')
+    bin_dir = File.join(tmp, 'bin')
+    log = File.join(tmp, 'operations.log')
+    FileUtils.mkdir_p([home, remote_home, bin_dir])
+    create_sync_fixture(home, remote_home)
+    fake_transport!(bin_dir)
+
+    env = {
+      'HOME' => home,
+      'PATH' => "#{bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin",
+      'REMOTE_HOME' => remote_home,
+      'SYNC_OP_LOG' => log,
+      'SANE_LOCAL_HOST_OVERRIDE' => 'fixture-mini',
+      'SANE_REMOTE_HOST_OVERRIDE' => 'fixture-mini'
+    }
+
+    _stdout, stderr, status = run(env, 'bash', SYNC, 'mini', '--quiet', '--no-restart') { true }
+    assert(!status.success? && stderr.include?('Refusing Mini control-plane loopback'),
+           'Mini loopback must fail closed')
+    %w[curl open rsync security ssh swift xcodebuild].each do |command|
+      wrapper = File.join(home, '.local', 'bin', command)
+      assert(!File.exist?(wrapper) && !File.symlink?(wrapper),
+             "loopback refusal mutated local wrapper: #{wrapper}")
+    end
+  end
+end
+
+tests << lambda do
+  Dir.mktmpdir('control-plane-lock-contention-test') do |tmp|
+    home = File.join(tmp, 'home')
+    remote_home = File.join(tmp, 'remote')
+    bin_dir = File.join(tmp, 'bin')
+    log = File.join(tmp, 'operations.log')
+    FileUtils.mkdir_p([home, remote_home, bin_dir])
+    create_sync_fixture(home, remote_home)
+    fake_transport!(bin_dir)
+    env = {
+      'HOME' => home,
+      'PATH' => "#{bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin",
+      'REMOTE_HOME' => remote_home,
+      'SYNC_OP_LOG' => log
+    }
+
+    local_lock = File.join(home, 'SaneApps', 'infra', 'SaneProcess', 'outputs', 'locks',
+                           'control-plane-sync.lock')
+    FileUtils.mkdir_p(local_lock)
+    remote_before = manifest_snapshot(remote_home)
+    _out, err, status = run(env, 'bash', SYNC, 'mini', '--quiet', '--no-restart') { true }
+    assert(!status.success? && err.include?('Local control-plane sync lock is held'),
+           "local lock contention did not fail closed:\n#{err}")
+    assert(Dir.exist?(local_lock), 'contended local lock was removed by the losing process')
+    assert_manifest_snapshot(remote_home, remote_before, 'local-lock refusal')
+    FileUtils.rm_r(local_lock)
+
+    remote_lock = File.join(remote_home, 'SaneApps', 'infra', 'SaneProcess', 'outputs', 'locks',
+                            'control-plane-sync.lock')
+    FileUtils.mkdir_p(remote_lock)
+    _out2, err2, status2 = run(env, 'bash', SYNC, 'mini', '--quiet', '--no-restart') { true }
+    assert(!status2.success? && err2.include?('Peer control-plane sync lock is held'),
+           "peer lock contention did not fail closed:\n#{err2}")
+    assert(Dir.exist?(remote_lock), 'contended peer lock was removed by the losing process')
+    assert(!Dir.exist?(local_lock), 'local lock leaked after peer lock contention')
+  end
+end
+
+tests << lambda do
+  Dir.mktmpdir('control-plane-concurrent-peer-test') do |tmp|
+    home = File.join(tmp, 'home')
+    remote_home = File.join(tmp, 'remote')
+    bin_dir = File.join(tmp, 'bin')
+    log = File.join(tmp, 'operations.log')
+    FileUtils.mkdir_p([home, remote_home, bin_dir])
+    create_sync_fixture(home, remote_home)
+    fake_transport!(bin_dir)
+    untouched_rel = 'SaneApps/infra/SaneProcess/scripts/hooks/sane_curl_guard.sh'
+    write(File.join(remote_home, untouched_rel), "peer original\n", executable: true)
+    untouched_before = sha(File.join(remote_home, untouched_rel))
+    env = {
+      'HOME' => home,
+      'PATH' => "#{bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin",
+      'REMOTE_HOME' => remote_home,
+      'SYNC_OP_LOG' => log,
+      'MUTATE_PEER_AFTER_STAGE' => '1'
+    }
+
+    _out, err, status = run(env, 'bash', SYNC, 'mini', '--quiet', '--no-restart') { true }
+    assert(!status.success? && err.include?('Peer reviewed manifest changed after locked preflight'),
+           "post-preflight peer mutation was not detected:\n#{err}")
+    mutated = File.join(remote_home, 'SaneApps', 'infra', 'scripts', 'check-inbox.sh')
+    assert(File.read(mutated) == "concurrent peer mutation\n", 'concurrent peer change was overwritten')
+    assert(sha(File.join(remote_home, untouched_rel)) == untouched_before,
+           'a different manifest file was promoted after concurrent mutation')
+    assert(!File.exist?(File.join(remote_home, '.codex', 'SKILLS_REGISTRY.md')),
+           'user-level control-plane files changed after concurrent mutation refusal')
+  end
+end
+
+tests << lambda do
+  Dir.mktmpdir('control-plane-rollback-test') do |tmp|
+    home = File.join(tmp, 'home')
+    remote_home = File.join(tmp, 'remote')
+    bin_dir = File.join(tmp, 'bin')
+    log = File.join(tmp, 'operations.log')
+    FileUtils.mkdir_p([home, remote_home, bin_dir])
+    create_sync_fixture(home, remote_home)
+    fake_transport!(bin_dir)
+    tracked_sync = 'SaneApps/infra/SaneProcess/scripts/automation/sync-codex-mini.sh'
+    CONTROL_PLANE_REL_FILES.each do |rel|
+      next if rel == tracked_sync
+
+      write(File.join(remote_home, rel), "peer original #{rel}\n", executable: rel.end_with?('.sh', '.rb'))
+    end
+    originals = manifest_snapshot(remote_home)
+    remote_config = File.join(remote_home, '.codex', 'config.toml')
+    remote_config_before = sha(remote_config)
+    env = {
+      'HOME' => home,
+      'PATH' => "#{bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin",
+      'REMOTE_HOME' => remote_home,
+      'SYNC_OP_LOG' => log,
+      'SANE_CONTROL_PLANE_FAIL_AFTER_PROMOTIONS' => '5'
+    }
+
+    _out, err, status = run(env, 'bash', SYNC, 'mini', '--quiet', '--no-restart') { true }
+    assert(!status.success? && err.include?('Injected control-plane promotion failure after 5 file(s)'),
+           "mid-promotion failure was not exercised:\n#{err}")
+    assert_manifest_snapshot(remote_home, originals, 'promotion rollback')
+    assert(sha(remote_config) == remote_config_before, 'rollback path changed host-managed config')
+    assert(!File.exist?(File.join(remote_home, '.codex', 'SKILLS_REGISTRY.md')),
+           'rollback path continued into user-level sync')
+  end
+end
+
+tests << lambda do
+  Dir.mktmpdir('control-plane-dirty-refusal-test') do |tmp|
+    home = File.join(tmp, 'home')
+    remote_home = File.join(tmp, 'remote')
+    bin_dir = File.join(tmp, 'bin')
+    log = File.join(tmp, 'operations.log')
+    FileUtils.mkdir_p([home, remote_home, bin_dir])
+    create_sync_fixture(home, remote_home)
+    fake_transport!(bin_dir)
+    remote_config = File.join(remote_home, '.codex', 'config.toml')
+    remote_config_before = sha(remote_config)
+    write(File.join(remote_home, 'SaneApps', 'infra', 'SaneProcess', '.gitignore'), "*\n# dirty peer\n")
+
+    env = {
+      'HOME' => home,
+      'PATH' => "#{bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin",
+      'REMOTE_HOME' => remote_home,
+      'SYNC_OP_LOG' => log
+    }
+    _stdout, stderr, status = run(env, 'bash', SYNC, 'mini', '--quiet', '--no-restart',
+                                  '--allow-reviewed-dirty') { true }
+    assert(!status.success? && stderr.include?('Peer SaneProcess is dirty'),
+           "dirty peer must fail before mutation:\n#{stderr}")
+    assert(File.read(log).include?("snapshot\t--snapshot-only"), 'dirty peer snapshot was not captured')
+    assert(sha(remote_config) == remote_config_before, 'dirty-peer refusal changed Mini config')
+    assert(!File.exist?(File.join(remote_home, '.codex', 'SKILLS_REGISTRY.md')),
+           'dirty-peer refusal copied the skill registry')
+    assert(!File.symlink?(File.join(home, '.local', 'bin', 'curl')),
+           'dirty-peer refusal installed a local guard wrapper')
+    assert(!Dir.glob(File.join(remote_home, 'SaneApps', 'infra', 'SaneProcess', 'outputs',
+                              'control-plane-preimages', '*', 'hashes.txt')).empty?,
+           'dirty-peer refusal did not preserve a remote preimage receipt')
+  end
+end
+
+tests << lambda do
+  Dir.mktmpdir('control-plane-reviewed-dirty-test') do |tmp|
+    home = File.join(tmp, 'home')
+    remote_home = File.join(tmp, 'remote')
+    bin_dir = File.join(tmp, 'bin')
+    log = File.join(tmp, 'operations.log')
+    FileUtils.mkdir_p([home, remote_home, bin_dir])
+    create_sync_fixture(home, remote_home)
+    fake_transport!(bin_dir)
+    sync_rel = 'SaneApps/infra/SaneProcess/scripts/automation/sync-codex-mini.sh'
+    local_sync = File.join(home, sync_rel)
+    remote_sync = File.join(remote_home, sync_rel)
+    write(local_sync, File.read(local_sync) + "# reviewed manifest change\n", executable: true)
+
+    env = {
+      'HOME' => home,
+      'PATH' => "#{bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin",
+      'REMOTE_HOME' => remote_home,
+      'SYNC_OP_LOG' => log
+    }
+    run(env, 'bash', SYNC, 'mini', '--quiet', '--no-restart', '--allow-reviewed-dirty')
+    assert(sha(local_sync) == sha(remote_sync), 'reviewed manifest-only source change did not sync')
+    assert(File.read(log).include?("snapshot\t--snapshot-only"),
+           'reviewed dirty source was not snapshotted before sync')
+  end
+end
+
+tests << lambda do
   Dir.mktmpdir('control-plane-sync-test') do |tmp|
     home = File.join(tmp, 'home')
     remote_home = File.join(tmp, 'remote')
@@ -257,9 +507,13 @@ tests << lambda do
       'HOME' => home,
       'PATH' => "#{bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin",
       'REMOTE_HOME' => remote_home,
-      'REMOTE_NODE' => '/fixture/bin/node',
       'SYNC_OP_LOG' => log
     }
+
+    local_config_path = File.join(home, '.codex', 'config.toml')
+    remote_config_path = File.join(remote_home, '.codex', 'config.toml')
+    local_config_before = sha(local_config_path)
+    remote_config_before = sha(remote_config_path)
 
     begin
       run(env, 'bash', SYNC, 'mini', '--quiet', '--no-restart')
@@ -273,16 +527,23 @@ tests << lambda do
     end
     sentinels.each { |path, before| assert(sha(path) == before, "automation sentinel changed: #{path}") }
 
-    remote_config = File.read(File.join(remote_home, '.codex', 'config.toml'))
-    assert(remote_config.include?('command = "/fixture/bin/node"'), 'Mini config did not rewrite Node path')
-    assert(remote_config.include?(remote_home), 'Mini config did not rewrite local home path')
-    assert(remote_config.include?('command = "npx"'), 'Mini config did not install direct AgentMemory MCP')
-    assert(remote_config.include?('AGENTMEMORY_URL = "http://localhost:3111"'), 'Mini AgentMemory URL missing')
-    assert(!remote_config.include?('agentmemory-mcp-air.sh'), 'Air AgentMemory tunnel leaked into Mini config')
+    assert(sha(local_config_path) == local_config_before, 'local host-managed Codex config changed')
+    assert(sha(remote_config_path) == remote_config_before, 'Mini host-managed Codex config changed')
     assert(File.file?(File.join(remote_home, '.codex', 'skills', 'fixture', 'SKILL.md')),
            'Codex skill did not sync')
     assert(File.file?(File.join(remote_home, '.agents', 'skills', 'shared', 'SKILL.md')),
            'shared agent skill did not sync')
+    assert(File.file?(File.join(remote_home, '.codex', 'skills', 'mini-only', 'SKILL.md')),
+           'Mini-only Codex skill was deleted')
+    assert(File.file?(File.join(remote_home, '.agents', 'skills', 'mini-only', 'SKILL.md')),
+           'Mini-only shared skill was deleted')
+    assert(!operations.include?('--delete'), "skills sync must be non-destructive:\n#{operations}")
+    assert(!Dir.glob(File.join(home, 'SaneApps', 'infra', 'SaneProcess', 'outputs',
+                              'control-plane-preimages', '*', 'hashes.txt')).empty?,
+           'local preimage receipt missing')
+    assert(!Dir.glob(File.join(remote_home, 'SaneApps', 'infra', 'SaneProcess', 'outputs',
+                              'control-plane-preimages', '*', 'hashes.txt')).empty?,
+           'remote preimage receipt missing')
     CODEX_BIN_FILES.each do |name|
       assert(File.file?(File.join(remote_home, '.codex', 'bin', name)), "Codex helper did not sync: #{name}")
     end
@@ -290,6 +551,21 @@ tests << lambda do
       local = File.join(home, rel)
       remote = File.join(remote_home, rel)
       assert(File.file?(remote) && sha(local) == sha(remote), "control-plane file parity failed: #{rel}")
+    end
+    {
+      'curl' => 'sane_curl_guard.sh',
+      'open' => 'sane_open_guard.sh',
+      'rsync' => 'sane_rsync_guard.sh',
+      'security' => 'sane_security_guard.sh',
+      'ssh' => 'sane_ssh_guard.sh',
+      'swift' => 'swift',
+      'xcodebuild' => 'xcodebuild'
+    }.each do |command, target|
+      [home, remote_home].each do |root|
+        wrapper = File.join(root, '.local', 'bin', command)
+        assert(File.symlink?(wrapper), "guard wrapper missing: #{wrapper}")
+        assert(File.basename(File.readlink(wrapper)) == target, "guard wrapper target mismatch: #{wrapper}")
+      end
     end
   end
 end
@@ -337,8 +613,18 @@ tests << lambda do
     lines = File.readlines(log, chomp: true)
     assert(lines.count { |line| line.start_with?("sync\t") } == 1, "expected one control-plane sync: #{lines}")
     assert(lines.include?("sync\tmini --quiet --no-restart"), "unsafe sync args: #{lines}")
-    assert(lines.any? { |line| line.start_with?("remote\tbash ") }, "remote git reconcile missing: #{lines}")
+    remote_snapshots = lines.each_index.select do |index|
+      lines[index].start_with?("remote\tbash ") && lines[index].include?('--snapshot-only')
+    end
+    assert(remote_snapshots.length == 1, "expected one remote pre-mutation snapshot: #{lines}")
+    assert(lines.include?("git\t--snapshot-only"), "local pre-mutation snapshot missing: #{lines}")
+    assert(lines.any? { |line| line.start_with?("remote\tbash ") && !line.include?('--snapshot-only') },
+           "remote git reconcile missing: #{lines}")
     assert(lines.include?("git\t--peer mini"), "local peer reconcile missing: #{lines}")
+    sync_index = lines.index("sync\tmini --quiet --no-restart")
+    local_reconcile_index = lines.index("git\t--peer mini")
+    assert(sync_index && local_reconcile_index && sync_index > local_reconcile_index,
+           "control-plane sync ran before Git reconciliation: #{lines}")
     FORBIDDEN_AUTOMATION_PATHS.each do |token|
       assert(lines.none? { |line| line.include?(token) }, "reconcile touched #{token}: #{lines}")
     end

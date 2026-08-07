@@ -10,7 +10,7 @@ How the enforcement system works, why decisions were made, and where it's headed
 
 SaneProcess is agent workflow enforcement built around the scientific method. It has one portable SOP and several adapter layers: a Claude-native hook runtime, a Codex-oriented instruction/config/skill path, and a generic `AGENTS.md` baseline for any repo-aware coding agent. The Claude side uses four Ruby hooks plus one session bootstrap hook to enforce research-before-edit discipline through a 4-category research gate (docs, web, github, local) and to prevent doom loops via a circuit breaker. Shared state lives in a single HMAC-signed JSON file for the Claude hook runtime.
 
-Codex note: the stable Codex contract is `AGENTS.md`, canonical skills in `~/.codex/skills`, optional `.agents/skills` mirrors for compatible clients, Codex config, MCP, and shared runtime guardrails such as `check-inbox.sh` send approval plus `sane_curl_guard.sh`. Codex now documents hook support, but SaneProcess treats hooks as an adapter layer rather than the portable enforcement base.
+Codex note: the stable Codex contract is `AGENTS.md`, canonical skills in `~/.codex/skills`, optional `.agents/skills` mirrors for compatible clients, Codex config, MCP, and shared runtime guardrails such as `check-inbox.sh` send approval plus the complete `~/.local/bin` wrapper set for curl, open, rsync, security, ssh, swift, and xcodebuild. Codex now documents hook support, but SaneProcess treats hooks as an adapter layer rather than the portable enforcement base.
 
 ### Component Diagram
 
@@ -566,7 +566,9 @@ the server never needs the Air's GitHub or signing credentials. GitHub `main`
 is canonical for code, while
 uncommitted Mini work is preserved as non-clobbering Air-side snapshots rather
 than raw-mirrored. Claude/Serena/Codex file memories use a conflict-preserving
-two-way Air recurrence. Shared AgentMemory runs as a Mini LaunchAgent with a
+two-way Air recurrence. Active client memory contains canonical files only;
+losing variants are retained in private, hashed SaneProcess output archives.
+Shared AgentMemory runs as a Mini LaunchAgent with a
 pinned home working directory so its database survives restarts. The Air
 reaches Mini loopback port 3111 through a private persistent SSH tunnel; a
 one-shot detached tunnel owned by an individual MCP startup is not durable

@@ -91,6 +91,7 @@ require_relative 'sanemaster/ponytail_audit'
 require_relative 'sanemaster/operator_brief'
 require_relative 'sanemaster/command_registry'
 require_relative 'sanemaster/machine_cleanup'
+require_relative 'sanemaster/prophecy_ledger_reviewer'
 require_relative 'sanemaster/verify'
 require_relative 'sanemaster/quality'
 require_relative 'sanemaster/secret_scan'
@@ -106,6 +107,7 @@ require_relative 'sanemaster/circuit_breaker_state'
 require_relative 'sanemaster/structural_compliance'
 require_relative 'sanemaster/saneui_guard'
 require_relative 'sanemaster/upgrade_path_proof'
+require_relative 'sanemaster/store_compliance'
 require_relative 'sanemaster/release'
 require_relative 'sanemaster/release_readiness'
 require_relative 'sanemaster/ci_helpers'
@@ -135,6 +137,7 @@ class SaneMaster
   include SaneMasterModules::OperatorBrief
   include SaneMasterModules::CommandRegistry
   include SaneMasterModules::MachineCleanup
+  include SaneMasterModules::ProphecyLedgerReviewer
   include SaneMasterModules::Verify
   include SaneMasterModules::Quality
   include SaneMasterModules::SecretScan
@@ -148,6 +151,7 @@ class SaneMaster
   include SaneMasterModules::Session
   include SaneMasterModules::StructuralCompliance
   include SaneMasterModules::UpgradePathProof
+  include SaneMasterModules::StoreCompliance
   include SaneMasterModules::Release
   include SaneMasterModules::ReleaseReadiness
   include SaneMasterModules::CIHelpers
@@ -167,7 +171,8 @@ class SaneMaster
         'release' => { args: '[--full|--deploy|--no-deploy|--skip-notarize|--version X.Y.Z|--notes "..."]', desc: 'Build, sign, notarize, package, and optionally deploy' },
         'upgrade_path_proof' => { args: '', desc: 'Run the configured behavioral upgrade test and write signed Mini proof' },
         'release_preflight' => { args: '', desc: 'Run all pre-release safety checks without building' },
-        'appstore_preflight' => { args: '[--platform macos|ios] [--pkg PATH]', desc: 'Run App Store submission checks and bind authorization to an exact fresh package' }
+        'appstore_preflight' => { args: '[--platform macos|ios] [--pkg PATH]', desc: 'Run App Store submission checks and bind authorization to an exact fresh package' },
+        'webstore_preflight' => { args: '--package ZIP --listing FILE --media-dir DIR --privacy-url URL [--review-instructions FILE]', desc: 'Run Chrome Web Store package, listing, privacy, media, and reviewer-access checks' }
       }
     },
     gen: {
@@ -245,6 +250,7 @@ class SaneMaster
         'install_provisioning_profiles' => { args: '[--delete-source] [glob ...]', desc: 'Install downloaded provisioning profiles deterministically by UUID' },
         'dedupe_apps' => { args: '[--host local|mini] [--apps App1,App2] [--dry-run] [--json]', desc: 'Keep one canonical app bundle per Sane app' },
         'machine_cleanup' => { args: '[--host local|mini] [--server] [--apply] [--json] [--preserve-apps A,B]', desc: 'Prune disposable caches and generated build/test artifacts without touching active app work' },
+        'prophecy_reviewer_click' => { args: '[--mode local|live] [--allow-live-submit]', desc: 'Canonical Prophecy Ledger reviewer click E2E on Mini (local demo or live Access session)' },
         'mcp_watchdog' => { args: '[status|doctor|clean|install|uninstall] [--max N] [--interval SEC] [--json] [--quiet]', desc: 'Detect and clean duplicate MCP daemons' },
         'universal_control_reset' => { args: '[--status] [--dry-run] [--local-only|--mini-only] [--cleanup-mini] [--reboot-mini]', desc: 'Recover Air↔Mini Universal Control / pointer handoff' },
         'work_session_on' => { args: '', desc: 'Start keep-awake + no-lock work session guard' },
@@ -2130,6 +2136,10 @@ PY
     when 'machine_cleanup', 'machine-cleanup', 'cleanup_machine', 'cleanup-machine'
       success = machine_cleanup(args)
       exit(success ? 0 : 1)
+    when 'prophecy_reviewer_click', 'prophecy-reviewer-click', 'prophecy_ledger_reviewer_click',
+         'pl_reviewer_click', 'pl-reviewer-click'
+      success = prophecy_ledger_reviewer_click(args)
+      exit(success ? 0 : 1)
     when 'mcp_watchdog', 'mcpw', 'mcp'
       mcp_watchdog(args)
     when 'universal_control_reset', 'uc_reset', 'ucr'
@@ -2185,6 +2195,13 @@ PY
       producer = 'saneprocess.appstore_preflight.v1'
       if ReleaseReceiptSigner.canonical_producer_child?(producer)
         appstore_preflight(args)
+      else
+        exit ReleaseReceiptSigner.run_canonical_producer(producer, project_root: Dir.pwd, args: args)
+      end
+    when 'webstore_preflight', 'wsp'
+      producer = SaneMasterModules::StoreCompliance::WEBSTORE_PREFLIGHT_PRODUCER
+      if ReleaseReceiptSigner.canonical_producer_child?(producer)
+        webstore_preflight(args)
       else
         exit ReleaseReceiptSigner.run_canonical_producer(producer, project_root: Dir.pwd, args: args)
       end
@@ -2741,6 +2758,20 @@ PY
         'machine_cleanup --local --apply'
       ]
     },
+    'prophecy_reviewer_click' => {
+      usage: 'prophecy_reviewer_click [--mode local|live] [--allow-live-submit]',
+      description: 'Canonical Prophecy Ledger reviewer click E2E on Mini. Local demo uses REVIEW_DEMO_MODE; live reuses an Access-authenticated Mini Brave tab (no new tabs / no OTP automation). Do not invent /tmp Brave login scripts.',
+      flags: {
+        '--mode local|live' => 'local = loopback demo click (default); live = production Access session in Mini Brave',
+        '--live' => 'Shortcut for --mode live',
+        '--allow-live-submit' => 'Permit Accept/Send-back mutations on production (off by default for live)'
+      },
+      examples: [
+        'prophecy_reviewer_click',
+        'prophecy_reviewer_click --mode live',
+        'prophecy_reviewer_click --live --allow-live-submit'
+      ]
+    },
     'doctor' => {
       usage: 'doctor',
       description: 'Check environment health and tool versions',
@@ -3185,6 +3216,18 @@ PY
         '--pkg PATH' => 'Bind authorization to this exact fresh package digest and bundle metadata'
       },
       examples: ['appstore_preflight', 'appstore_preflight --platform macos --pkg build/Example.pkg', 'asp --platform ios --pkg build/Example.ipa']
+    },
+    'webstore_preflight' => {
+      usage: 'webstore_preflight (or wsp) --package ZIP --listing FILE --media-dir DIR --privacy-url URL [--review-instructions FILE]',
+      description: 'Run signed Chrome Web Store checks against the exact ZIP, public listing copy, listing media, live privacy policy, and protected reviewer instructions',
+      flags: {
+        '--package PATH' => 'Exact Chrome Web Store ZIP candidate',
+        '--listing PATH' => 'Canonical listing copy and permission justification',
+        '--media-dir PATH' => 'Canonical store-listing image directory',
+        '--privacy-url URL' => 'Live HTTPS privacy policy URL',
+        '--review-instructions PATH' => 'Protected JSON reviewer invite/credential receipt for gated extensions'
+      },
+      examples: ['webstore_preflight --package outputs/extension.zip --listing extension/store-listing/LISTING.md --media-dir extension/store-listing --privacy-url https://example.com/privacy']
     },
     'sales' => {
       usage: 'sales [--daily|--month|--products|--fees|--find-customer-orders --email E --name N --product P|--license-status KEY|--disable-license-key KEY|--refund-order ID|--refund-order-number N|--refund-duplicate-license-key KEY --keep-license-key KEY --approval-note PATH|--include-refunded|--json]',

@@ -4,14 +4,15 @@
 #
 # Production runs on the Air and connects to the Mini over `ssh mini`. It is
 # intentionally no-delete. Each changed pair is backed up once per day, then
-# synchronized pull -> push -> pull using checksum comparison, newest-mtime
-# selection, and rsync backup suffixes. A losing same-file version therefore
-# survives as a `.sane-conflict-*` file on both machines.
+# synchronized pull -> push -> pull using checksum comparison and newest-mtime
+# selection. Losing same-file versions and legacy `.sane-conflict-*` artifacts
+# move to private, hashed archives outside active client memory.
 #
 # Session/LaunchAgent safety: an unreachable Mini or an already-held lock is a
 # clean skip. Use --strict for an interactive verification run that must fail on
 # an unreachable peer or post-sync checksum drift.
 set -uo pipefail
+umask 077
 
 MINI_HOST="mini"
 LOCAL_PEER_HOME=""
@@ -51,6 +52,7 @@ LOCK_HELD=0
 REMOTE_HOST=""
 LOCAL_HOST="$(hostname -s 2>/dev/null || hostname)"
 LOCK_TOKEN="$LOCAL_HOST:$$:$STAMP"
+DISCOVERY_TMP=""
 
 skip_or_fail() {
   echo "sync-memory-mini: $*" >&2
@@ -60,6 +62,7 @@ skip_or_fail() {
 
 if [[ -n "$LOCAL_PEER_HOME" ]]; then
   REMOTE_HOME="${LOCAL_PEER_HOME%/}"
+  REMOTE_HOST="${SANE_MEMORY_SYNC_PEER_HOST_LABEL:-local-peer}"
 else
   REMOTE_HOME="$("${SSH[@]}" "$MINI_HOST" 'printf %s "$HOME"' 2>/dev/null || true)"
   [[ -n "$REMOTE_HOME" ]] || skip_or_fail "$MINI_HOST unreachable; skipped"
@@ -69,6 +72,11 @@ else
     skip_or_fail "refusing loopback sync on $LOCAL_HOST"
   fi
 fi
+
+LOCAL_ARCHIVE_ROOT="${SANE_MEMORY_CONFLICT_ARCHIVE_ROOT:-$HOME/SaneApps/infra/SaneProcess/outputs/memory-conflicts}"
+REMOTE_ARCHIVE_ROOT="${SANE_MEMORY_CONFLICT_PEER_ARCHIVE_ROOT:-$REMOTE_HOME/SaneApps/infra/SaneProcess/outputs/memory-conflicts}"
+LOCAL_ARCHIVE_RUN="$LOCAL_ARCHIVE_ROOT/$STAMP"
+REMOTE_ARCHIVE_RUN="$REMOTE_ARCHIVE_ROOT/$STAMP"
 
 release_lock() {
   [[ "$LOCK_HELD" -eq 1 ]] || return 0
@@ -81,7 +89,16 @@ release_lock() {
     "${SSH[@]}" "$MINI_HOST" "test \"\$(cat '$REMOTE_HOME/$LOCK_REL/owner' 2>/dev/null)\" = '$LOCK_TOKEN' && rm -f '$REMOTE_HOME/$LOCK_REL/owner' && rmdir '$REMOTE_HOME/$LOCK_REL' || true" >/dev/null 2>&1 || true
   fi
 }
-trap release_lock EXIT INT TERM
+
+cleanup() {
+  release_lock
+  if [[ -n "$DISCOVERY_TMP" && -d "$DISCOVERY_TMP" ]]; then
+    rm -f "$DISCOVERY_TMP/local-serena.txt" \
+      "$DISCOVERY_TMP/peer-serena.txt" "$DISCOVERY_TMP/serena-union.txt"
+    rmdir "$DISCOVERY_TMP" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
 
 acquire_lock() {
   local owner owner_host owner_pid
@@ -137,6 +154,64 @@ acquire_lock() {
 
 acquire_lock || skip_or_fail "another sync owns the Mini lock; skipped"
 
+# Emit project-local Serena memory directories relative to ~/SaneApps. `find`
+# does not follow symlinked directories by default. Pruning output, preserved-
+# archive, and nested-worktree trees prevents stale copies from becoming active
+# memory roots; dependency and VCS trees are likewise not SaneApps projects.
+discover_project_serena_paths() {
+  local root="$1" path relative
+  [[ -d "$root" ]] || return 0
+  find "$root" \
+    \( -type d \( -name outputs -o -name archive -o -name .worktrees -o -name .git -o -name node_modules -o -name vendor \) -prune \) -o \
+    \( -type d -path '*/.serena/memories' -print0 -prune \) |
+    while IFS= read -r -d '' path; do
+      relative="${path#"$root"/}"
+      [[ "$relative" == ".serena/memories" ]] && continue
+      case "$relative" in
+        */.serena/memories) ;;
+        *) echo "ERROR: rejected unexpected Serena path: $relative" >&2; return 1 ;;
+      esac
+      case "$relative" in
+        *[!A-Za-z0-9._/-]*)
+          echo "ERROR: project Serena path contains unsupported characters: $relative" >&2
+          return 1
+          ;;
+      esac
+      printf '%s\n' "$relative"
+    done
+}
+
+discover_project_serena_peer_paths() {
+  local destination="$1"
+  if [[ -n "$LOCAL_PEER_HOME" ]]; then
+    discover_project_serena_paths "$REMOTE_HOME/SaneApps" > "$destination"
+    return
+  fi
+  "${SSH[@]}" "$MINI_HOST" /bin/bash -s -- "$REMOTE_HOME/SaneApps" > "$destination" <<'REMOTE_SERENA_DISCOVERY'
+set -uo pipefail
+root="$1"
+[[ -d "$root" ]] || exit 0
+find "$root" \
+  \( -type d \( -name outputs -o -name archive -o -name .worktrees -o -name .git -o -name node_modules -o -name vendor \) -prune \) -o \
+  \( -type d -path '*/.serena/memories' -print0 -prune \) |
+  while IFS= read -r -d '' path; do
+    relative="${path#"$root"/}"
+    [[ "$relative" == ".serena/memories" ]] && continue
+    case "$relative" in
+      */.serena/memories) ;;
+      *) echo "ERROR: rejected unexpected Serena path: $relative" >&2; exit 1 ;;
+    esac
+    case "$relative" in
+      *[!A-Za-z0-9._/-]*)
+        echo "ERROR: project Serena path contains unsupported characters: $relative" >&2
+        exit 1
+        ;;
+    esac
+    printf '%s\n' "$relative"
+  done
+REMOTE_SERENA_DISCOVERY
+}
+
 LOCAL_PROJECT="$(printf '%s' "$HOME/SaneApps" | sed 's#/#-#g')"
 REMOTE_PROJECT="$(printf '%s' "$REMOTE_HOME/SaneApps" | sed 's#/#-#g')"
 
@@ -151,6 +226,25 @@ REMOTE_PATHS=(
   "$REMOTE_HOME/.codex/memories"
 )
 LABELS=(claude-file-memory serena-memories codex-memories)
+
+DISCOVERY_TMP="$(mktemp -d "${TMPDIR:-/tmp}/sane-memory-discovery.XXXXXX")" || \
+  skip_or_fail "could not create private Serena discovery workspace"
+discover_project_serena_paths "$HOME/SaneApps" > "$DISCOVERY_TMP/local-serena.txt" || \
+  skip_or_fail "local project Serena discovery failed"
+discover_project_serena_peer_paths "$DISCOVERY_TMP/peer-serena.txt" || \
+  skip_or_fail "peer project Serena discovery failed"
+LC_ALL=C sort -u "$DISCOVERY_TMP/local-serena.txt" "$DISCOVERY_TMP/peer-serena.txt" \
+  > "$DISCOVERY_TMP/serena-union.txt" || skip_or_fail "project Serena union failed"
+
+while IFS= read -r relative; do
+  [[ -n "$relative" ]] || continue
+  digest="$(printf '%s' "$relative" | /usr/bin/shasum -a 256 | awk '{print $1}' | cut -c1-16)" || \
+    skip_or_fail "could not label project Serena path: $relative"
+  index="${#LOCAL_PATHS[@]}"
+  LOCAL_PATHS[$index]="$HOME/SaneApps/$relative"
+  REMOTE_PATHS[$index]="$REMOTE_HOME/SaneApps/$relative"
+  LABELS[$index]="project-serena-$digest"
+done < "$DISCOVERY_TMP/serena-union.txt"
 
 mkdir -p "$HOME/$BACKUP_REL"
 
@@ -184,9 +278,125 @@ local_backup_once() {
   [[ -d "$HOME/$BACKUP_REL/$label" ]]
 }
 
+archive_legacy_conflicts_local() {
+  local active_dir="$1" archive_branch="$2" path relative destination
+  [[ -d "$active_dir" ]] || return 0
+  while IFS= read -r -d '' path; do
+    relative="${path#"$active_dir"/}"
+    destination="$archive_branch/legacy/$relative"
+    mkdir -p "$(dirname "$destination")" || return 1
+    mv "$path" "$destination" || return 1
+  done < <(find "$active_dir" -type f -name '*.sane-conflict-*' -print0)
+}
+
+archive_legacy_conflicts_remote() {
+  local active_dir="$1" archive_branch="$2"
+  if [[ -n "$LOCAL_PEER_HOME" ]]; then
+    archive_legacy_conflicts_local "$active_dir" "$archive_branch"
+    return
+  fi
+  "${SSH[@]}" "$MINI_HOST" /bin/bash -s -- "$active_dir" "$archive_branch" <<'REMOTE_ARCHIVE'
+set -uo pipefail
+umask 077
+active_dir="$1"
+archive_branch="$2"
+[[ -d "$active_dir" ]] || exit 0
+while IFS= read -r -d '' path; do
+  relative="${path#"$active_dir"/}"
+  destination="$archive_branch/legacy/$relative"
+  mkdir -p "$(dirname "$destination")" || exit 1
+  mv "$path" "$destination" || exit 1
+done < <(find "$active_dir" -type f -name '*.sane-conflict-*' -print0)
+REMOTE_ARCHIVE
+}
+
+write_archive_receipt_local() {
+  local archive_root="$1" archive_run="$2" archive_branch="$3" host_role="$4" host_name="$5" label="$6" source_root="$7"
+  local receipt temp kind path relative digest bytes found
+  [[ -d "$archive_branch" ]] || return 0
+  found="$(find "$archive_branch" -type f ! -name manifest.tsv -print -quit 2>/dev/null)"
+  [[ -n "$found" ]] || return 0
+  mkdir -p "$archive_branch" || return 1
+  chmod 700 "$archive_root" "$archive_run" "$(dirname "$archive_branch")" "$archive_branch" || return 1
+  receipt="$archive_branch/manifest.tsv"
+  temp="$archive_branch/.manifest.tsv.tmp.$$"
+  {
+    printf 'schema\tsane-memory-conflict-archive-v1\n'
+    printf 'stamp\t%s\n' "$STAMP"
+    printf 'host_role\t%s\n' "$host_role"
+    printf 'host\t%s\n' "$host_name"
+    printf 'memory_label\t%s\n' "$label"
+    printf 'source_root\t%s\n' "$source_root"
+    printf 'columns\tkind\toriginal_relative_path\tsha256\tbytes\tarchived_relative_path\n'
+    for kind in legacy rsync; do
+      [[ -d "$archive_branch/$kind" ]] || continue
+      while IFS= read -r -d '' path; do
+        relative="${path#"$archive_branch/$kind/"}"
+        digest="$(/usr/bin/shasum -a 256 "$path" | awk '{print $1}')" || exit 1
+        bytes="$(wc -c < "$path" | tr -d '[:space:]')" || exit 1
+        printf 'file\t%s\t%s\t%s\t%s\t%s/%s\n' "$kind" "$relative" "$digest" "$bytes" "$kind" "$relative"
+      done < <(find "$archive_branch/$kind" -type f -print0)
+    done
+  } > "$temp" || { rm -f "$temp"; return 1; }
+  chmod 600 "$temp" || return 1
+  mv -f "$temp" "$receipt" || return 1
+  find "$archive_branch" -type d -exec chmod 700 {} + || return 1
+  find "$archive_branch" -type f -exec chmod 600 {} + || return 1
+}
+
+write_archive_receipt_remote() {
+  local archive_root="$1" archive_run="$2" archive_branch="$3" host_role="$4" host_name="$5" label="$6" source_root="$7"
+  if [[ -n "$LOCAL_PEER_HOME" ]]; then
+    write_archive_receipt_local "$archive_root" "$archive_run" "$archive_branch" "$host_role" "$host_name" "$label" "$source_root"
+    return
+  fi
+  "${SSH[@]}" "$MINI_HOST" /bin/bash -s -- \
+    "$archive_root" "$archive_run" "$archive_branch" "$host_role" "$host_name" "$label" "$source_root" "$STAMP" <<'REMOTE_RECEIPT'
+set -uo pipefail
+umask 077
+archive_root="$1"
+archive_run="$2"
+archive_branch="$3"
+host_role="$4"
+host_name="$5"
+label="$6"
+source_root="$7"
+stamp="$8"
+[[ -d "$archive_branch" ]] || exit 0
+found="$(find "$archive_branch" -type f ! -name manifest.tsv -print -quit 2>/dev/null)"
+[[ -n "$found" ]] || exit 0
+mkdir -p "$archive_branch" || exit 1
+chmod 700 "$archive_root" "$archive_run" "$(dirname "$archive_branch")" "$archive_branch" || exit 1
+receipt="$archive_branch/manifest.tsv"
+temp="$archive_branch/.manifest.tsv.tmp.$$"
+{
+  printf 'schema\tsane-memory-conflict-archive-v1\n'
+  printf 'stamp\t%s\n' "$stamp"
+  printf 'host_role\t%s\n' "$host_role"
+  printf 'host\t%s\n' "$host_name"
+  printf 'memory_label\t%s\n' "$label"
+  printf 'source_root\t%s\n' "$source_root"
+  printf 'columns\tkind\toriginal_relative_path\tsha256\tbytes\tarchived_relative_path\n'
+  for kind in legacy rsync; do
+    [[ -d "$archive_branch/$kind" ]] || continue
+    while IFS= read -r -d '' path; do
+      relative="${path#"$archive_branch/$kind/"}"
+      digest="$(/usr/bin/shasum -a 256 "$path" | awk '{print $1}')" || exit 1
+      bytes="$(wc -c < "$path" | tr -d '[:space:]')" || exit 1
+      printf 'file\t%s\t%s\t%s\t%s\t%s/%s\n' "$kind" "$relative" "$digest" "$bytes" "$kind" "$relative"
+    done < <(find "$archive_branch/$kind" -type f -print0)
+  done
+} > "$temp" || { rm -f "$temp"; exit 1; }
+chmod 600 "$temp" || exit 1
+mv -f "$temp" "$receipt" || exit 1
+find "$archive_branch" -type d -exec chmod 700 {} + || exit 1
+find "$archive_branch" -type f -exec chmod 600 {} + || exit 1
+REMOTE_RECEIPT
+}
+
 rsync_remote() {
-  local direction="$1" source="$2" destination="$3" suffix="$4"
-  local opts=(-a --omit-dir-times --checksum --update --backup "--suffix=$suffix")
+  local direction="$1" source="$2" destination="$3" backup_dir="$4"
+  local opts=(-a --omit-dir-times --checksum --update --backup "--backup-dir=$backup_dir")
   if [[ -n "$LOCAL_PEER_HOME" ]]; then
     rsync "${opts[@]}" "$source/" "$destination/"
   elif [[ "$direction" == "pull" ]]; then
@@ -211,8 +421,23 @@ pair_has_drift() {
 
 sync_pair() {
   local local_dir="$1" remote_dir="$2" label="$3"
+  local local_archive_branch="$LOCAL_ARCHIVE_RUN/$label/local"
+  local remote_archive_branch="$REMOTE_ARCHIVE_RUN/$label/peer"
   mkdir -p "$local_dir"
   remote_mkdir "$remote_dir" || return 1
+
+  archive_legacy_conflicts_local "$local_dir" "$local_archive_branch" || {
+    echo "ERROR: $label local legacy conflict archival failed" >&2
+    return 1
+  }
+  archive_legacy_conflicts_remote "$remote_dir" "$remote_archive_branch" || {
+    echo "ERROR: $label peer legacy conflict archival failed" >&2
+    return 1
+  }
+  write_archive_receipt_local "$LOCAL_ARCHIVE_ROOT" "$LOCAL_ARCHIVE_RUN" "$local_archive_branch" \
+    local "$LOCAL_HOST" "$label" "$local_dir" || return 1
+  write_archive_receipt_remote "$REMOTE_ARCHIVE_ROOT" "$REMOTE_ARCHIVE_RUN" "$remote_archive_branch" \
+    peer "$REMOTE_HOST" "$label" "$remote_dir" || return 1
 
   if pair_has_drift "$local_dir" "$remote_dir"; then
     :
@@ -238,9 +463,23 @@ sync_pair() {
     return 1
   }
 
-  rsync_remote pull "$remote_dir" "$local_dir" ".sane-conflict-local-$STAMP" || return 1
-  rsync_remote push "$local_dir" "$remote_dir" ".sane-conflict-peer-$STAMP" || return 1
-  rsync_remote pull "$remote_dir" "$local_dir" ".sane-conflict-local-$STAMP" || return 1
+  rsync_remote pull "$remote_dir" "$local_dir" "$local_archive_branch/rsync" || {
+    write_archive_receipt_local "$LOCAL_ARCHIVE_ROOT" "$LOCAL_ARCHIVE_RUN" "$local_archive_branch" local "$LOCAL_HOST" "$label" "$local_dir" || true
+    return 1
+  }
+  rsync_remote push "$local_dir" "$remote_dir" "$remote_archive_branch/rsync" || {
+    write_archive_receipt_remote "$REMOTE_ARCHIVE_ROOT" "$REMOTE_ARCHIVE_RUN" "$remote_archive_branch" peer "$REMOTE_HOST" "$label" "$remote_dir" || true
+    return 1
+  }
+  rsync_remote pull "$remote_dir" "$local_dir" "$local_archive_branch/rsync" || {
+    write_archive_receipt_local "$LOCAL_ARCHIVE_ROOT" "$LOCAL_ARCHIVE_RUN" "$local_archive_branch" local "$LOCAL_HOST" "$label" "$local_dir" || true
+    return 1
+  }
+
+  write_archive_receipt_local "$LOCAL_ARCHIVE_ROOT" "$LOCAL_ARCHIVE_RUN" "$local_archive_branch" \
+    local "$LOCAL_HOST" "$label" "$local_dir" || return 1
+  write_archive_receipt_remote "$REMOTE_ARCHIVE_ROOT" "$REMOTE_ARCHIVE_RUN" "$remote_archive_branch" \
+    peer "$REMOTE_HOST" "$label" "$remote_dir" || return 1
 
   if pair_has_drift "$local_dir" "$remote_dir"; then
     echo "ERROR: $label checksum parity failed" >&2
@@ -254,13 +493,15 @@ sync_pair() {
         ;;
     esac
   fi
-  echo "  synced $label both ways (backup-first, conflict-preserving, no-delete)"
+  echo "  synced $label both ways (backup-first, no-delete, private conflict archive)"
 }
 
 echo "Memory sync Air<->Mini ($MINI_HOST); lock acquired; stamp=$STAMP"
 failures=0
-for i in 0 1 2; do
+i=0
+while [[ "$i" -lt "${#LOCAL_PATHS[@]}" ]]; do
   sync_pair "${LOCAL_PATHS[$i]}" "${REMOTE_PATHS[$i]}" "${LABELS[$i]}" || failures=$((failures + 1))
+  i=$((i + 1))
 done
 
 if [[ "$failures" -gt 0 ]]; then

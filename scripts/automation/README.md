@@ -232,7 +232,7 @@ ruby scripts/SaneMaster.rb sync_mini mini --restart
 2. Syncs the active Codex skill registry (`~/.codex/SKILLS_REGISTRY.md`), `~/.codex/skills/`, and shared `~/.agents/skills/` to Mini.
 3. Installs the repo-owned Codex control-plane helpers from `scripts/codex-bin/` into local `~/.codex/bin/` and mirrors them to Mini.
 4. Syncs critical control-plane scripts (`check-inbox.sh`, `git-sync-safe.sh`, hooks, validation/reporting scripts).
-5. Points Mini AgentMemory at the Mini-owned loopback service; file-backed memories are handled by the separate conflict-preserving sync lane.
+5. Points Mini AgentMemory at the Mini-owned loopback service; file-backed memories are handled by the separate conflict-preserving sync lane, whose losing variants stay outside active memory in private hashed output archives.
 6. Verifies Air↔Mini SHA-256 parity for control-plane files and helpers plus dry-run `rsync` parity for skills.
 7. Preserves the running Mini Codex process by default; an explicit `--restart` is required to reload it.
 
@@ -338,7 +338,7 @@ install-memory-sync-agent.sh
 **What it does:**
 1. Installs `~/Library/LaunchAgents/com.saneapps.memory-sync.plist`.
 2. Runs at login and every 15 minutes.
-3. Uses `sync-memory-mini.sh` for locked, backup-first, no-delete, conflict-preserving Claude/Serena/Codex parity.
+3. Uses `sync-memory-mini.sh` for locked, backup-first, no-delete Claude/Serena/Codex parity. Serena coverage is the root `~/SaneApps/.serena/memories` pair plus the dynamic union of every real project-local `*/.serena/memories` directory present on either host, mapped relative to `~/SaneApps`; output archives, preserved archives, nested worktrees, and symlinked trees are never discovered as active memory. Losing variants and legacy conflict artifacts are retained in private hashed archives under `outputs/memory-conflicts/`, not active client memory.
 4. Triggers Mini snapshot-only preservation and pulls the snapshots to the Air without applying them.
 
 ### dependency_baseline.rb

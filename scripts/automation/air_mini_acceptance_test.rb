@@ -66,11 +66,27 @@ exit(run_tests('Air Mini Acceptance Tests') do
       true
     end
 
+    test('requires the Air session guardian owner, cadence, and successful last run') do
+      supervised = <<~TEXT
+        gui/501/com.saneapps.session-guardian = {
+          arguments = { /Users/sj/SaneApps/infra/SaneProcess/scripts/hooks/session-guardian.sh }
+          run interval = 600 seconds
+          last exit code = 0
+        }
+      TEXT
+      assert(SaneAppsAirMiniAcceptance::Validators.session_guardian_supervised?(supervised))
+      assert(!SaneAppsAirMiniAcceptance::Validators.session_guardian_supervised?(supervised.sub('600 seconds', '60 seconds')))
+      assert(!SaneAppsAirMiniAcceptance::Validators.session_guardian_supervised?(supervised.sub('last exit code = 0', 'last exit code = 1')))
+      true
+    end
+
     test('requires healthy Air REST and a real search response') do
       health = "{\"service\":\"agentmemory\",\"status\":\"healthy\"}\nhttp=200\n"
       search = "{\"format\":\"compact\",\"results\":[{\"title\":\"SaneApps memory durability\"}]}\nhttp=200\n"
       assert(SaneAppsAirMiniAcceptance::Validators.agentmemory_rest_health?(health))
       assert(SaneAppsAirMiniAcceptance::Validators.agentmemory_search_response?(search))
+      assert(SaneAppsAirMiniAcceptance::Validators.agentmemory_livez?("{\"status\":\"ok\"}\nhttp=200\n"))
+      assert(!SaneAppsAirMiniAcceptance::Validators.agentmemory_livez?("\nhttp=200\n"))
       assert(!SaneAppsAirMiniAcceptance::Validators.agentmemory_rest_health?(health.sub('healthy', 'degraded')))
       assert(!SaneAppsAirMiniAcceptance::Validators.agentmemory_search_response?("{\"results\":[]}\nhttp=200\n"))
       assert(!SaneAppsAirMiniAcceptance::Validators.agentmemory_search_response?(search.sub('http=200', 'http=503')))
@@ -105,9 +121,11 @@ exit(run_tests('Air Mini Acceptance Tests') do
       assert(status.success?, stderr)
       plan = JSON.parse(stdout)
       ids = plan.map { |entry| entry.fetch('id') }
-      %w[air-process-access air-agentmemory-tunnel air-agentmemory-health air-agentmemory-search
+      %w[air-process-access air-session-guardian air-session-guardian-health
+         air-agentmemory-tunnel air-agentmemory-health air-agentmemory-search
          air-mini-lan air-mini-tailscale mini-air-return mini-dependencies
-         mini-power mini-weekly-restart mini-agentmemory-health air-github-credential
+         mini-power mini-weekly-restart mini-agentmemory-livez mini-agentmemory-rest-health
+         mini-agentmemory-search mini-agentmemory-health air-github-credential
          mini-credential-consumers mini-mcp-apple-docs mini-mcp-macos-automator mini-mcp-serena mini-retired-training
          saneprocess-parity sanecite-parity memory-checksum-parity acceptance-contracts].each do |id|
         assert(ids.include?(id), "missing plan check #{id}")

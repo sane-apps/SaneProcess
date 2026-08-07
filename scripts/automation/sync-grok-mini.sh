@@ -1,8 +1,6 @@
 #!/bin/bash
-# Sync SaneOps Grok automation config and active Grok-visible helpers from the
-# local machine to the Mac mini.
-# Mirrors the structure and safety model of sync-codex-mini.sh but for the
-# Grok surface (lighter footprint on first pass).
+# Sync the Grok-visible SaneProcess surface through the canonical reviewed
+# Air/Mini control-plane contract. Host-native Grok config remains host-owned.
 
 set -euo pipefail
 
@@ -61,61 +59,157 @@ if [[ "$DUMP_CONFIG" -eq 1 ]]; then
   exit 0
 fi
 
-command -v ssh >/dev/null 2>&1 || die "ssh not found"
-command -v rsync >/dev/null 2>&1 || die "rsync not found"
-
+REPO_ROOT="$HOME/SaneApps/infra/SaneProcess"
+REPO_GROK_BIN_DIR="$REPO_ROOT/scripts/grok-bin"
 LOCAL_GROK_DIR="$HOME/.grok"
 LOCAL_GROK_BIN_DIR="$LOCAL_GROK_DIR/bin"
-LOCAL_GROK_CONFIG="$LOCAL_GROK_DIR/config.toml"
-REPO_GROK_BIN_DIR="$HOME/SaneApps/infra/SaneProcess/scripts/grok-bin"
-LOCAL_AGENTS_SKILLS_DIR="$HOME/.agents/skills"
-REPO_ROOT="$HOME/SaneApps/infra/SaneProcess"
+SHARED_SYNC="${SANE_GROK_SHARED_SYNC:-$REPO_ROOT/scripts/automation/sync-codex-mini.sh}"
+SSH="${SANE_GROK_SSH_BIN:-ssh}"
+RSYNC="${SANE_GROK_RSYNC_BIN:-rsync}"
 
-log "Syncing Grok control-plane profile to $MINI_HOST..."
-
-# Ensure repo grok-bin exists (the thing we actually keep in git)
+[[ -x "$SHARED_SYNC" ]] || die "Missing canonical control-plane sync: $SHARED_SYNC"
 [[ -d "$REPO_GROK_BIN_DIR" ]] || die "Missing repo grok-bin dir: $REPO_GROK_BIN_DIR"
+command -v "$SSH" >/dev/null 2>&1 || die "ssh not found: $SSH"
+command -v "$RSYNC" >/dev/null 2>&1 || die "rsync not found: $RSYNC"
 
-# Rsync the git-owned grok-bin helpers to the Mini (and ensure local ~/.grok/bin exists for the operator)
-mkdir -p "$LOCAL_GROK_BIN_DIR"
-rsync -az --delete "$REPO_GROK_BIN_DIR/" "$LOCAL_GROK_BIN_DIR/" || die "rsync of local grok-bin failed"
-log "  + grok-bin helpers synced locally"
-
-if [[ -f "$LOCAL_GROK_CONFIG" ]]; then
-  ssh "$MINI_HOST" "mkdir -p ~/.grok" 2>/dev/null || true
-  rsync -az "$LOCAL_GROK_CONFIG" "$MINI_HOST:~/.grok/config.toml" 2>/dev/null || log "  ! ~/.grok/config.toml rsync to mini failed (restart Grok after manual sync)"
-  log "  + Grok native config mirrored to mini (where reachable)"
-else
-  log "  ! no local ~/.grok/config.toml found; sync_grok only mirrors helpers and skills"
+# The canonical sync owns same-HEAD, clean-peer, reviewed-dirty, preimage,
+# shared-skill, guard, and failure semantics. Grok must not grow a second,
+# incompatible copy of that policy.
+shared_args=("$MINI_HOST" "--no-restart")
+if [[ "$QUIET" -eq 1 ]]; then
+  shared_args[${#shared_args[@]}]="--quiet"
 fi
+"$SHARED_SYNC" "${shared_args[@]}" || \
+  die "Canonical control-plane sync refused or failed; Grok helper promotion was not attempted"
 
-# Mirror .agents/skills (neutral SaneProcess skills) — these are what init.sh --client grok populates
-if [[ -d "$LOCAL_AGENTS_SKILLS_DIR" ]]; then
-  rsync -az --delete "$LOCAL_AGENTS_SKILLS_DIR/" "$MINI_HOST:~/.agents/skills/" 2>/dev/null || log "  ! .agents/skills rsync to mini (non-fatal if mini not reachable)"
-  log "  + .agents/skills mirrored to mini (where present)"
-fi
+REMOTE_HOME=$("$SSH" -o BatchMode=yes -o ConnectTimeout=8 "$MINI_HOST" 'printf %s "$HOME"') || \
+  die "Could not resolve $MINI_HOST home"
+[[ -n "$REMOTE_HOME" ]] || die "Peer home is empty"
 
-# Also push the grok-bin contents to the Mini's expected location so a Grok session there sees them
-ssh "$MINI_HOST" "mkdir -p ~/.grok/bin" 2>/dev/null || true
-rsync -az --delete "$REPO_GROK_BIN_DIR/" "$MINI_HOST:~/.grok/bin/" 2>/dev/null || log "  ! grok-bin rsync to mini (non-fatal if mini not reachable)"
-log "  + grok-bin mirrored to mini"
+RUN_TAG="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+mkdir -p "$LOCAL_GROK_DIR"
+LOCAL_STAGE=$(mktemp -d "$LOCAL_GROK_DIR/.bin-stage.XXXXXX") || die "Could not create local Grok stage"
+LOCAL_OLD="$LOCAL_GROK_DIR/.bin-old-$RUN_TAG"
+LOCAL_BACKUP="$LOCAL_GROK_DIR/backups/bin-$RUN_TAG"
+REMOTE_GROK_DIR="$REMOTE_HOME/.grok"
+REMOTE_STAGE="$REMOTE_GROK_DIR/.bin-stage-$RUN_TAG"
+REMOTE_OLD="$REMOTE_GROK_DIR/.bin-old-$RUN_TAG"
+REMOTE_BACKUP="$REMOTE_GROK_DIR/backups/bin-$RUN_TAG"
+LOCAL_PROMOTED=0
 
-# Push a small set of universal SaneProcess scripts that Grok sessions commonly invoke
-UNIVERSAL_SCRIPTS=(
-  "scripts/SaneMaster.rb"
-  "scripts/validation_report.rb"
-  "scripts/hooks/sane_curl_guard.sh"
-)
-for rel in "${UNIVERSAL_SCRIPTS[@]}"; do
-  if [[ -f "$REPO_ROOT/$rel" ]]; then
-    rsync -az "$REPO_ROOT/$rel" "$MINI_HOST:~/SaneApps/infra/SaneProcess/$rel" 2>/dev/null || true
+preserve_failed_local_stage() {
+  local failed="$LOCAL_GROK_DIR/failed-bin-$RUN_TAG"
+  if [[ -d "$LOCAL_STAGE" ]]; then
+    mv "$LOCAL_STAGE" "$failed" 2>/dev/null || true
   fi
-done
-log "  + core SaneMaster + guards mirrored (best-effort)"
+}
 
-log ""
-log "Grok profile sync complete (local + best-effort mini)."
-log "On the Mini, ensure ~/.grok/bin is on PATH for Grok sessions."
-log "Restart active Grok TUI sessions on target machines after config/helper changes."
+rollback_local_promotion() {
+  local failed="$LOCAL_GROK_DIR/failed-bin-$RUN_TAG"
+  if [[ "$LOCAL_PROMOTED" -eq 1 && -d "$LOCAL_GROK_BIN_DIR" ]]; then
+    mv "$LOCAL_GROK_BIN_DIR" "$failed" 2>/dev/null || true
+  fi
+  if [[ -d "$LOCAL_OLD" ]]; then
+    mv "$LOCAL_OLD" "$LOCAL_GROK_BIN_DIR" 2>/dev/null || true
+  fi
+  LOCAL_PROMOTED=0
+}
 
-# Note: full restart of Grok TUI processes on Mini is left to the operator (no reliable remote "killall grok" without side effects).
+fail_before_promotion() {
+  preserve_failed_local_stage
+  die "$1"
+}
+
+on_exit() {
+  local status=$?
+  trap - EXIT
+  if [[ "$status" -ne 0 && "$LOCAL_PROMOTED" -eq 1 ]]; then
+    rollback_local_promotion
+  fi
+  exit "$status"
+}
+trap on_exit EXIT
+trap 'exit 130' INT TERM
+
+if [[ -d "$LOCAL_GROK_BIN_DIR" ]]; then
+  cp -Rp "$LOCAL_GROK_BIN_DIR/." "$LOCAL_STAGE/"
+fi
+"$RSYNC" -a "$REPO_GROK_BIN_DIR/" "$LOCAL_STAGE/" || \
+  fail_before_promotion "Could not stage local Grok helpers"
+
+# Build the peer stage from its current directory first so peer-only helpers are
+# retained. Only the hidden stage is touched until every copy succeeds.
+if ! "$SSH" -o BatchMode=yes -o ConnectTimeout=8 "$MINI_HOST" \
+  "STAGE='$REMOTE_STAGE' DEST='$REMOTE_GROK_DIR/bin' /bin/bash -s" <<'REMOTE_PREP'
+set -euo pipefail
+mkdir -p "$(dirname "$STAGE")" "$STAGE"
+if [ -d "$DEST" ]; then
+  cp -Rp "$DEST/." "$STAGE/"
+fi
+REMOTE_PREP
+then
+  fail_before_promotion "Could not prepare peer Grok helper stage"
+fi
+
+if ! "$RSYNC" -a "$REPO_GROK_BIN_DIR/" "$MINI_HOST:$REMOTE_STAGE/"; then
+  fail_before_promotion "Could not stage peer Grok helpers; live helper directories are unchanged"
+fi
+
+stage_delta=$("$RSYNC" -a --checksum --dry-run "$REPO_GROK_BIN_DIR/" "$MINI_HOST:$REMOTE_STAGE/" 2>/dev/null) || \
+  fail_before_promotion "Could not verify peer Grok helper stage"
+[[ -z "${stage_delta//[[:space:]]/}" ]] || \
+  fail_before_promotion "Peer Grok helper stage does not match canonical files"
+
+# Promote locally while retaining the old directory until the peer promotion
+# succeeds. A peer promotion error restores the exact local predecessor.
+if [[ -d "$LOCAL_GROK_BIN_DIR" ]]; then
+  mv "$LOCAL_GROK_BIN_DIR" "$LOCAL_OLD" || fail_before_promotion "Could not preserve local Grok helpers"
+fi
+if ! mv "$LOCAL_STAGE" "$LOCAL_GROK_BIN_DIR"; then
+  [[ ! -d "$LOCAL_OLD" ]] || mv "$LOCAL_OLD" "$LOCAL_GROK_BIN_DIR" 2>/dev/null || true
+  die "Could not promote local Grok helpers"
+fi
+LOCAL_PROMOTED=1
+
+if ! "$SSH" -o BatchMode=yes -o ConnectTimeout=8 "$MINI_HOST" \
+  "STAGE='$REMOTE_STAGE' DEST='$REMOTE_GROK_DIR/bin' OLD='$REMOTE_OLD' BACKUP='$REMOTE_BACKUP' /bin/bash -s" <<'REMOTE_PROMOTE'
+set -euo pipefail
+rollback() {
+  if [ ! -e "$DEST" ] && [ -d "$OLD" ]; then
+    mv "$OLD" "$DEST" 2>/dev/null || true
+  fi
+}
+trap rollback EXIT
+if [ -d "$DEST" ]; then
+  mv "$DEST" "$OLD"
+fi
+mv "$STAGE" "$DEST"
+mkdir -p "$(dirname "$BACKUP")"
+if [ -d "$OLD" ]; then
+  mv "$OLD" "$BACKUP"
+fi
+trap - EXIT
+REMOTE_PROMOTE
+then
+  rollback_local_promotion
+  die "Peer Grok helper promotion failed; local helpers were restored"
+fi
+
+# Both live directories now contain the staged overlay. From this point a
+# process interruption must retain the matching pair, not roll back one host.
+LOCAL_PROMOTED=0
+
+if [[ -d "$LOCAL_OLD" ]]; then
+  mkdir -p "$(dirname "$LOCAL_BACKUP")"
+  mv "$LOCAL_OLD" "$LOCAL_BACKUP"
+fi
+
+final_delta=$("$RSYNC" -a --checksum --dry-run "$REPO_GROK_BIN_DIR/" "$MINI_HOST:$REMOTE_GROK_DIR/bin/" 2>/dev/null) || \
+  die "Could not verify installed peer Grok helpers"
+[[ -z "${final_delta//[[:space:]]/}" ]] || die "Installed peer Grok helpers do not match canonical files"
+
+trap - EXIT INT TERM
+
+log "Grok control plane synchronized through the canonical safety gate."
+log "Grok helper overlays were staged and promoted without deleting peer-only files."
+log "Host-managed ~/.grok/config.toml files were not copied or changed."

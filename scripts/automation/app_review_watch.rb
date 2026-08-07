@@ -19,7 +19,7 @@ module SaneAppReviewWatch
   DEFAULT_STATE_PATH = File.expand_path('~/SaneApps/outputs/app-review-watch-state.json')
   DEFAULT_ASC_SCRIPT = File.expand_path('~/SaneApps/apps/SaneLot/scripts/asc.rb')
   DEFAULT_APPS_ROOT = File.expand_path('~/SaneApps/apps')
-  ADVERSE_STATES = %w[REJECTED UNRESOLVED_ISSUES].freeze
+  ADVERSE_STATES = %w[REJECTED UNRESOLVED_ISSUES TAKEN_DOWN WARNED].freeze
 
   class WatchError < StandardError; end
 
@@ -36,14 +36,14 @@ module SaneAppReviewWatch
     ADVERSE_STATES.include?(state.to_s)
   end
 
-  def pending_event(changes, at:)
+  def pending_event(changes, at:, kind: SaneInternalReport::KIND)
     fingerprint = changes.sort_by { |change| change.fetch('entity_key') }.map do |change|
       [change.fetch('entity_key'), change['previous_state'], change.fetch('state')]
     end
     id = Digest::SHA256.hexdigest(JSON.generate(fingerprint))
     {
       'id' => id,
-      'kind' => SaneInternalReport::KIND,
+      'kind' => kind,
       'template_version' => SaneInternalReport::TEMPLATE_VERSION,
       'first_seen_at' => at.iso8601,
       'last_attempt_at' => nil,
@@ -328,10 +328,13 @@ module SaneAppReviewWatch
   end
 
   class Engine
-    def initialize(store:, sender:, now: -> { Time.now.utc })
+    def initialize(store:, sender:, now: -> { Time.now.utc },
+                   event_kind: SaneInternalReport::KIND, alert_on_initial: false)
       @store = store
       @sender = sender
       @now = now
+      @event_kind = event_kind
+      @alert_on_initial = alert_on_initial
     end
 
     def run(snapshot)
@@ -343,9 +346,9 @@ module SaneAppReviewWatch
         state['observed_entities'] = current
         state['last_checked_at'] = @now.call.iso8601
         @store.save(state)
-        deliver_pending(state)
+        delivered = deliver_pending(state)
         @store.save(state)
-        result(state, diagnostics)
+        result(state, diagnostics, delivered)
       end
     end
 
@@ -384,7 +387,7 @@ module SaneAppReviewWatch
           next if delivered.dig(key, 'state').to_s == entity['state'].to_s
           next if pending_state?(state, key, entity['state'])
 
-          if SaneAppReviewWatch.adverse_state?(entity['state'])
+          if @alert_on_initial || SaneAppReviewWatch.adverse_state?(entity['state'])
             changes << entity.merge('previous_state' => nil)
           else
             delivered[key] = entity
@@ -408,11 +411,12 @@ module SaneAppReviewWatch
     end
 
     def enqueue(state, changes)
-      event = SaneAppReviewWatch.pending_event(changes, at: @now.call)
+      event = SaneAppReviewWatch.pending_event(changes, at: @now.call, kind: @event_kind)
       state.fetch('pending_alerts')[event.fetch('id')] ||= event
     end
 
     def deliver_pending(state)
+      delivered = []
       state.fetch('pending_alerts').values.sort_by { |event| event.fetch('first_seen_at') }.each do |event|
         event['attempt_count'] = event['attempt_count'].to_i + 1
         event['last_attempt_at'] = @now.call.iso8601
@@ -423,6 +427,14 @@ module SaneAppReviewWatch
             state.fetch('delivered_entities')[change.fetch('entity_key')] = change.reject { |key, _| key == 'previous_state' }
           end
           state.fetch('delivery_receipts')[event.fetch('id')] = receipt
+          delivered << {
+            'id' => event.fetch('id'),
+            'delivered_at' => receipt.fetch('delivered_at'),
+            'apps' => event.fetch('changes').map { |change| change.fetch('app_name') }.uniq.sort,
+            'changes' => event.fetch('changes').map do |change|
+              change.slice('app_name', 'entity_type', 'previous_state', 'state', 'version', 'platform')
+            end
+          }
           state.fetch('pending_alerts').delete(event.fetch('id'))
           @store.save(state)
         rescue SaneInternalReport::DeliveryError, StandardError => e
@@ -430,9 +442,10 @@ module SaneAppReviewWatch
           @store.save(state)
         end
       end
+      delivered
     end
 
-    def result(state, diagnostics)
+    def result(state, diagnostics, delivered)
       pending = state.fetch('pending_alerts').values
       status =
         if diagnostics.any? && pending.any?
@@ -447,6 +460,8 @@ module SaneAppReviewWatch
       {
         'status' => status,
         'last_checked_at' => state['last_checked_at'],
+        'delivered_count' => delivered.length,
+        'delivered' => delivered,
         'pending_count' => pending.length,
         'diagnostics' => diagnostics,
         'pending' => pending.map do |event|

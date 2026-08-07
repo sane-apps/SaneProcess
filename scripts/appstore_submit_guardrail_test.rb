@@ -568,6 +568,89 @@ exit(run_tests('App Store Submit Guardrail Tests') do
     end
   end
 
+  test_category('Protected App Review connection codes') do
+    test('injects a private connection code into review notes without enabling a demo account') do
+      Dir.mktmpdir('appstore-review-access-code-') do |dir|
+        secret_path = File.join(dir, 'review-code.txt')
+        File.write(secret_path, "fixture-connection-code\n")
+        File.chmod(0o600, secret_path)
+        config = {
+          'appstore' => {
+            'review_notes' => 'Private App Review connection code: {{REVIEW_ACCESS_CODE}}',
+            'review_access_code_file' => secret_path
+          }
+        }
+
+        notes = resolve_review_notes_with_private_access(config, 'IOS', project_root: dir)
+
+        assert_eq(notes, 'Private App Review connection code: fixture-connection-code')
+        assert_eq(resolve_review_demo_account(config, project_root: dir), nil)
+      end
+      true
+    end
+
+    test('fails closed when the private code placeholder is missing') do
+      Dir.mktmpdir('appstore-review-access-code-placeholder-') do |dir|
+        secret_path = File.join(dir, 'review-code.txt')
+        File.write(secret_path, 'fixture-secret-must-not-appear')
+        File.chmod(0o600, secret_path)
+        config = {
+          'appstore' => {
+            'review_notes' => 'Enter the private connection code.',
+            'review_access_code_file' => secret_path
+          }
+        }
+
+        begin
+          resolve_review_notes_with_private_access(config, 'IOS', project_root: dir)
+          assert(false, 'expected the missing placeholder to fail')
+        rescue ArgumentError => e
+          assert_includes(e.message, '{{REVIEW_ACCESS_CODE}}')
+          assert(!e.message.include?('fixture-secret-must-not-appear'), 'diagnostic must not expose secret contents')
+        end
+      end
+      true
+    end
+
+    test('fails closed for insecure private connection code files') do
+      Dir.mktmpdir('appstore-review-access-code-insecure-') do |dir|
+        secret_path = File.join(dir, 'review-code.txt')
+        File.write(secret_path, 'fixture-secret-must-not-appear')
+        File.chmod(0o644, secret_path)
+        config = {
+          'appstore' => {
+            'review_notes' => 'Private App Review connection code: {{REVIEW_ACCESS_CODE}}',
+            'review_access_code_file' => secret_path
+          }
+        }
+
+        begin
+          resolve_review_notes_with_private_access(config, 'IOS', project_root: dir)
+          assert(false, 'expected insecure private connection code file to fail')
+        rescue ArgumentError => e
+          assert_includes(e.message, 'permissions 600')
+          assert(!e.message.include?('fixture-secret-must-not-appear'), 'diagnostic must not expose secret contents')
+        end
+      end
+      true
+    end
+
+    test('redacts a private connection code from ASC error excerpts') do
+      body = {
+        data: {
+          attributes: {
+            notes: 'Private App Review connection code: fixture-connection-code'
+          }
+        }
+      }
+      response = 'Rejected code fixture-connection-code in request'
+      redacted = redact_asc_response_body(response, body)
+
+      assert_eq(redacted, 'Rejected code [REDACTED] in request')
+      true
+    end
+  end
+
   test_category('Mandatory preflight receipt') do
     test('blocks submission when App Store preflight receipt is missing') do
       Dir.mktmpdir('missing-appstore-preflight-') do |dir|
