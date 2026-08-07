@@ -11,6 +11,36 @@
       ]
     },
     {
+      "path": "scripts/automation/dl_report_test.py",
+      "label": "SaneProcess direct-app funnel report tests",
+      "status": "required",
+      "cmd": [
+        "python3",
+        "-B",
+        "scripts/automation/dl_report_test.py"
+      ]
+    },
+    {
+      "path": "../cloudflare-workers/sane-checkout.test.mjs",
+      "label": "Sane checkout Worker behavior tests",
+      "status": "required",
+      "cmd": [
+        "node",
+        "--test",
+        "../cloudflare-workers/sane-checkout.test.mjs"
+      ]
+    },
+    {
+      "path": "../sane-dist-worker/sane-dist-worker.test.mjs",
+      "label": "Sane distribution Worker behavior tests",
+      "status": "required",
+      "cmd": [
+        "node",
+        "--test",
+        "../sane-dist-worker/sane-dist-worker.test.mjs"
+      ]
+    },
+    {
       "path": "scripts/hooks/release_receipt_signer_test.rb",
       "label": "SaneProcess release receipt signer security tests",
       "status": "required",
@@ -137,12 +167,30 @@
       ]
     },
     {
+      "path": "scripts/appstore_screenshot_compositor_test.rb",
+      "label": "SaneProcess App Store screenshot compositor tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/appstore_screenshot_compositor_test.rb"
+      ]
+    },
+    {
       "path": "scripts/appstore_submit_guardrail_test.rb",
       "label": "SaneProcess App Store guard tests",
       "status": "required",
       "cmd": [
         "ruby",
         "scripts/appstore_submit_guardrail_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/automation/app_review_watch_test.rb",
+      "label": "SaneProcess App Review watcher and delivery receipt tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/automation/app_review_watch_test.rb"
       ]
     },
     {

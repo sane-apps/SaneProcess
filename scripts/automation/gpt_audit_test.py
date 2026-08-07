@@ -415,19 +415,31 @@ class GptAuditCodexExecTests(unittest.TestCase):
                 )
             )
             thread.start()
-            deadline = time.monotonic() + 5
-            while not (root / "lock-marker").exists() and time.monotonic() < deadline:
-                time.sleep(0.02)
-            self.assertTrue((root / "lock-marker").exists())
+            marker = root / "lock-marker"
+            second = None
+            try:
+                # Fixture setup, Git initialization, source hashing, and runner
+                # startup can exceed five seconds on the 8 GB Mini. Wait almost
+                # as long as run_audit's 15-second subprocess guard, but stop
+                # early if the first run exits so its stderr can explain why.
+                deadline = time.monotonic() + 14
+                while not marker.exists() and thread.is_alive() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                if not marker.exists():
+                    first_stderr = first_result[0][0].stderr if first_result else "first audit exited without a result"
+                    self.fail(f"first audit never reached the lock hold: {first_stderr}")
 
-            second, _out, _log = self.run_audit(
-                root, {"blocker": "BLOCK_LANE"}, required_success=1
-            )
-            self.assertNotEqual(0, second.returncode)
-            self.assertIn("already active", second.stderr)
-            thread.join(timeout=10)
+                second, _out, _log = self.run_audit(
+                    root, {"blocker": "BLOCK_LANE"}, required_success=1
+                )
+            finally:
+                thread.join(timeout=10)
+
             self.assertFalse(thread.is_alive())
             self.assertEqual(0, first_result[0][0].returncode, first_result[0][0].stderr)
+            self.assertIsNotNone(second)
+            self.assertNotEqual(0, second.returncode)
+            self.assertIn("already active", second.stderr)
 
     def test_source_snapshot_changes_for_tracked_and_untracked_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:

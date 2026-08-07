@@ -36,6 +36,7 @@ FUNNEL_EVENT_TYPES = [
     "paywall_seen",
     "upsell_shown",
     "checkout_clicked",
+    "website_checkout_redirected",
     "upsell_clicked_buy",
     "license_activated",
     "first_value_action",
@@ -246,7 +247,7 @@ def print_events(events, window_days=90):
         print(f"{name:<15} {b.get('new_free_user', 0):>10} {b.get('early_adopter_grant', 0):>15} {b.get('license_activated', 0):>11}")
 
 
-def print_funnel_events(events, window_days=90):
+def print_funnel_events(events, event_dimensions, window_days=90):
     """Aggregate privacy-safe funnel event breakdown."""
     from datetime import timedelta, timezone
     now = datetime.now(timezone.utc)
@@ -256,9 +257,10 @@ def print_funnel_events(events, window_days=90):
 
     totals = {event: defaultdict(int) for event in FUNNEL_EVENT_TYPES}
 
+    dimension_events = {"checkout_clicked", "website_checkout_redirected"}
     for row in events:
         event = row["event"]
-        if event not in totals:
+        if event not in totals or event in dimension_events:
             continue
         count = row["count"]
         date = row["date"]
@@ -268,6 +270,29 @@ def print_funnel_events(events, window_days=90):
         if date == today:
             totals[event]["Today"] += count
 
+    excluded_legacy_checkout_clicks = 0
+    for row in event_dimensions:
+        event = row["event"]
+        platform = row.get("platform", "unknown")
+        channel = row.get("channel", "unknown")
+        if event == "checkout_clicked" and platform == "web" and channel == "website":
+            excluded_legacy_checkout_clicks += row["count"]
+            continue
+        if event == "checkout_clicked" and platform == "macos" and channel == "direct":
+            display_event = "checkout_clicked"
+        elif event == "website_checkout_redirected" and platform == "web" and channel == "website":
+            display_event = "website_checkout_redirected"
+        else:
+            continue
+
+        count = row["count"]
+        date = row["date"]
+        totals[display_event][window_label] += count
+        if date in week_dates:
+            totals[display_event]["This Week"] += count
+        if date == today:
+            totals[display_event]["Today"] += count
+
     print(f"\nFunnel Events — aggregate only")
     print(f"{'Event':<28} {'Today':>8} {'This Week':>10} {window_label:>12}")
     print("-" * 62)
@@ -276,6 +301,12 @@ def print_funnel_events(events, window_days=90):
         if b[window_label] == 0:
             continue
         print(f"{event:<28} {b['Today']:>8} {b['This Week']:>10} {b[window_label]:>12}")
+
+    if excluded_legacy_checkout_clicks:
+        print(
+            f"Note: excluded {excluded_legacy_checkout_clicks} legacy web/website "
+            "checkout_clicked events from direct checkout totals."
+        )
 
 
 def main():
@@ -296,15 +327,16 @@ def main():
         return
 
     events = data.get("events", [])
+    event_dimensions = data.get("event_dimensions", [])
 
     if args.events:
-        if not events:
+        if not events and not event_dimensions:
             print("No event data found for the selected period.")
             sys.exit(0)
         app_label = args.app or "all apps"
         print(f"Event Analytics — {app_label} — {datetime.now().strftime('%Y-%m-%d')}")
         print_events(events, window_days=args.days)
-        print_funnel_events(events, window_days=args.days)
+        print_funnel_events(events, event_dimensions, window_days=args.days)
         return
 
     rows = data.get("rows", [])
@@ -321,13 +353,13 @@ def main():
         print_daily(rows, window_days=args.days)
         if events:
             print_events(events, window_days=args.days)
-            print_funnel_events(events, window_days=args.days)
+            print_funnel_events(events, event_dimensions, window_days=args.days)
     else:
         print_by_app(rows)
         print_by_version(rows)
         if events:
             print_events(events, window_days=args.days)
-            print_funnel_events(events, window_days=args.days)
+            print_funnel_events(events, event_dimensions, window_days=args.days)
 
 
 if __name__ == "__main__":

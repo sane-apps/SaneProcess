@@ -474,7 +474,13 @@ module SaneMasterModules
 
       manifest = read_customer_ui_yaml(manifest_path)
       actions = Array(manifest['actions'])
-      required_actions = actions.reject { |action| action['release_required'] == false }
+      release_profile = config['customer_ui_release_profile'].to_s.strip
+      required_actions = customer_ui_required_actions(
+        manifest: manifest,
+        actions: actions,
+        release_profile: release_profile,
+        issues: issues
+      )
 
       issues << 'Customer UI action contract has no release-required actions' if required_actions.empty?
       issues.concat(customer_ui_manifest_issues(manifest_path, manifest, required_actions))
@@ -491,6 +497,7 @@ module SaneMasterModules
           receipt_path: nil,
           manifest_sha256: manifest_sha,
           source_fingerprint: source_fingerprint,
+          release_profile: release_profile.empty? ? nil : release_profile,
           action_count: required_actions.length,
           issues: issues,
           warnings: warnings
@@ -505,6 +512,7 @@ module SaneMasterModules
         required_actions: required_actions,
         manifest: manifest,
         receipt: receipt,
+        release_profile: release_profile,
         strict_visual: strict_visual
       ))
 
@@ -515,6 +523,7 @@ module SaneMasterModules
         receipt_path: receipt_path,
         manifest_sha256: manifest_sha,
         source_fingerprint: source_fingerprint,
+        release_profile: release_profile.empty? ? nil : release_profile,
         action_count: required_actions.length,
         receipt_generated_at: receipt['generated_at'],
         issues: issues,
@@ -531,6 +540,29 @@ module SaneMasterModules
         warnings: warnings,
         strict_visual: strict_visual
       }
+    end
+
+    def customer_ui_required_actions(manifest:, actions:, release_profile:, issues:)
+      return actions.reject { |action| action['release_required'] == false } if release_profile.empty?
+
+      profiles = manifest['release_profiles']
+      unless profiles.is_a?(Hash) && profiles.key?(release_profile)
+        issues << "Unknown customer UI release profile #{release_profile.inspect}"
+        return []
+      end
+
+      profile_ids = Array(profiles[release_profile]).map(&:to_s).map(&:strip).reject(&:empty?)
+      issues << "Customer UI release profile #{release_profile.inspect} has no actions" if profile_ids.empty?
+      duplicates = profile_ids.tally.select { |_id, count| count > 1 }.keys
+      issues << "Customer UI release profile #{release_profile.inspect} repeats action(s): #{duplicates.join(', ')}" unless duplicates.empty?
+
+      actions_by_id = actions.each_with_object({}) do |action, memo|
+        id = action['id'].to_s.strip
+        memo[id] = action unless id.empty?
+      end
+      unknown_ids = profile_ids - actions_by_id.keys
+      issues << "Customer UI release profile #{release_profile.inspect} references unknown action(s): #{unknown_ids.join(', ')}" unless unknown_ids.empty?
+      profile_ids.filter_map { |id| actions_by_id[id] }
     end
 
     def format_customer_ui_contract_report(report)
@@ -1924,9 +1956,14 @@ module SaneMasterModules
       issues
     end
 
-    def customer_ui_receipt_issues(app_name:, manifest_sha:, source_fingerprint:, required_actions:, manifest: {}, receipt:, strict_visual: false)
+    def customer_ui_receipt_issues(app_name:, manifest_sha:, source_fingerprint:, required_actions:, manifest: {}, receipt:, release_profile: '', strict_visual: false)
       issues = []
       issues << "Receipt app #{receipt['app']} does not match #{app_name}" if receipt['app'].to_s != app_name.to_s
+      expected_profile = release_profile.to_s.strip
+      actual_profile = receipt['release_profile'].to_s.strip
+      unless actual_profile == expected_profile
+        issues << "Receipt release profile #{actual_profile.inspect} does not match #{expected_profile.inspect}"
+      end
       issues << "Receipt status is #{receipt['status'].inspect}, expected \"passed\"" unless receipt['status'].to_s == 'passed'
       unless customer_ui_receipt_host_allowed?(receipt['host'])
         issues << 'Receipt was not generated on the Mini or an explicitly approved local Air fallback'

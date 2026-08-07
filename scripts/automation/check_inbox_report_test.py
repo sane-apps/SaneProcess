@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import http.server
+import importlib.util
 import os
 import socketserver
 import subprocess
@@ -15,6 +16,11 @@ from saneapps_paths import check_inbox_script
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CHECK_INBOX = check_inbox_script()
+CAMPAIGN_AUDIT_PATH = check_inbox_script().parent / "campaign_audit.py"
+CAMPAIGN_AUDIT_SPEC = importlib.util.spec_from_file_location("campaign_audit", CAMPAIGN_AUDIT_PATH)
+campaign_audit = importlib.util.module_from_spec(CAMPAIGN_AUDIT_SPEC)
+assert CAMPAIGN_AUDIT_SPEC and CAMPAIGN_AUDIT_SPEC.loader
+CAMPAIGN_AUDIT_SPEC.loader.exec_module(campaign_audit)
 
 
 def email_row(
@@ -44,6 +50,109 @@ def email_row(
 
 
 class CheckInboxReportTests(unittest.TestCase):
+    def test_campaign_audit_paginates_and_matches_replies_without_counting_canceled_rows(self):
+        calls = []
+
+        def fetch(url, _headers):
+            calls.append(url)
+            if "api.resend.com" in url:
+                if "after=send-1" in url:
+                    return {"data": [{"id": "send-2", "subject": "A", "created_at": "2026-07-16T12:00:00Z", "last_event": "canceled", "to": ["canceled@example.com"]}], "has_more": False}
+                return {"data": [{"id": "send-1", "subject": "A", "created_at": "2026-07-16T12:00:00Z", "last_event": "delivered", "to": ["reply@example.com"]}], "has_more": True}
+            return {"results": [{"from_email": "reply@example.com", "subject": "Re: A", "body_text": "Please unsubscribe me"}]}
+
+        report = campaign_audit.build_report(
+            campaign_audit.fetch_resend_pages(fetch, "resend-key"),
+            campaign_audit.fetch_inbox_pages(fetch, "https://email.example.test", "inbox-key"),
+            {"A"},
+            campaign_audit.parse_time("2026-07-16"),
+        )
+
+        self.assertEqual(report["matching_records"], 2)
+        self.assertEqual(report["recipient_count"], 1)
+        self.assertEqual(report["inbound_sender_count"], 1)
+        self.assertEqual(report["unsubscribe_count"], 1)
+        self.assertEqual(report["unsubscribe_email_ids"], [])
+        self.assertEqual(report["unsubscribe_recipients"], ["reply@example.com"])
+        self.assertEqual(report["last_event_counts"], {"canceled": 1, "delivered": 1})
+        self.assertEqual(sum("api.resend.com" in url for url in calls), 2)
+
+    def test_campaign_audit_filters_named_arm_windows_and_counts_safe_overlaps(self):
+        def resend_row(email_id, subject, scheduled_at, last_event, recipient):
+            return {
+                "id": email_id,
+                "subject": subject,
+                "created_at": "2026-07-26T12:00:00Z",
+                "scheduled_at": scheduled_at,
+                "last_event": last_event,
+                "to": [recipient],
+            }
+
+        with tempfile.TemporaryDirectory(prefix="campaign-suppression-") as tmpdir:
+            campaign_opt_outs = Path(tmpdir) / "campaign-opt-outs.json"
+            bounce_complaints = Path(tmpdir) / "bounce-complaints.txt"
+            campaign_opt_outs.write_text('[{"name":"campaign-opt-out:blocked@example.net"}]', encoding="utf-8")
+            bounce_complaints.write_text("suppressed:duplicate@example.com\n", encoding="utf-8")
+            suppression_sets = campaign_audit.load_suppression_files(
+                [
+                    f"campaign_opt_out={campaign_opt_outs}",
+                    f"bounce_complaint={bounce_complaints}",
+                ]
+            )
+
+        report = campaign_audit.build_arm_window_report(
+            [
+                resend_row("a-1", "Subject A", "2026-07-27T14:00:00Z", "scheduled", "duplicate@example.com"),
+                resend_row("a-2", "Subject A", "2026-07-27T15:00:00Z", "scheduled", "duplicate@example.com"),
+                resend_row("a-3", "Subject A", "2026-07-27T16:00:00Z", "canceled", "canceled@example.com"),
+                resend_row("a-4", "Subject A", "2026-07-28T01:00:00Z", "scheduled", "edge@example.net"),
+                resend_row("a-5", "Subject A", "2026-07-28T14:00:00Z", "scheduled", "outside@example.org"),
+                resend_row("b-1", "Subject B", "2026-07-28T14:00:00Z", "delivered", "shared@example.org"),
+                resend_row("b-2", "Subject B", "2026-07-29T14:00:00Z", "bounced", "blocked@example.net"),
+                resend_row("b-3", "Subject B", "2026-07-30T14:00:00Z", "scheduled", "duplicate@example.com"),
+            ],
+            [
+                {"from_email": "duplicate@example.com", "subject": "Re: A", "body_text": "Please unsubscribe me"},
+                {"from_email": "duplicate@example.com", "subject": "Re: A", "body_text": "Following up"},
+                {"from_email": "shared@example.org", "subject": "Re: B", "body_text": "Thanks"},
+            ],
+            {"A_generic_sales": "Subject A", "B_named_sales": "Subject B"},
+            campaign_audit.parse_arm_windows(
+                [
+                    "A_generic_sales=2026-07-27",
+                    "B_named_sales=2026-07-28..2026-07-31",
+                ]
+            ),
+            campaign_audit.parse_time("2026-07-26"),
+            "America/New_York",
+            suppression_sets,
+        )
+
+        arm_a = report["arms"]["A_generic_sales"]
+        self.assertEqual(arm_a["matching_records"], 4)
+        self.assertEqual(arm_a["excluded_canceled_records"], 1)
+        self.assertEqual(arm_a["active_records"], 3)
+        self.assertEqual(arm_a["unique_recipients"], 2)
+        self.assertEqual(arm_a["duplicate_recipients"], 1)
+        self.assertEqual(arm_a["duplicate_records"], 1)
+        self.assertEqual(arm_a["last_event_counts"], {"scheduled": 3})
+        self.assertEqual(arm_a["suppression_overlap_counts"], {"bounce_complaint": 1, "campaign_opt_out": 0})
+        self.assertEqual(arm_a["inbox_sender_overlap"], 1)
+        self.assertEqual(arm_a["inbox_message_overlap"], 2)
+        self.assertEqual(arm_a["unsubscribe_sender_overlap"], 1)
+
+        totals = report["totals"]
+        self.assertEqual(totals["active_records"], 6)
+        self.assertEqual(totals["unique_recipients"], 4)
+        self.assertEqual(totals["duplicate_recipients"], 1)
+        self.assertEqual(totals["duplicate_records"], 2)
+        self.assertEqual(totals["cross_arm_recipient_overlap"], 1)
+        self.assertEqual(totals["cross_arm_domain_overlap"], 2)
+        self.assertEqual(totals["suppression_overlap_counts"], {"bounce_complaint": 1, "campaign_opt_out": 1})
+        self.assertEqual(totals["inbox_sender_overlap"], 2)
+        self.assertEqual(totals["inbox_message_overlap"], 3)
+        self.assertEqual(totals["unsubscribe_sender_overlap"], 1)
+
     def run_validate_email_format(self, body, email):
         source = CHECK_INBOX.read_text(encoding="utf-8")
         start = source.index("validate_email_format() {")
@@ -96,6 +205,34 @@ validate_email_format {body_file} {email['id']}
                 from_email="support@vinaudit.com",
                 subject="Following up on my SaneLot API inquiry",
                 status="needs_human",
+            ),
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_twilio_compliance_support_category_accepts_business_signature(self):
+        body = """Thanks for following up.\n\nHere are the requested details.\n\nStephan Joseph\nFounder, SaneApps / SaneLot\n727-758-9785\nhi@saneapps.com\nhttps://sanelot.com\n"""
+        result = self.run_validate_email_format(
+            body,
+            email_row(
+                1158,
+                from_email="verifymyaccount@twilio.zendesk.com",
+                subject="Twilio Account Verification - Action Required",
+                status="needs_human",
+                category="support",
+            ),
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_generic_support_category_keeps_customer_signature_lane(self):
+        body = """Thanks for the report.\n\nI am reviewing it. Thanks again.\n\nMr. Sane\nhttps://saneapps.com\n"""
+        result = self.run_validate_email_format(
+            body,
+            email_row(
+                1159,
+                from_email="support@customer-company.example",
+                subject="SaneClip issue",
+                status="needs_human",
+                category="support",
             ),
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

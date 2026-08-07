@@ -58,6 +58,93 @@ skip_or_fail() {
   exit 1
 }
 
+# --- CPU discipline -------------------------------------------------------
+# 2026-07-24: three copies of this script ran concurrently on the Air at ~99%
+# CPU each for up to 2h55m and made the machine hot. rsync --checksum hashes
+# every file on every pass, so this is genuinely CPU-hungry work and must never
+# compete with the owner's interactive session.
+renice 10 $$ >/dev/null 2>&1 || true
+
+# A sync of markdown memory files takes seconds. If it is still running after
+# MAX_RUNTIME it is wedged, not working.
+MAX_RUNTIME="${SANE_SYNC_MAX_RUNTIME:-900}"
+STEP_TIMEOUT="${SANE_SYNC_STEP_TIMEOUT:-120}"
+
+# Per-call bound. This is the load-bearing guard: a watchdog child can be killed
+# out from under a script that survives orphaning (exactly what happened on
+# 2026-07-24 — `timeout 300` killed the timeout process, the sync got reparented
+# to launchd and ran another 68 minutes at 98.8% CPU with nothing left to stop
+# it). A timeout wrapped around each rsync/ssh cannot be orphaned away, because
+# it is in the call path rather than beside it.
+TIMEOUT_BIN=""
+for candidate in timeout gtimeout; do
+  command -v "$candidate" >/dev/null 2>&1 && { TIMEOUT_BIN="$candidate"; break; }
+done
+RUN_BOUNDED() {
+  if [[ -n "$TIMEOUT_BIN" ]]; then
+    "$TIMEOUT_BIN" "$STEP_TIMEOUT" "$@"
+  else
+    "$@"
+  fi
+}
+
+# Self-checked deadline. Unlike a watchdog child this cannot be orphaned away —
+# the script asks itself, between steps, whether it has overstayed.
+deadline_check() {
+  if (( SECONDS > MAX_RUNTIME )); then
+    echo "sync-memory-mini: exceeded ${MAX_RUNTIME}s at '$1' — aborting wedged sync" >&2
+    exit 1
+  fi
+}
+
+# Belt and braces: the watchdog still runs, but nothing depends on it surviving.
+(
+  sleep "$MAX_RUNTIME"
+  if kill -0 "$$" 2>/dev/null; then
+    echo "sync-memory-mini: exceeded ${MAX_RUNTIME}s — killing wedged sync (pid $$)" >&2
+    kill -9 "$$" 2>/dev/null || true
+  fi
+) &
+WATCHDOG_PID=$!
+
+# --- local single-instance lock -------------------------------------------
+# The Mini lock below protects the PEER's files. It does not stop this machine
+# from running N copies of itself, which is exactly what happened: a stale
+# ownerless remote lock got reclaimed by a second and third local process while
+# the first was still running. This lock is local, atomic (mkdir), and holds the
+# owning PID so a genuinely dead run can be reclaimed without a timer.
+LOCAL_LOCK="$HOME/.cache/saneapps-memory-sync.local.lock"
+mkdir -p "$HOME/.cache" 2>/dev/null || true
+LOCAL_LOCK_HELD=0
+if mkdir "$LOCAL_LOCK" 2>/dev/null; then
+  LOCAL_LOCK_HELD=1
+  printf '%s\n' "$$" > "$LOCAL_LOCK/pid"
+else
+  existing_pid="$(cat "$LOCAL_LOCK/pid" 2>/dev/null || true)"
+  if [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" 2>/dev/null; then
+    kill "$WATCHDOG_PID" 2>/dev/null || true
+    skip_or_fail "another sync is already running locally (pid $existing_pid); skipped"
+  fi
+  # Owner is dead (or the dir was left behind by a kill -9): reclaim it whole.
+  rm -rf "$LOCAL_LOCK" 2>/dev/null || true
+  if mkdir "$LOCAL_LOCK" 2>/dev/null; then
+    LOCAL_LOCK_HELD=1
+    printf '%s\n' "$$" > "$LOCAL_LOCK/pid"
+  else
+    kill "$WATCHDOG_PID" 2>/dev/null || true
+    skip_or_fail "could not take the local sync lock; skipped"
+  fi
+fi
+
+release_local_lock() {
+  [[ "$LOCAL_LOCK_HELD" -eq 1 ]] || return 0
+  if [[ "$(cat "$LOCAL_LOCK/pid" 2>/dev/null || true)" == "$$" ]]; then
+    rm -rf "$LOCAL_LOCK" 2>/dev/null || true
+  fi
+  kill "$WATCHDOG_PID" 2>/dev/null || true
+}
+trap release_local_lock EXIT INT TERM
+
 if [[ -n "$LOCAL_PEER_HOME" ]]; then
   REMOTE_HOME="${LOCAL_PEER_HOME%/}"
 else
@@ -73,15 +160,21 @@ fi
 release_lock() {
   [[ "$LOCK_HELD" -eq 1 ]] || return 0
   if [[ -n "$LOCAL_PEER_HOME" ]]; then
+    # `rm -rf` the whole lock dir in ONE step. The old two-step (rm owner, then
+    # rmdir) left an OWNERLESS lock dir behind whenever the rmdir failed — and
+    # acquire_lock treats "no owner file + dir older than 30 min" as stale and
+    # reclaims it. That is how a second and third sync took a lock the first was
+    # still holding on 2026-07-24. Never leave the dir without its owner file.
     if [[ "$(cat "$REMOTE_HOME/$LOCK_REL/owner" 2>/dev/null || true)" == "$LOCK_TOKEN" ]]; then
-      rm -f "$REMOTE_HOME/$LOCK_REL/owner"
-      rmdir "$REMOTE_HOME/$LOCK_REL" 2>/dev/null || true
+      rm -rf "$REMOTE_HOME/$LOCK_REL" 2>/dev/null || true
     fi
   else
-    "${SSH[@]}" "$MINI_HOST" "test \"\$(cat '$REMOTE_HOME/$LOCK_REL/owner' 2>/dev/null)\" = '$LOCK_TOKEN' && rm -f '$REMOTE_HOME/$LOCK_REL/owner' && rmdir '$REMOTE_HOME/$LOCK_REL' || true" >/dev/null 2>&1 || true
+    "${SSH[@]}" "$MINI_HOST" "test \"\$(cat '$REMOTE_HOME/$LOCK_REL/owner' 2>/dev/null)\" = '$LOCK_TOKEN' && rm -rf '$REMOTE_HOME/$LOCK_REL' || true" >/dev/null 2>&1 || true
   fi
 }
-trap release_lock EXIT INT TERM
+# Both locks release on the same trap. A second `trap ... EXIT` would REPLACE
+# the earlier one, silently leaking the local lock, so they are combined here.
+trap 'release_lock; release_local_lock' EXIT INT TERM
 
 acquire_lock() {
   local owner owner_host owner_pid
@@ -184,29 +277,55 @@ local_backup_once() {
   [[ -d "$HOME/$BACKUP_REL/$label" ]]
 }
 
+# A `.sane-conflict-*` file is a terminal artifact: the losing side of a past
+# conflict, kept as local evidence. It is not live memory, so re-hashing and
+# re-shipping it on every pass is pure waste — and it compounds, because each
+# run's conflicts add more dead weight for the next run to checksum. On
+# 2026-07-24 these were 124 files and 8.6MB of the 21MB codex-memories tree
+# (41%), re-checksummed on all five passes of every sync. Excluded from transfer
+# and from parity, never deleted.
+CONFLICT_EXCLUDE=(--exclude '*.sane-conflict-*')
+
+# `~/.codex/memories` is a GIT REPO. Its `.git/` internals (index, refs, logs)
+# change on every commit, so rsyncing them between two machines by mtime made
+# EVERY sync conflict — 28 of the 124 conflict files on 2026-07-24 were git
+# internals, each spawning another backup file for the next run to checksum.
+# That is the compounding loop. Beyond the waste, shipping a live `.git/index`
+# or `refs/heads/main` between machines can leave the repo pointing at objects
+# the other side does not have. Git state syncs via git, never via rsync.
+GIT_EXCLUDE=(--exclude '.git/' --exclude '.git/**')
+
 rsync_remote() {
   local direction="$1" source="$2" destination="$3" suffix="$4"
-  local opts=(-a --omit-dir-times --checksum --update --backup "--suffix=$suffix")
+  local opts=(-a --omit-dir-times --checksum --update --backup "--suffix=$suffix" "${CONFLICT_EXCLUDE[@]}" "${GIT_EXCLUDE[@]}")
   if [[ -n "$LOCAL_PEER_HOME" ]]; then
-    rsync "${opts[@]}" "$source/" "$destination/"
+    RUN_BOUNDED rsync "${opts[@]}" "$source/" "$destination/"
   elif [[ "$direction" == "pull" ]]; then
-    rsync "${opts[@]}" -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" "$MINI_HOST:$source/" "$destination/"
+    RUN_BOUNDED rsync "${opts[@]}" -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" "$MINI_HOST:$source/" "$destination/"
   else
-    rsync "${opts[@]}" -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" "$source/" "$MINI_HOST:$destination/"
+    RUN_BOUNDED rsync "${opts[@]}" -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" "$source/" "$MINI_HOST:$destination/"
   fi
 }
 
 pair_has_drift() {
   local local_dir="$1" remote_dir="$2" first second output
   if [[ -n "$LOCAL_PEER_HOME" ]]; then
-    first="$(rsync -ani --omit-dir-times --checksum "$local_dir/" "$remote_dir/")" || return 2
-    second="$(rsync -ani --omit-dir-times --checksum "$remote_dir/" "$local_dir/")" || return 2
+    first="$(RUN_BOUNDED rsync -ani --omit-dir-times --checksum "${CONFLICT_EXCLUDE[@]}" "${GIT_EXCLUDE[@]}" "$local_dir/" "$remote_dir/")" || return 2
+    second="$(RUN_BOUNDED rsync -ani --omit-dir-times --checksum "${CONFLICT_EXCLUDE[@]}" "${GIT_EXCLUDE[@]}" "$remote_dir/" "$local_dir/")" || return 2
   else
-    first="$(rsync -ani --omit-dir-times --checksum -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" "$local_dir/" "$MINI_HOST:$remote_dir/")" || return 2
-    second="$(rsync -ani --omit-dir-times --checksum -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" "$MINI_HOST:$remote_dir/" "$local_dir/")" || return 2
+    first="$(RUN_BOUNDED rsync -ani --omit-dir-times --checksum "${CONFLICT_EXCLUDE[@]}" "${GIT_EXCLUDE[@]}" -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" "$local_dir/" "$MINI_HOST:$remote_dir/")" || return 2
+    second="$(RUN_BOUNDED rsync -ani --omit-dir-times --checksum "${CONFLICT_EXCLUDE[@]}" "${GIT_EXCLUDE[@]}" -e "ssh -o ConnectTimeout=8 -o BatchMode=yes" "$MINI_HOST:$remote_dir/" "$local_dir/")" || return 2
   fi
   output="$first$second"
-  [[ -n "${output//[[:space:]]/}" ]]
+  # THE CPU BUG (fixed 2026-07-24). This was:
+  #     [[ -n "${output//[[:space:]]/}" ]]
+  # Bash's ${var//pat/} builds an entire new copy of the string to answer a
+  # yes/no question. `rsync -ani` over ~1500 files emits thousands of lines, so
+  # this burned ~99% CPU IN-PROCESS for hours with no child process running —
+  # which is why it looked like rsync was slow when rsync had already exited.
+  # grep short-circuits on the first non-space byte and is O(n).
+  printf '%s' "$output" | grep -q '[^[:space:]]'
+
 }
 
 sync_pair() {
@@ -260,8 +379,10 @@ sync_pair() {
 echo "Memory sync Air<->Mini ($MINI_HOST); lock acquired; stamp=$STAMP"
 failures=0
 for i in 0 1 2; do
+  deadline_check "${LABELS[$i]}"
   sync_pair "${LOCAL_PATHS[$i]}" "${REMOTE_PATHS[$i]}" "${LABELS[$i]}" || failures=$((failures + 1))
 done
+deadline_check "post-sync"
 
 if [[ "$failures" -gt 0 ]]; then
   echo "sync-memory-mini: $failures memory pair(s) failed" >&2

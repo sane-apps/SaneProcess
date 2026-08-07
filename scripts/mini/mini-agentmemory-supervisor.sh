@@ -5,6 +5,8 @@ set -uo pipefail
 # Convert sustained health loss into a non-zero exit that launchd can restart.
 
 AGENTMEMORY="${SANE_AGENTMEMORY_BIN:-/opt/homebrew/bin/agentmemory}"
+CURL="${SANE_CURL_BIN:-/usr/bin/curl}"
+LIVEZ_URL="${SANE_AGENTMEMORY_LIVEZ_URL:-http://127.0.0.1:3111/agentmemory/livez}"
 HEALTH_INTERVAL="${SANE_AGENTMEMORY_HEALTH_INTERVAL:-30}"
 HEALTH_MISSES="${SANE_AGENTMEMORY_HEALTH_MISSES:-2}"
 STARTUP_ATTEMPTS="${SANE_AGENTMEMORY_STARTUP_ATTEMPTS:-15}"
@@ -12,7 +14,7 @@ STARTUP_INTERVAL="${SANE_AGENTMEMORY_STARTUP_INTERVAL:-2}"
 CHILD_PID=""
 
 healthy() {
-  "$AGENTMEMORY" status 2>&1 | /usr/bin/grep -Eq 'Health:[[:space:]].*healthy'
+  "$CURL" -fsS --max-time 3 "$LIVEZ_URL" >/dev/null 2>&1
 }
 
 stop_child() {

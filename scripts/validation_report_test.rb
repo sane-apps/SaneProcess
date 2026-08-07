@@ -5,6 +5,7 @@ require_relative 'hooks/test/test_framework'
 require_relative 'validation_report'
 require 'tmpdir'
 require 'stringio'
+require 'yaml'
 
 class ValidationReportHarness < ValidationReport
   attr_reader :issues, :warnings, :metrics, :verdict
@@ -1007,6 +1008,20 @@ exit(run_tests('Validation report tests') do
 
       assert(subject.issues.any? { |issue| issue.include?('SaneApps Everything Bundle redirect') && issue.include?('returns 404') })
       assert_eq(1, subject.metrics[:website_distribution][:issues])
+      true
+    end
+
+    test('keeps every public bundle redirect alias aligned with the configured bundle checkout') do
+      process_root = File.expand_path('..', __dir__)
+      config = YAML.load_file(File.join(process_root, 'config/products.yml'))
+      checkout_url = config.dig('bundles', 'bundle', 'checkout_url')
+      worker_source = File.read(File.expand_path('../cloudflare-workers/sane-checkout.js', process_root))
+
+      assert(!checkout_url.to_s.empty?)
+      %w[bundle sane-bundle].each do |slug|
+        assert_includes(worker_source, "'#{slug}': '#{checkout_url}'")
+      end
+      assert(!worker_source.include?('b572a5cf-2eb4-490d-adea-51d5fc57d6e4'))
       true
     end
 

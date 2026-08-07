@@ -21,6 +21,7 @@ class DedupeSaneApps
     @dry_run = @args.delete('--dry-run')
     @json = @args.delete('--json')
     @remote = @args.delete('--remote')
+    @launch_services_only = @args.delete('--launch-services-only')
 
     unknown = @apps - APPS
     abort "Unknown app(s): #{unknown.join(', ')}" unless unknown.empty?
@@ -28,6 +29,12 @@ class DedupeSaneApps
 
   def run
     return run_remote_wrapper unless local_host? || @remote
+
+    if @launch_services_only
+      flush_launch_services
+      print_results([])
+      return
+    end
 
     results = @apps.map { |app| dedupe_app(app) }
     flush_launch_services
@@ -56,6 +63,7 @@ class DedupeSaneApps
     remote_args += ['--apps', @apps.join(',')] unless @apps == APPS
     remote_args << '--dry-run' if @dry_run
     remote_args << '--json' if @json
+    remote_args << '--launch-services-only' if @launch_services_only
     remote_args << '--remote'
 
     command = ['ssh', @host, 'ruby', '-', *remote_args]
@@ -192,7 +200,10 @@ class DedupeSaneApps
     ok = system('ditto', source, staging, out: File::NULL, err: File::NULL)
     abort "Failed to stage #{source} to #{target}" unless ok && File.directory?(staging)
 
-    FileUtils.rm_rf(target) if File.exist?(target)
+    if File.exist?(target)
+      unregister_launch_services_path(target)
+      FileUtils.rm_rf(target)
+    end
     FileUtils.mv(staging, target)
   ensure
     FileUtils.rm_rf(staging) if defined?(staging) && staging && File.exist?(staging)
@@ -202,10 +213,22 @@ class DedupeSaneApps
     puts "Trashing #{path}" unless @json
     return path if @dry_run
 
+    unregister_launch_services_path(path)
     ok = system('/usr/bin/trash', path, out: File::NULL, err: File::NULL)
     abort "Failed to trash #{path}" unless ok
 
     path
+  end
+
+  def unregister_launch_services_path(path)
+    return unless File.executable?(LSREGISTER)
+
+    root = File.expand_path(path)
+    bundles = Dir.glob(File.join(root, '**', '*.app')).sort_by { |bundle| -bundle.count(File::SEPARATOR) }
+    bundles << root if root.end_with?('.app')
+    bundles.uniq.each do |bundle|
+      system(LSREGISTER, '-u', bundle, out: File::NULL, err: File::NULL)
+    end
   end
 
   def flush_launch_services
@@ -214,8 +237,81 @@ class DedupeSaneApps
     puts 'Refreshing Launch Services' unless @json
     return if @dry_run
 
-    system(LSREGISTER, '-kill', '-r', '-domain', 'local', '-domain', 'system', '-domain', 'user',
-           out: File::NULL, err: File::NULL)
+    unregister_recorded_noncanonical_bundles
+    unregister_trashed_app_bundles
+    unregister_noncanonical_artifact_bundles
+    @apps.each do |app|
+      canonical = canonical_path(app)
+      system(LSREGISTER, '-f', canonical, out: File::NULL, err: File::NULL) if File.directory?(canonical)
+    end
+    system(LSREGISTER, '-gc', out: File::NULL, err: File::NULL)
+  end
+
+  # Launch Services can retain records after the bundle itself was deleted.
+  # Read those recorded paths from its own database so cleanup is not limited
+  # to app bundles that still exist on disk.
+  def unregister_recorded_noncanonical_bundles
+    @apps.each do |app|
+      recorded_app_paths(app)
+        .reject { |path| same_path?(path, canonical_path(app)) }
+        .sort_by { |path| -path.count(File::SEPARATOR) }
+        .each { |path| unregister_launch_services_path(path) }
+    end
+  end
+
+  def recorded_app_paths(app)
+    app_bundle = %r{(.*/#{Regexp.escape(app)}[^/]*\.app)(?:/|\s+\(0x)}
+    launch_services_dump.lines.filter_map do |line|
+      next unless line.start_with?('path:')
+
+      line.delete_prefix('path:').strip[app_bundle, 1]
+    end.uniq
+  end
+
+  def launch_services_dump
+    output, status = Open3.capture2e(LSREGISTER, '-dump')
+    status.success? ? output : ''
+  end
+
+  # Moving an app to Trash does not reliably remove its Launch Services entry.
+  # Leave Trash recoverable, but unregister every trashed copy before registering
+  # the one canonical /Applications build.
+  def unregister_trashed_app_bundles
+    trash_root = File.expand_path('~/.Trash')
+    return unless Dir.exist?(trash_root)
+
+    @apps.each do |app|
+      pattern = File.join(trash_root, '**', "#{app}*.app")
+      Dir.glob(pattern)
+        .select { |path| File.directory?(path) }
+        .sort_by { |path| -path.count(File::SEPARATOR) }
+        .each { |path| unregister_launch_services_path(path) }
+    end
+  end
+
+  # Xcode registers archive, export, and test products as it creates them.
+  # Preserve those release artifacts on disk, but remove their Launch Services
+  # registrations so the Dock resolves only the canonical /Applications app.
+  def unregister_noncanonical_artifact_bundles
+    @apps.each do |app|
+      patterns = [
+        File.expand_path("~/Library/Developer/Xcode/DerivedData/#{app}-*/Build/**/#{app}.app"),
+        File.expand_path("~/SaneApps/apps/#{app}*/build/**/#{app}.app"),
+        File.expand_path("~/SaneApps/apps/#{app}*/outputs/**/#{app}.app"),
+        File.expand_path("~/SaneApps/release*/**/#{app}.app"),
+        File.expand_path("~/codex-runs/**/#{app}.app"),
+        File.expand_path("~/tmp/**/#{app}.app"),
+        File.expand_path("/tmp/**/#{app}.app")
+      ]
+      patterns
+        .flat_map { |pattern| Dir.glob(pattern, File::FNM_DOTMATCH) }
+        .select { |path| File.directory?(path) }
+        .map { |path| File.expand_path(path) }
+        .reject { |path| same_path?(path, canonical_path(app)) }
+        .uniq
+        .sort_by { |path| -path.count(File::SEPARATOR) }
+        .each { |path| unregister_launch_services_path(path) }
+    end
   end
 
   def ensure_never_index_roots(app)
@@ -275,9 +371,11 @@ class DedupeSaneApps
   end
 end
 
-if ARGV.include?('--help')
-  puts 'Usage: ruby scripts/dedupe_sane_apps.rb [--host mini] [--apps App1,App2] [--dry-run] [--json]'
-  exit 0
-end
+if $PROGRAM_NAME == __FILE__
+  if ARGV.include?('--help')
+    puts 'Usage: ruby scripts/dedupe_sane_apps.rb [--host mini] [--apps App1,App2] [--launch-services-only] [--dry-run] [--json]'
+    exit 0
+  end
 
-DedupeSaneApps.new(ARGV).run
+  DedupeSaneApps.new(ARGV).run
+end

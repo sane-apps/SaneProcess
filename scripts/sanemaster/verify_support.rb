@@ -7,6 +7,7 @@ require 'socket'
 require 'securerandom'
 require 'time'
 require 'tmpdir'
+require 'rbconfig'
 
 module SaneMasterModules
   # Verify execution/support helpers (split from verify.rb for Rule #10):
@@ -15,6 +16,7 @@ module SaneMasterModules
   # helpers live in verify_permissions.rb (further Rule #10 split).
   module Verify
     VERIFY_COMMAND_EVIDENCE_MAX_BYTES = 2 * 1024 * 1024
+    LAUNCH_SERVICES_HYGIENE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneSync SaneVideo].freeze
 
     private
 
@@ -171,7 +173,25 @@ module SaneMasterModules
         end
       end
 
+      cleanup_launch_services_after_verify
       puts '✅'
+    end
+
+    def cleanup_launch_services_after_verify
+      return true unless LAUNCH_SERVICES_HYGIENE_APPS.include?(project_name)
+
+      script = File.expand_path('../dedupe_sane_apps.rb', __dir__)
+      ok = system(
+        RbConfig.ruby,
+        script,
+        '--apps',
+        project_name,
+        '--launch-services-only',
+        out: File::NULL,
+        err: File::NULL
+      )
+      warn "⚠️  Launch Services cleanup failed after verifying #{project_name}" unless ok
+      ok
     end
 
     def terminate_project_test_processes(signal)

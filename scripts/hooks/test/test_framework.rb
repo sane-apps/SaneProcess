@@ -169,6 +169,12 @@ module TestFramework
     raise message || "Expected to include #{item.inspect}"
   end
 
+  def assert_operator(left, operator, right, message = nil)
+    return true if left.public_send(operator, right)
+
+    raise message || "Expected #{left.inspect} to be #{operator} #{right.inspect}"
+  end
+
   # === TEST RUNNER ===
 
   def run_tests(name = 'Tests')

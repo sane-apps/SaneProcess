@@ -133,6 +133,33 @@ end
 exit(run_tests('SaneMaster Verify Repo Drift Tests') do
   subject = VerifyHarness.new
 
+  test_category('Launch Services cleanup') do
+    test('verify runs scoped Launch Services hygiene for a known SaneApp') do
+      harness = VerifyHarness.new
+      harness.define_singleton_method(:project_name) { 'SaneClip' }
+      calls = []
+      harness.define_singleton_method(:system) do |*args, **_kwargs|
+        calls << args
+        true
+      end
+
+      assert(harness.send(:cleanup_launch_services_after_verify))
+      hygiene_call = calls.find { |args| args.include?('--launch-services-only') }
+      assert(hygiene_call, 'verify must clean XCTest Launch Services registrations')
+      assert_includes(hygiene_call, 'SaneClip')
+      true
+    end
+
+    test('verify skips Launch Services hygiene for unrelated projects') do
+      harness = VerifyHarness.new
+      harness.define_singleton_method(:project_name) { 'ExampleApp' }
+      harness.define_singleton_method(:system) { |*_args| raise 'unexpected cleanup command' }
+
+      assert(harness.send(:cleanup_launch_services_after_verify))
+      true
+    end
+  end
+
   test_category('Verify repo drift guard') do
     test('reports no introduced drift for a clean repo') do
       Dir.mktmpdir('verify-guard-clean-') do |dir|
@@ -412,6 +439,44 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
       true
     end
 
+    test('uses a project verify timeout override when no CLI timeout is supplied') do
+      Dir.mktmpdir('verify-project-timeout-') do |dir|
+        File.write(
+          File.join(dir, '.saneprocess'),
+          <<~YAML
+            name: Example
+            type: ios_app
+            tests:
+              verify_timeout_seconds: 1800
+          YAML
+        )
+        had_env_timeout = ENV.key?('SANEMASTER_VERIFY_TIMEOUT')
+        previous_env_timeout = ENV.delete('SANEMASTER_VERIFY_TIMEOUT')
+        begin
+          Dir.chdir(dir) do
+            fresh_subject = VerifyHarness.new
+            configured_timeout = fresh_subject.send(
+              :config_value,
+              %w[tests verify_timeout_seconds],
+              'SANEMASTER_VERIFY_TIMEOUT',
+              300
+            ).to_i
+            parsed = fresh_subject.send(:parse_verify_args, [], default_timeout: configured_timeout)
+
+            assert_eq(configured_timeout, 1800)
+            assert_eq(parsed[:timeout], 1800)
+          end
+        ensure
+          if had_env_timeout
+            ENV['SANEMASTER_VERIFY_TIMEOUT'] = previous_env_timeout
+          else
+            ENV.delete('SANEMASTER_VERIFY_TIMEOUT')
+          end
+        end
+      end
+      true
+    end
+
     test('assigns a unique result bundle and requested scope to every Xcode phase') do
       Dir.mktmpdir('verify-result-bundles-') do |dir|
         File.write(
@@ -551,6 +616,55 @@ exit(run_tests('SaneMaster Verify Repo Drift Tests') do
   end
 
   test_category('Project test destinations') do
+    test('maps custom iPhone simulator aliases to a deterministic iPhone device type') do
+      fresh_subject = VerifyHarness.new
+      fresh_subject.define_singleton_method(:ios_simulator_device_types) do
+        [
+          { name: 'iPhone SE (3rd generation)', identifier: 'phone-se', product_family: 'iPhone' },
+          { name: 'iPhone 17 Pro', identifier: 'phone-pro', product_family: 'iPhone' },
+          { name: 'iPad Pro 13-inch (M4)', identifier: 'ipad-pro', product_family: 'iPad' }
+        ]
+      end
+
+      chosen = fresh_subject.send(:ios_simulator_device_type_for, 'SaneLot-iPhone')
+
+      assert_eq(chosen[:identifier], 'phone-pro')
+      assert_eq(chosen[:product_family], 'iPhone')
+      true
+    end
+
+    test('maps custom iPad simulator aliases to an iPad device type') do
+      fresh_subject = VerifyHarness.new
+      fresh_subject.define_singleton_method(:ios_simulator_device_types) do
+        [
+          { name: 'iPhone 17 Pro', identifier: 'phone-pro', product_family: 'iPhone' },
+          { name: 'iPad Air 13-inch (M3)', identifier: 'ipad-air', product_family: 'iPad' },
+          { name: 'iPad Pro 13-inch (M4)', identifier: 'ipad-pro', product_family: 'iPad' }
+        ]
+      end
+
+      chosen = fresh_subject.send(:ios_simulator_device_type_for, 'SaneLot-iPad')
+
+      assert_eq(chosen[:identifier], 'ipad-air')
+      assert_eq(chosen[:product_family], 'iPad')
+      true
+    end
+
+    test('preserves an exact simulator device-type name over product-family fallback') do
+      fresh_subject = VerifyHarness.new
+      fresh_subject.define_singleton_method(:ios_simulator_device_types) do
+        [
+          { name: 'iPhone 17 Pro', identifier: 'phone-pro', product_family: 'iPhone' },
+          { name: 'SaneLot-iPhone', identifier: 'exact-alias', product_family: 'iPhone' }
+        ]
+      end
+
+      chosen = fresh_subject.send(:ios_simulator_device_type_for, 'SaneLot-iPhone')
+
+      assert_eq(chosen[:identifier], 'exact-alias')
+      true
+    end
+
     test('uses the configured iOS simulator destination for iOS-only unit tests') do
       Dir.mktmpdir('verify-ios-destination-') do |dir|
         File.write(

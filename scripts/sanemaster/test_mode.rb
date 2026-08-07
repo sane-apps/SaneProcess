@@ -5,6 +5,7 @@ module SaneMasterModules
   module TestMode
     require 'fileutils'
     require 'open3'
+    require 'rbconfig'
     require 'tmpdir'
 
     SANEAPPS_TEST_MODE_APPS = %w[SaneBar SaneClick SaneClip SaneHosts SaneSales SaneVideo].freeze
@@ -145,12 +146,9 @@ module SaneMasterModules
       puts '🛠️ --- [ SANEMASTER RESTORE ] ---'
       puts 'Fixing common Xcode/Launch Services issues...'
 
-      lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
-      if File.exist?(lsregister)
-        print '  Resetting Launch Services database... '
-        system(lsregister, '-r', '-f', '-apps', 'local,user,system', out: File::NULL, err: File::NULL)
-        puts '✅'
-      end
+      print '  Cleaning Launch Services and registering the canonical app... '
+      flush_launch_services_cache
+      puts '✅'
 
       print '  Restarting Dock... '
       system('killall', 'Dock')
@@ -529,16 +527,47 @@ module SaneMasterModules
     def trash_local_path(path)
       return unless File.exist?(path)
 
+      unregister_launch_services_path(path)
       ok = system('/usr/bin/trash', path, out: File::NULL, err: File::NULL)
       raise "Failed to move stale app bundle to Trash: #{path}" unless ok
+
+      refresh_launch_services_hygiene
+    end
+
+    def refresh_launch_services_hygiene
+      script = File.expand_path('../dedupe_sane_apps.rb', __dir__)
+      ok = system(
+        RbConfig.ruby,
+        script,
+        '--apps',
+        project_name,
+        '--launch-services-only',
+        out: File::NULL,
+        err: File::NULL
+      )
+      raise "Launch Services cleanup failed for #{project_name}" unless ok
+    end
+
+    def unregister_launch_services_path(path)
+      lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+      return unless File.executable?(lsregister)
+
+      root = File.expand_path(path)
+      bundles = Dir.glob(File.join(root, '**', '*.app')).sort_by { |bundle| -bundle.count(File::SEPARATOR) }
+      bundles << root if root.end_with?('.app')
+      bundles.uniq.each do |bundle|
+        system(lsregister, '-u', bundle, out: File::NULL, err: File::NULL)
+      end
     end
 
     def flush_launch_services_cache
       lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
-      return unless File.exist?(lsregister)
+      return unless File.executable?(lsregister)
 
-      unless system(lsregister, '-r', '-f', '-apps', 'local,user,system', out: File::NULL, err: File::NULL)
-        puts '⚠️  Launch Services refresh failed; continuing with direct launch verification.'
+      canonical = canonical_local_app_path
+      system(lsregister, '-f', canonical, out: File::NULL, err: File::NULL) if File.directory?(canonical)
+      unless system(lsregister, '-gc', out: File::NULL, err: File::NULL)
+        puts '⚠️  Launch Services cleanup failed; continuing with direct launch verification.'
       end
     end
 

@@ -63,6 +63,31 @@ check('direct .accessibilityIdentifier("...") is declared') do
   end
 end
 
+check('ternary .accessibilityIdentifier declares both literal branches') do
+  with_fixture do
+    File.write('App/Views/Ternary.swift', <<~SWIFT)
+      TextField("", text: .constant(""))
+        .accessibilityIdentifier(field == .price ? "intake.price" : "intake.mileage")
+    SWIFT
+    ids = harness.extract_ui_identifiers
+    ids.include?('intake.price') && ids.include?('intake.mileage')
+  end
+end
+
+check('ternary identifier branches satisfy both test references') do
+  with_fixture do
+    File.write('App/Views/Ternary.swift', <<~SWIFT)
+      TextField("", text: .constant(""))
+        .accessibilityIdentifier(field == .price ? "intake.price" : "intake.mileage")
+    SWIFT
+    File.write('AppUITests/T.swift', <<~SWIFT)
+      app.textFields["intake.price"].tap()
+      app.textFields["intake.mileage"].tap()
+    SWIFT
+    harness.missing_test_identifiers.empty?
+  end
+end
+
 check('labeled component argument accessibilityID: "..." is declared (SaneVideo regression)') do
   with_fixture do
     File.write('App/Views/Sheet.swift', <<~SWIFT)

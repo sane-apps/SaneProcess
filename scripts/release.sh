@@ -376,6 +376,16 @@ release_err_trap() {
     fi
 }
 
+cleanup_release_launch_services() {
+    local app="${APP_NAME:-}"
+    local dedupe_script="${SCRIPT_DIR}/dedupe_sane_apps.rb"
+    [ -n "${app}" ] || return 0
+    [ -f "${dedupe_script}" ] || return 0
+
+    ruby "${dedupe_script}" --apps "${app}" || return 1
+    /usr/bin/killall Dock >/dev/null 2>&1 || true
+}
+
 release_exit_trap() {
     local exit_code="$1"
     set +e
@@ -399,6 +409,7 @@ release_exit_trap() {
             fi
         done
     fi
+    cleanup_release_launch_services >/dev/null 2>&1 || true
 
     local status="success"
     local summary="release completed"

@@ -98,7 +98,9 @@ redirect:
 bundles:
   bundle:
     name: SaneApps Everything Bundle
-    checkout_url: "https://saneapps.lemonsqueezy.com/checkout/custom/b572a5cf-2eb4-490d-adea-51d5fc57d6e4?signature=94dfad4c052a2d416089189cf63f11fffd2e1a3265109b08bf0fc3f9c56b8328"
+    product_id: "1230177"
+    variant_id: "1923204"
+    checkout_url: "https://saneapps.lemonsqueezy.com/checkout/custom/aa593db3-91dd-4373-ac20-6d3a7e0a5ea7?signature=5dab4ca2676584f6dccd75f13888c42f0265fe977a46f967bf5e66ea782bfd13"
     route: https://go.saneapps.com/buy/bundle
     price: "$49.99"
     includes:
@@ -107,7 +109,7 @@ bundles:
       - sanehosts
       - sanesales
       - sanevideo
-    note: "One Lemon license key for current direct Mac Pro apps. App Store purchases are handled separately by Apple."
+    note: "One perpetual Lemon license key for current direct Mac Pro apps. App Store purchases are handled separately by Apple."
 
 # Domains to monitor for expiry (includes unreleased products)
 all_domains:

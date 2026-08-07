@@ -45,9 +45,9 @@ CUSTOMER_EMAIL_SIGNOFF_PATTERN = /(?:^|\n)Mr\.?\s+Sane\s*(?:\nhttps:\/\/saneapps
 # Owner ruling 2026-07-15: ONE business signature template that works for every
 # product lane. Keep these lists in sync with validate_email_format in
 # ~/SaneApps/infra/scripts/check-inbox.sh.
-BUSINESS_SIGNATURE_PRODUCTS = 'SaneHosts|SaneClip|SaneClick|SaneSales|SaneVideo|SaneScan|SaneLot|SaneCite'
+BUSINESS_SIGNATURE_PRODUCTS = 'SaneHosts|SaneClip|SaneClick|SaneSales|SaneVideo|SaneScan|SaneLot|SaneCite|The Prophecy Ledger'
 BUSINESS_SIGNATURE_SITES = 'saneapps|sanehosts|saneclip|saneclick|sanesales|sanevideo|sanescan|sanelot|sanecite'
-BUSINESS_EMAIL_SIGNOFF_PATTERN = /(?:^|\n)Stephan Joseph\s*\nFounder, SaneApps(?: \/ (?:#{BUSINESS_SIGNATURE_PRODUCTS}))?\s*\n727-758-9785\s*\nhi@saneapps\.com\s*\nhttps:\/\/(?:#{BUSINESS_SIGNATURE_SITES})\.com\/?\s*\z/i
+BUSINESS_EMAIL_SIGNOFF_PATTERN = /(?:^|\n)Stephan Joseph\s*\nFounder, SaneApps(?: \/ (?:#{BUSINESS_SIGNATURE_PRODUCTS}))?\s*\n727-758-9785\s*\nhi@saneapps\.com\s*\nhttps:\/\/(?:(?:#{BUSINESS_SIGNATURE_SITES})\.com|prophecy-ledger\.pages\.dev)\/?\s*\z/i
 
 def email_format_valid?(body)
   text = body.to_s

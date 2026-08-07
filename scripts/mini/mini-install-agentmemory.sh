@@ -8,6 +8,8 @@ LABEL="com.saneapps.agentmemory"
 PLIST="${SANE_AGENTMEMORY_PLIST:-$HOME/Library/LaunchAgents/$LABEL.plist}"
 LOG_DIR="${SANE_AGENTMEMORY_LOG_DIR:-$HOME/Library/Logs/SaneApps}"
 AGENTMEMORY="${SANE_AGENTMEMORY_BIN:-/opt/homebrew/bin/agentmemory}"
+CURL="${SANE_CURL_BIN:-/usr/bin/curl}"
+LIVEZ_URL="${SANE_AGENTMEMORY_LIVEZ_URL:-http://127.0.0.1:3111/agentmemory/livez}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUPERVISOR_SOURCE="${SANE_AGENTMEMORY_SUPERVISOR_SOURCE:-$SCRIPT_DIR/mini-agentmemory-supervisor.sh}"
 SUPERVISOR="${SANE_AGENTMEMORY_SUPERVISOR:-$HOME/.local/libexec/sane-agentmemory-supervisor}"
@@ -89,8 +91,7 @@ fi
 echo "Installed $LABEL; waiting for AgentMemory health"
 attempt=1
 while [ "$attempt" -le 15 ]; do
-  status_output="$($AGENTMEMORY status 2>&1 || true)"
-  if printf '%s\n' "$status_output" | grep -Eq 'Health:[[:space:]].*healthy'; then
+  if "$CURL" -fsS --max-time 3 "$LIVEZ_URL" >/dev/null 2>&1; then
     echo "Started healthy $LABEL"
     exit 0
   fi
@@ -98,6 +99,5 @@ while [ "$attempt" -le 15 ]; do
   attempt=$((attempt + 1))
 done
 
-printf '%s\n' "$status_output" >&2
 echo "AgentMemory did not become healthy within 30 seconds" >&2
 exit 1

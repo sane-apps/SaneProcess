@@ -626,6 +626,34 @@ benchmarks remain separate evidence and are not queried by this report.
 
 ---
 
+### ADR-014: Runtime cleanup must unregister app bundles before deletion (2026-07-24)
+
+**Context:** Build, test, App Store audit, and Setapp staging created temporary
+SaneApps bundles under DerivedData, Trash, and per-run temp roots. Deleting the
+files did not delete their LaunchServices identities. Broad user-domain
+`lsregister` rescans then re-registered stale copies, producing duplicate or
+ghost Dock tiles. SaneClip was especially visible because an Xcode Debug run
+could coexist with its canonical Developer ID Release login item.
+
+**Decision:**
+1. SaneClip runtime proof remains Developer ID-signed Release only; the main
+   Xcode Run scheme must use Release.
+2. Before removing an app bundle, unregister the outer bundle and every nested
+   `.app` bundle deepest-first with supported `lsregister -u`.
+3. After cleanup, register only the canonical `/Applications` bundle and compact
+   with `lsregister -gc`. Ordinary workflows must not rescan the whole user
+   domain.
+4. Temporary audit roots that contain built or extracted app bundles carry
+   `.metadata_never_index` and unregister their bundle trees in an `ensure`
+   path.
+5. SaneClip channels are one logical clipboard manager; direct, Debug, App
+   Store, and Setapp identities must never monitor the pasteboard concurrently.
+
+**Consequences:** Build products can still use Debug for headless tests, but
+post-test dedupe must leave no missing LaunchServices paths or live test
+processes. A post-workflow LaunchServices missing-path count is the operational
+receipt for this invariant.
+
 ## 4. Landscape
 
 ### Comparison
@@ -719,6 +747,12 @@ Durable architecture rules:
   dedicated automation wrappers so they produce receipts and obey guardrails.
 - Secrets live in Keychain or the approved env cache; docs must not become
   credential ledgers.
+- Cross-machine secret writes use `sane-secret-set`. Its Mini half must run
+  through the logged-in GUI session because plain SSH cannot write the Mini
+  login keychain. The value crosses through a private bounded FIFO and never
+  appears in argv, command files, logs, receipts, or agent output. An
+  interrupted Air-only write is repaired with `--sync-mini NAME`, which reads
+  the approved local store internally and does not ask for a second paste.
 - App Store Connect and vendor API quirks belong in release/preflight code plus
   `templates/RELEASE_SOP.md`, not duplicated here.
 - Background automation ownership belongs in `DEVELOPMENT.md`; this file should

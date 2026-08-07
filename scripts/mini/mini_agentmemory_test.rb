@@ -42,27 +42,23 @@ exit(run_tests('Mini AgentMemory Tests') do
         assert_includes(source, "<string>#{dir}</string>")
         assert_includes(source, "<string>#{supervisor}</string>")
         assert(File.executable?(supervisor), 'installed supervisor must be executable')
-        assert_includes(File.read(INSTALLER), "grep -Eq 'Health:[[:space:]].*healthy'")
+        installed_supervisor = File.read(supervisor)
+        assert_includes(installed_supervisor, 'http://127.0.0.1:3111/agentmemory/livez')
+        assert(!installed_supervisor.include?('Health:[[:space:]].*healthy'), 'supervisor must not parse CLI display text')
+        assert_includes(File.read(INSTALLER), 'http://127.0.0.1:3111/agentmemory/livez')
         true
       end
     end
 
-    test('exits nonzero when the child engine loses health so launchd can restart it') do
-      Dir.mktmpdir('agentmemory-supervisor') do |dir|
+    test('accepts direct livez success even when CLI status text is unknown') do
+      Dir.mktmpdir('agentmemory-supervisor-health') do |dir|
         fake_bin = File.join(dir, 'agentmemory')
-        count = File.join(dir, 'status-count')
+        fake_curl = File.join(dir, 'curl')
+        curl_log = File.join(dir, 'curl.log')
         File.write(fake_bin, <<~SH)
           #!/bin/sh
           case "${1:-}" in
             status)
-              count=0
-              [ ! -f "$STATUS_COUNT" ] || count="$(cat "$STATUS_COUNT")"
-              count=$((count + 1))
-              printf '%s\n' "$count" > "$STATUS_COUNT"
-              if [ "$count" -le 2 ]; then
-                echo 'Health: healthy'
-                exit 0
-              fi
               echo 'Health: unknown'
               exit 1
               ;;
@@ -74,14 +70,67 @@ exit(run_tests('Mini AgentMemory Tests') do
               ;;
           esac
         SH
-        FileUtils.chmod(0o755, fake_bin)
+        File.write(fake_curl, <<~SH)
+          #!/bin/sh
+          echo "$*" >> "$CURL_LOG"
+          exit 0
+        SH
+        FileUtils.chmod(0o755, [fake_bin, fake_curl])
         env = {
           'SANE_AGENTMEMORY_BIN' => fake_bin,
+          'SANE_CURL_BIN' => fake_curl,
+          'SANE_AGENTMEMORY_HEALTH_INTERVAL' => '0.05',
+          'SANE_AGENTMEMORY_STARTUP_ATTEMPTS' => '2',
+          'SANE_AGENTMEMORY_STARTUP_INTERVAL' => '0.05',
+          'CURL_LOG' => curl_log
+        }
+
+        _stdin, _stdout, stderr, wait_thread = Open3.popen3(env, '/bin/bash', SUPERVISOR)
+        sleep 0.2
+        Process.kill('TERM', wait_thread.pid)
+        status = wait_thread.value
+        error_text = stderr.read
+
+        assert(status.success?, error_text)
+        assert_includes(File.read(curl_log), 'http://127.0.0.1:3111/agentmemory/livez')
+        assert(!error_text.include?('startup health deadline'), error_text)
+        true
+      end
+    end
+
+    test('exits nonzero when the child engine loses health so launchd can restart it') do
+      Dir.mktmpdir('agentmemory-supervisor') do |dir|
+        fake_bin = File.join(dir, 'agentmemory')
+        fake_curl = File.join(dir, 'curl')
+        count = File.join(dir, 'livez-count')
+        File.write(fake_bin, <<~SH)
+          #!/bin/sh
+          case "${1:-}" in
+            stop)
+              exit 0
+              ;;
+            *)
+              while :; do sleep 1; done
+              ;;
+          esac
+        SH
+        File.write(fake_curl, <<~SH)
+          #!/bin/sh
+          count=0
+          [ ! -f "$LIVEZ_COUNT" ] || count="$(cat "$LIVEZ_COUNT")"
+          count=$((count + 1))
+          printf '%s\n' "$count" > "$LIVEZ_COUNT"
+          [ "$count" -le 2 ]
+        SH
+        FileUtils.chmod(0o755, [fake_bin, fake_curl])
+        env = {
+          'SANE_AGENTMEMORY_BIN' => fake_bin,
+          'SANE_CURL_BIN' => fake_curl,
           'SANE_AGENTMEMORY_HEALTH_INTERVAL' => '0.1',
           'SANE_AGENTMEMORY_HEALTH_MISSES' => '2',
           'SANE_AGENTMEMORY_STARTUP_ATTEMPTS' => '2',
           'SANE_AGENTMEMORY_STARTUP_INTERVAL' => '0.1',
-          'STATUS_COUNT' => count
+          'LIVEZ_COUNT' => count
         }
         _out, err, status = Open3.capture3(env, '/bin/bash', SUPERVISOR)
         assert(!status.success?, 'supervisor must request a launchd restart after sustained health loss')
@@ -93,6 +142,7 @@ exit(run_tests('Mini AgentMemory Tests') do
     test('uses a bounded noninteractive admin fallback when remote launchd bootstrap is denied') do
       Dir.mktmpdir('agentmemory-remote-install') do |dir|
         fake_bin = File.join(dir, 'agentmemory')
+        fake_curl = File.join(dir, 'curl')
         fake_launchctl = File.join(dir, 'launchctl')
         fake_sudo = File.join(dir, 'sudo')
         launchctl_log = File.join(dir, 'launchctl.log')
@@ -109,15 +159,20 @@ exit(run_tests('Mini AgentMemory Tests') do
           echo "$*" >> "$LAUNCHCTL_LOG"
           [ "${1:-}" != bootstrap ]
         SH
+        File.write(fake_curl, <<~SH)
+          #!/bin/sh
+          exit 0
+        SH
         File.write(fake_sudo, <<~SH)
           #!/bin/sh
           echo "$*" >> "$SUDO_LOG"
           exit 0
         SH
-        FileUtils.chmod(0o755, [fake_bin, fake_launchctl, fake_sudo])
+        FileUtils.chmod(0o755, [fake_bin, fake_curl, fake_launchctl, fake_sudo])
         env = {
           'HOME' => dir,
           'SANE_AGENTMEMORY_BIN' => fake_bin,
+          'SANE_CURL_BIN' => fake_curl,
           'SANE_AGENTMEMORY_PLIST' => plist,
           'SANE_AGENTMEMORY_LOG_DIR' => File.join(dir, 'logs'),
           'SANE_AGENTMEMORY_SUPERVISOR' => supervisor,

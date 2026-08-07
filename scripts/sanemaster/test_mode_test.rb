@@ -371,12 +371,40 @@ exit(run_tests('SaneMaster Test Mode Fallback Tests') do
   end
 
   test_category('Launch Services refresh') do
-    test('test_mode uses supported lsregister refresh flags') do
+    test('test_mode cleans the trashed destination from Launch Services') do
+      harness = TestModeHarness.new
+      harness.instance_variable_set(:@project_name, 'SaneClip')
+      calls = []
+
+      Dir.mktmpdir('test-mode-launch-services') do |dir|
+        app = File.join(dir, 'SaneClip.app')
+        FileUtils.mkdir_p(app)
+        harness.define_singleton_method(:unregister_launch_services_path) { |_path| }
+        harness.define_singleton_method(:system) do |*args, **_kwargs|
+          calls << args
+          true
+        end
+
+        harness.send(:trash_local_path, app)
+      end
+
+      hygiene_call = calls.find { |args| args.include?('--launch-services-only') }
+      assert(hygiene_call, 'trash must be followed by scoped Launch Services hygiene')
+      assert_includes(hygiene_call, 'SaneClip')
+      true
+    end
+
+    test('test_mode unregisters stale copies and refreshes only the canonical app') do
       source = File.read(TEST_MODE_PATH)
 
-      assert_includes(source, "'-r', '-f', '-apps', 'local,user,system'")
+      assert_includes(source, "Dir.glob(File.join(root, '**', '*.app'))")
+      assert_includes(source, "system(lsregister, '-u', bundle")
+      assert_includes(source, "'-f', canonical")
+      assert_includes(source, "'-gc'")
+      assert(!source.include?("'-r', '-f', '-apps', 'local,user,system'"),
+             'full user-domain scans re-register trashed and DerivedData app bundles')
       assert(!source.include?("'-kill', '-r'"), 'lsregister -kill is removed on current macOS')
-      assert_includes(source, 'Launch Services refresh failed')
+      assert_includes(source, 'Launch Services cleanup failed')
       true
     end
   end

@@ -84,6 +84,33 @@ Dir.glob("#{HOME}/.claude/projects/-Users-sj-SaneApps/memory/*{.sane-conflict-*,
                   text: File.basename(f), why: 'stale sync artifact shadows a corrected canonical file' }
 end
 
+# Shell hooks cannot see browser automation embedded inside a Ruby process.
+# Scan the two executable App Store control paths so Safari cannot be restored
+# behind an otherwise-allowed `ruby ...` or SaneMaster invocation.
+app_store_browser_surfaces =
+  if ENV['SANE_INSTRUCTION_LINT_APP_STORE_BROWSER_SURFACES'].to_s.empty?
+    [
+      "#{HOME}/SaneApps/infra/SaneProcess/scripts/appstore_submit.rb",
+      "#{HOME}/SaneApps/infra/SaneProcess/scripts/sanemaster/release.rb"
+    ]
+  else
+    ENV.fetch('SANE_INSTRUCTION_LINT_APP_STORE_BROWSER_SURFACES').split(File::PATH_SEPARATOR)
+  end
+embedded_safari = /tell\s+application\s+["']Safari["']|Application\(\s*["']Safari["']\s*\)/i
+app_store_browser_surfaces.select { |path| File.file?(path) }.each do |path|
+  File.readlines(path).each_with_index do |line, index|
+    next unless line.match?(embedded_safari)
+
+    violations << {
+      rule: 'embedded-safari-app-store',
+      file: path.sub(HOME, '~'),
+      line: index + 1,
+      text: line.strip[0, 160],
+      why: 'App Store tooling is Brave-only; embedded Safari bypasses the shell invocation guard'
+    }
+  end
+end
+
 if ARGV.include?('--json')
   puts JSON.pretty_generate({ surfaces: SURFACES.length, violations: violations })
 else

@@ -300,7 +300,7 @@ module SaneMasterModules
     def create_ios_simulator_destination(simulator_name, requested_os = nil)
       return nil if ENV['SANEMASTER_AUTO_CREATE_IOS_SIMULATOR'] == '0'
 
-      device_type = ios_simulator_device_types.find { |candidate| candidate[:name] == simulator_name }
+      device_type = ios_simulator_device_type_for(simulator_name)
       return nil unless device_type
 
       runtime = ios_simulator_runtimes_for(device_type[:identifier], requested_os).max_by do |candidate|
@@ -336,7 +336,11 @@ module SaneMasterModules
             identifier = device_type['identifier'].to_s
             next device_types if name.empty? || identifier.empty?
 
-            device_types << { name: name, identifier: identifier }
+            device_types << {
+              name: name,
+              identifier: identifier,
+              product_family: device_type['productFamily'].to_s
+            }
           end
         else
           []
@@ -344,6 +348,24 @@ module SaneMasterModules
       end
     rescue StandardError
       []
+    end
+
+    # Custom simulator names are aliases, not CoreSimulator device type names.
+    # Prefer an exact type name whenever one exists; otherwise map an alias such
+    # as "SaneLot-iPhone" or "SaneLot-iPad" to an installed CoreSimulator type
+    # with the matching product family. Sorting makes that fallback stable across
+    # the JSON ordering returned by different Xcode versions.
+    def ios_simulator_device_type_for(simulator_name)
+      device_types = ios_simulator_device_types
+      exact_match = device_types.find { |candidate| candidate[:name] == simulator_name }
+      return exact_match if exact_match
+
+      product_family = simulator_name.to_s[/\b(iPhone|iPad)\b/i, 1]
+      return nil if product_family.nil?
+
+      device_types
+        .select { |candidate| candidate[:product_family].to_s.casecmp?(product_family) }
+        .min_by { |candidate| [candidate[:name].to_s, candidate[:identifier].to_s] }
     end
 
     def ios_simulator_runtimes_for(device_type_identifier, requested_os = nil)

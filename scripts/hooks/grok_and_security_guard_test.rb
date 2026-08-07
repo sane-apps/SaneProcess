@@ -363,6 +363,20 @@ _, legacy_asc_err, legacy_asc_status = run_ruby_hook(
 )
 t('Safari guard blocks legacy mini-safari.sh ASC wrapper', legacy_asc_status.exitstatus == 2)
 t('Legacy ASC wrapper block points to the Brave lane', legacy_asc_err.include?('Brave'))
+Dir.mktmpdir('embedded-safari-source') do |dir|
+  bad_source = File.join(dir, 'appstore_submit.rb')
+  File.write(bad_source, "script = <<~APPLESCRIPT\n  tell application \"Safari\"\nAPPLESCRIPT\n")
+  lint_out, _lint_err, lint_status = Open3.capture3(
+    { 'SANE_INSTRUCTION_LINT_APP_STORE_BROWSER_SURFACES' => bad_source },
+    'ruby',
+    File.join(SANEPROCESS_DIR, 'scripts', 'instruction_lint.rb'),
+    '--json',
+    chdir: SANEPROCESS_DIR
+  )
+  lint_payload = JSON.parse(lint_out)
+  embedded_hits = lint_payload.fetch('violations').select { |violation| violation['rule'] == 'embedded-safari-app-store' }
+  t('Instruction lint rejects Safari embedded inside App Store Ruby tooling', !lint_status.success? && embedded_hits.length == 1)
+end
 _, launch_chain_err, launch_chain_status = run_ruby_hook(
   'sane_launch_guard.rb',
   {

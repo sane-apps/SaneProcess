@@ -66,6 +66,7 @@ def monitor_receipt_fixture(root, started_at:, finished_at:, scheme: 'Example',
                             selector: 'ExampleTests/UpgradeTests/testUpgrade',
                             package_path: nil,
                             test_plan: nil,
+                            destination: nil,
                             upgrade_run_id: UPGRADE_RUN_ID, upgrade_nonce: UPGRADE_NONCE)
   binding = Digest::SHA256.hexdigest("#{upgrade_run_id}\0#{upgrade_nonce}")[0, 16]
   run = File.join(root, 'outputs', 'monitor-tests', "run-1-upgrade-#{binding}")
@@ -82,6 +83,7 @@ def monitor_receipt_fixture(root, started_at:, finished_at:, scheme: 'Example',
     'scheme' => scheme,
     'package_path' => package_path,
     'test_plan' => test_plan,
+    'destination' => destination,
     'test_selector' => selector,
     'started_at' => started_at.iso8601(6),
     'completed_at' => finished_at.iso8601(6),
@@ -166,6 +168,21 @@ exit(run_tests('Upgrade Path Proof Security Tests') do
 
       assert_includes(argv, '--package-path')
       assert_eq(argv[argv.index('--package-path') + 1], 'SaneHostsPackage')
+      true
+    end
+
+    test('runner binds an optional simulator destination to the canonical monitor command') do
+      destination = 'platform=iOS Simulator,name=SaneLot-iPhone'
+      argv = subject.send(
+        :upgrade_path_runner_argv,
+        scheme: 'SaneLot',
+        destination: destination,
+        test_selector: 'SaneLotTests/P0SafetyTests/testUpgrade',
+        timeout_seconds: 120
+      )
+
+      assert_includes(argv, '--destination')
+      assert_eq(argv[argv.index('--destination') + 1], destination)
       true
     end
 

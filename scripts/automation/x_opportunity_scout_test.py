@@ -13,11 +13,21 @@ from pathlib import Path
 
 
 SCRIPT_PATH = Path(__file__).with_name("x-opportunity-scout.py")
+HEARTBEAT_SCRIPT_PATH = Path.home() / "SaneApps" / "infra" / "scripts" / "x-opportunity-scout.py"
 
 
 class XOpportunityScoutTests(unittest.TestCase):
     def load_module(self):
         spec = importlib.util.spec_from_file_location("x_opportunity_scout_under_test", SCRIPT_PATH)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    def load_heartbeat_module(self):
+        spec = importlib.util.spec_from_file_location("heartbeat_x_opportunity_scout_under_test", HEARTBEAT_SCRIPT_PATH)
         self.assertIsNotNone(spec)
         self.assertIsNotNone(spec.loader)
         module = importlib.util.module_from_spec(spec)
@@ -324,6 +334,127 @@ class XOpportunityScoutTests(unittest.TestCase):
 
         self.assertEqual(captured["max_results"], 10)
         self.assertEqual([item["id"] for item in results], ["100", "101", "102"])
+
+    def test_heartbeat_scout_rejects_keyword_false_positive(self):
+        module = self.load_heartbeat_module()
+        result = module.classify_candidate(
+            "SaneCite",
+            "Microsoft locked my Xbox account behind automated phone responses.",
+            "Gaming content creator",
+            "gamer",
+        )
+        self.assertIsNone(result)
+
+    def test_heartbeat_scout_qualifies_sanecite_pain(self):
+        module = self.load_heartbeat_module()
+        result = module.classify_candidate(
+            "SaneCite",
+            "We answer the same security questionnaire by hand in a spreadsheet every week.",
+            "Enterprise sales engineer",
+            "seller",
+        )
+        self.assertEqual(result["kind"], "pain")
+        self.assertTrue(result["actionable"])
+        self.assertEqual(result["recommended_action"], "quote_repost")
+        self.assertIn("Do not send an automated cold reply", result["next_action"])
+
+    def test_seen_actionable_candidate_resurfaces_until_acted_on(self):
+        module = self.load_heartbeat_module()
+        classification = {"actionable": True}
+
+        self.assertTrue(module.should_surface_candidate("123", classification, {"123"}, set()))
+        self.assertFalse(module.should_surface_candidate("123", classification, {"123"}, {"123"}))
+        self.assertFalse(module.should_surface_candidate("123", {"actionable": False}, {"123"}, set()))
+        self.assertTrue(module.should_surface_candidate("new", classification, {"123"}, set()))
+
+    def test_heartbeat_scout_qualifies_real_dealer_listing_as_a_lead(self):
+        module = self.load_heartbeat_module()
+        result = module.classify_candidate(
+            "SaneLot",
+            "New inventory in stock. Financing available and trade-ins welcome.",
+            "Independent used car dealer serving Tampa, Florida.",
+            "tampaautos",
+            "Tampa, Florida",
+        )
+        self.assertEqual(result["kind"], "beta_review_candidate")
+        self.assertEqual(result["region"], "us")
+        self.assertTrue(result["actionable"])
+        self.assertEqual(result["invite_url"], "https://testflight.apple.com/join/hPv1tGs2")
+        self.assertIn("feedback", result["next_action"])
+        self.assertIn("VIN to a verified live listing", result["value_hook"])
+        self.assertTrue(result["suggested_invite"].startswith("I built SaneLot to get a car"))
+        self.assertIn("from one iPhone", result["suggested_invite"])
+        self.assertIn("won’t invent facts", result["suggested_invite"])
+        self.assertIn("would you test it and give me blunt feedback?", result["suggested_invite"])
+        self.assertNotIn("practice", result["suggested_invite"].lower())
+        self.assertNotIn("We ", result["suggested_invite"])
+        self.assertIn("email or DM", result["preferred_channel"])
+
+    def test_heartbeat_scout_rejects_private_listing_and_classified_platform(self):
+        module = self.load_heartbeat_module()
+        private_seller = module.classify_candidate(
+            "SaneLot",
+            "My SUV is available now. DM for details.",
+            "Dad, golfer, coffee fan.",
+            "privateperson",
+        )
+        classified_platform = module.classify_candidate(
+            "SaneLot",
+            "New inventory available now.",
+            "Post free classified ads for cars and motorcycles.",
+            "adplatform",
+        )
+        self.assertIsNone(private_seller)
+        self.assertIsNone(classified_platform)
+
+    def test_heartbeat_scout_rejects_frazer_name_collision_and_automotive_vendor(self):
+        module = self.load_heartbeat_module()
+        name_collision = module.classify_candidate(
+            "SaneLot",
+            "The issue is traffic near Frazer Town hospital.",
+            "Local resident.",
+            "resident",
+        )
+        automotive_vendor = module.classify_candidate(
+            "SaneLot",
+            "Your DMS connects inventory, CRM, accounting and OEM platforms.",
+            "Dealership revenue platform with lifecycle management and intent mining.",
+            "vendor",
+        )
+        self.assertIsNone(name_collision)
+        self.assertIsNone(automotive_vendor)
+
+    def test_heartbeat_scout_qualifies_dealer_podcaster_as_review_partner(self):
+        module = self.load_heartbeat_module()
+        result = module.classify_candidate(
+            "SaneLot",
+            "Mastering dealership inventory means understanding local pricing trends.",
+            "A podcast about practical ways to make your dealership better.",
+            "dealerpodcast",
+        )
+        self.assertEqual(result["kind"], "beta_review_partner")
+        self.assertTrue(result["actionable"])
+        self.assertEqual(result["invite_url"], "https://testflight.apple.com/join/hPv1tGs2")
+        self.assertIn("verified live listing", result["suggested_invite"])
+        self.assertIn("guides the walkaround", result["suggested_invite"])
+        self.assertIn("You understand how cars actually move through a lot", result["suggested_invite"])
+        self.assertIn("blunt review", result["suggested_invite"])
+        self.assertNotIn("practice", result["suggested_invite"].lower())
+        self.assertNotIn("We ", result["suggested_invite"])
+        self.assertIn("exact copy approval", result["preferred_channel"])
+
+    def test_heartbeat_scout_keeps_non_us_dealers_as_market_signals(self):
+        module = self.load_heartbeat_module()
+        result = module.classify_candidate(
+            "SaneLot",
+            "Fresh inventory in stock at our showroom. KSh 2,000,000.",
+            "Trusted used car dealership in Mombasa.",
+            "mombasacars",
+            "Mombasa, Kenya",
+        )
+        self.assertEqual(result["kind"], "non_us_dealer_signal")
+        self.assertEqual(result["region"], "non_us")
+        self.assertFalse(result["actionable"])
 
 
 if __name__ == "__main__":

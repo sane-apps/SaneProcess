@@ -70,7 +70,7 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
   test_category('Monitor test CLI options') do
     test('parses strict named options and preserves safe defaults') do
       explicit = subject.monitor_options(
-        ['--scheme', 'SaneVideo', '--package-path', 'Feature', '--test-plan', 'Release', '--test=SaneVideoTests/PlaybackTests/testPlay', '--timeout', '120']
+        ['--scheme', 'SaneVideo', '--package-path', 'Feature', '--test-plan', 'Release', '--destination', 'platform=iOS Simulator,name=Test-iPhone', '--test=SaneVideoTests/PlaybackTests/testPlay', '--timeout', '120']
       )
       defaults = subject.monitor_options([], default_scheme: 'CurrentProject')
 
@@ -80,11 +80,12 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
           scheme: 'SaneVideo',
           package_path: 'Feature',
           test_plan: 'Release',
+          destination: 'platform=iOS Simulator,name=Test-iPhone',
           test_selector: 'SaneVideoTests/PlaybackTests/testPlay',
           timeout: 120
         }
       )
-      assert_eq(defaults, { scheme: 'CurrentProject', package_path: nil, test_plan: nil, test_selector: nil, timeout: 300 })
+      assert_eq(defaults, { scheme: 'CurrentProject', package_path: nil, test_plan: nil, destination: nil, test_selector: nil, timeout: 300 })
       true
     end
 
@@ -95,6 +96,7 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
         ['--scheme'] => '--scheme requires a value',
         ['--test', '--timeout', '30'] => '--test requires a value',
         ['--test-plan'] => '--test-plan requires a value',
+        ['--destination'] => '--destination requires a value',
         ['--package-path'] => '--package-path requires a value',
         ['--scheme', 'One', '--scheme=Two'] => '--scheme was provided more than once',
         ['--timeout', '0'] => '--timeout must be a positive integer',
@@ -166,6 +168,25 @@ exit(run_tests('SaneMaster CI Helpers Tests') do
 
         assert(!plan[:command].include?('-only-testing'), 'all-tests plans must not invent a selector')
         assert_eq(plan[:test_selector], nil)
+      end
+      true
+    end
+
+    test('uses an explicit iOS simulator destination without changing the default') do
+      Dir.mktmpdir('ci-helpers-ios-') do |root|
+        destination = 'platform=iOS Simulator,name=SaneLot-iPhone'
+        plan = subject.monitor_plan(
+          root: root,
+          scheme: 'SaneLot',
+          destination: destination,
+          test_selector: 'SaneLotTests/P0SafetyTests/testUpgrade',
+          started_at: started_at,
+          pid: 4321,
+          nonce: 'ios-destination'
+        )
+
+        assert_eq(plan[:destination], destination)
+        assert_eq(plan[:command][plan[:command].index('-destination') + 1], destination)
       end
       true
     end

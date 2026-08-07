@@ -17,6 +17,7 @@ GUARDS = %w[
   sane_release_guard.rb
   sane_ship_guard.rb
   sane_email_guard.rb
+  sane_runaway_guard.rb
 ].map { |name| File.expand_path(name, __dir__) }.freeze
 
 SSH_OPTION_WITH_VALUE = %w[

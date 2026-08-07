@@ -201,6 +201,14 @@ module SaneMasterModules
         content = File.read(file)
         content.scan(/\.accessibilityIdentifier\(["']([^"']+)["']\)/) { |match| identifiers << match[0] }
         content.scan(/accessibilityIdentifier\(["']([^"']+)["']\)/) { |match| identifiers << match[0] }
+        # A ternary can select between two fixed identifiers while preserving
+        # one shared SwiftUI control. Both literal branches are declarations.
+        content.scan(
+          /\.accessibilityIdentifier\(\s*[^?\n]+\?\s*["']([^"']+)["']\s*:\s*["']([^"']+)["']\s*\)/
+        ) do |first, second|
+          identifiers << first if looks_like_custom_ui_identifier?(first)
+          identifiers << second if looks_like_custom_ui_identifier?(second)
+        end
         # Labeled component arguments forward identifiers into shared views —
         # accessibilityID:, cancelID:, actionID:, bare id:, ...Identifier: —
         # these are declarations too (2026-07-15 SaneVideo pre-push false
