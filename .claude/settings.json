@@ -112,17 +112,50 @@
     },
     "credentials": {
       "files": [
-        { "path": "~/.config/nv/env", "mode": "deny" },
-        { "path": "~/.private_keys", "mode": "deny" },
-        { "path": "~/.ssh/id_ed25519", "mode": "deny" },
-        { "path": "~/.ssh/id_ed25519_github", "mode": "deny" },
-        { "path": "~/.ssh/id_rsa", "mode": "deny" },
-        { "path": "~/.ssh/id_ecdsa", "mode": "deny" },
-        { "path": "~/.ssh/id_dsa", "mode": "deny" },
-        { "path": "~/.aws/credentials", "mode": "deny" },
-        { "path": "~/.netrc", "mode": "deny" },
-        { "path": "~/.codex/auth.json", "mode": "deny" },
-        { "path": "~/.claude/.credentials.json", "mode": "deny" }
+        {
+          "path": "~/.config/nv/env",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.private_keys",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.ssh/id_ed25519",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.ssh/id_ed25519_github",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.ssh/id_rsa",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.ssh/id_ecdsa",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.ssh/id_dsa",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.aws/credentials",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.netrc",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.codex/auth.json",
+          "mode": "deny"
+        },
+        {
+          "path": "~/.claude/.credentials.json",
+          "mode": "deny"
+        }
       ]
     },
     "network": {
@@ -200,6 +233,16 @@
             "type": "command",
             "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sane_bash_guards.rb",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/sane_prose_guard.rb",
+            "timeout": 10
           }
         ]
       }
