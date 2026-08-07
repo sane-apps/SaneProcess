@@ -39,6 +39,15 @@ RAW_APP_BUILD_TEST_PATTERN = Regexp.union(
   /\bswift\s+(?:build|test|run)\b/i,
   /\bfastlane\s+(?:scan|test|gym|build|beta|release)\b/i
 ).freeze
+# Proven iOS TestFlight packaging lane (archive/export into outputs/artifacts/<N>/).
+# Still blocks raw `xcodebuild test` / generic build — those stay on SaneMaster verify.
+TESTFLIGHT_PACKAGING_PATTERN = /
+  \bxcodebuild\b
+  .*
+  (?:\barchive\b|-exportArchive\b)
+  .*
+  outputs\/artifacts\/\d+
+/ix
 DESTRUCTIVE_CLEANUP_PATTERN = Regexp.union(
   /\brm\s+(?:-[^\s]*r[^\s]*f|-[^\s]*f[^\s]*r)\b.*(?:SaneApps|DerivedData|CoreSimulator|Simulator|\.saneprocess)/i,
   /\bkillall\b.*\b(?:Simulator|CoreSimulator|xcodebuild|SaneBar|SaneClick|SaneClip|SaneHosts|SaneSales|SaneScan|SaneSync|SaneVideo)\b/i,
@@ -86,6 +95,8 @@ def raw_app_build_test_command?(command)
   bare = SaneLocalUIGuard.strip_quoted(command)
   return false unless bare.match?(RAW_APP_BUILD_TEST_PATTERN)
   return false if bare.match?(READ_ONLY_XCODEBUILD_PATTERN)
+  # Allow the iOS TestFlight packaging lane (archive/export → artifacts/<build>/).
+  return false if bare.match?(TESTFLIGHT_PACKAGING_PATTERN)
 
   saneapps_project?(command_project_dir(command))
 end

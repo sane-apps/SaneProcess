@@ -41,6 +41,18 @@ read_only_xcodebuild() {
   [[ "$joined" =~ [[:space:]]-(list|version|showsdks|showBuildSettings)[[:space:]] ]]
 }
 
+# iOS TestFlight packaging: archive / exportArchive into outputs/artifacts/<build>/.
+testflight_packaging_xcodebuild() {
+  [[ "$TOOL_NAME" != "xcodebuild" ]] && return 1
+  local joined=" $* "
+  if [[ "$joined" =~ [[:space:]]archive[[:space:]] || "$joined" =~ -exportArchive ]]; then
+    if [[ "$joined" =~ outputs/artifacts/[0-9]+ ]]; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
 raw_swift_build_test() {
   [[ "$TOOL_NAME" != "swift" ]] && return 1
   case "${1:-}" in
@@ -52,6 +64,7 @@ raw_swift_build_test() {
 raw_xcodebuild_build_test() {
   [[ "$TOOL_NAME" != "xcodebuild" ]] && return 1
   read_only_xcodebuild "$@" && return 1
+  testflight_packaging_xcodebuild "$@" && return 1
   return 0
 }
 

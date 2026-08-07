@@ -16,14 +16,15 @@
 #   - Direct `swift.*set_dmg_icon` (manual icon setting)
 #   - Direct `swift.*fix_dmg_apps_icon` (manual alias fixing)
 #   - Direct `swift.*sign_update` (manual Sparkle signing)
-#   - Direct `generate_keys` or Sparkle key generation (ONE shared key, never generate)
-#   - Manual appcast.xml editing (must go through release.sh)
-#   - GitHub submissions to external repos without reading their contribution guidelines
+#   - Direct `altool --upload-app` for production/release.ipa (bypasses release.sh)
+#   - Direct ASC review-submission mutations (bypasses appstore_submit.rb)
 #
 # ALLOWS:
 #   - release.sh invocations (the proper way)
 #   - full_release.sh invocations
 #   - SaneMaster.rb invocations
+#   - TestFlight artifact IPA uploads (`outputs/artifacts/<N>/export/*.ipa`) after verify proof
+#   - ASC GET polls + betaGroups attach + betaBuildLocalizations (Dealer Preview lane)
 #   - hdiutil for info/attach/detach (non-creation operations)
 #   - Non-SaneApp commands
 
@@ -95,6 +96,117 @@ def token_value(tokens, *flags)
     return match[prefix.length..] if match
   end
   nil
+end
+
+# --- TestFlight lane (intelligent allow) ------------------------------------
+# Owner SOP 2026-08-05: hooks that blanket-block altool/ASC broke the proven
+# iOS Dealer Preview lane (archive → export → altool → betaGroups attach).
+# Full App Store *submission* still goes through release.sh + /ship.
+# TestFlight packaging uploads are allowed when they look like the artifacts
+# lane AND a fresh SaneMaster verify receipt exists.
+
+def recent_verify_proof?(project_dir, max_age_seconds: 36 * 3600)
+  verify_root = File.join(project_dir, 'outputs', 'verify')
+  return false unless Dir.exist?(verify_root)
+
+  cutoff = Time.now - max_age_seconds
+  Dir.children(verify_root).any? do |name|
+    path = File.join(verify_root, name)
+    next false unless File.directory?(path) || File.file?(path)
+
+    File.mtime(path) >= cutoff
+  rescue Errno::ENOENT, Errno::EACCES
+    false
+  end
+end
+
+def testflight_artifact_ipa_path?(path)
+  text = path.to_s.gsub(/\\/, '/')
+  return false if text.empty?
+  return false if text.match?(%r{(?:^|/)outputs/release\.ipa\b}i)
+  return false if text.match?(%r{(?:^|/)release(?:s)?/.+\.ipa\b}i)
+
+  text.match?(%r{(?:^|/)outputs/artifacts/\d+/export/[^/\s]+\.ipa\b}i)
+end
+
+# Agents commonly do ART=outputs/artifacts/1133; altool -f "$ART/export/App.ipa".
+# Resolve simple VAR=value assignments from the same command body.
+def expand_simple_shell_vars(command, value)
+  text = shell_unquote(value.to_s)
+  return text unless text.include?('$')
+
+  assigns = {}
+  command.to_s.each_line do |line|
+    stripped = line.chomp.strip
+    next unless stripped =~ /\A(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)\z/
+
+    key = Regexp.last_match(1)
+    raw = Regexp.last_match(2).to_s.strip
+    # Stop at shell operators so `ART=foo && true` does not poison the value.
+    raw = raw.split(/(?:&&|\|\||;)/, 2).first.to_s.strip
+    assigns[key] = shell_unquote(raw)
+  end
+
+  # Also pick up same-line assigns: `ART=outputs/artifacts/1133 && altool -f "$ART/..."`
+  command.to_s.scan(/(?:^|[\s;|&])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=([^\s;|&]+)/) do |key, raw|
+    assigns[key] ||= shell_unquote(raw)
+  end
+
+  text.gsub(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/) do
+    key = Regexp.last_match(1) || Regexp.last_match(2)
+    assigns[key] || Regexp.last_match(0)
+  end
+end
+
+def testflight_altool_upload?(command)
+  bare = command.to_s
+  return false unless bare.match?(/\baltool\b/) && bare.match?(/--upload-(?:app|package)\b/)
+
+  tokens = shell_tokens(bare)
+  ipa = token_value(tokens, '-f', '--file')
+  ipa = expand_simple_shell_vars(bare, ipa)
+  return false unless testflight_artifact_ipa_path?(ipa)
+
+  project_dir = command_project_dir(command)
+  return false unless File.exist?(File.join(project_dir, '.saneprocess'))
+  return false unless recent_verify_proof?(project_dir)
+
+  true
+rescue StandardError
+  false
+end
+
+def app_store_review_asc_mutation?(command)
+  text = command.to_s
+  text.match?(%r{/v1/appStoreVersionSubmissions\b}) ||
+    text.match?(%r{/v1/reviewSubmissions\b}) ||
+    text.match?(%r{appStoreVersionSubmission}) ||
+    text.match?(%r{/v1/appStoreVersions\b.+\bPOST\b}i) ||
+    (text.match?(/\b(?:curl|asc\.rb)\b/i) && text.match?(/\bPOST\b/i) && text.match?(%r{/v1/appStoreVersions\b}))
+end
+
+def testflight_asc_api_allowed?(command)
+  text = command.to_s
+  return false unless text.match?(/api\.appstoreconnect\.apple\.com/) || text.match?(/\basc\.rb\b/)
+
+  return false if app_store_review_asc_mutation?(text)
+
+  # Explicit reads.
+  return true if text.match?(/\basc\.rb\s+GET\b/)
+
+  curl_write = text.match?(/\bcurl\b/) && (
+    text.match?(/\s-X\s*(POST|PATCH|PUT|DELETE)\b/i) ||
+    text.match?(/\s-[dF]\b/) ||
+    text.match?(/--data(?:-binary|-raw|-urlencode)?\b/)
+  )
+  # curl without write flags is treated as GET/HEAD poll.
+  return true if text.match?(/\bcurl\b/) && !curl_write
+
+  # Dealer Preview / Internal attach + What to Test.
+  text.match?(%r{/v1/betaGroups/[^/\s"'\\]+/relationships/builds\b}) ||
+    text.match?(%r{/v1/builds/[^/\s"'\\]+/relationships/betaGroups\b}) ||
+    text.match?(%r{/v1/betaBuildLocalizations\b}) ||
+    text.match?(%r{/v1/buildBetaDetails\b})
 end
 
 def gh_public_command?(command)
@@ -305,22 +417,40 @@ if is_dist_command && !is_readonly
   exit 2
 end
 
-# Block 12: Manual altool uploads for SaneApps (must go through release.sh)
-if command.match?(/\baltool\s+--upload-app/) && (command.match?(SANE_APP_PATTERN) || saneprocess_command_context?(command))
-  warn '🔴 BLOCKED: Manual App Store upload for SaneApp'
-  warn '   App Store uploads should go through the release pipeline.'
-  warn ''
-  warn '   ✅ Use instead: bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project <path> --deploy'
-  exit 2
+# Block 12: Manual altool uploads for SaneApps.
+# Intelligent allow: TestFlight artifact IPA (`outputs/artifacts/<build>/export/*.ipa`)
+# after a fresh SaneMaster verify. Still block generic/production release.ipa uploads
+# that should go through release.sh + /ship.
+if command.match?(/\baltool\s+--upload-(?:app|package)\b/) && (command.match?(SANE_APP_PATTERN) || saneprocess_command_context?(command))
+  if testflight_altool_upload?(command)
+    warn '🟢 ALLOWED: TestFlight artifact upload (verify proof + outputs/artifacts/<build>/export/*.ipa)'
+    warn '   Reminder: App Store *review submission* still requires /ship → release.sh --deploy.'
+  else
+    warn '🔴 BLOCKED: Manual App Store upload for SaneApp'
+    warn '   Production/App Store uploads should go through the release pipeline.'
+    warn '   TestFlight uploads need:'
+    warn '     1) recent outputs/verify/* proof (SaneMaster.rb verify)'
+    warn '     2) IPA under outputs/artifacts/<build>/export/*.ipa'
+    warn ''
+    warn '   ✅ App Store: bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project <path> --deploy'
+    warn '   ✅ TestFlight: verify → archive/export to artifacts/<N>/export → altool that IPA'
+    exit 2
+  end
 end
 
-# Block 13: Manual App Store Connect API calls for SaneApps
-if command.match?(/\bcurl\b.*api\.appstoreconnect\.apple\.com/) && command.match?(SANE_APP_PATTERN)
-  warn '🔴 BLOCKED: Manual App Store Connect API call for SaneApp'
-  warn '   ASC API operations should go through appstore_submit.rb via release.sh.'
-  warn ''
-  warn '   ✅ Use instead: bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project <path> --deploy'
-  exit 2
+# Block 13: Manual App Store Connect API calls for SaneApps.
+# Allow TF beta attach / localization / read-backs. Block review submission mutations
+# and other write traffic that should go through release.sh.
+if (command.match?(/\bcurl\b[^\n]*api\.appstoreconnect\.apple\.com/) || command.match?(/\basc\.rb\b/)) &&
+   (command.match?(SANE_APP_PATTERN) || saneprocess_command_context?(command))
+  unless testflight_asc_api_allowed?(command)
+    warn '🔴 BLOCKED: Manual App Store Connect API call for SaneApp'
+    warn '   App Store *review* mutations go through appstore_submit.rb via release.sh.'
+    warn '   Allowed without /ship: GET polls, betaGroups build attach, betaBuildLocalizations.'
+    warn ''
+    warn '   ✅ Use instead: bash ~/SaneApps/infra/SaneProcess/scripts/release.sh --project <path> --deploy'
+    exit 2
+  end
 end
 
 # Block 15: External repo submissions require reading contribution guidelines first
