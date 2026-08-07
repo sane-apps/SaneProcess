@@ -1,15 +1,26 @@
 {
   "version": 1,
   "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/cursor/layout_before_shell.rb"
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/cursor/layout_pre_tool_use.rb",
+        "matcher": "Write|Edit|NotebookEdit|StrReplace"
+      }
+    ],
     "afterShellExecution": [
       {
-        "command": "./hooks/gui_feedback_after_shell.rb",
+        "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/cursor/gui_feedback_after_shell.rb",
         "matcher": "osascript|System Events|Brave|appstoreconnect|Update Review|Submit for Review|peekaboo|cliclick|mini-gui-run|keystroke|click button"
       }
     ],
     "stop": [
       {
-        "command": "./hooks/gui_feedback_stop.rb",
+        "command": "ruby ~/SaneApps/infra/SaneProcess/scripts/hooks/cursor/gui_feedback_stop.rb",
         "loop_limit": 2
       }
     ]

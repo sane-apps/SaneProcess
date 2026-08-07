@@ -13,6 +13,7 @@ require 'shellwords'
 
 GUARDS = %w[
   sane_catastrophic_guard.rb
+  sane_layout_guard.rb
   sane_launch_guard.rb
   sane_release_guard.rb
   sane_ship_guard.rb

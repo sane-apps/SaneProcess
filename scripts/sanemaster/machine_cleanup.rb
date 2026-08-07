@@ -92,7 +92,19 @@ module SaneMasterModules
       '~/.codex/tmp',
       '~/.codex/.tmp',
       '~/.sanemaster/routed-workspaces',
-      '~/Library/Developer/XcodeBuildMCP/workspaces'
+      '~/Library/Developer/XcodeBuildMCP/workspaces',
+      # Mini layout litter: also listed in LAYOUT_LITTER_PATHS for default (non-server) cleanup.
+      # Globs (* ? []) are expanded by server_exact_cleanup_paths; Desktop LemonSqueezy-Uploads stays.
+      '~/Desktop/SaneClick-E2E*',
+      '~/Desktop/SaneClick-Categories*',
+      '~/Users',
+      '~/SaneApps/Users',
+      '~/$HOME',
+      '~/LemonSqueezy-Uploads',
+      '~/shot',
+      '~/memory-bakeoff',
+      '~/sanebar-recovery-*',
+      '~/sanecite-build'
     ].freeze
     SERVER_CODE_SIGN_CLONE_GLOBS = [
       '/private/var/folders/*/*/X/com.openai.codex.code_sign_clone',
@@ -104,6 +116,25 @@ module SaneMasterModules
       '~/Desktop/Screenshots/email-review-media*',
       '~/Desktop/Screenshots/email*-linked-media*',
       '~/Desktop/Screenshots/email[0-9]*'
+    ].freeze
+    # Mini layout litter: cleaned on every machine_cleanup (not only --server).
+    # Nest dirs trash even when empty; Desktop LemonSqueezy-Uploads is NOT listed.
+    LAYOUT_LITTER_PATHS = [
+      '~/Desktop/SaneClick-E2E*',
+      '~/Desktop/SaneClick-Categories*',
+      '~/Users',
+      '~/SaneApps/Users',
+      '~/$HOME',
+      '~/LemonSqueezy-Uploads',
+      '~/shot',
+      '~/memory-bakeoff',
+      '~/sanebar-recovery-*',
+      '~/sanecite-build'
+    ].freeze
+    LAYOUT_NEST_PATHS = [
+      '~/Users',
+      '~/SaneApps/Users',
+      '~/$HOME'
     ].freeze
     SANE_APP_NAME_REGEX = /\b(SaneBar|SaneClip|SaneClick|SaneHosts|SaneSales|SaneSync|SaneVideo|SaneScan|SaneAI)\b/
 
@@ -246,12 +277,14 @@ module SaneMasterModules
       simulator_plan = machine_cleanup_simulator_plan(active, options, pressure)
       simulator_targets = simulator_plan.is_a?(Array) ? simulator_plan.compact : [simulator_plan].compact
       server_targets = machine_cleanup_server_targets(active, options, pressure)
+      layout_targets = machine_cleanup_layout_litter_targets
 
       actions = []
       actions << trash_target if trash_target
       actions.concat(cache_targets)
       actions.concat(deriveddata_targets)
       actions.concat(simulator_targets)
+      actions.concat(layout_targets)
       actions.concat(server_targets)
       actions = machine_cleanup_unique_actions(actions)
 
@@ -559,6 +592,49 @@ module SaneMasterModules
       }
     end
 
+    def machine_cleanup_layout_litter_targets
+      targets = []
+      layout_litter_paths.each do |path|
+        next unless File.exist?(path)
+        next unless machine_cleanup_safe_path?(path)
+
+        size_gb = path_size_gb(path)
+        nest = layout_nest_path?(path)
+        next if !nest && size_gb <= 0.01
+
+        targets << {
+          type: 'trash_path',
+          category: 'layout_litter',
+          path: path,
+          size_gb: size_gb,
+          reason: nest ?
+            'Layout litter: fake Air-path / literal $HOME nest (trash even when empty).' :
+            'Layout litter: Desktop E2E temp or home-level project dump.'
+        }
+      end
+      targets
+    end
+
+    def layout_litter_paths
+      LAYOUT_LITTER_PATHS.flat_map do |raw|
+        expanded = File.expand_path(raw)
+        if raw.match?(/[*?\[]/)
+          begin
+            Dir.glob(expanded)
+          rescue SystemCallError
+            []
+          end
+        else
+          [expanded]
+        end
+      end.uniq
+    end
+
+    def layout_nest_path?(path)
+      expanded = File.expand_path(path)
+      LAYOUT_NEST_PATHS.any? { |raw| expanded == File.expand_path(raw) }
+    end
+
     def machine_cleanup_server_targets(active, options, pressure = true)
       return [] unless options[:server]
 
@@ -757,13 +833,25 @@ module SaneMasterModules
       end
       return true if safe_root
 
-      return true if server_exact_cleanup_paths.any? { |allowed| expanded == allowed }
+      return true if server_exact_cleanup_path?(expanded)
+      return true if layout_litter_path_allowed?(expanded)
       return true if server_expensive_exact_paths.any? { |allowed| expanded == allowed }
       return true if server_child_cleanup_paths.any? { |allowed| expanded == allowed }
       return true if server_desktop_email_media_path?(expanded)
       return true if server_codex_code_sign_clone_path?(expanded)
 
       server_repo_generated_path?(expanded)
+    end
+
+    def layout_litter_path_allowed?(path)
+      expanded = File.expand_path(path)
+      return true if layout_litter_paths.any? { |allowed| expanded == allowed }
+
+      LAYOUT_LITTER_PATHS.any? do |raw|
+        next false unless raw.match?(/[*?\[]/)
+
+        File.fnmatch?(File.expand_path(raw), expanded, File::FNM_PATHNAME)
+      end
     end
 
     def cleanup_path_uses_symlink?(path)
@@ -789,7 +877,29 @@ module SaneMasterModules
     end
 
     def server_exact_cleanup_paths
-      SERVER_EXACT_CLEANUP_PATHS.map { |path| File.expand_path(path) }
+      SERVER_EXACT_CLEANUP_PATHS.flat_map do |raw|
+        expanded = File.expand_path(raw)
+        if raw.match?(/[*?\[]/)
+          begin
+            Dir.glob(expanded)
+          rescue SystemCallError
+            []
+          end
+        else
+          [expanded]
+        end
+      end.uniq
+    end
+
+    def server_exact_cleanup_path?(path)
+      expanded = File.expand_path(path)
+      return true if server_exact_cleanup_paths.any? { |allowed| expanded == allowed }
+
+      SERVER_EXACT_CLEANUP_PATHS.any? do |raw|
+        next false unless raw.match?(/[*?\[]/)
+
+        File.fnmatch?(File.expand_path(raw), expanded, File::FNM_PATHNAME)
+      end
     end
 
     def server_expensive_exact_paths

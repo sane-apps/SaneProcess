@@ -438,6 +438,91 @@ exit(run_tests('SaneMaster Machine Cleanup Tests') do
       end
     end
 
+    test('server exact cleanup list includes Mini layout litter paths and globs') do
+      litter = SaneMasterModules::MachineCleanup::SERVER_EXACT_CLEANUP_PATHS
+      layout = SaneMasterModules::MachineCleanup::LAYOUT_LITTER_PATHS
+      [
+        '~/Desktop/SaneClick-E2E*',
+        '~/Desktop/SaneClick-Categories*',
+        '~/Users',
+        '~/SaneApps/Users',
+        '~/$HOME',
+        '~/LemonSqueezy-Uploads',
+        '~/shot',
+        '~/memory-bakeoff',
+        '~/sanebar-recovery-*',
+        '~/sanecite-build'
+      ].each do |path|
+        assert_includes(litter, path)
+        assert_includes(layout, path)
+      end
+      assert(!litter.include?('~/Desktop/LemonSqueezy-Uploads'),
+             'Desktop LemonSqueezy-Uploads is canonical staging and must not be exact-cleanup')
+
+      with_home do |home|
+        e2e = mkdir_home_path(home, 'Desktop/SaneClick-E2E.abc123')
+        categories = mkdir_home_path(home, 'Desktop/SaneClick-Categories.xyz')
+        users = mkdir_home_path(home, 'Users')
+        saneapps_users = mkdir_home_path(home, 'SaneApps/Users')
+        dollar_home = mkdir_home_path(home, '$HOME')
+        ls_home = mkdir_home_path(home, 'LemonSqueezy-Uploads')
+        ls_desktop = mkdir_home_path(home, 'Desktop/LemonSqueezy-Uploads')
+        recovery = mkdir_home_path(home, 'sanebar-recovery-2026')
+        subject = MachineCleanupHarness.new(sizes: {
+          File.expand_path(e2e) => 0.1,
+          File.expand_path(categories) => 0.1,
+          File.expand_path(users) => 0.0,
+          File.expand_path(saneapps_users) => 0.0,
+          File.expand_path(dollar_home) => 0.0,
+          File.expand_path(ls_home) => 0.1,
+          File.expand_path(ls_desktop) => 0.1,
+          File.expand_path(recovery) => 0.1
+        })
+
+        # Default cleanup (no --server) must still plan layout litter, including empty nests.
+        default_plan = subject.send(:build_machine_cleanup_plan, {
+          apply: false,
+          host: 'local',
+          server: false,
+          min_free_gb: 30,
+          cache_threshold_gb: 99,
+          deriveddata_age_days: 999,
+          trash_threshold_gb: 99,
+          preserve_apps: []
+        })
+        default_paths = default_plan[:actions].map { |action| action[:path] }.compact
+        assert_includes(default_paths, e2e)
+        assert_includes(default_paths, users)
+        assert_includes(default_paths, saneapps_users)
+        assert_includes(default_paths, dollar_home)
+        assert(!default_paths.include?(ls_desktop), 'Desktop LemonSqueezy-Uploads must survive cleanup')
+
+        plan = subject.send(:build_machine_cleanup_plan, {
+          apply: false,
+          host: 'local',
+          server: true,
+          min_free_gb: 30,
+          cache_threshold_gb: 99,
+          deriveddata_age_days: 999,
+          trash_threshold_gb: 99,
+          preserve_apps: []
+        })
+        paths = plan[:actions].map { |action| action[:path] }.compact
+
+        assert_includes(paths, e2e)
+        assert_includes(paths, categories)
+        assert_includes(paths, users)
+        assert_includes(paths, saneapps_users)
+        assert_includes(paths, dollar_home)
+        assert_includes(paths, ls_home)
+        assert_includes(paths, recovery)
+        assert(!paths.include?(ls_desktop), 'Desktop LemonSqueezy-Uploads must survive cleanup')
+        assert_eq(subject.send(:machine_cleanup_safe_path?, e2e), true)
+        assert_eq(subject.send(:machine_cleanup_safe_path?, dollar_home), true)
+        assert_eq(subject.send(:machine_cleanup_safe_path?, ls_desktop), false)
+      end
+    end
+
     test('server cleanup rejects symlinked roots and symlinked children') do
       with_home do |home|
         outside = mkdir_home_path(home, 'outside')

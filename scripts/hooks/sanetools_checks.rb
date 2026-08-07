@@ -14,6 +14,7 @@ require_relative 'sanetools_deploy'
 require_relative 'sanetools_github_guard'
 require_relative 'sanetools_research'
 require_relative 'sanetools_refusal'
+require_relative 'sane_layout_guard'
 
 module SaneToolsChecks
   # Constants needed by checks
@@ -282,6 +283,15 @@ module SaneToolsChecks
         end
       end
 
+      # Project layout: block Mini path fragmentation on edit tools only
+      if edit_tools.include?(tool_name)
+        [path, sanitized_path, decoded_path, expanded_path, expanded_decoded].compact.uniq.each do |candidate|
+          if (layout_reason = SaneLayoutGuard.violation_for_path(candidate))
+            return layout_reason
+          end
+        end
+      end
+
       nil
     end
 
@@ -493,6 +503,10 @@ module SaneToolsChecks
       return nil unless tool_name == 'Bash'
 
       command = tool_input['command'] || tool_input[:command] || ''
+
+      if (layout_reason = SaneLayoutGuard.violation_for_bash(command))
+        return layout_reason
+      end
 
       unless command.match?(/SaneMaster\.rb/)
         state_bypass_patterns = [
