@@ -63,7 +63,7 @@ assert(SaneAppsDependencyBaseline::NPM_VERSIONS['@steipete/macos-automator-mcp']
        'macOS Automator MCP pin drifted')
 assert(SaneAppsDependencyBaseline::NPM_VERSIONS['@upstash/context7-mcp'] == '3.2.3',
        'Context7 MCP pin drifted')
-assert(SaneAppsDependencyBaseline.npm_specs(:mini).include?('@agentmemory/agentmemory@0.9.27'),
+assert(SaneAppsDependencyBaseline.npm_specs(:mini).include?('@agentmemory/agentmemory@0.9.28'),
        'Mini AgentMemory install is not version-pinned')
 assert(SaneAppsDependencyBaseline.npm_specs(:air).none? { |spec| spec.end_with?('@latest') },
        'dependency apply must not float managed packages to latest')

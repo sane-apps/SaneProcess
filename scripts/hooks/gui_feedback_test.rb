@@ -73,41 +73,73 @@ failures += 1 unless check(
 )
 
 Dir.mktmpdir do |dir|
-  state_path = File.join(dir, 'sane_gui_feedback.json')
-  # Temporarily point cursor state at tmp by stubbing constant... use track via write path override.
-  # Exercise public API through mark/clear with monkeypatch of CURSOR_STATE_PATH consumer.
-  original = SaneGuiFeedback::CURSOR_STATE_PATH
+  state_dir = File.join(dir, 'by-conversation')
+  original_path = SaneGuiFeedback::CURSOR_STATE_PATH
+  original_dir = SaneGuiFeedback::CURSOR_STATE_DIR
   begin
     SaneGuiFeedback.send(:remove_const, :CURSOR_STATE_PATH)
-    SaneGuiFeedback.const_set(:CURSOR_STATE_PATH, state_path)
+    SaneGuiFeedback.send(:remove_const, :CURSOR_STATE_DIR)
+    SaneGuiFeedback.const_set(:CURSOR_STATE_PATH, File.join(dir, 'legacy.json'))
+    SaneGuiFeedback.const_set(:CURSOR_STATE_DIR, state_dir)
 
-    SaneGuiFeedback.track_command!('osascript -e \'click button "Update Review" of window 1\'')
-    failures += 1 unless check('pending after GUI click', SaneGuiFeedback.pending?)
+    SaneGuiFeedback.track_command!(
+      'playwright fill password=super-secret-value then click button "Update Review"',
+      conversation_id: 'chat-a'
+    )
+    chat_a_scope = SaneGuiFeedback.resolve_scope(conversation_id: 'chat-a')
+    failures += 1 unless check('pending after scoped GUI click', SaneGuiFeedback.pending?(scope: chat_a_scope))
+    state_path = SaneGuiFeedback.state_file_for(chat_a_scope)
+    state_text = File.read(state_path)
+    failures += 1 unless check('state stores no raw command or secret', !state_text.include?('super-secret-value'))
+    failures += 1 unless check('state directory is private', (File.stat(state_dir).mode & 0o777) == 0o700)
+    failures += 1 unless check('state file is private', (File.stat(state_path).mode & 0o777) == 0o600)
+    failures += 1 unless check(
+      'atomic state write leaves no temp files',
+      Dir.children(state_dir).none? { |entry| entry.end_with?('.tmp') }
+    )
 
     payload = SaneGuiFeedback.cursor_after_shell_payload(
       command: 'osascript -e \'click button "Submit"\'',
-      output: 'Newer Build Available'
+      output: 'Newer Build Available',
+      conversation_id: 'chat-a'
     )
     failures += 1 unless check(
       'cursor after-shell injects additional_context',
       payload.is_a?(Hash) && payload[:additional_context].to_s.include?('GUI ACTION FEEDBACK LOOP')
     )
 
-    SaneGuiFeedback.track_command!('ruby scripts/asc.rb get submission status')
-    failures += 1 unless check('cleared after feedback poll', !SaneGuiFeedback.pending?)
+    SaneGuiFeedback.track_command!('ruby scripts/asc.rb get submission status', conversation_id: 'chat-a')
+    failures += 1 unless check('cleared after feedback poll', !SaneGuiFeedback.pending?(scope: chat_a_scope))
 
-    SaneGuiFeedback.track_command!('osascript -e \'click button "Update Review"\'')
-    followup = SaneGuiFeedback.cursor_stop_followup(status: 'completed', loop_count: 0)
+    SaneGuiFeedback.track_command!('osascript -e \'click button "Update Review"\'', conversation_id: 'chat-a')
+    followup = SaneGuiFeedback.cursor_stop_followup(status: 'completed', loop_count: 0, conversation_id: 'chat-a')
     failures += 1 unless check(
       'stop followup when pending',
       followup.to_s.include?('GUI feedback loop incomplete')
     )
 
-    no_followup = SaneGuiFeedback.cursor_stop_followup(status: 'completed', loop_count: 2)
+    no_followup = SaneGuiFeedback.cursor_stop_followup(status: 'completed', loop_count: 2, conversation_id: 'chat-a')
     failures += 1 unless check('stop followup capped', no_followup.nil?)
+
+    other = SaneGuiFeedback.cursor_stop_followup(status: 'completed', loop_count: 0, conversation_id: 'chat-b')
+    failures += 1 unless check('pending state does not leak across conversations', other.nil?)
+
+    workspace_only = SaneGuiFeedback.track_command!(
+      'osascript -e \'click button "Update Review"\'',
+      workspace_roots: ['/same/project']
+    )
+    failures += 1 unless check('workspace-only state cannot leak across chats', workspace_only == :noop)
+    failures += 1 unless check(
+      'workspace-only stop cannot read another chat',
+      SaneGuiFeedback.cursor_stop_followup(
+        status: 'completed', loop_count: 0, workspace_roots: ['/same/project']
+      ).nil?
+    )
   ensure
     SaneGuiFeedback.send(:remove_const, :CURSOR_STATE_PATH)
-    SaneGuiFeedback.const_set(:CURSOR_STATE_PATH, original)
+    SaneGuiFeedback.send(:remove_const, :CURSOR_STATE_DIR)
+    SaneGuiFeedback.const_set(:CURSOR_STATE_PATH, original_path)
+    SaneGuiFeedback.const_set(:CURSOR_STATE_DIR, original_dir)
   end
 end
 

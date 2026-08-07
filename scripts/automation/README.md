@@ -204,15 +204,43 @@ Daily development status report across all projects.
 morning-report.sh
 ```
 
-### Production Codex heartbeats
+### Production review-watch heartbeats: two separate lanes
 
-Recurring Codex automation is Mini-owned and intentionally limited to two
-lanes: SaneApps Operations at 08:30 Mini local time and SaneCite Growth at
-10:00. Both append to live pinned Mini-local tasks. ACTIVE records must pass
-`sane_automation_guard.rb --validate ~/.codex/automations`, which verifies the
-task database row, session rollout identity/cwd containment, and GPT-5.5+
-reasoning profile. Use `automation_update` on the Mini for every production
-automation change; sync/reconcile scripts never mutate automation records.
+Recurring Codex automation is Mini-owned. App Store Connect and Chrome Web
+Store are independent release lanes and must never be collapsed into one
+"approved" result:
+
+1. `app_review_watch.rb` reads App Store Connect and owns Apple transition
+   state. Its 15-minute Mini heartbeat is ready only when the canonical ASC GET
+   path, durable state, internal-report health, and automation validation are
+   all green.
+2. `cws_review_watch.rb` reads only the official Chrome Web Store v2
+   `fetchStatus` endpoint and owns CWS transition state. It is automation-ready
+   only after publisher ID plus a complete refresh credential are present,
+   `--health-get` succeeds, internal-report health succeeds, and a Mini
+   automation lane with separate CWS state/results is installed through
+   `automation_update`.
+
+`PENDING_REVIEW`/`WAITING_FOR_REVIEW` means submitted, not approved. A green
+lane reports only the state returned by its own store. A partial or pending
+delivery remains non-green until the durable alert is provider-verified.
+
+ACTIVE records must pass `sane_automation_guard.rb --validate
+~/.codex/automations`, which verifies the task database row, session rollout
+identity/cwd containment, and use of the active client's latest supported model
+with medium-or-higher reasoning. Use `automation_update` on the Mini for every
+production automation change; sync/reconcile scripts never mutate automation
+records. Do not create LaunchAgents or other scheduling fallbacks.
+
+The CWS watcher loads only its five `SANE_CWS_*` names from the private
+`~/.config/nv/env` cache and never overrides an explicitly supplied process
+environment. When a complete refresh credential and a direct access token both
+exist, the refresh credential wins so an expired cached access token cannot
+mask a successful authorization. `cws_review_watch.rb --health` validates
+redacted local configuration without state or delivery; `--health-get`
+additionally performs the authorized official status read.
+`internal_report.rb --health` checks the email API and Resend read paths without
+sending or modifying delivery state.
 
 ### sync-codex-mini.sh
 
@@ -232,7 +260,7 @@ ruby scripts/SaneMaster.rb sync_mini mini --restart
 2. Syncs the active Codex skill registry (`~/.codex/SKILLS_REGISTRY.md`), `~/.codex/skills/`, and shared `~/.agents/skills/` to Mini.
 3. Installs the repo-owned Codex control-plane helpers from `scripts/codex-bin/` into local `~/.codex/bin/` and mirrors them to Mini.
 4. Syncs critical control-plane scripts (`check-inbox.sh`, `git-sync-safe.sh`, hooks, validation/reporting scripts).
-5. Points Mini AgentMemory at the Mini-owned loopback service; file-backed memories are handled by the separate conflict-preserving sync lane.
+5. Points Mini AgentMemory at the Mini-owned loopback service; file-backed memories are handled by the separate conflict-preserving sync lane, whose losing variants stay outside active memory in private hashed output archives.
 6. Verifies Air↔Mini SHA-256 parity for control-plane files and helpers plus dry-run `rsync` parity for skills.
 7. Preserves the running Mini Codex process by default; an explicit `--restart` is required to reload it.
 
@@ -338,7 +366,7 @@ install-memory-sync-agent.sh
 **What it does:**
 1. Installs `~/Library/LaunchAgents/com.saneapps.memory-sync.plist`.
 2. Runs at login and every 15 minutes.
-3. Uses `sync-memory-mini.sh` for locked, backup-first, no-delete, conflict-preserving Claude/Serena/Codex parity.
+3. Uses `sync-memory-mini.sh` for locked, backup-first, no-delete Claude/Serena/Codex parity. Serena coverage is the root `~/SaneApps/.serena/memories` pair plus the dynamic union of every real project-local `*/.serena/memories` directory present on either host, mapped relative to `~/SaneApps`; output archives, preserved archives, nested worktrees, and symlinked trees are never discovered as active memory. Losing variants and legacy conflict artifacts are retained in private hashed archives under `outputs/memory-conflicts/`, not active client memory.
 4. Triggers Mini snapshot-only preservation and pulls the snapshots to the Air without applying them.
 
 ### dependency_baseline.rb

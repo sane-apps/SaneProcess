@@ -19,6 +19,7 @@ exit(run_tests('SaneMaster Command Alias Tests') do
       assert_eq(master.send(:canonical_command_name, 'release-readiness'), 'release_readiness')
       assert_eq(master.send(:canonical_command_name, 'upgrade-path-proof'), 'upgrade_path_proof')
       assert_eq(master.send(:canonical_command_name, 'tool-receipt'), 'tool_discovery')
+      assert_eq(master.send(:canonical_command_name, 'wsp'), 'webstore_preflight')
       assert_eq(master.send(:canonical_command_name, 'verify'), 'verify')
       true
     end
@@ -44,6 +45,17 @@ exit(run_tests('SaneMaster Command Alias Tests') do
       assert_includes(summary[:args], '--pkg PATH')
       assert_includes(detail[:description], 'reuse is retired')
       assert(!detail[:examples].any? { |example| example.include?('--asc-build-id') })
+      true
+    end
+
+    test('Chrome Web Store help binds package, listing, media, privacy, and reviewer evidence') do
+      summary = SaneMaster::COMMANDS.fetch(:build).fetch(:commands).fetch('webstore_preflight')
+      detail = SaneMaster::COMMAND_DETAILS.fetch('webstore_preflight')
+      %w[--package --listing --media-dir --privacy-url].each do |flag|
+        assert_includes(summary[:args], flag)
+        assert_includes(detail[:usage], flag)
+      end
+      assert_includes(detail[:usage], '--review-instructions')
       true
     end
 

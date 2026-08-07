@@ -164,6 +164,13 @@ ruby scripts/SaneMaster.rb verify
 
 Permanent owner rule (2026-07-29): after GUI/portal mutations, re-read dialog/page/AX/API before claiming success.
 
+Cursor pending state is isolated by `conversation_id` under
+`~/.cursor/sane_gui_feedback/`. Conversation identifiers are hashed before
+they become filenames, and state stores only safe action categories rather
+than raw commands. The retired machine-global `~/.cursor/sane_gui_feedback.json`
+must never be read because it leaked follow-ups into unrelated chats. Adapters
+pass `conversation_id`; unscoped and workspace-only writes are refused.
+
 Shared logic: `scripts/hooks/core/gui_feedback.rb`  
 Tests: `ruby scripts/hooks/gui_feedback_test.rb`
 
@@ -176,4 +183,3 @@ cp scripts/hooks/cursor/gui_feedback_stop.rb ~/.cursor/hooks/
 chmod +x ~/.cursor/hooks/gui_feedback_*.rb
 # Merge hooks.json.example into ~/.cursor/hooks.json (afterShellExecution + stop)
 ```
-

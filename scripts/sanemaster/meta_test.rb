@@ -88,6 +88,30 @@ exit(run_tests('SaneMaster Meta Tests') do
       assert_includes(wrappers.keys, :curl)
       assert_includes(wrappers.keys, :open)
       assert_includes(wrappers.keys, :rsync)
+      assert_includes(wrappers.keys, :security)
+      assert_includes(wrappers.keys, :swift)
+      assert_includes(wrappers.keys, :xcodebuild)
+      true
+    end
+
+
+    test('guard sources recognize the live Codex Desktop shell marker') do
+      %w[
+        sane_build_tool_guard.sh
+        sane_curl_guard.sh
+        sane_open_guard.sh
+        sane_security_guard.sh
+        sane_ssh_guard.sh
+      ].each do |guard|
+        source = File.read(File.join(File.expand_path('../hooks', __dir__), guard))
+        assert_includes(source, 'CODEX_CI')
+      end
+      true
+    end
+
+    test('canonical automation writer loads the automation guard') do
+      writer = File.read(File.expand_path('../automation/codex-automation-mini.rb', __dir__))
+      assert_includes(writer, "require_relative '../hooks/sane_automation_guard'")
       true
     end
   end

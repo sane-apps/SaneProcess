@@ -9,7 +9,7 @@ set -euo pipefail
 REAL_CURL="/usr/bin/curl"
 
 is_ai_session() {
-  [[ -n "${CODEX_SHELL:-}" || -n "${CLAUDE_CODE:-}" || -n "${CLAUDE_WORKTREES:-}" || -n "${GROK_HOOK_EVENT:-}" || -n "${GROK_SESSION_ID:-}" ]]
+  [[ -n "${CODEX_SHELL:-}" || "${CODEX_CI:-}" == "1" || "${CODEX_INTERNAL_ORIGINATOR_OVERRIDE:-}" == "Codex Desktop" || -n "${CLAUDE_CODE:-}" || -n "${CLAUDE_WORKTREES:-}" || -n "${CURSOR_AGENT:-}" || -n "${CURSOR_SESSION_ID:-}" || -n "${CURSOR_TRACE_ID:-}" || -n "${GROK_HOOK_EVENT:-}" || -n "${GROK_SESSION_ID:-}" ]]
 }
 
 is_write_request() {

@@ -36,7 +36,13 @@ module SaneMasterModules
       'agent-eval' => 'agent_eval',
       'skill-lint' => 'skill_lint',
       'tool_receipt' => 'tool_discovery',
-      'tool-receipt' => 'tool_discovery'
+      'tool-receipt' => 'tool_discovery',
+      'wsp' => 'webstore_preflight',
+      'webstore-preflight' => 'webstore_preflight',
+      'prophecy-reviewer-click' => 'prophecy_reviewer_click',
+      'prophecy_ledger_reviewer_click' => 'prophecy_reviewer_click',
+      'pl_reviewer_click' => 'prophecy_reviewer_click',
+      'pl-reviewer-click' => 'prophecy_reviewer_click'
     }.freeze
 
     def command_aliases

@@ -201,6 +201,16 @@ module SaneMasterModules
         content = File.read(file)
         content.scan(/\.accessibilityIdentifier\(["']([^"']+)["']\)/) { |match| identifiers << match[0] }
         content.scan(/accessibilityIdentifier\(["']([^"']+)["']\)/) { |match| identifiers << match[0] }
+        # Conditional identifiers are still concrete declarations, for example:
+        # .accessibilityIdentifier(field == .price ? "intake.price" : "intake.mileage")
+        # Extract every identifier-shaped string from a single-line modifier
+        # expression so the test-reference gate does not require view-only
+        # refactors just to make both branches visible to the scanner.
+        content.scan(/\.accessibilityIdentifier\(([^)\n]+)\)/) do |expression|
+          expression[0].scan(/["']([a-z0-9]+(?:[._-][A-Za-z0-9]+)+)["']/) do |match|
+            identifiers << match[0]
+          end
+        end
         # Labeled component arguments forward identifiers into shared views —
         # accessibilityID:, cancelID:, actionID:, bare id:, ...Identifier: —
         # these are declarations too (2026-07-15 SaneVideo pre-push false

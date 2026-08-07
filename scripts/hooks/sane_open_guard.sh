@@ -10,7 +10,24 @@ LOCAL_UI_APPROVAL="MR. SANE APPROVES LOCAL UI ON AIR"
 MINI_UNAVAILABLE_APPROVAL="MR. SANE CONFIRMS MINI UNAVAILABLE"
 
 is_ai_session() {
-  [[ -n "${CODEX_SHELL:-}" || -n "${CLAUDE_CODE:-}" || -n "${CLAUDE_WORKTREES:-}" || -n "${SANE_OPEN_GUARD_TEST:-}" || -n "${GROK_HOOK_EVENT:-}" || -n "${GROK_SESSION_ID:-}" ]]
+  [[ -n "${CODEX_SHELL:-}" || "${CODEX_CI:-}" == "1" || "${CODEX_INTERNAL_ORIGINATOR_OVERRIDE:-}" == "Codex Desktop" || -n "${CLAUDE_CODE:-}" || -n "${CLAUDE_WORKTREES:-}" || -n "${CURSOR_AGENT:-}" || -n "${CURSOR_SESSION_ID:-}" || -n "${CURSOR_TRACE_ID:-}" || -n "${SANE_OPEN_GUARD_TEST:-}" || -n "${GROK_HOOK_EVENT:-}" || -n "${GROK_SESSION_ID:-}" ]]
+}
+
+requests_blocked_browser() {
+  local args=("$@")
+  local i arg next
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    arg="${args[$i]}"
+    case "$arg" in
+      -a|-b)
+        next="${args[$((i + 1))]:-}"
+        case "$(printf '%s' "$next" | tr '[:upper:]' '[:lower:]')" in
+          safari|com.apple.safari|chrome|"google chrome"|com.google.chrome|com.google.chrome.*) return 0 ;;
+        esac
+        ;;
+    esac
+  done
+  return 1
 }
 
 running_on_macbook_air() {
@@ -73,6 +90,12 @@ block_reason_for_arg() {
 combined_command() {
   printf '%s ' "$@"
 }
+
+if is_ai_session && requests_blocked_browser "$@"; then
+  echo "🔴 BLOCKED: Safari/Chrome browser launch (Brave only)" >&2
+  echo "   Agent browser work must use the existing Brave session on the Mini." >&2
+  exit 2
+fi
 
 if is_ai_session && running_on_macbook_air && ! approved_local_fallback; then
   for arg in "$@"; do

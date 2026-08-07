@@ -59,6 +59,7 @@ module SaneMasterModules
       upgrade_path_proof
       release_preflight
                                       appstore_preflight
+                                      webstore_preflight
                                       setapp_status
                                       setapp-status
                                       setapp_package

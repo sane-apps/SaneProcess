@@ -54,6 +54,11 @@ Use `ssh mini-lan` only to diagnose same-network Bonjour. If LAN is unavailable,
 `ssh mini` automatically uses Tailscale. If both private routes fail, the proxy
 fails clearly rather than hiding the outage behind an ephemeral hostname.
 
+**Do not SSH to `100.77.120.83:22` directly from the Air.** Its userspace
+Tailscale does not provide kernel TCP routing to the Mini even when
+`tailscale ping` succeeds. Use `ssh mini` or the installed host aliases, which
+force `saneapps-mini-proxy`. The Mini user is `stephansmac`, never `sj`.
+
 ## Mini To Air Access
 
 The return route is intentionally available for recovery and bidirectional
@@ -82,8 +87,14 @@ agentmemory status
 exit keepalive, a 30-second throttle, explicit `HOME`, and working directory
 `/Users/stephansmac`. Its supervisor checks the real HTTP health surface, not
 just the long-lived Node wrapper; two consecutive health failures terminate the
-whole worker with a nonzero exit so launchd restarts it. The working directory
-is required because AgentMemory's database is `~/data/state_store.db`. The Air uses
+worker first and then its validated iii engine with a nonzero exit so launchd
+restarts the complete pair. Startup and restart require canonical ports 3111,
+3112, 3113, and 49134 to be free; an unrelated listener fails closed rather than
+being signaled. `SANE_AGENTMEMORY_CORPUS_MIN` defaults to `1` so this Mini's
+persisted corpus must remain nonempty, while the search canary only proves that
+the route returns a well-formed results array. Set the minimum to `0` only for an
+intentional fresh empty store. The working directory is required because
+AgentMemory's database is `~/data/state_store.db`. The Air uses
 `scripts/automation/agentmemory-mcp-air.sh` to create a bounded SSH tunnel to
 the Mini and then starts the stdio MCP shim.
 
@@ -94,8 +105,9 @@ login and every 15 minutes by `com.saneapps.memory-sync`. The implementation is
 - cross-host lock with stale-lock recovery;
 - backup-first, no-delete operation;
 - checksum verification;
-- newest-mtime selection with losing same-file versions retained as
-  `.sane-conflict-*` files on both Macs;
+- newest-mtime selection with losing same-file versions and legacy
+  `.sane-conflict-*` artifacts retained in private, hashed per-run archives
+  under `outputs/memory-conflicts/`, outside active client memory;
 - clean skip when the Mini is temporarily unreachable;
 - non-clobbering Mini dirty-work snapshots pulled into the Air outputs folder.
 

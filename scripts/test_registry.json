@@ -74,12 +74,39 @@
       ]
     },
     {
+      "path": "scripts/hooks/sane_action_guard_test.rb",
+      "label": "SaneProcess action authorization guard tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/hooks/sane_action_guard_test.rb"
+      ]
+    },
+    {
       "path": "scripts/hooks/sane_build_tool_guard_test.rb",
       "label": "SaneProcess build tool shell guard tests",
       "status": "required",
       "cmd": [
         "ruby",
         "scripts/hooks/sane_build_tool_guard_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/hooks/gui_feedback_test.rb",
+      "label": "SaneProcess GUI action feedback tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/hooks/gui_feedback_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/hooks/cursor/install_test.rb",
+      "label": "SaneProcess Cursor control-plane installer tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/hooks/cursor/install_test.rb"
       ]
     },
     {
@@ -155,6 +182,42 @@
       ]
     },
     {
+      "path": "scripts/automation/sync_grok_mini_test.rb",
+      "label": "SaneProcess Grok control plane sync tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/automation/sync_grok_mini_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/automation/app_review_watch_test.rb",
+      "label": "SaneApps App Store review transition watcher tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/automation/app_review_watch_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/automation/cws_review_watch_test.rb",
+      "label": "SaneLot Chrome Web Store review transition watcher tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/automation/cws_review_watch_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/automation/session_guardian_test.rb",
+      "label": "SaneProcess Air session guardian installer tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/automation/session_guardian_test.rb"
+      ]
+    },
+    {
       "path": "scripts/automation/dependency_baseline_test.rb",
       "label": "Air and Mini dependency baseline tests",
       "status": "required",
@@ -209,6 +272,15 @@
       "cmd": [
         "ruby",
         "scripts/sanemaster/routed_verify_metric_mirror_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/sanemaster/store_compliance_test.rb",
+      "label": "SaneProcess App Store and Chrome Web Store compliance tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/sanemaster/store_compliance_test.rb"
       ]
     },
     {
@@ -475,6 +547,24 @@
       "cmd": [
         "ruby",
         "scripts/mini/mini_agentmemory_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/mini/mini_agentmemory_supervisor_test.rb",
+      "label": "SaneProcess Mini AgentMemory supervisor ownership tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/mini/mini_agentmemory_supervisor_test.rb"
+      ]
+    },
+    {
+      "path": "scripts/mini/mini_agentmemory_installer_safety_test.rb",
+      "label": "SaneProcess Mini AgentMemory installer safety tests",
+      "status": "required",
+      "cmd": [
+        "ruby",
+        "scripts/mini/mini_agentmemory_installer_safety_test.rb"
       ]
     },
     {

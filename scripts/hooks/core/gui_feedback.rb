@@ -12,9 +12,13 @@
 require 'json'
 require 'fileutils'
 require 'time'
+require 'digest'
+require 'securerandom'
 
 module SaneGuiFeedback
+  # Legacy single-file path (pre-2026-08-01). Never read it for live state.
   CURSOR_STATE_PATH = File.expand_path('~/.cursor/sane_gui_feedback.json').freeze
+  CURSOR_STATE_DIR = File.expand_path('~/.cursor/sane_gui_feedback').freeze
   PENDING_TTL_SECONDS = 30 * 60
 
   # Hard mutations: always a GUI/portal action. Click return is not proof.
@@ -211,24 +215,36 @@ module SaneGuiFeedback
     ].join("\n")
   end
 
-  def track_command!(command)
+  def track_command!(command, conversation_id: nil, workspace_roots: nil)
     text = command.to_s
     return :noop if text.strip.empty?
 
+    scope = resolve_scope(conversation_id: conversation_id, workspace_roots: workspace_roots)
+
     if feedback_poll?(text)
-      clear_pending!
+      clear_pending!(scope: scope)
       return :cleared
     end
 
     return :noop unless gui_action?(text)
 
-    mark_pending!(text)
+    if scope.nil?
+      # Claude's StateManager is session-local. Cursor without a conversation ID
+      # must not fall back to machine- or workspace-global state.
+      return :noop unless defined?(StateManager)
+
+      track_state_manager_pending!(safe_action_summary(text))
+      return :pending
+    end
+
+    mark_pending!(text, scope: scope)
     :pending
   end
 
-  def mark_pending!(command)
-    summary = command.to_s.gsub(/\s+/, ' ').strip[0, 180]
+  def mark_pending!(command, scope: nil)
+    summary = safe_action_summary(command)
     write_cursor_state(
+      scope: scope,
       pending: true,
       last_action: summary,
       last_action_at: Time.now.iso8601,
@@ -237,62 +253,100 @@ module SaneGuiFeedback
     track_state_manager_pending!(summary)
   end
 
-  def clear_pending!
+  def clear_pending!(scope: nil)
+    if scope.to_s.empty?
+      track_state_manager_cleared!
+      return
+    end
+
+    prior = cursor_state(scope: scope)
     write_cursor_state(
+      scope: scope,
       pending: false,
-      last_action: cursor_state[:last_action],
-      last_action_at: cursor_state[:last_action_at],
+      last_action: prior[:last_action],
+      last_action_at: prior[:last_action_at],
       cleared_at: Time.now.iso8601
     )
     track_state_manager_cleared!
   end
 
-  def pending?
-    state = merged_pending_state
+  def pending?(scope: nil)
+    state = merged_pending_state(scope: scope)
     return false unless state[:pending]
     return false if stale?(state[:last_action_at])
 
     true
   end
 
-  def pending_summary
-    merged_pending_state[:last_action].to_s
+  def pending_summary(scope: nil)
+    merged_pending_state(scope: scope)[:last_action].to_s
   end
 
-  def cursor_after_shell_payload(command:, output: nil)
-    result = track_command!(command)
+  def cursor_after_shell_payload(command:, output: nil, conversation_id: nil, workspace_roots: nil)
+    scope = resolve_scope(conversation_id: conversation_id, workspace_roots: workspace_roots)
+    result = track_command!(command, conversation_id: conversation_id, workspace_roots: workspace_roots)
     signal = output_needs_attention?(output)
 
-    if result == :pending || (gui_action?(command) && signal)
+    if result == :pending || (gui_action?(command) && signal && !scope.nil?)
       {
         additional_context: reminder_text(
-          action_summary: command.to_s.gsub(/\s+/, ' ').strip,
+          action_summary: safe_action_summary(command),
           output_signal: signal
         )
       }
     elsif result == :cleared
       nil
-    elsif signal && gui_action?(command)
+    elsif signal && gui_action?(command) && !scope.nil?
       {
         additional_context: reminder_text(
-          action_summary: command.to_s.gsub(/\s+/, ' ').strip,
+          action_summary: safe_action_summary(command),
           output_signal: true
         )
       }
     end
   end
 
-  def cursor_stop_followup(status:, loop_count:)
+  def cursor_stop_followup(status:, loop_count:, conversation_id: nil, workspace_roots: nil)
     return nil unless status.to_s == 'completed'
     return nil if loop_count.to_i >= 2
-    return nil unless pending?
 
-    action = pending_summary
+    scope = resolve_scope(conversation_id: conversation_id, workspace_roots: workspace_roots)
+    return nil if scope.nil?
+    return nil unless pending?(scope: scope)
+
+    action = pending_summary(scope: scope)
     action_bit = action.empty? ? 'a GUI/portal mutation' : action
     'GUI feedback loop incomplete. You mutated a GUI/portal surface ' \
       "(#{action_bit}) but did not re-read dialog/page/AX/API state afterward. " \
       'Poll the live surface now, name what it shows, then continue or report the blocker. ' \
       'Do not claim success from click return alone.'
+  end
+
+  # Cursor conversations are the only safe cross-hook scope. A workspace is
+  # shared by multiple chats and recreated the original cross-chat leak.
+  def resolve_scope(conversation_id: nil, workspace_roots: nil)
+    _ = workspace_roots
+    cid = conversation_id.to_s.strip
+    return nil if cid.empty?
+
+    "conv:#{Digest::SHA256.hexdigest(cid)}"
+  end
+
+  # Persist only a category, never the raw shell command. GUI commands can carry
+  # typed passwords, tokens, URLs, VINs, or customer data.
+  def safe_action_summary(command)
+    text = command.to_s
+    return 'Playwright browser mutation' if text.match?(/\bplaywright\b/i)
+    return 'Chromium CDP browser mutation' if text.match?(/connectOverCDP/i)
+    return 'Brave browser mutation' if text.match?(/\bBrave(?: Browser)?\b/i)
+    return 'System Events GUI mutation' if text.match?(/\bSystem Events\b/i)
+    return 'AppleScript GUI mutation' if text.match?(/\bosascript\b/i)
+    return 'Peekaboo GUI mutation' if text.match?(/\bpeekaboo\b/i)
+    return 'cliclick GUI mutation' if text.match?(/\bcliclick\b/i)
+    return 'xdotool GUI mutation' if text.match?(/\bxdotool\b/i)
+    return 'Mini GUI mutation' if text.match?(/\bmini-gui-run\.sh\b/i)
+
+    'GUI or portal mutation'
   end
 
   def stale?(timestamp)
@@ -303,31 +357,55 @@ module SaneGuiFeedback
     true
   end
 
-  def cursor_state
-    return {} unless File.file?(CURSOR_STATE_PATH)
+  def state_file_for(scope)
+    digest = Digest::SHA256.hexdigest(scope.to_s)
+    File.join(CURSOR_STATE_DIR, "#{digest}.json")
+  end
 
-    raw = JSON.parse(File.read(CURSOR_STATE_PATH))
+  def cursor_state(scope: nil)
+    return {} if scope.to_s.empty?
+
+    path = state_file_for(scope)
+    return {} unless File.file?(path)
+
+    raw = JSON.parse(File.read(path))
     {
       pending: raw['pending'] == true,
       last_action: raw['last_action'],
       last_action_at: raw['last_action_at'],
-      cleared_at: raw['cleared_at']
+      cleared_at: raw['cleared_at'],
+      scope_digest: raw['scope_digest']
     }
   rescue JSON::ParserError, Errno::ENOENT
     {}
   end
 
-  def write_cursor_state(pending:, last_action:, last_action_at:, cleared_at:)
-    FileUtils.mkdir_p(File.dirname(CURSOR_STATE_PATH))
+  def write_cursor_state(pending:, last_action:, last_action_at:, cleared_at:, scope: nil)
+    return if scope.to_s.empty?
+
+    FileUtils.mkdir_p(CURSOR_STATE_DIR, mode: 0o700)
+    FileUtils.chmod(0o700, CURSOR_STATE_DIR)
+    path = state_file_for(scope)
+    temp = File.join(CURSOR_STATE_DIR, ".#{File.basename(path)}.#{Process.pid}.#{SecureRandom.hex(6)}.tmp")
     payload = {
+      scope_digest: Digest::SHA256.hexdigest(scope.to_s),
       pending: pending,
       last_action: last_action,
       last_action_at: last_action_at,
       cleared_at: cleared_at
     }
-    File.write(CURSOR_STATE_PATH, JSON.pretty_generate(payload))
+    File.open(temp, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+      file.write(JSON.pretty_generate(payload))
+      file.write("\n")
+      file.flush
+      file.fsync
+    end
+    File.rename(temp, path)
+    FileUtils.chmod(0o600, path)
   rescue StandardError
     # Fail open — never break the agent loop on state I/O.
+  ensure
+    FileUtils.rm_f(temp) if defined?(temp) && temp && File.exist?(temp)
   end
 
   def track_state_manager_pending!(summary)
@@ -358,7 +436,10 @@ module SaneGuiFeedback
     nil
   end
 
-  def merged_pending_state
+  def merged_pending_state(scope: nil)
+    return cursor_state(scope: scope) unless scope.to_s.empty?
+
+    # Unscoped callers are Claude-only and use session-local StateManager.
     sm = {}
     if defined?(StateManager)
       begin
@@ -367,24 +448,10 @@ module SaneGuiFeedback
         sm = {}
       end
     end
-    file = cursor_state
-    # Prefer the freshest pending marker.
-    candidates = [sm, file].select { |h| h[:pending] || h['pending'] }
-    return file.merge(sm) if candidates.empty?
-
-    candidates.max_by do |h|
-      ts = h[:last_action_at] || h['last_action_at']
-      begin
-        Time.parse(ts.to_s).to_i
-      rescue ArgumentError
-        0
-      end
-    end.then do |best|
-      {
-        pending: true,
-        last_action: best[:last_action] || best['last_action'],
-        last_action_at: best[:last_action_at] || best['last_action_at']
-      }
-    end
+    {
+      pending: sm[:pending] == true || sm['pending'] == true,
+      last_action: sm[:last_action] || sm['last_action'],
+      last_action_at: sm[:last_action_at] || sm['last_action_at']
+    }
   end
 end

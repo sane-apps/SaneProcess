@@ -57,8 +57,13 @@ def fake_issuer_runner(root)
     exit Integer(ENV.fetch('FAKE_ISSUER_EXIT', '1')) if ENV['FAKE_ISSUER_NO_CANDIDATE'] == '1'
 
     command = ARGV.first
+    payload_type = case command
+                   when 'appstore_preflight' then 'appstore_preflight_status'
+                   when 'webstore_preflight' then 'webstore_preflight_status'
+                   else 'release_preflight_status'
+                   end
     payload = {
-      'type' => command == 'appstore_preflight' ? 'appstore_preflight_status' : 'release_preflight_status',
+      'type' => payload_type,
       'status' => ENV.fetch('FAKE_ISSUER_STATUS', 'passed'),
       'issues' => [],
       'issueCount' => 0,
@@ -225,6 +230,54 @@ exit(run_tests('Release Receipt Signer Security Tests') do
           issuer.issue('saneprocess.appstore_preflight.v1', project, producer_args: ['--unsafe', 'passed'])
         end
         assert_includes(error.message, 'unsupported')
+      end
+      true
+    end
+
+    test('issuer preserves only project-contained Web Store evidence inputs') do
+      signer_fixture_root do |root|
+        project = File.join(root, 'project')
+        package = File.join(project, 'candidate.zip')
+        listing = File.join(project, 'LISTING.md')
+        media = File.join(project, 'media')
+        review = File.join(project, 'review.json')
+        FileUtils.mkdir_p(media)
+        File.write(package, 'zip fixture')
+        File.write(listing, 'listing fixture')
+        File.write(review, '{}')
+        authority = ReleaseReceiptSigner.test_signer(secret: 'issuer-test-secret', root: root)
+        issuer = ReleaseReceiptSigner::Issuer.new(
+          authority: authority,
+          root: root,
+          workspace_root: root,
+          runner: fake_issuer_runner(root),
+          environment: { 'PATH' => '/usr/bin:/bin', 'HOME' => Dir.home }
+        )
+        args = [
+          '--package', package,
+          '--listing', listing,
+          '--media-dir', media,
+          '--privacy-url', 'https://example.com/privacy',
+          '--review-instructions', review
+        ]
+
+        assert_eq(issuer.issue('saneprocess.webstore_preflight.v1', project, producer_args: args), 0)
+        receipt = File.join(project, 'outputs', 'webstore_preflight_status.json')
+        payload = authority.read(receipt, producer: 'saneprocess.webstore_preflight.v1')
+        assert_eq(payload['observedCommand'], 'webstore_preflight')
+        assert_eq(payload['observedArgs'][1], File.realpath(package))
+        assert_eq(payload['observedArgs'][5], File.realpath(media))
+
+        outside = File.join(root, 'outside.zip')
+        File.write(outside, 'outside')
+        error = assert_raises(ArgumentError) do
+          issuer.issue(
+            'saneprocess.webstore_preflight.v1',
+            project,
+            producer_args: args.each_slice(2).flat_map { |flag, value| [flag, flag == '--package' ? outside : value] }
+          )
+        end
+        assert_includes(error.message, 'escapes the project')
       end
       true
     end

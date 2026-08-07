@@ -5,6 +5,7 @@ require_relative 'hooks/test/test_framework'
 require_relative 'validation_report'
 require 'tmpdir'
 require 'stringio'
+require 'rbconfig'
 
 class ValidationReportHarness < ValidationReport
   attr_reader :issues, :warnings, :metrics, :verdict
@@ -484,7 +485,129 @@ def write_signed_release_preflight_status(path, signer, source_fingerprint: nil)
   receipt
 end
 
+def with_isolated_policy_home
+  Dir.mktmpdir('user-policy-home-') do |home|
+    previous_home = ENV['HOME']
+    ENV['HOME'] = home
+    FileUtils.mkdir_p(File.join(home, '.codex'))
+    FileUtils.mkdir_p(File.join(home, '.claude'))
+    policy = <<~POLICY
+      <!-- SANEPROCESS_ADMIN_BROWSER_POLICY_V1 -->
+      Authenticated admin and portal browser work runs only in the existing Brave session on the Mac Mini.
+      Never launch or control Chrome or Safari. Never automate browsers on the Air.
+      Use the active client's latest and best supported model.
+    POLICY
+    File.write(File.join(home, '.codex', 'AGENTS.md'), policy)
+    File.write(File.join(home, '.claude', 'CLAUDE.md'), policy)
+    File.write(File.join(home, '.codex', 'config.toml'), <<~TOML)
+      model_reasoning_effort = "high"
+
+      [plugins."chrome@openai-bundled"]
+      enabled = false
+    TOML
+    yield home
+  ensure
+    ENV['HOME'] = previous_home
+  end
+end
+
+def process_alive_for_test?(pid)
+  Process.kill(0, pid)
+  true
+rescue Errno::ESRCH
+  false
+rescue Errno::EPERM
+  true
+end
+
 exit(run_tests('Validation report tests') do
+  test_category('Q16 active user policy controls') do
+    test('accepts floating models and the marked Brave-only Mini-only browser rule') do
+      with_isolated_policy_home do
+        assert_eq(ValidationReport.new.send(:user_policy_control_issues), [])
+      end
+      true
+    end
+
+    test('accepts a policy prohibition wrapped across lines') do
+      with_isolated_policy_home do |home|
+        File.write(File.join(home, '.claude', 'CLAUDE.md'), <<~POLICY)
+          **SANEPROCESS_ADMIN_BROWSER_POLICY_V1:** Authenticated or admin browser work
+          runs only in the existing Brave session on the Mac Mini. Never launch or
+          control Google Chrome or Safari, and never automate Brave on the MacBook Air.
+        POLICY
+        assert_eq(ValidationReport.new.send(:user_policy_control_issues), [])
+      end
+      true
+    end
+
+    test('rejects a numbered GPT model in Codex global instructions') do
+      with_isolated_policy_home do |home|
+        File.open(File.join(home, '.codex', 'AGENTS.md'), 'a') { |file| file.puts('Use model gpt-5.6-sol.') }
+        issues = ValidationReport.new.send(:user_policy_control_issues)
+        assert(issues.any? { |issue| issue.include?('~/.codex/AGENTS.md hard-pins') }, issues.inspect)
+      end
+      true
+    end
+
+    test('rejects a numbered Claude model in Claude global instructions') do
+      with_isolated_policy_home do |home|
+        File.open(File.join(home, '.claude', 'CLAUDE.md'), 'a') { |file| file.puts('Use claude-sonnet-4-5.') }
+        issues = ValidationReport.new.send(:user_policy_control_issues)
+        assert(issues.any? { |issue| issue.include?('~/.claude/CLAUDE.md hard-pins') }, issues.inspect)
+      end
+      true
+    end
+
+    test('rejects each global instruction surface without the Brave-only Mini-only rule') do
+      with_isolated_policy_home do |home|
+        File.write(File.join(home, '.codex', 'AGENTS.md'), 'Use the latest model.')
+        File.write(File.join(home, '.claude', 'CLAUDE.md'), 'Use the latest model.')
+        issues = ValidationReport.new.send(:user_policy_control_issues)
+        assert(issues.any? { |issue| issue.include?('~/.codex/AGENTS.md is missing') }, issues.inspect)
+        assert(issues.any? { |issue| issue.include?('~/.claude/CLAUDE.md is missing') }, issues.inspect)
+      end
+      true
+    end
+
+    test('rejects a numbered model assignment in Codex config') do
+      with_isolated_policy_home do |home|
+        File.write(File.join(home, '.codex', 'config.toml'), 'model = "gpt-5.6-sol"\n')
+        issues = ValidationReport.new.send(:user_policy_control_issues)
+        assert(issues.any? { |issue| issue.include?('config.toml hard-pins') }, issues.inspect)
+      end
+      true
+    end
+
+    test('rejects Chrome backend availability in Codex config') do
+      with_isolated_policy_home do |home|
+        File.write(File.join(home, '.codex', 'config.toml'), "BROWSER_USE_AVAILABLE_BACKENDS = \"chrome,iab\"\n")
+        issues = ValidationReport.new.send(:user_policy_control_issues)
+        assert(issues.any? { |issue| issue.include?('enables the Chrome browser backend') }, issues.inspect)
+      end
+      true
+    end
+
+    test('rejects Chrome backend instructions in Codex config') do
+      with_isolated_policy_home do |home|
+        File.write(File.join(home, '.codex', 'config.toml'), "NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = \"Control Chrome\"\n")
+        issues = ValidationReport.new.send(:user_policy_control_issues)
+        assert(issues.any? { |issue| issue.include?('instructs use of the Chrome browser backend') }, issues.inspect)
+      end
+      true
+    end
+
+    test('rejects an enabled Chrome plugin while allowing a disabled declaration') do
+      with_isolated_policy_home do |home|
+        config = File.join(home, '.codex', 'config.toml')
+        File.write(config, "[plugins.\"chrome@openai-bundled\"]\nenabled = true\n")
+        issues = ValidationReport.new.send(:user_policy_control_issues)
+        assert(issues.any? { |issue| issue.include?('enables the Chrome plugin') }, issues.inspect)
+      end
+      true
+    end
+  end
+
   test_category('Q0 clean-session operating truth') do
     def clean_session_fixture(root)
       common = "> **Status: superseded on 2026-07-14.** Current operating truth only.\n"
@@ -1539,6 +1662,10 @@ exit(run_tests('Validation report tests') do
 
       assert_includes(init_source, '"$SRC"/*.rb')
       assert_includes(init_source, '"$SRC"/core/*.rb')
+      assert_includes(init_source, 'SHELL_GUARD_WRAPPERS=')
+      assert_includes(init_source, 'security:sane_security_guard.sh')
+      assert_includes(init_source, 'xcodebuild:xcodebuild')
+      assert_includes(init_source, 'ln -sfn "$guard_source" "$HOME/.local/bin/$command_name"')
       true
     end
 
@@ -2322,6 +2449,30 @@ exit(run_tests('Validation report tests') do
       true
     end
 
+    test('finds the documented home-root secret scan receipt when the repo receipt is absent') do
+      Dir.mktmpdir('validation-secret-scan-home-') do |home|
+        repo_receipts = File.join(home, 'repo-receipts')
+        home_receipts = File.join(home, 'outputs', 'secret-scan')
+        FileUtils.mkdir_p(repo_receipts)
+        FileUtils.mkdir_p(home_receipts)
+        receipt = File.join(home_receipts, 'home.json')
+        File.write(receipt, JSON.pretty_generate(
+          'generated_at' => Time.now.utc.iso8601,
+          'status' => 'pass',
+          'actionable_count' => 0
+        ))
+        previous_home = ENV['HOME']
+        ENV['HOME'] = home
+        subject = ValidationReport.new
+        subject.define_singleton_method(:secret_scan_receipt_dir) { repo_receipts }
+
+        assert_eq(subject.send(:latest_secret_scan_receipt_path), receipt)
+      ensure
+        ENV['HOME'] = previous_home
+      end
+      true
+    end
+
     test('validation report defaults to no keychain fallback') do
       source = File.read(__dir__ + '/validation_report.rb')
 
@@ -2364,8 +2515,8 @@ exit(run_tests('Validation report tests') do
       subject.instance_variable_set(:@warnings, [])
       subject.instance_variable_set(:@metrics, {})
       subject.define_singleton_method(:resolve_secret_value) { |_service, _account, *_env_names| '' }
-      subject.define_singleton_method(:agentmemory_status_output) do
-        "Connected — v0.9.27 at http://localhost:3111\nHealth: ✓ healthy\nMemories: 1,201\n"
+      subject.define_singleton_method(:agentmemory_runtime_proof) do
+        { connected: true, livez: true, json_health: true, corpus: true, search: true }
       end
 
       subject.send(:q9_support_infrastructure)
@@ -2377,7 +2528,7 @@ exit(run_tests('Validation report tests') do
       assert_includes(warnings, 'Q9 SUPPORT: Resend Email API live credential check skipped in no-prompt validation mode')
       assert_includes(warnings, 'Q9 SUPPORT: Lemon Squeezy API live credential check skipped in no-prompt validation mode')
       assert(!warnings.include?('Knowledge graph'), warnings)
-      assert(!warnings.include?('AgentMemory is unavailable'), warnings)
+      assert(!warnings.include?('AgentMemory runtime proof failed'), warnings)
       true
     ensure
       ENV['SANE_ALLOW_KEYCHAIN_PROMPTS'] = old_allow if old_allow
@@ -2386,6 +2537,127 @@ exit(run_tests('Validation report tests') do
       ENV['CLOUDFLARE_API_TOKEN'] = old_cf if old_cf
       ENV['RESEND_API_KEY'] = old_resend if old_resend
       ENV['LEMONSQUEEZY_API_KEY'] = old_ls if old_ls
+    end
+
+
+    test('support validation blocks on each missing AgentMemory runtime proof') do
+      old_allow = ENV.delete('SANE_ALLOW_KEYCHAIN_PROMPTS')
+      old_no_keychain = ENV.delete('SANE_NO_KEYCHAIN')
+      old_fallback = ENV.delete('SANE_KEYCHAIN_FALLBACK')
+      old_cf = ENV.delete('CLOUDFLARE_API_TOKEN')
+      old_resend = ENV.delete('RESEND_API_KEY')
+      old_ls = ENV.delete('LEMONSQUEEZY_API_KEY')
+
+      subject = ValidationReport.new
+      subject.instance_variable_set(:@issues, [])
+      subject.instance_variable_set(:@warnings, [])
+      subject.instance_variable_set(:@metrics, {})
+      subject.define_singleton_method(:resolve_secret_value) { |_service, _account, *_env_names| '' }
+      subject.define_singleton_method(:agentmemory_runtime_proof) do
+        { connected: true, livez: false, json_health: false, corpus: false, search: false }
+      end
+
+      subject.send(:q9_support_infrastructure)
+      issues = subject.instance_variable_get(:@issues).join("\n")
+      warnings = subject.instance_variable_get(:@warnings).join("\n")
+
+      assert_includes(issues, 'Q9 SUPPORT: AgentMemory runtime proof failed on the Mini-owned port 3111: livez, health, corpus, search')
+      assert(!warnings.include?('AgentMemory runtime proof failed'), warnings)
+      true
+    ensure
+      ENV['SANE_ALLOW_KEYCHAIN_PROMPTS'] = old_allow if old_allow
+      ENV['SANE_NO_KEYCHAIN'] = old_no_keychain if old_no_keychain
+      ENV['SANE_KEYCHAIN_FALLBACK'] = old_fallback if old_fallback
+      ENV['CLOUDFLARE_API_TOKEN'] = old_cf if old_cf
+      ENV['RESEND_API_KEY'] = old_resend if old_resend
+      ENV['LEMONSQUEEZY_API_KEY'] = old_ls if old_ls
+    end
+
+    test('AgentMemory status capture kills a real hanging child within its timeout bound') do
+      Dir.mktmpdir('agentmemory-status-hang-') do |dir|
+        pid_path = File.join(dir, 'child.pid')
+        child_pid = nil
+        child = <<~'RUBY'
+          Signal.trap('TERM', 'IGNORE')
+          File.write(ARGV.fetch(0), Process.pid.to_s)
+          sleep 30
+        RUBY
+        command = [RbConfig.ruby, '-e', child, pid_path]
+        subject = ValidationReport.new
+
+        started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        receipt = subject.send(:capture_agentmemory_status, command: command, timeout_seconds: 0.15)
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+        child_pid = Integer(File.read(pid_path))
+
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1.0
+        while process_alive_for_test?(child_pid) && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+          sleep 0.01
+        end
+
+        assert(elapsed < 2.0, "capture took #{elapsed.round(3)} seconds")
+        assert_eq(receipt[:timed_out], true)
+        assert_eq(receipt[:exit_code], 124)
+        assert(receipt[:duration_seconds].finite?, receipt.inspect)
+        assert(receipt[:duration_seconds] >= 0 && receipt[:duration_seconds] < 2.0, receipt.inspect)
+        assert(!process_alive_for_test?(child_pid), "hanging child #{child_pid} survived timeout cleanup")
+      ensure
+        if child_pid && process_alive_for_test?(child_pid)
+          Process.kill('KILL', child_pid)
+          Process.wait(child_pid)
+        end
+      end
+      true
+    end
+
+    test('AgentMemory status capture preserves fast successful output') do
+      expected = "Connected — v0.9.99 at http://localhost:3111\nHealth: ✓ healthy\nMemories: 1,201\n"
+      command = [RbConfig.ruby, '-e', 'STDOUT.write(ARGV.fetch(0))', expected]
+
+      receipt = ValidationReport.new.send(
+        :capture_agentmemory_status,
+        command: command,
+        timeout_seconds: 1.0
+      )
+
+      assert_eq(receipt[:output], expected)
+      assert_eq(receipt[:timed_out], false)
+      assert_eq(receipt[:exit_code], 0)
+      true
+    end
+
+    test('AgentMemory runtime proof requires direct routes, corpus, and search results') do
+      subject = ValidationReport.new
+      subject.define_singleton_method(:agentmemory_status_output) do
+        "Connected — v0.9.99 at http://localhost:3111\nHealth: ✓ healthy\nMemories: 1,201\n"
+      end
+      subject.define_singleton_method(:agentmemory_http_response) do |path, method: :get, payload: nil|
+        case path
+        when '/agentmemory/livez'
+          { code: 200, body: 'ok' }
+        when '/agentmemory/health'
+          { code: 200, body: JSON.generate(service: 'agentmemory', status: 'healthy') }
+        when '/agentmemory/search'
+          raise 'search must be a JSON POST' unless method == :post && JSON.parse(payload).fetch('query') == 'SaneApps'
+
+          { code: 200, body: JSON.generate(results: [{ title: 'SaneApps' }]) }
+        else
+          { code: 404, body: '' }
+        end
+      end
+
+      proof = subject.send(:agentmemory_runtime_proof)
+      assert(%i[connected livez json_health corpus search].all? { |key| proof[key] }, proof.inspect)
+
+      subject.define_singleton_method(:agentmemory_http_response) do |path, **_options|
+        if path == '/agentmemory/search'
+          { code: 200, body: JSON.generate(results: []) }
+        else
+          { code: 200, body: path.end_with?('health') ? JSON.generate(service: 'agentmemory', status: 'healthy') : 'ok' }
+        end
+      end
+      assert(!subject.send(:agentmemory_runtime_proof)[:search])
+      true
     end
   end
 end)

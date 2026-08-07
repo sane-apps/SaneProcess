@@ -108,6 +108,19 @@ def verify_approval(body)
     return [false, 'Approval flag is missing the recorded user approval quote.']
   end
 
+  # Reject vague assent that could have been copied from an unrelated turn.
+  quote = payload['user_approval'].to_s.strip.downcase
+  send_ok = quote.match?(
+    /\b(?:send(?:\s+it)?(?:\s+now)?|yes[,\s]+send|go\s+ahead\s+and\s+send|ship\s+it|send\s+as[- ]?is|send\s+the\s+(?:email|reply|draft|message)|approve(?:d)?\s+(?:to\s+)?send|ok(?:ay)?\s+to\s+send)\b/
+  )
+  vague = quote.match?(
+    /\A(?:yes|yeah|yep|ok|okay|sure|fine|go|go ahead|yes of course|of course|do it|lgtm|approved)[!.,]*\z/
+  )
+  if vague || !send_ok
+    cleanup_flag(EMAIL_APPROVAL_FLAG)
+    return [false, 'Approval quote is not an explicit send authorization (need e.g. "send" / "yes send it").']
+  end
+
   # Valid — do NOT consume here; let check-inbox.sh handle cleanup.
   # The flag has a 5-minute TTL so it won't linger.
   [true, nil]
@@ -181,9 +194,29 @@ exit 0 unless tool_name == 'Bash'
 command = (input['tool_input'] || {})['command'].to_s
 exit 0 if command.empty?
 
-# Block Claude from touching the approval flag directly in a send command chain.
+# Campaign repair mutations are private helper internals. Only the canonical
+# check-inbox wrapper may invoke them; a visible direct helper command bypasses
+# fresh suppression snapshots, exact approval paths, and rollback scoping.
+direct_campaign_repair = command.match?(
+  %r{(?:\bpython(?:3(?:\.\d+)?)?\b(?:\s+-[A-Za-z]+)*\s+|(?:^|[\s'";&|])(?:env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*)?)(?:\S*/)?campaign_repair\.py\s+(?:schedule|rollback|reconcile-cancel|correction-cancel)\b}
+)
+if direct_campaign_repair
+  warn '🔴 BLOCKED: Direct campaign repair mutation helper'
+  warn '   Use: check-inbox.sh campaign-repair schedule|rollback|reconcile-cancel|correction-cancel'
+  exit 2
+end
+
+# Block an agent from touching the approval flag directly in a send command chain.
 # The flag must be set in a SEPARATE tool call from the send.
-if command.include?('.email_post_approved') && command.include?('check-inbox.sh')
+# Only trip when the shell is actually invoking check-inbox send paths, not when
+# a commit message or path merely mentions check-inbox.sh.
+invokes_check_inbox_send = command.match?(
+  %r{(?:^|[;&|]\s*|\s)(?:\S*/)?check-inbox\.sh\s+(?:reply|compose)\b}
+)
+touches_approval_flag = command.match?(
+  %r{(?:(?:^|[;&|]\s*)(?:cat|tee|printf|echo|python3?|ruby|node)\b[^\n|;]*\.email_post_approved)|(?:>>?\s*[^\s;|]*\.email_post_approved)}
+)
+if touches_approval_flag && invokes_check_inbox_send
   warn '🔴 BLOCKED: Cannot set approval flag and send in the same command'
   warn '   The approval flag must be set in a separate step from sending.'
   warn '   Step 1: Show the user the final draft'

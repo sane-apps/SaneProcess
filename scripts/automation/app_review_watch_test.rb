@@ -446,6 +446,21 @@ exit(run_tests('App Review Watch Tests') do
     end
   end
 
+  test('a repeated identical transition receives a new event and provider identity') do
+    change = watch_entity(state: 'REJECTED').merge('previous_state' => 'WAITING_FOR_REVIEW')
+    detected_at = Time.utc(2026, 8, 3, 1, 0, 0)
+    first = SaneAppReviewWatch.pending_event(
+      [change], at: detected_at, kind: SaneInternalReport::CWS_REVIEW_KIND, nonce: 'occurrence-1'
+    )
+    second = SaneAppReviewWatch.pending_event(
+      [change], at: detected_at, kind: SaneInternalReport::CWS_REVIEW_KIND, nonce: 'occurrence-2'
+    )
+
+    assert(first['id'] != second['id'], 'separate occurrences must not reuse internal-report delivery state')
+    assert_eq(first['first_seen_at'], second['first_seen_at'])
+    true
+  end
+
   test('corrupt state fails closed and is not overwritten') do
     Dir.mktmpdir('app-review-watch') do |dir|
       path = File.join(dir, 'state.json')
@@ -485,6 +500,26 @@ exit(run_tests('App Review Watch Tests') do
       assert(false, 'expected unconfirmed delivery to fail')
     rescue SaneInternalReport::DeliveryError => e
       assert_includes(e.message, 'not verified')
+    end
+    true
+  end
+
+  test('internal report never echoes child stderr into durable watcher errors') do
+    secret_detail = 'provider-secret-bearing-stderr'
+    runner = lambda do |_command, _input|
+      ['', secret_detail, ReceiptStatus.new(success: false, exitstatus: 23)]
+    end
+    client = SaneInternalReport::Client.new(command: '/bin/true', runner: runner)
+    event = SaneAppReviewWatch.pending_event(
+      [watch_entity(state: 'REJECTED')], at: Time.utc(2026, 8, 3)
+    )
+
+    begin
+      client.deliver(event)
+      assert(false, 'failed child transport must raise')
+    rescue SaneInternalReport::DeliveryError => e
+      assert_includes(e.message, 'exit 23')
+      assert(!e.message.include?(secret_detail))
     end
     true
   end
@@ -570,6 +605,63 @@ exit(run_tests('App Review Watch Tests') do
       assert_eq(sends, 1)
       assert_eq(receipt['delivery_event'], 'delivered')
       assert_eq(JSON.parse(File.read(state_path)).dig(event_id, 'provider_id'), 'provider-accepted')
+      true
+    end
+  end
+
+  test('internal report health authenticates read-only without sending or mutating state') do
+    Dir.mktmpdir('internal-report-health') do |dir|
+      env_path = File.join(dir, 'env')
+      wrangler_path = File.join(dir, 'wrangler.toml')
+      state_path = File.join(dir, 'state.json')
+      File.write(env_path, "SANE_EMAIL_API_KEY=email-health-secret\nRESEND_API_KEY=resend-health-secret\n")
+      File.write(wrangler_path, "OWNER_EMAIL = \"owner@example.com\"\n")
+      calls = []
+      transport = SaneInternalReport::Transport.new(
+        state_path: state_path,
+        env_path: env_path,
+        wrangler_path: wrangler_path,
+        sender: ->(*) { raise 'health must not send' },
+        health_requester: lambda { |uri, token|
+          calls << [uri.to_s, token]
+          { code: 200 }
+        }
+      )
+
+      result = transport.health
+      serialized = JSON.generate(result)
+      assert_eq(calls.map(&:first), [
+        SaneInternalReport::Transport::EMAIL_HEALTH_API.to_s,
+        SaneInternalReport::Transport::RESEND_HEALTH_API.to_s
+      ])
+      assert_eq(result['status'], 'ok')
+      assert_eq(result['send_performed'], false)
+      assert(!serialized.include?('email-health-secret'))
+      assert(!serialized.include?('resend-health-secret'))
+      assert(!serialized.include?('owner@example.com'))
+      assert(!File.exist?(state_path), 'health mode mutated delivery state')
+      true
+    end
+  end
+
+  test('internal report health failure exposes only lane and HTTP status') do
+    Dir.mktmpdir('internal-report-health-failure') do |dir|
+      env_path = File.join(dir, 'env')
+      wrangler_path = File.join(dir, 'wrangler.toml')
+      File.write(env_path, "SANE_EMAIL_API_KEY=email-health-secret\nRESEND_API_KEY=resend-health-secret\n")
+      File.write(wrangler_path, "OWNER_EMAIL = \"owner@example.com\"\n")
+      transport = SaneInternalReport::Transport.new(
+        env_path: env_path,
+        wrangler_path: wrangler_path,
+        health_requester: ->(_uri, _token) { { code: 403, body: 'secret-bearing-provider-detail' } }
+      )
+      begin
+        transport.health
+        assert(false, 'expected read-only health failure')
+      rescue SaneInternalReport::DeliveryError => e
+        assert_includes(e.message, 'email_api health returned HTTP 403')
+        assert(!e.message.include?('secret-bearing-provider-detail'))
+      end
       true
     end
   end

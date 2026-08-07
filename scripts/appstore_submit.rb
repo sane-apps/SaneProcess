@@ -809,6 +809,47 @@ def resolve_review_demo_account(config, project_root:)
   }
 end
 
+def resolve_review_notes_with_private_access(config, asc_platform, project_root:)
+  notes = resolve_review_notes(config, asc_platform)
+  access_code_file = config_value(config['appstore'] || {}, 'review_access_code_file')
+  return notes if access_code_file.nil?
+
+  expanded_path =
+    if Pathname.new(access_code_file).absolute?
+      File.expand_path(access_code_file)
+    else
+      File.expand_path(access_code_file, project_root)
+    end
+
+  unless File.file?(expanded_path)
+    raise ArgumentError, 'App Store review access code file is missing or is not a regular file'
+  end
+  if File.symlink?(expanded_path)
+    raise ArgumentError, 'App Store review access code file must not be a symbolic link'
+  end
+
+  mode = File.stat(expanded_path).mode & 0o777
+  unless mode == 0o600
+    raise ArgumentError, 'App Store review access code file must have permissions 600'
+  end
+
+  access_code = File.read(expanded_path, encoding: Encoding::UTF_8).strip
+  if access_code.empty?
+    raise ArgumentError, 'App Store review access code file is empty'
+  end
+  if access_code.bytesize > 4_096
+    raise ArgumentError, 'App Store review access code file exceeds the 4096-byte limit'
+  end
+
+  placeholder = '{{REVIEW_ACCESS_CODE}}'
+  unless notes.include?(placeholder)
+    raise ArgumentError,
+          "appstore.review_notes must include #{placeholder} when review_access_code_file is configured"
+  end
+
+  notes.gsub(placeholder, access_code)
+end
+
 # ─── JWT Token Generation ───
 
 def generate_jwt
@@ -842,12 +883,22 @@ def redact_asc_response_body(response_body, request_body)
   response_text = response_body.to_s
   return response_text[0..500] unless request_body.is_a?(Hash)
 
-  secret = request_body.dig(:data, :attributes, :demoAccountPassword) ||
-           request_body.dig('data', 'attributes', 'demoAccountPassword')
-  secret = secret.to_s
-  return response_text[0..500] if secret.empty?
+  attributes = request_body.dig(:data, :attributes) ||
+               request_body.dig('data', 'attributes') ||
+               {}
+  secrets = [
+    attributes[:demoAccountPassword] || attributes['demoAccountPassword']
+  ]
 
-  response_text.gsub(secret, '[REDACTED]')[0..500]
+  notes = (attributes[:notes] || attributes['notes']).to_s
+  notes.scan(/Private App Review connection code:\s*(\S+)/i) do |match|
+    secrets << match.first
+  end
+
+  secrets.compact.map(&:to_s).reject(&:empty?).each do |secret|
+    response_text = response_text.gsub(secret, '[REDACTED]')
+  end
+  response_text[0..500]
 end
 
 def asc_request(method, path, body: nil, token: nil, retry_on_unauthorized: true)
@@ -5426,7 +5477,11 @@ if options[:sync_metadata_only]
   )
 
   contact = resolve_review_contact(config)
-  contact[:notes] = resolve_review_notes(config, asc_platform)
+  contact[:notes] = resolve_review_notes_with_private_access(
+    config,
+    asc_platform,
+    project_root: project_root
+  )
   contact[:demo_account] = resolve_review_demo_account(config, project_root: project_root)
   ensure_review_detail(version_id, contact, token)
 
@@ -5681,7 +5736,11 @@ end
 
 # Step 5: Ensure review contact detail
 contact = resolve_review_contact(config)
-contact[:notes] = resolve_review_notes(config, asc_platform)
+contact[:notes] = resolve_review_notes_with_private_access(
+  config,
+  asc_platform,
+  project_root: project_root
+)
 contact[:demo_account] = resolve_review_demo_account(config, project_root: project_root)
 ensure_review_detail(version_id, contact, token)
 

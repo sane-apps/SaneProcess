@@ -57,6 +57,37 @@ class SaneOpenGuardTest < Minitest::Test
     assert_includes stdout, 'OPEN_ALLOWED https://example.com'
   end
 
+  def test_blocks_safari_and_chrome_on_air_and_mini
+    [
+      ['-a', 'Safari'],
+      ['-b', 'com.apple.Safari'],
+      ['-a', 'Google Chrome'],
+      ['-b', 'com.google.Chrome']
+    ].each do |args|
+      [
+        {},
+        { 'SANE_FORCE_MACBOOK_AIR_FOR_TEST' => nil, 'SANE_FORCE_MAC_MINI_FOR_TEST' => '1' }
+      ].each do |host_env|
+        _stdout, stderr, status = run_guard(*args, env: host_env)
+        assert_equal 2, status.exitstatus, "expected block for #{args.inspect} with #{host_env.inspect}"
+        assert_includes stderr, 'Brave only'
+      end
+    end
+  end
+
+  def test_allows_explicit_brave_on_mini
+    stdout, stderr, status = run_guard(
+      '-a', 'Brave Browser', 'https://example.com',
+      env: {
+        'SANE_FORCE_MACBOOK_AIR_FOR_TEST' => nil,
+        'SANE_FORCE_MAC_MINI_FOR_TEST' => '1'
+      }
+    )
+
+    assert status.success?, stderr
+    assert_includes stdout, 'OPEN_ALLOWED -a Brave Browser https://example.com'
+  end
+
   def test_allows_on_mini
     stdout, stderr, status = run_guard(
       'https://app.lemonsqueezy.com/products/778575',

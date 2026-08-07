@@ -40,6 +40,7 @@ module SaneMasterModules
     ACTIVE_ACCESS_ALLOWLIST = [
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.ssh/[^/]+\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.private_keys/[^/]+\.p8\z},
+      %r{\A#{Regexp.escape(File.expand_path('~'))}/\.appstoreconnect/private_keys/[^/]+\.p8\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.sanevideo-signing/keys/[^/]+\.key\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.local/share/containers/podman/machine/machine\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.codex/auth\.json\z},
@@ -54,12 +55,22 @@ module SaneMasterModules
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.peekaboo/credentials\z}
     ].freeze
 
+    # These are vendor-owned, auto-managed CLI credential stores. Unlike the
+    # legacy path allowlist above, they are preserved only when the exact file
+    # remains a private, owner-controlled, canonical regular file.
+    CANONICAL_ACTIVE_ACCESS_RELATIVE_PATHS = %w[
+      .gemini/oauth_creds.json
+      .grok/auth.json
+    ].freeze
+
     THIRD_PARTY_FALSE_POSITIVE_ALLOWLIST = [
       %r{/(?:\.venv(?:-[^/]+)?|site-packages|node_modules|\.build|DerivedData|vendor/bundle)/},
       %r{/\.nvm/},
       %r{/(?:transformers|sklearn|numba|PyJWT|pyjwt)-[^/]*/},
       %r{/\.claude/plugins/marketplaces/[^/]+/src/supervisor/env-sanitizer\.ts\z},
       %r{/\.grok/marketplace-cache/[^/]+/src/supervisor/env-sanitizer\.ts\z},
+      %r{/\.grok/marketplace-cache/[^/]+/src/services/telemetry/common\.ts\z},
+      %r{/SaneApps/infra/SaneProcess/outputs/memory-conflicts/[^/]+/(?:claude-file-memory|codex-memories|serena-memories)/(?:local|remote)/manifest\.tsv\z},
       %r{/SaneClip/Tests/SaneClipTests\.swift\z},
       %r{/SaneClip-clean/Tests/SaneClipTests\.swift\z}
     ].freeze
@@ -259,7 +270,34 @@ module SaneMasterModules
 
     def active_access_finding?(finding)
       path = finding[:path].to_s
-      ACTIVE_ACCESS_ALLOWLIST.any? { |pattern| path.match?(pattern) }
+      secure_canonical_active_access_file?(path) ||
+        ACTIVE_ACCESS_ALLOWLIST.any? { |pattern| path.match?(pattern) }
+    end
+
+    def secure_canonical_active_access_file?(path, home: Dir.home, owner_uid: Process.uid)
+      expanded_home = File.expand_path(home)
+      expanded_path = File.expand_path(path)
+      expected_paths = CANONICAL_ACTIVE_ACCESS_RELATIVE_PATHS.map do |relative_path|
+        File.join(expanded_home, relative_path)
+      end
+      return false unless expected_paths.include?(expanded_path)
+
+      stat = File.lstat(expanded_path)
+      return false unless stat.file? && !stat.symlink?
+      return false unless stat.uid == owner_uid
+      return false unless (stat.mode & 0o777) == 0o600
+      return false unless stat.nlink == 1
+      return false unless File.realpath(expanded_path) == expanded_path
+
+      parent_path = File.dirname(expanded_path)
+      parent_stat = File.lstat(parent_path)
+      parent_stat.directory? &&
+        !parent_stat.symlink? &&
+        parent_stat.uid == owner_uid &&
+        (parent_stat.mode & 0o022).zero? &&
+        File.realpath(parent_path) == parent_path
+    rescue Errno::ENOENT, Errno::ENOTDIR, Errno::EACCES, Errno::EPERM, Errno::ELOOP, ArgumentError
+      false
     end
 
     def third_party_false_positive_finding?(finding)

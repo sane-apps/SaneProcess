@@ -41,7 +41,7 @@ module SaneAppsDependencyBaseline
     mini: %w[@agentmemory/agentmemory playwright]
   }.freeze
   NPM_VERSIONS = {
-    '@agentmemory/agentmemory' => '0.9.27',
+    '@agentmemory/agentmemory' => '0.9.28',
     '@google/gemini-cli' => '0.50.0',
     '@modelcontextprotocol/sdk' => '1.29.0',
     '@modelcontextprotocol/server-github' => '2025.4.8',

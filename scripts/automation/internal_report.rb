@@ -13,7 +13,10 @@ require 'uri'
 
 module SaneInternalReport
   TEMPLATE_VERSION = 1
-  KIND = 'app_review_transition'
+  APP_REVIEW_KIND = 'app_review_transition'
+  CWS_REVIEW_KIND = 'chrome_web_store_transition'
+  KIND = APP_REVIEW_KIND
+  SUPPORTED_KINDS = [APP_REVIEW_KIND, CWS_REVIEW_KIND].freeze
   DELIVERED_EVENTS = %w[delivered opened clicked complained].freeze
   DEFAULT_TRANSPORT_COMMAND = [
     RbConfig.ruby,
@@ -27,14 +30,29 @@ module SaneInternalReport
 
   def render(event)
     validate_event!(event)
+    kind = event['kind'].to_s.empty? ? KIND : event.fetch('kind')
     names = event.fetch('changes').map { |change| change.fetch('app_name') }.uniq.sort
-    subject = names.length == 1 ? "App Review changed: #{names.first}" : 'SaneApps App Review changed'
+    chrome_web_store = kind == CWS_REVIEW_KIND
+    subject =
+      if chrome_web_store
+        names.length == 1 ? "Chrome Web Store changed: #{names.first}" : 'SaneApps Chrome Web Store changed'
+      else
+        names.length == 1 ? "App Review changed: #{names.first}" : 'SaneApps App Review changed'
+      end
     lines = [
-      'App Store Connect reported a review-state transition.',
+      chrome_web_store ? 'Chrome Web Store reported a review-state transition.' :
+        'App Store Connect reported a review-state transition.',
       '',
       *event.fetch('changes').sort_by { |change| change.fetch('entity_key') }.map do |change|
         previous = change['previous_state'].to_s.empty? ? 'new' : change['previous_state']
         detail = "#{change.fetch('app_name')}: #{change.fetch('entity_type')} #{previous} -> #{change.fetch('state')}"
+        previous_version = change['previous_version'].to_s
+        version = change['version'].to_s
+        if !version.empty? && !previous_version.empty? && previous_version != version
+          detail = "#{detail} (version #{previous_version} -> #{version})"
+        elsif !version.empty?
+          detail = "#{detail} (version #{version})"
+        end
         submission_id = change['submission_id'].to_s
         submission_id.empty? ? detail : "#{detail} (submission #{submission_id})"
       end,
@@ -43,7 +61,7 @@ module SaneInternalReport
       "Detected: #{event.fetch('first_seen_at')}"
     ]
     {
-      'kind' => KIND,
+      'kind' => kind,
       'template_version' => TEMPLATE_VERSION,
       'event_id' => event.fetch('id'),
       'subject' => subject,
@@ -55,6 +73,8 @@ module SaneInternalReport
     raise DeliveryError, 'event must be a JSON object' unless event.is_a?(Hash)
     raise DeliveryError, 'event id is missing' if event['id'].to_s.empty?
     raise DeliveryError, 'event first_seen_at is missing' if event['first_seen_at'].to_s.empty?
+    kind = event['kind'].to_s.empty? ? KIND : event['kind'].to_s
+    raise DeliveryError, 'event kind is invalid' unless SUPPORTED_KINDS.include?(kind)
 
     changes = event['changes']
     raise DeliveryError, 'event changes must be a non-empty array' unless changes.is_a?(Array) && !changes.empty?
@@ -91,11 +111,11 @@ module SaneInternalReport
       envelope = SaneInternalReport.render(event)
       raise DeliveryError, 'internal-report transport is not configured' if @command.empty?
 
-      stdout, stderr, status = @runner.call(@command, JSON.generate(envelope))
+      stdout, _stderr, status = @runner.call(@command, JSON.generate(envelope))
       unless status.success?
-        detail = stderr.to_s.strip
-        detail = "exit #{status.exitstatus}" if detail.empty?
-        raise DeliveryError, "internal-report transport failed: #{detail}"
+        exit_status = status.respond_to?(:exitstatus) ? status.exitstatus : nil
+        detail = exit_status.nil? ? 'unknown status' : "exit #{exit_status}"
+        raise DeliveryError, "internal-report transport failed (#{detail})"
       end
 
       receipt = JSON.parse(stdout)
@@ -107,8 +127,12 @@ module SaneInternalReport
         'delivered_at' => receipt['delivered_at'].to_s.empty? ? @now.call.iso8601 : receipt['delivered_at'].to_s,
         'template_version' => SaneInternalReport::TEMPLATE_VERSION
       }
-    rescue JSON::ParserError => e
-      raise DeliveryError, "internal-report transport returned invalid JSON: #{e.message}"
+    rescue JSON::ParserError
+      raise DeliveryError, 'internal-report transport returned invalid JSON'
+    rescue DeliveryError
+      raise
+    rescue StandardError => e
+      raise DeliveryError, "internal-report transport execution failed: #{e.class}"
     end
 
     private
@@ -135,18 +159,35 @@ module SaneInternalReport
       '~/SaneApps/infra/sane-email-automation/wrangler.toml'
     )
     EMAIL_API = URI('https://email-api.saneapps.com/api/compose')
+    EMAIL_HEALTH_API = URI('https://email-api.saneapps.com/api/stats')
     RESEND_API = 'https://api.resend.com/emails/'
+    RESEND_HEALTH_API = URI('https://api.resend.com/emails?limit=1')
 
     def initialize(state_path: DEFAULT_STATE_PATH, env_path: DEFAULT_ENV_PATH,
                    wrangler_path: DEFAULT_WRANGLER_PATH, sender: nil, poller: nil,
+                   health_requester: nil,
                    sleeper: ->(seconds) { sleep(seconds) }, now: -> { Time.now.utc })
       @state_path = File.expand_path(state_path)
       @env_path = File.expand_path(env_path)
       @wrangler_path = File.expand_path(wrangler_path)
       @sender = sender || method(:send_envelope)
       @poller = poller || method(:poll_delivery)
+      @health_requester = health_requester || method(:perform_health_request)
       @sleeper = sleeper
       @now = now
+    end
+
+    def health
+      values = credentials
+      verify_health_response!('email_api', @health_requester.call(EMAIL_HEALTH_API, values.fetch(:email_key)))
+      verify_health_response!('resend_api', @health_requester.call(RESEND_HEALTH_API, values.fetch(:resend_key)))
+      {
+        'status' => 'ok',
+        'email_api' => 'ok',
+        'resend_api' => 'ok',
+        'owner' => 'configured',
+        'send_performed' => false
+      }
     end
 
     def deliver(envelope)
@@ -187,7 +228,7 @@ module SaneInternalReport
 
     def validate_envelope!(envelope)
       raise DeliveryError, 'internal-report envelope must be a JSON object' unless envelope.is_a?(Hash)
-      raise DeliveryError, 'internal-report kind is invalid' unless envelope['kind'] == KIND
+      raise DeliveryError, 'internal-report kind is invalid' unless SUPPORTED_KINDS.include?(envelope['kind'])
       raise DeliveryError, 'internal-report template version is invalid' unless envelope['template_version'].to_i == TEMPLATE_VERSION
       raise DeliveryError, 'internal-report event id is invalid' unless envelope['event_id'].to_s.match?(/\A[0-9a-f]{64}\z/)
 
@@ -266,6 +307,27 @@ module SaneInternalReport
       raise DeliveryError, "internal-report email API failed: #{e.class}"
     end
 
+    def perform_health_request(uri, token)
+      request = Net::HTTP::Get.new(uri)
+      request['Authorization'] = "Bearer #{token}"
+      response = Net::HTTP.start(
+        uri.host, uri.port, use_ssl: true,
+        open_timeout: 15, read_timeout: 30
+      ) { |http| http.request(request) }
+      { code: response.code.to_i }
+    rescue SocketError, SystemCallError, Timeout::Error => e
+      raise DeliveryError, "internal-report health request failed: #{e.class}"
+    end
+
+    def verify_health_response!(lane, response)
+      code = response.fetch(:code).to_i
+      return true if (200..299).cover?(code)
+
+      raise DeliveryError, "internal-report #{lane} health returned HTTP #{code}"
+    rescue KeyError
+      raise DeliveryError, "internal-report #{lane} health returned no status"
+    end
+
     def poll_delivery(provider_id, credentials)
       uri = URI("#{RESEND_API}#{URI.encode_www_form_component(provider_id)}")
       request = Net::HTTP::Get.new(uri)
@@ -333,6 +395,12 @@ if __FILE__ == $PROGRAM_NAME
       abort 'Usage: internal_report.rb --transport' unless ARGV.empty?
       envelope = JSON.parse($stdin.read)
       puts JSON.generate(SaneInternalReport::Transport.new.deliver(envelope))
+      exit 0
+    end
+    if ARGV.first == '--health'
+      ARGV.shift
+      abort 'Usage: internal_report.rb --health' unless ARGV.empty?
+      puts JSON.generate(SaneInternalReport::Transport.new.health)
       exit 0
     end
 

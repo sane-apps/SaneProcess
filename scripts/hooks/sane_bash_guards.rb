@@ -17,6 +17,7 @@ GUARDS = %w[
   sane_release_guard.rb
   sane_ship_guard.rb
   sane_email_guard.rb
+  sane_action_guard.rb
 ].map { |name| File.expand_path(name, __dir__) }.freeze
 
 SSH_OPTION_WITH_VALUE = %w[
@@ -306,7 +307,9 @@ end
 # Destructive `security` keychain mutations: overwrite an existing item
 # (add-*-password -U), delete an item, or rewrite its ACL/partition list. These
 # cause irrecoverable credential loss (a real license_key was clobbered this way).
-# Reads (find-*, find-identity, show-keychain-info, cms, dump) stay allowed.
+# Scoped reads (find-*, find-identity, show-keychain-info, cms) stay allowed.
+# Whole-keychain enumeration is blocked separately because it can trigger one
+# SecurityAgent authorization dialog per protected item.
 # Matches local and ssh-wrapped/quoted forms.
 DESTRUCTIVE_KEYCHAIN_SUBCOMMAND = Regexp.union(
   /add-(?:generic|internet)-password\b[^;&|\n'"]*?\s-U\b/,
@@ -343,7 +346,7 @@ def block_destructive_keychain_if_needed(payload)
     clobbered a real license_key once.
 
     Allowed (read-only): security find-generic-password / find-identity /
-    show-keychain-info / cms -D / dump-keychain.
+    show-keychain-info / cms -D. Whole-keychain dumps are not allowed.
 
     If a destructive keychain change is genuinely required, the USER must run it
     in their own terminal. Never overwrite, delete, or change the partition
@@ -352,45 +355,121 @@ def block_destructive_keychain_if_needed(payload)
   exit 2
 end
 
-# Safari automation is banned (owner rule 2026-07-14): Safari is routinely not
-# running on the Mini, loses sessions, and its automation path breaks. All agent
-# browser work runs in Brave (Claude-in-Chrome widget / Codex Chrome lane). Only
-# fire on actual INVOCATION of Safari automation — an osascript call that
-# targets Safari, or `open -a Safari` / `open -b com.apple.Safari` at a command
-# position (local or ssh-wrapped). Mentions (grep patterns, commit messages,
-# file edits) do not match. Corrected 2026-07-15: the owner retired the App
-# Store Connect Safari exception — ASC portal work also runs through Brave, and
-# the legacy wrappers (mini-safari.sh) are not a sanctioned lane.
-def safari_automation_command?(command)
+def unsafe_keychain_enumeration_command?(command)
   return false unless command
+
+  command_text_invokes?(command, 'security', subcommand: 'dump-keychain') ||
+    mini_ssh_remote_matches?(command) do |remote|
+      command_text_invokes?(remote.join(' '), 'security', subcommand: 'dump-keychain')
+    end
+end
+
+def block_keychain_enumeration_if_needed(payload)
+  command = bash_command_from_payload(payload)
+  return unless unsafe_keychain_enumeration_command?(command)
+
+  warn <<~MESSAGE
+    🔴 BLOCKED: whole-keychain enumeration
+
+    `security dump-keychain` can generate one macOS authorization dialog per
+    protected item. It is never an approved AI secret-discovery path.
+
+    Use ~/.config/nv/env first. If a secret is absent, make one explicitly
+    scoped `security find-generic-password -s <service> -a <account> -w`
+    lookup and reuse the returned value.
+  MESSAGE
+  exit 2
+end
+
+# Safari and Google Chrome are banned for agent browser work. The authenticated
+# Brave session on the Mini is the only browser lane. Match direct, absolute,
+# shell-wrapped, and ssh-wrapped invocations without blocking source/docs text.
+PROHIBITED_BROWSER_NAME = /\A(?:Safari|Google Chrome|Chrome|com\.apple\.Safari|com\.google\.Chrome(?:\..*)?)\z/i.freeze
+
+def direct_prohibited_browser_open?(tokens)
+  command_start = true
+  tokens.each_with_index do |token, index|
+    text = token.to_s
+    if command_start
+      if environment_assignment?(text) || command_wrapper_token?(text)
+        next
+      end
+      if File.basename(text) == 'open'
+        cursor = index + 1
+        while cursor < tokens.length && !shell_command_separator?(tokens[cursor])
+          flag = tokens[cursor].to_s
+          if %w[-a -b].include?(flag)
+            return true if tokens[cursor + 1].to_s.match?(PROHIBITED_BROWSER_NAME)
+            cursor += 2
+            next
+          end
+          cursor += 1
+        end
+      end
+      command_start = false
+    end
+    command_start = true if shell_command_separator?(text)
+  end
+  false
+end
+
+def ssh_remote_payloads(tokens)
+  payloads = []
+  tokens.each_with_index do |token, index|
+    next unless ssh_binary_token?(token)
+
+    cursor = index + 1
+    while cursor < tokens.length
+      arg = tokens[cursor].to_s
+      if arg == '--'
+        cursor += 1
+        break
+      end
+      if arg.start_with?('-')
+        cursor += SSH_OPTION_WITH_VALUE.include?(arg) ? 2 : 1
+        next
+      end
+      cursor += 1 # destination
+      payloads << (tokens[cursor..] || []).join(' ') unless cursor >= tokens.length
+      break
+    end
+  end
+  payloads
+end
+
+def prohibited_browser_automation_command?(command, depth = 0)
+  return false if command.to_s.empty? || depth > MAX_SHELL_INSPECTION_DEPTH
 
   legacy_wrapper = /(?:\A|[;&|(){}\n]|&&|\|\|)\s*(?:\S*\/)?mini-safari\.sh(?:\s|$)/
   return true if command.match?(legacy_wrapper)
 
-  tells_safari = /tell\s+app(?:lication)?\s+.?["']Safari["']/i
-  return true if command.match?(/\bosascript\b/) && command.match?(tells_safari)
+  tokens = Shellwords.shellsplit(command)
+  return true if direct_prohibited_browser_open?(tokens)
 
-  open_safari = /open\s+(?:-[a-zA-Z]+\s+)*(?:-a\s+["']?Safari["']?|-b\s+["']?com\.apple\.Safari["']?)(?:\s|$)/
-  local  = /(?:\A|[;&|(){}\n]|&&|\|\|)\s*#{open_safari.source}/
-  remote = /\bssh\s+\S+\s+["']\s*#{open_safari.source}/
-  command.match?(local) || command.match?(remote)
+  tells_browser = /tell\s+app(?:lication)?\s+(?:\\?["'])?(?:Safari|Google Chrome|Chrome)(?:\\?["'])?(?=\s|$)/i
+  return true if command_tokens_invoke?(tokens, 'osascript') && command.match?(tells_browser)
+
+  nested = shell_command_payloads(tokens) + ssh_remote_payloads(tokens)
+  nested.any? { |payload| prohibited_browser_automation_command?(payload, depth + 1) }
+rescue ArgumentError
+  command.match?(/(?:\A|[;&|(){}\n])\s*(?:\S*\/)?open\s+-(?:a|b)\s+["']?(?:Safari|Google Chrome|Chrome|com\.apple\.Safari|com\.google\.Chrome)/i)
 end
 
-def block_safari_automation_if_needed(payload)
+def block_prohibited_browser_automation_if_needed(payload)
   command = bash_command_from_payload(payload)
-  return unless safari_automation_command?(command)
+  return unless prohibited_browser_automation_command?(command)
 
   warn <<~MESSAGE
-    🔴 BLOCKED: Safari automation (owner rule 2026-07-14 — Brave only)
+    🔴 BLOCKED: Safari/Chrome automation (Brave only)
 
-    Safari scripting (osascript `tell application "Safari"`, `open -a Safari`)
-    is banned for agent browser work: Safari is routinely not running, loses
-    portal sessions, and the automation path breaks.
+    Safari and Google Chrome are banned for agent browser work. Use the existing
+    authenticated Brave session on the Mini so sessions and reviewer state stay
+    consistent.
 
     Use Brave instead:
       • Claude: the Claude-in-Chrome widget connected to Brave on the Mini
         (list_connected_browsers → select_browser → tabs_context_mcp → navigate)
-      • Codex: its Brave/Chrome control lane
+      • Codex/Cursor: the attached Brave lane or Mini GUI wrapper
       • Portal tokens (e.g. Setapp): sign in at the portal in Brave on the Mini,
         or set the stored token (SETAPP_PORTAL_TOKEN) — the scripts read Brave.
 
@@ -400,13 +479,57 @@ def block_safari_automation_if_needed(payload)
   exit 2
 end
 
+def prophecy_ledger_adhoc_click_command?(command)
+  return false if command.to_s.strip.empty?
+  return false if command.match?(/SaneMaster\.rb\s+prophecy[_-]reviewer[_-]click|npm\s+run\s+e2e:reviewer/)
+
+  # Hard-blocked leftover paths from the Access OTP / Brave spam era
+  hard = [
+    %r{/tmp/cf-access-login},
+    %r{/tmp/admin-brave-(?:e2e|claim-e2e|local-e2e)},
+    %r{/tmp/brave-access-login},
+    %r{/tmp/admin-agree-charles},
+    %r{/tmp/admin-live-(?:e2e|audit)},
+    %r{/tmp/admin-feedback-e2e}
+  ]
+  return true if hard.any? { |rx| command.match?(rx) }
+  soft = [
+    %r{prophecy-ledger/tmp/(?:reviewer-ui-e2e|simple-flow-e2e|e2e-full-flow|e2e-)}
+  ]
+  soft.any? { |rx| command.match?(rx) }
+end
+
+def block_prophecy_adhoc_reviewer_click_if_needed(payload)
+  command = bash_command_from_payload(payload)
+  return unless prophecy_ledger_adhoc_click_command?(command)
+
+  warn <<~MESSAGE
+    🔴 BLOCKED: ad-hoc Prophecy Ledger reviewer click / Access OTP script
+
+    Owner rule 2026-08-01: use the durable tool path, not /tmp Brave login spam.
+
+    Canonical:
+      ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb prophecy_reviewer_click
+      ruby ~/SaneApps/infra/SaneProcess/scripts/SaneMaster.rb prophecy_reviewer_click --mode live
+      ALLOW_LIVE_SUBMIT=1 … prophecy_reviewer_click --live --allow-live-submit
+
+    Repo doc (Mini): websites/prophecy-ledger/docs/REVIEWER_CLICK_E2E.md
+    npm (on Mini only): npm run e2e:reviewer | e2e:reviewer:live
+
+    Do not invent OTP scrapers or make-new-tab Brave scripts for this.
+  MESSAGE
+  exit 2
+end
+
 payload = $stdin.read.force_encoding(Encoding::UTF_8)
 original_stdin = $stdin
 
 block_destructive_keychain_if_needed(payload)
+block_keychain_enumeration_if_needed(payload)
 block_raw_mini_screenshot_if_needed(payload)
 block_detached_mini_qa_if_needed(payload)
-block_safari_automation_if_needed(payload)
+block_prohibited_browser_automation_if_needed(payload)
+block_prophecy_adhoc_reviewer_click_if_needed(payload)
 
 GUARDS.each do |guard|
   $stdin = StringIO.new(payload)

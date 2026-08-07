@@ -14,6 +14,7 @@ PLIST="${SANE_MEMORY_SYNC_PLIST:-$HOME/Library/LaunchAgents/$LABEL.plist}"
 TUNNEL_PLIST="${SANE_AGENTMEMORY_TUNNEL_PLIST:-$HOME/Library/LaunchAgents/$TUNNEL_LABEL.plist}"
 LOG_DIR="${SANE_MEMORY_SYNC_LOG_DIR:-$HOME/SaneApps/infra/SaneProcess/outputs}"
 INTERVAL="${SANE_MEMORY_SYNC_INTERVAL:-900}"
+LAUNCHCTL="${SANE_LAUNCHCTL_BIN:-/bin/launchctl}"
 DRY_RUN=0
 
 case "${1:-}" in
@@ -29,14 +30,14 @@ esac
 [[ -x "$TUNNEL_SCRIPT" ]] || { echo "Missing executable AgentMemory tunnel lane: $TUNNEL_SCRIPT" >&2; exit 1; }
 [[ "$INTERVAL" =~ ^[0-9]+$ ]] || { echo "Invalid sync interval: $INTERVAL" >&2; exit 2; }
 
-host="$(hostname -s 2>/dev/null || hostname)"
+host="${SANE_MEMORY_SYNC_HOST_OVERRIDE:-$(hostname -s 2>/dev/null || hostname)}"
 if [[ "$DRY_RUN" -eq 0 && "$host" == *[Mm]ini* ]]; then
   echo "Refusing to install the Air memory-sync agent on Mini host $host" >&2
   exit 2
 fi
 
-mkdir -p "$(dirname "$PLIST")" "$(dirname "$TUNNEL_PLIST")" "$LOG_DIR"
-cat > "$PLIST" <<PLIST
+render_memory_sync_plist() {
+cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -71,8 +72,10 @@ cat > "$PLIST" <<PLIST
 </dict>
 </plist>
 PLIST
+}
 
-cat > "$TUNNEL_PLIST" <<PLIST
+render_tunnel_plist() {
+cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -107,22 +110,29 @@ cat > "$TUNNEL_PLIST" <<PLIST
 </dict>
 </plist>
 PLIST
+}
 
-chmod 600 "$PLIST" "$TUNNEL_PLIST"
-plutil -lint "$PLIST" >/dev/null
-plutil -lint "$TUNNEL_PLIST" >/dev/null
 if [[ "$DRY_RUN" -eq 1 ]]; then
+  render_memory_sync_plist | plutil -lint - >/dev/null
+  render_tunnel_plist | plutil -lint - >/dev/null
   echo "Validated Air memory-sync LaunchAgent: $PLIST"
   echo "Validated Air AgentMemory tunnel LaunchAgent: $TUNNEL_PLIST"
   exit 0
 fi
 
+mkdir -p "$(dirname "$PLIST")" "$(dirname "$TUNNEL_PLIST")" "$LOG_DIR"
+render_memory_sync_plist > "$PLIST"
+render_tunnel_plist > "$TUNNEL_PLIST"
+chmod 600 "$PLIST" "$TUNNEL_PLIST"
+plutil -lint "$PLIST" >/dev/null
+plutil -lint "$TUNNEL_PLIST" >/dev/null
+
 uid="$(id -u)"
-launchctl bootout "gui/$uid/$LABEL" 2>/dev/null || true
-launchctl bootout "gui/$uid/$TUNNEL_LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$uid" "$PLIST"
-launchctl bootstrap "gui/$uid" "$TUNNEL_PLIST"
-launchctl enable "gui/$uid/$LABEL" 2>/dev/null || true
-launchctl enable "gui/$uid/$TUNNEL_LABEL" 2>/dev/null || true
+"$LAUNCHCTL" bootout "gui/$uid/$LABEL" 2>/dev/null || true
+"$LAUNCHCTL" bootout "gui/$uid/$TUNNEL_LABEL" 2>/dev/null || true
+"$LAUNCHCTL" bootstrap "gui/$uid" "$PLIST"
+"$LAUNCHCTL" bootstrap "gui/$uid" "$TUNNEL_PLIST"
+"$LAUNCHCTL" enable "gui/$uid/$LABEL" 2>/dev/null || true
+"$LAUNCHCTL" enable "gui/$uid/$TUNNEL_LABEL" 2>/dev/null || true
 echo "Installed $LABEL (RunAtLoad + every ${INTERVAL}s)"
 echo "Installed $TUNNEL_LABEL (RunAtLoad + KeepAlive foreground tunnel)"

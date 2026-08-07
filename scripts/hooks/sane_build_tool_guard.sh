@@ -8,7 +8,7 @@ TOOL_NAME="${SANE_BUILD_TOOL_NAME:-$(basename "$0")}"
 REAL_TOOL="/usr/bin/${TOOL_NAME}"
 
 is_ai_session() {
-  [[ -n "${CODEX_SHELL:-}" || -n "${CLAUDE_CODE:-}" || -n "${CLAUDE_WORKTREES:-}" || -n "${SANE_BUILD_TOOL_GUARD_TEST:-}" || -n "${GROK_HOOK_EVENT:-}" || -n "${GROK_SESSION_ID:-}" ]]
+  [[ -n "${CODEX_SHELL:-}" || "${CODEX_CI:-}" == "1" || "${CODEX_INTERNAL_ORIGINATOR_OVERRIDE:-}" == "Codex Desktop" || -n "${CLAUDE_CODE:-}" || -n "${CLAUDE_WORKTREES:-}" || -n "${CURSOR_AGENT:-}" || -n "${CURSOR_SESSION_ID:-}" || -n "${CURSOR_TRACE_ID:-}" || -n "${SANE_BUILD_TOOL_GUARD_TEST:-}" || -n "${GROK_HOOK_EVENT:-}" || -n "${GROK_SESSION_ID:-}" ]]
 }
 
 in_saneprocess_repo() {

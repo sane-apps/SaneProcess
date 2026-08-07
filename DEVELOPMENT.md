@@ -69,7 +69,9 @@ Mini sees the same filesystem and proves nothing about Air parity.
 
 GitHub `main` is canonical for committed code. Dirty work is snapshot-only and
 never auto-applied. The Air's conflict-preserving 15-minute file-memory sync is
-a separate lane and must not be mistaken for working-tree mirroring.
+a separate lane and must not be mistaken for working-tree mirroring. Its active
+client memory trees contain canonical files only; losing variants live in the
+private SaneProcess output archive described below.
 
 After either client or machine restarts, run this from the Air:
 
@@ -118,9 +120,17 @@ the Mini.
 File-backed Claude, Serena, and Codex memories use
 `scripts/automation/sync-memory-mini.sh`, installed on the Air as
 `com.saneapps.memory-sync` (`RunAtLoad`, then every 15 minutes). It is backup-
-first, no-delete, cross-host locked, checksum-verified, and preserves a losing
-same-file version as `.sane-conflict-*` on both machines. It also pulls Mini
-dirty-work snapshots without applying them. The shared AgentMemory worker is
+first, no-delete, cross-host locked, and checksum-verified. Serena sync retains
+the root `~/SaneApps/.serena/memories` pair and dynamically unions every real
+project-local `*/.serena/memories` directory found on either host by its path
+relative to `~/SaneApps`; output archives, preserved archives, nested
+worktrees, and symlinked trees are excluded.
+Losing same-file
+versions and legacy `.sane-conflict-*` artifacts are moved out of active client
+memory into private per-run archives under
+`outputs/memory-conflicts/`. Each archive records source provenance, byte size,
+and SHA-256 hashes in a private manifest. It also pulls Mini dirty-work
+snapshots without applying them. The shared AgentMemory worker is
 Mini-owned by `com.saneapps.agentmemory`. The Air must maintain a private,
 persistent SSH tunnel to Mini loopback port 3111; Air MCP clients use that local
 endpoint instead of creating an unmonitored one-shot detached tunnel. Tunnel

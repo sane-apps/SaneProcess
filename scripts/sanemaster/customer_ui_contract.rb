@@ -482,7 +482,23 @@ module SaneMasterModules
 
       manifest = read_customer_ui_yaml(manifest_path)
       actions = Array(manifest['actions'])
-      required_actions = actions.reject { |action| action['release_required'] == false }
+      release_profile = metadata_value(config, 'customer_ui_release_profile').to_s.strip
+      required_actions = if release_profile.empty?
+                           actions.reject { |action| action['release_required'] == false }
+                         else
+                           profile_ids = Array(manifest.dig('release_profiles', release_profile)).map(&:to_s)
+                           if profile_ids.empty?
+                             issues << "Unknown or empty customer UI release profile #{release_profile.inspect}"
+                             []
+                           else
+                             actions_by_id = actions.to_h { |action| [action['id'].to_s, action] }
+                             unknown_ids = profile_ids - actions_by_id.keys
+                             unless unknown_ids.empty?
+                               issues << "Customer UI release profile #{release_profile.inspect} references unknown action(s): #{unknown_ids.join(', ')}"
+                             end
+                             profile_ids.filter_map { |id| actions_by_id[id] }
+                           end
+                         end
 
       issues << 'Customer UI action contract has no release-required actions' if required_actions.empty?
       issues.concat(customer_ui_manifest_issues(manifest_path, manifest, required_actions))
@@ -499,6 +515,7 @@ module SaneMasterModules
           receipt_path: nil,
           manifest_sha256: manifest_sha,
           source_fingerprint: source_fingerprint,
+          release_profile: release_profile,
           action_count: required_actions.length,
           issues: issues,
           warnings: warnings
@@ -523,6 +540,7 @@ module SaneMasterModules
         receipt_path: receipt_path,
         manifest_sha256: manifest_sha,
         source_fingerprint: source_fingerprint,
+        release_profile: release_profile,
         action_count: required_actions.length,
         receipt_generated_at: receipt['generated_at'],
         issues: issues,
@@ -1643,6 +1661,13 @@ module SaneMasterModules
 
     def customer_ui_prepare_target_before_sweep(app_name)
       return [] unless customer_ui_visual_precheck_required?
+      project_type = metadata_value(current_saneprocess_config, 'type').to_s
+      # The generic launch lane stages a macOS bundle in /Applications and
+      # cannot launch an iOS simulator target. iOS workflow runners provide
+      # their own simulator/source-bound evidence, so continue to the normal
+      # cleanup, visual precheck, and app-specific runner instead.
+      return [] if project_type == 'ios_app'
+
       if app_name == 'SaneBar'
         return [] if resource_soak_running_app_candidate(app_name)
 

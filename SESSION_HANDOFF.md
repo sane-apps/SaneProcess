@@ -1,6 +1,137 @@
 # SaneProcess Session Handoff
 
-As of: 2026-07-29 America/New_York
+## 2026-08-03 SaneCite Wave-3 repair approval gate
+
+- The immutable 533-recipient Arm-B roster is now reconciled as 307 previously
+  covered and 226 safe repair recipients. The repair schedule is 113 on August
+  4 and 113 on August 5, starting at 9:00 a.m. America/New_York with five-minute
+  spacing. Fresh Mini preflight reports zero Arm-A, opt-out, suppression,
+  bounce/complaint, or active-provider overlap.
+- Wave-3 is B2B founder sales. The exact From identity is `Stephan Joseph
+  <hi@saneapps.com>` and the templates use the canonical `Stephan Joseph` /
+  `Founder, SaneApps / SaneCite` business signature. The prior `Mr. Sane`
+  manifest is invalid and must never be approved or scheduled.
+- Mini compile and focused campaign coverage pass 31/31. The protected current
+  manifest has 226 recipients and the exact founder copy has been presented.
+- Twenty-seven records from the first partial run remain scheduled with the
+  founder From header but the stale `Mr. Sane` body. A fresh correction
+  preflight identifies exactly those 27 records. Nothing else may be canceled.
+- Owner approved the exact founder batch. The canonical workflow canceled and
+  provider-confirmed all 27 stale-body schedules, then created 226 replacements.
+  Independent repair verification proves 533 combined unique roster recipients,
+  226 active repair rows, zero duplicates/Arm-A overlap, and 113/113 daily counts.
+- The read-only audit now fetches actual email details because Resend list rows
+  omit tags. Its shared client paces list and detail reads at no more than four
+  requests/second with bounded 429 handling. Live tagged audit reports exactly
+  226 active schedules, excludes the 27 canceled copies and 46 unrelated rows,
+  and has zero blockers or suppression overlap. Focused Mini tests pass 38/38.
+- The existing Mini `sanecite-ab-campaign-watch` automation was updated in place
+  through `automation_update` and authenticated file read-back. It runs at each
+  half hour from 08:30 through 18:30 with the 226/113/113, tag-filter, paced-read,
+  and per-row scheduled-time contract. Do not create a duplicate watcher.
+- Remaining work is observational: verify provider delivery, bounce rate,
+  replies, unsubscribes, and terminal completion as the August 4-5 cadence runs.
+
+## 2026-08-02 integrated Air/Mini control-plane state
+
+- The authoritative reviewed integration ref is
+  `codex/saneprocess-integrated-20260802`; use its current ref value rather than
+  the earlier `3db8f6947b43c7c0887f6703d2a87eb5cb10bbb2` checkpoint. Recoverable Mini
+  and Air dirty-work snapshots are preserved, and neither dirty `main` was
+  reset, stashed, or force-aligned.
+- The live Air Cursor install succeeded with 43 skills and seven protected
+  wrappers; its guard is active. User policy is Brave-only for browser work
+  (never Chrome or Safari) and latest/best supported models for automations,
+  never hard-coded monthly model identifiers. Session Guardian is healthy.
+- Strict file-memory sync has Air/Mini parity, zero active conflict artifacts,
+  with losing variants recoverable outside active client memory. The canonical
+  sync now dynamically covers every real project-local `*/.serena/memories`
+  tree as well as root Serena, Claude, and Codex memory; output archives,
+  preserved archives, worktrees, dependencies, and symlinked trees are pruned.
+- Current test receipts are green: control-plane sync 14/14, memory sync 11/11,
+  and validation 95/95 after the wrapped-policy regex and bounded AgentMemory
+  status-probe repairs.
+- The validator's AgentMemory status subprocess is now observational and
+  fail-bounded: it gets at most two seconds, runs in its own process group,
+  drains stdout/stderr concurrently, escalates TERM to KILL when needed, and
+  returns `timed_out`, `exit_code`, and `duration_seconds` in its internal
+  capture receipt. It never starts or retries AgentMemory. A full
+  `validation_report.rb --json` run completed instead of hanging; its broader
+  portfolio verdict remained `NOT READY` for unrelated release issues and the
+  expected unavailable AgentMemory state after the controlled retry rollback.
+- SaneLot Apple build 1126 is `VALID`, attached to version 1.1.0, and the review
+  submission is `WAITING_FOR_REVIEW`. Chrome Web Store package 1.0.9, revision
+  `00004`, is `Pending review` and not published. Neither lane is approved.
+- The Terminal TCC prompt was completed. The one controlled Mini AgentMemory
+  retry then failed the complete health contract and rolled back. The service
+  remains safely disabled/unloaded, its canonical ports are free, and its
+  persisted corpus file remains present. Do not perform another live retry in
+  this run.
+- AgentMemory lifecycle hardening is code-complete and passed 65/65 isolated
+  focused tests: service/installer 12, supervisor 11, rollback safety 7,
+  dependency baseline 24, and Air/Mini acceptance 11. The dependency baseline
+  now requires 0.9.28, and an independent final security review returned GO
+  with no findings. The live Mini package was not upgraded or restarted.
+- Publisher OAuth is provisioned in the dedicated `SaneApps Store Operations`
+  project with the exact `chromewebstore.readonly` scope. The official status
+  GET returned `PENDING_REVIEW` for 1.0.9. The existing 15-minute App Review
+  heartbeat now runs both canonical GET-only watchers; no duplicate automation
+  or ad-hoc LaunchAgent was created.
+- Validation Q0 is clean on both hosts after project-local Serena parity and a
+  documented hosted-workflow exception for retired SaneBar issue auto-close.
+  The SaneBar comment-only change is saved on
+  `codex/sanebar-hosted-workflow-exception-20260802` at
+  `74b1fc7a409f25c3da2924b6159d612f27e0e3de` and hash-applied to the Air.
+- Air secret-scan receipt `20260803-013524-secret-scan.json` is now discovered
+  by validation and remains red: 309 actionable findings. Aggregate inspection
+  points chiefly to historical AI session transcripts and private backup
+  archives; do not print their contents or bulk-delete them without a reviewed
+  remediation plan. Mini's latest strict receipt is clean (zero findings).
+
+## 2026-08-02 SaneLot review state and alert durability
+
+- iOS and Chrome remain separate release lanes. Fresh canonical App Store
+  Connect GETs at `2026-08-03T04:05Z` returned HTTP 200: review submission
+  `59a9bbf9-ed2c-4f07-ba02-a09a2612960c` and version 1.1.0 remain
+  `WAITING_FOR_REVIEW`; build `c6e10cac-adbd-4726-935b-225319b17243` is build
+  1126, `VALID`, and not expired. This is not approval. Source revision is
+  `07920b0d12acde0a277e1a10a3a3317c5bdc6f6f`; the verified IPA SHA-256 is
+  `24ac733139776f6159f5b533180e6af660112b8834e93c9da9ff33456ad94b00`.
+- Fresh authenticated Mini Brave read-back showed Chrome Web Store item
+  `ihhnhedfjfjplodfhacompiahlnjbpeb`, draft revision `00004`, package 1.0.9,
+  `Status: Pending review`, `This draft is pending review`, and `This item is
+  not published yet`. Pending review is not approval. The exact candidate is
+  `~/SaneApps/clients/autodealertool/outputs/extension-dist/sanelot-auction-pricing-1.0.9.zip`,
+  size 1,049,892 bytes, SHA-256
+  `3bdb4da1bb9c41fc4fc1976f55b330b6afd978e53ad6930be5d54de45e2cb706`.
+  Its signed `webstore_preflight` receipt was generated
+  `2026-08-02T23:42:04Z` with zero issues and zero warnings.
+- The Apple watcher is active every 15 minutes. State read-back at
+  `2026-08-03T03:59:59Z` showed 92 observed entities, 16 delivery receipts,
+  and zero pending alerts. The build-1126 rejection-to-resubmission alert has
+  a provider-verified delivered receipt at `2026-08-01T05:39:36Z`; this proves
+  transport delivery, not that the owner noticed the message. The historical
+  visibility failure was the automation result collapsing a delivered
+  transition into a no-change report; its current prompt explicitly surfaces
+  `delivered_count > 0`.
+- `app_review_watch_test.rb` and the conversation-scoped
+  `gui_feedback_test.rb` are now required registry tests. The shared transition
+  engine and verified internal-report transport now also support a GET-only
+  Chrome Web Store v2 `fetchStatus` watcher with durable pending retries,
+  redacted failures, distinct CWS copy, and first-observation notification so
+  a late installation cannot silently baseline an approval or rejection.
+- At `2026-08-03T17:16:55Z`, the first official CWS watcher run observed
+  SaneLot Auction Pricing 1.0.9 as `PENDING_REVIEW`, delivered one verified
+  transition alert, and left zero pending alerts or diagnostics. A second run
+  returned clean no-change state. The existing `SaneApps App Review Watch`
+  heartbeat was updated through `automation_update` to run Apple then CWS every
+  15 minutes; a filesystem read-back found exactly one CWS-enabled automation.
+- The accidental Onyx setup was cleaned without touching its legacy resources:
+  `chromewebstore.googleapis.com` is disabled in project `onyx-478920`, the
+  Aug 2 `SaneApps CWS Review Watch` OAuth client was deleted with its 30-day
+  restore path intact, and the unrelated Nov 22 `Desktop client 1` was retained.
+
+As of: 2026-08-03 America/New_York
 Owner host: Mac Mini = tree truth; Air = controller.
 Repo: `~/SaneApps/infra/SaneProcess`
 
@@ -480,8 +611,9 @@ dated research, AgentMemory, and durable architecture decisions.
   `6b65d5d09daecbadb68f84e2f0c11632` and durable logs under
   `outputs/verify/20260718T020226.435712Z-67333-78ddd533/`.
 - Focused final receipts also passed: App Store submit 48/48, release guardrails
-  225/225, validation 81/81, receipt signer 15/15, command registry/actual CLI
-  5/5, Mini routing 24/24, and Safari/security guards 117/117.
+  225/225, current validation 95/95, receipt signer 15/15, command
+  registry/actual CLI 5/5, Mini routing 24/24, and Safari/security guards
+  117/117.
 - The live portfolio validation snapshot remains NOT READY FOR RELEASE because
   of pre-existing customer-facing product/release blockers; it reported no
   StoreKit parity drift and is not a failure of this SaneProcess convergence.
