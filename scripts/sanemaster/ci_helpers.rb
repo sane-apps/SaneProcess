@@ -155,13 +155,14 @@ module SaneMasterModules
         options = monitor_test_options(args, default_scheme: project_scheme)
       rescue ArgumentError => e
         puts "❌ Invalid monitor_tests arguments: #{e.message}"
-        puts '   Usage: monitor_tests [--scheme NAME] [--package-path PATH] [--test-plan NAME] [--test SELECTOR] [--timeout POSITIVE_SECONDS]'
+        puts '   Usage: monitor_tests [--scheme NAME] [--destination XCODE_DESTINATION] [--package-path PATH] [--test-plan NAME] [--test SELECTOR] [--timeout POSITIVE_SECONDS]'
         exit 2
       end
       scheme = options.fetch(:scheme)
       package_path = options[:package_path]
       test_plan = options[:test_plan]
       test_name = options[:test_selector]
+      destination = options.fetch(:destination)
       timeout = options.fetch(:timeout)
       started_at = Time.now.utc
       started_monotonic = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -171,6 +172,7 @@ module SaneMasterModules
         package_path: package_path,
         test_plan: test_plan,
         test_selector: test_name,
+        destination: destination,
         started_at: started_at,
         upgrade_run_id: ENV['SANEMASTER_UPGRADE_RUN_ID'],
         upgrade_nonce: ENV['SANEMASTER_UPGRADE_NONCE']
@@ -187,6 +189,7 @@ module SaneMasterModules
       puts "   Package: #{package_path}" if package_path
       puts "   Test plan: #{test_plan}" if test_plan
       puts "   Test: #{test_name}" if test_name
+      puts "   Destination: #{destination}"
       puts "   Timeout: #{timeout}s"
       puts "   Results: #{plan.fetch(:result_bundle_path)}"
       puts ''
@@ -452,11 +455,11 @@ module SaneMasterModules
       remaining = args.dup
       until remaining.empty?
         argument = remaining.shift
-        match = argument.match(/\A--(scheme|package-path|test-plan|test|timeout)=(.*)\z/)
+        match = argument.match(/\A--(scheme|destination|package-path|test-plan|test|timeout)=(.*)\z/)
         if match
           key = match[1]
           value = match[2]
-        elsif %w[--scheme --package-path --test-plan --test --timeout].include?(argument)
+        elsif %w[--scheme --destination --package-path --test-plan --test --timeout].include?(argument)
           key = argument.delete_prefix('--')
           value = remaining.shift
           raise ArgumentError, "#{argument} requires a value" if value.nil? || value.start_with?('--')
@@ -489,11 +492,12 @@ module SaneMasterModules
         package_path: values[:package_path],
         test_plan: values[:test_plan],
         test_selector: values[:test_selector],
+        destination: values.fetch(:destination, 'platform=macOS,arch=arm64'),
         timeout: timeout_text.to_i
       }
     end
 
-    def monitor_test_plan(root:, scheme:, package_path: nil, test_plan: nil, test_selector:, started_at:, pid: Process.pid, nonce: SecureRandom.hex(4),
+    def monitor_test_plan(root:, scheme:, destination: 'platform=macOS,arch=arm64', package_path: nil, test_plan: nil, test_selector:, started_at:, pid: Process.pid, nonce: SecureRandom.hex(4),
                           upgrade_run_id: nil, upgrade_nonce: nil)
       project_root = File.realpath(root)
       upgrade_run_id = upgrade_run_id.to_s.strip
@@ -515,7 +519,7 @@ module SaneMasterModules
       working_directory = monitor_test_working_directory(project_root, package_path)
       command = [
         'xcodebuild', 'test', '-scheme', scheme,
-        '-destination', 'platform=macOS,arch=arm64',
+        '-destination', destination,
         '-resultBundlePath', result_bundle_path
       ]
       if test_plan || package_path
@@ -540,6 +544,7 @@ module SaneMasterModules
         package_path: package_path,
         test_plan: test_plan,
         test_selector: test_selector,
+        destination: destination,
         upgrade_run_id: upgrade_run_id.empty? ? nil : upgrade_run_id,
         upgrade_nonce: upgrade_nonce.empty? ? nil : upgrade_nonce
       }

@@ -169,6 +169,20 @@ exit(run_tests('Upgrade Path Proof Security Tests') do
       true
     end
 
+    test('runner binds the configured simulator destination to the canonical monitor command') do
+      argv = subject.send(
+        :upgrade_path_runner_argv,
+        scheme: 'SaneLot',
+        destination: 'platform=iOS Simulator,name=SaneLot-iPhone',
+        test_selector: 'SaneLotTests/P0SafetyTests/testUpgradeMigratesLegacyBrandOnlyToFirstAuthenticatedTenant',
+        timeout_seconds: 120
+      )
+
+      assert_includes(argv, '--destination')
+      assert_eq(argv[argv.index('--destination') + 1], 'platform=iOS Simulator,name=SaneLot-iPhone')
+      true
+    end
+
     test('monitor runtime echoes the fresh upgrade binding and binds it into the xcresult run path') do
       Dir.mktmpdir('upgrade-monitor-binding-') do |root|
         started_at = Time.now.utc

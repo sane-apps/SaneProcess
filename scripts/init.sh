@@ -1,8 +1,8 @@
 #!/bin/bash
 #
 # SaneProcess Installation Script
-# Sets up SaneProcess for Claude Code, Codex, Grok, or generic coding agents.
-# Usage: /path/to/SaneProcess/scripts/init.sh [--client all|claude|codex|grok|generic] [--force]
+# Sets up SaneProcess for Claude Code, Codex, Cursor, Grok, or generic agents.
+# Usage: scripts/init.sh [--client all|claude|codex|cursor|grok|generic] [--force]
 
 set -e
 
@@ -32,17 +32,18 @@ SaneProcess installer
 Usage:
   scripts/init.sh [options]
 Options:
-  --client all       Install AGENTS.md, Claude hooks, and shared .agents skills (default)
+  --client all       Install AGENTS.md, Claude/Cursor hooks, and shared skills (default)
   --client claude    Install AGENTS.md plus Claude Code native hooks
-  --client codex     Install AGENTS.md plus shared .agents skills for Codex-style clients
-  --client grok      Install AGENTS.md plus shared .agents skills for Grok-style clients
+  --client codex     Install AGENTS.md, shared .agents skills, and global shell guards for Codex
+  --client cursor    Install AGENTS.md, Cursor hooks/skills, and global shell guards
+  --client grok      Install AGENTS.md, shared .agents skills, and global shell guards for Grok
   --client generic   Install only the portable AGENTS.md baseline
-  --all | --claude | --codex | --grok | --generic
+  --all | --claude | --codex | --cursor | --grok | --generic
   --interactive      Ask which client adapter to install
   --force            Overwrite files previously installed by SaneProcess
   -h, --help         Show this help
 The default remains "all" so existing SaneApps setup flows keep the full
-Claude + Codex-compatible surface. Public adopters can choose a narrower
+Claude + Codex + Cursor-compatible surface. Public adopters can choose a narrower
 adapter without getting client-specific files they do not use.
 EOF
 }
@@ -52,7 +53,7 @@ while [ "$#" -gt 0 ]; do
         --client)
             shift
             if [ "$#" -eq 0 ]; then
-                echo -e "${RED}Error: --client requires all, claude, codex, grok, or generic${NC}" >&2
+                echo -e "${RED}Error: --client requires all, claude, codex, cursor, grok, or generic${NC}" >&2
                 exit 1
             fi
             CLIENT="$1"
@@ -60,6 +61,7 @@ while [ "$#" -gt 0 ]; do
         --all) CLIENT="all" ;;
         --claude) CLIENT="claude" ;;
         --codex) CLIENT="codex" ;;
+        --cursor) CLIENT="cursor" ;;
         --grok) CLIENT="grok" ;;
         --generic) CLIENT="generic" ;;
         --interactive) INTERACTIVE=1 ;;
@@ -88,16 +90,18 @@ if [ "$INTERACTIVE" -eq 1 ]; then
     echo "  1) all     - AGENTS.md, Claude hooks, and .agents skills"
     echo "  2) claude  - AGENTS.md and Claude Code native hooks"
     echo "  3) codex   - AGENTS.md and .agents skills"
-    echo "  4) grok    - AGENTS.md and .agents skills"
-    echo "  5) generic - AGENTS.md only"
+    echo "  4) cursor  - AGENTS.md, Cursor hooks, and Cursor skills"
+    echo "  5) grok    - AGENTS.md and .agents skills"
+    echo "  6) generic - AGENTS.md only"
     printf "Selection [1]: "
     read answer
     case "${answer:-1}" in
         1|all) CLIENT="all" ;;
         2|claude) CLIENT="claude" ;;
         3|codex) CLIENT="codex" ;;
-        4|grok) CLIENT="grok" ;;
-        5|generic) CLIENT="generic" ;;
+        4|cursor) CLIENT="cursor" ;;
+        5|grok) CLIENT="grok" ;;
+        6|generic) CLIENT="generic" ;;
         *)
             echo -e "${RED}Error: invalid selection${NC}" >&2
             exit 1
@@ -106,7 +110,7 @@ if [ "$INTERACTIVE" -eq 1 ]; then
 fi
 
 case "$CLIENT" in
-    all|claude|codex|grok|generic) ;;
+    all|claude|codex|cursor|grok|generic) ;;
     *)
         echo -e "${RED}Error: unsupported client '$CLIENT'${NC}" >&2
         usage >&2
@@ -116,12 +120,16 @@ esac
 
 INSTALL_CLAUDE=0
 INSTALL_AGENTS_SKILLS=0
+INSTALL_SHELL_GUARDS=0
+INSTALL_CURSOR=0
 CLAUDE_SETTINGS_ACTIVE=0
+AGENTS_SKILLS_DESTINATION_VALID=1
 
 case "$CLIENT" in
-    all) INSTALL_CLAUDE=1; INSTALL_AGENTS_SKILLS=1 ;;
-    claude) INSTALL_CLAUDE=1 ;;
-    codex|grok) INSTALL_AGENTS_SKILLS=1 ;;
+    all) INSTALL_CLAUDE=1; INSTALL_AGENTS_SKILLS=1; INSTALL_SHELL_GUARDS=1; INSTALL_CURSOR=1 ;;
+    claude) INSTALL_CLAUDE=1; INSTALL_SHELL_GUARDS=1 ;;
+    codex|grok) INSTALL_AGENTS_SKILLS=1; INSTALL_SHELL_GUARDS=1 ;;
+    cursor) INSTALL_AGENTS_SKILLS=1; INSTALL_SHELL_GUARDS=1; INSTALL_CURSOR=1 ;;
     generic) ;;
 esac
 
@@ -148,6 +156,91 @@ copy_file() {
         chmod "$mode" "$dst"
     fi
     echo -e "   ${GREEN}+${NC} $label"
+}
+
+has_supported_skills() {
+    skills_root="$1"
+    [ -d "$skills_root" ] || return 1
+    [ ! -L "$skills_root" ] || return 1
+    for skill_file in "$skills_root"/*/SKILL.md; do
+        [ -f "$skill_file" ] || continue
+        [ ! -L "$skill_file" ] || continue
+        [ ! -L "$(dirname "$skill_file")" ] || continue
+        return 0
+    done
+    return 1
+}
+
+copy_skill_file() {
+    source="$1"
+    destination="$2"
+    label="$3"
+    mode="$4"
+    if [ -L "$source" ]; then
+        echo -e "   ${YELLOW}!${NC} Skipping symlink skill source: $source"
+        return
+    fi
+    if [ -L "$destination" ]; then
+        echo -e "   ${RED}x${NC} Refusing symlink skill destination: $destination"
+        ERRORS=$((ERRORS + 1))
+        return
+    fi
+    copy_file "$source" "$destination" "$label" "$mode"
+}
+
+install_skills_from_source() {
+    skills_source="$1"
+    has_supported_skills "$skills_source" || return
+    SKILL_SOURCES_FOUND=$((SKILL_SOURCES_FOUND + 1))
+
+    for skill_dir in "$skills_source"/*/; do
+        [ -d "$skill_dir" ] || continue
+        [ ! -L "$skill_dir" ] || continue
+        [ -f "$skill_dir/SKILL.md" ] || continue
+        [ ! -L "$skill_dir/SKILL.md" ] || continue
+        skill_name=$(basename "$skill_dir")
+
+        if [ "$INSTALL_CLAUDE" -eq 1 ]; then
+            claude_skill_dir=".claude/skills/$skill_name"
+            if [ -L "$claude_skill_dir" ]; then
+                echo -e "   ${RED}x${NC} Refusing symlink skill destination: $claude_skill_dir"
+                ERRORS=$((ERRORS + 1))
+            else
+                mkdir -p "$claude_skill_dir"
+                copy_skill_file "$skill_dir/SKILL.md" "$claude_skill_dir/SKILL.md" ".claude/skills/$skill_name" ""
+                if [ -d "$skill_dir/prompts" ] && [ ! -L "$skill_dir/prompts" ]; then
+                    mkdir -p "$claude_skill_dir/prompts"
+                    for prompt in "$skill_dir"/prompts/*.md; do
+                        [ -f "$prompt" ] || continue
+                        copy_skill_file "$prompt" "$claude_skill_dir/prompts/$(basename "$prompt")" ".claude/skills/$skill_name/prompts/$(basename "$prompt")" ""
+                    done
+                fi
+            fi
+        fi
+
+        if [ "$INSTALL_AGENTS_SKILLS" -eq 1 ] && [ "$AGENTS_SKILLS_DESTINATION_VALID" -eq 1 ]; then
+            agents_skill_dir="$HOME/.agents/skills/$skill_name"
+            source_skill_dir=$(cd "$skill_dir" 2>/dev/null && pwd -P)
+            destination_skill_dir=$(cd "$HOME/.agents/skills/$skill_name" 2>/dev/null && pwd -P || true)
+            if [ -n "$destination_skill_dir" ] && [ "$source_skill_dir" = "$destination_skill_dir" ]; then
+                continue
+            fi
+            if [ -L "$agents_skill_dir" ]; then
+                echo -e "   ${RED}x${NC} Refusing symlink skill destination: $agents_skill_dir"
+                ERRORS=$((ERRORS + 1))
+                continue
+            fi
+            mkdir -p "$agents_skill_dir"
+            copy_skill_file "$skill_dir/SKILL.md" "$agents_skill_dir/SKILL.md" "~/.agents/skills/$skill_name" ""
+            if [ -d "$skill_dir/prompts" ] && [ ! -L "$skill_dir/prompts" ]; then
+                mkdir -p "$agents_skill_dir/prompts"
+                for prompt in "$skill_dir"/prompts/*.md; do
+                    [ -f "$prompt" ] || continue
+                    copy_skill_file "$prompt" "$agents_skill_dir/prompts/$(basename "$prompt")" "~/.agents/skills/$skill_name/prompts/$(basename "$prompt")" ""
+                done
+            fi
+        fi
+    done
 }
 
 version_at_least() {
@@ -316,6 +409,26 @@ ERRORS=0
 # below. The previous per-file module lists went 8 files stale and shipped
 # installs that crashed with LoadError (2026-06-11 audit).
 MAIN_HOOKS="session_start.rb saneprompt.rb sanetools.rb sanetrack.rb task_completed_gate.rb sanestop.rb"
+SHELL_GUARD_WRAPPERS="curl:sane_curl_guard.sh open:sane_open_guard.sh rsync:sane_rsync_guard.sh security:sane_security_guard.sh ssh:sane_ssh_guard.sh swift:swift xcodebuild:xcodebuild"
+
+if [ "$INSTALL_SHELL_GUARDS" -eq 1 ]; then
+    echo "Installing global shell guards..."
+    mkdir -p "$HOME/.local/bin"
+    for entry in $SHELL_GUARD_WRAPPERS; do
+        command_name="${entry%%:*}"
+        guard_name="${entry#*:}"
+        guard_source="$SANEPROCESS_DIR/scripts/hooks/$guard_name"
+        if [ ! -f "$guard_source" ]; then
+            echo -e "   ${RED}x${NC} $guard_name missing"
+            ERRORS=$((ERRORS + 1))
+            continue
+        fi
+        chmod +x "$guard_source"
+        ln -sfn "$guard_source" "$HOME/.local/bin/$command_name"
+        echo -e "   ${GREEN}+${NC} $command_name -> $guard_name"
+    done
+    echo ""
+fi
 
 echo "Installing portable instructions..."
 if [ -f "AGENTS.md" ] && [ "$FORCE" -ne 1 ]; then
@@ -486,38 +599,51 @@ GITIGNORE_EOF
     echo ""
 fi
 
+if [ "$INSTALL_SHELL_GUARDS" -eq 1 ]; then
+    for entry in $SHELL_GUARD_WRAPPERS; do
+        command_name="${entry%%:*}"
+        guard_name="${entry#*:}"
+        wrapper="$HOME/.local/bin/$command_name"
+        expected="$SANEPROCESS_DIR/scripts/hooks/$guard_name"
+        if [ ! -L "$wrapper" ] || [ "$(readlink "$wrapper")" != "$expected" ]; then
+            echo -e "   ${RED}x${NC} global guard wrapper invalid: $command_name"
+            ERRORS=$((ERRORS + 1))
+        fi
+    done
+fi
+
 if [ "$INSTALL_CLAUDE" -eq 1 ] || [ "$INSTALL_AGENTS_SKILLS" -eq 1 ]; then
     echo "Installing reusable skills..."
-    SKILLS_SRC="$SANEPROCESS_DIR/skills"
-    if [ -d "$SKILLS_SRC" ]; then
-        for skill_dir in "$SKILLS_SRC"/*/; do
-            skill_name=$(basename "$skill_dir")
-            [ -f "$skill_dir/SKILL.md" ] || continue
-
-            if [ "$INSTALL_CLAUDE" -eq 1 ]; then
-                mkdir -p ".claude/skills/$skill_name"
-                copy_file "$skill_dir/SKILL.md" ".claude/skills/$skill_name/SKILL.md" ".claude/skills/$skill_name" ""
-                if [ -d "$skill_dir/prompts" ]; then
-                    mkdir -p ".claude/skills/$skill_name/prompts"
-                    for prompt in "$skill_dir"/prompts/*.md; do
-                        [ -f "$prompt" ] && copy_file "$prompt" ".claude/skills/$skill_name/prompts/$(basename "$prompt")" ".claude/skills/$skill_name/prompts/$(basename "$prompt")" ""
-                    done
-                fi
-            fi
-
-            if [ "$INSTALL_AGENTS_SKILLS" -eq 1 ]; then
-                mkdir -p ".agents/skills/$skill_name"
-                copy_file "$skill_dir/SKILL.md" ".agents/skills/$skill_name/SKILL.md" ".agents/skills/$skill_name" ""
-                if [ -d "$skill_dir/prompts" ]; then
-                    mkdir -p ".agents/skills/$skill_name/prompts"
-                    for prompt in "$skill_dir"/prompts/*.md; do
-                        [ -f "$prompt" ] && copy_file "$prompt" ".agents/skills/$skill_name/prompts/$(basename "$prompt")" ".agents/skills/$skill_name/prompts/$(basename "$prompt")" ""
-                    done
-                fi
-            fi
-        done
+    if [ "$INSTALL_AGENTS_SKILLS" -eq 1 ] && [ -L "$HOME/.agents/skills" ]; then
+        echo -e "   ${RED}x${NC} Refusing symlink shared skill destination: $HOME/.agents/skills"
+        ERRORS=$((ERRORS + 1))
+        AGENTS_SKILLS_DESTINATION_VALID=0
+    fi
+    SKILL_SOURCES_FOUND=0
+    REPO_SKILLS_SRC="$SANEPROCESS_DIR/skills"
+    if has_supported_skills "$REPO_SKILLS_SRC"; then
+        install_skills_from_source "$REPO_SKILLS_SRC"
     else
-        echo -e "   ${YELLOW}!${NC} No skills found (optional)"
+        install_skills_from_source "$HOME/.codex/skills"
+        install_skills_from_source "$HOME/.agents/skills"
+    fi
+    if [ "$SKILL_SOURCES_FOUND" -eq 0 ]; then
+        echo -e "   ${YELLOW}!${NC} No supported skill source found"
+    fi
+    echo ""
+fi
+
+if [ "$INSTALL_CURSOR" -eq 1 ]; then
+    echo "Installing Cursor hooks and global skills (merge + backup, no delete)..."
+    CURSOR_INSTALLER="$SANEPROCESS_DIR/scripts/hooks/cursor/install.rb"
+    if [ ! -f "$CURSOR_INSTALLER" ]; then
+        echo -e "   ${RED}x${NC} Cursor installer missing: $CURSOR_INSTALLER"
+        ERRORS=$((ERRORS + 1))
+    elif "$RUBY_CMD" "$CURSOR_INSTALLER"; then
+        echo -e "   ${GREEN}+${NC} Cursor hooks and skills"
+    else
+        echo -e "   ${RED}x${NC} Cursor hook/skill installation failed"
+        ERRORS=$((ERRORS + 1))
     fi
     echo ""
 fi
@@ -556,10 +682,19 @@ if [ "$INSTALL_CLAUDE" -eq 1 ]; then
 fi
 
 if [ "$INSTALL_AGENTS_SKILLS" -eq 1 ]; then
-    if [ -d ".agents/skills" ]; then
-        echo -e "   ${GREEN}+${NC} .agents/skills present"
+    if has_supported_skills "$HOME/.agents/skills"; then
+        echo -e "   ${GREEN}+${NC} ~/.agents/skills present and nonempty"
     else
-        echo -e "   ${RED}x${NC} .agents/skills missing"
+        echo -e "   ${RED}x${NC} ~/.agents/skills missing or empty"
+        ERRORS=$((ERRORS + 1))
+    fi
+fi
+
+if [ "$INSTALL_CURSOR" -eq 1 ]; then
+    if [ -f "$HOME/.cursor/hooks.json" ] && [ -x "$HOME/.cursor/hooks/before_shell_guard.rb" ] && has_supported_skills "$HOME/.cursor/skills"; then
+        echo -e "   ${GREEN}+${NC} Cursor hook registration and skills present"
+    else
+        echo -e "   ${RED}x${NC} Cursor hook registration or skills missing"
         ERRORS=$((ERRORS + 1))
     fi
 fi
@@ -583,7 +718,10 @@ if [ "$INSTALL_CLAUDE" -eq 1 ]; then
     fi
 fi
 if [ "$INSTALL_AGENTS_SKILLS" -eq 1 ]; then
-    echo "  Shared skills: .agents/skills"
+    echo "  Shared skills: ~/.agents/skills"
+fi
+if [ "$INSTALL_CURSOR" -eq 1 ]; then
+    echo "  Cursor: fail-closed shell guard, conversation-scoped GUI feedback, and ~/.cursor/skills"
 fi
 if [ "$CLIENT" = "grok" ]; then
     echo "  Grok: AGENTS.md + .agents/skills; use /mcps or Ctrl+L for live MCP status"
@@ -635,11 +773,16 @@ case "$CLIENT" in
         ;;
     codex)
         echo "  Confirm your client sees AGENTS.md"
-        echo "  Confirm reusable skills exist under .agents/skills"
+        echo "  Confirm reusable skills exist under ~/.agents/skills"
+        echo "  Confirm curl/open/rsync/security/ssh/swift/xcodebuild resolve under ~/.local/bin"
+        ;;
+    cursor)
+        echo "  Confirm ~/.cursor/hooks.json retains unrelated hooks and includes before_shell_guard.rb"
+        echo "  Confirm reusable skills exist under ~/.cursor/skills"
         ;;
     grok)
         echo "  Confirm Grok sees AGENTS.md"
-        echo "  Confirm reusable skills exist under .agents/skills"
+        echo "  Confirm reusable skills exist under ~/.agents/skills"
         echo "  Check live MCP state in Grok with /mcps or Ctrl+L; native grok mcp list may not include compatibility-loaded servers"
         ;;
     generic)

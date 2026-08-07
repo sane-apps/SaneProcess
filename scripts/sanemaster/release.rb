@@ -3141,7 +3141,7 @@ module SaneMasterModules
       warnings = []
       if manifest_paths.empty?
         return {
-          issues: ['No PrivacyInfo.xcprivacy found — required since Spring 2024 for all new submissions'],
+          issues: ['No PrivacyInfo.xcprivacy found — SaneApps requires a manifest so Required Reason API and collected-data declarations are explicit in the submitted bundle'],
           warnings: [],
           summary: 'missing'
         }
@@ -5352,7 +5352,8 @@ module SaneMasterModules
       Dir.glob(File.join(root, 'test', 'fixtures', 'gates', "#{normalized}_*.json")).sort
     end
 
-    # App Store submission preflight — validates everything Apple checks during review.
+    # App Store submission preflight — validates deterministic release evidence
+    # and known policy contradictions. Human App Review remains a separate gate.
     # Derived from Apple's App Review Guidelines + community rejection checklists.
     # Works for any SaneApps project with a .saneprocess config.
     def appstore_preflight(args)
@@ -5369,6 +5370,9 @@ module SaneMasterModules
 
       issues = []
       warnings = []
+      policy_freshness = store_policy_freshness_report(:apple)
+      issues.concat(policy_freshness[:issues])
+      warnings.concat(policy_freshness[:warnings])
 
       config_path = File.join(Dir.pwd, '.saneprocess')
       config = if File.exist?(config_path)
@@ -5440,7 +5444,23 @@ module SaneMasterModules
         issues << 'Ruby jwt gem not installed — run: gem install jwt'
       end
 
-      # 1e. App-level territory availability
+      # 1e. Mature third-party metadata heuristics (advisory tool, not release authority)
+      print '  │ fastlane metadata precheck... '
+      fastlane_report = fastlane_precheck_report(
+        app_identifier: config['bundle_id'].to_s,
+        platform: platforms.first.to_s == 'macos' ? 'osx' : 'ios',
+        include_iap: !appstore_no_iap_policy?(appstore_config),
+        credentials: credentials
+      )
+      if fastlane_report[:issues].empty?
+        puts fastlane_report[:summary] == 'passed' ? '✅' : '⚠️  skipped'
+      else
+        puts '❌ FAIL'
+      end
+      issues.concat(fastlane_report[:issues])
+      warnings.concat(fastlane_report[:warnings])
+
+      # 1f. App-level territory availability
       print '  │ ASC app availability... '
       if asc_app_id.to_s.strip.empty?
         puts '⚠️  skipped (no ASC app_id)'
@@ -5519,6 +5539,21 @@ module SaneMasterModules
         platforms: platforms,
         issues: issues
       )
+      if submission_target&.dig(:path)
+        print '  │ Apple exact-package validation... '
+        apple_validation = appstore_package_validation_report(
+          package_path: submission_target[:path],
+          platform: submission_target[:platform],
+          credentials: credentials
+        )
+        if apple_validation[:issues].empty?
+          puts '✅'
+        else
+          puts '❌ FAIL'
+        end
+        issues.concat(apple_validation[:issues])
+        warnings.concat(apple_validation[:warnings])
+      end
 
       # 2b. Entitlements file
       print '  │ Entitlements... '
@@ -6660,7 +6695,7 @@ module SaneMasterModules
       end
       puts ''
       if issues.empty? && warnings.empty?
-        puts '  ✅ ALL CLEAR — ready for App Store submission'
+        puts '  ✅ DETERMINISTIC CHECKS CLEAR — retain live reviewer-flow, semantic, and portal read-back receipts'
       elsif issues.empty?
         puts '  🟡 REVIEW WARNINGS — then proceed with submission'
       else

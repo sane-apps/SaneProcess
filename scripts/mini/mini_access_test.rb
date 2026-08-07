@@ -85,7 +85,7 @@ exit(run_tests('Mini Access Tests') do
     test('falls back to authenticated Tailscale') do
       _out, err, status, log = run_proxy(lan: false, tailscale: true)
       assert(status.success?, err)
-      assert_includes(log, 'tailscale ping -c 1 --timeout=3s stephans-mac-mini')
+      assert_includes(log, 'tailscale ping -c 1 --timeout=5s stephans-mac-mini')
       assert_includes(log, 'tailscale nc stephans-mac-mini 22')
       true
     end
@@ -124,6 +124,11 @@ exit(run_tests('Mini Access Tests') do
         tailscale_cli = File.read(File.join(home, '.local', 'bin', 'tailscale'))
         assert_includes(config, 'Host mini mini-remote')
         assert_includes(config, 'ProxyCommand ~/.local/bin/saneapps-mini-proxy')
+        assert_includes(config, 'Host 100.77.120.83 stephans-mac-mini')
+        assert_includes(config, 'User stephansmac')
+        raw_alias = config.split('Host 100.77.120.83 stephans-mac-mini', 2).last.split("\nHost ", 2).first
+        assert_includes(raw_alias, 'ProxyCommand ~/.local/bin/saneapps-mini-proxy')
+        assert(!raw_alias.include?('User sj'), raw_alias)
         assert_includes(proxy, 'Tailscale')
         assert_includes(tailscale_cli, 'USERSPACE_SOCKET')
         assert(!config.include?('Cloudflare'))

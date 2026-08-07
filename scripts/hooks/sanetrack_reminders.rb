@@ -82,7 +82,7 @@ def emit_explore_reminder(tool_name, tool_input)
 
   warn ''
   warn '💡 TIP: Quick lookup? → Task(subagent_type: "Explore") — fast, disposable'
-  warn '   Real research? → Task(subagent_type: "general-purpose", model: "gpt-5.2" or "gpt-5.4") — persists to .claude/research.md'
+  warn '   Real research? → Task(subagent_type: "general-purpose", model: latest/best available) — persists to .claude/research.md'
   warn ''
 end
 

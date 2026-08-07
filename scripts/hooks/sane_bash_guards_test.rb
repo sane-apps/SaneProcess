@@ -77,6 +77,92 @@ exit(run_tests('Sane Bash Guards Dispatcher Tests') do
     true
   end
 
+  test('blocks whole-keychain enumeration before it can flood prompts') do
+    [
+      'security dump-keychain -d login.keychain-db',
+      '/usr/bin/security dump-keychain -d login.keychain-db',
+      "ssh mini 'security dump-keychain -d login.keychain-db'"
+    ].each do |command|
+      _out, err, status = run_guard(
+        'sane_bash_guards.rb',
+        { 'tool_name' => 'Bash', 'tool_input' => { 'command' => command } }
+      )
+
+      assert_eq(status.exitstatus, 2)
+      assert_includes(err, 'whole-keychain enumeration')
+      assert_includes(err, '~/.config/nv/env')
+    end
+    true
+  end
+
+  test('allows scoped Keychain lookup and textual mention of blocked command') do
+    [
+      'security find-generic-password -s cloudflare -a api_token -w',
+      'rg "security dump-keychain" scripts'
+    ].each do |command|
+      _out, err, status = run_guard(
+        'sane_bash_guards.rb',
+        { 'tool_name' => 'Bash', 'tool_input' => { 'command' => command } }
+      )
+
+      assert_eq(status.exitstatus, 0)
+      assert_eq(err, '')
+    end
+    true
+  end
+
+
+  test('blocks Safari and Chrome across direct absolute nested and remote forms') do
+    commands = [
+      '/usr/bin/open -a Safari https://example.com',
+      'command /usr/bin/open -b com.google.Chrome https://example.com',
+      '/bin/zsh -lc \'/usr/bin/open -a "Google Chrome" https://example.com\'',
+      'ssh mini \'/usr/bin/open -b com.apple.Safari https://example.com\'',
+      'osascript -e \'tell application "Google Chrome" to activate\'',
+      'ssh mini \'osascript -e "tell application \\"Safari\\" to activate"\''
+    ]
+    commands.each do |command|
+      _out, err, status = run_guard(
+        'sane_bash_guards.rb',
+        { 'tool_name' => 'Bash', 'tool_input' => { 'command' => command } }
+      )
+      assert_eq(status.exitstatus, 2)
+      assert_includes(err, 'Brave only')
+    end
+    true
+  end
+
+  test('allows Brave and source text that mentions prohibited browsers') do
+    [
+      '/usr/bin/open -a "Brave Browser" https://example.com',
+      'rg \'tell application "Safari"\' scripts',
+      'git commit -m "docs: Chrome is blocked; use Brave"'
+    ].each do |command|
+      _out, err, status = run_guard(
+        'sane_bash_guards.rb',
+        { 'tool_name' => 'Bash', 'tool_input' => { 'command' => command } }
+      )
+      assert_eq(status.exitstatus, 0)
+      assert_eq(err, '')
+    end
+    true
+  end
+
+  test('blocks deprecated ad-hoc Prophecy reviewer browser scripts') do
+    _out, err, status = run_guard(
+      'sane_bash_guards.rb',
+      {
+        'tool_name' => 'Bash',
+        'tool_input' => { 'command' => 'bash /tmp/admin-brave-e2e/run.sh' }
+      }
+    )
+
+    assert_eq(status.exitstatus, 2)
+    assert_includes(err, 'ad-hoc Prophecy Ledger reviewer click')
+    assert_includes(err, 'SaneMaster.rb prophecy_reviewer_click')
+    true
+  end
+
   test('blocks direct raw Mini screenshot even when ssh wrapper is bypassed') do
     _out, err, status = run_guard(
       'sane_bash_guards.rb',

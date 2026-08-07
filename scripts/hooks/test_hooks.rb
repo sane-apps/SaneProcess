@@ -437,7 +437,8 @@ class HookTests
 
     project.fetch('hooks') == global.fetch('hooks') &&
       pre_tool_commands[0].include?('sane_catastrophic_guard.rb') &&
-      pre_tool_commands[1].include?('sanetools.rb')
+      pre_tool_commands[1].include?('sanetools.rb') &&
+      pre_tool_commands[2].include?('sane_bash_guards.rb')
   end
 
   def test_settings_operator_sandbox_policy

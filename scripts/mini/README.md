@@ -54,6 +54,11 @@ Use `ssh mini-lan` only to diagnose same-network Bonjour. If LAN is unavailable,
 `ssh mini` automatically uses Tailscale. If both private routes fail, the proxy
 fails clearly rather than hiding the outage behind an ephemeral hostname.
 
+**Do not SSH to `100.77.120.83:22` directly from the Air.** Its userspace
+Tailscale does not provide kernel TCP routing to the Mini even when
+`tailscale ping` succeeds. Use `ssh mini` or the installed host aliases, which
+force `saneapps-mini-proxy`. The Mini user is `stephansmac`, never `sj`.
+
 ## Mini To Air Access
 
 The return route is intentionally available for recovery and bidirectional
@@ -94,8 +99,9 @@ login and every 15 minutes by `com.saneapps.memory-sync`. The implementation is
 - cross-host lock with stale-lock recovery;
 - backup-first, no-delete operation;
 - checksum verification;
-- newest-mtime selection with losing same-file versions retained as
-  `.sane-conflict-*` files on both Macs;
+- newest-mtime selection with losing same-file versions and legacy
+  `.sane-conflict-*` artifacts retained in private, hashed per-run archives
+  under `outputs/memory-conflicts/`, outside active client memory;
 - clean skip when the Mini is temporarily unreachable;
 - non-clobbering Mini dirty-work snapshots pulled into the Air outputs folder.
 

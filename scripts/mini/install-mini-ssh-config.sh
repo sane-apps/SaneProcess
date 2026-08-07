@@ -66,6 +66,19 @@ Host mini mini-remote
   # See SaneProcess scripts/mini/saneapps-mini-proxy.sh (canonical source).
   ProxyCommand ~/.local/bin/saneapps-mini-proxy
 
+# Air userspace Tailscale does not route raw TCP to 100.77.x:22. Keep the
+# known raw address and hostname on the same LAN-first/Tailscale proxy path.
+Host 100.77.120.83 stephans-mac-mini
+  User stephansmac
+  IdentityFile ~/.ssh/id_ed25519
+  IdentitiesOnly yes
+  StrictHostKeyChecking accept-new
+  AddKeysToAgent yes
+  ServerAliveInterval 30
+  ServerAliveCountMax 3
+  ConnectTimeout 15
+  ProxyCommand ~/.local/bin/saneapps-mini-proxy
+
 Host mini-lan
   HostName stephans-mac-mini.local
   User stephansmac

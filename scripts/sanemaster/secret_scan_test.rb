@@ -5,8 +5,10 @@ require 'json'
 require 'open3'
 require 'tmpdir'
 require 'fileutils'
+require 'digest'
 
 require_relative '../hooks/test/test_framework'
+require_relative '../../outputs/secret-remediation/execute-20260803-air-derived-trash'
 
 include TestFramework
 
@@ -136,7 +138,8 @@ exit(run_tests('SaneMaster Secret Scan Tests') do
           File.join(home, '.config', 'gh', 'hosts.yml'),
           File.join(home, '.config', 'saneprocess', 'secrets.env'),
           File.join(home, '.codex', 'secrets', 'github_token'),
-          File.join(home, '.peekaboo', 'credentials')
+          File.join(home, '.peekaboo', 'credentials'),
+          File.join(home, '.appstoreconnect', 'private_keys', 'AuthKey_FIXTURE.p8')
         ].map do |path|
           {
             'severity' => 'high',
@@ -151,7 +154,7 @@ exit(run_tests('SaneMaster Secret Scan Tests') do
         assert_eq(status.exitstatus, 0, stderr)
         assert_eq(receipt['status'], 'pass')
         assert_eq(receipt['actionable_count'], 0)
-        assert_eq(receipt['preserved_count'], 5)
+        assert_eq(receipt['preserved_count'], 6)
       end
       true
     end
@@ -162,7 +165,9 @@ exit(run_tests('SaneMaster Secret Scan Tests') do
         write_fake_av(scanner)
         findings = [
           File.join(dir, 'apps', 'SaneClip', 'Tests', 'SaneClipTests.swift'),
-          File.join(dir, '.nvm', '.github', 'workflows', 'windows-npm.yml')
+          File.join(dir, '.nvm', '.github', 'workflows', 'windows-npm.yml'),
+          File.join(Dir.home, '.grok', 'marketplace-cache', 'fixture', 'src', 'services', 'telemetry', 'common.ts'),
+          File.join(Dir.home, 'SaneApps', 'infra', 'SaneProcess', 'outputs', 'memory-conflicts', '20260803T011209Z', 'codex-memories', 'local', 'manifest.tsv')
         ].map do |path|
           {
             'severity' => 'critical',
@@ -177,7 +182,33 @@ exit(run_tests('SaneMaster Secret Scan Tests') do
         assert_eq(status.exitstatus, 0, stderr)
         assert_eq(receipt['status'], 'pass')
         assert_eq(receipt['actionable_count'], 0)
-        assert_eq(receipt['ignored_count'], 2)
+        assert_eq(receipt['ignored_count'], 4)
+      end
+      true
+    end
+
+    test('does not ignore live configs session history or private dirty patches') do
+      Dir.mktmpdir('secret-scan-negative-policy-') do |dir|
+        scanner = File.join(dir, 'av')
+        write_fake_av(scanner)
+        findings = [
+          File.join(Dir.home, 'SaneApps', 'sanelot', '.dev.vars'),
+          File.join(Dir.home, '.codex', 'sessions', '2026', '08', '03', 'rollout.jsonl'),
+          File.join(Dir.home, 'SaneApps', 'infra', 'SaneProcess', 'outputs', 'peer-dirty-backups', 'host', 'SaneProcess', 'snapshot', 'worktree.patch')
+        ].map do |path|
+          {
+            'severity' => 'high',
+            'kind' => 'token-literal',
+            'path' => path,
+            'message' => 'Must remain actionable'
+          }
+        end
+
+        _stdout, stderr, status, receipt = run_secret_scan(dir, scanner, findings)
+
+        assert_eq(status.exitstatus, 1, stderr)
+        assert_eq(receipt['actionable_count'], 3)
+        assert_eq(receipt['ignored_count'], 0)
       end
       true
     end
@@ -191,6 +222,67 @@ exit(run_tests('SaneMaster Secret Scan Tests') do
         assert_eq(receipt['status'], 'scanner_missing')
         assert_includes(receipt.dig('scanner', 'install'), 'automic-vault')
       end
+      true
+    end
+  end
+
+  test_category('Exact recoverable-trash plan') do
+    test('validates a private NUL-safe manifest and refuses changed content') do
+      Dir.mktmpdir('secret-trash-plan-') do |dir|
+        file_target = File.join(dir, "generated\nartifact.txt")
+        directory_target = File.join(dir, 'derived-cache')
+        File.write(file_target, 'fixture only')
+        FileUtils.mkdir_p(directory_target)
+        File.write(File.join(directory_target, 'entry.json'), '{}')
+        File.chmod(0o600, file_target)
+        File.chmod(0o700, directory_target)
+
+        paths = [file_target, directory_target]
+        manifest = File.join(dir, 'plan.paths0')
+        metadata = File.join(dir, 'plan.metadata.json')
+        File.binwrite(manifest, paths.join("\0") + "\0")
+        entries = paths.each_with_index.map do |path, index|
+          type = File.directory?(path) ? 'directory' : 'file'
+          {
+            index: index,
+            path_sha256: SaneSecretTrashPlan.path_hash(path),
+            type: type,
+            mode: SaneSecretTrashPlan.file_mode(path),
+            sha256: type == 'directory' ? SaneSecretTrashPlan.directory_digest(path) : Digest::SHA256.file(path).hexdigest,
+            precondition: 'fixture'
+          }
+        end
+        File.write(metadata, JSON.pretty_generate(
+          schema_version: 1,
+          manifest_sha256: Digest::SHA256.file(manifest).hexdigest,
+          entries: entries
+        ))
+        File.chmod(0o600, manifest)
+        File.chmod(0o600, metadata)
+
+        validated = SaneSecretTrashPlan.validate(manifest_path: manifest, metadata_path: metadata)
+        assert_eq(validated, paths)
+        assert_eq(SaneSecretTrashPlan.run([], manifest_path: manifest, metadata_path: metadata), 0)
+        assert(File.exist?(file_target), 'dry run changed a file')
+        assert(File.exist?(directory_target), 'dry run changed a directory')
+
+        File.write(file_target, 'changed fixture')
+        begin
+          SaneSecretTrashPlan.validate(manifest_path: manifest, metadata_path: metadata)
+          assert(false, 'changed content must fail validation')
+        rescue StandardError => e
+          assert_includes(e.message, 'content digest mismatch')
+        end
+      end
+      true
+    end
+
+    test('executor is dry-run by default and applies only through usr bin trash') do
+      source = File.read(File.join(ROOT, 'outputs', 'secret-remediation', 'execute-20260803-air-derived-trash.rb'))
+      assert_includes(source, "apply = argv.delete('--apply')")
+      assert_includes(source, "TRASH = '/usr/bin/trash'")
+      assert_includes(source, "Open3.capture3(TRASH, '--stopOnError', *paths)")
+      assert(!source.include?('rm -'), 'executor must never use rm')
       true
     end
   end

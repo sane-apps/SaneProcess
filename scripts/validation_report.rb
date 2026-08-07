@@ -116,6 +116,8 @@ class ValidationReport
     /(?:SaneAI|SaneSync).{0,100}(?:training|model).{0,100}\b(?:active|scheduled|target)\b/im => 'retired local AI training described as active',
     /(?:\b(?:use|required|canonical)\b.{0,40}self-SSH|self-SSH\s+(?:is\s+)?(?:required|canonical|supported))/im => 'self-SSH described as an operating route'
   }.freeze
+  GLOBAL_ADMIN_BROWSER_POLICY_MARKER = 'SANEPROCESS_ADMIN_BROWSER_POLICY_V1'
+  NUMBERED_MODEL_PATTERN = /\b(?:gpt-\d[\w.-]*|claude-(?:[a-z][a-z0-9]*-)*\d[\w.-]*)\b/i.freeze
   CUSTOMER_UI_MANIFEST_PATHS = [
     'Tests/CustomerUIActions.yml',
     'tests/customer_ui_actions.yml',
@@ -289,6 +291,7 @@ class ValidationReport
     q13_customer_reality_contracts # Release-required customer actions prove real workflows
     q14_disk_budget
     q15_secret_scan_receipt
+    q16_user_policy_controls
     q12_red_noise_budget
     calculate_final_verdict
   end
@@ -328,7 +331,7 @@ class ValidationReport
       :app_readiness
     when /^Q9 SUPPORT:/
       :system_health
-    when /^Q14 DISK:/, /^Q15 SECRET SCAN:/
+    when /^Q14 DISK:/, /^Q15 SECRET SCAN:/, /^Q16 USER POLICY:/
       :system_health
     else
       :advisory
@@ -374,6 +377,8 @@ class ValidationReport
       'Run `ruby scripts/SaneMaster.rb machine_cleanup --host mini --server --apply`, then rerun validation on the Mini.'
     when /Q15 SECRET SCAN:/
       'Run `ruby scripts/SaneMaster.rb secret_scan --path /Users/sj` on the affected host. Install Automic Vault or set SANEMASTER_AUTOMIC_VAULT_CLI if the scanner is missing.'
+    when /Q16 USER POLICY:/
+      'Remove numbered model pins, retain host-specific MCP settings, enforce the marked Brave-only/Mini-only admin-browser rule, then rerun validation on that host.'
     else
       'Open the matching Q-section in validation_report.rb, fix the named source of truth, and rerun `ruby scripts/validation_report.rb` on the Mini.'
     end
@@ -476,7 +481,11 @@ class ValidationReport
     # === HOOK FILES CHECK ===
     # Verify critical hooks exist in SaneProcess (the source of truth)
     saneprocess_hooks = File.expand_path('~/SaneApps/infra/SaneProcess/scripts/hooks')
-    %w[session_start.rb saneprompt.rb sanetools.rb sanetrack.rb sanestop.rb].each do |hook|
+    %w[
+      session_start.rb saneprompt.rb sanetools.rb sanetrack.rb
+      task_completed_gate.rb sanestop.rb sane_catastrophic_guard.rb
+      sane_bash_guards.rb sane_automation_guard.rb
+    ].each do |hook|
       hook_path = File.join(saneprocess_hooks, hook)
       unless File.exist?(hook_path)
         issues_found << "Missing SaneProcess hook: #{hook}"
@@ -489,11 +498,12 @@ class ValidationReport
     # DO NOT check project-local settings.json for hooks — that causes false positives
     # and adding hooks there recreates Session 15's duplicate-firing bug.
     hook_file_map = {
-      'SessionStart' => 'session_start.rb',
-      'UserPromptSubmit' => 'saneprompt.rb',
-      'PreToolUse' => 'sanetools.rb',
-      'PostToolUse' => 'sanetrack.rb',
-      'Stop' => 'sanestop.rb'
+      'SessionStart' => %w[session_start.rb],
+      'UserPromptSubmit' => %w[saneprompt.rb],
+      'PreToolUse' => %w[sane_catastrophic_guard.rb sanetools.rb sane_bash_guards.rb],
+      'PostToolUse' => %w[sanetrack.rb],
+      'TaskCompleted' => %w[task_completed_gate.rb],
+      'Stop' => %w[sanestop.rb]
     }
 
     if File.exist?(global_settings)
@@ -501,12 +511,17 @@ class ValidationReport
         settings = JSON.parse(File.read(global_settings))
         hooks = settings['hooks'] || {}
 
-        hook_file_map.each do |hook_name, hook_file|
+        hook_file_map.each do |hook_name, hook_files|
           hook_commands = configured_hook_commands(hooks, hook_name)
           if hook_commands.empty?
             issues_found << "Global #{hook_name} hook missing"
-          elsif hook_commands.none? { |command| command.include?(hook_file) }
-            issues_found << "Global #{hook_name} hook doesn't reference #{hook_file}"
+            next
+          end
+
+          hook_files.each do |hook_file|
+            if hook_commands.none? { |command| command.include?(hook_file) }
+              issues_found << "Global #{hook_name} hook doesn't reference #{hook_file}"
+            end
           end
         end
       rescue JSON::ParserError
@@ -2235,14 +2250,16 @@ class ValidationReport
       end
     end
 
-    # AgentMemory replaced the retired file-backed knowledge-graph MCP. This
-    # check consumes only the redacted status surface and never reads memory or
-    # credential files directly.
-    agentmemory = agentmemory_status_output
-    unless agentmemory.match?(/Connected.*v0\.9\.27/m) &&
-           agentmemory.match?(/Health:\s+.*healthy/) &&
-           agentmemory.match?(/Memories:\s+\d[\d,]*/)
-      warnings_found << 'AgentMemory is unavailable or unhealthy on the Mini-owned port 3111'
+    # AgentMemory replaced the retired file-backed knowledge-graph MCP. A CLI
+    # status line alone is insufficient: the wrapper can remain connected after
+    # its engine or search route has failed. Require direct loopback probes plus
+    # a non-empty corpus and a real search result.
+    agentmemory = agentmemory_runtime_proof
+    missing_agentmemory_proof = %i[connected livez json_health corpus search].reject { |key| agentmemory[key] }
+    unless missing_agentmemory_proof.empty?
+      proof_labels = { json_health: 'health' }
+      missing_labels = missing_agentmemory_proof.map { |key| proof_labels.fetch(key, key.to_s) }
+      issues_found << "AgentMemory runtime proof failed on the Mini-owned port 3111: #{missing_labels.join(', ')}"
     end
 
     @metrics[:support_infrastructure] = {
@@ -2263,6 +2280,60 @@ class ValidationReport
     status.success? ? stdout : "#{stdout}\n#{stderr}"
   rescue StandardError
     ''
+  end
+
+  def agentmemory_runtime_proof
+    status_output = agentmemory_status_output
+    memory_count = status_output[/Memories:\s*(\d[\d,]*)/, 1]&.delete(',')&.to_i
+    livez_response = agentmemory_http_response('/agentmemory/livez')
+    health_response = agentmemory_http_response('/agentmemory/health')
+    search_response = agentmemory_http_response(
+      '/agentmemory/search',
+      method: :post,
+      payload: JSON.generate(query: 'SaneApps', limit: 1, format: 'compact')
+    )
+    health_payload = parse_json_response(health_response)
+    search_payload = parse_json_response(search_response)
+
+    {
+      connected: status_output.match?(/Connected.*v\d+\.\d+\.\d+/m) && status_output.match?(/Health:\s+.*healthy/),
+      livez: http_success_with_body?(livez_response),
+      json_health: health_payload.is_a?(Hash) &&
+        health_payload['service'] == 'agentmemory' && health_payload['status'] == 'healthy',
+      corpus: memory_count && memory_count.positive?,
+      search: search_payload.is_a?(Hash) &&
+        search_payload['results'].is_a?(Array) && !search_payload['results'].empty?
+    }
+  end
+
+  def agentmemory_http_response(path, method: :get, payload: nil)
+    base_url = ENV.fetch('SANE_AGENTMEMORY_URL', 'http://127.0.0.1:3111').sub(%r{/+$}, '')
+    uri = URI("#{base_url}#{path}")
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.use_ssl = uri.scheme == 'https'
+    http.open_timeout = 2
+    http.read_timeout = method == :post ? 4 : 2
+    request = method == :post ? Net::HTTP::Post.new(uri) : Net::HTTP::Get.new(uri)
+    if payload
+      request['Content-Type'] = 'application/json'
+      request.body = payload
+    end
+    response = http.request(request)
+    { code: response.code.to_i, body: response.body.to_s }
+  rescue StandardError
+    { code: 0, body: '' }
+  end
+
+  def http_success_with_body?(response)
+    response[:code].between?(200, 299) && !response[:body].strip.empty?
+  end
+
+  def parse_json_response(response)
+    return nil unless http_success_with_body?(response)
+
+    JSON.parse(response[:body])
+  rescue JSON::ParserError
+    nil
   end
 
   # Q10: DOCUMENTATION CURRENCY
@@ -2777,12 +2848,100 @@ class ValidationReport
     @issues << "Q15 SECRET SCAN: Secret scan receipt unreadable: #{e.message}"
   end
 
+  def q16_user_policy_controls
+    issues_found = user_policy_control_issues
+    @metrics[:user_policy_controls] = {
+      issues: issues_found.length,
+      details: issues_found
+    }
+    issues_found.each { |issue| @issues << "Q16 USER POLICY: #{issue}" }
+  end
+
+  def user_policy_control_issues(home: File.expand_path(ENV.fetch('HOME', Dir.home)))
+    issues = []
+    policy_paths = {
+      '~/.codex/AGENTS.md' => File.join(home, '.codex', 'AGENTS.md'),
+      '~/.claude/CLAUDE.md' => File.join(home, '.claude', 'CLAUDE.md')
+    }
+
+    policy_paths.each do |label, path|
+      unless File.file?(path)
+        issues << "#{label} is missing; the global Brave-only/Mini-only admin-browser policy is not active"
+        next
+      end
+
+      content = File.read(path, encoding: 'UTF-8', invalid: :replace, undef: :replace)
+      lines = content.lines
+      numbered_lines = lines.each_index.select { |index| lines[index].match?(NUMBERED_MODEL_PATTERN) }
+      unless numbered_lines.empty?
+        issues << "#{label} hard-pins numbered GPT/Claude model(s) on line(s) #{numbered_lines.map { |index| index + 1 }.join(', ')}"
+      end
+
+      missing_terms = global_admin_browser_policy_missing_terms(content)
+      unless missing_terms.empty?
+        issues << "#{label} is missing the global Brave-only/Mini-only admin-browser rule: #{missing_terms.join(', ')}"
+      end
+    rescue SystemCallError => e
+      issues << "#{label} could not be read: #{e.message}"
+    end
+
+    codex_config = File.join(home, '.codex', 'config.toml')
+    issues.concat(codex_user_config_policy_issues(codex_config)) if File.file?(codex_config)
+    issues
+  end
+
+  def global_admin_browser_policy_missing_terms(content)
+    normalized = content.gsub(/\s+/, ' ')
+    required = {
+      GLOBAL_ADMIN_BROWSER_POLICY_MARKER => content.include?(GLOBAL_ADMIN_BROWSER_POLICY_MARKER),
+      'Brave' => content.match?(/\bBrave\b/i),
+      'Mini' => content.match?(/\bMini\b/i),
+      'admin or authenticated browser scope' => content.match?(/\b(?:admin|authenticated|portal)\b/i),
+      'Chrome prohibition' => normalized.match?(/\b(?:never|must not|do not|blocked?|forbidden)\b.{0,160}\bChrome\b/i),
+      'Safari prohibition' => normalized.match?(/\b(?:never|must not|do not|blocked?|forbidden)\b.{0,160}\bSafari\b/i)
+    }
+    required.reject { |_term, present| present }.keys
+  end
+
+  def codex_user_config_policy_issues(path)
+    issues = []
+    section = ''
+    File.readlines(path, encoding: 'UTF-8').each_with_index do |line, index|
+      stripped = line.strip
+      section = stripped if stripped.match?(/^\[[^\]]+\]$/)
+      line_number = index + 1
+
+      if stripped.match?(/^model\s*=\s*["']#{NUMBERED_MODEL_PATTERN.source}["']/i)
+        issues << "~/.codex/config.toml hard-pins a numbered model on line #{line_number}"
+      end
+      if stripped.match?(/^BROWSER_USE_AVAILABLE_BACKENDS\s*=.*\bchrome\b/i)
+        issues << "~/.codex/config.toml enables the Chrome browser backend on line #{line_number}"
+      end
+      if stripped.match?(/^NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME\s*=/i)
+        issues << "~/.codex/config.toml instructs use of the Chrome browser backend on line #{line_number}"
+      end
+      if section.match?(/^\[plugins\.['"]chrome@openai-bundled['"]\]$/i) && stripped.match?(/^enabled\s*=\s*true\b/i)
+        issues << "~/.codex/config.toml enables the Chrome plugin on line #{line_number}"
+      end
+    end
+    issues
+  rescue SystemCallError, ArgumentError => e
+    ["~/.codex/config.toml could not be read: #{e.message}"]
+  end
+
   def secret_scan_receipt_dir
     File.join(SANE_APPS_ROOT, 'infra', 'SaneProcess', 'outputs', 'secret-scan')
   end
 
   def latest_secret_scan_receipt_path
-    Dir.glob(File.join(secret_scan_receipt_dir, '*.json')).max_by { |path| File.mtime(path) }
+    primary = Dir.glob(File.join(secret_scan_receipt_dir, '*.json')).max_by { |path| File.mtime(path) }
+    return primary if primary
+
+    # `SaneMaster.rb secret_scan --path /Users/<user>` intentionally writes
+    # beneath the scanned root. Validation must consume that documented output
+    # instead of reporting that the receipt it just requested is missing.
+    home_receipt_dir = File.join(File.expand_path('~'), 'outputs', 'secret-scan')
+    Dir.glob(File.join(home_receipt_dir, '*.json')).max_by { |path| File.mtime(path) }
   end
 
   def disk_budget_path_size_gb(path)
@@ -3487,6 +3646,16 @@ class ValidationReport
     else
       puts "   ⚠️  #{m[:issues].to_i} issues, #{m[:warnings].to_i} warnings"
       Array(m[:details]).each { |d| puts "      - #{d}" }
+    end
+
+    puts
+    puts "Q16: ACTIVE USER POLICY CONTROLS"
+    m = @metrics[:user_policy_controls] || {}
+    if m[:issues].to_i.zero?
+      puts "   ✅ Floating model selection and Brave-only/Mini-only admin-browser policy active"
+    else
+      puts "   ❌ #{m[:issues].to_i} policy issue(s)"
+      Array(m[:details]).each { |detail| puts "      - #{detail}" }
     end
 
     puts

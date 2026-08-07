@@ -31,6 +31,9 @@ module SaneMasterModules
       curl: 'sane_curl_guard.sh',
       open: 'sane_open_guard.sh',
       rsync: 'sane_rsync_guard.sh',
+      security: 'sane_security_guard.sh',
+      swift: 'swift',
+      xcodebuild: 'xcodebuild',
       ssh: 'sane_ssh_guard.sh'
     }.freeze
 
@@ -863,6 +866,38 @@ module SaneMasterModules
           puts "   ❌ #{command} resolves to #{active_path.empty? ? 'nothing' : active_path}; expected #{wrapper}"
           issues << :"#{command}_wrapper_not_first_on_path"
         end
+      end
+
+      security_wrapper = File.expand_path('~/.local/bin/security')
+      if File.executable?(security_wrapper)
+        _stdout, stderr, status = Open3.capture3(
+          {
+            'CODEX_CI' => '1',
+            'CODEX_SHELL' => nil,
+            'CLAUDE_CODE' => nil,
+            'CLAUDE_WORKTREES' => nil,
+            'GROK_HOOK_EVENT' => nil,
+            'GROK_SESSION_ID' => nil,
+            'SANE_REAL_SECURITY' => '/usr/bin/true'
+          },
+          security_wrapper, 'dump-keychain', '-d', 'login.keychain-db'
+        )
+        if status.exitstatus == 2 && stderr.include?('Whole-keychain enumeration')
+          puts '   ✅ Codex Desktop marker activates security guard without a prompt'
+        else
+          puts '   ❌ security wrapper is installed but inert for Codex Desktop shells'
+          issues << :security_wrapper_codex_marker_inert
+        end
+      end
+
+      automation_guard = File.expand_path('~/SaneApps/infra/SaneProcess/scripts/hooks/sane_automation_guard.rb')
+      automation_writer = File.expand_path('~/SaneApps/infra/SaneProcess/scripts/automation/codex-automation-mini.rb')
+      if File.file?(automation_guard) && File.file?(automation_writer) &&
+         File.read(automation_writer).include?("require_relative '../hooks/sane_automation_guard'")
+        puts '   ✅ automation writer loads the canonical automation guard'
+      else
+        puts '   ❌ automation guard is missing or not loaded by the canonical writer'
+        issues << :automation_guard_not_integrated
       end
 
       inbox_script = File.expand_path('~/SaneApps/infra/scripts/check-inbox.sh')

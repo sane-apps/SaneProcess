@@ -2,6 +2,8 @@
 # sane_security_guard.sh
 # Shell-level guard for Codex/Claude sessions where native PreToolUse hooks may be unavailable.
 # Prevents repeated Keychain secret reads from flooding the user with prompts.
+# Whole-keychain enumeration is never an approved AI workflow: use the cached
+# secret file first, then one explicitly scoped Keychain lookup as fallback.
 
 set -euo pipefail
 
@@ -12,19 +14,27 @@ STAMP_FILE="${GUARD_DIR}/last_lookup"
 HISTORY_FILE="${GUARD_DIR}/history"
 REPEAT_COOLDOWN_SECONDS="${SANE_SECURITY_REPEAT_COOLDOWN_SECONDS:-30}"
 BURST_WINDOW_SECONDS="${SANE_SECURITY_BURST_WINDOW_SECONDS:-60}"
-BURST_MAX_LOOKUPS="${SANE_SECURITY_BURST_MAX_LOOKUPS:-12}"
+BURST_MAX_LOOKUPS="${SANE_SECURITY_BURST_MAX_LOOKUPS:-3}"
 
 is_ai_session() {
-  [[ -n "${CODEX_SHELL:-}" || -n "${CLAUDE_CODE:-}" || -n "${CLAUDE_WORKTREES:-}" || -n "${GROK_HOOK_EVENT:-}" || -n "${GROK_SESSION_ID:-}" ]]
+  [[ -n "${CODEX_SHELL:-}" || "${CODEX_CI:-}" == "1" || "${CODEX_INTERNAL_ORIGINATOR_OVERRIDE:-}" == "Codex Desktop" || -n "${CLAUDE_CODE:-}" || -n "${CLAUDE_WORKTREES:-}" || -n "${CURSOR_AGENT:-}" || -n "${CURSOR_SESSION_ID:-}" || -n "${CURSOR_TRACE_ID:-}" || -n "${GROK_HOOK_EVENT:-}" || -n "${GROK_SESSION_ID:-}" ]]
 }
 
 is_secret_read() {
   local subcommand="${1:-}"
   case "$subcommand" in
-    find-generic-password|find-internet-password|dump-keychain)
+    find-generic-password|find-internet-password)
       return 0
       ;;
   esac
+  return 1
+}
+
+requests_keychain_dump() {
+  local arg
+  for arg in "$@"; do
+    [[ "$arg" == "dump-keychain" ]] && return 0
+  done
   return 1
 }
 
@@ -136,6 +146,14 @@ recent_lookup_count() {
 }
 
 guarded=0
+
+if is_ai_session && requests_keychain_dump "$@"; then
+  echo "🔴 BLOCKED: Whole-keychain enumeration is not an approved secret lookup." >&2
+  echo "   Use ~/.config/nv/env first. If the value is absent, make one scoped" >&2
+  echo "   'security find-generic-password -s <service> -a <account> -w' lookup" >&2
+  echo "   and reuse that value. Never run security dump-keychain." >&2
+  exit 2
+fi
 
 if is_ai_session && is_secret_read "${1:-}" && ! is_claude_auth "$@"; then
   guarded=1

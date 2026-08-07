@@ -2,12 +2,15 @@
 # frozen_string_literal: true
 
 # Cursor stop adapter → force one follow-up when GUI click lacked a feedback poll.
+# Must be conversation-scoped — global/workspace pending leaked across chats.
 
 require 'json'
+require_relative 'runtime_paths'
 
-HELPER = File.expand_path('~/SaneApps/infra/SaneProcess/scripts/hooks/core/gui_feedback.rb')
+HELPER = SaneCursorRuntimePaths.hook('core/gui_feedback.rb')
 
 begin
+  raise LoadError unless HELPER && File.file?(HELPER)
   require HELPER
 rescue LoadError
   puts '{}'
@@ -22,7 +25,8 @@ end
 
 followup = SaneGuiFeedback.cursor_stop_followup(
   status: payload['status'],
-  loop_count: payload['loop_count']
+  loop_count: payload['loop_count'],
+  conversation_id: payload['conversation_id'] || payload['conversationId']
 )
 
 if followup

@@ -669,6 +669,23 @@ Dir.mktmpdir('email-guard-test-') do |dir|
       'created_at' => Time.now.to_i - 10,
       'body_hash' => Digest::SHA256.hexdigest(body.strip),
       'body_file' => body_path,
+      'user_approval' => 'okay'
+    )
+  )
+  _, vague_approval_err, vague_approval_status = run_ruby_hook(
+    'sane_email_guard.rb',
+    { 'tool_name' => 'Bash', 'tool_input' => { 'command' => "check-inbox.sh reply 123 #{body_path}" } }
+  )
+  t('Email guard rejects vague assent as send authorization', vague_approval_status.exitstatus == 2)
+  t('Vague approval block asks for explicit send authorization', vague_approval_err.include?('explicit send authorization'))
+  t('Email guard consumes invalid vague approval', !File.exist?(approval_path))
+
+  File.write(
+    approval_path,
+    JSON.pretty_generate(
+      'created_at' => Time.now.to_i - 10,
+      'body_hash' => Digest::SHA256.hexdigest(body.strip),
+      'body_file' => body_path,
       'user_approval' => 'send'
     )
   )
@@ -794,6 +811,28 @@ Dir.mktmpdir('email-guard-test-') do |dir|
   t('Email guard still rejects retired "(727) 758-9785" phone format', paren_phone_status.exitstatus == 2)
 end
 
+_, email_mention_err, email_mention_status = run_ruby_hook(
+  'sane_email_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => { 'command' => 'git commit -m "document check-inbox.sh and .email_post_approved"' }
+  }
+)
+t('Email guard ignores approval and send names in a commit message', email_mention_status.exitstatus == 0)
+t('Email mention-only command stays quiet', email_mention_err.empty?)
+
+_, email_same_chain_err, email_same_chain_status = run_ruby_hook(
+  'sane_email_guard.rb',
+  {
+    'tool_name' => 'Bash',
+    'tool_input' => {
+      'command' => 'printf approval > /tmp/.email_post_approved; check-inbox.sh compose a@b.test subject /tmp/body.txt'
+    }
+  }
+)
+t('Email guard blocks approval-file creation and send in one chain', email_same_chain_status.exitstatus == 2)
+t('Same-chain email block names separate steps', email_same_chain_err.include?('separate step'))
+
 email_force_path = '/tmp/.email_force_approved.json'
 FileUtils.rm_f(email_force_path)
 _, force_email_err, force_email_status = run_ruby_hook(
@@ -864,7 +903,65 @@ Dir.mktmpdir('sane-security-guard-test-') do |dir|
   _, repeat_err, repeat_status = Open3.capture3(env, 'bash', File.join(HOOK_DIR, 'sane_security_guard.sh'), *args)
   t('Repeated spoofed Claude auth lookup is throttled', repeat_status.exitstatus == 2)
   t('Repeated lookup block names Keychain reuse rule', repeat_err.include?('Repeated Keychain lookup too soon'))
+
+  _, dump_err, dump_status = Open3.capture3(
+    env,
+    'bash', File.join(HOOK_DIR, 'sane_security_guard.sh'),
+    'dump-keychain', '-d', 'login.keychain-db'
+  )
+  t('Security wrapper hard-blocks whole-keychain enumeration', dump_status.exitstatus == 2)
+  t('Enumeration block points to cached and scoped secret paths',
+    dump_err.include?('~/.config/nv/env') && dump_err.include?('find-generic-password'))
 end
+
+codex_env = {
+  'CODEX_CI' => '1',
+  'CODEX_SHELL' => nil,
+  'CLAUDE_CODE' => nil,
+  'CLAUDE_WORKTREES' => nil,
+  'GROK_HOOK_EVENT' => nil,
+  'GROK_SESSION_ID' => nil
+}
+_, codex_curl_err, codex_curl_status = Open3.capture3(
+  codex_env,
+  'bash', File.join(HOOK_DIR, 'sane_curl_guard.sh'),
+  '-X', 'POST', 'https://api.resend.com/emails'
+)
+t('Codex Desktop marker activates curl write guard', codex_curl_status.exitstatus == 2)
+t('Codex curl activation reports the canonical email route', codex_curl_err.include?('check-inbox.sh'))
+
+_, codex_security_err, codex_security_status = Open3.capture3(
+  codex_env.merge('SANE_REAL_SECURITY' => '/usr/bin/true'),
+  'bash', File.join(HOOK_DIR, 'sane_security_guard.sh'),
+  'dump-keychain', '-d', 'login.keychain-db'
+)
+t('Codex Desktop marker activates Keychain enumeration guard', codex_security_status.exitstatus == 2)
+t('Codex Keychain activation remains prompt-free', codex_security_err.include?('Whole-keychain enumeration'))
+
+cursor_env = {
+  'CURSOR_SESSION_ID' => 'guard-test-session',
+  'CODEX_CI' => nil,
+  'CODEX_SHELL' => nil,
+  'CLAUDE_CODE' => nil,
+  'CLAUDE_WORKTREES' => nil,
+  'GROK_HOOK_EVENT' => nil,
+  'GROK_SESSION_ID' => nil
+}
+_, cursor_curl_err, cursor_curl_status = Open3.capture3(
+  cursor_env,
+  'bash', File.join(HOOK_DIR, 'sane_curl_guard.sh'),
+  '-X', 'POST', 'https://api.resend.com/emails'
+)
+t('Cursor marker activates curl write guard', cursor_curl_status.exitstatus == 2)
+t('Cursor curl activation reports the canonical email route', cursor_curl_err.include?('check-inbox.sh'))
+
+_, cursor_security_err, cursor_security_status = Open3.capture3(
+  cursor_env.merge('SANE_REAL_SECURITY' => '/usr/bin/true'),
+  'bash', File.join(HOOK_DIR, 'sane_security_guard.sh'),
+  'dump-keychain', '-d', 'login.keychain-db'
+)
+t('Cursor marker activates Keychain enumeration guard', cursor_security_status.exitstatus == 2)
+t('Cursor Keychain activation remains prompt-free', cursor_security_err.include?('Whole-keychain enumeration'))
 
 warn ''
 warn '=' * 60

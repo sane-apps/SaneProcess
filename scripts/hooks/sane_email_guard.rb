@@ -108,7 +108,7 @@ def verify_approval(body)
     return [false, 'Approval flag is missing the recorded user approval quote.']
   end
 
-  # 2026-08-01: reject vague assent reused from unrelated turns.
+  # Reject vague assent that could have been copied from an unrelated turn.
   quote = payload['user_approval'].to_s.strip.downcase
   send_ok = quote.match?(
     /\b(?:send(?:\s+it)?(?:\s+now)?|yes[,\s]+send|go\s+ahead\s+and\s+send|ship\s+it|send\s+as[- ]?is|send\s+the\s+(?:email|reply|draft|message)|approve(?:d)?\s+(?:to\s+)?send|ok(?:ay)?\s+to\s+send)\b/
@@ -194,10 +194,10 @@ exit 0 unless tool_name == 'Bash'
 command = (input['tool_input'] || {})['command'].to_s
 exit 0 if command.empty?
 
-# Block Claude from touching the approval flag directly in a send command chain.
+# Block an agent from touching the approval flag directly in a send command chain.
 # The flag must be set in a SEPARATE tool call from the send.
-# Only trip when the shell is actually invoking check-inbox send paths (not
-# when a commit message / path merely mentions check-inbox.sh).
+# Only trip when the shell is actually invoking check-inbox send paths, not when
+# a commit message or path merely mentions check-inbox.sh.
 invokes_check_inbox_send = command.match?(
   %r{(?:^|[;&|]\s*|\s)(?:\S*/)?check-inbox\.sh\s+(?:reply|compose)\b}
 )

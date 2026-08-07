@@ -735,7 +735,11 @@ module SaneMasterModules
 
       # 1. Hook Infrastructure
       puts "\n═══ 1. HOOK INFRASTRUCTURE ═══"
-      hooks = %w[session_start.rb saneprompt.rb sanetools.rb sanetrack.rb sanestop.rb]
+      hooks = %w[
+        session_start.rb saneprompt.rb sanetools.rb sanetrack.rb
+        task_completed_gate.rb sanestop.rb sane_catastrophic_guard.rb
+        sane_bash_guards.rb sane_automation_guard.rb
+      ]
       hooks.each do |hook|
         path = File.join(saneprocess_hooks, hook)
         if File.exist?(path)

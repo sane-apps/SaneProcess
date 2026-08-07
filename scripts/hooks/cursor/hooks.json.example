@@ -1,10 +1,17 @@
 {
   "version": 1,
   "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "./hooks/before_shell_guard.rb",
+        "matcher": ".*",
+        "failClosed": true
+      }
+    ],
     "afterShellExecution": [
       {
         "command": "./hooks/gui_feedback_after_shell.rb",
-        "matcher": "osascript|System Events|Brave|appstoreconnect|Update Review|Submit for Review|peekaboo|cliclick|mini-gui-run|keystroke|click button"
+        "matcher": "osascript|System Events|Brave|appstoreconnect|Update Review|Submit for Review|peekaboo|cliclick|mini-gui-run|keystroke|click button|playwright|connectOverCDP|xdotool"
       }
     ],
     "stop": [

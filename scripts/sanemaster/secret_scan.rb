@@ -40,6 +40,7 @@ module SaneMasterModules
     ACTIVE_ACCESS_ALLOWLIST = [
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.ssh/[^/]+\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.private_keys/[^/]+\.p8\z},
+      %r{\A#{Regexp.escape(File.expand_path('~'))}/\.appstoreconnect/private_keys/[^/]+\.p8\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.sanevideo-signing/keys/[^/]+\.key\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.local/share/containers/podman/machine/machine\z},
       %r{\A#{Regexp.escape(File.expand_path('~'))}/\.codex/auth\.json\z},
@@ -60,6 +61,8 @@ module SaneMasterModules
       %r{/(?:transformers|sklearn|numba|PyJWT|pyjwt)-[^/]*/},
       %r{/\.claude/plugins/marketplaces/[^/]+/src/supervisor/env-sanitizer\.ts\z},
       %r{/\.grok/marketplace-cache/[^/]+/src/supervisor/env-sanitizer\.ts\z},
+      %r{/\.grok/marketplace-cache/[^/]+/src/services/telemetry/common\.ts\z},
+      %r{/SaneApps/infra/SaneProcess/outputs/memory-conflicts/[^/]+/(?:claude-file-memory|codex-memories|serena-memories)/(?:local|remote)/manifest\.tsv\z},
       %r{/SaneClip/Tests/SaneClipTests\.swift\z},
       %r{/SaneClip-clean/Tests/SaneClipTests\.swift\z}
     ].freeze

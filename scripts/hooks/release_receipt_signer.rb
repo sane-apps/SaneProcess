@@ -12,6 +12,7 @@ require 'securerandom'
 require 'socket'
 require 'tempfile'
 require 'time'
+require 'uri'
 
 # Domain-separated authentication for release-authorizing receipts.
 #
@@ -57,6 +58,16 @@ module ReleaseReceiptSigner
       receipt: 'outputs/appstore_preflight_status.json',
       option_flags: %w[--platform --pkg],
       receipt_optional_on_success: true
+    },
+    'saneprocess.webstore_preflight.v1' => {
+      path: 'scripts/sanemaster/store_compliance.rb',
+      payload_type: 'webstore_preflight_status',
+      command: 'webstore_preflight',
+      receipt: 'outputs/webstore_preflight_status.json',
+      option_flags: %w[--package --listing --media-dir --privacy-url --review-instructions],
+      file_flags: %w[--package --listing --review-instructions],
+      directory_flags: %w[--media-dir],
+      url_flags: %w[--privacy-url]
     },
     'saneprocess.upgrade_path_proof.v1' => {
       path: 'scripts/sanemaster/upgrade_path_proof.rb',
@@ -271,13 +282,23 @@ module ReleaseReceiptSigner
         raise ArgumentError, "missing value for canonical producer option: #{flag}" if value.to_s.empty? || value.include?("\0")
         raise ArgumentError, "duplicate canonical producer option: #{flag}" if seen[flag]
         raise ArgumentError, 'App Store platform must be macos or ios' if flag == '--platform' && !%w[macos ios].include?(value)
-        if flag == '--pkg'
+        if flag == '--pkg' || Array(spec[:file_flags]).include?(flag)
           expanded_package = File.expand_path(value, project)
           metadata = File.lstat(expanded_package)
-          raise ArgumentError, 'App Store package must be a regular non-symlink file' unless metadata.file? && !metadata.symlink?
+          raise ArgumentError, "#{flag} must be a regular non-symlink file" unless metadata.file? && !metadata.symlink?
           package = File.realpath(expanded_package)
-          raise ArgumentError, 'App Store package path escapes the project' unless beneath?(package, project)
+          raise ArgumentError, "#{flag} path escapes the project" unless beneath?(package, project)
           value = package
+        elsif Array(spec[:directory_flags]).include?(flag)
+          expanded_directory = File.expand_path(value, project)
+          metadata = File.lstat(expanded_directory)
+          raise ArgumentError, "#{flag} must be a non-symlink directory" unless metadata.directory? && !metadata.symlink?
+          directory = File.realpath(expanded_directory)
+          raise ArgumentError, "#{flag} path escapes the project" unless beneath?(directory, project)
+          value = directory
+        elsif Array(spec[:url_flags]).include?(flag)
+          uri = URI.parse(value)
+          raise ArgumentError, "#{flag} must be an HTTPS URL" unless uri.is_a?(URI::HTTPS) && uri.host
         elsif flag != '--platform' && !value.match?(/\A[A-Za-z0-9._-]+\z/)
           raise ArgumentError, "invalid value for canonical producer option: #{flag}"
         end
@@ -287,7 +308,7 @@ module ReleaseReceiptSigner
       end
       validated
     rescue Errno::ENOENT, Errno::EACCES
-      raise ArgumentError, 'App Store package path must be an existing readable file'
+      raise ArgumentError, 'canonical producer input path must exist and be readable'
     end
 
     def validate_candidate!(raw, producer, destination, token, status, spec)

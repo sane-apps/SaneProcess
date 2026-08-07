@@ -63,6 +63,17 @@ check('direct .accessibilityIdentifier("...") is declared') do
   end
 end
 
+check('both branches of a conditional accessibility identifier are declared') do
+  with_fixture do
+    File.write(
+      'App/Views/Conditional.swift',
+      %(.accessibilityIdentifier(field == .price ? "intake.price" : "intake.mileage")\n)
+    )
+    ids = harness.extract_ui_identifiers
+    ids.include?('intake.price') && ids.include?('intake.mileage')
+  end
+end
+
 check('labeled component argument accessibilityID: "..." is declared (SaneVideo regression)') do
   with_fixture do
     File.write('App/Views/Sheet.swift', <<~SWIFT)
