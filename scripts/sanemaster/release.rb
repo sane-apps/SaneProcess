@@ -3373,6 +3373,13 @@ module SaneMasterModules
       appstore_config['iap_policy'].to_s.strip.downcase == 'none'
     end
 
+    def appstore_missing_product_id_policy(appstore_config:, uses_storekit_unlock:)
+      return :required if uses_storekit_unlock
+      return :not_applicable if appstore_no_iap_policy?(appstore_config)
+
+      :optional
+    end
+
     def asc_list_app_subscriptions(app_id:, token:)
       response = asc_get_json("/apps/#{app_id}/subscriptionGroups?include=subscriptions&limit=200", token: token)
       return [] unless response.is_a?(Hash)
@@ -6210,19 +6217,24 @@ module SaneMasterModules
         .join("\n")
         .match?(/AppStoreProductID|INFOPLIST_KEY_AppStoreProductID/)
 
-      if uses_storekit_unlock
-        if configured_product_id.empty?
+      if configured_product_id.empty?
+        case appstore_missing_product_id_policy(
+          appstore_config: appstore_config, uses_storekit_unlock: uses_storekit_unlock
+        )
+        when :required
           puts '❌ missing appstore.product_id'
           issues << 'StoreKit unlock flow detected, but .saneprocess is missing appstore.product_id'
+        when :not_applicable
+          puts '⏭️  skipped (iap_policy: none)'
         else
-          puts "✅ #{configured_product_id}"
-          unless has_product_id_marker
-            warnings << 'AppStoreProductID marker not found in project settings — relying on preflight/release build-flag injection'
-          end
+          puts '⚠️  not set (no StoreKit unlock detected)'
+          warnings << 'No appstore.product_id configured'
         end
-      elsif configured_product_id.empty?
-        puts '⚠️  not set (no StoreKit unlock detected)'
-        warnings << 'No appstore.product_id configured'
+      elsif uses_storekit_unlock
+        puts "✅ #{configured_product_id}"
+        unless has_product_id_marker
+          warnings << 'AppStoreProductID marker not found in project settings — relying on preflight/release build-flag injection'
+        end
       elsif has_product_id_marker
         puts "✅ #{configured_product_id}"
       else

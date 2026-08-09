@@ -113,10 +113,19 @@ module SaneMasterModules
 
     def storefront_image_evidence(receipt, prefix)
       states = receipt['states']
-      return [[], ["#{prefix} states are missing or not an array"]] unless states.is_a?(Array)
+      entries = receipt['entries']
+      if states.is_a?(Array) && entries.is_a?(Array)
+        return [[], ["#{prefix} image evidence is ambiguous"]]
+      end
+      rows = if states.is_a?(Array)
+               states
+             elsif receipt['schema'].to_s == 'sanelot.app_store_ipad_selection.v1' && entries.is_a?(Array)
+               entries
+             end
+      return [[], ["#{prefix} image evidence is missing or not an array"]] unless rows
 
       issues = []
-      rows = states.each_with_index.each_with_object([]) do |(row, index), selected|
+      selected_rows = rows.each_with_index.each_with_object([]) do |(row, index), selected|
         unless row.is_a?(Hash) && row['path'].to_s.match?(/\.(?:png|jpe?g)\z/i) &&
                row['sha256'].to_s.match?(/\A[0-9a-f]{64}\z/)
           issues << "#{prefix} state #{index} lacks one image path and SHA-256"
@@ -124,7 +133,7 @@ module SaneMasterModules
         end
         selected << row
       end
-      [rows, issues]
+      [selected_rows, issues]
     end
 
     def storefront_relative_path(root, path)

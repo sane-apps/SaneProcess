@@ -12,7 +12,8 @@ class StorefrontReceiptHarness
   include SaneMasterModules::AppStoreStorefrontReceipts
 end
 
-def storefront_fixture(root, family:, commit:, branch: 'release/test', bind_images: true, relative_path: false)
+def storefront_fixture(root, family:, commit:, branch: 'release/test', bind_images: true, relative_path: false,
+                       evidence_key: 'states')
   directory = File.join(root, 'outputs', 'app-review-current-source', "storefront-#{family}")
   FileUtils.mkdir_p(directory)
   image = File.join(directory, '01.png')
@@ -25,10 +26,11 @@ def storefront_fixture(root, family:, commit:, branch: 'release/test', bind_imag
     'git_upstream_commit' => commit,
     'git_pushed' => true,
     'git_dirty' => false,
-    'states' => []
+    evidence_key => []
   }
+  receipt['schema'] = 'sanelot.app_store_ipad_selection.v1' if evidence_key == 'entries'
   if bind_images
-    receipt['states'] << {
+    receipt[evidence_key] << {
       'path' => relative_path ? image.delete_prefix("#{root}/") : image,
       'sha256' => Digest::SHA256.file(image).hexdigest,
       'bytes' => File.size(image)
@@ -51,13 +53,29 @@ exit(run_tests('App Store source-bound storefront receipts') do
   test('accepts exact private receipts that bind both device-family images and pushed source') do
     Dir.mktmpdir('storefront-receipts-') do |root|
       storefront_fixture(root, family: 'iphone', commit: identity[:commit], relative_path: true)
-      storefront_fixture(root, family: 'ipad', commit: identity[:commit])
+      storefront_fixture(root, family: 'ipad', commit: identity[:commit], evidence_key: 'entries')
       report = subject.appstore_storefront_receipt_report(
         root: root, screenshots_config: config,
         source_identity: identity, ios_supports_ipad: true
       )
       assert(report[:ok], report[:issues].join("\n"))
       assert_eq(report[:family_count], 2)
+    end
+    true
+  end
+
+  test('rejects ambiguous receipt evidence arrays') do
+    Dir.mktmpdir('storefront-receipts-ambiguous-') do |root|
+      _image, receipt_path = storefront_fixture(root, family: 'iphone', commit: identity[:commit])
+      storefront_fixture(root, family: 'ipad', commit: identity[:commit], evidence_key: 'entries')
+      receipt = JSON.parse(File.read(receipt_path))
+      receipt['entries'] = receipt.fetch('states').map(&:dup)
+      File.write(receipt_path, JSON.pretty_generate(receipt))
+      report = subject.appstore_storefront_receipt_report(
+        root: root, screenshots_config: config,
+        source_identity: identity, ios_supports_ipad: true
+      )
+      assert_includes(report[:issues].join("\n"), 'image evidence is ambiguous')
     end
     true
   end

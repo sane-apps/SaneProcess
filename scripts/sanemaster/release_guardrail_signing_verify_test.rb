@@ -19,6 +19,23 @@ end
 status = run_tests('SaneMaster Release Guardrails: Signing and verify output') do
   subject = ReleaseGuardrailSigningHarness.new
 
+  test_category("App Store product routing") do
+    test('does not require a product ID for an explicit no-IAP app') do
+      policy = lambda do |config, uses_storekit|
+        subject.send(
+          :appstore_missing_product_id_policy,
+          appstore_config: config,
+          uses_storekit_unlock: uses_storekit
+        )
+      end
+
+      assert_eq(policy.call({ 'iap_policy' => 'none' }, false), :not_applicable)
+      assert_eq(policy.call({}, false), :optional)
+      assert_eq(policy.call({ 'iap_policy' => 'none' }, true), :required)
+      true
+    end
+  end
+
   test_category("macOS App Store signing audit") do
     test('ignores test bundles when collecting macOS App Store signing targets') do
       Dir.mktmpdir do |dir|
